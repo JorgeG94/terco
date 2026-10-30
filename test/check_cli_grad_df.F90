@@ -136,7 +136,7 @@ contains
 
    pure function c_string_local(s) result(cs)
       !! `s` NUL-terminated, for a `character(kind=c_char) :: x(*)` dummy --
-      !! the same convention app/terco_app.F90's own `c_string` uses.
+      !! the same convention app/trc_app.F90's own `c_string` uses.
       character(*), intent(in) :: s
       character(len=len(s) + 1) :: cs
       cs = s//achar(0)

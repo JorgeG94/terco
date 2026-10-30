@@ -28,21 +28,21 @@ module trc_eri
    use trc_tables, only: tables_init, LMAX
    use pic_strings, only: to_string
    use trc_cart, only: cart_init
-   use trc_hgp, only: build_pairs_hgp
-   use trc_screen, only: schwarz_bounds_rys, pair_index
-   use trc_bins, only: pair_bins_t, build_binned_pairs, build_pair_quartets
+   use trc_hgp, only: hgp_build_pairs
+   use trc_screen, only: screen_schwarz_bounds_rys, screen_pair_index
+   use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
    use pic_profiler, only: profiler_start, profiler_stop
-   use trc_binkernel, only: fock_bins
+   use trc_binkernel, only: binkernel_fock_bins
    use trc_grad, only: grad_bins
    use trc_mdj, only: trc_mdj_t
    use trc_mdg, only: trc_mdg_t, trc_mdg_scales_t
    use trc_binkernel, only: TRC_PRIM_MARGIN
    use trc_api, only: trc_basis_t
-   use trc_decontract, only: decon_t, decontract_basis, decon_expand, decon_fold, decon_release, &
+   use trc_decontract, only: decon_t, decontract_basis, decontract_expand, decontract_fold, decontract_release, &
                              DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT, &
-                             decon_expand_host, decon_fold_host
+                             decontract_expand_host, decontract_fold_host
    implicit none
    private
    public :: trc_eri_t, eri_lmax_refusal
@@ -63,7 +63,7 @@ module trc_eri
       !! anyway since it is a one-time O(npp) cost at geometry-build time,
       !! not per Fock build.
       integer :: nqp = 0
-      !! Bin-interleaved second copy of the above (trc_bins%build_pair_quartets):
+      !! Bin-interleaved second copy of the above (trc_bins%bins_build_pair_quartets):
       !! flat fields here, not components of `bins` -- see that routine's
       !! own comment for why.
       integer,  allocatable :: qp_bin_pbase(:), qp_bin_k(:)
@@ -118,7 +118,7 @@ module trc_eri
       !!
       !! Used to be six: a separate MMD primitive-pair pass fed Schwarz
       !! before the HGP pairs existed. Schwarz is now computed from the HGP
-      !! pairs themselves (trc_screen.F90's schwarz_bounds_hgp), so that pass
+      !! pairs themselves (trc_screen.F90's screen_schwarz_bounds_hgp), so that pass
       !! and its stage are both gone -- see build_structures.
    contains
       procedure :: build   => eri_build
@@ -162,7 +162,7 @@ contains
    ! Two structures, both of which the four-centre path needs and neither of
    ! which a caller should have to assemble: the HGP primitive pairs the
    ! kernels read, and the Schwarz vector, now formed from THOSE pairs
-   ! directly (trc_screen.F90's schwarz_bounds_hgp) rather than from a second,
+   ! directly (trc_screen.F90's screen_schwarz_bounds_hgp) rather than from a second,
    ! MMD-only primitive-pair set built and discarded just to feed it -- see
    ! that routine's header for why this is not only faster but also closes a
    ! scale mismatch the MMD route had.
@@ -314,9 +314,9 @@ contains
       this%sh_at  = b%sh_at
 
       ! The basis already folded common_fac_sp into its coefficients, so the
-      ! separate per-shell factor build_pairs_hgp expects is unity. Passing
+      ! separate per-shell factor hgp_build_pairs expects is unity. Passing
       ! the factor twice is the classic way to be wrong by a smooth number
-      ! here -- see schwarz_bounds_hgp's header for the MMD route that used
+      ! here -- see screen_schwarz_bounds_hgp's header for the MMD route that used
       ! to get this wrong.
       allocate (one(b%nshell))
       one = 1.0_dp
@@ -324,7 +324,7 @@ contains
       ! The kernel multiplies each pair by sh_c, so sh_c is the amplitude
       ! the prune judges by. The cutoff sits three orders below the
       ! screening threshold.
-      call build_pairs_hgp(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
+      call hgp_build_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
                            one, b%sh_c, thresh*1.0e-3_dp, &
                            this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                            this%hp_ra, this%hp_rb, this%hp_c, hp_ki, hp_kj, this%nhpp, &
@@ -343,19 +343,19 @@ contains
       ! They stay resident for the Fock kernels regardless of what Schwarz
       ! does with them, so entering them before computing the bound (instead
       ! of after, alongside everything else below) costs nothing extra and
-      ! is what lets schwarz_bounds_rys read them without a transfer of its
+      ! is what lets screen_schwarz_bounds_rys read them without a transfer of its
       ! own. The exit pairing these before `eri_release` is unchanged.
       !
       !$acc enter data copyin(this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
       !$acc                   this%hp_ra, this%hp_rb, this%hp_c)
 
       allocate (qs(b%nshell*(b%nshell + 1)/2))
-      ! schwarz_bounds_rys: the Rys-quadrature diagonal kernel (one thread
+      ! screen_schwarz_bounds_rys: the Rys-quadrature diagonal kernel (one thread
       ! per (pair, component pair), trc_schwarz_rys.F90), which replaces
-      ! schwarz_bounds_hgp's one-thread-per-pair whole-block scan. Same Q,
-      ! see trc_screen.F90's own header; schwarz_bounds_hgp stays for
+      ! screen_schwarz_bounds_hgp's one-thread-per-pair whole-block scan. Same Q,
+      ! see trc_screen.F90's own header; screen_schwarz_bounds_hgp stays for
       ! check_schwarz_rys_vs_hgp's comparison.
-      call schwarz_bounds_rys(b%nshell, this%nhpp, b%sh_l, this%hp_off, this%hp_n, &
+      call screen_schwarz_bounds_rys(b%nshell, this%nhpp, b%sh_l, this%hp_off, this%hp_n, &
                               this%hp_p, this%hp_r, this%hp_ra, this%hp_rb, this%hp_c, qs)
       this%t_build(2) = tm%get_elapsed_time()
       call tm%start()
@@ -370,26 +370,26 @@ contains
       ! that turns one into the other; see build_maps in trc_decontract
       ! for the measurement that says it is worth 1.04e-05 Ha on water.
       !
-      ! Scaled here rather than inside schwarz_bounds_rys so that routine
+      ! Scaled here rather than inside screen_schwarz_bounds_rys so that routine
       ! stays a statement about integrals, and because both consumers --
-      ! the pair prune in build_binned_pairs and the exact per-quartet
+      ! the pair prune in bins_build_binned_pairs and the exact per-quartet
       ! test in the kernel, which reads sp_q -- then get it for free.
       !
       if (this%dec%active) then
          do i = 1, b%nshell
             do j = 1, i
-               qs(pair_index(i, j)) = qs(pair_index(i, j)) &
+               qs(screen_pair_index(i, j)) = qs(screen_pair_index(i, j)) &
                                       *this%dec%amp(i)*this%dec%amp(j)
             end do
          end do
       end if
 
-      call build_binned_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
+      call bins_build_binned_pairs(b%nshell, b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
                               this%bins, pp_n=this%hp_n, res=bres)
       this%t_build(3) = tm%get_elapsed_time()
       call tm%start()
 
-      call build_pair_quartets(this%bins, b%nshell, this%nhpp, &
+      call bins_build_pair_quartets(this%bins, b%nshell, this%nhpp, &
                                this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
                                this%hp_ra, this%hp_rb, this%hp_c, &
                                this%qp_bin_pbase, this%qp_bin_k, this%nqp, &
@@ -406,7 +406,7 @@ contains
       deallocate (qs, one)
 
       ! this%hp_* are already device-resident -- entered above, before
-      ! schwarz_bounds_rys ran.
+      ! screen_schwarz_bounds_rys ran.
       !$acc enter data copyin(this%sh_l, this%ao_off, this%sh_at, this%dsh, &
       !$acc                   this%bins, this%bins%sp_i, this%bins%sp_j, &
       !$acc                   this%bins%sp_q, &
@@ -491,7 +491,7 @@ contains
       allocate (jmat(1, nw, nw), kmat(1, nw, nw), dwork(1, nw, nw))
       allocate (dp_w(nw, nw), gp_w(nw, nw))
       if (this%dec%active) then
-         call decon_expand_host(this%dec, dmat, dp_w)
+         call decontract_expand_host(this%dec, dmat, dp_w)
       else
          dp_w = dmat
       end if
@@ -513,7 +513,7 @@ contains
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
-      call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
+      call binkernel_fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jbins, kfac, ow, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
@@ -537,7 +537,7 @@ contains
          end do
       end do
       if (this%dec%active) then
-         call decon_fold_host(this%dec, gp_w, gmat)
+         call decontract_fold_host(this%dec, gp_w, gmat)
       else
          do j = 1, n
             do i = 1, n
@@ -607,7 +607,7 @@ contains
    end function mdj_requested
 
    subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac, omega)
-      !! The g classes fock_bins leaves to MD exchange (those above
+      !! The g classes binkernel_fock_bins leaves to MD exchange (those above
       !! TERCO_RYS_G_LTOT), into the same folded matrix (both on the device).
       !! Builds the MD pair list and its sorted groups on first use.
       class(trc_eri_t), intent(inout) :: this
@@ -616,7 +616,7 @@ contains
       real(dp), intent(inout) :: jmat(:, :, :)
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: omega
-      !! the operator's erf range parameter, as fock_bins takes it (0: Coulomb)
+      !! the operator's erf range parameter, as binkernel_fock_bins takes it (0: Coulomb)
       type(trc_mdg_scales_t) :: sc
       if (.not. this%needs_md) return
       if (.not. this%md%built) then
@@ -725,7 +725,7 @@ contains
       nw = this%nao_w
       allocate (dp_w(nw, nw), jp_w(nw, nw))
       if (this%dec%active) then
-         call decon_expand_host(this%dec, dmat, dp_w)
+         call decontract_expand_host(this%dec, dmat, dp_w)
       else
          dp_w = dmat
       end if
@@ -734,7 +734,7 @@ contains
       !$acc update self(jp_w)
       !$acc exit data delete(dp_w, jp_w)
       if (this%dec%active) then
-         call decon_fold_host(this%dec, jp_w, jmat)
+         call decontract_fold_host(this%dec, jp_w, jmat)
       else
          jmat = jp_w
       end if
@@ -750,12 +750,12 @@ contains
    ! repulsion, XC and PCM are the caller's, same scope line eri_fock draws
    ! around Hcore.
    !
-   subroutine eri_gradient(this, b, dens, grad, k_scale, j_scale, omega)
+   subroutine eri_gradient(this, b, density, grad, k_scale, j_scale, omega)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
-      real(dp), intent(in)  :: dens(:, :, :)
-      !! (nao, nao, ndens): ndens = size(dens, 3) is read from this, not
-      !! passed separately, so the call stays eri%gradient(bas, dens, grad)
+      real(dp), intent(in)  :: density(:, :, :)
+      !! (nao, nao, ndens): ndens = size(density, 3) is read from this, not
+      !! passed separately, so the call stays eri%gradient(bas, density, grad)
       !! with no extra integer for the caller to keep in sync.
       real(dp), intent(out) :: grad(3, b%natm)
       real(dp), intent(in), optional :: k_scale, j_scale
@@ -782,7 +782,7 @@ contains
       if (present(omega)) ow = omega
       if (.not. (ow >= 0.0_dp)) error stop "terco: eri%gradient: omega < 0 or NaN (erfc/short-range) is not implemented"
 
-      ndens = size(dens, 3)
+      ndens = size(density, 3)
 
       ! A shell whose centre matched no atom exactly (basis_build leaves
       ! sh_at = 0) has nowhere to put its force: grad_bins would drop or
@@ -805,9 +805,9 @@ contains
       allocate (dwork(ndens, nw, nw))
       do id = 1, ndens
          if (this%dec%active) then
-            call decon_expand_host(this%dec, dens(:, :, id), dwork(id, :, :))
+            call decontract_expand_host(this%dec, density(:, :, id), dwork(id, :, :))
          else
-            dwork(id, :, :) = dens(:, :, id)
+            dwork(id, :, :) = density(:, :, id)
          end if
       end do
 
@@ -905,7 +905,7 @@ contains
       allocate (jmat(1, nw, nw), kmat(1, nw, nw), dwork(1, nw, nw))
       allocate (dp_w(nw, nw), gp_w(nw, nw))
       if (this%dec%active) then
-         call decon_expand_host(this%dec, dmat, dp_w)
+         call decontract_expand_host(this%dec, dmat, dp_w)
       else
          dp_w = dmat
       end if
@@ -920,7 +920,7 @@ contains
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
-      call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
+      call binkernel_fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jfac, kfac, ow, .true., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
@@ -941,7 +941,7 @@ contains
          end do
       end do
       if (this%dec%active) then
-         call decon_fold_host(this%dec, gp_w, gmat)
+         call decontract_fold_host(this%dec, gp_w, gmat)
       else
          do j = 1, n
             do i = 1, n
@@ -1025,7 +1025,7 @@ contains
       ! The density into the basis the integrals are formed in, on the device.
       ! Nothing crosses the bus here -- that is the whole point of `resident`.
       if (this%dec%active) then
-         call decon_expand(this%dec, dmat, dp_w)
+         call decontract_expand(this%dec, dmat, dp_w)
       else
          do concurrent(j=1:n, i=1:n)
             dp_w(i, j) = dmat(i, j)
@@ -1071,7 +1071,7 @@ contains
          want = len_trim(ke) > 0
          if (present(count_survivors)) want = want .or. count_survivors
          if (want) then
-            call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
+            call binkernel_fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                            this%ao_off, this%thresh, .false., &
                            jfac, kfac, ow, .false., this%dsh, &
                            this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
@@ -1095,7 +1095,7 @@ contains
       end block
       if (.not. (md_j .and. kfac == 0.0_dp)) then
          call profiler_start("eri: bins (hgp/rys)", nvtx_only=.true.)
-         call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
+         call binkernel_fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                         this%ao_off, this%thresh, .false., &
                         jbins, kfac, ow, .false., this%dsh, &
                         this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
@@ -1144,7 +1144,7 @@ contains
          deallocate (jw)
       end if
       if (this%dec%active) then
-         call decon_fold(this%dec, gp_w, gmat)
+         call decontract_fold(this%dec, gp_w, gmat)
       else
          do concurrent(j=1:n, i=1:n)
             gmat(i, j) = gp_w(i, j)
@@ -1222,7 +1222,7 @@ contains
       ! the maximum over the densities.
       do d = 1, ndens
          if (this%dec%active) then
-            call decon_expand(this%dec, dmats(:, :, d), dp_w)
+            call decontract_expand(this%dec, dmats(:, :, d), dp_w)
          else
             call copy_square_device(n, dmats(:, :, d), dp_w)
          end if
@@ -1235,7 +1235,7 @@ contains
       end do
 
       call profiler_start("eri: bins (hgp/rys), several densities", nvtx_only=.true.)
-      call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
+      call binkernel_fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jfac, kfac, ow, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
@@ -1253,7 +1253,7 @@ contains
       do d = 1, ndens
          call unpack_symmetrise_device(nw, ndens, d, jmat, gp_w)
          if (this%dec%active) then
-            call decon_fold(this%dec, gp_w, gmats(:, :, d))
+            call decontract_fold(this%dec, gp_w, gmats(:, :, d))
          else
             call copy_square_device(n, gp_w, gmats(:, :, d))
          end if
@@ -1470,7 +1470,7 @@ contains
       ! one pass over the integrals they share.
       do d = 1, ndens
          if (this%dec%active) then
-            call decon_expand_host(this%dec, dmats(d, :, :), dp_w)
+            call decontract_expand_host(this%dec, dmats(d, :, :), dp_w)
          else
             dp_w = dmats(d, :, :)
          end if
@@ -1487,7 +1487,7 @@ contains
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
-      call fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
+      call binkernel_fock_bins(this%bins, this%nbas, this%nhpp, nw, this%sh_l, &
                      this%ao_off, this%thresh, .false., &
                      jfac, kfac, ow, .false., this%dsh, &
                      this%hp_off, this%hp_n, this%hp_p, this%hp_r, &
@@ -1508,7 +1508,7 @@ contains
             end do
          end do
          if (this%dec%active) then
-            call decon_fold_host(this%dec, gp_w, gmats(d, :, :))
+            call decontract_fold_host(this%dec, gp_w, gmats(d, :, :))
          else
             do j = 1, n
                do i = 1, n
@@ -1566,7 +1566,7 @@ contains
       if (allocated(this%sh_l))   deallocate (this%sh_l)
       if (allocated(this%ao_off)) deallocate (this%ao_off)
       if (allocated(this%sh_at))  deallocate (this%sh_at)
-      call decon_release(this%dec)
+      call decontract_release(this%dec)
       call this%pb%release()
       this%nbas = 0
       this%nao = 0

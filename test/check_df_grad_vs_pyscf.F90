@@ -126,7 +126,7 @@ program check_df_grad_vs_pyscf
    opts%guess = "gwh"
    if (is_dft) opts%functional = trim(functional)
    opts%grid_level = grid_level
-   opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-10_dp; opts%max_iter = 200
+   opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-10_dp; opts%max_iteration = 200
    call trc_scf_run(bas, nalpha, nbeta, opts, res, la=lp, scf_dfjk=dfjk)
    if (.not. res%converged) then
       print '(a)', 'check_df_grad_vs_pyscf: reference SCF did not converge'; stop 1

@@ -28,7 +28,7 @@
 module trc_xc_batch
    use pic_types, only: dp
    use trc_api, only: trc_basis_t
-   use trc_collocation, only: shell_collocate, NCART_MAX
+   use trc_collocation, only: collocation_shell, NCART_MAX
    implicit none
    private
 
@@ -155,7 +155,7 @@ contains
 
       integer :: maxp, i, j, k, lo, hi, axis, top, nb, ib, ish, nsh_b, nao_b
       integer :: sh_in_batch
-      integer, allocatable :: idx(:), st_lo(:), st_hi(:), b_lo(:), b_hi(:)
+      integer, allocatable :: index(:), st_lo(:), st_hi(:), b_lo(:), b_hi(:)
       real(dp), allocatable :: rcut(:), bmin(:, :), bmax(:, :)
       real(dp) :: mid, d2, dd
       real(dp) :: lo3(3), hi3(3)
@@ -171,12 +171,12 @@ contains
       if (present(w_tol)) wtol = w_tol
 
       ! --- 0. the points that carry anything --------------------------------
-      allocate (idx(npts))
+      allocate (index(npts))
       n = 0
       do i = 1, npts
          if (abs(weights(i)) < wtol) cycle
          n = n + 1
-         idx(n) = i
+         index(n) = i
       end do
       this%npts = n
       this%n_dropped = npts - n
@@ -202,21 +202,21 @@ contains
          lo3 = huge(1.0_dp)
          hi3 = -huge(1.0_dp)
          do k = lo, hi
-            lo3 = min(lo3, coords(:, idx(k)))
-            hi3 = max(hi3, coords(:, idx(k)))
+            lo3 = min(lo3, coords(:, index(k)))
+            hi3 = max(hi3, coords(:, index(k)))
          end do
          axis = maxloc(hi3 - lo3, dim=1)
          mid = 0.5_dp*(lo3(axis) + hi3(axis))
-         ! Partition idx(lo:hi): below the midpoint first.
+         ! Partition index(lo:hi): below the midpoint first.
          i = lo
          j = hi
          do while (i <= j)
-            if (coords(axis, idx(i)) < mid) then
+            if (coords(axis, index(i)) < mid) then
                i = i + 1
             else
-               k = idx(i)
-               idx(i) = idx(j)
-               idx(j) = k
+               k = index(i)
+               index(i) = index(j)
+               index(j) = k
                j = j - 1
             end if
          end do
@@ -241,11 +241,11 @@ contains
          this%b_off(ib) = k + 1
          do i = b_lo(ib), b_hi(ib)
             k = k + 1
-            this%r(:, k) = coords(:, idx(i))
-            this%w(k) = weights(idx(i))
+            this%r(:, k) = coords(:, index(i))
+            this%w(k) = weights(index(i))
             this%batch_of(k) = ib
-            if (present(atom)) this%atom(k) = atom(idx(i))
-            if (present(qw)) this%qw(k) = qw(idx(i))
+            if (present(atom)) this%atom(k) = atom(index(i))
+            if (present(qw)) this%qw(k) = qw(index(i))
          end do
       end do
       this%b_off(nb + 1) = n + 1
@@ -381,7 +381,7 @@ contains
             d(1) = r(1, g) - sh_r(1, ish)
             d(2) = r(2, g) - sh_r(2, ish)
             d(3) = r(3, g) - sh_r(3, ish)
-            call shell_collocate(sh_l(ish), sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs)
+            call collocation_shell(sh_l(ish), sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs)
             nc = (sh_l(ish) + 1)*(sh_l(ish) + 2)/2
             do m = 1, nc
                b_amax(kk) = max(b_amax(kk), abs(cs(m)))

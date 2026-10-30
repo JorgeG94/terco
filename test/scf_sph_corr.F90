@@ -43,7 +43,7 @@ program scf_sph_corr
    use trc_sph, only: sph_cart_to_sph
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_scf_df, only: df_jk_t
-   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_mo_to_cart
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_driver_mo_to_cart
    use trc_linalg, only: trc_linalg_t
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
@@ -137,7 +137,7 @@ contains
          end if
 
          allocate (cmo_c(bas%nao, bas%nao), eps_c(bas%nao))
-         call rimp2_mo_to_cart(bas, res%cmo(:, :, 1), res%eps(:, 1), cmo_c, eps_c)
+         call rimp2_driver_mo_to_cart(bas, res%cmo(:, :, 1), res%eps(:, 1), cmo_c, eps_c)
          call trc_rimp2_run(bas, aux, pl, nocc, cmo_c, eps_c, mp)
          if (len_trim(mp%message) > 0) then
             print "(a)", "scf_sph_corr/A: "//trim(mp%message); ok = .false.
@@ -251,8 +251,8 @@ contains
       end if
 
       allocate (cmo_a(bas%nao, bas%nao), cmo_b(bas%nao, bas%nao), eps_a(bas%nao), eps_b(bas%nao))
-      call rimp2_mo_to_cart(bas, res%cmo(:, :, 1), res%eps(:, 1), cmo_a, eps_a)
-      call rimp2_mo_to_cart(bas, res%cmo(:, :, 2), res%eps(:, 2), cmo_b, eps_b)
+      call rimp2_driver_mo_to_cart(bas, res%cmo(:, :, 1), res%eps(:, 1), cmo_a, eps_a)
+      call rimp2_driver_mo_to_cart(bas, res%cmo(:, :, 2), res%eps(:, 2), cmo_b, eps_b)
       call trc_urimp2_run(bas, aux, pl, NA, NB, cmo_a, cmo_b, eps_a, eps_b, mp, nfrozen=NFZ)
       if (len_trim(mp%message) > 0) then
          print "(a)", "scf_sph_corr/B: "//trim(mp%message); ok = .false.
@@ -426,7 +426,7 @@ contains
       opts%df = .false.
       call trc_scf_run(bas, nalpha, nbeta, opts, res_4c, la=la)
       allocate (cmo_c(bas%nao, bas%nao), eps_c(bas%nao))
-      call rimp2_mo_to_cart(bas, res_4c%cmo(:, :, 1), res_4c%eps(:, 1), cmo_c, eps_c)
+      call rimp2_driver_mo_to_cart(bas, res_4c%cmo(:, :, 1), res_4c%eps(:, 1), cmo_c, eps_c)
       call trc_rimp2_run(bas, aux, pl, nalpha, cmo_c, eps_c, mp_4c, nfrozen=NFZ, la=la)
       deallocate (cmo_c, eps_c)
       if (.not. res_4c%converged) then
@@ -439,7 +439,7 @@ contains
       opts%df = .true.
       call trc_scf_run(bas, nalpha, nbeta, opts, res_df, la=la, scf_dfjk=dfjk)
       allocate (cmo_c(bas%nao, bas%nao), eps_c(bas%nao))
-      call rimp2_mo_to_cart(bas, res_df%cmo(:, :, 1), res_df%eps(:, 1), cmo_c, eps_c)
+      call rimp2_driver_mo_to_cart(bas, res_df%cmo(:, :, 1), res_df%eps(:, 1), cmo_c, eps_c)
       call trc_rimp2_run(bas, aux, pl, nalpha, cmo_c, eps_c, mp_df, nfrozen=NFZ, la=la, dfjk=dfjk)
       deallocate (cmo_c, eps_c)
       if (.not. res_df%converged) then

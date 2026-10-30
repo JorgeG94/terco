@@ -1613,7 +1613,7 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     prims = prims.replace("*pp_c(kp)*pp_c(kq)", "*pp_cs(kp)*pp_cs(kq)")
     # pp_cs carries the coefficients, so the prescreen weight is already in pref
     assert prims.count("if (abs(pref*w) <= pcut) cycle") == 1
-    # The pairs are sorted by |c|/p descending (build_pairs_hgp), so the
+    # The pairs are sorted by |c|/p descending (hgp_build_pairs), so the
     # bound 2 pi^2.5 (|c_p|/zeta)(|c_q|/eta)/sqrt(zeta) falls along the ket
     # loop: EXIT at the first failure, and skip a bra primitive whose best
     # ket already fails. Exact pref is still tested for the rare quartet
@@ -1652,7 +1652,7 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     #
     # Replace the pp_off/pp_n shell-pair lookup and the pp_p/pp_r/pp_ra/pp_cs
     # reads of the primitive loop with the bin-interleaved qp_*/sq_* tables
-    # (trc_bins%build_pair_quartets): `slotab`/`slotcd` are the pair's own
+    # (trc_bins%bins_build_pair_quartets): `slotab`/`slotcd` are the pair's own
     # slot, aligned with sp_i/sp_j/sp_q, and `kp`/`kq` become addresses into
     # qp_* rather than flat pp_* indices. Same screens, same cycle/exit, same
     # order of operations -- only where each value comes from changes.

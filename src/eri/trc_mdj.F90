@@ -257,7 +257,7 @@ contains
       !! Shell pairs into type order and their primitive pairs after them.
       !!
       !! A primitive pair is kept on the HGP kernels' own rule
-      !! (build_pairs_hgp): its s-type sqrt((ab|ab)) above thresh 10^-3, so
+      !! (hgp_build_pairs): its s-type sqrt((ab|ab)) above thresh 10^-3, so
       !! the two engines see the same pairs. A shell pair with none left is
       !! dropped; its J block is zero to that threshold.
       type(trc_mdj_t), intent(inout) :: this

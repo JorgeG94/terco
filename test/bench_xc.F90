@@ -5,7 +5,7 @@
 !
 ! Builds 6-31G on the molecule by default, or the MolSSI BSE basis named by
 ! the optional 5th argument (e.g. basis_sets/cc-pvdz.json on sih4.xyz, to put
-! a d shell through `shell_collocate` -- 6-31G alone has none, s/p only) --
+! a d shell through `collocation_shell` -- 6-31G alone has none, s/p only) --
 ! a grid at the given level with the default pruning, a fixed positive
 ! density, and times `trc_xc_rks` for PBE (or the functional named by the
 ! optional 6th argument, r2scan say, for a meta-GGA): the batching, then `reps`
@@ -18,7 +18,7 @@ program bench_xc
    use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_error, only: error_t
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_xc, only: trc_xc_rks
@@ -79,7 +79,7 @@ program bench_xc
    nao = bas%nao
 
    call tm%start()
-   call build_dft_grid(at_r, z, grid, err, level=level)
+   call dft_grid_build(at_r, z, grid, err, level=level)
    t1 = tm%get_elapsed_time()
    if (err%has_error()) then
       print '(a)', 'bench_xc: grid failed: '//err%get_message(); stop 1

@@ -125,7 +125,7 @@ program check_dft_grad_vs_pyscf
    ! differ by ~1e-8/1e-9 (measured), which this program's comparison
    ! cannot tell apart from a real gradient bug -- see this program's
    ! own gate comment below.
-   opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-11_dp; opts%max_iter = 200
+   opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-11_dp; opts%max_iteration = 200
    call trc_scf_run(bas, nalpha, nbeta, opts, res)
    if (.not. res%converged) then
       print '(a)', 'check_dft_grad_vs_pyscf: reference SCF did not converge'; stop 1
@@ -148,7 +148,7 @@ program check_dft_grad_vs_pyscf
    ! ~1e-11 at both level 1 AND level 2), while the semilocal grid's own
    ! level (3, same as the reference was generated with) reproduces the
    ! original ~1e-12/1e-13. Explicit here rather than left to
-   ! vv10_gradient_add's own default so a future change to that default
+   ! vv10_grad_add's own default so a future change to that default
    ! cannot silently change what this test measures.
    call trc_scf_gradient(bas, lp, nspin, nalpha, nbeta, res%cmo, res%eps, THRESH, grad, &
                          func=func, grid_level=grid_level, grid_max_pts=opts%grid_max_pts, &

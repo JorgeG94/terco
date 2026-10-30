@@ -133,7 +133,7 @@ module trc_xc
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, &
       xc_eval_point_fxc, xc_eval_point_mgga, xc_eval_point_mgga_polar, XC_MAX_KERNELS, XC_FAMILY_MGGA
-   use trc_collocation, only: shell_collocate, NCART_MAX
+   use trc_collocation, only: collocation_shell, NCART_MAX
    use trc_linalg, only: trc_linalg_t
    use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
@@ -141,7 +141,7 @@ module trc_xc
    private
 
    public :: trc_xc_rks, trc_xc_uks, trc_xc_fxc_rks, trc_xc_rho, XC_RHO_TOL
-   public :: XC_NP_PAD, XC_NL_PAD, sort_by_shape
+   public :: XC_NP_PAD, XC_NL_PAD, xc_sort_by_shape
 
    real(dp), parameter :: XC_RHO_TOL = 1.0e-12_dp
    !! A batch whose bound on rho is below this is skipped. The functionals'
@@ -284,7 +284,7 @@ contains
          do k = 1, nb
             ord(k) = b0 + k - 1
          end do
-         call sort_by_shape(nb, npp, nlp, ord)
+         call xc_sort_by_shape(nb, npp, nlp, ord)
          need = 0
          npairs = 0
          nwork = 0
@@ -495,7 +495,7 @@ contains
          do k = 1, nb
             ord(k) = b0 + k - 1
          end do
-         call sort_by_shape(nb, npp, nlp, ord)
+         call xc_sort_by_shape(nb, npp, nlp, ord)
          ! Offsets in storage order: tiles (point fastest), and (u,v) pairs.
          need = 0
          npairs = 0
@@ -736,7 +736,7 @@ contains
          do k0 = 1, nb
             ord(k0) = b0 + k0 - 1
          end do
-         call sort_by_shape(nb, npp, nlp, ord)
+         call xc_sort_by_shape(nb, npp, nlp, ord)
          need = 0
          npairs = 0
          nwork = 0
@@ -1033,7 +1033,7 @@ contains
    end subroutine xc_screen_body
 
    ! Insertion sort of `ord` by (npp, nlp) ascending; a chunk's worth of batches.
-   subroutine sort_by_shape(n, npp, nlp, ord)
+   subroutine xc_sort_by_shape(n, npp, nlp, ord)
       integer, intent(in) :: n
       integer, intent(in) :: npp(:), nlp(:)
       integer, intent(inout) :: ord(n)
@@ -1053,7 +1053,7 @@ contains
          integer, intent(in) :: a, b
          res = npp(a) > npp(b) .or. (npp(a) == npp(b) .and. nlp(a) > nlp(b))
       end function later
-   end subroutine sort_by_shape
+   end subroutine xc_sort_by_shape
 
    ! Insertion sort of `order` by descending `cost`; a few thousand batches.
    subroutine sort_desc(n, cost, order)
@@ -1176,7 +1176,7 @@ contains
       d(1) = r(1, gg) - sh_r(1, ish)
       d(2) = r(2, gg) - sh_r(2, ish)
       d(3) = r(3, gg) - sh_r(3, ish)
-      call shell_collocate(l, sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs)
+      call collocation_shell(l, sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs)
       nc = (l + 1)*(l + 2)/2
       ld = npp(ib)
       off = c_off(ib) + gl + 1

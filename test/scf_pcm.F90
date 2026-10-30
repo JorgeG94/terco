@@ -11,7 +11,7 @@
 !
 !   converged:   terco's converged total energy and E_diel against pyscf's;
 !   at-density:  terco's energy and E_diel AT pyscf's converged density --
-!                trc_scf_run with max_iter=1 and that density as dguess,
+!                trc_scf_run with max_iteration=1 and that density as dguess,
 !                whose energy is evaluated at dguess before the Roothaan
 !                step (the "energy at this density" in src/scf/trc_scf_driver.F90),
 !                i.e. pyscf's energy_tot(dm) -- so a disagreement there is
@@ -189,7 +189,7 @@ program scf_pcm
       opts%nlc_grid_level = 0
       opts%conv_energy = 1.0e-11_dp
       opts%conv_diis = 1.0e-8_dp
-      opts%max_iter = 200
+      opts%max_iteration = 200
       opts%pcm_model = cpcm(ic)
       opts%pcm_eps = EPS_WATER
       if (cseed(ic) .and. has_ref) then
@@ -259,7 +259,7 @@ program scf_pcm
          call ref_report(nfail, dp_c < TOL_E, trim(what)//': E_diel converged', dp_c)
          if (.not. csph(ic)) then
             opts2 = opts
-            opts2%max_iter = 1
+            opts2%max_iteration = 1
             call trc_scf_run(bas, cna(ic), cnb(ic), opts2, res2, dguess=dm_ref)
             dat = abs(res2%energy - e_dm)
             dp_at = abs(res2%e_pcm - ep_dm)

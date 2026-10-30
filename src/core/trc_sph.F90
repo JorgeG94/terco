@@ -192,7 +192,7 @@ contains
    ! boundary, same per-shell T block `sph_sph_to_cart` contracts on BOTH
    ! sides of a square two-AO-index matrix with; the column index here is
    ! some other label entirely (an MO number for RI-MP2's own use at
-   ! trc_rimp2_driver.F90's `rimp2_mo_to_cart`) and is left alone. `ncol`
+   ! trc_rimp2_driver.F90's `rimp2_driver_mo_to_cart`) and is left alone. `ncol`
    ! need not be `b%nao_sph` -- a caller folding only a slice of columns
    ! passes however many it has.
    !
@@ -262,21 +262,21 @@ contains
    ! one-sided folds (columns, then rows) through `lp` instead of a
    ! do-concurrent shell-pair loop: the metric is O(naux^2), and this
    ! module's own header measured that loop expensive at the auxiliary
-   ! sizes RI-MP2/`--df` actually run at. `tmp` (naux_c, naux_sph) is the
-   ! column-folded intermediate between the two passes.
+   ! sizes RI-MP2/`--df` actually run at. `temporary` (naux_c, naux_sph) is
+   ! the column-folded intermediate between the two passes.
    !
    subroutine sph_metric_cart_to_sph(aux, lp, mcart, msph)
       type(trc_basis_t), intent(in) :: aux
       type(trc_linalg_t), intent(inout) :: lp
       real(dp), intent(in)  :: mcart(aux%nao, aux%nao)
       real(dp), intent(out) :: msph(aux%nao_sph, aux%nao_sph)
-      real(dp), allocatable :: tmp(:, :)
-      allocate (tmp(aux%nao, aux%nao_sph))
-      !$acc enter data create(tmp)
-      call sph_fold_cols_cart_to_sph(aux, lp, aux%nao, mcart, tmp)
-      call sph_fold_rows_cart_to_sph(aux, lp, aux%nao_sph, tmp, msph)
-      !$acc exit data delete(tmp)
-      deallocate (tmp)
+      real(dp), allocatable :: temporary(:, :)
+      allocate (temporary(aux%nao, aux%nao_sph))
+      !$acc enter data create(temporary)
+      call sph_fold_cols_cart_to_sph(aux, lp, aux%nao, mcart, temporary)
+      call sph_fold_rows_cart_to_sph(aux, lp, aux%nao_sph, temporary, msph)
+      !$acc exit data delete(temporary)
+      deallocate (temporary)
    end subroutine sph_metric_cart_to_sph
 
    !

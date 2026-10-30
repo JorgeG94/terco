@@ -22,12 +22,12 @@ program bench_binwater
    use trc_boys, only: boys_init
    use trc_tables, only: LTOT, NHERM_MAX, tables_init
    use trc_cart, only: cart_init
-   use trc_batch, only: build_pairs, eri_batch, ncart, common_fac_sp
-   use trc_hgp, only: build_pairs_hgp, hgp_batch
+   use trc_batch, only: batch_build_pairs, batch_eri, batch_ncart, common_fac_sp
+   use trc_hgp, only: hgp_build_pairs, hgp_batch
 
-   use trc_screen, only: schwarz_bounds
-   use trc_bins, only: pair_bins_t, build_binned_pairs, build_pair_quartets
-   use trc_binkernel, only: fock_bins, trc_plan_t
+   use trc_screen, only: screen_schwarz_bounds
+   use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets
+   use trc_binkernel, only: binkernel_fock_bins, trc_plan_t
    implicit none
 
    integer, parameter :: NREP = 3
@@ -60,7 +60,7 @@ program bench_binwater
    integer(int64) :: nwork, nkept
    type(pair_bins_t) :: bins
    integer, allocatable :: qp_bin_pbase(:), qp_bin_k(:)
-   !! Bin-interleaved second copy of the hp_* data (build_pair_quartets);
+   !! Bin-interleaved second copy of the hp_* data (bins_build_pair_quartets);
    !! flat here, as trc_eri_t keeps them -- see that type's own comment.
    integer :: nqp
    real(dp), allocatable :: qp_z(:), qp_c(:), qp_px(:), qp_py(:), qp_pz(:)
@@ -78,21 +78,21 @@ program bench_binwater
 
    call tables_init(); call cart_init(); call boys_init()
 
-   call build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, THRESH, &
+   call batch_build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, THRESH, &
                     pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, npp)
-   call build_pairs_hgp(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, sh_c, THRESH*1.0e-3_dp, &
+   call hgp_build_pairs(nbas, sh_l, sh_np, sh_e, sh_c, sh_r, cfac, sh_c, THRESH*1.0e-3_dp, &
                         hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, hp_ki, hp_kj, nhpp)
 
    allocate (qs(nbas*(nbas + 1)/2), dmax(nbas, nbas))
    dmax = 1.0_dp
    call tm%start()
-   call schwarz_bounds(nbas, npp, sh_l, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, qs)
+   call screen_schwarz_bounds(nbas, npp, sh_l, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, qs)
    t1 = tm%get_elapsed_time()
    print '(a,f8.3,a)', '  schwarz bounds  : ', t1, ' s'
 
    call tm%start()
-   call build_binned_pairs(nbas, sh_l, sh_np, sh_r, qs, THRESH, bins, pp_n=hp_n)
-   call build_pair_quartets(bins, nbas, nhpp, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
+   call bins_build_binned_pairs(nbas, sh_l, sh_np, sh_r, qs, THRESH, bins, pp_n=hp_n)
+   call bins_build_pair_quartets(bins, nbas, nhpp, hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
                             qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                             sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n)
    t1 = tm%get_elapsed_time()
@@ -122,8 +122,8 @@ program bench_binwater
    if (DSCREEN) then
       do j = 1, nbas
          do i = 1, nbas
-            dsh(i, j) = maxval(abs(dmat(ao_off(i):ao_off(i) + ncart(sh_l(i)) - 1, &
-                                        ao_off(j):ao_off(j) + ncart(sh_l(j)) - 1)))
+            dsh(i, j) = maxval(abs(dmat(ao_off(i):ao_off(i) + batch_ncart(sh_l(i)) - 1, &
+                                        ao_off(j):ao_off(j) + batch_ncart(sh_l(j)) - 1)))
          end do
       end do
    else
@@ -156,7 +156,7 @@ program bench_binwater
    !$acc                   sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n) &
    !$acc            copyin(jmat, kmat)
 
-   call fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, THRESH, .false., &
+   call binkernel_fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, THRESH, .false., &
                      1.0_dp, 1.0_dp, 0.0_dp, .false., dsh, &
                   hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
                   qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
@@ -189,7 +189,7 @@ program bench_binwater
       jmat = 0.0_dp; kmat = 0.0_dp
       !$acc update device(jmat, kmat)
       call tm%start()
-      call fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, THRESH, .false., &
+      call binkernel_fock_bins(bins, nbas, nhpp, nao, sh_l, ao_off, THRESH, .false., &
                      1.0_dp, 1.0_dp, 0.0_dp, .false., dsh, &
                      hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, &
                      qp_bin_pbase, qp_bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
@@ -285,7 +285,7 @@ contains
    !
    ! 6-31G, standard exponents and coefficients.  Contraction coefficients are
    ! scaled by the libcint primitive normalisation here, matching what env
-   ! carries; build_pairs then applies common_fac_sp.
+   ! carries; batch_build_pairs then applies common_fac_sp.
    !
    subroutine build_water_631g()
       real(dp) :: oS6e(6), oS6c(6), oS3e(3), oS3c(3), oP3c(3), oS1e(1)
@@ -524,7 +524,7 @@ contains
          sh_c(k, ish) = c(k)*gto_norm(l, e(k))
       end do
       ao_off(ish) = nao + 1
-      nao = nao + ncart(l)
+      nao = nao + batch_ncart(l)
    end subroutine put
 
    !

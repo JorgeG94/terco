@@ -31,11 +31,11 @@ module trc_sap
    use trc_api, only: trc_basis_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_sad, only: trc_sad_build, trc_sadq_build, trc_atom_ranges
-   use trc_dft_radial, only: treutler_ahlrichs_radial
+   use trc_dft_radial, only: dft_radial_treutler_ahlrichs
    use trc_lebedev, only: lebedev_grid, lebedev_order_at_least
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_xc_batch, only: trc_xc_grid_t
-   use trc_collocation, only: shell_collocate, NCART_MAX
+   use trc_collocation, only: collocation_shell, NCART_MAX
    use pic_blas_interfaces, only: pic_gemm
    use trc_api, only: trc_pairlist_t, trc_df_3c
    use trc_basis_json, only: trc_fitted_shell_from_json
@@ -137,7 +137,7 @@ contains
       integer :: nrad, nang, k, ia, ish, np, nc, off, nz, i, j
 
       nz = size(dblk, 1)
-      call treutler_ahlrichs_radial(SAP_NRAD, z, r, dr, error)
+      call dft_radial_treutler_ahlrichs(SAP_NRAD, z, r, dr, error)
       if (error%has_error()) return
       nrad = size(r)
       nang = lebedev_order_at_least(SAP_NANG)
@@ -156,7 +156,7 @@ contains
                np = b%sh_np(ish)
                nc = ncart(b%sh_l(ish))
                d = pt - b%sh_r(:, ish)
-               call shell_collocate(b%sh_l(ish), np, b%sh_e(1:np, ish), b%sh_c(1:np, ish), d, chi, gchi)
+               call collocation_shell(b%sh_l(ish), np, b%sh_e(1:np, ish), b%sh_c(1:np, ish), d, chi, gchi)
                off = b%sh_ao(ish) - b%sh_ao(ish0)
                do i = 1, nc
                   phi(off + i) = chi(i)
@@ -422,7 +422,7 @@ contains
       type(error_t), intent(inout) :: error
       logical, intent(in), optional :: verbose
       integer, intent(in), optional :: nelec   !! molecular electron count, for SADQ atoms
-      integer, intent(in), optional :: level   !! quadrature level, as build_dft_grid spells it
+      integer, intent(in), optional :: level   !! quadrature level, as dft_grid_build spells it
 
       real(dp), allocatable :: dguess(:, :)
       integer,  allocatable :: atom_of(:), first(:), last(:), zint(:)
@@ -510,7 +510,7 @@ contains
       ! Grid SIZE follows the element (ghosts keep their quadrature points);
       ! `zint` above, the real nuclear charge, is only the screening table's
       ! own key and stays 0/unset for a ghost.
-      call build_dft_grid(b%at_r(:, 1:b%natm), b%at_elem(1:b%natm), g, error, level=lv)
+      call dft_grid_build(b%at_r(:, 1:b%natm), b%at_elem(1:b%natm), g, error, level=lv)
       if (error%has_error()) return
       if (talk) then
          block
@@ -612,7 +612,7 @@ contains
             nc = ncart(l)
             do ip = 1, npb
                d = xg%r(:, p0 + ip - 1) - b%sh_r(:, ish)
-               call shell_collocate(l, np, b%sh_e(1:np, ish), b%sh_c(1:np, ish), d, chi, gchi)
+               call collocation_shell(l, np, b%sh_e(1:np, ish), b%sh_c(1:np, ish), d, chi, gchi)
                do i = 1, nc
                   phi(ip, xg%b_shao(is) + i) = chi(i)
                end do

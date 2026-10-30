@@ -13,7 +13,7 @@ module trc_sad
    !! unrestricted with integer Hund's-rule occupations for a neutral atom (see
    !! `build_atomic`'s "WHICH ATOM TO RUN"), restricted with fractional
    !! occupations for a SADQ atom with a non-integer charge. The result is
-   !! SPHERICALLY AVERAGED (`average_atom_density`) and placed on the diagonal
+   !! SPHERICALLY AVERAGED (`sad_average_atom_density`) and placed on the diagonal
    !! of the molecular density in the molecule's function order. An open Hund
    !! shell's orientation is whatever the eigensolver's degenerate subspace
    !! returned, which is not reproducible across GPUs, compilers or cuSOLVER
@@ -34,7 +34,7 @@ module trc_sad
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
    private
-   public :: trc_sad_build, trc_sadq_build, trc_atom_ranges, average_atom_density
+   public :: trc_sad_build, trc_sadq_build, trc_atom_ranges, sad_average_atom_density
 
 contains
 
@@ -148,7 +148,7 @@ contains
       opts%frac_occ = .true.
       opts%conv_energy = 1.0e-8_dp
       opts%conv_diis = 1.0e-5_dp
-      opts%max_iter = 100
+      opts%max_iteration = 100
       opts%verbose = .false.
 
       do ia = 1, b%natm
@@ -239,8 +239,8 @@ contains
             end if
             ! SPHERICALLY AVERAGE, unconditionally: a no-op for closed-shell or
             ! SADQ-fractional atoms, and the fix for Hund atoms (see
-            ! `average_atom_density`).
-            call average_atom_density(ab, sph, cache(ncached)%d)
+            ! `sad_average_atom_density`).
+            call sad_average_atom_density(ab, sph, cache(ncached)%d)
             call ab%release()
             k = ncached
          end if
@@ -311,7 +311,7 @@ contains
    ! plain host copies of trc_sph.F90's block contraction (no `do concurrent`;
    ! this runs once per cached element on an atom-sized matrix).
    !
-   subroutine average_atom_density(ab, sph, d)
+   subroutine sad_average_atom_density(ab, sph, d)
       type(trc_basis_t), intent(in) :: ab
       logical, intent(in) :: sph
       real(dp), intent(inout) :: d(:, :)
@@ -329,11 +329,11 @@ contains
          d = d + ddelta
          deallocate (ds, ds_avg, ddelta)
       end if
-   end subroutine average_atom_density
+   end subroutine sad_average_atom_density
 
    subroutine average_sph_blocks(nshell, sh_l, sh_a, n, d)
       !! The Schur's-lemma average itself, on a SPHERICAL (n, n) matrix:
-      !! see `average_atom_density`'s header. `sh_a` is each shell's
+      !! see `sad_average_atom_density`'s header. `sh_a` is each shell's
       !! first-AO offset in `d` (1-based, m ascending) -- `ab%sh_ao_sph`
       !! from the caller, local to the atom.
       integer,  intent(in) :: nshell, n
@@ -369,7 +369,7 @@ contains
 
    subroutine cart_to_sph_atom(ab, dc, ds)
       !! ds := T^T dc T, shell pair by shell pair: a sequential host copy of
-      !! trc_sph.F90's contraction (no device data; see `average_atom_density`).
+      !! trc_sph.F90's contraction (no device data; see `sad_average_atom_density`).
       type(trc_basis_t), intent(in) :: ab
       real(dp), intent(in)  :: dc(ab%nao, ab%nao)
       real(dp), intent(out) :: ds(ab%nao_sph, ab%nao_sph)
@@ -447,7 +447,7 @@ contains
    pure subroutine hund_split(z, na, nb)
       !! Alpha and beta counts of the free atom's ground state: closed shells
       !! paired, the open subshell filled by Hund's rule, one spin first, in aufbau
-      !! order. The degenerate spread is not yet spherical; `average_atom_density`
+      !! order. The degenerate spread is not yet spherical; `sad_average_atom_density`
       !! makes it so.
       integer, intent(in) :: z
       integer, intent(out) :: na, nb

@@ -28,7 +28,7 @@ program check_pcm_ints
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_pcm_potential, trc_pcm_fock, PCM_LMAX
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
-   use trc_pcm, only: pcm_surface_t, build_pcm_surface
+   use trc_pcm, only: pcm_surface_t, pcm_build_surface
    use trc_test_basis, only: read_xyz
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_vector, ref_read_matrix, ref_report
    implicit none
@@ -69,7 +69,7 @@ program check_pcm_ints
    nao = bas%nao
 
    ! --- the points: the cavity, then the ones it never reaches ---
-   call build_pcm_surface(at_z, r, 302, 1.2_dp, surf, err)
+   call pcm_build_surface(at_z, r, 302, 1.2_dp, surf, err)
    if (err%has_error()) then
       print '(a)', 'check_pcm_ints: '//err%get_message(); stop 1
    end if

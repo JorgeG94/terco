@@ -21,14 +21,14 @@ module trc_dft_prune
    !! the grid claims, which is what the validation checks.
    use pic_types, only: dp
    use trc_error, only: error_t, ERROR_VALIDATION
-   use trc_dft_radial, only: bragg_radius
+   use trc_dft_radial, only: dft_radial_bragg_radius
    use trc_dft_partition, only: TINY_RADIUS
    implicit none
    private
 
    public :: PRUNE_NONE, PRUNE_NWCHEM
-   public :: prune_angular_orders
-   public :: prune_scheme_name
+   public :: dft_prune_angular_orders
+   public :: dft_prune_scheme_name
 
    integer, parameter :: PRUNE_NONE = 0    !! Same order at every radius
    integer, parameter :: PRUNE_NWCHEM = 1  !! NWChem five-zone scheme
@@ -58,7 +58,7 @@ module trc_dft_prune
 
 contains
 
-   pure function prune_scheme_name(scheme) result(name)
+   pure function dft_prune_scheme_name(scheme) result(name)
       !! Human-readable scheme name
       integer, intent(in) :: scheme
       character(len=:), allocatable :: name
@@ -71,9 +71,9 @@ contains
       case default
          name = "unknown"
       end select
-   end function prune_scheme_name
+   end function dft_prune_scheme_name
 
-   subroutine prune_angular_orders(scheme, atomic_number, r, n_angular, orders, error)
+   subroutine dft_prune_angular_orders(scheme, atomic_number, r, n_angular, orders, error)
       !! Lebedev order for each radial shell of one atom
       integer, intent(in) :: scheme             !! PRUNE_NONE or PRUNE_NWCHEM
       integer, intent(in) :: atomic_number      !! Z, for the radius and element class
@@ -125,23 +125,23 @@ contains
       end if
 
       do i = 1, size(r)
-         scaled = r(i)/(bragg_radius(atomic_number) + TINY_RADIUS)
+         scaled = r(i)/(dft_radial_bragg_radius(atomic_number) + TINY_RADIUS)
          ! Zone is the number of thresholds the scaled radius has passed.
          zone = count(scaled > ALPHAS(:, element_class)) + 1
          orders(i) = zone_order(zone)
       end do
-   end subroutine prune_angular_orders
+   end subroutine dft_prune_angular_orders
 
-   pure function order_index(n_angular) result(idx)
+   pure function order_index(n_angular) result(index)
       !! Position of an order in the prunable sequence, or 0 if absent
       integer, intent(in) :: n_angular
-      integer :: idx
+      integer :: index
       integer :: i
 
-      idx = 0
+      index = 0
       do i = 1, N_PRUNE_ORDERS
          if (PRUNE_ORDERS(i) == n_angular) then
-            idx = i
+            index = i
             exit
          end if
       end do

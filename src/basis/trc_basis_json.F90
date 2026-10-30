@@ -369,9 +369,9 @@ contains
    pure function itoa(i) result(t)
       integer, intent(in) :: i
       character(len=:), allocatable :: t
-      character(len=16) :: buf
-      write (buf, "(i0)") i
-      t = trim(buf)
+      character(len=16) :: buffer
+      write (buffer, "(i0)") i
+      t = trim(buffer)
    end function itoa
 
 end module trc_basis_json

@@ -28,8 +28,9 @@ module trc_bins
    implicit none
    private
 
-   public :: SMAX, bin_key, build_binned_pairs, pair_bins_t, bin_dmax, sort_bins_by_weight
-   public :: build_pair_quartets
+   public :: SMAX, bins_build_binned_pairs, pair_bins_t, bins_sort_by_weight
+   public :: bins_build_pair_quartets
+   ! bin_key/bin_dmax stay private: nothing outside this module uses them.
 
    !
    ! Size buckets are 1/`res` of a decade (runtime, up to SMAX_RES), as in the
@@ -100,7 +101,7 @@ contains
    ! O(N^2) throughout -- this is the whole point.  For 675 shells that is 228k
    ! pairs, against the 586M quartets the old path enumerated.
    !
-   subroutine build_binned_pairs(nbas, sh_l, sh_np, sh_r, q, thresh, b, sh_g, pp_n, res)
+   subroutine bins_build_binned_pairs(nbas, sh_l, sh_np, sh_r, q, thresh, b, sh_g, pp_n, res)
       integer,  intent(in)  :: nbas
       integer,  intent(in)  :: sh_l(nbas), sh_np(nbas)
       real(dp), intent(in)  :: sh_r(3, nbas)      !! shell centres, for the intra-bin sort
@@ -266,7 +267,7 @@ contains
             res = sh_np(i)*sh_np(j)
          end if
       end function kab_of
-   end subroutine build_binned_pairs
+   end subroutine bins_build_binned_pairs
 
    !
    ! Split every bin of more than BIN_CAP pairs into consecutive chunks of at
@@ -342,9 +343,9 @@ contains
 
    !
    ! Build the bin-interleaved primitive-pair tables from the pp_* ("hp_*" at
-   ! the call site) data build_pairs_hgp already built. Called once after
-   ! build_binned_pairs, and again whenever the slot order inside bins
-   ! changes (sort_bins_by_weight).
+   ! the call site) data hgp_build_pairs already built. Called once after
+   ! bins_build_binned_pairs, and again whenever the slot order inside bins
+   ! changes (bins_sort_by_weight).
    !
    ! K is constant inside a bin except for pairs clamped at KCAP (bin_key),
    ! so bin_k(b) -- the max kept primitive-pair count over the bin's pairs --
@@ -367,7 +368,7 @@ contains
    ! shape pp_off/pp_n/pp_p/... already have, and passes them back in on a
    ! rebuild so the reuse-the-allocation logic below still applies.
    !
-   subroutine build_pair_quartets(b, nbas, npp, pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
+   subroutine bins_build_pair_quartets(b, nbas, npp, pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                                   bin_pbase, bin_k, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                                   sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, pp_a, qp_a)
       type(pair_bins_t), intent(in) :: b
@@ -382,7 +383,7 @@ contains
       real(dp), allocatable, intent(inout) :: sq_abx(:), sq_aby(:), sq_abz(:)
       integer,  allocatable, intent(inout) :: sq_n(:)
       real(dp), optional, intent(in) :: pp_a(npp)
-      !! The i-side primitive's own exponent, pp_a from build_pairs_hgp.
+      !! The i-side primitive's own exponent, pp_a from hgp_build_pairs.
       !! Optional, like there: only the gradient path threads it through.
       real(dp), allocatable, optional, intent(inout) :: qp_a(:)
       !! Bin-interleaved form of pp_a, same layout as qp_z. The padding
@@ -394,7 +395,7 @@ contains
       !
       ! REUSE THE ALLOCATION ON A REBUILD.
       !
-      ! sort_bins_by_weight only permutes slots WITHIN a bin, so bin_cnt,
+      ! bins_sort_by_weight only permutes slots WITHIN a bin, so bin_cnt,
       ! every pair's own count and therefore bin_k and nqp come out
       ! identical the second time. Device residency is keyed on the host
       ! array's address: an `!$acc enter data copyin` from build_structures
@@ -449,7 +450,7 @@ contains
       end if
 
       ! Interleaved by primitive index: ix(b, k, s) = bin_pbase(b) + (k-1)*n_b + s.
-      ! The real primitives keep the order build_pairs_hgp already sorted them
+      ! The real primitives keep the order hgp_build_pairs already sorted them
       ! into (largest |c|/p first), so every sum happens in the same order and
       ! results are bit-identical to the pp_* path.
       do ib = 1, b%nlive
@@ -479,7 +480,7 @@ contains
             end do
          end do
       end do
-   end subroutine build_pair_quartets
+   end subroutine bins_build_pair_quartets
 
    !
    ! Order the pairs INSIDE each bin along a Morton curve through the pair
@@ -534,7 +535,7 @@ contains
    ! good heuristic for the whole SCF. That makes the cost a fixed charge
    ! against every later build rather than a per-build tax.
    !
-   subroutine sort_bins_by_weight(b, nbas, dsh)
+   subroutine bins_sort_by_weight(b, nbas, dsh)
       type(pair_bins_t), intent(inout) :: b
       integer,  intent(in) :: nbas
       real(dp), intent(in) :: dsh(nbas, nbas)
@@ -543,7 +544,7 @@ contains
       real(dp) :: wmax, w
       logical :: qonly
       integer(int64), allocatable :: code(:), kbuf(:)
-      integer(int_index), allocatable :: idx(:)
+      integer(int_index), allocatable :: index(:)
       integer,  allocatable :: ti(:), tj(:)
       real(dp), allocatable :: tq(:)
 
@@ -579,15 +580,15 @@ contains
       ti = b%sp_i
       tj = b%sp_j
       tq = b%sp_q
-      allocate (kbuf(maxval(b%bin_cnt)), idx(maxval(b%bin_cnt)))
+      allocate (kbuf(maxval(b%bin_cnt)), index(maxval(b%bin_cnt)))
       do k = 1, b%nbin
          n = b%bin_cnt(k)
          if (n <= 1) cycle
          lo = b%bin_off(k) + 1
          kbuf(1:n) = code(lo:lo + n - 1)
-         call sort_index(kbuf(1:n), idx(1:n))
+         call sort_index(kbuf(1:n), index(1:n))
          do m = 1, n
-            p = lo + int(idx(m)) - 1
+            p = lo + int(index(m)) - 1
             b%sp_i(lo + m - 1) = ti(p)
             b%sp_j(lo + m - 1) = tj(p)
             b%sp_q(lo + m - 1) = tq(p)
@@ -595,7 +596,7 @@ contains
       end do
 
       b%sorted = .true.
-      deallocate (code, kbuf, idx, ti, tj, tq)
+      deallocate (code, kbuf, index, ti, tj, tq)
 
    contains
       logical function qkey_only() result(res)
@@ -607,7 +608,7 @@ contains
          call get_environment_variable("TRC_BIN_SORT_Q", v)
          res = (trim(v) == "1")
       end function qkey_only
-   end subroutine sort_bins_by_weight
+   end subroutine bins_sort_by_weight
 
    !
    ! Kept behind -DTRC_SPATIAL_SORT rather than deleted: the idea is sound
@@ -623,7 +624,7 @@ contains
       real(dp) :: span
       real(dp) :: lo3(3), hi3(3), c(3)
       integer(int64), allocatable :: code(:), kbuf(:)
-      integer(int_index), allocatable :: idx(:)
+      integer(int_index), allocatable :: index(:)
       integer, allocatable :: ti(:), tj(:)
       real(dp), allocatable :: tq(:)
 
@@ -653,7 +654,7 @@ contains
       tj = b%sp_j
       tq = b%sp_q
 
-      allocate (kbuf(maxval(b%bin_cnt)), idx(maxval(b%bin_cnt)))
+      allocate (kbuf(maxval(b%bin_cnt)), index(maxval(b%bin_cnt)))
       do k = 1, b%nbin
          n = b%bin_cnt(k)
          if (n <= 1) cycle
@@ -661,16 +662,16 @@ contains
          ! sort_index takes the keys 0-based and returns a 1-based permutation
          ! of them; it sorts `kbuf` in place, hence the copy.
          kbuf(1:n) = code(lo:lo + n - 1)
-         call sort_index(kbuf(1:n), idx(1:n))
+         call sort_index(kbuf(1:n), index(1:n))
          do m = 1, n
-            p = lo + int(idx(m)) - 1
+            p = lo + int(index(m)) - 1
             b%sp_i(lo + m - 1) = ti(p)
             b%sp_j(lo + m - 1) = tj(p)
             b%sp_q(lo + m - 1) = tq(p)
          end do
       end do
 
-      deallocate (code, kbuf, idx, ti, tj, tq)
+      deallocate (code, kbuf, index, ti, tj, tq)
    end subroutine sort_bins_spatially
 
    pure integer(int64) function morton3(ix, iy, iz) result(res)

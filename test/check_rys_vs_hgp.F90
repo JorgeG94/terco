@@ -3,7 +3,7 @@
 !
 ! With TRC_RYS_CLASSES=all, every class the build generated a kernel for
 ! routes through Rys instead of
-! HGP (trc_rys_select%rys_route); everything else -- including classes this
+! HGP (trc_rys_select%rys_select_route); everything else -- including classes this
 ! build never generated a Rys kernel for -- still goes through HGP. Building
 ! the SAME Fock matrix twice, once per setting, and comparing is a stronger
 ! check than trusting either kernel alone: an integral that is wrong the

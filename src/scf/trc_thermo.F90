@@ -122,7 +122,7 @@ contains
       real(dp) :: theta_r, theta1, theta2, theta3
       real(dp), allocatable :: theta_v(:), u(:), ev(:)
       integer :: n_vib_warm
-      logical :: idx_mask_any
+      logical :: has_vib_warm
 
       natm = size(mass)
       if (natm < 1 .or. size(coords_bohr, 1) /= 3 .or. size(coords_bohr, 2) /= natm) then
@@ -218,10 +218,10 @@ contains
       theta_v = pack(CM1_TO_KELVIN*freq_vib_cm1, freq_vib_cm1 > 0.0_dp)
       u = theta_v/temperature
       ev = exp(-u)
-      idx_mask_any = n_vib_warm > 0
+      has_vib_warm = n_vib_warm > 0
 
       result%zpe_hartree = 0.5_dp*KB_HARTREE*sum(theta_v)
-      if (idx_mask_any) then
+      if (has_vib_warm) then
          result%s_vib_calmolk = R_CALMOLK*sum(u*ev/(1.0_dp - ev) - log(1.0_dp - ev))
          result%cv_vib_calmolk = R_CALMOLK*sum(ev*u**2/(1.0_dp - ev)**2)
          result%q_vib = product(1.0_dp/(1.0_dp - ev))
@@ -237,7 +237,7 @@ contains
          e_trans = 1.5_dp*KB_HARTREE*temperature
          e_rot = merge(0.0_dp, merge(KB_HARTREE*temperature, 1.5_dp*KB_HARTREE*temperature, result%is_linear), &
                        result%is_atom)
-         e_vib_thermal = merge(KB_HARTREE*sum(theta_v*ev/(1.0_dp - ev)), 0.0_dp, idx_mask_any)
+         e_vib_thermal = merge(KB_HARTREE*sum(theta_v*ev/(1.0_dp - ev)), 0.0_dp, has_vib_warm)
 
          result%delta_e_hartree = result%zpe_hartree + e_trans + e_rot + e_vib_thermal
       end block

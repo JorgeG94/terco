@@ -7,7 +7,7 @@
 ! a second pl%build/eri%build at the SAME geometry and threshold
 ! (trc_scf_grad.F90's own `pair_eri_cache` argument, which also reports
 ! whether it actually took that path through its `reused` out argument);
-! `project_density` (same module) is the orbital-projection warm start,
+! `scf_context_project_density` (same module) is the orbital-projection warm start,
 ! trc_capi.F90's TRC_GUESS_PROJECTED.
 !
 ! A test-drive suite. Reuse is checked as a pure PERFORMANCE path, never a
@@ -35,10 +35,10 @@
 !      the default -- also forces a rebuild rather than risking a result
 !      that differs from the no-cache path by more than round-off.
 !   5. `trc_pair_eri_cache_t%release()` is safe called twice.
-!   6. `project_density` at an UNCHANGED geometry (S' = S) reproduces the
+!   6. `scf_context_project_density` at an UNCHANGED geometry (S' = S) reproduces the
 !      SCF's own converged density to round-off -- the identity case
 !      every orbital-projection warm start must degenerate to.
-!   7. `project_density` at a MOVED geometry gives an S'-orthonormal C':
+!   7. `scf_context_project_density` at a MOVED geometry gives an S'-orthonormal C':
 !      checked through D'S'D' = occ_s D' (idempotency under the NEW
 !      overlap), the matrix identity that holds iff C'^T S' C' = I for a
 !      full-rank C -- and an SCF started from it converges to the SAME
@@ -62,7 +62,7 @@ module check_scf_reuse_suite
    use trc_basis_json, only: trc_basis_from_json
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_pair_eri_cache_t
    use trc_scf_grad, only: trc_scf_gradient
-   use trc_scf_context, only: project_density
+   use trc_scf_context, only: scf_context_project_density
    use trc_linalg, only: trc_linalg_t
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
@@ -80,7 +80,7 @@ module check_scf_reuse_suite
    !! Two builds of the SAME pairs/Schwarz/bins at the SAME threshold,
    !! contracted against the SAME density -- round-off, not truncation.
    real(dp), parameter :: TOL_PROJ = 1.0e-9_dp
-   !! `project_density` rebuilds S independently (its own pair list/trc_1e
+   !! `scf_context_project_density` rebuilds S independently (its own pair list/trc_1e
    !! call, not the SCF's), and goes through an eigendecomposition
    !! (`sym_orthog`) the SCF's own density build never does -- looser than
    !! TOL_GRAD, still far tighter than any physical effect this test could
@@ -156,7 +156,7 @@ contains
       end if
       call b%to_device()
 
-      opts%max_iter = 30; opts%conv_energy = 1.0e-11_dp; opts%conv_diis = 1.0e-8_dp
+      opts%max_iteration = 30; opts%conv_energy = 1.0e-11_dp; opts%conv_diis = 1.0e-8_dp
       call trc_scf_run(b, nalpha, nbeta, opts, res, pair_eri_cache=pec)
       if (res%iterations <= 0) then
          call b%release(); call pec%release()
@@ -212,7 +212,7 @@ contains
          call test_failed(error, "basis load (equilibrium): "//err%get_message()); return
       end if
       call b0%to_device()
-      opts%max_iter = 30; opts%conv_energy = 1.0e-11_dp; opts%conv_diis = 1.0e-8_dp
+      opts%max_iteration = 30; opts%conv_energy = 1.0e-11_dp; opts%conv_diis = 1.0e-8_dp
       call trc_scf_run(b0, nalpha, nbeta, opts, res, pair_eri_cache=pec)
       if (res%iterations <= 0) then
          call b0%release(); call pec%release()
@@ -270,7 +270,7 @@ contains
          call test_failed(error, "basis load: "//err%get_message()); return
       end if
       call b%to_device()
-      opts%max_iter = 30; opts%conv_energy = 1.0e-11_dp; opts%conv_diis = 1.0e-8_dp
+      opts%max_iteration = 30; opts%conv_energy = 1.0e-11_dp; opts%conv_diis = 1.0e-8_dp
       opts%eri_thresh = THRESH
       call trc_scf_run(b, nalpha, nbeta, opts, res, pair_eri_cache=pec)
       if (res%iterations <= 0) then
@@ -323,7 +323,7 @@ contains
          call test_failed(error, "basis load: "//err%get_message()); return
       end if
       call b%to_device()
-      opts%max_iter = 30; opts%conv_energy = 1.0e-11_dp; opts%conv_diis = 1.0e-8_dp
+      opts%max_iteration = 30; opts%conv_energy = 1.0e-11_dp; opts%conv_diis = 1.0e-8_dp
       opts%batch_res = 2   ! non-default: finer Schwarz-bound buckets than 1
       call trc_scf_run(b, nalpha, nbeta, opts, res, pair_eri_cache=pec)
       if (res%iterations <= 0) then
@@ -365,7 +365,7 @@ contains
          call test_failed(error, "basis load: "//err%get_message()); return
       end if
       call b%to_device()
-      opts%max_iter = 5
+      opts%max_iteration = 5
       call trc_scf_run(b, nalpha, nbeta, opts, res, pair_eri_cache=pec)
       call b%release()
       call pec%release()
@@ -394,7 +394,7 @@ contains
          call test_failed(error, "basis load: "//err%get_message()); return
       end if
       call b%to_device()
-      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iter = 60
+      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iteration = 60
       call trc_scf_run(b, nalpha, nbeta, opts, res)
       if (.not. res%converged) then
          call b%release()
@@ -408,7 +408,7 @@ contains
       call pl%release()
       call lp%init(nao)
       nocc = [nalpha, nbeta]
-      call project_density(lp, nao, res%nspin, nocc, res%cmo, s, dproj)
+      call scf_context_project_density(lp, nao, res%nspin, nocc, res%cmo, s, dproj)
       call lp%release()
       worst = maxval(abs(dproj - res%dmat))
       call b%release()
@@ -424,7 +424,7 @@ contains
       !! test/bench_warmstart.F90 measured, and far from water's
       !! dissociation): C' is S'-orthonormal (checked as D'S'D' = occ_s D',
       !! which holds iff C'^T S' C' = I for a full-rank C -- see
-      !! `project_density`'s own header), and an SCF started from the
+      !! `scf_context_project_density`'s own header), and an SCF started from the
       !! projected density converges to the SAME energy as one started
       !! from SAD.
       type(error_type), allocatable, intent(out) :: error
@@ -447,7 +447,7 @@ contains
          call test_failed(error, "basis load (A): "//err%get_message()); return
       end if
       call ba%to_device()
-      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iter = 60
+      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iteration = 60
       call trc_scf_run(ba, nalpha, nbeta, opts, res_a)
       if (.not. res_a%converged) then
          call ba%release()
@@ -471,12 +471,12 @@ contains
       call pl%release()
       call lp%init(nao)
       nocc = [nalpha, nbeta]
-      call project_density(lp, nao, res_a%nspin, nocc, res_a%cmo, s, dproj)
+      call scf_context_project_density(lp, nao, res_a%nspin, nocc, res_a%cmo, s, dproj)
       call lp%release()
 
       ! D' S' D' = occ_s D', the idempotency that holds iff C'^T S' C' = I
       ! for the (full-rank, by construction) projected C' -- see this
-      ! test's own header and `project_density`'s.
+      ! test's own header and `scf_context_project_density`'s.
       allocate (sd(nao, nao), sds(nao, nao))
       occ_s = merge(2.0_dp, 1.0_dp, res_a%nspin == 1)
       worst_ortho = 0.0_dp

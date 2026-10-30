@@ -45,12 +45,12 @@ program check_xc_energy
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_error, only: error_t
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_dft_prune, only: PRUNE_NONE
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_xc, only: trc_xc_rks, trc_xc_uks
-   use trc_cart_perm, only: build_ao_perm
+   use trc_cart_perm, only: cart_perm_build_ao
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, ref_read_matrix, &
                            ref_read_matrix3, ref_report
    implicit none
@@ -151,7 +151,7 @@ program check_xc_energy
    ! permutation below is what makes both builds integrate the SAME density.
    allocate (c(nao, NOCC), c_lex(nao, NOCC), dmat(nao, nao), vxc(nao, nao), vxc2(nao, nao))
    allocate (perm_l2b(nao), perm_b2l(nao))
-   call build_ao_perm(b%nshell, b%sh_l, b%sh_ao, nao, perm_l2b, perm_b2l)
+   call cart_perm_build_ao(b%nshell, b%sh_l, b%sh_ao, nao, perm_l2b, perm_b2l)
    lcg = 61_int64
    do j = 1, NOCC
       do i = 1, nao
@@ -173,7 +173,7 @@ program check_xc_energy
       end do
    end do
 
-   call build_dft_grid(at_r, nint(at_z), grid, err, level=4, prune=PRUNE_NONE)
+   call dft_grid_build(at_r, nint(at_z), grid, err, level=4, prune=PRUNE_NONE)
    if (err%has_error()) then
       print '(a)', "check_xc_energy: grid failed: "//err%get_message()
       stop 1

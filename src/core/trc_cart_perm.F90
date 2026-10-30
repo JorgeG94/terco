@@ -19,7 +19,7 @@ module trc_cart_perm
    private
 
    public :: trc_cart_order_id, trc_cart_order_name
-   public :: cart_perm_l2b, cart_perm_b2l, build_ao_perm
+   public :: cart_perm_l2b, cart_perm_b2l, cart_perm_build_ao
 
 contains
 
@@ -61,7 +61,7 @@ contains
 #include "trc_cart_perm_b2l.inc"
    end function cart_perm_b2l
 
-   subroutine build_ao_perm(nshell, sh_l, sh_ao, nao, perm_l2b, perm_b2l)
+   subroutine cart_perm_build_ao(nshell, sh_l, sh_ao, nao, perm_l2b, perm_b2l)
       !! Full-basis AO permutation, host code (a reader of external data is
       !! never device code): for a basis of `nshell` shells with angular
       !! momenta `sh_l` and 1-based AO offsets `sh_ao` (`trc_basis_t`'s own
@@ -89,6 +89,6 @@ contains
             perm_b2l(base + ic + 1) = base + cart_perm_b2l(sh_l(ish), ic) + 1
          end do
       end do
-   end subroutine build_ao_perm
+   end subroutine cart_perm_build_ao
 
 end module trc_cart_perm

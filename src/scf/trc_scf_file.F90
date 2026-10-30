@@ -135,7 +135,7 @@ contains
       character(len=8) :: magic_in, f_pname
       character(len=16) :: f_fname
       integer(int32) :: ver, f_natm, f_nshell, f_maxnp, f_nao, f_n, f_sph, f_order, f_nspin, &
-                        f_nalpha, f_nbeta, f_charge, f_mult, f_conv, f_iter, f_lindep, f_npcm
+                        f_nalpha, f_nbeta, f_charge, f_mult, f_conv, f_iteration, f_lindep, f_npcm
       real(real64) :: f_pcm_eps
       real(real64) :: sc(N_SCALARS)
       real(real64), allocatable :: f_z(:), f_r(:, :), f_e(:, :), f_c(:, :), f_sr(:, :)
@@ -167,7 +167,7 @@ contains
          return
       end if
       read (u, iostat=ios) f_natm, f_nshell, f_maxnp, f_nao, f_n, f_sph, f_order, f_nspin, &
-         f_nalpha, f_nbeta, f_charge, f_mult, f_conv, f_iter, f_lindep, f_npcm, &
+         f_nalpha, f_nbeta, f_charge, f_mult, f_conv, f_iteration, f_lindep, f_npcm, &
          f_fname, f_pname, f_pcm_eps, sc
       if (ios /= 0) then
          call refuse(u, path, msg, trim(path)//" is truncated")
@@ -262,7 +262,7 @@ contains
       close (u)
 
       res%converged = f_conv /= 0
-      res%iterations = int(f_iter)
+      res%iterations = int(f_iteration)
       res%nspin = int(f_nspin)
       res%energy = sc(1)
       res%e_nuc = sc(2)
@@ -282,7 +282,7 @@ contains
 
    !
    ! A module procedure rather than an internal one: see app/main.F90's
-   ! terco_run for what a sibling internal procedure did to NVHPC's
+   ! trc_run for what a sibling internal procedure did to NVHPC's
    ! collective SCF.
    !
    subroutine refuse(u, path, msg, why)

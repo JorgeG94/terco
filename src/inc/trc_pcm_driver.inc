@@ -86,7 +86,7 @@
       real(dp), intent(out)   :: vpart        !! this chunk's share of v(k)
 
       integer  :: ij, ii, jj, li, lj, ni, nj, a, b, mu, nu, o, n
-      real(dp) :: blk(NBLK_MAX), one(1), acc, abx, aby, abz
+      real(dp) :: block(NBLK_MAX), one(1), acc, abx, aby, abz
 
       one(1) = 1.0_dp
       acc = 0.0_dp
@@ -101,18 +101,18 @@
          o = pp_off(ij); n = pp_n(ij)
          call pcm_dispatch(li, lj, n, pp_z(o + 1:o + n), pp_k(o + 1:o + n), &
                            pp_p(:, o + 1:o + n), pp_a(:, o + 1:o + n), abx, aby, abz, &
-                           1, 1, 1, pts(:, k:k), zk(k:k), one, blk)
+                           1, 1, 1, pts(:, k:k), zk(k:k), one, block)
          ! The pair list is lower-triangular, and an off-diagonal block
          ! stands for itself and its transpose; D is taken as given rather
          ! than assumed symmetric, so both of its halves are read.
-         ! `blk` addressed by the kernel's own affine slot formula rather
+         ! `block` addressed by the kernel's own affine slot formula rather
          ! than a running counter, as the DF drivers do.
          if (ii == jj) then
             do b = 0, nj - 1
                nu = sh_ao(jj) + b
                do a = 0, ni - 1
                   mu = sh_ao(ii) + a
-                  acc = acc + blk(1 + a + ni*b)*dmat(mu, nu)
+                  acc = acc + block(1 + a + ni*b)*dmat(mu, nu)
                end do
             end do
          else
@@ -120,7 +120,7 @@
                nu = sh_ao(jj) + b
                do a = 0, ni - 1
                   mu = sh_ao(ii) + a
-                  acc = acc + blk(1 + a + ni*b)*(dmat(mu, nu) + dmat(nu, mu))
+                  acc = acc + block(1 + a + ni*b)*(dmat(mu, nu) + dmat(nu, mu))
                end do
             end do
          end if
@@ -168,7 +168,7 @@
       real(dp), intent(inout) :: vmat(nao, nao)
 
       integer  :: ii, jj, li, lj, ni, nj, a, b, mu, nu, o, n
-      real(dp) :: blk(NBLK_MAX), abx, aby, abz
+      real(dp) :: block(NBLK_MAX), abx, aby, abz
 
       ii = p_i(ij); jj = p_j(ij)
       li = sh_l(ii); lj = sh_l(jj)
@@ -180,7 +180,7 @@
       o = pp_off(ij); n = pp_n(ij)
       call pcm_dispatch(li, lj, n, pp_z(o + 1:o + n), pp_k(o + 1:o + n), &
                         pp_p(:, o + 1:o + n), pp_a(:, o + 1:o + n), abx, aby, abz, &
-                        (npts - c)/nch + 1, c, nch, pts, zk, q, blk)
+                        (npts - c)/nch + 1, c, nch, pts, zk, q, block)
       ! On a diagonal pair the block already holds both (mu,nu) and
       ! (nu,mu), so it is added once; off the diagonal the transpose is
       ! this pair's to add too. Adding, not storing: other chunks of the
@@ -190,7 +190,7 @@
          do a = 0, ni - 1
             mu = sh_ao(ii) + a
             !$acc atomic update
-            vmat(mu, nu) = vmat(mu, nu) + blk(1 + a + ni*b)
+            vmat(mu, nu) = vmat(mu, nu) + block(1 + a + ni*b)
          end do
       end do
       if (ii /= jj) then
@@ -199,7 +199,7 @@
             do a = 0, ni - 1
                mu = sh_ao(ii) + a
                !$acc atomic update
-               vmat(nu, mu) = vmat(nu, mu) + blk(1 + a + ni*b)
+               vmat(nu, mu) = vmat(nu, mu) + block(1 + a + ni*b)
             end do
          end do
       end if

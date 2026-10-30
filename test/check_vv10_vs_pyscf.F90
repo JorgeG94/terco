@@ -30,7 +30,7 @@ program check_vv10_vs_pyscf
    use pic_types, only: dp, int64
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_basis_json, only: trc_basis_from_json
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
    use trc_test_basis, only: read_xyz
@@ -120,7 +120,7 @@ contains
       call trc_1e(bas, pl, smat, tmat, vnmat)
       call pl%release()
 
-      call build_dft_grid(at_r, at_z, grid, err, level=GRID_LEVEL)
+      call dft_grid_build(at_r, at_z, grid, err, level=GRID_LEVEL)
       if (err%has_error()) then
          print '(a)', 'check_vv10_vs_pyscf: '//err%get_message(); stop 1
       end if
@@ -217,7 +217,7 @@ contains
       call trc_1e(bas, pl, smat, tmat, vnmat)
       call pl%release()
 
-      call build_dft_grid(at_r, at_z, grid, err, level=GRID_LEVEL)
+      call dft_grid_build(at_r, at_z, grid, err, level=GRID_LEVEL)
       if (err%has_error()) then
          print '(a)', 'check_vv10_vs_pyscf: '//err%get_message(); stop 1
       end if

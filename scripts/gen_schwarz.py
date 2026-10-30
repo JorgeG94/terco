@@ -114,7 +114,7 @@ MODULE_TEMPLATE = '''\
 ! THREAD MAPPING. `schwarz_rys_batch`'s do-concurrent is flattened over a
 ! single index spanning every (pair, component) assignment in the chunk
 ! (t_i/t_j/t_c, built by the caller, `trc_screen.F90`'s
-! `schwarz_bounds_rys`) rather than nested over (pair, component): a `do
+! `screen_schwarz_bounds_rys`) rather than nested over (pair, component): a `do
 ! concurrent` whose OUTER extent varies per iteration and is small drops
 ! the last slice on some nvfortran versions (see the project's own notes on
 ! this), so the outer/inner pair is precomputed on the host instead and the

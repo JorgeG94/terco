@@ -96,7 +96,7 @@ program sapcmp
       integer :: nocc
       nocc = sum(zint)/2
       opts%conv_energy = 1.0e-8_dp
-      opts%max_iter = 30
+      opts%max_iteration = 30
       call trc_scf_run(bas, nocc, nocc, opts, rg, hguess=hgrid)
       call trc_scf_run(bas, nocc, nocc, opts, rf, hguess=hfit)
       print '(a,f20.10,a,i0,a,l1)', "grid  E ", rg%energy, " (", rg%iterations, ")  conv ", rg%converged

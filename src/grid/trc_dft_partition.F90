@@ -32,21 +32,21 @@ module trc_dft_partition
    !! weights slightly and must match whatever a reference is being compared to.
    use pic_types, only: dp, int64
    use trc_error, only: error_t, ERROR_VALIDATION
-   use trc_dft_radial, only: bragg_radius
+   use trc_dft_radial, only: dft_radial_bragg_radius
    implicit none
    private
 
    public :: PARTITION_BECKE, PARTITION_STRATMANN
    public :: ADJUST_NONE, ADJUST_BECKE, ADJUST_TREUTLER
-   public :: becke_partition_weights
-   public :: becke_partition_derivatives
-   public :: becke_partition_grad_contract
-   public :: partition_scheme_name
+   public :: dft_partition_becke_weights
+   public :: dft_partition_becke_derivatives
+   public :: dft_partition_becke_grad_contract
+   public :: dft_partition_scheme_name
    public :: PARTITION_NU_MAX
 
    real(dp), parameter :: PARTITION_NU_MAX = 0.95_dp
    !! Screening threshold on the cutoff argument against the owner; see
-   !! becke_partition_weights. Becke's s(0.95) is 1e-9; a cell function is a
+   !! dft_partition_becke_weights. Becke's s(0.95) is 1e-9; a cell function is a
    !! product of such factors, so a dropped atom's cell is at most that.
 
    ! Cutoff profile
@@ -69,7 +69,7 @@ module trc_dft_partition
 
    real(dp), parameter :: CELL_FLOOR = 1.0e-150_dp
    !! A cell function below this is dropped from the gradient's sums in
-   !! becke_partition_grad_contract (see partition_grad_point): every term
+   !! dft_partition_becke_grad_contract (see partition_grad_point): every term
    !! it carries is below it, relatively, and above it every factor is
    !! safely non-zero to divide by.
    real(dp), parameter :: CELL_REL = 1.0e-20_dp
@@ -80,7 +80,7 @@ module trc_dft_partition
 
 contains
 
-   pure function partition_scheme_name(scheme) result(name)
+   pure function dft_partition_scheme_name(scheme) result(name)
       !! Human-readable scheme name, for logs and error messages
       integer, intent(in) :: scheme
       character(len=:), allocatable :: name
@@ -93,9 +93,9 @@ contains
       case default
          name = "unknown"
       end select
-   end function partition_scheme_name
+   end function dft_partition_scheme_name
 
-   subroutine becke_partition_weights(points, atom_coords, atomic_numbers, owner, &
+   subroutine dft_partition_becke_weights(points, atom_coords, atomic_numbers, owner, &
                                       scheme, adjust, weights, error, nu_max, budget, first, last)
       !! Partition weight at each grid point, for the atom that owns it
       !!
@@ -234,7 +234,7 @@ contains
          end do
       end do
       !$acc end data
-   end subroutine becke_partition_weights
+   end subroutine dft_partition_becke_weights
 
    !
    ! One point's partition weight, into weights(k), using row g of the
@@ -353,7 +353,7 @@ contains
       end if
    end subroutine partition_point
 
-   subroutine becke_partition_derivatives(points, atom_coords, atomic_numbers, owner, &
+   subroutine dft_partition_becke_derivatives(points, atom_coords, atomic_numbers, owner, &
                                           scheme, adjust, dweights, error, nu_max)
       !! dP_k/dR_A at fixed grid points, as (3, n_atoms, n_points)
       !!
@@ -367,13 +367,13 @@ contains
       !! owns them, but that motion is a separate contribution which the caller
       !! adds; mixing the two into one routine would make neither checkable.
       !!
-      !! SCREENED THE SAME WAY `becke_partition_weights` IS. The energy this
+      !! SCREENED THE SAME WAY `dft_partition_becke_weights` IS. The energy this
       !! feeds does not sum the UNSCREENED partition product over every
-      !! atom: `apply_partition` calls `becke_partition_weights` at its
+      !! atom: `apply_partition` calls `dft_partition_becke_weights` at its
       !! default `nu_max` (PARTITION_NU_MAX, or STRATMANN_A under that
       !! scheme), which drops an atom from a point's active set once its
       !! cutoff against that point is already below ~1e-9 relative, exactly
-      !! `becke_partition_weights`'s own header. A gradient of the UNSCREENED
+      !! `dft_partition_becke_weights`'s own header. A gradient of the UNSCREENED
       !! partition is not the exact derivative of the SCREENED energy that
       !! actually ran -- a difference `partition_point`'s own screening
       !! keeps below the energy's own truncation, so it never mattered for
@@ -422,7 +422,7 @@ contains
       !! and formamide -- see check_dft_partition_deriv.F90 -- to ~1e-14 (at
       !! `nu_max >= 1`, screening off on both sides; the two are NOT expected
       !! to agree at the production `nu_max`, by design), and the active-set
-      !! build itself against `becke_partition_weights`'s FD (perturbing one
+      !! build itself against `dft_partition_becke_weights`'s FD (perturbing one
       !! atom and differencing the SCREENED weight) on a case large enough
       !! for screening to actually drop atoms -- see
       !! check_xc_grad_fd.F90's own larger case.
@@ -435,9 +435,9 @@ contains
       real(dp), intent(out) :: dweights(:, :, :)  !! (3, n_atoms, n_points)
       type(error_t), intent(inout) :: error
       real(dp), intent(in), optional :: nu_max
-      !! As `becke_partition_weights`'s own `nu_max`: default PARTITION_NU_MAX,
+      !! As `dft_partition_becke_weights`'s own `nu_max`: default PARTITION_NU_MAX,
       !! or STRATMANN_A under that scheme -- the SAME default the energy's own
-      !! unqualified `becke_partition_weights` call (`apply_partition`) uses.
+      !! unqualified `dft_partition_becke_weights` call (`apply_partition`) uses.
       !! Pass >= 1 for no screening (what check_dft_partition_deriv.F90 does
       !! to compare against the unscreened reference).
 
@@ -446,7 +446,7 @@ contains
       real(dp), allocatable :: f(:), prefix(:), suffix(:)
       real(dp), allocatable :: own_deriv(:, :), oth_deriv(:, :)
       real(dp), allocatable :: dtotal(:, :), d_own(:, :)
-      integer, allocatable :: idx(:), active(:), mark(:)
+      integer, allocatable :: index(:), active(:), mark(:)
       real(dp) :: cell_own, total, excl, numax, r_inner, mu, nu
       real(dp) :: d_ii(3), d_ia(3)
       integer :: n_atoms, n_points, i, j, k, t, m, own, ia, ja, n_active, n1
@@ -508,9 +508,9 @@ contains
       !$omp           inv_distance, r_min, numax, n_points, n_atoms, adjust) &
       !$omp    private(k, i, j, t, m, own, ia, ja, n_active, n1, cell_own, total, excl, &
       !$omp            r_inner, mu, nu, d_ii, d_ia, atom_r, unit_vec, f, prefix, suffix, &
-      !$omp            own_deriv, oth_deriv, dtotal, d_own, idx, active, mark)
+      !$omp            own_deriv, oth_deriv, dtotal, d_own, index, active, mark)
       allocate (atom_r(n_atoms), unit_vec(3, n_atoms))
-      allocate (f(n_atoms), prefix(0:n_atoms), suffix(n_atoms + 1), idx(n_atoms))
+      allocate (f(n_atoms), prefix(0:n_atoms), suffix(n_atoms + 1), index(n_atoms))
       allocate (own_deriv(3, n_atoms), oth_deriv(3, n_atoms))
       allocate (dtotal(3, n_atoms), d_own(3, n_atoms))
       allocate (active(n_atoms), mark(n_atoms))
@@ -586,7 +586,7 @@ contains
                j = active(ja)
                if (j == i) cycle
                m = m + 1
-               idx(m) = j
+               index(m) = j
                call pair_sij(i, j, n_atoms, atom_coords, atom_r, unit_vec, shift, &
                             inv_distance, scheme, f(m), own_deriv(:, m), oth_deriv(:, m))
             end do
@@ -604,7 +604,7 @@ contains
             do t = 1, m
                excl = prefix(t - 1)*suffix(t + 1)
                d_ii = d_ii + own_deriv(:, t)*excl
-               j = idx(t)
+               j = index(t)
                d_ia = oth_deriv(:, t)*excl
                dtotal(:, j) = dtotal(:, j) + d_ia
                if (i == own) d_own(:, j) = d_ia
@@ -630,9 +630,9 @@ contains
       end do
       !$omp end do
       !$omp end parallel
-   end subroutine becke_partition_derivatives
+   end subroutine dft_partition_becke_derivatives
 
-   subroutine becke_partition_grad_contract(n_points, points, atom_coords, atomic_numbers, owner, &
+   subroutine dft_partition_becke_grad_contract(n_points, points, atom_coords, atomic_numbers, owner, &
                                             coef, scheme, adjust, grad, error, nu_max, budget)
       !! sum_k coef_k dP_k/dR_A, plus the point-motion term, straight into
       !! a (3, n_atoms) gradient
@@ -647,11 +647,11 @@ contains
       !!     grad(:, A)        += coef_k dP_k/dR_A          (every active A)
       !!     grad(:, owner(k)) -= coef_k sum_A dP_k/dR_A
       !!
-      !! which is what `becke_partition_derivatives` followed by that
+      !! which is what `dft_partition_becke_derivatives` followed by that
       !! double loop gives, without its dense (3, n_atoms, n_points) array:
       !! that is O(n_atoms) memory per point, the limit on a large molecule.
       !!
-      !! ON THE DEVICE, as `becke_partition_weights`: one point per thread,
+      !! ON THE DEVICE, as `dft_partition_becke_weights`: one point per thread,
       !! the per-point scratch in (chunk, ...) device arrays, point index
       !! first. Everything the O(active^2) pair loops touch (distances,
       !! factors, suffix products, derivative sums) is indexed by POSITION
@@ -659,7 +659,7 @@ contains
       !! writes whole columns instead of scattered entries; the running
       !! prefix product of each row is a register. The active set,
       !! screening and arithmetic order per point are those of
-      !! `becke_partition_derivatives`, so each point's dP/dR is the same
+      !! `dft_partition_becke_derivatives`, so each point's dP/dR is the same
       !! number; only the order the points' contributions are summed in
       !! differs (atomics on the device).
       !!
@@ -676,7 +676,7 @@ contains
       real(dp), intent(inout) :: grad(:, :)         !! (3, n_atoms), added into
       type(error_t), intent(inout) :: error
       real(dp), intent(in), optional :: nu_max
-      !! As `becke_partition_derivatives`'s.
+      !! As `dft_partition_becke_derivatives`'s.
       integer(int64), intent(in), optional :: budget
       !! Scratch budget in doubles, default 2^26 (512 MB): a chunk holds
       !! 2^26 / (4 n_atoms) points, 93k at 180 atoms.
@@ -746,10 +746,10 @@ contains
 #endif
       end do
       !$acc end data
-   end subroutine becke_partition_grad_contract
+   end subroutine dft_partition_becke_grad_contract
 
    !
-   ! One point of `becke_partition_grad_contract`, row g of the scratch.
+   ! One point of `dft_partition_becke_grad_contract`, row g of the scratch.
    !
    ! The active set is `partition_point`'s. With cell_i = prod_{j active,
    ! j /= i} S(i,j) and the point's weight P = cell_own / total, total the
@@ -857,7 +857,7 @@ contains
          end do
       end do
 
-      ! The cells, each in a register, in becke_partition_derivatives'
+      ! The cells, each in a register, in dft_partition_becke_derivatives'
       ! factor order (j by position, skipping i). The owner's comes first
       ! (it is position 1); every other row stops as soon as its product,
       ! which only falls, is below `floor`, and counts as zero from then on.
@@ -1134,11 +1134,11 @@ contains
       select case (adjust)
       case (ADJUST_TREUTLER)
          do i = 1, n_atoms
-            radius(i) = sqrt(bragg_radius(atomic_numbers(i))) + TINY_RADIUS
+            radius(i) = sqrt(dft_radial_bragg_radius(atomic_numbers(i))) + TINY_RADIUS
          end do
       case (ADJUST_BECKE)
          do i = 1, n_atoms
-            radius(i) = bragg_radius(atomic_numbers(i)) + TINY_RADIUS
+            radius(i) = dft_radial_bragg_radius(atomic_numbers(i)) + TINY_RADIUS
          end do
       case default
          radius = 1.0_dp

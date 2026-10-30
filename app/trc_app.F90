@@ -1,4 +1,4 @@
-module terco_app
+module trc_app
    !! What the `terco` command needs that the library does not: reading a
    !! geometry file, finding a basis set by name, and talking to the C API's
    !! NUL-terminated strings.
@@ -23,10 +23,10 @@ module terco_app
    implicit none
    private
 
-   public :: read_xyz, resolve_basis, element_symbol, terco_app_atomic_number, c_string, f_string, set_env
+   public :: app_read_xyz, app_resolve_basis, app_element_symbol, app_atomic_number, app_c_string, app_f_string, app_set_env
    public :: BOHR_PER_ANGSTROM
-   public :: terco_app_help_for_topic, terco_app_set_log_level
-   public :: write_opt_xyz_frame, write_traj_xyz_frames, write_opt_failure_json
+   public :: app_help_for_topic, app_set_log_level
+   public :: app_write_opt_xyz_frame, app_write_traj_xyz_frames, app_write_opt_failure_json
 
    real(dp), parameter :: BOHR_PER_ANGSTROM = ANGSTROM_TO_BOHR
       !! CODATA 2018 (trc_constants' ANGSTROM_TO_BOHR), the constant every
@@ -74,15 +74,15 @@ module terco_app
 
 contains
 
-   pure function element_symbol(z) result(sym)
+   pure function app_element_symbol(z) result(sym)
       !! The symbol for nuclear charge `z`, or "?" outside 1..118.
       integer, intent(in) :: z
       character(len=2) :: sym
       sym = "? "
       if (z >= 1 .and. z <= NELEM) sym = SYMBOLS(z)
-   end function element_symbol
+   end function app_element_symbol
 
-   pure integer function terco_app_atomic_number(tok) result(z)
+   pure integer function app_atomic_number(tok) result(z)
       !! Nuclear charge from an element symbol in any case, or from an
       !! integer (some xyz writers use Z). Zero if it is neither.
       character(len=*), intent(in) :: tok
@@ -102,9 +102,9 @@ contains
             return
          end if
       end do
-   end function terco_app_atomic_number
+   end function app_atomic_number
 
-   subroutine read_xyz(path, natm, z, xyz, title, err)
+   subroutine app_read_xyz(path, natm, z, xyz, title, err)
       !! A standard xyz file: atom count, a title line, then one
       !! `symbol x y z` line per atom in Angstrom. Coordinates come back in
       !! Bohr, atom-major (3, natm), which is what trc_set_molecule takes.
@@ -151,7 +151,7 @@ contains
             close (u)
             return
          end if
-         z(i) = terco_app_atomic_number(tok)
+         z(i) = app_atomic_number(tok)
          if (z(i) == 0) then
             call err%set(int(ERROR_PARSE, default_int), trim(path)//": atom "//to_string(i)// &
                          ": unknown element '"//trim(tok)//"'")
@@ -161,9 +161,9 @@ contains
          xyz(:, i) = r*BOHR_PER_ANGSTROM
       end do
       close (u)
-   end subroutine read_xyz
+   end subroutine app_read_xyz
 
-   subroutine resolve_basis(name, path, err)
+   subroutine app_resolve_basis(name, path, err)
       !! A basis set given on the command line, as a file path.
       !!
       !! Anything that names an existing file is used as is. Otherwise it is a
@@ -231,47 +231,47 @@ contains
          call err%set(int(ERROR_VALIDATION, default_int), "basis '"//trim(name)// &
                       "' is not a file and was not found as:"//tried)
       end if
-   end subroutine resolve_basis
+   end subroutine app_resolve_basis
 
    logical function exists(path) result(res)
       character(len=*), intent(in) :: path
       inquire (file=trim(path), exist=res)
    end function exists
 
-   pure function c_string(s) result(cs)
+   pure function app_c_string(s) result(cs)
       !! `s` NUL-terminated, for a `character(kind=c_char) :: x(*)` dummy.
       character(len=*), intent(in) :: s
       character(kind=c_char, len=len_trim(s) + 1) :: cs
       cs = trim(s)//c_null_char
-   end function c_string
+   end function app_c_string
 
-   pure function f_string(buf) result(s)
+   pure function app_f_string(buffer) result(s)
       !! The text of a NUL-terminated C buffer.
-      character(kind=c_char), intent(in) :: buf(:)
+      character(kind=c_char), intent(in) :: buffer(:)
       character(len=:), allocatable :: s
       integer :: i, n
-      n = size(buf)
-      do i = 1, size(buf)
-         if (buf(i) == c_null_char) then
+      n = size(buffer)
+      do i = 1, size(buffer)
+         if (buffer(i) == c_null_char) then
             n = i - 1
             exit
          end if
       end do
       allocate (character(len=n) :: s)
       do i = 1, n
-         s(i:i) = buf(i)
+         s(i:i) = buffer(i)
       end do
-   end function f_string
+   end function app_f_string
 
-   subroutine set_env(name, value)
+   subroutine app_set_env(name, value)
       !! POSIX setenv. The library reads a few settings (the SAP fit file
       !! among them) only from the environment.
       character(len=*), intent(in) :: name, value
       integer(c_int) :: rc
-      rc = c_setenv(c_string(name), c_string(value), 1_c_int)
-   end subroutine set_env
+      rc = c_setenv(app_c_string(name), app_c_string(value), 1_c_int)
+   end subroutine app_set_env
 
-   subroutine write_opt_xyz_frame(path, natm, z, energy, xyz_bohr, label)
+   subroutine app_write_opt_xyz_frame(path, natm, z, energy, xyz_bohr, label)
       !! `<geometry base>_opt.xyz`: one geometry in Angstrom, atom order
       !! unchanged, comment line carrying `label` and the energy. Shared by
       !! an ordinary --opt finish (app/main.F90's own write_opt_xyz) and
@@ -290,12 +290,12 @@ contains
       write (u, "(i0)") natm
       write (u, "(a,a,f0.12)") trim(label), "   E = ", energy
       do ia = 1, natm
-         write (u, "(a2,3f20.12)") element_symbol(z(ia)), xyz_bohr(:, ia)/BOHR_PER_ANGSTROM
+         write (u, "(a2,3f20.12)") app_element_symbol(z(ia)), xyz_bohr(:, ia)/BOHR_PER_ANGSTROM
       end do
       close (u)
-   end subroutine write_opt_xyz_frame
+   end subroutine app_write_opt_xyz_frame
 
-   subroutine write_traj_xyz_frames(path, natm, z, n_traj, traj_xyz_bohr, traj_energy)
+   subroutine app_write_traj_xyz_frames(path, natm, z, n_traj, traj_xyz_bohr, traj_energy)
       !! `<geometry base>_traj.xyz`: one frame per geometry handed in, in
       !! Angstrom, comment line carrying the step index and energy. The
       !! caller decides what belongs in `traj_xyz_bohr` -- app/main.F90
@@ -313,13 +313,13 @@ contains
          write (u, "(i0)") natm
          write (u, "(a,i0,a,f0.12)") "step ", k, "   E = ", traj_energy(k)
          do ia = 1, natm
-            write (u, "(a2,3f20.12)") element_symbol(z(ia)), traj_xyz_bohr(:, ia, k)/BOHR_PER_ANGSTROM
+            write (u, "(a2,3f20.12)") app_element_symbol(z(ia)), traj_xyz_bohr(:, ia, k)/BOHR_PER_ANGSTROM
          end do
       end do
       close (u)
-   end subroutine write_traj_xyz_frames
+   end subroutine app_write_traj_xyz_frames
 
-   subroutine write_opt_failure_json(path, geometry, reason, steps, energy_evaluations, &
+   subroutine app_write_opt_failure_json(path, geometry, reason, steps, energy_evaluations, &
                                      final_energy, final_gradient_max, final_gradient_rms, &
                                      coords_name, guess_name, traj_energy)
       !! A minimal "optimization" JSON block for the one outcome
@@ -355,9 +355,9 @@ contains
       call json%add(root, oobj)
       call json%print(root, path)
       call json%destroy(root)
-   end subroutine write_opt_failure_json
+   end subroutine app_write_opt_failure_json
 
-   function terco_app_help_for_topic(text, topic) result(out)
+   function app_help_for_topic(text, topic) result(out)
       !! `pic_cli`'s help text cut down to one topic. Without a topic the
       !! `--opt-*` tuning options (about fifty lines) are dropped, except
       !! `--opt-freq`, which is a headline switch; with `--help opt` only the
@@ -402,9 +402,9 @@ contains
          out = out//new_line("a")//"Run 'terco --help opt' for the geometry-optimisation (--opt-*) options."// &
                new_line("a")
       end if
-   end function terco_app_help_for_topic
+   end function app_help_for_topic
 
-   subroutine terco_app_set_log_level(name, ok)
+   subroutine app_set_log_level(name, ok)
       !! Apply `--logger <name>` to the global logger. Names are pic_logger's
       !! own levels, quietest first: knowledge, error, warning, performance,
       !! info, large_info, verbose, debug.
@@ -432,7 +432,7 @@ contains
       case default
       ok = .false.
       end select
-   end subroutine terco_app_set_log_level
+   end subroutine app_set_log_level
 
    function to_lower_alloc_app(s) result(lower_s)
       character(len=*), intent(in) :: s
@@ -444,4 +444,4 @@ contains
       end do
    end function to_lower_alloc_app
 
-end module terco_app
+end module trc_app

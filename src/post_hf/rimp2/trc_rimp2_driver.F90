@@ -96,10 +96,10 @@ module trc_rimp2_driver
    implicit none
    private
 
-   public :: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_mo_to_cart
+   public :: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_driver_mo_to_cart
 
    real(dp), parameter :: PAD_EPS = 1.0e6_dp
-   !! `rimp2_mo_to_cart`'s orbital energy for a padded, zero-coefficient
+   !! `rimp2_driver_mo_to_cart`'s orbital energy for a padded, zero-coefficient
    !! "virtual" -- see that routine's own header for why finite (never
    !! literally infinite) is what keeps every denominator it enters finite
    !! rather than NaN, and why the padded terms are exactly zero anyway.
@@ -181,7 +181,7 @@ contains
       logical :: talk, chained
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
-      type(trc_basis_t) :: blk
+      type(trc_basis_t) :: aux_subset
       real(dp), pointer :: bchain(:, :)
       integer :: nao, naux, naux_c, nfz, no, nv, nov, nblk, s0, s1, p0, np, p0c, npc, ish
       integer :: i, rank, nranks, ng, ldk, i0, i1
@@ -210,7 +210,7 @@ contains
       ! caller whose SCF ran spherical (`b%spherical`) does not hand this
       ! its raw (b%nao_sph, b%nao_sph) orbitals -- that would read past
       ! the end of a smaller array under sequence association -- but
-      ! `rimp2_mo_to_cart`'s own fold-and-pad result instead: every real
+      ! `rimp2_driver_mo_to_cart`'s own fold-and-pad result instead: every real
       ! MO transformed into the Cartesian AO space (C_cart = T C_sph, MO
       ! space itself does not care which AO representation it came from),
       ! padded out to `b%nao` columns with zero-coefficient, PAD_EPS
@@ -232,7 +232,7 @@ contains
       if (present(nfrozen)) nfz = max(nfrozen, 0)
       no = nocc - nfz
       ! For a spherical caller, `nao` (Cartesian) is bigger than the
-      ! true spherical MO count `b%nao_sph` -- rimp2_mo_to_cart's own
+      ! true spherical MO count `b%nao_sph` -- rimp2_driver_mo_to_cart's own
       ! header explains why this routine is never told that -- so `nv`
       ! below runs over `b%nao - b%nao_sph` zero-coefficient pad
       ! "virtuals" that cost real GEMM flops and contribute nothing.
@@ -245,7 +245,7 @@ contains
       ! 11-14% larger flop count; any O(nv^3) term costs proportionally
       ! more still. Don't change the kernels for this -- it is the
       ! price of keeping `trc_rimp2_run` Cartesian-only and reusing it
-      ! unchanged for a spherical caller (rimp2_mo_to_cart's own
+      ! unchanged for a spherical caller (rimp2_driver_mo_to_cart's own
       ! header).
       nv = nao - nocc
       nov = no*nv
@@ -400,15 +400,15 @@ contains
          end do
          p0c = aux%sh_ao(s0)
          npc = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0c
-         call aux%subset(s0, s1, blk)
-         call blk%to_device()
+         call aux%subset(s0, s1, aux_subset)
+         call aux_subset%to_device()
          ! Effective (spherical, when `aux%spherical`) offset/width this
-         ! block's columns land at in `xr` below -- `blk%nao_sph` is
+         ! block's columns land at in `xr` below -- `aux_subset%nao_sph` is
          ! exactly this block's own spherical width, since `subset` never
          ! cuts a shell in two.
          if (aux%spherical) then
             p0 = aux%sh_ao_sph(s0)
-            np = blk%nao_sph
+            np = aux_subset%nao_sph
          else
             p0 = p0c
             np = npc
@@ -423,7 +423,7 @@ contains
             ! the dense tensor the half-transform below reads either way
             ! -- no (mu nu|P) build, and no P-fold, at all.
             do concurrent(q=1:np, mu=1:nao, nu=1:nao)
-               tens(mu, nu, q) = bchain(rimp2_pack_idx(max(mu, nu), min(mu, nu)), p0 - 1 + q)
+               tens(mu, nu, q) = bchain(rimp2_pack_index(max(mu, nu), min(mu, nu)), p0 - 1 + q)
             end do
          else if (aux%spherical) then
             ! (mu nu|Pc), built Cartesian, folded into `tens` on the P
@@ -432,12 +432,12 @@ contains
             ! reads it (which never needs to know the difference).
             allocate (tcart3(nao, nao, npc))
             !$acc enter data create(tcart3)
-            call trc_df_3c(b, pl, blk, tcart3)
-            call sph_aux3c_to_sph(blk, nao, tcart3, tens, lp)
+            call trc_df_3c(b, pl, aux_subset, tcart3)
+            call sph_aux3c_to_sph(aux_subset, nao, tcart3, tens, lp)
             !$acc exit data delete(tcart3)
             deallocate (tcart3)
          else
-            call trc_df_3c(b, pl, blk, tens)
+            call trc_df_3c(b, pl, aux_subset, tens)
          end if
          call stab%step_off(lp, ST_3C, tc)
          call stab%step_on(lp, ST_TRANS, tc)
@@ -465,7 +465,7 @@ contains
          call stab%add_flop(ST_TRANS, int(np, int64)*(2*int(no, int64)*nao8*nao8 + 2*nv8*int(no, int64)*nao8))
          !$acc exit data delete(tens, half)
          deallocate (tens, half)
-         call blk%release()
+         call aux_subset%release()
          s0 = s1 + 1
       end do
       if (nranks > 1) then
@@ -673,7 +673,7 @@ contains
    ! multiplied by that zero. This is what lets `trc_rimp2_run` itself
    ! stay unchanged, Cartesian-interface, for a spherical caller.
    !
-   subroutine rimp2_mo_to_cart(b, csph, epssph, ccart, epscart)
+   subroutine rimp2_driver_mo_to_cart(b, csph, epssph, ccart, epscart)
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)  :: csph(b%nao_sph, b%nao_sph), epssph(b%nao_sph)
       real(dp), intent(out) :: ccart(b%nao, b%nao), epscart(b%nao)
@@ -692,7 +692,7 @@ contains
       if (nc > ns) ccart(:, ns + 1:nc) = 0.0_dp
       epscart(1:ns) = epssph
       if (nc > ns) epscart(ns + 1:nc) = PAD_EPS
-   end subroutine rimp2_mo_to_cart
+   end subroutine rimp2_driver_mo_to_cart
 
    !
    ! RI-MP2 for an UNRESTRICTED (UHF or UKS) reference, on the device, one
@@ -765,7 +765,7 @@ contains
       logical :: talk
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
-      type(trc_basis_t) :: blk
+      type(trc_basis_t) :: aux_subset
       integer :: nao, naux, naux_c, nfz, noa, nob, nva, nvb, nblk, s0, s1, p0, np, p0c, npc, ish
       integer :: rank, nranks
       integer :: novr_a, novr_b, ng_aa, ng_bb, ng_ab, ldk_aa, ldk_bb, ldk_ab
@@ -786,7 +786,7 @@ contains
 
       nao = b%nao
       ! `cmo_a`/`cmo_b`/`eps_a`/`eps_b` are the Cartesian-space, fold-and-
-      ! pad result of `rimp2_mo_to_cart` when `b` is spherical -- see
+      ! pad result of `rimp2_driver_mo_to_cart` when `b` is spherical -- see
       ! `trc_rimp2_run`'s own header on that routine, which this one reads
       ! exactly as it does. `naux_c`/`naux` split the auxiliary basis the
       ! same way too (CARTESIAN count for the kernel/block-walk below,
@@ -900,11 +900,11 @@ contains
          end do
          p0c = aux%sh_ao(s0)
          npc = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0c
-         call aux%subset(s0, s1, blk)
-         call blk%to_device()
+         call aux%subset(s0, s1, aux_subset)
+         call aux_subset%to_device()
          if (aux%spherical) then
             p0 = aux%sh_ao_sph(s0)
-            np = blk%nao_sph
+            np = aux_subset%nao_sph
          else
             p0 = p0c
             np = npc
@@ -915,12 +915,12 @@ contains
          if (aux%spherical) then
             allocate (tcart3(nao, nao, npc))
             !$acc enter data create(tcart3)
-            call trc_df_3c(b, pl, blk, tcart3)
-            call sph_aux3c_to_sph(blk, nao, tcart3, tens, lp)
+            call trc_df_3c(b, pl, aux_subset, tcart3)
+            call sph_aux3c_to_sph(aux_subset, nao, tcart3, tens, lp)
             !$acc exit data delete(tcart3)
             deallocate (tcart3)
          else
-            call trc_df_3c(b, pl, blk, tens)
+            call trc_df_3c(b, pl, aux_subset, tens)
          end if
          call stab%step_off(lp, ST_3C, tc)
 
@@ -950,7 +950,7 @@ contains
 
          !$acc exit data delete(tens)
          deallocate (tens)
-         call blk%release()
+         call aux_subset%release()
          s0 = s1 + 1
       end do
       if (talk) then
@@ -1182,7 +1182,7 @@ contains
    !
    ! The held block to `dest`, from the host copy, in MSG_CHUNK pieces.
    ! Module procedures rather than internal ones: see app/main.F90's
-   ! terco_run for what a sibling internal procedure did under NVHPC's MPI.
+   ! trc_run for what a sibling internal procedure did under NVHPC's MPI.
    !
    subroutine send_block(comm, xr, vis, cur, n, dest, first, reqs)
       type(comm_t), intent(in) :: comm
@@ -1323,9 +1323,9 @@ contains
    ! host addresses (send_seg, recv_seg) or device ones inside `host_data`
    ! (the _dev pair, by pic-mpi's specific names as send_block_dev does).
    !
-   subroutine send_seg(comm, buf, off, n, dest, reqs)
+   subroutine send_seg(comm, buffer, off, n, dest, reqs)
       type(comm_t), intent(in) :: comm
-      real(dp), intent(in), target :: buf(:)
+      real(dp), intent(in), target :: buffer(:)
       integer(int64), intent(in) :: off, n
       integer, intent(in) :: dest
       type(request_t), intent(inout) :: reqs(:)
@@ -1336,28 +1336,28 @@ contains
       do while (k <= n)
          m = min(MSG_CHUNK, n - k + 1)
          r = r + 1
-         call isend(comm, buf(off + k:off + k + m - 1), dest, 8, reqs(r))
+         call isend(comm, buffer(off + k:off + k + m - 1), dest, 8, reqs(r))
          k = k + m
       end do
    end subroutine send_seg
 
-   subroutine recv_seg(comm, buf, off, n, source)
+   subroutine recv_seg(comm, buffer, off, n, source)
       type(comm_t), intent(in) :: comm
-      real(dp), intent(inout) :: buf(:)
+      real(dp), intent(inout) :: buffer(:)
       integer(int64), intent(in) :: off, n
       integer, intent(in) :: source
       integer(int64) :: k, m
       k = 1
       do while (k <= n)
          m = min(MSG_CHUNK, n - k + 1)
-         call recv(comm, buf(off + k:off + k + m - 1), int(m), source, 8)
+         call recv(comm, buffer(off + k:off + k + m - 1), int(m), source, 8)
          k = k + m
       end do
    end subroutine recv_seg
 
-   subroutine send_seg_dev(comm, buf, off, n, dest, reqs)
+   subroutine send_seg_dev(comm, buffer, off, n, dest, reqs)
       type(comm_t), intent(in) :: comm
-      real(dp), intent(in), target :: buf(:)
+      real(dp), intent(in), target :: buffer(:)
       integer(int64), intent(in) :: off, n
       integer, intent(in) :: dest
       type(request_t), intent(inout) :: reqs(:)
@@ -1368,21 +1368,21 @@ contains
       do while (k <= n)
          m = min(MSG_CHUNK, n - k + 1)
          r = r + 1
-         call comm_isend_real_dp_array_n(comm, buf(off + k:off + k + m - 1), int(m), dest, 8, reqs(r))
+         call comm_isend_real_dp_array_n(comm, buffer(off + k:off + k + m - 1), int(m), dest, 8, reqs(r))
          k = k + m
       end do
    end subroutine send_seg_dev
 
-   subroutine recv_seg_dev(comm, buf, off, n, source)
+   subroutine recv_seg_dev(comm, buffer, off, n, source)
       type(comm_t), intent(in) :: comm
-      real(dp), intent(inout), target :: buf(:)
+      real(dp), intent(inout), target :: buffer(:)
       integer(int64), intent(in) :: off, n
       integer, intent(in) :: source
       integer(int64) :: k, m
       k = 1
       do while (k <= n)
          m = min(MSG_CHUNK, n - k + 1)
-         call comm_recv_real_dp_array_n(comm, buf(off + k:off + k + m - 1), int(m), source, 8)
+         call comm_recv_real_dp_array_n(comm, buffer(off + k:off + k + m - 1), int(m), source, 8)
          k = k + m
       end do
    end subroutine recv_seg_dev
@@ -1417,11 +1417,11 @@ contains
    !! boundary -- a `do concurrent` body may not call a procedure from
    !! another module (the same reason `ncart` above is its own copy and
    !! not trc_scf_df.F90's).
-   pure integer function rimp2_pack_idx(mu, nu) result(p)
+   pure integer function rimp2_pack_index(mu, nu) result(p)
       !$acc routine seq
       integer, intent(in) :: mu, nu
       p = mu*(mu - 1)/2 + nu
-   end function rimp2_pack_idx
+   end function rimp2_pack_index
 
    !
    ! For occupied i and the pairs j = jfirst.., one thread per (j, a), with a

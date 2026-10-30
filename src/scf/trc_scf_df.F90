@@ -3,8 +3,8 @@
 ! resident on the device. Every array THIS object owns -- `bpk`, the
 ! packed density/J factors, the K half-transform -- is Cartesian-sized
 ! (`n = b%nao`), whether the orbital basis `b` is spherical or not: a
-! spherical caller folds S/H/D/F through `trc_scf_fock.F90`'s `to_cart`/
-! `to_sph` at the boundary, and this object never sees the difference.
+! spherical caller folds S/H/D/F through `trc_scf_fock.F90`'s `scf_fock_to_cart`/
+! `scf_fock_to_sph` at the boundary, and this object never sees the difference.
 ! The AUXILIARY basis is a separate question (see `df_jk_setup`'s own
 ! comment): it follows its own `aux%spherical`, independent of `b`'s.
 !
@@ -46,12 +46,12 @@
 !                             over blocks and mirrored once at the end
 !
 ! and G = j_scale J[D] - (k_scale/2) K[D] for D the TOTAL density, the SAME convention `trc_eri_t%fock_resident`
-! returns (see trc_scf_fock.F90's build_g, which reads this object's `build`
+! returns (see trc_scf_fock.F90's scf_fock_build_g, which reads this object's `build`
 ! in its own branch) -- `--df` and the four-centre path must agree up to the
 ! fitting error, and matching the sign/scale convention exactly is how.
 !
 ! PACKED INDEXING. idx(mu, nu) = mu(mu-1)/2 + nu for mu >= nu (1-based,
-! lower-triangular, mu the slower index): `pack_idx`, a module-level pure
+! lower-triangular, mu the slower index): `pack_index`, a module-level pure
 ! function (`!$acc routine seq`), not a type-bound one, for the same reason
 ! RI-MP2's `pair_energy_body` is module-level -- a `do concurrent` body may
 ! not call a procedure from another module, but a local pure function is
@@ -181,7 +181,7 @@ contains
       integer, intent(in), optional :: nocc_hint
       integer, intent(in), optional :: aux_block
 
-      type(trc_basis_t) :: blk
+      type(trc_basis_t) :: aux_subset
       real(dp), allocatable :: jmc(:, :), tens(:, :, :), tsph(:, :, :)
       integer :: n, naux, naux_c, npack, ablk, omax0
       integer :: s0, s1, ish, p0, p0s, np, nps, mu, nu, q
@@ -191,8 +191,8 @@ contains
       if (this%ready) return
       ! The orbital basis `b` is only ever read here at its CARTESIAN size
       ! (`n = b%nao`, never `b%nao_sph`) -- `d_c`/`gmat_c` in `build`
-      ! below are the Cartesian-space scratch trc_scf_fock.F90's `to_cart`/
-      ! `to_sph` fold the SCF's own (spherical, if `b%spherical`) matrices
+      ! below are the Cartesian-space scratch trc_scf_fock.F90's `scf_fock_to_cart`/
+      ! `scf_fock_to_sph` fold the SCF's own (spherical, if `b%spherical`) matrices
       ! through at the call site -- so nothing here needs `b%spherical`
       ! at all, and a spherical orbital basis is not refused.
       if (maxval(b%sh_l) > DF_LMAX) then
@@ -300,8 +300,8 @@ contains
       ! `p0`/`np` below are the block's EFFECTIVE (spherical, when
       ! `aux%spherical`) offset/width -- what `bpk`'s own column index
       ! runs over -- kept distinct from the block's CARTESIAN `p0`/`np`
-      ! only where the two differ, read out of `blk` after `subset` cuts
-      ! it (never across a shell, so `blk%nao_sph` is exactly this
+      ! only where the two differ, read out of `aux_subset` after `subset` cuts
+      ! it (never across a shell, so `aux_subset%nao_sph` is exactly this
       ! block's own spherical width).
       s0 = 1
       do while (s0 <= aux%nshell)
@@ -312,35 +312,35 @@ contains
          end do
          p0 = aux%sh_ao(s0)
          np = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0
-         call aux%subset(s0, s1, blk)
-         call blk%to_device()
+         call aux%subset(s0, s1, aux_subset)
+         call aux_subset%to_device()
          allocate (tens(n, n, np))
          !$acc enter data create(tens)
          if (s0 == 1) call dbg_mem("after first (mn|P) block alloc (np="//itoa_dbg(np)//")")
          call this%tbl%step_on(lp, ST_3C, tc)
-         call trc_df_3c(b, pl, blk, tens)
+         call trc_df_3c(b, pl, aux_subset, tens)
          call this%tbl%step_off(lp, ST_3C, tc)
          call this%tbl%step_on(lp, ST_PACK, tc)
          if (aux%spherical) then
             p0s = aux%sh_ao_sph(s0)
-            nps = blk%nao_sph
+            nps = aux_subset%nao_sph
             allocate (tsph(n, n, nps))
             !$acc enter data create(tsph)
-            call sph_aux3c_to_sph(blk, n, tens, tsph, lp)
+            call sph_aux3c_to_sph(aux_subset, n, tens, tsph, lp)
             do concurrent(q=1:nps, mu=1:n, nu=1:n, nu <= mu)
-               this%bpk(pack_idx(mu, nu), p0s - 1 + q) = tsph(mu, nu, q)
+               this%bpk(pack_index(mu, nu), p0s - 1 + q) = tsph(mu, nu, q)
             end do
             !$acc exit data delete(tsph)
             deallocate (tsph)
          else
             do concurrent(q=1:np, mu=1:n, nu=1:n, nu <= mu)
-               this%bpk(pack_idx(mu, nu), p0 - 1 + q) = tens(mu, nu, q)
+               this%bpk(pack_index(mu, nu), p0 - 1 + q) = tens(mu, nu, q)
             end do
          end if
          call this%tbl%step_off(lp, ST_PACK, tc)
          !$acc exit data delete(tens)
          deallocate (tens)
-         call blk%release()
+         call aux_subset%release()
          s0 = s1 + 1
       end do
 
@@ -375,7 +375,7 @@ contains
 
    !
    ! G = j_scale J[D] - (k_scale/2) K[D], D the total density: the same convention
-   ! `trc_eri_t%fock_resident` returns (trc_scf_fock.F90's build_g branches
+   ! `trc_eri_t%fock_resident` returns (trc_scf_fock.F90's scf_fock_build_g branches
    ! on `cfg%df` into this instead of the four-centre call, never both).
    ! `gmat_c` is OVERWRITTEN, not accumulated into -- the caller has
    ! nothing else to add for the restricted case `--df` is scoped to (P1).
@@ -415,7 +415,7 @@ contains
       ! --- J: two GEMVs on the packed storage -------------------------------
       call this%tbl%step_on(lp, ST_JGAM, tc)
       do concurrent(mu=1:n, nu=1:n, nu <= mu)
-         this%dpk(pack_idx(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*d_c(mu, nu)
+         this%dpk(pack_index(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*d_c(mu, nu)
       end do
       call lp%gemv("T", npack, naux, 1.0_dp, this%bpk, npack, this%dpk, 0.0_dp, this%gq)
       call this%tbl%step_off(lp, ST_JGAM, tc)
@@ -424,7 +424,7 @@ contains
       call this%tbl%step_on(lp, ST_JBLD, tc)
       call lp%gemv("N", npack, naux, 1.0_dp, this%bpk, npack, this%gq, 0.0_dp, this%jpk)
       do concurrent(mu=1:n, nu=1:n)
-         gmat_c(mu, nu) = j_scale*this%jpk(pack_idx(max(mu, nu), min(mu, nu)))
+         gmat_c(mu, nu) = j_scale*this%jpk(pack_index(max(mu, nu), min(mu, nu)))
       end do
       call this%tbl%step_off(lp, ST_JBLD, tc)
       call this%tbl%add_bytes(ST_JBLD, 8_int64*int(npack, int64)*int(naux, int64))
@@ -478,7 +478,7 @@ contains
             mu = int(mod(t, n8)) + 1
             nu = int(mod(t/n8, n8)) + 1
             qq = int(t/(n8*n8)) + 1
-            this%bblk(mu, nu, qq) = this%bpk(pack_idx(max(mu, nu), min(mu, nu)), q0 - 1 + qq)
+            this%bblk(mu, nu, qq) = this%bpk(pack_index(max(mu, nu), min(mu, nu)), q0 - 1 + qq)
          end do
          call this%tbl%step_off(lp, ST_UNPK, tc)
          call this%tbl%add_bytes(ST_UNPK, 8_int64*int(n, int64)*int(n, int64)*int(qb_cur, int64))
@@ -790,10 +790,10 @@ contains
    !! idx(mu, nu) = mu(mu-1)/2 + nu, mu >= nu, 1-based: the packed row a
    !! (mu, nu) pair (either order) lives at. Module-level and pure (not
    !! type-bound) so a `do concurrent` body may call it directly.
-   pure integer function pack_idx(mu, nu) result(p)
+   pure integer function pack_index(mu, nu) result(p)
       !$acc routine seq
       integer, intent(in) :: mu, nu
       p = mu*(mu - 1)/2 + nu
-   end function pack_idx
+   end function pack_index
 
 end module trc_scf_df

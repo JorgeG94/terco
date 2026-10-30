@@ -1,5 +1,5 @@
 !
-! Invariants of trc_sad.F90's spherical averaging (`average_atom_density`),
+! Invariants of trc_sad.F90's spherical averaging (`sad_average_atom_density`),
 ! checked directly rather than through the energy it leaves unchanged.
 !
 ! PART 1 -- THE AVERAGING ALGEBRA, s/p/d/f, on a free O/cc-pVTZ atom (both
@@ -10,7 +10,7 @@
 ! densities that share each block's trace but differ in its off-diagonal
 ! content -- standing in for the two different orthonormal bases a
 ! degenerate eigensolver could have returned for the identical physical
-! atom -- and checks that `average_atom_density` sends both to the exact
+! atom -- and checks that `sad_average_atom_density` sends both to the exact
 ! same result (determinism), that a same-l block becomes exactly
 ! (trace/(2l+1)) times the identity and a different-l one exactly zero
 ! (block proportionality), and that every block's trace survives (the
@@ -30,7 +30,7 @@ program sad_sphavg
    use trc_sph_tables, only: SPH_T
    use trc_sph, only: sph_cart_to_sph
    use trc_basis_json, only: trc_basis_from_json
-   use trc_sad, only: trc_sad_build, average_atom_density
+   use trc_sad, only: trc_sad_build, sad_average_atom_density
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    implicit none
@@ -52,7 +52,7 @@ program sad_sphavg
    if (err%has_error()) call die(err)
 
    ! l_cap = 3 (s/p/d/f, this basis' own ceiling) for the spherical case:
-   ! there is no contaminant there at any l, so `average_atom_density`'s
+   ! there is no contaminant there at any l, so `sad_average_atom_density`'s
    ! simple replacement is exact end to end. l_cap = 1 (s/p only) for the
    ! Cartesian case: see `check_algebra`'s own header for why its
    ! determinism/block-proportionality fixture is deliberately NOT pushed
@@ -83,18 +83,18 @@ contains
    !
    ! See this program's own header, PART 1. `l_cap` caps which shell pairs
    ! the synthetic fixture (and the expected-answer check) touches at all:
-   ! `average_atom_density`'s simple same-trace replacement
+   ! `sad_average_atom_density`'s simple same-trace replacement
    ! (`cart_to_sph_atom`/average/`sph_to_cart_atom`) is exact in the
    ! SPHERICAL representation for any l (no contaminant exists there), but
    ! in the CARTESIAN one it is exact only where T is the identity --
    ! l <= 1, where Cartesian AND spherical are the SAME representation (see
-   ! `average_atom_density`'s header: T^T T is not the identity for l >= 2,
+   ! `sad_average_atom_density`'s header: T^T T is not the identity for l >= 2,
    ! so the averaging step itself, not just the electron count, runs in a
    ! metric-distorted space there). SAD's own open-shell atoms (O, C, N, F,
    ! ...) all have their Hund frontier at p, so capping the Cartesian
    ! check at l_cap = 1 tests exactly the regime that determinism bug
    ! lived in, without overclaiming determinism for a Cartesian d or f
-   ! shell's own internal contaminant -- which `average_atom_density`
+   ! shell's own internal contaminant -- which `sad_average_atom_density`
    ! still leaves untouched rather than discarding (see its header), so
    ! electron count survives there regardless; PART 2's real pipeline
    ! check below covers that block's Tr(D S) end to end instead.
@@ -148,8 +148,8 @@ contains
          call local_sph_to_cart(ab, ds2, d2)
       end if
 
-      call average_atom_density(ab, sph, d1)
-      call average_atom_density(ab, sph, d2)
+      call sad_average_atom_density(ab, sph, d1)
+      call sad_average_atom_density(ab, sph, d2)
 
       maxdiff = maxval(abs(d1 - d2))
       print '(a,l1,a,es10.2)', "sad_sphavg: determinism (sph=", sph, ")  max|D1-D2| = ", maxdiff
@@ -160,7 +160,7 @@ contains
       ! identity, every different-l block exactly zero), folded to
       ! Cartesian by the SAME forward transform used to build the fixture
       ! -- not a round trip through `local_cart_to_sph`, which (like
-      ! `cart_to_sph_atom` -- see `average_atom_density`'s header) is not
+      ! `cart_to_sph_atom` -- see `sad_average_atom_density`'s header) is not
       ! the inverse of `local_sph_to_cart`/`sph_to_cart_atom` for l >= 2.
       allocate (back1(n, n))
       call build_expected(ab, l_cap, back1)
@@ -244,7 +244,7 @@ contains
    ! (private) copy, so this test is not checking the implementation
    ! against itself -- see trc_sph.F90's header for the same formula's
    ! canonical, device-resident form. Only the forward (sph -> cart)
-   ! direction is needed here: see `average_atom_density`'s header for why
+   ! direction is needed here: see `sad_average_atom_density`'s header for why
    ! the reverse direction is not this transform's inverse for l >= 2, and
    ! so is never used as a check.
    !

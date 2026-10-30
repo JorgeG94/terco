@@ -507,12 +507,12 @@ contains
       status = TRC_OK
    end function trc_opt_result_trajectory
 
-   function trc_opt_result_message(handle, buf, buflen) result(status) bind(c, name="trc_opt_result_message")
+   function trc_opt_result_message(handle, buffer, buflen) result(status) bind(c, name="trc_opt_result_message")
       !! The run's own message (why it failed, or "" for an ordinary
-      !! finish), NUL-terminated into `buf` of `buflen` chars -- same
+      !! finish), NUL-terminated into `buffer` of `buflen` chars -- same
       !! contract as terco.h's trc_message.
       type(c_ptr), value :: handle
-      character(kind=c_char), intent(out) :: buf(*)
+      character(kind=c_char), intent(out) :: buffer(*)
       integer(c_int), value :: buflen
       integer(c_int) :: status
       type(trc_opt_result_box), pointer :: rb
@@ -525,9 +525,9 @@ contains
       if (allocated(rb%res%message)) msg = rb%res%message
       n = min(len_trim(msg), int(buflen) - 1)
       do i = 1, n
-         buf(i) = msg(i:i)
+         buffer(i) = msg(i:i)
       end do
-      if (buflen > 0) buf(n + 1) = c_null_char
+      if (buflen > 0) buffer(n + 1) = c_null_char
       status = TRC_OK
    end function trc_opt_result_message
 

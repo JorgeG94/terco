@@ -23,15 +23,15 @@ module trc_dft_grid
    use trc_constants, only: PI
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_lebedev, only: lebedev_grid
-   use trc_dft_radial, only: treutler_ahlrichs_radial
-   use trc_dft_partition, only: becke_partition_weights, PARTITION_BECKE, ADJUST_TREUTLER
-   use trc_dft_prune, only: prune_angular_orders, PRUNE_NONE, PRUNE_NWCHEM
+   use trc_dft_radial, only: dft_radial_treutler_ahlrichs
+   use trc_dft_partition, only: dft_partition_becke_weights, PARTITION_BECKE, ADJUST_TREUTLER
+   use trc_dft_prune, only: dft_prune_angular_orders, PRUNE_NONE, PRUNE_NWCHEM
    implicit none
    private
 
    public :: dft_grid_t
-   public :: build_dft_grid, build_dft_grid_block
-   public :: grid_level_radial, grid_level_angular
+   public :: dft_grid_build, dft_grid_build_block
+   public :: dft_grid_level_radial, dft_grid_level_angular
    public :: MIN_GRID_LEVEL, MAX_GRID_LEVEL, DEFAULT_GRID_LEVEL
    public :: DEFAULT_PRUNE
 
@@ -123,19 +123,19 @@ contains
       end do
    end function element_period
 
-   pure function grid_level_radial(atomic_number, level) result(n_radial)
+   pure function dft_grid_level_radial(atomic_number, level) result(n_radial)
       !! Radial shells this element gets at this level
       integer, intent(in) :: atomic_number, level
       integer :: n_radial
       n_radial = RAD_GRIDS(clamp_level(level), element_period(atomic_number))
-   end function grid_level_radial
+   end function dft_grid_level_radial
 
-   pure function grid_level_angular(atomic_number, level) result(n_angular)
+   pure function dft_grid_level_angular(atomic_number, level) result(n_angular)
       !! Lebedev points this element gets at this level
       integer, intent(in) :: atomic_number, level
       integer :: n_angular
       n_angular = ANG_POINTS(clamp_level(level), element_period(atomic_number))
-   end function grid_level_angular
+   end function dft_grid_level_angular
 
    pure function clamp_level(level) result(clamped)
       integer, intent(in) :: level
@@ -143,11 +143,11 @@ contains
       clamped = max(MIN_GRID_LEVEL, min(MAX_GRID_LEVEL, level))
    end function clamp_level
 
-   subroutine build_dft_grid(atom_coords, atomic_numbers, grid, error, &
+   subroutine dft_grid_build(atom_coords, atomic_numbers, grid, error, &
                              level, scheme, adjust, n_radial, n_angular, prune, t_points, t_partition)
       !! Build the molecular grid: see `build_grid` for the arguments.
       !!
-      !! A separate entry from `build_dft_grid_block`, with this interface
+      !! A separate entry from `dft_grid_build_block`, with this interface
       !! unchanged, because nvfortran 26.5 crashes compiling a caller that
       !! passes an expression actual with keyword optionals to a version
       !! carrying the two rank arguments (check_xc_energy did).
@@ -162,9 +162,9 @@ contains
       !! caller's own "grid (s)" sub-table -- trc_scf_context.F90's `setup`.
       call build_grid(atom_coords, atomic_numbers, grid, error, level, scheme, adjust, n_radial, n_angular, prune, &
                       t_points=t_points, t_partition=t_partition)
-   end subroutine build_dft_grid
+   end subroutine dft_grid_build
 
-   subroutine build_dft_grid_block(atom_coords, atomic_numbers, grid, error, my_rank, n_ranks, &
+   subroutine dft_grid_build_block(atom_coords, atomic_numbers, grid, error, my_rank, n_ranks, &
                                    level, scheme, adjust, n_radial, n_angular, prune, t_points, t_partition)
       !! Build the molecular grid with this rank partitioning only its block
       !! of the points: the partition is the expensive part of the build,
@@ -180,7 +180,7 @@ contains
       real(dp), intent(out), optional :: t_points, t_partition
       call build_grid(atom_coords, atomic_numbers, grid, error, level, scheme, adjust, n_radial, n_angular, prune, &
                       my_rank, n_ranks, t_points, t_partition)
-   end subroutine build_dft_grid_block
+   end subroutine dft_grid_build_block
 
    subroutine build_grid(atom_coords, atomic_numbers, grid, error, &
                          level, scheme, adjust, n_radial, n_angular, prune, my_rank, n_ranks, t_points, t_partition)
@@ -203,7 +203,7 @@ contains
       integer, intent(in), optional :: my_rank, n_ranks
       !! With both given, only this rank's block of the points is partitioned.
       real(dp), intent(out), optional :: t_points, t_partition
-      !! See `build_dft_grid`'s own declaration.
+      !! See `dft_grid_build`'s own declaration.
 
       real(dp), allocatable :: r(:), dr(:), sphere(:, :), w_ang(:)
       integer, allocatable :: shell_order(:)
@@ -243,10 +243,10 @@ contains
       total = 0
       do ia = 1, n_atoms
          call atom_sizes(atomic_numbers(ia), used_level, n_radial, n_angular, nr, na)
-         call treutler_ahlrichs_radial(nr, atomic_numbers(ia), r, dr, error)
+         call dft_radial_treutler_ahlrichs(nr, atomic_numbers(ia), r, dr, error)
          if (error%has_error()) return
          allocate (shell_order(nr))
-         call prune_angular_orders(used_prune, atomic_numbers(ia), r, na, shell_order, error)
+         call dft_prune_angular_orders(used_prune, atomic_numbers(ia), r, na, shell_order, error)
          if (error%has_error()) return
          total = total + sum(shell_order)
          deallocate (r, dr, shell_order)
@@ -261,11 +261,11 @@ contains
       do ia = 1, n_atoms
          call atom_sizes(atomic_numbers(ia), used_level, n_radial, n_angular, nr, na)
 
-         call treutler_ahlrichs_radial(nr, atomic_numbers(ia), r, dr, error)
+         call dft_radial_treutler_ahlrichs(nr, atomic_numbers(ia), r, dr, error)
          if (error%has_error()) return
 
          allocate (shell_order(nr))
-         call prune_angular_orders(used_prune, atomic_numbers(ia), r, na, shell_order, error)
+         call dft_prune_angular_orders(used_prune, atomic_numbers(ia), r, na, shell_order, error)
          if (error%has_error()) return
 
          ! Shells sharing an order are not contiguous -- the outer zone repeats
@@ -315,8 +315,8 @@ contains
          nr = n_radial
          na = n_angular
       else
-         nr = grid_level_radial(atomic_number, level)
-         na = grid_level_angular(atomic_number, level)
+         nr = dft_grid_level_radial(atomic_number, level)
+         na = dft_grid_level_angular(atomic_number, level)
       end if
    end subroutine atom_sizes
 
@@ -337,10 +337,10 @@ contains
          ! Contiguous blocks: the chunks inside are contiguous too.
          k_lo = int((int(grid%n_points, int64)*my_rank)/n_ranks) + 1
          k_hi = int((int(grid%n_points, int64)*(my_rank + 1))/n_ranks)
-         call becke_partition_weights(grid%coords, atom_coords, atomic_numbers, &
+         call dft_partition_becke_weights(grid%coords, atom_coords, atomic_numbers, &
                                       grid%atom, scheme, adjust, cell, error, first=k_lo, last=k_hi)
       else
-         call becke_partition_weights(grid%coords, atom_coords, atomic_numbers, &
+         call dft_partition_becke_weights(grid%coords, atom_coords, atomic_numbers, &
                                       grid%atom, scheme, adjust, cell, error)
       end if
       if (error%has_error()) return

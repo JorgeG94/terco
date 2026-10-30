@@ -4,9 +4,9 @@
 ! `error stop` forces to run from INSIDE a callback (trc_dlfind_bridge's own
 ! fail_eval -- there is no "after api_dl_find returns" on that path).
 !
-! WHY THIS DUPLICATES PART OF app/terco_app.F90 RATHER THAN MOVING IT THERE.
-! f_string/set_env/write_opt_xyz_frame/write_traj_xyz_frames/
-! write_opt_failure_json used to live in terco_app (app/terco_app.F90),
+! WHY THIS DUPLICATES PART OF app/trc_app.F90 RATHER THAN MOVING IT THERE.
+! opt_io_f_string/opt_io_set_env/opt_io_write_opt_xyz_frame/opt_io_write_traj_xyz_frames/
+! opt_io_write_opt_failure_json used to live in trc_app (app/trc_app.F90),
 ! which trc_dlfind_bridge.F90 could reach because both were compiled
 ! straight into the terco_cli executable together. Now that the bridge is
 ! built into libterco_opt (TERCO_ENABLE_DLFIND=ON only), it can no longer
@@ -14,10 +14,10 @@
 ! rule, and not just a style point here -- app/ is not installed or
 ! exported, so a caller outside terco's own build (cyclone, linking only
 ! libterco_opt.so and terco_opt.h) could not link against it even if the
-! rule were bent. Moving these five routines OUT of terco_app instead would
+! rule were bent. Moving these five routines OUT of trc_app instead would
 ! break the OPPOSITE build: app/main.F90's ordinary (non-crash) --opt finish
 ! path (write_opt_xyz/write_traj_xyz) calls them unconditionally, compiled
-! into terco_cli in EVERY build, DLFIND=ON or OFF, so terco_app.F90 must
+! into terco_cli in EVERY build, DLFIND=ON or OFF, so trc_app.F90 must
 ! keep its own copies regardless. Five small file-writers, stable since
 ! they were written, duplicated once rather than reshuffling module
 ! boundaries across both the CLI and the library for them.
@@ -30,12 +30,12 @@ module trc_opt_io
    implicit none
    private
 
-   public :: c_string, f_string, set_env
-   public :: write_opt_xyz_frame, write_traj_xyz_frames, write_opt_failure_json
+   public :: opt_io_c_string, opt_io_f_string, opt_io_set_env
+   public :: opt_io_write_opt_xyz_frame, opt_io_write_traj_xyz_frames, opt_io_write_opt_failure_json
 
    real(dp), parameter :: BOHR_PER_ANGSTROM = ANGSTROM_TO_BOHR
       !! CODATA 2018 (trc_constants' ANGSTROM_TO_BOHR) -- the same constant
-      !! app/terco_app.F90's own copy of this name uses.
+      !! app/trc_app.F90's own copy of this name uses.
 
    integer, parameter :: NELEM = 118
    character(len=2), parameter :: SYMBOLS(NELEM) = [character(len=2) :: &
@@ -77,43 +77,43 @@ contains
       end if
    end function element_symbol
 
-   pure function c_string(s) result(cs)
+   pure function opt_io_c_string(s) result(cs)
       !! `s` NUL-terminated, for a `character(kind=c_char) :: x(*)` dummy.
       character(len=*), intent(in) :: s
       character(kind=c_char, len=len_trim(s) + 1) :: cs
       cs = trim(s)//c_null_char
-   end function c_string
+   end function opt_io_c_string
 
-   pure function f_string(buf) result(s)
+   pure function opt_io_f_string(buffer) result(s)
       !! The text of a NUL-terminated C buffer.
-      character(kind=c_char), intent(in) :: buf(:)
+      character(kind=c_char), intent(in) :: buffer(:)
       character(len=:), allocatable :: s
       integer :: i, n
-      n = size(buf)
-      do i = 1, size(buf)
-         if (buf(i) == c_null_char) then
+      n = size(buffer)
+      do i = 1, size(buffer)
+         if (buffer(i) == c_null_char) then
             n = i - 1
             exit
          end if
       end do
       allocate (character(len=n) :: s)
       do i = 1, n
-         s(i:i) = buf(i)
+         s(i:i) = buffer(i)
       end do
-   end function f_string
+   end function opt_io_f_string
 
-   subroutine set_env(name, value)
+   subroutine opt_io_set_env(name, value)
       !! POSIX setenv -- trc_dlfind_bridge's own DLF_PO_SEED (--opt-seed).
       character(len=*), intent(in) :: name, value
       integer(c_int) :: rc
-      rc = c_setenv(c_string(name), c_string(value), 1_c_int)
-   end subroutine set_env
+      rc = c_setenv(opt_io_c_string(name), opt_io_c_string(value), 1_c_int)
+   end subroutine opt_io_set_env
 
-   subroutine write_opt_xyz_frame(path, natm, z, energy, xyz_bohr, label)
+   subroutine opt_io_write_opt_xyz_frame(path, natm, z, energy, xyz_bohr, label)
       !! `<geometry base>_opt.xyz`: one geometry in Angstrom, atom order
       !! unchanged, comment line carrying `label` and the energy. Shared by
       !! an ordinary --opt finish (app/main.F90's own write_opt_xyz, which
-      !! calls terco_app's OWN identical copy) and trc_dlfind_bridge's
+      !! calls trc_app's OWN identical copy) and trc_dlfind_bridge's
       !! unrecoverable-failure path, which has no other chance to write
       !! this file: DL-FIND's own api.f90 calls `error stop` right after a
       !! gradient evaluation reports status=1, so nothing runs after
@@ -132,9 +132,9 @@ contains
          write (u, "(a2,3f20.12)") element_symbol(z(ia)), xyz_bohr(:, ia)/BOHR_PER_ANGSTROM
       end do
       close (u)
-   end subroutine write_opt_xyz_frame
+   end subroutine opt_io_write_opt_xyz_frame
 
-   subroutine write_traj_xyz_frames(path, natm, z, n_traj, traj_xyz_bohr, traj_energy)
+   subroutine opt_io_write_traj_xyz_frames(path, natm, z, n_traj, traj_xyz_bohr, traj_energy)
       !! `<geometry base>_traj.xyz`: one frame per geometry handed in, in
       !! Angstrom, comment line carrying the step index and energy.
       character(len=*), intent(in) :: path
@@ -152,9 +152,9 @@ contains
          end do
       end do
       close (u)
-   end subroutine write_traj_xyz_frames
+   end subroutine opt_io_write_traj_xyz_frames
 
-   subroutine write_opt_failure_json(path, geometry, reason, steps, energy_evaluations, &
+   subroutine opt_io_write_opt_failure_json(path, geometry, reason, steps, energy_evaluations, &
                                      final_energy, final_gradient_max, final_gradient_rms, &
                                      coords_name, guess_name, traj_energy)
       !! A minimal "optimization" JSON block for the one outcome
@@ -185,6 +185,6 @@ contains
       call json%add(root, oobj)
       call json%print(root, path)
       call json%destroy(root)
-   end subroutine write_opt_failure_json
+   end subroutine opt_io_write_opt_failure_json
 
 end module trc_opt_io

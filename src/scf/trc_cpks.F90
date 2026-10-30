@@ -18,7 +18,7 @@
 ! a_x is the functional's own fraction of exact exchange (`func%exx`,
 ! zero for a pure functional); `eri%fock_resident(..., k_scale=a_x)`
 ! already folds the 1/2 into its own K, matching trc_scf_fock.F90's
-! `build_g` (k_scale = exx there too) -- see trc_eri.F90's own
+! `scf_fock_build_g` (k_scale = exx there too) -- see trc_eri.F90's own
 ! `eri_fock` header ("j*J - k*K/2"). f_xc[D_U], the kernel response, is
 ! `trc_xc_fxc_rks` (src/xc/trc_xc.F90): the second-derivative contraction
 ! against the trial density D_U, on the SAME grid batches trc_xc_rks
@@ -68,7 +68,8 @@ module trc_cpks
    use trc_xc_functional, only: trc_xc_functional_t, XC_FAMILY_MGGA
    use trc_xc, only: trc_xc_fxc_rks
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, &
-                       zero_mat, copy_mat, neg_mat, add_mat, axpy_mat, precond_mat, combine_p, add_diag
+                       cphf_zero_matrix, cphf_copy_matrix, cphf_neg_matrix, cphf_add_matrix, &
+                       cphf_axpy_matrix, cphf_precond_matrix, cphf_combine_p, cphf_add_diag
    implicit none
    private
 
@@ -131,7 +132,7 @@ contains
       integer(int64), intent(in), optional :: budget
 
       real(dp), allocatable :: d_u(:, :), d_ut(:, :), g_u(:, :), v_resp(:, :)
-      real(dp), allocatable :: tmp_no(:, :), tmp_no2(:, :)
+      real(dp), allocatable :: temporary_no(:, :), temporary_no2(:, :)
       real(dp), allocatable :: r(:, :), z(:, :), p(:, :), ap(:, :), diagv(:, :)
       real(dp) :: rz, rz_old, pap, alpha_cg, beta_cg, resid, ax
       integer :: it, comp, i, a
@@ -149,7 +150,7 @@ contains
       ax = func%exx
 
       allocate (d_u(nao, nao), d_ut(nao, nao), g_u(nao, nao), v_resp(nao, nao))
-      allocate (tmp_no(nao, nocc), tmp_no2(nao, nocc))
+      allocate (temporary_no(nao, nocc), temporary_no2(nao, nocc))
       allocate (r(nvirt, nocc), z(nvirt, nocc), p(nvirt, nocc), ap(nvirt, nocc), diagv(nvirt, nocc))
       do i = 1, nocc
          do a = 1, nvirt
@@ -157,7 +158,7 @@ contains
          end do
       end do
 
-      !$acc enter data create(d_u, d_ut, g_u, v_resp, tmp_no, tmp_no2, r, z, p, ap)
+      !$acc enter data create(d_u, d_ut, g_u, v_resp, temporary_no, temporary_no2, r, z, p, ap)
       !$acc enter data copyin(diagv, dmat)
 
       allocate (res%iterations(ncomp))
@@ -165,10 +166,10 @@ contains
       res%message = ""
 
       do comp = 1, ncomp
-         call neg_mat(nvirt, nocc, bvec(:, :, comp), r)
-         call zero_mat(nvirt, nocc, u(:, :, comp))
-         call precond_mat(nvirt, nocc, diagv, r, z)
-         call copy_mat(nvirt, nocc, z, p)
+         call cphf_neg_matrix(nvirt, nocc, bvec(:, :, comp), r)
+         call cphf_zero_matrix(nvirt, nocc, u(:, :, comp))
+         call cphf_precond_matrix(nvirt, nocc, diagv, r, z)
+         call cphf_copy_matrix(nvirt, nocc, z, p)
          rz = lp%dot_2d(r, z)
          resid = sqrt(lp%dot_2d(r, r))
          it = 0
@@ -177,7 +178,7 @@ contains
          ! see trc_cphf.F90's trc_cphf_solve_rhf for why a NaN resid must
          ! read as "not yet converged" here, not fall through both
          ! comparisons as false and report a silent converged.
-         do while (it < opts%max_iter .and. .not. (resid < opts%conv_residual))
+         do while (it < opts%max_iteration .and. .not. (resid < opts%conv_residual))
             call matvec(p, ap)
             pap = lp%dot_2d(p, ap)
             ! See trc_cphf.F90's trc_cphf_solve_rhf for why this guard is
@@ -189,16 +190,16 @@ contains
                exit
             end if
             alpha_cg = rz/pap
-            call axpy_mat(nvirt, nocc, alpha_cg, p, u(:, :, comp))
-            call axpy_mat(nvirt, nocc, -alpha_cg, ap, r)
+            call cphf_axpy_matrix(nvirt, nocc, alpha_cg, p, u(:, :, comp))
+            call cphf_axpy_matrix(nvirt, nocc, -alpha_cg, ap, r)
             resid = sqrt(lp%dot_2d(r, r))
             it = it + 1
             if (resid < opts%conv_residual) exit
-            call precond_mat(nvirt, nocc, diagv, r, z)
+            call cphf_precond_matrix(nvirt, nocc, diagv, r, z)
             rz_old = rz
             rz = lp%dot_2d(r, z)
             beta_cg = rz/rz_old
-            call combine_p(nvirt, nocc, z, beta_cg, p)
+            call cphf_combine_p(nvirt, nocc, z, beta_cg, p)
          end do
          res%iterations(comp) = it
          if (broke) then
@@ -219,7 +220,7 @@ contains
       end do
 
       !$acc exit data delete(diagv, dmat)
-      !$acc exit data delete(d_u, d_ut, g_u, v_resp, tmp_no, tmp_no2, r, z, p, ap)
+      !$acc exit data delete(d_u, d_ut, g_u, v_resp, temporary_no, temporary_no2, r, z, p, ap)
 
    contains
 
@@ -228,16 +229,16 @@ contains
       subroutine matvec(pin, apout)
          real(dp), intent(in) :: pin(nvirt, nocc)
          real(dp), intent(inout) :: apout(nvirt, nocc)
-         call lp%gemm_mat(cmo(:, nocc + 1:nao), pin, tmp_no)
-         call lp%gemm_mat(tmp_no, cmo(:, 1:nocc), d_u, transb="T")
+         call lp%gemm_mat(cmo(:, nocc + 1:nao), pin, temporary_no)
+         call lp%gemm_mat(temporary_no, cmo(:, 1:nocc), d_u, transb="T")
          call lp%transpose(nao, nao, d_u, nao, d_ut, nao)
-         call add_mat(nao, nao, d_u, d_ut, d_u)
+         call cphf_add_matrix(nao, nao, d_u, d_ut, d_u)
          call eri%fock_resident(b, d_u, g_u, k_scale=ax, j_scale=1.0_dp, density_screen=.false.)
          call trc_xc_fxc_rks(b, xg, func, dmat, d_u, v_resp, budget, lp)
-         call add_mat(nao, nao, g_u, v_resp, g_u)
-         call lp%gemm_mat(g_u, cmo(:, 1:nocc), tmp_no2)
-         call lp%gemm_mat(cmo(:, nocc + 1:nao), tmp_no2, apout, transa="T", alpha=2.0_dp)
-         call add_diag(nvirt, nocc, diagv, pin, apout)
+         call cphf_add_matrix(nao, nao, g_u, v_resp, g_u)
+         call lp%gemm_mat(g_u, cmo(:, 1:nocc), temporary_no2)
+         call lp%gemm_mat(cmo(:, nocc + 1:nao), temporary_no2, apout, transa="T", alpha=2.0_dp)
+         call cphf_add_diag(nvirt, nocc, diagv, pin, apout)
       end subroutine matvec
 
    end subroutine trc_cpks_solve_rks
@@ -268,7 +269,7 @@ contains
 
       type(trc_linalg_t), target :: la_own
       type(trc_linalg_t), pointer :: lp
-      real(dp), allocatable :: mmat(:, :, :), tmp(:, :), bvec(:, :, :), u(:, :, :)
+      real(dp), allocatable :: mmat(:, :, :), temporary(:, :), bvec(:, :, :), u(:, :, :)
       integer :: nao, nvirt, x, y
       logical :: owns_la
       character(len=256) :: reason
@@ -296,11 +297,11 @@ contains
       allocate (mmat(nao, nao, TRC_NMULT))
       call trc_multipoles(b, pl, [0.0_dp, 0.0_dp, 0.0_dp], mmat)
 
-      allocate (tmp(nao, nocc), bvec(nvirt, nocc, 3), u(nvirt, nocc, 3))
-      !$acc enter data copyin(cmo, mmat) create(tmp, bvec, u)
+      allocate (temporary(nao, nocc), bvec(nvirt, nocc, 3), u(nvirt, nocc, 3))
+      !$acc enter data copyin(cmo, mmat) create(temporary, bvec, u)
       do x = 1, 3
-         call lp%gemm_mat(mmat(:, :, x), cmo(:, 1:nocc), tmp)
-         call lp%gemm_mat(cmo(:, nocc + 1:nao), tmp, bvec(:, :, x), transa="T")
+         call lp%gemm_mat(mmat(:, :, x), cmo(:, 1:nocc), temporary)
+         call lp%gemm_mat(cmo(:, nocc + 1:nao), temporary, bvec(:, :, x), transa="T")
       end do
 
       call trc_cpks_solve_rks(b, eri, lp, xg, func, nao, nocc, nvirt, cmo, eps, dmat, 3, bvec, u, opts, res, budget)
@@ -311,8 +312,8 @@ contains
          end do
       end do
 
-      !$acc exit data delete(cmo, mmat, tmp, bvec, u)
-      deallocate (mmat, tmp, bvec, u)
+      !$acc exit data delete(cmo, mmat, temporary, bvec, u)
+      deallocate (mmat, temporary, bvec, u)
       if (owns_la) call lp%release()
    end subroutine trc_scf_polarizability_rks
 

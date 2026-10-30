@@ -41,7 +41,7 @@ module trc_hirshfeld
    use pic_strings, only: to_string
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc, only: trc_xc_rho
    use trc_hirshfeld_data, only: trc_hirshfeld_table_t, trc_hirshfeld_ensure_loaded, HIRSHFELD_Z_MAX
@@ -150,7 +150,7 @@ contains
 
       level = HIRSHFELD_GRID_LEVEL
       if (present(grid_level)) level = grid_level
-      call build_dft_grid(b%at_r, b%at_elem, grid, error, level=level)
+      call dft_grid_build(b%at_r, b%at_elem, grid, error, level=level)
       if (error%has_error()) return
 
       ! rho through the XC integrator's batched path (screened per batch,

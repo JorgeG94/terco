@@ -70,7 +70,7 @@ module trc_linalg
       ! every existing `lp%gemm("N", ...)` / `lp%dot(n, x, y)` call is
       ! completely unaffected.
       procedure :: gemm => linalg_gemm_raw
-      procedure :: gemm_mat => linalg_gemm_mat
+      procedure :: gemm_mat => linalg_gemm_matrix
       procedure :: gemm_strided => linalg_gemm_strided
       procedure :: transpose => linalg_transpose
       procedure :: sym_from_upper => linalg_sym_from_upper
@@ -83,8 +83,8 @@ module trc_linalg
       ! exactly-ranked array (never a scalar offset or a rank mismatch) --
       ! so it is safe to make it a real generic.
       procedure, private :: linalg_syev_raw
-      procedure, private :: linalg_syev_mat
-      generic :: syev => linalg_syev_raw, linalg_syev_mat
+      procedure, private :: linalg_syev_matrix
+      generic :: syev => linalg_syev_raw, linalg_syev_matrix
       procedure :: dot => linalg_dot_raw
       procedure :: dot_2d => linalg_dot_2d
       procedure :: dot_3d => linalg_dot_3d
@@ -604,7 +604,7 @@ contains
    !! computed here, so the result is bitwise identical to the equivalent
    !! raw call.
    !!
-   subroutine linalg_gemm_mat(this, a, b, c, transa, transb, alpha, beta)
+   subroutine linalg_gemm_matrix(this, a, b, c, transa, transb, alpha, beta)
       class(trc_linalg_t), intent(in) :: this
       real(dp), intent(in), contiguous :: a(:, :), b(:, :)
       real(dp), intent(inout), contiguous :: c(:, :)
@@ -648,7 +648,7 @@ contains
       ldb = size(b, 1)
       ldc = size(c, 1)
       call this%gemm(ta, tb, m, n, k, al, a, lda, b, ldb, be, c, ldc)
-   end subroutine linalg_gemm_mat
+   end subroutine linalg_gemm_matrix
 
    !!
    !! x . y over the whole of two same-shaped, contiguous rank-2 arrays,
@@ -686,7 +686,7 @@ contains
    !! the raw call -- a segfault. Pass a whole matrix or a contiguous
    !! section.
    !!
-   subroutine linalg_syev_mat(this, a, w, info)
+   subroutine linalg_syev_matrix(this, a, w, info)
       class(trc_linalg_t), intent(inout) :: this
       real(dp), intent(inout), contiguous :: a(:, :)
       real(dp), intent(out), contiguous :: w(:)
@@ -694,7 +694,7 @@ contains
       integer :: n
       n = size(a, 1)
       call this%linalg_syev_raw(n, a, n, w, info)
-   end subroutine linalg_syev_mat
+   end subroutine linalg_syev_matrix
 
    !!
    !! The density matrix built from the occupied columns of C: D = occ *
@@ -734,7 +734,7 @@ contains
    ! the SAD guess's first non-DF Fock build (SAD always needs this class --
    ! cc-pVDZ oxygen's own d shell against itself -- regardless of `--df`).
    ! Nothing after the guess launches that four-centre path under `--df`
-   ! (build_g never calls `eri%fock_resident` there), so MOST of the
+   ! (scf_fock_build_g never calls `eri%fock_resident` there), so MOST of the
    ! reservation -- everything above what the DF path's own largest kernel
    ! still needs, see `SMALL_STACK` below -- is pure waste for the rest of
    ! a `--df` run. `cudaDeviceSetLimit` on `cudaLimitStackSize` shrinks it

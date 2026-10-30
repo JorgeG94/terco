@@ -121,7 +121,7 @@ module trc_vv10
    use trc_constants, only: PI
    use trc_api, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
-   use trc_collocation, only: shell_collocate, NCART_MAX
+   use trc_collocation, only: collocation_shell, NCART_MAX
    use trc_linalg, only: trc_linalg_t
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    implicit none
@@ -252,7 +252,7 @@ contains
 
       real(dp), allocatable :: rho(:), grho(:, :), sigma(:), vrho(:), vsigma(:), eg(:)
       real(dp), allocatable :: gx(:), gy(:), gz(:), gkp(:), gw0p(:), grpw(:)
-      real(dp), allocatable :: buf(:)
+      real(dp), allocatable :: buffer(:)
       integer, allocatable :: gidx(:)
       real(dp) :: kvv, beta
       integer :: npass, g, rank, nranks, i0, i1
@@ -356,19 +356,19 @@ contains
       !$acc end data
 
       if (split) then
-         allocate (buf(3*npts))
-         buf(1:npts) = vrho
-         buf(npts + 1:2*npts) = vsigma
-         buf(2*npts + 1:3*npts) = eg
-         call allreduce(comm, buf, op=MPI_SUM)
+         allocate (buffer(3*npts))
+         buffer(1:npts) = vrho
+         buffer(npts + 1:2*npts) = vsigma
+         buffer(2*npts + 1:3*npts) = eg
+         call allreduce(comm, buffer, op=MPI_SUM)
          ! Then rank 0's copy everywhere: an allreduce does not promise the
          ! same bits on every rank, same reason trc_xc.F90's sum_ranks
          ! bcasts after its own allreduce.
-         call bcast(comm, buf, 3*npts, 0)
-         vrho = buf(1:npts)
-         vsigma = buf(npts + 1:2*npts)
-         eg = buf(2*npts + 1:3*npts)
-         deallocate (buf)
+         call bcast(comm, buffer, 3*npts, 0)
+         vrho = buffer(1:npts)
+         vsigma = buffer(npts + 1:2*npts)
+         eg = buffer(2*npts + 1:3*npts)
+         deallocate (buffer)
       end if
 
       e_nlc = sum(eg)
@@ -516,7 +516,7 @@ contains
    ! trc_xc.F90's xc_collocate (see its own header) with no nspin/padding
    ! difference -- VV10 always runs on one density, so this is that
    ! kernel's shape kept independent rather than imported, the same
-   ! module-boundary choice this file's header explains for shell_collocate.
+   ! module-boundary choice this file's header explains for collocation_shell.
    !
    subroutine vv10_tile_collocate(nwork, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
                                   b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, nchi, chi, gchi)
@@ -562,7 +562,7 @@ contains
       d(1) = r(1, gg) - sh_r(1, ish)
       d(2) = r(2, gg) - sh_r(2, ish)
       d(3) = r(3, gg) - sh_r(3, ish)
-      call shell_collocate(l, sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs)
+      call collocation_shell(l, sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs)
       nc = (l + 1)*(l + 2)/2
       ld = npp(ib)
       off = c_off(ib) + gl + 1
@@ -966,7 +966,7 @@ contains
    ! Z tile: one thread per point, writing Z_gu for every local function u
    ! of its batch -- the same Z_u trc_xc's kernel 3 forms for nspin = 1,
    ! just against chi/gchi read from the tile instead of a fresh
-   ! `shell_collocate`.
+   ! `collocation_shell`.
    !
    subroutine vv10_tile_z(np, p0, npts, batch_of, b_off, c_off, npp, b_aooff, nbatch, w, vrho, vsigma, grho, &
                           nchi, chi, gchi, zt)
@@ -1106,7 +1106,7 @@ contains
    end subroutine vv10_pair_batch
 
    ! Insertion sort of `ord` by (npp, nlp) ascending -- trc_xc's
-   ! `sort_by_shape`; a chunk's worth of batches, a few hundred at most.
+   ! `xc_sort_by_shape`; a chunk's worth of batches, a few hundred at most.
    subroutine vv10_sort_by_shape(n, npp, nlp, ord)
       integer, intent(in) :: n
       integer, intent(in) :: npp(:), nlp(:)

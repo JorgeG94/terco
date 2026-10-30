@@ -26,9 +26,9 @@
 program check_pcm_cavity
    use pic_types, only: dp
    use trc_error, only: error_t
-   use trc_pcm, only: trc_pcm_t, pcm_surface_t, build_pcm_surface, pcm_sd_matrices, &
+   use trc_pcm, only: trc_pcm_t, pcm_surface_t, pcm_build_surface, pcm_sd_matrices, &
                       pcm_switch_h, pcm_model_from_name, PCM_MODEL_CPCM, PCM_MODEL_IEFPCM
-   use trc_pcm_radii, only: pcm_cavity_radius
+   use trc_pcm_radii, only: pcm_radii_cavity_radius
    use trc_test_basis, only: read_xyz
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, &
                            ref_read_vector, ref_read_matrix, ref_report
@@ -72,15 +72,15 @@ contains
 
       ! An isolated sphere keeps every point; its weights sum to one and
       ! nothing is switched, so the area is the sphere's to roundoff.
-      call build_pcm_surface([8], ORIGIN, 110, 1.2_dp, surf, err)
-      call pcm_cavity_radius(8, 1.2_dp, radius, err)
+      call pcm_build_surface([8], ORIGIN, 110, 1.2_dp, surf, err)
+      call pcm_radii_cavity_radius(8, 1.2_dp, radius, err)
       call ref_report(nfail, .not. err%has_error() .and. surf%n_points == 110, &
                       'isolated sphere keeps all 110 points', real(110 - surf%n_points, dp))
       e = abs(sum(surf%area) - 4.0_dp*PI*radius**2)
       call ref_report(nfail, e < 1.0e-10_dp, 'isolated sphere area = 4 pi R^2', e)
 
       ! Two oxygens a bond apart lose the points between them.
-      call build_pcm_surface([8, 8], reshape([0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 2.3_dp], [3, 2]), &
+      call pcm_build_surface([8, 8], reshape([0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 2.3_dp], [3, 2]), &
                              110, 1.2_dp, surf, err)
       call ref_report(nfail, .not. err%has_error() .and. surf%n_points < 220 .and. &
                       surf%n_points + surf%n_discarded == 220 .and. &
@@ -107,7 +107,7 @@ contains
       real(dp), allocatable :: v(:), q(:)
       integer :: k
       call ctx%init(model, EPS_WATER, err)
-      call build_pcm_surface([8], ORIGIN, 302, 1.2_dp, ctx%surface, err)
+      call pcm_build_surface([8], ORIGIN, 302, 1.2_dp, ctx%surface, err)
       call ctx%build_operators(err)
       if (err%has_error()) then
          print '(a)', 'check_pcm_cavity: '//err%get_message(); stop 1
@@ -132,9 +132,9 @@ contains
       type(error_t) :: e1, e2, e3, e4, e5
       call ctx%init(pcm_model_from_name('cosmo'), EPS_WATER, e1)
       call ctx%init(PCM_MODEL_CPCM, 1.0_dp, e2)
-      call build_pcm_surface([8], ORIGIN, 74, 1.2_dp, surf, e3)
-      call build_pcm_surface([26], ORIGIN, 302, 1.2_dp, surf, e4)
-      call build_pcm_surface([8], ORIGIN, 303, 1.2_dp, surf, e5)
+      call pcm_build_surface([8], ORIGIN, 74, 1.2_dp, surf, e3)
+      call pcm_build_surface([26], ORIGIN, 302, 1.2_dp, surf, e4)
+      call pcm_build_surface([8], ORIGIN, 303, 1.2_dp, surf, e5)
       call ref_report(nfail, e1%has_error(), "refuses 'cosmo' (a model this does not solve)", 0.0_dp)
       call ref_report(nfail, e2%has_error(), 'refuses eps = 1', 0.0_dp)
       call ref_report(nfail, e3%has_error(), 'refuses Lebedev 74 (no fitted exponent)', 0.0_dp)
@@ -195,7 +195,7 @@ contains
       call ref_require('pcm_cavity_water.ref', u)
 
       ! --- 302 points per sphere: the cavity itself ---
-      call build_pcm_surface(zat, rat, 302, 1.2_dp, surf, err)
+      call pcm_build_surface(zat, rat, 302, 1.2_dp, surf, err)
       if (err%has_error()) then
          print '(a)', 'check_pcm_cavity: '//err%get_message(); stop 1
       end if
@@ -244,7 +244,7 @@ contains
       allocate (v(n), q(n))
       do model = PCM_MODEL_CPCM, PCM_MODEL_IEFPCM
          call ctx%init(model, EPS_WATER, err)
-         call build_pcm_surface(zat, rat, 302, 1.2_dp, ctx%surface, err)
+         call pcm_build_surface(zat, rat, 302, 1.2_dp, ctx%surface, err)
          call ctx%build_operators(err)
          if (err%has_error()) then
             print '(a)', 'check_pcm_cavity: '//err%get_message(); stop 1
@@ -275,7 +275,7 @@ contains
       deallocate (rc, rv, perm)
 
       ! --- 110 points per sphere: S and D element by element ---
-      call build_pcm_surface(zat, rat, 110, 1.2_dp, surf, err)
+      call pcm_build_surface(zat, rat, 110, 1.2_dp, surf, err)
       call ref_read_int(u, 'NPTS110', n110)
       call ref_report(nfail, n110 == surf%n_points, 'water, 110/sphere: point count vs pyscf', &
                       real(n110 - surf%n_points, dp))

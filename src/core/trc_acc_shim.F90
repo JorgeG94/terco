@@ -43,13 +43,17 @@ module trc_acc_shim
    use, intrinsic :: iso_c_binding, only: c_associated, c_ptr
    implicit none
    private
-   public :: acc_register_library
+   public :: acc_shim_register_library
 
 contains
 
-   subroutine acc_register_library(reg, unreg, lookup) &
+   subroutine acc_shim_register_library(reg, unreg, lookup) &
       bind(c, name="acc_register_library")
       !! The OpenACC profiling registration hook, deliberately doing nothing.
+      !! The Fortran name is `acc_shim_register_library`; the exported C
+      !! symbol stays `acc_register_library` -- that exact name is mandated
+      !! by the OpenACC profiling interface (see the module header), not
+      !! ours to choose.
       !!
       !! The three arguments are the register, unregister and lookup callbacks
       !! the OpenACC profiling interface passes; they are taken by value as
@@ -59,6 +63,6 @@ contains
       ! keeping the body genuinely empty.
       if (c_associated(reg) .and. c_associated(unreg) &
           .and. c_associated(lookup)) return
-   end subroutine acc_register_library
+   end subroutine acc_shim_register_library
 
 end module trc_acc_shim

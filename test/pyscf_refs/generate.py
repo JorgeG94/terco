@@ -1746,7 +1746,7 @@ def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3, grid_response=Fal
     the honest description of what this checks.
 
     'wb97x' is a range-separated hybrid (trc_xc_functional_t's nonzero
-    omega/exx_lr): src/xc/trc_xc_grad.F90's xc_gradient_add computes only
+    omega/exx_lr): src/xc/trc_xc_grad.F90's xc_grad_add computes only
     this functional's SEMILOCAL (GGA) term -- the erf(omega r)/r
     long-range exchange is trc_scf_grad.F90's own eri%gradient second
     pass, grid-independent -- so pyscf's full HYB_GGA_XC_WB97X analytic

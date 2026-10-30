@@ -89,7 +89,7 @@ contains
          print '(a)', 'check_full_grad_vs_pyscf: '//trim(name)//': reference shape does not match this build'
          any_fail = .true.; return
       end if
-      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iter = 200
+      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iteration = 200
       if (nspin == 2) then
          allocate (dm0(nao, nao, 2))
          call ref_read_matrix3(u, 'DM0_'//trim(name), nao, nao, 2, dm0)

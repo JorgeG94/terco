@@ -56,7 +56,7 @@ module trc_constants
    real(dp), parameter :: BOHR_TO_ANGSTROM = 0.529177210903_dp
       !! CODATA 2018 Bohr radius, in Angstrom.
    real(dp), parameter :: ANGSTROM_TO_BOHR = 1.0_dp/BOHR_TO_ANGSTROM
-      !! Derived; app/terco_app.F90's BOHR_PER_ANGSTROM.
+      !! Derived; app/trc_app.F90's BOHR_PER_ANGSTROM.
    real(dp), parameter :: HARTREE_TO_EV = 27.211386245988_dp
       !! CODATA 2018 Hartree energy, in eV.
    real(dp), parameter :: HARTREE_TO_J = 4.3597447222071e-18_dp

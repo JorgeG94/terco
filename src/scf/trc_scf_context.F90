@@ -21,7 +21,7 @@ module trc_scf_context
    use trc_sph, only: sph_cart_to_sph
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
    use trc_error, only: error_t, ERROR_GENERIC
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid, build_dft_grid_block
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build, dft_grid_build_block
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_linalg, only: trc_linalg_t
    use trc_pcm, only: trc_pcm_t, pcm_model_from_name
@@ -30,7 +30,7 @@ module trc_scf_context
    implicit none
    private
 
-   public :: scf_ctx_t, bcast_flat, trc_grid_cache_t, trc_pair_eri_cache_t, project_density
+   public :: scf_ctx_t, scf_context_bcast_flat, trc_grid_cache_t, trc_pair_eri_cache_t, scf_context_project_density
    public :: scf_context_orthogonalize   !! the overlap pseudo-inverse builder, also trc_minao's own cross-basis projection
    integer, parameter, public :: NSETUP = 6
    !! setup's steps: pair list, 1e integrals, spherical fold, ERI engine,
@@ -68,8 +68,8 @@ module trc_scf_context
       !! left to learn from rebuilding a pair list and a Schwarz screen the
       !! SCF already paid for at this geometry. `thresh_built` is what a
       !! reuser must match EXACTLY (bit for bit -- both sides read it from
-      !! the same `eri_thresh_env` call) before trusting `pl`/`eri` at all;
-      !! `has_eri` is false under `--df`, where `scf_ctx_setup` never calls
+      !! the same `scf_settings_eri_thresh_env` call) before trusting `pl`/`eri` at all;
+      !! `has_eri` is false under `--df`, where `scf_context_setup` never calls
       !! `eri%build` (trc_scf_df's own J/K, not the four-centre engine).
       !!
       !! FINGERPRINT. `thresh_built` is the only gate a C API caller ever
@@ -81,7 +81,7 @@ module trc_scf_context
       !! get a gradient from stale pair data, or out-of-bounds indexing if
       !! `nshell` changed. `nshell_built`/`natm_built`/`at_r_built` are
       !! that caller's own safety net: set once, at build time
-      !! (`scf_ctx_setup`), and checked by `matches` before ANY reuse,
+      !! (`scf_context_setup`), and checked by `matches` before ANY reuse,
       !! Fortran or C API alike. `batch_res_built` is the quartet-bin
       !! batching the engine was actually built with (`trc_scf_settings`'s
       !! own `opts%batch_res`) -- `trc_scf_gradient`'s OWN fresh build
@@ -139,27 +139,27 @@ module trc_scf_context
       real(dp) :: t_setup = 0.0_dp, t_grid = 0.0_dp, t_pcm_setup = 0.0_dp
       logical :: released = .false.
    contains
-      procedure :: setup => scf_ctx_setup
-      procedure :: release => scf_ctx_release
+      procedure :: setup => scf_context_setup
+      procedure :: release => scf_context_release
    end type scf_ctx_t
 
 contains
 
-   subroutine scf_ctx_setup(this, b, opts, cfg, err, comm, la, dfjk, grid_cache, pair_eri_cache)
+   subroutine scf_context_setup(this, b, opts, config, err, comm, la, dfjk, grid_cache, pair_eri_cache)
       class(scf_ctx_t), intent(inout), target :: this
       !! TARGET: `this%lp` may end up pointing at `this%la_own`, and that
       !! association must survive the return into `trc_scf_run`, which
       !! requires the actual argument (its own `ctx`) to carry TARGET too.
       type(trc_basis_t), intent(in) :: b
       type(trc_scf_options_t), intent(in) :: opts
-      type(scf_settings_t), intent(in) :: cfg
+      type(scf_settings_t), intent(in) :: config
       type(error_t), intent(out) :: err
       type(comm_t), intent(in), optional :: comm
       type(trc_linalg_t), intent(inout), optional, target :: la
       type(df_jk_t), intent(inout), optional, target :: dfjk
       !! Already fitted by the caller (see `scf_ctx_t%dfj`'s own comment);
-      !! required when `cfg%df` is true, checked here rather than left for
-      !! `build_g` to find out at the first Fock build.
+      !! required when `config%df` is true, checked here rather than left for
+      !! `scf_fock_build_g` to find out at the first Fock build.
       type(trc_grid_cache_t), intent(inout), optional, target :: grid_cache
       !! A caller-owned grid cache (trc_capi.F90's context handle) that
       !! this run builds the DFT grid DIRECTLY INTO -- not into a local
@@ -187,7 +187,7 @@ contains
       ! Before anything is allocated or uploaded: a shell above this build's
       ! four-centre kernels has no kernel, and its integrals would come out
       ! as NaN. A --df run checks its own ceiling in df_jk_t%setup.
-      if (.not. cfg%df) then
+      if (.not. config%df) then
          refusal = eri_lmax_refusal(b)
          if (len(refusal) > 0) then
             call err%set(ERROR_GENERIC, "trc_scf: "//refusal)
@@ -217,7 +217,7 @@ contains
       else
          this%pec => this%pec_own
       end if
-      if (cfg%df) then
+      if (config%df) then
          if (.not. present(dfjk)) then
             call err%set(ERROR_GENERIC, "trc_scf: --df needs a density-fitted object already set up "// &
                          "(trc_set_df/trc_set_jkfit_json)")
@@ -234,9 +234,9 @@ contains
       ! --- once per geometry, on the host ------------------------------------
       call tphase%start()
       call tm%start()
-      call this%pec%pl%build(b, cfg%eri_thresh_run)
+      call this%pec%pl%build(b, config%eri_thresh_run)
       call this%pec%pl%to_device()
-      this%pec%thresh_built = cfg%eri_thresh_run
+      this%pec%thresh_built = config%eri_thresh_run
       this%pec%built = .true.
       this%pec%has_eri = .false.
       ! The fingerprint a Fortran caller's reuse is checked against --
@@ -270,19 +270,19 @@ contains
       end block
       this%ts(3) = tm%get_elapsed_time()
       call tm%start()
-      ! Under --df, build_g never calls eri%fock_resident at all (the
+      ! Under --df, scf_fock_build_g never calls eri%fock_resident at all (the
       ! four-centre engine is not called for G, by design -- see
       ! trc_scf_df.F90's own header) -- so its setup (pair-quartet bins,
       ! Schwarz bounds, the device-resident work lists) is pure device
-      ! memory this run has no use for. `eri%release` and build_g's own
+      ! memory this run has no use for. `eri%release` and scf_fock_build_g's own
       ! `ctx%eri` argument are both safe either way: release() guards
-      ! every deallocation on `allocated`/`on_device`, and build_g reads
+      ! every deallocation on `allocated`/`on_device`, and scf_fock_build_g reads
       ! nothing off `eri` before checking `df_on`.
-      if (.not. cfg%df) then
+      if (.not. config%df) then
          this%pec%has_eri = .true.
          this%pec%batch_res_built = opts%batch_res
          if (present(comm)) then
-            call this%pec%eri%build(b, cfg%eri_thresh_run, comm, batch_res=opts%batch_res)
+            call this%pec%eri%build(b, config%eri_thresh_run, comm, batch_res=opts%batch_res)
             ! Not when `comm` is a real split (nranks > 1): each rank then
             ! holds only ITS share of the quartets, which is not what a
             ! reuser (a single-rank gradient right after, trc_capi.F90's
@@ -292,12 +292,12 @@ contains
             ! short-circuit, hence the nested `if` rather than one
             ! expression that would call `comm%size()` even when absent.
             ! Marked unusable for a reuser, NOT released: this SCF's own
-            ! Fock builds (build_g -> fock_resident) read `pec%eri` every
+            ! Fock builds (scf_fock_build_g -> fock_resident) read `pec%eri` every
             ! iteration, and on deallocated bins they segfault on the host,
             ! which nvfortran's handler turns into a silent spin.
             if (comm%size() > 1) this%pec%has_eri = .false.
          else
-            call this%pec%eri%build(b, cfg%eri_thresh_run, batch_res=opts%batch_res)
+            call this%pec%eri%build(b, config%eri_thresh_run, batch_res=opts%batch_res)
          end if
       end if
       this%e_nuc = nuclear_repulsion(b)
@@ -311,7 +311,7 @@ contains
          call this%release()
          return
       end if
-      if (cfg%talk .and. this%n_lindep > 0) then
+      if (config%talk .and. this%n_lindep > 0) then
          block
             character(len=1024) :: logline
             write (logline, "(a,i0,a,es9.2,a)") &
@@ -324,7 +324,7 @@ contains
       this%t_setup = tphase%get_elapsed_time()
 
       ! --- the continuum: cavity, K and the nuclear potential, once -------
-      if (cfg%pcm_on) then
+      if (config%pcm_on) then
          call tphase%start()
          call this%pcm%init(pcm_model_from_name(opts%pcm_model), opts%pcm_eps, err, la=this%lp)
          if (allocated(opts%pcm_radii_override)) then
@@ -338,7 +338,7 @@ contains
             return
          end if
          this%t_pcm_setup = tphase%get_elapsed_time()
-         if (cfg%talk) then
+         if (config%talk) then
             block
                character(len=1024) :: logline
                write (logline, "(a,a,a,f0.4,a,i0,a,i0,a,f0.3,a)") "   pcm: ", trim(opts%pcm_model), &
@@ -349,17 +349,17 @@ contains
          end if
       end if
 
-      if (cfg%dft) then
+      if (config%dft) then
          call tphase%start()
          call profiler_start("scf: grid", nvtx_only=.true.)
          ! The partition is split over the ranks; the summed cell weights are
          ! then rank 0's everywhere, as every reduced quantity is.
          if (present(comm)) then
-            call build_dft_grid_block(b%at_r, b%at_elem, this%gc%grid, err, comm%rank(), comm%size(), &
+            call dft_grid_build_block(b%at_r, b%at_elem, this%gc%grid, err, comm%rank(), comm%size(), &
                                       level=opts%grid_level, &
                                       t_points=this%t_grid_sub(1), t_partition=this%t_grid_sub(2))
          else
-            call build_dft_grid(b%at_r, b%at_elem, this%gc%grid, err, level=opts%grid_level, &
+            call dft_grid_build(b%at_r, b%at_elem, this%gc%grid, err, level=opts%grid_level, &
                                 t_points=this%t_grid_sub(1), t_partition=this%t_grid_sub(2))
          end if
          if (err%has_error()) then
@@ -378,8 +378,8 @@ contains
          call this%gc%xg%to_device()
          this%t_grid_sub(4) = tm%get_elapsed_time()
          this%gc%grid_built = .true.
-         if (cfg%nlc) then
-            call build_dft_grid(b%at_r, b%at_elem, this%gc%grid_nlc, err, level=opts%nlc_grid_level)
+         if (config%nlc) then
+            call dft_grid_build(b%at_r, b%at_elem, this%gc%grid_nlc, err, level=opts%nlc_grid_level)
             if (err%has_error()) then
                call profiler_stop("scf: grid")
                call this%release()
@@ -394,9 +394,9 @@ contains
          call profiler_stop("scf: grid")
          this%t_grid = tphase%get_elapsed_time()
       end if
-   end subroutine scf_ctx_setup
+   end subroutine scf_context_setup
 
-   subroutine scf_ctx_release(this)
+   subroutine scf_context_release(this)
       !! Idempotent: every early return in `setup` calls this once, and
       !! `trc_scf_run` calls it again at the end of a successful run, so a
       !! second call -- or a call on a context that never finished `setup`
@@ -410,15 +410,15 @@ contains
       ! an OWNED cache (`this%pec_own`, the default) is released here.
       if (this%owns_pec) call this%pec%release()
       ! A caller-owned cache (grid_cache present at `setup`) outlives this
-      ! context on purpose -- see `scf_ctx_setup`'s own header on
+      ! context on purpose -- see `scf_context_setup`'s own header on
       ! `grid_cache` -- so only an OWNED cache (`this%gc_own`, the default)
       ! is released here.
       if (this%owns_grid) call this%gc%release()
       this%released = .true.
-   end subroutine scf_ctx_release
+   end subroutine scf_context_release
 
    subroutine grid_cache_release(this)
-      !! Idempotent, same reason as `scf_ctx_release`'s own: a cache that
+      !! Idempotent, same reason as `scf_context_release`'s own: a cache that
       !! was never built (no DFT run reached it, or it has already been
       !! released) costs nothing to release again.
       class(trc_grid_cache_t), intent(inout) :: this
@@ -435,7 +435,7 @@ contains
    end subroutine grid_cache_release
 
    subroutine pair_eri_cache_release(this)
-      !! Idempotent, same reason as `scf_ctx_release`'s own: `pl%release`/
+      !! Idempotent, same reason as `scf_context_release`'s own: `pl%release`/
       !! `eri%release` already guard every deallocation on `allocated`/
       !! `on_device` (that module's own invariant), so releasing a cache
       !! that was never built, or has already been released, costs nothing.
@@ -457,7 +457,7 @@ contains
       !! trusting `pl`/`eri`: the build threshold EXACTLY (bit for bit, see
       !! `thresh_built`'s own comment above) and the geometry/basis
       !! fingerprint (`nshell`, `natm`, the atom centres) unchanged since
-      !! `scf_ctx_setup` built it. A cache that was never built, or has
+      !! `scf_context_setup` built it. A cache that was never built, or has
       !! since been released, fails on `built` alone.
       class(trc_pair_eri_cache_t), intent(in) :: this
       type(trc_basis_t), intent(in) :: b
@@ -490,7 +490,7 @@ contains
    ! diagonalisation not converging, or -- when the caller left
    ! lindep_thresh at 0, so canonical orthogonalisation never engages --
    ! a non-positive eigenvalue): a malformed overlap must come back as a
-   ! clean SCF failure, the same way `scf_ctx_setup`'s other refusals
+   ! clean SCF failure, the same way `scf_context_setup`'s other refusals
    ! (the LMAX ceiling, a missing --df fit) already do, not take the
    ! whole process down. Structured so every path still reaches the
    ! matching `!$acc end data` -- `return`ing out of an OpenACC `data`
@@ -571,7 +571,7 @@ contains
       call bcast(comm, g, n, 0)
    end subroutine sum_flat
 
-   subroutine project_density(lp, nao, nspin, nocc, cmo_old, s_new, dmat)
+   subroutine scf_context_project_density(lp, nao, nspin, nocc, cmo_old, s_new, dmat)
       !! A warm-start density at a NEW geometry (same molecule/basis, so
       !! `nao` is unchanged) from a PREVIOUS geometry's converged occupied
       !! orbitals, re-orthonormalised in the new overlap `s_new`: for each
@@ -638,15 +638,15 @@ contains
          dmat(:, :, s) = occ_s*matmul(cproj, transpose(cproj))
          deallocate (cocc, m, x, cproj)
       end do
-   end subroutine project_density
+   end subroutine scf_context_project_density
 
    ! Broadcast rank 0's copy of a contiguous array of any rank. Public: the
    ! iteration loop (trc_scf_driver) broadcasts the density, orbitals and
    ! orbital energies the same way `setup` broadcasts the grid weights.
-   subroutine bcast_flat(comm, g, n)
+   subroutine scf_context_bcast_flat(comm, g, n)
       type(comm_t), intent(in) :: comm
       integer, intent(in) :: n
       real(dp), intent(inout) :: g(n)
       call bcast(comm, g, n, 0)
-   end subroutine bcast_flat
+   end subroutine scf_context_bcast_flat
 end module trc_scf_context

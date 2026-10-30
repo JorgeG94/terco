@@ -53,7 +53,7 @@ module trc_tables
    integer, parameter, public :: LPAIR = 2*LMAX
    integer, parameter, public :: NHERM_PAIR = (LPAIR + 1)*(LPAIR + 2)*(LPAIR + 3)/6
 
-   public :: nherm, tables_init, herm_index
+   public :: tables_nherm, tables_init, tables_herm_index
 
    integer,  public :: hidx(0:LTOT, 0:LTOT, 0:LTOT)  !! (t,u,v) -> flat, 0 if degree > LTOT
    integer,  public :: hdir(NHERM_MAX)               !! 1/2/3 = which of x,y,z was decremented
@@ -76,16 +76,16 @@ module trc_tables
 
 contains
 
-   pure integer function nherm(l) result(res)
+   pure integer function tables_nherm(l) result(res)
       integer, intent(in) :: l
       res = (l + 1)*(l + 2)*(l + 3)/6
-   end function nherm
+   end function tables_nherm
 
-   pure integer function herm_index(t, u, v) result(res)
+   pure integer function tables_herm_index(t, u, v) result(res)
       !$acc routine seq
       integer, intent(in) :: t, u, v
       res = hidx(t, u, v)
-   end function herm_index
+   end function tables_herm_index
 
    !
    ! Build the tables and push them to the device.  Call once, before any

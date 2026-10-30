@@ -1,10 +1,10 @@
 !
 ! The CLI's own ASCII-lowercasing of its string options (--func, --guess,
-! ...), through the installed `terco` binary. app/main.F90's terco_run
+! ...), through the installed `terco` binary. app/main.F90's trc_run
 ! module normalises these with a small, non-elemental, allocatable-result
 ! helper (to_lower_alloc) INSTEAD of pic's own to_lower (pic_ascii.f90,
 ! `pure elemental`, automatic-length result): nvfortran 26.5 and 26.9,
-! `terco_main`'s real `-fast -O3` flags, host and GPU builds alike,
+! `trc_main`'s real `-fast -O3` flags, host and GPU builds alike,
 ! miscompile pic's to_lower at these call sites -- the result comes back
 ! the right LENGTH but BLANK (all-space) content, so `--func PBE` silently
 ! ran a plain SCF with no exchange-correlation term, and `--guess SAD`

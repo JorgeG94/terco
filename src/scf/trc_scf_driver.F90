@@ -51,7 +51,7 @@
 !
 ! The XC integrator gets `d_c`, the Cartesian density rebuilt from `res%dmat`
 ! each iteration, not spherical AO values on the grid: the transform is shared
-! with the Coulomb/exchange build, and `shell_collocate` evaluates Cartesian
+! with the Coulomb/exchange build, and `collocation_shell` evaluates Cartesian
 ! components straight off a flat table, so a second AO space there would
 ! duplicate trc_sph.F90's block structure.
 !
@@ -77,7 +77,7 @@
 ! linear-algebra handles, the orthogonaliser, and -- when asked for -- the
 ! PCM cavity and the DFT grid); `trc_scf_state` owns the per-iteration arrays
 ! (`scf_state_t`, "scf_state") and the one enter/exit pair that puts them, `scf_context`'s
-! own matrices and `scf_result` on the device together. `build_g`/`assemble_fock`
+! own matrices and `scf_result` on the device together. `scf_fock_build_g`/`scf_fock_assemble`
 ! and the DIIS push/combine helpers below stay in THIS file for now (they
 ! are not yet split into `trc_scf_fock`/`trc_scf_diis`): every one of them
 ! already takes its arrays as explicit-shape dummies rather than touching
@@ -90,12 +90,12 @@ module trc_scf_driver
    use trc_error, only: error_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_energies_t
-   use trc_scf_context, only: scf_ctx_t, bcast_flat, trc_grid_cache_t, trc_pair_eri_cache_t, project_density
+   use trc_scf_context, only: scf_ctx_t, scf_context_bcast_flat, trc_grid_cache_t, trc_pair_eri_cache_t, scf_context_project_density
    use trc_scf_state, only: scf_state_t, scf_timers_t
-   use trc_scf_fock, only: build_g, build_vxc, build_pcm, scf_energy, assemble_fock, &
-                           commutator_error, to_cart, to_sph
+   use trc_scf_fock, only: scf_fock_build_g, scf_fock_build_vxc, scf_fock_build_pcm, scf_fock_energy, scf_fock_assemble, &
+                           scf_fock_commutator_error, scf_fock_to_cart, scf_fock_to_sph
    use trc_scf_df, only: df_jk_t
-   use trc_scf_diis, only: cdiis_t, adiis_t, level_shift, damp
+   use trc_scf_diis, only: cdiis_t, adiis_t, scf_diis_level_shift, scf_diis_damp
    use pic_types, only: default_int
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
@@ -161,7 +161,7 @@ contains
       !! A PREVIOUS geometry's converged orbitals (SAME molecule/basis, so
       !! the same nao), re-orthonormalised into a guess density at THIS
       !! geometry's own overlap once `scf_context%setup` below has built
-      !! it (`trc_scf_context%project_density`) -- trc_capi.F90's
+      !! it (`trc_scf_context%scf_context_project_density`) -- trc_capi.F90's
       !! TRC_GUESS_PROJECTED, lowest priority of the three guess-density
       !! arguments (checked after `dguess` and `hguess`, same as every
       !! other guess kind the plain `scf_options%guess` string selects).
@@ -230,7 +230,7 @@ contains
       type(error_t) :: err
       type(scf_energies_t) :: scf_energies
       !! Every energy and integrated electron count the loop produces; all zero
-      !! until the first iteration, so a run with max_iter=0 still reports zeros.
+      !! until the first iteration, so a run with max_iteration=0 still reports zeros.
       logical :: diis_on
       real(dp) :: ctl(2)
       real(dp) :: eold, drms, errmax
@@ -317,7 +317,7 @@ contains
             if (info_s /= 0) diag_failed = .true.
          end do
       else if (present(cmo_project)) then
-         call project_density(linalg_provider, nao, scf_config%nspin, scf_config%nocc, cmo_project, &
+         call scf_context_project_density(linalg_provider, nao, scf_config%nspin, scf_config%nocc, cmo_project, &
                               scf_context%smat, scf_result%dmat)
       else if (scf_options%guess == "core") then
          do s = 1, scf_config%nspin
@@ -386,7 +386,7 @@ contains
                //"   fock(s) linalg(s)")
          end if
       end if
-      do it = 1, scf_options%max_iter
+      do it = 1, scf_options%max_iteration
          call scf_timers%fock%start()
          incr_now = .false.
          ! --- D_cart := T D_sph T^T, the one transform every Cartesian
@@ -395,30 +395,31 @@ contains
          ! header on why that keeps the Cartesian path byte-for-byte
          ! unchanged rather than merely numerically equivalent.
          do s = 1, scf_config%nspin
-            call to_cart(scf_basis, sph, nao, nao_c, scf_result%dmat(:, :, s), scf_state%d_c(:, :, s))
+            call scf_fock_to_cart(scf_basis, sph, nao, nao_c, scf_result%dmat(:, :, s), scf_state%d_c(:, :, s))
          end do
          ! --- two-electron part, resident, entirely in Cartesian space -------
          !
          ! INCREMENTAL. G(D) = G(D_ref) + G(D - D_ref), exactly, because G is
          ! linear in D. The point is the screening: the kernel screens on the
          ! density it is handed, and the difference is small and getting
-         ! smaller while the density is neither. See `build_g`'s own header.
+         ! smaller while the density is neither. See `scf_fock_build_g`'s own header.
          !
          incr_now = scf_config%incr_on .and. it > 1 &
                     .and. errmax < scf_config%incr_start_run &
                     .and. mod(it - 1, max(1, scf_config%incr_reset_run)) /= 0
-         call build_g(scf_basis, scf_context, scf_config, scf_state, incr_now)
+         call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incr_now)
          ! --- G_sph := T^T G_cart T, back up to the space the rest of the
          ! iteration runs in.
          do s = 1, scf_config%nspin
-            call to_sph(scf_basis, sph, nao, nao_c, scf_state%gmat_c(:, :, s), scf_state%gmat(:, :, s))
+            call scf_fock_to_sph(scf_basis, sph, nao, nao_c, scf_state%gmat_c(:, :, s), scf_state%gmat(:, :, s))
          end do
          scf_timers%tf_it = scf_timers%fock%get_elapsed_time()
          scf_timers%t_fock = scf_timers%t_fock + scf_timers%tf_it
          call scf_timers%xc%start()
          ! --- exchange-correlation: finds its (Cartesian) density present ----
          if (scf_config%dft) then
-            call build_vxc(scf_basis, scf_context, scf_config, scf_state, scf_options%rho_tol, scf_energies, scf_timers, comm)
+            call scf_fock_build_vxc(scf_basis, scf_context, scf_config, scf_state, scf_options%rho_tol, &
+                                    scf_energies, scf_timers, comm)
          end if
          scf_timers%tx_it = scf_timers%xc%get_elapsed_time()
          scf_timers%t_xc = scf_timers%t_xc + scf_timers%tx_it
@@ -427,16 +428,16 @@ contains
          ! too: one set of charges, one operator added to both spins) -----
          if (scf_config%pcm_on) then
             call scf_timers%pcm%start()
-            call build_pcm(scf_basis, scf_context, scf_config, scf_state, scf_energies, comm)
+            call scf_fock_build_pcm(scf_basis, scf_context, scf_config, scf_state, scf_energies, comm)
             scf_timers%t_pcm = scf_timers%t_pcm + scf_timers%pcm%get_elapsed_time()
             ! the PCM step is its own column, not part of the rest
             call scf_timers%rest%start()
          end if
          ! --- energy at this density -----------------------------------------
-         call scf_energy(scf_context, scf_config, scf_state, scf_result, scf_energies)
+         call scf_fock_energy(scf_context, scf_config, scf_state, scf_result, scf_energies)
          ! --- Fock and its commutator, per spin ------------------------------
-         call assemble_fock(scf_context, scf_config, scf_state)
-         call commutator_error(scf_context, scf_config, scf_state, scf_result)
+         call scf_fock_assemble(scf_context, scf_config, scf_state)
+         call scf_fock_commutator_error(scf_context, scf_config, scf_state, scf_result)
          ! `dold` must hold `scf_result%dmat` from BEFORE DIIS/diagonalisation touch
          ! it -- see trc_scf_state's own header.
          call scf_state%save_dold(nao, scf_config%nspin, scf_result%dmat)
@@ -449,7 +450,7 @@ contains
          if (present(comm)) then
             if (comm%size() > 1) then
                ctl = [scf_energies%total, errmax]
-               call bcast_flat(comm, ctl, 2)
+               call scf_context_bcast_flat(comm, ctl, 2)
                scf_energies%total = ctl(1)
                errmax = ctl(2)
             end if
@@ -479,7 +480,7 @@ contains
             end if
             ! --- level shift while DIIS and A/EDIIS are off: F += mu (S - S D S / occ)
             if (.not. diis_on .and. .not. adiis_active .and. scf_options%level_shift > 0.0_dp) then
-               call level_shift(linalg_provider, nao, scf_config%nspin, scf_options%level_shift, scf_config%occ, &
+               call scf_diis_level_shift(linalg_provider, nao, scf_config%nspin, scf_options%level_shift, scf_config%occ, &
                       scf_context%smat, scf_result%dmat, scf_state%w1, scf_state%w2, scf_state%fock)
             end if
             if (diis_on) then
@@ -499,7 +500,7 @@ contains
                if (info_s /= 0) diag_failed = .true.
             end do
             if (.not. diag_failed .and. .not. diis_on .and. .not. adiis_active) then
-               call damp(nao, scf_config%nspin, scf_options%damp, scf_state%dold, scf_result%dmat)
+               call scf_diis_damp(nao, scf_config%nspin, scf_options%damp, scf_state%dold, scf_result%dmat)
             end if
          end if
          ! Every rank must learn of a diagonalisation failure the same
@@ -511,7 +512,7 @@ contains
          if (present(comm)) then
             if (comm%size() > 1) then
                diag_flag = [merge(1.0_dp, 0.0_dp, diag_failed), real(diag_info, dp)]
-               call bcast_flat(comm, diag_flag, 2)
+               call scf_context_bcast_flat(comm, diag_flag, 2)
                diag_failed = diag_flag(1) > 0.5_dp
                diag_info = nint(diag_flag(2))
             end if
@@ -538,7 +539,7 @@ contains
          if (present(comm)) then
             if (comm%size() > 1) then
                !$acc update self(scf_result%dmat)
-               call bcast_flat(comm, scf_result%dmat, n2*scf_config%nspin)
+               call scf_context_bcast_flat(comm, scf_result%dmat, n2*scf_config%nspin)
                !$acc update device(scf_result%dmat)
             end if
          end if
@@ -589,8 +590,8 @@ contains
       !$acc update self(scf_state%dold, scf_result%cmo, scf_result%eps)
       if (present(comm)) then
          if (comm%size() > 1) then
-            call bcast_flat(comm, scf_result%cmo, n2*scf_config%nspin)
-            call bcast_flat(comm, scf_result%eps, nao*scf_config%nspin)
+            call scf_context_bcast_flat(comm, scf_result%cmo, n2*scf_config%nspin)
+            call scf_context_bcast_flat(comm, scf_result%eps, nao*scf_config%nspin)
          end if
       end if
       call scf_state%release_device(scf_context, scf_result)
@@ -601,14 +602,14 @@ contains
       call scf_result%update(scf_energies, scf_state%dold)
       ! The diagonalisation-failure message set above (`diag_failed`) is
       ! more specific than this generic one -- an ordinary "ran out of
-      ! max_iter" non-convergence leaves scf_result%message empty up to
+      ! max_iteration" non-convergence leaves scf_result%message empty up to
       ! here, so only THAT case gets the generic text.
       if (.not. scf_result%converged .and. len_trim(scf_result%message) == 0) then
          scf_result%message = "trc_scf: not converged"
       end if
       if (scf_config%dft) then
          ! The run's own totals, not a second measurement: grid build was
-         ! added in right after scf_context%setup, above; xc/vv10 are build_vxc's
+         ! added in right after scf_context%setup, above; xc/vv10 are scf_fock_build_vxc's
          ! running sums, read once here rather than per iteration, since
          ! `add_time` has no way to know "only the increment since last
          ! time" and the totals are already exactly what is wanted.

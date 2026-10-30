@@ -9,8 +9,8 @@ module trc_decontract
    implicit none
    private
 
-   public :: decon_t, decontract_basis, decon_expand, decon_fold, decon_release
-   public :: decon_expand_host, decon_fold_host
+   public :: decon_t, decontract_basis, decontract_expand, decontract_fold, decontract_release
+   public :: decontract_expand_host, decontract_fold_host
    public :: DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT
 
    real(dp), parameter :: DECON_CUTOFF_DEFAULT = 0.3_dp
@@ -81,7 +81,7 @@ contains
       mnp = DECON_MINPRIM_DEFAULT
       if (present(minprim)) mnp = minprim
 
-      call decon_release(m)
+      call decontract_release(m)
       call group_shells(b, grp, ng)
 
       ! Nothing shares an exponent with anything, or nothing that does is
@@ -290,8 +290,8 @@ contains
    ! exponents -- and its work has to be worth the screen the split tightens.
    ! The proxy for the work is the compact primitive count of the group's
    ! biggest contracted shell, which is what the unsplit path pays twice over:
-   ! once in the primitive pairs of every column, and once in `build_pairs`
-   ! and `schwarz_bounds`, where msn's setup went 2.0 s -> 9.7 s with the
+   ! once in the primitive pairs of every column, and once in `batch_build_pairs`
+   ! and `screen_schwarz_bounds`, where msn's setup went 2.0 s -> 9.7 s with the
    ! split off. See DECON_MINPRIM_DEFAULT for the measurement.
    !
    logical function group_pays(b, grp, g, cut, minprim) result(res)
@@ -605,7 +605,7 @@ contains
    ! about twenty million operations on the silica slice, against a Fock build
    ! of teraflops.
    !
-   subroutine decon_expand(m, d, dp_out)
+   subroutine decontract_expand(m, d, dp_out)
       type(decon_t), intent(in) :: m
       real(dp), intent(in)  :: d(m%nao_c, m%nao_c)
       real(dp), intent(out) :: dp_out(m%nao_p, m%nao_p)
@@ -613,7 +613,7 @@ contains
       ! there makes nvfortran map the whole thing and fail at "partially
       ! present". Same reason as fold_dsh_arrays in trc_bins.
       call expand_kernel(m%nao_c, m%nao_p, m%nnz, m%f_off, m%f_c, m%f_a, d, dp_out)
-   end subroutine decon_expand
+   end subroutine decontract_expand
 
    subroutine expand_kernel(nao_c, nao_p, nnz, f_off, f_c, f_a, d, dp_out)
       integer,  intent(in) :: nao_c, nao_p, nnz
@@ -644,12 +644,12 @@ contains
    ! G = C^T G_p C, the fold back. A gather again, over the transpose map, so
    ! no atomics and no ordering.
    !
-   subroutine decon_fold(m, gp, g)
+   subroutine decontract_fold(m, gp, g)
       type(decon_t), intent(in) :: m
       real(dp), intent(in)  :: gp(m%nao_p, m%nao_p)
       real(dp), intent(out) :: g(m%nao_c, m%nao_c)
       call fold_kernel(m%nao_c, m%nao_p, m%nnz, m%t_off, m%t_p, m%t_a, gp, g)
-   end subroutine decon_fold
+   end subroutine decontract_fold
 
    subroutine fold_kernel(nao_c, nao_p, nnz, t_off, t_p, t_a, gp, g)
       integer,  intent(in) :: nao_c, nao_p, nnz
@@ -682,7 +682,7 @@ contains
    ! because there everything already lives on the GPU and pulling it down
    ! would defeat the whole routine.
    !
-   subroutine decon_expand_host(m, d, dp_out)
+   subroutine decontract_expand_host(m, d, dp_out)
       type(decon_t), intent(in) :: m
       real(dp), intent(in)  :: d(m%nao_c, m%nao_c)
       real(dp), intent(out) :: dp_out(m%nao_p, m%nao_p)
@@ -699,9 +699,9 @@ contains
             dp_out(i, j) = acc
          end do
       end do
-   end subroutine decon_expand_host
+   end subroutine decontract_expand_host
 
-   subroutine decon_fold_host(m, gp, g)
+   subroutine decontract_fold_host(m, gp, g)
       type(decon_t), intent(in) :: m
       real(dp), intent(in)  :: gp(m%nao_p, m%nao_p)
       real(dp), intent(out) :: g(m%nao_c, m%nao_c)
@@ -718,9 +718,9 @@ contains
             g(i, j) = acc
          end do
       end do
-   end subroutine decon_fold_host
+   end subroutine decontract_fold_host
 
-   subroutine decon_release(m)
+   subroutine decontract_release(m)
       type(decon_t), intent(inout) :: m
       if (m%on_device) then
          !$acc exit data delete(m%f_off, m%f_c, m%f_a, m%t_off, m%t_p, m%t_a)
@@ -734,6 +734,6 @@ contains
       m%nao_c = 0
       m%nao_p = 0
       m%nnz = 0
-   end subroutine decon_release
+   end subroutine decontract_release
 
 end module trc_decontract

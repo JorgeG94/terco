@@ -1,7 +1,7 @@
 !
 ! The exchange-correlation contribution to the nuclear gradient, LDA and
 ! GGA, restricted and unrestricted. Added into an existing `grad(3,natm)`,
-! the same convention trc_1e_gradient and nuclear_repulsion_gradient use
+! the same convention trc_1e_gradient and scf_grad_nuclear_repulsion use
 ! (trc_scf_grad.F90).
 !
 ! THE FORMULA. For every atom A, the only thing that moves is the basis
@@ -73,7 +73,7 @@
 !      owner), not `ao_atom`.
 !
 !   B. PARTITION WEIGHT, explicit nuclear dependence, AT FIXED r_g.
-!      `trc_dft_partition.F90`'s `becke_partition_derivatives` (already in
+!      `trc_dft_partition.F90`'s `dft_partition_becke_derivatives` (already in
 !      the tree, written for this and unused until this branch) returns
 !      exactly dP_g/dR_A for every (atom, point) pair, carrying the VALUE
 !      and the DERIVATIVE through the Becke product together rather than
@@ -104,7 +104,7 @@
 !
 !      i.e. the negative of B's own sum, landed entirely on the point's
 !      owner, for FREE out of the same dP/dR B already computes -- no new
-!      derivative. trc_dft_partition's becke_partition_grad_contract does
+!      derivative. trc_dft_partition's dft_partition_becke_grad_contract does
 !      B and C together, on the device, one point per thread, with no
 !      (3, natm, npts) array: it takes qw_g rho_g eps_g per point and adds
 !      straight into a (3, natm) gradient. This is the piece a
@@ -195,21 +195,21 @@ module trc_xc_grad
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, &
                                  XC_FAMILY_LDA, XC_FAMILY_GGA, XC_MAX_KERNELS
-   use trc_collocation, only: shell_collocate, shell_collocate2, NCART_MAX, NHESS
+   use trc_collocation, only: collocation_shell, collocation_shell_hessian, NCART_MAX, NHESS
    use trc_linalg, only: trc_linalg_t
-   use trc_xc, only: XC_NP_PAD, XC_NL_PAD, sort_by_shape
-   use trc_dft_grid, only: dft_grid_t, build_dft_grid, DEFAULT_GRID_LEVEL
-   use trc_dft_partition, only: becke_partition_grad_contract
+   use trc_xc, only: XC_NP_PAD, XC_NL_PAD, xc_sort_by_shape
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build, DEFAULT_GRID_LEVEL
+   use trc_dft_partition, only: dft_partition_becke_grad_contract
    use trc_error, only: error_t
    use trc_step_table, only: step_table_t
    implicit none
    private
 
-   public :: xc_gradient_add, XC_GRAD_RHO_TOL, xc_grad_drive
+   public :: xc_grad_add, XC_GRAD_RHO_TOL, xc_grad_drive
    public :: XC_GRAD_NSTEP, xc_grad_step_names
    public :: ST_GRID, ST_POINTS, ST_PDERIV, ST_RESP
    integer, parameter :: XC_GRAD_NSTEP = 10
-   !! Steps of the timing table `xc_gradient_add` fills (see
+   !! Steps of the timing table `xc_grad_add` fills (see
    !! `xc_grad_step_names`); a caller's step_table_t is initialised with them.
    integer, parameter :: ST_GRID = 1, ST_SCREEN = 2, ST_ALLOC = 3, ST_COLLOC = 4, ST_GATHER = 5, &
                          ST_GEMM = 6, ST_POINTS = 7, ST_SCATTER = 8, ST_PDERIV = 9, ST_RESP = 10
@@ -245,7 +245,7 @@ module trc_xc_grad
 contains
 
    pure function xc_grad_step_names() result(names)
-      !! The step names of `xc_gradient_add`'s timing table, in order.
+      !! The step names of `xc_grad_add`'s timing table, in order.
       character(len=16) :: names(XC_GRAD_NSTEP)
       names = [character(len=16) :: "grid", "screen", "alloc", "collocate", "gather", &
                "gemm", "points", "scatter", "partition deriv", "response"]
@@ -265,20 +265,20 @@ contains
    ! existing caller), behaviour is unchanged: refuses what it cannot do,
    ! and ADDS the result into `grad`.
    !
-   subroutine xc_gradient_add(b, lp, func, nspin, dens, grad, grid_level, grid_max_pts, rho_tol, &
+   subroutine xc_grad_add(b, lp, func, nspin, density, grad, grid_level, grid_max_pts, rho_tol, &
                               grid_response, timing, grid, xg)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       type(trc_xc_functional_t), intent(in) :: func
       integer, intent(in) :: nspin
-      real(dp), intent(in) :: dens(b%nao, b%nao, nspin)
+      real(dp), intent(in) :: density(b%nao, b%nao, nspin)
       !! The converged density, per spin channel. Present on both host and
       !! device: the GEMM pipeline below reads the device copy, the
       !! per-batch screen reads the host one (trc_scf_gradient's own
       !! convention -- see its header -- keeps both valid at this point).
       real(dp), intent(inout) :: grad(3, b%natm)
       !! ADDED into; device-resident for the whole call, exactly as
-      !! trc_1e_gradient and nuclear_repulsion_gradient require of their
+      !! trc_1e_gradient and scf_grad_nuclear_repulsion require of their
       !! own `grad` argument.
       integer, intent(in), optional :: grid_level, grid_max_pts
       real(dp), intent(in), optional :: rho_tol
@@ -322,7 +322,7 @@ contains
       ! reach a converged SCF result in the first place -- there is no
       ! flag left to check for a double hybrid. The check below is for
       ! what CAN reach here that USED to be missing a kernel: VV10, whose
-      ! nonlocal correlation gradient is now trc_vv10_grad%vv10_gradient_add's
+      ! nonlocal correlation gradient is now trc_vv10_grad%vv10_grad_add's
       ! job, called by trc_scf_gradient next to this routine rather than
       ! from inside it. `func%nlc_b`/`nlc_c` play NO role in this routine at
       ! all -- they gate the SEPARATE nonlocal double-sum, not the semilocal
@@ -375,7 +375,7 @@ contains
          gp => grid
          xgp => xg
       else
-         call build_dft_grid(b%at_r, at_elem, grid_own, err, level=glevel)
+         call dft_grid_build(b%at_r, at_elem, grid_own, err, level=glevel)
          if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
          ! `atom`/`qw` are only ever read by the grid-response term below
          ! (xg%build leaves both unallocated, and every other caller of
@@ -412,19 +412,19 @@ contains
          fxc = 0.0_dp
          !$acc enter data copyin(fxc)
 
-         call xc_grad_drive(b, lp, is_gga, nspin, func%nk, func%kid, func%coef, dens, xgp, rtol, &
+         call xc_grad_drive(b, lp, is_gga, nspin, func%nk, func%kid, func%coef, density, xgp, rtol, &
                             ao_atom, grad, gresp, fxc, tbl)
 
          if (gresp) then
             ! The partition's own response, both pieces at once and with
-            ! no (3, natm, npts) array: becke_partition_grad_contract takes
+            ! no (3, natm, npts) array: dft_partition_becke_grad_contract takes
             ! the per-point factor qw*rho*eps (the quadrature weight alone,
             ! not w: the partition's own factor is what is differentiated).
             call tbl%step_on(lp, ST_PDERIV, tc)
             allocate (pcoef(xgp%npts), source=xgp%qw)
             !$acc enter data copyin(pcoef)
             call xc_grad_weight_coef(xgp%npts, fxc, pcoef)
-            call becke_partition_grad_contract(xgp%npts, xgp%r, b%at_r, at_elem, xgp%atom, pcoef, &
+            call dft_partition_becke_grad_contract(xgp%npts, xgp%r, b%at_r, at_elem, xgp%atom, pcoef, &
                                                gp%scheme, gp%adjust, grad_extra, err)
             if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
             !$acc exit data delete(pcoef)
@@ -448,7 +448,7 @@ contains
          call grid_own%destroy()
       end if
       deallocate (at_elem)
-   end subroutine xc_gradient_add
+   end subroutine xc_grad_add
 
    !
    ! Every surviving batch, in chunks, the energy path's way (trc_xc.F90's
@@ -473,7 +473,7 @@ contains
    ! over the functions instead, landing on the point's owner with the
    ! opposite sign -- this module's header, GRID RESPONSE, piece A.
    !
-   subroutine xc_grad_drive(b, lp, is_gga, nspin, nk, kid, coef, dens, xg, rtol, ao_atom, grad, &
+   subroutine xc_grad_drive(b, lp, is_gga, nspin, nk, kid, coef, density, xg, rtol, ao_atom, grad, &
                             gresp, fxc, tbl, act_in, ext_grho, ext_vrho, ext_vsigma)
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
@@ -481,7 +481,7 @@ contains
       integer, intent(in) :: nspin, nk
       integer, intent(in) :: kid(XC_MAX_KERNELS)
       real(dp), intent(in) :: coef(XC_MAX_KERNELS)
-      real(dp), intent(in) :: dens(b%nao, b%nao, nspin)
+      real(dp), intent(in) :: density(b%nao, b%nao, nspin)
       type(trc_xc_grid_t), intent(in) :: xg
       real(dp), intent(in) :: rtol
       integer, intent(in) :: ao_atom(b%nao)
@@ -493,7 +493,7 @@ contains
       type(step_table_t), intent(inout) :: tbl
       integer, intent(in), optional :: act_in(xg%nbatch)
       !! The caller's own batch screen (1 = keep) in place of the density
-      !! bound on `dens`.
+      !! bound on `density`.
       real(dp), intent(in), optional :: ext_grho(3, xg%npts), ext_vrho(xg%npts), ext_vsigma(xg%npts)
       !! A potential already in hand (VV10's, restricted GGA): the point
       !! kernel takes w, v_rho, v_sigma and grad rho from these, on the
@@ -519,7 +519,7 @@ contains
          if (npb > 0 .and. nloc > 0) then
             if (present(act_in)) then
                active(ib) = act_in(ib)
-            else if (xc_grad_batch_active(ib, xg, b%nao, nspin, dens, rtol)) then
+            else if (xc_grad_batch_active(ib, xg, b%nao, nspin, density, rtol)) then
                active(ib) = 1
             end if
          end if
@@ -599,7 +599,7 @@ contains
          do k = 1, nb
             ord(k) = b0 + k - 1
          end do
-         call sort_by_shape(nb, npp, nlp, ord)
+         call xc_sort_by_shape(nb, npp, nlp, ord)
          ! Offsets in storage order: tiles (point fastest), (u,v) pairs,
          ! collocation work (shell, point), and force work (function).
          need = 0
@@ -636,7 +636,7 @@ contains
          call tbl%step_off(lp, ST_COLLOC, tc)
 
          call tbl%step_on(lp, ST_GATHER, tc)
-         call xc_grad_gather_tiles(npairs, nb, ord, pb_off, nspin, b%nao, dens, xg%b_aooff, size(xg%b_ao), &
+         call xc_grad_gather_tiles(npairs, nb, ord, pb_off, nspin, b%nao, density, xg%b_aooff, size(xg%b_ao), &
                                    xg%b_ao, nlp, xg%nbatch, npairs_max, dloc)
          call tbl%step_off(lp, ST_GATHER, tc)
 
@@ -724,10 +724,10 @@ contains
    ! before this is ever called) and nloc is small enough that this costs
    ! nothing next to the GEMMs a surviving batch pays for.
    !
-   logical function xc_grad_batch_active(ib, xg, nao, nspin, dens, rtol) result(active)
+   logical function xc_grad_batch_active(ib, xg, nao, nspin, density, rtol) result(active)
       integer, intent(in) :: ib, nao, nspin
       type(trc_xc_grid_t), intent(in) :: xg
-      real(dp), intent(in) :: dens(nao, nao, nspin)
+      real(dp), intent(in) :: density(nao, nao, nspin)
       real(dp), intent(in) :: rtol
       real(dp) :: bound, su
       integer :: s, u, v, au, av
@@ -738,7 +738,7 @@ contains
             su = 0.0_dp
             do v = xg%b_aooff(ib), xg%b_aooff(ib + 1) - 1
                av = xg%b_ao(v)
-               su = su + abs(dens(av, au, s))*xg%b_amax(v)
+               su = su + abs(density(av, au, s))*xg%b_amax(v)
             end do
             bound = bound + su*xg%b_amax(u)
          end do
@@ -881,7 +881,7 @@ contains
       d(1) = r(1, gg) - sh_r(1, ish)
       d(2) = r(2, gg) - sh_r(2, ish)
       d(3) = r(3, gg) - sh_r(3, ish)
-      call shell_collocate(l, sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs)
+      call collocation_shell(l, sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs)
       nc = (l + 1)*(l + 2)/2
       ld = npp(ib)
       off = c_off(ib) + gl + 1
@@ -921,7 +921,7 @@ contains
       d(1) = r(1, gg) - sh_r(1, ish)
       d(2) = r(2, gg) - sh_r(2, ish)
       d(3) = r(3, gg) - sh_r(3, ish)
-      call shell_collocate2(l, sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs, hs)
+      call collocation_shell_hessian(l, sh_np(ish), sh_e(1:sh_np(ish), ish), sh_c(1:sh_np(ish), ish), d, cs, gs, hs)
       nc = (l + 1)*(l + 2)/2
       ld = npp(ib)
       off = c_off(ib) + gl + 1

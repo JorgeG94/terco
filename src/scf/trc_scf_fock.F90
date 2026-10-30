@@ -1,12 +1,12 @@
 !
 ! The Fock build, one iteration's worth: the two-electron part
-! (build_g: g_rks / g_rks_incremental / g_uks, dispatched on nspin/
-! incr_now), the exchange-correlation potential (build_vxc), the
-! polarisable continuum's operator (build_pcm), the energy at the current
-! density (scf_energy), assembling H + G (+ V_xc, + the continuum) into
-! the Fock matrix (assemble_fock), the orthogonalised commutator FDS -
-! SDF (commutator_error), and the Cartesian <-> spherical folds every one
-! of them crosses through (to_cart/to_sph). See trc_scf_driver's own
+! (scf_fock_build_g: g_rks / g_rks_incremental / g_uks, dispatched on nspin/
+! incr_now), the exchange-correlation potential (scf_fock_build_vxc), the
+! polarisable continuum's operator (scf_fock_build_pcm), the energy at the current
+! density (scf_fock_energy), assembling H + G (+ V_xc, + the continuum) into
+! the Fock matrix (scf_fock_assemble), the orthogonalised commutator FDS -
+! SDF (scf_fock_commutator_error), and the Cartesian <-> spherical folds every one
+! of them crosses through (scf_fock_to_cart/scf_fock_to_sph). See trc_scf_driver's own
 ! header for what each piece means physically; this module is just where
 ! the arithmetic now lives.
 !
@@ -15,7 +15,7 @@
 ! and per-iteration state (`scf_state_t`) and picks out what it needs, so
 ! the SCF loop reads as one line per step. A `do concurrent` body must never
 ! name a derived-type component, though: under `-gpu=mem:separate` that is
-! what breaks. So `build_g` and `assemble_fock`, the two with loops of their
+! what breaks. So `scf_fock_build_g` and `scf_fock_assemble`, the two with loops of their
 ! own, hand the arrays to a private explicit-shape worker (`*_arrays`), whose
 ! sizes come from the arrays themselves (1 x 1 where the run has no use for
 ! one, matching trc_scf_state%alloc).
@@ -41,8 +41,8 @@ module trc_scf_fock
    implicit none
    private
 
-   public :: build_g, build_vxc, build_pcm, scf_energy, assemble_fock, commutator_error
-   public :: to_cart, to_sph
+   public :: scf_fock_build_g, scf_fock_build_vxc, scf_fock_build_pcm, scf_fock_energy, scf_fock_assemble, scf_fock_commutator_error
+   public :: scf_fock_to_cart, scf_fock_to_sph
 
 contains
 
@@ -54,7 +54,7 @@ contains
    ! entry points, since the caller already has exactly one of them to ask
    ! for.
    !
-   subroutine build_g(scf_basis, scf_context, scf_config, scf_state, incr_now)
+   subroutine scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incr_now)
       type(trc_basis_t), intent(in) :: scf_basis
       type(scf_ctx_t), intent(inout) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
@@ -69,7 +69,7 @@ contains
                           scf_state%d_c, scf_state%gmat_c, scf_state%dtot_c, scf_state%jmat_c, scf_state%w1_c, &
                           scf_state%klr_c, scf_state%gacc_c, scf_state%dref_c, scf_state%ddif_c, &
                           scf_config%df, scf_context%dfj, scf_context%lp)
-   end subroutine build_g
+   end subroutine scf_fock_build_g
 
    subroutine build_g_arrays(b, eri, nao_c, nspin, nu_c, nlr_c, nin_c, incr_now, incr_on, &
                              exx, exx_lr, omega, incr_scale_run, &
@@ -242,9 +242,9 @@ contains
    ! VV10's nonlocal correlation on its own coarser grid when the functional
    ! has it, folded back to the run's own space. Only called when `dft` is
    ! true (the caller's own guard), so `vxc_c`/`vxc` are always full size
-   ! here -- no 1 x 1 sizing dummy needed, unlike `build_g`'s arrays.
+   ! here -- no 1 x 1 sizing dummy needed, unlike `scf_fock_build_g`'s arrays.
    !
-   subroutine build_vxc(scf_basis, scf_context, scf_config, scf_state, rho_tol, scf_energies, scf_timers, comm)
+   subroutine scf_fock_build_vxc(scf_basis, scf_context, scf_config, scf_state, rho_tol, scf_energies, scf_timers, comm)
       type(trc_basis_t), intent(in) :: scf_basis
       type(scf_ctx_t), intent(inout) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
@@ -317,10 +317,10 @@ contains
       scf_timers%tx_pts = scf_timers%tx_pts + tp1
       scf_timers%tx_prs = scf_timers%tx_prs + tq1
       do s = 1, scf_config%nspin
-         call to_sph(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, &
+         call scf_fock_to_sph(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, &
                      scf_state%vxc_c(:, :, s), scf_state%vxc(:, :, s))
       end do
-   end subroutine build_vxc
+   end subroutine scf_fock_build_vxc
 
    !
    ! The continuum's operator at the TOTAL density (pyscf's choice for UKS
@@ -328,7 +328,7 @@ contains
    ! to the run's own space. Only called when `pcm_on` is true. `nu_c` is
    ! `dtot_c`'s true size (1 when `nspin == 1`, where it is never read).
    !
-   subroutine build_pcm(scf_basis, scf_context, scf_config, scf_state, scf_energies, comm)
+   subroutine scf_fock_build_pcm(scf_basis, scf_context, scf_config, scf_state, scf_energies, comm)
       type(trc_basis_t), intent(in) :: scf_basis
       type(scf_ctx_t), intent(inout) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
@@ -344,13 +344,13 @@ contains
          call scf_context%pcm%operator(scf_basis, scf_context%pec%pl, scf_state%dtot_c, scf_state%vpcm_c, &
                                        scf_energies%pcm, comm)
       end if
-      call to_sph(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, scf_state%vpcm_c, scf_state%vpcm)
-   end subroutine build_pcm
+      call scf_fock_to_sph(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, scf_state%vpcm_c, scf_state%vpcm)
+   end subroutine scf_fock_build_pcm
 
    ! The one- and two-electron energy at the density `scf_result%dmat`: Tr(D H) and
    ! Tr(D G)/2, per spin; the total adds the nuclear repulsion and the XC and
    ! PCM energies already in `scf_energies`.
-   subroutine scf_energy(scf_context, scf_config, scf_state, scf_result, scf_energies)
+   subroutine scf_fock_energy(scf_context, scf_config, scf_state, scf_result, scf_energies)
       type(scf_ctx_t), intent(inout) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
       type(scf_state_t), intent(in) :: scf_state
@@ -364,9 +364,9 @@ contains
          scf_energies%two = scf_energies%two + 0.5_dp*scf_context%lp%dot_2d(scf_result%dmat(:, :, s), scf_state%gmat(:, :, s))
       end do
       scf_energies%total = scf_energies%one + scf_energies%two + scf_energies%xc + scf_context%e_nuc + scf_energies%pcm
-   end subroutine scf_energy
+   end subroutine scf_fock_energy
 
-   subroutine assemble_fock(scf_context, scf_config, scf_state)
+   subroutine scf_fock_assemble(scf_context, scf_config, scf_state)
       !! F = H + G (+ V_xc, + the continuum's operator), per spin, into
       !! `scf_state%fock`.
       type(scf_ctx_t), intent(in) :: scf_context
@@ -375,10 +375,10 @@ contains
       call assemble_fock_arrays(scf_context%nao, size(scf_state%vxc, 1), size(scf_state%vpcm, 1), scf_config%nspin, &
                                 scf_config%dft, scf_config%pcm_on, scf_context%hcore, scf_state%gmat, scf_state%vxc, &
                                 scf_state%vpcm, scf_state%fock)
-   end subroutine assemble_fock
+   end subroutine scf_fock_assemble
 
    subroutine assemble_fock_arrays(nao, nxc, npcm, nspin, dft, pcm_on, hcore, gmat, vxc, vpcm, fock)
-      !! `assemble_fock`'s loops, on explicit-shape arrays. `vxc` is
+      !! `scf_fock_assemble`'s loops, on explicit-shape arrays. `vxc` is
       !! 1 x 1 (unused) when `.not. dft`, `vpcm` 1 x 1 when `.not. pcm_on`;
       !! `nxc`/`npcm` are their true sizes, so the explicit-shape dummies
       !! below match whichever the caller actually allocated.
@@ -409,7 +409,7 @@ contains
 
    ! W = F D S - S D F, errv = X^T W X, per spin: the orthogonalised
    ! commutator DIIS extrapolates on, and whose norm gates DIIS/A-DIIS.
-   subroutine commutator_error(scf_context, scf_config, scf_state, scf_result)
+   subroutine scf_fock_commutator_error(scf_context, scf_config, scf_state, scf_result)
       type(scf_ctx_t), intent(inout) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
       type(scf_state_t), intent(inout) :: scf_state
@@ -426,9 +426,9 @@ contains
          call scf_context%lp%gemm_mat(scf_state%w2, scf_context%x, scf_state%w1)
          call scf_context%lp%gemm_mat(scf_context%x, scf_state%w1, scf_state%errv(:, :, s), transa="T")
       end do
-   end subroutine commutator_error
+   end subroutine scf_fock_commutator_error
 
-   subroutine to_cart(b, sph, nao, nao_c, a, a_c)
+   subroutine scf_fock_to_cart(b, sph, nao, nao_c, a, a_c)
       !! A matrix from the SCF's space to the Cartesian one the kernels run
       !! in: T A T^T when the basis is spherical, a plain copy when it is not
       !! (no transform call at all on the Cartesian path, see trc_scf_driver's
@@ -446,9 +446,9 @@ contains
             a_c(i, j) = a(i, j)
          end do
       end if
-   end subroutine to_cart
+   end subroutine scf_fock_to_cart
 
-   subroutine to_sph(b, sph, nao, nao_c, a_c, a)
+   subroutine scf_fock_to_sph(b, sph, nao, nao_c, a_c, a)
       !! The reverse fold: T^T A_cart T into the SCF's space, or a plain copy.
       type(trc_basis_t), intent(in) :: b
       logical, intent(in) :: sph
@@ -463,6 +463,6 @@ contains
             a(i, j) = a_c(i, j)
          end do
       end if
-   end subroutine to_sph
+   end subroutine scf_fock_to_sph
 
 end module trc_scf_fock

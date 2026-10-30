@@ -25,7 +25,7 @@ module trc_cart
    integer, parameter, public :: LCMAX = 2*LMAX
    integer, parameter, public :: NCUM = (LCMAX + 1)*(LCMAX + 2)*(LCMAX + 3)/6
 
-   public :: cart_init, ncart_of
+   public :: cart_init, cart_ncart_of
 
    integer, public :: cidx(0:LCMAX, 0:LCMAX, 0:LCMAX)  !! (nx,ny,nz) -> flat, 0 if L > LCMAX
    integer, public :: cnx(NCUM), cny(NCUM), cnz(NCUM)  !! flat -> powers
@@ -41,11 +41,11 @@ module trc_cart
 
 contains
 
-   pure integer function ncart_of(l) result(res)
+   pure integer function cart_ncart_of(l) result(res)
       !$acc routine seq
       integer, intent(in) :: l
       res = (l + 1)*(l + 2)/2
-   end function ncart_of
+   end function cart_ncart_of
 
    subroutine cart_init()
       integer :: l, lx, ly, lz, h, d, nx, ny, nz

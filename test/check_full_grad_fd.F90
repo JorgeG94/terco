@@ -19,7 +19,7 @@
 !
 ! NO INTERNAL PROCEDURES. `run_case`/`scf_energy_at` are genuine module
 ! procedures, not a `contains` block under the program, for the same
-! reason app/main.F90's `terco_run` module gives for its own equivalent
+! reason app/main.F90's `trc_run` module gives for its own equivalent
 ! refactor: an internal procedure anywhere in the executable -- even one
 ! with no state in common with the GPU call at all -- corrupted a later
 ! collective Fock build on this exact NVHPC/OpenMPI toolchain,
@@ -78,7 +78,7 @@ contains
       end if
       call bas%to_device()
 
-      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iter = 200
+      opts%conv_energy = 1.0e-12_dp; opts%conv_diis = 1.0e-9_dp; opts%max_iteration = 200
       call trc_scf_run(bas, nalpha, nbeta, opts, res)
       if (.not. res%converged) then
          print '(a)', 'check_full_grad_fd: '//label//': reference SCF did not converge'

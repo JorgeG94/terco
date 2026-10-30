@@ -293,13 +293,13 @@ contains
       character(len=*), parameter :: VARS(*) = [character(len=26) :: &
                                                 "OMPI_COMM_WORLD_LOCAL_RANK", "PALS_LOCAL_RANKID", &
                                                 "MPI_LOCALRANKID", "MV2_COMM_WORLD_LOCAL_RANK", "SLURM_LOCALID"]
-      character(len=32) :: val
+      character(len=32) :: value
       integer :: i, n, st, ios
       lr = -1
       do i = 1, size(VARS)
-         call get_environment_variable(trim(VARS(i)), val, n, st)
+         call get_environment_variable(trim(VARS(i)), value, n, st)
          if (st /= 0 .or. n == 0) cycle
-         read (val(1:n), *, iostat=ios) lr
+         read (value(1:n), *, iostat=ios) lr
          if (ios == 0 .and. lr >= 0) return
          lr = -1
       end do
@@ -744,7 +744,7 @@ contains
       type(trc_pairlist_t), intent(in) :: p
       real(dp), intent(in)    :: wmat(b%nao, b%nao)
       !! The energy-weighted density, W_mu,nu = sum_i n_i eps_i c_mu,i c_nu,i
-      !! (trc_scf_grad.F90's energy_weighted_density builds it).
+      !! (trc_scf_grad.F90's scf_grad_energy_weighted_density builds it).
       real(dp), intent(in)    :: dmat(b%nao, b%nao)
       !! The ordinary density -- the TOTAL one (Da + Db for UHF): T and V
       !! are both linear in the density, so the spin split eri%gradient
