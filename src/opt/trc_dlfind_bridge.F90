@@ -217,7 +217,7 @@ module trc_dlfind_bridge
    ! leaving app/main.F90's non-opt CLI code without opt_io_f_string/opt_io_set_env in a
    ! TERCO_ENABLE_DLFIND=OFF build).
    use trc_opt_io, only: opt_io_f_string, opt_io_set_env, opt_io_write_opt_xyz_frame, &
-                         opt_io_write_traj_xyz_frames, opt_io_write_opt_failure_json
+                         opt_io_write_traj_xyz_frames, opt_io_write_opt_failure_json, trc_opt_failure_t
    implicit none
    private
 
@@ -1954,10 +1954,19 @@ contains
                                     traj_e(1:traj_n))
       end if
       if (opt_str_set(cur_opts%json_path)) then
-         call opt_io_write_opt_failure_json(cur_opts%json_path, opt_str_or_blank(cur_opts%geometry_path), reason, &
-                                     n_steps, n_evals, latest_energy, accepted_gmax, accepted_grms, &
-                                     opt_str_or_blank(cur_opts%coords_name), opt_str_or_blank(cur_opts%guess_name), &
-                                     traj_e(1:traj_n))
+         block
+            type(trc_opt_failure_t) :: info
+            info%geometry = opt_str_or_blank(cur_opts%geometry_path)
+            info%reason = reason
+            info%steps = n_steps
+            info%energy_evaluations = n_evals
+            info%final_energy = latest_energy
+            info%final_gradient_max = accepted_gmax
+            info%final_gradient_rms = accepted_grms
+            info%coords_name = opt_str_or_blank(cur_opts%coords_name)
+            info%guess_name = opt_str_or_blank(cur_opts%guess_name)
+            call opt_io_write_opt_failure_json(cur_opts%json_path, info, traj_e(1:traj_n))
+         end block
       end if
    end subroutine write_failure_outputs
 

@@ -97,6 +97,7 @@ module trc_rimp2_driver
    private
 
    public :: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_driver_mo_to_cart
+   public :: trc_rimp2_options_t
 
    real(dp), parameter :: PAD_EPS = 1.0e6_dp
    !! `rimp2_driver_mo_to_cart`'s orbital energy for a padded, zero-coefficient
@@ -142,44 +143,66 @@ module trc_rimp2_driver
       character(len=200) :: message = ""
    end type trc_rimp2_result_t
 
+   type :: trc_rimp2_options_t
+    !! The knobs `trc_rimp2_run`/`trc_urimp2_run` used to take as separate
+    !! optional arguments, bundled the way `trc_scf_options_t`
+    !! (src/scf/trc_scf_settings.F90) bundles the SCF's own knobs --
+    !! `la` (a caller-owned device resource, mutated and possibly reused
+    !! across calls) and `comm` (ranks) stay separate arguments, exactly as
+    !! `trc_scf_run` keeps them separate from `scf_options`.
+      integer :: nfrozen = 0
+      !! Correlated occupied orbitals start at nfrozen + 1. Absent/default
+      !! (0) correlates every occupied orbital.
+      integer :: aux_block = 0
+      !! Auxiliary functions per (mu nu|P) block. 0 (the default) means
+      !! "the whole auxiliary basis at once" (`naux_c`); no real caller
+      !! wants a block of exactly zero, so 0 doubles as the "not set"
+      !! sentinel the old `present(aux_block)` check used.
+      logical :: verbose = .false.
+      !! One line per step with its wall time, rank 0 only.
+      real(dp), pointer :: packed_b(:, :) => null()
+      !! `trc_rimp2_run` only: the fitted B of a density-fitted J/K object
+      !! (see that routine's own header). Null (the default) runs the
+      !! ordinary, unchained path; `trc_urimp2_run` never reads this field.
+   end type trc_rimp2_options_t
+
 contains
 
    !
    ! `cmo` (nao, nao) and `eps` (nao) are the RHF orbitals, occupied first;
-   ! `nocc` doubly occupied, `nfrozen` of them left out of the correlation.
-   ! `pl` is the orbital basis's pair list. `la` optional, made here if
-   ! absent; `comm` optional, one rank without it.
+   ! `nocc` doubly occupied, `opts%nfrozen` of them left out of the
+   ! correlation (see `trc_rimp2_options_t`'s own header for `opts`, optional
+   ! throughout, as a whole). `pl` is the orbital basis's pair list. `la`
+   ! optional, made here if absent; `comm` optional, one rank without it.
    !
-   ! `packed_b`, optional: the fitted B of a density-fitted J/K object
+   ! `opts%packed_b`: the fitted B of a density-fitted J/K object
    ! (trc_scf_df.F90's `df_jk_t%packed_b()`, null until that object is set
    ! up), fitted on an auxiliary basis the CALLER has checked is the same
    ! one as `aux` (same JSON path/contents -- trc_capi.F90's trc_run_rimp2
    ! is the one library caller that does; this routine only checks the
    ! dimensions agree, not that the basis itself is really the same one).
    ! Passed as the array rather than the object so that post_hf does not
-   ! depend on scf. When present and associated, steps 1 (metric,
-   ! Cholesky), 2 (the (mu nu|P) build) and 4 (B = X L^-T) are skipped
-   ! entirely: `packed_b` is already B, (npack, naux) device-resident
-   ! (packed mu >= nu, L^-T applied), and the occupied/virtual half-
-   ! transform of step 3 run on it directly IS RI-MP2's own B -- L^-T acts
-   ! only on the auxiliary index, the half-transform only on (mu, nu), and
-   ! the two commute. `aux` is still used for its shell structure (the
-   ! block loop below only needs auxiliary function COUNTS and offsets,
-   ! identical either way).
+   ! depend on scf. When associated, steps 1 (metric, Cholesky), 2 (the
+   ! (mu nu|P) build) and 4 (B = X L^-T) are skipped entirely: `packed_b`
+   ! is already B, (npack, naux) device-resident (packed mu >= nu, L^-T
+   ! applied), and the occupied/virtual half-transform of step 3 run on it
+   ! directly IS RI-MP2's own B -- L^-T acts only on the auxiliary index,
+   ! the half-transform only on (mu, nu), and the two commute. `aux` is
+   ! still used for its shell structure (the block loop below only needs
+   ! auxiliary function COUNTS and offsets, identical either way).
    !
-   subroutine trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, nfrozen, aux_block, la, comm, verbose, packed_b)
+   subroutine trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, opts, la, comm)
       !! run a restricted ri-mp2 calculation
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: pl
       integer, intent(in) :: nocc
       real(dp), intent(in) :: cmo(b%nao, b%nao), eps(b%nao)
       type(trc_rimp2_result_t), intent(out) :: res
-      integer, intent(in), optional :: nfrozen, aux_block
+      type(trc_rimp2_options_t), intent(in), optional :: opts
       type(trc_linalg_t), intent(inout), optional, target :: la
       type(comm_t), intent(in), optional :: comm
-      logical, intent(in), optional :: verbose   !! one line per step with its wall time, rank 0
-      real(dp), pointer, intent(in), optional :: packed_b(:, :)
 
+      type(trc_rimp2_options_t) :: op
       type(timer_type) :: tw0, tw1
       logical :: talk, chained
       type(trc_linalg_t), target :: la_own
@@ -207,6 +230,7 @@ contains
       logical :: dense_mask(NSTEP)
       integer(int64) :: nv8, nao8, naux8
 
+      if (present(opts)) op = opts
       nao = b%nao
       ! `cmo`/`eps` above are declared (b%nao, b%nao)/(b%nao): ALWAYS the
       ! Cartesian AO space, whether `b` itself is spherical or not. A
@@ -231,8 +255,7 @@ contains
       ! is checked against.
       naux_c = aux%nao
       naux = merge(aux%nao_sph, aux%nao, aux%spherical)
-      nfz = 0
-      if (present(nfrozen)) nfz = max(nfrozen, 0)
+      nfz = max(op%nfrozen, 0)
       no = nocc - nfz
       ! For a spherical caller, `nao` (Cartesian) is bigger than the
       ! true spherical MO count `b%nao_sph` -- rimp2_driver_mo_to_cart's own
@@ -271,19 +294,17 @@ contains
       end if
       chained = .false.
       bchain => null()
-      if (present(packed_b)) then
-         if (associated(packed_b)) then
-            npack_chk = nao*(nao + 1)/2
-            if (size(packed_b, 1) /= npack_chk .or. size(packed_b, 2) /= naux) then
-               res%message = "trc_rimp2: the pre-fitted B does not match this orbital/auxiliary basis"
-               return
-            end if
-            bchain => packed_b
-            chained = .true.
+      if (associated(op%packed_b)) then
+         npack_chk = nao*(nao + 1)/2
+         if (size(op%packed_b, 1) /= npack_chk .or. size(op%packed_b, 2) /= naux) then
+            res%message = "trc_rimp2: the pre-fitted B does not match this orbital/auxiliary basis"
+            return
          end if
+         bchain => op%packed_b
+         chained = .true.
       end if
       nblk = naux_c
-      if (present(aux_block)) nblk = max(aux_block, 1)
+      if (op%aux_block > 0) nblk = op%aux_block
       rank = 0
       nranks = 1
       if (present(comm)) then
@@ -332,8 +353,7 @@ contains
       ! Create-once: a caller's handles are kept, the workspace only grows.
       call lp%init(naux)
 
-      talk = .false.
-      if (present(verbose)) talk = verbose .and. rank == 0
+      talk = op%verbose .and. rank == 0
       nv8 = nv
       nao8 = nao
       naux8 = naux
@@ -473,7 +493,7 @@ contains
       end do
       if (nranks > 1) then
          call stab%step_on(lp, ST_XCHG, tc)
-         call exchange_x(comm, rank, nranks, nv8, bn, plo, soff, ysend, xr, direct)
+         call exchange_x(comm, nv8, bn, plo, soff, ysend, xr, direct)
          call stab%step_off(lp, ST_XCHG, tc)
       end if
       !$acc exit data delete(ysend)
@@ -544,7 +564,7 @@ contains
          qv = mod(rank + step, nranks)
          if (step > 0) then
             call stab%step_on(lp, ST_RING, tc)
-            call ring_shift(comm, rank, nranks, xr, vis, cur, &
+            call ring_shift(comm, xr, vis, cur, &
                             int(bn(mod(rank + step - 1, nranks)), int64)*nv8*naux8, &
                             int(bn(qv), int64)*nv8*naux8, step == 1, direct)
             call stab%step_off(lp, ST_RING, tc)
@@ -752,18 +772,22 @@ contains
    ! has, so this round runs one rank only and refuses anything else below,
    ! with a message that says so.
    !
-   subroutine trc_urimp2_run(b, aux, pl, nalpha, nbeta, cmo_a, cmo_b, eps_a, eps_b, res, &
-                             nfrozen, aux_block, la, comm, verbose)
+   subroutine trc_urimp2_run(b, aux, pl, nalpha, nbeta, cmo, eps, res, opts, la, comm)
+      !! `cmo(:, :, 1)`/`eps(:, 1)` are the alpha orbitals/energies,
+      !! `cmo(:, :, 2)`/`eps(:, 2)` beta -- the same (nao, nao, nspin)/
+      !! (nao, nspin) layout `trc_scf_result_t` (src/scf/trc_scf_settings.F90)
+      !! already uses, so an unrestricted caller's own `res%cmo`/`res%eps`
+      !! pass straight through with no slicing.
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: pl
       integer, intent(in) :: nalpha, nbeta
-      real(dp), intent(in) :: cmo_a(b%nao, b%nao), cmo_b(b%nao, b%nao), eps_a(b%nao), eps_b(b%nao)
+      real(dp), intent(in) :: cmo(b%nao, b%nao, 2), eps(b%nao, 2)
       type(trc_rimp2_result_t), intent(out) :: res
-      integer, intent(in), optional :: nfrozen, aux_block
+      type(trc_rimp2_options_t), intent(in), optional :: opts
       type(trc_linalg_t), intent(inout), optional, target :: la
       type(comm_t), intent(in), optional :: comm
-      logical, intent(in), optional :: verbose
 
+      type(trc_rimp2_options_t) :: op
       type(timer_type) :: tw0, tw1
       logical :: talk
       type(trc_linalg_t), target :: la_own
@@ -787,13 +811,15 @@ contains
       logical :: dense_mask(NSTEP)
       integer(int64) :: nao8, naux8, nva8, nvb8, noa8, nob8, novr_a8, novr_b8
 
+      if (present(opts)) op = opts
       nao = b%nao
-      ! `cmo_a`/`cmo_b`/`eps_a`/`eps_b` are the Cartesian-space, fold-and-
-      ! pad result of `rimp2_driver_mo_to_cart` when `b` is spherical -- see
-      ! `trc_rimp2_run`'s own header on that routine, which this one reads
-      ! exactly as it does. `naux_c`/`naux` split the auxiliary basis the
-      ! same way too (CARTESIAN count for the kernel/block-walk below,
-      ! folded when `aux%spherical` for every other dimension).
+      ! `cmo(:,:,1)`/`cmo(:,:,2)`/`eps(:,1)`/`eps(:,2)` are the Cartesian-
+      ! space, fold-and-pad result of `rimp2_driver_mo_to_cart` when `b` is
+      ! spherical -- see `trc_rimp2_run`'s own header on that routine,
+      ! which this one reads exactly as it does. `naux_c`/`naux` split the
+      ! auxiliary basis the same way too (CARTESIAN count for the
+      ! kernel/block-walk below, folded when `aux%spherical` for every
+      ! other dimension).
       naux_c = aux%nao
       naux = merge(aux%nao_sph, aux%nao, aux%spherical)
       rank = 0
@@ -810,8 +836,7 @@ contains
                        "mixed ab block. Run on one rank (no communicator, or a single-rank one)"
          return
       end if
-      nfz = 0
-      if (present(nfrozen)) nfz = max(nfrozen, 0)
+      nfz = max(op%nfrozen, 0)
       noa = nalpha - nfz
       nob = nbeta - nfz
       nva = nao - nalpha
@@ -835,7 +860,7 @@ contains
          return
       end if
       nblk = naux_c
-      if (present(aux_block)) nblk = max(aux_block, 1)
+      if (op%aux_block > 0) nblk = op%aux_block
       if (present(la)) then
          lp => la
       else
@@ -853,8 +878,7 @@ contains
       nob8 = nob
       call lp%init(naux)
 
-      talk = .false.
-      if (present(verbose)) talk = verbose .and. rank == 0
+      talk = op%verbose .and. rank == 0
       call stab%init("rimp2u", STEP_NAME)
       call lp%sync()
       call tw0%start()
@@ -889,10 +913,10 @@ contains
       ! --- 2-3. (mu nu|P) once per aux block, (ia|P) for BOTH spins from it -
       allocate (cocc_a(nao, noa), cvir_a(nao, nva), xr_a(max(novr_a8*naux8, 1_int64)))
       allocate (cocc_b(nao, nob), cvir_b(nao, nvb), xr_b(max(novr_b8*naux8, 1_int64)))
-      cocc_a = cmo_a(:, nfz + 1:nalpha)
-      cvir_a = cmo_a(:, nalpha + 1:nao)
-      cocc_b = cmo_b(:, nfz + 1:nbeta)
-      cvir_b = cmo_b(:, nbeta + 1:nao)
+      cocc_a = cmo(:, nfz + 1:nalpha, 1)
+      cvir_a = cmo(:, nalpha + 1:nao, 1)
+      cocc_b = cmo(:, nfz + 1:nbeta, 2)
+      cvir_b = cmo(:, nbeta + 1:nao, 2)
       !$acc enter data copyin(cocc_a, cvir_a, cocc_b, cvir_b) create(xr_a, xr_b)
       s0 = 1
       do while (s0 <= aux%nshell)
@@ -987,10 +1011,10 @@ contains
 
       ! --- 5a/5b. the like-spin pair energies, restricted's own triangle ---
       allocate (eo_a(noa), ev_a(nva), eo_b(nob), ev_b(nvb))
-      eo_a = eps_a(nfz + 1:nalpha)
-      ev_a = eps_a(nalpha + 1:nao)
-      eo_b = eps_b(nfz + 1:nbeta)
-      ev_b = eps_b(nbeta + 1:nao)
+      eo_a = eps(nfz + 1:nalpha, 1)
+      ev_a = eps(nalpha + 1:nao, 1)
+      eo_b = eps(nfz + 1:nbeta, 2)
+      ev_b = eps(nbeta + 1:nao, 2)
       !$acc enter data copyin(eo_a, ev_a, eo_b, ev_b)
 
       ncolmax_aa = noa*nva
@@ -1140,15 +1164,16 @@ contains
    ! receive that is already posted or about to be. In pieces of at most
    ! MSG_CHUNK doubles, since MPI counts are 32-bit.
    !
-   subroutine ring_shift(comm, rank, nranks, xr, vis, cur, nsend, nrecv, first, direct)
+   subroutine ring_shift(comm, xr, vis, cur, nsend, nrecv, first, direct)
       type(comm_t), intent(in) :: comm
-      integer, intent(in) :: rank, nranks
       real(dp), intent(inout) :: xr(:), vis(:, :)
       integer, intent(inout) :: cur
       integer(int64), intent(in) :: nsend, nrecv
       logical, intent(in) :: first, direct
-      integer :: left, right, nxt, nreq
+      integer :: rank, nranks, left, right, nxt, nreq
       type(request_t), allocatable :: reqs(:)
+      rank = comm%rank()
+      nranks = comm%size()
       left = mod(rank - 1 + nranks, nranks)
       right = mod(rank + 1, nranks)
       nxt = merge(1, 3 - cur, first)
@@ -1281,17 +1306,18 @@ contains
    ! MSG_CHUNK pieces. Sender and receiver compute the same count,
    ! bn(dest) nv |P_r|, so an empty one is skipped on both sides.
    !
-   subroutine exchange_x(comm, rank, nranks, nv8, bn, plo, soff, ysend, xr, direct)
+   subroutine exchange_x(comm, nv8, bn, plo, soff, ysend, xr, direct)
       type(comm_t), intent(in) :: comm
-      integer, intent(in) :: rank, nranks
       integer, intent(in) :: bn(0:), plo(0:)
       integer(int64), intent(in) :: nv8
       integer(int64), intent(in) :: soff(0:)
       real(dp), intent(inout) :: ysend(:), xr(:)
       logical, intent(in) :: direct
-      integer :: k, dest, src, nreq
+      integer :: rank, nranks, k, dest, src, nreq
       integer(int64) :: nsend, nrecv, roff, novr8
       type(request_t), allocatable :: reqs(:)
+      rank = comm%rank()
+      nranks = comm%size()
       novr8 = int(bn(rank), int64)*nv8
       if (.not. direct) then
          !$acc update self(ysend)

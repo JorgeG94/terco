@@ -27,6 +27,21 @@ module trc_app
    public :: BOHR_PER_ANGSTROM
    public :: app_help_for_topic, app_set_log_level
    public :: app_write_opt_xyz_frame, app_write_traj_xyz_frames, app_write_opt_failure_json
+   public :: trc_app_opt_failure_t
+
+   type :: trc_app_opt_failure_t
+    !! The scalar fields of a failed optimization's JSON block, bundled so
+    !! app_write_opt_failure_json stays under the dummy-argument limit.
+    !! `path` and `traj_energy` (a run's own array) stay separate arguments.
+    !! Mirrors src/opt/trc_opt_io.F90's trc_opt_failure_t -- see that
+    !! module's header for why the two are not the same type.
+      character(len=:), allocatable :: geometry, reason, coords_name, guess_name
+      integer :: steps = 0
+      integer :: energy_evaluations = 0
+      real(dp) :: final_energy = 0.0_dp
+      real(dp) :: final_gradient_max = 0.0_dp
+      real(dp) :: final_gradient_rms = 0.0_dp
+   end type trc_app_opt_failure_t
 
    real(dp), parameter :: BOHR_PER_ANGSTROM = ANGSTROM_TO_BOHR
       !! CODATA 2018 (trc_constants' ANGSTROM_TO_BOHR), the constant every
@@ -319,9 +334,7 @@ contains
       close (u)
    end subroutine app_write_traj_xyz_frames
 
-   subroutine app_write_opt_failure_json(path, geometry, reason, steps, energy_evaluations, &
-                                     final_energy, final_gradient_max, final_gradient_rms, &
-                                     coords_name, guess_name, traj_energy)
+   subroutine app_write_opt_failure_json(path, info, traj_energy)
       !! A minimal "optimization" JSON block for the one outcome
       !! app/main.F90's own add_optimization never gets a chance to write:
       !! DL-FIND's `error stop` right after a failed evaluation
@@ -330,27 +343,26 @@ contains
       !! block on purpose -- no gradient_tolerance, no final geometry array
       !! -- but carries the two fields a caller checking a failed run needs:
       !! "failed" and "failure_reason".
-      character(len=*), intent(in) :: path, geometry, reason, coords_name, guess_name
-      integer, intent(in) :: steps, energy_evaluations
-      real(dp), intent(in) :: final_energy, final_gradient_max, final_gradient_rms
+      character(len=*), intent(in) :: path
+      type(trc_app_opt_failure_t), intent(in) :: info
       real(dp), intent(in) :: traj_energy(:)
       type(json_core) :: json
       type(json_value), pointer :: root, oobj
       call json%initialize()
       call json%create_object(root, "")
       call json%add(root, "program", "terco")
-      call json%add(root, "geometry", geometry)
+      call json%add(root, "geometry", info%geometry)
       call json%create_object(oobj, "optimization")
       call json%add(oobj, "converged", .false.)
       call json%add(oobj, "failed", .true.)
-      call json%add(oobj, "failure_reason", reason)
-      call json%add(oobj, "steps", steps)
-      call json%add(oobj, "energy_evaluations", energy_evaluations)
-      call json%add(oobj, "final_energy", final_energy)
-      call json%add(oobj, "final_gradient_max", final_gradient_max)
-      call json%add(oobj, "final_gradient_rms", final_gradient_rms)
-      call json%add(oobj, "coordinates", coords_name)
-      call json%add(oobj, "guess", guess_name)
+      call json%add(oobj, "failure_reason", info%reason)
+      call json%add(oobj, "steps", info%steps)
+      call json%add(oobj, "energy_evaluations", info%energy_evaluations)
+      call json%add(oobj, "final_energy", info%final_energy)
+      call json%add(oobj, "final_gradient_max", info%final_gradient_max)
+      call json%add(oobj, "final_gradient_rms", info%final_gradient_rms)
+      call json%add(oobj, "coordinates", info%coords_name)
+      call json%add(oobj, "guess", info%guess_name)
       if (size(traj_energy) > 0) call json%add(oobj, "trajectory_energies", traj_energy)
       call json%add(root, oobj)
       call json%print(root, path)

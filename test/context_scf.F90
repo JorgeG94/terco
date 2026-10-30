@@ -13,7 +13,7 @@ program context_scf
    use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
-   use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t, trc_rimp2_options_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build
    use trc_error, only: error_t
@@ -63,7 +63,12 @@ program context_scf
    allocate (dg3(b%nao, b%nao, 1)); dg3(:, :, 1) = dsad
    call trc_scf_run(b, nocc, nocc, opts, ref, dguess=dg3)
    call pl%build(b, 1.0e-12_dp); call pl%to_device()
-   call trc_rimp2_run(b, aux, pl, nocc, ref%cmo(:, :, 1), ref%eps(:, 1), mp2, nfrozen=1, aux_block=20)
+   block
+      type(trc_rimp2_options_t) :: rimp2_opts
+      rimp2_opts%nfrozen = 1
+      rimp2_opts%aux_block = 20
+      call trc_rimp2_run(b, aux, pl, nocc, ref%cmo(:, :, 1), ref%eps(:, 1), mp2, opts=rimp2_opts)
+   end block
 
    ! --- misuse first: every one a status, none a crash ---------------------
    rc = trc_destroy(c_null_ptr);            call expect(rc == TRC_ERR_NULL, "destroy(null) is NULL")

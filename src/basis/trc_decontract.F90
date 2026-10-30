@@ -38,6 +38,24 @@ module trc_decontract
       logical :: on_device = .false.
    end type decon_t
 
+   type :: decon_build_t
+    !! The primitive basis and the transform `split_group`/`emit_whole`
+    !! fill, one shell/triple at a time, bundled so those two internal
+    !! helpers stay under the dummy-argument limit -- `decontract_basis`
+    !! owns the allocation (sized once, an upper bound on every primitive
+    !! of every shell becoming its own) and reads the result back out
+    !! through `nsh_p`/`ntr`, exactly as it did through the separate
+    !! arrays before.
+      integer, allocatable :: p_l(:), p_np(:)
+      real(dp), allocatable :: p_e(:, :), p_c(:, :), p_r(:, :)
+      integer :: nsh_p = 0
+      ! one triple per (contracted shell, emitted shell) pair
+      integer, allocatable :: tr_mu(:), tr_s(:)
+      real(dp), allocatable :: tr_a(:)
+      logical, allocatable :: tr_whole(:)
+      integer :: ntr = 0
+   end type decon_build_t
+
 contains
 
    pure integer function ncart(l) result(res)
@@ -62,14 +80,9 @@ contains
       !! screen; DECON_MINPRIM_DEFAULT if absent. Zero splits everything.
 
       integer, allocatable :: grp(:)          ! group id per shell
-      integer, allocatable :: p_l(:), p_np(:)
-      real(dp), allocatable :: p_e(:, :), p_c(:, :), p_r(:, :)
-      ! one triple per (contracted shell, emitted shell) pair
-      integer, allocatable :: tr_mu(:), tr_s(:)
-      real(dp), allocatable :: tr_a(:)
-      logical, allocatable :: tr_whole(:)
+      type(decon_build_t) :: bld
       integer :: t
-      integer :: ntr, nsh_p, maxnp_p
+      integer :: maxnp_p
       integer :: ng, g, i, n
       real(dp) :: cut
       integer, parameter :: LTOP = 8
@@ -97,26 +110,25 @@ contains
       do i = 1, b%nshell
          n = n + b%sh_np(i)
       end do
-      allocate (p_l(n + b%nshell), p_np(n + b%nshell), p_r(3, n + b%nshell))
-      allocate (p_e(b%maxnp, n + b%nshell), p_c(b%maxnp, n + b%nshell))
-      allocate (tr_mu(n + b%nshell), tr_s(n + b%nshell), tr_a(n + b%nshell))
-      allocate (tr_whole(n + b%nshell))
-      p_e = 0.0_dp
-      p_c = 0.0_dp
-      nsh_p = 0
-      ntr = 0
+      allocate (bld%p_l(n + b%nshell), bld%p_np(n + b%nshell), bld%p_r(3, n + b%nshell))
+      allocate (bld%p_e(b%maxnp, n + b%nshell), bld%p_c(b%maxnp, n + b%nshell))
+      allocate (bld%tr_mu(n + b%nshell), bld%tr_s(n + b%nshell), bld%tr_a(n + b%nshell))
+      allocate (bld%tr_whole(n + b%nshell))
+      bld%p_e = 0.0_dp
+      bld%p_c = 0.0_dp
+      bld%nsh_p = 0
+      bld%ntr = 0
 
       do g = 1, ng
-         call split_group(b, grp, g, cut, mnp, p_l, p_np, p_e, p_c, p_r, nsh_p, &
-                          tr_mu, tr_s, tr_a, tr_whole, ntr)
+         call split_group(b, grp, g, cut, mnp, bld)
       end do
 
       maxnp_p = 1
-      do i = 1, nsh_p
-         maxnp_p = max(maxnp_p, p_np(i))
+      do i = 1, bld%nsh_p
+         maxnp_p = max(maxnp_p, bld%p_np(i))
       end do
-      call pb%build(nsh_p, p_l(1:nsh_p), p_np(1:nsh_p), p_e(1:maxnp_p, 1:nsh_p), &
-                    p_c(1:maxnp_p, 1:nsh_p), p_r(:, 1:nsh_p), &
+      call pb%build(bld%nsh_p, bld%p_l(1:bld%nsh_p), bld%p_np(1:bld%nsh_p), bld%p_e(1:maxnp_p, 1:bld%nsh_p), &
+                    bld%p_c(1:maxnp_p, 1:bld%nsh_p), bld%p_r(:, 1:bld%nsh_p), &
                     b%natm, b%at_z, b%at_r, maxnp_p, at_elem=b%at_elem)
 
       !
@@ -136,14 +148,14 @@ contains
       ! and screening in the primitive basis means what it says.
       !
       fl = 1.0_dp
-      do i = 1, nsh_p
-         if (p_c(1, i) /= 0.0_dp) fl(p_l(i)) = pb%sh_c(1, i)/p_c(1, i)
+      do i = 1, bld%nsh_p
+         if (bld%p_c(1, i) /= 0.0_dp) fl(bld%p_l(i)) = pb%sh_c(1, i)/bld%p_c(1, i)
       end do
-      do i = 1, nsh_p
-         if (fl(p_l(i)) /= 0.0_dp) p_c(:, i) = p_c(:, i)/fl(p_l(i))
+      do i = 1, bld%nsh_p
+         if (fl(bld%p_l(i)) /= 0.0_dp) bld%p_c(:, i) = bld%p_c(:, i)/fl(bld%p_l(i))
       end do
-      call pb%build(nsh_p, p_l(1:nsh_p), p_np(1:nsh_p), p_e(1:maxnp_p, 1:nsh_p), &
-                    p_c(1:maxnp_p, 1:nsh_p), p_r(:, 1:nsh_p), &
+      call pb%build(bld%nsh_p, bld%p_l(1:bld%nsh_p), bld%p_np(1:bld%nsh_p), bld%p_e(1:maxnp_p, 1:bld%nsh_p), &
+                    bld%p_c(1:maxnp_p, 1:bld%nsh_p), bld%p_r(:, 1:bld%nsh_p), &
                     b%natm, b%at_z, b%at_r, maxnp_p, at_elem=b%at_elem)
 
       ! The coefficient a split shell ENDS UP with is not the one handed to
@@ -152,11 +164,11 @@ contains
       ! whatever the constructor does to the numbers on the way through --
       ! computing it beforehand left every s and p shell short by that
       ! factor, which is a 4e-9 error in G and a silent one.
-      do t = 1, ntr
-         tr_a(t) = tr_a(t)/pb%sh_c(1, tr_s(t))
+      do t = 1, bld%ntr
+         bld%tr_a(t) = bld%tr_a(t)/pb%sh_c(1, bld%tr_s(t))
       end do
 
-      call build_maps(b, pb, tr_mu, tr_s, tr_a, ntr, m)
+      call build_maps(b, pb, bld%tr_mu, bld%tr_s, bld%tr_a, bld%ntr, m)
       m%active = .true.
       block
          character(len=8) :: dbge
@@ -186,7 +198,7 @@ contains
             end block
          end if
       end block
-      deallocate (p_l, p_np, p_e, p_c, p_r, tr_mu, tr_s, tr_a, tr_whole, grp)
+      deallocate (bld%p_l, bld%p_np, bld%p_e, bld%p_c, bld%p_r, bld%tr_mu, bld%tr_s, bld%tr_a, bld%tr_whole, grp)
    end subroutine decontract_basis
 
    !
@@ -318,16 +330,12 @@ contains
    ! Emit the shells one group becomes, and the triples that map the group's
    ! contracted shells onto them.
    !
-   subroutine split_group(b, grp, g, cut, minprim, p_l, p_np, p_e, p_c, p_r, nsh_p, &
-                          tr_mu, tr_s, tr_a, tr_whole, ntr)
+   subroutine split_group(b, grp, g, cut, minprim, bld)
       type(trc_basis_t), intent(in) :: b
       integer,  intent(in) :: g, minprim
       integer,  intent(in) :: grp(:)
       real(dp), intent(in) :: cut
-      integer,  intent(inout) :: nsh_p, ntr
-      integer,  intent(inout) :: p_l(:), p_np(:), tr_mu(:), tr_s(:)
-      real(dp), intent(inout) :: p_e(:, :), p_c(:, :), p_r(:, :), tr_a(:)
-      logical,  intent(inout) :: tr_whole(:)
+      type(decon_build_t), intent(inout) :: bld
 
       integer :: nmem, i, mu, k, kk, kc, s, ncomp, nmulti, i0
       integer :: mem(b%nshell)
@@ -347,8 +355,7 @@ contains
       ! mapped one to one, exactly as the unsplit path would have them.
       if (.not. group_pays(b, grp, g, cut, minprim)) then
          do i = 1, nmem
-            call emit_whole(b, mem(i), p_l, p_np, p_e, p_c, p_r, nsh_p, &
-                            tr_mu, tr_s, tr_a, tr_whole, ntr)
+            call emit_whole(b, mem(i), bld)
          end do
          return
       end if
@@ -372,8 +379,7 @@ contains
          mu = mem(i)
          if (nmulti == 1 .and. mu == i0) then
             ! The one real contraction in the group survives intact.
-            call emit_whole(b, mu, p_l, p_np, p_e, p_c, p_r, nsh_p, &
-                            tr_mu, tr_s, tr_a, tr_whole, ntr)
+            call emit_whole(b, mu, bld)
             cycle
          end if
          ! Everything else becomes one shell per primitive. An exponent
@@ -383,11 +389,11 @@ contains
          do k = 1, b%sh_np(mu)
             e = b%sh_e(k, mu)
             s = 0
-            do kk = nsh_p, 1, -1
-               if (p_np(kk) /= 1) cycle
-               if (p_l(kk) /= b%sh_l(mu)) cycle
-               if (maxval(abs(p_r(:, kk) - b%sh_r(:, mu))) > 1.0e-10_dp) cycle
-               if (same_exp(p_e(1, kk), e)) then
+            do kk = bld%nsh_p, 1, -1
+               if (bld%p_np(kk) /= 1) cycle
+               if (bld%p_l(kk) /= b%sh_l(mu)) cycle
+               if (maxval(abs(bld%p_r(:, kk) - b%sh_r(:, mu))) > 1.0e-10_dp) cycle
+               if (same_exp(bld%p_e(1, kk), e)) then
                   s = kk
                   exit
                end if
@@ -405,42 +411,38 @@ contains
                      end if
                   end do
                end do
-               nsh_p = nsh_p + 1
-               p_l(nsh_p) = b%sh_l(mu)
-               p_np(nsh_p) = 1
-               p_e(1, nsh_p) = e
-               p_c(1, nsh_p) = cbig
-               p_r(:, nsh_p) = b%sh_r(:, mu)
-               s = nsh_p
+               bld%nsh_p = bld%nsh_p + 1
+               bld%p_l(bld%nsh_p) = b%sh_l(mu)
+               bld%p_np(bld%nsh_p) = 1
+               bld%p_e(1, bld%nsh_p) = e
+               bld%p_c(1, bld%nsh_p) = cbig
+               bld%p_r(:, bld%nsh_p) = b%sh_r(:, mu)
+               s = bld%nsh_p
             end if
             ! Numerator only; the denominator is the coefficient the
             ! emitted shell actually ends up with, filled in by the caller
             ! once the basis is built.
-            ntr = ntr + 1
-            tr_mu(ntr) = mu
-            tr_s(ntr) = s
-            tr_a(ntr) = b%sh_c(k, mu)
-            tr_whole(ntr) = .false.
+            bld%ntr = bld%ntr + 1
+            bld%tr_mu(bld%ntr) = mu
+            bld%tr_s(bld%ntr) = s
+            bld%tr_a(bld%ntr) = b%sh_c(k, mu)
+            bld%tr_whole(bld%ntr) = .false.
          end do
       end do
    end subroutine split_group
 
-   subroutine emit_whole(b, mu, p_l, p_np, p_e, p_c, p_r, nsh_p, &
-                         tr_mu, tr_s, tr_a, tr_whole, ntr)
+   subroutine emit_whole(b, mu, bld)
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: mu
-      integer,  intent(inout) :: nsh_p, ntr
-      integer,  intent(inout) :: p_l(:), p_np(:), tr_mu(:), tr_s(:)
-      real(dp), intent(inout) :: p_e(:, :), p_c(:, :), p_r(:, :), tr_a(:)
-      logical,  intent(inout) :: tr_whole(:)
+      type(decon_build_t), intent(inout) :: bld
       integer :: k
-      nsh_p = nsh_p + 1
-      p_l(nsh_p) = b%sh_l(mu)
-      p_np(nsh_p) = b%sh_np(mu)
-      p_r(:, nsh_p) = b%sh_r(:, mu)
+      bld%nsh_p = bld%nsh_p + 1
+      bld%p_l(bld%nsh_p) = b%sh_l(mu)
+      bld%p_np(bld%nsh_p) = b%sh_np(mu)
+      bld%p_r(:, bld%nsh_p) = b%sh_r(:, mu)
       do k = 1, b%sh_np(mu)
-         p_e(k, nsh_p) = b%sh_e(k, mu)
-         p_c(k, nsh_p) = b%sh_c(k, mu)
+         bld%p_e(k, bld%nsh_p) = b%sh_e(k, mu)
+         bld%p_c(k, bld%nsh_p) = b%sh_c(k, mu)
       end do
       ! NOT alpha = 1. The constructor scales every coefficient it is given
       ! by common_fac_sp, so a shell handed back its own coefficients comes
@@ -450,11 +452,11 @@ contains
       ! know the constant. Assuming alpha = 1 here put every s and p shell
       ! out by 0.28 and 0.49 and was invisible to check_gc, which compares
       ! terco's two paths to each other and not to anything external.
-      ntr = ntr + 1
-      tr_mu(ntr) = mu
-      tr_s(ntr) = nsh_p
-      tr_a(ntr) = b%sh_c(1, mu)
-      tr_whole(ntr) = .true.
+      bld%ntr = bld%ntr + 1
+      bld%tr_mu(bld%ntr) = mu
+      bld%tr_s(bld%ntr) = bld%nsh_p
+      bld%tr_a(bld%ntr) = b%sh_c(1, mu)
+      bld%tr_whole(bld%ntr) = .true.
    end subroutine emit_whole
 
    !

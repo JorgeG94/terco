@@ -205,7 +205,8 @@ module trc_capi
    use pic_strings, only: to_string
    use pic_timer, only: timer_type
    use trc_linalg, only: trc_linalg_t, trc_release_local_mem_reservation
-   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_driver_mo_to_cart
+   use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_driver_mo_to_cart, &
+                               trc_rimp2_options_t
    use trc_scf_file, only: trc_scf_save, trc_scf_load
    use trc_cart_perm, only: trc_cart_order_id
    use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
@@ -1469,14 +1470,19 @@ contains
       if (.not. ab%b%on_device) call ab%b%to_device()
       call pl%build(bb%b, 1.0e-12_dp)
       call pl%to_device()
-      if (collective) then
-         call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
-                            nfrozen=int(nfrozen), aux_block=nblk, comm=comm)
-         call comm%finalize()
-      else
-         call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
-                            nfrozen=int(nfrozen), aux_block=nblk)
-      end if
+      block
+         type(trc_rimp2_options_t) :: rimp2_opts
+         rimp2_opts%nfrozen = int(nfrozen)
+         rimp2_opts%aux_block = nblk
+         if (collective) then
+            call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
+                               opts=rimp2_opts, comm=comm)
+            call comm%finalize()
+         else
+            call trc_rimp2_run(bb%b, ab%b, pl, bb%nalpha, bb%cmo(:, :, 1), bb%eps(:, 1), res, &
+                               opts=rimp2_opts)
+         end if
+      end block
       call pl%release()
       if (len_trim(res%message) > 0) then
          status = TRC_ERR_UNSUPPORTED
@@ -4299,7 +4305,8 @@ contains
       real(dp), pointer :: fitted_b(:, :)
       integer :: nfrozen, nblk, i, nc
       logical :: collective
-      real(dp), allocatable :: cmo_a(:, :), cmo_b(:, :), eps_a(:), eps_b(:)
+      type(trc_rimp2_options_t) :: rimp2_opts
+      real(dp), allocatable :: cmo_a(:, :), eps_a(:), cmo_ab(:, :, :), eps_ab(:, :)
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -4373,17 +4380,30 @@ contains
       ! A Cartesian basis copies straight through (nc == the SCF's own
       ! space already).
       nc = cx%bb%b%nao
-      allocate (cmo_a(nc, nc), eps_a(nc))
-      if (cx%res%nspin == 2) allocate (cmo_b(nc, nc), eps_b(nc))
-      if (cx%bb%b%spherical) then
-         call rimp2_driver_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), cmo_a, eps_a)
-         if (cx%res%nspin == 2) call rimp2_driver_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 2), cx%res%eps(:, 2), cmo_b, eps_b)
+      rimp2_opts%nfrozen = nfrozen
+      rimp2_opts%aux_block = nblk
+      rimp2_opts%verbose = cx%opts%verbose
+      if (cx%res%nspin == 2) then
+         allocate (cmo_ab(nc, nc, 2), eps_ab(nc, 2))
       else
-         cmo_a = cx%res%cmo(:, :, 1)
-         eps_a = cx%res%eps(:, 1)
+         allocate (cmo_a(nc, nc), eps_a(nc))
+      end if
+      if (cx%bb%b%spherical) then
          if (cx%res%nspin == 2) then
-            cmo_b = cx%res%cmo(:, :, 2)
-            eps_b = cx%res%eps(:, 2)
+            call rimp2_driver_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), cmo_ab(:, :, 1), eps_ab(:, 1))
+            call rimp2_driver_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 2), cx%res%eps(:, 2), cmo_ab(:, :, 2), eps_ab(:, 2))
+         else
+            call rimp2_driver_mo_to_cart(cx%bb%b, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), cmo_a, eps_a)
+         end if
+      else
+         if (cx%res%nspin == 2) then
+            cmo_ab(:, :, 1) = cx%res%cmo(:, :, 1)
+            cmo_ab(:, :, 2) = cx%res%cmo(:, :, 2)
+            eps_ab(:, 1) = cx%res%eps(:, 1)
+            eps_ab(:, 2) = cx%res%eps(:, 2)
+         else
+            cmo_a = cx%res%cmo(:, :, 1)
+            eps_a = cx%res%eps(:, 1)
          end if
       end if
       call pl%build(cx%bb%b, cx%opts%eri_thresh)
@@ -4391,30 +4411,30 @@ contains
       if (cx%res%nspin == 2) then
          ! Unrestricted: no DF chaining (--df is closed-shell only), one
          ! rank only (checked above).
-         call trc_urimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%nbeta, cmo_a, cmo_b, eps_a, eps_b, res, &
-                             nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la)
+         call trc_urimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cx%nbeta, cmo_ab, eps_ab, res, &
+                             opts=rimp2_opts, la=cx%la)
       ! Chained off --df's fit, ONLY when RI-MP2's own auxiliary basis is
       ! exactly the jkfit one (same JSON path), not merely the same shape:
       ! trc_rimp2_run checks dimensions, not that the basis is the same
       ! one, and a path match is this handle's own way to be sure of that.
       else if (cx%df_fit_ok .and. len_trim(cx%jkfit_path) > 0 .and. cx%jkfit_path == cx%aux_path) then
          fitted_b => cx%dfjk%packed_b()
+         rimp2_opts%packed_b => fitted_b
          if (collective) then
             call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
-                               nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la, &
-                               packed_b=fitted_b)
+                               opts=rimp2_opts, comm=comm, la=cx%la)
             call comm%finalize()
          else
             call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
-                               nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la, packed_b=fitted_b)
+                               opts=rimp2_opts, la=cx%la)
          end if
       else if (collective) then
          call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
-                            nfrozen=nfrozen, aux_block=nblk, comm=comm, verbose=cx%opts%verbose, la=cx%la)
+                            opts=rimp2_opts, comm=comm, la=cx%la)
          call comm%finalize()
       else
          call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
-                            nfrozen=nfrozen, aux_block=nblk, verbose=cx%opts%verbose, la=cx%la)
+                            opts=rimp2_opts, la=cx%la)
       end if
       call pl%release()
       cx%e_os = res%e_os
