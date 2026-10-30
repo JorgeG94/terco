@@ -46,7 +46,7 @@ module trc_minao
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_1e
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_sph, only: sph_cart_to_sph
    use trc_linalg, only: trc_linalg_t
    use trc_scf_context, only: scf_context_orthogonalize
@@ -206,7 +206,7 @@ contains
       ! refusal above already rules out the one case that would mismatch
       ! (a Cartesian target with occupied d).
       call trc_basis_from_json(bpath, b%natm, b%at_elem, b%at_r, minimal, error, &
-                               force_cart=.not. b%spherical, charges=b%at_z)
+                               force_cart=.not. b%spherical, overrides=trc_basis_json_overrides(charges=b%at_z))
       if (error%has_error()) then
          call error%set(error%get_code(), "minao guess: "//error%get_message())
          return

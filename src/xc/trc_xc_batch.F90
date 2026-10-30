@@ -65,8 +65,11 @@ module trc_xc_batch
       integer, allocatable :: b_shao(:)     !! parallel to b_sh: the shell's first function within the batch's local basis, 0-based
       integer, allocatable :: b_aooff(:)    !! (nbatch+1): its AOs are b_ao(b_aooff(b) .. b_aooff(b+1)-1)
       integer, allocatable :: src(:)        !! (npts): the input point each stored point came from;
-                                             !! HOST-only, it carries per-point input data
-                                             !! (`atom`, `qw`) through the permutation.
+                                             !! HOST-only and short-lived: `build` drops it before
+                                             !! returning unless `keep_src` is set, so the type is
+                                             !! never mapped whole with it allocated.
+      logical :: keep_src = .false.          !! `build_from_grid` sets it to read `src` once, then
+                                             !! drops `src` itself.
       integer, allocatable :: b_ao(:)
       integer :: n_dropped = 0               !! points below w_tol, left out of npts
       real(dp), allocatable :: b_amax(:)    !! parallel to b_ao: max |chi| of that function over the batch
@@ -314,6 +317,7 @@ contains
       call batch_maxima(nb, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, n, this%r, &
                         this%b_off, this%b_shoff, size(this%b_sh), this%b_sh, this%b_aooff, &
                         size(this%b_ao), this%b_amax)
+      if (.not. this%keep_src) deallocate (this%src)
 
    contains
 
@@ -399,12 +403,15 @@ contains
       integer, intent(in), optional :: max_pts   !! as `build`'s
       integer :: k
 
+      this%keep_src = .true.
       call this%build(grid%n_points, grid%coords, grid%weights, b, max_pts=max_pts)
+      this%keep_src = .false.
       allocate (this%atom(this%npts), this%qw(this%npts))
       do k = 1, this%npts
          this%atom(k) = grid%atom(this%src(k))
          this%qw(k) = grid%quad_weights(this%src(k))
       end do
+      if (allocated(this%src)) deallocate (this%src)
    end subroutine xcgrid_build_from_grid
 
    subroutine xcgrid_to_device(this)

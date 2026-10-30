@@ -773,8 +773,8 @@ contains
    ! with a message that says so.
    !
    subroutine trc_urimp2_run(b, aux, pl, nalpha, nbeta, cmo, eps, res, opts, la, comm)
-      !! `cmo`/`eps` are alpha in column/row 1, beta in 2 -- trc_scf_result_t's
-      !! own (nao, nao, nspin)/(nao, nspin) layout, so `res%cmo`/`res%eps` pass straight through.
+      !! `cmo`/`eps`: alpha in column/row 1, beta in 2 (trc_scf_result_t's layout). `res%cmo`/`res%eps`
+      !! pass straight through for a Cartesian, nspin = 2 result only; fold a spherical one first.
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: pl
       integer, intent(in) :: nalpha, nbeta
