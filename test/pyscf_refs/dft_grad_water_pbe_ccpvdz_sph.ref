@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["dft_grad_water_pbe_ccpvdz_sph"] -> gen_dft_grad
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: af4883dbd9c669fa1656c126907f812457467ad38b981fbd0aafe07955cfc1b6
+# hash: 33dc5d34e2a061176ba55449595f78497342ee3a3b209270c73821d1fefef432
 # files: test/check_dft_grad_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/water.xyz
 NAT 3
 NAO 24

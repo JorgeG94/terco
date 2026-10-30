@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["ao"] -> gen_ao
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 07addbdcf9713ccc74f78ef7bcc97fa420fc1a86dfde899d35b76eed73e12560
+# hash: b8c542dae49a79d29c4bdd281e9d09e80617bc55e835aa9b92be67c1309431e0
 # files: test/check_ao.F90
 NPTS 200
 NAO 30
