@@ -2019,7 +2019,7 @@ program trc_main
                          "for a later --restart")
    call r%cli%add_option("restart", "read the SCF result from a --save-scf file instead of running the "// &
                          "SCF, e.g. to go straight to --rimp2; the molecule, basis and method must match")
-   call r%cli%add_option("json", "also write a JSON run_summary to this file")
+   call r%cli%add_option("json", "also write a JSON summary to this file")
    call r%cli%add_flag("grad", "Print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
                        "RHF/UHF, or KS-DFT for an LDA/GGA --func (global and range-separated "// &
                        "hybrids and VV10 included); with --df, the fitted RHF/RKS gradient; "// &
@@ -2168,7 +2168,7 @@ program trc_main
                          "default, 10.0)")
    call r%cli%add_option("logger", "log verbosity: knowledge, error, warning, performance, info, "// &
                          "large_info, verbose or debug (info); also sets DL-FIND's own printl", default="info")
-   call r%cli%add_flag("silent", "only the run_summary: no SCF iterations, timings or guess details", short="s")
+   call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 
    call r%cli%parse(r%err)

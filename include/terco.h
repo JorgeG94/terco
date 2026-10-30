@@ -227,9 +227,9 @@ int trc_fock_many(trc_handle_t eri, trc_handle_t basis, int ndens, const double*
  */
 int trc_fock_nosym(trc_handle_t eri, trc_handle_t basis, const double* dmat, double* gmat, int dscreen);
 
-int trc_scf(trc_handle_t basis, int nalpha, int nbeta, const char* functional, int grid_level, double conv_energy, double conv_density, int max_iteration, const void* dguess, int verbose, double* energy, double* e_xc, double* dmat, double* eps, int* niter);
+int trc_scf(trc_handle_t basis, int nalpha, int nbeta, const char* functional, int grid_level, double conv_energy, double conv_density, int max_iter, const void* dguess, int verbose, double* energy, double* e_xc, double* dmat, double* eps, int* niter);
 
-int trc_scf_mpi(int fcomm, trc_handle_t basis, int nalpha, int nbeta, const char* functional, int grid_level, double conv_energy, double conv_density, int max_iteration, const void* dguess, int verbose, double* energy, double* e_xc, double* dmat, double* eps, int* niter);
+int trc_scf_mpi(int fcomm, trc_handle_t basis, int nalpha, int nbeta, const char* functional, int grid_level, double conv_energy, double conv_density, int max_iter, const void* dguess, int verbose, double* energy, double* e_xc, double* dmat, double* eps, int* niter);
 
 int trc_rimp2(int fcomm, trc_handle_t basis, trc_handle_t aux, int nfrozen, int aux_block, double* e_os, double* e_ss);
 
@@ -388,7 +388,7 @@ int trc_set_pcm_radii(trc_handle_t handle, int natm, const void* radii);
  */
 int trc_pcm_energy(trc_handle_t handle, double* e_diel, double* q_total, int* npoints);
 
-int trc_set_convergence(trc_handle_t handle, double conv_energy, double conv_diis, int max_iteration, int ndiis);
+int trc_set_convergence(trc_handle_t handle, double conv_energy, double conv_diis, int max_iter, int ndiis);
 
 /**
  * Canonical orthogonalisation threshold: an eigenvalue of S below
@@ -891,15 +891,15 @@ int trc_functional_info(const char* name, int* flags, double* exx, double* c_os,
 /**
  * XC_AVAILABLE_FUNCTIONALS -- every name trc_set_method/
  * trc_functional_info can look up that terco can actually run today
- * -- space-separated and NUL-terminated into `buffer` (capacity
+ * -- space-separated and NUL-terminated into `buf` (capacity
  * `buflen` bytes, NUL included). `reqlen` is ALWAYS set to the
  * number of bytes that call needed, NUL included, whether or not it
- * fit: a caller queries it with `buflen = 0` (`buffer` is never
+ * fit: a caller queries it with `buflen = 0` (`buf` is never
  * touched then) and allocates exactly `reqlen` bytes for a second,
- * filling call. Returns TRC_ERR_BADARG, leaving `buffer` untouched, if
+ * filling call. Returns TRC_ERR_BADARG, leaving `buf` untouched, if
  * `buflen` is positive but smaller than `reqlen`.
  */
-int trc_functional_list(char* buffer, int buflen, int* reqlen);
+int trc_functional_list(char* buf, int buflen, int* reqlen);
 
 int trc_nao(trc_handle_t handle, int* nao);
 
@@ -1047,9 +1047,9 @@ int trc_mo_energies(trc_handle_t handle, double* eps);
 int trc_rimp2_energy(trc_handle_t handle, double* e_os, double* e_ss);
 
 /**
- * The last message, NUL-terminated into `buffer` of `buflen` chars.
+ * The last message, NUL-terminated into `buf` of `buflen` chars.
  */
-int trc_message(trc_handle_t handle, char* buffer, int buflen);
+int trc_message(trc_handle_t handle, char* buf, int buflen);
 
 /**
  * The basis handle inside the context: BORROWED, never destroyed by

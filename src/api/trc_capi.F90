@@ -1394,10 +1394,10 @@ contains
    ! density filled in, so the caller can decide what that is worth.
    !
    function capi_scf(basis, nalpha, nbeta, functional, grid_level, conv_energy, &
-                     conv_density, max_iteration, dguess, verbose, energy, e_xc, dmat, eps, &
+                     conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
                      niter) result(status) bind(c, name="trc_scf")
       type(c_ptr), value :: basis
-      integer(c_int), value :: nalpha, nbeta, grid_level, max_iteration, verbose
+      integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
       character(kind=c_char), intent(in) :: functional(*)
       real(c_double), value :: conv_energy, conv_density
       type(c_ptr), value :: dguess
@@ -1412,7 +1412,7 @@ contains
       req%grid_level = int(grid_level)
       req%conv_energy = real(conv_energy, dp)
       req%conv_density = real(conv_density, dp)
-      req%max_iteration = int(max_iteration)
+      req%max_iteration = int(max_iter)
       req%verbose = verbose /= 0
       status = scf_entry(basis, functional, req, dguess, res_out, dmat, eps)
       energy = real(res_out%energy, c_double)
@@ -1439,11 +1439,11 @@ contains
    ! comm_from_handle gives back.
    !
    function capi_scf_mpi(fcomm, basis, nalpha, nbeta, functional, grid_level, conv_energy, &
-                         conv_density, max_iteration, dguess, verbose, energy, e_xc, dmat, eps, &
+                         conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
                          niter) result(status) bind(c, name="trc_scf_mpi")
       integer(c_int), value :: fcomm
       type(c_ptr), value :: basis
-      integer(c_int), value :: nalpha, nbeta, grid_level, max_iteration, verbose
+      integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
       character(kind=c_char), intent(in) :: functional(*)
       real(c_double), value :: conv_energy, conv_density
       type(c_ptr), value :: dguess
@@ -1467,7 +1467,7 @@ contains
       req%grid_level = int(grid_level)
       req%conv_energy = real(conv_energy, dp)
       req%conv_density = real(conv_density, dp)
-      req%max_iteration = int(max_iteration)
+      req%max_iteration = int(max_iter)
       req%verbose = verbose /= 0
       if (.not. collective) then
          ! fcomm was -1: one rank, no communicator: trc_scf.
@@ -2527,11 +2527,11 @@ contains
       status = TRC_OK
    end function trc_pcm_energy
 
-   function trc_set_convergence(handle, conv_energy, conv_diis, max_iteration, ndiis) result(status) &
+   function trc_set_convergence(handle, conv_energy, conv_diis, max_iter, ndiis) result(status) &
       bind(c, name="trc_set_convergence")
       type(c_ptr), value :: handle
       real(c_double), value :: conv_energy, conv_diis
-      integer(c_int), value :: max_iteration, ndiis
+      integer(c_int), value :: max_iter, ndiis
       integer(c_int) :: status
       type(context_box), pointer :: cx
       status = TRC_ERR_NULL
@@ -2546,8 +2546,8 @@ contains
          call refuse(cx, "trc_set_convergence: conv_diis must be positive (the commutator norm gate)")
          return
       end if
-      if (max_iteration < 1) then
-         call refuse(cx, "trc_set_convergence: max_iteration must be at least 1, got "//trim(itoa(int(max_iteration))))
+      if (max_iter < 1) then
+         call refuse(cx, "trc_set_convergence: max_iter must be at least 1, got "//trim(itoa(int(max_iter))))
          return
       end if
       if (ndiis < 1) then
@@ -2556,7 +2556,7 @@ contains
       end if
       cx%opts%conv_energy = real(conv_energy, dp)
       cx%opts%conv_diis = real(conv_diis, dp)
-      cx%opts%max_iteration = int(max_iteration)
+      cx%opts%max_iteration = int(max_iter)
       cx%opts%ndiis = int(ndiis)
       status = TRC_OK
    end function trc_set_convergence
@@ -4791,17 +4791,17 @@ contains
       c_ss = real(f%pt2_css, c_double)
    end function trc_functional_info
 
-   function trc_functional_list(buffer, buflen, reqlen) result(status) bind(c, name="trc_functional_list")
+   function trc_functional_list(buf, buflen, reqlen) result(status) bind(c, name="trc_functional_list")
       !! XC_AVAILABLE_FUNCTIONALS -- every name trc_set_method/
       !! trc_functional_info can look up that terco can actually run today
-      !! -- space-separated and NUL-terminated into `buffer` (capacity
+      !! -- space-separated and NUL-terminated into `buf` (capacity
       !! `buflen` bytes, NUL included). `reqlen` is ALWAYS set to the
       !! number of bytes that call needed, NUL included, whether or not it
-      !! fit: a caller queries it with `buflen = 0` (`buffer` is never
+      !! fit: a caller queries it with `buflen = 0` (`buf` is never
       !! touched then) and allocates exactly `reqlen` bytes for a second,
-      !! filling call. Returns TRC_ERR_BADARG, leaving `buffer` untouched, if
+      !! filling call. Returns TRC_ERR_BADARG, leaving `buf` untouched, if
       !! `buflen` is positive but smaller than `reqlen`.
-      character(kind=c_char), intent(out) :: buffer(*)
+      character(kind=c_char), intent(out) :: buf(*)
       integer(c_int), value :: buflen
       integer(c_int), intent(out) :: reqlen
       integer(c_int) :: status
@@ -4822,9 +4822,9 @@ contains
       do i = 1, len_trim(XC_AVAILABLE_FUNCTIONALS)
          if (XC_AVAILABLE_FUNCTIONALS(i:i) == ",") cycle
          k = k + 1
-         buffer(k) = XC_AVAILABLE_FUNCTIONALS(i:i)
+         buf(k) = XC_AVAILABLE_FUNCTIONALS(i:i)
       end do
-      buffer(k + 1) = c_null_char
+      buf(k + 1) = c_null_char
    end function trc_functional_list
 
    function trc_nao(handle, nao) result(status) bind(c, name="trc_nao")
@@ -5422,10 +5422,10 @@ contains
       status = TRC_OK
    end function trc_rimp2_energy
 
-   function trc_message(handle, buffer, buflen) result(status) bind(c, name="trc_message")
-      !! The last message, NUL-terminated into `buffer` of `buflen` chars.
+   function trc_message(handle, buf, buflen) result(status) bind(c, name="trc_message")
+      !! The last message, NUL-terminated into `buf` of `buflen` chars.
       type(c_ptr), value :: handle
-      character(kind=c_char), intent(out) :: buffer(*)
+      character(kind=c_char), intent(out) :: buf(*)
       integer(c_int), value :: buflen
       integer(c_int) :: status
       type(context_box), pointer :: cx
@@ -5435,9 +5435,9 @@ contains
       call c_f_pointer(handle, cx)
       n = min(len_trim(cx%message), int(buflen) - 1)
       do i = 1, n
-         buffer(i) = cx%message(i:i)
+         buf(i) = cx%message(i:i)
       end do
-      if (buflen > 0) buffer(n + 1) = c_null_char
+      if (buflen > 0) buf(n + 1) = c_null_char
       status = TRC_OK
    end function trc_message
 
