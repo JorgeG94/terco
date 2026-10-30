@@ -221,15 +221,15 @@ int trc_fock_many(trc_handle_t eri, trc_handle_t basis, int ndens, const double*
 
 /**
  * CONTRAVARIANT in, COVARIANT out, exactly as capi_fock -- the
- * diagonal congruence ao_scale_cov/fock_scale_in apply does not
+ * diagonal congruence ao_norm_scale_cov/fock_scale_in apply does not
  * care whether `dmat` is symmetric, so nothing here differs from
  * the symmetric entry beyond which shared routines it reuses.
  */
 int trc_fock_nosym(trc_handle_t eri, trc_handle_t basis, const double* dmat, double* gmat, int dscreen);
 
-int trc_scf(trc_handle_t basis, int nalpha, int nbeta, const char* functional, int grid_level, double conv_energy, double conv_density, int max_iter, const void* dguess, int verbose, double* energy, double* e_xc, double* dmat, double* eps, int* niter);
+int trc_scf(trc_handle_t basis, int nalpha, int nbeta, const char* functional, int grid_level, double conv_energy, double conv_density, int max_iteration, const void* dguess, int verbose, double* energy, double* e_xc, double* dmat, double* eps, int* niter);
 
-int trc_scf_mpi(int fcomm, trc_handle_t basis, int nalpha, int nbeta, const char* functional, int grid_level, double conv_energy, double conv_density, int max_iter, const void* dguess, int verbose, double* energy, double* e_xc, double* dmat, double* eps, int* niter);
+int trc_scf_mpi(int fcomm, trc_handle_t basis, int nalpha, int nbeta, const char* functional, int grid_level, double conv_energy, double conv_density, int max_iteration, const void* dguess, int verbose, double* energy, double* e_xc, double* dmat, double* eps, int* niter);
 
 int trc_rimp2(int fcomm, trc_handle_t basis, trc_handle_t aux, int nfrozen, int aux_block, double* e_os, double* e_ss);
 
@@ -388,7 +388,7 @@ int trc_set_pcm_radii(trc_handle_t handle, int natm, const void* radii);
  */
 int trc_pcm_energy(trc_handle_t handle, double* e_diel, double* q_total, int* npoints);
 
-int trc_set_convergence(trc_handle_t handle, double conv_energy, double conv_diis, int max_iter, int ndiis);
+int trc_set_convergence(trc_handle_t handle, double conv_energy, double conv_diis, int max_iteration, int ndiis);
 
 /**
  * Canonical orthogonalisation threshold: an eigenvalue of S below
@@ -570,7 +570,7 @@ int trc_set_geometry(trc_handle_t handle, const double* xyz);
  * sized for.
  *
  * NOT refused any more: a functional with VV10 nonlocal correlation
- * (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_gradient_add's
+ * (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_grad_add's
  * term on top of the semilocal one, on VV10's own grid
  * (`cx%opts%nlc_grid_level`, the SAME level the SCF itself converged
  * it on). wB97M-V is in terco's table too now (a meta-GGA with VV10
@@ -610,7 +610,7 @@ int trc_set_geometry(trc_handle_t handle, const double* xyz);
  * or the two are not derivatives of the same energy.
  * `trc_scf_gradient` itself builds the erf(omega r)/r long-range
  * exchange term (a second eri%gradient pass, its own header) and
- * trc_xc_grad%xc_gradient_add computes the functional's semilocal
+ * trc_xc_grad%xc_grad_add computes the functional's semilocal
  * GGA part exactly as for any other GGA -- see that module's own
  * header on why `omega`/`exx_lr` do not affect it.
  *
@@ -772,7 +772,7 @@ int trc_polarizability(trc_handle_t handle, double* alpha);
  * clean generalisation here). The orbital basis may be spherical:
  * `cx%res%cmo`/`eps` (at whatever space the SCF ran in) are folded
  * into the Cartesian, zero-padded space `trc_rimp2_run`/
- * `trc_urimp2_run` themselves run in by `rimp2_mo_to_cart`
+ * `trc_urimp2_run` themselves run in by `rimp2_driver_mo_to_cart`
  * (trc_rimp2_driver.F90's own header says why the pad is exact).
  */
 int trc_run_rimp2(trc_handle_t handle);
@@ -891,15 +891,15 @@ int trc_functional_info(const char* name, int* flags, double* exx, double* c_os,
 /**
  * XC_AVAILABLE_FUNCTIONALS -- every name trc_set_method/
  * trc_functional_info can look up that terco can actually run today
- * -- space-separated and NUL-terminated into `buf` (capacity
+ * -- space-separated and NUL-terminated into `buffer` (capacity
  * `buflen` bytes, NUL included). `reqlen` is ALWAYS set to the
  * number of bytes that call needed, NUL included, whether or not it
- * fit: a caller queries it with `buflen = 0` (`buf` is never
+ * fit: a caller queries it with `buflen = 0` (`buffer` is never
  * touched then) and allocates exactly `reqlen` bytes for a second,
- * filling call. Returns TRC_ERR_BADARG, leaving `buf` untouched, if
+ * filling call. Returns TRC_ERR_BADARG, leaving `buffer` untouched, if
  * `buflen` is positive but smaller than `reqlen`.
  */
-int trc_functional_list(char* buf, int buflen, int* reqlen);
+int trc_functional_list(char* buffer, int buflen, int* reqlen);
 
 int trc_nao(trc_handle_t handle, int* nao);
 
@@ -1047,9 +1047,9 @@ int trc_mo_energies(trc_handle_t handle, double* eps);
 int trc_rimp2_energy(trc_handle_t handle, double* e_os, double* e_ss);
 
 /**
- * The last message, NUL-terminated into `buf` of `buflen` chars.
+ * The last message, NUL-terminated into `buffer` of `buflen` chars.
  */
-int trc_message(trc_handle_t handle, char* buf, int buflen);
+int trc_message(trc_handle_t handle, char* buffer, int buflen);
 
 /**
  * The basis handle inside the context: BORROWED, never destroyed by
