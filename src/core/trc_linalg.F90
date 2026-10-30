@@ -36,7 +36,32 @@ module trc_linalg
    private
 
    public :: trc_linalg_t
+   public :: trc_gemm_batch_t
+   public :: trc_gemm_batch
    public :: trc_release_local_mem_reservation
+
+   type :: trc_gemm_batch_t
+    !! The shape and layout of `count` GEMMs of one shape, item i of A
+    !! starting `(i-1)*sa` elements past the first, likewise B and C: the
+    !! arguments cublasDgemmStridedBatched takes besides the arrays and
+    !! the scalars. Build it with `trc_gemm_batch`, by assignment.
+    !!
+    !! Plain values only, and that is load-bearing: nvfortran 26.5
+    !! miscompiles structure constructors of types with allocatable or
+    !! pointer components, so nothing of the kind may ever be added here.
+      character :: transa = "N"   !! "N" or "T": op(A) = A or A^T
+      character :: transb = "N"   !! "N" or "T": op(B) = B or B^T
+      integer :: m = 0            !! rows of op(A) and of C
+      integer :: n = 0            !! columns of op(B) and of C
+      integer :: k = 0            !! columns of op(A), rows of op(B)
+      integer :: count = 0        !! GEMMs in the batch; fewer than 1 is a no-op
+      integer :: lda = 1          !! leading dimension of each stored A
+      integer :: ldb = 1          !! leading dimension of each stored B
+      integer :: ldc = 1          !! leading dimension of each C
+      integer(int64) :: sa = 0    !! elements between consecutive A items (0: shared)
+      integer(int64) :: sb = 0    !! elements between consecutive B items (0: shared)
+      integer(int64) :: sc = 0    !! elements between consecutive C items
+   end type trc_gemm_batch_t
 
    type :: trc_linalg_t
     !! long lived object that on device enabled builds holds a buffer space and cublas and cusolver handles
@@ -68,10 +93,12 @@ module trc_linalg
       ! first-argument type). So the raw forms keep their own plain names,
       ! and the shape-inferred forms get their OWN names alongside them --
       ! every existing `lp%gemm("N", ...)` / `lp%dot(n, x, y)` call is
-      ! completely unaffected.
+      ! completely unaffected. The batched form keeps flat `a(*)` dummies
+      ! for the same reason, and takes its shape from a trc_gemm_batch_t
+      ! instead of seventeen positional arguments.
       procedure :: gemm => linalg_gemm_raw
       procedure :: gemm_mat => linalg_gemm_matrix
-      procedure :: gemm_strided => linalg_gemm_strided
+      procedure :: gemm_batched => linalg_gemm_batched
       procedure :: transpose => linalg_transpose
       procedure :: sym_from_upper => linalg_sym_from_upper
       procedure :: potrf => linalg_potrf
@@ -232,11 +259,6 @@ contains
 #endif
    end subroutine linalg_gemm_raw
 
-   ! `count` GEMMs of one shape at once: matrix i of A starts at a(1 + (i-1) sa),
-   ! likewise B and C. cublasDgemmStridedBatched on the device; a loop of
-   ! pic_gemm on the host. The flat dummies are what lets a caller hand in
-   ! the start of a tile inside a larger array.
-   !
    ! C = A^T, out of place: A is m x n, C is n x m. cuBLAS's geam does it at
    ! close to the device's bandwidth, which a `do concurrent` copy cannot:
    ! one side of a transpose is always strided across a warp, and only a
@@ -301,26 +323,97 @@ contains
 #endif
    end subroutine linalg_sym_from_upper
 
-   subroutine linalg_gemm_strided(this, ta, tb, m, n, k, alpha, a, lda, sa, b, ldb, sb, beta, c, ldc, sc, count)
+   function trc_gemm_batch(m, n, k, count, lda, ldb, ldc, sa, sb, sc, transa, transb) result(g)
+    !! A batch of `count` GEMMs, op(A) m x k times op(B) k x n into C m x n.
+    !! Every layout argument defaults to TIGHT packing of the stored
+    !! operand, consistent with the transposes: the leading dimension is
+    !! the stored operand's row count (A is stored k x m when transa = "T",
+    !! m x k otherwise; B is stored n x k when transb = "T", k x n
+    !! otherwise) and the stride is that times its column count. Pass a
+    !! leading dimension for an operand that is a block of a taller array,
+    !! and `sa = 0_int64` / `sb = 0_int64` for one operand shared by every
+    !! item.
+      integer, intent(in) :: m, n, k, count
+      integer, intent(in), optional :: lda, ldb, ldc
+      integer(int64), intent(in), optional :: sa, sb, sc
+      character, intent(in), optional :: transa, transb
+      type(trc_gemm_batch_t) :: g
+      integer :: arows, acols, brows, bcols
+
+      g%transa = "N"
+      if (present(transa)) g%transa = transa
+      g%transb = "N"
+      if (present(transb)) g%transb = transb
+      g%m = m
+      g%n = n
+      g%k = k
+      g%count = count
+      if (g%transa == "T" .or. g%transa == "t") then
+         arows = k
+         acols = m
+      else
+         arows = m
+         acols = k
+      end if
+      if (g%transb == "T" .or. g%transb == "t") then
+         brows = n
+         bcols = k
+      else
+         brows = k
+         bcols = n
+      end if
+      g%lda = max(arows, 1)
+      if (present(lda)) g%lda = lda
+      g%ldb = max(brows, 1)
+      if (present(ldb)) g%ldb = ldb
+      g%ldc = max(m, 1)
+      if (present(ldc)) g%ldc = ldc
+      g%sa = int(g%lda, int64)*int(acols, int64)
+      if (present(sa)) g%sa = sa
+      g%sb = int(g%ldb, int64)*int(bcols, int64)
+      if (present(sb)) g%sb = sb
+      g%sc = int(g%ldc, int64)*int(n, int64)
+      if (present(sc)) g%sc = sc
+   end function trc_gemm_batch
+
+   subroutine linalg_gemm_batched(this, g, a, b, c, alpha, beta)
+    !! `g%count` GEMMs of one shape, C_i = alpha op(A_i) op(B_i) + beta C_i,
+    !! with A_i at a(1 + (i-1) g%sa), likewise B and C; alpha and beta
+    !! default to 1 and 0 as in gemm_mat. cublasDgemmStridedBatched on
+    !! the device, a loop of the raw gemm on the host.
+    !!
+    !! The transposes live in `g`, not in this call, because they decide
+    !! the default leading dimensions and strides trc_gemm_batch computed:
+    !! a transpose given here could disagree with the layout `g` was built
+    !! for, and that is a wrong number, not an error. alpha and beta stay
+    !! here because they change from call to call on one shape (the
+    !! meta-GGA V accumulates with beta = 1 on the descriptor the plain
+    !! V uses with beta = 0).
+    !!
+    !! The flat dummies are what lets a caller hand in the start of a tile
+    !! inside a larger array, `chi(c_off(ib) + 1)`, by sequence
+    !! association; under `host_data use_device` that is the device
+    !! address of that element, exactly what cuBLAS needs.
       class(trc_linalg_t), intent(in) :: this
-      character, intent(in) :: ta, tb
-      integer, intent(in) :: m, n, k, lda, ldb, ldc, count
-      integer(int64), intent(in) :: sa, sb, sc
-      real(dp), intent(in) :: alpha, beta
+      type(trc_gemm_batch_t), intent(in) :: g
       real(dp), intent(in) :: a(*), b(*)
       real(dp), intent(inout) :: c(*)
-      logical :: tra, trb
-      tra = ta == "T" .or. ta == "t"
-      trb = tb == "T" .or. tb == "t"
-      if (count < 1) return
+      real(dp), intent(in), optional :: alpha, beta
+      real(dp) :: al, be
+
+      if (g%count < 1) return
+      al = 1.0_dp
+      if (present(alpha)) al = alpha
+      be = 0.0_dp
+      if (present(beta)) be = beta
 #ifdef TRC_DEVICE
       block
          integer :: st, oa, ob
-         oa = merge(CUBLAS_OP_T, CUBLAS_OP_N, tra)
-         ob = merge(CUBLAS_OP_T, CUBLAS_OP_N, trb)
+         oa = merge(CUBLAS_OP_T, CUBLAS_OP_N, g%transa == "T" .or. g%transa == "t")
+         ob = merge(CUBLAS_OP_T, CUBLAS_OP_N, g%transb == "T" .or. g%transb == "t")
          !$acc host_data use_device(a, b, c)
-         st = cublasDgemmStridedBatched(this%hb, oa, ob, m, n, k, alpha, a, lda, sa, b, ldb, sb, &
-                                        beta, c, ldc, sc, count)
+         st = cublasDgemmStridedBatched(this%hb, oa, ob, g%m, g%n, g%k, al, a, g%lda, g%sa, b, g%ldb, g%sb, &
+                                        be, c, g%ldc, g%sc, g%count)
          !$acc end host_data
          if (st /= 0) error stop "trc_linalg: cublasDgemmStridedBatched failed"
       end block
@@ -328,15 +421,16 @@ contains
       block
          integer :: i
          integer(int64) :: oa, ob, oc
-         do i = 1, count
-            oa = int(i - 1, int64)*sa
-            ob = int(i - 1, int64)*sb
-            oc = int(i - 1, int64)*sc
-            call this%gemm(ta, tb, m, n, k, alpha, a(oa + 1), lda, b(ob + 1), ldb, beta, c(oc + 1), ldc)
+         do i = 1, g%count
+            oa = int(i - 1, int64)*g%sa
+            ob = int(i - 1, int64)*g%sb
+            oc = int(i - 1, int64)*g%sc
+            call this%gemm(g%transa, g%transb, g%m, g%n, g%k, al, a(oa + 1), g%lda, b(ob + 1), g%ldb, &
+                           be, c(oc + 1), g%ldc)
          end do
       end block
 #endif
-   end subroutine linalg_gemm_strided
+   end subroutine linalg_gemm_batched
 
    ! Cholesky factor of a symmetric positive definite A: the lower triangle
    ! is overwritten with L, A = L L^T. The upper triangle is left as it was.
@@ -717,7 +811,7 @@ contains
             d(i, j) = 0.0_dp
          end do
       else
-         call this%gemm("N", "T", n, n, k, occ, c(:, 1:k), n, c(:, 1:k), n, 0.0_dp, d, n)
+         call this%gemm_mat(c(:, 1:k), c(:, 1:k), d, transb="T", alpha=occ)
       end if
    end subroutine linalg_density
 

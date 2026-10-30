@@ -64,7 +64,7 @@ module trc_scf_grad_df
    use pic_types, only: dp, int64
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_scf_df, only: df_jk_t
-   use trc_linalg, only: trc_linalg_t
+   use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_step_table, only: step_table_t
    use pic_timer, only: timer_type
    use trc_rys_select, only: rys_select_tables_init
@@ -121,6 +121,7 @@ contains
       type(trc_basis_t) :: aux_subset
       integer :: n, naux, npack, ablk, nci, nchunk, ic, i0, i1, nc, s0, s1, p0, np, mu, nu, q, i, p
       integer(int64) :: n8, o8, c8, t
+      type(trc_gemm_batch_t) :: gemm_shape
       integer :: q0, w, nrp, rbase, il, j, kmode
       integer :: coff(0:DFG_NPCLS)
       integer, allocatable :: q_a(:), q_b(:), q_o(:), q_n(:)
@@ -260,8 +261,8 @@ contains
             call tbl%add_bytes(ST_UNPK, 8_int64*n8*n8*int(np, int64))
             call tbl%step_on(lp, ST_HGEMM, tc)
             call lp%gemm("T", "N", nc, n*np, n, 1.0_dp, cocc(1, i0), n, tens, n, 0.0_dp, half, nc)
-            call lp%gemm_strided("N", "N", nc, nocc, n, 1.0_dp, half, nc, c8*n8, cocc, n, 0_int64, &
-                                 0.0_dp, hb, nc, c8*o8, np)
+            gemm_shape = trc_gemm_batch(nc, nocc, n, np, sb=0_int64)
+            call lp%gemm_batched(gemm_shape, half, cocc, hb)
             call tbl%step_off(lp, ST_HGEMM, tc)
             call tbl%add_flop(ST_HGEMM, 2_int64*c8*n8*int(np, int64)*(n8 + o8))
             call tbl%step_on(lp, ST_XPACK, tc)
@@ -338,8 +339,8 @@ contains
             ! half_q = V_q C^T (nc x n), then M = -(k/2) occ_s^2 C_c half,
             ! every q of the block in one GEMM; the J part is the kernels'.
             call tbl%step_on(lp, ST_YK, tc)
-            call lp%gemm_strided("N", "T", nc, n, nocc, 1.0_dp, hb, nc, c8*o8, cocc, n, 0_int64, 0.0_dp, &
-                                 half, nc, c8*n8, np)
+            gemm_shape = trc_gemm_batch(nc, n, nocc, np, sb=0_int64, transb="T")
+            call lp%gemm_batched(gemm_shape, hb, cocc, half)
             call lp%gemm("N", "N", n, n*np, nc, -0.5_dp*k_scale*occ_s*occ_s, cocc(1, i0), n, half, nc, &
                          0.0_dp, tens, n)
             call tbl%step_off(lp, ST_YK, tc)
