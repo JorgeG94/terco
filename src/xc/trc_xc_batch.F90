@@ -29,6 +29,7 @@ module trc_xc_batch
    use pic_types, only: dp
    use trc_basis_types, only: trc_basis_t
    use trc_collocation, only: collocation_shell, NCART_MAX
+   use trc_dft_grid, only: dft_grid_t
    implicit none
    private
 
@@ -63,12 +64,16 @@ module trc_xc_batch
       integer, allocatable :: b_sh(:)
       integer, allocatable :: b_shao(:)     !! parallel to b_sh: the shell's first function within the batch's local basis, 0-based
       integer, allocatable :: b_aooff(:)    !! (nbatch+1): its AOs are b_ao(b_aooff(b) .. b_aooff(b+1)-1)
+      integer, allocatable :: src(:)        !! (npts): the input point each stored point came from;
+                                             !! HOST-only, it carries per-point input data
+                                             !! (`atom`, `qw`) through the permutation.
       integer, allocatable :: b_ao(:)
       integer :: n_dropped = 0               !! points below w_tol, left out of npts
       real(dp), allocatable :: b_amax(:)    !! parallel to b_ao: max |chi| of that function over the batch
       logical :: on_device = .false.
    contains
       procedure :: build => xcgrid_build
+      procedure :: build_from_grid => xcgrid_build_from_grid
       procedure :: to_device => xcgrid_to_device
       procedure :: release => xcgrid_release
    end type trc_xc_grid_t
@@ -132,7 +137,7 @@ contains
    ! is far below the grid's own, and check_xc_energy measures it against
    ! the unscreened evaluation rather than assuming.
    !
-   subroutine xcgrid_build(this, npts, coords, weights, b, max_pts, tol, w_tol, atom, qw)
+   subroutine xcgrid_build(this, npts, coords, weights, b, max_pts, tol, w_tol)
       class(trc_xc_grid_t), intent(inout) :: this
       integer, intent(in) :: npts
       real(dp), intent(in) :: coords(3, npts), weights(npts)
@@ -144,14 +149,6 @@ contains
       !! after the partition a sizeable fraction of the grid carries
       !! nothing (Stocks and Barca drop 15-20% at 2e-15). Default 2e-15;
       !! pass 0 to keep every point.
-      integer, intent(in), optional :: atom(npts)   !! owning atom, see `this%atom`
-      real(dp), intent(in), optional :: qw(npts)     !! quadrature weight alone, see `this%qw`
-      !! Both optional and both absent by default: only trc_xc_grad's
-      !! gradient build passes them (the energy path, trc_xc.F90, has no
-      !! use for either). Present together or not at all -- a caller
-      !! wanting the grid-response term needs both, and one without the
-      !! other is a caller that forgot the second, not a legitimate partial
-      !! request.
 
       integer :: maxp, i, j, k, lo, hi, axis, top, nb, ib, ish, nsh_b, nao_b
       integer :: sh_in_batch
@@ -233,9 +230,7 @@ contains
       end do
       this%nbatch = nb
 
-      allocate (this%r(3, n), this%w(n), this%batch_of(n), this%b_off(nb + 1))
-      if (present(atom)) allocate (this%atom(n))
-      if (present(qw)) allocate (this%qw(n))
+      allocate (this%r(3, n), this%w(n), this%batch_of(n), this%b_off(nb + 1), this%src(n))
       k = 0
       do ib = 1, nb
          this%b_off(ib) = k + 1
@@ -244,8 +239,7 @@ contains
             this%r(:, k) = coords(:, index(i))
             this%w(k) = weights(index(i))
             this%batch_of(k) = ib
-            if (present(atom)) this%atom(k) = atom(index(i))
-            if (present(qw)) this%qw(k) = qw(index(i))
+            this%src(k) = index(i)
          end do
       end do
       this%b_off(nb + 1) = n + 1
@@ -391,6 +385,28 @@ contains
       end do
    end subroutine batch_maxima_body
 
+   !
+   ! Build from a DFT grid, keeping what the gradient's grid-response term
+   ! needs and the energy path does not: each point's owning atom and its
+   ! quadrature weight before the partition, through the same permutation
+   ! and screen as `r`/`w`. trc_xc_grad, trc_vv10_grad and the SCF's grid
+   ! cache build this way.
+   !
+   subroutine xcgrid_build_from_grid(this, grid, b, max_pts)
+      class(trc_xc_grid_t), intent(inout) :: this
+      type(dft_grid_t), intent(in) :: grid
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in), optional :: max_pts   !! as `build`'s
+      integer :: k
+
+      call this%build(grid%n_points, grid%coords, grid%weights, b, max_pts=max_pts)
+      allocate (this%atom(this%npts), this%qw(this%npts))
+      do k = 1, this%npts
+         this%atom(k) = grid%atom(this%src(k))
+         this%qw(k) = grid%quad_weights(this%src(k))
+      end do
+   end subroutine xcgrid_build_from_grid
+
    subroutine xcgrid_to_device(this)
       class(trc_xc_grid_t), intent(inout) :: this
       if (this%on_device .or. this%npts == 0) return
@@ -420,6 +436,7 @@ contains
       if (allocated(this%w)) deallocate (this%w)
       if (allocated(this%qw)) deallocate (this%qw)
       if (allocated(this%atom)) deallocate (this%atom)
+      if (allocated(this%src)) deallocate (this%src)
       if (allocated(this%batch_of)) deallocate (this%batch_of)
       if (allocated(this%b_off)) deallocate (this%b_off)
       if (allocated(this%b_shoff)) deallocate (this%b_shoff)

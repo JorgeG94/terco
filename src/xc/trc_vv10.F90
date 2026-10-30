@@ -2,9 +2,9 @@
 ! VV10 (Vydrov & Van Voorhis 2010) nonlocal correlation: an energy and a
 ! potential matrix, added onto whatever the semilocal functional already
 ! put there. wB97X-V uses it with b = 6.0, C = 0.01 (confirmed against
-! pyscf's `dft.libxc.nlc_coeff('WB97X_V')`); this module takes b and C as
-! arguments rather than hardcoding them, so a caller is free to run plain
-! VV10 (b = 5.9, C = 0.0093) with the same code.
+! pyscf's `dft.libxc.nlc_coeff('WB97X_V')`); this module reads b and C from
+! the functional (`nlc_b`, `nlc_c`) rather than hardcoding them, so a caller
+! is free to run plain VV10 (b = 5.9, C = 0.0093) with the same code.
 !
 ! THE FORMULAS, matched term for term against pyscf's `numint._vv10nlc`
 ! (the only place the kernel is written down outside the original paper):
@@ -65,9 +65,9 @@
 ! `grid` are assumed ALREADY on the device (`bas%to_device()`,
 ! `grid%to_device()`, called by whoever built them -- this module reads
 ! their flat arrays without a single `copyin` of its own, the same
-! assumption xc_drive makes of `b`/`xg`). `dmat`/`dmat_a`/`dmat_b` are
+! assumption xc_drive makes of `b`/`xg`). `dmat` (either spin layout) is
 ! `copyin` on entry (a no-op refcount bump if already resident); `vmat`
-! and friends are `copy` -- present or not, the accumulation inside this
+! is `copy` -- present or not, the accumulation inside this
 ! call sees the value the caller already put there and the result comes
 ! back out whichever way it went in. Every other array (rho, grad rho,
 ! sigma, vrho, vsigma, the per-point energy) is local to this call: `enter
@@ -121,6 +121,7 @@ module trc_vv10
    use trc_constants, only: PI
    use trc_basis_types, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
+   use trc_xc_functional, only: trc_xc_functional_t
    use trc_collocation, only: collocation_shell, NCART_MAX
    use trc_linalg, only: trc_linalg_t
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
@@ -160,15 +161,17 @@ contains
    !
    ! Closed shell: E_nlc and the VV10 potential, ADDED into `vmat` (not
    ! overwritten -- the caller has already put the semilocal V_xc there).
+   ! VV10's b and C are `func%nlc_b`/`func%nlc_c` (6.0, 0.01 for wB97X-V);
+   ! nothing else of `func` is read.
    ! `la`: GEMM/solver handles for passes 1 and 3's batched GEMMs, shared
    ! with the caller's own (trc_xc_rks's `la`) when given; made and
    ! released here otherwise, exactly as trc_xc's xc_drive does.
    !
-   subroutine trc_vv10_rks(bas, grid, dmat, b, c, e_nlc, vmat, la, comm)
+   subroutine trc_vv10_rks(bas, grid, func, dmat, e_nlc, vmat, la, comm)
       type(trc_basis_t), intent(in) :: bas
       type(trc_xc_grid_t), intent(in) :: grid
+      type(trc_xc_functional_t), intent(in) :: func
       real(dp), intent(in) :: dmat(bas%nao, bas%nao)
-      real(dp), intent(in) :: b, c   !! VV10's own b and C (6.0, 0.01 for wB97X-V)
       real(dp), intent(out) :: e_nlc
       real(dp), intent(inout) :: vmat(bas%nao, bas%nao)
       type(trc_linalg_t), intent(inout), optional, target :: la
@@ -178,24 +181,22 @@ contains
       !! header for why passes 1 and 3 are left replicated on every rank
       !! rather than split too.
 
-      call vv10_drive(bas%nao, bas%nshell, bas%maxnp, bas%sh_l, bas%sh_np, bas%sh_e, bas%sh_c, bas%sh_r, &
-                      grid%npts, grid%nbatch, grid%r, grid%w, grid%batch_of, grid%b_off, grid%b_shoff, &
-                      size(grid%b_sh), grid%b_sh, grid%b_shao, grid%b_aooff, size(grid%b_ao), grid%b_ao, &
-                      dmat, b, c, e_nlc, vmat, la, comm)
+      call vv10_drive(bas, grid, func, dmat, e_nlc, vmat, la, comm)
    end subroutine trc_vv10_rks
 
    !
-   ! Spin-polarised: VV10 sees only the total density D_a + D_b, and the
-   ! SAME potential matrix is added to both `vmat_a` and `vmat_b` (pyscf's
-   ! `uks.py` convention -- see this module's header).
+   ! Spin-polarised: VV10 sees only the total density D(:,:,1) + D(:,:,2),
+   ! and the SAME potential matrix is added to both vmat(:,:,1) and
+   ! vmat(:,:,2) (pyscf's `uks.py` convention -- see this module's header).
+   ! The spin layout is trc_xc_uks's.
    !
-   subroutine trc_vv10_uks(bas, grid, dmat_a, dmat_b, b, c, e_nlc, vmat_a, vmat_b, la, comm)
+   subroutine trc_vv10_uks(bas, grid, func, dmat, e_nlc, vmat, la, comm)
       type(trc_basis_t), intent(in) :: bas
       type(trc_xc_grid_t), intent(in) :: grid
-      real(dp), intent(in) :: dmat_a(bas%nao, bas%nao), dmat_b(bas%nao, bas%nao)
-      real(dp), intent(in) :: b, c
+      type(trc_xc_functional_t), intent(in) :: func
+      real(dp), intent(in) :: dmat(bas%nao, bas%nao, 2)
       real(dp), intent(out) :: e_nlc
-      real(dp), intent(inout) :: vmat_a(bas%nao, bas%nao), vmat_b(bas%nao, bas%nao)
+      real(dp), intent(inout) :: vmat(bas%nao, bas%nao, 2)
       type(trc_linalg_t), intent(inout), optional, target :: la
       type(comm_t), intent(in), optional :: comm
       real(dp), allocatable :: dtot(:, :), vtmp(:, :)
@@ -205,21 +206,18 @@ contains
       allocate (dtot(nao, nao), vtmp(nao, nao))
       vtmp = 0.0_dp
       !$acc enter data create(dtot) copyin(vtmp)
-      !$acc data copyin(dmat_a, dmat_b)
+      !$acc data copyin(dmat)
       do concurrent(i=1:nao, j=1:nao)
-         dtot(i, j) = dmat_a(i, j) + dmat_b(i, j)
+         dtot(i, j) = dmat(i, j, 1) + dmat(i, j, 2)
       end do
       !$acc end data
 
-      call vv10_drive(bas%nao, bas%nshell, bas%maxnp, bas%sh_l, bas%sh_np, bas%sh_e, bas%sh_c, bas%sh_r, &
-                      grid%npts, grid%nbatch, grid%r, grid%w, grid%batch_of, grid%b_off, grid%b_shoff, &
-                      size(grid%b_sh), grid%b_sh, grid%b_shao, grid%b_aooff, size(grid%b_ao), grid%b_ao, &
-                      dtot, b, c, e_nlc, vtmp, la, comm)
+      call vv10_drive(bas, grid, func, dtot, e_nlc, vtmp, la, comm)
 
-      !$acc data present(vtmp) copy(vmat_a, vmat_b)
+      !$acc data present(vtmp) copy(vmat)
       do concurrent(i=1:nao, j=1:nao)
-         vmat_a(i, j) = vmat_a(i, j) + vtmp(i, j)
-         vmat_b(i, j) = vmat_b(i, j) + vtmp(i, j)
+         vmat(i, j, 1) = vmat(i, j, 1) + vtmp(i, j)
+         vmat(i, j, 2) = vmat(i, j, 2) + vtmp(i, j)
       end do
       !$acc end data
       !$acc exit data delete(dtot, vtmp)
@@ -227,26 +225,21 @@ contains
    end subroutine trc_vv10_uks
 
    !
-   ! The three passes, on the flat arrays `bas`/`grid` carry -- never the
-   ! derived types themselves, the same discipline xc_drive uses, since a
+   ! The three passes. `bas` and `grid` come in whole and their flat arrays
+   ! go out to the kernels as explicit-shape arguments -- never the derived
+   ! types themselves, the same discipline xc_drive uses, since a
    ! derived-type component read from inside a `do concurrent`/`routine
    ! seq` is one of the two nvfortran traps this file has to avoid (the
-   ! other is an assumed-shape dummy in a device routine; every array
-   ! below is explicit-shape).
+   ! other is an assumed-shape dummy in a device routine; every kernel
+   ! array below is explicit-shape).
    !
-   subroutine vv10_drive(nao, nshell, maxnp, sh_l, sh_np, sh_e, sh_c, sh_r, &
-                         npts, nbatch, r, w, batch_of, b_off, b_shoff, nbsh, b_sh, b_shao, &
-                         b_aooff, nbao, b_ao, dmat, b, c, e_nlc, vmat, la, comm)
-      integer, intent(in) :: nao, nshell, maxnp, npts, nbatch, nbsh, nbao
-      integer, intent(in) :: sh_l(nshell), sh_np(nshell)
-      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell)
-      real(dp), intent(in) :: r(3, npts), w(npts)
-      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_shoff(nbatch + 1)
-      integer, intent(in) :: b_sh(nbsh), b_shao(nbsh), b_aooff(nbatch + 1), b_ao(nbao)
-      real(dp), intent(in) :: dmat(nao, nao)
-      real(dp), intent(in) :: b, c
+   subroutine vv10_drive(bas, grid, func, dmat, e_nlc, vmat, la, comm)
+      type(trc_basis_t), intent(in) :: bas
+      type(trc_xc_grid_t), intent(in) :: grid
+      type(trc_xc_functional_t), intent(in) :: func
+      real(dp), intent(in) :: dmat(bas%nao, bas%nao)
       real(dp), intent(out) :: e_nlc
-      real(dp), intent(inout) :: vmat(nao, nao)
+      real(dp), intent(inout) :: vmat(bas%nao, bas%nao)
       type(trc_linalg_t), intent(inout), optional, target :: la
       type(comm_t), intent(in), optional :: comm
 
@@ -254,8 +247,8 @@ contains
       real(dp), allocatable :: gx(:), gy(:), gz(:), gkp(:), gw0p(:), grpw(:)
       real(dp), allocatable :: buffer(:)
       integer, allocatable :: gidx(:)
-      real(dp) :: kvv, beta
-      integer :: npass, g, rank, nranks, i0, i1
+      real(dp) :: kvv, beta, b, c
+      integer :: npass, g, rank, nranks, i0, i1, npts
       integer(int64) :: cap
       logical :: split
       type(trc_linalg_t), target :: la_own
@@ -271,6 +264,7 @@ contains
       end if
 
       e_nlc = 0.0_dp
+      npts = grid%npts
       if (npts == 0) return
 
       ! A contiguous range [i0, i1] per rank -- see this module's own
@@ -278,6 +272,8 @@ contains
       i0 = rank*(npts/nranks) + min(rank, mod(npts, nranks)) + 1
       i1 = (rank + 1)*(npts/nranks) + min(rank + 1, mod(npts, nranks))
 
+      b = func%nlc_b
+      c = func%nlc_c
       kvv = b*1.5_dp*PI*(9.0_dp*PI)**(-1.0_dp/6.0_dp)
       beta = (3.0_dp/(b*b))**0.75_dp/32.0_dp
       cap = VV10_TILE_CAP
@@ -291,9 +287,7 @@ contains
       allocate (rho(npts), grho(3, npts), sigma(npts), vrho(npts), vsigma(npts), eg(npts))
       !$acc data copyin(dmat) create(rho, grho, sigma, vrho, vsigma, eg)
 
-      call vv10_density_tile(nao, nshell, maxnp, sh_l, sh_np, sh_e, sh_c, sh_r, &
-                             npts, nbatch, r, batch_of, b_off, b_shoff, nbsh, b_sh, b_shao, b_aooff, nbao, b_ao, &
-                             dmat, cap, lp, rho, grho, sigma)
+      call vv10_density_tile(bas, grid, dmat, cap, lp, rho, grho, sigma)
 
       !
       ! GATHER before the O(N^2) pass: every quantity the inner sum needs
@@ -329,12 +323,12 @@ contains
       allocate (gx(max(npass, 1)), gy(max(npass, 1)), gz(max(npass, 1)))
       allocate (gkp(max(npass, 1)), gw0p(max(npass, 1)), grpw(max(npass, 1)))
       !$acc data copyin(gidx(1:max(npass, 1))) create(gx, gy, gz, gkp, gw0p, grpw)
-      call vv10_gather(npts, r, w, rho, sigma, c, kvv, npass, gidx, gx, gy, gz, gkp, gw0p, grpw)
+      call vv10_gather(npts, grid%r, grid%w, rho, sigma, c, kvv, npass, gidx, gx, gy, gz, gkp, gw0p, grpw)
 
       ! MULTI-GPU: pass 2's outer points, a contiguous range per rank; see
       ! this module's own MULTI-GPU header for why passes 1 and 3 stay
       ! replicated instead.
-      call vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
+      call vv10_kernel(npts, grid%r, grid%w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                        i0, i1, vrho, vsigma, eg)
 
       !$acc end data
@@ -374,9 +368,7 @@ contains
       e_nlc = sum(eg)
 
       !$acc data copy(vmat) copyin(grho, vrho, vsigma)
-      call vv10_potential_tile(nao, nshell, maxnp, sh_l, sh_np, sh_e, sh_c, sh_r, &
-                               npts, nbatch, r, w, batch_of, b_off, b_shoff, nbsh, b_sh, b_shao, b_aooff, nbao, b_ao, &
-                               vrho, vsigma, grho, cap, lp, vmat)
+      call vv10_potential_tile(bas, grid, vrho, vsigma, grho, cap, lp, vmat)
       !$acc end data
 
       deallocate (rho, grho, sigma, vrho, vsigma, eg)
@@ -394,29 +386,27 @@ contains
    ! chi/gchi/X to form rho and grad rho. No atomics: every point writes
    ! only its own index, same as the loop form it replaces.
    !
-   subroutine vv10_density_tile(nao, nshell, maxnp, sh_l, sh_np, sh_e, sh_c, sh_r, &
-                                npts, nbatch, r, batch_of, b_off, b_shoff, nbsh, b_sh, b_shao, b_aooff, nbao, b_ao, &
-                                dmat, cap, lp, rho, grho, sigma)
-      integer, intent(in) :: nao, nshell, maxnp, npts, nbatch, nbsh, nbao
-      integer, intent(in) :: sh_l(nshell), sh_np(nshell)
-      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts)
-      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh), b_shao(nbsh)
-      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao)
-      real(dp), intent(in) :: dmat(nao, nao)
+   subroutine vv10_density_tile(bas, grid, dmat, cap, lp, rho, grho, sigma)
+      type(trc_basis_t), intent(in) :: bas
+      type(trc_xc_grid_t), intent(in) :: grid
+      !! Both already on the device; their arrays reach the kernels as
+      !! explicit-shape arguments (vv10_drive's header).
+      real(dp), intent(in) :: dmat(bas%nao, bas%nao)
       integer(int64), intent(in) :: cap
       type(trc_linalg_t), intent(inout) :: lp
-      real(dp), intent(out) :: rho(npts), grho(3, npts), sigma(npts)
+      real(dp), intent(out) :: rho(grid%npts), grho(3, grid%npts), sigma(grid%npts)
 
-      integer :: b0, b1, ib, nb, np, p0, nloc, npb, k, k0, k1, cnt, mp, ml
+      integer :: b0, b1, ib, nb, np, p0, nloc, npb, k, k0, k1, cnt, mp, ml, nbatch
       integer, allocatable :: ord(:), npp(:), nlp(:), c_off(:), pr_off(:), pb_off(:), wk_off(:)
       integer(int64) :: need, nchi, sa, sb, nlsq
       integer :: nwork
       real(dp), allocatable :: chi(:), gchi(:, :), xt(:), dloc(:)
 
+      nbatch = grid%nbatch
       allocate (npp(nbatch), nlp(nbatch), c_off(nbatch + 1), pr_off(nbatch + 1))
       do ib = 1, nbatch
-         nloc = b_aooff(ib + 1) - b_aooff(ib)
-         npb = b_off(ib + 1) - b_off(ib)
+         nloc = grid%b_aooff(ib + 1) - grid%b_aooff(ib)
+         npb = grid%b_off(ib + 1) - grid%b_off(ib)
          npp(ib) = ((npb + VV10_NP_PAD - 1)/VV10_NP_PAD)*VV10_NP_PAD
          nlp(ib) = ((nloc + VV10_NL_PAD - 1)/VV10_NL_PAD)*VV10_NL_PAD
       end do
@@ -432,8 +422,8 @@ contains
             b1 = ib
          end do
          nchi = max(need, 1_int64)
-         p0 = b_off(b0)
-         np = b_off(b1 + 1) - p0
+         p0 = grid%b_off(b0)
+         np = grid%b_off(b1 + 1) - p0
          nb = b1 - b0 + 1
          allocate (ord(nb), pb_off(nb + 1), wk_off(nb + 1))
          do k = 1, nb
@@ -466,7 +456,7 @@ contains
                error stop "vv10_density_tile: a single grid batch is too large for int32 tile offsets (pair-block offset)"
             end if
             pb_off(k + 1) = pb_off(k) + nlp(ib)*nlp(ib)
-            nwork = nwork + (b_shoff(ib + 1) - b_shoff(ib))*(b_off(ib + 1) - b_off(ib))
+            nwork = nwork + (grid%b_shoff(ib + 1) - grid%b_shoff(ib))*(grid%b_off(ib + 1) - grid%b_off(ib))
             wk_off(k + 1) = nwork
          end do
 
@@ -475,10 +465,11 @@ contains
 
          call vv10_tile_zero(nchi, chi)
          call vv10_tile_zero(int(pb_off(nb + 1), int64), dloc)
-         call vv10_tile_collocate(nwork, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
-                                  npts, r, b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, nchi, chi, gchi)
-         call vv10_tile_gather(pb_off(nb + 1), nb, ord, pb_off, nao, dmat, b_aooff, nbao, b_ao, &
-                               nlp, nbatch, dloc)
+         call vv10_tile_collocate(nwork, nb, ord, wk_off, bas%maxnp, bas%nshell, bas%sh_l, bas%sh_np, bas%sh_e, &
+                                  bas%sh_c, bas%sh_r, grid%npts, grid%r, grid%b_off, grid%b_shoff, size(grid%b_sh), &
+                                  grid%b_sh, grid%b_shao, c_off, npp, nbatch, nchi, chi, gchi)
+         call vv10_tile_gather(pb_off(nb + 1), nb, ord, pb_off, bas%nao, dmat, grid%b_aooff, size(grid%b_ao), &
+                               grid%b_ao, nlp, nbatch, dloc)
 
          k0 = 1
          do while (k0 <= nb)
@@ -500,8 +491,8 @@ contains
             k0 = k1 + 1
          end do
 
-         call vv10_tile_rho(np, p0, npts, batch_of, b_off, c_off, npp, b_aooff, nbatch, nchi, chi, gchi, xt, &
-                            rho, grho, sigma)
+         call vv10_tile_rho(np, p0, grid%npts, grid%batch_of, grid%b_off, c_off, npp, grid%b_aooff, nbatch, nchi, &
+                            chi, gchi, xt, rho, grho, sigma)
 
          !$acc exit data delete(chi, gchi, xt, dloc, c_off, pr_off, ord, pb_off, wk_off)
          deallocate (chi, gchi, xt, dloc, ord, pb_off, wk_off)
@@ -738,37 +729,27 @@ contains
    ! and nvfortran both compute pass 2 correctly through `do concurrent`
    ! already, which is why only the CPU form changes here.
    !
-#ifdef TRC_DEVICE
-   subroutine vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
+   subroutine vv10_kernel(npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                           i0, i1, vrho, vsigma, eg)
       integer, intent(in) :: npts, npass, i0, i1
       real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
-      real(dp), intent(in) :: b, c, kvv, beta
+      real(dp), intent(in) :: c, kvv, beta
       real(dp), intent(in) :: gx(npass), gy(npass), gz(npass), gkp(npass), gw0p(npass), grpw(npass)
       real(dp), intent(out) :: vrho(npts), vsigma(npts), eg(npts)
       integer :: i
 
+#ifdef TRC_DEVICE
       do concurrent(i=1:npts)
          call vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                                i0, i1, vrho(i), vsigma(i), eg(i))
       end do
-   end subroutine vv10_kernel
 #else
-   subroutine vv10_kernel(npts, r, w, rho, sigma, b, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
-                          i0, i1, vrho, vsigma, eg)
-      integer, intent(in) :: npts, npass, i0, i1
-      real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
-      real(dp), intent(in) :: b, c, kvv, beta
-      real(dp), intent(in) :: gx(npass), gy(npass), gz(npass), gkp(npass), gw0p(npass), grpw(npass)
-      real(dp), intent(out) :: vrho(npts), vsigma(npts), eg(npts)
-      integer :: i
-
       do i = 1, npts
          call vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                                i0, i1, vrho(i), vsigma(i), eg(i))
       end do
-   end subroutine vv10_kernel
 #endif
+   end subroutine vv10_kernel
 
    !
    ! `j`'s own work (w0p(j), K(j), rho(j) w(j), its gathered position) now
@@ -850,29 +831,26 @@ contains
    ! concurrent` promises a host compiler nothing about the shared,
    ! non-atomic update two batches' overlapping local lists create here).
    !
-   subroutine vv10_potential_tile(nao, nshell, maxnp, sh_l, sh_np, sh_e, sh_c, sh_r, &
-                                  npts, nbatch, r, w, batch_of, b_off, b_shoff, nbsh, b_sh, b_shao, b_aooff, nbao, b_ao, &
-                                  vrho, vsigma, grho, cap, lp, vmat)
-      integer, intent(in) :: nao, nshell, maxnp, npts, nbatch, nbsh, nbao
-      integer, intent(in) :: sh_l(nshell), sh_np(nshell)
-      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell), r(3, npts), w(npts)
-      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_shoff(nbatch + 1), b_sh(nbsh), b_shao(nbsh)
-      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao)
-      real(dp), intent(in) :: vrho(npts), vsigma(npts), grho(3, npts)
+   subroutine vv10_potential_tile(bas, grid, vrho, vsigma, grho, cap, lp, vmat)
+      type(trc_basis_t), intent(in) :: bas
+      type(trc_xc_grid_t), intent(in) :: grid
+      !! As vv10_density_tile's.
+      real(dp), intent(in) :: vrho(grid%npts), vsigma(grid%npts), grho(3, grid%npts)
       integer(int64), intent(in) :: cap
       type(trc_linalg_t), intent(inout) :: lp
-      real(dp), intent(inout) :: vmat(nao, nao)
+      real(dp), intent(inout) :: vmat(bas%nao, bas%nao)
 
-      integer :: b0, b1, ib, nb, np, p0, nloc, npb, k, k0, k1, cnt, mp, ml
+      integer :: b0, b1, ib, nb, np, p0, nloc, npb, k, k0, k1, cnt, mp, ml, nbatch
       integer, allocatable :: ord(:), npp(:), nlp(:), c_off(:), pr_off(:), pb_off(:), wk_off(:)
       integer(int64) :: need, nchi, sa, sc, nlsq
       integer :: nwork
       real(dp), allocatable :: chi(:), gchi(:, :), zt(:), vloc(:)
 
+      nbatch = grid%nbatch
       allocate (npp(nbatch), nlp(nbatch), c_off(nbatch + 1), pr_off(nbatch + 1))
       do ib = 1, nbatch
-         nloc = b_aooff(ib + 1) - b_aooff(ib)
-         npb = b_off(ib + 1) - b_off(ib)
+         nloc = grid%b_aooff(ib + 1) - grid%b_aooff(ib)
+         npb = grid%b_off(ib + 1) - grid%b_off(ib)
          npp(ib) = ((npb + VV10_NP_PAD - 1)/VV10_NP_PAD)*VV10_NP_PAD
          nlp(ib) = ((nloc + VV10_NL_PAD - 1)/VV10_NL_PAD)*VV10_NL_PAD
       end do
@@ -888,8 +866,8 @@ contains
             b1 = ib
          end do
          nchi = max(need, 1_int64)
-         p0 = b_off(b0)
-         np = b_off(b1 + 1) - p0
+         p0 = grid%b_off(b0)
+         np = grid%b_off(b1 + 1) - p0
          nb = b1 - b0 + 1
          allocate (ord(nb), pb_off(nb + 1), wk_off(nb + 1))
          do k = 1, nb
@@ -918,7 +896,7 @@ contains
                error stop "vv10_potential_tile: a single grid batch is too large for int32 tile offsets (pair-block offset)"
             end if
             pb_off(k + 1) = pb_off(k) + nlp(ib)*nlp(ib)
-            nwork = nwork + (b_shoff(ib + 1) - b_shoff(ib))*(b_off(ib + 1) - b_off(ib))
+            nwork = nwork + (grid%b_shoff(ib + 1) - grid%b_shoff(ib))*(grid%b_off(ib + 1) - grid%b_off(ib))
             wk_off(k + 1) = nwork
          end do
 
@@ -927,10 +905,11 @@ contains
 
          call vv10_tile_zero(nchi, chi)
          call vv10_tile_zero(nchi, zt)
-         call vv10_tile_collocate(nwork, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
-                                  npts, r, b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, nchi, chi, gchi)
-         call vv10_tile_z(np, p0, npts, batch_of, b_off, c_off, npp, b_aooff, nbatch, w, vrho, vsigma, grho, &
-                          nchi, chi, gchi, zt)
+         call vv10_tile_collocate(nwork, nb, ord, wk_off, bas%maxnp, bas%nshell, bas%sh_l, bas%sh_np, bas%sh_e, &
+                                  bas%sh_c, bas%sh_r, grid%npts, grid%r, grid%b_off, grid%b_shoff, size(grid%b_sh), &
+                                  grid%b_sh, grid%b_shao, c_off, npp, nbatch, nchi, chi, gchi)
+         call vv10_tile_z(np, p0, grid%npts, grid%batch_of, grid%b_off, c_off, npp, grid%b_aooff, nbatch, grid%w, &
+                          vrho, vsigma, grho, nchi, chi, gchi, zt)
 
          k0 = 1
          do while (k0 <= nb)
@@ -952,7 +931,8 @@ contains
             k0 = k1 + 1
          end do
 
-         call vv10_tile_scatter(pb_off(nb + 1), nb, ord, pb_off, nao, vmat, b_aooff, nbao, b_ao, nlp, nbatch, vloc)
+         call vv10_tile_scatter(pb_off(nb + 1), nb, ord, pb_off, bas%nao, vmat, grid%b_aooff, size(grid%b_ao), &
+                                grid%b_ao, nlp, nbatch, vloc)
 
          !$acc exit data delete(chi, gchi, zt, vloc, c_off, pr_off, ord, pb_off, wk_off)
          deallocate (chi, gchi, zt, vloc, ord, pb_off, wk_off)

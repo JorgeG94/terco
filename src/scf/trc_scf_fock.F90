@@ -29,7 +29,7 @@ module trc_scf_fock
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
    use trc_eri, only: trc_eri_t
    use trc_pcm, only: trc_pcm_t
-   use trc_xc, only: trc_xc_rks, trc_xc_uks
+   use trc_xc, only: trc_xc_rks, trc_xc_uks, trc_xc_options, trc_xc_result_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t
    use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
@@ -257,8 +257,9 @@ contains
       !! DFT step table (`xcst`) reports VV10 as its own step, separate from
       !! the semilocal points/pairs split -- see NVTX_RANGES below for why
       !! VV10's is a plain wall time rather than a `step_on`/`step_off` pair.
-      type(comm_t), intent(in), optional :: comm
-      real(dp) :: e_nlc, tp1, tq1
+      type(comm_t), intent(in), optional, target :: comm
+      real(dp) :: e_nlc
+      type(trc_xc_result_t) :: xres
       type(timer_type) :: tm_vv10
       integer :: s
       !
@@ -285,13 +286,13 @@ contains
       call profiler_start("scf: xc", nvtx_only=.true.)
       if (scf_config%nspin == 1) then
          call trc_xc_rks(scf_basis, scf_context%gc%xg, scf_config%func, scf_state%d_c(:, :, 1), scf_state%vxc_c(:, :, 1), &
-                         scf_energies%xc, scf_energies%nelec_grid, rho_tol=rho_tol, &
-                         comm=comm, t_points=tp1, t_pairs=tq1, la=scf_context%lp)
+                         xres, trc_xc_options(rho_tol=rho_tol, comm=comm, la=scf_context%lp))
       else
          call trc_xc_uks(scf_basis, scf_context%gc%xg, scf_config%func, scf_state%d_c, scf_state%vxc_c, &
-                         scf_energies%xc, scf_energies%nelec_grid, rho_tol=rho_tol, &
-                         comm=comm, t_points=tp1, t_pairs=tq1, la=scf_context%lp)
+                         xres, trc_xc_options(rho_tol=rho_tol, comm=comm, la=scf_context%lp))
       end if
+      scf_energies%xc = xres%exc
+      scf_energies%nelec_grid = xres%nelec
       call scf_context%lp%sync()
       call profiler_stop("scf: xc")
       ! VV10 adds its energy to the XC energy and its potential into vxc_c, on
@@ -301,21 +302,19 @@ contains
          call scf_context%lp%sync()
          call tm_vv10%start()
          if (scf_config%nspin == 1) then
-            call trc_vv10_rks(scf_basis, scf_context%gc%xg_nlc, scf_state%d_c(:, :, 1), &
-                              scf_config%func%nlc_b, scf_config%func%nlc_c, e_nlc, scf_state%vxc_c(:, :, 1), &
-                              la=scf_context%lp, comm=comm)
+            call trc_vv10_rks(scf_basis, scf_context%gc%xg_nlc, scf_config%func, scf_state%d_c(:, :, 1), e_nlc, &
+                              scf_state%vxc_c(:, :, 1), la=scf_context%lp, comm=comm)
          else
-            call trc_vv10_uks(scf_basis, scf_context%gc%xg_nlc, scf_state%d_c(:, :, 1), scf_state%d_c(:, :, 2), &
-                              scf_config%func%nlc_b, scf_config%func%nlc_c, e_nlc, &
-                              scf_state%vxc_c(:, :, 1), scf_state%vxc_c(:, :, 2), la=scf_context%lp, comm=comm)
+            call trc_vv10_uks(scf_basis, scf_context%gc%xg_nlc, scf_config%func, scf_state%d_c, e_nlc, &
+                              scf_state%vxc_c, la=scf_context%lp, comm=comm)
          end if
          call scf_context%lp%sync()
          call profiler_stop("scf: vv10")
          scf_timers%t_vv10 = scf_timers%t_vv10 + tm_vv10%get_elapsed_time()
          scf_energies%xc = scf_energies%xc + e_nlc
       end if
-      scf_timers%tx_pts = scf_timers%tx_pts + tp1
-      scf_timers%tx_prs = scf_timers%tx_prs + tq1
+      scf_timers%tx_pts = scf_timers%tx_pts + xres%t_points
+      scf_timers%tx_prs = scf_timers%tx_prs + xres%t_pairs
       do s = 1, scf_config%nspin
          call scf_fock_to_sph(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, &
                      scf_state%vxc_c(:, :, s), scf_state%vxc(:, :, s))

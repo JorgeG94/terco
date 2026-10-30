@@ -33,6 +33,7 @@ program bench_vv10
    use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_vv10, only: trc_vv10_rks
+   use trc_xc_functional, only: trc_xc_functional_t
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
    implicit none
@@ -106,7 +107,7 @@ program bench_vv10
 
    !$acc enter data copyin(dmat, vmat)
    call tm%start()
-   call trc_vv10_rks(bas, xg, dmat, 6.0_dp, 0.01_dp, e_nlc, vmat, comm=comm)
+   call trc_vv10_rks(bas, xg, trc_xc_functional_t(nlc_b=6.0_dp, nlc_c=0.01_dp), dmat, e_nlc, vmat, comm=comm)
    t_vv10 = tm%get_elapsed_time()
    !$acc exit data delete(dmat, vmat)
 
