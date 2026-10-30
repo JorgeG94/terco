@@ -25,7 +25,7 @@
 ! Twelve independent (molecule, basis, method) cases below, each its own
 ! test-drive unittest; the shared setup (per-group basis/DF-JK build, the
 ! probe write, the golden dump and the pyscf-reference read) runs once --
-! see check_xc_energy_suite's own `next_ifn` comment for why, and why
+! see check_xc_energy_suite's own `computed` comment for why, and why
 ! this suite stays `parallel=.false.`.
 !
 module scf_df_suite
@@ -65,31 +65,108 @@ contains
 
    subroutine collect_scf_df(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
-      integer :: ig, im, ic
-      allocate (testsuite(NCASE))
-      do ig = 1, NGROUP
-         do im = 1, NMETHOD
-            ic = (ig - 1)*NMETHOD + im
-            if (len_trim(METHOD(im)) > 0) then
-               testsuite(ic) = new_unittest(trim(GMOL(ig))//"/"//trim(GBASIS(ig))//"/"//trim(METHOD(im)), &
-                                            test_case)
-            else
-               testsuite(ic) = new_unittest(trim(GMOL(ig))//"/"//trim(GBASIS(ig))//"/hf", test_case)
-            end if
-         end do
-      end do
+      testsuite = [ &
+                  new_unittest(case_name(1), case_01), &
+                  new_unittest(case_name(2), case_02), &
+                  new_unittest(case_name(3), case_03), &
+                  new_unittest(case_name(4), case_04), &
+                  new_unittest(case_name(5), case_05), &
+                  new_unittest(case_name(6), case_06), &
+                  new_unittest(case_name(7), case_07), &
+                  new_unittest(case_name(8), case_08), &
+                  new_unittest(case_name(9), case_09), &
+                  new_unittest(case_name(10), case_10), &
+                  new_unittest(case_name(11), case_11), &
+                  new_unittest(case_name(12), case_12) &
+                ]
    end subroutine collect_scf_df
 
-   subroutine test_case(error)
+   function case_name(ic) result(name)
+      integer, intent(in) :: ic
+      character(len=:), allocatable :: name
+      integer :: ig, im
+      ! ic = (ig - 1)*NMETHOD + im, run_all's own order.
+      ig = (ic - 1)/NMETHOD + 1
+      im = mod(ic - 1, NMETHOD) + 1
+      if (len_trim(METHOD(im)) > 0) then
+         name = trim(GMOL(ig))//"/"//trim(GBASIS(ig))//"/"//trim(METHOD(im))
+      else
+         name = trim(GMOL(ig))//"/"//trim(GBASIS(ig))//"/hf"
+      end if
+   end function case_name
+
+   ! One wrapper per case, each passing its own index: a unittest must not
+   ! depend on which unittests ran before it (a name-selected run, or a
+   ! reordered suite, would otherwise check the wrong case).
+   subroutine case_01(error)
       type(error_type), allocatable, intent(out) :: error
-      integer, save :: next_ic = 0
+      call test_case(error, 1)
+   end subroutine case_01
+
+   subroutine case_02(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 2)
+   end subroutine case_02
+
+   subroutine case_03(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 3)
+   end subroutine case_03
+
+   subroutine case_04(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 4)
+   end subroutine case_04
+
+   subroutine case_05(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 5)
+   end subroutine case_05
+
+   subroutine case_06(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 6)
+   end subroutine case_06
+
+   subroutine case_07(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 7)
+   end subroutine case_07
+
+   subroutine case_08(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 8)
+   end subroutine case_08
+
+   subroutine case_09(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 9)
+   end subroutine case_09
+
+   subroutine case_10(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 10)
+   end subroutine case_10
+
+   subroutine case_11(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 11)
+   end subroutine case_11
+
+   subroutine case_12(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_case(error, 12)
+   end subroutine case_12
+
+   subroutine test_case(error, ic)
+      type(error_type), allocatable, intent(out) :: error
+      integer, intent(in) :: ic
       call ensure_computed()
-      next_ic = next_ic + 1
       if (skip_all) then
          call skip_test(error, trim(skip_message))
          return
       end if
-      call check(error, ok_case(next_ic), trim(msg_case(next_ic)))
+      call check(error, ok_case(ic), trim(msg_case(ic)))
    end subroutine test_case
 
    subroutine ensure_computed()
@@ -114,19 +191,23 @@ contains
       character(len=32) :: tag, name_ref, name_this
       real(dp) :: e_ref, de, pyscf_conv_tol, pyscf_conv_tol_grad, pyscf_grad_norm
 
+      ! Opened (not required) before any case runs: a missing reference must
+      ! not stop this suite before scf_df_probe.bin is written, or
+      ! test/pyscf_refs/generate.py has nothing to bootstrap from. The FAIL
+      ! happens at the end of run_all, after the dump is safely written.
       call ref_open("scf_df.ref", refu, has_ref)
       call golden_begin("scf_df")
-      if (.not. has_ref) error stop "FAIL: missing reference pyscf_refs/scf_df.ref -- run " &
-         //"test/pyscf_refs/generate.py (see test/pyscf_refs/README.md)"
-      call ref_read_int(refu, "NCASE", ncase_ref)
-      if (ncase_ref /= NCASE) error stop "scf_df: pyscf reference case count does not match this build"
+      if (has_ref) then
+         call ref_read_int(refu, "NCASE", ncase_ref)
+         if (ncase_ref /= NCASE) error stop "scf_df: pyscf reference case count does not match this build"
+      end if
 
       open (newunit=unit, file="scf_df_probe.bin", access="stream", form="unformatted", status="replace", &
             action="write")
       write (unit) int(NCASE, int64)
 
       ok_case = .false.
-      msg_case = ""
+      msg_case = "pyscf reference missing"
 
       do ig = 1, NGROUP
          call read_xyz(trim(GMOL(ig))//".xyz", natm, zint, at_r)
@@ -147,7 +228,7 @@ contains
             skip_all = .true.
             call auxb%release()
             call bas%release()
-            call ref_close(refu)
+            if (has_ref) call ref_close(refu)
             close (unit)
             return
          end if
@@ -188,20 +269,22 @@ contains
             name_case(ic) = name_this
             call golden_put("E_"//trim(name_this), res%energy)
 
-            write (tag, "(i0)") ic - 1
-            call ref_read_str(refu, "NAME_"//trim(tag), name_ref)
-            call ref_read_real(refu, "E_"//trim(tag), e_ref)
-            ! Provenance only, as rks.ref's own CONV_TOL_i/CONV_TOL_GRAD_i/
-            ! GRAD_NORM_i are: the pyscf convergence this energy was
-            ! committed at.
-            call ref_read_real(refu, "CONV_TOL_"//trim(tag), pyscf_conv_tol)
-            call ref_read_real(refu, "CONV_TOL_GRAD_"//trim(tag), pyscf_conv_tol_grad)
-            call ref_read_real(refu, "GRAD_NORM_"//trim(tag), pyscf_grad_norm)
-            if (trim(name_ref) /= trim(name_this)) error stop "scf_df: pyscf reference case order does not " &
-               //"match this build ("//trim(name_ref)//" vs "//trim(name_this)//")"
-            de = abs(res%energy - e_ref)
-            ok_case(ic) = res%converged .and. de < E_TOL
-            write (msg_case(ic), "(a,es10.2)") trim(name_this)//": E vs pyscf, |dE| = ", de
+            if (has_ref) then
+               write (tag, "(i0)") ic - 1
+               call ref_read_str(refu, "NAME_"//trim(tag), name_ref)
+               call ref_read_real(refu, "E_"//trim(tag), e_ref)
+               ! Provenance only, as rks.ref's own CONV_TOL_i/CONV_TOL_GRAD_i/
+               ! GRAD_NORM_i are: the pyscf convergence this energy was
+               ! committed at.
+               call ref_read_real(refu, "CONV_TOL_"//trim(tag), pyscf_conv_tol)
+               call ref_read_real(refu, "CONV_TOL_GRAD_"//trim(tag), pyscf_conv_tol_grad)
+               call ref_read_real(refu, "GRAD_NORM_"//trim(tag), pyscf_grad_norm)
+               if (trim(name_ref) /= trim(name_this)) error stop "scf_df: pyscf reference case order does not " &
+                  //"match this build ("//trim(name_ref)//" vs "//trim(name_this)//")"
+               de = abs(res%energy - e_ref)
+               ok_case(ic) = res%converged .and. de < E_TOL
+               write (msg_case(ic), "(a,es10.2)") trim(name_this)//": E vs pyscf, |dE| = ", de
+            end if
 
             write (unit) int(bas%nao, int64), int(natm, int64), int(nalpha, int64), int(nbeta, int64)
             write (unit) GMOL(ig)
@@ -218,7 +301,9 @@ contains
       end do
       call golden_end()
       close (unit)
-      call ref_close(refu)
+      if (has_ref) call ref_close(refu)
+      if (.not. has_ref) error stop "FAIL: missing reference pyscf_refs/scf_df.ref -- run " &
+         //"test/pyscf_refs/generate.py (see test/pyscf_refs/README.md)"
    end subroutine run_all
 
 end module scf_df_suite

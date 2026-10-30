@@ -163,7 +163,7 @@ contains
             return
          end if
          worst_alpha = maxval(abs(alpha - alpha_ref))
-         call check(error, worst_alpha < 1.0e-6_dp, &
+         call check(error, all(abs(alpha - alpha_ref) < 1.0e-6_dp), &
                     "alpha vs pyscf, worst|diff| = "//to_string(worst_alpha, "es10.2"))
          if (allocated(error)) then
             call eri%release(); call la%release(); call pl%release(); call bas%release()

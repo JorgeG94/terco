@@ -74,12 +74,16 @@ contains
       !! never a crash.
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
-      integer(c_int) :: rc
+      integer(c_int) :: rc, flag
       character(kind=c_char) :: msg(256)
       logical :: ok
       character(len=:), allocatable :: msgs
+      integer :: natm, dev
+      integer, allocatable :: zint(:)
+      real(dp), allocatable :: at_r(:, :)
 
       ok = .true.
+      flag = 0
       rc = trc_destroy(c_null_ptr);            call expect(ok, msgs, rc == TRC_ERR_NULL, "destroy(null) is NULL")
       rc = trc_create(h);                      call expect(ok, msgs, rc == TRC_OK, "create")
       rc = trc_run_scf(h);                     call expect(ok, msgs, rc == TRC_ERR_STATE, "run before setup is STATE")
@@ -94,6 +98,23 @@ contains
       call expect(ok, msgs, index(transfer(msg, repeat(' ', 256)), 'pbe99') > 0, "and named")
       rc = trc_set_method(h, ''//c_null_char, -1_c_int)
       call expect(ok, msgs, rc /= TRC_OK, "a negative grid level is refused")
+
+      ! The refusals above must leave the handle usable: set it up properly
+      ! now and it still runs a converged SCF.
+      dev = trc_bind_device(0)
+      call read_xyz('water.xyz', natm, zint, at_r)
+      rc = trc_set_molecule(h, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), 0_c_int, 1_c_int)
+      call expect(ok, msgs, rc == TRC_OK, "set_molecule after the refusals")
+      rc = trc_set_force_cartesian(h, 1_c_int)
+      call expect(ok, msgs, rc == TRC_OK, "set_force_cartesian after the refusals")
+      rc = trc_set_basis_json(h, 'basis_sets/cc-pvdz.json'//c_null_char)
+      call expect(ok, msgs, rc == TRC_OK, "set_basis_json after the refusals")
+      rc = trc_set_method(h, ''//c_null_char, 3_c_int)
+      call expect(ok, msgs, rc == TRC_OK, "set_method after the refusals")
+      rc = trc_set_convergence(h, 1.0e-10_c_double, 1.0e-6_c_double, 100_c_int, 10_c_int)
+      call expect(ok, msgs, rc == TRC_OK, "set_convergence after the refusals")
+      rc = trc_run_scf(h);                     call expect(ok, msgs, rc == TRC_OK, "run_scf after the refusals")
+      rc = trc_converged(h, flag);             call expect(ok, msgs, flag == 1, "converged after the refusals")
       rc = trc_destroy(h)
 
       call check(error, ok, msgs)

@@ -60,6 +60,7 @@ contains
       type(trc_rimp2_result_t) :: mp, mp2
       type(error_t) :: err
       real(dp), allocatable :: dguess(:, :), dg3(:, :, :)
+      logical :: c_ok
 
       dev = trc_bind_device(0)
 
@@ -132,23 +133,6 @@ contains
       print '(a,f20.12,a,f20.12)', "  E_os    = ", mp%e_os, "   E_ss = ", mp%e_ss
       print '(a,f20.12,a,es9.2)', "  E_corr  = ", mp%e_corr, "   blocked vs whole ", abs(mp%e_corr - mp2%e_corr)
 
-      call check(error, res%converged, "SCF did not converge")
-      if (allocated(error)) then
-         call pl%release(); call aux%release(); call bas%release()
-         return
-      end if
-      call check(error, len_trim(mp%message) == 0, "RI-MP2: "//trim(mp%message))
-      if (allocated(error)) then
-         call pl%release(); call aux%release(); call bas%release()
-         return
-      end if
-      call check(error, abs(mp%e_corr - mp2%e_corr) <= 1.0e-13_dp .and. abs(mp%e_os - mp2%e_os) <= 1.0e-13_dp, &
-                 "aux blocking changed the correlation energy")
-      if (allocated(error)) then
-         call pl%release(); call aux%release(); call bas%release()
-         return
-      end if
-
       ! The same through the C entries mqc uses: trc_scf_mpi then trc_rimp2 on
       ! the orbitals it kept, with no communicator (fcomm = -1).
       block
@@ -159,7 +143,6 @@ contains
          real(c_double), allocatable :: zat(:), d_lib(:, :), eps_lib(:)
          real(c_double) :: e_lib, e_xc, c_os, c_ss
          type(c_ptr) :: hbas, haux
-         logical :: c_ok
          c_ok = .true.
          fcomm = -1
          allocate (zat(natm), lc(nsh), npc(nsh), lca(nsha), npca(nsha))
@@ -184,11 +167,6 @@ contains
          ! the atomic accumulation order alone puts ~1e-10 between them.
          if (abs(e_lib - res%energy) > 1.0e-10_dp .or. abs(c_os + c_ss - mp%e_corr) > 1.0e-9_dp) c_ok = .false.
          rc = trc_basis_destroy(haux); rc = trc_basis_destroy(hbas)
-         call check(error, c_ok, "the C entries (trc_scf_mpi/trc_rimp2) disagree with the Fortran driver")
-         if (allocated(error)) then
-            call pl%release(); call aux%release(); call bas%release()
-            return
-         end if
       end block
 
       ! Golden case named after the probe, as the pyscf reference is below:
@@ -220,6 +198,20 @@ contains
       write (unit) res%energy, mp%e_os, mp%e_ss
       close (unit)
 
+      ! The golden and the probe are written above whatever happens below:
+      ! test/pyscf_refs/generate.py's gen_rimp2 reads the probe even when a
+      ! check here fails (e.g. a regeneration where the C entries disagree).
+      call pl%release(); call aux%release(); call bas%release()
+      call check(error, res%converged, "SCF did not converge")
+      if (allocated(error)) return
+      call check(error, len_trim(mp%message) == 0, "RI-MP2: "//trim(mp%message))
+      if (allocated(error)) return
+      call check(error, abs(mp%e_corr - mp2%e_corr) <= 1.0e-13_dp .and. abs(mp%e_os - mp2%e_os) <= 1.0e-13_dp, &
+                 "aux blocking changed the correlation energy")
+      if (allocated(error)) return
+      call check(error, c_ok, "the C entries (trc_scf_mpi/trc_rimp2) disagree with the Fortran driver")
+      if (allocated(error)) return
+
       ! --- against the committed pyscf reference (test/pyscf_refs/generate.py) ---
       ! test/pyscf_refs/generate.py's gen_rimp2 names each case's reference
       ! after its own probe file, "<probe base>.ref" in place of
@@ -242,8 +234,6 @@ contains
          call ref_read_real(u, 'CONV_TOL_GRAD', pyscf_conv_tol_grad)
          call ref_read_real(u, 'GRAD_NORM', pyscf_grad_norm)
          call ref_close(u)
-
-         call pl%release(); call aux%release(); call bas%release()
 
          call check(error, abs(res%energy - e_scf_ref) < 1.0e-9_dp, &
                     "E_RHF vs pyscf, |dE| = "//to_string(abs(res%energy - e_scf_ref), "es10.2"))

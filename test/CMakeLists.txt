@@ -1336,9 +1336,9 @@ set_tests_properties(
 # gen_scf_df). def2-universal-jkfit needs g auxiliary functions on O/C/N,
 # within the shipped DF_LMAX_AUX=4 ceiling since that became the default
 # (see the top-level CMakeLists.txt's TERCO_DF_LMAX_AUX), so this runs for
-# real in a plain build; scf_df.F90 still self-skips (stop 0, after
-# printing SKIP), same convention as check_df_vs_pyscf's, for anyone who
-# lowers TERCO_DF_LMAX_AUX back down.
+# real in a plain build; scf_df.F90 still self-skips (every case a
+# test-drive skip_test, whose "SKIP" output SKIP_REGULAR_EXPRESSION below
+# matches), for anyone who lowers TERCO_DF_LMAX_AUX back down.
 #
 add_executable(scf_df scf_df.F90)
 target_compile_definitions(scf_df PRIVATE ${TERCO_TEST_DEFS})
