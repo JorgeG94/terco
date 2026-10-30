@@ -228,6 +228,7 @@ terco_add_check(check_basis_631g_ref check_basis_631g_ref.F90 NEEDS_BASIS)
 terco_add_check(check_spherical check_spherical.F90 NEEDS_BASIS)
 target_link_libraries(check_spherical PRIVATE test-drive::test-drive)
 terco_add_check(sad_atoms sad_atoms.F90 NEEDS_BASIS)
+target_link_libraries(sad_atoms PRIVATE test-drive::test-drive)
 terco_add_check(sadq_atoms sadq_atoms.F90 NEEDS_BASIS)
 target_link_libraries(sadq_atoms PRIVATE test-drive::test-drive)
 # The spherical averaging itself (trc_sad.F90's `average_atom_density`):
@@ -1304,7 +1305,7 @@ set_tests_properties(
 #
 add_executable(scf_mgga scf_mgga.F90)
 target_compile_definitions(scf_mgga PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_mgga PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_link_libraries(scf_mgga PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK test-drive::test-drive)
 target_include_directories(scf_mgga PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_mgga COMMAND scf_mgga)
 set_tests_properties(
@@ -1325,7 +1326,7 @@ set_tests_properties(
 #
 add_executable(scf_df scf_df.F90)
 target_compile_definitions(scf_df PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(scf_df PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK)
+target_link_libraries(scf_df PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io LAPACK::LAPACK test-drive::test-drive)
 target_include_directories(scf_df PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/scf_df COMMAND scf_df)
 set_tests_properties(
