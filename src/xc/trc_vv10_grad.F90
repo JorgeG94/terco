@@ -210,8 +210,7 @@ contains
       else
          call dft_grid_build(b%at_r, at_elem, grid_own, err, level=opts%grid_level)
          if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
-         call xg_own%build(grid_own%n_points, grid_own%coords, grid_own%weights, b, max_pts=opts%grid_max_pts, &
-                           atom=grid_own%atom, qw=grid_own%quad_weights)
+         call xg_own%build_from_grid(grid_own, b, max_pts=opts%grid_max_pts)
          call xg_own%to_device()
          gp => grid_own
          xgp => xg_own
