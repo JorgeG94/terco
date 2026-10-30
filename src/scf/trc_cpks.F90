@@ -254,7 +254,8 @@ contains
    ! `xg` is built from `res_scf%grid_r`/`grid_w` by the caller, so the
    ! quadrature here is the one the SCF converged against.
    !
-   subroutine trc_scf_polarizability_rks(b, pl, eri, xg, func, nocc, cmo, eps, dmat, alpha, opts, res, la, budget)
+   recursive subroutine trc_scf_polarizability_rks(b, pl, eri, xg, func, nocc, cmo, eps, dmat, alpha, opts, res, &
+                                                   la, budget)
       type(trc_basis_t), intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
       type(trc_eri_t), intent(inout) :: eri
@@ -265,14 +266,12 @@ contains
       real(dp), intent(out) :: alpha(3, 3)
       type(trc_cphf_options_t), intent(in) :: opts
       type(trc_cphf_result_t), intent(out) :: res
-      type(trc_linalg_t), intent(inout), optional, target :: la
+      type(trc_linalg_t), intent(inout), optional :: la
+      !! The caller's handles; absent, made and released for this call.
       integer(int64), intent(in), optional :: budget
 
-      type(trc_linalg_t), target :: la_own
-      type(trc_linalg_t), pointer :: lp
       real(dp), allocatable :: mmat(:, :, :), temporary(:, :), bvec(:, :, :), u(:, :, :)
       integer :: nao, nvirt, x, y
-      logical :: owns_la
       character(len=256) :: reason
 
       reason = cpks_refuse_reason(func)
@@ -287,12 +286,15 @@ contains
 
       nao = b%nao
       nvirt = nao - nocc
-      owns_la = .not. present(la)
-      if (present(la)) then
-         lp => la
-      else
-         lp => la_own
-         call lp%init(nao)
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call la_local%init(nao)
+            call trc_scf_polarizability_rks(b, pl, eri, xg, func, nocc, cmo, eps, dmat, alpha, opts, res, la_local, &
+                                            budget)
+            call la_local%release()
+         end block
+         return
       end if
 
       allocate (mmat(nao, nao, TRC_NMULT))
@@ -301,21 +303,20 @@ contains
       allocate (temporary(nao, nocc), bvec(nvirt, nocc, 3), u(nvirt, nocc, 3))
       !$acc enter data copyin(cmo, mmat) create(temporary, bvec, u)
       do x = 1, 3
-         call lp%gemm_mat(mmat(:, :, x), cmo(:, 1:nocc), temporary)
-         call lp%gemm_mat(cmo(:, nocc + 1:nao), temporary, bvec(:, :, x), transa="T")
+         call la%gemm_mat(mmat(:, :, x), cmo(:, 1:nocc), temporary)
+         call la%gemm_mat(cmo(:, nocc + 1:nao), temporary, bvec(:, :, x), transa="T")
       end do
 
-      call trc_cpks_solve_rks(b, eri, lp, xg, func, nao, nocc, nvirt, cmo, eps, dmat, 3, bvec, u, opts, res, budget)
+      call trc_cpks_solve_rks(b, eri, la, xg, func, nao, nocc, nvirt, cmo, eps, dmat, 3, bvec, u, opts, res, budget)
 
       do y = 1, 3
          do x = 1, 3
-            alpha(x, y) = -2.0_dp*(lp%dot_2d(bvec(:, :, x), u(:, :, y)) + lp%dot_2d(bvec(:, :, y), u(:, :, x)))
+            alpha(x, y) = -2.0_dp*(la%dot_2d(bvec(:, :, x), u(:, :, y)) + la%dot_2d(bvec(:, :, y), u(:, :, x)))
          end do
       end do
 
       !$acc exit data delete(cmo, mmat, temporary, bvec, u)
       deallocate (mmat, temporary, bvec, u)
-      if (owns_la) call lp%release()
    end subroutine trc_scf_polarizability_rks
 
 end module trc_cpks

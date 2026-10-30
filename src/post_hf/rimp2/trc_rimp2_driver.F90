@@ -146,10 +146,9 @@ module trc_rimp2_driver
    type :: trc_rimp2_options_t
     !! The knobs `trc_rimp2_run`/`trc_urimp2_run` used to take as separate
     !! optional arguments, bundled the way `trc_scf_options_t`
-    !! (src/scf/trc_scf_settings.F90) bundles the SCF's own knobs --
-    !! `la` (a caller-owned device resource, mutated and possibly reused
-    !! across calls) and `comm` (ranks) stay separate arguments, exactly as
-    !! `trc_scf_run` keeps them separate from `scf_options`.
+    !! (src/scf/trc_scf_settings.F90) bundles the SCF's own knobs. Plain
+    !! values only; `la` (a caller-owned device resource, mutated and
+    !! possibly reused across calls) stays a separate argument.
       integer :: nfrozen = 0
       !! Correlated occupied orbitals start at nfrozen + 1. Absent/default
       !! (0) correlates every occupied orbital.
@@ -160,10 +159,10 @@ module trc_rimp2_driver
       !! sentinel the old `present(aux_block)` check used.
       logical :: verbose = .false.
       !! One line per step with its wall time, rank 0 only.
-      real(dp), pointer :: packed_b(:, :) => null()
-      !! `trc_rimp2_run` only: the fitted B of a density-fitted J/K object
-      !! (see that routine's own header). Null (the default) runs the
-      !! ordinary, unchained path; `trc_urimp2_run` never reads this field.
+      type(comm_t) :: comm
+      !! Ranks, a copy of the caller's communicator handle; read only when
+      !! `has_comm`. Without one, one rank.
+      logical :: has_comm = .false.
    end type trc_rimp2_options_t
 
 contains
@@ -172,17 +171,17 @@ contains
    ! `cmo` (nao, nao) and `eps` (nao) are the RHF orbitals, occupied first;
    ! `nocc` doubly occupied, `opts%nfrozen` of them left out of the
    ! correlation (see `trc_rimp2_options_t`'s own header for `opts`, optional
-   ! throughout, as a whole). `pl` is the orbital basis's pair list. `la`
-   ! optional, made here if absent; `comm` optional, one rank without it.
+   ! throughout, as a whole; its `comm` splits the work over ranks). `pl` is
+   ! the orbital basis's pair list. `la` optional, made here if absent.
    !
-   ! `opts%packed_b`: the fitted B of a density-fitted J/K object
-   ! (trc_scf_df.F90's `df_jk_t%packed_b()`, null until that object is set
+   ! `packed_b`: the fitted B of a density-fitted J/K object
+   ! (trc_scf_df.F90's `df_jk_t%bpk`, allocated once that object is set
    ! up), fitted on an auxiliary basis the CALLER has checked is the same
    ! one as `aux` (same JSON path/contents -- trc_capi.F90's trc_run_rimp2
    ! is the one library caller that does; this routine only checks the
    ! dimensions agree, not that the basis itself is really the same one).
    ! Passed as the array rather than the object so that post_hf does not
-   ! depend on scf. When associated, steps 1 (metric, Cholesky), 2 (the
+   ! depend on scf. When present, steps 1 (metric, Cholesky), 2 (the
    ! (mu nu|P) build) and 4 (B = X L^-T) are skipped entirely: `packed_b`
    ! is already B, (npack, naux) device-resident (packed mu >= nu, L^-T
    ! applied), and the occupied/virtual half-transform of step 3 run on it
@@ -191,7 +190,7 @@ contains
    ! still used for its shell structure (the block loop below only needs
    ! auxiliary function COUNTS and offsets, identical either way).
    !
-   subroutine trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, opts, la, comm)
+   recursive subroutine trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, opts, la, packed_b)
       !! run a restricted ri-mp2 calculation
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: pl
@@ -199,16 +198,14 @@ contains
       real(dp), intent(in) :: cmo(b%nao, b%nao), eps(b%nao)
       type(trc_rimp2_result_t), intent(out) :: res
       type(trc_rimp2_options_t), intent(in), optional :: opts
-      type(trc_linalg_t), intent(inout), optional, target :: la
-      type(comm_t), intent(in), optional :: comm
+      type(trc_linalg_t), intent(inout), optional :: la
+      real(dp), intent(in), optional, contiguous :: packed_b(:, :)
+      !! (npack, naux), device-resident: see the header above.
 
       type(trc_rimp2_options_t) :: op
       type(timer_type) :: tw0, tw1
       logical :: talk, chained
-      type(trc_linalg_t), target :: la_own
-      type(trc_linalg_t), pointer :: lp
       type(trc_basis_t) :: aux_subset
-      real(dp), pointer :: bchain(:, :)
       integer :: nao, naux, naux_c, nfz, no, nv, nov, nblk, s0, s1, p0, np, p0c, npc, ish
       integer :: i, rank, nranks, ng, ldk, i0, i1
       integer :: lo, nb, nmax, novr, step, nstep_ring, qv, cur, ncolmax, ldv
@@ -231,6 +228,14 @@ contains
       integer(int64) :: nv8, nao8, naux8
       type(trc_gemm_batch_t) :: gemm_shape
 
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, opts, la_local, packed_b)
+            call la_local%release()
+         end block
+         return
+      end if
       if (present(opts)) op = opts
       nao = b%nao
       ! `cmo`/`eps` above are declared (b%nao, b%nao)/(b%nao): ALWAYS the
@@ -293,29 +298,21 @@ contains
                        "density-fitting kernels were generated for (see gen_df.py --lmax-aux)"
          return
       end if
-      chained = .false.
-      bchain => null()
-      if (associated(op%packed_b)) then
+      chained = present(packed_b)
+      if (chained) then
          npack_chk = nao*(nao + 1)/2
-         if (size(op%packed_b, 1) /= npack_chk .or. size(op%packed_b, 2) /= naux) then
+         if (size(packed_b, 1) /= npack_chk .or. size(packed_b, 2) /= naux) then
             res%message = "trc_rimp2: the pre-fitted B does not match this orbital/auxiliary basis"
             return
          end if
-         bchain => op%packed_b
-         chained = .true.
       end if
       nblk = naux_c
       if (op%aux_block > 0) nblk = op%aux_block
       rank = 0
       nranks = 1
-      if (present(comm)) then
-         rank = comm%rank()
-         nranks = comm%size()
-      end if
-      if (present(la)) then
-         lp => la
-      else
-         lp => la_own
+      if (op%has_comm) then
+         rank = op%comm%rank()
+         nranks = op%comm%size()
       end if
       ! This rank's occupied block, O_rank = lo .. lo + nb - 1, and every
       ! rank's, which the ring needs to size what it receives.
@@ -352,7 +349,7 @@ contains
       end do
       plo(nranks) = naux + 1
       ! Create-once: a caller's handles are kept, the workspace only grows.
-      call lp%init(naux)
+      call la%init(naux)
 
       talk = op%verbose .and. rank == 0
       nv8 = nv
@@ -361,32 +358,32 @@ contains
       ! The metric and its factor run in full on every rank; the integrals are
       ! split by auxiliary shell.
       call stab%init("rimp2", STEP_NAME, replicated_steps=[ST_METRIC, ST_CHOL])
-      call lp%sync()
+      call la%sync()
       call tw0%start()
       ! --- 1. the metric and its Cholesky factor (skipped when chained) ----
       if (.not. chained) then
          allocate (jm(naux, naux))
          !$acc enter data create(jm)
-         call stab%step_on(lp, ST_METRIC, tc)
+         call stab%step_on(la, ST_METRIC, tc)
          if (aux%spherical) then
             allocate (jmc(naux_c, naux_c))
             !$acc enter data create(jmc)
             call trc_df_2c(aux, jmc)
-            call sph_metric_cart_to_sph(aux, lp, jmc, jm)
+            call sph_metric_cart_to_sph(aux, la, jmc, jm)
             !$acc exit data delete(jmc)
             deallocate (jmc)
          else
             call trc_df_2c(aux, jm)
          end if
-         call stab%step_off(lp, ST_METRIC, tc)
-         call stab%step_on(lp, ST_CHOL, tc)
-         call lp%potrf(naux, jm, naux)
-         call stab%step_off(lp, ST_CHOL, tc)
+         call stab%step_off(la, ST_METRIC, tc)
+         call stab%step_on(la, ST_CHOL, tc)
+         call la%potrf(naux, jm, naux)
+         call stab%step_off(la, ST_CHOL, tc)
          call stab%add_flop(ST_CHOL, naux8**3/3)
          if (talk) then
             block
                character(len=1024) :: logline
-               write (logline, "(a,i0,a,f8.2,a)") "  rimp2: metric (", naux, ") and Cholesky ", since(lp, tw0), " s"
+               write (logline, "(a,i0,a,f8.2,a)") "  rimp2: metric (", naux, ") and Cholesky ", since(la, tw0), " s"
                call global_logger%performance(trim(logline))
             end block
          end if
@@ -439,16 +436,14 @@ contains
          end if
          allocate (tens(nao, nao, np), half(no, nao, np))
          !$acc enter data create(tens, half)
-         call stab%step_on(lp, ST_3C, tc)
+         call stab%step_on(la, ST_3C, tc)
          if (chained) then
             ! B, already L^-T applied (and, when `aux` is spherical, the
             ! P-fold too -- `dfjk%setup` does both before packing),
             ! packed mu >= nu: unpack this block's columns straight into
             ! the dense tensor the half-transform below reads either way
             ! -- no (mu nu|P) build, and no P-fold, at all.
-            do concurrent(q=1:np, mu=1:nao, nu=1:nao)
-               tens(mu, nu, q) = bchain(rimp2_pack_index(max(mu, nu), min(mu, nu)), p0 - 1 + q)
-            end do
+            call rimp2_unpack_block(nao, size(packed_b, 1), naux, np, p0, packed_b, tens)
          else if (aux%spherical) then
             ! (mu nu|Pc), built Cartesian, folded into `tens` on the P
             ! index alone -- same `sph_aux3c_to_sph` `df_jk_setup` folds
@@ -457,14 +452,14 @@ contains
             allocate (tcart3(nao, nao, npc))
             !$acc enter data create(tcart3)
             call trc_df_3c(b, pl, aux_subset, tcart3)
-            call sph_aux3c_to_sph(aux_subset, nao, tcart3, tens, lp)
+            call sph_aux3c_to_sph(aux_subset, nao, tcart3, tens, la)
             !$acc exit data delete(tcart3)
             deallocate (tcart3)
          else
             call trc_df_3c(b, pl, aux_subset, tens)
          end if
-         call stab%step_off(lp, ST_3C, tc)
-         call stab%step_on(lp, ST_TRANS, tc)
+         call stab%step_off(la, ST_3C, tc)
+         call stab%step_on(la, ST_TRANS, tc)
          ! A few library calls per block, not two per auxiliary function:
          ! the occupied side of the whole block is one GEMM,
          !   half(i, nu q) = sum_mu C_occ(mu, i) T(mu, nu q)   (no x nao np),
@@ -472,19 +467,19 @@ contains
          ! per destination rank, on that rank's rows of `half`,
          !   X(:, P) = C_vir^T half_q^T                        (nv x bn(q), a fastest).
          ! 2 x 3840 calls at w40 cc-pVDZ ran at 41% of the device's peak.
-         call lp%gemm("T", "N", no, nao*np, nao, 1.0_dp, cocc, nao, tens, nao, 0.0_dp, half, no)
+         call la%gemm("T", "N", no, nao*np, nao, 1.0_dp, cocc, nao, tens, nao, 0.0_dp, half, no)
          do q = 0, nranks - 1
             if (bn(q) == 0) cycle
             if (q == rank) then
                gemm_shape = trc_gemm_batch(nv, nb, nao, np, ldb=no, sa=0_int64, sc=novr8, transa="T", transb="T")
-               call lp%gemm_batched(gemm_shape, cvir, half(lo, 1, 1), xr(1 + int(p0 - 1, int64)*novr8))
+               call la%gemm_batched(gemm_shape, cvir, half(lo, 1, 1), xr(1 + int(p0 - 1, int64)*novr8))
             else
                nq8 = int(bn(q), int64)*nv8
                gemm_shape = trc_gemm_batch(nv, bn(q), nao, np, ldb=no, sa=0_int64, sc=nq8, transa="T", transb="T")
-               call lp%gemm_batched(gemm_shape, cvir, half(blo(q), 1, 1), ysend(1 + soff(q) + int(p0 - plo(rank), int64)*nq8))
+               call la%gemm_batched(gemm_shape, cvir, half(blo(q), 1, 1), ysend(1 + soff(q) + int(p0 - plo(rank), int64)*nq8))
             end if
          end do
-         call stab%step_off(lp, ST_TRANS, tc)
+         call stab%step_off(la, ST_TRANS, tc)
          call stab%add_flop(ST_TRANS, int(np, int64)*(2*int(no, int64)*nao8*nao8 + 2*nv8*int(no, int64)*nao8))
          !$acc exit data delete(tens, half)
          deallocate (tens, half)
@@ -492,9 +487,9 @@ contains
          s0 = s1 + 1
       end do
       if (nranks > 1) then
-         call stab%step_on(lp, ST_XCHG, tc)
-         call exchange_x(comm, nv8, bn, plo, soff, ysend, xr, direct)
-         call stab%step_off(lp, ST_XCHG, tc)
+         call stab%step_on(la, ST_XCHG, tc)
+         call exchange_x(op%comm, nv8, bn, plo, soff, ysend, xr, direct)
+         call stab%step_off(la, ST_XCHG, tc)
       end if
       !$acc exit data delete(ysend)
       deallocate (ysend)
@@ -511,9 +506,9 @@ contains
       ! (skipped when chained: `xr` is already built from B, which has
       ! L^-T applied already -- see this routine's own `packed_b` comment)
       if (.not. chained) then
-         call stab%step_on(lp, ST_TRSM, tc)
-         if (nb > 0) call lp%trsm("R", "L", "T", novr, naux, 1.0_dp, jm, naux, xr, novr)
-         call stab%step_off(lp, ST_TRSM, tc)
+         call stab%step_on(la, ST_TRSM, tc)
+         if (nb > 0) call la%trsm("R", "L", "T", novr, naux, 1.0_dp, jm, naux, xr, novr)
+         call stab%step_off(la, ST_TRSM, tc)
          call stab%add_flop(ST_TRSM, novr8*naux8*naux8)
          if (talk) then
             block
@@ -523,7 +518,7 @@ contains
             end block
          end if
       end if
-      call lp%sync()
+      call la%sync()
       call tw1%start()
 
       ! --- 5. the pair energies, over the ring ------------------------------
@@ -563,11 +558,11 @@ contains
       do step = 0, nstep_ring
          qv = mod(rank + step, nranks)
          if (step > 0) then
-            call stab%step_on(lp, ST_RING, tc)
-            call ring_shift(comm, xr, vis, cur, &
+            call stab%step_on(la, ST_RING, tc)
+            call ring_shift(op%comm, xr, vis, cur, &
                             int(bn(mod(rank + step - 1, nranks)), int64)*nv8*naux8, &
                             int(bn(qv), int64)*nv8*naux8, step == 1, direct)
-            call stab%step_off(lp, ST_RING, tc)
+            call stab%step_off(la, ST_RING, tc)
          end if
          ! Rows i in ilo..ihi of this rank's block against columns j in
          ! jlo..jhi of block qv; `diag` keeps j >= i.
@@ -600,15 +595,15 @@ contains
             if (diag) jstart = i0
             ncol = (jhi - jstart + 1)*nv
             if (ncol <= 0) cycle
-            call stab%step_on(lp, ST_KGEMM, tc)
+            call stab%step_on(la, ST_KGEMM, tc)
             if (step == 0) then
-               call lp%gemm("N", "T", (i1 - i0 + 1)*nv, ncol, naux, 1.0_dp, xr(1 + (i0 - lo)*nv), novr, &
+               call la%gemm("N", "T", (i1 - i0 + 1)*nv, ncol, naux, 1.0_dp, xr(1 + (i0 - lo)*nv), novr, &
                             xr(1 + (jstart - jbase)*nv), ldv, 0.0_dp, ki, ldk)
             else
-               call lp%gemm("N", "T", (i1 - i0 + 1)*nv, ncol, naux, 1.0_dp, xr(1 + (i0 - lo)*nv), novr, &
+               call la%gemm("N", "T", (i1 - i0 + 1)*nv, ncol, naux, 1.0_dp, xr(1 + (i0 - lo)*nv), novr, &
                             vis(1 + (jstart - jbase)*nv, cur), ldv, 0.0_dp, ki, ldk)
             end if
-            call stab%step_off(lp, ST_KGEMM, tc)
+            call stab%step_off(la, ST_KGEMM, tc)
             call stab%add_flop(ST_KGEMM, 2*int(i1 - i0 + 1, int64)*nv8*int(ncol, int64)*naux8)
             do i = i0, i1
                ! K_i(a, jb) is the block of rows roff + a and, on the
@@ -622,12 +617,12 @@ contains
                   jfirst = jstart
                end if
                ncol_i = (jhi - jfirst + 1)*nv
-               call stab%step_on(lp, ST_PAIR, tc)
+               call stab%step_on(la, ST_PAIR, tc)
                ! K_i^T, so the kernel reads (ia|jb) and (ib|ja) both coalesced
-               call lp%transpose(nv, ncol_i, ki(roff + 1, coff + 1), ldk, kt, ncolmax)
+               call la%transpose(nv, ncol_i, ki(roff + 1, coff + 1), ldk, kt, ncolmax)
                call pair_energy(i, jfirst, no, nv, ldk, roff, coff, ncolmax, ncol_i, eo, ev, ki, kt, part)
                !$acc update self(part(1:2*ncol_i))
-               call stab%step_off(lp, ST_PAIR, tc)
+               call stab%step_off(la, ST_PAIR, tc)
                call stab%add_flop(ST_PAIR, 10*nv8*int(ncol_i, int64))
                e_os = e_os + sum(part(1:2*ncol_i:2))
                e_ss = e_ss + sum(part(2:2*ncol_i:2))
@@ -643,19 +638,19 @@ contains
       end if
       if (nranks > 1) then
          es = [e_os, e_ss]
-         call allreduce(comm, es, op=MPI_SUM)
-         call bcast(comm, es, 2, 0)
+         call allreduce(op%comm, es, op=MPI_SUM)
+         call bcast(op%comm, es, 2, 0)
          e_os = es(1)
          e_ss = es(2)
       end if
       ! The job's table, not rank 0's share: the slowest rank's time and the
       ! work of every rank. The energy reduction above has already lined the
       ! ranks up, so rank 0's wall time below is the job's.
-      if (nranks > 1) call stab%reduce(comm)
+      if (nranks > 1) call stab%reduce(op%comm)
       if (talk) then
          block
             character(len=1024) :: logline
-            write (logline, "(a,f8.2,a,f8.2,a)") "  rimp2: pair energies ", since(lp, tw1), " s;  total ", since(lp, tw0), " s"
+            write (logline, "(a,f8.2,a,f8.2,a)") "  rimp2: pair energies ", since(la, tw1), " s;  total ", since(la, tw0), " s"
             call global_logger%performance(trim(logline))
          end block
          dense_mask = .false.
@@ -663,13 +658,24 @@ contains
          dense_mask(ST_TRANS) = .true.
          dense_mask(ST_TRSM) = .true.
          dense_mask(ST_KGEMM) = .true.
-         call stab%report(since(lp, tw0), rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
+         call stab%report(since(la, tw0), rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
       end if
       res%e_os = e_os
       res%e_ss = e_ss
       res%e_corr = e_os + e_ss
-      if (.not. present(la)) call la_own%release()
    end subroutine trc_rimp2_run
+
+   subroutine rimp2_unpack_block(nao, npack, naux, np, p0, packed_b, tens)
+      !! tens(:, :, q) = B's column p0 - 1 + q, packed mu >= nu, unpacked to
+      !! the dense (nao, nao) block the half-transform reads; on the device.
+      integer, intent(in) :: nao, npack, naux, np, p0
+      real(dp), intent(in) :: packed_b(npack, naux)
+      real(dp), intent(out) :: tens(nao, nao, np)
+      integer :: q, mu, nu
+      do concurrent(q=1:np, mu=1:nao, nu=1:nao)
+         tens(mu, nu, q) = packed_b(rimp2_pack_index(max(mu, nu), min(mu, nu)), p0 - 1 + q)
+      end do
+   end subroutine rimp2_unpack_block
 
    !
    ! `trc_rimp2_run`/`trc_urimp2_run`'s own fold for a spherical orbital
@@ -772,7 +778,7 @@ contains
    ! has, so this round runs one rank only and refuses anything else below,
    ! with a message that says so.
    !
-   subroutine trc_urimp2_run(b, aux, pl, nalpha, nbeta, cmo, eps, res, opts, la, comm)
+   recursive subroutine trc_urimp2_run(b, aux, pl, nalpha, nbeta, cmo, eps, res, opts, la)
       !! `cmo`/`eps`: alpha in column/row 1, beta in 2 (trc_scf_result_t's layout). `res%cmo`/`res%eps`
       !! pass straight through for a Cartesian, nspin = 2 result only; fold a spherical one first.
       type(trc_basis_t), intent(in) :: b, aux
@@ -781,14 +787,11 @@ contains
       real(dp), intent(in) :: cmo(b%nao, b%nao, 2), eps(b%nao, 2)
       type(trc_rimp2_result_t), intent(out) :: res
       type(trc_rimp2_options_t), intent(in), optional :: opts
-      type(trc_linalg_t), intent(inout), optional, target :: la
-      type(comm_t), intent(in), optional :: comm
+      type(trc_linalg_t), intent(inout), optional :: la
 
       type(trc_rimp2_options_t) :: op
       type(timer_type) :: tw0, tw1
       logical :: talk
-      type(trc_linalg_t), target :: la_own
-      type(trc_linalg_t), pointer :: lp
       type(trc_basis_t) :: aux_subset
       integer :: nao, naux, naux_c, nfz, noa, nob, nva, nvb, nblk, s0, s1, p0, np, p0c, npc, ish
       integer :: rank, nranks
@@ -809,6 +812,14 @@ contains
       integer(int64) :: nao8, naux8, nva8, nvb8, noa8, nob8, novr_a8, novr_b8
       type(trc_gemm_batch_t) :: gemm_shape
 
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call trc_urimp2_run(b, aux, pl, nalpha, nbeta, cmo, eps, res, opts, la_local)
+            call la_local%release()
+         end block
+         return
+      end if
       if (present(opts)) op = opts
       nao = b%nao
       ! `cmo`/`eps` are the Cartesian-space, fold-and-pad result of
@@ -819,9 +830,9 @@ contains
       naux = merge(aux%nao_sph, aux%nao, aux%spherical)
       rank = 0
       nranks = 1
-      if (present(comm)) then
-         rank = comm%rank()
-         nranks = comm%size()
+      if (op%has_comm) then
+         rank = op%comm%rank()
+         nranks = op%comm%size()
       end if
       if (nranks > 1) then
          res%message = "trc_urimp2: multi-rank UHF RI-MP2 is not implemented this round -- "// &
@@ -856,11 +867,6 @@ contains
       end if
       nblk = naux_c
       if (op%aux_block > 0) nblk = op%aux_block
-      if (present(la)) then
-         lp => la
-      else
-         lp => la_own
-      end if
       novr_a = noa*nva
       novr_b = nob*nvb
       novr_a8 = novr_a
@@ -871,36 +877,36 @@ contains
       nvb8 = nvb
       noa8 = noa
       nob8 = nob
-      call lp%init(naux)
+      call la%init(naux)
 
       talk = op%verbose .and. rank == 0
       call stab%init("rimp2u", STEP_NAME)
-      call lp%sync()
+      call la%sync()
       call tw0%start()
 
       ! --- 1. the metric and its Cholesky factor (spin-independent) --------
       allocate (jm(naux, naux))
       !$acc enter data create(jm)
-      call stab%step_on(lp, ST_METRIC, tc)
+      call stab%step_on(la, ST_METRIC, tc)
       if (aux%spherical) then
          allocate (jmc(naux_c, naux_c))
          !$acc enter data create(jmc)
          call trc_df_2c(aux, jmc)
-         call sph_metric_cart_to_sph(aux, lp, jmc, jm)
+         call sph_metric_cart_to_sph(aux, la, jmc, jm)
          !$acc exit data delete(jmc)
          deallocate (jmc)
       else
          call trc_df_2c(aux, jm)
       end if
-      call stab%step_off(lp, ST_METRIC, tc)
-      call stab%step_on(lp, ST_CHOL, tc)
-      call lp%potrf(naux, jm, naux)
-      call stab%step_off(lp, ST_CHOL, tc)
+      call stab%step_off(la, ST_METRIC, tc)
+      call stab%step_on(la, ST_CHOL, tc)
+      call la%potrf(naux, jm, naux)
+      call stab%step_off(la, ST_CHOL, tc)
       call stab%add_flop(ST_CHOL, naux8**3/3)
       if (talk) then
          block
             character(len=1024) :: logline
-            write (logline, "(a,i0,a,f8.2,a)") "  rimp2u: metric (", naux, ") and Cholesky ", since(lp, tw0), " s"
+            write (logline, "(a,i0,a,f8.2,a)") "  rimp2u: metric (", naux, ") and Cholesky ", since(la, tw0), " s"
             call global_logger%performance(trim(logline))
          end block
       end if
@@ -933,37 +939,37 @@ contains
          end if
          allocate (tens(nao, nao, np))
          !$acc enter data create(tens)
-         call stab%step_on(lp, ST_3C, tc)
+         call stab%step_on(la, ST_3C, tc)
          if (aux%spherical) then
             allocate (tcart3(nao, nao, npc))
             !$acc enter data create(tcart3)
             call trc_df_3c(b, pl, aux_subset, tcart3)
-            call sph_aux3c_to_sph(aux_subset, nao, tcart3, tens, lp)
+            call sph_aux3c_to_sph(aux_subset, nao, tcart3, tens, la)
             !$acc exit data delete(tcart3)
             deallocate (tcart3)
          else
             call trc_df_3c(b, pl, aux_subset, tens)
          end if
-         call stab%step_off(lp, ST_3C, tc)
+         call stab%step_off(la, ST_3C, tc)
 
          allocate (half_a(noa, nao, np))
          !$acc enter data create(half_a)
-         call stab%step_on(lp, ST_TRANS, tc)
-         call lp%gemm("T", "N", noa, nao*np, nao, 1.0_dp, cocc_a, nao, tens, nao, 0.0_dp, half_a, noa)
+         call stab%step_on(la, ST_TRANS, tc)
+         call la%gemm("T", "N", noa, nao*np, nao, 1.0_dp, cocc_a, nao, tens, nao, 0.0_dp, half_a, noa)
          gemm_shape = trc_gemm_batch(nva, noa, nao, np, sa=0_int64, sc=novr_a8, transa="T", transb="T")
-         call lp%gemm_batched(gemm_shape, cvir_a, half_a, xr_a(1 + int(p0 - 1, int64)*novr_a8))
-         call stab%step_off(lp, ST_TRANS, tc)
+         call la%gemm_batched(gemm_shape, cvir_a, half_a, xr_a(1 + int(p0 - 1, int64)*novr_a8))
+         call stab%step_off(la, ST_TRANS, tc)
          call stab%add_flop(ST_TRANS, int(np, int64)*(2*noa8*nao8*nao8 + 2*nva8*noa8*nao8))
          !$acc exit data delete(half_a)
          deallocate (half_a)
 
          allocate (half_b(nob, nao, np))
          !$acc enter data create(half_b)
-         call stab%step_on(lp, ST_TRANS, tc)
-         call lp%gemm("T", "N", nob, nao*np, nao, 1.0_dp, cocc_b, nao, tens, nao, 0.0_dp, half_b, nob)
+         call stab%step_on(la, ST_TRANS, tc)
+         call la%gemm("T", "N", nob, nao*np, nao, 1.0_dp, cocc_b, nao, tens, nao, 0.0_dp, half_b, nob)
          gemm_shape = trc_gemm_batch(nvb, nob, nao, np, sa=0_int64, sc=novr_b8, transa="T", transb="T")
-         call lp%gemm_batched(gemm_shape, cvir_b, half_b, xr_b(1 + int(p0 - 1, int64)*novr_b8))
-         call stab%step_off(lp, ST_TRANS, tc)
+         call la%gemm_batched(gemm_shape, cvir_b, half_b, xr_b(1 + int(p0 - 1, int64)*novr_b8))
+         call stab%step_off(la, ST_TRANS, tc)
          call stab%add_flop(ST_TRANS, int(np, int64)*(2*nob8*nao8*nao8 + 2*nvb8*nob8*nao8))
          !$acc exit data delete(half_b)
          deallocate (half_b)
@@ -983,13 +989,13 @@ contains
       end if
 
       ! --- 4. B = X L^-T, one triangular solve per spin ---------------------
-      call stab%step_on(lp, ST_TRSM, tc)
-      call lp%trsm("R", "L", "T", novr_a, naux, 1.0_dp, jm, naux, xr_a, novr_a)
-      call stab%step_off(lp, ST_TRSM, tc)
+      call stab%step_on(la, ST_TRSM, tc)
+      call la%trsm("R", "L", "T", novr_a, naux, 1.0_dp, jm, naux, xr_a, novr_a)
+      call stab%step_off(la, ST_TRSM, tc)
       call stab%add_flop(ST_TRSM, novr_a8*naux8*naux8)
-      call stab%step_on(lp, ST_TRSM, tc)
-      call lp%trsm("R", "L", "T", novr_b, naux, 1.0_dp, jm, naux, xr_b, novr_b)
-      call stab%step_off(lp, ST_TRSM, tc)
+      call stab%step_on(la, ST_TRSM, tc)
+      call la%trsm("R", "L", "T", novr_b, naux, 1.0_dp, jm, naux, xr_b, novr_b)
+      call stab%step_off(la, ST_TRSM, tc)
       call stab%add_flop(ST_TRSM, novr_b8*naux8*naux8)
       !$acc exit data delete(jm)
       if (talk) then
@@ -999,7 +1005,7 @@ contains
             call global_logger%performance(trim(logline))
          end block
       end if
-      call lp%sync()
+      call la%sync()
       call tw1%start()
 
       ! --- 5a/5b. the like-spin pair energies, restricted's own triangle ---
@@ -1020,22 +1026,22 @@ contains
          i1 = min(noa, i0 + ng_aa - 1)
          jstart = i0
          ncol = (noa - jstart + 1)*nva
-         call stab%step_on(lp, ST_KGEMM, tc)
-         call lp%gemm("N", "T", (i1 - i0 + 1)*nva, ncol, naux, 1.0_dp, xr_a(1 + (i0 - 1)*nva), novr_a, &
+         call stab%step_on(la, ST_KGEMM, tc)
+         call la%gemm("N", "T", (i1 - i0 + 1)*nva, ncol, naux, 1.0_dp, xr_a(1 + (i0 - 1)*nva), novr_a, &
                       xr_a(1 + (jstart - 1)*nva), novr_a, 0.0_dp, ki_aa, ldk_aa)
-         call stab%step_off(lp, ST_KGEMM, tc)
+         call stab%step_off(la, ST_KGEMM, tc)
          call stab%add_flop(ST_KGEMM, 2*int(i1 - i0 + 1, int64)*nva8*int(ncol, int64)*naux8)
          do i = i0, i1
             roff = (i - i0)*nva
             coff = (i - i0)*nva
             jfirst = i
             ncol_i = (noa - jfirst + 1)*nva
-            call stab%step_on(lp, ST_PAIR, tc)
-            call lp%transpose(nva, ncol_i, ki_aa(roff + 1, coff + 1), ldk_aa, kt_aa, ncolmax_aa)
+            call stab%step_on(la, ST_PAIR, tc)
+            call la%transpose(nva, ncol_i, ki_aa(roff + 1, coff + 1), ldk_aa, kt_aa, ncolmax_aa)
             call pair_energy(i, jfirst, noa, nva, ldk_aa, roff, coff, ncolmax_aa, ncol_i, eo_a, ev_a, &
                              ki_aa, kt_aa, part_aa)
             !$acc update self(part_aa(1:2*ncol_i))
-            call stab%step_off(lp, ST_PAIR, tc)
+            call stab%step_off(la, ST_PAIR, tc)
             call stab%add_flop(ST_PAIR, 10*nva8*int(ncol_i, int64))
             e_aa = e_aa + sum(part_aa(2:2*ncol_i:2))   ! the same-spin half only; see this
          end do                                        ! routine's own header for the discarded "pos" half
@@ -1054,22 +1060,22 @@ contains
          i1 = min(nob, i0 + ng_bb - 1)
          jstart = i0
          ncol = (nob - jstart + 1)*nvb
-         call stab%step_on(lp, ST_KGEMM, tc)
-         call lp%gemm("N", "T", (i1 - i0 + 1)*nvb, ncol, naux, 1.0_dp, xr_b(1 + (i0 - 1)*nvb), novr_b, &
+         call stab%step_on(la, ST_KGEMM, tc)
+         call la%gemm("N", "T", (i1 - i0 + 1)*nvb, ncol, naux, 1.0_dp, xr_b(1 + (i0 - 1)*nvb), novr_b, &
                       xr_b(1 + (jstart - 1)*nvb), novr_b, 0.0_dp, ki_bb, ldk_bb)
-         call stab%step_off(lp, ST_KGEMM, tc)
+         call stab%step_off(la, ST_KGEMM, tc)
          call stab%add_flop(ST_KGEMM, 2*int(i1 - i0 + 1, int64)*nvb8*int(ncol, int64)*naux8)
          do i = i0, i1
             roff = (i - i0)*nvb
             coff = (i - i0)*nvb
             jfirst = i
             ncol_i = (nob - jfirst + 1)*nvb
-            call stab%step_on(lp, ST_PAIR, tc)
-            call lp%transpose(nvb, ncol_i, ki_bb(roff + 1, coff + 1), ldk_bb, kt_bb, ncolmax_bb)
+            call stab%step_on(la, ST_PAIR, tc)
+            call la%transpose(nvb, ncol_i, ki_bb(roff + 1, coff + 1), ldk_bb, kt_bb, ncolmax_bb)
             call pair_energy(i, jfirst, nob, nvb, ldk_bb, roff, coff, ncolmax_bb, ncol_i, eo_b, ev_b, &
                              ki_bb, kt_bb, part_bb)
             !$acc update self(part_bb(1:2*ncol_i))
-            call stab%step_off(lp, ST_PAIR, tc)
+            call stab%step_off(la, ST_PAIR, tc)
             call stab%add_flop(ST_PAIR, 10*nvb8*int(ncol_i, int64))
             e_bb = e_bb + sum(part_bb(2:2*ncol_i:2))
          end do
@@ -1087,17 +1093,17 @@ contains
       do i0 = 1, noa, ng_ab
          i1 = min(noa, i0 + ng_ab - 1)
          ncol = nob*nvb
-         call stab%step_on(lp, ST_KGEMM, tc)
-         call lp%gemm("N", "T", (i1 - i0 + 1)*nva, ncol, naux, 1.0_dp, xr_a(1 + (i0 - 1)*nva), novr_a, &
+         call stab%step_on(la, ST_KGEMM, tc)
+         call la%gemm("N", "T", (i1 - i0 + 1)*nva, ncol, naux, 1.0_dp, xr_a(1 + (i0 - 1)*nva), novr_a, &
                       xr_b, novr_b, 0.0_dp, ki_ab, ldk_ab)
-         call stab%step_off(lp, ST_KGEMM, tc)
+         call stab%step_off(la, ST_KGEMM, tc)
          call stab%add_flop(ST_KGEMM, 2*int(i1 - i0 + 1, int64)*nva8*int(ncol, int64)*naux8)
          do i = i0, i1
             roff = (i - i0)*nva
-            call stab%step_on(lp, ST_PAIR, tc)
+            call stab%step_on(la, ST_PAIR, tc)
             call mixed_energy(i, nva, nob, nvb, ldk_ab, roff, eo_a, ev_a, eo_b, ev_b, ki_ab, part_ab)
             !$acc update self(part_ab(1:nva*nob))
-            call stab%step_off(lp, ST_PAIR, tc)
+            call stab%step_off(la, ST_PAIR, tc)
             call stab%add_flop(ST_PAIR, 4_int64*nva8*nob8*nvb8)
             e_ab = e_ab + sum(part_ab(1:nva*nob))
          end do
@@ -1109,7 +1115,7 @@ contains
       if (talk) then
          block
             character(len=1024) :: logline
-            write (logline, "(a,f8.2,a,f8.2,a)") "  rimp2u: pair energies ", since(lp, tw1), " s;  total ", since(lp, tw0), " s"
+            write (logline, "(a,f8.2,a,f8.2,a)") "  rimp2u: pair energies ", since(la, tw1), " s;  total ", since(la, tw0), " s"
             call global_logger%performance(trim(logline))
          end block
          dense_mask = .false.
@@ -1117,12 +1123,11 @@ contains
          dense_mask(ST_TRANS) = .true.
          dense_mask(ST_TRSM) = .true.
          dense_mask(ST_KGEMM) = .true.
-         call stab%report(since(lp, tw0), rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
+         call stab%report(since(la, tw0), rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
       end if
       res%e_os = e_ab
       res%e_ss = e_aa + e_bb
       res%e_corr = res%e_os + res%e_ss
-      if (.not. present(la)) call la_own%release()
    end subroutine trc_urimp2_run
 
    !

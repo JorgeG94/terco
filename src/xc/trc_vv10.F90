@@ -174,7 +174,7 @@ contains
       real(dp), intent(in) :: dmat(bas%nao, bas%nao)
       real(dp), intent(out) :: e_nlc
       real(dp), intent(inout) :: vmat(bas%nao, bas%nao)
-      type(trc_linalg_t), intent(inout), optional, target :: la
+      type(trc_linalg_t), intent(inout), optional :: la
       type(comm_t), intent(in), optional :: comm
       !! Splits pass 2's outer points into a contiguous range per rank,
       !! one allreduce afterward -- see this module's own MULTI-GPU
@@ -197,7 +197,7 @@ contains
       real(dp), intent(in) :: dmat(bas%nao, bas%nao, 2)
       real(dp), intent(out) :: e_nlc
       real(dp), intent(inout) :: vmat(bas%nao, bas%nao, 2)
-      type(trc_linalg_t), intent(inout), optional, target :: la
+      type(trc_linalg_t), intent(inout), optional :: la
       type(comm_t), intent(in), optional :: comm
       real(dp), allocatable :: dtot(:, :), vtmp(:, :)
       integer :: nao, i, j
@@ -233,14 +233,14 @@ contains
    ! other is an assumed-shape dummy in a device routine; every kernel
    ! array below is explicit-shape).
    !
-   subroutine vv10_drive(bas, grid, func, dmat, e_nlc, vmat, la, comm)
+   recursive subroutine vv10_drive(bas, grid, func, dmat, e_nlc, vmat, la, comm)
       type(trc_basis_t), intent(in) :: bas
       type(trc_xc_grid_t), intent(in) :: grid
       type(trc_xc_functional_t), intent(in) :: func
       real(dp), intent(in) :: dmat(bas%nao, bas%nao)
       real(dp), intent(out) :: e_nlc
       real(dp), intent(inout) :: vmat(bas%nao, bas%nao)
-      type(trc_linalg_t), intent(inout), optional, target :: la
+      type(trc_linalg_t), intent(inout), optional :: la
       type(comm_t), intent(in), optional :: comm
 
       real(dp), allocatable :: rho(:), grho(:, :), sigma(:), vrho(:), vsigma(:), eg(:)
@@ -251,8 +251,6 @@ contains
       integer :: npass, g, rank, nranks, i0, i1, npts
       integer(int64) :: cap
       logical :: split
-      type(trc_linalg_t), target :: la_own
-      type(trc_linalg_t), pointer :: lp
 
       rank = 0
       nranks = 1
@@ -266,6 +264,16 @@ contains
       e_nlc = 0.0_dp
       npts = grid%npts
       if (npts == 0) return
+      if (.not. present(la)) then
+         ! The caller lent no handles: make a set for this call only.
+         block
+            type(trc_linalg_t) :: la_local
+            call la_local%init(1)
+            call vv10_drive(bas, grid, func, dmat, e_nlc, vmat, la_local, comm)
+            call la_local%release()
+         end block
+         return
+      end if
 
       ! A contiguous range [i0, i1] per rank -- see this module's own
       ! MULTI-GPU header for why.
@@ -277,17 +285,11 @@ contains
       kvv = b*1.5_dp*PI*(9.0_dp*PI)**(-1.0_dp/6.0_dp)
       beta = (3.0_dp/(b*b))**0.75_dp/32.0_dp
       cap = VV10_TILE_CAP
-      if (present(la)) then
-         lp => la
-      else
-         call la_own%init(1)
-         lp => la_own
-      end if
 
       allocate (rho(npts), grho(3, npts), sigma(npts), vrho(npts), vsigma(npts), eg(npts))
       !$acc data copyin(dmat) create(rho, grho, sigma, vrho, vsigma, eg)
 
-      call vv10_density_tile(bas, grid, dmat, cap, lp, rho, grho, sigma)
+      call vv10_density_tile(bas, grid, dmat, cap, la, rho, grho, sigma)
 
       !
       ! GATHER before the O(N^2) pass: every quantity the inner sum needs
@@ -368,11 +370,10 @@ contains
       e_nlc = sum(eg)
 
       !$acc data copy(vmat) copyin(grho, vrho, vsigma)
-      call vv10_potential_tile(bas, grid, vrho, vsigma, grho, cap, lp, vmat)
+      call vv10_potential_tile(bas, grid, vrho, vsigma, grho, cap, la, vmat)
       !$acc end data
 
       deallocate (rho, grho, sigma, vrho, vsigma, eg)
-      if (.not. present(la)) call la_own%release()
    end subroutine vv10_drive
 
    !

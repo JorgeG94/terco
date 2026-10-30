@@ -43,12 +43,12 @@ module trc_scf_grad
    use trc_linalg, only: trc_linalg_t
    use trc_sph, only: sph_sph_to_cart
    use trc_xc_functional, only: trc_xc_functional_t
-   use trc_xc_grad, only: xc_grad_add, xc_grad_step_names, xc_grad_options
+   use trc_xc_grad, only: xc_grad_add, xc_grad_add_on_grid, xc_grad_step_names, xc_grad_options, xc_grad_options_t
    use trc_step_table, only: step_table_t
    use trc_scf_context, only: trc_pair_eri_cache_t
    use trc_scf_df, only: df_jk_t
    use trc_scf_grad_df, only: scf_grad_df_two_electron
-   use trc_vv10_grad, only: vv10_grad_add
+   use trc_vv10_grad, only: vv10_grad_add, vv10_grad_add_on_grid
    use trc_scf_settings, only: DEFAULT_NLC_GRID_LEVEL
    use trc_dft_grid, only: dft_grid_t
    use trc_xc_batch, only: trc_xc_grid_t
@@ -206,28 +206,19 @@ contains
       !! or the two are not derivatives of the same number. Absent (a
       !! Fortran-side caller with no opinion) falls back to xc_grad_add's
       !! own defaults.
-      type(trc_pair_eri_cache_t), intent(inout), optional, target :: pair_eri_cache
+      type(trc_pair_eri_cache_t), intent(inout), optional :: pair_eri_cache
       !! The SCF's own pair list and (outside `--df`) four-centre engine,
       !! kept alive since `trc_scf_run` (trc_scf_context.F90's
-      !! `trc_pair_eri_cache_t` own header) -- reused here INSTEAD of a
-      !! fresh `pl%build`/`eri%build` when `pair_eri_cache%matches(b, thresh)`
-      !! (that function's own header: the build threshold EXACTLY, both
-      !! sides read it from the same deterministic `scf_settings_eri_thresh_env`, so a
-      !! real match is bit-identical, never a near-miss, AND the cache's
-      !! own geometry/basis fingerprint still matches `b` -- the backstop a
-      !! Fortran caller needs, since the C API's own staleness check
-      !! (`cx%scf_ok`, `trc_run_gradient`'s own GRID REUSE note above) is
-      !! what covers geometry for THAT caller, not this routine). The
-      !! four-centre engine is reused only when, on top of that,
-      !! `batch_res_built` is the default (1) -- the same batching this
-      !! routine's OWN fresh build below always uses (`eri%build` with no
-      !! `batch_res`), so a cache built at a non-default
-      !! `trc_set_batching` would otherwise make "with cache" and "without"
-      !! differ by more than round-off. A mismatch (a different `--thresh`
-      !! or batching set after the SCF ran, a moved geometry, or the cache
-      !! simply absent) rebuilds a fresh pair list/engine exactly as before
-      !! this argument existed -- this is a pure performance path, never a
-      !! correctness one, same as the grid's.
+      !! `trc_pair_eri_cache_t`) -- reused INSTEAD of a fresh build when
+      !! `pair_eri_cache%matches(b, thresh)`: the build threshold EXACTLY
+      !! (both sides read the same deterministic `scf_settings_eri_thresh_env`)
+      !! and the cache's own geometry/basis fingerprint, the backstop a
+      !! Fortran caller needs (the C API's `cx%scf_ok` covers geometry for
+      !! that caller). The engine is reused only when, on top of that,
+      !! `batch_res_built` is the default (1), the batching this routine's
+      !! own fresh build uses, or "with cache" and "without" would differ by
+      !! more than round-off. A mismatch, or no cache, rebuilds both: a pure
+      !! performance path, never a correctness one, same as the grid's.
       logical, intent(out), optional :: reused
       !! Set to whether this call actually took the reuse path (the pair
       !! list, and -- outside `--df` -- the four-centre engine too) rather
@@ -240,7 +231,7 @@ contains
       !! semilocal grid's: the gradient has to be taken on the grid the
       !! energy used, and a caller's own default must not drift from the
       !! SCF's.
-      type(df_jk_t), intent(in), optional, target :: dfjk
+      type(df_jk_t), intent(in), optional :: dfjk
       !! DENSITY FITTING (`--df`): present (with `aux`), the two-electron
       !! term is the FITTED one, trc_scf_grad_df's scf_grad_df_two_electron
       !! over the SAME fit (`dfjk`'s retained B and metric Cholesky factor)
@@ -254,22 +245,18 @@ contains
       logical, intent(in), optional :: verbose
       !! Log the gradient's timing table, its phases and the XC term's
       !! steps, through pic's logger at PERFORMANCE. Default off.
-      type(dft_grid_t), intent(in), optional, target :: grid, grid_nlc
-      type(trc_xc_grid_t), intent(in), optional, target :: xg, xg_nlc
-      !! The SCF's own semilocal grid (`grid`/`xg`) and, for VV10, its own
-      !! nlc grid (`grid_nlc`/`xg_nlc`) -- present, forwarded verbatim into
-      !! `xc_grad_add`/`vv10_grad_add`, which then skip their own
-      !! rebuild entirely (see either module's own header, REUSE/GRID).
-      !! Each pair is present together or not at all. Absent (every
-      !! Fortran-side caller, and a C API gradient at settings the SCF's
-      !! own kept grid no longer matches), both terms rebuild their grid
-      !! exactly as before this argument existed -- trc_capi.F90's
-      !! `trc_run_gradient` is the only caller that ever passes these.
+      type(dft_grid_t), intent(in), optional :: grid, grid_nlc
+      type(trc_xc_grid_t), intent(in), optional :: xg, xg_nlc
+      !! The SCF's own semilocal grid (`grid`/`xg`) and, for VV10, its nlc
+      !! grid (`grid_nlc`/`xg_nlc`), each pair present together or not at
+      !! all: present, the XC terms run on it (`xc_grad_add_on_grid`/
+      !! `vv10_grad_add_on_grid`) with no rebuild; absent, each term builds
+      !! its own. trc_capi.F90's `trc_run_gradient` is the one caller.
 
-      type(trc_pairlist_t), target :: pl_own
-      type(trc_pairlist_t), pointer :: plp
-      type(step_table_t) :: gst
-      type(step_table_t), target :: xst, vst
+      type(trc_pairlist_t) :: pl_own
+      !! The pair list built here when the cache's is not reused.
+      type(step_table_t) :: gst, xst, vst
+      type(xc_grad_options_t) :: xopts
       type(timer_type) :: tc
       logical :: talk, reuse_pl, reuse_eri
       integer :: nlc_level
@@ -363,12 +350,9 @@ contains
       reuse_eri = .false.
       if (reuse_pl) reuse_eri = pair_eri_cache%has_eri .and. pair_eri_cache%batch_res_built == 1
       if (present(reused)) reused = reuse_pl .and. (reuse_eri .or. present(dfjk))
-      if (reuse_pl) then
-         plp => pair_eri_cache%pl
-      else
-         plp => pl_own
-         call plp%build(b, thresh)
-         call plp%to_device()
+      if (.not. reuse_pl) then
+         call pl_own%build(b, thresh)
+         call pl_own%to_device()
       end if
 
       if (present(dfjk)) then
@@ -382,7 +366,12 @@ contains
          call aux%to_device()
          grad = 0.0_dp
          !$acc enter data copyin(dtot, grad)
-         call scf_grad_df_two_electron(b, aux, plp, dfjk, lp, nalpha, cmo(:, :, 1), dtot, 1.0_dp, exx_use, grad)
+         if (reuse_pl) then
+            call scf_grad_df_two_electron(b, aux, pair_eri_cache%pl, dfjk, lp, nalpha, cmo(:, :, 1), dtot, 1.0_dp, &
+                                          exx_use, grad)
+         else
+            call scf_grad_df_two_electron(b, aux, pl_own, dfjk, lp, nalpha, cmo(:, :, 1), dtot, 1.0_dp, exx_use, grad)
+         end if
       else
          if (reuse_eri) then
             call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, eri_cache=pair_eri_cache%eri)
@@ -396,7 +385,11 @@ contains
       end if
       call gst%step_off(lp, 2, tc)
       call gst%step_on(lp, 3, tc)
-      call trc_1e_gradient(b, plp, wmat, dtot, grad)
+      if (reuse_pl) then
+         call trc_1e_gradient(b, pair_eri_cache%pl, wmat, dtot, grad)
+      else
+         call trc_1e_gradient(b, pl_own, wmat, dtot, grad)
+      end if
       call gst%step_off(lp, 3, tc)
 
       ! --- exchange-correlation, added on top, LDA/GGA only. `density` is
@@ -404,10 +397,14 @@ contains
       ! routine's own DEVICE RESIDENCY note above); `grad` likewise. ---
       if (present(func)) then
          call gst%step_on(lp, 4, tc)
-         call xc_grad_add(b, lp, func, nspin, density, grad, &
-                          xc_grad_options(grid_level=grid_level, grid_max_pts=grid_max_pts, &
-                                          grid_response=grid_response, rho_tol=rho_tol, timing=xst, &
-                                          grid=grid, xg=xg))
+         xopts = xc_grad_options(grid_level=grid_level, grid_max_pts=grid_max_pts, grid_response=grid_response, &
+                                 rho_tol=rho_tol)
+         if (present(grid) .and. present(xg)) then
+            xopts%partition = grid%partition
+            call xc_grad_add_on_grid(b, lp, func, density, grad, xopts, xst, xg)
+         else
+            call xc_grad_add(b, lp, func, nspin, density, grad, xopts, xst)
+         end if
          call gst%step_off(lp, 4, tc)
          ! --- VV10 nonlocal correlation, added on top. Its own grid, its
          ! own screen -- see trc_vv10_grad's own header. `density` is still
@@ -421,10 +418,13 @@ contains
             ! the energy path's `trc_vv10_rks/uks` is hard-coded to --
             ! see that module's own header.
             call gst%step_on(lp, 5, tc)
-            call vv10_grad_add(b, lp, func, nspin, density, grad, &
-                               xc_grad_options(grid_level=nlc_level, grid_max_pts=grid_max_pts, &
-                                               grid_response=grid_response, timing=vst, &
-                                               grid=grid_nlc, xg=xg_nlc))
+            xopts = xc_grad_options(grid_level=nlc_level, grid_max_pts=grid_max_pts, grid_response=grid_response)
+            if (present(grid_nlc) .and. present(xg_nlc)) then
+               xopts%partition = grid_nlc%partition
+               call vv10_grad_add_on_grid(b, lp, func, density, grad, xopts, vst, xg_nlc)
+            else
+               call vv10_grad_add(b, lp, func, nspin, density, grad, xopts, vst)
+            end if
             call gst%step_off(lp, 5, tc)
          end if
       end if
@@ -435,10 +435,8 @@ contains
       ! --- nuclear repulsion, host arithmetic, added on top ---
       call scf_grad_nuclear_repulsion(b, grad)
 
-      ! A reused `pair_eri_cache%pl` is the caller's, not this routine's --
-      ! only this routine's OWN build (`pl_own`, the common case absent a
-      ! cache or on a thresh mismatch) is released here.
-      if (.not. reuse_pl) call plp%release()
+      ! A reused `pair_eri_cache%pl` is the caller's: only `pl_own` is ours.
+      if (.not. reuse_pl) call pl_own%release()
       deallocate (wmat, dtot, density)
 
       if (talk) then
@@ -449,7 +447,7 @@ contains
       end if
    end subroutine trc_scf_gradient
 
-   subroutine two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, eri_cache)
+   recursive subroutine two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, eri_cache)
       !! The four-centre two-electron gradient (eri%gradient), halved into
       !! the actual-energy convention -- trc_scf_gradient's non-`--df`
       !! branch. `grad` is OVERWRITTEN (host).
@@ -457,7 +455,7 @@ contains
       real(dp), intent(in) :: thresh, exx_use, exx_lr_use, omega_use
       real(dp), intent(in) :: density(:, :, :)
       real(dp), intent(out) :: grad(3, b%natm)
-      type(trc_eri_t), intent(inout), optional, target :: eri_cache
+      type(trc_eri_t), intent(inout), optional :: eri_cache
       !! The SCF's own four-centre engine at this SAME geometry and
       !! threshold (trc_scf_gradient's own `pair_eri_cache`, checked
       !! there before this is ever passed) -- REUSED here instead of a
@@ -465,20 +463,21 @@ contains
       !! already paid for cost nothing extra to run the gradient kernels
       !! over, since `%gradient` takes `omega`/`j_scale`/`k_scale` per
       !! call and reads nothing from `build` that depends on them.
-      !! Absent, this routine builds and releases its own, unchanged from
-      !! before this argument existed.
-      type(trc_eri_t), target :: eri_own
-      type(trc_eri_t), pointer :: eri
+      !! Absent, this routine builds its own and releases it (the
+      !! recursive call below, with one).
       real(dp), allocatable :: grad_lr(:, :)
 
-      if (present(eri_cache)) then
-         eri => eri_cache
-      else
-         eri => eri_own
-         call eri%build(b, thresh)
+      if (.not. present(eri_cache)) then
+         block
+            type(trc_eri_t) :: eri_own
+            call eri_own%build(b, thresh)
+            call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, eri_own)
+            call eri_own%release()
+         end block
+         return
       end if
       ! --- two-electron, first: this call starts `grad` from zero ---
-      call eri%gradient(b, density, grad, k_scale=exx_use)
+      call eri_cache%gradient(b, density, grad, k_scale=exx_use)
 
       ! --- the long-range exchange gradient, for a range-separated
       ! hybrid: a SECOND eri%gradient pass (j_scale=0, k_scale=exx_lr,
@@ -492,19 +491,13 @@ contains
       ! second allocation, same cost as before this argument existed. ---
       if (exx_lr_use /= 0.0_dp) then
          allocate (grad_lr(3, b%natm))
-         call eri%gradient(b, density, grad_lr, j_scale=0.0_dp, k_scale=exx_lr_use, omega=omega_use)
+         call eri_cache%gradient(b, density, grad_lr, j_scale=0.0_dp, k_scale=exx_lr_use, omega=omega_use)
          grad = grad + grad_lr
          deallocate (grad_lr)
       end if
       grad = 0.5_dp*grad   ! see this module's own header: eri%gradient's
                            ! convention is twice d(e_two)/dR -- true of
                            ! both passes above, added before this halving.
-
-      ! A reused `eri_cache` is the caller's (the SCF's own, kept alive in
-      ! `pair_eri_cache` for the gradient right after it) -- only this
-      ! routine's OWN build (`eri_own`, absent a cache or on a thresh
-      ! mismatch) is released here.
-      if (.not. present(eri_cache)) call eri%release()
    end subroutine two_electron_4c
 
 end module trc_scf_grad

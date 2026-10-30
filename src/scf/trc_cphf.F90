@@ -394,7 +394,7 @@ contains
    ! built on the SAME basis `b` (not necessarily the ones trc_scf_run used
    ! internally -- that engine is released when the SCF returns).
    !
-   subroutine trc_scf_polarizability_rhf(b, pl, eri, nocc, cmo, eps, alpha, opts, res, la)
+   recursive subroutine trc_scf_polarizability_rhf(b, pl, eri, nocc, cmo, eps, alpha, opts, res, la)
       type(trc_basis_t), intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
       type(trc_eri_t), intent(inout) :: eri
@@ -403,22 +403,22 @@ contains
       real(dp), intent(out) :: alpha(3, 3)
       type(trc_cphf_options_t), intent(in) :: opts
       type(trc_cphf_result_t), intent(out) :: res
-      type(trc_linalg_t), intent(inout), optional, target :: la
+      type(trc_linalg_t), intent(inout), optional :: la
+      !! The caller's handles; absent, made and released for this call.
 
-      type(trc_linalg_t), target :: la_own
-      type(trc_linalg_t), pointer :: lp
       real(dp), allocatable :: mmat(:, :, :), temporary(:, :), bvec(:, :, :), u(:, :, :)
       integer :: nao, nvirt, x, y
-      logical :: owns_la
 
       nao = b%nao
       nvirt = nao - nocc
-      owns_la = .not. present(la)
-      if (present(la)) then
-         lp => la
-      else
-         lp => la_own
-         call lp%init(nao)
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call la_local%init(nao)
+            call trc_scf_polarizability_rhf(b, pl, eri, nocc, cmo, eps, alpha, opts, res, la_local)
+            call la_local%release()
+         end block
+         return
       end if
 
       allocate (mmat(nao, nao, TRC_NMULT))
@@ -427,11 +427,11 @@ contains
       allocate (temporary(nao, nocc), bvec(nvirt, nocc, 3), u(nvirt, nocc, 3))
       !$acc enter data copyin(cmo, mmat) create(temporary, bvec, u)
       do x = 1, 3
-         call lp%gemm_mat(mmat(:, :, x), cmo(:, 1:nocc), temporary)
-         call lp%gemm_mat(cmo(:, nocc + 1:nao), temporary, bvec(:, :, x), transa="T")
+         call la%gemm_mat(mmat(:, :, x), cmo(:, 1:nocc), temporary)
+         call la%gemm_mat(cmo(:, nocc + 1:nao), temporary, bvec(:, :, x), transa="T")
       end do
 
-      call trc_cphf_solve_rhf(b, eri, lp, nao, nocc, nvirt, cmo, eps, 3, bvec, u, opts, res)
+      call trc_cphf_solve_rhf(b, eri, la, nao, nocc, nvirt, cmo, eps, 3, bvec, u, opts, res)
 
       ! alpha_xy = -2 [sum_ai mu^x_ai U^y_ai + sum_ai mu^y_ai U^x_ai], the
       ! symmetrised form pyscf's rhf.polarizability computes (e2 + e2^T):
@@ -440,13 +440,12 @@ contains
       ! a cosmetic average.
       do y = 1, 3
          do x = 1, 3
-            alpha(x, y) = -2.0_dp*(lp%dot_2d(bvec(:, :, x), u(:, :, y)) + lp%dot_2d(bvec(:, :, y), u(:, :, x)))
+            alpha(x, y) = -2.0_dp*(la%dot_2d(bvec(:, :, x), u(:, :, y)) + la%dot_2d(bvec(:, :, y), u(:, :, x)))
          end do
       end do
 
       !$acc exit data delete(cmo, mmat, temporary, bvec, u)
       deallocate (mmat, temporary, bvec, u)
-      if (owns_la) call lp%release()
    end subroutine trc_scf_polarizability_rhf
 
    !
@@ -455,7 +454,8 @@ contains
    ! factor of 2 (one identical contribution per spin there; two distinct
    ! ones, each counted once, here).
    !
-   subroutine trc_scf_polarizability_uhf(b, pl, eri, noa, nob, cmo_a, cmo_b, eps_a, eps_b, alpha, opts, res, la)
+   recursive subroutine trc_scf_polarizability_uhf(b, pl, eri, noa, nob, cmo_a, cmo_b, eps_a, eps_b, alpha, opts, &
+                                                   res, la)
       type(trc_basis_t), intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
       type(trc_eri_t), intent(inout) :: eri
@@ -464,24 +464,25 @@ contains
       real(dp), intent(out) :: alpha(3, 3)
       type(trc_cphf_options_t), intent(in) :: opts
       type(trc_cphf_result_t), intent(out) :: res
-      type(trc_linalg_t), intent(inout), optional, target :: la
+      type(trc_linalg_t), intent(inout), optional :: la
+      !! The caller's handles; absent, made and released for this call.
 
-      type(trc_linalg_t), target :: la_own
-      type(trc_linalg_t), pointer :: lp
       real(dp), allocatable :: mmat(:, :, :), temporary_a(:, :), temporary_b(:, :)
       real(dp), allocatable :: bvec_a(:, :, :), bvec_b(:, :, :), u_a(:, :, :), u_b(:, :, :)
       integer :: nao, nva, nvb, x, y
-      logical :: owns_la
 
       nao = b%nao
       nva = nao - noa
       nvb = nao - nob
-      owns_la = .not. present(la)
-      if (present(la)) then
-         lp => la
-      else
-         lp => la_own
-         call lp%init(nao)
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call la_local%init(nao)
+            call trc_scf_polarizability_uhf(b, pl, eri, noa, nob, cmo_a, cmo_b, eps_a, eps_b, alpha, opts, res, &
+                                            la_local)
+            call la_local%release()
+         end block
+         return
       end if
 
       allocate (mmat(nao, nao, TRC_NMULT))
@@ -491,13 +492,13 @@ contains
       allocate (bvec_a(nva, noa, 3), bvec_b(nvb, nob, 3), u_a(nva, noa, 3), u_b(nvb, nob, 3))
       !$acc enter data copyin(cmo_a, cmo_b, mmat) create(temporary_a, temporary_b, bvec_a, bvec_b, u_a, u_b)
       do x = 1, 3
-         call lp%gemm_mat(mmat(:, :, x), cmo_a(:, 1:noa), temporary_a)
-         call lp%gemm_mat(cmo_a(:, noa + 1:nao), temporary_a, bvec_a(:, :, x), transa="T")
-         call lp%gemm_mat(mmat(:, :, x), cmo_b(:, 1:nob), temporary_b)
-         call lp%gemm_mat(cmo_b(:, nob + 1:nao), temporary_b, bvec_b(:, :, x), transa="T")
+         call la%gemm_mat(mmat(:, :, x), cmo_a(:, 1:noa), temporary_a)
+         call la%gemm_mat(cmo_a(:, noa + 1:nao), temporary_a, bvec_a(:, :, x), transa="T")
+         call la%gemm_mat(mmat(:, :, x), cmo_b(:, 1:nob), temporary_b)
+         call la%gemm_mat(cmo_b(:, nob + 1:nao), temporary_b, bvec_b(:, :, x), transa="T")
       end do
 
-      call trc_cphf_solve_uhf(b, eri, lp, nao, noa, nva, nob, nvb, cmo_a, cmo_b, eps_a, eps_b, &
+      call trc_cphf_solve_uhf(b, eri, la, nao, noa, nva, nob, nvb, cmo_a, cmo_b, eps_a, eps_b, &
                               3, bvec_a, bvec_b, u_a, u_b, opts, res)
 
       ! alpha_xy = -[sum_s sum_ai mu^x_ai,s U^y_ai,s + (x<->y)] -- pyscf's
@@ -505,14 +506,13 @@ contains
       ! comment on why the symmetrised form, not the bare one, is right.
       do y = 1, 3
          do x = 1, 3
-            alpha(x, y) = -(lp%dot_2d(bvec_a(:, :, x), u_a(:, :, y)) + lp%dot_2d(bvec_b(:, :, x), u_b(:, :, y)) + &
-                            lp%dot_2d(bvec_a(:, :, y), u_a(:, :, x)) + lp%dot_2d(bvec_b(:, :, y), u_b(:, :, x)))
+            alpha(x, y) = -(la%dot_2d(bvec_a(:, :, x), u_a(:, :, y)) + la%dot_2d(bvec_b(:, :, x), u_b(:, :, y)) + &
+                            la%dot_2d(bvec_a(:, :, y), u_a(:, :, x)) + la%dot_2d(bvec_b(:, :, y), u_b(:, :, x)))
          end do
       end do
 
       !$acc exit data delete(cmo_a, cmo_b, mmat, temporary_a, temporary_b, bvec_a, bvec_b, u_a, u_b)
       deallocate (mmat, temporary_a, temporary_b, bvec_a, bvec_b, u_a, u_b)
-      if (owns_la) call lp%release()
    end subroutine trc_scf_polarizability_uhf
 
    !
@@ -532,7 +532,7 @@ contains
       real(dp), intent(out) :: alpha(3, 3)
       type(trc_cphf_options_t), intent(in) :: opts
       type(trc_cphf_result_t), intent(out) :: res
-      type(trc_linalg_t), intent(inout), optional, target :: la
+      type(trc_linalg_t), intent(inout), optional :: la
 
       if (res_scf%nspin == 1) then
          call trc_scf_polarizability_rhf(b, pl, eri, nalpha, res_scf%cmo(:, :, 1), res_scf%eps(:, 1), &

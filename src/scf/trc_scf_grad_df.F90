@@ -14,7 +14,7 @@
 !
 ! THE GRADIENT. Stationary in C (the SCF converged), so only the integrals
 ! move. With c = M^-1 t and X^{ij} = M^-1 h^{ij} -- one triangular solve
-! each against the RETAINED L (df_jk_t%cholesky), since df_jk_t already
+! each against the RETAINED L (df_jk_t%chol), since df_jk_t already
 ! holds B = T L^-T, whose contractions are L^-1 t and L^-1 h:
 !
 !     dE_2/dR = sum_(mn P) Y^P_mn d(mn|P)/dR + sum_(P Q) Z_PQ d(P|Q)/dR
@@ -107,7 +107,8 @@ contains
       type(trc_basis_t),    intent(in)    :: b
       type(trc_basis_t),    intent(in)    :: aux
       type(trc_pairlist_t), intent(in)    :: pl
-      type(df_jk_t),        intent(in), target :: dfjk
+      type(df_jk_t),        intent(in)    :: dfjk
+      !! Read for its retained B (`bpk`) and Cholesky factor (`chol`).
       type(trc_linalg_t),   intent(inout) :: lp
       integer,              intent(in)    :: nocc
       real(dp),             intent(in)    :: cmo(b%nao, b%nao)
@@ -115,7 +116,6 @@ contains
       real(dp),             intent(in)    :: j_scale, k_scale
       real(dp),             intent(inout) :: grad(3, b%natm)
 
-      real(dp), pointer :: bpk(:, :), chol(:, :)
       real(dp), allocatable :: dpk(:), cq(:), zmat(:, :), cocc(:, :), xp(:), hb(:, :, :)
       real(dp), allocatable :: tens(:, :, :), half(:, :, :), ydum(:, :, :)
       type(trc_basis_t) :: aux_subset
@@ -147,8 +147,6 @@ contains
       call tbl%init("dfgrad", NAMES, bytes_steps=[ST_JGAM, ST_UNPK, ST_XPACK])
       call lp%sync()
       call tall%start()
-      bpk => dfjk%packed_b()
-      chol => dfjk%cholesky()
       occ_s = 2.0_dp
       do_k = k_scale /= 0.0_dp .and. nocc > 0
       n8 = int(n, int64)
@@ -164,11 +162,11 @@ contains
          if (nu <= mu) dpk(pack_index(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*density(mu, nu)
       end do
       call tbl%step_on(lp, ST_JGAM, tc)
-      call lp%gemv("T", npack, naux, 1.0_dp, bpk, npack, dpk, 0.0_dp, cq)
+      call lp%gemv("T", npack, naux, 1.0_dp, dfjk%bpk, npack, dpk, 0.0_dp, cq)
       call tbl%step_off(lp, ST_JGAM, tc)
       call tbl%add_bytes(ST_JGAM, 8_int64*int(npack, int64)*int(naux, int64))
       call tbl%step_on(lp, ST_CSOL, tc)
-      call lp%trsm("L", "L", "T", naux, 1, 1.0_dp, chol, naux, cq, naux)
+      call lp%trsm("L", "L", "T", naux, 1, 1.0_dp, dfjk%chol, naux, cq, naux)
       call tbl%step_off(lp, ST_CSOL, tc)
       call tbl%add_flop(ST_CSOL, int(naux, int64)**2)
 
@@ -248,15 +246,7 @@ contains
             allocate (tens(n, n, np), half(nc, n, np), hb(nc, nocc, np))
             !$acc enter data create(tens, half, hb)
             call tbl%step_on(lp, ST_UNPK, tc)
-            ! One flat index over the whole (n, n, np) block: the three-
-            ! index form ran its q loop sequentially inside each thread
-            ! (nvfortran -Minfo), 62 GB/s on a V100.
-            do concurrent(t=0:n8*n8*int(np, int64) - 1) local(mu, nu, q)
-               mu = int(mod(t, n8)) + 1
-               nu = int(mod(t/n8, n8)) + 1
-               q = int(t/(n8*n8)) + 1
-               tens(mu, nu, q) = bpk(pack_index(max(mu, nu), min(mu, nu)), p0 - 1 + q)
-            end do
+            call unpack_aux_block(n, npack, naux, np, p0, dfjk%bpk, tens)
             call tbl%step_off(lp, ST_UNPK, tc)
             call tbl%add_bytes(ST_UNPK, 8_int64*n8*n8*int(np, int64))
             call tbl%step_on(lp, ST_HGEMM, tc)
@@ -281,7 +271,7 @@ contains
             s0 = s1 + 1
          end do
          call tbl%step_on(lp, ST_XTRSM, tc)
-         call lp%trsm("R", "L", "N", nrp, naux, 1.0_dp, chol, naux, xp, nrp)
+         call lp%trsm("R", "L", "N", nrp, naux, 1.0_dp, dfjk%chol, naux, xp, nrp)
          call tbl%step_off(lp, ST_XTRSM, tc)
          call tbl%add_flop(ST_XTRSM, int(nrp, int64)*int(naux, int64)**2)
          ! --- 3a. Z's K share, this chunk: Z is symmetric, so only its lower
@@ -482,6 +472,26 @@ contains
       integer, intent(in) :: l
       res = (l + 1)*(l + 2)/2
    end function ncart
+
+   subroutine unpack_aux_block(n, npack, naux, np, p0, bpk, tens)
+      !! tens(:, :, q) = B's column p0 - 1 + q unpacked to a full (n, n)
+      !! matrix, q = 1..np, on the device.
+      integer, intent(in) :: n, npack, naux, np, p0
+      real(dp), intent(in) :: bpk(npack, naux)
+      real(dp), intent(out) :: tens(n, n, np)
+      integer(int64) :: t, n8
+      integer :: mu, nu, q
+      n8 = int(n, int64)
+      ! One flat index over the whole (n, n, np) block: the three-index
+      ! form ran its q loop sequentially inside each thread (nvfortran
+      ! -Minfo), 62 GB/s on a V100.
+      do concurrent(t=0:n8*n8*int(np, int64) - 1) local(mu, nu, q)
+         mu = int(mod(t, n8)) + 1
+         nu = int(mod(t/n8, n8)) + 1
+         q = int(t/(n8*n8)) + 1
+         tens(mu, nu, q) = bpk(pack_index(max(mu, nu), min(mu, nu)), p0 - 1 + q)
+      end do
+   end subroutine unpack_aux_block
 
    pure integer function pack_index(mu, nu) result(p)
       !! trc_scf_df's packed index, mu >= nu: mu(mu-1)/2 + nu.

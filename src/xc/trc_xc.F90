@@ -164,11 +164,16 @@ module trc_xc
       real(dp) :: rho_tol = XC_RHO_TOL
       !! Density screening threshold on the per-batch bound of rho; zero
       !! screens nothing.
-      type(comm_t), pointer :: comm => null()
-      !! Split the batches over its ranks (RANKS in this module's header).
-      type(trc_linalg_t), pointer :: la => null()
-      !! GEMM handles; made and released per call if unassociated.
+      type(comm_t) :: comm
+      !! Split the batches over its ranks (RANKS in this module's header):
+      !! a copy of the caller's handle, read only when `has_comm`.
+      logical :: has_comm = .false.
    end type trc_xc_options_t
+
+   type, extends(trc_xc_options_t) :: xc_run_t
+      !! What `xc_drive` runs with: the caller's options and the spin count.
+      integer :: nspin = 1
+   end type xc_run_t
 
    type :: trc_xc_result_t
       !! What trc_xc_rks/trc_xc_uks return besides the potential.
@@ -187,27 +192,29 @@ contains
 
    !
    ! A trc_xc_options_t from the caller's own optional settings, passed
-   ! straight through: an absent one keeps its default. `comm` and `la` are
-   ! pointed at, so the caller's actuals need TARGET (or are pointers) and
-   ! must outlive the options.
+   ! straight through: an absent one keeps its default. `comm` is copied
+   ! (a communicator handle and its cached rank and size).
    !
-   function trc_xc_options(budget, rho_tol, comm, la) result(options)
+   function trc_xc_options(budget, rho_tol, comm) result(options)
       integer(int64), intent(in), optional :: budget
       real(dp), intent(in), optional :: rho_tol
-      type(comm_t), intent(in), optional, target :: comm
-      type(trc_linalg_t), intent(in), optional, target :: la
+      type(comm_t), intent(in), optional :: comm
       type(trc_xc_options_t) :: options
 
       if (present(budget)) options%budget = max(budget, 1_int64)
       if (present(rho_tol)) options%rho_tol = rho_tol
-      if (present(comm)) options%comm => comm
-      if (present(la)) options%la => la
+      if (present(comm)) then
+         options%comm = comm
+         options%has_comm = .true.
+      end if
    end function trc_xc_options
 
    !
    ! E_xc, V_xc and the integrated electron count for a closed-shell density.
+   ! `la` is the caller's GEMM handles; absent, the call makes a set and
+   ! releases it (the recursive call below, with its own).
    !
-   subroutine trc_xc_rks(b, xg, func, dmat, vxc, result, options)
+   recursive subroutine trc_xc_rks(b, xg, func, dmat, vxc, result, options, la)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
@@ -215,17 +222,28 @@ contains
       real(dp), intent(out) :: vxc(b%nao, b%nao)
       type(trc_xc_result_t), intent(out) :: result
       type(trc_xc_options_t), intent(in), optional :: options   !! absent, every default
-      type(trc_xc_options_t) :: opts
+      type(trc_linalg_t), intent(inout), optional :: la
+      type(xc_run_t) :: run
 
-      if (present(options)) opts = options
-      call xc_drive(b, xg, func, 1, dmat, vxc, result, opts)
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call la_local%init(1)
+            call trc_xc_rks(b, xg, func, dmat, vxc, result, options, la_local)
+            call la_local%release()
+         end block
+         return
+      end if
+      if (present(options)) run%trc_xc_options_t = options
+      run%nspin = 1
+      call xc_drive(b, xg, func, run, dmat, vxc, result, la)
    end subroutine trc_xc_rks
 
    !
    ! The same for a spin-polarised density: D(:,:,1) is alpha, D(:,:,2)
    ! beta, and the potentials come back in the same slots.
    !
-   subroutine trc_xc_uks(b, xg, func, dmat, vxc, result, options)
+   recursive subroutine trc_xc_uks(b, xg, func, dmat, vxc, result, options, la)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
@@ -233,10 +251,21 @@ contains
       real(dp), intent(out) :: vxc(b%nao, b%nao, 2)
       type(trc_xc_result_t), intent(out) :: result
       type(trc_xc_options_t), intent(in), optional :: options
-      type(trc_xc_options_t) :: opts
+      type(trc_linalg_t), intent(inout), optional :: la   !! as trc_xc_rks's
+      type(xc_run_t) :: run
 
-      if (present(options)) opts = options
-      call xc_drive(b, xg, func, 2, dmat, vxc, result, opts)
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call la_local%init(1)
+            call trc_xc_uks(b, xg, func, dmat, vxc, result, options, la_local)
+            call la_local%release()
+         end block
+         return
+      end if
+      if (present(options)) run%trc_xc_options_t = options
+      run%nspin = 2
+      call xc_drive(b, xg, func, run, dmat, vxc, result, la)
    end subroutine trc_xc_uks
 
    !
@@ -248,24 +277,32 @@ contains
    ! asked for. `dmat` need not be symmetric-positive (a spin density is
    ! fine). `b` and `xg` must already be on the device, as for trc_xc_rks.
    !
-   subroutine trc_xc_rho(b, xg, dmat, rho, budget, la)
+   recursive subroutine trc_xc_rho(b, xg, dmat, rho, budget, la)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       real(dp), intent(in) :: dmat(b%nao, b%nao)
       real(dp), intent(out) :: rho(xg%npts)
       integer(int64), intent(in), optional :: budget   !! as trc_xc_options_t's
-      type(trc_linalg_t), intent(inout), optional, target :: la
+      type(trc_linalg_t), intent(inout), optional :: la
+      !! GEMM handles; absent, made and released for this call.
 
       integer(int64) :: cap, need, nchi
       type(trc_gemm_batch_t) :: gemm_shape
       integer :: b0, b1, ib, nloc, npb, np, p0, npairs, k, nb, k0, k1, cnt, mp, ml, nwork
       integer, allocatable :: c_off(:), pr_off(:), npp(:), nlp(:), ord(:), pb_off(:), wk_off(:)
       real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), zt(:, :), dloc(:, :)
-      type(trc_linalg_t), target :: la_own
-      type(trc_linalg_t), pointer :: lp
 
       rho = 0.0_dp
       if (xg%npts == 0) return
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call la_local%init(1)
+            call trc_xc_rho(b, xg, dmat, rho, budget, la_local)
+            call la_local%release()
+         end block
+         return
+      end if
       cap = XC_BUDGET
       if (present(budget)) cap = max(budget, 1_int64)
 
@@ -277,12 +314,6 @@ contains
          npp(ib) = ((npb + XC_NP_PAD - 1)/XC_NP_PAD)*XC_NP_PAD
          nlp(ib) = ((nloc + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
       end do
-      if (present(la)) then
-         lp => la
-      else
-         call la_own%init(1)
-         lp => la_own
-      end if
       !$acc enter data copyin(dmat, npp, nlp) create(rho)
 
       b0 = 1
@@ -341,7 +372,7 @@ contains
             cnt = k1 - k0 + 1
             if (ml > 0) then
                gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
-               call lp%gemm_batched(gemm_shape, chi(c_off(ib) + 1), dloc(pr_off(ib) + 1, 1), xt(c_off(ib) + 1, 1))
+               call la%gemm_batched(gemm_shape, chi(c_off(ib) + 1), dloc(pr_off(ib) + 1, 1), xt(c_off(ib) + 1, 1))
             end if
             k0 = k1 + 1
          end do
@@ -354,7 +385,6 @@ contains
       end do
       !$acc update self(rho)
       !$acc exit data delete(dmat, npp, nlp, rho)
-      if (.not. present(la)) call la_own%release()
    end subroutine trc_xc_rho
 
    subroutine xc_rho_points(np, p0, npts, batch_of, b_off, b_aooff, c_off, npp, nbatch, nchi, chi, xt, rho)
@@ -394,21 +424,21 @@ contains
       end do
    end function xc_rho_point_body
 
-   subroutine xc_drive(b, xg, func, nspin, dmat, vxc, result, options)
+   subroutine xc_drive(b, xg, func, run, dmat, vxc, result, la)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
-      integer, intent(in) :: nspin
-      real(dp), intent(in) :: dmat(b%nao, b%nao, nspin)
-      real(dp), intent(out) :: vxc(b%nao, b%nao, nspin)
+      type(xc_run_t), intent(in) :: run
+      real(dp), intent(in) :: dmat(b%nao, b%nao, run%nspin)
+      real(dp), intent(out) :: vxc(b%nao, b%nao, run%nspin)
       type(trc_xc_result_t), intent(out) :: result
-      type(trc_xc_options_t), intent(in) :: options
+      type(trc_linalg_t), intent(inout) :: la
 
       integer(int64) :: cap
       real(dp) :: exc, nelec, t_points, t_pairs, rho_tol
       integer(int64) :: need, nchi
       type(trc_gemm_batch_t) :: gemm_shape
-      integer :: b0, b1, ib, nloc, npb, np, p0, npairs, rank, nranks, k, s, nb, k0, k1, cnt, mp, ml
+      integer :: b0, b1, ib, nloc, npb, np, p0, npairs, rank, nranks, k, s, nb, k0, k1, cnt, mp, ml, nspin
       integer, allocatable :: c_off(:), pr_off(:), active(:), order(:), npp(:), nlp(:), ord(:), pb_off(:), wk_off(:)
       integer :: nwork
       real(dp), allocatable :: cost(:)
@@ -418,19 +448,18 @@ contains
       real(dp), allocatable :: yt(:, :, :)
       !! meta-GGA only: (d chi/dx) D per direction and spin, then the tau
       !! potential tile in the same storage (see the module header)
-      type(trc_linalg_t), target :: la_own
-      type(trc_linalg_t), pointer :: lp
       integer :: kid(XC_MAX_KERNELS)
       real(dp) :: coef(XC_MAX_KERNELS)
       type(timer_type) :: tm
       logical :: mgga
       integer :: x
 
+      nspin = run%nspin
       mgga = func%family == XC_FAMILY_MGGA
       kid = func%kid
       coef = func%coef
-      cap = max(options%budget, 1_int64)
-      rho_tol = options%rho_tol
+      cap = max(run%budget, 1_int64)
+      rho_tol = run%rho_tol
       vxc = 0.0_dp
       exc = 0.0_dp
       nelec = 0.0_dp
@@ -446,9 +475,9 @@ contains
       rank = 0
       nranks = 1
       split = .false.
-      if (associated(options%comm)) then
-         rank = options%comm%rank()
-         nranks = options%comm%size()
+      if (run%has_comm) then
+         rank = run%comm%rank()
+         nranks = run%comm%size()
          split = nranks > 1
       end if
       active = 1
@@ -479,12 +508,6 @@ contains
       ! untouched by the host zeroing above; the accumulation must start
       ! from zero there too. Inside the region vxc is present either way.
       !$acc update device(vxc)
-      if (associated(options%la)) then
-         lp => options%la
-      else
-         call la_own%init(1)
-         lp => la_own
-      end if
       ! Padded tile shape of every batch; inactive ones have no functions.
       do ib = 1, xg%nbatch
          nloc = (xg%b_aooff(ib + 1) - xg%b_aooff(ib))*active(ib)
@@ -568,11 +591,11 @@ contains
             if (ml > 0) then
                gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
                do s = 1, nspin
-                  call lp%gemm_batched(gemm_shape, chi(c_off(ib) + 1), dloc(pr_off(ib) + 1, s), xt(c_off(ib) + 1, s))
+                  call la%gemm_batched(gemm_shape, chi(c_off(ib) + 1), dloc(pr_off(ib) + 1, s), xt(c_off(ib) + 1, s))
                   if (mgga) then
                      ! Y_x = (d chi/dx)_b D_b, for tau.
                      do x = 1, 3
-                        call lp%gemm_batched(gemm_shape, gchi(c_off(ib) + 1, x), dloc(pr_off(ib) + 1, s), &
+                        call la%gemm_batched(gemm_shape, gchi(c_off(ib) + 1, x), dloc(pr_off(ib) + 1, s), &
                                              yt(c_off(ib) + 1, x, s))
                      end do
                   end if
@@ -609,11 +632,11 @@ contains
             if (ml > 0) then
                gemm_shape = trc_gemm_batch(ml, ml, mp, cnt, transa="T")
                do s = 1, nspin
-                  call lp%gemm_batched(gemm_shape, chi(c_off(ib) + 1), zt(c_off(ib) + 1, s), vloc(pr_off(ib) + 1, s))
+                  call la%gemm_batched(gemm_shape, chi(c_off(ib) + 1), zt(c_off(ib) + 1, s), vloc(pr_off(ib) + 1, s))
                   if (mgga) then
                      ! V_b += sum_x (d chi/dx)_b^T W_x, W_x in Y_x's storage.
                      do x = 1, 3
-                        call lp%gemm_batched(gemm_shape, gchi(c_off(ib) + 1, x), yt(c_off(ib) + 1, x, s), &
+                        call la%gemm_batched(gemm_shape, gchi(c_off(ib) + 1, x), yt(c_off(ib) + 1, x, s), &
                                              vloc(pr_off(ib) + 1, s), beta=1.0_dp)
                      end do
                   end if
@@ -633,7 +656,6 @@ contains
          end if
          b0 = b1 + 1
       end do
-      if (.not. associated(options%la)) call la_own%release()
       !$acc end data
 
       ! Across ranks: sum, then rank 0's copy everywhere. A resident caller's
@@ -641,10 +663,10 @@ contains
       ! back, so fetch it, reduce on the host, and put the result back.
       if (split) then
          !$acc update self(vxc) if_present
-         call sum_ranks(options%comm, vxc, b%nao*b%nao*nspin)
+         call sum_ranks(run%comm, vxc, b%nao*b%nao*nspin)
          !$acc update device(vxc) if_present
          es = [exc, nelec]
-         call sum_ranks(options%comm, es, 2)
+         call sum_ranks(run%comm, es, 2)
          exc = es(1)
          nelec = es(2)
       end if
@@ -682,14 +704,15 @@ contains
    ! next. `v_resp` is written in full (not accumulated into); the caller
    ! adds it into its own Fock-response matrix.
    !
-   subroutine trc_xc_fxc_rks(b, xg, func, dmat, dmat_u, v_resp, budget, la)
+   recursive subroutine trc_xc_fxc_rks(b, xg, func, dmat, dmat_u, v_resp, budget, la)
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
       real(dp), intent(in) :: dmat(b%nao, b%nao), dmat_u(b%nao, b%nao)
       real(dp), intent(out) :: v_resp(b%nao, b%nao)
       integer(int64), intent(in), optional :: budget
-      type(trc_linalg_t), intent(inout), optional, target :: la
+      type(trc_linalg_t), intent(inout), optional :: la
+      !! GEMM handles; absent, made and released for this call.
 
       integer :: nao
       integer(int64) :: need, nchi, cap
@@ -698,17 +721,23 @@ contains
       integer, allocatable :: c_off(:), pr_off(:), npp(:), nlp(:), ord(:), pb_off(:), wk_off(:)
       integer :: nwork
       real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), zt(:, :), dloc(:, :), vloc(:), dpack(:, :, :)
-      type(trc_linalg_t), target :: la_own
-      type(trc_linalg_t), pointer :: lp
       integer :: kid(XC_MAX_KERNELS)
       real(dp) :: coef(XC_MAX_KERNELS)
-      logical :: owns_la
 
       nao = b%nao
       kid = func%kid
       coef = func%coef
       v_resp = 0.0_dp
       if (xg%npts == 0) return
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call la_local%init(1)
+            call trc_xc_fxc_rks(b, xg, func, dmat, dmat_u, v_resp, budget, la_local)
+            call la_local%release()
+         end block
+         return
+      end if
       cap = XC_BUDGET
       if (present(budget)) cap = max(budget, 1_int64)
 
@@ -716,13 +745,6 @@ contains
       allocate (npp(xg%nbatch), nlp(xg%nbatch))
       allocate (dpack(nao, nao, 2))
 
-      owns_la = .not. present(la)
-      if (present(la)) then
-         lp => la
-      else
-         lp => la_own
-         call la_own%init(1)
-      end if
 
       !$acc data copyin(dmat, dmat_u, kid, coef) copy(v_resp) create(npp, nlp, dpack)
       !$acc update device(v_resp)
@@ -793,7 +815,7 @@ contains
             if (ml > 0) then
                gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
                do s = 1, 2
-                  call lp%gemm_batched(gemm_shape, chi(c_off(ib) + 1), dloc(pr_off(ib) + 1, s), xt(c_off(ib) + 1, s))
+                  call la%gemm_batched(gemm_shape, chi(c_off(ib) + 1), dloc(pr_off(ib) + 1, s), xt(c_off(ib) + 1, s))
                end do
             end if
             k0 = k1 + 1
@@ -814,7 +836,7 @@ contains
             cnt = k1 - k0 + 1
             if (ml > 0) then
                gemm_shape = trc_gemm_batch(ml, ml, mp, cnt, transa="T")
-               call lp%gemm_batched(gemm_shape, chi(c_off(ib) + 1), zt(c_off(ib) + 1, 1), vloc(pr_off(ib) + 1))
+               call la%gemm_batched(gemm_shape, chi(c_off(ib) + 1), zt(c_off(ib) + 1, 1), vloc(pr_off(ib) + 1))
             end if
             k0 = k1 + 1
          end do
@@ -825,7 +847,6 @@ contains
          deallocate (chi, gchi, xt, zt, dloc, vloc, ord, pb_off, wk_off)
          b0 = b1 + 1
       end do
-      if (owns_la) call la_own%release()
       !$acc end data
    end subroutine trc_xc_fxc_rks
 

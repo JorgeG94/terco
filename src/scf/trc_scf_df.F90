@@ -67,8 +67,8 @@
 ! trc_linalg_t%init's own pattern): a caller that owns this object across
 ! more than one `trc_scf_run` -- trc_capi.F90's context handle is the one
 ! that does -- gets the metric/Cholesky/(mu nu|P)/trsm done exactly once,
-! and a correlated step that follows (RI-MP2) can read `bpk` back out
-! (`packed_b`) for the same reason: it is already (mu nu|P) contracted
+! and a correlated step that follows (RI-MP2) can read `bpk` (public,
+! read-only) for the same reason: it is already (mu nu|P) contracted
 ! against L^-T, over the same auxiliary basis, with nothing more to redo.
 !
 module trc_scf_df
@@ -124,8 +124,14 @@ module trc_scf_df
       integer :: n = 0, naux = 0, npack = 0
       integer :: qb = 1       !! auxiliary functions per K block, chosen at setup
       integer :: omax = 0     !! current capacity of the density-factor workspace
-      real(dp), allocatable :: bpk(:, :)              !! (npack, naux): B, packed mu >= nu
-      real(dp), allocatable :: chol(:, :)              !! (naux, naux): L, the metric's Cholesky
+      real(dp), allocatable, public :: bpk(:, :)      !! (npack, naux): B, packed mu >= nu
+      !! B itself, already L^-T applied, device-resident; public for READING
+      !! only, allocated exactly when `is_ready()`. A chained RI-MP2 step
+      !! reads it directly instead of rebuilding it: L^-T acts only on the
+      !! auxiliary index and the occupied/virtual half-transform only on
+      !! (mu, nu), so the two commute, and the half-transform run on THIS is
+      !! exactly RI-MP2's own B, no further triangular solve needed.
+      real(dp), allocatable, public :: chol(:, :)      !! (naux, naux): L, the metric's Cholesky
       !! factor (M = (P|Q) = L L^T), RETAINED past setup rather than freed --
       !! unlike the energy build, which never needs L again once B = T L^-T
       !! has absorbed it, the DF GRADIENT (trc_scf_grad_df.F90) needs one
@@ -149,8 +155,6 @@ module trc_scf_df
       procedure :: release => df_jk_release
       procedure :: report => df_jk_report
       procedure :: dims => df_jk_dims
-      procedure :: packed_b => df_jk_packed_b
-      procedure :: cholesky => df_jk_chol
       procedure :: is_ready => df_jk_is_ready
    end type df_jk_t
 
@@ -570,7 +574,7 @@ contains
       !! This object's dimensions, and whether `setup` has already fitted `bpk`
       !! -- what a chained RI-MP2 step checks before reusing it instead of
       !! redoing the metric/Cholesky/3c/trsm on the same auxiliary basis (see
-      !! `packed_b` below, and trc_rimp2_driver.F90's own `dfjk` argument).
+      !! `bpk` above, and trc_rimp2_driver.F90's own `dfjk` argument).
       class(df_jk_t), intent(in) :: this
       integer, intent(out) :: n, naux, npack
       n = this%n
@@ -582,40 +586,6 @@ contains
       class(df_jk_t), intent(in) :: this
       r = this%ready
    end function df_jk_is_ready
-
-   function df_jk_packed_b(this) result(p)
-      !! B itself, packed (mu >= nu, p = mu(mu-1)/2 + nu) and already L^-T
-      !! applied -- (npack, naux), device-resident. A chained RI-MP2 step
-      !! reads this directly instead of rebuilding it: L^-T acts only on the
-      !! auxiliary index and the occupied/virtual half-transform only on
-      !! (mu, nu), so the two commute, and the half-transform run on THIS is
-      !! exactly RI-MP2's own B, no further triangular solve needed. Null
-      !! unless `is_ready()`.
-      class(df_jk_t), intent(in), target :: this
-      real(dp), pointer :: p(:, :)
-      if (this%ready) then
-         p => this%bpk
-      else
-         p => null()
-      end if
-   end function df_jk_packed_b
-
-   function df_jk_chol(this) result(p)
-      !! L, the metric's Cholesky factor (M = (P|Q) = L L^T), lower-triangular,
-      !! (naux, naux), device-resident -- see this type's `chol` field comment.
-      !! The DF gradient (trc_scf_grad_df.F90) solves against this directly
-      !! (one triangular solve, `lp%trsm`/`lp%trsv` with "L","T") to turn the
-      !! Cholesky-space coefficients `build` already computes into the actual
-      !! fitting coefficients its envelope-theorem derivative is stationary in,
-      !! with no metric or Cholesky recomputation. Null unless `is_ready()`.
-      class(df_jk_t), intent(in), target :: this
-      real(dp), pointer :: p(:, :)
-      if (this%ready) then
-         p => this%chol
-      else
-         p => null()
-      end if
-   end function df_jk_chol
 
    subroutine df_jk_release(this)
       class(df_jk_t), intent(inout) :: this

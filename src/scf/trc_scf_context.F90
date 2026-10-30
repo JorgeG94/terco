@@ -49,8 +49,8 @@ module trc_scf_context
       !! that follows can reuse exactly what the SCF converged with rather
       !! than rebuild it -- see trc_scf_driver's `trc_scf_run`'s own
       !! `grid_cache` argument) can own one across more than one call,
-      !! the same pattern `la`/`dfjk` already use. Owned by `scf_ctx_t`'s
-      !! own `gc_own` when no caller hands one in.
+      !! the same pattern `la`/`dfjk` already use. `trc_scf_run` makes its
+      !! own, for the run only, when no caller hands one in.
       type(dft_grid_t) :: grid, grid_nlc
       type(trc_xc_grid_t) :: xg, xg_nlc
       logical :: grid_built = .false., nlc_built = .false.
@@ -107,31 +107,14 @@ module trc_scf_context
       !! by every iteration, never written by one. `nao`/`nao_c`/`sph` are
       !! `b`'s own sizes, read here once so every other new module can take
       !! them as plain arguments instead of a basis handle.
+      !!
+      !! What outlives a run is not here: the linear-algebra handles, the
+      !! pair-list/ERI cache, the DFT grid cache and the density fit belong
+      !! to `trc_scf_run`'s caller (or to `trc_scf_run` itself, for the run
+      !! only) and are passed to every step that reads them.
       integer :: nao = 0, nao_c = 0
       logical :: sph = .false.
-      type(trc_pair_eri_cache_t) :: pec_own
-      !! TARGET for `pec` to point to comes from `this` itself, the same
-      !! reason `gc_own`/`la_own` are -- see `lp`'s own comment, right below.
-      type(trc_pair_eri_cache_t), pointer :: pec => null()
-      logical :: owns_pec = .false.
-      type(trc_grid_cache_t) :: gc_own
-      !! TARGET for `gc` to point to comes from `this` itself, the same
-      !! reason `la_own` is -- see `lp`'s own comment, right below.
-      type(trc_grid_cache_t), pointer :: gc => null()
-      logical :: owns_grid = .false.
       type(trc_pcm_t) :: pcm
-      type(trc_linalg_t) :: la_own
-      !! TARGET for `lp` to point to comes from `this` itself (see `setup`'s
-      !! dummy and the caller's own `ctx` declaration), not from a component
-      !! attribute: Fortran does not allow TARGET on a type's component.
-      type(trc_linalg_t), pointer :: lp => null()
-      logical :: owns_la = .false.
-      !! The density-fitted J/K object (`--df`), borrowed from the caller
-      !! (trc_capi.F90's context handle owns one per geometry, so it
-      !! outlives a single `trc_scf_run`; see trc_scf_df.F90's own header)
-      !! and already fitted -- `setup` never calls `dfj%setup` itself, only
-      !! points at what it was handed. Null when `cfg%df` is false.
-      type(df_jk_t), pointer :: dfj => null()
       real(dp), allocatable :: smat(:, :), hcore(:, :), x(:, :)
       real(dp), allocatable :: pnull(:, :)
       !! I - X S X, the projector onto the directions canonical
@@ -154,41 +137,34 @@ module trc_scf_context
 
 contains
 
-   subroutine scf_context_setup(this, b, opts, config, err, comm, la, dfjk, grid_cache, pair_eri_cache)
-      class(scf_ctx_t), intent(inout), target :: this
-      !! TARGET: `this%lp` may end up pointing at `this%la_own`, and that
-      !! association must survive the return into `trc_scf_run`, which
-      !! requires the actual argument (its own `ctx`) to carry TARGET too.
+   subroutine scf_context_setup(this, b, opts, config, la, grid_cache, pair_eri_cache, err, comm, dfjk)
+      class(scf_ctx_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       type(trc_scf_options_t), intent(in) :: opts
       type(scf_settings_t), intent(in) :: config
+      type(trc_linalg_t), intent(inout) :: la
+      !! The run's handles, initialised here at `nao` (create-once).
+      type(trc_grid_cache_t), intent(inout) :: grid_cache
+      !! The grid cache this run builds the DFT grid DIRECTLY INTO -- not
+      !! into a local object that is then copied or moved -- so the grid
+      !! (and, once `%to_device` runs below, its device mapping) is built
+      !! once, at its final address, and stays valid for a gradient that
+      !! runs after the SCF when the cache is the caller's (trc_capi.F90's
+      !! context handle; the same reason `take_basis` there copies a basis
+      !! up BEFORE uploading it: the device present-table is keyed on host
+      !! addresses).
+      type(trc_pair_eri_cache_t), intent(inout) :: pair_eri_cache
+      !! The cache this run builds the pair list -- and, outside `--df`,
+      !! the four-centre engine -- DIRECTLY INTO, same reasoning as
+      !! `grid_cache`: a gradient immediately after can reuse it without a
+      !! second build at the same geometry and threshold
+      !! (`trc_pair_eri_cache_t`'s own header).
       type(error_t), intent(out) :: err
       type(comm_t), intent(in), optional :: comm
-      type(trc_linalg_t), intent(inout), optional, target :: la
-      type(df_jk_t), intent(inout), optional, target :: dfjk
-      !! Already fitted by the caller (see `scf_ctx_t%dfj`'s own comment);
-      !! required when `config%df` is true, checked here rather than left for
-      !! `scf_fock_build_g` to find out at the first Fock build.
-      type(trc_grid_cache_t), intent(inout), optional, target :: grid_cache
-      !! A caller-owned grid cache (trc_capi.F90's context handle) that
-      !! this run builds the DFT grid DIRECTLY INTO -- not into a local
-      !! object that is then copied or moved -- so the grid (and, once
-      !! `%to_device` runs below, its device mapping) is built once, at
-      !! its final, long-lived address, and stays valid for a gradient
-      !! that runs after this call returns (the same reason `take_basis`
-      !! in trc_capi.F90 copies a basis up BEFORE uploading it, never
-      !! after: the device present-table is keyed on host addresses).
-      !! Absent, `this%gc_own` plays the same role but does not outlive
-      !! this call -- unchanged from before this argument existed.
-      type(trc_pair_eri_cache_t), intent(inout), optional, target :: pair_eri_cache
-      !! A caller-owned pair-list/ERI cache (trc_capi.F90's context handle)
-      !! that this run builds the pair list -- and, outside `--df`, the
-      !! four-centre engine -- DIRECTLY INTO, same reasoning as
-      !! `grid_cache` right above: built once, at its final address, so a
-      !! gradient immediately after can reuse it without a second build at
-      !! the same geometry and threshold (`trc_pair_eri_cache_t`'s own
-      !! header). Absent, `this%pec_own` plays the same role but does not
-      !! outlive this call.
+      type(df_jk_t), intent(in), optional :: dfjk
+      !! Already fitted by the caller; required when `config%df` is true,
+      !! checked here rather than left for `scf_fock_build_g` to find out
+      !! at the first Fock build.
       type(timer_type) :: tm
       type(timer_type) :: tphase   !! the whole setup, and the PCM and grid phases
       character(len=:), allocatable :: refusal
@@ -208,24 +184,6 @@ contains
       this%sph = b%spherical
       this%nao = merge(b%nao_sph, this%nao_c, this%sph)
       allocate (this%smat(this%nao, this%nao), this%hcore(this%nao, this%nao), this%x(this%nao, this%nao))
-      this%owns_la = .not. present(la)
-      if (present(la)) then
-         this%lp => la
-      else
-         this%lp => this%la_own
-      end if
-      this%owns_grid = .not. present(grid_cache)
-      if (present(grid_cache)) then
-         this%gc => grid_cache
-      else
-         this%gc => this%gc_own
-      end if
-      this%owns_pec = .not. present(pair_eri_cache)
-      if (present(pair_eri_cache)) then
-         this%pec => pair_eri_cache
-      else
-         this%pec => this%pec_own
-      end if
       if (config%df) then
          if (.not. present(dfjk)) then
             call err%set(ERROR_GENERIC, "trc_scf: --df needs a density-fitted object already set up "// &
@@ -237,23 +195,22 @@ contains
                          "(trc_set_jkfit_json before trc_run_scf)")
             return
          end if
-         this%dfj => dfjk
       end if
 
       ! --- once per geometry, on the host ------------------------------------
       call tphase%start()
       call tm%start()
-      call this%pec%pl%build(b, config%eri_thresh_run)
-      call this%pec%pl%to_device()
-      this%pec%thresh_built = config%eri_thresh_run
-      this%pec%built = .true.
-      this%pec%has_eri = .false.
+      call pair_eri_cache%pl%build(b, config%eri_thresh_run)
+      call pair_eri_cache%pl%to_device()
+      pair_eri_cache%thresh_built = config%eri_thresh_run
+      pair_eri_cache%built = .true.
+      pair_eri_cache%has_eri = .false.
       ! The fingerprint a Fortran caller's reuse is checked against --
       ! see `trc_pair_eri_cache_t`'s own header, FINGERPRINT.
-      this%pec%nshell_built = b%nshell
-      this%pec%natm_built = b%natm
-      if (allocated(this%pec%at_r_built)) deallocate (this%pec%at_r_built)
-      this%pec%at_r_built = b%at_r
+      pair_eri_cache%nshell_built = b%nshell
+      pair_eri_cache%natm_built = b%natm
+      if (allocated(pair_eri_cache%at_r_built)) deallocate (pair_eri_cache%at_r_built)
+      pair_eri_cache%at_r_built = b%at_r
       this%ts(1) = tm%get_elapsed_time()
       call tm%start()
       ! The one-electron integrals are always Cartesian (trc_1e never
@@ -262,7 +219,7 @@ contains
       block
          real(dp), allocatable :: s_c(:, :), h_c(:, :), v_c(:, :)
          allocate (s_c(this%nao_c, this%nao_c), h_c(this%nao_c, this%nao_c), v_c(this%nao_c, this%nao_c))
-         call trc_1e(b, this%pec%pl, s_c, h_c, v_c)
+         call trc_1e(b, pair_eri_cache%pl, s_c, h_c, v_c)
          h_c = h_c + v_c
          this%ts(2) = tm%get_elapsed_time()
          call tm%start()
@@ -288,10 +245,10 @@ contains
       ! every deallocation on `allocated`/`on_device`, and scf_fock_build_g reads
       ! nothing off `eri` before checking `df_on`.
       if (.not. config%df) then
-         this%pec%has_eri = .true.
-         this%pec%batch_res_built = opts%batch_res
+         pair_eri_cache%has_eri = .true.
+         pair_eri_cache%batch_res_built = opts%batch_res
          if (present(comm)) then
-            call this%pec%eri%build(b, config%eri_thresh_run, comm, batch_res=opts%batch_res)
+            call pair_eri_cache%eri%build(b, config%eri_thresh_run, comm, batch_res=opts%batch_res)
             ! Not when `comm` is a real split (nranks > 1): each rank then
             ! holds only ITS share of the quartets, which is not what a
             ! reuser (a single-rank gradient right after, trc_capi.F90's
@@ -304,23 +261,23 @@ contains
             ! Fock builds (scf_fock_build_g -> fock_resident) read `pec%eri` every
             ! iteration, and on deallocated bins they segfault on the host,
             ! which nvfortran's handler turns into a silent spin.
-            if (comm%size() > 1) this%pec%has_eri = .false.
+            if (comm%size() > 1) pair_eri_cache%has_eri = .false.
          else
-            call this%pec%eri%build(b, config%eri_thresh_run, batch_res=opts%batch_res)
+            call pair_eri_cache%eri%build(b, config%eri_thresh_run, batch_res=opts%batch_res)
          end if
       end if
       this%e_nuc = nuclear_repulsion(b)
       this%ts(4) = tm%get_elapsed_time()
       call tm%start()
-      call this%lp%init(this%nao)
+      call la%init(this%nao)
       this%ts(5) = tm%get_elapsed_time()
       call tm%start()
-      call scf_context_orthogonalize(this%lp, this%nao, this%smat, this%x, err, opts%lindep_thresh, this%n_lindep)
+      call scf_context_orthogonalize(la, this%nao, this%smat, this%x, err, opts%lindep_thresh, this%n_lindep)
       if (err%has_error()) then
          call this%release()
          return
       end if
-      if (this%n_lindep > 0) call scf_context_null_projector(this%lp, this%nao, this%smat, this%x, this%pnull)
+      if (this%n_lindep > 0) call scf_context_null_projector(la, this%nao, this%smat, this%x, this%pnull)
       if (config%talk .and. this%n_lindep > 0) then
          block
             character(len=1024) :: logline
@@ -336,12 +293,12 @@ contains
       ! --- the continuum: cavity, K and the nuclear potential, once -------
       if (config%pcm_on) then
          call tphase%start()
-         call this%pcm%init(pcm_model_from_name(opts%pcm_model), opts%pcm_eps, err, la=this%lp)
+         call this%pcm%init(pcm_model_from_name(opts%pcm_model), opts%pcm_eps, err)
          if (allocated(opts%pcm_radii_override)) then
-            call this%pcm%build(b, opts%pcm_lebedev, opts%pcm_radii_scale, err, &
+            call this%pcm%build(la, b, opts%pcm_lebedev, opts%pcm_radii_scale, err, &
                                 radii_override=opts%pcm_radii_override)
          else
-            call this%pcm%build(b, opts%pcm_lebedev, opts%pcm_radii_scale, err)
+            call this%pcm%build(la, b, opts%pcm_lebedev, opts%pcm_radii_scale, err)
          end if
          if (err%has_error()) then
             call this%release()
@@ -365,38 +322,38 @@ contains
          ! The partition is split over the ranks; the summed cell weights are
          ! then rank 0's everywhere, as every reduced quantity is.
          if (present(comm)) then
-            call dft_grid_build_block(b%at_r, b%at_elem, this%gc%grid, err, comm%rank(), comm%size(), &
+            call dft_grid_build_block(b%at_r, b%at_elem, grid_cache%grid, err, comm%rank(), comm%size(), &
                                       level=opts%grid_level)
          else
-            call dft_grid_build(b%at_r, b%at_elem, this%gc%grid, err, level=opts%grid_level)
+            call dft_grid_build(b%at_r, b%at_elem, grid_cache%grid, err, level=opts%grid_level)
          end if
-         this%t_grid_sub(1) = this%gc%grid%t_points
-         this%t_grid_sub(2) = this%gc%grid%t_partition
+         this%t_grid_sub(1) = grid_cache%grid%t_points
+         this%t_grid_sub(2) = grid_cache%grid%t_partition
          if (err%has_error()) then
             call profiler_stop("dft: grid")
             call this%release()
             return
          end if
          if (present(comm)) then
-            if (comm%size() > 1) call sum_flat(comm, this%gc%grid%weights, this%gc%grid%n_points)
+            if (comm%size() > 1) call sum_flat(comm, grid_cache%grid%weights, grid_cache%grid%n_points)
          end if
          call tm%start()
-         call this%gc%xg%build_from_grid(this%gc%grid, b, max_pts=opts%grid_max_pts)
+         call grid_cache%xg%build_from_grid(grid_cache%grid, b, max_pts=opts%grid_max_pts)
          this%t_grid_sub(3) = tm%get_elapsed_time()
          call tm%start()
-         call this%gc%xg%to_device()
+         call grid_cache%xg%to_device()
          this%t_grid_sub(4) = tm%get_elapsed_time()
-         this%gc%grid_built = .true.
+         grid_cache%grid_built = .true.
          if (config%nlc) then
-            call dft_grid_build(b%at_r, b%at_elem, this%gc%grid_nlc, err, level=opts%nlc_grid_level)
+            call dft_grid_build(b%at_r, b%at_elem, grid_cache%grid_nlc, err, level=opts%nlc_grid_level)
             if (err%has_error()) then
                call profiler_stop("dft: grid")
                call this%release()
                return
             end if
-            call this%gc%xg_nlc%build_from_grid(this%gc%grid_nlc, b, max_pts=opts%grid_max_pts)
-            call this%gc%xg_nlc%to_device()
-            this%gc%nlc_built = .true.
+            call grid_cache%xg_nlc%build_from_grid(grid_cache%grid_nlc, b, max_pts=opts%grid_max_pts)
+            call grid_cache%xg_nlc%to_device()
+            grid_cache%nlc_built = .true.
          end if
          call profiler_stop("dft: grid")
          this%t_grid = tphase%get_elapsed_time()
@@ -407,23 +364,14 @@ contains
       !! Idempotent: every early return in `setup` calls this once, and
       !! `trc_scf_run` calls it again at the end of a successful run, so a
       !! second call -- or a call on a context that never finished `setup`
-      !! -- must be safe and must not release twice.
+      !! -- must be safe and must not release twice. The handles and caches
+      !! `setup` was given are their owner's to release.
       class(scf_ctx_t), intent(inout) :: this
       if (this%released) return
       if (allocated(this%pnull)) then
          !$acc exit data delete(this%pnull)
       end if
       call this%pcm%release()
-      if (this%owns_la) call this%lp%release()
-      ! A caller-owned cache (pair_eri_cache present at `setup`) outlives
-      ! this context on purpose, same reasoning as `gc` right below -- only
-      ! an OWNED cache (`this%pec_own`, the default) is released here.
-      if (this%owns_pec) call this%pec%release()
-      ! A caller-owned cache (grid_cache present at `setup`) outlives this
-      ! context on purpose -- see `scf_context_setup`'s own header on
-      ! `grid_cache` -- so only an OWNED cache (`this%gc_own`, the default)
-      ! is released here.
-      if (this%owns_grid) call this%gc%release()
       this%released = .true.
    end subroutine scf_context_release
 

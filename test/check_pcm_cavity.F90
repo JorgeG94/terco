@@ -36,6 +36,7 @@ module check_pcm_cavity_suite
    use trc_pcm, only: trc_pcm_t, pcm_surface_t, pcm_build_surface, pcm_sd_matrices, &
                       pcm_switch_h, pcm_model_from_name, PCM_MODEL_CPCM, PCM_MODEL_IEFPCM
    use trc_pcm_radii, only: pcm_radii_cavity_radius
+   use trc_linalg, only: trc_linalg_t
    use trc_test_basis, only: read_xyz
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, &
                            ref_read_vector, ref_read_matrix
@@ -186,12 +187,14 @@ contains
       integer, intent(in) :: model
       real(dp), intent(out) :: e, qt
       type(trc_pcm_t) :: ctx
+      type(trc_linalg_t) :: la
       type(error_t) :: err
       real(dp), allocatable :: v(:), q(:)
       integer :: k
+      call la%init(1)
       call ctx%init(model, EPS_WATER, err)
       call pcm_build_surface([8], ORIGIN, 302, 1.2_dp, ctx%surface, err)
-      call ctx%build_operators(err)
+      call ctx%build_operators(la, err)
       if (err%has_error()) then
          print '(a)', 'check_pcm_cavity: '//err%get_message(); stop 1
       end if
@@ -201,12 +204,13 @@ contains
       end do
       ! solve's vectors live where K does: on the device under the GPU build
       !$acc enter data copyin(v) create(q)
-      call ctx%solve(v, q)
+      call ctx%solve(la, v, q)
       !$acc update self(q)
       !$acc exit data delete(v, q)
       e = 0.5_dp*dot_product(q, v)
       qt = sum(q)
       call ctx%release()
+      call la%release()
    end subroutine born
 
    subroutine test_refusals(error)
@@ -356,6 +360,7 @@ contains
       type(error_type), allocatable, intent(out) :: error
       type(pcm_surface_t) :: surf
       type(trc_pcm_t) :: ctx
+      type(trc_linalg_t) :: la
       type(error_t) :: err
       integer :: n, k, model
       integer, allocatable :: perm(:)
@@ -378,10 +383,11 @@ contains
       if (allocated(error)) return
 
       allocate (v(n), q(n))
+      call la%init(1)
       do model = PCM_MODEL_CPCM, PCM_MODEL_IEFPCM
          call ctx%init(model, EPS_WATER, err)
          call pcm_build_surface(g_zat, g_rat, 302, 1.2_dp, ctx%surface, err)
-         call ctx%build_operators(err)
+         call ctx%build_operators(la, err)
          if (err%has_error()) then
             print '(a)', 'check_pcm_cavity: '//err%get_message(); stop 1
          end if
@@ -389,7 +395,7 @@ contains
             v(k) = vfix(ctx%surface%coords(:, k))
          end do
          !$acc enter data copyin(v) create(q)
-         call ctx%solve(v, q)
+         call ctx%solve(la, v, q)
          !$acc update self(q)
          !$acc exit data delete(v, q)
          e = 0.5_dp*dot_product(q, v)
@@ -409,8 +415,9 @@ contains
                           'IEF-PCM q.v/2 for a fixed v, |diff| = '//to_string(abs(e - g_ref%e_iefpcm), "es10.2"))
          end if
          call ctx%release()
-         if (allocated(error)) return
+         if (allocated(error)) exit
       end do
+      call la%release()
    end subroutine test_charge_solve
 
    subroutine test_cavity_110(error)

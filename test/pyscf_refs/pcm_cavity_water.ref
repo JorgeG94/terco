@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["pcm_cavity"] -> gen_pcm_cavity
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: d33765986b6aaa1240ad1dfb96f41bc14b1603093594f99d89c31ae4d99ff918
+# hash: 9145fe6db1d02b6c48afbaf39eb0a3066b69006711daaa55056d941cb95fd958
 # files: test/check_pcm_cavity.F90 test/water.xyz
 NPTS 556
 COORDS 3 556
