@@ -199,7 +199,7 @@ contains
       type(trc_rimp2_result_t), intent(out) :: res
       type(trc_rimp2_options_t), intent(in), optional :: opts
       type(trc_linalg_t), intent(inout), optional :: la
-      real(dp), intent(in), optional :: packed_b(:, :)
+      real(dp), intent(in), optional, contiguous :: packed_b(:, :)
       !! (npack, naux), device-resident: see the header above.
 
       type(trc_rimp2_options_t) :: op
