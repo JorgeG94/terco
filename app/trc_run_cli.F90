@@ -283,6 +283,7 @@ contains
       !! The geometry, basis, charge, multiplicity, functional, guess and charge-analysis inputs.
       type(run_t), intent(inout) :: r
       character(len=:), allocatable :: sval
+      integer :: ival
    ! ---- inputs ----------------------------------------------------------
    call app_read_xyz(r%geom, r%natm, r%z, r%xyz, r%title, r%err)
    if (r%err%has_error()) call run_die(r, r%err%get_message())
@@ -291,10 +292,16 @@ contains
    call app_resolve_basis(r%basis_arg, r%basis_path, r%err)
    if (r%err%has_error()) call run_die(r, r%err%get_message())
 
-   r%chrg = run_int_option(r, "chrg", ".CHRG", 0)
+   ! Through a local, never `r%chrg = run_int_option(r, ...)`: the function
+   ! takes r intent(inout), so assigning its result into r in the same
+   ! statement aliases r, and nvfortran (from a submodule procedure) copied
+   ! r back over the assigned component -- --chrg read as 0.
+   ival = run_int_option(r, "chrg", ".CHRG", 0)
+   r%chrg = ival
    r%nelec = sum(r%z) - r%chrg
    if (r%nelec < 1) call run_die(r, "charge "//to_string(r%chrg)//" leaves "//to_string(r%nelec)//" electrons")
-   r%uhf = run_int_option(r, "uhf", ".UHF", mod(r%nelec, 2))
+   ival = run_int_option(r, "uhf", ".UHF", mod(r%nelec, 2))
+   r%uhf = ival
    if (r%uhf < 0 .or. r%uhf > r%nelec .or. mod(r%nelec - r%uhf, 2) /= 0) then
      call run_die(r, "--uhf "//to_string(r%uhf)//" is impossible with "//to_string(r%nelec)//" electrons: the unpaired "// &
                "count must be between 0 and the electron count, with the same parity")
