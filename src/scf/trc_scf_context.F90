@@ -438,11 +438,24 @@ contains
       end do
    end function nuclear_repulsion
 
-   ! X = S^(-1/2), symmetric orthogonalisation, or, once `lindep_thresh` is positive
-   ! and some S eigenvalue falls below it, CANONICAL orthogonalisation: those
-   ! columns of U are zeroed rather than divided by sqrt(sqrt(w)), which is what
-   ! makes symmetric orthogonalisation diverge on a near-null mode. A zeroed column
-   ! decouples that mode from X^T F X. Once per geometry, on the host side.
+   ! X = Sn^(-1/2) D, symmetric orthogonalisation of the UNIT-DIAGONAL overlap
+   ! Sn = D S D (D = diag(1/sqrt(S_ii))), row-scaled back by D -- or, once
+   ! `lindep_thresh` is positive and some Sn eigenvalue falls below it,
+   ! CANONICAL orthogonalisation: those columns of U are zeroed rather than
+   ! divided by sqrt(sqrt(w)), which is what makes symmetric orthogonalisation
+   ! diverge on a near-null mode. A zeroed column decouples that mode from
+   ! X^T F X. `s`'s own diagonal is not unit (every spherical d function has
+   ! S_ii = 5/(4*pi), libcint's normalisation convention), so deciding on `s`'s
+   ! own eigenvalues would drop a different subspace than pyscf's
+   ! `remove_linear_dep_`/ORCA, which both normalise first -- matching that is
+   ! the whole point of `d`. `d`'s row-scaling does not commute with the
+   ! eigendecomposition, so the resulting X is no longer symmetric; it still
+   ! satisfies X^T S X = U_k U_k^T (the kept-subspace projector in the SAME
+   ! sense the old symmetric X did -- U_k U_k^T = U_k w_k^-1/2 U_k^T S U_k
+   ! w_k^-1/2 U_k^T with S = D^-1 Sn D^-1, since D Sn U_k = D U_k w_k, i.e. the
+   ! row-scaling cancels against itself), which is all `X^T F X` / `C = X C'`
+   ! / the commutator's `X^T (FDS-SDF) X` / the null projector's `X^T S X`
+   ! ever need. Once per geometry, on the host side.
    !
    ! `err` instead of `error stop` on either failure (the overlap's own
    ! diagonalisation not converging, or -- when the caller left
@@ -461,12 +474,20 @@ contains
       type(error_t), intent(inout) :: err
       real(dp), intent(in), optional :: lindep_thresh
       integer, intent(out), optional :: ndropped
-      real(dp), allocatable :: u(:, :), w(:)
+      real(dp), allocatable :: u(:, :), w(:), d(:)
       real(dp) :: threshold
-      integer :: i, k, ndrop, info
+      integer :: i, j, k, ndrop, info
       logical :: bad_info, bad_pd
-      allocate (u(n, n), w(n))
+      allocate (u(n, n), w(n), d(n))
       u = s
+      ! d(i) = 1/sqrt(S_ii), the diagonal that un-normalises the overlap --
+      ! always well-defined: S_ii > 0 for any Gram matrix of nonzero vectors
+      ! (the AO overlap, or `scf_context_project_density`'s nocc x nocc M),
+      ! whether or not the matrix as a whole is positive definite. A plain
+      ! host loop: n-length, once per geometry.
+      do i = 1, n
+         d(i) = 1.0_dp/sqrt(s(i, i))
+      end do
       x = 0.0_dp
       threshold = 0.0_dp
       if (present(lindep_thresh)) threshold = lindep_thresh
@@ -474,7 +495,13 @@ contains
       bad_info = .false.
       bad_pd = .false.
       ndrop = 0
-      !$acc data copy(u) create(w) copyout(x)
+      !$acc data copyin(d) copy(u) create(w) copyout(x)
+      ! u (a copy of S) becomes Sn = D S D in place, elementwise, before
+      ! diagonalising -- no row/column of this depends on any other, so a
+      ! do concurrent is a safe in-place map.
+      do concurrent(i=1:n, j=1:n)
+         u(i, j) = d(i)*u(i, j)*d(j)
+      end do
       call la%syev(u, w, info)
       if (info /= 0) then
          bad_info = .true.
@@ -483,7 +510,7 @@ contains
          ! w is ascending (LAPACK/cuSOLVER convention), so the near-null
          ! modes -- the ones canonical orthogonalisation drops -- are the
          ! leading entries, the same ones the old unconditional check read
-         ! as w(1).
+         ! as w(1). These are Sn's eigenvalues, not S's.
          if (threshold > 0.0_dp) then
             do k = 1, n
                if (w(k) < threshold) ndrop = ndrop + 1
@@ -492,10 +519,10 @@ contains
             bad_pd = .true.
          end if
          if (.not. bad_pd) then
-            ! Columns scaled by w^-1/4 on the device, then X = U U^T; the
-            ! first `ndrop` columns -- the near-null modes -- are zeroed
-            ! instead, so they carry no weight into X^T F X and never has
-            ! to divide by a near-zero w.
+            ! Columns scaled by w^-1/4 on the device, then U U^T; the first
+            ! `ndrop` columns -- the near-null modes -- are zeroed instead,
+            ! so they carry no weight into X^T F X and never has to divide
+            ! by a near-zero w.
             !$acc update device(w)
             do concurrent(i=1:n, k=1:n)
                if (k <= ndrop) then
@@ -505,6 +532,11 @@ contains
                end if
             end do
             call la%gemm_mat(u, u, x, transb="T")
+            ! Row-scale by d: X = D * (Sn^-1/2 on the kept modes). X is no
+            ! longer symmetric past this point.
+            do concurrent(i=1:n, j=1:n)
+               x(i, j) = d(i)*x(i, j)
+            end do
          end if
       end if
       !$acc end data
@@ -521,9 +553,14 @@ contains
    end subroutine scf_context_orthogonalize
 
    subroutine scf_context_null_projector(la, n, s, x, pnull)
-      !! pnull = I - X^T S X. With X = U_k w_k^-1/2 U_k^T (the kept modes of
-      !! S only), X^T S X = U_k U_k^T, so this is exactly the projector onto
-      !! the dropped modes. Host arrays in, `pnull` left on the device too.
+      !! pnull = I - X^T S X. `scf_context_orthogonalize`'s own X = D U_k
+      !! w_k^-1/2 U_k^T (U_k/w_k the kept modes of Sn = D S D only; `s` here
+      !! is the UN-normalised S) still gives X^T S X = U_k U_k^T, exactly as
+      !! the old symmetric X did: X^T S X = U_k w_k^-1/2 U_k^T D S D U_k
+      !! w_k^-1/2 U_k^T = U_k w_k^-1/2 U_k^T Sn U_k w_k^-1/2 U_k^T, and
+      !! Sn U_k = U_k w_k, so this is U_k w_k^-1/2 w_k w_k^-1/2 U_k^T =
+      !! U_k U_k^T, so this is exactly the projector onto the dropped
+      !! modes. Host arrays in, `pnull` left on the device too.
       type(trc_linalg_t), intent(inout) :: la
       integer, intent(in) :: n
       real(dp), intent(in) :: s(n, n), x(n, n)
@@ -559,20 +596,26 @@ contains
       !! spin's occupied block C (nao x nocc), M = C^T S' C is its overlap
       !! under S'; `scf_context_orthogonalize`'s own symmetric/canonical orthogonalisation
       !! works on ANY symmetric positive matrix handed to it, not only the
-      !! AO overlap, so calling it on M gives X = M^(-1/2); C' = C X is
-      !! once again orthonormal under S' (C'^T S' C' = X^T M X = X M X = I
-      !! by construction, since X = M^(-1/2) commutes with M). D' =
-      !! occ_s C' C'^T. At S' = S this is the identity transform (M = I
-      !! already, X = I); trc_capi.F90's TRC_GUESS_PROJECTED is the public
-      !! way to this. test/bench_warmstart.F90 measured it against the
-      !! plain density warm start at water/def2-SVP, steps 0.005-1.0 Bohr:
-      !! both needed the same iteration count at every step (HF 10/13/15,
-      !! B3LYP 8/10/12).
+      !! AO overlap, so calling it on M gives an X with X^T M X = I (with
+      !! `lindep_thresh` absent, nothing is dropped, so the kept-subspace
+      !! projector `scf_context_orthogonalize`'s own X^T M X builds is the
+      !! full identity here -- see that routine's own header for why X,
+      !! row-scaled by M's diagonal, still satisfies this with no functions
+      !! dropped, even though X is no longer M^(-1/2) itself). C' = C X is
+      !! once again orthonormal under S' (C'^T S' C' = X^T M X = I by
+      !! construction). D' = occ_s C' C'^T. At S' = S this is the identity
+      !! transform (M = I already, X = I); trc_capi.F90's TRC_GUESS_PROJECTED
+      !! is the public way to this. test/bench_warmstart.F90 measured it
+      !! against the plain density warm start at water/def2-SVP, steps
+      !! 0.005-1.0 Bohr: both needed the same iteration count at every step
+      !! (HF 10/13/15, B3LYP 8/10/12).
       !!
       !! A near-singular M (an occupied orbital that left the space, e.g a
       !! very large step) is not refused here -- `scf_context_orthogonalize`'s own
       !! `lindep_thresh=0` default only error-stops on a NON-positive-
-      !! definite M, which this call never raises
+      !! definite M (checked on its own unit-diagonal normalisation, which
+      !! does not change positive-definiteness: a congruence by an invertible
+      !! diagonal), which this call never raises
       !! (`lindep_thresh` absent): nocc columns of a full-rank C projected
       !! through a nonsingular S' make M positive definite by
       !! construction (it is a Gram matrix of independent vectors), so a

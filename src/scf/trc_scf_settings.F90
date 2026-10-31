@@ -154,11 +154,15 @@ module trc_scf_settings
       !! its answer and a damped Roothaan step alone throws it 300 hartree
       !! away; raising the virtuals keeps the occupied space from collapsing.
       real(dp) :: lindep_thresh = 1.0e-8_dp
-      !! Canonical orthogonalisation: an eigenvalue of S below this is linear
-      !! dependence, projected out of X rather than scaled by S^-1/4 (which would
-      !! divide by nearly zero). Diffuse bases (def2-TZVPD, aug-cc-pVDZ) put several
-      !! S eigenvalues below 1e-8 on anything but a single atom. 0 restores the old
-      !! `error stop` when S is not numerically positive definite.
+      !! Canonical orthogonalisation: an eigenvalue of S, normalised to a unit
+      !! diagonal first (Sn = D S D, D = diag(1/sqrt(S_ii)) -- pyscf's
+      !! `remove_linear_dep_`/ORCA's own convention; S itself is not
+      !! unit-diagonal, every spherical d function has S_ii = 5/(4*pi)), below
+      !! this is linear dependence, projected out of X rather than scaled by
+      !! Sn^-1/4 (which would divide by nearly zero). Diffuse bases
+      !! (def2-TZVPD, aug-cc-pVDZ) put several Sn eigenvalues below 1e-8 on
+      !! anything but a single atom. 0 restores the old `error stop` when S
+      !! is not numerically positive definite.
       real(dp) :: eri_thresh = 1.0e-12_dp
       logical :: df = .false.
       !! Density-fitted J and K (`--df`): ALWAYS fits both, never DF-J with

@@ -2021,8 +2021,9 @@ program trc_main
                        "refused with an open shell, a functional, --pcm, --df or more than one rank")
    call r%cli%add_option("soscf-start", "commutator norm at which --soscf hands over from DIIS (1e-2)")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
-   call r%cli%add_option("lindep", "linear-dependence threshold: S eigenvalues below it are dropped "// &
-                         "(canonical orthogonalisation; 1e-8; 0 drops none, though the minao guess keeps its own 1e-8). "// &
+   call r%cli%add_option("lindep", "linear-dependence threshold: eigenvalues of S normalised to a unit "// &
+                         "diagonal (pyscf/ORCA's convention) below it are dropped (canonical orthogonalisation; "// &
+                         "1e-8; 0 drops none, though the minao guess keeps its own 1e-8). "// &
                          "Diffuse bases on large molecules may need ~5e-6")
    call r%cli%add_flag("incremental", "build later Fock matrices from the density difference (closed shell)")
    call r%cli%add_flag("df", "density-fitted J and K instead of the four-centre engine (restricted, "// &

@@ -391,10 +391,12 @@ int trc_pcm_energy(trc_handle_t handle, double* e_diel, double* q_total, int* np
 int trc_set_convergence(trc_handle_t handle, double conv_energy, double conv_diis, int max_iter, int ndiis);
 
 /**
- * Canonical orthogonalisation threshold: an eigenvalue of S below
- * `threshold` is linear dependence and its direction is dropped from
- * the SCF (and, for a positive threshold, from the minao guess's
- * projection). Default 1e-8. A
+ * Canonical orthogonalisation threshold: an eigenvalue of S, normalised
+ * to a unit diagonal first (pyscf's `remove_linear_dep_`/ORCA's own
+ * convention -- S itself is not unit-diagonal), below `threshold` is
+ * linear dependence and its direction is dropped from the SCF (and,
+ * for a positive threshold, from the minao guess's projection).
+ * Default 1e-8. A
  * diffuse basis on a large molecule can need more: GPU4PySCF
  * converges a def2-TZVPD nitrosamine anion only at 5e-6 (40 functions
  * dropped). 0 means plain symmetric orthogonalisation in the SCF,
