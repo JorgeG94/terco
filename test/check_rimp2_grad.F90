@@ -55,7 +55,7 @@ module check_rimp2_grad_suite
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t, trc_rimp2_options_t, rimp2_driver_mo_to_cart
    use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t
    use trc_scf_df, only: df_jk_t
-   use trc_scf_grad_df, only: scf_grad_df_two_electron, scf_grad_df_bilinear
+   use trc_scf_grad_df, only: scf_grad_df_two_electron, scf_grad_df_bilinear, scf_grad_df_bilinear_t
    use trc_linalg, only: trc_linalg_t
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
@@ -251,6 +251,7 @@ contains
       type(case_t) :: c
       type(system_t) :: sys
       real(dp), allocatable :: r(:, :), cmo(:, :), dens(:, :), g_ref(:, :), g_bil(:, :)
+      type(scf_grad_df_bilinear_t) :: bil
       integer, allocatable :: z(:)
       integer :: nat, n
       real(dp) :: e_tot
@@ -275,7 +276,8 @@ contains
                                     1.0_dp, 1.0_dp, g_ref)
       !$acc update self(g_ref)
       !$acc exit data delete(cmo, dens, g_ref)
-      call scf_grad_df_bilinear(sys%bas, sys%jk, sys%pl, sys%dfjk, sys%lp, cmo(:, 1:sys%nocc), 0.5_dp*dens, g_bil)
+      call scf_grad_df_bilinear(sys%bas, sys%jk, sys%pl, sys%dfjk, sys%lp, cmo(:, 1:sys%nocc), 0.5_dp*dens, bil)
+      g_bil = bil%grad
       print "(a,a,es10.2)", "  ", trim(c%name)//": max |bilinear(D/2) - two-electron| ", maxval(abs(g_bil - g_ref))
       call check(error, maxval(abs(g_bil - g_ref)) < BILINEAR_TOL, trim(c%name)// &
                  ": scf_grad_df_bilinear(X = D/2) is not the --df SCF's two-electron gradient")

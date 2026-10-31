@@ -74,7 +74,7 @@ module trc_rimp2_grad
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_cphf_solve_rhf, trc_cphf_solve_rhf_fitted
    use trc_scf_df, only: df_jk_t
    use trc_scf_df_response, only: df_rotation_t
-   use trc_scf_grad_df, only: scf_grad_df_bilinear
+   use trc_scf_grad_df, only: scf_grad_df_bilinear, scf_grad_df_bilinear_t
    use trc_scf_grad, only: scf_grad_nuclear_repulsion
    use trc_rimp2_driver, only: trc_rimp2_options_t
    use trc_rimp2_relax, only: trc_rimp2_relax_t
@@ -156,6 +156,7 @@ module trc_rimp2_grad
       real(dp), allocatable :: wao(:, :)     !! (n, n) total energy-weighted density
       real(dp), allocatable :: dhf(:, :)     !! (n, n) the reference density, 2 C_o C_o^T
       real(dp), allocatable :: goo(:, :)     !! (nocc, nocc) C_o^T G[P] C_o, the --df path's own
+      real(dp), allocatable :: scratch(:)    !! the Z-vector's B_vv storage, device-mapped, for the 2e term
    end type grad_work_t
 
 contains
@@ -458,7 +459,7 @@ contains
             !$acc update device(w%goo)
             !$acc exit data delete(goo_z)
          end block
-         call rot%release()
+         call rot%release_keeping(w%scratch)
       else
          ! The exact solver's square Cartesian C: the nmo real orbitals, then
          ! zero-coefficient pad virtuals (PAD_EPS's own comment).
@@ -482,6 +483,10 @@ contains
             !$acc exit data delete(w%goo)
          end if
          call rot%release()
+         if (allocated(w%scratch)) then
+            !$acc exit data delete(w%scratch)
+            deallocate (w%scratch)
+         end if
          !$acc exit data delete(w%pao)
          !$acc exit data delete(w%ccart)
          return
@@ -585,10 +590,16 @@ contains
       type(grad_work_t), intent(inout) :: w
       real(dp), intent(out) :: grad(3, b%natm)
       real(dp), allocatable :: xmat(:, :)
+      type(scf_grad_df_bilinear_t) :: bil
       !$acc update self(w%pao, w%dhf)
       xmat = 0.5_dp*w%dhf + w%pao
-      grad = 0.0_dp
-      call scf_grad_df_bilinear(b, jkaux, pl, dfjk, la, w%ccart(:, 1:w%nocc), xmat, grad)
+      if (allocated(w%scratch)) call move_alloc(w%scratch, bil%buffer)
+      call scf_grad_df_bilinear(b, jkaux, pl, dfjk, la, w%ccart(:, 1:w%nocc), xmat, bil)
+      grad = bil%grad
+      if (allocated(bil%buffer)) then
+         !$acc exit data delete(bil%buffer)
+         deallocate (bil%buffer)
+      end if
       w%dhf = w%dhf + w%pao
       !$acc update device(w%dhf)
    end subroutine fitted_two_electron

@@ -115,8 +115,8 @@ module trc_scf_df_response
       !! C_o^T G C_o).
       real(dp), allocatable :: bvo(:, :, :)
       !! (nvir, nocc, naux): B^Q_ai; device-resident.
-      real(dp), allocatable :: bvv(:, :, :)
-      !! (nvir, nvir, naux): B^Q_ab; device-resident.
+      real(dp), allocatable :: bvv(:)
+      !! (nvir, nvir, naux), flat: B^Q_ab; device-resident.
       real(dp), allocatable :: boo(:, :, :)
       !! (nocc, naux, nocc): B^Q_ji, as (j, Q, i); device-resident.
       real(dp), allocatable :: wscr(:, :, :)
@@ -133,6 +133,7 @@ module trc_scf_df_response
       procedure :: apply_occ => df_rotation_apply_occ
       procedure :: apply_general => df_rotation_apply_general
       procedure :: release => df_rotation_release
+      procedure :: release_keeping => df_rotation_release_keeping
    end type df_rotation_t
 
 contains
@@ -188,7 +189,7 @@ contains
          call this%ao%setup(dfjk, lp, cmo, eps, nocc, keep_blocks=.true.)
          return
       end if
-      allocate (this%bvo(nv, no, naux), this%bvv(nv, nv, naux), this%boo(no, naux, no))
+      allocate (this%bvo(nv, no, naux), this%bvv(int(nv, int64)**2*int(naux, int64)), this%boo(no, naux, no))
       allocate (this%wscr(nv, naux, no), this%mscr(no, naux, no))
       allocate (cmo_d(n, no + nv), tens(n, n, ablk), half(nv, n*ablk))
       cmo_d = cmo(:, 1:no + nv)
@@ -201,7 +202,7 @@ contains
          ! B_vv(:, :, q) = half_q C_v and B_vo(:, :, q) = half_q C_o.
          call lp%gemm("T", "N", nv, n*np, n, 1.0_dp, this%cvir, n, tens, n, 0.0_dp, half, nv)
          gemm_shape = trc_gemm_batch(nv, nv, n, np, sb=0_int64)
-         call lp%gemm_batched(gemm_shape, half, this%cvir, this%bvv(1, 1, p0))
+         call lp%gemm_batched(gemm_shape, half, this%cvir, this%bvv(1 + int(p0 - 1, int64)*int(nv, int64)**2))
          gemm_shape = trc_gemm_batch(nv, no, n, np, sb=0_int64)
          call lp%gemm_batched(gemm_shape, half, cmo_d, this%bvo(1, 1, p0))
          ! B_oo(j, q, i) = C_o^T B_q C_o: half_o reuses `half`'s storage.
@@ -353,6 +354,23 @@ contains
       !$acc exit data delete(xvo, xvv, xoo)
       deallocate (xvo, xvv, xoo)
    end subroutine df_rotation_apply_general
+
+   subroutine df_rotation_release_keeping(this, buffer)
+      !! Release, but move the B_vv storage -- still device-mapped -- into
+      !! `buffer` for the caller to reuse as scratch (and to unmap and free
+      !! itself). `buffer` comes back unallocated on the AO path.
+      class(df_rotation_t), intent(inout) :: this
+      real(dp), allocatable, intent(inout) :: buffer(:)
+      if (allocated(buffer)) error stop "trc_scf_df_response: release_keeping into an allocated buffer"
+      if (this%ready .and. this%mo) then
+         !$acc exit data delete(this%bvo, this%boo, this%wscr, this%mscr)
+         call move_alloc(this%bvv, buffer)
+         this%mo = .false.
+         !$acc exit data delete(this%cvir, this%cocc, this%tq, this%yao, this%gco)
+         this%ready = .false.
+      end if
+      call this%release()
+   end subroutine df_rotation_release_keeping
 
    subroutine df_rotation_release(this)
       class(df_rotation_t), intent(inout) :: this

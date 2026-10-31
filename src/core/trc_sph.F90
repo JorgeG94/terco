@@ -69,7 +69,7 @@ module trc_sph
    private
 
    public :: sph_cart_to_sph, sph_sph_to_cart, sph_mo_to_cart, sph_aux3c_to_sph, sph_metric_cart_to_sph
-   public :: sph_cols_sph_to_cart
+   public :: sph_cols_sph_to_cart, sph_cols_sph_to_cart_block
 
 contains
 
@@ -342,50 +342,104 @@ contains
    ! adjoint of `sph_fold_cols_cart_to_sph`: a column-indexed quantity whose
    ! columns are spherical AUXILIARY functions, expanded onto the Cartesian
    ! ones the derivative kernels run over. The RI-MP2 gradient
-   ! (trc_rimp2_relax.F90) needs it for its three-index density Gamma^P
-   ! and, applied twice around a transpose, for its two-index gamma_PQ:
-   ! sum_Ps G^Ps (mu nu|Ps) = sum_Pc (T G)^Pc (mu nu|Pc), so contracting
-   ! the expanded density with the Cartesian derivative integrals is exact.
-   ! Same one-batched-GEMM-per-run-of-equal-l shape as the fold above, with
-   ! T now transposed (`transb = "T"`).
+   ! (trc_rimp2_relax.F90, trc_scf_grad_df.F90) needs it for its three-index
+   ! densities and, applied twice around a transpose, for its two-index
+   ! ones: sum_Ps G^Ps (mu nu|Ps) = sum_Pc (T G)^Pc (mu nu|Pc), so
+   ! contracting the expanded density with the Cartesian derivative
+   ! integrals is exact.
    !
-   subroutine sph_cols_sph_to_cart(aux, lp, nrow, msph, mcart)
+   ! A `do concurrent` over (row, shell), not the fold's batched GEMMs: each
+   ! output element is at most nine products, so this is a pure copy at
+   ! bandwidth, while one tall-and-thin batched GEMM per run of equal-l
+   ! shells (k = 2l + 1) ran far below it -- gly10/cc-pVDZ, the --df RI-MP2
+   ! gradient's (n nocc) x naux expansion: ~600 cuBLAS calls, 0.25 s on a
+   ! V100. Consecutive items are consecutive rows, so both sides coalesce.
+   !
+   subroutine sph_cols_sph_to_cart(aux, nrow, msph, mcart)
       type(trc_basis_t), intent(in) :: aux
-      type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nrow
       real(dp), intent(in)  :: msph(*)
       real(dp), intent(out) :: mcart(*)
-      real(dp) :: tl(SPH_NCART_MAX, SPH_NSPH_MAX, 0:SPH_LMAX)
-      integer :: ish0, ish, l0, nci, nsi, run, ac, bc
-      integer(int64) :: nrow8
-      type(trc_gemm_batch_t) :: gemm_shape
-
-      nrow8 = int(nrow, int64)
-      !$acc enter data create(tl)
-      tl = SPH_T
-      !$acc update device(tl)
-
-      ish0 = 1
-      do while (ish0 <= aux%nshell)
-         l0 = aux%sh_l(ish0)
-         run = 1
-         do ish = ish0 + 1, aux%nshell
-            if (aux%sh_l(ish) /= l0) exit
-            run = run + 1
-         end do
-         nci = (l0 + 1)*(l0 + 2)/2
-         nsi = 2*l0 + 1
-         ac = aux%sh_ao(ish0) - 1
-         bc = aux%sh_ao_sph(ish0) - 1
-         ! C (nrow x nci) = A (nrow x nsi) T^T, T stored (nci, nsi) in a
-         ! (SPH_NCART_MAX, SPH_NSPH_MAX) slot and shared by every item.
-         gemm_shape = trc_gemm_batch(nrow, nci, nsi, run, ldb=SPH_NCART_MAX, sb=0_int64, transb="T")
-         call lp%gemm_batched(gemm_shape, msph(1_int64 + int(bc, int64)*nrow8), tl(1, 1, l0), &
-                              mcart(1_int64 + int(ac, int64)*nrow8))
-         ish0 = ish0 + run
-      end do
-      !$acc exit data delete(tl)
+      call expand_columns(aux, 1, aux%nshell, nrow, aux%nao, msph, mcart)
    end subroutine sph_cols_sph_to_cart
+
+   !
+   ! The same expansion for the whole shells s0..s1 only: `msph` is the
+   ! full (nrow, nao_sph) spherical quantity, `mcart` (nrow, ncart) receives
+   ! the block's Cartesian columns numbered from aux%sh_ao(s0) -- one block
+   ! of auxiliary functions at a time, so a caller never holds the whole
+   ! Cartesian copy.
+   !
+   subroutine sph_cols_sph_to_cart_block(aux, s0, s1, nrow, msph, mcart)
+      type(trc_basis_t), intent(in) :: aux
+      integer, intent(in) :: s0, s1, nrow
+      real(dp), intent(in)  :: msph(*)
+      real(dp), intent(out) :: mcart(*)
+      integer :: ncol
+      ncol = aux%sh_ao(s1) + (aux%sh_l(s1) + 1)*(aux%sh_l(s1) + 2)/2 - aux%sh_ao(s0)
+      call expand_columns(aux, s0, s1, nrow, ncol, msph, mcart)
+   end subroutine sph_cols_sph_to_cart_block
+
+   subroutine expand_columns(aux, s0, s1, nrow, ncol, msph, mcart)
+      !! Stages SPH_T in a mapped array, then the kernel: the table is passed
+      !! as an argument because, read as the PARAMETER itself inside the
+      !! kernel, it was given a per-thread local-memory copy.
+      type(trc_basis_t), intent(in) :: aux
+      integer, intent(in) :: s0, s1, nrow, ncol
+      real(dp), intent(in)  :: msph(*)
+      real(dp), intent(out) :: mcart(*)
+      real(dp) :: tl(SPH_NCART_MAX, SPH_NSPH_MAX, 0:SPH_LMAX)
+      tl = SPH_T
+      !$acc enter data copyin(tl)
+      call cols_sph_to_cart_kernel(aux%nshell, aux%sh_l, aux%sh_ao, aux%sh_ao_sph, s0, s1, nrow, aux%nao_sph, &
+                                   ncol, tl, msph, mcart)
+      !$acc exit data delete(tl)
+   end subroutine expand_columns
+
+   subroutine cols_sph_to_cart_kernel(nshell, sh_l, sh_ao, sh_ao_sph, s0, s1, nrow, nsph, ncol, tl, msph, mcart)
+      integer,  intent(in)  :: nshell, s0, s1, nrow, nsph, ncol
+      integer,  intent(in)  :: sh_l(nshell), sh_ao(nshell), sh_ao_sph(nshell)
+      real(dp), intent(in)  :: tl(SPH_NCART_MAX, SPH_NSPH_MAX, 0:SPH_LMAX)
+      real(dp), intent(in)  :: msph(nrow, nsph)
+      real(dp), intent(out) :: mcart(nrow, ncol)
+      integer(int64) :: t, nrow8
+      integer :: c0
+      nrow8 = int(nrow, int64)
+      c0 = sh_ao(s0) - 1
+      do concurrent(t=0:nrow8*int(s1 - s0 + 1, int64) - 1)
+         call expand_item(t, nshell, sh_l, sh_ao, sh_ao_sph, s0, c0, nrow, nsph, ncol, tl, msph, mcart)
+      end do
+   end subroutine cols_sph_to_cart_kernel
+
+   pure subroutine expand_item(t, nshell, sh_l, sh_ao, sh_ao_sph, s0, c0, nrow, nsph, ncol, tl, msph, mcart)
+      !! One (row, shell) of cols_sph_to_cart_kernel: an item routine, so the
+      !! short p/r loops stay inside one thread (as a do concurrent body
+      !! nvfortran spread them over a thread block, one block per item:
+      !! 13 GB/s).
+      !$acc routine seq
+      integer(int64), intent(in) :: t
+      integer,  intent(in)  :: nshell, s0, c0, nrow, nsph, ncol
+      integer,  intent(in)  :: sh_l(nshell), sh_ao(nshell), sh_ao_sph(nshell)
+      real(dp), intent(in)  :: tl(SPH_NCART_MAX, SPH_NSPH_MAX, 0:SPH_LMAX)
+      real(dp), intent(in)  :: msph(nrow, nsph)
+      real(dp), intent(inout) :: mcart(nrow, ncol)
+      integer :: row, ish, li, nci, nsi, ai, bi, p, r
+      real(dp) :: acc
+      row = int(mod(t, int(nrow, int64))) + 1
+      ish = s0 + int(t/int(nrow, int64))
+      li = sh_l(ish)
+      nci = (li + 1)*(li + 2)/2
+      nsi = 2*li + 1
+      ai = sh_ao(ish) - c0
+      bi = sh_ao_sph(ish)
+      do p = 1, nci
+         acc = 0.0_dp
+         do r = 1, nsi
+            acc = acc + tl(p, r, li)*msph(row, bi + r - 1)
+         end do
+         mcart(row, ai + p - 1) = acc
+      end do
+   end subroutine expand_item
 
    !
    ! Msph(Psph, :) := sum_Pc SPH_T(Pc, Psph, l)^T Mcart(Pc, :) -- the

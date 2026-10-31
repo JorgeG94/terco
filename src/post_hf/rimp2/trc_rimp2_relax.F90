@@ -245,7 +245,7 @@ contains
       if (aux%spherical) then
          allocate (w%gamc(w%nov, w%naux_c))
          !$acc enter data create(w%gamc)
-         call sph_cols_sph_to_cart(aux, la, w%nov, w%gam, w%gamc)
+         call sph_cols_sph_to_cart(aux, w%nov, w%gam, w%gamc)
          !$acc exit data delete(w%gam)
          deallocate (w%gam)
          call lagrangian_pass(w, b, aux, pl, la, w%gamc)
@@ -441,9 +441,9 @@ contains
          ! T Z T^T as two column expansions around a transpose (Z symmetric).
          allocate (zhalf(naux, naux_c), zhalf_t(naux_c, naux))
          !$acc enter data create(zhalf, zhalf_t)
-         call sph_cols_sph_to_cart(aux, la, naux, gpq_t, zhalf)
+         call sph_cols_sph_to_cart(aux, naux, gpq_t, zhalf)
          call la%transpose(naux, naux_c, zhalf, naux, zhalf_t, naux_c)
-         call sph_cols_sph_to_cart(aux, la, naux_c, zhalf_t, zmat)
+         call sph_cols_sph_to_cart(aux, naux_c, zhalf_t, zmat)
          !$acc exit data delete(zhalf, zhalf_t)
          deallocate (zhalf, zhalf_t)
       else

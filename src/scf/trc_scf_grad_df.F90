@@ -68,7 +68,7 @@ module trc_scf_grad_df
    use trc_step_table, only: step_table_t
    use pic_timer, only: timer_type
    use trc_rys_select, only: rys_select_tables_init
-   use trc_sph, only: sph_cols_sph_to_cart
+   use trc_sph, only: sph_cols_sph_to_cart, sph_cols_sph_to_cart_block
    use trc_df_grad_kernels, only: df_grad_2c_driver, df_grad_3c_driver, df_grad_3c_plan, DFG_LMAX, &
                                   DFG_LMAX_AUX, DFG_NPCLS
 #ifdef TRC_DEVICE
@@ -77,7 +77,7 @@ module trc_scf_grad_df
 #endif
    implicit none
    private
-   public :: scf_grad_df_two_electron, scf_grad_df_bilinear
+   public :: scf_grad_df_two_electron, scf_grad_df_bilinear, scf_grad_df_bilinear_t
 
    ! The timed steps, reported (global_logger, PERFORMANCE) after every
    ! gradient in the same table shape DF-JK and RI-MP2 use: device-synced
@@ -97,6 +97,17 @@ module trc_scf_grad_df
                                    "3c pair plan (host)", "Y = K part (gemm)", "3c derivative kernels", &
                                    "2c derivative kernels"]
 
+   type :: scf_grad_df_bilinear_t
+      !! scf_grad_df_bilinear's result, and the scratch it may borrow.
+      real(dp), allocatable :: grad(:, :)
+      !! (3, natm): added into, allocated (zero) on first use.
+      real(dp), allocatable :: buffer(:)
+      !! Optional device-mapped scratch of at least 2 n nocc naux doubles: a
+      !! caller that has just freed that much (the RI-MP2 gradient's Z-vector
+      !! blocks) hands it over and gets it back unchanged in size, which
+      !! saves a multi-gigabyte cudaMalloc (gly10: 0.30 s on a V100).
+   end type scf_grad_df_bilinear_t
+
    type :: bilinear_work_t
       !! scf_grad_df_bilinear's dimensions and device-resident arrays, each
       !! component mapped on its own and reaching a kernel only as an actual
@@ -109,8 +120,9 @@ module trc_scf_grad_df
       !! c^D and c^X over the fitted auxiliary functions.
       real(dp), allocatable :: cdc(:), cxc(:)
       !! The same over the Cartesian auxiliary functions.
-      real(dp), allocatable :: xc(:, :)
-      !! X c^P over the Cartesian auxiliary functions: (n nocc, naux_c).
+      real(dp), allocatable :: big(:)
+      !! b and X c, (n nocc, naux) each over the fitted auxiliary functions,
+      !! back to back.
       real(dp), allocatable :: zmat(:, :)
       !! Z over the Cartesian auxiliary functions.
    end type bilinear_work_t
@@ -403,12 +415,12 @@ contains
       call tbl%report(tall%get_elapsed_time(), 0, 1, subtotal_mask=dense, subtotal_label="all dense algebra")
    end subroutine scf_grad_df_two_electron
 
-   subroutine scf_grad_df_bilinear(b, aux, pl, dfjk, lp, cocc, xmat, grad)
-      !! grad += d/dR Tr(X G_fit[D]) through the integrals only, D = 2 C C^T
-      !! the closed-shell reference density of the occupied orbitals `cocc`
-      !! and X ANY symmetric matrix, G_fit = J_fit - K_fit/2 the --df SCF's
-      !! own fitted operator (`dfjk`'s retained B and Cholesky factor, over
-      !! `aux`). X = D/2 is the --df SCF's own two-electron gradient
+   subroutine scf_grad_df_bilinear(b, aux, pl, dfjk, lp, cocc, xmat, job)
+      !! job%grad += d/dR Tr(X G_fit[D]) through the integrals only, D =
+      !! 2 C C^T the closed-shell reference density of the occupied orbitals
+      !! `cocc` and X ANY symmetric matrix, G_fit = J_fit - K_fit/2 the --df
+      !! SCF's own fitted operator (`dfjk`'s retained B and Cholesky factor,
+      !! over `aux`). X = D/2 is the --df SCF's own two-electron gradient
       !! (scf_grad_df_two_electron, J and K at scale one); the RI-MP2
       !! gradient over a --df reference passes X = D/2 + P, P its relaxed
       !! correlation density, for the reference term and the reference's
@@ -427,17 +439,19 @@ contains
       !! contracted with d(mn|P)/dR and d(P|Q)/dR by the generated kernels
       !! (their J part carries c^D X; M^P = c^X_P D/2 - X c^P C^T is the
       !! one-sided rest, Y = M + M^T). In the fitted (Cholesky) form, with
-      !! B = T L^-T: c^D = L^-T (B^T d), and c^P = (B C) L^-1 over the
-      !! auxiliary index, one triangular solve for every P at once.
+      !! B = T L^-T and b = B C: c^D = L^-T (B^T d), X c = (X b) L^-1 over the
+      !! auxiliary index, and <c^P, X c^Q> = L^-T (b^T X c).
       !!
       !! Unlike scf_grad_df_two_electron this takes a SPHERICAL orbital or
       !! auxiliary basis: `cocc` and `xmat` are in the Cartesian AO space the
       !! fit and the kernels share (C_cart = T C_sph for a spherical orbital
       !! basis; T X T^T), and the auxiliary index of c^D, c^X, X c^P and Z is
-      !! expanded onto the Cartesian auxiliary functions before the kernels
-      !! (trc_sph's sph_cols_sph_to_cart). Restricted HF scales (J and K at
-      !! one). `cocc`, `xmat` and `grad` are host arrays; `b`, `aux` and `pl`
-      !! device-resident. Memory: three (n nocc naux) tensors.
+      !! expanded onto the Cartesian auxiliary functions (trc_sph), X c^P one
+      !! derivative block at a time. Restricted HF scales (J and K at one).
+      !! `cocc` and `xmat` are host arrays; `b`, `aux` and `pl` device-
+      !! resident. Memory: two (n nocc naux) tensors, taken from `job%buffer`
+      !! when that is allocated, device-mapped and large enough (its own
+      !! comment), else allocated here.
       type(trc_basis_t),    intent(in)    :: b
       type(trc_basis_t),    intent(in)    :: aux
       type(trc_pairlist_t), intent(in)    :: pl
@@ -445,10 +459,11 @@ contains
       type(trc_linalg_t),   intent(inout) :: lp
       real(dp),             intent(in)    :: cocc(:, :)
       real(dp),             intent(in)    :: xmat(:, :)
-      real(dp),             intent(inout) :: grad(:, :)
+      type(scf_grad_df_bilinear_t), intent(inout) :: job
 
       type(bilinear_work_t) :: w
       integer :: n, naux, npack
+      logical :: borrowed
 
       call dfjk%dims(n, naux, npack)
       if (n /= b%nao .or. naux /= merge(aux%nao_sph, aux%nao, aux%spherical)) then
@@ -465,6 +480,15 @@ contains
       w%naux_c = aux%nao
       w%npack = npack
       w%nrow = int(n, int64)*int(w%no, int64)
+      ! The two big tensors, b and X c, back to back in one buffer.
+      borrowed = .false.
+      if (allocated(job%buffer)) borrowed = size(job%buffer, kind=int64) >= 2*w%nrow*int(naux, int64)
+      if (borrowed) then
+         call move_alloc(job%buffer, w%big)
+      else
+         allocate (w%big(2*w%nrow*int(naux, int64)))
+         !$acc enter data create(w%big)
+      end if
       allocate (w%cocc(n, w%no), w%xmat(n, n), w%dmat(n, n), w%grad(3, b%natm))
       allocate (w%cd(naux), w%cx(naux), w%cdc(w%naux_c), w%cxc(w%naux_c))
       w%cocc = cocc
@@ -473,11 +497,21 @@ contains
       !$acc enter data copyin(w%cocc, w%xmat, w%grad) create(w%dmat, w%cd, w%cx, w%cdc, w%cxc)
       call lp%density(w%cocc, w%no, 2.0_dp, w%dmat)
       call bilinear_coulomb(w, dfjk, lp)
-      call bilinear_exchange(w, aux, dfjk, lp)
-      call bilinear_derivatives(w, b, aux, pl, lp)
+      call bilinear_exchange(w, aux, dfjk, lp, w%big, w%big(w%nrow*int(naux, int64) + 1))
+      call bilinear_derivatives(w, b, aux, pl, lp, w%big(w%nrow*int(naux, int64) + 1))
       !$acc update self(w%grad)
-      grad = grad + w%grad
+      if (.not. allocated(job%grad)) then
+         allocate (job%grad(3, b%natm))
+         job%grad = 0.0_dp
+      end if
+      job%grad = job%grad + w%grad
       !$acc exit data delete(w%cocc, w%xmat, w%grad, w%dmat, w%cd, w%cx, w%cdc, w%cxc)
+      if (borrowed) then
+         call move_alloc(w%big, job%buffer)
+      else
+         !$acc exit data delete(w%big)
+         deallocate (w%big)
+      end if
    end subroutine scf_grad_df_bilinear
 
    subroutine bilinear_coulomb(w, dfjk, lp)
@@ -499,23 +533,25 @@ contains
       deallocate (dpk)
    end subroutine bilinear_coulomb
 
-   subroutine bilinear_exchange(w, aux, dfjk, lp)
-      !! w%xc = X c^P over every P (Cartesian auxiliary functions) and
-      !! w%zmat = Z (Cartesian auxiliary functions), from c = (B C) L^-1.
+   subroutine bilinear_exchange(w, aux, dfjk, lp, bmat, xc)
+      !! bmat := b = B C; xc := X c = (X b) L^-1, both (n nocc, naux) over the
+      !! fitted auxiliary functions; w%zmat = Z over the Cartesian ones.
       type(bilinear_work_t), intent(inout) :: w
       type(trc_basis_t), intent(in) :: aux
       type(df_jk_t), intent(in) :: dfjk
       type(trc_linalg_t), intent(inout) :: lp
-      real(dp), allocatable :: cmat(:, :), xc(:, :), tens(:, :, :), zfit(:, :), zhalf(:, :), zhalf_t(:, :)
+      real(dp), intent(inout) :: bmat(w%nrow, w%naux), xc(w%nrow, w%naux)
+      real(dp), allocatable :: tens(:, :, :), zfit(:, :), zhalf(:, :), zhalf_t(:, :)
       type(trc_gemm_batch_t) :: gemm_shape
-      integer :: n, no, naux, naux_c, p0, np, ablk
+      integer :: n, no, naux, naux_c, p0, np, ablk, nrow
 
       n = w%n
       no = w%no
       naux = w%naux
       naux_c = w%naux_c
-      allocate (cmat(w%nrow, naux), xc(w%nrow, naux), zfit(naux, naux))
-      !$acc enter data create(cmat, xc, zfit)
+      nrow = int(w%nrow)
+      allocate (zfit(naux, naux))
+      !$acc enter data create(zfit)
       ! b^P = B^P C, one block of unpacked B at a time (at most ~2 GB).
       ablk = int(max(1_int64, min(int(naux, int64), 268435456_int64/(int(n, int64)*int(n, int64)))))
       allocate (tens(n, n, ablk))
@@ -524,51 +560,56 @@ contains
          np = min(ablk, naux - p0 + 1)
          call unpack_aux_block(n, w%npack, naux, np, p0, dfjk%bpk, tens)
          gemm_shape = trc_gemm_batch(n, no, n, np, sb=0_int64)
-         call lp%gemm_batched(gemm_shape, tens, w%cocc, cmat(1, p0))
+         call lp%gemm_batched(gemm_shape, tens, w%cocc, bmat(1, p0))
       end do
       !$acc exit data delete(tens)
       deallocate (tens)
-      ! c = b L^-1 (the metric on the auxiliary index), X c, W = c^T X c
-      call lp%trsm("R", "L", "N", int(w%nrow), naux, 1.0_dp, dfjk%chol, naux, cmat, int(w%nrow))
-      call lp%gemm("N", "N", n, no*naux, n, 1.0_dp, w%xmat, n, cmat, n, 0.0_dp, xc, n)
-      call lp%gemm("T", "N", naux, naux, int(w%nrow), 1.0_dp, cmat, int(w%nrow), xc, int(w%nrow), 0.0_dp, &
-                   zfit, naux)
-      !$acc exit data delete(cmat)
-      deallocate (cmat)
-      ! Z = W - (c^X c^D^T + c^D c^X^T)/2; W is symmetric (X is).
+      ! X c = (X b) L^-1, then W = L^-T (b^T X c), symmetrised. Forming the
+      ! symmetric b^T X b by its lower triangle and solving on both sides
+      ! saves 1.4 TFLOP (gly10: 0.17 s) but squares the metric's condition
+      ! number into W: on formamide/cc-pVDZ with a Cartesian cc-pVDZ-RIFIT
+      ! it moved CPU against GPU from 2e-11 to 5e-10.
+      call lp%gemm("N", "N", n, no*naux, n, 1.0_dp, w%xmat, n, bmat, n, 0.0_dp, xc, n)
+      call lp%trsm("R", "L", "N", nrow, naux, 1.0_dp, dfjk%chol, naux, xc, nrow)
+      call lp%gemm("T", "N", naux, naux, nrow, 1.0_dp, bmat, nrow, xc, nrow, 0.0_dp, zfit, naux)
+      call lp%trsm("L", "L", "T", naux, naux, 1.0_dp, dfjk%chol, naux, zfit, naux)
+      call symmetrise(naux, zfit)
+      ! Z = W - (c^X c^D^T + c^D c^X^T)/2.
       call subtract_outer(naux, w%cx, w%cd, zfit)
-      allocate (w%zmat(naux_c, naux_c), w%xc(w%nrow, naux_c))
-      !$acc enter data create(w%zmat, w%xc)
+      allocate (w%zmat(naux_c, naux_c))
+      !$acc enter data create(w%zmat)
       if (aux%spherical) then
          allocate (zhalf(naux, naux_c), zhalf_t(naux_c, naux))
          !$acc enter data create(zhalf, zhalf_t)
-         call sph_cols_sph_to_cart(aux, lp, int(w%nrow), xc, w%xc)
-         call sph_cols_sph_to_cart(aux, lp, 1, w%cd, w%cdc)
-         call sph_cols_sph_to_cart(aux, lp, 1, w%cx, w%cxc)
-         call sph_cols_sph_to_cart(aux, lp, naux, zfit, zhalf)
+         call sph_cols_sph_to_cart(aux, 1, w%cd, w%cdc)
+         call sph_cols_sph_to_cart(aux, 1, w%cx, w%cxc)
+         call sph_cols_sph_to_cart(aux, naux, zfit, zhalf)
          call lp%transpose(naux, naux_c, zhalf, naux, zhalf_t, naux_c)
-         call sph_cols_sph_to_cart(aux, lp, naux_c, zhalf_t, w%zmat)
+         call sph_cols_sph_to_cart(aux, naux_c, zhalf_t, w%zmat)
          !$acc exit data delete(zhalf, zhalf_t)
          deallocate (zhalf, zhalf_t)
       else
-         call copy_flat(w%nrow*int(naux, int64), xc, w%xc)
          call copy_flat(int(naux, int64), w%cd, w%cdc)
          call copy_flat(int(naux, int64), w%cx, w%cxc)
          call copy_flat(int(naux, int64)**2, zfit, w%zmat)
       end if
-      !$acc exit data delete(xc, zfit)
-      deallocate (xc, zfit)
+      !$acc exit data delete(zfit)
+      deallocate (zfit)
    end subroutine bilinear_exchange
 
-   subroutine bilinear_derivatives(w, b, aux, pl, lp)
+   subroutine bilinear_derivatives(w, b, aux, pl, lp, xc)
       !! The three- and two-centre derivative kernels on Y and Z (see
-      !! scf_grad_df_bilinear's header), one auxiliary block at a time.
+      !! scf_grad_df_bilinear's header), one auxiliary block at a time; `xc`
+      !! is X c over the fitted auxiliary functions, expanded onto the block's
+      !! Cartesian ones when the auxiliary basis is spherical.
       type(bilinear_work_t), intent(inout) :: w
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: pl
       type(trc_linalg_t), intent(inout) :: lp
+      real(dp), intent(inout) :: xc(w%nrow, w%naux)
+      !! Spent here: a Cartesian auxiliary basis's blocks are overwritten.
       type(trc_basis_t) :: aux_subset
-      real(dp), allocatable :: mm(:, :, :), pd(:, :)
+      real(dp), allocatable :: mm(:, :, :), pd(:, :), xcb(:, :)
       integer, allocatable :: q_a(:), q_b(:), q_o(:), q_n(:)
       integer :: coff(0:DFG_NPCLS)
       type(trc_gemm_batch_t) :: gemm_shape
@@ -580,6 +621,15 @@ contains
                            pl%p_j, coff, q_a, q_b, q_o, q_n, pd)
       !$acc enter data copyin(q_a, q_b, q_o, q_n, pd)
       ablk = int(max(1_int64, min(int(w%naux_c, int64), 268435456_int64/(int(n, int64)*int(n, int64)))))
+      ! One block's M and, for a spherical auxiliary basis, its Cartesian X c,
+      ! allocated once at the largest block size.
+      allocate (mm(n, n, max(ablk, 15)))
+      if (aux%spherical) then
+         allocate (xcb(w%nrow, max(ablk, 15)))
+      else
+         allocate (xcb(1, 1))
+      end if
+      !$acc enter data create(mm, xcb)
       s0 = 1
       do while (s0 <= aux%nshell)
          ! Whole shells holding at most `ablk` Cartesian functions.
@@ -592,27 +642,50 @@ contains
          np = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0
          call aux%subset(s0, s1, aux_subset)
          call aux_subset%to_device()
-         allocate (mm(n, n, np))
-         !$acc enter data create(mm)
-         ! M^P = -(X c^P) C^T + c^X_P D / 2
+         ! M^P = -(X c^P) C^T + c^X_P D / 2 = -(X c^P - c^X_P C) C^T, D = 2 C C^T:
+         ! the density term rides in the GEMM, folded into its n x nocc
+         ! operand (an n x n pass per P over M measured 0.08 s at gly10).
          gemm_shape = trc_gemm_batch(n, n, no, np, sb=0_int64, transb="T")
-         call lp%gemm_batched(gemm_shape, w%xc(1, p0), w%cocc, mm, alpha=-1.0_dp)
-         call add_scaled_density(n, np, p0, w%naux_c, w%cxc, w%dmat, mm)
+         if (aux%spherical) then
+            call sph_cols_sph_to_cart_block(aux, s0, s1, int(w%nrow), xc, xcb)
+            call subtract_occupied(n, no, np, p0, w%naux_c, w%cxc, w%cocc, xcb)
+            call lp%gemm_batched(gemm_shape, xcb, w%cocc, mm, alpha=-1.0_dp)
+         else
+            call subtract_occupied(n, no, np, p0, w%naux_c, w%cxc, w%cocc, xc(1, p0))
+            call lp%gemm_batched(gemm_shape, xc(1, p0), w%cocc, mm, alpha=-1.0_dp)
+         end if
          call df_grad_3c_driver(b%nshell, n, b%sh_ao, b%sh_at, b%sh_r, coff, pl%npair, q_a, q_b, q_o, q_n, &
                                 size(pd, 2), pd, aux_subset%nshell, aux_subset%maxnp, aux_subset%sh_l, &
                                 aux_subset%sh_np, aux_subset%sh_ao, aux_subset%sh_at, aux_subset%sh_e, &
                                 aux_subset%sh_c, aux_subset%sh_r, b%natm, 2, n, np, mm, 1.0_dp, &
                                 w%naux_c, p0 - 1, w%cdc, w%xmat, w%grad)
-         !$acc exit data delete(mm)
-         deallocate (mm)
          call aux_subset%release()
          s0 = s1 + 1
       end do
       call df_grad_2c_driver(aux%nshell, w%naux_c, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
                              aux%sh_e, aux%sh_c, aux%sh_r, b%natm, w%zmat, w%grad)
-      !$acc exit data delete(q_a, q_b, q_o, q_n, pd, w%xc, w%zmat)
-      deallocate (q_a, q_b, q_o, q_n, pd, w%xc, w%zmat)
+      !$acc exit data delete(q_a, q_b, q_o, q_n, pd, mm, xcb, w%zmat)
+      deallocate (q_a, q_b, q_o, q_n, pd, mm, xcb, w%zmat)
    end subroutine bilinear_derivatives
+
+   subroutine symmetrise(n, z)
+      !! z := (z + z^T)/2, one item per unordered pair.
+      integer, intent(in) :: n
+      real(dp), intent(inout) :: z(n, n)
+      integer(int64) :: t, n8
+      integer :: p, q
+      real(dp) :: v
+      n8 = int(n, int64)
+      do concurrent(t=0:n8*n8 - 1) local(p, q, v)
+         p = int(mod(t, n8)) + 1
+         q = int(t/n8) + 1
+         if (p < q) then
+            v = 0.5_dp*(z(p, q) + z(q, p))
+            z(p, q) = v
+            z(q, p) = v
+         end if
+      end do
+   end subroutine symmetrise
 
    subroutine pack_doubled(n, npack, d, dpk)
       !! dpk = the lower triangle of d, off-diagonal doubled (B^T dpk = t).
@@ -644,21 +717,22 @@ contains
       end do
    end subroutine subtract_outer
 
-   subroutine add_scaled_density(n, np, p0, naux_c, cx, d, mm)
-      !! mm(:, :, q) += cx(p0 - 1 + q) d / 2.
-      integer, intent(in) :: n, np, p0, naux_c
-      real(dp), intent(in) :: cx(naux_c), d(n, n)
-      real(dp), intent(inout) :: mm(n, n, np)
-      integer(int64) :: t, n8
-      integer :: mu, nu, q
+   subroutine subtract_occupied(n, no, np, p0, naux_c, cx, cocc, xcblock)
+      !! xcblock(:, :, q) -= cx(p0 - 1 + q) C_o.
+      integer, intent(in) :: n, no, np, p0, naux_c
+      real(dp), intent(in) :: cx(naux_c), cocc(n, no)
+      real(dp), intent(inout) :: xcblock(n, no, np)
+      integer(int64) :: t, n8, no8
+      integer :: mu, i, q
       n8 = int(n, int64)
-      do concurrent(t=0:n8*n8*int(np, int64) - 1) local(mu, nu, q)
+      no8 = int(no, int64)
+      do concurrent(t=0:n8*no8*int(np, int64) - 1) local(mu, i, q)
          mu = int(mod(t, n8)) + 1
-         nu = int(mod(t/n8, n8)) + 1
-         q = int(t/(n8*n8)) + 1
-         mm(mu, nu, q) = mm(mu, nu, q) + 0.5_dp*cx(p0 - 1 + q)*d(mu, nu)
+         i = int(mod(t/n8, no8)) + 1
+         q = int(t/(n8*no8)) + 1
+         xcblock(mu, i, q) = xcblock(mu, i, q) - cx(p0 - 1 + q)*cocc(mu, i)
       end do
-   end subroutine add_scaled_density
+   end subroutine subtract_occupied
 
    subroutine copy_flat(n, x, y)
       !! y := x, on the device.
