@@ -79,6 +79,8 @@ module trc_run
       integer :: ndamp = -1              !! --damp-steps; -1 = by spin
       real(dp) :: damp = 0.3_dp          !! --damp
       real(dp) :: diis_start = -1.0_dp   !! --diis-start; -1 = by spin
+      logical :: soscf = .false.         !! --soscf
+      real(dp) :: soscf_start = -1.0_dp  !! --soscf-start; -1 = the library's default (1e-2)
       real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess, epcm, qpcm
       logical :: rimp2, df
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
@@ -1886,6 +1888,7 @@ program trc_main
    use pic_logger, only: global_logger
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                        trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_scf_accel, &
+                       trc_set_soscf, &
                        trc_set_level_shift, trc_set_lindep, trc_set_screening, &
                        trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
                        trc_set_guess, trc_set_verbose, trc_set_rimp2, trc_set_force_cartesian, trc_set_comm, &
@@ -2013,6 +2016,10 @@ program trc_main
    call r%cli%add_option("damp", "weight of the new density while damping, (0, 1] (0.3)")
    call r%cli%add_option("damp-steps", "damped steps before DIIS (by spin: 0 closed shell, 4 open shell)")
    call r%cli%add_option("diis-start", "commutator norm below which DIIS may start (by spin)")
+   call r%cli%add_flag("soscf", "second-order SCF: hand over from DIIS to a trust-region Newton step on the "// &
+                       "orbital rotations once |FDS - SDF| is small enough. Restricted Hartree-Fock only; "// &
+                       "refused with an open shell, a functional, --pcm, --df or more than one rank")
+   call r%cli%add_option("soscf-start", "commutator norm at which --soscf hands over from DIIS (1e-2)")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
    call r%cli%add_option("lindep", "linear-dependence threshold: S eigenvalues below it are dropped "// &
                          "(canonical orthogonalisation; 1e-8; 0 drops none, though the minao guess keeps its own 1e-8). "// &
@@ -2326,6 +2333,12 @@ program trc_main
       call r%cli%get("diis-start", r%diis_start, r%err)
       call run_check(r, "--diis-start")
       if (.not. (r%diis_start > 0.0_dp)) call run_die(r, "--diis-start must be > 0")
+   end if
+   r%soscf = r%cli%is_set("soscf")
+   if (r%cli%is_set("soscf-start")) then
+      call r%cli%get("soscf-start", r%soscf_start, r%err)
+      call run_check(r, "--soscf-start")
+      if (.not. (r%soscf_start > 0.0_dp)) call run_die(r, "--soscf-start must be > 0")
    end if
    call r%cli%get("thresh", r%thresh, r%err)
    call run_check(r, "--thresh")
@@ -2898,6 +2911,7 @@ program trc_main
    if (r%accel_set) call run_api(r, trc_set_scf_accel(r%h, merge(1_c_int, 0_c_int, r%adiis), &
                                                   int(r%ndamp, c_int), real(r%damp, c_double), &
                                                   real(r%diis_start, c_double)))
+   if (r%soscf) call run_api(r, trc_set_soscf(r%h, 1_c_int, real(r%soscf_start, c_double)))
    call run_api(r, trc_set_screening(r%h, real(r%thresh, c_double)))
    if (r%lindep >= 0.0_dp) call run_api(r, trc_set_lindep(r%h, real(r%lindep, c_double)))
    ! On unless asked otherwise: the library's default is off, so a host

@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 12
+#define TRC_ABI_MINOR 13
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -446,6 +446,25 @@ int trc_set_level_shift(trc_handle_t handle, double shift);
  * after it (trc_fukui_hirshfeld's three included).
  */
 int trc_set_scf_accel(trc_handle_t handle, int adiis, int ndamp, double damp, double diis_start);
+
+/**
+ * Second-order SCF (trc_scf_options_t%soscf's own comment): once
+ * DIIS brings |FDS - SDF| below `soscf_start`, hand over to a
+ * trust-region Newton step on the orbital rotations
+ * (trc_scf_soscf.F90, ported from metalquicha's mqc_czt_soscf).
+ * Restricted Hartree-Fock only -- refused at the next trc_run_scf
+ * with an open shell, a functional, a continuum solvent, --df or
+ * more than one rank, never run silently as plain DIIS.
+ *
+ *   enable       1 turns --soscf on; 0 off (the default).
+ *   soscf_start  commutator norm at which DIIS hands over; -1 (or
+ *                any value <= 0) for the library's own default
+ *                (1e-2).
+ *
+ * Takes effect at the next trc_run_scf, for every SCF the handle
+ * runs after it.
+ */
+int trc_set_soscf(trc_handle_t handle, int enable, double soscf_start);
 
 int trc_set_df(trc_handle_t handle, int on);
 

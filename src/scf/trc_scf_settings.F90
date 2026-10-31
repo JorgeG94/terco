@@ -32,6 +32,12 @@ module trc_scf_settings
    ! incr_env/incr_reset_env/incr_thresh_scale_env/incr_start_env stay
    ! private: nothing outside this module uses them.
    public :: DEFAULT_NLC_GRID_LEVEL
+   public :: DEFAULT_SOSCF_START
+
+   real(dp), parameter :: DEFAULT_SOSCF_START = 1.0e-2_dp
+   !! `trc_scf_options_t%soscf_start`'s own backend default, read here by
+   !! `resolve` and by `trc_capi.F90`'s `trc_set_soscf` so the sentinel (0)
+   !! means the same number everywhere it is spelled.
 
    integer, parameter :: DEFAULT_NLC_GRID_LEVEL = 1
    !! VV10's own default grid level, coarser than the semilocal grid's
@@ -127,6 +133,21 @@ module trc_scf_settings
       !! already reach the CDIIS window in the same iteration count on the existing
       !! suite. It earns its keep on hard cases (stretched bonds, small gaps,
       !! charged open shells); see the robustness test set.
+      logical :: soscf = .false.
+      !! Second-order SCF (`--soscf`): once Pulay DIIS brings the commutator
+      !! below `soscf_start`, hand over to a trust-region Newton step on the
+      !! orbital rotations (`trc_scf_soscf`), ported from metalquicha's
+      !! `mqc_czt_soscf`. Opt in, because each Newton step costs a Krylov
+      !! subspace of extra Fock builds (one per Hessian-vector product) on
+      !! top of one more to try each backtracked step -- cheaper in
+      !! iterations, not always cheaper in wall time. Restricted
+      !! Hartree-Fock only, like the backend it was ported from: refused
+      !! with an open shell, a functional, `--pcm` or `--df` (`resolve`,
+      !! below), never run silently as plain DIIS.
+      real(dp) :: soscf_start = 0.0_dp
+      !! The commutator at which DIIS hands over to Newton; 0 means the
+      !! backend's own default (1e-2, metalquicha's `DEFAULT_SOSCF_START`,
+      !! the same scale as `ACCEL_SWITCH` there).
       real(dp) :: level_shift = 1.0_dp
       !! Level shift on the virtual space while DIIS is off, in hartree.
       !! From a Wolfsberg-Helmholz guess cholesterol sits 20 hartree above
@@ -246,6 +267,8 @@ module trc_scf_settings
       real(dp) :: occ = 2.0_dp
       integer :: ndamp = 0
       real(dp) :: diis_start = huge(1.0_dp)
+      logical :: soscf = .false.
+      real(dp) :: soscf_start = DEFAULT_SOSCF_START
       logical :: pcm_on = .false.
       logical :: incr_on = .false.
       logical :: df = .false.
@@ -360,6 +383,46 @@ contains
                "build every iteration, and the increment buys nothing"
          ok = .false.
          return
+      end if
+      this%soscf = opts%soscf
+      this%soscf_start = opts%soscf_start
+      if (this%soscf_start <= 0.0_dp) this%soscf_start = DEFAULT_SOSCF_START
+      if (this%soscf) then
+         ! Restricted Hartree-Fock only, like the backend `trc_scf_soscf`
+         ! was ported from (metalquicha's `mqc_czt_soscf`/`mqc_czt_rhf`):
+         ! refused here, before anything is built, rather than silently
+         ! falling back to plain DIIS -- the same reason `--df` with an
+         ! unsupported combination is refused above instead of ignored.
+         if (this%nspin == 2) then
+            msg = "trc_scf: --soscf supports a restricted (closed-shell) reference only, for now"
+            ok = .false.
+            return
+         end if
+         if (this%dft) then
+            msg = "trc_scf: --soscf supports Hartree-Fock only, for now -- "// &
+                  "the orbital Hessian has no exchange-correlation kernel term here"
+            ok = .false.
+            return
+         end if
+         if (this%pcm_on) then
+            msg = "trc_scf: --soscf refuses a continuum solvent -- the orbital Hessian has no "// &
+                  "PCM response term here"
+            ok = .false.
+            return
+         end if
+         if (this%df) then
+            msg = "trc_scf: --soscf refuses --df -- its Hessian-vector product runs the four-centre "// &
+                  "engine directly and has no density-fitted form"
+            ok = .false.
+            return
+         end if
+         if (present(comm)) then
+            if (comm%size() > 1) then
+               msg = "trc_scf: --soscf runs on one rank only, for now"
+               ok = .false.
+               return
+            end if
+         end if
       end if
       this%eri_thresh_run = scf_settings_eri_thresh_env(opts%eri_thresh)
       this%incr_start_run = incr_start_env(opts%incr_start)

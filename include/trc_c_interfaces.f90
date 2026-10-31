@@ -35,7 +35,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 12
+   integer(c_int), parameter :: TRC_ABI_MINOR = 13
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -754,6 +754,29 @@ module trc_c_interfaces
          real(c_double), value :: damp
          real(c_double), value :: diis_start
       end function trc_set_scf_accel
+
+      integer(c_int) function trc_set_soscf(handle, enable, soscf_start) bind(c) result(res)
+         !! Second-order SCF (trc_scf_options_t%soscf's own comment): once
+         !! DIIS brings |FDS - SDF| below `soscf_start`, hand over to a
+         !! trust-region Newton step on the orbital rotations
+         !! (trc_scf_soscf.F90, ported from metalquicha's mqc_czt_soscf).
+         !! Restricted Hartree-Fock only -- refused at the next trc_run_scf
+         !! with an open shell, a functional, a continuum solvent, --df or
+         !! more than one rank, never run silently as plain DIIS.
+         !!
+         !!   enable       1 turns --soscf on; 0 off (the default).
+         !!   soscf_start  commutator norm at which DIIS hands over; -1 (or
+         !!                any value <= 0) for the library's own default
+         !!                (1e-2).
+         !!
+         !! Takes effect at the next trc_run_scf, for every SCF the handle
+         !! runs after it.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: enable
+         real(c_double), value :: soscf_start
+      end function trc_set_soscf
 
       integer(c_int) function trc_set_df(handle, on) bind(c) result(res)
          import :: c_int, c_ptr
