@@ -143,6 +143,8 @@ contains
                                test_soscf_recovers_from_oversized_trust), &
                   new_unittest("exp(kappa) stays orthogonal at larger sizes", &
                                test_rotation_orthogonal_at_various_sizes), &
+                  new_unittest("exp(kappa) matches a closed form on a structured kappa", &
+                               test_rotation_structured_kappa_matches_closed_form), &
                   new_unittest("a Krylov breakdown stops the phase immediately", &
                                test_soscf_breakdown_stops_cleanly) &
                   ]
@@ -564,6 +566,109 @@ contains
 
       !$acc exit data delete(kappa, s, c, rotation, scaled, term, next_term, utu, cprime, sc, ctsc, dprime)
    end subroutine check_rotation_orthogonal
+
+   subroutine test_rotation_structured_kappa_matches_closed_form(error)
+      !! check_rotation_orthogonal's RANDOM kappa cannot demonstrate the
+      !! largest-single-element norm actually breaking orthogonality (this
+      !! module's own header note: a random antisymmetric matrix's
+      !! spectral norm grows only as sqrt(n), not n, so the entrywise
+      !! bound still dominates it at the sizes tested). A STRUCTURED kappa
+      !! can: kappa(nocc+1:n, 1:nocc) = c, kappa(1:nocc, nocc+1:n) = -c
+      !! (10 occ x 200 virt) is rank 2, c*sqrt(nocc*nvirt)*(v u^T - u v^T)
+      !! for the normalised ones-vectors u (occ block) and v (virt block),
+      !! so it has a CLOSED FORM: a rotation by theta = c*sqrt(nocc*nvirt)
+      !! in the 2D span of u and v, identity elsewhere --
+      !!   exp(kappa) = I + (cos(theta)-1)(u u^T + v v^T) + sin(theta)(v u^T - u v^T).
+      !! Its 1-norm is nvirt*c (every occ column sums nvirt entries of c);
+      !! its largest-element norm is c -- a factor of nvirt = 200 apart,
+      !! big enough that the largest-element scale picks ZERO squarings
+      !! for every c tried here (all < 0.5) and runs the Taylor series
+      !! directly on the unscaled, large-angle matrix. Checked against the
+      !! closed form, not just self-consistency, so this also catches a
+      !! bug in the Taylor/squaring implementation itself, not only in
+      !! which norm a caller passes it.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_linalg_t) :: lp
+      integer, parameter :: nocc = 10, nvirt = 200, n = nocc + nvirt
+      real(dp), allocatable :: kappa(:, :), rotation(:, :), rotation_bad(:, :)
+      real(dp), allocatable :: scaled(:, :), term(:, :), next_term(:, :), u_exact(:, :)
+      real(dp) :: c, norm_good, norm_bad, theta, worst, worst_bad, root_nocc_nvirt
+      integer :: ic, i, j
+      real(dp), parameter :: cvals(3) = [0.05_dp, 0.15_dp, 0.30_dp]
+      character(len=64) :: msg
+
+      allocate (kappa(n, n), rotation(n, n), rotation_bad(n, n))
+      allocate (scaled(n, n), term(n, n), next_term(n, n), u_exact(n, n))
+      call lp%init(n)
+      !$acc enter data create(kappa, rotation, rotation_bad, scaled, term, next_term)
+
+      do ic = 1, 3
+         c = cvals(ic)
+         write (msg, "(a,f4.2)") "exp(kappa), structured 10x200 occ-virt block, c = ", c
+
+         kappa = 0.0_dp
+         kappa(nocc + 1:n, 1:nocc) = c
+         kappa(1:nocc, nocc + 1:n) = -c
+         root_nocc_nvirt = sqrt(real(nocc, dp)*real(nvirt, dp))
+         theta = c*root_nocc_nvirt
+         norm_good = real(nvirt, dp)*c   ! max absolute column sum: nvirt entries of c per occ column
+         norm_bad = c                    ! the OLD convention: the largest single element
+
+         !$acc update device(kappa)
+         call scf_soscf_rotation_matrix(lp, n, norm_good, kappa, rotation, scaled, term, next_term)
+         call scf_soscf_rotation_matrix(lp, n, norm_bad, kappa, rotation_bad, scaled, term, next_term)
+         !$acc update self(rotation, rotation_bad)
+
+         u_exact = 0.0_dp
+         do i = 1, n
+            u_exact(i, i) = 1.0_dp
+         end do
+         do j = 1, nocc
+            do i = 1, nocc
+               u_exact(i, j) = u_exact(i, j) + (cos(theta) - 1.0_dp)/real(nocc, dp)
+            end do
+         end do
+         do j = nocc + 1, n
+            do i = nocc + 1, n
+               u_exact(i, j) = u_exact(i, j) + (cos(theta) - 1.0_dp)/real(nvirt, dp)
+            end do
+         end do
+         do j = 1, nocc
+            do i = nocc + 1, n
+               u_exact(i, j) = u_exact(i, j) + sin(theta)/root_nocc_nvirt
+            end do
+         end do
+         do j = nocc + 1, n
+            do i = 1, nocc
+               u_exact(i, j) = u_exact(i, j) - sin(theta)/root_nocc_nvirt
+            end do
+         end do
+
+         worst = maxval(abs(rotation - u_exact))
+         call check(error, worst < 1.0e-12_dp, trim(msg)//": |U - U_exact|_max too large with the fixed norm")
+         if (allocated(error)) exit
+
+         ! At c = 0.05 (theta ~ 2.24 rad), this module's own TAYLOR_TERMS = 18
+         ! is accurate enough even on the UNSCALED matrix that the largest-
+         ! element norm's zero squarings do not visibly break orthogonality
+         ! (measured: |U_bad^T U_bad - I| ~ 6e-12, below the 1e-6 gate) --
+         ! 18 terms is more headroom than an order-8 Taylor series would
+         ! have, so the bug needs a bigger angle to show through it. It
+         ! does at c = 0.15 (theta ~ 6.71) and c = 0.30 (theta ~ 13.42, where
+         ! it is not a small discrepancy but outright loss of orthogonality,
+         ! |U_bad^T U_bad - I| > 1e7 measured): check those two, not 0.05.
+         if (ic > 1) then
+            worst_bad = maxval(abs(rotation_bad - u_exact))
+            call check(error, worst_bad > 1.0e-6_dp, &
+                       trim(msg)//": the largest-element norm should have broken this case but did not "// &
+                       "-- this test's own setup is not exercising the bug")
+            if (allocated(error)) exit
+         end if
+      end do
+
+      !$acc exit data delete(kappa, rotation, rotation_bad, scaled, term, next_term)
+      call lp%release()
+   end subroutine test_rotation_structured_kappa_matches_closed_form
 
    subroutine test_soscf_breakdown_stops_cleanly(error)
       !! TRC_SOSCF_FORCE_BREAKDOWN injects a Krylov/level-shift breakdown
