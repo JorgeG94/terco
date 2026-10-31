@@ -1,11 +1,23 @@
 !
 ! The analytic RI-MP2 nuclear gradient over a closed-shell RHF reference.
 !
-! An EXACT-ERI Hartree-Fock reference with a FITTED correlation energy,
-! E = E_RHF + E_RI-MP2 -- what `terco --rimp2` and `trc_run_rimp2` compute:
-! the auxiliary basis fits the correlation, not the SCF, so the Z-vector's
-! operator, the two reference potentials and the separable two-electron
-! derivative below are the exact four-centre ones. Stocks, Palethorpe and
+! Two references, E = E_RHF + E_RI-MP2 in both:
+!
+!   EXACT ERI (the default): what `terco --rimp2` computes -- the auxiliary
+!     basis fits the correlation, not the SCF, so the Z-vector's operator,
+!     the two reference potentials and the separable two-electron
+!     derivative below are the exact four-centre ones;
+!   DENSITY FITTED (`dfjk`/`jkaux` present, `terco --df --rimp2`): the SCF
+!     fitted its own J and K, so every one of those three moves to the fit
+!     the SCF converged with (`dfjk`, over the jkfit basis `jkaux`): the
+!     Z-vector is solved against the fitted orbital Hessian
+!     (trc_cphf_solve_rhf_fitted), the potentials are its occupied
+!     projections G_fit[X] C_o (trc_scf_df_response, both), and the
+!     two-electron derivative is
+!     trc_scf_grad_df's scf_grad_df_bilinear -- three- and two-centre, no
+!     four-centre integral anywhere. metalquicha's `fitted_reference`.
+!
+! Stocks, Palethorpe and
 ! Barca, J. Chem. Theory Comput. 2024, 20, 2505, section 3, ported from
 ! metalquicha (backends/cenzontle/correlation/mqc_czt_ri_mp2_gradient.f90
 ! with `fit_response = .false.`, its exact-operator mode, and the numpy
@@ -32,20 +44,22 @@
 !         Z-vector in the virtual-occupied blocks)
 !   dE  = dE_nuc + sum h^x (D_HF + P)                  (trc_1e_gradient)
 !         - sum S^x W                                  (same call, W below)
-!         + 1/2 d[Tr D G(D)] + d[Tr P G(D)]            (four-centre, integrals only)
+!         + 1/2 d[Tr D G(D)] + d[Tr P G(D)]            (integrals only)
 !         + 4 Gamma . (mu nu|P)^x - 2 gamma . (P|Q)^x  (trc_rimp2_relax)
 !   W   = W_HF + C (zeta o dm1mo) C^T + 2 P_o G(P) P_o - sym(C imat C^T)
 !
 ! with zeta_pq = (e_p + e_q)/2 except e_i on the occupied-virtual blocks,
-! P_o = C_o C_o^T and G = J - K/2. The four-centre term comes from
-! eri%gradient, whose single-density convention is d[Tr X G(X)]/dR: the
-! bilinear 1/2 Q(D) + B(D, P) is 1/2 [Q(D + P) - Q(P)], two passes.
+! P_o = C_o C_o^T and G = J - K/2. Exact reference: the four-centre term
+! comes from eri%gradient, whose single-density convention is
+! d[Tr X G(X)]/dR, so the bilinear 1/2 Q(D) + B(D, P) is
+! 1/2 [Q(D + P) - Q(P)], two passes. Fitted reference: it is
+! d[Tr (D/2 + P) G_fit(D)] directly, one bilinear pass.
 !
 ! SCOPE. Restricted, one rank, every orbital the SCF kept (no functions
 ! dropped by canonical orthogonalisation: `cmo` must be square and full
 ! rank), Cartesian or spherical orbital and auxiliary bases, frozen core.
 ! The caller refuses the rest (trc_capi.F90's gradient_capability_check:
-! an unrestricted or --df reference, a functional, PCM).
+! an unrestricted reference, a functional, PCM).
 !
 module trc_rimp2_grad
    use pic_types, only: dp
@@ -56,14 +70,17 @@ module trc_rimp2_grad
    use trc_linalg, only: trc_linalg_t
    use trc_sph, only: sph_mo_to_cart
    use trc_step_table, only: step_table_t
-   use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_cphf_solve_rhf
+   use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_cphf_solve_rhf, trc_cphf_solve_rhf_fitted
+   use trc_scf_df, only: df_jk_t
+   use trc_scf_df_response, only: df_response_t
+   use trc_scf_grad_df, only: scf_grad_df_bilinear
    use trc_scf_grad, only: scf_grad_nuclear_repulsion
    use trc_rimp2_driver, only: trc_rimp2_options_t
    use trc_rimp2_relax, only: trc_rimp2_relax_t
    implicit none
    private
 
-   public :: trc_rimp2_gradient, trc_rimp2_grad_options_t, trc_rimp2_grad_result_t
+   public :: trc_rimp2_gradient, trc_rimp2_grad_options_t, trc_rimp2_grad_result_t, trc_rimp2_grad_t
 
    real(dp), parameter :: PAD_EPS = 1.0e6_dp
    !! The orbital energy of a zero-coefficient pad column: the CPHF solver
@@ -76,7 +93,7 @@ module trc_rimp2_grad
                          NSTEP = 6
    character(len=20), parameter :: STEP_NAME(NSTEP) = [character(len=20) :: &
                                    "orbitals, pairs, ERI", "correlation (fitted)", "Z-vector (CPHF)", &
-                                   "relaxed densities", "4c gradient (2x)", "1e gradient"]
+                                   "relaxed densities", "2e gradient", "1e gradient"]
 
    type :: trc_rimp2_grad_options_t
       !! The RI-MP2 gradient's knobs. Plain values only.
@@ -113,6 +130,15 @@ module trc_rimp2_grad
       !! Empty when `ok`; the refusal or the failure otherwise.
    end type trc_rimp2_grad_result_t
 
+   type :: trc_rimp2_grad_t
+      !! One RI-MP2 gradient: what to compute (`opts`), how it went (`res`)
+      !! and, when `res%ok`, the gradient itself.
+      type(trc_rimp2_grad_options_t) :: opts
+      type(trc_rimp2_grad_result_t) :: res
+      real(dp), allocatable :: grad(:, :)
+      !! (3, natm), Eh/Bohr: d(E_RHF + E_RI-MP2)/dR.
+   end type trc_rimp2_grad_t
+
    type :: grad_work_t
       !! One gradient's dimensions and its MO/AO arrays. Each array is mapped
       !! on its own, never the object (see trc_rimp2_relax's relax_work_t).
@@ -128,42 +154,50 @@ module trc_rimp2_grad
 
 contains
 
-   recursive subroutine trc_rimp2_gradient(b, aux, cmo, eps, opts, grad, res, la)
-      !! dE(RHF + RI-MP2)/dR, Eh/Bohr, at the converged RHF orbitals `cmo`/
-      !! `eps` (the SCF's own space: nao_sph square when `b%spherical`, nao
-      !! otherwise; host arrays). `aux` is the RI-MP2 auxiliary basis, on the
-      !! same atoms. See this module's header for what is computed and what
-      !! the caller must have refused. `res%ok` false: `grad` is not set and
-      !! `res%message` says why. `la` absent: made and released here.
+   recursive subroutine trc_rimp2_gradient(b, aux, cmo, eps, job, la, dfjk, jkaux)
+      !! dE(RHF + RI-MP2)/dR, Eh/Bohr, into `job%grad`, at the converged RHF
+      !! orbitals `cmo`/`eps` (the SCF's own space: nao_sph square when
+      !! `b%spherical`, nao otherwise; host arrays) with `job%opts`. `aux` is
+      !! the RI-MP2 auxiliary basis, on the same atoms. `dfjk` and `jkaux`
+      !! present (both or neither): the reference is the --df SCF that fit
+      !! converged, see this module's header. `job%res%ok` false: no gradient,
+      !! and `job%res%message` says why. `la` absent: made and released here.
       type(trc_basis_t), intent(inout) :: b, aux
       real(dp), intent(in) :: cmo(merge(b%nao_sph, b%nao, b%spherical), merge(b%nao_sph, b%nao, b%spherical))
       real(dp), intent(in) :: eps(merge(b%nao_sph, b%nao, b%spherical))
-      type(trc_rimp2_grad_options_t), intent(in) :: opts
-      real(dp), intent(out) :: grad(3, b%natm)
-      type(trc_rimp2_grad_result_t), intent(out) :: res
+      type(trc_rimp2_grad_t), intent(inout) :: job
       type(trc_linalg_t), intent(inout), optional :: la
+      type(df_jk_t), intent(inout), optional :: dfjk
+      type(trc_basis_t), intent(inout), optional :: jkaux
 
       type(grad_work_t) :: w
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
       type(trc_rimp2_relax_t) :: relax
+      type(df_response_t) :: resp
       type(trc_rimp2_options_t) :: ropts
       type(step_table_t) :: tbl
       type(timer_type) :: tc, tall
       character(len=:), allocatable :: why
+      logical :: fitted
 
       if (.not. present(la)) then
          block
             type(trc_linalg_t) :: la_local
-            call trc_rimp2_gradient(b, aux, cmo, eps, opts, grad, res, la_local)
+            call trc_rimp2_gradient(b, aux, cmo, eps, job, la_local, dfjk, jkaux)
             call la_local%release()
          end block
          return
       end if
 
-      why = rimp2_grad_refusal(b, aux, opts)
+      job%res = trc_rimp2_grad_result_t()
+      if (allocated(job%grad)) deallocate (job%grad)
+      fitted = present(dfjk)
+      why = rimp2_grad_refusal(b, aux, job%opts)
+      if (len(why) == 0 .and. fitted .neqv. present(jkaux)) why = "a fitted reference needs both its fit and its basis"
+      if (len(why) == 0 .and. fitted) why = fitted_reference_refusal(b, jkaux, dfjk)
       if (len(why) > 0) then
-         res%message = "trc_rimp2_gradient: "//why
+         job%res%message = "trc_rimp2_gradient: "//why
          return
       end if
       call tbl%init("rimp2 gradient", STEP_NAME)
@@ -175,60 +209,101 @@ contains
       call tbl%step_on(la, ST_ORB, tc)
       call b%to_device()
       call aux%to_device()
-      call cartesian_orbitals(b, opts, cmo, eps, w)
-      call pl%build(b, opts%pair_threshold)
+      if (fitted) call jkaux%to_device()
+      call cartesian_orbitals(b, job%opts, cmo, eps, w)
+      call pl%build(b, job%opts%pair_threshold)
       call pl%to_device()
-      call eri%build(b, opts%eri_threshold)
+      if (.not. fitted) call eri%build(b, job%opts%eri_threshold)
       call tbl%step_off(la, ST_ORB, tc)
 
       ! --- the correlation: doo, dvv, L', L'', the fitted 3c/2c terms -----
       call tbl%step_on(la, ST_CORR, tc)
       ropts%nfrozen = w%nfz
-      ropts%aux_block = opts%aux_block
-      ropts%verbose = opts%verbose
+      ropts%aux_block = job%opts%aux_block
+      ropts%verbose = job%opts%verbose
       call relax%init(w%nmo, w%nocc)
       call relax%build(b, aux, pl, w%ccart, w%eps, ropts, la)
       call tbl%step_off(la, ST_CORR, tc)
       if (len_trim(relax%message) > 0) then
-         res%message = "trc_rimp2_gradient: "//trim(relax%message)
+         job%res%message = "trc_rimp2_gradient: "//trim(relax%message)
          !$acc exit data delete(w%ccart)
-         call release_all(pl, eri)
+         call release_all(pl, eri, fitted)
          return
       end if
-      res%e_corr = relax%e_corr
+      job%res%e_corr = relax%e_corr
 
       ! --- the Z-vector, then the relaxed and energy-weighted densities ----
       call tbl%step_on(la, ST_ZVEC, tc)
       call unrelaxed_density(relax, w)
-      call z_vector(b, eri, la, opts, w, res)
+      ! After the correlation, whose B and Gamma it would otherwise sit next to.
+      if (fitted) call resp%setup(dfjk, la, w%ccart, w%eps, w%nocc)
+      if (fitted) then
+         call z_vector(b, la, job, w, dfjk=dfjk, resp=resp)
+      else
+         call z_vector(b, la, job, w, eri=eri)
+      end if
       call tbl%step_off(la, ST_ZVEC, tc)
-      if (len_trim(res%message) > 0) then
-         call release_all(pl, eri)
+      if (len_trim(job%res%message) > 0) then
+         call resp%release()
+         call release_all(pl, eri, fitted)
          return
       end if
       call tbl%step_on(la, ST_DENSITY, tc)
-      call relaxed_densities(b, eri, la, w)
+      if (fitted) then
+         call relaxed_densities(b, la, w, dfjk=dfjk, resp=resp)
+         call resp%release()
+      else
+         call relaxed_densities(b, la, w, eri=eri)
+      end if
       call tbl%step_off(la, ST_DENSITY, tc)
 
       ! --- the assembly ------------------------------------------------------
+      allocate (job%grad(3, b%natm))
       call tbl%step_on(la, ST_GRAD4C, tc)
-      call separable_two_electron(b, eri, w, grad)
+      if (fitted) then
+         call fitted_two_electron(b, jkaux, pl, dfjk, la, w, job%grad)
+      else
+         call separable_two_electron(b, eri, w, job%grad)
+      end if
       call tbl%step_off(la, ST_GRAD4C, tc)
       call tbl%step_on(la, ST_GRAD1E, tc)
-      !$acc enter data copyin(grad)
-      call trc_1e_gradient(b, pl, w%wao, w%dhf, grad)
-      !$acc update self(grad)
-      !$acc exit data delete(grad, w%ccart, w%pao, w%wao, w%dhf)
+      !$acc enter data copyin(job%grad)
+      call trc_1e_gradient(b, pl, w%wao, w%dhf, job%grad)
+      !$acc update self(job%grad)
+      !$acc exit data delete(job%grad, w%ccart, w%pao, w%wao, w%dhf)
       call tbl%step_off(la, ST_GRAD1E, tc)
-      call scf_grad_nuclear_repulsion(b, grad)
-      grad = grad + relax%grad
-      call release_all(pl, eri)
-      res%ok = .true.
-      if (opts%verbose) then
+      call scf_grad_nuclear_repulsion(b, job%grad)
+      job%grad = job%grad + relax%grad
+      call release_all(pl, eri, fitted)
+      job%res%ok = .true.
+      if (job%opts%verbose) then
          call la%sync()
          call tbl%report(tall%get_elapsed_time(), 0, 1)
       end if
    end subroutine trc_rimp2_gradient
+
+   function fitted_reference_refusal(b, jkaux, dfjk) result(why)
+      !! Why `dfjk` over `jkaux` cannot be this basis's --df reference, or "".
+      type(trc_basis_t), intent(in) :: b, jkaux
+      type(df_jk_t), intent(in) :: dfjk
+      character(len=:), allocatable :: why
+      integer :: n, naux, npack
+      why = ""
+      if (.not. dfjk%is_ready()) then
+         why = "the --df reference's fit is not set up"
+         return
+      end if
+      call dfjk%dims(n, naux, npack)
+      if (n /= b%nao .or. naux /= merge(jkaux%nao_sph, jkaux%nao, jkaux%spherical)) then
+         why = "the --df fit does not match the orbital and jkfit bases"
+      else if (jkaux%natm /= b%natm) then
+         why = "the jkfit basis is on a different number of atoms than the orbital basis"
+      else if (maxval(abs(jkaux%at_r - b%at_r)) > 1.0e-10_dp) then
+         why = "the jkfit basis is on a different geometry than the orbital basis"
+      else if (any(jkaux%sh_at == 0)) then
+         why = "a jkfit shell sits on no atom: it has nowhere to put its force"
+      end if
+   end function fitted_reference_refusal
 
    function rimp2_grad_refusal(b, aux, opts) result(why)
       !! Why this gradient cannot run on these inputs, or "".
@@ -315,19 +390,22 @@ contains
       end do
    end subroutine unrelaxed_density
 
-   subroutine z_vector(b, eri, la, opts, w, res)
+   subroutine z_vector(b, la, job, w, eri, dfjk, resp)
       !! Solve (e_a - e_i) z_ai + [A z]_ai = -X_ai for the virtual-occupied
       !! block of the relaxed density, X = 2 C_v^T G[P_unrelaxed] C_o +
-      !! imat(i, a)^T - imat(a, i) (mqc's right-hand side), with trc_cphf's
-      !! own exact RHF operator, and add z (and z^T) into w%dm1mo. Sets
-      !! res%message on non-convergence.
+      !! imat(i, a)^T - imat(a, i) (mqc's right-hand side), and add z (and
+      !! z^T) into w%dm1mo. G and A are the reference's own: the exact RHF
+      !! operator with `eri` (trc_cphf_solve_rhf, density_screen off), the
+      !! fitted one with `dfjk` and `resp` (trc_cphf_solve_rhf_fitted). Sets
+      !! job%res%message on non-convergence.
       type(trc_basis_t), intent(in) :: b
-      type(trc_eri_t), intent(inout) :: eri
       type(trc_linalg_t), intent(inout) :: la
-      type(trc_rimp2_grad_options_t), intent(in) :: opts
+      type(trc_rimp2_grad_t), intent(inout) :: job
       type(grad_work_t), intent(inout) :: w
-      type(trc_rimp2_grad_result_t), intent(inout) :: res
-      real(dp), allocatable :: veff(:, :), half(:, :), xvo(:, :), cpad(:, :), epad(:), bvec(:, :, :), u(:, :, :)
+      type(trc_eri_t), intent(inout), optional :: eri
+      type(df_jk_t), intent(inout), optional :: dfjk
+      type(df_response_t), intent(inout), optional :: resp
+      real(dp), allocatable :: half(:, :), xvo(:, :), cpad(:, :), epad(:), bvec(:, :, :), u(:, :, :)
       type(trc_cphf_options_t) :: copts
       type(trc_cphf_result_t) :: cres
       integer :: n, nmo, nocc, nv, nvp, i, a
@@ -337,39 +415,47 @@ contains
       nocc = w%nocc
       nv = w%nv
       nvp = n - nocc
-      allocate (w%pao(n, n), veff(n, n), half(n, nocc), xvo(nv, nocc))
-      !$acc enter data copyin(w%dm1mo) create(w%pao, veff, half, xvo)
+      allocate (w%pao(n, n), half(n, nocc), xvo(nv, nocc))
+      !$acc enter data copyin(w%dm1mo) create(w%pao, half, xvo)
       call ao_from_mo(la, n, nmo, w%ccart, w%dm1mo, w%pao)
-      call eri%fock_resident(b, w%pao, veff, k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.)
-      call la%gemm_mat(veff, w%ccart(:, 1:nocc), half)
+      call reference_gco(b, la, w, w%pao, half, eri, dfjk, resp)
       call la%gemm_mat(w%ccart(:, nocc + 1:nmo), half, xvo, transa="T", alpha=2.0_dp)
       !$acc update self(xvo)
-      !$acc exit data delete(w%dm1mo, veff, half, xvo)
+      !$acc exit data delete(w%dm1mo, half, xvo)
       do i = 1, nocc
          do a = 1, nv
             xvo(a, i) = xvo(a, i) + w%imat(i, nocc + a) - w%imat(nocc + a, i)
          end do
       end do
 
-      ! The solver's square Cartesian C: the nmo real orbitals, then
-      ! zero-coefficient pad virtuals (PAD_EPS's own comment).
-      allocate (cpad(n, n), epad(n), bvec(nvp, nocc, 1), u(nvp, nocc, 1))
-      cpad = 0.0_dp
-      cpad(:, 1:nmo) = w%ccart
-      epad = PAD_EPS
-      epad(1:nmo) = w%eps
-      bvec = 0.0_dp
-      bvec(1:nv, :, 1) = xvo
-      copts%conv_residual = opts%cphf_residual
-      copts%max_iteration = opts%cphf_max_iteration
-      copts%verbose = opts%verbose
-      !$acc enter data copyin(cpad, bvec) create(u)
-      call trc_cphf_solve_rhf(b, eri, la, n, nocc, nvp, cpad, epad, 1, bvec, u, copts, cres)
+      copts%conv_residual = job%opts%cphf_residual
+      copts%max_iteration = job%opts%cphf_max_iteration
+      copts%verbose = job%opts%verbose
+      if (present(dfjk)) then
+         ! The fitted solver reads the nmo real orbitals as they are.
+         allocate (bvec(nv, nocc, 1), u(nv, nocc, 1))
+         bvec(:, :, 1) = xvo
+         !$acc enter data copyin(bvec) create(u)
+         call trc_cphf_solve_rhf_fitted(resp, dfjk, la, bvec, u, copts, cres)
+      else
+         ! The exact solver's square Cartesian C: the nmo real orbitals, then
+         ! zero-coefficient pad virtuals (PAD_EPS's own comment).
+         allocate (cpad(n, n), epad(n), bvec(nvp, nocc, 1), u(nvp, nocc, 1))
+         cpad = 0.0_dp
+         cpad(:, 1:nmo) = w%ccart
+         epad = PAD_EPS
+         epad(1:nmo) = w%eps
+         bvec = 0.0_dp
+         bvec(1:nv, :, 1) = xvo
+         !$acc enter data copyin(cpad, bvec) create(u)
+         call trc_cphf_solve_rhf(b, eri, la, n, nocc, nvp, cpad, epad, 1, bvec, u, copts, cres)
+         !$acc exit data delete(cpad)
+      end if
       !$acc update self(u)
-      !$acc exit data delete(cpad, bvec, u)
-      res%cphf_iterations = cres%iterations(1)
+      !$acc exit data delete(bvec, u)
+      job%res%cphf_iterations = cres%iterations(1)
       if (.not. cres%converged) then
-         res%message = "trc_rimp2_gradient: the Z-vector did not converge -- "//trim(cres%message)
+         job%res%message = "trc_rimp2_gradient: the Z-vector did not converge -- "//trim(cres%message)
          !$acc exit data delete(w%pao)
          !$acc exit data delete(w%ccart)
          return
@@ -378,14 +464,17 @@ contains
       w%dm1mo(1:nocc, nocc + 1:nmo) = w%dm1mo(1:nocc, nocc + 1:nmo) + transpose(u(1:nv, :, 1))
    end subroutine z_vector
 
-   subroutine relaxed_densities(b, eri, la, w)
+   subroutine relaxed_densities(b, la, w, eri, dfjk, resp)
       !! w%pao := P = C dm1mo C^T (relaxed), w%dhf := D_HF and w%wao := W,
-      !! the total energy-weighted density of this module's header. On the
+      !! the total energy-weighted density of this module's header, G the
+      !! reference's own operator (`eri`, or `dfjk` with `resp`). On the
       !! device; w%pao stays mapped.
       type(trc_basis_t), intent(in) :: b
-      type(trc_eri_t), intent(inout) :: eri
       type(trc_linalg_t), intent(inout) :: la
       type(grad_work_t), intent(inout) :: w
+      type(trc_eri_t), intent(inout), optional :: eri
+      type(df_jk_t), intent(inout), optional :: dfjk
+      type(df_response_t), intent(inout), optional :: resp
       real(dp), allocatable :: zw(:, :), im1(:, :), im1_t(:, :), gp(:, :), half(:, :), small(:, :), work(:, :)
       integer :: n, nmo, nocc, p, q, i
 
@@ -420,8 +509,7 @@ contains
       call ao_from_mo(la, n, nmo, w%ccart, zw, w%wao)
       call ao_from_mo(la, n, nocc, w%ccart, small, work)
       ! 2 P_o G(P) P_o: G(P + P^T) is 2 G(P), P symmetric.
-      call eri%fock_resident(b, w%pao, gp, k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.)
-      call la%gemm_mat(gp, w%ccart(:, 1:nocc), half)
+      call reference_gco(b, la, w, w%pao, half, eri, dfjk, resp)
       call la%gemm_mat(w%ccart(:, 1:nocc), half, small, transa="T", alpha=2.0_dp)
       call ao_from_mo(la, n, nocc, w%ccart, small, gp)
       call la%transpose(n, n, im1, n, im1_t, n)
@@ -453,10 +541,60 @@ contains
       deallocate (density, grad_p)
    end subroutine separable_two_electron
 
-   subroutine release_all(pl, eri)
+   subroutine fitted_two_electron(b, jkaux, pl, dfjk, la, w, grad)
+      !! grad := 1/2 d[Tr D G_fit(D)] + d[Tr P G_fit(D)] = d[Tr (D/2 + P)
+      !! G_fit(D)], the --df reference's own fitted two-electron derivative
+      !! and its cross term with the relaxed P, in one bilinear pass
+      !! (scf_grad_df_bilinear). Then w%dhf := D + P, as
+      !! separable_two_electron leaves it.
+      type(trc_basis_t), intent(in) :: b, jkaux
+      type(trc_pairlist_t), intent(in) :: pl
+      type(df_jk_t), intent(in) :: dfjk
+      type(trc_linalg_t), intent(inout) :: la
+      type(grad_work_t), intent(inout) :: w
+      real(dp), intent(out) :: grad(3, b%natm)
+      real(dp), allocatable :: xmat(:, :)
+      !$acc update self(w%pao, w%dhf)
+      xmat = 0.5_dp*w%dhf + w%pao
+      grad = 0.0_dp
+      call scf_grad_df_bilinear(b, jkaux, pl, dfjk, la, w%ccart(:, 1:w%nocc), xmat, grad)
+      w%dhf = w%dhf + w%pao
+      !$acc update device(w%dhf)
+   end subroutine fitted_two_electron
+
+   subroutine reference_gco(b, la, w, d, gco, eri, dfjk, resp)
+      !! gco := G[d] C_o, G = J - K/2 for a symmetric, possibly indefinite d,
+      !! with the reference's own integrals: exact (`eri`, no density screen
+      !! -- d is not the SCF's density -- then the projection) or fitted
+      !! (`resp` over `dfjk`, which forms the projection directly). Every
+      !! array device-resident.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_linalg_t), intent(inout) :: la
+      type(grad_work_t), intent(in) :: w
+      real(dp), intent(in) :: d(:, :)
+      real(dp), intent(inout) :: gco(:, :)
+      type(trc_eri_t), intent(inout), optional :: eri
+      type(df_jk_t), intent(inout), optional :: dfjk
+      type(df_response_t), intent(inout), optional :: resp
+      real(dp), allocatable :: g(:, :)
+      if (present(resp)) then
+         call resp%apply(dfjk, la, d, gco)
+      else
+         allocate (g(w%n, w%n))
+         !$acc enter data create(g)
+         call eri%fock_resident(b, d, g, k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.)
+         call la%gemm_mat(g, w%ccart(:, 1:w%nocc), gco)
+         !$acc exit data delete(g)
+         deallocate (g)
+      end if
+   end subroutine reference_gco
+
+   subroutine release_all(pl, eri, fitted)
+      !! The pair list, and the four-centre engine when it was built.
       type(trc_pairlist_t), intent(inout) :: pl
       type(trc_eri_t), intent(inout) :: eri
-      call eri%release()
+      logical, intent(in) :: fitted
+      if (.not. fitted) call eri%release()
       call pl%release()
    end subroutine release_all
 

@@ -78,11 +78,13 @@ module trc_cphf
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_result_t
+   use trc_scf_df, only: df_jk_t
+   use trc_scf_df_response, only: df_response_t
    implicit none
    private
 
    public :: trc_cphf_options_t, trc_cphf_result_t
-   public :: trc_cphf_solve_rhf, trc_cphf_solve_uhf
+   public :: trc_cphf_solve_rhf, trc_cphf_solve_uhf, trc_cphf_solve_rhf_fitted
    public :: trc_scf_polarizability_rhf, trc_scf_polarizability_uhf, trc_scf_polarizability
    ! Shared with trc_cpks (the CPKS extension of this solver): the same CG
    ! loop, the same elementwise `do concurrent` helpers -- see this
@@ -232,6 +234,124 @@ contains
       end subroutine matvec
 
    end subroutine trc_cphf_solve_rhf
+
+   !
+   ! RHF CPHF with the DENSITY-FITTED orbital Hessian: the same equation
+   ! and the same preconditioned CG as trc_cphf_solve_rhf, but
+   ! G[D_U] C_o = (J_fit - K_fit/2)[D_U] C_o from `resp`
+   ! (trc_scf_df_response, over `dfjk`'s fit and the orbitals `resp` was set
+   ! up with) -- the only projection [A U] reads. This is the response
+   ! operator of a --df SCF: its orbitals are stationary for the fitted
+   ! energy, so a Z-vector or a property over that reference has to use it,
+   ! not the exact one. No screening is involved at all.
+   !
+   ! Dimensions come from `resp` and the arrays: bvec/u (nvirt, nocc,
+   ! ncomp), nocc and nvirt `resp`'s own. bvec and u device-resident. Same
+   ! convergence test, breakdown and NaN handling as trc_cphf_solve_rhf.
+   !
+   subroutine trc_cphf_solve_rhf_fitted(resp, dfjk, lp, bvec, u, opts, res)
+      type(df_response_t), intent(inout) :: resp
+      type(df_jk_t), intent(in) :: dfjk
+      type(trc_linalg_t), intent(inout) :: lp
+      real(dp), intent(in) :: bvec(:, :, :)
+      real(dp), intent(inout) :: u(:, :, :)
+      type(trc_cphf_options_t), intent(in) :: opts
+      type(trc_cphf_result_t), intent(out) :: res
+
+      real(dp), allocatable :: d_u(:, :), d_ut(:, :)
+      real(dp), allocatable :: temporary_no(:, :), temporary_no2(:, :)
+      real(dp), allocatable :: r(:, :), z(:, :), p(:, :), ap(:, :), diagv(:, :)
+      real(dp) :: rz, rz_old, pap, alpha_cg, beta_cg, resid
+      integer :: nao, nocc, nvirt, ncomp, it, comp, i, a
+      logical :: broke
+
+      nao = resp%n
+      nvirt = resp%nvir
+      nocc = resp%nocc
+      ncomp = size(bvec, 3)
+      if (size(bvec, 1) /= nvirt .or. size(bvec, 2) /= nocc) error stop &
+         "trc_cphf_solve_rhf_fitted: the right-hand side does not match the response's orbitals"
+      allocate (d_u(nao, nao), d_ut(nao, nao))
+      allocate (temporary_no(nao, nocc), temporary_no2(nao, nocc))
+      allocate (r(nvirt, nocc), z(nvirt, nocc), p(nvirt, nocc), ap(nvirt, nocc), diagv(nvirt, nocc))
+      do i = 1, nocc
+         do a = 1, nvirt
+            diagv(a, i) = resp%eps(nocc + a) - resp%eps(i)
+         end do
+      end do
+      !$acc enter data create(d_u, d_ut, temporary_no, temporary_no2, r, z, p, ap)
+      !$acc enter data copyin(diagv)
+
+      allocate (res%iterations(ncomp))
+      res%converged = .true.
+      res%message = ""
+      do comp = 1, ncomp
+         call cphf_neg_matrix(nvirt, nocc, bvec(:, :, comp), r)
+         call cphf_zero_matrix(nvirt, nocc, u(:, :, comp))
+         call cphf_precond_matrix(nvirt, nocc, diagv, r, z)
+         call cphf_copy_matrix(nvirt, nocc, z, p)
+         rz = lp%dot_2d(r, z)
+         resid = sqrt(lp%dot_2d(r, r))
+         it = 0
+         broke = .false.
+         ! `.not. (resid < conv)`: a NaN residual must read as not converged
+         ! (trc_cphf_solve_rhf's own comment).
+         do while (it < opts%max_iteration .and. .not. (resid < opts%conv_residual))
+            call fitted_matvec(p, ap)
+            pap = lp%dot_2d(p, ap)
+            if (.not. (pap > 0.0_dp)) then
+               broke = .true.
+               exit
+            end if
+            alpha_cg = rz/pap
+            call cphf_axpy_matrix(nvirt, nocc, alpha_cg, p, u(:, :, comp))
+            call cphf_axpy_matrix(nvirt, nocc, -alpha_cg, ap, r)
+            resid = sqrt(lp%dot_2d(r, r))
+            it = it + 1
+            if (resid < opts%conv_residual) exit
+            call cphf_precond_matrix(nvirt, nocc, diagv, r, z)
+            rz_old = rz
+            rz = lp%dot_2d(r, z)
+            beta_cg = rz/rz_old
+            call cphf_combine_p(nvirt, nocc, z, beta_cg, p)
+         end do
+         res%iterations(comp) = it
+         if (broke) then
+            res%converged = .false.
+            res%message = "trc_cphf: CG breakdown (p^T A p <= 0, or NaN) on a right-hand side"
+         else if (.not. (resid < opts%conv_residual)) then
+            res%converged = .false.
+            res%message = "trc_cphf: a right-hand side did not converge"
+         end if
+         if (opts%verbose) then
+            block
+               character(len=1024) :: logline
+               write (logline, "(a,i0,a,i0,a,es9.2)") &
+                  "   cphf (fitted) rhs ", comp, ": ", it, " iterations, residual ", resid
+               call global_logger%info(trim(logline))
+            end block
+         end if
+      end do
+
+      !$acc exit data delete(diagv)
+      !$acc exit data delete(d_u, d_ut, temporary_no, temporary_no2, r, z, p, ap)
+
+   contains
+
+      ! [A p]_ai = 2 [C_vir^T G_fit[D_p] C_occ]_ai + (e_a-e_i) p_ai.
+      subroutine fitted_matvec(pin, apout)
+         real(dp), intent(in) :: pin(nvirt, nocc)
+         real(dp), intent(inout) :: apout(nvirt, nocc)
+         call lp%gemm_mat(resp%cmo(:, nocc + 1:nocc + nvirt), pin, temporary_no)
+         call lp%gemm_mat(temporary_no, resp%cmo(:, 1:nocc), d_u, transb="T")
+         call lp%transpose(nao, nao, d_u, nao, d_ut, nao)
+         call cphf_add_matrix(nao, nao, d_u, d_ut, d_u)
+         call resp%apply(dfjk, lp, d_u, temporary_no2)
+         call lp%gemm_mat(resp%cmo(:, nocc + 1:nocc + nvirt), temporary_no2, apout, transa="T", alpha=2.0_dp)
+         call cphf_add_diag(nvirt, nocc, diagv, pin, apout)
+      end subroutine fitted_matvec
+
+   end subroutine trc_cphf_solve_rhf_fitted
 
    !
    ! UHF CPHF: the two spin channels solved together (one combined CG over

@@ -28,6 +28,18 @@
 !    Cartesian bases, formamide, frozen core on a molecule with three
 !    cores, and a spherical orbital basis with its padded virtuals.
 !
+! C. The --df reference (`dfjk`/`jkaux`, the SCF's own J and K fitted):
+!    metalquicha's "RI-MP2 gradient over a fitted reference NH3
+!    def2-svp/def2-svp-rifit" (same validation file; its reference is a
+!    Richardson-extrapolated finite difference of PySCF 2.14's own
+!    density-fitted RHF + DF-MP2 energy, both fits in def2-SVP-RIFIT,
+!    gen_cpu_validation.py's pyscf_df_ref_mp2_gradient), and central
+!    finite differences of terco's own --df RHF + RI-MP2 energy, spherical
+!    with def2-universal-jkfit for the SCF and frozen core, and Cartesian
+!    with one set doing both fits. Plus an internal identity:
+!    scf_grad_df_bilinear at X = D/2 is the --df SCF's own two-electron
+!    gradient (scf_grad_df_two_electron).
+!
 ! Every case also checks the correlation energy the gradient's amplitudes
 ! give against trc_rimp2_run's (same B, same pairs) and translational
 ! invariance -- necessary, not sufficient.
@@ -41,7 +53,10 @@ module check_rimp2_grad_suite
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t, trc_rimp2_options_t, rimp2_driver_mo_to_cart
-   use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_options_t, trc_rimp2_grad_result_t
+   use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t
+   use trc_scf_df, only: df_jk_t
+   use trc_scf_grad_df, only: scf_grad_df_two_electron, scf_grad_df_bilinear
+   use trc_linalg, only: trc_linalg_t
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
    implicit none
@@ -56,15 +71,32 @@ module check_rimp2_grad_suite
    real(dp), parameter :: ECORR_TOL = 1.0e-11_dp
    !! The gradient's own amplitudes against trc_rimp2_run's pair energies.
    real(dp), parameter :: TRANS_TOL = 1.0e-10_dp
+   real(dp), parameter :: MQC_DFREF_TOL = 2.0e-8_dp
+   !! Against a finite-difference reference (metalquicha's own gate is
+   !! 1e-7; its measured agreement is a few times 1e-9).
+   real(dp), parameter :: BILINEAR_TOL = 1.0e-11_dp
 
    type :: case_t
       character(len=64) :: name = ""
       character(len=64) :: xyz = ""
       character(len=64) :: basis = ""
       character(len=64) :: aux = ""
+      character(len=64) :: jkfit = ""
+      !! The --df reference's fitting set; empty for the exact reference.
       integer :: nfrozen = 0
       logical :: cart = .false.
    end type case_t
+
+   type :: system_t
+      !! One converged reference and what the gradient needs of it.
+      type(trc_basis_t) :: bas, aux, jk
+      type(trc_pairlist_t) :: pl
+      type(trc_linalg_t) :: lp
+      type(df_jk_t) :: dfjk
+      type(trc_scf_result_t) :: res
+      integer :: nocc = 0
+      logical :: df = .false.
+   end type system_t
 
 contains
 
@@ -76,7 +108,12 @@ contains
                   new_unittest("NH3 def2-SVP/def2-SVP-RIFIT (sph) vs metalquicha", test_mqc_nh3_def2svp), &
                   new_unittest("formamide cc-pVDZ (Cartesian) vs finite differences", test_fd_formamide_cart), &
                   new_unittest("formamide cc-pVDZ (sph), frozen 3, vs finite differences", test_fd_formamide_sph_fc3), &
-                  new_unittest("water cc-pVDZ (Cartesian), frozen 1, vs finite differences", test_fd_water_cart_fc1) &
+                  new_unittest("water cc-pVDZ (Cartesian), frozen 1, vs finite differences", test_fd_water_cart_fc1), &
+                  new_unittest("--df: NH3 def2-SVP/def2-SVP-RIFIT (sph) vs metalquicha", test_mqc_dfref_nh3), &
+                  new_unittest("--df: formamide cc-pVDZ (sph), universal-jkfit, frozen 3, vs finite differences", &
+                               test_fd_df_formamide_sph), &
+                  new_unittest("--df: water cc-pVDZ (Cartesian) vs finite differences", test_fd_df_water_cart), &
+                  new_unittest("--df: the bilinear derivative at X = D/2 is the SCF's own", test_bilinear_identity) &
                   ]
    end subroutine collect_rimp2_grad
 
@@ -145,6 +182,103 @@ contains
       if (allocated(error)) return
       call check(error, maxval(abs(sum(grad, dim=2))) < TRANS_TOL, trim(c%name)//": not translationally invariant")
    end subroutine against_mqc
+
+   ! ---- C. the --df reference ----------------------------------------------
+
+   subroutine test_mqc_dfref_nh3(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(case_t) :: c
+      real(dp), allocatable :: grad(:, :), r(:, :)
+      integer, allocatable :: z(:)
+      integer :: nat
+      real(dp) :: e_tot, worst
+      real(dp), parameter :: E_MQC = -56.3395970169_dp
+      real(dp), parameter :: G_MQC(3, 4) = reshape([ &
+                                           -4e-11_dp, -2.9e-11_dp, 0.008288657367_dp, &
+                                           -0.002408829768_dp, -2.38e-10_dp, -0.002762885685_dp, &
+                                           0.001204414513_dp, -0.00208610766_dp, -0.002762886289_dp, &
+                                           0.001204414784_dp, 0.00208610774_dp, -0.002762885861_dp], [3, 4])
+      c%name = "NH3 def2-SVP --df fc0"
+      c%xyz = "nh3_mqc.xyz"
+      c%basis = "basis_sets/def2-svp.json"
+      c%aux = "basis_sets/def2-svp-rifit.json"
+      c%jkfit = "basis_sets/def2-svp-rifit.json"
+      call read_xyz(trim(c%xyz), nat, z, r)
+      call analytic_gradient(error, c, nat, z, r, grad, e_tot)
+      if (allocated(error)) return
+      worst = maxval(abs(grad - G_MQC))
+      print "(a,a,es10.2,a,es10.2,a,es10.2)", "  ", trim(c%name)//": |E - E_mqc| ", abs(e_tot - E_MQC), &
+         "  max |g - g_mqc| ", worst, "  |sum g| ", maxval(abs(sum(grad, dim=2)))
+      call check(error, abs(e_tot - E_MQC) < MQC_ENERGY_TOL, trim(c%name)// &
+                 ": the --df RHF + RI-MP2 energy differs from metalquicha's -- not the same energy")
+      if (allocated(error)) return
+      call check(error, worst < MQC_DFREF_TOL, trim(c%name)//": gradient differs from metalquicha's")
+      if (allocated(error)) return
+      call check(error, maxval(abs(sum(grad, dim=2))) < TRANS_TOL, trim(c%name)//": not translationally invariant")
+   end subroutine test_mqc_dfref_nh3
+
+   subroutine test_fd_df_formamide_sph(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(case_t) :: c
+      c%name = "formamide sph --df fc3"
+      c%xyz = "formamide.xyz"
+      c%basis = "basis_sets/cc-pvdz.json"
+      c%aux = "basis_sets/cc-pvdz-rifit.json"
+      c%jkfit = "basis_sets/def2-universal-jkfit.json"
+      c%nfrozen = 3
+      call against_fd(error, c, reshape([1, 2, 2, 3, 2, 6], [2, 3]))
+   end subroutine test_fd_df_formamide_sph
+
+   subroutine test_fd_df_water_cart(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(case_t) :: c
+      c%name = "water cart --df fc0"
+      c%xyz = "water.xyz"
+      c%basis = "basis_sets/cc-pvdz.json"
+      c%aux = "basis_sets/cc-pvdz-rifit.json"
+      c%jkfit = "basis_sets/cc-pvdz-rifit.json"
+      c%cart = .true.
+      call against_fd(error, c, reshape([3, 1, 2, 2, 3, 3], [2, 3]))
+   end subroutine test_fd_df_water_cart
+
+   subroutine test_bilinear_identity(error)
+      !! d[Tr (D/2) G_fit(D)] through scf_grad_df_bilinear against the
+      !! --df SCF gradient's own two-electron term, at a converged --df
+      !! SCF (Cartesian, where scf_grad_df_two_electron runs).
+      type(error_type), allocatable, intent(out) :: error
+      type(case_t) :: c
+      type(system_t) :: sys
+      real(dp), allocatable :: r(:, :), cmo(:, :), dens(:, :), g_ref(:, :), g_bil(:, :)
+      integer, allocatable :: z(:)
+      integer :: nat, n
+      real(dp) :: e_tot
+      c%name = "formamide cart --df identity"
+      c%xyz = "formamide.xyz"
+      c%basis = "basis_sets/cc-pvdz.json"
+      c%aux = "basis_sets/cc-pvdz-rifit.json"
+      c%jkfit = "basis_sets/cc-pvdz-rifit.json"
+      c%cart = .true.
+      call read_xyz(trim(c%xyz), nat, z, r)
+      call setup_system(error, c, nat, z, r, sys, e_tot)
+      if (allocated(error)) return
+      n = sys%bas%nao
+      cmo = sys%res%cmo(:, :, 1)
+      allocate (dens(n, n), g_ref(3, nat), g_bil(3, nat))
+      dens = 2.0_dp*matmul(cmo(:, 1:sys%nocc), transpose(cmo(:, 1:sys%nocc)))
+      g_ref = 0.0_dp
+      g_bil = 0.0_dp
+      !$acc enter data copyin(cmo, dens, g_ref)
+      call sys%jk%to_device()
+      call scf_grad_df_two_electron(sys%bas, sys%jk, sys%pl, sys%dfjk, sys%lp, sys%nocc, cmo, dens, &
+                                    1.0_dp, 1.0_dp, g_ref)
+      !$acc update self(g_ref)
+      !$acc exit data delete(cmo, dens, g_ref)
+      call scf_grad_df_bilinear(sys%bas, sys%jk, sys%pl, sys%dfjk, sys%lp, cmo(:, 1:sys%nocc), 0.5_dp*dens, g_bil)
+      print "(a,a,es10.2)", "  ", trim(c%name)//": max |bilinear(D/2) - two-electron| ", maxval(abs(g_bil - g_ref))
+      call check(error, maxval(abs(g_bil - g_ref)) < BILINEAR_TOL, trim(c%name)// &
+                 ": scf_grad_df_bilinear(X = D/2) is not the --df SCF's two-electron gradient")
+      call release_system(sys)
+   end subroutine test_bilinear_identity
 
    ! ---- B. finite differences of terco's own energy -------------------------
 
@@ -221,91 +355,106 @@ contains
 
    ! ---- shared ------------------------------------------------------------
 
-   subroutine build_bases(error, c, nat, z, r, bas, aux)
+   subroutine setup_system(error, c, nat, z, r, sys, e_tot)
+      !! The bases, the converged reference (four-centre, or --df over
+      !! `c%jkfit`) and E_RHF + E_RI-MP2 at geometry r, the way the energy
+      !! path computes them.
       type(error_type), allocatable, intent(out) :: error
       type(case_t), intent(in) :: c
       integer, intent(in) :: nat, z(nat)
       real(dp), intent(in) :: r(3, nat)
-      type(trc_basis_t), intent(out) :: bas, aux
+      type(system_t), intent(inout) :: sys
+      real(dp), intent(out) :: e_tot
       type(error_t) :: err
+      type(trc_scf_options_t) :: opts
+      real(dp) :: e_corr
+
+      e_tot = 0.0_dp
+      sys%nocc = sum(z)/2
+      sys%df = len_trim(c%jkfit) > 0
       ! Unpruned: the AO space metalquicha's and PySCF's readers build from
       ! the same file (pruning is span-preserving, so the energy would not
       ! move, but the comparison should not depend on that).
-      call trc_basis_from_json(trim(c%basis), nat, z, r, bas, err, force_cart=c%cart, &
+      call trc_basis_from_json(trim(c%basis), nat, z, r, sys%bas, err, force_cart=c%cart, &
                                overrides=trc_basis_json_overrides(prune=.false.))
-      if (.not. err%has_error()) call trc_basis_from_json(trim(c%aux), nat, z, r, aux, err, force_cart=c%cart, &
+      if (.not. err%has_error()) call trc_basis_from_json(trim(c%aux), nat, z, r, sys%aux, err, force_cart=c%cart, &
                                                            overrides=trc_basis_json_overrides(prune=.false.))
+      if (sys%df .and. .not. err%has_error()) then
+         call trc_basis_from_json(trim(c%jkfit), nat, z, r, sys%jk, err, force_cart=c%cart, &
+                                  overrides=trc_basis_json_overrides(prune=.false.))
+      end if
       call check(error, .not. err%has_error(), trim(c%name)//": basis: "//err%get_message())
       if (allocated(error)) return
-      call bas%to_device()
-      call aux%to_device()
-   end subroutine build_bases
-
-   subroutine converged_scf(error, c, bas, nocc, res)
-      type(error_type), allocatable, intent(out) :: error
-      type(case_t), intent(in) :: c
-      type(trc_basis_t), intent(inout) :: bas
-      integer, intent(in) :: nocc
-      type(trc_scf_result_t), intent(out) :: res
-      type(trc_scf_options_t) :: opts
+      call sys%bas%to_device()
+      call sys%aux%to_device()
+      call sys%pl%build(sys%bas, 1.0e-12_dp)
+      call sys%pl%to_device()
+      call sys%lp%init(sys%bas%nao)
       opts%conv_energy = 1.0e-13_dp
       opts%conv_density = 1.0e-11_dp
       opts%conv_diis = 1.0e-10_dp
       opts%max_iteration = 200
-      call trc_scf_run(bas, nocc, nocc, opts, res)
-      call check(error, res%converged, trim(c%name)//": the SCF did not converge")
+      if (sys%df) then
+         call sys%jk%to_device()
+         call sys%dfjk%setup(sys%bas, sys%jk, sys%pl, sys%lp, err, nocc_hint=sys%nocc)
+         call check(error, .not. err%has_error(), trim(c%name)//": fit: "//err%get_message())
+         if (allocated(error)) return
+         opts%df = .true.
+         call trc_scf_run(sys%bas, sys%nocc, sys%nocc, opts, sys%res, la=sys%lp, scf_dfjk=sys%dfjk)
+      else
+         call trc_scf_run(sys%bas, sys%nocc, sys%nocc, opts, sys%res, la=sys%lp)
+      end if
+      call check(error, sys%res%converged, trim(c%name)//": the SCF did not converge")
       if (allocated(error)) return
-      call check(error, res%n_lindep == 0, trim(c%name)//": functions dropped; the gradient needs them all")
-   end subroutine converged_scf
+      call check(error, sys%res%n_lindep == 0, trim(c%name)//": functions dropped; the gradient needs them all")
+      if (allocated(error)) return
+      call rimp2_energy(error, c, sys, e_corr)
+      if (allocated(error)) return
+      e_tot = sys%res%energy + e_corr
+   end subroutine setup_system
+
+   subroutine release_system(sys)
+      type(system_t), intent(inout) :: sys
+      if (sys%df) then
+         call sys%dfjk%release()
+         call sys%jk%release()
+      end if
+      call sys%lp%release()
+      call sys%pl%release()
+      call sys%aux%release()
+      call sys%bas%release()
+   end subroutine release_system
 
    subroutine total_energy(error, c, nat, z, r, e_tot)
-      !! E_RHF + E_RI-MP2 at geometry r, the way the energy path computes it.
+      !! E_RHF + E_RI-MP2 at geometry r.
       type(error_type), allocatable, intent(out) :: error
       type(case_t), intent(in) :: c
       integer, intent(in) :: nat, z(nat)
       real(dp), intent(in) :: r(3, nat)
       real(dp), intent(out) :: e_tot
-      type(trc_basis_t) :: bas, aux
-      type(trc_scf_result_t) :: res
-      real(dp) :: e_corr
-      integer :: nocc
-
-      e_tot = 0.0_dp
-      nocc = sum(z)/2
-      call build_bases(error, c, nat, z, r, bas, aux)
+      type(system_t) :: sys
+      call setup_system(error, c, nat, z, r, sys, e_tot)
       if (allocated(error)) return
-      call converged_scf(error, c, bas, nocc, res)
-      if (allocated(error)) return
-      call rimp2_energy(error, c, bas, aux, nocc, res, e_corr)
-      if (allocated(error)) return
-      e_tot = res%energy + e_corr
-      call aux%release()
-      call bas%release()
+      call release_system(sys)
    end subroutine total_energy
 
-   subroutine rimp2_energy(error, c, bas, aux, nocc, res, e_corr)
+   subroutine rimp2_energy(error, c, sys, e_corr)
       type(error_type), allocatable, intent(out) :: error
       type(case_t), intent(in) :: c
-      type(trc_basis_t), intent(in) :: bas, aux
-      integer, intent(in) :: nocc
-      type(trc_scf_result_t), intent(in) :: res
+      type(system_t), intent(inout) :: sys
       real(dp), intent(out) :: e_corr
-      type(trc_pairlist_t) :: pl
       type(trc_rimp2_result_t) :: mp
       type(trc_rimp2_options_t) :: ropts
       real(dp), allocatable :: cmo_c(:, :), eps_c(:)
-      allocate (cmo_c(bas%nao, bas%nao), eps_c(bas%nao))
-      if (bas%spherical) then
-         call rimp2_driver_mo_to_cart(bas, res%cmo(:, :, 1), res%eps(:, 1), cmo_c, eps_c)
+      allocate (cmo_c(sys%bas%nao, sys%bas%nao), eps_c(sys%bas%nao))
+      if (sys%bas%spherical) then
+         call rimp2_driver_mo_to_cart(sys%bas, sys%res%cmo(:, :, 1), sys%res%eps(:, 1), cmo_c, eps_c)
       else
-         cmo_c = res%cmo(:, :, 1)
-         eps_c = res%eps(:, 1)
+         cmo_c = sys%res%cmo(:, :, 1)
+         eps_c = sys%res%eps(:, 1)
       end if
-      call pl%build(bas, 1.0e-12_dp)
-      call pl%to_device()
       ropts%nfrozen = c%nfrozen
-      call trc_rimp2_run(bas, aux, pl, nocc, cmo_c, eps_c, mp, opts=ropts)
-      call pl%release()
+      call trc_rimp2_run(sys%bas, sys%aux, sys%pl, sys%nocc, cmo_c, eps_c, mp, opts=ropts, la=sys%lp)
       e_corr = mp%e_corr
       call check(error, len_trim(mp%message) == 0, trim(c%name)//": RI-MP2: "//trim(mp%message))
    end subroutine rimp2_energy
@@ -317,34 +466,29 @@ contains
       real(dp), intent(in) :: r(3, nat)
       real(dp), allocatable, intent(out) :: grad(:, :)
       real(dp), intent(out) :: e_tot
-      type(trc_basis_t) :: bas, aux
-      type(trc_scf_result_t) :: res
-      type(trc_rimp2_grad_options_t) :: gopts
-      type(trc_rimp2_grad_result_t) :: gres
+      type(system_t) :: sys
+      type(trc_rimp2_grad_t) :: job
       real(dp) :: e_corr
-      integer :: nocc
 
-      e_tot = 0.0_dp
-      nocc = sum(z)/2
-      allocate (grad(3, nat))
-      call build_bases(error, c, nat, z, r, bas, aux)
+      call setup_system(error, c, nat, z, r, sys, e_tot)
       if (allocated(error)) return
-      call converged_scf(error, c, bas, nocc, res)
+      e_corr = e_tot - sys%res%energy
+      job%opts%nocc = sys%nocc
+      job%opts%nfrozen = c%nfrozen
+      if (sys%df) then
+         call trc_rimp2_gradient(sys%bas, sys%aux, sys%res%cmo(:, :, 1), sys%res%eps(:, 1), job, sys%lp, &
+                                 dfjk=sys%dfjk, jkaux=sys%jk)
+      else
+         call trc_rimp2_gradient(sys%bas, sys%aux, sys%res%cmo(:, :, 1), sys%res%eps(:, 1), job, sys%lp)
+      end if
+      call check(error, job%res%ok, trim(c%name)//": "//trim(job%res%message))
       if (allocated(error)) return
-      call rimp2_energy(error, c, bas, aux, nocc, res, e_corr)
-      if (allocated(error)) return
-      e_tot = res%energy + e_corr
-      gopts%nocc = nocc
-      gopts%nfrozen = c%nfrozen
-      call trc_rimp2_gradient(bas, aux, res%cmo(:, :, 1), res%eps(:, 1), gopts, grad, gres)
-      call check(error, gres%ok, trim(c%name)//": "//trim(gres%message))
-      if (allocated(error)) return
+      grad = job%grad
       print "(a,a,es10.2,a,i0)", "  ", trim(c%name)//": E_corr (gradient) - E_corr (energy) ", &
-         gres%e_corr - e_corr, "  Z-vector iterations ", gres%cphf_iterations
-      call check(error, abs(gres%e_corr - e_corr) < ECORR_TOL, trim(c%name)// &
+         job%res%e_corr - e_corr, "  Z-vector iterations ", job%res%cphf_iterations
+      call check(error, abs(job%res%e_corr - e_corr) < ECORR_TOL, trim(c%name)// &
                  ": the gradient's amplitudes give a different correlation energy than trc_rimp2_run")
-      call aux%release()
-      call bas%release()
+      call release_system(sys)
    end subroutine analytic_gradient
 
 end module check_rimp2_grad_suite

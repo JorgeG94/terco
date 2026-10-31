@@ -2047,10 +2047,10 @@ program trc_main
    call r%cli%add_flag("grad", "Print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
                        "RHF/UHF, or KS-DFT for an LDA/GGA --func (global and range-separated "// &
                        "hybrids and VV10 included); with --df, the fitted RHF/RKS gradient; "// &
-                       "with --rimp2, the RHF + RI-MP2 gradient (four-centre RHF reference, one "// &
-                       "rank); refused for a meta-GGA, a double hybrid, --pcm, or --rimp2 over a "// &
-                       "UHF or --df reference; with more than one rank it is computed on rank 0 "// &
-                       "alone, with a warning")
+                       "with --rimp2, the RHF + RI-MP2 gradient (four-centre or --df RHF "// &
+                       "reference, one rank); refused for a meta-GGA, a double hybrid, --pcm, or "// &
+                       "--rimp2 over a UHF reference; with more than one rank it is computed on "// &
+                       "rank 0 alone, with a warning")
    call r%cli%add_flag("hessian", "finite-difference Cartesian Hessian (central differences of the "// &
                        "analytic gradient) after the SCF, then harmonic vibrational analysis and RRHO "// &
                        "thermochemistry; refused wherever --grad is (meta-GGA, --rimp2, a double "// &

@@ -50,7 +50,7 @@ rely exclusively on do concurrent to do the parallelization of the quartets.
 | **Kohn-Sham DFT** | LDA, GGA and meta-GGA (tau-dependent: r2SCAN, SCAN, TPSS, the Minnesota M05-M15 family, ...) functionals, global, range-separated and double hybrids and VV10, RKS and UKS; every kernel checked against libxc ([docs/functionals.md](docs/functionals.md)) |
 | **Correlation methods** | Terco runs ri-mp2 and also supports Double-Hybrid DFT energies  |
 | **Solvation** | C-PCM and IEF-PCM SCF energies (pyscf's SWIG cavity, term for term), RKS and UKS, any functional, CPU and GPU |
-| **Analytic gradients** | HF/UHF, LDA/GGA/hybrid/range-separated KS-DFT with VV10, the `--df` fitted RHF/RKS gradient, and RHF + RI-MP2 (`--rimp2 --grad`: four-centre RHF reference, frozen core, Cartesian or spherical, one GPU); validated against pyscf, metalquicha's RI-MP2 references and finite differences; single GPU (a multi-GPU run computes the SCF gradient on rank 0 and warns); no meta-GGA, PCM or double-hybrid gradients, no RI-MP2 gradient over a UHF or `--df` reference |
+| **Analytic gradients** | HF/UHF, LDA/GGA/hybrid/range-separated KS-DFT with VV10, the `--df` fitted RHF/RKS gradient, and RHF + RI-MP2 (`--rimp2 --grad`, four-centre or `--df` RHF reference, the latter with a density-fitted Z-vector; frozen core, Cartesian or spherical, one GPU); validated against pyscf, metalquicha's RI-MP2 references and finite differences; single GPU (a multi-GPU run computes the SCF gradient on rank 0 and warns); no meta-GGA, PCM or double-hybrid gradients, no RI-MP2 gradient over a UHF reference |
 | **Interfaces** | a Fortran API, and a `bind(c)` ABI for host codes built with another compiler |
 
 terco **ships no basis set**. A consumer passes exponents, coefficients and

@@ -5,8 +5,9 @@
 ! the same water geometry, cc-pVDZ / cc-pVDZ-RIFIT, no frozen core
 ! (metalquicha validation/validation_tests_cpu.json, "RI-MP2 gradient H2O
 ! cc-pvdz/cc-pvdz-rifit frozen 0"; provenance in check_rimp2_grad.F90's
-! header), and the refusal of a --df reference, which has no RI-MP2
-! gradient yet. The CLI keeps its default (pruned) reading of the basis:
+! header), and `--df --rimp2 --grad` against metalquicha's "RI-MP2 gradient
+! over a fitted reference NH3 def2-svp/def2-svp-rifit" (one set doing both
+! fits, `--jkfit` = `--aux`). The CLI keeps its default (pruned) reading of the basis:
 ! pruning preserves the span, so the energy and gradient do not move
 ! (measured: 1e-10 against the unpruned reference).
 !
@@ -24,6 +25,13 @@ module check_cli_grad_rimp2_suite
    real(dp), parameter :: TOL = 2.0e-8_dp
    !! The library-level comparison's own (check_rimp2_grad.F90), measured
    !! 1e-10 through the CLI at --econv 1e-12 --gconv 1e-9.
+   real(dp), parameter :: G_MQC_DF(3, 4) = reshape([ &
+                                          -4e-11_dp, -2.9e-11_dp, 0.008288657367_dp, &
+                                          -0.002408829768_dp, -2.38e-10_dp, -0.002762885685_dp, &
+                                          0.001204414513_dp, -0.00208610766_dp, -0.002762886289_dp, &
+                                          0.001204414784_dp, 0.00208610774_dp, -0.002762885861_dp], [3, 4])
+   !! check_rimp2_grad.F90's own --df reference (metalquicha, PySCF finite
+   !! differences), held there to 2e-8.
    real(dp), parameter :: G_MQC(3, 3) = reshape([ &
                                        -0.0_dp, 2.31e-10_dp, -0.015717146972_dp, &
                                        0.0_dp, 0.002913907061_dp, 0.007858573573_dp, &
@@ -43,35 +51,59 @@ contains
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
                   new_unittest("CLI --rimp2 --grad JSON gradient matches metalquicha", test_cli_rimp2_grad), &
-                  new_unittest("CLI --rimp2 --grad over --df is refused", test_cli_rimp2_grad_df_refused) &
+                  new_unittest("CLI --df --rimp2 --grad JSON gradient matches metalquicha", test_cli_rimp2_grad_df) &
                   ]
    end subroutine collect_cli_grad_rimp2_tests
 
    subroutine test_cli_rimp2_grad(error)
       type(error_type), allocatable, intent(out) :: error
-      character(len=:), allocatable :: cmd, probe_out, what
+      real(dp) :: grad(3, 3)
+      call cli_gradient(error, ' water_mqc.xyz -b basis_sets/cc-pvdz.json --rimp2 --aux basis_sets/cc-pvdz-rifit.json', &
+                        g_probe_json, 3, grad)
+      if (allocated(error)) return
+      call check(error, maxval(abs(grad - G_MQC)), 0.0_dp, thr=TOL, &
+                 message="worst |CLI - metalquicha| = "//to_string(maxval(abs(grad - G_MQC)), "es10.2"))
+   end subroutine test_cli_rimp2_grad
+
+   subroutine test_cli_rimp2_grad_df(error)
+      type(error_type), allocatable, intent(out) :: error
+      real(dp) :: grad(3, 4)
+      call cli_gradient(error, ' nh3_mqc.xyz -b basis_sets/def2-svp.json --df --jkfit basis_sets/def2-svp-rifit.json'// &
+                        ' --rimp2 --aux basis_sets/def2-svp-rifit.json', g_probe_json//'.df.json', 4, grad)
+      if (allocated(error)) return
+      call check(error, maxval(abs(grad - G_MQC_DF)), 0.0_dp, thr=TOL, &
+                 message="worst |CLI --df - metalquicha| = "//to_string(maxval(abs(grad - G_MQC_DF)), "es10.2"))
+   end subroutine test_cli_rimp2_grad_df
+
+   subroutine cli_gradient(error, args, probe, nat, grad)
+      !! Run the CLI with `args` plus --frozen 0, tight convergence, --grad
+      !! and --json `probe`, and read its gradient back.
+      type(error_type), allocatable, intent(out) :: error
+      character(*), intent(in) :: args, probe
+      integer, intent(in) :: nat
+      real(dp), intent(out) :: grad(3, nat)
+      character(len=:), allocatable :: cmd, what
       type(json_file) :: json
       real(dp), allocatable :: row(:)
-      real(dp) :: grad(3, 3), worst
       logical :: found
       integer :: rc, i
 
-      probe_out = g_probe_json//'.out'
-      cmd = g_cli_exe//' water_mqc.xyz -b basis_sets/cc-pvdz.json --rimp2 --aux basis_sets/cc-pvdz-rifit.json'// &
-            ' --frozen 0 --econv 1e-12 --gconv 1e-9 --grad --json '//g_probe_json//' > '//probe_out//' 2>&1'
+      grad = 0.0_dp
+      cmd = g_cli_exe//args//' --frozen 0 --econv 1e-12 --gconv 1e-9 --grad --json '//probe//' > '// &
+            probe//'.out 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
-      call check(error, rc == 0, "the CLI run failed, exit code "//to_string(rc)//" (see "//probe_out//")")
+      call check(error, rc == 0, "the CLI run failed, exit code "//to_string(rc)//" (see "//probe//".out)")
       if (allocated(error)) return
       call json%initialize()
-      call json%load(filename=g_probe_json)
-      call check(error, .not. json%failed(), "cannot read "//g_probe_json)
+      call json%load(filename=probe)
+      call check(error, .not. json%failed(), "cannot read "//probe)
       if (allocated(error)) then
          call json%destroy()
          return
       end if
       call json%get('gradient of', what, found)
       if (.not. found) what = ""
-      do i = 1, 3
+      do i = 1, nat
          call json%get('gradient('//to_string(i)//')', row, found)
          if (.not. found .or. size(row) /= 3) then
             call json%destroy()
@@ -83,34 +115,7 @@ contains
       call json%destroy()
       call check(error, what == "scf energy + mp2 correlation", &
                  "the JSON does not say the gradient includes the correlation: '"//what//"'")
-      if (allocated(error)) return
-      worst = maxval(abs(grad - G_MQC))
-      call check(error, worst, 0.0_dp, thr=TOL, &
-                 message="worst |CLI - metalquicha| = "//to_string(worst, "es10.2")//" exceeds "//to_string(TOL, "es10.2"))
-   end subroutine test_cli_rimp2_grad
-
-   subroutine test_cli_rimp2_grad_df_refused(error)
-      type(error_type), allocatable, intent(out) :: error
-      character(len=:), allocatable :: cmd, probe_out
-      character(len=512) :: line
-      integer :: rc, u, ios
-      logical :: said
-
-      probe_out = g_probe_json//'.df.out'
-      cmd = g_cli_exe//' water.xyz -b basis_sets/cc-pvdz.json --rimp2 --aux basis_sets/cc-pvdz-rifit.json'// &
-            ' --df --grad > '//probe_out//' 2>&1'
-      call execute_command_line(cmd, exitstat=rc, wait=.true.)
-      call check(error, rc /= 0, "the CLI ran --rimp2 --grad over a --df reference instead of refusing it")
-      if (allocated(error)) return
-      said = .false.
-      open (newunit=u, file=probe_out, status='old', action='read', iostat=ios)
-      do while (ios == 0)
-         read (u, '(a)', iostat=ios) line
-         if (ios == 0) said = said .or. index(line, "over a --df (density-fitted) SCF reference") > 0
-      end do
-      close (u)
-      call check(error, said, "the refusal does not name the --df reference (see "//probe_out//")")
-   end subroutine test_cli_rimp2_grad_df_refused
+   end subroutine cli_gradient
 
 end module check_cli_grad_rimp2_suite
 

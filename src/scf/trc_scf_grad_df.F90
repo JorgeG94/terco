@@ -68,6 +68,7 @@ module trc_scf_grad_df
    use trc_step_table, only: step_table_t
    use pic_timer, only: timer_type
    use trc_rys_select, only: rys_select_tables_init
+   use trc_sph, only: sph_cols_sph_to_cart
    use trc_df_grad_kernels, only: df_grad_2c_driver, df_grad_3c_driver, df_grad_3c_plan, DFG_LMAX, &
                                   DFG_LMAX_AUX, DFG_NPCLS
 #ifdef TRC_DEVICE
@@ -76,7 +77,7 @@ module trc_scf_grad_df
 #endif
    implicit none
    private
-   public :: scf_grad_df_two_electron
+   public :: scf_grad_df_two_electron, scf_grad_df_bilinear
 
    ! The timed steps, reported (global_logger, PERFORMANCE) after every
    ! gradient in the same table shape DF-JK and RI-MP2 use: device-synced
@@ -95,6 +96,24 @@ module trc_scf_grad_df
                                    "Z += X^T X (gemm)", &
                                    "3c pair plan (host)", "Y = K part (gemm)", "3c derivative kernels", &
                                    "2c derivative kernels"]
+
+   type :: bilinear_work_t
+      !! scf_grad_df_bilinear's dimensions and device-resident arrays, each
+      !! component mapped on its own and reaching a kernel only as an actual
+      !! argument.
+      integer :: n = 0, no = 0, naux = 0, naux_c = 0, npack = 0
+      integer(int64) :: nrow = 0
+      !! n nocc, the row count of the (n nocc, naux) tensors.
+      real(dp), allocatable :: cocc(:, :), xmat(:, :), dmat(:, :), grad(:, :)
+      real(dp), allocatable :: cd(:), cx(:)
+      !! c^D and c^X over the fitted auxiliary functions.
+      real(dp), allocatable :: cdc(:), cxc(:)
+      !! The same over the Cartesian auxiliary functions.
+      real(dp), allocatable :: xc(:, :)
+      !! X c^P over the Cartesian auxiliary functions: (n nocc, naux_c).
+      real(dp), allocatable :: zmat(:, :)
+      !! Z over the Cartesian auxiliary functions.
+   end type bilinear_work_t
 
 contains
 
@@ -383,6 +402,274 @@ contains
       call lp%sync()
       call tbl%report(tall%get_elapsed_time(), 0, 1, subtotal_mask=dense, subtotal_label="all dense algebra")
    end subroutine scf_grad_df_two_electron
+
+   subroutine scf_grad_df_bilinear(b, aux, pl, dfjk, lp, cocc, xmat, grad)
+      !! grad += d/dR Tr(X G_fit[D]) through the integrals only, D = 2 C C^T
+      !! the closed-shell reference density of the occupied orbitals `cocc`
+      !! and X ANY symmetric matrix, G_fit = J_fit - K_fit/2 the --df SCF's
+      !! own fitted operator (`dfjk`'s retained B and Cholesky factor, over
+      !! `aux`). X = D/2 is the --df SCF's own two-electron gradient
+      !! (scf_grad_df_two_electron, J and K at scale one); the RI-MP2
+      !! gradient over a --df reference passes X = D/2 + P, P its relaxed
+      !! correlation density, for the reference term and the reference's
+      !! cross term with P together (trc_rimp2_grad.F90).
+      !!
+      !! With t^Y_P = sum Y_mn (mn|P), c^Y = M^-1 t^Y, h^P = (. l|P) C and
+      !! c^P = sum_Q M^-1_PQ h^Q (n x nocc each):
+      !!
+      !!   Tr(X J[D]) = t^X M^-1 t^D       Tr(X K[D]) = 2 sum_PQ M^-1_PQ <h^P, X h^Q>
+      !!
+      !! so, differentiating the integrals and nothing else,
+      !!
+      !!   Y^P_mn = c^D_P X_mn + c^X_P D_mn - 2 [X c^P C^T]_mn (one-sided)
+      !!   Z_PQ   = -(c^X_P c^D_Q + c^D_P c^X_Q)/2 + <c^P, X c^Q>
+      !!
+      !! contracted with d(mn|P)/dR and d(P|Q)/dR by the generated kernels
+      !! (their J part carries c^D X; M^P = c^X_P D/2 - X c^P C^T is the
+      !! one-sided rest, Y = M + M^T). In the fitted (Cholesky) form, with
+      !! B = T L^-T: c^D = L^-T (B^T d), and c^P = (B C) L^-1 over the
+      !! auxiliary index, one triangular solve for every P at once.
+      !!
+      !! Unlike scf_grad_df_two_electron this takes a SPHERICAL orbital or
+      !! auxiliary basis: `cocc` and `xmat` are in the Cartesian AO space the
+      !! fit and the kernels share (C_cart = T C_sph for a spherical orbital
+      !! basis; T X T^T), and the auxiliary index of c^D, c^X, X c^P and Z is
+      !! expanded onto the Cartesian auxiliary functions before the kernels
+      !! (trc_sph's sph_cols_sph_to_cart). Restricted HF scales (J and K at
+      !! one). `cocc`, `xmat` and `grad` are host arrays; `b`, `aux` and `pl`
+      !! device-resident. Memory: three (n nocc naux) tensors.
+      type(trc_basis_t),    intent(in)    :: b
+      type(trc_basis_t),    intent(in)    :: aux
+      type(trc_pairlist_t), intent(in)    :: pl
+      type(df_jk_t),        intent(in)    :: dfjk
+      type(trc_linalg_t),   intent(inout) :: lp
+      real(dp),             intent(in)    :: cocc(:, :)
+      real(dp),             intent(in)    :: xmat(:, :)
+      real(dp),             intent(inout) :: grad(:, :)
+
+      type(bilinear_work_t) :: w
+      integer :: n, naux, npack
+
+      call dfjk%dims(n, naux, npack)
+      if (n /= b%nao .or. naux /= merge(aux%nao_sph, aux%nao, aux%spherical)) then
+         error stop "trc_scf_grad_df: the fit does not match these bases"
+      end if
+      if (aux%natm /= b%natm) error stop "trc_scf_grad_df: the auxiliary basis is on a different molecule"
+      if (maxval(b%sh_l) > DFG_LMAX .or. maxval(aux%sh_l) > DFG_LMAX_AUX) then
+         error stop "trc_scf_grad_df: a basis is above the DF derivative kernels' ceiling (gen_df_grad.py)"
+      end if
+      call rys_select_tables_init()
+      w%n = n
+      w%no = size(cocc, 2)
+      w%naux = naux
+      w%naux_c = aux%nao
+      w%npack = npack
+      w%nrow = int(n, int64)*int(w%no, int64)
+      allocate (w%cocc(n, w%no), w%xmat(n, n), w%dmat(n, n), w%grad(3, b%natm))
+      allocate (w%cd(naux), w%cx(naux), w%cdc(w%naux_c), w%cxc(w%naux_c))
+      w%cocc = cocc
+      w%xmat = xmat
+      w%grad = 0.0_dp
+      !$acc enter data copyin(w%cocc, w%xmat, w%grad) create(w%dmat, w%cd, w%cx, w%cdc, w%cxc)
+      call lp%density(w%cocc, w%no, 2.0_dp, w%dmat)
+      call bilinear_coulomb(w, dfjk, lp)
+      call bilinear_exchange(w, aux, dfjk, lp)
+      call bilinear_derivatives(w, b, aux, pl, lp)
+      !$acc update self(w%grad)
+      grad = grad + w%grad
+      !$acc exit data delete(w%cocc, w%xmat, w%grad, w%dmat, w%cd, w%cx, w%cdc, w%cxc)
+   end subroutine scf_grad_df_bilinear
+
+   subroutine bilinear_coulomb(w, dfjk, lp)
+      !! w%cd = c^D = M^-1 t^D and w%cx = c^X, through the packed B
+      !! (scf_grad_df_two_electron's own J step, twice).
+      type(bilinear_work_t), intent(inout) :: w
+      type(df_jk_t), intent(in) :: dfjk
+      type(trc_linalg_t), intent(inout) :: lp
+      real(dp), allocatable :: dpk(:)
+      allocate (dpk(w%npack))
+      !$acc enter data create(dpk)
+      call pack_doubled(w%n, w%npack, w%dmat, dpk)
+      call lp%gemv("T", w%npack, w%naux, 1.0_dp, dfjk%bpk, w%npack, dpk, 0.0_dp, w%cd)
+      call lp%trsm("L", "L", "T", w%naux, 1, 1.0_dp, dfjk%chol, w%naux, w%cd, w%naux)
+      call pack_doubled(w%n, w%npack, w%xmat, dpk)
+      call lp%gemv("T", w%npack, w%naux, 1.0_dp, dfjk%bpk, w%npack, dpk, 0.0_dp, w%cx)
+      call lp%trsm("L", "L", "T", w%naux, 1, 1.0_dp, dfjk%chol, w%naux, w%cx, w%naux)
+      !$acc exit data delete(dpk)
+      deallocate (dpk)
+   end subroutine bilinear_coulomb
+
+   subroutine bilinear_exchange(w, aux, dfjk, lp)
+      !! w%xc = X c^P over every P (Cartesian auxiliary functions) and
+      !! w%zmat = Z (Cartesian auxiliary functions), from c = (B C) L^-1.
+      type(bilinear_work_t), intent(inout) :: w
+      type(trc_basis_t), intent(in) :: aux
+      type(df_jk_t), intent(in) :: dfjk
+      type(trc_linalg_t), intent(inout) :: lp
+      real(dp), allocatable :: cmat(:, :), xc(:, :), tens(:, :, :), zfit(:, :), zhalf(:, :), zhalf_t(:, :)
+      type(trc_gemm_batch_t) :: gemm_shape
+      integer :: n, no, naux, naux_c, p0, np, ablk
+
+      n = w%n
+      no = w%no
+      naux = w%naux
+      naux_c = w%naux_c
+      allocate (cmat(w%nrow, naux), xc(w%nrow, naux), zfit(naux, naux))
+      !$acc enter data create(cmat, xc, zfit)
+      ! b^P = B^P C, one block of unpacked B at a time (at most ~2 GB).
+      ablk = int(max(1_int64, min(int(naux, int64), 268435456_int64/(int(n, int64)*int(n, int64)))))
+      allocate (tens(n, n, ablk))
+      !$acc enter data create(tens)
+      do p0 = 1, naux, ablk
+         np = min(ablk, naux - p0 + 1)
+         call unpack_aux_block(n, w%npack, naux, np, p0, dfjk%bpk, tens)
+         gemm_shape = trc_gemm_batch(n, no, n, np, sb=0_int64)
+         call lp%gemm_batched(gemm_shape, tens, w%cocc, cmat(1, p0))
+      end do
+      !$acc exit data delete(tens)
+      deallocate (tens)
+      ! c = b L^-1 (the metric on the auxiliary index), X c, W = c^T X c
+      call lp%trsm("R", "L", "N", int(w%nrow), naux, 1.0_dp, dfjk%chol, naux, cmat, int(w%nrow))
+      call lp%gemm("N", "N", n, no*naux, n, 1.0_dp, w%xmat, n, cmat, n, 0.0_dp, xc, n)
+      call lp%gemm("T", "N", naux, naux, int(w%nrow), 1.0_dp, cmat, int(w%nrow), xc, int(w%nrow), 0.0_dp, &
+                   zfit, naux)
+      !$acc exit data delete(cmat)
+      deallocate (cmat)
+      ! Z = W - (c^X c^D^T + c^D c^X^T)/2; W is symmetric (X is).
+      call subtract_outer(naux, w%cx, w%cd, zfit)
+      allocate (w%zmat(naux_c, naux_c), w%xc(w%nrow, naux_c))
+      !$acc enter data create(w%zmat, w%xc)
+      if (aux%spherical) then
+         allocate (zhalf(naux, naux_c), zhalf_t(naux_c, naux))
+         !$acc enter data create(zhalf, zhalf_t)
+         call sph_cols_sph_to_cart(aux, lp, int(w%nrow), xc, w%xc)
+         call sph_cols_sph_to_cart(aux, lp, 1, w%cd, w%cdc)
+         call sph_cols_sph_to_cart(aux, lp, 1, w%cx, w%cxc)
+         call sph_cols_sph_to_cart(aux, lp, naux, zfit, zhalf)
+         call lp%transpose(naux, naux_c, zhalf, naux, zhalf_t, naux_c)
+         call sph_cols_sph_to_cart(aux, lp, naux_c, zhalf_t, w%zmat)
+         !$acc exit data delete(zhalf, zhalf_t)
+         deallocate (zhalf, zhalf_t)
+      else
+         call copy_flat(w%nrow*int(naux, int64), xc, w%xc)
+         call copy_flat(int(naux, int64), w%cd, w%cdc)
+         call copy_flat(int(naux, int64), w%cx, w%cxc)
+         call copy_flat(int(naux, int64)**2, zfit, w%zmat)
+      end if
+      !$acc exit data delete(xc, zfit)
+      deallocate (xc, zfit)
+   end subroutine bilinear_exchange
+
+   subroutine bilinear_derivatives(w, b, aux, pl, lp)
+      !! The three- and two-centre derivative kernels on Y and Z (see
+      !! scf_grad_df_bilinear's header), one auxiliary block at a time.
+      type(bilinear_work_t), intent(inout) :: w
+      type(trc_basis_t), intent(in) :: b, aux
+      type(trc_pairlist_t), intent(in) :: pl
+      type(trc_linalg_t), intent(inout) :: lp
+      type(trc_basis_t) :: aux_subset
+      real(dp), allocatable :: mm(:, :, :), pd(:, :)
+      integer, allocatable :: q_a(:), q_b(:), q_o(:), q_n(:)
+      integer :: coff(0:DFG_NPCLS)
+      type(trc_gemm_batch_t) :: gemm_shape
+      integer :: n, no, s0, s1, p0, np, ablk, ish
+
+      n = w%n
+      no = w%no
+      call df_grad_3c_plan(b%nshell, b%maxnp, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, pl%npair, pl%p_i, &
+                           pl%p_j, coff, q_a, q_b, q_o, q_n, pd)
+      !$acc enter data copyin(q_a, q_b, q_o, q_n, pd)
+      ablk = int(max(1_int64, min(int(w%naux_c, int64), 268435456_int64/(int(n, int64)*int(n, int64)))))
+      s0 = 1
+      do while (s0 <= aux%nshell)
+         ! Whole shells holding at most `ablk` Cartesian functions.
+         s1 = s0
+         do ish = s0 + 1, aux%nshell
+            if (aux%sh_ao(ish) + ncart(aux%sh_l(ish)) - aux%sh_ao(s0) > ablk) exit
+            s1 = ish
+         end do
+         p0 = aux%sh_ao(s0)
+         np = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0
+         call aux%subset(s0, s1, aux_subset)
+         call aux_subset%to_device()
+         allocate (mm(n, n, np))
+         !$acc enter data create(mm)
+         ! M^P = -(X c^P) C^T + c^X_P D / 2
+         gemm_shape = trc_gemm_batch(n, n, no, np, sb=0_int64, transb="T")
+         call lp%gemm_batched(gemm_shape, w%xc(1, p0), w%cocc, mm, alpha=-1.0_dp)
+         call add_scaled_density(n, np, p0, w%naux_c, w%cxc, w%dmat, mm)
+         call df_grad_3c_driver(b%nshell, n, b%sh_ao, b%sh_at, b%sh_r, coff, pl%npair, q_a, q_b, q_o, q_n, &
+                                size(pd, 2), pd, aux_subset%nshell, aux_subset%maxnp, aux_subset%sh_l, &
+                                aux_subset%sh_np, aux_subset%sh_ao, aux_subset%sh_at, aux_subset%sh_e, &
+                                aux_subset%sh_c, aux_subset%sh_r, b%natm, 2, n, np, mm, 1.0_dp, &
+                                w%naux_c, p0 - 1, w%cdc, w%xmat, w%grad)
+         !$acc exit data delete(mm)
+         deallocate (mm)
+         call aux_subset%release()
+         s0 = s1 + 1
+      end do
+      call df_grad_2c_driver(aux%nshell, w%naux_c, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
+                             aux%sh_e, aux%sh_c, aux%sh_r, b%natm, w%zmat, w%grad)
+      !$acc exit data delete(q_a, q_b, q_o, q_n, pd, w%xc, w%zmat)
+      deallocate (q_a, q_b, q_o, q_n, pd, w%xc, w%zmat)
+   end subroutine bilinear_derivatives
+
+   subroutine pack_doubled(n, npack, d, dpk)
+      !! dpk = the lower triangle of d, off-diagonal doubled (B^T dpk = t).
+      integer, intent(in) :: n, npack
+      real(dp), intent(in) :: d(n, n)
+      real(dp), intent(out) :: dpk(npack)
+      integer(int64) :: t, n8
+      integer :: mu, nu
+      n8 = int(n, int64)
+      do concurrent(t=0:n8*n8 - 1) local(mu, nu)
+         mu = int(mod(t, n8)) + 1
+         nu = int(t/n8) + 1
+         if (nu <= mu) dpk(pack_index(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*d(mu, nu)
+      end do
+   end subroutine pack_doubled
+
+   subroutine subtract_outer(n, x, y, z)
+      !! z := z - (x y^T + y x^T)/2.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: x(n), y(n)
+      real(dp), intent(inout) :: z(n, n)
+      integer(int64) :: t, n8
+      integer :: p, q
+      n8 = int(n, int64)
+      do concurrent(t=0:n8*n8 - 1) local(p, q)
+         p = int(mod(t, n8)) + 1
+         q = int(t/n8) + 1
+         z(p, q) = z(p, q) - 0.5_dp*(x(p)*y(q) + y(p)*x(q))
+      end do
+   end subroutine subtract_outer
+
+   subroutine add_scaled_density(n, np, p0, naux_c, cx, d, mm)
+      !! mm(:, :, q) += cx(p0 - 1 + q) d / 2.
+      integer, intent(in) :: n, np, p0, naux_c
+      real(dp), intent(in) :: cx(naux_c), d(n, n)
+      real(dp), intent(inout) :: mm(n, n, np)
+      integer(int64) :: t, n8
+      integer :: mu, nu, q
+      n8 = int(n, int64)
+      do concurrent(t=0:n8*n8*int(np, int64) - 1) local(mu, nu, q)
+         mu = int(mod(t, n8)) + 1
+         nu = int(mod(t/n8, n8)) + 1
+         q = int(t/(n8*n8)) + 1
+         mm(mu, nu, q) = mm(mu, nu, q) + 0.5_dp*cx(p0 - 1 + q)*d(mu, nu)
+      end do
+   end subroutine add_scaled_density
+
+   subroutine copy_flat(n, x, y)
+      !! y := x, on the device.
+      integer(int64), intent(in) :: n
+      real(dp), intent(in) :: x(n)
+      real(dp), intent(out) :: y(n)
+      integer(int64) :: t
+      do concurrent(t=1:n)
+         y(t) = x(t)
+      end do
+   end subroutine copy_flat
 
    subroutine next_block(aux, s0, ablk, s1, p0, np)
       !! The run of whole auxiliary shells starting at s0 whose functions fit

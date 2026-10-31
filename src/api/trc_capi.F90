@@ -189,7 +189,7 @@ module trc_capi
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t, trc_pair_eri_cache_t
    use trc_scf_grad, only: trc_scf_gradient
-   use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_options_t, trc_rimp2_grad_result_t
+   use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t
    use trc_scf_settings, only: scf_settings_spin_rule, scf_settings_eri_thresh_env
    use trc_scf_df, only: df_jk_t
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
@@ -3588,9 +3588,9 @@ contains
          else if (cx%res%nspin /= 1) then
             refusal = "the RI-MP2 gradient is restricted (closed-shell RHF reference) only; "// &
                       "an unrestricted reference has no correlation gradient yet"
-         else if (cx%opts%df) then
-            refusal = "the RI-MP2 gradient over a --df (density-fitted) SCF reference is not implemented yet; "// &
-                      "the four-centre reference is"
+         else if (cx%opts%df .and. .not. cx%df_fit_ok) then
+            refusal = "the RI-MP2 gradient over a --df reference needs the density fit the SCF ran with"
+            refusal_status = TRC_ERR_STATE
          else if (cx%fcomm /= -1) then
             refusal = "the RI-MP2 gradient runs on one rank only (no trc_set_comm)"
          else if (cx%res%n_lindep > 0) then
@@ -3607,7 +3607,9 @@ contains
             return
          end if
       end if
-      if (cx%opts%df) then
+      ! The RI-MP2 gradient over a --df reference was checked above, and has
+      ! its own spherical-capable fitted derivative (scf_grad_df_bilinear).
+      if (cx%opts%df .and. .not. cx%rimp2_ok) then
          ! The fitted gradient differentiates the SAME fit the SCF converged
          ! with (`cx%dfjk`'s B and metric Cholesky factor), so it needs that
          ! fit still in place, and inherits the DF-SCF's own scope:
@@ -3786,17 +3788,19 @@ contains
       !! REFUSED, clearly, rather than attempted:
       !!   - meta-GGA: the energy runs, but trc_xc_grad has no tau term, so
       !!     the gradient is refused here with a message.
-      !!   - RI-MP2 over anything but a four-centre RHF reference on one
-      !!     rank: a double hybrid or other Kohn-Sham reference, an
-      !!     unrestricted or --df one, a multi-rank context, or dropped
-      !!     functions (gradient_capability_check's own messages).
+      !!   - RI-MP2 over anything but an RHF reference on one rank: a double
+      !!     hybrid or other Kohn-Sham reference, an unrestricted one, a
+      !!     multi-rank context, or dropped functions
+      !!     (gradient_capability_check's own messages).
       !!
       !! RI-MP2. After a successful trc_run_rimp2 the energy this context
       !! reports (trc_energy) is E_RHF + E_RI-MP2, and this differentiates
-      !! THAT: trc_rimp2_grad%trc_rimp2_gradient, the exact-ERI reference
-      !! with the fitted correlation, its Z-vector against the exact
-      !! orbital Hessian, the same frozen core and pair-list threshold the
-      !! energy used. A later trc_run_scf clears the RI-MP2 result, and the
+      !! THAT: trc_rimp2_grad%trc_rimp2_gradient, with the same frozen core
+      !! and pair-list threshold the energy used. A four-centre reference
+      !! keeps its Z-vector against the exact orbital Hessian; a --df one
+      !! (trc_set_df) differentiates the fitted SCF it converged, its
+      !! Z-vector, potentials and two-electron derivative all over
+      !! `cx%dfjk`. A later trc_run_scf clears the RI-MP2 result, and the
       !! gradient is the SCF's again.
       !!   - --df outside the DF-SCF's own scope (unrestricted, spherical,
       !!     range-separated -- the SCF refuses those first), or with the fit
@@ -4484,24 +4488,29 @@ contains
       !! the energy trc_energy reports. One rank (gradient_capability_check).
       type(context_box), intent(inout) :: cx
       integer(c_int), intent(out) :: status
-      type(trc_rimp2_grad_options_t) :: gopts
-      type(trc_rimp2_grad_result_t) :: gres
-      gopts%nocc = cx%nalpha
-      gopts%nfrozen = rimp2_frozen_count(cx)
-      gopts%aux_block = max(cx%aux_block, 0)
-      gopts%pair_threshold = cx%opts%eri_thresh
-      gopts%eri_threshold = scf_settings_eri_thresh_env(cx%opts%eri_thresh)
-      gopts%verbose = cx%opts%verbose
+      type(trc_rimp2_grad_t) :: job
+      job%opts%nocc = cx%nalpha
+      job%opts%nfrozen = rimp2_frozen_count(cx)
+      job%opts%aux_block = max(cx%aux_block, 0)
+      job%opts%pair_threshold = cx%opts%eri_thresh
+      job%opts%eri_threshold = scf_settings_eri_thresh_env(cx%opts%eri_thresh)
+      job%opts%verbose = cx%opts%verbose
       if (allocated(cx%grad)) deallocate (cx%grad)
-      allocate (cx%grad(3, cx%natm))
-      call trc_rimp2_gradient(cx%bb%b, cx%ab%b, cx%bb%cmo(:, :, 1), cx%bb%eps(:, 1), gopts, cx%grad, gres, cx%la)
-      if (.not. gres%ok) then
+      if (cx%opts%df) then
+         ! The --df reference: its Z-vector, potentials and two-electron
+         ! derivative all over the fit the SCF converged with.
+         call trc_rimp2_gradient(cx%bb%b, cx%ab%b, cx%bb%cmo(:, :, 1), cx%bb%eps(:, 1), job, cx%la, &
+                                 dfjk=cx%dfjk, jkaux=cx%jb%b)
+      else
+         call trc_rimp2_gradient(cx%bb%b, cx%ab%b, cx%bb%cmo(:, :, 1), cx%bb%eps(:, 1), job, cx%la)
+      end if
+      if (.not. job%res%ok) then
          status = TRC_ERR_NOCONV
-         if (index(gres%message, "did not converge") == 0) status = TRC_ERR_UNSUPPORTED
-         cx%message = "trc_run_gradient: "//trim(gres%message)
-         deallocate (cx%grad)
+         if (index(job%res%message, "did not converge") == 0) status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_run_gradient: "//trim(job%res%message)
          return
       end if
+      call move_alloc(job%grad, cx%grad)
       cx%grad_ok = .true.
       status = TRC_OK
    end subroutine rimp2_gradient_run
