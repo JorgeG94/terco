@@ -1,5 +1,5 @@
 !
-! The analytic RI-MP2 nuclear gradient (src/scf/trc_rimp2_grad.F90, exact-
+! The analytic RI-MP2 nuclear gradient (src/post_hf/rimp2/trc_rimp2_grad.F90, exact-
 ! ERI RHF reference + fitted correlation) against two references:
 !
 ! A. metalquicha's RI-MP2 gradient references, on the same molecule, basis,

@@ -7,7 +7,7 @@
 ! ri_mp2_gradient.py settled every index convention used here). The SCF
 ! side -- the Z-vector, the relaxed and energy-weighted densities, and the
 ! one-electron, overlap and four-centre derivative terms -- is
-! src/scf/trc_rimp2_grad.F90's; this module only builds what needs the
+! src/post_hf/rimp2/trc_rimp2_grad.F90's; this module only builds what needs the
 ! fitted integrals:
 !
 !   T_ij^ab = (ia|jb) / (e_i + e_j - e_a - e_b),  (ia|jb) = sum_Q B_ia^Q B_jb^Q

@@ -1696,7 +1696,7 @@ set_tests_properties(
   terco/scf_rimp2_uhf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
-# The analytic RI-MP2 gradient (src/scf/trc_rimp2_grad.F90) against
+# The analytic RI-MP2 gradient (src/post_hf/rimp2/trc_rimp2_grad.F90) against
 # metalquicha's pyscf-validated references (water cc-pVDZ, water 6-31G with
 # a frozen core, NH3 def2-SVP) and against finite differences of terco's own
 # RHF + RI-MP2 energy (formamide and water, Cartesian and spherical, frozen

@@ -21,8 +21,8 @@ A module may use modules in its own layer or any layer above it in this table
 | `eri` | `src/eri/` | Screening, shell-pair bins, integral drivers, Fock and gradient launchers |
 | `xc` | `src/xc/` | XC integration, functionals, VV10 |
 | `solvation` | `src/solvation/` | PCM |
-| `post_hf` | `src/post_hf/` | RI-MP2 |
 | `scf` | `src/scf/` | SCF driver, DIIS, guesses, DF-JK, gradients, CPHF/CPKS |
+| `post_hf` | `src/post_hf/` | RI-MP2 energy and gradient (built on the SCF's results, Z-vector and gradient pieces) |
 | `api` | `src/api/` | Fortran API and C ABI |
 | `opt` | `src/opt/` | The geometry optimiser (DL-FIND via libdlfind), built as `libterco_opt` with `trc_opt_capi.F90`'s own C ABI (`include/terco_opt.h`) -- only with `-DTERCO_ENABLE_DLFIND=ON`, see that option's own comment in the root `CMakeLists.txt` |
 | `app` | `app/` | The `terco` CLI |
