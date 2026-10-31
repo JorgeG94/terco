@@ -16,10 +16,15 @@ module trc_minao
    !!
    !!     D_B = S_BB^+ S_BA D_A S_AB S_BB^+
    !!
-   !! with S_BB^+ the pseudo-inverse `scf_context_orthogonalize` builds from the target
-   !! overlap's own eigendecomposition, near-null directions dropped rather
-   !! than divided by -- the same object the SCF's own orthogonaliser is. This
-   !! is PySCF's `project_dm_nr2nr` with nothing dropped.
+   !! with S_BB^+ = X X^T, X the pseudo-inverse `scf_context_orthogonalize`
+   !! builds from the target overlap's own UNIT-DIAGONAL normalisation
+   !! S_BB_n = D S_BB D (D = diag(1/sqrt(S_BB_ii))), near-null directions of
+   !! S_BB_n dropped rather than divided by -- the same object the SCF's own
+   !! orthogonaliser is. X is no longer symmetric past that normalisation
+   !! (`scf_context_orthogonalize`'s own header), but X X^T = D (S_BB_n)^+ D
+   !! still equals the pseudo-inverse of S_BB consistent with that dropping,
+   !! so the formula below is unchanged by it. This is PySCF's
+   !! `project_dm_nr2nr` with nothing dropped.
    !!
    !! There is no free-atom SCF, so nothing to converge or cache, and the atoms
    !! are neutral: the guess carries sum(Z) electrons whatever the molecule's
@@ -272,7 +277,9 @@ contains
          return
       end if
 
-      ! P = S_BB^+ S_BA = X X^T S_BA; D_B = P D_A P^T.
+      ! P = S_BB^+ S_BA = X X^T S_BA (X X^T = S_BB^+ holds for the
+      ! unit-diagonal-normalised X too; scf_context_orthogonalize's own
+      ! header); D_B = P D_A P^T.
       allocate (y(nb, na), p(nb, na), pd(nb, na), density(nb, nb))
       y = matmul(transpose(x), s_cross)
       p = matmul(x, y)

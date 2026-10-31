@@ -4,17 +4,35 @@
 ! X zeroes the directions it drops, so X^T F X used to have an eigenvalue 0
 ! for each of them: a zero orbital. Below a positive HOMO aufbau occupied
 ! it and the density lost two electrons. O2- (a dianion, HOMO +0.12 Eh) in
-! d-aug-cc-pVDZ with 10 functions dropped went from -74.1475 to an
-! unconverged -67.68 Eh that way. The reference is pyscf in the same
-! dropped subspace:
+! d-aug-cc-pVDZ with 10 functions dropped (terco's OLD, un-normalised
+! dropping decision) went from -74.1475 to an unconverged -67.68 Eh that
+! way.
 !
-!   S_t = D^1/2 S D^1/2 with D = 5/(4 pi) on every spherical d (terco's own
-!   AO norms, its S diagonal), keep the eigenvalues >= 0.2, X = D^1/2 U_k
-!   w_k^-1/2, RHF with that X, then mf.newton(): -74.147460338947,
-!   converged. pyscf 2.14.0, basis from generate.py's bse_json_basis.
+! `scf_context_orthogonalize` now decides dropping on the overlap
+! normalised to a unit diagonal (Sn = D S D, D = diag(1/sqrt(S_ii))) --
+! pyscf's `scf.addons.canonical_orth_`/ORCA's own convention -- rather
+! than on S's own eigenvalues, so the same 0.2 threshold now drops 5
+! functions, not 10 (terco's own AO norms put every spherical d at
+! S_ii = 5/(4*pi), p and s at 1, so the un-normalised and normalised
+! eigenvalues differ). Independently confirmed against pyscf 2.14.0,
+! basis from generate.py's bse_json_basis (a plain literal, not a .ref --
+! like the old reference, nothing here is checked by check_staleness.py):
 !
-! The literal basis (prune=.false.): pyscf reads the JSON's columns as they
-! are, and pruning changes the individual functions, so the dropped space.
+!   S = mol.intor("int1e_ovlp"); d = 1/sqrt(diag(S)); Sn = outer(d,d)*S
+!   eigh(Sn) has 1 eigenvalue below 0.1 and 5 below 0.2, exactly matching
+!   terco's own n_lindep at those thresholds.
+!
+!   mf = scf.RHF(mol); mf.level_shift = 0.5
+!   mf = scf.addons.remove_linear_dep_(mf, threshold=0.2, lindep=0.9)
+!   mf.kernel()  # does not converge by plain DIIS at this gap
+!   mf.newton().kernel()  -> -74.14746033894737, converged
+!
+! (0.1 is NOT used here: pyscf's own ground state there is
+! -74.445149289825, but terco's DIIS lands on a different, higher
+! stationary point at that threshold -- 0.2 is where terco's own
+! converged state IS pyscf's ground state.) The literal basis
+! (prune=.false.): pyscf reads the JSON's columns as they are, and
+! pruning changes the individual functions, so the dropped space.
 !
 ! A test-drive suite.
 !
@@ -39,7 +57,7 @@ contains
    subroutine collect_scf_lindep_gap(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
-                  new_unittest("O2- with 10 functions dropped matches pyscf", test_dianion_dropped), &
+                  new_unittest("O2- with 5 functions dropped matches pyscf", test_dianion_dropped), &
                   new_unittest("gap: closed shell", test_gap_closed), &
                   new_unittest("gap: per spin, not across spins", test_gap_per_spin), &
                   new_unittest("gap: dropped null states are not a LUMO", test_gap_null_states), &
@@ -70,7 +88,7 @@ contains
       opts%max_iteration = 100
       call trc_scf_run(bas, 5, 5, opts, res)   ! O2-: 10 electrons, RHF
       call bas%release()
-      call check(error, res%n_lindep == 10, "expected 10 functions dropped below 0.2")
+      call check(error, res%n_lindep == 5, "expected 5 functions dropped below 0.2 (unit-diagonal Sn)")
       if (allocated(error)) return
       call check(error, res%converged, "the SCF did not converge")
       if (allocated(error)) return
