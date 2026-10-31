@@ -2561,6 +2561,86 @@ def gen_cphf_uhf():
     _gen_cphf_one("cphf_uhf_probe.bin", "cphf_uhf_oh_6-31gs.ref", "oh.xyz", "oh", "6-31gs", uhf=True)
 
 
+def gen_soscf():
+    """check_soscf.F90's own two fixed-geometry/fixed-basis cases, each a
+    plain RHF energy, no terco probe needed (no fixed density or grid to
+    match -- unlike gen_cphf's, this generator's inputs are the geometry
+    and basis alone):
+
+    - water/6-31G* (cart=True, terco's own force_cart=.true. for this
+      case): plain pyscf RHF. --soscf and plain DIIS must BOTH reach this.
+
+    - a single O dianion (charge -2, 10 electrons, RHF), d-aug-cc-pVDZ,
+      the LITERAL basis (bse_json_basis, prune=.false., same reasoning as
+      check_scf_lindep_gap.F90's own reference), spherical (terco's
+      default -- this case does not force_cart), lindep_thresh = 0.1 on
+      the UNIT-DIAGONAL overlap (scf.addons.remove_linear_dep_'s own,
+      always-normalised convention -- PR #172's fix brought terco's own
+      dropping decision in line with it; see trc_scf_context.F90's
+      scf_context_orthogonalize). Plain DIIS does not reach pyscf's own
+      minimum in this subspace (checked below, and independently by
+      check_soscf.F90's own test); pyscf's .newton() does, which is
+      exactly the method this module ports.
+    """
+    atoms = []
+    with open(TEST / "water.xyz") as g:
+        nat = int(g.readline())
+        g.readline()
+        for _ in range(nat):
+            parts = g.readline().split()
+            atoms.append((parts[0], (float(parts[1]), float(parts[2]), float(parts[3]))))
+    elements = {sym: {"O": 8, "H": 1}[sym] for sym, _ in atoms}
+    water_basis = bse_json_basis(TEST / "basis_sets" / "6-31gs.json", elements)
+    water_mol = gto.M(atom=atoms, basis=water_basis, unit="Angstrom", cart=True, verbose=0)
+    water_mf, water_grad_norm = converge_tight(lambda: scf.RHF(water_mol), None, "soscf water/6-31gs")
+
+    o2_basis = bse_json_basis(TEST / "basis_sets" / "d-aug-cc-pvdz.json", {"O": 8})
+    o2_mol = gto.M(atom="O 0 0 0", basis=o2_basis, charge=-2, spin=0, cart=False, verbose=0)
+
+    def make_o2_mf():
+        m = scf.RHF(o2_mol)
+        m.level_shift = 0.5
+        return scf.addons.remove_linear_dep_(m, threshold=0.1, lindep=0.9)
+
+    # Plain DIIS on this subspace, run separately (not through
+    # converge_tight, which would fall back to .newton() and hide the
+    # point): it must NOT reach pyscf's own minimum, the same stalled
+    # point check_soscf.F90's own test_o2_anion_escapes_the_diis_
+    # stationary_point reproduces in terco. If it ever does converge to
+    # the minimum here, this case has stopped testing anything and needs
+    # a different threshold/lindep choice.
+    mf_diis = make_o2_mf()
+    mf_diis.conv_tol = 1.0e-12
+    mf_diis.kernel()
+    # conv_tol_grad=1e-6, not converge_tight's default 1e-8: this near-null
+    # mode's AH solver gradient bottoms out at ~3.5e-7 (measured, verbose=4),
+    # not from under-convergence but from this subspace's own conditioning
+    # (a mode just inside lindep_thresh); 1e-6 is still two orders tighter
+    # than the energy comparison check_soscf.F90 makes against this value.
+    o2_mf, o2_grad_norm = converge_tight(make_o2_mf, None, "soscf o2-anion/d-aug-cc-pvdz",
+                                          conv_tol_grad=1.0e-6)
+    if mf_diis.converged and abs(mf_diis.e_tot - o2_mf.e_tot) < 1.0e-6:
+        raise ConvergenceError(
+            "soscf o2-anion/d-aug-cc-pvdz: plain DIIS unexpectedly reached the "
+            "same minimum .newton() did -- this case no longer exercises what "
+            "check_soscf.F90's test needs; pick a different lindep_thresh.")
+
+    w = RefWriter("soscf.ref")
+    w.header("soscf", [TEST / "check_soscf.F90", TEST / "water.xyz", TEST / "basis_sets" / "6-31gs.json",
+                        TEST / "basis_sets" / "d-aug-cc-pvdz.json"])
+    w.comment(f"water: RHF/6-31G* (cart), |g| {water_grad_norm:.2e}")
+    w.real("E_WATER", water_mf.e_tot)
+    w.comment(f"o2_anion: RHF/d-aug-cc-pVDZ (spherical), lindep_thresh=0.1 on the unit-diagonal "
+              f"overlap, .newton(); plain DIIS E = {mf_diis.e_tot:.12f} "
+              f"(converged={mf_diis.converged}), |g| at the newton minimum {o2_grad_norm:.2e}")
+    w.real("E_O2_ANION", o2_mf.e_tot)
+    w.end()
+    w.write()
+    print(f"  soscf water: E(pyscf) {water_mf.e_tot:20.12f}  |g| {water_grad_norm:.2e}")
+    print(f"  soscf o2_anion: E(pyscf,newton) {o2_mf.e_tot:20.12f}  "
+          f"E(pyscf,diis) {mf_diis.e_tot:20.12f} (converged={mf_diis.converged})  |g| {o2_grad_norm:.2e}")
+
+
 def _gen_cpks_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
     """One scf_cpks.F90 case: rebuild the IDENTICAL molecule/basis
     (bse_json_basis, mol.cart=True) and pyscf's own RKS at terco's OWN
@@ -4689,6 +4769,7 @@ CASES = {
     "rimp2": gen_rimp2,
     "cphf": gen_cphf,
     "cphf_uhf": gen_cphf_uhf,
+    "soscf": gen_soscf,
     "cpks": gen_cpks,
     "rimp2_uhf": gen_rimp2_uhf,
     "scf_df": gen_scf_df,

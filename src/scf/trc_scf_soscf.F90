@@ -108,7 +108,7 @@ module trc_scf_soscf
    ! exponential's orthogonality (this module's own header, point 3):
    ! nothing else in terco calls it.
    public :: scf_soscf_rotation_matrix
-   public :: soscf_trust_after_rejection
+   public :: scf_soscf_trust_after_rejection
 
    real(dp), parameter :: HESSIAN_SCALE = 4.0_dp
    !! `scf_soscf_hessian_apply_rhf`'s `(e_a-e_i) p + [A p]` to the true
@@ -353,7 +353,7 @@ contains
                accepted = .true.
                exit
             end if
-            trust = soscf_trust_after_rejection(trust, scaling)
+            trust = scf_soscf_trust_after_rejection(trust, scaling)
             if (trust < MIN_ROTATION) exit
          end do
 
@@ -908,7 +908,7 @@ contains
       end if
    end function soscf_trust0_env
 
-   pure function soscf_trust_after_rejection(trust, scaling) result(new_trust)
+   pure function scf_soscf_trust_after_rejection(trust, scaling) result(new_trust)
       !! The trust radius a rejection leaves behind, given the step's own
       !! (fixed, unscaled) size `scaling`: halving `trust` alone is a
       !! no-op on the NEXT trial's actual step for as long as `trust`
@@ -925,7 +925,7 @@ contains
       real(dp), intent(in) :: trust, scaling
       real(dp) :: new_trust
       new_trust = 0.5_dp*min(trust, scaling)
-   end function soscf_trust_after_rejection
+   end function scf_soscf_trust_after_rejection
 
    logical function soscf_force_breakdown_env() result(res)
       !! TRC_SOSCF_FORCE_BREAKDOWN=1: an injected Krylov/level-shift
