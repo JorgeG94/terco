@@ -602,9 +602,8 @@ contains
          eold = scf_energies%total
       end do
       if (soscf_switch_iteration > 0 .and. .not. scf_result%converged) then
-         call trc_scf_soscf_run(scf_basis, scf_context, scf_config, scf_state, scf_options, scf_result, &
-                               scf_energies, la, pair_eri_cache%eri, soscf_switch_iteration, &
-                               scf_options%max_iteration - soscf_switch_iteration)
+         call trc_scf_soscf_run(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, la, &
+                               pair_eri_cache%eri)
       end if
 
       ! The density the energy was evaluated at, and the orbitals that made it.

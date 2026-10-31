@@ -269,6 +269,14 @@ module trc_scf_settings
       real(dp) :: diis_start = huge(1.0_dp)
       logical :: soscf = .false.
       real(dp) :: soscf_start = DEFAULT_SOSCF_START
+      real(dp) :: conv_energy = 0.0_dp
+      real(dp) :: conv_diis = 0.0_dp
+      integer :: max_iteration = 0
+      !! `opts%conv_energy`/`%conv_diis`/`%max_iteration`, resolved through
+      !! so `trc_scf_soscf%trc_scf_soscf_run` reads its convergence test and
+      !! remaining-iteration budget off `scf_config` alone, the same bundle
+      !! every other per-iteration step takes, rather than `scf_options` as
+      !! an extra argument.
       logical :: pcm_on = .false.
       logical :: incr_on = .false.
       logical :: df = .false.
@@ -387,6 +395,9 @@ contains
       this%soscf = opts%soscf
       this%soscf_start = opts%soscf_start
       if (this%soscf_start <= 0.0_dp) this%soscf_start = DEFAULT_SOSCF_START
+      this%conv_energy = opts%conv_energy
+      this%conv_diis = opts%conv_diis
+      this%max_iteration = opts%max_iteration
       if (this%soscf) then
          ! Restricted Hartree-Fock only, like the backend `trc_scf_soscf`
          ! was ported from (metalquicha's `mqc_czt_soscf`/`mqc_czt_rhf`):

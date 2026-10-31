@@ -14,6 +14,28 @@
 ! more than one rank before any of this ever runs, so none of those
 ! combinations reaches here silently as plain DIIS.
 !
+! ONLY `trc_scf_soscf_run` IS PUBLIC. `trc_scf_run` is this module's one
+! caller; nothing else in terco, and no test, reaches into its internals.
+!
+! BUNDLED ARGUMENTS. Three plain-value types below (`trc_soscf_dims_t`,
+! `trc_soscf_step_io_t`, `trc_soscf_hvp_scratch_t`) exist only to keep
+! every procedure here at the project's 8-argument limit, not to own or
+! share anything across calls. `trc_soscf_dims_t` is scalars only, so a
+! structure-constructor literal builds it safely; the other two have
+! allocatable components and are never built that way (this branch's own
+! no-pointer rule, and the nvfortran constructor defect it travels with)
+! -- each is a plain `type(...) :: x` declaration, filled by ordinary
+! `allocate` statements in the procedure that owns it, and read only
+! through intent(in)/(inout) dummies elsewhere. None of the three is ever
+! assigned FROM an existing `trc_basis_t`/`trc_eri_t`/`trc_linalg_t`/
+! `scf_ctx_t`-family object: those stay separate arguments everywhere
+! (the same `b, eri, lp` triple `trc_cphf.F90` passes around), because
+! copying one into a bundle's component would deep-copy its allocatable
+! device arrays -- for `trc_eri_t` for a large screened pair list, an
+! expensive wrong move, and for `mem:separate` as such, a residency bug:
+! the copy's arrays would carry a HOST address never entered into the
+! device present table.
+!
 ! THE ORBITAL HESSIAN ACTION (`scf_soscf_hessian_apply_rhf`)
 ! -------------------------------------------------------------
 ! `(e_a-e_i) p + [A p]`, `trc_cphf.F90`'s own equation (its header derives
@@ -39,9 +61,7 @@
 !    Hessian is `4` times `scf_soscf_hessian_apply_rhf`'s `(e_a-e_i) p +
 !    [A p]`. The factor is the one `mqc_czt_soscf`'s own header derives
 !    (`HESSIAN_SCALE`); it cancels out of the Newton step and only sets the
-!    UNITS the curvature thresholds below are read in, which is why it is
-!    re-derived independently, by finite difference, in this port's own
-!    test (`check_soscf.F90`) rather than carried over on trust alone.
+!    UNITS the curvature thresholds below are read in.
 ! 3. STEP (`scf_soscf_newton_step_rhf`): the level-shifted trust-region Newton
 !    equations, solved in a small Krylov subspace built from
 !    Hessian-vector products -- one Fock build (`scf_soscf_hessian_apply_rhf`)
@@ -73,7 +93,7 @@ module trc_scf_soscf
    use trc_linalg, only: trc_linalg_t
    use trc_cphf, only: cphf_zero_matrix, cphf_copy_matrix, cphf_add_matrix, cphf_axpy_matrix, cphf_add_diag
    use trc_scf_context, only: scf_ctx_t
-   use trc_scf_settings, only: scf_settings_t, trc_scf_options_t, trc_scf_result_t, scf_energies_t
+   use trc_scf_settings, only: scf_settings_t, trc_scf_result_t, scf_energies_t
    use trc_scf_state, only: scf_state_t
    use trc_scf_fock, only: scf_fock_build_g, scf_fock_energy, scf_fock_assemble, scf_fock_commutator_error, &
                            scf_fock_to_cart, scf_fock_to_sph
@@ -81,12 +101,6 @@ module trc_scf_soscf
    private
 
    public :: trc_scf_soscf_run
-   ! Exported for check_soscf.F90's own finite-difference validation of the
-   ! gradient and the Hessian scale -- see this module's own header, point 2.
-   public :: scf_soscf_semicanonicalize, scf_soscf_gradient, scf_soscf_newton_step_rhf, scf_soscf_rotation_matrix
-   public :: scf_soscf_fock_rebuild, scf_soscf_hessian_apply_rhf
-   public :: HESSIAN_SCALE, MIN_CURVATURE, SADDLE_CURVATURE, MAX_ROTATION, MIN_ROTATION, ENERGY_RESOLUTION, &
-             TRUST_GROWTH, DEFAULT_SOSCF_SUBSPACE, SUBSPACE_TOLERANCE, MAX_BACKTRACKS
 
    real(dp), parameter :: HESSIAN_SCALE = 4.0_dp
    !! `scf_soscf_hessian_apply_rhf`'s `(e_a-e_i) p + [A p]` to the true
@@ -119,68 +133,96 @@ module trc_scf_soscf
    real(dp), parameter :: LINEAR_DEPENDENCE = 1.0e-8_dp
    integer, parameter :: MAX_BACKTRACKS = 12
 
+   type :: trc_soscf_dims_t
+      !! Sizes threaded through the Hessian-vector product and the
+      !! semicanonicalisation. Scalars only -- see this module's own
+      !! header on why that makes a structure-constructor literal safe
+      !! here and nowhere else in this module.
+      logical :: sph = .false.
+      integer :: nao = 0, nao_c = 0, n_mo = 0, nocc = 0, nvirt = 0
+   end type trc_soscf_dims_t
+
+   type :: trc_soscf_hvp_scratch_t
+      !! `scf_soscf_hessian_apply_rhf`'s own device-resident scratch,
+      !! owned by `scf_soscf_newton_step_rhf` for the life of one call.
+      real(dp), allocatable :: diagv(:, :)
+      real(dp), allocatable :: d_u(:, :), d_ut(:, :), g_u(:, :)
+      real(dp), allocatable :: d_u_c(:, :), g_u_c(:, :)
+      real(dp), allocatable :: temporary_no(:, :), temporary_no2(:, :)
+   end type trc_soscf_hvp_scratch_t
+
+   type :: trc_soscf_step_io_t
+      !! The Newton step's own in/out parameters, owned by
+      !! `trc_scf_soscf_run` for the life of the phase: `gradient`/`step`
+      !! are reused, never reallocated, every Newton iteration.
+      real(dp), allocatable :: gradient(:, :)
+      real(dp), allocatable :: step(:, :)
+      real(dp) :: escape = 0.0_dp, lowest = 0.0_dp, predicted = 0.0_dp
+      integer :: products = 0, max_subspace = 0
+   end type trc_soscf_step_io_t
+
 contains
 
    !
    ! The second-order phase: `trc_scf_run`'s own DIIS loop calls this once
-   ! the commutator has fallen below `scf_options%soscf_start`, in place of
-   ! the rest of its own iterations. `switch_iteration` is the DIIS iteration
-   ! this took over after (reported, not used); `max_steps` is whatever is
-   ! left of `scf_options%max_iteration`. Updates `scf_result` (density,
-   ! orbitals, orbital energies, `converged`, `iterations`) in place;
-   ! `scf_state`/`scf_energies` are the same per-iteration scratch and
-   ! energy bundle the DIIS loop itself writes through, reused here rather
-   ! than duplicated.
+   ! the commutator has fallen below `scf_config%soscf_start`, in place of
+   ! the rest of its own iterations. The DIIS iteration this took over
+   ! after is `scf_result%iterations` on entry (every iteration already
+   ! sets it, including the one that triggered the handover); the steps
+   ! left are `scf_config%max_iteration` beyond it. Updates `scf_result`
+   ! (density, orbitals, orbital energies, `converged`, `iterations`) in
+   ! place; `scf_state`/`scf_energies` are the same per-iteration scratch
+   ! and energy bundle the DIIS loop itself writes through, reused here
+   ! rather than duplicated.
    !
-   subroutine trc_scf_soscf_run(scf_basis, scf_context, scf_config, scf_state, scf_options, scf_result, &
-                                scf_energies, la, eri, switch_iteration, max_steps)
+   subroutine trc_scf_soscf_run(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, la, eri)
       type(trc_basis_t), intent(in) :: scf_basis
       type(scf_ctx_t), intent(in) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
       type(scf_state_t), intent(inout) :: scf_state
-      type(trc_scf_options_t), intent(in) :: scf_options
       type(trc_scf_result_t), intent(inout) :: scf_result
       type(scf_energies_t), intent(inout) :: scf_energies
       type(trc_linalg_t), intent(inout) :: la
       type(trc_eri_t), intent(inout) :: eri
-      integer, intent(in) :: switch_iteration
-      integer, intent(in) :: max_steps
 
-      integer :: nao, n_mo, nocc, nvirt, iteration, trial, info, products, products_total, builds
-      real(dp) :: e_cur, e_try, e_old, de, errmax, scaling, trust, predicted, lowest
+      type(trc_soscf_dims_t) :: dims
+      type(trc_soscf_step_io_t) :: io
+      integer :: switch_iteration, max_steps, iteration, trial, info, products_total, builds
+      real(dp) :: e_cur, e_try, e_old, de, errmax, scaling, trust
       logical :: accepted, saddle, converged_now
       character(len=200) :: line
 
       real(dp), allocatable :: fock_cur(:, :), coeff_work(:, :), coeff_try(:, :), dmat_accepted(:, :)
       real(dp), allocatable :: fock_mo(:, :), energies_mo(:)
-      real(dp), allocatable :: gradient(:, :), step(:, :), step_scaled(:, :)
+      real(dp), allocatable :: step_scaled(:, :)
       real(dp), allocatable :: kappa(:, :), rotation(:, :), scratch_a(:, :), scratch_b(:, :), scratch_c(:, :)
       real(dp), allocatable :: step_host(:, :)
 
-      nao = scf_context%nao
-      n_mo = nao - scf_context%n_lindep
-      nocc = scf_config%nocc(1)
-      nvirt = n_mo - nocc
+      switch_iteration = scf_result%iterations
+      max_steps = scf_config%max_iteration - switch_iteration
+      dims = trc_soscf_dims_t(sph=scf_context%sph, nao=scf_context%nao, nao_c=scf_context%nao_c, &
+                              n_mo=scf_context%nao - scf_context%n_lindep, nocc=scf_config%nocc(1), &
+                              nvirt=scf_context%nao - scf_context%n_lindep - scf_config%nocc(1))
       products_total = 0
-      if (nocc < 1 .or. nvirt < 1) then
+      if (dims%nocc < 1 .or. dims%nvirt < 1) then
          scf_result%message = "trc_scf: --soscf needs at least one occupied and one virtual orbital; "// &
                               "there are no rotations to take"
          return
       end if
       if (max_steps < 1) return
 
-      allocate (fock_cur(nao, nao), coeff_work(nao, n_mo), coeff_try(nao, n_mo), dmat_accepted(nao, nao))
-      allocate (fock_mo(n_mo, n_mo), energies_mo(n_mo))
-      allocate (gradient(nvirt, nocc), step(nvirt, nocc), step_scaled(nvirt, nocc))
-      allocate (kappa(n_mo, n_mo), rotation(n_mo, n_mo), scratch_a(n_mo, n_mo), scratch_b(n_mo, n_mo), &
-               scratch_c(n_mo, n_mo))
-      allocate (step_host(nvirt, nocc))
-      !$acc enter data create(fock_cur, coeff_work, coeff_try, dmat_accepted, fock_mo, gradient, step) &
-      !$acc            create(step_scaled, kappa, rotation, scratch_a, scratch_b, scratch_c)
+      allocate (fock_cur(dims%nao, dims%nao), coeff_work(dims%nao, dims%n_mo), coeff_try(dims%nao, dims%n_mo))
+      allocate (dmat_accepted(dims%nao, dims%nao), fock_mo(dims%n_mo, dims%n_mo), energies_mo(dims%n_mo))
+      allocate (io%gradient(dims%nvirt, dims%nocc), io%step(dims%nvirt, dims%nocc))
+      allocate (step_scaled(dims%nvirt, dims%nocc), step_host(dims%nvirt, dims%nocc))
+      allocate (kappa(dims%n_mo, dims%n_mo), rotation(dims%n_mo, dims%n_mo))
+      allocate (scratch_a(dims%n_mo, dims%n_mo), scratch_b(dims%n_mo, dims%n_mo), scratch_c(dims%n_mo, dims%n_mo))
+      !$acc enter data create(fock_cur, coeff_work, coeff_try, dmat_accepted, fock_mo) &
+      !$acc            create(io%gradient, io%step, step_scaled, kappa, rotation, scratch_a, scratch_b, scratch_c)
       !$acc enter data copyin(energies_mo)
 
-      call cphf_copy_matrix(nao, n_mo, scf_result%cmo(:, 1:n_mo, 1), coeff_work)
-      call cphf_copy_matrix(nao, nao, scf_result%dmat(:, :, 1), dmat_accepted)
+      call cphf_copy_matrix(dims%nao, dims%n_mo, scf_result%cmo(:, 1:dims%n_mo, 1), coeff_work)
+      call cphf_copy_matrix(dims%nao, dims%nao, scf_result%dmat(:, :, 1), dmat_accepted)
 
       ! The point the Newton phase starts from, built in full: the Fock
       ! matrix DIIS left behind is extrapolated and possibly level
@@ -188,10 +230,11 @@ contains
       ! diagonalisation -- neither is a state this can differentiate
       ! (mqc_czt_rhf's own run_soscf_phase, same reasoning).
       call scf_soscf_fock_rebuild(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, la, eri)
-      call cphf_copy_matrix(nao, nao, scf_state%fock(:, :, 1), fock_cur)
+      call cphf_copy_matrix(dims%nao, dims%nao, scf_state%fock(:, :, 1), fock_cur)
       e_cur = scf_energies%total
       e_old = e_cur
       trust = MAX_ROTATION
+      io%max_subspace = DEFAULT_SOSCF_SUBSPACE
       if (scf_config%talk) then
          call global_logger%info("   second-order phase: trust-region Newton on the orbital rotations, "// &
                                  "handing over from DIIS at iteration "//to_string(switch_iteration))
@@ -199,30 +242,29 @@ contains
 
       do iteration = 1, max_steps
          builds = 0
-         call scf_soscf_semicanonicalize(la, nao, n_mo, nocc, fock_cur, coeff_work, fock_mo, energies_mo, info)
+         call scf_soscf_semicanonicalize(la, dims, fock_cur, coeff_work, fock_mo, energies_mo, info)
          if (info /= 0) then
             scf_result%message = "trc_scf: --soscf's semicanonicalisation did not converge "// &
                                  "(eigensolver info="//to_string(info)//")"
             exit
          end if
-         call scf_soscf_gradient(n_mo, nocc, nvirt, fock_mo, gradient)
+         call scf_soscf_gradient(dims%n_mo, dims%nocc, dims%nvirt, fock_mo, io%gradient)
 
          ! The commutator at the current (accepted) point, the SAME metric
          ! and the same test trc_scf_run's own DIIS loop converges on.
-         call cphf_copy_matrix(nao, nao, fock_cur, scf_state%fock(:, :, 1))
+         call cphf_copy_matrix(dims%nao, dims%nao, fock_cur, scf_state%fock(:, :, 1))
          call scf_fock_commutator_error(scf_context, scf_config, scf_state, scf_result, la)
          errmax = sqrt(la%dot_3d(scf_state%errv, scf_state%errv))
          de = abs(e_cur - e_old)
 
          !$acc update self(energies_mo)
-         call scf_soscf_newton_step_rhf(scf_basis, scf_context%sph, scf_context%nao_c, eri, la, nao, n_mo, nocc, &
-                                    nvirt, coeff_work, energies_mo, gradient, MAX_ROTATION, step, lowest, &
-                                    predicted, products, DEFAULT_SOSCF_SUBSPACE)
-         products_total = products_total + products
-         builds = builds + products
+         io%escape = MAX_ROTATION
+         call scf_soscf_newton_step_rhf(scf_basis, eri, la, dims, coeff_work, energies_mo, io)
+         products_total = products_total + io%products
+         builds = builds + io%products
 
-         saddle = lowest < SADDLE_CURVATURE
-         converged_now = de < scf_options%conv_energy .and. errmax < scf_options%conv_diis
+         saddle = io%lowest < SADDLE_CURVATURE
+         converged_now = de < scf_config%conv_energy .and. errmax < scf_config%conv_diis
          if (converged_now) then
             if (.not. saddle) then
                scf_result%converged = .true.
@@ -237,32 +279,32 @@ contains
                                        "negative curvature out")
          end if
 
-         call soscf_pull_matrix(nvirt, nocc, step, step_host)
+         call soscf_pull_matrix(dims%nvirt, dims%nocc, io%step, step_host)
          scaling = maxval(abs(step_host))
 
          accepted = .false.
          do trial = 1, MAX_BACKTRACKS
             if (scaling > trust) then
-               call soscf_scale_matrix(nvirt, nocc, step, trust/scaling, step_scaled)
+               call soscf_scale_matrix(dims%nvirt, dims%nocc, io%step, trust/scaling, step_scaled)
             else
-               call cphf_copy_matrix(nvirt, nocc, step, step_scaled)
+               call cphf_copy_matrix(dims%nvirt, dims%nocc, io%step, step_scaled)
             end if
-            call soscf_embed_kappa(n_mo, nocc, nvirt, step_scaled, kappa)
-            call scf_soscf_rotation_matrix(la, n_mo, min(scaling, trust), kappa, rotation, scratch_a, scratch_b, &
-                                       scratch_c)
+            call soscf_embed_kappa(dims%n_mo, dims%nocc, dims%nvirt, step_scaled, kappa)
+            call scf_soscf_rotation_matrix(la, dims%n_mo, min(scaling, trust), kappa, rotation, scratch_a, &
+                                           scratch_b, scratch_c)
             call la%gemm_mat(coeff_work, rotation, coeff_try)
-            call la%density(coeff_try, nocc, scf_config%occ, scf_result%dmat(:, :, 1))
+            call la%density(coeff_try, dims%nocc, scf_config%occ, scf_result%dmat(:, :, 1))
             call scf_soscf_fock_rebuild(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, &
-                                    la, eri)
+                                       la, eri)
             e_try = scf_energies%total
             builds = builds + 1
 
             ! `predicted` below its own resolution is a step too small to
             ! measure, not a step that failed -- see ENERGY_RESOLUTION.
-            if (e_try < e_cur .or. predicted < ENERGY_RESOLUTION) then
-               call cphf_copy_matrix(nao, n_mo, coeff_try, coeff_work)
-               call cphf_copy_matrix(nao, nao, scf_state%fock(:, :, 1), fock_cur)
-               call cphf_copy_matrix(nao, nao, scf_result%dmat(:, :, 1), dmat_accepted)
+            if (e_try < e_cur .or. io%predicted < ENERGY_RESOLUTION) then
+               call cphf_copy_matrix(dims%nao, dims%n_mo, coeff_try, coeff_work)
+               call cphf_copy_matrix(dims%nao, dims%nao, scf_state%fock(:, :, 1), fock_cur)
+               call cphf_copy_matrix(dims%nao, dims%nao, scf_result%dmat(:, :, 1), dmat_accepted)
                e_old = e_cur
                e_cur = e_try
                trust = min(MAX_ROTATION, trust*TRUST_GROWTH)
@@ -276,7 +318,7 @@ contains
          if (scf_config%talk) then
             write (line, "(a,i0,a,f20.12,a,es9.2,a,es9.2,a,f7.4,a,es9.2,a,i0)") &
                "   soscf ", iteration, ": E = ", e_cur, "  dE ", de, "  |FDS-SDF| ", errmax, &
-               "  trust ", trust, "  curvature ", lowest, "  fock builds ", builds
+               "  trust ", trust, "  curvature ", io%lowest, "  fock builds ", builds
             call global_logger%info(trim(line))
          end if
          scf_result%iterations = switch_iteration + iteration
@@ -293,12 +335,12 @@ contains
       ! density, and re-semicanonicalise so the orbital energies leaving
       ! are canonical (converged) or honestly semicanonical (stalled),
       ! never a half-written trial's.
-      call cphf_copy_matrix(nao, nao, dmat_accepted, scf_result%dmat(:, :, 1))
-      call scf_soscf_semicanonicalize(la, nao, n_mo, nocc, fock_cur, coeff_work, fock_mo, energies_mo, info)
+      call cphf_copy_matrix(dims%nao, dims%nao, dmat_accepted, scf_result%dmat(:, :, 1))
+      call scf_soscf_semicanonicalize(la, dims, fock_cur, coeff_work, fock_mo, energies_mo, info)
       if (info == 0) then
-         call cphf_copy_matrix(nao, n_mo, coeff_work, scf_result%cmo(:, 1:n_mo, 1))
+         call cphf_copy_matrix(dims%nao, dims%n_mo, coeff_work, scf_result%cmo(:, 1:dims%n_mo, 1))
          !$acc update self(energies_mo)
-         scf_result%eps(1:n_mo, 1) = energies_mo
+         scf_result%eps(1:dims%n_mo, 1) = energies_mo
       end if
       if (scf_config%talk) then
          write (line, "(a,i0,a,i0,a)") "   second-order phase: ", products_total, &
@@ -307,8 +349,8 @@ contains
          call global_logger%info(trim(line))
       end if
 
-      !$acc exit data delete(fock_cur, coeff_work, coeff_try, dmat_accepted, fock_mo, gradient, step) &
-      !$acc           delete(step_scaled, kappa, rotation, scratch_a, scratch_b, scratch_c)
+      !$acc exit data delete(fock_cur, coeff_work, coeff_try, dmat_accepted, fock_mo) &
+      !$acc           delete(io%gradient, io%step, step_scaled, kappa, rotation, scratch_a, scratch_b, scratch_c)
       !$acc exit data delete(energies_mo)
    end subroutine trc_scf_soscf_run
 
@@ -319,8 +361,7 @@ contains
    ! `--soscf`): `scf_fock_build_g`/`scf_fock_energy`/`scf_fock_assemble`,
    ! the SAME sequence `trc_scf_run`'s own iteration runs, reused rather
    ! than duplicated. Leaves `scf_state%fock(:,:,1)` and
-   ! `scf_energies%total` at that density; exported for
-   ! `check_soscf.F90`'s own finite-difference validation.
+   ! `scf_energies%total` at that density.
    !
    subroutine scf_soscf_fock_rebuild(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, la, eri)
       type(trc_basis_t), intent(in) :: scf_basis
@@ -349,23 +390,26 @@ contains
    ! Diagonalise the Fock matrix within the occupied block and within the
    ! virtual block, so the Hessian expression `scf_soscf_hessian_apply_rhf`
    ! computes means the Hessian again -- see this module's own header.
-   ! `coeff` (nao, n_mo) is rotated in place, within each block; what
-   ! comes out is the Fock matrix in the new basis (`fock_mo`), whose
+   ! `coeff` (dims%nao, dims%n_mo) is rotated in place, within each block;
+   ! what comes out is the Fock matrix in the new basis (`fock_mo`), whose
    ! occupied-virtual block is the gradient and whose diagonal
    ! (`energies_mo`) is the orbital energies -- canonical once the
    ! occupied-virtual block has vanished, semicanonical otherwise.
    !
-   subroutine scf_soscf_semicanonicalize(la, nao, n_mo, nocc, fock_ao, coeff, fock_mo, energies_mo, info)
+   subroutine scf_soscf_semicanonicalize(la, dims, fock_ao, coeff, fock_mo, energies_mo, info)
       type(trc_linalg_t), intent(inout) :: la
-      integer, intent(in) :: nao, n_mo, nocc
-      real(dp), intent(in) :: fock_ao(nao, nao)
-      real(dp), intent(inout) :: coeff(nao, n_mo)
-      real(dp), intent(inout) :: fock_mo(n_mo, n_mo)
-      real(dp), intent(inout) :: energies_mo(n_mo)
+      type(trc_soscf_dims_t), intent(in) :: dims
+      real(dp), intent(in) :: fock_ao(dims%nao, dims%nao)
+      real(dp), intent(inout) :: coeff(dims%nao, dims%n_mo)
+      real(dp), intent(inout) :: fock_mo(dims%n_mo, dims%n_mo)
+      real(dp), intent(inout) :: energies_mo(dims%n_mo)
       integer, intent(out) :: info
-      integer :: n_vir, k
+      integer :: nao, n_mo, nocc, n_vir
       real(dp), allocatable :: work(:, :), rotated(:, :), block_matrix(:, :), block_values(:)
 
+      nao = dims%nao
+      n_mo = dims%n_mo
+      nocc = dims%nocc
       n_vir = n_mo - nocc
       allocate (work(nao, n_mo), rotated(nao, n_mo))
       !$acc enter data create(work, rotated)
@@ -457,67 +501,68 @@ contains
    ! level-shifted subproblem there (`soscf_level_shifted_step`) -- the
    ! same step control CASSCF's own optimiser would apply to a dense
    ! Hessian, applied here to a projected one. `energies_mo` is HOST
-   ! (pulled once by the caller); `cmo`/`gradient`/`step` are device
-   ! resident. `lowest` is an UPPER BOUND on the true smallest curvature
-   ! (a Rayleigh-Ritz value), not the curvature itself.
+   ! (pulled once by the caller); `cmo` and `io%gradient`/`io%step` are
+   ! device resident. `io%lowest` is an UPPER BOUND on the true smallest
+   ! curvature (a Rayleigh-Ritz value), not the curvature itself. The
+   ! Hessian-vector product's own scratch (`trc_soscf_hvp_scratch_t`) is
+   ! local to this call, never a dummy here -- see this module's own
+   ! header on why the bundling stops at the arg-count limit, not at
+   ! "everything this touches".
    !
-   subroutine scf_soscf_newton_step_rhf(b, sph, nao_c, eri, lp, nao, n_mo, nocc, nvirt, cmo, energies_mo, gradient, &
-                                    escape, step, lowest, predicted, products, max_subspace)
+   subroutine scf_soscf_newton_step_rhf(b, eri, lp, dims, cmo, energies_mo, io)
       type(trc_basis_t), intent(in) :: b
-      logical, intent(in) :: sph
-      integer, intent(in) :: nao_c
       type(trc_eri_t), intent(inout) :: eri
       type(trc_linalg_t), intent(inout) :: lp
-      integer, intent(in) :: nao, n_mo, nocc, nvirt
-      real(dp), intent(in) :: cmo(nao, n_mo)
-      real(dp), intent(in) :: energies_mo(n_mo)
-      real(dp), intent(in) :: gradient(nvirt, nocc)
-      real(dp), intent(in) :: escape
-      real(dp), intent(inout) :: step(nvirt, nocc)
-      real(dp), intent(out) :: lowest, predicted
-      integer, intent(out) :: products
-      integer, intent(in) :: max_subspace
+      type(trc_soscf_dims_t), intent(in) :: dims
+      real(dp), intent(in) :: cmo(dims%nao, dims%n_mo)
+      real(dp), intent(in) :: energies_mo(dims%n_mo)
+      type(trc_soscf_step_io_t), intent(inout) :: io
 
-      real(dp), allocatable :: gaps(:, :)
+      type(trc_soscf_hvp_scratch_t) :: scratch
       real(dp), allocatable :: basis(:, :, :), image(:, :, :)
       real(dp), allocatable :: direction(:, :), residual(:, :)
-      real(dp), allocatable :: d_u(:, :), d_ut(:, :), g_u(:, :), d_u_c(:, :), g_u_c(:, :)
-      real(dp), allocatable :: temporary_no(:, :), temporary_no2(:, :)
       real(dp), allocatable :: small(:, :), small_gradient(:), amplitude(:)
       real(dp) :: gradient_norm, resid_norm
-      integer :: nmax, nsub, i, j, a0, i0
+      integer :: nao, nao_c, n_mo, nocc, nvirt, nmax, nsub, i, j, a0, i0
       integer :: softest(2)
       logical :: added, ok
 
-      lowest = 0.0_dp
-      predicted = 0.0_dp
-      products = 0
-      call cphf_zero_matrix(nvirt, nocc, step)
+      nao = dims%nao
+      nao_c = dims%nao_c
+      n_mo = dims%n_mo
+      nocc = dims%nocc
+      nvirt = dims%nvirt
+      io%lowest = 0.0_dp
+      io%predicted = 0.0_dp
+      io%products = 0
+      call cphf_zero_matrix(nvirt, nocc, io%step)
       if (nvirt < 1 .or. nocc < 1) return
 
-      allocate (gaps(nvirt, nocc))
+      allocate (scratch%diagv(nvirt, nocc))
       do i = 1, nocc
          do j = 1, nvirt
-            gaps(j, i) = energies_mo(nocc + j) - energies_mo(i)
+            scratch%diagv(j, i) = energies_mo(nocc + j) - energies_mo(i)
          end do
       end do
-      !$acc enter data copyin(gaps)
+      !$acc enter data copyin(scratch%diagv)
 
-      nmax = max(1, min(max_subspace, nvirt*nocc))
+      nmax = max(1, min(io%max_subspace, nvirt*nocc))
       allocate (basis(nvirt, nocc, nmax), image(nvirt, nocc, nmax))
       allocate (direction(nvirt, nocc), residual(nvirt, nocc))
-      allocate (d_u(nao, nao), d_ut(nao, nao), g_u(nao, nao), d_u_c(nao_c, nao_c), g_u_c(nao_c, nao_c))
-      allocate (temporary_no(nao, nocc), temporary_no2(nao, nocc))
-      !$acc enter data create(basis, image, direction, residual, d_u, d_ut, g_u, d_u_c, g_u_c) &
-      !$acc            create(temporary_no, temporary_no2)
+      allocate (scratch%d_u(nao, nao), scratch%d_ut(nao, nao), scratch%g_u(nao, nao))
+      allocate (scratch%d_u_c(nao_c, nao_c), scratch%g_u_c(nao_c, nao_c))
+      allocate (scratch%temporary_no(nao, nocc), scratch%temporary_no2(nao, nocc))
+      !$acc enter data create(basis, image, direction, residual)
+      !$acc enter data create(scratch%d_u, scratch%d_ut, scratch%g_u, scratch%d_u_c, scratch%g_u_c)
+      !$acc enter data create(scratch%temporary_no, scratch%temporary_no2)
 
-      gradient_norm = sqrt(lp%dot_2d(gradient, gradient))
+      gradient_norm = sqrt(lp%dot_2d(io%gradient, io%gradient))
 
       ! ---- the seeds: the preconditioned gradient, and the softest mode --
       nsub = 0
-      call soscf_preconditioned_direction(nvirt, nocc, gaps, PRECONDITION_FLOOR, gradient, direction)
+      call soscf_preconditioned_direction(nvirt, nocc, scratch%diagv, PRECONDITION_FLOOR, io%gradient, direction)
       call soscf_add_direction(lp, nvirt, nocc, basis, nsub, direction, added)
-      softest = minloc(gaps)
+      softest = minloc(scratch%diagv)
       a0 = softest(1)
       i0 = softest(2)
       call soscf_unit_matrix(nvirt, nocc, a0, i0, direction)
@@ -525,11 +570,9 @@ contains
 
       if (nsub > 0) then
          do i = 1, nsub
-            call scf_soscf_hessian_apply_rhf(b, sph, eri, lp, nao, nao_c, n_mo, nocc, nvirt, cmo, gaps, &
-                                             basis(:, :, i), image(:, :, i), d_u, d_ut, g_u, d_u_c, g_u_c, &
-                                             temporary_no, temporary_no2)
+            call scf_soscf_hessian_apply_rhf(b, eri, lp, dims, cmo, basis(:, :, i), image(:, :, i), scratch)
             call soscf_scale_matrix(nvirt, nocc, image(:, :, i), HESSIAN_SCALE, image(:, :, i))
-            products = products + 1
+            io%products = io%products + 1
          end do
 
          ! ---- solve, expand, repeat --------------------------------------
@@ -540,22 +583,22 @@ contains
                do i = 1, nsub
                   small(i, j) = lp%dot_2d(basis(:, :, i), image(:, :, j))
                end do
-               small_gradient(j) = lp%dot_2d(basis(:, :, j), gradient)
+               small_gradient(j) = lp%dot_2d(basis(:, :, j), io%gradient)
             end do
             small = 0.5_dp*(small + transpose(small))
 
             if (allocated(amplitude)) deallocate (amplitude)
             allocate (amplitude(nsub))
-            call soscf_level_shifted_step(small, small_gradient, escape, amplitude, lowest, predicted, ok)
+            call soscf_level_shifted_step(small, small_gradient, io%escape, amplitude, io%lowest, io%predicted, ok)
             if (.not. ok) then
                call global_logger%warning("trc_scf_soscf: the projected orbital Hessian failed to diagonalise")
                exit
             end if
 
-            call cphf_zero_matrix(nvirt, nocc, step)
-            call cphf_copy_matrix(nvirt, nocc, gradient, residual)
+            call cphf_zero_matrix(nvirt, nocc, io%step)
+            call cphf_copy_matrix(nvirt, nocc, io%gradient, residual)
             do i = 1, nsub
-               call cphf_axpy_matrix(nvirt, nocc, amplitude(i), basis(:, :, i), step)
+               call cphf_axpy_matrix(nvirt, nocc, amplitude(i), basis(:, :, i), io%step)
                call cphf_axpy_matrix(nvirt, nocc, amplitude(i), image(:, :, i), residual)
             end do
 
@@ -563,15 +606,13 @@ contains
             resid_norm = sqrt(lp%dot_2d(residual, residual))
             if (resid_norm <= SUBSPACE_TOLERANCE*max(gradient_norm, tiny(1.0_dp))) exit
 
-            call soscf_preconditioned_direction(nvirt, nocc, gaps, PRECONDITION_FLOOR, residual, direction)
+            call soscf_preconditioned_direction(nvirt, nocc, scratch%diagv, PRECONDITION_FLOOR, residual, direction)
             call soscf_add_direction(lp, nvirt, nocc, basis, nsub, direction, added)
             if (.not. added) exit
 
-            call scf_soscf_hessian_apply_rhf(b, sph, eri, lp, nao, nao_c, n_mo, nocc, nvirt, cmo, gaps, &
-                                             basis(:, :, nsub), image(:, :, nsub), d_u, d_ut, g_u, d_u_c, g_u_c, &
-                                             temporary_no, temporary_no2)
+            call scf_soscf_hessian_apply_rhf(b, eri, lp, dims, cmo, basis(:, :, nsub), image(:, :, nsub), scratch)
             call soscf_scale_matrix(nvirt, nocc, image(:, :, nsub), HESSIAN_SCALE, image(:, :, nsub))
-            products = products + 1
+            io%products = io%products + 1
          end do
       else
          ! Unreachable for nvirt, nocc >= 1 (the second seed is always a
@@ -582,46 +623,49 @@ contains
 
       if (allocated(small)) deallocate (small, small_gradient)
       if (allocated(amplitude)) deallocate (amplitude)
-      !$acc exit data delete(basis, image, direction, residual, d_u, d_ut, g_u, d_u_c, g_u_c) &
-      !$acc           delete(temporary_no, temporary_no2)
-      deallocate (basis, image, direction, residual, d_u, d_ut, g_u, d_u_c, g_u_c, temporary_no, temporary_no2)
-      !$acc exit data delete(gaps)
-      deallocate (gaps)
+      !$acc exit data delete(basis, image, direction, residual)
+      deallocate (basis, image, direction, residual)
+      !$acc exit data delete(scratch%d_u, scratch%d_ut, scratch%g_u, scratch%d_u_c, scratch%g_u_c)
+      !$acc exit data delete(scratch%temporary_no, scratch%temporary_no2)
+      deallocate (scratch%d_u, scratch%d_ut, scratch%g_u, scratch%d_u_c, scratch%g_u_c)
+      deallocate (scratch%temporary_no, scratch%temporary_no2)
+      !$acc exit data delete(scratch%diagv)
+      deallocate (scratch%diagv)
    end subroutine scf_soscf_newton_step_rhf
 
    !
    ! `(e_a-e_i) p + [A p]`, the RHF orbital-Hessian action on a trial
    ! rotation `pin`, folded through the Cartesian space `eri%fock_resident`
-   ! runs in -- see this module's own header. `d_u`/`d_ut`/`g_u` are
-   ! `nao`-by-`nao` (the SCF's own space, spherical when the basis is);
-   ! `d_u_c`/`g_u_c` are `nao_c`-by-`nao_c` (always Cartesian); `sph =
-   ! .false.` makes `scf_fock_to_cart`/`scf_fock_to_sph` a plain copy, so a
-   ! Cartesian basis (`nao == nao_c`) pays nothing beyond it.
+   ! runs in -- see this module's own header. `scratch%d_u`/`%d_ut`/`%g_u`
+   ! are `nao`-by-`nao` (the SCF's own space, spherical when the basis
+   ! is); `%d_u_c`/`%g_u_c` are `nao_c`-by-`nao_c` (always Cartesian);
+   ! `dims%sph = .false.` makes `scf_fock_to_cart`/`scf_fock_to_sph` a
+   ! plain copy, so a Cartesian basis (`nao == nao_c`) pays nothing beyond
+   ! it.
    !
-   subroutine scf_soscf_hessian_apply_rhf(b, sph, eri, lp, nao, nao_c, n_mo, nocc, nvirt, cmo, diagv, pin, apout, &
-                                          d_u, d_ut, g_u, d_u_c, g_u_c, temporary_no, temporary_no2)
+   subroutine scf_soscf_hessian_apply_rhf(b, eri, lp, dims, cmo, pin, apout, scratch)
       type(trc_basis_t), intent(in) :: b
-      logical, intent(in) :: sph
       type(trc_eri_t), intent(inout) :: eri
       type(trc_linalg_t), intent(inout) :: lp
-      integer, intent(in) :: nao, nao_c, n_mo, nocc, nvirt
-      real(dp), intent(in) :: cmo(nao, n_mo)
-      real(dp), intent(in) :: diagv(nvirt, nocc)
-      real(dp), intent(in) :: pin(nvirt, nocc)
-      real(dp), intent(inout) :: apout(nvirt, nocc)
-      real(dp), intent(inout) :: d_u(nao, nao), d_ut(nao, nao), g_u(nao, nao)
-      real(dp), intent(inout) :: d_u_c(nao_c, nao_c), g_u_c(nao_c, nao_c)
-      real(dp), intent(inout) :: temporary_no(nao, nocc), temporary_no2(nao, nocc)
-      call lp%gemm_mat(cmo(:, nocc + 1:n_mo), pin, temporary_no)
-      call lp%gemm_mat(temporary_no, cmo(:, 1:nocc), d_u, transb="T")
-      call lp%transpose(nao, nao, d_u, nao, d_ut, nao)
-      call cphf_add_matrix(nao, nao, d_u, d_ut, d_u)
-      call scf_fock_to_cart(b, sph, nao, nao_c, d_u, d_u_c)
-      call eri%fock_resident(b, d_u_c, g_u_c, k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.)
-      call scf_fock_to_sph(b, sph, nao, nao_c, g_u_c, g_u)
-      call lp%gemm_mat(g_u, cmo(:, 1:nocc), temporary_no2)
-      call lp%gemm_mat(cmo(:, nocc + 1:n_mo), temporary_no2, apout, transa="T", alpha=2.0_dp)
-      call cphf_add_diag(nvirt, nocc, diagv, pin, apout)
+      type(trc_soscf_dims_t), intent(in) :: dims
+      real(dp), intent(in) :: cmo(dims%nao, dims%n_mo)
+      real(dp), intent(in) :: pin(dims%nvirt, dims%nocc)
+      real(dp), intent(inout) :: apout(dims%nvirt, dims%nocc)
+      type(trc_soscf_hvp_scratch_t), intent(inout) :: scratch
+      integer :: nocc, n_mo
+
+      nocc = dims%nocc
+      n_mo = dims%n_mo
+      call lp%gemm_mat(cmo(:, nocc + 1:n_mo), pin, scratch%temporary_no)
+      call lp%gemm_mat(scratch%temporary_no, cmo(:, 1:nocc), scratch%d_u, transb="T")
+      call lp%transpose(dims%nao, dims%nao, scratch%d_u, dims%nao, scratch%d_ut, dims%nao)
+      call cphf_add_matrix(dims%nao, dims%nao, scratch%d_u, scratch%d_ut, scratch%d_u)
+      call scf_fock_to_cart(b, dims%sph, dims%nao, dims%nao_c, scratch%d_u, scratch%d_u_c)
+      call eri%fock_resident(b, scratch%d_u_c, scratch%g_u_c, k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.)
+      call scf_fock_to_sph(b, dims%sph, dims%nao, dims%nao_c, scratch%g_u_c, scratch%g_u)
+      call lp%gemm_mat(scratch%g_u, cmo(:, 1:nocc), scratch%temporary_no2)
+      call lp%gemm_mat(cmo(:, nocc + 1:n_mo), scratch%temporary_no2, apout, transa="T", alpha=2.0_dp)
+      call cphf_add_diag(dims%nvirt, nocc, scratch%diagv, pin, apout)
    end subroutine scf_soscf_hessian_apply_rhf
 
    subroutine soscf_add_direction(lp, m, n, basis, nsub, direction, added)
