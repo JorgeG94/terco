@@ -39,6 +39,8 @@ add_executable(
   trc_run_report.F90
   trc_run_opt.F90
   trc_run_json.F90
+  trc_run_cli.F90
+  trc_run_calc.F90
   ${_dlfind_bridge_src})
 set_target_properties(
   terco_cli PROPERTIES OUTPUT_NAME terco Fortran_MODULE_DIRECTORY

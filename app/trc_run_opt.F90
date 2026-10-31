@@ -429,7 +429,7 @@ contains
                          "' has no atom indices")
             return
          end if
-         kind_tok = run_to_lower_alloc(char(words(1)))
+         call run_to_lower_into(char(words(1)), kind_tok)
          select case (kind_tok)
          case ("bond")
             found_kind(ncons) = 1
