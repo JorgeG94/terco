@@ -12,8 +12,8 @@
 !     the SCF converged with (`dfjk`, over the jkfit basis `jkaux`): the
 !     Z-vector is solved against the fitted orbital Hessian in the MO
 !     basis (trc_cphf_solve_rhf_fitted over df_rotation_t), the two
-!     potentials of a general density are its occupied projections
-!     G_fit[X] C_o (df_response_t, trc_scf_df_response both), and the
+!     potentials of the relaxed density are projections through the same
+!     MO blocks (trc_scf_df_response), and the
 !     two-electron derivative is
 !     trc_scf_grad_df's scf_grad_df_bilinear -- three- and two-centre, no
 !     four-centre integral anywhere. metalquicha's `fitted_reference`.
@@ -73,7 +73,7 @@ module trc_rimp2_grad
    use trc_step_table, only: step_table_t
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_cphf_solve_rhf, trc_cphf_solve_rhf_fitted
    use trc_scf_df, only: df_jk_t
-   use trc_scf_df_response, only: df_response_t, df_rotation_t
+   use trc_scf_df_response, only: df_rotation_t
    use trc_scf_grad_df, only: scf_grad_df_bilinear
    use trc_scf_grad, only: scf_grad_nuclear_repulsion
    use trc_rimp2_driver, only: trc_rimp2_options_t
@@ -180,7 +180,6 @@ contains
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
       type(trc_rimp2_relax_t) :: relax
-      type(df_response_t) :: resp
       type(trc_rimp2_options_t) :: ropts
       type(step_table_t) :: tbl
       type(timer_type) :: tc, tall
@@ -241,16 +240,13 @@ contains
       ! --- the Z-vector, then the relaxed and energy-weighted densities ----
       call tbl%step_on(la, ST_ZVEC, tc)
       call unrelaxed_density(relax, w)
-      ! After the correlation, whose B and Gamma it would otherwise sit next to.
-      if (fitted) call resp%setup(dfjk, la, w%ccart, w%eps, w%nocc, keep_blocks=.false.)
       if (fitted) then
-         call z_vector(b, la, job, w, dfjk=dfjk, resp=resp)
+         call z_vector(b, la, job, w, dfjk=dfjk)
       else
          call z_vector(b, la, job, w, eri=eri)
       end if
       call tbl%step_off(la, ST_ZVEC, tc)
       if (len_trim(job%res%message) > 0) then
-         call resp%release()
          call release_all(pl, eri, fitted)
          return
       end if
@@ -395,21 +391,20 @@ contains
       end do
    end subroutine unrelaxed_density
 
-   subroutine z_vector(b, la, job, w, eri, dfjk, resp)
+   subroutine z_vector(b, la, job, w, eri, dfjk)
       !! Solve (e_a - e_i) z_ai + [A z]_ai = -X_ai for the virtual-occupied
       !! block of the relaxed density, X = 2 C_v^T G[P_unrelaxed] C_o +
       !! imat(i, a)^T - imat(a, i) (mqc's right-hand side), and add z (and
       !! z^T) into w%dm1mo. G and A are the reference's own: the exact RHF
       !! operator with `eri` (trc_cphf_solve_rhf, density_screen off), the
-      !! fitted one with `dfjk` and `resp` (trc_cphf_solve_rhf_fitted). Sets
-      !! job%res%message on non-convergence.
+      !! fitted one with `dfjk` (trc_cphf_solve_rhf_fitted over its MO
+      !! blocks, df_rotation_t). Sets job%res%message on non-convergence.
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: la
       type(trc_rimp2_grad_t), intent(inout) :: job
       type(grad_work_t), intent(inout) :: w
       type(trc_eri_t), intent(inout), optional :: eri
       type(df_jk_t), intent(inout), optional :: dfjk
-      type(df_response_t), intent(inout), optional :: resp
       real(dp), allocatable :: half(:, :), xvo(:, :), cpad(:, :), epad(:), bvec(:, :, :), u(:, :, :)
       type(df_rotation_t) :: rot
       type(trc_cphf_options_t) :: copts
@@ -424,15 +419,18 @@ contains
       allocate (w%pao(n, n), half(n, nocc), xvo(nv, nocc))
       !$acc enter data copyin(w%dm1mo) create(w%pao, half, xvo)
       call ao_from_mo(la, n, nmo, w%ccart, w%dm1mo, w%pao)
-      call reference_gco(b, la, w, w%pao, half, eri, dfjk, resp)
-      call la%gemm_mat(w%ccart(:, nocc + 1:nmo), half, xvo, transa="T", alpha=2.0_dp)
       if (present(dfjk)) then
-         ! C_o^T G[P] C_o, which the energy-weighted density needs: this
-         ! unrelaxed part now, the Z-vector's after the solve, so the AO
-         ! response is set up once.
+         ! The fitted orbital Hessian's MO blocks serve the right-hand side,
+         ! the solve and C_o^T G[P] C_o (which the energy-weighted density
+         ! needs: this unrelaxed part now, the Z-vector's after the solve).
+         call rot%setup(dfjk, la, w%ccart, w%eps, w%nocc, job%opts%df_response_ao)
          allocate (w%goo(nocc, nocc))
          !$acc enter data create(w%goo)
-         call la%gemm_mat(w%ccart(:, 1:nocc), half, w%goo, transa="T")
+         call rot%apply_general(dfjk, la, w%dm1mo, w%pao, xvo, w%goo)
+         call scale_copy_rect(nv, nocc, 2.0_dp, xvo)
+      else
+         call reference_gco(b, la, w, w%pao, half, eri)
+         call la%gemm_mat(w%ccart(:, nocc + 1:nmo), half, xvo, transa="T", alpha=2.0_dp)
       end if
       !$acc update self(xvo)
       !$acc exit data delete(w%dm1mo, half, xvo)
@@ -446,10 +444,6 @@ contains
       copts%max_iteration = job%opts%cphf_max_iteration
       copts%verbose = job%opts%verbose
       if (present(dfjk)) then
-         ! The right-hand side was the AO response's last use: its blocks
-         ! make room for the fitted orbital Hessian's MO ones.
-         call resp%release()
-         call rot%setup(dfjk, la, w%ccart, w%eps, w%nocc, job%opts%df_response_ao)
          allocate (bvec(nv, nocc, 1), u(nv, nocc, 1))
          bvec(:, :, 1) = xvo
          !$acc enter data copyin(bvec) create(u)
@@ -487,6 +481,7 @@ contains
          if (allocated(w%goo)) then
             !$acc exit data delete(w%goo)
          end if
+         call rot%release()
          !$acc exit data delete(w%pao)
          !$acc exit data delete(w%ccart)
          return
@@ -495,17 +490,16 @@ contains
       w%dm1mo(1:nocc, nocc + 1:nmo) = w%dm1mo(1:nocc, nocc + 1:nmo) + transpose(u(1:nv, :, 1))
    end subroutine z_vector
 
-   subroutine relaxed_densities(b, la, w, eri, dfjk, resp)
+   subroutine relaxed_densities(b, la, w, eri, dfjk)
       !! w%pao := P = C dm1mo C^T (relaxed), w%dhf := D_HF and w%wao := W,
       !! the total energy-weighted density of this module's header, G the
-      !! reference's own operator (`eri`, or `dfjk` with `resp`). On the
-      !! device; w%pao stays mapped.
+      !! reference's own operator (`eri`, or with `dfjk` the C_o^T G[P] C_o
+      !! z_vector left in w%goo). On the device; w%pao stays mapped.
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: la
       type(grad_work_t), intent(inout) :: w
       type(trc_eri_t), intent(inout), optional :: eri
       type(df_jk_t), intent(inout), optional :: dfjk
-      type(df_response_t), intent(inout), optional :: resp
       real(dp), allocatable :: zw(:, :), im1(:, :), im1_t(:, :), gp(:, :), half(:, :), small(:, :), work(:, :)
       integer :: n, nmo, nocc, p, q, i
 
@@ -545,7 +539,7 @@ contains
          call scale_copy(nocc, 2.0_dp, w%goo, small)
          !$acc exit data delete(w%goo)
       else
-         call reference_gco(b, la, w, w%pao, half, eri, dfjk, resp)
+         call reference_gco(b, la, w, w%pao, half, eri)
          call la%gemm_mat(w%ccart(:, 1:nocc), half, small, transa="T", alpha=2.0_dp)
       end if
       call ao_from_mo(la, n, nocc, w%ccart, small, gp)
@@ -599,31 +593,23 @@ contains
       !$acc update device(w%dhf)
    end subroutine fitted_two_electron
 
-   subroutine reference_gco(b, la, w, d, gco, eri, dfjk, resp)
+   subroutine reference_gco(b, la, w, d, gco, eri)
       !! gco := G[d] C_o, G = J - K/2 for a symmetric, possibly indefinite d,
-      !! with the reference's own integrals: exact (`eri`, no density screen
-      !! -- d is not the SCF's density -- then the projection) or fitted
-      !! (`resp` over `dfjk`, which forms the projection directly). Every
-      !! array device-resident.
+      !! with the exact integrals (no density screen: d is not the SCF's
+      !! density). Every array device-resident.
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: la
       type(grad_work_t), intent(in) :: w
       real(dp), intent(in) :: d(:, :)
       real(dp), intent(inout) :: gco(:, :)
-      type(trc_eri_t), intent(inout), optional :: eri
-      type(df_jk_t), intent(inout), optional :: dfjk
-      type(df_response_t), intent(inout), optional :: resp
+      type(trc_eri_t), intent(inout) :: eri
       real(dp), allocatable :: g(:, :)
-      if (present(resp)) then
-         call resp%apply(dfjk, la, d, gco)
-      else
-         allocate (g(w%n, w%n))
-         !$acc enter data create(g)
-         call eri%fock_resident(b, d, g, k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.)
-         call la%gemm_mat(g, w%ccart(:, 1:w%nocc), gco)
-         !$acc exit data delete(g)
-         deallocate (g)
-      end if
+      allocate (g(w%n, w%n))
+      !$acc enter data create(g)
+      call eri%fock_resident(b, d, g, k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.)
+      call la%gemm_mat(g, w%ccart(:, 1:w%nocc), gco)
+      !$acc exit data delete(g)
+      deallocate (g)
    end subroutine reference_gco
 
    subroutine release_all(pl, eri, fitted)
@@ -650,6 +636,17 @@ contains
       !$acc exit data delete(half)
       deallocate (half)
    end subroutine ao_from_mo
+
+   subroutine scale_copy_rect(m, n, alpha, x)
+      !! x := alpha x, (m, n), on the device.
+      integer, intent(in) :: m, n
+      real(dp), intent(in) :: alpha
+      real(dp), intent(inout) :: x(m, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:m)
+         x(i, j) = alpha*x(i, j)
+      end do
+   end subroutine scale_copy_rect
 
    subroutine scale_copy(n, alpha, x, y)
       !! y := alpha x, (n, n), on the device.

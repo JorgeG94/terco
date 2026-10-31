@@ -131,6 +131,7 @@ module trc_scf_df_response
       procedure :: setup => df_rotation_setup
       procedure :: apply => df_rotation_apply
       procedure :: apply_occ => df_rotation_apply_occ
+      procedure :: apply_general => df_rotation_apply_general
       procedure :: release => df_rotation_release
    end type df_rotation_t
 
@@ -291,6 +292,67 @@ contains
       call lp%gemm_batched(gemm_shape, this%bvo, this%wscr, this%mscr)
       call add_slices(no, naux, -0.5_dp, this%mscr, goo)
    end subroutine df_rotation_apply_occ
+
+   subroutine df_rotation_apply_general(this, dfjk, lp, xmo, xao, gvo, goo)
+      !! gvo := C_v^T G[X] C_o and goo := C_o^T G[X] C_o for a general
+      !! symmetric X: `xmo` (nmo, nmo) in the MO basis, `xao` the same in the
+      !! AO basis (read only by the AO fallback). With the MO blocks,
+      !! t_Q = sum_rs B^Q_rs x_rs, V^Q_r i = sum_s x_rs B^Q_si for r in o and
+      !! in v, and K_pi = sum_Q sum_r B^Q_pr V^Q_ri -- ten GEMMs and GEMVs,
+      !! the largest 2 nvir^2 nocc naux. Every array device-resident.
+      class(df_rotation_t), intent(inout) :: this
+      type(df_jk_t), intent(in) :: dfjk
+      type(trc_linalg_t), intent(inout) :: lp
+      real(dp), intent(in) :: xmo(:, :), xao(:, :)
+      real(dp), intent(inout) :: gvo(:, :), goo(:, :)
+      real(dp), allocatable :: xvo(:, :), xvv(:, :), xoo(:, :)
+      type(trc_gemm_batch_t) :: gemm_shape
+      integer :: nv, no, naux, nov, nmo
+
+      if (.not. this%ready) error stop "trc_scf_df_response: apply before setup"
+      nv = this%nvir
+      no = this%nocc
+      naux = this%naux
+      if (.not. this%mo) then
+         call this%ao%apply(dfjk, lp, xao, this%gco)
+         call lp%gemm("T", "N", nv, no, this%n, 1.0_dp, this%cvir, this%n, this%gco, this%n, 0.0_dp, gvo, nv)
+         call lp%gemm("T", "N", no, no, this%n, 1.0_dp, this%cocc, this%n, this%gco, this%n, 0.0_dp, goo, no)
+         return
+      end if
+      nov = nv*no
+      nmo = no + nv
+      allocate (xvo(nv, no), xvv(nv, nv), xoo(no, no))
+      !$acc enter data create(xvo, xvv, xoo)
+      call copy_block(nmo, no + 1, 1, nv, no, xmo, xvo)
+      call copy_block(nmo, no + 1, no + 1, nv, nv, xmo, xvv)
+      call copy_block(nmo, 1, 1, no, no, xmo, xoo)
+      ! J: t = 2 B_vo^T x_vo + B_vv^T x_vv + B_oo^T x_oo
+      call lp%gemv("T", nov, naux, 2.0_dp, this%bvo, nov, xvo, 0.0_dp, this%tq)
+      call lp%gemv("T", nv*nv, naux, 1.0_dp, this%bvv, nv*nv, xvv, 1.0_dp, this%tq)
+      call add_oo_trace(no, naux, this%boo, xoo, this%tq)
+      call lp%gemv("N", nov, naux, 1.0_dp, this%bvo, nov, this%tq, 0.0_dp, gvo)
+      gemm_shape = trc_gemm_batch(no, 1, naux, no, sb=0_int64, sc=int(no, int64))
+      call lp%gemm_batched(gemm_shape, this%boo, this%tq, goo)
+      ! K, occupied r: V_o(j, Q, i) = x_oo B_oo + x_ov B_vo, then
+      ! gvo -= B_vo V_o / 2 and goo -= B_oo^T V_o / 2
+      call lp%gemm("N", "N", no, naux*no, no, 1.0_dp, xoo, no, this%boo, no, 0.0_dp, this%mscr, no)
+      gemm_shape = trc_gemm_batch(no, no, nv, naux, ldc=no*naux, sa=0_int64, sc=int(no, int64), transa="T")
+      call lp%gemm_batched(gemm_shape, xvo, this%bvo, this%mscr, beta=1.0_dp)
+      call lp%gemm("N", "N", nv, no, no*naux, -0.5_dp, this%bvo, nv, this%mscr, no*naux, 1.0_dp, gvo, nv)
+      call lp%gemm("T", "N", no, no, no*naux, -0.5_dp, this%boo, no*naux, this%mscr, no*naux, 1.0_dp, goo, no)
+      ! K, virtual r: V_v(a, Q, i) = x_vo B_oo + x_vv B_vo, then
+      ! gvo -= B_vv V_v / 2 and goo -= sum_Q B_vo(:, :, Q)^T V_v(:, Q, :) / 2
+      call lp%gemm("N", "N", nv, naux*no, no, 1.0_dp, xvo, nv, this%boo, no, 0.0_dp, this%wscr, nv)
+      gemm_shape = trc_gemm_batch(nv, no, nv, naux, ldc=nv*naux, sa=0_int64, sc=int(nv, int64))
+      call lp%gemm_batched(gemm_shape, xvv, this%bvo, this%wscr, beta=1.0_dp)
+      call lp%gemm("N", "N", nv, no, nv*naux, -0.5_dp, this%bvv, nv, this%wscr, nv*naux, 1.0_dp, gvo, nv)
+      gemm_shape = trc_gemm_batch(no, no, nv, naux, ldb=nv*naux, sb=int(nv, int64), sc=int(no, int64)**2, &
+                                  transa="T")
+      call lp%gemm_batched(gemm_shape, this%bvo, this%wscr, this%mscr)
+      call add_slices(no, naux, -0.5_dp, this%mscr, goo)
+      !$acc exit data delete(xvo, xvv, xoo)
+      deallocate (xvo, xvv, xoo)
+   end subroutine df_rotation_apply_general
 
    subroutine df_rotation_release(this)
       class(df_rotation_t), intent(inout) :: this
@@ -516,6 +578,35 @@ contains
       bytes = 2_int64*1024*1024*1024
 #endif
    end function cache_budget
+
+   subroutine copy_block(ld, r0, c0, m, n, x, y)
+      !! y := x(r0 : r0 + m - 1, c0 : c0 + n - 1), x with leading dimension ld.
+      integer, intent(in) :: ld, r0, c0, m, n
+      real(dp), intent(in) :: x(ld, *)
+      real(dp), intent(out) :: y(m, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:m)
+         y(i, j) = x(r0 - 1 + i, c0 - 1 + j)
+      end do
+   end subroutine copy_block
+
+   subroutine add_oo_trace(no, naux, boo, xoo, tq)
+      !! tq(Q) += sum_jk B_oo(j, Q, k) x_oo(j, k).
+      integer, intent(in) :: no, naux
+      real(dp), intent(in) :: boo(no, naux, no), xoo(no, no)
+      real(dp), intent(inout) :: tq(naux)
+      integer :: q, j, k
+      real(dp) :: acc
+      do concurrent(q=1:naux) local(acc, j, k)
+         acc = 0.0_dp
+         do k = 1, no
+            do j = 1, no
+               acc = acc + boo(j, q, k)*xoo(j, k)
+            end do
+         end do
+         tq(q) = tq(q) + acc
+      end do
+   end subroutine add_oo_trace
 
    subroutine add_slices(no, naux, alpha, slices, goo)
       !! goo += alpha sum_Q slices(:, :, Q), slices (no, no, naux) flat.
