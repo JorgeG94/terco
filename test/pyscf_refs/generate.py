@@ -4069,8 +4069,8 @@ def gen_pcm_scf(set_name):
 
 
 # =========================================================================
-# Vibrational analysis and thermochemistry (src/scf/trc_vib.F90,
-# src/scf/trc_thermo.F90): pyscf's own analytic RHF Hessian,
+# Vibrational analysis and thermochemistry (src/scf/vibration/trc_vib.F90,
+# src/scf/vibration/trc_thermo.F90): pyscf's own analytic RHF Hessian,
 # harmonic_analysis and thermo, at the geometries, sigma and mult in CASES
 # below, with terco's own test/basis_sets/sto-3g.json. No terco binary is
 # run for this case: there is no AO permutation or fixed density to match,

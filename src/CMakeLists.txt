@@ -42,22 +42,22 @@ target_sources(
           scf/trc_scf_diis.F90          # CDIIS and ADIIS, the level shift and the damped step
           scf/trc_scf_driver.F90        # the SCF: HF and Kohn-Sham, R and U, resident
           scf/trc_scf_file.F90          # a converged SCF to a file and back, for a restart
-          scf/trc_scf_grad_df.F90       # the density-fitted (--df) two-electron gradient: fitted J and K
-          scf/trc_cphf.F90               # coupled-perturbed HF: the orbital-response solve and the static polarizability
-          scf/trc_cpks.F90               # coupled-perturbed KS: trc_cphf plus the XC kernel response, RKS LDA/GGA
+          scf/gradient/trc_scf_grad_df.F90       # the density-fitted (--df) two-electron gradient: fitted J and K
+          scf/response/trc_cphf.F90               # coupled-perturbed HF: the orbital-response solve and the static polarizability
+          scf/response/trc_cpks.F90               # coupled-perturbed KS: trc_cphf plus the XC kernel response, RKS LDA/GGA
           scf/trc_scf_soscf.F90          # second-order SCF (--soscf): trust-region Newton on the orbital rotations, RHF
-          scf/trc_scf_grad.F90          # the full analytic gradient: 1e + eri%gradient + nuclear repulsion
-          scf/trc_vib.F90                # harmonic vibrational analysis of a Cartesian Hessian, host only
-          scf/trc_thermo.F90             # ideal-gas RRHO thermochemistry from trc_vib's frequencies
+          scf/gradient/trc_scf_grad.F90          # the full analytic gradient: 1e + eri%gradient + nuclear repulsion
+          scf/vibration/trc_vib.F90                # harmonic vibrational analysis of a Cartesian Hessian, host only
+          scf/vibration/trc_thermo.F90             # ideal-gas RRHO thermochemistry from trc_vib's frequencies
           post_hf/rimp2/trc_rimp2_driver.F90      # RI-MP2 on the RHF reference, resident
           basis/trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
-          scf/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
-          scf/trc_sad.F90 # the SAD guess built here, one atomic SCF per element
-          scf/trc_sap.F90 # SAP: free-atom potentials, superposed on a quadrature
-          scf/trc_minao.F90 # the minao guess: a minimal-ANO density projected into the target basis
-          scf/trc_hirshfeld_data.F90 # the Hirshfeld proatom radial tables, loaded from a data file
-          scf/trc_hirshfeld.F90   # Hirshfeld atomic charges: stockholder partition of the molecular density
-          scf/trc_fukui.F90       # Hirshfeld-condensed Fukui indices: f+/f-/f0 from three states' charges
+          scf/guess/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
+          scf/guess/trc_sad.F90 # the SAD guess built here, one atomic SCF per element
+          scf/guess/trc_sap.F90 # SAP: free-atom potentials, superposed on a quadrature
+          scf/guess/trc_minao.F90 # the minao guess: a minimal-ANO density projected into the target basis
+          scf/analysis/trc_hirshfeld_data.F90 # the Hirshfeld proatom radial tables, loaded from a data file
+          scf/analysis/trc_hirshfeld.F90   # Hirshfeld atomic charges: stockholder partition of the molecular density
+          scf/analysis/trc_fukui.F90       # Hirshfeld-condensed Fukui indices: f+/f-/f0 from three states' charges
           api/trc_capi.F90       # the bind(c) skin
           core/trc_cart_perm.F90  # AO-index permutation, lexicographic <-> this build's order
           core/trc_ao_norm.F90    # AO-index normalisation, this build's <-> GAMESS's per-component convention
