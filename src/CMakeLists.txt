@@ -50,6 +50,8 @@ target_sources(
           scf/trc_vib.F90                # harmonic vibrational analysis of a Cartesian Hessian, host only
           scf/trc_thermo.F90             # ideal-gas RRHO thermochemistry from trc_vib's frequencies
           post_hf/rimp2/trc_rimp2_driver.F90      # RI-MP2 on the RHF reference, resident
+          post_hf/rimp2/trc_rimp2_relax.F90       # the RI-MP2 gradient's fitted side: amplitudes, Lagrangian, 3c/2c terms
+          scf/trc_rimp2_grad.F90                  # the analytic RI-MP2 gradient: Z-vector, relaxed densities, assembly
           basis/trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
           scf/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
           scf/trc_sad.F90 # the SAD guess built here, one atomic SCF per element

@@ -990,9 +990,18 @@ module trc_c_interfaces
          !! REFUSED, clearly, rather than attempted:
          !!   - meta-GGA: the energy runs, but trc_xc_grad has no tau term, so
          !!     the gradient is refused here with a message.
-         !!   - RI-MP2 (or, once it exists, a double hybrid): no correlation
-         !!     gradient exists; `trc_scf_gradient` is the SCF reference term
-         !!     only.
+         !!   - RI-MP2 over anything but a four-centre RHF reference on one
+         !!     rank: a double hybrid or other Kohn-Sham reference, an
+         !!     unrestricted or --df one, a multi-rank context, or dropped
+         !!     functions (gradient_capability_check's own messages).
+         !!
+         !! RI-MP2. After a successful trc_run_rimp2 the energy this context
+         !! reports (trc_energy) is E_RHF + E_RI-MP2, and this differentiates
+         !! THAT: trc_rimp2_grad%trc_rimp2_gradient, the exact-ERI reference
+         !! with the fitted correlation, its Z-vector against the exact
+         !! orbital Hessian, the same frozen core and pair-list threshold the
+         !! energy used. A later trc_run_scf clears the RI-MP2 result, and the
+         !! gradient is the SCF's again.
          !!   - --df outside the DF-SCF's own scope (unrestricted, spherical,
          !!     range-separated -- the SCF refuses those first), or with the fit
          !!     gone. A --df gradient otherwise runs the FITTED J/K gradient

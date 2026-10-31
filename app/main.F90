@@ -1624,6 +1624,13 @@ contains
       type(json_value), pointer :: rows
       integer :: ia
       call json%add(root, "gradient status", "validated: single rank (rank 0 alone on a multi-rank run)")
+      ! Which energy it differentiates: with --rimp2 the SCF energy plus the
+      ! two MP2 components above, not "total energy" (the SCF's own).
+      if (r%rimp2) then
+         call json%add(root, "gradient of", "scf energy + mp2 correlation")
+      else
+         call json%add(root, "gradient of", "scf energy")
+      end if
       call json%create_array(rows, "gradient")
       do ia = 1, r%natm
          call json%add(rows, "", r%gradient(:, ia))
@@ -2047,8 +2054,10 @@ program trc_main
    call r%cli%add_flag("grad", "Print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
                        "RHF/UHF, or KS-DFT for an LDA/GGA --func (global and range-separated "// &
                        "hybrids and VV10 included); with --df, the fitted RHF/RKS gradient; "// &
-                       "refused for a meta-GGA, --rimp2, a double hybrid or --pcm; with more than "// &
-                       "one rank it is computed on rank 0 alone, with a warning")
+                       "with --rimp2, the RHF + RI-MP2 gradient (four-centre RHF reference, one "// &
+                       "rank); refused for a meta-GGA, a double hybrid, --pcm, or --rimp2 over a "// &
+                       "UHF or --df reference; with more than one rank it is computed on rank 0 "// &
+                       "alone, with a warning")
    call r%cli%add_flag("hessian", "finite-difference Cartesian Hessian (central differences of the "// &
                        "analytic gradient) after the SCF, then harmonic vibrational analysis and RRHO "// &
                        "thermochemistry; refused wherever --grad is (meta-GGA, --rimp2, a double "// &
