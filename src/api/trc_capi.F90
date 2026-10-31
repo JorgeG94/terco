@@ -245,7 +245,7 @@ module trc_capi
    public :: trc_create, trc_destroy, trc_set_molecule, trc_set_charge, trc_set_basis_libcint, trc_set_basis_arrays, &
              trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, trc_set_nlc_grid, &
              trc_set_unrestricted, trc_set_level_shift, &
-             trc_set_convergence, trc_set_scf_accel, &
+             trc_set_convergence, trc_set_scf_accel, trc_set_soscf, &
              trc_set_lindep, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
              trc_set_jkfit_libcint, &
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
@@ -325,7 +325,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 12
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 13
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -2715,6 +2715,48 @@ contains
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_scf_accel
+
+   function trc_set_soscf(handle, enable, soscf_start) result(status) bind(c, name="trc_set_soscf")
+      !! Second-order SCF (trc_scf_options_t%soscf's own comment): once
+      !! DIIS brings |FDS - SDF| below `soscf_start`, hand over to a
+      !! trust-region Newton step on the orbital rotations
+      !! (trc_scf_soscf.F90, ported from metalquicha's mqc_czt_soscf).
+      !! Restricted Hartree-Fock only -- refused at the next trc_run_scf
+      !! with an open shell, a functional, a continuum solvent, --df or
+      !! more than one rank, never run silently as plain DIIS.
+      !!
+      !!   enable       1 turns --soscf on; 0 off (the default).
+      !!   soscf_start  commutator norm at which DIIS hands over; -1 (or
+      !!                any value <= 0) for the library's own default
+      !!                (1e-2).
+      !!
+      !! Takes effect at the next trc_run_scf, for every SCF the handle
+      !! runs after it.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: enable
+      real(c_double), value :: soscf_start
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (enable /= 0 .and. enable /= 1) then
+         call refuse(cx, "trc_set_soscf: enable must be 0 or 1")
+         return
+      end if
+      ! Any value <= 0 (not only -1) means "the library's own default" --
+      ! the only value this refuses is a NaN, which fails this comparison
+      ! with itself.
+      if (soscf_start /= soscf_start) then
+         call refuse(cx, "trc_set_soscf: soscf_start must be a number (NaN given)")
+         return
+      end if
+      cx%opts%soscf = enable == 1
+      cx%opts%soscf_start = real(soscf_start, dp)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_soscf
 
    !
    ! Density-fitted J and K (`--df`). Needs a jkfit basis too

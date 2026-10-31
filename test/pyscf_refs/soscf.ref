@@ -1,0 +1,12 @@
+# terco pyscf reference v1
+# case: soscf
+# generator: test/pyscf_refs/generate.py CASES["soscf"] -> gen_soscf
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: cc55136bc3fb94fceb1e83fe182a9bc55aca84dd327e601054e4184409f0d110
+# files: test/check_soscf.F90 test/water.xyz test/basis_sets/6-31gs.json test/basis_sets/d-aug-cc-pvdz.json
+# water: RHF/6-31G* (cart), |g| 3.14e-09
+E_WATER -7.60105049953125445e+01
+# o2_anion: RHF/d-aug-cc-pVDZ (spherical), lindep_thresh=0.1 on the unit-diagonal overlap, .newton(); plain DIIS E = -74.300938977463 (converged=False), |g| at the newton minimum 2.73e-07
+E_O2_ANION -7.44451492898247977e+01
+END
