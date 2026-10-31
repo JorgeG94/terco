@@ -36,12 +36,13 @@
 !      (mu nu|P) at a time (trc_rimp2_run's own single-rank steps 1-4).
 !   2. the amplitudes, a group of occupied i at a time: K = B_i B^T for
 !      every j (not only j >= i: Gamma needs each row), then one kernel for
-!      T and X, then Gamma'_i = X_i B (a strided batch), dvv (one GEMM over
+!      T and X (X also written back over K), then Gamma' = X B for the
+!      whole group (one GEMM the shape of K's), dvv (one GEMM over
 !      the whole group) and doo (one GEMM per i). E_corr = sum Gamma' . B
 !      comes for free and is returned, so a caller can check the gradient
 !      differentiates the energy it thinks it does.
-!   3. c = B L^-1 and Gamma = Gamma' L^-1 (two triangular solves), gamma =
-!      Gamma^T c, and the two-centre derivative with Z = -(gamma + gamma^T).
+!   3. Gamma = Gamma' L^-1 (a triangular solve), gamma = L^-T (Gamma'^T B)
+!      L^-1, and the two-centre derivative with Z = -(gamma + gamma^T).
 !   4. (mu nu|P) again, block by block, for the Lagrangian and the three-
 !      centre derivative together: G^P = C_vir Gamma^P, M^P = 2 C_act G^P^T
 !      (the derivative kernels' one-sided Y, Y = M + M^T), R_o += (mu nu|P)
@@ -131,7 +132,7 @@ module trc_rimp2_relax
       type(step_table_t) :: tbl
       real(dp), allocatable :: cmo(:, :), cocc(:, :), cvir(:, :), eo(:), ev(:), jm(:, :)
       real(dp), allocatable :: xr(:, :)
-      !! B, then c = B L^-1: (nocc nvir, naux), rows a + (i-1) nvir.
+      !! B: (nocc nvir, naux), rows a + (i-1) nvir.
       real(dp), allocatable :: gam(:, :)
       !! Gamma', then Gamma: (nocc nvir, naux).
       real(dp), allocatable :: gamc(:, :)
@@ -355,7 +356,6 @@ contains
       type(relax_work_t), intent(inout) :: w
       type(trc_linalg_t), intent(inout) :: la
       real(dp), allocatable :: ki(:, :), tt(:), xx(:)
-      type(trc_gemm_batch_t) :: gemm_shape
       type(timer_type) :: tc
       integer :: ng, nb, i0, il, no, nv, nov, ldk
       integer(int64) :: slab
@@ -379,10 +379,14 @@ contains
          call w%tbl%step_on(la, ST_AMP, tc)
          call amplitude_kernel(i0, nb, no, nv, ldk, nov, w%eo, w%ev, ki, tt, xx)
          call w%tbl%step_off(la, ST_AMP, tc)
-         ! Gamma'(a + (i-1) nv, Q) = sum_(b,j) X_i(a, b + (j-1) nv) B(b + (j-1) nv, Q)
+         ! Gamma'(a + (i-1) nv, Q) = sum_(b,j) X(a + (il-1) nv, b + (j-1) nv) B(b + (j-1) nv, Q):
+         ! the kernel left X in K's own layout, so the group's rows of Gamma'
+         ! are one GEMM the shape of K's. A strided batch of nv-row items
+         ! (one per i) ran at 4.9 TFLOP/s on a V100 (gly10/cc-pVDZ), cuBLAS
+         ! picking its 64x64 tile; this one runs at K's 7.0.
          call w%tbl%step_on(la, ST_GAMMA, tc)
-         gemm_shape = trc_gemm_batch(nv, w%naux, nov, nb, ldb=nov, ldc=nov, sb=0_int64, sc=int(nv, int64))
-         call la%gemm_batched(gemm_shape, xx, w%xr, w%gam(1 + (i0 - 1)*nv, 1))
+         call la%gemm("N", "N", nb*nv, w%naux, nov, 1.0_dp, ki, ldk, w%xr, nov, 0.0_dp, &
+                      w%gam(1 + (i0 - 1)*nv, 1), nov)
          call w%tbl%step_off(la, ST_GAMMA, tc)
          call w%tbl%add_flop(ST_GAMMA, 2*int(nb, int64)*slab*int(w%naux, int64))
          ! dvv(b, a) += sum_(c, j, i) X(b, c, j, i) T(a, c, j, i): the group is
@@ -401,8 +405,8 @@ contains
    end subroutine amplitude_pass
 
    subroutine fitted_two_index(w, aux, la)
-      !! Step 3: w%xr := c = B L^-1, w%gam := Gamma = Gamma' L^-1, gamma =
-      !! Gamma^T c, and w%grad += sum_PQ Z_PQ d(P|Q)/dR with Z = -(gamma +
+      !! Step 3: w%gam := Gamma = Gamma' L^-1, gamma = Gamma^T c with
+      !! c = B L^-1, and w%grad += sum_PQ Z_PQ d(P|Q)/dR with Z = -(gamma +
       !! gamma^T), expanded to the Cartesian auxiliary functions when `aux`
       !! is spherical.
       type(relax_work_t), intent(inout) :: w
@@ -418,13 +422,18 @@ contains
       allocate (gpq(naux, naux), gpq_t(naux, naux))
       !$acc enter data create(gpq, gpq_t)
       call w%tbl%step_on(la, ST_FIT, tc)
-      call la%trsm("R", "L", "N", nov, naux, 1.0_dp, w%jm, naux, w%xr, nov)
-      call la%trsm("R", "L", "N", nov, naux, 1.0_dp, w%jm, naux, w%gam, nov)
+      ! gamma = (Gamma' L^-1)^T (B L^-1) = L^-T (Gamma'^T B) L^-1: the
+      ! (nocc nvir) x naux^2 product first and the two solves on the
+      ! naux^2 result, so c = B L^-1 is never formed -- one full-size
+      ! triangular solve fewer (gly10/cc-pVDZ: 0.41 -> 0.27 s).
       call la%gemm("T", "N", naux, naux, nov, 1.0_dp, w%gam, nov, w%xr, nov, 0.0_dp, gpq, naux)
+      call la%trsm("L", "L", "T", naux, naux, 1.0_dp, w%jm, naux, gpq, naux)
+      call la%trsm("R", "L", "N", naux, naux, 1.0_dp, w%jm, naux, gpq, naux)
+      call la%trsm("R", "L", "N", nov, naux, 1.0_dp, w%jm, naux, w%gam, nov)
       call la%transpose(naux, naux, gpq, naux, gpq_t, naux)
       call negated_sum(int(naux, int64)**2, gpq, gpq_t)
       call w%tbl%step_off(la, ST_FIT, tc)
-      call w%tbl%add_flop(ST_FIT, 4*w%nov8*int(naux, int64)**2)
+      call w%tbl%add_flop(ST_FIT, 3*w%nov8*int(naux, int64)**2 + 2*int(naux, int64)**3)
       ! gpq_t now holds Z = -(gamma + gamma^T), in the fitted space.
       allocate (zmat(naux_c, naux_c))
       !$acc enter data create(zmat)
@@ -598,26 +607,44 @@ contains
 
    subroutine amplitude_kernel(i0, nb, no, nv, ldk, nov, eo, ev, ki, tt, xx)
       !! tt(a, b, j, il) = T_ij^ab and xx(a, b, j, il) = 2 T_ij^ab - T_ij^ba,
-      !! i = i0 - 1 + il, from K(a + (il-1) nv, b + (j-1) nv) = (ia|jb).
+      !! i = i0 - 1 + il, from K(a + (il-1) nv, b + (j-1) nv) = (ia|jb), and
+      !! X written back over K in K's own layout (Gamma's GEMM reads it
+      !! there). One item per unordered pair a <= b, which reads both
+      !! (ia|jb) and (ib|ja) before writing either, so the in-place update
+      !! has no race.
       integer, intent(in) :: i0, nb, no, nv, ldk, nov
-      real(dp), intent(in) :: eo(no), ev(nv), ki(ldk, nov)
+      real(dp), intent(in) :: eo(no), ev(nv)
+      real(dp), intent(inout) :: ki(ldk, nov)
       real(dp), intent(out) :: tt(nv, nv, no, nb), xx(nv, nv, no, nb)
       integer(int64) :: t, nv8, no8
-      integer :: a, bb, j, il, i
-      real(dp) :: denom, tab, tba
+      integer :: a, bb, j, il, i, ra, rb, ca, cb
+      real(dp) :: denom, tab, tba, xab, xba
       nv8 = int(nv, int64)
       no8 = int(no, int64)
-      do concurrent(t=0:nv8*nv8*no8*int(nb, int64) - 1) local(a, bb, j, il, i, denom, tab, tba)
+      do concurrent(t=0:nv8*nv8*no8*int(nb, int64) - 1) &
+         local(a, bb, j, il, i, ra, rb, ca, cb, denom, tab, tba, xab, xba)
          a = int(mod(t, nv8)) + 1
          bb = int(mod(t/nv8, nv8)) + 1
          j = int(mod(t/(nv8*nv8), no8)) + 1
          il = int(t/(nv8*nv8*no8)) + 1
-         i = i0 - 1 + il
-         denom = eo(i) + eo(j) - ev(a) - ev(bb)
-         tab = ki((il - 1)*nv + a, (j - 1)*nv + bb)/denom
-         tba = ki((il - 1)*nv + bb, (j - 1)*nv + a)/denom
-         tt(a, bb, j, il) = tab
-         xx(a, bb, j, il) = 2.0_dp*tab - tba
+         if (a <= bb) then
+            i = i0 - 1 + il
+            ra = (il - 1)*nv + a
+            rb = (il - 1)*nv + bb
+            ca = (j - 1)*nv + a
+            cb = (j - 1)*nv + bb
+            denom = eo(i) + eo(j) - ev(a) - ev(bb)
+            tab = ki(ra, cb)/denom
+            tba = ki(rb, ca)/denom
+            xab = 2.0_dp*tab - tba
+            xba = 2.0_dp*tba - tab
+            tt(a, bb, j, il) = tab
+            tt(bb, a, j, il) = tba
+            xx(a, bb, j, il) = xab
+            xx(bb, a, j, il) = xba
+            ki(ra, cb) = xab
+            ki(rb, ca) = xba
+         end if
       end do
    end subroutine amplitude_kernel
 
