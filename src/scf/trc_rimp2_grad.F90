@@ -10,9 +10,10 @@
 !   DENSITY FITTED (`dfjk`/`jkaux` present, `terco --df --rimp2`): the SCF
 !     fitted its own J and K, so every one of those three moves to the fit
 !     the SCF converged with (`dfjk`, over the jkfit basis `jkaux`): the
-!     Z-vector is solved against the fitted orbital Hessian
-!     (trc_cphf_solve_rhf_fitted), the potentials are its occupied
-!     projections G_fit[X] C_o (trc_scf_df_response, both), and the
+!     Z-vector is solved against the fitted orbital Hessian in the MO
+!     basis (trc_cphf_solve_rhf_fitted over df_rotation_t), the two
+!     potentials of a general density are its occupied projections
+!     G_fit[X] C_o (df_response_t, trc_scf_df_response both), and the
 !     two-electron derivative is
 !     trc_scf_grad_df's scf_grad_df_bilinear -- three- and two-centre, no
 !     four-centre integral anywhere. metalquicha's `fitted_reference`.
@@ -72,7 +73,7 @@ module trc_rimp2_grad
    use trc_step_table, only: step_table_t
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_cphf_solve_rhf, trc_cphf_solve_rhf_fitted
    use trc_scf_df, only: df_jk_t
-   use trc_scf_df_response, only: df_response_t
+   use trc_scf_df_response, only: df_response_t, df_rotation_t
    use trc_scf_grad_df, only: scf_grad_df_bilinear
    use trc_scf_grad, only: scf_grad_nuclear_repulsion
    use trc_rimp2_driver, only: trc_rimp2_options_t
@@ -117,6 +118,10 @@ module trc_rimp2_grad
       !! 0.05 x the residual), and each decade costs two CG iterations (one
       !! four-centre Fock build each).
       integer :: cphf_max_iteration = 200
+      logical :: df_response_ao = .false.
+      !! A --df reference's Z-vector through the AO form of the fitted
+      !! orbital Hessian even when its MO blocks fit (the memory fallback;
+      !! for testing).
       logical :: verbose = .false.
       !! Log the step tables (this module's and the correlation's).
    end type trc_rimp2_grad_options_t
@@ -150,6 +155,7 @@ module trc_rimp2_grad
       real(dp), allocatable :: pao(:, :)     !! (n, n) relaxed correlation density, AO
       real(dp), allocatable :: wao(:, :)     !! (n, n) total energy-weighted density
       real(dp), allocatable :: dhf(:, :)     !! (n, n) the reference density, 2 C_o C_o^T
+      real(dp), allocatable :: goo(:, :)     !! (nocc, nocc) C_o^T G[P] C_o, the --df path's own
    end type grad_work_t
 
 contains
@@ -236,7 +242,7 @@ contains
       call tbl%step_on(la, ST_ZVEC, tc)
       call unrelaxed_density(relax, w)
       ! After the correlation, whose B and Gamma it would otherwise sit next to.
-      if (fitted) call resp%setup(dfjk, la, w%ccart, w%eps, w%nocc)
+      if (fitted) call resp%setup(dfjk, la, w%ccart, w%eps, w%nocc, keep_blocks=.false.)
       if (fitted) then
          call z_vector(b, la, job, w, dfjk=dfjk, resp=resp)
       else
@@ -250,8 +256,7 @@ contains
       end if
       call tbl%step_on(la, ST_DENSITY, tc)
       if (fitted) then
-         call relaxed_densities(b, la, w, dfjk=dfjk, resp=resp)
-         call resp%release()
+         call relaxed_densities(b, la, w, dfjk=dfjk)
       else
          call relaxed_densities(b, la, w, eri=eri)
       end if
@@ -406,6 +411,7 @@ contains
       type(df_jk_t), intent(inout), optional :: dfjk
       type(df_response_t), intent(inout), optional :: resp
       real(dp), allocatable :: half(:, :), xvo(:, :), cpad(:, :), epad(:), bvec(:, :, :), u(:, :, :)
+      type(df_rotation_t) :: rot
       type(trc_cphf_options_t) :: copts
       type(trc_cphf_result_t) :: cres
       integer :: n, nmo, nocc, nv, nvp, i, a
@@ -420,6 +426,14 @@ contains
       call ao_from_mo(la, n, nmo, w%ccart, w%dm1mo, w%pao)
       call reference_gco(b, la, w, w%pao, half, eri, dfjk, resp)
       call la%gemm_mat(w%ccart(:, nocc + 1:nmo), half, xvo, transa="T", alpha=2.0_dp)
+      if (present(dfjk)) then
+         ! C_o^T G[P] C_o, which the energy-weighted density needs: this
+         ! unrelaxed part now, the Z-vector's after the solve, so the AO
+         ! response is set up once.
+         allocate (w%goo(nocc, nocc))
+         !$acc enter data create(w%goo)
+         call la%gemm_mat(w%ccart(:, 1:nocc), half, w%goo, transa="T")
+      end if
       !$acc update self(xvo)
       !$acc exit data delete(w%dm1mo, half, xvo)
       do i = 1, nocc
@@ -432,11 +446,25 @@ contains
       copts%max_iteration = job%opts%cphf_max_iteration
       copts%verbose = job%opts%verbose
       if (present(dfjk)) then
-         ! The fitted solver reads the nmo real orbitals as they are.
+         ! The right-hand side was the AO response's last use: its blocks
+         ! make room for the fitted orbital Hessian's MO ones.
+         call resp%release()
+         call rot%setup(dfjk, la, w%ccart, w%eps, w%nocc, job%opts%df_response_ao)
          allocate (bvec(nv, nocc, 1), u(nv, nocc, 1))
          bvec(:, :, 1) = xvo
          !$acc enter data copyin(bvec) create(u)
-         call trc_cphf_solve_rhf_fitted(resp, dfjk, la, bvec, u, copts, cres)
+         call trc_cphf_solve_rhf_fitted(rot, dfjk, la, bvec, u, copts, cres)
+         block
+            real(dp), allocatable :: goo_z(:, :)
+            allocate (goo_z(nocc, nocc))
+            !$acc enter data create(goo_z)
+            call rot%apply_occ(dfjk, la, u(:, :, 1), goo_z)
+            !$acc update self(goo_z, w%goo)
+            w%goo = w%goo + goo_z
+            !$acc update device(w%goo)
+            !$acc exit data delete(goo_z)
+         end block
+         call rot%release()
       else
          ! The exact solver's square Cartesian C: the nmo real orbitals, then
          ! zero-coefficient pad virtuals (PAD_EPS's own comment).
@@ -456,6 +484,9 @@ contains
       job%res%cphf_iterations = cres%iterations(1)
       if (.not. cres%converged) then
          job%res%message = "trc_rimp2_gradient: the Z-vector did not converge -- "//trim(cres%message)
+         if (allocated(w%goo)) then
+            !$acc exit data delete(w%goo)
+         end if
          !$acc exit data delete(w%pao)
          !$acc exit data delete(w%ccart)
          return
@@ -509,8 +540,14 @@ contains
       call ao_from_mo(la, n, nmo, w%ccart, zw, w%wao)
       call ao_from_mo(la, n, nocc, w%ccart, small, work)
       ! 2 P_o G(P) P_o: G(P + P^T) is 2 G(P), P symmetric.
-      call reference_gco(b, la, w, w%pao, half, eri, dfjk, resp)
-      call la%gemm_mat(w%ccart(:, 1:nocc), half, small, transa="T", alpha=2.0_dp)
+      if (present(dfjk)) then
+         ! C_o^T G[P] C_o from the Z-vector step (z_vector's own comment).
+         call scale_copy(nocc, 2.0_dp, w%goo, small)
+         !$acc exit data delete(w%goo)
+      else
+         call reference_gco(b, la, w, w%pao, half, eri, dfjk, resp)
+         call la%gemm_mat(w%ccart(:, 1:nocc), half, small, transa="T", alpha=2.0_dp)
+      end if
       call ao_from_mo(la, n, nocc, w%ccart, small, gp)
       call la%transpose(n, n, im1, n, im1_t, n)
       call energy_weighted_sum(n, work, gp, im1, im1_t, w%wao)
@@ -613,6 +650,18 @@ contains
       !$acc exit data delete(half)
       deallocate (half)
    end subroutine ao_from_mo
+
+   subroutine scale_copy(n, alpha, x, y)
+      !! y := alpha x, (n, n), on the device.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: alpha
+      real(dp), intent(in) :: x(n, n)
+      real(dp), intent(out) :: y(n, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         y(i, j) = alpha*x(i, j)
+      end do
+   end subroutine scale_copy
 
    subroutine energy_weighted_sum(n, whf, vso, im1, im1_t, wao)
       !! wao := wao + whf + vso - (im1 + im1^T)/2, elementwise on the device.

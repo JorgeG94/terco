@@ -79,7 +79,7 @@ module trc_cphf
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_result_t
    use trc_scf_df, only: df_jk_t
-   use trc_scf_df_response, only: df_response_t
+   use trc_scf_df_response, only: df_rotation_t
    implicit none
    private
 
@@ -238,9 +238,10 @@ contains
    !
    ! RHF CPHF with the DENSITY-FITTED orbital Hessian: the same equation
    ! and the same preconditioned CG as trc_cphf_solve_rhf, but
-   ! G[D_U] C_o = (J_fit - K_fit/2)[D_U] C_o from `resp`
-   ! (trc_scf_df_response, over `dfjk`'s fit and the orbitals `resp` was set
-   ! up with) -- the only projection [A U] reads. This is the response
+   ! [A U] - (e_a - e_i) U = 2 C_v^T (J_fit - K_fit/2)[D_U] C_o from `resp`
+   ! (trc_scf_df_response's df_rotation_t, over `dfjk`'s fit and the
+   ! orbitals `resp` was set up with: the MO-basis fitted orbital Hessian,
+   ! or its AO form when the MO blocks do not fit). This is the response
    ! operator of a --df SCF: its orbitals are stationary for the fitted
    ! energy, so a Z-vector or a property over that reference has to use it,
    ! not the exact one. No screening is involved at all.
@@ -250,7 +251,7 @@ contains
    ! convergence test, breakdown and NaN handling as trc_cphf_solve_rhf.
    !
    subroutine trc_cphf_solve_rhf_fitted(resp, dfjk, lp, bvec, u, opts, res)
-      type(df_response_t), intent(inout) :: resp
+      type(df_rotation_t), intent(inout) :: resp
       type(df_jk_t), intent(in) :: dfjk
       type(trc_linalg_t), intent(inout) :: lp
       real(dp), intent(in) :: bvec(:, :, :)
@@ -258,26 +259,23 @@ contains
       type(trc_cphf_options_t), intent(in) :: opts
       type(trc_cphf_result_t), intent(out) :: res
 
-      real(dp), allocatable :: temporary_no(:, :), temporary_no2(:, :)
       real(dp), allocatable :: r(:, :), z(:, :), p(:, :), ap(:, :), diagv(:, :)
       real(dp) :: rz, rz_old, pap, alpha_cg, beta_cg, resid
-      integer :: nao, nocc, nvirt, ncomp, it, comp, i, a
+      integer :: nocc, nvirt, ncomp, it, comp, i, a
       logical :: broke
 
-      nao = resp%n
       nvirt = resp%nvir
       nocc = resp%nocc
       ncomp = size(bvec, 3)
       if (size(bvec, 1) /= nvirt .or. size(bvec, 2) /= nocc) error stop &
          "trc_cphf_solve_rhf_fitted: the right-hand side does not match the response's orbitals"
-      allocate (temporary_no(nao, nocc), temporary_no2(nao, nocc))
       allocate (r(nvirt, nocc), z(nvirt, nocc), p(nvirt, nocc), ap(nvirt, nocc), diagv(nvirt, nocc))
       do i = 1, nocc
          do a = 1, nvirt
             diagv(a, i) = resp%eps(nocc + a) - resp%eps(i)
          end do
       end do
-      !$acc enter data create(temporary_no, temporary_no2, r, z, p, ap)
+      !$acc enter data create(r, z, p, ap)
       !$acc enter data copyin(diagv)
 
       allocate (res%iterations(ncomp))
@@ -295,7 +293,9 @@ contains
          ! `.not. (resid < conv)`: a NaN residual must read as not converged
          ! (trc_cphf_solve_rhf's own comment).
          do while (it < opts%max_iteration .and. .not. (resid < opts%conv_residual))
-            call fitted_matvec(p, ap)
+            ! [A p] = 2 C_v^T G_fit[D_p] C_o + (e_a - e_i) p
+            call resp%apply(dfjk, lp, p, ap)
+            call cphf_add_diag(nvirt, nocc, diagv, p, ap)
             pap = lp%dot_2d(p, ap)
             if (.not. (pap > 0.0_dp)) then
                broke = .true.
@@ -332,21 +332,7 @@ contains
       end do
 
       !$acc exit data delete(diagv)
-      !$acc exit data delete(temporary_no, temporary_no2, r, z, p, ap)
-
-   contains
-
-      ! [A p]_ai = 2 [C_vir^T G_fit[D_p] C_occ]_ai + (e_a-e_i) p_ai.
-      subroutine fitted_matvec(pin, apout)
-         real(dp), intent(in) :: pin(nvirt, nocc)
-         real(dp), intent(inout) :: apout(nvirt, nocc)
-         ! D_p = Y C_o^T + C_o Y^T with Y = C_v p, never formed.
-         call lp%gemm_mat(resp%cmo(:, nocc + 1:nocc + nvirt), pin, temporary_no)
-         call resp%apply_rotation(dfjk, lp, temporary_no, temporary_no2)
-         call lp%gemm_mat(resp%cmo(:, nocc + 1:nocc + nvirt), temporary_no2, apout, transa="T", alpha=2.0_dp)
-         call cphf_add_diag(nvirt, nocc, diagv, pin, apout)
-      end subroutine fitted_matvec
-
+      !$acc exit data delete(r, z, p, ap)
    end subroutine trc_cphf_solve_rhf_fitted
 
    !

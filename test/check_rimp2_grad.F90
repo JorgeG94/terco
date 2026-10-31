@@ -113,7 +113,9 @@ contains
                   new_unittest("--df: formamide cc-pVDZ (sph), universal-jkfit, frozen 3, vs finite differences", &
                                test_fd_df_formamide_sph), &
                   new_unittest("--df: water cc-pVDZ (Cartesian) vs finite differences", test_fd_df_water_cart), &
-                  new_unittest("--df: the bilinear derivative at X = D/2 is the SCF's own", test_bilinear_identity) &
+                  new_unittest("--df: the bilinear derivative at X = D/2 is the SCF's own", test_bilinear_identity), &
+                  new_unittest("--df: the AO fallback of the fitted orbital Hessian agrees with the MO one", &
+                               test_df_response_ao) &
                   ]
    end subroutine collect_rimp2_grad
 
@@ -279,6 +281,31 @@ contains
                  ": scf_grad_df_bilinear(X = D/2) is not the --df SCF's two-electron gradient")
       call release_system(sys)
    end subroutine test_bilinear_identity
+
+   subroutine test_df_response_ao(error)
+      !! The Z-vector's memory fallback (df_rotation_t's AO path) against
+      !! its default MO path, formamide spherical --df.
+      type(error_type), allocatable, intent(out) :: error
+      type(case_t) :: c
+      real(dp), allocatable :: r(:, :), g_mo(:, :), g_ao(:, :)
+      integer, allocatable :: z(:)
+      integer :: nat
+      real(dp) :: e_tot
+      c%name = "formamide sph --df AO fallback"
+      c%xyz = "formamide.xyz"
+      c%basis = "basis_sets/cc-pvdz.json"
+      c%aux = "basis_sets/cc-pvdz-rifit.json"
+      c%jkfit = "basis_sets/def2-universal-jkfit.json"
+      c%nfrozen = 3
+      call read_xyz(trim(c%xyz), nat, z, r)
+      call analytic_gradient(error, c, nat, z, r, g_mo, e_tot)
+      if (allocated(error)) return
+      call analytic_gradient(error, c, nat, z, r, g_ao, e_tot, force_ao=.true.)
+      if (allocated(error)) return
+      print "(a,a,es10.2)", "  ", trim(c%name)//": max |g(AO) - g(MO)| ", maxval(abs(g_ao - g_mo))
+      call check(error, maxval(abs(g_ao - g_mo)) < BILINEAR_TOL, trim(c%name)// &
+                 ": the two forms of the fitted orbital Hessian give different gradients")
+   end subroutine test_df_response_ao
 
    ! ---- B. finite differences of terco's own energy -------------------------
 
@@ -459,13 +486,14 @@ contains
       call check(error, len_trim(mp%message) == 0, trim(c%name)//": RI-MP2: "//trim(mp%message))
    end subroutine rimp2_energy
 
-   subroutine analytic_gradient(error, c, nat, z, r, grad, e_tot)
+   subroutine analytic_gradient(error, c, nat, z, r, grad, e_tot, force_ao)
       type(error_type), allocatable, intent(out) :: error
       type(case_t), intent(in) :: c
       integer, intent(in) :: nat, z(nat)
       real(dp), intent(in) :: r(3, nat)
       real(dp), allocatable, intent(out) :: grad(:, :)
       real(dp), intent(out) :: e_tot
+      logical, intent(in), optional :: force_ao
       type(system_t) :: sys
       type(trc_rimp2_grad_t) :: job
       real(dp) :: e_corr
@@ -475,6 +503,7 @@ contains
       e_corr = e_tot - sys%res%energy
       job%opts%nocc = sys%nocc
       job%opts%nfrozen = c%nfrozen
+      if (present(force_ao)) job%opts%df_response_ao = force_ao
       if (sys%df) then
          call trc_rimp2_gradient(sys%bas, sys%aux, sys%res%cmo(:, :, 1), sys%res%eps(:, 1), job, sys%lp, &
                                  dfjk=sys%dfjk, jkaux=sys%jk)

@@ -37,13 +37,31 @@
 ! a gigabyte kept back) are unpacked once, at setup, and kept, so an
 ! iterative solve pays the unpack only for the rest.
 !
+! THE ORBITAL HESSIAN IN THE MO BASIS: df_rotation_t, what the fitted
+! CPHF solve applies. [A' U]_ai = 2 [C_v^T G[D_U] C_o]_ai for
+! D_U = C_v U C_o^T + C_o U^T C_v^T is, with the fitted MO blocks
+! B^Q_ab, B^Q_ai and B^Q_ij built once (one pass over the unpacked B),
+!
+!     2 sum_Q B^Q_ai t_Q - sum_Q (B^Q_vv U B^Q_oo + B^Q_vo U^T B^Q_vo)_ai,
+!     t_Q = 2 sum_bj B^Q_bj U_bj
+!
+! two GEMVs and four GEMMs per application, 2 nocc naux (nvir^2 + 3 nocc
+! nvir) flops, no AO quantity and no unpacking at all: against the AO
+! route's 2 n^2 nocc naux pass over B (n the Cartesian AO count, 1.3 nvir
+! at cc-pVDZ) this is about half the work and all of it GEMM-shaped. It
+! needs B^Q_vv, nvir^2 naux doubles (9.9 GB at gly10/cc-pVDZ with
+! def2-universal-jkfit), so setup measures the free device memory and
+! falls back to df_response_t's apply_rotation when the MO blocks do not
+! fit.
+!
 module trc_scf_df_response
    use pic_types, only: dp, int64
    use trc_scf_df, only: df_jk_t
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
+   use pic_logger, only: global_logger
    implicit none
    private
-   public :: df_response_t
+   public :: df_response_t, df_rotation_t
 
    integer(int64), parameter :: BLOCK_DOUBLES = 268435456_int64
    !! Unpacked B per block, at most 2 GB.
@@ -80,16 +98,235 @@ module trc_scf_df_response
       procedure :: release => df_response_release
    end type df_response_t
 
+   type :: df_rotation_t
+      !! The fitted RHF orbital Hessian's two-electron part, [A' U] =
+      !! 2 C_v^T G[D_U] C_o, for a CPHF solve: in the MO basis when its
+      !! blocks fit, else through df_response_t (this module's header).
+      integer :: n = 0, nocc = 0, nvir = 0, naux = 0
+      logical :: ready = .false.
+      logical :: mo = .false.
+      !! The MO-basis path is set up (else `ao` is).
+      logical :: verbose_free = .true.
+      !! Log the memory decision at setup.
+      real(dp), allocatable :: eps(:)
+      !! (nocc + nvir), host.
+      real(dp), allocatable :: cvir(:, :), cocc(:, :)
+      !! (n, nvir) and (n, nocc), device-resident (the AO path's C_v U and
+      !! C_o^T G C_o).
+      real(dp), allocatable :: bvo(:, :, :)
+      !! (nvir, nocc, naux): B^Q_ai; device-resident.
+      real(dp), allocatable :: bvv(:, :, :)
+      !! (nvir, nvir, naux): B^Q_ab; device-resident.
+      real(dp), allocatable :: boo(:, :, :)
+      !! (nocc, naux, nocc): B^Q_ji, as (j, Q, i); device-resident.
+      real(dp), allocatable :: wscr(:, :, :)
+      !! (nvir, naux, nocc): U B_oo; device-resident.
+      real(dp), allocatable :: mscr(:, :, :)
+      !! (nocc, naux, nocc): U^T B_vo; device-resident.
+      real(dp), allocatable :: tq(:), yao(:, :), gco(:, :)
+      !! t, and the AO path's C_v U and G C_o; device-resident.
+      type(df_response_t) :: ao
+      !! The AO path, set up only when the MO blocks do not fit.
+   contains
+      procedure :: setup => df_rotation_setup
+      procedure :: apply => df_rotation_apply
+      procedure :: apply_occ => df_rotation_apply_occ
+      procedure :: release => df_rotation_release
+   end type df_rotation_t
+
 contains
 
-   subroutine df_response_setup(this, dfjk, lp, cmo, eps, nocc)
+   subroutine df_rotation_setup(this, dfjk, lp, cmo, eps, nocc, force_ao)
+      !! `cmo` (n, nmo) and `eps` (nmo): host arrays, the fit's Cartesian AO
+      !! space, occupied columns first.
+      class(df_rotation_t), intent(inout) :: this
+      type(df_jk_t), intent(in) :: dfjk
+      type(trc_linalg_t), intent(inout) :: lp
+      real(dp), intent(in) :: cmo(:, :), eps(:)
+      integer, intent(in) :: nocc
+      logical, intent(in) :: force_ao
+      !! Take the AO path whatever the memory: the fallback, for testing.
+      real(dp), allocatable :: cmo_d(:, :), tens(:, :, :), half(:, :)
+      type(trc_gemm_batch_t) :: gemm_shape
+      integer(int64) :: need
+      integer :: n, naux, npack, nv, no, ablk, p0, np
+
+      call this%release()
+      call dfjk%dims(n, naux, npack)
+      no = nocc
+      nv = size(cmo, 2) - nocc
+      this%n = n
+      this%nocc = no
+      this%nvir = nv
+      this%naux = naux
+      allocate (this%eps(size(eps)), this%cvir(n, nv), this%cocc(n, no), this%tq(naux), this%yao(n, no), &
+                this%gco(n, no))
+      this%eps = eps
+      this%cvir = cmo(:, no + 1:no + nv)
+      this%cocc = cmo(:, 1:no)
+      !$acc enter data copyin(this%cvir, this%cocc) create(this%tq, this%yao, this%gco)
+      this%ready = .true.
+      ! A small block: the build is GEMM-bound either way, and the MO blocks
+      ! need the room.
+      ablk = int(max(1_int64, min(int(naux, int64), (BLOCK_DOUBLES/4)/(int(n, int64)*int(n + nv, int64)))))
+      ! B_vv, B_vo, B_oo, the two scratch tensors, one unpacked block and
+      ! its half-transform.
+      need = 8_int64*int(naux, int64)*(int(nv, int64)**2 + 2_int64*int(nv, int64)*int(no, int64) + &
+                                       2_int64*int(no, int64)**2) + &
+             8_int64*int(ablk, int64)*int(n, int64)*int(n + nv, int64)
+      this%mo = need < cache_budget() .and. .not. force_ao
+      if (this%verbose_free) then
+         block
+            character(len=160) :: logline
+            write (logline, "(a,f8.2,a,f8.2,a,l1)") "  df rotation: MO blocks need ", real(need, dp)/2.0_dp**30, &
+               " GiB, free ", real(cache_budget(), dp)/2.0_dp**30, " GiB: MO path ", this%mo
+            call global_logger%performance(trim(logline))
+         end block
+      end if
+      if (.not. this%mo) then
+         call this%ao%setup(dfjk, lp, cmo, eps, nocc, keep_blocks=.true.)
+         return
+      end if
+      allocate (this%bvo(nv, no, naux), this%bvv(nv, nv, naux), this%boo(no, naux, no))
+      allocate (this%wscr(nv, naux, no), this%mscr(no, naux, no))
+      allocate (cmo_d(n, no + nv), tens(n, n, ablk), half(nv, n*ablk))
+      cmo_d = cmo(:, 1:no + nv)
+      !$acc enter data create(this%bvo, this%bvv, this%boo, this%wscr, this%mscr)
+      !$acc enter data copyin(cmo_d) create(tens, half)
+      do p0 = 1, naux, ablk
+         np = min(ablk, naux - p0 + 1)
+         call unpack_columns(n, npack, naux, np, p0, dfjk%bpk, tens)
+         ! half(a, nu q) = sum_mu C_v(mu, a) B(mu, nu, q); then per q
+         ! B_vv(:, :, q) = half_q C_v and B_vo(:, :, q) = half_q C_o.
+         call lp%gemm("T", "N", nv, n*np, n, 1.0_dp, this%cvir, n, tens, n, 0.0_dp, half, nv)
+         gemm_shape = trc_gemm_batch(nv, nv, n, np, sb=0_int64)
+         call lp%gemm_batched(gemm_shape, half, this%cvir, this%bvv(1, 1, p0))
+         gemm_shape = trc_gemm_batch(nv, no, n, np, sb=0_int64)
+         call lp%gemm_batched(gemm_shape, half, cmo_d, this%bvo(1, 1, p0))
+         ! B_oo(j, q, i) = C_o^T B_q C_o: half_o reuses `half`'s storage.
+         call lp%gemm("T", "N", no, n*np, n, 1.0_dp, cmo_d, n, tens, n, 0.0_dp, half, no)
+         gemm_shape = trc_gemm_batch(no, no, n, np, ldc=no*naux, sb=0_int64, sc=int(no, int64))
+         call lp%gemm_batched(gemm_shape, half, cmo_d, this%boo(1, p0, 1))
+      end do
+      !$acc exit data delete(cmo_d, tens, half)
+      deallocate (cmo_d, tens, half)
+   end subroutine df_rotation_setup
+
+   subroutine df_rotation_apply(this, dfjk, lp, u, au)
+      !! au := 2 C_v^T G[D_U] C_o for D_U = C_v U C_o^T + transpose, u and
+      !! au (nvir, nocc) device-resident.
+      class(df_rotation_t), intent(inout) :: this
+      type(df_jk_t), intent(in) :: dfjk
+      type(trc_linalg_t), intent(inout) :: lp
+      real(dp), intent(in) :: u(:, :)
+      real(dp), intent(inout) :: au(:, :)
+      type(trc_gemm_batch_t) :: gemm_shape
+      integer :: nv, no, naux, nov
+
+      if (.not. this%ready) error stop "trc_scf_df_response: apply before setup"
+      nv = this%nvir
+      no = this%nocc
+      naux = this%naux
+      if (.not. this%mo) then
+         call lp%gemm("N", "N", this%n, no, nv, 1.0_dp, this%cvir, this%n, u, nv, 0.0_dp, this%yao, this%n)
+         call this%ao%apply_rotation(dfjk, lp, this%yao, this%gco)
+         call lp%gemm("T", "N", nv, no, this%n, 2.0_dp, this%cvir, this%n, this%gco, this%n, 0.0_dp, au, nv)
+         return
+      end if
+      nov = nv*no
+      ! J: t = 2 B_vo^T u, au = 2 B_vo t
+      call lp%gemv("T", nov, naux, 2.0_dp, this%bvo, nov, u, 0.0_dp, this%tq)
+      call lp%gemv("N", nov, naux, 2.0_dp, this%bvo, nov, this%tq, 0.0_dp, au)
+      ! K, first term: W(b, Q, i) = sum_j U(b, j) B_oo(j, Q, i);
+      ! au -= sum_(b, Q) B_vv(a, b, Q) W(b, Q, i)
+      call lp%gemm("N", "N", nv, naux*no, no, 1.0_dp, u, nv, this%boo, no, 0.0_dp, this%wscr, nv)
+      call lp%gemm("N", "N", nv, no, nv*naux, -1.0_dp, this%bvv, nv, this%wscr, nv*naux, 1.0_dp, au, nv)
+      ! K, second term: M(j, Q, i) = sum_b U(b, j) B_vo(b, i, Q);
+      ! au -= sum_(j, Q) B_vo(a, j, Q) M(j, Q, i)
+      gemm_shape = trc_gemm_batch(no, no, nv, naux, ldc=no*naux, sa=0_int64, sc=int(no, int64), transa="T")
+      call lp%gemm_batched(gemm_shape, u, this%bvo, this%mscr)
+      call lp%gemm("N", "N", nv, no, no*naux, -1.0_dp, this%bvo, nv, this%mscr, no*naux, 1.0_dp, au, nv)
+   end subroutine df_rotation_apply
+
+   subroutine df_rotation_apply_occ(this, dfjk, lp, u, goo)
+      !! goo := C_o^T G[D_U] C_o (nocc, nocc), the occupied-occupied block of
+      !! the same potential `apply` projects on C_v^T: with the MO blocks,
+      !!
+      !!   sum_Q B^Q_ki t_Q - (1/2) sum_Q (B^Q_ov U B^Q_oo + B^Q_oo U^T B^Q_vo)_ki
+      !!
+      !! u (nvir, nocc) and goo device-resident. Clobbers the scratch.
+      class(df_rotation_t), intent(inout) :: this
+      type(df_jk_t), intent(in) :: dfjk
+      type(trc_linalg_t), intent(inout) :: lp
+      real(dp), intent(in) :: u(:, :)
+      real(dp), intent(inout) :: goo(:, :)
+      type(trc_gemm_batch_t) :: gemm_shape
+      integer :: nv, no, naux, nov
+
+      if (.not. this%ready) error stop "trc_scf_df_response: apply before setup"
+      nv = this%nvir
+      no = this%nocc
+      naux = this%naux
+      if (.not. this%mo) then
+         call lp%gemm("N", "N", this%n, no, nv, 1.0_dp, this%cvir, this%n, u, nv, 0.0_dp, this%yao, this%n)
+         call this%ao%apply_rotation(dfjk, lp, this%yao, this%gco)
+         call lp%gemm("T", "N", no, no, this%n, 1.0_dp, this%cocc, this%n, this%gco, this%n, 0.0_dp, goo, no)
+         return
+      end if
+      nov = nv*no
+      ! J: goo(:, i) = sum_Q B_oo(:, Q, i) t_Q, one (nocc x naux) GEMV per i
+      call lp%gemv("T", nov, naux, 2.0_dp, this%bvo, nov, u, 0.0_dp, this%tq)
+      gemm_shape = trc_gemm_batch(no, 1, naux, no, sb=0_int64, sc=int(no, int64))
+      call lp%gemm_batched(gemm_shape, this%boo, this%tq, goo)
+      ! K, (B_oo U^T B_vo): M(j, Q, i) = sum_b U(b, j) B_vo(b, i, Q);
+      ! goo -= 1/2 sum_(j, Q) B_oo(j, Q, k) M(j, Q, i)
+      gemm_shape = trc_gemm_batch(no, no, nv, naux, ldc=no*naux, sa=0_int64, sc=int(no, int64), transa="T")
+      call lp%gemm_batched(gemm_shape, u, this%bvo, this%mscr)
+      call lp%gemm("T", "N", no, no, no*naux, -0.5_dp, this%boo, no*naux, this%mscr, no*naux, 1.0_dp, goo, no)
+      ! K, (B_ov U B_oo): W(b, Q, i) = sum_j U(b, j) B_oo(j, Q, i), then per Q
+      ! B_vo(:, :, Q)^T W(:, Q, :) into mscr's room (nocc, nocc, naux), summed.
+      call lp%gemm("N", "N", nv, naux*no, no, 1.0_dp, u, nv, this%boo, no, 0.0_dp, this%wscr, nv)
+      gemm_shape = trc_gemm_batch(no, no, nv, naux, ldb=nv*naux, sb=int(nv, int64), sc=int(no, int64)**2, &
+                                  transa="T")
+      call lp%gemm_batched(gemm_shape, this%bvo, this%wscr, this%mscr)
+      call add_slices(no, naux, -0.5_dp, this%mscr, goo)
+   end subroutine df_rotation_apply_occ
+
+   subroutine df_rotation_release(this)
+      class(df_rotation_t), intent(inout) :: this
+      if (this%ready) then
+         !$acc exit data delete(this%cvir, this%cocc, this%tq, this%yao, this%gco)
+         if (this%mo) then
+            !$acc exit data delete(this%bvo, this%bvv, this%boo, this%wscr, this%mscr)
+         end if
+      end if
+      call this%ao%release()
+      if (allocated(this%eps)) deallocate (this%eps)
+      if (allocated(this%cvir)) deallocate (this%cvir)
+      if (allocated(this%cocc)) deallocate (this%cocc)
+      if (allocated(this%tq)) deallocate (this%tq)
+      if (allocated(this%yao)) deallocate (this%yao)
+      if (allocated(this%gco)) deallocate (this%gco)
+      if (allocated(this%bvo)) deallocate (this%bvo)
+      if (allocated(this%bvv)) deallocate (this%bvv)
+      if (allocated(this%boo)) deallocate (this%boo)
+      if (allocated(this%wscr)) deallocate (this%wscr)
+      if (allocated(this%mscr)) deallocate (this%mscr)
+      this%ready = .false.
+      this%mo = .false.
+   end subroutine df_rotation_release
+
+   subroutine df_response_setup(this, dfjk, lp, cmo, eps, nocc, keep_blocks)
       !! Keep `cmo` (n, nmo) and `eps` (nmo) -- host arrays, the Cartesian
       !! AO space of the fit, occupied columns first -- and build b = B C_o.
+      !! `keep_blocks`: keep what fits of the unpacked B, for an iterative
+      !! caller (a single application gains nothing from it).
       class(df_response_t), intent(inout) :: this
       type(df_jk_t), intent(in) :: dfjk
       type(trc_linalg_t), intent(inout) :: lp
       real(dp), intent(in) :: cmo(:, :), eps(:)
       integer, intent(in) :: nocc
+      logical, intent(in) :: keep_blocks
       type(trc_gemm_batch_t) :: gemm_shape
       integer :: n, naux, npack, p0, np
 
@@ -113,6 +350,7 @@ contains
       this%ncache = this%ablk*int(min(int((naux + this%ablk - 1)/this%ablk, int64), &
                                       max(0_int64, cache_budget()/(8_int64*int(n, int64)**2*this%ablk))))
       this%ncache = min(this%ncache, naux)
+      if (.not. keep_blocks) this%ncache = 0
       allocate (this%cache(n, n, max(this%ncache, 1)))
       !$acc enter data create(this%cache)
       this%ready = .true.
@@ -278,6 +516,23 @@ contains
       bytes = 2_int64*1024*1024*1024
 #endif
    end function cache_budget
+
+   subroutine add_slices(no, naux, alpha, slices, goo)
+      !! goo += alpha sum_Q slices(:, :, Q), slices (no, no, naux) flat.
+      integer, intent(in) :: no, naux
+      real(dp), intent(in) :: alpha
+      real(dp), intent(in) :: slices(no, no, naux)
+      real(dp), intent(inout) :: goo(no, no)
+      integer :: k, i, q
+      real(dp) :: acc
+      do concurrent(i=1:no, k=1:no) local(acc, q)
+         acc = 0.0_dp
+         do q = 1, naux
+            acc = acc + slices(k, i, q)
+         end do
+         goo(k, i) = goo(k, i) + alpha*acc
+      end do
+   end subroutine add_slices
 
    subroutine trace_diagonal(nocc, naux, m2, tq)
       !! tq(P) = 2 sum_i m2(i, P, i).
