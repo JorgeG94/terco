@@ -258,7 +258,6 @@ contains
       type(trc_cphf_options_t), intent(in) :: opts
       type(trc_cphf_result_t), intent(out) :: res
 
-      real(dp), allocatable :: d_u(:, :), d_ut(:, :)
       real(dp), allocatable :: temporary_no(:, :), temporary_no2(:, :)
       real(dp), allocatable :: r(:, :), z(:, :), p(:, :), ap(:, :), diagv(:, :)
       real(dp) :: rz, rz_old, pap, alpha_cg, beta_cg, resid
@@ -271,7 +270,6 @@ contains
       ncomp = size(bvec, 3)
       if (size(bvec, 1) /= nvirt .or. size(bvec, 2) /= nocc) error stop &
          "trc_cphf_solve_rhf_fitted: the right-hand side does not match the response's orbitals"
-      allocate (d_u(nao, nao), d_ut(nao, nao))
       allocate (temporary_no(nao, nocc), temporary_no2(nao, nocc))
       allocate (r(nvirt, nocc), z(nvirt, nocc), p(nvirt, nocc), ap(nvirt, nocc), diagv(nvirt, nocc))
       do i = 1, nocc
@@ -279,7 +277,7 @@ contains
             diagv(a, i) = resp%eps(nocc + a) - resp%eps(i)
          end do
       end do
-      !$acc enter data create(d_u, d_ut, temporary_no, temporary_no2, r, z, p, ap)
+      !$acc enter data create(temporary_no, temporary_no2, r, z, p, ap)
       !$acc enter data copyin(diagv)
 
       allocate (res%iterations(ncomp))
@@ -334,7 +332,7 @@ contains
       end do
 
       !$acc exit data delete(diagv)
-      !$acc exit data delete(d_u, d_ut, temporary_no, temporary_no2, r, z, p, ap)
+      !$acc exit data delete(temporary_no, temporary_no2, r, z, p, ap)
 
    contains
 
@@ -342,11 +340,9 @@ contains
       subroutine fitted_matvec(pin, apout)
          real(dp), intent(in) :: pin(nvirt, nocc)
          real(dp), intent(inout) :: apout(nvirt, nocc)
+         ! D_p = Y C_o^T + C_o Y^T with Y = C_v p, never formed.
          call lp%gemm_mat(resp%cmo(:, nocc + 1:nocc + nvirt), pin, temporary_no)
-         call lp%gemm_mat(temporary_no, resp%cmo(:, 1:nocc), d_u, transb="T")
-         call lp%transpose(nao, nao, d_u, nao, d_ut, nao)
-         call cphf_add_matrix(nao, nao, d_u, d_ut, d_u)
-         call resp%apply(dfjk, lp, d_u, temporary_no2)
+         call resp%apply_rotation(dfjk, lp, temporary_no, temporary_no2)
          call lp%gemm_mat(resp%cmo(:, nocc + 1:nocc + nvirt), temporary_no2, apout, transa="T", alpha=2.0_dp)
          call cphf_add_diag(nvirt, nocc, diagv, pin, apout)
       end subroutine fitted_matvec
