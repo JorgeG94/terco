@@ -14,8 +14,11 @@
 ! more than one rank before any of this ever runs, so none of those
 ! combinations reaches here silently as plain DIIS.
 !
-! ONLY `trc_scf_soscf_run` IS PUBLIC. `trc_scf_run` is this module's one
-! caller; nothing else in terco, and no test, reaches into its internals.
+! `trc_scf_soscf_run` IS THE PUBLIC ENTRY POINT. `trc_scf_run` is its one
+! caller. `scf_soscf_rotation_matrix` is ALSO public, but only so
+! check_soscf.F90 can test the matrix exponential on its own, at sizes
+! and random rotations the SCF path itself never happens to exercise --
+! nothing else in terco calls it.
 !
 ! BUNDLED ARGUMENTS. Three plain-value types below (`trc_soscf_dims_t`,
 ! `trc_soscf_step_io_t`, `trc_soscf_hvp_scratch_t`) exist only to keep
@@ -101,6 +104,11 @@ module trc_scf_soscf
    private
 
    public :: trc_scf_soscf_run
+   ! Exported for check_soscf.F90's own standalone test of the matrix
+   ! exponential's orthogonality (this module's own header, point 3):
+   ! nothing else in terco calls it.
+   public :: scf_soscf_rotation_matrix
+   public :: soscf_trust_after_rejection
 
    real(dp), parameter :: HESSIAN_SCALE = 4.0_dp
    !! `scf_soscf_hessian_apply_rhf`'s `(e_a-e_i) p + [A p]` to the true
@@ -159,6 +167,15 @@ module trc_scf_soscf
       real(dp), allocatable :: step(:, :)
       real(dp) :: escape = 0.0_dp, lowest = 0.0_dp, predicted = 0.0_dp
       integer :: products = 0, max_subspace = 0
+      logical :: ok = .true.
+      !! False on a breakdown inside the Krylov/level-shift solve (a NaN
+      !! or non-positive-definite projected Hessian the eigensolver
+      !! itself refused, or no direction at all to build a subspace
+      !! from): `trc_scf_soscf_run` must stop on this, not fall through
+      !! `max_iteration` iterations on a step that was never actually
+      !! solved for (AGENTS.md: an iterative solver reports
+      !! non-convergence on a breakdown or NaN, never lets it fall
+      !! through as "converged").
    end type trc_soscf_step_io_t
 
 contains
@@ -188,7 +205,7 @@ contains
       type(trc_soscf_dims_t) :: dims
       type(trc_soscf_step_io_t) :: io
       integer :: switch_iteration, max_steps, iteration, trial, info, products_total, builds
-      real(dp) :: e_cur, e_try, e_old, de, errmax, scaling, trust
+      real(dp) :: e_cur, e_try, e_old, de, errmax, scaling, trust, one_norm, factor
       logical :: accepted, saddle, converged_now
       character(len=200) :: line
 
@@ -233,7 +250,7 @@ contains
       call cphf_copy_matrix(dims%nao, dims%nao, scf_state%fock(:, :, 1), fock_cur)
       e_cur = scf_energies%total
       e_old = e_cur
-      trust = MAX_ROTATION
+      trust = soscf_trust0_env()
       io%max_subspace = DEFAULT_SOSCF_SUBSPACE
       if (scf_config%talk) then
          call global_logger%info("   second-order phase: trust-region Newton on the orbital rotations, "// &
@@ -262,6 +279,17 @@ contains
          call scf_soscf_newton_step_rhf(scf_basis, eri, la, dims, coeff_work, energies_mo, io)
          products_total = products_total + io%products
          builds = builds + io%products
+         ! A breakdown inside the Krylov/level-shift solve (NaN, a
+         ! non-positive-definite projected Hessian the eigensolver
+         ! refused, or no direction at all): stop here, not after
+         ! max_iteration iterations on a step this was never actually
+         ! solved for -- AGENTS.md's own rule on an iterative solver and
+         ! a breakdown or NaN.
+         if (.not. io%ok) then
+            scf_result%message = "trc_scf: --soscf's Newton step broke down "// &
+                                 "(the projected orbital Hessian could not be solved); stopping"
+            exit
+         end if
 
          saddle = io%lowest < SADDLE_CURVATURE
          converged_now = de < scf_config%conv_energy .and. errmax < scf_config%conv_diis
@@ -281,16 +309,30 @@ contains
 
          call soscf_pull_matrix(dims%nvirt, dims%nocc, io%step, step_host)
          scaling = maxval(abs(step_host))
+         ! A valid 1-norm bound on the FULL n_mo x n_mo kappa `soscf_embed_kappa`
+         ! builds from a step of this (ov-block) shape, computed from the
+         ! (small) ov block alone -- see `soscf_ov_one_norm`'s own header.
+         ! `scf_soscf_rotation_matrix` needs this, not `scaling` (the
+         ! largest single element, which bounds nothing): the largest
+         ! element can be arbitrarily smaller than the operator norm the
+         ! scaling-and-squaring Taylor series needs small, which is how
+         ! `exp(kappa)` lost orthogonality at larger nvirt/nocc.
+         one_norm = soscf_ov_one_norm(dims%nvirt, dims%nocc, step_host)
 
          accepted = .false.
          do trial = 1, MAX_BACKTRACKS
-            if (scaling > trust) then
-               call soscf_scale_matrix(dims%nvirt, dims%nocc, io%step, trust/scaling, step_scaled)
-            else
-               call cphf_copy_matrix(dims%nvirt, dims%nocc, io%step, step_scaled)
-            end if
+            ! Always rescaled by the SAME factor that caps the step at the
+            ! current trust radius (1 when the step already fits inside
+            ! it): unconditional, so a REJECTED trial's step is never
+            ! identical to the one just tried. The step/radius comparison
+            ! used to gate scaling off entirely while trust still exceeded
+            ! the step's own size, which is a step this module's own
+            ! history showed could repeat, unchanged, for every one of
+            ! MAX_BACKTRACKS trials.
+            factor = min(1.0_dp, trust/scaling)
+            call soscf_scale_matrix(dims%nvirt, dims%nocc, io%step, factor, step_scaled)
             call soscf_embed_kappa(dims%n_mo, dims%nocc, dims%nvirt, step_scaled, kappa)
-            call scf_soscf_rotation_matrix(la, dims%n_mo, min(scaling, trust), kappa, rotation, scratch_a, &
+            call scf_soscf_rotation_matrix(la, dims%n_mo, factor*one_norm, kappa, rotation, scratch_a, &
                                            scratch_b, scratch_c)
             call la%gemm_mat(coeff_work, rotation, coeff_try)
             call la%density(coeff_try, dims%nocc, scf_config%occ, scf_result%dmat(:, :, 1))
@@ -311,7 +353,7 @@ contains
                accepted = .true.
                exit
             end if
-            trust = 0.5_dp*trust
+            trust = soscf_trust_after_rejection(trust, scaling)
             if (trust < MIN_ROTATION) exit
          end do
 
@@ -330,18 +372,32 @@ contains
          end if
       end do
 
-      ! `scf_result%dmat` may hold a REJECTED trial (backtracking exhausted,
-      ! or the loop above hit `max_steps`): restore the last ACCEPTED
-      ! density, and re-semicanonicalise so the orbital energies leaving
-      ! are canonical (converged) or honestly semicanonical (stalled),
-      ! never a half-written trial's.
+      ! `scf_result%dmat`/`scf_energies` may hold a REJECTED trial
+      ! (backtracking exhausted, or the loop above hit `max_steps`):
+      ! restore the last ACCEPTED density and rebuild the Fock/energy
+      ! from it, so what leaves is the point that actually descended,
+      ! never a half-written trial's -- `scf_energies%total` (and
+      ! `%gmat`, read by the energy) was otherwise left by whichever
+      ! trial's `scf_soscf_fock_rebuild` ran last, accepted or not.
       call cphf_copy_matrix(dims%nao, dims%nao, dmat_accepted, scf_result%dmat(:, :, 1))
+      call scf_soscf_fock_rebuild(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, la, eri)
       call scf_soscf_semicanonicalize(la, dims, fock_cur, coeff_work, fock_mo, energies_mo, info)
       if (info == 0) then
          call cphf_copy_matrix(dims%nao, dims%n_mo, coeff_work, scf_result%cmo(:, 1:dims%n_mo, 1))
-         !$acc update self(energies_mo)
-         scf_result%eps(1:dims%n_mo, 1) = energies_mo
+         call soscf_copy_eps(dims%nao, dims%n_mo, energies_mo, scf_result%eps(:, 1))
+      else
+         ! The orbitals returned are still the last ACCEPTED ones (coeff_work
+         ! is only ever written on acceptance): not semicanonical, but not
+         ! stale either. eps is left at whatever the main loop's last
+         ! successful semicanonicalisation wrote -- the best available,
+         ! though no longer exactly consistent with this coeff.
+         call cphf_copy_matrix(dims%nao, dims%n_mo, coeff_work, scf_result%cmo(:, 1:dims%n_mo, 1))
       end if
+      ! `scf_state%dold` feeds `scf_result%update` and the analytic
+      ! gradient's own energy-weighted density -- it has to be the SAME
+      ! density as `scf_result%dmat` above, not whatever `trc_scf_run`'s
+      ! own DIIS loop last wrote there before handing over.
+      call cphf_copy_matrix(dims%nao, dims%nao, scf_result%dmat(:, :, 1), scf_state%dold(:, :, 1))
       if (scf_config%talk) then
          write (line, "(a,i0,a,i0,a)") "   second-order phase: ", products_total, &
             " Hessian-vector products (Fock builds) over ", max(scf_result%iterations - switch_iteration, 0), &
@@ -482,6 +538,27 @@ contains
       end do
    end subroutine soscf_diagonal
 
+   subroutine soscf_copy_eps(nao, n_mo, energies_mo, eps)
+      !! eps(1:n_mo) := energies_mo, device-resident: the final commit of
+      !! the semicanonical orbital energies into `scf_result%eps(:,1)`.
+      !! Done as a kernel on the device-resident arrays, not a host
+      !! assignment after `!$acc update self`: the latter leaves the
+      !! DEVICE copy of `eps` stale, so `trc_scf_run`'s own trailing
+      !! `!$acc update self(..., scf_result%eps)` pulls the OLD value
+      !! straight back over it (a GPU-only staleness bug, invisible on
+      !! the host build, where there is no separate device copy to go
+      !! stale). `eps(n_mo+1:nao)` -- the null states canonical
+      !! orthogonalisation dropped -- is left untouched: never written
+      !! here, never read as real by anything downstream.
+      integer, intent(in) :: nao, n_mo
+      real(dp), intent(in) :: energies_mo(n_mo)
+      real(dp), intent(inout) :: eps(nao)
+      integer :: k
+      do concurrent(k=1:n_mo)
+         eps(k) = energies_mo(k)
+      end do
+   end subroutine soscf_copy_eps
+
    subroutine scf_soscf_gradient(n_mo, nocc, nvirt, fock_mo, gradient)
       !! `dE/d kappa_ai = 4 F_ai`, virtual fastest -- see this module's own
       !! header, point 2.
@@ -535,8 +612,17 @@ contains
       io%lowest = 0.0_dp
       io%predicted = 0.0_dp
       io%products = 0
+      io%ok = .true.
       call cphf_zero_matrix(nvirt, nocc, io%step)
       if (nvirt < 1 .or. nocc < 1) return
+      if (soscf_force_breakdown_env()) then
+         ! TRC_SOSCF_FORCE_BREAKDOWN=1: an injected failure for
+         ! check_soscf.F90's own test that `trc_scf_soscf_run` stops
+         ! immediately on a Krylov/level-shift breakdown rather than
+         ! looping to max_iteration -- nothing in ordinary use sets this.
+         io%ok = .false.
+         return
+      end if
 
       allocate (scratch%diagv(nvirt, nocc))
       do i = 1, nocc
@@ -592,6 +678,7 @@ contains
             call soscf_level_shifted_step(small, small_gradient, io%escape, amplitude, io%lowest, io%predicted, ok)
             if (.not. ok) then
                call global_logger%warning("trc_scf_soscf: the projected orbital Hessian failed to diagonalise")
+               io%ok = .false.
                exit
             end if
 
@@ -619,6 +706,7 @@ contains
          ! unit vector, and the first call to soscf_add_direction has
          ! nothing yet to project it against) -- defensive only.
          call global_logger%warning("trc_scf_soscf: no direction to build a Krylov subspace from")
+         io%ok = .false.
       end if
 
       if (allocated(small)) deallocate (small, small_gradient)
@@ -774,17 +862,92 @@ contains
       a_host = a
    end subroutine soscf_pull_matrix
 
+   pure function soscf_ov_one_norm(nvirt, nocc, step) result(norm)
+      !! A 1-norm bound (the largest absolute COLUMN sum -- a true matrix
+      !! norm, unlike the largest single element) on the antisymmetric
+      !! `n_mo`-by-`n_mo` matrix `soscf_embed_kappa` builds from a step of
+      !! this shape, computed from the (small) occupied-virtual block
+      !! alone rather than the full matrix: column `i` (occupied) is
+      !! `step(:,i)`, so its abs-sum is the 1-norm of that column; column
+      !! `nocc+a` (virtual) is `-step(a,:)`, so its abs-sum is the 1-norm
+      !! of that ROW of `step`. `scf_soscf_rotation_matrix`'s own
+      !! scaling-and-squaring needs a bound like this on the matrix it is
+      !! actually exponentiating to converge; the largest single element
+      !! bounds nothing (a matrix with one huge entry and the rest zero
+      !! has a tiny operator norm; one with every entry equal to that same
+      !! "largest element" does not), which is how `exp(kappa)` lost
+      !! orthogonality at larger nvirt/nocc.
+      integer, intent(in) :: nvirt, nocc
+      real(dp), intent(in) :: step(nvirt, nocc)
+      real(dp) :: norm
+      integer :: i, a
+      norm = 0.0_dp
+      do i = 1, nocc
+         norm = max(norm, sum(abs(step(:, i))))
+      end do
+      do a = 1, nvirt
+         norm = max(norm, sum(abs(step(a, :))))
+      end do
+   end function soscf_ov_one_norm
+
+   real(dp) function soscf_trust0_env() result(res)
+      !! TRC_SOSCF_TRUST0: override the trust radius a --soscf phase
+      !! starts from -- MAX_ROTATION unless set. An experiment hook, like
+      !! trc_scf_settings.F90's own TRC_INCR_START and friends: nothing in
+      !! ordinary use sets it. check_soscf.F90's own backtracking test
+      !! sets it deliberately larger than a real Newton step's own size,
+      !! to force at least one rejection.
+      character(len=16) :: v
+      integer :: ios
+      real(dp) :: t
+      call get_environment_variable("TRC_SOSCF_TRUST0", v)
+      res = MAX_ROTATION
+      if (len_trim(v) > 0) then
+         read (v, *, iostat=ios) t
+         if (ios == 0 .and. t > 0.0_dp) res = t
+      end if
+   end function soscf_trust0_env
+
+   pure function soscf_trust_after_rejection(trust, scaling) result(new_trust)
+      !! The trust radius a rejection leaves behind, given the step's own
+      !! (fixed, unscaled) size `scaling`: halving `trust` alone is a
+      !! no-op on the NEXT trial's actual step for as long as `trust`
+      !! stays above `scaling` (the cap is not binding, so the step tried
+      !! is the same `scaling`-sized one every time) -- the bug this
+      !! module's own history had, where a backtracking loop could retry
+      !! one identical step for every one of MAX_BACKTRACKS trials.
+      !! Snapping `trust` to at most `scaling` first makes the cap bind
+      !! from the very next trial on, so every rejection actually
+      !! produces a smaller step. A pure function, exported, so
+      !! check_soscf.F90 can test this arithmetic directly rather than
+      !! only through a full SCF run that may or may not happen to reject
+      !! a step on the system it has in hand.
+      real(dp), intent(in) :: trust, scaling
+      real(dp) :: new_trust
+      new_trust = 0.5_dp*min(trust, scaling)
+   end function soscf_trust_after_rejection
+
+   logical function soscf_force_breakdown_env() result(res)
+      !! TRC_SOSCF_FORCE_BREAKDOWN=1: an injected Krylov/level-shift
+      !! breakdown, for check_soscf.F90's own test of the stop-immediately
+      !! path -- see soscf_trust0_env's own header on this module's
+      !! experiment-hook convention. Nothing in ordinary use sets it.
+      character(len=8) :: v
+      call get_environment_variable("TRC_SOSCF_FORCE_BREAKDOWN", v)
+      res = trim(v) == "1"
+   end function soscf_force_breakdown_env
+
    !
    ! `exp(kappa)` for antisymmetric `kappa`, by scaling and squaring:
    ! orthogonal to machine precision for any step size (ported from
    ! metalquicha's `mqc_orbital_rotation%rotation_matrix`, same algorithm,
-   ! device-resident GEMMs). `norm` is `maxval(abs(kappa))`, passed in
-   ! rather than recomputed here: the caller already knows it as the
-   ! (host) trust-radius scaling factor, and pulling the full n x n
-   ! `kappa` back to the host just to recompute the same number would be
-   ! the one unnecessary device-to-host transfer this module otherwise
-   ! avoids. `scaled`/`term`/`next_term` are the caller's own n x n
-   ! scratch.
+   ! device-resident GEMMs). `norm` is a 1-norm bound on `kappa`
+   ! (`soscf_ov_one_norm`), passed in rather than recomputed here: the
+   ! caller already knows it (from the small occupied-virtual step, not
+   ! the full n x n matrix), and pulling the full n x n `kappa` back to
+   ! the host just to recompute a bound on it would be the one
+   ! unnecessary device-to-host transfer this module otherwise avoids.
+   ! `scaled`/`term`/`next_term` are the caller's own n x n scratch.
    !
    subroutine scf_soscf_rotation_matrix(lp, n, norm, kappa, rotation, scaled, term, next_term)
       type(trc_linalg_t), intent(inout) :: lp
