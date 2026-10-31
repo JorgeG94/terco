@@ -24,7 +24,7 @@ Fortran API, a `bind(c)` ABI and a `terco` CLI. See `README.md`.
 | `src/core/` | kinds glue, Boys, Cartesian/spherical tables, linalg, errors, MPI device binding |
 | `src/basis/`, `src/grid/` | basis JSON reader, decontraction; DFT grids and Becke/Stratmann partitions |
 | `src/eri/` | screening, shell-pair bins, HGP/Rys drivers, the McMurchie–Davidson J and exchange engines (`trc_mdj`, `trc_mdg`), Fock and gradient launchers |
-| `src/scf/` | SCF driver, settings, state, DIIS, guesses, DF-JK, gradients, CPHF |
+| `src/scf/` | SCF driver, settings, state, Fock build, DIIS, DF-JK, SOSCF, restart; subdirectories `guess/` (SAD, SAP, minao, JSON), `gradient/`, `response/` (CPHF, CPKS), `analysis/` (Hirshfeld, Fukui) and `vibration/` (harmonic analysis, thermochemistry) |
 | `src/xc/`, `src/post_hf/`, `src/solvation/` | XC integration and functionals, VV10; RI-MP2; PCM |
 | `src/api/` | `trc_api` (Fortran) and `trc_capi` (C ABI); `include/` holds the C interfaces |
 | `src/opt/` | the geometry optimiser (DL-FIND via libdlfind), built as `libterco_opt` only with `-DTERCO_ENABLE_DLFIND=ON`; its own C ABI is `include/terco_opt.h` |

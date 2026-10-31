@@ -282,7 +282,7 @@ and the DFT grid with its separate VV10 grid. The DFT grid can be kept
   charged systems.
 - **SAP** [3]: the superposition of fitted atomic potentials, added to the
   core Hamiltonian and diagonalised.
-- **MINAO** (`src/scf/trc_minao.F90`): PySCF's `init_guess_by_minao`. Each
+- **MINAO** (`src/scf/guess/trc_minao.F90`): PySCF's `init_guess_by_minao`. Each
   atom's leading ANO-RCC contractions (`basis_sets/minao.json`, H-Kr) are
   occupied with the spherically averaged ground state and projected into
   the run's own basis -- no free-atom SCF, so nothing to converge or cache,
@@ -440,11 +440,11 @@ are split across ranks by surface point.
 ## 11. Response and gradients
 
 - **Polarisabilities** solve the coupled-perturbed Hartree–Fock equations
-  [18] (`src/scf/trc_cphf.F90`) and their Kohn–Sham counterpart
-  (`src/scf/trc_cpks.F90`, adding the XC kernel response) by preconditioned
+  [18] (`src/scf/response/trc_cphf.F90`) and their Kohn–Sham counterpart
+  (`src/scf/response/trc_cpks.F90`, adding the XC kernel response) by preconditioned
   conjugate gradients, with the orbital-Hessian products from the
   non-symmetric Fock build.
-- **Nuclear gradients** (`src/scf/trc_scf_grad.F90`) combine the
+- **Nuclear gradients** (`src/scf/gradient/trc_scf_grad.F90`) combine the
   one-electron derivative integrals with the energy-weighted density, the
   four-centre or density-fitted two-electron derivatives, the XC gradient
   including the grid-weight response (from the derivatives of the Becke

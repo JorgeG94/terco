@@ -1726,7 +1726,7 @@ set_tests_properties(
                                 ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
-# Coupled-perturbed HF (src/scf/trc_cphf.F90): the static dipole
+# Coupled-perturbed HF (src/scf/response/trc_cphf.F90): the static dipole
 # polarizability, RHF on water/formamide and UHF on the OH radical, each
 # against test/pyscf_refs/generate.py's gen_cphf/gen_cphf_uhf
 # (pyscf.prop.polarizability). Four RHF cases share scf_cphf.F90, one
@@ -1753,7 +1753,7 @@ terco_add_check(scf_cphf_uhf scf_cphf_uhf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(scf_cphf_uhf PRIVATE test-drive::test-drive)
 
 #
-# Coupled-perturbed KS (src/scf/trc_cpks.F90): the static dipole
+# Coupled-perturbed KS (src/scf/response/trc_cpks.F90): the static dipole
 # polarizability, RKS on water and formamide for SVWN (LDA), PBE and
 # B3LYP (GGA/hybrid-GGA), 6-31G*, against test/pyscf_refs/generate.py's
 # gen_cpks (pyscf.prop.polarizability.rks, grid matched to terco's own --

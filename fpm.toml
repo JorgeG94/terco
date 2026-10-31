@@ -102,4 +102,4 @@ line-length = 132
 # `procedure :: operator => pcm_operator` is valid Fortran the parser rejects.
 "src/solvation/trc_pcm.F90" = ["E001", "S082"]
 # Default-initialised components of a local derived type, not saved locals.
-"src/scf/trc_sap.F90" = ["C081"]
+"src/scf/guess/trc_sap.F90" = ["C081"]
