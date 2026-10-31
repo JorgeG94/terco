@@ -44,6 +44,12 @@ module trc_run
    public :: run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
              run_check_neb_endpoint, run_write_neb_path_xyz
    public :: run_read_xyz_frames
+   public :: run_define_cli, run_parse, run_parse_inputs, run_parse_scf, &
+             run_parse_features, run_parse_opt_flags, run_parse_opt_basic, run_parse_opt_target, &
+             run_parse_opt_neb, run_parse_opt_hessian, run_parse_opt_steps, run_parse_opt_geometry, &
+             run_parse_paths, run_calculation, run_calculate_setup, run_calculate_scf, &
+             run_calculate_opt, run_calculate_post, run_calculate_gradient, run_calculate_hessian, &
+             run_calculate_charges, run_calculate_report, run_calculate_finish
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
@@ -53,6 +59,23 @@ module trc_run
    type :: run_t
       !! Every setting and result `trc_main`'s procedures need, passed
       !! explicitly -- see this module's own header comment for why.
+      real(dp), allocatable :: xyz(:, :)   !! (3, natm) as app_read_xyz returns it; --opt replaces it with the final geometry
+      integer :: maxiter = 0    !! --iterations, parsed in run_parse_scf, handed to the library in run_calculate_setup
+      integer :: nfrozen = 0    !! --frozen, parsed in run_parse_scf, read by --rimp2 in run_calculate_setup
+      integer :: guess_kind = 0   !! the TRC_GUESS_* value of `guess`; parsed early, read by the setup and --opt
+      logical :: cart = .false.   !! --cart, parsed in run_parse_features, read in run_calculate_setup
+      integer(c_int) :: base_verbose = 1, loop_verbose = 1
+         !! trc_set_verbose's own argument: `base_verbose` is today's value
+         !! (on unless --silent), restored around every SCF a plain caller
+         !! would recognise as "the" SCF/gradient/Hessian run; `loop_verbose`
+         !! is on only at --logger verbose/debug, set for exactly the SCFs
+         !! evaluated INSIDE --opt/--opt-neb/DL-FIND's own loop and the FD
+         !! Hessian's displaced points. Both are chosen in run_calculate_setup and
+         !! used by run_calculate_opt and run_calculate_hessian.
+      character(len=:), allocatable :: opt_base
+         !! <geometry base name>_opt.xyz et al. without the suffix: built before
+         !! DL-FIND runs (run_calculate_opt), used by the file writers in run_calculate_report.
+      real(dp), allocatable :: opt_traj_xyz(:, :, :)   !! (3, natm, opt_n_traj), Bohr -- the --opt trajectory
       type(cli_t) :: cli
       type(error_t) :: err
       type(c_ptr) :: h
@@ -204,6 +227,122 @@ module trc_run
    end type run_t
 
    interface
+      module subroutine run_define_cli(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_define_cli
+
+      module subroutine run_parse(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse
+
+      module subroutine run_parse_inputs(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse_inputs
+
+      module subroutine run_parse_scf(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse_scf
+
+      module subroutine run_parse_features(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse_features
+
+      module subroutine run_parse_opt_flags(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse_opt_flags
+
+      module subroutine run_parse_opt_basic(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse_opt_basic
+
+      module subroutine run_parse_opt_target(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse_opt_target
+
+      module subroutine run_parse_opt_neb(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse_opt_neb
+
+      module subroutine run_parse_opt_hessian(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse_opt_hessian
+
+      module subroutine run_parse_opt_steps(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse_opt_steps
+
+      module subroutine run_parse_opt_geometry(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse_opt_geometry
+
+      module subroutine run_parse_paths(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse_paths
+
+      module subroutine run_calculation(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_calculation
+
+      module subroutine run_calculate_setup(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_calculate_setup
+
+      module subroutine run_calculate_scf(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_calculate_scf
+
+      module subroutine run_calculate_opt(r, st)
+         implicit none
+         type(run_t), intent(inout) :: r
+         integer(c_int), intent(out) :: st
+      end subroutine run_calculate_opt
+
+      module subroutine run_calculate_post(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_calculate_post
+
+      module subroutine run_calculate_gradient(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_calculate_gradient
+
+      module subroutine run_calculate_hessian(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_calculate_hessian
+
+      module subroutine run_calculate_charges(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_calculate_charges
+
+      module subroutine run_calculate_report(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_calculate_report
+
+      module subroutine run_calculate_finish(r)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_calculate_finish
+
       module subroutine run_banner(r)
          implicit none
          type(run_t), intent(in) :: r
