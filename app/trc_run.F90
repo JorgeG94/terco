@@ -40,7 +40,7 @@ module trc_run
              run_fukui_summary
    public :: run_opt_capability_check, run_build_opt_residues, run_opt_summary, run_write_opt_xyz, run_write_traj_xyz
    public :: run_parse_opt_global_options
-   public :: run_opt_geometry_is_linear, run_write_labelled_xyz, run_to_lower_alloc
+   public :: run_opt_geometry_is_linear, run_write_labelled_xyz, run_to_lower_alloc, run_to_lower_into
    public :: run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
              run_check_neb_endpoint, run_write_neb_path_xyz
    public :: run_read_xyz_frames
@@ -633,5 +633,29 @@ contains
          end if
       end do
    end function run_to_lower_alloc
+
+   subroutine run_to_lower_into(s, lower_s)
+      !! `run_to_lower_alloc` as a subroutine: ASCII-lowercase `s` into an
+      !! `intent(out)` deferred-length allocatable dummy. Use this, not the
+      !! function, wherever the result lands in a deferred-length allocatable
+      !! (a `run_t` component or a local): nvfortran (CI's nvidia-hpc host job)
+      !! returns corrupted contents (right length, garbage bytes) when a
+      !! deferred-length allocatable CHARACTER function result is assigned to
+      !! a deferred-length allocatable in a submodule procedure of this
+      !! module, e.g. `r%func = run_to_lower_alloc(trim(sval))` in
+      !! `run_parse_inputs`. The subroutine form allocates the target itself.
+      character(len=*), intent(in) :: s
+      character(len=:), allocatable, intent(out) :: lower_s
+      integer :: i, c
+      allocate (character(len=len(s)) :: lower_s)
+      do i = 1, len(s)
+         c = iachar(s(i:i))
+         if (c >= iachar("A") .and. c <= iachar("Z")) then
+            lower_s(i:i) = achar(c + 32)
+         else
+            lower_s(i:i) = s(i:i)
+         end if
+      end do
+   end subroutine run_to_lower_into
 
 end module trc_run

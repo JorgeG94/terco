@@ -67,6 +67,13 @@ the same history. This file adds the debugging side.
   size did not trip it); if you hit something that looks like this
   elsewhere, suspect any `pure elemental` automatic-length character
   function called from a large procedure first.
+- **Deferred-length allocatable CHARACTER function results assigned in a
+  submodule procedure.** nvfortran (the nvidia-hpc host CI job) corrupts
+  `r%func = run_to_lower_alloc(trim(sval))` once it runs inside a submodule
+  procedure of `trc_run` (`app/trc_run_cli.F90`) instead of the program: right
+  length, garbage bytes (`method : RKS/hffgstryal-reset@`). gfortran and ifx
+  are fine. Use the subroutine form, `call run_to_lower_into(trim(sval), r%func)`
+  (`intent(out)` deferred-length allocatable dummy), for every such assignment.
 
 ## MPI
 

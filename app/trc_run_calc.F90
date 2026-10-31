@@ -175,6 +175,7 @@ contains
       integer(c_int), intent(out) :: st
       integer, allocatable :: opt_residues(:)
       integer :: opt_base_slash
+      character(len=:), allocatable :: ext_lower
       type(trc_opt_options_t) :: opt_opts
       type(trc_opt_result_t) :: opt_res
       type(hess_err_t) :: herr
@@ -284,7 +285,8 @@ contains
    ! returns would ever get the chance.
    r%opt_base = r%geom
    if (len(r%opt_base) > 4) then
-      if (run_to_lower_alloc(r%opt_base(len(r%opt_base) - 3:)) == ".xyz") r%opt_base = r%opt_base(1:len(r%opt_base) - 4)
+      call run_to_lower_into(r%opt_base(len(r%opt_base) - 3:), ext_lower)
+      if (ext_lower == ".xyz") r%opt_base = r%opt_base(1:len(r%opt_base) - 4)
    end if
    ! Written into the CURRENT WORKING DIRECTORY, not next to the input
    ! geometry: a directory part in r%geom (an absolute path, or one

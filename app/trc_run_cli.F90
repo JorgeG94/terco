@@ -302,7 +302,7 @@ contains
    r%mult = r%uhf + 1
 
    call r%cli%get("func", sval, r%err)
-   r%func = run_to_lower_alloc(trim(sval))
+   call run_to_lower_into(trim(sval), r%func)
    if (r%func == "hf" .or. r%func == "rhf" .or. r%func == "uhf") r%func = ""
 
    ! A double hybrid's PT2 part is always RI-MP2 on the converged KS
@@ -331,7 +331,7 @@ contains
    if (r%cli%is_set("fukui")) r%guess = "minao"
    if (r%cli%is_set("guess")) then
       call r%cli%get("guess", sval, r%err)
-      r%guess = run_to_lower_alloc(trim(sval))
+      call run_to_lower_into(trim(sval), r%guess)
    end if
    select case (r%guess)
    case ("sad")
@@ -353,14 +353,14 @@ contains
    r%charges = ""
    if (r%cli%is_set("charges")) then
       call r%cli%get("charges", sval, r%err)
-      r%charges = run_to_lower_alloc(trim(sval))
+      call run_to_lower_into(trim(sval), r%charges)
       if (r%charges /= "hirshfeld") call run_die(r, "unknown --charges '"//r%charges//"': use hirshfeld")
    end if
 
    r%fukui = ""
    if (r%cli%is_set("fukui")) then
       call r%cli%get("fukui", sval, r%err)
-      r%fukui = run_to_lower_alloc(trim(sval))
+      call run_to_lower_into(trim(sval), r%fukui)
       if (r%fukui /= "hirshfeld") call run_die(r, "unknown --fukui '"//r%fukui//"': use hirshfeld")
    end if
    end subroutine run_parse_inputs
@@ -449,7 +449,7 @@ contains
          "has one above 1 (water: 2, ammonia: 3, ...)")
       call r%cli%get("masses", sval, r%err)
       call run_check(r, "--masses")
-      r%masses_kind = run_to_lower_alloc(trim(sval))
+      call run_to_lower_into(trim(sval), r%masses_kind)
       if (r%masses_kind /= "isotope" .and. r%masses_kind /= "average") then
          call run_die(r, "--masses must be isotope or average, got '"//r%masses_kind//"'")
       end if
@@ -459,7 +459,7 @@ contains
    r%eps = 0.0_dp
    if (r%cli%is_set("pcm")) then
       call r%cli%get("pcm", sval, r%err)
-      r%pcm = run_to_lower_alloc(trim(sval))
+      call run_to_lower_into(trim(sval), r%pcm)
       if (r%pcm /= "cpcm" .and. r%pcm /= "iefpcm") call run_die(r, "unknown --pcm '"//r%pcm//"': use cpcm or iefpcm")
       if (.not. r%cli%is_set("eps")) call run_die(r, "--pcm needs the solvent's dielectric constant: "// &
                                               "--eps 78.3553 for water; nothing is assumed")
@@ -549,7 +549,7 @@ contains
    opt_refusal = run_opt_capability_check(r)
    if (len(opt_refusal) > 0) call run_die(r, opt_refusal)
    call r%cli%get("opt-coords", sval, r%err)
-   r%opt_coords_arg = run_to_lower_alloc(trim(sval))
+   call run_to_lower_into(trim(sval), r%opt_coords_arg)
    select case (r%opt_coords_arg)
    case ("cartesian")
       r%opt_coords_kind = TRC_OPT_COORDS_CARTESIAN
@@ -565,7 +565,7 @@ contains
       call run_die(r, "--opt-coords must be cartesian, hdlc, hdlc-tc, dlc or dlc-tc, got '"//r%opt_coords_arg//"'")
    end select
    call r%cli%get("opt-guess", sval, r%err)
-   r%opt_guess_arg = run_to_lower_alloc(trim(sval))
+   call run_to_lower_into(trim(sval), r%opt_guess_arg)
    select case (r%opt_guess_arg)
    case ("density")
       r%opt_guess_kind = TRC_OPT_GUESS_DENSITY
@@ -588,7 +588,7 @@ contains
       character(len=:), allocatable :: sval
    ! ---- target, saddle method, connect -------------------------------
    call r%cli%get("opt-target", sval, r%err)
-   r%opt_target_arg = run_to_lower_alloc(trim(sval))
+   call run_to_lower_into(trim(sval), r%opt_target_arg)
    select case (r%opt_target_arg)
    case ("minimum")
       r%opt_target_kind = TRC_OPT_TARGET_MINIMUM
@@ -603,7 +603,7 @@ contains
       if (r%opt_connect) call run_die(r, "--opt-connect needs --opt-target saddle")
       if (r%cli%is_set("opt-algorithm")) then
          call r%cli%get("opt-algorithm", sval, r%err)
-         r%opt_algorithm_arg = run_to_lower_alloc(trim(sval))
+         call run_to_lower_into(trim(sval), r%opt_algorithm_arg)
          select case (r%opt_algorithm_arg)
          case ("sd")
             r%opt_algorithm_kind = TRC_OPT_ALG_SD
@@ -642,7 +642,7 @@ contains
                                                   "saddle: --opt-saddle-method (prfo or dimer) fixes "// &
                                                   "DL-FIND's own algorithm/coordinate family")
       call r%cli%get("opt-saddle-method", sval, r%err)
-      r%opt_saddle_method_arg = run_to_lower_alloc(trim(sval))
+      call run_to_lower_into(trim(sval), r%opt_saddle_method_arg)
       select case (r%opt_saddle_method_arg)
       case ("prfo")
          r%opt_saddle_method_kind = TRC_OPT_SADDLE_PRFO
@@ -701,7 +701,7 @@ contains
       end if
       r%opt_neb_climb = r%cli%is_set("opt-neb-climb")
       call r%cli%get("opt-neb-endpoints", sval, r%err)
-      r%opt_neb_endpoints_arg = run_to_lower_alloc(trim(sval))
+      call run_to_lower_into(trim(sval), r%opt_neb_endpoints_arg)
       select case (r%opt_neb_endpoints_arg)
       case ("free")
          r%opt_neb_endpoints_kind = TRC_OPT_NEB_FREE
@@ -737,7 +737,7 @@ contains
    ! ---- Hessian handling (meaningful for prfo/nr; harmless, DL-FIND
    ! simply ignores them, for every other algorithm) -------------------
    call r%cli%get("opt-init-hessian", sval, r%err)
-   r%opt_init_hessian_arg = run_to_lower_alloc(trim(sval))
+   call run_to_lower_into(trim(sval), r%opt_init_hessian_arg)
    select case (r%opt_init_hessian_arg)
    case ("terco")
       r%opt_hessian_source_kind = TRC_OPT_HESS_TERCO
@@ -748,7 +748,7 @@ contains
    end select
    if (r%cli%is_set("opt-hessian-update")) then
       call r%cli%get("opt-hessian-update", sval, r%err)
-      r%opt_hessian_update_arg = run_to_lower_alloc(trim(sval))
+      call run_to_lower_into(trim(sval), r%opt_hessian_update_arg)
       select case (r%opt_hessian_update_arg)
       case ("none")
          r%opt_hessian_update_kind = TRC_OPT_HUPD_NONE
@@ -845,7 +845,7 @@ contains
       if (r%opt_max_step <= 0.0_dp) call run_die(r, "--opt-max-step must be positive")
    end if
    call r%cli%get("opt-linesearch", sval, r%err)
-   r%opt_linesearch_arg = run_to_lower_alloc(trim(sval))
+   call run_to_lower_into(trim(sval), r%opt_linesearch_arg)
    select case (r%opt_linesearch_arg)
    case ("auto")
       r%opt_linesearch_kind = TRC_OPT_LINE_AUTO
