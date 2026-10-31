@@ -93,8 +93,12 @@ module trc_rimp2_grad
       real(dp) :: eri_threshold = 1.0e-12_dp
       !! The four-centre engine's Schwarz threshold (Z-vector, potentials,
       !! the separable derivative).
-      real(dp) :: cphf_residual = 1.0e-10_dp
+      real(dp) :: cphf_residual = 1.0e-9_dp
       !! The Z-vector's residual norm: it enters the gradient linearly.
+      !! Measured on gly10/cc-pVDZ against a 1e-12 solve: the gradient
+      !! moves by 2e-11 at 1e-9, 2e-10 at 1e-8 and 2e-9 at 1e-7 (about
+      !! 0.05 x the residual), and each decade costs two CG iterations (one
+      !! four-centre Fock build each).
       integer :: cphf_max_iteration = 200
       logical :: verbose = .false.
       !! Log the step tables (this module's and the correlation's).
