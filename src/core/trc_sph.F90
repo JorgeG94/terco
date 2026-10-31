@@ -69,6 +69,7 @@ module trc_sph
    private
 
    public :: sph_cart_to_sph, sph_sph_to_cart, sph_mo_to_cart, sph_aux3c_to_sph, sph_metric_cart_to_sph
+   public :: sph_cols_sph_to_cart
 
 contains
 
@@ -335,6 +336,56 @@ contains
       end do
       !$acc exit data delete(tl)
    end subroutine sph_fold_cols_cart_to_sph
+
+   !
+   ! Mcart(:, Pc) := sum_Psph Msph(:, Psph) SPH_T(Pc, Psph, l) -- the
+   ! adjoint of `sph_fold_cols_cart_to_sph`: a column-indexed quantity whose
+   ! columns are spherical AUXILIARY functions, expanded onto the Cartesian
+   ! ones the derivative kernels run over. The RI-MP2 gradient
+   ! (trc_rimp2_relax.F90) needs it for its three-index density Gamma^P
+   ! and, applied twice around a transpose, for its two-index gamma_PQ:
+   ! sum_Ps G^Ps (mu nu|Ps) = sum_Pc (T G)^Pc (mu nu|Pc), so contracting
+   ! the expanded density with the Cartesian derivative integrals is exact.
+   ! Same one-batched-GEMM-per-run-of-equal-l shape as the fold above, with
+   ! T now transposed (`transb = "T"`).
+   !
+   subroutine sph_cols_sph_to_cart(aux, lp, nrow, msph, mcart)
+      type(trc_basis_t), intent(in) :: aux
+      type(trc_linalg_t), intent(inout) :: lp
+      integer, intent(in) :: nrow
+      real(dp), intent(in)  :: msph(*)
+      real(dp), intent(out) :: mcart(*)
+      real(dp) :: tl(SPH_NCART_MAX, SPH_NSPH_MAX, 0:SPH_LMAX)
+      integer :: ish0, ish, l0, nci, nsi, run, ac, bc
+      integer(int64) :: nrow8
+      type(trc_gemm_batch_t) :: gemm_shape
+
+      nrow8 = int(nrow, int64)
+      !$acc enter data create(tl)
+      tl = SPH_T
+      !$acc update device(tl)
+
+      ish0 = 1
+      do while (ish0 <= aux%nshell)
+         l0 = aux%sh_l(ish0)
+         run = 1
+         do ish = ish0 + 1, aux%nshell
+            if (aux%sh_l(ish) /= l0) exit
+            run = run + 1
+         end do
+         nci = (l0 + 1)*(l0 + 2)/2
+         nsi = 2*l0 + 1
+         ac = aux%sh_ao(ish0) - 1
+         bc = aux%sh_ao_sph(ish0) - 1
+         ! C (nrow x nci) = A (nrow x nsi) T^T, T stored (nci, nsi) in a
+         ! (SPH_NCART_MAX, SPH_NSPH_MAX) slot and shared by every item.
+         gemm_shape = trc_gemm_batch(nrow, nci, nsi, run, ldb=SPH_NCART_MAX, sb=0_int64, transb="T")
+         call lp%gemm_batched(gemm_shape, msph(1_int64 + int(bc, int64)*nrow8), tl(1, 1, l0), &
+                              mcart(1_int64 + int(ac, int64)*nrow8))
+         ish0 = ish0 + run
+      end do
+      !$acc exit data delete(tl)
+   end subroutine sph_cols_sph_to_cart
 
    !
    ! Msph(Psph, :) := sum_Pc SPH_T(Pc, Psph, l)^T Mcart(Pc, :) -- the

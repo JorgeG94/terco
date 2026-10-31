@@ -535,6 +535,15 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_grad_dft PRIVATE test-drive::test-drive)
   unset(_cli_grad_dft_probe)
 
+  # --rimp2 --grad through the CLI: its JSON gradient against metalquicha's
+  # RI-MP2 reference, and the --df reference refused -- see
+  # check_cli_grad_rimp2.F90's own header.
+  set(_cli_grad_rimp2_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_rimp2_probe.json)
+  terco_add_check(check_cli_grad_rimp2 check_cli_grad_rimp2.F90
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_rimp2_probe})
+  target_link_libraries(check_cli_grad_rimp2 PRIVATE test-drive::test-drive)
+  unset(_cli_grad_rimp2_probe)
+
   # The same comparison for --df --grad (B3LYP: fitted J, fitted K, XC) --
   # see check_cli_grad_df.F90's own header.
   set(_cli_grad_df_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_df_probe.json)
@@ -1686,6 +1695,14 @@ add_test(NAME terco/scf_rimp2_uhf COMMAND scf_rimp2_uhf)
 set_tests_properties(
   terco/scf_rimp2_uhf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# The analytic RI-MP2 gradient (src/scf/trc_rimp2_grad.F90) against
+# metalquicha's pyscf-validated references (water cc-pVDZ, water 6-31G with
+# a frozen core, NH3 def2-SVP) and against finite differences of terco's own
+# RHF + RI-MP2 energy (formamide and water, Cartesian and spherical, frozen
+# core on and off). See the file's own header for the provenance.
+terco_add_check(check_rimp2_grad check_rimp2_grad.F90 NEEDS_BASIS)
+target_link_libraries(check_rimp2_grad PRIVATE test-drive::test-drive)
 
 # Double hybrids (b2plyp, b2gp-plyp -- trc_xc_functional.F90): the SCF
 # (four-centre AND --df, cc-pVDZ-RIFIT doing double duty as --df's jkfit
