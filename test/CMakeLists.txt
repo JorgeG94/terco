@@ -542,8 +542,8 @@ if(TERCO_BUILD_APP)
   unset(_cli_grad_dft_probe)
 
   # --rimp2 --grad through the CLI: its JSON gradient against metalquicha's
-  # RI-MP2 reference, and the --df reference refused -- see
-  # check_cli_grad_rimp2.F90's own header.
+  # RI-MP2 references (four-centre and --df), and a UHF reference refused --
+  # see check_cli_grad_rimp2.F90's own header.
   set(_cli_grad_rimp2_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_rimp2_probe.json)
   terco_add_check(check_cli_grad_rimp2 check_cli_grad_rimp2.F90
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_rimp2_probe})

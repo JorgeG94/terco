@@ -3637,7 +3637,7 @@ contains
             refusal = "the RI-MP2 gradient runs on one rank only (no trc_set_comm)"
          else if (cx%res%n_lindep > 0) then
             refusal = "the RI-MP2 gradient needs every basis function, and canonical orthogonalisation "// &
-                      "dropped "//trim(itoa(cx%res%n_lindep))//" (trc_set_lindep)"
+                      "dropped "//to_string(cx%res%n_lindep)//" (trc_set_lindep)"
          end if
          if (len(refusal) > 0) return
       end if

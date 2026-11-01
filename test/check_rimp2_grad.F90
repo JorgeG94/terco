@@ -114,6 +114,8 @@ contains
                                test_fd_df_formamide_sph), &
                   new_unittest("--df: water cc-pVDZ (Cartesian) vs finite differences", test_fd_df_water_cart), &
                   new_unittest("--df: the bilinear derivative at X = D/2 is the SCF's own", test_bilinear_identity), &
+                  new_unittest("--df: a frozen core with nothing left to correlate is refused with its own reason", &
+                               test_df_refuses_frozen_core), &
                   new_unittest("--df: the AO fallback of the fitted orbital Hessian agrees with the MO one", &
                                test_df_response_ao) &
                   ]
@@ -308,6 +310,38 @@ contains
       call check(error, maxval(abs(g_ao - g_mo)) < BILINEAR_TOL, trim(c%name)// &
                  ": the two forms of the fitted orbital Hessian give different gradients")
    end subroutine test_df_response_ao
+
+   subroutine test_df_refuses_frozen_core(error)
+      !! On the fitted path the gradient must report the actual reason it
+      !! refuses: nfrozen = nocc leaves nothing to correlate. A misparenthesised
+      !! fit/basis check once replaced every fitted-path reason with "a fitted
+      !! reference needs both its fit and its basis".
+      type(error_type), allocatable, intent(out) :: error
+      type(case_t) :: c
+      type(system_t) :: sys
+      type(trc_rimp2_grad_t) :: job
+      real(dp), allocatable :: r(:, :)
+      integer, allocatable :: z(:)
+      integer :: nat
+      real(dp) :: e_tot
+      c%name = "water --df frozen-core refusal"
+      c%xyz = "water.xyz"
+      c%basis = "basis_sets/cc-pvdz.json"
+      c%aux = "basis_sets/cc-pvdz-rifit.json"
+      c%jkfit = "basis_sets/def2-universal-jkfit.json"
+      call read_xyz(trim(c%xyz), nat, z, r)
+      call setup_system(error, c, nat, z, r, sys, e_tot)
+      if (allocated(error)) return
+      job%opts%nocc = sys%nocc
+      job%opts%nfrozen = sys%nocc
+      call trc_rimp2_gradient(sys%bas, sys%aux, sys%res%cmo(:, :, 1), sys%res%eps(:, 1), job, sys%lp, &
+                              dfjk=sys%dfjk, jkaux=sys%jk)
+      call release_system(sys)
+      call check(error, .not. job%res%ok, trim(c%name)//": nfrozen = nocc was not refused")
+      if (allocated(error)) return
+      call check(error, index(job%res%message, "frozen core") > 0, trim(c%name)// &
+                 ": refused for the wrong reason: "//trim(job%res%message))
+   end subroutine test_df_refuses_frozen_core
 
    ! ---- B. finite differences of terco's own energy -------------------------
 
