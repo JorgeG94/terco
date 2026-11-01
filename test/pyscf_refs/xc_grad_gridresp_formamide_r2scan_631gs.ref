@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["xc_grad_gridresp_formamide_r2scan_631gs"] -> gen_xc_grad
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 3ac11ec06c89d3582aeac7960763a42247ab7cf74af1a2fc17d47319adf222e6
+# hash: 219139e5818998dda9ef6f063cbb813ae10b190aa42b11a9c3c19f74af4fa671
 # files: test/check_xc_grad_vs_pyscf.F90 test/basis_sets/6-31gs.json test/formamide.xyz
 NAT 6
 NAO 51

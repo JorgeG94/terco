@@ -387,6 +387,10 @@ def converge_tight(make_mf, dm0, label, conv_tol=1.0e-12, conv_tol_grad=1.0e-8, 
     return mf, grad_norm
 
 
+NO_PRUNE = {"TRC_PRUNE_PRIMITIVES": "0"}
+#: env_extra for a probe run that must use the literal JSON contraction (see the gradient generators).
+
+
 def run_bin(relexe, args, env_extra=None):
     """Run a test/-built binary from BUILD_DIR/test, with cwd=test/ (so its
     relative file reads -- water.xyz, basis_sets/... -- resolve exactly as
@@ -1459,7 +1463,14 @@ def gen_dft_grad(case, xyz, json_rel, functional, grid_level=3):
     is_sph = 'cc-pvdz' in json_rel
 
     dump = TEST / f"dft_grad_probe_{case}.bin"
-    run_bin(f"check_dft_grad_vs_pyscf_{case}", [xyz, json_rel, functional, grid_level, dump.name, case])
+    # Pruning off for the probe run: pyscf is handed the literal (unpruned)
+    # contraction from the same JSON, and terco prunes general contractions
+    # by default (TRC_PRUNE_PRIMITIVES), so a cc-pVDZ probe would otherwise
+    # come from a different (same-span) AO basis and fail pyscf's overlap
+    # precheck. Gradients do not depend on it; bases with no general
+    # contraction (6-31G*) are unaffected.
+    run_bin(f"check_dft_grad_vs_pyscf_{case}", [xyz, json_rel, functional, grid_level, dump.name, case],
+            env_extra=NO_PRUNE)
     r = BinReader(dump)
     nat, nao_sp, nspin, nalpha, nbeta, sph_flag = (
         r.i8(), r.i8(), r.i8(), r.i8(), r.i8(), r.i8())
@@ -1556,8 +1567,14 @@ def gen_df_grad(case, xyz, json_rel, functional, grid_level=3):
     PYSCF = {'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP', 'r2scan': 'R2SCAN', 'tpssh': 'TPSSH'}
     aux_rel = "basis_sets/def2-universal-jkfit.json"
     dump = TEST / f"dfg_{case}_probe.bin"
+    # Pruning off for the probe run: pyscf is handed the literal (unpruned)
+    # contraction from the same JSON, and terco prunes general contractions
+    # by default (TRC_PRUNE_PRIMITIVES), so a cc-pVDZ probe would otherwise
+    # come from a different (same-span) AO basis and fail pyscf's overlap
+    # precheck. Gradients do not depend on it; bases with no general
+    # contraction (6-31G*) are unaffected.
     run_bin(f"check_df_grad_vs_pyscf_{case}", [xyz, json_rel, aux_rel, functional, grid_level, dump.name, case,
-                                                1.0])
+                                                1.0], env_extra=NO_PRUNE)
     if not dump.exists():
         print(f"  dfg {case}: binary self-skipped; not regenerating")
         return
@@ -1760,7 +1777,13 @@ def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3, grid_response=Fal
     exe = f"check_xc_grad_vs_pyscf_gridresp_{case}" if grid_response else f"check_xc_grad_vs_pyscf_{case}"
     dump = TEST / f"xc_grad_probe_gridresp_{case}.bin" if grid_response else TEST / f"xc_grad_probe_{case}.bin"
     gresp_arg = [1] if grid_response else []
-    run_bin(exe, [xyz, json_rel, functional, grid_level, dump.name, case] + gresp_arg)
+    # Pruning off for the probe run: pyscf is handed the literal (unpruned)
+    # contraction from the same JSON, and terco prunes general contractions
+    # by default (TRC_PRUNE_PRIMITIVES), so a cc-pVDZ probe would otherwise
+    # come from a different (same-span) AO basis and fail pyscf's overlap
+    # precheck. Gradients do not depend on it; bases with no general
+    # contraction (6-31G*) are unaffected.
+    run_bin(exe, [xyz, json_rel, functional, grid_level, dump.name, case] + gresp_arg, env_extra=NO_PRUNE)
     r = BinReader(dump)
     nat, nao, nspin, nalpha, nbeta = r.i8(), r.i8(), r.i8(), r.i8(), r.i8()
     at_z = r.i8(nat)

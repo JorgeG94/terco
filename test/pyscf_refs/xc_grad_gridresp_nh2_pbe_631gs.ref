@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["xc_grad_gridresp_nh2_pbe_631gs"] -> gen_xc_grad
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: cbbb6965f76c82958e0cb58d1cb67aa440024720140a810298b8bdc82caf416b
+# hash: 74b78257733496f566d3afed9c99782b49d7be8d581014a8b202689b6bef04b4
 # files: test/check_xc_grad_vs_pyscf.F90 test/basis_sets/6-31gs.json test/nh2.xyz
 NAT 3
 NAO 19
