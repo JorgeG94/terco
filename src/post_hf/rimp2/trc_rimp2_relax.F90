@@ -616,13 +616,13 @@ contains
       real(dp), intent(in) :: eo(no), ev(nv)
       real(dp), intent(inout) :: ki(ldk, nov)
       real(dp), intent(out) :: tt(nv, nv, no, nb), xx(nv, nv, no, nb)
-      integer(int64) :: t, nv8, no8
+      integer(int64) :: t, nv8, no8, tlast
       integer :: a, bb, j, il, i, ra, rb, ca, cb
       real(dp) :: denom, tab, tba, xab, xba
       nv8 = int(nv, int64)
       no8 = int(no, int64)
-      do concurrent(t=0:nv8*nv8*no8*int(nb, int64) - 1) &
-         local(a, bb, j, il, i, ra, rb, ca, cb, denom, tab, tba, xab, xba)
+      tlast = nv8*nv8*no8*int(nb, int64) - 1
+      do concurrent(t=0:tlast) local(a, bb, j, il, i, ra, rb, ca, cb, denom, tab, tba, xab, xba)
          a = int(mod(t, nv8)) + 1
          bb = int(mod(t/nv8, nv8)) + 1
          j = int(mod(t/(nv8*nv8), no8)) + 1
