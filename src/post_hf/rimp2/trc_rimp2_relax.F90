@@ -399,7 +399,7 @@ contains
       real(dp), allocatable :: ki(:, :), tt(:), xx(:), part(:, :), pool(:, :)
       integer, allocatable :: slot_of(:, :), free_slot(:)
       type(timer_type) :: tc
-      integer :: ng, ngrp, nb, i0, p, q, band, nslot, nfree, jstore, c1, no, nv, nov, ldk
+      integer :: ng, ngrp, nb, i0, p, q, band, nslot, nfree, jstore, c1, no, nv, nov, ldk, npart
       integer(int64) :: slab, tile
 
       no = w%no
@@ -462,12 +462,14 @@ contains
          ! E_os and E_ss of the row's pairs, which the energy step would
          ! otherwise compute again from its own K (trc_rimp2_run).
          call w%tbl%step_on(la, ST_PAIR, tc)
+         ! Only j >= i0: an earlier group's pairs were counted by its own row.
+         npart = nv*(no - i0 + 1)*nb
          call pair_energy_kernel(i0, nb, no, nv, w%eo, w%ev, tt, xx, part)
-         !$acc update self(part(:, 1:nov*nb))
-         w%e_os = w%e_os + sum(part(1, 1:nov*nb))
-         w%e_ss = w%e_ss + sum(part(2, 1:nov*nb))
+         !$acc update self(part(:, 1:npart))
+         w%e_os = w%e_os + sum(part(1, 1:npart))
+         w%e_ss = w%e_ss + sum(part(2, 1:npart))
          call w%tbl%step_off(la, ST_PAIR, tc)
-         call w%tbl%add_flop(ST_PAIR, 7*int(nb, int64)*slab)
+         call w%tbl%add_flop(ST_PAIR, 7*int(npart, int64)*int(nv, int64))
          call row_densities(w, la, i0, nb, ldk, ki, tt, xx)
          ! This row's T for the later groups in the band, into the pool.
          call w%tbl%step_on(la, ST_TILE, tc)
@@ -879,23 +881,28 @@ contains
    end subroutine tile_store
 
    subroutine pair_energy_kernel(i0, nb, no, nv, eo, ev, tt, xx, part)
-      !! part(1, a + (j-1) nv + (il-1) nv no) = sum_b T^2 D and part(2, ..) =
-      !! sum_b T (X - T) D, D = e_i + e_j - e_a - e_b, i = i0 - 1 + il: with
-      !! T = (ia|jb)/D and X - T = T - T_ij^ba, these are the pair's
-      !! (ia|jb)^2/D and [(ia|jb)^2 - (ia|jb)(ib|ja)]/D summed over b, the
-      !! energy step's E_os and E_ss terms. One item per (a, j, il), a
-      !! fastest, so both reads are unit stride; the host adds the items.
+      !! part(1, a + (j-i0) nv + (il-1) nv (no-i0+1)) = w sum_b T^2 D and
+      !! part(2, ..) = w sum_b T (X - T) D for j = i0 .. no, D = e_i + e_j -
+      !! e_a - e_b, i = i0 - 1 + il: with T = (ia|jb)/D and X - T = T -
+      !! T_ij^ba these are the pair's (ia|jb)^2/D and [(ia|jb)^2 -
+      !! (ia|jb)(ib|ja)]/D summed over b, the energy step's E_os and E_ss
+      !! terms. w = 2 for j beyond the row's own group, whose (j, i) pairs
+      !! are the same numbers and are never summed; 1 inside it, where both
+      !! orders are. One item per (a, j, il), a fastest, so both reads are
+      !! unit stride; the host adds the items.
       integer, intent(in) :: i0, nb, no, nv
       real(dp), intent(in) :: eo(no), ev(nv)
       real(dp), intent(in) :: tt(nv, nv, no, nb), xx(nv, nv, no, nb)
-      real(dp), intent(out) :: part(2, nv*no*nb)
-      integer :: t, a, j, il, b
-      real(dp) :: eija, d, tab, pos, pss
-      do concurrent(t=1:nv*no*nb) local(a, j, il, b, eija, d, tab, pos, pss)
+      real(dp), intent(out) :: part(2, nv*(no - i0 + 1)*nb)
+      integer :: t, a, j, il, b, ncol
+      real(dp) :: eija, d, tab, pos, pss, w
+      ncol = no - i0 + 1
+      do concurrent(t=1:nv*ncol*nb) local(a, j, il, b, eija, d, tab, pos, pss, w)
          a = mod(t - 1, nv) + 1
-         j = mod((t - 1)/nv, no) + 1
-         il = (t - 1)/(nv*no) + 1
+         j = i0 + mod((t - 1)/nv, ncol)
+         il = (t - 1)/(nv*ncol) + 1
          eija = eo(i0 - 1 + il) + eo(j) - ev(a)
+         w = merge(1.0_dp, 2.0_dp, j < i0 + nb)
          pos = 0.0_dp
          pss = 0.0_dp
          do b = 1, nv
@@ -904,8 +911,8 @@ contains
             pos = pos + tab*tab*d
             pss = pss + tab*(xx(a, b, j, il) - tab)*d
          end do
-         part(1, t) = pos
-         part(2, t) = pss
+         part(1, t) = w*pos
+         part(2, t) = w*pss
       end do
    end subroutine pair_energy_kernel
 
