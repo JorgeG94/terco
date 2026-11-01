@@ -1132,8 +1132,7 @@ contains
       end if
       b0 = this%nres + 1
       do while (b0 <= xg%nbatch)
-         block
-            ! Overflow: exactly trc_xc_fxc_rks's own chunking, one spin,
+         ! Overflow: exactly trc_xc_fxc_rks's own chunking, one spin,
             ! chi/grad-chi transient (never kept).
             need = 0
             b1 = b0 - 1
@@ -1202,7 +1201,6 @@ contains
             do k = 1, nb
                this%c_off(ord(k)) = -1
             end do
-         end block
          b0 = b1 + 1
       end do
       !$acc end data
@@ -1231,7 +1229,7 @@ contains
       integer(int64) :: cap, need, nchi
       type(trc_gemm_batch_t) :: gemm_shape
       integer :: b0, b1, ib, np, p0, npairs, nb, k0, k1, cnt, mp, ml, k
-      integer, allocatable :: pr_off(:), ord(:), pb_off(:), sord(:)
+      integer, allocatable :: pr_off(:), ord(:), pb_off(:), sord(:), c_off_local(:)
       real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), zt(:, :), dloc(:, :), vloc(:)
       real(dp), allocatable :: xt_res(:, :), zt_res(:, :)
       integer :: nwork
@@ -1278,7 +1276,6 @@ contains
       if (cache%nres > 0) call fxc_resident_order(cache%nres, cache%npp, cache%nlp, sord)
       b0 = 1
       do while (b0 <= cache%nres)
-         block
             need = 0
             b1 = b0 - 1
             do k = b0, cache%nres
@@ -1353,7 +1350,6 @@ contains
                                  cache%nlp, xg%nbatch, vloc)
             !$acc exit data delete(dloc, vloc, ord, pb_off)
             deallocate (dloc, vloc, ord, pb_off)
-         end block
          b0 = b1 + 1
       end do
       if (cache%nres_chi > 0) then
@@ -1363,7 +1359,6 @@ contains
 
       b0 = cache%nres + 1
       do while (b0 <= xg%nbatch)
-         block
             need = 0
             b1 = b0 - 1
             do ib = b0, xg%nbatch
@@ -1385,73 +1380,68 @@ contains
             nwork = 0
             pb_off(1) = 0
             wk_off(1) = 0
-            block
-               integer, allocatable :: c_off_local(:)
-               allocate (c_off_local(xg%nbatch + 1))
-               do k = 1, nb
-                  ib = ord(k)
-                  c_off_local(ib) = int(need)
-                  pr_off(ib) = npairs
-                  need = need + int(cache%npp(ib), int64)*int(cache%nlp(ib), int64)
-                  npairs = npairs + cache%nlp(ib)*cache%nlp(ib)
-                  pb_off(k + 1) = npairs
-                  nwork = nwork + (xg%b_shoff(ib + 1) - xg%b_shoff(ib))*(xg%b_off(ib + 1) - xg%b_off(ib))
-                  wk_off(k + 1) = nwork
+            allocate (c_off_local(xg%nbatch + 1))
+            do k = 1, nb
+               ib = ord(k)
+               c_off_local(ib) = int(need)
+               pr_off(ib) = npairs
+               need = need + int(cache%npp(ib), int64)*int(cache%nlp(ib), int64)
+               npairs = npairs + cache%nlp(ib)*cache%nlp(ib)
+               pb_off(k + 1) = npairs
+               nwork = nwork + (xg%b_shoff(ib + 1) - xg%b_shoff(ib))*(xg%b_off(ib + 1) - xg%b_off(ib))
+               wk_off(k + 1) = nwork
+            end do
+            allocate (chi(nchi), gchi(nchi, 3), xt(nchi, 1), zt(nchi, 1), dloc(max(npairs, 1), 1), &
+                      vloc(max(npairs, 1)))
+            !$acc enter data create(chi, gchi, xt, zt, dloc, vloc) copyin(c_off_local, ord, pb_off, wk_off)
+            call xc_zero(nchi, 1, chi, zt)
+            call xc_collocate(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, &
+                              b%sh_r, xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, xg%b_shao, &
+                              c_off_local, cache%npp, xg%nbatch, nchi, chi, gchi)
+            call xc_gather(npairs, nb, ord, pb_off, 1, nao, dmat_u, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                           cache%nlp, xg%nbatch, dloc)
+            k0 = 1
+            do while (k0 <= nb)
+               ib = ord(k0)
+               mp = cache%npp(ib)
+               ml = cache%nlp(ib)
+               k1 = k0
+               do while (k1 < nb)
+                  if (cache%npp(ord(k1 + 1)) /= mp .or. cache%nlp(ord(k1 + 1)) /= ml) exit
+                  k1 = k1 + 1
                end do
-               allocate (chi(nchi), gchi(nchi, 3), xt(nchi, 1), zt(nchi, 1), dloc(max(npairs, 1), 1), &
-                         vloc(max(npairs, 1)))
-               !$acc enter data create(chi, gchi, xt, zt, dloc, vloc) copyin(c_off_local, ord, pb_off, wk_off)
-               call xc_zero(nchi, 1, chi, zt)
-               call xc_collocate(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, &
-                                 b%sh_r, xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, xg%b_shao, &
-                                 c_off_local, cache%npp, xg%nbatch, nchi, chi, gchi)
-               call xc_gather(npairs, nb, ord, pb_off, 1, nao, dmat_u, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
-                              cache%nlp, xg%nbatch, dloc)
-               k0 = 1
-               do while (k0 <= nb)
-                  ib = ord(k0)
-                  mp = cache%npp(ib)
-                  ml = cache%nlp(ib)
-                  k1 = k0
-                  do while (k1 < nb)
-                     if (cache%npp(ord(k1 + 1)) /= mp .or. cache%nlp(ord(k1 + 1)) /= ml) exit
-                     k1 = k1 + 1
-                  end do
-                  cnt = k1 - k0 + 1
-                  if (ml > 0) then
-                     gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
-                     call la%gemm_batched(gemm_shape, chi(c_off_local(ib) + 1), dloc(pr_off(ib) + 1, 1), &
-                                          xt(c_off_local(ib) + 1, 1))
-                  end if
-                  k0 = k1 + 1
+               cnt = k1 - k0 + 1
+               if (ml > 0) then
+                  gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
+                  call la%gemm_batched(gemm_shape, chi(c_off_local(ib) + 1), dloc(pr_off(ib) + 1, 1), &
+                                       xt(c_off_local(ib) + 1, 1))
+               end if
+               k0 = k1 + 1
+            end do
+            call xc_fxc_apply_points(np, p0, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, c_off_local, &
+                                     cache%npp, xg%nbatch, nchi, chi, gchi, xt, cache%coefp, zt)
+            k0 = 1
+            do while (k0 <= nb)
+               ib = ord(k0)
+               mp = cache%npp(ib)
+               ml = cache%nlp(ib)
+               k1 = k0
+               do while (k1 < nb)
+                  if (cache%npp(ord(k1 + 1)) /= mp .or. cache%nlp(ord(k1 + 1)) /= ml) exit
+                  k1 = k1 + 1
                end do
-               call xc_fxc_apply_points(np, p0, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, c_off_local, &
-                                        cache%npp, xg%nbatch, nchi, chi, gchi, xt, cache%coefp, zt)
-               k0 = 1
-               do while (k0 <= nb)
-                  ib = ord(k0)
-                  mp = cache%npp(ib)
-                  ml = cache%nlp(ib)
-                  k1 = k0
-                  do while (k1 < nb)
-                     if (cache%npp(ord(k1 + 1)) /= mp .or. cache%nlp(ord(k1 + 1)) /= ml) exit
-                     k1 = k1 + 1
-                  end do
-                  cnt = k1 - k0 + 1
-                  if (ml > 0) then
-                     gemm_shape = trc_gemm_batch(ml, ml, mp, cnt, transa="T")
-                     call la%gemm_batched(gemm_shape, chi(c_off_local(ib) + 1), zt(c_off_local(ib) + 1, 1), &
-                                          vloc(pr_off(ib) + 1))
-                  end if
-                  k0 = k1 + 1
-               end do
-               call xc_resp_scatter(npairs, nb, ord, pb_off, nao, v_resp, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
-                                    cache%nlp, xg%nbatch, vloc)
-               !$acc exit data delete(chi, gchi, xt, zt, dloc, vloc, c_off_local, ord, pb_off, wk_off)
-               deallocate (chi, gchi, xt, zt, dloc, vloc, c_off_local)
-            end block
-            deallocate (ord, pb_off, wk_off)
-         end block
+               cnt = k1 - k0 + 1
+               if (ml > 0) then
+                  gemm_shape = trc_gemm_batch(ml, ml, mp, cnt, transa="T")
+                  call la%gemm_batched(gemm_shape, chi(c_off_local(ib) + 1), zt(c_off_local(ib) + 1, 1), &
+                                       vloc(pr_off(ib) + 1))
+               end if
+               k0 = k1 + 1
+            end do
+            call xc_resp_scatter(npairs, nb, ord, pb_off, nao, v_resp, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                                 cache%nlp, xg%nbatch, vloc)
+            !$acc exit data delete(chi, gchi, xt, zt, dloc, vloc, c_off_local, ord, pb_off, wk_off)
+            deallocate (chi, gchi, xt, zt, dloc, vloc, c_off_local, ord, pb_off, wk_off)
          b0 = b1 + 1
       end do
       !$acc update self(v_resp)
