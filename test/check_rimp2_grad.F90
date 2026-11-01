@@ -40,6 +40,10 @@
 !    scf_grad_df_bilinear at X = D/2 is the --df SCF's own two-electron
 !    gradient (scf_grad_df_two_electron).
 !
+! D. trc_rimp2_relax's pair-symmetric amplitude pass (K for j >= i groups,
+!    the rest from mirror tiles) against the same pass without the
+!    symmetry, whole tile pool and narrow bands.
+!
 ! Every case also checks the correlation energy the gradient's amplitudes
 ! give against trc_rimp2_run's (same B, same pairs) and translational
 ! invariance -- necessary, not sufficient.
@@ -54,6 +58,7 @@ module check_rimp2_grad_suite
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_rimp2_driver, only: trc_rimp2_run, trc_rimp2_result_t, trc_rimp2_options_t, rimp2_driver_mo_to_cart
    use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t
+   use trc_rimp2_relax, only: trc_rimp2_relax_t
    use trc_scf_df, only: df_jk_t
    use trc_scf_grad_df, only: scf_grad_df_two_electron, scf_grad_df_bilinear, scf_grad_df_bilinear_t
    use trc_linalg, only: trc_linalg_t
@@ -73,6 +78,9 @@ module check_rimp2_grad_suite
    real(dp), parameter :: PARTS_TOL = 1.0e-12_dp
    !! The gradient's E_os and E_ss (what a caller reports instead of running
    !! trc_rimp2_run) against trc_rimp2_run's.
+   real(dp), parameter :: SYMMETRY_TOL = 1.0e-12_dp
+   !! The pair-symmetric amplitude pass against the full one: the same
+   !! numbers summed in another order.
    real(dp), parameter :: TRANS_TOL = 1.0e-10_dp
    real(dp), parameter :: MQC_DFREF_TOL = 2.0e-8_dp
    !! Against a finite-difference reference (metalquicha's own gate is
@@ -120,7 +128,8 @@ contains
                   new_unittest("--df: water cc-pVDZ (Cartesian) vs finite differences", test_fd_df_water_cart), &
                   new_unittest("--df: the bilinear derivative at X = D/2 is the SCF's own", test_bilinear_identity), &
                   new_unittest("--df: the AO fallback of the fitted orbital Hessian agrees with the MO one", &
-                               test_df_response_ao) &
+                               test_df_response_ao), &
+                  new_unittest("the pair-symmetric amplitude pass agrees with the full one", test_pair_symmetry) &
                   ]
    end subroutine collect_rimp2_grad
 
@@ -313,6 +322,62 @@ contains
       call check(error, maxval(abs(g_ao - g_mo)) < BILINEAR_TOL, trim(c%name)// &
                  ": the two forms of the fitted orbital Hessian give different gradients")
    end subroutine test_df_response_ao
+
+   subroutine test_pair_symmetry(error)
+      !! trc_rimp2_relax's amplitude pass with the pair symmetry -- K only for
+      !! j from each group on, the earlier columns from mirror tiles -- with
+      !! every tile kept, with bands of one and two groups (the rest
+      !! recomputed), against the pass without it (no tile: every column
+      !! from K, the pass before the symmetry). Two occupied orbitals per
+      !! group so formamide's nine correlated orbitals make five groups.
+      !! Everything the pass returns must agree to round-off: doo, dvv, the
+      !! Lagrangian, the fitted derivative terms and the three energies.
+      type(error_type), allocatable, intent(out) :: error
+      integer, parameter :: NRUN = 4
+      integer, parameter :: TILES(NRUN) = [0, -1, 1, 3]
+      type(case_t) :: c
+      type(system_t) :: sys
+      type(trc_rimp2_relax_t) :: relax(NRUN)
+      type(trc_rimp2_options_t) :: ropts
+      real(dp), allocatable :: r(:, :), cmo(:, :), eps(:)
+      integer, allocatable :: z(:)
+      integer :: nat, k, n
+      real(dp) :: e_tot, dmat, dener
+      c%name = "formamide cart fc3 pair symmetry"
+      c%xyz = "formamide.xyz"
+      c%basis = "basis_sets/cc-pvdz.json"
+      c%aux = "basis_sets/cc-pvdz-rifit.json"
+      c%nfrozen = 3
+      c%cart = .true.
+      call read_xyz(trim(c%xyz), nat, z, r)
+      call setup_system(error, c, nat, z, r, sys, e_tot)
+      if (allocated(error)) return
+      n = sys%bas%nao
+      cmo = sys%res%cmo(:, :, 1)
+      eps = sys%res%eps(:, 1)
+      ropts%nfrozen = c%nfrozen
+      do k = 1, NRUN
+         call relax(k)%init(n, sys%nocc)
+         relax(k)%group_size = 2
+         relax(k)%tile_slots = TILES(k)
+         call relax(k)%build(sys%bas, sys%aux, sys%pl, cmo, eps, ropts, sys%lp)
+         call check(error, len_trim(relax(k)%message) == 0, trim(c%name)//": "//trim(relax(k)%message))
+         if (allocated(error)) return
+      end do
+      do k = 2, NRUN
+         dmat = max(maxval(abs(relax(k)%doo - relax(1)%doo)), maxval(abs(relax(k)%dvv - relax(1)%dvv)), &
+                    maxval(abs(relax(k)%lag_o - relax(1)%lag_o)), maxval(abs(relax(k)%lag_v - relax(1)%lag_v)), &
+                    maxval(abs(relax(k)%grad - relax(1)%grad)))
+         dener = max(abs(relax(k)%e_corr - relax(1)%e_corr), abs(relax(k)%e_os - relax(1)%e_os), &
+                     abs(relax(k)%e_ss - relax(1)%e_ss))
+         print "(a,a,i0,a,es10.2,a,es10.2)", "  ", trim(c%name)//": tiles ", TILES(k), &
+            "  max |doo, dvv, L, grad - no symmetry| ", dmat, "  energies ", dener
+         call check(error, dmat < SYMMETRY_TOL .and. dener < PARTS_TOL, trim(c%name)// &
+                    ": the pair-symmetric pass differs from the full one")
+         if (allocated(error)) return
+      end do
+      call release_system(sys)
+   end subroutine test_pair_symmetry
 
    ! ---- B. finite differences of terco's own energy -------------------------
 
