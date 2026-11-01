@@ -95,6 +95,7 @@
 module trc_rimp2_grad
    use pic_types, only: dp
    use pic_timer, only: timer_type
+   use pic_logger, only: global_logger
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_1e_gradient
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
@@ -129,10 +130,11 @@ module trc_rimp2_grad
    !! (trc_rimp2_driver's own rimp2_driver_mo_to_cart pads the same way).
 
    integer, parameter :: ST_ORB = 1, ST_CORR = 2, ST_ZVEC = 3, ST_DENSITY = 4, ST_GRAD4C = 5, ST_GRAD1E = 6, &
-                         ST_XC = 7, NSTEP = 7
+                         ST_XC = 7, ST_KSGRID = 8, NSTEP = 8
    character(len=20), parameter :: STEP_NAME(NSTEP) = [character(len=20) :: &
                                    "orbitals, pairs, ERI", "correlation (fitted)", "Z-vector (CPHF)", &
-                                   "relaxed densities", "2e gradient", "1e gradient", "XC (KS reference)"]
+                                   "relaxed densities", "2e gradient", "1e gradient", "XC (KS reference)", &
+                                   "KS grid (rebuilt)"]
 
    type :: trc_rimp2_grad_options_t
       !! The RI-MP2 gradient's knobs. Plain values only.
@@ -282,9 +284,9 @@ contains
       if (.not. fitted) call eri%build(b, job%opts%eri_threshold)
       call tbl%step_off(la, ST_ORB, tc)
       if (w%kohn_sham) then
-         call tbl%step_on(la, ST_XC, tc)
+         call tbl%step_on(la, ST_KSGRID, tc)
          call kohn_sham_setup(b, la, job%opts, w)
-         call tbl%step_off(la, ST_XC, tc)
+         call tbl%step_off(la, ST_KSGRID, tc)
       end if
 
       ! --- the correlation: doo, dvv, L', L'', the fitted 3c/2c terms -----
@@ -770,18 +772,33 @@ contains
       real(dp), intent(inout) :: grad(3, b%natm)
       type(xc_grad_options_t) :: xopts
       type(step_table_t) :: timing
+      type(timer_type) :: tm
       real(dp), allocatable :: dens3(:, :, :)
+      real(dp) :: t_exc
       xopts = xc_grad_options(grid_level=opts%grid_level, grid_max_pts=opts%grid_max_pts, rho_tol=opts%rho_tol, &
                               grid_response=.true., partition=w%grid%partition)
       call timing%init("xc grad", xc_grad_step_names())
+      call la%sync()
+      call tm%start()
       allocate (dens3(w%n, w%n, 1))
       dens3(:, :, 1) = w%dref
       !$acc enter data copyin(dens3)
       call xc_grad_add_on_grid(b, la, w%func, dens3, grad, xopts, timing, w%xg)
       !$acc exit data delete(dens3)
       deallocate (dens3)
+      call la%sync()
+      t_exc = tm%get_elapsed_time()
+      call tm%start()
       call xc_grad_potential_add(b, la, w%func, w%xg, w%dref, w%pao, grad, xopts)
-      if (opts%verbose) call timing%report(0.0_dp, 0, 1)
+      call la%sync()
+      if (opts%verbose) then
+         call timing%report(t_exc, 0, 1)
+         block
+            character(len=160) :: logline
+            write (logline, "(a,f9.3,a)") "  rimp2 gradient: d/dR Tr(P V_xc[D]) ", tm%get_elapsed_time(), " s"
+            call global_logger%performance(trim(logline))
+         end block
+      end if
    end subroutine kohn_sham_xc_gradient
 
    subroutine release_all(pl, eri, fitted, w)
