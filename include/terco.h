@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 13
+#define TRC_ABI_MINOR 14
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -615,14 +615,13 @@ int trc_set_geometry(trc_handle_t handle, const double* xyz);
  * (wB97X-V). `trc_scf_gradient` adds trc_vv10_grad%vv10_grad_add's
  * term on top of the semilocal one, on VV10's own grid
  * (`cx%opts%nlc_grid_level`, the SAME level the SCF itself converged
- * it on). wB97M-V is in terco's table too now (a meta-GGA with VV10
- * and its own range-separated exchange), but the meta-GGA refusal
- * below catches it before VV10 ever comes up: its energy runs, its
- * gradient does not, same tau reason as every other meta-GGA.
+ * it on). Meta-GGAs run too (trc_xc_grad's tau term), wB97M-V
+ * included: a meta-GGA with VV10 and its own range-separated
+ * exchange, each piece the same one its GGA counterpart uses.
  *
  * REFUSED, clearly, rather than attempted:
- *   - meta-GGA: the energy runs, but trc_xc_grad has no tau term, so
- *     the gradient is refused here with a message.
+ *   - a double hybrid on a meta-GGA base (none is registered): its
+ *     relaxed gradient would need a meta-GGA CPKS kernel.
  *   - RI-MP2 (or, once it exists, a double hybrid): no correlation
  *     gradient exists; `trc_scf_gradient` is the SCF reference term
  *     only.
@@ -720,8 +719,8 @@ int trc_hessian_step(trc_handle_t handle, double* step);
  *     written so a later split is "rank r takes k = r, r+P, ..."
  *     plus a reduction over the gradients, but nothing here runs
  *     that split yet (TRC_ERR_UNSUPPORTED);
- *   - anything trc_run_gradient itself would refuse (meta-GGA,
- *     RI-MP2/double-hybrid, PCM, --df outside its own scope --
+ *   - anything trc_run_gradient itself would refuse (RI-MP2/
+ *     double-hybrid, PCM, --df outside its own scope --
  *     gradient_capability_check, the SAME check trc_run_gradient
  *     makes, so the two can never disagree about what runs);
  *   - a non-positive step (trc_set_hessian_step already refuses
