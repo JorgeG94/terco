@@ -4214,6 +4214,13 @@ contains
          cx%message = "trc_run_hessian: "//refusal
          return
       end if
+      ! The analytic PCM gradient is validated (pyscf, finite differences);
+      ! a Hessian from finite differences of it is not, so it stays refused.
+      if (len_trim(cx%opts%pcm_model) > 0) then
+         status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_run_hessian: a PCM Hessian is not validated yet (the PCM gradient is)"
+         return
+      end if
 
       status = TRC_ERR_BADARG
       h = cx%hess_step
