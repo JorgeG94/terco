@@ -27,10 +27,12 @@ module trc_integrals
    use trc_mult_kernels, only: mult_driver, TRC_NMULT, MULT_LMAX
    use trc_df_kernels, only: df_2c_driver, df_3c_driver, DF_LMAX, DF_LMAX_AUX
    use trc_pcm_kernels, only: pcm_potential_driver, pcm_fock_driver, PCM_LMAX
+   use trc_pcm_grad_kernels, only: pcm_grad_driver, PCM_GRAD_LMAX
    implicit none
    private
    public :: trc_1e, trc_1e_gradient, trc_multipoles, trc_df_2c, trc_df_3c
    public :: trc_pcm_potential, trc_pcm_fock, PCM_LMAX
+   public :: trc_pcm_gradient, PCM_GRAD_LMAX
    public :: TRC_NMULT
 
    !
@@ -185,6 +187,37 @@ contains
                            p%p_i, p%p_j, p%pp_off, p%pp_n, p%pp_z, p%pp_k, p%pp_p, p%pp_a, &
                            npts, pts, zeta, q, vmat)
    end subroutine trc_pcm_fock
+
+   !
+   ! The polarisable continuum's surface-integral GRADIENT: +D:dV/dR of
+   ! sum_k q_k erf(zeta_k|r - pts_k|)/|r - pts_k|, the basis-centre
+   ! derivative (both A and B) and the Hellmann-Feynman-like derivative wrt
+   ! each point's own position (bucketed to its parent atom, `ptatm`),
+   ! ADDED into `grad` -- same convention as trc_1e_gradient. Needs the
+   ! basis's raw primitive data (sh_e, sh_c), not the pair list's
+   ! precombined pp_*: the bra/ket shift identity needs each primitive's
+   ! own exponent (gen_1e.py's emit_pcm_grad_class).
+   !
+   subroutine trc_pcm_gradient(b, p, pts, zeta, ptatm, q, dmat, grad)
+      !! `npts` is not a dummy here (tools/archcheck.py's arg-count limit):
+      !! `pts`/`zeta`/`ptatm`/`q` are assumed-shape, fine for a plain host
+      !! dispatcher that is not itself `!$acc routine seq` -- `size(zeta)`
+      !! supplies pcm_grad_driver's own explicit-shape `npts`, unchanged.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_pairlist_t), intent(in) :: p
+      real(dp), intent(in) :: pts(:, :), zeta(:)
+      integer, intent(in) :: ptatm(:)   !! the point's parent atom, 1-based
+      real(dp), intent(in) :: q(:)      !! the surface charge at each point
+      real(dp), intent(in) :: dmat(b%nao, b%nao)
+      !! The ordinary (total) density; linear in V, same reason
+      !! trc_1e_gradient's own dmat is the total one.
+      real(dp), intent(inout) :: grad(3, b%natm)
+      if (maxval(b%sh_l) > PCM_GRAD_LMAX) error stop &
+         "terco: trc_pcm_gradient: basis above PCM_GRAD_LMAX (gen_1e.py --pcm-grad --lmax)"
+      call pcm_grad_driver(b%nshell, b%nao, b%natm, b%maxnp, b%sh_l, b%sh_np, &
+                           b%sh_ao, b%sh_at, b%sh_e, b%sh_c, b%sh_r, &
+                           p%npair, p%p_i, p%p_j, size(zeta), pts, zeta, ptatm, q, dmat, grad)
+   end subroutine trc_pcm_gradient
 
    !
    ! Explicit-shape dummies with the extents passed in, and the extents

@@ -35,7 +35,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 13
+   integer(c_int), parameter :: TRC_ABI_MINOR = 16
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -997,7 +997,17 @@ module trc_c_interfaces
          !!     range-separated -- the SCF refuses those first), or with the fit
          !!     gone. A --df gradient otherwise runs the FITTED J/K gradient
          !!     (trc_scf_grad_df.F90) over `cx%dfjk`, the fit the SCF used.
-         !!   - PCM: no cavity/surface-charge derivative exists.
+         !!
+         !! NOT refused any more: PCM (C-PCM/IEF-PCM). `trc_scf_run` releases
+         !! its own continuum at the end of a run, the same as its pair list
+         !! and ERI engine (trc_scf_grad.F90's own header), so this rebuilds
+         !! one fresh, below, at `cx%opts%pcm_model`/`pcm_eps`/`pcm_lebedev`/
+         !! `pcm_radii_scale`/`pcm_radii_override` -- the SAME settings
+         !! `trc_run_scf` built its own continuum with, at a geometry
+         !! `cx%scf_ok` already guarantees is unchanged. `trc_scf_gradient`
+         !! solves it at this run's own density (one more triangular solve
+         !! through the already-factored K) and adds grad_qv + grad_nuc +
+         !! grad_solver (`trc_pcm_grad%pcm_gradient_add`'s own header).
          !!
          !! A multi-rank context (`cx%fcomm /= -1`) is NOT refused: the
          !! gradient is not rank-split yet, so rank 0 computes it alone and

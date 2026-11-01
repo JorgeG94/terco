@@ -34,6 +34,7 @@ target_sources(
           core/trc_constants.F90  # the single source of truth for math/CODATA constants and atomic masses
           solvation/trc_pcm_radii.F90  # cavity radii for the polarisable continuum
           solvation/trc_pcm.F90        # the polarisable continuum: cavity, charges, operator
+          solvation/trc_pcm_grad.F90   # the PCM analytic gradient: grad_qv + grad_nuc + grad_solver
           scf/trc_scf_settings.F90      # trc_scf_options_t/result_t and the options a run resolves them to
           scf/trc_scf_context.F90       # everything an SCF run builds once per geometry
           scf/trc_scf_state.F90         # the SCF's per-iteration arrays, and the one enter/exit pair for them
@@ -575,6 +576,13 @@ if(_regen)
     # limitation, it is a wrong force.
     terco_gen("gen_1e.py --deriv-dir" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
               --lmax ${TERCO_LMAX} --deriv-dir ${_gen_out} ${_order_flag})
+    # The PCM surface-integral GRADIENT kernels, same ceiling as --pcm
+    # above for the same reason: a continuum force that stops below the
+    # orbital basis is a wrong force. One module (not split): at
+    # TERCO_LMAX<=2 it is the same order as trc_1e_grad_kernels' own
+    # single-module class list.
+    terco_gen("gen_1e.py --pcm-grad" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
+              --lmax ${TERCO_LMAX} --pcm-grad ${_gen_out}/trc_pcm_grad_kernels.F90 ${_order_flag})
 
     # One module per (la,lb|lc)/(la|lc) class, same reason as gen_perclass.py's
     # --split above: at --lmax 3 --lmax-aux 4 (f orbitals, g auxiliary) a single

@@ -176,13 +176,15 @@ program trc_main
    call r%cli%add_option("json", "also write a JSON summary to this file")
    call r%cli%add_flag("grad", "Print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
                        "RHF/UHF, or KS-DFT for an LDA/GGA --func (global and range-separated "// &
-                       "hybrids and VV10 included); with --df, the fitted RHF/RKS gradient; "// &
-                       "refused for a meta-GGA, --rimp2, a double hybrid or --pcm; with more than "// &
-                       "one rank it is computed on rank 0 alone, with a warning")
+                       "hybrids and VV10 included); with --df, the fitted RHF/RKS gradient; with "// &
+                       "--pcm (C-PCM/IEF-PCM), the continuum's own analytic term (grad_qv + "// &
+                       "grad_nuc + grad_solver) on top; refused for a meta-GGA, --rimp2 or a "// &
+                       "double hybrid; with more than one rank it is computed on rank 0 alone, "// &
+                       "with a warning")
    call r%cli%add_flag("hessian", "finite-difference Cartesian Hessian (central differences of the "// &
                        "analytic gradient) after the SCF, then harmonic vibrational analysis and RRHO "// &
                        "thermochemistry; refused wherever --grad is (meta-GGA, --rimp2, a double "// &
-                       "hybrid, --pcm), checked before any displacement runs; single rank only for now")
+                       "hybrid), checked before any displacement runs; single rank only for now")
    call r%cli%add_option("step", "--hessian's displacement, Bohr (0.005)", default="0.005")
    call r%cli%add_option("temperature", "temperature for --hessian's thermochemistry, K (298.15)", &
                          default="298.15")

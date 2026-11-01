@@ -402,6 +402,20 @@ set_tests_properties(
 terco_add_check(check_full_grad_fd check_full_grad_fd.F90 NEEDS_BASIS)
 target_link_libraries(check_full_grad_fd PRIVATE test-drive::test-drive)
 
+# The analytic PCM (C-PCM/IEF-PCM) gradient term (trc_pcm_grad's grad_qv +
+# grad_nuc + grad_solver) against finite differences of terco's own fully
+# reconverged SCF energy -- water (both models) and formamide (IEF-PCM,
+# whose atoms sit close enough to exercise the switching-function
+# derivative) -- see check_pcm_grad_fd.F90's own header.
+terco_add_check(check_pcm_grad_fd check_pcm_grad_fd.F90 NEEDS_BASIS)
+target_link_libraries(check_pcm_grad_fd PRIVATE test-drive::test-drive)
+
+# The same PCM gradient term against pyscf's own solvent-wrapped
+# Gradients class (water/6-31G*, both models) -- see
+# check_pcm_grad_vs_pyscf.F90's own header.
+terco_add_check(check_pcm_grad_vs_pyscf check_pcm_grad_vs_pyscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_pcm_grad_vs_pyscf PRIVATE test-drive::test-drive)
+
 #
 # The SCF/gradient reuse added for a sequence of nearby geometries (the FD
 # Hessian, a later geometry optimiser): trc_pair_eri_cache_t and

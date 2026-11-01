@@ -1233,6 +1233,313 @@ end module trc_1e_grad_kernels
     print(f"wrote {path}: {len(names)} classes, {txt.count(chr(10))} lines")
 
 
+def emit_pcm_grad_class(la, lb, order="lexicographic"):
+    """(la|lb) PCM surface-integral GRADIENT block: +D:dV/dR for
+    sum_k q_k erf(zeta_k|r - C_k|)/|r - C_k|, the basis-centre derivative
+    (bra A, ket B) and the Hellmann-Feynman-like derivative wrt the surface
+    point's OWN position -- contracted directly into ga (bra atom), gb
+    (ket atom) and gc (the point's parent atom, atomic update); no
+    derivative matrix is ever materialised.
+
+    PCM's surface operator has no overlap or kinetic counterpart, so this
+    is exactly emit_grad_class's V block (see its docstring for the
+    bra/ket shift identity and emit_dc_vrr's docstring for the
+    Hellmann-Feynman derivation) with the SAME substitution emit_pcm_class
+    makes: the point-charge nuclear attraction's Boys argument T =
+    zeta|PC|^2 becomes theta T, F_m scaled by theta^m and the prefactor by
+    sqrt(theta), where theta = zeta_k^2/(zeta_k^2 + p) and p is the
+    primitive pair's own exponent -- the UNCHANGED recurrence
+    (emit_nuc_vrr), per emit_pcm_class's own derivation.
+
+    THE ONE THING WORTH CHECKING: does the Hellmann-Feynman term
+    (emit_dc_vrr, differentiating wrt where the point SITS) still come out
+    right once T is theta-scaled? Working the base case through,
+
+        V[0]^(m) = (2pi/p) K_ab sqrt(theta) theta^m F_m(theta T),
+        d(theta T)/dC_x = theta * dT/dC_x = -2 p theta PC_x    (theta has
+                                                no explicit C dependence),
+        dV[0]^(m)/dC_x = (2pi/p) K_ab sqrt(theta) theta^m * (-F_{m+1})
+                         * (-2 p theta PC_x)
+                       = 2 p PC_x * (2pi/p) K_ab sqrt(theta) theta^(m+1) F_{m+1}
+                       = 2 p PC_x * V[0]^(m+1),
+
+    the SAME base case emit_dc_vrr already emits for a bare point charge:
+    the theta's cancel. The recurrence's own coefficients (PA, PC, N/2p)
+    carry no theta either (emit_pcm_class's point: the recurrence is
+    "UNCHANGED"), so the whole derivative recurrence, fed the theta-scaled
+    vn, is exactly emit_dc_vrr -- no modification needed.
+
+    POINT, NOT NUCLEUS. A surface point moves rigidly with its own atom
+    only (coords = parent centre + a fixed offset): unlike the real
+    nucleus loop in emit_grad_class (every nucleus is an independent
+    centre, so `gc` sums over all of them), this is ONE point's own
+    parent atom per point -- `ptatm` names it, and the Hellmann-Feynman
+    contribution lands there alone, atomically (many points, many shell
+    pairs, the same atom). How that same point's position ALSO varies with
+    EVERY OTHER atom through the switching function is a separate,
+    non-integral term (trc_pcm_grad's dense dF/dA kernel), not this one.
+
+    cc, applied only where ga/gb/gc are written (not folded into vpref),
+    and vpref carrying no charge either (q(kk) is applied at the same
+    spot): both match emit_grad_class's own convention, not
+    emit_pcm_class's (which sums many points into ONE block and so can
+    fold wq(kk) into vpref) -- here every point's HRR-transferred result
+    must be contracted into ga/gb/gc before the next point overwrites it.
+    """
+    lab = la + lb
+    lab1 = lab + 1
+    na, nb = len(cart(la)), len(cart(lb))
+    na1, nb1 = len(cart(la + 1)), len(cart(lb + 1))
+    nam1 = len(cart(la - 1)) if la >= 1 else 0
+    nbm1 = len(cart(lb - 1)) if lb >= 1 else 0
+    idx = cart_cum(lab1)
+    nvn = ncum(lab1)
+    nvnw = ncum(lab)
+    tag = f"{la}{lb}"
+
+    cla, clb = cart(la, order), cart(lb, order)
+    cla1, clb1 = cart(la + 1, order), cart(lb + 1, order)
+    clam1 = cart(la - 1, order) if la >= 1 else None
+    clbm1 = cart(lb - 1, order) if lb >= 1 else None
+    AX = {"x": 0, "y": 1, "z": 2}
+
+    vrr = emit_nuc_vrr(lab1, idx)
+    dcvrr = emit_dc_vrr(lab, idx)
+    hrr_ap = emit_hrr(la + 1, lb, idx, "vn0", "vAp", order)
+    hrr_am = emit_hrr(la - 1, lb, idx, "vn0", "vAm", order) if la >= 1 else \
+        "            ! la = 0: no (la-1,lb) class"
+    hrr_bp = emit_hrr(la, lb + 1, idx, "vn0", "vBp", order)
+    hrr_bm = emit_hrr(la, lb - 1, idx, "vn0", "vBm", order) if lb >= 1 else \
+        "            ! lb = 0: no (la,lb-1) class"
+    hrr_wx = emit_hrr(la, lb, idx, "wx0", "wxt", order)
+    hrr_wy = emit_hrr(la, lb, idx, "wy0", "wyt", order)
+    hrr_wz = emit_hrr(la, lb, idx, "wz0", "wzt", order)
+
+    v_lines = []
+    wv = v_lines.append
+    for ib, bcomp in enumerate(clb):
+        for ia, acomp in enumerate(cla):
+            k = 1 + ia + na*ib
+            for d in "xyz":
+                di = AX[d] + 1
+                j = AX[d]
+                ap = tuple(c + (1 if jj == j else 0) for jj, c in enumerate(acomp))
+                k1 = 1 + cla1.index(ap) + na1*ib
+                bra_expr = f"2.0_dp*al*vAp({k1})"
+                if acomp[j] > 0:
+                    am = tuple(c - (1 if jj == j else 0) for jj, c in enumerate(acomp))
+                    k2 = 1 + clam1.index(am) + nam1*ib
+                    bra_expr = f"({bra_expr} - {float(acomp[j])}_dp*vAm({k2}))"
+                else:
+                    bra_expr = f"({bra_expr})"
+                bp = tuple(c + (1 if jj == j else 0) for jj, c in enumerate(bcomp))
+                k3 = 1 + ia + na*clb1.index(bp)
+                ket_expr = f"2.0_dp*bet*vBp({k3})"
+                if bcomp[j] > 0:
+                    bm = tuple(c - (1 if jj == j else 0) for jj, c in enumerate(bcomp))
+                    k4 = 1 + ia + na*clbm1.index(bm)
+                    ket_expr = f"({ket_expr} - {float(bcomp[j])}_dp*vBm({k4}))"
+                else:
+                    ket_expr = f"({ket_expr})"
+                wtab = {"x": "wxt", "y": "wyt", "z": "wzt"}[d]
+                wv(f"            ga({di}) = ga({di}) - cc*q(kk)*dblk({k})*{bra_expr}")
+                wv(f"            gb({di}) = gb({di}) - cc*q(kk)*dblk({k})*{ket_expr}")
+                wv("            !$acc atomic update")
+                wv(f"            gc({di},pa) = gc({di},pa) - cc*q(kk)*dblk({k})*{wtab}({k})")
+    v_block = "\n".join(v_lines)
+
+    na1nb = na1*nb
+    nanb1 = na*nb1
+    decl_am = f"      real(dp) :: vAm({nam1*nb})\n" if la >= 1 else ""
+    decl_bm = f"      real(dp) :: vBm({na*nbm1})\n" if lb >= 1 else ""
+
+    return f"""
+   pure subroutine pcm_grad_{tag}(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
+                                  npt, k0, kstep, cpt, zk, ptatm, q, natm, &
+                                  wt, dblk, ga, gb, gc)
+      !! ({la}|{lb}) PCM surface-integral gradient block: +D:dV/dR of
+      !! sum_k q_k erf(zeta_k|r-C_k|)/|r-C_k| over the npt points
+      !! k = k0, k0 + kstep, ... -- basis-centre derivative into ga/gb,
+      !! point derivative atomically into gc(:, ptatm(k)). See
+      !! emit_pcm_grad_class/emit_dc_vrr in scripts/gen_1e.py.
+      !$acc routine seq
+      integer,  intent(in)  :: nprim_a, nprim_b, npt, k0, kstep, natm
+      real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
+      real(dp), intent(in)  :: eb(nprim_b), cb(nprim_b)
+      real(dp), intent(in)  :: ra(3), rb(3)
+      real(dp), intent(in)  :: cpt(3, *)     !! point centres
+      real(dp), intent(in)  :: zk(*)         !! zeta_k; the Gaussian exponent is zeta_k^2
+      integer,  intent(in)  :: ptatm(*)      !! the point's parent atom, 1-based
+      real(dp), intent(in)  :: q(*)          !! the surface charge at each point
+      real(dp), intent(in)  :: wt, dblk({na*nb})
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
+
+      integer  :: ip, jp, ic, k, kk, m, pa
+      real(dp) :: al, bet, zeta, oo2z, xi, cc
+      real(dp) :: px, py, pz, pax, pay, paz, pbx, pby, pbz
+      real(dp) :: pcx, pcy, pcz, tval, vpref0, vpref, rab2
+      real(dp) :: abx, aby, abz, w2, theta, thm
+      real(dp) :: vn({nvn},0:{lab1}), vn0({nvn})
+      real(dp) :: wx({nvnw},0:{lab}), wy({nvnw},0:{lab}), wz({nvnw},0:{lab})
+      real(dp) :: wx0({nvnw}), wy0({nvnw}), wz0({nvnw})
+      real(dp) :: vAp({na1nb})
+{decl_am}      real(dp) :: vBp({nanb1})
+{decl_bm}      real(dp) :: wxt({na*nb}), wyt({na*nb}), wzt({na*nb})
+      real(dp) :: f(0:BOYS_MMAX)
+
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
+      rab2 = abx*abx + aby*aby + abz*abz
+
+      ga = 0.0_dp; gb = 0.0_dp
+
+      do ip = 1, nprim_a
+         al = ea(ip)
+      do jp = 1, nprim_b
+         bet = eb(jp)
+         zeta = al + bet
+         oo2z = 0.5_dp/zeta
+         xi = al*bet/zeta
+         cc = ca(ip)*cb(jp)*wt
+
+         px = (al*ra(1) + bet*rb(1))/zeta
+         py = (al*ra(2) + bet*rb(2))/zeta
+         pz = (al*ra(3) + bet*rb(3))/zeta
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
+
+         vpref0 = 2.0_dp*PI/zeta*exp(-xi*rab2)
+
+         do ic = 1, npt
+            kk = k0 + (ic - 1)*kstep
+            pcx = px - cpt(1, kk)
+            pcy = py - cpt(2, kk)
+            pcz = pz - cpt(3, kk)
+            w2 = zk(kk)*zk(kk)
+            theta = w2/(w2 + zeta)
+            tval = theta*zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
+            call boys_eval({lab1}, tval, f)
+            thm = 1.0_dp
+            do m = 1, {lab1}
+               thm = thm*theta
+               f(m) = f(m)*thm
+            end do
+            vpref = vpref0*sqrt(theta)
+
+{vrr}
+
+{dcvrr}
+
+            do k = 1, {nvn}
+               vn0(k) = vn(k,0)
+            end do
+            do k = 1, {nvnw}
+               wx0(k) = wx(k,0); wy0(k) = wy(k,0); wz0(k) = wz(k,0)
+            end do
+
+{hrr_ap}
+
+{hrr_am}
+
+{hrr_bp}
+
+{hrr_bm}
+
+{hrr_wx}
+
+{hrr_wy}
+
+{hrr_wz}
+
+            pa = ptatm(kk)
+{v_block}
+         end do
+      end do
+      end do
+   end subroutine pcm_grad_{tag}
+"""
+
+
+def emit_pcm_grad_module(L, path, order="lexicographic"):
+    """The PCM surface-integral GRADIENT kernels, one routine per class."""
+    order_val = 0 if order == "lexicographic" else 1
+    order_arg = "" if order == "lexicographic" else f" --order {order}"
+    parts = [f"""!
+! Gradient of the smeared-charge surface integrals for the polarisable
+! continuum: +D:dV/dR of sum_k q_k erf(zeta_k|r-C_k|)/|r-C_k|, contracted
+! directly into a (3, natm) gradient. See emit_pcm_grad_class in
+! scripts/gen_1e.py for the derivation.
+!
+! GENERATED by scripts/gen_1e.py --lmax {L} --pcm-grad{order_arg} -- do not edit.
+!
+#if TRC_CART_ORDER != {order_val}
+#error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
+#endif
+module trc_pcm_grad_kernels
+   use pic_types, only: dp
+   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
+   implicit none
+   private
+   public :: pcm_grad_dispatch, pcm_grad_driver, PCM_GRAD_LMAX
+
+   integer, parameter :: PCM_GRAD_LMAX = {L}
+   integer, parameter :: ONE_E_RADIX = __RADIX__
+   !! Same fixed radix as gen_1e.py's other dispatchers.
+   real(dp), parameter :: PI = 3.14159265358979323846_dp
+   integer, parameter :: NC_MAX = (PCM_GRAD_LMAX + 1)*(PCM_GRAD_LMAX + 2)/2
+   integer, parameter :: NBLK_MAX = NC_MAX*NC_MAX
+   integer, parameter :: PCM_GRAD_NPRIV = 8
+   !! Lane-private gradient copies, trc_1e_grad_kernels' ONE_E_GRAD_NPRIV
+   !! technique.
+   integer, parameter :: PCM_GRAD_PT_CHUNK = 64
+   !! Points per work item -- smaller than PCM_PT_CHUNK (the energy/Fock
+   !! kernels' 128): each point here also runs the bra/ket HRR transfers
+   !! and the Hellmann-Feynman VRR, several times a plain potential point's
+   !! cost, so a shorter chunk keeps one work item's register/local
+   !! footprint in the same ballpark.
+
+contains
+
+#include "inc/trc_boys_eval.inc"
+#include "inc/trc_pcm_grad_driver.inc"
+"""]
+    names = []
+    for la in range(L + 1):
+        for lb in range(L + 1):
+            parts.append(emit_pcm_grad_class(la, lb, order))
+            names.append((la, lb))
+    parts.append("""
+   pure subroutine pcm_grad_dispatch(la, lb, nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
+                                     npt, k0, kstep, cpt, zk, ptatm, q, natm, wt, dblk, ga, gb, gc)
+      !$acc routine seq
+      integer,  intent(in)  :: la, lb, nprim_a, nprim_b, npt, k0, kstep, natm
+      real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
+      real(dp), intent(in)  :: eb(nprim_b), cb(nprim_b)
+      real(dp), intent(in)  :: ra(3), rb(3)
+      real(dp), intent(in)  :: cpt(3, *), zk(*), q(*)
+      integer,  intent(in)  :: ptatm(*)
+      real(dp), intent(in)  :: wt, dblk(*)
+      real(dp), intent(out)   :: ga(3), gb(3)
+      real(dp), intent(inout) :: gc(3, natm)
+      select case (la*ONE_E_RADIX + lb)""")
+    for la, lb in names:
+        parts.append(f"""      case ({la*ONE_E_RADIX + lb}); call pcm_grad_{la}{lb}(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
+                          npt, k0, kstep, cpt, zk, ptatm, q, natm, wt, dblk, ga, gb, gc)""")
+    parts.append("""      case default
+         !! No kernel for this class: the basis is above PCM_GRAD_LMAX.
+         !! trc_pcm_grad refuses such a basis on the host before this runs.
+         ga(1) = huge(1.0_dp)
+      end select
+   end subroutine pcm_grad_dispatch
+
+end module trc_pcm_grad_kernels
+""")
+    txt = "\n".join(parts).replace("__RADIX__", str(ONE_E_RADIX))
+    with open(path, "w") as fh:
+        fh.write(txt)
+    print(f"wrote {path}: {len(names)} classes, {txt.count(chr(10))} lines")
+
+
 # ---------------------------------------------------------------------------
 # SPLIT EMITTERS: one module per (la, lb) class, each with its own launch.
 #
@@ -1613,6 +1920,12 @@ def main():
                          "Hellmann-Feynman term -- contracted directly "
                          "into a (3,natm) gradient) into their own module "
                          "instead.")
+    ap.add_argument("--pcm-grad", metavar="FILE", default=None,
+                    help="emit the PCM surface-integral GRADIENT kernels "
+                         "(+D:dV/dR of sum_k q_k erf(zeta_k r)/r -- basis "
+                         "derivative and the point's own Hellmann-Feynman "
+                         "derivative -- contracted directly into a "
+                         "(3,natm) gradient) into their own module instead.")
     ap.add_argument("--deriv-dir", metavar="DIR", default=None,
                     help="as --deriv, one module per class plus the driver module "
                          "(trc_1e_grad_kernels.F90) in DIR")
@@ -1641,6 +1954,9 @@ def main():
         return
     if args.deriv:
         emit_grad_module(L, args.deriv, order)
+        return
+    if args.pcm_grad:
+        emit_pcm_grad_module(L, args.pcm_grad, order)
         return
 
     parts = [f"""!
