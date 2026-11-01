@@ -578,11 +578,14 @@ if(_regen)
               --lmax ${TERCO_LMAX} --deriv-dir ${_gen_out} ${_order_flag})
     # The PCM surface-integral GRADIENT kernels, same ceiling as --pcm
     # above for the same reason: a continuum force that stops below the
-    # orbital basis is a wrong force. One module (not split): at
-    # TERCO_LMAX<=2 it is the same order as trc_1e_grad_kernels' own
-    # single-module class list.
-    terco_gen("gen_1e.py --pcm-grad" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
-              --lmax ${TERCO_LMAX} --pcm-grad ${_gen_out}/trc_pcm_grad_kernels.F90 ${_order_flag})
+    # orbital basis is a wrong force. One module PER CLASS, same reason
+    # --deriv-dir above is split rather than single-module: the monolithic
+    # dispatcher sized every thread's registers for the heaviest compiled
+    # class regardless of which one it ran (ncu, see the PR that split
+    # this; measured 1.08 s/call against the no-derivative PCM Fock term's
+    # 0.08 s on the same integral family, local-memory spills).
+    terco_gen("gen_1e.py --pcm-grad-dir" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
+              --lmax ${TERCO_LMAX} --pcm-grad-dir ${_gen_out} ${_order_flag})
 
     # One module per (la,lb|lc)/(la|lc) class, same reason as gen_perclass.py's
     # --split above: at --lmax 3 --lmax-aux 4 (f orbitals, g auxiliary) a single
