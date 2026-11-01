@@ -35,7 +35,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 13
+   integer(c_int), parameter :: TRC_ABI_MINOR = 14
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -757,6 +757,29 @@ module trc_c_interfaces
          real(c_double), value :: diis_start
       end function trc_set_scf_accel
 
+      integer(c_int) function trc_set_soscf(handle, enable, soscf_start) bind(c) result(res)
+         !! Second-order SCF (trc_scf_options_t%soscf's own comment): once
+         !! DIIS brings |FDS - SDF| below `soscf_start`, hand over to a
+         !! trust-region Newton step on the orbital rotations
+         !! (trc_scf_soscf.F90, ported from metalquicha's mqc_czt_soscf).
+         !! Restricted Hartree-Fock only -- refused at the next trc_run_scf
+         !! with an open shell, a functional, a continuum solvent, --df or
+         !! more than one rank, never run silently as plain DIIS.
+         !!
+         !!   enable       1 turns --soscf on; 0 off (the default).
+         !!   soscf_start  commutator norm at which DIIS hands over; -1 (or
+         !!                any value <= 0) for the library's own default
+         !!                (1e-2).
+         !!
+         !! Takes effect at the next trc_run_scf, for every SCF the handle
+         !! runs after it.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: enable
+         real(c_double), value :: soscf_start
+      end function trc_set_soscf
+
       integer(c_int) function trc_set_df(handle, on) bind(c) result(res)
          import :: c_int, c_ptr
          implicit none
@@ -967,17 +990,19 @@ module trc_c_interfaces
          !! REFUSED, clearly, rather than attempted:
          !!   - meta-GGA: the energy runs, but trc_xc_grad has no tau term, so
          !!     the gradient is refused here with a message.
-         !!   - RI-MP2 over anything but a four-centre RHF reference on one
-         !!     rank: a double hybrid or other Kohn-Sham reference, an
-         !!     unrestricted or --df one, a multi-rank context, or dropped
-         !!     functions (gradient_capability_check's own messages).
+         !!   - RI-MP2 over anything but an RHF reference on one rank: a double
+         !!     hybrid or other Kohn-Sham reference, an unrestricted one, a
+         !!     multi-rank context, or dropped functions
+         !!     (gradient_capability_check's own messages).
          !!
          !! RI-MP2. After a successful trc_run_rimp2 the energy this context
          !! reports (trc_energy) is E_RHF + E_RI-MP2, and this differentiates
-         !! THAT: trc_rimp2_grad%trc_rimp2_gradient, the exact-ERI reference
-         !! with the fitted correlation, its Z-vector against the exact
-         !! orbital Hessian, the same frozen core and pair-list threshold the
-         !! energy used. A later trc_run_scf clears the RI-MP2 result, and the
+         !! THAT: trc_rimp2_grad%trc_rimp2_gradient, with the same frozen core
+         !! and pair-list threshold the energy used. A four-centre reference
+         !! keeps its Z-vector against the exact orbital Hessian; a --df one
+         !! (trc_set_df) differentiates the fitted SCF it converged, its
+         !! Z-vector, potentials and two-electron derivative all over
+         !! `cx%dfjk`. A later trc_run_scf clears the RI-MP2 result, and the
          !! gradient is the SCF's again.
          !!   - --df outside the DF-SCF's own scope (unrestricted, spherical,
          !!     range-separated -- the SCF refuses those first), or with the fit

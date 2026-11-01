@@ -31,7 +31,15 @@ else()
   set(_dlfind_bridge_src trc_dlfind_stub.F90)
 endif()
 
-add_executable(terco_cli main.F90 trc_app.F90 ${_dlfind_bridge_src})
+add_executable(
+  terco_cli
+  main.F90
+  trc_app.F90
+  trc_run.F90
+  trc_run_report.F90
+  trc_run_opt.F90
+  trc_run_json.F90
+  ${_dlfind_bridge_src})
 set_target_properties(
   terco_cli PROPERTIES OUTPUT_NAME terco Fortran_MODULE_DIRECTORY
                                          ${CMAKE_CURRENT_BINARY_DIR}/modules)

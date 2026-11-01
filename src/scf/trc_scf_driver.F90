@@ -97,6 +97,7 @@ module trc_scf_driver
                            scf_fock_commutator_error, scf_fock_to_cart, scf_fock_to_sph
    use trc_scf_df, only: df_jk_t
    use trc_scf_diis, only: cdiis_t, adiis_t, scf_diis_level_shift, scf_diis_damp
+   use trc_scf_soscf, only: trc_scf_soscf_run
    use pic_types, only: default_int
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
@@ -224,6 +225,7 @@ contains
       real(dp) :: ctl(2)
       real(dp) :: eold, drms, errmax
       integer :: nfrac
+      integer :: soscf_switch_iteration   !! DIIS iteration --soscf took over after, 0 if never
       logical :: diag_failed      !! this iteration's Fock diagonalisation (every rank's own copy)
       integer :: diag_info        !! the FIRST failing spin's own eigensolver info, kept across the spin loop
       integer :: info_s           !! this spin's own raw info from the call just made
@@ -332,8 +334,7 @@ contains
       else if (present(hguess)) then
          do s = 1, scf_config%nspin
             call guess_from(hguess, scf_config%nocc(s), scf_result%dmat(:, :, s), info_s)
-            if (info_s /= 0 .and. .not. diag_failed) diag_info = info_s
-            if (info_s /= 0) diag_failed = .true.
+            call scf_driver_note_failure(info_s, diag_failed, diag_info)
          end do
       else if (present(cmo_project)) then
          call scf_context_project_density(la, nao, scf_config%nspin, scf_config%nocc, cmo_project, &
@@ -341,21 +342,14 @@ contains
       else if (scf_options%guess == "core") then
          do s = 1, scf_config%nspin
             call guess_from(scf_context%hcore, scf_config%nocc(s), scf_result%dmat(:, :, s), info_s)
-            if (info_s /= 0 .and. .not. diag_failed) diag_info = info_s
-            if (info_s /= 0) diag_failed = .true.
+            call scf_driver_note_failure(info_s, diag_failed, diag_info)
          end do
       else
          ! GWH: F_ij = 1.75/2 S_ij (H_ii + H_jj), diagonal H_ii.
-         do j = 1, nao
-            do i = 1, nao
-               scf_state%w1(i, j) = 0.875_dp*scf_context%smat(i, j)*(scf_context%hcore(i, i) + scf_context%hcore(j, j))
-            end do
-            scf_state%w1(j, j) = scf_context%hcore(j, j)
-         end do
+         call scf_driver_gwh_matrix(nao, scf_context%hcore, scf_context%smat, scf_state%w1)
          do s = 1, scf_config%nspin
             call guess_from(scf_state%w1, scf_config%nocc(s), scf_result%dmat(:, :, s), info_s)
-            if (info_s /= 0 .and. .not. diag_failed) diag_info = info_s
-            if (info_s /= 0) diag_failed = .true.
+            call scf_driver_note_failure(info_s, diag_failed, diag_info)
          end do
       end if
       ! A diagonalisation failure in the INITIAL guess (core/GWH/a supplied
@@ -382,6 +376,7 @@ contains
       ! (Fortran's .and. does not short-circuit), so give it a value.
       errmax = huge(1.0_dp)
       diis_on = .false.
+      soscf_switch_iteration = 0
       ! What the SCF is actually running on. Two callers can hand over the
       ! same molecule and basis name and different shells -- one had a
       ! reader that kept dead primitives -- and that only shows here.
@@ -512,12 +507,8 @@ contains
                call orbitals_and_density(scf_state%fock(:, :, s), scf_config%nocc(s), scf_options%frac_occ, &
                                          scf_state%w1, scf_state%w2, scf_result%eps(:, s), scf_result%cmo(:, :, s), &
                                          scf_result%dmat(:, :, s), scf_state%ofrac, info_s)
-               ! The FIRST failing spin's own info, not whichever spin ran
-               ! last: an unrestricted run that fails on alpha and then
-               ! succeeds on beta must still report alpha's own info, not
-               ! overwrite it with beta's 0.
-               if (info_s /= 0 .and. .not. diag_failed) diag_info = info_s
-               if (info_s /= 0) diag_failed = .true.
+               ! The FIRST failing spin's own info -- scf_driver_note_failure's own header.
+               call scf_driver_note_failure(info_s, diag_failed, diag_info)
             end do
             if (.not. diag_failed .and. .not. diis_on .and. .not. adiis_active) then
                call scf_diis_damp(nao, scf_config%nspin, scf_options%damp, scf_state%dold, scf_result%dmat)
@@ -603,8 +594,17 @@ contains
             scf_result%converged = .true.
             exit
          end if
+         ! --soscf: hand over to trc_scf_soscf_run, its own header, once the commutator is small enough.
+         if (scf_config%soscf .and. errmax < scf_config%soscf_start) then
+            soscf_switch_iteration = it
+            exit
+         end if
          eold = scf_energies%total
       end do
+      if (soscf_switch_iteration > 0 .and. .not. scf_result%converged) then
+         call trc_scf_soscf_run(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, la, &
+                               pair_eri_cache%eri)
+      end if
 
       ! The density the energy was evaluated at, and the orbitals that made it.
       !$acc update self(scf_state%dold, scf_result%cmo, scf_result%eps)
@@ -863,5 +863,36 @@ contains
          call global_logger%warning(trim(line))
       end if
    end subroutine scf_driver_gap_check
+
+   subroutine scf_driver_gwh_matrix(nao, hcore, smat, w1)
+      !! The Wolfsberg-Helmholz guess Fock-like matrix, F_ij = 1.75/2 S_ij
+      !! (H_ii + H_jj), diagonal H_ii. Host only, plain loops, not `do
+      !! concurrent`: `w1` is not yet mapped to the device at this point
+      !! in `trc_scf_run` (`scf_state%to_device` runs after the guess is
+      !! built), and nvfortran's `-stdpar=gpu` would otherwise try to
+      !! launch a kernel on an array `-gpu=mem:separate` has never put
+      !! there.
+      integer, intent(in) :: nao
+      real(dp), intent(in) :: hcore(nao, nao), smat(nao, nao)
+      real(dp), intent(inout) :: w1(nao, nao)
+      integer :: i, j
+      do j = 1, nao
+         do i = 1, nao
+            w1(i, j) = 0.875_dp*smat(i, j)*(hcore(i, i) + hcore(j, j))
+         end do
+         w1(j, j) = hcore(j, j)
+      end do
+   end subroutine scf_driver_gwh_matrix
+
+   subroutine scf_driver_note_failure(info_s, diag_failed, diag_info)
+      !! The FIRST failing spin's own diagonalisation info, not whichever
+      !! spin ran last -- see this file's own call sites for why that
+      !! matters for an unrestricted run.
+      integer, intent(in) :: info_s
+      logical, intent(inout) :: diag_failed
+      integer, intent(inout) :: diag_info
+      if (info_s /= 0 .and. .not. diag_failed) diag_info = info_s
+      if (info_s /= 0) diag_failed = .true.
+   end subroutine scf_driver_note_failure
 
 end module trc_scf_driver

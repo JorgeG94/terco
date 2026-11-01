@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate test/basis_sets/hirshfeld_proatoms.json: Hirshfeld free-atom tables.
 
-terco's Hirshfeld charges (src/scf/trc_hirshfeld.F90) partition the molecular
+terco's Hirshfeld charges (src/scf/analysis/trc_hirshfeld.F90) partition the molecular
 density by the stockholder recipe: each atom's share of space is its own
 free, spherically averaged density divided by the sum of every atom's. The
 free atoms are ONE FIXED RECIPE regardless of the molecule: the spherically

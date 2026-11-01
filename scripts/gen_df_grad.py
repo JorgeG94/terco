@@ -8,7 +8,7 @@ Emit the nuclear-DERIVATIVE kernels of the density-fitting integrals:
 already CONTRACTED against a coefficient block -- Y^c_ab for the three-centre
 integral, Z_ac for the two-centre one -- so each kernel call returns a few
 gradient numbers rather than a derivative-integral block. These are what the
-fitted (`--df`) SCF gradient needs (src/scf/trc_scf_grad_df.F90 builds Y and Z;
+fitted (`--df`) SCF gradient needs (src/scf/gradient/trc_scf_grad_df.F90 builds Y and Z;
 this file only differentiates the integrals).
 
 WHY RYS, FOR EVERY CLASS

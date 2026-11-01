@@ -881,35 +881,28 @@ contains
    ! code compiled for exactly its (la,lb,lc,ld) -- no select case, and
    ! ptxas budgets registers per class instead of for the worst class.
    !
-   ! Insertion sort on the class key, stable, so the segments of one class
-   ! keep their admission order; nseg is small (hundreds). The prefix sum is
-   ! rebuilt in the new order.
+   ! Stable argsort (pic sort_index) on the class key, so the segments of one
+   ! class keep their admission order. The prefix sum is rebuilt in the new
+   ! order.
    !
    subroutine bins_plan_sort_by_class(this, radix)
       class(trc_bin_plan_t), intent(inout) :: this
       integer, intent(in) :: radix
       !! The class key is ((la*radix + lb)*radix + lc)*radix + ld: the
       !! radix of the dispatcher that will read the key.
-      integer, allocatable :: ord(:), ckey(:), t(:)
+      integer(int_index), allocatable :: ord(:)
+      integer, allocatable :: ckey(:), t(:)
       logical, allocatable :: tl(:)
-      integer :: a, b2, k, n
+      integer :: a, k, n
 
       n = this%nseg
       allocate (ord(n), ckey(n), t(n), tl(n))
       do a = 1, n
          ckey(a) = this%class_key(a, radix)
-         ord(a) = a
       end do
-      do a = 2, n
-         k = ord(a)
-         b2 = a - 1
-         do while (b2 >= 1)
-            if (ckey(ord(b2)) <= ckey(k)) exit
-            ord(b2 + 1) = ord(b2)
-            b2 = b2 - 1
-         end do
-         ord(b2 + 1) = k
-      end do
+      ! Stable like the insertion sort it replaces: equal keys keep segment
+      ! order, so the plan is bit-identical.
+      call sort_index(ckey, ord)
 
       t = this%sA(ord)
       this%sA = t

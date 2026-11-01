@@ -230,6 +230,12 @@ terco_add_check(check_scf_file_prune check_scf_file_prune.F90 NEEDS_BASIS)
 target_link_libraries(check_scf_file_prune PRIVATE test-drive::test-drive)
 terco_add_check(check_scf_lindep_gap check_scf_lindep_gap.F90 NEEDS_BASIS)
 target_link_libraries(check_scf_lindep_gap PRIVATE test-drive::test-drive)
+# Second-order SCF (--soscf, trc_scf_soscf.F90): water (DIIS and --soscf
+# agree, and match pyscf), the O2- case where plain DIIS stalls above the
+# true minimum and --soscf escapes it, and the open-shell refusal -- see
+# check_soscf.F90's own header for the pyscf references.
+terco_add_check(check_soscf check_soscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_soscf PRIVATE test-drive::test-drive)
 # build_631g against trc_basis_from_json, on water through a five-water
 # cluster -- the one check allowed to call build_631g for its own basis
 # (see that subroutine's comment in trc_test_basis.F90). Water through
@@ -1737,7 +1743,7 @@ set_tests_properties(
                                 ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
-# Coupled-perturbed HF (src/scf/trc_cphf.F90): the static dipole
+# Coupled-perturbed HF (src/scf/response/trc_cphf.F90): the static dipole
 # polarizability, RHF on water/formamide and UHF on the OH radical, each
 # against test/pyscf_refs/generate.py's gen_cphf/gen_cphf_uhf
 # (pyscf.prop.polarizability). Four RHF cases share scf_cphf.F90, one
@@ -1764,7 +1770,7 @@ terco_add_check(scf_cphf_uhf scf_cphf_uhf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(scf_cphf_uhf PRIVATE test-drive::test-drive)
 
 #
-# Coupled-perturbed KS (src/scf/trc_cpks.F90): the static dipole
+# Coupled-perturbed KS (src/scf/response/trc_cpks.F90): the static dipole
 # polarizability, RKS on water and formamide for SVWN (LDA), PBE and
 # B3LYP (GGA/hybrid-GGA), 6-31G*, against test/pyscf_refs/generate.py's
 # gen_cpks (pyscf.prop.polarizability.rks, grid matched to terco's own --
