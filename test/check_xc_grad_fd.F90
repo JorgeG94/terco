@@ -27,7 +27,13 @@
 ! AND grid level 5, so the omission's level-dependence (OFF) and its
 ! absence (ON) are both visible in this test's own output.
 !
-! Nine independent cases below, each its own test-drive unittest.
+! META-GGA: r2SCAN, TPSS and M06-L on water and r2SCAN on NH2
+! (unrestricted), and wB97M-V (meta-GGA + VV10 + erf exchange) on water --
+! the tau term of trc_xc_grad.F90's header in all three of its channels
+! (Pulay, point motion, partition weight), against the same reconverged
+! energy, same gates.
+!
+! Each case below is its own test-drive unittest.
 !
 ! NO INTERNAL PROCEDURES, here or in the program: the SCFs below make
 ! collective MPI calls, and on NVHPC 26.5 + HPC-X a `contains`-ed procedure
@@ -83,7 +89,12 @@ contains
                   new_unittest("UKS PBE NH2/6-31G* L5", test_nh2_pbe_l5), &
                   new_unittest("RKS SVWN w3/6-31G* L3 (screened, Richardson)", test_w3_svwn_l3), &
                   new_unittest("RKS wB97X-V water/6-31G* L3", test_water_wb97xv_l3), &
-                  new_unittest("RKS wB97X-V water/6-31G* L5", test_water_wb97xv_l5) &
+                  new_unittest("RKS wB97X-V water/6-31G* L5", test_water_wb97xv_l5), &
+                  new_unittest("RKS r2SCAN water/6-31G* L3", test_water_r2scan_l3), &
+                  new_unittest("RKS TPSS water/6-31G* L3", test_water_tpss_l3), &
+                  new_unittest("RKS M06-L water/6-31G* L3", test_water_m06l_l3), &
+                  new_unittest("UKS r2SCAN NH2/6-31G* L3", test_nh2_r2scan_l3), &
+                  new_unittest("RKS wB97M-V water/6-31G* L3", test_water_wb97mv_l3) &
                   ]
    end subroutine collect_xc_grad_fd
 
@@ -204,6 +215,31 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'wb97x-v', 5)
    end subroutine test_water_wb97xv_l5
+
+   subroutine test_water_r2scan_l3(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'r2scan', 3)
+   end subroutine test_water_r2scan_l3
+
+   subroutine test_water_tpss_l3(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'tpss', 3)
+   end subroutine test_water_tpss_l3
+
+   subroutine test_water_m06l_l3(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'm06l', 3)
+   end subroutine test_water_m06l_l3
+
+   subroutine test_nh2_r2scan_l3(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'nh2.xyz', 'basis_sets/6-31gs.json', 5, 4, 'r2scan', 3)
+   end subroutine test_nh2_r2scan_l3
+
+   subroutine test_water_wb97mv_l3(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 'water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'wb97m-v', 3)
+   end subroutine test_water_wb97mv_l3
 
    subroutine run_case(error, xyzfile, basis_json, nalpha, nbeta, functional, grid_level, &
                        abstol_on_override, invtol_override, richardson)
