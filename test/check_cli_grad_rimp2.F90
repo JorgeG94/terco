@@ -17,6 +17,13 @@
 ! header has the provenance), and its refusals: an unrestricted (UKS)
 ! reference and PCM.
 !
+! And for both RI-MP2 references, that `--grad` runs no separate RI-MP2
+! energy step -- the energy comes from the gradient's own amplitudes
+! (trc_run_rimp2 defers it) -- yet reports the same "mp2 opposite-spin
+! energy" and "mp2 same-spin energy" as the run without `--grad` to 1e-12;
+! "no step" is read off the --logger verbose output, where the energy
+! step's own table ("rimp2:" lines) appears only in the energy-only run.
+!
 ! Arguments: the terco executable and a scratch path for its --json output.
 !
 module check_cli_grad_rimp2_suite
@@ -28,6 +35,9 @@ module check_cli_grad_rimp2_suite
    private
    public :: collect_cli_grad_rimp2_tests, set_cli_grad_rimp2_args
 
+   real(dp), parameter :: ENERGY_TOL = 1.0e-12_dp
+   !! --grad's E_os/E_ss against the energy-only run's: the same B and
+   !! pairs, round-off apart.
    real(dp), parameter :: TOL = 2.0e-8_dp
    !! The library-level comparison's own (check_rimp2_grad.F90), measured
    !! 1e-10 through the CLI at --econv 1e-12 --gconv 1e-9.
@@ -66,6 +76,10 @@ contains
       testsuite = [ &
                   new_unittest("CLI --rimp2 --grad JSON gradient matches metalquicha", test_cli_rimp2_grad), &
                   new_unittest("CLI --df --rimp2 --grad JSON gradient matches metalquicha", test_cli_rimp2_grad_df), &
+                  new_unittest("CLI --rimp2 --grad: no energy step, the energy-only run's E_os/E_ss", &
+                               test_cli_grad_energy), &
+                  new_unittest("CLI --df --rimp2 --grad: no energy step, the energy-only run's E_os/E_ss", &
+                               test_cli_grad_energy_df), &
                   new_unittest("CLI --rimp2 --grad over a UHF reference is refused", test_cli_rimp2_grad_uhf_refused), &
                   new_unittest("CLI -f b2plyp --df --grad JSON gradient matches pyscf", test_cli_dh_grad_df), &
                   new_unittest("CLI -f b2plyp --grad over a UKS reference is refused", test_cli_dh_grad_uks_refused), &
@@ -94,6 +108,77 @@ contains
                  message="worst |CLI --df - metalquicha| = "//to_string(maxval(abs(grad - G_MQC_DF)), "es10.2"))
    end subroutine test_cli_rimp2_grad_df
 
+   subroutine test_cli_grad_energy(error)
+      type(error_type), allocatable, intent(out) :: error
+      call grad_energy_matches(error, ' water_mqc.xyz -b basis_sets/cc-pvdz.json --rimp2'// &
+                               ' --aux basis_sets/cc-pvdz-rifit.json', g_probe_json//'.e')
+   end subroutine test_cli_grad_energy
+
+   subroutine test_cli_grad_energy_df(error)
+      type(error_type), allocatable, intent(out) :: error
+      call grad_energy_matches(error, ' nh3_mqc.xyz -b basis_sets/def2-svp.json --df --jkfit basis_sets/def2-svp-rifit.json'// &
+                               ' --rimp2 --aux basis_sets/def2-svp-rifit.json', g_probe_json//'.edf')
+   end subroutine test_cli_grad_energy_df
+
+   subroutine grad_energy_matches(error, args, probe)
+      !! `args` with and without --grad (both --logger verbose): the same
+      !! E_os and E_ss, and the energy step's table only in the run without.
+      type(error_type), allocatable, intent(out) :: error
+      character(*), intent(in) :: args, probe
+      real(dp) :: os_ref, ss_ref, os_grad, ss_grad
+      logical :: table_ref, table_grad
+      call cli_energy(error, args, probe//'.energy.json', os_ref, ss_ref, table_ref)
+      if (allocated(error)) return
+      call check(error, table_ref, "the energy-only run logs no RI-MP2 energy table (the probe is blind)")
+      if (allocated(error)) return
+      call cli_energy(error, args//' --grad', probe//'.grad.json', os_grad, ss_grad, table_grad)
+      if (allocated(error)) return
+      call check(error, .not. table_grad, "--grad ran the separate RI-MP2 energy step")
+      if (allocated(error)) return
+      call check(error, max(abs(os_grad - os_ref), abs(ss_grad - ss_ref)), 0.0_dp, thr=ENERGY_TOL, &
+                 message="--grad's E_os/E_ss differ from the energy-only run's by "// &
+                 to_string(max(abs(os_grad - os_ref), abs(ss_grad - ss_ref)), "es10.2"))
+   end subroutine grad_energy_matches
+
+   subroutine cli_energy(error, args, probe, e_os, e_ss, energy_table)
+      !! Run the CLI with `args` plus --frozen 0, tight convergence, --logger
+      !! verbose and --json `probe`; read its MP2 energies back, and whether
+      !! its output carries trc_rimp2_run's own step table.
+      type(error_type), allocatable, intent(out) :: error
+      character(*), intent(in) :: args, probe
+      real(dp), intent(out) :: e_os, e_ss
+      logical, intent(out) :: energy_table
+      character(len=:), allocatable :: cmd
+      character(len=512) :: line
+      type(json_file) :: json
+      logical :: found_os, found_ss
+      integer :: rc, u, ios
+
+      e_os = 0.0_dp
+      e_ss = 0.0_dp
+      energy_table = .false.
+      cmd = g_cli_exe//args//' --frozen 0 --econv 1e-12 --gconv 1e-9 --logger verbose --json '//probe//' > '// &
+            probe//'.out 2>&1'
+      call execute_command_line(cmd, exitstat=rc, wait=.true.)
+      call check(error, rc == 0, "the CLI run failed, exit code "//to_string(rc)//" (see "//probe//".out)")
+      if (allocated(error)) return
+      call json%initialize()
+      call json%load(filename=probe)
+      call json%get('mp2 opposite-spin energy', e_os, found_os)
+      call json%get('mp2 same-spin energy', e_ss, found_ss)
+      call json%destroy()
+      call check(error, found_os .and. found_ss, "no MP2 energies in "//probe)
+      if (allocated(error)) return
+      open (newunit=u, file=probe//'.out', status="old", action="read", iostat=ios)
+      call check(error, ios == 0, "cannot read "//probe//".out")
+      if (allocated(error)) return
+      do
+         read (u, "(a)", iostat=ios) line
+         if (ios /= 0) exit
+         if (index(line, " rimp2:") > 0) energy_table = .true.
+      end do
+      close (u)
+   end subroutine cli_energy
    subroutine test_cli_rimp2_grad_uhf_refused(error)
       !! An unrestricted reference has no RI-MP2 gradient: the run must stop
       !! with a non-zero exit code and say why, not print an SCF-only gradient.

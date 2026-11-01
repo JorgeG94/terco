@@ -1222,6 +1222,11 @@ module trc_c_interfaces
          !! into the Cartesian, zero-padded space `trc_rimp2_run`/
          !! `trc_urimp2_run` themselves run in by `rimp2_driver_mo_to_cart`
          !! (trc_rimp2_driver.F90's own header says why the pad is exact).
+         !! On one rank with a closed-shell reference the pair energies are
+         !! deferred: computed by the first trc_energy or trc_rimp2_energy, or
+         !! taken from the amplitudes of a trc_run_gradient that comes first,
+         !! which then runs no separate energy step. The numbers are the same
+         !! either way (to round-off); only when the work happens moves.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle

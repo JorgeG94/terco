@@ -34,13 +34,18 @@
 ! THE ORDER OF WORK
 !   1. the metric and its Cholesky factor; B, one auxiliary block of
 !      (mu nu|P) at a time (trc_rimp2_run's own single-rank steps 1-4).
-!   2. the amplitudes, a group of occupied i at a time: K = B_i B^T for
-!      every j (not only j >= i: Gamma needs each row), then one kernel for
-!      T and X (X also written back over K), then Gamma' = X B for the
-!      whole group (one GEMM the shape of K's), dvv (one GEMM over
-!      the whole group) and doo (one GEMM per i). E_corr = sum Gamma' . B
-!      comes for free and is returned, so a caller can check the gradient
-!      differentiates the energy it thinks it does.
+!   2. the amplitudes, a group of occupied i at a time (a row of pairs):
+!      K = B_i B_j^T only for the groups j from the row's own on, one kernel
+!      for T and X (X also written back over K), and the earlier groups'
+!      columns from the pair symmetry, T_ij^ab = T_ji^ba, out of mirror
+!      tiles those groups' rows kept (amplitude_pass, pair_tile_plan): about
+!      half of K, the largest step. Then Gamma' = X B for the whole row
+!      (one GEMM the shape of K's), dvv (one GEMM over the row) and doo (one
+!      GEMM per i) -- doo pairs (k, i) with (k, j), which is why each row is
+!      completed rather than each tile used twice. E_corr = sum Gamma' . B,
+!      and E_os, E_ss from T and X, come for free and are returned: the
+!      energy step's numbers, so a caller with a gradient needs no separate
+!      energy run, and can check the gradient differentiates its energy.
 !   3. Gamma = Gamma' L^-1 (a triangular solve), gamma = L^-T (Gamma'^T B)
 !      L^-1, and the two-centre derivative with Z = -(gamma + gamma^T).
 !   4. (mu nu|P) again, block by block, for the Lagrangian and the three-
@@ -58,11 +63,19 @@
 !
 ! MEMORY. B and Gamma are nocc nvir naux doubles each, plus three
 ! group-sized (nvir, nvir, nocc, ng) amplitude buffers; the group size is
-! chosen from the device's free memory (amplitude_group). One rank.
+! chosen from the device's free memory (amplitude_group), and the mirror
+! tiles, (ng nvir)^2 doubles each, take what is left: about (nocc nvir)^2/4
+! doubles hold them all (gly10/cc-pVDZ: 9.6 GB; next to a --df SCF's own
+! fit on a 32 GB V100, 6.6 GB were free, a band of 9 of the 14 later
+! groups). With less, the band of groups kept narrows and the rest of K is
+! computed again, as without the symmetry -- the numbers do not change.
+! One rank.
 !
 module trc_rimp2_relax
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
+   use pic_logger, only: global_logger
+   use pic_strings, only: to_string
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
@@ -79,11 +92,12 @@ module trc_rimp2_relax
    public :: trc_rimp2_relax_t
 
    integer, parameter :: ST_METRIC = 1, ST_3C = 2, ST_TRANS = 3, ST_TRSM = 4, ST_KGEMM = 5, ST_AMP = 6, &
-                         ST_GAMMA = 7, ST_DENSITY = 8, ST_FIT = 9, ST_D2C = 10, ST_LAG = 11, ST_D3C = 12, &
-                         NSTEP = 12
+                         ST_TILE = 7, ST_PAIR = 8, ST_GAMMA = 9, ST_DENSITY = 10, ST_FIT = 11, ST_D2C = 12, &
+                         ST_LAG = 13, ST_D3C = 14, NSTEP = 14
    character(len=22), parameter :: STEP_NAME(NSTEP) = [character(len=22) :: &
                                    "metric + Cholesky", "(mu nu|P)", "transform (ia|P)", "B = X L^-T", &
-                                   "K_i GEMMs", "amplitudes T, X", "Gamma' = X B (gemm)", &
+                                   "K_i GEMMs", "amplitudes T, X", "mirror tiles", "pair energies", &
+                                   "Gamma' = X B (gemm)", &
                                    "doo, dvv (gemm)", "Gamma, gamma (trsm)", "2c derivative kernels", &
                                    "Lagrangian (gemm)", "3c derivative kernels"]
 
@@ -103,7 +117,14 @@ module trc_rimp2_relax
       integer :: nact = 0      !! nocc - nfrozen
       integer :: nvir = 0      !! nmo - nocc
       real(dp) :: e_corr = 0.0_dp
-      !! The RI-MP2 correlation energy these amplitudes give.
+      !! The RI-MP2 correlation energy these amplitudes give, sum X . (ia|jb)
+      !! (= Gamma' . B).
+      real(dp) :: e_os = 0.0_dp
+      !! Its opposite-spin part, sum (ia|jb)^2 / D, summed from the same
+      !! amplitudes (trc_rimp2_run's E_os, so a caller with a gradient needs
+      !! no separate energy step).
+      real(dp) :: e_ss = 0.0_dp
+      !! Its same-spin part, sum [(ia|jb)^2 - (ia|jb)(ib|ja)] / D.
       real(dp), allocatable :: doo(:, :)
       !! (nact, nact): eq 17, active occupied block, before symmetrising.
       real(dp), allocatable :: dvv(:, :)
@@ -116,6 +137,13 @@ module trc_rimp2_relax
       !! (3, natm): the three- and two-centre derivative terms of eq 6.
       character(len=256) :: message = ""
       !! Empty on success; the refusal otherwise.
+      integer :: group_size = 0
+      !! Occupied orbitals per amplitude group; 0 sizes it from the free
+      !! memory (amplitude_group). For tests.
+      integer :: tile_slots = -1
+      !! Mirror tiles the pool may hold; negative sizes it from the free
+      !! memory, 0 recomputes every column (the pass without the pair
+      !! symmetry). For tests.
    contains
       procedure :: init => rimp2_relax_init
       procedure :: build => rimp2_relax_build
@@ -128,6 +156,8 @@ module trc_rimp2_relax
       !! object, and reaches a kernel or a library call only as an actual
       !! argument -- trc_scf_df's `df_jk_t%bpk` pattern.
       integer :: n = 0, nmo = 0, no = 0, nv = 0, nov = 0, naux = 0, naux_c = 0, nblk = 0, natm = 0
+      integer :: group_size = 0, tile_slots = -1
+      logical :: verbose = .false.
       integer(int64) :: nov8 = 0
       type(step_table_t) :: tbl
       real(dp), allocatable :: cmo(:, :), cocc(:, :), cvir(:, :), eo(:), ev(:), jm(:, :)
@@ -138,6 +168,7 @@ module trc_rimp2_relax
       real(dp), allocatable :: gamc(:, :)
       !! Gamma on the Cartesian auxiliary functions (a spherical aux only).
       real(dp), allocatable :: doo(:, :), dvv(:, :), lag_o(:, :), lag_v(:, :), grad(:, :)
+      real(dp) :: e_os = 0.0_dp, e_ss = 0.0_dp
    end type relax_work_t
 
 contains
@@ -192,6 +223,9 @@ contains
       w%natm = b%natm
       w%nblk = w%naux_c
       if (opts%aux_block > 0) w%nblk = opts%aux_block
+      w%group_size = this%group_size
+      w%tile_slots = this%tile_slots
+      w%verbose = opts%verbose
       this%nfrozen = nfz
       this%nact = w%no
       this%nvir = w%nv
@@ -236,6 +270,8 @@ contains
       ! --- 2. amplitudes, Gamma', doo, dvv ----------------------------------
       call amplitude_pass(w, la)
       this%e_corr = chunked_dot(la, w%nov8, w%naux, w%gam, w%xr)
+      this%e_os = w%e_os
+      this%e_ss = w%e_ss
       ! --- 3. Gamma, gamma and the two-centre derivative --------------------
       call fitted_two_index(w, aux, la)
       ! B is spent: everything after this reads Gamma and the raw integrals.
@@ -351,58 +387,187 @@ contains
 
    subroutine amplitude_pass(w, la)
       !! Step 2 of the header: w%gam := Gamma' = X B (rows a + (i-1) nv, the
-      !! fitted auxiliary index), doo -= sum_k T_k^T X_k, dvv += X T^T, one
-      !! group of occupied orbitals at a time.
+      !! fitted auxiliary index), doo -= sum_k T_k^T X_k, dvv += X T^T and
+      !! E_os, E_ss, one group of occupied orbitals (a row of pairs) at a
+      !! time. Each group's row needs T and X for EVERY j, but K only for
+      !! j from the group on: the columns of earlier groups are mirror
+      !! tiles, T_ij^ab = T_ji^ba, kept from those groups' own rows in a
+      !! pool (pair_tile_plan) -- what the pool cannot hold is computed
+      !! again, as every column was before.
       type(relax_work_t), intent(inout) :: w
       type(trc_linalg_t), intent(inout) :: la
-      real(dp), allocatable :: ki(:, :), tt(:), xx(:)
+      real(dp), allocatable :: ki(:, :), tt(:), xx(:), part(:, :), pool(:, :)
+      integer, allocatable :: slot_of(:, :), free_slot(:)
       type(timer_type) :: tc
-      integer :: ng, nb, i0, il, no, nv, nov, ldk
-      integer(int64) :: slab
+      integer :: ng, ngrp, nb, i0, p, q, band, nslot, nfree, jstore, c1, no, nv, nov, ldk, npart
+      integer(int64) :: slab, tile
 
       no = w%no
       nv = w%nv
       nov = w%nov
       slab = int(nv, int64)*w%nov8
-      ng = amplitude_group(no, nv)
+      call amplitude_group(no, nv, w%group_size, w%tile_slots, ng, nslot)
+      ngrp = (no + ng - 1)/ng
+      call pair_tile_plan(ngrp, nslot, band)
+      if (w%verbose) then
+         call global_logger%performance("  rimp2 grad: "//to_string(ng)//" occupied per group, "// &
+                                        to_string(ngrp)//" groups; mirror tiles kept "//to_string(band)// &
+                                        " groups ahead, "//to_string(nslot)//" at once ("// &
+                                        to_string(8.0_dp*real(nslot, dp)*(real(ng, dp)*real(nv, dp))**2/ &
+                                                  1024.0_dp**3, "f8.2")//" GiB)")
+      end if
       ldk = ng*nv
-      allocate (ki(ldk, nov), tt(slab*ng), xx(slab*ng))
-      !$acc enter data create(ki, tt, xx)
-      do i0 = 1, no, ng
+      tile = int(nv, int64)**2*int(ng, int64)**2
+      if (nslot == 0) tile = 1
+      allocate (ki(ldk, nov), tt(slab*ng), xx(slab*ng), part(2, nov*ng), pool(tile, max(nslot, 1)))
+      allocate (slot_of(ngrp, ngrp), free_slot(max(nslot, 1)))
+      !$acc enter data create(ki, tt, xx, part, pool)
+      slot_of = 0
+      nfree = nslot
+      free_slot = [(q, q=1, max(nslot, 1))]
+      w%e_os = 0.0_dp
+      w%e_ss = 0.0_dp
+      do p = 1, ngrp
+         i0 = (p - 1)*ng + 1
          nb = min(ng, no - i0 + 1)
-         ! K(a + (il-1) nv, b + (j-1) nv) = (ia|jb), i = i0 - 1 + il
+         ! Groups jstore .. p - 1 come from the pool; columns 1 .. c1 (the
+         ! groups beyond the band) and i0 .. no from K.
+         jstore = max(1, p - band)
+         c1 = (jstore - 1)*ng
          call w%tbl%step_on(la, ST_KGEMM, tc)
-         call la%gemm("N", "T", nb*nv, nov, w%naux, 1.0_dp, w%xr(1 + (i0 - 1)*nv, 1), nov, w%xr, nov, &
-                      0.0_dp, ki, ldk)
+         if (c1 == i0 - 1) then
+            call k_columns(w, la, i0, nb, 1, no, ldk, ki)
+         else
+            if (c1 > 0) call k_columns(w, la, i0, nb, 1, c1, ldk, ki)
+            call k_columns(w, la, i0, nb, i0, no, ldk, ki)
+         end if
          call w%tbl%step_off(la, ST_KGEMM, tc)
-         call w%tbl%add_flop(ST_KGEMM, 2*int(nb*nv, int64)*w%nov8*int(w%naux, int64))
          call w%tbl%step_on(la, ST_AMP, tc)
-         call amplitude_kernel(i0, nb, no, nv, ldk, nov, w%eo, w%ev, ki, tt, xx)
+         if (c1 == i0 - 1) then
+            call amplitude_kernel(i0, nb, 1, no, no, nv, ldk, nov, w%eo, w%ev, ki, tt, xx)
+         else
+            if (c1 > 0) call amplitude_kernel(i0, nb, 1, c1, no, nv, ldk, nov, w%eo, w%ev, ki, tt, xx)
+            call amplitude_kernel(i0, nb, i0, no - i0 + 1, no, nv, ldk, nov, w%eo, w%ev, ki, tt, xx)
+         end if
          call w%tbl%step_off(la, ST_AMP, tc)
-         ! Gamma'(a + (i-1) nv, Q) = sum_(b,j) X(a + (il-1) nv, b + (j-1) nv) B(b + (j-1) nv, Q):
-         ! the kernel left X in K's own layout, so the group's rows of Gamma'
-         ! are one GEMM the shape of K's. A strided batch of nv-row items
-         ! (one per i) ran at 4.9 TFLOP/s on a V100 (gly10/cc-pVDZ), cuBLAS
-         ! picking its 64x64 tile; this one runs at K's 7.0.
-         call w%tbl%step_on(la, ST_GAMMA, tc)
-         call la%gemm("N", "N", nb*nv, w%naux, nov, 1.0_dp, ki, ldk, w%xr, nov, 0.0_dp, &
-                      w%gam(1 + (i0 - 1)*nv, 1), nov)
-         call w%tbl%step_off(la, ST_GAMMA, tc)
-         call w%tbl%add_flop(ST_GAMMA, 2*int(nb, int64)*slab*int(w%naux, int64))
-         ! dvv(b, a) += sum_(c, j, i) X(b, c, j, i) T(a, c, j, i): the group is
-         ! one contiguous inner index; doo(i, j) -= sum_(a, b) T_k(ab, i) X_k(ab, j).
-         call w%tbl%step_on(la, ST_DENSITY, tc)
-         call la%gemm("N", "T", nv, nv, nv*no*nb, 1.0_dp, xx, nv, tt, nv, 1.0_dp, w%dvv, nv)
-         do il = 1, nb
-            call la%gemm("T", "N", no, no, nv*nv, -1.0_dp, tt(1 + (il - 1)*slab), nv*nv, &
-                         xx(1 + (il - 1)*slab), nv*nv, 1.0_dp, w%doo, no)
+         ! The mirror tiles: T and X of (i in p, j in q) from T of (j, i).
+         call w%tbl%step_on(la, ST_TILE, tc)
+         do q = jstore, p - 1
+            call mirror_fill((q - 1)*ng + 1, ng, nb, no, nv, ldk, nov, pool(1, slot_of(q, p)), ki, tt, xx)
+            nfree = nfree + 1
+            free_slot(nfree) = slot_of(q, p)
          end do
-         call w%tbl%step_off(la, ST_DENSITY, tc)
-         call w%tbl%add_flop(ST_DENSITY, 2*int(nb, int64)*slab*int(nv + no, int64))
+         call w%tbl%step_off(la, ST_TILE, tc)
+         call w%tbl%add_flop(ST_TILE, 3*int(nv, int64)**2*int(nb, int64)*int(i0 - 1 - c1, int64))
+         ! E_os and E_ss of the row's pairs, which the energy step would
+         ! otherwise compute again from its own K (trc_rimp2_run).
+         call w%tbl%step_on(la, ST_PAIR, tc)
+         ! Only j >= i0: an earlier group's pairs were counted by its own row.
+         npart = nv*(no - i0 + 1)*nb
+         call pair_energy_kernel(i0, nb, no, nv, w%eo, w%ev, tt, xx, part)
+         !$acc update self(part(:, 1:npart))
+         w%e_os = w%e_os + sum(part(1, 1:npart))
+         w%e_ss = w%e_ss + sum(part(2, 1:npart))
+         call w%tbl%step_off(la, ST_PAIR, tc)
+         call w%tbl%add_flop(ST_PAIR, 7*int(npart, int64)*int(nv, int64))
+         call row_densities(w, la, i0, nb, ldk, ki, tt, xx)
+         ! This row's T for the later groups in the band, into the pool.
+         call w%tbl%step_on(la, ST_TILE, tc)
+         do q = p + 1, min(p + band, ngrp)
+            slot_of(p, q) = free_slot(nfree)
+            nfree = nfree - 1
+            call tile_store((q - 1)*ng + 1, min(ng, no - (q - 1)*ng), ng, nb, no, nv, tt, pool(1, slot_of(p, q)))
+         end do
+         call w%tbl%step_off(la, ST_TILE, tc)
       end do
-      !$acc exit data delete(ki, tt, xx)
-      deallocate (ki, tt, xx)
+      !$acc exit data delete(ki, tt, xx, part, pool)
+      deallocate (ki, tt, xx, part, pool, slot_of, free_slot)
    end subroutine amplitude_pass
+
+   subroutine k_columns(w, la, i0, nb, j0, j1, ldk, ki)
+      !! K(a + (il-1) nv, b + (j-1) nv) = (ia|jb) for i = i0 - 1 + il and the
+      !! occupied columns j = j0 .. j1, one GEMM.
+      type(relax_work_t), intent(inout) :: w
+      type(trc_linalg_t), intent(inout) :: la
+      integer, intent(in) :: i0, nb, j0, j1, ldk
+      real(dp), intent(inout) :: ki(ldk, w%nov)
+      integer :: nv
+      nv = w%nv
+      call la%gemm("N", "T", nb*nv, (j1 - j0 + 1)*nv, w%naux, 1.0_dp, w%xr(1 + (i0 - 1)*nv, 1), w%nov, &
+                   w%xr(1 + (j0 - 1)*nv, 1), w%nov, 0.0_dp, ki(1, 1 + (j0 - 1)*nv), ldk)
+      call w%tbl%add_flop(ST_KGEMM, 2*int(nb*nv, int64)*int((j1 - j0 + 1)*nv, int64)*int(w%naux, int64))
+   end subroutine k_columns
+
+   subroutine row_densities(w, la, i0, nb, ldk, ki, tt, xx)
+      !! Gamma' for the row's i, and its doo and dvv terms, from X in K's
+      !! layout (`ki`) and T, X as (a, b, j, il) (`tt`, `xx`).
+      type(relax_work_t), intent(inout) :: w
+      type(trc_linalg_t), intent(inout) :: la
+      integer, intent(in) :: i0, nb, ldk
+      real(dp), intent(in) :: ki(ldk, w%nov), tt(*), xx(*)
+      type(timer_type) :: tc
+      integer :: il, no, nv, nov
+      integer(int64) :: slab
+      no = w%no
+      nv = w%nv
+      nov = w%nov
+      slab = int(nv, int64)*w%nov8
+      ! Gamma'(a + (i-1) nv, Q) = sum_(b,j) X(a + (il-1) nv, b + (j-1) nv) B(b + (j-1) nv, Q):
+      ! the kernels left X in K's own layout, so the group's rows of Gamma'
+      ! are one GEMM the shape of K's. A strided batch of nv-row items
+      ! (one per i) ran at 4.9 TFLOP/s on a V100 (gly10/cc-pVDZ), cuBLAS
+      ! picking its 64x64 tile; this one runs at K's 7.0.
+      call w%tbl%step_on(la, ST_GAMMA, tc)
+      call la%gemm("N", "N", nb*nv, w%naux, nov, 1.0_dp, ki, ldk, w%xr, nov, 0.0_dp, &
+                   w%gam(1 + (i0 - 1)*nv, 1), nov)
+      call w%tbl%step_off(la, ST_GAMMA, tc)
+      call w%tbl%add_flop(ST_GAMMA, 2*int(nb, int64)*slab*int(w%naux, int64))
+      ! dvv(b, a) += sum_(c, j, i) X(b, c, j, i) T(a, c, j, i): the group is
+      ! one contiguous inner index; doo(i, j) -= sum_(a, b) T_k(ab, i) X_k(ab, j).
+      ! doo couples two pairs sharing an index (k, i) and (k, j), which is
+      ! why each row is completed from the mirror tiles before this.
+      call w%tbl%step_on(la, ST_DENSITY, tc)
+      call la%gemm("N", "T", nv, nv, nv*no*nb, 1.0_dp, xx, nv, tt, nv, 1.0_dp, w%dvv, nv)
+      do il = 1, nb
+         call la%gemm("T", "N", no, no, nv*nv, -1.0_dp, tt(1 + (il - 1)*slab), nv*nv, &
+                      xx(1 + (il - 1)*slab), nv*nv, 1.0_dp, w%doo, no)
+      end do
+      call w%tbl%step_off(la, ST_DENSITY, tc)
+      call w%tbl%add_flop(ST_DENSITY, 2*int(nb, int64)*slab*int(nv + no, int64))
+   end subroutine row_densities
+
+   subroutine pair_tile_plan(ngrp, nslot, band)
+      !! The widest band of mirror tiles the pool can hold: group p's row
+      !! keeps its T for the groups p + 1 .. p + band, each tile freed when
+      !! that group's row reads it. `nslot` comes back as the most tiles
+      !! ever held at once (band 0: none, every column recomputed).
+      integer, intent(in) :: ngrp
+      integer, intent(inout) :: nslot
+      integer, intent(out) :: band
+      integer :: trial, peak
+      band = 0
+      do trial = 1, ngrp - 1
+         peak = band_peak(ngrp, trial)
+         if (peak > nslot) exit
+         band = trial
+      end do
+      nslot = band_peak(ngrp, band)
+   end subroutine pair_tile_plan
+
+   pure integer function band_peak(ngrp, band) result(peak)
+      !! Tiles held right after group p's row stores its own -- (q, r) with
+      !! q <= p < r <= q + band -- at the worst p.
+      integer, intent(in) :: ngrp, band
+      integer :: p, q, held
+      peak = 0
+      do p = 1, ngrp
+         held = 0
+         do q = max(1, p - band + 1), p
+            held = held + max(0, min(q + band, ngrp) - p)
+         end do
+         peak = max(peak, held)
+      end do
+   end function band_peak
 
    subroutine fitted_two_index(w, aux, la)
       !! Step 3: w%gam := Gamma = Gamma' L^-1, gamma = Gamma^T c with
@@ -560,26 +725,48 @@ contains
       res = (l + 1)*(l + 2)/2
    end function ncart
 
-   integer function amplitude_group(no, nv) result(ng)
-      !! Occupied orbitals per amplitude group: NG_BEST, or as many as three
-      !! (nvir, nocc nvir) buffers each fit in the device's free memory with
-      !! half a gigabyte kept back for the libraries. At least one.
+   subroutine amplitude_group(no, nv, group_size, tile_slots, ng, nslot)
+      !! Occupied orbitals per group, `ng`: `group_size` when positive, else
+      !! NG_BEST, or as many as three (nvir, nocc nvir) buffers each fit in
+      !! the device's free memory with half a gigabyte kept back for the
+      !! libraries; at least one. And `nslot`, the mirror tiles of (ng nvir)^2
+      !! the pool may hold: `tile_slots` when not negative, else what the
+      !! rest of the free memory takes (on the host, no limit:
+      !! pair_tile_plan caps it at the whole band). Shrinking ng so that
+      !! every tile fits does not pay: gly10/cc-pVDZ --df on a V100 at ng = 6
+      !! (all tiles) against 8 (a band of 9 of 14 groups) saved 0.20 s of K
+      !! and lost 0.21 s of Gamma' to the smaller GEMMs.
 #ifdef TRC_DEVICE
       use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
                          acc_property_free_memory
 #endif
-      integer, intent(in) :: no, nv
+      integer, intent(in) :: no, nv, group_size, tile_slots
+      integer, intent(out) :: ng, nslot
+      integer(int64), parameter :: HOST_TILE_BUDGET = 2_int64*1024*1024*1024
+      !! The host build's mirror-tile pool: the same 2 GB trc_scf_df_response's
+      !! cache_budget keeps on the host. Every tile is ~(nocc nvir)^2/4 doubles
+      !! in total (9.6 GB at gly10/cc-pVDZ), which a CPU/OpenMP run that fit
+      !! before the tiles existed need not have.
+      integer(int64) :: tile_bytes
 #ifdef TRC_DEVICE
       integer(int64) :: free, per_i
       free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
-                                  acc_property_free_memory), int64)
+                                  acc_property_free_memory), int64) - 512_int64*1024*1024
       per_i = 24_int64*int(nv, int64)**2*int(no, int64)
-      ng = int(min(int(NG_BEST, int64), max(1_int64, (free - 512_int64*1024*1024)/per_i)))
+      ng = int(min(int(NG_BEST, int64), max(1_int64, free/per_i)))
 #else
       ng = NG_BEST
 #endif
+      if (group_size > 0) ng = group_size
       ng = max(1, min(ng, no))
-   end function amplitude_group
+      tile_bytes = 8_int64*(int(ng, int64)*int(nv, int64))**2
+#ifdef TRC_DEVICE
+      nslot = int(min(int(huge(nslot), int64), max(0_int64, (free - per_i*ng)/tile_bytes)))
+#else
+      nslot = int(min(int(huge(nslot), int64), HOST_TILE_BUDGET/tile_bytes))
+#endif
+      if (tile_slots >= 0) nslot = tile_slots
+   end subroutine amplitude_group
 
    function chunked_dot(la, nrow, ncol, x, y) result(s)
       !! sum(x * y) over an (nrow, ncol) pair, one panel per library call so
@@ -605,28 +792,28 @@ contains
    ! do concurrent kernels: explicit-shape dummies, device-resident arrays.
    ! ----------------------------------------------------------------------
 
-   subroutine amplitude_kernel(i0, nb, no, nv, ldk, nov, eo, ev, ki, tt, xx)
+   subroutine amplitude_kernel(i0, nb, j0, nj, no, nv, ldk, nov, eo, ev, ki, tt, xx)
       !! tt(a, b, j, il) = T_ij^ab and xx(a, b, j, il) = 2 T_ij^ab - T_ij^ba,
-      !! i = i0 - 1 + il, from K(a + (il-1) nv, b + (j-1) nv) = (ia|jb), and
-      !! X written back over K in K's own layout (Gamma's GEMM reads it
-      !! there). One item per unordered pair a <= b, which reads both
-      !! (ia|jb) and (ib|ja) before writing either, so the in-place update
-      !! has no race.
-      integer, intent(in) :: i0, nb, no, nv, ldk, nov
+      !! i = i0 - 1 + il and j = j0 .. j0 + nj - 1, from K(a + (il-1) nv,
+      !! b + (j-1) nv) = (ia|jb), and X written back over K in K's own layout
+      !! (Gamma's GEMM reads it there). One item per unordered pair a <= b,
+      !! which reads both (ia|jb) and (ib|ja) before writing either, so the
+      !! in-place update has no race.
+      integer, intent(in) :: i0, nb, j0, nj, no, nv, ldk, nov
       real(dp), intent(in) :: eo(no), ev(nv)
       real(dp), intent(inout) :: ki(ldk, nov)
-      real(dp), intent(out) :: tt(nv, nv, no, nb), xx(nv, nv, no, nb)
-      integer(int64) :: t, nv8, no8, tlast
+      real(dp), intent(inout) :: tt(nv, nv, no, nb), xx(nv, nv, no, nb)
+      integer(int64) :: t, nv8, nj8, tlast
       integer :: a, bb, j, il, i, ra, rb, ca, cb
       real(dp) :: denom, tab, tba, xab, xba
       nv8 = int(nv, int64)
-      no8 = int(no, int64)
-      tlast = nv8*nv8*no8*int(nb, int64) - 1
+      nj8 = int(nj, int64)
+      tlast = nv8*nv8*nj8*int(nb, int64) - 1
       do concurrent(t=0:tlast) local(a, bb, j, il, i, ra, rb, ca, cb, denom, tab, tba, xab, xba)
          a = int(mod(t, nv8)) + 1
          bb = int(mod(t/nv8, nv8)) + 1
-         j = int(mod(t/(nv8*nv8), no8)) + 1
-         il = int(t/(nv8*nv8*no8)) + 1
+         j = j0 + int(mod(t/(nv8*nv8), nj8))
+         il = int(t/(nv8*nv8*nj8)) + 1
          if (a <= bb) then
             i = i0 - 1 + il
             ra = (il - 1)*nv + a
@@ -647,6 +834,93 @@ contains
          end if
       end do
    end subroutine amplitude_kernel
+
+   subroutine mirror_fill(j0, ng, nb, no, nv, ldk, nov, tile, ki, tt, xx)
+      !! The row's columns j = j0 .. j0 + ng - 1 (an earlier, whole group)
+      !! from that group's own row: tile(a, b, il, jl) = T_ji^ab with
+      !! i = the row's il-th orbital and j = j0 - 1 + jl, so T_ij^ab =
+      !! tile(b, a, il, jl) and X_ij^ab = 2 tile(b, a, ..) - tile(a, b, ..),
+      !! written where amplitude_kernel would have put them (tt, xx, and X
+      !! over K's layout in ki). One item per (a, b), a fastest: every write
+      !! and one of the two reads are unit stride.
+      integer, intent(in) :: j0, ng, nb, no, nv, ldk, nov
+      real(dp), intent(in) :: tile(nv, nv, ng, ng)
+      real(dp), intent(inout) :: ki(ldk, nov)
+      real(dp), intent(inout) :: tt(nv, nv, no, nb), xx(nv, nv, no, nb)
+      integer(int64) :: t, nv8, ng8, tlast
+      integer :: a, bb, jl, il, j
+      real(dp) :: tab, tba
+      nv8 = int(nv, int64)
+      ng8 = int(ng, int64)
+      tlast = nv8*nv8*ng8*int(nb, int64) - 1
+      do concurrent(t=0:tlast) local(a, bb, jl, il, j, tab, tba)
+         a = int(mod(t, nv8)) + 1
+         bb = int(mod(t/nv8, nv8)) + 1
+         jl = int(mod(t/(nv8*nv8), ng8)) + 1
+         il = int(t/(nv8*nv8*ng8)) + 1
+         j = j0 - 1 + jl
+         tab = tile(bb, a, il, jl)
+         tba = tile(a, bb, il, jl)
+         tt(a, bb, j, il) = tab
+         xx(a, bb, j, il) = 2.0_dp*tab - tba
+         ki((il - 1)*nv + a, (j - 1)*nv + bb) = 2.0_dp*tab - tba
+      end do
+   end subroutine mirror_fill
+
+   subroutine tile_store(c0, ncol, ng, nb, no, nv, tt, tile)
+      !! tile(a, b, cl, il) = tt(a, b, c0 - 1 + cl, il) = T_ij^ab for the
+      !! row's il-th i and the later group's cl-th j: what that group's row
+      !! reads back as its mirror (mirror_fill). A copy, unit stride.
+      integer, intent(in) :: c0, ncol, ng, nb, no, nv
+      real(dp), intent(in) :: tt(nv*nv, no, nb)
+      real(dp), intent(out) :: tile(nv*nv, ng, ng)
+      integer(int64) :: t, nvv8, nc8
+      integer :: ab, cl, il
+      nvv8 = int(nv, int64)**2
+      nc8 = int(ncol, int64)
+      do concurrent(t=0:nvv8*nc8*int(nb, int64) - 1) local(ab, cl, il)
+         ab = int(mod(t, nvv8)) + 1
+         cl = int(mod(t/nvv8, nc8)) + 1
+         il = int(t/(nvv8*nc8)) + 1
+         tile(ab, cl, il) = tt(ab, c0 - 1 + cl, il)
+      end do
+   end subroutine tile_store
+
+   subroutine pair_energy_kernel(i0, nb, no, nv, eo, ev, tt, xx, part)
+      !! part(1, a + (j-i0) nv + (il-1) nv (no-i0+1)) = w sum_b T^2 D and
+      !! part(2, ..) = w sum_b T (X - T) D for j = i0 .. no, D = e_i + e_j -
+      !! e_a - e_b, i = i0 - 1 + il: with T = (ia|jb)/D and X - T = T -
+      !! T_ij^ba these are the pair's (ia|jb)^2/D and [(ia|jb)^2 -
+      !! (ia|jb)(ib|ja)]/D summed over b, the energy step's E_os and E_ss
+      !! terms. w = 2 for j beyond the row's own group, whose (j, i) pairs
+      !! are the same numbers and are never summed; 1 inside it, where both
+      !! orders are. One item per (a, j, il), a fastest, so both reads are
+      !! unit stride; the host adds the items.
+      integer, intent(in) :: i0, nb, no, nv
+      real(dp), intent(in) :: eo(no), ev(nv)
+      real(dp), intent(in) :: tt(nv, nv, no, nb), xx(nv, nv, no, nb)
+      real(dp), intent(out) :: part(2, nv*(no - i0 + 1)*nb)
+      integer :: t, a, j, il, b, ncol
+      real(dp) :: eija, d, tab, pos, pss, w
+      ncol = no - i0 + 1
+      do concurrent(t=1:nv*ncol*nb) local(a, j, il, b, eija, d, tab, pos, pss, w)
+         a = mod(t - 1, nv) + 1
+         j = i0 + mod((t - 1)/nv, ncol)
+         il = (t - 1)/(nv*ncol) + 1
+         eija = eo(i0 - 1 + il) + eo(j) - ev(a)
+         w = merge(1.0_dp, 2.0_dp, j < i0 + nb)
+         pos = 0.0_dp
+         pss = 0.0_dp
+         do b = 1, nv
+            d = eija - ev(b)
+            tab = tt(a, b, j, il)
+            pos = pos + tab*tab*d
+            pss = pss + tab*(xx(a, b, j, il) - tab)*d
+         end do
+         part(1, t) = w*pos
+         part(2, t) = w*pss
+      end do
+   end subroutine pair_energy_kernel
 
    subroutine reorder_last_two(n, no, np, gg, gp)
       !! gp(nu, q, i) = gg(nu, i, q).

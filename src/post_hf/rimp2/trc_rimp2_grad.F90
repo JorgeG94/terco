@@ -181,6 +181,14 @@ module trc_rimp2_grad
    type :: trc_rimp2_grad_result_t
       real(dp) :: e_corr = 0.0_dp
       !! The correlation energy the gradient's amplitudes give.
+      real(dp) :: e_os = 0.0_dp
+      !! Its opposite-spin part, as trc_rimp2_run reports it.
+      real(dp) :: e_ss = 0.0_dp
+      !! Its same-spin part, as trc_rimp2_run reports it.
+      logical :: has_energy = .false.
+      !! The amplitudes ran, so e_corr, e_os and e_ss are set -- true even
+      !! when a later step (the Z-vector) fails: a caller wanting E_RI-MP2
+      !! too needs no separate trc_rimp2_run.
       integer :: cphf_iterations = 0
       logical :: ok = .false.
       character(len=256) :: message = ""
@@ -304,6 +312,9 @@ contains
          return
       end if
       job%res%e_corr = relax%e_corr
+      job%res%e_os = relax%e_os
+      job%res%e_ss = relax%e_ss
+      job%res%has_energy = .true.
 
       ! --- the Z-vector, then the relaxed and energy-weighted densities ----
       call tbl%step_on(la, ST_ZVEC, tc)
