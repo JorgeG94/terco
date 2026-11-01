@@ -345,8 +345,15 @@ contains
 
    subroutine pcm_grad_offdiag(n, natm, coords, normals, zeta, parent, bra_s, q, &
                                has_d, bra_d, ket_d, grad)
-      !! The dS (always) and dD (IEF only) bilinear terms, O(n^2),
-      !! atomically scattered by each pair's two parent atoms.
+      !! The dS (always) and dD (IEF only) bilinear terms, O(n^2) over
+      !! UNORDERED pairs i < j rather than every ordered pair: g(r)/gp(r)
+      !! (pcm_grad_g/_gp, the erf/exp-bearing radial pieces) depend only on
+      !! r = |coords(i)-coords(j)| and zij = zeta(i)*zeta(j)/sqrt(zeta(i)^2
+      !! + zeta(j)^2), both symmetric in i and j, so the ordered pair (j,i)
+      !! needs the SAME g/gp the pair (i,j) already paid the sqrt/erf/exp
+      !! for. pcm_grad_pair_item below folds both ordered contributions
+      !! into one call, halving the transcendental-heavy work (and, for
+      !! the dS term, the atomic scatter too -- see its own header).
       integer, intent(in) :: n, natm
       real(dp), intent(in) :: coords(3, n), normals(3, n), zeta(n)
       integer, intent(in) :: parent(n)
@@ -356,7 +363,7 @@ contains
       real(dp), intent(inout) :: grad(3, natm)
       integer :: i, j
       do concurrent(j = 1:n, i = 1:n)
-         if (i /= j) then
+         if (i < j) then
             call pcm_grad_pair_item(i, j, n, natm, coords, normals, zeta, parent, &
                                     bra_s, q, has_d, bra_d, ket_d, grad)
          end if
@@ -365,6 +372,19 @@ contains
 
    pure subroutine pcm_grad_pair_item(i, j, n, natm, coords, normals, zeta, parent, &
                                       bra_s, q, has_d, bra_d, ket_d, grad)
+      !! Called once per unordered pair i < j (pcm_grad_offdiag's `if`),
+      !! folding in BOTH ordered contributions (i,j) and (j,i).
+      !!
+      !! dS: dS_ji/dr_j = -dS_ij/dr_i exactly (translation invariance, this
+      !! module's header), so bra_s(i)*q(j)*dS_ij/dr_i (pair (i,j)) and
+      !! bra_s(j)*q(i)*dS_ji/dr_j (pair (j,i)) share the SAME direction
+      !! vector dsx/dsy/dsz up to its own sign and collapse into one
+      !! combined coefficient `coefs`, scattered once -- 6 atomics for
+      !! this unordered pair where the old ordered-pair loop used 12.
+      !!
+      !! dD: D_ij's ket normal is point j's own (this module's header), so
+      !! (i,j) and (j,i) read DIFFERENT normals and do not collapse the
+      !! same way; they still share gval/gpval/r, computed once.
       !$acc routine seq
       integer,  value       :: i, j, n, natm
       real(dp), intent(in)  :: coords(3, n), normals(3, n), zeta(n)
@@ -375,7 +395,8 @@ contains
       real(dp), intent(inout) :: grad(3, natm)
 
       real(dp) :: vx, vy, vz, r, zij, gval, dsx, dsy, dsz, coefs
-      real(dp) :: gpval, nr, ddx, ddy, ddz, coefd
+      real(dp) :: gpval, nrij, nrji, ddx_ij, ddy_ij, ddz_ij, ddx_ji, ddy_ji, ddz_ji
+      real(dp) :: coefd_ij, coefd_ji
       integer  :: ai, aj
 
       vx = coords(1, i) - coords(1, j)
@@ -387,7 +408,7 @@ contains
       dsx = -gval*vx
       dsy = -gval*vy
       dsz = -gval*vz
-      coefs = bra_s(i)*q(j)
+      coefs = bra_s(i)*q(j) + bra_s(j)*q(i)
 
       ai = parent(i)
       aj = parent(j)
@@ -406,23 +427,47 @@ contains
 
       if (has_d) then
          gpval = pcm_grad_gp(r, zij)
-         nr = vx*normals(1, j) + vy*normals(2, j) + vz*normals(3, j)
-         ddx = gpval*(nr/r)*vx + gval*normals(1, j)
-         ddy = gpval*(nr/r)*vy + gval*normals(2, j)
-         ddz = gpval*(nr/r)*vz + gval*normals(3, j)
-         coefd = bra_d(i)*ket_d(j)
+         nrij = vx*normals(1, j) + vy*normals(2, j) + vz*normals(3, j)
+         ddx_ij = gpval*(nrij/r)*vx + gval*normals(1, j)
+         ddy_ij = gpval*(nrij/r)*vy + gval*normals(2, j)
+         ddz_ij = gpval*(nrij/r)*vz + gval*normals(3, j)
+         coefd_ij = bra_d(i)*ket_d(j)
+         ! (j,i): ket point i, its own normal; direction vector is -v, not
+         ! a sign-flip of ddx_ij (DIFFERENT normal, this routine's header).
+         nrji = -vx*normals(1, i) - vy*normals(2, i) - vz*normals(3, i)
+         ddx_ji = -gpval*(nrji/r)*vx + gval*normals(1, i)
+         ddy_ji = -gpval*(nrji/r)*vy + gval*normals(2, i)
+         ddz_ji = -gpval*(nrji/r)*vz + gval*normals(3, i)
+         coefd_ji = bra_d(j)*ket_d(i)
+         ! Two atomics per component, not one combined update: OpenACC's
+         ! `atomic update` requires the single-operator form `x = x op
+         ! expr` (nvfortran rejects `x = x + a - b` outright, "Invalid
+         ! atomic update expression"). Still only ONE gval/gpval/r per
+         ! unordered pair -- this routine's own header.
          !$acc atomic update
-         grad(1, ai) = grad(1, ai) + coefd*ddx
+         grad(1, ai) = grad(1, ai) + coefd_ij*ddx_ij
          !$acc atomic update
-         grad(2, ai) = grad(2, ai) + coefd*ddy
+         grad(1, ai) = grad(1, ai) - coefd_ji*ddx_ji
          !$acc atomic update
-         grad(3, ai) = grad(3, ai) + coefd*ddz
+         grad(2, ai) = grad(2, ai) + coefd_ij*ddy_ij
          !$acc atomic update
-         grad(1, aj) = grad(1, aj) - coefd*ddx
+         grad(2, ai) = grad(2, ai) - coefd_ji*ddy_ji
          !$acc atomic update
-         grad(2, aj) = grad(2, aj) - coefd*ddy
+         grad(3, ai) = grad(3, ai) + coefd_ij*ddz_ij
          !$acc atomic update
-         grad(3, aj) = grad(3, aj) - coefd*ddz
+         grad(3, ai) = grad(3, ai) - coefd_ji*ddz_ji
+         !$acc atomic update
+         grad(1, aj) = grad(1, aj) - coefd_ij*ddx_ij
+         !$acc atomic update
+         grad(1, aj) = grad(1, aj) + coefd_ji*ddx_ji
+         !$acc atomic update
+         grad(2, aj) = grad(2, aj) - coefd_ij*ddy_ij
+         !$acc atomic update
+         grad(2, aj) = grad(2, aj) + coefd_ji*ddy_ji
+         !$acc atomic update
+         grad(3, aj) = grad(3, aj) - coefd_ij*ddz_ij
+         !$acc atomic update
+         grad(3, aj) = grad(3, aj) + coefd_ji*ddz_ji
       end if
    end subroutine pcm_grad_pair_item
 
