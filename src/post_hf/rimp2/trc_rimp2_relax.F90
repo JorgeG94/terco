@@ -742,8 +742,14 @@ contains
 #endif
       integer, intent(in) :: no, nv, group_size, tile_slots
       integer, intent(out) :: ng, nslot
+      integer(int64), parameter :: HOST_TILE_BUDGET = 2_int64*1024*1024*1024
+      !! The host build's mirror-tile pool: the same 2 GB trc_scf_df_response's
+      !! cache_budget keeps on the host. Every tile is ~(nocc nvir)^2/4 doubles
+      !! in total (9.6 GB at gly10/cc-pVDZ), which a CPU/OpenMP run that fit
+      !! before the tiles existed need not have.
+      integer(int64) :: tile_bytes
 #ifdef TRC_DEVICE
-      integer(int64) :: free, per_i, tile_bytes
+      integer(int64) :: free, per_i
       free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
                                   acc_property_free_memory), int64) - 512_int64*1024*1024
       per_i = 24_int64*int(nv, int64)**2*int(no, int64)
@@ -753,11 +759,11 @@ contains
 #endif
       if (group_size > 0) ng = group_size
       ng = max(1, min(ng, no))
-#ifdef TRC_DEVICE
       tile_bytes = 8_int64*(int(ng, int64)*int(nv, int64))**2
+#ifdef TRC_DEVICE
       nslot = int(min(int(huge(nslot), int64), max(0_int64, (free - per_i*ng)/tile_bytes)))
 #else
-      nslot = huge(nslot)
+      nslot = int(min(int(huge(nslot), int64), HOST_TILE_BUDGET/tile_bytes))
 #endif
       if (tile_slots >= 0) nslot = tile_slots
    end subroutine amplitude_group
