@@ -70,6 +70,9 @@ module check_rimp2_grad_suite
    real(dp), parameter :: FD_TOL = 5.0e-8_dp
    real(dp), parameter :: ECORR_TOL = 1.0e-11_dp
    !! The gradient's own amplitudes against trc_rimp2_run's pair energies.
+   real(dp), parameter :: PARTS_TOL = 1.0e-12_dp
+   !! The gradient's E_os and E_ss (what a caller reports instead of running
+   !! trc_rimp2_run) against trc_rimp2_run's.
    real(dp), parameter :: TRANS_TOL = 1.0e-10_dp
    real(dp), parameter :: MQC_DFREF_TOL = 2.0e-8_dp
    !! Against a finite-difference reference (metalquicha's own gate is
@@ -96,6 +99,8 @@ module check_rimp2_grad_suite
       type(trc_scf_result_t) :: res
       integer :: nocc = 0
       logical :: df = .false.
+      real(dp) :: e_os = 0.0_dp, e_ss = 0.0_dp
+      !! trc_rimp2_run's own parts of E_RI-MP2.
    end type system_t
 
 contains
@@ -485,6 +490,8 @@ contains
       ropts%nfrozen = c%nfrozen
       call trc_rimp2_run(sys%bas, sys%aux, sys%pl, sys%nocc, cmo_c, eps_c, mp, opts=ropts, la=sys%lp)
       e_corr = mp%e_corr
+      sys%e_os = mp%e_os
+      sys%e_ss = mp%e_ss
       call check(error, len_trim(mp%message) == 0, trim(c%name)//": RI-MP2: "//trim(mp%message))
    end subroutine rimp2_energy
 
@@ -519,6 +526,12 @@ contains
          job%res%e_corr - e_corr, "  Z-vector iterations ", job%res%cphf_iterations
       call check(error, abs(job%res%e_corr - e_corr) < ECORR_TOL, trim(c%name)// &
                  ": the gradient's amplitudes give a different correlation energy than trc_rimp2_run")
+      if (allocated(error)) return
+      print "(a,a,es10.2,a,es10.2)", "  ", trim(c%name)//": |E_os (gradient) - E_os| ", abs(job%res%e_os - sys%e_os), &
+         "  |E_ss (gradient) - E_ss| ", abs(job%res%e_ss - sys%e_ss)
+      call check(error, job%res%has_energy .and. abs(job%res%e_os - sys%e_os) < PARTS_TOL .and. &
+                 abs(job%res%e_ss - sys%e_ss) < PARTS_TOL, trim(c%name)// &
+                 ": the gradient's E_os/E_ss differ from trc_rimp2_run's")
       call release_system(sys)
    end subroutine analytic_gradient
 

@@ -1597,6 +1597,19 @@ set_tests_properties(terco/check_capi_ghost PROPERTIES WORKING_DIRECTORY ${CMAKE
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
+# trc_run_rimp2 then trc_run_gradient: no separate RI-MP2 energy step, and
+# the energy trc_rimp2_energy/trc_energy report after the gradient equals an
+# energy-only handle's to 1e-12 (exact, --df and --df chained references).
+# See check_capi_rimp2_grad.F90's own header.
+add_executable(check_capi_rimp2_grad check_capi_rimp2_grad.F90)
+target_compile_definitions(check_capi_rimp2_grad PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_rimp2_grad PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
+                                                     test-drive::test-drive)
+add_test(NAME terco/check_capi_rimp2_grad COMMAND check_capi_rimp2_grad ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(terco/check_capi_rimp2_grad PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
 # trc_run_hessian/trc_hessian (the finite-difference Cartesian Hessian),
 # through the context API, against pyscf's own ANALYTIC RHF/STO-3G
 # Hessian already in test/pyscf_refs/vib_thermo_{water,hcn,

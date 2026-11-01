@@ -79,11 +79,11 @@ module trc_rimp2_relax
    public :: trc_rimp2_relax_t
 
    integer, parameter :: ST_METRIC = 1, ST_3C = 2, ST_TRANS = 3, ST_TRSM = 4, ST_KGEMM = 5, ST_AMP = 6, &
-                         ST_GAMMA = 7, ST_DENSITY = 8, ST_FIT = 9, ST_D2C = 10, ST_LAG = 11, ST_D3C = 12, &
-                         NSTEP = 12
+                         ST_PAIR = 7, ST_GAMMA = 8, ST_DENSITY = 9, ST_FIT = 10, ST_D2C = 11, ST_LAG = 12, &
+                         ST_D3C = 13, NSTEP = 13
    character(len=22), parameter :: STEP_NAME(NSTEP) = [character(len=22) :: &
                                    "metric + Cholesky", "(mu nu|P)", "transform (ia|P)", "B = X L^-T", &
-                                   "K_i GEMMs", "amplitudes T, X", "Gamma' = X B (gemm)", &
+                                   "K_i GEMMs", "amplitudes T, X", "pair energies", "Gamma' = X B (gemm)", &
                                    "doo, dvv (gemm)", "Gamma, gamma (trsm)", "2c derivative kernels", &
                                    "Lagrangian (gemm)", "3c derivative kernels"]
 
@@ -103,7 +103,14 @@ module trc_rimp2_relax
       integer :: nact = 0      !! nocc - nfrozen
       integer :: nvir = 0      !! nmo - nocc
       real(dp) :: e_corr = 0.0_dp
-      !! The RI-MP2 correlation energy these amplitudes give.
+      !! The RI-MP2 correlation energy these amplitudes give, sum X . (ia|jb)
+      !! (= Gamma' . B).
+      real(dp) :: e_os = 0.0_dp
+      !! Its opposite-spin part, sum (ia|jb)^2 / D, summed from the same
+      !! amplitudes (trc_rimp2_run's E_os, so a caller with a gradient needs
+      !! no separate energy step).
+      real(dp) :: e_ss = 0.0_dp
+      !! Its same-spin part, sum [(ia|jb)^2 - (ia|jb)(ib|ja)] / D.
       real(dp), allocatable :: doo(:, :)
       !! (nact, nact): eq 17, active occupied block, before symmetrising.
       real(dp), allocatable :: dvv(:, :)
@@ -138,6 +145,7 @@ module trc_rimp2_relax
       real(dp), allocatable :: gamc(:, :)
       !! Gamma on the Cartesian auxiliary functions (a spherical aux only).
       real(dp), allocatable :: doo(:, :), dvv(:, :), lag_o(:, :), lag_v(:, :), grad(:, :)
+      real(dp) :: e_os = 0.0_dp, e_ss = 0.0_dp
    end type relax_work_t
 
 contains
@@ -236,6 +244,8 @@ contains
       ! --- 2. amplitudes, Gamma', doo, dvv ----------------------------------
       call amplitude_pass(w, la)
       this%e_corr = chunked_dot(la, w%nov8, w%naux, w%gam, w%xr)
+      this%e_os = w%e_os
+      this%e_ss = w%e_ss
       ! --- 3. Gamma, gamma and the two-centre derivative --------------------
       call fitted_two_index(w, aux, la)
       ! B is spent: everything after this reads Gamma and the raw integrals.
@@ -355,7 +365,7 @@ contains
       !! group of occupied orbitals at a time.
       type(relax_work_t), intent(inout) :: w
       type(trc_linalg_t), intent(inout) :: la
-      real(dp), allocatable :: ki(:, :), tt(:), xx(:)
+      real(dp), allocatable :: ki(:, :), tt(:), xx(:), part(:, :)
       type(timer_type) :: tc
       integer :: ng, nb, i0, il, no, nv, nov, ldk
       integer(int64) :: slab
@@ -366,8 +376,10 @@ contains
       slab = int(nv, int64)*w%nov8
       ng = amplitude_group(no, nv)
       ldk = ng*nv
-      allocate (ki(ldk, nov), tt(slab*ng), xx(slab*ng))
-      !$acc enter data create(ki, tt, xx)
+      allocate (ki(ldk, nov), tt(slab*ng), xx(slab*ng), part(2, nov*ng))
+      !$acc enter data create(ki, tt, xx, part)
+      w%e_os = 0.0_dp
+      w%e_ss = 0.0_dp
       do i0 = 1, no, ng
          nb = min(ng, no - i0 + 1)
          ! K(a + (il-1) nv, b + (j-1) nv) = (ia|jb), i = i0 - 1 + il
@@ -379,6 +391,15 @@ contains
          call w%tbl%step_on(la, ST_AMP, tc)
          call amplitude_kernel(i0, nb, no, nv, ldk, nov, w%eo, w%ev, ki, tt, xx)
          call w%tbl%step_off(la, ST_AMP, tc)
+         ! E_os and E_ss of the group's pairs, which the energy step would
+         ! otherwise compute again from its own K (trc_rimp2_run).
+         call w%tbl%step_on(la, ST_PAIR, tc)
+         call pair_energy_kernel(i0, nb, no, nv, w%eo, w%ev, tt, xx, part)
+         !$acc update self(part(:, 1:nov*nb))
+         w%e_os = w%e_os + sum(part(1, 1:nov*nb))
+         w%e_ss = w%e_ss + sum(part(2, 1:nov*nb))
+         call w%tbl%step_off(la, ST_PAIR, tc)
+         call w%tbl%add_flop(ST_PAIR, 7*int(nb, int64)*slab)
          ! Gamma'(a + (i-1) nv, Q) = sum_(b,j) X(a + (il-1) nv, b + (j-1) nv) B(b + (j-1) nv, Q):
          ! the kernel left X in K's own layout, so the group's rows of Gamma'
          ! are one GEMM the shape of K's. A strided batch of nv-row items
@@ -400,8 +421,8 @@ contains
          call w%tbl%step_off(la, ST_DENSITY, tc)
          call w%tbl%add_flop(ST_DENSITY, 2*int(nb, int64)*slab*int(nv + no, int64))
       end do
-      !$acc exit data delete(ki, tt, xx)
-      deallocate (ki, tt, xx)
+      !$acc exit data delete(ki, tt, xx, part)
+      deallocate (ki, tt, xx, part)
    end subroutine amplitude_pass
 
    subroutine fitted_two_index(w, aux, la)
@@ -647,6 +668,37 @@ contains
          end if
       end do
    end subroutine amplitude_kernel
+
+   subroutine pair_energy_kernel(i0, nb, no, nv, eo, ev, tt, xx, part)
+      !! part(1, a + (j-1) nv + (il-1) nv no) = sum_b T^2 D and part(2, ..) =
+      !! sum_b T (X - T) D, D = e_i + e_j - e_a - e_b, i = i0 - 1 + il: with
+      !! T = (ia|jb)/D and X - T = T - T_ij^ba, these are the pair's
+      !! (ia|jb)^2/D and [(ia|jb)^2 - (ia|jb)(ib|ja)]/D summed over b, the
+      !! energy step's E_os and E_ss terms. One item per (a, j, il), a
+      !! fastest, so both reads are unit stride; the host adds the items.
+      integer, intent(in) :: i0, nb, no, nv
+      real(dp), intent(in) :: eo(no), ev(nv)
+      real(dp), intent(in) :: tt(nv, nv, no, nb), xx(nv, nv, no, nb)
+      real(dp), intent(out) :: part(2, nv*no*nb)
+      integer :: t, a, j, il, b
+      real(dp) :: eija, d, tab, pos, pss
+      do concurrent(t=1:nv*no*nb) local(a, j, il, b, eija, d, tab, pos, pss)
+         a = mod(t - 1, nv) + 1
+         j = mod((t - 1)/nv, no) + 1
+         il = (t - 1)/(nv*no) + 1
+         eija = eo(i0 - 1 + il) + eo(j) - ev(a)
+         pos = 0.0_dp
+         pss = 0.0_dp
+         do b = 1, nv
+            d = eija - ev(b)
+            tab = tt(a, b, j, il)
+            pos = pos + tab*tab*d
+            pss = pss + tab*(xx(a, b, j, il) - tab)*d
+         end do
+         part(1, t) = pos
+         part(2, t) = pss
+      end do
+   end subroutine pair_energy_kernel
 
    subroutine reorder_last_two(n, no, np, gg, gp)
       !! gp(nu, q, i) = gg(nu, i, q).
