@@ -65,7 +65,8 @@ contains
                   new_unittest("CLI --rimp2 --grad: no energy step, the energy-only run's E_os/E_ss", &
                                test_cli_grad_energy), &
                   new_unittest("CLI --df --rimp2 --grad: no energy step, the energy-only run's E_os/E_ss", &
-                               test_cli_grad_energy_df) &
+                               test_cli_grad_energy_df), &
+                  new_unittest("CLI --rimp2 --grad over a UHF reference is refused", test_cli_rimp2_grad_uhf_refused) &
                   ]
    end subroutine collect_cli_grad_rimp2_tests
 
@@ -160,6 +161,27 @@ contains
       end do
       close (u)
    end subroutine cli_energy
+   subroutine test_cli_rimp2_grad_uhf_refused(error)
+      !! An unrestricted reference has no RI-MP2 gradient: the run must stop
+      !! with a non-zero exit code and say why, not print an SCF-only gradient.
+      type(error_type), allocatable, intent(out) :: error
+      character(len=:), allocatable :: cmd, out
+      character(len=512) :: line
+      integer :: rc, u, ios
+      out = g_probe_json//'.uhf.out'
+      cmd = g_cli_exe//' water.xyz -b basis_sets/6-31g.json --uhf 2 --rimp2 --grad > '//out//' 2>&1'
+      call execute_command_line(cmd, exitstat=rc, wait=.true.)
+      call check(error, rc /= 0, "a UHF reference with --rimp2 --grad was not refused (exit code 0, see "//out//")")
+      if (allocated(error)) return
+      rc = 0
+      open (newunit=u, file=out, status="old", action="read", iostat=ios)
+      do while (ios == 0)
+         read (u, "(a)", iostat=ios) line
+         if (ios == 0 .and. index(line, "restricted (closed-shell RHF reference) only") > 0) rc = 1
+      end do
+      close (u)
+      call check(error, rc == 1, "the refusal does not say the RI-MP2 gradient is restricted only (see "//out//")")
+   end subroutine test_cli_rimp2_grad_uhf_refused
 
    subroutine cli_gradient(error, args, probe, nat, grad)
       !! Run the CLI with `args` plus --frozen 0, tight convergence, --grad

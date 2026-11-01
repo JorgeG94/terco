@@ -208,7 +208,7 @@ contains
       if (allocated(job%grad)) deallocate (job%grad)
       fitted = present(dfjk)
       why = rimp2_grad_refusal(b, aux, job%opts)
-      if (len(why) == 0 .and. fitted .neqv. present(jkaux)) why = "a fitted reference needs both its fit and its basis"
+      if (len(why) == 0 .and. (fitted .neqv. present(jkaux))) why = "a fitted reference needs both its fit and its basis"
       if (len(why) == 0 .and. fitted) why = fitted_reference_refusal(b, jkaux, dfjk)
       if (len(why) > 0) then
          job%res%message = "trc_rimp2_gradient: "//why
