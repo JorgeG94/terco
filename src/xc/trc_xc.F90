@@ -143,6 +143,7 @@ module trc_xc
    public :: trc_xc_rks, trc_xc_uks, trc_xc_fxc_rks, trc_xc_rho, XC_RHO_TOL
    public :: trc_xc_options_t, trc_xc_options, trc_xc_result_t
    public :: XC_NP_PAD, XC_NL_PAD, xc_sort_by_shape
+   public :: trc_xc_kernel_points_rks, trc_xc_kernel_points_t
 
    real(dp), parameter :: XC_RHO_TOL = 1.0e-12_dp
    !! A batch whose bound on rho is below this is skipped. The functionals'
@@ -169,6 +170,29 @@ module trc_xc
       !! a copy of the caller's handle, read only when `has_comm`.
       logical :: has_comm = .false.
    end type trc_xc_options_t
+
+   type :: trc_xc_kernel_points_t
+      !! Per grid point, what d/dR Tr(P V_xc[D]) needs (trc_xc_grad_potential):
+      !! the coefficients of the two densities' derivatives in the integrand
+      !! G = sum_g w_g [v_rho rho_P + 2 v_sigma grad rho . grad rho_P], v at the
+      !! reference density D. Filled by trc_xc_kernel_points_rks on the
+      !! device, in xg's own point order, zero on a batch its `active` drops;
+      !! each array mapped on its own, unmapped by `release`.
+      integer :: npts = 0
+      real(dp), allocatable :: coef_d(:)
+      !! (npts): f_rr rho_P + 2 f_rs grad rho . grad rho_P, what multiplies d rho.
+      real(dp), allocatable :: vec_d(:, :)
+      !! (3, npts): 2 f_rs rho_P grad rho + 4 f_ss (grad rho . grad rho_P) grad rho
+      !! + 2 v_sigma grad rho_P, what multiplies d grad rho.
+      real(dp), allocatable :: vrho(:), vsigma(:)
+      !! (npts): the potential at D, what multiplies d rho_P and (with grho) d grad rho_P.
+      real(dp), allocatable :: grho(:, :)
+      !! (3, npts): grad rho of D.
+      real(dp), allocatable :: energy(:)
+      !! (npts): the integrand itself, unweighted (the partition response's).
+   contains
+      procedure :: release => xc_kernel_points_release
+   end type trc_xc_kernel_points_t
 
    type, extends(trc_xc_options_t) :: xc_run_t
       !! What `xc_drive` runs with: the caller's options and the spin count.
@@ -849,6 +873,225 @@ contains
       end do
       !$acc end data
    end subroutine trc_xc_fxc_rks
+
+   !
+   ! trc_xc_kernel_points_t at every point of `xg` for the reference density
+   ! `dmat` and a second, symmetric density `pmat` (a relaxed correlation
+   ! density: indefinite, traceless), restricted. trc_xc_fxc_rks's front half
+   ! -- collocate, gather both densities, X = chi D and chi P by batched GEMM
+   ! -- then one thread per point evaluating the functional's first
+   ! (xc_eval_point) and second (xc_eval_point_fxc) derivatives at D. Batches
+   ! with active(ib) == 0 are left zero: the caller passes the screen the
+   ! reference potential was built with, so the points that never carried
+   ! V_xc[D] carry nothing here either. Both densities HOST arrays; `b` and
+   ! `xg` on the device. `pts` is (re)allocated and mapped here.
+   !
+   recursive subroutine trc_xc_kernel_points_rks(b, xg, func, dmat, pmat, active, pts, la)
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_xc_functional_t), intent(in) :: func
+      real(dp), intent(in) :: dmat(b%nao, b%nao), pmat(b%nao, b%nao)
+      integer, intent(in) :: active(xg%nbatch)
+      type(trc_xc_kernel_points_t), intent(inout) :: pts
+      type(trc_linalg_t), intent(inout), optional :: la
+      !! GEMM handles; absent, made and released for this call.
+
+      integer(int64) :: need, nchi
+      type(trc_gemm_batch_t) :: gemm_shape
+      integer :: b0, b1, ib, nloc, npb, np, p0, npairs, k, nb, k0, k1, cnt, mp, ml, nwork, s
+      integer, allocatable :: c_off(:), pr_off(:), npp(:), nlp(:), ord(:), pb_off(:), wk_off(:), act(:)
+      real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), dloc(:, :), dpack(:, :, :)
+      integer :: kid(XC_MAX_KERNELS)
+      real(dp) :: coef(XC_MAX_KERNELS)
+
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call la_local%init(1)
+            call trc_xc_kernel_points_rks(b, xg, func, dmat, pmat, active, pts, la_local)
+            call la_local%release()
+         end block
+         return
+      end if
+      call pts%release()
+      pts%npts = xg%npts
+      allocate (pts%coef_d(max(xg%npts, 1)), pts%vec_d(3, max(xg%npts, 1)), pts%vrho(max(xg%npts, 1)), &
+                pts%vsigma(max(xg%npts, 1)), pts%grho(3, max(xg%npts, 1)), pts%energy(max(xg%npts, 1)))
+      pts%coef_d = 0.0_dp
+      pts%vec_d = 0.0_dp
+      pts%vrho = 0.0_dp
+      pts%vsigma = 0.0_dp
+      pts%grho = 0.0_dp
+      pts%energy = 0.0_dp
+      !$acc enter data copyin(pts%coef_d, pts%vec_d, pts%vrho, pts%vsigma, pts%grho, pts%energy)
+      if (xg%npts == 0) return
+      kid = func%kid
+      coef = func%coef
+
+      allocate (c_off(xg%nbatch + 1), pr_off(xg%nbatch + 1))
+      allocate (npp(xg%nbatch), nlp(xg%nbatch), act(xg%nbatch), dpack(b%nao, b%nao, 2))
+      do ib = 1, xg%nbatch
+         nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
+         npb = xg%b_off(ib + 1) - xg%b_off(ib)
+         act(ib) = active(ib)
+         npp(ib) = ((npb + XC_NP_PAD - 1)/XC_NP_PAD)*XC_NP_PAD
+         nlp(ib) = ((nloc + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
+      end do
+      !$acc enter data copyin(dmat, pmat, npp, nlp, act, kid, coef) create(dpack)
+      call xc_pack2(b%nao, dmat, pmat, dpack)
+
+      b0 = 1
+      do while (b0 <= xg%nbatch)
+         need = 0
+         b1 = b0 - 1
+         do ib = b0, xg%nbatch
+            if (need + int(npp(ib), int64)*int(nlp(ib), int64) > XC_BUDGET .and. ib > b0) exit
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            b1 = ib
+         end do
+         nchi = max(need, 1_int64)
+         p0 = xg%b_off(b0)
+         np = xg%b_off(b1 + 1) - p0
+         nb = b1 - b0 + 1
+         allocate (ord(nb), pb_off(nb + 1), wk_off(nb + 1))
+         do k = 1, nb
+            ord(k) = b0 + k - 1
+         end do
+         call xc_sort_by_shape(nb, npp, nlp, ord)
+         need = 0
+         npairs = 0
+         nwork = 0
+         pb_off(1) = 0
+         wk_off(1) = 0
+         do k = 1, nb
+            ib = ord(k)
+            c_off(ib) = int(need)
+            pr_off(ib) = npairs
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            npairs = npairs + nlp(ib)*nlp(ib)
+            pb_off(k + 1) = npairs
+            nwork = nwork + (xg%b_shoff(ib + 1) - xg%b_shoff(ib))*(xg%b_off(ib + 1) - xg%b_off(ib))
+            wk_off(k + 1) = nwork
+         end do
+
+         allocate (chi(nchi), gchi(nchi, 3), xt(nchi, 2), dloc(max(npairs, 1), 2))
+         !$acc enter data create(chi, gchi, xt, dloc) copyin(c_off, pr_off, ord, pb_off, wk_off)
+         ! Padding must be zero, as in xc_drive: it feeds the GEMM.
+         call xc_zero(nchi, 1, chi, xt)
+         call xc_collocate(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
+                           xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, xg%b_shao, &
+                           c_off, npp, xg%nbatch, nchi, chi, gchi)
+         call xc_gather(npairs, nb, ord, pb_off, 2, b%nao, dpack, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                        nlp, xg%nbatch, dloc)
+         k0 = 1
+         do while (k0 <= nb)
+            ib = ord(k0)
+            mp = npp(ib)
+            ml = nlp(ib)
+            k1 = k0
+            do while (k1 < nb)
+               if (npp(ord(k1 + 1)) /= mp .or. nlp(ord(k1 + 1)) /= ml) exit
+               k1 = k1 + 1
+            end do
+            cnt = k1 - k0 + 1
+            if (ml > 0) then
+               gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
+               do s = 1, 2
+                  call la%gemm_batched(gemm_shape, chi(c_off(ib) + 1), dloc(pr_off(ib) + 1, s), xt(c_off(ib) + 1, s))
+               end do
+            end if
+            k0 = k1 + 1
+         end do
+         call xc_kernel_points(np, p0, xg%npts, xg%batch_of, xg%b_off, xg%b_aooff, c_off, npp, act, xg%nbatch, &
+                               func%nk, kid, coef, nchi, chi, gchi, xt, pts%coef_d, pts%vec_d, pts%vrho, &
+                               pts%vsigma, pts%grho, pts%energy)
+
+         !$acc exit data delete(chi, gchi, xt, dloc, c_off, pr_off, ord, pb_off, wk_off)
+         deallocate (chi, gchi, xt, dloc, ord, pb_off, wk_off)
+         b0 = b1 + 1
+      end do
+      !$acc exit data delete(dmat, pmat, npp, nlp, act, kid, coef, dpack)
+   end subroutine trc_xc_kernel_points_rks
+
+   subroutine xc_kernel_points_release(this)
+      class(trc_xc_kernel_points_t), intent(inout) :: this
+      if (allocated(this%coef_d)) then
+         !$acc exit data delete(this%coef_d, this%vec_d, this%vrho, this%vsigma, this%grho, this%energy)
+         deallocate (this%coef_d, this%vec_d, this%vrho, this%vsigma, this%grho, this%energy)
+      end if
+      this%npts = 0
+   end subroutine xc_kernel_points_release
+
+   !
+   ! The point kernel of trc_xc_kernel_points_rks: one thread per point of
+   ! the chunk, reading its row of chi D (xt slot 1) and chi P (slot 2).
+   !
+   subroutine xc_kernel_points(np, p0, npts, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, nk, kid, &
+                               coef, nchi, chi, gchi, xt, coef_d, vec_d, vrho, vsigma, grho, energy)
+      integer, intent(in) :: np, p0, npts, nbatch, nk
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, 2)
+      real(dp), intent(inout) :: coef_d(npts), vec_d(3, npts), vrho(npts), vsigma(npts), grho(3, npts), &
+                                 energy(npts)
+      integer :: g
+
+      do concurrent(g=1:np)
+         call xc_kernel_point_body(p0 + g - 1, npts, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, nk, &
+                                   kid, coef, nchi, chi, gchi, xt, coef_d, vec_d, vrho, vsigma, grho, energy)
+      end do
+   end subroutine xc_kernel_points
+
+   pure subroutine xc_kernel_point_body(gg, npts, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, nk, kid, &
+                                        coef, nchi, chi, gchi, xt, coef_d, vec_d, vrho, vsigma, grho, energy)
+      !$acc routine seq
+      integer, intent(in) :: gg, npts, nbatch, nk
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, 2)
+      real(dp), intent(inout) :: coef_d(npts), vec_d(3, npts), vrho(npts), vsigma(npts), grho(3, npts), &
+                                 energy(npts)
+      integer :: ib, nloc, ld, off, u, i, k
+      real(dp) :: x, xp, rho, rho_p, sigma, gdotp, eps, vr, vs, vs2, frr, frs, fss
+      real(dp) :: gr(3), gp(3)
+
+      ib = batch_of(gg)
+      if (active(ib) == 0) return
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = npp(ib)
+      off = c_off(ib) + (gg - b_off(ib)) + 1
+      rho = 0.0_dp
+      rho_p = 0.0_dp
+      gr = 0.0_dp
+      gp = 0.0_dp
+      do u = 1, nloc
+         i = off + (u - 1)*ld
+         x = xt(i, 1)
+         xp = xt(i, 2)
+         rho = rho + x*chi(i)
+         rho_p = rho_p + xp*chi(i)
+         do k = 1, 3
+            gr(k) = gr(k) + 2.0_dp*x*gchi(i, k)
+            gp(k) = gp(k) + 2.0_dp*xp*gchi(i, k)
+         end do
+      end do
+      sigma = gr(1)**2 + gr(2)**2 + gr(3)**2
+      gdotp = gr(1)*gp(1) + gr(2)*gp(2) + gr(3)*gp(3)
+      call xc_eval_point(nk, kid, coef, rho, sigma, eps, vr, vs)
+      call xc_eval_point_fxc(nk, kid, coef, rho, sigma, vs2, frr, frs, fss)
+      coef_d(gg) = frr*rho_p + 2.0_dp*frs*gdotp
+      do k = 1, 3
+         vec_d(k, gg) = 2.0_dp*frs*rho_p*gr(k) + 4.0_dp*fss*gdotp*gr(k) + 2.0_dp*vs*gp(k)
+         grho(k, gg) = gr(k)
+      end do
+      vrho(gg) = vr
+      vsigma(gg) = vs
+      energy(gg) = vr*rho_p + 2.0_dp*vs*gdotp
+   end subroutine xc_kernel_point_body
 
    ! dpack(:,:,1) = a, dpack(:,:,2) = bb -- packs the ground and trial
    ! densities into one array so a single `xc_gather` call (nspin = 2)

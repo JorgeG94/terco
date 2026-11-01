@@ -1710,6 +1710,21 @@ set_tests_properties(
 terco_add_check(check_rimp2_grad check_rimp2_grad.F90 NEEDS_BASIS)
 target_link_libraries(check_rimp2_grad PRIVATE test-drive::test-drive)
 
+# The analytic double-hybrid gradient (trc_rimp2_grad.F90 over a Kohn-Sham
+# reference: b2plyp, b2gp-plyp, mpw2plyp) against Richardson finite
+# differences of terco's own DH energy (--df Cartesian and spherical, and the
+# exact reference) and of pyscf's, plus the identity that defines the new
+# d/dR Tr(P V_xc[D]) term (trc_xc_grad_potential.F90). See its header.
+terco_add_check(check_dh_grad check_dh_grad.F90 NEEDS_BASIS)
+target_link_libraries(check_dh_grad PRIVATE terco_c_interfaces test-drive::test-drive)
+# Formamide (no symmetry, spherical) against pyscf and finite differences, and
+# the exact reference: ~3 min on four host cores, so nightly only.
+add_test(NAME terco/check_dh_grad_long COMMAND check_dh_grad long)
+set_tests_properties(
+  terco/check_dh_grad_long PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                      ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+                                      LABELS LONG)
+
 # Double hybrids (b2plyp, b2gp-plyp -- trc_xc_functional.F90): the SCF
 # (four-centre AND --df, cc-pVDZ-RIFIT doing double duty as --df's jkfit
 # too) then RI-MP2 (plain and chained off --df's fit) on water and

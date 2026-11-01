@@ -58,6 +58,19 @@
 ! extra call inside `matvec`, folding `f_xc[D_U]` into the resident
 ! Fock-like build before the two back-transforms.
 !
+! A --df REFERENCE: trc_cpks_fitted_t
+! -----------------------------------
+! A --df KS SCF is stationary for its FITTED J and K, so its response
+! operator is the fitted one: trc_scf_df_response's df_rotation_t (the
+! MO-basis blocks of trc_cphf_solve_rhf_fitted) at k_scale = a_x, plus the
+! XC kernel, which is a grid quantity and never fitted: trc_cpks_kernel_t
+! forms D_U in the AO basis, calls trc_xc_fxc_rks and projects the result
+! on the orbitals. The same CG loop again; the double-hybrid gradient's
+! Z-vector (trc_rimp2_grad.F90) is its caller. The kernel also serves the
+! right-hand side and the energy-weighted density there (`add_general`,
+! `add_rotation`'s `goo`), so every response of that gradient is the same
+! operator.
+!
 module trc_cpks
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
@@ -71,10 +84,56 @@ module trc_cpks
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, &
                        cphf_zero_matrix, cphf_copy_matrix, cphf_neg_matrix, cphf_add_matrix, &
                        cphf_axpy_matrix, cphf_precond_matrix, cphf_combine_p, cphf_add_diag
+   use trc_scf_df, only: df_jk_t
+   use trc_scf_df_response, only: df_rotation_t
    implicit none
    private
 
    public :: trc_cpks_solve_rks, trc_scf_polarizability_rks, cpks_refuse_reason
+   public :: trc_cpks_kernel_t, trc_cpks_fitted_t
+
+   type :: trc_cpks_kernel_t
+      !! The exchange-correlation kernel's share of a restricted Kohn-Sham
+      !! orbital Hessian, f_xc[X] (trc_xc_fxc_rks, evaluated at the reference
+      !! density `dmat`) projected on the orbitals: what a fitted CPKS solve
+      !! and a Z-vector's right-hand side add to the fitted J - (a_x/2) K of
+      !! trc_scf_df_response, whose MO-basis blocks cannot carry a grid term.
+      !! Every array is device-resident, mapped on its own (never the type),
+      !! and reaches a kernel only as an actual argument.
+      type(trc_xc_functional_t) :: func
+      integer :: n = 0, nocc = 0, nvir = 0
+      integer(int64) :: budget = 0
+      !! trc_xc_fxc_rks's chunk cap in doubles; zero is its own default.
+      logical :: ready = .false.
+      real(dp), allocatable :: dmat(:, :)
+      !! (n, n): the reference density, Cartesian AO.
+      real(dp), allocatable :: cocc(:, :), cvir(:, :)
+      !! (n, nocc), (n, nvir): the orbitals, Cartesian AO.
+      real(dp), allocatable :: xden(:, :), xden_t(:, :), vresp(:, :), half(:, :)
+      !! (n, n) trial density and its transpose, (n, n) f_xc[X], (n, nocc) f_xc[X] C_o.
+   contains
+      procedure :: setup => cpks_kernel_setup
+      procedure :: add_rotation => cpks_kernel_add_rotation
+      procedure :: add_general => cpks_kernel_add_general
+      procedure :: release => cpks_kernel_release
+   end type trc_cpks_kernel_t
+
+   type :: trc_cpks_fitted_t
+      !! The restricted Kohn-Sham orbital Hessian of a --df reference, and its
+      !! CG solve: the fitted J - (a_x/2) K in the MO basis (`rot`,
+      !! trc_scf_df_response's df_rotation_t at k_scale = a_x) plus the
+      !! unfitted XC kernel on the grid (`kernel`). The KS analogue of
+      !! trc_cphf_solve_rhf_fitted, same CG, same convergence, breakdown and
+      !! NaN handling. `opts` is read and `res` written by `solve`.
+      type(df_rotation_t) :: rot
+      type(trc_cpks_kernel_t) :: kernel
+      type(trc_cphf_options_t) :: opts
+      type(trc_cphf_result_t) :: res
+   contains
+      procedure :: apply => cpks_fitted_apply
+      procedure :: solve => cpks_fitted_solve
+      procedure :: release => cpks_fitted_release
+   end type trc_cpks_fitted_t
 
 contains
 
@@ -318,5 +377,218 @@ contains
       !$acc exit data delete(cmo, mmat, temporary, bvec, u)
       deallocate (mmat, temporary, bvec, u)
    end subroutine trc_scf_polarizability_rks
+
+   subroutine cpks_kernel_setup(this, func, dmat, cmo, nocc)
+      !! Keep the functional, the reference density `dmat` (n, n) and the
+      !! orbitals `cmo` (n, nmo), occupied columns first -- host arrays, the
+      !! Cartesian AO space the grid's collocation runs in -- on the device.
+      class(trc_cpks_kernel_t), intent(inout) :: this
+      type(trc_xc_functional_t), intent(in) :: func
+      real(dp), intent(in) :: dmat(:, :), cmo(:, :)
+      integer, intent(in) :: nocc
+      integer :: n
+      call this%release()
+      n = size(cmo, 1)
+      this%func = func
+      this%n = n
+      this%nocc = nocc
+      this%nvir = size(cmo, 2) - nocc
+      allocate (this%dmat(n, n), this%cocc(n, nocc), this%cvir(n, this%nvir))
+      allocate (this%xden(n, n), this%xden_t(n, n), this%vresp(n, n), this%half(n, nocc))
+      this%dmat = dmat
+      this%cocc = cmo(:, 1:nocc)
+      this%cvir = cmo(:, nocc + 1:size(cmo, 2))
+      !$acc enter data copyin(this%dmat, this%cocc, this%cvir) create(this%xden, this%xden_t, this%vresp, this%half)
+      this%ready = .true.
+   end subroutine cpks_kernel_setup
+
+   subroutine cpks_kernel_add_rotation(this, b, xg, lp, u, au, goo)
+      !! For the rotation D_U = C_v U C_o^T + (C_v U C_o^T)^T: au += 2 C_v^T
+      !! f_xc[D_U] C_o (the orbital Hessian's convention, trc_cpks_solve_rks's
+      !! matvec) and goo += C_o^T f_xc[D_U] C_o, each when present. u (nvir,
+      !! nocc), au and goo device-resident.
+      class(trc_cpks_kernel_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_linalg_t), intent(inout) :: lp
+      real(dp), intent(in) :: u(:, :)
+      real(dp), intent(inout), optional :: au(:, :), goo(:, :)
+      if (.not. this%ready) error stop "trc_cpks: kernel used before setup"
+      call lp%gemm_mat(this%cvir, u, this%half)
+      call lp%gemm_mat(this%half, this%cocc, this%xden, transb="T")
+      call lp%transpose(this%n, this%n, this%xden, this%n, this%xden_t, this%n)
+      call cphf_add_matrix(this%n, this%n, this%xden, this%xden_t, this%xden)
+      call kernel_response(this, b, xg, lp)
+      if (present(au)) call lp%gemm_mat(this%cvir, this%half, au, transa="T", alpha=2.0_dp, beta=1.0_dp)
+      if (present(goo)) call lp%gemm_mat(this%cocc, this%half, goo, transa="T", beta=1.0_dp)
+   end subroutine cpks_kernel_add_rotation
+
+   subroutine cpks_kernel_add_general(this, b, xg, lp, xao, gvo, goo)
+      !! gvo += C_v^T f_xc[X] C_o and goo += C_o^T f_xc[X] C_o for a general
+      !! symmetric AO X (n, n): a relaxed density. Every array device-resident.
+      class(trc_cpks_kernel_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_linalg_t), intent(inout) :: lp
+      real(dp), intent(in) :: xao(:, :)
+      real(dp), intent(inout) :: gvo(:, :), goo(:, :)
+      if (.not. this%ready) error stop "trc_cpks: kernel used before setup"
+      call cphf_copy_matrix(this%n, this%n, xao, this%xden)
+      call kernel_response(this, b, xg, lp)
+      call lp%gemm_mat(this%cvir, this%half, gvo, transa="T", beta=1.0_dp)
+      call lp%gemm_mat(this%cocc, this%half, goo, transa="T", beta=1.0_dp)
+   end subroutine cpks_kernel_add_general
+
+   subroutine kernel_response(this, b, xg, lp)
+      !! this%half := f_xc[this%xden] C_o, through this%vresp.
+      type(trc_cpks_kernel_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_linalg_t), intent(inout) :: lp
+      if (this%budget > 0) then
+         call trc_xc_fxc_rks(b, xg, this%func, this%dmat, this%xden, this%vresp, this%budget, lp)
+      else
+         call trc_xc_fxc_rks(b, xg, this%func, this%dmat, this%xden, this%vresp, la=lp)
+      end if
+      call lp%gemm_mat(this%vresp, this%cocc, this%half)
+   end subroutine kernel_response
+
+   subroutine cpks_kernel_release(this)
+      class(trc_cpks_kernel_t), intent(inout) :: this
+      if (this%ready) then
+         !$acc exit data delete(this%dmat, this%cocc, this%cvir, this%xden, this%xden_t, this%vresp, this%half)
+      end if
+      if (allocated(this%dmat)) deallocate (this%dmat)
+      if (allocated(this%cocc)) deallocate (this%cocc)
+      if (allocated(this%cvir)) deallocate (this%cvir)
+      if (allocated(this%xden)) deallocate (this%xden)
+      if (allocated(this%xden_t)) deallocate (this%xden_t)
+      if (allocated(this%vresp)) deallocate (this%vresp)
+      if (allocated(this%half)) deallocate (this%half)
+      this%ready = .false.
+   end subroutine cpks_kernel_release
+
+   subroutine cpks_fitted_apply(this, b, xg, dfjk, lp, u, au)
+      !! au := 2 C_v^T (J_fit - (a_x/2) K_fit + f_xc)[D_U] C_o, the orbital
+      !! Hessian's two-electron and kernel part (no (e_a - e_i) diagonal).
+      !! u and au (nvir, nocc) device-resident.
+      class(trc_cpks_fitted_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(df_jk_t), intent(in) :: dfjk
+      type(trc_linalg_t), intent(inout) :: lp
+      real(dp), intent(in) :: u(:, :)
+      real(dp), intent(inout) :: au(:, :)
+      call this%rot%apply(dfjk, lp, u, au)
+      call this%kernel%add_rotation(b, xg, lp, u, au=au)
+   end subroutine cpks_fitted_apply
+
+   subroutine cpks_fitted_solve(this, b, xg, dfjk, lp, bvec, u)
+      !! (e_a - e_i) u_ai + [A u]_ai = -b_ai for every right-hand side of
+      !! `bvec` (nvir, nocc, ncomp), A this type's orbital Hessian, `xg` the
+      !! grid the reference converged on: trc_cphf_solve_rhf_fitted's CG
+      !! with `apply` as its matvec. bvec and u device-resident; this%res
+      !! says how it went (non-convergence, breakdown and NaN reported, never
+      !! passed as converged -- trc_cphf_solve_rhf's own comment).
+      class(trc_cpks_fitted_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(df_jk_t), intent(in) :: dfjk
+      type(trc_linalg_t), intent(inout) :: lp
+      real(dp), intent(in) :: bvec(:, :, :)
+      real(dp), intent(inout) :: u(:, :, :)
+
+      real(dp), allocatable :: r(:, :), z(:, :), p(:, :), ap(:, :), diagv(:, :)
+      real(dp) :: rz, rz_old, pap, alpha_cg, beta_cg, resid
+      integer :: nocc, nvirt, ncomp, it, comp, i, a
+      logical :: broke
+      character(len=256) :: reason
+
+      ! Reset field by field: a structure constructor of a type with an
+      ! allocatable component is one nvfortran has miscompiled.
+      if (allocated(this%res%iterations)) deallocate (this%res%iterations)
+      this%res%converged = .true.
+      this%res%message = ""
+      nvirt = this%rot%nvir
+      nocc = this%rot%nocc
+      ncomp = size(bvec, 3)
+      allocate (this%res%iterations(ncomp))
+      this%res%iterations = 0
+      reason = cpks_refuse_reason(this%kernel%func)
+      if (len_trim(reason) > 0) then
+         this%res%converged = .false.
+         this%res%message = reason
+         return
+      end if
+      if (size(bvec, 1) /= nvirt .or. size(bvec, 2) /= nocc .or. this%kernel%nocc /= nocc .or. &
+          this%kernel%nvir /= nvirt) error stop "trc_cpks: the fitted solve's right-hand side, rotation and "// &
+         "kernel disagree on the orbitals"
+      allocate (r(nvirt, nocc), z(nvirt, nocc), p(nvirt, nocc), ap(nvirt, nocc), diagv(nvirt, nocc))
+      do i = 1, nocc
+         do a = 1, nvirt
+            diagv(a, i) = this%rot%eps(nocc + a) - this%rot%eps(i)
+         end do
+      end do
+      !$acc enter data create(r, z, p, ap)
+      !$acc enter data copyin(diagv)
+      this%res%converged = .true.
+      this%res%message = ""
+      do comp = 1, ncomp
+         call cphf_neg_matrix(nvirt, nocc, bvec(:, :, comp), r)
+         call cphf_zero_matrix(nvirt, nocc, u(:, :, comp))
+         call cphf_precond_matrix(nvirt, nocc, diagv, r, z)
+         call cphf_copy_matrix(nvirt, nocc, z, p)
+         rz = lp%dot_2d(r, z)
+         resid = sqrt(lp%dot_2d(r, r))
+         it = 0
+         broke = .false.
+         ! `.not. (resid < conv)`: a NaN residual must read as not converged
+         ! (trc_cphf_solve_rhf's own comment).
+         do while (it < this%opts%max_iteration .and. .not. (resid < this%opts%conv_residual))
+            call this%apply(b, xg, dfjk, lp, p, ap)
+            call cphf_add_diag(nvirt, nocc, diagv, p, ap)
+            pap = lp%dot_2d(p, ap)
+            if (.not. (pap > 0.0_dp)) then
+               broke = .true.
+               exit
+            end if
+            alpha_cg = rz/pap
+            call cphf_axpy_matrix(nvirt, nocc, alpha_cg, p, u(:, :, comp))
+            call cphf_axpy_matrix(nvirt, nocc, -alpha_cg, ap, r)
+            resid = sqrt(lp%dot_2d(r, r))
+            it = it + 1
+            if (resid < this%opts%conv_residual) exit
+            call cphf_precond_matrix(nvirt, nocc, diagv, r, z)
+            rz_old = rz
+            rz = lp%dot_2d(r, z)
+            beta_cg = rz/rz_old
+            call cphf_combine_p(nvirt, nocc, z, beta_cg, p)
+         end do
+         this%res%iterations(comp) = it
+         if (broke) then
+            this%res%converged = .false.
+            this%res%message = "trc_cpks: CG breakdown (p^T A p <= 0, or NaN) on a right-hand side"
+         else if (.not. (resid < this%opts%conv_residual)) then
+            this%res%converged = .false.
+            this%res%message = "trc_cpks: a right-hand side did not converge"
+         end if
+         if (this%opts%verbose) then
+            block
+               character(len=1024) :: logline
+               write (logline, "(a,i0,a,i0,a,es9.2)") &
+                  "   cpks (fitted) rhs ", comp, ": ", it, " iterations, residual ", resid
+               call global_logger%info(trim(logline))
+            end block
+         end if
+      end do
+      !$acc exit data delete(diagv)
+      !$acc exit data delete(r, z, p, ap)
+   end subroutine cpks_fitted_solve
+
+   subroutine cpks_fitted_release(this)
+      class(trc_cpks_fitted_t), intent(inout) :: this
+      call this%rot%release()
+      call this%kernel%release()
+   end subroutine cpks_fitted_release
 
 end module trc_cpks

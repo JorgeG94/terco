@@ -37,6 +37,12 @@
 ! a gigabyte kept back) are unpacked once, at setup, and kept, so an
 ! iterative solve pays the unpack only for the rest.
 !
+! A KOHN-SHAM REFERENCE. A hybrid's fitted SCF builds G = J - (a_x/2) K,
+! a_x its exact-exchange fraction, so both types carry `k_scale` (one, the
+! Hartree-Fock default, everywhere above) and scale every K term by it.
+! The exchange-correlation kernel is not fitted and not here: trc_cpks adds
+! it on the grid.
+!
 ! THE ORBITAL HESSIAN IN THE MO BASIS: df_rotation_t, what the fitted
 ! CPHF solve applies. [A' U]_ai = 2 [C_v^T G[D_U] C_o]_ai for
 ! D_U = C_v U C_o^T + C_o U^T C_v^T is, with the fitted MO blocks
@@ -71,6 +77,10 @@ module trc_scf_df_response
       !! orbitals themselves (device-resident), for `apply`.
       integer :: n = 0, nocc = 0, nvir = 0, naux = 0, npack = 0, ablk = 0
       logical :: ready = .false.
+      real(dp) :: k_scale = 1.0_dp
+      !! The exchange fraction a_x of G = J - (a_x/2) K: one for Hartree-Fock,
+      !! a hybrid functional's `exx` for a Kohn-Sham reference. Kept across
+      !! `setup` and `release`.
       real(dp), allocatable :: cmo(:, :)
       !! (n, nocc + nvir): occupied columns first; device-resident.
       real(dp), allocatable :: eps(:)
@@ -104,6 +114,9 @@ module trc_scf_df_response
       !! blocks fit, else through df_response_t (this module's header).
       integer :: n = 0, nocc = 0, nvir = 0, naux = 0
       logical :: ready = .false.
+      real(dp) :: k_scale = 1.0_dp
+      !! As df_response_t's: G = J - (k_scale/2) K. Kept across `setup` and
+      !! `release`, and handed to the AO path.
       logical :: mo = .false.
       !! The MO-basis path is set up (else `ao` is).
       logical :: verbose_free = .true.
@@ -230,6 +243,7 @@ contains
       no = this%nocc
       naux = this%naux
       if (.not. this%mo) then
+         this%ao%k_scale = this%k_scale
          call lp%gemm("N", "N", this%n, no, nv, 1.0_dp, this%cvir, this%n, u, nv, 0.0_dp, this%yao, this%n)
          call this%ao%apply_rotation(dfjk, lp, this%yao, this%gco)
          call lp%gemm("T", "N", nv, no, this%n, 2.0_dp, this%cvir, this%n, this%gco, this%n, 0.0_dp, au, nv)
@@ -242,12 +256,12 @@ contains
       ! K, first term: W(b, Q, i) = sum_j U(b, j) B_oo(j, Q, i);
       ! au -= sum_(b, Q) B_vv(a, b, Q) W(b, Q, i)
       call lp%gemm("N", "N", nv, naux*no, no, 1.0_dp, u, nv, this%boo, no, 0.0_dp, this%wscr, nv)
-      call lp%gemm("N", "N", nv, no, nv*naux, -1.0_dp, this%bvv, nv, this%wscr, nv*naux, 1.0_dp, au, nv)
+      call lp%gemm("N", "N", nv, no, nv*naux, -this%k_scale, this%bvv, nv, this%wscr, nv*naux, 1.0_dp, au, nv)
       ! K, second term: M(j, Q, i) = sum_b U(b, j) B_vo(b, i, Q);
       ! au -= sum_(j, Q) B_vo(a, j, Q) M(j, Q, i)
       gemm_shape = trc_gemm_batch(no, no, nv, naux, ldc=no*naux, sa=0_int64, sc=int(no, int64), transa="T")
       call lp%gemm_batched(gemm_shape, u, this%bvo, this%mscr)
-      call lp%gemm("N", "N", nv, no, no*naux, -1.0_dp, this%bvo, nv, this%mscr, no*naux, 1.0_dp, au, nv)
+      call lp%gemm("N", "N", nv, no, no*naux, -this%k_scale, this%bvo, nv, this%mscr, no*naux, 1.0_dp, au, nv)
    end subroutine df_rotation_apply
 
    subroutine df_rotation_apply_occ(this, dfjk, lp, u, goo)
@@ -270,6 +284,7 @@ contains
       no = this%nocc
       naux = this%naux
       if (.not. this%mo) then
+         this%ao%k_scale = this%k_scale
          call lp%gemm("N", "N", this%n, no, nv, 1.0_dp, this%cvir, this%n, u, nv, 0.0_dp, this%yao, this%n)
          call this%ao%apply_rotation(dfjk, lp, this%yao, this%gco)
          call lp%gemm("T", "N", no, no, this%n, 1.0_dp, this%cocc, this%n, this%gco, this%n, 0.0_dp, goo, no)
@@ -284,14 +299,15 @@ contains
       ! goo -= 1/2 sum_(j, Q) B_oo(j, Q, k) M(j, Q, i)
       gemm_shape = trc_gemm_batch(no, no, nv, naux, ldc=no*naux, sa=0_int64, sc=int(no, int64), transa="T")
       call lp%gemm_batched(gemm_shape, u, this%bvo, this%mscr)
-      call lp%gemm("T", "N", no, no, no*naux, -0.5_dp, this%boo, no*naux, this%mscr, no*naux, 1.0_dp, goo, no)
+      call lp%gemm("T", "N", no, no, no*naux, -0.5_dp*this%k_scale, this%boo, no*naux, this%mscr, no*naux, 1.0_dp, &
+                   goo, no)
       ! K, (B_ov U B_oo): W(b, Q, i) = sum_j U(b, j) B_oo(j, Q, i), then per Q
       ! B_vo(:, :, Q)^T W(:, Q, :) into mscr's room (nocc, nocc, naux), summed.
       call lp%gemm("N", "N", nv, naux*no, no, 1.0_dp, u, nv, this%boo, no, 0.0_dp, this%wscr, nv)
       gemm_shape = trc_gemm_batch(no, no, nv, naux, ldb=nv*naux, sb=int(nv, int64), sc=int(no, int64)**2, &
                                   transa="T")
       call lp%gemm_batched(gemm_shape, this%bvo, this%wscr, this%mscr)
-      call add_slices(no, naux, -0.5_dp, this%mscr, goo)
+      call add_slices(no, naux, -0.5_dp*this%k_scale, this%mscr, goo)
    end subroutine df_rotation_apply_occ
 
    subroutine df_rotation_apply_general(this, dfjk, lp, xmo, xao, gvo, goo)
@@ -315,6 +331,7 @@ contains
       no = this%nocc
       naux = this%naux
       if (.not. this%mo) then
+         this%ao%k_scale = this%k_scale
          call this%ao%apply(dfjk, lp, xao, this%gco)
          call lp%gemm("T", "N", nv, no, this%n, 1.0_dp, this%cvir, this%n, this%gco, this%n, 0.0_dp, gvo, nv)
          call lp%gemm("T", "N", no, no, this%n, 1.0_dp, this%cocc, this%n, this%gco, this%n, 0.0_dp, goo, no)
@@ -339,18 +356,21 @@ contains
       call lp%gemm("N", "N", no, naux*no, no, 1.0_dp, xoo, no, this%boo, no, 0.0_dp, this%mscr, no)
       gemm_shape = trc_gemm_batch(no, no, nv, naux, ldc=no*naux, sa=0_int64, sc=int(no, int64), transa="T")
       call lp%gemm_batched(gemm_shape, xvo, this%bvo, this%mscr, beta=1.0_dp)
-      call lp%gemm("N", "N", nv, no, no*naux, -0.5_dp, this%bvo, nv, this%mscr, no*naux, 1.0_dp, gvo, nv)
-      call lp%gemm("T", "N", no, no, no*naux, -0.5_dp, this%boo, no*naux, this%mscr, no*naux, 1.0_dp, goo, no)
+      call lp%gemm("N", "N", nv, no, no*naux, -0.5_dp*this%k_scale, this%bvo, nv, this%mscr, no*naux, 1.0_dp, &
+                   gvo, nv)
+      call lp%gemm("T", "N", no, no, no*naux, -0.5_dp*this%k_scale, this%boo, no*naux, this%mscr, no*naux, 1.0_dp, &
+                   goo, no)
       ! K, virtual r: V_v(a, Q, i) = x_vo B_oo + x_vv B_vo, then
       ! gvo -= B_vv V_v / 2 and goo -= sum_Q B_vo(:, :, Q)^T V_v(:, Q, :) / 2
       call lp%gemm("N", "N", nv, naux*no, no, 1.0_dp, xvo, nv, this%boo, no, 0.0_dp, this%wscr, nv)
       gemm_shape = trc_gemm_batch(nv, no, nv, naux, ldc=nv*naux, sa=0_int64, sc=int(nv, int64))
       call lp%gemm_batched(gemm_shape, xvv, this%bvo, this%wscr, beta=1.0_dp)
-      call lp%gemm("N", "N", nv, no, nv*naux, -0.5_dp, this%bvv, nv, this%wscr, nv*naux, 1.0_dp, gvo, nv)
+      call lp%gemm("N", "N", nv, no, nv*naux, -0.5_dp*this%k_scale, this%bvv, nv, this%wscr, nv*naux, 1.0_dp, &
+                   gvo, nv)
       gemm_shape = trc_gemm_batch(no, no, nv, naux, ldb=nv*naux, sb=int(nv, int64), sc=int(no, int64)**2, &
                                   transa="T")
       call lp%gemm_batched(gemm_shape, this%bvo, this%wscr, this%mscr)
-      call add_slices(no, naux, -0.5_dp, this%mscr, goo)
+      call add_slices(no, naux, -0.5_dp*this%k_scale, this%mscr, goo)
       !$acc exit data delete(xvo, xvv, xoo)
       deallocate (xvo, xvv, xoo)
    end subroutine df_rotation_apply_general
@@ -471,7 +491,7 @@ contains
       call pack_doubled(n, this%npack, x, this%xpk)
       call lp%gemv("T", this%npack, naux, 1.0_dp, dfjk%bpk, this%npack, this%xpk, 0.0_dp, this%tq)
       call lp%gemm("N", "N", n, naux*nocc, n, 1.0_dp, x, n, this%bocc, n, 0.0_dp, this%work, n)
-      call combine_jk(n, naux, nocc, this%tq, this%cmo, this%work)
+      call combine_jk(n, naux, nocc, this%k_scale, this%tq, this%cmo, this%work)
       call b_pass(this, dfjk, lp, gco)
    end subroutine df_response_apply
 
@@ -495,7 +515,7 @@ contains
       ! W = Y boo + C_o m2
       call lp%gemm("N", "N", n, naux*nocc, nocc, 1.0_dp, y, n, this%boo, nocc, 0.0_dp, this%work, n)
       call lp%gemm("N", "N", n, naux*nocc, nocc, 1.0_dp, this%cmo, n, this%m2, nocc, 1.0_dp, this%work, n)
-      call combine_jk(n, naux, nocc, this%tq, this%cmo, this%work)
+      call combine_jk(n, naux, nocc, this%k_scale, this%tq, this%cmo, this%work)
       call b_pass(this, dfjk, lp, gco)
    end subroutine df_response_apply_rotation
 
@@ -659,9 +679,10 @@ contains
       end do
    end subroutine trace_diagonal
 
-   subroutine combine_jk(n, naux, nocc, tq, cmo, work)
-      !! work(nu, P, i) := C(nu, i) t_P - work(nu, P, i)/2.
+   subroutine combine_jk(n, naux, nocc, k_scale, tq, cmo, work)
+      !! work(nu, P, i) := C(nu, i) t_P - k_scale work(nu, P, i)/2.
       integer, intent(in) :: n, naux, nocc
+      real(dp), intent(in) :: k_scale
       real(dp), intent(in) :: tq(naux), cmo(n, nocc)
       real(dp), intent(inout) :: work(n, naux, nocc)
       integer(int64) :: t, n8, na8
@@ -672,7 +693,7 @@ contains
          nu = int(mod(t, n8)) + 1
          p = int(mod(t/n8, na8)) + 1
          i = int(t/(n8*na8)) + 1
-         work(nu, p, i) = cmo(nu, i)*tq(p) - 0.5_dp*work(nu, p, i)
+         work(nu, p, i) = cmo(nu, i)*tq(p) - 0.5_dp*k_scale*work(nu, p, i)
       end do
    end subroutine combine_jk
 
