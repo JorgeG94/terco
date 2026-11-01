@@ -65,7 +65,8 @@ contains
          end if
       end if
       if (r%rimp2 .or. r%dh) then
-         refusal = "--opt needs a gradient at every step; RI-MP2/double-hybrid correlation has none"
+         refusal = "--opt reruns only the SCF and its gradient at every step; the RI-MP2/double-hybrid "// &
+                   "correlation is not re-run there, so its gradient would silently be the SCF's alone"
          return
       end if
       if (len(r%pcm) > 0) then

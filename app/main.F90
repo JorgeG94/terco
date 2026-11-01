@@ -177,10 +177,11 @@ program trc_main
    call r%cli%add_flag("grad", "Print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
                        "RHF/UHF, or KS-DFT for an LDA/GGA --func (global and range-separated "// &
                        "hybrids and VV10 included); with --df, the fitted RHF/RKS gradient; "// &
-                       "with --rimp2, the RHF + RI-MP2 gradient (four-centre or --df RHF "// &
-                       "reference, one rank); refused for a meta-GGA, a double hybrid, --pcm, or "// &
-                       "--rimp2 over a UHF reference; with more than one rank it is computed on "// &
-                       "rank 0 alone, with a warning")
+                       "with --rimp2, the RHF + RI-MP2 gradient, and with a double-hybrid --func "// &
+                       "(b2plyp, b2gp-plyp, mpw2plyp) its KS + c RI-MP2 gradient (four-centre or "// &
+                       "--df reference, restricted, one rank); refused for a meta-GGA, --pcm, or "// &
+                       "--rimp2/a double hybrid over an unrestricted reference; with more than one "// &
+                       "rank it is computed on rank 0 alone, with a warning")
    call r%cli%add_flag("hessian", "finite-difference Cartesian Hessian (central differences of the "// &
                        "analytic gradient) after the SCF, then harmonic vibrational analysis and RRHO "// &
                        "thermochemistry; refused wherever --grad is (meta-GGA, --rimp2, a double "// &
@@ -1293,7 +1294,8 @@ program trc_main
       if (r%dh) call run_api(r, trc_energy(r%h, r%etot_dh))
    end if
    if (r%grad .and. r%conv /= 0) then
-      ! trc_run_gradient's own refusals (RI-MP2, PCM) come
+      ! trc_run_gradient's own refusals (an unrestricted RI-MP2 or
+      ! double-hybrid reference, PCM) come
       ! back through `api`, which prints the library's own message and
       ! stops -- the same clear-refusal path every other unsupported
       ! combination in this CLI already takes. An LDA/GGA --func (global

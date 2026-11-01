@@ -11,6 +11,12 @@
 ! pruning preserves the span, so the energy and gradient do not move
 ! (measured: 1e-10 against the unpruned reference).
 !
+! The double hybrid: `-f b2plyp --df --grad` (water, Cartesian cc-pVDZ, one
+! cc-pVDZ-RIFIT doing both fits, the default frozen core) against pyscf's
+! own finite-difference gradient (check_dh_grad.F90's G_PYSCF_WATER, its
+! header has the provenance), and its refusals: an unrestricted (UKS)
+! reference and PCM.
+!
 ! Arguments: the terco executable and a scratch path for its --json output.
 !
 module check_cli_grad_rimp2_suite
@@ -37,6 +43,14 @@ module check_cli_grad_rimp2_suite
                                        0.0_dp, 0.002913907061_dp, 0.007858573573_dp, &
                                        -0.0_dp, -0.002913907293_dp, 0.0078585734_dp], [3, 3])
 
+   real(dp), parameter :: G_PYSCF_DH(3, 3) = reshape([ &
+                                          -1.894780628694e-11_dp, -1.515824502955e-10_dp, -1.332378636339e-02_dp, &
+                                          3.552713678801e-10_dp, -3.896076487801e-03_dp, 6.661893121892e-03_dp, &
+                                          1.421085471520e-11_dp, 3.896076588461e-03_dp, 6.661893099391e-03_dp], [3, 3])
+   !! pyscf 2.14, b2plyp --df: check_dh_grad.F90's G_PYSCF_WATER.
+   real(dp), parameter :: TOL_DH = 5.0e-9_dp
+   !! check_dh_grad.F90's own gate against the same numbers.
+
    character(len=:), allocatable :: g_cli_exe, g_probe_json
 
 contains
@@ -52,15 +66,18 @@ contains
       testsuite = [ &
                   new_unittest("CLI --rimp2 --grad JSON gradient matches metalquicha", test_cli_rimp2_grad), &
                   new_unittest("CLI --df --rimp2 --grad JSON gradient matches metalquicha", test_cli_rimp2_grad_df), &
-                  new_unittest("CLI --rimp2 --grad over a UHF reference is refused", test_cli_rimp2_grad_uhf_refused) &
+                  new_unittest("CLI --rimp2 --grad over a UHF reference is refused", test_cli_rimp2_grad_uhf_refused), &
+                  new_unittest("CLI -f b2plyp --df --grad JSON gradient matches pyscf", test_cli_dh_grad_df), &
+                  new_unittest("CLI -f b2plyp --grad over a UKS reference is refused", test_cli_dh_grad_uks_refused), &
+                  new_unittest("CLI -f b2plyp --pcm --grad is refused", test_cli_dh_grad_pcm_refused) &
                   ]
    end subroutine collect_cli_grad_rimp2_tests
 
    subroutine test_cli_rimp2_grad(error)
       type(error_type), allocatable, intent(out) :: error
       real(dp) :: grad(3, 3)
-      call cli_gradient(error, ' water_mqc.xyz -b basis_sets/cc-pvdz.json --rimp2 --aux basis_sets/cc-pvdz-rifit.json', &
-                        g_probe_json, 3, grad)
+      call cli_gradient(error, ' water_mqc.xyz -b basis_sets/cc-pvdz.json --rimp2 --aux basis_sets/cc-pvdz-rifit.json'// &
+                        ' --frozen 0', g_probe_json, 3, grad, "scf energy + mp2 correlation")
       if (allocated(error)) return
       call check(error, maxval(abs(grad - G_MQC)), 0.0_dp, thr=TOL, &
                  message="worst |CLI - metalquicha| = "//to_string(maxval(abs(grad - G_MQC)), "es10.2"))
@@ -70,7 +87,8 @@ contains
       type(error_type), allocatable, intent(out) :: error
       real(dp) :: grad(3, 4)
       call cli_gradient(error, ' nh3_mqc.xyz -b basis_sets/def2-svp.json --df --jkfit basis_sets/def2-svp-rifit.json'// &
-                        ' --rimp2 --aux basis_sets/def2-svp-rifit.json', g_probe_json//'.df.json', 4, grad)
+                        ' --rimp2 --aux basis_sets/def2-svp-rifit.json --frozen 0', g_probe_json//'.df.json', 4, grad, &
+                        "scf energy + mp2 correlation")
       if (allocated(error)) return
       call check(error, maxval(abs(grad - G_MQC_DF)), 0.0_dp, thr=TOL, &
                  message="worst |CLI --df - metalquicha| = "//to_string(maxval(abs(grad - G_MQC_DF)), "es10.2"))
@@ -98,11 +116,57 @@ contains
       call check(error, rc == 1, "the refusal does not say the RI-MP2 gradient is restricted only (see "//out//")")
    end subroutine test_cli_rimp2_grad_uhf_refused
 
-   subroutine cli_gradient(error, args, probe, nat, grad)
-      !! Run the CLI with `args` plus --frozen 0, tight convergence, --grad
-      !! and --json `probe`, and read its gradient back.
+   subroutine test_cli_dh_grad_df(error)
       type(error_type), allocatable, intent(out) :: error
-      character(*), intent(in) :: args, probe
+      real(dp) :: grad(3, 3)
+      call cli_gradient(error, ' water.xyz -b basis_sets/cc-pvdz.json --cart -f b2plyp --df --jkfit '// &
+                        'basis_sets/cc-pvdz-rifit.json --aux basis_sets/cc-pvdz-rifit.json', &
+                        g_probe_json//'.dh.json', 3, grad, &
+                        "double hybrid total: scf energy + pt2 fraction x mp2 correlation")
+      if (allocated(error)) return
+      call check(error, maxval(abs(grad - G_PYSCF_DH)), 0.0_dp, thr=TOL_DH, &
+                 message="worst |CLI b2plyp --df - pyscf| = "//to_string(maxval(abs(grad - G_PYSCF_DH)), "es10.2"))
+   end subroutine test_cli_dh_grad_df
+
+   subroutine test_cli_dh_grad_uks_refused(error)
+      type(error_type), allocatable, intent(out) :: error
+      call expect_refusal(error, ' oh.xyz -b basis_sets/6-31g.json --uhf 1 -f b2plyp --grad', '.uks.out', &
+                          "an unrestricted (UKS) reference has no correlation gradient")
+   end subroutine test_cli_dh_grad_uks_refused
+
+   subroutine test_cli_dh_grad_pcm_refused(error)
+      type(error_type), allocatable, intent(out) :: error
+      call expect_refusal(error, ' water.xyz -b basis_sets/6-31g.json -f b2plyp --pcm cpcm --eps 78.3553 --grad', &
+                          '.pcm.out', "PCM gradient not implemented")
+   end subroutine test_cli_dh_grad_pcm_refused
+
+   subroutine expect_refusal(error, args, suffix, reason)
+      !! The CLI with `args` must exit non-zero and print `reason`.
+      type(error_type), allocatable, intent(out) :: error
+      character(*), intent(in) :: args, suffix, reason
+      character(len=:), allocatable :: out
+      character(len=512) :: line
+      integer :: rc, u, ios
+      out = g_probe_json//suffix
+      call execute_command_line(g_cli_exe//args//' > '//out//' 2>&1', exitstat=rc, wait=.true.)
+      call check(error, rc /= 0, "not refused (exit code 0, see "//out//")")
+      if (allocated(error)) return
+      rc = 0
+      open (newunit=u, file=out, status="old", action="read", iostat=ios)
+      do while (ios == 0)
+         read (u, "(a)", iostat=ios) line
+         if (ios == 0 .and. index(line, reason) > 0) rc = 1
+      end do
+      close (u)
+      call check(error, rc == 1, "the refusal does not say '"//reason//"' (see "//out//")")
+   end subroutine expect_refusal
+
+   subroutine cli_gradient(error, args, probe, nat, grad, expect_of)
+      !! Run the CLI with `args` plus tight convergence, --grad and --json
+      !! `probe`, read its gradient back, and check its "gradient of" says
+      !! `expect_of`.
+      type(error_type), allocatable, intent(out) :: error
+      character(*), intent(in) :: args, probe, expect_of
       integer, intent(in) :: nat
       real(dp), intent(out) :: grad(3, nat)
       character(len=:), allocatable :: cmd, what
@@ -112,7 +176,7 @@ contains
       integer :: rc, i
 
       grad = 0.0_dp
-      cmd = g_cli_exe//args//' --frozen 0 --econv 1e-12 --gconv 1e-9 --grad --json '//probe//' > '// &
+      cmd = g_cli_exe//args//' --econv 1e-12 --gconv 1e-9 --grad --json '//probe//' > '// &
             probe//'.out 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
       call check(error, rc == 0, "the CLI run failed, exit code "//to_string(rc)//" (see "//probe//".out)")
@@ -136,8 +200,8 @@ contains
          grad(:, i) = row
       end do
       call json%destroy()
-      call check(error, what == "scf energy + mp2 correlation", &
-                 "the JSON does not say the gradient includes the correlation: '"//what//"'")
+      call check(error, what == expect_of, &
+                 "the JSON does not say what the gradient differentiates ('"//expect_of//"'): '"//what//"'")
    end subroutine cli_gradient
 
 end module check_cli_grad_rimp2_suite

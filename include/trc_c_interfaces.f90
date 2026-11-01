@@ -35,7 +35,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 14
+   integer(c_int), parameter :: TRC_ABI_MINOR = 15
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -990,20 +990,27 @@ module trc_c_interfaces
          !! REFUSED, clearly, rather than attempted:
          !!   - meta-GGA: the energy runs, but trc_xc_grad has no tau term, so
          !!     the gradient is refused here with a message.
-         !!   - RI-MP2 over anything but an RHF reference on one rank: a double
-         !!     hybrid or other Kohn-Sham reference, an unrestricted one, a
+         !!   - RI-MP2 over anything but a restricted RHF or LDA/GGA KS
+         !!     reference on one rank: an unrestricted one (UHF, UKS), a
+         !!     meta-GGA, range-separated or VV10 functional, a
+         !!     spin-component-scaled double hybrid (none is registered), a
          !!     multi-rank context, or dropped functions
          !!     (gradient_capability_check's own messages).
          !!
-         !! RI-MP2. After a successful trc_run_rimp2 the energy this context
-         !! reports (trc_energy) is E_RHF + E_RI-MP2, and this differentiates
-         !! THAT: trc_rimp2_grad%trc_rimp2_gradient, with the same frozen core
-         !! and pair-list threshold the energy used. A four-centre reference
-         !! keeps its Z-vector against the exact orbital Hessian; a --df one
+         !! RI-MP2 AND DOUBLE HYBRIDS. After a successful trc_run_rimp2 the
+         !! energy this context reports (trc_energy) is E_ref + c E_RI-MP2 --
+         !! E_ref the RHF or KS energy, c a double hybrid's PT2 fraction or one
+         !! -- and this differentiates THAT: trc_rimp2_grad%trc_rimp2_gradient,
+         !! with the same frozen core, pair-list threshold and (for a KS
+         !! reference) functional and grid settings the energy used. A
+         !! four-centre reference keeps its Z-vector against the exact orbital
+         !! Hessian (CPHF, or CPKS with the XC kernel); a --df one
          !! (trc_set_df) differentiates the fitted SCF it converged, its
          !! Z-vector, potentials and two-electron derivative all over
-         !! `cx%dfjk`. A later trc_run_scf clears the RI-MP2 result, and the
-         !! gradient is the SCF's again.
+         !! `cx%dfjk` (the XC kernel and potential derivative on the SCF's
+         !! grid). A later trc_run_scf clears the RI-MP2 result, and the
+         !! gradient is the SCF's again. (ABI 1.15: a double hybrid's
+         !! gradient was refused before.)
          !!   - --df outside the DF-SCF's own scope (unrestricted, spherical,
          !!     range-separated -- the SCF refuses those first), or with the fit
          !!     gone. A --df gradient otherwise runs the FITTED J/K gradient

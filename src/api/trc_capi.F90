@@ -218,7 +218,7 @@ module trc_capi
    use trc_pcm, only: pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
-   use trc_cpks, only: trc_scf_polarizability_rks
+   use trc_cpks, only: trc_scf_polarizability_rks, cpks_refuse_reason
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_constants, only: BOHR_TO_ANGSTROM, HARTREE_TO_EV, HARTREE_TO_KCALMOL, AMU_TO_ME, KB_SI, NA_SI
    implicit none
@@ -326,7 +326,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 14
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 15
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -3621,12 +3621,24 @@ contains
          end if
       end if
       if (cx%rimp2_ok) then
-         ! The RI-MP2 gradient (trc_rimp2_grad.F90): an exact-ERI RHF
-         ! reference plus the fitted correlation, one rank. Anything else
-         ! that reached RI-MP2 has no correlation gradient yet.
+         ! The RI-MP2 gradient (trc_rimp2_grad.F90): an RHF reference, or a
+         ! restricted KS one -- a double hybrid, E_KS + c E_RI-MP2, or a
+         ! plain functional's E_KS + E_RI-MP2 -- four-centre or --df, plus
+         ! the fitted correlation, one rank. Anything else that reached
+         ! RI-MP2 has no correlation gradient yet.
          if (have_func) then
-            refusal = "double-hybrid (Kohn-Sham reference) correlation gradient not implemented yet -- "// &
-                      "the RI-MP2 gradient needs a Hartree-Fock reference"
+            if (func%pt2_cos /= func%pt2_css) then
+               refusal = "a spin-component-scaled double hybrid ('"//trim(cx%opts%functional)//"', c_os /= "// &
+                         "c_ss) has no gradient yet -- the RI-MP2 gradient scales one correlation energy"
+            else if (len_trim(cpks_refuse_reason(func)) > 0) then
+               refusal = "the RI-MP2 gradient over this Kohn-Sham reference needs its CPKS response: "// &
+                         trim(cpks_refuse_reason(func))
+            end if
+         end if
+         if (len(refusal) > 0) return
+         if (cx%res%nspin /= 1 .and. have_func) then
+            refusal = "the double-hybrid (KS + RI-MP2) gradient is restricted only; an unrestricted (UKS) "// &
+                      "reference has no correlation gradient -- trc_cpks has no spin-resolved kernel response"
          else if (cx%res%nspin /= 1) then
             refusal = "the RI-MP2 gradient is restricted (closed-shell RHF reference) only; "// &
                       "an unrestricted reference has no correlation gradient yet"
@@ -3830,20 +3842,27 @@ contains
       !! REFUSED, clearly, rather than attempted:
       !!   - meta-GGA: the energy runs, but trc_xc_grad has no tau term, so
       !!     the gradient is refused here with a message.
-      !!   - RI-MP2 over anything but an RHF reference on one rank: a double
-      !!     hybrid or other Kohn-Sham reference, an unrestricted one, a
+      !!   - RI-MP2 over anything but a restricted RHF or LDA/GGA KS
+      !!     reference on one rank: an unrestricted one (UHF, UKS), a
+      !!     meta-GGA, range-separated or VV10 functional, a
+      !!     spin-component-scaled double hybrid (none is registered), a
       !!     multi-rank context, or dropped functions
       !!     (gradient_capability_check's own messages).
       !!
-      !! RI-MP2. After a successful trc_run_rimp2 the energy this context
-      !! reports (trc_energy) is E_RHF + E_RI-MP2, and this differentiates
-      !! THAT: trc_rimp2_grad%trc_rimp2_gradient, with the same frozen core
-      !! and pair-list threshold the energy used. A four-centre reference
-      !! keeps its Z-vector against the exact orbital Hessian; a --df one
+      !! RI-MP2 AND DOUBLE HYBRIDS. After a successful trc_run_rimp2 the
+      !! energy this context reports (trc_energy) is E_ref + c E_RI-MP2 --
+      !! E_ref the RHF or KS energy, c a double hybrid's PT2 fraction or one
+      !! -- and this differentiates THAT: trc_rimp2_grad%trc_rimp2_gradient,
+      !! with the same frozen core, pair-list threshold and (for a KS
+      !! reference) functional and grid settings the energy used. A
+      !! four-centre reference keeps its Z-vector against the exact orbital
+      !! Hessian (CPHF, or CPKS with the XC kernel); a --df one
       !! (trc_set_df) differentiates the fitted SCF it converged, its
       !! Z-vector, potentials and two-electron derivative all over
-      !! `cx%dfjk`. A later trc_run_scf clears the RI-MP2 result, and the
-      !! gradient is the SCF's again.
+      !! `cx%dfjk` (the XC kernel and potential derivative on the SCF's
+      !! grid). A later trc_run_scf clears the RI-MP2 result, and the
+      !! gradient is the SCF's again. (ABI 1.15: a double hybrid's
+      !! gradient was refused before.)
       !!   - --df outside the DF-SCF's own scope (unrestricted, spherical,
       !!     range-separated -- the SCF refuses those first), or with the fit
       !!     gone. A --df gradient otherwise runs the FITTED J/K gradient
@@ -4524,13 +4543,29 @@ contains
    end function rimp2_frozen_count
 
    subroutine rimp2_gradient_run(cx, status)
-      !! trc_run_gradient's RI-MP2 branch: d(E_RHF + E_RI-MP2)/dR at the
+      !! trc_run_gradient's RI-MP2 branch: d(E_ref + c E_RI-MP2)/dR at the
       !! orbitals the SCF left in `cx%bb`, over the SAME pair-list threshold
       !! and frozen core trc_run_rimp2 used, so the gradient differentiates
-      !! the energy trc_energy reports. One rank (gradient_capability_check).
+      !! the energy trc_energy reports: E_ref the RHF or the KS energy (with
+      !! the SCF's own grid settings), c a double hybrid's PT2 fraction or
+      !! one (trc_energy's own weighting). One rank
+      !! (gradient_capability_check).
       type(context_box), intent(inout) :: cx
       integer(c_int), intent(out) :: status
       type(trc_rimp2_grad_t) :: job
+      if (len_trim(cx%opts%functional) > 0) then
+         ! Re-resolved, as gradient_capability_check did: the name was
+         ! validated when it was set.
+         if (.not. xc_functional_by_name(cx%opts%functional, job%opts%func)) then
+            status = TRC_ERR_UNSUPPORTED
+            cx%message = "trc_run_gradient: functional '"//trim(cx%opts%functional)//"' failed to re-resolve"
+            return
+         end if
+         if (xc_is_double_hybrid(job%opts%func)) job%opts%pt2_scale = job%opts%func%pt2_cos
+         job%opts%grid_level = cx%opts%grid_level
+         job%opts%grid_max_pts = cx%opts%grid_max_pts
+         job%opts%rho_tol = cx%opts%rho_tol
+      end if
       job%opts%nocc = cx%nalpha
       job%opts%nfrozen = rimp2_frozen_count(cx)
       job%opts%aux_block = max(cx%aux_block, 0)
