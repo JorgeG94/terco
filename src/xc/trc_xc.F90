@@ -1194,15 +1194,21 @@ contains
             end do
             call xc_fxc_setup_points(np, p0, xg%npts, xg%batch_of, xg%b_off, xg%b_aooff, this%c_off, this%npp, &
                                      xg%nbatch, func%nk, kid, coef, nchi, chi, gchi, xt, this%coefp)
-            !$acc exit data delete(chi, gchi, xt, dloc, ord, pb_off, wk_off)
-            deallocate (chi, gchi, xt, dloc, ord, pb_off, wk_off)
             ! Reset to the "not resident" sentinel: this batch's local
-            ! offset above has no meaning once this chunk is gone.
+            ! offset above has no meaning once this chunk is gone. Before
+            ! `ord` is freed: reading it after the deallocate below was a
+            ! use-after-free that small systems survived by luck and gly10
+            ! (B2PLYP --df gradient) did not.
             do k = 1, nb
                this%c_off(ord(k)) = -1
             end do
+            !$acc exit data delete(chi, gchi, xt, dloc, ord, pb_off, wk_off)
+            deallocate (chi, gchi, xt, dloc, ord, pb_off, wk_off)
          b0 = b1 + 1
       end do
+      ! The device copy still holds the last chunk's offsets; the apply
+      ! reads the sentinel.
+      !$acc update device(this%c_off)
       !$acc end data
       ! this%npp, this%nlp, this%c_off, this%coefp (and this%chi/this%gchi,
       ! entered above when nres_chi > 0) stay mapped for
