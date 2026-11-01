@@ -524,7 +524,7 @@ contains
          !$acc enter data create(w%goo)
          call cpks%rot%apply_general(dfjk, la, w%dm1mo, w%pao, xvo, w%goo)
          if (w%kohn_sham) then
-            call cpks%kernel%setup(w%func, w%dref, w%ccart, nocc)
+            call cpks%kernel%setup(b, w%xg, w%func, w%dref, w%ccart, nocc, la)
             call cpks%kernel%add_general(b, w%xg, la, w%pao, xvo, w%goo)
          end if
          call scale_copy_rect(nv, nocc, 2.0_dp, xvo)

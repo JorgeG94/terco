@@ -64,8 +64,10 @@
 ! operator is the fitted one: trc_scf_df_response's df_rotation_t (the
 ! MO-basis blocks of trc_cphf_solve_rhf_fitted) at k_scale = a_x, plus the
 ! XC kernel, which is a grid quantity and never fitted: trc_cpks_kernel_t
-! forms D_U in the AO basis, calls trc_xc_fxc_rks and projects the result
-! on the orbitals. The same CG loop again; the double-hybrid gradient's
+! forms D_U in the AO basis, calls trc_xc_fxc_rks_apply against its own
+! `cache` (collocated once, not every CG iteration -- trc_xc_fxc_cache_t's
+! own header) and projects the result on the orbitals. The same CG loop
+! again; the double-hybrid gradient's
 ! Z-vector (trc_rimp2_grad.F90) is its caller. The kernel also serves the
 ! right-hand side and the energy-weighted density there (`add_general`,
 ! `add_rotation`'s `goo`), so every response of that gradient is the same
@@ -80,7 +82,7 @@ module trc_cpks
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, XC_FAMILY_MGGA
-   use trc_xc, only: trc_xc_fxc_rks
+   use trc_xc, only: trc_xc_fxc_rks, trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, &
                        cphf_zero_matrix, cphf_copy_matrix, cphf_neg_matrix, cphf_add_matrix, &
                        cphf_axpy_matrix, cphf_precond_matrix, cphf_combine_p, cphf_add_diag
@@ -94,23 +96,28 @@ module trc_cpks
 
    type :: trc_cpks_kernel_t
       !! The exchange-correlation kernel's share of a restricted Kohn-Sham
-      !! orbital Hessian, f_xc[X] (trc_xc_fxc_rks, evaluated at the reference
-      !! density `dmat`) projected on the orbitals: what a fitted CPKS solve
-      !! and a Z-vector's right-hand side add to the fitted J - (a_x/2) K of
+      !! orbital Hessian, f_xc[X] (trc_xc_fxc_rks_apply, evaluated against
+      !! `cache`, built once from the reference density `dmat`) projected
+      !! on the orbitals: what a fitted CPKS solve and a Z-vector's
+      !! right-hand side add to the fitted J - (a_x/2) K of
       !! trc_scf_df_response, whose MO-basis blocks cannot carry a grid term.
-      !! Every array is device-resident, mapped on its own (never the type),
-      !! and reaches a kernel only as an actual argument.
+      !! `cache` collocates the grid once and keeps as much of it resident
+      !! as device memory allows (trc_xc.F90's own trc_xc_fxc_cache_t) --
+      !! every X of this type's own CG loop reuses it, never recollocating
+      !! what fits. Every array is device-resident, mapped on its own
+      !! (never the type), and reaches a kernel only as an actual argument.
       type(trc_xc_functional_t) :: func
       integer :: n = 0, nocc = 0, nvir = 0
       integer(int64) :: budget = 0
-      !! trc_xc_fxc_rks's chunk cap in doubles; zero is its own default.
+      !! trc_xc_fxc_rks_apply's chunk cap in doubles; zero is its own
+      !! default. Unrelated to how much of the grid `cache` keeps
+      !! resident, which is sized from free device memory on its own.
       logical :: ready = .false.
-      real(dp), allocatable :: dmat(:, :)
-      !! (n, n): the reference density, Cartesian AO.
       real(dp), allocatable :: cocc(:, :), cvir(:, :)
       !! (n, nocc), (n, nvir): the orbitals, Cartesian AO.
       real(dp), allocatable :: xden(:, :), xden_t(:, :), vresp(:, :), half(:, :)
       !! (n, n) trial density and its transpose, (n, n) f_xc[X], (n, nocc) f_xc[X] C_o.
+      type(trc_xc_fxc_cache_t) :: cache
    contains
       procedure :: setup => cpks_kernel_setup
       procedure :: add_rotation => cpks_kernel_add_rotation
@@ -378,14 +385,24 @@ contains
       deallocate (mmat, temporary, bvec, u)
    end subroutine trc_scf_polarizability_rks
 
-   subroutine cpks_kernel_setup(this, func, dmat, cmo, nocc)
-      !! Keep the functional, the reference density `dmat` (n, n) and the
-      !! orbitals `cmo` (n, nmo), occupied columns first -- host arrays, the
-      !! Cartesian AO space the grid's collocation runs in -- on the device.
+   subroutine cpks_kernel_setup(this, b, xg, func, dmat, cmo, nocc, la)
+      !! Keep the functional and the orbitals `cmo` (n, nmo), occupied
+      !! columns first -- host arrays, the Cartesian AO space the grid's
+      !! collocation runs in -- on the device, and build `cache` from the
+      !! reference density `dmat` (n, n), once, for every CPKS/Z-vector CG
+      !! iteration this kernel runs through (trc_xc_fxc_cache_t's own
+      !! header). `dmat` need not stay resident after this call: the cache
+      !! keeps its own share of it (coefp and, where it fits, the
+      !! collocation itself). `la` is the caller's GEMM handles, passed
+      !! through to the cache's own build; absent, it makes and releases
+      !! its own.
       class(trc_cpks_kernel_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
       real(dp), intent(in) :: dmat(:, :), cmo(:, :)
       integer, intent(in) :: nocc
+      type(trc_linalg_t), intent(inout), optional :: la
       integer :: n
       call this%release()
       n = size(cmo, 1)
@@ -393,12 +410,16 @@ contains
       this%n = n
       this%nocc = nocc
       this%nvir = size(cmo, 2) - nocc
-      allocate (this%dmat(n, n), this%cocc(n, nocc), this%cvir(n, this%nvir))
+      allocate (this%cocc(n, nocc), this%cvir(n, this%nvir))
       allocate (this%xden(n, n), this%xden_t(n, n), this%vresp(n, n), this%half(n, nocc))
-      this%dmat = dmat
       this%cocc = cmo(:, 1:nocc)
       this%cvir = cmo(:, nocc + 1:size(cmo, 2))
-      !$acc enter data copyin(this%dmat, this%cocc, this%cvir) create(this%xden, this%xden_t, this%vresp, this%half)
+      !$acc enter data copyin(this%cocc, this%cvir) create(this%xden, this%xden_t, this%vresp, this%half)
+      if (present(la)) then
+         call this%cache%setup(b, xg, func, dmat, la)
+      else
+         call this%cache%setup(b, xg, func, dmat)
+      end if
       this%ready = .true.
    end subroutine cpks_kernel_setup
 
@@ -440,15 +461,17 @@ contains
    end subroutine cpks_kernel_add_general
 
    subroutine kernel_response(this, b, xg, lp)
-      !! this%half := f_xc[this%xden] C_o, through this%vresp.
+      !! this%half := f_xc[this%xden] C_o, through this%vresp -- against
+      !! `this%cache` (cpks_kernel_setup), not a fresh collocation: every
+      !! CG iteration through this routine reuses it.
       type(trc_cpks_kernel_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_linalg_t), intent(inout) :: lp
       if (this%budget > 0) then
-         call trc_xc_fxc_rks(b, xg, this%func, this%dmat, this%xden, this%vresp, this%budget, lp)
+         call trc_xc_fxc_rks_apply(b, xg, this%cache, this%xden, this%vresp, this%budget, lp)
       else
-         call trc_xc_fxc_rks(b, xg, this%func, this%dmat, this%xden, this%vresp, la=lp)
+         call trc_xc_fxc_rks_apply(b, xg, this%cache, this%xden, this%vresp, la=lp)
       end if
       call lp%gemm_mat(this%vresp, this%cocc, this%half)
    end subroutine kernel_response
@@ -456,9 +479,9 @@ contains
    subroutine cpks_kernel_release(this)
       class(trc_cpks_kernel_t), intent(inout) :: this
       if (this%ready) then
-         !$acc exit data delete(this%dmat, this%cocc, this%cvir, this%xden, this%xden_t, this%vresp, this%half)
+         !$acc exit data delete(this%cocc, this%cvir, this%xden, this%xden_t, this%vresp, this%half)
       end if
-      if (allocated(this%dmat)) deallocate (this%dmat)
+      call this%cache%release()
       if (allocated(this%cocc)) deallocate (this%cocc)
       if (allocated(this%cvir)) deallocate (this%cvir)
       if (allocated(this%xden)) deallocate (this%xden)
