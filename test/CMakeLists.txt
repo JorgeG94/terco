@@ -431,8 +431,24 @@ foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
              formamide_pbe_631gs formamide_b3lyp_631gs
              nh2_pbe_ccpvdz_sph nh2_b3lyp_ccpvdz_sph
              water_wb97x_ccpvdz_sph nh2_wb97x_ccpvdz_sph
-             water_wb97xv_ccpvdz_sph nh2_wb97xv_ccpvdz_sph)
-  if(case STREQUAL "water_pbe_ccpvdz_sph")
+             water_wb97xv_ccpvdz_sph nh2_wb97xv_ccpvdz_sph
+             water_r2scan_ccpvdz_sph water_tpss_ccpvdz_sph water_m06l_ccpvdz_sph
+             formamide_r2scan_ccpvdz_sph formamide_r2scan_631gs nh2_r2scan_ccpvdz_sph
+             water_wb97mv_ccpvdz_sph nh2_wb97mv_ccpvdz_sph)
+  if(case MATCHES "^(water|nh2|formamide)_(r2scan|tpss|m06l|wb97mv)_(631gs|ccpvdz_sph)$")
+    # Meta-GGAs (trc_xc_grad.F90's META-GGA): RKS and, on NH2, UKS;
+    # wB97M-V is the meta-GGA with VV10 and erf exchange.
+    set(xyz ${CMAKE_MATCH_1}.xyz)
+    set(func ${CMAKE_MATCH_2})
+    if(func STREQUAL "wb97mv")
+      set(func wb97m-v)
+    endif()
+    if(CMAKE_MATCH_3 STREQUAL "631gs")
+      set(json basis_sets/6-31gs.json)
+    else()
+      set(json basis_sets/cc-pvdz.json)
+    endif()
+  elseif(case STREQUAL "water_pbe_ccpvdz_sph")
     set(xyz water.xyz)
     set(json basis_sets/cc-pvdz.json)
     set(func pbe)
@@ -604,17 +620,17 @@ if(TERCO_BUILD_APP)
   endif()
 
   if(TERCO_ENABLE_DLFIND)
-    # --opt refuses a method with no gradient (a meta-GGA) BEFORE any SCF
-    # runs at all: app/main.F90's opt_capability_check knows statically,
-    # from the command line's own --func, which functionals have no
-    # analytic gradient, so there is no "iterations" line in the output
-    # at all when this fires.
-    add_test(NAME terco/cli_opt_refused_mgga
-             COMMAND $<TARGET_FILE:terco_cli> ${_opt_xyz}/water.xyz -b 6-31g -f r2scan --opt --silent)
+    # --opt refuses a double hybrid BEFORE any SCF runs at all: its steps
+    # rerun only the SCF and its gradient, not the RI-MP2 correlation, and
+    # app/trc_run_opt.F90's run_opt_capability_check knows that statically
+    # from the command line, so there is no SCF line in the output at all
+    # when this fires.
+    add_test(NAME terco/cli_opt_refused_dh
+             COMMAND $<TARGET_FILE:terco_cli> ${_opt_xyz}/water.xyz -b 6-31g -f b2plyp --opt --silent)
     set_tests_properties(
-      terco/cli_opt_refused_mgga
+      terco/cli_opt_refused_dh
       PROPERTIES ENVIRONMENT "${_opt_env}" PASS_REGULAR_EXPRESSION
-                 "needs a gradient.*meta-GGA" FAIL_REGULAR_EXPRESSION "SCF +: +[0-9]")
+                 "reruns only the SCF.*RI-MP2/double-hybrid" FAIL_REGULAR_EXPRESSION "SCF +: +[0-9]")
 
     # The CLI's --opt --json end to end: the "optimization" JSON block,
     # and that <name>_opt.xyz/_traj.xyz were actually written -- see
@@ -973,8 +989,21 @@ endforeach()
 # open-shell, non-degenerate-SOMO case -- check_xc_grad_fd.F90's own
 # header explains why NH2 and not OH).
 foreach(case water_svwn_631gs water_pbe_631gs nh2_pbe_631gs
-             water_wb97x_631gs water_wb97x_ccpvdz)
-  if(case STREQUAL "water_svwn_631gs")
+             water_wb97x_631gs water_wb97x_ccpvdz
+             water_r2scan_631gs water_tpss_631gs water_m06l_631gs
+             nh2_r2scan_631gs nh2_tpss_631gs formamide_r2scan_631gs)
+  if(case MATCHES "^(water|nh2|formamide)_(r2scan|tpss|m06l)_(631gs|ccpvdz)$")
+    # Meta-GGAs: the tau term in all three grid-response channels
+    # (trc_xc_grad.F90's META-GGA), RKS and, on NH2, UKS.
+    set(xyz ${CMAKE_MATCH_1}.xyz)
+    set(func ${CMAKE_MATCH_2})
+    if(CMAKE_MATCH_3 STREQUAL "631gs")
+      set(json basis_sets/6-31gs.json)
+    else()
+      set(json basis_sets/cc-pvdz.json)
+    endif()
+    set(glev 3)
+  elseif(case STREQUAL "water_svwn_631gs")
     set(xyz water.xyz)
     set(json basis_sets/6-31gs.json)
     set(func svwn)
@@ -1270,9 +1299,9 @@ set_tests_properties(
 # converged orbitals (and grid), def2-universal-jkfit, Cartesian --
 # test/pyscf_refs/dfg_<case>.ref, see check_df_grad_vs_pyscf.F90.
 foreach(case IN ITEMS water_hf_631gs formamide_hf_ccpvdz water_pbe_631gs water_b3lyp_631gs
-                      formamide_b3lyp_ccpvdz)
+                      formamide_b3lyp_ccpvdz water_r2scan_631gs water_tpssh_631gs)
   string(REGEX MATCH "^[a-z]+" _mol "${case}")
-  string(REGEX MATCH "_(hf|pbe|b3lyp)_" _fn "${case}")
+  string(REGEX MATCH "_(hf|pbe|b3lyp|r2scan|tpssh)_" _fn "${case}")
   string(REPLACE "_" "" _fn "${_fn}")
   if(case MATCHES "631gs$")
     set(_bas basis_sets/6-31gs.json)

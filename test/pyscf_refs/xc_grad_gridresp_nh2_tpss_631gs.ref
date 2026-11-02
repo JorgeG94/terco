@@ -1,0 +1,13 @@
+# terco pyscf reference v1
+# case: check_xc_grad_vs_pyscf_nh2_tpss_631gs
+# generator: test/pyscf_refs/generate.py CASES["xc_grad_gridresp_nh2_tpss_631gs"] -> gen_xc_grad
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: a6b07ab394c8067c44f873ff3ad9f2c3073c6e8295ec6504be3d01bcb7c77a79
+# files: test/check_xc_grad_vs_pyscf.F90 test/basis_sets/6-31gs.json test/nh2.xyz
+NAT 3
+NAO 19
+GRAD 3 3
+2.28854761891422301e-17 2.97952309526176632e-17 -1.77776259529967007e-02 -8.09618774366527237e-18 -8.54852033584752036e-03 8.88881297649701807e-03
+-1.15063227451703372e-17 8.54852033584840854e-03 8.88881297649612989e-03
+END

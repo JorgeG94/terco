@@ -33,7 +33,8 @@ module check_fd_hessian_suite
                                trc_set_force_cartesian, trc_set_method, trc_set_convergence, &
                                trc_set_screening, trc_set_guess, trc_set_verbose, trc_run_scf, &
                                trc_run_hessian, trc_hessian, trc_set_hessian_step, trc_energy, &
-                               trc_iterations, TRC_OK, TRC_ERR_UNSUPPORTED, TRC_ERR_STATE, TRC_GUESS_SAD
+                               trc_iterations, trc_set_pcm, TRC_OK, TRC_ERR_UNSUPPORTED, TRC_ERR_STATE, &
+                               TRC_GUESS_SAD
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, &
                            ref_read_vector, ref_read_matrix, ref_report
    use testdrive, only: new_unittest, unittest_type, error_type, test_failed
@@ -49,7 +50,7 @@ contains
                   new_unittest("water FD Hessian vs pyscf", test_water), &
                   new_unittest("hcn FD Hessian vs pyscf", test_hcn), &
                   new_unittest("planar nh3 FD Hessian vs pyscf", test_nh3_planar), &
-                  new_unittest("a meta-GGA is refused before any SCF", test_refusal) &
+                  new_unittest("a PCM reference is refused before any SCF", test_refusal) &
                   ]
    end subroutine collect_fd_hessian
 
@@ -222,8 +223,9 @@ contains
    end subroutine check_case
 
    !
-   ! --hessian's up-front refusal: trc_run_hessian must refuse a meta-GGA
-   ! BEFORE spending any SCF time on a displacement, the same way
+   ! --hessian's up-front refusal: trc_run_hessian must refuse a PCM
+   ! reference (no cavity or surface-charge derivative exists) BEFORE
+   ! spending any SCF time on a displacement, the same way
    ! trc_run_gradient already does (gradient_capability_check, shared
    ! between the two). Checked by requiring TRC_ERR_UNSUPPORTED, the SCF
    ! iteration count unchanged (any displaced or restoring SCF would
@@ -248,17 +250,19 @@ contains
       rc = trc_set_molecule(h, 3_c_int, z_c, xyz_c, 0_c_int, 1_c_int)
       rc = trc_set_force_cartesian(h, 1_c_int)
       rc = trc_set_basis_json(h, 'basis_sets/sto-3g.json'//c_null_char)
-      rc = trc_set_method(h, 'tpss'//c_null_char, 2_c_int)
-      call expect(nfail, rc == TRC_OK, 'refusal: set_method (tpss, a runnable meta-GGA)')
+      rc = trc_set_method(h, 'pbe'//c_null_char, 2_c_int)
+      call expect(nfail, rc == TRC_OK, 'refusal: set_method (pbe)')
+      rc = trc_set_pcm(h, 'cpcm'//c_null_char, 78.3553_c_double, 0_c_int, 0.0_c_double)
+      call expect(nfail, rc == TRC_OK, 'refusal: set_pcm (cpcm, water)')
       rc = trc_set_convergence(h, 1.0e-10_c_double, 1.0e-6_c_double, 100_c_int, 10_c_int)
       rc = trc_set_screening(h, 1.0e-12_c_double)
       rc = trc_set_guess(h, TRC_GUESS_SAD, c_null_ptr, 1_c_int)
       rc = trc_run_scf(h)
-      call expect(nfail, rc == TRC_OK, 'refusal: run_scf (tpss energy runs fine)')
+      call expect(nfail, rc == TRC_OK, 'refusal: run_scf (the PCM energy runs fine)')
 
       rc = trc_iterations(h, it_before)
       rc = trc_run_hessian(h)
-      call expect(nfail, rc == TRC_ERR_UNSUPPORTED, 'refusal: trc_run_hessian refuses a meta-GGA up front')
+      call expect(nfail, rc == TRC_ERR_UNSUPPORTED, 'refusal: trc_run_hessian refuses a PCM reference up front')
       rc = trc_iterations(h, it_after)
       call expect(nfail, it_after == it_before, 'refusal: no SCF ran before the refusal')
 

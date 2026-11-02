@@ -50,20 +50,9 @@ contains
    ! refusal message otherwise.
    !
    module function run_opt_capability_check(r) result(refusal)
-      use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, XC_FAMILY_MGGA
       type(run_t), intent(in) :: r
       character(len=:), allocatable :: refusal
-      type(trc_xc_functional_t) :: func
       refusal = ""
-      if (len(r%func) > 0) then
-         if (xc_functional_by_name(r%func, func)) then
-            if (func%family == XC_FAMILY_MGGA) then
-               refusal = "--opt needs a gradient at every step; meta-GGA ('"//trim(r%func)// &
-                        "') exchange-correlation gradient not implemented"
-               return
-            end if
-         end if
-      end if
       if (r%rimp2 .or. r%dh) then
          refusal = "--opt reruns only the SCF and its gradient at every step; the RI-MP2/double-hybrid "// &
                    "correlation is not re-run there, so its gradient would silently be the SCF's alone"
