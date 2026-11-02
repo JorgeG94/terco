@@ -19,6 +19,7 @@ module trc_run_input
    !! out, because its value is decided later from the system.
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
+   use pic_ascii, only: to_lower
    use pic_string_type, only: string_type, assignment(=)
    use pic_cli, only: cli_t
    use json_module, only: json_core, json_value
@@ -549,16 +550,5 @@ contains
       state%nflags = state%nflags + 1
       state%flags(state%nflags) = flag
    end subroutine push
-
-   pure function to_lower(text) result(lower)
-      character(len=*), intent(in) :: text
-      character(len=len(text)) :: lower
-      integer :: i, c
-      lower = text
-      do i = 1, len(text)
-         c = iachar(text(i:i))
-         if (c >= iachar("A") .and. c <= iachar("Z")) lower(i:i) = achar(c + 32)
-      end do
-   end function to_lower
 
 end module trc_run_input

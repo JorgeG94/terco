@@ -19,6 +19,7 @@
 !
 module check_cli_input_suite
    use pic_types, only: dp
+   use pic_strings, only: to_string
    use json_module, only: json_file
    use testdrive, only: new_unittest, unittest_type, error_type, test_failed, check
    implicit none
@@ -66,12 +67,12 @@ contains
       ! From the PARENT of case/: nothing resolves unless paths follow the file.
       call run('cd '//work_dir//' && '//cli_exe//' case/run.toml > toml.out 2>&1', rc)
       if (rc /= 0) then
-         call test_failed(error, "the TOML run failed, exit code "//itoa(rc)); return
+         call test_failed(error, "the TOML run failed, exit code "//to_string(rc)); return
       end if
       call run('cd '//work_dir//'/case && '//cli_exe//' water.xyz -b basis_sets/sto-3g.json --iterations 60 '// &
                '--econv 1e-11 --gconv 1e-7 --grad --json flags.json --silent > ../flags.out 2>&1', rc)
       if (rc /= 0) then
-         call test_failed(error, "the flag run failed, exit code "//itoa(rc)); return
+         call test_failed(error, "the flag run failed, exit code "//to_string(rc)); return
       end if
 
       call read_result(work_dir//'/case/toml.json', e_toml, g_toml, error)
@@ -104,7 +105,7 @@ contains
                       '[output]', 'json = "echo.json"', 'silent = true'])
       call run('cd '//work_dir//' && '//cli_exe//' case/echo.toml --grid 4 > echo.out 2>&1', rc)
       if (rc /= 0) then
-         call test_failed(error, "the run failed, exit code "//itoa(rc)); return
+         call test_failed(error, "the run failed, exit code "//to_string(rc)); return
       end if
       call json%initialize()
       call json%load(filename=work_dir//'/case/echo.json')
@@ -242,9 +243,9 @@ contains
       ! One row per atom; water has three.
       allocate (gradient(0))
       do ia = 1, 3
-         call json%get('gradient('//itoa(ia)//')', row, found)
+         call json%get('gradient('//to_string(ia)//')', row, found)
          if (.not. found) then
-            call json%destroy(); call test_failed(error, "no gradient row "//itoa(ia)//" in "//path); return
+            call json%destroy(); call test_failed(error, "no gradient row "//to_string(ia)//" in "//path); return
          end if
          gradient = [gradient, row]
       end do
@@ -267,20 +268,11 @@ contains
       close (u)
    end function slurp
 
-   pure function itoa(i) result(s)
-      integer, intent(in) :: i
-      character(len=:), allocatable :: s
-      character(len=16) :: buf
-      write (buf, '(i0)') i
-      s = trim(buf)
-   end function itoa
-
    pure function rtoa(x) result(s)
+      !! Enough digits to tell two energies apart in a failure message.
       real(dp), intent(in) :: x
       character(len=:), allocatable :: s
-      character(len=32) :: buf
-      write (buf, '(es24.16)') x
-      s = trim(adjustl(buf))
+      s = trim(adjustl(to_string(x, "es24.16")))
    end function rtoa
 
 end module check_cli_input_suite
