@@ -3623,8 +3623,15 @@ contains
       if (cx%rimp2_ok) then
          ! The RI-MP2 gradient (trc_rimp2_grad.F90): an exact-ERI RHF
          ! reference plus the fitted correlation, one rank. Anything else
-         ! that reached RI-MP2 has no correlation gradient yet.
-         if (have_func) then
+         ! that reached RI-MP2 has no correlation gradient yet. PCM first,
+         ! and here rather than only in the general checks below: the
+         ! RI-MP2 gradient's Z-vector and densities carry no PCM response,
+         ! so a PCM reference must be refused on this path even where the
+         ! SCF-level PCM gradient is supported.
+         if (len_trim(cx%opts%pcm_model) > 0) then
+            refusal = "the RI-MP2/double-hybrid gradient over a PCM reference is not implemented "// &
+                      "(no PCM response in the Z-vector)"
+         else if (have_func) then
             refusal = "double-hybrid (Kohn-Sham reference) correlation gradient not implemented yet -- "// &
                       "the RI-MP2 gradient needs a Hartree-Fock reference"
          else if (cx%res%nspin /= 1) then
