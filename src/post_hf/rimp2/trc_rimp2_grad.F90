@@ -56,15 +56,46 @@
 ! 1/2 [Q(D + P) - Q(P)], two passes. Fitted reference: it is
 ! d[Tr (D/2 + P) G_fit(D)] directly, one bilinear pass.
 !
+! A KOHN-SHAM REFERENCE: THE DOUBLE HYBRID (`opts%func` named). E =
+! E_KS[D] + c E_RI-MP2, the RI-MP2 on the converged KS orbitals and c the
+! functional's PT2 fraction (`opts%pt2_scale`; one for a plain KS + RI-MP2).
+! The KS energy is variational and the PT2 term is not, so the assembly is
+! the one above with the reference's operator swapped and one term added
+! (metalquicha's czt_ri_mp2_gradient with `xc` present, whose four
+! consequences are these):
+!
+!   1. every response is the KS one: G(X) = J[X] - (a_x/2) K[X] + f_xc[X],
+!      a_x the functional's exact exchange -- the Z-vector's operator
+!      (trc_cpks_solve_rks exact, trc_cpks_fitted_t over a --df fit), its
+!      right-hand side and the 2 P_o G(P) P_o of W;
+!   2. the two-electron derivative is the hybrid's, K at a_x, and the
+!      reference's own XC gradient at D joins it (trc_xc_grad, grid
+!      response included: the SCF's grid moved with the atoms);
+!   3. d/dR Tr(P V_xc[D]) at fixed P and D appears (trc_xc_grad_potential):
+!      P meets the derivative of the reference operator, and a KS operator
+!      contains V_xc[D];
+!   4. c scales every correlation quantity once, where they are made
+!      (doo, dvv and the Lagrangian, and the fitted 3c/2c terms): the
+!      Z-vector is linear in its right-hand side, so P, the correlation's
+!      share of W and everything downstream carry c from there.
+!
+! W_HF becomes the KS orbitals' own 2 sum_i e_i c_i c_i^T, unchanged in
+! form. The grid is the SCF's (dft_grid_build at `opts%grid_level`, the
+! same points the converged energy used), built here; the XC parts run in
+! the Cartesian AO space, as all of terco's XC does.
+!
 ! SCOPE. Restricted, one rank, every orbital the SCF kept (no functions
 ! dropped by canonical orthogonalisation: `cmo` must be square and full
 ! rank), Cartesian or spherical orbital and auxiliary bases, frozen core.
-! The caller refuses the rest (trc_capi.F90's gradient_capability_check:
-! an unrestricted reference, a functional, PCM).
+! A KS reference: LDA or GGA, global hybrid or pure (trc_cpks's
+! cpks_refuse_reason refuses meta-GGA, range separation and VV10). The
+! caller refuses the rest (trc_capi.F90's gradient_capability_check: an
+! unrestricted reference, PCM, a spin-component-scaled double hybrid).
 !
 module trc_rimp2_grad
    use pic_types, only: dp
    use pic_timer, only: timer_type
+   use pic_logger, only: global_logger
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_1e_gradient
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
@@ -72,8 +103,16 @@ module trc_rimp2_grad
    use trc_sph, only: sph_mo_to_cart
    use trc_step_table, only: step_table_t
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_cphf_solve_rhf, trc_cphf_solve_rhf_fitted
+   use trc_cpks, only: trc_cpks_solve_rks, trc_cpks_fitted_t, cpks_refuse_reason
    use trc_scf_df, only: df_jk_t
-   use trc_scf_df_response, only: df_rotation_t
+   use trc_xc_functional, only: trc_xc_functional_t
+   use trc_xc_batch, only: trc_xc_grid_t
+   use trc_xc, only: trc_xc_fxc_rks
+   use trc_xc_grad, only: xc_grad_add_on_grid, xc_grad_options, xc_grad_options_t, xc_grad_step_names, &
+                          XC_GRAD_RHO_TOL
+   use trc_xc_grad_potential, only: xc_grad_potential_add
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build, DEFAULT_GRID_LEVEL
+   use trc_error, only: error_t
    use trc_scf_grad_df, only: scf_grad_df_bilinear, scf_grad_df_bilinear_t
    use trc_scf_grad, only: scf_grad_nuclear_repulsion
    use trc_rimp2_driver, only: trc_rimp2_options_t
@@ -91,10 +130,11 @@ module trc_rimp2_grad
    !! (trc_rimp2_driver's own rimp2_driver_mo_to_cart pads the same way).
 
    integer, parameter :: ST_ORB = 1, ST_CORR = 2, ST_ZVEC = 3, ST_DENSITY = 4, ST_GRAD4C = 5, ST_GRAD1E = 6, &
-                         NSTEP = 6
+                         ST_XC = 7, ST_KSGRID = 8, NSTEP = 8
    character(len=20), parameter :: STEP_NAME(NSTEP) = [character(len=20) :: &
                                    "orbitals, pairs, ERI", "correlation (fitted)", "Z-vector (CPHF)", &
-                                   "relaxed densities", "2e gradient", "1e gradient"]
+                                   "relaxed densities", "2e gradient", "1e gradient", "XC (KS reference)", &
+                                   "KS grid (rebuilt)"]
 
    type :: trc_rimp2_grad_options_t
       !! The RI-MP2 gradient's knobs. Plain values only.
@@ -124,6 +164,18 @@ module trc_rimp2_grad
       !! for testing).
       logical :: verbose = .false.
       !! Log the step tables (this module's and the correlation's).
+      type(trc_xc_functional_t) :: func
+      !! The Kohn-Sham reference's functional (a double hybrid's own: its
+      !! exchange fraction and semilocal kernels); an empty name is the
+      !! Hartree-Fock reference. See this module's header.
+      real(dp) :: pt2_scale = 1.0_dp
+      !! c in E = E_ref + c E_RI-MP2: a double hybrid's PT2 fraction
+      !! (c_os = c_ss), one otherwise.
+      integer :: grid_level = DEFAULT_GRID_LEVEL
+      !! The KS reference's grid: the level, points per batch and density
+      !! screen its SCF converged with.
+      integer :: grid_max_pts = 512
+      real(dp) :: rho_tol = XC_GRAD_RHO_TOL
    end type trc_rimp2_grad_options_t
 
    type :: trc_rimp2_grad_result_t
@@ -165,6 +217,16 @@ module trc_rimp2_grad
       real(dp), allocatable :: dhf(:, :)     !! (n, n) the reference density, 2 C_o C_o^T
       real(dp), allocatable :: goo(:, :)     !! (nocc, nocc) C_o^T G[P] C_o, the --df path's own
       real(dp), allocatable :: scratch(:)    !! the Z-vector's B_vv storage, device-mapped, for the 2e term
+      logical :: kohn_sham = .false.
+      !! A KS reference (`opts%func` named): the fields below are set.
+      real(dp) :: exx = 1.0_dp
+      !! a_x of G = J - (a_x/2) K: one for Hartree-Fock.
+      real(dp) :: scale = 1.0_dp
+      !! opts%pt2_scale.
+      type(trc_xc_functional_t) :: func
+      type(dft_grid_t) :: grid               !! the KS reference's grid
+      type(trc_xc_grid_t) :: xg              !! the same, batched, on the device
+      real(dp), allocatable :: dref(:, :)    !! (n, n) the reference density D, host, kept past w%dhf's D + P
    end type grad_work_t
 
 contains
@@ -229,6 +291,11 @@ contains
       call pl%to_device()
       if (.not. fitted) call eri%build(b, job%opts%eri_threshold)
       call tbl%step_off(la, ST_ORB, tc)
+      if (w%kohn_sham) then
+         call tbl%step_on(la, ST_KSGRID, tc)
+         call kohn_sham_setup(b, la, job%opts, w)
+         call tbl%step_off(la, ST_KSGRID, tc)
+      end if
 
       ! --- the correlation: doo, dvv, L', L'', the fitted 3c/2c terms -----
       call tbl%step_on(la, ST_CORR, tc)
@@ -241,7 +308,7 @@ contains
       if (len_trim(relax%message) > 0) then
          job%res%message = "trc_rimp2_gradient: "//trim(relax%message)
          !$acc exit data delete(w%ccart)
-         call release_all(pl, eri, fitted)
+         call release_all(pl, eri, fitted, w)
          return
       end if
       job%res%e_corr = relax%e_corr
@@ -259,7 +326,7 @@ contains
       end if
       call tbl%step_off(la, ST_ZVEC, tc)
       if (len_trim(job%res%message) > 0) then
-         call release_all(pl, eri, fitted)
+         call release_all(pl, eri, fitted, w)
          return
       end if
       call tbl%step_on(la, ST_DENSITY, tc)
@@ -282,12 +349,17 @@ contains
       call tbl%step_on(la, ST_GRAD1E, tc)
       !$acc enter data copyin(job%grad)
       call trc_1e_gradient(b, pl, w%wao, w%dhf, job%grad)
+      call tbl%step_off(la, ST_GRAD1E, tc)
+      if (w%kohn_sham) then
+         call tbl%step_on(la, ST_XC, tc)
+         call kohn_sham_xc_gradient(b, la, job%opts, w, job%grad)
+         call tbl%step_off(la, ST_XC, tc)
+      end if
       !$acc update self(job%grad)
       !$acc exit data delete(job%grad, w%ccart, w%pao, w%wao, w%dhf)
-      call tbl%step_off(la, ST_GRAD1E, tc)
       call scf_grad_nuclear_repulsion(b, job%grad)
-      job%grad = job%grad + relax%grad
-      call release_all(pl, eri, fitted)
+      job%grad = job%grad + w%scale*relax%grad
+      call release_all(pl, eri, fitted, w)
       job%res%ok = .true.
       if (job%opts%verbose) then
          call la%sync()
@@ -341,6 +413,7 @@ contains
       else
          why = eri_lmax_refusal(b)
       end if
+      if (len(why) == 0 .and. len_trim(opts%func%name) > 0) why = trim(cpks_refuse_reason(opts%func))
    end function rimp2_grad_refusal
 
    subroutine cartesian_orbitals(b, opts, cmo, eps, w)
@@ -359,6 +432,12 @@ contains
       w%nfz = opts%nfrozen
       w%nv = w%nmo - w%nocc
       w%natm = b%natm
+      w%kohn_sham = len_trim(opts%func%name) > 0
+      w%scale = opts%pt2_scale
+      if (w%kohn_sham) then
+         w%func = opts%func
+         w%exx = opts%func%exx
+      end if
       allocate (w%ccart(w%n, w%nmo), w%eps(w%nmo))
       w%eps = eps
       if (b%spherical) then
@@ -382,6 +461,7 @@ contains
       !! imat(p, i)/(e_p - e_i) -- that rotation's own first-order response,
       !! resolved directly since both orbitals are occupied. It lands before
       !! the Z-vector's right-hand side, which responds to all of dm1mo.
+      !! Everything is scaled by w%scale here, once (this module's header).
       type(trc_rimp2_relax_t), intent(in) :: relax
       type(grad_work_t), intent(inout) :: w
       integer :: nmo, nocc, nfz, i, p
@@ -390,11 +470,11 @@ contains
       nfz = w%nfz
       allocate (w%dm1mo(nmo, nmo), w%imat(nmo, nmo))
       w%dm1mo = 0.0_dp
-      w%dm1mo(nfz + 1:nocc, nfz + 1:nocc) = relax%doo + transpose(relax%doo)
-      w%dm1mo(nocc + 1:nmo, nocc + 1:nmo) = relax%dvv + transpose(relax%dvv)
+      w%dm1mo(nfz + 1:nocc, nfz + 1:nocc) = w%scale*(relax%doo + transpose(relax%doo))
+      w%dm1mo(nocc + 1:nmo, nocc + 1:nmo) = w%scale*(relax%dvv + transpose(relax%dvv))
       w%imat = 0.0_dp
-      w%imat(:, nfz + 1:nocc) = -transpose(relax%lag_o)
-      w%imat(:, nocc + 1:nmo) = -transpose(relax%lag_v)
+      w%imat(:, nfz + 1:nocc) = -w%scale*transpose(relax%lag_o)
+      w%imat(:, nocc + 1:nmo) = -w%scale*transpose(relax%lag_v)
       do i = nfz + 1, nocc
          do p = 1, nfz
             w%dm1mo(p, i) = w%imat(p, i)/(w%eps(p) - w%eps(i))
@@ -410,7 +490,10 @@ contains
       !! z^T) into w%dm1mo. G and A are the reference's own: the exact RHF
       !! operator with `eri` (trc_cphf_solve_rhf, density_screen off), the
       !! fitted one with `dfjk` (trc_cphf_solve_rhf_fitted over its MO
-      !! blocks, df_rotation_t). Sets job%res%message on non-convergence.
+      !! blocks, df_rotation_t). A KS reference's are its KS operator:
+      !! trc_cpks_solve_rks exact, trc_cpks_fitted_t fitted (the same MO
+      !! blocks at K scale a_x, plus the XC kernel on the grid). Sets
+      !! job%res%message on non-convergence.
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: la
       type(trc_rimp2_grad_t), intent(inout) :: job
@@ -418,7 +501,7 @@ contains
       type(trc_eri_t), intent(inout), optional :: eri
       type(df_jk_t), intent(inout), optional :: dfjk
       real(dp), allocatable :: half(:, :), xvo(:, :), cpad(:, :), epad(:), bvec(:, :, :), u(:, :, :)
-      type(df_rotation_t) :: rot
+      type(trc_cpks_fitted_t) :: cpks
       type(trc_cphf_options_t) :: copts
       type(trc_cphf_result_t) :: cres
       integer :: n, nmo, nocc, nv, nvp, i, a
@@ -435,10 +518,15 @@ contains
          ! The fitted orbital Hessian's MO blocks serve the right-hand side,
          ! the solve and C_o^T G[P] C_o (which the energy-weighted density
          ! needs: this unrelaxed part now, the Z-vector's after the solve).
-         call rot%setup(dfjk, la, w%ccart, w%eps, w%nocc, job%opts%df_response_ao)
+         call cpks%rot%setup(dfjk, la, w%ccart, w%eps, w%nocc, job%opts%df_response_ao)
+         cpks%rot%k_scale = w%exx
          allocate (w%goo(nocc, nocc))
          !$acc enter data create(w%goo)
-         call rot%apply_general(dfjk, la, w%dm1mo, w%pao, xvo, w%goo)
+         call cpks%rot%apply_general(dfjk, la, w%dm1mo, w%pao, xvo, w%goo)
+         if (w%kohn_sham) then
+            call cpks%kernel%setup(b, w%xg, w%func, w%dref, w%ccart, nocc, la)
+            call cpks%kernel%add_general(b, w%xg, la, w%pao, xvo, w%goo)
+         end if
          call scale_copy_rect(nv, nocc, 2.0_dp, xvo)
       else
          call reference_gco(b, la, w, w%pao, half, eri)
@@ -459,18 +547,28 @@ contains
          allocate (bvec(nv, nocc, 1), u(nv, nocc, 1))
          bvec(:, :, 1) = xvo
          !$acc enter data copyin(bvec) create(u)
-         call trc_cphf_solve_rhf_fitted(rot, dfjk, la, bvec, u, copts, cres)
+         if (w%kohn_sham) then
+            cpks%opts = copts
+            call cpks%solve(b, w%xg, dfjk, la, bvec, u)
+            cres%converged = cpks%res%converged
+            cres%message = cpks%res%message
+            cres%iterations = cpks%res%iterations
+         else
+            call trc_cphf_solve_rhf_fitted(cpks%rot, dfjk, la, bvec, u, copts, cres)
+         end if
          block
             real(dp), allocatable :: goo_z(:, :)
             allocate (goo_z(nocc, nocc))
             !$acc enter data create(goo_z)
-            call rot%apply_occ(dfjk, la, u(:, :, 1), goo_z)
+            call cpks%rot%apply_occ(dfjk, la, u(:, :, 1), goo_z)
+            if (w%kohn_sham) call cpks%kernel%add_rotation(b, w%xg, la, u(:, :, 1), goo=goo_z)
             !$acc update self(goo_z, w%goo)
             w%goo = w%goo + goo_z
             !$acc update device(w%goo)
             !$acc exit data delete(goo_z)
          end block
-         call rot%release_keeping(w%scratch)
+         call cpks%rot%release_keeping(w%scratch)
+         call cpks%kernel%release()
       else
          ! The exact solver's square Cartesian C: the nmo real orbitals, then
          ! zero-coefficient pad virtuals (PAD_EPS's own comment).
@@ -482,7 +580,12 @@ contains
          bvec = 0.0_dp
          bvec(1:nv, :, 1) = xvo
          !$acc enter data copyin(cpad, bvec) create(u)
-         call trc_cphf_solve_rhf(b, eri, la, n, nocc, nvp, cpad, epad, 1, bvec, u, copts, cres)
+         if (w%kohn_sham) then
+            call trc_cpks_solve_rks(b, eri, la, w%xg, w%func, n, nocc, nvp, cpad, epad, w%dref, 1, bvec, u, &
+                                    copts, cres)
+         else
+            call trc_cphf_solve_rhf(b, eri, la, n, nocc, nvp, cpad, epad, 1, bvec, u, copts, cres)
+         end if
          !$acc exit data delete(cpad)
       end if
       !$acc update self(u)
@@ -493,7 +596,7 @@ contains
          if (allocated(w%goo)) then
             !$acc exit data delete(w%goo)
          end if
-         call rot%release()
+         call cpks%release()
          if (allocated(w%scratch)) then
             !$acc exit data delete(w%scratch)
             deallocate (w%scratch)
@@ -569,7 +672,8 @@ contains
    subroutine separable_two_electron(b, eri, w, grad)
       !! grad := 1/2 d[Tr D G(D)] + d[Tr P G(D)], the four-centre integral
       !! derivatives at the reference density D and the relaxed P, as
-      !! 1/2 [Q(D + P) - Q(P)] with Q(X) = eri%gradient(X) = d[Tr X G(X)].
+      !! 1/2 [Q(D + P) - Q(P)] with Q(X) = eri%gradient(X) = d[Tr X G(X)], G at
+      !! the reference's own K scale (a_x for a KS reference, one for HF).
       !! Then w%dhf := D + P, the density the one-electron term contracts.
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
@@ -579,10 +683,10 @@ contains
       allocate (density(w%n, w%n, 1), grad_p(3, b%natm))
       !$acc update self(w%pao, w%dhf)
       density(:, :, 1) = w%pao
-      call eri%gradient(b, density, grad_p)
+      call eri%gradient(b, density, grad_p, k_scale=w%exx)
       w%dhf = w%dhf + w%pao
       density(:, :, 1) = w%dhf
-      call eri%gradient(b, density, grad)
+      call eri%gradient(b, density, grad, k_scale=w%exx)
       grad = 0.5_dp*(grad - grad_p)
       !$acc update device(w%dhf)
       deallocate (density, grad_p)
@@ -604,6 +708,7 @@ contains
       type(scf_grad_df_bilinear_t) :: bil
       !$acc update self(w%pao, w%dhf)
       xmat = 0.5_dp*w%dhf + w%pao
+      bil%k_scale = w%exx
       if (allocated(w%scratch)) call move_alloc(w%scratch, bil%buffer)
       call scf_grad_df_bilinear(b, jkaux, pl, dfjk, la, w%ccart(:, 1:w%nocc), xmat, bil)
       grad = bil%grad
@@ -616,32 +721,122 @@ contains
    end subroutine fitted_two_electron
 
    subroutine reference_gco(b, la, w, d, gco, eri)
-      !! gco := G[d] C_o, G = J - K/2 for a symmetric, possibly indefinite d,
-      !! with the exact integrals (no density screen: d is not the SCF's
-      !! density). Every array device-resident.
+      !! gco := G[d] C_o for a symmetric, possibly indefinite d, with the
+      !! exact integrals (no density screen: d is not the SCF's density): G =
+      !! J - K/2, or a KS reference's J - (a_x/2) K + f_xc (f_xc at D, on the
+      !! reference's grid). Every array device-resident.
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: la
       type(grad_work_t), intent(in) :: w
       real(dp), intent(in) :: d(:, :)
       real(dp), intent(inout) :: gco(:, :)
       type(trc_eri_t), intent(inout) :: eri
-      real(dp), allocatable :: g(:, :)
+      real(dp), allocatable :: g(:, :), vresp(:, :)
       allocate (g(w%n, w%n))
       !$acc enter data create(g)
-      call eri%fock_resident(b, d, g, k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.)
+      call eri%fock_resident(b, d, g, k_scale=w%exx, j_scale=1.0_dp, density_screen=.false.)
+      if (w%kohn_sham) then
+         allocate (vresp(w%n, w%n))
+         !$acc enter data create(vresp)
+         call trc_xc_fxc_rks(b, w%xg, w%func, w%dref, d, vresp, la=la)
+         call add_matrix(w%n, vresp, g)
+         !$acc exit data delete(vresp)
+         deallocate (vresp)
+      end if
       call la%gemm_mat(g, w%ccart(:, 1:w%nocc), gco)
       !$acc exit data delete(g)
       deallocate (g)
    end subroutine reference_gco
 
-   subroutine release_all(pl, eri, fitted)
-      !! The pair list, and the four-centre engine when it was built.
+   subroutine kohn_sham_setup(b, la, opts, w)
+      !! The KS reference's grid -- the SCF's, rebuilt at its level from the
+      !! same atoms, so the same points -- batched with its atoms and
+      !! quadrature weights (the grid response needs both) and on the device,
+      !! and the reference density D = 2 C_o C_o^T in the Cartesian AO space.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_linalg_t), intent(inout) :: la
+      type(trc_rimp2_grad_options_t), intent(in) :: opts
+      type(grad_work_t), intent(inout) :: w
+      type(error_t) :: err
+      integer, allocatable :: at_elem(:)
+      allocate (at_elem(b%natm), source=b%at_elem)
+      call dft_grid_build(b%at_r, at_elem, w%grid, err, level=opts%grid_level)
+      if (err%has_error()) error stop "trc_rimp2_grad: the KS reference's grid: "//trim(err%get_message())
+      call w%xg%build_from_grid(w%grid, b, max_pts=opts%grid_max_pts)
+      call w%xg%to_device()
+      allocate (w%dref(w%n, w%n))
+      !$acc enter data create(w%dref)
+      call la%density(w%ccart, w%nocc, 2.0_dp, w%dref)
+      !$acc update self(w%dref)
+      !$acc exit data delete(w%dref)
+   end subroutine kohn_sham_setup
+
+   subroutine kohn_sham_xc_gradient(b, la, opts, w, grad)
+      !! grad += dE_xc/dR at D (trc_xc_grad, grid response on) + d/dR Tr(P
+      !! V_xc[D]) at fixed P and D (trc_xc_grad_potential), P = w%pao (its
+      !! host copy is current: the two-electron step updated it). `grad`
+      !! device-resident.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_linalg_t), intent(inout) :: la
+      type(trc_rimp2_grad_options_t), intent(in) :: opts
+      type(grad_work_t), intent(inout) :: w
+      real(dp), intent(inout) :: grad(3, b%natm)
+      type(xc_grad_options_t) :: xopts
+      type(step_table_t) :: timing
+      type(timer_type) :: tm
+      real(dp), allocatable :: dens3(:, :, :)
+      real(dp) :: t_exc
+      xopts = xc_grad_options(grid_level=opts%grid_level, grid_max_pts=opts%grid_max_pts, rho_tol=opts%rho_tol, &
+                              grid_response=.true., partition=w%grid%partition)
+      call timing%init("xc grad", xc_grad_step_names())
+      call la%sync()
+      call tm%start()
+      allocate (dens3(w%n, w%n, 1))
+      dens3(:, :, 1) = w%dref
+      !$acc enter data copyin(dens3)
+      call xc_grad_add_on_grid(b, la, w%func, dens3, grad, xopts, timing, w%xg)
+      !$acc exit data delete(dens3)
+      deallocate (dens3)
+      call la%sync()
+      t_exc = tm%get_elapsed_time()
+      call tm%start()
+      call xc_grad_potential_add(b, la, w%func, w%xg, w%dref, w%pao, grad, xopts)
+      call la%sync()
+      if (opts%verbose) then
+         call timing%report(t_exc, 0, 1)
+         block
+            character(len=160) :: logline
+            write (logline, "(a,f9.3,a)") "  rimp2 gradient: d/dR Tr(P V_xc[D]) ", tm%get_elapsed_time(), " s"
+            call global_logger%performance(trim(logline))
+         end block
+      end if
+   end subroutine kohn_sham_xc_gradient
+
+   subroutine release_all(pl, eri, fitted, w)
+      !! The pair list, the four-centre engine when it was built, and a KS
+      !! reference's grid.
       type(trc_pairlist_t), intent(inout) :: pl
       type(trc_eri_t), intent(inout) :: eri
       logical, intent(in) :: fitted
+      type(grad_work_t), intent(inout) :: w
       if (.not. fitted) call eri%release()
       call pl%release()
+      if (w%kohn_sham) then
+         call w%xg%release()
+         call w%grid%destroy()
+      end if
    end subroutine release_all
+
+   subroutine add_matrix(n, x, y)
+      !! y := y + x, (n, n), on the device.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: x(n, n)
+      real(dp), intent(inout) :: y(n, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         y(i, j) = y(i, j) + x(i, j)
+      end do
+   end subroutine add_matrix
 
    subroutine ao_from_mo(la, n, k, c, m, out)
       !! out := C M C^T, C the first k columns of an (n, k)-leading array;

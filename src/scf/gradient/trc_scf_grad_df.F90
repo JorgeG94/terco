@@ -101,6 +101,10 @@ module trc_scf_grad_df
       !! scf_grad_df_bilinear's result, and the scratch it may borrow.
       real(dp), allocatable :: grad(:, :)
       !! (3, natm): added into, allocated (zero) on first use.
+      real(dp) :: k_scale = 1.0_dp
+      !! The exchange fraction a_x of G_fit = J_fit - (a_x/2) K_fit: one for a
+      !! Hartree-Fock reference, the functional's `exx` for a hybrid
+      !! Kohn-Sham one (a double hybrid's).
       real(dp), allocatable :: buffer(:)
       !! Optional device-mapped scratch of at least 2 n nocc naux doubles: a
       !! caller that has just freed that much (the RI-MP2 gradient's Z-vector
@@ -113,6 +117,7 @@ module trc_scf_grad_df
       !! component mapped on its own and reaching a kernel only as an actual
       !! argument.
       integer :: n = 0, no = 0, naux = 0, naux_c = 0, npack = 0
+      real(dp) :: k_scale = 1.0_dp
       integer(int64) :: nrow = 0
       !! n nocc, the row count of the (n nocc, naux) tensors.
       real(dp), allocatable :: cocc(:, :), xmat(:, :), dmat(:, :), grad(:, :)
@@ -447,7 +452,10 @@ contains
       !! fit and the kernels share (C_cart = T C_sph for a spherical orbital
       !! basis; T X T^T), and the auxiliary index of c^D, c^X, X c^P and Z is
       !! expanded onto the Cartesian auxiliary functions (trc_sph), X c^P one
-      !! derivative block at a time. Restricted HF scales (J and K at one).
+      !! derivative block at a time. J at scale one, K at `job%k_scale` (one
+      !! by default): with a_x = k_scale every K term of Y and Z above is
+      !! a_x times its Hartree-Fock value, which scaling X c by a_x does once
+      !! for both.
       !! `cocc` and `xmat` are host arrays; `b`, `aux` and `pl` device-
       !! resident. Memory: two (n nocc naux) tensors, taken from `job%buffer`
       !! when that is allocated, device-mapped and large enough (its own
@@ -480,6 +488,7 @@ contains
       w%naux_c = aux%nao
       w%npack = npack
       w%nrow = int(n, int64)*int(w%no, int64)
+      w%k_scale = job%k_scale
       ! The two big tensors, b and X c, back to back in one buffer.
       borrowed = .false.
       if (allocated(job%buffer)) borrowed = size(job%buffer, kind=int64) >= 2*w%nrow*int(naux, int64)
@@ -571,6 +580,8 @@ contains
       ! it moved CPU against GPU from 2e-11 to 5e-10.
       call lp%gemm("N", "N", n, no*naux, n, 1.0_dp, w%xmat, n, bmat, n, 0.0_dp, xc, n)
       call lp%trsm("R", "L", "N", nrow, naux, 1.0_dp, dfjk%chol, naux, xc, nrow)
+      ! Every K term below is linear in X c: a_x X c is the hybrid's exchange.
+      if (w%k_scale /= 1.0_dp) call scale_flat(w%nrow*int(naux, int64), w%k_scale, xc)
       call lp%gemm("T", "N", naux, naux, nrow, 1.0_dp, bmat, nrow, xc, nrow, 0.0_dp, zfit, naux)
       call lp%trsm("L", "L", "T", naux, naux, 1.0_dp, dfjk%chol, naux, zfit, naux)
       call symmetrise(naux, zfit)
@@ -733,6 +744,17 @@ contains
          xcblock(mu, i, q) = xcblock(mu, i, q) - cx(p0 - 1 + q)*cocc(mu, i)
       end do
    end subroutine subtract_occupied
+
+   subroutine scale_flat(n, alpha, x)
+      !! x := alpha x, on the device.
+      integer(int64), intent(in) :: n
+      real(dp), intent(in) :: alpha
+      real(dp), intent(inout) :: x(n)
+      integer(int64) :: i
+      do concurrent(i=1:n)
+         x(i) = alpha*x(i)
+      end do
+   end subroutine scale_flat
 
    subroutine copy_flat(n, x, y)
       !! y := x, on the device.

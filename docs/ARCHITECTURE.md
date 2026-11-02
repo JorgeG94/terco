@@ -449,6 +449,13 @@ are split across ranks by surface point.
   four-centre or density-fitted two-electron derivatives, the XC gradient
   including the grid-weight response (from the derivatives of the Becke
   partition), the VV10 gradient and the nuclear repulsion.
+- **RI-MP2 and double-hybrid gradients** (`src/post_hf/rimp2/trc_rimp2_grad.F90`)
+  add the correlation's relaxed and energy-weighted densities, from a
+  Z-vector solved against the reference's own orbital Hessian: CPHF for an
+  RHF reference, CPKS (exact exchange at the functional's fraction plus the
+  XC kernel) for a Kohn-Sham one, fitted when the SCF was (`--df`). A KS
+  reference also brings d/dR Tr(P V_xc[D]), the relaxed density against the
+  derivative of the XC potential (`src/xc/trc_xc_grad_potential.F90`).
 
 ## 12. GPU programming model and data ownership
 
