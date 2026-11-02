@@ -53,6 +53,11 @@
 ! that cannot tolerate the HOST PROCESS stopping must not call trc_opt_run
 ! in that process at all.
 !
+! Compiled only with TERCO_ENABLE_DLFIND (src/opt/CMakeLists.txt defines it on
+! terco_opt). fpm compiles everything under src/ and cannot skip this
+! directory; without the macro (fpm's default, no DL-FIND) this file is
+! empty and app/trc_dlfind_stub.F90 provides the module instead.
+#ifdef TERCO_ENABLE_DLFIND
 module trc_opt_capi
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_char, c_null_ptr, c_null_char, c_associated, &
                                           c_loc, c_f_pointer
@@ -653,3 +658,4 @@ contains
    end subroutine build_residues
 
 end module trc_opt_capi
+#endif

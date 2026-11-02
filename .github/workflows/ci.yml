@@ -381,7 +381,7 @@ jobs:
           --no-tests=error ${{ env.CTEST_LONG }}
 
   fpm-build:
-    name: fpm (gcc 15, MPI, DL-FIND)
+    name: fpm (gcc 15, MPI)
     runs-on: ubuntu-latest
     # pic-mpi's fpm manifest compiles its mpi_f08 backends, so this needs an
     # MPI whose .mod files gfortran 15 reads: the same conda-forge gfortran 15
@@ -417,8 +417,7 @@ jobs:
       # The fpm build exists so that `fpm install terco` works for someone who
       # does not want CMake. It compiles the COMMITTED kernels in
       # `src/generated` plus the Rys and MD kernels tools/fpm_generate.sh writes
-      # to src/generated/fpm -- fpm cannot run the generators itself. It always
-      # builds --opt against libdlfind (an fpm dependency).
+      # to src/generated/fpm -- fpm cannot run the generators itself.
       #
       # No GPU flags: without `-stdpar=gpu` this is a correct, slow CPU
       # library, which is exactly what a runner can check.
@@ -428,22 +427,40 @@ jobs:
       - name: fpm build
         run: fpm build --compiler mpifort --profile release --flag "-ffree-line-length-none"
 
-      # Compiling is not the check: optimise water/STO-3G with the fpm-built
-      # CLI and compare against the pyscf+scipy anchor check_opt_vs_pyscf uses
-      # (opt_water.ref), at that check's own energy tolerance.
-      - name: --opt against the pyscf anchor
+      # Compiling is not the check. The SCF at opt_water.ref's geometry (the
+      # pyscf+scipy RHF/STO-3G minimum check_opt_vs_pyscf anchors to) must
+      # give that reference's E_FINAL; at a minimum the energy is quadratic in
+      # any geometry error, so 1e-8 Eh is loose for an SCF converged to 1e-10.
+      # This default build has no DL-FIND (LGPL, opt-in: README "fpm"), so
+      # --opt must be refused by the stub, not crash or run.
+      - name: SCF against the pyscf anchor, --opt refused
         working-directory: test
         run: |
           exe=$(find ../build -path '*app*' -name terco -type f | head -1)
-          "$exe" water.xyz -b basis_sets/sto-3g.json --opt --opt-gtol 1e-5 --silent --json "$RUNNER_TEMP/opt.json"
-          python3 - "$RUNNER_TEMP/opt.json" pyscf_refs/opt_water.ref <<'PY'
-          import json, sys
-          opt = json.load(open(sys.argv[1]))["optimization"]
-          ref = next(float(l.split()[1]) for l in open(sys.argv[2]) if l.startswith("E_FINAL"))
-          diff = abs(opt["final_energy"] - ref)
-          print(f"converged={opt['converged']}  E={opt['final_energy']:.12f}  pyscf={ref:.12f}  |dE|={diff:.2e}")
-          sys.exit(0 if opt["converged"] and diff < 5e-8 else 1)
+          python3 - pyscf_refs/opt_water.ref "$RUNNER_TEMP/water_min.xyz" <<'PY'
+          import sys
+          lines = open(sys.argv[1]).read().split("\n")
+          i = next(k for k, l in enumerate(lines) if l.startswith("COORDS"))
+          vals = [float(x) for l in lines[i + 1:i + 3] for x in l.split()]
+          bohr = 0.529177210903
+          with open(sys.argv[2], "w") as f:
+              f.write("3\nwater, opt_water.ref minimum\n")
+              for a, el in enumerate("OHH"):
+                  f.write(f"{el} " + " ".join(f"{vals[3 * a + c] * bohr:.15f}" for c in range(3)) + "\n")
           PY
+          "$exe" "$RUNNER_TEMP/water_min.xyz" -b basis_sets/sto-3g.json --silent --json "$RUNNER_TEMP/scf.json"
+          python3 - "$RUNNER_TEMP/scf.json" pyscf_refs/opt_water.ref <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          e = d["total energy"]
+          ref = next(float(l.split()[1]) for l in open(sys.argv[2]) if l.startswith("E_FINAL"))
+          print(f"converged={d['converged']}  E={e:.12f}  pyscf={ref:.12f}  |dE|={abs(e - ref):.2e}")
+          sys.exit(0 if d["converged"] and abs(e - ref) < 1e-8 else 1)
+          PY
+          if "$exe" water.xyz -b basis_sets/sto-3g.json --opt > "$RUNNER_TEMP/opt.log" 2>&1; then
+            echo "--opt ran in a build without DL-FIND"; exit 1
+          fi
+          grep -q "needs libdlfind" "$RUNNER_TEMP/opt.log"
 
   generators:
     name: generated sources are up to date
