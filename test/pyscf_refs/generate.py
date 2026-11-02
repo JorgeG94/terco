@@ -3968,6 +3968,47 @@ def gen_pcm_radii_override():
     print(f"  pcm_radii_override: E {mf.e_tot:.12f}  E_diel {mf.scf_summary['e_solvent']:.12f}")
 
 
+def gen_pcm_grad():
+    """check_pcm_grad_vs_pyscf.F90: the analytic PCM (C-PCM and IEF-PCM)
+    nuclear gradient (trc_pcm_grad%pcm_grad_add's grad_qv + grad_nuc +
+    grad_solver, added on top of trc_scf_gradient's own vacuum RHF
+    gradient) against pyscf's own solvent-wrapped `Gradients` class --
+    water/6-31G*, eps = PCM_EPS, pyscf's own SWIG defaults (lebedev_order
+    29 -> 302 points per sphere, vdw_scale 1.2) matching terco's.
+
+    FIXED INITIAL DENSITY: NOT NEEDED, same reasoning gen_pcm_radii_override's
+    own docstring gives (a closed-shell ground state has no nearby
+    competing stationary point, continuum or not): converged
+    independently on both sides."""
+    atoms = _xyz_bohr("water.xyz")
+    basis_arg = bse_json_basis(TEST / "basis_sets" / "6-31gs.json", {"O": 8, "H": 1})
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+    nao = mol.nao_nr()
+
+    w = RefWriter("pcm_grad.ref")
+    w.header("check_pcm_grad_vs_pyscf",
+             [ROOT / "test" / "check_pcm_grad_vs_pyscf.F90", TEST / "basis_sets" / "6-31gs.json",
+              TEST / "water.xyz"])
+    w.int_("NAO", nao)
+    for model, pyscf_method in (("cpcm", "C-PCM"), ("iefpcm", "IEF-PCM")):
+        mf = scf.RHF(mol).PCM()
+        mf.with_solvent.method = pyscf_method
+        mf.with_solvent.eps = PCM_EPS
+        mf, gnorm = _pcm_converge(mf, f"pcm_grad water/6-31gs {model}")
+        g = mf.nuc_grad_method()
+        g.verbose = 0
+        grad_py = g.kernel()   # (nat, 3), Eh/Bohr, terco's own atom order
+
+        w.str_(f"MODEL_{model}", model)
+        w.real(f"E_{model}", mf.e_tot)
+        w.real(f"E_DIEL_{model}", mf.scf_summary['e_solvent'])
+        w.real(f"GRAD_NORM_{model}", gnorm)
+        w.matrix(f"GRAD_{model}", grad_py.T)   # (3, nat), matching terco's layout
+        print(f"  pcm_grad {model}: E(pyscf,converged) {mf.e_tot:18.12f}  |g| {gnorm:.2e}")
+    w.end()
+    w.write()
+
+
 def gen_pcm_scf(set_name):
     """scf_pcm.F90's cases: pyscf's own RHF/UHF/RKS/UKS with .PCM() (same
     model, dielectric, radii scale and Lebedev order), on terco's own DFT
@@ -4697,6 +4738,7 @@ CASES = {
     "mult": gen_mult,
     "ao": gen_ao,
     "pcm_radii_override": gen_pcm_radii_override,
+    "pcm_grad": gen_pcm_grad,
     "xc_energy": gen_xc_energy,
     "vv10": gen_vv10,
     "rys_grad_631gs": lambda: gen_rys_grad("631gs", "basis_sets/6-31gs.json"),

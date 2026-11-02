@@ -252,7 +252,6 @@ contains
       !! all: present, the XC terms run on it (`xc_grad_add_on_grid`/
       !! `vv10_grad_add_on_grid`) with no rebuild; absent, each term builds
       !! its own. trc_capi.F90's `trc_run_gradient` is the one caller.
-
       type(trc_pairlist_t) :: pl_own
       !! The pair list built here when the cache's is not reused.
       type(step_table_t) :: gst, xst, vst

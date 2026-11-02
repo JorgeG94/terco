@@ -53,6 +53,11 @@ module trc_pcm
 
    public :: trc_pcm_t, pcm_surface_t
    public :: pcm_build_surface, pcm_sd_matrices, pcm_switch_h, pcm_model_from_name
+   public :: pcm_s_fill, pcm_da_fill
+   !! The raw S and D*A fills: trc_pcm_grad's grad_solver term needs them
+   !! again (K's own factors are consumed by build_operators and the raw
+   !! matrices never kept), and pcm_da_fill with an all-ones area gives raw D
+   !! (pcm_sd_matrices' own trick).
    public :: PCM_MODEL_NONE, PCM_MODEL_CPCM, PCM_MODEL_IEFPCM
    public :: PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
 
@@ -103,6 +108,16 @@ module trc_pcm
       real(dp), allocatable :: switch_f(:)      !! SWIG switching value, in (0, 1]
       real(dp), allocatable :: area(:)          !! weight * R**2 * switch, bohr**2
       real(dp), allocatable :: r_parent(:)      !! cavity radius of the owning atom
+      real(dp), allocatable :: radii(:)         !! (natm) the realised cavity radius per atom
+      real(dp), allocatable :: r_switch(:)      !! (natm) SWIG switching-shell width per atom
+      real(dp), allocatable :: r_inner(:)       !! (natm) SWIG inner radius per atom
+      !! radii/r_switch/r_inner are per-ATOM (not per-point), the same
+      !! three arrays pcm_build_surface computes locally to tessellate the
+      !! cavity -- kept here too because trc_pcm_grad's switching-function
+      !! derivative (dF/dA) needs them again at the gradient, after
+      !! radii_scale/angular_points/radii_override (whichever produced
+      !! them) are out of scope. Realised values, not the settings that
+      !! made them: correct under radii_override with no extra plumbing.
    end type pcm_surface_t
 
    type :: trc_pcm_t
@@ -305,6 +320,9 @@ contains
          surface%r_parent(ipt) = radii(own(ipt))
          surface%area(ipt) = wgt(ipt)*radii(own(ipt))**2*swf(ipt)
       end do
+      surface%radii = radii
+      surface%r_switch = r_switch
+      surface%r_inner = r_inner
    end subroutine pcm_build_surface
 
    pure real(dp) function s_elem(i, j, n, coords, zeta, switch_f) result(res)
@@ -345,7 +363,7 @@ contains
       end if
    end function d_elem
 
-   subroutine s_fill(n, coords, zeta, switch_f, smat)
+   subroutine pcm_s_fill(n, coords, zeta, switch_f, smat)
       !! S, on arrays already where the build computes (the device, on GPU)
       !!
       !! Every element is independent, so the matrix is one `do concurrent`
@@ -357,10 +375,10 @@ contains
       do concurrent(j = 1:n, i = 1:n)
          smat(i, j) = s_elem(i, j, n, coords, zeta, switch_f)
       end do
-   end subroutine s_fill
+   end subroutine pcm_s_fill
 
-   subroutine da_fill(n, coords, normals, zeta, r_parent, area, dmat)
-      !! D A: D with its columns scaled by the point areas, as s_fill
+   subroutine pcm_da_fill(n, coords, normals, zeta, r_parent, area, dmat)
+      !! D A: D with its columns scaled by the point areas, as pcm_s_fill
       integer, intent(in) :: n
       real(dp), intent(in) :: coords(3, n), normals(3, n), zeta(n), r_parent(n), area(n)
       real(dp), intent(out) :: dmat(n, n)
@@ -368,12 +386,12 @@ contains
       do concurrent(j = 1:n, i = 1:n)
          dmat(i, j) = d_elem(i, j, n, coords, normals, zeta, r_parent)*area(j)
       end do
-   end subroutine da_fill
+   end subroutine pcm_da_fill
 
    subroutine pcm_sd_matrices(n, coords, normals, zeta, switch_f, r_parent, smat, dmat)
       !! S, and D when it is present, for a surface; host arrays in and out
       !!
-      !! The element builders K is formed from (s_fill, da_fill), wrapped for
+      !! The element builders K is formed from (pcm_s_fill, pcm_da_fill), wrapped for
       !! a caller that wants the matrices themselves -- check_pcm_cavity
       !! compares them with pyscf's. D here is D itself: unit areas.
       integer, intent(in) :: n
@@ -382,14 +400,14 @@ contains
       real(dp), intent(out), optional :: dmat(n, n)
       real(dp), allocatable :: ones(:)
       !$acc enter data copyin(coords, normals, zeta, switch_f, r_parent) create(smat)
-      call s_fill(n, coords, zeta, switch_f, smat)
+      call pcm_s_fill(n, coords, zeta, switch_f, smat)
       !$acc update self(smat)
       !$acc exit data delete(smat)
       if (present(dmat)) then
          allocate (ones(n))
          ones = 1.0_dp
          !$acc enter data copyin(ones) create(dmat)
-         call da_fill(n, coords, normals, zeta, r_parent, ones, dmat)
+         call pcm_da_fill(n, coords, normals, zeta, r_parent, ones, dmat)
          !$acc update self(dmat)
          !$acc exit data delete(ones, dmat)
       end if
@@ -510,6 +528,8 @@ contains
       this%v = 0.0_dp; this%q = 0.0_dp; this%wq = 0.0_dp
       !$acc enter data copyin(this%surface%coords, this%surface%normals, this%surface%zeta) &
       !$acc            copyin(this%surface%switch_f, this%surface%r_parent, this%surface%area) &
+      !$acc            copyin(this%surface%radii, this%surface%r_switch, this%surface%r_inner) &
+      !$acc            copyin(this%surface%parent) &
       !$acc            create(this%kmat, this%ipiv) copyin(this%v, this%q, this%wq)
       associate (sf => this%surface)
          if (this%model == PCM_MODEL_IEFPCM) then
@@ -517,15 +537,15 @@ contains
             ! K = S - f/(2 pi) (D A) S, and R = -f (I - D A/(2 pi)) in place.
             allocate (smat(n, n), this%rmat(n, n))
             !$acc enter data create(smat, this%rmat)
-            call s_fill(n, sf%coords, sf%zeta, sf%switch_f, smat)
-            call da_fill(n, sf%coords, sf%normals, sf%zeta, sf%r_parent, sf%area, this%rmat)
+            call pcm_s_fill(n, sf%coords, sf%zeta, sf%switch_f, smat)
+            call pcm_da_fill(n, sf%coords, sf%normals, sf%zeta, sf%r_parent, sf%area, this%rmat)
             call copy_square(n, smat, this%kmat)
             call la%gemm_mat(this%rmat, smat, this%kmat, alpha=-f2pi, beta=1.0_dp)
             !$acc exit data delete(smat)
             deallocate (smat)
             call scale_shift(n, this%rmat, f2pi, -f)
          else
-            call s_fill(n, sf%coords, sf%zeta, sf%switch_f, this%kmat)
+            call pcm_s_fill(n, sf%coords, sf%zeta, sf%switch_f, this%kmat)
          end if
       end associate
       call la%getrf(n, this%kmat, n, this%ipiv, info)
@@ -729,6 +749,8 @@ contains
          if (allocated(this%kmat)) then
             !$acc exit data delete(this%surface%coords, this%surface%normals, this%surface%zeta) &
             !$acc           delete(this%surface%switch_f, this%surface%r_parent, this%surface%area) &
+            !$acc           delete(this%surface%radii, this%surface%r_switch, this%surface%r_inner) &
+            !$acc           delete(this%surface%parent) &
             !$acc           delete(this%kmat, this%ipiv, this%v, this%q, this%wq)
          end if
          if (allocated(this%rmat)) then

@@ -190,6 +190,7 @@ module trc_capi
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t, trc_pair_eri_cache_t
    use trc_scf_grad, only: trc_scf_gradient
    use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t
+   use trc_pcm_grad, only: pcm_grad_scf_add
    use trc_scf_settings, only: scf_settings_spin_rule, scf_settings_eri_thresh_env
    use trc_scf_df, only: df_jk_t
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
@@ -215,7 +216,7 @@ module trc_capi
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
    use trc_hirshfeld, only: trc_hirshfeld_populations
    use trc_fukui, only: trc_fukui_indices
-   use trc_pcm, only: pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
+   use trc_pcm, only: trc_pcm_t, pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
    use trc_cpks, only: trc_scf_polarizability_rks, cpks_refuse_reason
@@ -326,7 +327,9 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 16
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 17
+   !! trc_run_gradient accepts a PCM reference (C-PCM/IEF-PCM) instead of
+   !! refusing it; trc_run_hessian still refuses PCM. Additive.
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -3707,10 +3710,6 @@ contains
             return
          end if
       end if
-      if (len_trim(cx%opts%pcm_model) > 0) then
-         refusal = "PCM gradient not implemented yet (no cavity/charge derivative)"
-         return
-      end if
    end subroutine gradient_capability_check
 
    !
@@ -3881,7 +3880,17 @@ contains
       !!     range-separated -- the SCF refuses those first), or with the fit
       !!     gone. A --df gradient otherwise runs the FITTED J/K gradient
       !!     (trc_scf_grad_df.F90) over `cx%dfjk`, the fit the SCF used.
-      !!   - PCM: no cavity/surface-charge derivative exists.
+      !!
+      !! NOT refused any more: PCM (C-PCM/IEF-PCM). `trc_scf_run` releases
+      !! its own continuum at the end of a run, the same as its pair list
+      !! and ERI engine (trc_scf_grad.F90's own header), so this rebuilds
+      !! one fresh, below, at `cx%opts%pcm_model`/`pcm_eps`/`pcm_lebedev`/
+      !! `pcm_radii_scale`/`pcm_radii_override` -- the SAME settings
+      !! `trc_run_scf` built its own continuum with, at a geometry
+      !! `cx%scf_ok` already guarantees is unchanged. `trc_scf_gradient`
+      !! solves it at this run's own density (one more triangular solve
+      !! through the already-factored K) and adds grad_qv + grad_nuc +
+      !! grad_solver (`trc_pcm_grad%pcm_grad_add`'s own header).
       !!
       !! A multi-rank context (`cx%fcomm /= -1`) is NOT refused: the
       !! gradient is not rank-split yet, so rank 0 computes it alone and
@@ -3926,11 +3935,13 @@ contains
       type(context_box), pointer :: cx
       type(trc_xc_functional_t) :: func
       logical :: reuse_grid, reuse_nlc
-      logical :: have_func
+      logical :: have_func, have_pcm
       character(len=:), allocatable :: refusal
       type(comm_t) :: comm
       logical :: collective, root
       real(dp), allocatable :: gbuf(:)
+      type(trc_pcm_t) :: pcm_local
+      type(error_t) :: perr
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -3951,6 +3962,7 @@ contains
          call rimp2_gradient_run(cx, status)
          return
       end if
+      have_pcm = len_trim(cx%opts%pcm_model) > 0
       ! GRID REUSE -- see this function's own header.
       reuse_grid = have_func .and. cx%kgrid%grid_built .and. &
                    cx%kgrid_level == cx%opts%grid_level .and. cx%kgrid_max_pts == cx%opts%grid_max_pts .and. &
@@ -3978,6 +3990,31 @@ contains
       if (allocated(cx%grad)) deallocate (cx%grad)
       allocate (cx%grad(3, cx%natm))
       if (root) then
+         if (have_pcm) then
+            ! Rebuilt fresh, at the SAME settings `trc_run_scf` built its
+            ! own continuum with, at a geometry `cx%scf_ok` already
+            ! guarantees is unchanged (any geometry change would have
+            ! cleared it) -- see this function's own header, "NOT refused
+            ! any more: PCM". `trc_scf_gradient` solves `pcm_local` at its
+            ! own `dtot` (one more triangular solve) and adds the term on
+            ! top; this never touches `pcm_local%on_device` across ranks,
+            ! since only `root` ever builds or uses it.
+            call pcm_local%init(pcm_model_from_name(cx%opts%pcm_model), cx%opts%pcm_eps, perr)
+            if (.not. perr%has_error()) then
+               if (allocated(cx%opts%pcm_radii_override)) then
+                  call pcm_local%build(cx%la, cx%bb%b, cx%opts%pcm_lebedev, cx%opts%pcm_radii_scale, perr, &
+                                       radii_override=cx%opts%pcm_radii_override)
+               else
+                  call pcm_local%build(cx%la, cx%bb%b, cx%opts%pcm_lebedev, cx%opts%pcm_radii_scale, perr)
+               end if
+            end if
+            if (perr%has_error()) then
+               cx%message = "trc_run_gradient: PCM: "//perr%get_message()
+               if (collective) call comm%finalize()
+               status = TRC_ERR_STATE
+               return
+            end if
+         end if
          if (cx%opts%df) then
             ! The pair list at the threshold the fit's own was built with
             ! (trc_run_scf's `pl%build(cx%bb%b, cx%opts%eri_thresh)`), so the
@@ -4040,6 +4077,15 @@ contains
             call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                   cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                   verbose=cx%opts%verbose, pair_eri_cache=cx%peri)
+         end if
+         ! --- PCM, added on top of the vacuum gradient above: its own
+         ! density/pair list (pcm_grad_scf_add's own header explains why
+         ! it is not threaded through trc_scf_gradient's own argument
+         ! list), then grad_qv + grad_nuc + grad_solver. ---
+         if (have_pcm) then
+            call pcm_grad_scf_add(cx%bb%b, cx%la, [cx%nalpha, cx%nbeta], cx%bb%cmo, cx%bb%eps, &
+                                  scf_settings_eri_thresh_env(cx%opts%eri_thresh), pcm_local, cx%grad)
+            call pcm_local%release()
          end if
       end if
       if (collective) then
@@ -4234,6 +4280,13 @@ contains
       call gradient_capability_check(cx, have_func, func, refusal, status)
       if (len(refusal) > 0) then
          cx%message = "trc_run_hessian: "//refusal
+         return
+      end if
+      ! The analytic PCM gradient is validated (pyscf, finite differences);
+      ! a Hessian from finite differences of it is not, so it stays refused.
+      if (len_trim(cx%opts%pcm_model) > 0) then
+         status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_run_hessian: a PCM Hessian is not validated yet (the PCM gradient is)"
          return
       end if
       if (cx%rimp2_ok) then

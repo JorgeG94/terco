@@ -43,7 +43,7 @@ blocks instead of calling anything. It looks like a mistake and is the opposite.
 | `gen_rys.py` | one Rys-quadrature Fock kernel per class, spliced from `gen_perclass`'s prologue, CHUNKED per a measured plan (below) | f classes, seven heavy d classes, g classes up to total L `TERCO_RYS_G_LTOT` |
 | `gen_md_j.py` | the McMurchie–Davidson J engine: ket, Hermite (per (la+lb, lc+ld), R batched and sieved, `md/rtree.py`) and bra stages | `trc_mdj`, J for every class when MD J is on (always for a g basis) |
 | `gen_md_k.py` | McMurchie–Davidson exchange per class: R per primitive quartet, then S = PQ Hk^T and the integral rows fused, PQ never stored; E matrices per shell-pair type | `trc_mdg`, the g classes above `TERCO_RYS_G_LTOT` |
-| `gen_1e.py` | overlap, kinetic, nuclear attraction; `--multipole` for the Cartesian tensors; `--pcm` for the PCM smeared-charge surface integrals | `trc_1e`, `trc_multipoles`, `trc_pcm_potential`/`trc_pcm_fock` |
+| `gen_1e.py` | overlap, kinetic, nuclear attraction; `--multipole` for the Cartesian tensors; `--pcm` for the PCM smeared-charge surface integrals; `--deriv`/`--deriv-dir` for the one-electron gradient; `--pcm-grad`/`--pcm-grad-dir` for the PCM surface-integral gradient | `trc_1e`, `trc_multipoles`, `trc_pcm_potential`/`trc_pcm_fock`, `trc_1e_gradient`, `trc_pcm_gradient` |
 | `gen_df.py` | two- and three-centre Coulomb, one module per class (`--split`, the only mode) | `trc_df_2c`, `trc_df_3c` |
 | `gen_df_grad.py` | the two- and three-centre Coulomb nuclear derivatives, contracted with a coefficient block, Rys for every class, one module per class | the `--df` gradient (`trc_scf_grad_df`) |
 | `gen_schwarz.py` | the Rys-quadrature diagonal Schwarz kernel, one module, no `TERCO_LMAX` dependence (`select case` over the 9 inlined Rys root counts, runtime loops otherwise) | `trc_screen`'s `schwarz_bounds_rys` |
@@ -353,6 +353,7 @@ python3 scripts/gen_perclass.py --lmax 2 --split src/generated
 python3 scripts/gen_1e.py --lmax 2 -o src/generated/trc_1e_kernels.F90
 python3 scripts/gen_1e.py --lmax 2 --multipole src/generated/trc_mult_kernels.F90
 python3 scripts/gen_1e.py --lmax 2 --pcm src/generated/trc_pcm_kernels.F90
+python3 scripts/gen_1e.py --lmax 2 --pcm-grad-dir src/generated   # one module per class, what CMake calls
 python3 scripts/gen_df.py --lmax 2 --lmax-aux 4 --unroll-max-comp 81 --split src/generated
 python3 scripts/gen_df_grad.py --lmax 2 --lmax-aux 4 --unroll-max-comp 135 --unroll-roots-max-comp 0 \
     --split src/generated
