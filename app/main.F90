@@ -1281,17 +1281,11 @@ program trc_main
    call run_api(r, trc_pcm_energy(r%h, r%epcm, r%qpcm, r%npcm))
    r%eos = 0
    r%ess = 0
-   if (r%rimp2 .and. r%conv /= 0) then
-      call run_api(r, trc_run_rimp2(r%h))
-      call run_api(r, trc_rimp2_energy(r%h, r%eos, r%ess))
-      ! The double hybrid's own weighted total comes from trc_energy
-      ! itself (now that RI-MP2 has run, cx%rimp2_ok is set and its
-      ! pt2_cos/pt2_css branch applies), not recomputed here from
-      ! r%pt2_cos/r%pt2_css -- those stay around only to report the
-      ! fractions themselves (write_json), never to duplicate the
-      ! weighting trc_energy already does from the SAME table.
-      if (r%dh) call run_api(r, trc_energy(r%h, r%etot_dh))
-   end if
+   ! The RI-MP2 energy is read only after --grad's gradient: on one rank
+   ! trc_run_rimp2 defers the pair energies, and an RI-MP2 gradient
+   ! computes them from its own amplitudes, so asking for them first would
+   ! run the energy step for nothing (trc_run_rimp2's own header).
+   if (r%rimp2 .and. r%conv /= 0) call run_api(r, trc_run_rimp2(r%h))
    if (r%grad .and. r%conv /= 0) then
       ! trc_run_gradient's own refusals (RI-MP2, PCM) come
       ! back through `api`, which prints the library's own message and
@@ -1305,6 +1299,16 @@ program trc_main
       call run_api(r, trc_gradient(r%h, gradbuf))
       r%gradient = reshape(real(gradbuf, dp), [3, r%natm])
       deallocate (gradbuf)
+   end if
+   if (r%rimp2 .and. r%conv /= 0) then
+      call run_api(r, trc_rimp2_energy(r%h, r%eos, r%ess))
+      ! The double hybrid's own weighted total comes from trc_energy
+      ! itself (now that RI-MP2 has run, cx%rimp2_ok is set and its
+      ! pt2_cos/pt2_css branch applies), not recomputed here from
+      ! r%pt2_cos/r%pt2_css -- those stay around only to report the
+      ! fractions themselves (write_json), never to duplicate the
+      ! weighting trc_energy already does from the SAME table.
+      if (r%dh) call run_api(r, trc_energy(r%h, r%etot_dh))
    end if
    if (r%hessian .and. r%conv /= 0) then
       ! trc_run_hessian's own refusals (meta-GGA, --rimp2, a double

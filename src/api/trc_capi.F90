@@ -430,6 +430,12 @@ module trc_capi
       integer :: nalpha = 0, nbeta = 0
       logical :: scf_ok = .false., rimp2_ok = .false.
       real(dp) :: e_os = 0.0_dp, e_ss = 0.0_dp
+      logical :: rimp2_deferred = .false.
+      ! With `rimp2_ok`: trc_run_rimp2 has accepted the run but e_os/e_ss
+      ! are not computed yet (one rank, closed shell: trc_run_rimp2's own
+      ! header). trc_run_gradient fills them from its own amplitudes, and
+      ! any reader first runs the energy (rimp2_settle). Meaningless while
+      ! `rimp2_ok` is false, so the sites that clear that need not touch it.
       ! trc_run_gradient's own result: (3, natm), Eh/Bohr, in terco's atom
       ! order. `grad_ok` is cleared by anything that invalidates `scf_ok`
       ! too (invalidate_runs) -- a gradient at a geometry/density this
@@ -4553,6 +4559,14 @@ contains
       else
          call trc_rimp2_gradient(cx%bb%b, cx%ab%b, cx%bb%cmo(:, :, 1), cx%bb%eps(:, 1), job, cx%la)
       end if
+      ! The energy trc_run_rimp2 deferred comes from these amplitudes (the
+      ! same B and pairs, so the same numbers to round-off), even if a
+      ! later step failed.
+      if (job%res%has_energy .and. cx%rimp2_deferred) then
+         cx%e_os = job%res%e_os
+         cx%e_ss = job%res%e_ss
+         cx%rimp2_deferred = .false.
+      end if
       if (.not. job%res%ok) then
          status = TRC_ERR_NOCONV
          if (index(job%res%message, "did not converge") == 0) status = TRC_ERR_UNSUPPORTED
@@ -4574,16 +4588,17 @@ contains
       !! into the Cartesian, zero-padded space `trc_rimp2_run`/
       !! `trc_urimp2_run` themselves run in by `rimp2_driver_mo_to_cart`
       !! (trc_rimp2_driver.F90's own header says why the pad is exact).
+      !! On one rank with a closed-shell reference the pair energies are
+      !! deferred: computed by the first trc_energy or trc_rimp2_energy, or
+      !! taken from the amplitudes of a trc_run_gradient that comes first,
+      !! which then runs no separate energy step. The numbers are the same
+      !! either way (to round-off); only when the work happens moves.
       type(c_ptr), value :: handle
       integer(c_int) :: status
       type(context_box), pointer :: cx
-      type(trc_pairlist_t) :: pl
-      type(trc_rimp2_result_t) :: res
       type(comm_t) :: comm
-      integer :: nfrozen, nblk, nc
+      integer :: nfrozen
       logical :: collective
-      type(trc_rimp2_options_t) :: rimp2_opts
-      real(dp), allocatable :: cmo_a(:, :), eps_a(:), cmo_ab(:, :, :), eps_ab(:, :)
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -4625,8 +4640,6 @@ contains
          cx%message = "trc_run_rimp2: every occupied orbital is frozen in at least one spin channel"
          return
       end if
-      nblk = cx%aux_block
-      if (nblk <= 0) nblk = cx%ab%b%nao
       call trc_build_comm(cx%fcomm, comm, collective, status)
       if (status /= TRC_OK) return
       ! UHF/UKS RI-MP2 (cx%res%nspin == 2) refuses more than one rank --
@@ -4643,6 +4656,49 @@ contains
          call comm%finalize()
          return
       end if
+      ! One rank and a closed shell: accept the run and leave the pair
+      ! energies until something needs them. An RI-MP2 gradient
+      ! (trc_run_gradient next) computes them from its own amplitudes, so
+      ! the 2.9 s energy step never runs (gly10/cc-pVDZ --df, V100: the
+      ! gradient's own pair energies take 0.2 s); any
+      ! reader (trc_energy, trc_rimp2_energy) runs it then (rimp2_settle),
+      ! with the settings in force now -- every setter they depend on
+      ! clears `rimp2_ok`. More than one rank stays eager: a reader is not
+      ! a collective call, and the ring is.
+      cx%rimp2_ok = .true.
+      if (cx%res%nspin == 1 .and. .not. collective) then
+         cx%rimp2_deferred = .true.
+         status = TRC_OK
+         return
+      end if
+      call rimp2_pair_energies(cx, comm, collective)
+      cx%rimp2_deferred = .false.
+      if (collective) call comm%finalize()
+      status = TRC_OK
+   end function trc_run_rimp2
+
+   subroutine rimp2_settle(cx)
+      !! Run the RI-MP2 energy trc_run_rimp2 deferred, if it did and
+      !! nothing has computed it since (one rank: trc_run_rimp2's own rule).
+      type(context_box), intent(inout) :: cx
+      type(comm_t) :: comm
+      if (.not. (cx%rimp2_ok .and. cx%rimp2_deferred)) return
+      call rimp2_pair_energies(cx, comm, .false.)
+      cx%rimp2_deferred = .false.
+   end subroutine rimp2_settle
+
+   subroutine rimp2_pair_energies(cx, comm, collective)
+      !! cx%e_os and cx%e_ss: trc_rimp2_run/trc_urimp2_run on the context's
+      !! converged SCF, over `comm` when `collective` (restricted only;
+      !! trc_run_rimp2 has checked everything else).
+      type(context_box), intent(inout) :: cx
+      type(comm_t), intent(in) :: comm
+      logical, intent(in) :: collective
+      type(trc_pairlist_t) :: pl
+      type(trc_rimp2_result_t) :: res
+      type(trc_rimp2_options_t) :: rimp2_opts
+      real(dp), allocatable :: cmo_a(:, :), eps_a(:), cmo_ab(:, :, :), eps_ab(:, :)
+      integer :: nc
       ! `cx%res%cmo`/`eps` are at the SCF's own space (`scf_space_nao`:
       ! `nao_sph` when `cx%bb%b%spherical`, the Cartesian `nao` otherwise)
       ! -- `trc_rimp2_run`/`trc_urimp2_run` themselves stay Cartesian-
@@ -4651,8 +4707,9 @@ contains
       ! A Cartesian basis copies straight through (nc == the SCF's own
       ! space already).
       nc = cx%bb%b%nao
-      rimp2_opts%nfrozen = nfrozen
-      rimp2_opts%aux_block = nblk
+      rimp2_opts%nfrozen = rimp2_frozen_count(cx)
+      rimp2_opts%aux_block = cx%aux_block
+      if (rimp2_opts%aux_block <= 0) rimp2_opts%aux_block = cx%ab%b%nao
       rimp2_opts%verbose = cx%opts%verbose
       if (cx%res%nspin == 2) then
          allocate (cmo_ab(nc, nc, 2), eps_ab(nc, 2))
@@ -4701,14 +4758,11 @@ contains
             call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
                                opts=rimp2_opts, la=cx%la)
          end if
-         if (collective) call comm%finalize()
       end if
       call pl%release()
       cx%e_os = res%e_os
       cx%e_ss = res%e_ss
-      cx%rimp2_ok = .true.
-      status = TRC_OK
-   end function trc_run_rimp2
+   end subroutine rimp2_pair_energies
 
    function trc_save_scf(handle, path) result(status) bind(c, name="trc_save_scf")
       !! Write the context's SCF result -- orbitals, orbital energies,
@@ -5156,6 +5210,7 @@ contains
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
       energy = real(cx%res%energy, c_double)
+      call rimp2_settle(cx)
       if (cx%rimp2_ok) then
          if (len_trim(cx%opts%functional) > 0 .and. xc_functional_by_name(cx%opts%functional, func)) then
             if (xc_is_double_hybrid(func)) then
@@ -5600,6 +5655,7 @@ contains
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%rimp2_ok) return
+      call rimp2_settle(cx)
       e_os = real(cx%e_os, c_double)
       e_ss = real(cx%e_ss, c_double)
       status = TRC_OK
