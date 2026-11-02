@@ -1280,6 +1280,11 @@ contains
       ! order's own batches need not be contiguous in xg's point order.
       allocate (sord(max(cache%nres, 1)))
       if (cache%nres > 0) call fxc_resident_order(cache%nres, cache%npp, cache%nlp, sord)
+      ! Zeroed once for the whole resident region: the point kernel assigns
+      ! every row it owns and never writes a batch's padding, so clearing it
+      ! per chunk (a pass over all nres_chi entries each time) was
+      ! quadratic in the resident size.
+      if (cache%nres > 0) call xc_zero_zt(cache%nres_chi, zt_res)
       b0 = 1
       do while (b0 <= cache%nres)
             need = 0
@@ -1305,7 +1310,6 @@ contains
             end do
             allocate (dloc(max(npairs, 1), 1), vloc(max(npairs, 1)))
             !$acc enter data create(dloc, vloc) copyin(ord, pb_off)
-            call xc_zero_zt(cache%nres_chi, zt_res)
             call xc_gather(npairs, nb, ord, pb_off, 1, nao, dmat_u, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
                            cache%nlp, xg%nbatch, dloc)
             k0 = 1
