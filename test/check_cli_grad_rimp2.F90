@@ -83,7 +83,8 @@ contains
                   new_unittest("CLI --rimp2 --grad over a UHF reference is refused", test_cli_rimp2_grad_uhf_refused), &
                   new_unittest("CLI -f b2plyp --df --grad JSON gradient matches pyscf", test_cli_dh_grad_df), &
                   new_unittest("CLI -f b2plyp --grad over a UKS reference is refused", test_cli_dh_grad_uks_refused), &
-                  new_unittest("CLI -f b2plyp --pcm --grad is refused", test_cli_dh_grad_pcm_refused) &
+                  new_unittest("CLI -f b2plyp --pcm --grad is refused", test_cli_dh_grad_pcm_refused), &
+                  new_unittest("CLI --rimp2 --grad over a PCM reference is refused", test_cli_rimp2_grad_pcm_refused) &
                   ]
    end subroutine collect_cli_grad_rimp2_tests
 
@@ -222,8 +223,17 @@ contains
    subroutine test_cli_dh_grad_pcm_refused(error)
       type(error_type), allocatable, intent(out) :: error
       call expect_refusal(error, ' water.xyz -b basis_sets/6-31g.json -f b2plyp --pcm cpcm --eps 78.3553 --grad', &
-                          '.pcm.out', "PCM gradient not implemented")
+                          '.pcm.out', "over a PCM reference")
    end subroutine test_cli_dh_grad_pcm_refused
+
+   subroutine test_cli_rimp2_grad_pcm_refused(error)
+      !! The RI-MP2 gradient has no PCM response in its Z-vector: a PCM
+      !! reference must stop with a non-zero exit code and say so, not
+      !! return a gradient without the solvent terms.
+      type(error_type), allocatable, intent(out) :: error
+      call expect_refusal(error, ' water.xyz -b basis_sets/6-31g.json --pcm cpcm --eps 78.3553 --rimp2 --grad', &
+                          '.rimp2_pcm.out', "over a PCM reference")
+   end subroutine test_cli_rimp2_grad_pcm_refused
 
    subroutine expect_refusal(error, args, suffix, reason)
       !! The CLI with `args` must exit non-zero and print `reason`.

@@ -107,7 +107,7 @@ contains
       type(error_type), allocatable, intent(out) :: error
       character(len=:), allocatable :: cmd, out_path
       integer :: rc
-      logical :: has_scf_table, has_step_table, has_summary
+      logical :: has_scf_table, has_step_table, has_summary, has_citation
 
       call setup_work_dir()
       out_path = work_dir//'/opt_info.out'
@@ -131,6 +131,12 @@ contains
       call grep_contains(out_path, 'geometry optimisation (--opt)', has_summary)
       if (.not. has_summary) then
          call test_failed(error, "no final optimisation summary at the default --logger level"); return
+      end if
+      ! src/opt/trc_dlfind_bridge.F90's trc_dlfind_citation: DL-FIND must be
+      ! acknowledged and cited whenever it drives a run.
+      call grep_contains(out_path, 'Please cite: Johannes Kaestner', has_citation)
+      if (.not. has_citation) then
+         call test_failed(error, "no DL-FIND citation banner at the default --logger level"); return
       end if
    end subroutine test_opt_info_terse
 
