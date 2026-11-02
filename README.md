@@ -123,7 +123,7 @@ Consume it with `find_package(terco)` and link `terco::terco`.
 ### fpm
 
 ```sh
-tools/fpm_generate.sh                     # the Rys kernels, into src/generated/fpm/
+tools/fpm_generate.sh                     # the Rys and MD kernels, into src/generated/fpm/
 fpm build --compiler mpifort --flag "-ffree-line-length-none"            # gfortran
 fpm build --compiler mpifort --flag "-stdpar=gpu -acc -gpu=cc70,mem:separate"  # nvfortran
 ```
@@ -131,9 +131,14 @@ fpm build --compiler mpifort --flag "-stdpar=gpu -acc -gpu=cc70,mem:separate"  #
 fpm builds the **shipped configuration and only that one**: `TRC_LMAX=2`. fpm
 cannot run a code generator and most of this library is generated, so
 `src/generated/` holds the committed HGP kernels, and `tools/fpm_generate.sh`
-generates the Rys kernels (energy and gradient) that CMake would generate at
-configure time. Rerun it after changing `scripts/`. Any other ceiling needs
-CMake.
+generates the Rys kernels (energy and gradient) and the MD J/K kernels that
+CMake would generate at configure time. Rerun it after changing `scripts/`.
+Any other ceiling needs CMake.
+
+Unlike CMake, fpm always builds `--opt`: it pulls libdlfind (LGPL-3.0-or-later)
+as a dependency and links it **statically**, so redistributing an fpm-built
+binary carries the LGPL's relinking terms. The CMake build keeps it a separate
+shared library behind `TERCO_ENABLE_DLFIND`.
 
 ---
 

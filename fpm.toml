@@ -29,7 +29,10 @@ homepage = "https://github.com/JorgeG94/terco"
 [preprocess.cpp]
 suffixes = ["F90", "f90"]
 # The definitions CMake always sets (CMakeLists.txt, target_compile_definitions).
-macros = ["TRC_LMAX=2", "TRC_FOCK6"]
+# TERCO_ENABLE_DLFIND: unlike the CMake build (option, OFF by default), fpm
+# always builds --opt against libdlfind (dependency below), so src/opt/ is
+# compiled and app/trc_dlfind_stub.F90 is skipped.
+macros = ["TRC_LMAX=2", "TRC_FOCK6", "TERCO_ENABLE_DLFIND"]
 
 [library]
 source-dir = "src"
@@ -63,6 +66,12 @@ pic-blas = { git = "https://github.com/JorgeG94/pic-blas", tag = "v0.3.1" }
 # use: `fpm build --compiler mpifort`. The CMake build has a serial backend.
 pic-mpi = { git = "https://github.com/JorgeG94/pic-mpi", tag = "v0.6.8" }
 json-fortran = { git = "https://github.com/jacobwilliams/json-fortran", tag = "9.3.1" }
+# DL-FIND for --opt, at the commit cmake/modules/Findlibdlfind.cmake pins.
+# LGPL-3.0-or-later: fpm links it statically into the terco archive, unlike the
+# CMake build, which keeps it a separate shared library (see TERCO_ENABLE_DLFIND
+# in the root CMakeLists.txt). Anyone redistributing an fpm-built binary takes
+# on the LGPL's relinking terms.
+libdlfind = { git = "https://github.com/JorgeG94/libdlfind", rev = "eadcd7c61aa64bbb57bfe77cf5e3182f7b10167d" }
 
 [dev-dependencies]
 # The unit-test framework, at the commit cmake/modules/Findtest-drive.cmake pins.

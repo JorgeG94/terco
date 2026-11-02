@@ -3,7 +3,8 @@
 # Generate the kernels fpm cannot generate itself, then let fpm build.
 #
 # The CMake build generates the Rys kernels (energy and gradient, one module
-# per class, plus their dispatchers) into the build tree at configure time.
+# per class, plus their dispatchers) and the MD J/K engine's kernels
+# (scripts/gen_md_j.py, gen_md_k.py) into the build tree at configure time.
 # fpm cannot run a generator, so this script does the same generation into
 # src/generated/fpm/, which fpm then compiles along with everything else
 # under src/. Run it once before `fpm build`, and again after changing
@@ -75,6 +76,13 @@ echo "fpm_generate: ${#rys[@]} Rys energy kernels, ${#all[@]} gradient kernels (
   -o "${stage}/trc_rys_kernels.F90" > /dev/null
 "${py}" scripts/gen_rys_grad_dispatch.py --classes "$(join "${all[@]}")" \
   -o "${stage}/trc_rys_grad_kernels.F90" > /dev/null
+
+# The MD J engine, and MD exchange (trc_mdg), as src/CMakeLists.txt's
+# _terco_gen_mdj. MD-K takes only g classes (an l > 3 shell), so at lmax 2
+# its class list is empty, exactly as CMake passes it.
+echo "fpm_generate: MD J/K kernels"
+"${py}" scripts/gen_md_j.py --lmax ${lmax} -o "${stage}" > /dev/null
+"${py}" scripts/gen_md_k.py --lmax ${lmax} --classes= -o "${stage}" > /dev/null
 
 # Swap in only once everything generated, so a failure never leaves a
 # half-written set behind for fpm to pick up.
