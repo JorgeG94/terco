@@ -231,7 +231,7 @@ module trc_xc_grad
    implicit none
    private
 
-   public :: xc_grad_add, xc_grad_add_on_grid, XC_GRAD_RHO_TOL, xc_grad_drive
+   public :: xc_grad_add, xc_grad_add_on_grid, XC_GRAD_RHO_TOL, xc_grad_drive, xc_grad_batch_active
    public :: xc_grad_options_t, xc_grad_options, xc_grad_point_io_t
    public :: XC_GRAD_NSTEP, xc_grad_step_names
    public :: ST_GRID, ST_POINTS, ST_PDERIV, ST_RESP

@@ -189,6 +189,7 @@ module trc_capi
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t, trc_pair_eri_cache_t
    use trc_scf_grad, only: trc_scf_gradient
+   use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t
    use trc_scf_settings, only: scf_settings_spin_rule, scf_settings_eri_thresh_env
    use trc_scf_df, only: df_jk_t
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
@@ -217,7 +218,7 @@ module trc_capi
    use trc_pcm, only: pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
-   use trc_cpks, only: trc_scf_polarizability_rks
+   use trc_cpks, only: trc_scf_polarizability_rks, cpks_refuse_reason
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_constants, only: BOHR_TO_ANGSTROM, HARTREE_TO_EV, HARTREE_TO_KCALMOL, AMU_TO_ME, KB_SI, NA_SI
    implicit none
@@ -325,7 +326,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 17
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 16
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -429,6 +430,12 @@ module trc_capi
       integer :: nalpha = 0, nbeta = 0
       logical :: scf_ok = .false., rimp2_ok = .false.
       real(dp) :: e_os = 0.0_dp, e_ss = 0.0_dp
+      logical :: rimp2_deferred = .false.
+      ! With `rimp2_ok`: trc_run_rimp2 has accepted the run but e_os/e_ss
+      ! are not computed yet (one rank, closed shell: trc_run_rimp2's own
+      ! header). trc_run_gradient fills them from its own amplitudes, and
+      ! any reader first runs the energy (rimp2_settle). Meaningless while
+      ! `rimp2_ok` is false, so the sites that clear that need not touch it.
       ! trc_run_gradient's own result: (3, natm), Eh/Bohr, in terco's atom
       ! order. `grad_ok` is cleared by anything that invalidates `scf_ok`
       ! too (invalidate_runs) -- a gradient at a geometry/density this
@@ -3620,8 +3627,44 @@ contains
          end if
       end if
       if (cx%rimp2_ok) then
-         refusal = "RI-MP2/double-hybrid correlation gradient not implemented yet"
-         return
+         ! The RI-MP2 gradient (trc_rimp2_grad.F90): an RHF reference, or a
+         ! restricted KS one -- a double hybrid, E_KS + c E_RI-MP2, or a
+         ! plain functional's E_KS + E_RI-MP2 -- four-centre or --df, plus
+         ! the fitted correlation, one rank. Anything else that reached
+         ! RI-MP2 has no correlation gradient yet. PCM first, and here rather
+         ! than only in the general checks below: the RI-MP2 gradient's
+         ! Z-vector and densities carry no PCM response, so a PCM reference
+         ! must be refused on this path even where the SCF-level PCM
+         ! gradient is supported.
+         if (len_trim(cx%opts%pcm_model) > 0) then
+            refusal = "the RI-MP2/double-hybrid gradient over a PCM reference is not implemented "// &
+                      "(no PCM response in the Z-vector)"
+         else if (have_func) then
+            if (func%pt2_cos /= func%pt2_css) then
+               refusal = "a spin-component-scaled double hybrid ('"//trim(cx%opts%functional)//"', c_os /= "// &
+                         "c_ss) has no gradient yet -- the RI-MP2 gradient scales one correlation energy"
+            else if (len_trim(cpks_refuse_reason(func)) > 0) then
+               refusal = "the RI-MP2 gradient over this Kohn-Sham reference needs its CPKS response: "// &
+                         trim(cpks_refuse_reason(func))
+            end if
+         end if
+         if (len(refusal) > 0) return
+         if (cx%res%nspin /= 1 .and. have_func) then
+            refusal = "the double-hybrid (KS + RI-MP2) gradient is restricted only; an unrestricted (UKS) "// &
+                      "reference has no correlation gradient -- trc_cpks has no spin-resolved kernel response"
+         else if (cx%res%nspin /= 1) then
+            refusal = "the RI-MP2 gradient is restricted (closed-shell RHF reference) only; "// &
+                      "an unrestricted reference has no correlation gradient yet"
+         else if (cx%opts%df .and. .not. cx%df_fit_ok) then
+            refusal = "the RI-MP2 gradient over a --df reference needs the density fit the SCF ran with"
+            refusal_status = TRC_ERR_STATE
+         else if (cx%fcomm /= -1) then
+            refusal = "the RI-MP2 gradient runs on one rank only (no trc_set_comm)"
+         else if (cx%res%n_lindep > 0) then
+            refusal = "the RI-MP2 gradient needs every basis function, and canonical orthogonalisation "// &
+                      "dropped "//to_string(cx%res%n_lindep)//" (trc_set_lindep)"
+         end if
+         if (len(refusal) > 0) return
       end if
       if (have_func) then
          ! A meta-GGA's own gradient runs (trc_xc_grad's tau term). A double
@@ -3633,7 +3676,9 @@ contains
             return
          end if
       end if
-      if (cx%opts%df) then
+      ! The RI-MP2 gradient over a --df reference was checked above, and has
+      ! its own spherical-capable fitted derivative (scf_grad_df_bilinear).
+      if (cx%opts%df .and. .not. cx%rimp2_ok) then
          ! The fitted gradient differentiates the SAME fit the SCF converged
          ! with (`cx%dfjk`'s B and metric Cholesky factor), so it needs that
          ! fit still in place, and inherits the DF-SCF's own scope:
@@ -3811,9 +3856,27 @@ contains
       !! REFUSED, clearly, rather than attempted:
       !!   - a double hybrid on a meta-GGA base (none is registered): its
       !!     relaxed gradient would need a meta-GGA CPKS kernel.
-      !!   - RI-MP2 (or, once it exists, a double hybrid): no correlation
-      !!     gradient exists; `trc_scf_gradient` is the SCF reference term
-      !!     only.
+      !!   - RI-MP2 over anything but a restricted RHF or LDA/GGA KS
+      !!     reference on one rank: an unrestricted one (UHF, UKS), a
+      !!     meta-GGA, range-separated or VV10 functional, a
+      !!     spin-component-scaled double hybrid (none is registered), a
+      !!     multi-rank context, or dropped functions
+      !!     (gradient_capability_check's own messages).
+      !!
+      !! RI-MP2 AND DOUBLE HYBRIDS. After a successful trc_run_rimp2 the
+      !! energy this context reports (trc_energy) is E_ref + c E_RI-MP2 --
+      !! E_ref the RHF or KS energy, c a double hybrid's PT2 fraction or one
+      !! -- and this differentiates THAT: trc_rimp2_grad%trc_rimp2_gradient,
+      !! with the same frozen core, pair-list threshold and (for a KS
+      !! reference) functional and grid settings the energy used. A
+      !! four-centre reference keeps its Z-vector against the exact orbital
+      !! Hessian (CPHF, or CPKS with the XC kernel); a --df one
+      !! (trc_set_df) differentiates the fitted SCF it converged, its
+      !! Z-vector, potentials and two-electron derivative all over
+      !! `cx%dfjk` (the XC kernel and potential derivative on the SCF's
+      !! grid). A later trc_run_scf clears the RI-MP2 result, and the
+      !! gradient is the SCF's again. (ABI 1.15: a double hybrid's
+      !! gradient was refused before.)
       !!   - --df outside the DF-SCF's own scope (unrestricted, spherical,
       !!     range-separated -- the SCF refuses those first), or with the fit
       !!     gone. A --df gradient otherwise runs the FITTED J/K gradient
@@ -3880,6 +3943,12 @@ contains
       call gradient_capability_check(cx, have_func, func, refusal, status)
       if (len(refusal) > 0) then
          cx%message = "trc_run_gradient: "//refusal
+         return
+      end if
+      if (cx%rimp2_ok) then
+         ! The energy this context holds is E_RHF + E_RI-MP2: differentiate
+         ! that (gradient_capability_check has refused every case it cannot).
+         call rimp2_gradient_run(cx, status)
          return
       end if
       ! GRID REUSE -- see this function's own header.
@@ -4165,6 +4234,13 @@ contains
       call gradient_capability_check(cx, have_func, func, refusal, status)
       if (len(refusal) > 0) then
          cx%message = "trc_run_hessian: "//refusal
+         return
+      end if
+      if (cx%rimp2_ok) then
+         ! Each displacement below reruns the SCF, which clears the RI-MP2
+         ! result, so its gradient would silently be the reference's alone.
+         cx%message = "trc_run_hessian: the RI-MP2 finite-difference Hessian is not implemented yet "// &
+                      "(each displaced point would need its own trc_run_rimp2)"
          return
       end if
 
@@ -4467,6 +4543,77 @@ contains
       end if
    end function core_orbitals
 
+   integer function rimp2_frozen_count(cx) result(nfrozen)
+      !! The frozen core trc_set_rimp2 asked for, or (-1) the elements' own.
+      type(context_box), intent(in) :: cx
+      integer :: i
+      nfrozen = cx%nfrozen
+      if (nfrozen < 0) then
+         nfrozen = 0
+         do i = 1, cx%natm
+            nfrozen = nfrozen + core_orbitals(cx%at_z(i))
+         end do
+      end if
+   end function rimp2_frozen_count
+
+   subroutine rimp2_gradient_run(cx, status)
+      !! trc_run_gradient's RI-MP2 branch: d(E_ref + c E_RI-MP2)/dR at the
+      !! orbitals the SCF left in `cx%bb`, over the SAME pair-list threshold
+      !! and frozen core trc_run_rimp2 used, so the gradient differentiates
+      !! the energy trc_energy reports: E_ref the RHF or the KS energy (with
+      !! the SCF's own grid settings), c a double hybrid's PT2 fraction or
+      !! one (trc_energy's own weighting). One rank
+      !! (gradient_capability_check).
+      type(context_box), intent(inout) :: cx
+      integer(c_int), intent(out) :: status
+      type(trc_rimp2_grad_t) :: job
+      if (len_trim(cx%opts%functional) > 0) then
+         ! Re-resolved, as gradient_capability_check did: the name was
+         ! validated when it was set.
+         if (.not. xc_functional_by_name(cx%opts%functional, job%opts%func)) then
+            status = TRC_ERR_UNSUPPORTED
+            cx%message = "trc_run_gradient: functional '"//trim(cx%opts%functional)//"' failed to re-resolve"
+            return
+         end if
+         if (xc_is_double_hybrid(job%opts%func)) job%opts%pt2_scale = job%opts%func%pt2_cos
+         job%opts%grid_level = cx%opts%grid_level
+         job%opts%grid_max_pts = cx%opts%grid_max_pts
+         job%opts%rho_tol = cx%opts%rho_tol
+      end if
+      job%opts%nocc = cx%nalpha
+      job%opts%nfrozen = rimp2_frozen_count(cx)
+      job%opts%aux_block = max(cx%aux_block, 0)
+      job%opts%pair_threshold = cx%opts%eri_thresh
+      job%opts%eri_threshold = scf_settings_eri_thresh_env(cx%opts%eri_thresh)
+      job%opts%verbose = cx%opts%verbose
+      if (allocated(cx%grad)) deallocate (cx%grad)
+      if (cx%opts%df) then
+         ! The --df reference: its Z-vector, potentials and two-electron
+         ! derivative all over the fit the SCF converged with.
+         call trc_rimp2_gradient(cx%bb%b, cx%ab%b, cx%bb%cmo(:, :, 1), cx%bb%eps(:, 1), job, cx%la, &
+                                 dfjk=cx%dfjk, jkaux=cx%jb%b)
+      else
+         call trc_rimp2_gradient(cx%bb%b, cx%ab%b, cx%bb%cmo(:, :, 1), cx%bb%eps(:, 1), job, cx%la)
+      end if
+      ! The energy trc_run_rimp2 deferred comes from these amplitudes (the
+      ! same B and pairs, so the same numbers to round-off), even if a
+      ! later step failed.
+      if (job%res%has_energy .and. cx%rimp2_deferred) then
+         cx%e_os = job%res%e_os
+         cx%e_ss = job%res%e_ss
+         cx%rimp2_deferred = .false.
+      end if
+      if (.not. job%res%ok) then
+         status = TRC_ERR_NOCONV
+         if (index(job%res%message, "did not converge") == 0) status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_run_gradient: "//trim(job%res%message)
+         return
+      end if
+      call move_alloc(job%grad, cx%grad)
+      cx%grad_ok = .true.
+      status = TRC_OK
+   end subroutine rimp2_gradient_run
+
    function trc_run_rimp2(handle) result(status) bind(c, name="trc_run_rimp2")
       !! Needs a converged SCF in the context (restricted, or unrestricted --
       !! UHF or UKS, cx%res%nspin == 2) and an auxiliary basis. An
@@ -4477,16 +4624,17 @@ contains
       !! into the Cartesian, zero-padded space `trc_rimp2_run`/
       !! `trc_urimp2_run` themselves run in by `rimp2_driver_mo_to_cart`
       !! (trc_rimp2_driver.F90's own header says why the pad is exact).
+      !! On one rank with a closed-shell reference the pair energies are
+      !! deferred: computed by the first trc_energy or trc_rimp2_energy, or
+      !! taken from the amplitudes of a trc_run_gradient that comes first,
+      !! which then runs no separate energy step. The numbers are the same
+      !! either way (to round-off); only when the work happens moves.
       type(c_ptr), value :: handle
       integer(c_int) :: status
       type(context_box), pointer :: cx
-      type(trc_pairlist_t) :: pl
-      type(trc_rimp2_result_t) :: res
       type(comm_t) :: comm
-      integer :: nfrozen, nblk, i, nc
+      integer :: nfrozen
       logical :: collective
-      type(trc_rimp2_options_t) :: rimp2_opts
-      real(dp), allocatable :: cmo_a(:, :), eps_a(:), cmo_ab(:, :, :), eps_ab(:, :)
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -4522,20 +4670,12 @@ contains
                       "auxiliary ceiling "//trim(itoa(DF_LMAX_AUX))//" (TERCO_DF_LMAX + 1)"
          return
       end if
-      nfrozen = cx%nfrozen
-      if (nfrozen < 0) then
-         nfrozen = 0
-         do i = 1, cx%natm
-            nfrozen = nfrozen + core_orbitals(cx%at_z(i))
-         end do
-      end if
+      nfrozen = rimp2_frozen_count(cx)
       status = TRC_ERR_BADARG
       if (nfrozen >= cx%nalpha .or. nfrozen >= cx%nbeta) then
          cx%message = "trc_run_rimp2: every occupied orbital is frozen in at least one spin channel"
          return
       end if
-      nblk = cx%aux_block
-      if (nblk <= 0) nblk = cx%ab%b%nao
       call trc_build_comm(cx%fcomm, comm, collective, status)
       if (status /= TRC_OK) return
       ! UHF/UKS RI-MP2 (cx%res%nspin == 2) refuses more than one rank --
@@ -4552,6 +4692,49 @@ contains
          call comm%finalize()
          return
       end if
+      ! One rank and a closed shell: accept the run and leave the pair
+      ! energies until something needs them. An RI-MP2 gradient
+      ! (trc_run_gradient next) computes them from its own amplitudes, so
+      ! the 2.9 s energy step never runs (gly10/cc-pVDZ --df, V100: the
+      ! gradient's own pair energies take 0.2 s); any
+      ! reader (trc_energy, trc_rimp2_energy) runs it then (rimp2_settle),
+      ! with the settings in force now -- every setter they depend on
+      ! clears `rimp2_ok`. More than one rank stays eager: a reader is not
+      ! a collective call, and the ring is.
+      cx%rimp2_ok = .true.
+      if (cx%res%nspin == 1 .and. .not. collective) then
+         cx%rimp2_deferred = .true.
+         status = TRC_OK
+         return
+      end if
+      call rimp2_pair_energies(cx, comm, collective)
+      cx%rimp2_deferred = .false.
+      if (collective) call comm%finalize()
+      status = TRC_OK
+   end function trc_run_rimp2
+
+   subroutine rimp2_settle(cx)
+      !! Run the RI-MP2 energy trc_run_rimp2 deferred, if it did and
+      !! nothing has computed it since (one rank: trc_run_rimp2's own rule).
+      type(context_box), intent(inout) :: cx
+      type(comm_t) :: comm
+      if (.not. (cx%rimp2_ok .and. cx%rimp2_deferred)) return
+      call rimp2_pair_energies(cx, comm, .false.)
+      cx%rimp2_deferred = .false.
+   end subroutine rimp2_settle
+
+   subroutine rimp2_pair_energies(cx, comm, collective)
+      !! cx%e_os and cx%e_ss: trc_rimp2_run/trc_urimp2_run on the context's
+      !! converged SCF, over `comm` when `collective` (restricted only;
+      !! trc_run_rimp2 has checked everything else).
+      type(context_box), intent(inout) :: cx
+      type(comm_t), intent(in) :: comm
+      logical, intent(in) :: collective
+      type(trc_pairlist_t) :: pl
+      type(trc_rimp2_result_t) :: res
+      type(trc_rimp2_options_t) :: rimp2_opts
+      real(dp), allocatable :: cmo_a(:, :), eps_a(:), cmo_ab(:, :, :), eps_ab(:, :)
+      integer :: nc
       ! `cx%res%cmo`/`eps` are at the SCF's own space (`scf_space_nao`:
       ! `nao_sph` when `cx%bb%b%spherical`, the Cartesian `nao` otherwise)
       ! -- `trc_rimp2_run`/`trc_urimp2_run` themselves stay Cartesian-
@@ -4560,8 +4743,9 @@ contains
       ! A Cartesian basis copies straight through (nc == the SCF's own
       ! space already).
       nc = cx%bb%b%nao
-      rimp2_opts%nfrozen = nfrozen
-      rimp2_opts%aux_block = nblk
+      rimp2_opts%nfrozen = rimp2_frozen_count(cx)
+      rimp2_opts%aux_block = cx%aux_block
+      if (rimp2_opts%aux_block <= 0) rimp2_opts%aux_block = cx%ab%b%nao
       rimp2_opts%verbose = cx%opts%verbose
       if (cx%res%nspin == 2) then
          allocate (cmo_ab(nc, nc, 2), eps_ab(nc, 2))
@@ -4610,14 +4794,11 @@ contains
             call trc_rimp2_run(cx%bb%b, cx%ab%b, pl, cx%nalpha, cmo_a, eps_a, res, &
                                opts=rimp2_opts, la=cx%la)
          end if
-         if (collective) call comm%finalize()
       end if
       call pl%release()
       cx%e_os = res%e_os
       cx%e_ss = res%e_ss
-      cx%rimp2_ok = .true.
-      status = TRC_OK
-   end function trc_run_rimp2
+   end subroutine rimp2_pair_energies
 
    function trc_save_scf(handle, path) result(status) bind(c, name="trc_save_scf")
       !! Write the context's SCF result -- orbitals, orbital energies,
@@ -5065,6 +5246,7 @@ contains
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) return
       energy = real(cx%res%energy, c_double)
+      call rimp2_settle(cx)
       if (cx%rimp2_ok) then
          if (len_trim(cx%opts%functional) > 0 .and. xc_functional_by_name(cx%opts%functional, func)) then
             if (xc_is_double_hybrid(func)) then
@@ -5509,6 +5691,7 @@ contains
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%rimp2_ok) return
+      call rimp2_settle(cx)
       e_os = real(cx%e_os, c_double)
       e_ss = real(cx%e_ss, c_double)
       status = TRC_OK

@@ -557,6 +557,15 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_grad_dft PRIVATE test-drive::test-drive)
   unset(_cli_grad_dft_probe)
 
+  # --rimp2 --grad through the CLI: its JSON gradient against metalquicha's
+  # RI-MP2 references (four-centre and --df), and a UHF reference refused --
+  # see check_cli_grad_rimp2.F90's own header.
+  set(_cli_grad_rimp2_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_rimp2_probe.json)
+  terco_add_check(check_cli_grad_rimp2 check_cli_grad_rimp2.F90
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_rimp2_probe})
+  target_link_libraries(check_cli_grad_rimp2 PRIVATE test-drive::test-drive)
+  unset(_cli_grad_rimp2_probe)
+
   # The same comparison for --df --grad (B3LYP: fitted J, fitted K, XC) --
   # see check_cli_grad_df.F90's own header.
   set(_cli_grad_df_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_df_probe.json)
@@ -611,17 +620,17 @@ if(TERCO_BUILD_APP)
   endif()
 
   if(TERCO_ENABLE_DLFIND)
-    # --opt refuses a method with no gradient (a double hybrid) BEFORE any
-    # SCF runs at all: app/trc_run_opt.F90's run_opt_capability_check
-    # knows statically, from the command line alone, which methods have no
-    # analytic gradient, so there is no SCF line in the output at all when
-    # this fires.
+    # --opt refuses a double hybrid BEFORE any SCF runs at all: its steps
+    # rerun only the SCF and its gradient, not the RI-MP2 correlation, and
+    # app/trc_run_opt.F90's run_opt_capability_check knows that statically
+    # from the command line, so there is no SCF line in the output at all
+    # when this fires.
     add_test(NAME terco/cli_opt_refused_dh
              COMMAND $<TARGET_FILE:terco_cli> ${_opt_xyz}/water.xyz -b 6-31g -f b2plyp --opt --silent)
     set_tests_properties(
       terco/cli_opt_refused_dh
       PROPERTIES ENVIRONMENT "${_opt_env}" PASS_REGULAR_EXPRESSION
-                 "needs a gradient.*double-hybrid" FAIL_REGULAR_EXPRESSION "SCF +: +[0-9]")
+                 "reruns only the SCF.*RI-MP2/double-hybrid" FAIL_REGULAR_EXPRESSION "SCF +: +[0-9]")
 
     # The CLI's --opt --json end to end: the "optimization" JSON block,
     # and that <name>_opt.xyz/_traj.xyz were actually written -- see
@@ -1617,6 +1626,19 @@ set_tests_properties(terco/check_capi_ghost PROPERTIES WORKING_DIRECTORY ${CMAKE
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
+# trc_run_rimp2 then trc_run_gradient: no separate RI-MP2 energy step, and
+# the energy trc_rimp2_energy/trc_energy report after the gradient equals an
+# energy-only handle's to 1e-12 (exact, --df and --df chained references).
+# See check_capi_rimp2_grad.F90's own header.
+add_executable(check_capi_rimp2_grad check_capi_rimp2_grad.F90)
+target_compile_definitions(check_capi_rimp2_grad PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_rimp2_grad PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
+                                                     test-drive::test-drive)
+add_test(NAME terco/check_capi_rimp2_grad COMMAND check_capi_rimp2_grad ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(terco/check_capi_rimp2_grad PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
 # trc_run_hessian/trc_hessian (the finite-difference Cartesian Hessian),
 # through the context API, against pyscf's own ANALYTIC RHF/STO-3G
 # Hessian already in test/pyscf_refs/vib_thermo_{water,hcn,
@@ -1721,6 +1743,29 @@ add_test(NAME terco/scf_rimp2_uhf COMMAND scf_rimp2_uhf)
 set_tests_properties(
   terco/scf_rimp2_uhf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# The analytic RI-MP2 gradient (src/post_hf/rimp2/trc_rimp2_grad.F90) against
+# metalquicha's pyscf-validated references (water cc-pVDZ, water 6-31G with
+# a frozen core, NH3 def2-SVP) and against finite differences of terco's own
+# RHF + RI-MP2 energy (formamide and water, Cartesian and spherical, frozen
+# core on and off). See the file's own header for the provenance.
+terco_add_check(check_rimp2_grad check_rimp2_grad.F90 NEEDS_BASIS)
+target_link_libraries(check_rimp2_grad PRIVATE test-drive::test-drive)
+
+# The analytic double-hybrid gradient (trc_rimp2_grad.F90 over a Kohn-Sham
+# reference: b2plyp, b2gp-plyp, mpw2plyp) against Richardson finite
+# differences of terco's own DH energy (--df Cartesian and spherical, and the
+# exact reference) and of pyscf's, plus the identity that defines the new
+# d/dR Tr(P V_xc[D]) term (trc_xc_grad_potential.F90). See its header.
+terco_add_check(check_dh_grad check_dh_grad.F90 NEEDS_BASIS)
+target_link_libraries(check_dh_grad PRIVATE terco_c_interfaces test-drive::test-drive)
+# Formamide (no symmetry, spherical) against pyscf and finite differences, and
+# the exact reference: ~3 min on four host cores, so nightly only.
+add_test(NAME terco/check_dh_grad_long COMMAND check_dh_grad long)
+set_tests_properties(
+  terco/check_dh_grad_long PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                      ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+                                      LABELS LONG)
 
 # Double hybrids (b2plyp, b2gp-plyp -- trc_xc_functional.F90): the SCF
 # (four-centre AND --df, cc-pVDZ-RIFIT doing double duty as --df's jkfit

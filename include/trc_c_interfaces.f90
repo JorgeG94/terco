@@ -35,7 +35,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 17
+   integer(c_int), parameter :: TRC_ABI_MINOR = 16
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -989,9 +989,27 @@ module trc_c_interfaces
          !! REFUSED, clearly, rather than attempted:
          !!   - a double hybrid on a meta-GGA base (none is registered): its
          !!     relaxed gradient would need a meta-GGA CPKS kernel.
-         !!   - RI-MP2 (or, once it exists, a double hybrid): no correlation
-         !!     gradient exists; `trc_scf_gradient` is the SCF reference term
-         !!     only.
+         !!   - RI-MP2 over anything but a restricted RHF or LDA/GGA KS
+         !!     reference on one rank: an unrestricted one (UHF, UKS), a
+         !!     meta-GGA, range-separated or VV10 functional, a
+         !!     spin-component-scaled double hybrid (none is registered), a
+         !!     multi-rank context, or dropped functions
+         !!     (gradient_capability_check's own messages).
+         !!
+         !! RI-MP2 AND DOUBLE HYBRIDS. After a successful trc_run_rimp2 the
+         !! energy this context reports (trc_energy) is E_ref + c E_RI-MP2 --
+         !! E_ref the RHF or KS energy, c a double hybrid's PT2 fraction or one
+         !! -- and this differentiates THAT: trc_rimp2_grad%trc_rimp2_gradient,
+         !! with the same frozen core, pair-list threshold and (for a KS
+         !! reference) functional and grid settings the energy used. A
+         !! four-centre reference keeps its Z-vector against the exact orbital
+         !! Hessian (CPHF, or CPKS with the XC kernel); a --df one
+         !! (trc_set_df) differentiates the fitted SCF it converged, its
+         !! Z-vector, potentials and two-electron derivative all over
+         !! `cx%dfjk` (the XC kernel and potential derivative on the SCF's
+         !! grid). A later trc_run_scf clears the RI-MP2 result, and the
+         !! gradient is the SCF's again. (ABI 1.15: a double hybrid's
+         !! gradient was refused before.)
          !!   - --df outside the DF-SCF's own scope (unrestricted, spherical,
          !!     range-separated -- the SCF refuses those first), or with the fit
          !!     gone. A --df gradient otherwise runs the FITTED J/K gradient
@@ -1203,6 +1221,11 @@ module trc_c_interfaces
          !! into the Cartesian, zero-padded space `trc_rimp2_run`/
          !! `trc_urimp2_run` themselves run in by `rimp2_driver_mo_to_cart`
          !! (trc_rimp2_driver.F90's own header says why the pad is exact).
+         !! On one rank with a closed-shell reference the pair energies are
+         !! deferred: computed by the first trc_energy or trc_rimp2_energy, or
+         !! taken from the amplitudes of a trc_run_gradient that comes first,
+         !! which then runs no separate energy step. The numbers are the same
+         !! either way (to round-off); only when the work happens moves.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
