@@ -1,0 +1,13 @@
+# terco pyscf reference v1
+# case: check_df_grad_vs_pyscf_water_tpssh_631gs
+# generator: test/pyscf_refs/generate.py CASES["dfg_water_tpssh_631gs"] -> gen_df_grad
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 1a84e83e21cd5d72f85c011c7a937e8ba38c7dccf830699ba75ea577d1171075
+# files: test/check_df_grad_vs_pyscf.F90 test/basis_sets/6-31gs.json test/basis_sets/def2-universal-jkfit.json test/water.xyz
+NAT 3
+NAO 19
+GRAD 3 3
+-2.63432879388360934e-16 2.16641798961412847e-15 -1.68051442718111232e-02 2.00961533198405194e-16 -9.36776040027265111e-03 8.40248962163347990e-03
+1.77540350059933690e-16 9.36776040027087475e-03 8.40248962163281377e-03
+END

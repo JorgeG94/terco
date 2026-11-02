@@ -30,8 +30,20 @@
 ! is to ~1e-9 absolute on a gradient of order 1: no fitting, no tolerance
 ! chosen to let a residual through.
 !
-! Three independent cases below, each its own test-drive unittest, each
-! building its own basis/grid.
+! META-GGA (r2SCAN, TPSS, M06-L restricted; r2SCAN and TPSS unrestricted):
+! the tau term of trc_xc_grad.F90's header, META-GGA, differenced the same
+! way, but on an N-representable density (`orbital_density`: two
+! synthetic orbitals, unequal occupations). The matrix above is not
+! positive semidefinite, so it breaks tau >= tau_W = |grad rho|^2/(8 rho)
+! at some points; there the kernels clamp tau (trc_xc_util's
+! enforce_fermi_hole_curvature) and return derivatives that are not those
+! of the energy they return. Measured with that matrix: r2SCAN 1e-3 and
+! TPSS 1e14 off the finite difference; with this one the same gradient
+! code agrees to ~1e-9 (RKS ~4e-10, UKS ~1.1e-9, as the GGA cases). With
+! one orbital tau = tau_W exactly, on the clamp, hence two.
+!
+! Each case below is its own test-drive unittest, building its own
+! basis/grid.
 !
 module check_xc_grad_fixedgrid_fd_suite
    use pic_types, only: dp
@@ -61,7 +73,12 @@ contains
       testsuite = [ &
                   new_unittest("RKS SVWN H2/6-31G*, fixed grid", test_rks_svwn), &
                   new_unittest("RKS PBE H2/6-31G*, fixed grid", test_rks_pbe), &
-                  new_unittest("UKS PBE H2/6-31G*, fixed grid", test_uks_pbe) &
+                  new_unittest("UKS PBE H2/6-31G*, fixed grid", test_uks_pbe), &
+                  new_unittest("RKS r2SCAN H2/6-31G*, fixed grid", test_rks_r2scan), &
+                  new_unittest("RKS TPSS H2/6-31G*, fixed grid", test_rks_tpss), &
+                  new_unittest("RKS M06-L H2/6-31G*, fixed grid", test_rks_m06l), &
+                  new_unittest("UKS r2SCAN H2/6-31G*, fixed grid", test_uks_r2scan), &
+                  new_unittest("UKS TPSS H2/6-31G*, fixed grid", test_uks_tpss) &
                   ]
    end subroutine collect_xc_grad_fixedgrid_fd
 
@@ -69,6 +86,12 @@ contains
    ! Same deterministic, dense, symmetric construction as
    ! check_rys_grad_vs_pyscf.F90/check_rys_grad_fd.F90.
    !
+   ! Whether `name` is one of this suite's meta-GGA cases.
+   pure logical function is_meta(name) result(meta)
+      character(*), intent(in) :: name
+      meta = name == 'r2scan' .or. name == 'tpss' .or. name == 'm06l'
+   end function is_meta
+
    subroutine synth_density(n, phase, d)
       integer, intent(in) :: n, phase
       real(dp), intent(out) :: d(n, n)
@@ -80,6 +103,27 @@ contains
       end do
       d = 0.5_dp*(d + transpose(d))
    end subroutine synth_density
+
+   !
+   ! An N-representable density for the meta-GGA cases: occupations 1 and
+   ! 0.6 of two deterministic, linearly independent synthetic orbitals, so
+   ! tau > tau_W wherever the two orbitals' gradients are not parallel.
+   !
+   subroutine orbital_density(n, phase, d)
+      integer, intent(in) :: n, phase
+      real(dp), intent(out) :: d(n, n)
+      real(dp) :: c1(n), c2(n)
+      integer :: p, q
+      do p = 1, n
+         c1(p) = 0.6_dp + 0.2_dp*cos(real(3*p + 7*phase, dp))
+         c2(p) = 0.5_dp*sin(real(5*p + 3*phase, dp))
+      end do
+      do q = 1, n
+         do p = 1, n
+            d(p, q) = c1(p)*c1(q) + 0.6_dp*c2(p)*c2(q)
+         end do
+      end do
+   end subroutine orbital_density
 
    subroutine setup(bas, grid0, xg0, r0, at_z)
       type(trc_basis_t), intent(out) :: bas
@@ -112,6 +156,36 @@ contains
       call run_rks_case(error, 'pbe')
    end subroutine test_rks_pbe
 
+   subroutine test_rks_r2scan(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_rks_case(error, 'r2scan')
+   end subroutine test_rks_r2scan
+
+   subroutine test_rks_tpss(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_rks_case(error, 'tpss')
+   end subroutine test_rks_tpss
+
+   subroutine test_rks_m06l(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_rks_case(error, 'm06l')
+   end subroutine test_rks_m06l
+
+   subroutine test_uks_pbe(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_uks_case(error, 'pbe')
+   end subroutine test_uks_pbe
+
+   subroutine test_uks_r2scan(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_uks_case(error, 'r2scan')
+   end subroutine test_uks_r2scan
+
+   subroutine test_uks_tpss(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_uks_case(error, 'tpss')
+   end subroutine test_uks_tpss
+
    subroutine run_rks_case(error, func_name)
       type(error_type), allocatable, intent(out) :: error
       character(*), intent(in) :: func_name
@@ -128,7 +202,11 @@ contains
 
       call setup(bas, grid0, xg0, r0, at_z)
       allocate (dmat(bas%nao, bas%nao), grad(3, NAT))
-      call synth_density(bas%nao, 1, dmat)
+      if (is_meta(func_name)) then
+         call orbital_density(bas%nao, 1, dmat)
+      else
+         call synth_density(bas%nao, 1, dmat)
+      end if
       call lp%init(bas%nao)
 
       ok = xc_functional_by_name(func_name, func)
@@ -146,10 +224,12 @@ contains
                  " exceeds "//to_string(ABSTOL, "es10.2"))
    end subroutine run_rks_case
 
-   subroutine test_uks_pbe(error)
-      !! GGA (PBE), unrestricted: two independent, asymmetric densities,
-      !! so the cross-spin Q1/Q2 terms (trc_xc_grad.F90's header) are live.
+   subroutine run_uks_case(error, func_name)
+      !! Unrestricted: two independent, asymmetric densities, so the
+      !! cross-spin Q1/Q2 terms (trc_xc_grad.F90's header) are live, and a
+      !! meta-GGA's two tau channels differ.
       type(error_type), allocatable, intent(out) :: error
+      character(*), intent(in) :: func_name
       type(trc_basis_t) :: bas, basp
       type(dft_grid_t) :: grid0
       type(trc_xc_grid_t) :: xg0
@@ -163,13 +243,18 @@ contains
 
       call setup(bas, grid0, xg0, r0, at_z)
       allocate (dmat2(bas%nao, bas%nao, 2), grad2(3, NAT))
-      call synth_density(bas%nao, 1, dmat2(:, :, 1))
-      call synth_density(bas%nao, 2, dmat2(:, :, 2))
+      if (is_meta(func_name)) then
+         call orbital_density(bas%nao, 1, dmat2(:, :, 1))
+         call orbital_density(bas%nao, 2, dmat2(:, :, 2))
+      else
+         call synth_density(bas%nao, 1, dmat2(:, :, 1))
+         call synth_density(bas%nao, 2, dmat2(:, :, 2))
+      end if
       call lp%init(bas%nao)
 
-      ok = xc_functional_by_name('pbe', func)
+      ok = xc_functional_by_name(func_name, func)
       worst = fixedgrid_worst_diff2(bas, basp, xg0, lp, func, dmat2, r0, at_z, NAT, H, grad2)
-      print '(a,es10.2)', '  UKS PBE H2/6-31G*, fixed grid: worst|analytic-FD| ', worst
+      print '(a,es10.2)', '  UKS '//trim(func_name)//' H2/6-31G*, fixed grid: worst|analytic-FD| ', worst
 
       call lp%release()
       call xg0%release()
@@ -180,7 +265,7 @@ contains
       if (allocated(error)) return
       call check(error, worst <= ABSTOL, "worst|analytic-FD| = "//to_string(worst, "es10.2")// &
                  " exceeds "//to_string(ABSTOL, "es10.2"))
-   end subroutine test_uks_pbe
+   end subroutine run_uks_case
 
    !
    ! RKS: the analytic fixed-grid XC gradient (into `grad`) and the worst

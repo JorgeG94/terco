@@ -1,0 +1,13 @@
+# terco pyscf reference v1
+# case: check_xc_grad_vs_pyscf_water_r2scan_631gs
+# generator: test/pyscf_refs/generate.py CASES["xc_grad_gridresp_water_r2scan_631gs"] -> gen_xc_grad
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 26808914861f4ce47032044b4ce93a3a5741d3286220fb9bfa6bd766986378a2
+# files: test/check_xc_grad_vs_pyscf.F90 test/basis_sets/6-31gs.json test/water.xyz
+NAT 3
+NAO 19
+GRAD 3 3
+-8.76853257085397826e-17 -6.40150232085121401e-16 -1.25395400036483196e-02 6.28396939369469517e-17 -6.30320136446860246e-03 6.26977000181994093e-03
+2.79323356366692775e-17 6.30320136446904655e-03 6.26977000182127320e-03
+END

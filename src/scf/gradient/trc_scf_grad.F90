@@ -7,7 +7,7 @@
 ! converged trc_scf_result_t. With `func` present (optional, see
 ! trc_scf_gradient's own header) this is the KS-DFT gradient instead:
 ! eri%gradient's exact-exchange piece scaled by `func%exx`, plus
-! trc_xc_grad%xc_grad_add's LDA/GGA exchange-correlation term.
+! trc_xc_grad%xc_grad_add's LDA/GGA/meta-GGA exchange-correlation term.
 !
 ! ORDER MATTERS. eri%gradient starts `grad` from zero (its own header: "the
 ! two-electron part ONLY"); trc_1e_gradient and scf_grad_nuclear_repulsion
@@ -391,7 +391,7 @@ contains
       end if
       call gst%step_off(lp, 3, tc)
 
-      ! --- exchange-correlation, added on top, LDA/GGA only. `density` is
+      ! --- exchange-correlation, added on top (LDA, GGA, meta-GGA). `density` is
       ! still present and correct on the device at this point (see this
       ! routine's own DEVICE RESIDENCY note above); `grad` likewise. ---
       if (present(func)) then

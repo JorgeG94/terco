@@ -445,8 +445,24 @@ foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
              formamide_pbe_631gs formamide_b3lyp_631gs
              nh2_pbe_ccpvdz_sph nh2_b3lyp_ccpvdz_sph
              water_wb97x_ccpvdz_sph nh2_wb97x_ccpvdz_sph
-             water_wb97xv_ccpvdz_sph nh2_wb97xv_ccpvdz_sph)
-  if(case STREQUAL "water_pbe_ccpvdz_sph")
+             water_wb97xv_ccpvdz_sph nh2_wb97xv_ccpvdz_sph
+             water_r2scan_ccpvdz_sph water_tpss_ccpvdz_sph water_m06l_ccpvdz_sph
+             formamide_r2scan_ccpvdz_sph formamide_r2scan_631gs nh2_r2scan_ccpvdz_sph
+             water_wb97mv_ccpvdz_sph nh2_wb97mv_ccpvdz_sph)
+  if(case MATCHES "^(water|nh2|formamide)_(r2scan|tpss|m06l|wb97mv)_(631gs|ccpvdz_sph)$")
+    # Meta-GGAs (trc_xc_grad.F90's META-GGA): RKS and, on NH2, UKS;
+    # wB97M-V is the meta-GGA with VV10 and erf exchange.
+    set(xyz ${CMAKE_MATCH_1}.xyz)
+    set(func ${CMAKE_MATCH_2})
+    if(func STREQUAL "wb97mv")
+      set(func wb97m-v)
+    endif()
+    if(CMAKE_MATCH_3 STREQUAL "631gs")
+      set(json basis_sets/6-31gs.json)
+    else()
+      set(json basis_sets/cc-pvdz.json)
+    endif()
+  elseif(case STREQUAL "water_pbe_ccpvdz_sph")
     set(xyz water.xyz)
     set(json basis_sets/cc-pvdz.json)
     set(func pbe)
@@ -555,6 +571,15 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_grad_dft PRIVATE test-drive::test-drive)
   unset(_cli_grad_dft_probe)
 
+  # --rimp2 --grad through the CLI: its JSON gradient against metalquicha's
+  # RI-MP2 references (four-centre and --df), and a UHF reference refused --
+  # see check_cli_grad_rimp2.F90's own header.
+  set(_cli_grad_rimp2_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_rimp2_probe.json)
+  terco_add_check(check_cli_grad_rimp2 check_cli_grad_rimp2.F90
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_rimp2_probe})
+  target_link_libraries(check_cli_grad_rimp2 PRIVATE test-drive::test-drive)
+  unset(_cli_grad_rimp2_probe)
+
   # The same comparison for --df --grad (B3LYP: fitted J, fitted K, XC) --
   # see check_cli_grad_df.F90's own header.
   set(_cli_grad_df_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_grad_df_probe.json)
@@ -609,17 +634,17 @@ if(TERCO_BUILD_APP)
   endif()
 
   if(TERCO_ENABLE_DLFIND)
-    # --opt refuses a method with no gradient (a meta-GGA) BEFORE any SCF
-    # runs at all: app/main.F90's opt_capability_check knows statically,
-    # from the command line's own --func, which functionals have no
-    # analytic gradient, so there is no "iterations" line in the output
-    # at all when this fires.
-    add_test(NAME terco/cli_opt_refused_mgga
-             COMMAND $<TARGET_FILE:terco_cli> ${_opt_xyz}/water.xyz -b 6-31g -f r2scan --opt --silent)
+    # --opt refuses a double hybrid BEFORE any SCF runs at all: its steps
+    # rerun only the SCF and its gradient, not the RI-MP2 correlation, and
+    # app/trc_run_opt.F90's run_opt_capability_check knows that statically
+    # from the command line, so there is no SCF line in the output at all
+    # when this fires.
+    add_test(NAME terco/cli_opt_refused_dh
+             COMMAND $<TARGET_FILE:terco_cli> ${_opt_xyz}/water.xyz -b 6-31g -f b2plyp --opt --silent)
     set_tests_properties(
-      terco/cli_opt_refused_mgga
+      terco/cli_opt_refused_dh
       PROPERTIES ENVIRONMENT "${_opt_env}" PASS_REGULAR_EXPRESSION
-                 "needs a gradient.*meta-GGA" FAIL_REGULAR_EXPRESSION "SCF +: +[0-9]")
+                 "reruns only the SCF.*RI-MP2/double-hybrid" FAIL_REGULAR_EXPRESSION "SCF +: +[0-9]")
 
     # The CLI's --opt --json end to end: the "optimization" JSON block,
     # and that <name>_opt.xyz/_traj.xyz were actually written -- see
@@ -978,8 +1003,21 @@ endforeach()
 # open-shell, non-degenerate-SOMO case -- check_xc_grad_fd.F90's own
 # header explains why NH2 and not OH).
 foreach(case water_svwn_631gs water_pbe_631gs nh2_pbe_631gs
-             water_wb97x_631gs water_wb97x_ccpvdz)
-  if(case STREQUAL "water_svwn_631gs")
+             water_wb97x_631gs water_wb97x_ccpvdz
+             water_r2scan_631gs water_tpss_631gs water_m06l_631gs
+             nh2_r2scan_631gs nh2_tpss_631gs formamide_r2scan_631gs)
+  if(case MATCHES "^(water|nh2|formamide)_(r2scan|tpss|m06l)_(631gs|ccpvdz)$")
+    # Meta-GGAs: the tau term in all three grid-response channels
+    # (trc_xc_grad.F90's META-GGA), RKS and, on NH2, UKS.
+    set(xyz ${CMAKE_MATCH_1}.xyz)
+    set(func ${CMAKE_MATCH_2})
+    if(CMAKE_MATCH_3 STREQUAL "631gs")
+      set(json basis_sets/6-31gs.json)
+    else()
+      set(json basis_sets/cc-pvdz.json)
+    endif()
+    set(glev 3)
+  elseif(case STREQUAL "water_svwn_631gs")
     set(xyz water.xyz)
     set(json basis_sets/6-31gs.json)
     set(func svwn)
@@ -1275,9 +1313,9 @@ set_tests_properties(
 # converged orbitals (and grid), def2-universal-jkfit, Cartesian --
 # test/pyscf_refs/dfg_<case>.ref, see check_df_grad_vs_pyscf.F90.
 foreach(case IN ITEMS water_hf_631gs formamide_hf_ccpvdz water_pbe_631gs water_b3lyp_631gs
-                      formamide_b3lyp_ccpvdz)
+                      formamide_b3lyp_ccpvdz water_r2scan_631gs water_tpssh_631gs)
   string(REGEX MATCH "^[a-z]+" _mol "${case}")
-  string(REGEX MATCH "_(hf|pbe|b3lyp)_" _fn "${case}")
+  string(REGEX MATCH "_(hf|pbe|b3lyp|r2scan|tpssh)_" _fn "${case}")
   string(REPLACE "_" "" _fn "${_fn}")
   if(case MATCHES "631gs$")
     set(_bas basis_sets/6-31gs.json)
@@ -1602,6 +1640,19 @@ set_tests_properties(terco/check_capi_ghost PROPERTIES WORKING_DIRECTORY ${CMAKE
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
+# trc_run_rimp2 then trc_run_gradient: no separate RI-MP2 energy step, and
+# the energy trc_rimp2_energy/trc_energy report after the gradient equals an
+# energy-only handle's to 1e-12 (exact, --df and --df chained references).
+# See check_capi_rimp2_grad.F90's own header.
+add_executable(check_capi_rimp2_grad check_capi_rimp2_grad.F90)
+target_compile_definitions(check_capi_rimp2_grad PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_rimp2_grad PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
+                                                     test-drive::test-drive)
+add_test(NAME terco/check_capi_rimp2_grad COMMAND check_capi_rimp2_grad ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(terco/check_capi_rimp2_grad PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
 # trc_run_hessian/trc_hessian (the finite-difference Cartesian Hessian),
 # through the context API, against pyscf's own ANALYTIC RHF/STO-3G
 # Hessian already in test/pyscf_refs/vib_thermo_{water,hcn,
@@ -1706,6 +1757,29 @@ add_test(NAME terco/scf_rimp2_uhf COMMAND scf_rimp2_uhf)
 set_tests_properties(
   terco/scf_rimp2_uhf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# The analytic RI-MP2 gradient (src/post_hf/rimp2/trc_rimp2_grad.F90) against
+# metalquicha's pyscf-validated references (water cc-pVDZ, water 6-31G with
+# a frozen core, NH3 def2-SVP) and against finite differences of terco's own
+# RHF + RI-MP2 energy (formamide and water, Cartesian and spherical, frozen
+# core on and off). See the file's own header for the provenance.
+terco_add_check(check_rimp2_grad check_rimp2_grad.F90 NEEDS_BASIS)
+target_link_libraries(check_rimp2_grad PRIVATE test-drive::test-drive)
+
+# The analytic double-hybrid gradient (trc_rimp2_grad.F90 over a Kohn-Sham
+# reference: b2plyp, b2gp-plyp, mpw2plyp) against Richardson finite
+# differences of terco's own DH energy (--df Cartesian and spherical, and the
+# exact reference) and of pyscf's, plus the identity that defines the new
+# d/dR Tr(P V_xc[D]) term (trc_xc_grad_potential.F90). See its header.
+terco_add_check(check_dh_grad check_dh_grad.F90 NEEDS_BASIS)
+target_link_libraries(check_dh_grad PRIVATE terco_c_interfaces test-drive::test-drive)
+# Formamide (no symmetry, spherical) against pyscf and finite differences, and
+# the exact reference: ~3 min on four host cores, so nightly only.
+add_test(NAME terco/check_dh_grad_long COMMAND check_dh_grad long)
+set_tests_properties(
+  terco/check_dh_grad_long PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                      ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+                                      LABELS LONG)
 
 # Double hybrids (b2plyp, b2gp-plyp -- trc_xc_functional.F90): the SCF
 # (four-centre AND --df, cc-pVDZ-RIFIT doing double duty as --df's jkfit

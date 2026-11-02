@@ -175,16 +175,19 @@ program trc_main
                          "SCF, e.g. to go straight to --rimp2; the molecule, basis and method must match")
    call r%cli%add_option("json", "also write a JSON summary to this file")
    call r%cli%add_flag("grad", "Print the analytic nuclear gradient (Eh/Bohr) after the SCF -- "// &
-                       "RHF/UHF, or KS-DFT for an LDA/GGA --func (global and range-separated "// &
-                       "hybrids and VV10 included); with --df, the fitted RHF/RKS gradient; with "// &
-                       "--pcm (C-PCM/IEF-PCM), the continuum's own analytic term (grad_qv + "// &
-                       "grad_nuc + grad_solver) on top; refused for a meta-GGA, --rimp2 or a "// &
-                       "double hybrid; with more than one rank it is computed on rank 0 alone, "// &
-                       "with a warning")
+                       "RHF/UHF, or KS-DFT for an LDA/GGA/meta-GGA --func (global and "// &
+                       "range-separated hybrids and VV10 included); with --df, the fitted RHF/RKS "// &
+                       "gradient; with --pcm (C-PCM/IEF-PCM), the continuum's own analytic term "// &
+                       "(grad_qv + grad_nuc + grad_solver) on top; with --rimp2, the RHF + RI-MP2 "// &
+                       "gradient, and with a double-hybrid --func (b2plyp, b2gp-plyp, mpw2plyp) its "// &
+                       "KS + c RI-MP2 gradient (four-centre or --df reference, restricted, one rank); "// &
+                       "refused for --rimp2/a double hybrid over an unrestricted or --pcm reference; "// &
+                       "with more than one rank it is computed on rank 0 alone, with a warning")
    call r%cli%add_flag("hessian", "finite-difference Cartesian Hessian (central differences of the "// &
                        "analytic gradient) after the SCF, then harmonic vibrational analysis and RRHO "// &
-                       "thermochemistry; refused wherever --grad is (meta-GGA, --rimp2, a double "// &
-                       "hybrid), checked before any displacement runs; single rank only for now")
+                       "thermochemistry; refused for --rimp2, a double hybrid and --pcm (the PCM "// &
+                       "gradient is analytic, its Hessian is not validated), checked before any "// &
+                       "displacement runs; single rank only for now")
    call r%cli%add_option("step", "--hessian's displacement, Bohr (0.005)", default="0.005")
    call r%cli%add_option("temperature", "temperature for --hessian's thermochemistry, K (298.15)", &
                          default="298.15")
@@ -1281,19 +1284,14 @@ program trc_main
    call run_api(r, trc_pcm_energy(r%h, r%epcm, r%qpcm, r%npcm))
    r%eos = 0
    r%ess = 0
-   if (r%rimp2 .and. r%conv /= 0) then
-      call run_api(r, trc_run_rimp2(r%h))
-      call run_api(r, trc_rimp2_energy(r%h, r%eos, r%ess))
-      ! The double hybrid's own weighted total comes from trc_energy
-      ! itself (now that RI-MP2 has run, cx%rimp2_ok is set and its
-      ! pt2_cos/pt2_css branch applies), not recomputed here from
-      ! r%pt2_cos/r%pt2_css -- those stay around only to report the
-      ! fractions themselves (write_json), never to duplicate the
-      ! weighting trc_energy already does from the SAME table.
-      if (r%dh) call run_api(r, trc_energy(r%h, r%etot_dh))
-   end if
+   ! The RI-MP2 energy is read only after --grad's gradient: on one rank
+   ! trc_run_rimp2 defers the pair energies, and an RI-MP2 gradient
+   ! computes them from its own amplitudes, so asking for them first would
+   ! run the energy step for nothing (trc_run_rimp2's own header).
+   if (r%rimp2 .and. r%conv /= 0) call run_api(r, trc_run_rimp2(r%h))
    if (r%grad .and. r%conv /= 0) then
-      ! trc_run_gradient's own refusals (RI-MP2, PCM) come
+      ! trc_run_gradient's own refusals (an unrestricted RI-MP2 or
+      ! double-hybrid reference, PCM) come
       ! back through `api`, which prints the library's own message and
       ! stops -- the same clear-refusal path every other unsupported
       ! combination in this CLI already takes. An LDA/GGA --func (global
@@ -1306,9 +1304,19 @@ program trc_main
       r%gradient = reshape(real(gradbuf, dp), [3, r%natm])
       deallocate (gradbuf)
    end if
+   if (r%rimp2 .and. r%conv /= 0) then
+      call run_api(r, trc_rimp2_energy(r%h, r%eos, r%ess))
+      ! The double hybrid's own weighted total comes from trc_energy
+      ! itself (now that RI-MP2 has run, cx%rimp2_ok is set and its
+      ! pt2_cos/pt2_css branch applies), not recomputed here from
+      ! r%pt2_cos/r%pt2_css -- those stay around only to report the
+      ! fractions themselves (write_json), never to duplicate the
+      ! weighting trc_energy already does from the SAME table.
+      if (r%dh) call run_api(r, trc_energy(r%h, r%etot_dh))
+   end if
    if (r%hessian .and. r%conv /= 0) then
-      ! trc_run_hessian's own refusals (meta-GGA, --rimp2, a double
-      ! hybrid, --pcm, --df outside its own scope, more than one rank)
+      ! trc_run_hessian's own refusals (--rimp2, a double hybrid,
+      ! --pcm, --df outside its own scope, more than one rank)
       ! come back through `api`, exactly as --grad's do -- checked
       ! before any displacement, so a refused run costs nothing beyond
       ! the SCF this CLI already ran for --grad/the energy anyway.

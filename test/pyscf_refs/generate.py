@@ -387,6 +387,10 @@ def converge_tight(make_mf, dm0, label, conv_tol=1.0e-12, conv_tol_grad=1.0e-8, 
     return mf, grad_norm
 
 
+NO_PRUNE = {"TRC_PRUNE_PRIMITIVES": "0"}
+#: env_extra for a probe run that must use the literal JSON contraction (see the gradient generators).
+
+
 def run_bin(relexe, args, env_extra=None):
     """Run a test/-built binary from BUILD_DIR/test, with cwd=test/ (so its
     relative file reads -- water.xyz, basis_sets/... -- resolve exactly as
@@ -1454,11 +1458,19 @@ def gen_dft_grad(case, xyz, json_rel, functional, grid_level=3):
     so the SCF this function reads back is reproducible without this
     script needing to carry an initial density of its own."""
     PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP',
-             'wb97x': 'HYB_GGA_XC_WB97X', 'wb97x-v': 'wb97x-v'}
+             'wb97x': 'HYB_GGA_XC_WB97X', 'wb97x-v': 'wb97x-v',
+             'r2scan': 'R2SCAN', 'tpss': 'TPSS', 'm06l': 'M06L', 'wb97m-v': 'wb97m-v'}
     is_sph = 'cc-pvdz' in json_rel
 
     dump = TEST / f"dft_grad_probe_{case}.bin"
-    run_bin(f"check_dft_grad_vs_pyscf_{case}", [xyz, json_rel, functional, grid_level, dump.name, case])
+    # Pruning off for the probe run: pyscf is handed the literal (unpruned)
+    # contraction from the same JSON, and terco prunes general contractions
+    # by default (TRC_PRUNE_PRIMITIVES), so a cc-pVDZ probe would otherwise
+    # come from a different (same-span) AO basis and fail pyscf's overlap
+    # precheck. Gradients do not depend on it; bases with no general
+    # contraction (6-31G*) are unaffected.
+    run_bin(f"check_dft_grad_vs_pyscf_{case}", [xyz, json_rel, functional, grid_level, dump.name, case],
+            env_extra=NO_PRUNE)
     r = BinReader(dump)
     nat, nao_sp, nspin, nalpha, nbeta, sph_flag = (
         r.i8(), r.i8(), r.i8(), r.i8(), r.i8(), r.i8())
@@ -1552,11 +1564,17 @@ def gen_df_grad(case, xyz, json_rel, functional, grid_level=3):
     -- gen_dft_grad's recipe, with `density_fit` on the mf. Grid response
     off on both sides (pyscf's default, and the Fortran side passes
     grid_response=.false.)."""
-    PYSCF = {'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP'}
+    PYSCF = {'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP', 'r2scan': 'R2SCAN', 'tpssh': 'TPSSH'}
     aux_rel = "basis_sets/def2-universal-jkfit.json"
     dump = TEST / f"dfg_{case}_probe.bin"
+    # Pruning off for the probe run: pyscf is handed the literal (unpruned)
+    # contraction from the same JSON, and terco prunes general contractions
+    # by default (TRC_PRUNE_PRIMITIVES), so a cc-pVDZ probe would otherwise
+    # come from a different (same-span) AO basis and fail pyscf's overlap
+    # precheck. Gradients do not depend on it; bases with no general
+    # contraction (6-31G*) are unaffected.
     run_bin(f"check_df_grad_vs_pyscf_{case}", [xyz, json_rel, aux_rel, functional, grid_level, dump.name, case,
-                                                1.0])
+                                                1.0], env_extra=NO_PRUNE)
     if not dump.exists():
         print(f"  dfg {case}: binary self-skipped; not regenerating")
         return
@@ -1754,12 +1772,18 @@ def gen_xc_grad(case, xyz, json_rel, functional, grid_level=3, grid_response=Fal
     trc_scf_gradient does) is the right comparison, not a semilocal-only
     one on either side."""
     PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP',
-             'wb97x': 'HYB_GGA_XC_WB97X'}
+             'wb97x': 'HYB_GGA_XC_WB97X', 'r2scan': 'R2SCAN', 'tpss': 'TPSS', 'm06l': 'M06L'}
 
     exe = f"check_xc_grad_vs_pyscf_gridresp_{case}" if grid_response else f"check_xc_grad_vs_pyscf_{case}"
     dump = TEST / f"xc_grad_probe_gridresp_{case}.bin" if grid_response else TEST / f"xc_grad_probe_{case}.bin"
     gresp_arg = [1] if grid_response else []
-    run_bin(exe, [xyz, json_rel, functional, grid_level, dump.name, case] + gresp_arg)
+    # Pruning off for the probe run: pyscf is handed the literal (unpruned)
+    # contraction from the same JSON, and terco prunes general contractions
+    # by default (TRC_PRUNE_PRIMITIVES), so a cc-pVDZ probe would otherwise
+    # come from a different (same-span) AO basis and fail pyscf's overlap
+    # precheck. Gradients do not depend on it; bases with no general
+    # contraction (6-31G*) are unaffected.
+    run_bin(exe, [xyz, json_rel, functional, grid_level, dump.name, case] + gresp_arg, env_extra=NO_PRUNE)
     r = BinReader(dump)
     nat, nao, nspin, nalpha, nbeta = r.i8(), r.i8(), r.i8(), r.i8(), r.i8()
     at_z = r.i8(nat)
@@ -4753,6 +4777,18 @@ CASES = {
         "water_wb97x_631gs", "water.xyz", "basis_sets/6-31gs.json", "wb97x", grid_response=True),
     "xc_grad_gridresp_water_wb97x_ccpvdz": lambda: gen_xc_grad(
         "water_wb97x_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", "wb97x", grid_response=True),
+    "xc_grad_gridresp_water_r2scan_631gs": lambda: gen_xc_grad(
+        "water_r2scan_631gs", "water.xyz", "basis_sets/6-31gs.json", "r2scan", grid_response=True),
+    "xc_grad_gridresp_water_tpss_631gs": lambda: gen_xc_grad(
+        "water_tpss_631gs", "water.xyz", "basis_sets/6-31gs.json", "tpss", grid_response=True),
+    "xc_grad_gridresp_water_m06l_631gs": lambda: gen_xc_grad(
+        "water_m06l_631gs", "water.xyz", "basis_sets/6-31gs.json", "m06l", grid_response=True),
+    "xc_grad_gridresp_nh2_r2scan_631gs": lambda: gen_xc_grad(
+        "nh2_r2scan_631gs", "nh2.xyz", "basis_sets/6-31gs.json", "r2scan", grid_response=True),
+    "xc_grad_gridresp_nh2_tpss_631gs": lambda: gen_xc_grad(
+        "nh2_tpss_631gs", "nh2.xyz", "basis_sets/6-31gs.json", "tpss", grid_response=True),
+    "xc_grad_gridresp_formamide_r2scan_631gs": lambda: gen_xc_grad(
+        "formamide_r2scan_631gs", "formamide.xyz", "basis_sets/6-31gs.json", "r2scan", grid_response=True),
     "dft_grad_water_pbe_ccpvdz_sph": lambda: gen_dft_grad(
         "water_pbe_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "pbe"),
     "dft_grad_water_b3lyp_ccpvdz_sph": lambda: gen_dft_grad(
@@ -4777,6 +4813,22 @@ CASES = {
         "water_wb97xv_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "wb97x-v"),
     "dft_grad_nh2_wb97xv_ccpvdz_sph": lambda: gen_dft_grad(
         "nh2_wb97xv_ccpvdz_sph", "nh2.xyz", "basis_sets/cc-pvdz.json", "wb97x-v"),
+    "dft_grad_water_r2scan_ccpvdz_sph": lambda: gen_dft_grad(
+        "water_r2scan_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "r2scan"),
+    "dft_grad_water_tpss_ccpvdz_sph": lambda: gen_dft_grad(
+        "water_tpss_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "tpss"),
+    "dft_grad_water_m06l_ccpvdz_sph": lambda: gen_dft_grad(
+        "water_m06l_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "m06l"),
+    "dft_grad_formamide_r2scan_ccpvdz_sph": lambda: gen_dft_grad(
+        "formamide_r2scan_ccpvdz_sph", "formamide.xyz", "basis_sets/cc-pvdz.json", "r2scan"),
+    "dft_grad_formamide_r2scan_631gs": lambda: gen_dft_grad(
+        "formamide_r2scan_631gs", "formamide.xyz", "basis_sets/6-31gs.json", "r2scan"),
+    "dft_grad_nh2_r2scan_ccpvdz_sph": lambda: gen_dft_grad(
+        "nh2_r2scan_ccpvdz_sph", "nh2.xyz", "basis_sets/cc-pvdz.json", "r2scan"),
+    "dft_grad_water_wb97mv_ccpvdz_sph": lambda: gen_dft_grad(
+        "water_wb97mv_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "wb97m-v"),
+    "dft_grad_nh2_wb97mv_ccpvdz_sph": lambda: gen_dft_grad(
+        "nh2_wb97mv_ccpvdz_sph", "nh2.xyz", "basis_sets/cc-pvdz.json", "wb97m-v"),
     "rys_fock_water_ccpvdz": lambda: gen_rys_fock("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json", 1e-9),
     "rys_fock_water_ccpvtz": lambda: gen_rys_fock("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json", 1e-10),
     "rys_fock_formamide_def2tzvp": lambda: gen_rys_fock(
@@ -4801,6 +4853,10 @@ CASES = {
     "dfg_formamide_hf_ccpvdz": lambda: gen_df_grad(
         "formamide_hf_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json", "hf"),
     "dfg_water_pbe_631gs": lambda: gen_df_grad("water_pbe_631gs", "water.xyz", "basis_sets/6-31gs.json", "pbe"),
+    "dfg_water_r2scan_631gs": lambda: gen_df_grad(
+        "water_r2scan_631gs", "water.xyz", "basis_sets/6-31gs.json", "r2scan"),
+    "dfg_water_tpssh_631gs": lambda: gen_df_grad(
+        "water_tpssh_631gs", "water.xyz", "basis_sets/6-31gs.json", "tpssh"),
     "dfg_water_b3lyp_631gs": lambda: gen_df_grad(
         "water_b3lyp_631gs", "water.xyz", "basis_sets/6-31gs.json", "b3lyp"),
     "dfg_formamide_b3lyp_ccpvdz": lambda: gen_df_grad(

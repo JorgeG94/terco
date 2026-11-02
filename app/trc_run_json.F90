@@ -51,8 +51,8 @@ contains
       else
          call json%add(root, "scf energy", real(r%etot, dp))
          call json%add(root, "total energy", real(r%etot, dp))
-         if (r%grad .and. allocated(r%gradient)) call add_gradient(json, root, r)
       end if
+      if (r%grad .and. allocated(r%gradient)) call add_gradient(json, root, r)
       if (r%hessian .and. r%hess_ok) call add_hessian(json, root, r)
       if (r%opt) call add_optimization(json, root, r)
       if (r%charges == "hirshfeld" .and. allocated(r%hirshfeld_charges)) call add_charges(json, root, r)
@@ -75,6 +75,16 @@ contains
       type(json_value), pointer :: rows
       integer :: ia
       call json%add(root, "gradient status", "validated: single rank (rank 0 alone on a multi-rank run)")
+      ! Which energy it differentiates: with --rimp2 the SCF energy plus the
+      ! two MP2 components above, not "total energy" (the SCF's own); a
+      ! double hybrid's weights them by its PT2 fraction (its own total).
+      if (r%dh) then
+         call json%add(root, "gradient of", "double hybrid total: scf energy + pt2 fraction x mp2 correlation")
+      else if (r%rimp2) then
+         call json%add(root, "gradient of", "scf energy + mp2 correlation")
+      else
+         call json%add(root, "gradient of", "scf energy")
+      end if
       call json%create_array(rows, "gradient")
       do ia = 1, r%natm
          call json%add(rows, "", r%gradient(:, ia))

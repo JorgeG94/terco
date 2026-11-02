@@ -40,6 +40,7 @@ target_sources(
           scf/trc_scf_state.F90         # the SCF's per-iteration arrays, and the one enter/exit pair for them
           scf/trc_scf_fock.F90          # the Fock build: two-electron, XC, PCM, energy, commutator, folds
           scf/trc_scf_df.F90            # density-fitted J/K (--df): metric, Cholesky, (mn|P), B, per-iteration J/K
+          scf/trc_scf_df_response.F90   # G_fit[X] C_occ for any symmetric X: the --df reference's response potential
           scf/trc_scf_diis.F90          # CDIIS and ADIIS, the level shift and the damped step
           scf/trc_scf_driver.F90        # the SCF: HF and Kohn-Sham, R and U, resident
           scf/trc_scf_file.F90          # a converged SCF to a file and back, for a restart
@@ -51,6 +52,8 @@ target_sources(
           scf/vibration/trc_vib.F90                # harmonic vibrational analysis of a Cartesian Hessian, host only
           scf/vibration/trc_thermo.F90             # ideal-gas RRHO thermochemistry from trc_vib's frequencies
           post_hf/rimp2/trc_rimp2_driver.F90      # RI-MP2 on the RHF reference, resident
+          post_hf/rimp2/trc_rimp2_relax.F90       # the RI-MP2 gradient's fitted side: amplitudes, Lagrangian, 3c/2c terms
+          post_hf/rimp2/trc_rimp2_grad.F90                # the analytic RI-MP2 gradient: Z-vector, relaxed densities, assembly
           basis/trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
           scf/guess/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
           scf/guess/trc_sad.F90 # the SAD guess built here, one atomic SCF per element
@@ -195,6 +198,7 @@ target_sources(
           xc/trc_xc_batch.F90       # the grid, batched and screened
           xc/trc_xc.F90             # the integrator: E_xc and V_xc
           xc/trc_xc_grad.F90        # the exchange-correlation nuclear gradient, LDA/GGA
+          xc/trc_xc_grad_potential.F90  # d/dR Tr(P V_xc[D]): the double-hybrid gradient's XC term
           xc/trc_vv10.F90           # VV10 nonlocal correlation: E_nlc and its potential
           xc/trc_vv10_grad.F90)     # VV10's nuclear gradient, with grid response
 

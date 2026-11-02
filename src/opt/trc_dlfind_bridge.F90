@@ -825,6 +825,7 @@ contains
                call random_seed(put=seed_values)
             end block
          end if
+         call trc_dlfind_citation()
          call api_dl_find(nvar, nvar2, nspec, 1_c_int, &
                           c_funloc(cb_error), c_funloc(cb_get_gradient), c_funloc(cb_get_hessian), &
                           c_funloc(cb_get_multistate_gradients), c_funloc(cb_get_params), &
@@ -923,6 +924,23 @@ contains
       opt_is_neb = .false.
       natm = 0
    end subroutine trc_dlfind_optimize
+
+   subroutine trc_dlfind_citation()
+      !! Log the DL-FIND acknowledgement: that this run uses it, how to cite
+      !! it, and thanks to its helpers. Called once per optimisation from
+      !! trc_dlfind_optimize, the one entry point both the CLI (--opt) and
+      !! trc_opt_capi reach, so a library user gets it too. No rank test:
+      !! the optimiser is a single-process path (see `active`) and the
+      !! logger is terco's only console route. ASCII "Kaestner" because no
+      !! other source file carries non-ASCII text, so every compiler and
+      !! the linter see only 7-bit source.
+      call global_logger%info("Geometry optimisation: DL-FIND (libdlfind)")
+      call global_logger%info("Please cite: Johannes Kaestner, Joanne M. Carr, Thomas W. Keal, "// &
+                              "Walter Thiel, Adrian Wander, and Paul Sherwood,")
+      call global_logger%info("J. Phys. Chem. A, 2009, 113 (43), 11856-11865.")
+      call global_logger%info("Thanks to Cyrille Lavigne (@clavigne), Ivan Pribec (@ivan-pi) and "// &
+                              "Sebastian Ehlert (@awvwgk) for many helpful suggestions.")
+   end subroutine trc_dlfind_citation
 
    subroutine reset_optimize_state(handle, n, z, residues_in, coords, opts)
       !! `trc_dlfind_optimize`'s own per-run reset of this module's `save`
