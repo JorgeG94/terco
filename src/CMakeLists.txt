@@ -516,7 +516,7 @@ endif()
 if(_regen)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   set(_gen_out "${CMAKE_BINARY_DIR}/stage/generated")
-  set(_scripts "${CMAKE_SOURCE_DIR}/scripts")
+  set(_scripts "${PROJECT_SOURCE_DIR}/scripts")
 
   set(_hgp_lmax ${TERCO_LMAX})
   if(_hgp_lmax GREATER 2)
@@ -849,27 +849,27 @@ target_sources(${main_lib} PRIVATE ${_rys_grad_sources}
 # whenever the Rys kernels are -- and is not needed when they are skipped.
 macro(_terco_gen_rys)
   terco_gen("gen_perclass.py (Rys template)" ${Python3_EXECUTABLE}
-            ${CMAKE_SOURCE_DIR}/scripts/gen_perclass.py --lmax ${TERCO_LMAX} ${_order_flag}
+            ${PROJECT_SOURCE_DIR}/scripts/gen_perclass.py --lmax ${TERCO_LMAX} ${_order_flag}
             --classes ${_all_classes_csv} --skeleton --split ${_hgp_template})
   foreach(_tag ${_rys_classes})
-    terco_gen("gen_rys.py ${_tag}" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_rys.py
+    terco_gen("gen_rys.py ${_tag}" ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/gen_rys.py
               ${_tag} ${_order_flag} --src-dir ${_hgp_template}
               --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_stage}/trc_pc_rys${_tag}.F90)
   endforeach()
   terco_gen("gen_rys_dispatch.py" ${Python3_EXECUTABLE}
-            ${CMAKE_SOURCE_DIR}/scripts/gen_rys_dispatch.py --classes ${_rys_classes_csv}
+            ${PROJECT_SOURCE_DIR}/scripts/gen_rys_dispatch.py --classes ${_rys_classes_csv}
             -o ${_rys_stage}/trc_rys_kernels.F90)
   foreach(_tag ${_rys_grad_classes})
     terco_gen("gen_rys_grad.py ${_tag}" ${Python3_EXECUTABLE}
-              ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad.py ${_tag} ${_order_flag}
+              ${PROJECT_SOURCE_DIR}/scripts/gen_rys_grad.py ${_tag} ${_order_flag}
               --src-dir ${_hgp_template} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
               -o ${_rys_stage}/trc_pc_rysg${_tag}.F90)
   endforeach()
   terco_gen("gen_rys_grad_dispatch.py" ${Python3_EXECUTABLE}
-            ${CMAKE_SOURCE_DIR}/scripts/gen_rys_grad_dispatch.py
+            ${PROJECT_SOURCE_DIR}/scripts/gen_rys_grad_dispatch.py
             --classes ${_rys_grad_classes_csv} -o ${_rys_stage}/trc_rys_grad_kernels.F90)
 endmacro()
-set(_s "${CMAKE_SOURCE_DIR}/scripts")
+set(_s "${PROJECT_SOURCE_DIR}/scripts")
 terco_generate(
   "Rys kernels" _terco_gen_rys "${_rys_stage}" "${_rys_dir}" ON ON
   ${_s}/gen_perclass.py ${_s}/gen_vrr.py ${_s}/gen_hrr.py ${_s}/gen_rys.py
@@ -918,9 +918,9 @@ if(TERCO_LMAX GREATER 3)
 endif()
 list(JOIN _mdg_classes "," _mdg_classes)
 macro(_terco_gen_mdj)
-  terco_gen("gen_md_j.py" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_md_j.py
+  terco_gen("gen_md_j.py" ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/gen_md_j.py
             --lmax ${TERCO_LMAX} ${_order_flag} ${_mdj_batch_flag} -o ${_mdj_stage})
-  terco_gen("gen_md_k.py" ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/gen_md_k.py
+  terco_gen("gen_md_k.py" ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/gen_md_k.py
             --lmax ${TERCO_LMAX} --classes=${_mdg_classes} ${_order_flag} -o ${_mdj_stage})
 endmacro()
 terco_generate(
