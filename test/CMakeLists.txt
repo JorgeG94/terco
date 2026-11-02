@@ -597,6 +597,16 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_lowercase PRIVATE test-drive::test-drive)
   unset(_cli_lowercase_probe)
 
+  # The TOML input files (docs/INPUT.md): same numbers as the equivalent
+  # flags, paths relative to the file, the "input" echo with a flag
+  # overriding the file, and every malformed file refused by name -- see
+  # check_cli_input.F90's own header.
+  set(_cli_input_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_input_work)
+  terco_add_check(check_cli_input check_cli_input.F90
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_input_workdir})
+  target_link_libraries(check_cli_input PRIVATE test-drive::test-drive)
+  unset(_cli_input_workdir)
+
   # --hessian's JSON (frequencies, ZPE, thermal corrections, G_tot)
   # against pyscf's own analytic RHF/STO-3G Hessian and harmonic_
   # analysis/thermo, water -- see check_cli_hessian.F90's own header for

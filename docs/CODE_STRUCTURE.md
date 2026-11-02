@@ -65,8 +65,10 @@ New code must not add an upward edge. Removing one is always welcome.
 - Leaf data modules with no procedures (settings, constants) are fine and
   encouraged: they are what lets layers stay apart.
 - **No POINTERs**, except where the language forces one: C ABI handles
-  (`c_f_pointer` in `src/api/` and `src/opt/trc_opt_capi.F90`) and
-  json-fortran's `type(json_value), pointer`. Pointer components and
+  (`c_f_pointer` in `src/api/` and `src/opt/trc_opt_capi.F90`),
+  json-fortran's `type(json_value), pointer`, and toml-f's
+  `type(toml_table)`/`type(toml_array), pointer` (how it returns a sub-table
+  or an array). Pointer components and
   optional pointer dummies have been miscompiled by nvfortran, defeat
   no-alias optimisation and hide who owns what. Instead, an owner holds its
   parts by value (or as `allocatable` components when they are optional:

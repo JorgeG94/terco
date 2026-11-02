@@ -53,13 +53,17 @@ json = "water.json"
   file and its inputs can move together. A basis *name* (`def2-svp`) is
   looked up exactly as on the command line.
 - **Flags override the file.** `terco run.toml --grid 4` runs with grid 4
-  whatever `[dft] grid` says.
+  whatever `[dft] grid` says. A switch set to `true` in the file cannot be
+  turned off from the command line (there is no `--no-grad`); leave it out
+  of the file instead.
 - **The driver is explicit.** `[driver]` holds the switches that choose what
   runs after the SCF; there is no "section present means on".
-- **The resolved input is recorded.** With `[output] json` (or `--json`),
-  the JSON summary gains an `"input"` block with every setting as it was
-  actually used: defaults filled in, flags applied, paths absolute. Feeding
-  it back reproduces the run.
+- **The resolved input is recorded.** The JSON summary (`[output] json` or
+  `--json`) has an `"input"` object in these sections, with every key as
+  the run used it: from the file, from a flag that overrode it, or the
+  flag's declared default. Keys whose default is decided from the system
+  (the charge, the guess, ...) appear only when given. Written back as TOML
+  it reruns the same calculation.
 - `--version` and `--help` stay command-line only.
 
 ## Keys

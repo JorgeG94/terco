@@ -63,6 +63,8 @@ pic-blas = { git = "https://github.com/JorgeG94/pic-blas", tag = "v0.3.1" }
 # use: `fpm build --compiler mpifort`. The CMake build has a serial backend.
 pic-mpi = { git = "https://github.com/JorgeG94/pic-mpi", tag = "v0.6.8" }
 json-fortran = { git = "https://github.com/jacobwilliams/json-fortran", tag = "9.3.1" }
+# The CLI's TOML input files, at the commit cmake/modules/Findtoml-f.cmake pins.
+toml-f = { git = "https://github.com/JorgeG94/toml-f", rev = "e7d95ffa1c24d03c2a2d67160337cea8d61bce4a" }
 
 [dev-dependencies]
 # The unit-test framework, at the commit cmake/modules/Findtest-drive.cmake pins.

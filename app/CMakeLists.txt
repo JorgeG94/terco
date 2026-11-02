@@ -39,6 +39,7 @@ add_executable(
   trc_run_report.F90
   trc_run_opt.F90
   trc_run_json.F90
+  trc_run_input.F90
   ${_dlfind_bridge_src})
 set_target_properties(
   terco_cli PROPERTIES OUTPUT_NAME terco Fortran_MODULE_DIRECTORY
@@ -51,7 +52,10 @@ target_compile_definitions(
 # pic-mpi: the CLI initialises and finalises MPI, and asks for the world
 # communicator's Fortran handle, itself (app/main.F90) -- the library only
 # ever sees the handle trc_set_comm hands it.
-target_link_libraries(terco_cli PRIVATE ${main_lib} pic::pic pic-mpi::pic-mpi)
+# toml-f reads the TOML input files (app/trc_run_input.F90); only the CLI
+# links it.
+find_package("toml-f" REQUIRED)
+target_link_libraries(terco_cli PRIVATE ${main_lib} pic::pic pic-mpi::pic-mpi toml-f::toml-f)
 if(TERCO_ENABLE_DLFIND)
   target_compile_definitions(terco_cli PRIVATE TERCO_ENABLE_DLFIND)
   # terco::terco_opt (src/opt/CMakeLists.txt, added by the root

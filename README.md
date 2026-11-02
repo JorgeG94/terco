@@ -160,6 +160,37 @@ A basis name is looked up as `<name>.json` in each directory of
 where `cmake --install` puts the basis sets terco is tested with. The exit
 status is 0 on success, 1 on an error and 2 if the SCF did not converge.
 
+#### From an input file
+
+The same run can be written as a TOML file, one key per option, in readable
+sections ([docs/INPUT.md](docs/INPUT.md) lists them all):
+
+```toml
+[molecule]
+geometry = "water.xyz"    # relative to this file
+
+[basis]
+main = "cc-pvdz"
+
+[scf]
+functional = "b3lyp"
+
+[solvation]
+model   = "cpcm"
+epsilon = 78.3553
+
+[output]
+json = "water.json"
+```
+
+```sh
+terco water.toml              # the run in the file
+terco water.toml --grid 4     # flags after the file override it
+```
+
+An unknown key or a wrong type is refused with the line it is on, and the
+JSON summary records every setting the run used in the same sections.
+
 #### Over MPI ranks
 
 Build with `-DTERCO_ENABLE_MPI=ON` (NVHPC's own MPI; see the CMake table
