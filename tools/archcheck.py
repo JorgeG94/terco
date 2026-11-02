@@ -22,8 +22,9 @@ Rules (thresholds and word lists are the constants below):
                     kernel drivers excepted; see KERNEL_HOST_STMTS)
     no-pointer      a declaration with the POINTER attribute (or a POINTER
                     statement), outside the places the language forces one:
-                    the C ABI (POINTER_ALLOWED) and json-fortran's
-                    `type(json_value), pointer`. Owners hold their parts by
+                    the C ABI (POINTER_ALLOWED), json-fortran's
+                    `type(json_value), pointer` and toml-f's
+                    `type(toml_table|toml_array), pointer`. Owners hold their parts by
                     value or as allocatable components and pass them down
                     as arguments instead
 
@@ -78,11 +79,13 @@ EXEMPT = ("src/xc/functionals/",)
 
 # Where a POINTER is the language's, not a design choice: the C ABI turns
 # handles into Fortran objects with c_f_pointer. json-fortran's own API
-# (`type(json_value), pointer`) is allowed everywhere, by type.
+# (`type(json_value), pointer`) and toml-f's (`type(toml_table)` /
+# `type(toml_array)`, pointer: how it hands back a sub-table or an array) are
+# allowed everywhere, by type.
 POINTER_ALLOWED = ("src/api/", "src/opt/trc_opt_capi.F90")
 RE_POINTER_ATTR = re.compile(r"\bpointer\b", re.I)
 RE_POINTER_STMT = re.compile(r"^\s*pointer\b", re.I)
-RE_JSON_VALUE = re.compile(r"^\s*type\s*\(\s*json_value\s*\)", re.I)
+RE_JSON_VALUE = re.compile(r"^\s*type\s*\(\s*(?:json_value|toml_table|toml_array)\s*\)", re.I)
 
 RE_DECL = re.compile(
     r"^\s*(?:integer|real|logical|complex|character|double\s+precision|"

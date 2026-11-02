@@ -2,6 +2,7 @@ submodule (trc_run) trc_run_json
    !! The `--json` summary writer of the `terco` command (bodies of `trc_run`).
    use json_module, only: json_core, json_value
    use trc_app, only: BOHR_PER_ANGSTROM
+   use trc_run_input, only: run_input_echo
    implicit none
 
 contains
@@ -19,6 +20,7 @@ contains
       call json%create_object(root, "")
       call json%add(root, "program", "terco")
       call json%add(root, "version", VERSION)
+      call run_input_echo(r%cli, json, root)
       call json%add(root, "geometry", r%geom)
       call json%add(root, "method", method(r))
       call json%add(root, "basis", r%basis_path)

@@ -1,0 +1,29 @@
+# Optimise water with PBE0/def2-SVP, then the finite-difference Hessian at
+# the minimum: harmonic frequencies and RRHO thermochemistry (Gaussian's
+# Opt Freq). Needs a DL-FIND build (-DTERCO_ENABLE_DLFIND=ON).
+# Run:  terco water_opt_freq.toml
+
+[molecule]
+geometry = "water.xyz"
+
+[basis]
+main = "def2-svp"
+
+[scf]
+functional     = "pbe0"
+commutator_tol = 1e-7    # a gradient error near 1e-7, well below gradient_tol
+
+[driver]
+optimize = true
+hessian  = true          # with optimize: the Hessian at the optimised geometry
+
+[opt]
+gradient_tol = 1e-5
+
+[thermo]
+temperature     = 298.15
+pressure        = 1.0
+symmetry_number = 2      # C2v water
+
+[output]
+json = "water_opt_freq.json"

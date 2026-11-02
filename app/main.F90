@@ -39,6 +39,8 @@ program trc_main
    use pic_logger, only: global_logger, verbose_level
    use trc_app, only: app_read_xyz, app_resolve_basis, app_c_string, app_set_env, app_help_for_topic, app_set_log_level
    use pic_strings, only: to_string
+   use pic_string_type, only: string_type, assignment(=)
+   use trc_run_input, only: run_input_is_toml, run_input_args
    use trc_run, only: run_t, VERSION, run_die, run_quit, run_check, run_api, run_int_option, run_banner, &
                        run_summary, run_write_json, &
                        run_gradient_summary, run_hessian_summary, run_build_masses, run_charges_summary, &
@@ -68,6 +70,9 @@ program trc_main
 
    type(run_t) :: r
    character(len=:), allocatable :: sval
+   type(string_type), allocatable :: cli_args(:), cli_grown(:)
+   character(len=:), allocatable :: input_message
+   integer :: iarg, arglen, ncmd
    real(dp), allocatable :: xyz(:, :)
    real(c_double), allocatable :: gradbuf(:), hessbuf(:), chargebuf(:)
    real(c_double), allocatable :: fplusbuf(:), fminusbuf(:), fzerobuf(:), qnbuf(:), qnp1buf(:), qnm1buf(:)
@@ -117,7 +122,8 @@ program trc_main
 
    ! ---- the interface ---------------------------------------------------
    call r%cli%set_program("terco", "Hartree-Fock and Kohn-Sham DFT, in standard Fortran")
-   call r%cli%add_positional("geometry", "molecule in xyz format, Angstrom", required=.false.)
+   call r%cli%add_positional("geometry", "molecule in xyz format, Angstrom (or, as the first argument, a "// &
+                             "TOML input file: docs/INPUT.md)", required=.false.)
    call r%cli%add_option("basis", "basis set: a Basis Set Exchange JSON file, or a name looked up "// &
                          "in $TERCO_BASIS_PATH and then the installed basis sets (def2-svp)", short="b", &
                          default="def2-svp")
@@ -330,7 +336,34 @@ program trc_main
    call r%cli%add_flag("silent", "only the summary: no SCF iterations, timings or guess details", short="s")
    call r%cli%add_flag("version", "print the version and stop")
 
-   call r%cli%parse(r%err)
+   ! A first argument ending in .toml is an input file (docs/INPUT.md): its
+   ! keys become arguments, the rest of the command line follows them, and
+   ! cli_t keeps an option's last value, so a flag overrides the file.
+   ncmd = command_argument_count()
+   sval = ""
+   if (ncmd >= 1) then
+      call get_command_argument(1, length=arglen)
+      deallocate (sval)
+      allocate (character(len=arglen) :: sval)
+      call get_command_argument(1, sval)
+   end if
+   if (run_input_is_toml(sval)) then
+      call run_input_args(sval, cli_args, input_message)
+      if (len(input_message) > 0) call run_die(r, input_message)
+      do iarg = 2, ncmd
+         call get_command_argument(iarg, length=arglen)
+         deallocate (sval)
+         allocate (character(len=arglen) :: sval)
+         call get_command_argument(iarg, sval)
+         allocate (cli_grown(size(cli_args) + 1))
+         cli_grown(1:size(cli_args)) = cli_args
+         cli_grown(size(cli_grown)) = sval
+         call move_alloc(cli_grown, cli_args)
+      end do
+      call r%cli%parse_args(cli_args, r%err)
+   else
+      call r%cli%parse(r%err)
+   end if
    if (r%err%has_error()) call run_die(r, r%err%get_message()//new_line("a")//"try 'terco --help'")
    if (r%cli%help_requested()) then
       ! pic_cli's --help takes no value, so `--help opt` leaves "opt" in the
