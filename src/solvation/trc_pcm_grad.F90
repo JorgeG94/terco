@@ -399,11 +399,27 @@ contains
       !! (i,j) and (j,i) read DIFFERENT normals and do not collapse the
       !! same way; they still share gval/gpval/r, computed once.
       !$acc routine seq
-      integer,  value       :: i, j, n, natm
+      ! TODO(nvfortran-bug): value on the device (the do concurrent items
+      ! need it there: with intent(in) the GPU gradient is wrong by ~1e-1);
+      ! intent(in) on the host, where nvfortran (24.7, 25.5-26.9; not
+      ! 24.9/24.11) at -O2+ reads value scalars used as subscripts as 0 when
+      ! the caller is in another file (i = n = 0: a bounds failure on
+      ! coords, heap corruption through grad). intent(in), value fails the
+      ! same way. gfortran and ifx are fine either way. One declaration,
+      ! and fpm.toml's C061 ignore for this file, once nvfortran is fixed.
+#ifdef TRC_DEVICE
+      integer,  intent(in), value :: i, j, n, natm
+#else
+      integer,  intent(in)  :: i, j, n, natm
+#endif
       real(dp), intent(in)  :: coords(3, n), normals(3, n), zeta(n)
       integer,  intent(in)  :: parent(n)
       real(dp), intent(in)  :: bra_s(n), q(n)
-      logical,  value       :: has_d
+#ifdef TRC_DEVICE
+      logical,  intent(in), value :: has_d
+#else
+      logical,  intent(in)  :: has_d
+#endif
       real(dp), intent(in)  :: bra_d(n), ket_d(n)
       real(dp), intent(inout) :: grad(3, natm)
 
@@ -528,7 +544,11 @@ contains
       !! update at a time reproduces "every factor changes together"
       !! exactly, with no separate pre-summed array needed.
       !$acc routine seq
-      integer,  value       :: i, ja, n, natm
+#ifdef TRC_DEVICE
+      integer,  intent(in), value :: i, ja, n, natm
+#else
+      integer,  intent(in)  :: i, ja, n, natm
+#endif
       real(dp), intent(in)  :: coords(3, n)
       integer,  intent(in)  :: parent(n)
       real(dp), intent(in)  :: atom_r(3, natm), r_switch(natm), r_inner(natm)
@@ -595,7 +615,11 @@ contains
 
    pure subroutine pcm_grad_nuc_item(k, ia, n, natm, coords, zeta, parent, q, at_z, at_r, grad)
       !$acc routine seq
-      integer,  value       :: k, ia, n, natm
+#ifdef TRC_DEVICE
+      integer,  intent(in), value :: k, ia, n, natm
+#else
+      integer,  intent(in)  :: k, ia, n, natm
+#endif
       real(dp), intent(in)  :: coords(3, n), zeta(n)
       integer,  intent(in)  :: parent(n)
       real(dp), intent(in)  :: q(n), at_z(natm), at_r(3, natm)

@@ -101,5 +101,9 @@ line-length = 132
 "src/eri/trc_binkernel.F90" = ["S082"]
 # `procedure :: operator => pcm_operator` is valid Fortran the parser rejects.
 "src/solvation/trc_pcm.F90" = ["E001", "S082"]
+# TODO(nvfortran-bug): the item routines declare their scalars `intent(in), value` under
+# TRC_DEVICE and `intent(in)` otherwise (nvfortran miscompiles `value` scalars on the host);
+# fortitude then blames the callers' loop indices for a missing intent. Drop with the #ifdef.
+"src/solvation/trc_pcm_grad.F90" = ["C061"]
 # Default-initialised components of a local derived type, not saved locals.
 "src/scf/guess/trc_sap.F90" = ["C081"]
