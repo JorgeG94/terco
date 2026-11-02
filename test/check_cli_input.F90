@@ -3,8 +3,12 @@
 ! the real `terco` binary.
 !
 ! The reference for a file is the command line it stands for: the same run
-! given as flags must give bit-identical numbers, since both reach the same
-! cli_t and the same code from there. The file sits in a subdirectory and the
+! given as flags must give the same numbers, since both reach the same cli_t
+! and the same code from there. On the host build they are bit-identical; the
+! GPU build is not bitwise reproducible run to run (two identical flag runs on
+! a V100, nvfortran 26.5: energy 4e-14 Eh, gradient 5e-15 Eh/Bohr apart), so
+! the comparison allows ENERGY_TOL/GRADIENT_TOL -- a thousand times that noise,
+! and far below what any setting this run changes would move. The file sits in a subdirectory and the
 ! run starts from its parent, so the geometry, the basis file and the JSON
 ! output only resolve if paths are taken relative to the file, as the format
 ! says. Then: the "input" echo in --json shows the file's values, a flag
@@ -26,6 +30,8 @@ module check_cli_input_suite
    character(len=:), allocatable :: work_dir
       !! A scratch directory this check owns; the input files go in its
       !! `case/` subdirectory.
+   real(dp), parameter :: ENERGY_TOL = 1.0e-11_dp
+   real(dp), parameter :: GRADIENT_TOL = 1.0e-10_dp
 
 contains
 
@@ -72,11 +78,13 @@ contains
       if (allocated(error)) return
       call read_result(work_dir//'/case/flags.json', e_flags, g_flags, error)
       if (allocated(error)) return
-      call check(error, e_toml == e_flags, "total energy differs: file "//rtoa(e_toml)//", flags "//rtoa(e_flags))
+      call check(error, abs(e_toml - e_flags) < ENERGY_TOL, &
+                 "total energy differs: file "//rtoa(e_toml)//", flags "//rtoa(e_flags))
       if (allocated(error)) return
       call check(error, size(g_toml) == size(g_flags) .and. size(g_toml) == 9, "gradient sizes differ")
       if (allocated(error)) return
-      call check(error, all(g_toml == g_flags), "gradient differs between the file and the flags")
+      call check(error, maxval(abs(g_toml - g_flags)) < GRADIENT_TOL, &
+                 "gradient differs between the file and the flags by "//rtoa(maxval(abs(g_toml - g_flags))))
    end subroutine test_same_as_flags
 
    subroutine test_echo(error)
