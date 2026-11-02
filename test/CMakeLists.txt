@@ -123,6 +123,11 @@ target_include_directories(bench_mdj PRIVATE ${CMAKE_BINARY_DIR}/modules)
 terco_add_check(check_si check_si.F90)
 target_link_libraries(check_si PRIVATE test-drive::test-drive)
 
+# The step-timing tables' layout: work/rate columns only where something
+# counted -- see check_step_table_report.F90's own header.
+terco_add_check(check_step_table_report check_step_table_report.F90)
+target_link_libraries(check_step_table_report PRIVATE test-drive::test-drive)
+
 # A basis above this build's four-centre ceiling is refused with a message,
 # not run into NaN integrals and an eigensolver failure.
 terco_add_check(check_lmax_refusal check_lmax_refusal.F90)
