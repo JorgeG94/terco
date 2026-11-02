@@ -4245,7 +4245,7 @@ def _thermo_with_mass(e_tot, freq_au, mass, atom_coords_bohr, sigma, mult, tempe
     return results
 
 
-def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
+def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1, pcm=None):
     """RHF/STO-3G, built from terco's own basis file (not pyscf's built-in
     STO-3G, same reasoning as gen_vib_thermo: the anchor then follows the
     file the tests read, which is on this ref's files: line): optimise
@@ -4264,7 +4264,12 @@ def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
     Stores the final Cartesian geometry (Bohr) and energy; the Fortran
     check computes bond lengths/angles from COORDS itself rather than
     pyscf computing and committing them separately, so there is only one
-    place either side's internal coordinates come from."""
+    place either side's internal coordinates come from.
+
+    `pcm` ("C-PCM" or "IEF-PCM") wraps every trial SCF in pyscf's own
+    solvent model at eps = PCM_EPS with its SWIG defaults (lebedev_order 29,
+    vdw_scale 1.2, gen_pcm_grad's settings), so scipy follows pyscf's own
+    PCM gradient: the anchor for --opt --pcm."""
     natm = len(atoms_ang)
     symbols = [a[0] for a in atoms_ang]
     elements = {sym: z for (sym, _), z in zip(atoms_ang, mass_z)}
@@ -4282,6 +4287,10 @@ def gen_opt(case, atoms_ang, mass_z, charge=0, mult=1):
         mol = gto.M(atom=list(zip(symbols, coords)), basis=basis_arg, unit='Bohr',
                     charge=charge, spin=mult - 1, verbose=0)
         mf = scf.RHF(mol)
+        if pcm is not None:
+            mf = mf.PCM()
+            mf.with_solvent.method = pcm
+            mf.with_solvent.eps = PCM_EPS
         mf.conv_tol = 1e-13
         mf.conv_tol_grad = 1e-11
         mf.max_cycle = 200
@@ -4887,6 +4896,12 @@ CASES = {
          ("H", (0.00000000000000, 0.77250895271063, -0.46780199741728)),
          ("H", (0.00000000000000, -0.77250895280218, -0.46780199748881))],
         [8, 1, 1]),
+    "opt_water_cpcm": lambda: gen_opt(
+        "water_cpcm",
+        [("O", (0.00000000000000, 0.00000000009155, 0.10077199490609)),
+         ("H", (0.00000000000000, 0.77250895271063, -0.46780199741728)),
+         ("H", (0.00000000000000, -0.77250895280218, -0.46780199748881))],
+        [8, 1, 1], pcm="C-PCM"),
     "opt_hcn": lambda: gen_opt(
         "hcn",
         [("H", (0.0, 0.0, 0.000)),

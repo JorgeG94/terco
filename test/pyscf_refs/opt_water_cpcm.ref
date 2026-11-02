@@ -1,0 +1,17 @@
+# terco pyscf reference v1
+# case: opt water_cpcm
+# generator: test/pyscf_refs/generate.py CASES["opt_water_cpcm"] -> gen_opt
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: edee08c2cdad813087a0bed72a024fda3d8fda8ef4105b7f52230abb64553c33
+# files: test/basis_sets/sto-3g.json test/check_opt_vs_pyscf.F90
+# scipy L-BFGS-B, 6 iterations, final max|g| 4.050e-10 Eh/Bohr
+NAT 3
+Z 3
+8.00000000000000000e+00 1.00000000000000000e+00 1.00000000000000000e+00
+COORDS 3 3
+1.06621533555428094e-15 2.61844409173517732e-10 2.74204028354938234e-01 -6.32091911073075887e-16 1.42879154647850282e+00 -9.25903934059528977e-01
+-4.45035322724870701e-16 -1.42879154674031406e+00 -9.25903934318272337e-01
+E_FINAL -7.49718089017433016e+01
+GMAX_FINAL 4.04984783954937219e-10
+END

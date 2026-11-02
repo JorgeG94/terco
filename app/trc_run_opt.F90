@@ -58,10 +58,10 @@ contains
                    "correlation is not re-run there, so its gradient would silently be the SCF's alone"
          return
       end if
-      if (len(r%pcm) > 0) then
-         refusal = "--opt needs a gradient at every step; PCM gradient not implemented"
-         return
-      end if
+      ! --pcm is allowed: the analytic PCM gradient is validated, and each
+      ! step's SCF rebuilds the cavity at that step's geometry. Only terco's
+      ! own FD Hessian (trc_run_hessian) still refuses PCM; main.F90 refuses
+      ! the searches that would ask for it, once --opt-init-hessian is parsed.
    end function run_opt_capability_check
 
    !

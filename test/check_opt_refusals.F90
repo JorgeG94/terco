@@ -38,6 +38,10 @@ contains
          new_unittest("--opt-zero-modes above 3*natm is refused", test_zero_modes_too_large), &
          new_unittest("a negative --opt-zero-modes is refused", test_zero_modes_negative), &
          new_unittest("an unknown --opt-init-hessian is refused", test_bad_init_hessian), &
+         new_unittest("--pcm with a P-RFO saddle search on terco's own Hessian is refused", &
+                      test_pcm_prfo_terco_hessian), &
+         new_unittest("--pcm with --opt-algorithm nr on terco's own Hessian is refused", &
+                      test_pcm_nr_terco_hessian), &
          new_unittest("an unknown --opt-hessian-update is refused", test_bad_hessian_update), &
          new_unittest("an unknown --opt-linesearch is refused", test_bad_linesearch), &
          new_unittest("a --opt-print-level DL-FIND does not accept is refused", test_bad_print_level), &
@@ -155,6 +159,20 @@ contains
       call refuse('water.xyz', '--opt --opt-target saddle --opt-saddle-method prfo --opt-init-hessian bogus', &
                   '--opt-init-hessian must be', error)
    end subroutine test_bad_init_hessian
+
+   ! trc_run_hessian refuses PCM; without this refusal cb_get_hessian would
+   ! quietly fall back to DL-FIND's own FD Hessian (app/main.F90).
+   subroutine test_pcm_prfo_terco_hessian(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--pcm cpcm --eps 78.3553 --opt --opt-target saddle --opt-saddle-method prfo', &
+                  'pass --opt-init-hessian dlfind', error)
+   end subroutine test_pcm_prfo_terco_hessian
+
+   subroutine test_pcm_nr_terco_hessian(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--pcm cpcm --eps 78.3553 --opt --opt-algorithm nr', &
+                  'pass --opt-init-hessian dlfind', error)
+   end subroutine test_pcm_nr_terco_hessian
 
    subroutine test_bad_hessian_update(error)
       type(error_type), allocatable, intent(out) :: error
