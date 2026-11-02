@@ -66,7 +66,7 @@ pic-blas = { git = "https://github.com/JorgeG94/pic-blas", tag = "v0.3.1" }
 pic-mpi = { git = "https://github.com/JorgeG94/pic-mpi", tag = "v0.6.8" }
 json-fortran = { git = "https://github.com/jacobwilliams/json-fortran", tag = "9.3.1" }
 # The CLI's TOML input files, at the commit cmake/modules/Findtoml-f.cmake pins.
-toml-f = { git = "https://github.com/JorgeG94/toml-f", rev = "e7d95ffa1c24d03c2a2d67160337cea8d61bce4a" }
+toml-f = { git = "https://github.com/JorgeG94/toml-f", rev = "e0bc8c69985adcae9b61af45b8dd18ceea54ef2c" }
 # DL-FIND for --opt is NOT a default dependency: it is LGPL-3.0-or-later and fpm
 # would link it into libterco itself (CMake keeps it in a separate libterco_opt,
 # behind TERCO_ENABLE_DLFIND). To opt in, uncomment this and add
