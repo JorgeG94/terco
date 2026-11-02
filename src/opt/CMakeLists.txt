@@ -53,6 +53,9 @@ else()
   add_library(terco_opt STATIC trc_opt_io.F90 trc_dlfind_bridge.F90 trc_opt_capi.F90)
 endif()
 add_library(terco::terco_opt ALIAS terco_opt)
+# The three sources are wrapped in #ifdef TERCO_ENABLE_DLFIND so that fpm,
+# which compiles all of src/ and has no DL-FIND by default, skips them.
+target_compile_definitions(terco_opt PRIVATE TERCO_ENABLE_DLFIND)
 
 # A shared libterco_opt.so, not terco_cli, carries the DT_NEEDED on
 # libdlfind.so, and an executable's RUNPATH does not cover its libraries'

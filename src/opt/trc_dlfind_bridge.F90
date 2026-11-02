@@ -197,6 +197,11 @@
 !         value -- not reachable through DL-FIND's own public interface at
 !         all (see above).
 !
+! Compiled only with TERCO_ENABLE_DLFIND (src/opt/CMakeLists.txt defines it on
+! terco_opt). fpm compiles everything under src/ and cannot skip this
+! directory; without the macro (fpm's default, no DL-FIND) this file is
+! empty and app/trc_dlfind_stub.F90 provides the module instead.
+#ifdef TERCO_ENABLE_DLFIND
 module trc_dlfind_bridge
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_char, c_ptr, c_funptr, c_funloc, c_loc, &
                                           c_null_ptr, c_associated
@@ -2435,3 +2440,4 @@ contains
    end function dlfind_print_level
 
 end module trc_dlfind_bridge
+#endif

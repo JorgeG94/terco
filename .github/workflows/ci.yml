@@ -381,24 +381,25 @@ jobs:
           --no-tests=error ${{ env.CTEST_LONG }}
 
   fpm-build:
-    name: fpm (gcc 15)
+    name: fpm (gcc 15, MPI)
     runs-on: ubuntu-latest
-    # Off until pic-mpi can be built by fpm without an MPI: its manifest
-    # compiles every backend, two of which need mpi_f08, and an MPI built for
-    # gfortran 15 is not something a runner has. The gfortran CMake job above
-    # covers the compiler; this job only ever checked the shipped manifest.
-    # Re-enable by deleting the `if`.
-    if: false
+    # pic-mpi's fpm manifest compiles its mpi_f08 backends, so this needs an
+    # MPI whose .mod files gfortran 15 reads: the same conda-forge gfortran 15
+    # + OpenMPI 5 pairing host-mpi-static uses (Ubuntu's OpenMPI is built with
+    # its older system gfortran). openblas because pic-blas links -lopenblas.
+    defaults:
+      run:
+        shell: bash -el {0}
     steps:
       - uses: actions/checkout@v4
 
-      # Same floor as host-build: `local()` locality specifiers need 15.
-      - name: Setup Fortran compiler
-        uses: fortran-lang/setup-fortran@v1.9.0
-        id: setup-fortran
+      - name: Setup gfortran 15 and OpenMPI
+        uses: mamba-org/setup-micromamba@v2
         with:
-          compiler: gcc
-          version: 15
+          environment-name: terco-fpm
+          create-args: >-
+            -c conda-forge
+            gfortran=15 gcc=15 openmpi=5 openblas python git
 
       # Not fortran-lang/setup-fpm: v5 cannot fetch fpm at all. The release
       # binary is one curl and is pinned, so a bad fpm release cannot turn this
@@ -415,16 +416,51 @@ jobs:
 
       # The fpm build exists so that `fpm install terco` works for someone who
       # does not want CMake. It compiles the COMMITTED kernels in
-      # `src/generated` plus the Rys kernels tools/fpm_generate.sh writes to
-      # src/generated/fpm -- fpm cannot run the generators itself.
+      # `src/generated` plus the Rys and MD kernels tools/fpm_generate.sh writes
+      # to src/generated/fpm -- fpm cannot run the generators itself.
       #
       # No GPU flags: without `-stdpar=gpu` this is a correct, slow CPU
       # library, which is exactly what a runner can check.
-      - name: Generate the Rys kernels
+      - name: Generate the Rys and MD kernels
         run: tools/fpm_generate.sh
 
       - name: fpm build
         run: fpm build --compiler mpifort --profile release --flag "-ffree-line-length-none"
+
+      # Compiling is not the check. The SCF at opt_water.ref's geometry (the
+      # pyscf+scipy RHF/STO-3G minimum check_opt_vs_pyscf anchors to) must
+      # give that reference's E_FINAL; at a minimum the energy is quadratic in
+      # any geometry error, so 1e-8 Eh is loose for an SCF converged to 1e-10.
+      # This default build has no DL-FIND (LGPL, opt-in: README "fpm"), so
+      # --opt must be refused by the stub, not crash or run.
+      - name: SCF against the pyscf anchor, --opt refused
+        working-directory: test
+        run: |
+          exe=$(find ../build -path '*app*' -name terco -type f | head -1)
+          python3 - pyscf_refs/opt_water.ref "$RUNNER_TEMP/water_min.xyz" <<'PY'
+          import sys
+          lines = open(sys.argv[1]).read().split("\n")
+          i = next(k for k, l in enumerate(lines) if l.startswith("COORDS"))
+          vals = [float(x) for l in lines[i + 1:i + 3] for x in l.split()]
+          bohr = 0.529177210903
+          with open(sys.argv[2], "w") as f:
+              f.write("3\nwater, opt_water.ref minimum\n")
+              for a, el in enumerate("OHH"):
+                  f.write(f"{el} " + " ".join(f"{vals[3 * a + c] * bohr:.15f}" for c in range(3)) + "\n")
+          PY
+          "$exe" "$RUNNER_TEMP/water_min.xyz" -b basis_sets/sto-3g.json --silent --json "$RUNNER_TEMP/scf.json"
+          python3 - "$RUNNER_TEMP/scf.json" pyscf_refs/opt_water.ref <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          e = d["total energy"]
+          ref = next(float(l.split()[1]) for l in open(sys.argv[2]) if l.startswith("E_FINAL"))
+          print(f"converged={d['converged']}  E={e:.12f}  pyscf={ref:.12f}  |dE|={abs(e - ref):.2e}")
+          sys.exit(0 if d["converged"] and abs(e - ref) < 1e-8 else 1)
+          PY
+          if "$exe" water.xyz -b basis_sets/sto-3g.json --opt > "$RUNNER_TEMP/opt.log" 2>&1; then
+            echo "--opt ran in a build without DL-FIND"; exit 1
+          fi
+          grep -q "needs libdlfind" "$RUNNER_TEMP/opt.log"
 
   generators:
     name: generated sources are up to date

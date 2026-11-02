@@ -22,6 +22,11 @@
 ! they were written, duplicated once rather than reshuffling module
 ! boundaries across both the CLI and the library for them.
 !
+! Compiled only with TERCO_ENABLE_DLFIND (src/opt/CMakeLists.txt defines it on
+! terco_opt). fpm compiles everything under src/ and cannot skip this
+! directory; without the macro (fpm's default, no DL-FIND) this file is
+! empty and app/trc_dlfind_stub.F90 provides the module instead.
+#ifdef TERCO_ENABLE_DLFIND
 module trc_opt_io
    use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
    use pic_types, only: dp
@@ -198,3 +203,4 @@ contains
    end subroutine opt_io_write_opt_failure_json
 
 end module trc_opt_io
+#endif
