@@ -1,0 +1,35 @@
+# Formamide in water: B3LYP/def2-SVP, density-fitted, C-PCM,
+# with the analytic gradient and Hirshfeld charges.
+# Run:  terco formamide.toml        (paths below are relative to this file)
+
+[molecule]
+geometry = "formamide.xyz"
+charge   = 0
+unpaired = 0
+
+[basis]
+main         = "def2-svp"
+jk_auxiliary = "def2-universal-jkfit"   # fitting basis for density_fitted
+cartesian    = true                     # density fitting needs Cartesian AOs
+
+[scf]
+functional     = "b3lyp"
+density_fitted = true
+energy_tol     = 1e-10
+commutator_tol = 1e-7    # tighter than the 1e-5 default: we want a clean gradient
+
+[dft]
+grid = 3
+
+[solvation]
+model   = "cpcm"
+epsilon = 78.3553        # water
+
+[driver]
+gradient = true
+
+[analysis]
+charges = "hirshfeld"
+
+[output]
+json = "formamide.json"

@@ -1,0 +1,31 @@
+# HCN -> HNC isomerisation with a climbing-image nudged elastic band,
+# RHF/STO-3G. Both endpoints are minima; the bent transition-state guess in
+# hcn_ts_guess.xyz seeds the initial path so it does not run H straight
+# through the C-N bond, and the climbing image climbs to the saddle point.
+# These are the settings test/check_opt_neb.F90 checks converge (its
+# NEB_FLAGS_CONVERGES). Needs a DL-FIND build (-DTERCO_ENABLE_DLFIND=ON).
+# Run:  terco hcn_neb.toml
+
+[molecule]
+geometry = "hcn_minimum.xyz"
+
+[basis]
+main = "sto-3g"
+
+[driver]
+optimize = true
+
+[opt]
+gradient_tol = 2e-3      # DL-FIND's NEB criterion is an RMS over each image;
+                         # tighter than ~1e-3 it does not converge on this path
+max_steps    = 2000
+
+[opt.neb]
+product   = "hnc_minimum.xyz"
+via       = "hcn_ts_guess.xyz"
+images    = 10
+spring    = 0.01
+climb     = true
+
+[output]
+json = "hcn_neb.json"

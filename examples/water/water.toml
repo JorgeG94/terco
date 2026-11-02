@@ -1,0 +1,11 @@
+# The simplest run: RHF/def2-SVP on water, from a SAD guess.
+# Run:  terco water.toml
+
+[molecule]
+geometry = "water.xyz"
+
+[basis]
+main = "def2-svp"
+
+[output]
+json = "water.json"
