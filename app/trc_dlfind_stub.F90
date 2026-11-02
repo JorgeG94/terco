@@ -6,6 +6,11 @@
 ! against: it calls trc_dlfind_available() first and, finding it false,
 ! refuses --opt with a message instead of ever calling trc_dlfind_optimize.
 !
+! fpm compiles every file under app/ and cannot skip this one. A fpm build
+! that opts in to DL-FIND (README, "fpm") defines TERCO_ENABLE_DLFIND and gets
+! the real bridge from src/opt/; the guard keeps the two modules from
+! colliding. CMake compiles this file only with TERCO_ENABLE_DLFIND off.
+#ifndef TERCO_ENABLE_DLFIND
 module trc_dlfind_bridge
    use, intrinsic :: iso_c_binding, only: c_int, c_ptr
    use pic_types, only: dp
@@ -164,7 +169,9 @@ contains
       type(trc_opt_result_t), intent(out) :: res
       res%failed = .true.
       res%message = "terco was built with -DTERCO_ENABLE_DLFIND=OFF (the default): "// &
-                    "--opt needs libdlfind. Reconfigure with -DTERCO_ENABLE_DLFIND=ON."
+                    "--opt needs libdlfind. Reconfigure with -DTERCO_ENABLE_DLFIND=ON, or under fpm "// &
+                    "opt in as the README's fpm section shows."
    end subroutine trc_dlfind_optimize
 
 end module trc_dlfind_bridge
+#endif

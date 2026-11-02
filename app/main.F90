@@ -614,7 +614,8 @@ program trc_main
    if (r%opt) then
       if (.not. trc_dlfind_available()) call run_die(r, "--opt needs libdlfind: this terco was built with "// &
                                                   "-DTERCO_ENABLE_DLFIND=OFF (the default). Reconfigure "// &
-                                                  "with -DTERCO_ENABLE_DLFIND=ON.")
+                                                  "with -DTERCO_ENABLE_DLFIND=ON, or under fpm opt in as "// &
+                                                  "the README's fpm section shows.")
       if (r%nranks > 1) call run_die(r, "--opt is single-rank only for now (DL-FIND itself is serial; it is "// &
                                    "driven from the CLI, never run collectively)")
       if (len(r%restart) > 0) call run_die(r, "--opt cannot start from --restart: restart loads one SCF "// &

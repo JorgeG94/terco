@@ -29,6 +29,8 @@ homepage = "https://github.com/JorgeG94/terco"
 [preprocess.cpp]
 suffixes = ["F90", "f90"]
 # The definitions CMake always sets (CMakeLists.txt, target_compile_definitions).
+# Add "TERCO_ENABLE_DLFIND" here, with the libdlfind dependency below, to build
+# --opt (README, "fpm"); without it --opt is refused, as in a default CMake build.
 macros = ["TRC_LMAX=2", "TRC_FOCK6"]
 
 [library]
@@ -65,6 +67,11 @@ pic-mpi = { git = "https://github.com/JorgeG94/pic-mpi", tag = "v0.6.8" }
 json-fortran = { git = "https://github.com/jacobwilliams/json-fortran", tag = "9.3.1" }
 # The CLI's TOML input files, at the commit cmake/modules/Findtoml-f.cmake pins.
 toml-f = { git = "https://github.com/JorgeG94/toml-f", rev = "e7d95ffa1c24d03c2a2d67160337cea8d61bce4a" }
+# DL-FIND for --opt is NOT a default dependency: it is LGPL-3.0-or-later and fpm
+# would link it into libterco itself (CMake keeps it in a separate libterco_opt,
+# behind TERCO_ENABLE_DLFIND). To opt in, uncomment this and add
+# "TERCO_ENABLE_DLFIND" to the macros above:
+# libdlfind = { git = "https://github.com/JorgeG94/libdlfind", rev = "eadcd7c61aa64bbb57bfe77cf5e3182f7b10167d" }
 
 [dev-dependencies]
 # The unit-test framework, at the commit cmake/modules/Findtest-drive.cmake pins.

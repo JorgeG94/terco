@@ -123,7 +123,7 @@ Consume it with `find_package(terco)` and link `terco::terco`.
 ### fpm
 
 ```sh
-tools/fpm_generate.sh                     # the Rys kernels, into src/generated/fpm/
+tools/fpm_generate.sh                     # the Rys and MD kernels, into src/generated/fpm/
 fpm build --compiler mpifort --flag "-ffree-line-length-none"            # gfortran
 fpm build --compiler mpifort --flag "-stdpar=gpu -acc -gpu=cc70,mem:separate"  # nvfortran
 ```
@@ -131,9 +131,31 @@ fpm build --compiler mpifort --flag "-stdpar=gpu -acc -gpu=cc70,mem:separate"  #
 fpm builds the **shipped configuration and only that one**: `TRC_LMAX=2`. fpm
 cannot run a code generator and most of this library is generated, so
 `src/generated/` holds the committed HGP kernels, and `tools/fpm_generate.sh`
-generates the Rys kernels (energy and gradient) that CMake would generate at
-configure time. Rerun it after changing `scripts/`. Any other ceiling needs
-CMake.
+generates the Rys kernels (energy and gradient) and the MD J/K kernels that
+CMake would generate at configure time. Rerun it after changing `scripts/`.
+Any other ceiling needs CMake.
+
+#### `--opt` (DL-FIND) under fpm
+
+The geometry optimiser is off by default, as in the CMake build: DL-FIND is
+LGPL-3.0-or-later, and fpm links its dependencies into `libterco` itself
+(CMake keeps it in a separate `libterco_opt` behind `TERCO_ENABLE_DLFIND`).
+Without it, `terco --opt` is refused with a message. To build it, opt in with
+two edits to `fpm.toml`:
+
+```toml
+[preprocess.cpp]
+macros = ["TRC_LMAX=2", "TRC_FOCK6", "TERCO_ENABLE_DLFIND"]
+
+[dependencies]
+libdlfind = { git = "https://github.com/JorgeG94/libdlfind", rev = "eadcd7c61aa64bbb57bfe77cf5e3182f7b10167d" }
+```
+
+then `fpm build` as above. The pin is the commit of terco's libdlfind fork
+that adds an fpm manifest; it compiles the same DL-FIND sources as the commit
+the CMake build fetches (`cmake/modules/Findlibdlfind.cmake`). An fpm-built
+binary with DL-FIND in it is covered by the LGPL's relinking terms if you
+redistribute it.
 
 ---
 
