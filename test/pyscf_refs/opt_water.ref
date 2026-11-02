@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["opt_water"] -> gen_opt
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 363be1453492c796a35669d40533adbb15af82fb2802d382d286f5682e02068c
+# hash: f432206027d54704e4f296341907235d9ab8a7e46984ba65e0999203dbb0f684
 # files: test/basis_sets/sto-3g.json test/check_opt_vs_pyscf.F90
 # scipy L-BFGS-B, 6 iterations, final max|g| 1.576e-08 Eh/Bohr
 NAT 3

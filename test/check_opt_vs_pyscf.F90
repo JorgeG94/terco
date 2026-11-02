@@ -32,10 +32,16 @@
 ! ~5e-11 Eh, O-H/H-C/C-N to <1e-5 Bohr (test/pyscf_refs/opt_water.ref,
 ! opt_hcn.ref).
 !
-! A test-drive suite. CMakeLists.txt builds this source TWICE, once per
-! case (check_opt_vs_pyscf_water/_hcn), each with its own xyzfile/ref_base
-! command-line arguments -- one unit test runs whichever case this
-! particular executable was given.
+! The water_cpcm case is the same comparison in a C-PCM continuum (gen_opt's
+! `pcm` argument: pyscf's own PCM gradient driving scipy), run with
+! --pcm cpcm --eps 78.3553, the optional sixth argument below. The
+! tolerances above carry over unchanged: they come from --opt-gtol and the
+! bond curvature, which the continuum barely changes.
+!
+! A test-drive suite. CMakeLists.txt builds this source once per case
+! (check_opt_vs_pyscf_water/_hcn/_water_cpcm), each with its own
+! xyzfile/ref_base/extra-flag command-line arguments -- one unit test runs
+! whichever case this particular executable was given.
 !
 module check_opt_vs_pyscf_suite
    use, intrinsic :: iso_c_binding, only: c_double
@@ -48,7 +54,7 @@ module check_opt_vs_pyscf_suite
                            ref_read_matrix, ref_report
    implicit none
    private
-   public :: collect_opt_vs_pyscf, cli_exe, xyzfile, ref_base, probe_json, work_dir
+   public :: collect_opt_vs_pyscf, cli_exe, xyzfile, ref_base, probe_json, work_dir, cli_extra
 
    character(len=:), allocatable :: cli_exe
       !! The terco CLI binary, from the command line.
@@ -62,6 +68,9 @@ module check_opt_vs_pyscf_suite
       !! A scratch directory this check owns, for the xyz outputs -- one
       !! per case (water/hcn, test/CMakeLists.txt's own foreach), never
       !! shared with its sibling.
+   character(len=:), allocatable :: cli_extra
+      !! Extra CLI flags for this case (e.g. "--pcm cpcm --eps 78.3553"),
+      !! empty for the vacuum cases.
    real(dp), parameter :: ENERGY_TOL = 5.0e-8_dp
    real(dp), parameter :: BOND_TOL = 3.0e-4_dp
    real(dp), parameter :: ANGLE_TOL = 0.05_dp
@@ -75,7 +84,7 @@ contains
 
    subroutine test_opt_vs_pyscf(error)
       type(error_type), allocatable, intent(out) :: error
-      character(len=:), allocatable :: cmd, probe_out
+      character(len=:), allocatable :: cmd, probe_out, extra
       integer :: rc, nfail, nat, k
       real(dp), allocatable :: z_ref(:), coords_ref(:, :), coords_json(:, :)
       real(dp) :: e_ref, gmax_ref, e_json
@@ -95,8 +104,10 @@ contains
       call execute_command_line('cp -f basis_sets/sto-3g.json '//work_dir//'/basis_sets/sto-3g.json', &
                                 exitstat=rc, wait=.true.)
       probe_out = probe_json//'.out'
+      extra = ''
+      if (len(cli_extra) > 0) extra = cli_extra//' '
       cmd = 'cd '//work_dir//' && '//trim(cli_exe)//' '//xyzfile//' -b basis_sets/sto-3g.json --opt --opt-gtol 1e-5 '// &
-            '--silent --json '//probe_json//' > '//probe_out//' 2>&1'
+            extra//'--silent --json '//probe_json//' > '//probe_out//' 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
       if (rc /= 0) then
          call test_failed(error, "the CLI run itself failed, exit code "//to_string(rc)); return
@@ -238,7 +249,8 @@ end module check_opt_vs_pyscf_suite
 program check_opt_vs_pyscf
    use, intrinsic :: iso_fortran_env, only: error_unit
    use testdrive, only: run_testsuite
-   use check_opt_vs_pyscf_suite, only: collect_opt_vs_pyscf, cli_exe, xyzfile, ref_base, probe_json, work_dir
+   use check_opt_vs_pyscf_suite, only: collect_opt_vs_pyscf, cli_exe, xyzfile, ref_base, probe_json, work_dir, &
+                                       cli_extra
    implicit none
    character(len=1024) :: arg
    integer :: stat
@@ -247,10 +259,11 @@ program check_opt_vs_pyscf
    call get_command_argument(3, arg); ref_base = trim(arg)
    call get_command_argument(4, arg); probe_json = trim(arg)
    call get_command_argument(5, arg); work_dir = trim(arg)
+   call get_command_argument(6, arg); cli_extra = trim(arg)
    if (len(cli_exe) == 0 .or. len(xyzfile) == 0 .or. len(ref_base) == 0 .or. len(probe_json) == 0 .or. &
        len(work_dir) == 0) then
       write (error_unit, "(a)") "check_opt_vs_pyscf: usage: check_opt_vs_pyscf <terco CLI> <xyz> <ref base> "// &
-         "<scratch .json> <scratch dir>"
+         "<scratch .json> <scratch dir> [extra CLI flags]"
       error stop 1
    end if
    stat = 0

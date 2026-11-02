@@ -692,12 +692,20 @@ if(TERCO_BUILD_APP)
     # See check_opt_vs_pyscf.F90's own header for the tolerances. A
     # separate work dir PER CASE, so the water and hcn ctest cases (which
     # can run concurrently under -j) never share a CWD.
-    foreach(case water hcn)
+    # water_cpcm: the same water start in a C-PCM continuum (eps 78.3553,
+    # gen_opt's pcm="C-PCM"), the anchor for --opt --pcm.
+    foreach(case water hcn water_cpcm)
       set(_cli_opt_pyscf_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_pyscf_probe_${case}.json)
       set(_cli_opt_pyscf_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_opt_pyscf_work_${case})
+      set(_cli_opt_pyscf_xyz ${case}.xyz)
+      set(_cli_opt_pyscf_extra "")
+      if(case STREQUAL "water_cpcm")
+        set(_cli_opt_pyscf_xyz water.xyz)
+        set(_cli_opt_pyscf_extra "--pcm cpcm --eps 78.3553")
+      endif()
       terco_add_check(check_opt_vs_pyscf_${case} check_opt_vs_pyscf.F90 NEEDS_PYSCF_REF
-                      ARGS $<TARGET_FILE:terco_cli> ${case}.xyz opt_${case} ${_cli_opt_pyscf_probe}
-                           ${_cli_opt_pyscf_workdir})
+                      ARGS $<TARGET_FILE:terco_cli> ${_cli_opt_pyscf_xyz} opt_${case} ${_cli_opt_pyscf_probe}
+                           ${_cli_opt_pyscf_workdir} ${_cli_opt_pyscf_extra})
       target_link_libraries(check_opt_vs_pyscf_${case} PRIVATE test-drive::test-drive)
       # Its own module directory: both cases compile the same source, whose
       # helper module would otherwise race into one shared directory (see
@@ -706,6 +714,8 @@ if(TERCO_BUILD_APP)
                             ${CMAKE_CURRENT_BINARY_DIR}/mod_check_opt_vs_pyscf_${case})
       unset(_cli_opt_pyscf_probe)
       unset(_cli_opt_pyscf_workdir)
+      unset(_cli_opt_pyscf_xyz)
+      unset(_cli_opt_pyscf_extra)
     endforeach()
 
     # The SAME water/hcn vs pyscf+scipy comparison as check_opt_vs_pyscf_*

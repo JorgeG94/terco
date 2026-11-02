@@ -772,6 +772,14 @@ program trc_main
       case default
          call run_die(r, "--opt-init-hessian must be terco or dlfind, got '"//r%opt_init_hessian_arg//"'")
       end select
+      ! trc_run_hessian refuses PCM, and cb_get_hessian would turn that into a
+      ! silent fall-back to DL-FIND's own FD Hessian: refuse up front instead.
+      if (len(r%pcm) > 0 .and. r%opt_hessian_source_kind == TRC_OPT_HESS_TERCO .and. &
+          ((r%opt_target_kind == TRC_OPT_TARGET_SADDLE .and. r%opt_saddle_method_kind == TRC_OPT_SADDLE_PRFO) .or. &
+           any(r%opt_algorithm_kind == [TRC_OPT_ALG_PRFO, TRC_OPT_ALG_NR]))) then
+         call run_die(r, "--opt with --pcm: terco's own FD Hessian (--opt-init-hessian terco) is not "// &
+                  "validated with PCM; pass --opt-init-hessian dlfind for a P-RFO or NR search")
+      end if
       if (r%cli%is_set("opt-hessian-update")) then
          call r%cli%get("opt-hessian-update", sval, r%err)
          r%opt_hessian_update_arg = run_to_lower_alloc(trim(sval))
