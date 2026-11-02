@@ -327,10 +327,8 @@ module trc_capi
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
    integer(c_int), parameter, public :: TRC_ABI_MINOR = 16
-   !! 16, not 14: #176 already took 14 on main, and another branch may take
-   !! 15 before this one merges. This change makes trc_run_gradient (and
-   !! trc_run_hessian, sharing its capability check) succeed with --pcm
-   !! set instead of refusing it -- additive, existing callers unaffected.
+   !! trc_run_gradient accepts a PCM reference (C-PCM/IEF-PCM) instead of
+   !! refusing it; trc_run_hessian still refuses PCM. Additive.
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a

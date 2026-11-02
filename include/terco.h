@@ -640,7 +640,7 @@ int trc_set_geometry(trc_handle_t handle, const double* xyz);
  * `cx%scf_ok` already guarantees is unchanged. `trc_scf_gradient`
  * solves it at this run's own density (one more triangular solve
  * through the already-factored K) and adds grad_qv + grad_nuc +
- * grad_solver (`trc_pcm_grad%pcm_gradient_add`'s own header).
+ * grad_solver (`trc_pcm_grad%pcm_grad_add`'s own header).
  *
  * A multi-rank context (`cx%fcomm /= -1`) is NOT refused: the
  * gradient is not rank-split yet, so rank 0 computes it alone and
