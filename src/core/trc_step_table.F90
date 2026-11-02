@@ -223,6 +223,11 @@ contains
    ! "all dense algebra" row); then a total, which says whose numbers these
    ! are: "all N ranks" after `reduce`, else "rank r of N", one rank's share.
    !
+   ! A table where no step counted any operations or bytes (the XC gradient,
+   ! the RI-MP2 gradient's own step list) prints the time column alone: a
+   ! whole column of dashes read as if the counting had failed. Where some
+   ! steps count, a dash marks the ones that do not.
+   !
    subroutine step_table_report(this, t_total, rank, nranks, subtotal_mask, subtotal_label)
       class(step_table_t), intent(in) :: this
       real(dp), intent(in) :: t_total
@@ -232,28 +237,49 @@ contains
       integer, parameter :: TIME_W = 12, WORK_W = 15, RATE_W = 16
       integer :: k
       real(dp) :: tg, fg, fa
-      character(len=:), allocatable :: whose
+      character(len=:), allocatable :: whose, dash_work, dash_rate
+      logical :: counted
+      counted = .false.
+      do k = 1, this%n
+         if (this%is_bytes(k)) then
+            counted = counted .or. this%bytes(k) > 0
+         else
+            counted = counted .or. this%fl(k)%get() > 0
+         end if
+      end do
+      if (counted) then
+         dash_work = right("-", WORK_W)
+         dash_rate = right("-", RATE_W)
+      else
+         dash_work = ""
+         dash_rate = ""
+      end if
       if (this%nranks_reduced > 0) then
          whose = "   all "//to_string(this%nranks_reduced)//" ranks"
       else
          whose = "   rank "//to_string(rank)//" of "//to_string(nranks)
       end if
-      call global_logger%performance("  "//this%prefix//": step"//repeat(" ", 3 + NAME_LEN - 4) &
-                                     //right("time (s)", TIME_W)//right("work", WORK_W)//right("rate", RATE_W))
+      if (counted) then
+         call global_logger%performance("  "//this%prefix//": step"//repeat(" ", 3 + NAME_LEN - 4) &
+                                        //right("time (s)", TIME_W)//right("work", WORK_W)//right("rate", RATE_W))
+      else
+         call global_logger%performance("  "//this%prefix//": step"//repeat(" ", 3 + NAME_LEN - 4) &
+                                        //right("time (s)", TIME_W))
+      end if
       do k = 1, this%n
          if (this%is_bytes(k)) then
             if (this%bytes(k) > 0 .and. this%t(k) > 0.0_dp) then
-               call row(this%names(k), this%t(k), right("-", WORK_W), &
+               call row(this%names(k), this%t(k), dash_work, &
                         si_string(real(this%bytes(k), dp)/this%t(k), "B/s", RATE_W))
             else
-               call row(this%names(k), this%t(k), right("-", WORK_W), right("-", RATE_W))
+               call row(this%names(k), this%t(k), dash_work, dash_rate)
             end if
          else
             if (this%fl(k)%get() > 0 .and. this%t(k) > 0.0_dp) then
                call row(this%names(k), this%t(k), si_string(real(this%fl(k)%get(), dp), "FLOP", WORK_W), &
                         si_string(real(this%fl(k)%get(), dp)/this%t(k), "FLOP/s", RATE_W))
             else
-               call row(this%names(k), this%t(k), right("-", WORK_W), right("-", RATE_W))
+               call row(this%names(k), this%t(k), dash_work, dash_rate)
             end if
          end if
       end do
@@ -279,7 +305,7 @@ contains
          call row(label("total"), t_total, si_string(fa, "FLOP", WORK_W), si_string(fa/t_total, "FLOP/s", RATE_W), &
                   whose)
       else
-         call row(label("total"), t_total, right("-", WORK_W), right("-", RATE_W), &
+         call row(label("total"), t_total, dash_work, dash_rate, &
                   whose)
       end if
 
