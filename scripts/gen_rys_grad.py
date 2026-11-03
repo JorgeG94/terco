@@ -52,8 +52,8 @@ not only its description:
     not L+2, even though the table's nominal range covers both raised by
     one. Confirmed against gpu4pyscf's own bounds (gvhf-rys/...ip1.cu
     around its `order = li+lj+lk+ll; nroots = (order+1)/2+1`). This means
-    the existing n = 1..5 root tables cover every class up to (dd|dd); no
-    new table is needed.
+    (dd|dd) needs 5 roots and (ff|ff) 7, both inside the committed n =
+    1..9 tables the energy kernels already use.
   - Gamma, from the standard RHF/UHF two-electron gradient identity (not
     copied from the Fock digestion's internal 4x/divide-by-8 bookkeeping,
     which is a Fock-MATRIX convention that does not transfer to a gradient
@@ -571,10 +571,15 @@ def chunked_rhf_item_text(tag, item, comps, inside):
         "         kfac_eff = 0.25_dp*kfac\n"
         "         cj = 8.0_dp*wq*jfac\n"
         "         ck = 8.0_dp*wq*kfac_eff\n"]
-    if lb == 2 or ld == 2:
-        body.append("         abx2 = abx*abx; aby2 = aby*aby; abz2 = abz*abz\n"
-                    "         cdx2 = cdx*cdx; cdy2 = cdy*cdy; cdz2 = cdz*cdz\n")
-        names.update(("abx2", "aby2", "abz2", "cdx2", "cdy2", "cdz2"))
+    # Every power the horizontal transfer reads, (A-B)^p and (C-D)^p up to
+    # p = lb, ld (j and l are never raised): squares at d, cubes at f.
+    for pw in range(2, max(lb, ld) + 1):
+        prev = {2: "{0}"}.get(pw, "{0}" + str(pw - 1))
+        body.append("         " + "; ".join(
+            f"{v}{pw} = {prev.format(v)}*{v}" for v in ("abx", "aby", "abz")) + "\n")
+        body.append("         " + "; ".join(
+            f"{v}{pw} = {prev.format(v)}*{v}" for v in ("cdx", "cdy", "cdz")) + "\n")
+        names.update(f"{v}{pw}" for v in ("abx", "aby", "abz", "cdx", "cdy", "cdz"))
     body.append("         vax = 0.0_dp; vay = 0.0_dp; vaz = 0.0_dp\n"
                 "         vbx = 0.0_dp; vby = 0.0_dp; vbz = 0.0_dp\n"
                 "         vcx = 0.0_dp; vcy = 0.0_dp; vcz = 0.0_dp\n")
@@ -1030,8 +1035,8 @@ def main():
     nig, nkg = ni + 1, nk + 1       # the gradient-extended table's dims
     L = la + lb + lc + ld
     nroots = (L + 1)//2 + 1
-    if nroots > 5:
-        raise SystemExit(f"class {tag}: nroots={nroots} exceeds the 5 "
+    if nroots > 9:
+        raise SystemExit(f"class {tag}: nroots={nroots} exceeds the 9 "
                           "committed root tables")
     dims = [len(co.components(l, args.order)) for l in (la, lb, lc, ld)]
     nv = dims[0]*dims[1]*dims[2]*dims[3]

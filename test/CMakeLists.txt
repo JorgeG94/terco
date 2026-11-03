@@ -375,9 +375,15 @@ terco_add_check(check_rys_grad_fd_ccpvdz check_rys_grad_fd.F90 NEEDS_BASIS
 target_link_libraries(check_rys_grad_fd_ccpvdz PRIVATE test-drive::test-drive)
 set_target_properties(check_rys_grad_fd_ccpvdz PROPERTIES Fortran_MODULE_DIRECTORY
                       ${CMAKE_CURRENT_BINARY_DIR}/mod_check_rys_grad_fd_ccpvdz)
+terco_add_check(check_rys_grad_fd_ccpvtz check_rys_grad_fd.F90 NEEDS_BASIS
+                ARGS basis_sets/cc-pvtz.json)
+target_link_libraries(check_rys_grad_fd_ccpvtz PRIVATE test-drive::test-drive)
+set_target_properties(check_rys_grad_fd_ccpvtz PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_rys_grad_fd_ccpvtz)
 set_tests_properties(
-  terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz
+  terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz terco/check_rys_grad_fd_ccpvtz
   PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=none")
+set_tests_properties(terco/check_rys_grad_fd_ccpvtz PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
 # eri%gradient's long-range (erf(omega*r12)/r12) exchange term alone
@@ -420,6 +426,15 @@ target_link_libraries(check_pcm_grad_fd PRIVATE test-drive::test-drive)
 # check_pcm_grad_vs_pyscf.F90's own header.
 terco_add_check(check_pcm_grad_vs_pyscf check_pcm_grad_vs_pyscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_pcm_grad_vs_pyscf PRIVATE test-drive::test-drive)
+# Both targets compile the same source module: separate module directories.
+set_target_properties(check_pcm_grad_vs_pyscf PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_pcm_grad_vs_pyscf)
+# The same on water/cc-pVTZ, the f case (skips below LMAX=3).
+terco_add_check(check_pcm_grad_vs_pyscf_ccpvtz check_pcm_grad_vs_pyscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                ARGS basis_sets/cc-pvtz.json pcm_grad_ccpvtz.ref)
+target_link_libraries(check_pcm_grad_vs_pyscf_ccpvtz PRIVATE test-drive::test-drive)
+set_target_properties(check_pcm_grad_vs_pyscf_ccpvtz PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_pcm_grad_vs_pyscf_ccpvtz)
 
 #
 # The SCF/gradient reuse added for a sequence of nearby geometries (the FD
@@ -453,7 +468,8 @@ foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
              water_wb97xv_ccpvdz_sph nh2_wb97xv_ccpvdz_sph
              water_r2scan_ccpvdz_sph water_tpss_ccpvdz_sph water_m06l_ccpvdz_sph
              formamide_r2scan_ccpvdz_sph formamide_r2scan_631gs nh2_r2scan_ccpvdz_sph
-             water_wb97mv_ccpvdz_sph nh2_wb97mv_ccpvdz_sph)
+             water_wb97mv_ccpvdz_sph nh2_wb97mv_ccpvdz_sph
+             water_wb97xv_ccpvtz_sph)
   if(case MATCHES "^(water|nh2|formamide)_(r2scan|tpss|m06l|wb97mv)_(631gs|ccpvdz_sph)$")
     # Meta-GGAs (trc_xc_grad.F90's META-GGA): RKS and, on NH2, UKS;
     # wB97M-V is the meta-GGA with VV10 and erf exchange.
@@ -528,6 +544,13 @@ foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
     # for real.
     set(xyz nh2.xyz)
     set(json basis_sets/cc-pvdz.json)
+    set(func wb97x-v)
+  elseif(case STREQUAL "water_wb97xv_ccpvtz_sph")
+    # The f case of the one above it, RKS: every term of the wB97X-V
+    # gradient (1e, Coulomb + erf exchange 4c, GGA XC, VV10) through an f
+    # shell and the spherical fold. Skips below LMAX=3.
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvtz.json)
     set(func wb97x-v)
   else()
     set(xyz nh2.xyz)
@@ -937,12 +960,14 @@ target_link_libraries(check_fukui PRIVATE test-drive::test-drive terco_c_interfa
 # eri%gradient against a committed pyscf int2e_ip1 contraction (pyscf's
 # own Gradients class assumes a converged SCF density; this is a fixed,
 # non-SCF density, same reasoning as check_rys_grad_fd). RHF and UHF,
-# water/6-31G* and water/cc-pVDZ.
-foreach(b 631gs ccpvdz)
+# water/6-31G*, water/cc-pVDZ and water/cc-pVTZ (f; skips below LMAX=3).
+foreach(b 631gs ccpvdz ccpvtz)
   if(b STREQUAL "631gs")
     set(json basis_sets/6-31gs.json)
-  else()
+  elseif(b STREQUAL "ccpvdz")
     set(json basis_sets/cc-pvdz.json)
+  else()
+    set(json basis_sets/cc-pvtz.json)
   endif()
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_grad_probe_${b}.bin)
   terco_add_check(check_rys_grad_vs_pyscf_${b} check_rys_grad_vs_pyscf.F90
@@ -1086,11 +1111,14 @@ endforeach()
 # mol.with_range_coulomb(omega) -- the omega > 0 analogue of
 # check_rys_grad_vs_pyscf, RHF only. Two omega values (0.3, 0.4) in one
 # binary/reference -- see check_lr_exchange_grad_vs_pyscf.F90's own header.
-foreach(b 631gs ccpvdz)
+# cc-pVTZ is the f case and skips below LMAX=3.
+foreach(b 631gs ccpvdz ccpvtz)
   if(b STREQUAL "631gs")
     set(json basis_sets/6-31gs.json)
-  else()
+  elseif(b STREQUAL "ccpvdz")
     set(json basis_sets/cc-pvdz.json)
+  else()
+    set(json basis_sets/cc-pvtz.json)
   endif()
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/lr_exchange_grad_probe_${b}.bin)
   terco_add_check(check_lr_exchange_grad_vs_pyscf_${b} check_lr_exchange_grad_vs_pyscf.F90
@@ -1103,14 +1131,18 @@ endforeach()
 # trc_1e_gradient against committed pyscf int1e_ipovlp/int1e_ipkin/
 # int1e_ipnuc(+Hellmann-Feynman) contractions, each term separated (see
 # check_1e_grad_vs_pyscf.F90's own header), at a fixed non-SCF density --
-# water/6-31G*, water/cc-pVDZ, formamide/cc-pVDZ.
-foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
+# water/6-31G*, water/cc-pVDZ, formamide/cc-pVDZ, and water/cc-pVTZ (f;
+# skips below LMAX=3).
+foreach(case water_631gs water_ccpvdz formamide_ccpvdz water_ccpvtz)
   if(case STREQUAL "water_631gs")
     set(xyz water.xyz)
     set(json basis_sets/6-31gs.json)
   elseif(case STREQUAL "water_ccpvdz")
     set(xyz water.xyz)
     set(json basis_sets/cc-pvdz.json)
+  elseif(case STREQUAL "water_ccpvtz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvtz.json)
   else()
     set(xyz formamide.xyz)
     set(json basis_sets/cc-pvdz.json)

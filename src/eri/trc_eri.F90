@@ -37,6 +37,7 @@ module trc_eri
    use pic_profiler, only: profiler_start, profiler_stop
    use trc_binkernel, only: binkernel_fock_bins
    use trc_grad, only: grad_bins
+   use trc_rys_grad_kernels, only: RYSG_LMAX
    use trc_mdj, only: trc_mdj_t
    use trc_mdg, only: trc_mdg_t, trc_mdg_scales_t
    use trc_binkernel, only: TRC_PRIM_MARGIN
@@ -46,7 +47,7 @@ module trc_eri
                              decontract_expand_host, decontract_fold_host
    implicit none
    private
-   public :: trc_eri_t, eri_lmax_refusal
+   public :: trc_eri_t, eri_lmax_refusal, eri_grad_lmax_refusal
 
    integer, parameter :: NBUILD_STAGES = 5  !! timed stages of eri%build, see t_build
 
@@ -141,6 +142,23 @@ contains
          msg = msg//"terco's integrals go up to g (TERCO_LMAX="//to_string(LMAX_BUILDABLE)//")"
       end if
    end function eri_lmax_refusal
+
+   function eri_grad_lmax_refusal(b) result(msg)
+      !! "" when this build has four-centre GRADIENT kernels for every shell
+      !! of `b`; otherwise why not. Stricter than eri_lmax_refusal only on a
+      !! TERCO_LMAX=4 build: the gradient kernels stop at f (RYSG_LMAX), since
+      !! no g gradient has been validated.
+      type(trc_basis_t), intent(in) :: b
+      character(len=:), allocatable :: msg
+      integer :: lb
+      msg = eri_lmax_refusal(b)
+      if (len(msg) > 0) return
+      if (b%nshell == 0) return
+      lb = maxval(b%sh_l)
+      if (lb <= RYSG_LMAX) return
+      msg = "the basis has functions of l = "//to_string(lb)//", but the analytic gradient stops at l = " &
+            //to_string(RYSG_LMAX)//" (no gradient kernels above it)"
+   end function eri_grad_lmax_refusal
 
    !
    ! Everything that depends on the geometry and not on the density.

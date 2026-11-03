@@ -2,8 +2,9 @@
 ! The analytic PCM (C-PCM and IEF-PCM) nuclear gradient (trc_pcm_grad's
 ! pcm_grad_add: grad_qv + grad_nuc + grad_solver, added on top of
 ! trc_scf_gradient's own vacuum RHF gradient via pcm_grad_scf_add) against
-! pyscf's own solvent-wrapped `Gradients` class -- water/6-31G*,
-! eps = 78.3553, pyscf's own SWIG defaults (lebedev_order 29 -> 302 points
+! pyscf's own solvent-wrapped `Gradients` class -- water/6-31G* by
+! default, or the basis and reference named on the command line (water/
+! cc-pVTZ, the f case, which skips below TERCO_LMAX=3) -- eps = 78.3553, pyscf's own SWIG defaults (lebedev_order 29 -> 302 points
 ! per sphere, vdw_scale 1.2), matching terco's.
 !
 ! FIXED INITIAL DENSITY: NOT NEEDED (test/pyscf_refs/generate.py's
@@ -21,7 +22,8 @@
 module check_pcm_grad_vs_pyscf_suite
    use pic_types, only: dp
    use pic_strings, only: to_string
-   use testdrive, only: new_unittest, unittest_type, error_type, check
+   use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
+   use trc_tables, only: LMAX
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -49,6 +51,10 @@ module check_pcm_grad_vs_pyscf_suite
       real(dp), allocatable :: grad(:, :)
    end type ref_case_t
 
+   character(len=256), public :: g_basis_json = 'basis_sets/6-31gs.json'
+      !! argument 1, if given
+   character(len=256), public :: g_ref_name = 'pcm_grad.ref'
+      !! argument 2, if given
    integer :: g_nao = 0
    type(ref_case_t) :: g_cases(2)
       !! Filled by load_reference, in the file's own write order: C-PCM,
@@ -58,7 +64,7 @@ contains
 
    subroutine load_reference()
       integer :: u
-      call ref_require('pcm_grad.ref', u)
+      call ref_require(trim(g_ref_name), u)
       call ref_read_int(u, 'NAO', g_nao)
       call read_one_case(u, 'cpcm', g_cases(1))
       call read_one_case(u, 'iefpcm', g_cases(2))
@@ -82,8 +88,8 @@ contains
    subroutine collect_pcm_grad_vs_pyscf_tests(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
-                  new_unittest("water/6-31G* C-PCM gradient vs pyscf", test_cpcm), &
-                  new_unittest("water/6-31G* IEF-PCM gradient vs pyscf", test_iefpcm) &
+                  new_unittest("water C-PCM gradient vs pyscf", test_cpcm), &
+                  new_unittest("water IEF-PCM gradient vs pyscf", test_iefpcm) &
                   ]
    end subroutine collect_pcm_grad_vs_pyscf_tests
 
@@ -116,10 +122,18 @@ contains
       model = trim(c%model)
       dev = trc_bind_device(0)
       call read_xyz('water.xyz', nat, at_z, r0)
-      call trc_basis_from_json('basis_sets/6-31gs.json', nat, at_z, r0, bas, err)
+      call trc_basis_from_json(trim(g_basis_json), nat, at_z, r0, bas, err)
       call check(error,.not. err%has_error(), trim(model)//': basis build failed: '//err%get_message())
       if (allocated(error)) return
-      call check(error, bas%nao == g_nao, trim(model)//': reference nao does not match this build')
+      ! cc-pVTZ's f on a d build: no kernels to check, not wrong ones.
+      if (maxval(bas%sh_l) > LMAX) then
+         call skip_test(error, "SKIP: basis needs l = "//to_string(maxval(bas%sh_l)) &
+                        //", this build has LMAX = "//to_string(LMAX))
+         call bas%release()
+         return
+      end if
+      call check(error, merge(bas%nao_sph, bas%nao, bas%spherical) == g_nao, &
+                 trim(model)//': reference nao does not match this build')
       if (allocated(error)) then
          call bas%release(); return
       end if
@@ -165,11 +179,16 @@ end module check_pcm_grad_vs_pyscf_suite
 program check_pcm_grad_vs_pyscf
    use, intrinsic :: iso_fortran_env, only: error_unit
    use testdrive, only: run_testsuite, new_testsuite, testsuite_type
-   use check_pcm_grad_vs_pyscf_suite, only: collect_pcm_grad_vs_pyscf_tests, load_reference
+   use check_pcm_grad_vs_pyscf_suite, only: collect_pcm_grad_vs_pyscf_tests, load_reference, &
+                                            g_basis_json, g_ref_name
    implicit none
    type(testsuite_type), allocatable :: testsuites(:)
    integer :: stat
 
+   if (command_argument_count() >= 2) then
+      call get_command_argument(1, g_basis_json)
+      call get_command_argument(2, g_ref_name)
+   end if
    call load_reference()
 
    stat = 0
