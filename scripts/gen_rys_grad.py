@@ -899,15 +899,22 @@ def _rt_chunk_axis(tag, comps, outer, inner, axis, pad):
     return "\n".join(out) + "\n", names, H, [key(m)[2] for m in range(len(inner))]
 
 
-def _rt_gamma(comp):
-    """Gamma for one inner component, RHF, read from dmat, the outer shells'
-    components at their run-time offsets jo{s}."""
+def _rt_gamma(comp, uhf=False):
+    """Gamma for one inner component, read from dmat, the outer shells'
+    components at their run-time offsets jo{s}. RHF: cj D_ab D_cd - ck (D_ac
+    D_bd + D_ad D_bc) on the total density. UHF: the Coulomb term on Da + Db,
+    the exchange term summed per spin (the per-quartet routine's Gamma)."""
     ao = ("mui", "nuj", "lamk", "sigl")
     o = lambda s: f"{ao[s]} + jo{s}" if comp[s] == "o" else f"{ao[s]} + {comp[s]}"
-    D = lambda p, q: f"dmat(1, {o(p)}, {o(q)})"
-    return (f"cj*{D(0, 1)}*{D(2, 3)} &\n"
-            f"                    - ck*({D(0, 2)}*{D(1, 3)} &\n"
-            f"                    + {D(0, 3)}*{D(1, 2)})")
+    D = lambda sp, p, q: f"dmat({sp}, {o(p)}, {o(q)})"
+    if not uhf:
+        return (f"cj*{D(1, 0, 1)}*{D(1, 2, 3)} &\n"
+                f"                    - ck*({D(1, 0, 2)}*{D(1, 1, 3)} &\n"
+                f"                    + {D(1, 0, 3)}*{D(1, 1, 2)})")
+    return (f"cj*({D(1, 0, 1)} + {D(2, 0, 1)}) &\n"
+            f"                    *({D(1, 2, 3)} + {D(2, 2, 3)}) &\n"
+            f"                    - ck*({D(1, 0, 2)}*{D(1, 1, 3)} + {D(1, 0, 3)}*{D(1, 1, 2)} &\n"
+            f"                    + {D(2, 0, 2)}*{D(2, 1, 3)} + {D(2, 0, 3)}*{D(2, 1, 2)})")
 
 
 def _parse_rt_plan(text):
@@ -919,10 +926,13 @@ def _parse_rt_plan(text):
     return (tuple(int(c) for c in outer), form)
 
 
-def rt_chunked_rhf_item_text(tag, item, comps, outer, thread):
-    """rysgi{tag}_crhf in the RUNTIME-OUTER form (see the section comment
-    above), from the compact item routine `item`, as chunked_rhf_item_text
-    builds the literal form. Returns (routine text, chunk count, cn tables)."""
+def rt_chunked_rhf_item_text(tag, item, comps, outer, thread, uhf=False):
+    """rysgi{tag}_crhf (or, with `uhf`, rysgi{tag}_cuhf: ndens = 2, Gamma
+    from both spin densities) in the RUNTIME-OUTER form (see the section
+    comment above), from the compact item routine `item`, as
+    chunked_rhf_item_text builds the literal form. Returns (routine text,
+    chunk count, cn tables)."""
+    rname = f"rysgi{tag}_cuhf" if uhf else f"rysgi{tag}_crhf"
     la, lb, lc, ld = (int(c) for c in tag)
     nroots = (la + lb + lc + ld + 1)//2 + 1
     dims = [len(c) for c in comps]
@@ -943,12 +953,15 @@ def rt_chunked_rhf_item_text(tag, item, comps, outer, thread):
     inner, _ = gr._chunk_keys(comps, outer, 0)
     names = {"cj", "ck", "ai2", "aj2", "ak2", "gyz", "gxz", "gxy"}
     names.update(f"gm_{n}" for n in range(len(inner)))
-    body = [
-        "         ! RHF: ndens is 1 in this routine, so kfac_eff is kfac/4\n"
-        "         ! (see the item routine above for the 1/4 and the 8).\n"
-        "         kfac_eff = 0.25_dp*kfac\n"
-        "         cj = 8.0_dp*wq*jfac\n"
-        "         ck = 8.0_dp*wq*kfac_eff\n"]
+    kfac_text = ("         ! UHF: ndens is 2 in this routine, so kfac_eff is kfac/2 per spin\n"
+                 "         ! (see the item routine above for the 1/2 and the 8).\n"
+                 "         kfac_eff = 0.5_dp*kfac\n") if uhf else (
+                 "         ! RHF: ndens is 1 in this routine, so kfac_eff is kfac/4\n"
+                 "         ! (see the item routine above for the 1/4 and the 8).\n"
+                 "         kfac_eff = 0.25_dp*kfac\n")
+    body = [kfac_text +
+            "         cj = 8.0_dp*wq*jfac\n"
+            "         ck = 8.0_dp*wq*kfac_eff\n"]
     for pw in range(2, max(lb, ld) + 1):
         prev = {2: "{0}"}.get(pw, "{0}" + str(pw - 1))
         body.append("         " + "; ".join(
@@ -977,7 +990,7 @@ def rt_chunked_rhf_item_text(tag, item, comps, outer, thread):
     body.append(wtxt)
     names.update(wn)
     for m, comp in enumerate(inner):
-        body.append(f"            gm_{m} = {_rt_gamma(comp)}\n")
+        body.append(f"            gm_{m} = {_rt_gamma(comp, uhf)}\n")
     body.append(prim_hdr)
     body.append("                  ai2 = 2.0_dp*alpha_i; aj2 = 2.0_dp*alpha_j; ak2 = 2.0_dp*alpha_k\n")
     body.append(ri.roots_inline_body(nroots, "tval", 18))
@@ -1053,15 +1066,15 @@ def rt_chunked_rhf_item_text(tag, item, comps, outer, thread):
     i_si = pre.index("si = sp_i(sOA(seg) + iab)")
     i_si = pre.rfind("\n", 0, i_si)
     pre = pre[:i_si] + "\n" + decls + pre[i_si:]
-    pre = pre.replace(f"subroutine rysgi{tag}_compact(", f"subroutine rysgi{tag}_crhf(", 1)
+    pre = pre.replace(f"subroutine rysgi{tag}_compact(", f"subroutine {rname}(", 1)
     if thread:
-        a = f"subroutine rysgi{tag}_crhf(seg, "
+        a = f"subroutine {rname}(seg, "
         assert pre.count(a) == 1, a
-        pre = pre.replace(a, f"subroutine rysgi{tag}_crhf(jch, seg, ", 1)
+        pre = pre.replace(a, f"subroutine {rname}(jch, seg, ", 1)
         a = "      !$acc routine seq\n"
         assert pre.count(a) == 1
         pre = pre.replace(a, a + "      integer, intent(in) :: jch\n", 1)
-    tail = tail.replace(f"end subroutine rysgi{tag}_compact", f"end subroutine rysgi{tag}_crhf")
+    tail = tail.replace(f"end subroutine rysgi{tag}_compact", f"end subroutine {rname}")
     tabs = ""
     for x in outer:
         for cnm, a in (("cnx", 0), ("cny", 1), ("cnz", 2)):
@@ -1303,12 +1316,12 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
         compact_loops = compact_loop(f"rysgi{tag}_compact", 6)
     elif rt_plan is not None:
         compact_loops = (
-            "      ! RHF runs the RUNTIME-OUTER CHUNKED RHF PASS (gen_rys_grad.py); UHF\n"
-            "      ! keeps the per-quartet form below.\n"
+            "      ! RUNTIME-OUTER CHUNKED PASS (gen_rys_grad.py): crhf for RHF, cuhf\n"
+            "      ! for UHF (ndens = 2).\n"
             "      if (ndens == 1) then\n"
             + compact_loop(f"rysgi{tag}_crhf", 9, rt_nch if rt_thread else 0)
             + "      else\n"
-            + compact_loop(f"rysgi{tag}_compact", 9)
+            + compact_loop(f"rysgi{tag}_cuhf", 9, rt_nch if rt_thread else 0)
             + "      end if\n")
     else:
         compact_loops = (
@@ -1404,8 +1417,14 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
         compact += "\n" + chunked_rhf_item_text(tag, compact[i_item:], comps, chunk_inside)
     elif rt_plan is not None:
         i_item = compact.index(f"   pure subroutine rysgi{tag}_compact(")
-        txt, _, tabs = rt_chunked_rhf_item_text(tag, compact[i_item:], comps, rt_plan[0], rt_thread)
-        compact += "\n" + txt
+        # Both from the compact routine alone: slicing after the first is
+        # appended would carry a copy of it into the second one's tail.
+        item = compact[i_item:]
+        txt, _, tabs = rt_chunked_rhf_item_text(tag, item, comps, rt_plan[0], rt_thread)
+        txt_u, _, _ = rt_chunked_rhf_item_text(tag, item, comps, rt_plan[0], rt_thread, uhf=True)
+        # The per-quartet routine is only their source text now: RHF and UHF
+        # both run a chunked pass, so it is not emitted (nothing calls it).
+        compact = compact[:i_item] + txt + "\n" + txt_u
     return screen + compact, tabs
 
 
