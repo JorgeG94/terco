@@ -142,7 +142,9 @@ contains
       real(dp) :: r(3, 1)
 
       r = 0.0_dp
-      call trc_basis_from_json('basis_sets/def2-svp.json', 1, [40], r, b, err)   ! Zr, Z=40
+      ! Zr, Z=40, all-electron: def2-SVP's Zr needs an ECP, which the basis
+      ! reader refuses before minao is reached.
+      call trc_basis_from_json('basis_sets/sto-3g-rb-zr.json', 1, [40], r, b, err)
       call check(error,.not. err%has_error(), "Zr must build: "//err%get_message())
       if (allocated(error)) return
       call trc_minao_build(b, d, err)

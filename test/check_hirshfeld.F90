@@ -264,7 +264,9 @@ contains
 
       z = [37]
       r = 0.0_dp
-      call trc_basis_from_json("basis_sets/def2-svp.json", 1, z, r, b, err)
+      ! An all-electron probe: def2-SVP's Rb needs an ECP, which the basis
+      ! reader refuses before Hirshfeld is reached.
+      call trc_basis_from_json("basis_sets/sto-3g-rb-zr.json", 1, z, r, b, err)
       call check(error,.not. err%has_error(), "basis: "//err%get_message())
       if (allocated(error)) return
       allocate (dzero(b%nao, b%nao))
