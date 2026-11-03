@@ -29,8 +29,10 @@ longer to compile.
 Pull requests and pushes run ctest with `-LE LONG`. Tests labelled `LONG`
 in `test/CMakeLists.txt` (`check_xc_grad_fd`, over half the suite's time) run
 only in the nightly scheduled run on main (13:00 UTC, midnight AEDT) and in a
-run started by hand (`workflow_dispatch`). Run them locally with `ctest -L LONG`
-when you touch the XC gradient.
+run started by hand (`workflow_dispatch`). They are off by default
+locally: `TERCO_LONG_TESTS` (OFF) registers them DISABLED, so a plain
+`ctest` lists them as not run. Configure with `-DTERCO_LONG_TESTS=ON` and
+run `ctest -L LONG` when you touch the XC gradient or another LONG check.
 
 ## Generators
 
