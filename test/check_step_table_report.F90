@@ -90,7 +90,9 @@ program check_step_table_report
    implicit none
    integer :: stat
    stat = 0
-   call run_testsuite(collect_step_table_report, error_unit, stat)
+   ! Serial: both tests point the shared global_logger at one log file, and
+   ! test-drive runs a suite's tests on OpenMP threads unless told not to.
+   call run_testsuite(collect_step_table_report, error_unit, stat, parallel=.false.)
    if (stat > 0) then
       write (error_unit, "(i0, a)") stat, " test(s) failed"
       error stop 1
