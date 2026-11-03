@@ -674,6 +674,13 @@ def chunked_rhf_item_text(tag, item, comps, inside):
 #: (dp|dp), (fs|dp), (fp|ds), (fp|fs) and (ff|ps); the array form won none.
 #: Over the 42 classes: 1368 ms, against 2947 ms for the literal pass where
 #: it compiles and the array form elsewhere.
+#:
+#: Checked on a second system, NA-040 (89 atoms, C34H40N8O7), def2-TZVP,
+#: raced the same way (17 shapes; not the array form or the all-outer sets,
+#: which lost by 2-9x on w20): this plan takes 56.40 s over the 42 classes,
+#: the per-class best over both races 56.26 s. Only (dd|dd) and (fp|dd)
+#: would move (23:thread -> 23:loop, -0.25% there, +2.6 ms on w20), so the
+#: plan is left as measured on w20.
 GRAD_CHUNK_PLAN = {
     "2111": ((2, 3), "loop"),  # (21|11) 86; next literal 91; literal 91
     "2211": ((2, 3), "loop"),  # (22|11) 44; next 13:loop 49; literal 49
