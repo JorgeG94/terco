@@ -34,7 +34,9 @@ permissions:
 
 env:
   # Every ctest below appends this: LONG tests run only on the nightly
-  # schedule and when the workflow is started by hand.
+  # schedule and when the workflow is started by hand. Every configure
+  # passes -DTERCO_LONG_TESTS=ON (the default OFF registers them DISABLED),
+  # so this label filter alone decides.
   # (Written as `not-nightly && '-LE LONG' || ''`: an empty string is falsy
   # in GitHub expressions, so `nightly && '' || '-LE LONG'` would always
   # give '-LE LONG'.)
@@ -82,6 +84,7 @@ jobs:
           cmake -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DTERCO_ENABLE_GPU=OFF
+          -DTERCO_LONG_TESTS=ON
           -S . -B build
 
       - name: Build
@@ -148,6 +151,7 @@ jobs:
           cmake -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DTERCO_ENABLE_GPU=OFF
+          -DTERCO_LONG_TESTS=ON
           -DTERCO_DF_LMAX=3
           -S . -B build
 
@@ -215,6 +219,7 @@ jobs:
           cmake -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DTERCO_ENABLE_GPU=OFF
+          -DTERCO_LONG_TESTS=ON
           -DTERCO_LMAX=3
           -DTERCO_DF_LMAX=3
           -S . -B build
@@ -294,6 +299,7 @@ jobs:
           cmake -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DTERCO_ENABLE_GPU=OFF
+          -DTERCO_LONG_TESTS=ON
           -DTERCO_ENABLE_DLFIND=ON
           -S . -B build
 
@@ -361,6 +367,7 @@ jobs:
           cmake -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DTERCO_ENABLE_GPU=OFF
+          -DTERCO_LONG_TESTS=ON
           -DTERCO_ENABLE_MPI=ON
           -DTERCO_BUILD_SHARED=OFF
           -DTERCO_ENABLE_DLFIND=ON
@@ -605,7 +612,7 @@ jobs:
           python3 tools/dc_to_omp.py --target cpu --write src
           python3 tools/acc_to_omp.py --target cpu --translate-atomics --write src
           git diff --stat -- src | tail -1
-          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DTERCO_ENABLE_GPU=OFF \
+          cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DTERCO_ENABLE_GPU=OFF -DTERCO_LONG_TESTS=ON \
                 -DCMAKE_Fortran_FLAGS=-fopenmp -S . -B build-omp
           # The Rys and MD J/K kernels are generated into the BUILD tree at
           # configure time, so the conversion of src/ above never saw them:

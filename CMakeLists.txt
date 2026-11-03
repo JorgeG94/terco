@@ -143,6 +143,11 @@ set(TERCO_CUDA_VERSION
     CACHE STRING "CUDA version to build against (empty: nvfortran's default), e.g. 12.9")
 
 option(TERCO_ENABLE_TESTING "Build the correctness checks" ON)
+# The checks labelled LONG (test/CMakeLists.txt) take most of the suite's
+# time, check_xc_grad_fd alone ~35 min on a CPU build. OFF registers them
+# DISABLED, so a plain `ctest` skips them; CI configures ON and picks them
+# per run with -L/-LE LONG (.github/workflows/ci.yml).
+option(TERCO_LONG_TESTS "Run the checks labelled LONG under a plain ctest" OFF)
 option(TERCO_BUILD_APP "Build and install the terco command line program" ON)
 #
 # Ranks. The Fock build splits the sorted quartet list across ranks -- every

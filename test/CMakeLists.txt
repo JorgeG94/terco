@@ -2078,3 +2078,17 @@ if(Python3_FOUND)
     endforeach()
   endforeach()
 endif()
+
+# TERCO_LONG_TESTS=OFF (the default): every check labelled LONG above is
+# registered DISABLED, so `ctest` lists it as not run instead of spending
+# most of the suite's time on it. Configure with -DTERCO_LONG_TESTS=ON to
+# run them (`ctest -L LONG` for those alone).
+if(NOT TERCO_LONG_TESTS)
+  get_property(_terco_tests DIRECTORY PROPERTY TESTS)
+  foreach(_t IN LISTS _terco_tests)
+    get_test_property(${_t} LABELS _labels)
+    if(_labels AND "LONG" IN_LIST _labels)
+      set_tests_properties(${_t} PROPERTIES DISABLED TRUE)
+    endif()
+  endforeach()
+endif()
