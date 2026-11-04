@@ -3499,11 +3499,8 @@ contains
       case (TRC_GUESS_GWH)
          opts%guess = "gwh"
       case (TRC_GUESS_SAD, TRC_GUESS_SADQ)
-         ! SADQ is SAD with the molecule's charge put on its atoms, so it
-         ! needs the electron count this run was asked for -- which is the
-         ! one thing SAD never looks at. On a neutral molecule the two are
-         ! the same density; see trc_sad. Split out, as minao_guess_build
-         ! is, to keep this dispatch off trc_run_scf's own line count.
+         ! SADQ is SAD with the molecule's charge on its atoms (trc_sad);
+         ! split out, as minao_guess_build is, to keep this dispatch short.
          call sad_guess_build(cx, nelec, nspin, cx%guess_kind == TRC_GUESS_SADQ, talk, dg, err)
          if (err%has_error()) then
             cx%message = err%get_message()

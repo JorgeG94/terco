@@ -193,10 +193,7 @@ contains
       !! A caller-owned pair-list/ERI cache, the same way: present, the pair
       !! list and (outside `--df`) the four-centre engine stay alive for a
       !! gradient at the SAME geometry and threshold; absent, the run's own.
-      type(trc_ecp_t), intent(in), optional :: ecp
-      !! An effective core potential on `scf_basis`'s atoms -- passed
-      !! straight through to `scf_context%setup` (its own header); absent,
-      !! or present with `has_ecp` false, this run is exactly as before.
+      type(trc_ecp_t), intent(in), optional :: ecp   !! passed through to `scf_context%setup`
 
       integer :: nao, nao_c, s, it, i, j, n2
       logical :: ok, sph
