@@ -186,7 +186,7 @@ module trc_capi
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, trc_bind_device_env, &
                         trc_1e, trc_df_2c, trc_df_3c, trc_multipoles, &
                         TRC_NMULT
-   use trc_eri, only: trc_eri_t, eri_lmax_refusal
+   use trc_eri, only: trc_eri_t, eri_lmax_refusal, eri_grad_lmax_refusal
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t, trc_pair_eri_cache_t
    use trc_scf_grad, only: trc_scf_gradient
    use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t
@@ -3619,6 +3619,10 @@ contains
       refusal = ""
       refusal_status = TRC_ERR_UNSUPPORTED
       have_func = len_trim(cx%opts%functional) > 0
+      ! Before anything else: with no kernels for the basis's l, every other
+      ! path below would end in grad_bins' error stop, not a refusal.
+      refusal = eri_grad_lmax_refusal(cx%bb%b)
+      if (len(refusal) > 0) return
       if (have_func) then
          ! `cx%opts%functional` only ever holds a name trc_set_method/
          ! scf_entry already validated (xc_functional_by_name succeeded,

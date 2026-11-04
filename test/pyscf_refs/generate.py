@@ -1460,7 +1460,7 @@ def gen_dft_grad(case, xyz, json_rel, functional, grid_level=3):
     PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP',
              'wb97x': 'HYB_GGA_XC_WB97X', 'wb97x-v': 'wb97x-v',
              'r2scan': 'R2SCAN', 'tpss': 'TPSS', 'm06l': 'M06L', 'wb97m-v': 'wb97m-v'}
-    is_sph = 'cc-pvdz' in json_rel
+    is_sph = 'cc-pv' in json_rel   # cc-pVDZ/cc-pVTZ are tagged spherical, 6-31G* Cartesian
 
     dump = TEST / f"dft_grad_probe_{case}.bin"
     # Pruning off for the probe run: pyscf is handed the literal (unpruned)
@@ -3968,12 +3968,14 @@ def gen_pcm_radii_override():
     print(f"  pcm_radii_override: E {mf.e_tot:.12f}  E_diel {mf.scf_summary['e_solvent']:.12f}")
 
 
-def gen_pcm_grad():
+def gen_pcm_grad(json_rel="basis_sets/6-31gs.json", ref_name="pcm_grad.ref", sph=False,
+                 test_name="check_pcm_grad_vs_pyscf"):
     """check_pcm_grad_vs_pyscf.F90: the analytic PCM (C-PCM and IEF-PCM)
     nuclear gradient (trc_pcm_grad%pcm_grad_add's grad_qv + grad_nuc +
     grad_solver, added on top of trc_scf_gradient's own vacuum RHF
     gradient) against pyscf's own solvent-wrapped `Gradients` class --
-    water/6-31G*, eps = PCM_EPS, pyscf's own SWIG defaults (lebedev_order
+    water/6-31G* (or `json_rel`; cc-pVTZ is the spherical f case),
+    eps = PCM_EPS, pyscf's own SWIG defaults (lebedev_order
     29 -> 302 points per sphere, vdw_scale 1.2) matching terco's.
 
     FIXED INITIAL DENSITY: NOT NEEDED, same reasoning gen_pcm_radii_override's
@@ -3981,20 +3983,20 @@ def gen_pcm_grad():
     competing stationary point, continuum or not): converged
     independently on both sides."""
     atoms = _xyz_bohr("water.xyz")
-    basis_arg = bse_json_basis(TEST / "basis_sets" / "6-31gs.json", {"O": 8, "H": 1})
-    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+    basis_arg = bse_json_basis(TEST / json_rel, {"O": 8, "H": 1})
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=not sph, verbose=0)
     nao = mol.nao_nr()
 
-    w = RefWriter("pcm_grad.ref")
-    w.header("check_pcm_grad_vs_pyscf",
-             [ROOT / "test" / "check_pcm_grad_vs_pyscf.F90", TEST / "basis_sets" / "6-31gs.json",
+    w = RefWriter(ref_name)
+    w.header(test_name,
+             [ROOT / "test" / "check_pcm_grad_vs_pyscf.F90", TEST / json_rel,
               TEST / "water.xyz"])
     w.int_("NAO", nao)
     for model, pyscf_method in (("cpcm", "C-PCM"), ("iefpcm", "IEF-PCM")):
         mf = scf.RHF(mol).PCM()
         mf.with_solvent.method = pyscf_method
         mf.with_solvent.eps = PCM_EPS
-        mf, gnorm = _pcm_converge(mf, f"pcm_grad water/6-31gs {model}")
+        mf, gnorm = _pcm_converge(mf, f"pcm_grad water/{json_rel} {model}")
         g = mf.nuc_grad_method()
         g.verbose = 0
         grad_py = g.kernel()   # (nat, 3), Eh/Bohr, terco's own atom order
@@ -4748,14 +4750,19 @@ CASES = {
     "ao": gen_ao,
     "pcm_radii_override": gen_pcm_radii_override,
     "pcm_grad": gen_pcm_grad,
+    "pcm_grad_ccpvtz": lambda: gen_pcm_grad("basis_sets/cc-pvtz.json", "pcm_grad_ccpvtz.ref", sph=True,
+                                            test_name="check_pcm_grad_vs_pyscf_ccpvtz"),
     "xc_energy": gen_xc_energy,
     "vv10": gen_vv10,
     "rys_grad_631gs": lambda: gen_rys_grad("631gs", "basis_sets/6-31gs.json"),
     "rys_grad_ccpvdz": lambda: gen_rys_grad("ccpvdz", "basis_sets/cc-pvdz.json"),
+    "rys_grad_ccpvtz": lambda: gen_rys_grad("ccpvtz", "basis_sets/cc-pvtz.json"),
     "lr_exchange_grad_631gs": lambda: gen_lr_exchange_grad("631gs", "basis_sets/6-31gs.json"),
     "lr_exchange_grad_ccpvdz": lambda: gen_lr_exchange_grad("ccpvdz", "basis_sets/cc-pvdz.json"),
+    "lr_exchange_grad_ccpvtz": lambda: gen_lr_exchange_grad("ccpvtz", "basis_sets/cc-pvtz.json"),
     "onee_grad_water_631gs": lambda: gen_1e_grad("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "onee_grad_water_ccpvdz": lambda: gen_1e_grad("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json"),
+    "onee_grad_water_ccpvtz": lambda: gen_1e_grad("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json"),
     "onee_grad_formamide_ccpvdz": lambda: gen_1e_grad(
         "formamide_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json"),
     "xc_grad_water_svwn_631gs": lambda: gen_xc_grad(
@@ -4822,6 +4829,8 @@ CASES = {
         "water_wb97xv_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "wb97x-v"),
     "dft_grad_nh2_wb97xv_ccpvdz_sph": lambda: gen_dft_grad(
         "nh2_wb97xv_ccpvdz_sph", "nh2.xyz", "basis_sets/cc-pvdz.json", "wb97x-v"),
+    "dft_grad_water_wb97xv_ccpvtz_sph": lambda: gen_dft_grad(
+        "water_wb97xv_ccpvtz_sph", "water.xyz", "basis_sets/cc-pvtz.json", "wb97x-v"),
     "dft_grad_water_r2scan_ccpvdz_sph": lambda: gen_dft_grad(
         "water_r2scan_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "r2scan"),
     "dft_grad_water_tpss_ccpvdz_sph": lambda: gen_dft_grad(

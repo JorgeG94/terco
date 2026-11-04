@@ -29,17 +29,20 @@
 ! against zero -- a property of the ANALYTIC gradient alone, not of the
 ! finite difference.
 !
-! The basis (6-31G* or cc-pVDZ) comes from the command line (test/CMakeLists.txt
-! registers this source as TWO executables, ARGS basis_sets/6-31gs.json and
-! basis_sets/cc-pvdz.json, each also setting TRC_RYS_CLASSES=none so the
-! HGP path is what gets checked), so each run checks exactly the one basis
-! it was invoked with.
+! The basis (6-31G*, cc-pVDZ or cc-pVTZ) comes from the command line
+! (test/CMakeLists.txt registers this source as THREE executables, ARGS
+! basis_sets/6-31gs.json, basis_sets/cc-pvdz.json and basis_sets/cc-pvtz.json,
+! the last the f-shell case, which skips below TERCO_LMAX=3), each setting
+! TRC_RYS_CLASSES=none so the HGP path is what gets checked up to d (f
+! classes are Rys only), so each run checks exactly the one basis it was
+! invoked with.
 !
 module check_rys_grad_fd_suite
    use pic_types, only: dp
    use pic_strings, only: to_string
-   use testdrive, only: new_unittest, unittest_type, error_type, check
+   use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
    use trc_api, only: trc_basis_t
+   use trc_tables, only: LMAX
    use trc_eri, only: trc_eri_t
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
@@ -193,6 +196,14 @@ contains
                                overrides=trc_basis_json_overrides(prune=.false.))
       call check(error,.not. err%has_error(), "check_rys_grad_fd: "//err%get_message())
       if (allocated(error)) return
+      ! A basis above the build's LMAX (cc-pVTZ's f on a d build) has no
+      ! kernels to check, not wrong ones.
+      if (maxval(bas%sh_l) > LMAX) then
+         call skip_test(error, "SKIP: basis needs l = "//to_string(maxval(bas%sh_l)) &
+                        //", this build has LMAX = "//to_string(LMAX))
+         call bas%release()
+         return
+      end if
       nao = bas%nao
 
       allocate (dmat(nao, nao, ndens), grad(3, nat))

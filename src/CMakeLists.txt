@@ -808,24 +808,38 @@ list(LENGTH _rys_sources _nrys)
 message(STATUS "terco: ${_nrys} Rys class kernels in ${_rys_dir}")
 target_sources(${main_lib} PRIVATE ${_rys_sources} ${_rys_dir}/trc_rys_kernels.F90)
 
-# --- Rys GRADIENT kernels: all 81 classes up to (dd|dd), no HGP fallback --
+# --- Rys GRADIENT kernels: every class the pair bins launch -------------
 #
 # Unlike the energy kernel above (generated only where Rys measures faster
 # than HGP), the gradient has no HGP counterpart to fall back to -- an HGP
-# gradient is out of scope -- so every class a basis up to LMAX=2 can form
-# needs one. Not above d yet: gen_rys_grad.py stops at five roots, so an f
-# gradient stops in grad_bins (rysg_has_class) rather than running.
+# gradient is out of scope -- so every class a basis can form needs one.
+# Up to d that is all 81 tags, as before. Above d only the
+# ANGULAR-MOMENTUM CANONICAL ones (la >= lb, lc >= ld, (la, lb) >= (lc,
+# ld); trc_bins.F90) are built: grad_bins never launches the others, and
+# at LMAX=3 they would be ~175 dead kernels of compile time. Not above f:
+# no g gradient has been validated, so a TERCO_LMAX=4 build stops at f and
+# trc_capi refuses a g basis up front (RYSG_LMAX).
 #
 set(_grad_lmax ${TERCO_LMAX})
-if(_grad_lmax GREATER 2)
-  set(_grad_lmax 2)
+if(_grad_lmax GREATER 3)
+  set(_grad_lmax 3)
 endif()
 set(_rys_grad_classes "")
 foreach(la RANGE 0 ${_grad_lmax})
   foreach(lb RANGE 0 ${_grad_lmax})
     foreach(lc RANGE 0 ${_grad_lmax})
       foreach(ld RANGE 0 ${_grad_lmax})
-        list(APPEND _rys_grad_classes "${la}${lb}${lc}${ld}")
+        set(_keep TRUE)
+        if(la GREATER 2 OR lb GREATER 2 OR lc GREATER 2 OR ld GREATER 2)
+          math(EXPR _ab "${la}*16 + ${lb}")
+          math(EXPR _cd "${lc}*16 + ${ld}")
+          if(lb GREATER la OR ld GREATER lc OR _cd GREATER _ab)
+            set(_keep FALSE)
+          endif()
+        endif()
+        if(_keep)
+          list(APPEND _rys_grad_classes "${la}${lb}${lc}${ld}")
+        endif()
       endforeach()
     endforeach()
   endforeach()
