@@ -7,18 +7,45 @@
 !
 ! HI and the free I atom are checked against mqc's own independently
 ! converged numbers (ECP_DESIGN.md's Validation section) -- a STORED VALUE
-! reference (AGENTS.md), not a pyscf one: an unguided pyscf RHF/UHF on
-! these same systems was measured landing on a DIFFERENT, nearby
-! stationary point (|dE| ~1e-4 for HI; the free atom, with no geometry
-! freedom to get wrong, instead matches mqc's own number to 1e-13) --
-! multiple self-consistent HF solutions are a real possibility here, not
-! a terco bug: check_ecp_matrix.F90's own gen_ecp_ints already validates
-! this build's U_ECP matrix element-by-element against pyscf's own
-! ECPscalar to 7e-15 on this EXACT geometry, so the one-electron operator
-! itself is not in question, only which root an unseeded SCF finds. Chasing
-! a pyscf-seeded anchor that reproducibly lands on the SAME root was not
-! pursued further here; mqc's numbers are the validation this suite holds
-! to, per the phase 3 handoff.
+! reference (AGENTS.md), not a pyscf one.
+!
+! GEOMETRY. HI's bond is mqc's own
+! (metalquicha/validation/inputs/sample_inputs/hi.xyz): I at the origin, H
+! at z = 1.609 Angstrom = 3.040569334522864 bohr (CODATA 2018, terco's own
+! ANGSTROM_TO_BOHR). An EARLIER version of this file used the rounded
+! literal 3.04 bohr (check_ecp_matrix.F90's own "hi_svp" case, which only
+! checks the U_ECP matrix and so is insensitive to a 6e-4 bohr geometry
+! error) and measured |dE| ~1e-6 to mqc for RHF/PBE/B3LYP -- a real but
+! small geometry mismatch, not a method or integral problem. At mqc's EXACT
+! bond length terco matches mqc to machine precision (measured: RHF
+! 1.3e-12, PBE 2.3e-10, B3LYP 1.7e-10 -- see each test's own tolerance).
+!
+! PYSCF, SEPARATELY: an unguided pyscf RHF on this SAME exact geometry
+! (same JSON basis+ECP, bse_json_basis/bse_json_ecp) still converges to a
+! DIFFERENT, lower stationary point than mqc/terco's (both the default
+! minao guess and an explicit core-Hamiltonian guess land there,
+! reproducibly: measured |dE| 9.59e-5 against mqc, independent of the
+! geometry fix above). This is confirmed to be a second genuine RHF
+! solution, not a terco integral bug: terco's and pyscf's full H_core
+! (T + V_ne + U_ECP) have IDENTICAL generalized eigenvalues (checked to
+! 1e-14) on this system, and warm-starting terco's own SCF from pyscf's
+! converged density (permuted into terco's AO order) makes terco converge
+! to pyscf's exact lower energy too -- so both codes can reach either
+! root, and only the UNSEEDED guess differs in which one it finds.
+! check_ecp_matrix.F90's own gen_ecp_ints already validates this build's
+! U_ECP matrix element-by-element against pyscf's own ECPscalar to 7e-15
+! on this exact geometry, so the one-electron operator itself was never in
+! question. Chasing a pyscf-seeded anchor that reproducibly lands on the
+! SAME root as mqc was not pursued further here; mqc's numbers are the
+! validation this suite holds to.
+!
+! RI-MP2, frozen core 4 (not a committed case here): measured E = mqc's
+! -297.360082905691 to |dE| = 1.32e-5 at the corrected geometry, using
+! def2-svp-rifit.json as the auxiliary basis -- an order of magnitude
+! looser than RHF/DFT, consistent with a density-fitting/auxiliary-basis
+! difference from whatever mqc's own RI-MP2 used (not confirmed to be the
+! identical aux set), rather than a bug; left unadded rather than
+! committing a loose, unexplained tolerance.
 !
 ! An I2 case (two ECP atoms, exercising attach_ecp's per-atom loop) was
 ! tried at several I-I separations (4.0-6.0 bohr) and refused every time
@@ -36,6 +63,7 @@
 module check_ecp_scf_suite
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char
    use pic_types, only: dp
+   use trc_constants, only: ANGSTROM_TO_BOHR
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                                trc_set_convergence, trc_set_guess, trc_set_method, trc_run_scf, trc_run_gradient, &
@@ -46,19 +74,25 @@ module check_ecp_scf_suite
    private
    public :: collect_ecp_scf_tests
 
+   real(dp), parameter :: HI_BOND_ANGSTROM = 1.609_dp
+   !! mqc's own HI geometry (metalquicha/validation/inputs/sample_inputs/
+   !! hi.xyz): I at the origin, H at z = 1.609 Angstrom.
+   real(dp), parameter :: HI_BOND_BOHR = HI_BOND_ANGSTROM*ANGSTROM_TO_BOHR
+   !! = 3.040569334522864 bohr (CODATA 2018, AGENTS.md). The module header
+   !! above has the measurement that found this: an earlier 3.04 bohr
+   !! rounding gave |dE| ~1e-6 to mqc on every HI case below.
+
    real(dp), parameter :: MQC_HI = -297.23153166336_dp
-   !! HI/def2-SVP RHF: H at the origin, I on the z-axis at 3.04 bohr --
-   !! check_ecp_matrix.F90's own "hi_svp" case, the system the VERIFIED
-   !! BUG (ECP_DESIGN.md) is about. Measured agreement: 1.7e-6.
+   !! HI/def2-SVP RHF at HI_BOND_BOHR. Measured agreement: 1.3e-12.
    real(dp), parameter :: MQC_I_ATOM = -296.649606475643_dp
    !! The free I atom, UHF: def2-svp's 28-electron ECP core leaves 25
    !! valence electrons -- odd, a doublet. No geometry at all, so there is
    !! nothing for terco and mqc's own number to disagree about
    !! independently. Measured agreement: 1.1e-13.
    real(dp), parameter :: MQC_PBE = -298.278875556201_dp
-   !! RKS/PBE on the SAME HI geometry as MQC_HI. Measured agreement: 5.2e-6.
+   !! RKS/PBE at HI_BOND_BOHR. Measured agreement: 2.3e-10.
    real(dp), parameter :: MQC_B3LYP = -298.392681495465_dp
-   !! RKS/B3LYP on the SAME HI geometry. Measured agreement: 3.5e-6.
+   !! RKS/B3LYP at HI_BOND_BOHR. Measured agreement: 1.7e-10.
 
 contains
 
@@ -78,15 +112,15 @@ contains
    end subroutine collect_ecp_scf_tests
 
    !
-   ! HI: H at the origin, I at (0, 0, 3.04) bohr -- check_ecp_matrix.F90's
-   ! own "hi_svp" case_geometry, read here verbatim.
+   ! HI: H at the origin, I at (0, 0, HI_BOND_BOHR) -- mqc's own geometry
+   ! (this module's header).
    !
    subroutine make_hi(h)
       type(c_ptr), intent(out) :: h
       integer(c_int) :: rc
       real(c_double), parameter :: z(2) = [1.0_c_double, 53.0_c_double]
       real(c_double), parameter :: r(6) = &
-         [0.0_c_double, 0.0_c_double, 0.0_c_double, 0.0_c_double, 0.0_c_double, 3.04_c_double]
+         [0.0_c_double, 0.0_c_double, 0.0_c_double, 0.0_c_double, 0.0_c_double, real(HI_BOND_BOHR, c_double)]
       rc = trc_create(h)
       rc = trc_set_molecule(h, 2_c_int, z, r, 0_c_int, 1_c_int)
       rc = trc_set_basis_json(h, 'basis_sets/def2-svp.json'//c_null_char)
@@ -113,7 +147,7 @@ contains
       print '(a,f20.12,a,i0,a,es10.2)', "check_ecp_scf: E(HI,RHF) terco ", real(e_terco, dp), &
          "  iter ", iters, "  (vs mqc) dE = ", abs(real(e_terco, dp) - MQC_HI)
       write (msg, '(a,es10.2)') "ecp_scf hi vs mqc, |dE| = ", abs(real(e_terco, dp) - MQC_HI)
-      call check(error, abs(real(e_terco, dp) - MQC_HI) < 1.0e-5_dp, trim(msg))
+      call check(error, abs(real(e_terco, dp) - MQC_HI) < 1.0e-9_dp, trim(msg))
    end subroutine test_hi
 
    !
@@ -188,7 +222,11 @@ contains
       print '(a,a,a,f20.12,a,i0,a,es10.2)', "check_ecp_scf: E(HI,RKS/", func, ") terco ", real(e_terco, dp), &
          "  iter ", iters, "  (vs mqc) dE = ", abs(real(e_terco, dp) - mqc)
       write (msg, '(a,a,a,es10.2)') "ecp_scf ", func, " vs mqc, |dE| = ", abs(real(e_terco, dp) - mqc)
-      call check(error, abs(real(e_terco, dp) - mqc) < 1.0e-5_dp, trim(msg))
+      ! Measured 2.3e-10 (PBE) and 1.7e-10 (B3LYP) at HI_BOND_BOHR -- close
+      ! to RHF's own precision, not grid-limited here, but given a little
+      ! more room than test_hi's 1e-9 for whatever grid-level variation a
+      ! different compiler/platform might add.
+      call check(error, abs(real(e_terco, dp) - mqc) < 1.0e-8_dp, trim(msg))
    end subroutine test_rks_case
 
    subroutine test_minao_refused(error)
