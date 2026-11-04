@@ -2110,3 +2110,14 @@ if(Python3_FOUND)
     endforeach()
   endforeach()
 endif()
+
+# The f (cc-pVTZ) gradient checks skip themselves below TERCO_LMAX=3. Without
+# this, ctest would count a skip as a pass, and a plain ctest on the default
+# build would claim f gradients had been checked.
+set_tests_properties(
+  terco/check_rys_grad_vs_pyscf_ccpvtz
+  terco/check_lr_exchange_grad_vs_pyscf_ccpvtz
+  terco/check_1e_grad_vs_pyscf_water_ccpvtz
+  terco/check_dft_grad_vs_pyscf_water_wb97xv_ccpvtz_sph
+  terco/check_pcm_grad_vs_pyscf_ccpvtz
+  PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
