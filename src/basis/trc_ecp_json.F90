@@ -25,6 +25,7 @@
 !
 module trc_ecp_json
    use pic_types, only: dp
+   use pic_strings, only: to_string
    use trc_ecp_types, only: trc_ecp_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use json_module, only: json_file
@@ -159,23 +160,23 @@ contains
       logical :: found
 
       el%z = z
-      key = "elements."//itoa(z)
+      key = "elements."//to_string(z)
       call json%info(key//".ecp_potentials", found=found, n_children=npot)
       if (.not. found .or. npot <= 0) return   ! no ECP for this element
 
       call json%get(key//".ecp_electrons", el%ncore, found)
       if (.not. found) then
-         call error%set(ERROR_VALIDATION, "trc_ecp_json: element "//itoa(z)// &
+         call error%set(ERROR_VALIDATION, "trc_ecp_json: element "//to_string(z)// &
                         " has ecp_potentials but no ecp_electrons in "//trim(path))
          return
       end if
 
       allocate (chan_l(npot), raw(npot))
       do ipot = 1, npot
-         call json%get(key//".ecp_potentials("//itoa(ipot)//").ecp_type", ptype, found)
+         call json%get(key//".ecp_potentials("//to_string(ipot)//").ecp_type", ptype, found)
          if (found) then
             if (trim(ptype) /= "scalar_ecp") then
-               call error%set(ERROR_VALIDATION, "trc_ecp_json: element "//itoa(z)// &
+               call error%set(ERROR_VALIDATION, "trc_ecp_json: element "//to_string(z)// &
                               " carries a '"//trim(ptype)//"' ECP channel in "//trim(path)// &
                               "; only scalar_ecp is supported (no spin-orbit)")
                return
@@ -233,7 +234,7 @@ contains
       real(dp) :: v
       logical :: found
 
-      cpath = key//".ecp_potentials("//itoa(ipot)//")"
+      cpath = key//".ecp_potentials("//to_string(ipot)//")"
       call json%get(cpath//".angular_momentum", momenta, found)
       if (found .and. allocated(momenta)) then
          if (size(momenta) < 1) found = .false.
@@ -266,7 +267,7 @@ contains
       allocate (ch%rpow(nprim), ch%e(nprim), ch%c(nprim))
       ch%rpow = powers
       do iprim = 1, nprim
-         call json%get(cpath//".gaussian_exponents("//itoa(iprim)//")", text, found)
+         call json%get(cpath//".gaussian_exponents("//to_string(iprim)//")", text, found)
          if (.not. found) then
             call error%set(ERROR_VALIDATION, "trc_ecp_json: missing ECP exponent in "//trim(path))
             return
@@ -279,7 +280,7 @@ contains
          end if
          ch%e(iprim) = v
 
-         call json%get(cpath//".coefficients(1)("//itoa(iprim)//")", text, found)
+         call json%get(cpath//".coefficients(1)("//to_string(iprim)//")", text, found)
          if (.not. found) then
             call error%set(ERROR_VALIDATION, "trc_ecp_json: missing ECP coefficient in "//trim(path))
             return
@@ -344,13 +345,5 @@ contains
       end do
       deallocate (distinct, group)
    end subroutine split_by_rpow
-
-   pure function itoa(i) result(t)
-      integer, intent(in) :: i
-      character(len=:), allocatable :: t
-      character(len=16) :: buffer
-      write (buffer, "(i0)") i
-      t = trim(buffer)
-   end function itoa
 
 end module trc_ecp_json

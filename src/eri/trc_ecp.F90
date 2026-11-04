@@ -104,7 +104,8 @@ module trc_ecp
    integer, parameter :: FAC1SIZE = NFMAX*(ECP_ORB_LMAX + 1)**3                  !! 640
    integer, parameter :: ANG2SIZE = (ECP_ORB_LMAX + 1)*NFMAX*(2*ECP_LMAX + 1)*LC1MAX  !! 3960
 
-   !> A contribution below this, to a matrix whose real entries run from
+   real(dp), parameter :: ECP_NEGLIGIBLE = 1.0e-20_dp
+   !! A contribution below this, to a matrix whose real entries run from
    !! ~1e-3 to a few hundred (measured: Xe/def2-SVP's U diagonal reaches
    !! 206), can never matter past the 1e-9 tolerance anything here is
    !! validated to. Used to stop the adaptive radial loop from chasing a
@@ -113,7 +114,6 @@ module trc_ecp
    !! core primitive pair reaches often, and which the relative test alone
    !! can fail to confirm within this port's ECP_LEVEL_MAX even though the
    !! term's actual contribution to U is already settled at zero.
-   real(dp), parameter :: ECP_NEGLIGIBLE = 1.0e-20_dp
 
 contains
 
@@ -496,21 +496,23 @@ contains
       c = abs(x - y) <= 1.0e-12_dp*max(abs(x), abs(y))
    end function close_enough
 
-   !> Picks the level a (primitive pair, type 1) or (lambda, type 2) block
-   !! converged at, from its ECP_NLEVEL-column snapshot: the same "two
-   !! consecutive close levels" test the original per-level loop ran while
-   !! the block's own state persisted across levels, now run once over an
-   !! already-materialised snapshot. `ld`, the dummy-bound explicit shape
-   !! (like `sh_e(maxnp, nshell)` elsewhere in this file), is the CALLER's
-   !! own fixed ceiling (D2MAX or D2MAX2), not the actual `d2`: passing the
-   !! caller's array un-sliced, with its own real leading dimension, is
-   !! what keeps this a reference rather than a copy-in/copy-out temporary
-   !! sized by the runtime `d2` -- see `ecp_radial_type2_lab_levels`'s own
-   !! header for the same trap this avoids. `picked` defaults to the last
-   !! level and `failed` to true so a caller that never calls this for an
-   !! exhausted block still gets the same "use the finest level, flag
-   !! non-convergence" fallback the original fell through to.
    pure subroutine pick_converged_level(ld, d2, rad_levels, picked, failed)
+      !! Picks the level a (primitive pair, type 1) or (lambda, type 2)
+      !! block converged at, from its ECP_NLEVEL-column snapshot: the same
+      !! "two consecutive close levels" test the original per-level loop
+      !! ran while the block's own state persisted across levels, now run
+      !! once over an already-materialised snapshot. `ld`, the
+      !! dummy-bound explicit shape (like `sh_e(maxnp, nshell)` elsewhere
+      !! in this file), is the CALLER's own fixed ceiling (D2MAX or
+      !! D2MAX2), not the actual `d2`: passing the caller's array
+      !! un-sliced, with its own real leading dimension, is what keeps
+      !! this a reference rather than a copy-in/copy-out temporary sized
+      !! by the runtime `d2` -- see `ecp_radial_type2_lab_levels`'s own
+      !! header for the same trap this avoids. `picked` defaults to the
+      !! last level and `failed` to true so a caller that never calls this
+      !! for an exhausted block still gets the same "use the finest
+      !! level, flag non-convergence" fallback the original fell through
+      !! to.
       !$acc routine seq
       integer, intent(in) :: ld, d2
       real(dp), intent(in) :: rad_levels(0:ld - 1, 0:ECP_NLEVEL - 1)
@@ -551,13 +553,14 @@ contains
       end do
    end subroutine pick_converged_level
 
-   !> Same as `pick_converged_level`, for a type-2 lambda block: a block
-   !! whose every entry is already below ECP_NEGLIGIBLE is accepted at
-   !! whatever level it first reaches that floor, without the relative
-   !! test -- see ecp_type2_item's own header for why (a term already this
-   !! small can fail a RELATIVE test indefinitely without ever being wrong
-   !! to within this port's tolerance, `ecp_ints_ih_far`'s 25 bohr I-H).
    pure subroutine pick_converged_level_t2(ld, d2, rad_levels, picked, failed)
+      !! Same as `pick_converged_level`, for a type-2 lambda block: a
+      !! block whose every entry is already below ECP_NEGLIGIBLE is
+      !! accepted at whatever level it first reaches that floor, without
+      !! the relative test -- see ecp_type2_item's own header for why (a
+      !! term already this small can fail a RELATIVE test indefinitely
+      !! without ever being wrong to within this port's tolerance,
+      !! `ecp_ints_ih_far`'s 25 bohr I-H).
       !$acc routine seq
       integer, intent(in) :: ld, d2
       real(dp), intent(in) :: rad_levels(0:ld - 1, 0:ECP_NLEVEL - 1)

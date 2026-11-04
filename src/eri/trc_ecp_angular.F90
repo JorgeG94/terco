@@ -42,9 +42,9 @@ module trc_ecp_angular
    public :: ecp_cache_3dfac, ecp_type2_facs_ang, ecp_type1_rad_ang
    public :: ecp_int_unit_xyz, ecp_ang_nuc_in_cart
 
-   !> Highest ORBITAL shell angular momentum the ECP path supports (f).
-   !! TERCO_LMAX never builds past this; checked by the driver.
    integer, parameter :: ECP_ORB_LMAX = 3
+   !! Highest ORBITAL shell angular momentum the ECP path supports (f).
+   !! TERCO_LMAX never builds past this; checked by the driver.
 
    ! Cartesian (ly, lz) powers, lexicographic order, indexed from zero
    ! REGARDLESS of l: the first ncart(l) entries of this SAME array are
@@ -62,10 +62,10 @@ module trc_ecp_angular
       5, 0, 1, 2, 3, 4, 5, 6, 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, &
       4, 5, 6, 7, 8]
 
-   !> Cumulative Cartesian counts, OFFSET_CART(l) = sum_{j<l} ncart(j).
    integer, parameter :: OFFSET_CART(0:ECP_ANG_LMAX + 1) = [0, 1, 4, 10, 20, 35, 56, 84, 120, 165]
-   !> Total Cartesian components through l=8: OFFSET_CART(9).
+   !! Cumulative Cartesian counts, OFFSET_CART(l) = sum_{j<l} ncart(j).
    integer, parameter :: CART_CUM = 165
+   !! Total Cartesian components through l=8: OFFSET_CART(9).
 
 contains
 
@@ -76,10 +76,10 @@ contains
       n = (l + 1)*(l + 2)/2
    end function cart_len
 
-   !> Unit vector from a displacement, zero if there is none. Negated, as
-   !! PySCF's C has it: the angular factors are built about the vector FROM
-   !! the shell centre TOWARDS the ECP.
    pure subroutine unit_direction(r, unitr)
+      !! Unit vector from a displacement, zero if there is none. Negated,
+      !! as PySCF's C has it: the angular factors are built about the
+      !! vector FROM the shell centre TOWARDS the ECP.
       !$acc routine seq
       real(dp), intent(in) :: r(3)
       real(dp), intent(out) :: unitr(3)
@@ -93,10 +93,10 @@ contains
       end if
    end subroutine unit_direction
 
-   !> omega(0:cart_len(l)-1): PySCF's ECPang_nuc_in_cart, l=0,1 by closed
-   !! constant, l>=2 by the c2s/s2c round trip through ECP_ANG_C2S -- see
-   !! this module's own header.
    pure subroutine ecp_ang_nuc_in_cart(omega, l, r)
+      !! omega(0:cart_len(l)-1): PySCF's ECPang_nuc_in_cart, l=0,1 by
+      !! closed constant, l>=2 by the c2s/s2c round trip through
+      !! ECP_ANG_C2S -- see this module's own header.
       !$acc routine seq
       integer, intent(in) :: l
       real(dp), intent(in) :: r(3)
@@ -149,9 +149,9 @@ contains
       end select
    end subroutine ecp_ang_nuc_in_cart
 
-   !> Integral of x^i y^j z^k over the unit sphere, divided by 4 pi. Zero
-   !! unless every exponent is even.
    pure real(dp) function ecp_int_unit_xyz(i, j, k) result(v)
+      !! Integral of x^i y^j z^k over the unit sphere, divided by 4 pi.
+      !! Zero unless every exponent is even.
       !$acc routine seq
       integer, intent(in) :: i, j, k
       if (mod(i, 2) /= 0 .or. mod(j, 2) /= 0 .or. mod(k, 2) /= 0) then
@@ -162,11 +162,12 @@ contains
       end if
    end function ecp_int_unit_xyz
 
-   !> Binomial-expansion factors for shifting a Cartesian shell of angular
-   !! momentum `l` (<= ECP_ORB_LMAX) to a new centre: three (l+1)x(l+1)
-   !! blocks (x, y, z), fac(i,j) = binom(i,j) r^(i-j). Fixed-size backing
-   !! array sized for ECP_ORB_LMAX; indexed at the caller's actual l.
    pure subroutine ecp_cache_3dfac(facs, l, r)
+      !! Binomial-expansion factors for shifting a Cartesian shell of
+      !! angular momentum `l` (<= ECP_ORB_LMAX) to a new centre: three
+      !! (l+1)x(l+1) blocks (x, y, z), fac(i,j) = binom(i,j) r^(i-j).
+      !! Fixed-size backing array sized for ECP_ORB_LMAX; indexed at the
+      !! caller's actual l.
       !$acc routine seq
       integer, intent(in) :: l
       real(dp), intent(in) :: r(3)
@@ -202,42 +203,43 @@ contains
       end do
    end subroutine ecp_cache_3dfac
 
-   !> Angular factors for the type-2 (projected) term: `facs`, shaped
-   !! (li+1, nfi, dlc, dlambda) in the caller's flat ordering (dlc=2lc+1,
-   !! dlambda=li+lc+1), fixed-size for (ECP_ORB_LMAX, ECP_LMAX) and read at
-   !! the caller's actual li/lc.
-   !!
-   !! DISPATCHES on `lc` to one of the six ecp_type2_facs_ang_lc0..lc5
-   !! copies below rather than running one routine with `lc` as a plain
-   !! runtime dummy. Measured (nvfortran 26.5 and 26.9, cc70,
-   !! -stdpar=gpu): with `lc` a genuine runtime argument driving the
-   !! array-index strides below (dlc, dlambda, dlclmb, and everything
-   !! built from them), the GPU build silently computes a WRONG value for
-   !! some entries -- reproducible, independent of optimisation level
-   !! (checked at -O0), FMA contraction and flush-to-zero (-gpu=nofma,
-   !! -Mnoflushz: no change), declaration order, and the backing arrays'
-   !! sizes -- while the identical host-compiled code (even nvfortran's
-   !! own, -DTERCO_ENABLE_GPU=OFF) is correct, and so is a hard-coded-li/lc
-   !! copy of this exact loop run on the SAME GPU build. Bisected by
-   !! narrowing that copy back toward the real routine one difference at a
-   !! time: the omega_nuc assembly, the fac3d/facs assembly, and even a
-   !! verbatim copy with li AND lc as PARAMETERs all matched host and
-   !! device; the same copy with li and lc turned back into genuine
-   !! `integer, intent(in)` dummies reproduced the mismatch, and restoring
-   !! only `li` to a dummy (keeping `lc` a PARAMETER) did not -- so `lc`
-   !! alone needs to be compile-time; `li` can stay a runtime argument in
-   !! every lc# copy below. Not reduced further to a minimal reproducer
-   !! outside terco: several attempts at a standalone, self-contained
-   !! version of the same loop (same strides, same table-driven inner sum)
-   !! did not reproduce it, so whatever nvfortran code path this trips
-   !! depends on something in the surrounding routine this port has not
-   !! isolated -- a lead for anyone revisiting this, not a closed case.
-   !!
-   !! `lc` runs 0..ECP_LMAX (5 today). If ECP_LMAX ever grows, add a
-   !! matching ecp_type2_facs_ang_lc# copy and `case` below -- the
-   !! `case default` falls back to lc5, which is silently wrong for any lc
-   !! this dispatch has not been extended for.
    pure subroutine ecp_type2_facs_ang(facs, li, lc, ri)
+      !! Angular factors for the type-2 (projected) term: `facs`, shaped
+      !! (li+1, nfi, dlc, dlambda) in the caller's flat ordering
+      !! (dlc=2lc+1, dlambda=li+lc+1), fixed-size for (ECP_ORB_LMAX,
+      !! ECP_LMAX) and read at the caller's actual li/lc.
+      !!
+      !! DISPATCHES on `lc` to one of the six ecp_type2_facs_ang_lc0..lc5
+      !! copies below rather than running one routine with `lc` as a plain
+      !! runtime dummy. Measured (nvfortran 26.5 and 26.9, cc70,
+      !! -stdpar=gpu): with `lc` a genuine runtime argument driving the
+      !! array-index strides below (dlc, dlambda, dlclmb, and everything
+      !! built from them), the GPU build silently computes a WRONG value
+      !! for some entries -- reproducible, independent of optimisation
+      !! level (checked at -O0), FMA contraction and flush-to-zero
+      !! (-gpu=nofma, -Mnoflushz: no change), declaration order, and the
+      !! backing arrays' sizes -- while the identical host-compiled code
+      !! (even nvfortran's own, -DTERCO_ENABLE_GPU=OFF) is correct, and so
+      !! is a hard-coded-li/lc copy of this exact loop run on the SAME GPU
+      !! build. Bisected by narrowing that copy back toward the real
+      !! routine one difference at a time: the omega_nuc assembly, the
+      !! fac3d/facs assembly, and even a verbatim copy with li AND lc as
+      !! PARAMETERs all matched host and device; the same copy with li and
+      !! lc turned back into genuine `integer, intent(in)` dummies
+      !! reproduced the mismatch, and restoring only `li` to a dummy
+      !! (keeping `lc` a PARAMETER) did not -- so `lc` alone needs to be
+      !! compile-time; `li` can stay a runtime argument in every lc# copy
+      !! below. Not reduced further to a minimal reproducer outside terco:
+      !! several attempts at a standalone, self-contained version of the
+      !! same loop (same strides, same table-driven inner sum) did not
+      !! reproduce it, so whatever nvfortran code path this trips depends
+      !! on something in the surrounding routine this port has not
+      !! isolated -- a lead for anyone revisiting this, not a closed case.
+      !!
+      !! `lc` runs 0..ECP_LMAX (5 today). If ECP_LMAX ever grows, add a
+      !! matching ecp_type2_facs_ang_lc# copy and `case` below -- the
+      !! `case default` falls back to lc5, which is silently wrong for any
+      !! lc this dispatch has not been extended for.
       !$acc routine seq
       integer, intent(in) :: li, lc
       real(dp), intent(in) :: ri(3)
@@ -986,10 +988,11 @@ contains
       end do
    end subroutine ecp_type2_facs_ang_lc5
 
-   !> Angular contraction of the type-1 (local) radial integrals. `rad_all`
-   !! arrives indexed (total degree, lambda), `rad_ang` comes out over the
-   !! three Cartesian powers, (lmax+1)^3, fixed to (2*ECP_ORB_LMAX+1)^3.
    pure subroutine ecp_type1_rad_ang(rad_ang, lmax, r, rad_all)
+      !! Angular contraction of the type-1 (local) radial integrals.
+      !! `rad_all` arrives indexed (total degree, lambda), `rad_ang` comes
+      !! out over the three Cartesian powers, (lmax+1)^3, fixed to
+      !! (2*ECP_ORB_LMAX+1)^3.
       !$acc routine seq
       integer, intent(in) :: lmax
       real(dp), intent(in) :: r(3)

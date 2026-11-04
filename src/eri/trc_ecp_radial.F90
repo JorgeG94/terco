@@ -49,8 +49,8 @@ module trc_ecp_radial
    public :: ecp_radial_type1_rad_part_levels, ecp_radial_type2_lab_levels
    public :: ECP_NLEVEL
 
-   !> Highest level index + 1 (levels ECP_LEVEL0..ECP_LEVEL_MAX inclusive).
    integer, parameter :: ECP_NLEVEL = ECP_LEVEL_MAX - ECP_LEVEL0 + 1
+   !! Highest level index + 1 (levels ECP_LEVEL0..ECP_LEVEL_MAX inclusive).
 
 contains
 
@@ -60,10 +60,11 @@ contains
       n = (l + 1)*(l + 2)/2
    end function cart_len
 
-   !> U(r) on the WHOLE finest grid, summed over one group's rows
-   !! (row0:row1), each row applying its OWN r-power to its OWN primitives
-   !! -- see trc_ecp_types.F90 for why a channel can be more than one row.
    pure subroutine ecp_radial_rad_part(ur, rs, row0, row1, nrow, maxnp, ecp_rpow, ecp_np, ecp_e, ecp_c)
+      !! U(r) on the WHOLE finest grid, summed over one group's rows
+      !! (row0:row1), each row applying its OWN r-power to its OWN
+      !! primitives -- see trc_ecp_types.F90 for why a channel can be more
+      !! than one row.
       !$acc routine seq
       integer, intent(in) :: row0, row1, nrow, maxnp
       real(dp), intent(in) :: rs(0:ECP_NRS - 1)
@@ -92,12 +93,13 @@ contains
       end do
    end subroutine ecp_radial_rad_part
 
-   !> Radial factors for the type-2 (projected) term, one orbital shell's
-   !! primitives against one ECP channel's own angular momentum `lc`:
-   !! `facs(i*lilc1+j) `, i = 0..nrs-1 (the level's own grid slice), j the
-   !! lambda ladder 0..li+lc. Fixed-size for (ECP_ORB_LMAX, ECP_LMAX); the
-   !! caller reads only the first `nrs*(li+lc+1)` entries.
    pure subroutine ecp_radial_type2_facs_rad(facs, li, np, e, c, lc, rca, rs, start, inc, nrs)
+      !! Radial factors for the type-2 (projected) term, one orbital
+      !! shell's primitives against one ECP channel's own angular
+      !! momentum `lc`: `facs(i*lilc1+j) `, i = 0..nrs-1 (the level's own
+      !! grid slice), j the lambda ladder 0..li+lc. Fixed-size for
+      !! (ECP_ORB_LMAX, ECP_LMAX); the caller reads only the first
+      !! `nrs*(li+lc+1)` entries.
       !$acc routine seq
       integer, intent(in) :: li, np, lc, start, inc, nrs
       real(dp), intent(in) :: rca
@@ -129,9 +131,9 @@ contains
       end do
    end subroutine ecp_radial_type2_facs_rad
 
-   !> Centre-shift factors for the type-1 term, one block per Cartesian
-   !! component of a shell of angular momentum `li` (<= ECP_ORB_LMAX).
    pure subroutine ecp_radial_type1_static_facs(facs, li, ri)
+      !! Centre-shift factors for the type-1 term, one block per Cartesian
+      !! component of a shell of angular momentum `li` (<= ECP_ORB_LMAX).
       !$acc routine seq
       integer, intent(in) :: li
       real(dp), intent(in) :: ri(3)
@@ -165,23 +167,24 @@ contains
       end do
    end subroutine ecp_radial_type1_static_facs
 
-   !> Radial integrals for the type-1 (local) term, one primitive pair, ALL
-   !! levels at once: `rad_levels(:, lvl)` is the cumulative value through
-   !! level `ECP_LEVEL0+lvl` (lvl=0..ECP_NLEVEL-1), exactly what the
-   !! sequential halving loop this replaces would have held in `rad_all`
-   !! after processing that level -- see trc_ecp.F90's own header for why
-   !! a `do concurrent` item cannot hold the ECP_NRS-sized intermediates
-   !! (`rur`/`bval`) the original per-level call built, and reads this
-   !! instead of calling once per level: the grid loop here is FUSED with
-   !! the angular-momentum ladder (no per-point array, `rn**lab` built
-   !! incrementally per point, same trick ecp_radial_type2_facs_rad's
-   !! caller already uses for its own r^lab ladder) so nothing here scales
-   !! with ECP_NRS except the loop trip count.
-   !!
-   !! The parity stride is not an optimisation: terms where (lab+i) is odd
-   !! integrate to zero over the sphere, so stepping by two skips exactly
-   !! what the angular factor would multiply by nothing.
    pure subroutine ecp_radial_type1_rad_part_levels(rad_levels, lmax, k, aij, ur, rs, ws)
+      !! Radial integrals for the type-1 (local) term, one primitive pair,
+      !! ALL levels at once: `rad_levels(:, lvl)` is the cumulative value
+      !! through level `ECP_LEVEL0+lvl` (lvl=0..ECP_NLEVEL-1), exactly what
+      !! the sequential halving loop this replaces would have held in
+      !! `rad_all` after processing that level -- see trc_ecp.F90's own
+      !! header for why a `do concurrent` item cannot hold the
+      !! ECP_NRS-sized intermediates (`rur`/`bval`) the original per-level
+      !! call built, and reads this instead of calling once per level: the
+      !! grid loop here is FUSED with the angular-momentum ladder (no
+      !! per-point array, `rn**lab` built incrementally per point, same
+      !! trick ecp_radial_type2_facs_rad's caller already uses for its own
+      !! r^lab ladder) so nothing here scales with ECP_NRS except the loop
+      !! trip count.
+      !!
+      !! The parity stride is not an optimisation: terms where (lab+i) is
+      !! odd integrate to zero over the sphere, so stepping by two skips
+      !! exactly what the angular factor would multiply by nothing.
       !$acc routine seq
       integer, intent(in) :: lmax
       real(dp), intent(in) :: k, aij
@@ -240,28 +243,30 @@ contains
       end do
    end subroutine ecp_radial_type1_rad_part_levels
 
-   !> Radial integrals for the type-2 (projected) term, one lambda value
-   !! `lab` (0..li+lj), ALL levels at once -- the same cumulative-snapshot
-   !! trick as `ecp_radial_type1_rad_part_levels` above, for the SAME
-   !! reason: trc_ecp.F90's item cannot hold an ECP_NRS-sized `ur_level`/
-   !! `rpow` per level (the original, per-level call built both). `radi`/
-   !! `radj` are READ here, not built: they are `trc_ecp.F90`'s own global
-   !! per-(shell, channel) cache, filled once per geometry by
-   !! `ecp_radial_type2_facs_rad` on the whole grid, so nothing here scales
-   !! with ECP_NRS except the loop trip count, and `lilc1`/`ljlc1` passed in
-   !! MUST be the same values the cache was filled with (same shell, same
-   !! channel) -- a flat 1-D array indexed by a value shared between writer
-   !! and reader, not a declared leading dimension, so there is no
-   !! maxnp-style stride trap there. `rad_levels` itself DOES have a
-   !! declared leading dimension, `ld` -- the caller's own fixed ceiling,
-   !! not lilc1*ljlc1 -- so a caller whose own local array is sized to its
-   !! OWN module's larger constant can pass it un-sliced: slicing it to
-   !! (0:lilc1*ljlc1-1, :) first would hand this routine a NON-contiguous
-   !! section (every "column" strided by the caller's bigger ld, not by
-   !! lilc1*ljlc1), which Fortran would then have to repack through a
-   !! copy-in/copy-out temporary sized by a RUNTIME value -- exactly the
-   !! automatic-array-in-`routine seq` trap this whole file exists to avoid.
    pure subroutine ecp_radial_type2_lab_levels(rad_levels, ld, lab, lilc1, ljlc1, ur, ws, rs, radi, radj)
+      !! Radial integrals for the type-2 (projected) term, one lambda
+      !! value `lab` (0..li+lj), ALL levels at once -- the same
+      !! cumulative-snapshot trick as `ecp_radial_type1_rad_part_levels`
+      !! above, for the SAME reason: trc_ecp.F90's item cannot hold an
+      !! ECP_NRS-sized `ur_level`/`rpow` per level (the original,
+      !! per-level call built both). `radi`/`radj` are READ here, not
+      !! built: they are `trc_ecp.F90`'s own global per-(shell, channel)
+      !! cache, filled once per geometry by `ecp_radial_type2_facs_rad` on
+      !! the whole grid, so nothing here scales with ECP_NRS except the
+      !! loop trip count, and `lilc1`/`ljlc1` passed in MUST be the same
+      !! values the cache was filled with (same shell, same channel) -- a
+      !! flat 1-D array indexed by a value shared between writer and
+      !! reader, not a declared leading dimension, so there is no
+      !! maxnp-style stride trap there. `rad_levels` itself DOES have a
+      !! declared leading dimension, `ld` -- the caller's own fixed
+      !! ceiling, not lilc1*ljlc1 -- so a caller whose own local array is
+      !! sized to its OWN module's larger constant can pass it un-sliced:
+      !! slicing it to (0:lilc1*ljlc1-1, :) first would hand this routine a
+      !! NON-contiguous section (every "column" strided by the caller's
+      !! bigger ld, not by lilc1*ljlc1), which Fortran would then have to
+      !! repack through a copy-in/copy-out temporary sized by a RUNTIME
+      !! value -- exactly the automatic-array-in-`routine seq` trap this
+      !! whole file exists to avoid.
       !$acc routine seq
       integer, intent(in) :: ld, lab, lilc1, ljlc1
       real(dp), intent(in) :: ur(0:ECP_NRS - 1), ws(0:ECP_NRS - 1), rs(0:ECP_NRS - 1)

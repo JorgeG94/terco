@@ -23,41 +23,41 @@ module trc_ecp_quadrature
    public :: ecp_quadrature_gauss_chebyshev, ecp_quadrature_sph_ine
    public :: ecp_quadrature_factorial, ecp_quadrature_factorial2, ecp_quadrature_binom
 
-   !> Highest angular momentum an ECP CHANNEL itself may carry (libfint's
-   !! own ceiling; def2's heaviest local channels reach l=3-4).
    integer, parameter :: ECP_LMAX = 5
+   !! Highest angular momentum an ECP CHANNEL itself may carry (libfint's
+   !! own ceiling; def2's heaviest local channels reach l=3-4).
 
-   !> A coefficient below this is treated as absent.
    real(dp), parameter :: ECP_SIM_ZERO = 1.0e-50_dp
-   !> exp(-x) below this is zero to double precision (x=39 gives ~1e-17).
+   !! A coefficient below this is treated as absent.
    real(dp), parameter :: ECP_EXPCUTOFF = 39.0_dp
-   !> exp(x) above this overflows (x=460 gives ~1e200).
+   !! exp(-x) below this is zero to double precision (x=39 gives ~1e-17).
    real(dp), parameter :: ECP_CUTOFF = 460.0_dp
+   !! exp(x) above this overflows (x=460 gives ~1e200).
 
-   !> Radial grid refinement levels: 2**(level+1)-1 points at `level`.
-   !!
-   !! Matches PySCF's own nr_ecp.c ceiling (2047 points). An earlier cut-down
-   !! version of this port stopped at 9 (511 points) to bound the per-level
-   !! buffers this feeds (`trc_ecp_radial.F90`'s radial factors), which are
-   !! PER-THREAD scratch in a `do concurrent` item, fixed-size at the worst
-   !! case. Validation against pyscf (HI/def2-SVP, I...H at 25 bohr, Xe,
-   !! CsH, SnH4) found shell pairs whose value was already stable well
-   !! before level 9 but that need one or two further levels to show TWO
-   !! consecutive matches at the 1e-12 relative tolerance the convergence
-   !! test asks for -- `trc_ecp.F90`'s own ecp_type1_item/ecp_type2_item
-   !! separately screen out the pairs that are instead stuck because their
-   !! actual contribution has decayed to numerically negligible, which no
-   !! amount of refinement would fix. With both effects accounted for, 11
-   !! (2047 points) is where every case validated so far converges; each
-   !! NRS-sized buffer this feeds is correspondingly about 4x the size the
-   !! 511-point cut-down needed (several past 100 KB per thread) -- a real
-   !! cost to revisit once this runs on the GPU and gets measured there.
+   ! Radial grid refinement levels: 2**(level+1)-1 points at `level`.
+   !
+   ! Matches PySCF's own nr_ecp.c ceiling (2047 points). An earlier cut-down
+   ! version of this port stopped at 9 (511 points) to bound the per-level
+   ! buffers this feeds (`trc_ecp_radial.F90`'s radial factors), which are
+   ! PER-THREAD scratch in a `do concurrent` item, fixed-size at the worst
+   ! case. Validation against pyscf (HI/def2-SVP, I...H at 25 bohr, Xe,
+   ! CsH, SnH4) found shell pairs whose value was already stable well
+   ! before level 9 but that need one or two further levels to show TWO
+   ! consecutive matches at the 1e-12 relative tolerance the convergence
+   ! test asks for -- `trc_ecp.F90`'s own ecp_type1_item/ecp_type2_item
+   ! separately screen out the pairs that are instead stuck because their
+   ! actual contribution has decayed to numerically negligible, which no
+   ! amount of refinement would fix. With both effects accounted for, 11
+   ! (2047 points) is where every case validated so far converges; each
+   ! NRS-sized buffer this feeds is correspondingly about 4x the size the
+   ! 511-point cut-down needed (several past 100 KB per thread) -- a real
+   ! cost to revisit once this runs on the GPU and gets measured there.
    integer, parameter :: ECP_LEVEL0 = 5
    integer, parameter :: ECP_LEVEL_MAX = 11
-   !> Points in the finest grid: 2047, not 2048 -- see `ecp_quadrature_gauss_chebyshev`.
    integer, parameter :: ECP_NRS = 2**ECP_LEVEL_MAX - 1
+   !! Points in the finest grid: 2047, not 2048 -- see `ecp_quadrature_gauss_chebyshev`.
 
-   !> Highest n tabulated in FACTORIAL/FACTORIAL2 below.
+   ! Highest n tabulated in FACTORIAL/FACTORIAL2 below.
    integer, parameter :: FACTORIAL_NMAX = 23
    integer, parameter :: FACTORIAL2_NMAX = 39
 
@@ -87,8 +87,8 @@ module trc_ecp_quadrature
 
 contains
 
-   !> n!, and 1 outside the tabulated range (same convention libfint uses).
    pure real(dp) function ecp_quadrature_factorial(n) result(f)
+      !! n!, and 1 outside the tabulated range (same convention libfint uses).
       !$acc routine seq
       integer, intent(in) :: n
       if (n < 0 .or. n > ubound(FACTORIAL, 1)) then
@@ -98,9 +98,9 @@ contains
       end if
    end function ecp_quadrature_factorial
 
-   !> n!!, with the convention that a negative argument gives 1 -- load
-   !! bearing for the type-2 angular factors, which index this at l-1.
    pure real(dp) function ecp_quadrature_factorial2(n) result(f)
+      !! n!!, with the convention that a negative argument gives 1 -- load
+      !! bearing for the type-2 angular factors, which index this at l-1.
       !$acc routine seq
       integer, intent(in) :: n
       if (n < 0 .or. n > ubound(FACTORIAL2, 1)) then
@@ -110,8 +110,8 @@ contains
       end if
    end function ecp_quadrature_factorial2
 
-   !> Binomial coefficient n choose m.
    pure real(dp) function ecp_quadrature_binom(n, m) result(b)
+      !! Binomial coefficient n choose m.
       !$acc routine seq
       integer, intent(in) :: n, m
       if (m < 0 .or. m > n) then
@@ -121,10 +121,11 @@ contains
       end if
    end function ecp_quadrature_binom
 
-   !> Gauss-Chebyshev radial grid on (0,1], mapped by Perez-Jorda, Becke and
-   !! San-Fabian's r = 1 - log2(1+x) so an ECP's short-ranged integrand gets
-   !! points where it has support, with no cutoff parameter.
    pure subroutine ecp_quadrature_gauss_chebyshev(rs, ws, n)
+      !! Gauss-Chebyshev radial grid on (0,1], mapped by Perez-Jorda, Becke
+      !! and San-Fabian's r = 1 - log2(1+x) so an ECP's short-ranged
+      !! integrand gets points where it has support, with no cutoff
+      !! parameter.
       !$acc routine seq
       integer, intent(in) :: n
       real(dp), intent(out) :: rs(0:n - 1), ws(0:n - 1)
@@ -150,14 +151,14 @@ contains
       end do
    end subroutine ecp_quadrature_gauss_chebyshev
 
-   !> out(l) = i_l(z) exp(-z), l = 0..order: the scaled modified spherical
-   !! Bessel function the ECP radial integrand needs (i_l alone overflows
-   !! for large z and underflows for small). Three regimes, boundaries as
-   !! in PySCF's C: a leading Taylor term below 1e-7, the terminating
-   !! asymptotic sum above 16, the ascending series (bounded iteration;
-   !! never remotely reached in practice, kept finite for a GPU thread)
-   !! in between.
    pure subroutine ecp_quadrature_sph_ine(out, order, z)
+      !! out(l) = i_l(z) exp(-z), l = 0..order: the scaled modified
+      !! spherical Bessel function the ECP radial integrand needs (i_l
+      !! alone overflows for large z and underflows for small). Three
+      !! regimes, boundaries as in PySCF's C: a leading Taylor term below
+      !! 1e-7, the terminating asymptotic sum above 16, the ascending
+      !! series (bounded iteration; never remotely reached in practice,
+      !! kept finite for a GPU thread) in between.
       !$acc routine seq
       integer, intent(in) :: order
       real(dp), intent(in) :: z
