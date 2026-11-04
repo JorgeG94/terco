@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 17
+#define TRC_ABI_MINOR 18
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -327,6 +327,22 @@ int trc_set_aux_arrays(trc_handle_t handle, int nshell, int maxnp, const int* l,
 int trc_set_basis_json(trc_handle_t handle, const char* path);
 
 int trc_set_aux_json(trc_handle_t handle, const char* path);
+
+/**
+ * An explicit effective core potential, a MolSSI BSE JSON file's own
+ * `ecp_potentials`/`ecp_electrons` -- overriding auto-attach from the
+ * orbital basis file itself (ECP_DESIGN.md's DECIDED rule 2: a basis
+ * file that carries its own ecp_potentials attaches automatically
+ * when trc_set_basis_json loads it; this picks a DIFFERENT file
+ * instead). Call this BEFORE trc_set_basis_json: the attach itself
+ * happens there, once the molecule's elements are known, so a basis
+ * already loaded is refused (TRC_ERR_STATE) rather than left stale.
+ * A caller still passes the BARE atomic number to trc_set_molecule
+ * either way -- terco reduces it internally (at_z -= ncore per atom)
+ * and lowers the electron count by the same sum; nothing about
+ * trc_set_molecule or trc_set_charge changes.
+ */
+int trc_set_ecp_json(trc_handle_t handle, const char* path);
 
 /**
  * An empty functional name is Hartree-Fock.
@@ -1049,8 +1065,9 @@ int trc_density(trc_handle_t handle, double* dmat);
  * (1977)), with the free atoms H-Kr's fixed wB97X/def2-TZVP recipe.
  * Works for RHF/UHF/RKS/UKS and with C-PCM/IEF-PCM (the charge
  * analysis never touches the solvent operator, only the converged
- * density). TRC_ERR_BADARG for an element outside H-Kr (terco has
- * no effective-core-potential support to refuse separately);
+ * density). TRC_ERR_BADARG for an element outside H-Kr, or for an
+ * effective core potential attached (refused separately -- the
+ * free-atom reference is all-electron, state_hirshfeld_charges);
  * TRC_ERR_STATE when the free-atom data file cannot be read (set
  * TRC_HIRSHFELD_DATA).
  */

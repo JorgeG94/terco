@@ -57,6 +57,7 @@ module trc_run
       type(error_t) :: err
       type(c_ptr) :: h
       character(len=:), allocatable :: geom, basis_arg, basis_path, aux_path, jkfit_path, func, guess, title, json
+      character(len=:), allocatable :: ecp_path   !! "" when --ecp was not given (auto-attach decides)
       character(len=:), allocatable :: pcm
       character(len=:), allocatable :: save_scf, restart   !! "" when not asked for
       integer, allocatable :: z(:)

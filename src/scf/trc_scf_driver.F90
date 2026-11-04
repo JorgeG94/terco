@@ -87,6 +87,7 @@
 module trc_scf_driver
    use pic_types, only: dp, int64
    use trc_basis_types, only: trc_basis_t
+   use trc_ecp_types, only: trc_ecp_t
    use trc_error, only: error_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_energies_t, &
@@ -147,7 +148,7 @@ contains
    ! the result's convention; without it the guess is the core Hamiltonian.
    !
    recursive subroutine trc_scf_run(scf_basis, nalpha, nbeta, scf_options, scf_result, dguess, comm, hguess, la, &
-                                    scf_dfjk, grid_cache, pair_eri_cache, cmo_project)
+                                    scf_dfjk, grid_cache, pair_eri_cache, cmo_project, ecp)
       type(trc_basis_t), intent(in) :: scf_basis
       integer, intent(in) :: nalpha, nbeta
       type(trc_scf_options_t), intent(in) :: scf_options
@@ -192,6 +193,7 @@ contains
       !! A caller-owned pair-list/ERI cache, the same way: present, the pair
       !! list and (outside `--df`) the four-centre engine stay alive for a
       !! gradient at the SAME geometry and threshold; absent, the run's own.
+      type(trc_ecp_t), intent(in), optional :: ecp   !! passed through to `scf_context%setup`
 
       integer :: nao, nao_c, s, it, i, j, n2
       logical :: ok, sph
@@ -238,7 +240,7 @@ contains
          block
             type(trc_linalg_t) :: la_run
             call trc_scf_run(scf_basis, nalpha, nbeta, scf_options, scf_result, dguess, comm, hguess, la_run, &
-                             scf_dfjk, grid_cache, pair_eri_cache, cmo_project)
+                             scf_dfjk, grid_cache, pair_eri_cache, cmo_project, ecp)
             call la_run%release()
          end block
          return
@@ -247,7 +249,7 @@ contains
          block
             type(trc_grid_cache_t) :: grid_run
             call trc_scf_run(scf_basis, nalpha, nbeta, scf_options, scf_result, dguess, comm, hguess, la, &
-                             scf_dfjk, grid_run, pair_eri_cache, cmo_project)
+                             scf_dfjk, grid_run, pair_eri_cache, cmo_project, ecp)
             call grid_run%release()
          end block
          return
@@ -256,7 +258,7 @@ contains
          block
             type(trc_pair_eri_cache_t) :: pair_eri_run
             call trc_scf_run(scf_basis, nalpha, nbeta, scf_options, scf_result, dguess, comm, hguess, la, &
-                             scf_dfjk, grid_cache, pair_eri_run, cmo_project)
+                             scf_dfjk, grid_cache, pair_eri_run, cmo_project, ecp)
             call pair_eri_run%release()
          end block
          return
@@ -281,7 +283,7 @@ contains
       ! --- everything once per geometry: pairs, 1e, S/H fold, ERI, linalg,
       ! orthogonaliser, and (when asked for) the PCM cavity and DFT grid ---
       call scf_context%setup(scf_basis, scf_options, scf_config, la, grid_cache, pair_eri_cache, err, comm=comm, &
-                             dfjk=scf_dfjk)
+                             dfjk=scf_dfjk, ecp=ecp)
       if (err%has_error()) then
          scf_result%message = "trc_scf: "//err%get_message()
          return
