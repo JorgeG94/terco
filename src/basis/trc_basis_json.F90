@@ -280,6 +280,22 @@ contains
          return
       end if
 
+      ! A basis written for an effective core potential (def2 from Rb on)
+      ! expects the ECP in H_core and the core electrons gone. terco has no
+      ! ECPs, so without this check such a basis ran all-electron with valence-
+      ! only shells: HI/def2-SVP gave -1996.90 Eh against -297.23 (pyscf, mqc).
+      if (.not. skip_norm) then
+         call json%info(key//".ecp_potentials", found=found)
+         if (found) then
+            k = 0
+            call json%get(key//".ecp_electrons", k, found)
+            call error%set(ERROR_VALIDATION, "trc_basis_json: element "//itoa(z)//" in "//trim(path)// &
+                           " uses an effective core potential ("//itoa(k)//" core electrons), "// &
+                           "which terco does not support; use an all-electron basis for it")
+            return
+         end if
+      end if
+
       ! Count shells after splitting: one per coefficient column.
       nsh = 0
       do ish = 1, nsh_json

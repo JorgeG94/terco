@@ -123,6 +123,12 @@ target_include_directories(bench_mdj PRIVATE ${CMAKE_BINARY_DIR}/modules)
 terco_add_check(check_si check_si.F90)
 target_link_libraries(check_si PRIVATE test-drive::test-drive)
 
+# The basis reader refuses an element whose basis needs an effective core
+# potential (def2 from Rb on) instead of running it all-electron -- see
+# check_basis_ecp_refused.F90's own header.
+terco_add_check(check_basis_ecp_refused check_basis_ecp_refused.F90 NEEDS_BASIS)
+target_link_libraries(check_basis_ecp_refused PRIVATE test-drive::test-drive)
+
 # The step-timing tables' layout: work/rate columns only where something
 # counted -- see check_step_table_report.F90's own header.
 terco_add_check(check_step_table_report check_step_table_report.F90)
