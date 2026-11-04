@@ -141,6 +141,19 @@ foreach(case hi_svp ih_far xe csh snh4)
                         ${CMAKE_CURRENT_BINARY_DIR}/mod_check_ecp_matrix_${case})
 endforeach()
 
+# ECP phase 3: RHF on HI/def2-SVP and UHF on the free I atom through the
+# C API's own auto-attach (trc_set_basis_json alone), vs mqc's own stored
+# numbers, plus the guess/Hirshfeld/gradient refusals and a restart-file
+# (format version 3) round trip -- see check_ecp_scf.F90's own header.
+add_executable(check_ecp_scf check_ecp_scf.F90)
+target_compile_definitions(check_ecp_scf PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_ecp_scf PRIVATE ${main_lib} terco_c_interfaces
+                                             test-drive::test-drive)
+target_include_directories(check_ecp_scf PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/check_ecp_scf COMMAND check_ecp_scf)
+set_tests_properties(terco/check_ecp_scf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
 # The step-timing tables' layout: work/rate columns only where something
 # counted -- see check_step_table_report.F90's own header.
 terco_add_check(check_step_table_report check_step_table_report.F90)
