@@ -147,7 +147,7 @@ endforeach()
 # (format version 3) round trip -- see check_ecp_scf.F90's own header.
 add_executable(check_ecp_scf check_ecp_scf.F90)
 target_compile_definitions(check_ecp_scf PRIVATE ${TERCO_TEST_DEFS})
-target_link_libraries(check_ecp_scf PRIVATE ${main_lib} terco_c_interfaces
+target_link_libraries(check_ecp_scf PRIVATE ${main_lib} terco_c_interfaces terco_pyscf_ref_io
                                              test-drive::test-drive)
 target_include_directories(check_ecp_scf PRIVATE ${CMAKE_BINARY_DIR}/modules)
 add_test(NAME terco/check_ecp_scf COMMAND check_ecp_scf)
