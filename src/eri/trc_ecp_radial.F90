@@ -30,17 +30,27 @@
 !
 ! The adaptive LEVEL loop itself -- the actual accuracy control, genuinely
 ! shell-pair dependent -- is not here: it lives in the item routines
-! (trc_ecp.F90) that call `ecp_radial_type1_rad_part`/`ecp_radial_type2_facs_rad` once per
-! level, exactly as PySCF's C does.
+! (trc_ecp.F90) that call `ecp_radial_type1_rad_part_levels`/
+! `ecp_radial_type2_lab_levels`, each computing every level's cumulative
+! value in one call (`trc_ecp.F90`'s own `pick_converged_level` then picks
+! the level the original's per-level loop would have stopped at), exactly
+! the SAME arithmetic PySCF's C runs once per level, just not laid out the
+! same way in memory -- see this module's own header for why.
 !
 module trc_ecp_radial
    use pic_types, only: dp
-   use trc_ecp_quadrature, only: ECP_NRS, ECP_EXPCUTOFF, ECP_CUTOFF, ECP_LMAX, ecp_quadrature_sph_ine
+   use trc_ecp_quadrature, only: ECP_NRS, ECP_EXPCUTOFF, ECP_CUTOFF, ECP_LMAX, &
+                                 ECP_LEVEL0, ECP_LEVEL_MAX, ecp_quadrature_sph_ine
    use trc_ecp_angular, only: ECP_ORB_LMAX, ecp_cache_3dfac, CART_POW_Y, CART_POW_Z
    implicit none
    private
 
-   public :: ecp_radial_rad_part, ecp_radial_type2_facs_rad, ecp_radial_type1_static_facs, ecp_radial_type1_rad_part
+   public :: ecp_radial_rad_part, ecp_radial_type2_facs_rad, ecp_radial_type1_static_facs
+   public :: ecp_radial_type1_rad_part_levels, ecp_radial_type2_lab_levels
+   public :: ECP_NLEVEL
+
+   !> Highest level index + 1 (levels ECP_LEVEL0..ECP_LEVEL_MAX inclusive).
+   integer, parameter :: ECP_NLEVEL = ECP_LEVEL_MAX - ECP_LEVEL0 + 1
 
 contains
 
@@ -155,61 +165,158 @@ contains
       end do
    end subroutine ecp_radial_type1_static_facs
 
-   !> Radial integrals for the type-1 (local) term, one primitive pair,
-   !! accumulated INTO `rad_all` (the caller zeroes it first, then calls
-   !! this once per primitive pair -- unchanged from libfint). `rad_all` is
-   !! fixed at (2*ECP_ORB_LMAX+1)^2, matching trc_ecp_angular.F90's
-   !! `ecp_type1_rad_ang`, which reads it next.
+   !> Radial integrals for the type-1 (local) term, one primitive pair, ALL
+   !! levels at once: `rad_levels(:, lvl)` is the cumulative value through
+   !! level `ECP_LEVEL0+lvl` (lvl=0..ECP_NLEVEL-1), exactly what the
+   !! sequential halving loop this replaces would have held in `rad_all`
+   !! after processing that level -- see trc_ecp.F90's own header for why
+   !! a `do concurrent` item cannot hold the ECP_NRS-sized intermediates
+   !! (`rur`/`bval`) the original per-level call built, and reads this
+   !! instead of calling once per level: the grid loop here is FUSED with
+   !! the angular-momentum ladder (no per-point array, `rn**lab` built
+   !! incrementally per point, same trick ecp_radial_type2_facs_rad's
+   !! caller already uses for its own r^lab ladder) so nothing here scales
+   !! with ECP_NRS except the loop trip count.
    !!
    !! The parity stride is not an optimisation: terms where (lab+i) is odd
    !! integrate to zero over the sphere, so stepping by two skips exactly
    !! what the angular factor would multiply by nothing.
-   pure subroutine ecp_radial_type1_rad_part(rad_all, lmax, k, aij, ur, rs, start, inc, nrs)
+   pure subroutine ecp_radial_type1_rad_part_levels(rad_levels, lmax, k, aij, ur, rs, ws)
       !$acc routine seq
-      integer, intent(in) :: lmax, start, inc, nrs
+      integer, intent(in) :: lmax
       real(dp), intent(in) :: k, aij
-      real(dp), intent(in) :: ur(0:ECP_NRS - 1), rs(0:ECP_NRS - 1)
-      real(dp), intent(inout) :: rad_all(0:(2*ECP_ORB_LMAX + 1)*(2*ECP_ORB_LMAX + 1) - 1)
+      real(dp), intent(in) :: ur(0:ECP_NRS - 1), rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1)
+      real(dp), intent(out) :: rad_levels(0:(2*ECP_ORB_LMAX + 1)*(2*ECP_ORB_LMAX + 1) - 1, 0:ECP_NLEVEL - 1)
 
-      integer :: lmax1, lab, i, n
-      real(dp) :: kaij, fac, temporary, s, rn
-      real(dp) :: rur(0:ECP_NRS - 1), bval(0:ECP_NRS*(2*ECP_ORB_LMAX + 1) - 1)
+      integer :: lmax1, lab, i, n, lvl, level, nrs0, start, step, nrs
+      real(dp) :: kaij, fac, temporary, rn, wtscale, rur0, rpow_n
       real(dp) :: bess(0:2*ECP_ORB_LMAX)
 
-      if (nrs == 0) return
       lmax1 = lmax + 1
-
       kaij = k/(2.0_dp*aij)
       fac = kaij*kaij*aij
-      do n = 0, nrs - 1
-         rn = rs(start + n*inc)
-         temporary = rn - kaij
-         temporary = fac - aij*temporary*temporary
-         if (ur(start + n*inc) == 0.0_dp .or. temporary > ECP_CUTOFF &
-             .or. temporary < -(ECP_EXPCUTOFF + 6.0_dp + 30.0_dp)) then
-            rur(n) = 0.0_dp
-            bval(n*lmax1:n*lmax1 + lmax) = 0.0_dp
-         else
-            rur(n) = ur(start + n*inc)*exp(temporary)
-            call ecp_quadrature_sph_ine(bess, lmax, k*rn)
-            bval(n*lmax1:n*lmax1 + lmax) = bess(0:lmax)
-         end if
-      end do
 
-      do lab = 0, lmax
-         if (lab > 0) then
-            do n = 0, nrs - 1
-               rur(n) = rur(n)*rs(start + n*inc)
+      nrs0 = 2**ECP_LEVEL0 - 1
+      step = 2**(ECP_LEVEL_MAX - ECP_LEVEL0)
+      start = step - 1
+      wtscale = real(step, dp)
+
+      do lvl = 0, ECP_NLEVEL - 1
+         nrs = nrs0
+         if (lvl == 0) then
+            do i = 0, lmax1*lmax1 - 1
+               rad_levels(i, lvl) = 0.0_dp
+            end do
+         else
+            do i = 0, lmax1*lmax1 - 1
+               rad_levels(i, lvl) = rad_levels(i, lvl - 1)*0.5_dp
             end do
          end if
-         do i = mod(lab, 2), lmax, 2
-            s = rad_all(lab*lmax1 + i)
-            do n = 0, nrs - 1
-               s = s + rur(n)*bval(n*lmax1 + i)
+
+         do n = 0, nrs - 1
+            rn = rs(start + n*step)
+            temporary = rn - kaij
+            temporary = fac - aij*temporary*temporary
+            if (ur(start + n*step) == 0.0_dp .or. temporary > ECP_CUTOFF &
+                .or. temporary < -(ECP_EXPCUTOFF + 6.0_dp + 30.0_dp)) cycle
+            rur0 = ur(start + n*step)*ws(start + n*step)*wtscale*exp(temporary)
+            call ecp_quadrature_sph_ine(bess, lmax, k*rn)
+            rpow_n = 1.0_dp
+            do lab = 0, lmax
+               do i = mod(lab, 2), lmax, 2
+                  rad_levels(lab*lmax1 + i, lvl) = rad_levels(lab*lmax1 + i, lvl) + rur0*rpow_n*bess(i)
+               end do
+               rpow_n = rpow_n*rn
             end do
-            rad_all(lab*lmax1 + i) = s
          end do
+
+         if (lvl < ECP_NLEVEL - 1) then
+            level = ECP_LEVEL0 + lvl
+            nrs0 = 2**level - 1
+            step = 2**(ECP_LEVEL_MAX - level)
+            start = (start - 1)/2
+            wtscale = wtscale*0.5_dp
+         end if
       end do
-   end subroutine ecp_radial_type1_rad_part
+   end subroutine ecp_radial_type1_rad_part_levels
+
+   !> Radial integrals for the type-2 (projected) term, one lambda value
+   !! `lab` (0..li+lj), ALL levels at once -- the same cumulative-snapshot
+   !! trick as `ecp_radial_type1_rad_part_levels` above, for the SAME
+   !! reason: trc_ecp.F90's item cannot hold an ECP_NRS-sized `ur_level`/
+   !! `rpow` per level (the original, per-level call built both). `radi`/
+   !! `radj` are READ here, not built: they are `trc_ecp.F90`'s own global
+   !! per-(shell, channel) cache, filled once per geometry by
+   !! `ecp_radial_type2_facs_rad` on the whole grid, so nothing here scales
+   !! with ECP_NRS except the loop trip count, and `lilc1`/`ljlc1` passed in
+   !! MUST be the same values the cache was filled with (same shell, same
+   !! channel) -- a flat 1-D array indexed by a value shared between writer
+   !! and reader, not a declared leading dimension, so there is no
+   !! maxnp-style stride trap there. `rad_levels` itself DOES have a
+   !! declared leading dimension, `ld` -- the caller's own fixed ceiling,
+   !! not lilc1*ljlc1 -- so a caller whose own local array is sized to its
+   !! OWN module's larger constant can pass it un-sliced: slicing it to
+   !! (0:lilc1*ljlc1-1, :) first would hand this routine a NON-contiguous
+   !! section (every "column" strided by the caller's bigger ld, not by
+   !! lilc1*ljlc1), which Fortran would then have to repack through a
+   !! copy-in/copy-out temporary sized by a RUNTIME value -- exactly the
+   !! automatic-array-in-`routine seq` trap this whole file exists to avoid.
+   pure subroutine ecp_radial_type2_lab_levels(rad_levels, ld, lab, lilc1, ljlc1, ur, ws, rs, radi, radj)
+      !$acc routine seq
+      integer, intent(in) :: ld, lab, lilc1, ljlc1
+      real(dp), intent(in) :: ur(0:ECP_NRS - 1), ws(0:ECP_NRS - 1), rs(0:ECP_NRS - 1)
+      real(dp), intent(in) :: radi(0:ECP_NRS*lilc1 - 1), radj(0:ECP_NRS*ljlc1 - 1)
+      real(dp), intent(out) :: rad_levels(0:ld - 1, 0:ECP_NLEVEL - 1)
+
+      integer :: d2, i, j, n, pt, lvl, level, nrs0, start, step, nrs
+      real(dp) :: wtscale, pointval, rn
+
+      d2 = lilc1*ljlc1
+      nrs0 = 2**ECP_LEVEL0 - 1
+      step = 2**(ECP_LEVEL_MAX - ECP_LEVEL0)
+      start = step - 1
+      wtscale = real(step, dp)
+
+      do lvl = 0, ECP_NLEVEL - 1
+         nrs = nrs0
+         if (lvl == 0) then
+            do i = 0, d2 - 1
+               rad_levels(i, lvl) = 0.0_dp
+            end do
+         else
+            do i = 0, d2 - 1
+               rad_levels(i, lvl) = rad_levels(i, lvl - 1)*0.5_dp
+            end do
+         end if
+
+         do n = 0, nrs - 1
+            ! `radi`/`radj` are K1b's cache, filled on the NATURAL grid
+            ! index (start=0, inc=1, nrs=ECP_NRS -- the whole grid, once),
+            ! not on this level's densified one: `pt`, not `n`, is the
+            ! point this level's n-th sample actually is, and a cached
+            ! factor is read at the point it was built for, exactly like
+            ! `ur`/`ws`/`rs` themselves. Reading it at `n` instead (this
+            ! port's own first version of this routine did) silently reads
+            ! a DIFFERENT point's factor at every level but the finest.
+            pt = start + n*step
+            rn = rs(pt)
+            pointval = ur(pt)*ws(pt)*wtscale*rn**lab
+            do i = 0, lilc1 - 1
+               do j = 0, ljlc1 - 1
+                  rad_levels(i*ljlc1 + j, lvl) = rad_levels(i*ljlc1 + j, lvl) &
+                     + pointval*radi(pt*lilc1 + i)*radj(pt*ljlc1 + j)
+               end do
+            end do
+         end do
+
+         if (lvl < ECP_NLEVEL - 1) then
+            level = ECP_LEVEL0 + lvl
+            nrs0 = 2**level - 1
+            step = 2**(ECP_LEVEL_MAX - level)
+            start = (start - 1)/2
+            wtscale = wtscale*0.5_dp
+         end if
+      end do
+   end subroutine ecp_radial_type2_lab_levels
 
 end module trc_ecp_radial

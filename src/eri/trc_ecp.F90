@@ -12,10 +12,36 @@
 ! quadrature weight -- the weight is level-dependent and is folded in by
 ! K2 instead, once per level, which is what `trc_ecp_radial.F90`'s own
 ! header means by "letting every shell pair's own adaptive level loop
-! slice a strided view of the SAME cached array"); K2 is one item per
+! slice a strided view of the SAME cached array"); K1b precomputes, once
+! per (orbital shell, ECP channel group) rather than once per shell pair,
+! the semi-local radial factors on the whole grid (`fac2_cache`), the
+! semi-local angular factors (`ang2_cache`), and the local term's static
+! centre-shift factors (`fac1_cache`) -- the three things the ORIGINAL,
+! per-shell-pair port used to rebuild from scratch inside K2's own item,
+! each scaling with ECP_NRS or with this module's angular-momentum
+! ceilings: moving them to K1b's global, mapped-once arrays is what keeps
+! K2's own item down to a handful of scalars per thread (measured:
+! ecp_type2_item's `radi`/`radj` alone were ECP_NRS*LC1MAX reals each,
+! ~147 KB, the dominant piece of a stack overrun that failed the kernel
+! launch outright -- see this file's git history). K2 is one item per
 ! (orbital shell pair, ECP atom), summing that atom's own channels and
 ! writing its own exclusive output slot (no atomics); K3 reduces K2's
 ! per-atom slots into the Cartesian matrix.
+!
+! ADAPTIVE CONVERGENCE WITHOUT PER-LEVEL STATE. The original per-level
+! call (halve the running value, add the next level's points, compare to
+! the last level) needed its running value to persist ACROSS levels for
+! every primitive pair (type 1) or lambda value (type 2) at once --
+! `NPMAX*NPMAX` pairs' worth, in the worst case. `trc_ecp_radial.F90`'s
+! `ecp_radial_type1_rad_part_levels`/`ecp_radial_type2_lab_levels`
+! replace that with a single call per pair/lambda that materialises every
+! level's cumulative value (same halve-then-add arithmetic, just written
+! into separate columns instead of overwritten in place), so this file's
+! own items process pairs/lambdas ONE AT A TIME and `pick_converged_level`
+! below picks, from that small (level-count)-sized snapshot, the exact
+! level the original's "two consecutive close levels" test would have
+! stopped at -- the same convergence semantics, the same CPU numbers, with
+! nothing here scaling with the radial grid.
 !
 ! FIXED-SIZE, NO GENERAL CONTRACTIONS. Every scratch array a `routine seq`
 ! item owns is sized to this module's own ceilings (`ECP_ORB_LMAX` from
@@ -51,7 +77,8 @@ module trc_ecp
    use trc_ecp_angular, only: ECP_ORB_LMAX, CART_POW_Y, CART_POW_Z, &
                               ecp_type1_rad_ang, ecp_type2_facs_ang
    use trc_ecp_radial, only: ecp_radial_rad_part, ecp_radial_type1_static_facs, &
-                             ecp_radial_type1_rad_part, ecp_radial_type2_facs_rad
+                             ecp_radial_type1_rad_part_levels, ecp_radial_type2_facs_rad, &
+                             ecp_radial_type2_lab_levels, ECP_NLEVEL
    use trc_sph, only: sph_cart_to_sph
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
@@ -67,6 +94,15 @@ module trc_ecp
    integer, parameter :: D2MAX2 = LC1MAX*LC1MAX                              !! 81
    integer, parameter :: D3MAX2 = D1MAX*D2MAX2                               !! 567
    integer, parameter :: SLOT_SIZE = NFMAX*NFMAX                                  !! 100: one (shell pair, atom) slot
+   !! K1b's per-(shell, channel) global caches, sized to this module's own
+   !! ceilings and read at the caller's actual, smaller extent -- exactly
+   !! `ecp_radial_type1_static_facs`'s and `ecp_type2_facs_ang`'s own
+   !! output bounds (not the oversized ifac/jfac/angi/angj this replaces:
+   !! those were declared NFMAX*D1MAX**3 and (ECP_ORB_LMAX+1)*NFMAX*
+   !! (2*ECP_LMAX+1)*LC1MAX respectively in an earlier version of this
+   !! file, but only the first FAC1SIZE/ANG2SIZE entries were ever read).
+   integer, parameter :: FAC1SIZE = NFMAX*(ECP_ORB_LMAX + 1)**3                  !! 640
+   integer, parameter :: ANG2SIZE = (ECP_ORB_LMAX + 1)*NFMAX*(2*ECP_LMAX + 1)*LC1MAX  !! 3960
 
    !> A contribution below this, to a matrix whose real entries run from
    !! ~1e-3 to a few hundred (measured: Xe/def2-SVP's U diagonal reaches
@@ -150,17 +186,19 @@ contains
 
       real(dp) :: rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1)
       real(dp), allocatable :: ur_cache(:, :)
+      real(dp), allocatable :: fac1_cache(:, :, :), fac2_cache(:, :, :), ang2_cache(:, :, :)
       integer, allocatable :: grp_atom(:), grp_l(:), grp_row0(:), grp_row1(:)
       integer, allocatable :: atm_ecp(:), atm_grp0(:), atm_grp1(:)
       integer, allocatable :: pr_i(:), pr_j(:)
       real(dp), allocatable :: block_buffer(:, :, :)
       integer, allocatable :: conv_fail(:, :)
-      integer :: ngroup, natm_ecp, npair
-      integer :: i, j, p, g, a, nfail
+      integer :: ngroup, natm_ecp, npair, nshell
+      integer :: i, j, p, g, a, nfail, t, ntask, ntask1b
 
       call build_groups(ecp, grp_atom, grp_l, grp_row0, grp_row1, ngroup)
       if (ngroup == 0) return
       call build_atom_list(grp_atom, ngroup, atm_ecp, atm_grp0, atm_grp1, natm_ecp)
+      nshell = b%nshell
 
       call ecp_quadrature_gauss_chebyshev(rs, ws, ECP_NRS)
       allocate (ur_cache(0:ECP_NRS - 1, ngroup))
@@ -173,10 +211,10 @@ contains
       end do
       !$acc exit data delete(ecp%ecp_rpow, ecp%ecp_np, ecp%ecp_e, ecp%ecp_c, grp_row0, grp_row1, ecp)
 
-      npair = b%nshell*(b%nshell + 1)/2
+      npair = nshell*(nshell + 1)/2
       allocate (pr_i(npair), pr_j(npair))
       p = 0
-      do i = 1, b%nshell
+      do i = 1, nshell
          do j = 1, i
             p = p + 1
             pr_i(p) = i
@@ -188,28 +226,61 @@ contains
       block_buffer = 0.0_dp
       conv_fail = 0
 
-      !$acc enter data copyin(ws, pr_i, pr_j, b, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, b%sh_ao) &
-      !$acc            copyin(grp_l, atm_ecp, atm_grp0, atm_grp1, b%at_r) &
+      ! K1b: once per (orbital shell, ECP channel group) -- not once per
+      ! shell pair -- the semi-local radial/angular factors (fac2_cache,
+      ! ang2_cache) and the local term's static centre-shift factors
+      ! (fac1_cache). Flattened for the same reason K2 below is: `ngroup`
+      ! is as small a run-time extent as `natm_ecp`.
+      allocate (fac1_cache(0:FAC1SIZE - 1, nshell, ngroup))
+      allocate (fac2_cache(0:ECP_NRS*LC1MAX - 1, nshell, ngroup))
+      allocate (ang2_cache(0:ANG2SIZE - 1, nshell, ngroup))
+
+      !$acc enter data copyin(ws, b, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, b%at_r, grp_atom, grp_l) &
+      !$acc            create(fac1_cache, fac2_cache, ang2_cache)
+      ntask1b = nshell*ngroup
+      do concurrent(t=1:ntask1b) local(i, g)
+         g = (t - 1)/nshell + 1
+         i = t - (g - 1)*nshell
+         call ecp_k1b_item(i, g, nshell, b%sh_l, b%sh_np, b%maxnp, b%sh_e, b%sh_c, b%sh_r, &
+                           b%natm, b%at_r, ngroup, grp_atom, grp_l, rs, &
+                           fac1_cache(:, i, g), fac2_cache(:, i, g), ang2_cache(:, i, g))
+      end do
+
+      !$acc enter data copyin(pr_i, pr_j, b%sh_ao) copyin(atm_ecp, atm_grp0, atm_grp1) &
       !$acc            create(block_buffer, conv_fail)
       if (natm_ecp > 0) then
-         do concurrent(p=1:npair, a=1:natm_ecp)
+         ! Flattened, not do concurrent(p=1:npair, a=1:natm_ecp): a
+         ! two-index do concurrent whose outer extent is small and set at
+         ! run time has, in testing here, failed the kernel launch outright
+         ! on the GPU build (nvfortran, cc70) rather than merely dropping a
+         ! slice -- gpu-pitfalls.md's own warning about this shape, and
+         ! natm_ecp (the number of distinct ECP atoms) is exactly the kind
+         ! of small run-time extent it means: 1 or 2 for every case
+         ! validated so far.
+         ntask = npair*natm_ecp
+         do concurrent(t=1:ntask) local(p, a)
+            a = (t - 1)/npair + 1
+            p = t - (a - 1)*npair
             call ecp_pair_atom_item(pr_i(p), pr_j(p), atm_ecp(a), atm_grp0(a), atm_grp1(a), &
                                     ngroup, grp_l, &
-                                    b%nshell, b%sh_l, b%sh_np, b%maxnp, b%sh_e, b%sh_c, b%sh_r, &
+                                    nshell, b%sh_l, b%sh_np, b%maxnp, b%sh_e, b%sh_c, b%sh_r, &
                                     b%natm, b%at_r, &
-                                    rs, ws, ur_cache, &
+                                    rs, ws, ur_cache, fac1_cache, fac2_cache, ang2_cache, &
                                     block_buffer(:, p, a), conv_fail(p, a))
          end do
       end if
       !$acc update self(block_buffer, conv_fail)
       !$acc exit data delete(ws, pr_i, pr_j, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, b%sh_ao, b%at_r, b, &
-      !$acc                  grp_l, atm_ecp, atm_grp0, atm_grp1, rs, ur_cache, block_buffer, conv_fail)
+      !$acc                  grp_l, grp_atom, atm_ecp, atm_grp0, atm_grp1, rs, ur_cache, block_buffer, conv_fail) &
+      !$acc            delete(fac1_cache, fac2_cache, ang2_cache)
 
       nfail = sum(conv_fail)
       if (nfail > 0) then
          call error%set(ERROR_VALIDATION, "trc_ecp_matrix: the ECP radial quadrature did not "// &
                         "converge within this port's ECP_LEVEL_MAX for at least one shell "// &
                         "pair/channel; raise trc_ecp_quadrature's ECP_LEVEL_MAX")
+         deallocate (ur_cache, fac1_cache, fac2_cache, ang2_cache, grp_atom, grp_l, grp_row0, grp_row1)
+         deallocate (atm_ecp, atm_grp0, atm_grp1, pr_i, pr_j, block_buffer, conv_fail)
          return
       end if
 
@@ -220,7 +291,7 @@ contains
          call deposit_block(b, mcart, pr_i(p), pr_j(p), block_buffer(:, p, :), natm_ecp)
       end do
 
-      deallocate (ur_cache, grp_atom, grp_l, grp_row0, grp_row1)
+      deallocate (ur_cache, fac1_cache, fac2_cache, ang2_cache, grp_atom, grp_l, grp_row0, grp_row1)
       deallocate (atm_ecp, atm_grp0, atm_grp1, pr_i, pr_j, block_buffer, conv_fail)
    end subroutine ecp_matrix_cart
 
@@ -303,6 +374,45 @@ contains
    end subroutine build_atom_list
 
    !
+   ! K1b's item: one (orbital shell, ECP channel group). Writes ONLY the
+   ! cache this group's own type (local or semi-local) needs -- the other
+   ! two output arrays are left untouched, which is fine: K2 never reads a
+   ! local group's fac2/ang2 slot or a semi-local group's fac1 slot.
+   !
+   pure subroutine ecp_k1b_item(ish, g, nshell, sh_l, sh_np, maxnp, sh_e, sh_c, sh_r, &
+                                natm, at_r, ngroup, grp_atom, grp_l, rs, &
+                                fac1_slot, fac2_slot, ang2_slot)
+      !$acc routine seq
+      integer, intent(in) :: ish, g, nshell, maxnp, natm, ngroup
+      integer, intent(in) :: sh_l(nshell), sh_np(nshell)
+      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell)
+      real(dp), intent(in) :: at_r(3, natm)
+      integer, intent(in) :: grp_atom(ngroup), grp_l(ngroup)
+      real(dp), intent(in) :: rs(0:ECP_NRS - 1)
+      real(dp), intent(out) :: fac1_slot(0:FAC1SIZE - 1)
+      real(dp), intent(out) :: fac2_slot(0:ECP_NRS*LC1MAX - 1)
+      real(dp), intent(out) :: ang2_slot(0:ANG2SIZE - 1)
+
+      integer :: li, np, lc
+      real(dp) :: rca(3)
+      real(dp) :: dca
+
+      li = sh_l(ish)
+      np = sh_np(ish)
+      lc = grp_l(g)
+      rca = at_r(:, grp_atom(g)) - sh_r(:, ish)
+
+      if (lc == -1) then
+         call ecp_radial_type1_static_facs(fac1_slot, li, rca)
+      else
+         dca = sqrt(sum(rca**2))
+         call ecp_radial_type2_facs_rad(fac2_slot, li, np, sh_e(1:np, ish), sh_c(1:np, ish), &
+                                        lc, dca, rs, 0, 1, ECP_NRS)
+         call ecp_type2_facs_ang(ang2_slot, li, lc, rca)
+      end if
+   end subroutine ecp_k1b_item
+
+   !
    ! K2's item: one (orbital shell pair, ECP atom). Sums every one of that
    ! atom's channels (local and projected) into its OWN output slot,
    ! `slot` -- SLOT_SIZE = NFMAX*NFMAX reals, column-major (mi, mj) with mi the
@@ -313,7 +423,7 @@ contains
                                       ngroup, grp_l, &
                                       nshell, sh_l, sh_np, maxnp, sh_e, sh_c, sh_r, &
                                       natm, at_r, &
-                                      rs, ws, ur_cache, &
+                                      rs, ws, ur_cache, fac1_cache, fac2_cache, ang2_cache, &
                                       slot, conv_fail)
       !$acc routine seq
       integer, intent(in) :: ish, jsh, atm_id, g0, g1
@@ -335,6 +445,12 @@ contains
       real(dp), intent(in) :: at_r(3, natm)
       real(dp), intent(in) :: rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1)
       real(dp), intent(in) :: ur_cache(0:ECP_NRS - 1, ngroup)
+      !! K1b's own global caches -- see its own header. Read here at
+      !! (:,ish,g) and (:,jsh,g): the pair's two shells against the SAME
+      !! channel group, never recomputed.
+      real(dp), intent(in) :: fac1_cache(0:FAC1SIZE - 1, nshell, ngroup)
+      real(dp), intent(in) :: fac2_cache(0:ECP_NRS*LC1MAX - 1, nshell, ngroup)
+      real(dp), intent(in) :: ang2_cache(0:ANG2SIZE - 1, nshell, ngroup)
       real(dp), intent(out) :: slot(SLOT_SIZE)
       integer, intent(out) :: conv_fail
 
@@ -356,11 +472,13 @@ contains
          if (grp_l(g) == -1) then
             call ecp_type1_item(gctr, li, lj, npi, npj, &
                                 sh_e(1:npi, ish), sh_c(1:npi, ish), sh_e(1:npj, jsh), sh_c(1:npj, jsh), &
-                                ri, rj, rc, rs, ws, ur_cache(:, g), local_fail)
+                                ri, rj, rc, rs, ws, ur_cache(:, g), &
+                                fac1_cache(:, ish, g), fac1_cache(:, jsh, g), local_fail)
          else
-            call ecp_type2_item(gctr, li, lj, npi, npj, &
-                                sh_e(1:npi, ish), sh_c(1:npi, ish), sh_e(1:npj, jsh), sh_c(1:npj, jsh), &
-                                ri, rj, rc, grp_l(g), rs, ws, ur_cache(:, g), local_fail)
+            call ecp_type2_item(gctr, li, lj, grp_l(g), &
+                                rs, ws, ur_cache(:, g), &
+                                fac2_cache(:, ish, g), fac2_cache(:, jsh, g), &
+                                ang2_cache(:, ish, g), ang2_cache(:, jsh, g), local_fail)
          end if
          conv_fail = max(conv_fail, local_fail)
       end do
@@ -378,36 +496,143 @@ contains
       c = abs(x - y) <= 1.0e-12_dp*max(abs(x), abs(y))
    end function close_enough
 
+   !> Picks the level a (primitive pair, type 1) or (lambda, type 2) block
+   !! converged at, from its ECP_NLEVEL-column snapshot: the same "two
+   !! consecutive close levels" test the original per-level loop ran while
+   !! the block's own state persisted across levels, now run once over an
+   !! already-materialised snapshot. `ld`, the dummy-bound explicit shape
+   !! (like `sh_e(maxnp, nshell)` elsewhere in this file), is the CALLER's
+   !! own fixed ceiling (D2MAX or D2MAX2), not the actual `d2`: passing the
+   !! caller's array un-sliced, with its own real leading dimension, is
+   !! what keeps this a reference rather than a copy-in/copy-out temporary
+   !! sized by the runtime `d2` -- see `ecp_radial_type2_lab_levels`'s own
+   !! header for the same trap this avoids. `picked` defaults to the last
+   !! level and `failed` to true so a caller that never calls this for an
+   !! exhausted block still gets the same "use the finest level, flag
+   !! non-convergence" fallback the original fell through to.
+   pure subroutine pick_converged_level(ld, d2, rad_levels, picked, failed)
+      !$acc routine seq
+      integer, intent(in) :: ld, d2
+      real(dp), intent(in) :: rad_levels(0:ld - 1, 0:ECP_NLEVEL - 1)
+      integer, intent(out) :: picked
+      logical, intent(out) :: failed
+
+      integer :: lvl, n, converged
+      logical :: is_close
+
+      converged = 0
+      picked = ECP_NLEVEL - 1
+      failed = .true.
+      do lvl = 0, ECP_NLEVEL - 1
+         is_close = .true.
+         do n = 0, d2 - 1
+            if (lvl == 0) then
+               if (.not. close_enough(0.0_dp, rad_levels(n, lvl))) then
+                  is_close = .false.
+                  exit
+               end if
+            else
+               if (.not. close_enough(rad_levels(n, lvl - 1), rad_levels(n, lvl))) then
+                  is_close = .false.
+                  exit
+               end if
+            end if
+         end do
+         if (is_close) then
+            converged = converged + 1
+            if (converged >= 2) then
+               picked = lvl
+               failed = .false.
+               exit
+            end if
+         else
+            converged = 0
+         end if
+      end do
+   end subroutine pick_converged_level
+
+   !> Same as `pick_converged_level`, for a type-2 lambda block: a block
+   !! whose every entry is already below ECP_NEGLIGIBLE is accepted at
+   !! whatever level it first reaches that floor, without the relative
+   !! test -- see ecp_type2_item's own header for why (a term already this
+   !! small can fail a RELATIVE test indefinitely without ever being wrong
+   !! to within this port's tolerance, `ecp_ints_ih_far`'s 25 bohr I-H).
+   pure subroutine pick_converged_level_t2(ld, d2, rad_levels, picked, failed)
+      !$acc routine seq
+      integer, intent(in) :: ld, d2
+      real(dp), intent(in) :: rad_levels(0:ld - 1, 0:ECP_NLEVEL - 1)
+      integer, intent(out) :: picked
+      logical, intent(out) :: failed
+
+      integer :: lvl, n, converged
+      logical :: is_close
+
+      converged = 0
+      picked = ECP_NLEVEL - 1
+      failed = .true.
+      do lvl = 0, ECP_NLEVEL - 1
+         if (maxval(abs(rad_levels(0:d2 - 1, lvl))) < ECP_NEGLIGIBLE) then
+            is_close = .true.
+         else
+            is_close = .true.
+            do n = 0, d2 - 1
+               if (lvl == 0) then
+                  if (.not. close_enough(0.0_dp, rad_levels(n, lvl))) then
+                     is_close = .false.
+                     exit
+                  end if
+               else
+                  if (.not. close_enough(rad_levels(n, lvl - 1), rad_levels(n, lvl))) then
+                     is_close = .false.
+                     exit
+                  end if
+               end if
+            end do
+         end if
+         if (is_close) then
+            converged = converged + 1
+            if (converged >= 2) then
+               picked = lvl
+               failed = .false.
+               exit
+            end if
+         else
+            converged = 0
+         end if
+      end do
+   end subroutine pick_converged_level_t2
+
    !
    ! The type-1 (local) term for one (shell pair, ECP channel). Per-primitive-
    ! pair convergence, exactly as libfint's `ecp_type1_cart`: each (ip,jp)'s
-   ! own radial integral is refined level by level and the angular
-   ! contraction runs only once, after every pair has converged (or the
-   ! level ceiling is hit, which sets `conv_fail`).
+   ! own radial integral is refined to its OWN converged level (picked by
+   ! `pick_converged_level` from `ecp_radial_type1_rad_part_levels`'s whole
+   ! snapshot, computed and consumed one pair at a time) and the angular
+   ! contraction runs only once, after every pair has been picked (or the
+   ! level ceiling is hit, which sets `conv_fail`). `ifac`/`jfac` are
+   ! K1b's global cache, not rebuilt here.
    !
    pure subroutine ecp_type1_item(gctr, li, lj, npi, npj, ei, ci, ej, cj, ri, rj, rc, &
-                                  rs, ws, ur, conv_fail)
+                                  rs, ws, ur, ifac, jfac, conv_fail)
       !$acc routine seq
       integer, intent(in) :: li, lj, npi, npj
       real(dp), intent(in) :: ei(npi), ci(npi), ej(npj), cj(npj)
       real(dp), intent(in) :: ri(3), rj(3), rc(3)
       real(dp), intent(in) :: rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1), ur(0:ECP_NRS - 1)
+      real(dp), intent(in) :: ifac(0:FAC1SIZE - 1), jfac(0:FAC1SIZE - 1)
       real(dp), intent(inout) :: gctr(NFMAX, NFMAX)
       integer, intent(out) :: conv_fail
 
       real(dp), parameter :: PI = acos(-1.0_dp)
       real(dp) :: rca(3), rcb(3), rij(3)
       real(dp) :: cei(NPMAX), cej(NPMAX)
-      real(dp) :: rad_all(0:NPMAX*NPMAX*D2MAX - 1), plast(0:D2MAX - 1)
-      real(dp) :: ur_level(0:ECP_NRS - 1), rs_level(0:ECP_NRS - 1)
+      real(dp) :: rad_levels(0:D2MAX - 1, 0:ECP_NLEVEL - 1)
       real(dp) :: rad_ang(0:D3MAX - 1), rad_ang_all(0:D3MAX - 1)
-      real(dp) :: ifac(0:NFMAX*D1MAX*D1MAX*D1MAX - 1), jfac(0:NFMAX*D1MAX*D1MAX*D1MAX - 1)
-      integer :: lilj1, d1, d2, d3, di1, dj1, pr
+      integer :: lilj1, d1, d2, d3, di1, dj1
       integer :: ip, jp, mi, mj, n, i1, i2, i3, j1, j2, j3, ix, iy, iz, jx, jy, jz
-      integer :: level, start, step, nrs0, nrs
-      real(dp) :: wtscale, r2ca, r2cb, fac
-      integer :: converged(NPMAX, NPMAX)
-      logical :: pair_close, all_conv
+      integer :: picked
+      real(dp) :: r2ca, r2cb, fac
+      logical :: failed
 
       lilj1 = li + lj + 1
       d1 = lilj1
@@ -427,95 +652,38 @@ contains
          cej(jp) = cj(jp)*exp(-ej(jp)*r2cb)*4.0_dp*PI
       end do
 
-      converged = 0
-      rad_all(0:npi*npj*d2 - 1) = 0.0_dp
-      all_conv = .true.
-      nrs0 = 2**ECP_LEVEL0 - 1
-      step = 2**(ECP_LEVEL_MAX - ECP_LEVEL0)
-      start = step - 1
-      wtscale = real(step, dp)
-
-      do level = ECP_LEVEL0, ECP_LEVEL_MAX
-         nrs = nrs0
-         do n = 0, nrs - 1
-            ur_level(n) = ur(start + n*step)*ws(start + n*step)*wtscale
-            ! rs is densified the SAME way ur is: ecp_radial_type1_rad_part reads
-            ! both at plain index n, not at this level's own (start, step)
-            ! -- passing (start, step) with the UNdensified rs here (as an
-            ! earlier version of this routine did) paired ur_level(n) (this
-            ! level's point) against rs(start + n*step), which is a
-            ! DIFFERENT, uninvolved grid point once step > 1: the two must
-            ! read the SAME densified index.
-            rs_level(n) = rs(start + n*step)
-         end do
-         all_conv = .true.
-         do ip = 1, npi
-            do jp = 1, npj
-               ! A primitive pair whose centre-shift prefactor has already
-               ! decayed past this floor contributes negligibly to gctr
-               ! (fac*rad_ang below) however rad_all's own magnitude looks:
-               ! `ecp_radial_type1_rad_part`'s exponent-shift (complete the
-               ! square around kaij, rather than evaluate exp(-aij*rn^2)
-               ! directly) trades a huge-but-finite intermediate for one
-               ! that would otherwise underflow outright, and that
-               ! intermediate's own growth tracks the SAME exponents this
-               ! prefactor decays by, so it never overtakes a floor this
-               ! far below any value that could matter (measured: a
-               ! prefactor of 8.4e-251 next to a "val" of 8.6e+187, net
-               ! contribution ~1e-63) -- so this never needs refining, and
-               ! never blocks all_conv. A tight core primitive far from the
-               ! ECP centre (ecp_ints_ih_far's 25 bohr I-H, ecp_ints_csh's
-               ! Cs 1s next to the same-atom local channel) reaches this
-               ! routinely.
-               if (converged(ip, jp) >= 2 .or. abs(cei(ip)*cej(jp)) < 1.0e-150_dp) cycle
-               pr = ((ip - 1)*npj + (jp - 1))*d2
-               do n = 0, d2 - 1
-                  plast(n) = rad_all(pr + n)
-                  rad_all(pr + n) = rad_all(pr + n)*0.5_dp
-               end do
-               rij = ei(ip)*rca + ej(jp)*rcb
-               call ecp_radial_type1_rad_part(rad_all(pr:pr + d2 - 1), li + lj, &
-                                      sqrt(sum(rij**2))*2.0_dp, ei(ip) + ej(jp), &
-                                      ur_level, rs_level, 0, 1, nrs)
-               pair_close = .true.
-               do n = 0, d2 - 1
-                  if (.not. close_enough(plast(n), rad_all(pr + n))) then
-                     pair_close = .false.
-                     exit
-                  end if
-               end do
-               if (pair_close) then
-                  converged(ip, jp) = converged(ip, jp) + 1
-                  if (converged(ip, jp) < 2) all_conv = .false.
-               else
-                  converged(ip, jp) = 0
-                  all_conv = .false.
-               end if
-            end do
-         end do
-         if (all_conv) exit
-         nrs0 = 2**level - 1
-         step = 2**(ECP_LEVEL_MAX - level)
-         start = (start - 1)/2
-         wtscale = wtscale*0.5_dp
-      end do
       conv_fail = 0
-      if (.not. all_conv) conv_fail = 1
       rad_ang_all = 0.0_dp
       do ip = 1, npi
          do jp = 1, npj
-            pr = ((ip - 1)*npj + (jp - 1))*d2
+            ! A primitive pair whose centre-shift prefactor has already
+            ! decayed past this floor contributes negligibly to gctr
+            ! (fac*rad_ang below) however rad_levels' own magnitude looks:
+            ! `ecp_radial_type1_rad_part_levels`'s exponent-shift (complete
+            ! the square around kaij, rather than evaluate exp(-aij*rn^2)
+            ! directly) trades a huge-but-finite intermediate for one that
+            ! would otherwise underflow outright, and that intermediate's
+            ! own growth tracks the SAME exponents this prefactor decays
+            ! by, so it never overtakes a floor this far below any value
+            ! that could matter (measured: a prefactor of 8.4e-251 next to
+            ! a "val" of 8.6e+187, net contribution ~1e-63) -- so this pair
+            ! never needs the quadrature run on it at all. A tight core
+            ! primitive far from the ECP centre (ecp_ints_ih_far's 25 bohr
+            ! I-H, ecp_ints_csh's Cs 1s next to the same-atom local channel)
+            ! reaches this routinely.
+            if (abs(cei(ip)*cej(jp)) < 1.0e-150_dp) cycle
             rij = ei(ip)*rca + ej(jp)*rcb
-            call ecp_type1_rad_ang(rad_ang, li + lj, rij, rad_all(pr:pr + d2 - 1))
+            call ecp_radial_type1_rad_part_levels(rad_levels, li + lj, &
+                                      sqrt(sum(rij**2))*2.0_dp, ei(ip) + ej(jp), ur, rs, ws)
+            call pick_converged_level(D2MAX, d2, rad_levels, picked, failed)
+            if (failed) conv_fail = 1
+            call ecp_type1_rad_ang(rad_ang, li + lj, rij, rad_levels(0:d2 - 1, picked))
             fac = cei(ip)*cej(jp)
             do n = 0, d3 - 1
                rad_ang_all(n) = rad_ang_all(n) + fac*rad_ang(n)
             end do
          end do
       end do
-
-      call ecp_radial_type1_static_facs(ifac, li, rca)
-      call ecp_radial_type1_static_facs(jfac, lj, rcb)
 
       do mi = 0, ncart_l(li) - 1
          iy = CART_POW_Y(mi)
@@ -548,37 +716,35 @@ contains
    !
    ! The type-2 (semi-local) term for one (shell pair, ECP channel of
    ! angular momentum lc). No nc/ic loop (trc_basis_t never holds a general
-   ! contraction), so the convergence state is indexed by `lab` alone, and
-   ! rad_all carries no (ic,jc) offset.
+   ! contraction), so the convergence state is indexed by `lab` alone.
+   ! `radi`/`radj`/`angi`/`angj` are K1b's global cache -- nothing here
+   ! rebuilds a radial or angular factor, or holds one at ECP_NRS size:
+   ! each `lab` (0..li+lj) is picked to its OWN converged level one at a
+   ! time (`ecp_radial_type2_lab_levels` + `pick_converged_level_t2`), and
+   ! only the picked, SLOT_SIZE-scale `rad_all` persists across lab values
+   ! -- it has to, since the final contraction below indexes it by i+j,
+   ! which repeats across different (i,j) pairs.
    !
-   pure subroutine ecp_type2_item(gctr, li, lj, npi, npj, ei, ci, ej, cj, ri, rj, rc, lc, &
-                                  rs, ws, ur, conv_fail)
+   pure subroutine ecp_type2_item(gctr, li, lj, lc, &
+                                  rs, ws, ur, radi, radj, angi, angj, conv_fail)
       !$acc routine seq
-      integer, intent(in) :: li, lj, npi, npj, lc
-      real(dp), intent(in) :: ei(npi), ci(npi), ej(npj), cj(npj)
-      real(dp), intent(in) :: ri(3), rj(3), rc(3)
+      integer, intent(in) :: li, lj, lc
       real(dp), intent(in) :: rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1), ur(0:ECP_NRS - 1)
+      real(dp), intent(in) :: radi(0:ECP_NRS*LC1MAX - 1), radj(0:ECP_NRS*LC1MAX - 1)
+      real(dp), intent(in) :: angi(0:ANG2SIZE - 1), angj(0:ANG2SIZE - 1)
       real(dp), intent(inout) :: gctr(NFMAX, NFMAX)
       integer, intent(out) :: conv_fail
 
       real(dp), parameter :: PI = acos(-1.0_dp)
-      real(dp) :: rca(3), rcb(3)
-      real(dp) :: dca, dcb, common_fac
-      real(dp) :: radi(0:ECP_NRS*LC1MAX - 1), radj(0:ECP_NRS*LC1MAX - 1)
-      real(dp) :: ur_level(0:ECP_NRS - 1)
-      real(dp) :: rad_all(0:D3MAX2 - 1), plast(0:D2MAX2 - 1)
-      real(dp) :: angi(0:(ECP_ORB_LMAX + 1)*NFMAX*(2*ECP_LMAX + 1)*LC1MAX - 1)
-      real(dp) :: angj(0:(ECP_ORB_LMAX + 1)*NFMAX*(2*ECP_LMAX + 1)*LC1MAX - 1)
+      real(dp) :: common_fac
+      real(dp) :: rad_levels(0:D2MAX2 - 1, 0:ECP_NLEVEL - 1)
+      real(dp) :: rad_all(0:D3MAX2 - 1)
       real(dp) :: buffer(0:NFMAX*(2*ECP_LMAX + 1) - 1)
-      real(dp) :: rpow(0:ECP_NRS - 1)
-      integer :: lilj1, lilc1, ljlc1, d2, im, mq, dlc
-      integer :: level, nrs0, start, step, nrs, lab
-      integer :: i, j, n, mi, mj
-      real(dp) :: wtscale, s, acc
-      logical :: all_conv, pair_close
-      integer :: converged(0:D1MAX - 1)
+      integer :: lilc1, ljlc1, d2, im, mq, dlc
+      integer :: lab, i, j, n, mi, mj, picked
+      real(dp) :: acc
+      logical :: failed
 
-      lilj1 = li + lj + 1
       lilc1 = li + lc + 1
       ljlc1 = lj + lc + 1
       d2 = lilc1*ljlc1
@@ -587,91 +753,16 @@ contains
       mq = dlc*ljlc1
       common_fac = 16.0_dp*PI*PI
 
-      rca = rc - ri
-      rcb = rc - rj
-      dca = sqrt(sum(rca**2))
-      dcb = sqrt(sum(rcb**2))
-
-      converged = 0
-      rad_all(0:lilj1*d2 - 1) = 0.0_dp
-      all_conv = .true.
-      nrs0 = 2**ECP_LEVEL0 - 1
-      step = 2**(ECP_LEVEL_MAX - ECP_LEVEL0)
-      start = step - 1
-      wtscale = real(step, dp)
-
-      do level = ECP_LEVEL0, ECP_LEVEL_MAX
-         nrs = nrs0
-         call ecp_radial_type2_facs_rad(radi, li, npi, ei, ci, lc, dca, rs, start, step, nrs)
-         call ecp_radial_type2_facs_rad(radj, lj, npj, ej, cj, lc, dcb, rs, start, step, nrs)
-         do n = 0, nrs - 1
-            ur_level(n) = ur(start + n*step)*ws(start + n*step)*wtscale
-         end do
-
-         all_conv = .true.
-         do lab = 0, li + lj
-            if (converged(lab) >= 2) cycle
-            ! r^lab at this level's own grid points, computed fresh per lab
-            ! (rather than an incremental ladder) because an already-
-            ! converged lab's `cycle` above would otherwise skip the
-            ! ladder's advance and desynchronise every lab after it.
-            do n = 0, nrs - 1
-               rpow(n) = rs(start + n*step)**lab
-            end do
-            do n = 0, d2 - 1
-               plast(n) = rad_all(lab*d2 + n)
-            end do
-            do i = 0, lilc1 - 1
-               do j = 0, ljlc1 - 1
-                  ! Halved, then the new (finer) points' contribution added
-                  ! -- the same nested-quadrature refinement type 1's own
-                  ! rad_all halving is, and for the same reason: the
-                  ! previous level's points reappear in this one at twice
-                  ! the weight.
-                  s = rad_all(lab*d2 + i*ljlc1 + j)*0.5_dp
-                  do n = 0, nrs - 1
-                     s = s + ur_level(n)*rpow(n)*radi(n*lilc1 + i)*radj(n*ljlc1 + j)
-                  end do
-                  rad_all(lab*d2 + i*ljlc1 + j) = s
-               end do
-            end do
-            ! An absolutely negligible lab-block (every entry already below
-            ! ECP_NEGLIGIBLE) is accepted without the relative test:
-            ! common_fac (16*pi^2) and the angular contraction below can
-            ! only scale it further, never promote it into significance,
-            ! and a term already this small can fail the 1e-12 RELATIVE
-            ! test indefinitely (ecp_ints_ih_far's 25 bohr I-H) without
-            ! ever being wrong to within this port's own tolerance.
-            if (maxval(abs(rad_all(lab*d2:lab*d2 + d2 - 1))) < ECP_NEGLIGIBLE) then
-               pair_close = .true.
-            else
-               pair_close = .true.
-               do n = 0, d2 - 1
-                  if (.not. close_enough(plast(n), rad_all(lab*d2 + n))) then
-                     pair_close = .false.
-                     exit
-                  end if
-               end do
-            end if
-            if (pair_close) then
-               converged(lab) = converged(lab) + 1
-               if (converged(lab) < 2) all_conv = .false.
-            else
-               converged(lab) = 0
-               all_conv = .false.
-            end if
-         end do
-
-         if (all_conv) exit
-         nrs0 = 2**level - 1
-         step = 2**(ECP_LEVEL_MAX - level)
-         start = (start - 1)/2
-         wtscale = wtscale*0.5_dp
-      end do
       conv_fail = 0
-      if (.not. all_conv) conv_fail = 1
-      call ecp_type2_facs_ang(angi, li, lc, rca)
-      call ecp_type2_facs_ang(angj, lj, lc, rcb)
+      rad_all(0:(li + lj + 1)*d2 - 1) = 0.0_dp
+      do lab = 0, li + lj
+         call ecp_radial_type2_lab_levels(rad_levels, D2MAX2, lab, lilc1, ljlc1, ur, ws, rs, radi, radj)
+         call pick_converged_level_t2(D2MAX2, d2, rad_levels, picked, failed)
+         if (failed) conv_fail = 1
+         do n = 0, d2 - 1
+            rad_all(lab*d2 + n) = rad_levels(n, picked)
+         end do
+      end do
 
       do i = 0, li
          do j = 0, lj
