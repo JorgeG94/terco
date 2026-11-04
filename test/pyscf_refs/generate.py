@@ -69,7 +69,10 @@ BUILD_DIR = Path(os.environ.get("TERCO_PYSCF_REF_BUILD", str(ROOT / "build-cpu")
 #: point at a different one (e.g. the LMAX=3 build, for the f/g cases).
 
 _SYMBOL = {1: 'H', 6: 'C', 7: 'N', 8: 'O', 9: 'F', 10: 'Ne',
-           14: 'Si', 15: 'P', 16: 'S', 17: 'Cl'}
+           14: 'Si', 15: 'P', 16: 'S', 17: 'Cl',
+           50: 'Sn', 53: 'I', 54: 'Xe', 55: 'Cs'}
+           #: Sn/I/Xe/Cs added for gen_ecp_ints -- the first cases here
+           #: whose elements carry an effective core potential.
 
 
 # =========================================================================
@@ -199,6 +202,41 @@ def ao_norm_from_overlap(s_terco, s_pyscf):
     pred = n[:, None] * s_pyscf * n[None, :]
     err = np.abs(s_terco - pred).max()
     return n, err
+
+
+def bse_json_ecp(path, elements):
+    """BSE JSON's ecp_potentials -> pyscf's internal ECP format
+    (`gto.basis.load_ecp` returns the same shape): `{symbol: [core_charge,
+    [[l, [block_rpow0, block_rpow1, ...]], ...]]}`, `block_rpow` a list of
+    [exponent, coefficient] pairs for the primitives that carry that one
+    r-power. `l = -1` marks the LOCAL channel -- the one with the highest
+    angular momentum in the potential, not necessarily listed first (same
+    rule trc_ecp_json.F90 applies). An element the file has no
+    `ecp_potentials` for is simply absent from the returned dict, so a
+    mixed molecule (an ECP atom next to an all-electron one) needs no
+    special casing -- pyscf treats a missing key as all-electron."""
+    d = json.load(open(path))
+    out = {}
+    for sym, z in elements.items():
+        el = d['elements'][str(z)]
+        pots = el.get('ecp_potentials')
+        if not pots:
+            continue
+        core_charge = int(el['ecp_electrons'])
+        ls = [p['angular_momentum'][0] for p in pots]
+        local_index = ls.index(max(ls))
+        channels = []
+        for idx, p in enumerate(pots):
+            l = -1 if idx == local_index else p['angular_momentum'][0]
+            rexp = [int(x) for x in p['r_exponents']]
+            gexp = [float(e) for e in p['gaussian_exponents']]
+            coef = [float(c) for c in p['coefficients'][0]]
+            buckets = [[] for _ in range(max(rexp) + 1)]
+            for e, c, rp in zip(gexp, coef, rexp):
+                buckets[rp].append([e, c])
+            channels.append([l, buckets])
+        out[sym] = [core_charge, channels]
+    return out
 
 
 # =========================================================================
@@ -507,6 +545,61 @@ def gen_mult():
     w.matrix3("MM", np.moveaxis(ref, 0, 2))   # (nao, nao, 39), matching trc_multipoles' layout
     w.end()
     w.write()
+
+
+def gen_ecp_ints(case):
+    """check_ecp_matrix.F90's trc_ecp_matrix against pyscf's
+    intor('ECPscalar'), fed the SAME def2-svp.json (`bse_json_ecp`), not
+    pyscf's own bundled ECP tables -- see that file's own header and
+    ECP_DESIGN.md.
+
+    Geometry comes from the Fortran dump (check_ecp_matrix.F90's own
+    hardcoded case_geometry), not re-typed here, so there is one source of
+    truth for it rather than two numbers that have to agree by
+    inspection -- the SAME reasoning rys_fock_ref.py and every other
+    dump-based case here already follows."""
+    dump = TEST / f"ecp_matrix_probe_{case}.bin"
+    run_bin("check_ecp_matrix_" + case, [case, dump.name])
+    r = BinReader(dump)
+    nat, nao = r.i8(), r.i8()
+    at_z = np.atleast_1d(r.i8(nat))   # a single-atom case (xe) makes i8(1) a scalar
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    s_terco = r.mat(nao)
+    u_terco = r.mat(nao)
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(HERE.parent / "basis_sets" / "def2-svp.json", elements)
+    ecp_arg = bse_json_ecp(HERE.parent / "basis_sets" / "def2-svp.json", elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    mol = gto.M(atom=atoms, basis=basis_arg, ecp=ecp_arg, unit='Bohr', cart=True,
+                spin=None, charge=0, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_ecp_ints {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+
+    s_pyscf = mol.intor('int1e_ovlp')
+    n, s_err = ao_norm_from_overlap(s_terco_p, s_pyscf)
+    if s_err >= 1.0e-9:
+        raise RuntimeError(f"gen_ecp_ints {case}: overlap check failed, {s_err:.3e}")
+
+    u_pyscf = mol.intor('ECPscalar')
+    u_ref_terco = (u_pyscf * n[:, None] * n[None, :])[np.ix_(perm, perm)]
+
+    w = RefWriter(f"ecp_ints_{case}.ref")
+    w.header("check_ecp_matrix_" + case,
+             [ROOT / "test" / "check_ecp_matrix.F90", HERE.parent / "basis_sets" / "def2-svp.json"])
+    w.int_("NAT", nat)
+    w.int_("NAO", nao)
+    w.matrix("U", u_ref_terco)
+    w.end()
+    w.write()
+    worst = np.abs(u_terco - u_ref_terco).max()
+    print(f"  ecp_ints {case}: max|U_terco - U_pyscf| (at generation time, overlap-rescaled) = {worst:.3e}")
+    dump.unlink()
 
 
 def gen_ao():
@@ -4745,6 +4838,11 @@ def gen_ghost_water_dimer():
 CASES = {
     "hirshfeld": gen_hirshfeld,
     "mult": gen_mult,
+    "ecp_ints_hi_svp": lambda: gen_ecp_ints("hi_svp"),
+    "ecp_ints_ih_far": lambda: gen_ecp_ints("ih_far"),
+    "ecp_ints_xe": lambda: gen_ecp_ints("xe"),
+    "ecp_ints_csh": lambda: gen_ecp_ints("csh"),
+    "ecp_ints_snh4": lambda: gen_ecp_ints("snh4"),
     "ao": gen_ao,
     "pcm_radii_override": gen_pcm_radii_override,
     "pcm_grad": gen_pcm_grad,
