@@ -16,9 +16,20 @@
 !   e_xc, e_pcm, pcm_qtotal, nelec_grid
 !   at_z(natm), at_r(3, natm), at_elem(natm)    the molecule (version 2: at_elem
 !                                               added for ghost atoms, b%at_elem)
+!   at_ncore(natm)                              version 3: core electrons an ECP
+!                                               replaced on each atom (0 with none)
 !   sh_l, sh_np, sh_e, sh_c, sh_r               the basis, exactly as built
 !   eps(n, nspin), cmo(n, n, nspin),            the orbitals and the density
 !   dmat(n, n, nspin)
+!
+! OLDER VERSIONS
+! --------------
+! A version 1 or 2 file is still read: version 2 added at_elem (no ghost
+! check on a version 1 file, which predates ghost atoms); version 3 added
+! at_ncore (no ECP check on a version 1 or 2 file, which predates ECP
+! support -- loading one into a run that itself has no ECP is accepted,
+! same as loading it today; loading one into an ECP run is refused, since
+! an older file cannot say whether its own orbitals were built with one).
 !
 ! WHAT A READ REFUSES
 ! -------------------
@@ -50,9 +61,12 @@ module trc_scf_file
    public :: trc_scf_save, trc_scf_load
 
    character(len=8), parameter :: MAGIC = "TERCOSCF"
-   integer(int32), parameter :: VERSION = 2
+   integer(int32), parameter :: VERSION = 3
    !! 2: added at_elem(natm) (ghost atoms -- trc_set_elements) and an
    !! element-mismatch refusal on load, alongside the existing charge one.
+   !! 3: added at_ncore(natm) (an effective core potential's core electron
+   !! count per atom, 0 with none) and an ECP-mismatch refusal on load.
+   !! Versions 1 and 2 are still read -- MODULE HEADER's "OLDER VERSIONS".
    integer, parameter :: N_SCALARS = 8   !! energy, e_nuc, e_one, e_two, e_xc, e_pcm, pcm_qtotal, nelec_grid
 
    ! The molecule is read from the same xyz the original run read, through
@@ -69,7 +83,7 @@ contains
    ! `msg` is empty on success.
    !
    subroutine trc_scf_save(path, b, at_z, at_r, charge, mult, nalpha, nbeta, functional, &
-                           pcm_model, pcm_eps, res, msg)
+                           pcm_model, pcm_eps, res, msg, at_ncore)
       character(len=*), intent(in) :: path
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: at_z(:), at_r(:, :)
@@ -78,9 +92,13 @@ contains
       real(dp), intent(in) :: pcm_eps
       type(trc_scf_result_t), intent(in) :: res
       character(len=*), intent(out) :: msg
+      integer, intent(in), optional :: at_ncore(:)
+      !! Core electrons an ECP replaced, per atom; absent is every-atom-zero
+      !! (no ECP), same as every caller before phase 3.
       integer :: u, ios, n
       character(len=16) :: fname
       character(len=8) :: pname
+      integer(int32), allocatable :: f_ncore(:)
 
       msg = ""
       if (.not. (allocated(res%cmo) .and. allocated(res%eps) .and. allocated(res%dmat))) then
@@ -106,6 +124,10 @@ contains
          real(res%e_one, real64), real(res%e_two, real64), real(res%e_xc, real64), &
          real(res%e_pcm, real64), real(res%pcm_qtotal, real64), real(res%nelec_grid, real64)
       if (ios == 0) write (u, iostat=ios) real(at_z, real64), real(at_r, real64), int(b%at_elem, int32)
+      allocate (f_ncore(size(at_z)))
+      f_ncore = 0_int32
+      if (present(at_ncore)) f_ncore = int(at_ncore, int32)
+      if (ios == 0) write (u, iostat=ios) f_ncore
       if (ios == 0) write (u, iostat=ios) int(b%sh_l, int32), int(b%sh_np, int32), &
          real(b%sh_e, real64), real(b%sh_c, real64), real(b%sh_r, real64)
       if (ios == 0) write (u, iostat=ios) real(res%eps, real64)
@@ -122,7 +144,7 @@ contains
    ! `msg` says why and `res` is untouched.
    !
    subroutine trc_scf_load(path, b, at_z, at_r, charge, mult, nspin, functional, &
-                           pcm_model, pcm_eps, res, msg)
+                           pcm_model, pcm_eps, res, msg, at_ncore)
       character(len=*), intent(in) :: path
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: at_z(:), at_r(:, :)
@@ -131,6 +153,11 @@ contains
       real(dp), intent(in) :: pcm_eps
       type(trc_scf_result_t), intent(inout) :: res
       character(len=*), intent(out) :: msg
+      integer, intent(in), optional :: at_ncore(:)
+      !! This run's own per-atom core-electron count (0 with no ECP);
+      !! absent is every-atom-zero, same as every caller before phase 3.
+      !! Compared against the file's own (version 3 only -- see MODULE
+      !! HEADER's "OLDER VERSIONS").
 
       character(len=8) :: magic_in, f_pname
       character(len=16) :: f_fname
@@ -139,7 +166,8 @@ contains
       real(real64) :: f_pcm_eps
       real(real64) :: sc(N_SCALARS)
       real(real64), allocatable :: f_z(:), f_r(:, :), f_e(:, :), f_c(:, :), f_sr(:, :)
-      integer(int32), allocatable :: f_l(:), f_np(:), f_elem(:)
+      integer(int32), allocatable :: f_l(:), f_np(:), f_elem(:), f_ncore(:)
+      integer, allocatable :: want_ncore(:)
       real(dp), allocatable :: eps(:, :), cmo(:, :, :), dmat(:, :, :)
       integer :: u, ios, n, natm
       logical :: there
@@ -161,9 +189,9 @@ contains
          call refuse(u, path, msg, trim(path)//" is not a terco SCF file")
          return
       end if
-      if (ver /= VERSION) then
+      if (ver < 1 .or. ver > VERSION) then
          call refuse(u, path, msg, trim(path)//" is format version "//itoa(int(ver))//", this build reads "// &
-                     itoa(int(VERSION)))
+                     "1.."//itoa(int(VERSION)))
          return
       end if
       read (u, iostat=ios) f_natm, f_nshell, f_maxnp, f_nao, f_n, f_sph, f_order, f_nspin, &
@@ -216,8 +244,13 @@ contains
          return
       end if
 
-      allocate (f_z(natm), f_r(3, natm), f_elem(natm))
-      read (u, iostat=ios) f_z, f_r, f_elem
+      allocate (f_z(natm), f_r(3, natm))
+      if (ver >= 2) then
+         allocate (f_elem(natm))
+         read (u, iostat=ios) f_z, f_r, f_elem
+      else
+         read (u, iostat=ios) f_z, f_r
+      end if
       if (ios /= 0) then
          call refuse(u, path, msg, trim(path)//" is truncated")
          return
@@ -226,14 +259,46 @@ contains
          call refuse(u, path, msg, "its atoms are different charges, or in a different order")
          return
       end if
-      if (any(int(f_elem) /= b%at_elem)) then
-         call refuse(u, path, msg, "its atoms are different elements (a different ghost "// &
-                     "placement, trc_set_elements), or in a different order")
-         return
+      ! A version 1 file predates ghost atoms (trc_set_elements): nothing
+      ! to compare `b%at_elem` against, so this check is skipped rather
+      ! than refused -- the charge check above already matches `at_z`,
+      ! which is what a ghost-free run's elements default from anyway.
+      if (ver >= 2) then
+         if (any(int(f_elem) /= b%at_elem)) then
+            call refuse(u, path, msg, "its atoms are different elements (a different ghost "// &
+                        "placement, trc_set_elements), or in a different order")
+            return
+         end if
       end if
       if (any(abs(f_r - at_r) > TOL_POS)) then
          call refuse(u, path, msg, "its atoms are at different positions (largest difference "// &
                      rtoa(maxval(abs(f_r - at_r)))//" bohr)")
+         return
+      end if
+
+      allocate (want_ncore(natm))
+      want_ncore = 0
+      if (present(at_ncore)) want_ncore = at_ncore
+      if (ver >= 3) then
+         allocate (f_ncore(natm))
+         read (u, iostat=ios) f_ncore
+         if (ios /= 0) then
+            call refuse(u, path, msg, trim(path)//" is truncated")
+            return
+         end if
+         if (any(int(f_ncore) /= want_ncore)) then
+            call refuse(u, path, msg, "it was made with a different effective core potential "// &
+                        "(core electron count per atom does not match)")
+            return
+         end if
+      else if (any(want_ncore /= 0)) then
+         ! A version 1 or 2 file predates ECP support outright: it cannot
+         ! say whether its own orbitals were built with one, so loading it
+         ! into a run that itself has an ECP attached is refused rather
+         ! than silently assumed ECP-free.
+         call refuse(u, path, msg, "it is format version "//itoa(int(ver))//", which predates ECP "// &
+                     "support, and this run has an effective core potential attached -- regenerate "// &
+                     "it with --save-scf")
          return
       end if
 

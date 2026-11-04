@@ -194,10 +194,12 @@ module trc_capi
    use trc_scf_settings, only: scf_settings_spin_rule, scf_settings_eri_thresh_env
    use trc_scf_df, only: df_jk_t
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
+   use trc_ecp_types, only: trc_ecp_t
+   use trc_ecp_json, only: trc_ecp_from_json
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
    use trc_minao, only: trc_minao_build
-   use trc_error, only: error_t, ERROR_IO
+   use trc_error, only: error_t, ERROR_IO, ERROR_VALIDATION
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, xc_is_double_hybrid, &
                                 XC_AVAILABLE_FUNCTIONALS, XC_FAMILY_MGGA
    use trc_tables, only: TRC_ERI_LMAX => LMAX
@@ -245,7 +247,8 @@ module trc_capi
    ! the C symbols are the ABI and are unchanged.
    public :: capi_fock, trc_fock_many, trc_fock_nosym
    public :: trc_create, trc_destroy, trc_set_molecule, trc_set_charge, trc_set_basis_libcint, trc_set_basis_arrays, &
-             trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_method, trc_set_nlc_grid, &
+             trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_ecp_json, &
+             trc_set_method, trc_set_nlc_grid, &
              trc_set_unrestricted, trc_set_level_shift, &
              trc_set_convergence, trc_set_scf_accel, trc_set_soscf, &
              trc_set_lindep, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
@@ -327,9 +330,10 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 17
-   !! trc_run_gradient accepts a PCM reference (C-PCM/IEF-PCM) instead of
-   !! refusing it; trc_run_hessian still refuses PCM. Additive.
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 18
+   !! 18: trc_set_ecp_json, a new entry point (an explicit effective core
+   !! potential, overriding auto-attach from the orbital basis file's own
+   !! ecp_potentials). Additive.
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -379,6 +383,12 @@ module trc_capi
       ! molecule
       integer :: natm = 0, charge = 0, multiplicity = 1
       real(dp), allocatable :: at_z(:), at_r(:, :)
+      real(dp), allocatable :: at_z_bare(:)
+      !! trc_set_molecule's own z(i), untouched afterwards -- what `ecp`
+      !! attach (`basis_json`) always re-derives `at_z` FROM (at_z_bare -
+      !! at_ncore), rather than reducing `at_z` cumulatively, so attaching
+      !! (or re-attaching, on a second trc_set_basis_json call) an ECP is
+      !! idempotent.
       integer, allocatable :: elements(:)
       !! Element per atom (1..118), trc_set_elements's own array -- defaults
       !! to nint(at_z) (trc_set_molecule resets it there). Drives JSON basis
@@ -485,6 +495,25 @@ module trc_capi
       real(dp) :: hess_step = 0.005_dp
       real(dp), allocatable :: hess(:, :)
       logical :: hess_ok = .false.
+      ! The effective core potential attached to the orbital basis: either
+      ! auto-attached from that basis's own JSON (`ecp_potentials`) when
+      ! `basis_json` loads it, or from `ecp_path` when a caller set one
+      ! explicitly (trc_set_ecp_json) -- the explicit path always wins.
+      ! `ecp%has_ecp` is false, and `ecp` otherwise default-initialised,
+      ! for a molecule with no ECP; `cx%at_z` is reduced by `ecp%at_ncore`
+      ! per atom at attach time (basis_json), so `at_z` is what every
+      ! downstream nuclear-charge/electron-count site already reads
+      ! (nuclear_repulsion, trc_1e's V_ne, trc_sad's "want", and the three
+      ! nelec = nint(sum(at_z)) - charge sites) -- see ECP_DESIGN.md.
+      ! `elements`/`at_elem` stay the BARE atomic number throughout (the
+      ! existing ghost-atom convention already keeps them separate from
+      ! at_z), which is what keeps the DFT grid, Becke/Stratmann radii and
+      ! PCM radii element-correct rather than keyed to the reduced charge.
+      type(trc_ecp_t) :: ecp
+      character(len=1024) :: ecp_path = ""
+      !! trc_set_ecp_json's own explicit override path, set before the
+      !! orbital basis loads (refused after, like trc_set_elements); read
+      !! back by `basis_json` at attach time, then not touched again.
       character(len=256) :: message = ""
    end type context_box
 
@@ -1708,6 +1737,7 @@ contains
       if (cx%have_basis) call cx%bb%b%release()
       if (cx%have_aux) call cx%ab%b%release()
       if (cx%have_jkfit) call cx%jb%b%release()
+      call cx%ecp%release()
       deallocate (cx)
       status = TRC_OK
    end function trc_destroy
@@ -1771,6 +1801,23 @@ contains
       end if
    end function elements_refusal
 
+   pure function ecp_guess_refusal(cx) result(why)
+      !! What trc_run_scf refuses about `cx%guess_kind` over an ECP basis,
+      !! or an empty string if there is nothing to refuse -- MINAO's cross-
+      !! basis projection and SAP's free-atom potentials both have fixed
+      !! tables keyed on the bare element (H-Kr/H-Rn), not the ECP-reduced
+      !! valence charge; SAD/SADQ/GWH/CORE all read `cx%at_z` (already
+      !! reduced) and stay available.
+      type(context_box), intent(in) :: cx
+      character(len=:), allocatable :: why
+      why = ""
+      if (.not. cx%ecp%has_ecp) return
+      if (cx%guess_kind == TRC_GUESS_MINAO .or. cx%guess_kind == TRC_GUESS_SAP) then
+         why = "the MINAO/SAP guess is not supported over an ECP basis (their free-atom "// &
+               "tables assume the bare nuclear charge); use SAD, SADQ, GWH or CORE instead"
+      end if
+   end function ecp_guess_refusal
+
    subroutine invalidate_runs(cx)
       !! A setting the results depended on changed.
       type(context_box), intent(inout) :: cx
@@ -1812,7 +1859,8 @@ contains
       end if
       if (allocated(cx%at_z)) deallocate (cx%at_z, cx%at_r)
       if (allocated(cx%elements)) deallocate (cx%elements)
-      allocate (cx%at_z(natm), cx%at_r(3, natm), cx%elements(natm))
+      if (allocated(cx%at_z_bare)) deallocate (cx%at_z_bare)
+      allocate (cx%at_z(natm), cx%at_r(3, natm), cx%elements(natm), cx%at_z_bare(natm))
       do i = 1, natm
          cx%at_z(i) = real(z(i), dp)
          cx%at_r(:, i) = real(xyz(3*i - 2:3*i), dp)
@@ -1820,10 +1868,17 @@ contains
       ! Back-compatible default: every atom is its own element, i.e. no
       ! ghosts. A caller wanting one calls trc_set_elements next.
       cx%elements = nint(cx%at_z)
+      ! The BARE charge every caller hands in (ECP_DESIGN.md's DECIDED
+      ! contract: a caller always passes the real atomic number, never the
+      ! ECP-reduced one): `ecp` attach re-derives `at_z` from this, below,
+      ! never from whatever `at_z` already holds.
+      cx%at_z_bare = cx%at_z
       cx%natm = int(natm)
       cx%charge = int(charge)
       cx%multiplicity = int(multiplicity)
       cx%have_mol = .true.
+      call cx%ecp%release()
+      cx%ecp_path = ""
       call invalidate_runs(cx)
       if (cx%df_fit_ok) call cx%dfjk%release()
       cx%df_fit_ok = .false.
@@ -2201,7 +2256,7 @@ contains
       type(error_t) :: err
       character(len=1024) :: fpath
       integer :: i
-      logical :: force_cart_this
+      logical :: force_cart_this, allow_ecp
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -2215,6 +2270,21 @@ contains
          if (path(i) == c_null_char) exit
          fpath(i:i) = path(i)
       end do
+      ! The ECP attach (auto from this same file's own ecp_potentials, or
+      ! from trc_set_ecp_json's explicit override) only for the orbital
+      ! basis -- never for an auxiliary/jkfit basis (ECP_DESIGN.md's
+      ! DECIDED rule 2). Before trc_basis_from_json: it reduces cx%at_z,
+      ! which that call reads as its own `charges` override, and decides
+      ! `allow_ecp`, which that call reads to admit a valence-only element.
+      allow_ecp = .false.
+      if (.not. aux) then
+         call attach_ecp(cx, fpath, allow_ecp, err)
+         if (err%has_error()) then
+            cx%message = err%get_message()
+            status = TRC_ERR_BADARG
+            return
+         end if
+      end if
       ! The orbital basis (aux = .false.) follows its own file's tag
       ! unless `force_cartesian` was set (trc_set_force_cartesian). The
       ! auxiliary/fitting basis follows the ORBITAL basis's convention
@@ -2229,7 +2299,8 @@ contains
       force_cart_this = cx%opts%force_cartesian
       if (aux .and. cx%have_basis) force_cart_this = force_cart_this .or. .not. cx%bb%b%spherical
       call trc_basis_from_json(trim(fpath), cx%natm, cx%elements, cx%at_r, b, err, &
-                               force_cart=force_cart_this, overrides=trc_basis_json_overrides(charges=cx%at_z))
+                               force_cart=force_cart_this, &
+                               overrides=trc_basis_json_overrides(charges=cx%at_z, allow_ecp=allow_ecp))
       if (err%has_error()) then
          cx%message = err%get_message()
          status = TRC_ERR_BADARG
@@ -2297,6 +2368,114 @@ contains
       integer(c_int) :: status
       status = basis_json(handle, .true., path)
    end function trc_set_aux_json
+
+   function trc_set_ecp_json(handle, path) result(status) bind(c, name="trc_set_ecp_json")
+      !! An explicit effective core potential, a MolSSI BSE JSON file's own
+      !! `ecp_potentials`/`ecp_electrons` -- overriding auto-attach from the
+      !! orbital basis file itself (ECP_DESIGN.md's DECIDED rule 2: a basis
+      !! file that carries its own ecp_potentials attaches automatically
+      !! when trc_set_basis_json loads it; this picks a DIFFERENT file
+      !! instead). Call this BEFORE trc_set_basis_json: the attach itself
+      !! happens there, once the molecule's elements are known, so a basis
+      !! already loaded is refused (TRC_ERR_STATE) rather than left stale.
+      !! A caller still passes the BARE atomic number to trc_set_molecule
+      !! either way -- terco reduces it internally (at_z -= ncore per atom)
+      !! and lowers the electron count by the same sum; nothing about
+      !! trc_set_molecule or trc_set_charge changes.
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(in) :: path(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: i
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_mol) then
+         call refuse(cx, "trc_set_ecp_json: set the molecule first; the file is read for its elements")
+         return
+      end if
+      if (cx%have_basis) then
+         call refuse(cx, "trc_set_ecp_json: call this before trc_set_basis_json -- the ECP attaches "// &
+                     "when the orbital basis loads, not when this is called")
+         return
+      end if
+      cx%ecp_path = ""
+      do i = 1, len(cx%ecp_path)
+         if (path(i) == c_null_char) exit
+         cx%ecp_path(i:i) = path(i)
+      end do
+      status = TRC_OK
+   end function trc_set_ecp_json
+
+   subroutine attach_ecp(cx, fpath, allow_ecp, error)
+      !! basis_json's own ECP attach, aux = .false. only (never for an
+      !! auxiliary/jkfit/MINAO basis -- ECP_DESIGN.md's DECIDED rule 2):
+      !! an explicit trc_set_ecp_json path (`cx%ecp_path`) overrides
+      !! auto-attach from `fpath` itself. trc_ecp_from_json is harmless to
+      !! call on a file with no ecp_potentials for any of `cx%elements` --
+      !! it comes back with `has_ecp = .false.` and nothing else here fires.
+      !!
+      !! `cx%at_z` is re-derived from `cx%at_z_bare` here, never reduced
+      !! cumulatively (`context_box%at_z_bare`'s own header), so a second
+      !! trc_set_basis_json call (a new ECP, or none) attaches cleanly
+      !! rather than double-subtracting a core count already taken off.
+      type(context_box), intent(inout) :: cx
+      character(len=*), intent(in) :: fpath
+      logical, intent(out) :: allow_ecp
+      !! Passed on to trc_basis_from_json's own overrides: true admits an
+      !! element whose shells are valence-only (the file also carries
+      !! ecp_potentials for it) instead of refusing it as the original bug
+      !! did (trc_basis_overrides_t's own header). Left false when nothing
+      !! here actually attaches an ECP, so a file that carries
+      !! ecp_potentials with NO attach reached (an explicit path that
+      !! matches none of this molecule's elements, say) still trips that
+      !! refusal rather than silently running every electron in a
+      !! valence-only basis.
+      type(error_t), intent(inout) :: error
+      type(trc_ecp_t) :: ecp_new
+      character(len=1024) :: ecp_source
+      integer :: ia
+
+      allow_ecp = .false.
+      ecp_source = fpath
+      if (len_trim(cx%ecp_path) > 0) ecp_source = cx%ecp_path
+      call trc_ecp_from_json(trim(ecp_source), cx%natm, cx%elements, ecp_new, error)
+      if (error%has_error()) return
+      cx%at_z = cx%at_z_bare
+      if (.not. ecp_new%has_ecp) then
+         call cx%ecp%release()
+         return
+      end if
+      do ia = 1, cx%natm
+         if (ecp_new%at_ncore(ia) <= 0) cycle
+         if (cx%at_z_bare(ia) - real(ecp_new%at_ncore(ia), dp) < 1.0_dp) then
+            call error%set(ERROR_VALIDATION, "trc_set_basis_json: atom "//trim(itoa(ia))// &
+                           " has an ECP replacing "//trim(itoa(ecp_new%at_ncore(ia)))// &
+                           " of its "//trim(itoa(nint(cx%at_z_bare(ia))))// &
+                           " electrons, leaving fewer than one nuclear charge")
+            return
+         end if
+         cx%at_z(ia) = cx%at_z_bare(ia) - real(ecp_new%at_ncore(ia), dp)
+      end do
+      call cx%ecp%release()
+      cx%ecp = ecp_new
+      allow_ecp = .true.
+   end subroutine attach_ecp
+
+   pure function ecp_ncore_array(cx) result(ncore)
+      !! `cx%ecp%at_ncore`, every-atom-zero when there is no ECP (or on an
+      !! atom count mismatch, which should not happen but would otherwise
+      !! be an out-of-bounds read) -- trc_save_scf/trc_load_scf's own
+      !! `at_ncore` argument, trc_scf_file's version-3 field.
+      type(context_box), intent(in) :: cx
+      integer, allocatable :: ncore(:)
+      allocate (ncore(cx%natm))
+      ncore = 0
+      if (cx%ecp%has_ecp) then
+         if (size(cx%ecp%at_ncore) == cx%natm) ncore = cx%ecp%at_ncore
+      end if
+   end function ecp_ncore_array
 
    function trc_set_method(handle, functional, grid_level) result(status) bind(c, name="trc_set_method")
       !! An empty functional name is Hartree-Fock.
@@ -3222,6 +3401,11 @@ contains
          cx%message = "trc_run_scf: "//elements_refusal(cx)
          return
       end if
+      if (len(ecp_guess_refusal(cx)) > 0) then
+         status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_run_scf: "//ecp_guess_refusal(cx)
+         return
+      end if
       ! `n` is the SCF's own space (nao_sph if spherical); `nc` is always
       ! the Cartesian count, for the one place below (SAP) that still
       ! builds something in Cartesian space before handing it to the SCF.
@@ -3320,7 +3504,7 @@ contains
          ! one thing SAD never looks at. On a neutral molecule the two are
          ! the same density; see trc_sad. Split out, as minao_guess_build
          ! is, to keep this dispatch off trc_run_scf's own line count.
-         call sad_guess_build(cx%bb%b, nelec, nspin, cx%guess_kind == TRC_GUESS_SADQ, talk, cx%la, dg, err)
+         call sad_guess_build(cx, nelec, nspin, cx%guess_kind == TRC_GUESS_SADQ, talk, dg, err)
          if (err%has_error()) then
             cx%message = err%get_message()
             if (collective) call comm%finalize()
@@ -3436,34 +3620,34 @@ contains
       if (use_projected) then
          if (collective) then
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, cmo_project=cx%bb%cmo)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, cmo_project=cx%bb%cmo, ecp=cx%ecp)
          else
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, cmo_project=cx%bb%cmo)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, cmo_project=cx%bb%cmo, ecp=cx%ecp)
          end if
       else if (allocated(dg)) then
          if (collective) then
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, comm=comm, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, ecp=cx%ecp)
          else
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, ecp=cx%ecp)
          end if
       else if (allocated(hsap)) then
          if (collective) then
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, hguess=hsap, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, ecp=cx%ecp)
          else
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, hguess=hsap, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, ecp=cx%ecp)
          end if
       else
          if (collective) then
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, comm=comm, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, ecp=cx%ecp)
          else
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la, scf_dfjk=cx%dfjk, grid_cache=cx%kgrid, &
-                             pair_eri_cache=cx%peri)
+                             pair_eri_cache=cx%peri, ecp=cx%ecp)
          end if
       end if
       if (collective) call comm%finalize()
@@ -3519,21 +3703,25 @@ contains
    ! TRC_GUESS_SAD/SADQ's density, both spins -- split out of trc_run_scf's
    ! own dispatch for the same reason as minao_guess_build.
    !
-   subroutine sad_guess_build(b, nelec, nspin, sadq, talk, la, dg, err)
-      type(trc_basis_t), intent(in) :: b
+   subroutine sad_guess_build(cx, nelec, nspin, sadq, talk, dg, err)
+      !! `cx%bb%b`/`cx%la`/`cx%ecp` travel together here (docs/CODE_STRUCTURE.md's
+      !! "bundle the arguments that travel together"): all three are the
+      !! calling context's own, so this takes `cx` itself rather than one
+      !! dummy per field -- `la`/`ecp` joined `b` this way when phase 3
+      !! added the ECP-aware free atom (this module's own header).
+      type(context_box), intent(inout) :: cx
       integer, intent(in) :: nelec, nspin
       logical, intent(in) :: sadq   !! TRC_GUESS_SADQ rather than plain SAD
       logical, intent(in) :: talk
-      type(trc_linalg_t), intent(inout) :: la
       real(dp), allocatable, intent(out) :: dg(:, :, :)
       type(error_t), intent(inout) :: err
       real(dp), allocatable :: dsad(:, :)
       integer :: n
-      n = merge(b%nao_sph, b%nao, b%spherical)   ! this SCF's own space, scf_space_nao's rule
+      n = merge(cx%bb%b%nao_sph, cx%bb%b%nao, cx%bb%b%spherical)   ! this SCF's own space, scf_space_nao's rule
       if (sadq) then
-         call trc_sadq_build(b, nelec, dsad, err, verbose=talk, la=la)
+         call trc_sadq_build(cx%bb%b, nelec, dsad, err, verbose=talk, la=cx%la, ecp=cx%ecp)
       else
-         call trc_sad_build(b, dsad, err, verbose=talk, la=la)
+         call trc_sad_build(cx%bb%b, dsad, err, verbose=talk, la=cx%la, ecp=cx%ecp)
       end if
       if (err%has_error()) return
       allocate (dg(n, n, nspin))
@@ -3618,6 +3806,21 @@ contains
       !! out -- test/check_grad_df_refusals.F90 checks that distinction.
       refusal = ""
       refusal_status = TRC_ERR_UNSUPPORTED
+      ! Phase 4 (ECP_DESIGN.md's PR breakdown), not this one: U_ECP's own
+      ! derivative (the energy kernel at l +/- 1) is not ported yet, so an
+      ! ECP atom's analytic gradient would silently miss that term rather
+      ! than include it. Checked first and unconditionally -- before the
+      ! functional/RI-MP2 checks below, which do not apply here -- so
+      ! trc_run_hessian (which calls this up front, its own header) and
+      ! --opt/--opt-freq/a FD Hessian (all gradient-driven) refuse clean
+      ! rather than running a displacement loop that fails at the first
+      ! gradient anyway.
+      if (cx%ecp%has_ecp) then
+         refusal = "the analytic gradient has no effective-core-potential term yet "// &
+                   "(U_ECP's derivative is not implemented); this applies to --grad, "// &
+                   "--hessian/--freq and --opt on a molecule with an ECP attached"
+         return
+      end if
       have_func = len_trim(cx%opts%functional) > 0
       if (have_func) then
          ! `cx%opts%functional` only ever holds a name trc_set_method/
@@ -4723,8 +4926,20 @@ contains
                       "auxiliary ceiling "//trim(itoa(DF_LMAX_AUX))//" (TERCO_DF_LMAX + 1)"
          return
       end if
-      nfrozen = rimp2_frozen_count(cx)
       status = TRC_ERR_BADARG
+      if (cx%nfrozen < 0 .and. cx%ecp%has_ecp) then
+         ! The by-element count (core_orbitals) is wrong on an ECP atom:
+         ! it would count core orbitals by the BARE element, but the basis
+         ! already has no shells for the ECP's own replaced core, and
+         ! cx%at_z is the REDUCED charge -- ECP_DESIGN.md's DECIDED rule 3
+         ! (mqc's own refusal): an explicit --frozen/trc_set_rimp2 is
+         ! honoured, the automatic per-element count is not.
+         cx%message = "trc_run_rimp2: frozen_core is automatic (by element) and this molecule has "// &
+                      "an effective core potential attached; give an explicit frozen-core count "// &
+                      "(--frozen/trc_set_rimp2) instead"
+         return
+      end if
+      nfrozen = rimp2_frozen_count(cx)
       if (nfrozen >= cx%nalpha .or. nfrozen >= cx%nbeta) then
          cx%message = "trc_run_rimp2: every occupied orbital is frozen in at least one spin channel"
          return
@@ -4873,7 +5088,7 @@ contains
       end if
       call trc_scf_save(c_path(path), cx%bb%b, cx%at_z, cx%at_r, cx%charge, cx%multiplicity, &
                         cx%nalpha, cx%nbeta, cx%opts%functional, cx%opts%pcm_model, cx%opts%pcm_eps, &
-                        cx%res, msg)
+                        cx%res, msg, at_ncore=ecp_ncore_array(cx))
       cx%message = msg
       status = merge(TRC_OK, TRC_ERR_BADARG, len_trim(msg) == 0)
    end function trc_save_scf
@@ -4923,7 +5138,8 @@ contains
       call scf_settings_spin_rule(nalpha, nbeta, cx%opts%unrestricted, cx%opts%frac_occ, cx%opts%nelec_frac, nspin, nocc)
       status = TRC_ERR_BADARG
       call trc_scf_load(c_path(path), cx%bb%b, cx%at_z, cx%at_r, cx%charge, cx%multiplicity, nspin, &
-                        cx%opts%functional, cx%opts%pcm_model, cx%opts%pcm_eps, cx%res, msg)
+                        cx%opts%functional, cx%opts%pcm_model, cx%opts%pcm_eps, cx%res, msg, &
+                        at_ncore=ecp_ncore_array(cx))
       cx%message = msg
       if (len_trim(msg) > 0) return
       n = scf_space_nao(cx%bb)
@@ -5404,8 +5620,9 @@ contains
       !! (1977)), with the free atoms H-Kr's fixed wB97X/def2-TZVP recipe.
       !! Works for RHF/UHF/RKS/UKS and with C-PCM/IEF-PCM (the charge
       !! analysis never touches the solvent operator, only the converged
-      !! density). TRC_ERR_BADARG for an element outside H-Kr (terco has
-      !! no effective-core-potential support to refuse separately);
+      !! density). TRC_ERR_BADARG for an element outside H-Kr, or for an
+      !! effective core potential attached (refused separately -- the
+      !! free-atom reference is all-electron, state_hirshfeld_charges);
       !! TRC_ERR_STATE when the free-atom data file cannot be read (set
       !! TRC_HIRSHFELD_DATA).
       type(c_ptr), value :: handle
@@ -5445,6 +5662,19 @@ contains
 
       real(dp), allocatable :: d_total_sph(:, :), d_total_cart(:, :)
       integer :: n, ns
+
+      ! The free-atom reference (trc_hirshfeld_populations' own proatom
+      ! table) is all-electron at the atom's bare Z; a molecule with an
+      ! ECP attached has a valence-only basis and a reduced charge, so the
+      ! stockholder partition's electron-count budget would not match --
+      ! refused rather than silently wrong. Covers trc_hirshfeld_charges
+      ! and every one of trc_fukui_hirshfeld's three states, both of which
+      ! call this.
+      if (cx%ecp%has_ecp) then
+         call error%set(ERROR_VALIDATION, "hirshfeld charges: not supported with an effective "// &
+                        "core potential attached (the free-atom reference is all-electron)")
+         return
+      end if
 
       n = scf_space_nao(cx%bb)
       ns = cx%res%nspin
