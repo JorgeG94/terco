@@ -69,10 +69,15 @@ BUILD_DIR = Path(os.environ.get("TERCO_PYSCF_REF_BUILD", str(ROOT / "build-cpu")
 #: point at a different one (e.g. the LMAX=3 build, for the f/g cases).
 
 _SYMBOL = {1: 'H', 6: 'C', 7: 'N', 8: 'O', 9: 'F', 10: 'Ne',
-           14: 'Si', 15: 'P', 16: 'S', 17: 'Cl',
-           50: 'Sn', 53: 'I', 54: 'Xe', 55: 'Cs'}
-           #: Sn/I/Xe/Cs added for gen_ecp_ints -- the first cases here
-           #: whose elements carry an effective core potential.
+           14: 'Si', 15: 'P', 16: 'S', 17: 'Cl'}
+
+#: gen_ecp_ints's own extension of _SYMBOL (Sn/I/Xe/Cs, the first elements
+#: here that carry an effective core potential) -- kept SEPARATE from
+#: _SYMBOL itself, which most other cases also reach: extending the shared
+#: dict in place would change its parsed node and so restale every one of
+#: their references (refhash.py's own closure, nothing to do with whether
+#: their actual numbers moved). gen_ecp_ints is the only reader.
+_SYMBOL_ECP = {**_SYMBOL, 50: 'Sn', 53: 'I', 54: 'Xe', 55: 'Cs'}
 
 
 # =========================================================================
@@ -568,10 +573,10 @@ def gen_ecp_ints(case):
     u_terco = r.mat(nao)
     r.close()
 
-    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    elements = {_SYMBOL_ECP[int(z)]: int(z) for z in at_z}
     basis_arg = bse_json_basis(HERE.parent / "basis_sets" / "def2-svp.json", elements)
     ecp_arg = bse_json_ecp(HERE.parent / "basis_sets" / "def2-svp.json", elements)
-    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    atoms = [(_SYMBOL_ECP[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
     mol = gto.M(atom=atoms, basis=basis_arg, ecp=ecp_arg, unit='Bohr', cart=True,
                 spin=None, charge=0, verbose=0)
     if mol.nao_nr() != nao:
