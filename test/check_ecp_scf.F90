@@ -38,7 +38,7 @@ module check_ecp_scf_suite
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
-                               trc_set_convergence, trc_set_guess, trc_run_scf, trc_run_gradient, &
+                               trc_set_convergence, trc_set_guess, trc_set_method, trc_run_scf, trc_run_gradient, &
                                trc_hirshfeld_charges, trc_save_scf, trc_load_scf, &
                                trc_energy, trc_iterations, &
                                TRC_OK, TRC_ERR_UNSUPPORTED, TRC_GUESS_MINAO, TRC_GUESS_SAP
@@ -55,6 +55,10 @@ module check_ecp_scf_suite
    !! valence electrons -- odd, a doublet. No geometry at all, so there is
    !! nothing for terco and mqc's own number to disagree about
    !! independently. Measured agreement: 1.1e-13.
+   real(dp), parameter :: MQC_PBE = -298.278875556201_dp
+   !! RKS/PBE on the SAME HI geometry as MQC_HI. Measured agreement: 5.2e-6.
+   real(dp), parameter :: MQC_B3LYP = -298.392681495465_dp
+   !! RKS/B3LYP on the SAME HI geometry. Measured agreement: 3.5e-6.
 
 contains
 
@@ -63,6 +67,8 @@ contains
       testsuite = [ &
                   new_unittest("RHF HI/def2-SVP (auto-attached ECP) vs mqc", test_hi), &
                   new_unittest("UHF I atom/def2-SVP (ECP, doublet) vs mqc", test_i_atom), &
+                  new_unittest("RKS/PBE HI/def2-SVP (ECP) vs mqc", test_pbe), &
+                  new_unittest("RKS/B3LYP HI/def2-SVP (ECP) vs mqc", test_b3lyp), &
                   new_unittest("MINAO guess is refused with an ECP attached", test_minao_refused), &
                   new_unittest("SAP guess is refused with an ECP attached", test_sap_refused), &
                   new_unittest("Hirshfeld charges are refused with an ECP attached", test_hirshfeld_refused), &
@@ -141,6 +147,49 @@ contains
       write (msg, '(a,es10.2)') "ecp_scf i_atom vs mqc, |dE| = ", abs(real(e_terco, dp) - MQC_I_ATOM)
       call check(error, abs(real(e_terco, dp) - MQC_I_ATOM) < 1.0e-8_dp, trim(msg))
    end subroutine test_i_atom
+
+   subroutine test_pbe(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_rks_case(error, "pbe", MQC_PBE)
+   end subroutine test_pbe
+
+   subroutine test_b3lyp(error)
+      type(error_type), allocatable, intent(out) :: error
+      call test_rks_case(error, "b3lyp", MQC_B3LYP)
+   end subroutine test_b3lyp
+
+   !
+   ! RKS/HI (make_hi's own geometry) at the given functional, vs mqc's own
+   ! number -- the same auto-attached ECP H_core the RHF case uses, now
+   ! through the XC path too (XC itself never touches U_ECP, so this is
+   ! really a check that the two compose correctly).
+   !
+   subroutine test_rks_case(error, func, mqc)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=*), intent(in) :: func
+      real(dp), intent(in) :: mqc
+      type(c_ptr) :: h
+      integer(c_int) :: rc, iters
+      real(c_double) :: e_terco
+      character(len=160) :: msg
+
+      call make_hi(h)
+      rc = trc_set_method(h, func//c_null_char, 3_c_int)
+      rc = trc_set_convergence(h, 1.0e-11_c_double, 1.0e-8_c_double, 150_c_int, 10_c_int)
+      rc = trc_run_scf(h)
+      call check(error, rc, TRC_OK, "ecp_scf "//func//": trc_run_scf must converge")
+      if (allocated(error)) then
+         rc = trc_destroy(h); return
+      end if
+      rc = trc_iterations(h, iters)
+      rc = trc_energy(h, e_terco)
+      rc = trc_destroy(h)
+
+      print '(a,a,a,f20.12,a,i0,a,es10.2)', "check_ecp_scf: E(HI,RKS/", func, ") terco ", real(e_terco, dp), &
+         "  iter ", iters, "  (vs mqc) dE = ", abs(real(e_terco, dp) - mqc)
+      write (msg, '(a,a,a,es10.2)') "ecp_scf ", func, " vs mqc, |dE| = ", abs(real(e_terco, dp) - mqc)
+      call check(error, abs(real(e_terco, dp) - mqc) < 1.0e-5_dp, trim(msg))
+   end subroutine test_rks_case
 
    subroutine test_minao_refused(error)
       type(error_type), allocatable, intent(out) :: error
