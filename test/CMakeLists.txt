@@ -123,6 +123,12 @@ target_include_directories(bench_mdj PRIVATE ${CMAKE_BINARY_DIR}/modules)
 terco_add_check(check_si check_si.F90)
 target_link_libraries(check_si PRIVATE test-drive::test-drive)
 
+# The basis reader refuses an element whose basis needs an effective core
+# potential (def2 from Rb on) instead of running it all-electron -- see
+# check_basis_ecp_refused.F90's own header.
+terco_add_check(check_basis_ecp_refused check_basis_ecp_refused.F90 NEEDS_BASIS)
+target_link_libraries(check_basis_ecp_refused PRIVATE test-drive::test-drive)
+
 # The step-timing tables' layout: work/rate columns only where something
 # counted -- see check_step_table_report.F90's own header.
 terco_add_check(check_step_table_report check_step_table_report.F90)
@@ -2121,3 +2127,17 @@ set_tests_properties(
   terco/check_dft_grad_vs_pyscf_water_wb97xv_ccpvtz_sph
   terco/check_pcm_grad_vs_pyscf_ccpvtz
   PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# TERCO_LONG_TESTS=OFF (the default): every check labelled LONG above is
+# registered DISABLED, so `ctest` lists it as not run instead of spending
+# most of the suite's time on it. Configure with -DTERCO_LONG_TESTS=ON to
+# run them (`ctest -L LONG` for those alone).
+if(NOT TERCO_LONG_TESTS)
+  get_property(_terco_tests DIRECTORY PROPERTY TESTS)
+  foreach(_t IN LISTS _terco_tests)
+    get_test_property(${_t} LABELS _labels)
+    if(_labels AND "LONG" IN_LIST _labels)
+      set_tests_properties(${_t} PROPERTIES DISABLED TRUE)
+    endif()
+  endforeach()
+endif()
