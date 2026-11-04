@@ -59,12 +59,13 @@ module trc_run_input
       integer :: kind
    end type run_input_key_t
 
-   integer, parameter :: NKEYS = 87
+   integer, parameter :: NKEYS = 88
    type(run_input_key_t), parameter :: RUN_INPUT_KEYS(NKEYS) = [ &
       run_input_key_t("molecule", "geometry", "", KIND_PATH), &
       run_input_key_t("molecule", "charge", "chrg", KIND_INT), &
       run_input_key_t("molecule", "unpaired", "uhf", KIND_INT), &
       run_input_key_t("basis", "main", "basis", KIND_FILE_OR_NAME), &
+      run_input_key_t("basis", "ecp", "ecp", KIND_FILE_OR_NAME), &
       run_input_key_t("basis", "auxiliary", "aux", KIND_FILE_OR_NAME), &
       run_input_key_t("basis", "jk_auxiliary", "jkfit", KIND_FILE_OR_NAME), &
       run_input_key_t("basis", "cartesian", "cart", KIND_BOOL), &
