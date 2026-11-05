@@ -637,6 +637,14 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_lowercase PRIVATE test-drive::test-drive)
   unset(_cli_lowercase_probe)
 
+  # The end-of-SCF HOMO/LUMO energies in the CLI's --json, RHF and UHF,
+  # against pyscf -- see check_cli_homo_lumo.F90's own header.
+  set(_cli_homo_lumo_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_homo_lumo_probe.json)
+  terco_add_check(check_cli_homo_lumo check_cli_homo_lumo.F90 NEEDS_BASIS
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_homo_lumo_probe})
+  target_link_libraries(check_cli_homo_lumo PRIVATE test-drive::test-drive)
+  unset(_cli_homo_lumo_probe)
+
   # The TOML input files (docs/INPUT.md): same numbers as the equivalent
   # flags, paths relative to the file, the "input" echo with a flag
   # overriding the file, and every malformed file refused by name -- see

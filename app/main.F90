@@ -1323,6 +1323,7 @@ program trc_main
    call run_api(r, trc_energy_parts(r%h, r%enuc, r%eone, r%etwo, r%exc))
    call run_api(r, trc_converged(r%h, r%conv))
    call run_api(r, trc_iterations(r%h, r%niter))
+   call run_frontier(r, nspin)
    call run_api(r, trc_pcm_energy(r%h, r%epcm, r%qpcm, r%npcm))
    r%eos = 0
    r%ess = 0

@@ -168,6 +168,7 @@ contains
       ! that specifically no longer has to infer it from context.
       call line("TOTAL ENERGY", merge(r%etot_dh, r%etot, r%dh .and. r%conv /= 0))
       call line("SCF ENERGY", r%etot)
+      call frontier_lines(r)
       if (r%rimp2 .and. r%conv /= 0) then
          if (r%dh) then
             call line("PT2 CORRELATION", r%eos + r%ess)
@@ -310,6 +311,23 @@ contains
       call trc_vib_log_table(r%freq_cm1, r%redmass_amu, r%force_const)
       call trc_thermo_log_summary(r%thermo)
    end subroutine run_hessian_summary
+
+   subroutine frontier_lines(r)
+      !! HOMO/LUMO rows of the energy box: one pair for a restricted run,
+      !! an alpha and a beta pair for an unrestricted one.
+      type(run_t), intent(in) :: r
+      character(len=8), parameter :: tag(2) = ["(alpha) ", "(beta)  "]
+      integer :: s
+      do s = 1, r%nspin
+         if (r%nspin == 1) then
+            if (r%has_homo(s)) call line("HOMO", real(r%homo(s), c_double))
+            if (r%has_lumo(s)) call line("LUMO", real(r%lumo(s), c_double))
+         else
+            if (r%has_homo(s)) call line("HOMO "//trim(tag(s)), real(r%homo(s), c_double))
+            if (r%has_lumo(s)) call line("LUMO "//trim(tag(s)), real(r%lumo(s), c_double))
+         end if
+      end do
+   end subroutine frontier_lines
 
    subroutine line(label, e)
       character(len=*), intent(in) :: label
