@@ -36,6 +36,7 @@ module trc_eri
    use pic_timer, only: timer_type
    use pic_profiler, only: profiler_start, profiler_stop
    use trc_binkernel, only: binkernel_fock_bins
+   use trc_bin_tiles, only: bin_tiles_build
    use trc_grad, only: grad_bins
    use trc_rys_grad_kernels, only: RYSG_LMAX
    use trc_mdj, only: trc_mdj_t
@@ -386,6 +387,7 @@ contains
       call tm%start()
 
       call bins_build_pair_quartets(this%bins, this%pairs, this%quartets)
+      call bin_tiles_build(this%quartets%tiles, this%bins, b%nshell)
       this%t_build(4) = tm%get_elapsed_time()
       call tm%start()
 

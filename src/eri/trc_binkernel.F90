@@ -25,6 +25,7 @@ module trc_binkernel
    use trc_cart, only: NCUM, cidx, cnx, cny, cnz, cll, cdir, cdn1, cdn2, cf2, &
                          ncum_of, cart_ncart_of
    use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_sort_by_weight, bins_build_pair_quartets
+   use trc_bin_tiles, only: bin_tiles_requested, bin_tiles_build, bin_tiles_reach, bin_tiles_plan
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
    use trc_rys_select, only: rys_select_init, rys_select_route
@@ -176,6 +177,7 @@ contains
       type(trc_bin_plan_t) :: plan
       real(dp) :: thresh
       integer :: nseg
+      logical :: tiled
 
       thresh = launch%thresh
       ! Order the pairs inside each bin by how much they matter, once, so
@@ -204,9 +206,21 @@ contains
          !$acc                quartets%px, quartets%py, quartets%pz, &
          !$acc                quartets%ax, quartets%ay, quartets%az, &
          !$acc                quartets%abx, quartets%aby, quartets%abz, quartets%n)
+         if (quartets%tiles%built) call bin_tiles_build(quartets%tiles, b, pairs%nbas)
       end if
 
-      call plan%build(b, thresh, quartets%bin_pbase, launch%use_density)
+      ! An exchange-only launch (jfac = 0: the MD J engine forms J) is planned
+      ! on the exchange tiles when the caller built them (trc_bin_tiles):
+      ! the tile pairs whose every quartet the kernels' density screen would
+      ! reject are dropped before launch.
+      tiled = quartets%tiles%built .and. launch%jfac == 0.0_dp .and. launch%kfac /= 0.0_dp &
+              .and. .not. launch%nosym .and. bin_tiles_requested()
+      if (tiled) then
+         call bin_tiles_reach(quartets%tiles, dsh)
+         call bin_tiles_plan(quartets%tiles, plan, b, thresh, quartets%bin_pbase)
+      else
+         call plan%build(b, thresh, quartets%bin_pbase, launch%use_density)
+      end if
       nseg = plan%nseg
       launch%nwork = plan%nwork
       launch%nlaunch = 1
@@ -241,7 +255,8 @@ contains
       ! address rather than a wrong number.
       call plan%sort_by_class(CLASS_RADIX)
 
-      !$acc enter data copyin(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, plan%sOff)
+      !$acc enter data copyin(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
+      !$acc                   plan%sD, plan%sOff)
       ! A counting call only counts: it used to fall through and build the
       ! Fock matrix as well, into the same accumulator the caller's real
       ! build then added to, so TRC_KEPT_STATS doubled the two-electron part.
@@ -252,7 +267,8 @@ contains
       else
          call launch_classes(b, pairs, quartets, launch, plan, dsh, dmat, jmat)
       end if
-      !$acc exit data delete(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, plan%sOff)
+      !$acc exit data delete(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
+      !$acc                  plan%sD, plan%sOff)
       call plan%release()
    end subroutine binkernel_fock_bins
 
@@ -301,7 +317,7 @@ contains
             continue
          else if (rys_select_route(key)) then
             call rys_dispatch(key, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
-                              plan%sPA, plan%sPB, plan%sD, &
+                              plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, &
                               b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
                               launch%jfac, launch%kfac, launch%omega, dsh, pairs%nbas, launch%nao, &
                               pairs%sh_l, pairs%ao_off, &
@@ -311,7 +327,7 @@ contains
                               launch%ndens, dmat, jmat, launch%rank, launch%nranks)
          else
             call pc_dispatch(key, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
-                             plan%sPA, plan%sPB, plan%sD, &
+                             plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, &
                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
                              launch%jfac, launch%kfac, launch%omega, dsh, pairs%nbas, launch%nao, &
                              pairs%sh_l, pairs%ao_off, &

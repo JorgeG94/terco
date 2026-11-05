@@ -61,9 +61,14 @@ PROLOGUE = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
-      !! Primitive base of the bra bin / ket bin, into qp_* below -- the
+      !! Primitive base of the bra / ket pairs, into qp_* below -- the
       !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
       !! that lane iab's primitive k sits next to lane iab+1's.
+      integer,  intent(in)    :: sSA(nseg), sSB(nseg)
+      !! Pairs in the whole bra / ket BIN: the stride of that interleave.
+      !! sA/sNB are the pairs the segment covers, which is the whole bin
+      !! unless the launcher cut the bin into exchange tiles
+      !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
@@ -97,7 +102,7 @@ PROLOGUE = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       integer,  intent(in)    :: nqp
       !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
       !! are what the kernel reads for the bra/ket primitives, at
-      !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
+      !! sPA(seg) + (k-1)*sSA(seg) + iab (bra) or sPB(seg) + (k-1)*sSB(seg)
       !! + icd (ket).
       real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
       real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
@@ -774,7 +779,7 @@ def emit_scalar_driver(name, item):
     invariant for no behavioural gain, since the two are already the same
     text by construction. `scripts/rotaxis/emit_docon.py` -- which has no
     block-form driver to derive from -- calls this directly."""
-    return f"""   subroutine {name}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+    return f"""   subroutine {name}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -800,7 +805,7 @@ def emit_scalar_driver(name, item):
       nr = 0
       if (g1 >= g0) nr = (g1 - g0)/nranks + 1
       do concurrent(i=1:nr)
-         call {item}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+         call {item}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                        npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                        nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                        sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
@@ -813,7 +818,7 @@ def emit_item_signature(name):
     """The item routine's signature: same argument list as the driver plus
     the flat quartet index `gt`, `pure` and `!$acc routine seq` so it inlines
     into its caller (the reason it lives in the same module and file)."""
-    return f"""   pure subroutine {name}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+    return f"""   pure subroutine {name}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -890,7 +895,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
     hrr_body = re.sub(r"\bg\(", "g1(", hrr_body)
 
     txt = f"""
-   subroutine pc{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+   subroutine pc{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -920,14 +925,14 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
       nr = 0
       if (g1 >= g0) nr = (g1 - g0)/nranks + 1
       do concurrent(i=1:nr)
-         call pci{tag}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+         call pci{tag}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                        npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                        nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                        sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
       end do
    end subroutine pc{tag}
 
-   pure subroutine pci{tag}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+   pure subroutine pci{tag}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -1466,7 +1471,7 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
     drv = drv.replace("      integer(int64) :: g0, g1, nr, i\n",
                       "      integer(int64) :: g0, g1, nr, i, it\n      integer :: role\n")
     old = ("      do concurrent(i=1:nr)\n"
-           "         call pcri" + tag + "(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &\n"
+           "         call pcri" + tag + "(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &\n"
            "                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &\n"
            "                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &\n"
            "                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)\n"
@@ -1493,7 +1498,7 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
          role = int(mod((i - 1)/32, {nrole}_int64)) + 1
          it = ((i - 1)/(32*{nrole}))*32 + mod(i - 1, 32_int64) + 1
          if (it <= nr) then
-            call pcri{tag}(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+            call pcri{tag}(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
@@ -1701,7 +1706,7 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     assert prims.count(prims_old) == 1
     prims = prims.replace(prims_old,
                           "            do k1 = 1, nab\n"
-                          "               kp = sPA(seg) + (k1 - 1)*sA(seg) + iab\n"
+                          "               kp = sPA(seg) + (k1 - 1)*sSA(seg) + iab\n"
                           "               zeta = qp_z(kp)\n"
                           "               bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))\n"
                           "               if (bnd*abs(qp_c(sPB(seg) + icd))/qp_z(sPB(seg) + icd) <= pcut) cycle\n")
@@ -1716,7 +1721,7 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     prims = prims.replace("               do kq = offcd + 1, offcd + ncd\n"
                           "                  eta = pp_p(kq)\n",
                           "               do k2 = 1, ncd\n"
-                          "                  kq = sPB(seg) + (k2 - 1)*sNB(seg) + icd\n"
+                          "                  kq = sPB(seg) + (k2 - 1)*sSB(seg) + icd\n"
                           "                  eta = qp_z(kq)\n")
     prims = prims.replace("                  pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))*pp_cs(kp)*pp_cs(kq)\n"
                           "                  if (bnd*abs(pp_cs(kq))/eta <= pcut) exit\n",
@@ -1957,7 +1962,7 @@ contains
     if args.role_report:
         return
     out.append(f"""
-   subroutine pc_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+   subroutine pc_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -1968,7 +1973,7 @@ contains
       select case (key)""")
     for key, tag in names:
         kern = "pcr" if tag in ROLE_SPLITS else "pcs"
-        out.append(f"""      case ({key}); call {kern}{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+        out.append(f"""      case ({key}); call {kern}{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)""")

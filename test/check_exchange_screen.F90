@@ -1,19 +1,26 @@
 module check_exchange_screen_suite
-   !! The density screen of an exchange-only bin launch (jfac = 0, which is
-   !! what the bins run whenever the MD J engine forms J), on a chain (40
-   !! waters in a line, STO-3G) with a density that decays with the distance
-   !! between the two AO centres, as a real insulator's does: the kernels'
-   !! screen counts only the blocks whose factor is non-zero, so an
-   !! exchange-only launch keeps strictly fewer quartets than a Coulomb +
-   !! exchange one, and its K still matches the one from the full build
-   !! (G_JK - G_J) to well inside the screening threshold.
+   !! The density screens of an exchange-only bin launch (jfac = 0, which is
+   !! what the bins run whenever the MD J engine forms J).
    !!
-   !! The counts come from fock_resident's count_survivors, the kernels' own
-   !! screen replayed on the plan the build launches.
+   !! Two properties, on a chain (40 waters in a line, STO-3G) with a
+   !! density that decays with the distance between the two AO centres, as
+   !! a real insulator's does:
+   !!
+   !! - the kernels' density screen counts only the blocks whose factor is
+   !!   non-zero, so an exchange-only launch keeps strictly fewer quartets
+   !!   than a Coulomb + exchange one, and its K still matches the one from
+   !!   the full build (G_JK - G_J) to well inside the screening threshold;
+   !! - the exchange tiles (trc_bin_tiles) prune the launch plan before
+   !!   launch, and drop nothing the kernels would keep: the same quartets
+   !!   survive, quartet for quartet, and the same matrix comes back.
+   !!
+   !! Both counts come from fock_resident's count_survivors, the kernels'
+   !! own screen replayed on the plan the build launches.
    use pic_types, only: dp, int64
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t
    use trc_eri, only: trc_eri_t
+   use trc_bin_tiles, only: bin_tiles_set_enabled
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -24,6 +31,8 @@ module check_exchange_screen_suite
    real(dp), parameter :: THRESH = 1.0e-10_dp
    real(dp), parameter :: DECAY = 1.0_dp
    !! the model density's decay, per bohr between the two AO centres
+   real(dp), parameter :: TOL_SAME = 1.0e-12_dp
+   !! tiles on against off, relative to max|K|: summation order only
    real(dp), parameter :: TOL_SCREEN = 1.0e-8_dp
    !! K-only against G_JK - G_J, absolute: what the two screens may differ
    !! by is a sum of quartets each below THRESH
@@ -33,7 +42,8 @@ contains
    subroutine collect_exchange_screen(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
-                  new_unittest("exchange-only screen keeps fewer quartets", test_exchange_screen) &
+                  new_unittest("exchange-only screen keeps fewer quartets", test_exchange_screen), &
+                  new_unittest("tiles prune the launch and drop nothing", test_tiles) &
                   ]
    end subroutine collect_exchange_screen
 
@@ -99,10 +109,12 @@ contains
       call setup(error, bas, d)
       if (allocated(error)) return
       allocate (gk, gjk, gj, mold=d)
+      call bin_tiles_set_enabled(.false.)
       call eri%build(bas, THRESH)
       call build(eri, bas, bas%nao, d, gj, 1.0_dp, 0.0_dp, kept_jk, nw)
       call build(eri, bas, bas%nao, d, gjk, 1.0_dp, 1.0_dp, kept_jk, nw)
       call build(eri, bas, bas%nao, d, gk, 0.0_dp, 1.0_dp, kept_k, nw)
+      call bin_tiles_set_enabled(.true.)
       call eri%release()
       call bas%release()
 
@@ -116,6 +128,41 @@ contains
       call check(error, worst <= TOL_SCREEN, trim(msg))
    end subroutine test_exchange_screen
 
+   subroutine test_tiles(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: bas
+      type(trc_eri_t) :: eri
+      real(dp), allocatable :: d(:, :), gon(:, :), goff(:, :)
+      integer(int64) :: kept_on, kept_off, work_on, work_off
+      character(len=200) :: msg
+      real(dp) :: worst
+
+      call setup(error, bas, d)
+      if (allocated(error)) return
+      allocate (gon, goff, mold=d)
+      call eri%build(bas, THRESH)
+      call bin_tiles_set_enabled(.false.)
+      call build(eri, bas, bas%nao, d, goff, 0.0_dp, 1.0_dp, kept_off, work_off)
+      call bin_tiles_set_enabled(.true.)
+      call build(eri, bas, bas%nao, d, gon, 0.0_dp, 1.0_dp, kept_on, work_on)
+      call eri%release()
+      call bas%release()
+
+      write (msg, "(a,i0,a,i0,a,i0,a,i0)") "launched ", work_off, " -> ", work_on, &
+         " quartets, kept ", kept_off, " -> ", kept_on
+      print "(4x,a)", trim(msg)
+      ! The plan must actually be pruned on this chain, or the rest proves
+      ! nothing.
+      call check(error, real(work_on, dp) < 0.9_dp*real(work_off, dp), "no pruning: "//trim(msg))
+      if (allocated(error)) return
+      call check(error, kept_on == kept_off, "a kept quartet was dropped: "//trim(msg))
+      if (allocated(error)) return
+      worst = maxval(abs(gon - goff))/maxval(abs(goff))
+      write (msg, "(a,es9.2)") "max |G_tiles - G_whole|/max|G| = ", worst
+      print "(4x,a)", trim(msg)
+      call check(error, worst <= TOL_SAME, trim(msg))
+   end subroutine test_tiles
+
 end module check_exchange_screen_suite
 
 program check_exchange_screen
@@ -125,7 +172,7 @@ program check_exchange_screen
    implicit none
    integer :: stat
    stat = 0
-   ! Serial: the cases build device-resident engines.
+   ! Serial: the cases share the tiles switch and device-resident engines.
    call run_testsuite(collect_exchange_screen, error_unit, stat, parallel=.false.)
    if (stat > 0) then
       write (error_unit, "(i0,a)") stat, " test(s) failed"

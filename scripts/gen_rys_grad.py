@@ -1482,6 +1482,31 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
     return screen + compact, tabs
 
 
+def _untile(src):
+    """The Fock kernel with its tile strides folded back into the extents.
+
+    A Fock segment may be a tile of a bin (trc_bin_tiles), so
+    the Fock kernels take the bin's pair count sSA/sSB as the stride of the
+    bin-interleaved primitive table, apart from the segment's extent sA/sNB.
+    A gradient plan never tiles -- every segment is a whole bin, stride and
+    extent equal -- so the gradient kernels keep the one pair of arrays."""
+    decl = (
+        "      integer,  intent(in)    :: sSA(nseg), sSB(nseg)\n"
+        "      !! Pairs in the whole bra / ket BIN: the stride of that interleave.\n"
+        "      !! sA/sNB are the pairs the segment covers, which is the whole bin\n"
+        "      !! unless the launcher cut the bin into exchange tiles\n"
+        "      !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.\n")
+    assert decl in src, "gen_perclass.py's sSA/sSB declaration changed"
+    src = src.replace(decl, "")
+    src = src.replace("sPA, sPB, sSA, sSB, sD", "sPA, sPB, sD")
+    src = src.replace("sSA(seg)", "sA(seg)").replace("sSB(seg)", "sNB(seg)")
+    src = src.replace(
+        "      !! Primitive base of the bra / ket pairs, into qp_* below -- the\n",
+        "      !! Primitive base of the bra bin / ket bin, into qp_* below -- the\n")
+    assert "sSA" not in src and "sSB" not in src
+    return src
+
+
 #: `pcsi{tag}`'s primitive-quartet head already computes the wB97X-V
 #: long-range exchange substitution (rho_theta = theta*rho, theta from
 #: `omega`) -- see scripts/gen_perclass.py, whose comment is reproduced
@@ -1594,7 +1619,7 @@ def main():
     unroll = nv <= _parse_unroll_max(args.unroll_max_comp)
 
     src_path = os.path.join(args.src_dir, f"trc_pc_k{tag}.F90")
-    src = open(src_path).read()
+    src = _untile(open(src_path).read())
 
     i_item = src.index(f"   pure subroutine pcsi{tag}(")
     i_end = src.index(f"end subroutine pcsi{tag}\n") + len(f"end subroutine pcsi{tag}\n")

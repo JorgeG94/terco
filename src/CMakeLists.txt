@@ -17,6 +17,7 @@ target_sources(
           eri/trc_hgp.F90        # Head-Gordon-Pople driver
           eri/trc_screen.F90     # Schwarz bounds
           eri/trc_bins.F90       # the binned shell-pair container
+          eri/trc_bin_tiles.F90  # exchange tiles: density pruning of the launch plan
           eri/trc_binkernel.F90  # the shared quartet kernel and the digestion
           eri/trc_grad.F90       # two-electron gradient launch plan, Rys only
           core/trc_basis_types.F90 # trc_basis_t and trc_pairlist_t: the basis and the screened pair list

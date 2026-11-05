@@ -26,7 +26,7 @@ module trc_pc_k2211
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
 
 contains
-   subroutine pcs2211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+   subroutine pcs2211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -39,9 +39,14 @@ contains
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
-      !! Primitive base of the bra bin / ket bin, into qp_* below -- the
+      !! Primitive base of the bra / ket pairs, into qp_* below -- the
       !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
       !! that lane iab's primitive k sits next to lane iab+1's.
+      integer,  intent(in)    :: sSA(nseg), sSB(nseg)
+      !! Pairs in the whole bra / ket BIN: the stride of that interleave.
+      !! sA/sNB are the pairs the segment covers, which is the whole bin
+      !! unless the launcher cut the bin into exchange tiles
+      !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
@@ -75,7 +80,7 @@ contains
       integer,  intent(in)    :: nqp
       !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
       !! are what the kernel reads for the bra/ket primitives, at
-      !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
+      !! sPA(seg) + (k-1)*sSA(seg) + iab (bra) or sPB(seg) + (k-1)*sSB(seg)
       !! + icd (ket).
       real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
       real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
@@ -107,14 +112,14 @@ contains
       nr = 0
       if (g1 >= g0) nr = (g1 - g0)/nranks + 1
       do concurrent(i=1:nr)
-         call pcsi2211(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+         call pcsi2211(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                        npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                        nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                        sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
       end do
    end subroutine pcs2211
 
-   pure subroutine pcsi2211(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+   pure subroutine pcsi2211(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -125,9 +130,14 @@ contains
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
-      !! Primitive base of the bra bin / ket bin, into qp_* below -- the
+      !! Primitive base of the bra / ket pairs, into qp_* below -- the
       !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
       !! that lane iab's primitive k sits next to lane iab+1's.
+      integer,  intent(in)    :: sSA(nseg), sSB(nseg)
+      !! Pairs in the whole bra / ket BIN: the stride of that interleave.
+      !! sA/sNB are the pairs the segment covers, which is the whole bin
+      !! unless the launcher cut the bin into exchange tiles
+      !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
@@ -161,7 +171,7 @@ contains
       integer,  intent(in)    :: nqp
       !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
       !! are what the kernel reads for the bra/ket primitives, at
-      !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
+      !! sPA(seg) + (k-1)*sSA(seg) + iab (bra) or sPB(seg) + (k-1)*sSB(seg)
       !! + icd (ket).
       real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
       real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
@@ -285,7 +295,7 @@ contains
                g1(x) = 0.0_dp
             end do
             do k1 = 1, nab
-               kp = sPA(seg) + (k1 - 1)*sA(seg) + iab
+               kp = sPA(seg) + (k1 - 1)*sSA(seg) + iab
                zeta = qp_z(kp)
                bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))
                if (bnd*abs(qp_c(sPB(seg) + icd))/qp_z(sPB(seg) + icd) <= pcut) cycle
@@ -307,7 +317,7 @@ contains
                rzeta = 1.0_dp/zeta
                oo2z = 0.5_dp*rzeta
                do k2 = 1, ncd
-                  kq = sPB(seg) + (k2 - 1)*sNB(seg) + icd
+                  kq = sPB(seg) + (k2 - 1)*sSB(seg) + icd
                   eta = qp_z(kq)
                   zpe = zeta + eta
                   ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
@@ -3838,7 +3848,7 @@ contains
          end if
    end subroutine pcsi2211
 
-   subroutine pcr2211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+   subroutine pcr2211(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -3851,9 +3861,14 @@ contains
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
-      !! Primitive base of the bra bin / ket bin, into qp_* below -- the
+      !! Primitive base of the bra / ket pairs, into qp_* below -- the
       !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
       !! that lane iab's primitive k sits next to lane iab+1's.
+      integer,  intent(in)    :: sSA(nseg), sSB(nseg)
+      !! Pairs in the whole bra / ket BIN: the stride of that interleave.
+      !! sA/sNB are the pairs the segment covers, which is the whole bin
+      !! unless the launcher cut the bin into exchange tiles
+      !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
@@ -3887,7 +3902,7 @@ contains
       integer,  intent(in)    :: nqp
       !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
       !! are what the kernel reads for the bra/ket primitives, at
-      !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
+      !! sPA(seg) + (k-1)*sSA(seg) + iab (bra) or sPB(seg) + (k-1)*sSB(seg)
       !! + icd (ket).
       real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
       real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
@@ -3940,7 +3955,7 @@ contains
          role = int(mod((i - 1)/32, 3_int64)) + 1
          it = ((i - 1)/(32*3))*32 + mod(i - 1, 32_int64) + 1
          if (it <= nr) then
-            call pcri2211(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+            call pcri2211(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
@@ -3948,7 +3963,7 @@ contains
       end do
    end subroutine pcr2211
 
-   pure subroutine pcri2211(gt, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+   pure subroutine pcri2211(gt, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -3960,9 +3975,14 @@ contains
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
-      !! Primitive base of the bra bin / ket bin, into qp_* below -- the
+      !! Primitive base of the bra / ket pairs, into qp_* below -- the
       !! bin-interleaved second copy of pp_p/pp_r/pp_ra/pp_c, laid out so
       !! that lane iab's primitive k sits next to lane iab+1's.
+      integer,  intent(in)    :: sSA(nseg), sSB(nseg)
+      !! Pairs in the whole bra / ket BIN: the stride of that interleave.
+      !! sA/sNB are the pairs the segment covers, which is the whole bin
+      !! unless the launcher cut the bin into exchange tiles
+      !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
@@ -3996,7 +4016,7 @@ contains
       integer,  intent(in)    :: nqp
       !! Bin-interleaved primitive-pair data: qp_z/qp_c/qp_px/qp_py/qp_pz
       !! are what the kernel reads for the bra/ket primitives, at
-      !! sPA(seg) + (k-1)*sA(seg) + iab (bra) or sPB(seg) + (k-1)*sNB(seg)
+      !! sPA(seg) + (k-1)*sSA(seg) + iab (bra) or sPB(seg) + (k-1)*sSB(seg)
       !! + icd (ket).
       real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp)
       real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
@@ -4133,7 +4153,7 @@ contains
                g1(x) = 0.0_dp
             end do
             do k1 = 1, nab
-               kp = sPA(seg) + (k1 - 1)*sA(seg) + iab
+               kp = sPA(seg) + (k1 - 1)*sSA(seg) + iab
                zeta = qp_z(kp)
                bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))
                if (bnd*abs(qp_c(sPB(seg) + icd))/qp_z(sPB(seg) + icd) <= pcut) cycle
@@ -4155,7 +4175,7 @@ contains
                rzeta = 1.0_dp/zeta
                oo2z = 0.5_dp*rzeta
                do k2 = 1, ncd
-                  kq = sPB(seg) + (k2 - 1)*sNB(seg) + icd
+                  kq = sPB(seg) + (k2 - 1)*sSB(seg) + icd
                   eta = qp_z(kq)
                   zpe = zeta + eta
                   ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
@@ -5962,7 +5982,7 @@ contains
                g1(x) = 0.0_dp
             end do
             do k1 = 1, nab
-               kp = sPA(seg) + (k1 - 1)*sA(seg) + iab
+               kp = sPA(seg) + (k1 - 1)*sSA(seg) + iab
                zeta = qp_z(kp)
                bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))
                if (bnd*abs(qp_c(sPB(seg) + icd))/qp_z(sPB(seg) + icd) <= pcut) cycle
@@ -5984,7 +6004,7 @@ contains
                rzeta = 1.0_dp/zeta
                oo2z = 0.5_dp*rzeta
                do k2 = 1, ncd
-                  kq = sPB(seg) + (k2 - 1)*sNB(seg) + icd
+                  kq = sPB(seg) + (k2 - 1)*sSB(seg) + icd
                   eta = qp_z(kq)
                   zpe = zeta + eta
                   ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
@@ -7785,7 +7805,7 @@ contains
                g1(x) = 0.0_dp
             end do
             do k1 = 1, nab
-               kp = sPA(seg) + (k1 - 1)*sA(seg) + iab
+               kp = sPA(seg) + (k1 - 1)*sSA(seg) + iab
                zeta = qp_z(kp)
                bnd = TWO_PI_2_5*abs(qp_c(kp))/(zeta*sqrt(zeta))
                if (bnd*abs(qp_c(sPB(seg) + icd))/qp_z(sPB(seg) + icd) <= pcut) cycle
@@ -7807,7 +7827,7 @@ contains
                rzeta = 1.0_dp/zeta
                oo2z = 0.5_dp*rzeta
                do k2 = 1, ncd
-                  kq = sPB(seg) + (k2 - 1)*sNB(seg) + icd
+                  kq = sPB(seg) + (k2 - 1)*sSB(seg) + icd
                   eta = qp_z(kq)
                   zpe = zeta + eta
                   ! PRIMITIVE-QUARTET PRESCREEN. The prefactor bounds the
