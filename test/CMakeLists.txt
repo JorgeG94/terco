@@ -425,6 +425,11 @@ set_tests_properties(
 terco_add_check(check_full_grad_fd check_full_grad_fd.F90 NEEDS_BASIS)
 target_link_libraries(check_full_grad_fd PRIVATE test-drive::test-drive)
 
+# The incremental Fock build against full builds, run for run: RHF, UHF, a
+# range-separated UKS and C-PCM -- see check_scf_incremental.F90's own header.
+terco_add_check(check_scf_incremental check_scf_incremental.F90 NEEDS_BASIS)
+target_link_libraries(check_scf_incremental PRIVATE test-drive::test-drive)
+
 # The analytic PCM (C-PCM/IEF-PCM) gradient term (trc_pcm_grad's grad_qv +
 # grad_nuc + grad_solver) against finite differences of terco's own fully
 # reconverged SCF energy -- water (both models) and formamide (IEF-PCM,

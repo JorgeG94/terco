@@ -101,6 +101,7 @@ module trc_scf_driver
    use trc_scf_df, only: df_jk_t
    use trc_scf_diis, only: cdiis_t, adiis_t, scf_diis_level_shift, scf_diis_damp
    use trc_scf_soscf, only: trc_scf_soscf_run
+   use trc_scf_incremental, only: scf_incremental_t
    use pic_types, only: default_int
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
@@ -212,6 +213,7 @@ contains
       character(len=256) :: msg
       character(len=160) :: line
       logical :: incr_now
+      type(scf_incremental_t) :: incremental   !! which builds are increments, trc_scf_incremental
       type(cdiis_t) :: cdiis
       type(adiis_t) :: adiis
       !! ADIIS's history (fock, density) is kept apart from CDIIS's own (fock,
@@ -373,9 +375,9 @@ contains
       call scf_state%to_device(scf_context, scf_result)
 
       eold = 0.0_dp
-      ! Read by the first iteration's `incr_now` before any commutator exists
-      ! (Fortran's .and. does not short-circuit), so give it a value.
+      ! Read by the first iteration's `incr_now` before any commutator exists.
       errmax = huge(1.0_dp)
+      call incremental%setup(scf_config)
       diis_on = .false.
       soscf_switch_iteration = 0
       ! What the SCF is actually running on. Two callers can hand over the
@@ -384,14 +386,7 @@ contains
       if (scf_config%talk) call global_logger%info("   basis: "//to_string(nao)//" functions, " &
          //to_string(scf_basis%nshell)//" shells, "//to_string(sum(scf_basis%sh_np))//" primitives, max " &
          //to_string(maxval(scf_basis%sh_np)))
-      ! Say so when increments are on: they are opt-in and change the timings.
-      ! An `i` after an iteration's line marks a Fock matrix built from the
-      ! density difference.
-      if (scf_config%talk .and. scf_config%incr_on) then
-         write (line, "(a,es8.1,a,i0,a)") "   incremental Fock: from |FDS-SDF| < ", scf_config%incr_start_run, &
-            ", full build every ", max(1, scf_config%incr_reset_run), " iterations (marked i)"
-         call global_logger%info(trim(line))
-      end if
+      if (scf_config%talk) call log_incremental_mode(scf_config)
       if (scf_config%talk) then
          if (scf_config%dft) then
             call global_logger%info("   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
@@ -419,10 +414,8 @@ contains
          ! density it is handed, and the difference is small and getting
          ! smaller while the density is neither. See `scf_fock_build_g`'s own header.
          !
-         incr_now = scf_config%incr_on .and. it > 1 &
-                    .and. errmax < scf_config%incr_start_run &
-                    .and. mod(it - 1, max(1, scf_config%incr_reset_run)) /= 0
-         call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incr_now, pair_eri_cache%eri, la, &
+         incr_now = incremental%next_build(it, errmax)
+         call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incremental%scale, pair_eri_cache%eri, la, &
                                scf_dfjk)
          ! --- G_sph := T^T G_cart T, back up to the space the rest of the
          ! iteration runs in, into `fock` until the assembly below.
@@ -589,7 +582,9 @@ contains
             !$acc update self(scf_result%dmat)
             call dump_density(nao, scf_result%dmat(:, :, 1))
          end if
-         if (it > 1 .and. abs(scf_energies%total - eold) < scf_options%conv_energy .and. errmax < scf_options%conv_diis) then
+         ! Converged only on a full build (trc_scf_incremental's rule 1).
+         if (incremental%accept(it > 1 .and. abs(scf_energies%total - eold) < scf_options%conv_energy &
+                                .and. errmax < scf_options%conv_diis, errmax)) then
             scf_result%converged = .true.
             exit
          end if
@@ -600,6 +595,7 @@ contains
          end if
          eold = scf_energies%total
       end do
+      scf_result%n_increments = incremental%n_increments
       if (soscf_switch_iteration > 0 .and. .not. scf_result%converged) then
          call trc_scf_soscf_run(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, la, &
                                pair_eri_cache%eri)
@@ -891,5 +887,18 @@ contains
       if (info_s /= 0 .and. .not. diag_failed) diag_info = info_s
       if (info_s /= 0) diag_failed = .true.
    end subroutine scf_driver_note_failure
+
+   subroutine log_incremental_mode(scf_config)
+      !! Say so when increments are on: they change the timings. An `i` after
+      !! an iteration's line marks a Fock matrix built from the density difference.
+      !! Under --df they are off, and a caller who did not ask for that is told.
+      type(scf_settings_t), intent(in) :: scf_config
+      if (scf_config%incr_on) then
+         call global_logger%info("   incremental Fock (marked i); converged only on a full build")
+      else if (scf_config%incr_off_df) then
+         call global_logger%warning("   incremental Fock builds are not supported with density fitting; "// &
+                                    "every iteration is a full build")
+      end if
+   end subroutine log_incremental_mode
 
 end module trc_scf_driver

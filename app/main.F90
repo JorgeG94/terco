@@ -161,7 +161,9 @@ program trc_main
                          "diagonal (pyscf/ORCA's convention) below it are dropped (canonical orthogonalisation; "// &
                          "1e-8; 0 drops none, though the minao guess keeps its own 1e-8). "// &
                          "Diffuse bases on large molecules may need ~5e-6")
-   call r%cli%add_flag("incremental", "build later Fock matrices from the density difference (closed shell)")
+   call r%cli%add_flag("incremental", "build later Fock matrices from the density difference (the default; "// &
+                       "refused with --df)")
+   call r%cli%add_flag("no-incremental", "a full Fock build every iteration")
    call r%cli%add_flag("df", "density-fitted J and K instead of the four-centre engine (restricted, "// &
                        "Cartesian only; fits both, never DF-J with 4-centre K)")
    call r%cli%add_option("jkfit", "fitting basis for --df (def2-universal-jkfit)", default="def2-universal-jkfit")
@@ -573,6 +575,9 @@ program trc_main
       call r%cli%get("aux", sval, r%err)
       call app_resolve_basis(sval, r%aux_path, r%err)
       if (r%err%has_error()) call run_die(r, "--aux: "//r%err%get_message())
+   end if
+   if (r%cli%is_set("incremental") .and. r%cli%is_set("no-incremental")) then
+      call run_die(r, "--incremental and --no-incremental contradict each other")
    end if
    if (r%df) then
       if (r%cli%is_set("incremental")) call run_die(r, "--df with --incremental is refused -- a "// &
@@ -1092,9 +1097,8 @@ program trc_main
    if (r%soscf) call run_api(r, trc_set_soscf(r%h, 1_c_int, real(r%soscf_start, c_double)))
    call run_api(r, trc_set_screening(r%h, real(r%thresh, c_double)))
    if (r%lindep >= 0.0_dp) call run_api(r, trc_set_lindep(r%h, real(r%lindep, c_double)))
-   ! On unless asked otherwise: the library's default is off, so a host
-   ! code keeps the build it had, but a command-line run gets the speed.
-   call run_api(r, trc_set_incremental(r%h, merge(1_c_int, 0_c_int, r%cli%is_set("incremental"))))
+   ! On unless asked otherwise, as in the library (trc_scf_options_t%incremental).
+   call run_api(r, trc_set_incremental(r%h, merge(0_c_int, 1_c_int, r%cli%is_set("no-incremental"))))
    call run_api(r, trc_set_guess(r%h, int(guess_kind, c_int), c_null_ptr, 1_c_int))
    if (r%rimp2) then
       ! The three-index tensor (mu nu|P) is nao^2 per auxiliary function and

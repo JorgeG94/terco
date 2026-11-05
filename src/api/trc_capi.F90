@@ -2622,12 +2622,12 @@ contains
    end function trc_set_screening
 
    !
-   ! Incremental Fock builds: after the first iterations, G is accumulated
+   ! Incremental Fock builds: after the first iteration, G is accumulated
    ! from the density DIFFERENCE, which screens far harder as the SCF
-   ! converges (trc_scf_options_t%incremental has the measurements and the
-   ! safeguards: a 1e-4 tighter screen on each difference build, a start
-   ! gated on the commutator, a full rebuild every 20). 0 off, the library's
-   ! default; nonzero on, the terco CLI's default.
+   ! converges (trc_scf_options_t%incremental has the measurements,
+   ! trc_scf_incremental the schedule and its error argument; convergence
+   ! is declared on a full build only). Nonzero on, the default of the
+   ! library and of the terco CLI; 0 off. Not used under trc_set_df.
    !
    function trc_set_incremental(handle, on) result(status) bind(c, name="trc_set_incremental")
       type(c_ptr), value :: handle
