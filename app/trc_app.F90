@@ -17,7 +17,7 @@ module trc_app
    use pic_ascii, only: to_lower
    use pic_logger, only: global_logger, debug_level, verbose_level, large_info_level, info_level, &
                          performance_level, warning_level, error_level, knowledge_level
-   use pic_strings, only: to_string, ends_with
+   use pic_strings, only: to_string, ends_with, replace_all
    use trc_constants, only: ANGSTROM_TO_BOHR
    implicit none
    private
@@ -171,12 +171,19 @@ contains
       !! order, then in the installed basis directory, then in the source
       !! tree's test/basis_sets. The files are Basis Set
       !! Exchange JSON, as trc_basis_from_json reads them.
+      !!
+      !! A name with "*" or "+" (6-31G*, 6-311+G**) is looked up under Basis
+      !! Set Exchange's own file name first, "*" as "_st_" and "+" as "_pl_"
+      !! (6-31g_st_.json, as BSE downloads it), then with "*" as "s", the
+      !! spelling of the files terco ships (6-31gs.json).
       character(len=*), intent(in) :: name
       character(len=:), allocatable, intent(out) :: path
       type(error_t), intent(inout) :: err
       character(len=:), allocatable :: file, dirs, tried
       character(len=4096) :: env
-      integer :: n, i0, i1, stat
+      character(len=:), allocatable :: bse, alt
+      !! The file names tried in each directory: BSE's spelling, then terco's.
+      integer :: n, i0, i1, stat, ic, ncand
 
       path = ""
       if (exists(name)) then
@@ -185,6 +192,9 @@ contains
       end if
       file = to_lower(trim(name))
       if (.not. ends_with(file, ".json")) file = file//".json"
+      bse = replace_all(replace_all(file, "*", "_st_"), "+", "_pl_")
+      alt = replace_all(file, "*", "s")
+      ncand = merge(1, 2, alt == bse)
 
       call get_environment_variable("TERCO_BASIS_PATH", env, n, stat)
       dirs = ""
@@ -214,11 +224,18 @@ contains
             i1 = i0 + i1 - 1
          end if
          if (i1 > i0) then
-            if (exists(dirs(i0:i1 - 1)//"/"//file)) then
-               path = dirs(i0:i1 - 1)//"/"//file
-               return
-            end if
-            tried = tried//new_line("a")//"    "//dirs(i0:i1 - 1)//"/"//file
+            do ic = 1, ncand
+               if (ic == 1) then
+                  file = bse
+               else
+                  file = alt
+               end if
+               if (exists(dirs(i0:i1 - 1)//"/"//file)) then
+                  path = dirs(i0:i1 - 1)//"/"//file
+                  return
+               end if
+               tried = tried//new_line("a")//"    "//dirs(i0:i1 - 1)//"/"//file
+            end do
          end if
          i0 = i1 + 1
       end do
