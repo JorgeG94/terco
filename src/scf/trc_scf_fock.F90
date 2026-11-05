@@ -29,7 +29,7 @@ module trc_scf_fock
    use pic_profiler, only: profiler_start, profiler_stop
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_pcm, only: trc_pcm_t
    use trc_xc, only: trc_xc_rks, trc_xc_uks, trc_xc_options, trc_xc_result_t
    use trc_xc_batch, only: trc_xc_grid_t
@@ -37,7 +37,7 @@ module trc_scf_fock
    use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
    use trc_linalg, only: trc_linalg_t
    use trc_scf_df, only: df_jk_t
-   use trc_scf_settings, only: scf_settings_t, scf_energies_t, trc_scf_result_t
+   use trc_scf_settings, only: scf_settings_t, scf_energies_t, trc_scf_result_t, scf_settings_fock_densities
    use trc_scf_context, only: scf_ctx_t, trc_grid_cache_t
    use trc_scf_state, only: scf_state_t, scf_timers_t
    implicit none
@@ -68,6 +68,11 @@ contains
       type(trc_linalg_t), intent(inout) :: la
       type(df_jk_t), intent(inout), optional :: dfjk
       !! The fitted J/K object, present exactly when `scf_config%df`.
+      ! Every four-centre build runs on scratch lent from `la`'s workspace
+      ! (trc_linalg's `reserve`), which is dead between eigensolves.
+      ! trc_scf_context's setup has made it large enough already, so this
+      ! is a no-op unless a caller skipped that.
+      if (.not. scf_config%df) call la%reserve(eri%fock_work_size(scf_settings_fock_densities(scf_config)))
       call build_g_arrays(scf_basis, eri, scf_context%nao_c, scf_config%nspin, &
                           size(scf_state%dtot_c, 1), size(scf_state%klr_c, 1), size(scf_state%dref_c, 1), &
                           incr_now, scf_config%incr_on, &
@@ -138,9 +143,10 @@ contains
                real(dp) :: thresh0
                thresh0 = eri%thresh
                eri%thresh = thresh0*incr_scale_run
-               call eri%fock_resident(b, ddif_c, gmat_c(:, :, 1), k_scale=exx)
+               call eri%fock_resident_lent(b, ddif_c, gmat_c(:, :, 1), trc_fock_options_t(k_scale=exx), lp%dwork)
                if (exx_lr /= 0.0_dp) then
-                  call eri%fock_resident(b, ddif_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
+                  call eri%fock_resident_lent(b, ddif_c, klr_c, &
+                                              trc_fock_options_t(j_scale=0.0_dp, k_scale=exx_lr, omega=omega), lp%dwork)
                   do concurrent(i=1:nao_c, j=1:nao_c)
                      gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
                   end do
@@ -153,9 +159,10 @@ contains
                dref_c(i, j) = d_c(i, j, 1)
             end do
          else
-            call eri%fock_resident(b, d_c(:, :, 1), gmat_c(:, :, 1), k_scale=exx)
+            call eri%fock_resident_lent(b, d_c(:, :, 1), gmat_c(:, :, 1), trc_fock_options_t(k_scale=exx), lp%dwork)
             if (exx_lr /= 0.0_dp) then
-               call eri%fock_resident(b, d_c(:, :, 1), klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
+               call eri%fock_resident_lent(b, d_c(:, :, 1), klr_c, &
+                                           trc_fock_options_t(j_scale=0.0_dp, k_scale=exx_lr, omega=omega), lp%dwork)
                do concurrent(i=1:nao_c, j=1:nao_c)
                   gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
                end do
@@ -173,7 +180,7 @@ contains
          do concurrent(i=1:nao_c, j=1:nao_c)
             dtot_c(i, j) = d_c(i, j, 1) + d_c(i, j, 2)
          end do
-         call eri%fock_resident(b, dtot_c, jmat_c, k_scale=0.0_dp)
+         call eri%fock_resident_lent(b, dtot_c, jmat_c, trc_fock_options_t(k_scale=0.0_dp), lp%dwork)
          do s = 1, 2
             call copy_into_spin(nao_c, jmat_c, gmat_c(:, :, s))
          end do
@@ -190,13 +197,15 @@ contains
                call scale_into_spin(nao_c, 2.0_dp, d_c(:, :, s), w2_c(:, :, s))
             end do
             if (exx /= 0.0_dp) then
-               call eri%fock_resident_many(b, 2, w2_c, k2_c, j_scale=0.0_dp, k_scale=exx)
+               call eri%fock_resident_many_lent(b, 2, w2_c, k2_c, trc_fock_options_t(j_scale=0.0_dp, k_scale=exx), &
+                                                lp%dwork)
                do s = 1, 2
                   call add_into_spin(nao_c, k2_c(:, :, s), gmat_c(:, :, s))
                end do
             end if
             if (exx_lr /= 0.0_dp) then
-               call eri%fock_resident_many(b, 2, w2_c, k2_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
+               call eri%fock_resident_many_lent(b, 2, w2_c, k2_c, &
+                                                trc_fock_options_t(j_scale=0.0_dp, k_scale=exx_lr, omega=omega), lp%dwork)
                do s = 1, 2
                   call add_into_spin(nao_c, k2_c(:, :, s), gmat_c(:, :, s))
                end do
