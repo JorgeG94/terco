@@ -97,7 +97,7 @@ module trc_scf_driver
    use trc_scf_context, only: scf_ctx_t, scf_context_bcast_flat, trc_grid_cache_t, trc_pair_eri_cache_t, scf_context_project_density
    use trc_scf_state, only: scf_state_t, scf_timers_t
    use trc_scf_fock, only: scf_fock_build_g, scf_fock_build_vxc, scf_fock_build_pcm, scf_fock_energy, scf_fock_assemble, &
-                           scf_fock_commutator_error, scf_fock_to_cart, scf_fock_to_sph
+                           scf_fock_commutator_error, scf_fock_to_cart, scf_fock_fold_g
    use trc_scf_df, only: df_jk_t
    use trc_scf_diis, only: cdiis_t, adiis_t, scf_diis_level_shift, scf_diis_damp
    use trc_scf_soscf, only: trc_scf_soscf_run
@@ -425,10 +425,8 @@ contains
          call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incr_now, pair_eri_cache%eri, la, &
                                scf_dfjk)
          ! --- G_sph := T^T G_cart T, back up to the space the rest of the
-         ! iteration runs in.
-         do s = 1, scf_config%nspin
-            call scf_fock_to_sph(scf_basis, sph, nao, nao_c, scf_state%gmat_c(:, :, s), scf_state%gmat(:, :, s))
-         end do
+         ! iteration runs in, into `fock` until the assembly below.
+         call scf_fock_fold_g(scf_basis, scf_context, scf_config, scf_state)
          scf_timers%tf_it = scf_timers%fock%get_elapsed_time()
          scf_timers%t_fock = scf_timers%t_fock + scf_timers%tf_it
          call scf_timers%xc%start()

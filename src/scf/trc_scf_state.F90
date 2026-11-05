@@ -53,9 +53,11 @@ module trc_scf_state
    end type scf_timers_t
 
    type :: scf_state_t
-      real(dp), allocatable :: fock(:, :, :), gmat(:, :, :), vxc(:, :, :)
+      real(dp), allocatable :: fock(:, :, :), vxc(:, :, :)
+      !! `fock` also holds G between its fold and the Fock assembly
+      !! (`trc_scf_fock%scf_fock_fold_g`): there is no separate G matrix.
       real(dp), allocatable :: d_c(:, :, :), gmat_c(:, :, :), vxc_c(:, :, :)
-      real(dp), allocatable :: dtot_c(:, :), jmat_c(:, :), w1_c(:, :), klr_c(:, :)
+      real(dp), allocatable :: dtot_c(:, :), jmat_c(:, :), klr_c(:, :)
       !! klr_c: the long-range exchange of a range-separated hybrid, built
       !! by its own pass (erf(omega r12)/r12) and added into G.
       real(dp), allocatable :: dref_c(:, :), gacc_c(:, :), ddif_c(:, :)
@@ -96,16 +98,15 @@ contains
       nin_c = merge(nao_c, 1, config%incr_on)
       npcm = merge(nao, 1, config%pcm_on)
       npcm_c = merge(nao_c, 1, config%pcm_on)
-      allocate (this%fock(nao, nao, nspin), this%gmat(nao, nao, nspin), this%vxc(nxc, nxc, nspin))
+      allocate (this%fock(nao, nao, nspin), this%vxc(nxc, nxc, nspin))
       allocate (this%d_c(nao_c, nao_c, nspin), this%gmat_c(nao_c, nao_c, nspin), this%vxc_c(nxc_c, nxc_c, nspin))
-      allocate (this%dtot_c(nu_c, nu_c), this%jmat_c(nu_c, nu_c), this%w1_c(nao_c, nao_c), this%klr_c(nlr_c, nlr_c))
+      allocate (this%dtot_c(nu_c, nu_c), this%jmat_c(nu_c, nu_c), this%klr_c(nlr_c, nlr_c))
       allocate (this%dref_c(nin_c, nin_c), this%gacc_c(nin_c, nin_c), this%ddif_c(nin_c, nin_c))
       allocate (this%vpcm_c(npcm_c, npcm_c), this%vpcm(npcm, npcm))
       allocate (this%dold(nao, nao, nspin), this%errv(nao, nao, nspin))
       allocate (this%w1(nao, nao), this%w2(nao, nao))
       allocate (this%ofrac(nao))
       this%fock = 0.0_dp
-      this%gmat = 0.0_dp
       this%vxc = 0.0_dp
       this%dold = 0.0_dp
       this%errv = 0.0_dp
@@ -116,7 +117,6 @@ contains
       this%vxc_c = 0.0_dp
       this%dtot_c = 0.0_dp
       this%jmat_c = 0.0_dp
-      this%w1_c = 0.0_dp
       this%klr_c = 0.0_dp
       this%vpcm_c = 0.0_dp
       this%vpcm = 0.0_dp
@@ -129,8 +129,8 @@ contains
       type(trc_scf_result_t), intent(in) :: res
       !$acc enter data copyin(this%ofrac)
       !$acc enter data copyin(context%hcore, context%smat, context%x, res%dmat, res%cmo, res%eps) &
-      !$acc            copyin(this%fock, this%gmat, this%vxc, this%dold, this%errv, this%w1, this%w2) &
-      !$acc            copyin(this%d_c, this%gmat_c, this%vxc_c, this%dtot_c, this%jmat_c, this%w1_c, this%klr_c) &
+      !$acc            copyin(this%fock, this%vxc, this%dold, this%errv, this%w1, this%w2) &
+      !$acc            copyin(this%d_c, this%gmat_c, this%vxc_c, this%dtot_c, this%jmat_c, this%klr_c) &
       !$acc            create(this%dref_c, this%gacc_c, this%ddif_c) copyin(this%vpcm_c, this%vpcm)
    end subroutine scf_state_to_device
 
@@ -140,8 +140,8 @@ contains
       type(trc_scf_result_t), intent(in) :: res
       !$acc exit data delete(this%ofrac)
       !$acc exit data delete(context%hcore, context%smat, context%x, res%dmat, res%cmo, res%eps) &
-      !$acc           delete(this%fock, this%gmat, this%vxc, this%dold, this%errv, this%w1, this%w2) &
-      !$acc           delete(this%d_c, this%gmat_c, this%vxc_c, this%dtot_c, this%jmat_c, this%w1_c, this%klr_c) &
+      !$acc           delete(this%fock, this%vxc, this%dold, this%errv, this%w1, this%w2) &
+      !$acc           delete(this%d_c, this%gmat_c, this%vxc_c, this%dtot_c, this%jmat_c, this%klr_c) &
       !$acc           delete(this%dref_c, this%gacc_c, this%ddif_c, this%vpcm_c, this%vpcm)
    end subroutine scf_state_release_device
 

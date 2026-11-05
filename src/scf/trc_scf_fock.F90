@@ -44,7 +44,7 @@ module trc_scf_fock
    private
 
    public :: scf_fock_build_g, scf_fock_build_vxc, scf_fock_build_pcm, scf_fock_energy, scf_fock_assemble, scf_fock_commutator_error
-   public :: scf_fock_to_cart, scf_fock_to_sph
+   public :: scf_fock_to_cart, scf_fock_to_sph, scf_fock_fold_g
 
 contains
 
@@ -72,14 +72,14 @@ contains
                           size(scf_state%dtot_c, 1), size(scf_state%klr_c, 1), size(scf_state%dref_c, 1), &
                           incr_now, scf_config%incr_on, &
                           scf_config%exx, scf_config%exx_lr, scf_config%omega, scf_config%incr_scale_run, &
-                          scf_state%d_c, scf_state%gmat_c, scf_state%dtot_c, scf_state%jmat_c, scf_state%w1_c, &
+                          scf_state%d_c, scf_state%gmat_c, scf_state%dtot_c, scf_state%jmat_c, &
                           scf_state%klr_c, scf_state%gacc_c, scf_state%dref_c, scf_state%ddif_c, &
                           scf_config%df, la, dfjk)
    end subroutine scf_fock_build_g
 
    subroutine build_g_arrays(b, eri, nao_c, nspin, nu_c, nlr_c, nin_c, incr_now, incr_on, &
                              exx, exx_lr, omega, incr_scale_run, &
-                             d_c, gmat_c, dtot_c, jmat_c, w1_c, klr_c, gacc_c, dref_c, ddif_c, &
+                             d_c, gmat_c, dtot_c, jmat_c, klr_c, gacc_c, dref_c, ddif_c, &
                              df_on, lp, dfj)
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
@@ -89,7 +89,7 @@ contains
       real(dp), intent(in) :: d_c(nao_c, nao_c, nspin)
       real(dp), intent(inout) :: gmat_c(nao_c, nao_c, nspin)
       real(dp), intent(inout) :: dtot_c(nu_c, nu_c), jmat_c(nu_c, nu_c)
-      real(dp), intent(inout) :: w1_c(nao_c, nao_c), klr_c(nlr_c, nlr_c)
+      real(dp), intent(inout) :: klr_c(nlr_c, nlr_c)
       real(dp), intent(inout) :: gacc_c(nin_c, nin_c), dref_c(nin_c, nin_c), ddif_c(nin_c, nin_c)
       logical, intent(in) :: df_on
       !! `--df`: density-fitted J and K instead of the four-centre engine.
@@ -357,7 +357,8 @@ contains
 
    ! The one- and two-electron energy at the density `scf_result%dmat`: Tr(D H) and
    ! Tr(D G)/2, per spin; the total adds the nuclear repulsion and the XC and
-   ! PCM energies already in `scf_energies`.
+   ! PCM energies already in `scf_energies`. G is read from `scf_state%fock`,
+   ! which holds it from `scf_fock_fold_g` until `scf_fock_assemble`.
    subroutine scf_fock_energy(scf_context, scf_config, scf_state, scf_result, scf_energies, la)
       type(scf_ctx_t), intent(in) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
@@ -370,42 +371,60 @@ contains
       scf_energies%two = 0.0_dp
       do s = 1, scf_config%nspin
          scf_energies%one = scf_energies%one + la%dot_2d(scf_result%dmat(:, :, s), scf_context%hcore)
-         scf_energies%two = scf_energies%two + 0.5_dp*la%dot_2d(scf_result%dmat(:, :, s), scf_state%gmat(:, :, s))
+         scf_energies%two = scf_energies%two + 0.5_dp*la%dot_2d(scf_result%dmat(:, :, s), scf_state%fock(:, :, s))
       end do
       scf_energies%total = scf_energies%one + scf_energies%two + scf_energies%xc + scf_context%e_nuc + scf_energies%pcm
    end subroutine scf_fock_energy
 
+   subroutine scf_fock_fold_g(scf_basis, scf_context, scf_config, scf_state)
+      !! G_sph := T^T G_cart T per spin, straight into `scf_state%fock`: the
+      !! last iteration's Fock matrix is dead by the time G is built, so G
+      !! needs no matrix of its own (one nao^2 per spin of device memory).
+      !! `fock` holds G until `scf_fock_assemble` adds H (and V_xc, the
+      !! continuum) to it in place; `scf_fock_energy` reads G there between.
+      type(trc_basis_t), intent(in) :: scf_basis
+      type(scf_ctx_t), intent(in) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
+      integer :: s
+      do s = 1, scf_config%nspin
+         call scf_fock_to_sph(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, &
+                              scf_state%gmat_c(:, :, s), scf_state%fock(:, :, s))
+      end do
+   end subroutine scf_fock_fold_g
+
    subroutine scf_fock_assemble(scf_context, scf_config, scf_state)
-      !! F = H + G (+ V_xc, + the continuum's operator), per spin, into
-      !! `scf_state%fock`.
+      !! F = H + G (+ V_xc, + the continuum's operator), per spin, in place
+      !! in `scf_state%fock`, which holds G on entry (`scf_fock_fold_g`).
       type(scf_ctx_t), intent(in) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
       type(scf_state_t), intent(inout) :: scf_state
       call assemble_fock_arrays(scf_context%nao, size(scf_state%vxc, 1), size(scf_state%vpcm, 1), scf_config%nspin, &
-                                scf_config%dft, scf_config%pcm_on, scf_context%hcore, scf_state%gmat, scf_state%vxc, &
+                                scf_config%dft, scf_config%pcm_on, scf_context%hcore, scf_state%vxc, &
                                 scf_state%vpcm, scf_state%fock)
    end subroutine scf_fock_assemble
 
-   subroutine assemble_fock_arrays(nao, nxc, npcm, nspin, dft, pcm_on, hcore, gmat, vxc, vpcm, fock)
+   subroutine assemble_fock_arrays(nao, nxc, npcm, nspin, dft, pcm_on, hcore, vxc, vpcm, fock)
       !! `scf_fock_assemble`'s loops, on explicit-shape arrays. `vxc` is
       !! 1 x 1 (unused) when `.not. dft`, `vpcm` 1 x 1 when `.not. pcm_on`;
       !! `nxc`/`npcm` are their true sizes, so the explicit-shape dummies
-      !! below match whichever the caller actually allocated.
+      !! below match whichever the caller actually allocated. `fock` holds G
+      !! on entry, and the sums keep the order H + G + V_xc.
       integer, intent(in) :: nao, nxc, npcm, nspin
       logical, intent(in) :: dft, pcm_on
       real(dp), intent(in) :: hcore(nao, nao)
-      real(dp), intent(in) :: gmat(nao, nao, nspin), vxc(nxc, nxc, nspin)
+      real(dp), intent(in) :: vxc(nxc, nxc, nspin)
       real(dp), intent(in) :: vpcm(npcm, npcm)
       real(dp), intent(inout) :: fock(nao, nao, nspin)
       integer :: i, j, s
       do s = 1, nspin
          if (dft) then
             do concurrent(i=1:nao, j=1:nao)
-               fock(i, j, s) = hcore(i, j) + gmat(i, j, s) + vxc(i, j, s)
+               fock(i, j, s) = hcore(i, j) + fock(i, j, s) + vxc(i, j, s)
             end do
          else
             do concurrent(i=1:nao, j=1:nao)
-               fock(i, j, s) = hcore(i, j) + gmat(i, j, s)
+               fock(i, j, s) = hcore(i, j) + fock(i, j, s)
             end do
          end if
          if (pcm_on) then
