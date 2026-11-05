@@ -212,7 +212,7 @@ module trc_dlfind_bridge
    use trc_capi, only: trc_set_geometry, trc_run_scf, trc_run_gradient, trc_gradient, &
                        trc_energy, trc_converged, trc_iterations, trc_nspin, trc_nao, &
                        trc_set_guess, trc_density, trc_message, trc_run_hessian, trc_hessian, &
-                       trc_run_rimp2, TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
+                       trc_run_rimp2, trc_check_rimp2_gradient, TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
    ! trc_opt_io, not trc_app (app/trc_app.F90): this module is built into
    ! libterco_opt, which must not depend on app/ -- CODE_STRUCTURE.md's
    ! "entry points are leaves" rule, and the only way a caller outside
@@ -457,6 +457,10 @@ module trc_dlfind_bridge
       logical :: converged = .false.
       logical :: failed = .false.
       character(len=:), allocatable :: message
+      integer :: refusal_status = 0
+         !! Non-zero: the run was refused before DL-FIND started, nothing
+         !! was evaluated, and this is the trc_capi status of the refusal
+         !! (trc_check_rimp2_gradient's, for trc_opt_options_t%rimp2).
       integer :: steps = 0               !! ACCEPTED geometries (cb_put_coords, this module's own
                                           !! replica of DL-FIND's test_acceptance/the always-accept
                                           !! rule for the algorithm in use -- see cb_put_coords)
@@ -801,6 +805,25 @@ contains
          ! learns about the geometry, not a diagonalisation info code).
          call check_neb_initial_path(n, znuc, start_coords, opts%neb_via, opts%neb_product, n_images_dlf, &
                                      res%failed, res%message)
+      end if
+      if (.not. res%failed .and. opts%rimp2) then
+         ! Every step runs the RI-MP2 gradient; whatever refuses it refuses
+         ! the first evaluation, and DL-FIND's only answer to a failed
+         ! evaluation is `error stop` (fail_eval). Asked here, before any
+         ! SCF, so the caller gets the refusal as a status instead
+         ! (trc_opt_capi's trc_opt_run returns refusal_status).
+         block
+            integer(c_int) :: st
+            character(kind=c_char) :: message_buffer(MSG_LEN)
+            st = trc_check_rimp2_gradient(handle)
+            if (st /= TRC_OK) then
+               res%failed = .true.
+               res%refusal_status = int(st)
+               st = trc_message(handle, message_buffer, int(size(message_buffer), c_int))
+               res%message = "geometry optimisation refused before its first step: "// &
+                             opt_io_f_string(message_buffer)
+            end if
+         end block
       end if
 
       if (.not. res%failed) then

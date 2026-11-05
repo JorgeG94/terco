@@ -327,7 +327,9 @@ contains
       !! or a double hybrid's E_KS + c_os E_os + c_ss E_ss) -- what a
       !! double hybrid always needs, since its SCF energy alone is not the
       !! functional's energy. Needs the auxiliary basis set on the context
-      !! (trc_set_aux_*), as trc_run_rimp2 does. Zero (the default): the
+      !! (trc_set_aux_*), as trc_run_rimp2 does; trc_opt_run checks the
+      !! setup with trc_check_rimp2_gradient before the first SCF and
+      !! returns its refusal instead of starting. Zero (the default): the
       !! SCF energy and gradient.
       type(c_ptr), value :: handle
       integer(c_int), value :: enable
@@ -572,7 +574,11 @@ contains
       !! place. Returns TRC_OK when converged, TRC_ERR_NOCONV when the run
       !! finished without converging (the usual "ran out of steps"),
       !! TRC_ERR_STATE when an evaluation failed outright (the message is
-      !! on result_handle either way, trc_opt_result_message) -- but see
+      !! on result_handle either way, trc_opt_result_message). With
+      !! trc_opt_set_rimp2, a setup the RI-MP2 gradient refuses (an
+      !! unrestricted reference, PCM, no auxiliary basis, ...) is refused
+      !! BEFORE the first SCF, with trc_check_rimp2_gradient's own status
+      !! (TRC_ERR_UNSUPPORTED or TRC_ERR_STATE) and message -- but see
       !! this module's own header: DL-FIND's `error stop` can still end the
       !! calling PROCESS before this function ever returns at all.
       type(c_ptr), value :: handle
@@ -623,7 +629,9 @@ contains
 
       call trc_dlfind_optimize(handle, int(natm), z_in, residues, xyz_in, opts, rb%res)
 
-      if (rb%res%failed) then
+      if (rb%res%refusal_status /= 0) then
+         status = int(rb%res%refusal_status, c_int)
+      else if (rb%res%failed) then
          status = TRC_ERR_STATE
       else if (rb%res%converged) then
          status = TRC_OK

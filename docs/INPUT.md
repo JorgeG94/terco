@@ -157,7 +157,9 @@ hybrid, every optimisation step and every Hessian displacement reruns the
 RI-MP2, so both act on the correlated total energy (a double hybrid's
 E_KS + c_os E_os + c_ss E_ss), which is also the energy the thermochemistry
 starts from. What the correlated gradient refuses (an unrestricted
-reference, PCM) is refused before the first SCF.
+reference, PCM) is refused: by `optimize` before the first SCF, by a
+`hessian` without `optimize` after the reference SCF, before any
+displacement runs.
 
 ### `[analysis]`
 

@@ -21,7 +21,9 @@
 !    of that same energy, (E(x+h) - 2 E(x) + E(x-h))/h^2 on every diagonal
 !    element: no gradient code in the reference at all. Plus symmetry, the
 !    reference state (and its correlated energy) restored afterwards, and a
-!    sane harmonic analysis: six zero modes, three real ones, no NaN.
+!    sane harmonic analysis: six zero modes, three real ones, no NaN. The
+!    same at the RHF + RI-MP2/def2-SVP minimum (plain --rimp2 --hessian,
+!    E_RHF + E_os + E_ss).
 !
 ! C. What the RI-MP2 gradient refuses, trc_run_hessian still refuses, with
 !    the gradient's message: an unrestricted RI-MP2 reference and RI-MP2
@@ -58,7 +60,8 @@ module check_hessian_dh_suite
    real(dp), parameter :: HESSIAN_STEP = 5.0e-3_dp
    !! Bohr: trc_run_hessian's own default, and the second difference's.
    real(dp), parameter :: HESSIAN_DIAG_TOL = 1.0e-5_dp
-   !! B: measured worst 3.7e-6 Eh/Bohr^2 (H(3,3)). Both sides carry an O(h^2)
+   !! B: measured worst 3.7e-6 (b2plyp) and 3.8e-6 (RI-MP2) Eh/Bohr^2, both
+   !! H(3,3). Both sides carry an O(h^2)
    !! truncation at h = 0.005 (check_fd_hessian_vs_pyscf.F90 measures
    !! 1.4e-5 for the gradient side alone on water/HF).
    real(dp), parameter :: ENERGY_TOL = 1.0e-9_dp
@@ -68,6 +71,12 @@ module check_hessian_dh_suite
                                                0.0_dp, -0.754065492362_dp, -0.473800658216_dp], [3, 3])
    !! The B2PLYP/def2-SVP minimum, Angstrom: terco --opt (this setup), max
    !! |g| 1.1e-5 Eh/Bohr there.
+   real(dp), parameter :: MIN_RIMP2_ANGSTROM(3, 3) = reshape([ &
+                                                     0.0_dp, 0.0_dp, 0.128286001881_dp, &
+                                                     0.0_dp, 0.750231168460_dp, -0.474693000940_dp, &
+                                                     0.0_dp, -0.750231168460_dp, -0.474693000940_dp], [3, 3])
+   !! The RHF + RI-MP2/def2-SVP minimum, Angstrom: terco --rimp2 --opt
+   !! --opt-gtol 1e-6, max |g| 3.2e-8 Eh/Bohr there.
    real(dp), parameter :: Z_WATER(3) = [8.0_dp, 1.0_dp, 1.0_dp]
 
 contains
@@ -79,6 +88,8 @@ contains
                                test_fd_gradient), &
                   new_unittest("b2plyp: the FD Hessian matches second differences of the total energy", &
                                test_hessian), &
+                  new_unittest("RHF + RI-MP2: the FD Hessian matches second differences of the total energy", &
+                               test_hessian_rimp2), &
                   new_unittest("the Hessian over an unrestricted RI-MP2 reference is still refused", &
                                test_refuses_unrestricted), &
                   new_unittest("the Hessian over RI-MP2 + PCM is still refused", test_refuses_pcm) &
@@ -170,6 +181,19 @@ contains
 
    subroutine test_hessian(error)
       type(error_type), allocatable, intent(out) :: error
+      call hessian_case(error, "b2plyp", MIN_ANGSTROM)
+   end subroutine test_hessian
+
+   subroutine test_hessian_rimp2(error)
+      !! Plain --rimp2 --hessian: an RHF reference, E_RHF + E_os + E_ss.
+      type(error_type), allocatable, intent(out) :: error
+      call hessian_case(error, "", MIN_RIMP2_ANGSTROM)
+   end subroutine test_hessian_rimp2
+
+   subroutine hessian_case(error, functional, minimum_angstrom)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=*), intent(in) :: functional
+      real(dp), intent(in) :: minimum_angstrom(3, 3)
       type(c_ptr) :: h
       real(dp) :: x0(3, 3), xd(3, 3), e0, e_after, eplus, eminus, fd, worst, asym
       real(dp), allocatable :: hess(:, :), mass(:), freq(:), redmass(:), force_const(:), displacement(:, :, :)
@@ -178,14 +202,14 @@ contains
       integer :: k, atom, comp, n_tr, i
       logical :: is_linear
       type(error_t) :: verr
-      x0 = MIN_ANGSTROM/BOHR_TO_ANGSTROM
-      call water_context(error, h, "b2plyp", x0, 0, 1, .false.)
+      x0 = minimum_angstrom/BOHR_TO_ANGSTROM
+      call water_context(error, h, functional, x0, 0, 1, .false.)
       if (allocated(error)) return
       call correlated_energy(error, h, x0, e0)
       if (allocated(error)) return
       rc = trc_set_hessian_step(h, real(HESSIAN_STEP, c_double))
       if (rc == TRC_OK) rc = trc_run_hessian(h)
-      call check(error, rc == TRC_OK, "trc_run_hessian over a double-hybrid reference: "//message_of(h))
+      call check(error, rc == TRC_OK, "trc_run_hessian over a correlated reference: "//message_of(h))
       if (allocated(error)) return
       rc = trc_hessian(h, hbuf)
       call check(error, rc == TRC_OK, "trc_hessian after a successful trc_run_hessian")
@@ -197,7 +221,7 @@ contains
       rc = trc_energy(h, e)
       e_after = real(e, dp)
       call check(error, rc == TRC_OK .and. abs(e_after - e0) <= ENERGY_TOL, &
-                 "trc_energy after trc_run_hessian is not the reference's double-hybrid total", &
+                 "trc_energy after trc_run_hessian is not the reference's correlated total", &
                  more="before "//real_text(e0)//", after "//real_text(e_after))
       if (allocated(error)) return
 
@@ -222,7 +246,7 @@ contains
          worst = max(worst, abs(fd - hess(k, k)))
       end do
       call check(error, worst <= HESSIAN_DIAG_TOL, "the Hessian's diagonal disagrees with second differences "// &
-                 "of the double-hybrid energy", more="worst "//real_text(worst))
+                 "of the correlated energy", more="worst "//real_text(worst))
       if (allocated(error)) return
 
       allocate (mass(3))
@@ -238,7 +262,7 @@ contains
       call check(error, all(freq == freq) .and. all(freq > 1000.0_dp) .and. all(freq < 4500.0_dp), &
                  "a frequency is NaN, imaginary or out of range for water at its minimum")
       rc = trc_destroy(h)
-   end subroutine test_hessian
+   end subroutine hessian_case
 
    subroutine test_refuses_unrestricted(error)
       type(error_type), allocatable, intent(out) :: error

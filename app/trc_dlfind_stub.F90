@@ -116,6 +116,7 @@ module trc_dlfind_bridge
       logical :: converged = .false.
       logical :: failed = .false.
       character(len=:), allocatable :: message
+      integer :: refusal_status = 0
       integer :: steps = 0
       integer :: energy_evaluations = 0
       integer :: hessian_evaluations = 0

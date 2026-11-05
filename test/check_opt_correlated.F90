@@ -31,7 +31,8 @@ module check_opt_correlated_suite
    use trc_test_basis, only: read_xyz
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_aux_json, &
                                trc_set_method, trc_set_convergence, trc_set_rimp2, trc_run_scf, trc_run_rimp2, &
-                               trc_run_gradient, trc_gradient, trc_energy, trc_message, TRC_OK
+                               trc_run_gradient, trc_gradient, trc_energy, trc_message, trc_set_pcm, &
+                               trc_iterations, TRC_OK, TRC_ERR_UNSUPPORTED, TRC_ERR_STATE
    use trc_opt_c_interfaces, only: trc_opt_options_create, trc_opt_options_destroy, trc_opt_set_gtol, &
                                    trc_opt_set_rimp2, trc_opt_result_create, trc_opt_result_destroy, trc_opt_run, &
                                    trc_opt_result_converged, trc_opt_result_energy, trc_opt_result_gradient_max, &
@@ -54,7 +55,12 @@ contains
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
                   new_unittest("--opt b2plyp/def2-SVP: the double-hybrid total at every step", test_dh), &
-                  new_unittest("--opt RI-MP2/def2-SVP: the RHF + RI-MP2 total at every step", test_rimp2) &
+                  new_unittest("--opt RI-MP2/def2-SVP: the RHF + RI-MP2 total at every step", test_rimp2), &
+                  new_unittest("trc_opt_run refuses an unrestricted RI-MP2 setup before its first step", &
+                               test_refuses_unrestricted), &
+                  new_unittest("trc_opt_run refuses a double hybrid over PCM before its first step", &
+                               test_refuses_pcm), &
+                  new_unittest("trc_opt_run refuses a correlated run with no auxiliary basis", test_refuses_no_aux) &
                   ]
    end subroutine collect_opt_correlated
 
@@ -68,17 +74,89 @@ contains
       call run_case(error, "")
    end subroutine test_rimp2
 
-   subroutine water_context(error, h, functional, xyz)
+   subroutine test_refuses_unrestricted(error)
+      !! The water cation, a doublet: UHF + RI-MP2 has an energy but no
+      !! gradient yet.
+      type(error_type), allocatable, intent(out) :: error
+      call expect_refused(error, "", 1, 2, .false., .true., TRC_ERR_UNSUPPORTED, &
+                          "restricted (closed-shell RHF reference) only")
+   end subroutine test_refuses_unrestricted
+
+   subroutine test_refuses_pcm(error)
+      type(error_type), allocatable, intent(out) :: error
+      call expect_refused(error, "b2plyp", 0, 1, .true., .true., TRC_ERR_UNSUPPORTED, &
+                          "no PCM response in the Z-vector")
+   end subroutine test_refuses_pcm
+
+   subroutine test_refuses_no_aux(error)
+      type(error_type), allocatable, intent(out) :: error
+      call expect_refused(error, "", 0, 1, .false., .false., TRC_ERR_STATE, "no auxiliary basis was set")
+   end subroutine test_refuses_no_aux
+
+   subroutine expect_refused(error, functional, charge, multiplicity, pcm, aux, expected_status, expected)
+      !! trc_opt_run with trc_opt_set_rimp2 on a setup the RI-MP2 gradient
+      !! refuses: it must RETURN (DL-FIND's `error stop` on the first step
+      !! would end this test program instead), with the refusal's status
+      !! and message, and without having run a single SCF.
+      type(error_type), allocatable, intent(out) :: error
+      character(len=*), intent(in) :: functional, expected
+      integer, intent(in) :: charge, multiplicity
+      logical, intent(in) :: pcm, aux
+      integer(c_int), intent(in) :: expected_status
+      type(c_ptr) :: h, opts, res
+      integer :: natm
+      integer, allocatable :: z(:)
+      real(dp), allocatable :: r(:, :)
+      integer(c_int) :: rc, st, niter
+      character(kind=c_char) :: msg(1024)
+      character(len=:), allocatable :: text
+      call read_xyz("water.xyz", natm, z, r)
+      call water_context(error, h, functional, r, charge, multiplicity, pcm, aux)
+      if (allocated(error)) return
+      rc = trc_opt_options_create(opts)
+      if (rc == TRC_OK) rc = trc_opt_set_rimp2(opts, 1_c_int)
+      if (rc == TRC_OK) rc = trc_opt_result_create(res)
+      call check(error, rc == TRC_OK, "trc_opt options/result setup failed")
+      if (allocated(error)) return
+      rc = trc_opt_run(h, 3_c_int, int(z, c_int), reshape(real(r, c_double), [9]), opts, res)
+      st = trc_opt_result_message(res, msg, int(size(msg), c_int))
+      text = f_message(msg)
+      write (output_unit, "(a,i0,a,a)") "  trc_opt_run status ", rc, ": ", text
+      ! No SCF ran: trc_iterations refuses before the first one.
+      st = trc_iterations(h, niter)
+      rc = merge(rc, -999_c_int, st /= TRC_OK)
+      st = trc_opt_result_destroy(res)
+      st = trc_opt_options_destroy(opts)
+      st = trc_destroy(h)
+      call check(error, rc == expected_status .and. index(text, expected) > 0, &
+                 "trc_opt_run should refuse before its first SCF with '"//expected//"'", &
+                 more="status "//real_text(real(rc, dp))//": "//text)
+   end subroutine expect_refused
+
+   subroutine water_context(error, h, functional, xyz, charge, multiplicity, pcm, aux)
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr), intent(out) :: h
       character(len=*), intent(in) :: functional
       real(dp), intent(in) :: xyz(3, 3)
-      integer(c_int) :: rc
+      integer, intent(in), optional :: charge, multiplicity
+      logical, intent(in), optional :: pcm, aux
+      integer(c_int) :: rc, chg, mult
+      logical :: with_pcm, with_aux
+      chg = 0_c_int
+      mult = 1_c_int
+      if (present(charge)) chg = int(charge, c_int)
+      if (present(multiplicity)) mult = int(multiplicity, c_int)
+      with_pcm = .false.
+      if (present(pcm)) with_pcm = pcm
+      with_aux = .true.
+      if (present(aux)) with_aux = aux
       rc = trc_create(h)
       if (rc == TRC_OK) rc = trc_set_molecule(h, 3_c_int, [8.0_c_double, 1.0_c_double, 1.0_c_double], &
-                                              reshape(real(xyz, c_double), [9]), 0_c_int, 1_c_int)
+                                              reshape(real(xyz, c_double), [9]), chg, mult)
       if (rc == TRC_OK) rc = trc_set_basis_json(h, "basis_sets/def2-svp.json"//c_null_char)
-      if (rc == TRC_OK) rc = trc_set_aux_json(h, "basis_sets/def2-svp-rifit.json"//c_null_char)
+      if (rc == TRC_OK .and. with_aux) rc = trc_set_aux_json(h, "basis_sets/def2-svp-rifit.json"//c_null_char)
+      if (rc == TRC_OK .and. with_pcm) rc = trc_set_pcm(h, "cpcm"//c_null_char, 78.3553_c_double, 0_c_int, &
+                                                         0.0_c_double)
       if (rc == TRC_OK) rc = trc_set_method(h, functional//c_null_char, 3_c_int)
       if (rc == TRC_OK) rc = trc_set_convergence(h, 1.0e-12_c_double, 1.0e-9_c_double, 200_c_int, 8_c_int)
       if (rc == TRC_OK) rc = trc_set_rimp2(h, 1_c_int, 0_c_int)
