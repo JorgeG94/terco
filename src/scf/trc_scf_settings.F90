@@ -105,6 +105,18 @@ module trc_scf_settings
       !! build. `incr_reset` and the three below are that schedule's knobs, each
       !! with an environment hook (TRC_INCR_RESET, TRC_INCR_THRESH_SCALE,
       !! TRC_INCR_EARLY_SCALE, TRC_INCR_EARLY_UNTIL, TRC_INCR_START).
+      real(dp) :: incr_predict = 1.0_dp
+      !! The build after one whose commutator, times its ratio to the one
+      !! before, falls below `incr_predict * conv_diis` is full: the
+      !! iteration predicted to converge (trc_scf_incremental, rule 2). 0
+      !! turns the prediction off, so convergence is first met on an
+      !! increment and retaken on the next, full, build (rule 1);
+      !! TRC_INCR_PREDICT overrides it.
+      logical :: incremental_requested = .false.
+      !! The caller set `incremental` on itself (trc_set_incremental(1),
+      !! TRC_INCREMENTAL=1) rather than leaving the default. Read only to
+      !! decide how loudly `df` turning increments off is reported: a warning
+      !! when they were asked for, an info line when they were the default.
       integer :: incr_reset = 30
       !! At most this many increments in a row before a full build (0: no
       !! limit). A loose cap only: the stall rule rebuilds as soon as the
@@ -310,7 +322,9 @@ module trc_scf_settings
       logical :: pcm_on = .false.
       logical :: incr_on = .false.
       logical :: incr_off_df = .false.
-      !! Increments were asked for (the default) but --df turned them off.
+      !! Increments were on (by default or asked for) but `df` turned them off.
+      logical :: incr_df_requested = .false.
+      !! ... and they had been asked for explicitly (`incremental_requested`).
       logical :: df = .false.
       logical :: talk = .false.
       logical :: root = .true.
@@ -320,7 +334,7 @@ module trc_scf_settings
       real(dp) :: incr_early_scale_run = 0.0_dp
       real(dp) :: incr_early_until_run = 0.0_dp
       real(dp) :: incr_predict_run = 1.0_dp
-      !! TRC_INCR_PREDICT, an experiment hook: the next build is full once the
+      !! `opts%incr_predict`, or TRC_INCR_PREDICT: the next build is full once the
       !! commutator it is predicted to reach is below this times `conv_diis`.
       real(dp) :: incr_endgame_run = 0.0_dp
       !! TRC_INCR_ENDGAME, an experiment hook only: every build is full once
@@ -421,6 +435,7 @@ contains
       ! with it.
       this%incr_on = incr_env(opts%incremental) .and. .not. opts%frac_occ .and. .not. opts%df
       this%incr_off_df = incr_env(opts%incremental) .and. .not. opts%frac_occ .and. opts%df
+      this%incr_df_requested = this%incr_off_df .and. (opts%incremental_requested .or. incr_env_set())
       this%df = opts%df
       if (this%df .and. this%nspin == 2) then
          msg = "trc_scf: --df supports a restricted (closed-shell) reference only, for now"
@@ -484,7 +499,7 @@ contains
       this%incr_early_scale_run = incr_real_env("TRC_INCR_EARLY_SCALE", opts%incr_early_scale)
       this%incr_early_until_run = incr_real_env("TRC_INCR_EARLY_UNTIL", opts%incr_early_until)
       this%incr_endgame_run = incr_real_env("TRC_INCR_ENDGAME", 0.0_dp)
-      this%incr_predict_run = incr_real_env("TRC_INCR_PREDICT", 1.0_dp)
+      this%incr_predict_run = incr_real_env("TRC_INCR_PREDICT", opts%incr_predict)
    end function scf_settings_resolve
 
    !
@@ -519,6 +534,13 @@ contains
       if (trim(v) == "1") res = .true.
       if (trim(v) == "0") res = .false.
    end function incr_env
+
+   logical function incr_env_set() result(res)
+      !! TRC_INCREMENTAL=1: increments asked for through the environment.
+      character(len=8) :: v
+      call get_environment_variable("TRC_INCREMENTAL", v)
+      res = (trim(v) == "1")
+   end function incr_env_set
 
    integer function incr_reset_env(dflt) result(res)
       !! Full rebuild interval, and an integral threshold override. A

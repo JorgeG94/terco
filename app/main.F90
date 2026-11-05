@@ -1097,8 +1097,10 @@ program trc_main
    if (r%soscf) call run_api(r, trc_set_soscf(r%h, 1_c_int, real(r%soscf_start, c_double)))
    call run_api(r, trc_set_screening(r%h, real(r%thresh, c_double)))
    if (r%lindep >= 0.0_dp) call run_api(r, trc_set_lindep(r%h, real(r%lindep, c_double)))
-   ! On unless asked otherwise, as in the library (trc_scf_options_t%incremental).
-   call run_api(r, trc_set_incremental(r%h, merge(0_c_int, 1_c_int, r%cli%is_set("no-incremental"))))
+   ! Only when a flag says so: unset, the library's default (on) stands and
+   ! is not "asked for", so a --df run gets an info line, not a warning.
+   if (r%cli%is_set("incremental")) call run_api(r, trc_set_incremental(r%h, 1_c_int))
+   if (r%cli%is_set("no-incremental")) call run_api(r, trc_set_incremental(r%h, 0_c_int))
    call run_api(r, trc_set_guess(r%h, int(guess_kind, c_int), c_null_ptr, 1_c_int))
    if (r%rimp2) then
       ! The three-index tensor (mu nu|P) is nao^2 per auxiliary function and
