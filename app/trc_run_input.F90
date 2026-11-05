@@ -47,6 +47,9 @@ module trc_run_input
       !! A string array, joined with semicolons (`--opt-constrain`).
    integer, parameter :: KIND_METHOD = 9
       !! `[correlation] method`: "rimp2" gives `--rimp2`, "none" nothing.
+   integer, parameter :: KIND_BOOL_ON = 10
+      !! A switch that is on by default: true gives the flag, false gives
+      !! its `--no-` form (`incremental = false` is `--no-incremental`).
 
    type :: run_input_key_t
       !! One key of the format.
@@ -75,7 +78,7 @@ module trc_run_input
       run_input_key_t("scf", "energy_tol", "econv", KIND_FLOAT), &
       run_input_key_t("scf", "commutator_tol", "gconv", KIND_FLOAT), &
       run_input_key_t("scf", "screening", "thresh", KIND_FLOAT), &
-      run_input_key_t("scf", "incremental", "incremental", KIND_BOOL), &
+      run_input_key_t("scf", "incremental", "incremental", KIND_BOOL_ON), &
       run_input_key_t("scf", "density_fitted", "df", KIND_BOOL), &
       run_input_key_t("scf", "restart", "restart", KIND_PATH), &
       run_input_key_t("scf.convergence", "diis_size", "diis", KIND_INT), &
@@ -333,6 +336,17 @@ contains
             return
          end if
          if (lval) call push(state, flag)
+      case (KIND_BOOL_ON)
+         call get_value(table, key%key, lval, stat=stat)
+         if (stat /= 0) then
+            state%message = context%report("'"//key%key//"' must be true or false", key%origin)
+            return
+         end if
+         if (lval) then
+            call push(state, flag)
+         else
+            call push(state, "--no-"//trim(spec%flag))
+         end if
       case (KIND_INT_LIST, KIND_STRING_LIST)
          call get_value(table, key%key, array, requested=.false., stat=stat)
          if (.not. associated(array)) then
@@ -387,6 +401,11 @@ contains
          if (spec%kind == KIND_BOOL) then
             call section_object(json, input, trim(spec%section), section)
             call json%add(section, trim(spec%key), cli%is_set(trim(spec%flag)))
+            cycle
+         end if
+         if (spec%kind == KIND_BOOL_ON) then
+            call section_object(json, input, trim(spec%section), section)
+            call json%add(section, trim(spec%key), .not. cli%is_set("no-"//trim(spec%flag)))
             cycle
          end if
          if (spec%kind == KIND_METHOD) then

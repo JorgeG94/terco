@@ -82,7 +82,7 @@ module trc_scf_settings
       !! when the pairs are binned. 1 is decades, which is what this always
       !! did; higher values make the pre-launch screen finer, at more and
       !! smaller batches. Settable through trc_set_batching.
-      logical :: incremental = .false.
+      logical :: incremental = .true.
       !! Rebuild the two-electron matrix from the DENSITY DIFFERENCE, accumulating
       !! onto the last one. G is linear in D, so this is exact but for the
       !! screening, and the screening is the point: the difference shrinks as the
@@ -91,8 +91,8 @@ module trc_scf_settings
       !! is full, every later one is an increment, and convergence is declared only
       !! on a full build, so the reported energy and density are a full build's.
       !! The exchange-correlation potential and the continuum are rebuilt in full
-      !! from the density every iteration either way. Off for SAD's free atoms;
-      !! refused with `df` (a full build every iteration, nothing to screen).
+      !! from the density every iteration either way. Off for SAD's free atoms and
+      !! under `df` (a full build every iteration, nothing to screen);
       !! TRC_INCREMENTAL=0 or 1 overrides it without a rebuild.
       !!
       !! Measured (V100, RHF cc-pVTZ, `eri_thresh` 3.16e-11, `conv_energy` 1e-8),
@@ -104,10 +104,11 @@ module trc_scf_settings
       !! build. `incr_reset` and the three below are that schedule's knobs, each
       !! with an environment hook (TRC_INCR_RESET, TRC_INCR_THRESH_SCALE,
       !! TRC_INCR_EARLY_SCALE, TRC_INCR_EARLY_UNTIL, TRC_INCR_START).
-      integer :: incr_reset = 0
-      !! At most this many increments in a row before a full build; 0, the
-      !! default, is no fixed limit. The schedule's own stall rule rebuilds when
-      !! the accumulated error starts to show (trc_scf_incremental, rule 3).
+      integer :: incr_reset = 30
+      !! At most this many increments in a row before a full build (0: no
+      !! limit). A loose cap only: the stall rule rebuilds as soon as the
+      !! accumulated error shows (trc_scf_incremental, rule 3), and none of the
+      !! measured runs reached 30 increments without one.
       real(dp) :: incr_thresh_scale = 1.0_dp
       !! Multiplies `eri_thresh` for an increment once |FDS - SDF| is below
       !! `incr_early_until`: the full build's own screen. It was 1e-4, chosen on
@@ -315,6 +316,13 @@ module trc_scf_settings
       real(dp) :: incr_scale_run = 0.0_dp
       real(dp) :: incr_early_scale_run = 0.0_dp
       real(dp) :: incr_early_until_run = 0.0_dp
+      real(dp) :: incr_predict_run = 1.0_dp
+      !! TRC_INCR_PREDICT, an experiment hook: the next build is full once the
+      !! commutator it is predicted to reach is below this times `conv_diis`.
+      real(dp) :: incr_endgame_run = 0.0_dp
+      !! TRC_INCR_ENDGAME, an experiment hook only: every build is full once
+      !! |FDS - SDF| < this times `conv_diis` (0, the default: the schedule's
+      !! own prediction alone, trc_scf_incremental's rule 2).
       integer :: incr_reset_run = 0
       real(dp) :: rho_tol = 0.0_dp   !! the XC batch screen, `opts%rho_tol`
    contains
@@ -405,7 +413,10 @@ contains
       ! Not for SAD's free-atom runs (`frac_occ`): a few functions, nothing
       ! to screen, and the guess stays the same density whatever the
       ! molecule's own setting.
-      this%incr_on = incr_env(opts%incremental) .and. .not. opts%frac_occ
+      ! Nor for --df, a full build every iteration with no screening for a
+      ! difference density to buy; the CLI refuses an explicit --incremental
+      ! with it.
+      this%incr_on = incr_env(opts%incremental) .and. .not. opts%frac_occ .and. .not. opts%df
       this%df = opts%df
       if (this%df .and. this%nspin == 2) then
          msg = "trc_scf: --df supports a restricted (closed-shell) reference only, for now"
@@ -416,12 +427,6 @@ contains
          msg = "trc_scf: --df with a range-separated functional is refused -- the erf-attenuated "// &
                "fit does not exist yet, and mixing a fitted K with a 4-centre long-range one is "// &
                "never done silently"
-         ok = .false.
-         return
-      end if
-      if (this%df .and. this%incr_on) then
-         msg = "trc_scf: --df with --incremental is refused -- a density-fitted build is a full "// &
-               "build every iteration, and the increment buys nothing"
          ok = .false.
          return
       end if
@@ -474,6 +479,8 @@ contains
       this%incr_scale_run = incr_real_env("TRC_INCR_THRESH_SCALE", opts%incr_thresh_scale)
       this%incr_early_scale_run = incr_real_env("TRC_INCR_EARLY_SCALE", opts%incr_early_scale)
       this%incr_early_until_run = incr_real_env("TRC_INCR_EARLY_UNTIL", opts%incr_early_until)
+      this%incr_endgame_run = incr_real_env("TRC_INCR_ENDGAME", 0.0_dp)
+      this%incr_predict_run = incr_real_env("TRC_INCR_PREDICT", 1.0_dp)
    end function scf_settings_resolve
 
    !

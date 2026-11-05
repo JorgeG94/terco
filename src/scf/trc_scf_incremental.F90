@@ -35,7 +35,14 @@
 ! 2. The iteration that is expected to converge is built in full to begin
 !    with, so rule 1 costs no extra iteration when the expectation holds:
 !    DIIS shrinks the commutator geometrically, and when the last ratio
-!    carries it below `conv_diis` the next build is full.
+!    carries it below `conv_diis` the next build is full. When it falls
+!    faster than that, the run takes one more iteration than full builds
+!    would (w20 cc-pVQZ 12 against 11; water20 aug-cc-pVDZ 13 against 12,
+!    where the jump onto the full build also exceeds conv_energy 1e-10).
+!    Predicting to 3 x conv_diis (TRC_INCR_PREDICT=3) or building in full
+!    below 10 x conv_diis (TRC_INCR_ENDGAME=10) removes those, but spends a
+!    full build an iteration early elsewhere: over gly10, gly30, water20,
+!    w20, w172 and the aug-cc-pVDZ case 441 s as is, 454 s with either.
 ! 3. A stall is a rebuild. Once the commutator stops falling over
 !    STALL_ITERATIONS increments, it has reached the floor eps sets, and
 !    only a full build lowers that floor; it also resets the sum.
@@ -76,6 +83,10 @@ module trc_scf_incremental
       logical :: early_since_full = .false.
       !! An early (loose) increment has gone into G since the last full build.
       real(dp) :: conv_diis = 0.0_dp
+      real(dp) :: predict = 1.0_dp
+      real(dp) :: endgame = 0.0_dp
+      !! Full builds once the commutator is within this factor of `conv_diis`
+      !! (an experiment hook, scf_settings_t%incr_endgame_run; 0 is off).
       logical :: full_due = .false.
       !! The next build must be full: a convergence to verify, a predicted
       !! convergence, or a stall (this module's own header).
@@ -107,6 +118,8 @@ contains
       this%early_scale = config%incr_early_scale_run
       this%early_until = config%incr_early_until_run
       this%conv_diis = config%conv_diis
+      this%endgame = config%incr_endgame_run
+      this%predict = config%incr_predict_run
    end subroutine scf_incremental_setup
 
    logical function scf_incremental_next_build(this, iteration, errmax) result(incr_now)
@@ -157,7 +170,8 @@ contains
       ! No ratio before there are two commutators to take it from.
       ratio = 1.0_dp
       if (this%err_prev < huge(1.0_dp)) ratio = min(1.0_dp, errmax/max(this%err_prev, tiny(1.0_dp)))
-      if (errmax*ratio < this%conv_diis) this%full_due = .true.
+      if (errmax*ratio < this%predict*this%conv_diis) this%full_due = .true.
+      if (errmax < this%endgame*this%conv_diis) this%full_due = .true.
       if (.not. this%built_full) then
          if (errmax < this%best) then
             this%best = errmax

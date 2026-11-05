@@ -338,14 +338,22 @@ Convergence requires |ΔE| < 10⁻¹⁰ and ‖FDS − SDF‖ < 10⁻⁵ by defa
 
 ### 6.5 Incremental Fock build
 
-As an option (`--incremental`), later iterations build G from the change in
-the density, G(D) = G(D_ref) + G(D − D_ref), which is exact because G is
-linear in D. The density difference shrinks as the SCF converges, so the
-density-weighted screen discards more quartets. Two safeguards keep the
-energy correct: the difference build uses a threshold 10⁻⁴ times tighter
-than a full build (a fixed absolute threshold applied to a vanishing
-density bounds nothing), and increments begin only once the commutator norm
-is below 10⁻², with a full rebuild every 20 iterations.
+By default (`--no-incremental` turns it off), every build after the first
+forms G from the change in the density, G(D) = G(D_ref) + G(D − D_ref),
+which is exact because G is linear in D. The density difference shrinks as
+the SCF converges, so the density-weighted screen discards more quartets.
+What is not exact is the screening: each increment drops a different set of
+quartets, and their errors add up in the accumulated G as an offset that
+holds |FDS − SDF| at a floor. `trc_scf_incremental` keeps that offset out of
+the answer. Increments are screened 100 times looser while the commutator
+is above 10⁻² (where the offset is two decades smaller than the commutator)
+and at the full build's own threshold after; leaving the loose phase, a
+stall of the commutator and the iteration expected to converge take a full
+build; and convergence is declared only on a full build, so the reported
+energy and density are a full build's. Restricted and unrestricted alike;
+the XC potential and the continuum are rebuilt from the full density every
+iteration. On RHF gly10–gly20 and water20 in cc-pVTZ the SCF takes the same
+iterations as with full builds in 0.61–0.65 of the time.
 
 ### 6.6 Several GPUs
 
