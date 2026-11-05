@@ -119,6 +119,12 @@ target_compile_definitions(bench_mdj PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_mdj PRIVATE ${main_lib} terco_test_basis)
 target_include_directories(bench_mdj PRIVATE ${CMAKE_BINARY_DIR}/modules)
 
+# The exchange-only bin launch's density screens: J blocks do not keep a
+# quartet when jfac = 0, and the exchange tiles (trc_bin_tiles) prune the
+# plan without dropping a quartet the kernels would keep.
+terco_add_check(check_exchange_screen check_exchange_screen.F90 NEEDS_BASIS)
+target_link_libraries(check_exchange_screen PRIVATE test-drive::test-drive)
+
 # The step tables' SI-prefixed counts (2.45 PFLOP, not 2453056.2 GFLOP).
 terco_add_check(check_si check_si.F90)
 target_link_libraries(check_si PRIVATE test-drive::test-drive)

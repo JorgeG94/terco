@@ -25,6 +25,7 @@ module trc_binkernel
    use trc_cart, only: NCUM, cidx, cnx, cny, cnz, cll, cdir, cdn1, cdn2, cf2, &
                          ncum_of, cart_ncart_of
    use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_sort_by_weight, bins_build_pair_quartets
+   use trc_bin_tiles, only: bin_tiles_requested, bin_tiles_build, bin_tiles_reach, bin_tiles_plan
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
    use trc_rys_select, only: rys_select_init, rys_select_route
@@ -176,6 +177,7 @@ contains
       type(trc_bin_plan_t) :: plan
       real(dp) :: thresh
       integer :: nseg
+      logical :: tiled
 
       thresh = launch%thresh
       ! Order the pairs inside each bin by how much they matter, once, so
@@ -204,9 +206,21 @@ contains
          !$acc                quartets%px, quartets%py, quartets%pz, &
          !$acc                quartets%ax, quartets%ay, quartets%az, &
          !$acc                quartets%abx, quartets%aby, quartets%abz, quartets%n)
+         if (quartets%tiles%built) call bin_tiles_build(quartets%tiles, b, pairs%nbas)
       end if
 
-      call plan%build(b, thresh, quartets%bin_pbase, launch%use_density)
+      ! An exchange-only launch (jfac = 0: the MD J engine forms J) is planned
+      ! on the exchange tiles when the caller built them (trc_bin_tiles):
+      ! the tile pairs whose every quartet the kernels' density screen would
+      ! reject are dropped before launch.
+      tiled = quartets%tiles%built .and. launch%jfac == 0.0_dp .and. launch%kfac /= 0.0_dp &
+              .and. .not. launch%nosym .and. bin_tiles_requested()
+      if (tiled) then
+         call bin_tiles_reach(quartets%tiles, dsh)
+         call bin_tiles_plan(quartets%tiles, plan, b, thresh, quartets%bin_pbase)
+      else
+         call plan%build(b, thresh, quartets%bin_pbase, launch%use_density)
+      end if
       nseg = plan%nseg
       launch%nwork = plan%nwork
       launch%nlaunch = 1
@@ -241,12 +255,20 @@ contains
       ! address rather than a wrong number.
       call plan%sort_by_class(CLASS_RADIX)
 
-      !$acc enter data copyin(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, plan%sOff)
-      if (launch%count_kept) call count_kept(nseg, plan%nwork, plan%sNB, plan%sOA, plan%sOB, plan%sD, &
-                                             plan%sOff, b%npair, b%sp_i, b%sp_j, &
-                                             b%sp_q, thresh, dsh, pairs%nbas, launch%nkept)
-      call launch_classes(b, pairs, quartets, launch, plan, dsh, dmat, jmat)
-      !$acc exit data delete(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, plan%sOff)
+      !$acc enter data copyin(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
+      !$acc                   plan%sD, plan%sOff)
+      ! A counting call only counts: it used to fall through and build the
+      ! Fock matrix as well, into the same accumulator the caller's real
+      ! build then added to, so TRC_KEPT_STATS doubled the two-electron part.
+      if (launch%count_kept) then
+         call count_kept(nseg, plan%nwork, plan%sNB, plan%sOA, plan%sOB, plan%sD, &
+                         plan%sOff, b%npair, b%sp_i, b%sp_j, &
+                         b%sp_q, thresh, launch%jfac, launch%kfac, dsh, pairs%nbas, launch%nkept)
+      else
+         call launch_classes(b, pairs, quartets, launch, plan, dsh, dmat, jmat)
+      end if
+      !$acc exit data delete(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
+      !$acc                  plan%sD, plan%sOff)
       call plan%release()
    end subroutine binkernel_fock_bins
 
@@ -295,7 +317,7 @@ contains
             continue
          else if (rys_select_route(key)) then
             call rys_dispatch(key, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
-                              plan%sPA, plan%sPB, plan%sD, &
+                              plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, &
                               b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
                               launch%jfac, launch%kfac, launch%omega, dsh, pairs%nbas, launch%nao, &
                               pairs%sh_l, pairs%ao_off, &
@@ -305,7 +327,7 @@ contains
                               launch%ndens, dmat, jmat, launch%rank, launch%nranks)
          else
             call pc_dispatch(key, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
-                             plan%sPA, plan%sPB, plan%sD, &
+                             plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, &
                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
                              launch%jfac, launch%kfac, launch%omega, dsh, pairs%nbas, launch%nao, &
                              pairs%sh_l, pairs%ao_off, &
@@ -365,7 +387,7 @@ contains
    ! threads, plenty to fill the GPU.
    !
    subroutine count_kept(nseg, nwork, sNB, sOA, sOB, sD, sOff, &
-                         npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, nkept)
+                         npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, nkept)
       integer,  intent(in) :: nseg, npair, nbas
       integer(int64), intent(in) :: nwork
       integer,  intent(in) :: sNB(nseg), sOA(nseg), sOB(nseg)
@@ -373,19 +395,26 @@ contains
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in) :: sp_i(npair), sp_j(npair)
       real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: jfac, kfac
+      !! The operator's scalings: a zero factor's blocks do not keep a
+      !! quartet, exactly as in the kernels.
       real(dp), intent(in) :: sp_q(npair), dsh(nbas, nbas)
       integer(int64), intent(out) :: nkept
 
       integer(int64), parameter :: KEPT_CHUNK = 4096
       integer(int64), allocatable :: part(:)
-      integer(int64) :: nchunk, ic
+      integer(int64) :: nchunk
+      integer :: ic
 
       nchunk = (nwork + KEPT_CHUNK - 1)/KEPT_CHUNK
       allocate (part(nchunk))
       !$acc enter data create(part)
-      do concurrent(ic=1:nchunk)
-         call kept_in_chunk(ic, KEPT_CHUNK, nchunk, nwork, nseg, sNB, sOA, sOB, sD, sOff, &
-                            npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, part)
+      ! A default-integer index: with an integer(int64) one, ifx 2026.2 returned
+      ! garbage counts here (most part(ic) never written; 8.9e18 on CI's 2025.0)
+      ! while gfortran and nvfortran were right. nchunk = nwork/4096 fits.
+      do concurrent(ic=1:int(nchunk))
+         call kept_in_chunk(int(ic, int64), KEPT_CHUNK, nchunk, nwork, nseg, sNB, sOA, sOB, sD, sOff, &
+                            npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, part)
       end do
       !$acc update self(part)
       !$acc exit data delete(part)
@@ -394,7 +423,7 @@ contains
    end subroutine count_kept
 
    pure subroutine kept_in_chunk(ic, chunk, nchunk, nwork, nseg, sNB, sOA, sOB, sD, sOff, &
-                                 npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, part)
+                                 npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, part)
       !! Work items (ic-1)*chunk+1 .. ic*chunk of count_kept, into part(ic).
       !$acc routine seq
       integer(int64), intent(in) :: ic, chunk, nchunk, nwork
@@ -403,13 +432,13 @@ contains
       logical,  intent(in) :: sD(nseg)
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in) :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: thresh, jfac, kfac
       real(dp), intent(in) :: sp_q(npair), dsh(nbas, nbas)
       integer(int64), intent(inout) :: part(nchunk)
 
       integer(int64) :: gt, nk
       integer :: lo, hi, mid, seg, t, iab, icd, si, sj, sk, sl
-      real(dp) :: qcut
+      real(dp) :: qcut, dscr
 
       nk = 0
       do gt = (ic - 1)*chunk + 1, min(ic*chunk, nwork)
@@ -440,13 +469,15 @@ contains
             sj = sp_j(sOA(seg) + iab)
             sk = sp_i(sOB(seg) + icd)
             sl = sp_j(sOB(seg) + icd)
-            if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), &
-                         dsh(si, sk), dsh(si, sl), &
-                         dsh(sj, sk), dsh(sj, sl)) > thresh) nk = nk + 1
+            dscr = 0.0_dp
+            if (jfac /= 0.0_dp) dscr = 4.0_dp*max(dsh(si, sj), dsh(sk, sl))
+            if (kfac /= 0.0_dp) dscr = max(dscr, dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl))
+            if (qcut*dscr > thresh) nk = nk + 1
          end if
       end do
       part(ic) = nk
    end subroutine kept_in_chunk
+
 
    subroutine fock_all_nosym(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
                              npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, omega, dsh, &
@@ -553,7 +584,7 @@ contains
       real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
 
       integer  :: iab, icd, si, sj, sk, sl
-      real(dp) :: qcut
+      real(dp) :: qcut, dscr
       integer  :: la, lb, lc, ld, lab, lcd, lt, nca, ncc
       integer  :: keyab, keycd, offab, offcd, nab, ncd
       integer  :: kp, kq, m, d, x, cur, nxt, lim, dn
@@ -599,10 +630,12 @@ contains
       si = sp_i(offA + iab); sj = sp_j(offA + iab)
       sk = sp_i(offB + icd); sl = sp_j(offB + icd)
 
-      ! Density-weighted screen -- see the note in scripts/gen_perclass.py.
-      if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), &
-                   dsh(si, sk), dsh(si, sl), &
-                   dsh(sj, sk), dsh(sj, sl)) <= thresh) return
+      ! Density-weighted screen -- see the note in scripts/gen_perclass.py,
+      ! including why a zero factor's blocks do not count.
+      dscr = 0.0_dp
+      if (jfac /= 0.0_dp) dscr = 4.0_dp*max(dsh(si, sj), dsh(sk, sl))
+      if (kfac /= 0.0_dp) dscr = max(dscr, dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl))
+      if (qcut*dscr <= thresh) return
 
       !
       ! NO canonical swap between bra and ket.

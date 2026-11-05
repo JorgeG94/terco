@@ -36,6 +36,7 @@ module trc_eri
    use pic_timer, only: timer_type
    use pic_profiler, only: profiler_start, profiler_stop
    use trc_binkernel, only: binkernel_fock_bins
+   use trc_bin_tiles, only: bin_tiles_build
    use trc_grad, only: grad_bins
    use trc_rys_grad_kernels, only: RYSG_LMAX
    use trc_mdj, only: trc_mdj_t
@@ -403,6 +404,7 @@ contains
       call tm%start()
 
       call bins_build_pair_quartets(this%bins, this%pairs, this%quartets)
+      call bin_tiles_build(this%quartets%tiles, this%bins, b%nshell)
       this%t_build(4) = tm%get_elapsed_time()
       call tm%start()
 
@@ -1114,7 +1116,9 @@ contains
          want = len_trim(ke) > 0
          want = want .or. opts%count_survivors
          if (want) then
-            launch = bin_launch(this, 1, jfac, kfac, ow)
+            ! jbins, not jfac: count what the bins will screen, and with the
+            ! MD J engine forming J that is exchange alone.
+            launch = bin_launch(this, 1, jbins, kfac, ow)
             launch%count_kept = .true.
             call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, work(:, :, :, 1), &
                                      work(:, :, :, 2), work(:, :, :, 2))

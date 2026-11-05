@@ -124,6 +124,18 @@ contiguous run of one class is one kernel launch. Inside a launch, each
 through a prefix sum and evaluates that quartet. A diagonal bin pair uses
 only its lower triangle.
 
+An exchange-only launch (the bins' pass whenever the McMurchie–Davidson J
+engine forms J, any basis with an f shell) is planned on **exchange tiles**
+instead (`src/eri/trc_bin_tiles.F90`): each bin is cut into runs of at most
+64 pairs whose leading shell stays within a few shell blocks, and a tile
+pair is launched only if the largest density element between the two
+tiles' shell blocks can carry exchange at Q_A Q_B. Every quartet a dropped
+tile pair holds would fail the kernel's own density test, so the energy is
+unchanged; on gly50 cc-pVTZ the launch shrinks from 4.9·10¹⁰ to 2.1·10¹⁰
+quartets. A descriptor then covers a tile of each bin: its extents
+(`sA`, `sNB`) are the tiles', its strides into the bin-interleaved
+primitive tables (`sSA`, `sSB`) the bins'.
+
 ### 4.4 Screening inside the kernel
 
 Bin admission is a bound on whole bins. Each quartet is then tested on its
@@ -131,9 +143,13 @@ own:
 
 1. the exact Schwarz product Q_ab Q_cd > τ;
 2. a density-weighted bound, Q_ab Q_cd · max(4D_ab, 4D_cd, D_ac, D_ad, D_bc,
-   D_bd) > τ, with D the largest density element over each shell block. A
-   coupled-perturbed solve switches this off (the trial densities are not
-   the SCF density);
+   D_bd) > τ, with D the largest density element over each shell block. The
+   Coulomb blocks count only when the launch forms J and the exchange
+   blocks only when it forms K: in an exchange-only launch the Coulomb
+   blocks, large for every Schwarz-significant pair, kept O(N²) quartets
+   alive (84% of those launched on gly30 cc-pVTZ, against 27% on the
+   exchange blocks alone). A coupled-perturbed solve switches this off (the
+   trial densities are not the SCF density);
 3. a primitive-quartet bound, which abandons a primitive quartet before the
    Boys function when its prefactor is below τ·10⁻³ (`TRC_PRIM_MARGIN`).
 

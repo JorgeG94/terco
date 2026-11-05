@@ -1164,6 +1164,9 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
     decode_start_marker = "      ! locate the segment\n"
     decode_start = head.index(decode_start_marker, decl_start)
     item_decls = head[decl_start:decode_start]
+    # `dscr` belongs to the Fock screen (see density_block below).
+    assert item_decls.count("      real(dp) :: qcut, bnd, dscr\n") == 1
+    item_decls = item_decls.replace("      real(dp) :: qcut, bnd, dscr\n", "      real(dp) :: qcut, bnd\n")
 
     schwarz_return = "if (qcut <= thresh) return\n"
     decode_end = head.index(schwarz_return, decode_start) + len(schwarz_return)
@@ -1175,9 +1178,22 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
     density_start = head.index(density_comment, si_start)
     si_only_block = head[si_start:density_start]
 
-    density_return = "dsh(sj, sk), dsh(sj, sl)) <= thresh) return\n"
+    density_return = "if (qcut*dscr <= thresh) return\n"
     density_end = head.index(density_return, density_start) + len(density_return)
-    density_block = head[density_start:density_end]
+    # The Fock kernel's screen drops the blocks of a zero factor (jfac,
+    # kfac); a gradient has no such factors and contracts all six blocks,
+    # so it keeps the six-block test instead of the spliced one.
+    density_block = """         ! Density-weighted screen.  What actually enters the Fock matrix is
+         ! Q_ab Q_cd times a density block, so a quartet whose integrals are
+         ! above threshold still contributes nothing if every density block it
+         ! multiplies is negligible.  The J terms carry a factor 4 from the
+         ! Coulomb degeneracy, the K terms 1.  For a converged density on an
+         ! extended molecule this is where most of the screening comes from --
+         ! with a flat model density it correctly fires on nothing.
+         if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), &
+                      dsh(si, sk), dsh(si, sl), &
+                      dsh(sj, sk), dsh(sj, sl)) <= thresh) return
+"""
 
     # same_ab/same_cd/same_pair, slotab/slotcd/nab/ncd, abx..cdz, the
     # injected same-atom+mui+wq+kfac_eff+gam block, and the primitive-pair
@@ -1466,6 +1482,31 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
     return screen + compact, tabs
 
 
+def _untile(src):
+    """The Fock kernel with its tile strides folded back into the extents.
+
+    A Fock segment may be a tile of a bin (trc_bin_tiles), so
+    the Fock kernels take the bin's pair count sSA/sSB as the stride of the
+    bin-interleaved primitive table, apart from the segment's extent sA/sNB.
+    A gradient plan never tiles -- every segment is a whole bin, stride and
+    extent equal -- so the gradient kernels keep the one pair of arrays."""
+    decl = (
+        "      integer,  intent(in)    :: sSA(nseg), sSB(nseg)\n"
+        "      !! Pairs in the whole bra / ket BIN: the stride of that interleave.\n"
+        "      !! sA/sNB are the pairs the segment covers, which is the whole bin\n"
+        "      !! unless the launcher cut the bin into exchange tiles\n"
+        "      !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.\n")
+    assert decl in src, "gen_perclass.py's sSA/sSB declaration changed"
+    src = src.replace(decl, "")
+    src = src.replace("sPA, sPB, sSA, sSB, sD", "sPA, sPB, sD")
+    src = src.replace("sSA(seg)", "sA(seg)").replace("sSB(seg)", "sNB(seg)")
+    src = src.replace(
+        "      !! Primitive base of the bra / ket pairs, into qp_* below -- the\n",
+        "      !! Primitive base of the bra bin / ket bin, into qp_* below -- the\n")
+    assert "sSA" not in src and "sSB" not in src
+    return src
+
+
 #: `pcsi{tag}`'s primitive-quartet head already computes the wB97X-V
 #: long-range exchange substitution (rho_theta = theta*rho, theta from
 #: `omega`) -- see scripts/gen_perclass.py, whose comment is reproduced
@@ -1578,7 +1619,7 @@ def main():
     unroll = nv <= _parse_unroll_max(args.unroll_max_comp)
 
     src_path = os.path.join(args.src_dir, f"trc_pc_k{tag}.F90")
-    src = open(src_path).read()
+    src = _untile(open(src_path).read())
 
     i_item = src.index(f"   pure subroutine pcsi{tag}(")
     i_end = src.index(f"end subroutine pcsi{tag}\n") + len(f"end subroutine pcsi{tag}\n")
