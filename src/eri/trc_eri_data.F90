@@ -94,7 +94,8 @@ module trc_eri_data
       logical :: nosym = .false.
       !! The density is not symmetric: route through the enumerated kernel.
       logical :: count_kept = .false.
-      !! Also count the quartets that survive both screens, into `nkept`.
+      !! Count the quartets that survive both screens, into `nkept`, and
+      !! build nothing: binkernel_fock_bins returns after the count.
       !! A full extra pass, so it is opt-in.
       integer :: nlaunch = 0
       !! Out: kernel launches.

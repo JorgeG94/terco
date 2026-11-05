@@ -426,9 +426,20 @@ def emit_screens():
          ! Coulomb degeneracy, the K terms 1.  For a converged density on an
          ! extended molecule this is where most of the screening comes from --
          ! with a flat model density it correctly fires on nothing.
-         if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), &
-                      dsh(si, sk), dsh(si, sl), &
-                      dsh(sj, sk), dsh(sj, sl)) <= thresh) return
+         !
+         ! A term whose factor is zero adds nothing, so its blocks must not
+         ! keep the quartet alive. jfac = 0 is every build whose J comes from
+         ! the MD J engine (any basis with an f shell): the bins form K alone,
+         ! and the Coulomb blocks D_ab, D_cd stay large for every Schwarz-
+         ! significant pair, so they kept O(N^2) quartets whose exchange
+         ! blocks had died. Measured on gly30 cc-pVTZ (thresh 3.16e-11, second
+         ! SCF iteration): 84% of the launched quartets passed with the J
+         ! blocks counted, 27% on the exchange blocks alone. jfac and kfac
+         ! are uniform over a launch, so no warp diverges.
+         dscr = 0.0_dp
+         if (jfac /= 0.0_dp) dscr = 4.0_dp*max(dsh(si, sj), dsh(sk, sl))
+         if (kfac /= 0.0_dp) dscr = max(dscr, dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl))
+         if (qcut*dscr <= thresh) return
 
          same_ab = (si == sj); same_cd = (sk == sl)
          same_pair = sD(seg) .and. (iab == icd)
@@ -926,7 +937,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
 {PROLOGUE}
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
       integer(int64) :: nsa, u, kx
-      real(dp) :: qcut, bnd
+      real(dp) :: qcut, bnd, dscr
       integer :: keyab, keycd, offab, offcd, nab, ncd
       integer :: kp, kq, d, x, cur, ia, ib, ic, id, idx, idens
       integer :: mu, nu, lam, sig, mui, nuj, lamk, sigl

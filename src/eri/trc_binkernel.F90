@@ -242,10 +242,16 @@ contains
       call plan%sort_by_class(CLASS_RADIX)
 
       !$acc enter data copyin(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, plan%sOff)
-      if (launch%count_kept) call count_kept(nseg, plan%nwork, plan%sNB, plan%sOA, plan%sOB, plan%sD, &
-                                             plan%sOff, b%npair, b%sp_i, b%sp_j, &
-                                             b%sp_q, thresh, dsh, pairs%nbas, launch%nkept)
-      call launch_classes(b, pairs, quartets, launch, plan, dsh, dmat, jmat)
+      ! A counting call only counts: it used to fall through and build the
+      ! Fock matrix as well, into the same accumulator the caller's real
+      ! build then added to, so TRC_KEPT_STATS doubled the two-electron part.
+      if (launch%count_kept) then
+         call count_kept(nseg, plan%nwork, plan%sNB, plan%sOA, plan%sOB, plan%sD, &
+                         plan%sOff, b%npair, b%sp_i, b%sp_j, &
+                         b%sp_q, thresh, launch%jfac, launch%kfac, dsh, pairs%nbas, launch%nkept)
+      else
+         call launch_classes(b, pairs, quartets, launch, plan, dsh, dmat, jmat)
+      end if
       !$acc exit data delete(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, plan%sOff)
       call plan%release()
    end subroutine binkernel_fock_bins
@@ -365,7 +371,7 @@ contains
    ! threads, plenty to fill the GPU.
    !
    subroutine count_kept(nseg, nwork, sNB, sOA, sOB, sD, sOff, &
-                         npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, nkept)
+                         npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, nkept)
       integer,  intent(in) :: nseg, npair, nbas
       integer(int64), intent(in) :: nwork
       integer,  intent(in) :: sNB(nseg), sOA(nseg), sOB(nseg)
@@ -373,6 +379,9 @@ contains
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in) :: sp_i(npair), sp_j(npair)
       real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: jfac, kfac
+      !! The operator's scalings: a zero factor's blocks do not keep a
+      !! quartet, exactly as in the kernels.
       real(dp), intent(in) :: sp_q(npair), dsh(nbas, nbas)
       integer(int64), intent(out) :: nkept
 
@@ -385,7 +394,7 @@ contains
       !$acc enter data create(part)
       do concurrent(ic=1:nchunk)
          call kept_in_chunk(ic, KEPT_CHUNK, nchunk, nwork, nseg, sNB, sOA, sOB, sD, sOff, &
-                            npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, part)
+                            npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, part)
       end do
       !$acc update self(part)
       !$acc exit data delete(part)
@@ -394,7 +403,7 @@ contains
    end subroutine count_kept
 
    pure subroutine kept_in_chunk(ic, chunk, nchunk, nwork, nseg, sNB, sOA, sOB, sD, sOff, &
-                                 npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, part)
+                                 npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, part)
       !! Work items (ic-1)*chunk+1 .. ic*chunk of count_kept, into part(ic).
       !$acc routine seq
       integer(int64), intent(in) :: ic, chunk, nchunk, nwork
@@ -403,13 +412,13 @@ contains
       logical,  intent(in) :: sD(nseg)
       integer(int64), intent(in) :: sOff(nseg + 1)
       integer,  intent(in) :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in) :: thresh
+      real(dp), intent(in) :: thresh, jfac, kfac
       real(dp), intent(in) :: sp_q(npair), dsh(nbas, nbas)
       integer(int64), intent(inout) :: part(nchunk)
 
       integer(int64) :: gt, nk
       integer :: lo, hi, mid, seg, t, iab, icd, si, sj, sk, sl
-      real(dp) :: qcut
+      real(dp) :: qcut, dscr
 
       nk = 0
       do gt = (ic - 1)*chunk + 1, min(ic*chunk, nwork)
@@ -440,13 +449,15 @@ contains
             sj = sp_j(sOA(seg) + iab)
             sk = sp_i(sOB(seg) + icd)
             sl = sp_j(sOB(seg) + icd)
-            if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), &
-                         dsh(si, sk), dsh(si, sl), &
-                         dsh(sj, sk), dsh(sj, sl)) > thresh) nk = nk + 1
+            dscr = 0.0_dp
+            if (jfac /= 0.0_dp) dscr = 4.0_dp*max(dsh(si, sj), dsh(sk, sl))
+            if (kfac /= 0.0_dp) dscr = max(dscr, dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl))
+            if (qcut*dscr > thresh) nk = nk + 1
          end if
       end do
       part(ic) = nk
    end subroutine kept_in_chunk
+
 
    subroutine fock_all_nosym(nseg, nwork, sA, sNB, sOA, sOB, sD, sOff, &
                              npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, omega, dsh, &
@@ -553,7 +564,7 @@ contains
       real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
 
       integer  :: iab, icd, si, sj, sk, sl
-      real(dp) :: qcut
+      real(dp) :: qcut, dscr
       integer  :: la, lb, lc, ld, lab, lcd, lt, nca, ncc
       integer  :: keyab, keycd, offab, offcd, nab, ncd
       integer  :: kp, kq, m, d, x, cur, nxt, lim, dn
@@ -599,10 +610,12 @@ contains
       si = sp_i(offA + iab); sj = sp_j(offA + iab)
       sk = sp_i(offB + icd); sl = sp_j(offB + icd)
 
-      ! Density-weighted screen -- see the note in scripts/gen_perclass.py.
-      if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), &
-                   dsh(si, sk), dsh(si, sl), &
-                   dsh(sj, sk), dsh(sj, sl)) <= thresh) return
+      ! Density-weighted screen -- see the note in scripts/gen_perclass.py,
+      ! including why a zero factor's blocks do not count.
+      dscr = 0.0_dp
+      if (jfac /= 0.0_dp) dscr = 4.0_dp*max(dsh(si, sj), dsh(sk, sl))
+      if (kfac /= 0.0_dp) dscr = max(dscr, dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl))
+      if (qcut*dscr <= thresh) return
 
       !
       ! NO canonical swap between bra and ket.

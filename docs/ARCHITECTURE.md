@@ -131,9 +131,13 @@ own:
 
 1. the exact Schwarz product Q_ab Q_cd > τ;
 2. a density-weighted bound, Q_ab Q_cd · max(4D_ab, 4D_cd, D_ac, D_ad, D_bc,
-   D_bd) > τ, with D the largest density element over each shell block. A
-   coupled-perturbed solve switches this off (the trial densities are not
-   the SCF density);
+   D_bd) > τ, with D the largest density element over each shell block. The
+   Coulomb blocks count only when the launch forms J and the exchange
+   blocks only when it forms K: in an exchange-only launch the Coulomb
+   blocks, large for every Schwarz-significant pair, kept O(N²) quartets
+   alive (84% of those launched on gly30 cc-pVTZ, against 27% on the
+   exchange blocks alone). A coupled-perturbed solve switches this off (the
+   trial densities are not the SCF density);
 3. a primitive-quartet bound, which abandons a primitive quartet before the
    Boys function when its prefactor is below τ·10⁻³ (`TRC_PRIM_MARGIN`).
 

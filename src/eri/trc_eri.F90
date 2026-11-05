@@ -1065,7 +1065,9 @@ contains
          want = len_trim(ke) > 0
          if (present(count_survivors)) want = want .or. count_survivors
          if (want) then
-            launch = bin_launch(this, 1, jfac, kfac, ow)
+            ! jbins, not jfac: count what the bins will screen, and with the
+            ! MD J engine forming J that is exchange alone.
+            launch = bin_launch(this, 1, jbins, kfac, ow)
             launch%count_kept = .true.
             call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
             this%nlaunch = launch%nlaunch
