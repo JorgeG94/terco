@@ -308,6 +308,8 @@ module trc_scf_settings
       !! an extra argument.
       logical :: pcm_on = .false.
       logical :: incr_on = .false.
+      logical :: incr_off_df = .false.
+      !! Increments were asked for (the default) but --df turned them off.
       logical :: df = .false.
       logical :: talk = .false.
       logical :: root = .true.
@@ -417,6 +419,7 @@ contains
       ! difference density to buy; the CLI refuses an explicit --incremental
       ! with it.
       this%incr_on = incr_env(opts%incremental) .and. .not. opts%frac_occ .and. .not. opts%df
+      this%incr_off_df = incr_env(opts%incremental) .and. .not. opts%frac_occ .and. opts%df
       this%df = opts%df
       if (this%df .and. this%nspin == 2) then
          msg = "trc_scf: --df supports a restricted (closed-shell) reference only, for now"

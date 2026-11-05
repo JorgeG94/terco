@@ -385,11 +385,7 @@ contains
       if (scf_config%talk) call global_logger%info("   basis: "//to_string(nao)//" functions, " &
          //to_string(scf_basis%nshell)//" shells, "//to_string(sum(scf_basis%sh_np))//" primitives, max " &
          //to_string(maxval(scf_basis%sh_np)))
-      ! Say so when increments are on: they change the timings. An `i` after
-      ! an iteration's line marks a Fock matrix built from the density difference.
-      if (scf_config%talk .and. scf_config%incr_on) then
-         call global_logger%info("   incremental Fock (marked i); converged only on a full build")
-      end if
+      if (scf_config%talk) call log_incremental_mode(scf_config)
       if (scf_config%talk) then
          if (scf_config%dft) then
             call global_logger%info("   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
@@ -894,5 +890,18 @@ contains
       if (info_s /= 0 .and. .not. diag_failed) diag_info = info_s
       if (info_s /= 0) diag_failed = .true.
    end subroutine scf_driver_note_failure
+
+   subroutine log_incremental_mode(scf_config)
+      !! Say so when increments are on: they change the timings. An `i` after
+      !! an iteration's line marks a Fock matrix built from the density difference.
+      !! Under --df they are off, and a caller who did not ask for that is told.
+      type(scf_settings_t), intent(in) :: scf_config
+      if (scf_config%incr_on) then
+         call global_logger%info("   incremental Fock (marked i); converged only on a full build")
+      else if (scf_config%incr_off_df) then
+         call global_logger%warning("   incremental Fock builds are not supported with density fitting; "// &
+                                    "every iteration is a full build")
+      end if
+   end subroutine log_incremental_mode
 
 end module trc_scf_driver
