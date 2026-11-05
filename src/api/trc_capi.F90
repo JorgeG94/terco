@@ -327,13 +327,18 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 19
-   !! trc_run_hessian accepts an RI-MP2/double-hybrid reference (one the
-   !! RI-MP2 gradient supports) instead of refusing it, rerunning
-   !! trc_run_rimp2 at every displacement; trc_check_rimp2_gradient asks,
-   !! before any SCF, whether that gradient will be refused. Additive.
-   !! (1.17: trc_run_gradient accepts a PCM reference; trc_run_hessian
-   !! still refuses PCM.)
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 20
+   !! 1.20: the incremental Fock build is ON by default (trc_set_incremental
+   !! was 0 by default before); trc_set_incremental(handle, 0) restores full
+   !! builds every iteration, and density fitting never increments. The
+   !! energies are unchanged (convergence is declared on a full build), so
+   !! no signature or enum changes meaning. 1.19: trc_run_hessian accepts an
+   !! RI-MP2/double-hybrid reference (one the RI-MP2 gradient supports)
+   !! instead of refusing it, rerunning trc_run_rimp2 at every displacement;
+   !! trc_check_rimp2_gradient asks, before any SCF, whether that gradient
+   !! will be refused. Additive. (1.18 was never released on main.) 1.17:
+   !! trc_run_gradient accepts a PCM reference; trc_run_hessian still
+   !! refuses PCM.
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -2626,14 +2631,20 @@ contains
    end function trc_set_screening
 
    !
-   ! Incremental Fock builds: after the first iterations, G is accumulated
+   ! Incremental Fock builds: after the first iteration, G is accumulated
    ! from the density DIFFERENCE, which screens far harder as the SCF
-   ! converges (trc_scf_options_t%incremental has the measurements and the
-   ! safeguards: a 1e-4 tighter screen on each difference build, a start
-   ! gated on the commutator, a full rebuild every 20). 0 off, the library's
-   ! default; nonzero on, the terco CLI's default.
+   ! converges (trc_scf_options_t%incremental has the measurements,
+   ! trc_scf_incremental the schedule and its error argument; convergence
+   ! is declared on a full build only). Nonzero on, the default of the
+   ! library and of the terco CLI; 0 off. Not used under trc_set_df.
    !
    function trc_set_incremental(handle, on) result(status) bind(c, name="trc_set_incremental")
+      !! Incremental Fock builds, on (nonzero, the default) or off (0): after the
+      !! first iteration the two-electron matrix is built from the change in the
+      !! density and accumulated, with a full build on the iteration convergence
+      !! is declared on (see trc_scf_incremental.F90). Not used with
+      !! trc_set_df, whose builds are always full. Takes effect at the next
+      !! trc_run_scf.
       type(c_ptr), value :: handle
       integer(c_int), value :: on
       integer(c_int) :: status
@@ -2642,6 +2653,9 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       cx%opts%incremental = on /= 0
+      ! Asked for, not defaulted: under trc_set_df this is the case that
+      ! warns (scf_settings_t%incr_df_requested).
+      cx%opts%incremental_requested = on /= 0
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_incremental

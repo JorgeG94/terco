@@ -43,6 +43,7 @@ target_sources(
           scf/trc_scf_df.F90            # density-fitted J/K (--df): metric, Cholesky, (mn|P), B, per-iteration J/K
           scf/trc_scf_df_response.F90   # G_fit[X] C_occ for any symmetric X: the --df reference's response potential
           scf/trc_scf_diis.F90          # CDIIS and ADIIS, the level shift and the damped step
+          scf/trc_scf_incremental.F90   # when the Fock build is an increment and when it is full
           scf/trc_scf_driver.F90        # the SCF: HF and Kohn-Sham, R and U, resident
           scf/trc_scf_file.F90          # a converged SCF to a file and back, for a restart
           scf/gradient/trc_scf_grad_df.F90       # the density-fitted (--df) two-electron gradient: fitted J and K

@@ -425,6 +425,11 @@ set_tests_properties(
 terco_add_check(check_full_grad_fd check_full_grad_fd.F90 NEEDS_BASIS)
 target_link_libraries(check_full_grad_fd PRIVATE test-drive::test-drive)
 
+# The incremental Fock build against full builds, run for run: RHF, UHF, a
+# range-separated UKS and C-PCM -- see check_scf_incremental.F90's own header.
+terco_add_check(check_scf_incremental check_scf_incremental.F90 NEEDS_BASIS)
+target_link_libraries(check_scf_incremental PRIVATE test-drive::test-drive)
+
 # The analytic PCM (C-PCM/IEF-PCM) gradient term (trc_pcm_grad's grad_qv +
 # grad_nuc + grad_solver) against finite differences of terco's own fully
 # reconverged SCF energy -- water (both models) and formamide (IEF-PCM,
@@ -654,6 +659,15 @@ if(TERCO_BUILD_APP)
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_input_workdir})
   target_link_libraries(check_cli_input PRIVATE test-drive::test-drive)
   unset(_cli_input_workdir)
+
+  # The incremental Fock build's switches through the CLI: on by default,
+  # off with --no-incremental or a TOML `incremental = false`, contradictory
+  # switches refused -- see check_cli_incremental.F90's own header.
+  set(_cli_incremental_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_incremental_work)
+  terco_add_check(check_cli_incremental check_cli_incremental.F90
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_incremental_workdir})
+  target_link_libraries(check_cli_incremental PRIVATE test-drive::test-drive)
+  unset(_cli_incremental_workdir)
 
   # --hessian's JSON (frequencies, ZPE, thermal corrections, G_tot)
   # against pyscf's own analytic RHF/STO-3G Hessian and harmonic_

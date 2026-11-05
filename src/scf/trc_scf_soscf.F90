@@ -433,7 +433,7 @@ contains
          call scf_fock_to_cart(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, &
                                scf_result%dmat(:, :, s), scf_state%d_c(:, :, s))
       end do
-      call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, .false., eri, la)
+      call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, 0.0_dp, eri, la)
       call scf_fock_fold_g(scf_basis, scf_context, scf_config, scf_state)
       call scf_fock_energy(scf_context, scf_config, scf_state, scf_result, scf_energies, la)
       call scf_fock_assemble(scf_context, scf_config, scf_state)

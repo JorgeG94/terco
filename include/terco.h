@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 19
+#define TRC_ABI_MINOR 20
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -409,6 +409,14 @@ int trc_set_lindep(trc_handle_t handle, double threshold);
 
 int trc_set_screening(trc_handle_t handle, double thresh);
 
+/**
+ * Incremental Fock builds, on (nonzero, the default) or off (0): after the
+ * first iteration the two-electron matrix is built from the change in the
+ * density and accumulated, with a full build on the iteration convergence
+ * is declared on (see trc_scf_incremental.F90). Not used with
+ * trc_set_df, whose builds are always full. Takes effect at the next
+ * trc_run_scf.
+ */
 int trc_set_incremental(trc_handle_t handle, int on);
 
 /**
