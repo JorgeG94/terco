@@ -132,6 +132,14 @@ if(TERCO_ENABLE_TESTING)
     terco/cli_rhf PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
                              "TOTAL ENERGY +-75\\.98397446")
 
+  # A basis named with "*": 6-31G* resolves to the shipped 6-31gs.json (BSE's
+  # own 6-31g_st_.json first, when a basis directory has it; BSE keeps "+"). Water RHF/6-31G*
+  # is test/pyscf_refs/cphf_water_6-31gs.ref's E_SCF, -76.0105049954.
+  add_test(NAME terco/cli_basis_star COMMAND terco_cli ${_xyz}/water.xyz --basis 6-31G*)
+  set_tests_properties(
+    terco/cli_basis_star PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+                                    "TOTAL ENERGY +-76\\.010504")
+
   # The same through every other guess, so each one stays reachable from the
   # command line and converges to the same state.
   foreach(g sap gwh core minao)
