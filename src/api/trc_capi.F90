@@ -2630,6 +2630,12 @@ contains
    ! library and of the terco CLI; 0 off. Not used under trc_set_df.
    !
    function trc_set_incremental(handle, on) result(status) bind(c, name="trc_set_incremental")
+      !! Incremental Fock builds, on (nonzero, the default) or off (0): after the
+      !! first iteration the two-electron matrix is built from the change in the
+      !! density and accumulated, with a full build on the iteration convergence
+      !! is declared on (see trc_scf_incremental.F90). Not used with
+      !! trc_set_df, whose builds are always full. Takes effect at the next
+      !! trc_run_scf.
       type(c_ptr), value :: handle
       integer(c_int), value :: on
       integer(c_int) :: status

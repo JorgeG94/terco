@@ -704,6 +704,12 @@ module trc_c_interfaces
       end function trc_set_screening
 
       integer(c_int) function trc_set_incremental(handle, on) bind(c) result(res)
+         !! Incremental Fock builds, on (nonzero, the default) or off (0): after the
+         !! first iteration the two-electron matrix is built from the change in the
+         !! density and accumulated, with a full build on the iteration convergence
+         !! is declared on (see trc_scf_incremental.F90). Not used with
+         !! trc_set_df, whose builds are always full. Takes effect at the next
+         !! trc_run_scf.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
