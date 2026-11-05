@@ -44,6 +44,7 @@ module trc_run
    public :: run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
              run_check_neb_endpoint, run_write_neb_path_xyz
    public :: run_read_xyz_frames
+   public :: run_frontier
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
