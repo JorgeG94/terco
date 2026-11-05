@@ -29,7 +29,7 @@ module trc_scf_fock
    use pic_profiler, only: profiler_start, profiler_stop
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_pcm, only: trc_pcm_t
    use trc_xc, only: trc_xc_rks, trc_xc_uks, trc_xc_options, trc_xc_result_t
    use trc_xc_batch, only: trc_xc_grid_t
@@ -37,14 +37,14 @@ module trc_scf_fock
    use trc_vv10, only: trc_vv10_rks, trc_vv10_uks
    use trc_linalg, only: trc_linalg_t
    use trc_scf_df, only: df_jk_t
-   use trc_scf_settings, only: scf_settings_t, scf_energies_t, trc_scf_result_t
+   use trc_scf_settings, only: scf_settings_t, scf_energies_t, trc_scf_result_t, scf_settings_fock_densities
    use trc_scf_context, only: scf_ctx_t, trc_grid_cache_t
    use trc_scf_state, only: scf_state_t, scf_timers_t
    implicit none
    private
 
    public :: scf_fock_build_g, scf_fock_build_vxc, scf_fock_build_pcm, scf_fock_energy, scf_fock_assemble, scf_fock_commutator_error
-   public :: scf_fock_to_cart, scf_fock_to_sph
+   public :: scf_fock_to_cart, scf_fock_to_sph, scf_fock_fold_g
 
 contains
 
@@ -68,6 +68,11 @@ contains
       type(trc_linalg_t), intent(inout) :: la
       type(df_jk_t), intent(inout), optional :: dfjk
       !! The fitted J/K object, present exactly when `scf_config%df`.
+      ! Every four-centre build runs on scratch lent from `la`'s workspace
+      ! (trc_linalg's `reserve`), which is dead between eigensolves.
+      ! trc_scf_context's setup has made it large enough already, so this
+      ! is a no-op unless a caller skipped that.
+      if (.not. scf_config%df) call la%reserve(eri%fock_work_size(scf_settings_fock_densities(scf_config)))
       call build_g_arrays(scf_basis, eri, scf_config, scf_context%nao_c, size(scf_state%dtot_c, 1), &
                           size(scf_state%klr_c, 1), size(scf_state%dref_c, 1), incr_scale, &
                           scf_state%d_c, scf_state%gmat_c, scf_state%dtot_c, scf_state%klr_c, &
@@ -114,11 +119,11 @@ contains
          ! trc_scf_incremental for the two scales and why.
          thresh0 = eri%thresh
          eri%thresh = thresh0*incr_scale
-         call g_of_density(b, eri, config, nao_c, nlr_c, ddif_c, gmat_c, klr_c)
+         call g_of_density(b, eri, config, nao_c, ddif_c, gmat_c, klr_c, lp)
          eri%thresh = thresh0
          call accumulate_flat(n2, d_c, gmat_c, gacc_c, dref_c)
       else
-         call g_of_density(b, eri, config, nao_c, nlr_c, d_c, gmat_c, klr_c)
+         call g_of_density(b, eri, config, nao_c, d_c, gmat_c, klr_c, lp)
          ! The reference for the next increment, kept only when there
          ! will be one (gacc_c and dref_c are 1 x 1 otherwise).
          if (config%incr_on) then
@@ -129,43 +134,45 @@ contains
       if (nspin == 2) call sum_spins(nao_c, d_c, dtot_c)
    end subroutine build_g_arrays
 
-   subroutine g_of_density(b, eri, config, nao_c, nlr_c, density, g, klr_c)
+   subroutine g_of_density(b, eri, config, nao_c, density, g, klr_c, lp)
       !! G[density] per spin, overwriting `g`. Restricted: J - a_x K/2 of
       !! the total density, plus the long-range exchange pass of a
       !! range-separated functional. Unrestricted: G_s = J[D_a + D_b] -
       !! a_x K[D_s] (+ the long-range part), the exchange of both spins in
-      !! one pass over the integrals per operator.
+      !! one pass over the integrals per operator. Every pass runs on
+      !! `lp%dwork`, lent (scf_fock_build_g).
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
       type(scf_settings_t), intent(in) :: config
-      integer, intent(in) :: nao_c, nlr_c
+      integer, intent(in) :: nao_c
       real(dp), intent(in) :: density(nao_c, nao_c, config%nspin)
       real(dp), intent(inout) :: g(nao_c, nao_c, config%nspin)
-      real(dp), intent(inout) :: klr_c(nlr_c, nlr_c)
-      !! the long-range exchange scratch; 1 x 1 unless range-separated
-      real(dp), allocatable :: dtot(:, :), jmat(:, :), w2_c(:, :, :), k2_c(:, :, :)
+      real(dp), contiguous, intent(inout) :: klr_c(:, :)
+      !! the long-range exchange scratch, nao_c square when range-separated
+      !! (1 x 1 and unused otherwise); contiguous, so it reaches the
+      !! engine's explicit-shape dummy without a copy
+      type(trc_linalg_t), intent(inout) :: lp
+      real(dp), allocatable :: w2_c(:, :, :), k2_c(:, :, :)
       integer :: s
       if (config%nspin == 1) then
-         call eri%fock_resident(b, density(:, :, 1), g(:, :, 1), k_scale=config%exx)
+         call eri%fock_resident_lent(b, density(:, :, 1), g(:, :, 1), trc_fock_options_t(k_scale=config%exx), lp%dwork)
          if (config%exx_lr /= 0.0_dp) then
-            call eri%fock_resident(b, density(:, :, 1), klr_c, j_scale=0.0_dp, k_scale=config%exx_lr, &
-                                   omega=config%omega)
+            call eri%fock_resident_lent(b, density(:, :, 1), klr_c, &
+                                        trc_fock_options_t(j_scale=0.0_dp, k_scale=config%exx_lr, omega=config%omega), &
+                                        lp%dwork)
             call add_into_spin(nao_c, klr_c, g(:, :, 1))
          end if
          return
       end if
-      allocate (dtot(nao_c, nao_c), jmat(nao_c, nao_c))
-      !$acc enter data create(dtot, jmat)
-      call sum_spins(nao_c, density, dtot)
-      call eri%fock_resident(b, dtot, jmat, k_scale=0.0_dp)
-      do s = 1, 2
-         call copy_into_spin(nao_c, jmat, g(:, :, s))
-      end do
-      !$acc exit data delete(dtot, jmat)
-      deallocate (dtot, jmat)
+      ! J[D_a + D_b] with the two spin slices of `g` as its operand and
+      ! result -- the total density in the first, J in the second, then
+      ! copied back -- so the Coulomb pass needs no matrix of its own.
+      call sum_spins(nao_c, density, g(:, :, 1))
+      call eri%fock_resident_lent(b, g(:, :, 1), g(:, :, 2), trc_fock_options_t(k_scale=0.0_dp), lp%dwork)
+      call copy_into_spin(nao_c, g(:, :, 2), g(:, :, 1))
       if (config%exx == 0.0_dp .and. config%exx_lr == 0.0_dp) return
       ! Both spins' exchange in ONE pass over the integrals per operator
-      ! (fock_resident_many): every quartet evaluated once and digested
+      ! (fock_resident_many_lent): every quartet evaluated once and digested
       ! into K[D_alpha] and K[D_beta] together, not in two passes. J is
       ! J[D_total] above (its own pass, or MD J); the spins' passes are
       ! exchange only. A full-range pass only when the functional has a
@@ -176,13 +183,16 @@ contains
          call scale_into_spin(nao_c, 2.0_dp, density(:, :, s), w2_c(:, :, s))
       end do
       if (config%exx /= 0.0_dp) then
-         call eri%fock_resident_many(b, 2, w2_c, k2_c, j_scale=0.0_dp, k_scale=config%exx)
+         call eri%fock_resident_many_lent(b, 2, w2_c, k2_c, trc_fock_options_t(j_scale=0.0_dp, k_scale=config%exx), &
+                                          lp%dwork)
          do s = 1, 2
             call add_into_spin(nao_c, k2_c(:, :, s), g(:, :, s))
          end do
       end if
       if (config%exx_lr /= 0.0_dp) then
-         call eri%fock_resident_many(b, 2, w2_c, k2_c, j_scale=0.0_dp, k_scale=config%exx_lr, omega=config%omega)
+         call eri%fock_resident_many_lent(b, 2, w2_c, k2_c, &
+                                          trc_fock_options_t(j_scale=0.0_dp, k_scale=config%exx_lr, &
+                                                             omega=config%omega), lp%dwork)
          do s = 1, 2
             call add_into_spin(nao_c, k2_c(:, :, s), g(:, :, s))
          end do
@@ -389,7 +399,8 @@ contains
 
    ! The one- and two-electron energy at the density `scf_result%dmat`: Tr(D H) and
    ! Tr(D G)/2, per spin; the total adds the nuclear repulsion and the XC and
-   ! PCM energies already in `scf_energies`.
+   ! PCM energies already in `scf_energies`. G is read from `scf_state%fock`,
+   ! which holds it from `scf_fock_fold_g` until `scf_fock_assemble`.
    subroutine scf_fock_energy(scf_context, scf_config, scf_state, scf_result, scf_energies, la)
       type(scf_ctx_t), intent(in) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
@@ -402,42 +413,60 @@ contains
       scf_energies%two = 0.0_dp
       do s = 1, scf_config%nspin
          scf_energies%one = scf_energies%one + la%dot_2d(scf_result%dmat(:, :, s), scf_context%hcore)
-         scf_energies%two = scf_energies%two + 0.5_dp*la%dot_2d(scf_result%dmat(:, :, s), scf_state%gmat(:, :, s))
+         scf_energies%two = scf_energies%two + 0.5_dp*la%dot_2d(scf_result%dmat(:, :, s), scf_state%fock(:, :, s))
       end do
       scf_energies%total = scf_energies%one + scf_energies%two + scf_energies%xc + scf_context%e_nuc + scf_energies%pcm
    end subroutine scf_fock_energy
 
+   subroutine scf_fock_fold_g(scf_basis, scf_context, scf_config, scf_state)
+      !! G_sph := T^T G_cart T per spin, straight into `scf_state%fock`: the
+      !! last iteration's Fock matrix is dead by the time G is built, so G
+      !! needs no matrix of its own (one nao^2 per spin of device memory).
+      !! `fock` holds G until `scf_fock_assemble` adds H (and V_xc, the
+      !! continuum) to it in place; `scf_fock_energy` reads G there between.
+      type(trc_basis_t), intent(in) :: scf_basis
+      type(scf_ctx_t), intent(in) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
+      integer :: s
+      do s = 1, scf_config%nspin
+         call scf_fock_to_sph(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, &
+                              scf_state%gmat_c(:, :, s), scf_state%fock(:, :, s))
+      end do
+   end subroutine scf_fock_fold_g
+
    subroutine scf_fock_assemble(scf_context, scf_config, scf_state)
-      !! F = H + G (+ V_xc, + the continuum's operator), per spin, into
-      !! `scf_state%fock`.
+      !! F = H + G (+ V_xc, + the continuum's operator), per spin, in place
+      !! in `scf_state%fock`, which holds G on entry (`scf_fock_fold_g`).
       type(scf_ctx_t), intent(in) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
       type(scf_state_t), intent(inout) :: scf_state
       call assemble_fock_arrays(scf_context%nao, size(scf_state%vxc, 1), size(scf_state%vpcm, 1), scf_config%nspin, &
-                                scf_config%dft, scf_config%pcm_on, scf_context%hcore, scf_state%gmat, scf_state%vxc, &
+                                scf_config%dft, scf_config%pcm_on, scf_context%hcore, scf_state%vxc, &
                                 scf_state%vpcm, scf_state%fock)
    end subroutine scf_fock_assemble
 
-   subroutine assemble_fock_arrays(nao, nxc, npcm, nspin, dft, pcm_on, hcore, gmat, vxc, vpcm, fock)
+   subroutine assemble_fock_arrays(nao, nxc, npcm, nspin, dft, pcm_on, hcore, vxc, vpcm, fock)
       !! `scf_fock_assemble`'s loops, on explicit-shape arrays. `vxc` is
       !! 1 x 1 (unused) when `.not. dft`, `vpcm` 1 x 1 when `.not. pcm_on`;
       !! `nxc`/`npcm` are their true sizes, so the explicit-shape dummies
-      !! below match whichever the caller actually allocated.
+      !! below match whichever the caller actually allocated. `fock` holds G
+      !! on entry, and the sums keep the order H + G + V_xc.
       integer, intent(in) :: nao, nxc, npcm, nspin
       logical, intent(in) :: dft, pcm_on
       real(dp), intent(in) :: hcore(nao, nao)
-      real(dp), intent(in) :: gmat(nao, nao, nspin), vxc(nxc, nxc, nspin)
+      real(dp), intent(in) :: vxc(nxc, nxc, nspin)
       real(dp), intent(in) :: vpcm(npcm, npcm)
       real(dp), intent(inout) :: fock(nao, nao, nspin)
       integer :: i, j, s
       do s = 1, nspin
          if (dft) then
             do concurrent(i=1:nao, j=1:nao)
-               fock(i, j, s) = hcore(i, j) + gmat(i, j, s) + vxc(i, j, s)
+               fock(i, j, s) = hcore(i, j) + fock(i, j, s) + vxc(i, j, s)
             end do
          else
             do concurrent(i=1:nao, j=1:nao)
-               fock(i, j, s) = hcore(i, j) + gmat(i, j, s)
+               fock(i, j, s) = hcore(i, j) + fock(i, j, s)
             end do
          end if
          if (pcm_on) then
