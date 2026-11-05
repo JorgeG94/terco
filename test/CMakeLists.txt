@@ -652,6 +652,15 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_input PRIVATE test-drive::test-drive)
   unset(_cli_input_workdir)
 
+  # The incremental Fock build's switches through the CLI: on by default,
+  # off with --no-incremental or a TOML `incremental = false`, contradictory
+  # switches refused -- see check_cli_incremental.F90's own header.
+  set(_cli_incremental_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_incremental_work)
+  terco_add_check(check_cli_incremental check_cli_incremental.F90
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_incremental_workdir})
+  target_link_libraries(check_cli_incremental PRIVATE test-drive::test-drive)
+  unset(_cli_incremental_workdir)
+
   # --hessian's JSON (frequencies, ZPE, thermal corrections, G_tot)
   # against pyscf's own analytic RHF/STO-3G Hessian and harmonic_
   # analysis/thermo, water -- see check_cli_hessian.F90's own header for
