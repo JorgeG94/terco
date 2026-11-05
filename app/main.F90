@@ -49,7 +49,7 @@ program trc_main
                        run_opt_geometry_is_linear, run_write_labelled_xyz, run_parse_opt_global_options, &
                        run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
                        run_check_neb_endpoint, run_write_neb_path_xyz, &
-                       run_read_xyz_frames, run_to_lower_alloc
+                       run_read_xyz_frames, run_to_lower_alloc, run_frontier
    use trc_dlfind_bridge, only: trc_dlfind_available, trc_opt_options_t, trc_opt_result_t, trc_dlfind_optimize, &
                                 TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_HDLC_TC, &
                                 TRC_OPT_COORDS_DLC, TRC_OPT_COORDS_DLC_TC, &
