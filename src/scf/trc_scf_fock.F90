@@ -76,11 +76,11 @@ contains
       call build_g_arrays(scf_basis, eri, scf_config, scf_context%nao_c, size(scf_state%dtot_c, 1), &
                           size(scf_state%klr_c, 1), size(scf_state%dref_c, 1), incr_scale, &
                           scf_state%d_c, scf_state%gmat_c, scf_state%dtot_c, scf_state%klr_c, &
-                          scf_state%gacc_c, scf_state%dref_c, scf_state%ddif_c, la, dfjk)
+                          scf_state%gacc_c, scf_state%dref_c, la, dfjk)
    end subroutine scf_fock_build_g
 
    subroutine build_g_arrays(b, eri, config, nao_c, nu_c, nlr_c, nin_c, incr_scale, &
-                             d_c, gmat_c, dtot_c, klr_c, gacc_c, dref_c, ddif_c, lp, dfj)
+                             d_c, gmat_c, dtot_c, klr_c, gacc_c, dref_c, lp, dfj)
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
       type(scf_settings_t), intent(in) :: config
@@ -92,9 +92,10 @@ contains
       !! dtot_c: D_alpha + D_beta, unrestricted only, which the continuum
       !! reads after this returns.
       real(dp), intent(inout) :: gacc_c(nin_c, nin_c, config%nspin), dref_c(nin_c, nin_c, config%nspin)
-      real(dp), intent(inout) :: ddif_c(nin_c, nin_c, config%nspin)
-      !! The increments' reference density and its accumulated G, per spin,
-      !! and the difference; 1 x 1 unless `incr_on`.
+      !! The increments' reference density and its accumulated G, per spin;
+      !! 1 x 1 unless `incr_on`. An increment overwrites `dref_c` with the
+      !! difference D - D_ref for the build, then with D, the next
+      !! reference: the difference needs no matrix of its own.
       type(trc_linalg_t), intent(inout) :: lp
       type(df_jk_t), intent(inout), optional :: dfj
       !! Present when `config%df`; absent and unused otherwise. Never
@@ -113,13 +114,13 @@ contains
       ! the last slice of on the GPU.
       n2 = nao_c*nao_c*nspin
       if (incr_scale > 0.0_dp) then
-         call difference_flat(n2, d_c, dref_c, ddif_c)
+         call difference_flat(n2, d_c, dref_c)
          ! The scale multiplies the bins' threshold for this increment only
          ! (the MD J engine's cut is fixed when it is built); see
          ! trc_scf_incremental for the two scales and why.
          thresh0 = eri%thresh
          eri%thresh = thresh0*incr_scale
-         call g_of_density(b, eri, config, nao_c, ddif_c, gmat_c, klr_c, lp)
+         call g_of_density(b, eri, config, nao_c, dref_c, gmat_c, klr_c, lp)
          eri%thresh = thresh0
          call accumulate_flat(n2, d_c, gmat_c, gacc_c, dref_c)
       else
@@ -201,14 +202,14 @@ contains
       deallocate (w2_c, k2_c)
    end subroutine g_of_density
 
-   subroutine difference_flat(n, d, dref, ddif)
-      ! ddif := D - D_ref, every spin as one flat resident array.
+   subroutine difference_flat(n, d, dref)
+      ! dref := D - D_ref in place, every spin as one flat resident array.
       integer, intent(in) :: n
-      real(dp), intent(in) :: d(n), dref(n)
-      real(dp), intent(out) :: ddif(n)
+      real(dp), intent(in) :: d(n)
+      real(dp), intent(inout) :: dref(n)
       integer :: k
       do concurrent(k=1:n)
-         ddif(k) = d(k) - dref(k)
+         dref(k) = d(k) - dref(k)
       end do
    end subroutine difference_flat
 

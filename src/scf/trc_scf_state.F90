@@ -61,9 +61,10 @@ module trc_scf_state
       !! dtot_c: D_alpha + D_beta of an unrestricted run, for the continuum.
       !! klr_c: the long-range exchange of a range-separated hybrid, built
       !! by its own pass (erf(omega r12)/r12) and added into G.
-      real(dp), allocatable :: dref_c(:, :, :), gacc_c(:, :, :), ddif_c(:, :, :)
-      !! The incremental build's reference density/G and their difference,
-      !! per spin.
+      real(dp), allocatable :: dref_c(:, :, :), gacc_c(:, :, :)
+      !! The incremental build's reference density and accumulated G, per
+      !! spin; an increment's density difference is formed in `dref_c` itself
+      !! (trc_scf_fock's build_g_arrays).
       !! Never zeroed here (see `alloc`): the full build on iteration 1
       !! always writes them before an increment ever reads them.
       real(dp), allocatable :: vpcm_c(:, :), vpcm(:, :)
@@ -103,7 +104,7 @@ contains
       allocate (this%fock(nao, nao, nspin), this%vxc(nxc, nxc, nspin))
       allocate (this%d_c(nao_c, nao_c, nspin), this%gmat_c(nao_c, nao_c, nspin), this%vxc_c(nxc_c, nxc_c, nspin))
       allocate (this%dtot_c(nu_c, nu_c), this%klr_c(nlr_c, nlr_c))
-      allocate (this%dref_c(nin_c, nin_c, nspin), this%gacc_c(nin_c, nin_c, nspin), this%ddif_c(nin_c, nin_c, nspin))
+      allocate (this%dref_c(nin_c, nin_c, nspin), this%gacc_c(nin_c, nin_c, nspin))
       allocate (this%vpcm_c(npcm_c, npcm_c), this%vpcm(npcm, npcm))
       allocate (this%dold(nao, nao, nspin), this%errv(nao, nao, nspin))
       allocate (this%w1(nao, nao), this%w2(nao, nao))
@@ -132,7 +133,7 @@ contains
       !$acc enter data copyin(context%hcore, context%smat, context%x, res%dmat, res%cmo, res%eps) &
       !$acc            copyin(this%fock, this%vxc, this%dold, this%errv, this%w1, this%w2) &
       !$acc            copyin(this%d_c, this%gmat_c, this%vxc_c, this%dtot_c, this%klr_c) &
-      !$acc            create(this%dref_c, this%gacc_c, this%ddif_c) copyin(this%vpcm_c, this%vpcm)
+      !$acc            create(this%dref_c, this%gacc_c) copyin(this%vpcm_c, this%vpcm)
    end subroutine scf_state_to_device
 
    subroutine scf_state_release_device(this, context, res)
@@ -143,7 +144,7 @@ contains
       !$acc exit data delete(context%hcore, context%smat, context%x, res%dmat, res%cmo, res%eps) &
       !$acc           delete(this%fock, this%vxc, this%dold, this%errv, this%w1, this%w2) &
       !$acc           delete(this%d_c, this%gmat_c, this%vxc_c, this%dtot_c, this%klr_c) &
-      !$acc           delete(this%dref_c, this%gacc_c, this%ddif_c, this%vpcm_c, this%vpcm)
+      !$acc           delete(this%dref_c, this%gacc_c, this%vpcm_c, this%vpcm)
    end subroutine scf_state_release_device
 
    subroutine scf_state_save_dold(this, nao, nspin, dmat)
