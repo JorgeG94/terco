@@ -5946,9 +5946,11 @@ contains
             return
          end if
          if (collective) then
-            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, comm, batch_res=cx%opts%batch_res)
+            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, comm, batch_res=cx%opts%batch_res, &
+                              decontract=cx%opts%decontract)
          else
-            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, batch_res=cx%opts%batch_res)
+            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, batch_res=cx%opts%batch_res, &
+                              decontract=cx%opts%decontract)
          end if
       end if
       ep => cx%eb

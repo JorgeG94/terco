@@ -11,14 +11,94 @@ module trc_decontract
 
    public :: decon_t, decontract_basis, decontract_expand, decontract_fold, decontract_release
    public :: decontract_expand_host, decontract_fold_host
-   public :: DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT
+   public :: trc_decontract_options_t
+   public :: DECON_CUTOFF_DEFAULT, DECON_DIFFUSE_DEFAULT, DECON_SHELL_COST_DEFAULT
 
    real(dp), parameter :: DECON_CUTOFF_DEFAULT = 0.3_dp
    !! Exponents at or below this are diffuse. GPU4PySCF's `diffuse_cutoff`.
 
-   !
-   integer, parameter :: DECON_MINPRIM_DEFAULT = 0
-   !! SPLIT ONLY THE GROUPS THAT PAY FOR IT -- OFF BY DEFAULT.
+   logical, parameter :: DECON_DIFFUSE_DEFAULT = .false.
+   !! SPLIT DIFFUSE PRIMITIVES OUT OF SEGMENTED SHELLS -- OFF BY DEFAULT.
+   !!
+   !! GPU4PySCF moves every primitive at or below the cutoff out of a
+   !! contracted shell into a shell of its own, so the tight remainder
+   !! screens on its own bound. In pyscf's own data for H, C, N, O and Si
+   !! (what trc_basis_json's pruning turns the BSE files into) the only
+   !! contracted shells holding a primitive at or below 0.3 are Si's 6-31G*
+   !! sp; at 0.5 H's cc-pVDZ and def2-SVPD s join them; at 0.1 nothing
+   !! does. It loses wherever it acts (V100, RHF, 1e-11, full builds, mean
+   !! of builds 2-10): msn/6-31G* 3.76 -> 4.32 s at 0.3; gly20/cc-pVDZ
+   !! 1.31 -> 1.41, gly20/def2-SVPD 8.82 -> 9.48, water40/aug-cc-pVDZ
+   !! 25.8 -> 29.7 s at 0.5. Every class with an s shell grows by 8-11%
+   !! (nsys, gly20/cc-pVDZ): more shells, each split one carrying a
+   !! screening amplitude of 2 (`build_maps`), so its pairs are judged four
+   !! times tighter, and the transform of D and G every build.
+
+   real(dp), parameter :: DECON_SHELL_COST_DEFAULT = 2.0_dp
+   !! THE PRICE OF ONE MORE SHELL, IN PRIMITIVES, FOR THE GENERAL-CONTRACTION
+   !! SPLIT. A general contraction is split only when
+   !!
+   !!   sum over the shells it becomes of (nprim + shell_cost)
+   !!
+   !! is smaller than the same sum over the contracted shells: the split
+   !! removes the primitives the columns repeat and adds shells, and every
+   !! shell costs pair and quartet bookkeeping and a Schwarz bound carrying
+   !! the transform's amplitude (`build_maps`, up to 12 on cc-pVDZ oxygen),
+   !! whatever its primitive count. At 2: the 8-primitive, 2-column s of C,
+   !! N and O (16 + 2c against 8 + 8c) stays whole; Si's 11-primitive,
+   !! 3-column s (33 + 3c against 11 + 11c) splits; its 7-primitive,
+   !! 2-column p (14 + 2c against 7 + 7c) stays whole. 0 splits every
+   !! general contraction, which is what this module did before the price
+   !! existed; `md_coulomb` forces that.
+   !!
+   !! Measured against 0 (V100, RHF, 1e-11, full builds, mean of builds
+   !! 2-10, s per build): gly20/cc-pVDZ 1.94 -> 1.31, aug-cc-pVDZ 27.7 ->
+   !! 18.2; water40/cc-pVDZ 0.99 -> 0.73, aug-cc-pVDZ 36.4 -> 25.8;
+   !! NA-040/cc-pVDZ 2.10 -> 1.47, aug-cc-pVDZ 48.5 -> 32.6; w172/cc-pVDZ
+   !! 16.8 -> 9.9; the silica fragment and slice, cc-pVDZ, 9.66 -> 6.26 and
+   !! 6.85 -> 4.51 (splitting Si's p as well, price 1.37: 7.20 and 5.48;
+   !! splitting nothing, price 3: 6.37 and 4.64).
+   !!
+   !! THE SCREEN IS LOOSER UNSPLIT. The amplitude makes a split shell's
+   !! pairs screen tighter than the contracted shell's did, so at the same
+   !! threshold the whole shell drops more: water10/cc-pVDZ at 1e-11 is
+   !! 1.0e-09 Eh from the 1e-14 energy kept whole against 4.1e-10 split,
+   !! the silica slice 1.0e-07 against 4.4e-09. At 1e-12 the whole shells
+   !! are within 2e-11 on water10 (and still faster than the split at
+   !! 1e-11: gly20/cc-pVDZ 1.45 s, aug-cc-pVDZ 20.1 s), and at 1e-13 the two
+   !! agree to 1e-11. A segmented basis has always screened this way.
+
+   type :: trc_decontract_options_t
+      !! How the working basis is split. TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE
+      !! (0 or 1) and TRC_DECON_SHELL_COST override the fields at build time
+      !! (`trc_eri`), so a policy can be swept without a rebuild; the
+      !! integrals over the split basis are exact either way, only the cost
+      !! changes.
+      real(dp) :: cutoff = DECON_CUTOFF_DEFAULT
+      !! Exponents at or below this are diffuse.
+      logical :: diffuse = DECON_DIFFUSE_DEFAULT
+      !! Move diffuse primitives out of segmented shells into their own.
+      real(dp) :: shell_cost = DECON_SHELL_COST_DEFAULT
+      !! See DECON_SHELL_COST_DEFAULT.
+      logical :: md_coulomb = .false.
+      !! The Coulomb matrix will come from the McMurchie-Davidson J engine
+      !! (trc_mdj: a basis with f or higher, or a functional without exact
+      !! exchange). Its cost goes with primitive pairs, not shells, so every
+      !! general contraction is split, whatever `shell_cost` says. Measured
+      !! on gly20/cc-pVTZ (V100, RHF, 1e-11, nsys over a 3-build run):
+      !! keeping C, N and O's s whole takes the MD J kernels from 6.5 to
+      !! 11.4 s and the exchange bins from 28.8 to 29.4 s, 17.1 -> 19.3 s
+      !! per build; water20, water40 and NA-040 in cc-pVTZ lose 1-5% the
+      !! same way.
+   end type trc_decontract_options_t
+
+   integer, parameter :: PLAN_WHOLE = 0
+   !! Keep every member of the group as it is.
+   integer, parameter :: PLAN_SEGMENT = 1
+   !! One column keeps the primitives only it uses as a segmented shell;
+   !! every other primitive becomes a shell of one, shared by the columns.
+   integer, parameter :: PLAN_PRIMITIVES = 2
+   !! Every primitive becomes a shell of one.
 
    type :: decon_t
       logical :: active = .false.
@@ -39,7 +119,7 @@ module trc_decontract
    end type decon_t
 
    type :: decon_build_t
-    !! The primitive basis and the transform `split_group`/`emit_whole`
+    !! The primitive basis and the transform `emit_segment`/`emit_primitive`
     !! fill, one shell/triple at a time, bundled so those two internal
     !! helpers stay under the dummy-argument limit -- `decontract_basis`
     !! owns the allocation (sized once, an upper bound on every primitive
@@ -48,11 +128,14 @@ module trc_decontract
     !! arrays before.
       integer, allocatable :: p_l(:), p_np(:)
       real(dp), allocatable :: p_e(:, :), p_c(:, :), p_r(:, :)
+      logical, allocatable :: p_single(:)
+      !! A shell of one primitive that the columns of its group share, as
+      !! opposed to a contracted shell that happens to have one primitive:
+      !! only the former may be reused by a later column.
       integer :: nsh_p = 0
       ! one triple per (contracted shell, emitted shell) pair
       integer, allocatable :: tr_mu(:), tr_s(:)
       real(dp), allocatable :: tr_a(:)
-      logical, allocatable :: tr_whole(:)
       integer :: ntr = 0
    end type decon_build_t
 
@@ -69,37 +152,30 @@ contains
    ! `active` comes back false for a basis with nothing to split, and then
    ! `pb` and the maps are untouched: the caller must go on using `b`.
    !
-   subroutine decontract_basis(b, pb, m, cutoff, minprim)
+   subroutine decontract_basis(b, pb, m, options)
       type(trc_basis_t), intent(in)    :: b
       type(trc_basis_t), intent(inout) :: pb
       type(decon_t),     intent(inout) :: m
-      real(dp), intent(in), optional :: cutoff
-      !! Diffuse threshold; DECON_CUTOFF_DEFAULT if absent.
-      integer, intent(in), optional :: minprim
-      !! Smallest compact primitive count that makes a split worth its
-      !! screen; DECON_MINPRIM_DEFAULT if absent. Zero splits everything.
+      type(trc_decontract_options_t), intent(in), optional :: options
+      !! The split policy; the defaults if absent.
 
       integer, allocatable :: grp(:)          ! group id per shell
       type(decon_build_t) :: bld
+      type(trc_decontract_options_t) :: opts
       integer :: t
       integer :: maxnp_p
       integer :: ng, g, i, n
-      real(dp) :: cut
       integer, parameter :: LTOP = 8
       real(dp) :: fl(0:LTOP)
-      integer :: mnp
 
-      cut = DECON_CUTOFF_DEFAULT
-      if (present(cutoff)) cut = cutoff
-      mnp = DECON_MINPRIM_DEFAULT
-      if (present(minprim)) mnp = minprim
+      if (present(options)) opts = options
 
       call decontract_release(m)
       call group_shells(b, grp, ng)
 
       ! Nothing shares an exponent with anything, or nothing that does is
       ! worth the split: a segmented basis as far as this module cares. Leave.
-      if (.not. any_group_splits(b, grp, ng, cut, mnp)) then
+      if (.not. any_group_splits(b, grp, ng, opts)) then
          m%active = .false.
          return
       end if
@@ -113,14 +189,14 @@ contains
       allocate (bld%p_l(n + b%nshell), bld%p_np(n + b%nshell), bld%p_r(3, n + b%nshell))
       allocate (bld%p_e(b%maxnp, n + b%nshell), bld%p_c(b%maxnp, n + b%nshell))
       allocate (bld%tr_mu(n + b%nshell), bld%tr_s(n + b%nshell), bld%tr_a(n + b%nshell))
-      allocate (bld%tr_whole(n + b%nshell))
+      allocate (bld%p_single(n + b%nshell))
       bld%p_e = 0.0_dp
       bld%p_c = 0.0_dp
       bld%nsh_p = 0
       bld%ntr = 0
 
       do g = 1, ng
-         call split_group(b, grp, g, cut, mnp, bld)
+         call split_group(b, grp, g, opts, bld)
       end do
 
       maxnp_p = 1
@@ -198,7 +274,7 @@ contains
             end block
          end if
       end block
-      deallocate (bld%p_l, bld%p_np, bld%p_e, bld%p_c, bld%p_r, bld%tr_mu, bld%tr_s, bld%tr_a, bld%tr_whole, grp)
+      deallocate (bld%p_l, bld%p_np, bld%p_e, bld%p_c, bld%p_r, bld%tr_mu, bld%tr_s, bld%tr_a, bld%p_single, grp)
    end subroutine decontract_basis
 
    !
@@ -280,15 +356,15 @@ contains
    ! has, and a segmented run is bit-for-bit what it was before this module
    ! existed.
    !
-   logical function any_group_splits(b, grp, ng, cut, minprim) result(res)
+   logical function any_group_splits(b, grp, ng, opts) result(res)
       type(trc_basis_t), intent(in) :: b
-      integer, intent(in) :: ng, minprim
+      integer, intent(in) :: ng
       integer, intent(in) :: grp(:)
-      real(dp), intent(in) :: cut
+      type(trc_decontract_options_t), intent(in) :: opts
       integer :: g
       res = .false.
       do g = 1, ng
-         if (group_pays(b, grp, g, cut, minprim)) then
+         if (group_plan(b, grp, g, opts) /= PLAN_WHOLE) then
             res = .true.
             return
          end if
@@ -296,52 +372,81 @@ contains
    end function any_group_splits
 
    !
-   ! Is this group worth splitting?
+   ! What one group becomes: PLAN_WHOLE, PLAN_SEGMENT or PLAN_PRIMITIVES.
    !
-   ! It has to BE a general contraction -- more than one shell sharing the
-   ! exponents -- and its work has to be worth the screen the split tightens.
-   ! The proxy for the work is the compact primitive count of the group's
-   ! biggest contracted shell, which is what the unsplit path pays twice over:
-   ! once in the primitive pairs of every column, and once in `batch_build_pairs`
-   ! and `screen_schwarz_bounds`, where msn's setup went 2.0 s -> 9.7 s with the
-   ! split off. See DECON_MINPRIM_DEFAULT for the measurement.
+   ! A group of one shell is a segmented shell. It is split only when
+   ! `opts%diffuse` asks for it and it has a diffuse primitive among several:
+   ! the compact primitives stay one segment (PLAN_SEGMENT), the diffuse
+   ! ones go out on their own, GPU4PySCF's rule for `nctr == 1`.
    !
-   logical function group_pays(b, grp, g, cut, minprim) result(res)
+   ! A general contraction -- more than one shell sharing exponents -- takes
+   ! GPU4PySCF's `_optimize_contraction` rule: if exactly one column holds
+   ! more than one compact primitive, that column keeps the primitives no
+   ! other column uses as a segment and the rest become shared shells of one
+   ! (PLAN_SEGMENT); otherwise every primitive does (PLAN_PRIMITIVES). That
+   ! rule only says how to split. Whether to is the price in
+   ! DECON_SHELL_COST_DEFAULT: the split happens only if it is cheaper than
+   ! the contracted shells by that measure.
+   !
+   integer function group_plan(b, grp, g, opts) result(plan)
       type(trc_basis_t), intent(in) :: b
-      integer, intent(in) :: g, minprim
+      integer, intent(in) :: g
       integer, intent(in) :: grp(:)
-      real(dp), intent(in) :: cut
-      integer :: i, k, nmem, ncomp, best
-      nmem = 0
-      best = 0
-      do i = 1, b%nshell
-         if (grp(i) /= g) cycle
-         nmem = nmem + 1
-         ncomp = 0
-         do k = 1, b%sh_np(i)
-            if (b%sh_e(k, i) > cut) ncomp = ncomp + 1
-         end do
-         best = max(best, ncomp)
-      end do
-      res = (nmem > 1) .and. (best >= minprim)
-   end function group_pays
+      type(trc_decontract_options_t), intent(in) :: opts
 
-   !
-   ! Emit the shells one group becomes, and the triples that map the group's
-   ! contracted shells onto them.
-   !
-   subroutine split_group(b, grp, g, cut, minprim, bld)
-      type(trc_basis_t), intent(in) :: b
-      integer,  intent(in) :: g, minprim
-      integer,  intent(in) :: grp(:)
-      real(dp), intent(in) :: cut
-      type(decon_build_t), intent(inout) :: bld
-
-      integer :: nmem, i, mu, k, kk, kc, s, ncomp, nmulti, i0
       integer :: mem(b%nshell)
-      real(dp) :: e, cbig
-      logical :: seen
+      logical :: in_segment(b%maxnp)
+      integer :: nmem, i, mu, ncomp, nmulti, i0, nunique, nseg
+      real(dp) :: cost_whole, cost_split, price
 
+      call group_members(b, grp, g, mem, nmem)
+      plan = PLAN_WHOLE
+
+      if (nmem == 1) then
+         mu = mem(1)
+         if (.not. opts%diffuse .or. b%sh_np(mu) < 2) return
+         ncomp = count(b%sh_e(1:b%sh_np(mu), mu) > opts%cutoff)
+         if (ncomp < b%sh_np(mu)) plan = PLAN_SEGMENT
+         return
+      end if
+
+      price = opts%shell_cost
+      if (opts%md_coulomb) price = 0.0_dp
+      nmulti = 0
+      i0 = 0
+      cost_whole = 0.0_dp
+      do i = 1, nmem
+         mu = mem(i)
+         cost_whole = cost_whole + real(b%sh_np(mu), dp) + price
+         if (count(b%sh_e(1:b%sh_np(mu), mu) > opts%cutoff) > 1) then
+            nmulti = nmulti + 1
+            i0 = mu
+         end if
+      end do
+      nunique = group_unique_exponents(b, mem, nmem)
+
+      nseg = 0
+      if (nmulti == 1) then
+         call segment_mask(b, mem, nmem, i0, opts, in_segment)
+         nseg = count(in_segment(1:b%sh_np(i0)))
+      end if
+      if (nseg >= 2) then
+         ! One segment of nseg primitives, every other primitive on its own.
+         cost_split = real(nseg, dp) + price + real(nunique - nseg, dp)*(1.0_dp + price)
+         if (cost_split < cost_whole) plan = PLAN_SEGMENT
+      else
+         cost_split = real(nunique, dp)*(1.0_dp + price)
+         if (cost_split < cost_whole) plan = PLAN_PRIMITIVES
+      end if
+   end function group_plan
+
+   subroutine group_members(b, grp, g, mem, nmem)
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: g
+      integer, intent(in) :: grp(:)
+      integer, intent(out) :: mem(:)
+      integer, intent(out) :: nmem
+      integer :: i
       nmem = 0
       do i = 1, b%nshell
          if (grp(i) == g) then
@@ -349,115 +454,205 @@ contains
             mem(nmem) = i
          end if
       end do
+   end subroutine group_members
 
-      ! A segmented shell, or a general contraction whose columns are too
-      ! cheap to be worth the tightened screen: keep every member whole,
-      ! mapped one to one, exactly as the unsplit path would have them.
-      if (.not. group_pays(b, grp, g, cut, minprim)) then
+   integer function group_unique_exponents(b, mem, nmem) result(n)
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: nmem
+      integer, intent(in) :: mem(:)
+      integer :: i, k, ii, kk
+      logical :: seen
+      n = 0
+      do i = 1, nmem
+         do k = 1, b%sh_np(mem(i))
+            seen = .false.
+            do ii = 1, i
+               do kk = 1, merge(k - 1, b%sh_np(mem(ii)), ii == i)
+                  if (same_exp(b%sh_e(kk, mem(ii)), b%sh_e(k, mem(i)))) seen = .true.
+               end do
+            end do
+            if (.not. seen) n = n + 1
+         end do
+      end do
+   end function group_unique_exponents
+
+   !
+   ! Which primitives of shell `mu` stay in its segment: the ones no other
+   ! member of the group uses, and, when `opts%diffuse` is on, only the
+   ! compact ones among those. Everything else becomes a shared shell of one.
+   !
+   subroutine segment_mask(b, mem, nmem, mu, opts, in_segment)
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: nmem, mu
+      integer, intent(in) :: mem(:)
+      type(trc_decontract_options_t), intent(in) :: opts
+      logical, intent(out) :: in_segment(:)
+      integer :: k, i, kk
+      in_segment = .false.
+      do k = 1, b%sh_np(mu)
+         in_segment(k) = .true.
+         if (opts%diffuse .and. b%sh_e(k, mu) <= opts%cutoff) in_segment(k) = .false.
          do i = 1, nmem
-            call emit_whole(b, mem(i), bld)
+            if (mem(i) == mu) cycle
+            do kk = 1, b%sh_np(mem(i))
+               if (same_exp(b%sh_e(kk, mem(i)), b%sh_e(k, mu))) in_segment(k) = .false.
+            end do
+         end do
+      end do
+   end subroutine segment_mask
+
+   !
+   ! Emit the shells one group becomes, and the triples that map the group's
+   ! contracted shells onto them.
+   !
+   subroutine split_group(b, grp, g, opts, bld)
+      type(trc_basis_t), intent(in) :: b
+      integer,  intent(in) :: g
+      integer,  intent(in) :: grp(:)
+      type(trc_decontract_options_t), intent(in) :: opts
+      type(decon_build_t), intent(inout) :: bld
+
+      integer :: nmem, i, mu, k, plan, i0, first
+      integer :: mem(b%nshell)
+      logical :: in_segment(b%maxnp)
+
+      call group_members(b, grp, g, mem, nmem)
+      plan = group_plan(b, grp, g, opts)
+
+      ! A segmented shell, or a general contraction whose split costs more
+      ! than it saves: keep every member whole, mapped one to one, exactly as
+      ! the unsplit path would have them.
+      if (plan == PLAN_WHOLE) then
+         in_segment = .true.
+         do i = 1, nmem
+            call emit_segment(b, mem(i), in_segment(1:b%sh_np(mem(i))), bld)
          end do
          return
       end if
 
-      ! Does exactly one column hold more than one compact primitive?
-      nmulti = 0
+      ! The column that keeps a segment: the only one with more than one
+      ! compact primitive, or the group's one shell.
       i0 = 0
-      do i = 1, nmem
-         mu = mem(i)
-         ncomp = 0
-         do k = 1, b%sh_np(mu)
-            if (b%sh_e(k, mu) > cut) ncomp = ncomp + 1
+      if (plan == PLAN_SEGMENT) then
+         do i = 1, nmem
+            if (nmem == 1 .or. count(b%sh_e(1:b%sh_np(mem(i)), mem(i)) > opts%cutoff) > 1) i0 = mem(i)
          end do
-         if (ncomp > 1) then
-            nmulti = nmulti + 1
-            i0 = mu
+         if (nmem == 1) then
+            ! A segmented shell: the compact primitives stay together.
+            in_segment = .false.
+            in_segment(1:b%sh_np(i0)) = b%sh_e(1:b%sh_np(i0), i0) > opts%cutoff
+         else
+            call segment_mask(b, mem, nmem, i0, opts, in_segment)
          end if
-      end do
+         if (count(in_segment(1:b%sh_np(i0))) > 0) then
+            call emit_segment(b, i0, in_segment(1:b%sh_np(i0)), bld)
+         end if
+      end if
 
+      ! Everything else becomes one shell per primitive. An exponent already
+      ! emitted for this group is reused, so the columns of a general
+      ! contraction share their primitive shells -- which is the entire point.
+      first = bld%nsh_p + 1
       do i = 1, nmem
          mu = mem(i)
-         if (nmulti == 1 .and. mu == i0) then
-            ! The one real contraction in the group survives intact.
-            call emit_whole(b, mu, bld)
-            cycle
-         end if
-         ! Everything else becomes one shell per primitive. An exponent
-         ! already emitted for this group is reused, so the columns of a
-         ! general contraction share their primitive shells -- which is the
-         ! entire point.
          do k = 1, b%sh_np(mu)
-            e = b%sh_e(k, mu)
-            s = 0
-            do kk = bld%nsh_p, 1, -1
-               if (bld%p_np(kk) /= 1) cycle
-               if (bld%p_l(kk) /= b%sh_l(mu)) cycle
-               if (maxval(abs(bld%p_r(:, kk) - b%sh_r(:, mu))) > 1.0e-10_dp) cycle
-               if (same_exp(bld%p_e(1, kk), e)) then
-                  s = kk
-                  exit
-               end if
-            end do
-            if (s == 0) then
-               ! Scale the primitive shell by the largest coefficient any
-               ! column gives it, so every alpha lands in [-1, 1] and the
-               ! transform stays well conditioned whatever the basis does
-               ! with tight exponents.
-               cbig = 0.0_dp
-               do kk = 1, nmem
-                  do kc = 1, b%sh_np(mem(kk))
-                     if (same_exp(b%sh_e(kc, mem(kk)), e)) then
-                        if (abs(b%sh_c(kc, mem(kk))) > abs(cbig)) cbig = b%sh_c(kc, mem(kk))
-                     end if
-                  end do
-               end do
-               bld%nsh_p = bld%nsh_p + 1
-               bld%p_l(bld%nsh_p) = b%sh_l(mu)
-               bld%p_np(bld%nsh_p) = 1
-               bld%p_e(1, bld%nsh_p) = e
-               bld%p_c(1, bld%nsh_p) = cbig
-               bld%p_r(:, bld%nsh_p) = b%sh_r(:, mu)
-               s = bld%nsh_p
+            if (mu == i0) then
+               if (in_segment(k)) cycle
             end if
-            ! Numerator only; the denominator is the coefficient the
-            ! emitted shell actually ends up with, filled in by the caller
-            ! once the basis is built.
-            bld%ntr = bld%ntr + 1
-            bld%tr_mu(bld%ntr) = mu
-            bld%tr_s(bld%ntr) = s
-            bld%tr_a(bld%ntr) = b%sh_c(k, mu)
-            bld%tr_whole(bld%ntr) = .false.
+            call emit_primitive(b, mem, nmem, mu, k, first, bld)
          end do
       end do
    end subroutine split_group
 
-   subroutine emit_whole(b, mu, bld)
+   !
+   ! Primitive `k` of contracted shell `mu`, as a shared shell of one: found
+   ! among the ones this group has emitted since `first`, or emitted now.
+   !
+   subroutine emit_primitive(b, mem, nmem, mu, k, first, bld)
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: nmem, mu, k, first
+      integer, intent(in) :: mem(:)
+      type(decon_build_t), intent(inout) :: bld
+      integer :: s, kk, kc
+      real(dp) :: e, cbig
+
+      e = b%sh_e(k, mu)
+      s = 0
+      do kk = first, bld%nsh_p
+         if (.not. bld%p_single(kk)) cycle
+         if (same_exp(bld%p_e(1, kk), e)) then
+            s = kk
+            exit
+         end if
+      end do
+      if (s == 0) then
+         ! Scale the primitive shell by the largest coefficient any column
+         ! gives it, so every alpha lands in [-1, 1] and the transform stays
+         ! well conditioned whatever the basis does with tight exponents.
+         cbig = 0.0_dp
+         do kk = 1, nmem
+            do kc = 1, b%sh_np(mem(kk))
+               if (same_exp(b%sh_e(kc, mem(kk)), e)) then
+                  if (abs(b%sh_c(kc, mem(kk))) > abs(cbig)) cbig = b%sh_c(kc, mem(kk))
+               end if
+            end do
+         end do
+         bld%nsh_p = bld%nsh_p + 1
+         bld%p_l(bld%nsh_p) = b%sh_l(mu)
+         bld%p_np(bld%nsh_p) = 1
+         bld%p_e(1, bld%nsh_p) = e
+         bld%p_c(1, bld%nsh_p) = cbig
+         bld%p_r(:, bld%nsh_p) = b%sh_r(:, mu)
+         bld%p_single(bld%nsh_p) = .true.
+         s = bld%nsh_p
+      end if
+      ! Numerator only; the denominator is the coefficient the emitted shell
+      ! actually ends up with, filled in by the caller once the basis is
+      ! built.
+      bld%ntr = bld%ntr + 1
+      bld%tr_mu(bld%ntr) = mu
+      bld%tr_s(bld%ntr) = s
+      bld%tr_a(bld%ntr) = b%sh_c(k, mu)
+   end subroutine emit_primitive
+
+   !
+   ! Contracted shell `mu` restricted to the primitives `keep` marks, with
+   ! their own coefficients: the whole shell when every one is kept.
+   !
+   subroutine emit_segment(b, mu, keep, bld)
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: mu
+      logical, intent(in) :: keep(:)
       type(decon_build_t), intent(inout) :: bld
-      integer :: k
+      integer :: k, n, kfirst
       bld%nsh_p = bld%nsh_p + 1
       bld%p_l(bld%nsh_p) = b%sh_l(mu)
-      bld%p_np(bld%nsh_p) = b%sh_np(mu)
       bld%p_r(:, bld%nsh_p) = b%sh_r(:, mu)
+      bld%p_single(bld%nsh_p) = .false.
+      n = 0
+      kfirst = 0
       do k = 1, b%sh_np(mu)
-         bld%p_e(k, bld%nsh_p) = b%sh_e(k, mu)
-         bld%p_c(k, bld%nsh_p) = b%sh_c(k, mu)
+         if (.not. keep(k)) cycle
+         if (kfirst == 0) kfirst = k
+         n = n + 1
+         bld%p_e(n, bld%nsh_p) = b%sh_e(k, mu)
+         bld%p_c(n, bld%nsh_p) = b%sh_c(k, mu)
       end do
+      bld%p_np(bld%nsh_p) = n
       ! NOT alpha = 1. The constructor scales every coefficient it is given
       ! by common_fac_sp, so a shell handed back its own coefficients comes
       ! out that factor too large -- uniformly, across all its primitives.
-      ! Recording the first coefficient and dividing by the one the built
-      ! shell ends up with recovers the ratio without this module having to
-      ! know the constant. Assuming alpha = 1 here put every s and p shell
-      ! out by 0.28 and 0.49 and was invisible to check_gc, which compares
-      ! terco's two paths to each other and not to anything external.
+      ! Recording the first kept coefficient and dividing by the one the
+      ! built shell ends up with recovers the ratio without this module
+      ! having to know the constant. Assuming alpha = 1 here put every s and
+      ! p shell out by 0.28 and 0.49 and was invisible to check_gc, which
+      ! compares terco's two paths to each other and not to anything
+      ! external.
       bld%ntr = bld%ntr + 1
       bld%tr_mu(bld%ntr) = mu
       bld%tr_s(bld%ntr) = bld%nsh_p
-      bld%tr_a(bld%ntr) = b%sh_c(1, mu)
-      bld%tr_whole(bld%ntr) = .true.
-   end subroutine emit_whole
+      bld%tr_a(bld%ntr) = b%sh_c(kfirst, mu)
+   end subroutine emit_segment
 
    !
    ! Expand the per-shell triples into per-AO CSR, both directions.

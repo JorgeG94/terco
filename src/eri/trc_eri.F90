@@ -44,7 +44,7 @@ module trc_eri
    use trc_binkernel, only: TRC_PRIM_MARGIN
    use trc_basis_types, only: trc_basis_t
    use trc_decontract, only: decon_t, decontract_basis, decontract_expand, decontract_fold, decontract_release, &
-                             DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT, &
+                             trc_decontract_options_t, &
                              decontract_expand_host, decontract_fold_host
    implicit none
    private
@@ -189,7 +189,7 @@ contains
    ! that routine's header for why this is not only faster but also closes a
    ! scale mismatch the MMD route had.
    !
-   subroutine eri_build(this, b, thresh, comm, batch_res)
+   subroutine eri_build(this, b, thresh, comm, batch_res, decontract)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
@@ -198,8 +198,12 @@ contains
       !! (trc_bind_device) BEFORE any object goes to the device.
       integer, intent(in), optional :: batch_res
       !! Buckets per decade of Schwarz bound in the pair bins; 1 is decades.
+      type(trc_decontract_options_t), intent(in), optional :: decontract
+      !! How the working basis is split (trc_decontract); the defaults if
+      !! absent. Invisible but for speed: the integrals are exact either way.
 
       integer :: bres
+      type(trc_decontract_options_t) :: decon
       character(len=8) :: bt_env
       character(len=:), allocatable :: refusal
 
@@ -244,10 +248,19 @@ contains
       bt_env = " "
       call get_environment_variable("TRC_NO_DECONTRACT", bt_env)
       if (len_trim(bt_env) == 0) then
-         ! TRC_DECON_CUTOFF overrides the diffuse threshold the split rule
-         ! uses, so the rule can be swept without a rebuild.
-         call decontract_basis(b, this%pb, this%dec, cutoff=decon_cutoff(), &
-                               minprim=decon_minprim())
+         ! The policy is the caller's, or the defaults, and the
+         ! environment can override either (decon_options).
+         ! A Coulomb matrix the MD J engine builds wants every general
+         ! contraction split (trc_decontract_options_t%md_coulomb); that is
+         ! decided here for the basis, and by the caller for a functional
+         ! without exact exchange.
+         if (present(decontract)) then
+            decon = decon_options(decontract)
+         else
+            decon = decon_options(trc_decontract_options_t())
+         end if
+         if (mdj_requested(maxval(b%sh_l) >= 3, .false.) .or. this%needs_md) decon%md_coulomb = .true.
+         call decontract_basis(b, this%pb, this%dec, decon)
       end if
       if (this%dec%active) then
          ! The transform runs inside `fock_resident`, where everything is
@@ -271,35 +284,36 @@ contains
    !
    ! Everything eri_build does once the basis to build over has been chosen.
    !
-   real(dp) function decon_cutoff() result(res)
-      !! Diffuse threshold for the decontraction rule; DECON_CUTOFF_DEFAULT
-      !! unless TRC_DECON_CUTOFF says otherwise.
+   function decon_options(base) result(opts)
+      !! The split policy the build uses: `base` (the caller's, or the
+      !! defaults), with TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE (0 or 1) and
+      !! TRC_DECON_SHELL_COST overriding it, so a policy can be swept without
+      !! a rebuild. An unreadable value leaves the field as it was.
+      type(trc_decontract_options_t), intent(in) :: base
+      type(trc_decontract_options_t) :: opts
       character(len=32) :: e
-      integer :: ios
+      integer :: ios, flag
+      real(dp) :: x
+      opts = base
       e = " "
       call get_environment_variable("TRC_DECON_CUTOFF", e)
-      res = DECON_CUTOFF_DEFAULT
       if (len_trim(e) > 0) then
-         read (e, *, iostat=ios) res
-         if (ios /= 0) res = DECON_CUTOFF_DEFAULT
+         read (e, *, iostat=ios) x
+         if (ios == 0) opts%cutoff = x
       end if
-   end function decon_cutoff
-
-   integer function decon_minprim() result(res)
-      !! Smallest compact primitive count a general contraction must have for
-      !! the split to be worth its tightened screen. TRC_DECON_MINPRIM
-      !! overrides it, so the gate can be swept without a rebuild; 0 splits
-      !! every group, as this module did before the gate existed.
-      character(len=32) :: e
-      integer :: ios
       e = " "
-      call get_environment_variable("TRC_DECON_MINPRIM", e)
-      res = DECON_MINPRIM_DEFAULT
+      call get_environment_variable("TRC_DECON_DIFFUSE", e)
       if (len_trim(e) > 0) then
-         read (e, *, iostat=ios) res
-         if (ios /= 0) res = DECON_MINPRIM_DEFAULT
+         read (e, *, iostat=ios) flag
+         if (ios == 0) opts%diffuse = flag /= 0
       end if
-   end function decon_minprim
+      e = " "
+      call get_environment_variable("TRC_DECON_SHELL_COST", e)
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) x
+         if (ios == 0) opts%shell_cost = x
+      end if
+   end function decon_options
 
    subroutine build_structures(this, b, thresh, bres)
       class(trc_eri_t), intent(inout) :: this
