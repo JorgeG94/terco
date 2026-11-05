@@ -99,7 +99,7 @@ module trc_scf_soscf
    use trc_scf_settings, only: scf_settings_t, trc_scf_result_t, scf_energies_t
    use trc_scf_state, only: scf_state_t
    use trc_scf_fock, only: scf_fock_build_g, scf_fock_energy, scf_fock_assemble, scf_fock_commutator_error, &
-                           scf_fock_to_cart, scf_fock_to_sph
+                           scf_fock_to_cart, scf_fock_to_sph, scf_fock_fold_g
    implicit none
    private
 
@@ -434,10 +434,7 @@ contains
                                scf_result%dmat(:, :, s), scf_state%d_c(:, :, s))
       end do
       call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, .false., eri, la)
-      do s = 1, scf_config%nspin
-         call scf_fock_to_sph(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, &
-                              scf_state%gmat_c(:, :, s), scf_state%gmat(:, :, s))
-      end do
+      call scf_fock_fold_g(scf_basis, scf_context, scf_config, scf_state)
       call scf_fock_energy(scf_context, scf_config, scf_state, scf_result, scf_energies, la)
       call scf_fock_assemble(scf_context, scf_config, scf_state)
    end subroutine scf_soscf_fock_rebuild

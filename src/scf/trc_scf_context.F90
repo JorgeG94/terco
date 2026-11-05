@@ -26,7 +26,7 @@ module trc_scf_context
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_linalg, only: trc_linalg_t
    use trc_pcm, only: trc_pcm_t, pcm_model_from_name
-   use trc_scf_settings, only: trc_scf_options_t, scf_settings_t
+   use trc_scf_settings, only: trc_scf_options_t, scf_settings_t, scf_settings_fock_densities
    use trc_scf_df, only: df_jk_t
    implicit none
    private
@@ -269,6 +269,10 @@ contains
       this%e_nuc = nuclear_repulsion(b)
       this%ts(4) = tm%get_elapsed_time()
       call tm%start()
+      ! One device buffer for the eigensolver's workspace and the Fock
+      ! build's scratch (trc_linalg's `reserve`), sized before `init` asks
+      ! for its own share so it is allocated once, at the larger of the two.
+      if (.not. config%df) call la%reserve(pair_eri_cache%eri%fock_work_size(scf_settings_fock_densities(config)))
       call la%init(this%nao)
       this%ts(5) = tm%get_elapsed_time()
       call tm%start()

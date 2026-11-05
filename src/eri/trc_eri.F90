@@ -47,9 +47,23 @@ module trc_eri
                              decontract_expand_host, decontract_fold_host
    implicit none
    private
-   public :: trc_eri_t, eri_lmax_refusal, eri_grad_lmax_refusal
+   public :: trc_eri_t, eri_lmax_refusal, eri_grad_lmax_refusal, trc_fock_options_t
 
    integer, parameter :: NBUILD_STAGES = 5  !! timed stages of eri%build, see t_build
+
+   type :: trc_fock_options_t
+      !! What `fock_resident_lent`/`fock_resident_many_lent` build, the
+      !! optional arguments of `fock_resident` as one value: gmat = j_scale
+      !! J[D] - k_scale K[D]/2 of the operator erf(omega r12)/r12 (omega 0:
+      !! the Coulomb operator). Plain values only (see trc_gemm_batch_t's
+      !! own comment on nvfortran's structure constructors).
+      real(dp) :: j_scale = 1.0_dp
+      real(dp) :: k_scale = 1.0_dp
+      real(dp) :: omega = 0.0_dp
+      logical :: density_screen = .true.
+      !! A COUPLED-PERTURBED SOLVE MUST SET FALSE -- see `eri_fock`.
+      logical :: count_survivors = .false.
+   end type trc_fock_options_t
 
    type :: trc_eri_t
       real(dp) :: thresh = 1.0e-10_dp
@@ -114,6 +128,9 @@ module trc_eri
       procedure :: fock_nosym => eri_fock_nosym
       procedure :: fock_resident => eri_fock_resident
       procedure :: fock_resident_many => eri_fock_resident_many
+      procedure :: fock_resident_lent => eri_fock_resident_lent
+      procedure :: fock_resident_many_lent => eri_fock_resident_many_lent
+      procedure :: fock_work_size => eri_fock_work_size
       procedure :: gradient => eri_gradient
       procedure :: coulomb => eri_coulomb
       procedure :: release => eri_release
@@ -967,10 +984,10 @@ contains
    ! to this routine is a segfault, not a wrong number, and a flag makes that
    ! one typo away; two names make it a compile-time choice.
    !
-   ! The scratch it still needs -- the folded accumulator and the density-block
-   ! bound -- is allocated per call. Those are nao^2, the same order as the
-   ! matrices, so a caller doing many builds should expect this to be improved
-   ! by hoisting them into the object; it is the next thing to do here.
+   ! The scratch it needs -- three working-basis matrices, see
+   ! `fock_resident_lent` -- is allocated per call here. A caller with device
+   ! memory to spare between builds lends it to `fock_resident_lent` instead;
+   ! the SCF lends its linear-algebra workspace.
    !
    subroutine eri_fock_resident(this, b, dmat, gmat, k_scale, j_scale, &
                                 density_screen, count_survivors, omega)
@@ -988,20 +1005,60 @@ contains
       logical, intent(in), optional :: count_survivors
       !! Also count the quartets that survive screening, into this%nkept.
       !! A full extra pass over the work list, so it is opt-in.
+      type(trc_fock_options_t) :: opts
+      real(dp), allocatable :: work(:)
+      if (present(j_scale)) opts%j_scale = j_scale
+      if (present(k_scale)) opts%k_scale = k_scale
+      if (present(omega)) opts%omega = omega
+      opts%density_screen = screen_on(density_screen)
+      if (present(count_survivors)) opts%count_survivors = count_survivors
+      allocate (work(this%fock_work_size(1)))
+      !$acc enter data create(work)
+      call this%fock_resident_lent(b, dmat, gmat, opts, work)
+      !$acc exit data delete(work)
+      deallocate (work)
+   end subroutine eri_fock_resident
 
-      real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
-      real(dp), allocatable :: dp_w(:, :), gp_w(:, :), jw(:, :)
+   pure function eri_fock_work_size(this, ndens) result(nelem)
+      !! Doubles of scratch `fock_resident_lent` (ndens = 1) and
+      !! `fock_resident_many_lent` need: three working-basis matrices for one
+      !! density, 2 ndens + 1 for several.
+      class(trc_eri_t), intent(in) :: this
+      integer, intent(in) :: ndens
+      integer(int64) :: nelem
+      nelem = int(this%nao_w, int64)**2*int(merge(3, 2*ndens + 1, ndens == 1), int64)
+   end function eri_fock_work_size
+
+   subroutine eri_fock_resident_lent(this, b, dmat, gmat, opts, work)
+      !! `fock_resident` on scratch the caller lends: `work`, device-resident,
+      !! at least `fock_work_size(1)` doubles, contents undefined on entry
+      !! and on return. The SCF lends its linear-algebra workspace
+      !! (trc_linalg's `reserve`), which is dead during a Fock build, so the
+      !! build costs no device memory of its own.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      !! Both must already be present on the device.
+      real(dp), intent(in)  :: dmat(this%nao, this%nao)
+      real(dp), intent(out) :: gmat(this%nao, this%nao)
+      type(trc_fock_options_t), intent(in) :: opts
+      real(dp), intent(inout) :: work(1, this%nao_w, this%nao_w, 3)
+      !! THREE working-basis matrices (the old build allocated five, plus
+      !! one for MD J): the working-basis density, which is also the
+      !! kernel's (1, nw, nw) operand (the same storage as an (nw, nw)
+      !! matrix, so it is passed as one where that is wanted); the folded
+      !! accumulator, symmetrised in place, which also stands in, unread,
+      !! for the exchange accumulator only the non-symmetric kernel
+      !! (eri_fock_nosym) writes; and MD J's own result. Each is 1.66 nao^2
+      !! on gly20/cc-pVTZ (4252 decontracted functions against 3298).
+
       integer :: n, nw, i, j
       real(dp) :: jfac, kfac, ow, jbins
       type(trc_bin_launch_t) :: launch
       logical :: md_j
 
-      jfac = 1.0_dp
-      kfac = 1.0_dp
-      ow = 0.0_dp
-      if (present(j_scale)) jfac = j_scale
-      if (present(k_scale)) kfac = k_scale
-      if (present(omega)) ow = omega
+      jfac = opts%j_scale
+      kfac = opts%k_scale
+      ow = opts%omega
       if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
       n = this%nao
       nw = this%nao_w
@@ -1012,36 +1069,28 @@ contains
       jbins = jfac
       if (md_j) jbins = 0.0_dp
 
-      allocate (jmat(1, nw, nw), kmat(1, nw, nw), dwork(1, nw, nw))
-      allocate (dp_w(nw, nw), gp_w(nw, nw))
-      !$acc enter data create(jmat, kmat, dwork, dp_w, gp_w)
-
       ! The density into the basis the integrals are formed in, on the device.
       ! Nothing crosses the bus here -- that is the whole point of `resident`.
       if (this%dec%active) then
-         call decontract_expand(this%dec, dmat, dp_w)
+         call decontract_expand(this%dec, dmat, work(:, :, :, 1))
       else
          do concurrent(j=1:n, i=1:n)
-            dp_w(i, j) = dmat(i, j)
+            work(1, i, j, 1) = dmat(i, j)
          end do
       end if
 
-      ! Reshape on the device: the kernel wants (ndens, nao, nao) and the
-      ! caller has (nao, nao). This is a device-to-device copy, not a transfer.
       ! `do concurrent` rather than an OpenACC parallel loop. The arrays are
       ! already device-resident, so the standard construct is enough and the
       ! directive was only ever spelling out what it already says.
       do concurrent(j=1:nw, i=1:nw)
-         dwork(1, i, j) = dp_w(i, j)
-         jmat(1, i, j) = 0.0_dp
-         kmat(1, i, j) = 0.0_dp
+         work(1, i, j, 2) = 0.0_dp
       end do
 
       ! The screening bound is computed ON THE DEVICE. Doing it host-side, as
       ! `fock` does, would mean pulling the whole density down and would undo
       ! the entire point of this routine.
-      if (screen_on(density_screen)) then
-         call density_blocks_device(this%nbas, nw, this%pairs%sh_l, this%pairs%ao_off, dp_w, this%dsh)
+      if (opts%density_screen) then
+         call density_blocks_device(this%nbas, nw, this%pairs%sh_l, this%pairs%ao_off, work(:, :, :, 1), this%dsh)
       else
          ! density_screen=.false. (a coupled-perturbed solve): fill_ones_device,
          ! not a `do concurrent` reading `this%dsh`/`this%nbas` directly --
@@ -1063,11 +1112,12 @@ contains
          ke = " "
          call get_environment_variable("TRC_KEPT_STATS", ke)
          want = len_trim(ke) > 0
-         if (present(count_survivors)) want = want .or. count_survivors
+         want = want .or. opts%count_survivors
          if (want) then
             launch = bin_launch(this, 1, jfac, kfac, ow)
             launch%count_kept = .true.
-            call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+            call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, work(:, :, :, 1), &
+                                     work(:, :, :, 2), work(:, :, :, 2))
             this%nlaunch = launch%nlaunch
             this%nwork = launch%nwork
             this%nkept = launch%nkept
@@ -1085,13 +1135,14 @@ contains
       if (.not. (md_j .and. kfac == 0.0_dp)) then
          call profiler_start("eri: bins (hgp/rys)", nvtx_only=.true.)
          launch = bin_launch(this, 1, jbins, kfac, ow)
-         call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+         call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, work(:, :, :, 1), &
+                                     work(:, :, :, 2), work(:, :, :, 2))
          this%nlaunch = launch%nlaunch
          this%nwork = launch%nwork
          !$acc wait
          call profiler_stop("eri: bins (hgp/rys)")
          call profiler_start("eri: md exchange", nvtx_only=.true.)
-         call mdg_pass(this, b, dwork, jmat, jbins, kfac, ow)
+         call mdg_pass(this, b, work(:, :, :, 1), work(:, :, :, 2), jbins, kfac, ow)
          !$acc wait
          call profiler_stop("eri: md exchange")
       end if
@@ -1103,10 +1154,10 @@ contains
       ! directive was only ever spelling out what it already says.
       !
       ! Symmetrise in the basis the integrals were formed in, THEN fold back.
-      ! The other order is a different matrix, because C is not square.
-      do concurrent(j=1:nw, i=1:nw)
-         gp_w(i, j) = 0.5_dp*(jmat(1, i, j) + jmat(1, j, i))
-      end do
+      ! The other order is a different matrix, because C is not square. In
+      ! place, one thread per (i, j) pair below the diagonal; the diagonal is
+      ! already 0.5 (x + x) = x.
+      call symmetrise_in_place_device(nw, work(:, :, :, 2))
       if (md_j) then
          if (.not. this%md%built) then
             if (this%dec%active) then
@@ -1115,37 +1166,54 @@ contains
                call this%md%build(b, this%bins, this%thresh)
             end if
          end if
-         allocate (jw(nw, nw))
-         !$acc enter data create(jw)
          call profiler_start("eri: md J", nvtx_only=.true.)
-         call this%md%coulomb(nw, dp_w, jw, this%rank, this%nranks)
+         call this%md%coulomb(nw, work(:, :, :, 1), work(:, :, :, 3), this%rank, this%nranks)
          call profiler_stop("eri: md J")
          ! Each rank forms its share of J (trc_mdj splits the Hermite stage's
          ! ket chunks); sum_ranks totals them with the rest of the matrix.
-         call add_scaled_device(nw*nw, jfac, jw, gp_w)
-         !$acc exit data delete(jw)
-         deallocate (jw)
+         call add_scaled_device(nw*nw, jfac, work(:, :, :, 3), work(:, :, :, 2))
       end if
       if (this%dec%active) then
-         call decontract_fold(this%dec, gp_w, gmat)
+         call decontract_fold(this%dec, work(:, :, :, 2), gmat)
       else
          do concurrent(j=1:n, i=1:n)
-            gmat(i, j) = gp_w(i, j)
+            gmat(i, j) = work(1, i, j, 2)
          end do
       end if
 
-      !$acc exit data delete(jmat, kmat, dwork, dp_w, gp_w)
       ! Resident on every rank; the sum goes through the host for now.
       if (this%distributed) then
          !$acc update self(gmat)
          call sum_ranks(this, gmat, n*n)
          !$acc update device(gmat)
       end if
-      deallocate (jmat, kmat, dwork, dp_w, gp_w)
-   end subroutine eri_fock_resident
+   end subroutine eri_fock_resident_lent
 
 
    subroutine eri_fock_resident_many(this, b, ndens, dmats, gmats, k_scale, j_scale, omega)
+      !! `fock_resident_many_lent` on scratch of its own; see that for what
+      !! is built.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: ndens
+      real(dp), intent(in)  :: dmats(this%nao, this%nao, ndens)
+      !! Both must already be present on the device.
+      real(dp), intent(out) :: gmats(this%nao, this%nao, ndens)
+      real(dp), intent(in), optional :: k_scale, j_scale
+      real(dp), intent(in), optional :: omega
+      type(trc_fock_options_t) :: opts
+      real(dp), allocatable :: work(:)
+      if (present(j_scale)) opts%j_scale = j_scale
+      if (present(k_scale)) opts%k_scale = k_scale
+      if (present(omega)) opts%omega = omega
+      allocate (work(this%fock_work_size(ndens)))
+      !$acc enter data create(work)
+      call this%fock_resident_many_lent(b, ndens, dmats, gmats, opts, work)
+      !$acc exit data delete(work)
+      deallocate (work)
+   end subroutine eri_fock_resident_many
+
+   subroutine eri_fock_resident_many_lent(this, b, ndens, dmats, gmats, opts, work)
       !! eri_fock_resident for `ndens` densities in ONE pass over the
       !! integrals: gmats(:, :, d) = j_scale J[D_d] - k_scale K[D_d]/2, every
       !! quartet evaluated once and digested into each density's own G (the
@@ -1169,36 +1237,40 @@ contains
       real(dp), intent(in)  :: dmats(this%nao, this%nao, ndens)
       !! Both must already be present on the device.
       real(dp), intent(out) :: gmats(this%nao, this%nao, ndens)
-      real(dp), intent(in), optional :: k_scale, j_scale
-      real(dp), intent(in), optional :: omega
+      type(trc_fock_options_t), intent(in) :: opts
+      !! `density_screen` and `count_survivors` are not read: this build is
+      !! always density-screened.
+      real(dp), intent(inout) :: work(this%nao_w, this%nao_w, 2*ndens + 1)
+      !! At least `fock_work_size(ndens)` doubles, device-resident, as for
+      !! `fock_resident_lent`: the kernel's (ndens, nw, nw) operand and
+      !! accumulator (`kmat`, which only the non-symmetric kernel writes, is
+      !! the accumulator again, unread), then one working-basis matrix for
+      !! each density's expansion and, once the operands are packed, its
+      !! symmetrised result: 2 ndens + 1 matrices, where the old build
+      !! allocated 3 ndens + 2.
 
-      real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
-      real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, d
       real(dp) :: jfac, kfac, ow
       type(trc_bin_launch_t) :: launch
 
-      jfac = 1.0_dp
-      kfac = 1.0_dp
-      ow = 0.0_dp
-      if (present(j_scale)) jfac = j_scale
-      if (present(k_scale)) kfac = k_scale
-      if (present(omega)) ow = omega
+      jfac = opts%j_scale
+      kfac = opts%k_scale
+      ow = opts%omega
       if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
 
       if (ndens == 1 .or. this%needs_md .or. &
           (jfac /= 0.0_dp .and. ow == 0.0_dp .and. mdj_requested(this%has_f, kfac == 0.0_dp))) then
+         ! One density at a time on the same scratch: fock_work_size(1) is
+         ! never more than fock_work_size(ndens).
          do d = 1, ndens
-            call this%fock_resident(b, dmats(:, :, d), gmats(:, :, d), k_scale=kfac, j_scale=jfac, omega=ow)
+            call this%fock_resident_lent(b, dmats(:, :, d), gmats(:, :, d), &
+                                         trc_fock_options_t(j_scale=jfac, k_scale=kfac, omega=ow), work)
          end do
          return
       end if
 
       n = this%nao
       nw = this%nao_w
-      allocate (jmat(ndens, nw, nw), kmat(ndens, nw, nw), dwork(ndens, nw, nw))
-      allocate (dp_w(nw, nw), gp_w(nw, nw))
-      !$acc enter data create(jmat, kmat, dwork, dp_w, gp_w)
 
       ! Each density into the integrals' basis and into the kernel's
       ! (ndens, nao, nao) layout -- density index fastest, so one (mu,nu)'s
@@ -1206,21 +1278,25 @@ contains
       ! the maximum over the densities.
       do d = 1, ndens
          if (this%dec%active) then
-            call decontract_expand(this%dec, dmats(:, :, d), dp_w)
+            call decontract_expand(this%dec, dmats(:, :, d), work(:, :, 2*ndens + 1))
          else
-            call copy_square_device(n, dmats(:, :, d), dp_w)
+            call copy_square_device(n, dmats(:, :, d), work(:, :, 2*ndens + 1))
          end if
-         call pack_density_device(nw, ndens, d, dp_w, dwork, jmat, kmat)
+         call pack_density_device(nw, ndens, d, work(:, :, 2*ndens + 1), work(:, :, 1:ndens), &
+                                  work(:, :, ndens + 1:2*ndens))
          if (d == 1) then
-            call density_blocks_device(this%nbas, nw, this%pairs%sh_l, this%pairs%ao_off, dp_w, this%dsh)
+            call density_blocks_device(this%nbas, nw, this%pairs%sh_l, this%pairs%ao_off, &
+                                       work(:, :, 2*ndens + 1), this%dsh)
          else
-            call density_blocks_device_max(this%nbas, nw, this%pairs%sh_l, this%pairs%ao_off, dp_w, this%dsh)
+            call density_blocks_device_max(this%nbas, nw, this%pairs%sh_l, this%pairs%ao_off, &
+                                           work(:, :, 2*ndens + 1), this%dsh)
          end if
       end do
 
       call profiler_start("eri: bins (hgp/rys), several densities", nvtx_only=.true.)
       launch = bin_launch(this, ndens, jfac, kfac, ow)
-      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, work(:, :, 1:ndens), &
+                               work(:, :, ndens + 1:2*ndens), work(:, :, ndens + 1:2*ndens))
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
       !$acc wait
@@ -1229,23 +1305,21 @@ contains
       ! Symmetrise each in the integrals' basis, THEN fold back (the other
       ! order is a different matrix: the decontraction C is not square).
       do d = 1, ndens
-         call unpack_symmetrise_device(nw, ndens, d, jmat, gp_w)
+         call unpack_symmetrise_device(nw, ndens, d, work(:, :, ndens + 1:2*ndens), work(:, :, 2*ndens + 1))
          if (this%dec%active) then
-            call decontract_fold(this%dec, gp_w, gmats(:, :, d))
+            call decontract_fold(this%dec, work(:, :, 2*ndens + 1), gmats(:, :, d))
          else
-            call copy_square_device(n, gp_w, gmats(:, :, d))
+            call copy_square_device(n, work(:, :, 2*ndens + 1), gmats(:, :, d))
          end if
       end do
 
-      !$acc exit data delete(jmat, kmat, dwork, dp_w, gp_w)
       ! Resident on every rank; the sum goes through the host for now.
       if (this%distributed) then
          !$acc update self(gmats)
          call sum_ranks(this, gmats, n*n*ndens)
          !$acc update device(gmats)
       end if
-      deallocate (jmat, kmat, dwork, dp_w, gp_w)
-   end subroutine eri_fock_resident_many
+   end subroutine eri_fock_resident_many_lent
 
    !
    ! Shell-block density bound, computed on the device.
@@ -1279,19 +1353,34 @@ contains
       end do
    end subroutine copy_square_device
 
-   subroutine pack_density_device(nw, ndens, d, dp_w, dwork, jmat, kmat)
+   subroutine pack_density_device(nw, ndens, d, dp_w, dwork, jmat)
       !! Density `d` into slot d of the kernel's (ndens, nw, nw) layout, and
-      !! that slot's accumulators zeroed. Device to device.
+      !! that slot's accumulator zeroed. Device to device.
       integer, intent(in) :: nw, ndens, d
       real(dp), intent(in) :: dp_w(nw, nw)
-      real(dp), intent(inout) :: dwork(ndens, nw, nw), jmat(ndens, nw, nw), kmat(ndens, nw, nw)
+      real(dp), intent(inout) :: dwork(ndens, nw, nw), jmat(ndens, nw, nw)
       integer :: i, j
       do concurrent(j=1:nw, i=1:nw)
          dwork(d, i, j) = dp_w(i, j)
          jmat(d, i, j) = 0.0_dp
-         kmat(d, i, j) = 0.0_dp
       end do
    end subroutine pack_density_device
+
+   subroutine symmetrise_in_place_device(n, a)
+      !! a := (a + a^T)/2 on a resident (n, n) matrix, in place: the
+      !! iteration at (i, j), i > j, owns both (i, j) and (j, i), so no two
+      !! iterations touch the same element. Bit for bit the out-of-place
+      !! 0.5 (a(i,j) + a(j,i)), which is the same sum either way round.
+      integer, intent(in) :: n
+      real(dp), intent(inout) :: a(n, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         if (i > j) then
+            a(i, j) = 0.5_dp*(a(i, j) + a(j, i))
+            a(j, i) = a(i, j)
+         end if
+      end do
+   end subroutine symmetrise_in_place_device
 
    subroutine unpack_symmetrise_device(nw, ndens, d, jmat, gp_w)
       !! Slot d of the kernel's result, symmetrised.
