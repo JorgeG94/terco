@@ -231,7 +231,7 @@ contains
       call json%add(oobj, "converged", r%opt_converged)
       call json%add(oobj, "steps", r%opt_steps)
       call json%add(oobj, "energy_evaluations", r%opt_evals)
-      call json%add(oobj, "final_energy", real(r%etot, dp))
+      call json%add(oobj, "final_energy", real(r%etot_total, dp))
       call json%add(oobj, "final_gradient_max", r%opt_gmax)
       call json%add(oobj, "final_gradient_rms", r%opt_grms)
       call json%add(oobj, "gradient_tolerance", r%opt_gtol)

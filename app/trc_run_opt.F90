@@ -11,6 +11,8 @@ submodule (trc_run) trc_run_opt
    use trc_vib, only: trc_vib_rotor
    use trc_dlfind_bridge, only: TRC_OPT_STEP_RULE
    use trc_constants, only: trc_atomic_mass, trc_atomic_mass_average, trc_covalent_radius
+   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
+   use trc_rimp2_grad, only: rimp2_grad_reference_refusal
    implicit none
 
 contains
@@ -44,18 +46,30 @@ contains
    ! Whether this run's method has a gradient at all, checked BEFORE any
    ! SCF runs: every one of these conditions is already known from the
    ! command line alone, so there is no need to spend an SCF on a probe
-   ! gradient just to find out. The same set trc_run_gradient's own
-   ! gradient_capability_check refuses after a converged SCF
-   ! (src/api/trc_capi.F90). Returns "" when a gradient is available, the
-   ! refusal message otherwise.
+   ! gradient just to find out (DL-FIND has no graceful way to decline a
+   ! run whose first evaluation fails). For --rimp2 and a double hybrid
+   ! the part of trc_run_gradient's own gradient_capability_check
+   ! (src/api/trc_capi.F90) a command line already settles --
+   ! rimp2_grad_reference_refusal, the same function and so the same
+   ! message; every step then reruns trc_run_rimp2 after its SCF
+   ! (trc_opt_options_t%rimp2), so the energy and gradient DL-FIND sees
+   ! are the correlated total's. Returns "" when a gradient is available,
+   ! the refusal message otherwise.
    !
    module function run_opt_capability_check(r) result(refusal)
       type(run_t), intent(in) :: r
       character(len=:), allocatable :: refusal
+      type(trc_xc_functional_t) :: func
+      logical :: have_func
       refusal = ""
-      if (r%rimp2 .or. r%dh) then
-         refusal = "--opt reruns only the SCF and its gradient at every step; the RI-MP2/double-hybrid "// &
-                   "correlation is not re-run there, so its gradient would silently be the SCF's alone"
+      if (r%rimp2) then
+         ! r%func was validated when it was parsed, so this lookup only
+         ! reads the fields the check needs. nspin follows trc_scf_driver's
+         ! own rule: restricted exactly when no electron is unpaired.
+         have_func = len(r%func) > 0
+         if (have_func) have_func = xc_functional_by_name(r%func, func)
+         refusal = rimp2_grad_reference_refusal(have_func, func, merge(1, 2, r%uhf == 0), len(r%pcm) > 0)
+         if (len(refusal) > 0) refusal = "--opt: "//refusal
          return
       end if
       ! --pcm is allowed: the analytic PCM gradient is validated, and each
@@ -730,7 +744,7 @@ contains
       end if
       block
          character(len=1024) :: logline
-         write (logline, "(a,f22.12,a)") "   final energy     : ", r%etot, " Eh"
+         write (logline, "(a,f22.12,a)") "   final energy     : ", r%etot_total, " Eh"
          call global_logger%info(trim(logline))
       end block
       ! The TS check: for a saddle target, state how many imaginary modes
@@ -873,7 +887,7 @@ contains
       type(run_t), intent(in) :: r
       character(len=*), intent(in) :: path
       real(dp), intent(in) :: xyz_bohr(3, r%natm)
-      call app_write_opt_xyz_frame(path, r%natm, r%z, real(r%etot, dp), xyz_bohr, &
+      call app_write_opt_xyz_frame(path, r%natm, r%z, real(r%etot_total, dp), xyz_bohr, &
                                trim(merge("converged    ", "NOT converged", r%opt_converged)))
    end subroutine run_write_opt_xyz
 

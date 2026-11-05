@@ -692,18 +692,6 @@ if(TERCO_BUILD_APP)
   endif()
 
   if(TERCO_ENABLE_DLFIND)
-    # --opt refuses a double hybrid BEFORE any SCF runs at all: its steps
-    # rerun only the SCF and its gradient, not the RI-MP2 correlation, and
-    # app/trc_run_opt.F90's run_opt_capability_check knows that statically
-    # from the command line, so there is no SCF line in the output at all
-    # when this fires.
-    add_test(NAME terco/cli_opt_refused_dh
-             COMMAND $<TARGET_FILE:terco_cli> ${_opt_xyz}/water.xyz -b 6-31g -f b2plyp --opt --silent)
-    set_tests_properties(
-      terco/cli_opt_refused_dh
-      PROPERTIES ENVIRONMENT "${_opt_env}" PASS_REGULAR_EXPRESSION
-                 "reruns only the SCF.*RI-MP2/double-hybrid" FAIL_REGULAR_EXPRESSION "SCF +: +[0-9]")
-
     # The CLI's --opt --json end to end: the "optimization" JSON block,
     # and that <name>_opt.xyz/_traj.xyz were actually written -- see
     # check_cli_opt.F90's own header.
