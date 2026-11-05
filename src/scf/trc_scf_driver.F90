@@ -6,11 +6,14 @@
 !
 ! WHAT CROSSES THE BUS
 ! --------------------
-! Per iteration: two energies, a norm, and a DIIS matrix of at most ten by
-! ten. The density, Fock matrices, orbitals, DIIS history and orthogonaliser
-! stay on the device; the Fock build is the resident driver, the XC integrator
-! finds its density already present, and the products, commutator and
-! eigenproblem are trc_linalg (cuBLAS/cuSOLVER under OpenACC). This follows
+! Per iteration: two energies, a norm, and, once DIIS runs, three packed
+! triangles (the new Fock matrix and commutator down, the extrapolated Fock
+! matrix up): the DIIS history lives on the host, where it costs no device
+! memory (trc_scf_diis's own header). The density, Fock matrices, orbitals
+! and orthogonaliser stay on the device; the Fock build is the resident
+! driver, the XC integrator finds its density already present, and the
+! products, commutator and eigenproblem are trc_linalg (cuBLAS/cuSOLVER
+! under OpenACC). This follows
 ! metalquicha's device SCF, which measured host LAPACK plus copies at three
 ! times the cost of the GPU Fock build. A host build runs the same source with
 ! LAPACK, and the numbers agree to rounding, so the host suite tests this module.
@@ -94,7 +97,7 @@ module trc_scf_driver
    use trc_scf_context, only: scf_ctx_t, scf_context_bcast_flat, trc_grid_cache_t, trc_pair_eri_cache_t, scf_context_project_density
    use trc_scf_state, only: scf_state_t, scf_timers_t
    use trc_scf_fock, only: scf_fock_build_g, scf_fock_build_vxc, scf_fock_build_pcm, scf_fock_energy, scf_fock_assemble, &
-                           scf_fock_commutator_error, scf_fock_to_cart, scf_fock_to_sph
+                           scf_fock_commutator_error, scf_fock_to_cart, scf_fock_fold_g
    use trc_scf_df, only: df_jk_t
    use trc_scf_diis, only: cdiis_t, adiis_t, scf_diis_level_shift, scf_diis_damp
    use trc_scf_soscf, only: trc_scf_soscf_run
@@ -322,8 +325,8 @@ contains
       allocate (scf_result%dmat(nao, nao, scf_config%nspin), scf_result%cmo(nao, nao, scf_config%nspin), &
              scf_result%eps(nao, scf_config%nspin))
       ! Only when asked for: a second ndiis-deep history the size of
-      ! cdiis's own, which matters on a system the size of w172, where
-      ! one nao^2*ndiis block is already hundreds of megabytes.
+      ! cdiis's own. Both live on the host, packed (trc_scf_diis's own
+      ! header), but at gly100's 16,258 functions one is still 10 GB.
       if (scf_options%adiis) call adiis%alloc(nao, scf_config%nspin, scf_options%ndiis)
 
       ! --- the guess, on the host, then everything goes up -------------------
@@ -368,8 +371,6 @@ contains
       scf_result%eps = 0.0_dp
 
       call scf_state%to_device(scf_context, scf_result)
-      call cdiis%to_device()
-      if (scf_options%adiis) call adiis%to_device()
 
       eold = 0.0_dp
       ! Read by the first iteration's `incr_now` before any commutator exists
@@ -424,10 +425,8 @@ contains
          call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incr_now, pair_eri_cache%eri, la, &
                                scf_dfjk)
          ! --- G_sph := T^T G_cart T, back up to the space the rest of the
-         ! iteration runs in.
-         do s = 1, scf_config%nspin
-            call scf_fock_to_sph(scf_basis, sph, nao, nao_c, scf_state%gmat_c(:, :, s), scf_state%gmat(:, :, s))
-         end do
+         ! iteration runs in, into `fock` until the assembly below.
+         call scf_fock_fold_g(scf_basis, scf_context, scf_config, scf_state)
          scf_timers%tf_it = scf_timers%fock%get_elapsed_time()
          scf_timers%t_fock = scf_timers%t_fock + scf_timers%tf_it
          call scf_timers%xc%start()
@@ -490,8 +489,8 @@ contains
          diag_info = 0
          if (scf_config%root) then
             if (adiis_active) then
-               call adiis%push(la, nao, scf_config%nspin, scf_state%fock, scf_state%dold)
-               call adiis%extrapolate(nao, scf_config%nspin, scf_state%fock)
+               call adiis%push(nao, scf_config%nspin, scf_state%fock, scf_state%dold, scf_state%w1)
+               call adiis%extrapolate(nao, scf_config%nspin, scf_state%fock, scf_state%w1)
             end if
             ! --- level shift while DIIS and A/EDIIS are off: F += mu (S - S D S / occ)
             if (.not. diis_on .and. .not. adiis_active .and. scf_options%level_shift > 0.0_dp) then
@@ -499,8 +498,8 @@ contains
                       scf_context%smat, scf_result%dmat, scf_state%w1, scf_state%w2, scf_state%fock)
             end if
             if (diis_on) then
-               call cdiis%push(la, nao, scf_config%nspin, scf_state%fock, scf_state%errv)
-               call cdiis%extrapolate(nao, scf_config%nspin, scf_state%fock, ok)
+               call cdiis%push(nao, scf_config%nspin, scf_state%fock, scf_state%errv, scf_state%w1)
+               call cdiis%extrapolate(nao, scf_config%nspin, scf_state%fock, scf_state%w1, ok)
             end if
             ! --- diagonalise, per spin, and the new density ---------------------
             do s = 1, scf_config%nspin
@@ -615,8 +614,6 @@ contains
          end if
       end if
       call scf_state%release_device(scf_context, scf_result)
-      call cdiis%release_device()
-      if (scf_options%adiis) call adiis%release_device()
       scf_result%dmat = scf_state%dold
       scf_energies%pcm_qtotal = scf_context%pcm%q_total
       call scf_result%update(scf_energies, scf_state%dold)

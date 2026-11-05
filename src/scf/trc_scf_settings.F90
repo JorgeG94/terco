@@ -29,6 +29,7 @@ module trc_scf_settings
    public :: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_settings_spin_rule, scf_energies_t
    public :: scf_settings_eri_thresh_env
    public :: scf_settings_homo_lumo_gap
+   public :: scf_settings_fock_densities
    ! incr_env/incr_reset_env/incr_thresh_scale_env/incr_start_env stay
    ! private: nothing outside this module uses them.
    public :: DEFAULT_NLC_GRID_LEVEL
@@ -554,5 +555,16 @@ contains
          gap = min(gap, eps(nocc(s) + 1, s) - eps(nocc(s), s))
       end do
    end function scf_settings_homo_lumo_gap
+
+   pure function scf_settings_fock_densities(config) result(ndens)
+      !! Densities in the widest four-centre pass of one Fock build: 2 for
+      !! an unrestricted run with exact exchange (both spins' K together,
+      !! trc_eri's `fock_resident_many_lent`), 1 otherwise. What sizes the
+      !! scratch the SCF lends that build (trc_eri's `fock_work_size`).
+      type(scf_settings_t), intent(in) :: config
+      integer :: ndens
+      ndens = 1
+      if (config%nspin == 2 .and. (config%exx /= 0.0_dp .or. config%exx_lr /= 0.0_dp)) ndens = 2
+   end function scf_settings_fock_densities
 
 end module trc_scf_settings
