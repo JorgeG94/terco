@@ -191,9 +191,10 @@ program trc_main
                        "with more than one rank it is computed on rank 0 alone, with a warning")
    call r%cli%add_flag("hessian", "finite-difference Cartesian Hessian (central differences of the "// &
                        "analytic gradient) after the SCF, then harmonic vibrational analysis and RRHO "// &
-                       "thermochemistry; refused for --rimp2, a double hybrid and --pcm (the PCM "// &
-                       "gradient is analytic, its Hessian is not validated), checked before any "// &
-                       "displacement runs; single rank only for now")
+                       "thermochemistry; with --rimp2 or a double hybrid the RI-MP2 reruns at every "// &
+                       "displacement, so it is the correlated total's Hessian (refused where --grad "// &
+                       "is); refused for --pcm (the PCM gradient is analytic, its Hessian is not "// &
+                       "validated), checked before any displacement runs; single rank only for now")
    call r%cli%add_option("step", "--hessian's displacement, Bohr (0.005)", default="0.005")
    call r%cli%add_option("temperature", "temperature for --hessian's thermochemistry, K (298.15)", &
                          default="298.15")
@@ -207,7 +208,9 @@ program trc_main
    call r%cli%add_flag("opt-freq", "--opt followed by --hessian at the optimised geometry (Gaussian's "// &
                        "Opt Freq); shorthand for giving both, and --opt-*/--hessian options still apply")
    call r%cli%add_flag("opt", "optimise the geometry with DL-FIND (needs a TERCO_ENABLE_DLFIND=ON build; "// &
-                       "refused otherwise). Warm-starts the SCF between steps; writes <geometry>_opt.xyz "// &
+                       "refused otherwise). Warm-starts the SCF between steps; with --rimp2 or a double "// &
+                       "hybrid every step reruns the RI-MP2, so it optimises the correlated total "// &
+                       "(refused where --grad is). Writes <geometry>_opt.xyz "// &
                        "and <geometry>_traj.xyz into the CURRENT WORKING DIRECTORY (named from the input "// &
                        "geometry's own base name), and an 'optimization' block to --json. "// &
                        "Combined with --hessian, the Hessian runs at the OPTIMISED geometry. If a step's "// &
@@ -1145,6 +1148,9 @@ program trc_main
       opt_opts%fallback_guess_kind = int(guess_kind, c_int)
       opt_opts%maxiter = r%opt_maxiter
       opt_opts%gtol = r%opt_gtol
+      ! --rimp2 or a double hybrid (r%rimp2 covers both): every step's
+      ! energy and gradient are the correlated total's, not the SCF's.
+      opt_opts%rimp2 = r%rimp2
       opt_opts%algorithm = r%opt_algorithm_kind
       opt_opts%target_kind = r%opt_target_kind
       opt_opts%saddle_method = r%opt_saddle_method_kind
@@ -1320,6 +1326,7 @@ program trc_main
    call run_api(r, trc_is_spherical(r%h, r%sph))
    call run_api(r, trc_nspin(r%h, nspin))
    call run_api(r, trc_energy(r%h, r%etot))
+   r%etot_total = r%etot
    call run_api(r, trc_energy_parts(r%h, r%enuc, r%eone, r%etwo, r%exc))
    call run_api(r, trc_converged(r%h, r%conv))
    call run_api(r, trc_iterations(r%h, r%niter))
@@ -1356,11 +1363,13 @@ program trc_main
       ! fractions themselves (write_json), never to duplicate the
       ! weighting trc_energy already does from the SAME table.
       if (r%dh) call run_api(r, trc_energy(r%h, r%etot_dh))
+      call run_api(r, trc_energy(r%h, r%etot_total))
    end if
    if (r%hessian .and. r%conv /= 0) then
-      ! trc_run_hessian's own refusals (--rimp2, a double hybrid,
-      ! --pcm, --df outside its own scope, more than one rank)
-      ! come back through `api`, exactly as --grad's do -- checked
+      ! trc_run_hessian's own refusals (--pcm, an RI-MP2/double-hybrid
+      ! reference outside the RI-MP2 gradient's scope, --df outside its
+      ! own scope, more than one rank) come back through `api`, exactly as
+      ! --grad's do -- checked
       ! before any displacement, so a refused run costs nothing beyond
       ! the SCF this CLI already ran for --grad/the energy anyway.
       call run_api(r, trc_set_hessian_step(r%h, real(r%hess_step, c_double)))
@@ -1384,7 +1393,7 @@ program trc_main
       call trc_vibrational_analysis(mass, xyz, r%hess, r%freq_cm1, r%redmass_amu, r%force_const, &
                                     displacement, r%is_linear, r%n_tr, herr)
       if (herr%has_error()) call run_die(r, "--hessian: vibrational analysis: "//herr%get_message())
-      call trc_thermochemistry(mass, xyz, r%freq_cm1, real(r%etot, dp), r%sym_number, r%mult, r%thermo, herr, &
+      call trc_thermochemistry(mass, xyz, r%freq_cm1, real(r%etot_total, dp), r%sym_number, r%mult, r%thermo, herr, &
                                temperature_k=r%temperature_k, pressure_pa=r%pressure_atm*ATM_TO_PA)
       if (herr%has_error()) call run_die(r, "--hessian: thermochemistry: "//herr%get_message())
       r%hess_ok = .true.

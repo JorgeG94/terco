@@ -101,6 +101,10 @@ contains
          new_unittest("--opt-constrain across an HDLC residue boundary is refused", &
                       test_constrain_crosses_residue), &
          new_unittest("--opt-constrain touching a --opt-frozen atom is refused", test_constrain_touches_frozen), &
+         new_unittest("a double hybrid over --pcm is refused (no PCM response in the RI-MP2 Z-vector)", &
+                      test_dh_pcm), &
+         new_unittest("--rimp2 over an unrestricted reference is refused", test_rimp2_unrestricted), &
+         new_unittest("a double hybrid over an unrestricted (UKS) reference is refused", test_dh_unrestricted), &
          new_unittest("none of the refusal cases above started an SCF or left xyz output in test/ itself", &
                       test_no_stray) &
          ]
@@ -173,6 +177,27 @@ contains
       call refuse('water.xyz', '--pcm cpcm --eps 78.3553 --opt --opt-algorithm nr', &
                   'pass --opt-init-hessian dlfind', error)
    end subroutine test_pcm_nr_terco_hessian
+
+   ! --opt with RI-MP2 or a double hybrid runs the correlated gradient at
+   ! every step; what that gradient refuses, the CLI refuses before the
+   ! first SCF, with the gradient's own message (rimp2_grad_reference_refusal).
+   subroutine test_dh_pcm(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '-f b2plyp --pcm cpcm --eps 78.3553 --opt', &
+                  '--opt: the RI-MP2/double-hybrid gradient over a PCM reference is not implemented', error)
+   end subroutine test_dh_pcm
+
+   subroutine test_rimp2_unrestricted(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--rimp2 --uhf 2 --opt', &
+                  '--opt: the RI-MP2 gradient is restricted (closed-shell RHF reference) only', error)
+   end subroutine test_rimp2_unrestricted
+
+   subroutine test_dh_unrestricted(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '-f b2plyp --uhf 2 --opt', &
+                  '--opt: the double-hybrid (KS + RI-MP2) gradient is restricted only', error)
+   end subroutine test_dh_unrestricted
 
    subroutine test_bad_hessian_update(error)
       type(error_type), allocatable, intent(out) :: error

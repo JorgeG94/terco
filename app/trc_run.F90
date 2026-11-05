@@ -79,6 +79,11 @@ module trc_run
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
       logical :: vv10 = .false.  !! --func has VV10 nonlocal correlation, on its own --nlc-grid
       real(c_double) :: pt2_cos = 0.0_c_double, pt2_css = 0.0_c_double, etot_dh = 0.0_c_double
+      real(c_double) :: etot_total = 0.0_c_double
+         !! trc_energy once the run's correlation is in: the SCF energy, plus
+         !! the RI-MP2 correlation for --rimp2 (c_os E_os + c_ss E_ss for a
+         !! double hybrid) -- the energy --grad/--opt/--hessian differentiate,
+         !! so the one --opt reports and thermochemistry starts from.
       ! Frontier orbitals of the final SCF, per spin (run_frontier): column 1
       ! is the restricted or alpha set, column 2 beta. A spin with no occupied
       ! (or no virtual) level has has_homo (has_lumo) false.

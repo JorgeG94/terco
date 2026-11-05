@@ -189,7 +189,7 @@ module trc_capi
    use trc_eri, only: trc_eri_t, eri_lmax_refusal, eri_grad_lmax_refusal
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t, trc_pair_eri_cache_t
    use trc_scf_grad, only: trc_scf_gradient
-   use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t
+   use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t, rimp2_grad_reference_refusal
    use trc_pcm_grad, only: pcm_grad_scf_add
    use trc_scf_settings, only: scf_settings_spin_rule, scf_settings_eri_thresh_env
    use trc_scf_df, only: df_jk_t
@@ -219,7 +219,7 @@ module trc_capi
    use trc_pcm, only: trc_pcm_t, pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
-   use trc_cpks, only: trc_scf_polarizability_rks, cpks_refuse_reason
+   use trc_cpks, only: trc_scf_polarizability_rks
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_constants, only: BOHR_TO_ANGSTROM, HARTREE_TO_EV, HARTREE_TO_KCALMOL, AMU_TO_ME, KB_SI, NA_SI
    implicit none
@@ -256,7 +256,7 @@ module trc_capi
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: trc_run_gradient, trc_gradient
    public :: trc_set_geometry
-   public :: trc_set_hessian_step, trc_hessian_step, trc_run_hessian, trc_hessian
+   public :: trc_set_hessian_step, trc_hessian_step, trc_run_hessian, trc_hessian, trc_check_rimp2_gradient
    public :: trc_save_scf, trc_load_scf
    public :: trc_set_pcm, trc_set_pcm_radii, trc_pcm_energy
    public :: trc_set_ao_norm, trc_get_ao_norm
@@ -327,9 +327,13 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 17
-   !! trc_run_gradient accepts a PCM reference (C-PCM/IEF-PCM) instead of
-   !! refusing it; trc_run_hessian still refuses PCM. Additive.
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 19
+   !! trc_run_hessian accepts an RI-MP2/double-hybrid reference (one the
+   !! RI-MP2 gradient supports) instead of refusing it, rerunning
+   !! trc_run_rimp2 at every displacement; trc_check_rimp2_gradient asks,
+   !! before any SCF, whether that gradient will be refused. Additive.
+   !! (1.17: trc_run_gradient accepts a PCM reference; trc_run_hessian
+   !! still refuses PCM.)
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -3638,31 +3642,14 @@ contains
          ! restricted KS one -- a double hybrid, E_KS + c E_RI-MP2, or a
          ! plain functional's E_KS + E_RI-MP2 -- four-centre or --df, plus
          ! the fitted correlation, one rank. Anything else that reached
-         ! RI-MP2 has no correlation gradient yet. PCM first, and here rather
-         ! than only in the general checks below: the RI-MP2 gradient's
-         ! Z-vector and densities carry no PCM response, so a PCM reference
-         ! must be refused on this path even where the SCF-level PCM
-         ! gradient is supported.
-         if (len_trim(cx%opts%pcm_model) > 0) then
-            refusal = "the RI-MP2/double-hybrid gradient over a PCM reference is not implemented "// &
-                      "(no PCM response in the Z-vector)"
-         else if (have_func) then
-            if (func%pt2_cos /= func%pt2_css) then
-               refusal = "a spin-component-scaled double hybrid ('"//trim(cx%opts%functional)//"', c_os /= "// &
-                         "c_ss) has no gradient yet -- the RI-MP2 gradient scales one correlation energy"
-            else if (len_trim(cpks_refuse_reason(func)) > 0) then
-               refusal = "the RI-MP2 gradient over this Kohn-Sham reference needs its CPKS response: "// &
-                         trim(cpks_refuse_reason(func))
-            end if
-         end if
+         ! RI-MP2 has no correlation gradient yet. The reference's own scope
+         ! (PCM, a spin-component-scaled double hybrid, a KS kernel trc_cpks
+         ! lacks, an unrestricted reference) is rimp2_grad_reference_refusal's,
+         ! shared with the CLI's up-front --opt/--hessian check so the two
+         ! give the same message; what only a finished SCF knows follows.
+         refusal = rimp2_grad_reference_refusal(have_func, func, cx%res%nspin, len_trim(cx%opts%pcm_model) > 0)
          if (len(refusal) > 0) return
-         if (cx%res%nspin /= 1 .and. have_func) then
-            refusal = "the double-hybrid (KS + RI-MP2) gradient is restricted only; an unrestricted (UKS) "// &
-                      "reference has no correlation gradient -- trc_cpks has no spin-resolved kernel response"
-         else if (cx%res%nspin /= 1) then
-            refusal = "the RI-MP2 gradient is restricted (closed-shell RHF reference) only; "// &
-                      "an unrestricted reference has no correlation gradient yet"
-         else if (cx%opts%df .and. .not. cx%df_fit_ok) then
+         if (cx%opts%df .and. .not. cx%df_fit_ok) then
             refusal = "the RI-MP2 gradient over a --df reference needs the density fit the SCF ran with"
             refusal_status = TRC_ERR_STATE
          else if (cx%fcomm /= -1) then
@@ -4125,6 +4112,82 @@ contains
       status = TRC_OK
    end function trc_gradient
 
+   function trc_check_rimp2_gradient(handle) result(status) bind(c, name="trc_check_rimp2_gradient")
+      !! Whether an RI-MP2/double-hybrid gradient (trc_run_scf, trc_run_rimp2,
+      !! trc_run_gradient) will be refused for this context's CURRENT
+      !! settings, answered from the settings alone, before any SCF runs:
+      !! TRC_OK when nothing known up front refuses it, otherwise the status
+      !! and message (trc_message) trc_run_rimp2 or trc_run_gradient would
+      !! give -- no auxiliary basis, l above this build's kernels, a
+      !! reference outside the gradient's scope (unrestricted, PCM, a
+      !! spin-component-scaled double hybrid, a functional with no CPKS
+      !! kernel), more than one rank. A geometry optimiser asks this before
+      !! its first step (trc_opt_run with trc_opt_set_rimp2): a refusal
+      !! there would otherwise reach DL-FIND, whose only answer to a failed
+      !! evaluation is `error stop`. What only a finished SCF knows
+      !! (functions dropped by canonical orthogonalisation, trc_set_lindep)
+      !! is not, and cannot be, checked here.
+      type(c_ptr), value :: handle
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_xc_functional_t) :: func
+      logical :: have_func
+      character(len=:), allocatable :: refusal
+      integer :: nelec, nalpha, nbeta, nspin
+      integer :: nocc(2)
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. (cx%have_mol .and. cx%have_basis)) then
+         cx%message = "trc_check_rimp2_gradient: set the molecule and the basis first"
+         return
+      end if
+      if (.not. cx%have_aux) then
+         cx%message = "trc_run_rimp2: no auxiliary basis was set"
+         return
+      end if
+      status = TRC_ERR_UNSUPPORTED
+      if (maxval(cx%bb%b%sh_l) > DF_LMAX) then
+         cx%message = "trc_run_rimp2: the orbital basis has l = "// &
+                      trim(itoa(int(maxval(cx%bb%b%sh_l))))//", above this build's density-fitting "// &
+                      "ceiling "//trim(itoa(DF_LMAX))//" (TERCO_DF_LMAX)"
+         return
+      end if
+      if (maxval(cx%ab%b%sh_l) > DF_LMAX_AUX) then
+         cx%message = "trc_run_rimp2: the auxiliary basis has l = "// &
+                      trim(itoa(int(maxval(cx%ab%b%sh_l))))//", above this build's density-fitting "// &
+                      "auxiliary ceiling "//trim(itoa(DF_LMAX_AUX))//" (TERCO_DF_LMAX + 1)"
+         return
+      end if
+      refusal = eri_grad_lmax_refusal(cx%bb%b)
+      if (len(refusal) > 0) then
+         cx%message = "trc_run_gradient: "//refusal
+         return
+      end if
+      have_func = len_trim(cx%opts%functional) > 0
+      if (have_func) have_func = xc_functional_by_name(cx%opts%functional, func)
+      ! trc_run_scf's own spin rule, on the same charge, multiplicity and
+      ! trc_set_unrestricted; a count that does not fit is trc_run_scf's to
+      ! refuse, so it is left to it.
+      nelec = nint(sum(cx%at_z)) - cx%charge
+      nalpha = (nelec + cx%multiplicity - 1)/2
+      nbeta = nelec - nalpha
+      call scf_settings_spin_rule(nalpha, nbeta, cx%opts%unrestricted, cx%opts%frac_occ, cx%opts%nelec_frac, nspin, nocc)
+      refusal = rimp2_grad_reference_refusal(have_func, func, nspin, len_trim(cx%opts%pcm_model) > 0)
+      if (len(refusal) == 0 .and. cx%fcomm /= -1) refusal = "the RI-MP2 gradient runs on one rank only (no trc_set_comm)"
+      if (len(refusal) == 0 .and. have_func) then
+         if (func%family == XC_FAMILY_MGGA .and. xc_is_double_hybrid(func)) then
+            refusal = "meta-GGA double hybrid ('"//trim(cx%opts%functional)//"') gradient not implemented"
+         end if
+      end if
+      if (len(refusal) > 0) then
+         cx%message = "trc_run_gradient: "//refusal
+         return
+      end if
+      status = TRC_OK
+   end function trc_check_rimp2_gradient
+
    function trc_set_hessian_step(handle, step) result(status) bind(c, name="trc_set_hessian_step")
       !! The Cartesian displacement trc_run_hessian's central differences
       !! use, in Bohr; must be positive. Default 0.005: its truncation
@@ -4184,12 +4247,25 @@ contains
       !!     written so a later split is "rank r takes k = r, r+P, ..."
       !!     plus a reduction over the gradients, but nothing here runs
       !!     that split yet (TRC_ERR_UNSUPPORTED);
-      !!   - anything trc_run_gradient itself would refuse (RI-MP2/
-      !!     double-hybrid, PCM, --df outside its own scope --
-      !!     gradient_capability_check, the SAME check trc_run_gradient
-      !!     makes, so the two can never disagree about what runs);
+      !!   - anything trc_run_gradient itself would refuse (an RI-MP2/
+      !!     double-hybrid reference outside the RI-MP2 gradient's scope,
+      !!     --df outside its own scope -- gradient_capability_check, the
+      !!     SAME check trc_run_gradient makes, so the two can never
+      !!     disagree about what runs);
+      !!   - PCM: the analytic PCM gradient is validated, a finite
+      !!     difference of it is not yet;
       !!   - a non-positive step (trc_set_hessian_step already refuses
       !!     one, so this is the backstop, not the primary gate).
+      !!
+      !! RI-MP2 AND DOUBLE HYBRIDS. When this context holds an RI-MP2
+      !! result (trc_run_rimp2 after the reference SCF), every displaced
+      !! SCF is followed by its own trc_run_rimp2, so each gradient is the
+      !! correlated one trc_run_gradient returns there -- the derivative of
+      !! E_ref + c E_RI-MP2, the energy trc_energy reports (c a double
+      !! hybrid's PT2 fractions, or one) -- and the Hessian is that
+      !! energy's. The restored reference gets its trc_run_rimp2 again too.
+      !! (ABI 1.19: this was refused before.) Without an RI-MP2 result the
+      !! Hessian is the SCF energy's, as trc_run_gradient's gradient is.
       !!
       !! SCF CONVERGENCE AT THE DISPLACED POINTS. FD noise is of order
       !! (gradient error)/(2h) = 100x the gradient error at h = 0.005, so
@@ -4262,6 +4338,7 @@ contains
       type(timer_type) :: wall_timer, k_timer
       integer :: niter_plus, niter_minus
       character(len=256) :: logline
+      logical :: correlated, restore_rimp2_failed
 
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
@@ -4293,13 +4370,11 @@ contains
          cx%message = "trc_run_hessian: a PCM Hessian is not validated yet (the PCM gradient is)"
          return
       end if
-      if (cx%rimp2_ok) then
-         ! Each displacement below reruns the SCF, which clears the RI-MP2
-         ! result, so its gradient would silently be the reference's alone.
-         cx%message = "trc_run_hessian: the RI-MP2 finite-difference Hessian is not implemented yet "// &
-                      "(each displaced point would need its own trc_run_rimp2)"
-         return
-      end if
+      ! Each displacement reruns the SCF, which clears the RI-MP2 result, so
+      ! a correlated reference reruns trc_run_rimp2 after every displaced
+      ! SCF (and after the restoring one): the gradients differenced below
+      ! are then those of the energy trc_energy reports, E_ref + c E_RI-MP2.
+      correlated = cx%rimp2_ok
 
       status = TRC_ERR_BADARG
       h = cx%hess_step
@@ -4350,22 +4425,12 @@ contains
             call hessian_set_geometry(cx, disp_r)
             cx%guess_kind = TRC_GUESS_GIVEN
             cx%dguess = d0
-            st = trc_run_scf(handle)
+            call hessian_displaced_gradient(handle, cx, correlated, &
+                                            " at displacement "//trim(to_string(k))//"/"//trim(to_string(ndof))// &
+                                            merge(" (+h)", " (-h)", isign == 1), st, fail_message)
             if (st /= TRC_OK) then
                failed = .true.
                fail_status = st
-               fail_message = "trc_run_hessian: the SCF at displacement "//trim(to_string(k))//"/"// &
-                              trim(to_string(ndof))//merge(" (+h)", " (-h)", isign == 1)// &
-                              " did not converge: "//trim(cx%message)
-               exit k_loop
-            end if
-            st = trc_run_gradient(handle)
-            if (st /= TRC_OK) then
-               failed = .true.
-               fail_status = st
-               fail_message = "trc_run_hessian: the gradient at displacement "//trim(to_string(k))//"/"// &
-                              trim(to_string(ndof))//merge(" (+h)", " (-h)", isign == 1)// &
-                              " failed: "//trim(cx%message)
                exit k_loop
             end if
             if (isign == 1) then
@@ -4393,6 +4458,13 @@ contains
       cx%guess_kind = TRC_GUESS_GIVEN
       cx%dguess = d0
       st = trc_run_scf(handle)
+      ! The reference RI-MP2 result too, so trc_energy reports the same
+      ! correlated total it did before this call.
+      restore_rimp2_failed = .false.
+      if (correlated .and. st == TRC_OK) then
+         st = trc_run_rimp2(handle)
+         restore_rimp2_failed = st /= TRC_OK
+      end if
       cx%opts%conv_energy = ref_conv_energy
       cx%opts%conv_diis = ref_conv_diis
       cx%guess_kind = ref_guess_kind
@@ -4406,10 +4478,22 @@ contains
          cx%message = fail_message
          ! The caller must also learn that the context no longer holds a
          ! converged SCF, not only why the loop stopped.
-         if (st /= TRC_OK) cx%message = trim(fail_message)//"; restoring the reference SCF then failed too"
+         if (restore_rimp2_failed) then
+            cx%message = trim(fail_message)//"; the restored reference's RI-MP2 then failed too"
+         else if (st /= TRC_OK) then
+            cx%message = trim(fail_message)//"; restoring the reference SCF then failed too"
+         end if
          cx%hess_ok = .false.
          if (allocated(cx%hess)) deallocate (cx%hess)
          status = fail_status
+         return
+      end if
+      if (st /= TRC_OK .and. restore_rimp2_failed) then
+         cx%message = "trc_run_hessian: every displacement succeeded and the reference SCF reconverged, "// &
+                      "but its RI-MP2 failed: "//trim(cx%message)
+         cx%hess_ok = .false.
+         if (allocated(cx%hess)) deallocate (cx%hess)
+         status = st
          return
       end if
       if (st /= TRC_OK) then
@@ -4427,6 +4511,34 @@ contains
       call global_logger%info(trim(logline))
       status = TRC_OK
    end function trc_run_hessian
+
+   subroutine hessian_displaced_gradient(handle, cx, correlated, where, status, message)
+      !! One of trc_run_hessian's displaced points, the geometry already
+      !! moved: the SCF, the RI-MP2 when the reference is correlated, and
+      !! the gradient. On failure `status` is the failing call's and
+      !! `message` names the step and `where` (" at displacement k/n (+h)").
+      type(c_ptr), intent(in) :: handle
+      type(context_box), intent(inout) :: cx
+      logical, intent(in) :: correlated
+      character(len=*), intent(in) :: where
+      integer(c_int), intent(out) :: status
+      character(len=*), intent(out) :: message
+      message = ""
+      status = trc_run_scf(handle)
+      if (status /= TRC_OK) then
+         message = "trc_run_hessian: the SCF"//where//" did not converge: "//trim(cx%message)
+         return
+      end if
+      if (correlated) then
+         status = trc_run_rimp2(handle)
+         if (status /= TRC_OK) then
+            message = "trc_run_hessian: RI-MP2"//where//" failed: "//trim(cx%message)
+            return
+         end if
+      end if
+      status = trc_run_gradient(handle)
+      if (status /= TRC_OK) message = "trc_run_hessian: the gradient"//where//" failed: "//trim(cx%message)
+   end subroutine hessian_displaced_gradient
 
    function trc_hessian(handle, hess) result(status) bind(c, name="trc_hessian")
       !! (3*natm, 3*natm), Eh/Bohr^2, column-major, row/column k =

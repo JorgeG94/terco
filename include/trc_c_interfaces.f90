@@ -35,7 +35,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 17
+   integer(c_int), parameter :: TRC_ABI_MINOR = 19
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -1083,6 +1083,26 @@ module trc_c_interfaces
          real(c_double), intent(out) :: grad(*)
       end function trc_gradient
 
+      integer(c_int) function trc_check_rimp2_gradient(handle) bind(c) result(res)
+         !! Whether an RI-MP2/double-hybrid gradient (trc_run_scf, trc_run_rimp2,
+         !! trc_run_gradient) will be refused for this context's CURRENT
+         !! settings, answered from the settings alone, before any SCF runs:
+         !! TRC_OK when nothing known up front refuses it, otherwise the status
+         !! and message (trc_message) trc_run_rimp2 or trc_run_gradient would
+         !! give -- no auxiliary basis, l above this build's kernels, a
+         !! reference outside the gradient's scope (unrestricted, PCM, a
+         !! spin-component-scaled double hybrid, a functional with no CPKS
+         !! kernel), more than one rank. A geometry optimiser asks this before
+         !! its first step (trc_opt_run with trc_opt_set_rimp2): a refusal
+         !! there would otherwise reach DL-FIND, whose only answer to a failed
+         !! evaluation is `error stop`. What only a finished SCF knows
+         !! (functions dropped by canonical orthogonalisation, trc_set_lindep)
+         !! is not, and cannot be, checked here.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+      end function trc_check_rimp2_gradient
+
       integer(c_int) function trc_set_hessian_step(handle, step) bind(c) result(res)
          !! The Cartesian displacement trc_run_hessian's central differences
          !! use, in Bohr; must be positive. Default 0.005: its truncation
@@ -1125,12 +1145,25 @@ module trc_c_interfaces
          !!     written so a later split is "rank r takes k = r, r+P, ..."
          !!     plus a reduction over the gradients, but nothing here runs
          !!     that split yet (TRC_ERR_UNSUPPORTED);
-         !!   - anything trc_run_gradient itself would refuse (RI-MP2/
-         !!     double-hybrid, PCM, --df outside its own scope --
-         !!     gradient_capability_check, the SAME check trc_run_gradient
-         !!     makes, so the two can never disagree about what runs);
+         !!   - anything trc_run_gradient itself would refuse (an RI-MP2/
+         !!     double-hybrid reference outside the RI-MP2 gradient's scope,
+         !!     --df outside its own scope -- gradient_capability_check, the
+         !!     SAME check trc_run_gradient makes, so the two can never
+         !!     disagree about what runs);
+         !!   - PCM: the analytic PCM gradient is validated, a finite
+         !!     difference of it is not yet;
          !!   - a non-positive step (trc_set_hessian_step already refuses
          !!     one, so this is the backstop, not the primary gate).
+         !!
+         !! RI-MP2 AND DOUBLE HYBRIDS. When this context holds an RI-MP2
+         !! result (trc_run_rimp2 after the reference SCF), every displaced
+         !! SCF is followed by its own trc_run_rimp2, so each gradient is the
+         !! correlated one trc_run_gradient returns there -- the derivative of
+         !! E_ref + c E_RI-MP2, the energy trc_energy reports (c a double
+         !! hybrid's PT2 fractions, or one) -- and the Hessian is that
+         !! energy's. The restored reference gets its trc_run_rimp2 again too.
+         !! (ABI 1.19: this was refused before.) Without an RI-MP2 result the
+         !! Hessian is the SCF energy's, as trc_run_gradient's gradient is.
          !!
          !! SCF CONVERGENCE AT THE DISPLACED POINTS. FD noise is of order
          !! (gradient error)/(2h) = 100x the gradient error at h = 0.005, so

@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 17
+#define TRC_ABI_MINOR 19
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -712,6 +712,24 @@ int trc_run_gradient(trc_handle_t handle);
 int trc_gradient(trc_handle_t handle, double* grad);
 
 /**
+ * Whether an RI-MP2/double-hybrid gradient (trc_run_scf, trc_run_rimp2,
+ * trc_run_gradient) will be refused for this context's CURRENT
+ * settings, answered from the settings alone, before any SCF runs:
+ * TRC_OK when nothing known up front refuses it, otherwise the status
+ * and message (trc_message) trc_run_rimp2 or trc_run_gradient would
+ * give -- no auxiliary basis, l above this build's kernels, a
+ * reference outside the gradient's scope (unrestricted, PCM, a
+ * spin-component-scaled double hybrid, a functional with no CPKS
+ * kernel), more than one rank. A geometry optimiser asks this before
+ * its first step (trc_opt_run with trc_opt_set_rimp2): a refusal
+ * there would otherwise reach DL-FIND, whose only answer to a failed
+ * evaluation is `error stop`. What only a finished SCF knows
+ * (functions dropped by canonical orthogonalisation, trc_set_lindep)
+ * is not, and cannot be, checked here.
+ */
+int trc_check_rimp2_gradient(trc_handle_t handle);
+
+/**
  * The Cartesian displacement trc_run_hessian's central differences
  * use, in Bohr; must be positive. Default 0.005: its truncation
  * error, about 1e-5 Eh/Bohr^2 on water/STO-3G, sits well above the
@@ -747,12 +765,25 @@ int trc_hessian_step(trc_handle_t handle, double* step);
  *     written so a later split is "rank r takes k = r, r+P, ..."
  *     plus a reduction over the gradients, but nothing here runs
  *     that split yet (TRC_ERR_UNSUPPORTED);
- *   - anything trc_run_gradient itself would refuse (RI-MP2/
- *     double-hybrid, PCM, --df outside its own scope --
- *     gradient_capability_check, the SAME check trc_run_gradient
- *     makes, so the two can never disagree about what runs);
+ *   - anything trc_run_gradient itself would refuse (an RI-MP2/
+ *     double-hybrid reference outside the RI-MP2 gradient's scope,
+ *     --df outside its own scope -- gradient_capability_check, the
+ *     SAME check trc_run_gradient makes, so the two can never
+ *     disagree about what runs);
+ *   - PCM: the analytic PCM gradient is validated, a finite
+ *     difference of it is not yet;
  *   - a non-positive step (trc_set_hessian_step already refuses
  *     one, so this is the backstop, not the primary gate).
+ *
+ * RI-MP2 AND DOUBLE HYBRIDS. When this context holds an RI-MP2
+ * result (trc_run_rimp2 after the reference SCF), every displaced
+ * SCF is followed by its own trc_run_rimp2, so each gradient is the
+ * correlated one trc_run_gradient returns there -- the derivative of
+ * E_ref + c E_RI-MP2, the energy trc_energy reports (c a double
+ * hybrid's PT2 fractions, or one) -- and the Hessian is that
+ * energy's. The restored reference gets its trc_run_rimp2 again too.
+ * (ABI 1.19: this was refused before.) Without an RI-MP2 result the
+ * Hessian is the SCF energy's, as trc_run_gradient's gradient is.
  *
  * SCF CONVERGENCE AT THE DISPLACED POINTS. FD noise is of order
  * (gradient error)/(2h) = 100x the gradient error at h = 0.005, so
