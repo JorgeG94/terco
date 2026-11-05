@@ -403,13 +403,17 @@ contains
 
       integer(int64), parameter :: KEPT_CHUNK = 4096
       integer(int64), allocatable :: part(:)
-      integer(int64) :: nchunk, ic
+      integer(int64) :: nchunk
+      integer :: ic
 
       nchunk = (nwork + KEPT_CHUNK - 1)/KEPT_CHUNK
       allocate (part(nchunk))
       !$acc enter data create(part)
-      do concurrent(ic=1:nchunk)
-         call kept_in_chunk(ic, KEPT_CHUNK, nchunk, nwork, nseg, sNB, sOA, sOB, sD, sOff, &
+      ! A default-integer index: with an integer(int64) one, ifx 2026.2 returned
+      ! garbage counts here (most part(ic) never written; 8.9e18 on CI's 2025.0)
+      ! while gfortran and nvfortran were right. nchunk = nwork/4096 fits.
+      do concurrent(ic=1:int(nchunk))
+         call kept_in_chunk(int(ic, int64), KEPT_CHUNK, nchunk, nwork, nseg, sNB, sOA, sOB, sD, sOff, &
                             npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, part)
       end do
       !$acc update self(part)
