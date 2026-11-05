@@ -1,13 +1,13 @@
 !
 ! The incremental Fock build against full builds, run for run: the same
 ! molecule, basis and thresholds with `incremental` off and on must reach
-! the same energy (to 1e-9 Eh, the convergence test's own scale) in at most
-! one more iteration, and the incremental run must actually have built
-! from the density difference for all but a few iterations -- the first
-! build, the full one convergence is declared on (trc_scf_incremental's
-! rule 1) and at most one rebuild. Restricted and unrestricted, Hartree-Fock,
-! a range-separated hybrid (the erf exchange increments too) and the
-! continuum (rebuilt in full every iteration, on the full density).
+! the same energy (to ETOL, below) in at most one more iteration, and the
+! incremental run must actually have built from the density difference
+! for all but a few iterations (MAX_FULL, below). Restricted and
+! unrestricted, Hartree-Fock, a range-separated hybrid (the erf exchange
+! increments too) and the continuum (rebuilt in full every iteration, on
+! the full density). And a run that converges on its last allowed
+! iteration is reported converged (test_last_iteration).
 !
 ! Before trc_scf_incremental an open shell never incremented, and a closed
 ! shell waited for |FDS - SDF| < 1e-2 before its first increment.
@@ -25,12 +25,20 @@ module check_scf_incremental_suite
    private
    public :: collect_scf_incremental_tests
 
-   real(dp), parameter :: ETOL = 1.0e-9_dp
-   integer, parameter :: MAX_FULL = 3
-   !! Full builds an incremental run may take, at least: the first, the
-   !! converged one and one stall or verification rebuild. A long run (an
-   !! open shell's damped start) may rebuild on a stall more often, up to a
-   !! quarter of its iterations.
+   real(dp), parameter :: ETOL = 1.0e-10_dp
+   !! Incremental against full builds. Measured, all five cases: at most
+   !! 2.8e-13 Eh under gfortran 15 and 5.7e-13 under ifx 2026.2 (conv_energy
+   !! 1e-10), so 1e-10 is the convergence test's own scale with two decades
+   !! to spare.
+   integer, parameter :: MAX_FULL = 4
+   !! Full builds an incremental run may take, at least: the first, the one
+   !! leaving the loose early phase (trc_scf_incremental's rule 0), the one
+   !! predicted to converge (rule 2), and -- when that prediction narrowly
+   !! misses, its energy change just above conv_energy -- the next build,
+   !! full again, that converges. ifx 2025.0 took exactly that path on the
+   !! UKS case: 4 of 15 builds full. A long run (an open shell's damped
+   !! start) may rebuild on a stall more often, up to a quarter of its
+   !! iterations.
 
 contains
 
@@ -40,7 +48,8 @@ contains
                   new_unittest("RHF water trimer/6-31G*", test_rhf), &
                   new_unittest("UHF OH/6-31G*", test_uhf), &
                   new_unittest("UKS wB97X OH/6-31G* (range-separated)", test_uks_rsh), &
-                  new_unittest("RHF water/6-31G* C-PCM", test_rhf_pcm) &
+                  new_unittest("RHF water/6-31G* C-PCM", test_rhf_pcm), &
+                  new_unittest("converging on the last allowed iteration", test_last_iteration) &
                   ]
    end subroutine collect_scf_incremental_tests
 
@@ -71,6 +80,54 @@ contains
       call compare(error, "water.xyz", 5, 5, opts, "RHF water/6-31G* C-PCM")
    end subroutine test_rhf_pcm
 
+   !
+   ! A run that converges on its LAST allowed iteration must say so. With
+   ! the prediction off (`incr_predict = 0`), the convergence test is first
+   ! met on an increment, refused there, and retaken on the next build,
+   ! which is full: the unbounded run converges at N with N - 1 an
+   ! increment that met the test. Capped at N - 1 iterations, that last
+   ! iteration has to be a full build (trc_scf_incremental's
+   ! `next_build`), or the run ends unconverged although it met the test.
+   !
+   subroutine test_last_iteration(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_scf_options_t) :: opts
+      type(trc_scf_result_t) :: free, capped
+      integer :: nat, dev
+      integer, allocatable :: at_z(:)
+      real(dp), allocatable :: r0(:, :)
+      type(trc_basis_t) :: bas
+      type(error_t) :: err
+
+      dev = trc_bind_device(0)
+      call read_xyz("w3.xyz", nat, at_z, r0)
+      call trc_basis_from_json("basis_sets/6-31gs.json", nat, at_z, r0, bas, err)
+      call check(error, .not. err%has_error(), "last iteration: basis build failed: "//err%get_message())
+      if (allocated(error)) return
+      call bas%to_device()
+      opts%conv_energy = 1.0e-10_dp
+      opts%conv_diis = 1.0e-6_dp
+      opts%max_iteration = 100
+      opts%incremental = .true.
+      opts%incr_predict = 0.0_dp
+      call trc_scf_run(bas, 15, 15, opts, free)
+      opts%max_iteration = free%iterations - 1
+      call trc_scf_run(bas, 15, 15, opts, capped)
+      call bas%release()
+      print '(a,i4,a,l2,a,es10.2)', "last iteration: unbounded run converged in", free%iterations, &
+         "; capped one below it, converged", capped%converged, ", dE ", capped%energy - free%energy
+
+      call check(error, free%converged, "last iteration: the unbounded run did not converge")
+      if (allocated(error)) return
+      call check(error, capped%converged .and. capped%iterations == free%iterations - 1, &
+                 "last iteration: capped at "//to_string(free%iterations - 1)//" iterations, the run "// &
+                 "stopped after "//to_string(capped%iterations)//", converged "// &
+                 trim(merge("yes", "no ", capped%converged)))
+      if (allocated(error)) return
+      call check(error, abs(capped%energy - free%energy) <= ETOL, "last iteration: capped E "// &
+                 to_string(capped%energy, "f20.12")//" against "//to_string(free%energy, "f20.12"))
+   end subroutine test_last_iteration
+
    subroutine compare(error, xyzfile, nalpha, nbeta, opts_in, label)
       type(error_type), allocatable, intent(out) :: error
       character(*), intent(in) :: xyzfile, label
@@ -100,6 +157,9 @@ contains
       opts%incremental = .true.
       call trc_scf_run(bas, nalpha, nbeta, opts, incr)
       call bas%release()
+      ! For the record (and for setting ETOL): the run's numbers, one line.
+      print '(2a,i4,a,i4,a,i3,a,es10.2)', label, ": full ", full%iterations, " iterations, incremental ", &
+         incr%iterations, " with ", incr%iterations - incr%n_increments, " full builds, dE ", incr%energy - full%energy
 
       call check(error, full%converged .and. incr%converged, label//": both SCFs must converge (full "// &
                  trim(merge("yes", "no ", full%converged))//", incremental "// &

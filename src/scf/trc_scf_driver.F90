@@ -414,7 +414,7 @@ contains
          ! density it is handed, and the difference is small and getting
          ! smaller while the density is neither. See `scf_fock_build_g`'s own header.
          !
-         incr_now = incremental%next_build(it, errmax)
+         incr_now = incremental%next_build(it, errmax, it == scf_options%max_iteration)
          call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incremental%scale, pair_eri_cache%eri, la, &
                                scf_dfjk)
          ! --- G_sph := T^T G_cart T, back up to the space the rest of the
@@ -891,13 +891,17 @@ contains
    subroutine log_incremental_mode(scf_config)
       !! Say so when increments are on: they change the timings. An `i` after
       !! an iteration's line marks a Fock matrix built from the density difference.
-      !! Under --df they are off, and a caller who did not ask for that is told.
+      !! Under --df they are off: a warning when the caller asked for them
+      !! (trc_set_incremental(1), TRC_INCREMENTAL=1), one info line when they
+      !! were only the default, so every --df run is not a warning.
       type(scf_settings_t), intent(in) :: scf_config
       if (scf_config%incr_on) then
          call global_logger%info("   incremental Fock (marked i); converged only on a full build")
-      else if (scf_config%incr_off_df) then
+      else if (scf_config%incr_df_requested) then
          call global_logger%warning("   incremental Fock builds are not supported with density fitting; "// &
                                     "every iteration is a full build")
+      else if (scf_config%incr_off_df) then
+         call global_logger%info("   incremental Fock: off with density fitting (always full builds)")
       end if
    end subroutine log_incremental_mode
 

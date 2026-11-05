@@ -327,9 +327,14 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 17
-   !! trc_run_gradient accepts a PCM reference (C-PCM/IEF-PCM) instead of
-   !! refusing it; trc_run_hessian still refuses PCM. Additive.
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 18
+   !! 1.18: the incremental Fock build is ON by default (trc_set_incremental
+   !! was 0 by default before); trc_set_incremental(handle, 0) restores full
+   !! builds every iteration, and density fitting never increments. The
+   !! energies are unchanged (convergence is declared on a full build), so
+   !! no signature or enum changes meaning. 1.17: trc_run_gradient accepts a
+   !! PCM reference (C-PCM/IEF-PCM) instead of refusing it; trc_run_hessian
+   !! still refuses PCM. Additive.
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -2644,6 +2649,9 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       cx%opts%incremental = on /= 0
+      ! Asked for, not defaulted: under trc_set_df this is the case that
+      ! warns (scf_settings_t%incr_df_requested).
+      cx%opts%incremental_requested = on /= 0
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_incremental

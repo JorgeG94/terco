@@ -43,6 +43,18 @@
 !    below 10 x conv_diis (TRC_INCR_ENDGAME=10) removes those, but spends a
 !    full build an iteration early elsewhere: over gly10, gly30, water20,
 !    w20, w172 and the aug-cc-pVDZ case 441 s as is, 454 s with either.
+!    The other way, a predicted build only when the prediction clears
+!    conv_diis by a margin (TRC_INCR_PREDICT=0.3), makes a MISSED
+!    prediction rarer -- the predicted build full but its energy change
+!    just above conv_energy, so the next build is full again (gly20
+!    cc-pVTZ on a GH200: full builds at 1, 9, 14 and 15) -- but costs an
+!    iteration more often than it saves one: gly10, gly20, gly30, water20
+!    and water40 cc-pVTZ and w172/6-31G each took one iteration more, 85
+!    against 79 in all, 588 s against 561 s (V100). A miss costs one full
+!    build and no iteration, so the plain prediction (`incr_predict` 1)
+!    stays.
+!    The last allowed iteration is always full (`next_build`), so a run
+!    that converges there is never refused for having been an increment.
 ! 3. A stall is a rebuild. Once the commutator stops falling over
 !    STALL_ITERATIONS increments, it has reached the floor eps sets, and
 !    only a full build lowers that floor; it also resets the sum.
@@ -122,16 +134,21 @@ contains
       this%predict = config%incr_predict_run
    end subroutine scf_incremental_setup
 
-   logical function scf_incremental_next_build(this, iteration, errmax) result(incr_now)
+   logical function scf_incremental_next_build(this, iteration, errmax, last) result(incr_now)
       !! Whether iteration `iteration` builds G from the density difference.
       !! `errmax` is the previous iteration's commutator norm (huge before
       !! the first). The first build is always full: there is no reference.
+      !! So is the `last` allowed one: an increment there could only meet
+      !! the convergence test to have it refused (rule 1) with no iteration
+      !! left to retake it on, and a run that converges on its last
+      !! iteration would be reported as not converged.
       class(scf_incremental_t), intent(inout) :: this
       integer, intent(in) :: iteration
       real(dp), intent(in) :: errmax
+      logical, intent(in) :: last
       logical :: early
       early = errmax >= this%early_until
-      incr_now = this%on .and. iteration > 1 .and. .not. this%full_due .and. errmax < this%start
+      incr_now = this%on .and. iteration > 1 .and. .not. this%full_due .and. errmax < this%start .and. .not. last
       if (this%reset > 0) incr_now = incr_now .and. this%since_full < this%reset
       ! Leaving the early phase discards what its loose increments left in G.
       if (.not. early .and. this%early_since_full) incr_now = .false.

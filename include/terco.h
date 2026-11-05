@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 17
+#define TRC_ABI_MINOR 18
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
