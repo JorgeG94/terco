@@ -1850,6 +1850,11 @@ target_link_libraries(check_rimp2_grad PRIVATE test-drive::test-drive)
 # d/dR Tr(P V_xc[D]) term (trc_xc_grad_potential.F90). See its header.
 terco_add_check(check_dh_grad check_dh_grad.F90 NEEDS_BASIS)
 target_link_libraries(check_dh_grad PRIVATE terco_c_interfaces test-drive::test-drive)
+# trc_run_hessian over a double-hybrid reference (RI-MP2 rerun at every
+# displacement): the Hessian against second differences of the DH energy,
+# the energy/gradient pairing --opt relies on, and the refusals it keeps.
+terco_add_check(check_hessian_dh check_hessian_dh.F90 NEEDS_BASIS)
+target_link_libraries(check_hessian_dh PRIVATE terco_c_interfaces test-drive::test-drive)
 # Formamide (no symmetry, spherical) against pyscf and finite differences, and
 # the exact reference: ~3 min on four host cores, so nightly only.
 add_test(NAME terco/check_dh_grad_long COMMAND check_dh_grad long)

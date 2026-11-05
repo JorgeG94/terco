@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 17
+#define TRC_ABI_MINOR 18
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -747,12 +747,25 @@ int trc_hessian_step(trc_handle_t handle, double* step);
  *     written so a later split is "rank r takes k = r, r+P, ..."
  *     plus a reduction over the gradients, but nothing here runs
  *     that split yet (TRC_ERR_UNSUPPORTED);
- *   - anything trc_run_gradient itself would refuse (RI-MP2/
- *     double-hybrid, PCM, --df outside its own scope --
- *     gradient_capability_check, the SAME check trc_run_gradient
- *     makes, so the two can never disagree about what runs);
+ *   - anything trc_run_gradient itself would refuse (an RI-MP2/
+ *     double-hybrid reference outside the RI-MP2 gradient's scope,
+ *     --df outside its own scope -- gradient_capability_check, the
+ *     SAME check trc_run_gradient makes, so the two can never
+ *     disagree about what runs);
+ *   - PCM: the analytic PCM gradient is validated, a finite
+ *     difference of it is not yet;
  *   - a non-positive step (trc_set_hessian_step already refuses
  *     one, so this is the backstop, not the primary gate).
+ *
+ * RI-MP2 AND DOUBLE HYBRIDS. When this context holds an RI-MP2
+ * result (trc_run_rimp2 after the reference SCF), every displaced
+ * SCF is followed by its own trc_run_rimp2, so each gradient is the
+ * correlated one trc_run_gradient returns there -- the derivative of
+ * E_ref + c E_RI-MP2, the energy trc_energy reports (c a double
+ * hybrid's PT2 fractions, or one) -- and the Hessian is that
+ * energy's. The restored reference gets its trc_run_rimp2 again too.
+ * (ABI 1.18: this was refused before.) Without an RI-MP2 result the
+ * Hessian is the SCF energy's, as trc_run_gradient's gradient is.
  *
  * SCF CONVERGENCE AT THE DISPLACED POINTS. FD noise is of order
  * (gradient error)/(2h) = 100x the gradient error at h = 0.005, so
