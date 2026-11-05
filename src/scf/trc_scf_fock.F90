@@ -1,7 +1,7 @@
 !
 ! The Fock build, one iteration's worth: the two-electron part
-! (scf_fock_build_g: g_rks / g_rks_incremental / g_uks, dispatched on nspin/
-! incr_now), the exchange-correlation potential (scf_fock_build_vxc), the
+! (scf_fock_build_g: in full or as an increment, restricted or unrestricted,
+! through the one `g_of_density`), the exchange-correlation potential (scf_fock_build_vxc), the
 ! polarisable continuum's operator (scf_fock_build_pcm), the energy at the current
 ! density (scf_fock_energy), assembling H + G (+ V_xc, + the continuum) into
 ! the Fock matrix (scf_fock_assemble), the orthogonalised commutator FDS -
@@ -49,163 +49,195 @@ module trc_scf_fock
 contains
 
    !
-   ! The two-electron build, resident and entirely in Cartesian space:
-   ! g_rks (nspin = 1, a full build), g_rks_incremental (nspin = 1, from the
-   ! density DIFFERENCE, see trc_scf_driver's own header) and g_uks (nspin = 2),
-   ! dispatched on `nspin`/`incr_now` rather than three separately-named
-   ! entry points, since the caller already has exactly one of them to ask
-   ! for.
+   ! The two-electron build, resident and entirely in Cartesian space, from
+   ! the density itself (a full build) or from its DIFFERENCE to the last
+   ! build's (an increment, see trc_scf_incremental for when and why),
+   ! restricted or unrestricted alike: `g_of_density` is the one build, and
+   ! the increment is that build on D - D_ref accumulated onto G(D_ref).
    !
-   subroutine scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incr_now, eri, la, dfjk)
+   subroutine scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incr_scale, eri, la, dfjk)
       type(trc_basis_t), intent(in) :: scf_basis
       type(scf_ctx_t), intent(in) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
       type(scf_state_t), intent(inout) :: scf_state
-      logical, intent(in) :: incr_now
-      !! This iteration builds G from the density difference (the caller's
-      !! schedule: `incr_on`, the commutator below `incr_start`, not a reset).
+      real(dp), intent(in) :: incr_scale
+      !! 0 for a full build; otherwise this iteration builds G from the
+      !! density difference, screened at `incr_scale` times the engine's
+      !! threshold (the caller's schedule, trc_scf_incremental).
       type(trc_eri_t), intent(inout) :: eri         !! the four-centre engine (unused under `--df`)
       type(trc_linalg_t), intent(inout) :: la
       type(df_jk_t), intent(inout), optional :: dfjk
       !! The fitted J/K object, present exactly when `scf_config%df`.
-      call build_g_arrays(scf_basis, eri, scf_context%nao_c, scf_config%nspin, &
-                          size(scf_state%dtot_c, 1), size(scf_state%klr_c, 1), size(scf_state%dref_c, 1), &
-                          incr_now, scf_config%incr_on, &
-                          scf_config%exx, scf_config%exx_lr, scf_config%omega, scf_config%incr_scale_run, &
-                          scf_state%d_c, scf_state%gmat_c, scf_state%dtot_c, scf_state%jmat_c, scf_state%w1_c, &
-                          scf_state%klr_c, scf_state%gacc_c, scf_state%dref_c, scf_state%ddif_c, &
-                          scf_config%df, la, dfjk)
+      call build_g_arrays(scf_basis, eri, scf_config, scf_context%nao_c, size(scf_state%dtot_c, 1), &
+                          size(scf_state%klr_c, 1), size(scf_state%dref_c, 1), incr_scale, &
+                          scf_state%d_c, scf_state%gmat_c, scf_state%dtot_c, scf_state%klr_c, &
+                          scf_state%gacc_c, scf_state%dref_c, scf_state%ddif_c, la, dfjk)
    end subroutine scf_fock_build_g
 
-   subroutine build_g_arrays(b, eri, nao_c, nspin, nu_c, nlr_c, nin_c, incr_now, incr_on, &
-                             exx, exx_lr, omega, incr_scale_run, &
-                             d_c, gmat_c, dtot_c, jmat_c, w1_c, klr_c, gacc_c, dref_c, ddif_c, &
-                             df_on, lp, dfj)
+   subroutine build_g_arrays(b, eri, config, nao_c, nu_c, nlr_c, nin_c, incr_scale, &
+                             d_c, gmat_c, dtot_c, klr_c, gacc_c, dref_c, ddif_c, lp, dfj)
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
-      integer, intent(in) :: nao_c, nspin, nu_c, nlr_c, nin_c
-      logical, intent(in) :: incr_now, incr_on
-      real(dp), intent(in) :: exx, exx_lr, omega, incr_scale_run
-      real(dp), intent(in) :: d_c(nao_c, nao_c, nspin)
-      real(dp), intent(inout) :: gmat_c(nao_c, nao_c, nspin)
-      real(dp), intent(inout) :: dtot_c(nu_c, nu_c), jmat_c(nu_c, nu_c)
-      real(dp), intent(inout) :: w1_c(nao_c, nao_c), klr_c(nlr_c, nlr_c)
-      real(dp), intent(inout) :: gacc_c(nin_c, nin_c), dref_c(nin_c, nin_c), ddif_c(nin_c, nin_c)
-      logical, intent(in) :: df_on
-      !! `--df`: density-fitted J and K instead of the four-centre engine.
-      !! Restricted only (`nspin == 1`), never combined with `incr_on`
-      !! (trc_scf_settings.F90's own refusal) -- the whole incremental
-      !! block below is unreachable under it, so this branches BEFORE any
-      !! of that rather than threading a flag through it.
+      type(scf_settings_t), intent(in) :: config
+      integer, intent(in) :: nao_c, nu_c, nlr_c, nin_c
+      real(dp), intent(in) :: incr_scale
+      real(dp), intent(in) :: d_c(nao_c, nao_c, config%nspin)
+      real(dp), intent(inout) :: gmat_c(nao_c, nao_c, config%nspin)
+      real(dp), intent(inout) :: dtot_c(nu_c, nu_c), klr_c(nlr_c, nlr_c)
+      !! dtot_c: D_alpha + D_beta, unrestricted only, which the continuum
+      !! reads after this returns.
+      real(dp), intent(inout) :: gacc_c(nin_c, nin_c, config%nspin), dref_c(nin_c, nin_c, config%nspin)
+      real(dp), intent(inout) :: ddif_c(nin_c, nin_c, config%nspin)
+      !! The increments' reference density and its accumulated G, per spin,
+      !! and the difference; 1 x 1 unless `incr_on`.
       type(trc_linalg_t), intent(inout) :: lp
       type(df_jk_t), intent(inout), optional :: dfj
-      !! Present when `df_on`; absent and unused otherwise.
-      integer :: i, j, s
-      real(dp), allocatable :: w2_c(:, :, :), k2_c(:, :, :)
-      !! Unrestricted only: both spins' 2 D_s, and their exchange, for
-      !! fock_resident_many.
+      !! Present when `config%df`; absent and unused otherwise. Never
+      !! combined with increments (trc_scf_settings turns them off).
+      integer :: nspin, n2
+      real(dp) :: thresh0
 
-      if (df_on) then
-         call dfj%build(lp, d_c(:, :, 1), gmat_c(:, :, 1), j_scale=1.0_dp, k_scale=exx)
+      nspin = config%nspin
+      if (config%df) then
+         call dfj%build(lp, d_c(:, :, 1), gmat_c(:, :, 1), j_scale=1.0_dp, k_scale=config%exx)
          return
       end if
 
-      if (nspin == 1) then
-         if (incr_now) then
-            do concurrent(i=1:nao_c, j=1:nao_c)
-               ddif_c(i, j) = d_c(i, j, 1) - dref_c(i, j)
-            end do
-            !
-            ! A fixed, tighter threshold on the increment, not one tracking ddif.
-            !
-            ! The Schwarz/density screen drops a quartet whose bound qq*dd is below
-            ! an absolute threshold: fine for a full build, where dd is O(1). On
-            ! ddif, quartets sit at the edge of the test, and which ones changes
-            ! each iteration because ddif is a difference of iterates with a
-            ! changing shape. The dropped sets differ and the errors do not average
-            ! down as the full build's (always the same negligible quartets) do. On
-            ! w172/6-31G (450 atoms, 1950 AOs) RMS(D) reaches 1e-10 while the
-            ! energy bounces by 1e-4 to 1e-6 Eh per iteration.
-            !
-            ! Scaling `thresh` by ||ddif||/||dref|| is backwards: it loosens as
-            ! ddif shrinks and loses the speed (25.6 s against 24.4 s baseline).
-            ! A fixed tighter factor, `incr_thresh_scale` (default 1e-4), keeps
-            ! the error floor low enough that |dE| clears 1e-8 at every reset
-            ! through iteration 20, while each increment stays a few times cheaper
-            ! than a full build.
-            !
-            block
-               real(dp) :: thresh0
-               thresh0 = eri%thresh
-               eri%thresh = thresh0*incr_scale_run
-               call eri%fock_resident(b, ddif_c, gmat_c(:, :, 1), k_scale=exx)
-               if (exx_lr /= 0.0_dp) then
-                  call eri%fock_resident(b, ddif_c, klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
-                  do concurrent(i=1:nao_c, j=1:nao_c)
-                     gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
-                  end do
-               end if
-               eri%thresh = thresh0
-            end block
-            do concurrent(i=1:nao_c, j=1:nao_c)
-               gacc_c(i, j) = gacc_c(i, j) + gmat_c(i, j, 1)
-               gmat_c(i, j, 1) = gacc_c(i, j)
-               dref_c(i, j) = d_c(i, j, 1)
-            end do
-         else
-            call eri%fock_resident(b, d_c(:, :, 1), gmat_c(:, :, 1), k_scale=exx)
-            if (exx_lr /= 0.0_dp) then
-               call eri%fock_resident(b, d_c(:, :, 1), klr_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  gmat_c(i, j, 1) = gmat_c(i, j, 1) + klr_c(i, j)
-               end do
-            end if
-            ! The reference for the next increment, kept only when there
-            ! will be one (gacc_c and dref_c are 1 x 1 otherwise).
-            if (incr_on) then
-               do concurrent(i=1:nao_c, j=1:nao_c)
-                  gacc_c(i, j) = gmat_c(i, j, 1)
-                  dref_c(i, j) = d_c(i, j, 1)
-               end do
-            end if
-         end if
+      ! The per-spin loops below run over one flattened index, n2 = nao_c^2 *
+      ! nspin: a two-entry outer extent is the shape nvfortran has dropped
+      ! the last slice of on the GPU.
+      n2 = nao_c*nao_c*nspin
+      if (incr_scale > 0.0_dp) then
+         call difference_flat(n2, d_c, dref_c, ddif_c)
+         ! The scale multiplies the bins' threshold for this increment only
+         ! (the MD J engine's cut is fixed when it is built); see
+         ! trc_scf_incremental for the two scales and why.
+         thresh0 = eri%thresh
+         eri%thresh = thresh0*incr_scale
+         call g_of_density(b, eri, config, nao_c, nlr_c, ddif_c, gmat_c, klr_c)
+         eri%thresh = thresh0
+         call accumulate_flat(n2, d_c, gmat_c, gacc_c, dref_c)
       else
-         do concurrent(i=1:nao_c, j=1:nao_c)
-            dtot_c(i, j) = d_c(i, j, 1) + d_c(i, j, 2)
-         end do
-         call eri%fock_resident(b, dtot_c, jmat_c, k_scale=0.0_dp)
-         do s = 1, 2
-            call copy_into_spin(nao_c, jmat_c, gmat_c(:, :, s))
-         end do
-         if (exx /= 0.0_dp .or. exx_lr /= 0.0_dp) then
-            ! Both spins' exchange in ONE pass over the integrals per operator
-            ! (fock_resident_many): every quartet evaluated once and digested
-            ! into K[D_alpha] and K[D_beta] together, not in two passes. J is
-            ! J[D_total] above (its own pass, or MD J); the spins' passes are
-            ! exchange only. A full-range pass only when the functional has a
-            ! full-range exact-exchange part at all.
-            allocate (w2_c(nao_c, nao_c, 2), k2_c(nao_c, nao_c, 2))
-            !$acc enter data create(w2_c, k2_c)
-            do s = 1, 2
-               call scale_into_spin(nao_c, 2.0_dp, d_c(:, :, s), w2_c(:, :, s))
-            end do
-            if (exx /= 0.0_dp) then
-               call eri%fock_resident_many(b, 2, w2_c, k2_c, j_scale=0.0_dp, k_scale=exx)
-               do s = 1, 2
-                  call add_into_spin(nao_c, k2_c(:, :, s), gmat_c(:, :, s))
-               end do
-            end if
-            if (exx_lr /= 0.0_dp) then
-               call eri%fock_resident_many(b, 2, w2_c, k2_c, j_scale=0.0_dp, k_scale=exx_lr, omega=omega)
-               do s = 1, 2
-                  call add_into_spin(nao_c, k2_c(:, :, s), gmat_c(:, :, s))
-               end do
-            end if
-            !$acc exit data delete(w2_c, k2_c)
-            deallocate (w2_c, k2_c)
+         call g_of_density(b, eri, config, nao_c, nlr_c, d_c, gmat_c, klr_c)
+         ! The reference for the next increment, kept only when there
+         ! will be one (gacc_c and dref_c are 1 x 1 otherwise).
+         if (config%incr_on) then
+            call reference_flat(n2, d_c, gmat_c, gacc_c, dref_c)
          end if
       end if
+      ! nu_c is nao_c exactly when unrestricted (trc_scf_state%alloc).
+      if (nspin == 2) call sum_spins(nao_c, d_c, dtot_c)
    end subroutine build_g_arrays
+
+   subroutine g_of_density(b, eri, config, nao_c, nlr_c, density, g, klr_c)
+      !! G[density] per spin, overwriting `g`. Restricted: J - a_x K/2 of
+      !! the total density, plus the long-range exchange pass of a
+      !! range-separated functional. Unrestricted: G_s = J[D_a + D_b] -
+      !! a_x K[D_s] (+ the long-range part), the exchange of both spins in
+      !! one pass over the integrals per operator.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_eri_t), intent(inout) :: eri
+      type(scf_settings_t), intent(in) :: config
+      integer, intent(in) :: nao_c, nlr_c
+      real(dp), intent(in) :: density(nao_c, nao_c, config%nspin)
+      real(dp), intent(inout) :: g(nao_c, nao_c, config%nspin)
+      real(dp), intent(inout) :: klr_c(nlr_c, nlr_c)
+      !! the long-range exchange scratch; 1 x 1 unless range-separated
+      real(dp), allocatable :: dtot(:, :), jmat(:, :), w2_c(:, :, :), k2_c(:, :, :)
+      integer :: s
+      if (config%nspin == 1) then
+         call eri%fock_resident(b, density(:, :, 1), g(:, :, 1), k_scale=config%exx)
+         if (config%exx_lr /= 0.0_dp) then
+            call eri%fock_resident(b, density(:, :, 1), klr_c, j_scale=0.0_dp, k_scale=config%exx_lr, &
+                                   omega=config%omega)
+            call add_into_spin(nao_c, klr_c, g(:, :, 1))
+         end if
+         return
+      end if
+      allocate (dtot(nao_c, nao_c), jmat(nao_c, nao_c))
+      !$acc enter data create(dtot, jmat)
+      call sum_spins(nao_c, density, dtot)
+      call eri%fock_resident(b, dtot, jmat, k_scale=0.0_dp)
+      do s = 1, 2
+         call copy_into_spin(nao_c, jmat, g(:, :, s))
+      end do
+      !$acc exit data delete(dtot, jmat)
+      deallocate (dtot, jmat)
+      if (config%exx == 0.0_dp .and. config%exx_lr == 0.0_dp) return
+      ! Both spins' exchange in ONE pass over the integrals per operator
+      ! (fock_resident_many): every quartet evaluated once and digested
+      ! into K[D_alpha] and K[D_beta] together, not in two passes. J is
+      ! J[D_total] above (its own pass, or MD J); the spins' passes are
+      ! exchange only. A full-range pass only when the functional has a
+      ! full-range exact-exchange part at all.
+      allocate (w2_c(nao_c, nao_c, 2), k2_c(nao_c, nao_c, 2))
+      !$acc enter data create(w2_c, k2_c)
+      do s = 1, 2
+         call scale_into_spin(nao_c, 2.0_dp, density(:, :, s), w2_c(:, :, s))
+      end do
+      if (config%exx /= 0.0_dp) then
+         call eri%fock_resident_many(b, 2, w2_c, k2_c, j_scale=0.0_dp, k_scale=config%exx)
+         do s = 1, 2
+            call add_into_spin(nao_c, k2_c(:, :, s), g(:, :, s))
+         end do
+      end if
+      if (config%exx_lr /= 0.0_dp) then
+         call eri%fock_resident_many(b, 2, w2_c, k2_c, j_scale=0.0_dp, k_scale=config%exx_lr, omega=config%omega)
+         do s = 1, 2
+            call add_into_spin(nao_c, k2_c(:, :, s), g(:, :, s))
+         end do
+      end if
+      !$acc exit data delete(w2_c, k2_c)
+      deallocate (w2_c, k2_c)
+   end subroutine g_of_density
+
+   subroutine difference_flat(n, d, dref, ddif)
+      ! ddif := D - D_ref, every spin as one flat resident array.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: d(n), dref(n)
+      real(dp), intent(out) :: ddif(n)
+      integer :: k
+      do concurrent(k=1:n)
+         ddif(k) = d(k) - dref(k)
+      end do
+   end subroutine difference_flat
+
+   subroutine accumulate_flat(n, d, g, gacc, dref)
+      ! G_acc += G[D - D_ref], G := G_acc, and D becomes the next reference.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: d(n)
+      real(dp), intent(inout) :: g(n), gacc(n)
+      real(dp), intent(out) :: dref(n)
+      integer :: k
+      do concurrent(k=1:n)
+         gacc(k) = gacc(k) + g(k)
+         g(k) = gacc(k)
+         dref(k) = d(k)
+      end do
+   end subroutine accumulate_flat
+
+   subroutine reference_flat(n, d, g, gacc, dref)
+      ! A full build's G and D, kept as the next increment's reference.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: d(n), g(n)
+      real(dp), intent(out) :: gacc(n), dref(n)
+      integer :: k
+      do concurrent(k=1:n)
+         gacc(k) = g(k)
+         dref(k) = d(k)
+      end do
+   end subroutine reference_flat
+
+   subroutine sum_spins(n, d, dtot)
+      ! dtot := D_alpha + D_beta, resident.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: d(n, n, 2)
+      real(dp), intent(out) :: dtot(n, n)
+      integer :: i, j
+      do concurrent(i=1:n, j=1:n)
+         dtot(i, j) = d(i, j, 1) + d(i, j, 2)
+      end do
+   end subroutine sum_spins
 
    subroutine copy_into_spin(n, a, c)
       ! c := a, resident (n, n) matrices; explicit shape so a spin slice of
