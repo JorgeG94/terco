@@ -133,7 +133,7 @@ if(TERCO_ENABLE_TESTING)
                              "TOTAL ENERGY +-75\\.98397446")
 
   # A basis named with "*": 6-31G* resolves to the shipped 6-31gs.json (BSE's
-  # own 6-31g_st_.json first, when a basis directory has it). Water RHF/6-31G*
+  # own 6-31g_st_.json first, when a basis directory has it; BSE keeps "+"). Water RHF/6-31G*
   # is test/pyscf_refs/cphf_water_6-31gs.ref's E_SCF, -76.0105049954.
   add_test(NAME terco/cli_basis_star COMMAND terco_cli ${_xyz}/water.xyz --basis 6-31G*)
   set_tests_properties(
