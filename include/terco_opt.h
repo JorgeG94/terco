@@ -124,6 +124,17 @@ int trc_opt_set_hessian_source(trc_handle_t handle, int source);
 int trc_opt_set_guess(trc_handle_t handle, int guess_kind);
 
 /**
+ * Non-zero: run trc_run_rimp2 after every SCF of the optimisation, so
+ * each step's energy and gradient are the correlated ones (RI-MP2,
+ * or a double hybrid's E_KS + c_os E_os + c_ss E_ss) -- what a
+ * double hybrid always needs, since its SCF energy alone is not the
+ * functional's energy. Needs the auxiliary basis set on the context
+ * (trc_set_aux_*), as trc_run_rimp2 does. Zero (the default): the
+ * SCF energy and gradient.
+ */
+int trc_opt_set_rimp2(trc_handle_t handle, int enable);
+
+/**
  * --opt-frozen: `atoms` holds `n` 1-based indices into trc_opt_run's
  * own atom order. Replaces whatever a previous call set (not
  * additive): a caller that wants to grow the list reads it back

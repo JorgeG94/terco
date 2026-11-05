@@ -212,7 +212,7 @@ module trc_dlfind_bridge
    use trc_capi, only: trc_set_geometry, trc_run_scf, trc_run_gradient, trc_gradient, &
                        trc_energy, trc_converged, trc_iterations, trc_nspin, trc_nao, &
                        trc_set_guess, trc_density, trc_message, trc_run_hessian, trc_hessian, &
-                       TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
+                       trc_run_rimp2, TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
    ! trc_opt_io, not trc_app (app/trc_app.F90): this module is built into
    ! libterco_opt, which must not depend on app/ -- CODE_STRUCTURE.md's
    ! "entry points are leaves" rule, and the only way a caller outside
@@ -367,6 +367,16 @@ module trc_dlfind_bridge
          !! this molecule would have used.
       integer :: maxiter = 100
       real(dp) :: gtol = 4.5e-4_dp
+      logical :: rimp2 = .false.
+         !! Run trc_run_rimp2 after every converged SCF (--rimp2, or a
+         !! double hybrid, whose PT2 term is RI-MP2): the energy DL-FIND
+         !! sees is then trc_energy's correlated total, E_ref + E_RI-MP2 or
+         !! a double hybrid's E_KS + c_os E_os + c_ss E_ss, and the gradient
+         !! trc_run_gradient's derivative of that same energy -- never the
+         !! SCF energy paired with a correlated gradient. Every evaluation
+         !! runs through scf_at_geometry, so NEB images and cb_get_hessian's
+         !! trc_run_hessian (which reruns RI-MP2 at each displacement when
+         !! the context holds a result) are covered too.
 
       ! --- algorithm, saddle-search target and Hessian handling ---------
       integer :: algorithm = TRC_OPT_ALG_LBFGS
@@ -1806,6 +1816,20 @@ contains
       if (.not. converged_now) then
          why = "the SCF did not converge at this geometry"
          return
+      end if
+      if (cur_opts%rimp2) then
+         ! trc_run_scf cleared the previous geometry's RI-MP2 result; the
+         ! correlation must be this geometry's before trc_energy/
+         ! trc_run_gradient read it (trc_opt_options_t%rimp2).
+         st = trc_run_rimp2(context)
+         if (st /= TRC_OK) then
+            block
+               character(kind=c_char) :: message_buffer(MSG_LEN)
+               st = trc_message(context, message_buffer, int(size(message_buffer), c_int))
+               why = "trc_run_rimp2: "//opt_io_f_string(message_buffer)
+            end block
+            return
+         end if
       end if
       ! From here on there IS a converged SCF on `context` to warm-start a
       ! LATER evaluation's guess from (density or projected orbitals, per

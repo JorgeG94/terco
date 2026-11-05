@@ -149,6 +149,20 @@ module trc_opt_c_interfaces
          integer(c_int), value :: guess_kind
       end function trc_opt_set_guess
 
+      integer(c_int) function trc_opt_set_rimp2(handle, enable) bind(c) result(res)
+         !! Non-zero: run trc_run_rimp2 after every SCF of the optimisation, so
+         !! each step's energy and gradient are the correlated ones (RI-MP2,
+         !! or a double hybrid's E_KS + c_os E_os + c_ss E_ss) -- what a
+         !! double hybrid always needs, since its SCF energy alone is not the
+         !! functional's energy. Needs the auxiliary basis set on the context
+         !! (trc_set_aux_*), as trc_run_rimp2 does. Zero (the default): the
+         !! SCF energy and gradient.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: enable
+      end function trc_opt_set_rimp2
+
       integer(c_int) function trc_opt_set_frozen_atoms(handle, n, atoms) bind(c) result(res)
          !! --opt-frozen: `atoms` holds `n` 1-based indices into trc_opt_run's
          !! own atom order. Replaces whatever a previous call set (not

@@ -37,7 +37,8 @@
 ! genetic global search (trc_dlfind_bridge.F90's own header lists what each
 ! one is for) -- none of those have a setter here yet, only what was asked
 ! for: task, algorithm, coordinates, step/tolerance limits, the initial
-! Hessian source and frozen atoms. trc_opt_run always takes the
+! Hessian source, frozen atoms and the RI-MP2/double-hybrid correlation at
+! every step (trc_opt_set_rimp2). trc_opt_run always takes the
 ! single-state path (never --opt-neb/--opt-connect); terco's own CLI still
 ! reaches the rest directly through trc_opt_options_t/trc_dlfind_optimize
 ! (app/main.F90), which is why those fields stay on that type rather than
@@ -84,7 +85,7 @@ module trc_opt_capi
    public :: trc_opt_options_create, trc_opt_options_destroy
    public :: trc_opt_set_target, trc_opt_set_algorithm, trc_opt_set_coords, trc_opt_set_saddle_method
    public :: trc_opt_set_max_steps, trc_opt_set_gtol, trc_opt_set_max_step
-   public :: trc_opt_set_hessian_source, trc_opt_set_guess, trc_opt_set_frozen_atoms
+   public :: trc_opt_set_hessian_source, trc_opt_set_guess, trc_opt_set_frozen_atoms, trc_opt_set_rimp2
    public :: trc_opt_result_create, trc_opt_result_destroy
    public :: trc_opt_result_converged, trc_opt_result_failed, trc_opt_result_steps
    public :: trc_opt_result_energy_evaluations, trc_opt_result_energy
@@ -319,6 +320,25 @@ contains
       ob%opts%guess_kind = int(guess_kind)
       status = TRC_OK
    end function trc_opt_set_guess
+
+   function trc_opt_set_rimp2(handle, enable) result(status) bind(c, name="trc_opt_set_rimp2")
+      !! Non-zero: run trc_run_rimp2 after every SCF of the optimisation, so
+      !! each step's energy and gradient are the correlated ones (RI-MP2,
+      !! or a double hybrid's E_KS + c_os E_os + c_ss E_ss) -- what a
+      !! double hybrid always needs, since its SCF energy alone is not the
+      !! functional's energy. Needs the auxiliary basis set on the context
+      !! (trc_set_aux_*), as trc_run_rimp2 does. Zero (the default): the
+      !! SCF energy and gradient.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: enable
+      integer(c_int) :: status
+      type(trc_opt_options_box), pointer :: ob
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, ob)
+      ob%opts%rimp2 = enable /= 0_c_int
+      status = TRC_OK
+   end function trc_opt_set_rimp2
 
    function trc_opt_set_frozen_atoms(handle, n, atoms) result(status) bind(c, name="trc_opt_set_frozen_atoms")
       !! --opt-frozen: `atoms` holds `n` 1-based indices into trc_opt_run's

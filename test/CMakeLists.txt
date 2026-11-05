@@ -789,6 +789,13 @@ if(TERCO_BUILD_APP)
     target_link_libraries(check_capi_opt PRIVATE test-drive::test-drive terco_c_interfaces
                                                  terco_opt_c_interfaces terco::terco_opt)
 
+    # --opt with RI-MP2 and a double hybrid through terco_opt.h
+    # (trc_opt_set_rimp2): each step's energy is the correlated total whose
+    # gradient DL-FIND gets -- see check_opt_correlated.F90's own header.
+    terco_add_check(check_opt_correlated check_opt_correlated.F90 NEEDS_BASIS)
+    target_link_libraries(check_opt_correlated PRIVATE test-drive::test-drive terco_c_interfaces
+                                                       terco_opt_c_interfaces terco::terco_opt)
+
     # Every --opt-algorithm/--opt-coords combination terco exposes
     # converges water/STO-3G to the existing opt_water anchor -- see
     # check_opt_algorithms.F90's own header. One shared work dir: the
