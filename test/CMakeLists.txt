@@ -642,6 +642,14 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_lowercase PRIVATE test-drive::test-drive)
   unset(_cli_lowercase_probe)
 
+  # The end-of-SCF HOMO/LUMO energies in the CLI's --json, RHF and UHF,
+  # against pyscf -- see check_cli_homo_lumo.F90's own header.
+  set(_cli_homo_lumo_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_homo_lumo_probe.json)
+  terco_add_check(check_cli_homo_lumo check_cli_homo_lumo.F90 NEEDS_BASIS
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_homo_lumo_probe})
+  target_link_libraries(check_cli_homo_lumo PRIVATE test-drive::test-drive)
+  unset(_cli_homo_lumo_probe)
+
   # The TOML input files (docs/INPUT.md): same numbers as the equivalent
   # flags, paths relative to the file, the "input" echo with a flag
   # overriding the file, and every malformed file refused by name -- see
@@ -698,18 +706,6 @@ if(TERCO_BUILD_APP)
   endif()
 
   if(TERCO_ENABLE_DLFIND)
-    # --opt refuses a double hybrid BEFORE any SCF runs at all: its steps
-    # rerun only the SCF and its gradient, not the RI-MP2 correlation, and
-    # app/trc_run_opt.F90's run_opt_capability_check knows that statically
-    # from the command line, so there is no SCF line in the output at all
-    # when this fires.
-    add_test(NAME terco/cli_opt_refused_dh
-             COMMAND $<TARGET_FILE:terco_cli> ${_opt_xyz}/water.xyz -b 6-31g -f b2plyp --opt --silent)
-    set_tests_properties(
-      terco/cli_opt_refused_dh
-      PROPERTIES ENVIRONMENT "${_opt_env}" PASS_REGULAR_EXPRESSION
-                 "reruns only the SCF.*RI-MP2/double-hybrid" FAIL_REGULAR_EXPRESSION "SCF +: +[0-9]")
-
     # The CLI's --opt --json end to end: the "optimization" JSON block,
     # and that <name>_opt.xyz/_traj.xyz were actually written -- see
     # check_cli_opt.F90's own header.
@@ -794,6 +790,13 @@ if(TERCO_BUILD_APP)
     terco_add_check(check_capi_opt check_capi_opt.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
     target_link_libraries(check_capi_opt PRIVATE test-drive::test-drive terco_c_interfaces
                                                  terco_opt_c_interfaces terco::terco_opt)
+
+    # --opt with RI-MP2 and a double hybrid through terco_opt.h
+    # (trc_opt_set_rimp2): each step's energy is the correlated total whose
+    # gradient DL-FIND gets -- see check_opt_correlated.F90's own header.
+    terco_add_check(check_opt_correlated check_opt_correlated.F90 NEEDS_BASIS)
+    target_link_libraries(check_opt_correlated PRIVATE test-drive::test-drive terco_c_interfaces
+                                                       terco_opt_c_interfaces terco::terco_opt)
 
     # Every --opt-algorithm/--opt-coords combination terco exposes
     # converges water/STO-3G to the existing opt_water anchor -- see
@@ -1856,6 +1859,11 @@ target_link_libraries(check_rimp2_grad PRIVATE test-drive::test-drive)
 # d/dR Tr(P V_xc[D]) term (trc_xc_grad_potential.F90). See its header.
 terco_add_check(check_dh_grad check_dh_grad.F90 NEEDS_BASIS)
 target_link_libraries(check_dh_grad PRIVATE terco_c_interfaces test-drive::test-drive)
+# trc_run_hessian over a double-hybrid reference (RI-MP2 rerun at every
+# displacement): the Hessian against second differences of the DH energy,
+# the energy/gradient pairing --opt relies on, and the refusals it keeps.
+terco_add_check(check_hessian_dh check_hessian_dh.F90 NEEDS_BASIS)
+target_link_libraries(check_hessian_dh PRIVATE terco_c_interfaces test-drive::test-drive)
 # Formamide (no symmetry, spherical) against pyscf and finite differences, and
 # the exact reference: ~3 min on four host cores, so nightly only.
 add_test(NAME terco/check_dh_grad_long COMMAND check_dh_grad long)

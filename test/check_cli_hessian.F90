@@ -47,7 +47,9 @@ contains
 
    subroutine collect_cli_hessian(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
-      testsuite = [new_unittest("--hessian's JSON vs pyscf, water", test_cli)]
+      testsuite = [new_unittest("--hessian's JSON vs pyscf, water", test_cli), &
+                   new_unittest("--hessian with a double hybrid: thermochemistry from the double-hybrid total", &
+                                test_cli_dh)]
    end subroutine collect_cli_hessian
 
    subroutine test_cli(error)
@@ -122,6 +124,67 @@ contains
                       abs(gtot_cli - gtot_ref))
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_cli
+
+   !
+   ! A double hybrid's --hessian (b2plyp/def2-SVP, def2-SVP-RIFIT): every
+   ! displaced gradient reruns the RI-MP2 (trc_run_hessian), and the
+   ! thermochemistry's electronic energy is the double-hybrid total the
+   ! Hessian is the second derivative of -- not the SCF part, 0.065 Eh
+   ! away. The Hessian itself is checked against second differences of that
+   ! energy by check_hessian_dh.F90; this is the CLI's reporting of it.
+   ! Refused outright before (the CLI exited with trc_run_hessian's
+   ! "RI-MP2 finite-difference Hessian is not implemented yet").
+   !
+   subroutine test_cli_dh(error)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=:), allocatable :: cmd, probe, probe_out
+      integer :: rc, nfail, n_modes, n_imaginary
+      real(dp) :: e_total, e_scf, e_elec, dg, g_tot
+      type(json_file) :: json
+      logical :: found
+      nfail = 0
+      probe = probe_json//'.dh.json'
+      probe_out = probe//'.out'
+      cmd = trim(cli_exe)//' vib_thermo_water.xyz -b basis_sets/def2-svp.json --aux basis_sets/def2-svp-rifit.json '// &
+            '-f b2plyp --hessian --silent --json '//probe//' > '//probe_out//' 2>&1'
+      call execute_command_line(cmd, exitstat=rc, wait=.true.)
+      if (rc /= 0) then
+         call test_failed(error, "the CLI run itself failed, exit code "//to_string(rc)//" (see "//probe_out//")")
+         return
+      end if
+      call json%initialize()
+      call json%load(filename=probe)
+      if (json%failed()) then
+         call test_failed(error, "cannot read "//probe)
+         return
+      end if
+      e_total = huge(1.0_dp)
+      e_scf = huge(1.0_dp)
+      e_elec = -huge(1.0_dp)
+      dg = huge(1.0_dp)
+      g_tot = huge(1.0_dp)
+      n_modes = -1
+      n_imaginary = -1
+      call json%get('total energy', e_total, found)
+      call json%get('scf energy', e_scf, found)
+      call json%get('thermochemistry.total_energies_hartree.electronic', e_elec, found)
+      call json%get('thermochemistry.thermal_corrections_hartree.to_gibbs', dg, found)
+      call json%get('thermochemistry.total_energies_hartree.electronic_plus_thermal_G', g_tot, found)
+      call json%get('frequencies.n_modes', n_modes, found)
+      call json%get('frequencies.n_imaginary', n_imaginary, found)
+      call json%destroy()
+      call ref_report(nfail, abs(e_total - e_scf) > 1.0e-2_dp, &
+                      'check_cli_hessian (b2plyp): total - scf energy, Eh', e_total - e_scf)
+      call ref_report(nfail, abs(e_elec - e_total) <= 1.0e-12_dp, &
+                      'check_cli_hessian (b2plyp): thermo electronic - total, Eh', &
+                      abs(e_elec - e_total))
+      call ref_report(nfail, abs(g_tot - (e_total + dg)) <= 1.0e-10_dp, &
+                      'check_cli_hessian (b2plyp): G_tot - (total + dG), Eh', &
+                      abs(g_tot - (e_total + dg)))
+      call ref_report(nfail, n_modes == 3 .and. n_imaginary == 0, &
+                      'check_cli_hessian (b2plyp): 3 real modes', real(n_modes, dp))
+      if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
+   end subroutine test_cli_dh
 
    !
    ! vib_thermo_water.ref's own tags, in generate.py's write order, up to

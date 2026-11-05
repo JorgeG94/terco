@@ -121,6 +121,7 @@ module trc_rimp2_grad
    private
 
    public :: trc_rimp2_gradient, trc_rimp2_grad_options_t, trc_rimp2_grad_result_t, trc_rimp2_grad_t
+   public :: rimp2_grad_reference_refusal
 
    real(dp), parameter :: PAD_EPS = 1.0e6_dp
    !! The orbital energy of a zero-coefficient pad column: the CPHF solver
@@ -230,6 +231,48 @@ module trc_rimp2_grad
    end type grad_work_t
 
 contains
+
+   pure function rimp2_grad_reference_refusal(have_func, func, nspin, have_pcm) result(refusal)
+      !! Why the RI-MP2/double-hybrid gradient cannot run over this
+      !! reference, or "" when it can: the part of the scope above that is
+      !! known before any SCF runs (the functional, the spin and PCM).
+      !! trc_capi.F90's gradient_capability_check asks this first and then
+      !! adds what only a finished SCF knows (the --df fit, the ranks, the
+      !! dropped functions); the CLI asks it before --opt/--hessian starts,
+      !! so a run DL-FIND cannot finish is refused with the SAME message
+      !! the gradient itself would give at the first step.
+      logical, intent(in) :: have_func
+      type(trc_xc_functional_t), intent(in) :: func
+         !! read only when `have_func`
+      integer, intent(in) :: nspin
+         !! 1 restricted (nalpha == nbeta), 2 unrestricted
+      logical, intent(in) :: have_pcm
+      character(len=:), allocatable :: refusal
+      refusal = ""
+      ! PCM first: the Z-vector and densities carry no PCM response, so a
+      ! PCM reference is refused here even where the SCF-level PCM gradient
+      ! is supported.
+      if (have_pcm) then
+         refusal = "the RI-MP2/double-hybrid gradient over a PCM reference is not implemented "// &
+                   "(no PCM response in the Z-vector)"
+      else if (have_func) then
+         if (func%pt2_cos /= func%pt2_css) then
+            refusal = "a spin-component-scaled double hybrid ('"//trim(func%name)//"', c_os /= "// &
+                      "c_ss) has no gradient yet -- the RI-MP2 gradient scales one correlation energy"
+         else if (len_trim(cpks_refuse_reason(func)) > 0) then
+            refusal = "the RI-MP2 gradient over this Kohn-Sham reference needs its CPKS response: "// &
+                      trim(cpks_refuse_reason(func))
+         end if
+      end if
+      if (len(refusal) > 0) return
+      if (nspin /= 1 .and. have_func) then
+         refusal = "the double-hybrid (KS + RI-MP2) gradient is restricted only; an unrestricted (UKS) "// &
+                   "reference has no correlation gradient -- trc_cpks has no spin-resolved kernel response"
+      else if (nspin /= 1) then
+         refusal = "the RI-MP2 gradient is restricted (closed-shell RHF reference) only; "// &
+                   "an unrestricted reference has no correlation gradient yet"
+      end if
+   end function rimp2_grad_reference_refusal
 
    recursive subroutine trc_rimp2_gradient(b, aux, cmo, eps, job, la, dfjk, jkaux)
       !! dE(RHF + RI-MP2)/dR, Eh/Bohr, into `job%grad`, at the converged RHF
