@@ -3,8 +3,8 @@
 # generator: test/pyscf_refs/generate.py CASES["sym_so_dims"] -> gen_sym_so_dims
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 448b300559efafb09f2ec900c82c7703b53256ca44bad04451f8265ffb32da33
-# files: test/check_sym_ao.F90 test/water.xyz test/hocl.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
+# hash: a72a4c01a74934b300d208da6dc550dfd248a83773f03126c6d05a12aa8bf233
+# files: test/check_sym_ao.F90 test/water.xyz test/hocl.xyz test/ch2cl2.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
 NAO_water_631gs_cart 19
 SO_water_631gs_cart 2
 1.50000000000000000e+01 4.00000000000000000e+00
@@ -29,4 +29,16 @@ SO_hocl_ccpvdz_cart 2
 NAO_hocl_ccpvdz_sph 37
 SO_hocl_ccpvdz_sph 2
 2.70000000000000000e+01 1.00000000000000000e+01
+NAO_ch2cl2_631gs_cart 57
+SO_ch2cl2_631gs_cart 2
+3.40000000000000000e+01 2.30000000000000000e+01
+NAO_ch2cl2_631gs_sph 54
+SO_ch2cl2_631gs_sph 2
+3.20000000000000000e+01 2.20000000000000000e+01
+NAO_ch2cl2_ccpvdz_cart 63
+SO_ch2cl2_ccpvdz_cart 2
+3.80000000000000000e+01 2.50000000000000000e+01
+NAO_ch2cl2_ccpvdz_sph 60
+SO_ch2cl2_ccpvdz_sph 2
+3.60000000000000000e+01 2.40000000000000000e+01
 END

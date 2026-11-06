@@ -4747,15 +4747,16 @@ def gen_ghost_water_dimer():
 def gen_sym_so_dims():
     """check_sym_ao.F90's anchor: the number of symmetry-adapted orbitals per
     irrep that pyscf's `mol.symm_orb` gives, for water (as its Cs subgroup,
-    symmetry='Cs', the largest group terco reports at this stage) and HOCl
-    (Cs), in the Cartesian and the spherical AO space, 6-31G* and cc-pVDZ.
+    symmetry='Cs', the largest group terco reports at this stage), HOCl
+    (Cs) and nonplanar CH2Cl2 (C2v capped to Cs; its mirror moves atoms,
+    unlike the planar two), in the Cartesian and the spherical AO space, 6-31G* and cc-pVDZ.
     Basis from terco's own BSE JSON (bse_json_basis), so both codes see
     the same shells. Irrep order is pyscf's: A', A". The counts do not depend
     on the orientation, only on which plane is the mirror: for water that is
     the molecular plane, which pyscf picks for symmetry='Cs' (A' larger than A").
     """
     json_for = {"631gs": "basis_sets/6-31gs.json", "ccpvdz": "basis_sets/cc-pvdz.json"}
-    mols = ["water", "hocl"]
+    mols = ["water", "hocl", "ch2cl2"]
     w = RefWriter("sym_so_dims.ref")
     w.header("check_sym_ao", [ROOT / "test" / "check_sym_ao.F90"]
              + [TEST / f"{m}.xyz" for m in mols] + [TEST / j for j in json_for.values()])

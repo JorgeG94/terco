@@ -2,9 +2,10 @@
 ! trc_sym_ao: AO signed permutations and the SO basis, on terco's own 1e
 ! integrals.
 !
-! For water (as Cs, the largest group reported at this stage) and HOCl, in
-! 6-31G* and cc-pVDZ, in the Cartesian and the spherical AO space, with the
-! basis built on the standard frame of trc_sym_geom:
+! For water and HOCl (planar, so every atom is its own mirror image: only the
+! signs are exercised) and nonplanar CH2Cl2 (mirror swaps atoms), all as Cs, the
+! largest group reported at this stage, in 6-31G* and cc-pVDZ, in the Cartesian
+! and the spherical AO space, with the basis built on the standard frame of trc_sym_geom:
 !   - U^T U = I, and the irrep dimensions add up to the AO count;
 !   - the dimensions equal those of pyscf 2.14.0's mol.symm_orb
 !     (pyscf_refs/sym_so_dims.ref);
@@ -42,8 +43,8 @@ module check_sym_ao_suite
    character(len=8) :: g_mode = 'main'
       !! "main" or "f", set from argv before run_testsuite.
 
-   integer, parameter :: NMOL = 2, NBAS = 2
-   character(len=8), parameter :: MOL(NMOL) = [character(len=8) :: "water", "hocl"]
+   integer, parameter :: NMOL = 3, NBAS = 2
+   character(len=8), parameter :: MOL(NMOL) = [character(len=8) :: "water", "hocl", "ch2cl2"]
    character(len=8), parameter :: BAS_NAME(NBAS) = [character(len=8) :: "631gs", "ccpvdz"]
    character(len=32), parameter :: BAS_FILE(NBAS) = [character(len=32) :: &
                                                       "basis_sets/6-31gs.json", "basis_sets/cc-pvdz.json"]
