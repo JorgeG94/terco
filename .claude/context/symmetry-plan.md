@@ -185,7 +185,7 @@ used by nothing yet.
   `pyscf.symm.param`** (for example C2v: A1, A2, B1, B2), so labels compare
   directly with anchors; the product table (irrep × irrep) for later use.
 - `type :: trc_sym_group_t` with `name`, `order`, `ops(:)`, `chars(:,:)`,
-  `irrep_names(:)`, and a constructor `trc_sym_group(name)` that returns an
+  `irrep_names(:)`, and a constructor `sym_group_from_name(name, error)` that returns an
   `error_t` for an unknown name.
 - Tests (`check_sym_group`): each group is closed under composition (XOR of
   masks); characters are orthogonal (Σ_g χ_i χ_j = |G| δ_ij); the
