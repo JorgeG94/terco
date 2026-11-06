@@ -94,7 +94,8 @@ contains
          call check(error, res%group%order, 2, "two operations")
          if (allocated(error)) return
       end do
-      call check(error, count(SYM_GROUP_ENABLED), 2, "only C1 and Cs are enabled")
+      call check(error, SYM_GROUP_ENABLED(5) .and. SYM_GROUP_ENABLED(7) .and. SYM_GROUP_ENABLED(8), &
+                 "Cs, C2 and C1 are enabled (sym_group_names order D2h, C2h, C2v, D2, Cs, Ci, C2, C1)")
    end subroutine test_groups
 
    subroutine test_pyscf_frame(error)

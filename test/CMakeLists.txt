@@ -166,6 +166,12 @@ target_link_libraries(check_sym_run PRIVATE test-drive::test-drive)
 terco_add_check(check_sym_scf_cs check_sym_scf_cs.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_sym_scf_cs PRIVATE test-drive::test-drive)
 
+# Point group C2 (gauche H2O2 and N2H4: the rotation moves every atom): detection
+# and pyscf's frame, SALC block-diagonality, the central oracle (RHF, UHF,
+# B3LYP) and pyscf anchors (pyscf_refs/sym_c2.ref), gradient symmetrisation.
+terco_add_check(check_sym_c2 check_sym_c2.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_c2 PRIVATE test-drive::test-drive)
+
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
 # check_basis_ecp_refused.F90's own header.
@@ -2194,6 +2200,7 @@ if(Python3_FOUND)
   foreach(case water_ccpvdz water_ccpvtz formamide_def2tzvp)
     terco_add_golden(check_rys_fock_vs_pyscf_${case} rys_fock_${case})
   endforeach()
+  terco_add_golden(check_sym_c2 sym_c2)
   foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
     foreach(path hgp nosym rys)
       terco_add_golden(check_erf_fock_vs_pyscf_${case}_${path} erf_fock_${case}_${path})
