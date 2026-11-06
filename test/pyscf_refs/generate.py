@@ -5217,6 +5217,195 @@ def gen_sym_c2v():
     w.write()
 
 
+C2H_IRREPS = ["Ag", "Bg", "Au", "Bu"]   # terco's (and pyscf's) C2h order
+
+
+def gen_sym_c2h():
+    """check_sym_c2h's anchors: pyscf 2.14.0 with symmetry=True, which is C2h
+    for all three molecules: trans-diazene N2H2 and trans-glyoxal (both
+    planar, so every atom lies on the mirror) and anti ClH2C-CH2Cl (nonplanar:
+    the C2 axis and the inversion move the H atoms out of the mirror plane).
+    All three are given in a general orientation. First the frame
+    (`mol._symm_axes`, rows x, y, z, any sign; `mol._symm_orig`): z is the C2
+    axis. Then the number of symmetry-adapted orbitals per irrep
+    (mol.symm_orb; Ag, Bg, Au, Bu), Cartesian and spherical, 6-31G* and
+    cc-pVDZ (tags SO_/NAO_). Then, per SCF case, the electrons per irrep
+    (`mf.get_irrep_nelec()`) and the sorted orbital energies of each irrep:
+    RHF, the radical cations by UHF, and B3LYP. Basis from terco's own BSE JSON
+    (bse_json_basis). B3LYP is HYB_GGA_XC_B3LYP on pyscf's grid level 6, so its
+    orbital energies agree with terco's own grid only to the grid error.
+    The anti ClH2C-CH2Cl cation has no anchor: its UHF has two converged
+    states (the beta hole in Bg or in Au) and terco and pyscf settle in
+    different ones from their core-Hamiltonian guesses.
+    """
+    from pyscf import symm
+    json_for = {"631gs": "basis_sets/6-31gs.json", "ccpvdz": "basis_sets/cc-pvdz.json"}
+    mols = ["n2h2_trans", "glyoxal_trans", "clh2c_ch2cl_anti"]
+    # tag, molecule, basis, cart, method, charge, spin
+    cases = [("n2h2_rhf", "n2h2_trans", "ccpvdz", False, "rhf", 0, 0),
+             ("n2h2_cation_uhf", "n2h2_trans", "ccpvdz", False, "uhf", 1, 1),
+             ("glyoxal_rhf", "glyoxal_trans", "631gs", True, "rhf", 0, 0),
+             ("n2h2_b3lyp", "n2h2_trans", "ccpvdz", False, "b3lyp", 0, 0),
+             ("anti_rhf", "clh2c_ch2cl_anti", "ccpvdz", False, "rhf", 0, 0)]
+    w = RefWriter("sym_c2h.ref")
+    w.header("check_sym_c2h", [ROOT / "test" / "check_sym_c2h.F90"]
+             + [TEST / f"{m}.xyz" for m in mols] + [TEST / j for j in json_for.values()])
+
+    def elements_of(atoms):
+        return {sym: {v: k for k, v in _SYMBOL.items()}[sym] for sym, _ in atoms}
+
+    def make_mol(atoms, basis_arg, cart, charge, spin):
+        mol = gto.M(atom=atoms, basis=basis_arg, unit='Angstrom', cart=cart, charge=charge, spin=spin,
+                    symmetry=True, verbose=0)
+        if mol.groupname != 'C2h' or list(mol.irrep_name) != C2H_IRREPS:
+            raise RuntimeError(f"gen_sym_c2h: pyscf group {mol.groupname} {mol.irrep_name}")
+        return mol
+
+    for m in mols:
+        atoms = _xyz_atoms(m)
+        mol = make_mol(atoms, bse_json_basis(TEST / json_for["631gs"], elements_of(atoms)), True, 0, 0)
+        w.vector(f"AXES_{m}", np.asarray(mol._symm_axes).ravel())
+        w.vector(f"ORIG_{m}", np.asarray(mol._symm_orig))
+    for m in mols:
+        atoms = _xyz_atoms(m)
+        for bname, jrel in json_for.items():
+            basis_arg = bse_json_basis(TEST / jrel, elements_of(atoms))
+            for kind, cart in (("cart", True), ("sph", False)):
+                mol = make_mol(atoms, basis_arg, cart, 0, 0)
+                dims = [o.shape[1] for o in mol.symm_orb]
+                if sum(dims) != mol.nao_nr():
+                    raise RuntimeError(f"gen_sym_c2h {m}: SO count {dims} != nao {mol.nao_nr()}")
+                tag = f"{m}_{bname}_{kind}"
+                w.int_("NAO_" + tag, mol.nao_nr())
+                w.vector("SO_" + tag, dims)
+                print(f"  SO_{tag}: nao {mol.nao_nr()} dims {dims}")
+
+    for tag, m, bname, cart, method, charge, spin in cases:
+        atoms = _xyz_atoms(m)
+        mol = make_mol(atoms, bse_json_basis(TEST / json_for[bname], elements_of(atoms)), cart, charge, spin)
+
+        def make_mf():
+            if method == "rhf":
+                return scf.RHF(mol)
+            if method == "uhf":
+                return scf.UHF(mol)
+            mf_ = dft.RKS(mol)
+            mf_.xc = 'HYB_GGA_XC_B3LYP'
+            mf_.grids.level = 6
+            return mf_
+        mf, grad_norm = converge_tight(make_mf, None, f"sym_c2h {tag}")
+        nelec = mf.get_irrep_nelec()
+        mo_e = mf.mo_energy if method == "uhf" else (mf.mo_energy,)
+        mo_c = mf.mo_coeff if method == "uhf" else (mf.mo_coeff,)
+        w.comment(f"{tag}: {method}, E {mf.e_tot:.12f}, GRAD_NORM {grad_norm:.3e}")
+        w.int_("NSPIN_" + tag, len(mo_e))
+        w.real("E_" + tag, mf.e_tot)
+        if method == "uhf":
+            ne = [[nelec[n][s] if n in nelec else 0 for n in C2H_IRREPS] for s in (0, 1)]
+        else:
+            ne = [[nelec.get(n, 0) // 2 for n in C2H_IRREPS]] * 2
+        w.vector("NELEC_" + tag, np.array(ne, dtype=float).ravel())   # alpha: Ag..Bu; beta: Ag..Bu
+        for s, (e, c) in enumerate(zip(mo_e, mo_c)):
+            lab = np.array(symm.label_orb_symm(mol, mol.irrep_name, mol.symm_orb, c))
+            for k, name in enumerate(C2H_IRREPS, start=1):
+                w.vector(f"EPS{k}_{tag}_{s + 1}", np.sort(e[lab == name]))
+        print(f"  {tag}: E {mf.e_tot:.10f} nelec {ne}")
+    w.end()
+    w.write()
+
+
+C2H_SUB_IRREPS = {"Cs": ["A'", 'A"'], "C2": ["A", "B"], "Ci": ["Ag", "Au"]}
+
+
+def _c2h_sub_mol(m, sub, bname, cart, charge, spin, json_for):
+    """pyscf Mole for molecule `m` with symmetry=<sub> (a subgroup of its C2h)."""
+    atoms = _xyz_atoms(m)
+    elements = {sym: {v: k for k, v in _SYMBOL.items()}[sym] for sym, _ in atoms}
+    basis_arg = bse_json_basis(TEST / json_for[bname], elements)
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Angstrom', cart=cart, charge=charge, spin=spin,
+                symmetry=sub, verbose=0)
+    if mol.groupname != sub or mol.topgroup != 'C2h':
+        raise RuntimeError(f"{m}: pyscf group {mol.groupname} (top {mol.topgroup}), expected {sub} of C2h")
+    return mol
+
+
+def gen_sym_c2h_subgroup():
+    """check_sym_c2h_subgroup's anchor: pyscf 2.14.0 with symmetry='Cs',
+    'C2' and 'Ci' on C2h molecules (a requested subgroup). Molecules:
+    trans-diazene (planar) and anti ClH2C-CH2Cl in a general orientation,
+    and anti ClH2C-CH2Cl with axis-aligned input twice (clh2c_ch2cl_alignx:
+    C2 along x, so sigma_h and C2 do not hold in the input axes and pyscf
+    turns to the C2h frame, but the inversion does hold and pyscf keeps the
+    input axes for Ci; clh2c_ch2cl_alignz: C2 along z, every subgroup holds
+    in the input axes). Per molecule and subgroup: the frame
+    (`mol._symm_axes`, rows x, y, z, any sign) and origin, and the SO
+    dimensions per irrep (6-31G* Cartesian, cc-pVDZ spherical). Per SCF case:
+    the energy, electrons per irrep and the sorted orbital energies of each
+    irrep.
+    """
+    from pyscf import symm
+    json_for = {"631gs": "basis_sets/6-31gs.json", "ccpvdz": "basis_sets/cc-pvdz.json"}
+    mols = ["n2h2_trans", "clh2c_ch2cl_anti", "clh2c_ch2cl_alignx", "clh2c_ch2cl_alignz"]
+    subs = ["Cs", "C2", "Ci"]
+    dimcases = [("631gs", True), ("ccpvdz", False)]
+    # tag, molecule, subgroup, basis, cart, method, charge, spin
+    cases = [("n2h2_cs_rhf", "n2h2_trans", "Cs", "ccpvdz", False, "rhf", 0, 0),
+             ("n2h2_c2_rhf", "n2h2_trans", "C2", "631gs", True, "rhf", 0, 0),
+             ("n2h2_ci_uhf", "n2h2_trans", "Ci", "ccpvdz", False, "uhf", 1, 1),
+             ("anti_cs_rhf", "clh2c_ch2cl_anti", "Cs", "631gs", True, "rhf", 0, 0),
+             ("anti_c2_rhf", "clh2c_ch2cl_anti", "C2", "631gs", True, "rhf", 0, 0),
+             ("anti_ci_rhf", "clh2c_ch2cl_anti", "Ci", "631gs", True, "rhf", 0, 0),
+             ("alignx_cs_rhf", "clh2c_ch2cl_alignx", "Cs", "631gs", True, "rhf", 0, 0),
+             ("alignx_ci_rhf", "clh2c_ch2cl_alignx", "Ci", "631gs", True, "rhf", 0, 0),
+             ("alignz_cs_rhf", "clh2c_ch2cl_alignz", "Cs", "631gs", True, "rhf", 0, 0),
+             ("alignz_c2_rhf", "clh2c_ch2cl_alignz", "C2", "631gs", True, "rhf", 0, 0)]
+    w = RefWriter("sym_c2h_subgroup.ref")
+    w.header("check_sym_c2h_subgroup", [ROOT / "test" / "check_sym_c2h_subgroup.F90"]
+             + [TEST / f"{m}.xyz" for m in mols] + [TEST / j for j in json_for.values()])
+    for m in mols:
+        for sub in subs:
+            mol = _c2h_sub_mol(m, sub, "631gs", True, 0, 0, json_for)
+            w.vector(f"AXES_{m}_{sub}", np.asarray(mol._symm_axes).ravel())
+            w.vector(f"ORIG_{m}_{sub}", np.asarray(mol._symm_orig))
+    for m in mols:
+        for sub in subs:
+            for bname, cart in dimcases:
+                mol = _c2h_sub_mol(m, sub, bname, cart, 0, 0, json_for)
+                dimd = {n: o.shape[1] for n, o in zip(mol.irrep_name, mol.symm_orb)}
+                dims = [dimd.get(n, 0) for n in C2H_SUB_IRREPS[sub]]
+                if sum(dims) != mol.nao_nr():
+                    raise RuntimeError(f"gen_sym_c2h_subgroup {m} {sub}: SO count {dims} != nao {mol.nao_nr()}")
+                tag = f"{m}_{sub}_{bname}"
+                w.int_("NAO_" + tag, mol.nao_nr())
+                w.vector("SO_" + tag, dims)
+                print(f"  SO_{tag}: dims {dims}")
+    for tag, m, sub, bname, cart, method, charge, spin in cases:
+        mol = _c2h_sub_mol(m, sub, bname, cart, charge, spin, json_for)
+        irreps = C2H_SUB_IRREPS[sub]
+
+        def make_mf():
+            return scf.UHF(mol) if method == "uhf" else scf.RHF(mol)
+        mf, grad_norm = converge_tight(make_mf, None, f"sym_c2h_subgroup {tag}")
+        nelec = mf.get_irrep_nelec()
+        mo_e = mf.mo_energy if method == "uhf" else (mf.mo_energy,)
+        mo_c = mf.mo_coeff if method == "uhf" else (mf.mo_coeff,)
+        w.comment(f"{tag}: {method}, E {mf.e_tot:.12f}, GRAD_NORM {grad_norm:.3e}")
+        w.int_("NSPIN_" + tag, len(mo_e))
+        w.real("E_" + tag, mf.e_tot)
+        if method == "uhf":
+            ne = [[nelec[n][s] if n in nelec else 0 for n in irreps] for s in (0, 1)]
+        else:
+            ne = [[nelec.get(n, 0) // 2 for n in irreps]] * 2
+        w.vector("NELEC_" + tag, np.array(ne, dtype=float).ravel())
+        for s, (e, c) in enumerate(zip(mo_e, mo_c)):
+            lab = np.array(symm.label_orb_symm(mol, mol.irrep_name, mol.symm_orb, c))
+            for k, name in enumerate(irreps, start=1):
+                w.vector(f"EPS{k}_{tag}_{s + 1}", np.sort(e[lab == name]))
+        print(f"  {tag}: E {mf.e_tot:.10f} nelec {ne}")
+    w.end()
+    w.write()
+
+
 CASES = {
     "hirshfeld": gen_hirshfeld,
     "mult": gen_mult,
@@ -5374,6 +5563,8 @@ CASES = {
     "sym_c2v_so_dims": gen_sym_c2v_so_dims,
     "sym_c2v": gen_sym_c2v,
     "sym_subgroup": gen_sym_subgroup,
+    "sym_c2h": gen_sym_c2h,
+    "sym_c2h_subgroup": gen_sym_c2h_subgroup,
     "sym_ci": gen_sym_ci,
     "pcm_ints_water_631gs": lambda: gen_pcm_ints("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "pcm_ints_water_ccpvtz": lambda: gen_pcm_ints("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json"),

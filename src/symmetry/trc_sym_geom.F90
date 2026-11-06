@@ -15,7 +15,8 @@ module trc_sym_geom
    !!
    !! REQUESTED SUBGROUPS. With `requested` (a group name), `group` is that
    !! group when it is a proper subgroup of `detected` that has a rule in
-   !! `has_subgroup_rule` (today C2v -> Cs and C2v -> C2); `detected` still
+   !! `has_subgroup_rule` (today C2v -> Cs, C2v -> C2, C2h -> Cs, C2h -> C2
+   !! and C2h -> Ci); `detected` still
    !! names the full group. The elements and the frame are those of pyscf
    !! 2.14.0 for `gto.M(..., symmetry='H')` (`Mole._build_symmetry`):
    !!  1. if the detected axes are the input axes (each a signed unit
@@ -25,7 +26,9 @@ module trc_sym_geom
    !!  2. else `as_subgroup`: the frame of the full group, turned for H. For
    !!     C2v -> Cs the axes are turned by 90 degrees about y (x becomes the
    !!     C2 axis, z the old x, the normal of the mirror kept); for
-   !!     C2v -> C2 the C2v frame is kept as it is.
+   !!     C2v -> C2 the C2v frame is kept as it is. For every subgroup of
+   !!     C2h (Cs, C2, Ci) pyscf keeps the C2h frame as it is (`get_subgroup`
+   !!     returns the C2h axes, `as_subgroup` changes them for C2v only).
    !!  Step 1 matters: the two mirrors of a nonplanar C2v molecule give
    !!  different SO blocks, and which one is kept depends on the input
    !!  orientation. Planar molecules have one choice, the molecular plane.
@@ -46,7 +49,7 @@ module trc_sym_geom
    !!
    !! Frame conventions follow pyscf 2.14.0 `symm/geom.py`, `detect_symm`
    !! and `as_subgroup`, and only for the groups that are enabled (C1, Cs,
-   !! C2, C2v, Ci):
+   !! C2, C2v, C2h, Ci):
    !!  - C1: no rotation, no shift (pyscf resets both).
    !!  - Cs: z is the mirror normal; x, y are the other principal axes in
    !!    cyclic order (mirror normal P1 -> axes P2, P3, P1; and so on). A Cs
@@ -56,15 +59,20 @@ module trc_sym_geom
    !!  - C2: z is the rotation axis; x, y are the other principal axes in
    !!    cyclic order. C2 has only C1 below it, so a molecule whose largest
    !!    Abelian group is C2 is reported as C2 (and only such a molecule: a
-   !!    C2 inside C2h keeps the Cs cap, inside D2 the C1 cap, until their
-   !!    stages). A C2 requested on a C2v molecule has the C2v axes.
+   !!    C2 inside D2 keeps the C1 cap until its stage). A C2 requested on a
+   !!    C2v molecule has the C2v axes, on a C2h molecule the C2h axes.
    !!  - C2v: z is the C2 axis; x, y are the other principal axes in cyclic
    !!    order (C2 axis P1 -> x, y = P2, P3; P2 -> P3, P1; P3 -> P1, P2). A
    !!    planar molecule is turned about z so that x is the normal of its
    !!    plane (pyscf `_adjust_planar_c2v`): water lies in the yz plane, its
    !!    in-plane O-H bonding orbital is B2 and its out-of-plane lone pair B1.
+   !!  - C2h: z is the C2 axis, which is also the normal of the mirror sigma_h
+   !!    (xy); x, y are the other principal axes in cyclic order, as for C2
+   !!    (pyscf's `Ag, Bg, Au, Bu`: x and y span Bu, z is Au, Rz is Ag). A Cs, C2
+   !!    or Ci requested on a C2h molecule has this frame.
    !!  - Ci: the inversion fixes no axis, so the orientation is free; the
    !!    principal axes in order (1, 2, 3). The labels (Ag, Au) do not depend on it.
+   !!    A Ci requested on a C2h molecule has the C2h frame.
    !! pyscf takes the sign of each axis from LAPACK, so it is arbitrary
    !! there; here the largest component of each principal axis is positive
    !! and y is flipped when needed so that det(rot) = +1. A sign flip of an
@@ -84,7 +92,7 @@ module trc_sym_geom
    public :: SYM_GROUP_ENABLED, SYM_DEFAULT_TOL
 
    logical, parameter :: SYM_GROUP_ENABLED(SYM_NGROUPS) = &
-                         [.false., .false., .true., .false., .true., .true., .true., .true.]
+                         [.false., .true., .true., .false., .true., .true., .true., .true.]
       !! THE CAP: which groups may be reported, in the order of
       !! `sym_group_names` (D2h, C2h, C2v, D2, Cs, Ci, C2, C1). A larger
       !! detected group is reported as the largest enabled subgroup. Stages
@@ -308,6 +316,8 @@ contains
       select case (trim(top))
       case ("C2v")
          ok = trim(sub) == "Cs" .or. trim(sub) == "C2"
+      case ("C2h")
+         ok = trim(sub) == "Cs" .or. trim(sub) == "C2" .or. trim(sub) == "Ci"
       case default
          ok = .false.
       end select
@@ -362,6 +372,20 @@ contains
       end if
    end function c2v_order
 
+   pure function c2h_order(found) result(order)
+      !! The axis order of the C2h standard frame (module header): z is the C2
+      !! axis (the axis the only C2 mask does not flip), x and y follow in
+      !! cyclic order.
+      logical, intent(in) :: found(N_MASK)
+      integer :: order(3)
+      integer :: m, kc2
+      kc2 = 3
+      do m = 1, N_MASK
+         if (found(m) .and. popcnt(m) == 2) kc2 = merge(1, merge(2, 3, .not. btest(m, 1)), .not. btest(m, 0))
+      end do
+      order = [modulo(kc2, 3) + 1, modulo(kc2 + 1, 3) + 1, kc2]
+   end function c2h_order
+
    subroutine frame_order(rep, top, found, q, tol, order, error)
       !! Which principal axes become x, y, z of the standard frame of group
       !! `rep`, following pyscf (module header). `found` marks the masks of
@@ -383,8 +407,10 @@ contains
       case ("Ci")
          ! The inversion fixes no axis: the orientation is arbitrary. pyscf
          ! keeps the input orientation; the labels (Ag, Au) do not depend on
-         ! it, so the principal axes are used as they come.
+         ! it, so the principal axes are used as they come. A Ci requested on a
+         ! C2h molecule has the C2h frame (pyscf as_subgroup keeps it).
          order = [1, 2, 3]
+         if (top == "C2h") order = c2h_order(found)
       case ("Cs")
          nmir = 0
          k = 0
@@ -438,6 +464,8 @@ contains
          end if
       case ("C2v")
          order = c2v_order(found, q, tol)
+      case ("C2h")
+         order = c2h_order(found)
       case default
          call error%set(ERROR_GENERIC, "no axis convention yet for point group "//rep// &
                         " (enabled in trc_sym_geom, but its frame is missing)")
