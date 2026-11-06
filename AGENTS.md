@@ -181,3 +181,5 @@ before any non-trivial change. The rules that most often break builds:
 - `docs/pic_api.md`: everything pic provides at the pinned tag.
 - `docs/functionals.md`: every registered functional (generated).
 - `test/pyscf_refs/README.md`: regenerating anchors and the per-case hash.
+- `.claude/context/symmetry-plan.md` and `symmetry-agent-briefs.md`: the
+  point-group symmetry project (stages, and per-stage agent instructions).
