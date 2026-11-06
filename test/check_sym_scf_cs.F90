@@ -109,8 +109,15 @@ contains
       p%nalpha = (nelec + mult - 1)/2
       p%nbeta = nelec - p%nalpha
       opts%functional = functional
-      opts%conv_energy = 1.0e-12_dp
-      opts%conv_diis = 1.0e-10_dp
+      ! Convergence just above the accumulation-order noise floor, not below
+      ! it. Under OpenMP (and on the device) the C1 UHF CH2Cl2+ run settles by
+      ! iteration ~40 and then sits at |FDS-SDF| 1.7e-10..4e-10 and |dE|
+      ! 0..9e-12 (|E| ~ 958 Eh) until max_iteration, so 1e-10/1e-12 converged
+      ! only by luck (2 of 6 OpenMP runs failed). The energy is variational,
+      ! so a 1e-9 commutator moves E by ~1e-18 and the 1e-10 oracle gates on
+      ! dE, d eps and dD below are unaffected.
+      opts%conv_energy = 1.0e-10_dp
+      opts%conv_diis = 1.0e-9_dp
       opts%max_iteration = 100
       if (present(incremental)) opts%incremental = incremental
 
