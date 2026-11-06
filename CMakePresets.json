@@ -66,6 +66,31 @@
         "CMAKE_CXX_COMPILER": "mpic++",
         "TERCO_ENABLE_MPI": "ON"
       }
+    },
+    {
+      "name": "macos-host",
+      "displayName": "macOS Apple Silicon, host build (gfortran 15)",
+      "description": "brew install gcc@15 cmake ninja python@3.12, venv at ~/.venvs/terco (the generators need Python >= 3.10, and Apple's /usr/bin/python3 is 3.9). No GPU, no MPI. BLAS/LAPACK come from Accelerate. See .claude/context/macos.md.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Darwin" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_Fortran_COMPILER": "/opt/homebrew/bin/gfortran-15",
+        "Python3_EXECUTABLE": "$env{HOME}/.venvs/terco/bin/python",
+        "TERCO_ENABLE_GPU": "OFF",
+        "TERCO_ENABLE_MPI": "OFF"
+      }
+    },
+    {
+      "name": "macos-omp",
+      "inherits": "macos-host",
+      "displayName": "macOS Apple Silicon, OpenMP CPU build",
+      "description": "Only valid on a scratch worktree whose src/ and build-omp/generated_* were converted by tools/dc_to_omp.py and tools/acc_to_omp.py (recipe in .claude/context/ci.md and macos.md). Run ctest with OMP_NUM_THREADS=4.",
+      "binaryDir": "${sourceDir}/build-omp",
+      "cacheVariables": {
+        "CMAKE_Fortran_FLAGS": "-fopenmp"
+      }
     }
   ],
   "buildPresets": [
@@ -88,6 +113,14 @@
       "name": "gadi-mpi",
       "configurePreset": "gadi-mpi",
       "jobs": 16
+    },
+    {
+      "name": "macos-host",
+      "configurePreset": "macos-host"
+    },
+    {
+      "name": "macos-omp",
+      "configurePreset": "macos-omp"
     }
   ]
 }
