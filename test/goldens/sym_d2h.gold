@@ -1,0 +1,11 @@
+# terco golden v1
+# case: sym_d2h
+# from: gfortran-15 build build at c52cffd, by test/goldens/regen_goldens.py
+E_c2h4_rhf -7.8039727620712796e+01
+E_c2h4a_rhf -7.8030800175514969e+01
+E_nap_rhf -3.8335242053581555e+02
+E_b2h6_rhf -5.2815740029276256e+01
+E_b2h6a_rhf -5.2812274699462236e+01
+E_c2h4_uhf -7.7713914593550129e+01
+E_c2h4_b3lyp -7.8590925769006233e+01
+END

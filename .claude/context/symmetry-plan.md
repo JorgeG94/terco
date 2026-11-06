@@ -79,7 +79,7 @@ assumption for the plan is:
 | S8 | Group C2v | S5 | done |
 | S9 | Group C2h | S5 | done |
 | S10 | Group D2 | S5 | done |
-| S11 | Group D2h | S5 | todo |
+| S11 | Group D2h | S5 | done |
 | S12 | Symmetric and spherical tops, linear molecules | S11 | todo |
 | S13 | Skeleton Fock design spike | S11 | todo |
 | S14 | Skeleton Fock: host implementation | S13 + maintainer sign-off | todo |
@@ -355,8 +355,15 @@ Open items left by S2, each owned by the stage named:
   normal) and x, y the other principal axes in cyclic order, as terco does.
   C2h is now enabled; its subgroups Cs, C2 and Ci (`has_subgroup_rule`) keep
   the C2h frame, as pyscf does (`as_subgroup` only turns the axes for C2v).
-- **S11**: D2h capped to Cs uses principal-axis order (1, 2, 3)
-  provisionally, with no pyscf check. Fix it against pyscf.
+- **S11** (done): D2h capped to Cs used principal-axis order (1, 2, 3) with no pyscf
+  check. Checked against pyscf 2.14.0: the D2h frame is the principal axes in ascending
+  order of the second moment, with no `alias_axes` (so no LAPACK-sign x/y ambiguity,
+  unlike D2), then `_adjust_planar_d2h` for a planar molecule (x = the plane normal; z
+  from counting the atoms off each axis; `d2h_order`). D2h is now enabled, so the Cs
+  cap and its provisional path are gone (`frame_order` errors for a Cs with several
+  mirrors that no rule covers). Every subgroup request (C2v, C2h, Cs, C2, Ci) keeps
+  the D2h frame, as pyscf does; `symmetry='D2'` on a D2h molecule is refused by pyscf
+  itself (not in its `SUBGROUP['D2h']`) and by terco.
 - `test/hocl.xyz` and `test/ch2cl2.xyz` (nonplanar, the mirror moves atoms) were added in S3.
 
 ## S12 — Symmetric and spherical tops, linear molecules
