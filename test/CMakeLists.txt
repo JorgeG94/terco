@@ -222,6 +222,25 @@ set_tests_properties(terco/check_sym_c2h_f PROPERTIES SKIP_REGULAR_EXPRESSION "S
 # (pyscf_refs/sym_c2h_subgroup.ref), energy equal to C2h and C1.
 terco_add_check(check_sym_c2h_subgroup check_sym_c2h_subgroup.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_sym_c2h_subgroup PRIVATE test-drive::test-drive)
+# The point group D2h, the last Abelian group (planar ethylene and naphthalene,
+# nonplanar diborane): detection, pyscf's frame (principal axes plus
+# _adjust_planar_d2h), SALC block-diagonality, the central oracle for
+# RHF/UHF/B3LYP with irrep occupations and orbital energies per irrep against
+# pyscf (pyscf_refs/sym_d2h.ref), gradient symmetrisation. Registered twice
+# (_f: the uncontracted l = 0..3 set), as check_sym_ci is.
+terco_add_check(check_sym_d2h check_sym_d2h.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_d2h PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_d2h PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_d2h)
+terco_add_check(check_sym_d2h_f check_sym_d2h.F90 NEEDS_BASIS NEEDS_PYSCF_REF ARGS f)
+target_link_libraries(check_sym_d2h_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_d2h_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_d2h_f)
+set_tests_properties(terco/check_sym_d2h_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+# C2v, C2h, Cs, C2 and Ci requested on D2h molecules in pyscf's frame
+# (pyscf_refs/sym_d2h_subgroup.ref), energy equal to D2h and C1.
+terco_add_check(check_sym_d2h_subgroup check_sym_d2h_subgroup.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_d2h_subgroup PRIVATE test-drive::test-drive)
 
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
@@ -2256,6 +2275,7 @@ if(Python3_FOUND)
   endforeach()
   terco_add_golden(check_sym_c2 sym_c2)
   terco_add_golden(check_sym_d2 sym_d2)
+  terco_add_golden(check_sym_d2h sym_d2h)
   foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
     foreach(path hgp nosym rys)
       terco_add_golden(check_erf_fock_vs_pyscf_${case}_${path} erf_fock_${case}_${path})

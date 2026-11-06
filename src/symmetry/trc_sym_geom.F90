@@ -16,7 +16,8 @@ module trc_sym_geom
    !! REQUESTED SUBGROUPS. With `requested` (a group name), `group` is that
    !! group when it is a proper subgroup of `detected` that has a rule in
    !! `has_subgroup_rule` (today C2v -> Cs, C2v -> C2, D2 -> C2, C2h -> Cs,
-   !! C2h -> C2 and C2h -> Ci); `detected` still
+   !! C2h -> C2, C2h -> Ci, and D2h -> C2v, C2h, Cs, C2, Ci; not D2h -> D2, which
+   !! pyscf refuses: D2 is not in its SUBGROUP table for D2h); `detected` still
    !! names the full group. The elements and the frame are those of pyscf
    !! 2.14.0 for `gto.M(..., symmetry='H')` (`Mole._build_symmetry`):
    !!  1. if the detected axes are the input axes (each a signed unit
@@ -31,6 +32,10 @@ module trc_sym_geom
    !!     For every subgroup of C2h (Cs, C2, Ci) pyscf keeps the C2h frame as
    !!     it is (`get_subgroup` returns the C2h axes, `as_subgroup` changes
    !!     them for C2v only).
+   !!     For every subgroup of D2h (C2v, C2h, Cs, C2, Ci) pyscf keeps the D2h
+   !!     frame as it is (`as_subgroup` turns the axes for a C2v group name only,
+   !!     and a D2h top group is named D2h): z is the D2h z, so the C2v and C2
+   !!     axis, the C2h axis and the Cs normal are the same axis of the molecule.
    !!  Step 1 matters: the two mirrors of a nonplanar C2v molecule give
    !!  different SO blocks, and which one is kept depends on the input
    !!  orientation. Planar molecules have one choice, the molecular plane.
@@ -50,8 +55,7 @@ module trc_sym_geom
    !! input frame (`r_sym`), and the residual |r_sym - r|.
    !!
    !! Frame conventions follow pyscf 2.14.0 `symm/geom.py`, `detect_symm`
-   !! and `as_subgroup`, and only for the groups that are enabled (C1, Cs,
-   !! C2, C2v, C2h, D2, Ci):
+   !! and `as_subgroup` (all eight Abelian groups):
    !!  - C1: no rotation, no shift (pyscf resets both).
    !!  - Cs: z is the mirror normal; x, y are the other principal axes in
    !!    cyclic order (mirror normal P1 -> axes P2, P3, P1; and so on). A Cs
@@ -84,6 +88,14 @@ module trc_sym_geom
    !!    (xy); x, y are the other principal axes in cyclic order, as for C2
    !!    (pyscf's `Ag, Bg, Au, Bu`: x and y span Bu, z is Au, Rz is Ag). A Cs, C2
    !!    or Ci requested on a C2h molecule has this frame.
+   !!  - D2h: the principal axes in ascending order of the second moment
+   !!    (x, y, z = P1, P2, P3), with no `alias_axes` (unlike D2), so the frame
+   !!    does not depend on LAPACK's eigenvector signs and a sign change of an axis
+   !!    changes no D2h label. A planar molecule is turned by pyscf
+   !!    `_adjust_planar_d2h` (`d2h_order`): x is the plane normal, and z the in-plane
+   !!    axis chosen by counting the atoms off each axis. Measured on ethylene
+   !!    (in the xy plane, C=C along x): pyscf axes (z_in, y_in, x_in). pyscf's
+   !!    frame there is left-handed; terco flips y, which changes no label.
    !!  - Ci: the inversion fixes no axis, so the orientation is free; the
    !!    principal axes in order (1, 2, 3). The labels (Ag, Au) do not depend on it.
    !!    A Ci requested on a C2h molecule has the C2h frame.
@@ -106,12 +118,12 @@ module trc_sym_geom
    public :: SYM_GROUP_ENABLED, SYM_DEFAULT_TOL
 
    logical, parameter :: SYM_GROUP_ENABLED(SYM_NGROUPS) = &
-                         [.false., .true., .true., .true., .true., .true., .true., .true.]
+                         [.true., .true., .true., .true., .true., .true., .true., .true.]
       !! THE CAP: which groups may be reported, in the order of
-      !! `sym_group_names` (D2h, C2h, C2v, D2, Cs, Ci, C2, C1). A larger
-      !! detected group is reported as the largest enabled subgroup. Stages
-      !! S6-S11 each switch their group on here and add its frame to
-      !! `frame_order`, which refuses a group it has no convention for.
+      !! `sym_group_names` (D2h, C2h, C2v, D2, Cs, Ci, C2, C1). All eight Abelian
+      !! groups are enabled since S11, so the cap no longer changes what is
+      !! reported; it stays as the switch `enabled` and `frame_order` consult
+      !! (`frame_order` refuses a group it has no convention for).
 
    integer, parameter :: N_MASK = 7  !! non-identity sign masks
    real(dp), parameter :: SYM_DEFAULT_TOL = 1.0e-5_dp  !! default geometry tolerance, Bohr
@@ -303,13 +315,11 @@ contains
 
    function reported_name(detected, nmirror) result(name)
       !! The group to report: the detected one if enabled, else the largest
-      !! enabled subgroup. C2v (S8) is reported as such when it is detected.
-      !! Ci is reached only when the molecule is Ci itself (below C2h it is
-      !! a request, `has_subgroup_rule`); a D2h molecule keeps the Cs cap
-      !! until a stage fixes pyscf's choice among its subgroups. A D2h molecule
-      !! still falls back to Cs: which C2v of D2h to take needs the D2h frame
-      !! (S11/S12). A stage that enables another group adds its subgroup
-      !! rule here and its frame in `frame_order`.
+      !! enabled subgroup. Since S11 every Abelian group is enabled, so this is
+      !! the detected group; the fallback to Cs (a mirror exists) or C1 only
+      !! matters if a group is switched off in `SYM_GROUP_ENABLED`. Its frame
+      !! would then be a Cs frame of the detected group, which only the groups
+      !! with a single mirror define (`frame_order`).
       character(len=3), intent(in) :: detected
       integer, intent(in) :: nmirror
       character(len=3) :: name
@@ -334,6 +344,9 @@ contains
          ok = trim(sub) == "C2"
       case ("C2h")
          ok = trim(sub) == "Cs" .or. trim(sub) == "C2" .or. trim(sub) == "Ci"
+      case ("D2h")
+         ! pyscf's SUBGROUP['D2h'] has no D2: the request is refused there too.
+         ok = any(trim(sub) == ["C2v", "C2h", "Cs ", "C2 ", "Ci "])
       case default
          ok = .false.
       end select
@@ -415,6 +428,30 @@ contains
       order = [x, y, z]
    end function d2_order
 
+   pure function d2h_order(q) result(order)
+      !! The axis order of the D2h standard frame: pyscf `detect_symm` keeps the
+      !! principal axes (ascending second moment) and, for a planar molecule,
+      !! applies `_adjust_planar_d2h`, which counts the atoms off each axis.
+      !! `q` are the coordinates in the principal frame. Signs are not tracked:
+      !! they change no D2h label. The counts use pyscf's tolerance.
+      real(dp), intent(in) :: q(:, :)
+      integer :: order(3)
+      real(dp) :: tl
+      integer :: nx, ny, nz
+      tl = 1.0e-5_dp/sqrt(1.0_dp + real(size(q, 2), dp))
+      nx = count(abs(q(1, :)) > tl)
+      ny = count(abs(q(2, :)) > tl)
+      nz = count(abs(q(3, :)) > tl)
+      order = [1, 2, 3]
+      if (nz == 0) then  ! atoms on the plane normal to P3
+         order = merge([3, 2, 1], [3, 1, 2], nx >= ny)
+      else if (ny == 0) then  ! atoms on the plane normal to P2
+         order = merge([2, 1, 3], [2, 3, 1], nx < nz)
+      else if (nx == 0) then  ! atoms on the plane normal to P1
+         if (ny > nz) order = [1, 3, 2]
+      end if
+   end function d2h_order
+
    pure function c2h_order(found) result(order)
       !! The axis order of the C2h standard frame (module header): z is the C2
       !! axis (the axis the only C2 mask does not flip), x and y follow in
@@ -445,6 +482,11 @@ contains
       logical :: planar
 
       order = [1, 2, 3]
+      if (top == "D2h" .and. rep /= "C1") then
+         ! pyscf keeps the D2h frame for D2h and every subgroup of it.
+         order = d2h_order(q)
+         return
+      end if
       select case (rep)
       case ("C1")
          return
@@ -485,9 +527,9 @@ contains
                order = [kc2, a1, a0]
             end if
          else
-            ! D2h (three mirrors): provisional, the plane of the two lowest
-            ! axes. S11 fixes it against pyscf.
-            order = [1, 2, 3]
+            call error%set(ERROR_GENERIC, "frame_order: no Cs frame for a "//top//" molecule with "// &
+                           "several mirrors")
+            return
          end if
       case ("C2")
          ! pyscf's C2 frame has the axis along z; x and y follow in cyclic

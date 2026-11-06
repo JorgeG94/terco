@@ -92,13 +92,20 @@ contains
       g = sym_choose_group(req, geom, e7)
       call check(error, e7%has_error() .and. index(e7%get_message(), 'subgroups') > 0, 'Ci is not in C2v: '//e7%get_message())
       if (allocated(error)) return
-      ! A detected group that is not enabled (D2h, S11) is refused as not yet supported.
+      ! All eight groups are enabled since S11, so no request is "not yet supported" any more; a D2h
+      ! molecule is accepted as D2h, and D2 (pyscf has no D2 subgroup of D2h) is refused for want of a frame.
       geom%detected = 'D2h'
-      geom%group = sym_group_from_name('Cs', err)
+      geom%group = sym_group_from_name('D2h', err)
       req%group = 'D2h'
       g = sym_choose_group(req, geom, e5)
-      call check(error, e5%has_error() .and. index(e5%get_message(), 'not yet supported') > 0, &
-                 'D2h is not supported yet: '//e5%get_message())
+      call check(error, g == 'D2h' .and. .not. e5%has_error(), 'D2h is accepted: '//e5%get_message())
+      if (allocated(error)) return
+      geom%detected = 'D2h'
+      geom%group = sym_group_from_name('D2h', err)
+      req%group = 'D2'
+      g = sym_choose_group(req, geom, e5)
+      call check(error, e5%has_error() .and. index(e5%get_message(), 'no frame is defined') > 0, &
+                 'D2 of a D2h molecule is refused: '//e5%get_message())
       if (allocated(error)) return
       geom%detected = 'C2v'
       geom%group = sym_group_from_name('C2v', err)
