@@ -60,27 +60,38 @@ contains
       type(error_type), allocatable, intent(out) :: error
       type(trc_sym_geom_t) :: geom
       type(trc_sym_request_t) :: req
-      type(error_t) :: err, e2, e3, e4
+      type(error_t) :: err, e2, e3, e4, e5
       character(len=3) :: g
 
-      ! A water-like geometry: C2v found, the enabled subgroup Cs reported.
+      ! A water-like geometry: C2v found and reported (C2v is enabled since S8).
       geom%detected = 'C2v'
-      geom%group = sym_group_from_name('Cs', err)
+      geom%group = sym_group_from_name('C2v', err)
       req%mode = SYM_AUTO
       g = sym_choose_group(req, geom, err)
-      call check(error, g == 'Cs' .and. .not. err%has_error(), 'auto uses the reported group')
+      call check(error, g == 'C2v' .and. .not. err%has_error(), 'auto uses the reported group')
       if (allocated(error)) return
       req%mode = SYM_EXPLICIT
-      req%group = 'Cs'
-      g = sym_choose_group(req, geom, e2)
-      call check(error, g == 'Cs' .and. .not. e2%has_error(), 'Cs is a subgroup of C2v and enabled')
-      if (allocated(error)) return
       req%group = 'C2v'
+      g = sym_choose_group(req, geom, e2)
+      call check(error, g == 'C2v' .and. .not. e2%has_error(), 'C2v is the detected group and enabled')
+      if (allocated(error)) return
+      ! A subgroup below the reported group (here Cs of C2v) has no frame of its own
+      ! yet: sym_detect reports one group, so it is refused rather than run in the wrong frame.
+      req%group = 'Cs'
       g = sym_choose_group(req, geom, e3)
-      call check(error, e3%has_error(), 'C2v is the detected group but not supported yet')
+      call check(error, e3%has_error() .and. index(e3%get_message(), 'cannot be used for this molecule') > 0, &
+                 'Cs of a C2v molecule is refused: '//e3%get_message())
       if (allocated(error)) return
-      call check(error, index(e3%get_message(), 'not yet supported') > 0, 'with that message: '//e3%get_message())
+      ! A detected group that is not enabled (D2h, S11) is refused as not yet supported.
+      geom%detected = 'D2h'
+      geom%group = sym_group_from_name('Cs', err)
+      req%group = 'D2h'
+      g = sym_choose_group(req, geom, e5)
+      call check(error, e5%has_error() .and. index(e5%get_message(), 'not yet supported') > 0, &
+                 'D2h is not supported yet: '//e5%get_message())
       if (allocated(error)) return
+      geom%detected = 'C2v'
+      geom%group = sym_group_from_name('C2v', err)
       req%group = 'D2'
       g = sym_choose_group(req, geom, e4)
       call check(error, e4%has_error() .and. index(e4%get_message(), 'subgroups') > 0, 'D2 is not in C2v: '//e4%get_message())

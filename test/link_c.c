@@ -265,14 +265,13 @@ int main(void) {
       return 1;
    }
 
-   /* --- symmetry (ABI 1.21): water is C2v, of which this build runs the Cs
-    * subgroup. The C1 gradient first, then the same context with
+   /* --- symmetry (ABI 1.21): water is C2v (A1 A2 B1 B2). The C1 gradient first, then the same context with
     * symmetry = auto: the energy and the norm of the gradient (which the move
     * to the standard frame rotates but cannot change) must agree. ----------*/
    {
       double g1[9], g2[9], n1 = 0.0, n2 = 0.0, e_sym, resid, rot[9], shift[3], geom[9];
       char name[16], det[16];
-      int nirrep, dims[2], irreps[13], nao, k, nocc[2] = {0, 0};
+      int nirrep, dims[4], irreps[13], nao, k, nocc[4] = {0, 0, 0, 0};
 
       rc = trc_run_gradient(h);
       if (must(rc, "trc_run_gradient (C1)")) return 1;
@@ -302,8 +301,8 @@ int main(void) {
       rc = trc_symmetry_detected(h, det, 16);
       if (must(rc, "trc_symmetry_detected")) return 1;
       printf("link_c: water symmetry: detected %s, used %s\n", det, name);
-      if (strcmp(name, "Cs") != 0 || strcmp(det, "C2v") != 0) {
-         fprintf(stderr, "link_c: water should be detected C2v and run in Cs, got %s / %s\n", det, name);
+      if (strcmp(name, "C2v") != 0 || strcmp(det, "C2v") != 0) {
+         fprintf(stderr, "link_c: water should be detected C2v and run in C2v, got %s / %s\n", det, name);
          return 1;
       }
       rc = trc_symmetry_residual(h, &resid);
@@ -326,34 +325,41 @@ int main(void) {
       if (must(rc, "trc_symmetry_nirrep")) return 1;
       rc = trc_symmetry_irrep_name(h, 1, name, 16);
       if (must(rc, "trc_symmetry_irrep_name(1)")) return 1;
-      if (nirrep != 2 || strcmp(name, "A'") != 0) {
-         fprintf(stderr, "link_c: Cs has two irreps starting with A', got %d / %s\n", nirrep, name);
+      if (nirrep != 4 || strcmp(name, "A1") != 0) {
+         fprintf(stderr, "link_c: C2v has four irreps starting with A1, got %d / %s\n", nirrep, name);
          return 1;
       }
-      if (trc_symmetry_irrep_name(h, 3, name, 16) != TRC_ERR_BADARG) {
-         fprintf(stderr, "link_c: irrep 3 of Cs should be refused\n");
+      rc = trc_symmetry_irrep_name(h, 4, name, 16);
+      if (must(rc, "trc_symmetry_irrep_name(4)")) return 1;
+      if (strcmp(name, "B2") != 0) {
+         fprintf(stderr, "link_c: irrep 4 of C2v should be B2, got %s\n", name);
+         return 1;
+      }
+      if (trc_symmetry_irrep_name(h, 5, name, 16) != TRC_ERR_BADARG) {
+         fprintf(stderr, "link_c: irrep 5 of C2v should be refused\n");
          return 1;
       }
       rc = trc_symmetry_irrep_dim(h, dims);
       if (must(rc, "trc_symmetry_irrep_dim")) return 1;
       rc = trc_nao(h, &nao);
       if (must(rc, "trc_nao")) return 1;
-      if (dims[0] + dims[1] != nao) {
-         fprintf(stderr, "link_c: SO dimensions %d + %d do not sum to nao %d\n", dims[0], dims[1], nao);
+      if (dims[0] + dims[1] + dims[2] + dims[3] != nao) {
+         fprintf(stderr, "link_c: SO dimensions %d + %d + %d + %d do not sum to nao %d\n", dims[0], dims[1], dims[2], dims[3], nao);
          return 1;
       }
       rc = trc_mo_irreps(h, irreps);
       if (must(rc, "trc_mo_irreps")) return 1;
       for (k = 0; k < nao; k++) {
-         if (irreps[k] < 1 || irreps[k] > 2) {
+         if (irreps[k] < 1 || irreps[k] > 4) {
             fprintf(stderr, "link_c: orbital %d has irrep %d\n", k + 1, irreps[k]);
             return 1;
          }
          if (k < 5) nocc[irreps[k] - 1]++;   /* water: 5 doubly occupied orbitals */
       }
-      printf("link_c: water occupied orbitals per irrep %d / %d (dims %d / %d)\n", nocc[0], nocc[1], dims[0], dims[1]);
-      if (nocc[0] != 4 || nocc[1] != 1) {
-         fprintf(stderr, "link_c: water in Cs (plane = molecular plane) has 4 A' and 1 A\" occupied orbitals\n");
+      printf("link_c: water occupied orbitals per irrep %d %d %d %d (dims %d %d %d %d)\n", nocc[0], nocc[1], nocc[2], nocc[3],
+             dims[0], dims[1], dims[2], dims[3]);
+      if (nocc[0] != 3 || nocc[1] != 0 || nocc[2] != 1 || nocc[3] != 1) {
+         fprintf(stderr, "link_c: water in C2v has 3 a1, 1 b1 (out of plane) and 1 b2 (in plane) occupied orbitals\n");
          return 1;
       }
       rc = trc_geometry(h, geom);

@@ -13,8 +13,8 @@
 !
 ! Refused, each by name and before any SCF: --symmetry with --opt, --hessian,
 ! --rimp2 (and a double hybrid), --df, --pcm, --soscf, --fukui and --restart;
-! a group that is not the detected one or a subgroup; a group this build does
-! not support yet (C2v on water); a gradient with fixed irrep occupations that
+! a group that is not the detected one or a subgroup; a subgroup below the
+! reported group (Cs on C2v water: only the reported group is run); a gradient with fixed irrep occupations that
 ! are not the aufbau ones; an irrep_nelec that is malformed or does not add up.
 ! MPI: the library refuses symmetry on more than one rank (the irrep labels
 ! live on the rank that ran the SCF); that path needs a multi-rank build and
@@ -59,7 +59,7 @@ contains
          new_unittest("TOML: a wrongly typed symmetry key is refused", test_toml_type), &
          new_unittest("an explicit subgroup runs; C1 runs without symmetry", test_explicit), &
          new_unittest("an explicit group that is not a subgroup is refused", test_not_subgroup), &
-         new_unittest("an explicit group not supported yet is refused", test_not_yet), &
+         new_unittest("a subgroup below the reported group is refused", test_not_yet), &
          new_unittest("an unknown group is refused", test_unknown_group), &
          new_unittest("irrep_nelec: aufbau counts reproduce the energy; others are a different state", test_irrep_nelec), &
          new_unittest("irrep_nelec: malformed and not adding up are refused", test_irrep_nelec_bad), &
@@ -330,8 +330,9 @@ contains
 
    subroutine test_not_yet(error)
       type(error_type), allocatable, intent(out) :: error
-      ! Water is C2v: a subgroup test passes, the support test does not.
-      call refused('water.xyz -b basis_sets/sto-3g.json --symmetry c2v', 'is not yet supported', error)
+      ! Water is C2v (enabled since S8). Cs is one of its subgroups, but the
+      ! detection reports one group only, so a subgroup below it is refused.
+      call refused('water.xyz -b basis_sets/sto-3g.json --symmetry cs', 'cannot be used for this molecule', error)
    end subroutine test_not_yet
 
    subroutine test_unknown_group(error)

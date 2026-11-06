@@ -7,8 +7,8 @@
 ! two must agree: total energy (<= 1e-10 Eh for HF, <= 1e-9 for B3LYP),
 ! orbital energies and the density. Cases:
 !   RHF   HOCl (planar: every atom is its own mirror image) cc-pVDZ, spherical
-!   RHF   CH2Cl2 (nonplanar, the mirror swaps atoms) 6-31G*, Cartesian
-!   UHF   HCO radical cc-pVDZ, and the CH2Cl2 radical cation 6-31G* (nonplanar)
+!   RHF   CHFCl2 (nonplanar, the mirror swaps atoms) 6-31G*, Cartesian
+!   UHF   HCO radical cc-pVDZ, and the CHFCl2 radical cation 6-31G* (nonplanar)
 !   B3LYP HOCl cc-pVDZ
 ! Anchors (pyscf 2.14.0, mol.symmetry = 'Cs', sym_scf_cs.ref): the electrons
 ! per irrep (`mf.get_irrep_nelec()`) and the orbital energies of each irrep.
@@ -62,11 +62,11 @@ contains
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
                   new_unittest("RHF HOCl cc-pVDZ (spherical): symmetry vs C1 and pyscf", test_hocl_rhf), &
-                  new_unittest("RHF CH2Cl2 6-31G* (Cartesian, mirror moves atoms): vs C1 and pyscf", test_ch2cl2_rhf), &
+                  new_unittest("RHF CHFCl2 6-31G* (Cartesian, mirror moves atoms): vs C1 and pyscf", test_chfcl2_rhf), &
                   new_unittest("UHF HCO cc-pVDZ: symmetry vs C1 and pyscf", test_hco_uhf), &
-                  new_unittest("UHF CH2Cl2 cation 6-31G* (nonplanar): symmetry vs C1", test_ch2cl2_cation_uhf), &
+                  new_unittest("UHF CHFCl2 cation 6-31G* (nonplanar): symmetry vs C1", test_chfcl2_cation_uhf), &
                   new_unittest("B3LYP HOCl cc-pVDZ: symmetry vs C1 and pyscf", test_hocl_b3lyp), &
-                  new_unittest("RHF CH2Cl2 without incremental Fock builds: symmetry vs C1", test_full_builds), &
+                  new_unittest("RHF CHFCl2 without incremental Fock builds: symmetry vs C1", test_full_builds), &
                   new_unittest("gradient: forbidden components vanish, equals C1", test_gradient), &
                   new_unittest("fixed per-irrep occupations", test_fixed_occupations), &
                   new_unittest("--soscf is refused with symmetry; C1 group is the old path", test_refusals) &
@@ -110,7 +110,7 @@ contains
       p%nbeta = nelec - p%nalpha
       opts%functional = functional
       ! Convergence just above the accumulation-order noise floor, not below
-      ! it. Under OpenMP (and on the device) the C1 UHF CH2Cl2+ run settles by
+      ! it. Under OpenMP (and on the device) the C1 UHF CHFCl2+ run settles by
       ! iteration ~40 and then sits at |FDS-SDF| 1.7e-10..4e-10 and |dE|
       ! 0..9e-12 (|E| ~ 958 Eh) until max_iteration, so 1e-10/1e-12 converged
       ! only by luck (2 of 6 OpenMP runs failed). The energy is variational,
@@ -246,17 +246,17 @@ contains
       call p%bas%release()
    end subroutine test_hocl_rhf
 
-   subroutine test_ch2cl2_rhf(error)
+   subroutine test_chfcl2_rhf(error)
       type(error_type), allocatable, intent(out) :: error
       type(pair_t) :: p
-      call make_pair(error, 'ch2cl2.xyz', 'basis_sets/6-31gs.json', .false., '', 0, 1, p)
+      call make_pair(error, 'chfcl2.xyz', 'basis_sets/6-31gs.json', .false., '', 0, 1, p)
       if (allocated(error)) return
-      call compare_pair(error, p, 'RHF CH2Cl2 6-31G*', TOL_E_HF)
+      call compare_pair(error, p, 'RHF CHFCl2 6-31G*', TOL_E_HF)
       if (.not. allocated(error)) call check(error, p%rs%n_increments > 0 .and. p%r1%n_increments > 0, &
                                              "the default runs must have used incremental Fock builds")
-      if (.not. allocated(error)) call compare_anchor(error, p, 'ch2cl2_rhf', TOL_ANCHOR_HF)
+      if (.not. allocated(error)) call compare_anchor(error, p, 'chfcl2_rhf', TOL_ANCHOR_HF)
       call p%bas%release()
-   end subroutine test_ch2cl2_rhf
+   end subroutine test_chfcl2_rhf
 
    subroutine test_hco_uhf(error)
       type(error_type), allocatable, intent(out) :: error
@@ -268,23 +268,23 @@ contains
       call p%bas%release()
    end subroutine test_hco_uhf
 
-   subroutine test_ch2cl2_cation_uhf(error)
+   subroutine test_chfcl2_cation_uhf(error)
       type(error_type), allocatable, intent(out) :: error
       type(pair_t) :: p
-      call make_pair(error, 'ch2cl2.xyz', 'basis_sets/6-31gs.json', .false., '', 1, 2, p)
+      call make_pair(error, 'chfcl2.xyz', 'basis_sets/6-31gs.json', .false., '', 1, 2, p)
       if (allocated(error)) return
-      call compare_pair(error, p, 'UHF CH2Cl2+ 6-31G*', TOL_E_HF)
+      call compare_pair(error, p, 'UHF CHFCl2+ 6-31G*', TOL_E_HF)
       call p%bas%release()
-   end subroutine test_ch2cl2_cation_uhf
+   end subroutine test_chfcl2_cation_uhf
 
    subroutine test_full_builds(error)
       !! The same oracle with every Fock build full. With the default
-      !! (incremental) schedule, test_ch2cl2_rhf checks the increments are used.
+      !! (incremental) schedule, test_chfcl2_rhf checks the increments are used.
       type(error_type), allocatable, intent(out) :: error
       type(pair_t) :: p
-      call make_pair(error, 'ch2cl2.xyz', 'basis_sets/6-31gs.json', .false., '', 0, 1, p, incremental=.false.)
+      call make_pair(error, 'chfcl2.xyz', 'basis_sets/6-31gs.json', .false., '', 0, 1, p, incremental=.false.)
       if (allocated(error)) return
-      call compare_pair(error, p, 'RHF CH2Cl2 6-31G*, full builds', TOL_E_HF)
+      call compare_pair(error, p, 'RHF CHFCl2 6-31G*, full builds', TOL_E_HF)
       if (.not. allocated(error)) call check(error, p%rs%n_increments == 0 .and. p%r1%n_increments == 0, &
                                              "incremental builds were off")
       call p%bas%release()
@@ -302,11 +302,11 @@ contains
 
    subroutine test_gradient(error)
       !! Forbidden components of the gradient, and the symmetrised gradient
-      !! against C1, for planar HOCl (RHF), nonplanar CH2Cl2 (RHF) and HCO (UHF).
+      !! against C1, for planar HOCl (RHF), nonplanar CHFCl2 (RHF) and HCO (UHF).
       type(error_type), allocatable, intent(out) :: error
       call grad_case(error, 'hocl.xyz', 'basis_sets/6-31gs.json', .false., 0, 1)
       if (allocated(error)) return
-      call grad_case(error, 'ch2cl2.xyz', 'basis_sets/6-31gs.json', .false., 0, 1)
+      call grad_case(error, 'chfcl2.xyz', 'basis_sets/6-31gs.json', .false., 0, 1)
       if (allocated(error)) return
       call grad_case(error, 'hco.xyz', 'basis_sets/6-31gs.json', .false., 0, 2)
       if (allocated(error)) return
@@ -325,7 +325,7 @@ contains
       real(dp), allocatable :: r(:, :), g(:, :), gs(:, :), g2(:, :)
       real(dp) :: asym, sg, forbidden, idem
       integer :: a, k, ic, nat
-      call read_xyz('ch2cl2.xyz', nat, elem, r)
+      call read_xyz('chfcl2.xyz', nat, elem, r)
       geom = sym_detect(r, elem, err, basis_id=elem)
       call check(error, .not. err%has_error(), "sym_detect: "//err%get_message())
       if (allocated(error)) return

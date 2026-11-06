@@ -75,7 +75,7 @@ assumption for the plan is:
 | S5 | Input, CLI, Fortran API, C ABI, reporting | S4 | done |
 | S6 | Group C2 | S5 | done |
 | S7 | Group Ci | S5 | todo |
-| S8 | Group C2v | S5 | todo |
+| S8 | Group C2v | S5 | done |
 | S9 | Group C2h | S5 | todo |
 | S10 | Group D2 | S5 | todo |
 | S11 | Group D2h | S5 | todo |

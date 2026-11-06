@@ -171,6 +171,13 @@ target_link_libraries(check_sym_scf_cs PRIVATE test-drive::test-drive)
 # B3LYP) and pyscf anchors (pyscf_refs/sym_c2.ref), gradient symmetrisation.
 terco_add_check(check_sym_c2 check_sym_c2.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_sym_c2 PRIVATE test-drive::test-drive)
+# The point group C2v (S8): frame and origin against pyscf, the SO basis
+# (pyscf_refs/sym_c2v_so_dims.ref), the central oracle for RHF/UHF/B3LYP on
+# water, formaldehyde, NH2 and nonplanar CH2Cl2 with the HOMO irrep, electrons
+# per irrep and orbital energies per irrep against pyscf (pyscf_refs/sym_c2v.ref),
+# the B1/B2 labels for a rotated input, gradient symmetrisation, fixed occupations.
+terco_add_check(check_sym_c2v check_sym_c2v.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_c2v PRIVATE test-drive::test-drive)
 
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
@@ -2192,6 +2199,7 @@ if(Python3_FOUND)
   # run that selects a test requiring it, so an unlabelled golden check
   # would run scf_robust under -LE LONG anyway.
   set_tests_properties(terco/golden/scf_robust PROPERTIES LABELS LONG)
+  terco_add_golden(check_sym_c2v sym_c2v)
   terco_add_golden(scf_rimp2 scf_rimp2)
   terco_add_golden(scf_rimp2_ccpvdz scf_rimp2_ccpvdz)
   foreach(set main f)
