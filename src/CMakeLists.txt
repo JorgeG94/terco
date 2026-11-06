@@ -64,6 +64,7 @@ target_sources(
           scf/analysis/trc_hirshfeld_data.F90 # the Hirshfeld proatom radial tables, loaded from a data file
           scf/analysis/trc_hirshfeld.F90   # Hirshfeld atomic charges: stockholder partition of the molecular density
           scf/analysis/trc_fukui.F90       # Hirshfeld-condensed Fukui indices: f+/f-/f0 from three states' charges
+          scf/analysis/trc_chelpg.F90      # CHELPG atomic charges: point charges fitted to the electrostatic potential on a grid
           api/trc_capi.F90       # the bind(c) skin
           core/trc_cart_perm.F90  # AO-index permutation, lexicographic <-> this build's order
           core/trc_ao_norm.F90    # AO-index normalisation, this build's <-> GAMESS's per-component convention

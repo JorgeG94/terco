@@ -65,7 +65,7 @@ contains
       if (r%grad .and. allocated(r%gradient)) call add_gradient(json, root, r)
       if (r%hessian .and. r%hess_ok) call add_hessian(json, root, r)
       if (r%opt) call add_optimization(json, root, r)
-      if (r%charges == "hirshfeld" .and. allocated(r%hirshfeld_charges)) call add_charges(json, root, r)
+      if (allocated(r%hirshfeld_charges) .or. allocated(r%chelpg_charges)) call add_charges(json, root, r)
       if (r%fukui == "hirshfeld" .and. allocated(r%fukui_f_plus)) call add_fukui(json, root, r)
       call json%print(root, path)
       if (json%failed()) then
@@ -105,14 +105,21 @@ contains
    end subroutine add_gradient
 
    subroutine add_charges(json, root, r)
-      !! Hirshfeld charges as an array, one per atom in `r%hirshfeld_charges`'s
-      !! own (and `trc_set_molecule`'s) atom order, plus their sum.
+      !! Each requested scheme's charges as an array, one per atom in
+      !! `trc_set_molecule`'s atom order, plus its sum: Hirshfeld's and
+      !! CHELPG's side by side when --charges names both.
       type(json_core), intent(inout) :: json
       type(json_value), pointer, intent(in) :: root
       type(run_t), intent(in) :: r
       call json%add(root, "charges scheme", r%charges)
-      call json%add(root, "hirshfeld charges", r%hirshfeld_charges)
-      call json%add(root, "hirshfeld charges sum", sum(r%hirshfeld_charges))
+      if (allocated(r%hirshfeld_charges)) then
+         call json%add(root, "hirshfeld charges", r%hirshfeld_charges)
+         call json%add(root, "hirshfeld charges sum", sum(r%hirshfeld_charges))
+      end if
+      if (allocated(r%chelpg_charges)) then
+         call json%add(root, "chelpg charges", r%chelpg_charges)
+         call json%add(root, "chelpg charges sum", sum(r%chelpg_charges))
+      end if
    end subroutine add_charges
 
    subroutine add_fukui(json, root, r)

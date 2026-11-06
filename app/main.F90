@@ -26,7 +26,7 @@ program trc_main
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
                        trc_set_pcm, trc_pcm_energy, trc_save_scf, trc_load_scf, &
                        trc_run_gradient, trc_gradient, trc_set_geometry, trc_set_hessian_step, trc_run_hessian, &
-                       trc_hessian, trc_hirshfeld_charges, trc_fukui_hirshfeld, &
+                       trc_hessian, trc_hirshfeld_charges, trc_chelpg_charges, trc_fukui_hirshfeld, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP, TRC_GUESS_MINAO
    use trc_api, only: trc_bind_device, trc_bind_device_env
@@ -49,7 +49,7 @@ program trc_main
                        run_opt_geometry_is_linear, run_write_labelled_xyz, run_parse_opt_global_options, &
                        run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
                        run_check_neb_endpoint, run_write_neb_path_xyz, &
-                       run_read_xyz_frames, run_to_lower_alloc, run_frontier
+                       run_read_xyz_frames, run_to_lower_alloc, run_frontier, run_parse_charges
    use trc_dlfind_bridge, only: trc_dlfind_available, trc_opt_options_t, trc_opt_result_t, trc_dlfind_optimize, &
                                 TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_HDLC_TC, &
                                 TRC_OPT_COORDS_DLC, TRC_OPT_COORDS_DLC_TC, &
@@ -134,7 +134,8 @@ program trc_main
                          short="f", default="hf")
    call r%cli%add_option("guess", "sad, sadq, sap, minao, gwh or core (default: sad; sadq for an ion). "// &
                          "minao always starts from neutral atoms, also for an ion; it is the default with --fukui", short="g")
-   call r%cli%add_option("charges", "atomic charge analysis: hirshfeld (none by default)")
+   call r%cli%add_option("charges", "atomic charge analysis: hirshfeld, chelpg, or both as "// &
+                         "hirshfeld,chelpg (none by default)")
    call r%cli%add_option("fukui", "Hirshfeld-condensed Fukui indices, by finite difference in the "// &
                          "electron count: hirshfeld (none by default; needs a closed-shell neutral; "// &
                          "the guess defaults to minao for all three states)")
@@ -463,7 +464,7 @@ program trc_main
    if (r%cli%is_set("charges")) then
       call r%cli%get("charges", sval, r%err)
       r%charges = run_to_lower_alloc(trim(sval))
-      if (r%charges /= "hirshfeld") call run_die(r, "unknown --charges '"//r%charges//"': use hirshfeld")
+      call run_parse_charges(r)
    end if
 
    r%fukui = ""
@@ -1024,7 +1025,7 @@ program trc_main
    ! The Hirshfeld free atoms ship next to the basis sets too: without this
    ! the library falls back to a path relative to the working directory,
    ! which only exists inside the test tree.
-   if (r%charges == "hirshfeld" .or. r%fukui == "hirshfeld") then
+   if (r%want_hirshfeld .or. r%fukui == "hirshfeld") then
       block
          character(len=1024) :: e
          integer :: n, s
@@ -1405,12 +1406,21 @@ program trc_main
       r%hess_ok = .true.
    end if
 
-   if (r%charges == "hirshfeld" .and. r%conv /= 0) then
+   if (r%want_hirshfeld .and. r%conv /= 0) then
       ! trc_hirshfeld_charges's own refusals (an element outside H-Kr) come
       ! back through `api`, same as --grad's/--hessian's.
       allocate (chargebuf(r%natm), r%hirshfeld_charges(r%natm))
       call run_api(r, trc_hirshfeld_charges(r%h, chargebuf))
       r%hirshfeld_charges = real(chargebuf, dp)
+      deallocate (chargebuf)
+   end if
+
+   if (r%want_chelpg .and. r%conv /= 0) then
+      ! trc_chelpg_charges's own refusals (a ghost, an element without a
+      ! van der Waals radius) come back through `api` the same way.
+      allocate (chargebuf(r%natm), r%chelpg_charges(r%natm))
+      call run_api(r, trc_chelpg_charges(r%h, chargebuf))
+      r%chelpg_charges = real(chargebuf, dp)
       deallocate (chargebuf)
    end if
 
@@ -1437,7 +1447,7 @@ program trc_main
 
    if (r%rank0) call run_summary(r)
    if (r%rank0 .and. r%grad .and. r%conv /= 0) call run_gradient_summary(r)
-   if (r%rank0 .and. r%charges == "hirshfeld" .and. r%conv /= 0) call run_charges_summary(r)
+   if (r%rank0 .and. (r%want_hirshfeld .or. r%want_chelpg) .and. r%conv /= 0) call run_charges_summary(r)
    if (r%rank0 .and. r%fukui == "hirshfeld" .and. r%conv /= 0) call run_fukui_summary(r)
    if (r%rank0 .and. r%opt) call run_opt_summary(r)
    if (r%rank0 .and. r%hessian .and. r%hess_ok) call run_hessian_summary(r)

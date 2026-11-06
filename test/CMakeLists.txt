@@ -980,6 +980,13 @@ target_link_libraries(check_bin_sort_grad PRIVATE test-drive::test-drive)
 terco_add_check(check_hirshfeld check_hirshfeld.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_hirshfeld PRIVATE test-drive::test-drive)
 
+# CHELPG charges (trc_chelpg) against mqc's recipe in pyscf (chelpg.ref) and
+# mqc's own Fortran numbers, plus the sum rule, translation and atom-order
+# invariance, the grid's exclusion rule and the refusals -- see the file's
+# own header.
+terco_add_check(check_chelpg check_chelpg.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_chelpg PRIVATE test-drive::test-drive terco_c_interfaces)
+
 # Hirshfeld-condensed Fukui indices (trc_capi's trc_fukui_hirshfeld) against
 # metalquicha's own fukui_indices at its own test_fukui case -- see the
 # file's own header.

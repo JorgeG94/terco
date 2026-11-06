@@ -314,6 +314,31 @@ contains
       end if
    end subroutine run_parse_opt_global_options
 
+   module subroutine run_parse_charges(r)
+      !! `r%charges` (--charges, lowercased) into the schemes it names:
+      !! one of hirshfeld or chelpg, or both, comma-separated. Anything
+      !! else stops the run before the SCF rather than after it.
+      type(run_t), intent(inout) :: r
+      type(string_type), allocatable :: schemes(:)
+      character(len=:), allocatable :: scheme
+      integer :: i
+
+      r%want_hirshfeld = .false.
+      r%want_chelpg = .false.
+      schemes = split(strip(r%charges), ",")
+      do i = 1, size(schemes)
+         scheme = strip(char(schemes(i)))
+         select case (scheme)
+         case ("hirshfeld")
+            r%want_hirshfeld = .true.
+         case ("chelpg")
+            r%want_chelpg = .true.
+         case default
+            call run_die(r, "unknown --charges '"//r%charges//"': use hirshfeld, chelpg, or hirshfeld,chelpg")
+         end select
+      end do
+   end subroutine run_parse_charges
+
    !
    ! --opt-frozen "1-3,7": a comma-separated list of 1-based atom indices
    ! and ranges, into a sorted array with no duplicates. Validated here
