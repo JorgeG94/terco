@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 20
+#define TRC_ABI_MINOR 21
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -1094,6 +1094,23 @@ int trc_density(trc_handle_t handle, double* dmat);
  * TRC_HIRSHFELD_DATA).
  */
 int trc_hirshfeld_charges(trc_handle_t handle, double* charges);
+
+/**
+ * CHELPG atomic charges from the converged density, one per atom in
+ * `trc_set_molecule`'s own order: point charges on the nuclei fitted
+ * to the molecule's electrostatic potential on Breneman and Wiberg's
+ * grid (J. Comput. Chem. 11, 361 (1990); 0.3 Angstrom spacing, 2.8
+ * Angstrom head space, Bondi radii), constrained to sum to the
+ * molecular charge -- `trc_chelpg.F90`, metalquicha's recipe. Works
+ * for RHF/UHF/RKS/UKS (the total density) and with C-PCM/IEF-PCM (the
+ * potential fitted is the solute's own, its nuclei and its polarised
+ * density, without the apparent surface charges). TRC_ERR_BADARG for a ghost
+ * atom, an element without a tabulated radius, or a basis above this
+ * build's potential-integral ceiling. Every rank of a multi-rank run
+ * computes the same charges (the analysis is replicated, like
+ * trc_hirshfeld_charges). (ABI 1.21.)
+ */
+int trc_chelpg_charges(trc_handle_t handle, double* charges);
 
 /**
  * Hirshfeld-condensed Fukui indices by finite difference in the

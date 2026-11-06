@@ -215,6 +215,7 @@ module trc_capi
                           ao_norm_vector, ao_norm_scale_cov, ao_norm_scale_contra, ao_norm_scale_contra_row
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
    use trc_hirshfeld, only: trc_hirshfeld_populations
+   use trc_chelpg, only: trc_chelpg_charges_from => trc_chelpg_charges
    use trc_fukui, only: trc_fukui_indices
    use trc_pcm, only: trc_pcm_t, pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
@@ -269,6 +270,7 @@ module trc_capi
    public :: trc_run_polarizability, trc_polarizability
    public :: trc_nmo, trc_mo_occupations
    public :: trc_hirshfeld_charges
+   public :: trc_chelpg_charges
    public :: trc_fukui_hirshfeld
 
    ! Status codes. Zero is success; everything else is a reason.
@@ -327,8 +329,10 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 20
-   !! 1.20: the incremental Fock build is ON by default (trc_set_incremental
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 21
+   !! 1.21: trc_chelpg_charges, CHELPG charges fitted to the converged
+   !! density's electrostatic potential (a new entry point, nothing else
+   !! changes). 1.20: the incremental Fock build is ON by default (trc_set_incremental
    !! was 0 by default before); trc_set_incremental(handle, 0) restores full
    !! builds every iteration, and density fitting never increments. The
    !! energies are unchanged (convergence is declared on a full build), so
@@ -5573,13 +5577,26 @@ contains
       real(dp), allocatable, intent(out) :: q(:)
       type(error_t), intent(inout) :: error
 
-      real(dp), allocatable :: d_total_sph(:, :), d_total_cart(:, :)
-      integer :: n, ns
+      real(dp), allocatable :: d_total_cart(:, :)
+
+      call state_total_density_cart(cx, d_total_cart)
+      call trc_hirshfeld_populations(cx%bb%b, d_total_cart, q, error)
+   end subroutine state_hirshfeld_charges
+
+   subroutine state_total_density_cart(cx, d_total_cart)
+      !! The converged total density (alpha plus beta) this context holds, in
+      !! terco's Cartesian AO space -- what a charge analysis reads. The SCF's
+      !! own space is spherical when `b%spherical`; sph_sph_to_cart is the
+      !! transform trc_scf_fock's own XC call goes through (trc_sph.F90).
+      type(context_box), intent(in) :: cx
+      real(dp), allocatable, intent(out) :: d_total_cart(:, :)
+
+      real(dp), allocatable :: d_total_sph(:, :)
+      integer :: n
 
       n = scf_space_nao(cx%bb)
-      ns = cx%res%nspin
       allocate (d_total_sph(n, n))
-      if (ns == 1) then
+      if (cx%res%nspin == 1) then
          d_total_sph = cx%res%dmat(:, :, 1)
       else
          d_total_sph = cx%res%dmat(:, :, 1) + cx%res%dmat(:, :, 2)
@@ -5588,11 +5605,46 @@ contains
          allocate (d_total_cart(cx%bb%b%nao, cx%bb%b%nao))
          call sph_sph_to_cart(cx%bb%b, d_total_sph, d_total_cart)
       else
-         d_total_cart = d_total_sph
+         call move_alloc(d_total_sph, d_total_cart)
       end if
+   end subroutine state_total_density_cart
 
-      call trc_hirshfeld_populations(cx%bb%b, d_total_cart, q, error)
-   end subroutine state_hirshfeld_charges
+   function trc_chelpg_charges(handle, charges) result(status) bind(c, name="trc_chelpg_charges")
+      !! CHELPG atomic charges from the converged density, one per atom in
+      !! `trc_set_molecule`'s own order: point charges on the nuclei fitted
+      !! to the molecule's electrostatic potential on Breneman and Wiberg's
+      !! grid (J. Comput. Chem. 11, 361 (1990); 0.3 Angstrom spacing, 2.8
+      !! Angstrom head space, Bondi radii), constrained to sum to the
+      !! molecular charge -- `trc_chelpg.F90`, metalquicha's recipe. Works
+      !! for RHF/UHF/RKS/UKS (the total density) and with C-PCM/IEF-PCM (the
+      !! potential fitted is the solute's own, its nuclei and its polarised
+      !! density, without the apparent surface charges). TRC_ERR_BADARG for a ghost
+      !! atom, an element without a tabulated radius, or a basis above this
+      !! build's potential-integral ceiling. Every rank of a multi-rank run
+      !! computes the same charges (the analysis is replicated, like
+      !! trc_hirshfeld_charges). (ABI 1.21.)
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: charges(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(error_t) :: err
+      real(dp), allocatable :: q(:), d_total_cart(:, :)
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) return
+
+      call state_total_density_cart(cx, d_total_cart)
+      call trc_chelpg_charges_from(cx%bb%b, d_total_cart, real(cx%charge, dp), q, err)
+      if (err%has_error()) then
+         cx%message = err%get_message()
+         status = TRC_ERR_BADARG
+         return
+      end if
+      charges(1:cx%bb%b%natm) = real(q, c_double)
+      status = TRC_OK
+   end function trc_chelpg_charges
 
    function trc_fukui_hirshfeld(handle, f_plus, f_minus, f_zero, q_n, q_np1, q_nm1) &
       result(status) bind(c, name="trc_fukui_hirshfeld")

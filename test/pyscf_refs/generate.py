@@ -3407,6 +3407,115 @@ def gen_hirshfeld():
     w.write()
 
 
+def gen_chelpg():
+    """test/check_chelpg.F90's pyscf-side cases: CHELPG charges by
+    metalquicha's own recipe (mqc_czt_charges' chelpg_grid/chelpg_charges),
+    with pyscf's SCF, pyscf's own `int1e_grids` electrostatic potential and
+    a numpy fit -- independent of terco's PCM-kernel potential and its
+    `do concurrent` grid and fit.
+
+    The grid is mqc's Breneman-Wiberg lattice, NOT GPU4PySCF's
+    (gpu4pyscf/qmmm/chelpg.py): spacing 0.3 A from the low corner of the
+    nuclei's bounding box grown by 2.8 A, a point kept when it is outside
+    every van der Waals sphere (mqc's radii, below) and within 2.8 A of the
+    nearest NUCLEUS. GPU4PySCF measures the head space from the vdW surface,
+    grows the box by the radius too and smooths both cutoffs by default; its
+    grid reimplemented with the potential and fit below agreed with
+    eval_chelpg_layer_gpu(ifqchem=False) to 9e-14 on water/6-31G, and this
+    recipe reproduced mqc's own Fortran charges to 7e-9 (both measured when
+    this case was written). The fit is mqc's: least squares with the
+    total-charge constraint only, by a Lagrange multiplier.
+
+    DFT runs on pyscf's own Grids at GRID_LEVEL, the level terco's side
+    uses too (the same radial/angular tables, Becke partition and NWChem
+    pruning). NPTS_i is the fit grid's point count, which terco's own grid
+    must match exactly."""
+    bohr = 0.529177210903  # CODATA 2018, as terco
+    # mqc_elements' vdw_radii (Bondi; H Rowland-Taylor; Li Mantina), Angstrom, H-Ar
+    vdw = [1.10, 1.40, 1.81, 1.53, 1.92, 1.70, 1.55, 1.52, 1.47, 1.54,
+           2.27, 1.73, 1.84, 2.10, 1.80, 1.80, 1.75, 1.88]
+    spacing, head = 0.3 / bohr, 2.8 / bohr
+    grid_level = 3
+    cases = [("water_rhf_6-31g", "water.xyz", "6-31g", 0, 0, ""),
+             ("water_b3lyp_6-31g", "water.xyz", "6-31g", 0, 0, "b3lyp"),
+             ("formamide_rhf_def2-svp", "formamide.xyz", "def2-svp", 0, 0, ""),
+             ("formamide_b3lyp_def2-svp", "formamide.xyz", "def2-svp", 0, 0, "b3lyp"),
+             ("acetate_rhf_def2-svp", "acetate.xyz", "def2-svp", -1, 0, ""),
+             ("acetate_b3lyp_def2-svp", "acetate.xyz", "def2-svp", -1, 0, "b3lyp"),
+             ("nh2_uhf_cc-pvdz", "nh2.xyz", "cc-pvdz", 0, 1, "")]
+    files = sorted({TEST / c[1] for c in cases} | {TEST / "basis_sets" / (c[2] + ".json") for c in cases})
+
+    def atoms_bohr(xyz):
+        lines = (TEST / xyz).read_text().splitlines()
+        n = int(lines[0])
+        return [(ln.split()[0], tuple(float(v) / bohr for v in ln.split()[1:4]))
+                for ln in lines[2:2 + n]]
+
+    def mqc_grid(coords, z):
+        radius = np.array([vdw[int(round(zz)) - 1] for zz in z]) / bohr
+        low = coords.min(axis=0) - head
+        high = coords.max(axis=0) + head
+        nx = [int((high[d] - low[d]) / spacing) + 1 for d in range(3)]
+        # x fastest, as mqc's loop nest (and terco's flattened index) runs
+        k, j, i = np.meshgrid(np.arange(nx[2]), np.arange(nx[1]), np.arange(nx[0]), indexing="ij")
+        pts = np.stack([low[0] + i.ravel() * spacing, low[1] + j.ravel() * spacing,
+                        low[2] + k.ravel() * spacing], axis=1)
+        dist = np.linalg.norm(pts[:, None, :] - coords[None, :, :], axis=2)
+        keep = ~(dist < radius[None, :]).any(axis=1) & (dist.min(axis=1) <= head)
+        return pts[keep]
+
+    w = RefWriter("chelpg.ref")
+    w.header("chelpg", files)
+    w.comment("grid: mqc's Breneman-Wiberg lattice, 0.3 A spacing, 2.8 A head space from the nuclei")
+    w.int_("GRID_LEVEL", grid_level)
+    w.int_("NCASE", len(cases))
+    for ic, (name, xyz, basname, charge, spin, xc) in enumerate(cases, start=1):
+        atoms = atoms_bohr(xyz)
+        elements = {sym: gto.charge(sym) for sym, _ in atoms}
+        bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+        mol = gto.M(atom=atoms, unit="Bohr", basis=bas, charge=charge, spin=spin, cart=False, verbose=0)
+
+        def make_mf(mol=mol, spin=spin, xc=xc):
+            if xc:
+                m = dft.RKS(mol) if spin == 0 else dft.UKS(mol)
+                m.xc = "HYB_GGA_XC_B3LYP"
+                m.grids.level = grid_level
+            else:
+                m = scf.RHF(mol) if spin == 0 else scf.UHF(mol)
+            return m
+
+        mf, _ = converge_tight(make_mf, None, f"gen_chelpg {name}")
+        dm = np.asarray(mf.make_rdm1())
+        if dm.ndim == 3:
+            dm = dm[0] + dm[1]
+        coords = mol.atom_coords()
+        pts = mqc_grid(coords, mol.atom_charges())
+        inv = 1.0 / np.linalg.norm(pts[None, :, :] - coords[:, None, :], axis=2)
+        v = mol.atom_charges() @ inv
+        for c0 in range(0, len(pts), 1000):
+            ints = mol.intor("int1e_grids", grids=pts[c0:c0 + 1000])
+            v[c0:c0 + 1000] -= np.einsum("gij,ij->g", ints, dm)
+        n = mol.natm
+        a = np.zeros((n + 1, n + 1))
+        b = np.zeros(n + 1)
+        a[:n, :n] = inv @ inv.T
+        a[:n, n] = 1.0
+        a[n, :n] = 1.0
+        b[:n] = inv @ v
+        b[n] = charge
+        q = np.linalg.solve(a, b)[:n]
+        rrms = np.sqrt(np.mean((v - q @ inv) ** 2) / np.mean(v ** 2))
+        print(f"  chelpg {name:26s} E {mf.e_tot:.10f}  npts {len(pts)}  rrms {rrms:.4f}  q "
+              + " ".join(f"{x:.6f}" for x in q))
+        w.str_(f"NAME_{ic}", name)
+        w.int_(f"NATM_{ic}", n)
+        w.int_(f"NPTS_{ic}", len(pts))
+        w.real(f"E_{ic}", mf.e_tot)
+        w.vector(f"Q_{ic}", q)
+    w.end()
+    w.write()
+
+
 def gen_minao():
     """test/check_minao.F90's two cases against PySCF's own
     `init_guess_by_minao`: water/cc-pVDZ and silane/def2-SVP (Si, Z=14, a
@@ -4746,6 +4855,7 @@ def gen_ghost_water_dimer():
 
 CASES = {
     "hirshfeld": gen_hirshfeld,
+    "chelpg": gen_chelpg,
     "mult": gen_mult,
     "ao": gen_ao,
     "pcm_radii_override": gen_pcm_radii_override,
