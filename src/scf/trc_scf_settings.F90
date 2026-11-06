@@ -23,6 +23,7 @@ module trc_scf_settings
    use trc_xc, only: XC_RHO_TOL
    use trc_pcm, only: pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
+   use trc_decontract, only: trc_decontract_options_t
    implicit none
    private
 
@@ -83,6 +84,15 @@ module trc_scf_settings
       !! when the pairs are binned. 1 is decades, which is what this always
       !! did; higher values make the pre-launch screen finer, at more and
       !! smaller batches. Settable through trc_set_batching.
+      type(trc_decontract_options_t) :: decontract
+      !! How the four-centre engine splits the basis into its working basis
+      !! (trc_decontract). The integrals are exact in any working basis; the
+      !! policy sets the cost and, at the screening threshold, what is
+      !! dropped (trc_decontract's DECON_SHELL_COST_DEFAULT says how much).
+      !! Gradients, the response solves and the RI-MP2 gradient build their
+      !! own engines with it too. TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE,
+      !! TRC_DECON_SHELL_COST and TRC_DECON_SCREEN_WHOLE override it; with
+      !! more than one rank, rank 0's environment decides.
       logical :: incremental = .true.
       !! Rebuild the two-electron matrix from the DENSITY DIFFERENCE, accumulating
       !! onto the last one. G is linear in D, so this is exact but for the

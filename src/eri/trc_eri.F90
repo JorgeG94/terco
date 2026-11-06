@@ -44,11 +44,28 @@ module trc_eri
    use trc_binkernel, only: TRC_PRIM_MARGIN
    use trc_basis_types, only: trc_basis_t
    use trc_decontract, only: decon_t, decontract_basis, decontract_expand, decontract_fold, decontract_release, &
-                             DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT, &
+                             trc_decontract_options_t, decontract_whole_screen, &
                              decontract_expand_host, decontract_fold_host
    implicit none
    private
    public :: trc_eri_t, eri_lmax_refusal, eri_grad_lmax_refusal, trc_fock_options_t
+   public :: eri_mdj_size_rule, TRC_J_ENGINE_AUTO, TRC_J_ENGINE_BINS, TRC_J_ENGINE_MDJ
+
+   integer, parameter :: TRC_J_ENGINE_AUTO = 0
+   integer, parameter :: TRC_J_ENGINE_BINS = 1
+   integer, parameter :: TRC_J_ENGINE_MDJ = 2
+
+   ! eri_mdj_size_rule's coefficients: its log time ratio, MD J over the bins'
+   ! shared J+K pass, fitted to the measurements in its own comment.
+   real(dp), parameter :: RULE_C0 = 3.97_dp, RULE_CFILL = 0.464_dp, RULE_CPPP = 1.144_dp
+   real(dp), parameter :: RULE_CFPA = -2.227_dp, RULE_CNPAIR = -0.254_dp
+   real(dp), parameter :: WHOLE_BINS_CREDIT = 0.157_dp
+   !! ln(1.17): the least the bins have measured faster over the split
+   !! policy's working basis than over the all-split one the size rule was
+   !! fitted on (V100, RHF, 1e-11, cc-pVDZ/aug-cc-pVDZ, C/N/O s kept whole:
+   !! water40 1.17x, NA-040 1.19x, gly20 1.31x, aug 1.34-1.44x). eri_build
+   !! gives J to MD J over the policy's bins only when the rule predicts
+   !! it faster than the all-split bins by more than this.
 
    integer, parameter :: NBUILD_STAGES = 5  !! timed stages of eri%build, see t_build
 
@@ -64,6 +81,10 @@ module trc_eri
       logical :: density_screen = .true.
       !! A COUPLED-PERTURBED SOLVE MUST SET FALSE -- see `eri_fock`.
       logical :: count_survivors = .false.
+      integer :: j_engine = TRC_J_ENGINE_AUTO
+      !! Which engine forms J: TRC_J_ENGINE_AUTO (mdj_requested's rule),
+      !! TRC_J_ENGINE_BINS or TRC_J_ENGINE_MDJ. TRC_MDJ=0/1 in the
+      !! environment overrides it either way. A g basis always takes MD J.
    end type trc_fock_options_t
 
    type :: trc_eri_t
@@ -96,8 +117,21 @@ module trc_eri
       logical :: needs_md = .false.
       !! A shell above f: HGP and Rys have no kernel for its classes, so J
       !! comes from trc_mdj and K from trc_mdg whatever the environment says.
+      integer :: mdj_force = -1
+      !! TRC_MDJ at build time (`mdj_force_env`), rank 0's on every rank.
+      real(dp) :: pcut_scale = 1.0_dp
+      !! Multiplies every kernel's primitive-quartet cut: below 1 when a
+      !! general contraction kept whole needs it (trc_decontract's
+      !! `decontract_whole_screen`).
       logical :: has_f = .false.
-      !! A shell of f or higher: MD J beats the bins' J there (see mdj_requested).
+      !! A shell of f or higher: the J-engine rule of a coupled-perturbed
+      !! build and of several densities (see mdj_requested).
+      logical :: mdj_extended = .false.
+      real(dp) :: mdj_score = 0.0_dp
+      !! eri_mdj_size_score on the working basis `build` judged: the
+      !! predicted ln(t_MDJ / t_bins); mdj_extended is its sign.
+      !! eri_mdj_size_rule's verdict on this basis and geometry, set by `build`:
+      !! the bins' shared J+K pass is slower than MD J plus exchange-only bins.
       !! The McMurchie-Davidson J engine over the same bins, built on the
       !! first `coulomb` call: an HGP/Rys-only run never pays for it.
       logical :: on_device = .false.
@@ -189,7 +223,7 @@ contains
    ! that routine's header for why this is not only faster but also closes a
    ! scale mismatch the MMD route had.
    !
-   subroutine eri_build(this, b, thresh, comm, batch_res)
+   subroutine eri_build(this, b, thresh, comm, batch_res, decontract)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
@@ -198,8 +232,15 @@ contains
       !! (trc_bind_device) BEFORE any object goes to the device.
       integer, intent(in), optional :: batch_res
       !! Buckets per decade of Schwarz bound in the pair bins; 1 is decades.
+      type(trc_decontract_options_t), intent(in), optional :: decontract
+      !! How the working basis is split (trc_decontract); the defaults if
+      !! absent. The integrals over any working basis are exact; the policy
+      !! changes the cost, and what the screens drop at `thresh` (see
+      !! trc_decontract's DECON_SHELL_COST_DEFAULT for what is guaranteed).
 
       integer :: bres
+      type(trc_decontract_options_t) :: decon, split
+      logical :: no_decontract
       character(len=8) :: bt_env
       character(len=:), allocatable :: refusal
 
@@ -243,12 +284,98 @@ contains
       !
       bt_env = " "
       call get_environment_variable("TRC_NO_DECONTRACT", bt_env)
-      if (len_trim(bt_env) == 0) then
-         ! TRC_DECON_CUTOFF overrides the diffuse threshold the split rule
-         ! uses, so the rule can be swept without a rebuild.
-         call decontract_basis(b, this%pb, this%dec, cutoff=decon_cutoff(), &
-                               minprim=decon_minprim())
+      no_decontract = len_trim(bt_env) > 0
+      ! The policy is the caller's, or the defaults, and the environment can
+      ! override either (decon_options).
+      if (present(decontract)) then
+         decon = decon_options(decontract)
+      else
+         decon = decon_options(trc_decontract_options_t())
       end if
+      this%mdj_force = mdj_force_env()
+      ! Every rank must build the SAME working basis: G is summed over
+      ! ranks element by element, and two working bases of the same size
+      ! would add up to a wrong matrix with nothing to show for it. The
+      ! environment is per process, so rank 0's reading of it is the one.
+      if (this%distributed) call share_policy(this%comm, no_decontract, decon, this%mdj_force)
+      if (no_decontract) then
+         call build_over(this, b, thresh, bres)
+         return
+      end if
+      !
+      ! WHICH ENGINE FORMS J DECIDES THE SPLIT, AND THE SPLIT FEEDS THE RULE
+      ! THAT DECIDES THE ENGINE.
+      !
+      ! MD J wants every general contraction split (`md_coulomb`: its cost
+      ! goes with primitive pairs), the bins want the policy's own working
+      ! basis. eri_mdj_size_rule picks the engine from the working basis's
+      ! counts, and it was fitted on the all-split working basis. So the
+      ! all-split basis is built first and the rule judged on exactly what
+      ! it was fitted on. Only when it then gives J to the bins, and the
+      ! policy would keep something whole, is the engine rebuilt over the
+      ! policy's basis, with the verdict kept: the rule is not re-asked on
+      ! counts it was never fitted to. A g basis (MD exchange), TRC_MDJ=1
+      ! and a caller's md_coulomb (no exact exchange) are MD J already, and
+      ! TRC_MDJ=0 is the bins already: one pass each.
+      !
+      if (this%needs_md .or. this%mdj_force == 1) decon%md_coulomb = .true.
+      if (decon%md_coulomb .or. this%mdj_force == 0) then
+         call decontract_basis(b, this%pb, this%dec, decon)
+         call build_over(this, b, thresh, bres)
+         return
+      end if
+      split = decon
+      split%md_coulomb = .true.
+      call decontract_basis(b, this%pb, this%dec, split)
+      call build_over(this, b, thresh, bres)
+      block
+         type(trc_basis_t) :: pb_policy
+         type(decon_t) :: dec_policy
+         logical :: same
+         call decontract_basis(b, pb_policy, dec_policy, decon)
+         same = (dec_policy%active .eqv. this%dec%active)
+         if (same .and. dec_policy%active) same = pb_policy%nshell == this%pb%nshell .and. &
+                                                  dec_policy%nao_p == this%dec%nao_p
+         call decontract_release(dec_policy)
+         call pb_policy%release()
+         if (same) return
+      end block
+      ! The rule compares MD J with the bins over the all-split basis; the
+      ! bins over the policy's basis are faster than that by at least
+      ! WHOLE_BINS_CREDIT, so MD J keeps J only if it wins by more.
+      call log_engine_choice(this%mdj_score, this%mdj_score < -WHOLE_BINS_CREDIT)
+      if (this%mdj_score < -WHOLE_BINS_CREDIT) return
+      call this%release()
+      this%thresh = thresh
+      this%nao = b%nao
+      this%needs_md = maxval(b%sh_l) > 3
+      this%has_f = maxval(b%sh_l) >= 3
+      call decontract_basis(b, this%pb, this%dec, decon)
+      call build_over(this, b, thresh, bres)
+      this%mdj_extended = .false.
+   end subroutine eri_build
+
+   subroutine log_engine_choice(score, md_j)
+      !! Under TRC_BUILD_TIMING, the size rule's score on the all-split
+      !! basis and what eri_build made of it.
+      real(dp), intent(in) :: score
+      logical, intent(in) :: md_j
+      character(len=8) :: e
+      e = " "
+      call get_environment_variable("TRC_BUILD_TIMING", e)
+      if (len_trim(e) == 0) return
+      call global_logger%info("  [J engine] size score "//to_string(score)//": "// &
+                              merge("MD J over the all-split basis  ", "bins over the policy's basis   ", md_j))
+   end subroutine log_engine_choice
+
+   subroutine build_over(this, b, thresh, bres)
+      !! Everything eri_build does once `this%dec` holds the working basis:
+      !! the transform to the device, then the structures over the working
+      !! basis (this%pb when split, `b` otherwise).
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in) :: thresh
+      integer, intent(in) :: bres
       if (this%dec%active) then
          ! The transform runs inside `fock_resident`, where everything is
          ! device-resident; the maps have to be up there with it.
@@ -266,40 +393,68 @@ contains
       else
          call build_structures(this, b, thresh, bres)
       end if
-   end subroutine eri_build
+   end subroutine build_over
 
    !
    ! Everything eri_build does once the basis to build over has been chosen.
    !
-   real(dp) function decon_cutoff() result(res)
-      !! Diffuse threshold for the decontraction rule; DECON_CUTOFF_DEFAULT
-      !! unless TRC_DECON_CUTOFF says otherwise.
+   function decon_options(base) result(opts)
+      !! The split policy the build uses: `base` (the caller's, or the
+      !! defaults), with TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE (0 or 1),
+      !! TRC_DECON_SHELL_COST and TRC_DECON_SCREEN_WHOLE (0 or 1) overriding
+      !! it, so a policy can be swept without a rebuild. An unreadable value leaves the field as it was.
+      type(trc_decontract_options_t), intent(in) :: base
+      type(trc_decontract_options_t) :: opts
       character(len=32) :: e
-      integer :: ios
+      integer :: ios, flag
+      real(dp) :: x
+      opts = base
       e = " "
       call get_environment_variable("TRC_DECON_CUTOFF", e)
-      res = DECON_CUTOFF_DEFAULT
       if (len_trim(e) > 0) then
-         read (e, *, iostat=ios) res
-         if (ios /= 0) res = DECON_CUTOFF_DEFAULT
+         read (e, *, iostat=ios) x
+         if (ios == 0) opts%cutoff = x
       end if
-   end function decon_cutoff
-
-   integer function decon_minprim() result(res)
-      !! Smallest compact primitive count a general contraction must have for
-      !! the split to be worth its tightened screen. TRC_DECON_MINPRIM
-      !! overrides it, so the gate can be swept without a rebuild; 0 splits
-      !! every group, as this module did before the gate existed.
-      character(len=32) :: e
-      integer :: ios
       e = " "
-      call get_environment_variable("TRC_DECON_MINPRIM", e)
-      res = DECON_MINPRIM_DEFAULT
+      call get_environment_variable("TRC_DECON_DIFFUSE", e)
       if (len_trim(e) > 0) then
-         read (e, *, iostat=ios) res
-         if (ios /= 0) res = DECON_MINPRIM_DEFAULT
+         read (e, *, iostat=ios) flag
+         if (ios == 0) opts%diffuse = flag /= 0
       end if
-   end function decon_minprim
+      e = " "
+      call get_environment_variable("TRC_DECON_SHELL_COST", e)
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) x
+         if (ios == 0) opts%shell_cost = x
+      end if
+      e = " "
+      call get_environment_variable("TRC_DECON_SCREEN_WHOLE", e)
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) flag
+         if (ios == 0) opts%screen_whole = flag /= 0
+      end if
+   end function decon_options
+
+   subroutine share_policy(comm, no_decontract, decon, mdj_force)
+      !! Rank 0's split policy, TRC_NO_DECONTRACT and TRC_MDJ, on every rank.
+      type(comm_t), intent(in) :: comm
+      logical, intent(inout) :: no_decontract
+      type(trc_decontract_options_t), intent(inout) :: decon
+      integer, intent(inout) :: mdj_force
+      integer, parameter :: NPOLICY = 7
+      real(dp) :: buffer(NPOLICY)
+      buffer = [merge(1.0_dp, 0.0_dp, no_decontract), decon%cutoff, merge(1.0_dp, 0.0_dp, decon%diffuse), &
+             decon%shell_cost, merge(1.0_dp, 0.0_dp, decon%screen_whole), merge(1.0_dp, 0.0_dp, decon%md_coulomb), &
+             real(mdj_force, dp)]
+      call bcast(comm, buffer, NPOLICY, 0)
+      no_decontract = buffer(1) /= 0.0_dp
+      decon%cutoff = buffer(2)
+      decon%diffuse = buffer(3) /= 0.0_dp
+      decon%shell_cost = buffer(4)
+      decon%screen_whole = buffer(5) /= 0.0_dp
+      decon%md_coulomb = buffer(6) /= 0.0_dp
+      mdj_force = nint(buffer(7))
+   end subroutine share_policy
 
    subroutine build_structures(this, b, thresh, bres)
       class(trc_eri_t), intent(inout) :: this
@@ -308,7 +463,8 @@ contains
       integer, intent(in) :: bres
 
       integer :: i, j
-      real(dp), allocatable :: qs(:), one(:)
+      real(dp) :: uneven
+      real(dp), allocatable :: qs(:), one(:), camp(:, :)
       ! Stage timing, kept in this%t_build: `build` is five routines with
       ! very different costs and no way to tell from the outside which one
       ! is the slow one.
@@ -345,9 +501,20 @@ contains
       one = 1.0_dp
 
       ! The kernel multiplies each pair by sh_c, so sh_c is the amplitude
-      ! the prune judges by. The cutoff sits three orders below the
-      ! screening threshold.
-      call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, thresh*1.0e-3_dp, this%pairs)
+      ! the prune judges by -- except on a general contraction kept whole,
+      ! which is judged by the coefficients its split would carry, and
+      ! whose unevenness tightens the kernels' primitive cut to match
+      ! (trc_decontract's `decontract_whole_screen`). The cutoff sits three
+      ! orders below the screening threshold.
+      allocate (camp(b%maxnp, b%nshell))
+      camp = b%sh_c
+      this%pcut_scale = 1.0_dp
+      if (this%dec%screen_whole) then
+         call decontract_whole_screen(b, camp, uneven)
+         this%pcut_scale = uneven**(-4)
+      end if
+      call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, camp, thresh*1.0e-3_dp, this%pairs)
+      deallocate (camp)
       this%t_build(1) = tm%get_elapsed_time()
       call tm%start()
 
@@ -389,7 +556,10 @@ contains
       ! the pair prune in bins_build_binned_pairs and the exact per-quartet
       ! test in the kernel, which reads sp_q -- then get it for free.
       !
-      if (this%dec%active) then
+      ! `amp` is also there, over the caller's own shells, when nothing was
+      ! split but a general contraction was kept whole: it then screens as
+      ! its split would have (trc_decontract's `whole_amplitude`).
+      if (allocated(this%dec%amp)) then
          do i = 1, b%nshell
             do j = 1, i
                qs(screen_pair_index(i, j)) = qs(screen_pair_index(i, j)) &
@@ -400,6 +570,8 @@ contains
 
       call bins_build_binned_pairs(b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
                                    this%bins, pp_n=this%pairs%n, res=bres)
+      this%mdj_score = eri_mdj_size_score(b%nshell, this%bins%npair, prim_pairs(b, this%bins), b%nao)
+      this%mdj_extended = this%mdj_score < 0.0_dp
       this%t_build(3) = tm%get_elapsed_time()
       call tm%start()
 
@@ -591,40 +763,175 @@ contains
       launch%nao = this%nao_w
       launch%rank = this%rank
       launch%nranks = this%nranks
+      launch%pcut_scale = this%pcut_scale
    end function bin_launch
 
-   logical function mdj_requested(has_f, pure_functional) result(res)
+   logical function mdj_requested(force, pure_functional, size_rule, j_engine) result(res)
       !! Whether the Coulomb part of a resident Fock build comes from the
       !! McMurchie-Davidson J engine instead of the bins. TRC_MDJ=1 forces it
-      !! on and TRC_MDJ=0 off, so both stay measurable; unset, it follows the
-      !! rule: on for a basis with an f or higher shell, or when the
-      !! functional is pure (no exact exchange, so the bins are skipped
-      !! altogether), off otherwise.
-      !!
-      !! Fock s/iteration at --iterations 4, thresh 1e-12, Tesla V100-PCIE-32GB,
-      !! RHF unless noted, TRC_MDJ=0 / TRC_MDJ=1 (energies agree to 2e-11):
-      !!   w20 cc-pVDZ           0.106 / 0.147   (d at most: bins win)
-      !!   gly10 6-31G*          0.181 / 0.278
-      !!   w20 def2-SVP          0.039 / 0.059
-      !!   gly10 def2-SVP        0.252 / 0.316
-      !!   w20 def2-TZVP         0.361 / 0.411   (hybrid, has f: the rule picks MD J and loses)
-      !!   w20 cc-pVTZ           1.064 / 0.966   (f: MD J wins)
-      !!   w20 cc-pVTZ PBE       0.647 / 0.207   (pure: no bins at all)
-      !! def2-TZVP is the one case the rule gets wrong (14% slower with MD J);
-      !! cc-pVTZ, also hybrid with f, wins 9%.
-      logical, intent(in) :: has_f, pure_functional
+      !! on and TRC_MDJ=0 off (`force`, read once at build time by
+      !! `mdj_force_env` and made the same on every rank), so both stay
+      !! measurable; then `j_engine` (trc_fock_options_t's), if it names an
+      !! engine; otherwise on when the functional is pure (no exact exchange,
+      !! so the bins are skipped altogether) or when `size_rule` says so. The
+      !! callers pass eri_mdj_size_rule's verdict (eri%mdj_extended) for a
+      !! density-screened build; a coupled-perturbed build (density_screen =
+      !! .false.) keeps the rule that predates it, MD J for an f basis
+      !! (eri%has_f), so its numbers do not move. See eri_mdj_size_rule for
+      !! the measurements.
+      integer, intent(in) :: force
+      logical, intent(in) :: pure_functional, size_rule
+      integer, intent(in) :: j_engine
+      select case (force)
+      case (1)
+         res = .true.
+      case (0)
+         res = .false.
+      case default
+         select case (j_engine)
+         case (TRC_J_ENGINE_MDJ)
+            res = .true.
+         case (TRC_J_ENGINE_BINS)
+            res = .false.
+         case default
+            res = pure_functional .or. size_rule
+         end select
+      end select
+   end function mdj_requested
+
+   integer function mdj_force_env() result(force)
+      !! TRC_MDJ as `mdj_requested` takes it: 1, 0, or -1 when unset.
       character(len=8) :: e
       e = " "
       call get_environment_variable("TRC_MDJ", e)
       select case (trim(e))
       case ("1")
-         res = .true.
+         force = 1
       case ("0")
-         res = .false.
+         force = 0
       case default
-         res = has_f .or. pure_functional
+         force = -1
       end select
-   end function mdj_requested
+   end function mdj_force_env
+
+   pure logical function eri_mdj_size_rule(nshell, npair, nprim_pairs, nao) result(res)
+      !! Whether MD J plus exchange-only bins beats the bins' shared J+K
+      !! pass for a hybrid or HF build, from four counts `build` has anyway:
+      !! the working basis's shells and functions, its Schwarz-significant
+      !! shell pairs and their primitive pairs (before the primitive prune).
+      !!
+      !! In the bins J and K share one quartet list, so J costs only the
+      !! quartets that are Coulomb- but not exchange-significant. On a
+      !! compact cluster that is few of them, and the bins win; along an
+      !! extended chain it is most, and MD J, whose Hermite stage is cheap
+      !! per primitive quartet, wins. The fit is a power law in
+      !!   fill = npair / (nshell (nshell + 1) / 2)   compactness: K shares J's quartets
+      !!   ppp  = nprim_pairs / npair                 contraction: MD J pays per primitive pair
+      !!   fpa  = nao / nshell                        functions per shell: bins pay per Cartesian quartet
+      !!   npair                                      size
+      !! and MD J is chosen when its predicted log time ratio is negative:
+      !!   3.97 + 0.464 ln(fill) + 1.144 ln(ppp) - 2.227 ln(fpa) - 0.254 ln(npair) < 0
+      !! Every sign is the one the cost argument predicts. The coefficients
+      !! are a linear programme's (hinge loss weighted by |ln ratio|) over the
+      !! RHF and B3LYP rows below without f; the f rows were not fitted.
+      !!
+      !! Measured, Tesla V100-DGXS-32GB, RHF, --thresh 1e-11, full builds
+      !! (--no-incremental), mean Fock s/build of builds 2-4, TRC_MDJ=0 / 1;
+      !! `*` marks the engine the rule picks:
+      !!
+      !!   cc-pVDZ:
+      !!     water10 240 0.027* / 0.037;  water20 480 0.137* / 0.169
+      !!     water30 720 0.426* / 0.478;  water40 960 0.991* / 1.033
+      !!     gly5 379 0.096* / 0.110;  gly10 734 0.437 / 0.405*
+      !!     gly15 1089 1.032 / 0.834*;  gly20 1444 1.946 / 1.349*
+      !!     gly50 3574 14.640 / 5.477*;  NA-040 886 2.106 / 1.968*
+      !!   def2-SVP:
+      !!     water10 240 0.017* / 0.030;  water20 480 0.089* / 0.130
+      !!     water30 720 0.264* / 0.360;  water40 960 0.606* / 0.772
+      !!     gly5 379 0.052* / 0.075;  gly10 734 0.213* / 0.259
+      !!     gly15 1089 0.508* / 0.543;  gly20 1444 0.931 / 0.881*
+      !!     gly50 3574 6.448 / 3.720*;  NA-040 886 1.078* / 1.263
+      !!   6-31G*:
+      !!     water10 190 0.012* / 0.025;  water20 380 0.047* / 0.085
+      !!     water30 570 0.124* / 0.213;  water40 760 0.273* / 0.444
+      !!     gly5 349 0.039* / 0.069;  gly10 679 0.151* / 0.232
+      !!     gly15 1009 0.362* / 0.489;  gly20 1339 0.665* / 0.814
+      !!     gly50 3319 4.449 / 3.559*
+      !!   def2-SVPD:
+      !!     water10 390 0.149* / 0.167;  water20 780 1.659 / 1.650*
+      !!     water30 1170 6.779 / 6.162*;  water40 1560 18.502 / 15.415*
+      !!     gly5 574 0.418* / 0.431;  gly10 1109 1.963 / 1.801*
+      !!     gly15 1644 4.724 / 3.892*;  gly20 2179 8.848 / 6.463*
+      !!     gly50 5389 72.466 / 27.377*
+      !!   aug-cc-pVDZ:
+      !!     water10 410 0.253* / 0.260;  water20 820 2.851 / 2.588*
+      !!     water30 1230 12.225 / 9.714*;  water40 1640 36.399 / 24.815*
+      !!     gly5 636 1.065 / 0.970*;  gly10 1231 5.445 / 4.321*
+      !!     gly15 1826 13.995 / 9.690*;  gly20 2421 27.715 / 16.773*
+      !!     gly50 5991 280.655 / 87.308*
+      !!   def2-TZVP:
+      !!     water10 430 0.144* / 0.186;  water20 860 0.862 / 0.899*
+      !!     gly5 753 0.988 / 0.993*;  gly10 1463 4.470 / 3.939*
+      !!     gly20 2883 19.396 / 12.828*
+      !!   cc-pVTZ:
+      !!     water10 580 0.359 / 0.350*;  water20 1160 2.420 / 2.042*
+      !!     gly5 868 1.726 / 1.458*;  gly10 1678 7.644 / 5.561*
+      !!     gly20 3298 34.297 / 17.174*
+      !!   cc-pVDZ B3LYP:
+      !!     water20 480 0.141* / 0.173;  gly10 734 0.441 / 0.427*
+      !!     gly20 1444 1.954 / 1.391*;  gly50 3574 14.694 / 5.533*
+      !!   def2-SVP B3LYP:
+      !!     water40 960 0.618* / 0.806;  gly20 1444 0.936 / 0.910*
+      !!   cc-pVDZ PBE:
+      !!     water20 480 0.085 / 0.067*;  gly10 734 0.246 / 0.125*
+      !!     gly20 1444 1.109 / 0.474*;  gly50 3574 9.040 / 2.901*
+      !!   def2-SVP PBE:
+      !!     water40 960 0.356 / 0.338*;  gly20 1444 0.531 / 0.374*
+      !!
+      !! The table's nao is the caller's basis; the rule's counts are the
+      !! working basis's (larger on a split general contraction). The rule
+      !! picks the faster engine in 67 of 69 rows; it misses water20
+      !! def2-TZVP (4.4% slower) and gly5 def2-TZVP (0.5%). The rule it
+      !! replaces (MD J for an f basis or a pure functional, bins otherwise)
+      !! lost 3.2x at gly50 aug-cc-pVDZ, 2.7x at gly50 cc-pVDZ and 29% at
+      !! water10 def2-TZVP. B3LYP's exchange is HF's, and its rows follow the
+      !! HF ones; a pure functional (PBE) always takes MD J, which wins every
+      !! PBE row. The two engines' iteration-4 energies agree to 3.5e-9
+      !! (gly50 6-31G*; most below 1e-9), and converged (--econv 1e-12)
+      !! NA-040 cc-pVDZ gives -2270.555778831719 by MD J (this rule) against
+      !! -2270.555778831765 by the bins, with 1e-14 references of
+      !! -2270.555778834471 (bins) and -2270.555778834457 (MD J): the
+      !! threshold's own 2.7e-9 is the same with either engine.
+      integer, intent(in) :: nshell, npair, nao
+      real(dp), intent(in) :: nprim_pairs
+      res = eri_mdj_size_score(nshell, npair, nprim_pairs, nao) < 0.0_dp
+   end function eri_mdj_size_rule
+
+   pure real(dp) function eri_mdj_size_score(nshell, npair, nprim_pairs, nao) result(score)
+      !! eri_mdj_size_rule's predicted ln(t_MDJ / t_bins); the rule is its
+      !! sign. Zero (no verdict) for an empty basis.
+      integer, intent(in) :: nshell, npair, nao
+      real(dp), intent(in) :: nprim_pairs
+      real(dp) :: fill, ppp, fpa
+      score = 0.0_dp
+      if (nshell < 1 .or. npair < 1) return
+      fill = real(npair, dp)/(0.5_dp*real(nshell, dp)*real(nshell + 1, dp))
+      ppp = nprim_pairs/real(npair, dp)
+      fpa = real(nao, dp)/real(nshell, dp)
+      score = RULE_C0 + RULE_CFILL*log(fill) + RULE_CPPP*log(ppp) + RULE_CFPA*log(fpa) &
+              + RULE_CNPAIR*log(real(npair, dp))
+   end function eri_mdj_size_score
+
+   real(dp) function prim_pairs(b, bins) result(n)
+      !! Primitive pairs of `bins`' shell pairs, before the primitive prune.
+      type(trc_basis_t), intent(in) :: b
+      type(pair_bins_t), intent(in) :: bins
+      integer :: s
+      n = 0.0_dp
+      do s = 1, bins%npair
+         n = n + real(b%sh_np(bins%sp_i(s))*b%sh_np(bins%sp_j(s)), dp)
+      end do
+   end function prim_pairs
 
    subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac, omega)
       !! The g classes binkernel_fock_bins leaves to MD exchange (those above
@@ -663,7 +970,7 @@ contains
          end block
       end if
       sc%thresh = this%thresh
-      sc%pcut = this%thresh*TRC_PRIM_MARGIN
+      sc%pcut = this%thresh*TRC_PRIM_MARGIN*this%pcut_scale
       sc%omega = omega
       sc%jfac = jfac
       sc%kfac = kfac
@@ -1067,7 +1374,9 @@ contains
       ! See mdj_requested: the Coulomb part from the McMurchie-Davidson J engine, and
       ! the bins only for exchange (or not at all without it). Ordinary
       ! Coulomb operator only; an erf pass keeps the bins.
-      md_j = (mdj_requested(this%has_f, kfac == 0.0_dp) .or. this%needs_md) .and. jfac /= 0.0_dp .and. ow == 0.0_dp
+      md_j = (mdj_requested(this%mdj_force, kfac == 0.0_dp, merge(this%mdj_extended, this%has_f, &
+                            opts%density_screen), opts%j_engine) .or. this%needs_md) &
+             .and. jfac /= 0.0_dp .and. ow == 0.0_dp
       jbins = jfac
       if (md_j) jbins = 0.0_dp
 
@@ -1229,7 +1538,12 @@ contains
       !! at a time, so when either would run -- a basis with classes routed to
       !! MD exchange, or a Coulomb part mdj_requested would give to MD J --
       !! this is eri_fock_resident once per density instead: the same
-      !! numbers, without the shared pass.
+      !! numbers, without the shared pass. eri_mdj_size_rule decides it as for one
+      !! density, though it was fitted to RHF: unrestricted, MD J did better
+      !! still (V100, cation doublets, cc-pVDZ, 1e-11, s/build bins / MD J:
+      !! gly10 0.652 / 0.535, gly15 1.406 / 1.105, NA-040 3.122 / 2.480; and
+      !! where the rule keeps the bins, water40 1.449 / 1.266, gly5 0.164 /
+      !! 0.142), so the rule leaves some UHF time on the table, never loses it.
       !!
       !! Always density-screened, the bound being the maximum over the
       !! densities per shell pair (each sees at least the quartets it would
@@ -1253,22 +1567,32 @@ contains
       !! symmetrised result: 2 ndens + 1 matrices, where the old build
       !! allocated 3 ndens + 2.
 
-      integer :: n, nw, d
+      integer :: n, nw, d, eng
       real(dp) :: jfac, kfac, ow
       type(trc_bin_launch_t) :: launch
+      logical :: use_md
 
       jfac = opts%j_scale
       kfac = opts%k_scale
       ow = opts%omega
       if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
 
-      if (ndens == 1 .or. this%needs_md .or. &
-          (jfac /= 0.0_dp .and. ow == 0.0_dp .and. mdj_requested(this%has_f, kfac == 0.0_dp))) then
+      ! MD J by eri_mdj_size_rule, or for an f basis as before it: an f basis
+      ! the rule would give the bins (a small compact one) keeps MD J here
+      ! (unmeasured with two densities), and it is passed on as forced so
+      ! each density's build makes the same choice.
+      use_md = jfac /= 0.0_dp .and. ow == 0.0_dp .and. &
+               mdj_requested(this%mdj_force, kfac == 0.0_dp, this%mdj_extended .or. this%has_f, &
+                             opts%j_engine)
+      if (ndens == 1 .or. this%needs_md .or. use_md) then
+         eng = opts%j_engine
+         if (use_md) eng = TRC_J_ENGINE_MDJ
          ! One density at a time on the same scratch: fock_work_size(1) is
          ! never more than fock_work_size(ndens).
          do d = 1, ndens
             call this%fock_resident_lent(b, dmats(:, :, d), gmats(:, :, d), &
-                                         trc_fock_options_t(j_scale=jfac, k_scale=kfac, omega=ow), work)
+                                         trc_fock_options_t(j_scale=jfac, k_scale=kfac, omega=ow, &
+                                                            j_engine=eng), work)
          end do
          return
       end if

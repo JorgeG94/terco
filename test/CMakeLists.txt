@@ -113,6 +113,10 @@ target_link_libraries(check_scf_diag_failure PRIVATE test-drive::test-drive)
 # The McMurchie-Davidson J engine against the Fock build's own J.
 terco_add_check(check_mdj check_mdj.F90 NEEDS_BASIS)
 target_link_libraries(check_mdj PRIVATE test-drive::test-drive)
+# Which engine forms J in a resident build (eri_mdj_size_rule), and that the
+# two give the same G.
+terco_add_check(check_mdj_rule check_mdj_rule.F90 NEEDS_BASIS)
+target_link_libraries(check_mdj_rule PRIVATE test-drive::test-drive)
 # Its timing harness: not a test, a tool (bench_mdj <xyz> <basis> [thresh] [repeats]).
 add_executable(bench_mdj bench_mdj.F90)
 target_compile_definitions(bench_mdj PRIVATE ${TERCO_TEST_DEFS})
@@ -233,6 +237,11 @@ target_link_libraries(check_decontract PRIVATE test-drive::test-drive)
 add_test(NAME terco/check_decontract_si COMMAND check_decontract sih4.xyz basis_sets/cc-pvdz.json)
 set_tests_properties(terco/check_decontract_si PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+# The split policy (trc_decontract_options_t): which groups the shell price
+# and the diffuse split cut up, by shell count, and that the RHF energy is the
+# same under every policy.
+terco_add_check(check_decontract_policy check_decontract_policy.F90 NEEDS_BASIS)
+target_link_libraries(check_decontract_policy PRIVATE test-drive::test-drive)
 # Dropping a general contraction's redundant primitives (trc_basis_json's
 # prune_block) against pyscf's cc-pVDZ counts and against the energy the
 # unpruned (BSE-literal) basis gives.

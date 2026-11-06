@@ -28,6 +28,7 @@ module trc_scf_context
    use trc_pcm, only: trc_pcm_t, pcm_model_from_name
    use trc_scf_settings, only: trc_scf_options_t, scf_settings_t, scf_settings_fock_densities
    use trc_scf_df, only: df_jk_t
+   use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange
    implicit none
    private
 
@@ -95,6 +96,14 @@ module trc_scf_context
       type(trc_eri_t) :: eri
       real(dp) :: thresh_built = -1.0_dp
       integer :: nshell_built = -1, natm_built = -1, batch_res_built = -1
+      type(trc_decontract_options_t) :: decontract_built
+      !! The split policy the engine was built with, resolved for the
+      !! method (`decontract_options_for_exchange`): a gradient reuses the
+      !! engine only if its own fresh build would use the same one.
+      type(trc_decontract_options_t) :: decontract_base
+      !! The SCF's own `opts%decontract`, before that resolution: what a
+      !! gradient's fresh engine is built with (trc_scf_grad's
+      !! `gradient_policy`), so a Fortran caller's policy reaches it.
       real(dp), allocatable :: at_r_built(:, :)
       logical :: built = .false., has_eri = .false.
    contains
@@ -168,6 +177,7 @@ contains
       type(timer_type) :: tm
       type(timer_type) :: tphase   !! the whole setup, and the PCM and grid phases
       character(len=:), allocatable :: refusal
+      type(trc_decontract_options_t) :: decontract
 
       ! Before anything is allocated or uploaded: a shell above this build's
       ! four-centre kernels has no kernel, and its integrals would come out
@@ -245,10 +255,16 @@ contains
       ! every deallocation on `allocated`/`on_device`, and scf_fock_build_g reads
       ! nothing off `eri` before checking `df_on`.
       if (.not. config%df) then
+         ! Without exact exchange the bins are skipped and J is the MD
+         ! engine's alone, which wants every general contraction split.
+         decontract = decontract_options_for_exchange(opts%decontract, config%exx, config%exx_lr)
+         pair_eri_cache%decontract_built = decontract
+         pair_eri_cache%decontract_base = opts%decontract
          pair_eri_cache%has_eri = .true.
          pair_eri_cache%batch_res_built = opts%batch_res
          if (present(comm)) then
-            call pair_eri_cache%eri%build(b, config%eri_thresh_run, comm, batch_res=opts%batch_res)
+            call pair_eri_cache%eri%build(b, config%eri_thresh_run, comm, batch_res=opts%batch_res, &
+                                           decontract=decontract)
             ! Not when `comm` is a real split (nranks > 1): each rank then
             ! holds only ITS share of the quartets, which is not what a
             ! reuser (a single-rank gradient right after, trc_capi.F90's
@@ -263,7 +279,8 @@ contains
             ! which nvfortran's handler turns into a silent spin.
             if (comm%size() > 1) pair_eri_cache%has_eri = .false.
          else
-            call pair_eri_cache%eri%build(b, config%eri_thresh_run, batch_res=opts%batch_res)
+            call pair_eri_cache%eri%build(b, config%eri_thresh_run, batch_res=opts%batch_res, &
+                                           decontract=decontract)
          end if
       end if
       this%e_nuc = nuclear_repulsion(b)

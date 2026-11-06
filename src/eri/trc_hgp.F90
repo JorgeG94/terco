@@ -100,9 +100,6 @@ contains
       real(dp), allocatable :: emin(:), amax(:)
       real(dp), parameter :: SQRT2_PI54 = 1.4142135623730951_dp*4.1827004988466890_dp  ! sqrt(2) pi^(5/4)
       logical, allocatable :: keep(:, :, :)
-      integer, allocatable :: pp_ki(:), pp_kj(:)
-      !! The primitive of each shell a kept pair came from: the sort below
-      !! keys on their amplitudes. Nothing downstream asks.
 
       nbas = size(sh_np)
       pairs%nbas = nbas
@@ -162,7 +159,6 @@ contains
 
       pairs%npp = npp
       allocate (pairs%p(npp), pairs%r(npp, 3), pairs%ra(npp, 3), pairs%rb(npp, 3), pairs%c(npp))
-      allocate (pp_ki(npp), pp_kj(npp))
       allocate (pairs%a(npp))
 
       do i = 1, nbas
@@ -184,8 +180,6 @@ contains
                   mu = a*b/p
                   pairs%p(k) = p
                   pairs%a(k) = a
-                  pp_ki(k) = ki
-                  pp_kj(k) = kj
                   do d = 1, 3
                      pairs%r(k, d) = (a*sh_r(d, i) + b*sh_r(d, j))/p
                      pairs%ra(k, d) = sh_r(d, i)
@@ -209,15 +203,25 @@ contains
       ! iteration, a shortened loop does not. Selection sort, in place, on
       ! at most a few hundred entries per shell pair.
       !
+      ! The key is |c|/p and nothing else: it must be the quantity the
+      ! kernel's exit tests. It used to be weighted by the prune amplitudes
+      ! as well, which with `camp = sh_c` counted the coefficients twice:
+      ! the order was then |c|^2/p, the bound no longer fell along the loop,
+      ! and the exit dropped primitive quartets it should have kept. A
+      ! segmented shell of one primitive never noticed; a contracted shell
+      ! with uneven coefficients did -- the silica slice in cc-pVDZ with
+      ! Si's 7-primitive p kept whole was 9.2e-08 Eh off at 1e-11 because
+      ! of it, 2.3e-10 with this key.
+      !
       do i = 1, nbas
          do j = 1, nbas
             key = (i - 1)*nbas + j
             if (pairs%n(key) < 2) cycle
             do k1 = pairs%off(key) + 1, pairs%off(key) + pairs%n(key) - 1
                kb = k1
-               ubest = abs(camp(pp_ki(k1), i)*camp(pp_kj(k1), j)*pairs%c(k1))/pairs%p(k1)
+               ubest = abs(pairs%c(k1))/pairs%p(k1)
                do k2 = k1 + 1, pairs%off(key) + pairs%n(key)
-                  ukey = abs(camp(pp_ki(k2), i)*camp(pp_kj(k2), j)*pairs%c(k2))/pairs%p(k2)
+                  ukey = abs(pairs%c(k2))/pairs%p(k2)
                   if (ukey > ubest) then
                      ubest = ukey
                      kb = k2
@@ -231,7 +235,7 @@ contains
       subroutine swap_pair(x, y)
          integer, intent(in) :: x, y
          real(dp) :: t
-         integer :: it, dd
+         integer :: dd
          t = pairs%p(x)
          pairs%p(x) = pairs%p(y)
          pairs%p(y) = t
@@ -252,12 +256,6 @@ contains
             pairs%rb(x, dd) = pairs%rb(y, dd)
             pairs%rb(y, dd) = t
          end do
-         it = pp_ki(x)
-         pp_ki(x) = pp_ki(y)
-         pp_ki(y) = it
-         it = pp_kj(x)
-         pp_kj(x) = pp_kj(y)
-         pp_kj(y) = it
       end subroutine swap_pair
    end subroutine hgp_build_pairs
 
