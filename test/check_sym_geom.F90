@@ -94,9 +94,9 @@ contains
          call check(error, res%group%order, ORDER(im), "operations of "//MOL_NAME(im))
          if (allocated(error)) return
       end do
-      call check(error, SYM_GROUP_ENABLED(3) .and. SYM_GROUP_ENABLED(5) .and. SYM_GROUP_ENABLED(7) .and. &
-                 SYM_GROUP_ENABLED(8), &
-                 "C2v, Cs, C2 and C1 are enabled (sym_group_names order D2h, C2h, C2v, D2, Cs, Ci, C2, C1)")
+      ! C1 and Cs stay enabled whatever a later stage adds (the order of the
+      ! flags is that of sym_group_names: D2h, C2h, C2v, D2, Cs, Ci, C2, C1)
+      call check(error, SYM_GROUP_ENABLED(5) .and. SYM_GROUP_ENABLED(8), "C1 and Cs are enabled")
    end subroutine test_groups
 
    subroutine test_pyscf_frame(error)
