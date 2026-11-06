@@ -162,7 +162,8 @@ program trc_main
                        "refused with an open shell, a functional, --pcm, --df or more than one rank")
    call r%cli%add_option("soscf-start", "commutator norm at which --soscf hands over from DIIS (1e-2)")
    call r%cli%add_option("symmetry", "point-group symmetry in the SCF: off (the default), auto (the detected group, "// &
-                         "capped to what is supported: C1 and Cs so far) or a group, which must be the detected group "// &
+                         "the largest Abelian group: D2h or a subgroup; symmetric tops and linear molecules run in C1 "// &
+                         "for now) or a group, which must be the detected group "// &
                          "or a subgroup of it. The molecule is symmetrised and moved to the standard frame of the "// &
                          "group, and the SCF, the gradient and the report are in that frame. Refused with --opt, "// &
                          "--hessian, --rimp2, --df, --pcm, --soscf, --fukui, --restart and more than one rank")

@@ -1647,7 +1647,8 @@ module trc_c_interfaces
 
       integer(c_int) function trc_set_symmetry(handle, group, tol) bind(c) result(res)
          !! Point-group symmetry for the SCF: "off" (the default), "auto" (the
-         !! detected group, capped to the groups this build supports: C1 and Cs),
+         !! largest Abelian group of the molecule, D2h or a subgroup; symmetric
+         !! and spherical tops and linear molecules run in C1 for now),
          !! or a group name, which must be the detected group or a subgroup of it
          !! (else trc_run_scf refuses). `tol` is the geometry tolerance in Bohr,
          !! or 0 for the default (1e-5). With a group other than C1, trc_run_scf
