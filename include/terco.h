@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 20
+#define TRC_ABI_MINOR 21
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -1158,6 +1158,89 @@ int trc_mo_coefficients(trc_handle_t handle, double* cmo);
 int trc_mo_energies(trc_handle_t handle, double* eps);
 
 int trc_rimp2_energy(trc_handle_t handle, double* e_os, double* e_ss);
+
+/**
+ * Point-group symmetry for the SCF: "off" (the default), "auto" (the
+ * detected group, capped to the groups this build supports: C1 and Cs),
+ * or a group name, which must be the detected group or a subgroup of it
+ * (else trc_run_scf refuses). `tol` is the geometry tolerance in Bohr,
+ * or 0 for the default (1e-5). With a group other than C1, trc_run_scf
+ * moves the molecule to the symmetrised, oriented standard frame
+ * (trc_geometry returns it) and runs the SCF, and any gradient, there.
+ * Refused at the run, not here: density fitting, PCM, fractional
+ * occupations, SOSCF, more than one rank, a given or projected guess,
+ * RI-MP2, CPHF/CPKS, the Hessian, Fukui indices and restarts.
+ */
+int trc_set_symmetry(trc_handle_t handle, const char* group, double tol);
+
+/**
+ * Fix the electrons per irrep, as pyscf's irrep_nelec: "A'=6,A\"=2" for
+ * a restricted run (even counts), "A'=4/3,A\"=1/1" (alpha/beta) for an
+ * unrestricted one; irreps not listed hold none. An empty string
+ * restores the aufbau occupation. The labels are checked against the
+ * group when trc_run_scf runs. A gradient is refused for occupations
+ * that differ from the aufbau ones.
+ */
+int trc_set_irrep_nelec(trc_handle_t handle, const char* spec);
+
+/**
+ * The point group the last trc_run_scf used ("C1" when it ran without
+ * symmetry), NUL-terminated into `buf` of `buflen` chars. TRC_ERR_STATE
+ * unless a symmetry request ran.
+ */
+int trc_symmetry_group(trc_handle_t handle, char* buf, int buflen);
+
+/**
+ * The largest point group found in the geometry, before the cap to the
+ * groups this build supports (so "C2v" for water while only Cs is used).
+ */
+int trc_symmetry_detected(trc_handle_t handle, char* buf, int buflen);
+
+/**
+ * The name of irrep `irrep` (1-based, the order of trc_mo_irreps) of the
+ * group used. TRC_ERR_STATE unless the last run was symmetric.
+ */
+int trc_symmetry_irrep_name(trc_handle_t handle, int irrep, char* buf, int buflen);
+
+/**
+ * The largest displacement (Bohr) symmetrisation made to any atom of the
+ * input geometry; 0 for C1.
+ */
+int trc_symmetry_residual(trc_handle_t handle, double* residual);
+
+/**
+ * The orientation of the standard frame: x_std = rot (x - shift) for an
+ * input-frame point x (Bohr). `rot` is 9 doubles, row-major (rot[3*i+j]);
+ * `shift` is the centre of nuclear charge, 3 doubles. The identity and
+ * zero for C1.
+ */
+int trc_symmetry_frame(trc_handle_t handle, double* rot, double* shift);
+
+/**
+ * The number of irreps of the group used. TRC_ERR_STATE unless the last
+ * run was symmetric (group other than C1).
+ */
+int trc_symmetry_nirrep(trc_handle_t handle, int* nirrep);
+
+/**
+ * The number of symmetry-adapted basis functions of each irrep
+ * (trc_symmetry_nirrep entries), summing to trc_nao.
+ */
+int trc_symmetry_irrep_dim(trc_handle_t handle, int* dim);
+
+/**
+ * The irrep of each molecular orbital, 1-based into the irrep order of
+ * trc_symmetry_irrep_name, laid out like trc_mo_energies ((nao, nspin),
+ * column-major); 0 for an orbital canonical orthogonalisation dropped.
+ * TRC_ERR_STATE unless the last run was symmetric.
+ */
+int trc_mo_irreps(trc_handle_t handle, int* irreps);
+
+/**
+ * The geometry the context holds now, atom-major Bohr (3*natm): the
+ * input unless a symmetric run moved it to the standard frame.
+ */
+int trc_geometry(trc_handle_t handle, double* xyz);
 
 /**
  * The last message, NUL-terminated into `buf` of `buflen` chars.

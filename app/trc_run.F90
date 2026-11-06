@@ -29,7 +29,10 @@ module trc_run
    use pic_logger, only: global_logger
    use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t, abort_comm, pic_mpi_finalize
-   use trc_capi, only: trc_message, TRC_OK, trc_nmo, trc_nao, trc_mo_energies, trc_mo_occupations
+   use trc_capi, only: trc_message, TRC_OK, trc_nmo, trc_nao, trc_mo_energies, trc_mo_occupations, &
+                       trc_symmetry_group, trc_symmetry_detected, trc_symmetry_residual, trc_symmetry_frame, &
+                       trc_symmetry_nirrep, trc_symmetry_irrep_name, trc_symmetry_irrep_dim, trc_mo_irreps, &
+                       trc_geometry
    use trc_app, only: app_f_string
    use trc_thermo, only: trc_thermo_result_t
    use trc_error, only: mass_error_t => error_t
@@ -44,7 +47,7 @@ module trc_run
    public :: run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
              run_check_neb_endpoint, run_write_neb_path_xyz
    public :: run_read_xyz_frames
-   public :: run_frontier
+   public :: run_frontier, run_symmetry_collect, run_symmetry_refusal, run_symmetry_summary
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
@@ -90,6 +93,22 @@ module trc_run
       integer :: nspin = 1
       real(dp) :: homo(2) = 0.0_dp, lumo(2) = 0.0_dp
       logical :: has_homo(2) = .false., has_lumo(2) = .false.
+      ! --symmetry: the request (`symmetry` is "off" unless given), and what the
+      ! SCF reported back (run_symmetry_collect), all in the STANDARD frame.
+      character(len=:), allocatable :: symmetry, irrep_nelec
+      real(dp) :: sym_tol = 0.0_dp         !! --symmetry-tol, Bohr; 0 = the library's default
+      logical :: sym_wanted = .false.      !! a request that needs the symmetry code (not off, not C1)
+      logical :: sym_ran = .false.         !! the library ran a symmetry request
+      logical :: sym_active = .false.      !! ... and used a group of more than one operation
+      character(len=3) :: sym_used = "C1", sym_detected = "C1"
+      real(dp) :: sym_residual = 0.0_dp
+      real(dp) :: sym_rot(3, 3) = 0.0_dp
+      real(dp) :: sym_shift(3) = 0.0_dp
+      integer :: sym_nirrep = 0
+      character(len=3), allocatable :: sym_irrep_names(:)
+      integer, allocatable :: sym_irrep_dim(:), sym_mo_irrep(:, :)   !! (nirrep); (nmo, nspin)
+      real(dp), allocatable :: sym_eps(:, :), sym_occ(:, :)           !! (nmo, nspin)
+      real(dp), allocatable :: geom_std(:, :)  !! (3, natm), Bohr, the geometry the SCF ran on
       type(timer_type) :: wall
       type(comm_t) :: wcomm
       integer :: nranks
@@ -225,6 +244,11 @@ module trc_run
          implicit none
          type(run_t), intent(in) :: r
       end subroutine run_summary
+
+      module subroutine run_symmetry_summary(r)
+         implicit none
+         type(run_t), intent(in) :: r
+      end subroutine run_symmetry_summary
 
       module subroutine run_gradient_summary(r)
          implicit none
@@ -455,17 +479,104 @@ contains
       if (trc_mo_energies(r%h, eps) /= TRC_OK) return
       if (trc_mo_occupations(r%h, occ) /= TRC_OK) return
       do s = 1, int(nspin)
+         ! The highest occupied and lowest empty orbital, which is eps(n) and
+         ! eps(n + 1) for the aufbau occupation but not for fixed irrep occupations.
          n = count(occ(:, s) > 0.0_c_double)
          if (n >= 1) then
-            r%homo(s) = real(eps(n, s), dp)
+            r%homo(s) = real(maxval(eps(1:nmo, s), mask=occ(:, s) > 0.0_c_double), dp)
             r%has_homo(s) = .true.
          end if
          if (n < nmo) then
-            r%lumo(s) = real(eps(n + 1, s), dp)
+            r%lumo(s) = real(minval(eps(1:nmo, s), mask=occ(:, s) <= 0.0_c_double), dp)
             r%has_lumo(s) = .true.
          end if
       end do
    end subroutine run_frontier
+
+   function run_symmetry_refusal(r) result(why)
+      !! What this run asks for that a symmetric SCF does not support yet, or an
+      !! empty string. Each is a refusal rather than a silent run in C1.
+      type(run_t), intent(in) :: r
+      character(len=:), allocatable :: why
+      why = ""
+      if (.not. r%sym_wanted) return
+      if (r%opt) then
+         why = "--opt"
+      else if (r%hessian) then
+         why = "--hessian (frequencies and thermochemistry)"
+      else if (r%rimp2) then
+         why = "--rimp2 (or a double-hybrid --func)"
+      else if (r%df) then
+         why = "--df"
+      else if (len(r%pcm) > 0) then
+         why = "--pcm"
+      else if (r%soscf) then
+         why = "--soscf"
+      else if (len(r%fukui) > 0) then
+         why = "--fukui"
+      else if (len(r%restart) > 0) then
+         why = "--restart"
+      else if (r%nranks > 1) then
+         why = "more than one rank (the orbital irrep labels are not broadcast)"
+      end if
+      if (len(why) > 0) why = "--symmetry is not supported with "//why//" yet; use --symmetry off"
+   end function run_symmetry_refusal
+
+   subroutine run_symmetry_collect(r)
+      !! What the library reports about a symmetry request after the SCF: the
+      !! group detected and used, the residual, the frame, and for a group of
+      !! more than one operation the irreps, their dimensions, and the label,
+      !! energy and occupation of every orbital. `r%nspin` and `r%nao` must be
+      !! set. Leaves `sym_ran` false when no symmetry request ran.
+      type(run_t), intent(inout) :: r
+      integer, parameter :: LEN_NAME = 16
+      character(kind=c_char) :: buf(LEN_NAME)
+      integer(c_int) :: nirrep, nmo, nao
+      integer(c_int), allocatable :: dims(:), labels(:, :)
+      integer, parameter :: NROT = 9
+      real(c_double) :: rot(NROT)
+      real(c_double) :: shift(3)
+      real(c_double) :: res
+      real(c_double), allocatable :: eps(:, :), occ(:, :), xyz(:)
+      integer :: i, j
+
+      r%sym_ran = .false.
+      r%sym_active = .false.
+      if (trc_symmetry_group(r%h, buf, int(LEN_NAME, c_int)) /= TRC_OK) return
+      r%sym_ran = .true.
+      r%sym_used = app_f_string(buf)
+      if (trc_symmetry_detected(r%h, buf, int(LEN_NAME, c_int)) == TRC_OK) r%sym_detected = app_f_string(buf)
+      if (trc_symmetry_residual(r%h, res) == TRC_OK) r%sym_residual = real(res, dp)
+      if (trc_symmetry_frame(r%h, rot, shift) == TRC_OK) then
+         do i = 1, 3
+            r%sym_shift(i) = real(shift(i), dp)
+            do j = 1, 3
+               r%sym_rot(i, j) = real(rot(3*(i - 1) + j), dp)
+            end do
+         end do
+      end if
+      allocate (xyz(3*r%natm))
+      if (trc_geometry(r%h, xyz) == TRC_OK) r%geom_std = reshape(real(xyz, dp), [3, r%natm])
+      if (trc_symmetry_nirrep(r%h, nirrep) /= TRC_OK) return
+      r%sym_active = .true.
+      r%sym_nirrep = int(nirrep)
+      allocate (r%sym_irrep_names(nirrep), dims(nirrep))
+      do i = 1, int(nirrep)
+         if (trc_symmetry_irrep_name(r%h, int(i, c_int), buf, int(LEN_NAME, c_int)) == TRC_OK) then
+            r%sym_irrep_names(i) = app_f_string(buf)
+         end if
+      end do
+      if (trc_symmetry_irrep_dim(r%h, dims) == TRC_OK) r%sym_irrep_dim = int(dims)
+      if (trc_nmo(r%h, nmo) /= TRC_OK) return
+      if (trc_nao(r%h, nao) /= TRC_OK) return
+      allocate (labels(nao, r%nspin), eps(nao, r%nspin), occ(nmo, r%nspin))
+      if (trc_mo_irreps(r%h, labels) /= TRC_OK) return
+      if (trc_mo_energies(r%h, eps) /= TRC_OK) return
+      if (trc_mo_occupations(r%h, occ) /= TRC_OK) return
+      r%sym_mo_irrep = int(labels(1:nmo, :))
+      r%sym_eps = real(eps(1:nmo, :), dp)
+      r%sym_occ = real(occ, dp)
+   end subroutine run_symmetry_collect
 
    subroutine run_check(r, what)
       type(run_t), intent(in) :: r
