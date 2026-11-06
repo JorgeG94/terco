@@ -73,7 +73,7 @@ assumption for the plan is:
 | S3 | AO representation and SO basis | S2 | done |
 | S4 | SO-blocked SCF (pilot group: Cs) | S3 | done |
 | S5 | Input, CLI, Fortran API, C ABI, reporting | S4 | done |
-| S6 | Group C2 | S5 | todo |
+| S6 | Group C2 | S5 | done |
 | S7 | Group Ci | S5 | todo |
 | S8 | Group C2v | S5 | todo |
 | S9 | Group C2h | S5 | todo |

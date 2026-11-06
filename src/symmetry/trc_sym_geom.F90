@@ -19,13 +19,18 @@ module trc_sym_geom
    !! input frame (`r_sym`), and the residual |r_sym - r|.
    !!
    !! Frame conventions follow pyscf 2.14.0 `symm/geom.py`, `detect_symm`
-   !! and `as_subgroup`, and only for the groups that are enabled (C1, Cs):
+   !! and `as_subgroup`, and only for the groups that are enabled (C1, Cs, C2):
    !!  - C1: no rotation, no shift (pyscf resets both).
    !!  - Cs: z is the mirror normal; x, y are the other principal axes in
    !!    cyclic order (mirror normal P1 -> axes P2, P3, P1; and so on). A Cs
    !!    reached from a C2v molecule follows the pyscf `symmetry='Cs'`
    !!    subgroup of C2v: x is the C2 axis, and z is the normal of the
    !!    molecular plane when the molecule is planar.
+   !!  - C2: z is the rotation axis; x, y are the other principal axes in
+   !!    cyclic order. C2 has only C1 below it, so a molecule whose largest
+   !!    Abelian group is C2 is reported as C2 (and only such a molecule: a
+   !!    C2 inside C2h/C2v keeps the Cs cap, inside D2 the C1 cap, until
+   !!    their stages).
    !! pyscf takes the sign of each axis from LAPACK, so it is arbitrary
    !! there; here the largest component of each principal axis is positive
    !! and y is flipped when needed so that det(rot) = +1. A sign flip of an
@@ -45,7 +50,7 @@ module trc_sym_geom
    public :: SYM_GROUP_ENABLED, SYM_DEFAULT_TOL
 
    logical, parameter :: SYM_GROUP_ENABLED(SYM_NGROUPS) = &
-                         [.false., .false., .false., .false., .true., .false., .false., .true.]
+                         [.false., .false., .false., .false., .true., .false., .true., .true.]
       !! THE CAP: which groups may be reported, in the order of
       !! `sym_group_names` (D2h, C2h, C2v, D2, Cs, Ci, C2, C1). A larger
       !! detected group is reported as the largest enabled subgroup. Stages
@@ -308,6 +313,19 @@ contains
             ! axes. S11 fixes it against pyscf.
             order = [1, 2, 3]
          end if
+      case ("C2")
+         ! pyscf's C2 frame has the axis along z; x and y follow in cyclic
+         ! order (which two principal axes they are changes no A/B label).
+         ! The rotation axis is the one the (only) C2 mask does not flip.
+         kc2 = 0
+         do m = 1, N_MASK
+            if (found(m) .and. popcnt(m) == 2) kc2 = merge(1, merge(2, 3, .not. btest(m, 1)), .not. btest(m, 0))
+         end do
+         if (kc2 == 0) then
+            call error%set(ERROR_GENERIC, "frame_order: group C2 reported without a C2 axis")
+            return
+         end if
+         order = [modulo(kc2, 3) + 1, modulo(kc2 + 1, 3) + 1, kc2]
       case default
          call error%set(ERROR_GENERIC, "no axis convention yet for point group "//rep// &
                         " (enabled in trc_sym_geom, but its frame is missing)")
