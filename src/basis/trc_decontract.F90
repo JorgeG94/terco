@@ -44,29 +44,23 @@ module trc_decontract
    !! removes the primitives the columns repeat and adds shells, and every
    !! shell costs pair and quartet bookkeeping and a Schwarz bound carrying
    !! the transform's amplitude (`build_maps`, up to 12 on cc-pVDZ oxygen),
-   !! whatever its primitive count. At 2: the 8-primitive, 2-column s of C,
-   !! N and O (16 + 2c against 8 + 8c) stays whole; Si's 11-primitive,
-   !! 3-column s (33 + 3c against 11 + 11c) splits; its 7-primitive,
-   !! 2-column p (14 + 2c against 7 + 7c) stays whole. 0 splits every
-   !! general contraction, which is what this module did before the price
-   !! existed; `md_coulomb` forces that.
+   !! whatever its primitive count. At 2 the 8-primitive, 2-column s of C,
+   !! N and O (16 + 2c against 8 + 8c) stays whole. A group whose columns
+   !! share a primitive at or below `cutoff` splits whatever the price (Si's
+   !! cc-pVDZ s and p; see `group_plan`), and `md_coulomb` splits every
+   !! group. 0 splits every general contraction, which is what this module
+   !! did before the price existed.
    !!
+   !! A shell kept whole screens as tightly as its split would have
+   !! (`whole_amplitude`), so the choice moves the time and not the energy:
+   !! converged RHF at 1e-11 is within 6e-11 Eh of the all-split energy on
+   !! water10 (cc-pVDZ, aug-cc-pVDZ) and 7e-13 on the silica slice.
    !! Measured against 0 (V100, RHF, 1e-11, full builds, mean of builds
-   !! 2-10, s per build): gly20/cc-pVDZ 1.94 -> 1.31, aug-cc-pVDZ 27.7 ->
-   !! 18.2; water40/cc-pVDZ 0.99 -> 0.73, aug-cc-pVDZ 36.4 -> 25.8;
-   !! NA-040/cc-pVDZ 2.10 -> 1.47, aug-cc-pVDZ 48.5 -> 32.6; w172/cc-pVDZ
-   !! 16.8 -> 9.9; the silica fragment and slice, cc-pVDZ, 9.66 -> 6.26 and
-   !! 6.85 -> 4.51 (splitting Si's p as well, price 1.37: 7.20 and 5.48;
-   !! splitting nothing, price 3: 6.37 and 4.64).
-   !!
-   !! THE SCREEN IS LOOSER UNSPLIT. The amplitude makes a split shell's
-   !! pairs screen tighter than the contracted shell's did, so at the same
-   !! threshold the whole shell drops more: water10/cc-pVDZ at 1e-11 is
-   !! 1.0e-09 Eh from the 1e-14 energy kept whole against 4.1e-10 split,
-   !! the silica slice 1.0e-07 against 4.4e-09. At 1e-12 the whole shells
-   !! are within 2e-11 on water10 (and still faster than the split at
-   !! 1e-11: gly20/cc-pVDZ 1.45 s, aug-cc-pVDZ 20.1 s), and at 1e-13 the two
-   !! agree to 1e-11. A segmented basis has always screened this way.
+   !! 2-10, s per build): gly20/cc-pVDZ 1.945 -> 1.370, aug-cc-pVDZ 27.67 ->
+   !! 18.70; water40/cc-pVDZ 0.990 -> 0.788, aug-cc-pVDZ 36.38 -> 26.58;
+   !! NA-040/cc-pVDZ 2.101 -> 1.586, aug-cc-pVDZ 48.48 -> 33.49;
+   !! w172/cc-pVDZ 16.83 -> 10.78; the silica fragment and slice, cc-pVDZ,
+   !! 9.66 -> 7.47 and 6.85 -> 5.64.
 
    type :: trc_decontract_options_t
       !! How the working basis is split. TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE
@@ -80,6 +74,11 @@ module trc_decontract
       !! Move diffuse primitives out of segmented shells into their own.
       real(dp) :: shell_cost = DECON_SHELL_COST_DEFAULT
       !! See DECON_SHELL_COST_DEFAULT.
+      logical :: screen_whole = .true.
+      !! A general contraction kept whole screens as tightly as its split
+      !! would have (`whole_amplitude`), so the split policy changes the
+      !! cost and not the accuracy. TRC_DECON_SCREEN_WHOLE=0 turns it off,
+      !! for measuring what it costs.
       logical :: md_coulomb = .false.
       !! The Coulomb matrix will come from the McMurchie-Davidson J engine
       !! (trc_mdj: a basis with f or higher, or a functional without exact
@@ -129,6 +128,9 @@ module trc_decontract
       integer, allocatable :: p_l(:), p_np(:)
       real(dp), allocatable :: p_e(:, :), p_c(:, :), p_r(:, :)
       logical, allocatable :: p_single(:)
+      real(dp), allocatable :: p_screen(:)
+      !! Extra screening amplitude per emitted shell: `whole_amplitude` for a
+      !! member of a general contraction kept whole, 1 otherwise.
       !! A shell of one primitive that the columns of its group share, as
       !! opposed to a contracted shell that happens to have one primitive:
       !! only the former may be reused by a later column.
@@ -177,6 +179,18 @@ contains
       ! worth the split: a segmented basis as far as this module cares. Leave.
       if (.not. any_group_splits(b, grp, ng, opts)) then
          m%active = .false.
+         ! The caller keeps its basis, but a general contraction kept whole
+         ! still screens as its split would have: `amp` then lives over the
+         ! caller's shells, and only when some shell needs it.
+         if (opts%screen_whole) then
+            allocate (m%amp(b%nshell))
+            m%amp = 1.0_dp
+            do g = 1, ng
+               call group_whole_amplitudes(b, grp, g, m%amp)
+            end do
+            if (all(m%amp == 1.0_dp)) deallocate (m%amp)
+         end if
+         deallocate (grp)
          return
       end if
 
@@ -189,7 +203,8 @@ contains
       allocate (bld%p_l(n + b%nshell), bld%p_np(n + b%nshell), bld%p_r(3, n + b%nshell))
       allocate (bld%p_e(b%maxnp, n + b%nshell), bld%p_c(b%maxnp, n + b%nshell))
       allocate (bld%tr_mu(n + b%nshell), bld%tr_s(n + b%nshell), bld%tr_a(n + b%nshell))
-      allocate (bld%p_single(n + b%nshell))
+      allocate (bld%p_single(n + b%nshell), bld%p_screen(n + b%nshell))
+      bld%p_screen = 1.0_dp
       bld%p_e = 0.0_dp
       bld%p_c = 0.0_dp
       bld%nsh_p = 0
@@ -245,6 +260,7 @@ contains
       end do
 
       call build_maps(b, pb, bld%tr_mu, bld%tr_s, bld%tr_a, bld%ntr, m)
+      if (opts%screen_whole) m%amp = m%amp*bld%p_screen(1:bld%nsh_p)
       m%active = .true.
       block
          character(len=8) :: dbge
@@ -274,7 +290,7 @@ contains
             end block
          end if
       end block
-      deallocate (bld%p_l, bld%p_np, bld%p_e, bld%p_c, bld%p_r, bld%tr_mu, bld%tr_s, bld%tr_a, bld%p_single, grp)
+      deallocate (bld%p_l, bld%p_np, bld%p_e, bld%p_c, bld%p_r, bld%tr_mu, bld%tr_s, bld%tr_a, bld%p_single, bld%p_screen, grp)
    end subroutine decontract_basis
 
    !
@@ -412,6 +428,13 @@ contains
 
       price = opts%shell_cost
       if (opts%md_coulomb) price = 0.0_dp
+      ! A diffuse primitive the columns share goes out on its own whatever
+      ! the price: kept whole, the silica slice's Si p (7 primitives under 2
+      ! columns, both holding 0.2964) costs 9e-08 Eh at 1e-11 against the
+      ! split, which `whole_amplitude` does not recover (9.2e-08 with it,
+      ! 1.0e-07 without), while O's compact s kept whole lands within
+      ! 4e-11 of the split once it carries that amplitude.
+      if (shares_diffuse(b, mem, nmem, opts%cutoff)) price = 0.0_dp
       nmulti = 0
       i0 = 0
       cost_whole = 0.0_dp
@@ -439,6 +462,26 @@ contains
          if (cost_split < cost_whole) plan = PLAN_PRIMITIVES
       end if
    end function group_plan
+
+   logical function shares_diffuse(b, mem, nmem, cutoff) result(res)
+      !! Does an exponent at or below `cutoff` appear in two members or more?
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: nmem
+      integer, intent(in) :: mem(:)
+      real(dp), intent(in) :: cutoff
+      integer :: i, k, ii, kk
+      res = .false.
+      do i = 1, nmem
+         do k = 1, b%sh_np(mem(i))
+            if (b%sh_e(k, mem(i)) > cutoff) cycle
+            do ii = i + 1, nmem
+               do kk = 1, b%sh_np(mem(ii))
+                  if (same_exp(b%sh_e(kk, mem(ii)), b%sh_e(k, mem(i)))) res = .true.
+               end do
+            end do
+         end do
+      end do
+   end function shares_diffuse
 
    subroutine group_members(b, grp, g, mem, nmem)
       type(trc_basis_t), intent(in) :: b
@@ -502,6 +545,87 @@ contains
    end subroutine segment_mask
 
    !
+   ! THE SCREEN OF A GENERAL CONTRACTION KEPT WHOLE.
+   !
+   ! Split, every primitive p of the group becomes a shell of one scaled by
+   ! the largest coefficient any column gives it, and its Schwarz bound is
+   ! multiplied by amp_p, the sum over the columns nu it feeds of
+   ! a_nu = sum_q |c_q,nu| / max_mu |c_q,mu| (`build_maps`). That is what
+   ! makes `thresh` bound the error of the contracted matrix there, and it
+   ! screens far tighter than the contracted shells do by their own bound:
+   ! amp is 7 to 12 on cc-pVDZ oxygen's s, and water10/cc-pVDZ at 1e-11
+   ! lands 4.1e-10 Eh from the 1e-14 energy split against 1.0e-09 whole.
+   !
+   ! So that the split policy changes the cost and not the answer, a column
+   ! kept whole carries the largest amplitude any of its primitives would
+   ! have had split, A_mu = max over p in mu of amp_p, and its pairs are
+   ! judged by Q_mu Q_nu A_mu A_nu. That is not a proof that it drops no
+   ! more than the split: the contracted bound and the primitive ones bound
+   ! different sums. It is a matching of the two screens' strictness, and
+   ! it only ever tightens the screen, so it can cost time but never
+   ! accuracy. Measured (V100, RHF, 1e-11, converged), split against kept
+   ! whole: water10/cc-pVDZ 6.1e-10 Eh apart without it, 4.1e-11 with it;
+   ! water10/aug-cc-pVDZ 6.2e-10 and 6.0e-11. What it does not recover --
+   ! a general contraction whose columns share a diffuse primitive -- is
+   ! split instead (`group_plan`).
+   !
+   real(dp) function whole_amplitude(b, mem, nmem, mu) result(a)
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: nmem, mu
+      integer, intent(in) :: mem(:)
+      integer :: k, i, kk
+      real(dp) :: amp_p
+      a = 1.0_dp
+      do k = 1, b%sh_np(mu)
+         amp_p = 0.0_dp
+         do i = 1, nmem
+            do kk = 1, b%sh_np(mem(i))
+               if (same_exp(b%sh_e(kk, mem(i)), b%sh_e(k, mu))) then
+                  amp_p = amp_p + column_sum(b, mem, nmem, mem(i))
+               end if
+            end do
+         end do
+         a = max(a, amp_p)
+      end do
+   end function whole_amplitude
+
+   real(dp) function column_sum(b, mem, nmem, nu) result(a)
+      !! a_nu: the column sum of |C| contracted shell `nu` would have split,
+      !! each primitive scaled by the largest coefficient the group gives it.
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: nmem, nu
+      integer, intent(in) :: mem(:)
+      integer :: k, i, kk
+      real(dp) :: cbig
+      a = 0.0_dp
+      do k = 1, b%sh_np(nu)
+         cbig = 0.0_dp
+         do i = 1, nmem
+            do kk = 1, b%sh_np(mem(i))
+               if (same_exp(b%sh_e(kk, mem(i)), b%sh_e(k, nu))) cbig = max(cbig, abs(b%sh_c(kk, mem(i))))
+            end do
+         end do
+         if (cbig > 0.0_dp) a = a + abs(b%sh_c(k, nu))/cbig
+      end do
+   end function column_sum
+
+   subroutine group_whole_amplitudes(b, grp, g, amp)
+      !! `whole_amplitude` for every member of group `g` when it has more than
+      !! one, into `amp` over the caller's shells.
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: g
+      integer, intent(in) :: grp(:)
+      real(dp), intent(inout) :: amp(:)
+      integer :: mem(b%nshell)
+      integer :: nmem, i
+      call group_members(b, grp, g, mem, nmem)
+      if (nmem < 2) return
+      do i = 1, nmem
+         amp(mem(i)) = whole_amplitude(b, mem, nmem, mem(i))
+      end do
+   end subroutine group_whole_amplitudes
+
+   !
    ! Emit the shells one group becomes, and the triples that map the group's
    ! contracted shells onto them.
    !
@@ -526,6 +650,9 @@ contains
          in_segment = .true.
          do i = 1, nmem
             call emit_segment(b, mem(i), in_segment(1:b%sh_np(mem(i))), bld)
+            if (nmem > 1 .and. opts%screen_whole) then
+               bld%p_screen(bld%nsh_p) = whole_amplitude(b, mem, nmem, mem(i))
+            end if
          end do
          return
       end if

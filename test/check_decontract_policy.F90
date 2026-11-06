@@ -35,6 +35,10 @@ module check_decontract_policy_suite
 
    real(dp), parameter :: SPAN_TOL = 1.0e-12_dp
    real(dp), parameter :: ENERGY_TOL = 1.0e-10_dp
+   real(dp), parameter :: WHOLE_TOL = 3.0e-8_dp
+      !! w5/cc-pVDZ at an ERI threshold of 1e-8, gfortran 15: O's s kept
+      !! whole lands 9.9e-09 Eh from it split, 8.8e-08 without the
+      !! amplitude `screen_whole` gives it. Midway, a factor of 3 each side.
    real(dp), parameter :: NEVER = 1.0e6_dp
       !! A shell price no split can beat: the caller's basis, unsplit.
 
@@ -46,7 +50,8 @@ contains
                   new_unittest("the shell price splits Si s and keeps C/N/O s whole", test_shell_price), &
                   new_unittest("the diffuse split moves diffuse primitives out", test_diffuse_split), &
                   new_unittest("the diffuse split spans the same functions", test_diffuse_span), &
-                  new_unittest("RHF energy is the same under every policy", test_energy_invariant) &
+                  new_unittest("RHF energy is the same under every policy", test_energy_invariant), &
+                  new_unittest("kept whole screens as tightly as split", test_screen_invariant) &
                   ]
    end subroutine collect_decontract_policy
 
@@ -78,12 +83,14 @@ contains
 
    !
    ! After trc_basis_json's pruning, the only general contractions in
-   ! cc-pVDZ are O's s (8 primitives under 2 columns) and Si's s (11 under
-   ! 3) and p (7 under 2). At the default price of 2 primitives a shell:
-   ! O s 16 + 2*2 = 20 against 8*3 = 24, kept; Si s 33 + 3*2 = 39 against
-   ! 11*3 = 33, split (3 shells -> 11); Si p 14 + 2*2 = 18 against 7*3 = 21,
-   ! kept. A price of zero splits all three, as the module did before the
-   ! price existed (Si p 2 -> 7).
+   ! cc-pVDZ are O's s (8 primitives under 2 columns, all compact) and Si's
+   ! s (11 under 3) and p (7 under 2), both of which share a diffuse
+   ! primitive between their columns. At the default price of 2 primitives
+   ! a shell O's s is kept (16 + 2*2 = 20 against 8*3 = 24). Si's s and p
+   ! split whatever the price, because their columns share a primitive
+   ! below the 0.3 cutoff (3 -> 11 and 2 -> 7 shells); only a cutoff below
+   ! it hands them back to the price. A price of zero splits everything, as
+   ! the module did before the price existed.
    !
    subroutine test_shell_price(error)
       type(error_type), allocatable, intent(out) :: error
@@ -112,17 +119,23 @@ contains
       call load('sih4.xyz', 'basis_sets/cc-pvdz.json', b)
       opts = trc_decontract_options_t()
       n = nshell_split(b, opts, active)
-      call check(error, active, "SiH4/cc-pVDZ: the default price splits Si's s")
-      if (allocated(error)) return
-      call check(error, n, b%nshell - 3 + 11, "SiH4/cc-pVDZ: Si s 3 -> 11 shells, p kept")
-      if (allocated(error)) return
-      opts%shell_cost = 0.0_dp
-      n = nshell_split(b, opts, active)
-      call check(error, n, b%nshell - 3 + 11 - 2 + 7, "SiH4/cc-pVDZ: price 0 also splits Si's p")
+      call check(error, n, b%nshell - 3 + 11 - 2 + 7, "SiH4/cc-pVDZ: Si s and p, sharing a diffuse primitive, split")
       if (allocated(error)) return
       opts%shell_cost = NEVER
       n = nshell_split(b, opts, active)
-      call check(error, .not. active, "SiH4/cc-pVDZ: a price nothing beats splits nothing")
+      call check(error, n, b%nshell - 3 + 11 - 2 + 7, "SiH4/cc-pVDZ: a shared diffuse primitive splits at any price")
+      if (allocated(error)) return
+      ! Below every shared exponent (Si s 0.2517, p 0.2964), only the price
+      ! decides: at 0.2 the s (33 + 3*2 = 39 against 33) splits, the p
+      ! (14 + 2*2 = 18 against 21) stays whole.
+      opts = trc_decontract_options_t()
+      opts%cutoff = 0.2_dp
+      n = nshell_split(b, opts, active)
+      call check(error, n, b%nshell - 3 + 11, "SiH4/cc-pVDZ: at cutoff 0.2 Si s splits on price, p is kept")
+      if (allocated(error)) return
+      opts%shell_cost = NEVER
+      n = nshell_split(b, opts, active)
+      call check(error, .not. active, "SiH4/cc-pVDZ: at cutoff 0.2 a price nothing beats splits nothing")
    end subroutine test_shell_price
 
    !
@@ -190,11 +203,12 @@ contains
       call b%release(); call pb%release()
    end subroutine test_diffuse_span
 
-   subroutine run_rhf(xyz, json, nocc, opts, energy)
+   subroutine run_rhf(xyz, json, nocc, opts, energy, eri_thresh)
       character(*), intent(in) :: xyz, json
       integer, intent(in) :: nocc
       type(trc_decontract_options_t), intent(in) :: opts
       real(dp), intent(out) :: energy
+      real(dp), intent(in), optional :: eri_thresh
       type(trc_basis_t) :: b
       type(trc_scf_options_t) :: scf
       type(trc_scf_result_t) :: res
@@ -206,6 +220,13 @@ contains
       scf%conv_diis = 1.0e-10_dp
       scf%max_iteration = 200
       scf%decontract = opts
+      if (present(eri_thresh)) then
+         ! A loose screen has a noise floor of its own: converge to it, not
+         ! past it.
+         scf%eri_thresh = eri_thresh
+         scf%conv_diis = 1.0e-5_dp
+         scf%conv_energy = 1.0e-9_dp
+      end if
       call trc_scf_run(b, nocc, nocc, scf, res)
       call b%release()
       if (.not. res%converged) error stop 'check_decontract_policy: RHF did not converge'
@@ -254,6 +275,38 @@ contains
       call run_rhf('sih4.xyz', 'basis_sets/6-31gs.json', 9, opts, e)
       call check(error, e, e_ref, thr=ENERGY_TOL, message="SiH4/6-31G*: diffuse split moves E_RHF")
    end subroutine test_energy_invariant
+
+   !
+   ! The point of `screen_whole`: at a loose screening threshold the policy
+   ! must not move the energy. A general contraction kept whole screens on
+   ! its contracted bound, which drops far more than the split's
+   ! amplitude-scaled primitive bounds; carrying the amplitude the split
+   ! would have keeps the two together. Five waters in cc-pVDZ at 1e-8, so
+   ! that screening, not round-off, sets the difference: the energies with
+   ! O's s split and kept whole must agree far better than kept whole
+   ! without the amplitude does.
+   !
+   subroutine test_screen_invariant(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_decontract_options_t) :: opts
+      real(dp), parameter :: LOOSE = 1.0e-8_dp
+      real(dp) :: e_split, e_whole, e_bare
+
+      opts%shell_cost = 0.0_dp
+      call run_rhf('w5.xyz', 'basis_sets/cc-pvdz.json', 25, opts, e_split, LOOSE)
+      opts = trc_decontract_options_t()
+      call run_rhf('w5.xyz', 'basis_sets/cc-pvdz.json', 25, opts, e_whole, LOOSE)
+      opts%screen_whole = .false.
+      call run_rhf('w5.xyz', 'basis_sets/cc-pvdz.json', 25, opts, e_bare, LOOSE)
+      print '(a,es10.3,a,es10.3)', '  w5/cc-pVDZ at 1e-8: |E_whole - E_split| ', abs(e_whole - e_split), &
+         '   without the amplitude ', abs(e_bare - e_split)
+      call check(error, abs(e_whole - e_split) < WHOLE_TOL, &
+                 "w5/cc-pVDZ: kept whole moves E_RHF at a loose threshold")
+      if (allocated(error)) return
+      ! The comparison above can fail: without the amplitude it does.
+      call check(error, abs(e_bare - e_split) > WHOLE_TOL, &
+                 "w5/cc-pVDZ: the loose threshold no longer exposes the bare whole-shell screen")
+   end subroutine test_screen_invariant
 
 end module check_decontract_policy_suite
 

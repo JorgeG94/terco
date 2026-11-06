@@ -286,9 +286,9 @@ contains
    !
    function decon_options(base) result(opts)
       !! The split policy the build uses: `base` (the caller's, or the
-      !! defaults), with TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE (0 or 1) and
-      !! TRC_DECON_SHELL_COST overriding it, so a policy can be swept without
-      !! a rebuild. An unreadable value leaves the field as it was.
+      !! defaults), with TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE (0 or 1),
+      !! TRC_DECON_SHELL_COST and TRC_DECON_SCREEN_WHOLE (0 or 1) overriding
+      !! it, so a policy can be swept without a rebuild. An unreadable value leaves the field as it was.
       type(trc_decontract_options_t), intent(in) :: base
       type(trc_decontract_options_t) :: opts
       character(len=32) :: e
@@ -312,6 +312,12 @@ contains
       if (len_trim(e) > 0) then
          read (e, *, iostat=ios) x
          if (ios == 0) opts%shell_cost = x
+      end if
+      e = " "
+      call get_environment_variable("TRC_DECON_SCREEN_WHOLE", e)
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) flag
+         if (ios == 0) opts%screen_whole = flag /= 0
       end if
    end function decon_options
 
@@ -403,7 +409,10 @@ contains
       ! the pair prune in bins_build_binned_pairs and the exact per-quartet
       ! test in the kernel, which reads sp_q -- then get it for free.
       !
-      if (this%dec%active) then
+      ! `amp` is also there, over the caller's own shells, when nothing was
+      ! split but a general contraction was kept whole: it then screens as
+      ! its split would have (trc_decontract's `whole_amplitude`).
+      if (allocated(this%dec%amp)) then
          do i = 1, b%nshell
             do j = 1, i
                qs(screen_pair_index(i, j)) = qs(screen_pair_index(i, j)) &
