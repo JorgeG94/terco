@@ -2,9 +2,9 @@
 ! trc_sym_ao: AO signed permutations and the SO basis, on terco's own 1e
 ! integrals.
 !
-! For water and HOCl (planar, so every atom is its own mirror image: only the
-! signs are exercised) and nonplanar CH2Cl2 (mirror swaps atoms), all as Cs, the
-! largest group reported at this stage, in 6-31G* and cc-pVDZ, in the Cartesian
+! For HOCl (planar, so every atom is its own mirror image: only the signs are
+! exercised) and nonplanar CHFCl2 (the mirror swaps the two Cl), both Cs (C2v
+! has its own check, check_sym_c2v), in 6-31G* and cc-pVDZ, in the Cartesian
 ! and the spherical AO space, with the basis built on the standard frame of trc_sym_geom:
 !   - U^T U = I, and the irrep dimensions add up to the AO count;
 !   - the dimensions equal those of pyscf 2.14.0's mol.symm_orb
@@ -43,8 +43,8 @@ module check_sym_ao_suite
    character(len=8) :: g_mode = 'main'
       !! "main" or "f", set from argv before run_testsuite.
 
-   integer, parameter :: NMOL = 3, NBAS = 2
-   character(len=8), parameter :: MOL(NMOL) = [character(len=8) :: "water", "hocl", "ch2cl2"]
+   integer, parameter :: NMOL = 2, NBAS = 2
+   character(len=8), parameter :: MOL(NMOL) = [character(len=8) :: "hocl", "chfcl2"]
    character(len=8), parameter :: BAS_NAME(NBAS) = [character(len=8) :: "631gs", "ccpvdz"]
    character(len=32), parameter :: BAS_FILE(NBAS) = [character(len=32) :: &
                                                       "basis_sets/6-31gs.json", "basis_sets/cc-pvdz.json"]
@@ -242,22 +242,22 @@ contains
       type(trc_sym_geom_t) :: geom
       type(decon_t) :: m
       integer, allocatable :: elem(:)
-      call setup_geom('water', elem, geom, error)
+      call setup_geom('hocl', elem, geom, error)
       if (allocated(error)) return
       call make_basis('basis_sets/cc-pvdz.json', elem, geom, .false., bas, error)
       if (allocated(error)) return
       call decontract_basis(bas, pb, m)
-      call check(error, m%active, "cc-pVDZ water has something to decontract")
+      call check(error, m%active, "cc-pVDZ HOCl has something to decontract")
       if (allocated(error)) return
-      call analyse(pb, geom, 'water cc-pVDZ primitive', .false., error)
+      call analyse(pb, geom, 'hocl cc-pVDZ primitive', .false., error)
       call decontract_release(m)
       call pb%release(); call bas%release()
    end subroutine test_decontracted
 
    subroutine test_refuse_shells(error)
-      !! CH2Cl2 (nonplanar, C2v capped to Cs): the mirror swaps a pair of
-      !! equivalent atoms, so a change to one of them must be refused. (Water
-      !! and HOCl lie in the mirror plane, so every atom is its own image.)
+      !! CH2Cl2 (nonplanar, C2v): the operations swap pairs of equivalent
+      !! atoms, so a change to one of them must be refused. (Planar HOCl lies
+      !! in the mirror plane, so every atom is its own image.)
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_sym_geom_t) :: geom

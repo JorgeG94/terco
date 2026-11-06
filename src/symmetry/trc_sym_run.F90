@@ -157,7 +157,7 @@ contains
          end if
          if (.not. group_enabled(req%group)) then
             call error%set(ERROR_VALIDATION, "symmetry "//trim(req%group)//" is not yet supported (the molecule is "// &
-                           trim(geom%detected)//"; only C1 and Cs are available so far; symmetry = auto uses the "// &
+                           trim(geom%detected)//"; supported so far: "//enabled_list()//"; symmetry = auto uses the "// &
                            "largest supported subgroup)")
             return
          end if
@@ -252,6 +252,16 @@ contains
          end if
       end do
    end subroutine sym_parse_irrep_nelec
+
+   function enabled_list() result(text)
+      !! The enabled groups (`SYM_GROUP_ENABLED`), comma separated, for messages.
+      character(len=:), allocatable :: text
+      integer :: ig
+      text = "C1"
+      do ig = SYM_NGROUPS - 1, 1, -1
+         if (SYM_GROUP_ENABLED(ig)) text = text//", "//trim(sym_group_names(ig))
+      end do
+   end function enabled_list
 
    function names_list(group) result(text)
       type(trc_sym_group_t), intent(in) :: group

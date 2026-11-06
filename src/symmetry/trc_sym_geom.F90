@@ -19,13 +19,19 @@ module trc_sym_geom
    !! input frame (`r_sym`), and the residual |r_sym - r|.
    !!
    !! Frame conventions follow pyscf 2.14.0 `symm/geom.py`, `detect_symm`
-   !! and `as_subgroup`, and only for the groups that are enabled (C1, Cs):
+   !! and `as_subgroup`, and only for the groups that are enabled (C1, Cs,
+   !! C2v):
    !!  - C1: no rotation, no shift (pyscf resets both).
    !!  - Cs: z is the mirror normal; x, y are the other principal axes in
    !!    cyclic order (mirror normal P1 -> axes P2, P3, P1; and so on). A Cs
    !!    reached from a C2v molecule follows the pyscf `symmetry='Cs'`
    !!    subgroup of C2v: x is the C2 axis, and z is the normal of the
    !!    molecular plane when the molecule is planar.
+   !!  - C2v: z is the C2 axis; x, y are the other principal axes in cyclic
+   !!    order (C2 axis P1 -> x, y = P2, P3; P2 -> P3, P1; P3 -> P1, P2). A
+   !!    planar molecule is turned about z so that x is the normal of its
+   !!    plane (pyscf `_adjust_planar_c2v`): water lies in the yz plane, its
+   !!    in-plane O-H bonding orbital is B2 and its out-of-plane lone pair B1.
    !! pyscf takes the sign of each axis from LAPACK, so it is arbitrary
    !! there; here the largest component of each principal axis is positive
    !! and y is flipped when needed so that det(rot) = +1. A sign flip of an
@@ -45,7 +51,7 @@ module trc_sym_geom
    public :: SYM_GROUP_ENABLED, SYM_DEFAULT_TOL
 
    logical, parameter :: SYM_GROUP_ENABLED(SYM_NGROUPS) = &
-                         [.false., .false., .false., .false., .true., .false., .false., .true.]
+                         [.false., .false., .true., .false., .true., .false., .false., .true.]
       !! THE CAP: which groups may be reported, in the order of
       !! `sym_group_names` (D2h, C2h, C2v, D2, Cs, Ci, C2, C1). A larger
       !! detected group is reported as the largest enabled subgroup. Stages
@@ -242,9 +248,10 @@ contains
 
    function reported_name(detected, nmirror) result(name)
       !! The group to report: the detected one if enabled, else the largest
-      !! enabled subgroup. Only Cs and C1 are reachable by the cap today; a
-      !! stage that enables another group adds its subgroup rule here (for
-      !! example C2 inside C2v) and its frame in `frame_order`.
+      !! enabled subgroup. C2v (S8) is reported as such when it is detected.
+      !! A D2h molecule still falls back to Cs: which C2v of D2h to take
+      !! needs the D2h frame (S11/S12). A stage that enables another group
+      !! adds its subgroup rule here and its frame in `frame_order`.
       character(len=3), intent(in) :: detected
       integer, intent(in) :: nmirror
       character(len=3) :: name
@@ -307,6 +314,20 @@ contains
             ! D2h (three mirrors): provisional, the plane of the two lowest
             ! axes. S11 fixes it against pyscf.
             order = [1, 2, 3]
+         end if
+      case ("C2v")
+         ! the C2 axis is the one the C2 mask does not flip
+         kc2 = 0
+         do m = 1, N_MASK
+            if (found(m) .and. popcnt(m) == 2) kc2 = merge(1, merge(2, 3, .not. btest(m, 1)), .not. btest(m, 0))
+         end do
+         a0 = modulo(kc2, 3) + 1
+         a1 = modulo(kc2 + 1, 3) + 1
+         planar = all(abs(q(a1, :)) < tol)  ! every atom on the plane whose normal would be y
+         if (planar) then
+            order = [a1, a0, kc2]
+         else
+            order = [a0, a1, kc2]
          end if
       case default
          call error%set(ERROR_GENERIC, "no axis convention yet for point group "//rep// &

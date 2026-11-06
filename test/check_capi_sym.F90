@@ -336,8 +336,13 @@ contains
       call make_context(h, 'water.xyz', 'basis_sets/6-31g.json', geom)
       rc = trc_set_symmetry(h, 'c2v'//c_null_char, 0.0_c_double)
       rc = trc_run_scf(h)
-      call check(error, rc, TRC_ERR_BADARG, 'C2v on water: not supported yet')
-      call check(error, index(message(h), 'is not yet supported') > 0, message(h))
+      call check(error, rc, TRC_OK, 'C2v on water')
+      call check(error, name_of(h, 1, 0), 'C2v', 'C2v used')
+      if (allocated(error)) return
+      rc = trc_set_symmetry(h, 'cs'//c_null_char, 0.0_c_double)
+      rc = trc_run_scf(h)
+      call check(error, rc, TRC_ERR_BADARG, 'Cs on water (a subgroup below the reported group): refused')
+      call check(error, index(message(h), 'cannot be used for this molecule') > 0, message(h))
       rc = trc_destroy(h)
    end subroutine test_explicit
 

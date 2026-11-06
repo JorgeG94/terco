@@ -5,8 +5,7 @@ module check_sym_geom_suite
    !!
    !! The expected frames (rows x, y, z, compared up to sign, and the origin
    !! in Bohr) were printed by pyscf 2.14.0 on the geometries below with
-   !! symmetry=True (HOCl) and symmetry='Cs' (water and CH2Cl2, whose
-   !! symmetry=True group is C2v, which the cap reports as Cs). Static
+   !! symmetry=True (all three; water and CH2Cl2 are C2v). Static
    !! data, so no .ref file; pyscf never runs in CI. The sign of an axis is
    !! LAPACK's in pyscf and does not affect any label, so it is not compared.
    use pic_types, only: dp
@@ -22,13 +21,14 @@ module check_sym_geom_suite
    character(len=6), parameter :: MOL_NAME(NMOL) = [character(len=6) :: "HOCl", "water", "CH2Cl2"]
    integer, parameter :: NATM(NMOL) = [3, 3, 5]
    character(len=3), parameter :: DETECTED(NMOL) = [character(len=3) :: "Cs", "C2v", "C2v"]
+   integer, parameter :: ORDER(NMOL) = [2, 4, 4]  !! operations of the reported group
 
 contains
 
    subroutine collect_sym_geom(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
-                  new_unittest("groups detected, capped to Cs", test_groups), &
+                  new_unittest("groups detected and reported", test_groups), &
                   new_unittest("frame matches pyscf", test_pyscf_frame), &
                   new_unittest("rotation is a proper rotation", test_rotation), &
                   new_unittest("distorted molecule is C1 with the identity frame", test_c1), &
@@ -89,12 +89,12 @@ contains
          if (allocated(error)) return
          call check(error, res%detected, DETECTED(im), "detected group of "//MOL_NAME(im))
          if (allocated(error)) return
-         call check(error, res%group%name, "Cs", "reported group of "//MOL_NAME(im))
+         call check(error, res%group%name, DETECTED(im), "reported group of "//MOL_NAME(im))
          if (allocated(error)) return
-         call check(error, res%group%order, 2, "two operations")
+         call check(error, res%group%order, ORDER(im), "operations of "//MOL_NAME(im))
          if (allocated(error)) return
       end do
-      call check(error, count(SYM_GROUP_ENABLED), 2, "only C1 and Cs are enabled")
+      call check(error, SYM_GROUP_ENABLED(3), "C2v is enabled")
    end subroutine test_groups
 
    subroutine test_pyscf_frame(error)
@@ -107,12 +107,14 @@ contains
       ax(:, :, 1) = transpose(reshape([-0.53940512_dp, 0.5709197_dp, 0.61894492_dp, &
                                        0.74658923_dp, -0.0156706_dp, 0.66510071_dp, &
                                        0.38941834_dp, 0.82085634_dp, -0.41778969_dp], [3, 3], order=[2, 1]))
-      ax(:, :, 2) = transpose(reshape([0.38941834_dp, 0.82085634_dp, -0.41778969_dp, &
+      ! water: C2 along z, the molecular plane normal x (pyscf _adjust_planar_c2v)
+      ax(:, :, 2) = transpose(reshape([-0.70446631_dp, -0.02677426_dp, -0.70923224_dp, &
                                        0.59336378_dp, -0.5705068_dp, -0.56783924_dp, &
-                                       -0.70446631_dp, -0.02677426_dp, -0.70923224_dp], [3, 3], order=[2, 1]))
-      ax(:, :, 3) = transpose(reshape([0.38941834_dp, 0.82085634_dp, -0.41778969_dp, &
+                                       -0.38941834_dp, -0.82085634_dp, 0.41778969_dp], [3, 3], order=[2, 1]))
+      ! CH2Cl2: C2 along z, x and y by the principal moments (cyclic order)
+      ax(:, :, 3) = transpose(reshape([0.59336378_dp, -0.5705068_dp, -0.56783924_dp, &
                                        0.70446631_dp, 0.02677426_dp, 0.70923224_dp, &
-                                       0.59336378_dp, -0.5705068_dp, -0.56783924_dp], [3, 3], order=[2, 1]))
+                                       -0.38941834_dp, -0.82085634_dp, 0.41778969_dp], [3, 3], order=[2, 1]))
       orig(:, 1) = [1.98549203_dp, -0.28353597_dp, 2.45259591_dp]
       orig(:, 2) = [0.56691784_dp, -0.37794522_dp, 0.94486306_dp]
       orig(:, 3) = [0.02270669_dp, -1.52508987_dp, 1.5287231_dp]
@@ -196,7 +198,7 @@ contains
       do im = 1, NMOL
          call noisy(im, elem, r)
          res = sym_detect(r, elem, err)
-         call check(error, res%group%name, "Cs", "still Cs with 1e-7 noise, "//MOL_NAME(im))
+         call check(error, res%group%name, DETECTED(im), "still the same group with 1e-7 noise, "//MOL_NAME(im))
          if (allocated(error)) return
          call check(error, res%residual > 0.0_dp .and. res%residual < 5.0e-7_dp, "residual is the noise")
          if (allocated(error)) return
@@ -291,7 +293,7 @@ contains
       call check(error, res%group%name, "C1", "1e-7 noise is not symmetric at 1e-9")
       if (allocated(error)) return
       res = sym_detect(r, elem, err, tol=1.0e-6_dp)
-      call check(error, res%group%name, "Cs", "but is at 1e-6")
+      call check(error, res%group%name, "C2v", "but is at 1e-6")
    end subroutine test_tolerance
 
    subroutine test_bad_args(error)
