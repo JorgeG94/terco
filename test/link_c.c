@@ -265,6 +265,124 @@ int main(void) {
       return 1;
    }
 
+   /* --- symmetry (ABI 1.21): water is C2v, of which this build runs the Cs
+    * subgroup. The C1 gradient first, then the same context with
+    * symmetry = auto: the energy and the norm of the gradient (which the move
+    * to the standard frame rotates but cannot change) must agree. ----------*/
+   {
+      double g1[9], g2[9], n1 = 0.0, n2 = 0.0, e_sym, resid, rot[9], shift[3], geom[9];
+      char name[16], det[16];
+      int nirrep, dims[2], irreps[13], nao, k, nocc[2] = {0, 0};
+
+      rc = trc_run_gradient(h);
+      if (must(rc, "trc_run_gradient (C1)")) return 1;
+      rc = trc_gradient(h, g1);
+      if (must(rc, "trc_gradient (C1)")) return 1;
+      /* before any symmetric run the getters have nothing to say */
+      if (trc_symmetry_group(h, name, 16) != TRC_ERR_STATE) {
+         fprintf(stderr, "link_c: trc_symmetry_group should be TRC_ERR_STATE before a symmetric run\n");
+         return 1;
+      }
+      if (trc_set_symmetry(h, "bogus", 0.0) != TRC_ERR_BADARG) {
+         fprintf(stderr, "link_c: trc_set_symmetry(bogus) should be refused\n");
+         return 1;
+      }
+      rc = trc_set_symmetry(h, "auto", 0.0);
+      if (must(rc, "trc_set_symmetry(auto)")) return 1;
+      rc = trc_run_scf(h);
+      if (must(rc, "trc_run_scf (symmetric)")) return 1;
+      rc = trc_energy(h, &e_sym);
+      if (must(rc, "trc_energy (symmetric)")) return 1;
+      if (fabs(e_sym - energy) > 1.0e-8) {
+         fprintf(stderr, "link_c: symmetric energy %.12f differs from C1 %.12f\n", e_sym, energy);
+         return 1;
+      }
+      rc = trc_symmetry_group(h, name, 16);
+      if (must(rc, "trc_symmetry_group")) return 1;
+      rc = trc_symmetry_detected(h, det, 16);
+      if (must(rc, "trc_symmetry_detected")) return 1;
+      printf("link_c: water symmetry: detected %s, used %s\n", det, name);
+      if (strcmp(name, "Cs") != 0 || strcmp(det, "C2v") != 0) {
+         fprintf(stderr, "link_c: water should be detected C2v and run in Cs, got %s / %s\n", det, name);
+         return 1;
+      }
+      rc = trc_symmetry_residual(h, &resid);
+      if (must(rc, "trc_symmetry_residual")) return 1;
+      if (resid > 1.0e-6) {
+         fprintf(stderr, "link_c: the water geometry is symmetric, residual %.3e\n", resid);
+         return 1;
+      }
+      rc = trc_symmetry_frame(h, rot, shift);
+      if (must(rc, "trc_symmetry_frame")) return 1;
+      /* the rotation is orthogonal */
+      for (k = 0; k < 3; k++) {
+         double d = rot[3*k]*rot[3*k] + rot[3*k+1]*rot[3*k+1] + rot[3*k+2]*rot[3*k+2];
+         if (fabs(d - 1.0) > 1.0e-12) {
+            fprintf(stderr, "link_c: frame row %d has norm^2 %.14f\n", k, d);
+            return 1;
+         }
+      }
+      rc = trc_symmetry_nirrep(h, &nirrep);
+      if (must(rc, "trc_symmetry_nirrep")) return 1;
+      rc = trc_symmetry_irrep_name(h, 1, name, 16);
+      if (must(rc, "trc_symmetry_irrep_name(1)")) return 1;
+      if (nirrep != 2 || strcmp(name, "A'") != 0) {
+         fprintf(stderr, "link_c: Cs has two irreps starting with A', got %d / %s\n", nirrep, name);
+         return 1;
+      }
+      if (trc_symmetry_irrep_name(h, 3, name, 16) != TRC_ERR_BADARG) {
+         fprintf(stderr, "link_c: irrep 3 of Cs should be refused\n");
+         return 1;
+      }
+      rc = trc_symmetry_irrep_dim(h, dims);
+      if (must(rc, "trc_symmetry_irrep_dim")) return 1;
+      rc = trc_nao(h, &nao);
+      if (must(rc, "trc_nao")) return 1;
+      if (dims[0] + dims[1] != nao) {
+         fprintf(stderr, "link_c: SO dimensions %d + %d do not sum to nao %d\n", dims[0], dims[1], nao);
+         return 1;
+      }
+      rc = trc_mo_irreps(h, irreps);
+      if (must(rc, "trc_mo_irreps")) return 1;
+      for (k = 0; k < nao; k++) {
+         if (irreps[k] < 1 || irreps[k] > 2) {
+            fprintf(stderr, "link_c: orbital %d has irrep %d\n", k + 1, irreps[k]);
+            return 1;
+         }
+         if (k < 5) nocc[irreps[k] - 1]++;   /* water: 5 doubly occupied orbitals */
+      }
+      printf("link_c: water occupied orbitals per irrep %d / %d (dims %d / %d)\n", nocc[0], nocc[1], dims[0], dims[1]);
+      if (nocc[0] != 4 || nocc[1] != 1) {
+         fprintf(stderr, "link_c: water in Cs (plane = molecular plane) has 4 A' and 1 A\" occupied orbitals\n");
+         return 1;
+      }
+      rc = trc_geometry(h, geom);
+      if (must(rc, "trc_geometry")) return 1;
+      rc = trc_run_gradient(h);
+      if (must(rc, "trc_run_gradient (symmetric)")) return 1;
+      rc = trc_gradient(h, g2);
+      if (must(rc, "trc_gradient (symmetric)")) return 1;
+      for (k = 0; k < 9; k++) { n1 += g1[k]*g1[k]; n2 += g2[k]*g2[k]; }
+      if (fabs(sqrt(n1) - sqrt(n2)) > 1.0e-6) {
+         fprintf(stderr, "link_c: gradient norm %.9f (C1) vs %.9f (symmetric)\n", sqrt(n1), sqrt(n2));
+         return 1;
+      }
+      /* what is not supported is refused, not run in C1 */
+      if (trc_run_rimp2(h) != TRC_ERR_UNSUPPORTED || trc_run_hessian(h) != TRC_ERR_UNSUPPORTED) {
+         fprintf(stderr, "link_c: RI-MP2 and the Hessian should be refused with symmetry on\n");
+         return 1;
+      }
+      /* back to off: a later run is the plain C1 run */
+      rc = trc_set_symmetry(h, "off", 0.0);
+      if (must(rc, "trc_set_symmetry(off)")) return 1;
+      rc = trc_run_scf(h);
+      if (must(rc, "trc_run_scf (off again)")) return 1;
+      if (trc_symmetry_group(h, name, 16) != TRC_ERR_STATE) {
+         fprintf(stderr, "link_c: no symmetry request, no symmetry result\n");
+         return 1;
+      }
+   }
+
    rc = trc_destroy(h);
    if (must(rc, "trc_destroy")) return 1;
 

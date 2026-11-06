@@ -72,7 +72,7 @@ assumption for the plan is:
 | S2 | Detection, orientation, symmetrization (nondegenerate tops) | S1 | done |
 | S3 | AO representation and SO basis | S2 | done |
 | S4 | SO-blocked SCF (pilot group: Cs) | S3 | done |
-| S5 | Input, CLI, Fortran API, C ABI, reporting | S4 | todo |
+| S5 | Input, CLI, Fortran API, C ABI, reporting | S4 | done |
 | S6 | Group C2 | S5 | todo |
 | S7 | Group Ci | S5 | todo |
 | S8 | Group C2v | S5 | todo |
@@ -437,3 +437,14 @@ Each of these is its own design-then-implement pair, decided after S15:
 3. Where should NVIDIA [GPU] checks run, and who runs them?
 4. Should orientation be forced to pyscf's convention, or is a terco
    convention acceptable, with a label mapping in the anchors?
+
+## Known issues found along the way (not symmetry bugs)
+
+- `check_xc_energy` occasionally hangs at 0% CPU in the OpenMP build on
+  macOS (gfortran 15.3, 4 threads): 1 of 10 runs on 51d3e3b, before any
+  symmetry code it could reach. It passes otherwise. Looks like a deadlock;
+  not investigated. Use `ctest --timeout 300` for OpenMP runs here.
+- OpenMP and device builds accumulate the Fock matrix in a run-dependent
+  order, so two identical runs differ at ~1e-13..1e-12 Eh and the
+  commutator floors at a few 1e-10 for ~1000 Eh systems. Symmetry checks
+  must not compare runs bitwise or converge below that floor (S4 hit both).

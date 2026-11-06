@@ -154,6 +154,11 @@ set_target_properties(check_sym_ao_f PROPERTIES Fortran_MODULE_DIRECTORY
                       ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ao_f)
 set_tests_properties(terco/check_sym_ao_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# What a symmetry request means (trc_sym_run): subgroups, groups not supported
+# yet, the electrons-per-irrep text and the occupation helpers. No SCF.
+terco_add_check(check_sym_run check_sym_run.F90)
+target_link_libraries(check_sym_run PRIVATE test-drive::test-drive)
+
 # The SO-blocked SCF for Cs (trc_sym_scf, trc_scf_run's sym argument): the
 # central oracle (symmetry vs C1 on the symmetrised geometry; RHF, UHF,
 # B3LYP), irrep occupations and per-irrep orbital energies against pyscf
@@ -691,6 +696,17 @@ if(TERCO_BUILD_APP)
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_input_workdir})
   target_link_libraries(check_cli_input PRIVATE test-drive::test-drive)
   unset(_cli_input_workdir)
+
+  # The symmetry keywords through the CLI (--symmetry, --symmetry-tol,
+  # --irrep-nelec, the TOML keys): HOCl symmetry=auto against pyscf's electrons
+  # per irrep and energy and against a symmetry-off run on the symmetrised
+  # geometry, the report, symmetry off unchanged, and every refusal -- see
+  # check_sym_cli.F90's own header.
+  set(_sym_cli_workdir ${CMAKE_CURRENT_BINARY_DIR}/sym_cli_work)
+  terco_add_check(check_sym_cli check_sym_cli.F90 NEEDS_PYSCF_REF
+                  ARGS $<TARGET_FILE:terco_cli> ${_sym_cli_workdir})
+  target_link_libraries(check_sym_cli PRIVATE test-drive::test-drive)
+  unset(_sym_cli_workdir)
 
   # The incremental Fock build's switches through the CLI: on by default,
   # off with --no-incremental or a TOML `incremental = false`, contradictory
@@ -1756,6 +1772,14 @@ target_link_libraries(check_capi_ghost PRIVATE ${main_lib} terco_test_basis terc
 add_test(NAME terco/check_capi_ghost COMMAND check_capi_ghost)
 set_tests_properties(terco/check_capi_ghost PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# The symmetry entries of the C ABI (trc_set_symmetry, trc_set_irrep_nelec and
+# the getters, ABI 1.21), through include/trc_c_interfaces.f90: the round trip
+# against a C1 run on the reported geometry, the frame, labels, fixed irrep
+# occupations and every refusal. The C side is link_c.c. See
+# check_capi_sym.F90's own header.
+terco_add_check(check_capi_sym check_capi_sym.F90 NEEDS_BASIS)
+target_link_libraries(check_capi_sym PRIVATE terco_c_interfaces test-drive::test-drive)
 
 #
 # trc_run_rimp2 then trc_run_gradient: no separate RI-MP2 energy step, and

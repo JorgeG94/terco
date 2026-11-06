@@ -2,9 +2,10 @@ submodule (trc_run) trc_run_report
    !! Console output of the `terco` command: the banner and the energy,
    !! gradient, charge, Fukui and Hessian summaries (bodies of `trc_run`).
    use pic_strings, only: to_string
-   use trc_app, only: app_element_symbol
+   use trc_app, only: app_element_symbol, BOHR_PER_ANGSTROM
    use trc_vib, only: trc_vib_log_table
    use trc_thermo, only: trc_thermo_log_summary
+   use trc_sym_run, only: sym_occupied_counts
    implicit none
 
 contains
@@ -46,6 +47,7 @@ contains
          end block
       end if
       call global_logger%info("   method           : "//method(r))
+      if (r%symmetry /= "off") call global_logger%info("   symmetry         : "//r%symmetry)
       call global_logger%info("   basis            : "//r%basis_path)
       if (r%rimp2) call global_logger%info("   auxiliary basis  : "//r%aux_path)
       ! The AO space itself (spherical or Cartesian) is not known until the
@@ -197,6 +199,80 @@ contains
       end if
       call global_logger%info("   ::::::::::::::::::::::::::::::::::::::::::::::::::::::")
    end subroutine run_summary
+
+   module subroutine run_symmetry_summary(r)
+      !! What the symmetry request did: the group detected and used, how far the
+      !! atoms moved, the geometry the SCF actually ran on (the standard frame,
+      !! not the input's), the electrons per irrep, and a label on each orbital.
+      !! Printed only when a symmetry request ran, so a run with symmetry off is
+      !! unchanged.
+      type(run_t), intent(in) :: r
+      character(len=1024) :: logline
+      integer :: ia, ir, s, m, nmo, nocc, m0, m1, ns
+      integer, allocatable :: cnt(:, :)
+      character(len=64) :: tag
+
+      call global_logger%info("")
+      call global_logger%info("   symmetry         : requested "//r%symmetry//", detected "//trim(r%sym_detected)// &
+                              ", used "//trim(r%sym_used))
+      if (.not. r%sym_active) then
+         call global_logger%info("                      no symmetry in the SCF (the group used is C1)")
+         return
+      end if
+      write (logline, "(a,es9.2,a)") "   symmetrisation   : largest atom displacement ", r%sym_residual, " Bohr"
+      call global_logger%info(trim(logline))
+      call global_logger%info("   NOTE: the coordinates below, the gradient and the orbitals are in the STANDARD FRAME of "// &
+                              trim(r%sym_used)//":")
+      call global_logger%info("         the molecule is symmetrised, moved to its centre of nuclear charge and rotated "// &
+                              "to the group's axes")
+      call global_logger%info("         (--json symmetry.frame rotation and symmetry.frame origin map the input to it).")
+      call global_logger%info("   geometry, standard frame (Angstrom)")
+      do ia = 1, r%natm
+         write (logline, "(a,i4,2x,a2,3f16.8)") "   ", ia, app_element_symbol(r%z(ia)), r%geom_std(:, ia)/BOHR_PER_ANGSTROM
+         call global_logger%info(trim(logline))
+      end do
+      if (.not. allocated(r%sym_mo_irrep)) return
+      ns = r%nspin
+      nmo = size(r%sym_occ, 1)
+      allocate (cnt(r%sym_nirrep, ns))
+      do s = 1, ns
+         cnt(:, s) = sym_occupied_counts(r%sym_mo_irrep(1:nmo, s), r%sym_occ(:, s) > 0.0_dp, r%sym_nirrep)
+      end do
+      if (ns == 1) then
+         call global_logger%info("   irrep  SO functions  occupied orbitals")
+      else
+         call global_logger%info("   irrep  SO functions  occupied orbitals (alpha / beta)")
+      end if
+      do ir = 1, r%sym_nirrep
+         if (ns == 1) then
+            write (logline, "(a,a6,i12,i12)") "   ", trim(r%sym_irrep_names(ir)), r%sym_irrep_dim(ir), cnt(ir, 1)
+         else
+            write (logline, "(a,a6,i12,i8,a,i0)") "   ", trim(r%sym_irrep_names(ir)), r%sym_irrep_dim(ir), cnt(ir, 1), &
+               " / ", cnt(ir, 2)
+         end if
+         call global_logger%info(trim(logline))
+      end do
+      do s = 1, ns
+         nocc = count(r%sym_occ(:, s) > 0.0_dp)
+         ! Every orbital of a small molecule; a window around the frontier otherwise.
+         m0 = 1
+         m1 = nmo
+         if (nmo > 50) then
+            m0 = max(1, nocc - 14)
+            m1 = min(nmo, nocc + 10)
+         end if
+         call global_logger%info("")
+         tag = "   orbitals"
+         if (ns == 2) tag = merge("   orbitals (alpha)", "   orbitals (beta) ", s == 1)
+         if (m0 > 1 .or. m1 < nmo) tag = trim(tag)//", window around the HOMO"
+         call global_logger%info(trim(tag)//": index  irrep  energy (Eh)  occupation")
+         do m = m0, m1
+            write (logline, "(a,i8,2x,a6,f18.10,f8.1)") "   ", m, trim(r%sym_irrep_names(max(1, r%sym_mo_irrep(m, s)))), &
+               r%sym_eps(m, s), r%sym_occ(m, s)
+            call global_logger%info(trim(logline))
+         end do
+      end do
+   end subroutine run_symmetry_summary
 
    module subroutine run_gradient_summary(r)
       !! Per-atom analytic nuclear gradient (Eh/Bohr), plus the RMS and the
