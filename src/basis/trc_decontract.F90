@@ -77,8 +77,15 @@ module trc_decontract
    !! for the table (water, glycine, silica, P/S/Cl and Fe/Zn systems), and
    !! check_decontract_policy for the loose-threshold case that fails
    !! without `screen_whole`.
-   !! Measured against 0 (V100, RHF, 1e-11, full builds, mean of builds
-   !! 2-10): see the commit that set DECON_WHOLE_UNEVEN_MAX.
+   !! Measured against 0, which is main before the price (V100, RHF,
+   !! 1e-11, full builds, mean of builds 2-10, s per build): gly20/cc-pVDZ
+   !! 1.945 -> 1.484, aug-cc-pVDZ 27.67 -> 19.24; water40/cc-pVDZ 0.990 ->
+   !! 0.849, aug-cc-pVDZ 36.38 -> 27.08; NA-040/cc-pVDZ 2.101 -> 1.764,
+   !! aug-cc-pVDZ 48.48 -> 34.63; w172/cc-pVDZ 16.83 -> 11.37; the silica
+   !! fragment and slice, cc-pVDZ, 9.66 -> 7.67 and 6.85 -> 5.56. Without
+   !! the primitive-level screen (`decontract_whole_screen`) these were
+   !! 1.370, 18.71, 0.788, 26.58, 1.586, 33.49, 10.78, 7.47 and 5.64, at
+   !! accuracy that depended on the policy.
 
    type :: trc_decontract_options_t
       !! How the working basis is split. TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE
