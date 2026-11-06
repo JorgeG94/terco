@@ -415,8 +415,6 @@ contains
       order = [x, y, z]
    end function d2_order
 
-   subroutine frame_order(rep, top, found, q, tol, ax, order, error)
-
    pure function c2h_order(found) result(order)
       !! The axis order of the C2h standard frame (module header): z is the C2
       !! axis (the axis the only C2 mask does not flip), x and y follow in
@@ -431,7 +429,7 @@ contains
       order = [modulo(kc2, 3) + 1, modulo(kc2 + 1, 3) + 1, kc2]
    end function c2h_order
 
-   subroutine frame_order(rep, top, found, q, tol, order, error)
+   subroutine frame_order(rep, top, found, q, tol, ax, order, error)
       !! Which principal axes become x, y, z of the standard frame of group
       !! `rep`, following pyscf (module header). `found` marks the masks of
       !! the detected group, `q` the coordinates in the principal frame.
