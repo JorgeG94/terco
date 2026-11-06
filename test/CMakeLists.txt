@@ -134,6 +134,11 @@ target_link_libraries(check_si PRIVATE test-drive::test-drive)
 terco_add_check(check_sym_group check_sym_group.F90)
 target_link_libraries(check_sym_group PRIVATE test-drive::test-drive)
 
+# Point-group detection, orientation and symmetrization (trc_sym_geom): water,
+# HOCl and CH2Cl2 against the frames pyscf 2.14.0 picks, invariance, perm.
+terco_add_check(check_sym_geom check_sym_geom.F90)
+target_link_libraries(check_sym_geom PRIVATE test-drive::test-drive)
+
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
 # check_basis_ecp_refused.F90's own header.

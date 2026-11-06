@@ -69,7 +69,7 @@ assumption for the plan is:
 | S0 | macOS host + OpenMP build | — | done |
 | S0b | Apple GPU feasibility spike (time-boxed) | S0 | done (no-go, see `apple-gpu.md`) |
 | S1 | Point-group tables (`trc_sym_group`) | S0 | done |
-| S2 | Detection, orientation, symmetrization (nondegenerate tops) | S1 | todo |
+| S2 | Detection, orientation, symmetrization (nondegenerate tops) | S1 | done |
 | S3 | AO representation and SO basis | S2 | todo |
 | S4 | SO-blocked SCF (pilot group: Cs) | S3 | todo |
 | S5 | Input, CLI, Fortran API, C ABI, reporting | S4 | todo |
@@ -322,6 +322,19 @@ separate small PR first.
 | S9 | C2h | 4 | trans-diazene (N2H2), trans-glyoxal |
 | S10 | D2 | 4 | twisted ethylene (e.g. 30°) |
 | S11 | D2h | 8 | ethylene, naphthalene, O2 triplet (`test/o2.xyz`, UHF), once S12 lands |
+
+How to enable a group (from S2): in `src/symmetry/trc_sym_geom.F90`, set
+the group's flag in `SYM_GROUP_ENABLED`, add its subgroup rule in
+`reported_name`, and add its frame in `frame_order` (which errors for a
+group with no frame). Axis signs are fixed so the largest component of each
+axis is positive and det(rot) = +1; pyscf's signs are arbitrary.
+
+Open items left by S2, each owned by the stage named:
+- **S9**: C2h capped to Cs uses the C2 axis as the mirror normal. This is
+  consistent with pyscf's C2h frame but was not run against pyscf. Confirm it.
+- **S11**: D2h capped to Cs uses principal-axis order (1, 2, 3)
+  provisionally, with no pyscf check. Fix it against pyscf.
+- **S4**: no `test/hocl.xyz` exists yet (S2 used inline geometries). Add it.
 
 ## S12 — Symmetric and spherical tops, linear molecules
 

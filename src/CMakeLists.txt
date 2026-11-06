@@ -69,7 +69,8 @@ target_sources(
           core/trc_ao_norm.F90    # AO-index normalisation, this build's <-> GAMESS's per-component convention
           core/trc_sph.F90        # the spherical (pure) AO space: block-sparse Cartesian <-> spherical transforms
           core/trc_acc_shim.F90   # see the file: this one is not optional
-          symmetry/trc_sym_group.F90) # the eight Abelian point groups: operations, characters, irrep names
+          symmetry/trc_sym_group.F90   # the eight Abelian point groups: operations, characters, irrep names
+          symmetry/trc_sym_geom.F90)   # point-group detection, orientation, symmetrization of a geometry
 
 # --- the molecular quadrature -------------------------------------------------
 #
