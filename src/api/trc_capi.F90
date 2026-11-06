@@ -3629,7 +3629,12 @@ contains
       end if
 
       if (.not. cx%sym_frame_ok) then
-         geom = sym_detect(cx%at_r, cx%elements, err, tol=cx%sym_req%tol, ghost=cx%at_z == 0.0_dp, basis_id=cx%elements)
+         if (cx%sym_req%mode == SYM_EXPLICIT) then
+            geom = sym_detect(cx%at_r, cx%elements, err, tol=cx%sym_req%tol, ghost=cx%at_z == 0.0_dp, &
+                              basis_id=cx%elements, requested=cx%sym_req%group)
+         else
+            geom = sym_detect(cx%at_r, cx%elements, err, tol=cx%sym_req%tol, ghost=cx%at_z == 0.0_dp, basis_id=cx%elements)
+         end if
          if (err%has_error()) then
             cx%message = "trc_run_scf: "//err%get_message()
             status = TRC_ERR_BADARG

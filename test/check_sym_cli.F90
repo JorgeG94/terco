@@ -59,7 +59,7 @@ contains
          new_unittest("TOML: a wrongly typed symmetry key is refused", test_toml_type), &
          new_unittest("an explicit subgroup runs; C1 runs without symmetry", test_explicit), &
          new_unittest("an explicit group that is not a subgroup is refused", test_not_subgroup), &
-         new_unittest("a subgroup below the reported group is refused", test_not_yet), &
+         new_unittest("a subgroup below the detected group runs (Cs on water); a non-subgroup is refused", test_not_yet), &
          new_unittest("an unknown group is refused", test_unknown_group), &
          new_unittest("irrep_nelec: aufbau counts reproduce the energy; others are a different state", test_irrep_nelec), &
          new_unittest("irrep_nelec: malformed and not adding up are refused", test_irrep_nelec_bad), &
@@ -330,9 +330,38 @@ contains
 
    subroutine test_not_yet(error)
       type(error_type), allocatable, intent(out) :: error
-      ! Water is C2v (enabled since S8). Cs is one of its subgroups, but the
-      ! detection reports one group only, so a subgroup below it is refused.
-      call refused('water.xyz -b basis_sets/sto-3g.json --symmetry cs', 'cannot be used for this molecule', error)
+      type(json_file) :: json
+      character(len=:), allocatable :: group, detected
+      logical :: found
+      integer :: rc
+      real(dp) :: e_cs, e_c2v
+
+      ! Water is C2v and Cs is one of its subgroups: the run uses Cs (pyscf's
+      ! frame for it) and gives the C2v energy.
+      call setup()
+      call run_cli('water.xyz -b basis_sets/sto-3g.json --symmetry cs'//TIGHT//' --json '//work_dir//'/wcs.json > '// &
+                   work_dir//'/wcs.out 2>&1', rc)
+      call check(error, rc == 0, "--symmetry cs on water failed:"//new_line('a')//slurp(work_dir//'/wcs.out'))
+      if (allocated(error)) return
+      call run_cli('water.xyz -b basis_sets/sto-3g.json --symmetry c2v'//TIGHT//' --json '//work_dir//'/wc2v.json > '// &
+                   work_dir//'/wc2v.out 2>&1', rc)
+      call check(error, rc == 0, "--symmetry c2v on water failed")
+      if (allocated(error)) return
+      call json%initialize()
+      call json%load(filename=work_dir//'/wcs.json')
+      call json%get('symmetry.group', group, found)
+      call check(error, found .and. group == 'Cs', "Cs requested on water, Cs should be used")
+      if (allocated(error)) return
+      call json%get('symmetry.detected group', detected, found)
+      call json%destroy()
+      call check(error, found .and. detected == 'C2v', "the detected group of water is C2v")
+      if (allocated(error)) return
+      e_cs = energy_of(work_dir//'/wcs.json')
+      e_c2v = energy_of(work_dir//'/wc2v.json')
+      call check(error, abs(e_cs - e_c2v) < TOL_E_HF, "Cs and C2v energies of water differ: "//to_string(e_cs - e_c2v, 'es10.2'))
+      if (allocated(error)) return
+      ! Ci is not a subgroup of C2v.
+      call refused('water.xyz -b basis_sets/sto-3g.json --symmetry ci', 'is not that group or one of its subgroups', error)
    end subroutine test_not_yet
 
    subroutine test_unknown_group(error)

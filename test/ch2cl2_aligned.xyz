@@ -1,0 +1,7 @@
+5
+CH2Cl2, nonplanar C2v, axis-aligned input: C2 along x, both Cl in the xy plane, both H in the xz plane (Angstrom). pyscf keeps these axes for a requested Cs (the xy mirror), so the Cs plane holds the Cl atoms
+C    0.0000000000   0.0000000000   0.0000000000
+Cl   0.5500000000   1.7000000000   0.0000000000
+Cl   0.5500000000  -1.7000000000   0.0000000000
+H   -0.5500000000   0.0000000000   0.9200000000
+H   -0.5500000000   0.0000000000  -0.9200000000

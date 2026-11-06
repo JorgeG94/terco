@@ -178,6 +178,11 @@ target_link_libraries(check_sym_c2 PRIVATE test-drive::test-drive)
 # the B1/B2 labels for a rotated input, gradient symmetrisation, fixed occupations.
 terco_add_check(check_sym_c2v check_sym_c2v.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_sym_c2v PRIVATE test-drive::test-drive)
+# Requested subgroups (S5b): Cs and C2 requested on C2v molecules (water, nonplanar
+# and axis-aligned CH2Cl2, NH2): pyscf's frame, SO dimensions, irrep occupations
+# and orbital energies (pyscf_refs/sym_subgroup.ref), energy equal to C2v and C1.
+terco_add_check(check_sym_subgroup check_sym_subgroup.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_subgroup PRIVATE test-drive::test-drive)
 # The point group Ci (an inversion centre only): detection, the AO signs
 # (-1)^l, block-diagonal S and H, the central oracle for RHF, UHF and B3LYP,
 # and the gradient, on meso-CHFCl-CHFCl and N2H2F2 against pyscf

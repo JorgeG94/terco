@@ -11,7 +11,33 @@ module trc_sym_geom
    !! equivalent when element, ghost status and basis identity all match.
    !! The passing masks form the largest Abelian group of the D2h family
    !! (`detected`); the group actually reported (`group`) is capped by
-   !! `SYM_GROUP_ENABLED`.
+   !! `SYM_GROUP_ENABLED`, or is the subgroup the caller `requested`.
+   !!
+   !! REQUESTED SUBGROUPS. With `requested` (a group name), `group` is that
+   !! group when it is a proper subgroup of `detected` that has a rule in
+   !! `has_subgroup_rule` (today C2v -> Cs and C2v -> C2); `detected` still
+   !! names the full group. The elements and the frame are those of pyscf
+   !! 2.14.0 for `gto.M(..., symmetry='H')` (`Mole._build_symmetry`):
+   !!  1. if the detected axes are the input axes (each a signed unit
+   !!     vector, within 1e-5) and the elements of H hold in the input frame,
+   !!     pyscf keeps the input frame (axes = identity). terco does the same:
+   !!     `rot` is the identity (`input_frame_holds`);
+   !!  2. else `as_subgroup`: the frame of the full group, turned for H. For
+   !!     C2v -> Cs the axes are turned by 90 degrees about y (x becomes the
+   !!     C2 axis, z the old x, the normal of the mirror kept); for
+   !!     C2v -> C2 the C2v frame is kept as it is.
+   !!  Step 1 matters: the two mirrors of a nonplanar C2v molecule give
+   !!  different SO blocks, and which one is kept depends on the input
+   !!  orientation. Planar molecules have one choice, the molecular plane.
+   !!
+   !! HOW TO ADD A PAIR (full group G, subgroup H), the local change for the
+   !! stages that enable a group: (a) make H's name true in
+   !! `has_subgroup_rule(G, H)`; (b) in `frame_order`, give H's frame when
+   !! `top == G` (the `top` argument is the detected group; copy what
+   !! pyscf `as_subgroup` does for that pair: a rotation of G's axes, or
+   !! none), reusing G's own axis order; (c) add a pyscf anchor for the
+   !! pair to `check_sym_subgroup`. Nothing else changes: `sym_choose_group`
+   !! accepts any enabled subgroup that `sym_is_subgroup` allows.
    !!
    !! Result: the reported group, the frame (`rot`, `shift`), the atom
    !! permutation `perm(natm, nop)` in the operation order of the group, the
@@ -31,7 +57,7 @@ module trc_sym_geom
    !!    cyclic order. C2 has only C1 below it, so a molecule whose largest
    !!    Abelian group is C2 is reported as C2 (and only such a molecule: a
    !!    C2 inside C2h keeps the Cs cap, inside D2 the C1 cap, until their
-   !!    stages).
+   !!    stages). A C2 requested on a C2v molecule has the C2v axes.
    !!  - C2v: z is the C2 axis; x, y are the other principal axes in cyclic
    !!    order (C2 axis P1 -> x, y = P2, P3; P2 -> P3, P1; P3 -> P1, P2). A
    !!    planar molecule is turned about z so that x is the normal of its
@@ -274,11 +300,74 @@ contains
       end if
    end function reported_name
 
-   subroutine frame_order(rep, found, q, tol, order, error)
+   pure function has_subgroup_rule(top, sub) result(ok)
+      !! Whether a frame is defined for the proper subgroup `sub` of the
+      !! detected group `top` (module header, "How to add a pair").
+      character(len=*), intent(in) :: top, sub
+      logical :: ok
+      select case (trim(top))
+      case ("C2v")
+         ok = trim(sub) == "Cs" .or. trim(sub) == "C2"
+      case default
+         ok = .false.
+      end select
+   end function has_subgroup_rule
+
+   pure function input_frame_holds(ax, ops, found) result(ok)
+      !! pyscf keeps the input axes for a requested group when the detected
+      !! axes are the input axes and every operation of the group holds there.
+      !! `ax` are the principal axes (rows), `ops` the sign masks of the group
+      !! in its own frame, `found` the masks of the detected group in the
+      !! principal frame.
+      real(dp), intent(in) :: ax(3, 3)
+      integer, intent(in) :: ops(:)
+      logical, intent(in) :: found(N_MASK)
+      logical :: ok
+      integer :: k(3)
+      integer :: j, i, mq
+      ok = .false.
+      do j = 1, 3
+         k(j) = maxloc(abs(ax(:, j)), 1)
+         if (abs(abs(ax(k(j), j)) - 1.0_dp) > 1.0e-5_dp) return
+      end do
+      do i = 1, size(ops)
+         if (ops(i) == 0) cycle
+         mq = 0
+         do j = 1, 3
+            if (btest(ops(i), j - 1)) mq = ior(mq, ishft(1, k(j) - 1))
+         end do
+         if (mq < 1 .or. mq > N_MASK) return
+         if (.not. found(mq)) return
+      end do
+      ok = .true.
+   end function input_frame_holds
+
+   pure function c2v_order(found, q, tol) result(order)
+      !! The axis order of the C2v standard frame (module header).
+      logical, intent(in) :: found(N_MASK)
+      real(dp), intent(in) :: q(:, :)
+      real(dp), intent(in) :: tol
+      integer :: order(3)
+      integer :: m, kc2, a0, a1
+      kc2 = 0
+      do m = 1, N_MASK
+         if (found(m) .and. popcnt(m) == 2) kc2 = merge(1, merge(2, 3, .not. btest(m, 1)), .not. btest(m, 0))
+      end do
+      a0 = modulo(kc2, 3) + 1
+      a1 = modulo(kc2 + 1, 3) + 1
+      if (all(abs(q(a1, :)) < tol)) then  ! every atom on the plane whose normal would be y
+         order = [a1, a0, kc2]
+      else
+         order = [a0, a1, kc2]
+      end if
+   end function c2v_order
+
+   subroutine frame_order(rep, top, found, q, tol, order, error)
       !! Which principal axes become x, y, z of the standard frame of group
       !! `rep`, following pyscf (module header). `found` marks the masks of
       !! the detected group, `q` the coordinates in the principal frame.
       character(len=3), intent(in) :: rep
+      character(len=3), intent(in) :: top  !! the detected group (for a requested subgroup)
       logical, intent(in) :: found(N_MASK)
       real(dp), intent(in) :: q(:, :)
       real(dp), intent(in) :: tol
@@ -314,7 +403,7 @@ contains
             ! Cs, or C2h (whose only mirror is perpendicular to its axis):
             ! the mirror normal is z, the rest follow in cyclic order.
             order = [modulo(k, 3) + 1, modulo(k + 1, 3) + 1, k]
-         else if (nmir == 2 .and. kc2 > 0) then
+         else if (top == "C2v" .and. nmir == 2 .and. kc2 > 0) then
             ! the pyscf Cs subgroup of C2v: x = the C2 axis; the plane
             ! normal is the second remaining axis for a planar molecule.
             a0 = modulo(kc2, 3) + 1
@@ -342,39 +431,35 @@ contains
             call error%set(ERROR_GENERIC, "frame_order: group C2 reported without a C2 axis")
             return
          end if
-         order = [modulo(kc2, 3) + 1, modulo(kc2 + 1, 3) + 1, kc2]
-      case ("C2v")
-         ! the C2 axis is the one the C2 mask does not flip
-         kc2 = 0
-         do m = 1, N_MASK
-            if (found(m) .and. popcnt(m) == 2) kc2 = merge(1, merge(2, 3, .not. btest(m, 1)), .not. btest(m, 0))
-         end do
-         a0 = modulo(kc2, 3) + 1
-         a1 = modulo(kc2 + 1, 3) + 1
-         planar = all(abs(q(a1, :)) < tol)  ! every atom on the plane whose normal would be y
-         if (planar) then
-            order = [a1, a0, kc2]
+         if (top == "C2v") then
+            order = c2v_order(found, q, tol)  ! pyscf as_subgroup keeps the C2v axes
          else
-            order = [a0, a1, kc2]
+            order = [modulo(kc2, 3) + 1, modulo(kc2 + 1, 3) + 1, kc2]
          end if
+      case ("C2v")
+         order = c2v_order(found, q, tol)
       case default
          call error%set(ERROR_GENERIC, "no axis convention yet for point group "//rep// &
                         " (enabled in trc_sym_geom, but its frame is missing)")
       end select
    end subroutine frame_order
 
-   function sym_detect(r, elem, error, tol, ghost, basis_id) result(res)
+   function sym_detect(r, elem, error, tol, ghost, basis_id, requested) result(res)
       !! Detect, orient and symmetrize the geometry `r` (Bohr, 3 x natm) of
       !! atoms with element numbers `elem`. `ghost` marks ghost atoms and
       !! `basis_id` labels the basis of each atom; atoms are equivalent only when
       !! element, ghost status and basis label all agree. `tol` is the
-      !! geometry tolerance in Bohr (default `SYM_DEFAULT_TOL`).
+      !! geometry tolerance in Bohr (default `SYM_DEFAULT_TOL`). `requested`
+      !! names a subgroup of the detected group to report instead (module
+      !! header); it is ignored when it is not a proper subgroup with a rule,
+      !! and the caller (`sym_choose_group`) then decides what that means.
       real(dp), intent(in) :: r(:, :)
       integer, intent(in) :: elem(:)
       type(error_t), intent(out) :: error
       real(dp), intent(in), optional :: tol
       logical, intent(in), optional :: ghost(:)
       integer, intent(in), optional :: basis_id(:)
+      character(len=*), intent(in), optional :: requested
       type(trc_sym_geom_t) :: res
 
       integer :: natm, i, j, k, m, n, nmir
@@ -386,6 +471,7 @@ contains
       integer :: order(3)
       logical :: found(N_MASK)
       character(len=3) :: rep
+      logical :: subreq
 
       natm = size(r, 2)
       tl = SYM_DEFAULT_TOL
@@ -480,18 +566,34 @@ contains
       res%detected = detected_name(found)
       nmir = count([(found(m) .and. popcnt(m) == 1, m=1, N_MASK)])
       rep = reported_name(res%detected, nmir)
+      subreq = .false.
+      if (present(requested)) then
+         if (trim(requested) /= trim(rep) .and. trim(requested) /= "C1" .and. enabled(requested) .and. &
+             has_subgroup_rule(res%detected, requested)) then
+            rep = trim(requested)
+            subreq = .true.
+         end if
+      end if
       res%group = sym_group_from_name(rep, error)
       if (error%has_error()) return
 
       if (rep == "C1") return  ! identity frame, no shift: the old code path sees the input untouched
 
-      call frame_order(rep, found, q, tl, order, error)
+      call frame_order(rep, res%detected, found, q, tl, order, error)
       if (error%has_error()) return
       res%rot = ax(order, :)
       det = res%rot(1, 1)*(res%rot(2, 2)*res%rot(3, 3) - res%rot(2, 3)*res%rot(3, 2)) &
               - res%rot(1, 2)*(res%rot(2, 1)*res%rot(3, 3) - res%rot(2, 3)*res%rot(3, 1)) &
               + res%rot(1, 3)*(res%rot(2, 1)*res%rot(3, 2) - res%rot(2, 2)*res%rot(3, 1))
       if (det < 0.0_dp) res%rot(2, :) = -res%rot(2, :)
+      if (subreq) then
+         if (input_frame_holds(ax, res%group%ops, found)) then  ! pyscf keeps the input axes
+            res%rot = 0.0_dp
+            do i = 1, 3
+               res%rot(i, i) = 1.0_dp
+            end do
+         end if
+      end if
       res%shift = cm
       do i = 1, natm
          qf(:, i) = matmul(res%rot, d(:, i))
