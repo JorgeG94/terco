@@ -153,6 +153,30 @@ The coordinator (the main session) dispatches the `sym-helper` agent
 - Check a helper's result before using it. You are responsible for it in
   your PR.
 
+### 8. Lessons from S1–S5 (each one cost a failed run)
+
+- **test-drive suites run serially**: call `run_testsuite(..., parallel=.false.)`.
+  The default runs cases in an OpenMP parallel do, and the basis reader is
+  not thread-safe.
+- **Never compare two runs bitwise**, whether energies, matrices or printed
+  text. Under OpenMP (and on the GPU) the Fock build accumulates in a
+  run-dependent order: identical runs differ by ~1e-13..1e-12 Eh and in the
+  last printed digit. Compare with a tolerance, and justify it from a
+  measurement.
+- **Don't converge below the noise floor**: for ~1000 Eh systems the
+  commutator floors at a few 1e-10 under OpenMP. Use `conv_diis >= 1e-9`
+  and `conv_energy >= 1e-10` in oracle SCFs. The energy is variational, so
+  the 1e-10 oracle gates still hold.
+- **Reference hashes**: editing any file on a `.ref`'s `# files:` line makes
+  it stale. Regenerate with `generate.py <case>` and confirm that only the
+  hash line moved.
+- **OpenMP builds** use the `macos-omp` preset, which links libomp (see
+  `macos.md`), with `ctest --timeout 600`. Run your final OpenMP check on
+  your final commit.
+- **Test planar and nonplanar molecules**: in a planar molecule every atom
+  lies on the mirror, so many symmetry errors vanish identically. Include
+  a molecule whose operations move atoms.
+
 ---
 
 ## S0: macOS host and OpenMP build

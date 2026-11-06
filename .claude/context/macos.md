@@ -48,6 +48,14 @@ Nothing in CMake needed an `if(APPLE)` guard: the shared library, `link_c.c` tes
 
 ## OpenMP build
 
+The `macos-omp` preset links LLVM `libomp` (`brew install libomp`) in place
+of GNU `libgomp` (`TERCO_MACOS_LIBOMP=ON`). On macOS, libgomp's mutex and
+condvar team barrier occasionally deadlocks at the end of a parallel region:
+`check_xc_energy` and `check_capi_sym` hung at 0% CPU in up to a third of
+4-thread runs. With libomp the full suite passes 235/235, and the two tests
+pass 20/20 more. Don't configure an OpenMP build by hand without this
+option. Use `ctest --timeout 600` anyway.
+
 Use a scratch worktree because the converters rewrite `src/` in place:
 
 ```sh
