@@ -67,7 +67,7 @@ assumption for the plan is:
 | Stage | Title | Depends on | Status |
 |---|---|---|---|
 | S0 | macOS host + OpenMP build | — | done (branch sym/s0-macos-build) |
-| S0b | Apple GPU feasibility spike (time-boxed) | S0 | todo |
+| S0b | Apple GPU feasibility spike (time-boxed) | S0 | done (branch sym/s0b-apple-gpu; no-go) |
 | S1 | Point-group tables (`trc_sym_group`) | S0 | todo |
 | S2 | Detection, orientation, symmetrization (nondegenerate tops) | S1 | todo |
 | S3 | AO representation and SO basis | S2 | todo |
