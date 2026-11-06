@@ -229,7 +229,7 @@ contains
       !! trc_decontract's DECON_SHELL_COST_DEFAULT for what is guaranteed).
 
       integer :: bres
-      type(trc_decontract_options_t) :: decon
+      type(trc_decontract_options_t) :: decon, split
       logical :: no_decontract
       character(len=8) :: bt_env
       character(len=:), allocatable :: refusal
@@ -288,18 +288,57 @@ contains
       ! would add up to a wrong matrix with nothing to show for it. The
       ! environment is per process, so rank 0's reading of it is the one.
       if (this%distributed) call share_policy(this%comm, no_decontract, decon, this%mdj_force)
-      if (.not. no_decontract) then
-         ! A Coulomb matrix the MD J engine builds wants every general
-         ! contraction split (trc_decontract_options_t%md_coulomb). Which
-         ! engine forms J is eri_mdj_size_rule's verdict on the working
-         ! basis, which does not exist yet: an f basis stands in for it here
-         ! until the cycle is broken.
-         if (mdj_requested(this%mdj_force, .false., this%has_f, TRC_J_ENGINE_AUTO) .or. this%needs_md) then
-            decon%md_coulomb = .true.
-         end if
-         call decontract_basis(b, this%pb, this%dec, decon)
+      if (no_decontract) then
+         call build_over(this, b, thresh, bres)
+         return
       end if
+      !
+      ! WHICH ENGINE FORMS J DECIDES THE SPLIT, AND THE SPLIT FEEDS THE RULE
+      ! THAT DECIDES THE ENGINE.
+      !
+      ! MD J wants every general contraction split (`md_coulomb`: its cost
+      ! goes with primitive pairs), the bins want the policy's own working
+      ! basis. eri_mdj_size_rule picks the engine from the working basis's
+      ! counts, and it was fitted on the all-split working basis. So the
+      ! all-split basis is built first and the rule judged on exactly what
+      ! it was fitted on. Only when it then gives J to the bins, and the
+      ! policy would keep something whole, is the engine rebuilt over the
+      ! policy's basis, with the verdict kept: the rule is not re-asked on
+      ! counts it was never fitted to. A g basis (MD exchange), TRC_MDJ=1
+      ! and a caller's md_coulomb (no exact exchange) are MD J already, and
+      ! TRC_MDJ=0 is the bins already: one pass each.
+      !
+      if (this%needs_md .or. this%mdj_force == 1) decon%md_coulomb = .true.
+      if (decon%md_coulomb .or. this%mdj_force == 0) then
+         call decontract_basis(b, this%pb, this%dec, decon)
+         call build_over(this, b, thresh, bres)
+         return
+      end if
+      split = decon
+      split%md_coulomb = .true.
+      call decontract_basis(b, this%pb, this%dec, split)
       call build_over(this, b, thresh, bres)
+      if (mdj_requested(this%mdj_force, .false., this%mdj_extended, TRC_J_ENGINE_AUTO)) return
+      block
+         type(trc_basis_t) :: pb_policy
+         type(decon_t) :: dec_policy
+         logical :: same
+         call decontract_basis(b, pb_policy, dec_policy, decon)
+         same = (dec_policy%active .eqv. this%dec%active)
+         if (same .and. dec_policy%active) same = pb_policy%nshell == this%pb%nshell .and. &
+                                                  dec_policy%nao_p == this%dec%nao_p
+         call decontract_release(dec_policy)
+         call pb_policy%release()
+         if (same) return
+      end block
+      call this%release()
+      this%thresh = thresh
+      this%nao = b%nao
+      this%needs_md = maxval(b%sh_l) > 3
+      this%has_f = maxval(b%sh_l) >= 3
+      call decontract_basis(b, this%pb, this%dec, decon)
+      call build_over(this, b, thresh, bres)
+      this%mdj_extended = .false.
    end subroutine eri_build
 
    subroutine build_over(this, b, thresh, bres)
