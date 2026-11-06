@@ -448,3 +448,9 @@ Each of these is its own design-then-implement pair, decided after S15:
   order, so two identical runs differ at ~1e-13..1e-12 Eh and the
   commutator floors at a few 1e-10 for ~1000 Eh systems. Symmetry checks
   must not compare runs bitwise or converge below that floor (S4 hit both).
+- terco's default DFT grid (`grid_level` 3) is not converged for orbital
+  energies at the 1e-5 level: on meso-CHFCl-CHFCl B3LYP/6-31G* it differs
+  from its own level 8 by 2.0e-5 Eh, while pyscf levels 4..8 agree with
+  level 9 to 2.7e-6 (S7's table, in `test/check_sym_ci.F90`). Symmetry
+  checks that compare DFT orbital energies with pyscf at 1e-5 run at
+  `grid_level` 5. Worth a look by the maintainer, separately.
