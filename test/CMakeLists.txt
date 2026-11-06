@@ -139,6 +139,21 @@ target_link_libraries(check_sym_group PRIVATE test-drive::test-drive)
 terco_add_check(check_sym_geom check_sym_geom.F90)
 target_link_libraries(check_sym_geom PRIVATE test-drive::test-drive)
 
+# AO signed permutations and the SO basis (trc_sym_ao): U^T U = I, U^T S U and
+# U^T H U block-diagonal, per-irrep SO counts against pyscf's mol.symm_orb
+# (pyscf_refs/sym_so_dims.ref), Cartesian and spherical, 6-31G* and cc-pVDZ,
+# and the uncontracted l = 0..3 set (skips itself below TERCO_LMAX=3).
+terco_add_check(check_sym_ao check_sym_ao.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_ao PRIVATE test-drive::test-drive)
+set_tests_properties(terco/check_sym_ao PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+set_target_properties(check_sym_ao PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ao)
+terco_add_check(check_sym_ao_f check_sym_ao.F90 NEEDS_BASIS NEEDS_PYSCF_REF ARGS f)
+target_link_libraries(check_sym_ao_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_ao_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ao_f)
+set_tests_properties(terco/check_sym_ao_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
 # check_basis_ecp_refused.F90's own header.

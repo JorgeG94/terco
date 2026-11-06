@@ -70,7 +70,7 @@ assumption for the plan is:
 | S0b | Apple GPU feasibility spike (time-boxed) | S0 | done (no-go, see `apple-gpu.md`) |
 | S1 | Point-group tables (`trc_sym_group`) | S0 | done |
 | S2 | Detection, orientation, symmetrization (nondegenerate tops) | S1 | done |
-| S3 | AO representation and SO basis | S2 | todo |
+| S3 | AO representation and SO basis | S2 | done |
 | S4 | SO-blocked SCF (pilot group: Cs) | S3 | todo |
 | S5 | Input, CLI, Fortran API, C ABI, reporting | S4 | todo |
 | S6 | Group C2 | S5 | todo |
@@ -334,7 +334,7 @@ Open items left by S2, each owned by the stage named:
   consistent with pyscf's C2h frame but was not run against pyscf. Confirm it.
 - **S11**: D2h capped to Cs uses principal-axis order (1, 2, 3)
   provisionally, with no pyscf check. Fix it against pyscf.
-- **S4**: no `test/hocl.xyz` exists yet (S2 used inline geometries). Add it.
+- `test/hocl.xyz` and `test/ch2cl2.xyz` (nonplanar, the mirror moves atoms) were added in S3.
 
 ## S12 — Symmetric and spherical tops, linear molecules
 
