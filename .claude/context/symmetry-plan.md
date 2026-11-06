@@ -66,9 +66,9 @@ assumption for the plan is:
 
 | Stage | Title | Depends on | Status |
 |---|---|---|---|
-| S0 | macOS host + OpenMP build | — | done (branch sym/s0-macos-build) |
-| S0b | Apple GPU feasibility spike (time-boxed) | S0 | done (branch sym/s0b-apple-gpu; no-go) |
-| S1 | Point-group tables (`trc_sym_group`) | S0 | todo |
+| S0 | macOS host + OpenMP build | — | done |
+| S0b | Apple GPU feasibility spike (time-boxed) | S0 | done (no-go, see `apple-gpu.md`) |
+| S1 | Point-group tables (`trc_sym_group`) | S0 | done |
 | S2 | Detection, orientation, symmetrization (nondegenerate tops) | S1 | todo |
 | S3 | AO representation and SO basis | S2 | todo |
 | S4 | SO-blocked SCF (pilot group: Cs) | S3 | todo |
@@ -130,7 +130,8 @@ molecule.
   5. The **[GPU]** items either run on an NVIDIA host or are listed as
      "not run" in the PR body.
   6. Run the `pr-review` skill on your own diff and fix every must-fix.
-  7. Update the Status column above in the same PR.
+  7. Leave the Status column alone: the coordinator updates it when merging
+     (parallel edits to adjacent rows conflict).
 
 ## S0 — macOS host and OpenMP build
 

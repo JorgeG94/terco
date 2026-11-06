@@ -98,7 +98,8 @@ report:
 7. The OpenMP build passes at `OMP_NUM_THREADS=4`, if you touched
    `do concurrent`, `!$acc` or `!$omp` code.
 8. You ran the `pr-review` skill on your own diff and fixed every must-fix.
-9. The Status column in `symmetry-plan.md` is updated for your stage.
+9. You did not edit the Status column in `symmetry-plan.md`; the
+   coordinator updates it on merge (adjacent-row edits conflict).
 
 ### 6. Report format (your final message)
 
@@ -409,7 +410,7 @@ reproduction; the coordinator will schedule a separate fix PR.
 
 **Parallel note**: other agents may be doing other groups at the same time.
 Touch only your group's lines in shared files (`generate.py`,
-`test/CMakeLists.txt`, the plan's status table) to keep merges trivial.
+`test/CMakeLists.txt`) to keep merges trivial. Never edit the status table.
 
 ## S12: symmetric and spherical tops, linear molecules
 

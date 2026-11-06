@@ -129,6 +129,11 @@ target_link_libraries(check_exchange_screen PRIVATE test-drive::test-drive)
 terco_add_check(check_si check_si.F90)
 target_link_libraries(check_si PRIVATE test-drive::test-drive)
 
+# The Abelian point-group tables (trc_sym_group): closure, character
+# orthogonality, irrep names and order against pyscf 2.14.0's param.py.
+terco_add_check(check_sym_group check_sym_group.F90)
+target_link_libraries(check_sym_group PRIVATE test-drive::test-drive)
+
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
 # check_basis_ecp_refused.F90's own header.
