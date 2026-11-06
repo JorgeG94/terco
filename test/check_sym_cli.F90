@@ -210,8 +210,11 @@ contains
       if (allocated(error)) return
       plain = stable_text(work_dir//'/plain.out')
       off = stable_text(work_dir//'/off.out')
-      ! The banner of an explicit `off` has no extra line either: they are identical.
-      call check(error, plain == off, "--symmetry off changed the output")
+      ! The banner of an explicit `off` has no extra line either: same lines,
+      ! same words. Numbers only to accumulation-order noise: under OpenMP
+      ! two identical runs print the energy components differently in the
+      ! 12th decimal (measured +-2e-12 Eh over 8 runs at 4 threads).
+      call check(error, same_text_to_noise(plain, off, 1.0e-9_dp), "--symmetry off changed the output")
       if (allocated(error)) return
       call check(error, index(plain, 'symmetry') == 0 .and. index(plain, 'STANDARD FRAME') == 0 .and. &
                  index(plain, 'irrep') == 0, "a run without symmetry mentions symmetry")
@@ -587,6 +590,65 @@ contains
       end do
       close (u)
    end function stable_text
+
+   logical function same_text_to_noise(a, b, tol) result(same)
+      !! Two stable_text outputs with the same lines and the same words, where
+      !! a word that differs must be a number in both, within `tol`.
+      character(len=*), intent(in) :: a, b
+      real(dp), intent(in) :: tol
+      integer :: ia, ib, ea, eb
+      same = .false.
+      ia = 1
+      ib = 1
+      do while (ia <= len(a) .and. ib <= len(b))
+         ea = index(a(ia:), new_line('a')) + ia - 1
+         eb = index(b(ib:), new_line('a')) + ib - 1
+         if (ea < ia .or. eb < ib) return
+         if (.not. same_line(a(ia:ea - 1), b(ib:eb - 1))) return
+         ia = ea + 1
+         ib = eb + 1
+      end do
+      same = (ia > len(a) .and. ib > len(b))
+   contains
+      logical function same_line(la, lb) result(ok)
+         character(len=*), intent(in) :: la, lb
+         integer :: pa, pb, qa, qb, ios_a, ios_b
+         real(dp) :: va, vb
+         ok = .false.
+         if (la == lb) then
+            ok = .true.
+            return
+         end if
+         pa = 1
+         pb = 1
+         do
+            do while (pa <= len(la))
+               if (la(pa:pa) /= ' ') exit
+               pa = pa + 1
+            end do
+            do while (pb <= len(lb))
+               if (lb(pb:pb) /= ' ') exit
+               pb = pb + 1
+            end do
+            if (pa > len(la) .or. pb > len(lb)) then
+               ok = (pa > len(la) .and. pb > len(lb))
+               return
+            end if
+            qa = index(la(pa:), ' ') + pa - 2
+            if (qa < pa) qa = len(la)
+            qb = index(lb(pb:), ' ') + pb - 2
+            if (qb < pb) qb = len(lb)
+            if (la(pa:qa) /= lb(pb:qb)) then
+               read (la(pa:qa), *, iostat=ios_a) va
+               read (lb(pb:qb), *, iostat=ios_b) vb
+               if (ios_a /= 0 .or. ios_b /= 0) return
+               if (abs(va - vb) > tol) return
+            end if
+            pa = qa + 1
+            pb = qb + 1
+         end do
+      end function same_line
+   end function same_text_to_noise
 
 end module check_sym_cli_suite
 
