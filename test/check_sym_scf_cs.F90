@@ -502,7 +502,7 @@ program check_sym_scf_cs
    testsuites = [new_testsuite("sym_scf_cs", collect_sym_scf_cs)]
    do is = 1, size(testsuites)
       write (error_unit, '(a)') "Testing: "//testsuites(is)%name
-      call run_testsuite(testsuites(is)%collect, error_unit, stat)
+      call run_testsuite(testsuites(is)%collect, error_unit, stat, parallel=.false.)
    end do
    if (stat > 0) then
       write (error_unit, '(i0,a)') stat, " test(s) failed"
