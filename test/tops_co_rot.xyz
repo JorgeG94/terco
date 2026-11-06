@@ -1,0 +1,4 @@
+2
+carbon monoxide, Coov, r = 1.1283 Angstrom (experimental Re, recalled from memory), along z; then rotated by a random proper rotation (numpy RandomState(105), QR of a normal matrix) and shifted by a random vector
+C     -0.30707429862710     2.55714438965817     3.86076850139257
+O     -1.23756905699953     1.93127061808897     3.98535749249210

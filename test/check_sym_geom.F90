@@ -35,7 +35,7 @@ contains
                   new_unittest("symmetrized coordinates invariant to 1e-14", test_invariance), &
                   new_unittest("perm is a bijection per operation", test_perm), &
                   new_unittest("basis identity and ghost break symmetry", test_classes), &
-                  new_unittest("degenerate moments give C1", test_degenerate), &
+                  new_unittest("degenerate moments: linear molecule and atom in D2h/C2v", test_degenerate), &
                   new_unittest("tolerance decides detection", test_tolerance), &
                   new_unittest("bad arguments are refused", test_bad_args) &
                   ]
@@ -272,16 +272,25 @@ contains
       type(error_type), allocatable, intent(out) :: error
       type(trc_sym_geom_t) :: res
       type(error_t) :: err
-      ! CO2 is linear: two vanishing moments
+      ! CO2 is linear: two vanishing moments; since S12 the group is D2h (inversion centre)
       res = sym_detect(reshape([0.0_dp, 0.0_dp, -2.2_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 2.2_dp], &
                                [3, 3]), [8, 6, 8], err)
       call check(error, res%degenerate, "flagged")
       if (allocated(error)) return
-      call check(error, res%group%name, "C1", "C1 until S12")
+      call check(error, res%group%name, "D2h", "linear with an inversion centre: D2h")
       if (allocated(error)) return
-      ! a single atom
+      ! the same without the centre (OCS-like): C2v
+      res = sym_detect(reshape([0.0_dp, 0.0_dp, -2.2_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 2.9_dp], &
+                               [3, 3]), [8, 6, 16], err)
+      call check(error, res%group%name, "C2v", "linear without an inversion centre: C2v")
+      if (allocated(error)) return
+      ! a single atom: D2h, frame = input axes, origin = the atom
       res = sym_detect(reshape([1.0_dp, 2.0_dp, 3.0_dp], [3, 1]), [8], err)
-      call check(error, res%degenerate .and. res%group%name == "C1", "single atom")
+      call check(error, res%degenerate .and. res%group%name == "D2h", "single atom")
+      if (allocated(error)) return
+      call check(error, maxval(abs(res%shift - [1.0_dp, 2.0_dp, 3.0_dp])) < 1.0e-14_dp, "atom: origin on the atom")
+      if (allocated(error)) return
+      call check(error, maxval(abs(res%rot - reshape([1, 0, 0, 0, 1, 0, 0, 0, 1], [3, 3]))) < 1.0e-14_dp, "atom: input axes")
    end subroutine test_degenerate
 
    subroutine test_tolerance(error)

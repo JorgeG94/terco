@@ -1,0 +1,18 @@
+# terco golden v1
+# case: sym_tops
+# from: gfortran-15 build build at a4ab7ac, by test/goldens/regen_goldens.py
+E_benzene_rhf -2.3070286586566408e+02
+E_nh3_rhf -5.6195616322492228e+01
+E_nh3_uhf -5.5857573755479393e+01
+E_nh3_b3lyp -5.6553755596531190e+01
+E_ch4_rhf -4.0198672615419277e+01
+E_sf6_rhf -9.9398968326390582e+02
+E_n2_rhf -1.0895412801367382e+02
+E_co_rhf -1.1274928346873237e+02
+E_hcn_rhf -9.2882964135470743e+01
+E_o2_uhf -1.4962775750359526e+02
+E_ne_rhf -1.2848877555174056e+02
+E_o_uhf -7.4792166058284124e+01
+E_benzene_c2v -2.3070286586566408e+02
+E_benzene_cs -2.3070286586566431e+02
+END
