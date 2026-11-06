@@ -78,7 +78,7 @@ assumption for the plan is:
 | S7 | Group Ci | S5 | done |
 | S8 | Group C2v | S5 | done |
 | S9 | Group C2h | S5 | todo |
-| S10 | Group D2 | S5 | todo |
+| S10 | Group D2 | S5 | done |
 | S11 | Group D2h | S5 | todo |
 | S12 | Symmetric and spherical tops, linear molecules | S11 | todo |
 | S13 | Skeleton Fock design spike | S11 | todo |
@@ -471,3 +471,10 @@ Each of these is its own design-then-implement pair, decided after S15:
   level 9 to 2.7e-6 (S7's table, in `test/check_sym_ci.F90`). Symmetry
   checks that compare DFT orbital energies with pyscf at 1e-5 run at
   `grid_level` 5. Worth a look by the maintainer, separately.
+- D2 labels in a general orientation: pyscf's `alias_axes` swaps x and y
+  when its LAPACK-signed eigenvector frame is left-handed, so pyscf's B2/B3
+  for a rotated D2 molecule depend on LAPACK's eigenvector signs. terco
+  always takes the right-handed frame. Its B2/B3 can therefore be pyscf's
+  B3/B2 for the same input. Axis-aligned inputs agree exactly. S10's test
+  accepts either and maps the labels (60 random rotations: the difference
+  is exactly the left-handed cases).
