@@ -5659,6 +5659,117 @@ def gen_sym_d2h_subgroup():
     w.end()
     w.write()
 
+TOPS_IRREPS = {"D2h": D2H_IRREPS, "C2v": D2H_SUB_IRREPS["C2v"], "Cs": D2H_SUB_IRREPS["Cs"],
+               "D2": ["A", "B1", "B2", "B3"]}
+# molecule -> (pyscf top group, pyscf Abelian group, requested group for aligned linear molecules and atoms)
+TOPS_MOLS = {"tops_benzene": ("D6h", "D2h"), "tops_benzene_rot": ("D6h", "D2h"),
+             "tops_nh3": ("C3v", "Cs"), "tops_nh3_rot": ("C3v", "Cs"),
+             "tops_ch4": ("Td", "D2"), "tops_ch4_rot": ("Td", "D2"),
+             "tops_sf6": ("Oh", "D2h"), "tops_sf6_rot": ("Oh", "D2h"),
+             "tops_n2": ("Dooh", "D2h"), "tops_n2_rot": ("Dooh", "D2h"),
+             "tops_co": ("Coov", "C2v"), "tops_co_rot": ("Coov", "C2v"),
+             "tops_hcn": ("Coov", "C2v"), "tops_hcn_rot": ("Coov", "C2v"),
+             "o2": ("Dooh", "D2h"), "tops_o2_rot": ("Dooh", "D2h"),
+             "tops_ne": ("SO3", "D2h"), "o_atom": ("SO3", "D2h")}
+
+
+def _tops_mol(m, bname, cart, charge, spin, json_for, sub=True):
+    """pyscf Mole for `m`. sub=True: symmetry=True. Linear molecules and atoms keep the
+    cylindrical/spherical group for a spherical basis, so their SO anchors use the
+    requested Abelian group (valid for the axis-aligned files)."""
+    atoms = _xyz_atoms(m)
+    elements = {sym: gto.charge(sym) for sym, _ in atoms}
+    basis_arg = bse_json_basis(TEST / json_for[bname], elements)
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Angstrom', cart=cart, charge=charge, spin=spin,
+                symmetry=sub, verbose=0)
+    top, abel = TOPS_MOLS[m] if m in TOPS_MOLS else ("D6h", "D2h")
+    want = abel if sub is True else sub
+    if sub is True and top in ("Dooh", "Coov", "SO3") and not cart:
+        want = top   # spherical basis: pyscf keeps the cylindrical group (descends by irrep_id % 10)
+    if mol.groupname != want or (m in TOPS_MOLS and mol.topgroup != top):
+        raise RuntimeError(f"{m}: pyscf group {mol.groupname} (top {mol.topgroup}), expected {want} of {top}")
+    return mol
+
+
+def gen_sym_tops():
+    """check_sym_tops's anchor: pyscf 2.14.0 for symmetric and spherical tops, linear
+    molecules and atoms. Per molecule (aligned and randomly rotated and shifted files):
+    the frame (`mol._symm_axes`, rows x, y, z, any sign) and origin from symmetry=True with
+    a Cartesian basis (then pyscf's group is the Abelian D2h / C2v for the cylindrical
+    groups; the frame does not depend on the basis). SO dimensions per irrep for 6-31G*
+    Cartesian and cc-pVDZ spherical; for linear molecules and atoms on the aligned files
+    with the Abelian group requested (pyscf keeps the input axes, which are the molecular
+    axes), because a spherical basis otherwise uses Dooh / Coov / SO3 irreps. Per SCF
+    case: the energy, electrons per irrep and sorted orbital energies per irrep. Benzene
+    also with symmetry='C2v' and 'Cs' (requested subgroups of D6h -> D2h)."""
+    json_for = {"631gs": "basis_sets/6-31gs.json", "ccpvdz": "basis_sets/cc-pvdz.json"}
+    mols = list(TOPS_MOLS)
+    lin = {m for m, (t, a) in TOPS_MOLS.items() if t in ("Dooh", "Coov", "SO3")}
+    dimcases = [("631gs", True), ("ccpvdz", False)]
+    # tag, molecule, basis, cart, method, charge, spin, requested group (True = symmetry=True)
+    cases = [("benzene_rhf", "tops_benzene_rot", "631gs", True, "rhf", 0, 0, True),
+             ("nh3_rhf", "tops_nh3_rot", "ccpvdz", False, "rhf", 0, 0, True),
+             ("nh3_uhf", "tops_nh3", "ccpvdz", False, "uhf", 1, 1, True),
+             ("nh3_b3lyp", "tops_nh3_rot", "ccpvdz", False, "b3lyp", 0, 0, True),
+             ("ch4_rhf", "tops_ch4_rot", "ccpvdz", False, "rhf", 0, 0, True),
+             ("sf6_rhf", "tops_sf6_rot", "631gs", True, "rhf", 0, 0, True),
+             ("n2_rhf", "tops_n2", "ccpvdz", False, "rhf", 0, 0, "D2h"),
+             ("co_rhf", "tops_co", "ccpvdz", False, "rhf", 0, 0, "C2v"),
+             ("hcn_rhf", "tops_hcn", "ccpvdz", False, "rhf", 0, 0, "C2v"),
+             ("o2_uhf", "o2", "ccpvdz", False, "uhf", 0, 2, "D2h"),
+             ("ne_rhf", "tops_ne", "ccpvdz", False, "rhf", 0, 0, "D2h"),
+             ("o_uhf", "o_atom", "ccpvdz", False, "uhf", 0, 2, "D2h"),
+             ("benzene_c2v_rhf", "tops_benzene_rot", "631gs", True, "rhf", 0, 0, "C2v"),
+             ("benzene_cs_rhf", "tops_benzene_rot", "631gs", True, "rhf", 0, 0, "Cs")]
+    subs = ["C2v", "Cs"]
+    bz = ["tops_benzene", "tops_benzene_rot"]
+    w = RefWriter("sym_tops.ref")
+    w.header("check_sym_tops", [ROOT / "test" / "check_sym_tops.F90"]
+             + [TEST / f"{m}.xyz" for m in mols] + [TEST / j for j in json_for.values()])
+    for m in mols:
+        mol = _tops_mol(m, "631gs", True, 0, 0, json_for)
+        w.vector(f"AXES_{m}", np.asarray(mol._symm_axes).ravel())
+        w.vector(f"ORIG_{m}", np.asarray(mol._symm_orig))
+    for m in bz:
+        for sub in subs:
+            mol = _tops_mol(m, "631gs", True, 0, 0, json_for, sub)
+            w.vector(f"AXES_{m}_{sub}", np.asarray(mol._symm_axes).ravel())
+            w.vector(f"ORIG_{m}_{sub}", np.asarray(mol._symm_orig))
+
+    def dims_of(mol, irreps):
+        dimd = {n: o.shape[1] for n, o in zip(mol.irrep_name, mol.symm_orb)}
+        dims = [dimd.get(n, 0) for n in irreps]
+        if sum(dims) != mol.nao_nr():
+            raise RuntimeError(f"gen_sym_tops {mol.groupname}: SO count {dims} != nao {mol.nao_nr()}")
+        return dims
+    for m in mols:
+        if m in lin and m.endswith("_rot"):
+            continue   # same dimensions as the aligned file
+        top, abel = TOPS_MOLS[m]
+        for bname, cart in dimcases:
+            sub = abel if m in lin else True
+            mol = _tops_mol(m, bname, cart, 0, 0, json_for, sub)
+            dims = dims_of(mol, TOPS_IRREPS[abel])
+            tag = f"{m}_{bname}"
+            w.int_("NAO_" + tag, mol.nao_nr())
+            w.vector("SO_" + tag, dims)
+            print(f"  SO_{tag}: nao {mol.nao_nr()} dims {dims}")
+    for m in bz:
+        for sub in subs:
+            for bname, cart in dimcases:
+                mol = _tops_mol(m, bname, cart, 0, 0, json_for, sub)
+                dims = dims_of(mol, TOPS_IRREPS[sub])
+                tag = f"{m}_{sub}_{bname}"
+                w.int_("NAO_" + tag, mol.nao_nr())
+                w.vector("SO_" + tag, dims)
+    for tag, m, bname, cart, method, charge, spin, sub in cases:
+        mol = _tops_mol(m, bname, cart, charge, spin, json_for, sub)
+        abel = sub if sub is not True else TOPS_MOLS[m][1]
+        mf, grad_norm = _d2h_scf(mol, method, f"sym_tops {tag}")
+        _d2h_write_case(w, tag, mol, mf, grad_norm, method, TOPS_IRREPS[abel])
+    w.end()
+    w.write()
+
 
 CASES = {
     "hirshfeld": gen_hirshfeld,
@@ -5820,6 +5931,7 @@ CASES = {
     "sym_d2": gen_sym_d2,
     "sym_d2h": gen_sym_d2h,
     "sym_d2h_subgroup": gen_sym_d2h_subgroup,
+    "sym_tops": gen_sym_tops,
     "sym_c2h": gen_sym_c2h,
     "sym_c2h_subgroup": gen_sym_c2h_subgroup,
     "sym_ci": gen_sym_ci,

@@ -80,7 +80,7 @@ assumption for the plan is:
 | S9 | Group C2h | S5 | done |
 | S10 | Group D2 | S5 | done |
 | S11 | Group D2h | S5 | done |
-| S12 | Symmetric and spherical tops, linear molecules | S11 | todo |
+| S12 | Symmetric and spherical tops, linear molecules | S11 | done |
 | S13 | Skeleton Fock design spike | S11 | todo |
 | S14 | Skeleton Fock: host implementation | S13 + maintainer sign-off | todo |
 | S15 | GPU validation and performance | S14, NVIDIA host | todo |
@@ -375,9 +375,38 @@ Abelian subgroup and axes that pyscf picks.
   planes among directions defined by atoms and atom pairs. With three equal
   moments (CH4, SF6), do the same, and expect D2 or D2h for Td and Oh. For
   linear molecules use C2v or D2h, as pyscf does.
-- Tests: benzene → D2h, NH3 → Cs, CH4 → D2, N2 → D2h, CO → C2v, SF6 → D2h,
-  each matching pyscf's chosen subgroup and orientation, with the central
-  oracle on each.
+- Tests: benzene, NH3, CH4, SF6, N2, CO, HCN, O2, Ne, O, each matching pyscf's
+  chosen subgroup and orientation, with the central oracle on each.
+
+Done (S12), measured against pyscf 2.14.0 (`symmetry=True`): the plan's guesses
+were right for the nonlinear molecules, but the linear ones and atoms need care.
+`trc_sym_tops.F90` is a port of pyscf's `detect_symm` degenerate branch,
+`SymmSys` axis search and `get_subgroup` (functions and line numbers in its
+header), so group and frame come from pyscf's own algorithm, not from a guess.
+
+| Molecule | pyscf topgroup | pyscf groupname (Cartesian / spherical) |
+|---|---|---|
+| benzene | D6h | D2h (z = C6 axis, x = the C2 axis through the first atom) |
+| NH3, CH3F | C3v | Cs (z = mirror normal) |
+| CH4 | Td | D2 |
+| SF6, cubane | Oh | D2h |
+| N2, O2, CO2 | Dooh | D2h / Dooh |
+| CO, HCN | Coov | C2v / Coov |
+| Ne, O | SO3 | D2h / SO3 |
+| BF3, PF5 | D3h | C2v |
+| ethane (staggered) | D3d | C2h |
+| allene | D2d | D2 |
+
+For a spherical basis pyscf keeps `Dooh`, `Coov`, `SO3` for linear molecules and
+atoms, with their own irreps (E1gx, p+1, ...); they descend to D2h / C2v by
+`irrep_id % 10`, which is what terco runs. pyscf takes the x, y axes of a linear
+molecule from LAPACK, so only z is comparable. Unsupported (kept as C1 with a
+warning): a full group whose `get_subgroup` is not a group pyscf can use (S6,
+S10, ...), and accidentally equal moments, where pyscf runs on arbitrary axes.
+Requested subgroups of linear molecules and atoms are refused (pyscf accepts them
+only for axis-aligned input). For NH3 pyscf's choice among the three equivalent
+mirrors follows the sign of LAPACK's unique axis; terco's frame is then pyscf's
+up to a symmetry operation (same labels).
 
 ## S13 — Skeleton Fock design spike
 

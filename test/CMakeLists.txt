@@ -241,6 +241,12 @@ set_tests_properties(terco/check_sym_d2h_f PROPERTIES SKIP_REGULAR_EXPRESSION "S
 # (pyscf_refs/sym_d2h_subgroup.ref), energy equal to D2h and C1.
 terco_add_check(check_sym_d2h_subgroup check_sym_d2h_subgroup.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_sym_d2h_subgroup PRIVATE test-drive::test-drive)
+# Symmetric and spherical tops, linear molecules and atoms (benzene, NH3, CH4, SF6,
+# N2, CO, HCN, O2, Ne, O): the group and frame pyscf's detect_symm / get_subgroup
+# give (trc_sym_tops), SO dimensions, the central oracle for RHF/UHF/B3LYP with the
+# anchors in pyscf_refs/sym_tops.ref, benzene as C2v and Cs, gradient symmetrisation.
+terco_add_check(check_sym_tops check_sym_tops.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_tops PRIVATE test-drive::test-drive)
 
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
@@ -2276,6 +2282,7 @@ if(Python3_FOUND)
   terco_add_golden(check_sym_c2 sym_c2)
   terco_add_golden(check_sym_d2 sym_d2)
   terco_add_golden(check_sym_d2h sym_d2h)
+  terco_add_golden(check_sym_tops sym_tops)
   foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
     foreach(path hgp nosym rys)
       terco_add_golden(check_erf_fock_vs_pyscf_${case}_${path} erf_fock_${case}_${path})

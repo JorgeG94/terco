@@ -70,6 +70,7 @@ target_sources(
           core/trc_sph.F90        # the spherical (pure) AO space: block-sparse Cartesian <-> spherical transforms
           core/trc_acc_shim.F90   # see the file: this one is not optional
           symmetry/trc_sym_group.F90   # the eight Abelian point groups: operations, characters, irrep names
+          symmetry/trc_sym_tops.F90    # pyscf's axis search for symmetric/spherical tops, linear molecules, atoms
           symmetry/trc_sym_geom.F90    # point-group detection, orientation, symmetrization of a geometry
           symmetry/trc_sym_ao.F90      # AO signed permutations and the SO basis
           symmetry/trc_sym_scf.F90     # SO-blocked SCF step: per-irrep diagonalisation, labels, symmetrisation

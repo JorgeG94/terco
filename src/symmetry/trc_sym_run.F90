@@ -150,8 +150,8 @@ contains
       case (SYM_EXPLICIT)
          if (.not. sym_is_subgroup(req%group, geom%detected)) then
             why = ""
-            if (geom%degenerate) why = " (its moments of inertia are degenerate, so only C1 can be used until "// &
-                                       "linear molecules and symmetric tops are supported)"
+            if (geom%degenerate) why = " (a symmetric or spherical top, linear molecule or atom: requested "// &
+                                       "subgroups of these are not supported, use symmetry = auto)"
             call error%set(ERROR_VALIDATION, "symmetry "//trim(req%group)//": the molecule's point group is "// &
                            trim(geom%detected)//trim(why)//", and "//trim(req%group)// &
                            " is not that group or one of its subgroups; use symmetry = auto or a subgroup")

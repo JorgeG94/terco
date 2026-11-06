@@ -104,13 +104,16 @@ module trc_sym_geom
    !! and y is flipped when needed so that det(rot) = +1. A sign flip of an
    !! axis changes no label of the groups above.
    !!
-   !! Moments that are not all distinct (symmetric and spherical tops,
-   !! linear molecules, single atoms) return C1 with a warning: S12 lifts
-   !! that.
+   !! Moments that are not all distinct (symmetric and spherical tops, linear
+   !! molecules, single atoms): `trc_sym_tops` ports pyscf's axis search and
+   !! `get_subgroup`, which give the Abelian group and the axes (S12). The frame
+   !! is then used as it is (pyscf's `_symm_axes`, signs aside); only a requested
+   !! C2v -> Cs turns it. Linear molecules and atoms accept no requested subgroup.
    use pic_types, only: dp
    use pic_logger, only: global_logger
    use trc_error, only: error_t, ERROR_VALIDATION, ERROR_GENERIC
    use trc_sym_group, only: trc_sym_group_t, sym_group_from_name, SYM_NGROUPS
+   use trc_sym_tops, only: sym_top_axes, closest_axes_eye
    implicit none
    private
 
@@ -133,7 +136,7 @@ module trc_sym_geom
    type :: trc_sym_geom_t
       type(trc_sym_group_t) :: group  !! the reported group
       character(len=3) :: detected = "C1"  !! the largest group found, before the cap
-      logical :: degenerate = .false.  !! moments not all distinct: C1 forced
+      logical :: degenerate = .false.  !! moments not all distinct (top, linear molecule or atom): `trc_sym_tops` frame
       real(dp) :: rot(3, 3) = 0.0_dp  !! rows are the frame axes: x_std = rot (x - shift)
       real(dp) :: shift(3) = 0.0_dp  !! origin of the frame (centre of nuclear charge)
       real(dp) :: residual = 0.0_dp  !! max |r_sym - r|, Bohr
@@ -403,29 +406,12 @@ contains
 
    pure function d2_order(ax) result(order)
       !! The axis order of the D2 standard frame: pyscf `alias_axes` /
-      !! `closest_axes` against the input axes (module header). `ax` are the
-      !! principal axes (rows, input coordinates).
+      !! `closest_axes` against the input axes (module header), shared with the
+      !! O and T families in `trc_sym_tops`. `ax` are the principal axes (rows,
+      !! input coordinates).
       real(dp), intent(in) :: ax(3, 3)
       integer :: order(3)
-      real(dp), parameter :: TIE = 1.0e-5_dp  ! pyscf symm.TOLERANCE
-      real(dp) :: zc(3), xc(3), yc(3)
-      integer :: i, x, y, z
-      zc = abs(ax(:, 3))
-      xc = abs(ax(:, 1))
-      yc = abs(ax(:, 2))
-      z = 1
-      do i = 1, 3
-         if (abs(zc(i) - maxval(zc)) < TIE) z = i
-      end do
-      xc(z) = 0.0_dp
-      yc(z) = 0.0_dp
-      x = 1
-      do i = 1, 3
-         if (abs(xc(i) - maxval(xc)) < TIE) x = i
-      end do
-      yc(x) = 0.0_dp
-      y = maxloc(yc, 1)
-      order = [x, y, z]
+      order = closest_axes_eye(ax)
    end function d2_order
 
    pure function d2h_order(q) result(order)
@@ -588,8 +574,11 @@ contains
       real(dp) :: tl, wsum, det, big
       integer :: order(3)
       logical :: found(N_MASK)
-      character(len=3) :: rep
-      logical :: subreq
+      character(len=3) :: rep, abel
+      character(len=4) :: topname
+      logical :: subreq, top_frame, eq12, eq23, top
+      integer :: kind
+      real(dp) :: tolp
 
       natm = size(r, 2)
       tl = SYM_DEFAULT_TOL
@@ -654,25 +643,35 @@ contains
       call eig3(t, ev, vec)
 
       big = ev(3)
-      if (big <= tl*tl .or. ev(2) - ev(1) <= DEGENERACY_TOL*big .or. ev(3) - ev(2) <= DEGENERACY_TOL*big) then
+      tolp = tl/sqrt(1.0_dp + real(natm, dp))  ! pyscf: TOLERANCE / sqrt(1 + natm)
+      eq12 = ev(2) - ev(1) <= DEGENERACY_TOL*big
+      eq23 = ev(3) - ev(2) <= DEGENERACY_TOL*big
+      top = big <= tolp .or. ev(2) <= tolp .or. eq12 .or. eq23
+      top_frame = .false.
+      if (top) then
+         ! symmetric or spherical top, linear molecule, atom: the pyscf search of trc_sym_tops
          res%degenerate = .true.
-         call global_logger%warning("symmetry: the moments of inertia are not all distinct (symmetric or "// &
-                                    "spherical top, linear molecule or single atom); using C1 until S12")
-         return
-      end if
-
-      ! Principal axes, sign fixed: the largest component is positive.
-      do k = 1, 3
-         ax(k, :) = vec(:, k)
-         m = maxloc(abs(ax(k, :)), 1)
-         do j = 1, 3
-            if (abs(ax(k, j)) >= abs(ax(k, m)) - 1.0e-6_dp) then
-               m = j
-               exit
-            end if
+         call sym_top_axes(d, cls, tl, ev, vec, eq12, eq23, kind, topname, abel, ax)
+         if (kind == 0) then
+            call global_logger%warning("symmetry: the point group of this symmetric or spherical top is not "// &
+                                       "one pyscf reduces to an Abelian group; using C1")
+            return
+         end if
+         top_frame = kind == 1
+      else
+         ! Principal axes, sign fixed: the largest component is positive.
+         do k = 1, 3
+            ax(k, :) = vec(:, k)
+            m = maxloc(abs(ax(k, :)), 1)
+            do j = 1, 3
+               if (abs(ax(k, j)) >= abs(ax(k, m)) - 1.0e-6_dp) then
+                  m = j
+                  exit
+               end if
+            end do
+            if (ax(k, m) < 0.0_dp) ax(k, :) = -ax(k, :)
          end do
-         if (ax(k, m) < 0.0_dp) ax(k, :) = -ax(k, :)
-      end do
+      end if
       do i = 1, natm
          q(:, i) = matmul(ax, d(:, i))
       end do
@@ -682,12 +681,21 @@ contains
          found(m) = is_symmetry(m, q, cls, tl)
       end do
       res%detected = detected_name(found)
+      if (top_frame) then
+         if (res%detected /= abel) then
+            ! the verified group differs from pyscf's (tolerance): use the generic frame rules
+            call global_logger%warning("symmetry: the group "//trim(abel)//" that the pyscf search found does not "// &
+                                       "hold to the tolerance; using "//trim(res%detected))
+            top_frame = .false.
+         end if
+      end if
       nmir = count([(found(m) .and. popcnt(m) == 1, m=1, N_MASK)])
       rep = reported_name(res%detected, nmir)
       subreq = .false.
       if (present(requested)) then
          if (trim(requested) /= trim(rep) .and. trim(requested) /= "C1" .and. enabled(requested) .and. &
-             has_subgroup_rule(res%detected, requested)) then
+             has_subgroup_rule(res%detected, requested) .and. &
+             .not. (top .and. (topname == "SO3" .or. topname == "Dooh" .or. topname == "Coov"))) then
             rep = trim(requested)
             subreq = .true.
          end if
@@ -697,8 +705,14 @@ contains
 
       if (rep == "C1") return  ! identity frame, no shift: the old code path sees the input untouched
 
-      call frame_order(rep, res%detected, found, q, tl, ax, order, error)
-      if (error%has_error()) return
+      if (top_frame) then
+         ! `ax` is already pyscf's `_symm_axes`; only C2v -> Cs turns it (as_subgroup, l.416)
+         order = [1, 2, 3]
+         if (res%detected == "C2v" .and. rep == "Cs") order = [3, 2, 1]
+      else
+         call frame_order(rep, res%detected, found, q, tl, ax, order, error)
+         if (error%has_error()) return
+      end if
       res%rot = ax(order, :)
       det = res%rot(1, 1)*(res%rot(2, 2)*res%rot(3, 3) - res%rot(2, 3)*res%rot(3, 2)) &
               - res%rot(1, 2)*(res%rot(2, 1)*res%rot(3, 3) - res%rot(2, 3)*res%rot(3, 1)) &
