@@ -198,6 +198,13 @@ set_target_properties(check_sym_ci_f PROPERTIES Fortran_MODULE_DIRECTORY
                       ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ci_f)
 set_tests_properties(terco/check_sym_ci_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# Point group D2 (twisted ethylene and tetrafluoroethylene): detection and pyscf's
+# frame (x, y order), SALC block-diagonality, the central oracle (RHF, UHF,
+# B3LYP) and pyscf anchors (pyscf_refs/sym_d2.ref), the requested subgroup
+# D2 -> C2, gradient symmetrisation.
+terco_add_check(check_sym_d2 check_sym_d2.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_d2 PRIVATE test-drive::test-drive)
+
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
 # check_basis_ecp_refused.F90's own header.
@@ -2229,6 +2236,7 @@ if(Python3_FOUND)
     terco_add_golden(check_rys_fock_vs_pyscf_${case} rys_fock_${case})
   endforeach()
   terco_add_golden(check_sym_c2 sym_c2)
+  terco_add_golden(check_sym_d2 sym_d2)
   foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
     foreach(path hgp nosym rys)
       terco_add_golden(check_erf_fock_vs_pyscf_${case}_${path} erf_fock_${case}_${path})

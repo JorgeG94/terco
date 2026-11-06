@@ -5217,6 +5217,103 @@ def gen_sym_c2v():
     w.write()
 
 
+D2_IRREPS = ["A", "B1", "B2", "B3"]   # terco's (and pyscf's) D2 order
+D2_C2_IRREPS = ["A", "B"]
+
+
+def _d2_mol(m, bname, cart, charge, spin, json_for, sub=True):
+    """pyscf Mole for molecule `m` with symmetry=<sub> (True: D2; 'C2': its C2 subgroup), top group D2."""
+    atoms = _xyz_atoms(m)
+    elements = {sym: {v: k for k, v in _SYMBOL.items()}[sym] for sym, _ in atoms}
+    basis_arg = bse_json_basis(TEST / json_for[bname], elements)
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Angstrom', cart=cart, charge=charge, spin=spin,
+                symmetry=sub, verbose=0)
+    want = "D2" if sub is True else sub
+    if mol.groupname != want or mol.topgroup != 'D2':
+        raise RuntimeError(f"{m}: pyscf group {mol.groupname} (top {mol.topgroup}), expected {want} of D2")
+    return mol
+
+
+def gen_sym_d2():
+    """check_sym_d2's anchor: pyscf 2.14.0 on twisted ethylene (general
+    orientation, shifted) and twisted tetrafluoroethylene (axes aligned with
+    the input), both D2. Per molecule: the frame (`mol._symm_axes`, rows x, y,
+    z, any sign) and origin for symmetry=True (D2) and for the requested
+    subgroup symmetry='C2' (AXES_<m>, ORIG_<m>, AXES_<m>_C2). pyscf names
+    x, y, z from the principal axes (`alias_axes`) and swaps x and y when the
+    LAPACK signs make them left-handed, so in a general orientation its B2
+    and B3 may be terco's B3 and B2; check_sym_d2 reads the frame from this
+    file to decide. SO dimensions per irrep (D2: A, B1, B2, B3; C2: A, B) for
+    6-31G* Cartesian and cc-pVDZ spherical. Per SCF case: energy, electrons
+    per irrep (alpha then beta) and the sorted orbital energies of each irrep.
+    B3LYP is HYB_GGA_XC_B3LYP on pyscf's grid level 6, so its orbital energies
+    agree with terco's own grid only to the grid error.
+    """
+    from pyscf import symm
+    json_for = {"631gs": "basis_sets/6-31gs.json", "ccpvdz": "basis_sets/cc-pvdz.json"}
+    mols = ["c2h4_twisted", "c2f4_twisted"]
+    dimcases = [("631gs", True, "cart"), ("ccpvdz", False, "sph")]
+    # tag, molecule, subgroup (True = D2), basis, cart, method, charge, spin
+    cases = [("c2h4_rhf", "c2h4_twisted", True, "ccpvdz", False, "rhf", 0, 0),
+             ("c2h4_b3lyp", "c2h4_twisted", True, "ccpvdz", False, "b3lyp", 0, 0),
+             ("c2h4_uhf", "c2h4_twisted", True, "ccpvdz", False, "uhf", 1, 1),
+             ("c2f4_rhf", "c2f4_twisted", True, "631gs", True, "rhf", 0, 0),
+             ("c2h4_c2_rhf", "c2h4_twisted", "C2", "631gs", True, "rhf", 0, 0),
+             ("c2f4_c2_rhf", "c2f4_twisted", "C2", "ccpvdz", False, "rhf", 0, 0)]
+    w = RefWriter("sym_d2.ref")
+    w.header("check_sym_d2", [ROOT / "test" / "check_sym_d2.F90"]
+             + [TEST / f"{m}.xyz" for m in mols] + [TEST / j for j in json_for.values()])
+    for m in mols:
+        mol = _d2_mol(m, "631gs", True, 0, 0, json_for)
+        w.vector(f"AXES_{m}", np.asarray(mol._symm_axes).ravel())
+        w.vector(f"ORIG_{m}", np.asarray(mol._symm_orig))
+        mol = _d2_mol(m, "631gs", True, 0, 0, json_for, "C2")
+        w.vector(f"AXES_{m}_C2", np.asarray(mol._symm_axes).ravel())
+        for bname, cart, kind in dimcases:
+            for sub, irreps in ((True, D2_IRREPS), ("C2", D2_C2_IRREPS)):
+                mol = _d2_mol(m, bname, cart, 0, 0, json_for, sub)
+                dimd = {n: o.shape[1] for n, o in zip(mol.irrep_name, mol.symm_orb)}
+                dims = [dimd.get(n, 0) for n in irreps]
+                if sum(dims) != mol.nao_nr():
+                    raise RuntimeError(f"gen_sym_d2 {m}: SO count {dims} != nao {mol.nao_nr()}")
+                tag = f"{m}_{'D2' if sub is True else 'C2'}_{bname}"
+                w.int_("NAO_" + tag, mol.nao_nr())
+                w.vector("SO_" + tag, dims)
+                print(f"  SO_{tag}: nao {mol.nao_nr()} dims {dims}")
+    for tag, m, sub, bname, cart, method, charge, spin in cases:
+        mol = _d2_mol(m, bname, cart, charge, spin, json_for, sub)
+        irreps = D2_IRREPS if sub is True else D2_C2_IRREPS
+
+        def make_mf():
+            if method == "rhf":
+                return scf.RHF(mol)
+            if method == "uhf":
+                return scf.UHF(mol)
+            mf_ = dft.RKS(mol)
+            mf_.xc = 'HYB_GGA_XC_B3LYP'
+            mf_.grids.level = 6
+            return mf_
+        mf, grad_norm = converge_tight(make_mf, None, f"sym_d2 {tag}")
+        nelec = mf.get_irrep_nelec()
+        mo_e = mf.mo_energy if method == "uhf" else (mf.mo_energy,)
+        mo_c = mf.mo_coeff if method == "uhf" else (mf.mo_coeff,)
+        w.comment(f"{tag}: {method}, E {mf.e_tot:.12f}, GRAD_NORM {grad_norm:.3e}")
+        w.int_("NSPIN_" + tag, len(mo_e))
+        w.real("E_" + tag, mf.e_tot)
+        if method == "uhf":
+            ne = [[nelec[n][s] if n in nelec else 0 for n in irreps] for s in (0, 1)]
+        else:
+            ne = [[nelec.get(n, 0) // 2 for n in irreps]] * 2
+        w.vector("NELEC_" + tag, np.array(ne, dtype=float).ravel())   # alpha irreps, then beta irreps
+        for s, (e, c) in enumerate(zip(mo_e, mo_c)):
+            lab = np.array(symm.label_orb_symm(mol, mol.irrep_name, mol.symm_orb, c))
+            for k, name in enumerate(irreps, start=1):
+                w.vector(f"EPS{k}_{tag}_{s + 1}", np.sort(e[lab == name]))
+        print(f"  {tag}: E {mf.e_tot:.10f} nelec {ne}")
+    w.end()
+    w.write()
+
+
 CASES = {
     "hirshfeld": gen_hirshfeld,
     "mult": gen_mult,
@@ -5374,6 +5471,7 @@ CASES = {
     "sym_c2v_so_dims": gen_sym_c2v_so_dims,
     "sym_c2v": gen_sym_c2v,
     "sym_subgroup": gen_sym_subgroup,
+    "sym_d2": gen_sym_d2,
     "sym_ci": gen_sym_ci,
     "pcm_ints_water_631gs": lambda: gen_pcm_ints("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "pcm_ints_water_ccpvtz": lambda: gen_pcm_ints("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json"),
