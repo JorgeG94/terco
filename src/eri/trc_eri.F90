@@ -59,6 +59,13 @@ module trc_eri
    ! shared J+K pass, fitted to the measurements in its own comment.
    real(dp), parameter :: RULE_C0 = 3.97_dp, RULE_CFILL = 0.464_dp, RULE_CPPP = 1.144_dp
    real(dp), parameter :: RULE_CFPA = -2.227_dp, RULE_CNPAIR = -0.254_dp
+   real(dp), parameter :: WHOLE_BINS_CREDIT = 0.157_dp
+   !! ln(1.17): the least the bins have measured faster over the split
+   !! policy's working basis than over the all-split one the size rule was
+   !! fitted on (V100, RHF, 1e-11, cc-pVDZ/aug-cc-pVDZ, C/N/O s kept whole:
+   !! water40 1.17x, NA-040 1.19x, gly20 1.31x, aug 1.34-1.44x). eri_build
+   !! gives J to MD J over the policy's bins only when the rule predicts
+   !! it faster than the all-split bins by more than this.
 
    integer, parameter :: NBUILD_STAGES = 5  !! timed stages of eri%build, see t_build
 
@@ -120,6 +127,9 @@ module trc_eri
       !! A shell of f or higher: the J-engine rule of a coupled-perturbed
       !! build and of several densities (see mdj_requested).
       logical :: mdj_extended = .false.
+      real(dp) :: mdj_score = 0.0_dp
+      !! eri_mdj_size_score on the working basis `build` judged: the
+      !! predicted ln(t_MDJ / t_bins); mdj_extended is its sign.
       !! eri_mdj_size_rule's verdict on this basis and geometry, set by `build`:
       !! the bins' shared J+K pass is slower than MD J plus exchange-only bins.
       !! The McMurchie-Davidson J engine over the same bins, built on the
@@ -318,7 +328,6 @@ contains
       split%md_coulomb = .true.
       call decontract_basis(b, this%pb, this%dec, split)
       call build_over(this, b, thresh, bres)
-      if (mdj_requested(this%mdj_force, .false., this%mdj_extended, TRC_J_ENGINE_AUTO)) return
       block
          type(trc_basis_t) :: pb_policy
          type(decon_t) :: dec_policy
@@ -331,6 +340,11 @@ contains
          call pb_policy%release()
          if (same) return
       end block
+      ! The rule compares MD J with the bins over the all-split basis; the
+      ! bins over the policy's basis are faster than that by at least
+      ! WHOLE_BINS_CREDIT, so MD J keeps J only if it wins by more.
+      call log_engine_choice(this%mdj_score, this%mdj_score < -WHOLE_BINS_CREDIT)
+      if (this%mdj_score < -WHOLE_BINS_CREDIT) return
       call this%release()
       this%thresh = thresh
       this%nao = b%nao
@@ -340,6 +354,19 @@ contains
       call build_over(this, b, thresh, bres)
       this%mdj_extended = .false.
    end subroutine eri_build
+
+   subroutine log_engine_choice(score, md_j)
+      !! Under TRC_BUILD_TIMING, the size rule's score on the all-split
+      !! basis and what eri_build made of it.
+      real(dp), intent(in) :: score
+      logical, intent(in) :: md_j
+      character(len=8) :: e
+      e = " "
+      call get_environment_variable("TRC_BUILD_TIMING", e)
+      if (len_trim(e) == 0) return
+      call global_logger%info("  [J engine] size score "//to_string(score)//": "// &
+                              merge("MD J over the all-split basis  ", "bins over the policy's basis   ", md_j))
+   end subroutine log_engine_choice
 
    subroutine build_over(this, b, thresh, bres)
       !! Everything eri_build does once `this%dec` holds the working basis:
@@ -543,7 +570,8 @@ contains
 
       call bins_build_binned_pairs(b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
                                    this%bins, pp_n=this%pairs%n, res=bres)
-      this%mdj_extended = eri_mdj_size_rule(b%nshell, this%bins%npair, prim_pairs(b, this%bins), b%nao)
+      this%mdj_score = eri_mdj_size_score(b%nshell, this%bins%npair, prim_pairs(b, this%bins), b%nao)
+      this%mdj_extended = this%mdj_score < 0.0_dp
       this%t_build(3) = tm%get_elapsed_time()
       call tm%start()
 
@@ -876,16 +904,23 @@ contains
       !! threshold's own 2.7e-9 is the same with either engine.
       integer, intent(in) :: nshell, npair, nao
       real(dp), intent(in) :: nprim_pairs
-      real(dp) :: fill, ppp, fpa, score
-      res = .false.
+      res = eri_mdj_size_score(nshell, npair, nprim_pairs, nao) < 0.0_dp
+   end function eri_mdj_size_rule
+
+   pure real(dp) function eri_mdj_size_score(nshell, npair, nprim_pairs, nao) result(score)
+      !! eri_mdj_size_rule's predicted ln(t_MDJ / t_bins); the rule is its
+      !! sign. Zero (no verdict) for an empty basis.
+      integer, intent(in) :: nshell, npair, nao
+      real(dp), intent(in) :: nprim_pairs
+      real(dp) :: fill, ppp, fpa
+      score = 0.0_dp
       if (nshell < 1 .or. npair < 1) return
       fill = real(npair, dp)/(0.5_dp*real(nshell, dp)*real(nshell + 1, dp))
       ppp = nprim_pairs/real(npair, dp)
       fpa = real(nao, dp)/real(nshell, dp)
       score = RULE_C0 + RULE_CFILL*log(fill) + RULE_CPPP*log(ppp) + RULE_CFPA*log(fpa) &
               + RULE_CNPAIR*log(real(npair, dp))
-      res = score < 0.0_dp
-   end function eri_mdj_size_rule
+   end function eri_mdj_size_score
 
    real(dp) function prim_pairs(b, bins) result(n)
       !! Primitive pairs of `bins`' shell pairs, before the primitive prune.

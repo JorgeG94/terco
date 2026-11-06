@@ -9,6 +9,14 @@ module check_mdj_rule_suite
    !! engines are forced through trc_fock_options_t's j_engine, which a
    !! TRC_MDJ in the environment would override (and the equality then
    !! compares an engine with itself, which still passes).
+   !!
+   !! The rule was fitted on an all-split working basis. With the default
+   !! split policy, which keeps O's s whole for the bins, MD J must beat
+   !! the all-split bins by more than eri_build's whole-bins credit. gly10
+   !! (rule score -0.08 on the all-split basis) then keeps the bins over
+   !! the policy's basis, and gly40 still takes MD J. Splitting every
+   !! general contraction (shell_cost 0) leaves nothing to credit, which
+   !! is the rule alone.
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t
@@ -16,6 +24,7 @@ module check_mdj_rule_suite
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
+   use trc_decontract, only: trc_decontract_options_t
    implicit none
    private
    public :: collect_mdj_rule
@@ -31,16 +40,19 @@ contains
    subroutine collect_mdj_rule(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
-                  new_unittest("gly10 cc-pVDZ (chain): MD J", test_chain), &
+                  new_unittest("gly10 cc-pVDZ (chain), all split: MD J", test_chain), &
+                  new_unittest("gly10 cc-pVDZ, default policy: bins over the kept-whole basis", test_chain_whole), &
+                  new_unittest("gly40 cc-pVDZ, default policy: MD J", test_long_chain), &
                   new_unittest("w5 cc-pVDZ (compact): bins", test_cluster), &
                   new_unittest("gly3 cc-pVDZ: MD J and bins give the same G", test_same_g) &
                   ]
    end subroutine collect_mdj_rule
 
-   subroutine verdict(error, xyz, basis, expect)
+   subroutine verdict(error, xyz, basis, expect, policy)
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in) :: xyz, basis
       logical, intent(in) :: expect
+      type(trc_decontract_options_t), intent(in) :: policy
       type(trc_basis_t) :: bas
       type(trc_eri_t) :: eri
       type(error_t) :: err
@@ -54,7 +66,7 @@ contains
       call check(error, .not. err%has_error(), "basis: "//err%get_message())
       if (allocated(error)) return
       call bas%to_device()
-      call eri%build(bas, 1.0e-11_dp)
+      call eri%build(bas, 1.0e-11_dp, decontract=policy)
       got = eri%mdj_extended
       call eri%release()
       call bas%release()
@@ -63,12 +75,24 @@ contains
 
    subroutine test_chain(error)
       type(error_type), allocatable, intent(out) :: error
-      call verdict(error, "gly10.xyz", "basis_sets/cc-pvdz.json", .true.)
+      type(trc_decontract_options_t) :: split
+      split%shell_cost = 0.0_dp
+      call verdict(error, "gly10.xyz", "basis_sets/cc-pvdz.json", .true., split)
    end subroutine test_chain
+
+   subroutine test_chain_whole(error)
+      type(error_type), allocatable, intent(out) :: error
+      call verdict(error, "gly10.xyz", "basis_sets/cc-pvdz.json", .false., trc_decontract_options_t())
+   end subroutine test_chain_whole
+
+   subroutine test_long_chain(error)
+      type(error_type), allocatable, intent(out) :: error
+      call verdict(error, "gly40.xyz", "basis_sets/cc-pvdz.json", .true., trc_decontract_options_t())
+   end subroutine test_long_chain
 
    subroutine test_cluster(error)
       type(error_type), allocatable, intent(out) :: error
-      call verdict(error, "w5.xyz", "basis_sets/cc-pvdz.json", .false.)
+      call verdict(error, "w5.xyz", "basis_sets/cc-pvdz.json", .false., trc_decontract_options_t())
    end subroutine test_cluster
 
    subroutine test_same_g(error)
