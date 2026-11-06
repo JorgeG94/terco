@@ -60,7 +60,7 @@ contains
       type(error_type), allocatable, intent(out) :: error
       type(trc_sym_geom_t) :: geom
       type(trc_sym_request_t) :: req
-      type(error_t) :: err, e2, e3, e4, e5
+      type(error_t) :: err, e2, e3, e4, e5, e6, e7
       character(len=3) :: g
 
       ! A water-like geometry: C2v found and reported (C2v is enabled since S8).
@@ -75,12 +75,22 @@ contains
       g = sym_choose_group(req, geom, e2)
       call check(error, g == 'C2v' .and. .not. e2%has_error(), 'C2v is the detected group and enabled')
       if (allocated(error)) return
-      ! A subgroup below the reported group (here Cs of C2v) has no frame of its own
-      ! yet: sym_detect reports one group, so it is refused rather than run in the wrong frame.
+      ! A subgroup of the detected group: sym_detect(requested=) reports it, and it is accepted.
+      geom%group = sym_group_from_name('Cs', err)
       req%group = 'Cs'
       g = sym_choose_group(req, geom, e3)
-      call check(error, e3%has_error() .and. index(e3%get_message(), 'cannot be used for this molecule') > 0, &
-                 'Cs of a C2v molecule is refused: '//e3%get_message())
+      call check(error, g == 'Cs' .and. .not. e3%has_error(), 'Cs of a C2v molecule, reported as Cs, is accepted')
+      if (allocated(error)) return
+      ! A subgroup the detection did not report (no frame rule for the pair, or the
+      ! request not passed to sym_detect) is refused rather than run in the wrong frame.
+      geom%group = sym_group_from_name('C2v', err)
+      g = sym_choose_group(req, geom, e6)
+      call check(error, e6%has_error() .and. index(e6%get_message(), 'cannot be used for this molecule') > 0, &
+                 'Cs of a C2v molecule not reported as Cs is refused: '//e6%get_message())
+      if (allocated(error)) return
+      req%group = 'Ci'
+      g = sym_choose_group(req, geom, e7)
+      call check(error, e7%has_error() .and. index(e7%get_message(), 'subgroups') > 0, 'Ci is not in C2v: '//e7%get_message())
       if (allocated(error)) return
       ! A detected group that is not enabled (D2h, S11) is refused as not yet supported.
       geom%detected = 'D2h'

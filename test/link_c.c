@@ -378,6 +378,25 @@ int main(void) {
          fprintf(stderr, "link_c: RI-MP2 and the Hessian should be refused with symmetry on\n");
          return 1;
       }
+      /* a subgroup of the detected group: Cs on water runs, in Cs, with the C2v energy */
+      rc = trc_set_symmetry(h, "cs", 0.0);
+      if (must(rc, "trc_set_symmetry(cs)")) return 1;
+      rc = trc_run_scf(h);
+      if (must(rc, "trc_run_scf (Cs on water)")) return 1;
+      rc = trc_energy(h, &e_sym);
+      if (must(rc, "trc_energy (Cs on water)")) return 1;
+      if (fabs(e_sym - energy) > 1.0e-8) {
+         fprintf(stderr, "link_c: Cs energy %.12f differs from C1 %.12f\n", e_sym, energy);
+         return 1;
+      }
+      rc = trc_symmetry_group(h, name, 16);
+      if (must(rc, "trc_symmetry_group (Cs)")) return 1;
+      rc = trc_symmetry_detected(h, det, 16);
+      if (must(rc, "trc_symmetry_detected (Cs)")) return 1;
+      if (strcmp(name, "Cs") != 0 || strcmp(det, "C2v") != 0) {
+         fprintf(stderr, "link_c: Cs requested on water should be used as Cs of a detected C2v, got %s / %s\n", name, det);
+         return 1;
+      }
       /* back to off: a later run is the plain C1 run */
       rc = trc_set_symmetry(h, "off", 0.0);
       if (must(rc, "trc_set_symmetry(off)")) return 1;

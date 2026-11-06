@@ -73,6 +73,7 @@ assumption for the plan is:
 | S3 | AO representation and SO basis | S2 | done |
 | S4 | SO-blocked SCF (pilot group: Cs) | S3 | done |
 | S5 | Input, CLI, Fortran API, C ABI, reporting | S4 | done |
+| S5b | Requested subgroups (Cs/C2 of C2v), pyscf's subgroup frames | S8 | done |
 | S6 | Group C2 | S5 | done |
 | S7 | Group Ci | S5 | done |
 | S8 | Group C2v | S5 | done |
@@ -331,6 +332,22 @@ the group's flag in `SYM_GROUP_ENABLED`, add its subgroup rule in
 `reported_name`, and add its frame in `frame_order` (which errors for a
 group with no frame). Axis signs are fixed so the largest component of each
 axis is positive and det(rot) = +1; pyscf's signs are arbitrary.
+
+Requested subgroups (S5b): `sym_detect(..., requested=H)` reports H as `group`
+(with `detected` still the full group G) when H is a proper subgroup of G with
+a rule. Adding a pair (G, H) is local to `trc_sym_geom.F90`: (a) make
+`has_subgroup_rule(G, H)` true; (b) in `frame_order`, give H's frame for
+`top == G` (pyscf `as_subgroup`: a rotation of G's axes, or none); (c) add the
+pair to the pyscf anchor `sym_subgroup` in `generate.py` and to
+`check_sym_subgroup`. pyscf keeps the input axes for a requested group that
+holds in them (`Mole._build_symmetry`); `input_frame_holds` does the same, and
+needs no change per pair. `sym_choose_group` and the API/CLI need no change.
+Which Cs of C2v pyscf picks depends on the input orientation (see the header
+of `trc_sym_geom.F90`); an axis-aligned nonplanar molecule is the test for it
+(`test/ch2cl2_aligned.xyz`). Not done: pyscf also keeps the input axes for a
+request equal to the full group (`symmetry='C2v'` on a molecule whose C2 axis
+is already z); terco's frame for G itself is always the `symmetry=True` frame
+(B1/B2 can differ from pyscf for a planar C2v molecule input in the xz plane).
 
 Open items left by S2, each owned by the stage named:
 - **S9**: C2h capped to Cs uses the C2 axis as the mirror normal. This is

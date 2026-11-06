@@ -43,7 +43,7 @@ contains
                   new_unittest("round trip: energy vs C1 on the reported geometry, frame, labels", test_round_trip), &
                   new_unittest("a second run reuses the frame; trc_set_geometry starts over", test_rerun), &
                   new_unittest("irrep_nelec: aufbau counts, occupations, a gradient refused for others", test_irrep_nelec), &
-                  new_unittest("explicit groups: not a subgroup, not yet supported, C1", test_explicit), &
+                  new_unittest("explicit groups: not a subgroup, a subgroup of the detected group, C1", test_explicit), &
                   new_unittest("the unsupported SCF settings are refused, not run in C1", test_scf_refusals), &
                   new_unittest("entries that would run C1 silently are refused", test_entry_refusals) &
                   ]
@@ -341,8 +341,14 @@ contains
       if (allocated(error)) return
       rc = trc_set_symmetry(h, 'cs'//c_null_char, 0.0_c_double)
       rc = trc_run_scf(h)
-      call check(error, rc, TRC_ERR_BADARG, 'Cs on water (a subgroup below the reported group): refused')
-      call check(error, index(message(h), 'cannot be used for this molecule') > 0, message(h))
+      call check(error, rc, TRC_OK, 'Cs on water (a subgroup of the detected C2v)')
+      call check(error, name_of(h, 1, 0), 'Cs', 'Cs used')
+      call check(error, name_of(h, 2, 0), 'C2v', 'C2v detected')
+      if (allocated(error)) return
+      rc = trc_set_symmetry(h, 'ci'//c_null_char, 0.0_c_double)
+      rc = trc_run_scf(h)
+      call check(error, rc, TRC_ERR_BADARG, 'Ci on water is not a subgroup')
+      call check(error, index(message(h), 'is not that group or one of its subgroups') > 0, message(h))
       rc = trc_destroy(h)
    end subroutine test_explicit
 

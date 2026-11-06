@@ -9,7 +9,9 @@ module trc_sym_run
    !! RULES. `off` (the default) never reaches the symmetry code. `auto` uses
    !! the largest enabled subgroup of the detected group (`trc_sym_geom`
    !! applies the cap). A named group must be the detected group or one of
-   !! its subgroups, else the run is refused; a group the build does not
+   !! its subgroups, else the run is refused. The caller passes the named
+   !! group to `sym_detect(..., requested=)`, which reports it in pyscf's
+   !! frame for that subgroup; a group the build does not
    !! support yet (`SYM_GROUP_ENABLED`) is refused with its own message, after
    !! the subgroup test so that a wrong group is reported as wrong first.
    !! `C1` is always allowed and means "no symmetry in the SCF".
@@ -162,11 +164,14 @@ contains
             return
          end if
          name = req%group
-         ! The detection reports the largest enabled subgroup. A requested
-         ! group below it (today only C1) is honoured by running without symmetry.
+         ! `sym_detect(..., requested=req%group)` reports a requested subgroup that has a
+         ! frame rule in `trc_sym_geom`. A requested group that it did not report
+         ! (no rule for this pair yet) can only be C1, which runs without symmetry.
          if (name /= geom%group%name .and. name /= "C1") then
             call error%set(ERROR_VALIDATION, "symmetry "//trim(req%group)//" cannot be used for this molecule "// &
-                           "(the supported group found is "//trim(geom%group%name)//")")
+                           "(the molecule is "//trim(geom%detected)//", the group found is "// &
+                           trim(geom%group%name)//", and no frame is defined for "//trim(req%group)// &
+                           " as a subgroup of "//trim(geom%detected)//"; pass the request to sym_detect)")
          end if
       case default
          name = "C1"

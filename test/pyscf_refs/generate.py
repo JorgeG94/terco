@@ -5024,6 +5024,94 @@ def gen_sym_c2():
     w.write()
 
 
+SUB_IRREPS = {"Cs": ["A'", 'A"'], "C2": ["A", "B"]}
+
+
+def _sub_mol(m, sub, bname, cart, charge, spin, json_for):
+    """pyscf Mole for molecule `m` with symmetry=<sub> (a subgroup of its C2v)."""
+    atoms = _xyz_atoms(m)
+    elements = {sym: {v: k for k, v in _SYMBOL.items()}[sym] for sym, _ in atoms}
+    basis_arg = bse_json_basis(TEST / json_for[bname], elements)
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Angstrom', cart=cart, charge=charge, spin=spin,
+                symmetry=sub, verbose=0)
+    if mol.groupname != sub or mol.topgroup != 'C2v':
+        raise RuntimeError(f"{m}: pyscf group {mol.groupname} (top {mol.topgroup}), expected {sub} of C2v")
+    return mol
+
+
+def gen_sym_subgroup():
+    """check_sym_subgroup's anchor: pyscf 2.14.0 with symmetry='Cs' and
+    symmetry='C2' on C2v molecules (a requested subgroup, `as_subgroup`).
+    Molecules: water (planar), nonplanar CH2Cl2 in a general orientation, the
+    NH2 radical, and nonplanar CH2Cl2 with axis-aligned input
+    (ch2cl2_aligned.xyz), for which pyscf keeps the input axes when the
+    requested group holds in them: its Cs mirror is then the xy plane, not
+    the one `as_subgroup` would pick (the SO dimensions differ). Per molecule
+    and subgroup: the frame (`mol._symm_axes`, rows x, y, z, any sign) and
+    origin, and the SO dimensions per irrep (6-31G* Cartesian, cc-pVDZ
+    spherical). Per SCF case: the energy, electrons per irrep and the sorted
+    orbital energies of each irrep.
+    """
+    from pyscf import symm
+    json_for = {"631gs": "basis_sets/6-31gs.json", "ccpvdz": "basis_sets/cc-pvdz.json"}
+    mols = ["water", "ch2cl2", "nh2", "ch2cl2_aligned"]
+    subs = ["Cs", "C2"]
+    dimcases = [("631gs", True), ("ccpvdz", False)]
+    # tag, molecule, subgroup, basis, cart, method, charge, spin
+    cases = [("water_cs_rhf", "water", "Cs", "ccpvdz", False, "rhf", 0, 0),
+             ("water_c2_rhf", "water", "C2", "ccpvdz", False, "rhf", 0, 0),
+             ("ch2cl2_cs_rhf", "ch2cl2", "Cs", "631gs", True, "rhf", 0, 0),
+             ("ch2cl2_c2_rhf", "ch2cl2", "C2", "631gs", True, "rhf", 0, 0),
+             ("aligned_cs_rhf", "ch2cl2_aligned", "Cs", "631gs", True, "rhf", 0, 0),
+             ("nh2_cs_uhf", "nh2", "Cs", "ccpvdz", False, "uhf", 0, 1)]
+    w = RefWriter("sym_subgroup.ref")
+    w.header("check_sym_subgroup", [ROOT / "test" / "check_sym_subgroup.F90"]
+             + [TEST / f"{m}.xyz" for m in mols] + [TEST / j for j in json_for.values()])
+    for m in mols:
+        for sub in subs:
+            mol = _sub_mol(m, sub, "631gs", True, 0, 1 if m == "nh2" else 0, json_for)
+            w.vector(f"AXES_{m}_{sub}", np.asarray(mol._symm_axes).ravel())
+            w.vector(f"ORIG_{m}_{sub}", np.asarray(mol._symm_orig))
+    for m in mols:
+        for sub in subs:
+            spin = 1 if m == "nh2" else 0
+            for bname, cart in dimcases:
+                mol = _sub_mol(m, sub, bname, cart, 0, spin, json_for)
+                dimd = {n: o.shape[1] for n, o in zip(mol.irrep_name, mol.symm_orb)}
+                dims = [dimd.get(n, 0) for n in SUB_IRREPS[sub]]
+                if sum(dims) != mol.nao_nr():
+                    raise RuntimeError(f"gen_sym_subgroup {m} {sub}: SO count {dims} != nao {mol.nao_nr()}")
+                tag = f"{m}_{sub}_{bname}"
+                w.int_("NAO_" + tag, mol.nao_nr())
+                w.vector("SO_" + tag, dims)
+                print(f"  SO_{tag}: dims {dims}")
+    for tag, m, sub, bname, cart, method, charge, spin in cases:
+        mol = _sub_mol(m, sub, bname, cart, charge, spin, json_for)
+        irreps = SUB_IRREPS[sub]
+
+        def make_mf():
+            return scf.UHF(mol) if method == "uhf" else scf.RHF(mol)
+        mf, grad_norm = converge_tight(make_mf, None, f"sym_subgroup {tag}")
+        nelec = mf.get_irrep_nelec()
+        mo_e = mf.mo_energy if method == "uhf" else (mf.mo_energy,)
+        mo_c = mf.mo_coeff if method == "uhf" else (mf.mo_coeff,)
+        w.comment(f"{tag}: {method}, E {mf.e_tot:.12f}, GRAD_NORM {grad_norm:.3e}")
+        w.int_("NSPIN_" + tag, len(mo_e))
+        w.real("E_" + tag, mf.e_tot)
+        if method == "uhf":
+            ne = [[nelec[n][s] if n in nelec else 0 for n in irreps] for s in (0, 1)]
+        else:
+            ne = [[nelec.get(n, 0) // 2 for n in irreps]] * 2
+        w.vector("NELEC_" + tag, np.array(ne, dtype=float).ravel())
+        for s, (e, c) in enumerate(zip(mo_e, mo_c)):
+            lab = np.array(symm.label_orb_symm(mol, mol.irrep_name, mol.symm_orb, c))
+            for k, name in enumerate(irreps, start=1):
+                w.vector(f"EPS{k}_{tag}_{s + 1}", np.sort(e[lab == name]))
+        print(f"  {tag}: E {mf.e_tot:.10f} nelec {ne}")
+    w.end()
+    w.write()
+
+
 def gen_sym_c2v_so_dims():
     """check_sym_c2v's SO-dimension anchor: the number of symmetry-adapted
     orbitals per irrep (A1, A2, B1, B2) that pyscf 2.14.0's `mol.symm_orb`
@@ -5285,6 +5373,7 @@ CASES = {
     "sym_c2": gen_sym_c2,
     "sym_c2v_so_dims": gen_sym_c2v_so_dims,
     "sym_c2v": gen_sym_c2v,
+    "sym_subgroup": gen_sym_subgroup,
     "sym_ci": gen_sym_ci,
     "pcm_ints_water_631gs": lambda: gen_pcm_ints("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "pcm_ints_water_ccpvtz": lambda: gen_pcm_ints("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json"),
