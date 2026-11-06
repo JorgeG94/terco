@@ -204,6 +204,24 @@ set_tests_properties(terco/check_sym_ci_f PROPERTIES SKIP_REGULAR_EXPRESSION "SK
 # D2 -> C2, gradient symmetrisation.
 terco_add_check(check_sym_d2 check_sym_d2.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_sym_d2 PRIVATE test-drive::test-drive)
+# The point group C2h (trans-N2H2, trans-glyoxal, anti ClH2C-CH2Cl): detection,
+# frame against pyscf, SO dimensions (pyscf_refs/sym_c2h.ref), SALC
+# block-diagonality, the central oracle for RHF/UHF/B3LYP with irrep occupations
+# and orbital energies per irrep against pyscf, gradient symmetrisation.
+# Registered twice, as check_sym_ci is (_f: the uncontracted l = 0..3 set).
+terco_add_check(check_sym_c2h check_sym_c2h.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_c2h PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_c2h PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_c2h)
+terco_add_check(check_sym_c2h_f check_sym_c2h.F90 NEEDS_BASIS NEEDS_PYSCF_REF ARGS f)
+target_link_libraries(check_sym_c2h_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_c2h_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_c2h_f)
+set_tests_properties(terco/check_sym_c2h_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+# Cs, C2 and Ci requested on C2h molecules in pyscf's frame
+# (pyscf_refs/sym_c2h_subgroup.ref), energy equal to C2h and C1.
+terco_add_check(check_sym_c2h_subgroup check_sym_c2h_subgroup.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_c2h_subgroup PRIVATE test-drive::test-drive)
 
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
@@ -2227,6 +2245,7 @@ if(Python3_FOUND)
   # would run scf_robust under -LE LONG anyway.
   set_tests_properties(terco/golden/scf_robust PROPERTIES LABELS LONG)
   terco_add_golden(check_sym_c2v sym_c2v)
+  terco_add_golden(check_sym_c2h sym_c2h)
   terco_add_golden(scf_rimp2 scf_rimp2)
   terco_add_golden(scf_rimp2_ccpvdz scf_rimp2_ccpvdz)
   foreach(set main f)

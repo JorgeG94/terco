@@ -77,7 +77,7 @@ assumption for the plan is:
 | S6 | Group C2 | S5 | done |
 | S7 | Group Ci | S5 | done |
 | S8 | Group C2v | S5 | done |
-| S9 | Group C2h | S5 | todo |
+| S9 | Group C2h | S5 | done |
 | S10 | Group D2 | S5 | done |
 | S11 | Group D2h | S5 | todo |
 | S12 | Symmetric and spherical tops, linear molecules | S11 | todo |
@@ -350,8 +350,11 @@ is already z); terco's frame for G itself is always the `symmetry=True` frame
 (B1/B2 can differ from pyscf for a planar C2v molecule input in the xz plane).
 
 Open items left by S2, each owned by the stage named:
-- **S9**: C2h capped to Cs uses the C2 axis as the mirror normal. This is
-  consistent with pyscf's C2h frame but was not run against pyscf. Confirm it.
+- **S9** (done): C2h capped to Cs used the C2 axis as the mirror normal.
+  Checked against pyscf 2.14.0: its C2h frame has z = the C2 axis (= the sigma_h
+  normal) and x, y the other principal axes in cyclic order, as terco does.
+  C2h is now enabled; its subgroups Cs, C2 and Ci (`has_subgroup_rule`) keep
+  the C2h frame, as pyscf does (`as_subgroup` only turns the axes for C2v).
 - **S11**: D2h capped to Cs uses principal-axis order (1, 2, 3)
   provisionally, with no pyscf check. Fix it against pyscf.
 - `test/hocl.xyz` and `test/ch2cl2.xyz` (nonplanar, the mirror moves atoms) were added in S3.
