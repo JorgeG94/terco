@@ -37,6 +37,7 @@ module trc_sym_ao
    !! `nao_sph` functions when `bas%spherical`, else `nao`. The basis must be
    !! built on the standard-frame coordinates (`geom%r_std`); that is checked.
    use pic_types, only: dp
+   use pic_strings, only: to_string
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_basis_types, only: trc_basis_t
    use trc_cart_perm, only: cart_perm_powers
@@ -136,7 +137,6 @@ contains
       type(error_t), intent(inout) :: error
       integer, allocatable :: cnt(:), first(:, :), nth(:)
       integer :: s, ia, ja, k, n, maxsh, t
-      character(len=16) :: ai, aj
 
       allocate (cnt(bas%natm), nth(bas%nshell))
       cnt = 0
@@ -161,26 +161,20 @@ contains
             ia = bas%sh_at(s)
             ja = geom%perm(ia, k)
             if (cnt(ja) /= cnt(ia)) then
-               write (ai, "(i0)") ia
-               write (aj, "(i0)") ja
-               call error%set(ERROR_VALIDATION, "sym_ao_build: equivalent atoms "//trim(ai)//" and "//trim(aj)// &
+               call error%set(ERROR_VALIDATION, "sym_ao_build: equivalent atoms "//to_string(ia)//" and "//to_string(ja)// &
                               " have different numbers of shells")
                return
             end if
             t = first(nth(s), ja)
             n = bas%sh_np(s)
             if (bas%sh_l(t) /= bas%sh_l(s) .or. bas%sh_np(t) /= n) then
-               write (ai, "(i0)") ia
-               write (aj, "(i0)") ja
-               call error%set(ERROR_VALIDATION, "sym_ao_build: equivalent atoms "//trim(ai)//" and "//trim(aj)// &
+               call error%set(ERROR_VALIDATION, "sym_ao_build: equivalent atoms "//to_string(ia)//" and "//to_string(ja)// &
                               " have different shell sequences (angular momentum or primitive count)")
                return
             end if
             if (any(abs(bas%sh_e(1:n, t) - bas%sh_e(1:n, s)) > SHELL_TOL*abs(bas%sh_e(1:n, s))) .or. &
                 any(abs(bas%sh_c(1:n, t) - bas%sh_c(1:n, s)) > SHELL_TOL*max(abs(bas%sh_c(1:n, s)), 1.0e-300_dp))) then
-               write (ai, "(i0)") ia
-               write (aj, "(i0)") ja
-               call error%set(ERROR_VALIDATION, "sym_ao_build: equivalent atoms "//trim(ai)//" and "//trim(aj)// &
+               call error%set(ERROR_VALIDATION, "sym_ao_build: equivalent atoms "//to_string(ia)//" and "//to_string(ja)// &
                               " have different shell exponents or coefficients")
                return
             end if
