@@ -290,9 +290,9 @@ contains
    function reported_name(detected, nmirror) result(name)
       !! The group to report: the detected one if enabled, else the largest
       !! enabled subgroup. C2v (S8) is reported as such when it is detected.
-      !! Ci is reached only when the molecule is Ci itself: it lies below
-      !! D2h and C2h too, but Cs is preferred there (as before) until a stage
-      !! fixes pyscf's choice among the order-2 subgroups. A D2h molecule
+      !! Ci is reached only when the molecule is Ci itself (below C2h it is
+      !! a request, `has_subgroup_rule`); a D2h molecule keeps the Cs cap
+      !! until a stage fixes pyscf's choice among its subgroups. A D2h molecule
       !! still falls back to Cs: which C2v of D2h to take needs the D2h frame
       !! (S11/S12). A stage that enables another group adds its subgroup
       !! rule here and its frame in `frame_order`.
