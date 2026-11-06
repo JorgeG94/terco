@@ -1,8 +1,8 @@
 # terco golden v1
 # case: sym_ci
-# from: gfortran build build at 94d4471 (+ S7 working tree), same format as test/goldens/regen_goldens.py (run for this case only)
+# from: gfortran-15 build build at 64b2f32, by test/goldens/regen_goldens.py
 E_chfcl2_rhf -1.1947793920779927e+03
-E_chfcl2_b3lyp -1.1974683437610715e+03
+E_chfcl2_b3lyp -1.1974683375658174e+03
 E_n2h2f2_rhf -3.0875343855054234e+02
 E_n2h2f2_cation_uhf -3.0838479192010334e+02
 END

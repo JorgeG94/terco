@@ -52,9 +52,20 @@ module check_sym_ci_suite
    real(dp), parameter :: TOL_EPS = 1.0e-8_dp     !! orbital energies, symmetry vs C1
    real(dp), parameter :: TOL_D = 1.0e-7_dp       !! density, symmetry vs C1
    real(dp), parameter :: TOL_ANCHOR_HF = 1.0e-6_dp   !! terco vs pyscf, HF orbital energies
-   real(dp), parameter :: TOL_ANCHOR_DFT = 1.0e-4_dp
-      !! B3LYP: the two codes use different grids; measured 2.0e-5 here (|dE| 5.7e-6); a mislabelled
-      !! orbital would be off by an orbital level spacing, orders of magnitude more
+   real(dp), parameter :: TOL_ANCHOR_DFT = 1.0e-5_dp
+      !! B3LYP orbital energies against pyscf. The gate rests on grid convergence, measured on
+      !! meso-CHFCl-CHFCl 6-31G* (Cartesian), max |eps| difference over all orbitals, terco
+      !! `grid_level` (rows) against pyscf `grids.level` (columns), Eh:
+      !!            pyscf 5   pyscf 6   pyscf 7   pyscf 9
+      !!   terco 3  1.8e-05   2.0e-05   2.0e-05   2.0e-05   (terco's default: its own grid error)
+      !!   terco 4  1.7e-06   1.6e-06   1.6e-06   1.6e-06
+      !!   terco 5  3.3e-06   9.4e-07   8.9e-07   1.1e-06   <- used here, against pyscf 6 (generate.py)
+      !!   terco 6  1.5e-06   8.5e-07   9.0e-07   6.9e-07
+      !!   terco 8  1.9e-06   4.1e-07   3.7e-07   2.5e-07
+      !! The error at terco's default level 3 is terco's grid (against terco level 8 it is 2.0e-5,
+      !! pyscf's own levels agree among themselves to 3e-6 from level 4 up), so the test runs
+      !! B3LYP at level 5 (about 29 s against 17 s for level 3) and keeps the 1e-5 gate.
+      integer, parameter :: DFT_GRID_LEVEL = 5  !! terco grid level of the B3LYP cases
 
    integer, parameter :: NMOL = 2, NBAS = 2
    character(len=12), parameter :: MOL(NMOL) = [character(len=12) :: "chfcl2_ci", "n2h2f2_ci"]
@@ -414,6 +425,7 @@ contains
       p%nalpha = (nelec + mult - 1)/2
       p%nbeta = nelec - p%nalpha
       opts%functional = functional
+      opts%grid_level = DFT_GRID_LEVEL
       ! Convergence just above the accumulation-order noise floor, not below
       ! it. Under OpenMP (and on the device) the C1 UHF CH2Cl2+ run settles by
       ! iteration ~40 and then sits at |FDS-SDF| 1.7e-10..4e-10 and |dE|
