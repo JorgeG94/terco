@@ -1,6 +1,6 @@
 # terco golden v1
 # case: sym_tops
-# from: gfortran-15 build build at a4ab7ac, by test/goldens/regen_goldens.py
+# from: gfortran-15 build build at 2767e04, by test/goldens/regen_goldens.py
 E_benzene_rhf -2.3070286586566408e+02
 E_nh3_rhf -5.6195616322492228e+01
 E_nh3_uhf -5.5857573755479393e+01
