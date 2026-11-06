@@ -124,21 +124,37 @@ Branch: sym/<stage>-<slug> (base: <base>), commits: <n>, head: <sha>
 Report numbers you measured, not numbers you expect. If something wasn't
 run, say so.
 
-### 7. Delegating simple tasks to Haiku (`sym-helper`)
+### 7. Delegating mechanical work to Haiku (`sym-helper`): the default
 
 Subagents can't spawn subagents, so you can't start a helper yourself.
 The coordinator (the main session) dispatches the `sym-helper` agent
-(`.claude/agents/sym-helper.md`, model Haiku) on your behalf.
+(`.claude/agents/sym-helper.md`, model Haiku) on your behalf. **Delegate
+by default**: for the task types below, send a request instead of doing
+the work yourself, unless it takes under a minute or you are blocked on
+the answer right now. Your report must list what you delegated and what
+you kept, with a one-line reason for each mechanical task you kept.
 
-- **Good tasks**: write a test `.xyz` from coordinates you give; run
-  `ctest -R <pattern>` and summarise failures; list every call site of a
-  routine; apply fortitude fixes to one named file; run a short pyscf
-  snippet and return its numbers.
-- **Not for a helper**: anything needing judgement about correctness,
-  design, tolerances, references, generators or git. Do that yourself, or
-  report it as a blocker.
+- **Delegate these** (each is long-running or rote, and checkable):
+  - **The final OpenMP run.** The helper creates a scratch worktree at your
+    final commit, converts it, builds with the `macos-omp` preset, runs
+    `OMP_NUM_THREADS=4 ctest -LE LONG --timeout 900`, removes the worktree,
+    and returns the pass count and any failure output. Send it as soon as
+    your final commit exists, then do your report and review while it runs.
+  - **Full host suites** after an edit, when you can keep working meanwhile:
+    `ctest -LE LONG` in your build dir, returning the pass count and
+    failures.
+  - Writing `.xyz` files from coordinates or internal coordinates you
+    give.
+  - Running a pyscf snippet you write, and returning its printed numbers.
+  - Finding every call site or use of a routine, type or keyword.
+  - `fortitude check` on named files, and applying its fixes to those files.
+  - Regenerating one golden with the per-case method, or one `.ref` with
+    `generate.py <case>`, and reporting which lines changed.
+- **Never delegate**: design, correctness or numerical judgement,
+  tolerances, choosing what a reference should be, editing source logic,
+  generators, or git. Do those yourself, or report them as a blocker.
 - **How to ask**: send the coordinator a message with `SendMessage` (to
-  `main`) while you keep working. Use one request per task, in this form:
+  `main`) and keep working. Use one request per task, in this form:
   ```
   sym-helper request (stage <id>)
   Worktree: <absolute path>
@@ -149,9 +165,16 @@ The coordinator (the main session) dispatches the `sym-helper` agent
   If messaging isn't available, list the requests under "Blockers /
   questions" in your report instead.
 - Pause work on the files a helper may edit until its result arrives, so
-  you and the helper never edit the same file at once.
-- Check a helper's result before using it. You are responsible for it in
-  your PR.
+  you and the helper never edit the same file at once. Don't run a build
+  in a directory a helper is building in.
+- Check a helper's result before using it, for example by spot-running one
+  test or diffing a file. You are responsible for it in your PR.
+
+**Coordinator side.** The coordinator also uses Haiku helpers for its own
+mechanical work: post-merge full suites (host, OpenMP, LMAX=3), reference
+staleness and goldens reports, and conflict-free rebuilds of shared files
+followed by a "reproduced exactly" diff check. Merge decisions and
+conflict resolution that needs judgement stay with the coordinator.
 
 ### 8. Lessons from S1–S5 (each one cost a failed run)
 
