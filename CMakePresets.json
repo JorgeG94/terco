@@ -86,10 +86,11 @@
       "name": "macos-omp",
       "inherits": "macos-host",
       "displayName": "macOS Apple Silicon, OpenMP CPU build",
-      "description": "Only valid on a scratch worktree whose src/ and build-omp/generated_* were converted by tools/dc_to_omp.py and tools/acc_to_omp.py (recipe in .claude/context/ci.md and macos.md). Run ctest with OMP_NUM_THREADS=4.",
+      "description": "Only valid on a scratch worktree whose src/ and build-omp/generated_* were converted by tools/dc_to_omp.py and tools/acc_to_omp.py (recipe in .claude/context/ci.md and macos.md). Run ctest with OMP_NUM_THREADS=4. Links LLVM libomp (brew install libomp) in place of libgomp, whose macOS team barrier deadlocks intermittently; see TERCO_MACOS_LIBOMP in CMakeLists.txt.",
       "binaryDir": "${sourceDir}/build-omp",
       "cacheVariables": {
-        "CMAKE_Fortran_FLAGS": "-fopenmp"
+        "CMAKE_Fortran_FLAGS": "-fopenmp",
+        "TERCO_MACOS_LIBOMP": "ON"
       }
     }
   ],

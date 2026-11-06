@@ -267,6 +267,35 @@ option(TERCO_BUILD_SHARED
 # depends on the offload model is a bug in the offload model.
 #
 option(TERCO_ENABLE_GPU "Offload with -stdpar=gpu (needs NVHPC)" ON)
+
+#
+# macOS OpenMP builds: link LLVM libomp in place of GNU libgomp. On Darwin
+# libgomp has no futex and falls back to a mutex + condvar team barrier, and
+# that barrier loses a wakeup now and then: the last thread to arrive sleeps
+# in pthread_cond_wait with its semaphore already posted, holding the barrier
+# mutex, and every thread waits forever at the end of a parallel region
+# (0% CPU). With gfortran 15.3 on macOS 26.5 at 4 threads, check_capi_sym hung
+# in about 6% of runs and check_xc_energy in up to a third under load; with
+# libomp, 55 of 55 of each passed. libomp implements the GOMP_* entry points
+# gfortran's -fopenmp emits, so the objects are unchanged: a libgomp.dylib
+# symlink to libomp in the build tree wins the implicit -lgomp. Linux uses the
+# futex barrier and does not need this.
+#
+option(TERCO_MACOS_LIBOMP "On macOS, link LLVM libomp instead of libgomp for -fopenmp builds" OFF)
+if(TERCO_MACOS_LIBOMP)
+  if(NOT APPLE)
+    message(FATAL_ERROR "TERCO_MACOS_LIBOMP is for macOS only")
+  endif()
+  find_library(TERCO_LIBOMP_PATH NAMES omp
+               HINTS /opt/homebrew/opt/libomp/lib /usr/local/opt/libomp/lib
+               REQUIRED)
+  set(_terco_omp_shim "${CMAKE_BINARY_DIR}/omp-shim")
+  file(MAKE_DIRECTORY "${_terco_omp_shim}")
+  file(CREATE_LINK "${TERCO_LIBOMP_PATH}" "${_terco_omp_shim}/libgomp.dylib" SYMBOLIC)
+  add_link_options("-L${_terco_omp_shim}")
+  message(STATUS "OpenMP runtime: LLVM libomp (${TERCO_LIBOMP_PATH}) in place of libgomp")
+endif()
+
 option(TERCO_ENABLE_MULTICORE
        "Host build with -stdpar=multicore -acc=multicore (needs NVHPC)" OFF)
 if(TERCO_ENABLE_GPU AND TERCO_ENABLE_MULTICORE)
