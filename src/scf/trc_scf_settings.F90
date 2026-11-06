@@ -86,9 +86,13 @@ module trc_scf_settings
       !! smaller batches. Settable through trc_set_batching.
       type(trc_decontract_options_t) :: decontract
       !! How the four-centre engine splits the basis into its working basis
-      !! (trc_decontract): speed only, the integrals are exact either way.
-      !! TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE and TRC_DECON_SHELL_COST
-      !! override it.
+      !! (trc_decontract). The integrals are exact in any working basis; the
+      !! policy sets the cost and, at the screening threshold, what is
+      !! dropped (trc_decontract's DECON_SHELL_COST_DEFAULT says how much).
+      !! Gradients, the response solves and the RI-MP2 gradient build their
+      !! own engines with it too. TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE,
+      !! TRC_DECON_SHELL_COST and TRC_DECON_SCREEN_WHOLE override it; with
+      !! more than one rank, rank 0's environment decides.
       logical :: incremental = .true.
       !! Rebuild the two-electron matrix from the DENSITY DIFFERENCE, accumulating
       !! onto the last one. G is linear in D, so this is exact but for the

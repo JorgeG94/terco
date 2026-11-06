@@ -44,7 +44,7 @@ module trc_eri
    use trc_binkernel, only: TRC_PRIM_MARGIN
    use trc_basis_types, only: trc_basis_t
    use trc_decontract, only: decon_t, decontract_basis, decontract_expand, decontract_fold, decontract_release, &
-                             trc_decontract_options_t, &
+                             trc_decontract_options_t, decontract_whole_screen, &
                              decontract_expand_host, decontract_fold_host
    implicit none
    private
@@ -96,6 +96,12 @@ module trc_eri
       logical :: needs_md = .false.
       !! A shell above f: HGP and Rys have no kernel for its classes, so J
       !! comes from trc_mdj and K from trc_mdg whatever the environment says.
+      integer :: mdj_force = -1
+      !! TRC_MDJ at build time (`mdj_force_env`), rank 0's on every rank.
+      real(dp) :: pcut_scale = 1.0_dp
+      !! Multiplies every kernel's primitive-quartet cut: below 1 when a
+      !! general contraction kept whole needs it (trc_decontract's
+      !! `decontract_whole_screen`).
       logical :: has_f = .false.
       !! A shell of f or higher: MD J beats the bins' J there (see mdj_requested).
       !! The McMurchie-Davidson J engine over the same bins, built on the
@@ -200,10 +206,13 @@ contains
       !! Buckets per decade of Schwarz bound in the pair bins; 1 is decades.
       type(trc_decontract_options_t), intent(in), optional :: decontract
       !! How the working basis is split (trc_decontract); the defaults if
-      !! absent. Invisible but for speed: the integrals are exact either way.
+      !! absent. The integrals over any working basis are exact; the policy
+      !! changes the cost, and what the screens drop at `thresh` (see
+      !! trc_decontract's DECON_SHELL_COST_DEFAULT for what is guaranteed).
 
       integer :: bres
       type(trc_decontract_options_t) :: decon
+      logical :: no_decontract
       character(len=8) :: bt_env
       character(len=:), allocatable :: refusal
 
@@ -247,19 +256,28 @@ contains
       !
       bt_env = " "
       call get_environment_variable("TRC_NO_DECONTRACT", bt_env)
-      if (len_trim(bt_env) == 0) then
-         ! The policy is the caller's, or the defaults, and the
-         ! environment can override either (decon_options).
+      no_decontract = len_trim(bt_env) > 0
+      ! The policy is the caller's, or the defaults, and the environment can
+      ! override either (decon_options).
+      if (present(decontract)) then
+         decon = decon_options(decontract)
+      else
+         decon = decon_options(trc_decontract_options_t())
+      end if
+      this%mdj_force = mdj_force_env()
+      ! Every rank must build the SAME working basis: G is summed over
+      ! ranks element by element, and two working bases of the same size
+      ! would add up to a wrong matrix with nothing to show for it. The
+      ! environment is per process, so rank 0's reading of it is the one.
+      if (this%distributed) call share_policy(this%comm, no_decontract, decon, this%mdj_force)
+      if (.not. no_decontract) then
          ! A Coulomb matrix the MD J engine builds wants every general
          ! contraction split (trc_decontract_options_t%md_coulomb); that is
          ! decided here for the basis, and by the caller for a functional
          ! without exact exchange.
-         if (present(decontract)) then
-            decon = decon_options(decontract)
-         else
-            decon = decon_options(trc_decontract_options_t())
+         if (mdj_requested(this%mdj_force, maxval(b%sh_l) >= 3, .false.) .or. this%needs_md) then
+            decon%md_coulomb = .true.
          end if
-         if (mdj_requested(maxval(b%sh_l) >= 3, .false.) .or. this%needs_md) decon%md_coulomb = .true.
          call decontract_basis(b, this%pb, this%dec, decon)
       end if
       if (this%dec%active) then
@@ -321,6 +339,27 @@ contains
       end if
    end function decon_options
 
+   subroutine share_policy(comm, no_decontract, decon, mdj_force)
+      !! Rank 0's split policy, TRC_NO_DECONTRACT and TRC_MDJ, on every rank.
+      type(comm_t), intent(in) :: comm
+      logical, intent(inout) :: no_decontract
+      type(trc_decontract_options_t), intent(inout) :: decon
+      integer, intent(inout) :: mdj_force
+      integer, parameter :: NPOLICY = 7
+      real(dp) :: buffer(NPOLICY)
+      buffer = [merge(1.0_dp, 0.0_dp, no_decontract), decon%cutoff, merge(1.0_dp, 0.0_dp, decon%diffuse), &
+             decon%shell_cost, merge(1.0_dp, 0.0_dp, decon%screen_whole), merge(1.0_dp, 0.0_dp, decon%md_coulomb), &
+             real(mdj_force, dp)]
+      call bcast(comm, buffer, NPOLICY, 0)
+      no_decontract = buffer(1) /= 0.0_dp
+      decon%cutoff = buffer(2)
+      decon%diffuse = buffer(3) /= 0.0_dp
+      decon%shell_cost = buffer(4)
+      decon%screen_whole = buffer(5) /= 0.0_dp
+      decon%md_coulomb = buffer(6) /= 0.0_dp
+      mdj_force = nint(buffer(7))
+   end subroutine share_policy
+
    subroutine build_structures(this, b, thresh, bres)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
@@ -328,7 +367,8 @@ contains
       integer, intent(in) :: bres
 
       integer :: i, j
-      real(dp), allocatable :: qs(:), one(:)
+      real(dp) :: uneven
+      real(dp), allocatable :: qs(:), one(:), camp(:, :)
       ! Stage timing, kept in this%t_build: `build` is five routines with
       ! very different costs and no way to tell from the outside which one
       ! is the slow one.
@@ -365,9 +405,20 @@ contains
       one = 1.0_dp
 
       ! The kernel multiplies each pair by sh_c, so sh_c is the amplitude
-      ! the prune judges by. The cutoff sits three orders below the
-      ! screening threshold.
-      call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, thresh*1.0e-3_dp, this%pairs)
+      ! the prune judges by -- except on a general contraction kept whole,
+      ! which is judged by the coefficients its split would carry, and
+      ! whose unevenness tightens the kernels' primitive cut to match
+      ! (trc_decontract's `decontract_whole_screen`). The cutoff sits three
+      ! orders below the screening threshold.
+      allocate (camp(b%maxnp, b%nshell))
+      camp = b%sh_c
+      this%pcut_scale = 1.0_dp
+      if (this%dec%screen_whole) then
+         call decontract_whole_screen(b, camp, uneven)
+         this%pcut_scale = uneven**(-4)
+      end if
+      call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, camp, thresh*1.0e-3_dp, this%pairs)
+      deallocate (camp)
       this%t_build(1) = tm%get_elapsed_time()
       call tm%start()
 
@@ -614,12 +665,15 @@ contains
       launch%nao = this%nao_w
       launch%rank = this%rank
       launch%nranks = this%nranks
+      launch%pcut_scale = this%pcut_scale
    end function bin_launch
 
-   logical function mdj_requested(has_f, pure_functional) result(res)
+   logical function mdj_requested(force, has_f, pure_functional) result(res)
       !! Whether the Coulomb part of a resident Fock build comes from the
       !! McMurchie-Davidson J engine instead of the bins. TRC_MDJ=1 forces it
-      !! on and TRC_MDJ=0 off, so both stay measurable; unset, it follows the
+      !! on and TRC_MDJ=0 off (`force`, read once at build time by
+      !! `mdj_force_env` and made the same on every rank), so both stay
+      !! measurable; unset (-1), it follows the
       !! rule: on for a basis with an f or higher shell, or when the
       !! functional is pure (no exact exchange, so the bins are skipped
       !! altogether), off otherwise.
@@ -635,19 +689,32 @@ contains
       !!   w20 cc-pVTZ PBE       0.647 / 0.207   (pure: no bins at all)
       !! def2-TZVP is the one case the rule gets wrong (14% slower with MD J);
       !! cc-pVTZ, also hybrid with f, wins 9%.
+      integer, intent(in) :: force
       logical, intent(in) :: has_f, pure_functional
-      character(len=8) :: e
-      e = " "
-      call get_environment_variable("TRC_MDJ", e)
-      select case (trim(e))
-      case ("1")
+      select case (force)
+      case (1)
          res = .true.
-      case ("0")
+      case (0)
          res = .false.
       case default
          res = has_f .or. pure_functional
       end select
    end function mdj_requested
+
+   integer function mdj_force_env() result(force)
+      !! TRC_MDJ as `mdj_requested` takes it: 1, 0, or -1 when unset.
+      character(len=8) :: e
+      e = " "
+      call get_environment_variable("TRC_MDJ", e)
+      select case (trim(e))
+      case ("1")
+         force = 1
+      case ("0")
+         force = 0
+      case default
+         force = -1
+      end select
+   end function mdj_force_env
 
    subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac, omega)
       !! The g classes binkernel_fock_bins leaves to MD exchange (those above
@@ -686,7 +753,7 @@ contains
          end block
       end if
       sc%thresh = this%thresh
-      sc%pcut = this%thresh*TRC_PRIM_MARGIN
+      sc%pcut = this%thresh*TRC_PRIM_MARGIN*this%pcut_scale
       sc%omega = omega
       sc%jfac = jfac
       sc%kfac = kfac
@@ -1090,7 +1157,7 @@ contains
       ! See mdj_requested: the Coulomb part from the McMurchie-Davidson J engine, and
       ! the bins only for exchange (or not at all without it). Ordinary
       ! Coulomb operator only; an erf pass keeps the bins.
-      md_j = (mdj_requested(this%has_f, kfac == 0.0_dp) .or. this%needs_md) .and. jfac /= 0.0_dp .and. ow == 0.0_dp
+      md_j = (mdj_requested(this%mdj_force, this%has_f, kfac == 0.0_dp) .or. this%needs_md) .and. jfac /= 0.0_dp .and. ow == 0.0_dp
       jbins = jfac
       if (md_j) jbins = 0.0_dp
 
@@ -1286,7 +1353,7 @@ contains
       if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
 
       if (ndens == 1 .or. this%needs_md .or. &
-          (jfac /= 0.0_dp .and. ow == 0.0_dp .and. mdj_requested(this%has_f, kfac == 0.0_dp))) then
+          (jfac /= 0.0_dp .and. ow == 0.0_dp .and. mdj_requested(this%mdj_force, this%has_f, kfac == 0.0_dp))) then
          ! One density at a time on the same scratch: fock_work_size(1) is
          ! never more than fock_work_size(ndens).
          do d = 1, ndens

@@ -108,6 +108,8 @@ module trc_eri_data
       !! rank's share, and what the launch reports back.
       real(dp) :: thresh = 1.0e-10_dp
       !! Integral (Schwarz) threshold.
+      real(dp) :: pcut_scale = 1.0_dp
+      !! Multiplies the kernels' primitive-quartet cut (trc_eri's own).
       real(dp) :: jfac = 1.0_dp, kfac = 1.0_dp
       !! Coulomb and exchange scalings; 1 and 1 is Hartree-Fock.
       real(dp) :: omega = 0.0_dp

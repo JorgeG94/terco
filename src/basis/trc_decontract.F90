@@ -11,7 +11,8 @@ module trc_decontract
 
    public :: decon_t, decontract_basis, decontract_expand, decontract_fold, decontract_release
    public :: decontract_expand_host, decontract_fold_host
-   public :: trc_decontract_options_t
+   public :: trc_decontract_options_t, decontract_whole_screen
+   public :: decontract_options_for_exchange, decontract_options_equal
    public :: DECON_CUTOFF_DEFAULT, DECON_DIFFUSE_DEFAULT, DECON_SHELL_COST_DEFAULT
 
    real(dp), parameter :: DECON_CUTOFF_DEFAULT = 0.3_dp
@@ -34,6 +35,16 @@ module trc_decontract
    !! screening amplitude of 2 (`build_maps`), so its pairs are judged four
    !! times tighter, and the transform of D and G every build.
 
+   real(dp), parameter :: DECON_WHOLE_UNEVEN_MAX = 128.0_dp
+   !! A general contraction is kept whole only if no column's coefficient
+   !! falls more than this far below the largest the group gives that
+   !! primitive (group_unevenness): the kernels' primitive cut is then
+   !! tightened by at most 128**4 = 2.7e8 (`decontract_whole_screen`). In
+   !! cc-pVDZ that keeps O's s (36 in pyscf's data, 71 in the pruned BSE
+   !! file), Si p (27), P p (32), S p (55) and the Fe/Zn d (6.3) whole, and
+   !! splits every second-row s (700-1000), Cl p (319) and the
+   !! transition-metal s and p.
+
    real(dp), parameter :: DECON_SHELL_COST_DEFAULT = 2.0_dp
    !! THE PRICE OF ONE MORE SHELL, IN PRIMITIVES, FOR THE GENERAL-CONTRACTION
    !! SPLIT. A general contraction is split only when
@@ -45,29 +56,37 @@ module trc_decontract
    !! shell costs pair and quartet bookkeeping and a Schwarz bound carrying
    !! the transform's amplitude (`build_maps`, up to 12 on cc-pVDZ oxygen),
    !! whatever its primitive count. At 2 the 8-primitive, 2-column s of C,
-   !! N and O (16 + 2c against 8 + 8c) stays whole. A group whose columns
-   !! share a primitive at or below `cutoff` splits whatever the price (Si's
-   !! cc-pVDZ s and p; see `group_plan`), and `md_coulomb` splits every
-   !! group. 0 splits every general contraction, which is what this module
-   !! did before the price existed.
+   !! N and O (16 + 2c against 8 + 8c) stays whole. A group too uneven to
+   !! keep (DECON_WHOLE_UNEVEN_MAX) splits whatever the price, and
+   !! `md_coulomb` splits every group. 0 splits every general contraction.
+   !! That is not quite what this module did before the price existed: a
+   !! group with exactly one multi-primitive column then kept that whole
+   !! column, shared primitives included, where PLAN_SEGMENT keeps only the
+   !! primitives no other column uses.
    !!
-   !! A shell kept whole screens as tightly as its split would have
-   !! (`whole_amplitude`), so the choice moves the time and not the energy:
-   !! converged RHF at 1e-11 is within 6e-11 Eh of the all-split energy on
-   !! water10 (cc-pVDZ, aug-cc-pVDZ) and 7e-13 on the silica slice.
+   !! WHAT A SHELL KEPT WHOLE GUARANTEES (`screen_whole`, on by default).
+   !! Three screens act. Two of them act on primitives, and for those the
+   !! guarantee is by construction (`decontract_whole_screen`): the pair
+   !! prune and the kernels' primitive-quartet cut drop nothing the split
+   !! would have kept. The third is the shell-pair Schwarz test. There the
+   !! bound carries the amplitude the split's primitives would have
+   !! (`whole_amplitude`). That matches the two screens' strictness but is
+   !! not a proof, so the claim there is measured, not derived. Converged
+   !! RHF at 1e-11, against the same system at 1e-14, kept whole is as
+   !! accurate as all split: see the commit that set DECON_WHOLE_UNEVEN_MAX
+   !! for the table (water, glycine, silica, P/S/Cl and Fe/Zn systems), and
+   !! check_decontract_policy for the loose-threshold case that fails
+   !! without `screen_whole`.
    !! Measured against 0 (V100, RHF, 1e-11, full builds, mean of builds
-   !! 2-10, s per build): gly20/cc-pVDZ 1.945 -> 1.370, aug-cc-pVDZ 27.67 ->
-   !! 18.70; water40/cc-pVDZ 0.990 -> 0.788, aug-cc-pVDZ 36.38 -> 26.58;
-   !! NA-040/cc-pVDZ 2.101 -> 1.586, aug-cc-pVDZ 48.48 -> 33.49;
-   !! w172/cc-pVDZ 16.83 -> 10.78; the silica fragment and slice, cc-pVDZ,
-   !! 9.66 -> 7.47 and 6.85 -> 5.64.
+   !! 2-10): see the commit that set DECON_WHOLE_UNEVEN_MAX.
 
    type :: trc_decontract_options_t
       !! How the working basis is split. TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE
-      !! (0 or 1) and TRC_DECON_SHELL_COST override the fields at build time
-      !! (`trc_eri`), so a policy can be swept without a rebuild; the
-      !! integrals over the split basis are exact either way, only the cost
-      !! changes.
+      !! (0 or 1), TRC_DECON_SHELL_COST and TRC_DECON_SCREEN_WHOLE (0 or 1)
+      !! override the fields at build time (`trc_eri`, rank 0's environment
+      !! on every rank), so a policy can be swept without a rebuild. The
+      !! integrals over the split basis are exact either way; what changes
+      !! is the cost and what the screens drop (DECON_SHELL_COST_DEFAULT).
       real(dp) :: cutoff = DECON_CUTOFF_DEFAULT
       !! Exponents at or below this are diffuse.
       logical :: diffuse = DECON_DIFFUSE_DEFAULT
@@ -75,10 +94,14 @@ module trc_decontract
       real(dp) :: shell_cost = DECON_SHELL_COST_DEFAULT
       !! See DECON_SHELL_COST_DEFAULT.
       logical :: screen_whole = .true.
-      !! A general contraction kept whole screens as tightly as its split
-      !! would have (`whole_amplitude`), so the split policy changes the
-      !! cost and not the accuracy. TRC_DECON_SCREEN_WHOLE=0 turns it off,
-      !! for measuring what it costs.
+      !! A general contraction kept whole is screened as its split would be:
+      !! its primitives carry the split's coefficients in the pair prune and
+      !! the kernels' primitive cut is tightened to match
+      !! (`decontract_whole_screen`), and its shell pairs carry the split's
+      !! amplitude (`whole_amplitude`). See DECON_SHELL_COST_DEFAULT for
+      !! what that guarantees. TRC_DECON_SCREEN_WHOLE=0 turns it off, which
+      !! is the contracted shell's own screen and is measurably less
+      !! accurate at the same threshold.
       logical :: md_coulomb = .false.
       !! The Coulomb matrix will come from the McMurchie-Davidson J engine
       !! (trc_mdj: a basis with f or higher, or a functional without exact
@@ -114,6 +137,10 @@ module trc_decontract
       !! by for screening in this basis to bound the error in the CONTRACTED
       !! matrix. Derived, with the reasoning, at the end of `build_maps`.
       !! Host only -- screening is built once, on the host.
+      logical :: screen_whole = .false.
+      !! The working basis's general contractions kept whole screen as the
+      !! split would (`decontract_whole_screen`). False for a transform that
+      !! never went through `decontract_basis`, which is the old screen.
       logical :: on_device = .false.
    end type decon_t
 
@@ -128,12 +155,12 @@ module trc_decontract
       integer, allocatable :: p_l(:), p_np(:)
       real(dp), allocatable :: p_e(:, :), p_c(:, :), p_r(:, :)
       logical, allocatable :: p_single(:)
-      real(dp), allocatable :: p_screen(:)
-      !! Extra screening amplitude per emitted shell: `whole_amplitude` for a
-      !! member of a general contraction kept whole, 1 otherwise.
       !! A shell of one primitive that the columns of its group share, as
       !! opposed to a contracted shell that happens to have one primitive:
       !! only the former may be reused by a later column.
+      real(dp), allocatable :: p_screen(:)
+      !! Extra screening amplitude per emitted shell: `whole_amplitude` for a
+      !! member of a general contraction kept whole, 1 otherwise.
       integer :: nsh_p = 0
       ! one triple per (contracted shell, emitted shell) pair
       integer, allocatable :: tr_mu(:), tr_s(:)
@@ -142,6 +169,28 @@ module trc_decontract
    end type decon_build_t
 
 contains
+
+   function decontract_options_for_exchange(base, exx, exx_lr) result(opts)
+      !! The policy an engine for a method with these exact-exchange
+      !! fractions must be built with: `base`, with `md_coulomb` on when there
+      !! is no exact exchange (no bins at all; J is the MD engine's). The one
+      !! rule every builder -- the SCF's, a gradient's fresh one, a response
+      !! solve's -- applies, so an engine reused from the SCF and one built
+      !! fresh are the same engine.
+      type(trc_decontract_options_t), intent(in) :: base
+      real(dp), intent(in) :: exx, exx_lr
+      type(trc_decontract_options_t) :: opts
+      opts = base
+      if (exx == 0.0_dp .and. exx_lr == 0.0_dp) opts%md_coulomb = .true.
+   end function decontract_options_for_exchange
+
+   pure logical function decontract_options_equal(a, b) result(res)
+      !! The two policies build the same working basis.
+      type(trc_decontract_options_t), intent(in) :: a, b
+      res = a%cutoff == b%cutoff .and. (a%diffuse .eqv. b%diffuse) .and. &
+            a%shell_cost == b%shell_cost .and. (a%screen_whole .eqv. b%screen_whole) .and. &
+            (a%md_coulomb .eqv. b%md_coulomb)
+   end function decontract_options_equal
 
    pure integer function ncart(l) result(res)
       integer, intent(in) :: l
@@ -173,6 +222,7 @@ contains
       if (present(options)) opts = options
 
       call decontract_release(m)
+      m%screen_whole = opts%screen_whole
       call group_shells(b, grp, ng)
 
       ! Nothing shares an exponent with anything, or nothing that does is
@@ -428,13 +478,11 @@ contains
 
       price = opts%shell_cost
       if (opts%md_coulomb) price = 0.0_dp
-      ! A diffuse primitive the columns share goes out on its own whatever
-      ! the price: kept whole, the silica slice's Si p (7 primitives under 2
-      ! columns, both holding 0.2964) costs 9e-08 Eh at 1e-11 against the
-      ! split, which `whole_amplitude` does not recover (9.2e-08 with it,
-      ! 1.0e-07 without), while O's compact s kept whole lands within
-      ! 4e-11 of the split once it carries that amplitude.
-      if (shares_diffuse(b, mem, nmem, opts%cutoff)) price = 0.0_dp
+      ! A column whose primitives the group weights very unevenly is split
+      ! whatever the price: kept whole it would need the kernels' primitive
+      ! cut tightened by the fourth power of that unevenness for the whole
+      ! group's screen to stay inside the split's (`decontract_whole_screen`).
+      if (group_unevenness(b, mem, nmem) > DECON_WHOLE_UNEVEN_MAX) price = 0.0_dp
       nmulti = 0
       i0 = 0
       cost_whole = 0.0_dp
@@ -463,25 +511,89 @@ contains
       end if
    end function group_plan
 
-   logical function shares_diffuse(b, mem, nmem, cutoff) result(res)
-      !! Does an exponent at or below `cutoff` appear in two members or more?
+   real(dp) function group_unevenness(b, mem, nmem) result(f)
+      !! The largest, over the members and their primitives, of
+      !! max_mu |c_k,mu| / |c_k,nu|: how much smaller a column's coefficient
+      !! is than the one the split would give that primitive. 1 for a group
+      !! of one.
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: nmem
       integer, intent(in) :: mem(:)
-      real(dp), intent(in) :: cutoff
-      integer :: i, k, ii, kk
-      res = .false.
+      integer :: i, k
+      f = 1.0_dp
       do i = 1, nmem
          do k = 1, b%sh_np(mem(i))
-            if (b%sh_e(k, mem(i)) > cutoff) cycle
-            do ii = i + 1, nmem
-               do kk = 1, b%sh_np(mem(ii))
-                  if (same_exp(b%sh_e(kk, mem(ii)), b%sh_e(k, mem(i)))) res = .true.
-               end do
+            if (b%sh_c(k, mem(i)) == 0.0_dp) cycle
+            f = max(f, primitive_cbig(b, mem, nmem, b%sh_e(k, mem(i)))/abs(b%sh_c(k, mem(i))))
+         end do
+      end do
+   end function group_unevenness
+
+   real(dp) function primitive_cbig(b, mem, nmem, e) result(cbig)
+      !! The largest |coefficient| any member gives the exponent `e`: what the
+      !! split scales that primitive's shell by.
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: nmem
+      integer, intent(in) :: mem(:)
+      real(dp), intent(in) :: e
+      integer :: i, k
+      cbig = 0.0_dp
+      do i = 1, nmem
+         do k = 1, b%sh_np(mem(i))
+            if (same_exp(b%sh_e(k, mem(i)), e)) cbig = max(cbig, abs(b%sh_c(k, mem(i))))
+         end do
+      end do
+   end function primitive_cbig
+
+   !
+   ! THE PRIMITIVE SCREEN OF A GENERAL CONTRACTION KEPT WHOLE.
+   !
+   ! Two screens act on primitives, not shells, and neither reads `amp`:
+   ! the pair prune in hgp_build_pairs, which judges a primitive pair by
+   ! `camp`, and the kernels' primitive-quartet cut, which judges it by the
+   ! pair's own coefficient product against `pcut`. Split, a primitive's
+   ! shell carries cbig, the largest coefficient any column gives it. Kept
+   ! whole, it carries its column's own coefficient, which can be far
+   ! smaller, so both screens drop more.
+   !
+   ! Over the working basis `wb` (what the integrals are evaluated in), for
+   ! every group of more than one shell -- which after decontract_basis is
+   ! exactly a general contraction kept whole, the split ones sharing no
+   ! exponent any more:
+   !
+   ! - `camp(k, mu)` is cbig_k, so the prune keeps exactly the primitive
+   !   pairs the split would;
+   ! - `uneven` is the largest cbig_k/|c_k,mu| (group_unevenness). The
+   !   kernels' cut tests a product of four coefficients, so the caller
+   !   multiplies `pcut` by uneven**(-4): every primitive quartet the whole
+   !   shells drop then has a cbig product at or below the split's own cut,
+   !   which the split would have dropped too.
+   !
+   ! Everything else gets camp = sh_c and uneven = 1, the old screen.
+   !
+   subroutine decontract_whole_screen(wb, camp, uneven)
+      type(trc_basis_t), intent(in) :: wb
+      real(dp), intent(out) :: camp(:, :)
+      !! (wb%maxnp, wb%nshell)
+      real(dp), intent(out) :: uneven
+      integer, allocatable :: grp(:)
+      integer :: mem(wb%nshell)
+      integer :: ng, g, nmem, i, k
+      camp = wb%sh_c
+      uneven = 1.0_dp
+      call group_shells(wb, grp, ng)
+      do g = 1, ng
+         call group_members(wb, grp, g, mem, nmem)
+         if (nmem < 2) cycle
+         uneven = max(uneven, group_unevenness(wb, mem, nmem))
+         do i = 1, nmem
+            do k = 1, wb%sh_np(mem(i))
+               camp(k, mem(i)) = primitive_cbig(wb, mem, nmem, wb%sh_e(k, mem(i)))
             end do
          end do
       end do
-   end function shares_diffuse
+      deallocate (grp)
+   end subroutine decontract_whole_screen
 
    subroutine group_members(b, grp, g, mem, nmem)
       type(trc_basis_t), intent(in) :: b
@@ -556,18 +668,17 @@ contains
    ! amp is 7 to 12 on cc-pVDZ oxygen's s, and water10/cc-pVDZ at 1e-11
    ! lands 4.1e-10 Eh from the 1e-14 energy split against 1.0e-09 whole.
    !
-   ! So that the split policy changes the cost and not the answer, a column
-   ! kept whole carries the largest amplitude any of its primitives would
-   ! have had split, A_mu = max over p in mu of amp_p, and its pairs are
-   ! judged by Q_mu Q_nu A_mu A_nu. That is not a proof that it drops no
-   ! more than the split: the contracted bound and the primitive ones bound
-   ! different sums. It is a matching of the two screens' strictness, and
-   ! it only ever tightens the screen, so it can cost time but never
-   ! accuracy. Measured (V100, RHF, 1e-11, converged), split against kept
-   ! whole: water10/cc-pVDZ 6.1e-10 Eh apart without it, 4.1e-11 with it;
-   ! water10/aug-cc-pVDZ 6.2e-10 and 6.0e-11. What it does not recover --
-   ! a general contraction whose columns share a diffuse primitive -- is
-   ! split instead (`group_plan`).
+   ! So that the split policy changes the cost and not the accuracy, a
+   ! column kept whole carries the largest amplitude any of its primitives
+   ! would have had split, A_mu = max over p in mu of amp_p, and its pairs
+   ! are judged by Q_mu Q_nu A_mu A_nu. That is not a proof that it drops
+   ! no more than the split: the contracted bound and the primitive ones
+   ! bound different sums. It matches the two screens' strictness, and it
+   ! only ever tightens the screen. The two primitive-level screens are
+   ! matched by construction instead (`decontract_whole_screen`). Measured
+   ! (V100, RHF, 1e-11, converged) after hgp_build_pairs' sort was fixed:
+   ! the silica slice with Si's p kept whole is 1.2e-08 Eh from the 1e-14
+   ! energy with none of the three, 3.9e-09 with them, 4.4e-09 all split.
    !
    real(dp) function whole_amplitude(b, mem, nmem, mu) result(a)
       type(trc_basis_t), intent(in) :: b
