@@ -123,6 +123,35 @@ Branch: sym/<stage>-<slug> (base: <base>), commits: <n>, head: <sha>
 Report numbers you measured, not numbers you expect. If something wasn't
 run, say so.
 
+### 7. Delegating simple tasks to Haiku (`sym-helper`)
+
+Subagents can't spawn subagents, so you can't start a helper yourself.
+The coordinator (the main session) dispatches the `sym-helper` agent
+(`.claude/agents/sym-helper.md`, model Haiku) on your behalf.
+
+- **Good tasks**: write a test `.xyz` from coordinates you give; run
+  `ctest -R <pattern>` and summarise failures; list every call site of a
+  routine; apply fortitude fixes to one named file; run a short pyscf
+  snippet and return its numbers.
+- **Not for a helper**: anything needing judgement about correctness,
+  design, tolerances, references, generators or git. Do that yourself, or
+  report it as a blocker.
+- **How to ask**: send the coordinator a message with `SendMessage` (to
+  `main`) while you keep working. Use one request per task, in this form:
+  ```
+  sym-helper request (stage <id>)
+  Worktree: <absolute path>
+  Task: <one self-contained instruction; the helper has none of your context>
+  Files it may edit: <paths, or "none">
+  Return: <exactly what you want back>
+  ```
+  If messaging isn't available, list the requests under "Blockers /
+  questions" in your report instead.
+- Pause work on the files a helper may edit until its result arrives, so
+  you and the helper never edit the same file at once.
+- Check a helper's result before using it. You are responsible for it in
+  your PR.
+
 ---
 
 ## S0: macOS host and OpenMP build
