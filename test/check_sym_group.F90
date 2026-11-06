@@ -11,7 +11,7 @@ module check_sym_group_suite
    !! CHARACTER_TABLE). Static data, so no .ref file.
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_error, only: error_t
-   use trc_sym_group, only: trc_sym_group_t, trc_sym_group, sym_group_names, SYM_NGROUPS
+   use trc_sym_group, only: trc_sym_group_t, sym_group_from_name, sym_group_names, SYM_NGROUPS
    implicit none
    private
    public :: collect_sym_group
@@ -38,7 +38,7 @@ contains
       character(len=*), intent(in) :: name
       type(trc_sym_group_t) :: g
       type(error_t) :: err
-      g = trc_sym_group(name, err)
+      g = sym_group_from_name(name, err)
       if (err%has_error()) error stop "check_sym_group: "//err%get_message()
    end function get
 
@@ -276,14 +276,14 @@ contains
       type(error_type), allocatable, intent(out) :: error
       type(trc_sym_group_t) :: g
       type(error_t) :: err
-      g = trc_sym_group("D3h", err)
+      g = sym_group_from_name("D3h", err)
       call check(error, err%has_error(), "D3h refused")
       if (allocated(error)) return
       call check(error, index(err%get_message(), "D3h") > 0, "message names the group")
       if (allocated(error)) return
       call check(error, g%order, 0, "empty group on error")
       if (allocated(error)) return
-      g = trc_sym_group("", err)
+      g = sym_group_from_name("", err)
       call check(error, err%has_error(), "empty name refused")
    end subroutine test_unknown
 
@@ -291,7 +291,7 @@ contains
       type(error_type), allocatable, intent(out) :: error
       type(trc_sym_group_t) :: g
       type(error_t) :: err
-      g = trc_sym_group("c2V", err)
+      g = sym_group_from_name("c2V", err)
       call check(error, .not. err%has_error(), "c2V accepted")
       if (allocated(error)) return
       call check(error, g%name, "C2v", "canonical name")
