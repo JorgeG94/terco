@@ -363,7 +363,7 @@ program check_sym_ao
       stop 0
    end if
    stat = 0
-   call run_testsuite(collect_sym_ao, error_unit, stat)
+   call run_testsuite(collect_sym_ao, error_unit, stat, parallel=.false.)
    if (stat > 0) then
       write (error_unit, "(i0, a)") stat, " test(s) failed"
       error stop 1
