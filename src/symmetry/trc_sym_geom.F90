@@ -1,10 +1,10 @@
 module trc_sym_geom
    !! Point-group detection, orientation and symmetrization of a geometry.
    !!
-   !! Algorithm. Shift to the centre of nuclear charge (pyscf's choice: a
-   !! ghost atom weighs its element's charge + 0.3, as in pyscf's
+   !! Algorithm. Shift to the centre of nuclear charge (the pyscf choice: a
+   !! ghost atom weighs the charge of its element + 0.3, as in the pyscf
    !! `SymmSys`), diagonalize the charge-weighted second-moment tensor
-   !! sum_i (w_i / W) d_i d_i^T (the "first Cartesian tensor" of pyscf's
+   !! sum_i (w_i / W) d_i d_i^T (the "first Cartesian tensor" of the pyscf
    !! `detect_symm`), and, when its three eigenvalues are distinct, test
    !! all 7 sign masks in the principal frame: a mask is a symmetry when
    !! every atom maps onto an equivalent atom within `tol`. Two atoms are
@@ -14,7 +14,7 @@ module trc_sym_geom
    !! `SYM_GROUP_ENABLED`.
    !!
    !! Result: the reported group, the frame (`rot`, `shift`), the atom
-   !! permutation `perm(natm, nop)` in the group's operation order, the
+   !! permutation `perm(natm, nop)` in the operation order of the group, the
    !! symmetrized coordinates in the standard frame (`r_std`) and in the
    !! input frame (`r_sym`), and the residual |r_sym - r|.
    !!
@@ -23,7 +23,7 @@ module trc_sym_geom
    !!  - C1: no rotation, no shift (pyscf resets both).
    !!  - Cs: z is the mirror normal; x, y are the other principal axes in
    !!    cyclic order (mirror normal P1 -> axes P2, P3, P1; and so on). A Cs
-   !!    reached from a C2v molecule follows pyscf's `symmetry='Cs'`
+   !!    reached from a C2v molecule follows the pyscf `symmetry='Cs'`
    !!    subgroup of C2v: x is the C2 axis, and z is the normal of the
    !!    molecular plane when the molecule is planar.
    !! pyscf takes the sign of each axis from LAPACK, so it is arbitrary
@@ -293,7 +293,7 @@ contains
             ! the mirror normal is z, the rest follow in cyclic order.
             order = [modulo(k, 3) + 1, modulo(k + 1, 3) + 1, k]
          else if (nmir == 2 .and. kc2 > 0) then
-            ! pyscf's Cs subgroup of C2v: x = the C2 axis; the plane
+            ! the pyscf Cs subgroup of C2v: x = the C2 axis; the plane
             ! normal is the second remaining axis for a planar molecule.
             a0 = modulo(kc2, 3) + 1
             a1 = modulo(kc2 + 1, 3) + 1
@@ -317,7 +317,7 @@ contains
    function sym_detect(r, elem, error, tol, ghost, basis_id) result(res)
       !! Detect, orient and symmetrize the geometry `r` (Bohr, 3 x natm) of
       !! atoms with element numbers `elem`. `ghost` marks ghost atoms and
-      !! `basis_id` labels each atom's basis; atoms are equivalent only when
+      !! `basis_id` labels the basis of each atom; atoms are equivalent only when
       !! element, ghost status and basis label all agree. `tol` is the
       !! geometry tolerance in Bohr (default `SYM_DEFAULT_TOL`).
       real(dp), intent(in) :: r(:, :)
