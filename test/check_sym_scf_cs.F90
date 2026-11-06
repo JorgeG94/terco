@@ -476,16 +476,27 @@ contains
          return
       end if
 
-      ! a C1 group is the old path: no labels, identical to a run without `sym`
+      ! a C1 group is the old path: no labels, and the same result as a run
+      ! without `sym`. Not bitwise: under OpenMP (and on the device) the Fock
+      ! build accumulates in a run-dependent order, so two plain C1 runs of
+      ! this case differ by up to 4.5e-13 Eh and 3.1e-13 in D (measured at 4
+      ! and 8 threads; 0 at 1 thread). The gate is ~20x that noise and far
+      ! below any real symmetry effect (the Cs oracle cases above).
       opts%soscf = .false.
       opts%conv_energy = 1.0e-12_dp
       opts%conv_diis = 1.0e-10_dp
       sc%ao%nop = 1
       call trc_scf_run(p%bas, p%nalpha, p%nbeta, opts, rr, sym=sc)
       call trc_scf_run(p%bas, p%nalpha, p%nbeta, opts, r0)
-      call check(error, rr%converged .and. r0%converged .and. rr%energy == r0%energy .and. &
-                 .not. allocated(rr%mo_irrep) .and. all(rr%dmat == r0%dmat), &
-                 "a one-operation group must take the unchanged C1 path (bitwise)")
+      call check(error, rr%converged .and. r0%converged .and. .not. allocated(rr%mo_irrep), &
+                 "a one-operation group must take the unchanged C1 path (no irrep labels)")
+      if (allocated(error)) then
+         call p%bas%release()
+         return
+      end if
+      call check(error, abs(rr%energy - r0%energy) <= 1.0e-11_dp .and. &
+                 maxval(abs(rr%dmat - r0%dmat)) <= 1.0e-11_dp, &
+                 "a one-operation group must give the C1 result (to accumulation-order noise)")
       call p%bas%release()
    end subroutine test_refusals
 
