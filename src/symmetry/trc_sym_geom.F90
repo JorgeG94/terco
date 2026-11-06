@@ -19,13 +19,15 @@ module trc_sym_geom
    !! input frame (`r_sym`), and the residual |r_sym - r|.
    !!
    !! Frame conventions follow pyscf 2.14.0 `symm/geom.py`, `detect_symm`
-   !! and `as_subgroup`, and only for the groups that are enabled (C1, Cs):
+   !! and `as_subgroup`, and only for the groups that are enabled (C1, Cs, Ci):
    !!  - C1: no rotation, no shift (pyscf resets both).
    !!  - Cs: z is the mirror normal; x, y are the other principal axes in
    !!    cyclic order (mirror normal P1 -> axes P2, P3, P1; and so on). A Cs
    !!    reached from a C2v molecule follows the pyscf `symmetry='Cs'`
    !!    subgroup of C2v: x is the C2 axis, and z is the normal of the
    !!    molecular plane when the molecule is planar.
+   !!  - Ci: the inversion fixes no axis, so the orientation is free; the
+   !!    principal axes in order (1, 2, 3). The labels (Ag, Au) do not depend on it.
    !! pyscf takes the sign of each axis from LAPACK, so it is arbitrary
    !! there; here the largest component of each principal axis is positive
    !! and y is flipped when needed so that det(rot) = +1. A sign flip of an
@@ -45,7 +47,7 @@ module trc_sym_geom
    public :: SYM_GROUP_ENABLED, SYM_DEFAULT_TOL
 
    logical, parameter :: SYM_GROUP_ENABLED(SYM_NGROUPS) = &
-                         [.false., .false., .false., .false., .true., .false., .false., .true.]
+                         [.false., .false., .false., .false., .true., .true., .false., .true.]
       !! THE CAP: which groups may be reported, in the order of
       !! `sym_group_names` (D2h, C2h, C2v, D2, Cs, Ci, C2, C1). A larger
       !! detected group is reported as the largest enabled subgroup. Stages
@@ -242,9 +244,11 @@ contains
 
    function reported_name(detected, nmirror) result(name)
       !! The group to report: the detected one if enabled, else the largest
-      !! enabled subgroup. Only Cs and C1 are reachable by the cap today; a
-      !! stage that enables another group adds its subgroup rule here (for
-      !! example C2 inside C2v) and its frame in `frame_order`.
+      !! enabled subgroup. Ci is reached only when the molecule is Ci itself:
+      !! it lies below D2h and C2h too, but Cs is preferred there (as before)
+      !! until a stage fixes pyscf's choice among the order-2 subgroups. A stage
+      !! that enables another group adds its subgroup rule here (for example
+      !! C2 inside C2v) and its frame in `frame_order`.
       character(len=3), intent(in) :: detected
       integer, intent(in) :: nmirror
       character(len=3) :: name
@@ -274,6 +278,11 @@ contains
       select case (rep)
       case ("C1")
          return
+      case ("Ci")
+         ! The inversion fixes no axis: the orientation is arbitrary. pyscf
+         ! keeps the input orientation; the labels (Ag, Au) do not depend on
+         ! it, so the principal axes are used as they come.
+         order = [1, 2, 3]
       case ("Cs")
          nmir = 0
          k = 0

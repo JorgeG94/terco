@@ -166,6 +166,21 @@ target_link_libraries(check_sym_run PRIVATE test-drive::test-drive)
 terco_add_check(check_sym_scf_cs check_sym_scf_cs.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_sym_scf_cs PRIVATE test-drive::test-drive)
 
+# The point group Ci (an inversion centre only): detection, the AO signs
+# (-1)^l, block-diagonal S and H, the central oracle for RHF, UHF and B3LYP,
+# and the gradient, on meso-CHFCl-CHFCl and N2H2F2 against pyscf
+# (pyscf_refs/sym_ci.ref). Registered twice, as check_sym_ao is: the _f one is
+# the uncontracted l = 0..3 set and skips below TERCO_LMAX=3.
+terco_add_check(check_sym_ci check_sym_ci.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_ci PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_ci PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ci)
+terco_add_check(check_sym_ci_f check_sym_ci.F90 NEEDS_BASIS NEEDS_PYSCF_REF ARGS f)
+target_link_libraries(check_sym_ci_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_ci_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ci_f)
+set_tests_properties(terco/check_sym_ci_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
 # check_basis_ecp_refused.F90's own header.
@@ -2179,6 +2194,7 @@ if(Python3_FOUND)
                                                          SKIP_REGULAR_EXPRESSION "^SKIP")
   endfunction()
   terco_add_golden(scf_rks scf_rks)
+  terco_add_golden(check_sym_ci sym_ci)
   terco_add_golden(scf_mgga scf_mgga)
   terco_add_golden(scf_df scf_df)
   terco_add_golden(scf_robust scf_robust)
