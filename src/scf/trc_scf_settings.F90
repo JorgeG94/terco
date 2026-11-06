@@ -282,6 +282,7 @@ module trc_scf_settings
       real(dp), allocatable :: dmat(:, :, :)   !! (nao, nao, nspin); restricted holds the total
       real(dp), allocatable :: cmo(:, :, :)    !! (nao, nao, nspin) orbitals
       real(dp), allocatable :: eps(:, :)       !! (nao, nspin) orbital energies
+      integer, allocatable :: mo_irrep(:, :)   !! (nao, nspin) irrep of each orbital (trc_sym_scf); unallocated without symmetry
       real(dp), allocatable :: grid_r(:, :)    !! (3, npts) the grid used, for a same-grid comparison
       real(dp), allocatable :: grid_w(:)
       real(dp), allocatable :: grid_r_nlc(:, :)  !! VV10's own (coarser) grid, unallocated when the
