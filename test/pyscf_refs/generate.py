@@ -4744,6 +4744,42 @@ def gen_ghost_water_dimer():
     print(f"  ghost_water_dimer: E_RHF={e_rhf:.12f} E_B3LYP={e_b3lyp:.12f}")
 
 
+def gen_sym_so_dims():
+    """check_sym_ao.F90's anchor: the number of symmetry-adapted orbitals per
+    irrep that pyscf's `mol.symm_orb` gives, for water (as its Cs subgroup,
+    symmetry='Cs', the largest group terco reports at this stage) and HOCl
+    (Cs), in the Cartesian and the spherical AO space, 6-31G* and cc-pVDZ.
+    Basis from terco's own BSE JSON (bse_json_basis), so both codes see
+    the same shells. Irrep order is pyscf's: A', A". The counts do not depend
+    on the orientation, only on which plane is the mirror: for water that is
+    the molecular plane, which pyscf picks for symmetry='Cs' (A' larger than A").
+    """
+    json_for = {"631gs": "basis_sets/6-31gs.json", "ccpvdz": "basis_sets/cc-pvdz.json"}
+    mols = ["water", "hocl"]
+    w = RefWriter("sym_so_dims.ref")
+    w.header("check_sym_ao", [ROOT / "test" / "check_sym_ao.F90"]
+             + [TEST / f"{m}.xyz" for m in mols] + [TEST / j for j in json_for.values()])
+    for m in mols:
+        atoms = _xyz_atoms(m)
+        elements = {sym: {v: k for k, v in _SYMBOL.items()}[sym] for sym, _ in atoms}
+        for bname, jrel in json_for.items():
+            basis_arg = bse_json_basis(TEST / jrel, elements)
+            for kind, cart in (("cart", True), ("sph", False)):
+                mol = gto.M(atom=atoms, basis=basis_arg, unit='Angstrom', cart=cart,
+                            symmetry='Cs', verbose=0)
+                if mol.groupname != 'Cs' or list(mol.irrep_name) != ["A'", 'A"']:
+                    raise RuntimeError(f"gen_sym_so_dims {m}: pyscf group {mol.groupname} {mol.irrep_name}")
+                dims = [o.shape[1] for o in mol.symm_orb]
+                if sum(dims) != mol.nao_nr():
+                    raise RuntimeError(f"gen_sym_so_dims {m}: SO count {dims} != nao {mol.nao_nr()}")
+                tag = f"SO_{m}_{bname}_{kind}"
+                w.int_("NAO_" + tag[3:], mol.nao_nr())
+                w.vector(tag, dims)
+                print(f"  {tag}: nao {mol.nao_nr()} dims {dims}")
+    w.end()
+    w.write()
+
+
 CASES = {
     "hirshfeld": gen_hirshfeld,
     "mult": gen_mult,
@@ -4895,6 +4931,7 @@ CASES = {
     "xc_kernels": gen_xc_kernels,
     "pcm_cavity": gen_pcm_cavity,
     "ghost_water_dimer": gen_ghost_water_dimer,
+    "sym_so_dims": gen_sym_so_dims,
     "pcm_ints_water_631gs": lambda: gen_pcm_ints("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "pcm_ints_water_ccpvtz": lambda: gen_pcm_ints("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json"),
     "pcm_scf_main": lambda: gen_pcm_scf("main"),
