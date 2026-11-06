@@ -71,7 +71,8 @@ target_sources(
           core/trc_acc_shim.F90   # see the file: this one is not optional
           symmetry/trc_sym_group.F90   # the eight Abelian point groups: operations, characters, irrep names
           symmetry/trc_sym_geom.F90    # point-group detection, orientation, symmetrization of a geometry
-          symmetry/trc_sym_ao.F90)     # AO signed permutations and the SO basis
+          symmetry/trc_sym_ao.F90      # AO signed permutations and the SO basis
+          symmetry/trc_sym_scf.F90)    # SO-blocked SCF step: per-irrep diagonalisation, labels, symmetrisation
 
 # --- the molecular quadrature -------------------------------------------------
 #

@@ -71,7 +71,7 @@ assumption for the plan is:
 | S1 | Point-group tables (`trc_sym_group`) | S0 | done |
 | S2 | Detection, orientation, symmetrization (nondegenerate tops) | S1 | done |
 | S3 | AO representation and SO basis | S2 | done |
-| S4 | SO-blocked SCF (pilot group: Cs) | S3 | todo |
+| S4 | SO-blocked SCF (pilot group: Cs) | S3 | done |
 | S5 | Input, CLI, Fortran API, C ABI, reporting | S4 | todo |
 | S6 | Group C2 | S5 | todo |
 | S7 | Group Ci | S5 | todo |
@@ -114,6 +114,9 @@ molecule.
   (S0 sets this up).
 - New checks use test-drive (`test/check_si.F90` is the pattern). Name them
   `check_sym_*`.
+  Call `run_testsuite(..., parallel=.false.)`: its default runs cases in an
+  OpenMP parallel do under `-fopenmp`, and the basis reader is not
+  thread-safe (this broke the OpenMP job for S3 and S4).
 - Branch: `sym/<stage>-<slug>` (for example `sym/s4-so-scf`), based on
   `symmetry`, or on the previous stage's branch if that is not merged yet.
   Say so in the PR body. PR target: `symmetry`. Merge commits, no squash,

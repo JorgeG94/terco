@@ -154,6 +154,13 @@ set_target_properties(check_sym_ao_f PROPERTIES Fortran_MODULE_DIRECTORY
                       ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ao_f)
 set_tests_properties(terco/check_sym_ao_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# The SO-blocked SCF for Cs (trc_sym_scf, trc_scf_run's sym argument): the
+# central oracle (symmetry vs C1 on the symmetrised geometry; RHF, UHF,
+# B3LYP), irrep occupations and per-irrep orbital energies against pyscf
+# (pyscf_refs/sym_scf_cs.ref), gradient symmetrisation, fixed occupations.
+terco_add_check(check_sym_scf_cs check_sym_scf_cs.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_scf_cs PRIVATE test-drive::test-drive)
+
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
 # check_basis_ecp_refused.F90's own header.

@@ -50,6 +50,8 @@ module trc_scf_grad
    use trc_scf_grad_df, only: scf_grad_df_two_electron
    use trc_vv10_grad, only: vv10_grad_add, vv10_grad_add_on_grid
    use trc_scf_settings, only: DEFAULT_NLC_GRID_LEVEL
+   use trc_sym_geom, only: trc_sym_geom_t
+   use trc_sym_scf, only: sym_grad_symmetrize
    use trc_dft_grid, only: dft_grid_t
    use trc_xc_batch, only: trc_xc_grid_t
    implicit none
@@ -132,7 +134,7 @@ contains
 
    subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
                                func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, dfjk, aux, &
-                               verbose, grid, xg, grid_nlc, xg_nlc, pair_eri_cache, reused)
+                               verbose, grid, xg, grid_nlc, xg_nlc, pair_eri_cache, reused, sym_geom)
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
@@ -247,6 +249,12 @@ contains
       !! steps, through pic's logger at PERFORMANCE. Default off.
       type(dft_grid_t), intent(in), optional :: grid, grid_nlc
       type(trc_xc_grid_t), intent(in), optional :: xg, xg_nlc
+      type(trc_sym_geom_t), intent(in), optional :: sym_geom
+      !! The symmetry the molecule was run in (trc_sym_geom): present, the
+      !! finished gradient is averaged over the group with the atom
+      !! permutation (`sym_grad_symmetrize` of trc_sym_scf), which zeroes the
+      !! components the group forbids. `b` must sit on `sym_geom%r_std`, so
+      !! `grad` is in the standard frame. Absent, nothing is done.
       !! The SCF's own semilocal grid (`grid`/`xg`) and, for VV10, its nlc
       !! grid (`grid_nlc`/`xg_nlc`), each pair present together or not at
       !! all: present, the XC terms run on it (`xc_grad_add_on_grid`/
@@ -433,6 +441,7 @@ contains
 
       ! --- nuclear repulsion, host arithmetic, added on top ---
       call scf_grad_nuclear_repulsion(b, grad)
+      if (present(sym_geom)) call sym_grad_symmetrize(sym_geom%group, sym_geom%perm, grad)
 
       ! A reused `pair_eri_cache%pl` is the caller's: only `pl_own` is ours.
       if (.not. reuse_pl) call pl_own%release()
