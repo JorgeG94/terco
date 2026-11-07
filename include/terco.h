@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 22
+#define TRC_ABI_MINOR 23
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -1190,6 +1190,17 @@ int trc_rimp2_energy(trc_handle_t handle, double* e_os, double* e_ss);
  * RI-MP2, CPHF/CPKS, the Hessian, Fukui indices and restarts.
  */
 int trc_set_symmetry(trc_handle_t handle, const char* group, double tol);
+
+/**
+ * Under a symmetry request (trc_set_symmetry), build the Fock matrix
+ * from the orbit representatives of the integral quartets and
+ * symmetrize it (on = 1, the default), or build the full matrix and
+ * symmetrize that (on = 0). The same SCF either way, to round-off; only
+ * the number of integrals computed differs. No effect without a group
+ * other than C1, with density fitting or over more than one rank
+ * (those take the full build).
+ */
+int trc_set_symmetry_skeleton(trc_handle_t handle, int on);
 
 /**
  * Fix the electrons per irrep, as pyscf's irrep_nelec: "A'=6,A\"=2" for

@@ -74,6 +74,7 @@ target_sources(
           symmetry/trc_sym_tops.F90    # pyscf's axis search for symmetric/spherical tops, linear molecules, atoms
           symmetry/trc_sym_geom.F90    # point-group detection, orientation, symmetrization of a geometry
           symmetry/trc_sym_ao.F90      # AO signed permutations and the SO basis
+          symmetry/trc_sym_pairs.F90   # shell-pair orbits under the group: images, representatives, weights, orbit-invariant Q and dsh
           symmetry/trc_sym_scf.F90     # SO-blocked SCF step: per-irrep diagonalisation, labels, symmetrisation
           symmetry/trc_sym_run.F90)    # what a run asks for: off/auto/group, subgroup rules, per-irrep occupations
 

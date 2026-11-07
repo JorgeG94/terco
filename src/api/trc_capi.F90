@@ -263,8 +263,9 @@ module trc_capi
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: trc_run_gradient, trc_gradient
    public :: trc_set_geometry, trc_symmetry_requested
-   public :: trc_set_symmetry, trc_set_irrep_nelec, trc_symmetry_group, trc_symmetry_detected, trc_symmetry_residual, &
-             trc_symmetry_frame, trc_symmetry_nirrep, trc_symmetry_irrep_name, trc_symmetry_irrep_dim, trc_mo_irreps, &
+   public :: trc_set_symmetry, trc_set_irrep_nelec, trc_set_symmetry_skeleton, trc_symmetry_group, &
+             trc_symmetry_detected, trc_symmetry_residual, trc_symmetry_frame, trc_symmetry_nirrep, &
+             trc_symmetry_irrep_name, trc_symmetry_irrep_dim, trc_mo_irreps, &
              trc_geometry
    public :: trc_set_hessian_step, trc_hessian_step, trc_run_hessian, trc_hessian, trc_check_rimp2_gradient
    public :: trc_save_scf, trc_load_scf
@@ -338,7 +339,10 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 22
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 23
+   !! 1.23: trc_set_symmetry_skeleton, the switch of the skeleton Fock build
+   !! under a symmetry request (additive; on by default, nothing existing
+   !! changes: the result is the same, only the integral work differs).
    !! 1.22: point-group symmetry for the SCF (additive): trc_set_symmetry,
    !! trc_set_irrep_nelec, and the getters trc_symmetry_group,
    !! trc_symmetry_detected, trc_symmetry_residual, trc_symmetry_frame,
@@ -3669,6 +3673,8 @@ contains
       end if
 
       allocate (ssym)
+      ssym%skeleton = cx%sym_req%skeleton
+      ssym%geom = cx%sym_geom
       ssym%ao = sym_ao_build(cx%bb%b, cx%sym_geom, err)
       if (err%has_error()) then
          cx%message = "trc_run_scf: "//err%get_message()
@@ -6229,6 +6235,26 @@ contains
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_symmetry
+
+   function trc_set_symmetry_skeleton(handle, on) result(status) bind(c, name="trc_set_symmetry_skeleton")
+      !! Under a symmetry request (trc_set_symmetry), build the Fock matrix
+      !! from the orbit representatives of the integral quartets and
+      !! symmetrize it (on = 1, the default), or build the full matrix and
+      !! symmetrize that (on = 0). The same SCF either way, to round-off; only
+      !! the number of integrals computed differs. No effect without a group
+      !! other than C1, with density fitting or over more than one rank
+      !! (those take the full build).
+      type(c_ptr), value :: handle
+      integer(c_int), value :: on
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%sym_req%skeleton = on /= 0_c_int
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_symmetry_skeleton
 
    function trc_set_irrep_nelec(handle, spec) result(status) bind(c, name="trc_set_irrep_nelec")
       !! Fix the electrons per irrep, as pyscf's irrep_nelec: "A'=6,A\"=2" for

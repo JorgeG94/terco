@@ -44,6 +44,7 @@ module trc_sym_run
       character(len=3) :: group = "C1"  !! canonical name, with `SYM_EXPLICIT`
       real(dp) :: tol = SYM_DEFAULT_TOL  !! geometry tolerance, Bohr
       character(len=:), allocatable :: irrep_nelec  !! electrons per irrep, unparsed; absent = aufbau
+      logical :: skeleton = .true.  !! the skeleton Fock build (trc_sym_scf_t%skeleton); false: full build, then symmetrize
    end type trc_sym_request_t
 
 contains

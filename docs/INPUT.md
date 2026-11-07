@@ -103,6 +103,7 @@ json = "water.json"
 | `restart` | string | `--restart` | read the SCF result from a `save_scf` file |
 | `symmetry` | string | `--symmetry` | `off` (the default), `auto` (the largest Abelian point group of the molecule: D2h or one of its subgroups; symmetric and spherical tops and linear molecules run in C1 for now) or a group, which must be the detected group or a subgroup of it. The molecule is symmetrised and moved to the standard frame of the group; the SCF, the gradient and the report are in that frame. Refused with `driver.optimize`, `driver.hessian`, `correlation.method`, `scf.density_fitted`, `solvation.model`, `scf.convergence.soscf`, `analysis.fukui`, `scf.restart` and more than one rank |
 | `symmetry_tol` | float | `--symmetry-tol` | geometry tolerance for `symmetry`, Bohr (1e-5) |
+| `symmetry_skeleton` | boolean | `--sym-skeleton` / `--no-sym-skeleton` | with `symmetry`, build the Fock matrix from the orbit representatives of the integral quartets and symmetrize it (the default, `true`); `false` builds the full matrix and symmetrizes that. The same SCF to round-off; only the integral work differs. Needs a group other than C1; density fitting and more than one rank take the full build |
 | `irrep_nelec` | string | `--irrep-nelec` | electrons per irrep, e.g. `"A'=20,A\"=6"` (restricted: even counts) or `"A'=11/9,A\"=3/3"` (alpha/beta); unlisted irreps hold none; default aufbau. A gradient is refused for occupations that are not the aufbau ones |
 
 The SCF is converged when the energy change is below `energy_tol` **and** the

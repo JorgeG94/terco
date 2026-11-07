@@ -26,7 +26,7 @@ module trc_binkernel
                          ncum_of, cart_ncart_of
    use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_sort_by_weight, bins_build_pair_quartets
    use trc_bin_tiles, only: bin_tiles_requested, bin_tiles_build, bin_tiles_reach, bin_tiles_plan
-   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
+   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t, trc_bin_orbits_t
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
    use trc_rys_select, only: rys_select_init, rys_select_route
    use trc_rys_kernels, only: rys_dispatch
@@ -148,7 +148,7 @@ contains
    ! each.  The host loop is over BINS -- tens of thousands of iterations at
    ! most -- not over quartets.
    !
-   subroutine binkernel_fock_bins(b, pairs, quartets, launch, dsh, dmat, jmat, kmat)
+   subroutine binkernel_fock_bins(b, pairs, quartets, launch, dsh, dmat, jmat, kmat, orb)
       type(pair_bins_t), intent(inout) :: b
       !! `intent(inout)`: the optional one-time resort below reorders it.
       type(trc_shell_pairs_t), intent(in) :: pairs
@@ -173,11 +173,22 @@ contains
       real(dp), intent(in)    :: dmat(launch%ndens, launch%nao, launch%nao)
       real(dp), intent(inout) :: jmat(launch%ndens, launch%nao, launch%nao)
       real(dp), intent(inout) :: kmat(launch%ndens, launch%nao, launch%nao)
+      type(trc_bin_orbits_t), intent(in), optional :: orb
+      !! The bins' pair orbits (trc_eri%orb) when they were built closed under
+      !! a point group. With `launch%skeleton` the plan is the skeleton one:
+      !! the sum is G_skel, to be symmetrized by the caller. Without
+      !! `launch%skeleton` the same bins are walked in full, as ever.
 
       type(trc_bin_plan_t) :: plan
       real(dp) :: thresh
       integer :: nseg
-      logical :: tiled
+      logical :: tiled, skel, orbits
+
+      orbits = .false.
+      if (present(orb)) orbits = orb%built
+      skel = launch%skeleton
+      if (skel .and. .not. orbits) error stop "terco: a skeleton Fock build needs the bins built with a point group"
+      if (skel .and. launch%nosym) error stop "terco: a skeleton Fock build needs an invariant density (not nosym)"
 
       thresh = launch%thresh
       ! Order the pairs inside each bin by how much they matter, once, so
@@ -195,8 +206,15 @@ contains
       ! Set TRC_BIN_SORT=1 to turn it on; TRC_BIN_SORT_Q=1 keys on the
       ! bound alone.
       !
+      ! On bins closed under a point group the order changes only inside each
+      ! range of equal orbit size (bins_sort_by_weight), which keeps the
+      ! representatives first and every weight contiguous.
       if (.not. b%sorted .and. bin_sort_on()) then
-         call bins_sort_by_weight(b, pairs%nbas, dsh)
+         if (orbits) then
+            call bins_sort_by_weight(b, pairs%nbas, dsh, orb)
+         else
+            call bins_sort_by_weight(b, pairs%nbas, dsh)
+         end if
          !$acc update device(b%sp_i, b%sp_j, b%sp_q)
          ! The slot order inside a bin just changed, and the bin-interleaved
          ! tables are keyed on it -- rebuild them from the same pairs
@@ -206,7 +224,13 @@ contains
          !$acc                quartets%px, quartets%py, quartets%pz, &
          !$acc                quartets%ax, quartets%ay, quartets%az, &
          !$acc                quartets%abx, quartets%aby, quartets%abz, quartets%n)
-         if (quartets%tiles%built) call bin_tiles_build(quartets%tiles, b, pairs%nbas)
+         if (quartets%tiles%built) then
+            if (orbits) then
+               call bin_tiles_build(quartets%tiles, b, pairs%nbas, orb)
+            else
+               call bin_tiles_build(quartets%tiles, b, pairs%nbas)
+            end if
+         end if
       end if
 
       ! An exchange-only launch (jfac = 0: the MD J engine forms J) is planned
@@ -217,7 +241,13 @@ contains
               .and. .not. launch%nosym .and. bin_tiles_requested()
       if (tiled) then
          call bin_tiles_reach(quartets%tiles, dsh)
-         call bin_tiles_plan(quartets%tiles, plan, b, thresh, quartets%bin_pbase)
+         if (skel) then
+            call bin_tiles_plan(quartets%tiles, plan, b, thresh, quartets%bin_pbase, orb)
+         else
+            call bin_tiles_plan(quartets%tiles, plan, b, thresh, quartets%bin_pbase)
+         end if
+      else if (skel) then
+         call plan%build_skeleton(b, orb, thresh, quartets%bin_pbase)
       else
          call plan%build(b, thresh, quartets%bin_pbase, launch%use_density)
       end if
@@ -291,7 +321,7 @@ contains
 
       integer :: c0, c1, nl, key, nseg
       integer(int64) :: lcap
-      real(dp) :: thresh
+      real(dp) :: thresh, wt, jf, kf
 
       nseg = plan%nseg
       thresh = launch%thresh
@@ -300,9 +330,19 @@ contains
       lcap = launch_cap()
       do while (c0 <= nseg)
          key = plan%class_key(c0, CLASS_RADIX)
+         ! A skeleton plan's segments carry a weight (an orbit size): one
+         ! launch per (class, weight), the weight multiplying both scalars.
+         ! It cannot change a kernel's branch: they test jfac /= 0, kfac /= 0.
+         wt = 1.0_dp
+         if (allocated(plan%sW)) wt = plan%sW(c0)
+         jf = launch%jfac*wt
+         kf = launch%kfac*wt
          c1 = c0
          do while (c1 < nseg)
             if (plan%class_key(c1 + 1, CLASS_RADIX) /= key) exit
+            if (allocated(plan%sW)) then
+               if (plan%sW(c1 + 1) /= wt) exit
+            end if
             if (lcap > 0 .and. plan%sOff(c1 + 2) - plan%sOff(c0) > lcap) exit
             c1 = c1 + 1
          end do
@@ -319,7 +359,7 @@ contains
             call rys_dispatch(key, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
                               plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, &
                               b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
-                              launch%jfac, launch%kfac, launch%omega, dsh, pairs%nbas, launch%nao, &
+                              jf, kf, launch%omega, dsh, pairs%nbas, launch%nao, &
                               pairs%sh_l, pairs%ao_off, &
                               quartets%nqp, quartets%z, quartets%c, quartets%px, quartets%py, quartets%pz, &
                               quartets%ax, quartets%ay, quartets%az, &
@@ -329,7 +369,7 @@ contains
             call pc_dispatch(key, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
                              plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, &
                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
-                             launch%jfac, launch%kfac, launch%omega, dsh, pairs%nbas, launch%nao, &
+                             jf, kf, launch%omega, dsh, pairs%nbas, launch%nao, &
                              pairs%sh_l, pairs%ao_off, &
                              quartets%nqp, quartets%z, quartets%c, quartets%px, quartets%py, quartets%pz, &
                              quartets%ax, quartets%ay, quartets%az, &

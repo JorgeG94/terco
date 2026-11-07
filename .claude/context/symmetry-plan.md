@@ -86,10 +86,10 @@ assumption for the plan is:
 | S11 | Group D2h | S5 | done |
 | S12 | Symmetric and spherical tops, linear molecules | S11 | done |
 | S13 | Skeleton Fock design spike | S11 | done (approved, see `docs/SYMMETRY_FOCK.md` 6a) |
-| S14.1 | Orbit tables (`trc_sym_pairs`), closure and weight-sum check | S13 | todo |
-| S14.2 | Symmetry-aware bins/plan/tiles, skeleton entry, `check_sym_fock` | S14.1 | todo |
-| S14.3 | SCF wiring, central SCF oracle with the skeleton for all groups | S14.2 | todo |
-| S14.4 | MD J and MD exchange bra restriction (required for g bases) | S14.2 | todo |
+| S14.1 | Orbit tables (`trc_sym_pairs`), closure and weight-sum check | S13 | done |
+| S14.2 | Symmetry-aware bins/plan/tiles, skeleton entry, `check_sym_fock` | S14.1 | done |
+| S14.3 | SCF wiring, central SCF oracle with the skeleton for all groups | S14.2 | done |
+| S14.4 | MD J and MD exchange bra restriction (required before symmetry becomes the default) | S14.2 | todo |
 | S14.5 | Device-mapping list for S15 | S14.3 | todo |
 | S15 | GPU validation and performance | S14, NVIDIA host | todo |
 | S16 | Optional: DF-JK, XC grid and gradient reductions | S15 | todo |
@@ -525,3 +525,7 @@ Each of these is its own design-then-implement pair, decided after S15:
   B3/B2 for the same input. Axis-aligned inputs agree exactly. S10's test
   accepts either and maps the labels (60 random rotations: the difference
   is exactly the left-handed cases).
+- Planar Cs molecules (HOCl, HCO) gain nothing from the skeleton build and
+  launch 4-5% more quartets than the full build (every atom is its own
+  image). Decision 2 keeps the skeleton always on under `symmetry=on`;
+  revisit with S15's GPU timings.

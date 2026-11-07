@@ -61,8 +61,8 @@
 !
 module trc_bin_tiles
    use pic_types, only: dp, int64
-   use trc_bins, only: pair_bins_t, trc_bin_plan_t
-   use trc_eri_data, only: trc_bin_tiles_t
+   use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_skel_cut_first, bins_plan_emit, bins_plan_allocate
+   use trc_eri_data, only: trc_bin_tiles_t, trc_bin_orbits_t
    implicit none
    private
 
@@ -90,6 +90,8 @@ module trc_bin_tiles
       !! ob+1..ob+nb of bin kb, a triangle when diag.
       integer :: ka = 0, kb = 0, oa = 0, na = 0, ob = 0, nb = 0
       logical :: diag = .false.
+      real(dp) :: w = 1.0_dp
+      !! Weight of a skeleton plan's segment (trc_bins); ignored otherwise.
    end type segment_t
 
 contains
@@ -110,16 +112,25 @@ contains
       tiles_enabled = on
    end subroutine bin_tiles_set_enabled
 
-   subroutine bin_tiles_build(this, b, nbas)
+   subroutine bin_tiles_build(this, b, nbas, orb)
       !! Cut every bin of `b` into tiles. Geometry only: once per bins, and
       !! again whenever the pair order inside the bins changes.
+      !!
+      !! With `orb` (bins closed under a point group, trc_bins) a tile never
+      !! crosses a boundary between two orbit sizes or between the
+      !! representatives and the other pairs, so that a representative tile
+      !! has one weight; the representative tiles come first in a bin.
       type(trc_bin_tiles_t), intent(inout) :: this
       type(pair_bins_t), intent(in) :: b
       integer, intent(in) :: nbas
+      type(trc_bin_orbits_t), intent(in), optional :: orb
+      logical :: skel
 
       integer :: k, t, p, lo, hi, nt
 
       this = trc_bin_tiles_t()
+      skel = .false.
+      if (present(orb)) skel = orb%built
       this%nbin = b%nbin
       this%nbas = nbas
       this%nblk = (nbas + TILE_BLOCK - 1)/TILE_BLOCK
@@ -128,7 +139,11 @@ contains
       do k = 1, b%nbin
          this%bt0(k) = nt
          this%btn(k) = 0
-         call cut_bin(b, k, .false., this, nt)
+         if (skel) then
+            call cut_bin(b, k, .false., this, nt, orb)
+         else
+            call cut_bin(b, k, .false., this, nt)
+         end if
          this%btn(k) = nt - this%bt0(k)
       end do
       this%ntile = nt
@@ -137,9 +152,18 @@ contains
       allocate (this%rlo(0:TILE_NLEV, nt), this%rhi(0:TILE_NLEV, nt))
       allocate (this%db(this%nblk, this%nblk))
       this%qbin = 0.0_dp
+      if (skel) then
+         allocate (this%brep(b%nbin), this%tw(nt))
+         this%brep = 0
+         this%tw = 0
+      end if
       nt = 0
       do k = 1, b%nbin
-         call cut_bin(b, k, .true., this, nt)
+         if (skel) then
+            call cut_bin(b, k, .true., this, nt, orb)
+         else
+            call cut_bin(b, k, .true., this, nt)
+         end if
       end do
       do k = 1, b%nbin
          do t = this%bt0(k) + 1, this%bt0(k) + this%btn(k)
@@ -170,15 +194,42 @@ contains
       this%built = .true.
    end subroutine bin_tiles_build
 
-   subroutine cut_bin(b, k, fill, this, nt)
+   subroutine cut_bin(b, k, fill, this, nt, orb)
       !! The tiles of bin k: runs of consecutive pairs, each ended at
       !! TILE_PAIRS pairs or when the leading shell (the larger index, which
       !! the canonical pair order ascends) has moved TILE_SPAN blocks past the
       !! tile's first. Counted into nt, or (fill) also written from tile
       !! nt + 1. The span cut is what keeps a tile compact in a sparse bin:
       !! 64 pairs of a bin with a handful per atom would span the molecule.
+      !! With `orb` the bin is cut one range at a time (each weight of the
+      !! representatives, then the other pairs), and a representative tile
+      !! records its weight and counts in `brep`.
       type(pair_bins_t), intent(in) :: b
       integer, intent(in) :: k
+      logical, intent(in) :: fill
+      type(trc_bin_tiles_t), intent(inout) :: this
+      integer, intent(inout) :: nt
+      type(trc_bin_orbits_t), intent(in), optional :: orb
+      integer :: r
+
+      if (.not. present(orb)) then
+         call cut_range(b, k, 0, b%bin_cnt(k), 0, fill, this, nt)
+         return
+      end if
+      do r = orb%sec0(k) + 1, orb%sec0(k + 1)
+         call cut_range(b, k, orb%sec_beg(r), orb%sec_cnt(r), orb%sec_w(r), fill, this, nt)
+      end do
+      if (fill) this%brep(k) = nt - this%bt0(k)
+      if (orb%bin_nrep(k) < b%bin_cnt(k)) then
+         call cut_range(b, k, orb%bin_nrep(k), b%bin_cnt(k) - orb%bin_nrep(k), 0, fill, this, nt)
+      end if
+   end subroutine cut_bin
+
+   subroutine cut_range(b, k, beg, cnt, w, fill, this, nt)
+      !! The tiles of the pairs beg+1..beg+cnt of bin k (cut_bin's rule); w is
+      !! the weight recorded for them.
+      type(pair_bins_t), intent(in) :: b
+      integer, intent(in) :: k, beg, cnt, w
       logical, intent(in) :: fill
       type(trc_bin_tiles_t), intent(inout) :: this
       integer, intent(inout) :: nt
@@ -187,12 +238,13 @@ contains
       n = 0
       first = 0
       start = 0
-      do p = 1, b%bin_cnt(k)
+      do p = beg + 1, beg + cnt
          lead = block_of(max(b%sp_i(b%bin_off(k) + p), b%sp_j(b%bin_off(k) + p)))
          if (n == 0 .or. n == TILE_PAIRS .or. lead >= first + TILE_SPAN) then
             if (n > 0 .and. fill) then
                this%t0(nt) = start
                this%tn(nt) = n
+               if (allocated(this%tw)) this%tw(nt) = w
             end if
             nt = nt + 1
             n = 0
@@ -204,8 +256,9 @@ contains
       if (n > 0 .and. fill) then
          this%t0(nt) = start
          this%tn(nt) = n
+         if (allocated(this%tw)) this%tw(nt) = w
       end if
-   end subroutine cut_bin
+   end subroutine cut_range
 
    pure integer function block_of(shell) result(res)
       integer, intent(in) :: shell
@@ -316,33 +369,132 @@ contains
       db(bi, bj) = m
    end subroutine block_max_item
 
-   subroutine bin_tiles_plan(this, plan, b, thresh, bin_pbase)
+   subroutine bin_tiles_plan(this, plan, b, thresh, bin_pbase, orb)
       !! The launch plan of trc_bin_plan_t%build, with every Schwarz-admitted
       !! bin pair either kept whole or cut into the tile pairs that can carry
       !! exchange at this density (see the module header). Needs this
       !! build's `reach`.
+      !!
+      !! With `orb` the plan is the skeleton plan of trc_bin_plan_t%build_skeleton
+      !! (one side of each bin pair restricted to representatives, weights in
+      !! sW), cut the same way: the tiles are those of the representative
+      !! ranges against the whole other bin.
       type(trc_bin_tiles_t), intent(in) :: this
       type(trc_bin_plan_t), intent(inout) :: plan
       type(pair_bins_t), intent(in) :: b
       real(dp), intent(in) :: thresh
       integer, intent(in) :: bin_pbase(:)
       !! (nbin) first slot - 1 of each bin in the bin-interleaved tables
+      type(trc_bin_orbits_t), intent(in), optional :: orb
 
       integer :: nseg
+      logical :: skel
 
+      skel = .false.
+      if (present(orb)) skel = orb%built
       call plan%release()
       nseg = 0
-      call walk(this, plan, b, thresh, bin_pbase, .false., nseg)
-      allocate (plan%sA(nseg), plan%sNB(nseg), plan%sOA(nseg), plan%sOB(nseg))
-      allocate (plan%sPA(nseg), plan%sPB(nseg), plan%sSA(nseg), plan%sSB(nseg), plan%sD(nseg))
-      allocate (plan%sLA(nseg), plan%sLB(nseg), plan%sLC(nseg), plan%sLD(nseg))
-      allocate (plan%sOff(nseg + 1))
-      plan%sOff(1) = 0
+      if (skel) then
+         call walk_skeleton(this, plan, b, orb, thresh, bin_pbase, .false., nseg)
+      else
+         call walk(this, plan, b, thresh, bin_pbase, .false., nseg)
+      end if
+      call bins_plan_allocate(plan, nseg, skel)
       nseg = 0
-      call walk(this, plan, b, thresh, bin_pbase, .true., nseg)
+      if (skel) then
+         call walk_skeleton(this, plan, b, orb, thresh, bin_pbase, .true., nseg)
+      else
+         call walk(this, plan, b, thresh, bin_pbase, .true., nseg)
+      end if
       plan%nseg = nseg
       plan%nwork = plan%sOff(nseg + 1)
    end subroutine bin_tiles_plan
+
+   subroutine walk_skeleton(this, plan, b, orb, thresh, bin_pbase, fill, nseg)
+      !! walk for the skeleton plan. For each admitted bin pair the bra side
+      !! kx is the one bins_skel_cut_first picks, and only its representative
+      !! tiles (the leading `brep` tiles) are bra tiles; the ket side is all
+      !! of the other bin. A bin against itself is the same rectangle, with
+      !! the half of the diagonal bin pair in the weight. Both passes take
+      !! the same decisions.
+      type(trc_bin_tiles_t), intent(in) :: this
+      type(trc_bin_plan_t), intent(inout) :: plan
+      type(pair_bins_t), intent(in) :: b
+      type(trc_bin_orbits_t), intent(in) :: orb
+      real(dp), intent(in) :: thresh
+      integer, intent(in) :: bin_pbase(:)
+      logical, intent(in) :: fill
+      integer, intent(inout) :: nseg
+
+      integer :: ia, ib, ka, kb, kx, ky, smax_keep, ta, tb, t1, t2, run0, run1, nkept, r, ntx, tlast
+      integer(int64) :: area, full
+      logical :: keep
+      real(dp) :: half, w
+
+      smax_keep = int(-log10(thresh))*b%sres
+      do ia = 1, b%nlive
+         ka = b%live(ia)
+         do ib = 1, ia
+            kb = b%live(ib)
+            if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
+            if (b%bin_cnt(ka) == 0 .or. b%bin_cnt(kb) == 0) cycle
+            kx = ka
+            ky = kb
+            if (.not. bins_skel_cut_first(b, orb, ka, kb)) then
+               kx = kb
+               ky = ka
+            end if
+            half = merge(0.5_dp, 1.0_dp, ka == kb)
+            ntx = this%brep(kx)
+            full = int(orb%bin_nrep(kx), int64)*int(b%bin_cnt(ky), int64)
+            area = 0
+            nkept = 0
+            if (this%btn(kx) > 1 .or. this%btn(ky) > 1) then
+               do ta = this%bt0(kx) + 1, this%bt0(kx) + ntx
+                  call candidates(this, ta, ky, thresh, t1, t2)
+                  do tb = t1, t2
+                     if (.not. tile_pair_kept(this, ta, tb, thresh)) cycle
+                     nkept = nkept + 1
+                     area = area + int(this%tn(ta), int64)*int(this%tn(tb), int64)
+                  end do
+               end do
+            else
+               area = full
+            end if
+            if (real(area, dp) > TILE_KEEP_MAX*real(full, dp)) then
+               do r = orb%sec0(kx) + 1, orb%sec0(kx + 1)
+                  call bins_plan_emit(plan, b, bin_pbase, fill, nseg, kx, ky, orb%sec_beg(r), orb%sec_cnt(r), &
+                                      0, b%bin_cnt(ky), .false., half*real(orb%sec_w(r), dp))
+               end do
+               cycle
+            end if
+            if (nkept == 0) cycle
+            ! Cut: per representative bra tile, each run of consecutive kept
+            ! ket tiles is one rectangle.
+            do ta = this%bt0(kx) + 1, this%bt0(kx) + ntx
+               call candidates(this, ta, ky, thresh, t1, t2)
+               w = half*real(this%tw(ta), dp)
+               run0 = 0
+               run1 = -1
+               tlast = t2
+               do tb = t1, tlast + 1
+                  keep = .false.
+                  if (tb <= tlast) keep = tile_pair_kept(this, ta, tb, thresh)
+                  if (keep) then
+                     if (run1 < run0) run0 = tb
+                     run1 = tb
+                  else if (run1 >= run0) then
+                     call bins_plan_emit(plan, b, bin_pbase, fill, nseg, kx, ky, this%t0(ta), this%tn(ta), &
+                                         this%t0(run0), this%t0(run1) + this%tn(run1) - this%t0(run0), &
+                                         .false., w)
+                     run0 = 0
+                     run1 = -1
+                  end if
+               end do
+            end do
+         end do
+      end do
+   end subroutine walk_skeleton
 
    subroutine walk(this, plan, b, thresh, bin_pbase, fill, nseg)
       !! One pass over the admitted bin pairs: count the segments, or (fill)
@@ -506,42 +658,7 @@ contains
       logical, intent(in) :: fill
       integer, intent(inout) :: nseg
       type(segment_t), intent(in) :: sg
-      integer(int64) :: nt
-      integer :: ka, kb, oa, na, ob, nb
-      logical :: diag
-
-      nseg = nseg + 1
-      if (.not. fill) return
-      ka = sg%ka
-      kb = sg%kb
-      oa = sg%oa
-      na = sg%na
-      ob = sg%ob
-      nb = sg%nb
-      diag = sg%diag
-      plan%sA(nseg) = na
-      plan%sNB(nseg) = nb
-      plan%sOA(nseg) = b%bin_off(ka) + oa
-      plan%sOB(nseg) = b%bin_off(kb) + ob
-      plan%sPA(nseg) = bin_pbase(ka) + oa
-      plan%sPB(nseg) = bin_pbase(kb) + ob
-      plan%sSA(nseg) = b%bin_cnt(ka)
-      plan%sSB(nseg) = b%bin_cnt(kb)
-      plan%sD(nseg) = diag
-      plan%sLA(nseg) = b%bin_la(ka)
-      plan%sLB(nseg) = b%bin_lb(ka)
-      plan%sLC(nseg) = b%bin_la(kb)
-      plan%sLD(nseg) = b%bin_lb(kb)
-      if (diag) then
-         nt = int(na, int64)*int(na + 1, int64)/2
-      else
-         nt = int(na, int64)*int(nb, int64)
-      end if
-      ! See bins_plan_build: the kernels index within a segment by a
-      ! default integer, and bins are capped so that no segment needs more.
-      if (nt > 2147483000_int64) error stop &
-         "terco: bin-pair segment exceeds a default integer; widen the kernels' t"
-      plan%sOff(nseg + 1) = plan%sOff(nseg) + nt
+      call bins_plan_emit(plan, b, bin_pbase, fill, nseg, sg%ka, sg%kb, sg%oa, sg%na, sg%ob, sg%nb, sg%diag, sg%w)
    end subroutine emit
 
 end module trc_bin_tiles

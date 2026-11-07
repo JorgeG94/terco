@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["sym_scf_cs"] -> gen_sym_scf_cs
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 3b38a2af6bbf67a3d018ebd462c3f7216f50758eecd2f03468b107e620d07f34
+# hash: a2421105cdc90ca1344f27bb863e731fa26f98d70a49a6ffabec42a5465d0211
 # files: test/check_sym_scf_cs.F90 test/chfcl2.xyz test/hco.xyz test/hocl.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
 # hocl_rhf: rhf, E -534.873143038401, GRAD_NORM 4.914e-09
 NSPIN_hocl_rhf 1

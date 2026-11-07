@@ -437,8 +437,8 @@ unchanged):
 3. **SCF wiring**: `scf_fock` symmetrizes after the fold when symmetry is on;
    central SCF oracle for all groups with the skeleton path on; UHF and
    range-separated (long-range exchange pass uses the same plan).
-4. **MD J and MD exchange** bra restriction (required before default-on for
-   g bases, decision 6; correct without it).
+4. **MD J and MD exchange** bra restriction (required before symmetry becomes
+   the default, decision 6; correct without it).
 5. Device mapping list (new arrays and their `enter data`/`exit data`) for
    S15: `rep` ranges and weights are host-only in design (segment
    descriptors), so the list is expected to be short.
@@ -479,10 +479,12 @@ The design (scheme 2a) is approved. The answers to section 6:
    reasonable time) joins the S14 oracle to exercise the exchange tiles.
 5. **Yes**: the skeleton gradient (same plan, atom-permuted components) is
    the intended S16 route. Response stays on `fock_nosym`.
-6. **Both**: the MD exchange bra restriction is staged behind the bins
-   (S14 PR 4, safe by idempotence), and it is **required**, not optional,
-   before the skeleton is on by default for bases with g functions. Until
-   PR 4 lands, the MD exchange engine runs unrestricted (still exact).
+6. **Required before default-on** (clarified by the user on 2026-11-07): the
+   MD exchange bra restriction is staged behind the bins as S14 PR 4. It must
+   be done before symmetry, and with it the skeleton build, becomes the
+   default, for every basis and not only for bases with g functions. Until
+   PR 4 lands, the MD exchange engine runs unrestricted, which is still exact
+   by idempotence, and `symmetry` stays off by default.
 
 ## 7. Caveats and what the prototype does not show
 
