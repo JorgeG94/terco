@@ -437,7 +437,8 @@ unchanged):
 3. **SCF wiring**: `scf_fock` symmetrizes after the fold when symmetry is on;
    central SCF oracle for all groups with the skeleton path on; UHF and
    range-separated (long-range exchange pass uses the same plan).
-4. **MD J and MD exchange** bra restriction (optional; correct without it).
+4. **MD J and MD exchange** bra restriction (required before default-on for
+   g bases, decision 6; correct without it).
 5. Device mapping list (new arrays and their `enter data`/`exit data`) for
    S15: `rep` ranges and weights are host-only in design (segment
    descriptors), so the list is expected to be short.
@@ -462,6 +463,26 @@ unchanged):
    (same plan, atom-permuted components) is the intended S16 route.
 6. MD exchange bra restriction: stage it behind the bins (idempotence makes
    it safe), or require it before default-on for g bases?
+
+## 6a. Maintainer decisions (2026-11-07)
+
+The design (scheme 2a) is approved. The answers to section 6:
+
+1. **Yes**: the shell-level limit is accepted (planar molecules gain about |G|/2).
+   AO-component parity skipping is a separate generator project, not part
+   of S14.
+2. **Yes, always on**: under `symmetry=on` the skeleton build is used for
+   every group, with a flag to disable it. Revisit from S15's measurements.
+3. **Yes**: orbit-closed bin splitting may exceed BIN_CAP by fewer than |G|
+   pairs. The cap semantics become "at most BIN_CAP + |G|".
+4. **Yes**: an extended D2h molecule (pentacene, and hexacene if it runs in
+   reasonable time) joins the S14 oracle to exercise the exchange tiles.
+5. **Yes**: the skeleton gradient (same plan, atom-permuted components) is
+   the intended S16 route. Response stays on `fock_nosym`.
+6. **Both**: the MD exchange bra restriction is staged behind the bins
+   (S14 PR 4, safe by idempotence), and it is **required**, not optional,
+   before the skeleton is on by default for bases with g functions. Until
+   PR 4 lands, the MD exchange engine runs unrestricted (still exact).
 
 ## 7. Caveats and what the prototype does not show
 
