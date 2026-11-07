@@ -472,7 +472,7 @@ contains
          call sym_pairs_symmetrize_q(shmap, qs)
          ! Parity skipping: the dead axis of the point group, and the shells
          ! in its plane, which bin apart.
-         if (pmode /= PARITY_OFF) call parity_choose_axis(sym%group, b%sh_r, this%parity_axis, shmask)
+         if (pmode /= PARITY_OFF .and. allocated(sym%perm)) call parity_choose_axis(sym%group, sym%perm, b%sh_at, b%sh_r, this%parity_axis, shmask)
          ! A mask is only meaningful in a frame whose z is the dead axis: z
          ! itself, or the permuted frame, which is applied only when a masked
          ! kernel exists to profit from it (or a test forces it).

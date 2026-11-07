@@ -47,29 +47,45 @@ contains
       default_mode = mode
    end subroutine parity_set_default
 
-   subroutine parity_choose_axis(group, sh_r, axis, shmask)
+   subroutine parity_choose_axis(group, perm, sh_at, sh_r, axis, shmask)
       !! The dead axis (1 to 3, 0 for none) and `shmask(s)`, 1 for a shell
-      !! whose centre has that coordinate exactly zero.
+      !! whose centre the mirror sigma_axis fixes. The axis qualifies only if
+      !! EVERY fixed centre has that coordinate exactly zero: a plane whose
+      !! atoms carry rounding noise (a molecule rotated into its frame by a
+      !! tops transformation) is no dead plane for the kernels, and a mask
+      !! that took some of its atoms and not others would not be invariant
+      !! under the group.
       type(trc_sym_group_t), intent(in) :: group
+      integer, intent(in) :: perm(:, :)  !! (natm, nop) atom each operation sends an atom to (trc_sym_geom)
+      integer, intent(in) :: sh_at(:)  !! (nshell) atom of each shell
       real(dp), intent(in) :: sh_r(:, :)  !! (3, nshell) shell centres, standard frame
       integer, intent(out) :: axis
       integer, allocatable, intent(out) :: shmask(:)
-      integer :: d, n, best
+      integer, allocatable :: m(:)
+      integer :: d, n, best, k, s
       integer :: nshell
+      logical :: exact
       nshell = size(sh_r, 2)
-      allocate (shmask(nshell))
+      allocate (shmask(nshell), m(nshell))
       shmask = 0
       axis = 0
       best = 0
       do d = 3, 1, -1
-         if (group%op_index(ishft(1, d - 1)) == 0) cycle
-         n = count(sh_r(d, :) == 0.0_dp)
+         k = group%op_index(ishft(1, d - 1))
+         if (k == 0) cycle
+         exact = .true.
+         do s = 1, nshell
+            m(s) = merge(1, 0, perm(sh_at(s), k) == sh_at(s))
+            if (m(s) == 1 .and. sh_r(d, s) /= 0.0_dp) exact = .false.
+         end do
+         if (.not. exact) cycle
+         n = sum(m)
          if (n > best) then
             best = n
             axis = d
+            shmask = m
          end if
       end do
-      if (axis > 0) shmask = merge(1, 0, sh_r(axis, :) == 0.0_dp)
    end subroutine parity_choose_axis
 
    pure function parity_axperm(axis) result(p)
