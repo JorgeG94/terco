@@ -133,13 +133,32 @@ run, say so.
 
 ### 7. Delegating mechanical work to Haiku (`sym-helper`): the default
 
-Subagents can't spawn subagents, so you can't start a helper yourself.
-The coordinator (the main session) dispatches the `sym-helper` agent
-(`.claude/agents/sym-helper.md`, model Haiku) on your behalf. **Delegate
-by default**: for the task types below, send a request instead of doing
-the work yourself, unless it takes under a minute or you are blocked on
-the answer right now. Your report must list what you delegated and what
-you kept, with a one-line reason for each mechanical task you kept.
+You can start Haiku helpers yourself: use the Agent tool with
+`model: "haiku"` and `run_in_background: true`. S14.3 showed this works; an
+earlier version of this file wrongly said subagents can't spawn subagents.
+**Delegate by default**: for the task types below, start a helper instead
+of doing the work yourself, unless it takes under a minute or you are
+blocked on the answer right now. Your report must list what you delegated
+and what you kept, with a one-line reason for each mechanical task you kept.
+
+Rules for a helper you start:
+- Open its prompt with: "You are `sym-helper`. Read
+  `/Users/albert/terco/.claude/agents/sym-helper.md` for your standing
+  rules." Give it one self-contained task, the exact commit SHA, which
+  files it may edit (usually none), and the exact report format you want.
+- Commit first. Point the helper at the SHA, not at your working tree.
+- Give it its own scratch worktree, outside your worktree and outside the
+  coordinator's `/private/tmp/claude-501/v-*` trees:
+  `git -C /Users/albert/terco worktree add --detach /Users/albert/terco-<stage>-<task> <sha>`.
+  It removes the worktree when done.
+- Have it write its logs to a fixed path you name, and **open the log
+  yourself** before quoting a result. A helper's summary is not evidence.
+  Put the log paths in your report.
+- At most two helpers at a time. Builds share the machine, and contention
+  causes timeouts.
+- Helpers never commit, push, branch or change source.
+- If you can't start agents, send a `sym-helper request` to `main` instead,
+  in the format below.
 
 - **Delegate these** (each is long-running or rote, and checkable):
   - **The final OpenMP run.** The helper creates a scratch worktree at your
@@ -160,8 +179,9 @@ you kept, with a one-line reason for each mechanical task you kept.
 - **Never delegate**: design, correctness or numerical judgement,
   tolerances, choosing what a reference should be, editing source logic,
   generators, or git. Do those yourself, or report them as a blocker.
-- **How to ask**: send the coordinator a message with `SendMessage` (to
-  `main`) and keep working. Use one request per task, in this form:
+- **Fallback, if you can't start agents yourself**: send the coordinator a
+  message with `SendMessage` (to `main`) and keep working. Use one request
+  per task, in this form:
   ```
   sym-helper request (stage <id>)
   Worktree: <absolute path>
