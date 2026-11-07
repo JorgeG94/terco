@@ -477,12 +477,12 @@ contains
       type(error_type), allocatable, intent(out) :: error
       type(ctx_t) :: ctx
       type(trc_eri_t) :: ea, eb
-      real(dp), allocatable :: ds(:, :), dc(:, :), ga(:, :), gb(:, :)
+      real(dp), allocatable :: ds(:, :), dc(:, :), ga(:, :), gb(:, :), gc2(:, :)
       integer :: dev
       dev = trc_bind_device(0)
       call setup_ctx(ctx, "tops_benzene", "D2h", "basis_sets/6-31gs.json", -1, .false., .false., error)
       if (allocated(error)) return
-      allocate (ds(ctx%ns, ctx%ns), dc(ctx%nc, ctx%nc), ga(ctx%nc, ctx%nc), gb(ctx%nc, ctx%nc))
+      allocate (ds(ctx%ns, ctx%ns), dc(ctx%nc, ctx%nc), ga(ctx%nc, ctx%nc), gb(ctx%nc, ctx%nc), gc2(ctx%nc, ctx%nc))
       call random_density(ctx, 5, 0.5_dp, ds)
       call to_cart(ctx, ds, dc)
       ea%parity_mode = PARITY_AUTO
@@ -496,7 +496,17 @@ contains
       if (allocated(error)) return
       call check(error, ea%nwork == eb%nwork .and. ea%nlaunch == eb%nlaunch, "the plan differs with parity skipping on")
       if (allocated(error)) return
-      call check(error, all(ga == gb), "G is not bit-identical without a point group")
+      ! Bit-identical wherever one engine reproduces itself (the serial build). With
+      ! OpenMP the atomic accumulation order depends on the run, two builds of the
+      ! same matrix differ at the rounding level by themselves, and the two engines
+      ! are then compared to that level.
+      call ea%fock(ctx%bas, dc, gc2)
+      if (all(ga == gc2)) then
+         call check(error, all(ga == gb), "G is not bit-identical without a point group")
+      else
+         call check(error, maxval(abs(ga - gb)) <= 1.0e-12_dp*max(1.0_dp, maxval(abs(ga))), &
+                    "G differs without a point group beyond the run-to-run noise of this build")
+      end if
       call ea%release()
       call eb%release()
       call release_ctx(ctx)
