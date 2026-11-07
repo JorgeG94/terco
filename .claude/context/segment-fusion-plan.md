@@ -358,39 +358,46 @@ to 0.99) while 18 atoms break even and 36 atoms win. terco already picks the
 J engine by a measured size rule (`check_sym_fock_mdrule` tests exactly that
 pattern), so the mechanism exists.
 
-## Aside: parity skipping appears inert on the CLI path
+## Retracted: "parity skipping appears inert on the CLI path"
 
-Found while measuring W0, and **not a W-stage item** -- it belongs to
-whoever owns the parity work. On this GPU build, a CLI run engages **no**
-z-masked variant kernel at all: `nsys` shows zero `trc_pc_*z_*` launches for
-benzene, naphthalene, pentacene and SF6 under `--symmetry auto`, and
-benzene shows zero with cc-pVDZ **and** with 6-31G*.
+**This aside was wrong and is withdrawn.** It claimed that a CLI run engaged
+no z-masked variant kernel on any of the four systems. The measurement was
+taken on `build-gpu-l3`, which was **configured at 05:07:28 while the
+parity-skip merge commit `7ce32ad` is dated 05:37:35** -- half an hour
+later. That build's generated tree holds **zero** `trc_pc_k*z*.F90` files
+against 30 in a post-merge build, so parity skipping was not in the binary.
+Zero launches meant the feature was absent, not inert.
 
-The same molecule and the same basis engage parity in the test:
-`check_sym_parity.F90:424` drives `run_molecule("benzene", "D2h",
-"basis_sets/6-31gs.json", .false., 1, 0.95_dp, ...)` -- expected dead axis
-**1**, masked share at least **0.95** -- plus
-`check(error, ctx%eri%nlaunch_variant > 0 .and. ctx%eri%nwork_variant > 0, ...)`
-at line 344. That test passes. So the test asserts parity engages and the
-CLI does not do it, for the same molecule and basis.
+The claim was "independently confirmed" at two basis sets, which confirmed
+nothing: both runs used the same pre-merge binary, so the check shared the
+flaw it was meant to catch. Re-pointing a measurement at the same wrong
+artefact is not independent verification.
 
-A plausible mechanism is `parity_choose_axis`
-(`src/eri/trc_parity.F90:50-88`), whose gate is an **exact** floating-point
-comparison -- `if (m(s) == 1 .and. sh_r(d, s) /= 0.0_dp) exact = .false.` --
-and whose own comment says a plane carrying rounding noise "is no dead plane
-for the kernels". A symmetrised benzene reports a 4.4e-16 Bohr displacement.
-But that is a hypothesis, not a measurement: `nwork_masked`,
-`nwork_variant`, `nlaunch_variant` and `parity_axis` are not surfaced through
-the CLI or `--json`, so which step on the CLI path differs from the test's
-has not been determined. Note also that zero *variant* launches does not by
-itself prove `parity_axis == 0`: a masked class with no variant kernel falls
-back to its base kernel.
+**Parity skipping does engage.** On a post-merge build, W2 measured 18
+z-masked kernels running for benzene and 18 for SF6 under `--symmetry auto`
+at cc-pVDZ. The masks also split SF6's `(class, mask)` groups further, which
+is why its launch count is 218 before fusion and 72 after, rather than the
+114 and 36 W0 predicted from the parity-less build. W0's benzene,
+naphthalene and pentacene numbers are unaffected -- fusion hit 33/36/36
+exactly as predicted -- because those systems' fused counts do not depend on
+the masks.
 
-**Suggested first step**: surface those four counters through `--json` (or a
-`performance` log line) and run benzene through the CLI. That answers it in
-one run, and it is the check both merge reviews independently asked for --
-parity skipping has never been tested through the S17 default-auto path,
-only through the Fortran API with `sym=` passed explicitly.
+`parity_choose_axis`'s exact-zero gate is therefore NOT a defect and needs
+no remedy. Nothing in this section should be acted on.
+
+**The lasting lesson is an observability one.** Four separate agents could
+not establish whether a merged 18-commit feature was active without running
+nsys against a 748 MB shared library, and the conclusion reached that way
+was wrong. `eri%parity_axis`, `nwork_masked`, `nwork_variant` and
+`nlaunch_variant` exist on the engine and are surfaced nowhere outside
+`check_sym_parity`. Exposing them through `--json` or a `performance` log
+line would have settled this in one run, and that work is in progress on
+branch `sym/parity-observability`.
+
+**A build-hygiene rule worth adopting from this**: a measurement must record
+the commit of the tree its binary was built from, not the commit the
+worktree happens to be on when the measurement is read. The two differ
+whenever anything merges mid-session, which on this project is often.
 
 ## Open questions for the maintainer
 
