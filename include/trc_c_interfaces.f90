@@ -35,7 +35,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 21
+   integer(c_int), parameter :: TRC_ABI_MINOR = 22
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -1558,6 +1558,26 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
          real(c_double), intent(out) :: charges(*)
       end function trc_hirshfeld_charges
+
+      integer(c_int) function trc_chelpg_charges(handle, charges) bind(c) result(res)
+         !! CHELPG atomic charges from the converged density, one per atom in
+         !! `trc_set_molecule`'s own order: point charges on the nuclei fitted
+         !! to the molecule's electrostatic potential on Breneman and Wiberg's
+         !! grid (J. Comput. Chem. 11, 361 (1990); 0.3 Angstrom spacing, 2.8
+         !! Angstrom head space, Bondi radii), constrained to sum to the
+         !! molecular charge -- `trc_chelpg.F90`, metalquicha's recipe. Works
+         !! for RHF/UHF/RKS/UKS (the total density) and with C-PCM/IEF-PCM (the
+         !! potential fitted is the solute's own, its nuclei and its polarised
+         !! density, without the apparent surface charges). TRC_ERR_BADARG for a ghost
+         !! atom, an element without a tabulated radius, or a basis above this
+         !! build's potential-integral ceiling. Every rank of a multi-rank run
+         !! computes the same charges (the analysis is replicated, like
+         !! trc_hirshfeld_charges). (ABI 1.21.)
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: charges(*)
+      end function trc_chelpg_charges
 
       integer(c_int) function trc_fukui_hirshfeld(handle, f_plus, f_minus, f_zero, q_n, q_np1, q_nm1) bind(c) result(res)
          !! Hirshfeld-condensed Fukui indices by finite difference in the

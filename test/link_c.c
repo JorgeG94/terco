@@ -265,7 +265,7 @@ int main(void) {
       return 1;
    }
 
-   /* --- symmetry (ABI 1.21): water is C2v (A1 A2 B1 B2). The C1 gradient first, then the same context with
+   /* --- symmetry (ABI 1.22): water is C2v (A1 A2 B1 B2). The C1 gradient first, then the same context with
     * symmetry = auto: the energy and the norm of the gradient (which the move
     * to the standard frame rotates but cannot change) must agree. ----------*/
    {

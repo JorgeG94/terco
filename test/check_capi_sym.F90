@@ -1,5 +1,5 @@
 !
-! The symmetry entries of the C ABI (ABI 1.21), called through the Fortran
+! The symmetry entries of the C ABI (ABI 1.22), called through the Fortran
 ! interfaces of include/trc_c_interfaces.f90: trc_set_symmetry,
 ! trc_set_irrep_nelec and the getters. The C side of the same round trip (water,
 ! the header compiled by a C compiler) is in link_c.c.
