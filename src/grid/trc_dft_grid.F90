@@ -93,6 +93,14 @@ module trc_dft_grid
       type(dft_partition_options_t) :: partition
       !! The partition's cutoff and size adjustment (and screening, scratch
       !! budget); its point block is set by dft_grid_build_block.
+      real(dp) :: angular_rotation(3, 3) = reshape([1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, &
+                                                    0.0_dp, 0.0_dp, 1.0_dp], [3, 3])
+      !! Rotation applied to every atom's Lebedev points (p = A + r R u).
+      !! The identity is the lab-oriented grid. A symmetric run in the standard
+      !! frame `x_std = rot (x - shift)` passes `rot` to get the grid of the
+      !! USER's axes, so its energies do not depend on how the molecule was
+      !! rotated into the group's frame. The partition and the quadrature
+      !! weights are rotation invariant, so nothing else changes.
    end type dft_grid_options_t
 
    type :: dft_grid_t
@@ -215,6 +223,7 @@ contains
       type(dft_grid_options_t) :: opts
       integer :: n_atoms, used_level
       integer :: ia, i, j, k, nr, na, total, offset, cached_order
+      logical :: rotated
       type(timer_type) :: tm_gen
 
       n_atoms = size(atom_coords, 2)
@@ -230,6 +239,9 @@ contains
       used_level = DEFAULT_GRID_LEVEL
       if (present(level)) used_level = level
       if (present(options)) opts = options
+      ! An identity rotation leaves the points bit for bit what they were.
+      rotated = any(opts%angular_rotation /= reshape([1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, &
+                                                      0.0_dp, 0.0_dp, 1.0_dp], [3, 3]))
 
       if ((opts%n_radial > 0) .neqv. (opts%n_angular > 0)) then
          call error%set(ERROR_VALIDATION, &
@@ -279,6 +291,7 @@ contains
                if (allocated(sphere)) deallocate (sphere, w_ang)
                call lebedev_grid(shell_order(i), sphere, w_ang, error)
                if (error%has_error()) return
+               if (rotated) sphere = matmul(opts%angular_rotation, sphere)
                cached_order = shell_order(i)
             end if
 

@@ -353,12 +353,17 @@ module trc_capi
    !! take (DF, PCM, SOSCF, fractional occupations, a given or projected
    !! guess, several ranks, the Hessian, CPHF/CPKS, RI-MP2, Fukui indices,
    !! restarts, the optimiser) runs in C1 instead of being refused. Added:
-   !! trc_set_symmetry_report_frame and trc_symmetry_report_frame. Two
-   !! observable differences remain: the atoms are moved to the standard frame
-   !! inside the context, so a basis handle borrowed (trc_context_basis)
-   !! BEFORE the first run shows those centres afterwards, and a DFT energy on
-   !! a rotated input differs from the old one at the integration-grid level
-   !! (the grid follows the standard frame). Both vanish with symmetry off.
+   !! trc_set_symmetry_report_frame and trc_symmetry_report_frame. The DFT and
+   !! VV10 grids of a default run are the grids of the caller's axes (the
+   !! Lebedev points rotated into the standard frame), so a DFT energy on a
+   !! rotated input equals the symmetry-off one to second order (3e-12 Eh
+   !! measured, B3LYP/cc-pVDZ water at the default grid; the gradient follows
+   !! the grid's own symmetry breaking, 1e-7..1e-6 at the default grid), where
+   !! an explicit request keeps the group-symmetric standard-frame grid and its
+   !! orientation error (7e-7 Eh). One observable difference remains: the atoms
+   !! are moved to the standard frame inside the context, so a basis handle
+   !! borrowed (trc_context_basis) BEFORE the first run shows those centres
+   !! afterwards. It vanishes with symmetry off.
    !! 1.23: trc_set_symmetry_skeleton, the switch of the skeleton Fock build
    !! under a symmetry request (additive; on by default, nothing existing
    !! changes: the result is the same, only the integral work differs).
@@ -3332,6 +3337,7 @@ contains
       cx%grad_ok = .false.
       cx%sym_active = .false.
       cx%sym_ran = .false.
+      cx%opts%grid_rotation = reshape([1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp], [3, 3])
       status = TRC_ERR_STATE
       if (.not. (cx%have_mol .and. cx%have_basis)) then
          cx%message = "trc_run_scf: set the molecule and the basis first"
@@ -3930,6 +3936,10 @@ contains
       allocate (ssym)
       ssym%skeleton = cx%sym_req%skeleton
       ssym%decline_lindep = cx%sym_req%by_default
+      ! A default request reports in the input frame, so its DFT and VV10 grids are
+      ! the grids of the input axes (the Lebedev points rotated into the standard
+      ! frame); an explicit request keeps the lab-oriented, group-symmetric grid.
+      if (cx%sym_req%by_default) cx%opts%grid_rotation = cx%sym_geom%rot
       ssym%geom = cx%sym_geom
       ssym%ao = sym_ao_build(cx%bb%b, cx%sym_geom, err)
       if (err%has_error()) then
@@ -4429,13 +4439,20 @@ contains
                return
             end if
          end if
-         allocate (gsym)
-         gsym = cx%sym_geom
       end if
       call gradient_capability_check(cx, have_func, func, refusal, status)
       if (len(refusal) > 0) then
          cx%message = "trc_run_gradient: "//refusal
          return
+      end if
+      ! The gradient is projected onto the symmetric subspace, which is exact for
+      ! a symmetric grid (HF, or an explicit request). The default request's DFT
+      ! grid is the input axes' grid, which breaks the symmetry at the grid's own
+      ! (first-order) error; projecting would move the gradient by that much
+      ! away from the symmetry-off one, so it is left as computed.
+      if (cx%sym_active .and. .not. (have_func .and. cx%sym_req%by_default)) then
+         allocate (gsym)
+         gsym = cx%sym_geom
       end if
       if (cx%rimp2_ok) then
          ! The energy this context holds is E_RHF + E_RI-MP2: differentiate
@@ -4506,7 +4523,8 @@ contains
                                         cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
                                         func=func, grid_level=cx%opts%grid_level, &
                                         grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                        nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
+                                        nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
+                                        dfjk=cx%dfjk, aux=cx%jb%b, &
                                         verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
                                         grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri, sym_geom=gsym)
                else if (reuse_grid) then
@@ -4514,7 +4532,8 @@ contains
                                         cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
                                         func=func, grid_level=cx%opts%grid_level, &
                                         grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                        nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
+                                        nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
+                                        dfjk=cx%dfjk, aux=cx%jb%b, &
                                         verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
                                         pair_eri_cache=cx%peri, sym_geom=gsym)
                else
@@ -4522,7 +4541,8 @@ contains
                                         cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
                                         func=func, grid_level=cx%opts%grid_level, &
                                         grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                        nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
+                                        nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
+                                        dfjk=cx%dfjk, aux=cx%jb%b, &
                                         verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym)
                end if
             else
@@ -4536,7 +4556,8 @@ contains
                                      cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                      func=func, grid_level=cx%opts%grid_level, &
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                     nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
+                                     nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
+                                     verbose=cx%opts%verbose, &
                                      grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
                                      grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri, sym_geom=gsym)
             else if (reuse_grid) then
@@ -4544,14 +4565,16 @@ contains
                                      cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                      func=func, grid_level=cx%opts%grid_level, &
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                     nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
+                                     nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
+                                     verbose=cx%opts%verbose, &
                                      grid=cx%kgrid%grid, xg=cx%kgrid%xg, pair_eri_cache=cx%peri, sym_geom=gsym)
             else
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                      func=func, grid_level=cx%opts%grid_level, &
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                     nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
+                                     nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
+                                     verbose=cx%opts%verbose, &
                                      pair_eri_cache=cx%peri, sym_geom=gsym)
             end if
          else

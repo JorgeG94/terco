@@ -210,6 +210,11 @@ module trc_scf_settings
       !! per context handle; see trc_scf_df.F90's own header on why it
       !! outlives a single run).
       integer :: grid_level = 3
+      real(dp) :: grid_rotation(3, 3) = reshape([1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, &
+                                                 0.0_dp, 0.0_dp, 1.0_dp], [3, 3])
+      !! Rotation of the Lebedev points of the DFT and VV10 grids
+      !! (`dft_grid_options_t%angular_rotation`); the identity unless a
+      !! symmetric run in a standard frame wants the grid of the user's axes.
       integer :: nlc_grid_level = DEFAULT_NLC_GRID_LEVEL
       !! Grid level for VV10's nonlocal correlation, when the functional has
       !! it. Coarser than the semilocal grid by convention (SG-1-like): VV10

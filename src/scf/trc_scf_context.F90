@@ -23,7 +23,7 @@ module trc_scf_context
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
    use trc_sym_geom, only: trc_sym_geom_t
    use trc_error, only: error_t, ERROR_GENERIC
-   use trc_dft_grid, only: dft_grid_t, dft_grid_build, dft_grid_build_block
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build, dft_grid_build_block, dft_grid_options_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_linalg, only: trc_linalg_t
    use trc_pcm, only: trc_pcm_t, pcm_model_from_name
@@ -177,6 +177,7 @@ contains
       !! checked here rather than left for `scf_fock_build_g` to find out
       !! at the first Fock build.
       type(timer_type) :: tm
+      type(dft_grid_options_t) :: gopts   !! the grids' options: the production grid, rotated as `opts%grid_rotation` says
       type(timer_type) :: tphase   !! the whole setup, and the PCM and grid phases
       character(len=:), allocatable :: refusal
 
@@ -342,11 +343,12 @@ contains
          call profiler_start("dft: grid", nvtx_only=.true.)
          ! The partition is split over the ranks; the summed cell weights are
          ! then rank 0's everywhere, as every reduced quantity is.
+         gopts%angular_rotation = opts%grid_rotation
          if (present(comm)) then
             call dft_grid_build_block(b%at_r, b%at_elem, grid_cache%grid, err, comm%rank(), comm%size(), &
-                                      level=opts%grid_level)
+                                      level=opts%grid_level, options=gopts)
          else
-            call dft_grid_build(b%at_r, b%at_elem, grid_cache%grid, err, level=opts%grid_level)
+            call dft_grid_build(b%at_r, b%at_elem, grid_cache%grid, err, level=opts%grid_level, options=gopts)
          end if
          this%t_grid_sub(1) = grid_cache%grid%t_points
          this%t_grid_sub(2) = grid_cache%grid%t_partition
@@ -366,7 +368,7 @@ contains
          this%t_grid_sub(4) = tm%get_elapsed_time()
          grid_cache%grid_built = .true.
          if (config%nlc) then
-            call dft_grid_build(b%at_r, b%at_elem, grid_cache%grid_nlc, err, level=opts%nlc_grid_level)
+            call dft_grid_build(b%at_r, b%at_elem, grid_cache%grid_nlc, err, level=opts%nlc_grid_level, options=gopts)
             if (err%has_error()) then
                call profiler_stop("dft: grid")
                call this%release()

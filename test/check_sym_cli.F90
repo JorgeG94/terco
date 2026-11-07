@@ -613,14 +613,30 @@ contains
    end subroutine test_default_matches_off
 
    subroutine test_default_dft(error)
-      !! B3LYP on the axis-aligned inputs, where the standard frame is the
-      !! input frame and the integration grid is the same grid: 1e-9 Eh. (On a
-      !! rotated input the grid follows the standard frame and a DFT energy
-      !! moves with the grid's orientation; see the stage report.)
+      !! B3LYP, TPSS (meta-GGA) and wB97X-V (VV10) on axis-aligned AND rotated
+      !! inputs. A default run builds its DFT and VV10 grids on the user's axes
+      !! (the Lebedev points rotated into the standard frame), so the energy
+      !! equals the symmetry-off energy to the second-order effect of
+      !! symmetrising F: 1e-9 Eh gate, measured 3e-12..8e-10 (benzene), against
+      !! 7e-7 with the standard-frame grid. The gradient is first order in that
+      !! symmetry-breaking: it follows the grid, 1e-7..1e-6 at the default grid
+      !! (gate 3e-6; the standard-frame grid gave 7e-6..9e-6) and 2e-9 at grid
+      !! level 5 (gate 1e-8). Axis-aligned inputs are identical to round-off.
       type(error_type), allocatable, intent(out) :: error
+      real(dp), parameter :: TOL_G_GRID3 = 3.0e-6_dp, TOL_G_GRID5 = 1.0e-8_dp
       call default_vs_off('water.xyz', '-b basis_sets/cc-pvdz.json --func b3lyp', 1.0e-9_dp, TOL_G, 'C2v', error)
       if (allocated(error)) return
       call default_vs_off('no2.xyz', '-b basis_sets/cc-pvdz.json --uhf 1 --func b3lyp', 1.0e-9_dp, TOL_G, 'C2v', error)
+      if (allocated(error)) return
+      call default_vs_off('water_rot.xyz', '-b basis_sets/cc-pvdz.json --func b3lyp', 1.0e-9_dp, TOL_G_GRID3, 'C2v', error)
+      if (allocated(error)) return
+      call default_vs_off('no2_rot.xyz', '-b basis_sets/cc-pvdz.json --uhf 1 --func b3lyp', 1.0e-9_dp, TOL_G_GRID3, 'C2v', error)
+      if (allocated(error)) return
+      call default_vs_off('water_rot.xyz', '-b basis_sets/cc-pvdz.json --func tpss', 1.0e-9_dp, TOL_G_GRID3, 'C2v', error)
+      if (allocated(error)) return
+      call default_vs_off('water_rot.xyz', '-b basis_sets/cc-pvdz.json --func wb97x-v', 1.0e-9_dp, TOL_G_GRID3, 'C2v', error)
+      if (allocated(error)) return
+      call default_vs_off('water_rot.xyz', '-b basis_sets/cc-pvdz.json --func b3lyp --grid 5', 1.0e-9_dp, TOL_G_GRID5, 'C2v', error)
    end subroutine test_default_dft
 
    subroutine test_default_report(error)

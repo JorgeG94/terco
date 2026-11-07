@@ -539,10 +539,13 @@ the default request is `auto`. Binding rules, as implemented:
    RI-MP2, Fukui, restart) repeats that SCF in C1, with the settings it had,
    on the caller's own coordinates. An explicit request still refuses.
 
-Known consequences, measured (see the stage report): a DFT energy on a rotated
-symmetric input moves with the integration grid (7e-7 Eh for B3LYP/cc-pVDZ
-water at grid level 3, 5e-9 at level 5); axis-aligned inputs are identical.
-Planar Cs molecules gain nothing from the skeleton (Known issues below), and
+DFT grids: a default run builds its DFT and VV10 grids on the user's axes
+(`dft_grid_options_t%angular_rotation` = the frame rotation; Becke weights are
+rotation invariant), and the symmetrised F is the only symmetrisation. Energy
+matches `off` to second order (3e-12..8e-10 Eh on rotated inputs, was 7e-7);
+the gradient is not projected for DFT and follows the grid's symmetry breaking
+(1e-7..1e-6 at grid 3, 2e-9 at grid 5). Explicit requests keep the symmetric
+standard-frame grid. Planar Cs molecules gain nothing from the skeleton (Known issues below), and
 are now run that way by default.
 
 ## Known issues found along the way (not symmetry bugs)
