@@ -76,9 +76,20 @@ do while (c1 < nseg)
    ...
 ```
 
-An orbit size divides |G|, so a D2h run has at most the weights 1, 2, 4 and
-8 and therefore up to a 4x launch inflation per class. Benzene measures
-2.16x.
+The realised weights are multiples of **one half**, not of one: `skeleton_walk`
+and `bin_tiles_plan` both emit `half*real(orb%sec_w(r), dp)`, with
+`half = 0.5` on a diagonal bin pair, and the sort key is `nint(2*sW)`
+precisely because of it (`trc_bins.F90:1377`). W0 measured the realised set
+as **{1/2, 1, 2, 4}**: weight 8 never occurs, because an orbit of 8 needs a
+shell pair with trivial stabiliser and in all four test systems every shell
+pair is fixed by at least one operation. So the ceiling is still 4 distinct
+weights per class, for a different reason than "divides |G|".
+
+Launch inflation per **Fock build** is 4.05x for benzene, not the 2.16x that
+a whole-process count suggests: 306 of benzene's 1071 `trc_pc_*` launches
+belong to the SAD atomic guess and are identical with symmetry on and off.
+Per build it is 85 against 21 (naphthalene 4.19x, pentacene 4.29x, SF6
+5.43x). Fusion does not recover all of that -- see W0's results.
 
 **There is already a precedent in the tree for the fix.** The MD J engine
 does not split its launches by weight: `weight_copies` in `src/eri/trc_mdj.F90`
@@ -118,7 +129,7 @@ substance of W2.
 
 | Stage | Title | Depends on | Status |
 |---|---|---|---|
-| W0 | Bound the win; no product code | - | todo |
+| W0 | Bound the win; no product code | - | done (GO for W2) |
 | W1 | Host-side per-segment cost | W0 | todo |
 | W2 | Per-segment weight in the kernels | W0, W1 | todo |
 | W3 | Validation across builds | W1 or W2 | todo |
@@ -129,10 +140,58 @@ and carries no register risk; W2 is the one that needs a generator change
 and a full regeneration. Do W1 first and let W0's numbers decide whether W2
 is worth its cost.
 
-## W0 - Bound the win
+## W0 - Bound the win  [DONE: GO for W2]
 
-**Goal**: know, before touching product code, how many launches fusion would
-remove and what that is worth.
+**Measured** (cc-pVDZ, `--econv 1e-10`, `--symmetry auto`, one steady-state
+Fock build, `build-gpu-l3`, V100 cc70). Launches are exact, not estimated:
+the plan is sorted on the composite `(class, mask, weight)` key immediately
+before the launch loop (`bins_plan_sort_by_class(CLASS_RADIX, by_mask=.true.)`,
+`trc_binkernel.F90:305`), so a launch count IS a count of distinct triples
+and a fused count IS a count of distinct `(class, mask)` pairs.
+
+| system | atoms | segments | launches now | fused | ratio | off |
+|---|---|---|---|---|---|---|
+| benzene | 12 | 5712 | 85 | 33 | **2.58x** | 21 |
+| naphthalene_d2h | 18 | 7871 | 88 | 36 | **2.44x** | 21 |
+| pentacene_d2h | 36 | 8959 | 90 | 36 | **2.50x** | 21 |
+| tops_sf6 | 7 | 4217 | 114 | 36 | **3.17x** | 21 |
+
+Distinct weights per `(class, mask)` group: no group holds more than 4, and
+the 4x ceiling is reached by only 3 of 33 groups (benzene) and 6 of 36
+(SF6). SF6 is the worst case because every one of its groups splits 3 or 4
+ways -- its small, heavily stabilised orbits put several weights into every
+class.
+
+Fusion lands at 33-36 launches and not at the symmetry-off 21, because
+`bins_skel_cut_first` swaps bra and ket for some bin pairs and forms class
+keys the full plan never does. That extra ~1.6x is the swap, not the weight,
+and **W2 cannot remove it**.
+
+**`launch_cap()` does not threaten W2: it is 0 by default and nothing in the
+tree ever sets it.** `TRC_LAUNCH_CAP` appears only in `launch_cap()` itself
+and two comments; no test, CMake file, script or CI job sets it, and the
+loop guard is `if (lcap > 0 .and. ...)`. So zero fused groups exceed the cap
+and it gives back none of the win. If it is ever enabled, the floor must sit
+above the largest fused group (327k / 1.26M / 9.25M / 205k quartets for the
+four systems) and **its setting and W2's benefit have to be decided
+together**. It should not be scaled DOWN: the measured disease is launches
+that are already too small. On 80 SMs at 128-thread blocks (~164k work items
+to saturate), 68% of benzene's and 100% of SF6's quartets currently sit in
+launches too small to fill the card; fusion takes both to ~46%.
+
+**Throughput model** (each class's largest observed launch taken as the
+throughput its fused launch would reach -- optimistic, and it charges nothing
+for the per-segment weight load or any register cost): ERI time per build
+falls benzene 10.00 -> 6.26 ms, naphthalene 16.55 -> 12.26, SF6 9.89 -> 7.29,
+pentacene 70.21 -> 65.19. Benzene's symmetry-off ERI time is 7.74 ms per
+build, so the predicted 6.26 ms is **below the C1 baseline** -- W2 alone
+would turn benzene's ERI excess into a surplus, before W1 touches the host
+side. Treat the launch counts as hard and the times as an upper bound.
+
+Register pressure is untouched by W0 and remains W2's real gate.
+
+**Original goal, for reference**: know, before touching product code, how
+many launches fusion would remove and what that is worth.
 
 - `TRC_SEG_STATS=1` already dumps the segment shape of each Fock build
   (`seg_stats_on`/`log_segment_shape` in `src/eri/trc_binkernel.F90`). Use
@@ -248,14 +307,53 @@ to 0.99) while 18 atoms break even and 36 atoms win. terco already picks the
 J engine by a measured size rule (`check_sym_fock_mdrule` tests exactly that
 pattern), so the mechanism exists.
 
+## Aside: parity skipping appears inert on the CLI path
+
+Found while measuring W0, and **not a W-stage item** -- it belongs to
+whoever owns the parity work. On this GPU build, a CLI run engages **no**
+z-masked variant kernel at all: `nsys` shows zero `trc_pc_*z_*` launches for
+benzene, naphthalene, pentacene and SF6 under `--symmetry auto`, and
+benzene shows zero with cc-pVDZ **and** with 6-31G*.
+
+The same molecule and the same basis engage parity in the test:
+`check_sym_parity.F90:424` drives `run_molecule("benzene", "D2h",
+"basis_sets/6-31gs.json", .false., 1, 0.95_dp, ...)` -- expected dead axis
+**1**, masked share at least **0.95** -- plus
+`check(error, ctx%eri%nlaunch_variant > 0 .and. ctx%eri%nwork_variant > 0, ...)`
+at line 344. That test passes. So the test asserts parity engages and the
+CLI does not do it, for the same molecule and basis.
+
+A plausible mechanism is `parity_choose_axis`
+(`src/eri/trc_parity.F90:50-88`), whose gate is an **exact** floating-point
+comparison -- `if (m(s) == 1 .and. sh_r(d, s) /= 0.0_dp) exact = .false.` --
+and whose own comment says a plane carrying rounding noise "is no dead plane
+for the kernels". A symmetrised benzene reports a 4.4e-16 Bohr displacement.
+But that is a hypothesis, not a measurement: `nwork_masked`,
+`nwork_variant`, `nlaunch_variant` and `parity_axis` are not surfaced through
+the CLI or `--json`, so which step on the CLI path differs from the test's
+has not been determined. Note also that zero *variant* launches does not by
+itself prove `parity_axis == 0`: a masked class with no variant kernel falls
+back to its base kernel.
+
+**Suggested first step**: surface those four counters through `--json` (or a
+`performance` log line) and run benzene through the CLI. That answers it in
+one run, and it is the check both merge reviews independently asked for --
+parity skipping has never been tested through the S17 default-auto path,
+only through the Fortran API with `sym=` passed explicitly.
+
 ## Open questions for the maintainer
 
 1. Is a size rule acceptable as a stopgap before W1/W2 land, given that
    S17 has already made symmetry the default and small molecules are
    currently slower than they were?
-2. Should W2's per-segment weight be a `real(dp)` array or an `integer`
-   orbit size converted in the kernel? The former matches `jfac`/`kfac`;
-   the latter is half the device memory and cannot lose precision.
+2. ~~`real(dp)` array or `integer` orbit size?~~ **Answered by W0: it must
+   be `real(dp)`.** The realised weight set is {1/2, 1, 2, 4} -- the 1/2
+   comes from a diagonal bin pair, not from an orbit size, so an integer
+   orbit size cannot represent it. The alternative is the integer plus the
+   existing `sD` diagonal flag with the kernel forming the half itself,
+   which halves device memory at the cost of a branch in the per-segment
+   prologue. Prefer `real(dp)` and spend the review effort on the register
+   measurement.
 3. SF6 reaches only 2.44x although it is nonplanar D2h, where
    `docs/SYMMETRY_FOCK.md` section 6 expects planarity to be the limiter.
    Its atoms sit on many symmetry elements at once (S is fixed by all eight
