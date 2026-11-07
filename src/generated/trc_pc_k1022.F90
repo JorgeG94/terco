@@ -728,7 +728,97 @@ contains
             v(140,1) = paz*v(137,1) + wpz*v(137,0) &
                + 4.0_dp*oo2ze*v(77,0)
                cur = 1
-                  do x = 1, 140
+                  do x = 18, 20
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 22, 24
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 26, 28
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 30, 32
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 34, 36
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 38, 40
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 42, 44
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 46, 48
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 50, 52
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 54, 56
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 58, 60
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 62, 64
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 66, 68
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 70, 72
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 74, 76
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 78, 80
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 82, 84
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 86, 88
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 90, 92
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 94, 96
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 98, 100
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 102, 104
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 106, 108
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 110, 112
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 114, 116
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 118, 120
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 122, 124
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 126, 128
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 130, 132
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 134, 136
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 138, 140
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

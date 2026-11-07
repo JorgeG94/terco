@@ -434,7 +434,13 @@ contains
             v(16,0) = qcz*v(4,0) + wqz*v(4,1) &
                + 1.0_dp*oo2ze*v(1,1)
                cur = 0
-                  do x = 1, 16
+                  do x = 6, 8
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 10, 12
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 14, 16
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

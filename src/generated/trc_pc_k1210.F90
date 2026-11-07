@@ -573,7 +573,13 @@ contains
             v(80,0) = qcz*v(20,0) + wqz*v(20,1) &
                + 3.0_dp*oo2ze*v(10,1)
                cur = 0
-                  do x = 1, 80
+                  do x = 22, 40
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 42, 60
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 62, 80
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

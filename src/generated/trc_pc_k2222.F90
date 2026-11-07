@@ -4046,7 +4046,97 @@ contains
                + 3.0_dp*oo2e*(v(350,0) - re*v(350,1)) &
                + 4.0_dp*oo2ze*v(685,1)
                cur = 0
-                  do x = 1, 1225
+                  do x = 145, 175
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 180, 210
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 215, 245
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 250, 280
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 285, 315
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 320, 350
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 355, 385
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 390, 420
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 425, 455
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 460, 490
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 495, 525
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 530, 560
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 565, 595
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 600, 630
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 635, 665
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 670, 700
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 705, 735
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 740, 770
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 775, 805
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 810, 840
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 845, 875
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 880, 910
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 915, 945
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 950, 980
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 985, 1015
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 1020, 1050
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 1055, 1085
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 1090, 1120
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 1125, 1155
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 1160, 1190
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 1195, 1225
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

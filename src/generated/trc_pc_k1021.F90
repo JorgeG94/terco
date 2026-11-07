@@ -570,7 +570,52 @@ contains
                + 2.0_dp*oo2e*(v(16,0) - re*v(16,1)) &
                + 1.0_dp*oo2ze*v(37,1)
                cur = 0
-                  do x = 1, 80
+                  do x = 18, 20
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 22, 24
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 26, 28
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 30, 32
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 34, 36
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 38, 40
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 42, 44
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 46, 48
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 50, 52
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 54, 56
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 58, 60
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 62, 64
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 66, 68
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 70, 72
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 74, 76
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 78, 80
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

@@ -624,7 +624,31 @@ contains
                + 1.0_dp*oo2e*(v(10,0) - re*v(10,1)) &
                + 2.0_dp*oo2ze*v(34,1)
                cur = 0
-                  do x = 1, 100
+                  do x = 15, 20
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 25, 30
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 35, 40
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 45, 50
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 55, 60
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 65, 70
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 75, 80
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 85, 90
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 95, 100
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

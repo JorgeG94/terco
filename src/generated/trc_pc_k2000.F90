@@ -431,7 +431,7 @@ contains
             v(10,0) = paz*v(4,0) + wpz*v(4,1) &
                + 1.0_dp*oo2z*(v(1,0) - rz*v(1,1))
                cur = 0
-                  do x = 1, 10
+                  do x = 5, 10
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

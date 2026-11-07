@@ -67,6 +67,7 @@ module check_sym_fock_suite
    use trc_basis_json, only: trc_basis_from_json
    use trc_bin_tiles, only: bin_tiles_set_enabled
    use trc_eri, only: trc_eri_t
+   use trc_parity, only: PARITY_OFF
    use trc_error, only: error_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
@@ -693,15 +694,18 @@ contains
       end do
    end subroutine test_acenes
 
-   subroutine count_case(xyz, group, basis_json, nfull, nskel, error)
+   subroutine count_case(xyz, group, basis_json, nfull, nskel, mixed, error)
       !! The plan's own counts on a zero density (every quartet fails the
       !! density screen, so nothing is evaluated).
       character(len=*), intent(in) :: xyz, group, basis_json
       integer(int64), intent(in) :: nfull, nskel
+      logical, intent(in) :: mixed
+      !! Part of the molecule's pairs lie in the dead plane of parity skipping and part do not
       type(error_type), allocatable, intent(out) :: error
       type(ctx_t) :: ctx
+      type(trc_eri_t) :: eoff
       real(dp), allocatable :: dc(:, :), gc(:, :)
-      integer(int64) :: n1, n2
+      integer(int64) :: n1, n2, n1off, n2off
       integer :: dev, st
       character(len=16) :: cap
       dev = trc_bind_device(0)
@@ -713,9 +717,38 @@ contains
       n1 = ctx%eri%nwork
       call ctx%eri%fock(ctx%bas, dc, gc, skeleton=.true.)
       n2 = ctx%eri%nwork
-      print "(a,a,a,i0,a,i0,a,f6.3,a)", "  ", trim(xyz), " cc-pVDZ quartets: full ", n1, "  skeleton ", n2, "  (", &
-         real(n1, dp)/real(n2, dp), " times fewer)"
-      call check(error, n1 == nfull, trim(xyz)//": full plan quartets "//to_string(n1)//", S13: "//to_string(nfull))
+      ! The S13 pins are the plan without parity skipping: the same engine with
+      ! the masks off. Parity skipping bins the pairs of the dead plane apart,
+      ! which can change which side of a bin pair the skeleton cuts.
+      eoff%parity_mode = PARITY_OFF
+      call eoff%build(ctx%bas, THRESH, sym=ctx%geom)
+      call eoff%fock(ctx%bas, dc, gc)
+      n1off = eoff%nwork
+      call eoff%fock(ctx%bas, dc, gc, skeleton=.true.)
+      n2off = eoff%nwork
+      call eoff%release()
+      print "(a,a,a,i0,a,i0,a,f6.3,a,i0)", "  ", trim(xyz), " cc-pVDZ quartets: full ", n1, "  skeleton ", n2, "  (", &
+         real(n1, dp)/real(n2, dp), " times fewer); skeleton without parity skipping ", n2off
+      call check(error, n1off == nfull, trim(xyz)//": full plan quartets "//to_string(n1off)//", S13: "//to_string(nfull))
+      if (allocated(error)) return
+      ! Binning the dead-plane pairs apart never makes the skeleton plan larger:
+      ! per bin pair it cuts the side with fewer quartets, rep(A)*|B| or |A|*rep(B),
+      ! and for the sub-bins A = A1 + A2 and B = B1 + B2 the sum of the minima over
+      ! the four sub-pairs is at most the minimum of the sums (a bin against itself:
+      ! the triangle R*N becomes two triangles and the cheaper rectangle). The full plan is the
+      ! same set of quartets however the bins are cut.
+      call check(error, n1 == n1off, trim(xyz)//": the full plan changed with parity skipping: "// &
+                 to_string(n1)//" against "//to_string(n1off))
+      if (allocated(error)) return
+      call check(error, n2 <= n2off, trim(xyz)//": parity skipping made the skeleton plan larger: "// &
+                 to_string(n2)//" against "//to_string(n2off))
+      if (allocated(error)) return
+      ! A molecule with every pair in the plane (or none) has the same bins.
+      if (mixed) then
+         call check(error, n2 < n2off, trim(xyz)//": a mixed-mask molecule left the skeleton plan unchanged")
+      else
+         call check(error, n2 == n2off, trim(xyz)//": a uniform-mask molecule changed its skeleton plan")
+      end if
       if (allocated(error)) return
       ! A lowered bin cap (TRC_BIN_CAP, the orbit-closed split) changes which
       ! side of a bin pair is cheaper to cut, so only the S13 count is exact.
@@ -723,7 +756,7 @@ contains
       if (st == 0) then
          call check(error, n2 < n1, trim(xyz)//": the skeleton plan under a bin cap is not smaller than the full one")
       else
-         call check(error, n2 == nskel, trim(xyz)//": skeleton plan quartets "//to_string(n2)//", S13: "//to_string(nskel))
+         call check(error, n2off == nskel, trim(xyz)//": skeleton plan quartets "//to_string(n2off)//", S13: "//to_string(nskel))
       end if
       if (allocated(error)) return
       call release_ctx(ctx)
@@ -731,18 +764,18 @@ contains
 
    subroutine test_counts_small(error)
       type(error_type), allocatable, intent(out) :: error
-      call count_case("water", "C2v", "basis_sets/cc-pvdz.json", 14627_int64, 9968_int64, error)
+      call count_case("water", "C2v", "basis_sets/cc-pvdz.json", 14627_int64, 9968_int64, .false., error)
       if (allocated(error)) return
-      call count_case("b2h6_d2h", "D2h", "basis_sets/cc-pvdz.json", 360415_int64, 107763_int64, error)
+      call count_case("b2h6_d2h", "D2h", "basis_sets/cc-pvdz.json", 360415_int64, 107763_int64, .true., error)
    end subroutine test_counts_small
 
    subroutine test_counts(error)
       type(error_type), allocatable, intent(out) :: error
       call test_counts_small(error)
       if (allocated(error)) return
-      call count_case("tops_benzene", "D2h", "basis_sets/cc-pvdz.json", 4741001_int64, 1342393_int64, error)
+      call count_case("tops_benzene", "D2h", "basis_sets/cc-pvdz.json", 4741001_int64, 1342393_int64, .false., error)
       if (allocated(error)) return
-      call count_case("naphthalene_d2h", "D2h", "basis_sets/cc-pvdz.json", 20671728_int64, 5451483_int64, error)
+      call count_case("naphthalene_d2h", "D2h", "basis_sets/cc-pvdz.json", 20671728_int64, 5451483_int64, .false., error)
    end subroutine test_counts
 
    subroutine test_md_f(error)

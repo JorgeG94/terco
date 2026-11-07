@@ -131,6 +131,19 @@ module trc_eri_data
       !! The same bins cut into exchange tiles (trc_bin_tiles), host only:
       !! like the slots above it follows the pair order inside the bins, and
       !! is rebuilt with them.
+      integer :: axperm(3) = [1, 2, 3]
+      !! The engine-internal frame of parity skipping (docs/SYMMETRY_PARITY_SKIP.md,
+      !! decision 1): the kernels' axis k is the molecule's axis axperm(k), so
+      !! that the most common dead axis is the kernels' z. Not applied to the
+      !! arrays above (the gradient kernels read them in the standard frame):
+      !! the launcher hands the kernels the coordinate arrays in this order,
+      !! and permutes the density in and the result out through `ao_perm`.
+      !! The identity unless `build` was given a point group.
+      integer, allocatable :: ao_perm(:), ao_perm_inv(:)
+      !! (nao) of the working basis, allocated only when `axperm` is not the
+      !! identity: ao_perm(i') is the AO of the standard frame that AO i' of
+      !! the kernels' frame is, so D'(i', j') = D(ao_perm(i'), ao_perm(j')).
+      !! `ao_perm_inv` is its inverse. Device-resident like the arrays above.
    end type trc_pair_quartets_t
 
    type, public :: trc_bin_launch_t
@@ -168,6 +181,20 @@ module trc_eri_data
       !! Out: work items (quartets before the in-kernel screens).
       integer(int64) :: nkept = 0
       !! Out: quartets that survived, when `count_kept` asked for it.
+      integer(int64) :: nwork_masked = 0
+      !! Out: work items of the segments whose quartets all have the dead z
+      !! axis of the kernels' frame (parity skipping), launched or not as a
+      !! masked variant.
+      integer(int64) :: nwork_variant = 0
+      !! Out: work items that ran in a masked variant kernel. The difference
+      !! to `nwork_masked` is the work of classes without a variant.
+      integer :: nlaunch_variant = 0
+      !! Out: launches that went to a masked variant.
+      real(dp) :: ops_base = 0.0_dp, ops_masked = 0.0_dp
+      !! Out: the modelled operations (kernel text, per primitive quartet, times
+      !! the work items) of the launches that went to a masked variant, as the
+      !! unmasked kernel of the class would have cost and as the variant costs:
+      !! the work the masks drop is 1 - ops_masked/ops_base.
    end type trc_bin_launch_t
 
 end module trc_eri_data

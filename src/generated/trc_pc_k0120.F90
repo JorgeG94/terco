@@ -490,7 +490,7 @@ contains
             v(40,1) = paz*v(37,1) + wpz*v(37,0) &
                + 2.0_dp*oo2ze*v(13,0)
                cur = 1
-                  do x = 1, 40
+                  do x = 17, 40
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

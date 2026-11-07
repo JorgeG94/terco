@@ -458,7 +458,7 @@ contains
             v(20,1) = paz*v(10,1) + wpz*v(10,0) &
                + 2.0_dp*oo2z*(v(4,1) - rz*v(4,0))
                cur = 1
-                  do x = 1, 20
+                  do x = 5, 20
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

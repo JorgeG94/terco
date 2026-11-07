@@ -907,7 +907,7 @@ contains
                + 2.0_dp*oo2e*(v(40,1) - re*v(40,0)) &
                + 2.0_dp*oo2ze*v(94,0)
                cur = 1
-                  do x = 1, 200
+                  do x = 11, 200
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

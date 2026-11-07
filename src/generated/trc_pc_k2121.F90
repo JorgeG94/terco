@@ -1437,7 +1437,52 @@ contains
                + 2.0_dp*oo2e*(v(80,0) - re*v(80,1)) &
                + 3.0_dp*oo2ze*v(190,1)
                cur = 0
-                  do x = 1, 400
+                  do x = 85, 100
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 105, 120
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 125, 140
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 145, 160
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 165, 180
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 185, 200
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 205, 220
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 225, 240
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 245, 260
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 265, 280
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 285, 300
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 305, 320
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 325, 340
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 345, 360
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 365, 380
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 385, 400
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do
