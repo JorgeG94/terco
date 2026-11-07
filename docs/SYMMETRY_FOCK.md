@@ -275,11 +275,15 @@ property of the segment.
   guard `nt > 2**31` keeps its margin); `bins_plan_build` produces the
   rep segments (choice of side, one segment per weight), `bins_plan_sort_by_class`
   adds the weight to the sort key.
-- `src/eri/trc_binkernel.F90`: `launch_classes` splits a class run at weight
-  changes and multiplies `jfac`, `kfac` by the weight for that launch.
-  Because the kernels test `jfac /= 0`, `kfac == 0` for warp-uniform
-  branches, a nonzero weight cannot change a branch. `count_kept` and
-  `fock_all_nosym` are untouched (the nosym path stays full).
+- `src/eri/trc_binkernel.F90`: `launch_classes` passes the plan's `sW` to
+  the kernels, one launch per `(class, mask)`, and leaves `jfac`/`kfac`
+  unweighted. (As built for S14 it split a class run at weight changes and
+  multiplied `jfac`, `kfac` by the weight for that launch; W2 of
+  `.claude/context/segment-fusion-plan.md` replaced that -- see the
+  compile-time note below.) `jfac`/`kfac` stay unweighted because the
+  kernels test `jfac /= 0`, `kfac == 0` for warp-uniform branches, so a
+  weight must not reach them. `count_kept` and `fock_all_nosym` are
+  untouched (the nosym path stays full).
 - `src/eri/trc_bin_tiles.F90`: `cut_bin` over the rep sub-range; `bin_tiles_plan`
   emits the weighted tile segments.
 - `src/eri/trc_eri.F90` (`build_structures`, the `fock*` entries): take an
@@ -291,13 +295,18 @@ property of the segment.
   is untouched.
 - Generators: **none**. MPI: **none**.
 
-*Compile-time cost.* No generated source changes, so the per-class kernel
-build is unchanged (0 min of the 15-20). The edited host files are
-small modules (seconds). If one prefers a per-segment weight array
-`sW(seg)` instead of the launch scalar, every `pc*`/`rys*` kernel and
-dispatcher signature changes: a full regeneration and one full rebuild of
-the kernels, with no growth in code (one load and multiply per quartet);
-it is not needed.
+*Compile-time cost.* As designed, no generated source changes, so the
+per-class kernel build was unchanged (0 min of the 15-20) and the edited
+host files are small modules (seconds). The per-segment weight array
+`sW(seg)` was listed here as the alternative -- every `pc*`/`rys*` kernel
+and dispatcher signature changes, a full regeneration and one full rebuild
+of the kernels, with no growth in code (one load and multiply per quartet)
+-- and judged unnecessary. **S15 and the W-stages made it necessary**: the
+launch scalar costs one launch per `(class, mask, weight)`, which S15
+measured as the reason the quartet savings do not convert into wall time
+below ~20 atoms, and W1 showed both the extra kernel time and nvfortran's
+fixed per-offload-region host cost scale with the launch count. The array
+is what is built; see `.claude/context/segment-fusion-plan.md`.
 
 *Risks.* (i) More launches: `(class, weight)` instead of `class`; the
 weights present in a D2h planar molecule are a few (1, 2, 4), most pairs are

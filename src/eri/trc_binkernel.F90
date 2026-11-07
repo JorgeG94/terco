@@ -303,9 +303,24 @@ contains
       ! and not to `exit data`, which is a stale mapping and an illegal
       ! address rather than a wrong number.
       call plan%sort_by_class(CLASS_RADIX, by_mask=.true.)
+      ! The kernels read the segment's orbit weight themselves, so one launch
+      ! covers every weight of a (class, mask) run. A plan with no weights --
+      ! every non-skeleton build -- is handed an array of ones instead of a
+      ! branch in the kernels' per-segment prologue: one nseg-long copy per
+      ! Fock build against the ~8 memsets, 4 H2D copies and 3 stream syncs
+      ! nvfortran spends on each offload region it no longer launches.
+      !
+      ! AFTER the sort: sort_by_class folds nint(2*sW) into its key whenever
+      ! sW is allocated, and a plan that never carried weights has to keep
+      ! the segment order -- and so the accumulation order into jmat -- that
+      ! it has today.
+      if (.not. allocated(plan%sW)) then
+         allocate (plan%sW(nseg))
+         plan%sW = 1.0_dp
+      end if
 
       !$acc enter data copyin(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
-      !$acc                   plan%sD, plan%sOff)
+      !$acc                   plan%sD, plan%sW, plan%sOff)
       ! A counting call only counts: it used to fall through and build the
       ! Fock matrix as well, into the same accumulator the caller's real
       ! build then added to, so TRC_KEPT_STATS doubled the two-electron part.
@@ -317,7 +332,7 @@ contains
          call launch_in_frame(b, pairs, quartets, launch, plan, dsh, dmat, jmat)
       end if
       !$acc exit data delete(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
-      !$acc                  plan%sD, plan%sOff)
+      !$acc                  plan%sD, plan%sW, plan%sOff)
       call plan%release()
    end subroutine binkernel_fock_bins
 
@@ -391,7 +406,7 @@ contains
       integer :: c0, c1, nl, key, dkey, nseg, mask
       logical :: rys_route
       integer(int64) :: lcap, nw
-      real(dp) :: thresh, wt, jf, kf
+      real(dp) :: thresh
 
       nseg = plan%nseg
       thresh = launch%thresh
@@ -401,20 +416,40 @@ contains
       do while (c0 <= nseg)
          key = plan%class_key(c0, CLASS_RADIX)
          mask = plan%sM(c0)
-         ! A skeleton plan's segments carry a weight (an orbit size): one
-         ! launch per (class, weight), the weight multiplying both scalars.
-         ! It cannot change a kernel's branch: they test jfac /= 0, kfac /= 0.
-         wt = 1.0_dp
-         if (allocated(plan%sW)) wt = plan%sW(c0)
-         jf = launch%jfac*wt
-         kf = launch%kfac*wt
+         ! ONE LAUNCH PER (class, mask). A skeleton plan's segments carry a
+         ! weight (an orbit size, halved on a diagonal bin pair) and the run
+         ! used to break wherever it changed, because the weight was folded
+         ! into jfac/kfac as a launch scalar. The kernels read plan%sW per
+         ! segment instead, so the weight no longer splits anything. Measured
+         ! per steady-state Fock build, cc-pVDZ, --econv 1e-10, V100 cc70:
+         ! benzene 85 -> 33 launches, naphthalene 88 -> 36, pentacene 90 -> 36,
+         ! SF6 218 -> 72, each landing on the number of distinct (class, mask)
+         ! groups. Both halves of the loss S15 measured -- kernels too small
+         ! to fill the card, and nvfortran's fixed ~8 memsets / 4 H2D copies /
+         ! 3 syncs per offload region -- scale with that count, so ERI time
+         ! per build fell benzene 8.50 -> 4.50 ms, naphthalene 15.70 -> 11.79,
+         ! pentacene 71.48 -> 66.61, SF6 14.89 -> 7.29.
+         !
+         ! jfac and kfac stay SCALARS and stay unweighted: the kernels screen
+         ! on jfac /= 0 and kfac == 0 to choose the J-only, K-only and
+         ! combined digestions, and that separation is what keeps a J-only or
+         ! K-only launch correct. The weight rides on the integral (`wq`).
+         !
+         ! Moving it there is exact -- the weight and the quartet degeneracy
+         ! are both powers of two, and the skeleton energies of the serial
+         ! host build are bit-identical with the weight on `wq` and the run
+         ! still split. Merging the runs is what moves the last bits: the
+         ! chunked Rys and warp-role kernels map threads to work items in
+         ! blocks whose boundaries depend on the launch's own extent, so a
+         ! fused launch adds into G in a different order. On the serial host
+         ! build that moves benzene's converged energy by 9.3e-12 Eh against
+         ! a 1e-10 gate, with the iteration count unchanged (water 2.8e-14,
+         ! B2H6 6.5e-13). The symmetry-off plan never had a weight to fuse on
+         ! and stays bit-identical.
          c1 = c0
          do while (c1 < nseg)
             if (plan%class_key(c1 + 1, CLASS_RADIX) /= key) exit
             if (plan%sM(c1 + 1) /= mask) exit
-            if (allocated(plan%sW)) then
-               if (plan%sW(c1 + 1) /= wt) exit
-            end if
             if (lcap > 0 .and. plan%sOff(c1 + 2) - plan%sOff(c0) > lcap) exit
             c1 = c1 + 1
          end do
@@ -451,9 +486,9 @@ contains
             continue
          else if (rys_route) then
             call rys_dispatch(dkey, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
-                              plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, &
+                              plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, plan%sW, &
                               b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
-                              jf, kf, launch%omega, dsh, pairs%nbas, launch%nao, &
+                              launch%jfac, launch%kfac, launch%omega, dsh, pairs%nbas, launch%nao, &
                               pairs%sh_l, pairs%ao_off, &
                               quartets%nqp, quartets%z, quartets%c, qpx, qpy, qpz, &
                               qax, qay, qaz, &
@@ -461,9 +496,9 @@ contains
                               launch%ndens, dmat, jmat, launch%rank, launch%nranks)
          else
             call pc_dispatch(dkey, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
-                             plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, &
+                             plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, plan%sW, &
                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
-                             jf, kf, launch%omega, dsh, pairs%nbas, launch%nao, &
+                             launch%jfac, launch%kfac, launch%omega, dsh, pairs%nbas, launch%nao, &
                              pairs%sh_l, pairs%ao_off, &
                              quartets%nqp, quartets%z, quartets%c, qpx, qpy, qpz, &
                              qax, qay, qaz, &

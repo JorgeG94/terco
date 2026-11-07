@@ -130,10 +130,14 @@ module trc_bins
       integer(int64), allocatable :: sOff(:)
       !! (nseg + 1) prefix sum of the work items; sOff(1) = 0.
       real(dp), allocatable :: sW(:)
-      !! (nseg) skeleton plans only (unallocated otherwise, meaning 1): the
-      !! weight of the segment's bra pairs, their orbit size, halved on a
-      !! diagonal bin pair. Host only: it multiplies jfac and kfac of the
-      !! launch of the segment's (class, weight) run and is never mapped.
+      !! (nseg) the weight of the segment's bra pairs: their orbit size,
+      !! halved on a diagonal bin pair, hence a multiple of one half. Only a
+      !! skeleton plan builds it; unallocated means 1, and the Fock launcher
+      !! fills an array of ones in that case rather than branch in the
+      !! kernels (trc_binkernel). It is MAPPED and the kernels read it per
+      !! segment, which is what lets one launch cover every weight of a
+      !! (class, mask) run; it used to multiply that launch's jfac and kfac
+      !! instead, and cost benzene 85 launches a Fock build against 33.
    contains
       procedure :: build         => bins_plan_build
       procedure :: build_skeleton => bins_plan_build_skeleton
@@ -1368,9 +1372,12 @@ contains
       allocate (ord(n), ckey(n), t(n), tl(n))
       do a = 1, n
          ckey(a) = this%class_key(a, radix)
-         ! A skeleton plan launches one run per (class, weight): the weight
-         ! (an orbit size, halved on a diagonal bin pair) is a multiple of
-         ! 1/2 below 9, so twice it is a small integer.
+         ! The weight (an orbit size, halved on a diagonal bin pair) is a
+         ! multiple of 1/2 below 9, so twice it is a small integer. The Fock
+         ! launcher no longer splits a run on it -- the kernels read it per
+         ! segment -- but keeping it in the key costs nothing and keeps each
+         ! weight contiguous, which is what makes a launch's slice of sW a
+         ! contiguous range.
          if (present(by_mask)) then
             if (by_mask) ckey(a) = ckey(a)*2 + this%sM(a)
          end if
@@ -1459,7 +1466,7 @@ contains
    ! reps(A) x A with an extra 1/2 (the triangle's own factor, which no
    ! rectangle carries; the kernels apply the ab = cd 1/2 only on a
    ! triangle). A segment holds the representatives of one orbit size, so its
-   ! weight is one number, kept in sW and applied as a launch scalar.
+   ! weight is one number, kept in sW and applied by the kernels per segment.
    ! The result, symmetrized once, is the full matrix.
    !
    subroutine bins_plan_build_skeleton(this, b, orb, thresh, bin_pbase)
