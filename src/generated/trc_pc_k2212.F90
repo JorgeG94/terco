@@ -2390,7 +2390,61 @@ contains
                + 3.0_dp*oo2z*(v(675,1) - rz*v(675,0)) &
                + 3.0_dp*oo2ze*v(335,0)
                cur = 1
-                  do x = 1, 700
+                  do x = 40, 70
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 75, 105
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 110, 140
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 145, 175
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 180, 210
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 215, 245
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 250, 280
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 285, 315
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 320, 350
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 355, 385
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 390, 420
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 425, 455
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 460, 490
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 495, 525
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 530, 560
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 565, 595
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 600, 630
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 635, 665
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 670, 700
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

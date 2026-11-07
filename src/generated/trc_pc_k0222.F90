@@ -1321,7 +1321,7 @@ contains
                + 3.0_dp*oo2e*(v(100,0) - re*v(100,1)) &
                + 2.0_dp*oo2ze*v(194,1)
                cur = 0
-                  do x = 1, 350
+                  do x = 41, 350
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

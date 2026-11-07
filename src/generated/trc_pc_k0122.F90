@@ -747,7 +747,7 @@ contains
             v(140,1) = paz*v(137,1) + wpz*v(137,0) &
                + 4.0_dp*oo2ze*v(77,0)
                cur = 1
-                  do x = 1, 140
+                  do x = 17, 140
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

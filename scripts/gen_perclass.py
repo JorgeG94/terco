@@ -1580,6 +1580,43 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
     return drv + "\n" + item
 
 
+def trim_accumulation(prims, hrr_body, nv):
+    """Accumulate only the final-buffer entries the HRR reads.
+
+    The scalar primitive loop added every one of the `nv` entries of the
+    final VRR level into g1, but the HRR reads a strict subset (81 of 100 at
+    (pp|pp)) and the sieve has not even computed the rest, so the loop was
+    summing stale `v` for nothing. The statements below add exactly the
+    entries the HRR reads, in runs of consecutive indices, so every value the
+    HRR sees is the same sum in the same order: bit-identical. Measured
+    kernel-level in docs/SYMMETRY_PARITY_SKIP.md 3.6.
+
+    A skeleton module (no HRR text) keeps the full loop, which gen_rys.py and
+    gen_rys_grad.py splice around.
+    """
+    reads = sorted({int(x) for x in re.findall(r"\bg\((\d+)\)", hrr_body)})
+    if not reads or len(reads) == nv:
+        return prims
+    old = (f"                  do x = 1, {nv}\n"
+           "                     g1(x) = g1(x) + v(x, cur)\n"
+           "                  end do\n")
+    assert prims.count(old) == 1, "accumulation loop not found"
+    runs, start = [], reads[0]
+    for a, b in zip(reads, reads[1:] + [None]):
+        if b != a + 1:
+            runs.append((start, a))
+            start = b
+    new = ""
+    for lo, hi in runs:
+        if lo == hi:
+            new += f"                  g1({lo}) = g1({lo}) + v({lo}, cur)\n"
+        else:
+            new += (f"                  do x = {lo}, {hi}\n"
+                    "                     g1(x) = g1(x) + v(x, cur)\n"
+                    "                  end do\n")
+    return prims.replace(old, new)
+
+
 def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     """The scalar kernel for one class.
 
@@ -1754,7 +1791,9 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
 
     isig = txt_l.index("   pure subroutine pci" + tag + "(")
     sig = txt_l[isig:idecl0].replace("pci" + tag, "pcsi" + tag)
-    scalar_item = (sig + decls + head + prims + decode + hrr_and_digest
+    nv_total = gv.ncum(la + lb)*gv.ncum(lc + ld)
+    scalar_item = (sig + decls + head + trim_accumulation(prims, hrr_body, nv_total)
+                   + decode + hrr_and_digest
                    + "   end subroutine pcsi" + tag + "\n")
 
     # --- scalar driver: the block driver with the names swapped

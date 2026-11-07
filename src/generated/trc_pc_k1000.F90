@@ -415,7 +415,7 @@ contains
             v(3,1) = pay*v(1,1) + wpy*v(1,0)
             v(4,1) = paz*v(1,1) + wpz*v(1,0)
                cur = 1
-                  do x = 1, 4
+                  do x = 2, 4
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

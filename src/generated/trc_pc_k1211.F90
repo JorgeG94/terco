@@ -898,7 +898,31 @@ contains
                + 1.0_dp*oo2e*(v(20,1) - re*v(20,0)) &
                + 3.0_dp*oo2ze*v(70,0)
                cur = 1
-                  do x = 1, 200
+                  do x = 22, 40
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 42, 60
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 62, 80
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 82, 100
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 102, 120
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 122, 140
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 142, 160
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 162, 180
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 182, 200
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

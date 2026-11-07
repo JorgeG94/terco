@@ -502,7 +502,7 @@ contains
             v(35,0) = qcz*v(20,0) + wqz*v(20,1) &
                + 3.0_dp*oo2e*(v(10,0) - re*v(10,1))
                cur = 0
-                  do x = 1, 35
+                  do x = 5, 35
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

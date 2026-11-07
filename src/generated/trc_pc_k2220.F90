@@ -1257,7 +1257,22 @@ contains
                + 1.0_dp*oo2e*(v(35,0) - re*v(35,1)) &
                + 4.0_dp*oo2ze*v(125,1)
                cur = 0
-                  do x = 1, 350
+                  do x = 145, 175
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 180, 210
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 215, 245
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 250, 280
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 285, 315
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 320, 350
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

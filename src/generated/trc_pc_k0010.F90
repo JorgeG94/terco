@@ -415,7 +415,7 @@ contains
             v(3,1) = qcy*v(1,1) + wqy*v(1,0)
             v(4,1) = qcz*v(1,1) + wqz*v(1,0)
                cur = 1
-                  do x = 1, 4
+                  do x = 2, 4
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do
