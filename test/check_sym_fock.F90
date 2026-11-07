@@ -45,6 +45,18 @@
 ! check_sym_fock_f (mode "f": the uncontracted l = 0..3 set, which prints SKIP
 ! when this build's LMAX is below 3).
 !
+! The McMurchie-Davidson engines (S14.4): their bra is restricted to the orbit
+! representatives too, on the engines' own counters (`eri%md%npq`, the
+! (P, Q) primitive pairs of the Hermite stage; `eri%mg%nquart`, the
+! shell-pair quartets of the exchange windows), which a silent fall back to
+! the unrestricted engine would leave unchanged. check_sym_fock_md (mode
+! "md", TRC_MDJ=1: the resident entry's J from MD J on the uncontracted
+! l = 0..3 set; SKIP below LMAX 3), check_sym_fock_mdrule (mode "mdrule",
+! TRC_MDJ unset: a system for which eri_mdj_size_rule picks MD J by itself) and
+! check_sym_fock_mdg (mode "mdg": water cc-pVQZ, whose g shell sends the
+! classes above TERCO_RYS_G_LTOT to MD exchange and J to MD J; SKIP below
+! LMAX 4, where those classes are not generated).
+!
 ! NO INTERNAL PROCEDURES: the helpers are module procedures.
 !
 module check_sym_fock_suite
@@ -119,7 +131,20 @@ contains
 
    subroutine collect_sym_fock(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
-      if (g_mode == "f") then
+      if (g_mode == "md") then
+         testsuite = [ &
+                     new_unittest("MD J forced, uncontracted l = 0..3: water C2v, B2H6 D2h", test_md_f) &
+                     ]
+      else if (g_mode == "mdrule") then
+         testsuite = [ &
+                     new_unittest("MD J by the size rule: naphthalene D2h, d-aug-cc-pVDZ", test_md_rule) &
+                     ]
+      else if (g_mode == "mdg") then
+         testsuite = [ &
+                     new_unittest("MD J and MD exchange: water C2v cc-pVQZ", test_mdg), &
+                     new_unittest("MD J and MD exchange: uncontracted l = 0..4, B2H6 D2h", test_mdg_aux) &
+                     ]
+      else if (g_mode == "f") then
          testsuite = [ &
                      new_unittest("uncontracted l = 0..3, water C2v and B2H6 D2h: J, K, J+K, resident", test_lmax3) &
                      ]
@@ -404,8 +429,7 @@ contains
 
    subroutine compare_resident(ctx, dc, error)
       !! The resident entry (which the SCF uses, and which sends J to the MD J
-      !! engine in an f basis: that engine stays unrestricted and adds its full
-      !! J to the skeleton K) against the host full build.
+      !! engine in an f basis, restricted like the rest) against the host full build.
       type(ctx_t), intent(inout) :: ctx
       real(dp), intent(in) :: dc(ctx%nc, ctx%nc)
       type(error_type), allocatable, intent(out) :: error
@@ -424,6 +448,70 @@ contains
       call check(error, e <= TOL_REL*max(1.0_dp, gmax), trim(ctx%label)// &
                  ": resident skeleton differs from the full G by "//to_string(e, "es10.3"))
    end subroutine compare_resident
+
+   subroutine compare_md(ctx, dc, jscale, kscale, omega, tag, resident, want_j, want_g, error)
+      !! The skeleton and the full build through the entry that reaches the MD
+      !! engines, which must have run (their counters are nonzero in the full
+      !! build) and run less in the skeleton build (smaller counters).
+      type(ctx_t), intent(inout) :: ctx
+      real(dp), intent(in) :: dc(ctx%nc, ctx%nc)
+      real(dp), intent(in) :: jscale, kscale, omega
+      character(len=*), intent(in) :: tag
+      logical, intent(in) :: resident
+      !! fock_resident, else fock
+      logical, intent(in) :: want_j, want_g
+      !! MD J / MD exchange must have run
+      type(error_type), allocatable, intent(out) :: error
+      real(dp), allocatable :: gfc(:, :), gsc(:, :), gf(:, :), gs(:, :), w(:, :)
+      real(dp) :: e, gmax
+      integer(int64) :: pq(2), qq(2)
+
+      allocate (gfc(ctx%nc, ctx%nc), gsc(ctx%nc, ctx%nc), gf(ctx%ns, ctx%ns), gs(ctx%ns, ctx%ns), w(ctx%ns, ctx%ns))
+      ctx%eri%md%npq = 0
+      ctx%eri%mg%nquart = 0
+      if (resident) then
+         call ctx%eri%fock_resident(ctx%bas, dc, gfc, k_scale=kscale, j_scale=jscale, omega=omega)
+      else
+         call ctx%eri%fock(ctx%bas, dc, gfc, k_scale=kscale, j_scale=jscale, omega=omega)
+      end if
+      pq(1) = ctx%eri%md%npq
+      qq(1) = ctx%eri%mg%nquart
+      ctx%eri%md%npq = 0
+      ctx%eri%mg%nquart = 0
+      if (resident) then
+         call ctx%eri%fock_resident(ctx%bas, dc, gsc, k_scale=kscale, j_scale=jscale, omega=omega, skeleton=.true.)
+      else
+         call ctx%eri%fock(ctx%bas, dc, gsc, k_scale=kscale, j_scale=jscale, omega=omega, skeleton=.true.)
+      end if
+      pq(2) = ctx%eri%md%npq
+      qq(2) = ctx%eri%mg%nquart
+      call to_caller(ctx, gfc, gf)
+      call to_caller(ctx, gsc, gs)
+      gmax = maxval(abs(gf))
+      call ctx%sc%symmetrize(ctx%ns, gs, w)
+      e = maxval(abs(gs - gf))
+      ctx%worst = max(ctx%worst, e/max(1.0_dp, gmax))
+      print "(a,a,a,a,a,es10.3,a,es10.3,a,i0,a,i0,a,i0,a,i0)", "  ", trim(ctx%label), " ", trim(tag), &
+         ": max|G| ", gmax, "  symmetrized err ", e, "  MD J (P,Q) pairs ", pq(1), " -> ", pq(2), &
+         "  MD exchange quartets ", qq(1), " -> ", qq(2)
+      call check(error, e <= TOL_REL*max(1.0_dp, gmax), trim(ctx%label)//" "//trim(tag)// &
+                 ": symmetrized skeleton differs from the full G by "//to_string(e, "es10.3"))
+      if (allocated(error)) return
+      if (want_j) then
+         call check(error, pq(1) > 0, trim(ctx%label)//" "//trim(tag)//": MD J did not run")
+         if (allocated(error)) return
+         call check(error, pq(2) > 0 .and. pq(2) < pq(1), trim(ctx%label)//" "//trim(tag)// &
+                    ": the skeleton MD J did not restrict its bra")
+         if (allocated(error)) return
+      end if
+      if (want_g) then
+         call check(error, qq(1) > 0, trim(ctx%label)//" "//trim(tag)//": MD exchange did not run")
+         if (allocated(error)) return
+         call check(error, qq(2) > 0 .and. qq(2) < qq(1), trim(ctx%label)//" "//trim(tag)// &
+                    ": the skeleton MD exchange did not restrict its bra")
+         if (allocated(error)) return
+      end if
+   end subroutine compare_md
 
    subroutine run_densities(ctx, scf, error)
       !! The matrix of one molecule in one AO space: a random and (with
@@ -657,10 +745,117 @@ contains
       call count_case("naphthalene_d2h", "D2h", "basis_sets/cc-pvdz.json", 20671728_int64, 5451483_int64, error)
    end subroutine test_counts
 
+   subroutine test_md_f(error)
+      !! TRC_MDJ=1 (the ctest entry's environment): the resident entry forms J
+      !! with MD J on the uncontracted l = 0..3 set. J+K (the bins' exchange
+      !! skeleton next to the MD J skeleton), J alone and K alone.
+      type(error_type), allocatable, intent(out) :: error
+      character(len=12), parameter :: MOL(2) = [character(len=12) :: "water", "b2h6_d2h"]
+      character(len=4), parameter :: GRP(2) = [character(len=4) :: "C2v", "D2h"]
+      type(ctx_t) :: ctx
+      real(dp), allocatable :: ds(:, :), dc(:, :)
+      character(len=8) :: e
+      integer :: im, ik, dev
+      dev = trc_bind_device(0)
+      call get_environment_variable("TRC_MDJ", e)
+      call check(error, trim(e) == "1", "check_sym_fock md mode needs TRC_MDJ=1 in the environment")
+      if (allocated(error)) return
+      do im = 1, 2
+         do ik = 1, 2
+            call setup_ctx(ctx, trim(MOL(im)), trim(GRP(im)), " ", 3, ik == 2, .false., error)
+            if (allocated(error)) return
+            allocate (ds(ctx%ns, ctx%ns), dc(ctx%nc, ctx%nc))
+            call random_density(ctx, 3, 0.1_dp, ds)
+            call to_cart(ctx, ds, dc)
+            call compare_md(ctx, dc, 1.0_dp, 1.0_dp, 0.0_dp, "J+K", .true., .true., .false., error)
+            if (allocated(error)) return
+            call compare_md(ctx, dc, 1.0_dp, 0.0_dp, 0.0_dp, "J  ", .true., .true., .false., error)
+            if (allocated(error)) return
+            call compare_md(ctx, dc, 0.0_dp, 1.0_dp, 0.0_dp, "K  ", .true., .false., .false., error)
+            if (allocated(error)) return
+            deallocate (ds, dc)
+            call release_ctx(ctx)
+         end do
+      end do
+   end subroutine test_md_f
+
+   subroutine test_md_rule(error)
+      !! TRC_MDJ unset: eri_mdj_size_rule picks MD J for this extended system,
+      !! with no f function and no environment to force it.
+      type(error_type), allocatable, intent(out) :: error
+      type(ctx_t) :: ctx
+      real(dp), allocatable :: ds(:, :), dc(:, :)
+      character(len=8) :: e
+      integer :: dev, st
+      dev = trc_bind_device(0)
+      call get_environment_variable("TRC_MDJ", e, status=st)
+      call check(error, st /= 0 .or. len_trim(e) == 0, "check_sym_fock mdrule mode needs TRC_MDJ unset")
+      if (allocated(error)) return
+      call setup_ctx(ctx, "naphthalene_d2h", "D2h", "basis_sets/d-aug-cc-pvdz.json", -1, .false., .false., error)
+      if (allocated(error)) return
+      call check(error, ctx%eri%mdj_extended, trim(ctx%label)//": the size rule does not choose MD J here")
+      if (allocated(error)) return
+      allocate (ds(ctx%ns, ctx%ns), dc(ctx%nc, ctx%nc))
+      call random_density(ctx, 3, 0.1_dp, ds)
+      call to_cart(ctx, ds, dc)
+      call compare_md(ctx, dc, 1.0_dp, 1.0_dp, 0.0_dp, "J+K", .true., .true., .false., error)
+      if (allocated(error)) return
+      deallocate (ds, dc)
+      call release_ctx(ctx)
+   end subroutine test_md_rule
+
+   subroutine test_mdg(error)
+      !! Water cc-pVQZ: the g shell on O. `fock` sends J to MD J and the
+      !! classes above TERCO_RYS_G_LTOT to MD exchange; with omega > 0 MD J
+      !! stands aside and MD exchange forms J too.
+      type(error_type), allocatable, intent(out) :: error
+      type(ctx_t) :: ctx
+      real(dp), allocatable :: ds(:, :), dc(:, :)
+      integer :: ik, dev
+      dev = trc_bind_device(0)
+      do ik = 1, 2
+         call setup_ctx(ctx, "water", "C2v", "basis_sets/cc-pvqz-pyscf17.json", -1, ik == 2, .false., error)
+         if (allocated(error)) return
+         allocate (ds(ctx%ns, ctx%ns), dc(ctx%nc, ctx%nc))
+         call random_density(ctx, 3, 0.1_dp, ds)
+         call to_cart(ctx, ds, dc)
+         call compare_md(ctx, dc, 1.0_dp, 1.0_dp, 0.0_dp, "J+K", .false., .true., .true., error)
+         if (allocated(error)) return
+         call compare_md(ctx, dc, 0.0_dp, 1.0_dp, 0.0_dp, "K  ", .false., .false., .true., error)
+         if (allocated(error)) return
+         call compare_md(ctx, dc, 1.0_dp, 1.0_dp, 0.3_dp, "J+K omega 0.3", .false., .false., .true., error)
+         if (allocated(error)) return
+         call compare_md(ctx, dc, 1.0_dp, 1.0_dp, 0.0_dp, "J+K resident", .true., .true., .true., error)
+         if (allocated(error)) return
+         deallocate (ds, dc)
+         call release_ctx(ctx)
+      end do
+   end subroutine test_mdg
+
+   subroutine test_mdg_aux(error)
+      !! The uncontracted l = 0..4 set (Cartesian: 8 minutes with the spherical
+      !! run too) on nonplanar D2h B2H6, whose operations
+      !! move atoms: the g classes of every pair of atoms, MD exchange and MD J
+      !! in all the group's orbit sizes.
+      type(error_type), allocatable, intent(out) :: error
+      type(ctx_t) :: ctx
+      real(dp), allocatable :: ds(:, :), dc(:, :)
+      integer :: dev
+      dev = trc_bind_device(0)
+      call setup_ctx(ctx, "b2h6_d2h", "D2h", " ", 4, .false., .false., error)
+      if (allocated(error)) return
+      allocate (ds(ctx%ns, ctx%ns), dc(ctx%nc, ctx%nc))
+      call random_density(ctx, 3, 0.05_dp, ds)
+      call to_cart(ctx, ds, dc)
+      call compare_md(ctx, dc, 1.0_dp, 1.0_dp, 0.0_dp, "J+K", .false., .true., .true., error)
+      if (allocated(error)) return
+      deallocate (ds, dc)
+      call release_ctx(ctx)
+   end subroutine test_mdg_aux
+
    subroutine test_lmax3(error)
       !! Uncontracted l = 0..3 shells on every atom: the f classes (Rys only),
-      !! and MD J in the resident entry, which stays unrestricted next to the
-      !! skeleton exchange.
+      !! and MD J in the resident entry.
       type(error_type), allocatable, intent(out) :: error
       character(len=12), parameter :: MOL(2) = [character(len=12) :: "water", "b2h6_d2h"]
       character(len=4), parameter :: GRP(2) = [character(len=4) :: "C2v", "D2h"]
@@ -700,8 +895,12 @@ program check_sym_fock
    integer :: stat
 
    if (command_argument_count() >= 1) call get_command_argument(1, g_mode)
-   if (trim(g_mode) == "f" .and. LMAX < 3) then
+   if ((trim(g_mode) == "f" .or. trim(g_mode) == "md") .and. LMAX < 3) then
       print "(a,i0,a)", "  SKIP: the l = 0..3 set needs LMAX = 3 and this build has LMAX = ", LMAX, "."
+      stop 0
+   end if
+   if (trim(g_mode) == "mdg" .and. LMAX < 4) then
+      print "(a,i0,a)", "  SKIP: MD exchange (g classes) needs LMAX = 4 and this build has LMAX = ", LMAX, "."
       stop 0
    end if
    stat = 0

@@ -33,7 +33,7 @@ module trc_bins
    private
 
    public :: SMAX, bins_build_binned_pairs, pair_bins_t, bins_sort_by_weight
-   public :: bins_build_pair_quartets
+   public :: bins_build_pair_quartets, bins_rep_weights
    public :: bins_skel_cut_first, bins_plan_emit, bins_plan_allocate
    ! bin_key/bin_dmax stay private: nothing outside this module uses them.
 
@@ -131,6 +131,22 @@ module trc_bins
    end type trc_bin_plan_t
 
 contains
+
+   function bins_rep_weights(b, orb) result(w)
+      !! Per pair of the bins: its orbit size when it is an orbit
+      !! representative, 0 otherwise. For the MD engines' skeleton restriction,
+      !! which cut by pair rather than by bin segment.
+      type(pair_bins_t), intent(in) :: b
+      type(trc_bin_orbits_t), intent(in) :: orb
+      integer :: w(b%npair)
+      integer :: k, r
+      w = 0
+      do k = 1, b%nbin
+         do r = orb%sec0(k) + 1, orb%sec0(k + 1)
+            w(b%bin_off(k) + orb%sec_beg(r) + 1:b%bin_off(k) + orb%sec_beg(r) + orb%sec_cnt(r)) = orb%sec_w(r)
+         end do
+      end do
+   end function bins_rep_weights
 
    !
    ! Bin identity is (type, size), and TYPE CARRIES THE CONTRACTION DEGREE as

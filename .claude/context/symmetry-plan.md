@@ -89,7 +89,7 @@ assumption for the plan is:
 | S14.1 | Orbit tables (`trc_sym_pairs`), closure and weight-sum check | S13 | done |
 | S14.2 | Symmetry-aware bins/plan/tiles, skeleton entry, `check_sym_fock` | S14.1 | done |
 | S14.3 | SCF wiring, central SCF oracle with the skeleton for all groups | S14.2 | done |
-| S14.4 | MD J and MD exchange bra restriction (required before symmetry becomes the default) | S14.2 | todo |
+| S14.4 | MD J and MD exchange bra restriction (required before symmetry becomes the default) | S14.2 | done |
 | S14.5 | Device-mapping list for S15 | S14.3 | todo |
 | S15 | GPU validation and performance | S14, NVIDIA host | todo |
 | S16 | Optional: DF-JK, XC grid and gradient reductions | S15 | todo |
@@ -529,3 +529,6 @@ Each of these is its own design-then-implement pair, decided after S15:
   launch 4-5% more quartets than the full build (every atom is its own
   image). Decision 2 keeps the skeleton always on under `symmetry=on`;
   revisit with S15's GPU timings.
+- MD exchange (g classes) is only generated when `TERCO_LMAX` > 3, so
+  `check_sym_fock_mdg` runs only in an LMAX=4 build (about 5-8 minutes); a CI
+  job for the g path must use LMAX=4.

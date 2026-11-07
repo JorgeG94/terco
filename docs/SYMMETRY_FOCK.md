@@ -395,6 +395,73 @@ kernel and generator cost of 4.3 with less gain. Not recommended.
   stay on the full path.
 - **DF-JK, XC grid.** Not touched (S16).
 
+### 4.6 S14.4: the MD engines as built
+
+Both McMurchie-Davidson engines restrict their bra to the orbit
+representatives on the skeleton path (`eri%fock` and `eri%fock_resident` with
+`skeleton=.true.`); with symmetry off, or the skeleton off, they run exactly
+as before. No generator or kernel file changed: the restriction is in the
+host code that sets up their launches (`trc_mdj`, `trc_mdg`, the dispatch in
+`trc_eri`). The pair orbit weights come from `bins_rep_weights` (the bins'
+representative sections, per pair).
+
+- **MD J.** `mdj%build` given the weights appends a *copy* of each
+  representative's primitive pairs after the ordinary ones (the exchange engine's
+  view of the lists is unchanged), with `c` times the orbit size, in their
+  own lp blocks of the Hermite arrays. The skeleton `coulomb` runs the
+  Hermite stage with P over the copies and Q over all pairs (same kernels,
+  other offsets and strides) and the bra stage over the copies' shell pairs;
+  the ket stage is untouched. The result is the skeleton J, the sum over
+  representatives of |orbit| J_p. The (P,Q) screen's bound I_P is formed from
+  the plain `c`, before the weight. The Hermite stage has no ab-cd fold, so
+  nothing is lost to a half weight: the gain is pairs / representatives,
+  twice scheme 1's.
+- **MD exchange.** The sorted groups (type, primitive-count bucket) are
+  orbit-closed (an orbit shares its type, its primitive count and its
+  symmetrized bound), so a group is split into representative groups, one
+  per orbit size, in the group's own bound order (so the staircase and its
+  early exit are intact), with their own E matrices. A skeleton window pairs a
+  representative group (bra, weight = orbit size) with a whole group (ket);
+  of two different groups of one type only the second-not-above-first pair is
+  run as before, and a group against its own parent keeps the extra 1/2.
+  Both J and K of the window carry the weight (omega > 0 forms J here as well).
+  The fold of ab and cd is kept at group level (distinct groups, the cut is
+  free), lost only on a group against itself; the choice of the cheaper
+  side is not available, as swapping bra and ket changes the class.
+- **Counters.** `eri%md%npq`: (P,Q) primitive pairs handed to the Hermite
+  stage by the last `coulomb`. `eri%mg%nquart`: bra x ket shell pairs of
+  the windows the last `fock` ran. A silent fall back to the full engine
+  leaves them unchanged; `check_sym_fock_md/_mdrule/_mdg` require them nonzero
+  in the full build and smaller in the skeleton build.
+- **Not covered.** `fock_resident_many` (several densities) runs the engines
+  per density through `fock_resident_lent`, which now honours `opts%skeleton`;
+  the many-density kernel path itself has no skeleton option yet (S14.3).
+  The `mg` object is rebuilt once, with the representative groups, the
+  first time a skeleton build asks for them; the E matrices of the
+  representative groups are the extra memory.
+- **Device (S15).** New device arrays: `rsp_ao1/ao2/k0/nk` (the copies' shell
+  pairs) in `mdj_build`'s and `mdj_release`'s data lists; `mp_*` and `mp_ip`/`mp_nq`
+  are longer by the copies, and `mp_c`'s copy slice is updated after
+  weighting. The `mg` side adds only host index lists (`gl` is longer). Not
+  run on a GPU.
+
+Measured (host, serial, `parallel=.false.`; symmetrized skeleton against the full G,
+relative gate 5e-11·max(1,|G|) as in S14.2). Work counters, full -> skeleton:
+
+| system, basis (engine) | full | skeleton | reduction | max err (abs), in brackets max G |
+|---|---|---|---|---|
+| water C2v, uncontracted l=0..3 (MD J, TRC_MDJ=1) | 164 836 | 99 876 | 1.65x | 5.8e-13 (196) |
+| B2H6 D2h, uncontracted l=0..3 (MD J) | 5 683 456 | 1 535 296 | 3.70x | 2.6e-12 (233) |
+| naphthalene D2h, d-aug-cc-pVDZ (MD J by the size rule) | 957 902 500 | 247 878 550 | 3.86x | 6.8e-11 (164) |
+| water C2v, cc-pVQZ (MD J) | 1 306 449 | 833 247 | 1.57x | 3.2e-14 (50) |
+| water C2v, cc-pVQZ (MD exchange quartets) | 3 303 | 2 548 | 1.30x | 3.2e-14 |
+| B2H6 D2h, uncontracted l=0..4 (MD J) | 13 402 921 | 3 598 763 | 3.72x | 1.9e-12 (228) |
+| B2H6 D2h, uncontracted l=0..4 (MD exchange quartets) | 1 778 423 | 502 742 | 3.54x | 1.9e-12 |
+
+The naphthalene row's error is 4e-13 relative (the full J+K of 1e9 primitive
+pairs). Without the orbit weight the same checks fail by 1.6 (g) and 48 (f);
+that is, the weights, not the restriction alone, are what the checks test.
+
 ## 5. Recommendation
 
 **Scheme 2a** (bin-ordered unique bra pairs, closed bins, reps first,
@@ -439,6 +506,7 @@ unchanged):
    range-separated (long-range exchange pass uses the same plan).
 4. **MD J and MD exchange** bra restriction (required before symmetry becomes
    the default, decision 6; correct without it).
+   Done (S14.4); what was built and measured: section 4.6.
 5. Device mapping list (new arrays and their `enter data`/`exit data`) for
    S15: `rep` ranges and weights are host-only in design (segment
    descriptors), so the list is expected to be short.

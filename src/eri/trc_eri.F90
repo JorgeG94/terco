@@ -30,7 +30,8 @@ module trc_eri
    use trc_cart, only: cart_init
    use trc_hgp, only: hgp_build_pairs
    use trc_screen, only: screen_schwarz_bounds_rys, screen_pair_index
-   use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets
+   use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets, &
+                       bins_rep_weights
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t, trc_bin_orbits_t
    use trc_error, only: error_t
    use trc_sym_geom, only: trc_sym_geom_t
@@ -572,9 +573,8 @@ contains
       !! caller symmetrizes it over the point group, in its AO space
       !! (trc_sym_scf's symmetrize, after this fold). Requires `build` to have
       !! been given the point group and `dmat` to be invariant under it (the
-      !! density screen is then symmetrized too). Default false. Engines that
-      !! are not restricted (MD J, MD exchange) add their full matrices, which
-      !! the symmetrization leaves unchanged.
+      !! density screen is then symmetrized too). Default false. The MD J and
+      !! MD exchange engines restrict their bra the same way (trc_mdj, trc_mdg).
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
@@ -631,8 +631,8 @@ contains
       call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat, this%orb)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
-      call mdg_pass(this, b, dwork, jmat, jbins, kfac, ow)
-      if (md_j .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac)
+      call mdg_pass(this, b, dwork, jmat, jbins, kfac, ow, skel)
+      if (md_j .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac, skel)
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -845,7 +845,7 @@ contains
       end do
    end function prim_pairs
 
-   subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac, omega)
+   subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac, omega, skeleton)
       !! The g classes binkernel_fock_bins leaves to MD exchange (those above
       !! TERCO_RYS_G_LTOT), into the same folded matrix (both on the device).
       !! Builds the MD pair list and its sorted groups on first use.
@@ -856,15 +856,18 @@ contains
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: omega
       !! the operator's erf range parameter, as binkernel_fock_bins takes it (0: Coulomb)
+      logical, intent(in), optional :: skeleton
+      !! Only the orbit representatives as bra, weighted by their orbit size: the
+      !! skeleton matrix, as in the bins. Needs the object built with the point group.
       type(trc_mdg_scales_t) :: sc
+      logical :: skel
+      skel = .false.
+      if (present(skeleton)) skel = skeleton
       if (.not. this%needs_md) return
-      if (.not. this%md%built) then
-         if (this%dec%active) then
-            call this%md%build(this%pb, this%bins, this%thresh)
-         else
-            call this%md%build(b, this%bins, this%thresh)
-         end if
-      end if
+      call ensure_md(this, b)
+      ! The representative groups are formed when first asked for; an object
+      ! first used for full builds is rebuilt then.
+      if (this%mg%built .and. skel .and. .not. this%mg%has_reps) call this%mg%release()
       if (.not. this%mg%built) then
          ! Exchange in spherical components when the caller's basis is
          ! spherical; TRC_MDG_CART=1 keeps it Cartesian, for comparing.
@@ -875,9 +878,9 @@ contains
             call get_environment_variable("TRC_MDG_CART", ec)
             sph = b%spherical .and. trim(ec) /= "1"
             if (this%dec%active) then
-               call this%mg%build(this%md, this%pb, sph)
+               call this%mg%build(this%md, this%pb, sph, skel)
             else
-               call this%mg%build(this%md, b, sph)
+               call this%mg%build(this%md, b, sph, skel)
             end if
          end block
       end if
@@ -888,10 +891,30 @@ contains
       sc%kfac = kfac
       sc%rank = this%rank
       sc%nranks = this%nranks
+      sc%skeleton = skel
       call this%mg%fock(this%md, this%dsh, dwork, jmat, sc)
    end subroutine mdg_pass
 
-   subroutine add_md_j(this, b, dp_w, jmat, jfac)
+   subroutine ensure_md(this, b)
+      !! The MD pair list, built on first use. An object built with the point
+      !! group gives it the pair orbit weights, for the skeleton bra.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      if (this%md%built) return
+      if (this%orb%built) then
+         if (this%dec%active) then
+            call this%md%build(this%pb, this%bins, this%thresh, bins_rep_weights(this%bins, this%orb))
+         else
+            call this%md%build(b, this%bins, this%thresh, bins_rep_weights(this%bins, this%orb))
+         end if
+      else if (this%dec%active) then
+         call this%md%build(this%pb, this%bins, this%thresh)
+      else
+         call this%md%build(b, this%bins, this%thresh)
+      end if
+   end subroutine ensure_md
+
+   subroutine add_md_j(this, b, dp_w, jmat, jfac, skeleton)
       !! jmat(1, :, :) += jfac J[dp_w] from the MD engine; dp_w is a host
       !! array (eri_fock's), jmat is on the device. This rank's share of it,
       !! as in eri_fock_resident: the caller sums the ranks.
@@ -900,19 +923,15 @@ contains
       real(dp), intent(in)    :: dp_w(:, :)
       real(dp), intent(inout) :: jmat(:, :, :)
       real(dp), intent(in)    :: jfac
+      logical, intent(in), optional :: skeleton
+      !! the skeleton J: the orbit representatives' bra only (trc_mdj)
       real(dp), allocatable :: jw(:, :)
       integer :: nw, i, j
-      if (.not. this%md%built) then
-         if (this%dec%active) then
-            call this%md%build(this%pb, this%bins, this%thresh)
-         else
-            call this%md%build(b, this%bins, this%thresh)
-         end if
-      end if
+      call ensure_md(this, b)
       nw = size(dp_w, 1)
       allocate (jw(nw, nw))
       !$acc enter data copyin(dp_w) create(jw)
-      call this%md%coulomb(nw, dp_w, jw, this%rank, this%nranks)
+      call this%md%coulomb(nw, dp_w, jw, this%rank, this%nranks, skeleton)
       !$acc update self(jw)
       !$acc exit data delete(dp_w, jw)
       ! jmat on the device; the fold symmetrises (jmat + jmat^T)/2, and J is
@@ -954,13 +973,7 @@ contains
       real(dp), allocatable :: dp_w(:, :), jp_w(:, :)
       integer :: nw
 
-      if (.not. this%md%built) then
-         if (this%dec%active) then
-            call this%md%build(this%pb, this%bins, this%thresh)
-         else
-            call this%md%build(b, this%bins, this%thresh)
-         end if
-      end if
+      call ensure_md(this, b)
       nw = this%nao_w
       allocate (dp_w(nw, nw), jp_w(nw, nw))
       if (this%dec%active) then
@@ -1370,7 +1383,7 @@ contains
          !$acc wait
          call profiler_stop("eri: bins (hgp/rys)")
          call profiler_start("eri: md exchange", nvtx_only=.true.)
-         call mdg_pass(this, b, work(:, :, :, 1), work(:, :, :, 2), jbins, kfac, ow)
+         call mdg_pass(this, b, work(:, :, :, 1), work(:, :, :, 2), jbins, kfac, ow, opts%skeleton)
          !$acc wait
          call profiler_stop("eri: md exchange")
       end if
@@ -1387,15 +1400,9 @@ contains
       ! already 0.5 (x + x) = x.
       call symmetrise_in_place_device(nw, work(:, :, :, 2))
       if (md_j) then
-         if (.not. this%md%built) then
-            if (this%dec%active) then
-               call this%md%build(this%pb, this%bins, this%thresh)
-            else
-               call this%md%build(b, this%bins, this%thresh)
-            end if
-         end if
+         call ensure_md(this, b)
          call profiler_start("eri: md J", nvtx_only=.true.)
-         call this%md%coulomb(nw, work(:, :, :, 1), work(:, :, :, 3), this%rank, this%nranks)
+         call this%md%coulomb(nw, work(:, :, :, 1), work(:, :, :, 3), this%rank, this%nranks, opts%skeleton)
          call profiler_stop("eri: md J")
          ! Each rank forms its share of J (trc_mdj splits the Hermite stage's
          ! ket chunks); sum_ranks totals them with the rest of the matrix.
