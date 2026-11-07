@@ -217,6 +217,34 @@ set_target_properties(check_sym_pairs_f PROPERTIES Fortran_MODULE_DIRECTORY
                       ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_pairs_f)
 set_tests_properties(terco/check_sym_pairs_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# The skeleton Fock build (S14.2): symmetrized skeleton G against the full G for
+# every enabled group, Cartesian and spherical, J/K/J+K, tiles on and off,
+# incremental, random and converged densities, pentacene/hexacene so the
+# exchange tiles cut, and the plan's quartet counts against the S13 prototype.
+# The quick variants rerun a small matrix under the engine routing (Rys / HGP),
+# an orbit-closed bin split (TRC_BIN_CAP) and the orbit-aware sort (TRC_BIN_SORT);
+# _f is the uncontracted l = 0..3 set (skipped below TERCO_LMAX=3).
+terco_add_check(check_sym_fock check_sym_fock.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_fock PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_fock PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_fock)
+foreach(_v hgp:TRC_RYS_CLASSES=none rys:TRC_RYS_CLASSES=all cap:TRC_BIN_CAP=40 sort:TRC_BIN_SORT=1)
+  string(REPLACE ":" ";" _p "${_v}")
+  list(GET _p 0 _n)
+  list(GET _p 1 _e)
+  terco_add_check(check_sym_fock_${_n} check_sym_fock.F90 NEEDS_BASIS ARGS quick)
+  target_link_libraries(check_sym_fock_${_n} PRIVATE test-drive::test-drive)
+  set_target_properties(check_sym_fock_${_n} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_fock_${_n})
+  set_tests_properties(terco/check_sym_fock_${_n} PROPERTIES ENVIRONMENT
+                       "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};${_e}")
+endforeach()
+terco_add_check(check_sym_fock_f check_sym_fock.F90 NEEDS_BASIS ARGS f)
+target_link_libraries(check_sym_fock_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_fock_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_fock_f)
+set_tests_properties(terco/check_sym_fock_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
 # Point group D2 (twisted ethylene and tetrafluoroethylene): detection and pyscf's
 # frame (x, y order), SALC block-diagonality, the central oracle (RHF, UHF,
 # B3LYP) and pyscf anchors (pyscf_refs/sym_d2.ref), the requested subgroup
