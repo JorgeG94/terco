@@ -6,9 +6,16 @@ module trc_sym_run
    !! only decides and parses, so the CLI, the Fortran API and the C ABI
    !! share one set of rules and one set of messages.
    !!
-   !! RULES. `off` (the default) never reaches the symmetry code. `auto` uses
+   !! RULES. `off` never reaches the symmetry code. `auto` uses
    !! the largest enabled subgroup of the detected group (`trc_sym_geom`
-   !! applies the cap). A named group must be the detected group or one of
+   !! applies the cap). `default` is `auto` asked for by nobody: the request
+   !! of a fresh C-ABI context and of a CLI run without `--symmetry` (S17).
+   !! It differs from an explicit `auto` in two ways: the results are
+   !! reported in the user's input frame, and a path the symmetric SCF does
+   !! not support runs in C1 instead of being refused (`by_default`). The
+   !! Fortran library entry `trc_scf_run` has no default: `sym` is absent
+   !! unless the caller passes it, and `trc_sym_request_t` itself starts at
+   !! `SYM_OFF`. A named group must be the detected group or one of
    !! its subgroups, else the run is refused. The caller passes the named
    !! group to `sym_detect(..., requested=)`, which reports it in pyscf's
    !! frame for that subgroup; a group the build does not
@@ -34,7 +41,7 @@ module trc_sym_run
    public :: sym_parse_request, sym_choose_group, sym_is_subgroup, sym_request_text
    public :: sym_parse_irrep_nelec, sym_aufbau_matches, sym_fixed_occupation, sym_occupied_counts
 
-   integer, parameter :: SYM_OFF = 0       !! no symmetry (the default)
+   integer, parameter :: SYM_OFF = 0       !! no symmetry
    integer, parameter :: SYM_AUTO = 1      !! the detected group, capped to what is enabled
    integer, parameter :: SYM_EXPLICIT = 2  !! a named group
 
@@ -45,6 +52,7 @@ module trc_sym_run
       real(dp) :: tol = SYM_DEFAULT_TOL  !! geometry tolerance, Bohr
       character(len=:), allocatable :: irrep_nelec  !! electrons per irrep, unparsed; absent = aufbau
       logical :: skeleton = .true.  !! the skeleton Fock build (trc_sym_scf_t%skeleton); false: full build, then symmetrize
+      logical :: by_default = .false.  !! `auto` nobody asked for (`default`): input-frame report, C1 fallback
    end type trc_sym_request_t
 
 contains
@@ -61,12 +69,13 @@ contains
    end function lower
 
    pure function sym_request_text(req) result(text)
-      !! The request as the user wrote it: "off", "auto" or the group name.
+      !! The request as the user wrote it: "off", "auto", "default" or the group name.
       type(trc_sym_request_t), intent(in) :: req
       character(len=:), allocatable :: text
       select case (req%mode)
       case (SYM_AUTO)
-         text = "auto"
+         text = merge("default", "auto   ", req%by_default)
+         text = trim(text)
       case (SYM_EXPLICIT)
          text = trim(req%group)
       case default
@@ -75,8 +84,9 @@ contains
    end function sym_request_text
 
    subroutine sym_parse_request(text, req, error)
-      !! `off`, `auto` or a group name (any case) into `req%mode`/`req%group`.
-      !! Leaves `req%tol` and `req%irrep_nelec` alone.
+      !! `off`, `auto`, `default` or a group name (any case) into
+      !! `req%mode`/`req%group`/`req%by_default`. Leaves `req%tol` and
+      !! `req%irrep_nelec` alone.
       character(len=*), intent(in) :: text
       type(trc_sym_request_t), intent(inout) :: req
       type(error_t), intent(out) :: error
@@ -84,6 +94,7 @@ contains
       character(len=:), allocatable :: t
 
       t = lower(trim(adjustl(text)))
+      req%by_default = .false.
       select case (t)
       case ("off", "none", "")
          req%mode = SYM_OFF
@@ -91,6 +102,10 @@ contains
       case ("auto")
          req%mode = SYM_AUTO
          req%group = "C1"
+      case ("default")
+         req%mode = SYM_AUTO
+         req%group = "C1"
+         req%by_default = .true.
       case default
          g = sym_group_from_name(t, error)
          if (error%has_error()) then

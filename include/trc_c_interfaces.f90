@@ -35,7 +35,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 23
+   integer(c_int), parameter :: TRC_ABI_MINOR = 24
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -1530,7 +1530,9 @@ module trc_c_interfaces
       end function trc_iterations
 
       integer(c_int) function trc_density(handle, dmat) bind(c) result(res)
-         !! (nao, nao, nspin), column-major; restricted holds the total.
+         !! (nao, nao, nspin), column-major; restricted holds the total. After a
+         !! symmetric run reported in the input frame, rotated back exactly
+         !! (D_in = D D_std D^T, trc_sym_frame).
          !!
          !! CONTRAVARIANT under trc_set_ao_norm: D_out = N^-1 D_terco N^-1 per
          !! spin slice when UNIT. Scaled on a COPY -- `cx%res%dmat` itself
@@ -1641,6 +1643,9 @@ module trc_c_interfaces
       end function trc_fukui_hirshfeld
 
       integer(c_int) function trc_mo_coefficients(handle, cmo) bind(c) result(res)
+         !! After a symmetric run reported in the input frame the orbitals are
+         !! rotated back exactly (C_in = D C_std, trc_sym_frame).
+         !!
          !! CONTRAVARIANT under trc_set_ao_norm, on the AO (row) index only:
          !! C_out = N^-1 C_terco per spin slice when UNIT -- see trc_density
          !! for why this scales a copy, not `cx%res%cmo` itself.
@@ -1666,17 +1671,24 @@ module trc_c_interfaces
       end function trc_rimp2_energy
 
       integer(c_int) function trc_set_symmetry(handle, group, tol) bind(c) result(res)
-         !! Point-group symmetry for the SCF: "off" (the default), "auto" (the
-         !! largest Abelian group of the molecule, D2h or a subgroup; symmetric
-         !! and spherical tops and linear molecules run in C1 for now),
-         !! or a group name, which must be the detected group or a subgroup of it
-         !! (else trc_run_scf refuses). `tol` is the geometry tolerance in Bohr,
-         !! or 0 for the default (1e-5). With a group other than C1, trc_run_scf
-         !! moves the molecule to the symmetrised, oriented standard frame
-         !! (trc_geometry returns it) and runs the SCF, and any gradient, there.
-         !! Refused at the run, not here: density fitting, PCM, fractional
-         !! occupations, SOSCF, more than one rank, a given or projected guess,
-         !! RI-MP2, CPHF/CPKS, the Hessian, Fukui indices and restarts.
+         !! Point-group symmetry for the SCF. A fresh context has the DEFAULT
+         !! request ("default", ABI 1.24): "auto" whose results are reported in
+         !! the caller's input frame and which runs in C1, with one log line,
+         !! where the symmetric SCF is not supported. "off" never uses symmetry.
+         !! "auto" asks for it explicitly: the largest Abelian group of the
+         !! molecule, D2h or a subgroup (symmetric and spherical tops and linear
+         !! molecules run in C1 for now); a group name must be the detected group
+         !! or a subgroup of it (else trc_run_scf refuses). `tol` is the geometry
+         !! tolerance in Bohr, or 0 for the default (1e-5). With a group other
+         !! than C1, trc_run_scf moves the molecule to the symmetrised, oriented
+         !! standard frame and runs the SCF, and any gradient, there; trc_geometry,
+         !! trc_gradient, trc_mo_coefficients, trc_density and the borrowed
+         !! handles report that frame for an explicit request and the input frame
+         !! for the default one (trc_set_symmetry_report_frame overrides).
+         !! An explicit request is refused at the run, not here, for: density
+         !! fitting, PCM, fractional occupations, SOSCF, more than one rank, a
+         !! given or projected guess, RI-MP2, CPHF/CPKS, the Hessian, Fukui
+         !! indices and restarts; the default request falls back to C1 there.
          import :: c_char, c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
@@ -1697,6 +1709,32 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
          integer(c_int), value :: on
       end function trc_set_symmetry_skeleton
+
+      integer(c_int) function trc_set_symmetry_report_frame(handle, frame) bind(c) result(res)
+         !! The frame a symmetric run reports in: the geometry (trc_geometry), the
+         !! gradient, the orbitals, the density and the borrowed basis/ERI handles
+         !! (trc_context_basis/eri). 1 = the caller's input frame (the molecule
+         !! symmetrised in it), 0 = the group's standard frame, -1 = the default:
+         !! the input frame when the symmetry request is the default one, the
+         !! standard frame when trc_set_symmetry asked for it. Energies, orbital
+         !! energies, irrep labels, occupations and atomic charges do not depend
+         !! on it.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: frame
+      end function trc_set_symmetry_report_frame
+
+      integer(c_int) function trc_symmetry_report_frame(handle, frame) bind(c) result(res)
+         !! The frame the getters return now: 1 = the caller's input frame (every
+         !! run without symmetry, and a symmetric run reported in it), 0 = the
+         !! standard frame of the group the last run used. TRC_ERR_STATE before
+         !! a successful run.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: frame
+      end function trc_symmetry_report_frame
 
       integer(c_int) function trc_set_irrep_nelec(handle, spec) bind(c) result(res)
          !! Fix the electrons per irrep, as pyscf's irrep_nelec: "A'=6,A\"=2" for
@@ -1795,7 +1833,10 @@ module trc_c_interfaces
 
       integer(c_int) function trc_geometry(handle, xyz) bind(c) result(res)
          !! The geometry the context holds now, atom-major Bohr (3*natm): the
-         !! input unless a symmetric run moved it to the standard frame.
+         !! input, or after a symmetric run the symmetrised geometry in the
+         !! frame the results are reported in (trc_symmetry_report_frame): the
+         !! caller's input frame by default, the group's standard frame under an
+         !! explicit trc_set_symmetry request.
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
@@ -1814,6 +1855,12 @@ module trc_c_interfaces
       integer(c_int) function trc_context_basis(handle, basis) bind(c) result(res)
          !! The basis handle inside the context: BORROWED, never destroyed by
          !! the caller, valid until the context is destroyed or the basis reset.
+         !! After a symmetric run whose results are reported in the input frame
+         !! (the default request) it is a copy of the basis on the input-frame
+         !! centres, so that it goes with trc_density, trc_mo_coefficients and
+         !! trc_geometry; it is rebuilt after the geometry changes. A handle
+         !! borrowed BEFORE such a run is the context's own basis, whose centres
+         !! the run moved to the standard frame.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle

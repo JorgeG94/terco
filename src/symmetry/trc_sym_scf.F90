@@ -54,6 +54,11 @@ module trc_sym_scf
 
    type :: trc_sym_scf_t
       type(trc_sym_ao_t) :: ao  !! AO maps, signs and SO basis: set by the caller
+      logical :: decline_lindep = .false.
+      !! Decline (`trc_scf_result_t%sym_declined`) instead of running when canonical
+      !! orthogonalisation drops functions: the per-irrep drop can differ from the
+      !! C1 one (see above), and a request nobody made explicitly (the default of
+      !! S17) must give the C1 numbers. Read by `trc_scf_run`.
       logical :: skeleton = .true.
       !! The Fock build is the SKELETON build (docs/SYMMETRY_FOCK.md): the
       !! integral engine is built with the point group, launches only the

@@ -80,7 +80,8 @@ contains
    subroutine add_symmetry(json, root, r)
       !! The "symmetry" object, only when a symmetry request ran: groups, the
       !! symmetrisation residual, and for a group of more than one operation the
-      !! frame, the geometry the SCF ran on (the standard frame, Angstrom, which
+      !! frame, the geometry (Angstrom; the input symmetrised in the input frame
+      !! for the default request, else the standard frame the SCF ran on, which
       !! is also the frame of the gradient and the orbitals), the irreps with their
       !! SO dimensions and occupied orbitals, and each orbital's irrep.
       type(json_core), intent(inout) :: json
@@ -98,7 +99,12 @@ contains
       call json%add(sobj, "group", trim(r%sym_used))
       call json%add(sobj, "residual", r%sym_residual)
       if (r%sym_active) then
-         call json%add(sobj, "frame", "standard: the geometry, gradient and orbitals of this run are in it")
+         if (r%sym_input_frame) then
+            call json%add(sobj, "frame", "input: the geometry (the input symmetrised in it) and the gradient of this "// &
+                          "run are in your input frame; frame rotation and frame origin map it to the standard frame")
+         else
+            call json%add(sobj, "frame", "standard: the geometry, gradient and orbitals of this run are in it")
+         end if
          call json%create_array(rows, "frame rotation")
          do ia = 1, 3
             call json%add(rows, "", r%sym_rot(ia, :))

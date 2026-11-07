@@ -275,6 +275,9 @@ module trc_scf_settings
       integer :: n_increments = 0
       !! Fock builds taken from the density difference (trc_scf_incremental);
       !! the rest of `iterations` were full builds, the last one always.
+      logical :: sym_declined = .false.
+      !! The symmetric run was not made: `sym%decline_lindep` and functions were
+      !! dropped (`message` says so, `iterations` is 0). The caller runs in C1.
       integer :: n_lindep = 0
       !! Functions dropped by canonical orthogonalisation: S eigenvalues
       !! below `opts%lindep_thresh`. 0 for every compact basis; see

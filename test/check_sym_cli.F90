@@ -20,8 +20,20 @@
 ! live on the rank that ran the SCF); that path needs a multi-rank build and
 ! is covered by the code review, not by this check.
 !
-! Symmetry off is unchanged: a run without the flag prints nothing about
-! symmetry and its output is the output of `--symmetry off`, timings aside.
+! Symmetry off is unchanged: `--symmetry off` prints nothing about symmetry.
+!
+! S17 (symmetry on by default): a run without the flag is `--symmetry default`.
+! It reports in the input frame (the geometry input symmetrised, the gradient
+! rotated back), gives the `--symmetry off` energy and gradient (water and an
+! open-shell NO2, axis-aligned and rotated; benzene rotated; HF and B3LYP),
+! says which frame its results are in with one line, prints one line only for
+! a molecule without symmetry, and runs the paths the symmetric SCF does not
+! support in C1 with exactly the old output and one line saying why. An
+! explicit `--symmetry auto` keeps the standard frame and the refusals (the
+! cases above, unchanged). The tests that assumed `off` was the default were
+! changed: test_off_unchanged (now about the explicit `off`),
+! test_skeleton_flag and test_irrep_nelec_bad (a bare --no-sym-skeleton is now
+! valid, a bare --irrep-nelec means an explicit auto).
 !
 ! A test-drive suite; its cases run in order (`parallel=.false.`), as the
 ! other CLI checks do.
@@ -54,7 +66,17 @@ contains
          new_unittest("HOCl symmetry=auto: group, labels, energy vs pyscf and vs C1", test_hocl_auto), &
          new_unittest("symmetry=auto gradient equals the C1 gradient on the same geometry", test_gradient), &
          new_unittest("the report says the coordinates are in the standard frame", test_report), &
-         new_unittest("symmetry=off is the output of no flag, and prints nothing new", test_off_unchanged), &
+         new_unittest("symmetry=off prints nothing about symmetry and writes no symmetry block", test_off_unchanged), &
+         new_unittest("default: energy, gradient and geometry equal --symmetry off, in the input frame", &
+                      test_default_matches_off), &
+         new_unittest("default: DFT energy and gradient equal --symmetry off", test_default_dft), &
+         new_unittest("default: one line says the results are in the input frame; explicit auto says standard", &
+                      test_default_report), &
+         new_unittest("default on a molecule without symmetry: the output of off, apart from one line", &
+                      test_default_c1_unchanged), &
+         new_unittest("default: the unsupported paths run in C1 with one line and the old numbers", &
+                      test_default_fallbacks), &
+         new_unittest("default: --irrep-nelec is an explicit auto; the input echo says default", test_default_inputs), &
          new_unittest("TOML: symmetry keys give the flags' numbers and are echoed", test_toml), &
          new_unittest("TOML: a wrongly typed symmetry key is refused", test_toml_type), &
          new_unittest("--no-sym-skeleton: the same energy; needs --symmetry; the TOML key matches", test_skeleton_flag), &
@@ -182,6 +204,8 @@ contains
       call check(error, rc == 0, "the run failed")
       if (allocated(error)) return
       text = slurp(work_dir//'/rep.out')
+      call check(error, index(text, 'INPUT frame') == 0, "an explicit auto must not claim the input frame")
+      if (allocated(error)) return
       call check(error, index(text, 'requested auto, detected Cs, used Cs') > 0, "the groups are not reported")
       if (allocated(error)) return
       call check(error, index(text, 'STANDARD FRAME') > 0, "the output does not say the coordinates are in the standard frame")
@@ -196,34 +220,28 @@ contains
    end subroutine test_report
 
    subroutine test_off_unchanged(error)
+      !! `--symmetry off` is the path symmetry never reaches: no word about
+      !! symmetry in the output, no block in --json. (Before S17 this test
+      !! compared a run without the flag with `off`; a plain run is now the
+      !! default request, tested below.)
       type(error_type), allocatable, intent(out) :: error
-      character(len=:), allocatable :: plain, off, jplain
+      character(len=:), allocatable :: off, jplain
       integer :: rc
       type(json_file) :: json
       logical :: found
 
       call setup()
-      call run_cli('hocl.xyz'//BASIS//' --grad --silent --json '//work_dir//'/plain.json > '//work_dir//'/plain.out 2>&1', rc)
-      call check(error, rc == 0, "the plain run failed")
-      if (allocated(error)) return
-      call run_cli('hocl.xyz'//BASIS//' --grad --silent --symmetry off --json '//work_dir//'/off.json > '//work_dir//'/off.out 2>&1', rc)
+      call run_cli('hocl.xyz'//BASIS//' --grad --symmetry off --json '//work_dir//'/off.json > '//work_dir//'/off.out 2>&1', rc)
       call check(error, rc == 0, "the --symmetry off run failed")
       if (allocated(error)) return
-      plain = stable_text(work_dir//'/plain.out')
       off = stable_text(work_dir//'/off.out')
-      ! The banner of an explicit `off` has no extra line either: same lines,
-      ! same words. Numbers only to accumulation-order noise: under OpenMP
-      ! two identical runs print the energy components differently in the
-      ! 12th decimal (measured +-2e-12 Eh over 8 runs at 4 threads).
-      call check(error, same_text_to_noise(plain, off, 1.0e-9_dp), "--symmetry off changed the output")
-      if (allocated(error)) return
-      call check(error, index(plain, 'symmetry') == 0 .and. index(plain, 'STANDARD FRAME') == 0 .and. &
-                 index(plain, 'irrep') == 0, "a run without symmetry mentions symmetry")
+      call check(error, index(off, 'symmetry') == 0 .and. index(off, 'STANDARD FRAME') == 0 .and. &
+                 index(off, 'INPUT frame') == 0 .and. index(off, 'irrep') == 0, "a run with symmetry off mentions symmetry")
       if (allocated(error)) return
       call json%initialize()
-      call json%load(filename=work_dir//'/plain.json')
+      call json%load(filename=work_dir//'/off.json')
       call json%get('symmetry.group', jplain, found)
-      call check(error, .not. found, "a run without symmetry writes a symmetry block to --json")
+      call check(error, .not. found, "a run with symmetry off writes a symmetry block to --json")
       call json%destroy()
    end subroutine test_off_unchanged
 
@@ -325,7 +343,11 @@ contains
       call check(error, abs(e_on - e_off) < 1.0e-9_dp, "--no-sym-skeleton changed the energy by "// &
                  to_string(abs(e_on - e_off), 'es10.2'))
       if (allocated(error)) return
-      call refused('hocl.xyz'//BASIS//' --no-sym-skeleton', 'need --symmetry', error)
+      ! Symmetry is on by default, so a bare --no-sym-skeleton is valid (the
+      ! default request builds the full Fock matrix); it needs symmetry to be on.
+      call setup_run_ok('hocl.xyz'//BASIS//' --no-sym-skeleton --silent', error)
+      if (allocated(error)) return
+      call refused('hocl.xyz'//BASIS//' --symmetry off --no-sym-skeleton', 'need symmetry', error)
       if (allocated(error)) return
       call refused('hocl.xyz'//BASIS//' --symmetry auto --sym-skeleton --no-sym-skeleton', 'contradict', error)
       if (allocated(error)) return
@@ -467,7 +489,7 @@ contains
       if (allocated(error)) return
       call refused('hocl.xyz'//BASIS//' --symmetry auto --irrep-nelec "A'//"'"//'20"', 'is not LABEL=ELECTRONS', error)
       if (allocated(error)) return
-      call refused('hocl.xyz'//BASIS//' --irrep-nelec "A'//"'"//'=20,A\"=6"', 'needs --symmetry', error)
+      call refused('hocl.xyz'//BASIS//' --symmetry off --irrep-nelec "A'//"'"//'=20,A\"=6"', 'needs --symmetry', error)
       if (allocated(error)) return
       call refused('hocl.xyz'//BASIS//' --symmetry auto --symmetry-tol=-1', 'must be positive', error)
    end subroutine test_irrep_nelec_bad
@@ -502,6 +524,296 @@ contains
       if (allocated(error)) return
       call refused(B//' --restart none.scf', '--symmetry is not supported with --restart', error)
    end subroutine test_path_refusals
+
+   ! ---- S17: symmetry on by default -------------------------------------
+
+   subroutine default_vs_off(xyz, args, etol, gtol, group, error)
+      !! A run without --symmetry against `--symmetry off`, same molecule and
+      !! settings: the energy to `etol`, the gradient to `gtol`, the group the
+      !! default found, the frame it reports (input), and the geometry it
+      !! reports against the input file (within the residual it states).
+      character(len=*), intent(in) :: xyz, args, group
+      real(dp), intent(in) :: etol, gtol
+      type(error_type), allocatable, intent(out) :: error
+      type(json_file) :: json
+      character(len=:), allocatable :: sval
+      real(dp), allocatable :: gd(:), go(:), row(:), xin(:, :)
+      real(dp) :: ed, eo, resid, dev
+      integer :: rc, ia, nat
+      logical :: found
+
+      call setup()
+      call run_cli(xyz//' '//args//' --grad --silent --econv 1e-12 --gconv 1e-10 --json '//work_dir//'/d.json > '// &
+                   work_dir//'/d.out 2>&1', rc)
+      call check(error, rc == 0, "the default run failed: "//xyz//new_line('a')//slurp(work_dir//'/d.out'))
+      if (allocated(error)) return
+      call run_cli(xyz//' '//args//' --symmetry off --grad --silent --econv 1e-12 --gconv 1e-10 --json '//work_dir// &
+                   '/o.json > '//work_dir//'/o.out 2>&1', rc)
+      call check(error, rc == 0, "the --symmetry off run failed: "//xyz)
+      if (allocated(error)) return
+      call read_gradient_n(work_dir//'/d.json', nat, ed, gd, error)
+      if (allocated(error)) return
+      call read_gradient_n(work_dir//'/o.json', nat, eo, go, error)
+      if (allocated(error)) return
+      print '(a,a,a,es10.2,a,es10.2)', '  ', xyz, ': |dE| ', abs(ed - eo), '   max|dg| ', maxval(abs(gd - go))
+      call check(error, abs(ed - eo) <= etol, xyz//": |E(default) - E(off)| = "//to_string(abs(ed - eo), 'es10.2'))
+      if (allocated(error)) return
+      call check(error, maxval(abs(gd - go)) <= gtol, xyz//": gradient (input frame) differs from off by "// &
+                 to_string(maxval(abs(gd - go)), 'es10.2'))
+      if (allocated(error)) return
+      call json%initialize()
+      call json%load(filename=work_dir//'/d.json')
+      call json%get('symmetry.group', sval, found)
+      call check(error, found .and. sval == group, xyz//": the default should have used "//group)
+      if (allocated(error)) then
+         call json%destroy()
+         return
+      end if
+      call json%get('symmetry.frame', sval, found)
+      call check(error, found .and. sval(1:5) == 'input', xyz//": the JSON frame should say input")
+      if (allocated(error)) then
+         call json%destroy()
+         return
+      end if
+      call json%get('symmetry.residual', resid, found)
+      call check(error, found .and. resid < 1.0e-5_dp, xyz//": residual should be below the symmetry tolerance")
+      ! The reported geometry is the input, symmetrised in the input frame: it
+      ! differs from the input file by no more than the residual (Bohr).
+      call read_xyz_angstrom(xyz, nat, xin)
+      dev = 0.0_dp
+      do ia = 1, nat
+         call json%get('symmetry.geometry('//to_string(ia)//')', row, found)
+         if (.not. found) then
+            call json%destroy()
+            call test_failed(error, 'no symmetry.geometry row '//to_string(ia))
+            return
+         end if
+         dev = max(dev, maxval(abs(row - xin(:, ia))))
+      end do
+      call json%destroy()
+      print '(a,es10.2,a,es10.2,a)', '     reported geometry vs input file ', dev/0.529177210903_dp, ' Bohr, residual ', resid, ' Bohr'
+      call check(error, dev/0.529177210903_dp <= resid*(1.0_dp + 1.0e-6_dp) + 1.0e-8_dp, &
+                 xyz//": the reported geometry is not the input frame's: deviation "// &
+                 to_string(dev/0.529177210903_dp, 'es10.2')//" Bohr, residual "//to_string(resid, 'es10.2'))
+   end subroutine default_vs_off
+
+   subroutine test_default_matches_off(error)
+      !! HF: water in two orientations, an open-shell C2v radical (NO2, UHF) in
+      !! two, benzene rotated. Gates: the project's 1e-10 (energy) and 1e-9 (gradient).
+      type(error_type), allocatable, intent(out) :: error
+      call default_vs_off('water.xyz', '-b basis_sets/cc-pvdz.json', TOL_E_HF, TOL_G, 'C2v', error)
+      if (allocated(error)) return
+      call default_vs_off('water_rot.xyz', '-b basis_sets/cc-pvdz.json', TOL_E_HF, TOL_G, 'C2v', error)
+      if (allocated(error)) return
+      call default_vs_off('no2.xyz', '-b basis_sets/cc-pvdz.json --uhf 1', TOL_E_HF, TOL_G, 'C2v', error)
+      if (allocated(error)) return
+      call default_vs_off('no2_rot.xyz', '-b basis_sets/cc-pvdz.json --uhf 1', TOL_E_HF, TOL_G, 'C2v', error)
+      if (allocated(error)) return
+      call default_vs_off('benzene_rot.xyz', '-b basis_sets/sto-3g.json', TOL_E_HF, TOL_G, 'D2h', error)
+   end subroutine test_default_matches_off
+
+   subroutine test_default_dft(error)
+      !! B3LYP on the axis-aligned inputs, where the standard frame is the
+      !! input frame and the integration grid is the same grid: 1e-9 Eh. (On a
+      !! rotated input the grid follows the standard frame and a DFT energy
+      !! moves with the grid's orientation; see the stage report.)
+      type(error_type), allocatable, intent(out) :: error
+      call default_vs_off('water.xyz', '-b basis_sets/cc-pvdz.json --func b3lyp', 1.0e-9_dp, TOL_G, 'C2v', error)
+      if (allocated(error)) return
+      call default_vs_off('no2.xyz', '-b basis_sets/cc-pvdz.json --uhf 1 --func b3lyp', 1.0e-9_dp, TOL_G, 'C2v', error)
+   end subroutine test_default_dft
+
+   subroutine test_default_report(error)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=:), allocatable :: text
+      integer :: rc
+
+      call setup()
+      call run_cli('water_rot.xyz -b basis_sets/sto-3g.json --grad > '//work_dir//'/dr.out 2>&1', rc)
+      call check(error, rc == 0, "the default run failed")
+      if (allocated(error)) return
+      text = slurp(work_dir//'/dr.out')
+      call check(error, index(text, 'results are in your INPUT frame') > 0, "the default run does not say its frame")
+      if (allocated(error)) return
+      call check(error, index(text, 'STANDARD FRAME') == 0, "the default run claims the standard frame")
+      if (allocated(error)) return
+      call check(error, index(text, 'geometry, input frame, symmetrised (Angstrom)') > 0, "no input-frame geometry")
+      if (allocated(error)) return
+      call check(error, index(text, 'largest atom displacement') > 0, "the symmetrisation residual is not stated")
+      if (allocated(error)) return
+      call check(error, index(text, 'symmetry         : default (auto, reported in the input frame)') > 0, &
+                 "the settings do not say the symmetry request is the default")
+      if (allocated(error)) return
+      call run_cli('water_rot.xyz -b basis_sets/sto-3g.json --grad --symmetry auto > '//work_dir//'/er.out 2>&1', rc)
+      call check(error, rc == 0, "the explicit run failed")
+      if (allocated(error)) return
+      text = slurp(work_dir//'/er.out')
+      call check(error, index(text, 'STANDARD FRAME') > 0 .and. index(text, 'INPUT frame') == 0, &
+                 "an explicit auto should stay in the standard frame")
+   end subroutine test_default_report
+
+   subroutine test_default_c1_unchanged(error)
+      !! A molecule with no symmetry: the output is that of `--symmetry off`
+      !! apart from the one settings line the default adds (--silent, as the
+      !! original off test compared: no iteration timings), and --json has no
+      !! symmetry block.
+      type(error_type), allocatable, intent(out) :: error
+      character(len=:), allocatable :: d, o, jg
+      type(json_file) :: json
+      logical :: found
+      integer :: rc
+
+      call setup()
+      call run_cli('chfcln_c1.xyz -b basis_sets/cc-pvdz.json --grad > '//work_dir//'/c1v.out 2>&1', rc)
+      call check(error, rc == 0, "the default run failed:"//new_line('a')//slurp(work_dir//'/c1v.out'))
+      if (allocated(error)) return
+      call check(error, index(slurp(work_dir//'/c1v.out'), 'symmetry         : default (auto') > 0, &
+                 "the default run should say its request in one line")
+      if (allocated(error)) return
+      call run_cli('chfcln_c1.xyz -b basis_sets/cc-pvdz.json --grad --silent --json '//work_dir//'/c1d.json > '// &
+                   work_dir//'/c1d.out 2>&1', rc)
+      call check(error, rc == 0, "the silent default run failed")
+      if (allocated(error)) return
+      call run_cli('chfcln_c1.xyz -b basis_sets/cc-pvdz.json --grad --silent --symmetry off --json '//work_dir// &
+                   '/c1o.json > '//work_dir//'/c1o.out 2>&1', rc)
+      call check(error, rc == 0, "the off run failed")
+      if (allocated(error)) return
+      d = stable_text(work_dir//'/c1d.out', drop='symmetry         :')
+      o = stable_text(work_dir//'/c1o.out')
+      call check(error, same_text_to_noise(d, o, 1.0e-9_dp), "the default run on a C1 molecule changed the output")
+      if (allocated(error)) return
+      call check(error, index(d, 'irrep') == 0 .and. index(d, 'STANDARD') == 0 .and. index(d, 'frame') == 0, &
+                 "a C1 molecule reports symmetry details")
+      if (allocated(error)) return
+      call json%initialize()
+      call json%load(filename=work_dir//'/c1d.json')
+      call json%get('symmetry.group', jg, found)
+      call json%destroy()
+      call check(error, .not. found, "a C1 molecule writes a symmetry block to --json")
+   end subroutine test_default_c1_unchanged
+
+   subroutine fallback_case(args, option, error)
+      !! `args` with no --symmetry: runs, logs the one line naming `option`
+      !! (a verbose run), and with --silent is the output of `--symmetry off`
+      !! (same lines, numbers to noise).
+      character(len=*), intent(in) :: args, option
+      type(error_type), allocatable, intent(out) :: error
+      character(len=:), allocatable :: d, o, text
+      real(dp) :: ed, eo
+      integer :: rc
+
+      call setup()
+      call run_cli(args//' > '//work_dir//'/fv.out 2>&1', rc)
+      call check(error, rc == 0, "the default run failed: "//args//new_line('a')//slurp(work_dir//'/fv.out'))
+      if (allocated(error)) return
+      text = slurp(work_dir//'/fv.out')
+      call check(error, index(text, 'default (auto), but '//option) > 0 .and. &
+                 index(text, ' is not supported with symmetry yet: running in C1') > 0, &
+                 "no line naming "//option//" for: "//args//new_line('a')//text)
+      if (allocated(error)) return
+      call check(error, index(text, 'irrep') == 0 .and. index(text, 'frame') == 0, "a C1 fallback reports symmetry details")
+      if (allocated(error)) return
+      call run_cli(args//' --silent --json '//work_dir//'/fd.json > '//work_dir//'/fd.out 2>&1', rc)
+      call check(error, rc == 0, "the silent default run failed: "//args)
+      if (allocated(error)) return
+      call run_cli(args//' --silent --symmetry off --json '//work_dir//'/fo.json > '//work_dir//'/fo.out 2>&1', rc)
+      call check(error, rc == 0, "the off run failed: "//args)
+      if (allocated(error)) return
+      d = stable_text(work_dir//'/fd.out', drop='symmetry         :')
+      o = stable_text(work_dir//'/fo.out')
+      call check(error, same_text_to_noise(d, o, 1.0e-9_dp), "the fallback run is not the old C1 output for: "//args)
+      if (allocated(error)) return
+      ed = energy_of(work_dir//'/fd.json')
+      eo = energy_of(work_dir//'/fo.json')
+      print '(a,a,a,es10.2)', '  ', option, ': |E(default) - E(off)| ', abs(ed - eo)
+      call check(error, abs(ed - eo) < 1.0e-11_dp, "fallback energy differs from off: "//to_string(abs(ed - eo), 'es10.2'))
+   end subroutine fallback_case
+
+   subroutine test_default_fallbacks(error)
+      !! Each path S5 refuses under an explicit request, without one. (Their
+      !! refusal under `--symmetry auto` is test_path_refusals above.)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=*), parameter :: W = 'water.xyz -b basis_sets/cc-pvdz.json --econv 1e-10 --gconv 1e-8'
+      integer :: rc
+      call fallback_case(W//' --hessian', '--hessian', error)
+      if (allocated(error)) return
+      call fallback_case(W//' --rimp2 --aux basis_sets/cc-pvdz-rifit.json', '--rimp2', error)
+      if (allocated(error)) return
+      call fallback_case(W//' --func b2plyp --aux basis_sets/cc-pvdz-rifit.json', '--rimp2', error)
+      if (allocated(error)) return
+      call fallback_case('water.xyz -b basis_sets/6-31gs.json --df --jkfit basis_sets/def2-universal-jkfit.json --cart', &
+                         '--df', error)
+      if (allocated(error)) return
+      call fallback_case(W//' --pcm cpcm --eps 78.4', '--pcm', error)
+      if (allocated(error)) return
+      call fallback_case(W//' --soscf', '--soscf', error)
+      if (allocated(error)) return
+      call fallback_case(W//' --fukui hirshfeld', '--fukui', error)
+      if (allocated(error)) return
+      ! --restart: the file is written by a run with symmetry off, read back by the default
+      call run_cli(W//' --symmetry off --save-scf '//work_dir//'/fb.scf --silent > '//work_dir//'/fb0.out 2>&1', rc)
+      call check(error, rc == 0, "--save-scf failed")
+      if (allocated(error)) return
+      call fallback_case(W//' --restart '//work_dir//'/fb.scf', '--restart', error)
+      if (allocated(error)) return
+      ! --opt needs DL-FIND; a build without it says so and the case is skipped
+      call run_cli(W//' --opt > '//work_dir//'/fbopt.out 2>&1', rc)
+      if (index(slurp(work_dir//'/fbopt.out'), 'libdlfind') > 0 .and. rc /= 0) then
+         print '(a)', '  --opt: no DL-FIND in this build, case skipped'
+         return
+      end if
+      call check(error, rc == 0, "the default --opt run failed:"//new_line('a')//slurp(work_dir//'/fbopt.out'))
+      if (allocated(error)) return
+      call check(error, index(slurp(work_dir//'/fbopt.out'), 'default (auto), but --opt') > 0, "no line naming --opt")
+   end subroutine test_default_fallbacks
+
+   subroutine test_default_inputs(error)
+      !! --irrep-nelec without --symmetry is an explicit auto (standard frame,
+      !! refusals); the input echo of a plain run says `default`, a file's
+      !! `off` runs without symmetry.
+      type(error_type), allocatable, intent(out) :: error
+      type(json_file) :: json
+      character(len=:), allocatable :: sval, text
+      logical :: found
+      integer :: rc
+
+      call setup()
+      call run_cli('hocl.xyz'//BASIS//' --irrep-nelec "A'//"'"//'=20,A\"=6"'//' --econv 1e-10 > '//work_dir//'/ir.out 2>&1', rc)
+      call check(error, rc == 0, "a bare --irrep-nelec failed:"//new_line('a')//slurp(work_dir//'/ir.out'))
+      if (allocated(error)) return
+      text = slurp(work_dir//'/ir.out')
+      call check(error, index(text, 'STANDARD FRAME') > 0 .and. index(text, 'requested auto') > 0, &
+                 "--irrep-nelec alone should be an explicit auto")
+      if (allocated(error)) return
+      call run_cli('hocl.xyz'//BASIS//' --silent --json '//work_dir//'/echo.json > '//work_dir//'/echo.out 2>&1', rc)
+      call check(error, rc == 0, "the plain run failed")
+      if (allocated(error)) return
+      call json%initialize()
+      call json%load(filename=work_dir//'/echo.json')
+      call json%get('input.scf.symmetry', sval, found)
+      call check(error, found .and. sval == 'default', "input.scf.symmetry of a plain run should echo default")
+      if (allocated(error)) then
+         call json%destroy()
+         return
+      end if
+      call json%get('symmetry.requested', sval, found)
+      call json%destroy()
+      call check(error, found .and. sval == 'default', "symmetry.requested of a plain run should be default")
+      if (allocated(error)) return
+      call write_toml(work_dir//'/case/off.toml', [character(len=96) :: &
+                      '[molecule]', 'geometry = "hocl.xyz"', '[basis]', 'main = "basis_sets/cc-pvdz.json"', &
+                      '[scf]', 'symmetry = "off"', '[output]', 'json = "offt.json"', 'silent = true'])
+      call run_cli_raw('cd '//work_dir//' && '//cli_exe//' case/off.toml > offt.out 2>&1', rc)
+      call check(error, rc == 0, "the TOML off run failed")
+      if (allocated(error)) return
+      call json%initialize()
+      call json%load(filename=work_dir//'/case/offt.json')
+      call json%get('symmetry.group', sval, found)
+      call check(error, .not. found, "symmetry = off in a file still ran symmetry")
+      call json%get('input.scf.symmetry', sval, found)
+      call json%destroy()
+      call check(error, found .and. sval == 'off', "input.scf.symmetry should echo the file's off")
+   end subroutine test_default_inputs
 
    ! ---- helpers ---------------------------------------------------------
 
@@ -617,6 +929,50 @@ contains
       call json%destroy()
    end subroutine read_gradient
 
+   subroutine read_gradient_n(path, nat, energy, gradient, error)
+      !! As read_gradient, for any atom count (the rows of "gradient").
+      character(len=*), intent(in) :: path
+      integer, intent(out) :: nat
+      real(dp), intent(out) :: energy
+      real(dp), allocatable, intent(out) :: gradient(:)
+      type(error_type), allocatable, intent(out) :: error
+      type(json_file) :: json
+      logical :: found
+      real(dp), allocatable :: row(:)
+      integer :: ia
+
+      call json%initialize()
+      call json%load(filename=path)
+      call json%get('total energy', energy, found)
+      allocate (gradient(0))
+      ia = 0
+      do
+         call json%get('gradient('//to_string(ia + 1)//')', row, found)
+         if (.not. found) exit
+         gradient = [gradient, row]
+         ia = ia + 1
+      end do
+      nat = ia
+      call json%destroy()
+      if (nat == 0) call test_failed(error, 'no gradient rows in '//path)
+   end subroutine read_gradient_n
+
+   subroutine read_xyz_angstrom(path, nat, xyz)
+      character(len=*), intent(in) :: path
+      integer, intent(out) :: nat
+      real(dp), allocatable, intent(out) :: xyz(:, :)
+      character(len=8) :: sym
+      integer :: u, ia
+      open (newunit=u, file=path, status='old', action='read')
+      read (u, *) nat
+      read (u, *)
+      allocate (xyz(3, nat))
+      do ia = 1, nat
+         read (u, *) sym, xyz(:, ia)
+      end do
+      close (u)
+   end subroutine read_xyz_angstrom
+
    function energy_of(path) result(e)
       character(len=*), intent(in) :: path
       real(dp) :: e
@@ -654,10 +1010,11 @@ contains
       close (u)
    end function slurp
 
-   function stable_text(path) result(text)
+   function stable_text(path, drop) result(text)
       !! A CLI output without the lines that change from run to run: the wall
-      !! clock and the timing table.
+      !! clock and the timing table, and the lines containing `drop`.
       character(len=*), intent(in) :: path
+      character(len=*), intent(in), optional :: drop
       character(len=:), allocatable :: text
       character(len=1024) :: line
       integer :: u, ios
@@ -668,6 +1025,10 @@ contains
          read (u, '(a)', iostat=ios) line
          if (ios /= 0) exit
          if (index(line, 'wall time') > 0 .or. index(line, '(s)') > 0) cycle
+         if (index(line, 'trc_run_hessian: ') == 1) cycle   ! per-displacement seconds
+         if (present(drop)) then
+            if (index(line, drop) > 0) cycle
+         end if
          text = text//trim(line)//new_line('a')
       end do
       close (u)

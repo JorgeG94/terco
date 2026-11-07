@@ -1,5 +1,6 @@
 !
-! The symmetry entries of the C ABI (ABI 1.22; 1.23 adds trc_set_symmetry_skeleton), called through the Fortran
+! The symmetry entries of the C ABI (ABI 1.22; 1.23 adds trc_set_symmetry_skeleton;
+! 1.24 makes symmetry the default and adds the report-frame pair), called through the Fortran
 ! interfaces of include/trc_c_interfaces.f90: trc_set_symmetry,
 ! trc_set_irrep_nelec and the getters. The C side of the same round trip (water,
 ! the header compiled by a C compiler) is in link_c.c.
@@ -12,6 +13,19 @@
 ! is refused, each with its message: every entry that would otherwise run the
 ! C1 path silently, the cases the SCF cannot do with symmetry, and an explicit
 ! group that is not a subgroup or not supported yet.
+!
+! S17 (ABI 1.24, symmetry on by default): a fresh context asks for `auto`, reports in
+! the caller's INPUT frame, and runs the paths the symmetric SCF cannot do in C1.
+! test_default_round_trip: a rotated water, a default context against one with
+! symmetry off: energy 1e-10, gradient 1e-9, orbital energies, density and the
+! density of the rotated-back orbitals 1e-7, the reported geometry (the input
+! symmetrised in it), atomic charges; the report-frame setter and getter.
+! test_default_borrowed: the borrowed basis, its overlap and the dipole computed
+! from it. test_default_fallbacks:
+! DF, PCM, SOSCF, a given guess, and every entry the symmetric SCF cannot serve
+! (Hessian, polarizability, RI-MP2, Fukui indices, restarts) give the symmetry-off
+! numbers. The tests that assumed `off` was the default: test_irrep_nelec (a bare
+! irrep_nelec is now an explicit auto; the old refusal needs an explicit off).
 !
 module check_capi_sym_suite
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_char, c_null_char, c_null_ptr, c_loc
@@ -27,6 +41,11 @@ module check_capi_sym_suite
                                trc_mo_occupations, trc_nao, trc_message, trc_set_geometry, trc_set_df, trc_set_pcm, &
                                trc_set_soscf, trc_run_rimp2, trc_run_hessian, trc_run_polarizability, trc_load_scf, &
                                trc_fukui_hirshfeld, trc_check_rimp2_gradient, trc_set_guess, &
+                               trc_symmetry_report_frame, trc_set_symmetry_report_frame, trc_density, &
+                               trc_mo_coefficients, trc_mo_energies, trc_nmo, trc_hirshfeld_charges, trc_chelpg_charges, &
+                               trc_context_basis, trc_pairs_create, trc_pairs_destroy, trc_compute_1e, &
+                               trc_compute_multipoles, trc_set_force_cartesian, trc_set_aux_json, trc_hessian, &
+                               trc_polarizability, trc_rimp2_energy, trc_set_jkfit_json, trc_save_scf, &
                                TRC_OK, TRC_ERR_BADARG, TRC_ERR_STATE, TRC_ERR_UNSUPPORTED, TRC_GUESS_GIVEN
    implicit none
    private
@@ -46,7 +65,12 @@ contains
                   new_unittest("irrep_nelec: aufbau counts, occupations, a gradient refused for others", test_irrep_nelec), &
                   new_unittest("explicit groups: not a subgroup, a subgroup of the detected group, C1", test_explicit), &
                   new_unittest("the unsupported SCF settings are refused, not run in C1", test_scf_refusals), &
-                  new_unittest("entries that would run C1 silently are refused", test_entry_refusals) &
+                  new_unittest("entries that would run C1 silently are refused", test_entry_refusals), &
+                  new_unittest("default: a rotated water equals symmetry off in the input frame", test_default_round_trip), &
+                  new_unittest("default: the borrowed basis, the overlap and the dipole are in the input frame", &
+                               test_default_borrowed), &
+                  new_unittest("default: the unsupported paths run in C1 with the symmetry-off numbers", &
+                               test_default_fallbacks) &
                   ]
    end subroutine collect_capi_sym
 
@@ -176,6 +200,8 @@ contains
 
       ! The central oracle: a plain run on the geometry the context reports.
       call make_context(h1, 'hocl.xyz', 'basis_sets/6-31gs.json', geom)
+      ! the C1 oracle: symmetry switched off (a fresh context has the default request, ABI 1.24)
+      rc = trc_set_symmetry(h1, 'off'//c_null_char, 0.0_c_double)
       rc = trc_set_molecule(h1, 3_c_int, [1.0_c_double, 8.0_c_double, 17.0_c_double], std, 0_c_int, 1_c_int)
       rc = trc_set_basis_json(h1, 'basis_sets/6-31gs.json'//c_null_char)
       rc = trc_run_scf(h1)
@@ -289,14 +315,26 @@ contains
       real(dp), allocatable :: geom(:, :), occ(:)
       real(c_double) :: e_auto, e_fixed, e_exc
       integer(c_int), allocatable :: irreps(:)
-      integer(c_int) :: rc, nao
+      integer(c_int) :: rc, nao, fr
 
       call make_context(h, 'hocl.xyz', 'basis_sets/6-31gs.json', geom)
-      ! irrep_nelec without a symmetry request is a mistake, not a no-op.
+      ! irrep_nelec with symmetry switched off is a mistake, not a no-op. (Before
+      ! ABI 1.24 a context without a request had no symmetry; now it has the
+      ! default one, and irrep_nelec alone turns it into an explicit auto.)
+      rc = trc_set_symmetry(h, 'off'//c_null_char, 0.0_c_double)
       rc = trc_set_irrep_nelec(h, "A'=20,A"""//'=6'//c_null_char)
       rc = trc_run_scf(h)
       call check(error, rc, TRC_ERR_BADARG, 'irrep_nelec needs symmetry')
       call check(error, index(message(h), 'needs a symmetry request') > 0, message(h))
+      if (allocated(error)) return
+      rc = trc_destroy(h)
+      call make_context(h, 'hocl.xyz', 'basis_sets/6-31gs.json', geom)
+      rc = trc_set_irrep_nelec(h, "A'=20,A"""//'=6'//c_null_char)
+      rc = trc_run_scf(h)
+      call check(error, rc, TRC_OK, 'irrep_nelec alone is an explicit auto: '//message(h))
+      call check(error, name_of(h, 1, 0), 'Cs', 'and it runs in Cs')
+      rc = trc_symmetry_report_frame(h, fr)
+      call check(error, fr, 0_c_int, 'with the standard frame reported (an explicit request)')
       if (allocated(error)) return
       rc = trc_set_irrep_nelec(h, c_null_char)
       rc = trc_set_symmetry(h, 'auto'//c_null_char, 0.0_c_double)
@@ -457,6 +495,359 @@ contains
       call check(error, rc, TRC_ERR_UNSUPPORTED, 'Fukui')
       rc = trc_destroy(h)
    end subroutine test_entry_refusals
+
+
+   ! ---- S17: symmetry on by default (ABI 1.24) --------------------------
+
+   subroutine make_pair(hd, ho, xyz_file, basis, cart)
+      !! A default context and a symmetry-off one on the same molecule.
+      type(c_ptr), intent(out) :: hd, ho
+      character(len=*), intent(in) :: xyz_file, basis
+      logical, intent(in), optional :: cart
+      real(dp), allocatable :: geom(:, :)
+      integer(c_int) :: rc
+      call make_context(hd, xyz_file, basis, geom)
+      call make_context(ho, xyz_file, basis, geom)
+      rc = trc_set_symmetry(ho, 'off'//c_null_char, 0.0_c_double)
+      if (present(cart)) then
+         if (cart) then
+            rc = trc_set_force_cartesian(hd, 1_c_int)
+            rc = trc_set_force_cartesian(ho, 1_c_int)
+            rc = trc_set_basis_json(hd, basis//c_null_char)
+            rc = trc_set_basis_json(ho, basis//c_null_char)
+         end if
+      end if
+   end subroutine make_pair
+
+   subroutine test_default_round_trip(error)
+      !! Water in a general orientation (C2v), cc-pVDZ (spherical, so the d
+      !! shells use the spherical AO rotation), a default context against one with
+      !! symmetry off.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: hd, ho
+      real(dp), allocatable :: geom(:, :)
+      real(c_double), allocatable :: dd(:), do_(:), cd(:), eps_d(:), eps_o(:), p(:)
+      real(c_double) :: ed, eo, gd(9), go(9), resid, xyz(9), q_d(3), q_o(3), std(9)
+      integer(c_int) :: rc, nao, nmo, fr
+      integer :: n, i, nocc, ia
+      real(dp) :: dev
+
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/cc-pvdz.json')
+      call read_geom('water_rot.xyz', geom)
+      rc = trc_run_scf(hd)
+      call check(error, rc, TRC_OK, 'default SCF: '//message(hd))
+      rc = trc_run_scf(ho)
+      call check(error, rc, TRC_OK, 'symmetry-off SCF')
+      if (allocated(error)) return
+      call check(error, name_of(hd, 1, 0), 'C2v', 'the default used C2v on a rotated water')
+      call check(error, name_of(ho, 1, 0), '<status 5>', 'the off context has no symmetry result')
+      if (allocated(error)) return
+      rc = trc_energy(hd, ed)
+      rc = trc_energy(ho, eo)
+      print '(a,es10.2)', '  default vs off, |dE| ', abs(ed - eo)
+      call check(error, abs(ed - eo) <= 1.0e-10_dp, '|E(default) - E(off)| '//to_string(abs(ed - eo), 'es10.2'))
+      if (allocated(error)) return
+
+      ! orbital energies, density, rotated-back orbitals
+      rc = trc_nao(hd, nao)
+      rc = trc_nmo(hd, nmo)
+      n = nao
+      allocate (dd(n*n), do_(n*n), cd(n*n), eps_d(n), eps_o(n), p(n*n))
+      rc = trc_mo_energies(hd, eps_d)
+      rc = trc_mo_energies(ho, eps_o)
+      print '(a,es10.2)', '  orbital energies, max diff ', maxval(abs(eps_d - eps_o))
+      call check(error, maxval(abs(eps_d - eps_o)) < 1.0e-8_dp, 'orbital energies differ: '// &
+                 to_string(maxval(abs(eps_d - eps_o)), 'es10.2'))
+      rc = trc_density(hd, dd)
+      rc = trc_density(ho, do_)
+      print '(a,es10.2)', '  density (input frame), max diff ', maxval(abs(dd - do_))
+      call check(error, maxval(abs(dd - do_)) < 1.0e-9_dp, 'density differs from off: '// &
+                 to_string(maxval(abs(dd - do_)), 'es10.2'))
+      if (allocated(error)) return
+      rc = trc_mo_coefficients(hd, cd)
+      nocc = 5
+      p = 0.0_dp
+      do i = 1, nocc
+         p = p + 2.0_dp*reshape(spread(cd((i - 1)*n + 1:i*n), 2, n)*spread(cd((i - 1)*n + 1:i*n), 1, n), [n*n])
+      end do
+      print '(a,es10.2)', '  2 C_occ C_occ^T (rotated-back orbitals) vs the off density, max diff ', maxval(abs(p - do_))
+      call check(error, maxval(abs(p - do_)) < 1.0e-9_dp, 'rotated-back orbitals do not reproduce the off density: '// &
+                 to_string(maxval(abs(p - do_)), 'es10.2'))
+      if (allocated(error)) return
+
+      ! the geometry is the input, symmetrised in the input frame
+      rc = trc_geometry(hd, xyz)
+      rc = trc_symmetry_residual(hd, resid)
+      dev = 0.0_dp
+      do ia = 1, 3
+         dev = max(dev, maxval(abs(xyz(3*ia - 2:3*ia) - geom(:, ia))))
+      end do
+      print '(a,es10.2,a,es10.2)', '  reported geometry vs input ', dev, '   residual ', resid
+      call check(error, dev <= resid + 1.0e-12_dp, 'the reported geometry is not the input within the residual')
+      rc = trc_symmetry_report_frame(hd, fr)
+      call check(error, fr, 1_c_int, 'the default reports the input frame')
+      if (allocated(error)) return
+
+      ! gradient
+      rc = trc_run_gradient(hd)
+      call check(error, rc, TRC_OK, 'default gradient: '//message(hd))
+      rc = trc_run_gradient(ho)
+      rc = trc_gradient(hd, gd)
+      rc = trc_gradient(ho, go)
+      print '(a,es10.2)', '  gradient (input frame), max diff ', maxval(abs(gd - go))
+      call check(error, maxval(abs(gd - go)) < 1.0e-9_dp, 'gradient (input frame) differs from off: '// &
+                 to_string(maxval(abs(gd - go)), 'es10.2'))
+      if (allocated(error)) return
+
+      ! atomic charges: atom-based, evaluated in the input frame, so equal
+      rc = trc_hirshfeld_charges(hd, q_d)
+      rc = trc_hirshfeld_charges(ho, q_o)
+      print '(a,es10.2)', '  Hirshfeld charges, max diff ', maxval(abs(q_d - q_o))
+      call check(error, maxval(abs(q_d - q_o)) < 1.0e-9_dp, 'Hirshfeld charges differ: '// &
+                 to_string(maxval(abs(q_d - q_o)), 'es10.2'))
+      rc = trc_chelpg_charges(hd, q_d)
+      rc = trc_chelpg_charges(ho, q_o)
+      print '(a,es10.2)', '  CHELPG charges, max diff ', maxval(abs(q_d - q_o))
+      call check(error, maxval(abs(q_d - q_o)) < 1.0e-9_dp, 'CHELPG charges differ: '// &
+                 to_string(maxval(abs(q_d - q_o)), 'es10.2'))
+      if (allocated(error)) return
+
+      ! the report frame can be switched: standard frame = the group's frame
+      rc = trc_set_symmetry_report_frame(hd, 0_c_int)
+      call check(error, rc, TRC_OK, 'report frame 0')
+      rc = trc_symmetry_report_frame(hd, fr)
+      call check(error, fr, 0_c_int, 'reads back as the standard frame')
+      rc = trc_geometry(hd, std)
+      call check(error, maxval(abs(std - xyz)) > 0.1_dp, 'the standard-frame geometry of a rotated molecule differs from the input')
+      rc = trc_set_symmetry_report_frame(hd, 7_c_int)
+      call check(error, rc, TRC_ERR_BADARG, 'a bad frame is refused')
+      rc = trc_set_symmetry_report_frame(hd, -1_c_int)
+      rc = trc_symmetry_report_frame(hd, fr)
+      call check(error, fr, 1_c_int, 'back to the default rule: the input frame')
+      rc = trc_destroy(hd)
+      rc = trc_destroy(ho)
+   end subroutine test_default_round_trip
+
+   subroutine read_geom(xyz_file, geom)
+      character(len=*), intent(in) :: xyz_file
+      real(dp), allocatable, intent(out) :: geom(:, :)
+      integer, allocatable :: elem(:)
+      integer :: nat
+      call read_xyz(xyz_file, nat, elem, geom)
+   end subroutine read_geom
+
+   function dipole(basis, dens, geom, z, origin, error) result(d)
+      !! Nuclear minus electronic dipole about `origin` from a (Cartesian) basis
+      !! handle, its density and the first three multipole components (x, y, z).
+      type(c_ptr), intent(in) :: basis
+      real(c_double), intent(in) :: dens(:)
+      real(dp), intent(in) :: geom(:, :), z(:)
+      real(c_double), intent(in) :: origin(3)
+      type(error_type), allocatable, intent(out) :: error
+      real(dp) :: d(3)
+      type(c_ptr) :: pairs
+      real(c_double), allocatable :: mm(:)
+      integer :: n, k, ia
+      integer(c_int) :: rc
+      n = nint(sqrt(real(size(dens), dp)))
+      allocate (mm(n*n*39))
+      rc = trc_pairs_create(basis, 1.0e-14_c_double, pairs)
+      call check(error, rc, TRC_OK, 'trc_pairs_create')
+      if (allocated(error)) return
+      rc = trc_compute_multipoles(basis, pairs, origin, mm)
+      call check(error, rc, TRC_OK, 'trc_compute_multipoles')
+      rc = trc_pairs_destroy(pairs)
+      if (allocated(error)) return
+      do k = 1, 3
+         d(k) = -sum(dens*mm((k - 1)*n*n + 1:k*n*n))
+      end do
+      do ia = 1, size(z)
+         d = d + z(ia)*(geom(:, ia) - origin)
+      end do
+   end function dipole
+
+   subroutine test_default_borrowed(error)
+      !! The basis a default context lends (trc_context_basis) is the input-frame
+      !! one: its overlap and the dipole it gives with trc_density equal those of
+      !! a symmetry-off context. Cartesian AOs, as the multipole integrals are.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: hd, ho, bd, bo, pd, po
+      real(dp), allocatable :: geom(:, :)
+      real(c_double), allocatable :: dd(:), do_(:), sd(:), so(:), td(:), vd(:)
+      real(c_double) :: o1(3), o2(3), xyz(9)
+      real(dp) :: dip_d(3), dip_o(3), dip_o2(3), z(3), g(3, 3)
+      integer(c_int) :: rc, nao
+      integer :: n
+
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/cc-pvdz.json', cart=.true.)
+      call read_geom('water_rot.xyz', geom)
+      rc = trc_run_scf(hd)
+      rc = trc_run_scf(ho)
+      call check(error, rc, TRC_OK, 'SCF')
+      call check(error, name_of(hd, 1, 0), 'C2v', 'default used C2v')
+      if (allocated(error)) return
+      rc = trc_nao(hd, nao)
+      n = nao
+      allocate (dd(n*n), do_(n*n), sd(n*n), so(n*n), td(n*n), vd(n*n))
+      rc = trc_density(hd, dd)
+      rc = trc_density(ho, do_)
+      print '(a,es10.2)', '  Cartesian density, max diff ', maxval(abs(dd - do_))
+      call check(error, maxval(abs(dd - do_)) < 1.0e-9_dp, 'density (Cartesian) differs from off')
+      if (allocated(error)) return
+      rc = trc_context_basis(hd, bd)
+      rc = trc_context_basis(ho, bo)
+      rc = trc_pairs_create(bd, 1.0e-14_c_double, pd)
+      rc = trc_pairs_create(bo, 1.0e-14_c_double, po)
+      rc = trc_compute_1e(bd, pd, sd, td, vd)
+      rc = trc_compute_1e(bo, po, so, td, vd)
+      rc = trc_pairs_destroy(pd)
+      rc = trc_pairs_destroy(po)
+      print '(a,es10.2)', '  overlap from the borrowed basis, max diff ', maxval(abs(sd - so))
+      call check(error, maxval(abs(sd - so)) < 1.0e-9_dp, 'the borrowed basis is not the input-frame basis: overlap differs '// &
+                 to_string(maxval(abs(sd - so)), 'es10.2'))
+      if (allocated(error)) return
+
+      z = [8.0_dp, 1.0_dp, 1.0_dp]
+      rc = trc_geometry(hd, xyz)
+      g = reshape(real(xyz, dp), [3, 3])
+      o1 = 0.0_c_double
+      o2 = [0.7_c_double, -1.1_c_double, 2.3_c_double]
+      dip_d = dipole(bd, dd, g, z, o1, error)
+      if (allocated(error)) return
+      dip_o = dipole(bo, do_, geom, z, o1, error)
+      if (allocated(error)) return
+      dip_o2 = dipole(bo, do_, geom, z, o2, error)
+      if (allocated(error)) return
+      print '(a,3f12.8,a,es10.2)', '  dipole (a.u.), default ', dip_d, '   |default - off| ', maxval(abs(dip_d - dip_o))
+      call check(error, maxval(abs(dip_o - dip_o2)) < 1.0e-6_dp, 'the neutral molecule dipole must not depend on the origin '// &
+                 '(wrong sign convention in the test)')
+      call check(error, maxval(abs(dip_d - dip_o)) < 1.0e-8_dp, 'the dipole vector is not in the input frame: '// &
+                 to_string(maxval(abs(dip_d - dip_o)), 'es10.2'))
+      if (allocated(error)) return
+      rc = trc_destroy(hd)
+      rc = trc_destroy(ho)
+   end subroutine test_default_borrowed
+
+   subroutine test_default_fallbacks(error)
+      !! Each setting or entry the symmetric SCF cannot serve, on a default
+      !! context, gives what a symmetry-off context gives, and (for the
+      !! settings) leaves no symmetry result.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: hd, ho
+      real(c_double) :: ed, eo, hd9(81), ho9(81), ad(9), ao(9), ed2, eo2, f(3, 6), g(3, 6)
+      real(c_double), allocatable, target :: dg(:)
+      integer(c_int) :: rc, nao
+
+      ! --- settings of the SCF ---
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/6-31gs.json', cart=.true.)
+      rc = trc_set_jkfit_json(hd, 'basis_sets/def2-universal-jkfit.json'//c_null_char)
+      rc = trc_set_jkfit_json(ho, 'basis_sets/def2-universal-jkfit.json'//c_null_char)
+      rc = trc_set_df(hd, 1_c_int)
+      rc = trc_set_df(ho, 1_c_int)
+      call compare_runs('density fitting', hd, ho, error)
+      if (allocated(error)) return
+      rc = trc_destroy(hd); rc = trc_destroy(ho)
+
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/6-31gs.json')
+      rc = trc_set_pcm(hd, 'cpcm'//c_null_char, 78.4_c_double, 0_c_int, 0.0_c_double)
+      rc = trc_set_pcm(ho, 'cpcm'//c_null_char, 78.4_c_double, 0_c_int, 0.0_c_double)
+      call compare_runs('PCM', hd, ho, error)
+      if (allocated(error)) return
+      rc = trc_destroy(hd); rc = trc_destroy(ho)
+
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/6-31gs.json')
+      rc = trc_set_soscf(hd, 1_c_int, 0.0_c_double)
+      rc = trc_set_soscf(ho, 1_c_int, 0.0_c_double)
+      call compare_runs('SOSCF', hd, ho, error)
+      if (allocated(error)) return
+      rc = trc_destroy(hd); rc = trc_destroy(ho)
+
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/6-31gs.json')
+      rc = trc_nao(hd, nao)
+      allocate (dg(nao*nao))
+      dg = 0.0_c_double
+      rc = trc_set_guess(hd, TRC_GUESS_GIVEN, c_loc(dg), 1_c_int)
+      rc = trc_set_guess(ho, TRC_GUESS_GIVEN, c_loc(dg), 1_c_int)
+      call compare_runs('a given guess', hd, ho, error)
+      if (allocated(error)) return
+      rc = trc_destroy(hd); rc = trc_destroy(ho)
+
+      ! --- entries that follow a (symmetric) default SCF ---
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/6-31gs.json')
+      rc = trc_run_scf(hd)
+      rc = trc_run_scf(ho)
+      call check(error, name_of(hd, 1, 0), 'C2v', 'the default SCF is symmetric before the Hessian')
+      if (allocated(error)) return
+      rc = trc_run_hessian(hd)
+      call check(error, rc, TRC_OK, 'Hessian on a default context: '//message(hd))
+      rc = trc_run_hessian(ho)
+      if (allocated(error)) return
+      call check(error, name_of(hd, 1, 0), '<status 5>', 'after the Hessian the context is C1')
+      rc = trc_hessian(hd, hd9)
+      rc = trc_hessian(ho, ho9)
+      print '(a,es10.2)', '  Hessian (default context) vs off, max diff ', maxval(abs(hd9 - ho9))
+      call check(error, maxval(abs(hd9 - ho9)) < 1.0e-9_dp, 'the Hessian differs from the symmetry-off Hessian: '// &
+                 to_string(maxval(abs(hd9 - ho9)), 'es10.2'))
+      if (allocated(error)) return
+      rc = trc_destroy(hd); rc = trc_destroy(ho)
+
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/6-31gs.json')
+      rc = trc_run_scf(hd)
+      rc = trc_run_scf(ho)
+      rc = trc_run_polarizability(hd)
+      call check(error, rc, TRC_OK, 'polarizability on a default context: '//message(hd))
+      rc = trc_run_polarizability(ho)
+      rc = trc_polarizability(hd, ad)
+      rc = trc_polarizability(ho, ao)
+      call check(error, maxval(abs(ad - ao)) < 1.0e-9_dp, 'the polarizability differs from the symmetry-off one: '// &
+                 to_string(maxval(abs(ad - ao)), 'es10.2'))
+      if (allocated(error)) return
+      rc = trc_destroy(hd); rc = trc_destroy(ho)
+
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/6-31gs.json')
+      rc = trc_run_scf(hd)
+      rc = trc_run_scf(ho)
+      rc = trc_fukui_hirshfeld(hd, f(:, 1), f(:, 2), f(:, 3), g(:, 1), g(:, 2), g(:, 3))
+      call check(error, rc, TRC_OK, 'Fukui on a default context: '//message(hd))
+      rc = trc_fukui_hirshfeld(ho, f(:, 4), f(:, 5), f(:, 6), g(:, 4), g(:, 5), g(:, 6))
+      call check(error, maxval(abs(f(:, 1:3) - f(:, 4:6))) < 1.0e-9_dp .and. maxval(abs(g(:, 1:3) - g(:, 4:6))) < 1.0e-9_dp, &
+                 'the Fukui indices differ from the symmetry-off ones')
+      if (allocated(error)) return
+      rc = trc_destroy(hd); rc = trc_destroy(ho)
+
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/cc-pvdz.json')
+      rc = trc_set_aux_json(hd, 'basis_sets/cc-pvdz-rifit.json'//c_null_char)
+      rc = trc_set_aux_json(ho, 'basis_sets/cc-pvdz-rifit.json'//c_null_char)
+      rc = trc_run_scf(hd)
+      rc = trc_run_scf(ho)
+      rc = trc_run_rimp2(hd)
+      call check(error, rc, TRC_OK, 'RI-MP2 on a default context: '//message(hd))
+      rc = trc_run_rimp2(ho)
+      rc = trc_rimp2_energy(hd, ed, ed2)
+      rc = trc_rimp2_energy(ho, eo, eo2)
+      call check(error, abs(ed - eo) < 1.0e-10_dp .and. abs(ed2 - eo2) < 1.0e-10_dp, 'the RI-MP2 energy differs from the symmetry-off one')
+      rc = trc_destroy(hd); rc = trc_destroy(ho)
+   end subroutine test_default_fallbacks
+
+   subroutine compare_runs(label, hd, ho, error)
+      !! SCF on both contexts: the same energy to 1e-11, no symmetry result on the default one.
+      character(len=*), intent(in) :: label
+      type(c_ptr), intent(in) :: hd, ho
+      type(error_type), allocatable, intent(out) :: error
+      real(c_double) :: ed, eo
+      integer(c_int) :: rc
+      rc = trc_run_scf(hd)
+      call check(error, rc, TRC_OK, label//': the default context must run, not refuse: '//message(hd))
+      rc = trc_run_scf(ho)
+      if (allocated(error)) return
+      rc = trc_energy(hd, ed)
+      rc = trc_energy(ho, eo)
+      print '(a,a,es10.2)', '  '//label//': |E(default) - E(off)| ', abs(ed - eo)
+      call check(error, abs(ed - eo) < 1.0e-11_dp, label//': energy differs from symmetry off: '// &
+                 to_string(abs(ed - eo), 'es10.2'))
+      if (allocated(error)) return
+      call check(error, name_of(hd, 1, 0), '<status 5>', label//': a C1 fallback leaves no symmetry result')
+   end subroutine compare_runs
 
 end module check_capi_sym_suite
 
