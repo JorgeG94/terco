@@ -248,6 +248,11 @@ int main(void) {
       }
    }
 
+   /* ABI 1.24: a fresh context has symmetry on. This file's first run is the
+    * plain C1 one its symmetry block below compares against, so it asks for
+    * "off"; the default has its own block at the end. */
+   rc = trc_set_symmetry(h, "off", 0.0);
+   if (must(rc, "trc_set_symmetry(off) before the C1 run")) return 1;
    rc = trc_set_method(h, "", 3); /* empty functional name: Hartree-Fock */
    if (must(rc, "trc_set_method")) return 1;
    rc = trc_set_convergence(h, 1.0e-10, 1.0e-7, 100, 10);
@@ -404,6 +409,49 @@ int main(void) {
       if (must(rc, "trc_run_scf (off again)")) return 1;
       if (trc_symmetry_group(h, name, 16) != TRC_ERR_STATE) {
          fprintf(stderr, "link_c: no symmetry request, no symmetry result\n");
+         return 1;
+      }
+
+      /* the default request (a fresh context's own, ABI 1.24): symmetric, and
+       * reported in the input frame -- the geometry is the input, not the
+       * standard frame, and the energy and the gradient norm are the C1 ones */
+      rc = trc_set_symmetry(h, "default", 0.0);
+      if (must(rc, "trc_set_symmetry(default)")) return 1;
+      rc = trc_run_scf(h);
+      if (must(rc, "trc_run_scf (default)")) return 1;
+      rc = trc_energy(h, &e_sym);
+      if (must(rc, "trc_energy (default)")) return 1;
+      if (fabs(e_sym - energy) > 1.0e-8) {
+         fprintf(stderr, "link_c: default-symmetry energy %.12f differs from C1 %.12f\n", e_sym, energy);
+         return 1;
+      }
+      rc = trc_symmetry_group(h, name, 16);
+      if (must(rc, "trc_symmetry_group (default)")) return 1;
+      if (strcmp(name, "C2v") != 0) {
+         fprintf(stderr, "link_c: the default request should run water in C2v, got %s\n", name);
+         return 1;
+      }
+      rc = trc_symmetry_report_frame(h, &k);
+      if (must(rc, "trc_symmetry_report_frame")) return 1;
+      if (k != 1) {
+         fprintf(stderr, "link_c: the default request should report the input frame\n");
+         return 1;
+      }
+      rc = trc_geometry(h, geom);
+      if (must(rc, "trc_geometry (default)")) return 1;
+      for (k = 0; k < 9; k++) {
+         if (fabs(geom[k] - xyz[k]) > 1.0e-5) {
+            fprintf(stderr, "link_c: the default request must report the input geometry, coordinate %d is %.8f not %.8f\n",
+                    k, geom[k], xyz[k]);
+            return 1;
+         }
+      }
+      rc = trc_set_symmetry_report_frame(h, 0);
+      if (must(rc, "trc_set_symmetry_report_frame(0)")) return 1;
+      rc = trc_symmetry_report_frame(h, &k);
+      if (must(rc, "trc_symmetry_report_frame (standard)")) return 1;
+      if (k != 0) {
+         fprintf(stderr, "link_c: report frame 0 should read back as the standard frame\n");
          return 1;
       }
    }

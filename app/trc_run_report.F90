@@ -47,7 +47,15 @@ contains
          end block
       end if
       call global_logger%info("   method           : "//method(r))
-      if (r%symmetry /= "off") call global_logger%info("   symmetry         : "//r%symmetry)
+      if (r%sym_default .and. len(r%sym_fallback) > 0) then
+         ! One line, with the reason: this run takes the C1 path it always took.
+         call global_logger%info("   symmetry         : default (auto), but "//r%sym_fallback// &
+                                 " is not supported with symmetry yet: running in C1")
+      else if (r%sym_default) then
+         call global_logger%info("   symmetry         : default (auto, reported in the input frame)")
+      else if (r%symmetry /= "off") then
+         call global_logger%info("   symmetry         : "//r%symmetry)
+      end if
       call global_logger%info("   basis            : "//r%basis_path)
       if (r%rimp2) call global_logger%info("   auxiliary basis  : "//r%aux_path)
       ! The AO space itself (spherical or Cartesian) is not known until the
@@ -202,10 +210,12 @@ contains
 
    module subroutine run_symmetry_summary(r)
       !! What the symmetry request did: the group detected and used, how far the
-      !! atoms moved, the geometry the SCF actually ran on (the standard frame,
-      !! not the input's), the electrons per irrep, and a label on each orbital.
-      !! Printed only when a symmetry request ran, so a run with symmetry off is
-      !! unchanged.
+      !! atoms moved, the geometry (the input symmetrised in the input frame for
+      !! the default request, the standard frame the SCF ran on for an explicit
+      !! one), the electrons per irrep, and a label on each orbital. One line
+      !! says which frame the results are in. Printed only when a symmetry
+      !! request ran and used a group, so a run with symmetry off, or with a
+      !! default request on a molecule without symmetry, is unchanged.
       type(run_t), intent(in) :: r
       character(len=1024) :: logline
       integer :: ia, ir, s, m, nmo, nocc, m0, m1, ns
@@ -221,12 +231,18 @@ contains
       end if
       write (logline, "(a,es9.2,a)") "   symmetrisation   : largest atom displacement ", r%sym_residual, " Bohr"
       call global_logger%info(trim(logline))
-      call global_logger%info("   NOTE: the coordinates below, the gradient and the orbitals are in the STANDARD FRAME of "// &
-                              trim(r%sym_used)//":")
-      call global_logger%info("         the molecule is symmetrised, moved to its centre of nuclear charge and rotated "// &
-                              "to the group's axes")
-      call global_logger%info("         (--json symmetry.frame rotation and symmetry.frame origin map the input to it).")
-      call global_logger%info("   geometry, standard frame (Angstrom)")
+      if (r%sym_input_frame) then
+         call global_logger%info("   frame            : results are in your INPUT frame (rotated back from the "// &
+                                 trim(r%sym_used)//" standard frame the SCF ran in)")
+         call global_logger%info("   geometry, input frame, symmetrised (Angstrom)")
+      else
+         call global_logger%info("   NOTE: the coordinates below, the gradient and the orbitals are in the STANDARD FRAME of "// &
+                                 trim(r%sym_used)//":")
+         call global_logger%info("         the molecule is symmetrised, moved to its centre of nuclear charge and rotated "// &
+                                 "to the group's axes")
+         call global_logger%info("         (--json symmetry.frame rotation and symmetry.frame origin map the input to it).")
+         call global_logger%info("   geometry, standard frame (Angstrom)")
+      end if
       do ia = 1, r%natm
          write (logline, "(a,i4,2x,a2,3f16.8)") "   ", ia, app_element_symbol(r%z(ia)), r%geom_std(:, ia)/BOHR_PER_ANGSTROM
          call global_logger%info(trim(logline))

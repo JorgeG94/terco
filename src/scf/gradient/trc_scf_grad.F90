@@ -133,8 +133,8 @@ contains
    end subroutine scf_grad_energy_weighted_density
 
    subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
-                               func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, dfjk, aux, &
-                               verbose, grid, xg, grid_nlc, xg_nlc, pair_eri_cache, reused, sym_geom)
+                               func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, grid_rotation, &
+                               dfjk, aux, verbose, grid, xg, grid_nlc, xg_nlc, pair_eri_cache, reused, sym_geom)
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
@@ -227,6 +227,9 @@ contains
       !! than rebuilding: the only way a caller or a test can tell the two
       !! paths apart, since they agree on the numbers by construction.
       integer, intent(in), optional :: nlc_grid_level
+      real(dp), intent(in), optional :: grid_rotation(3, 3)
+      !! The Lebedev rotation of the SCF's grids (`trc_scf_options_t%grid_rotation`),
+      !! for a grid this routine has to build itself; absent: the identity.
       !! VV10's own grid level -- see this subroutine's own header, VV10.
       !! Absent means `trc_scf_settings%DEFAULT_NLC_GRID_LEVEL`, the SAME
       !! constant `trc_scf_options_t%nlc_grid_level` defaults to, not the
@@ -408,7 +411,7 @@ contains
       if (present(func)) then
          call gst%step_on(lp, 4, tc)
          xopts = xc_grad_options(grid_level=grid_level, grid_max_pts=grid_max_pts, grid_response=grid_response, &
-                                 rho_tol=rho_tol)
+                                 rho_tol=rho_tol, grid_rotation=grid_rotation)
          if (present(grid) .and. present(xg)) then
             xopts%partition = grid%partition
             call xc_grad_add_on_grid(b, lp, func, density, grad, xopts, xst, xg)
@@ -428,7 +431,8 @@ contains
             ! the energy path's `trc_vv10_rks/uks` is hard-coded to --
             ! see that module's own header.
             call gst%step_on(lp, 5, tc)
-            xopts = xc_grad_options(grid_level=nlc_level, grid_max_pts=grid_max_pts, grid_response=grid_response)
+            xopts = xc_grad_options(grid_level=nlc_level, grid_max_pts=grid_max_pts, grid_response=grid_response, &
+                                    grid_rotation=grid_rotation)
             if (present(grid_nlc) .and. present(xg_nlc)) then
                xopts%partition = grid_nlc%partition
                call vv10_grad_add_on_grid(b, lp, func, density, grad, xopts, vst, xg_nlc)

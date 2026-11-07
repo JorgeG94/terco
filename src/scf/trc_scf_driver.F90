@@ -361,6 +361,14 @@ contains
             return
          end if
          scf_result%n_lindep = nao - sym%nmo
+         if (sym%decline_lindep .and. (scf_context%n_lindep > 0 .or. sym%nmo < nao)) then
+            scf_result%sym_declined = .true.
+            scf_result%message = "trc_scf: canonical orthogonalisation drops functions, which the per-irrep "// &
+                                 "blocks treat differently from C1; symmetry declined"
+            call sym%release()
+            call scf_context%release()
+            return
+         end if
       end if
       if (scf_config%pcm_on) scf_result%pcm_npoints = scf_context%pcm%surface%n_points
       if (scf_config%dft) then

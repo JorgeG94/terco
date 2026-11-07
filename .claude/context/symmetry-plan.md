@@ -22,9 +22,9 @@ done, report format, per-stage brief).
   symmetry-adapted (SO) basis, block the SCF by irrep, label orbitals, and
   finally build the Fock matrix from symmetry-unique integrals only (a
   skeleton Fock build) for up to |G|-fold fewer quartets.
-- **Off by default** until the maintainer decides otherwise. With
-  `symmetry=off` (or group C1) every number must be bitwise what `main`
-  produces.
+- **Off by default** until the maintainer decided otherwise; S17 made it
+  **on by default** (`auto`; see "S17" below). With `symmetry=off` (or group
+  C1) every number must still be bitwise what `main` produces.
 
 Out of scope for this plan: non-Abelian groups and degenerate irreps,
 symmetry in CPHF/CPKS, RI-MP2, PCM, the geometry optimiser, and vibrational
@@ -491,7 +491,7 @@ Each of these is its own design-then-implement pair, decided after S15:
   grid must then be symmetric, which Lebedev grids in the standard frame
   are, but pruning and Becke partitions must be checked.
 - Skeleton gradients.
-- Turning symmetry on by default (maintainer decision).
+- Turning symmetry on by default: decided, done as S17 (below).
 
 ## Open questions for the maintainer
 
@@ -501,6 +501,52 @@ Each of these is its own design-then-implement pair, decided after S15:
 3. Where should NVIDIA [GPU] checks run, and who runs them?
 4. Should orientation be forced to pyscf's convention, or is a terco
    convention acceptable, with a label mapping in the anchors?
+
+## S17 — Symmetry on by default
+
+The maintainer's decision (6a of `docs/SYMMETRY_FOCK.md`, precondition S14.4):
+the default request is `auto`. Binding rules, as implemented:
+
+1. **Default `auto`** in the CLI (`--symmetry` absent = `default`), the
+   input files (TOML/JSON; `input.scf.symmetry` echoes `default`) and the C
+   ABI context (`trc_create`; ABI **1.24**, minor: no signature or enum
+   changes, `trc_set_symmetry(h, "off")` restores the old path). The Fortran
+   library entry `trc_scf_run` is unchanged (`sym` absent unless passed);
+   the skeleton stays on with symmetry.
+2. **A default run reports in the user's input frame**: the geometry (the
+   input symmetrised in it, `trc_sym_geom_t%r_sym`, with the residual
+   printed), the gradient (each atomic vector by `rot^T`), the orbitals
+   (`C_in = D C_std`), the density (`D D_std D^T`), multipoles and dipole
+   (through the borrowed basis, `trc_context_basis`, rebuilt on the
+   input-frame centres), the Hirshfeld and CHELPG charges (their grids are
+   frame-dependent, so they are evaluated in the input frame), `--save-scf`
+   files, and the JSON `symmetry.geometry`/`frame`. `D` is the exact AO
+   rotation of `src/symmetry/trc_sym_frame.F90`: the l-th symmetric tensor
+   power of the 3x3 rotation on the Cartesian monomials of each shell, and
+   `X = (T^T T)^-1 T^T D T` in the spherical space (`SPH_T`); checked against
+   brute force (`check_sym_frame`) to 5e-15, every l up to `TERCO_LMAX`. An
+   explicit `--symmetry auto|<group>` keeps the standard frame and the
+   `STANDARD FRAME` note; `trc_set_symmetry_report_frame` /
+   `trc_symmetry_report_frame` set and read the frame.
+3. **Unsupported paths run in C1** under the default, with one
+   `global_logger%info` line: `--opt` (the DL-FIND bridge calls
+   `trc_symmetry_suppress_default`), `--hessian`, RI-MP2 and double hybrids,
+   `--df`, `--pcm`, `--soscf`, `--fukui`, `--restart`, fractional
+   occupations, given or projected guesses, CPHF/CPKS, several MPI ranks, and a
+   basis whose canonical orthogonalisation drops functions (the per-irrep
+   drop differs from C1's: `trc_sym_scf_t%decline_lindep`). In the C ABI an
+   entry that follows a symmetric default SCF (Hessian, polarizability,
+   RI-MP2, Fukui, restart) repeats that SCF in C1, with the settings it had,
+   on the caller's own coordinates. An explicit request still refuses.
+
+DFT grids: a default run builds its DFT and VV10 grids on the user's axes
+(`dft_grid_options_t%angular_rotation` = the frame rotation; Becke weights are
+rotation invariant), and the symmetrised F is the only symmetrisation. Energy
+matches `off` to second order (3e-12..8e-10 Eh on rotated inputs, was 7e-7);
+the gradient is not projected for DFT and follows the grid's symmetry breaking
+(1e-7..1e-6 at grid 3, 2e-9 at grid 5). Explicit requests keep the symmetric
+standard-frame grid. Planar Cs molecules gain nothing from the skeleton (Known issues below), and
+are now run that way by default.
 
 ## Known issues found along the way (not symmetry bugs)
 

@@ -76,7 +76,8 @@ target_sources(
           symmetry/trc_sym_ao.F90      # AO signed permutations and the SO basis
           symmetry/trc_sym_pairs.F90   # shell-pair orbits under the group: images, representatives, weights, orbit-invariant Q and dsh
           symmetry/trc_sym_scf.F90     # SO-blocked SCF step: per-irrep diagonalisation, labels, symmetrisation
-          symmetry/trc_sym_run.F90)    # what a run asks for: off/auto/group, subgroup rules, per-irrep occupations
+          symmetry/trc_sym_frame.F90   # exact AO rotation between the standard frame and the user's input frame
+          symmetry/trc_sym_run.F90)    # what a run asks for: off/auto/default/group, subgroup rules, per-irrep occupations
 
 # --- the molecular quadrature -------------------------------------------------
 #

@@ -158,6 +158,12 @@ set_target_properties(check_sym_ao_f PROPERTIES Fortran_MODULE_DIRECTORY
                       ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ao_f)
 set_tests_properties(terco/check_sym_ao_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# The exact AO rotation between the standard frame and the user's input frame
+# (trc_sym_frame, S17): a basis built on rotated atoms has S = D^T S_in D and the
+# same for T + V, Cartesian and spherical, every l up to this build's LMAX.
+terco_add_check(check_sym_frame check_sym_frame.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_frame PRIVATE test-drive::test-drive)
+
 # What a symmetry request means (trc_sym_run): subgroups, groups not supported
 # yet, the electrons-per-irrep text and the occupation helpers. No SCF.
 terco_add_check(check_sym_run check_sym_run.F90)

@@ -32,7 +32,7 @@ module trc_run
    use trc_capi, only: trc_message, TRC_OK, trc_nmo, trc_nao, trc_mo_energies, trc_mo_occupations, &
                        trc_symmetry_group, trc_symmetry_detected, trc_symmetry_residual, trc_symmetry_frame, &
                        trc_symmetry_nirrep, trc_symmetry_irrep_name, trc_symmetry_irrep_dim, trc_mo_irreps, &
-                       trc_geometry
+                       trc_geometry, trc_symmetry_report_frame
    use trc_app, only: app_f_string
    use trc_thermo, only: trc_thermo_result_t
    use trc_error, only: mass_error_t => error_t
@@ -48,7 +48,8 @@ module trc_run
    public :: run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
              run_check_neb_endpoint, run_write_neb_path_xyz
    public :: run_read_xyz_frames
-   public :: run_frontier, run_symmetry_collect, run_symmetry_refusal, run_symmetry_summary
+   public :: run_frontier, run_symmetry_collect, run_symmetry_refusal, run_symmetry_unsupported
+   public :: run_symmetry_summary
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
@@ -94,11 +95,16 @@ module trc_run
       integer :: nspin = 1
       real(dp) :: homo(2) = 0.0_dp, lumo(2) = 0.0_dp
       logical :: has_homo(2) = .false., has_lumo(2) = .false.
-      ! --symmetry: the request (`symmetry` is "off" unless given), and what the
-      ! SCF reported back (run_symmetry_collect), all in the STANDARD frame.
+      ! --symmetry: the request (`symmetry` is "default", S17: auto, reported in
+      ! the input frame, C1 where unsupported), and what the SCF reported back
+      ! (run_symmetry_collect): in the input frame for the default request and
+      ! the group's standard frame for an explicit one (`sym_input_frame`).
       character(len=:), allocatable :: symmetry, irrep_nelec
+      logical :: sym_default = .true.       !! no --symmetry (nor --irrep-nelec) was given
+      character(len=:), allocatable :: sym_fallback  !! what sent a default request to C1 (e.g. "--opt"); empty = none
+      logical :: sym_input_frame = .false.  !! the geometry, gradient and orbitals are in the user's input frame
       real(dp) :: sym_tol = 0.0_dp         !! --symmetry-tol, Bohr; 0 = the library's default
-      logical :: sym_wanted = .false.      !! a request that needs the symmetry code (not off, not C1)
+      logical :: sym_wanted = .true.       !! a request that needs the symmetry code (not off, not C1, not a fallback)
       logical :: sym_ran = .false.         !! the library ran a symmetry request
       logical :: sym_active = .false.      !! ... and used a group of more than one operation
       character(len=3) :: sym_used = "C1", sym_detected = "C1"
@@ -109,7 +115,7 @@ module trc_run
       character(len=3), allocatable :: sym_irrep_names(:)
       integer, allocatable :: sym_irrep_dim(:), sym_mo_irrep(:, :)   !! (nirrep); (nmo, nspin)
       real(dp), allocatable :: sym_eps(:, :), sym_occ(:, :)           !! (nmo, nspin)
-      real(dp), allocatable :: geom_std(:, :)  !! (3, natm), Bohr, the geometry the SCF ran on
+      real(dp), allocatable :: geom_std(:, :)  !! (3, natm), Bohr, as reported: input frame, or the SCF's standard frame
       type(timer_type) :: wall
       type(comm_t) :: wcomm
       integer :: nranks
@@ -504,9 +510,10 @@ contains
       end do
    end subroutine run_frontier
 
-   function run_symmetry_refusal(r) result(why)
-      !! What this run asks for that a symmetric SCF does not support yet, or an
-      !! empty string. Each is a refusal rather than a silent run in C1.
+   function run_symmetry_unsupported(r) result(why)
+      !! What this run asks for that a symmetric SCF does not support yet (the
+      !! option's name), or an empty string. An explicit --symmetry refuses it
+      !! (`run_symmetry_refusal`); the default request runs this in C1.
       type(run_t), intent(in) :: r
       character(len=:), allocatable :: why
       why = ""
@@ -530,6 +537,17 @@ contains
       else if (r%nranks > 1) then
          why = "more than one rank (the orbital irrep labels are not broadcast)"
       end if
+   end function run_symmetry_unsupported
+
+   function run_symmetry_refusal(r) result(why)
+      !! The refusal of an explicit --symmetry on a path the symmetric SCF does
+      !! not support yet, or an empty string (also for the default request,
+      !! which runs those in C1).
+      type(run_t), intent(in) :: r
+      character(len=:), allocatable :: why
+      why = ""
+      if (r%sym_default) return
+      why = run_symmetry_unsupported(r)
       if (len(why) > 0) why = "--symmetry is not supported with "//why//" yet; use --symmetry off"
    end function run_symmetry_refusal
 
@@ -542,7 +560,7 @@ contains
       type(run_t), intent(inout) :: r
       integer, parameter :: LEN_NAME = 16
       character(kind=c_char) :: buf(LEN_NAME)
-      integer(c_int) :: nirrep, nmo, nao
+      integer(c_int) :: nirrep, nmo, nao, frame
       integer(c_int), allocatable :: dims(:), labels(:, :)
       integer, parameter :: NROT = 9
       real(c_double) :: rot(NROT)
@@ -556,6 +574,13 @@ contains
       if (trc_symmetry_group(r%h, buf, int(LEN_NAME, c_int)) /= TRC_OK) return
       r%sym_ran = .true.
       r%sym_used = app_f_string(buf)
+      ! A default request that found no symmetry to use has nothing to report.
+      if (r%sym_default .and. r%sym_used == "C1") then
+         r%sym_ran = .false.
+         return
+      end if
+      r%sym_input_frame = .false.
+      if (trc_symmetry_report_frame(r%h, frame) == TRC_OK) r%sym_input_frame = frame == 1
       if (trc_symmetry_detected(r%h, buf, int(LEN_NAME, c_int)) == TRC_OK) r%sym_detected = app_f_string(buf)
       if (trc_symmetry_residual(r%h, res) == TRC_OK) r%sym_residual = real(res, dp)
       if (trc_symmetry_frame(r%h, rot, shift) == TRC_OK) then

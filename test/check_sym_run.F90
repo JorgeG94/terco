@@ -10,7 +10,7 @@ module check_sym_run_suite
    use trc_sym_group, only: trc_sym_group_t, sym_group_from_name
    use trc_sym_geom, only: trc_sym_geom_t
    use trc_sym_run, only: trc_sym_request_t, SYM_OFF, SYM_AUTO, SYM_EXPLICIT, sym_parse_request, sym_choose_group, &
-                          sym_is_subgroup, sym_parse_irrep_nelec, sym_aufbau_matches, sym_fixed_occupation, &
+                          sym_is_subgroup, sym_request_text, sym_parse_irrep_nelec, sym_aufbau_matches, sym_fixed_occupation, &
                           sym_occupied_counts
    implicit none
    private
@@ -43,6 +43,24 @@ contains
       call check(error, req%group, 'Cs', 'cs is Cs')
       call sym_parse_request('td', req, err)
       call check(error, err%has_error(), 'td is not an Abelian group of this code')
+      if (allocated(error)) return
+      ! S17: `default` is auto asked for by nobody; every other spelling is explicit.
+      call sym_parse_request('default', req, err)
+      call check(error, req%mode == SYM_AUTO .and. req%by_default .and. sym_request_text(req) == 'default', 'default')
+      if (allocated(error)) return
+      call sym_parse_request('auto', req, err)
+      call check(error, req%mode == SYM_AUTO .and. .not. req%by_default .and. sym_request_text(req) == 'auto', &
+                 'an explicit auto is not the default')
+      if (allocated(error)) return
+      call sym_parse_request('default', req, err)
+      call sym_parse_request('cs', req, err)
+      call check(error, .not. req%by_default, 'a group after default is explicit')
+      call sym_parse_request('default', req, err)
+      call sym_parse_request('off', req, err)
+      call check(error, req%mode == SYM_OFF .and. .not. req%by_default, 'off after default')
+      ! the type itself starts at off: the Fortran entry has no default symmetry
+      req = trc_sym_request_t()
+      call check(error, req%mode == SYM_OFF .and. .not. req%by_default, 'a fresh request is off')
    end subroutine test_request
 
    subroutine test_subgroups(error)

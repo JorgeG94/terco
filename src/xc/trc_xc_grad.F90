@@ -224,7 +224,7 @@ module trc_xc_grad
    use trc_collocation, only: collocation_shell, collocation_shell_hessian, NCART_MAX, NHESS
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_xc, only: XC_NP_PAD, XC_NL_PAD, xc_sort_by_shape
-   use trc_dft_grid, only: dft_grid_t, dft_grid_build, DEFAULT_GRID_LEVEL
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build, dft_grid_options_t, DEFAULT_GRID_LEVEL
    use trc_dft_partition, only: dft_partition_becke_grad_contract, dft_partition_options_t
    use trc_error, only: error_t
    use trc_step_table, only: step_table_t
@@ -293,6 +293,10 @@ module trc_xc_grad
       !! The partition the grid was built with (`dft_grid_t%partition`),
       !! which the grid response differentiates. `xc_grad_add` sets it from
       !! the grid it builds; a caller of `xc_grad_add_on_grid` from its own.
+      real(dp) :: grid_rotation(3, 3) = reshape([1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, &
+                                                 0.0_dp, 0.0_dp, 1.0_dp], [3, 3])
+      !! `dft_grid_options_t%angular_rotation` of the grid built here, which
+      !! must be the SCF's own (`trc_scf_options_t%grid_rotation`).
    end type xc_grad_options_t
 
    type :: xc_grad_point_io_t
@@ -361,8 +365,9 @@ contains
    ! An xc_grad_options_t from the caller's own optional settings, passed
    ! straight through: an absent one keeps its default.
    !
-   function xc_grad_options(grid_level, grid_max_pts, rho_tol, grid_response, partition) result(options)
+   function xc_grad_options(grid_level, grid_max_pts, rho_tol, grid_response, partition, grid_rotation) result(options)
       integer, intent(in), optional :: grid_level, grid_max_pts
+      real(dp), intent(in), optional :: grid_rotation(3, 3)
       real(dp), intent(in), optional :: rho_tol
       logical, intent(in), optional :: grid_response
       type(dft_partition_options_t), intent(in), optional :: partition
@@ -373,6 +378,7 @@ contains
       if (present(rho_tol)) options%rho_tol = rho_tol
       if (present(grid_response)) options%grid_response = grid_response
       if (present(partition)) options%partition = partition
+      if (present(grid_rotation)) options%grid_rotation = grid_rotation
    end function xc_grad_options
 
    pure function xc_grad_step_names() result(names)
@@ -406,6 +412,7 @@ contains
       !! dropped (the recursive call below, with one).
 
       type(xc_grad_options_t) :: opts
+      type(dft_grid_options_t) :: gopts   !! rotated like the SCF's grid
       type(dft_grid_t) :: grid_own
       type(trc_xc_grid_t) :: xg_own
       type(timer_type) :: tc
@@ -423,7 +430,8 @@ contains
       if (present(options)) opts = options
       call timing%step_on(lp, ST_GRID, tc)
       allocate (at_elem(b%natm), source=b%at_elem)
-      call dft_grid_build(b%at_r, at_elem, grid_own, err, level=opts%grid_level)
+      gopts%angular_rotation = opts%grid_rotation
+      call dft_grid_build(b%at_r, at_elem, grid_own, err, level=opts%grid_level, options=gopts)
       if (err%has_error()) error stop "trc_xc_grad: "//trim(err%get_message())
       ! `atom`/`qw` are only ever read by the grid-response term
       ! (`build` leaves both unallocated; `build_from_grid` fills them);

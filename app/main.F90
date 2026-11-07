@@ -53,7 +53,7 @@ program trc_main
                        run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
                        run_check_neb_endpoint, run_write_neb_path_xyz, &
                        run_read_xyz_frames, run_to_lower_alloc, run_frontier, run_parse_charges, &
-                       run_symmetry_collect, run_symmetry_refusal, run_symmetry_summary
+                       run_symmetry_collect, run_symmetry_refusal, run_symmetry_unsupported, run_symmetry_summary
    use trc_dlfind_bridge, only: trc_dlfind_available, trc_opt_options_t, trc_opt_result_t, trc_dlfind_optimize, &
                                 TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_HDLC_TC, &
                                 TRC_OPT_COORDS_DLC, TRC_OPT_COORDS_DLC_TC, &
@@ -163,19 +163,23 @@ program trc_main
                        "orbital rotations once |FDS - SDF| is small enough. Restricted Hartree-Fock only; "// &
                        "refused with an open shell, a functional, --pcm, --df or more than one rank")
    call r%cli%add_option("soscf-start", "commutator norm at which --soscf hands over from DIIS (1e-2)")
-   call r%cli%add_option("symmetry", "point-group symmetry in the SCF: off (the default), auto (the detected group, "// &
+   call r%cli%add_option("symmetry", "point-group symmetry in the SCF: default (what no flag means: auto, "// &
+                         "reported in the input frame, C1 where unsupported), off, auto (the detected group, "// &
                          "the largest Abelian group: D2h or a subgroup; symmetric tops and linear molecules run in C1 "// &
                          "for now) or a group, which must be the detected group "// &
                          "or a subgroup of it. The molecule is symmetrised and moved to the standard frame of the "// &
-                         "group, and the SCF, the gradient and the report are in that frame. Refused with --opt, "// &
-                         "--hessian, --rimp2, --df, --pcm, --soscf, --fukui, --restart and more than one rank")
-   call r%cli%add_option("symmetry-tol", "geometry tolerance for --symmetry, Bohr (1e-5)")
-   call r%cli%add_option("irrep-nelec", "electrons per irrep with --symmetry, e.g. A'=6,A""=4 (restricted: even "// &
+                         "group for the SCF. By default the geometry, gradient and orbitals are reported in your "// &
+                         "input frame (the input symmetrised in it); an explicit auto or group reports the standard "// &
+                         "frame. With --opt, --hessian, --rimp2, --df, --pcm, --soscf, --fukui, --restart or more than "// &
+                         "one rank the default runs in C1 (one log line says why) and an explicit request is refused", &
+                         default="default")
+   call r%cli%add_option("symmetry-tol", "geometry tolerance for the symmetry detection, Bohr (1e-5)")
+   call r%cli%add_option("irrep-nelec", "electrons per irrep (an explicit --symmetry auto), e.g. A'=6,A""=4 (restricted: even "// &
                          "counts) or A'=4/3,A""=3/3 (alpha/beta); unlisted irreps hold none. Default: aufbau. "// &
                          "A gradient is refused for occupations that are not the aufbau ones")
-   call r%cli%add_flag("sym-skeleton", "with --symmetry, build the Fock matrix from the orbit representatives "// &
+   call r%cli%add_flag("sym-skeleton", "in a symmetric run, build the Fock matrix from the orbit representatives "// &
                        "of the integral quartets and symmetrize it (the default)")
-   call r%cli%add_flag("no-sym-skeleton", "with --symmetry, build the full Fock matrix and symmetrize it "// &
+   call r%cli%add_flag("no-sym-skeleton", "in a symmetric run, build the full Fock matrix and symmetrize it "// &
                        "(the same result, more quartets)")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
    call r%cli%add_option("lindep", "linear-dependence threshold: eigenvalues of S normalised to a unit "// &
@@ -592,8 +596,14 @@ program trc_main
    ! Parsed here, before the --opt block, so a symmetry request with --opt (or
    ! anything else the symmetric SCF does not support yet) is refused by name
    ! rather than by whatever that block would say first.
-   r%symmetry = "off"
-   r%sym_wanted = .false.
+   ! Symmetry is ON by default (S17): `default` is auto, reported in the input
+   ! frame, and a path the symmetric SCF does not support runs in C1 with one
+   ! log line. An explicit --symmetry (auto, a group) reports the standard
+   ! frame and refuses those paths.
+   r%symmetry = "default"
+   r%sym_default = .true.
+   r%sym_wanted = .true.
+   r%sym_fallback = ""
    if (r%cli%is_set("symmetry")) then
       call r%cli%get("symmetry", sval, r%err)
       call run_check(r, "--symmetry")
@@ -601,29 +611,40 @@ program trc_main
       call sym_parse_request(r%symmetry, sym_req, sym_err)
       if (sym_err%has_error()) call run_die(r, "--"//sym_err%get_message())
       if (sym_req%mode == SYM_EXPLICIT) r%symmetry = trim(sym_req%group)
+      r%sym_default = sym_req%by_default
       r%sym_wanted = sym_req%mode /= SYM_OFF .and. .not. (sym_req%mode == SYM_EXPLICIT .and. sym_req%group == "C1")
    end if
    if (r%cli%is_set("symmetry-tol")) then
       call r%cli%get("symmetry-tol", r%sym_tol, r%err)
       call run_check(r, "--symmetry-tol")
       if (.not. (r%sym_tol > 0.0_dp)) call run_die(r, "--symmetry-tol must be positive (Bohr)")
-      if (r%symmetry == "off") call run_die(r, "--symmetry-tol needs --symmetry")
+      if (r%symmetry == "off") call run_die(r, "--symmetry-tol has no effect with --symmetry off")
    end if
    if (r%cli%is_set("irrep-nelec")) then
       call r%cli%get("irrep-nelec", r%irrep_nelec, r%err)
       call run_check(r, "--irrep-nelec")
       if (.not. r%sym_wanted) call run_die(r, "--irrep-nelec needs --symmetry auto or a group other than C1")
+      ! Fixed irrep occupations only mean something in a symmetric run: an
+      ! explicit auto (standard frame, refusals), never a silent C1.
+      if (r%sym_default) then
+         r%symmetry = "auto"
+         r%sym_default = .false.
+      end if
    end if
    if (r%cli%is_set("sym-skeleton") .and. r%cli%is_set("no-sym-skeleton")) then
       call run_die(r, "--sym-skeleton and --no-sym-skeleton contradict each other")
    end if
    if ((r%cli%is_set("sym-skeleton") .or. r%cli%is_set("no-sym-skeleton")) .and. .not. r%sym_wanted) then
-      call run_die(r, "--sym-skeleton and --no-sym-skeleton need --symmetry auto or a group other than C1")
+      call run_die(r, "--sym-skeleton and --no-sym-skeleton need symmetry, not --symmetry off or C1")
    end if
    r%restart = ""
    if (r%cli%is_set("restart")) call r%cli%get("restart", r%restart, r%err)
    sval = run_symmetry_refusal(r)
    if (len(sval) > 0) call run_die(r, sval)
+   if (r%sym_default) then
+      r%sym_fallback = run_symmetry_unsupported(r)
+      if (len(r%sym_fallback) > 0) r%sym_wanted = .false.
+   end if
 
    if (r%rimp2) then
       ! RI-MP2 (restricted or unrestricted, UHF/UKS) now follows the
@@ -1137,8 +1158,14 @@ program trc_main
    call run_api(r, trc_set_verbose(r%h, base_verbose))
    call run_api(r, trc_set_molecule(r%h, int(r%natm, c_int), real(r%z, c_double), xyz, int(r%chrg, c_int), &
                                 int(r%mult, c_int)))
-   if (r%symmetry /= "off") then
-      call run_api(r, trc_set_symmetry(r%h, app_c_string(r%symmetry), real(r%sym_tol, c_double)))
+   ! Always sent: a fresh context's own default is symmetry on.
+   if (r%sym_default .and. .not. r%sym_wanted) then
+      sval = "off"   ! a default request that falls back to C1: see run_symmetry_unsupported
+   else
+      sval = trim(r%symmetry)
+   end if
+   call run_api(r, trc_set_symmetry(r%h, app_c_string(sval), real(r%sym_tol, c_double)))
+   if (r%sym_wanted) then
       if (allocated(r%irrep_nelec)) call run_api(r, trc_set_irrep_nelec(r%h, app_c_string(r%irrep_nelec)))
       if (r%cli%is_set("no-sym-skeleton")) call run_api(r, trc_set_symmetry_skeleton(r%h, 0_c_int))
    end if
