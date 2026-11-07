@@ -29,7 +29,7 @@ module trc_binkernel
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t, trc_bin_orbits_t
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX, pc_has_variant, pc_cost
    use trc_rys_select, only: rys_select_init, rys_select_route
-   use trc_rys_kernels, only: rys_dispatch
+   use trc_rys_kernels, only: rys_dispatch, rys_has_variant
    use trc_mdg, only: mdg_routes
    implicit none
    private
@@ -423,7 +423,13 @@ contains
          rys_route = rys_select_route(key)
          if (mask /= 0) then
             launch%nwork_masked = launch%nwork_masked + nw
-            if (.not. rys_route .and. variant_exists(key + CLASS_RADIX**4)) then
+            if (rys_route) then
+               if (rys_has_variant(key + CLASS_RADIX**4)) then
+                  dkey = key + CLASS_RADIX**4
+                  launch%nwork_variant = launch%nwork_variant + nw
+                  launch%nlaunch_variant = launch%nlaunch_variant + 1
+               end if
+            else if (variant_exists(key + CLASS_RADIX**4)) then
                dkey = key + CLASS_RADIX**4
                launch%nwork_variant = launch%nwork_variant + nw
                launch%nlaunch_variant = launch%nlaunch_variant + 1

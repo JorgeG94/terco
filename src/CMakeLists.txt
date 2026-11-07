@@ -815,6 +815,18 @@ foreach(_tag ${_rys_classes})
 endforeach()
 list(JOIN _rys_classes "," _rys_classes_csv)
 
+# Parity skipping (docs/SYMMETRY_PARITY_SKIP.md): the z-masked variants of the
+# Rys-routed classes among the ten dominant ones (gen_perclass.py's
+# PARITY_RYS_TOP; the HGP ones are in ${_gen_dir}), where this build has them.
+set(_rys_masked_classes "")
+foreach(_tag 2111 2120 2121)
+  if(_tag IN_LIST _rys_classes)
+    list(APPEND _rys_masked_classes "${_tag}")
+    list(APPEND _rys_sources "${_rys_dir}/trc_pc_rys${_tag}z.F90")
+  endif()
+endforeach()
+list(JOIN _rys_masked_classes "," _rys_masked_classes_csv)
+
 list(LENGTH _rys_sources _nrys)
 message(STATUS "terco: ${_nrys} Rys class kernels in ${_rys_dir}")
 target_sources(${main_lib} PRIVATE ${_rys_sources} ${_rys_dir}/trc_rys_kernels.F90)
@@ -881,8 +893,14 @@ macro(_terco_gen_rys)
               ${_tag} ${_order_flag} --src-dir ${_hgp_template}
               --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_stage}/trc_pc_rys${_tag}.F90)
   endforeach()
+  foreach(_tag ${_rys_masked_classes})
+    terco_gen("gen_rys.py ${_tag} --dead z" ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/gen_rys.py
+              ${_tag} ${_order_flag} --src-dir ${_hgp_template} --dead z
+              --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_stage}/trc_pc_rys${_tag}z.F90)
+  endforeach()
   terco_gen("gen_rys_dispatch.py" ${Python3_EXECUTABLE}
             ${PROJECT_SOURCE_DIR}/scripts/gen_rys_dispatch.py --classes ${_rys_classes_csv}
+            --masked-classes "${_rys_masked_classes_csv}"
             -o ${_rys_stage}/trc_rys_kernels.F90)
   foreach(_tag ${_rys_grad_classes})
     terco_gen("gen_rys_grad.py ${_tag}" ${Python3_EXECUTABLE}
