@@ -614,3 +614,40 @@ python3 ../scripts/spike_parity_gen.py report /tmp/naph.csv /tmp/costs.json --pl
 
 The ctest entries `spike_parity` and `spike_parity_kernel` are
 DISABLED. `git diff 2291c9c -- src` is empty.
+
+## 10. Implementation (fork, decisions 1-6 of section 8a)
+
+Commits on `sym/parity-skip`, one per PR boundary:
+
+1. **Trimmed accumulation** (`gen_perclass.py`, `trim_accumulation`): the
+   scalar kernels add only the final-buffer nodes the HRR reads. Bit-identical
+   by construction (the HRR sees the same sums in the same order); the
+   golden outputs agree to the last printed digit but one (scf_mgga, 3e-14
+   absolute, the compiler vectorises the shorter loops differently).
+2. **Plumbing** (`src/eri/trc_parity.F90`, `trc_bins.F90`, `trc_binkernel.F90`,
+   `trc_eri.F90`): `parity_choose_axis` takes the axis `d` for which the group
+   contains the mirror that flips `d` and every atom that mirror fixes has
+   coordinate `d` exactly zero (most such shells, ties to z); a pair of two
+   such shells bins apart (`BIN_G_MASKED` in the bin key), the plan carries
+   `sM` per segment and sorts by (class, mask, weight), and `launch_classes`
+   hands the kernels the coordinate arrays in the cyclic order that makes the
+   axis their z and permutes D in and G out in `launch_in_frame` (2 nw^2
+   doubles of scratch per build, only when the axis is not z). Counters on the
+   engine: `parity_axis`, `nwork_masked`, `nwork_variant`, `nlaunch_variant`,
+   `parity_ops_base/masked`. `eri%parity_mode`, `TRC_PARITY` and
+   `parity_set_default` switch it (0 off, 1 auto, 2 force the frame).
+3. **HGP variants**: 15 `pcs{tag}z` kernels (the seven HGP classes of the top
+   ten, the three Rys-routed ones in their bra/ket-swapped order, and the
+   swaps of the HGP ones), dispatched at `key + CLASS_RADIX**4`.
+4. **Rys variants**: `gen_rys.py --dead z` for (dp|pp), (dp|ds), (dp|dp).
+
+Not done, deliberately (follow-ups):
+
+- **DF three-centre** (`gen_df.py`) reuses the four-centre VRR and takes the
+  same masks directly; the 2-centre metric is block-diagonal in parity.
+- **Gradients** (`gen_rys_grad.py`): the dead-axis derivative drops out, the
+  others halve their components (section 5.2); needs its own measurement.
+- **MD J/K** (`gen_md_j.py`, `gen_md_k.py`): halve the Hermite index sets.
+- The other 71 classes, the y and x axes without the permutation, and the
+  GPU register/occupancy check of the variants ([GPU], S15): not run.
+- `launch_in_frame` could use the caller's scratch instead of allocating.
