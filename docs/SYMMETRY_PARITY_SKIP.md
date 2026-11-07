@@ -581,7 +581,24 @@ the skeleton, 5.0-5.6x of the ideal 8x overall.
    spherical, including one f case, 4 to 5 orders inside the S14.2 gate; the
    residue is summation order, not the mapping.
 
-Questions 2-6 above are still open.
+Questions 2-6, decided for the fork's implementation (the user, acting as
+maintainer on the fork, 2026-11-07). These are the design's own
+recommendations:
+
+2. **Scope:** z-only masked variants for the dominant classes only, i.e.
+   the top ten by modelled cost (about 70% of it), with the list in the
+   generator. Every other class runs unmasked. State the host
+   compile-time cost; the GPU cost is measured in S15.
+3. **Mask tied to the detected group.** The dead-axis mask comes from the
+   stabilizer under the symmetry the SCF uses. With symmetry off or C1,
+   nothing is masked, and runs stay bit-identical to today.
+4. **Mixed-mask bins:** the plan builder splits segments by mask, so every
+   launch is uniform in its variant.
+5. **The trimmed accumulation (§4d.1) goes first,** as its own PR,
+   independent of symmetry. It must be bit-identical, or justified exactly.
+6. **GPU:** the masked kernels are validated on the host and the OpenMP
+   build only. The GPU register/occupancy check is an S15 item, marked
+   [GPU] not run.
 
 ## 9. Reproducing
 
