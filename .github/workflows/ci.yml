@@ -68,7 +68,7 @@ jobs:
           python-version: '3.x'
 
       - name: Setup Fortran compiler
-        uses: fortran-lang/setup-fortran@v1.9.0
+        uses: fortran-lang/setup-fortran@v1.11.0
         id: setup-fortran
         with:
           compiler: ${{ matrix.toolchain.compiler }}
@@ -118,7 +118,7 @@ jobs:
           python-version: '3.x'
 
       - name: Setup Fortran compiler
-        uses: fortran-lang/setup-fortran@v1.9.0
+        uses: fortran-lang/setup-fortran@v1.11.0
         id: setup-fortran
         with:
           compiler: gcc
@@ -192,7 +192,7 @@ jobs:
           python-version: '3.x'
 
       - name: Setup Fortran compiler
-        uses: fortran-lang/setup-fortran@v1.9.0
+        uses: fortran-lang/setup-fortran@v1.11.0
         id: setup-fortran
         with:
           compiler: gcc
@@ -285,7 +285,7 @@ jobs:
           python-version: '3.x'
 
       - name: Setup Fortran compiler
-        uses: fortran-lang/setup-fortran@v1.9.0
+        uses: fortran-lang/setup-fortran@v1.11.0
         id: setup-fortran
         with:
           compiler: gcc

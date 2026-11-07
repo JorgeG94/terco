@@ -42,7 +42,7 @@ jobs:
         with:
           python-version: '3.x'
       - name: Setup nvfortran
-        uses: fortran-lang/setup-fortran@v1.9.0
+        uses: fortran-lang/setup-fortran@v1.11.0
         with:
           compiler: nvidia-hpc
           version: ${{ matrix.version }}
