@@ -177,6 +177,31 @@ target_link_libraries(check_sym_scf_cs PRIVATE test-drive::test-drive)
 terco_add_check(check_sym_scf_skeleton check_sym_scf_skeleton.F90 NEEDS_BASIS)
 target_link_libraries(check_sym_scf_skeleton PRIVATE test-drive::test-drive)
 
+# Parity-skip design spike (sym/parity-skip only, never merged): quartet and
+# component counts by stabilizer, and the exactness of skipping the odd-parity
+# components (docs/SYMMETRY_PARITY_SKIP.md). Registered DISABLED like S13's.
+terco_add_check(spike_parity spike_parity.F90 NEEDS_BASIS)
+set_tests_properties(terco/spike_parity PROPERTIES DISABLED TRUE)
+
+# The kernel half of the spike: masked VRR/HRR kernels emitted by
+# scripts/spike_parity_gen.py into the build tree (nothing in src/generated),
+# compared with the unmasked kernels and timed. Not part of `all`: build it
+# with `cmake --build build --target spike_parity_kernel`.
+set(SPIKE_PK_SPECS
+    "1010:0,1010:4,1111:0,1111:0:r,1111:4,1111:2,1111:6,1111:1,1111:7,2020:0,2020:4,2121:0,2121:0:r,2121:4,2121:6,2222:0,2222:0:r,2222:4,2222:6"
+    CACHE STRING "class:mask[:r] kernels of the parity-skip kernel spike")
+set(SPIKE_PK_GEN ${CMAKE_CURRENT_BINARY_DIR}/spike_parity_kernels.F90)
+add_custom_command(
+  OUTPUT ${SPIKE_PK_GEN}
+  COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/spike_parity_gen.py module
+          ${SPIKE_PK_SPECS} -o ${SPIKE_PK_GEN}
+  DEPENDS ${PROJECT_SOURCE_DIR}/scripts/spike_parity_gen.py ${PROJECT_SOURCE_DIR}/scripts/gen_vrr.py
+          ${PROJECT_SOURCE_DIR}/scripts/gen_hrr.py
+  COMMENT "spike: emitting masked parity kernels")
+terco_add_check(spike_parity_kernel "spike_parity_kernel.F90;${SPIKE_PK_GEN}")
+set_target_properties(spike_parity_kernel PROPERTIES EXCLUDE_FROM_ALL TRUE)
+set_tests_properties(terco/spike_parity_kernel PROPERTIES DISABLED TRUE)
+
 # Point group C2 (gauche H2O2 and N2H4: the rotation moves every atom): detection
 # and pyscf's frame, SALC block-diagonality, the central oracle (RHF, UHF,
 # B3LYP) and pyscf anchors (pyscf_refs/sym_c2.ref), gradient symmetrisation.
