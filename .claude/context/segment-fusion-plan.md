@@ -39,11 +39,18 @@ Where the loss is, for benzene (88 ms over 9 iterations), from nsys:
   90.36 ms over 1067 launches with symmetry against 69.65 ms over 495
   without: 2.16x the launches, but each only 1.66x cheaper (84.7 us against
   140.7 us), so the total RISES 1.30x. The device is left underfilled.
-- About half is host-side per-segment cost: `cuStreamSynchronize` +26.2 ms
-  (+1691 calls), `cuMemsetD32Async` +10.5 ms (+4576 calls),
-  `cuMemcpyHtoDAsync` +8.2 ms (+2366 calls). `cudaLaunchKernel` barely
-  moves, so raw launch latency is not the problem: it is the zeroing and
-  synchronisation AROUND each segment.
+- The rest is host-side CUDA API cost that scales with the LAUNCH count:
+  `cuStreamSynchronize` +26.2 ms (+1691 calls), `cuMemsetD32Async` +10.5 ms
+  (+4576 calls), `cuMemcpyHtoDAsync` +8.2 ms (+2366 calls).
+  `cudaLaunchKernel` barely moves, so raw launch latency is not the problem.
+  **Do not add the sync time to the kernel time**: a `do concurrent` launch
+  is synchronous, so the host blocks inside `cuStreamSynchronize` while that
+  launch's own kernel runs, and nsys reports the host-side API duration and
+  the device-side kernel duration separately -- they overlap (15.5 us mean
+  sync against an 84.7 us mean kernel). The unambiguously additive host cost
+  is memset + HtoD = **18.7 ms, about 21% of the 88 ms**, not half. W1
+  established this from the published figures; it has not been confirmed by
+  a fresh profile.
 - The remainder is host CPU work outside the CUDA API.
 
 The same decomposition at 18 atoms comes out the other way: naphthalene's
@@ -130,15 +137,15 @@ substance of W2.
 | Stage | Title | Depends on | Status |
 |---|---|---|---|
 | W0 | Bound the win; no product code | - | done (GO for W2) |
-| W1 | Host-side per-segment cost | W0 | todo |
-| W2 | Per-segment weight in the kernels | W0, W1 | todo |
+| W1 | Host-side per-segment cost | W0 | done (no target) |
+| W2 | Per-segment weight in the kernels | W0 | todo -- the only stage that helps |
 | W3 | Validation across builds | W1 or W2 | todo |
 | W4 | Re-measure the S15 matrix | W3 | todo |
 
-W1 and W2 are independent fixes to the two halves of the loss. W1 is cheap
-and carries no register risk; W2 is the one that needs a generator change
-and a full regeneration. Do W1 first and let W0's numbers decide whether W2
-is worth its cost.
+W1 and W2 were meant to be independent fixes to the two halves of the loss.
+W1 found that there are not two halves: both the extra GPU kernel time and
+the extra host-side API cost scale with the launch count, so W2 is the only
+stage that addresses either. Go straight to W2.
 
 ## W0 - Bound the win  [DONE: GO for W2]
 
@@ -210,24 +217,68 @@ many launches fusion would remove and what that is worth.
 - **Done when** there is a table of current against fused launch counts for
   the four systems, with the cap's effect quantified, and a go/no-go for W2.
 
-## W1 - Host-side per-segment cost
+## W1 - Host-side per-segment cost  [DONE: no target; do not attempt]
 
-**Goal**: remove the synchronisation and zeroing that scale with the
-segment count, without touching a kernel or a generator.
+**W1 as specified cannot be done, because its premise was wrong.** The three
+API costs are not per segment. They are a fixed multiple of the LAUNCH
+count -- nvfortran's prologue for one `do concurrent` offload region, not
+terco code:
 
-- Targets, measured on benzene (per-iteration figures are for the whole
-  9-iteration run): +1691 `cuStreamSynchronize` calls, +4576
-  `cuMemsetD32Async`, +2366 `cuMemcpyHtoDAsync`.
-- Batch the per-segment buffer zeroing into one memset per launch group;
-  hoist the host-to-device copies out of the segment loop; drop
-  synchronisation between consecutive launches of the same class where
-  nothing reads the intermediate result.
-- No kernel signature changes, no regeneration, no new device arrays, so no
-  register-pressure risk.
-- **Done when** benzene's `cuStreamSynchronize`, `cuMemsetD32Async` and
-  `cuMemcpyHtoDAsync` counts with symmetry on are within ~10% of the
-  symmetry-off counts, `check_sym_fock` is unchanged and green, and the
-  energies are bit-identical to before the change.
+| API | delta (calls) | per extra launch |
+|---|---|---|
+| `cuMemsetD32Async` | +4576 | 7.94 |
+| `cuMemcpyHtoDAsync` | +2366 | 4.11 |
+| `cuStreamSynchronize` | +1691 | 2.94 |
+
+Benzene is 85 launches per Fock build with symmetry against 21 without, so
+64 extra per build and 576 over 9 iterations. Taking the constants as 8/4/3
+and applying them to the whole-process counts predicts 4608/2304/1728
+against the measured 4576/2366/1691 -- within 1.4%, 2.7% and 2.1%, on both
+sides of the comparison.
+
+The per-segment reading is excluded by the same data: benzene's plan has
+**5712 segments** against 85 launches (~67 segments per launch), so a call
+issued per segment would make the deltas 5-14x larger than they are.
+
+Audited and confirmed: the `do while (c0 <= nseg)` loop
+(`trc_binkernel.F90:385-475`) contains **zero** `!$acc` directives, zero
+allocations and zero zeroing -- only host integer arithmetic and one
+dispatch call. The dispatchers are a `select case` to one generated driver,
+one `do concurrent` per dispatch, with every per-thread workspace a
+fixed-size automatic inside the item routine, so nvfortran emits no implicit
+per-launch copy. All 30 array arguments the Fock kernels read are explicitly
+mapped, and every module array in device code carries `!$acc declare
+create`, so there is no implicit copy to hoist. terco issues no memset at
+all: every zeroing on the path is a `do concurrent` kernel, once per build.
+
+terco's own per-build device traffic is ~11 HtoD, ~2 DtoH and ~6 syncs, i.e.
+~3-4% of the measured deltas and almost all of it common to both sides.
+There is nothing to batch, hoist or drop that would register.
+
+**Consequence: the entire measured host-side excess is proportional to the
+launch count, so W2 is the only stage that can remove it.** W2 takes
+benzene 85 -> 33 launches, which is ~61% off each of the three counts:
+
+| per Fock build | off (21) | now (85) | after W2 (33) |
+|---|---|---|---|
+| `cuMemsetD32Async` | 168 | 680 | 264 |
+| `cuMemcpyHtoDAsync` | 84 | 340 | 132 |
+| `cuStreamSynchronize` | 63 | 255 | 99 |
+
+**And W1's old acceptance criterion was unreachable even in principle.** It
+asked for the three counts within ~10% of the symmetry-off counts, which
+reduces to "launches within 10% of 21 per build". W0 measured full fusion
+landing at 33, not 21, because `bins_skel_cut_first` forms class keys the
+full plan never does. Restate any such criterion against **8/4/3 times the
+fused launch count** (33 per build for benzene), or drop it for W4's
+wall-time target.
+
+Rejected on the brief's own rules, not on effort: fusing mask-split launches
+would reorder segments, changing the order of accumulations into `jmat` and
+so the last bits of the energy on the serial host build, which
+`check_sym_parity.F90:504` relies on reproducing bit-for-bit. It is also
+worth nothing on benzene, where W0 measured fused-by-`(class, mask)` = 33 =
+the number of distinct classes, so the mask splits nothing.
 
 ## W2 - Per-segment weight in the kernels
 
