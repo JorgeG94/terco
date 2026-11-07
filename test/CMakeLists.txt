@@ -2397,3 +2397,9 @@ if(NOT TERCO_LONG_TESTS)
     endif()
   endforeach()
 endif()
+
+# Symmetry-unique pair list design study (docs/SYMMETRY_UNIQUE_PAIRS.md):
+# counts, memory model, pair-data reconstruction and exactness prototype.
+# Registered DISABLED; run by hand: spike_unique <xyz> <basis.json> <count|verify>.
+terco_add_check(spike_unique spike_unique.F90 NEEDS_BASIS)
+set_tests_properties(terco/spike_unique PROPERTIES DISABLED TRUE)
