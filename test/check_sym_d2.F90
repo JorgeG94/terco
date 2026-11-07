@@ -351,11 +351,16 @@ contains
             call ref_close(u)
             return
          end if
+         ! irrep_map -> pyscf_frame opens sym_d2.ref on a unit of its own, and
+         ! a file already connected to one unit cannot be connected to a second
+         ! (nvfortran's runtime enforces this and returns iostat 207; gfortran
+         ! does not check, which is why this only failed on the device build).
+         ! Drop the outer unit across the call: goto_tag rewinds, so the read
+         ! position here does not matter.
+         call ref_close(u)
          pm = irrep_map(geom, MOL(im), error)
-         if (allocated(error)) then
-            call ref_close(u)
-            return
-         end if
+         if (allocated(error)) return
+         call ref_require('sym_d2.ref', u)
          do ib = 1, NBAS
             do ik = 1, 2
                if (ik /= ib) cycle  ! 6-31G* Cartesian, cc-pVDZ spherical: the anchored pairs

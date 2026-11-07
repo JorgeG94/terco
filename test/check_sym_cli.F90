@@ -57,6 +57,11 @@ module check_sym_cli_suite
    real(dp), parameter :: TOL_G = 1.0e-9_dp       !! gradient, symmetry vs C1
    real(dp), parameter :: TOL_ANCHOR = 1.0e-8_dp  !! terco vs pyscf, RHF energy (measured 4e-12)
    character(len=*), parameter :: TIGHT = ' --econv 1e-12 --gconv 1e-10 --silent'
+   character(len=*), parameter :: BS = char(92)
+      !! One backslash, for the shell and TOML escapes below. NOT written as a
+      !! literal '\' : backslash in a character literal is an ordinary character
+      !! to gfortran but an escape introducer to nvfortran, which silently eats
+      !! it and leaves the shell with an unbalanced quote.
 
 contains
 
@@ -257,13 +262,13 @@ contains
       call write_toml(work_dir//'/case/sym.toml', [character(len=96) :: &
                       '[molecule]', 'geometry = "hocl.xyz"', &
                       '[basis]', 'main = "basis_sets/cc-pvdz.json"', &
-                      '[scf]', 'symmetry = "auto"', 'symmetry_tol = 1e-6', 'irrep_nelec = "A'//"'"//'=20,A\"=6"', &
+                      '[scf]', 'symmetry = "auto"', 'symmetry_tol = 1e-6', 'irrep_nelec = "A'//"'"//'=20,A'//BS//'"=6"', &
                       'energy_tol = 1e-12', 'commutator_tol = 1e-10', &
                       '[output]', 'json = "toml.json"', 'silent = true'])
       call run_cli_raw('cd '//work_dir//' && '//cli_exe//' case/sym.toml > toml.out 2>&1', rc)
       call check(error, rc == 0, "the TOML run failed:"//new_line('a')//slurp(work_dir//'/toml.out'))
       if (allocated(error)) return
-      call run_cli('hocl.xyz'//BASIS//' --symmetry auto --symmetry-tol 1e-6 --irrep-nelec "A'//"'"//'=20,A\"=6"'// &
+      call run_cli('hocl.xyz'//BASIS//' --symmetry auto --symmetry-tol 1e-6 --irrep-nelec "A'//"'"//'=20,A'//BS//'"=6"'// &
                    TIGHT//' --json '//work_dir//'/flags.json > '//work_dir//'/flags.out 2>&1', rc)
       call check(error, rc == 0, "the flag run failed:"//new_line('a')//slurp(work_dir//'/flags.out'))
       if (allocated(error)) return
@@ -454,11 +459,11 @@ contains
       call run_cli('hocl.xyz'//BASIS//' --symmetry auto'//TIGHT//' --json '//work_dir//'/n0.json > '//work_dir//'/n0.out 2>&1', rc)
       call check(error, rc == 0, "the aufbau run failed")
       if (allocated(error)) return
-      call run_cli('hocl.xyz'//BASIS//' --symmetry auto --irrep-nelec "A'//"'"//'=20,A\"=6"'//TIGHT// &
+      call run_cli('hocl.xyz'//BASIS//' --symmetry auto --irrep-nelec "A'//"'"//'=20,A'//BS//'"=6"'//TIGHT// &
                    ' --json '//work_dir//'/n1.json > '//work_dir//'/n1.out 2>&1', rc)
       call check(error, rc == 0, "the fixed aufbau counts failed:"//new_line('a')//slurp(work_dir//'/n1.out'))
       if (allocated(error)) return
-      call run_cli('hocl.xyz'//BASIS//' --symmetry auto --irrep-nelec "A'//"'"//'=18,A\"=8"'//TIGHT// &
+      call run_cli('hocl.xyz'//BASIS//' --symmetry auto --irrep-nelec "A'//"'"//'=18,A'//BS//'"=8"'//TIGHT// &
                    ' --json '//work_dir//'/n2.json > '//work_dir//'/n2.out 2>&1', rc)
       call check(error, rc == 0, "the non-aufbau counts failed:"//new_line('a')//slurp(work_dir//'/n2.out'))
       if (allocated(error)) return
@@ -481,26 +486,26 @@ contains
 
    subroutine test_irrep_nelec_bad(error)
       type(error_type), allocatable, intent(out) :: error
-      call refused('hocl.xyz'//BASIS//' --symmetry auto --irrep-nelec "A'//"'"//'=20,A\"=8"', 'does not add up', error)
+      call refused('hocl.xyz'//BASIS//' --symmetry auto --irrep-nelec "A'//"'"//'=20,A'//BS//'"=8"', 'does not add up', error)
       if (allocated(error)) return
-      call refused('hocl.xyz'//BASIS//' --symmetry auto --irrep-nelec "B1=20,A\"=6"', "is not an irrep of Cs", error)
+      call refused('hocl.xyz'//BASIS//' --symmetry auto --irrep-nelec "B1=20,A'//BS//'"=6"', "is not an irrep of Cs", error)
       if (allocated(error)) return
-      call refused('hocl.xyz'//BASIS//' --symmetry auto --irrep-nelec "A'//"'"//'=21,A\"=5"', 'even number', error)
+      call refused('hocl.xyz'//BASIS//' --symmetry auto --irrep-nelec "A'//"'"//'=21,A'//BS//'"=5"', 'even number', error)
       if (allocated(error)) return
       call refused('hocl.xyz'//BASIS//' --symmetry auto --irrep-nelec "A'//"'"//'20"', 'is not LABEL=ELECTRONS', error)
       if (allocated(error)) return
-      call refused('hocl.xyz'//BASIS//' --symmetry off --irrep-nelec "A'//"'"//'=20,A\"=6"', 'needs --symmetry', error)
+      call refused('hocl.xyz'//BASIS//' --symmetry off --irrep-nelec "A'//"'"//'=20,A'//BS//'"=6"', 'needs --symmetry', error)
       if (allocated(error)) return
       call refused('hocl.xyz'//BASIS//' --symmetry auto --symmetry-tol=-1', 'must be positive', error)
    end subroutine test_irrep_nelec_bad
 
    subroutine test_grad_fixed_refused(error)
       type(error_type), allocatable, intent(out) :: error
-      call refused('hocl.xyz'//BASIS//' --symmetry auto --grad --irrep-nelec "A'//"'"//'=18,A\"=8"', &
+      call refused('hocl.xyz'//BASIS//' --symmetry auto --grad --irrep-nelec "A'//"'"//'=18,A'//BS//'"=8"', &
                    'not the aufbau occupation', error)
       if (allocated(error)) return
       ! The aufbau counts give a gradient: not refused.
-      call setup_run_ok('hocl.xyz'//BASIS//' --symmetry auto --grad --silent --irrep-nelec "A'//"'"//'=20,A\"=6"', error)
+      call setup_run_ok('hocl.xyz'//BASIS//' --symmetry auto --grad --silent --irrep-nelec "A'//"'"//'=20,A'//BS//'"=6"', error)
    end subroutine test_grad_fixed_refused
 
    subroutine test_path_refusals(error)
@@ -794,7 +799,7 @@ contains
       integer :: rc
 
       call setup()
-      call run_cli('hocl.xyz'//BASIS//' --irrep-nelec "A'//"'"//'=20,A\"=6"'//' --econv 1e-10 > '//work_dir//'/ir.out 2>&1', rc)
+      call run_cli('hocl.xyz'//BASIS//' --irrep-nelec "A'//"'"//'=20,A'//BS//'"=6"'//' --econv 1e-10 > '//work_dir//'/ir.out 2>&1', rc)
       call check(error, rc == 0, "a bare --irrep-nelec failed:"//new_line('a')//slurp(work_dir//'/ir.out'))
       if (allocated(error)) return
       text = slurp(work_dir//'/ir.out')

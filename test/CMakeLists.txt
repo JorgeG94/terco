@@ -2016,6 +2016,11 @@ else()
   endif()
 endif()
 target_include_directories(link_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+# link_c.c calls sqrt/fabs directly, so it needs libm on its own command line.
+# Linking libterco by FILE (above) does not propagate the library's own NEEDED
+# entries as link inputs, and a linker defaulting to --no-copy-dt-needed-entries
+# then fails with "DSO missing from command line".
+target_link_libraries(link_c PRIVATE m)
 # With nvc as the C compiler, a C main has to be linked with the OpenACC
 # multicore runtime itself: without -acc=multicore the energy comes back as
 # the nuclear repulsion alone (9.19 for water). Any other C compiler gets the

@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["sym_d2"] -> gen_sym_d2
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: ac0e69209bfa854c74d2e2e1bbea9c78336f9e280d6c8192068ae7317ab8c905
+# hash: 4a6e87d860976100122d820bc7d136714ac8ea56c9c8d7742bd195f126359c9c
 # files: test/check_sym_d2.F90 test/c2h4_twisted.xyz test/c2f4_twisted.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
 AXES_c2h4_twisted 9
 6.10338465875143399e-01 -6.34497044897677775e-01 4.74236709976454007e-01 7.45078805356918838e-01 2.56551206708430013e-01 -6.15661475280332438e-01
