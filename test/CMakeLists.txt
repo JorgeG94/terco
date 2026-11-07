@@ -293,6 +293,18 @@ foreach(_v md:TRC_MDJ=1 mdrule: mdg:)
   set_tests_properties(terco/check_sym_fock_${_n} PROPERTIES ENVIRONMENT
                        "${_env}" SKIP_REGULAR_EXPRESSION "SKIP")
 endforeach()
+# Parity skipping (docs/SYMMETRY_PARITY_SKIP.md): the Fock matrix with the
+# dead-axis masks and the engine frame against the one without, on the planar
+# and the mixed-mask molecules; _f is the uncontracted l = 0..3 set.
+terco_add_check(check_sym_parity check_sym_parity.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_parity PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_parity PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_parity)
+terco_add_check(check_sym_parity_f check_sym_parity.F90 NEEDS_BASIS ARGS f)
+target_link_libraries(check_sym_parity_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_parity_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_parity_f)
+set_tests_properties(terco/check_sym_parity_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 terco_add_check(check_sym_fock_f check_sym_fock.F90 NEEDS_BASIS ARGS f)
 target_link_libraries(check_sym_fock_f PRIVATE test-drive::test-drive)
 set_target_properties(check_sym_fock_f PROPERTIES Fortran_MODULE_DIRECTORY

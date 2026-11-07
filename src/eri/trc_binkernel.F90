@@ -50,7 +50,7 @@ module trc_binkernel
    !! tightening it costs. This makes that measurable.
 
    public :: trc_set_prim_margin
-   public :: binkernel_fock_bins
+   public :: binkernel_fock_bins, binkernel_have_variants
 
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
 
@@ -86,6 +86,20 @@ contains
       call get_environment_variable("TRC_BIN_SORT", v)
       res = (trim(v) == "1")
    end function bin_sort_on
+
+   logical function binkernel_have_variants() result(res)
+      !! Whether this build has any masked kernel variant (parity skipping).
+      !! The engine applies the axis permutation of the dead axis only then
+      !! (trc_parity): without a variant it would permute D and G for nothing.
+      res = .false.
+   end function binkernel_have_variants
+
+   logical function variant_exists(dkey) result(res)
+      !! Whether the dispatch key `dkey` (class key + mask*CLASS_RADIX**4)
+      !! names a masked kernel; otherwise the launch runs the unmasked kernel.
+      integer, intent(in) :: dkey
+      res = dkey < 0  ! keys are never negative: no masked kernel is generated yet
+   end function variant_exists
 
    subroutine trc_set_prim_margin(f)
       real(dp), intent(in) :: f
@@ -283,7 +297,7 @@ contains
       ! the basis instead. Two of them were once added to `enter data`
       ! and not to `exit data`, which is a stale mapping and an illegal
       ! address rather than a wrong number.
-      call plan%sort_by_class(CLASS_RADIX)
+      call plan%sort_by_class(CLASS_RADIX, by_mask=.true.)
 
       !$acc enter data copyin(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
       !$acc                   plan%sD, plan%sOff)
@@ -295,7 +309,7 @@ contains
                          plan%sOff, b%npair, b%sp_i, b%sp_j, &
                          b%sp_q, thresh, launch%jfac, launch%kfac, dsh, pairs%nbas, launch%nkept)
       else
-         call launch_classes(b, pairs, quartets, launch, plan, dsh, dmat, jmat)
+         call launch_in_frame(b, pairs, quartets, launch, plan, dsh, dmat, jmat)
       end if
       !$acc exit data delete(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
       !$acc                  plan%sD, plan%sOff)
@@ -307,7 +321,52 @@ contains
    ! TRC_LAUNCH_CAP quartets of one), each through the class's own HGP or
    ! Rys kernel. The plan's arrays are already on the device.
    !
-   subroutine launch_classes(b, pairs, quartets, launch, plan, dsh, dmat, jmat)
+   subroutine launch_in_frame(b, pairs, quartets, launch, plan, dsh, dmat, jmat)
+      !! launch_classes in the engine's frame (parity skipping): the kernels
+      !! are handed the coordinate arrays in the order `quartets%axperm`
+      !! says, so that the dead axis is their z, and read the density and add
+      !! into the result in that frame. The identity frame is the plain call.
+      type(pair_bins_t), intent(in) :: b
+      type(trc_shell_pairs_t), intent(in) :: pairs
+      type(trc_pair_quartets_t), intent(in) :: quartets
+      type(trc_bin_launch_t), intent(inout) :: launch
+      type(trc_bin_plan_t), intent(in) :: plan
+      real(dp), intent(in)    :: dsh(pairs%nbas, pairs%nbas)
+      real(dp), intent(in)    :: dmat(launch%ndens, launch%nao, launch%nao)
+      real(dp), intent(inout) :: jmat(launch%ndens, launch%nao, launch%nao)
+      real(dp), allocatable :: dfr(:, :, :), gfr(:, :, :)
+      integer :: ax(3)
+
+      ax = quartets%axperm
+      if (all(ax == [1, 2, 3])) then
+         call launch_classes(b, pairs, quartets, launch, plan, dsh, dmat, jmat, &
+                             quartets%px, quartets%py, quartets%pz, quartets%ax, quartets%ay, quartets%az, &
+                             quartets%abx, quartets%aby, quartets%abz)
+         return
+      end if
+      allocate (dfr(launch%ndens, launch%nao, launch%nao), gfr(launch%ndens, launch%nao, launch%nao))
+      !$acc enter data create(dfr, gfr)
+      call frame_gather(launch%ndens, launch%nao, quartets%ao_perm, dmat, dfr)
+      call frame_zero(launch%ndens, launch%nao, gfr)
+      if (all(ax == [2, 3, 1])) then
+         call launch_classes(b, pairs, quartets, launch, plan, dsh, dfr, gfr, &
+                             quartets%py, quartets%pz, quartets%px, quartets%ay, quartets%az, quartets%ax, &
+                             quartets%aby, quartets%abz, quartets%abx)
+      else if (all(ax == [3, 1, 2])) then
+         call launch_classes(b, pairs, quartets, launch, plan, dsh, dfr, gfr, &
+                             quartets%pz, quartets%px, quartets%py, quartets%az, quartets%ax, quartets%ay, &
+                             quartets%abz, quartets%abx, quartets%aby)
+      else
+         error stop "terco: binkernel: the engine frame is not a cyclic axis permutation"
+      end if
+      call frame_gather(launch%ndens, launch%nao, quartets%ao_perm_inv, gfr, dfr)
+      call frame_add(launch%ndens, launch%nao, dfr, jmat)
+      !$acc exit data delete(dfr, gfr)
+      deallocate (dfr, gfr)
+   end subroutine launch_in_frame
+
+   subroutine launch_classes(b, pairs, quartets, launch, plan, dsh, dmat, jmat, &
+                             qpx, qpy, qpz, qax, qay, qaz, qabx, qaby, qabz)
       type(pair_bins_t), intent(in) :: b
       type(trc_shell_pairs_t), intent(in) :: pairs
       type(trc_pair_quartets_t), intent(in) :: quartets
@@ -318,9 +377,14 @@ contains
       real(dp), intent(in)    :: dmat(launch%ndens, launch%nao, launch%nao)
       real(dp), intent(inout) :: jmat(launch%ndens, launch%nao, launch%nao)
       !! The folded accumulator: the per-class kernels add J and K into it.
+      real(dp), intent(in)    :: qpx(quartets%nqp), qpy(quartets%nqp), qpz(quartets%nqp)
+      real(dp), intent(in)    :: qax(b%npair), qay(b%npair), qaz(b%npair)
+      real(dp), intent(in)    :: qabx(b%npair), qaby(b%npair), qabz(b%npair)
+      !! The product centres, the A centres and A - B along the KERNELS' axes
+      !! x, y, z: the quartets' own arrays, in the engine frame's order.
 
-      integer :: c0, c1, nl, key, nseg
-      integer(int64) :: lcap
+      integer :: c0, c1, nl, key, dkey, nseg, mask
+      integer(int64) :: lcap, nw
       real(dp) :: thresh, wt, jf, kf
 
       nseg = plan%nseg
@@ -330,6 +394,7 @@ contains
       lcap = launch_cap()
       do while (c0 <= nseg)
          key = plan%class_key(c0, CLASS_RADIX)
+         mask = plan%sM(c0)
          ! A skeleton plan's segments carry a weight (an orbit size): one
          ! launch per (class, weight), the weight multiplying both scalars.
          ! It cannot change a kernel's branch: they test jfac /= 0, kfac /= 0.
@@ -340,6 +405,7 @@ contains
          c1 = c0
          do while (c1 < nseg)
             if (plan%class_key(c1 + 1, CLASS_RADIX) /= key) exit
+            if (plan%sM(c1 + 1) /= mask) exit
             if (allocated(plan%sW)) then
                if (plan%sW(c1 + 1) /= wt) exit
             end if
@@ -347,6 +413,19 @@ contains
             c1 = c1 + 1
          end do
          nl = nl + 1
+         ! The dispatch key of a masked run (parity skipping): the class key
+         ! and, past it, the mask. A class without a masked variant runs the
+         ! unmasked kernel, which is right for every quartet.
+         nw = plan%sOff(c1 + 1) - plan%sOff(c0)
+         dkey = key
+         if (mask /= 0) then
+            launch%nwork_masked = launch%nwork_masked + nw
+            if (variant_exists(key + CLASS_RADIX**4)) then
+               dkey = key + CLASS_RADIX**4
+               launch%nwork_variant = launch%nwork_variant + nw
+               launch%nlaunch_variant = launch%nlaunch_variant + 1
+            end if
+         end if
          ! TRC_RYS_CLASSES routes this launch's whole class run to the
          ! Rys kernel instead of HGP's, for classes that have one --
          ! `rys_select_route` already checked that. Out of scope otherwise: Rys
@@ -356,30 +435,63 @@ contains
             ! MD exchange pass (trc_mdg), which orders the work its own way.
             continue
          else if (rys_select_route(key)) then
-            call rys_dispatch(key, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
+            call rys_dispatch(dkey, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
                               plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, &
                               b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
                               jf, kf, launch%omega, dsh, pairs%nbas, launch%nao, &
                               pairs%sh_l, pairs%ao_off, &
-                              quartets%nqp, quartets%z, quartets%c, quartets%px, quartets%py, quartets%pz, &
-                              quartets%ax, quartets%ay, quartets%az, &
-                              quartets%abx, quartets%aby, quartets%abz, quartets%n, &
+                              quartets%nqp, quartets%z, quartets%c, qpx, qpy, qpz, &
+                              qax, qay, qaz, &
+                              qabx, qaby, qabz, quartets%n, &
                               launch%ndens, dmat, jmat, launch%rank, launch%nranks)
          else
-            call pc_dispatch(key, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
+            call pc_dispatch(dkey, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
                              plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, &
                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
                              jf, kf, launch%omega, dsh, pairs%nbas, launch%nao, &
                              pairs%sh_l, pairs%ao_off, &
-                             quartets%nqp, quartets%z, quartets%c, quartets%px, quartets%py, quartets%pz, &
-                             quartets%ax, quartets%ay, quartets%az, &
-                             quartets%abx, quartets%aby, quartets%abz, quartets%n, &
+                             quartets%nqp, quartets%z, quartets%c, qpx, qpy, qpz, &
+                             qax, qay, qaz, &
+                             qabx, qaby, qabz, quartets%n, &
                              launch%ndens, dmat, jmat, launch%rank, launch%nranks)
          end if
          c0 = c1 + 1
       end do
       launch%nlaunch = nl
    end subroutine launch_classes
+
+   subroutine frame_gather(ndens, n, map, src, dst)
+      !! dst(d, i, j) = src(d, map(i), map(j)): a density into the engine's
+      !! frame with the AO map of the frame, or a result back out with its
+      !! inverse.
+      integer, intent(in) :: ndens, n
+      integer, intent(in) :: map(n)
+      real(dp), intent(in) :: src(ndens, n, n)
+      real(dp), intent(inout) :: dst(ndens, n, n)
+      integer :: i, j, d
+      do concurrent(j=1:n, i=1:n, d=1:ndens)
+         dst(d, i, j) = src(d, map(i), map(j))
+      end do
+   end subroutine frame_gather
+
+   subroutine frame_zero(ndens, n, dst)
+      integer, intent(in) :: ndens, n
+      real(dp), intent(inout) :: dst(ndens, n, n)
+      integer :: i, j, d
+      do concurrent(j=1:n, i=1:n, d=1:ndens)
+         dst(d, i, j) = 0.0_dp
+      end do
+   end subroutine frame_zero
+
+   subroutine frame_add(ndens, n, src, dst)
+      integer, intent(in) :: ndens, n
+      real(dp), intent(in) :: src(ndens, n, n)
+      real(dp), intent(inout) :: dst(ndens, n, n)
+      integer :: i, j, d
+      do concurrent(j=1:n, i=1:n, d=1:ndens)
+         dst(d, i, j) = dst(d, i, j) + src(d, i, j)
+      end do
+   end subroutine frame_add
 
    !
    ! Segment shape, for comparing this against a batching scheme that caps

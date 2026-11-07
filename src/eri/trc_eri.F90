@@ -40,7 +40,9 @@ module trc_eri
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
    use pic_profiler, only: profiler_start, profiler_stop
-   use trc_binkernel, only: binkernel_fock_bins
+   use trc_binkernel, only: binkernel_fock_bins, binkernel_have_variants
+   use trc_parity, only: parity_choose_axis, parity_axperm, parity_ao_perm, parity_mode_env, &
+                         PARITY_OFF, PARITY_FORCE_FRAME
    use trc_bin_tiles, only: bin_tiles_build
    use trc_grad, only: grad_bins
    use trc_rys_grad_kernels, only: RYSG_LMAX
@@ -140,6 +142,21 @@ module trc_eri
       !! when fock_resident is asked for it. Diagnostic: it costs a full
       !! extra enumeration pass.
       integer(int64) :: nwork = 0
+      integer(int64) :: nwork_masked = 0, nwork_variant = 0
+      integer :: nlaunch_variant = 0
+      !! Parity skipping, of the last bin launch (trc_bin_launch_t): work items
+      !! of the segments with the dead z axis of the kernels' frame, the part
+      !! of them that ran in a masked kernel variant, and those launches. The
+      !! counters a test reads to see that the masks were used and not
+      !! silently dropped.
+      integer :: parity_mode = -1
+      !! Set before `build`: PARITY_OFF, PARITY_AUTO or PARITY_FORCE_FRAME
+      !! (trc_parity). -1, the default, takes TRC_PARITY from the environment
+      !! (PARITY_AUTO without it). Only an engine built with a point group
+      !! has a dead axis at all.
+      integer :: parity_axis = 0
+      !! The dead axis of the last `build` (1 to 3 of the standard frame), 0
+      !! for none: the engine's mask and frame.
       type(comm_t) :: comm
       !! Ranks. Every rank builds the same bins and takes every nranks-th
       !! item of the sorted work list from its rank; the Fock matrix is then
@@ -349,7 +366,8 @@ contains
       type(trc_sym_geom_t), intent(in), optional :: sym
 
       integer :: i, j
-      integer, allocatable :: shmap(:, :)
+      integer, allocatable :: shmap(:, :), shmask(:)
+      integer :: pmode
       logical :: orbits
       real(dp), allocatable :: qs(:), one(:)
       ! Stage timing, kept in this%t_build: `build` is five routines with
@@ -358,6 +376,9 @@ contains
       type(timer_type) :: tm
 
       this%t_build = 0.0_dp
+      this%parity_axis = 0
+      pmode = this%parity_mode
+      if (pmode < 0) pmode = parity_mode_env()
       call tm%start()
 
       ! All three, not just Boys: the HGP primitive pairs and the Schwarz
@@ -449,8 +470,23 @@ contains
          ! size bucket must not tell the members of an orbit apart).
          call orbit_shell_map(b, sym, shmap)
          call sym_pairs_symmetrize_q(shmap, qs)
-         call bins_build_binned_pairs(b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
-                                      this%bins, pp_n=this%pairs%n, res=bres, shmap=shmap, orb=this%orb)
+         ! Parity skipping: the dead axis of the point group, and the shells
+         ! in its plane, which bin apart.
+         if (pmode /= PARITY_OFF) call parity_choose_axis(sym%group, b%sh_r, this%parity_axis, shmask)
+         ! A mask is only meaningful in a frame whose z is the dead axis: z
+         ! itself, or the permuted frame, which is applied only when a masked
+         ! kernel exists to profit from it (or a test forces it).
+         if (this%parity_axis /= 3 .and. .not. (binkernel_have_variants() .or. pmode == PARITY_FORCE_FRAME)) then
+            this%parity_axis = 0
+         end if
+         if (this%parity_axis > 0) then
+            call bins_build_binned_pairs(b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
+                                         this%bins, pp_n=this%pairs%n, res=bres, shmap=shmap, orb=this%orb, &
+                                         shmask=shmask)
+         else
+            call bins_build_binned_pairs(b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
+                                         this%bins, pp_n=this%pairs%n, res=bres, shmap=shmap, orb=this%orb)
+         end if
       else
          call bins_build_binned_pairs(b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
                                       this%bins, pp_n=this%pairs%n, res=bres)
@@ -460,6 +496,14 @@ contains
       call tm%start()
 
       call bins_build_pair_quartets(this%bins, this%pairs, this%quartets)
+      ! The engine's frame: the dead axis is the kernels' z (a permutation of
+      ! D and G per build, hence only when the axis is not z already).
+      if (this%parity_axis > 0 .and. this%parity_axis /= 3) then
+         this%quartets%axperm = parity_axperm(this%parity_axis)
+         allocate (this%quartets%ao_perm(b%nao), this%quartets%ao_perm_inv(b%nao))
+         call parity_ao_perm(b%nshell, b%sh_l, b%sh_ao, b%nao, this%quartets%axperm, &
+                             this%quartets%ao_perm, this%quartets%ao_perm_inv)
+      end if
       if (orbits) then
          call bin_tiles_build(this%quartets%tiles, this%bins, b%nshell, this%orb)
       else
@@ -483,6 +527,9 @@ contains
       !$acc                   this%quartets%ax, this%quartets%ay, this%quartets%az, &
       !$acc                   this%quartets%abx, this%quartets%aby, this%quartets%abz, &
       !$acc                   this%quartets%n)
+      if (allocated(this%quartets%ao_perm)) then
+         !$acc enter data copyin(this%quartets%ao_perm, this%quartets%ao_perm_inv)
+      end if
       this%on_device = .true.
       this%t_build(5) = tm%get_elapsed_time()
    end subroutine build_structures
@@ -631,6 +678,9 @@ contains
       call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat, this%orb)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
+      this%nwork_masked = launch%nwork_masked
+      this%nwork_variant = launch%nwork_variant
+      this%nlaunch_variant = launch%nlaunch_variant
       call mdg_pass(this, b, dwork, jmat, jbins, kfac, ow, skel)
       if (md_j .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac, skel)
       !$acc wait
@@ -1174,6 +1224,9 @@ contains
       call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat, this%orb)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
+      this%nwork_masked = launch%nwork_masked
+      this%nwork_variant = launch%nwork_variant
+      this%nlaunch_variant = launch%nlaunch_variant
       !$acc wait
       !$acc update self(jmat, kmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -1361,6 +1414,9 @@ contains
                                      work(:, :, :, 2), work(:, :, :, 2), this%orb)
             this%nlaunch = launch%nlaunch
             this%nwork = launch%nwork
+            this%nwork_masked = launch%nwork_masked
+            this%nwork_variant = launch%nwork_variant
+            this%nlaunch_variant = launch%nlaunch_variant
             this%nkept = launch%nkept
             if (len_trim(ke) > 0) then
                block
@@ -1380,6 +1436,9 @@ contains
                                      work(:, :, :, 2), work(:, :, :, 2), this%orb)
          this%nlaunch = launch%nlaunch
          this%nwork = launch%nwork
+         this%nwork_masked = launch%nwork_masked
+         this%nwork_variant = launch%nwork_variant
+         this%nlaunch_variant = launch%nlaunch_variant
          !$acc wait
          call profiler_stop("eri: bins (hgp/rys)")
          call profiler_start("eri: md exchange", nvtx_only=.true.)
@@ -1553,6 +1612,9 @@ contains
                                work(:, :, ndens + 1:2*ndens), work(:, :, ndens + 1:2*ndens), this%orb)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
+      this%nwork_masked = launch%nwork_masked
+      this%nwork_variant = launch%nwork_variant
+      this%nlaunch_variant = launch%nlaunch_variant
       !$acc wait
       call profiler_stop("eri: bins (hgp/rys), several densities")
 
@@ -1818,6 +1880,9 @@ contains
       call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat, this%orb)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
+      this%nwork_masked = launch%nwork_masked
+      this%nwork_variant = launch%nwork_variant
+      this%nlaunch_variant = launch%nlaunch_variant
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -1849,6 +1914,9 @@ contains
       call this%md%release()
       this%orb = trc_bin_orbits_t()
       if (this%on_device) then
+         if (allocated(this%quartets%ao_perm)) then
+            !$acc exit data delete(this%quartets%ao_perm, this%quartets%ao_perm_inv)
+         end if
          !$acc exit data delete(this%pairs%sh_l, this%pairs%ao_off, this%pairs%sh_at, this%dsh, &
          !$acc                  this%bins%sp_i, this%bins%sp_j, &
          !$acc                  this%bins%sp_q, this%bins, &

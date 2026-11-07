@@ -16,6 +16,7 @@ target_sources(
           eri/trc_batch.F90      # primitive-pair batching
           eri/trc_hgp.F90        # Head-Gordon-Pople driver
           eri/trc_screen.F90     # Schwarz bounds
+          eri/trc_parity.F90     # parity skipping: dead axis, shell mask, axis permutation
           eri/trc_bins.F90       # the binned shell-pair container
           eri/trc_bin_tiles.F90  # exchange tiles: density pruning of the launch plan
           eri/trc_binkernel.F90  # the shared quartet kernel and the digestion
