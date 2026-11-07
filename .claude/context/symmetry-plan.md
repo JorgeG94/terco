@@ -86,7 +86,7 @@ assumption for the plan is:
 | S11 | Group D2h | S5 | done |
 | S12 | Symmetric and spherical tops, linear molecules | S11 | done |
 | S13 | Skeleton Fock design spike | S11 | done (approved, see `docs/SYMMETRY_FOCK.md` 6a) |
-| S14.1 | Orbit tables (`trc_sym_pairs`), closure and weight-sum check | S13 | todo |
+| S14.1 | Orbit tables (`trc_sym_pairs`), closure and weight-sum check | S13 | done |
 | S14.2 | Symmetry-aware bins/plan/tiles, skeleton entry, `check_sym_fock` | S14.1 | todo |
 | S14.3 | SCF wiring, central SCF oracle with the skeleton for all groups | S14.2 | todo |
 | S14.4 | MD J and MD exchange bra restriction (required before symmetry becomes the default) | S14.2 | todo |
