@@ -138,7 +138,7 @@ substance of W2.
 |---|---|---|---|
 | W0 | Bound the win; no product code | - | done (GO for W2) |
 | W1 | Host-side per-segment cost | W0 | done (no target) |
-| W2 | Per-segment weight in the kernels | W0 | todo -- the only stage that helps |
+| W2 | Per-segment weight in the kernels | W0 | done (landed; spills still zero) |
 | W3 | Validation across builds | W1 or W2 | todo |
 | W4 | Re-measure the S15 matrix | W3 | todo |
 
@@ -280,7 +280,7 @@ so the last bits of the energy on the serial host build, which
 worth nothing on benzene, where W0 measured fused-by-`(class, mask)` = 33 =
 the number of distinct classes, so the mask splits nothing.
 
-## W2 - Per-segment weight in the kernels
+## W2 - Per-segment weight in the kernels  [DONE]
 
 **Goal**: one launch per (class, mask). The weight becomes a per-segment
 datum the kernel reads, instead of a scalar folded into `jfac`/`kfac`.
@@ -311,6 +311,83 @@ datum the kernel reads, instead of a scalar folded into `jfac`/`kfac`.
   reachable canonical classes, stop and report rather than proceeding.
 - **Done when** fused launch counts match W0's prediction, spills are still
   zero, and W3 passes.
+
+### W2 results
+
+**Measured** (cc-pVDZ, `--econv 1e-10`, `--symmetry auto`, V100 cc70,
+nvfortran 26.5, `TERCO_LMAX=3`; per steady-state Fock build, from nsys as
+the difference between two consecutive `--iterations` runs -- W0's method):
+
+| system | launches before | after | W0 predicted | ERI ms before | after | sym off |
+|---|---|---|---|---|---|---|
+| benzene | 85 | **33** | 33 | 8.50 | **4.50** | 6.34 |
+| naphthalene_d2h | 88 | **36** | 36 | 15.70 | **11.79** | 24.46 |
+| pentacene_d2h | 90 | **36** | 36 | 71.48 | **66.61** | 184.92 |
+| tops_sf6 | 218 | **72** | 36 | 14.89 | **7.29** | 3.23 |
+
+Every system lands on exactly the number of distinct `(class, mask)` groups:
+the per-kernel launch histograms after fusion are {1: 33}, {1: 36}, {1: 36}
+and {1: 36, 2: 18}. Fusion is therefore complete; what is left over the
+symmetry-off 21 is `bins_skel_cut_first`'s swap, as W0 said.
+
+**SF6 does not match W0's 36, and its baseline is 218 and not 114, because
+parity skipping is NOT inert on this branch.** Benzene and SF6 each engage
+18 z-masked kernels under `--symmetry auto` with cc-pVDZ, against the zero
+W0's aside reported. The masks split the `(class, mask)` groups further, so
+SF6 has 72 groups rather than 36 -- a 3.03x reduction against W0's predicted
+3.17x. **The "parity skipping appears inert on the CLI path" aside above is
+stale for this branch** and whoever owns the parity work should re-check it.
+
+Benzene's ERI time is now **below** its symmetry-off baseline (4.50 against
+6.34 ms, and 3.86 against 4.44 on the next build), which is what W0's
+throughput model predicted. naphthalene and pentacene come out 2.07x and
+2.78x faster than symmetry-off on ERI time. SF6's ERI is still 2.3x above
+its C1 baseline, down from 4.6x: at 7 atoms with heavily stabilised orbits
+there is not enough work per class, and W2 does not fix that.
+
+**Registers: no spills introduced.** `cuobjdump -res-usage` on the LINKED
+`libterco.so`, `TERCO_LMAX=3`, kernel names normalised for the `_<line>_gpu`
+suffix that moves with the source. Over 1225 device functions: REG at the
+255 ceiling 587 -> 586, mean 183.6 -> 183.6, total STACK 2 684 272 ->
+2 684 608 bytes (+336, +0.013%), max STACK unchanged at 169 600, LOCAL 0
+throughout, and **every kernel whose STACK was 0 still has STACK 0**. For the
+353 `trc_pc_*` Fock kernels alone, 4 REG up (largest +16, on a kernel at
+142 -> 158) and 19 down; 51 STACK up and 46 down, largest +312 bytes on
+`trc_pc_k1222` (+0.9%).
+
+**Compile time: unchanged.** The generated kernels grow by comment lines and
+one dummy only, no extra executable statement (`trc_pc_k2222.F90` 20 270 ->
+20 313 lines). Interleaved nvfortran timings on a quiet box: (dd|dd) 562.4 ->
+547.3 s, (dp|dp) 132.5 -> 132.8, (dd|ps) 64.6 -> 63.6, Rys (ff|ff) 11.53 ->
+11.61, Rys (dd|dd) 4.49 -> 4.48, (pp|pp) 6.12 -> 6.11.
+
+**The energies move in the last bits, and it is the FUSION, not the weight.**
+Relocating the weight from `jfac`/`kfac` onto the digestion's `wq` is exact:
+both factors are powers of two, and a host build carrying the new kernels
+with the weight split still in place reproduces the base energies bit for
+bit, skeleton and off, for water, B2H6 and benzene. Merging the runs is what
+reorders: the chunked Rys and warp-role kernels map threads to work items in
+blocks whose boundaries depend on the launch's own extent, so a fused launch
+adds into G in a different order. On the serial host build benzene's
+converged energy moves 9.3e-12 Eh against a 1e-10 gate with the iteration
+count unchanged (water 2.8e-14, B2H6 6.5e-13). The symmetry-off plan never
+had a weight to fuse on and stays bit-identical. On the device the
+before/after spread (<= 4.6e-13 Eh total, <= 2.4e-12 on the two-electron
+part) is inside the same binary's own run-to-run spread (<= 2.8e-13 and
+<= 1.25e-12), i.e. the atomic accumulation order was never reproducible
+there.
+
+`eri%nwork` is unmoved: `check_sym_fock`'s pins are exact (water
+14627/9968, B2H6 360415/107763, benzene 4741001/1342393, naphthalene
+20671728/5451483).
+
+**Open question 2 is answered and closed**: `real(dp)`, as W0 recommended.
+
+**Note for W3/W4**: the tiled builder is the one in use and was measured, not
+assumed. Benzene's device profile carries `trc_mdj_*` kernels, so `jfac == 0`
+and the bin call is exchange-only and tiled (`bin_tiles_plan` ->
+`walk_skeleton`). Both skeleton builders fill `sW` through the same
+`bins_plan_emit`, so neither needed a change.
 
 ## W3 - Validation
 
