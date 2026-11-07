@@ -30,13 +30,13 @@ module trc_eri
    use trc_cart, only: cart_init
    use trc_hgp, only: hgp_build_pairs
    use trc_screen, only: screen_schwarz_bounds_rys, screen_pair_index
-   use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets, &
+   use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets, pair_image_source, &
                        bins_rep_weights
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t, trc_bin_orbits_t
    use trc_error, only: error_t
    use trc_sym_geom, only: trc_sym_geom_t
    use trc_sym_ao, only: trc_sym_ao_t, sym_ao_build
-   use trc_sym_pairs, only: sym_pairs_shell_map, sym_pairs_symmetrize_q, sym_pairs_symmetrize_dsh
+   use trc_sym_pairs, only: sym_pairs_shell_map, sym_pairs_symmetrize_q, sym_pairs_symmetrize_dsh, sym_pairs_wanted
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
    use pic_profiler, only: profiler_start, profiler_stop
@@ -122,6 +122,22 @@ module trc_eri
       type(trc_mdj_t) :: md
       type(trc_mdg_t) :: mg
       !! The MD exchange pass over the same pairs, for the g classes above TERCO_RYS_G_LTOT.
+      logical :: upair = .false.
+      !! The unique-pair build (docs/SYMMETRY_UNIQUE_PAIRS.md): `pairs` holds
+      !! primitive pairs for the orbit representatives only, the Schwarz bounds
+      !! were computed for them alone, and the bin-interleaved tables of the
+      !! images were rebuilt from them. Set by `build` when it is given a point
+      !! group (TRC_UNIQUE_PAIRS=0 turns it off). The paths that read `pairs`
+      !! directly (the non-symmetric Fock build, the gradient) call
+      !! `complete_pairs` first.
+      integer :: upair_nshell_pairs = 0
+      !! Ordered shell pairs whose primitive pairs `build` formed (all of
+      !! nshell**2 without the unique-pair build).
+      integer(int64) :: upair_npp_stored = 0
+      !! Primitive pairs held by `pairs` after `build`.
+      integer(int64) :: upair_npp_bins = 0
+      !! Primitive pairs of the pairs in the bins: what the full list holds, and
+      !! what the bin-interleaved tables are made of.
       logical :: needs_md = .false.
       !! A shell above f: HGP and Rys have no kernel for its classes, so J
       !! comes from trc_mdj and K from trc_mdg whatever the environment says.
@@ -351,6 +367,7 @@ contains
       integer :: i, j
       integer, allocatable :: shmap(:, :)
       logical :: orbits
+      logical, allocatable :: want(:, :)
       real(dp), allocatable :: qs(:), one(:)
       ! Stage timing, kept in this%t_build: `build` is five routines with
       ! very different costs and no way to tell from the outside which one
@@ -390,7 +407,25 @@ contains
       ! The kernel multiplies each pair by sh_c, so sh_c is the amplitude
       ! the prune judges by. The cutoff sits three orders below the
       ! screening threshold.
-      call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, thresh*1.0e-3_dp, this%pairs)
+      orbits = .false.
+      if (present(sym)) orbits = sym%group%order > 1
+      this%upair = .false.
+      if (orbits) then
+         ! The point group first: the unique-pair build forms primitive pairs
+         ! and Schwarz bounds for the orbit representatives only.
+         call orbit_shell_map(b, sym, shmap)
+         this%upair = unique_pairs_requested()
+      end if
+      if (this%upair) then
+         want = sym_pairs_wanted(shmap, b%sh_l)
+         call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, thresh*1.0e-3_dp, this%pairs, want)
+         this%upair_nshell_pairs = count(want)
+         deallocate (want)
+      else
+         call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, thresh*1.0e-3_dp, this%pairs)
+         this%upair_nshell_pairs = b%nshell*b%nshell
+      end if
+      this%upair_npp_stored = this%pairs%npp
       this%t_build(1) = tm%get_elapsed_time()
       call tm%start()
 
@@ -441,13 +476,12 @@ contains
          end do
       end if
 
-      orbits = .false.
-      if (present(sym)) orbits = sym%group%order > 1
       if (orbits) then
          ! The bins are closed under the group: Q is made invariant first (the
          ! equivalent bounds differ in the last bits, and the cut on Q and the
-         ! size bucket must not tell the members of an orbit apart).
-         call orbit_shell_map(b, sym, shmap)
+         ! size bucket must not tell the members of an orbit apart). With the
+         ! unique-pair build the images have no bound of their own (Q = 0
+         ! there), and the maximum over the orbit is the representative's.
          call sym_pairs_symmetrize_q(shmap, qs)
          call bins_build_binned_pairs(b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
                                       this%bins, pp_n=this%pairs%n, res=bres, shmap=shmap, orb=this%orb)
@@ -459,12 +493,15 @@ contains
       this%t_build(3) = tm%get_elapsed_time()
       call tm%start()
 
-      call bins_build_pair_quartets(this%bins, this%pairs, this%quartets)
       if (orbits) then
+         this%orb%ops = sym%group%ops
+         call bins_build_pair_quartets(this%bins, this%pairs, this%quartets, this%orb)
          call bin_tiles_build(this%quartets%tiles, this%bins, b%nshell, this%orb)
       else
+         call bins_build_pair_quartets(this%bins, this%pairs, this%quartets)
          call bin_tiles_build(this%quartets%tiles, this%bins, b%nshell)
       end if
+      this%upair_npp_bins = sum(int(this%quartets%n, int64))
       this%t_build(4) = tm%get_elapsed_time()
       call tm%start()
 
@@ -504,6 +541,88 @@ contains
       call sym_pairs_shell_map(wbc, ao, geom, shmap, err)
       if (err%has_error()) error stop "terco: eri%build with a point group: "//err%get_message()
    end subroutine orbit_shell_map
+
+   logical function unique_pairs_requested() result(res)
+      !! The unique-pair build is on for every engine built with a point group;
+      !! TRC_UNIQUE_PAIRS=0 forms the primitive pairs and Schwarz bounds of
+      !! every shell pair instead (the merged scheme's build), to compare.
+      character(len=8) :: e
+      e = " "
+      call get_environment_variable("TRC_UNIQUE_PAIRS", e)
+      res = trim(adjustl(e)) /= "0"
+   end function unique_pairs_requested
+
+   subroutine complete_pairs(this)
+      !! Give every pair of the bins its own primitive pairs in `pairs`, rebuilt
+      !! from its representative's (the centres flipped by the operation's
+      !! mask, as the bin-interleaved tables were): what the paths that read
+      !! `pairs` through the bins' (sp_i, sp_j) need, the non-symmetric Fock
+      !! build and the gradient. Host work, once, appended after the
+      !! representatives' entries; the device copy is replaced. A no-op
+      !! without the unique-pair build.
+      class(trc_eri_t), intent(inout) :: this
+      integer :: p, key, ksrc, nbas, npp0, npp1, kk, d, o_src, o_dst, n_src
+      integer, allocatable :: n_old(:)
+      real(dp) :: sg(3)
+      real(dp), allocatable :: pp(:), pc(:), pa(:), pr(:, :), pra(:, :), prb(:, :)
+
+      if (.not. this%upair) return
+      nbas = this%pairs%nbas
+      npp0 = this%pairs%npp
+      n_old = this%pairs%n
+      npp1 = npp0
+      do p = 1, this%bins%npair
+         key = (this%bins%sp_i(p) - 1)*nbas + this%bins%sp_j(p)
+         if (n_old(key) > 0) cycle
+         call pair_image_source(this%bins%sp_i(p), this%bins%sp_j(p), nbas, n_old, this%orb, ksrc, sg)
+         npp1 = npp1 + n_old(ksrc)
+      end do
+      allocate (pp(npp1), pc(npp1), pa(npp1), pr(npp1, 3), pra(npp1, 3), prb(npp1, 3))
+      pp(1:npp0) = this%pairs%p
+      pc(1:npp0) = this%pairs%c
+      pa(1:npp0) = this%pairs%a
+      pr(1:npp0, :) = this%pairs%r
+      pra(1:npp0, :) = this%pairs%ra
+      prb(1:npp0, :) = this%pairs%rb
+      npp1 = npp0
+      do p = 1, this%bins%npair
+         key = (this%bins%sp_i(p) - 1)*nbas + this%bins%sp_j(p)
+         if (n_old(key) > 0) cycle
+         call pair_image_source(this%bins%sp_i(p), this%bins%sp_j(p), nbas, n_old, this%orb, ksrc, sg)
+         n_src = n_old(ksrc)
+         o_src = this%pairs%off(ksrc)
+         o_dst = npp1
+         do kk = 1, n_src
+            pp(o_dst + kk) = this%pairs%p(o_src + kk)
+            pc(o_dst + kk) = this%pairs%c(o_src + kk)
+            pa(o_dst + kk) = this%pairs%a(o_src + kk)
+            do d = 1, 3
+               pr(o_dst + kk, d) = sg(d)*this%pairs%r(o_src + kk, d)
+               pra(o_dst + kk, d) = sg(d)*this%pairs%ra(o_src + kk, d)
+               prb(o_dst + kk, d) = sg(d)*this%pairs%rb(o_src + kk, d)
+            end do
+         end do
+         this%pairs%off(key) = o_dst
+         this%pairs%n(key) = n_src
+         npp1 = npp1 + n_src
+      end do
+      if (this%on_device) then
+         !$acc exit data delete(this%pairs%off, this%pairs%n, this%pairs%p, this%pairs%r, &
+         !$acc                  this%pairs%ra, this%pairs%rb, this%pairs%c)
+      end if
+      call move_alloc(pp, this%pairs%p)
+      call move_alloc(pc, this%pairs%c)
+      call move_alloc(pa, this%pairs%a)
+      call move_alloc(pr, this%pairs%r)
+      call move_alloc(pra, this%pairs%ra)
+      call move_alloc(prb, this%pairs%rb)
+      this%pairs%npp = npp1
+      if (this%on_device) then
+         !$acc enter data copyin(this%pairs%off, this%pairs%n, this%pairs%p, this%pairs%r, &
+         !$acc                   this%pairs%ra, this%pairs%rb, this%pairs%c)
+      end if
+      this%upair = .false.
+   end subroutine complete_pairs
 
    subroutine skeleton_dsh(this)
       !! Make the density bound dsh invariant under the group (its maximum
@@ -1043,6 +1162,8 @@ contains
       ! not for a gradient; a recomputed centre is a caller bug either way.
       if (any(this%pairs%sh_at == 0)) error stop &
          "terco: eri%gradient: a shell centre matches no atom coordinate exactly"
+      ! The gradient kernels read the primitive pairs through the bins' pair list.
+      call complete_pairs(this)
 
       jfac = 1.0_dp
       kfac = 1.0_dp
@@ -1171,6 +1292,8 @@ contains
       !$acc update device(this%dsh)
       launch = bin_launch(this, 1, jfac, kfac, ow)
       launch%nosym = .true.
+      ! The non-symmetric kernel reads the primitive pairs through the bins.
+      call complete_pairs(this)
       call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat, this%orb)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork

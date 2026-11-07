@@ -219,7 +219,11 @@ contains
          ! The slot order inside a bin just changed, and the bin-interleaved
          ! tables are keyed on it -- rebuild them from the same pairs
          ! hgp_build_pairs filled, and refresh the device copy.
-         call bins_build_pair_quartets(b, pairs, quartets)
+         if (orbits) then
+            call bins_build_pair_quartets(b, pairs, quartets, orb)
+         else
+            call bins_build_pair_quartets(b, pairs, quartets)
+         end if
          !$acc update device(quartets%z, quartets%c, quartets%a, &
          !$acc                quartets%px, quartets%py, quartets%pz, &
          !$acc                quartets%ax, quartets%ay, quartets%az, &

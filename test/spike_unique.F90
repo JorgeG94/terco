@@ -32,6 +32,10 @@
 !
 ! usage: spike_unique <xyz> <basis.json> <count|verify> [thresh]
 !
+! The counts and the reconstruction check read the FULL pair data the merged
+! build forms: run with TRC_UNIQUE_PAIRS=0 (the engine's default is now the
+! unique-pair build, which forms the representatives' only).
+!
 module spike_unique_mod
    use pic_types, only: dp, int64
    use trc_eri_data, only: trc_shell_pairs_t
@@ -118,6 +122,17 @@ program spike_unique
    tab = sym_pairs_build(eri%orb%shmap, eri%bins%sp_i(1:np), eri%bins%sp_j(1:np), eri%bins%sp_q(1:np), err)
    if (err%has_error()) stop 'sym_pairs_build failed'
    nrep = tab%nrep
+   print '(a,l1,a,i0,a,i0,a,i0,a,i0)', 'engine: unique-pair build ', eri%upair, ';  shell pairs formed ', eri%upair_nshell_pairs, &
+      ' of ', nsh*nsh, ';  primitive pairs stored ', eri%upair_npp_stored, ' for ', eri%upair_npp_bins
+   if (eri%dec%active) then
+      print '(a,i0,a,f10.2,a,f10.2)', 'hgp_build_pairs keep scratch (max primitives ', size(eri%pb%sh_e, 1), '): MB all pairs ', &
+         real(size(eri%pb%sh_e, 1), dp)**2*nsh*nsh/1.0e6_dp, '  wanted only ', &
+         real(size(eri%pb%sh_e, 1), dp)**2*eri%upair_nshell_pairs/1.0e6_dp
+   else
+      print '(a,i0,a,f10.2,a,f10.2)', 'hgp_build_pairs keep scratch (max primitives ', size(bas%sh_e, 1), '): MB all pairs ', &
+         real(size(bas%sh_e, 1), dp)**2*nsh*nsh/1.0e6_dp, '  wanted only ', &
+         real(size(bas%sh_e, 1), dp)**2*eri%upair_nshell_pairs/1.0e6_dp
+   end if
    call counts()
    if (verify) call reconstruct_and_verify()
 
