@@ -239,6 +239,28 @@ foreach(_v hgp:TRC_RYS_CLASSES=none rys:TRC_RYS_CLASSES=all cap:TRC_BIN_CAP=40 s
   set_tests_properties(terco/check_sym_fock_${_n} PROPERTIES ENVIRONMENT
                        "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};${_e}")
 endforeach()
+# The McMurchie-Davidson engines' skeleton bra (S14.4): MD J forced on the
+# uncontracted l = 0..3 set (skipped below TERCO_LMAX=3), MD J chosen by the
+# size rule on an extended system, and MD J + MD exchange on water cc-pVQZ
+# (skipped below TERCO_LMAX=4). Each checks the engine's own work counter.
+foreach(_v md:TRC_MDJ=1 mdrule: mdg:)
+  string(REPLACE ":" ";" _p "${_v}")
+  list(GET _p 0 _n)
+  list(LENGTH _p _np)
+  set(_env "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+  if(_np GREATER 1)
+    list(GET _p 1 _e)
+    if(NOT "${_e}" STREQUAL "")
+      list(APPEND _env "${_e}")
+    endif()
+  endif()
+  terco_add_check(check_sym_fock_${_n} check_sym_fock.F90 NEEDS_BASIS ARGS ${_n})
+  target_link_libraries(check_sym_fock_${_n} PRIVATE test-drive::test-drive)
+  set_target_properties(check_sym_fock_${_n} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_fock_${_n})
+  set_tests_properties(terco/check_sym_fock_${_n} PROPERTIES ENVIRONMENT
+                       "${_env}" SKIP_REGULAR_EXPRESSION "SKIP")
+endforeach()
 terco_add_check(check_sym_fock_f check_sym_fock.F90 NEEDS_BASIS ARGS f)
 target_link_libraries(check_sym_fock_f PRIVATE test-drive::test-drive)
 set_target_properties(check_sym_fock_f PROPERTIES Fortran_MODULE_DIRECTORY

@@ -73,13 +73,25 @@ module trc_mdg
       integer :: nranks = 1
       !! MPI ranks: each takes every nranks-th window, and the caller sums
       !! the ranks' matrices, as for the bins
+      logical :: skeleton = .false.
+      !! The skeleton Fock build: the bra of every window is a group of orbit
+      !! representatives, weighted by the orbit size (see trc_mdg_t's rep
+      !! groups). The caller symmetrizes the result.
    end type trc_mdg_scales_t
 
    type :: trc_mdg_t
       logical :: built = .false.
       integer :: ngrp = 0
+      !! groups of all the shell pairs of a type and primitive-count bucket
+      integer :: ngrp_all = 0
+      !! with the representative groups after them (ngrp + 1 .. ngrp_all)
+      logical :: has_reps = .false.
+      !! the representative groups exist (built with orbit weights and asked for)
       integer, allocatable :: gr_ty(:), gr_k(:), gr_off(:), gr_n(:)
       !! per group: type index in the MD J object, primitive count, offset into gl, size
+      integer, allocatable :: gr_par(:), gr_w(:)
+      !! per representative group: the group whose orbit representatives of one
+      !! orbit size it holds, and that orbit size
       integer, allocatable :: gl(:)
       !! shell-pair indices, group by group, each group by Schwarz bound descending
       real(dp), allocatable :: gq(:)
@@ -107,6 +119,9 @@ module trc_mdg
       !! TRC_MDG_STATS=1: count windows and launched and surviving quartets per
       !! build, and log them with per-class times. The survivor count is a host loop.
       integer(int64) :: st_win = 0, st_quart = 0, st_pass = 0
+      integer(int64) :: nquart = 0
+      !! shell-pair quartets (bra x ket pairs of the windows this rank ran) of
+      !! the last `fock`: the work counter, fewer for a skeleton build
       integer(int64) :: nwin = 0
       !! windows met so far this build, on every rank alike: the rank split
       real(dp) :: st_cpass = 0.0_dp, st_cquart = 0.0_dp
@@ -128,7 +143,7 @@ contains
       res = sz(1) /= 0
    end function mdg_routes
 
-   subroutine mdg_build(this, md, wb, sph)
+   subroutine mdg_build(this, md, wb, sph, reps)
       !! Groups of the MD J object's shell pairs, sorted, on the device, and
       !! their E matrices.
       class(trc_mdg_t), intent(inout) :: this
@@ -137,12 +152,18 @@ contains
       !! the basis md was built over (the split one on a general contraction)
       logical, intent(in) :: sph
       !! the CALLER's basis is spherical
-      integer :: t, s, n, k, g, m, kmax
+      logical, intent(in), optional :: reps
+      !! also form the representative groups of the skeleton build (needs md
+      !! built with the orbit weights)
+      integer :: t, s, n, k, g, m, kmax, w, gp, ngf, nrw, nrep_pairs
+      logical :: want_reps
       integer(int64), allocatable :: key(:)
       integer(int_index), allocatable :: sort_order(:)
       integer, allocatable :: bucket_pair(:)
 
       call this%release()
+      want_reps = .false.
+      if (present(reps)) want_reps = reps .and. md%has_reps
       kmax = 0
       if (md%nsp > 0) kmax = maxval(md%sp_nk(1:md%nsp))
       ! Count the groups: one per (type, primitive-count bucket) that has pairs.
@@ -158,8 +179,19 @@ contains
             end if
          end do
       end do
-      allocate (this%gr_ty(this%ngrp), this%gr_k(this%ngrp), this%gr_off(this%ngrp), this%gr_n(this%ngrp))
-      allocate (this%gl(max(md%nsp, 1)), this%gq(max(md%nsp, 1)), bucket_pair(max(md%nsp, 1)))
+      ! The representative groups: one per full group and orbit size present.
+      ngf = this%ngrp
+      nrw = 0
+      nrep_pairs = 0
+      if (want_reps) then
+         nrep_pairs = md%nrp
+         nrw = ngf*max(1, maxval(md%sp_w(1:md%nsp)))
+      end if
+      allocate (this%gr_ty(ngf + nrw), this%gr_k(ngf + nrw), this%gr_off(ngf + nrw), this%gr_n(ngf + nrw))
+      allocate (this%gr_par(ngf + nrw), this%gr_w(ngf + nrw))
+      this%gr_par = 0
+      this%gr_w = 1
+      allocate (this%gl(max(md%nsp + nrep_pairs, 1)), this%gq(max(md%nsp + nrep_pairs, 1)), bucket_pair(max(md%nsp, 1)))
       allocate (key(max(md%nsp, 1)), sort_order(max(md%nsp, 1)))
       g = 0
       m = 0
@@ -187,6 +219,41 @@ contains
             m = m + n
          end do
       end do
+      ! After the full groups, for each its orbit representatives, one group per
+      ! orbit size, in the full group's sorted order (so each is sorted by
+      ! bound too, which the staircase needs). An orbit lies in one full group:
+      ! its pairs share the type, the primitive count and the (symmetrized) bound.
+      this%ngrp_all = ngf
+      if (want_reps) then
+         do gp = 1, ngf
+            do w = 1, maxval(md%sp_w(1:md%nsp))
+               n = 0
+               do s = 1, this%gr_n(gp)
+                  if (md%sp_w(this%gl(this%gr_off(gp) + s)) == w) n = n + 1
+               end do
+               if (n == 0) cycle
+               g = this%ngrp_all + 1
+               this%ngrp_all = g
+               this%gr_ty(g) = this%gr_ty(gp)
+               this%gr_par(g) = gp
+               this%gr_w(g) = w
+               this%gr_off(g) = m
+               this%gr_n(g) = n
+               this%gr_k(g) = 1
+               n = 0
+               do s = 1, this%gr_n(gp)
+                  k = this%gl(this%gr_off(gp) + s)
+                  if (md%sp_w(k) /= w) cycle
+                  n = n + 1
+                  this%gl(m + n) = k
+                  this%gq(m + n) = md%sp_q(k)
+                  this%gr_k(g) = max(this%gr_k(g), md%sp_nk(k))
+               end do
+               m = m + n
+            end do
+         end do
+      end if
+      this%has_reps = want_reps
       deallocate (key, sort_order, bucket_pair)
       this%sph = sph
       this%nsh = wb%nshell
@@ -209,7 +276,7 @@ contains
       logical, allocatable :: need(:)
       real(dp), allocatable :: hc(:)
 
-      allocate (need(md%ntype), this%gh_off(this%ngrp))
+      allocate (need(md%ntype), this%gh_off(this%ngrp_all))
       need = .false.
       do c = 1, mdg_class_count()
          key = mdg_class_key(c)
@@ -219,7 +286,7 @@ contains
          if (t2 > 0) need(t2) = .true.
       end do
       total = 0
-      do g = 1, this%ngrp
+      do g = 1, this%ngrp_all
          this%gh_off(g) = -1
          if (.not. need(this%gr_ty(g))) cycle
          la = md%ty_la(this%gr_ty(g))
@@ -229,7 +296,7 @@ contains
       end do
       allocate (this%gh(max(total, 1_int64)))
       !$acc enter data create(this%gh)
-      do g = 1, this%ngrp
+      do g = 1, this%ngrp_all
          if (this%gh_off(g) < 0) cycle
          la = md%ty_la(this%gr_ty(g))
          lb = md%ty_lb(this%gr_ty(g))
@@ -287,7 +354,7 @@ contains
       type(trc_mdg_scales_t), intent(in) :: sc
       type(trc_mdg_scales_t) :: scd
       type(timer_type) :: tm
-      integer :: c, key, t1, t2, g1, g2
+      integer :: c, key, t1, t2
 
       !$acc update self(dsh)
       scd = sc
@@ -297,6 +364,10 @@ contains
       this%nwin = 0
       this%st_quart = 0
       this%st_pass = 0
+      this%nquart = 0
+      if (sc%skeleton .and. .not. this%has_reps) then
+        error stop "terco: a skeleton MD exchange needs mdg%build to have been given reps"
+      end if
       if (this%sph) then
          call fock_spherical(this, md, dsh, dmat, jmat, scd)
          call report_stats(this)
@@ -314,16 +385,7 @@ contains
             this%st_cpass = real(this%st_pass, dp)
             this%st_cquart = real(this%st_quart, dp)
          end if
-         do g1 = 1, this%ngrp
-            if (this%gr_ty(g1) /= t1) cycle
-            do g2 = 1, this%ngrp
-               if (this%gr_ty(g2) /= t2) cycle
-               ! One type against itself: each unordered pair of groups once,
-               ! a group against itself as a full square at half weight.
-               if (t1 == t2 .and. g2 > g1) cycle
-               call group_pair(this, md, [key, g1, g2], dsh, dmat, jmat, scd)
-            end do
-         end do
+         call class_groups(this, md, key, t1, t2, dsh, dmat, jmat, scd)
          if (this%stats) call class_line(this, key, tm)
          !$acc wait
          call profiler_stop("mdg: "//class_label(key))
@@ -418,7 +480,7 @@ contains
       type(trc_mdg_scales_t), intent(in) :: sc
       real(dp), allocatable :: ds(:, :, :), ks(:, :, :)
       type(timer_type) :: tm
-      integer :: nd, c, key, t1, t2, g1, g2
+      integer :: nd, c, key, t1, t2
       nd = size(dmat, 1)
       allocate (ds(nd, this%naos, this%naos), ks(nd, this%naos, this%naos))
       !$acc enter data create(ds, ks)
@@ -436,14 +498,7 @@ contains
             this%st_cpass = real(this%st_pass, dp)
             this%st_cquart = real(this%st_quart, dp)
          end if
-         do g1 = 1, this%ngrp
-            if (this%gr_ty(g1) /= t1) cycle
-            do g2 = 1, this%ngrp
-               if (this%gr_ty(g2) /= t2) cycle
-               if (t1 == t2 .and. g2 > g1) cycle
-               call group_pair(this, md, [key, g1, g2], dsh, ds, ks, sc)
-            end do
-         end do
+         call class_groups(this, md, key, t1, t2, dsh, ds, ks, sc)
          if (this%stats) call class_line(this, key, tm)
          !$acc wait
          call profiler_stop("mdg: "//class_label(key))
@@ -467,12 +522,63 @@ contains
       end do
    end subroutine zero_flat
 
-   subroutine group_pair(this, md, job, dsh, dmat, jmat, sc)
+   subroutine class_groups(this, md, key, t1, t2, dsh, dmat, jmat, sc)
+      !! One class: every pair of groups it runs, as mdg_fock describes.
+      !!
+      !! The ordinary build takes each unordered pair of groups of one type
+      !! once (the second not above the first), a group against itself as a
+      !! full square at half weight. The skeleton build takes the bra from the
+      !! representative groups of the first group alone, each weighted by its
+      !! orbit size, against the whole second group: the groups are closed
+      !! under the point group, so for two different groups
+      !! sum_{p in g1, q in g2} f(p, q) = sum_{p in reps(g1)} |orbit(p)| sum_{q in g2} f(p, q)
+      !! once the result is symmetrized, and the half weight of a group against
+      !! itself carries over.
+      type(trc_mdg_t), intent(inout) :: this
+      type(trc_mdj_t), intent(in) :: md
+      integer, intent(in) :: key, t1, t2
+      real(dp), intent(inout) :: dsh(:, :)
+      real(dp), intent(in)    :: dmat(:, :, :)
+      real(dp), intent(inout) :: jmat(:, :, :)
+      type(trc_mdg_scales_t), intent(in) :: sc
+      integer :: g1, g2
+      real(dp) :: wgt
+      if (sc%skeleton) then
+         do g1 = this%ngrp + 1, this%ngrp_all
+            if (this%gr_ty(g1) /= t1) cycle
+            do g2 = 1, this%ngrp
+               if (this%gr_ty(g2) /= t2) cycle
+               if (t1 == t2 .and. g2 > this%gr_par(g1)) cycle
+               wgt = real(this%gr_w(g1), dp)
+               if (g2 == this%gr_par(g1)) wgt = 0.5_dp*wgt
+               call group_pair(this, md, [key, g1, g2], wgt, dsh, dmat, jmat, sc)
+            end do
+         end do
+         return
+      end if
+      do g1 = 1, this%ngrp
+         if (this%gr_ty(g1) /= t1) cycle
+         do g2 = 1, this%ngrp
+            if (this%gr_ty(g2) /= t2) cycle
+            ! One type against itself: each unordered pair of groups once,
+            ! a group against itself as a full square at half weight.
+            if (t1 == t2 .and. g2 > g1) cycle
+            wgt = 1.0_dp
+            if (g1 == g2) wgt = 0.5_dp
+            call group_pair(this, md, [key, g1, g2], wgt, dsh, dmat, jmat, sc)
+         end do
+      end do
+   end subroutine class_groups
+
+   subroutine group_pair(this, md, job, wgt, dsh, dmat, jmat, sc)
       !! The staircase over one bra group and one ket group.
       type(trc_mdg_t), intent(inout) :: this
       type(trc_mdj_t), intent(in) :: md
       integer, intent(in) :: job(3)
       !! class key, bra group, ket group
+      real(dp), intent(in) :: wgt
+      !! the weight of the pair of groups: 1/2 on a group against itself, times
+      !! the orbit size of a skeleton bra group
       real(dp), intent(inout) :: dsh(:, :)
       real(dp), intent(in)    :: dmat(:, :, :)
       real(dp), intent(inout) :: jmat(:, :, :)
@@ -480,7 +586,7 @@ contains
       integer :: sz(N_SIZES)
       integer :: ka, kb, ib, ni, nimax, jmax, j0, nj, njmax, key, g1, g2
       integer(int64) :: per
-      real(dp) :: wdiag, wscr
+      real(dp) :: wscr
       integer(int64) :: hb0, hk0, perb, perk
 
       key = job(1)
@@ -494,8 +600,6 @@ contains
       end if
       ka = this%gr_k(g1)
       kb = this%gr_k(g2)
-      wdiag = 1.0_dp
-      if (g1 == g2) wdiag = 0.5_dp
       wscr = 1.0_dp
       if (sc%jfac /= 0.0_dp) wscr = 4.0_dp
       nimax = min(block_size(), this%gr_n(g1))
@@ -522,13 +626,14 @@ contains
             ! density, same sorted groups), so the count picks a disjoint share.
             this%nwin = this%nwin + 1
             if (mod(this%nwin - 1, int(sc%nranks, int64)) /= sc%rank) cycle
+            this%nquart = this%nquart + int(ni, int64)*nj
             if (this%stats) call count_window(this, md, [this%gr_off(g1) + ib, ni, ka, this%gr_off(g2) + j0, nj, kb], &
                                               sz, dsh, sc)
             call mdg_fused(key, this%sph, md%nhp, md%mp_z, md%mp_px, md%mp_py, md%mp_pz, md%mp_ax, md%mp_ay, &
                         md%mp_az, md%mp_bx, md%mp_by, md%mp_bz, md%mp_c, md%nsp, md%sp_ao1, md%sp_ao2, &
                         md%sp_as1, md%sp_as2, md%sp_k0, md%sp_nk, md%sp_sh1, md%sp_sh2, md%sp_q, &
                         size(this%gl), this%gl, this%gr_off(g1) + ib, ni, ka, this%gr_off(g2) + j0, nj, kb, &
-                        sc%thresh, sc%pcut, sc%omega, sc%jfac, sc%kfac, wdiag, size(dsh, 1), dsh, &
+                        sc%thresh, sc%pcut, sc%omega, sc%jfac, sc%kfac, wgt, size(dsh, 1), dsh, &
                         size(dmat, 2), size(dmat, 1), dmat, jmat, this%gh(hb0 + ib*perb + 1), &
                         this%gh(hk0 + j0*perk + 1), this%wrb, this%wsm)
          end do
@@ -623,7 +728,7 @@ contains
       if (this%built) then
          !$acc exit data delete(this%gl, this%gh, this%sh_l, this%sh_ao, this%sh_ao_sph)
       end if
-      if (allocated(this%gr_ty)) deallocate (this%gr_ty, this%gr_k, this%gr_off, this%gr_n)
+      if (allocated(this%gr_ty)) deallocate (this%gr_ty, this%gr_k, this%gr_off, this%gr_n, this%gr_par, this%gr_w)
       if (allocated(this%gl)) deallocate (this%gl, this%gq)
       if (allocated(this%gh)) deallocate (this%gh, this%gh_off)
       if (allocated(this%sh_l)) deallocate (this%sh_l, this%sh_ao, this%sh_ao_sph)
@@ -632,6 +737,8 @@ contains
          deallocate (this%wrb, this%wsm)
       end if
       this%ngrp = 0
+      this%ngrp_all = 0
+      this%has_reps = .false.
       this%built = .false.
    end subroutine mdg_release
 

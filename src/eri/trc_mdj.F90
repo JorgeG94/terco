@@ -35,7 +35,7 @@
 !     J. Chem. Phys. 160, 244109 (2024).
 !
 module trc_mdj
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use trc_basis_types, only: trc_basis_t
    use trc_bins, only: pair_bins_t
    use trc_mdj_kernels, only: mdj_ket, mdj_bra, mdj_bound, mdj_hermite, MDJ_LPMAX
@@ -92,6 +92,32 @@ module trc_mdj
       integer :: cl_k0(0:MDJ_LPMAX) = 0, cl_nk(0:MDJ_LPMAX) = 0, cl_hb(0:MDJ_LPMAX) = 0
       !! per lp block: first primitive pair less one, count, first Hermite slot less one
       real(dp), allocatable :: dt(:), jt(:)
+      !
+      ! The skeleton Fock build's bra (docs/SYMMETRY_FOCK.md 4.5). Built only
+      ! when `build` is given the pair orbit weights. The orbit
+      ! representatives' primitive pairs are COPIED after the nhp ordinary ones
+      ! (so the exchange engine's view of the lists is unchanged), the copy's
+      ! c already multiplied by the orbit size. The Hermite stage then runs P
+      ! over the copies only and Q over all pairs, and the bra stage reads
+      ! the copies' blocks of jt: the same kernels, other offsets.
+      !
+      logical :: has_reps = .false.
+      !! the representative copies exist
+      integer :: nhp_all = 0
+      !! primitive pairs with the copies: the length of the mp_ arrays
+      integer :: nrp = 0
+      !! representative shell pairs (the copies)
+      integer, allocatable :: sp_w(:)
+      !! per shell pair: its orbit size when it is an orbit representative, else 0
+      integer,  allocatable :: rsp_ao1(:), rsp_ao2(:), rsp_k0(:), rsp_nk(:), rsp_w(:)
+      !! first AO of each shell, first primitive pair less one, count, of the copies
+      integer,  allocatable :: rty_s0(:), rty_ns(:), rty_k0(:), rty_nk(:)
+      !! per type: the copies' shell pairs and primitive pairs, as ty_s0.. are for the full lists
+      integer :: cr_k0(0:MDJ_LPMAX) = 0, cr_nk(0:MDJ_LPMAX) = 0, cr_hb(0:MDJ_LPMAX) = 0
+      !! per lp block of copies: first primitive pair less one, count, first Hermite slot less one
+      integer(int64) :: npq = 0
+      !! (P, Q) primitive pairs the last `coulomb` handed the Hermite stage: the
+      !! work counter (a skeleton call's is a fraction of a full one's)
    contains
       procedure :: build => mdj_build
       procedure :: coulomb => mdj_coulomb
@@ -100,7 +126,7 @@ module trc_mdj
 
 contains
 
-   subroutine mdj_build(this, b, bins, thresh)
+   subroutine mdj_build(this, b, bins, thresh, pair_w)
       !! The primitive pair list over `bins`' shell pairs of `b`, its bounds,
       !! and the Hermite work arrays, all on the device.
       class(trc_mdj_t), intent(inout) :: this
@@ -108,40 +134,64 @@ contains
       !! the basis the bins were built over (the split one on a general contraction)
       type(pair_bins_t), intent(in) :: bins
       real(dp), intent(in) :: thresh
+      integer, intent(in), optional :: pair_w(:)
+      !! per bins pair: its orbit size if it is an orbit representative, else
+      !! 0 (trc_bins' bins_rep_weights). Given, the skeleton bra exists and
+      !! `coulomb`'s skeleton option can be used.
 
       integer :: t, lp
 
       call this%release()
       call order_pairs(this, b, bins)
-      call fill_prims(this, b, bins, thresh)
+      if (present(pair_w)) then
+         call fill_prims(this, b, bins, thresh, pair_w)
+      else
+         call fill_prims(this, b, bins, thresh)
+      end if
 
       this%ndt = 0
       do lp = 0, MDJ_LPMAX
          this%cl_hb(lp) = this%ndt
          this%ndt = this%ndt + this%cl_nk(lp)*nherm(lp)
       end do
+      do lp = 0, MDJ_LPMAX
+         this%cr_hb(lp) = this%ndt
+         this%ndt = this%ndt + this%cr_nk(lp)*nherm(lp)
+      end do
       allocate (this%dt(max(this%ndt, 1)), this%jt(max(this%ndt, 1)))
-      allocate (this%mp_ip(max(this%nhp, 1)), this%mp_nq(max(this%nhp, 1)))
+      allocate (this%mp_ip(max(this%nhp_all, 1)), this%mp_nq(max(this%nhp_all, 1)))
       this%cut = thresh*margin()
 
       !$acc enter data copyin(this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
       !$acc                   this%mp_ax, this%mp_ay, this%mp_az, &
       !$acc                   this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_sp, &
       !$acc                   this%sp_ao1, this%sp_ao2, this%sp_k0, this%sp_nk, &
-      !$acc                   this%sp_sh1, this%sp_sh2, this%sp_q, this%sp_as1, this%sp_as2) &
+      !$acc                   this%sp_sh1, this%sp_sh2, this%sp_q, this%sp_as1, this%sp_as2, &
+      !$acc                   this%rsp_ao1, this%rsp_ao2, this%rsp_k0, this%rsp_nk) &
       !$acc            create(this%mp_ip, this%mp_nq, this%dt, this%jt)
       this%on_device = .true.
 
       do t = 1, this%ntype
          if (this%ty_nk(t) == 0) cycle
-         call mdj_bound(this%ty_la(t), this%ty_lb(t), this%ty_nk(t), this%ty_k0(t), this%nhp, &
+         call mdj_bound(this%ty_la(t), this%ty_lb(t), this%ty_nk(t), this%ty_k0(t), this%nhp_all, &
                         this%mp_z, this%mp_ax, this%mp_ay, this%mp_az, &
                         this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_ip)
       end do
+      if (this%has_reps) then
+         ! The copies' bound I_P from the plain c, THEN the orbit size into c:
+         ! the weight is a factor of the bra stage, not of the screen.
+         do t = 1, this%ntype
+            if (this%rty_nk(t) == 0) cycle
+            call mdj_bound(this%ty_la(t), this%ty_lb(t), this%rty_nk(t), this%rty_k0(t), this%nhp_all, &
+                           this%mp_z, this%mp_ax, this%mp_ay, this%mp_az, &
+                           this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_ip)
+         end do
+         call weight_copies(this)
+      end if
       this%built = .true.
    end subroutine mdj_build
 
-   subroutine mdj_coulomb(this, nao, dmat, jmat, rank, nranks)
+   subroutine mdj_coulomb(this, nao, dmat, jmat, rank, nranks, skeleton)
       !! jmat = J[dmat], both (nao, nao), Cartesian, already on the device.
       !! Every element outside the kept shell pairs is set to zero.
       !!
@@ -154,9 +204,21 @@ contains
       real(dp), intent(in)  :: dmat(nao, nao)
       real(dp), intent(inout) :: jmat(nao, nao)
       integer,  intent(in), optional :: rank, nranks
+      logical,  intent(in), optional :: skeleton
+      !! Only the bra of the orbit representatives, each block times its orbit
+      !! size: jmat is then the SKELETON J, which the caller's symmetrization
+      !! turns into J (docs/SYMMETRY_FOCK.md 4.5). The ket side stays whole.
+      !! Needs `build` to have been given the orbit weights. Default false.
 
       integer :: t, lp, lq, lpt, qfix, c0, cstep
+      logical :: skel
 
+      skel = .false.
+      if (present(skeleton)) skel = skeleton
+      if (skel .and. .not. this%has_reps) then
+        error stop "terco: the skeleton MD J needs mdj%build to be given the orbit weights"
+      end if
+      this%npq = 0
       qfix = qlen_override()
       c0 = 0
       cstep = 1
@@ -173,7 +235,7 @@ contains
          if (this%ty_nk(t) == 0) cycle
          lpt = this%ty_la(t) + this%ty_lb(t)
          call mdj_ket(this%ty_la(t), this%ty_lb(t), this%ty_nk(t), this%ty_k0(t), &
-                      this%ty_k0(t) - this%cl_k0(lpt), this%cl_nk(lpt), this%cl_hb(lpt), this%nhp, &
+                      this%ty_k0(t) - this%cl_k0(lpt), this%cl_nk(lpt), this%cl_hb(lpt), this%nhp_all, &
                       this%mp_z, this%mp_ax, this%mp_ay, this%mp_az, &
                       this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_sp, &
                       this%nsp, this%sp_ao1, this%sp_ao2, nao, dmat, this%ndt, this%dt, this%mp_nq)
@@ -185,26 +247,48 @@ contains
          if (this%cl_nk(lp) == 0) cycle
          do lq = 0, MDJ_LPMAX
             if (this%cl_nk(lq) == 0) cycle
-            call mdj_hermite(lp, lq, this%cl_nk(lp), this%cl_k0(lp), this%cl_hb(lp), &
-                             this%cl_nk(lq), this%cl_k0(lq), this%cl_hb(lq), &
-                             chunk_length(this%cl_nk(lp), this%cl_nk(lq), qfix, cstep), c0, cstep, &
-                             this%nhp, &
-                             this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
-                             this%mp_ip, this%mp_nq, this%ndt, this%dt, this%jt, this%cut)
+            if (skel) then
+               if (this%cr_nk(lp) == 0) cycle
+               call mdj_hermite(lp, lq, this%cr_nk(lp), this%cr_k0(lp), this%cr_hb(lp), &
+                                this%cl_nk(lq), this%cl_k0(lq), this%cl_hb(lq), &
+                                chunk_length(this%cr_nk(lp), this%cl_nk(lq), qfix, cstep), c0, cstep, &
+                                this%nhp_all, &
+                                this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
+                                this%mp_ip, this%mp_nq, this%ndt, this%dt, this%jt, this%cut)
+               this%npq = this%npq + int(this%cr_nk(lp), int64)*this%cl_nk(lq)
+            else
+               call mdj_hermite(lp, lq, this%cl_nk(lp), this%cl_k0(lp), this%cl_hb(lp), &
+                                this%cl_nk(lq), this%cl_k0(lq), this%cl_hb(lq), &
+                                chunk_length(this%cl_nk(lp), this%cl_nk(lq), qfix, cstep), c0, cstep, &
+                                this%nhp_all, &
+                                this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
+                                this%mp_ip, this%mp_nq, this%ndt, this%dt, this%jt, this%cut)
+               this%npq = this%npq + int(this%cl_nk(lp), int64)*this%cl_nk(lq)
+            end if
          end do
       end do
       !$acc wait
       call profiler_stop("mdj: hermite")
       call profiler_start("mdj: bra", nvtx_only=.true.)
       do t = 1, this%ntype
-         if (this%ty_ns(t) == 0) cycle
          lpt = this%ty_la(t) + this%ty_lb(t)
-         call mdj_bra(this%ty_la(t), this%ty_lb(t), this%ty_ns(t), this%ty_s0(t), &
-                      this%cl_k0(lpt), this%cl_nk(lpt), this%cl_hb(lpt), this%nhp, &
-                      this%mp_z, this%mp_ax, this%mp_ay, this%mp_az, &
-                      this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, &
-                      this%nsp, this%sp_ao1, this%sp_ao2, this%sp_k0, this%sp_nk, &
-                      this%ndt, this%jt, nao, jmat)
+         if (skel) then
+            if (this%rty_ns(t) == 0) cycle
+            call mdj_bra(this%ty_la(t), this%ty_lb(t), this%rty_ns(t), this%rty_s0(t), &
+                         this%cr_k0(lpt), this%cr_nk(lpt), this%cr_hb(lpt), this%nhp_all, &
+                         this%mp_z, this%mp_ax, this%mp_ay, this%mp_az, &
+                         this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, &
+                         this%nrp, this%rsp_ao1, this%rsp_ao2, this%rsp_k0, this%rsp_nk, &
+                         this%ndt, this%jt, nao, jmat)
+         else
+            if (this%ty_ns(t) == 0) cycle
+            call mdj_bra(this%ty_la(t), this%ty_lb(t), this%ty_ns(t), this%ty_s0(t), &
+                         this%cl_k0(lpt), this%cl_nk(lpt), this%cl_hb(lpt), this%nhp_all, &
+                         this%mp_z, this%mp_ax, this%mp_ay, this%mp_az, &
+                         this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, &
+                         this%nsp, this%sp_ao1, this%sp_ao2, this%sp_k0, this%sp_nk, &
+                         this%ndt, this%jt, nao, jmat)
+         end if
       end do
       !$acc wait
       call profiler_stop("mdj: bra")
@@ -253,7 +337,7 @@ contains
       deallocate (tyof)
    end subroutine order_pairs
 
-   subroutine fill_prims(this, b, bins, thresh)
+   subroutine fill_prims(this, b, bins, thresh, pair_w)
       !! Shell pairs into type order and their primitive pairs after them.
       !!
       !! A primitive pair is kept on the HGP kernels' own rule
@@ -264,9 +348,11 @@ contains
       type(trc_basis_t), intent(in) :: b
       type(pair_bins_t), intent(in) :: bins
       real(dp), intent(in) :: thresh
+      integer, intent(in), optional :: pair_w(:)
+      !! see mdj_build
 
       real(dp), parameter :: SQRT2_PI54 = 1.4142135623730951_dp*4.1827004988466890_dp
-      integer :: s, t, i, j, ki, kj, k, n, lp, ia, ib
+      integer :: s, t, i, j, ki, kj, k, n, lp, ia, ib, nrep_hp
       integer, allocatable :: pos(:), sord(:), nk(:)
       real(dp) :: ea, eb, p, mu, ab2, cut
       real(dp) :: pc(3)
@@ -300,17 +386,27 @@ contains
 
       ! Drop the shell pairs with nothing kept, renumbering within each type.
       this%nsp = count(nk > 0)
+      this%has_reps = present(pair_w)
+      nrep_hp = 0
+      if (this%has_reps) then
+         do n = 1, bins%npair
+            if (pair_w(sord(n)) > 0) nrep_hp = nrep_hp + nk(n)
+         end do
+      end if
+      this%nhp_all = this%nhp + nrep_hp
       allocate (this%sp_ao1(max(this%nsp, 1)), this%sp_ao2(max(this%nsp, 1)), &
                 this%sp_k0(max(this%nsp, 1)), this%sp_nk(max(this%nsp, 1)), &
                 this%sp_sh1(max(this%nsp, 1)), this%sp_sh2(max(this%nsp, 1)), this%sp_q(max(this%nsp, 1)), &
                 this%sp_as1(max(this%nsp, 1)), this%sp_as2(max(this%nsp, 1)))
       this%nao_sph = b%nao_sph
-      allocate (this%mp_z(max(this%nhp, 1)), this%mp_px(max(this%nhp, 1)), &
-                this%mp_py(max(this%nhp, 1)), this%mp_pz(max(this%nhp, 1)), &
-                this%mp_ax(max(this%nhp, 1)), this%mp_ay(max(this%nhp, 1)), &
-                this%mp_az(max(this%nhp, 1)), this%mp_bx(max(this%nhp, 1)), &
-                this%mp_by(max(this%nhp, 1)), this%mp_bz(max(this%nhp, 1)), &
-                this%mp_c(max(this%nhp, 1)), this%mp_sp(max(this%nhp, 1)))
+      allocate (this%mp_z(max(this%nhp_all, 1)), this%mp_px(max(this%nhp_all, 1)), &
+                this%mp_py(max(this%nhp_all, 1)), this%mp_pz(max(this%nhp_all, 1)), &
+                this%mp_ax(max(this%nhp_all, 1)), this%mp_ay(max(this%nhp_all, 1)), &
+                this%mp_az(max(this%nhp_all, 1)), this%mp_bx(max(this%nhp_all, 1)), &
+                this%mp_by(max(this%nhp_all, 1)), this%mp_bz(max(this%nhp_all, 1)), &
+                this%mp_c(max(this%nhp_all, 1)), this%mp_sp(max(this%nhp_all, 1)))
+      allocate (this%sp_w(max(this%nsp, 1)))
+      this%sp_w = 0
       ia = 0
       k = 0
       do t = 1, this%ntype
@@ -331,6 +427,7 @@ contains
             this%sp_as1(ia) = b%sh_ao_sph(i)
             this%sp_as2(ia) = b%sh_ao_sph(j)
             this%sp_q(ia) = bins%sp_q(s)
+            if (present(pair_w)) this%sp_w(ia) = pair_w(s)
             ab2 = sum((b%sh_r(:, i) - b%sh_r(:, j))**2)
             do ki = 1, b%sh_np(i)
                ea = b%sh_e(ki, i)
@@ -368,6 +465,7 @@ contains
          if (this%cl_nk(lp) == 0) this%cl_k0(lp) = this%ty_k0(t)
          this%cl_nk(lp) = this%cl_nk(lp) + this%ty_nk(t)
       end do
+      call copy_reps(this)
       deallocate (pos, sord, nk)
 
    contains
@@ -379,6 +477,78 @@ contains
          res = abs(ca*cb)*exp(-(a*bb/pp)*r2)*SQRT2_PI54/(pp*sqrt(sqrt(2.0_dp*pp))) > c
       end function keep
    end subroutine fill_prims
+
+   subroutine copy_reps(this)
+      !! The orbit representatives' primitive pairs, again, after the nhp
+      !! ordinary ones: type by type, so each lp block of copies is
+      !! contiguous, with their own shell-pair arrays. A copy's c is the
+      !! plain one until weight_copies (the bound needs the plain one).
+      type(trc_mdj_t), intent(inout) :: this
+      integer :: t, lp, ia, kk, k, kn, ir
+      allocate (this%rty_s0(this%ntype), this%rty_ns(this%ntype), this%rty_k0(this%ntype), this%rty_nk(this%ntype))
+      this%rty_s0 = 0
+      this%rty_ns = 0
+      this%rty_k0 = this%nhp
+      this%rty_nk = 0
+      this%nrp = 0
+      if (this%has_reps) this%nrp = count(this%sp_w(1:this%nsp) > 0)
+      allocate (this%rsp_ao1(max(this%nrp, 1)), this%rsp_ao2(max(this%nrp, 1)), &
+                this%rsp_k0(max(this%nrp, 1)), this%rsp_nk(max(this%nrp, 1)), this%rsp_w(max(this%nrp, 1)))
+      this%cr_k0 = 0
+      this%cr_nk = 0
+      if (.not. this%has_reps) return
+      ir = 0
+      kn = this%nhp
+      do t = 1, this%ntype
+         this%rty_s0(t) = ir
+         this%rty_k0(t) = kn
+         do ia = this%ty_s0(t) + 1, this%ty_s0(t) + this%ty_ns(t)
+            if (this%sp_w(ia) == 0) cycle
+            ir = ir + 1
+            this%rsp_ao1(ir) = this%sp_ao1(ia)
+            this%rsp_ao2(ir) = this%sp_ao2(ia)
+            this%rsp_nk(ir) = this%sp_nk(ia)
+            this%rsp_w(ir) = this%sp_w(ia)
+            this%rsp_k0(ir) = kn
+            do kk = 1, this%sp_nk(ia)
+               k = this%sp_k0(ia) + kk
+               kn = kn + 1
+               this%mp_z(kn) = this%mp_z(k)
+               this%mp_px(kn) = this%mp_px(k)
+               this%mp_py(kn) = this%mp_py(k)
+               this%mp_pz(kn) = this%mp_pz(k)
+               this%mp_ax(kn) = this%mp_ax(k)
+               this%mp_ay(kn) = this%mp_ay(k)
+               this%mp_az(kn) = this%mp_az(k)
+               this%mp_bx(kn) = this%mp_bx(k)
+               this%mp_by(kn) = this%mp_by(k)
+               this%mp_bz(kn) = this%mp_bz(k)
+               this%mp_c(kn) = this%mp_c(k)
+               this%mp_sp(kn) = ir
+            end do
+         end do
+         this%rty_ns(t) = ir - this%rty_s0(t)
+         this%rty_nk(t) = kn - this%rty_k0(t)
+      end do
+      do t = 1, this%ntype
+         lp = this%ty_la(t) + this%ty_lb(t)
+         if (this%cr_nk(lp) == 0) this%cr_k0(lp) = this%rty_k0(t)
+         this%cr_nk(lp) = this%cr_nk(lp) + this%rty_nk(t)
+      end do
+   end subroutine copy_reps
+
+   subroutine weight_copies(this)
+      !! The orbit size into each copy's c, host and device, after the bound
+      !! was formed from the plain c.
+      type(trc_mdj_t), intent(inout) :: this
+      integer :: ir, kk
+      do ir = 1, this%nrp
+         do kk = 1, this%rsp_nk(ir)
+            this%mp_c(this%rsp_k0(ir) + kk) = this%mp_c(this%rsp_k0(ir) + kk)*real(this%rsp_w(ir), dp)
+         end do
+      end do
+      !$acc update device(this%mp_c(this%nhp+1:this%nhp_all))
+   end subroutine weight_copies
 
    pure integer function chunk_length(np, nq, qfix, nshare) result(qlen)
       !! Kets per thread for an np x nq Hermite launch: enough chunks to reach
@@ -453,6 +623,7 @@ contains
          !$acc                  this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_sp, &
          !$acc                  this%sp_ao1, this%sp_ao2, this%sp_k0, this%sp_nk, &
          !$acc                  this%sp_sh1, this%sp_sh2, this%sp_q, this%sp_as1, this%sp_as2, &
+         !$acc                  this%rsp_ao1, this%rsp_ao2, this%rsp_k0, this%rsp_nk, &
          !$acc                  this%mp_ip, this%mp_nq, this%dt, this%jt)
          this%on_device = .false.
       end if
@@ -461,14 +632,20 @@ contains
                                             this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_sp)
       if (allocated(this%sp_ao1)) deallocate (this%sp_ao1, this%sp_ao2, this%sp_k0, this%sp_nk, &
                                               this%sp_sh1, this%sp_sh2, this%sp_q, this%sp_as1, this%sp_as2)
+      if (allocated(this%sp_w)) deallocate (this%sp_w)
+      if (allocated(this%rsp_ao1)) deallocate (this%rsp_ao1, this%rsp_ao2, this%rsp_k0, this%rsp_nk, this%rsp_w)
+      if (allocated(this%rty_s0)) deallocate (this%rty_s0, this%rty_ns, this%rty_k0, this%rty_nk)
       if (allocated(this%mp_ip)) deallocate (this%mp_ip, this%mp_nq)
       if (allocated(this%dt)) deallocate (this%dt, this%jt)
       if (allocated(this%ty_la)) deallocate (this%ty_la, this%ty_lb, this%ty_s0, this%ty_ns, &
                                              this%ty_k0, this%ty_nk)
       this%nhp = 0
+      this%nhp_all = 0
       this%nsp = 0
+      this%nrp = 0
       this%ndt = 0
       this%ntype = 0
+      this%has_reps = .false.
       this%built = .false.
    end subroutine mdj_release
 
