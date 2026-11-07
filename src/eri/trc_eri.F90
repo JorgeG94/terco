@@ -144,6 +144,7 @@ module trc_eri
       integer(int64) :: nwork = 0
       integer(int64) :: nwork_masked = 0, nwork_variant = 0
       integer :: nlaunch_variant = 0
+      real(dp) :: parity_ops_base = 0.0_dp, parity_ops_masked = 0.0_dp
       !! Parity skipping, of the last bin launch (trc_bin_launch_t): work items
       !! of the segments with the dead z axis of the kernels' frame, the part
       !! of them that ran in a masked kernel variant, and those launches. The
@@ -681,6 +682,8 @@ contains
       this%nwork_masked = launch%nwork_masked
       this%nwork_variant = launch%nwork_variant
       this%nlaunch_variant = launch%nlaunch_variant
+      this%parity_ops_base = launch%ops_base
+      this%parity_ops_masked = launch%ops_masked
       call mdg_pass(this, b, dwork, jmat, jbins, kfac, ow, skel)
       if (md_j .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac, skel)
       !$acc wait
@@ -1227,6 +1230,8 @@ contains
       this%nwork_masked = launch%nwork_masked
       this%nwork_variant = launch%nwork_variant
       this%nlaunch_variant = launch%nlaunch_variant
+      this%parity_ops_base = launch%ops_base
+      this%parity_ops_masked = launch%ops_masked
       !$acc wait
       !$acc update self(jmat, kmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -1417,6 +1422,8 @@ contains
             this%nwork_masked = launch%nwork_masked
             this%nwork_variant = launch%nwork_variant
             this%nlaunch_variant = launch%nlaunch_variant
+      this%parity_ops_base = launch%ops_base
+      this%parity_ops_masked = launch%ops_masked
             this%nkept = launch%nkept
             if (len_trim(ke) > 0) then
                block
@@ -1439,6 +1446,8 @@ contains
          this%nwork_masked = launch%nwork_masked
          this%nwork_variant = launch%nwork_variant
          this%nlaunch_variant = launch%nlaunch_variant
+      this%parity_ops_base = launch%ops_base
+      this%parity_ops_masked = launch%ops_masked
          !$acc wait
          call profiler_stop("eri: bins (hgp/rys)")
          call profiler_start("eri: md exchange", nvtx_only=.true.)
@@ -1615,6 +1624,8 @@ contains
       this%nwork_masked = launch%nwork_masked
       this%nwork_variant = launch%nwork_variant
       this%nlaunch_variant = launch%nlaunch_variant
+      this%parity_ops_base = launch%ops_base
+      this%parity_ops_masked = launch%ops_masked
       !$acc wait
       call profiler_stop("eri: bins (hgp/rys), several densities")
 
@@ -1883,6 +1894,8 @@ contains
       this%nwork_masked = launch%nwork_masked
       this%nwork_variant = launch%nwork_variant
       this%nlaunch_variant = launch%nlaunch_variant
+      this%parity_ops_base = launch%ops_base
+      this%parity_ops_masked = launch%ops_masked
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)

@@ -178,15 +178,24 @@ QCN = {0: "qcx", 1: "qcy", 2: "qcz"}
 WQN = {0: "wqx", 1: "wqy", 2: "wqz"}
 
 
-def _pathways(node, P, I):
-    """Every way to form `node`; each is (kind, direction, [input nodes])."""
+def _pathways(node, P, I, dead=0):
+    """Every way to form `node`; each is (kind, direction, [input nodes]).
+
+    `dead` is the mask of dead coordinates (bit d set: coordinate d of all
+    four centres is exactly zero; docs/SYMMETRY_PARITY_SKIP.md, section 2).
+    There PA_d = QC_d = WP_d = WQ_d = 0, so the first-order terms
+    PA_d*[a-1_d] + WP_d*[...] and QC_d*[...] + WQ_d*[...] drop out and only
+    the second-order and the cross term survive; a pathway left with no input
+    forms a node of odd parity in d, which is exactly zero and not formed.
+    `dead` = 0 is the full set of pathways, unchanged.
+    """
     ai, ci, m = node
     A, C = P[ai], P[ci]
     out = []
     for d in range(3):
         if A[d] > 0:
             am = list(A); am[d] -= 1; a1 = I[tuple(am)]
-            ins = [(a1, ci, m), (a1, ci, m + 1)]
+            ins = [] if (dead >> d) & 1 else [(a1, ci, m), (a1, ci, m + 1)]
             if A[d] >= 2:
                 a2l = list(A); a2l[d] -= 2
                 a2 = I[tuple(a2l)]
@@ -194,11 +203,12 @@ def _pathways(node, P, I):
             if C[d] >= 1:
                 cl = list(C); cl[d] -= 1
                 ins.append((a1, I[tuple(cl)], m + 1))
-            out.append(("a", d, ins))
+            if ins or not dead:
+                out.append(("a", d, ins))
     for d in range(3):
         if C[d] > 0:
             cl = list(C); cl[d] -= 1; c1 = I[tuple(cl)]
-            ins = [(ai, c1, m), (ai, c1, m + 1)]
+            ins = [] if (dead >> d) & 1 else [(ai, c1, m), (ai, c1, m + 1)]
             if C[d] >= 2:
                 c2l = list(C); c2l[d] -= 2
                 c2 = I[tuple(c2l)]
@@ -206,11 +216,12 @@ def _pathways(node, P, I):
             if A[d] >= 1:
                 al = list(A); al[d] -= 1
                 ins.append((I[tuple(al)], c1, m + 1))
-            out.append(("c", d, ins))
+            if ins or not dead:
+                out.append(("c", d, ins))
     return out
 
 
-def sieve_nodes(lab, lcd, targets, P, I):
+def sieve_nodes(lab, lcd, targets, P, I, dead=0):
     """Complete auxiliary list, then Gill's sieve to a fixed point."""
     lt = lab + lcd
 
@@ -222,7 +233,7 @@ def sieve_nodes(lab, lcd, targets, P, I):
         full.add(n)
         if n[0] == 1 and n[1] == 1:
             continue
-        for _, _, ins in _pathways(n, P, I):
+        for _, _, ins in _pathways(n, P, I, dead):
             for t in ins:
                 if t not in full:
                     stack.append(t)
@@ -231,13 +242,13 @@ def sieve_nodes(lab, lcd, targets, P, I):
         if n[0] == 1 and n[1] == 1:
             return True
         return any(all(t in avail for t in ins)
-                   for _, _, ins in _pathways(n, P, I))
+                   for _, _, ins in _pathways(n, P, I, dead))
 
     cons = {}
     for n in full:
         if n[0] == 1 and n[1] == 1:
             continue
-        for _, _, ins in _pathways(n, P, I):
+        for _, _, ins in _pathways(n, P, I, dead):
             for t in ins:
                 if t in full:
                     cons.setdefault(t, set()).add(n)
@@ -262,10 +273,10 @@ def sieve_nodes(lab, lcd, targets, P, I):
     return full, live
 
 
-def emit_class_sieved(lab, lcd, targets, P, I, nca):
-    """Straight-line VRR over the sieved node set."""
+def emit_class_sieved(lab, lcd, targets, P, I, nca, dead=0):
+    """Straight-line VRR over the sieved node set (`dead`: see _pathways)."""
     lt = lab + lcd
-    _full, live = sieve_nodes(lab, lcd, targets, P, I)
+    _full, live = sieve_nodes(lab, lcd, targets, P, I, dead)
 
     def buf(m):
         return (lt - m) % 2
@@ -291,7 +302,7 @@ def emit_class_sieved(lab, lcd, targets, P, I, nca):
             # cheapest available pathway; direction order breaks ties so the
             # output stays deterministic
             best = None
-            for kind, d, ins in _pathways(n, P, I):
+            for kind, d, ins in _pathways(n, P, I, dead):
                 if all(t in live for t in ins):
                     if best is None or len(ins) < len(best[2]):
                         best = (kind, d, ins)
@@ -299,33 +310,39 @@ def emit_class_sieved(lab, lcd, targets, P, I, nca):
                 raise RuntimeError(f"sieve left {n} unformable")
             kind, d, _ins = best
             A, C = P[ai], P[ci]
+            # In a dead direction the first-order terms are exactly zero and
+            # are not written; `terms` is then the surviving ones.
+            dd = (dead >> d) & 1
+            terms = []
             if kind == "a":
                 am = list(A); am[d] -= 1; a1 = I[tuple(am)]
-                t = (f"{AXN[d]}*{V((a1, ci, m))}"
-                     f" + {WPN[d]}*{V((a1, ci, m + 1))}")
+                if not dd:
+                    terms.append(f"{AXN[d]}*{V((a1, ci, m))}"
+                                 f" + {WPN[d]}*{V((a1, ci, m + 1))}")
                 if A[d] >= 2:
                     a2l = list(A); a2l[d] -= 2
                     a2 = I[tuple(a2l)]
-                    t += (f" &\n         + {float(A[d] - 1)}_dp*oo2z*"
-                          f"({V((a2, ci, m))} - rz*{V((a2, ci, m + 1))})")
+                    terms.append(f"{float(A[d] - 1)}_dp*oo2z*"
+                                 f"({V((a2, ci, m))} - rz*{V((a2, ci, m + 1))})")
                 if C[d] >= 1:
                     cl = list(C); cl[d] -= 1
-                    t += (f" &\n         + {float(C[d])}_dp*oo2ze*"
-                          f"{V((a1, I[tuple(cl)], m + 1))}")
+                    terms.append(f"{float(C[d])}_dp*oo2ze*"
+                                 f"{V((a1, I[tuple(cl)], m + 1))}")
             else:
                 cl = list(C); cl[d] -= 1; c1 = I[tuple(cl)]
-                t = (f"{QCN[d]}*{V((ai, c1, m))}"
-                     f" + {WQN[d]}*{V((ai, c1, m + 1))}")
+                if not dd:
+                    terms.append(f"{QCN[d]}*{V((ai, c1, m))}"
+                                 f" + {WQN[d]}*{V((ai, c1, m + 1))}")
                 if C[d] >= 2:
                     c2l = list(C); c2l[d] -= 2
                     c2 = I[tuple(c2l)]
-                    t += (f" &\n         + {float(C[d] - 1)}_dp*oo2e*"
-                          f"({V((ai, c2, m))} - re*{V((ai, c2, m + 1))})")
+                    terms.append(f"{float(C[d] - 1)}_dp*oo2e*"
+                                 f"({V((ai, c2, m))} - re*{V((ai, c2, m + 1))})")
                 if A[d] >= 1:
                     al = list(A); al[d] -= 1
-                    t += (f" &\n         + {float(A[d])}_dp*oo2ze*"
-                          f"{V((I[tuple(al)], c1, m + 1))}")
-            w(f"      {V(n)} = {t}")
+                    terms.append(f"{float(A[d])}_dp*oo2ze*"
+                                 f"{V((I[tuple(al)], c1, m + 1))}")
+            w(f"      {V(n)} = " + " &\n         + ".join(terms))
     return "\n".join(o), buf(0), len(live)
 
 

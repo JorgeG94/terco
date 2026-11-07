@@ -547,7 +547,7 @@ def _jblocks_store(na, nb, nc, nd):
     return o
 
 
-def _jonly_digestion(na, nb, nc, nd):
+def _jonly_digestion(na, nb, nc, nd, zpar=False):
     """The kfac = 0 branch of emit_digestion, from its density loop through
     the J scatters. Its statements are the general branch's J statements,
     but it emits no single-trip loop: an s shell's `do ia = 0, 0` becomes
@@ -588,12 +588,16 @@ def _jonly_digestion(na, nb, nc, nd):
 """
     o += _do("id", nd, i9) + _do("ic", nc, i9) + _do("ib", nb, i9) + _do("ia", na, i9)
     vb = f"(wq*vbuf(1 + ia + {na}*ib + {na*nb}*ic + {na*nb*nc}*id))"
+    if zpar:
+        o += f"{i12}if ({PARITY_EVEN}) then\n"
     o += (f"{i12}jab(1 + ia + {na}*ib) = jab(1 + ia + {na}*ib) &\n"
           f"{' ' * 36}+ 4.0_dp*jfac*{vb} &\n"
           f"{' ' * 36}*dcd(1 + ic + {nc}*id)\n"
           f"{i12}jcd(1 + ic + {nc}*id) = jcd(1 + ic + {nc}*id) &\n"
           f"{' ' * 36}+ 4.0_dp*jfac*{vb} &\n"
           f"{' ' * 36}*dab(1 + ia + {na}*ib)\n")
+    if zpar:
+        o += f"{i12}end if\n"
     o += _end(na, i9) + _end(nb, i9) + _end(nc, i9) + _end(nd, i9)
     o += "\n"
     o += _do("ib", nb, i9) + _do("ia", na, i12)
@@ -610,13 +614,22 @@ def _jonly_digestion(na, nb, nc, nd):
     return o
 
 
-def emit_digestion(na, nb, nc, nd):
+#: The guard of a masked digestion: the component (ia, ib, ic, id) is live
+#: when its combined z power is even. zpa..zpd are the per-shell parity
+#: tables declared by _emit_block; with constant loop bounds the guard folds
+#: to the live components when the loops unroll.
+PARITY_EVEN = "mod(zpa(ia) + zpb(ib) + zpc(ic) + zpd(id), 2) == 0"
+
+
+def emit_digestion(na, nb, nc, nd, zpar=False):
     """Block-accumulated, density-batched Fock digestion from `vbuf`.
     Its second line is DIGEST_MARKER, which the splicing generators search
     for. Parameterised only by the four shells' Cartesian counts, so it is the same text for every kernel -- HGP or
     rotaxis -- that fills `vbuf(1:na*nb*nc*nd)` in the ia-fastest order this
     reads (FRAME.md section 6 confirms rotaxis's derivation order already
     matches it, so no remapping is needed to reuse this)."""
+    zopen = f"            if ({PARITY_EVEN}) then\n" if zpar else ""
+    zclose = "            end if\n" if zpar else ""
     return f"""         !
          ! BLOCK-ACCUMULATED DIGESTION.
          !
@@ -654,7 +667,7 @@ def emit_digestion(na, nb, nc, nd):
          ! kfac is uniform over the launch, so no warp diverges here.
          !
          if (kfac == 0.0_dp) then
-{_jonly_digestion(na, nb, nc, nd)}         end do   ! idens
+{_jonly_digestion(na, nb, nc, nd, zpar)}         end do   ! idens
          else
 
          !
@@ -714,7 +727,7 @@ def emit_digestion(na, nb, nc, nd):
          do ib = 0, {nb - 1}
          do ia = 0, {na - 1}
             idx = idx + 1
-            sc = wq*vbuf(idx)
+{zopen}            sc = wq*vbuf(idx)
             jab(1 + ia + {na}*ib) = jab(1 + ia + {na}*ib) &
                                     + 4.0_dp*jfac*sc*dcd(1 + ic + {nc}*id)
             jcd(1 + ic + {nc}*id) = jcd(1 + ic + {nc}*id) &
@@ -727,7 +740,7 @@ def emit_digestion(na, nb, nc, nd):
                                     - kfac*sc*dad(1 + ia + {na}*id)
             kbd(1 + ib + {nb}*id) = kbd(1 + ib + {nb}*id) &
                                     - kfac*sc*dac(1 + ia + {na}*ic)
-         end do
+{zclose}         end do
          end do
          end do
          end do
@@ -829,14 +842,24 @@ def emit_item_signature(name):
 """
 
 
-def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
+def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True, dead=0, order="lexicographic"):
     lab, lcd = la + lb, lc + ld
     lt = lab + lcd
     nca, ncc = gv.ncum(lab), gv.ncum(lcd)
     na, nb = (la + 1)*(la + 2)//2, (lb + 1)*(lb + 2)//2
     nc, nd = (lc + 1)*(lc + 2)//2, (ld + 1)*(ld + 2)//2
     nv = nca*ncc
-    tag = f"{la}{lb}{lc}{ld}"
+    # A masked variant (dead = 4: z) carries a "z" after the class tag in
+    # every name, and a parity table per shell for its digestion guard.
+    tag = f"{la}{lb}{lc}{ld}" + ("z" if dead else "")
+    if dead:
+        assert dead == 4, "only the z axis has masked variants"
+        zdecl = "".join(
+            f"      integer, parameter :: zp{n}(0:{len(gh.cart(l)) - 1}) = ["
+            + ", ".join(str(c[2] % 2) for c in gh.cart(l, order)) + "]\n"
+            for n, l in zip("abcd", (la, lb, lc, ld)))
+    else:
+        zdecl = ""
     # Column combinations accumulated at once: the VRR block per
     # combination costs nv doubles of registers, so the chunk shrinks with
     # the class; a quartet with more combinations than this repeats its
@@ -968,7 +991,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
       real(dp) :: kad({na*nd}), kbc({nb*nc}), kbd({nb*nd})
       real(dp) :: dab({na*nb}), dcd({nc*nd}), dac({na*nc})
       real(dp) :: dad({na*nd}), dbc({nb*nc}), dbd({nb*nd})
-
+{zdecl}
 {emit_segment_decode()}{emit_screens()}{emit_pair_offsets(True)}
          abx = pp_ra(offab + 1, 1) - pp_rb(offab + 1, 1)
          aby = pp_ra(offab + 1, 2) - pp_rb(offab + 1, 2)
@@ -1249,7 +1272,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
          ! --- HRR ---
 {hrr_body}
 
-{emit_digestion(na, nb, nc, nd)}         end do   ! qab
+{emit_digestion(na, nb, nc, nd, bool(dead))}         end do   ! qab
          end do   ! qcd
          end do   ! cd0
          end do   ! ab0
@@ -1347,6 +1370,39 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True):
 #: broke an A100 build. Every other role class here compiles for both. If a
 #: later compiler fixes it the class is worth about 1.8 s of a 68 s Fock
 #: build on the silica slice.
+#: PARITY SKIPPING (docs/SYMMETRY_PARITY_SKIP.md, decisions 1 and 2): the
+#: classes that get a z-masked variant, pcs{tag}z, dispatched at
+#: key + CLASS_RADIX**4. Decision 2 is the ten classes with the largest share
+#: of the modelled cost on the planar test molecules (naphthalene, skeleton
+#: plan, section 3.2); every other class runs unmasked. Seven are HGP here;
+#: the other three, (dp|pp), (dp|ds) and (dp|dp), are Rys in production and
+#: get their variants from gen_rys.py. The skeleton plan may launch a bin pair
+#: with bra and ket swapped (bins_skel_cut_first), which is the same class in
+#: the other order, so the swapped orderings of all ten are in the list too
+#: (those that production routes to HGP).
+PARITY_HGP_TOP = ("1000", "2010", "1110", "1010", "2110", "2011", "2000")
+PARITY_RYS_TOP = ("2111", "2120", "2121")
+RYS_ROUTED = ("2111", "2120", "2121", "2210", "2211", "2221", "2222")
+
+
+def parity_hgp_tags(lmax):
+    """The classes with a masked HGP kernel, in generation order."""
+    out = []
+    for t in PARITY_HGP_TOP + PARITY_RYS_TOP:
+        for u in (t, t[2:] + t[:2]):
+            if u in RYS_ROUTED or u in out or max(int(c) for c in u) > lmax:
+                continue
+            out.append(u)
+    return out
+
+
+def flops(text):
+    """Arithmetic operators of a Fortran fragment: the modelled cost of a
+    kernel body, reported to the launcher so that the work a masked launch
+    saves is a number (parity_cost)."""
+    return len(re.findall(r"\*", text)) + len(re.findall(r"(?:^|\s)[+-](?=\s)", text, flags=re.M))
+
+
 ROLE_SPLITS = {"2121": "c", "2111": "c", "2221": "c", "2211": "c", "2120": "c",
                "2220": "c"}
 
@@ -1617,7 +1673,7 @@ def trim_accumulation(prims, hrr_body, nv):
     return prims.replace(old, new)
 
 
-def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
+def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body, dead=0, order="lexicographic"):
     """The scalar kernel for one class.
 
     One accumulator, the pair coefficients folded into pp_cs, no column
@@ -1634,13 +1690,13 @@ def emit_kernel(la, lb, lc, ld, cidx, vrr_body, hrr_body):
     nothing to share. Emitting it cost 162 subroutines of the 324 here and
     roughly half the compile time of this library for code that production
     could no longer reach."""
-    tag = f"{la}{lb}{lc}{ld}"
-    txt = _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body)
+    tag = f"{la}{lb}{lc}{ld}" + ("z" if dead else "")
+    txt = _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, dead=dead, order=order)
     # The scalar kernel is sliced out of the LOOP form: its markers are
     # statements rather than the unrolled form's literal blocks, and the
     # two differ only after the combination head, which the scalar kernel
     # replaces wholesale anyway.
-    txt_l = _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=False)
+    txt_l = _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=False, dead=dead, order=order)
 
     m1 = "         if (ncab*nccd == 1) then\n"
     i1 = txt.index(m1)
@@ -1912,7 +1968,7 @@ module trc_pc_kernels
    use trc_tables, only: LMAX
    implicit none
    private
-   public :: pc_dispatch, CLASS_RADIX
+   public :: pc_dispatch, CLASS_RADIX, pc_has_variant, pc_cost
 
    integer, parameter :: CLASS_RADIX = __RADIX__
    !! Radix of the dispatch key, FIXED so it does not encode LMAX.
@@ -1941,6 +1997,7 @@ contains
                   for lc in range(L + 1) for ld in range(L + 1)]
 
     names = []
+    costs = {}   # dispatch key -> modelled VRR + accumulation + HRR operations
     for la, lb, lc, ld in combos:
         tag = f"{la}{lb}{lc}{ld}"
         if args.skeleton:
@@ -1981,6 +2038,8 @@ contains
             hrr = gh.emit_class(la, lb, lc, ld, idx_h, order)
         key = ((la*CLASS_RADIX + lb)*CLASS_RADIX + lc)*CLASS_RADIX + ld
         names.append((key, tag))
+        if not args.skeleton:
+            costs[key] = flops(vrr) + flops(hrr) + len({int(x) for x in re.findall(r"g\((\d+)\)", hrr)})
         if args.role_report:
             if not args.skeleton and 2 in (la, lb, lc, ld):
                 print(role_report(la, lb, lc, ld, vrr, hrr))
@@ -2000,7 +2059,55 @@ contains
 
     if args.role_report:
         return
+
+    # The z-masked variants. Built exactly like the classes above from the
+    # dead-z VRR sieve and HRR (gen_vrr.py, gen_hrr.py `dead`), so that at
+    # dead = 0 nothing differs; the digestion skips the odd components.
+    variants = []
+    if not args.skeleton and not args.classes:
+        for tag in parity_hgp_tags(L):
+            la, lb, lc, ld = (int(c) for c in tag)
+            hrr_pre = gh.emit_class(la, lb, lc, ld, idx_h, dead=4)
+            nca_ = gv.ncum(la + lb)
+            reads = {int(x) for x in re.findall(r"g\((\d+)\)", hrr_pre)}
+            targets = {((r - 1) % nca_ + 1, (r - 1)//nca_ + 1, 0) for r in reads}
+            Pl = [None] + gv.cart_list(2*L)
+            Il = {q: i for i, q in enumerate(Pl) if q is not None}
+            vrr, _fin, nlive = gv.emit_class_sieved(la + lb, lc + ld, targets, Pl, Il, nca_, 4)
+            print(f"  ({la}{lb}|{lc}{ld}) z-masked: VRR statements {nlive}")
+            vrr = "\n".join("      " + ln if ln.strip() else ln for ln in vrr.split("\n"))
+            vrr += f"\n               cur = {(la + lb + lc + ld) % 2}"
+            hrr = gh.emit_class(la, lb, lc, ld, idx_h, order, dead=4)
+            key = ((la*CLASS_RADIX + lb)*CLASS_RADIX + lc)*CLASS_RADIX + ld + CLASS_RADIX**4
+            names.append((key, tag + "z"))
+            variants.append(key)
+            costs[key] = flops(vrr) + flops(hrr) + len(reads)
+            body, parts = emit_kernel(la, lb, lc, ld, idx_h, vrr, hrr, dead=4, order=order)
+            pieces.append((tag + "z", body))
+            out.append(body)
+
+    cost_cases = "".join(f"      case ({k}); c = {v}.0_dp\n" for k, v in sorted(costs.items()))
+    var_cases = ", ".join(str(k) for k in sorted(variants)) if variants else "-1"
     out.append(f"""
+   pure logical function pc_has_variant(key) result(has)
+      !! Whether the dispatch key (class key + CLASS_RADIX**4 for the z-masked
+      !! variant of the class) names a kernel in this build.
+      integer, intent(in) :: key
+      has = any(key == [{var_cases}])
+   end function pc_has_variant
+
+   pure function pc_cost(key) result(c)
+      !! The modelled operations (VRR, accumulation, HRR; no digestion) of one
+      !! primitive quartet of the class at this dispatch key, 0 for a key
+      !! without a kernel: the launcher's measure of what a masked variant
+      !! saves.
+      integer, intent(in) :: key
+      real(dp) :: c
+      select case (key)
+{cost_cases}      case default; c = 0.0_dp
+      end select
+   end function pc_cost
+
    subroutine pc_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
@@ -2092,7 +2199,7 @@ module trc_pc_kernels
 """ + "\n".join(use_lines) + """
    implicit none
    private
-   public :: pc_dispatch, CLASS_RADIX
+   public :: pc_dispatch, CLASS_RADIX, pc_has_variant, pc_cost
 
    integer, parameter :: CLASS_RADIX = __RADIX__
    !! Radix of the dispatch key, FIXED so it does not encode LMAX.
@@ -2102,7 +2209,7 @@ module trc_pc_kernels
 
 contains
 """]
-        disp.append(txt[txt.index("   subroutine pc_dispatch"):
+        disp.append(txt[txt.index("   pure logical function pc_has_variant"):
                         txt.index("end module trc_pc_kernels")])
         disp.append("end module trc_pc_kernels\n")
         with open(os.path.join(args.split, "trc_pc_kernels.F90"), "w") as fh:

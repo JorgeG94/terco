@@ -190,6 +190,11 @@ module trc_eri_data
       !! to `nwork_masked` is the work of classes without a variant.
       integer :: nlaunch_variant = 0
       !! Out: launches that went to a masked variant.
+      real(dp) :: ops_base = 0.0_dp, ops_masked = 0.0_dp
+      !! Out: the modelled operations (kernel text, per primitive quartet, times
+      !! the work items) of the launches that went to a masked variant, as the
+      !! unmasked kernel of the class would have cost and as the variant costs:
+      !! the work the masks drop is 1 - ops_masked/ops_base.
    end type trc_bin_launch_t
 
 end module trc_eri_data

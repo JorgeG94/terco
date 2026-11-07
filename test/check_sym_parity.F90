@@ -323,7 +323,7 @@ contains
       real(dp), intent(in) :: min_masked
       type(error_type), allocatable, intent(out) :: error
       real(dp), allocatable :: dc(:, :), gc(:, :)
-      real(dp) :: frac
+      real(dp) :: frac, ratio
       allocate (dc(ctx%nc, ctx%nc), gc(ctx%nc, ctx%nc))
       dc = 1.0e-3_dp
       call ctx%eri%fock(ctx%bas, dc, gc, skeleton=.true.)
@@ -343,6 +343,16 @@ contains
       if (binkernel_have_variants()) then
          call check(error, ctx%eri%nlaunch_variant > 0 .and. ctx%eri%nwork_variant > 0, &
                     trim(ctx%label)//": no launch went to a masked variant")
+         if (allocated(error)) return
+         ! The work the variants drop, modelled as the operations of the
+         ! kernel text (VRR, accumulation, HRR) of the launches that ran in
+         ! a variant: a variant that fell back to the full kernel, or one
+         ! that dropped nothing, shows as a ratio near one. The z-masked
+         ! kernels measure 0.4 to 0.7 of the unmasked ones (3.6 of the design).
+         ratio = ctx%eri%parity_ops_masked/max(ctx%eri%parity_ops_base, 1.0_dp)
+         print "(a,a,a,f7.4)", "  ", trim(ctx%label), " modelled operations of the variant launches, masked/unmasked: ", ratio
+         call check(error, ratio < 0.8_dp, trim(ctx%label)//": the masked variants drop too little work: "// &
+                    to_string(ratio, "f7.4"))
       else
          call check(error, ctx%eri%nlaunch_variant == 0, trim(ctx%label)//": a variant ran but none exists")
       end if

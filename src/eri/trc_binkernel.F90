@@ -27,7 +27,7 @@ module trc_binkernel
    use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_sort_by_weight, bins_build_pair_quartets
    use trc_bin_tiles, only: bin_tiles_requested, bin_tiles_build, bin_tiles_reach, bin_tiles_plan
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t, trc_bin_orbits_t
-   use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX
+   use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX, pc_has_variant, pc_cost
    use trc_rys_select, only: rys_select_init, rys_select_route
    use trc_rys_kernels, only: rys_dispatch
    use trc_mdg, only: mdg_routes
@@ -91,14 +91,15 @@ contains
       !! Whether this build has any masked kernel variant (parity skipping).
       !! The engine applies the axis permutation of the dead axis only then
       !! (trc_parity): without a variant it would permute D and G for nothing.
-      res = .false.
+      !! (ps|ss) is the first class of the list in gen_perclass.py.
+      res = pc_has_variant(CLASS_RADIX**3 + CLASS_RADIX**4)
    end function binkernel_have_variants
 
    logical function variant_exists(dkey) result(res)
       !! Whether the dispatch key `dkey` (class key + mask*CLASS_RADIX**4)
       !! names a masked kernel; otherwise the launch runs the unmasked kernel.
       integer, intent(in) :: dkey
-      res = dkey < 0  ! keys are never negative: no masked kernel is generated yet
+      res = pc_has_variant(dkey)
    end function variant_exists
 
    subroutine trc_set_prim_margin(f)
@@ -384,6 +385,7 @@ contains
       !! x, y, z: the quartets' own arrays, in the engine frame's order.
 
       integer :: c0, c1, nl, key, dkey, nseg, mask
+      logical :: rys_route
       integer(int64) :: lcap, nw
       real(dp) :: thresh, wt, jf, kf
 
@@ -418,12 +420,15 @@ contains
          ! unmasked kernel, which is right for every quartet.
          nw = plan%sOff(c1 + 1) - plan%sOff(c0)
          dkey = key
+         rys_route = rys_select_route(key)
          if (mask /= 0) then
             launch%nwork_masked = launch%nwork_masked + nw
-            if (variant_exists(key + CLASS_RADIX**4)) then
+            if (.not. rys_route .and. variant_exists(key + CLASS_RADIX**4)) then
                dkey = key + CLASS_RADIX**4
                launch%nwork_variant = launch%nwork_variant + nw
                launch%nlaunch_variant = launch%nlaunch_variant + 1
+               launch%ops_base = launch%ops_base + real(nw, dp)*pc_cost(key)
+               launch%ops_masked = launch%ops_masked + real(nw, dp)*pc_cost(dkey)
             end if
          end if
          ! TRC_RYS_CLASSES routes this launch's whole class run to the
@@ -434,7 +439,7 @@ contains
             ! A g class above TERCO_RYS_G_LTOT: done after the bins by the
             ! MD exchange pass (trc_mdg), which orders the work its own way.
             continue
-         else if (rys_select_route(key)) then
+         else if (rys_route) then
             call rys_dispatch(dkey, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
                               plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, &
                               b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
