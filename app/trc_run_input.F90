@@ -62,7 +62,7 @@ module trc_run_input
       integer :: kind
    end type run_input_key_t
 
-   integer, parameter :: NKEYS = 90
+   integer, parameter :: NKEYS = 91
    type(run_input_key_t), parameter :: RUN_INPUT_KEYS(NKEYS) = [ &
       run_input_key_t("molecule", "geometry", "", KIND_PATH), &
       run_input_key_t("molecule", "charge", "chrg", KIND_INT), &
@@ -84,6 +84,7 @@ module trc_run_input
       run_input_key_t("scf", "symmetry", "symmetry", KIND_STRING), &
       run_input_key_t("scf", "symmetry_tol", "symmetry-tol", KIND_FLOAT), &
       run_input_key_t("scf", "irrep_nelec", "irrep-nelec", KIND_STRING), &
+      run_input_key_t("scf", "symmetry_skeleton", "sym-skeleton", KIND_BOOL_ON), &
       run_input_key_t("scf.convergence", "diis_size", "diis", KIND_INT), &
       run_input_key_t("scf.convergence", "adiis", "adiis", KIND_BOOL), &
       run_input_key_t("scf.convergence", "level_shift", "level-shift", KIND_FLOAT), &

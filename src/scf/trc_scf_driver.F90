@@ -103,6 +103,7 @@ module trc_scf_driver
    use trc_scf_soscf, only: trc_scf_soscf_run
    use trc_scf_incremental, only: scf_incremental_t
    use trc_sym_scf, only: trc_sym_scf_t
+   use trc_sym_geom, only: trc_sym_geom_t
    use pic_types, only: default_int
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
@@ -238,6 +239,8 @@ contains
       !! until the first iteration, so a run with max_iteration=0 still reports zeros.
       logical :: diis_on
       logical :: sym_on          !! the SO-blocked path (a symmetric group was handed in)
+      logical :: skel_on         !! ... with the skeleton Fock build (the engine holds the group's orbits)
+      type(trc_sym_geom_t) :: sym_geom  !! the group and atom permutations the engine is built with
       real(dp) :: ctl(2)
       real(dp) :: eold, drms, errmax
       integer :: nfrac
@@ -314,8 +317,28 @@ contains
 
       ! --- everything once per geometry: pairs, 1e, S/H fold, ERI, linalg,
       ! orthogonaliser, and (when asked for) the PCM cavity and DFT grid ---
-      call scf_context%setup(scf_basis, scf_options, scf_config, la, grid_cache, pair_eri_cache, err, comm=comm, &
-                             dfjk=scf_dfjk)
+      !
+      ! THE SKELETON FOCK BUILD (docs/SYMMETRY_FOCK.md) under a symmetric
+      ! group: the four-centre engine is built with the point group, launches
+      ! only the orbit representatives, and F is symmetrized after the assembly
+      ! (as for the full build). Not with density fitting (its own path) nor over several ranks
+      ! (the plan is unmeasured there); `sym%skeleton = .false.` keeps the
+      ! full build and the symmetrization of F alone.
+      skel_on = sym_on .and. .not. scf_config%df
+      if (skel_on) skel_on = sym%skeleton
+      if (skel_on .and. present(comm)) skel_on = comm%size() == 1
+      if (skel_on) then
+         call sym%geometry(scf_basis, sym_geom, err)
+         if (err%has_error()) then
+            scf_result%message = "trc_scf: "//err%get_message()
+            return
+         end if
+         call scf_context%setup(scf_basis, scf_options, scf_config, la, grid_cache, pair_eri_cache, err, comm=comm, &
+                                dfjk=scf_dfjk, sym_geom=sym_geom)
+      else
+         call scf_context%setup(scf_basis, scf_options, scf_config, la, grid_cache, pair_eri_cache, err, comm=comm, &
+                                dfjk=scf_dfjk)
+      end if
       if (err%has_error()) then
          scf_result%message = "trc_scf: "//err%get_message()
          return
@@ -468,10 +491,15 @@ contains
          !
          incr_now = incremental%next_build(it, errmax, it == scf_options%max_iteration)
          call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incremental%scale, pair_eri_cache%eri, la, &
-                               scf_dfjk)
+                               scf_dfjk, skeleton=skel_on)
          ! --- G_sph := T^T G_cart T, back up to the space the rest of the
          ! iteration runs in, into `fock` until the assembly below.
          call scf_fock_fold_g(scf_basis, scf_context, scf_config, scf_state)
+         ! The skeleton build returns G summed over the orbit representatives
+         ! only. It is not symmetrized here: the energy below is Tr(D G) with
+         ! D invariant, which the average over the group leaves unchanged, and
+         ! the symmetrization of F after the assembly (below, whenever `sym`
+         ! is active) makes the matrix itself invariant before DIIS sees it.
          scf_timers%tf_it = scf_timers%fock%get_elapsed_time()
          scf_timers%t_fock = scf_timers%t_fock + scf_timers%tf_it
          call scf_timers%xc%start()

@@ -170,6 +170,13 @@ target_link_libraries(check_sym_run PRIVATE test-drive::test-drive)
 terco_add_check(check_sym_scf_cs check_sym_scf_cs.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_sym_scf_cs PRIVATE test-drive::test-drive)
 
+# The SCF with the skeleton Fock build (S14.3): for every group, the skeleton
+# run against the C1 run and the S4 run (skeleton = .false.: full build, then
+# symmetrize), RHF/UHF/B3LYP/wB97X, incremental on and off, and the plan's
+# quartet counts (a silent fallback to the full build fails).
+terco_add_check(check_sym_scf_skeleton check_sym_scf_skeleton.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_scf_skeleton PRIVATE test-drive::test-drive)
+
 # Point group C2 (gauche H2O2 and N2H4: the rotation moves every atom): detection
 # and pyscf's frame, SALC block-diagonality, the central oracle (RHF, UHF,
 # B3LYP) and pyscf anchors (pyscf_refs/sym_c2.ref), gradient symmetrisation.

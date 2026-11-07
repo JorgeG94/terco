@@ -41,6 +41,8 @@ module trc_sym_scf
    use trc_linalg, only: trc_linalg_t
    use trc_sym_group, only: trc_sym_group_t
    use trc_sym_ao, only: trc_sym_ao_t
+   use trc_sym_geom, only: trc_sym_geom_t
+   use trc_basis_types, only: trc_basis_t
    implicit none
    private
 
@@ -52,6 +54,19 @@ module trc_sym_scf
 
    type :: trc_sym_scf_t
       type(trc_sym_ao_t) :: ao  !! AO maps, signs and SO basis: set by the caller
+      logical :: skeleton = .true.
+      !! The Fock build is the SKELETON build (docs/SYMMETRY_FOCK.md): the
+      !! integral engine is built with the point group, launches only the
+      !! orbit representatives, and the SCF symmetrizes G after the fold.
+      !! False: the full Fock build, then symmetrization of F (the S4 path),
+      !! with an engine built without the group. Only read by `trc_scf_run`
+      !! with a group of more than one operation, one rank and four-centre
+      !! integrals (density fitting has its own path).
+      type(trc_sym_geom_t) :: geom
+      !! Optional: the detected geometry (group and atom permutations) the
+      !! skeleton build needs. Unset (no `geom%perm`), `geometry` derives the
+      !! permutations of `ao%group` from the basis centres, so a caller that
+      !! only sets `ao` still gets the skeleton build.
       integer, allocatable :: irrep_nocc(:, :)
       !! Optional fixed occupations, (nirrep, nspin): orbitals per irrep, per
       !! spin channel (restricted: doubly occupied orbitals). Unallocated is
@@ -80,6 +95,7 @@ module trc_sym_scf
       procedure :: check_occupations => sym_scf_check_occupations
       procedure :: diagonalize => sym_scf_diagonalize
       procedure :: symmetrize => sym_scf_symmetrize
+      procedure :: geometry => sym_scf_geometry
    end type trc_sym_scf_t
 
 contains
@@ -89,6 +105,49 @@ contains
       class(trc_sym_scf_t), intent(in) :: this
       on = this%ao%nop > 1
    end function sym_scf_is_active
+
+   subroutine sym_scf_geometry(this, bas, geom, err)
+      !! The point-group geometry of the skeleton Fock build: `this%geom` when
+      !! the caller set it, else the group of `this%ao` with the atom
+      !! permutations found by applying each operation's sign mask to the
+      !! basis centres (`bas` sits on the standard frame, as for `sym_ao_build`).
+      class(trc_sym_scf_t), intent(in) :: this
+      type(trc_basis_t), intent(in) :: bas
+      type(trc_sym_geom_t), intent(out) :: geom
+      type(error_t), intent(out) :: err
+      real(dp), parameter :: TOL = 1.0e-6_dp
+      real(dp) :: x(3), s(3)
+      integer :: k, ia, ja, ic
+      logical :: found
+
+      if (allocated(this%geom%perm)) then
+         geom = this%geom
+         return
+      end if
+      geom%group = this%ao%group
+      allocate (geom%perm(bas%natm, this%ao%nop))
+      do k = 1, this%ao%nop
+         do ic = 1, 3
+            s(ic) = merge(-1.0_dp, 1.0_dp, btest(this%ao%group%ops(k), ic - 1))
+         end do
+         do ia = 1, bas%natm
+            x = s*bas%at_r(:, ia)
+            found = .false.
+            do ja = 1, bas%natm
+               if (maxval(abs(x - bas%at_r(:, ja))) <= TOL) then
+                  geom%perm(ia, k) = ja
+                  found = .true.
+                  exit
+               end if
+            end do
+            if (.not. found) then
+               call err%set(ERROR_VALIDATION, "trc_sym_scf: the basis centres are not invariant under the group "// &
+                            "operations (atom "//to_string(ia)//", operation "//to_string(k)//")")
+               return
+            end if
+         end do
+      end do
+   end subroutine sym_scf_geometry
 
    subroutine sym_scf_prepare(this, smat, nspin, lindep_thresh, err)
       !! Per-block orthogonalisers and device data for a run of `nspin` spin

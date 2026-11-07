@@ -1472,7 +1472,8 @@ contains
       real(dp), intent(out) :: gmats(this%nao, this%nao, ndens)
       type(trc_fock_options_t), intent(in) :: opts
       !! `density_screen` and `count_survivors` are not read: this build is
-      !! always density-screened.
+      !! always density-screened. `skeleton` is as for `fock_resident_lent`
+      !! (every density must be invariant under the group).
       real(dp), intent(inout) :: work(this%nao_w, this%nao_w, 2*ndens + 1)
       !! At least `fock_work_size(ndens)` doubles, device-resident, as for
       !! `fock_resident_lent`: the kernel's (ndens, nw, nw) operand and
@@ -1506,7 +1507,7 @@ contains
          do d = 1, ndens
             call this%fock_resident_lent(b, dmats(:, :, d), gmats(:, :, d), &
                                          trc_fock_options_t(j_scale=jfac, k_scale=kfac, omega=ow, &
-                                                            j_engine=eng), work)
+                                                            j_engine=eng, skeleton=opts%skeleton), work)
          end do
          return
       end if
@@ -1535,8 +1536,12 @@ contains
          end if
       end do
 
+      ! The skeleton plan needs the bound invariant under the group: the
+      ! maximum over the densities is symmetrized like a single density's.
+      if (opts%skeleton) call skeleton_dsh(this)
+
       call profiler_start("eri: bins (hgp/rys), several densities", nvtx_only=.true.)
-      launch = bin_launch(this, ndens, jfac, kfac, ow)
+      launch = bin_launch(this, ndens, jfac, kfac, ow, opts%skeleton)
       call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, work(:, :, 1:ndens), &
                                work(:, :, ndens + 1:2*ndens), work(:, :, ndens + 1:2*ndens), this%orb)
       this%nlaunch = launch%nlaunch
@@ -1755,6 +1760,11 @@ contains
       !! them see the same quartets whichever way this is set; that is what
       !! keeps a batch bit-comparable with the same densities passed one at a
       !! time.
+      !!
+      !! No skeleton option: this host-array entry point (the C API's
+      !! trc_fock_many) always runs the full plan, also on an engine built with
+      !! the point group. The SCF's several-density build is
+      !! `fock_resident_many_lent`, which has it.
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)

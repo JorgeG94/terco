@@ -55,7 +55,7 @@ contains
    ! restricted or unrestricted alike: `g_of_density` is the one build, and
    ! the increment is that build on D - D_ref accumulated onto G(D_ref).
    !
-   subroutine scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incr_scale, eri, la, dfjk)
+   subroutine scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incr_scale, eri, la, dfjk, skeleton)
       type(trc_basis_t), intent(in) :: scf_basis
       type(scf_ctx_t), intent(in) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
@@ -68,19 +68,27 @@ contains
       type(trc_linalg_t), intent(inout) :: la
       type(df_jk_t), intent(inout), optional :: dfjk
       !! The fitted J/K object, present exactly when `scf_config%df`.
+      logical, intent(in), optional :: skeleton
+      !! Build the SKELETON matrix (every pass of `g_of_density`, the
+      !! incremental difference and the long-range pass included): `eri` must
+      !! have been built with the point group and the density be invariant,
+      !! and the caller symmetrizes G after `scf_fock_fold_g`. Default false.
+      logical :: skel
       ! Every four-centre build runs on scratch lent from `la`'s workspace
       ! (trc_linalg's `reserve`), which is dead between eigensolves.
       ! trc_scf_context's setup has made it large enough already, so this
       ! is a no-op unless a caller skipped that.
       if (.not. scf_config%df) call la%reserve(eri%fock_work_size(scf_settings_fock_densities(scf_config)))
+      skel = .false.
+      if (present(skeleton)) skel = skeleton
       call build_g_arrays(scf_basis, eri, scf_config, scf_context%nao_c, size(scf_state%dtot_c, 1), &
                           size(scf_state%klr_c, 1), size(scf_state%dref_c, 1), incr_scale, &
                           scf_state%d_c, scf_state%gmat_c, scf_state%dtot_c, scf_state%klr_c, &
-                          scf_state%gacc_c, scf_state%dref_c, la, dfjk)
+                          scf_state%gacc_c, scf_state%dref_c, la, dfjk, skel)
    end subroutine scf_fock_build_g
 
    subroutine build_g_arrays(b, eri, config, nao_c, nu_c, nlr_c, nin_c, incr_scale, &
-                             d_c, gmat_c, dtot_c, klr_c, gacc_c, dref_c, lp, dfj)
+                             d_c, gmat_c, dtot_c, klr_c, gacc_c, dref_c, lp, dfj, skel)
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
       type(scf_settings_t), intent(in) :: config
@@ -100,6 +108,7 @@ contains
       type(df_jk_t), intent(inout), optional :: dfj
       !! Present when `config%df`; absent and unused otherwise. Never
       !! combined with increments (trc_scf_settings turns them off).
+      logical, intent(in) :: skel   !! the skeleton build, see `scf_fock_build_g`
       integer :: nspin, n2
       real(dp) :: thresh0
 
@@ -120,11 +129,11 @@ contains
          ! trc_scf_incremental for the two scales and why.
          thresh0 = eri%thresh
          eri%thresh = thresh0*incr_scale
-         call g_of_density(b, eri, config, nao_c, dref_c, gmat_c, klr_c, lp)
+         call g_of_density(b, eri, config, nao_c, dref_c, gmat_c, klr_c, lp, skel)
          eri%thresh = thresh0
          call accumulate_flat(n2, d_c, gmat_c, gacc_c, dref_c)
       else
-         call g_of_density(b, eri, config, nao_c, d_c, gmat_c, klr_c, lp)
+         call g_of_density(b, eri, config, nao_c, d_c, gmat_c, klr_c, lp, skel)
          ! The reference for the next increment, kept only when there
          ! will be one (gacc_c and dref_c are 1 x 1 otherwise).
          if (config%incr_on) then
@@ -135,7 +144,7 @@ contains
       if (nspin == 2) call sum_spins(nao_c, d_c, dtot_c)
    end subroutine build_g_arrays
 
-   subroutine g_of_density(b, eri, config, nao_c, density, g, klr_c, lp)
+   subroutine g_of_density(b, eri, config, nao_c, density, g, klr_c, lp, skel)
       !! G[density] per spin, overwriting `g`. Restricted: J - a_x K/2 of
       !! the total density, plus the long-range exchange pass of a
       !! range-separated functional. Unrestricted: G_s = J[D_a + D_b] -
@@ -153,13 +162,17 @@ contains
       !! (1 x 1 and unused otherwise); contiguous, so it reaches the
       !! engine's explicit-shape dummy without a copy
       type(trc_linalg_t), intent(inout) :: lp
+      logical, intent(in) :: skel
+      !! the skeleton build (every pass below), see `scf_fock_build_g`
       real(dp), allocatable :: w2_c(:, :, :), k2_c(:, :, :)
       integer :: s
       if (config%nspin == 1) then
-         call eri%fock_resident_lent(b, density(:, :, 1), g(:, :, 1), trc_fock_options_t(k_scale=config%exx), lp%dwork)
+         call eri%fock_resident_lent(b, density(:, :, 1), g(:, :, 1), &
+                                     trc_fock_options_t(k_scale=config%exx, skeleton=skel), lp%dwork)
          if (config%exx_lr /= 0.0_dp) then
             call eri%fock_resident_lent(b, density(:, :, 1), klr_c, &
-                                        trc_fock_options_t(j_scale=0.0_dp, k_scale=config%exx_lr, omega=config%omega), &
+                                        trc_fock_options_t(j_scale=0.0_dp, k_scale=config%exx_lr, omega=config%omega, &
+                                                           skeleton=skel), &
                                         lp%dwork)
             call add_into_spin(nao_c, klr_c, g(:, :, 1))
          end if
@@ -169,7 +182,7 @@ contains
       ! result -- the total density in the first, J in the second, then
       ! copied back -- so the Coulomb pass needs no matrix of its own.
       call sum_spins(nao_c, density, g(:, :, 1))
-      call eri%fock_resident_lent(b, g(:, :, 1), g(:, :, 2), trc_fock_options_t(k_scale=0.0_dp), lp%dwork)
+      call eri%fock_resident_lent(b, g(:, :, 1), g(:, :, 2), trc_fock_options_t(k_scale=0.0_dp, skeleton=skel), lp%dwork)
       call copy_into_spin(nao_c, g(:, :, 2), g(:, :, 1))
       if (config%exx == 0.0_dp .and. config%exx_lr == 0.0_dp) return
       ! Both spins' exchange in ONE pass over the integrals per operator
@@ -184,8 +197,8 @@ contains
          call scale_into_spin(nao_c, 2.0_dp, density(:, :, s), w2_c(:, :, s))
       end do
       if (config%exx /= 0.0_dp) then
-         call eri%fock_resident_many_lent(b, 2, w2_c, k2_c, trc_fock_options_t(j_scale=0.0_dp, k_scale=config%exx), &
-                                          lp%dwork)
+         call eri%fock_resident_many_lent(b, 2, w2_c, k2_c, &
+                                          trc_fock_options_t(j_scale=0.0_dp, k_scale=config%exx, skeleton=skel), lp%dwork)
          do s = 1, 2
             call add_into_spin(nao_c, k2_c(:, :, s), g(:, :, s))
          end do
@@ -193,7 +206,7 @@ contains
       if (config%exx_lr /= 0.0_dp) then
          call eri%fock_resident_many_lent(b, 2, w2_c, k2_c, &
                                           trc_fock_options_t(j_scale=0.0_dp, k_scale=config%exx_lr, &
-                                                             omega=config%omega), lp%dwork)
+                                                             omega=config%omega, skeleton=skel), lp%dwork)
          do s = 1, 2
             call add_into_spin(nao_c, k2_c(:, :, s), g(:, :, s))
          end do
