@@ -270,6 +270,75 @@ affected kernels. On the GPU, where the heavy classes take 15-20 minutes,
 that is +5 minutes per class per axis. Register pressure falls (fewer
 live nodes), not rises; this was not measured on a GPU.
 
+### 3.8 Axis-permutation round trip
+
+Decision 1 of §8a (engine-internal axis permutation) is exact; this is the
+measurement. `spike_parity ... roundtrip` (`test/spike_parity.F90`) builds J,
+K and G = J - K/2 with the four-centre engine (same bins, `hgp_batch`
+digestion, full and s2a plans as in §3.1) on the standard-frame coordinates.
+It then rebuilds basis, pairs, bins, AO maps and orbit tables on coordinates
+permuted cyclically so that the most common dead axis becomes z
+((x,y,z)_new = (y,z,x)_old for a normal on x; the identity for z), maps the
+symmetric density in with the induced AO permutation, runs the engine, maps
+G back and, for the spherical case, folds both to spherical with the
+production cart-to-sph transform. The AO permutation sends x^a y^b z^c to
+the component of the same shell with the permuted powers, found with
+`cart_perm_powers`, so it holds for any `TERCO_CART_ORDER`. The spherical
+density is a Cartesian-symmetric density projected through T T^T. In the
+permuted frame the dead-coordinate skip (rule 2 of §3.5) was also run.
+cc-pVDZ, tau = 1e-10, working basis. Largest error over the J, K, G
+matrices, absolute, against the gate 5e-11 max(1, max|G|) (gates 8e-10 to
+2.5e-9):
+
+| system (frame change) | space | full | s2a | full + skip | s2a + skip | gate (min) |
+|---|---|---|---|---|---|---|
+| HOCl (identity) | cart | 0 | 0 | 0 | 0 | 9.6e-10 |
+| | sph | 0 | 0 | 0 | 0 | 8.4e-10 |
+| benzene (x to z) | cart | 7.1e-14 | 7.1e-14 | 7.1e-14 | 7.1e-14 | 1.7e-09 |
+| | sph | 3.2e-14 | 2.8e-14 | 3.2e-14 | 2.8e-14 | 1.5e-09 |
+| naphthalene (x to z) | cart | 1.6e-13 | 6.4e-14 | 1.6e-13 | 6.4e-14 | 2.4e-09 |
+| | sph | 7.1e-14 | 5.0e-14 | 7.1e-14 | 5.0e-14 | 2.2e-09 |
+| B2H6 (x to z) | cart | 2.1e-14 | 1.4e-14 | (same) | (same) | 9.2e-10 |
+| | sph | 8.9e-15 | 1.4e-14 | (same) | (same) | 8.5e-10 |
+| H2CO cc-pVTZ, f, LMAX=3 (x to z) | cart | 1.1e-13 | 1.2e-13 | 1.1e-13 | 1.2e-13 | 1.9e-09 |
+| | sph | 1.4e-13 | 1.1e-13 | 1.4e-13 | 1.1e-13 | 2.5e-09 |
+
+J and K alone are never larger than G (K is 3e-15 to 1.2e-14, J equals G
+within rounding). HOCl is bit-identical, as it must be. The other cases are
+not bit-identical: the permuted frame orders bins and pairs differently, so
+the accumulation order changes; the 1e-14 to 1e-13 differences are summation
+noise, 4 to 5 orders inside the gate. The mapped density is invariant under
+the permuted group to 2e-16 or better. With the skip in the permuted frame
+the skipped fractions are those of §3.2 (0.449 benzene, 0.450 naphthalene,
+0.338 / 0.398 B2H6 full / s2a, 0.553 / 0.586 H2CO) and the largest skipped
+|v| is 0, so skip plus permutation equals the unskipped original frame to
+the same noise. The same table was reproduced with `TERCO_CART_ORDER=gamess`
+(HOCl, benzene, B2H6, all within 5e-14, log below).
+
+**Mask counts.** The histogram of dead-coordinate masks (Z, quartets after
+Schwarz) of the permuted frame is the histogram of the original with the
+bits permuted, case by case, for both plans. For the planar molecules the
+z-dead fraction after equals the x-dead fraction before (1.0000; the
+stabilizer rule, sigma_z against sigma_x, gives 1.0000 as well; 98.5 % {z}
+and 1.5 % {x,z} for benzene, 99.84 % / 0.16 % naphthalene, 73.2 % / 26.8 %
+H2CO). B2H6, full plan (s2a in parentheses):
+
+| mask | none | {x} | {y} | {x,y} | {y,z} |
+|---|---|---|---|---|---|
+| before | 32.74 % (24.05) | 42.45 % (41.89) | 15.54 % (17.24) | 9.21 % (16.69) | 0.06 % (0.13) |
+
+| mask | none | {z} | {x} | {x,z} | {x,y} |
+|---|---|---|---|---|---|
+| after | 32.74 % (24.05) | 42.45 % (41.89) | 15.54 % (17.24) | 9.21 % (16.69) | 0.06 % (0.13) |
+
+z now holds 42.45 % + 9.21 % = 51.7 % of the quartets (s2a: 58.6 %), the
+same as x before; this is the share that runs masked under decision 1.
+
+Logs: `/Users/albert/terco-parity-logs/lmax3.log` (H2CO f case, a helper
+build at LMAX=3), `/Users/albert/terco-parity-logs/gamess.log` (gamess
+order). Reproduce: `spike_parity <xyz> basis_sets/cc-pvdz.json roundtrip
+1e-10 x [nskip]`.
+
 ## 4. Candidate schemes
 
 ### (a) Parity-masked kernels per (class, mask)
@@ -507,7 +576,10 @@ the skeleton, 5.0-5.6x of the ideal 8x overall.
    revisited only if S15 shows that mixed-mask molecules matter.
 
    The exactness of the permutation round trip (Cartesian and spherical) is
-   to be shown by the prototype before PR-A.
+   shown by the prototype (§3.8): max|G_back - G| is 0 (HOCl, identity) to
+   1.6e-13 (naphthalene) over full and s2a plans, J, K and G, Cartesian and
+   spherical, including one f case, 4 to 5 orders inside the S14.2 gate; the
+   residue is summation order, not the mapping.
 
 Questions 2-6 above are still open.
 
