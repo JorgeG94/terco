@@ -25,7 +25,19 @@
 ! digestion, and the s2a skeleton with the skip, symmetrized, against the
 ! unskipped full G (the S14.2 gate: 5e-11 * max(1, max|G|)).
 !
-! usage: spike_parity xyz basis.json mode(count|verify|both) thresh csv
+! `roundtrip` (decision 1 of docs/SYMMETRY_PARITY_SKIP.md section 8a, section
+! 3.8): builds G = J - K/2 (and J, K alone) with the engine on the
+! standard-frame coordinates, then again on coordinates with the axes
+! permuted cyclically so that the most common dead axis (the plane normal)
+! becomes z, with the density mapped in by the induced Cartesian AO
+! permutation (x^a y^b z^c -> the component of the same shell with the
+! permuted powers, found with cart_perm_powers so every TERCO_CART_ORDER
+! works), the orbit tables rebuilt on the permuted geometry, and G mapped
+! back.  Reports max|G_back - G| (Cartesian, and folded to spherical) against
+! the S14.2 gate, full and s2a plans, the permuted frame also with the
+! dead-coordinate skip (rule 2), and the dead-axis histograms of both frames.
+!
+! usage: spike_parity xyz basis.json mode(count|verify|both|roundtrip) thresh csv
 !
 module spike_parity_mod
    use pic_types, only: dp, int64
@@ -464,6 +476,8 @@ program spike_parity
    use trc_sym_ao, only: trc_sym_ao_t, sym_ao_build
    use trc_sym_geom, only: trc_sym_geom_t, sym_detect
    use trc_test_basis, only: read_xyz
+   use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
+   use trc_cart_perm, only: cart_perm_powers
    implicit none
    character(len=256) :: xyz, bfile, mode, csv, arg
    real(dp) :: thresh
@@ -482,6 +496,13 @@ program spike_parity
    integer, parameter :: PSCHEME(2) = [1, 3]
    integer(int64) :: nq(2)
    real(dp) :: gate, scl
+   ! round trip
+   integer :: nskip, rt_axis, rt_perm(3), rt_nw
+   integer, allocatable :: rt_amap(:)
+   real(dp), allocatable :: rt_d(:, :, :), rt_j(:, :, :, :, :, :), rt_k(:, :, :, :, :, :)
+   integer(int64) :: rt_hist(0:7, 2, 2), rt_stab(0:7, 2, 2)
+   real(dp) :: rt_skipfrac(2, 2), rt_maxflag(2, 2)
+   type(trc_basis_t) :: rt_wb1
 
    i = trc_bind_device(0)
    call get_command_argument(1, xyz)
@@ -496,6 +517,13 @@ program spike_parity
    geom = sym_detect(r, elem, err, basis_id=elem)
    if (err%has_error()) stop 'sym_detect failed'
    print '(a,a,a,i0,a,a)', 'molecule ', trim(xyz), '  natm ', nat, '  group ', trim(geom%group%name)
+   if (index(mode, 'roundtrip') > 0) then
+      call get_command_argument(6, arg)
+      nskip = 2
+      if (len_trim(arg) > 0) read (arg, *) nskip
+      call roundtrip_main()
+      stop
+   end if
    call trc_basis_from_json(trim(bfile), nat, elem, geom%r_std, bas, err, force_cart=.true.)
    if (err%has_error()) stop 'basis failed'
    bas%spherical = .false.
@@ -568,4 +596,282 @@ program spike_parity
    gs = c%jx - 0.5_dp*c%kx
    call symmetrize(gs, aow%ao_map, aow%ao_sign, gy)
    print '(a,es10.2)', '  s2a unskipped (S14.2 reference): max|sym(G_s2a)-G_full| ', maxval(abs(gy - gf))
+contains
+
+   subroutine roundtrip_main()
+      integer :: fr, pl, sk, ds, i, j, k, v, z, zp
+      character(len=5), parameter :: SNAME(2) = [character(len=5) :: 'skip0', 'skip2']
+      character(len=3), parameter :: AX(3) = ['x  ', 'y  ', 'z  ']
+      real(dp), allocatable :: a(:, :), b(:, :), fa(:, :), fb(:, :), back(:, :)
+      real(dp) :: gate, e(3)
+      real(dp) :: tot(2), cnt(2), dead1, dead2, st1, st2
+      logical :: same
+      character(len=64) :: lab
+
+      lab = xyz
+      i = index(lab, '/', back=.true.)
+      if (i > 0) lab = lab(i + 1:)
+      i = index(lab, '.xyz')
+      if (i > 0) lab = lab(:i - 1)
+      rt_perm = [1, 2, 3]
+      do fr = 1, 2
+         call do_frame(fr)
+      end do
+      ! ---- histograms, axis, stabilizer rule
+      print '(a,a,a,a,a)', 'RTAXIS ', trim(lab), '  normal/most common dead axis in the standard frame: ', AX(rt_axis), &
+         '  -> z; new axes (x,y,z) = old (' // AX(rt_perm(1)) // ',' // AX(rt_perm(2)) // ',' // AX(rt_perm(3)) // ')'
+      do pl = 1, 2
+         tot(1) = real(sum(rt_hist(:, pl, 1)), dp); tot(2) = real(sum(rt_hist(:, pl, 2)), dp)
+         do fr = 1, 2
+            write (*, '(a,a,a,a,a,i0,a)', advance='no') 'RTMASK ', trim(lab), ' plan=', merge('full', 's2a ', pl == 1), ' frame ', fr, ':'
+            do z = 0, 7
+               if (rt_hist(z, pl, fr) > 0) write (*, '(a,a,f7.2,a)', advance='no') ' {', trim(zname(z)) // '}=', &
+                  100.0_dp*real(rt_hist(z, pl, fr), dp)/tot(fr), '%'
+            end do
+            print *
+         end do
+         same = tot(1) == tot(2)
+         do z = 0, 7
+            zp = 0
+            do k = 1, 3
+               if (btest(z, rt_perm(k) - 1)) zp = ior(zp, ishft(1, k - 1))
+            end do
+            if (rt_hist(z, pl, 1) /= rt_hist(zp, pl, 2)) same = .false.
+         end do
+         dead1 = real(sum([(merge(rt_hist(z, pl, 1), 0_int64, btest(z, rt_axis - 1)), z=0, 7)]), dp)/tot(1)
+         dead2 = real(sum([(merge(rt_hist(z, pl, 2), 0_int64, btest(z, 2)), z=0, 7)]), dp)/tot(2)
+         st1 = real(sum([(merge(rt_stab(v, pl, 1), 0_int64, v == ishft(1, rt_axis - 1)), v=0, 7)]), dp)/tot(1)
+         st2 = real(sum([(merge(rt_stab(v, pl, 2), 0_int64, v == 4), v=0, 7)]), dp)/tot(2)
+         print '(a,a,a,a,a,f8.4,a,f8.4,a,f8.4,a,f8.4,a,l1)', 'RTDEAD ', trim(lab), ' plan=', merge('full', 's2a ', pl == 1), &
+            '  old-dead-fraction ', dead1, '  new-z-dead-fraction ', dead2, '  stabilizer sigma_old ', st1, ' sigma_z ', st2, &
+            '  whole histogram identical under the bit permutation: ', same
+      end do
+      ! ---- errors
+      do ds = 1, 2
+         do pl = 1, 2
+            do sk = 1, merge(2, 1, nskip >= 2)
+               do k = 1, 3
+                  do i = 1, 2                      ! 1 cart, 2 sph (only dset 2 is folded)
+                     if (i == 1 .and. ds /= 1) cycle
+                     if (i == 2 .and. ds /= 2) cycle
+                     call pick(k, 1, pl, 1, ds, a)
+                     call pick(k, 2, pl, sk, ds, b)
+                     allocate (back(rt_nw, rt_nw))
+                     do j = 1, rt_nw
+                        do v = 1, rt_nw
+                           back(j, v) = b(rt_amap(j), rt_amap(v))
+                        end do
+                     end do
+                     if (i == 2) then
+                        allocate (fa(rt_wb1%nao_sph, rt_wb1%nao_sph), fb(rt_wb1%nao_sph, rt_wb1%nao_sph))
+                        call sph_cart_to_sph(rt_wb1, a, fa)
+                        call sph_cart_to_sph(rt_wb1, back, fb)
+                        gate = 5.0e-11_dp*max(1.0_dp, maxval(abs(fa)))
+                        e(k) = maxval(abs(fb - fa))
+                        deallocate (fa, fb)
+                     else
+                        gate = 5.0e-11_dp*max(1.0_dp, maxval(abs(a)))
+                        e(k) = maxval(abs(back - a))
+                     end if
+                     deallocate (back)
+                     if (k == 3) print '(a,a,a,a,a,a,a,a,3(a,es10.2),a,es10.2,a,l1)', 'RTERR ', trim(lab), &
+                        ' ', merge('cart', 'sph ', i == 1), ' plan=', merge('full', 's2a ', pl == 1), ' ', trim(SNAME(sk)), &
+                        '  J ', e(1), '  K ', e(2), '  G ', e(3), '  gate ', gate, '  ok ', e(3) <= gate .and. e(1) <= gate &
+                        .and. e(2) <= gate
+                  end do
+               end do
+            end do
+         end do
+      end do
+      do pl = 1, 2
+         do sk = 1, 2
+            if (sk > 1 .and. nskip < 2) cycle
+            print '(a,a,a,a,a,a,a,f7.3,a,es10.2)', 'RTSKIP ', trim(lab), ' plan=', merge('full', 's2a ', pl == 1), ' perm-frame ', &
+               trim(SNAME(sk)), ': skipped fraction ', rt_skipfrac(pl, sk), '  max|v| of a skipped component ', rt_maxflag(pl, sk)
+         end do
+      end do
+      print '(a,a,a,i0,a,i0)', 'RTDONE ', trim(lab), ' nw ', rt_nw, ' nsph ', rt_wb1%nao_sph
+   end subroutine roundtrip_main
+
+   function zname(z) result(s)
+      integer, intent(in) :: z
+      character(len=3) :: s
+      s = ''
+      if (z == 0) then
+         s = '-'
+         return
+      end if
+      if (btest(z, 0)) s = trim(s) // 'x'
+      if (btest(z, 1)) s = trim(s) // 'y'
+      if (btest(z, 2)) s = trim(s) // 'z'
+   end function zname
+
+   subroutine pick(k, fr, pl, sk, ds, m)
+      !! k = 1 J, 2 K, 3 G = J - K/2
+      integer, intent(in) :: k, fr, pl, sk, ds
+      real(dp), allocatable, intent(out) :: m(:, :)
+      if (k == 1) then
+         m = rt_j(:, :, ds, pl, sk, fr)
+      else if (k == 2) then
+         m = rt_k(:, :, ds, pl, sk, fr)
+      else
+         m = rt_j(:, :, ds, pl, sk, fr) - 0.5_dp*rt_k(:, :, ds, pl, sk, fr)
+      end if
+   end subroutine pick
+
+   subroutine do_frame(fr)
+      !! frame 1: the standard frame; frame 2: axes permuted so that
+      !! `rt_axis` becomes z.  Everything the engine needs is rebuilt.
+      integer, intent(in) :: fr
+      type(trc_basis_t), target :: bf
+      type(trc_basis_t) :: wbf
+      type(trc_eri_t), target :: ef
+      type(trc_basis_t), pointer :: wbp
+      type(trc_sym_geom_t) :: gf
+      type(trc_sym_ao_t) :: aof
+      real(dp), allocatable :: rf(:, :), tt(:, :), ds_(:, :), spp(:, :), cc(:, :)
+      integer :: k, m, pl, sk, ds, s, ic, ic2, px, py, pz, q(3), z, v, nsk, a0
+      integer :: gg
+      integer, parameter :: PSCH(2) = [1, 3]
+
+      c = ctx_t()
+      gf = geom
+      if (fr == 2) then
+         do k = 1, 3
+            rt_perm(k) = mod(rt_axis - 1 + k, 3) + 1
+         end do
+      else
+         rt_perm = [1, 2, 3]
+      end if
+      allocate (rf(3, nat))
+      do k = 1, 3
+         rf(k, :) = geom%r_std(rt_perm(k), :)
+      end do
+      gf%r_std = rf
+      if (fr == 2) then
+         do gg = 1, size(gf%group%ops)
+            v = 0
+            do k = 1, 3
+               if (btest(geom%group%ops(gg), rt_perm(k) - 1)) v = ior(v, ishft(1, k - 1))
+            end do
+            gf%group%ops(gg) = v
+         end do
+      end if
+      call trc_basis_from_json(trim(bfile), nat, elem, rf, bf, err, force_cart=.true.)
+      if (err%has_error()) stop 'basis failed (round trip)'
+      bf%spherical = .false.
+      call bf%to_device()
+      call ef%build(bf, thresh)
+      if (ef%dec%active) then
+         wbp => ef%pb
+      else
+         wbp => bf
+      end if
+      wbf = wbp
+      wbf%spherical = .false.
+      aof = sym_ao_build(wbf, gf, err)
+      if (err%has_error()) stop 'sym_ao_build failed (round trip)'
+      call setup(wbp, aof%ao_map, gf%perm, gf%group%ops, gf%group%order, rf, ef, thresh)
+      print '(a,i0,a,i0,a,i0,a,i0,a,i0)', 'RTFRAME ', fr, '  working nao ', wbp%nao, '  shells ', c%nsh, '  pairs ', c%np, &
+         '  live bins ', c%nlb, '  nsph ', wbp%nao_sph
+      ! ---- mask histograms (count runs), both plans
+      do pl = 1, 2
+         call run_plan(PSCH(pl), .false., 0)
+         do z = 0, 7
+            rt_hist(z, pl, fr) = sum(c%tq(:, :, :, :, z, :))
+         end do
+         do v = 0, 7
+            rt_stab(v, pl, fr) = 0
+            do k = 0, 255
+               if (btest(k, v)) rt_stab(v, pl, fr) = rt_stab(v, pl, fr) + sum(c%tq(:, :, :, :, :, k))
+            end do
+         end do
+      end do
+      if (fr == 1) then
+         ! the dead axis with the most quartets in the full plan; a tie goes to z
+         rt_axis = 3
+         do k = 2, 1, -1
+            if (sum([(merge(rt_hist(z, 1, 1), 0_int64, btest(z, k - 1)), z=0, 7)]) > &
+                sum([(merge(rt_hist(z, 1, 1), 0_int64, btest(z, rt_axis - 1)), z=0, 7)])) rt_axis = k
+         end do
+         rt_nw = wbp%nao
+         rt_wb1 = wbf
+         allocate (rt_d(rt_nw, rt_nw, 2))
+         allocate (rt_j(rt_nw, rt_nw, 2, 2, 2, 2), rt_k(rt_nw, rt_nw, 2, 2, 2, 2))
+         rt_j = 0.0_dp; rt_k = 0.0_dp
+         ! dataset 1: symmetric Cartesian density; dataset 2: its image under T T^T (a
+         ! density that is a spherical one expanded on the Cartesian functions)
+         allocate (tt(rt_nw, rt_nw), ds_(rt_nw, rt_nw), spp(wbf%nao_sph, wbf%nao_sph), cc(rt_nw, rt_nw))
+         do k = 1, rt_nw
+            do m = 1, rt_nw
+               tt(k, m) = 0.3_dp*cos(real(2*k + 3*m, dp)) + 0.3_dp*cos(real(2*m + 3*k, dp)) + merge(1.0_dp, 0.0_dp, k == m)
+            end do
+         end do
+         call symmetrize(tt, aof%ao_map, aof%ao_sign, ds_)
+         rt_d(:, :, 1) = ds_
+         call sph_cart_to_sph(wbf, ds_, spp)
+         call sph_sph_to_cart(wbf, spp, cc)
+         call symmetrize(cc, aof%ao_map, aof%ao_sign, ds_)
+         rt_d(:, :, 2) = ds_
+      else
+         ! induced AO permutation: component (px,py,pz) of the old frame is the component
+         ! with powers (px,py,pz)(rt_perm(k)) of the same shell in the new frame
+         if (wbp%nao /= rt_nw) stop 'round trip: working basis size differs between frames'
+         allocate (rt_amap(rt_nw))
+         do s = 1, wbp%nshell
+            if (wbp%sh_l(s) /= rt_wb1%sh_l(s) .or. wbp%sh_ao(s) /= rt_wb1%sh_ao(s)) stop 'round trip: shell layout differs'
+            a0 = wbp%sh_ao(s)
+            do ic = 0, ncart(wbp%sh_l(s)) - 1
+               call cart_perm_powers(wbp%sh_l(s), ic, q(1), q(2), q(3))
+               px = q(rt_perm(1)); py = q(rt_perm(2)); pz = q(rt_perm(3))
+               ic2 = -1
+               do m = 0, ncart(wbp%sh_l(s)) - 1
+                  call cart_perm_powers(wbp%sh_l(s), m, q(1), q(2), q(3))
+                  if (q(1) == px .and. q(2) == py .and. q(3) == pz) ic2 = m
+               end do
+               if (ic2 < 0) stop 'round trip: no permuted component'
+               rt_amap(a0 + ic) = a0 + ic2
+            end do
+         end do
+         if (any([(count(rt_amap == k), k=1, rt_nw)] /= 1)) stop 'round trip: AO map is not a permutation'
+      end if
+      ! ---- engine runs
+      nsk = merge(2, 1, fr == 2 .and. nskip >= 2)
+      if (allocated(tt)) deallocate (tt)
+      allocate (tt(rt_nw, rt_nw))
+      do pl = 1, 2
+         do sk = 1, nsk
+            do ds = 1, 2
+               if (fr == 1) then
+                  c%dw = rt_d(:, :, ds)
+               else
+                  if (.not. allocated(c%dw)) allocate (c%dw(rt_nw, rt_nw))
+                  do k = 1, rt_nw
+                     do m = 1, rt_nw
+                        c%dw(rt_amap(k), rt_amap(m)) = rt_d(k, m, ds)
+                     end do
+                  end do
+                  ! the mapped density is invariant under the permuted group
+                  call symmetrize(c%dw, aof%ao_map, aof%ao_sign, tt)
+                  if (ds == 1 .and. pl == 1 .and. sk == 1) print '(a,es10.2)', &
+                     'RTDINV max|D_perm - sym(D_perm)| in the permuted frame ', maxval(abs(tt - c%dw))
+               end if
+               call run_plan(PSCH(pl), .true., merge(2, 0, sk == 2))
+               if (pl == 1) then
+                  rt_j(:, :, ds, pl, sk, fr) = c%jx
+                  rt_k(:, :, ds, pl, sk, fr) = c%kx
+               else
+                  call symmetrize(c%jx, aof%ao_map, aof%ao_sign, tt)
+                  rt_j(:, :, ds, pl, sk, fr) = tt
+                  call symmetrize(c%kx, aof%ao_map, aof%ao_sign, tt)
+                  rt_k(:, :, ds, pl, sk, fr) = tt
+               end if
+               if (fr == 2 .and. ds == 1) then
+                  rt_skipfrac(pl, sk) = real(c%nflag, dp)/real(c%ncomp, dp)
+                  rt_maxflag(pl, sk) = c%maxflag
+               end if
+            end do
+         end do
+      end do
+   end subroutine do_frame
 end program spike_parity
