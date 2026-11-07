@@ -100,6 +100,10 @@ module trc_eri_data
       integer, allocatable :: shmap(:, :)
       !! (nshell, nop) the shell each operation sends a shell of the working
       !! basis to (trc_sym_pairs).
+      integer, allocatable :: ops(:)
+      !! (nop) sign mask of each operation (trc_sym_group: bit 0 flips x, bit 1
+      !! y, bit 2 z), in the order of the columns of `shmap`. The unique-pair
+      !! build rebuilds an image pair from its representative with them.
       integer, allocatable :: bin_nrep(:)
       !! (nbin) representatives at the start of bin k.
       integer, allocatable :: sec0(:)

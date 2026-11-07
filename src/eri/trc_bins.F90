@@ -33,7 +33,7 @@ module trc_bins
    private
 
    public :: SMAX, bins_build_binned_pairs, pair_bins_t, bins_sort_by_weight
-   public :: bins_build_pair_quartets, bins_rep_weights
+   public :: bins_build_pair_quartets, bins_rep_weights, pair_image_source
    public :: bins_skel_cut_first, bins_plan_emit, bins_plan_allocate
    ! bin_key/bin_dmax stay private: nothing outside this module uses them.
 
@@ -776,17 +776,25 @@ contains
    ! passes it back in on a rebuild so the reuse-the-allocation logic below
    ! still applies.
    !
-   subroutine bins_build_pair_quartets(b, pairs, quartets)
+   subroutine bins_build_pair_quartets(b, pairs, quartets, orb)
       type(pair_bins_t), intent(in) :: b
       type(trc_shell_pairs_t), intent(in) :: pairs
       !! The primitive pairs from hgp_build_pairs.
+      type(trc_bin_orbits_t), intent(in), optional :: orb
+      !! Present, with `orb%built`: `pairs` holds primitive pairs for the orbit
+      !! representatives only (hgp_build_pairs' `want`); a bin pair without
+      !! any is an image, and its slot is filled from the representative's
+      !! pair (pair_image_source) with the centres sign-flipped by the
+      !! operation's mask. Absent: every pair of a bin has its own.
       type(trc_pair_quartets_t), intent(inout) :: quartets
       !! Filled in place: `intent(inout)` because a rebuild after a resort
       !! reuses the allocation (see below). A padding slot (k past a pair's
       !! own kept count) is never read, since the kernel's loop bound is
       !! always the pair's real count (`n`); its `a` is 0.
 
-      integer :: nbas, nqp, ib, bb, s, p, key, k1, kreal, off, ix
+      integer :: nbas, nqp, ib, bb, s, p, key, k1, kreal, off, ix, gop
+      real(dp) :: sg(3)
+      logical :: images
 
       !
       ! REUSE THE ALLOCATION ON A REBUILD.
@@ -812,15 +820,21 @@ contains
       ! Per pair slot: the A centre, A - B, and the real kept count -- what
       ! pairs%off(key)/pairs%n(key) would give the kernel, read here once
       ! rather than once per quartet.
+      images = .false.
+      if (present(orb)) images = orb%built
       do p = 1, b%npair
          key = (b%sp_i(p) - 1)*nbas + b%sp_j(p)
+         sg = 1.0_dp
+         if (images) then
+            if (pairs%n(key) == 0) call pair_image_source(b%sp_i(p), b%sp_j(p), nbas, pairs%n, orb, key, sg)
+         end if
          off = pairs%off(key)
-         quartets%ax(p) = pairs%ra(off + 1, 1)
-         quartets%ay(p) = pairs%ra(off + 1, 2)
-         quartets%az(p) = pairs%ra(off + 1, 3)
-         quartets%abx(p) = pairs%ra(off + 1, 1) - pairs%rb(off + 1, 1)
-         quartets%aby(p) = pairs%ra(off + 1, 2) - pairs%rb(off + 1, 2)
-         quartets%abz(p) = pairs%ra(off + 1, 3) - pairs%rb(off + 1, 3)
+         quartets%ax(p) = sg(1)*pairs%ra(off + 1, 1)
+         quartets%ay(p) = sg(2)*pairs%ra(off + 1, 2)
+         quartets%az(p) = sg(3)*pairs%ra(off + 1, 3)
+         quartets%abx(p) = sg(1)*(pairs%ra(off + 1, 1) - pairs%rb(off + 1, 1))
+         quartets%aby(p) = sg(2)*(pairs%ra(off + 1, 2) - pairs%rb(off + 1, 2))
+         quartets%abz(p) = sg(3)*(pairs%ra(off + 1, 3) - pairs%rb(off + 1, 3))
          quartets%n(p) = pairs%n(key)
       end do
 
@@ -853,6 +867,10 @@ contains
          do s = 1, b%bin_cnt(bb)
             p = b%bin_off(bb) + s
             key = (b%sp_i(p) - 1)*nbas + b%sp_j(p)
+            sg = 1.0_dp
+            if (images) then
+               if (pairs%n(key) == 0) call pair_image_source(b%sp_i(p), b%sp_j(p), nbas, pairs%n, orb, key, sg)
+            end if
             off = pairs%off(key)
             kreal = quartets%n(p)
             do k1 = 1, quartets%bin_k(bb)
@@ -860,9 +878,9 @@ contains
                if (k1 <= kreal) then
                   quartets%z(ix) = pairs%p(off + k1)
                   quartets%c(ix) = pairs%c(off + k1)
-                  quartets%px(ix) = pairs%r(off + k1, 1)
-                  quartets%py(ix) = pairs%r(off + k1, 2)
-                  quartets%pz(ix) = pairs%r(off + k1, 3)
+                  quartets%px(ix) = sg(1)*pairs%r(off + k1, 1)
+                  quartets%py(ix) = sg(2)*pairs%r(off + k1, 2)
+                  quartets%pz(ix) = sg(3)*pairs%r(off + k1, 3)
                   quartets%a(ix) = pairs%a(off + k1)
                else
                   quartets%z(ix) = 1.0_dp
@@ -876,6 +894,41 @@ contains
          end do
       end do
    end subroutine bins_build_pair_quartets
+
+   subroutine pair_image_source(i, j, nbas, pp_n, orb, key_src, sg)
+      !! The pair (i, j) has no primitive pairs of its own: it is an image of a
+      !! representative that has. Finds an operation g that sends (i, j) to a
+      !! shell pair (u, v) whose primitive pairs were built, and returns that
+      !! pair's key and the signs that turn its centres into (i, j)'s.
+      !!
+      !! The operations are diagonal sign matrices, so g is its own inverse: g
+      !! sends i to u and u back to i, and the image of the pair (u, v) -- the
+      !! same exponents, the same combined coefficient, the product centre and
+      !! the two shell centres with the axes flipped by g's mask -- is the
+      !! pair (i, j), in this very order. Nothing about the angular components
+      !! enters: the image shell is a shell of the basis with its own centre,
+      !! and its integrals are the integrals of the flipped geometry. (The
+      !! component signs of trc_sym_ao relate the *Fock matrix elements* of
+      !! equivalent shells; they are not part of the pair data.)
+      integer, intent(in) :: i, j, nbas
+      integer, intent(in) :: pp_n(:)
+      type(trc_bin_orbits_t), intent(in) :: orb
+      integer, intent(out) :: key_src
+      real(dp), intent(out) :: sg(3)
+      integer :: g, u, v, d
+      do g = 1, orb%nop
+         u = orb%shmap(i, g)
+         v = orb%shmap(j, g)
+         if (pp_n((u - 1)*nbas + v) > 0) then
+            key_src = (u - 1)*nbas + v
+            do d = 1, 3
+               sg(d) = merge(-1.0_dp, 1.0_dp, btest(orb%ops(g), d - 1))
+            end do
+            return
+         end if
+      end do
+      error stop "terco: unique pairs: a shell pair without primitive pairs has no image with any"
+   end subroutine pair_image_source
 
    !
    ! Order the pairs INSIDE each bin along a Morton curve through the pair

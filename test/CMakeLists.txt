@@ -2448,3 +2448,23 @@ if(NOT TERCO_LONG_TESTS)
     endif()
   endforeach()
 endif()
+
+# The unique-pair build (docs/SYMMETRY_UNIQUE_PAIRS.md): primitive pairs and
+# Schwarz bounds of the orbit representatives only, images rebuilt from them.
+terco_add_check(check_sym_unique check_sym_unique.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_unique PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_unique PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_unique)
+# The skeleton oracle on the merged scheme's build (all pairs formed).
+terco_add_check(check_sym_fock_nouniq check_sym_fock.F90 NEEDS_BASIS ARGS quick)
+target_link_libraries(check_sym_fock_nouniq PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_fock_nouniq PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_fock_nouniq)
+set_tests_properties(terco/check_sym_fock_nouniq PROPERTIES ENVIRONMENT
+                     "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_UNIQUE_PAIRS=0")
+
+# Symmetry-unique pair list design study (docs/SYMMETRY_UNIQUE_PAIRS.md):
+# counts, memory model, pair-data reconstruction and exactness prototype.
+# Registered DISABLED; run by hand: spike_unique <xyz> <basis.json> <count|verify>.
+terco_add_check(spike_unique spike_unique.F90 NEEDS_BASIS)
+set_tests_properties(terco/spike_unique PROPERTIES DISABLED TRUE)

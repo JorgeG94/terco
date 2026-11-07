@@ -85,7 +85,7 @@ contains
    ! over the columns on the primitive-shell path, where sh_c is unity and
    ! the coefficients are applied in the kernel.
    !
-   subroutine hgp_build_pairs(sh_np, sh_e, sh_c, sh_r, cfac, camp, cut, pairs)
+   subroutine hgp_build_pairs(sh_np, sh_e, sh_c, sh_r, cfac, camp, cut, pairs, want)
       integer,  intent(in)  :: sh_np(:)
       !! (nbas) primitives per shell; its size is the shell count.
       real(dp), intent(in)  :: sh_e(:, :), sh_c(:, :), sh_r(:, :), cfac(:)
@@ -94,12 +94,22 @@ contains
       type(trc_shell_pairs_t), intent(inout) :: pairs
       !! Out: nbas, npp and the pair arrays. The shell part (sh_l, ao_off,
       !! sh_at, natm) is the caller's and is left as it is.
+      logical, intent(in), optional :: want(:, :)
+      !! (nbas, nbas) Present: only the shell pairs (i, j) with want(i, j)
+      !! get primitive pairs; every other pair has n = 0, as if it were pruned.
+      !! The unique-pair build (docs/SYMMETRY_UNIQUE_PAIRS.md) wants the orbit
+      !! representatives and rebuilds the images from them. The `keep` scratch
+      !! is then sized by the wanted pairs, not by nbas**2. Absent: every pair,
+      !! exactly as before.
 
       integer  :: nbas, npp, i, j, ki, kj, key, k, d, k1, k2, kb
       real(dp) :: a, b, p, mu, ab2, ukey, ubest
       real(dp), allocatable :: emin(:), amax(:)
       real(dp), parameter :: SQRT2_PI54 = 1.4142135623730951_dp*4.1827004988466890_dp  ! sqrt(2) pi^(5/4)
       logical, allocatable :: keep(:, :, :)
+      integer, allocatable :: kslot(:)
+      !! Row of `keep` of each shell pair (key); only with `want`.
+      integer :: ks, nslot
       integer, allocatable :: pp_ki(:), pp_kj(:)
       !! The primitive of each shell a kept pair came from: the sort below
       !! keys on their amplitudes. Nothing downstream asks.
@@ -109,7 +119,23 @@ contains
       if (allocated(pairs%off)) deallocate (pairs%off, pairs%n)
       if (allocated(pairs%p)) deallocate (pairs%p, pairs%r, pairs%ra, pairs%rb, pairs%c, pairs%a)
       allocate (pairs%off(nbas*nbas), pairs%n(nbas*nbas))
-      allocate (keep(size(sh_e, 1), size(sh_e, 1), nbas*nbas))
+      nslot = nbas*nbas
+      if (present(want)) then
+         allocate (kslot(nbas*nbas))
+         nslot = 0
+         do i = 1, nbas
+            do j = 1, nbas
+               key = (i - 1)*nbas + j
+               if (want(i, j)) then
+                  nslot = nslot + 1
+                  kslot(key) = nslot
+               else
+                  kslot(key) = 0
+               end if
+            end do
+         end do
+      end if
+      allocate (keep(size(sh_e, 1), size(sh_e, 1), nslot))
       keep = .false.
       !
       ! ONE EXPONENTIAL PER SHELL PAIR BEFORE ANY PRIMITIVE PAIR.
@@ -139,6 +165,11 @@ contains
                ab2 = ab2 + (sh_r(d, i) - sh_r(d, j))**2
             end do
             pairs%n(key) = 0
+            ks = key
+            if (present(want)) then
+               ks = kslot(key)
+               if (ks == 0) cycle
+            end if
             a = emin(i)
             b = emin(j)
             p = a + b
@@ -151,9 +182,9 @@ contains
                   b = sh_e(kj, j)
                   p = a + b
                   mu = a*b/p
-                  keep(ki, kj, key) = abs(camp(ki, i)*camp(kj, j))*exp(-mu*ab2) &
-                                      *SQRT2_PI54/(p*sqrt(sqrt(2.0_dp*p))) > cut
-                  if (keep(ki, kj, key)) pairs%n(key) = pairs%n(key) + 1
+                  keep(ki, kj, ks) = abs(camp(ki, i)*camp(kj, j))*exp(-mu*ab2) &
+                                     *SQRT2_PI54/(p*sqrt(sqrt(2.0_dp*p))) > cut
+                  if (keep(ki, kj, ks)) pairs%n(key) = pairs%n(key) + 1
                end do
             end do
             npp = npp + pairs%n(key)
@@ -169,6 +200,8 @@ contains
          do j = 1, nbas
             key = (i - 1)*nbas + j
             if (pairs%n(key) == 0) cycle
+            ks = key
+            if (present(want)) ks = kslot(key)
             k = pairs%off(key)
             ab2 = 0.0_dp
             do d = 1, 3
@@ -177,7 +210,7 @@ contains
             do ki = 1, sh_np(i)
                a = sh_e(ki, i)
                do kj = 1, sh_np(j)
-                  if (.not. keep(ki, kj, key)) cycle
+                  if (.not. keep(ki, kj, ks)) cycle
                   b = sh_e(kj, j)
                   k = k + 1
                   p = a + b

@@ -75,7 +75,7 @@ module trc_sym_pairs
    private
 
    public :: trc_sym_pairs_t, sym_pairs_build, sym_pairs_shell_map
-   public :: sym_pairs_symmetrize_q, sym_pairs_symmetrize_dsh, sym_pairs_tri
+   public :: sym_pairs_symmetrize_q, sym_pairs_symmetrize_dsh, sym_pairs_tri, sym_pairs_wanted
 
    type :: trc_sym_pairs_t
       !! Orbit tables of a pair list under a point group.
@@ -216,6 +216,63 @@ contains
       end do
       dsh = dn
    end subroutine sym_pairs_symmetrize_dsh
+
+   function sym_pairs_wanted(shmap, sh_l) result(want)
+      !! want(i, j): the ordered shell pair (i, j) is one the unique-pair build
+      !! must form primitive pairs for. Those are the orbit representatives
+      !! (the member of an orbit with the smallest canonical key) in the
+      !! orders that are used:
+      !!  - (i, j) with i >= j, the order the Schwarz bound is computed in;
+      !!  - the order of every image: the bins store a pair with its higher-l
+      !!    shell first (index order breaks a tie), and the image of a pair
+      !!    (a, b) stored so is (ga, gb), in this order, whichever of the
+      !!    orbit's members it is. An image is rebuilt from the representative
+      !!    in that order by sign flips alone, so that order of the
+      !!    representative has to exist.
+      !! Needs no pair list, only the shell map and the shells' l: O(nshell^2
+      !! nop) integer work. The ordered pairs of all other orbit members are
+      !! rebuilt, never formed.
+      integer, intent(in) :: shmap(:, :), sh_l(:)
+      logical, allocatable :: want(:, :)
+      logical, allocatable :: isrep(:, :)
+      integer :: i, j, g, nsh, nop, a, b, u, v
+      integer(int64) :: k0, k
+
+      nsh = size(shmap, 1)
+      nop = size(shmap, 2)
+      allocate (want(nsh, nsh), isrep(nsh, nsh))
+      want = .false.
+      do j = 1, nsh
+         do i = 1, nsh
+            k0 = sym_pairs_tri(i, j)
+            isrep(i, j) = .true.
+            do g = 2, nop
+               k = sym_pairs_tri(shmap(i, g), shmap(j, g))
+               if (k < k0) then
+                  isrep(i, j) = .false.
+                  exit
+               end if
+            end do
+         end do
+      end do
+      do i = 1, nsh
+         do j = 1, i
+            if (isrep(i, j)) want(i, j) = .true.
+            if (sh_l(j) > sh_l(i)) then
+               a = j
+               b = i
+            else
+               a = i
+               b = j
+            end if
+            do g = 1, nop
+               u = shmap(a, g)
+               v = shmap(b, g)
+               if (isrep(u, v)) want(u, v) = .true.
+            end do
+         end do
+      end do
+   end function sym_pairs_wanted
 
    function sym_pairs_build(shmap, sp_i, sp_j, sp_q, error) result(tab)
       !! Orbit tables of the pair list (sp_i(p), sp_j(p)) with Schwarz bounds
