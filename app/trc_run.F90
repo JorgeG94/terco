@@ -41,6 +41,7 @@ module trc_run
    public :: run_opt_capability_check, run_build_opt_residues, run_opt_summary, run_write_opt_xyz, run_write_traj_xyz
    public :: run_parse_opt_global_options
    public :: run_opt_geometry_is_linear, run_write_labelled_xyz, run_to_lower_alloc
+   public :: run_parse_charges
    public :: run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
              run_check_neb_endpoint, run_write_neb_path_xyz
    public :: run_read_xyz_frames
@@ -96,8 +97,12 @@ module trc_run
       logical :: rank0
       logical :: grad
       real(dp), allocatable :: gradient(:, :)   !! (3, natm), Eh/Bohr, after --grad
-      character(len=:), allocatable :: charges  !! "" (none) or "hirshfeld", --charges
+      character(len=:), allocatable :: charges
+         !! "" (none), or --charges's comma-separated schemes: hirshfeld, chelpg
+      logical :: want_hirshfeld = .false.  !! --charges names hirshfeld
+      logical :: want_chelpg = .false.     !! --charges names chelpg
       real(dp), allocatable :: hirshfeld_charges(:)  !! (natm), e, after --charges hirshfeld
+      real(dp), allocatable :: chelpg_charges(:)     !! (natm), e, after --charges chelpg
       character(len=:), allocatable :: fukui  !! "" (none) or "hirshfeld", --fukui
       ! (natm) each, after --fukui hirshfeld: f+/f-/f0 and the three
       ! states' own Hirshfeld charges (N, N+1, N-1) trc_fukui_hirshfeld
@@ -282,6 +287,12 @@ module trc_run
          implicit none
          type(run_t), intent(inout) :: r
       end subroutine run_parse_opt_global_options
+
+      module subroutine run_parse_charges(r)
+         !! --charges's schemes into r%want_hirshfeld / r%want_chelpg (trc_run_opt.F90)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse_charges
 
       module subroutine run_parse_frozen_list(spec, natm, frozen, err)
          implicit none
