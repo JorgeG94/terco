@@ -89,7 +89,7 @@ assumption for the plan is:
 | S14.1 | Orbit tables (`trc_sym_pairs`), closure and weight-sum check | S13 | todo |
 | S14.2 | Symmetry-aware bins/plan/tiles, skeleton entry, `check_sym_fock` | S14.1 | todo |
 | S14.3 | SCF wiring, central SCF oracle with the skeleton for all groups | S14.2 | todo |
-| S14.4 | MD J and MD exchange bra restriction (required for g bases) | S14.2 | todo |
+| S14.4 | MD J and MD exchange bra restriction (required before symmetry becomes the default) | S14.2 | todo |
 | S14.5 | Device-mapping list for S15 | S14.3 | todo |
 | S15 | GPU validation and performance | S14, NVIDIA host | todo |
 | S16 | Optional: DF-JK, XC grid and gradient reductions | S15 | todo |
