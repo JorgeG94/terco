@@ -57,6 +57,7 @@ contains
          new_unittest("symmetry=off is the output of no flag, and prints nothing new", test_off_unchanged), &
          new_unittest("TOML: symmetry keys give the flags' numbers and are echoed", test_toml), &
          new_unittest("TOML: a wrongly typed symmetry key is refused", test_toml_type), &
+         new_unittest("--no-sym-skeleton: the same energy; needs --symmetry; the TOML key matches", test_skeleton_flag), &
          new_unittest("an explicit subgroup runs; C1 runs without symmetry", test_explicit), &
          new_unittest("an explicit group that is not a subgroup is refused", test_not_subgroup), &
          new_unittest("a subgroup below the detected group runs (Cs on water); a non-subgroup is refused", test_not_yet), &
@@ -293,6 +294,57 @@ contains
       text = slurp(work_dir//'/bad.out')
       call check(error, index(text, "'symmetry_tol' must be a number") > 0, "the message does not name the key")
    end subroutine test_toml_type
+
+   subroutine test_skeleton_flag(error)
+      !! The skeleton Fock build is the default under --symmetry; --no-sym-skeleton
+      !! (or symmetry_skeleton = false) takes the full build and gives the same
+      !! SCF; either flag without a symmetry request is refused.
+      type(error_type), allocatable, intent(out) :: error
+      type(json_file) :: json
+      real(dp) :: e_on, e_off, e_toml
+      logical :: found
+      integer :: rc
+
+      call setup()
+      call run_cli('hocl.xyz'//BASIS//' --symmetry auto'//TIGHT//' --json '//work_dir//'/sk_on.json > '// &
+                   work_dir//'/sk_on.out 2>&1', rc)
+      call check(error, rc == 0, "the default run failed:"//new_line('a')//slurp(work_dir//'/sk_on.out'))
+      if (allocated(error)) return
+      call run_cli('hocl.xyz'//BASIS//' --symmetry auto --no-sym-skeleton'//TIGHT//' --json '//work_dir// &
+                   '/sk_off.json > '//work_dir//'/sk_off.out 2>&1', rc)
+      call check(error, rc == 0, "--no-sym-skeleton failed:"//new_line('a')//slurp(work_dir//'/sk_off.out'))
+      if (allocated(error)) return
+      call json%initialize()
+      call json%load(filename=work_dir//'/sk_on.json')
+      call json%get('total energy', e_on, found)
+      call json%destroy()
+      call json%initialize()
+      call json%load(filename=work_dir//'/sk_off.json')
+      call json%get('total energy', e_off, found)
+      call json%destroy()
+      call check(error, abs(e_on - e_off) < 1.0e-9_dp, "--no-sym-skeleton changed the energy by "// &
+                 to_string(abs(e_on - e_off), 'es10.2'))
+      if (allocated(error)) return
+      call refused('hocl.xyz'//BASIS//' --no-sym-skeleton', 'need --symmetry', error)
+      if (allocated(error)) return
+      call refused('hocl.xyz'//BASIS//' --symmetry auto --sym-skeleton --no-sym-skeleton', 'contradict', error)
+      if (allocated(error)) return
+      ! The TOML key is the flag: symmetry_skeleton = false is --no-sym-skeleton.
+      call write_toml(work_dir//'/case/sk.toml', [character(len=96) :: &
+                      '[molecule]', 'geometry = "hocl.xyz"', &
+                      '[basis]', 'main = "basis_sets/cc-pvdz.json"', &
+                      '[scf]', 'symmetry = "auto"', 'symmetry_skeleton = false', &
+                      'energy_tol = 1e-12', 'commutator_tol = 1e-10', &
+                      '[output]', 'json = "sk_toml.json"', 'silent = true'])
+      call run_cli_raw('cd '//work_dir//' && '//cli_exe//' case/sk.toml > sk_toml.out 2>&1', rc)
+      call check(error, rc == 0, "the TOML run failed:"//new_line('a')//slurp(work_dir//'/sk_toml.out'))
+      if (allocated(error)) return
+      call json%initialize()
+      call json%load(filename=work_dir//'/case/sk_toml.json')
+      call json%get('total energy', e_toml, found)
+      call json%destroy()
+      call check(error, found .and. abs(e_toml - e_off) < 1.0e-9_dp, "the TOML run's energy differs")
+   end subroutine test_skeleton_flag
 
    subroutine test_explicit(error)
       type(error_type), allocatable, intent(out) :: error

@@ -355,7 +355,10 @@ contains
       reuse_pl = present(pair_eri_cache)
       if (reuse_pl) reuse_pl = pair_eri_cache%matches(b, thresh)
       reuse_eri = .false.
-      if (reuse_pl) reuse_eri = pair_eri_cache%has_eri .and. pair_eri_cache%batch_res_built == 1
+      ! An engine built with the point group is not reused (its bins are
+      ! orbit-closed; the gradient's use of them is S16's to take over).
+      if (reuse_pl) reuse_eri = pair_eri_cache%has_eri .and. pair_eri_cache%batch_res_built == 1 .and. &
+                                .not. pair_eri_cache%orbits_built
       if (present(reused)) reused = reuse_pl .and. (reuse_eri .or. present(dfjk))
       if (.not. reuse_pl) then
          call pl_own%build(b, thresh)
