@@ -64,6 +64,12 @@ In this order:
 - **Do not push, open PRs or merge** unless your dispatch prompt explicitly
   says to. Never commit to `main` or `symmetry` directly. Never rewrite
   pushed history.
+- **Everything targets the fork, `AlbertThie/terco` (remote `fork`).** That
+  covers pushes, branches, pull requests and issues. `origin`
+  (`JorgeG94/terco`) is fetch-only, and its push URL is disabled on purpose.
+  Never re-enable it, never open a PR or issue against `JorgeG94/terco`, and
+  with `gh` always pass `--repo AlbertThie/terco`. PRs target the fork's
+  `symmetry` branch, not `main`, unless the dispatch prompt says otherwise.
 
 ### 4. Hard limits (stop and report instead of working around them)
 

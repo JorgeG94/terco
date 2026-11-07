@@ -1,6 +1,9 @@
 # Molecular point-group symmetry: project plan
 
-Integration branch: `symmetry` (off `main` at a1fdef6, the merge of #199).
+Integration branch: `symmetry` (off `main` at a1fdef6, the merge of #199),
+published on the fork **`AlbertThie/terco`** (remote `fork`). All pushes, PRs
+and issues for this project target the fork; `origin` (`JorgeG94/terco`) is
+fetch-only, with its push URL disabled.
 This plan is written so that each stage can be handed to an agent on its own:
 "implement stage S5 of `.claude/context/symmetry-plan.md`". Every stage
 lists its goal, the files it touches, what it must deliver, the tests that
