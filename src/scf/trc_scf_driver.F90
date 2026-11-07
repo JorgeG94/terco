@@ -740,7 +740,10 @@ contains
          call scf_timers%xcst%add_time(3, scf_timers%t_vv10)
       end if
       if (scf_config%talk) then
-         call report_timing(scf_context, scf_timers, scf_config%dft, pair_eri_cache%eri%t_build)
+         call report_timing(scf_context, scf_timers, scf_config%dft, pair_eri_cache%eri%t_build, &
+                            pair_eri_cache%eri%parity_axis, pair_eri_cache%eri%nwork, &
+                            pair_eri_cache%eri%nwork_masked, pair_eri_cache%eri%nwork_variant, &
+                            pair_eri_cache%eri%nlaunch_variant)
          if (scf_config%dft) then
             if (present(comm)) then
                call scf_timers%xcst%report(scf_context%t_grid + scf_timers%t_xc, comm%rank(), comm%size())
@@ -880,14 +883,21 @@ contains
       str = str//"]"
    end function dims_string
 
-   subroutine report_timing(scf_context, scf_timers, dft, t_eri_build)
+   subroutine report_timing(scf_context, scf_timers, dft, t_eri_build, parity_axis, nwork, &
+                            nwork_masked, nwork_variant, nlaunch_variant)
       !! Where the run's time went, through pic's logger at PERFORMANCE,
       !! which its default INFO level shows: the phases, then setup and
-      !! the ERI engine's build broken into their steps.
+      !! the ERI engine's build broken into their steps, then what parity
+      !! skipping did with the last Fock build's work list.
       type(scf_ctx_t), intent(in) :: scf_context
       type(scf_timers_t), intent(in) :: scf_timers
       logical, intent(in) :: dft
       real(dp), intent(in) :: t_eri_build(:)   !! the ERI engine's `t_build`
+      integer, intent(in) :: parity_axis   !! the engine's `parity_axis`: the dead axis, 0 for none
+      integer(int64), intent(in) :: nwork   !! the engine's `nwork`: work items of the last bin launch
+      integer(int64), intent(in) :: nwork_masked   !! of those, the ones in a masked segment
+      integer(int64), intent(in) :: nwork_variant   !! of those, the ones a masked kernel variant took
+      integer, intent(in) :: nlaunch_variant   !! launches that went to a masked variant
       character(len=160) :: line
       ! `total` is the run's own wall time, so it also holds what no column
       ! times (PCM, the guess density's upload, the final transfers).
@@ -903,6 +913,14 @@ contains
       call global_logger%performance( &
          "   eri (s) hgp pairs   schwarz      bins  quartets    upload")
       write (line, "(a,5f10.3)") "          ", t_eri_build
+      call global_logger%performance(trim(line))
+      ! Parity skipping (docs/SYMMETRY_PARITY_SKIP.md), from the engine's own
+      ! counters: a dead axis of 0 means no mask was taken at all, and a
+      ! masked share with no variant launches means the masks were taken but
+      ! no class that reached a kernel has a masked variant in this build.
+      call global_logger%performance( &
+         "   parity  dead axis         nwork   masked work  variant work  variant launches")
+      write (line, "(a,i10,3i14,i18)") "          ", parity_axis, nwork, nwork_masked, nwork_variant, nlaunch_variant
       call global_logger%performance(trim(line))
       if (dft) then
          call global_logger%performance( &
