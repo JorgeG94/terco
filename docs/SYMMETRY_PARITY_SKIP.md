@@ -486,6 +486,31 @@ the skeleton, 5.0-5.6x of the ideal 8x overall.
 6. GPU measurement: needs an A100/V100 run of one masked (dd|dd) and a
    Rys class before PR-B/C is merged (register spill, occupancy).
 
+## 8a. Decisions so far (2026-11-07)
+
+1. **Frame: z-only variants, with an axis permutation inside the integral
+   engine only.** The standard frame, irrep labels and every reported
+   quantity stay pyscf's. In pyscf, `_adjust_planar_d2h` puts the plane
+   normal on x on purpose (its comment cites the iOpenShell guide and pyscf
+   issue #1201), so moving it would break label agreement.
+
+   For the Fock build, the integral engine and its orbit tables are built on
+   coordinates with the axes permuted, so that the most common dead axis is
+   z. The Cartesian density goes in, and the Cartesian G comes back, through
+   the induced AO permutation (x^a y^b z^c maps to another component of the
+   same shell). That mapping is exact and costs O(N^2), and the fold to
+   spherical happens after it as today.
+
+   This covers every quartet of a planar molecule. On mixed-mask molecules
+   it covers the most common axis (B2H6: x, so 42% + 9% of quartets); the
+   rest runs unmasked. Variants for the other two axes, or scheme (b), are
+   revisited only if S15 shows that mixed-mask molecules matter.
+
+   The exactness of the permutation round trip (Cartesian and spherical) is
+   to be shown by the prototype before PR-A.
+
+Questions 2-6 above are still open.
+
 ## 9. Reproducing
 
 ```sh
