@@ -20,7 +20,7 @@
 ! on and off. The molecules are those of the group's own check_sym_<group>.
 !
 module check_sym_scf_skeleton_suite
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_bind_device
@@ -96,7 +96,7 @@ contains
       integer, allocatable :: elem(:)
       real(dp), allocatable :: r(:, :)
       integer :: nat, nelec, nalpha, nbeta, dev
-      integer(8) :: nw_skel, nw_full
+      integer(int64) :: nw_skel, nw_full
       real(dp) :: tol_e
 
       dev = trc_bind_device(0)
@@ -165,7 +165,7 @@ contains
                     " quartets, the C1 run "//to_string(c1%eri%nwork))
       if (.not. allocated(error)) then
          print '(a,a,a,i0,a,i0,a,f5.2,a)', '  ', label, ': last build quartets skeleton ', nw_skel, ' full ', nw_full, &
-            '  (x', real(nw_full, dp)/real(max(nw_skel, 1_8), dp), ')'
+            '  (x', real(nw_full, dp)/real(max(nw_skel, 1_int64), dp), ')'
          call check(error, nw_skel /= nw_full .and. real(nw_full, dp) >= min_gain*real(nw_skel, dp), &
                     label//": the skeleton build launched "//to_string(nw_skel)//" quartets against the full build's "// &
                     to_string(nw_full)//": expected a gain of at least "//to_string(min_gain, "f4.2"))
