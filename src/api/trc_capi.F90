@@ -5806,6 +5806,19 @@ contains
 
       real(dp), allocatable :: d_total_cart(:, :)
 
+      ! The free-atom reference (trc_hirshfeld_populations' own proatom
+      ! table) is all-electron at the atom's bare Z; a molecule with an
+      ! ECP attached has a valence-only basis and a reduced charge, so the
+      ! stockholder partition's electron-count budget would not match --
+      ! refused rather than silently wrong. Covers trc_hirshfeld_charges
+      ! and every one of trc_fukui_hirshfeld's three states, both of which
+      ! call this.
+      if (cx%ecp%has_ecp) then
+         call error%set(ERROR_VALIDATION, "hirshfeld charges: not supported with an effective "// &
+                        "core potential attached (the free-atom reference is all-electron)")
+         return
+      end if
+
       call state_total_density_cart(cx, d_total_cart)
       call trc_hirshfeld_populations(cx%bb%b, d_total_cart, q, error)
    end subroutine state_hirshfeld_charges
@@ -5820,19 +5833,6 @@ contains
 
       real(dp), allocatable :: d_total_sph(:, :)
       integer :: n
-
-      ! The free-atom reference (trc_hirshfeld_populations' own proatom
-      ! table) is all-electron at the atom's bare Z; a molecule with an
-      ! ECP attached has a valence-only basis and a reduced charge, so the
-      ! stockholder partition's electron-count budget would not match --
-      ! refused rather than silently wrong. Covers trc_hirshfeld_charges
-      ! and every one of trc_fukui_hirshfeld's three states, both of which
-      ! call this.
-      if (cx%ecp%has_ecp) then
-         call error%set(ERROR_VALIDATION, "hirshfeld charges: not supported with an effective "// &
-                        "core potential attached (the free-atom reference is all-electron)")
-         return
-      end if
 
       n = scf_space_nao(cx%bb)
       allocate (d_total_sph(n, n))
