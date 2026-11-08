@@ -634,12 +634,14 @@ Commits on `sym/parity-skip`, one per PR boundary:
    axis their z and permutes D in and G out in `launch_in_frame` (2 nw^2
    doubles of scratch per build, only when the axis is not z). Counters on the
    engine: `parity_axis`, `nwork_masked`, `nwork_variant`, `nlaunch_variant`,
-   `parity_ops_base/masked`. `eri%parity_mode`, `TRC_PARITY` and
+   `parity_ops_base/masked`, `parity_cost_masked/variant`. `eri%parity_mode`,
+   `TRC_PARITY` and
    `parity_set_default` switch it (0 off, 1 auto, 2 force the frame).
-3. **HGP variants**: 15 `pcs{tag}z` kernels (the seven HGP classes of the top
-   ten, the three Rys-routed ones in their bra/ket-swapped order, and the
+3. **HGP variants**: 18 `pcs{tag}z` kernels (the seven HGP classes of the top
+   ten, the Rys-routed ones in their bra/ket-swapped order, and the
    swaps of the HGP ones), dispatched at `key + CLASS_RADIX**4`.
-4. **Rys variants**: `gen_rys.py --dead z` for (dp|pp), (dp|ds), (dp|dp).
+4. **Rys variants**: `gen_rys.py --dead z` for (dp|pp), (dp|ds), (dp|dp),
+   and (section 11) (dd|ds), (dd|pp), (dd|dp), (dd|dd).
 
 Not done, deliberately (follow-ups):
 
@@ -648,6 +650,257 @@ Not done, deliberately (follow-ups):
 - **Gradients** (`gen_rys_grad.py`): the dead-axis derivative drops out, the
   others halve their components (section 5.2); needs its own measurement.
 - **MD J/K** (`gen_md_j.py`, `gen_md_k.py`): halve the Hermite index sets.
-- The other 71 classes, the y and x axes without the permutation, and the
+- The other 64 classes, the y and x axes without the permutation, and the
   GPU register/occupancy check of the variants ([GPU], S15): not run.
 - `launch_in_frame` could use the caller's scratch instead of allocating.
+
+## 11. The heavy classes (`sym/parity-heavy-classes`)
+
+Section 10's variant set is the ten classes of decision 2. What it actually
+covers was then measured on the shipped engine, and it is not what the work
+counters suggested.
+
+**Work items are the wrong unit.** `nwork_variant / nwork_masked` reads
+67.7 % (benzene), 69.9 % (naphthalene_d2h) and 72.0 % (pentacene_d2h) --
+6-31G*, `--symmetry auto`, skeleton plan, host build. Weighting each masked
+launch by `pc_cost`, the operations one of its work items costs, the covered
+share is **47.2 / 49.8 / 54.4 %**: a work item of (ss|ss) is 2 modelled
+operations and one of (dd|dd) is 63 644. Half the masked work was reaching no
+variant, and it was the expensive half. Shares of the masked modelled cost
+with no variant, benzene / naphthalene / pentacene:
+
+| class | % | class | % |
+|---|---|---|---|
+| (dp\|dd) | 9.3 / 11.5 / 9.9 | (dd\|dd) | 10.1 / 8.3 / 5.9 |
+| (ds\|dd) | 6.2 / 5.5 / 4.3 | (ps\|dd) | 5.3 / 5.0 / 4.3 |
+| (pp\|dd) | 4.6 / 4.6 / 4.2 | (ds\|ds) | 4.5 / 3.7 / 3.1 |
+| (dd\|pp) | 3.9 / 2.4 / 2.4 | (pp\|pp) | 2.4 / 2.4 / 3.0 |
+
+Every uncovered class at the top has a d shell on **both** sides, and the
+largest single one is (dp|dd) -- the bra/ket-swapped ordering of (dd|dp).
+`bins_skel_cut_first` cuts the ket side of those bin pairs, so production
+launches them in the swapped order, which `rys_default_class` does not route
+to Rys: they run HGP, where a masked variant is the cheaper kernel.
+
+**What was added.** (dd|ds), (dd|pp), (dd|dp) and (dd|dd) joined
+`PARITY_RYS_TOP`, which gives four `gen_rys.py --dead z` chunked kernels and,
+through the swap rule, three HGP ones -- (ps|dd), (pp|dd), (dp|dd). The
+cost-weighted covered share goes 0.472 -> 0.807 (benzene) and
+0.498 -> 0.829 (naphthalene), 0.544 -> 0.842 (pentacene); the work-item share
+only 0.677 -> 0.694, 0.699 -> 0.718 and 0.720 -> 0.739, which is why the
+cost-weighted pair of counters exists and why `check_sym_parity` now gates on
+it per molecule.
+
+**What it is worth, measured, and why it is not what the coverage says.**
+Host build, gfortran 15.1 `-O3` (`do concurrent` serial), `terco <mol>.xyz -b
+basis_sets/6-31gs.json --symmetry auto`, the timing block's `fock` column,
+best of 2-3 runs, `TRC_PARITY=0` over `TRC_PARITY=1`:
+
+| system | before | after |
+|---|---|---|
+| benzene | 2.120 / 1.804 = **1.175x** | 2.097 / 1.748 = **1.200x** |
+| naphthalene_d2h | 12.264 / 10.083 = **1.216x** | 11.885 / 9.591 = **1.239x** |
+| pentacene_d2h | (not usable, below) | 97.806 / 79.734 = **1.227x** |
+
+Two other agents were building and running on the machine throughout, so
+pentacene's before pair (97.304 / 99.121 = 1.019x) saw load its after pair
+did not -- it disagrees with the 1.16-1.19x this configuration is known to
+give, so only its after value is quoted. Energies are unchanged to 3e-12 Eh
+against a 1e-10 convergence (benzene `...128250` -> `...128247` with parity
+on; parity off is bit-identical), and `check_sym_parity` puts masked against
+unmasked G at 8.7e-16 to 6.2e-12 on a 5e-11 gate.
+
+**+2 % of Fock time for 33 points of modelled coverage.** `pc_cost` badly
+overstates what these classes cost in time: they have few quartets, and
+production runs the (dd|..) ones through chunked Rys, whose cost is nothing
+like HGP's statement count. The counter pair is the right instrument for
+finding which classes have no variant and the wrong one for predicting what
+adding them buys. It also says the shortfall against section 1's
+1.43-1.46x is **not** mainly class coverage: on the host the ten mid classes
+that already had variants were carrying nearly all of the available gain,
+and the rest of the gap is the model's per-primitive overhead term
+(section 3.4: x3 gives 1.26x) plus the host's own cost profile. The GPU does
+agree that the heavy classes carry much more of the time -- 11.4 to 19.1 %
+of it, against the ~2 % of host Fock time this stage buys -- and section 12
+has the measurement.
+
+**Compile cost** (AGENTS.md: a generator change that grows the heavy classes
+states it). nvfortran 26.5, `-stdpar=gpu -acc -gpu=cc70,mem:separate -O3`,
+one object, seconds, the kernel a variant shadows -> the variant:
+
+| class | shadowed | variant | | class | shadowed | variant |
+|---|---|---|---|---|---|---|
+| (ps\|dd) HGP | 11.2 | 7.5 | | (dd\|ds) Rys | 6.5 | 8.8 |
+| (pp\|dd) HGP | 42.5 | 19.6 | | (dd\|pp) Rys | 7.3 | 12.1 |
+| (dp\|dd) HGP | 157.5 | 65.6 | | (dd\|dp) Rys | 4.7 | 10.3 |
+| | | | | (dd\|dd) Rys | 6.6 | 10.8 |
+
+The variants are extra objects, so the set grows by their own **135 s** --
+against 547 s for the HGP (dd|dd) kernel alone. A masked HGP kernel is
+smaller than the one it shadows (the sieve reruns on half the nodes:
+(dp|dd) 7267 lines -> 3327), a masked chunked Rys kernel larger (the chunk
+body exists once per parity of the outer components' z powers, each half the
+size), which is why the four cheap Rys classes are the ones that cost more
+than they replace. gfortran 15.1 `-O3`, the same seven objects inside the
+host build: the three HGP variants 2.8 / 7.0 / 16.1 s and the four Rys ones
+1.8-2.7 s, **34.9 s** in total, on a set whose per-object times sum to
+2606 s and whose own HGP (dd|dd) kernel is 123 s.
+
+**Registers.** cc70, read from a linked shared library with
+`cuobjdump -res-usage` (never the `.o`), `STACK` not `LOCAL`. Every chunked
+Rys kernel here already sits at 255 registers with a non-zero frame, before
+and after; the variants do not change the kernels they shadow, and their own
+frames are:
+
+| class | unmasked | variant |
+|---|---|---|
+| (dd\|ds) | 192 B | 144 B |
+| (dd\|pp) | 384 B | 464 B |
+| (dd\|dp) | 288 B | 360 B |
+| (dd\|dd) | 360 B | 568 B |
+
+For comparison the variants section 10 already shipped: (dp|pp) 296 -> 376 B,
+(dp|ds) 112 -> 72 B, (dp|dp) 216 -> 224 B. The new Rys ones are the same shape
+of change, and the largest, (dd|dd) at 568 B, is inside the 56-1256 B the
+chunked kernels already run with (docs/GENERATORS.md).
+
+**The three HGP variants are the risk, and one of them is a regression.**
+Same measurement, the scalar HGP kernels:
+
+| class | unmasked | variant |
+|---|---|---|
+| (ps\|dd) | 2 192 B | 1 824 B |
+| (pp\|dd) | 9 808 B | 5 040 B |
+| (dp\|dd) | 15 904 B | **25 472 B** |
+
+A masked HGP kernel does about a third of the arithmetic but declares the
+SAME scratch -- `v(700, 0:1)`, `g1(700)`, `vbuf(648)`, 22 kB of doubles --
+because the generator only stops writing the dead entries, it does not
+compact the buffers the way the warp-role path does with its `vmap`. On
+(ps|dd) and (pp|dd) the compiler still eliminates more of that scratch than
+before; on (dp|dd) it eliminates less, and the frame grows by 9.6 kB per
+thread on a kernel that already spilled 15.9 kB. docs/GENERATORS.md's
+precedent is the array-form Rys kernels, which ran at 3.5 % of SM throughput
+with 7.5 kB. **So (dp|dd) must not be believed until a GPU has run it**, even
+though it is the largest single uncovered class; compacting the masked
+kernel's buffers to the live node set is the generator work that would fix it
+properly, and holding the (dp|dd) swap out of `parity_hgp_tags` is the
+one-line alternative.
+
+**The above was measured in a device link of these kernels and their module
+dependencies only, not of `libterco.so`**, because this stage had no GPU
+toolchain run over the whole tree. Section 12 closes that: a full device
+build was made afterwards and the full-library registers, the occupancy and
+the run-time effect are measured there.
+
+**Not added, and why.** (ds|dd) 4.3-6.2 % and (ss|dd) 1.5 % would need
+(dd|ds) and (dd|ss) in `PARITY_HGP_TOP`, and (dd|ds) is a `ROLE_SPLITS`
+class: a masked launch would leave its warp-role kernel for a scalar one, and
+the split is worth 1.1-4.5x exactly where the scalar working set spills.
+Nothing on a host build can measure that, so a masked **role** kernel is the
+next piece of generator work, not a list edit. (ds|ds) 3.1-4.5 % and
+(pp|pp) 2.4-3.0 % are the next two uncovered classes without that
+complication.
+
+**Still [GPU].** The chunk shape of a masked Rys kernel is the unmasked
+class's shape; the design (section 4a) says a masked variant has its own best
+shape and needs its own race, which needs a device. So does the occupancy and
+spill effect of the 568 B frame, and so does whether the HGP masked (dp|dd)
+kernel beats the Rys route the canonical ordering takes.
+
+## 12. On a GPU (measured after section 11)
+
+Full device build of this branch: nvfortran 26.5, `-stdpar=gpu -acc
+-gpu=cc70,mem:separate`, `TERCO_LMAX=3`, `TERCO_DF_LMAX=2`, Tesla
+V100-DGXS-32GB (cc70), 33.8 min at `--parallel 12`. Baseline is the same
+tree without these variants (`sym/w2-segment-weight`), identically
+configured, so the W2 launch fusion is in both. ERI figures are summed over
+`trc_pc_*` from `nsys cuda_gpu_kern_sum` for one steady-state Fock build (the
+difference between two `--iterations` runs); 6-31G* is three repeats, per
+class reproducible to under 0.5 %, cc-pVDZ single runs. `--symmetry auto`,
+`--econv 1e-10`, `TRC_PARITY=1` against `TRC_PARITY=0`.
+
+**The headline is not the increment. Before this stage, parity skipping was a
+net loss on the GPU** in five of six configurations -- off/on of 0.964,
+1.000, 1.005, 0.967, 0.964, 0.964 -- i.e. the shipped default cost time on a
+device. With these variants it is 0.991 to 1.059. That is the case for the
+stage, and it was invisible to section 11 because the host cost profile is
+not the device's.
+
+| system / basis | ERI gain | this stage's own effect on Fock |
+|---|---|---|
+| benzene 6-31G* | +3.93 % | +2.68 % |
+| naphthalene 6-31G* | +5.46 % | +2.96 % |
+| pentacene 6-31G* | +7.10 % | +4.88 % |
+| benzene cc-pVDZ | +4.92 % | +3.30 % |
+| naphthalene cc-pVDZ | +1.37 % | +2.59 % |
+| pentacene cc-pVDZ | +2.20 % | +4.84 % |
+
+All seven variants launch, 25 variant launches per build, and all 25 masked
+kernels together are about 31 % of ERI time. Coverage reproduces section 11's
+host numbers exactly (0.807 / 0.829 / 0.842).
+
+Per class, masked against unmasked (6-31G*, pentacene):
+
+| | gain |
+|---|---|
+| `pcs1122z` (pp\|dd) | **+58.5 %** |
+| `pcs1022z` (ps\|dd) | +43.1 % |
+| `rys2210z` (dd\|ds) | +17.5 % |
+| `rys2221z` (dd\|dp) | +9.1 % |
+| `rys2211z` (dd\|pp) | +5.6 % |
+| `rys2222z` (dd\|dd) | -2.2 % |
+| `pcs2122z` (dp\|dd) | **-18.2 % benzene, -9.7 % naphthalene, +4.1 % pentacene** |
+
+The seven classes carry 11.4 / 14.0 / 19.1 % of ERI-off time, and the
+realised saving *within* them is +3.9 / +13.2 / +24.8 % -- so 4 to 25 % of
+the available ceiling, not the half a naive reading would give. The entire
+shortfall is `(dp|dd)`.
+
+**The `(dp|dd)` frame regression is real but costs no occupancy.**
+`cuobjdump -res-usage` on both fully linked libraries: 0 of the common
+functions changed `REG` or `STACK`, none went from `STACK` 0 to non-zero, the
+maximum is unchanged at 169 600 B, and the total `STACK` delta is exactly the
+sum of the seven new frames (33 872 B). `ncu` on `pcs2122z` against
+`pcs2122`, identical grids: registers 255 both, the same four occupancy
+limiters, theoretical occupancy 12.50 % both, achieved 9.1 against 9.2 %,
+duration +0.1 %. So the 25 472 B is not an occupancy cost -- but it is not
+merely declared either: the masked kernel executes **6.8 % fewer
+instructions** and spends it on **15.5 % more local loads and 13.3 % more
+local stores**, 39.5 % of all its instructions against 32.2 %. On a small
+grid (benzene's `pcs2122` launches three blocks) there is no parallelism to
+hide that latency, which is why it inverts to a loss there.
+
+`STACK` mixes declared scratch with spill slots and cannot be decomposed from
+a linked library. `nvfortran -gpu=...,ptxinfo` can, and it shows the frame
+growing while the spill traffic falls:
+
+| kernel | frame | spill stores | spill loads |
+|---|---|---|---|
+| `pcs2122` | 15 904 B | 23 344 B | 29 820 B |
+| `pcs2122z` | 25 472 B | 15 532 B | 12 632 B |
+
+So the claim that spills are zero anywhere in this library is false, and
+`-res-usage`'s `LOCAL` field (0 throughout) does not say otherwise.
+
+**The `(dp|dd)` retreat is not worth taking.** Dropping it changes the total
+gain by +0.35 ms summed over all six configurations, and the two losses land
+on pentacene, the most production-relevant case, at 0.19 to 0.29 points --
+below the 0.5 to 0.7 % wall-clock trial spread. It would trade the coverage
+gate for no measurable speed. What it would buy is 65.6 s of the stage's 135 s
+of compile and 3 327 of its 6 457 generated lines, so it is defensible on
+compile cost alone.
+
+**The better follow-up** is the compaction section 10 already names: compact
+the masked kernel's `v`/`g1`/`vbuf` to the live node set as `role_plan`'s
+`vmap` does. `pcs2122z` already executes fewer instructions and loses it to
+carrying the full uncompacted scratch; that would turn `(dp|dd)` from
+break-even into a gain and likely lift `rys2222z` and `rys2211z` too.
+
+Device suite: 276 of 277, the one failure being `terco/link_c`, a known
+build-configuration defect fixed on `sym/capi-acc-gpu` and unrelated to this
+stage. `check_sym_parity` and `check_sym_parity_f` both pass on the device.
+Energies across all six systems, both builds, both parity settings: maximum
+deviation 1.02e-12 Eh, under this device's own run-to-run noise (up to
+1.4e-12, growing with system size), against a 1e-10 convergence. Iteration
+counts identical everywhere.

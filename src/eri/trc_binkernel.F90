@@ -462,16 +462,23 @@ contains
          rys_route = rys_select_route(key)
          if (mask /= 0) then
             launch%nwork_masked = launch%nwork_masked + nw
+            ! pc_cost for both routes, because this pair of counters measures
+            ! COVERAGE -- which classes have a variant, weighted by how much a
+            ! work item of each is worth -- and HGP's model is the only one
+            ! defined for every class.
+            launch%cost_masked = launch%cost_masked + real(nw, dp)*pc_cost(key)
             if (rys_route) then
                if (rys_has_variant(key + CLASS_RADIX**4)) then
                   dkey = key + CLASS_RADIX**4
                   launch%nwork_variant = launch%nwork_variant + nw
                   launch%nlaunch_variant = launch%nlaunch_variant + 1
+                  launch%cost_variant = launch%cost_variant + real(nw, dp)*pc_cost(key)
                end if
             else if (variant_exists(key + CLASS_RADIX**4)) then
                dkey = key + CLASS_RADIX**4
                launch%nwork_variant = launch%nwork_variant + nw
                launch%nlaunch_variant = launch%nlaunch_variant + 1
+               launch%cost_variant = launch%cost_variant + real(nw, dp)*pc_cost(key)
                launch%ops_base = launch%ops_base + real(nw, dp)*pc_cost(key)
                launch%ops_masked = launch%ops_masked + real(nw, dp)*pc_cost(dkey)
             end if

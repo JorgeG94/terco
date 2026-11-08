@@ -817,10 +817,13 @@ endforeach()
 list(JOIN _rys_classes "," _rys_classes_csv)
 
 # Parity skipping (docs/SYMMETRY_PARITY_SKIP.md): the z-masked variants of the
-# Rys-routed classes among the ten dominant ones (gen_perclass.py's
-# PARITY_RYS_TOP; the HGP ones are in ${_gen_dir}), where this build has them.
+# Rys-routed classes that get one (gen_perclass.py's PARITY_RYS_TOP, whose
+# comment has the coverage measurement that chose them; the HGP ones are in
+# ${_gen_dir}), where this build has them. Keep this list and PARITY_RYS_TOP
+# in step: a tag missing here only means the launch falls back to the unmasked
+# kernel, which is the right answer and the slower one.
 set(_rys_masked_classes "")
-foreach(_tag 2111 2120 2121)
+foreach(_tag 2111 2120 2121 2210 2211 2221 2222)
   if(_tag IN_LIST _rys_classes)
     list(APPEND _rys_masked_classes "${_tag}")
     list(APPEND _rys_sources "${_rys_dir}/trc_pc_rys${_tag}z.F90")

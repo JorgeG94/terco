@@ -1397,16 +1397,73 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True, dead=0, o
 #: build on the silica slice.
 #: PARITY SKIPPING (docs/SYMMETRY_PARITY_SKIP.md, decisions 1 and 2): the
 #: classes that get a z-masked variant, pcs{tag}z, dispatched at
-#: key + CLASS_RADIX**4. Decision 2 is the ten classes with the largest share
-#: of the modelled cost on the planar test molecules (naphthalene, skeleton
-#: plan, section 3.2); every other class runs unmasked. Seven are HGP here;
-#: the other three, (dp|pp), (dp|ds) and (dp|dp), are Rys in production and
-#: get their variants from gen_rys.py. The skeleton plan may launch a bin pair
+#: key + CLASS_RADIX**4; every class not reachable from these two lists runs
+#: unmasked, which is right for every quartet. The first set was decision 2's
+#: ten classes with the largest share of the modelled cost on the planar test
+#: molecules (naphthalene, skeleton plan, section 3.2): seven HGP here, and
+#: (dp|pp), (dp|ds), (dp|dp), which production routes to Rys and which take
+#: their variants from gen_rys.py. The skeleton plan may launch a bin pair
 #: with bra and ket swapped (bins_skel_cut_first), which is the same class in
-#: the other order, so the swapped orderings of all ten are in the list too
-#: (those that production routes to HGP).
+#: the other order, so the swapped orderings are in the list too (those that
+#: production routes to HGP).
+#:
+#: THE FOUR (dd|..) CLASSES WERE ADDED AFTER MEASURING WHAT THOSE TEN COVER.
+#: The launcher's counters say the ten took 67.7-72.0% of the masked WORK
+#: ITEMS (benzene / naphthalene_d2h / pentacene_d2h, 6-31G*, --symmetry auto,
+#: skeleton plan, host build), but a work item of (ss|ss) is not a work item
+#: of (dd|dd). Weighting each masked launch by pc_cost -- the operations one
+#: of its work items really costs -- the covered share is only 47.2 / 49.8 /
+#: 54.4%, and the uncovered half is entirely the classes with a d shell on
+#: BOTH sides. Shares of the masked modelled cost that reached no variant,
+#: benzene / naphthalene / pentacene:
+#:    (dp|dd) 9.3 / 11.5 / 9.9     (dd|dd) 10.1 / 8.3 / 5.9
+#:    (ds|dd) 6.2 / 5.5 / 4.3      (ps|dd) 5.3 / 5.0 / 4.3
+#:    (pp|dd) 4.6 / 4.6 / 4.2      (ds|ds) 4.5 / 3.7 / 3.1
+#:    (dd|pp) 3.9 / 2.4 / 2.4      (pp|pp) 2.4 / 2.4 / 3.0
+#: (dd|ds), (dd|pp), (dd|dp) and (dd|dd) here bring their four chunked Rys
+#: variants AND, through the swap rule above, the HGP variants of (ps|dd),
+#: (pp|dd) and (dp|dd) -- which is where most of that cost sits, because the
+#: skeleton cuts the ket side of those bin pairs, so production launches them
+#: in the swapped order through HGP, not as (dd|..) through Rys. (dp|dd) alone
+#: is a larger share of the uncovered cost than (dd|dd).
+#:
+#: Compile cost, stated because this grows the heavy classes (AGENTS.md).
+#: nvfortran 26.5 -stdpar=gpu -acc -gpu=cc70,mem:separate -O3, one object,
+#: seconds, the shadowed kernel -> its variant: (ps|dd) 11.2 -> 7.5,
+#: (pp|dd) 42.5 -> 19.6, (dp|dd) 157.5 -> 65.6, and the four chunked Rys
+#: kernels (dd|ds) 6.5 -> 8.8, (dd|pp) 7.3 -> 12.1, (dd|dp) 4.7 -> 10.3,
+#: (dd|dd) 6.6 -> 10.8. The variants are ADDITIONAL objects, so the set grows
+#: by their own 135 s -- against the 547 s the HGP (dd|dd) kernel takes on its
+#: own. A masked HGP kernel is SMALLER than the one it shadows (the sieve
+#: reruns on half the nodes: (dp|dd) 7267 lines -> 3327), while a masked Rys
+#: kernel is LARGER (the chunk body exists once per parity of the outer
+#: components' z powers, each half the size), which is why the four cheap Rys
+#: classes are the ones that cost more than they replace. gfortran 15.1 -O3,
+#: the same seven objects inside the host build: 34.9 s in total (the HGP
+#: three 2.8 / 7.0 / 16.1 s, the Rys four 1.8-2.7), where the host set's
+#: per-object times sum to 2606 s and its (dd|dd) HGP kernel alone is 123 s.
+#:
+#: REGISTER PRESSURE, read with cuobjdump -res-usage from a cc70 device link
+#: of these kernels (never the .o), STACK not LOCAL. A masked HGP kernel
+#: declares the SAME scratch as the one it shadows -- v(700, 0:1), g1(700),
+#: vbuf(648) for (dp|dd) -- because this generator stops writing the dead
+#: entries and does not compact the buffers the way role_plan's vmap does.
+#: The compiler eliminates more of it than before on (ps|dd) (2192 -> 1824 B
+#: per thread) and (pp|dd) (9808 -> 5040), and LESS on (dp|dd):
+#: 15904 -> 25472 B. The four Rys variants are 144-568 B against 192-384.
+#: (dp|dd)'s frame is the one number here that is worse than what it replaces,
+#: on the largest uncovered class, and no host build can say what it costs:
+#: compacting the masked buffers to the live set is the fix, and holding
+#: "2122" out of parity_hgp_tags is the one-line retreat.
+#:
+#: NOT added, deliberately: (ds|dd) and (ss|dd) would need (dd|ds) and
+#: (dd|ss) in PARITY_HGP_TOP, and (dd|ds) is a ROLE_SPLITS class -- a masked
+#: launch would leave its warp-role kernel for a scalar one, and the split is
+#: worth 1.1-4.5x exactly where the scalar working set spills, which no host
+#: build can measure. (ds|ds) and (pp|pp) are the next two uncovered classes
+#: without that complication.
 PARITY_HGP_TOP = ("1000", "2010", "1110", "1010", "2110", "2011", "2000")
-PARITY_RYS_TOP = ("2111", "2120", "2121")
+PARITY_RYS_TOP = ("2111", "2120", "2121", "2210", "2211", "2221", "2222")
 RYS_ROUTED = ("2111", "2120", "2121", "2210", "2211", "2221", "2222")
 
 
