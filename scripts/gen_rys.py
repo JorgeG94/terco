@@ -1058,8 +1058,9 @@ def main():
     if chunk_outer is not None:
         pre, prim_hdr = head.split("@@CHUNK_SPLIT@@")
         pre_loop = decode + """\
-         ! Degeneracy weight, as the block digestion forms it.
-         wq = 1.0_dp
+         ! Degeneracy weight and the segment's orbit weight, as the block
+         ! digestion forms them (gen_perclass.py's emit_digestion).
+         wq = sW(seg)
          if (.not. dij) wq = wq*0.5_dp
          if (.not. dkl) wq = wq*0.5_dp
          if (.not. dpq) wq = wq*0.5_dp

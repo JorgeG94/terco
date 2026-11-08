@@ -70,6 +70,24 @@ PROLOGUE = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       !! unless the launcher cut the bin into exchange tiles
       !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.
       logical,  intent(in)    :: sD(nseg)
+      real(dp), intent(in)    :: sW(nseg)
+      !! The segment's weight: on a skeleton plan (docs/SYMMETRY_FOCK.md
+      !! scheme 2a) the orbit size of its bra pairs, halved on a diagonal bin
+      !! pair, so a multiple of ONE HALF and not an integer; 1 on every other
+      !! plan. Read once per work item into `wq` below, beside the quartet's
+      !! own degeneracy factor.
+      !!
+      !! Per segment rather than per launch because the launcher used to fold
+      !! it into jfac/kfac, which forced one launch per (class, mask, weight):
+      !! 85 launches a Fock build for benzene against 33, and both the extra
+      !! kernel time (the launches are too small to fill the card) and
+      !! nvfortran's ~8 memsets, 4 H2D copies and 3 syncs per offload region
+      !! scale with that count.
+      !!
+      !! NOT folded into jfac/kfac here either: those two are SCREENED on
+      !! (`jfac /= 0.0_dp`, `kfac == 0.0_dp`) to pick the J-only, K-only and
+      !! combined branches, and a weight reaching those tests would decide a
+      !! branch. `wq` is on the data path only.
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
       real(dp), intent(in)    :: pcut
@@ -645,9 +663,16 @@ def emit_digestion(na, nb, nc, nd, zpar=False):
          ! 54 loads and 54 atomics for (pp|pp) instead of 486.
          !
          ! The degeneracy factors are per-quartet, so they collapse into one
-         ! scalar applied as the components are consumed.
+         ! scalar applied as the components are consumed -- and so does the
+         ! segment's orbit weight, which the launcher used to fold into
+         ! jfac/kfac at the cost of one launch per weight (see the weight
+         ! dummy's own comment above).
+         ! Both are exact powers of two (the realised weight set is
+         ! {1/2, 1, 2, 4}, the degeneracy halves), so scaling the integral
+         ! here instead of the two operator factors is bit-identical to the
+         ! old form, and the component loops below are untouched.
          !
-         wq = 1.0_dp
+         wq = sW(seg)
          if (.not. dij) wq = wq*0.5_dp
          if (.not. dkl) wq = wq*0.5_dp
          if (.not. dpq) wq = wq*0.5_dp
@@ -792,7 +817,7 @@ def emit_scalar_driver(name, item):
     invariant for no behavioural gain, since the two are already the same
     text by construction. `scripts/rotaxis/emit_docon.py` -- which has no
     block-form driver to derive from -- calls this directly."""
-    return f"""   subroutine {name}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+    return f"""   subroutine {name}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -818,7 +843,7 @@ def emit_scalar_driver(name, item):
       nr = 0
       if (g1 >= g0) nr = (g1 - g0)/nranks + 1
       do concurrent(i=1:nr)
-         call {item}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+         call {item}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                        npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                        nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                        sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
@@ -831,7 +856,7 @@ def emit_item_signature(name):
     """The item routine's signature: same argument list as the driver plus
     the flat quartet index `gt`, `pure` and `!$acc routine seq` so it inlines
     into its caller (the reason it lives in the same module and file)."""
-    return f"""   pure subroutine {name}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+    return f"""   pure subroutine {name}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -918,7 +943,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True, dead=0, o
     hrr_body = re.sub(r"\bg\(", "g1(", hrr_body)
 
     txt = f"""
-   subroutine pc{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+   subroutine pc{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -948,14 +973,14 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True, dead=0, o
       nr = 0
       if (g1 >= g0) nr = (g1 - g0)/nranks + 1
       do concurrent(i=1:nr)
-         call pci{tag}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+         call pci{tag}(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                        npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                        nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                        sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
       end do
    end subroutine pc{tag}
 
-   pure subroutine pci{tag}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+   pure subroutine pci{tag}(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -1527,7 +1552,7 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
     drv = drv.replace("      integer(int64) :: g0, g1, nr, i\n",
                       "      integer(int64) :: g0, g1, nr, i, it\n      integer :: role\n")
     old = ("      do concurrent(i=1:nr)\n"
-           "         call pcri" + tag + "(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &\n"
+           "         call pcri" + tag + "(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &\n"
            "                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &\n"
            "                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &\n"
            "                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)\n"
@@ -1554,7 +1579,7 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
          role = int(mod((i - 1)/32, {nrole}_int64)) + 1
          it = ((i - 1)/(32*{nrole}))*32 + mod(i - 1, 32_int64) + 1
          if (it <= nr) then
-            call pcri{tag}(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+            call pcri{tag}(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
@@ -2108,7 +2133,7 @@ contains
       end select
    end function pc_cost
 
-   subroutine pc_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+   subroutine pc_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -2119,7 +2144,7 @@ contains
       select case (key)""")
     for key, tag in names:
         kern = "pcr" if tag in ROLE_SPLITS else "pcs"
-        out.append(f"""      case ({key}); call {kern}{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+        out.append(f"""      case ({key}); call {kern}{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)""")
