@@ -166,6 +166,13 @@ module trc_eri
       !! of them that ran in a masked kernel variant, and those launches. The
       !! counters a test reads to see that the masks were used and not
       !! silently dropped.
+      real(dp) :: parity_cost_masked = 0.0_dp, parity_cost_variant = 0.0_dp
+      !! Of the same launch: the modelled unmasked cost of every masked launch
+      !! and of the part of it a variant took (trc_bin_launch_t's
+      !! `cost_masked`/`cost_variant`). Their ratio is how much of the masked
+      !! work the variant set reaches; `nwork_variant / nwork_masked` reads
+      !! much higher because it counts an (ss|ss) work item and a (dd|dd) one
+      !! the same.
       integer :: parity_mode = -1
       !! Set before `build`: PARITY_OFF, PARITY_AUTO or PARITY_FORCE_FRAME
       !! (trc_parity). -1, the default, takes TRC_PARITY from the environment
@@ -807,6 +814,8 @@ contains
       this%nlaunch_variant = launch%nlaunch_variant
       this%parity_ops_base = launch%ops_base
       this%parity_ops_masked = launch%ops_masked
+      this%parity_cost_masked = launch%cost_masked
+      this%parity_cost_variant = launch%cost_variant
       call mdg_pass(this, b, dwork, jmat, jbins, kfac, ow, skel)
       if (md_j .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac, skel)
       !$acc wait
@@ -1359,6 +1368,8 @@ contains
       this%nlaunch_variant = launch%nlaunch_variant
       this%parity_ops_base = launch%ops_base
       this%parity_ops_masked = launch%ops_masked
+      this%parity_cost_masked = launch%cost_masked
+      this%parity_cost_variant = launch%cost_variant
       !$acc wait
       !$acc update self(jmat, kmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -1551,6 +1562,8 @@ contains
             this%nlaunch_variant = launch%nlaunch_variant
       this%parity_ops_base = launch%ops_base
       this%parity_ops_masked = launch%ops_masked
+      this%parity_cost_masked = launch%cost_masked
+      this%parity_cost_variant = launch%cost_variant
             this%nkept = launch%nkept
             if (len_trim(ke) > 0) then
                block
@@ -1575,6 +1588,8 @@ contains
          this%nlaunch_variant = launch%nlaunch_variant
       this%parity_ops_base = launch%ops_base
       this%parity_ops_masked = launch%ops_masked
+      this%parity_cost_masked = launch%cost_masked
+      this%parity_cost_variant = launch%cost_variant
          !$acc wait
          call profiler_stop("eri: bins (hgp/rys)")
          call profiler_start("eri: md exchange", nvtx_only=.true.)
@@ -1753,6 +1768,8 @@ contains
       this%nlaunch_variant = launch%nlaunch_variant
       this%parity_ops_base = launch%ops_base
       this%parity_ops_masked = launch%ops_masked
+      this%parity_cost_masked = launch%cost_masked
+      this%parity_cost_variant = launch%cost_variant
       !$acc wait
       call profiler_stop("eri: bins (hgp/rys), several densities")
 
@@ -2023,6 +2040,8 @@ contains
       this%nlaunch_variant = launch%nlaunch_variant
       this%parity_ops_base = launch%ops_base
       this%parity_ops_masked = launch%ops_masked
+      this%parity_cost_masked = launch%cost_masked
+      this%parity_cost_variant = launch%cost_variant
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)

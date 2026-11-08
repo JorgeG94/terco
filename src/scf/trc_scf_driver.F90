@@ -743,7 +743,8 @@ contains
          call report_timing(scf_context, scf_timers, scf_config%dft, pair_eri_cache%eri%t_build, &
                             pair_eri_cache%eri%parity_axis, pair_eri_cache%eri%nwork, &
                             pair_eri_cache%eri%nwork_masked, pair_eri_cache%eri%nwork_variant, &
-                            pair_eri_cache%eri%nlaunch_variant)
+                            pair_eri_cache%eri%nlaunch_variant, pair_eri_cache%eri%parity_cost_masked, &
+                            pair_eri_cache%eri%parity_cost_variant)
          if (scf_config%dft) then
             if (present(comm)) then
                call scf_timers%xcst%report(scf_context%t_grid + scf_timers%t_xc, comm%rank(), comm%size())
@@ -884,7 +885,7 @@ contains
    end function dims_string
 
    subroutine report_timing(scf_context, scf_timers, dft, t_eri_build, parity_axis, nwork, &
-                            nwork_masked, nwork_variant, nlaunch_variant)
+                            nwork_masked, nwork_variant, nlaunch_variant, cost_masked, cost_variant)
       !! Where the run's time went, through pic's logger at PERFORMANCE,
       !! which its default INFO level shows: the phases, then setup and
       !! the ERI engine's build broken into their steps, then what parity
@@ -898,6 +899,8 @@ contains
       integer(int64), intent(in) :: nwork_masked   !! of those, the ones in a masked segment
       integer(int64), intent(in) :: nwork_variant   !! of those, the ones a masked kernel variant took
       integer, intent(in) :: nlaunch_variant   !! launches that went to a masked variant
+      real(dp), intent(in) :: cost_masked   !! the engine's `parity_cost_masked`
+      real(dp), intent(in) :: cost_variant   !! the engine's `parity_cost_variant`
       character(len=160) :: line
       ! `total` is the run's own wall time, so it also holds what no column
       ! times (PCM, the guess density's upload, the final transfers).
@@ -918,9 +921,15 @@ contains
       ! counters: a dead axis of 0 means no mask was taken at all, and a
       ! masked share with no variant launches means the masks were taken but
       ! no class that reached a kernel has a masked variant in this build.
+      ! `variant cost` is the same share as variant/masked work but weighted
+      ! by the modelled cost of a work item of each class, which is the figure
+      ! that tracks the speed-up: counting work items alone reads 70% where
+      ! the cost-weighted share is 50%, because the uncovered classes are the
+      ! expensive ones (gen_perclass.py's PARITY_RYS_TOP comment).
       call global_logger%performance( &
-         "   parity  dead axis         nwork   masked work  variant work  variant launches")
-      write (line, "(a,i10,3i14,i18)") "          ", parity_axis, nwork, nwork_masked, nwork_variant, nlaunch_variant
+         "   parity  dead axis         nwork   masked work  variant work  variant launches  variant cost")
+      write (line, "(a,i10,3i14,i18,f14.3)") "          ", parity_axis, nwork, nwork_masked, nwork_variant, &
+         nlaunch_variant, cost_variant/max(cost_masked, 1.0_dp)
       call global_logger%performance(trim(line))
       if (dft) then
          call global_logger%performance( &

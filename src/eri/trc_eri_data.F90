@@ -199,6 +199,17 @@ module trc_eri_data
       !! the work items) of the launches that went to a masked variant, as the
       !! unmasked kernel of the class would have cost and as the variant costs:
       !! the work the masks drop is 1 - ops_masked/ops_base.
+      real(dp) :: cost_masked = 0.0_dp, cost_variant = 0.0_dp
+      !! Out: the same modelled operations of the UNMASKED kernel, over all the
+      !! masked launches and over the part of them a variant took. Their ratio
+      !! is how much of the masked work the variant set reaches, which
+      !! `nwork_variant / nwork_masked` overstates badly: a work item of
+      !! (ss|ss) is 2 operations and one of (dd|dd) is 63644, so counting work
+      !! items read 67.7-72.0% where this reads 47.2-54.4% on the same three
+      !! planar molecules (gen_perclass.py's PARITY_RYS_TOP comment has the
+      !! per-class table). Weighted with HGP's model for every class, the
+      !! Rys-routed ones included, so it is a relative measure of which classes
+      !! are covered and not a prediction of either kernel's time.
    end type trc_bin_launch_t
 
 end module trc_eri_data

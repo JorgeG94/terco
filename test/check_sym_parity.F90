@@ -12,8 +12,9 @@
 !   |.|_max <= 5e-11 max(1, |G|_max).
 ! Counters (`eri%nwork_masked`, `nwork_variant`, `parity_axis`) show that the
 ! masks and, once a kernel exists, the variants really ran: a silent
-! fall back to the unmasked plan fails on them. Without a point group
-! nothing may be masked and the matrix must be bit-identical.
+! fall back to the unmasked plan fails on them, and `parity_cost_*` that the
+! variants cover the masked work that is actually expensive. Without a point
+! group nothing may be masked and the matrix must be bit-identical.
 !
 ! Mode "f" is the uncontracted l = 0..3 set (skipped below LMAX = 3).
 ! NO INTERNAL PROCEDURES: the helpers are module procedures.
@@ -313,17 +314,20 @@ contains
                  ": incremental skeleton with parity skipping differs by "//to_string(e, "es10.3"))
    end subroutine compare_incremental
 
-   subroutine check_counters(ctx, axis, min_masked, error)
+   subroutine check_counters(ctx, axis, min_masked, min_cover, error)
       !! The masks were computed for the expected axis, the skeleton plan has
       !! at least `min_masked` of its work in masked segments, the engine
       !! without parity skipping has none, and (when this build has masked
-      !! kernels) the variants ran for part of the masked work.
+      !! kernels) the variants ran for at least `min_cover` of the masked
+      !! work, weighted by what a work item of each class costs.
       type(ctx_t), intent(inout) :: ctx
       integer, intent(in) :: axis
       real(dp), intent(in) :: min_masked
+      real(dp), intent(in) :: min_cover
+      !! Least cost-weighted share of the masked work a variant may take.
       type(error_type), allocatable, intent(out) :: error
       real(dp), allocatable :: dc(:, :), gc(:, :)
-      real(dp) :: frac, ratio
+      real(dp) :: frac, ratio, cover
       allocate (dc(ctx%nc, ctx%nc), gc(ctx%nc, ctx%nc))
       dc = 1.0e-3_dp
       call ctx%eri%fock(ctx%bas, dc, gc, skeleton=.true.)
@@ -353,6 +357,20 @@ contains
          print "(a,a,a,f7.4)", "  ", trim(ctx%label), " modelled operations of the variant launches, masked/unmasked: ", ratio
          call check(error, ratio < 0.8_dp, trim(ctx%label)//": the masked variants drop too little work: "// &
                     to_string(ratio, "f7.4"))
+         if (allocated(error)) return
+         ! How much of the masked work a variant reaches, weighted by what a
+         ! work item of each class costs (eri%parity_cost_*). The unweighted
+         ! share hides the gap this gate exists for: with variants for the ten
+         ! dominant classes only it read 0.677-0.720 while the cost-weighted
+         ! share was 0.472-0.544, because the classes with a d shell on both
+         ! sides had no variant (docs/SYMMETRY_PARITY_SKIP.md section 11).
+         ! Each caller's floor is under its own measured value and above what
+         ! the earlier variant set reached, so dropping a heavy class's variant
+         ! fails here instead of quietly costing time.
+         cover = ctx%eri%parity_cost_variant/max(ctx%eri%parity_cost_masked, 1.0_dp)
+         print "(a,a,a,f7.4)", "  ", trim(ctx%label), " cost-weighted masked work reaching a variant: ", cover
+         call check(error, cover > min_cover, trim(ctx%label)//": only "//to_string(cover, "f7.4")// &
+                    " of the masked work reaches a masked variant, under "//to_string(min_cover, "f7.4"))
       else
          call check(error, ctx%eri%nlaunch_variant == 0, trim(ctx%label)//": a variant ran but none exists")
       end if
@@ -394,11 +412,13 @@ contains
       ctx%label = base
    end subroutine run_densities
 
-   subroutine run_molecule(xyz, group, basis_json, scf, axis, min_masked, error)
+   subroutine run_molecule(xyz, group, basis_json, scf, axis, min_masked, min_cover, error)
       character(len=*), intent(in) :: xyz, group, basis_json
       logical, intent(in) :: scf
       integer, intent(in) :: axis
       real(dp), intent(in) :: min_masked
+      real(dp), intent(in) :: min_cover
+      !! check_counters' floor on the cost-weighted variant coverage.
       type(error_type), allocatable, intent(out) :: error
       type(ctx_t) :: ctx
       integer :: ik, dev
@@ -406,7 +426,7 @@ contains
       do ik = 1, 2
          call setup_ctx(ctx, xyz, group, basis_json, -1, ik == 2, .true., error)
          if (allocated(error)) return
-         call check_counters(ctx, axis, min_masked, error)
+         call check_counters(ctx, axis, min_masked, min_cover, error)
          if (allocated(error)) return
          call run_densities(ctx, scf, error)
          if (allocated(error)) return
@@ -421,15 +441,15 @@ contains
       !! Benzene is D6h, detected as D2h with the plane normal on x: the
       !! engine frame moves x to z. Every pair of atoms is in the plane.
       type(error_type), allocatable, intent(out) :: error
-      call run_molecule("benzene", "D2h", "basis_sets/6-31gs.json", .false., 1, 0.95_dp, error)
+      call run_molecule("benzene", "D2h", "basis_sets/6-31gs.json", .false., 1, 0.95_dp, 0.75_dp, error)
       if (allocated(error)) return
       ! the same molecule in the other orientation of the test set: the normal on z
-      call run_molecule("tops_benzene", "D2h", "basis_sets/6-31gs.json", .false., 3, 0.95_dp, error)
+      call run_molecule("tops_benzene", "D2h", "basis_sets/6-31gs.json", .false., 3, 0.95_dp, 0.75_dp, error)
    end subroutine test_benzene
 
    subroutine test_naphthalene(error)
       type(error_type), allocatable, intent(out) :: error
-      call run_molecule("naphthalene_d2h", "D2h", "basis_sets/6-31gs.json", .false., 1, 0.95_dp, error)
+      call run_molecule("naphthalene_d2h", "D2h", "basis_sets/6-31gs.json", .false., 1, 0.95_dp, 0.75_dp, error)
    end subroutine test_naphthalene
 
    subroutine test_pentacene(error)
@@ -440,7 +460,10 @@ contains
       dev = trc_bind_device(0)
       call setup_ctx(ctx, "pentacene_d2h", "D2h", "basis_sets/6-31g.json", -1, .false., .true., error)
       if (allocated(error)) return
-      call check_counters(ctx, 1, 0.95_dp, error)
+      ! 6-31G has no d shell, so this is the one case that cannot reach the
+      ! (dd|..) variants at all: its uncovered masked cost is (pp|pp), which
+      ! has no variant either (section 11 of the design).
+      call check_counters(ctx, 1, 0.95_dp, 0.55_dp, error)
       if (allocated(error)) return
       allocate (dc(ctx%nc, ctx%nc))
       call banded_density(ctx, 5, 14.0_dp, dc)
@@ -454,21 +477,21 @@ contains
    subroutine test_hocl(error)
       !! Planar Cs, plane normal already z: no permutation, masks only.
       type(error_type), allocatable, intent(out) :: error
-      call run_molecule("hocl", "Cs", "basis_sets/cc-pvdz.json", .true., 3, 0.95_dp, error)
+      call run_molecule("hocl", "Cs", "basis_sets/cc-pvdz.json", .true., 3, 0.95_dp, 0.70_dp, error)
    end subroutine test_hocl
 
    subroutine test_c2(error)
       type(error_type), allocatable, intent(out) :: error
-      call run_molecule("water", "C2v", "basis_sets/cc-pvdz.json", .false., 1, 0.5_dp, error)
+      call run_molecule("water", "C2v", "basis_sets/cc-pvdz.json", .false., 1, 0.5_dp, 0.70_dp, error)
       if (allocated(error)) return
-      call run_molecule("n2h2_trans", "C2h", "basis_sets/6-31gs.json", .true., 3, 0.5_dp, error)
+      call run_molecule("n2h2_trans", "C2h", "basis_sets/6-31gs.json", .true., 3, 0.5_dp, 0.75_dp, error)
    end subroutine test_c2
 
    subroutine test_b2h6(error)
       !! Six of the eight atoms lie in one mirror plane: part of the plan is masked (doc 3.8: 52 % of the
       !! full plan, 59 % of the skeleton), the rest runs unmasked in the same launch list.
       type(error_type), allocatable, intent(out) :: error
-      call run_molecule("b2h6_d2h", "D2h", "basis_sets/6-31gs.json", .true., 1, 0.35_dp, error)
+      call run_molecule("b2h6_d2h", "D2h", "basis_sets/6-31gs.json", .true., 1, 0.35_dp, 0.75_dp, error)
    end subroutine test_b2h6
 
    subroutine test_nosym(error)
