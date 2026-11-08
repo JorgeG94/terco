@@ -4960,6 +4960,8 @@ CASES = {
     "ecp_ints_xe": lambda: gen_ecp_ints("xe"),
     "ecp_ints_csh": lambda: gen_ecp_ints("csh"),
     "ecp_ints_snh4": lambda: gen_ecp_ints("snh4"),
+    "ecp_ints_i2": lambda: gen_ecp_ints("i2"),
+    "ecp_ints_ch3i": lambda: gen_ecp_ints("ch3i"),
     "ao": gen_ao,
     "pcm_radii_override": gen_pcm_radii_override,
     "pcm_grad": gen_pcm_grad,
