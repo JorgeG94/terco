@@ -45,18 +45,16 @@
 ! identical aux set), rather than a bug; left unadded rather than
 ! committing a loose, unexplained tolerance.
 !
-! An I2 case (two ECP atoms, exercising attach_ecp's per-atom loop) was
-! tried at several I-I separations (4.0-10.0 bohr) and refused every time
-! with "the ECP radial quadrature did not converge within ... ECP_LEVEL_MAX"
-! -- trc_ecp.F90/trc_ecp_radial.F90's own adaptive radial quadrature, a
-! phase 1-2 integral routine, not touched by this phase. The existing ECP
-! integral test suite (check_ecp_matrix's hi_svp/ih_far/xe/csh/snh4) has
-! exactly ONE ECP atom in every case; two ECP atoms close enough to overlap
-! appears to be an untested code path there. At 25 bohr (ih_far's own far
-! separation) the matrix builds fine, so this is specifically a near-field
-! issue, not a general multi-ECP-atom one -- left for a phase 1-2 follow-up
-! (raise ECP_LEVEL_MAX, or find the pair/channel it fails on), not pursued
-! further here; no I2 case is in this suite.
+! I2 (two ECP atoms, attach_ecp's per-atom loop and the semi-local blocks
+! between two heavy atoms) is a case here now. It used to be refused at
+! every separation tried: the ECP radial quadrature failed instead of
+! keeping its finest level as pyscf does (#194 review, fixed in trc_ecp).
+!
+! H2 next to a GHOST iodine (trc_set_elements, charge 0) checks attach_ecp's
+! ghost rule: the ghost keeps iodine's basis and gets no ECP and no core
+! count, as in pyscf (an atom labelled GHOST-, with no ecp entry). Before,
+! attach_ecp gave the ghost iodine's 28-electron core and refused it for a
+! negative charge.
 !
 ! Writes ecp_scf_probe.bin for generate.py's gen_ecp_scf, same idea as
 ! scf_robust.F90's own probe/ref pair; the probe write and the sequential
@@ -78,7 +76,7 @@ module check_ecp_scf_suite
    use pyscf_ref_io, only: ref_open, ref_close, ref_read_real
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                                trc_set_convergence, trc_set_guess, trc_run_scf, trc_run_gradient, &
-                               trc_hirshfeld_charges, trc_save_scf, trc_load_scf, &
+                               trc_hirshfeld_charges, trc_save_scf, trc_load_scf, trc_set_elements, &
                                trc_energy, trc_iterations, &
                                TRC_OK, TRC_ERR_UNSUPPORTED, TRC_GUESS_MINAO, TRC_GUESS_SAP
    implicit none
@@ -90,6 +88,8 @@ module check_ecp_scf_suite
    !! hi.xyz): I at the origin, H at z = 1.609 Angstrom.
    real(dp), parameter :: HI_BOND_BOHR = HI_BOND_ANGSTROM*ANGSTROM_TO_BOHR
    !! = 3.040569334522864 bohr (CODATA 2018, AGENTS.md).
+   real(dp), parameter :: I2_BOND_BOHR = 5.04_dp
+   !! I2 near its 2.666 Angstrom bond, as check_ecp_matrix's i2 case.
 
    real(dp), parameter :: MQC_HI = -297.23153166336_dp
    !! RHF HI/def2-SVP at HI_BOND_BOHR -- a SECONDARY cross-check against
@@ -100,8 +100,9 @@ module check_ecp_scf_suite
    !! nothing for terco and mqc's own number to disagree about
    !! independently.
 
-   integer, parameter :: NCASE = 4
-   character(len=16), parameter :: CASE_NAME(NCASE) = [character(len=16) :: "hi", "i_atom", "hi_pbe", "hi_b3lyp"]
+   integer, parameter :: NCASE = 6
+   character(len=16), parameter :: CASE_NAME(NCASE) = [character(len=16) :: "hi", "i_atom", "hi_pbe", "hi_b3lyp", &
+                                                       "i2", "h2_ghost_i"]
    !! generate.py's gen_ecp_scf reads this suite's own dump in this exact
    !! order and writes E_<name> back in the same order; keep both lists in
    !! step.
@@ -120,6 +121,8 @@ contains
                   new_unittest("UHF I atom/def2-SVP (ECP, doublet) vs pyscf", case_i_atom), &
                   new_unittest("RKS/PBE HI/def2-SVP (ECP) vs pyscf (same grid)", case_hi_pbe), &
                   new_unittest("RKS/B3LYP HI/def2-SVP (ECP) vs pyscf (same grid)", case_hi_b3lyp), &
+                  new_unittest("RHF I2/def2-SVP (two ECP atoms) vs pyscf", case_i2), &
+                  new_unittest("RHF H2 + ghost I/def2-SVP (the ghost gets no ECP) vs pyscf", case_h2_ghost_i), &
                   new_unittest("MINAO guess is refused with an ECP attached", test_minao_refused), &
                   new_unittest("SAP guess is refused with an ECP attached", test_sap_refused), &
                   new_unittest("Hirshfeld charges are refused with an ECP attached", test_hirshfeld_refused), &
@@ -152,6 +155,18 @@ contains
       call check(error, ok_case(4), trim(msg_case(4)))
    end subroutine case_hi_b3lyp
 
+   subroutine case_i2(error)
+      type(error_type), allocatable, intent(out) :: error
+      call ensure_computed()
+      call check(error, ok_case(5), trim(msg_case(5)))
+   end subroutine case_i2
+
+   subroutine case_h2_ghost_i(error)
+      type(error_type), allocatable, intent(out) :: error
+      call ensure_computed()
+      call check(error, ok_case(6), trim(msg_case(6)))
+   end subroutine case_h2_ghost_i
+
    subroutine ensure_computed()
       if (computed) return
       call run_all()
@@ -159,7 +174,7 @@ contains
    end subroutine ensure_computed
 
    !
-   ! All four energy cases, run once: builds each molecule/basis with the
+   ! All the energy cases, run once: builds each molecule/basis with the
    ! ECP attached exactly as trc_capi.F90's attach_ecp does (bare Z minus
    ! at_ncore), runs trc_scf_run directly (not the C API) so the converged
    ! DFT grid (trc_scf_result_t%grid_r/grid_w) is available to dump, writes
@@ -180,7 +195,7 @@ contains
       msg_case = "pyscf reference missing -- run test/pyscf_refs/generate.py ecp_scf"
 
       do ic = 1, NCASE
-         natm = merge(1, 2, CASE_NAME(ic) == "i_atom")
+         natm = case_natm(CASE_NAME(ic))
          call run_one_case(ic, natm, unit)
 
          has_mqc = CASE_NAME(ic) == "hi" .or. CASE_NAME(ic) == "i_atom"
@@ -229,6 +244,7 @@ contains
       integer, intent(in) :: unit
 
       integer, allocatable :: elements(:)
+      logical, allocatable :: ghost(:)
       real(dp), allocatable :: at_r(:, :), zred(:)
       real(dp), allocatable :: grid_r(:, :), grid_w(:)
       integer :: charge, mult, nelec, nunp, nalpha, nbeta, ia
@@ -237,18 +253,28 @@ contains
       logical :: is_dft
       integer(int64) :: npts
 
-      allocate (elements(natm), at_r(3, natm))
+      allocate (elements(natm), at_r(3, natm), ghost(natm))
       charge = 0
-      if (natm == 2) then
-         elements = [1, 53]
-         at_r(:, 1) = [0.0_dp, 0.0_dp, 0.0_dp]
-         at_r(:, 2) = [0.0_dp, 0.0_dp, HI_BOND_BOHR]
-         mult = 1
-      else
+      mult = 1
+      ghost = .false.
+      at_r = 0.0_dp
+      select case (trim(CASE_NAME(ic)))
+      case ("i_atom")
          elements = [53]
-         at_r(:, 1) = [0.0_dp, 0.0_dp, 0.0_dp]
          mult = 2
-      end if
+      case ("i2")
+         elements = [53, 53]
+         at_r(3, 2) = I2_BOND_BOHR
+      case ("h2_ghost_i")
+         ! H2 at 1.4 bohr, a ghost iodine 3.6 bohr past the second H.
+         elements = [1, 1, 53]
+         ghost = [.false., .false., .true.]
+         at_r(3, 2) = 1.4_dp
+         at_r(3, 3) = 5.0_dp
+      case default
+         elements = [1, 53]
+         at_r(3, 2) = HI_BOND_BOHR
+      end select
 
       ! The per-atom reduced charge, needed either way for the probe's own
       ! na/nb (generate.py's pyscf mol needs the spin): trc_set_basis_json
@@ -261,6 +287,7 @@ contains
       do ia = 1, natm
          zred(ia) = real(elements(ia), dp) - real(ecp%at_ncore(ia), dp)
       end do
+      where (ghost) zred = 0.0_dp
       call ecp%release()
       nelec = nint(sum(zred)) - charge
       nunp = mult - 1
@@ -273,11 +300,12 @@ contains
          call run_case_grid(ic, natm, elements, at_r, nalpha, nbeta, grid_r, grid_w)
          npts = int(size(grid_w), int64)
       else
-         call run_case_capi(ic, natm, elements, at_r, charge, mult)
+         call run_case_capi(ic, natm, elements, ghost, at_r, charge, mult)
       end if
 
       write (unit) CASE_NAME(ic)
       write (unit) int(natm, int64), int(elements, int64)
+      write (unit) int(merge(1, 0, ghost), int64)
       write (unit) at_r
       write (unit) int(charge, int64), int(mult, int64), int(nalpha, int64), int(nbeta, int64)
       write (unit) npts
@@ -291,18 +319,26 @@ contains
    ! RHF HI / UHF I atom through the C API: bare Z, trc_set_basis_json's
    ! own auto-attach, trc_run_scf -- see run_one_case's own header.
    !
-   subroutine run_case_capi(ic, natm, elements, at_r, charge, mult)
+   subroutine run_case_capi(ic, natm, elements, ghost, at_r, charge, mult)
       integer, intent(in) :: ic, natm, elements(natm), charge, mult
+      logical, intent(in) :: ghost(natm)
       real(dp), intent(in) :: at_r(3, natm)
       type(c_ptr) :: h
       integer(c_int) :: rc
       real(c_double) :: z(natm), xyz(3*natm), e
 
-      z = real(elements, c_double)
+      ! A ghost is charge 0 in trc_set_molecule and keeps its element
+      ! through trc_set_elements, before the basis -- that call's own rule.
+      z = merge(0.0_c_double, real(elements, c_double), ghost)
       xyz = reshape(real(at_r, c_double), [3*natm])
       rc = trc_create(h)
       rc = trc_set_molecule(h, int(natm, c_int), z, xyz, int(charge, c_int), int(mult, c_int))
+      if (any(ghost)) then
+         rc = trc_set_elements(h, int(natm, c_int), int(elements, c_int))
+         if (rc /= TRC_OK) error stop 'check_ecp_scf: trc_set_elements refused'
+      end if
       rc = trc_set_basis_json(h, 'basis_sets/def2-svp.json'//c_null_char)
+      if (rc /= TRC_OK) error stop "check_ecp_scf: "//trim(CASE_NAME(ic))//": trc_set_basis_json refused"
       rc = trc_set_convergence(h, 1.0e-11_c_double, 1.0e-8_c_double, 150_c_int, 10_c_int)
       rc = trc_run_scf(h)
       if (rc /= TRC_OK) error stop 'check_ecp_scf: '//trim(CASE_NAME(ic))//' (C API) did not converge'
@@ -357,6 +393,15 @@ contains
       call bas%release()
       call ecp%release()
    end subroutine run_case_grid
+
+   pure integer function case_natm(name) result(n)
+      character(len=*), intent(in) :: name
+      select case (trim(name))
+      case ("i_atom"); n = 1
+      case ("h2_ghost_i"); n = 3
+      case default; n = 2
+      end select
+   end function case_natm
 
    !
    ! HI through the C API (make_hi), for the refusal/restart checks below

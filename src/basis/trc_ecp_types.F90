@@ -22,7 +22,7 @@ module trc_ecp_types
    use pic_types, only: dp
    implicit none
    private
-   public :: trc_ecp_t, trc_ecp_subset_atom
+   public :: trc_ecp_t, trc_ecp_subset_atom, trc_ecp_without_atoms
 
    type :: trc_ecp_t
       integer :: nrow = 0, natm = 0, maxnp = 0
@@ -102,5 +102,50 @@ contains
       out%at_ncore(1) = this%at_ncore(ia)
       out%has_ecp = .true.
    end subroutine trc_ecp_subset_atom
+
+   !
+   ! `this` without the rows of the atoms `drop` marks, those atoms' core
+   ! counts zeroed, every atom keeping its own index (unlike
+   ! trc_ecp_subset_atom, which renumbers onto one atom). attach_ecp uses it
+   ! for ghost atoms: a ghost carries its element's basis functions and no
+   ! nucleus, so no core is replaced and no core potential applies -- pyscf's
+   ! own treatment of a ghost. `out` comes back `has_ecp = .false.` when no
+   ! row survives.
+   !
+   pure subroutine trc_ecp_without_atoms(this, drop, out)
+      type(trc_ecp_t), intent(in) :: this
+      logical, intent(in) :: drop(:)
+      !! (this%natm)
+      type(trc_ecp_t), intent(out) :: out
+      integer :: i, k, nrow
+
+      out%natm = this%natm
+      allocate (out%at_ncore(this%natm))
+      out%at_ncore = 0
+      if (.not. this%has_ecp .or. this%nrow == 0) return
+      out%at_ncore = merge(0, this%at_ncore, drop)
+      nrow = 0
+      do i = 1, this%nrow
+         if (.not. drop(this%ecp_at(i))) nrow = nrow + 1
+      end do
+      if (nrow == 0) return
+
+      out%nrow = nrow
+      out%maxnp = this%maxnp
+      allocate (out%ecp_at(nrow), out%ecp_l(nrow), out%ecp_rpow(nrow), out%ecp_np(nrow))
+      allocate (out%ecp_e(this%maxnp, nrow), out%ecp_c(this%maxnp, nrow))
+      k = 0
+      do i = 1, this%nrow
+         if (drop(this%ecp_at(i))) cycle
+         k = k + 1
+         out%ecp_at(k) = this%ecp_at(i)
+         out%ecp_l(k) = this%ecp_l(i)
+         out%ecp_rpow(k) = this%ecp_rpow(i)
+         out%ecp_np(k) = this%ecp_np(i)
+         out%ecp_e(:, k) = this%ecp_e(:, i)
+         out%ecp_c(:, k) = this%ecp_c(:, i)
+      end do
+      out%has_ecp = .true.
+   end subroutine trc_ecp_without_atoms
 
 end module trc_ecp_types

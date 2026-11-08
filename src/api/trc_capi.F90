@@ -195,7 +195,7 @@ module trc_capi
    use trc_scf_df, only: df_jk_t
    use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
-   use trc_ecp_types, only: trc_ecp_t
+   use trc_ecp_types, only: trc_ecp_t, trc_ecp_without_atoms
    use trc_ecp_json, only: trc_ecp_from_json
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
@@ -2462,6 +2462,24 @@ contains
          call cx%ecp%release()
          return
       end if
+      ! The file carries an ECP for this molecule's elements, so its
+      ! valence-only shells are admitted -- a ghost's included.
+      allow_ecp = .true.
+      ! A ghost (trc_set_elements: no nucleus, its element's basis) keeps the
+      ! basis and gets no core potential and no core count, as in pyscf.
+      ! Kept, its core count would also drive its zero charge negative.
+      if (any(cx%at_z_bare == 0.0_dp)) then
+         block
+            type(trc_ecp_t) :: kept
+            call trc_ecp_without_atoms(ecp_new, cx%at_z_bare == 0.0_dp, kept)
+            call ecp_new%release()
+            ecp_new = kept
+         end block
+         if (.not. ecp_new%has_ecp) then
+            call cx%ecp%release()
+            return
+         end if
+      end if
       do ia = 1, cx%natm
          if (ecp_new%at_ncore(ia) <= 0) cycle
          if (cx%at_z_bare(ia) - real(ecp_new%at_ncore(ia), dp) < 1.0_dp) then
@@ -2475,7 +2493,6 @@ contains
       end do
       call cx%ecp%release()
       cx%ecp = ecp_new
-      allow_ecp = .true.
    end subroutine attach_ecp
 
    pure function ecp_ncore_array(cx) result(ncore)

@@ -608,8 +608,9 @@ def gen_ecp_ints(case):
 
 
 def gen_ecp_scf():
-    """check_ecp_scf.F90's four ECP energy cases -- RHF HI, UHF the free I
-    atom, and RKS PBE/B3LYP on HI -- against pyscf fed the IDENTICAL JSON
+    """check_ecp_scf.F90's ECP energy cases -- RHF HI, UHF the free I atom,
+    RKS PBE/B3LYP on HI, RHF I2, and RHF H2 next to a ghost iodine (labelled
+    GHOST-, its basis kept, no ECP entry: pyscf's ghost) -- against pyscf fed the IDENTICAL JSON
     basis+ECP (bse_json_basis/bse_json_ecp) at mqc's own HI geometry
     (check_ecp_scf.F90's own HI_BOND_BOHR), `cart=False`: this build's own
     default for def2-svp, which is tagged gto_spherical, NOT the `cart=True`
@@ -637,6 +638,7 @@ def gen_ecp_scf():
         name = r.str_(16)
         natm = r.i8()
         elements = np.atleast_1d(r.i8(natm))
+        ghost = np.atleast_1d(r.i8(natm)).astype(bool)
         at_r = r.mat(3, natm)
         charge, _mult, na, nb = (r.i8() for _ in range(4))
         npts = r.i8()
@@ -653,10 +655,18 @@ def gen_ecp_scf():
             pts = r.f8(3*npts).reshape(3, npts, order='F').T
             wts = r.f8(npts)
 
-        sym_elements = {f"{_SYMBOL_ECP[int(z)]}{i + 1}": int(z) for i, z in enumerate(elements)}
+        labels = [f"{_SYMBOL_ECP[int(z)]}{i + 1}" for i, z in enumerate(elements)]
+        sym_elements = dict(zip(labels, (int(z) for z in elements)))
         basis_arg = bse_json_basis(HERE.parent / "basis_sets" / "def2-svp.json", sym_elements)
         ecp_arg = bse_json_ecp(HERE.parent / "basis_sets" / "def2-svp.json", sym_elements)
-        atoms = [(f"{_SYMBOL_ECP[int(z)]}{i + 1}", tuple(at_r[:, i])) for i, z in enumerate(elements)]
+        # A ghost keeps its element's basis under a GHOST- label and has no
+        # ECP entry, so pyscf gives it neither nucleus nor core potential.
+        for lab, g in zip(labels, ghost):
+            if g:
+                basis_arg[f"GHOST-{lab}"] = basis_arg.pop(lab)
+                ecp_arg.pop(lab, None)
+        atoms = [((f"GHOST-{lab}" if g else lab), tuple(at_r[:, i]))
+                 for i, (lab, g) in enumerate(zip(labels, ghost))]
         mol = gto.M(atom=atoms, basis=basis_arg, ecp=ecp_arg, unit='Bohr', cart=False,
                     charge=int(charge), spin=int(na - nb), verbose=0)
 
