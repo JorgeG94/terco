@@ -1517,6 +1517,14 @@ set_tests_properties(terco/check_df_2c_ceiling PROPERTIES
 terco_add_check(check_df_3c_ceiling check_df_3c_ceiling.F90 NEEDS_BASIS)
 set_tests_properties(terco/check_df_3c_ceiling PROPERTIES
   PASS_REGULAR_EXPRESSION "trc_df_3c: orbital basis above DF_LMAX")
+# The same for the one-electron integrals and their gradient, which had no
+# guard: an f shell in an LMAX=2 build wrote past trc_1e's block.
+terco_add_check(check_one_e_ceiling check_one_e_ceiling.F90 NEEDS_BASIS)
+set_tests_properties(terco/check_one_e_ceiling PROPERTIES
+  PASS_REGULAR_EXPRESSION "trc_1e: basis above ONE_E_LMAX")
+terco_add_check(check_one_e_grad_ceiling check_one_e_grad_ceiling.F90 NEEDS_BASIS)
+set_tests_properties(terco/check_one_e_grad_ceiling PROPERTIES
+  PASS_REGULAR_EXPRESSION "trc_1e_gradient: basis above ONE_E_GRAD_LMAX")
 
 #
 # A complete RHF through the public API, and the makeEFP pathway on top of it.
