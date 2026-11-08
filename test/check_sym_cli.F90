@@ -324,10 +324,13 @@ contains
       !! same SCF; either flag without a symmetry request is refused. Both are
       !! given explicitly because HOCl is a molecule the size rule declines,
       !! so a bare --symmetry auto would take the full build on both sides.
+      !! Also the `--json` echo of the key, which is KIND_BOOL_TRI: it carries
+      !! the flag that WAS given, and only that (the third state, neither flag,
+      !! is checked in check_cli_input's test_echo).
       type(error_type), allocatable, intent(out) :: error
       type(json_file) :: json
       real(dp) :: e_on, e_off, e_toml
-      logical :: found
+      logical :: found, echoed
       integer :: rc
 
       call setup()
@@ -342,11 +345,20 @@ contains
       call json%initialize()
       call json%load(filename=work_dir//'/sk_on.json')
       call json%get('total energy', e_on, found)
+      ! The echo must name the flag that was given, so that rerunning the echo
+      ! as a TOML file reproduces this run's Fock build rather than falling
+      ! back to the size rule.
+      call json%get('input.scf.symmetry_skeleton', echoed, found)
       call json%destroy()
+      call check(error, found .and. echoed, "--sym-skeleton must echo input.scf.symmetry_skeleton = true")
+      if (allocated(error)) return
       call json%initialize()
       call json%load(filename=work_dir//'/sk_off.json')
       call json%get('total energy', e_off, found)
+      call json%get('input.scf.symmetry_skeleton', echoed, found)
       call json%destroy()
+      call check(error, found .and. .not. echoed, "--no-sym-skeleton must echo input.scf.symmetry_skeleton = false")
+      if (allocated(error)) return
       call check(error, abs(e_on - e_off) < 1.0e-9_dp, "--no-sym-skeleton changed the energy by "// &
                  to_string(abs(e_on - e_off), 'es10.2'))
       if (allocated(error)) return
@@ -373,6 +385,13 @@ contains
       call json%get('total energy', e_toml, found)
       call json%destroy()
       call check(error, found .and. abs(e_toml - e_off) < 1.0e-9_dp, "the TOML run's energy differs")
+      if (allocated(error)) return
+      call json%initialize()
+      call json%load(filename=work_dir//'/case/sk_toml.json')
+      call json%get('input.scf.symmetry_skeleton', echoed, found)
+      call json%destroy()
+      call check(error, found .and. .not. echoed, &
+                 "symmetry_skeleton = false in the file must echo back as false, not as the third state")
    end subroutine test_skeleton_flag
 
    subroutine test_explicit(error)
