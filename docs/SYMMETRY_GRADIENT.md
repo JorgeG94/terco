@@ -1,10 +1,11 @@
 # Skeleton nuclear gradient: design (S16)
 
-Status: **design spike, awaiting maintainer sign-off.** Nothing here is
-implemented in `src/`. The measurements come from a CPU prototype
-(`test/spike_symgrad.F90`, registered `DISABLED`, on the branch
-`sym/s16-grad-spike`) and from `nsys` on a GPU build of `main` at
-**0f59b51**. No product code, no generator and no kernel was changed.
+Status: **implemented** (see section 11 for what survived contact with the
+code and what did not). Sections 0-10 are the design spike as it was signed
+off; their measurements come from a CPU prototype (`test/spike_symgrad.F90`,
+registered `DISABLED`) and from `nsys` on a GPU build of `main` at
+**0f59b51**. Section 11 is the implementation: what was built, the realised
+numbers, and the places the design was wrong.
 
 S16 lists three optional follow-ups: DF-JK with symmetry, an XC grid
 reduction, and skeleton gradients. This document recommends **skeleton
@@ -751,3 +752,217 @@ The GPU reality check says the launch profile has room, and says why this is
   the screen pass, `verify2` is the exact oracle of section 4 (`verify` is the
   same comparison with the production whole-bin stride, i.e. the wrong
   answer, kept because it is the evidence for section 2).
+
+## 11. The implementation, and what the design got wrong
+
+Built on `sym/s16-grad-impl`, based on this document's own branch.
+`eri%gradient` takes `skeleton`, with `eri%fock`'s semantics;
+`trc_scf_gradient`'s `sym_geom` turns it on and projects the four-centre
+term inside `two_electron_4c`.
+
+### 11.1 What was built
+
+| Decision | What landed |
+|---|---|
+| 1, scheme (c) | `bins_plan_emit` takes `canon`: it writes the two sides so that `(sLA, sLB) >= (sLC, sLD)`, whichever side the walk cut. `skeleton_walk` threads it through and the gradient's own plan asks for it (`trc_grad.F90`). The cheaper-side cut is untouched, so the whole reduction is kept, and `SKEL_SWAP_LMAX` no longer applies to a canonical plan. |
+| 2, the signature | `sSA`, `sSB`, `sW` on every gradient kernel's compact pass and on `rysg_compact_dispatch`. `_untile` is **gone**: the gradient kernels now carry what the Fock ones do, and the splice *asserts* `(k1 - 1)*sSA(seg)` instead of rewriting it to `sA(seg)`. The orbit weight is one line next to the existing degeneracy factors (`wq = wq*sW(seg)`). The screen pass is unchanged, as section 2 predicted. |
+| 3, default DFT, (i) | `two_electron_4c` projects the four-centre term; `trc_scf_gradient` gained `sym_project` for the end-of-routine projection, which `trc_capi` sets false exactly where it used to withhold `sym_geom`. The group is now handed over for every symmetric run. |
+| 4, `bins_plan_build` too | `bins_plan_build` is one `plain_walk` through `bins_plan_emit` with `canon`. It is a **strict no-op** on an unsplit plan -- a bin's index *is* its `bin_key`, which packs `(la, lb)` most significantly, and `live` is ascending -- so no golden moves. It changes the plan only where `split_large_bins`/`arrange_orbits` appended chunks past the original indices, which is the hole it closes. |
+| 6, the counter | `eri%nwork` and `eri%nkept` after `eri%gradient`. `nkept` is free there: the ordered-survivor compaction already copies its screen pass's atomic counter to the host once per batch. |
+| 7 item 7, range separation | Both passes take `skeleton`; `two_electron_4c` adds them and projects once. `check_sym_grad`'s `compare_two_pass` pins it. |
+| 5 | Untouched, as scoped. The **Fock** skeleton plan does not ask for canonical emission (`canonical` defaults false), so its 42 bra<ket energy kernels stay live and its accumulation order is unchanged. |
+
+### 11.2 Counts and exactness, as built
+
+Host build, gfortran 15.1.0, `TERCO_LMAX=2`, `tau = 1e-10`, the engine built
+with the detected group, the density made invariant by the production
+symmetrizer (`trc_sym_scf_t%symmetrize`) in the caller's space and folded to
+the Cartesian working basis. `check_sym_grad`'s own printout.
+
+Work items the gradient launches, full -> skeleton:
+
+| system | group | basis | full | skeleton | reduction |
+|---|---|---|---|---|---|
+| HOCl (planar) | Cs | 6-31G* | 9 142 | 9 355 | **0.98x** (see 11.3.5) |
+| CHFCl2 | Cs | 6-31G* | 96 116 | 51 717 | 1.86x |
+| H2O2 | C2 | cc-pVDZ | 85 784 | 44 874 | 1.91x |
+| water | C2v | cc-pVDZ | 14 627 | 9 968 | **1.467x** |
+| trans-N2H2 | C2h | 6-31G* | 9 312 | 4 875 | 1.91x |
+| N2H2F2 | Ci | 6-31G* | 76 357 | 39 209 | 1.95x |
+| twisted C2H4 | D2 | 6-31G* | 22 148 | 7 370 | 3.01x |
+| B2H6 (nonplanar) | D2h | 6-31G* | 45 108 | 12 690 | 3.56x |
+| SF6 | D2h | cc-pVDZ | 2 883 269 | 1 192 250 | **2.418x** |
+| benzene (D6h as D2h) | D2h | 6-31G* | 649 008 | 180 146 | 3.60x |
+
+The two systems section 3.1 measured at the same basis reproduce **exactly**:
+water 14 627 -> 9 968 (1.467x) and SF6 2 883 269 -> 1 192 250 (2.418x). So do
+the segment counts of section 3.3: water Cartesian, 909 full segments and
+1 320 skeleton segments, of which 575 carry their sub-range on the ket side
+-- which is section 3.3's "swapped" column, now reordered by the
+canonicalisation instead of changing the class. Survivors are 11 541 -> 6 609
+(water) and 2 770 356 -> 1 133 419 (SF6) against the prototype's 11 534 /
+6 605 and 2 761 476 / 1 130 616; the few extra are the skeleton screen's
+symmetrized `dsh`, which is a looser bound by construction.
+
+Exactness: `max|sym(grad_skel) - grad_full|` relative to
+`max(1, max|grad_full|)`, worst over {J+K, J, K, long range} x {RHF, UHF} x
+{random, converged} density, and the same quantity for the **raw**
+(unprojected) skeleton gradient:
+
+| system | group | Cartesian | spherical | raw, relative |
+|---|---|---|---|---|
+| HOCl | Cs | 7.5e-15 | 2.3e-14 | 7.5e-15 (see 11.3.5) |
+| CHFCl2 | Cs | 1.0e-12 | 1.9e-12 | 1.34 |
+| H2O2 | C2 | 1.6e-14 | 1.6e-14 | 0.86 / 1.08 |
+| water | C2v | 2.6e-15 | 2.7e-15 | 1.39 |
+| trans-N2H2 | C2h | 7.2e-13 | 1.9e-12 | 0.58 |
+| N2H2F2 | Ci | 1.8e-14 | 4.6e-14 | 0.61 / 0.68 |
+| twisted C2H4 | D2 | 1.5e-12 | 1.5e-12 | 2.11 |
+| B2H6 | D2h | 5.3e-14 | 6.6e-13 | 1.26 |
+| SF6 | D2h | 3.8e-14 | 3.2e-13 | 1.56 |
+| benzene | D2h | 3.1e-13 | 2.1e-12 | 1.88 |
+
+Two things to read off. The **spherical** column is as good as the Cartesian
+one, which settles section 10's open caveat: the spike's hand-rolled density
+projection was not invariant in the spherical AO space, the production
+symmetrizer is, and the identity holds there to the same precision. And the
+**raw** skeleton gradient is wrong by 0.58 to 2.11 times the largest
+component on every molecule whose orbits are not all singletons, so the
+projection is doing all the work, exactly as section 4 said.
+
+Translational invariance of the raw skeleton gradient: 1e-16 to 9e-12
+absolute, on gradients up to 460 (the random densities are not physical).
+
+The f-basis case (`TERCO_LMAX=3`, the uncontracted l = 0..3 set,
+`TRC_BIN_CAP=40` so that `split_large_bins` fires -- the combination no
+gradient test had ever run): water C2v, 82 621 -> 47 991 work items, the
+projected skeleton gradient 6.2e-11 against `max|grad| = 1079`, i.e. 5.8e-14
+relative. Of the 1 114 skeleton segments, 0 are non-canonical and 0 carry a
+class the build has no gradient kernel for; 391 carry their sub-range on the
+ket. With `canon` turned off: **391 non-canonical, of which 275 carry a class
+with no gradient kernel**, so `grad_classes` would `error stop`. That is the
+latent hole of section 5, fired and closed.
+
+End to end, through `trc_scf_gradient` with `sym_geom` (the skeleton
+four-centre term, its own projection, and the one-electron, overlap and
+nuclear-repulsion terms on top) against the same molecule's C1 gradient:
+3.8e-15 (water/6-31G*), 3.1e-15 (water/cc-pVDZ spherical), 9.5e-15
+(B2H6/6-31G*), with the equivariance residual and every symmetry-forbidden
+component exactly 0. Against a central difference of terco's own reconverged
+SCF energy (water/6-31G*, h = 1e-3, 18 displaced C1 SCFs): worst absolute
+1.4e-7, inside `check_full_grad_fd`'s own 5e-7 truncation floor.
+
+### 11.3 What did not survive contact with the code
+
+1. **The step speedups are real but smaller than projected, because the
+   gradient's kernel time does not scale with its quartet count.** Measured
+   on the same V100-DGXS-32GB (cc70, nvfortran 26.5, `TERCO_LMAX=2`, commit
+   `c07a4c1`, cc-pVDZ, `--grad --econv 1e-10`, nsys 2025.1.3, GPU 0, no other
+   compute process and 1 MiB in use on all four cards), two independent runs
+   agreeing to within 2%:
+
+   | system | `rysg*` off | `rysg*` skeleton | kernel reduction | quartet reduction | total off | total auto | step vs off |
+   |---|---|---|---|---|---|---|---|
+   | benzene | 25.71 ms | 16.47 ms | **1.56x** | 3.60x | 158.7 ms | 124.3 ms | 1.28x |
+   | naphthalene_d2h | 71.46 | 27.53 | **2.60x** | 3.79x | 407.5 | 228.9 | 1.78x |
+   | pentacene_d2h | 426.66 | 128.79 | **3.31x** | 3.85x | 2519.9 | 966.5 | 2.61x |
+   | tops_sf6 | 20.17 | 14.64 | **1.38x** | 2.42x | 184.9 | 199.0 | 0.93x |
+
+   Section 8 projected the gradient's time by its quartet reduction, on the
+   argument that "the cost per survivor does not change". It does: a skeleton
+   segment is a *sub-range* of its bin, so a class run is made of more and
+   shorter segments (water: 1 320 skeleton segments against 909 full ones),
+   the screen pass's RUNLEN=32 chunks share a ket less often, and the compact
+   pass's survivor list is less ket-uniform. The shortfall is worst where the
+   segments are smallest: 1.56x of a 3.60x quartet cut on benzene, against
+   3.31x of 3.85x on pentacene.
+
+   Isolating the skeleton's own contribution to the step -- the same `auto`
+   run with the gradient's `off` time substituted back -- gives **1.07x
+   (benzene), 1.19x (naphthalene), 1.31x (pentacene), 1.03x (SF6)** against
+   section 8's projected 1.15x / 1.24x / 1.34x / 1.06x. Those substituted
+   totals (272.8 ms naphthalene, 1264.4 ms pentacene, 204.5 ms SF6) reproduce
+   section 8's own `auto` totals (276.0, 1285.6, 204.8) to within 1.6%, which
+   is what makes the construction trustworthy; benzene's 133.5 against 134.0
+   likewise. Against `symmetry=off` the whole step is 1.28x / 1.78x / 2.61x /
+   0.93x, against 1.35x / 1.78x / 2.65x / 0.99x projected.
+
+   The **launch count does not grow**, as scheme (c) promised: 42 gradient
+   launches with symmetry off and 42 with the skeleton on, on every system but
+   pentacene, where it *falls* from 46 to 42 (fewer `GRAD_COMPACT_CAP`
+   batches). SF6 still loses overall, as it did before this work and for the
+   same reason (S15's small-molecule Fock launch problem: 1 301 -> 1 811 Fock
+   launches); its gradient term is 1.38x faster.
+2. **The compile cost really is a re-run of what the build already pays, but
+   the design's own figure for the old set does not reproduce.** Compiling
+   all 81 `trc_pc_rysg*.F90` with their own compile commands on this host
+   (NVHPC 26.5, `-stdpar=gpu -acc -gpu=cc70,mem:separate -fast -O3`), old
+   against new, back to back: summed single-file time **1858.0 s new against
+   1939.1 s old** (0.96x), mean 22.9 s against 23.9 s. The two files that set
+   the critical path, recompiled four at a time on a quiet box, are
+   **unchanged**: `rysg2220` 248.9 s new against 249.1 s old, `rysg2121`
+   186.1 s new against 184.0 s old. At 20 concurrent compiles the *wall*
+   figures were 395.8 s new against 302.5 s old, but that difference is
+   scheduling under 20-way contention, not a property of the change -- the
+   same two files measured 349.6 s and 268.9 s there, against 248.9 s and
+   186.1 s at four. Section 7's 277.9 s / 1473.4 s for the old set does not
+   reproduce on this box today (302.5 s / 1939.1 s for the same files), so the
+   A/B above, not that figure, is the comparison to use.
+3. **Oracle item 9, exchange tiles on the gradient, is still not available**,
+   and `sSA`/`sSB` were not the only thing in the way. `bin_tiles_plan` is
+   reached only from an **exchange-only** Fock launch
+   (`tiled = ... .and. launch%jfac == 0.0_dp`), and the reach bound it prunes
+   on, `bin_tiles_reach(tiles, dsh)`, bounds the **exchange** blocks alone.
+   The gradient's Gamma contracts all six blocks, the two Coulomb ones
+   included, so an exchange-tile prune would drop real contributions. The
+   kernels can now express a tile on either side, so the mechanism is
+   unblocked; using it needs a gradient-specific reach bound, which no
+   decision in section 7 covered.
+4. **Oracle item 6 cannot be done the way it is written.**
+   "`check_full_grad_fd`'s and `check_rys_grad_fd`'s finite differences with
+   the skeleton on" has nothing to turn on: both run in C1, with no
+   `sym_geom` and no group, so there is no skeleton path through them. The
+   finite difference is instead `check_sym_grad`'s own `test_fd`, which takes
+   the symmetric molecule's skeleton gradient and differences the reconverged
+   energy at **displaced, C1** geometries -- a displacement along one
+   Cartesian component breaks the symmetry, so the difference cannot be taken
+   inside the group.
+5. **Oracle item 5 needed no test edits at all, and must not have had any.**
+   `trc_scf_gradient`'s `sym_geom` now implies the skeleton build, so the
+   eight existing `check_sym_*` gradient cases (`_c2v`, `_c2`, `_c2h`, `_ci`,
+   `_d2`, `_d2h`, `_tops`, `_scf_cs`) exercise it, with their
+   forbidden-component, equivariance and C1-agreement assertions, without a
+   line changed. That is as well: all eight of those files are on a
+   `test/pyscf_refs/*.ref` `# files:` line, so even a comment in them would
+   have made eight anchors stale.
+6. **The canonicalisation cannot be global.** Decision 4 asks for it on
+   `bins_plan_build` and decision 1 on the gradient's skeleton plan, but
+   decision 5 keeps the energy side's 42 bra<ket Rys kernels -- and those
+   exist *only* because the skeleton Fock plan swaps. Canonicalising
+   `bins_plan_build_skeleton` unconditionally would have made them dead
+   kernels, which is decision 5's own territory. So `canon` is a per-plan
+   flag, default off, and `bins_skel_cut_first`'s `SKEL_SWAP_LMAX` guard is
+   lifted only for a canonical plan, where the cut side no longer decides
+   which kernel runs.
+7. **The skeleton is not always smaller, and nothing stops it.** On a
+   molecule where every atom lies on every mirror -- a **planar Cs**
+   molecule, whose only operation besides the identity is the molecular plane
+   -- every pair orbit is a singleton. The restriction then drops nothing,
+   while a diagonal bin pair still becomes the rectangle `reps(A) x A` at
+   weight 1/2 instead of the triangle, so the plan *grows*: HOCl/6-31G*,
+   9 355 work items against the full plan's 9 142 (+2.3%), with the raw
+   skeleton gradient already equal to the full one to 7.5e-15 relative. The
+   skeleton Fock build has exactly the same property and neither path has a
+   size rule for it, so none was added here; `check_sym_grad`'s
+   `test_cs_planar` pins it, so that it is a documented property rather than
+   a surprise, and it is the one configuration where the oracle's "the plan
+   must be smaller" and "a segment was reordered" assertions must *not* hold.
+   Section 3's molecule list has no planar Cs case, which is why this is not
+   in it.
+8. **A symmetric gradient now requires an orbit-built engine.**
+   `trc_scf_gradient` used to refuse to reuse one on purpose ("that is
+   S16's"). It now requires one: a symmetric gradient on an engine without
+   orbit tables would silently fall back to the full plan, so the reuse test
+   admits exactly the orbit-built engine and `two_electron_4c` builds its own
+   **with the group** when there is no cache. That is why the eight
+   per-group gradient cases, which pass no cache, get the skeleton.

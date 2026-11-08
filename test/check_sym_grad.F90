@@ -71,7 +71,10 @@ module check_sym_grad_suite
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
+   use trc_bins, only: trc_bin_plan_t
    use trc_eri, only: trc_eri_t
+   use trc_pc_kernels, only: CLASS_RADIX
+   use trc_rys_grad_kernels, only: rysg_has_class
    use trc_error, only: error_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
@@ -313,6 +316,78 @@ contains
       end do
    end subroutine equivariance
 
+   subroutine canon_case(ctx, reordered, error)
+      !! PLAN LEVEL, no integrals, so it costs nothing. Both plans the
+      !! gradient can build must be ANGULAR-MOMENTUM CANONICAL --
+      !! (sLA, sLB) >= (sLC, sLD) on every segment -- and every class they
+      !! carry must be one this build generated a gradient kernel for. That is
+      !! the whole claim of bins_plan_emit's `canon`, and above d it is the
+      !! difference between a launch and grad_classes' `error stop`: the
+      !! filter in src/CMakeLists.txt builds no f-containing class with
+      !! (lc, ld) > (la, lb) (30 of them, listed there).
+      !!
+      !! The third count is what makes this test non-vacuous: a segment whose
+      !! sub-range sits on the KET side (sNB < sSB) is one where
+      !! bins_skel_cut_first chose the far bin -- the cheaper side -- and the
+      !! canonicalisation then moved that sub-range to the ket rather than
+      !! swapping the class. Without `canon` it would be the bra side and the
+      !! count would be zero, which is the assertion that fails without the
+      !! change. CLASS_RADIX is trc_grad's own GCLASS_RADIX (both 11).
+      type(ctx_t), intent(inout) :: ctx
+      logical, intent(in) :: reordered
+      !! At least one segment must have had its two sides reordered. False
+      !! for a molecule all of whose pair orbits are singletons (a planar Cs
+      !! molecule, see `test_cs_planar`): every section then covers its whole
+      !! bin, so no segment is a sub-range at all and there is nothing to
+      !! order.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_bin_plan_t) :: pf, ps
+      integer :: i, nbad_f, nbad_s, nmiss_f, nmiss_s, nket, nbra
+
+      call pf%build(ctx%eri%bins, ctx%eri%thresh, ctx%eri%quartets%bin_pbase, .false.)
+      call ps%build_skeleton(ctx%eri%bins, ctx%eri%orb, ctx%eri%thresh, ctx%eri%quartets%bin_pbase, &
+                             canonical=.true.)
+      nbad_f = 0
+      nbad_s = 0
+      nmiss_f = 0
+      nmiss_s = 0
+      nket = 0
+      nbra = 0
+      do i = 1, pf%nseg
+         if (pf%sLC(i)*16 + pf%sLD(i) > pf%sLA(i)*16 + pf%sLB(i)) nbad_f = nbad_f + 1
+         if (.not. rysg_has_class(pf%class_key(i, CLASS_RADIX))) nmiss_f = nmiss_f + 1
+      end do
+      do i = 1, ps%nseg
+         if (ps%sLC(i)*16 + ps%sLD(i) > ps%sLA(i)*16 + ps%sLB(i)) nbad_s = nbad_s + 1
+         if (.not. rysg_has_class(ps%class_key(i, CLASS_RADIX))) nmiss_s = nmiss_s + 1
+         if (ps%sNB(i) < ps%sSB(i)) nket = nket + 1
+         if (ps%sA(i) < ps%sSA(i)) nbra = nbra + 1
+      end do
+      print "(a,a,a,i0,a,i0,a,i0,a,i0,a,i0,a,i0,a,i0)", "  ", trim(ctx%label), &
+         " plans: full segs ", pf%nseg, " non-canonical ", nbad_f, " without a kernel ", nmiss_f, &
+         ";  skeleton segs ", ps%nseg, " non-canonical ", nbad_s, " without a kernel ", nmiss_s, &
+         ";  sub-range on the ket ", nket
+      call pf%release()
+      call ps%release()
+
+      call check(error, nbad_f == 0, trim(ctx%label)//": "//to_string(nbad_f)// &
+                 " segments of the FULL gradient plan have (lc, ld) > (la, lb)")
+      if (allocated(error)) return
+      call check(error, nbad_s == 0, trim(ctx%label)//": "//to_string(nbad_s)// &
+                 " segments of the SKELETON gradient plan have (lc, ld) > (la, lb)")
+      if (allocated(error)) return
+      call check(error, nmiss_f == 0 .and. nmiss_s == 0, trim(ctx%label)//": "// &
+                 to_string(nmiss_f)//" full and "//to_string(nmiss_s)// &
+                 " skeleton segments carry a class with no gradient kernel")
+      if (allocated(error)) return
+      if (.not. reordered) return
+      call check(error, nket > 0, trim(ctx%label)// &
+                 ": no skeleton segment has its sub-range on the ket side, so the cheaper-side cut "// &
+                 "never had to be reordered and this check proves nothing")
+      if (allocated(error)) return
+      call check(error, nbra > 0, trim(ctx%label)//": no skeleton segment has its sub-range on the bra side")
+   end subroutine canon_case
+
    subroutine compare_grad(ctx, dc, ndens, jscale, kscale, omega, tag, smaller, error, graw, gfull)
       !! The skeleton and the full gradient of the same operator on the same
       !! engine: the first projected over the group, the second as it comes.
@@ -483,11 +558,19 @@ contains
       do ik = 1, 2
          call setup_ctx(ctx, xyz, group, basis_json, -1, ik == 2, error)
          if (allocated(error)) return
-         call run_densities(ctx, scf, smaller, error)
-         if (allocated(error)) return
-         print "(a,a,a,es9.2,a,es9.2)", "  ", trim(ctx%label), ": worst relative error ", ctx%worst, &
-            ", worst RAW relative error ", ctx%worst_raw
+         ! RELEASE ON EVERY PATH OUT. An early return would leave the basis
+         ! and the engine mapped; the next molecule's `to_device` then meets a
+         ! host address the device present table still holds, with the wrong
+         ! size, and nvfortran dumps the present table and dies. Measured:
+         ! the GPU build's first failing case took the whole program with it.
+         call canon_case(ctx, smaller, error)
+         if (.not. allocated(error)) call run_densities(ctx, scf, smaller, error)
+         if (.not. allocated(error)) then
+            print "(a,a,a,es9.2,a,es9.2)", "  ", trim(ctx%label), ": worst relative error ", ctx%worst, &
+               ", worst RAW relative error ", ctx%worst_raw
+         end if
          call release_ctx(ctx)
+         if (allocated(error)) return
       end do
    end subroutine run_molecule
 
@@ -576,8 +659,16 @@ contains
       !! registration so that split_large_bins fires. An f basis plus a split
       !! bin plus a skeleton plan that cuts the cheaper side is the only
       !! combination that can present grad_classes with a class ordering the
-      !! filter drops; bins_plan_emit's canonicalisation is what makes it
-      !! impossible, and this is the test that would `error stop` without it.
+      !! filter drops, and this is the test that would `error stop` -- or,
+      !! before reaching a launch at all, fail canon_case -- without
+      !! bins_plan_emit's canonicalisation.
+      !!
+      !! The PLAN checks run on both molecules in both AO spaces, because they
+      !! cost nothing. The integral comparison runs on water, Cartesian, J+K
+      !! only: an f-class gradient over a bin split at 40 pairs is minutes of
+      !! host time per evaluation, and what it adds over the plan checks is
+      !! only that the kernels index a sub-range correctly, which every case
+      !! in the main mode already covers.
       type(error_type), allocatable, intent(out) :: error
       type(ctx_t) :: ctx
       real(dp), allocatable :: ds(:, :), dc(:, :)
@@ -589,15 +680,16 @@ contains
          do ik = 1, 2
             call setup_ctx(ctx, trim(MOL(im)), trim(GRP(im)), " ", 3, ik == 2, error)
             if (allocated(error)) return
-            allocate (ds(ctx%ns, ctx%ns), dc(ctx%nc, ctx%nc))
-            call random_density(ctx, 3, 0.1_dp, ds)
-            call to_cart(ctx, ds, dc)
-            call compare_grad(ctx, dc, 1, 1.0_dp, 1.0_dp, 0.0_dp, "J+K ", .true., error)
-            if (allocated(error)) return
-            call compare_grad(ctx, dc, 2, 0.0_dp, 1.0_dp, 0.0_dp, "K   ", .true., error)
-            if (allocated(error)) return
-            deallocate (ds, dc)
+            call canon_case(ctx, .true., error)
+            if (.not. allocated(error) .and. im == 1 .and. ik == 1) then
+               allocate (ds(ctx%ns, ctx%ns), dc(ctx%nc, ctx%nc))
+               call random_density(ctx, 3, 0.1_dp, ds)
+               call to_cart(ctx, ds, dc)
+               call compare_grad(ctx, dc, 1, 1.0_dp, 1.0_dp, 0.0_dp, "J+K ", .true., error)
+               deallocate (ds, dc)
+            end if
             call release_ctx(ctx)
+            if (allocated(error)) return
          end do
       end do
    end subroutine test_lmax3
@@ -620,12 +712,12 @@ contains
       call random_density(ctx, 7, 0.5_dp, ds)
       call to_cart(ctx, ds, dc)
       call compare_grad(ctx, dc, 1, 1.0_dp, 1.0_dp, 0.0_dp, "J+K ", .true., error, graw=graw, gfull=gfull)
-      if (allocated(error)) return
-      rel = maxval(abs(graw - gfull))/max(1.0_dp, maxval(abs(gfull)))
-      print "(a,es10.3,a,es10.3)", "  raw skeleton vs full, relative: ", rel, "  max|g| ", maxval(abs(gfull))
-      call check(error, rel > 0.1_dp, "the raw skeleton gradient is within 10% of the full one ("// &
-                 to_string(rel, "es10.3")//"): the projection is not being tested")
-      if (allocated(error)) return
+      if (.not. allocated(error)) then
+         rel = maxval(abs(graw - gfull))/max(1.0_dp, maxval(abs(gfull)))
+         print "(a,es10.3,a,es10.3)", "  raw skeleton vs full, relative: ", rel, "  max|g| ", maxval(abs(gfull))
+         call check(error, rel > 0.1_dp, "the raw skeleton gradient is within 10% of the full one ("// &
+                    to_string(rel, "es10.3")//"): the projection is not being tested")
+      end if
       call release_ctx(ctx)
    end subroutine test_raw
 
