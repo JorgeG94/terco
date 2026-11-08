@@ -317,6 +317,18 @@ set_target_properties(check_sym_fock_f PROPERTIES Fortran_MODULE_DIRECTORY
                       ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_fock_f)
 set_tests_properties(terco/check_sym_fock_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# Weighted-segment fusion in the bin Fock launch (W2 of the segment-fusion
+# plan): the launch count of a skeleton build equals the number of distinct
+# (class, mask) groups in its plan, so no group is split by the segment weight
+# as it was before W2. check_sym_fock pins eri%nwork, which fusion does not
+# move, and so pins nothing about the launches.
+terco_add_check(check_sym_fusion check_sym_fusion.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_fusion PRIVATE test-drive::test-drive)
+# An active TRC_LAUNCH_CAP re-splits a class run by quartet count, which this
+# check does not model, so it skips rather than asserting -- report that as a
+# skip, as the check_sym_fock_* variants do, not as a pass.
+set_tests_properties(terco/check_sym_fusion PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
 # Point group D2 (twisted ethylene and tetrafluoroethylene): detection and pyscf's
 # frame (x, y order), SALC block-diagonality, the central oracle (RHF, UHF,
 # B3LYP) and pyscf anchors (pyscf_refs/sym_d2.ref), the requested subgroup
