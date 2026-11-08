@@ -463,8 +463,12 @@ contains
             end if
             if (real(area, dp) > TILE_KEEP_MAX*real(full, dp)) then
                do r = orb%sec0(kx) + 1, orb%sec0(kx + 1)
+                  ! Not canonicalised (bins_plan_emit's `canon`): this is a
+                  ! Fock exchange plan, whose kernels exist in both bra/ket
+                  ! orderings, and reordering here would only move its
+                  ! accumulation order.
                   call bins_plan_emit(plan, b, bin_pbase, fill, nseg, kx, ky, orb%sec_beg(r), orb%sec_cnt(r), &
-                                      0, b%bin_cnt(ky), .false., half*real(orb%sec_w(r), dp))
+                                      0, b%bin_cnt(ky), .false., half*real(orb%sec_w(r), dp), .false.)
                end do
                cycle
             end if
@@ -486,7 +490,7 @@ contains
                   else if (run1 >= run0) then
                      call bins_plan_emit(plan, b, bin_pbase, fill, nseg, kx, ky, this%t0(ta), this%tn(ta), &
                                          this%t0(run0), this%t0(run1) + this%tn(run1) - this%t0(run0), &
-                                         .false., w)
+                                         .false., w, .false.)
                      run0 = 0
                      run1 = -1
                   end if
@@ -658,7 +662,7 @@ contains
       logical, intent(in) :: fill
       integer, intent(inout) :: nseg
       type(segment_t), intent(in) :: sg
-      call bins_plan_emit(plan, b, bin_pbase, fill, nseg, sg%ka, sg%kb, sg%oa, sg%na, sg%ob, sg%nb, sg%diag, sg%w)
+      call bins_plan_emit(plan, b, bin_pbase, fill, nseg, sg%ka, sg%kb, sg%oa, sg%na, sg%ob, sg%nb, sg%diag, sg%w, .false.)
    end subroutine emit
 
 end module trc_bin_tiles

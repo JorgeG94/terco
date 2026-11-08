@@ -317,6 +317,35 @@ set_target_properties(check_sym_fock_f PROPERTIES Fortran_MODULE_DIRECTORY
                       ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_fock_f)
 set_tests_properties(terco/check_sym_fock_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# The skeleton nuclear gradient (S16): the projected skeleton gradient against
+# the full one on the same engine, for every enabled group, Cartesian and
+# spherical, J/K/J+K/long-range, RHF and UHF, random and converged densities,
+# the range-separated two-pass sum, the work and survivor counts, the raw
+# skeleton's translational invariance, that the raw skeleton is NOT a
+# gradient, the production path (trc_scf_gradient with sym_geom) against C1
+# with the forbidden components, and a finite difference of the reconverged
+# SCF energy. _cap lowers TRC_BIN_CAP so split_large_bins fires; _f is the
+# uncontracted l = 0..3 set WITH the split (skipped below TERCO_LMAX=3), the
+# only combination that can hand grad_classes a class ordering its filter
+# drops.
+terco_add_check(check_sym_grad check_sym_grad.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_grad PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_grad PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_grad)
+terco_add_check(check_sym_grad_cap check_sym_grad.F90 NEEDS_BASIS ARGS quick)
+target_link_libraries(check_sym_grad_cap PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_grad_cap PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_grad_cap)
+set_tests_properties(terco/check_sym_grad_cap PROPERTIES ENVIRONMENT
+                     "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_BIN_CAP=40")
+terco_add_check(check_sym_grad_f check_sym_grad.F90 NEEDS_BASIS ARGS f)
+target_link_libraries(check_sym_grad_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_grad_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_grad_f)
+set_tests_properties(terco/check_sym_grad_f PROPERTIES ENVIRONMENT
+                     "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_BIN_CAP=40"
+                     SKIP_REGULAR_EXPRESSION "SKIP")
+
 # Weighted-segment fusion in the bin Fock launch (W2 of the segment-fusion
 # plan): the launch count of a skeleton build equals the number of distinct
 # (class, mask) groups in its plan, so no group is split by the segment weight

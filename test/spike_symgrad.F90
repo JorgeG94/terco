@@ -14,7 +14,7 @@
 !     (the bra/ket swap bins_skel_cut_first makes), split by whether the
 !     class is one src/CMakeLists.txt builds a gradient kernel for.
 !  3. EXACTNESS. The symmetrized skeleton gradient against the full one.
-!     There is no weighted gradient kernel, so the weight is applied by
+!     This harness predates the weighted kernels, so the weight is applied by
 !     REPLICATION: a segment of weight w is emitted nint(2*w) times (every
 !     weight is a multiple of one half, so 2*w is an integer) and the sum is
 !     halved. That costs about twice the full build's work and is useless as
@@ -27,10 +27,15 @@
 !                   items and segments of the full plan, of the skeleton plan,
 !                   and of a skeleton plan with the bra/ket swap forbidden
 !   mode = count    plan, plus the screen pass's survivor counts and launches
-!   mode = verify   count, plus the skeleton gradient run through the
-!                   PRODUCTION whole-bin stride -- i.e. the wrong answer, kept
-!                   because it is the evidence that the gradient kernels need
-!                   sSA/sSB (section 2 of the design)
+!   mode = verify   count, plus the skeleton gradient over the PRODUCTION
+!                   plan (sub-range segments), which is now EXACT: the
+!                   gradient kernels take the bin strides sSA/sSB, which is
+!                   the S16 change. Before it they read the segment's own
+!                   extent and this mode was the evidence for that finding --
+!                   wrong by 16.6 (water) to 2.3e+05 (SF6). It is now the
+!                   cheapest demonstration that the fix works, and
+!                   `verify2`'s stride-one workaround is no longer needed for
+!                   anything but reproducing the design's own table.
 !   mode = verify2  the exact oracle: one segment per quartet over a
 !                   stride-one primitive layout, the weight by repetition,
 !                   symmetrized against the full gradient
@@ -80,8 +85,14 @@ contains
       integer :: nmax
       integer(int64) :: w0, w1, gend, nout
       integer(int64) :: ctr(1)
+      real(dp), allocatable :: sw1(:)
 
       nseg = plan%nseg
+      ! The gradient kernels now take the segment's orbit weight (S16), but
+      ! this harness still applies it by REPLICATION (replicate_plan below),
+      ! so it hands them ones -- as grad_bins does for an unweighted plan.
+      allocate (sw1(max(nseg, 1)))
+      sw1 = 1.0_dp
       nl = 0
       nsurv = 0_int64
       c0 = 1
@@ -120,7 +131,8 @@ contains
                nl = nl + 1
                if (run) then
                   call rysg_compact_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, plan%sA, plan%sNB, &
-                                             plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, &
+                                             plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
+                                             plan%sD, sw1, &
                                              b%npair, b%sp_i, b%sp_j, b%sp_q, launch%thresh*1.0e-3_dp, &
                                              launch%jfac, launch%kfac, launch%omega, pairs%nbas, launch%nao, &
                                              pairs%ao_off, pairs%sh_at, pairs%natm, &

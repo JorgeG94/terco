@@ -4414,8 +4414,12 @@ contains
       type(trc_pcm_t) :: pcm_local
       type(error_t) :: perr
       type(trc_sym_geom_t), allocatable :: gsym
-         !! Allocated only for a symmetric run: the gradient is then symmetrised
-         !! over the group (it is in the standard frame the SCF ran in).
+         !! Allocated for a symmetric run: the four-centre term is then built
+         !! as a skeleton over the group's pair orbits and projected, and so is
+         !! the finished gradient unless `gproject` is false. It is in the
+         !! standard frame the SCF ran in.
+      logical :: gproject
+         !! Project the FINISHED gradient (see where it is set).
       integer :: nocc_s(2)
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
@@ -4445,14 +4449,23 @@ contains
          cx%message = "trc_run_gradient: "//refusal
          return
       end if
-      ! The gradient is projected onto the symmetric subspace, which is exact for
-      ! a symmetric grid (HF, or an explicit request). The default request's DFT
-      ! grid is the input axes' grid, which breaks the symmetry at the grid's own
-      ! (first-order) error; projecting would move the gradient by that much
-      ! away from the symmetry-off one, so it is left as computed.
-      if (cx%sym_active .and. .not. (have_func .and. cx%sym_req%by_default)) then
+      ! The FINISHED gradient is projected onto the symmetric subspace, which
+      ! is exact for a symmetric grid (HF, or an explicit request). The default
+      ! request's DFT grid is the input axes' grid, which breaks the symmetry at
+      ! the grid's own (first-order) error; projecting would move the gradient
+      ! by that much away from the symmetry-off one, so it is left as computed.
+      !
+      ! The GROUP is handed over in that case too (S16): the four-centre term
+      ! is then a SKELETON build, which is not a gradient until it is
+      ! projected, and trc_scf_gradient projects that term alone, inside
+      ! two_electron_4c, leaving the DFT grid story exactly as it was. The
+      ! four-centre term is equivariant to round-off, so this moves no number
+      ! a default DFT run reports today.
+      gproject = .true.
+      if (cx%sym_active) then
          allocate (gsym)
          gsym = cx%sym_geom
+         gproject = .not. (have_func .and. cx%sym_req%by_default)
       end if
       if (cx%rimp2_ok) then
          ! The energy this context holds is E_RHF + E_RI-MP2: differentiate
@@ -4526,7 +4539,8 @@ contains
                                         nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
                                         dfjk=cx%dfjk, aux=cx%jb%b, &
                                         verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
-                                        grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri, sym_geom=gsym)
+                                        grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                        sym_project=gproject)
                else if (reuse_grid) then
                   call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                         cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
@@ -4535,7 +4549,8 @@ contains
                                         nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
                                         dfjk=cx%dfjk, aux=cx%jb%b, &
                                         verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
-                                        pair_eri_cache=cx%peri, sym_geom=gsym)
+                                        pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                        sym_project=gproject)
                else
                   call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                         cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
@@ -4543,12 +4558,14 @@ contains
                                         grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                         nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
                                         dfjk=cx%dfjk, aux=cx%jb%b, &
-                                        verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym)
+                                        verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                        sym_project=gproject)
                end if
             else
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
-                                     dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym)
+                                     dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                     sym_project=gproject)
             end if
          else if (have_func) then
             if (reuse_nlc) then
@@ -4559,7 +4576,8 @@ contains
                                      nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
                                      verbose=cx%opts%verbose, &
                                      grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
-                                     grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri, sym_geom=gsym)
+                                     grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                     sym_project=gproject)
             else if (reuse_grid) then
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
@@ -4567,7 +4585,8 @@ contains
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                      nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
                                      verbose=cx%opts%verbose, &
-                                     grid=cx%kgrid%grid, xg=cx%kgrid%xg, pair_eri_cache=cx%peri, sym_geom=gsym)
+                                     grid=cx%kgrid%grid, xg=cx%kgrid%xg, pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                     sym_project=gproject)
             else
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
@@ -4575,12 +4594,14 @@ contains
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                      nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
                                      verbose=cx%opts%verbose, &
-                                     pair_eri_cache=cx%peri, sym_geom=gsym)
+                                     pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                     sym_project=gproject)
             end if
          else
             call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                   cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
-                                  verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym)
+                                  verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                  sym_project=gproject)
          end if
          ! --- PCM, added on top of the vacuum gradient above: its own
          ! density/pair list (pcm_grad_scf_add's own header explains why
