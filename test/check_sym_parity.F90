@@ -364,9 +364,23 @@ contains
          ! dominant classes only it read 0.677-0.720 while the cost-weighted
          ! share was 0.472-0.544, because the classes with a d shell on both
          ! sides had no variant (docs/SYMMETRY_PARITY_SKIP.md section 11).
-         ! Each caller's floor is under its own measured value and above what
-         ! the earlier variant set reached, so dropping a heavy class's variant
-         ! fails here instead of quietly costing time.
+         ! An AGGREGATE gate, and only that. Each caller's floor is under its
+         ! own measured value and above what the earlier variant set reached
+         ! (0.47-0.50), so losing the whole new set fails here -- measured, by
+         ! making all seven unreachable with TRC_RYS_CLASSES: five of six cases
+         ! drop below their floor. It does NOT catch losing ONE variant: the
+         ! tightest shipped margins are benzene 0.059 and b2h6 0.053, so a
+         ! class worth less than about five points of masked cost goes
+         ! unnoticed -- dropping (dd|pp), tag 2211, leaves the whole suite
+         ! passing (b2h6 0.8031 -> 0.7534 against its 0.75). Only (dp|dd) and
+         ! (dd|dd) are individually heavy enough to trip it. Gate per class if
+         ! that matters.
+         !
+         ! The value also depends on rys_default_class, so a pure ROUTING
+         ! change with no parity content can move it: gen_rys.py's own comment
+         ! says (pp|pp), (dd|ds) and (ds|pp) "win on some systems and lose or
+         ! tie on others". One such move of 2211 puts b2h6 at 0.7534; two
+         ! would fail here with a message that names coverage, not routing.
          cover = ctx%eri%parity_cost_variant/max(ctx%eri%parity_cost_masked, 1.0_dp)
          print "(a,a,a,f7.4)", "  ", trim(ctx%label), " cost-weighted masked work reaching a variant: ", cover
          call check(error, cover > min_cover, trim(ctx%label)//": only "//to_string(cover, "f7.4")// &

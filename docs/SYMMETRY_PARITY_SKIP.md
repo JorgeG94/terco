@@ -719,9 +719,10 @@ adding them buys. It also says the shortfall against section 1's
 1.43-1.46x is **not** mainly class coverage: on the host the ten mid classes
 that already had variants were carrying nearly all of the available gain,
 and the rest of the gap is the model's per-primitive overhead term
-(section 3.4: x3 gives 1.26x) plus the host's own cost profile. Whether the
-GPU agrees is the open question -- there the heavy classes are a much larger
-share of Fock time, which is what motivated this stage.
+(section 3.4: x3 gives 1.26x) plus the host's own cost profile. The GPU does
+agree that the heavy classes carry much more of the time -- 11.4 to 19.1 %
+of it, against the ~2 % of host Fock time this stage buys -- and section 12
+has the measurement.
 
 **Compile cost** (AGENTS.md: a generator change that grows the heavy classes
 states it). nvfortran 26.5, `-stdpar=gpu -acc -gpu=cc70,mem:separate -O3`,
@@ -786,11 +787,11 @@ kernel's buffers to the live node set is the generator work that would fix it
 properly, and holding the (dp|dd) swap out of `parity_hgp_tags` is the
 one-line alternative.
 
-**All of the above was measured in a device link of these kernels and their
-module dependencies only, not of `libterco.so`**, because this stage had no
-GPU toolchain run over the whole tree. The full-library figures, the
-occupancy, and whether these frames were already there before parity skipping
-are still [GPU].
+**The above was measured in a device link of these kernels and their module
+dependencies only, not of `libterco.so`**, because this stage had no GPU
+toolchain run over the whole tree. Section 12 closes that: a full device
+build was made afterwards and the full-library registers, the occupancy and
+the run-time effect are measured there.
 
 **Not added, and why.** (ds|dd) 4.3-6.2 % and (ss|dd) 1.5 % would need
 (dd|ds) and (dd|ss) in `PARITY_HGP_TOP`, and (dd|ds) is a `ROLE_SPLITS`
@@ -806,3 +807,100 @@ class's shape; the design (section 4a) says a masked variant has its own best
 shape and needs its own race, which needs a device. So does the occupancy and
 spill effect of the 568 B frame, and so does whether the HGP masked (dp|dd)
 kernel beats the Rys route the canonical ordering takes.
+
+## 12. On a GPU (measured after section 11)
+
+Full device build of this branch: nvfortran 26.5, `-stdpar=gpu -acc
+-gpu=cc70,mem:separate`, `TERCO_LMAX=3`, `TERCO_DF_LMAX=2`, Tesla
+V100-DGXS-32GB (cc70), 33.8 min at `--parallel 12`. Baseline is the same
+tree without these variants (`sym/w2-segment-weight`), identically
+configured, so the W2 launch fusion is in both. ERI figures are summed over
+`trc_pc_*` from `nsys cuda_gpu_kern_sum` for one steady-state Fock build (the
+difference between two `--iterations` runs); 6-31G* is three repeats, per
+class reproducible to under 0.5 %, cc-pVDZ single runs. `--symmetry auto`,
+`--econv 1e-10`, `TRC_PARITY=1` against `TRC_PARITY=0`.
+
+**The headline is not the increment. Before this stage, parity skipping was a
+net loss on the GPU** in five of six configurations -- off/on of 0.964,
+1.000, 1.005, 0.967, 0.964, 0.964 -- i.e. the shipped default cost time on a
+device. With these variants it is 0.991 to 1.059. That is the case for the
+stage, and it was invisible to section 11 because the host cost profile is
+not the device's.
+
+| system / basis | ERI gain | this stage's own effect on Fock |
+|---|---|---|
+| benzene 6-31G* | +3.93 % | +2.68 % |
+| naphthalene 6-31G* | +5.46 % | +2.96 % |
+| pentacene 6-31G* | +7.10 % | +4.88 % |
+| benzene cc-pVDZ | +4.92 % | +3.30 % |
+| naphthalene cc-pVDZ | +1.37 % | +2.59 % |
+| pentacene cc-pVDZ | +2.20 % | +4.84 % |
+
+All seven variants launch, 25 variant launches per build, and all 25 masked
+kernels together are about 31 % of ERI time. Coverage reproduces section 11's
+host numbers exactly (0.807 / 0.829 / 0.842).
+
+Per class, masked against unmasked (6-31G*, pentacene):
+
+| | gain |
+|---|---|
+| `pcs1122z` (pp\|dd) | **+58.5 %** |
+| `pcs1022z` (ps\|dd) | +43.1 % |
+| `rys2210z` (dd\|ds) | +17.5 % |
+| `rys2221z` (dd\|dp) | +9.1 % |
+| `rys2211z` (dd\|pp) | +5.6 % |
+| `rys2222z` (dd\|dd) | -2.2 % |
+| `pcs2122z` (dp\|dd) | **-18.2 % benzene, -9.7 % naphthalene, +4.1 % pentacene** |
+
+The seven classes carry 11.4 / 14.0 / 19.1 % of ERI-off time, and the
+realised saving *within* them is +3.9 / +13.2 / +24.8 % -- so 4 to 25 % of
+the available ceiling, not the half a naive reading would give. The entire
+shortfall is `(dp|dd)`.
+
+**The `(dp|dd)` frame regression is real but costs no occupancy.**
+`cuobjdump -res-usage` on both fully linked libraries: 0 of the common
+functions changed `REG` or `STACK`, none went from `STACK` 0 to non-zero, the
+maximum is unchanged at 169 600 B, and the total `STACK` delta is exactly the
+sum of the seven new frames (33 872 B). `ncu` on `pcs2122z` against
+`pcs2122`, identical grids: registers 255 both, the same four occupancy
+limiters, theoretical occupancy 12.50 % both, achieved 9.1 against 9.2 %,
+duration +0.1 %. So the 25 472 B is not an occupancy cost -- but it is not
+merely declared either: the masked kernel executes **6.8 % fewer
+instructions** and spends it on **15.5 % more local loads and 13.3 % more
+local stores**, 39.5 % of all its instructions against 32.2 %. On a small
+grid (benzene's `pcs2122` launches three blocks) there is no parallelism to
+hide that latency, which is why it inverts to a loss there.
+
+`STACK` mixes declared scratch with spill slots and cannot be decomposed from
+a linked library. `nvfortran -gpu=...,ptxinfo` can, and it shows the frame
+growing while the spill traffic falls:
+
+| kernel | frame | spill stores | spill loads |
+|---|---|---|---|
+| `pcs2122` | 15 904 B | 23 344 B | 29 820 B |
+| `pcs2122z` | 25 472 B | 15 532 B | 12 632 B |
+
+So the claim that spills are zero anywhere in this library is false, and
+`-res-usage`'s `LOCAL` field (0 throughout) does not say otherwise.
+
+**The `(dp|dd)` retreat is not worth taking.** Dropping it changes the total
+gain by +0.35 ms summed over all six configurations, and the two losses land
+on pentacene, the most production-relevant case, at 0.19 to 0.29 points --
+below the 0.5 to 0.7 % wall-clock trial spread. It would trade the coverage
+gate for no measurable speed. What it would buy is 65.6 s of the stage's 135 s
+of compile and 3 327 of its 6 457 generated lines, so it is defensible on
+compile cost alone.
+
+**The better follow-up** is the compaction section 10 already names: compact
+the masked kernel's `v`/`g1`/`vbuf` to the live node set as `role_plan`'s
+`vmap` does. `pcs2122z` already executes fewer instructions and loses it to
+carrying the full uncompacted scratch; that would turn `(dp|dd)` from
+break-even into a gain and likely lift `rys2222z` and `rys2211z` too.
+
+Device suite: 276 of 277, the one failure being `terco/link_c`, a known
+build-configuration defect fixed on `sym/capi-acc-gpu` and unrelated to this
+stage. `check_sym_parity` and `check_sym_parity_f` both pass on the device.
+Energies across all six systems, both builds, both parity settings: maximum
+deviation 1.02e-12 Eh, under this device's own run-to-run noise (up to
+1.4e-12, growing with system size), against a 1e-10 convergence. Iteration
+counts identical everywhere.
