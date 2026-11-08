@@ -228,7 +228,8 @@ module trc_capi
    use trc_sym_scf, only: trc_sym_scf_t
    use trc_sym_group, only: trc_sym_group_t, sym_group_from_name
    use trc_sym_run, only: trc_sym_request_t, SYM_OFF, SYM_AUTO, SYM_EXPLICIT, sym_parse_request, sym_choose_group, &
-                          sym_parse_irrep_nelec, sym_aufbau_matches, sym_fixed_occupation
+                          sym_parse_irrep_nelec, sym_aufbau_matches, sym_fixed_occupation, &
+                          SYM_SKEL_ON, SYM_SKEL_OFF
    use trc_sym_frame, only: sym_ao_rot_blocks, sym_ao_rotate_rows, sym_ao_rotate_dmat, sym_frame_to_input
    implicit none
    private
@@ -341,7 +342,31 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 24
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 25
+   !! 1.25: the skeleton Fock build under a symmetry request is chosen by a
+   !! measured size rule instead of being unconditional (trc_sym_run's
+   !! sym_skeleton_size_rule). MINOR: no signature and no enum value changes,
+   !! and no change to the API surface: only which quartets are launched.
+   !! The group and the frame are the same either way. The ENERGY and the
+   !! PER-ORBITAL IRREP LABELS can differ in their last bits, because the
+   !! two Fock paths accumulate in different orders and trc_sym_scf's energy
+   !! merge then breaks a near-tie between degenerate partners the other way:
+   !! measured on SF6 (cc-pVDZ, D2h, the one molecule in the rule's own table
+   !! that it declines; gfortran 15.1 host build, TERCO_LMAX=2, --econv
+   !! 1e-10), 18 of 102 mo_irrep entries move and the energy moves 1.4e-11 Eh.
+   !! Every one of those 18 is a PERMUTATION INSIDE a degenerate level -- nine
+   !! transpositions, in levels that are twofold and threefold in D2h -- so
+   !! the irrep DECOMPOSITION does not move: the orbital count per irrep,
+   !! occupied and total, is identical on the two paths
+   !! (check_sym_skeleton_rule asserts exactly that, block by block).
+   !! That difference is pre-existing
+   !! between the two paths, not introduced here, but this is the change that
+   !! alters which path SF6 takes by default. A caller that pins occupations
+   !! with trc_set_irrep_nelec on a molecule with accidental degeneracy should
+   !! know the labels are only reproducible for a FIXED choice of Fock path --
+   !! force it with trc_set_symmetry_skeleton if that matters. trc_set_symmetry_skeleton(1) now
+   !! FORCES the skeleton build rather than naming the default, and
+   !! TRC_SYM_SKELETON=0/1 in the environment overrides both.
    !! 1.24: symmetry is ON by default (a fresh context asks for `auto`, as
    !! trc_set_symmetry(h, "default", 0) does), and a symmetric run reports in
    !! the caller's INPUT frame. MINOR, not MAJOR: no signature and no enum
@@ -6595,13 +6620,16 @@ contains
    end function trc_set_symmetry
 
    function trc_set_symmetry_skeleton(handle, on) result(status) bind(c, name="trc_set_symmetry_skeleton")
-      !! Under a symmetry request (trc_set_symmetry), build the Fock matrix
-      !! from the orbit representatives of the integral quartets and
-      !! symmetrize it (on = 1, the default), or build the full matrix and
-      !! symmetrize that (on = 0). The same SCF either way, to round-off; only
-      !! the number of integrals computed differs. No effect without a group
-      !! other than C1, with density fitting or over more than one rank
-      !! (those take the full build).
+      !! Under a symmetry request (trc_set_symmetry), force the Fock matrix to
+      !! be built from the orbit representatives of the integral quartets and
+      !! symmetrized (on = 1), or force the full matrix and symmetrize that
+      !! (on = 0). Without this call the choice is a measured size rule's
+      !! (trc_sym_run's sym_skeleton_size_rule, ABI 1.25: before it, the
+      !! skeleton build was unconditional under a group), and
+      !! TRC_SYM_SKELETON=0/1 in the environment overrides both. The same SCF
+      !! either way, to round-off; only the number of integrals computed
+      !! differs. No effect without a group other than C1, with density
+      !! fitting or over more than one rank (those take the full build).
       type(c_ptr), value :: handle
       integer(c_int), value :: on
       integer(c_int) :: status
@@ -6609,7 +6637,7 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
-      cx%sym_req%skeleton = on /= 0_c_int
+      cx%sym_req%skeleton = merge(SYM_SKEL_ON, SYM_SKEL_OFF, on /= 0_c_int)
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_symmetry_skeleton

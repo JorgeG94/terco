@@ -103,7 +103,8 @@ module trc_scf_driver
    use trc_scf_soscf, only: trc_scf_soscf_run
    use trc_scf_incremental, only: scf_incremental_t
    use trc_sym_scf, only: trc_sym_scf_t
-   use trc_sym_geom, only: trc_sym_geom_t
+   use trc_sym_geom, only: trc_sym_geom_t, sym_geom_atom_orbits
+   use trc_sym_run, only: sym_skeleton_mode, sym_skeleton_size_rule, SYM_SKEL_AUTO, SYM_SKEL_OFF
    use pic_types, only: default_int
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
@@ -240,6 +241,9 @@ contains
       logical :: diis_on
       logical :: sym_on          !! the SO-blocked path (a symmetric group was handed in)
       logical :: skel_on         !! ... with the skeleton Fock build (the engine holds the group's orbits)
+      integer :: skel_mode       !! what was asked for: SYM_SKEL_AUTO/ON/OFF, TRC_SYM_SKELETON applied
+      integer :: skel_norbit     !! atoms inequivalent under the group, 0 when the size rule was not consulted
+      character(len=48) :: skel_why  !! why `skel_on` came out as it did, for the run's own log
       type(trc_sym_geom_t) :: sym_geom  !! the group and atom permutations the engine is built with
       real(dp) :: ctl(2)
       real(dp) :: eold, drms, errmax
@@ -322,17 +326,53 @@ contains
       ! group: the four-centre engine is built with the point group, launches
       ! only the orbit representatives, and F is symmetrized after the assembly
       ! (as for the full build). Not with density fitting (its own path) nor over several ranks
-      ! (the plan is unmeasured there); `sym%skeleton = .false.` keeps the
-      ! full build and the symmetrization of F alone.
-      skel_on = sym_on .and. .not. scf_config%df
-      if (skel_on) skel_on = sym%skeleton
-      if (skel_on .and. present(comm)) skel_on = comm%size() == 1
+      ! (the plan is unmeasured there); `sym%skeleton = SYM_SKEL_OFF` keeps the
+      ! full build and the symmetrization of F alone, and SYM_SKEL_AUTO (the
+      ! default) leaves it to the size rule below. Either way the group, the
+      ! frame, the SO basis, the irrep labels and every reported quantity are
+      ! the same: only which quartets are launched changes.
+      skel_mode = SYM_SKEL_AUTO
+      skel_norbit = 0
+      skel_why = "asked for"
+      skel_on = sym_on
+      if (skel_on .and. scf_config%df) then
+         skel_on = .false.
+         skel_why = "density fitting"
+      end if
+      if (skel_on) then
+         skel_mode = sym_skeleton_mode(sym%skeleton)
+         if (skel_mode == SYM_SKEL_OFF) then
+            skel_on = .false.
+            skel_why = "asked for"
+         end if
+      end if
+      if (skel_on .and. present(comm)) then
+         if (comm%size() > 1) then
+            skel_on = .false.
+            skel_why = "several ranks"
+         end if
+      end if
       if (skel_on) then
          call sym%geometry(scf_basis, sym_geom, err)
          if (err%has_error()) then
             scf_result%message = "trc_scf: "//err%get_message()
             return
          end if
+         ! THE SIZE RULE. The skeleton build is a loss on a molecule whose
+         ! atom orbits are small, measured at 0.44x the symmetry-off ERI time
+         ! on SF6 and 1.41x-2.78x on benzene, naphthalene and pentacene
+         ! (sym_skeleton_size_rule carries the numbers). The atom
+         ! permutations are in hand either way, so the orbit count is free.
+         if (skel_mode == SYM_SKEL_AUTO) then
+            skel_norbit = sym_geom_atom_orbits(sym_geom%perm)
+            skel_on = sym_skeleton_size_rule(scf_basis%natm, skel_norbit)
+            skel_why = "size rule: "//to_string(scf_basis%natm)//" atoms in "// &
+                       to_string(skel_norbit)//" orbits"
+         end if
+      end if
+      scf_result%sym_skeleton = skel_on
+      scf_result%sym_atom_orbits = skel_norbit
+      if (skel_on) then
          call scf_context%setup(scf_basis, scf_options, scf_config, la, grid_cache, pair_eri_cache, err, comm=comm, &
                                 dfjk=scf_dfjk, sym_geom=sym_geom)
       else
@@ -453,8 +493,18 @@ contains
          do s = 1, scf_config%nspin
             call sym%symmetrize(nao, scf_result%dmat(:, :, s), scf_state%w1)
          end do
-         if (scf_config%talk) call global_logger%info("   symmetry: "//trim(sym%ao%group%name)//", "// &
-            to_string(sym%ao%nirrep)//" irreps, SO dimensions "//dims_string(sym%ao%irrep_dim))
+         if (scf_config%talk) then
+            call global_logger%info("   symmetry: "//trim(sym%ao%group%name)//", "// &
+               to_string(sym%ao%nirrep)//" irreps, SO dimensions "//dims_string(sym%ao%irrep_dim))
+            ! Which Fock build a symmetric run is using is not visible in any
+            ! reported number -- both paths give the same F -- so it is said
+            ! here, with the size rule's own counts when the rule decided.
+            if (skel_on) then
+               call global_logger%info("   symmetry: skeleton Fock build ("//trim(skel_why)//")")
+            else
+               call global_logger%info("   symmetry: full Fock build ("//trim(skel_why)//")")
+            end if
+         end if
       end if
 
       eold = 0.0_dp

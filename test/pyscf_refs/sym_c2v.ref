@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["sym_c2v"] -> gen_sym_c2v
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 68735ebc2582a72d0ea4f44bdf8396bfd26becbbe57c34eca9cfa37dff6b52d2
+# hash: 8520e69c9e8c486e7c488217191817729aaa7a5bd2bd83a86f012e4a87b1e778
 # files: test/check_sym_c2v.F90 test/ch2cl2.xyz test/formaldehyde.xyz test/nh2.xyz test/water.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
 # water_rhf: rhf, E -76.026772053394, GRAD_NORM 3.170e-09
 NSPIN_water_rhf 1

@@ -18,6 +18,24 @@
 ! Also: fixed per-irrep occupations, --soscf refused with symmetry, and the
 ! incremental Fock build with symmetry.
 !
+! WHICH FOCK BUILD EACH CASE RUNS, DELIBERATELY. Every molecule here is below
+! the skeleton build's size rule (`sym_skeleton_size_rule`): HOCl is 3 atoms
+! in 3 orbits and CHFCl2 is 5 in 4, because a planar Cs molecule is its own
+! mirror image and the nonplanar one still pairs up only its two chlorines.
+! A default symmetric run therefore takes the FULL build with F symmetrized
+! after it, and the skeleton build would not be exercised here at all unless
+! it is asked for. So `make_pair` takes `skeleton`, and every case states what
+! it wants and asserts (`trc_scf_result_t%sym_skeleton`) that it got it:
+!   skeleton = .true.   CHFCl2 RHF (nonplanar: the mirror moves atoms, so the
+!                       orbit fold is nontrivial) and the HCO radical (UHF).
+!                       This is the group's skeleton-build coverage against
+!                       both C1 and the pyscf anchor.
+!   absent              the rule in charge, which for these molecules means
+!                       the full build -- the path a user actually gets. The
+!                       assertion is that the rule declined, so if the rule
+!                       ever starts accepting them this test says so rather
+!                       than silently changing what it covers.
+!
 ! NO INTERNAL PROCEDURES: the helpers are module procedures.
 !
 module check_sym_scf_cs_suite
@@ -32,6 +50,7 @@ module check_sym_scf_cs_suite
    use trc_error, only: error_t
    use trc_sym_ao, only: trc_sym_ao_t, sym_ao_build
    use trc_sym_geom, only: trc_sym_geom_t, sym_detect
+   use trc_sym_run, only: SYM_SKEL_ON
    use trc_sym_scf, only: trc_sym_scf_t, sym_grad_symmetrize
    use trc_test_basis, only: read_xyz
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_vector
@@ -73,15 +92,20 @@ contains
                   ]
    end subroutine collect_sym_scf_cs
 
-   subroutine make_pair(error, xyz, basis_json, spherical, functional, charge, mult, p, incremental, with_c1)
+   subroutine make_pair(error, xyz, basis_json, spherical, functional, charge, mult, p, incremental, with_c1, skeleton)
       !! Detect Cs, build the basis on the standard frame, and run the SCF
-      !! with symmetry and (unless `with_c1` is false) as C1.
+      !! with symmetry and (unless `with_c1` is false) as C1. `skeleton` picks
+      !! the Fock build: present and true forces the skeleton build, absent
+      !! leaves the size rule in charge (which declines every molecule of this
+      !! file -- see the header). Either way the path the run took is asserted,
+      !! so no case can change its coverage without changing this file.
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in) :: xyz, basis_json, functional
       logical, intent(in) :: spherical
       integer, intent(in) :: charge, mult
       type(pair_t), intent(inout) :: p
-      logical, intent(in), optional :: incremental, with_c1
+      logical, intent(in), optional :: incremental, with_c1, skeleton
+      logical :: want_skeleton
       integer :: nat, nelec, dev
       integer, allocatable :: elem(:)
       real(dp), allocatable :: r(:, :)
@@ -124,8 +148,21 @@ contains
       if (present(incremental)) opts%incremental = incremental
 
       sc%ao = p%ao
+      want_skeleton = .false.
+      if (present(skeleton)) want_skeleton = skeleton
+      if (want_skeleton) then
+         sc%geom = p%geom
+         sc%skeleton = SYM_SKEL_ON
+      end if
       call trc_scf_run(p%bas, p%nalpha, p%nbeta, opts, p%rs, sym=sc)
       call check(error, p%rs%converged, xyz//": the symmetric SCF did not converge: "//trim(p%rs%message))
+      if (allocated(error)) return
+      if (want_skeleton) then
+         call check(error, p%rs%sym_skeleton, xyz//": the skeleton Fock build was forced on and was not used")
+      else
+         call check(error, .not. p%rs%sym_skeleton, xyz//": the size rule should decline the skeleton build here ("// &
+                    to_string(p%rs%sym_atom_orbits)//" atom orbits); it used it")
+      end if
       if (allocated(error)) return
       call sc%release()
       if (present(with_c1)) then
@@ -251,9 +288,11 @@ contains
    subroutine test_chfcl2_rhf(error)
       type(error_type), allocatable, intent(out) :: error
       type(pair_t) :: p
-      call make_pair(error, 'chfcl2.xyz', 'basis_sets/6-31gs.json', .false., '', 0, 1, p)
+      ! The skeleton Fock build, forced: nonplanar, so the mirror moves atoms
+      ! and the orbit fold is nontrivial. See the header.
+      call make_pair(error, 'chfcl2.xyz', 'basis_sets/6-31gs.json', .false., '', 0, 1, p, skeleton=.true.)
       if (allocated(error)) return
-      call compare_pair(error, p, 'RHF CHFCl2 6-31G*', TOL_E_HF)
+      call compare_pair(error, p, 'RHF CHFCl2 6-31G*, skeleton build', TOL_E_HF)
       if (.not. allocated(error)) call check(error, p%rs%n_increments > 0 .and. p%r1%n_increments > 0, &
                                              "the default runs must have used incremental Fock builds")
       if (.not. allocated(error)) call compare_anchor(error, p, 'chfcl2_rhf', TOL_ANCHOR_HF)
@@ -263,9 +302,10 @@ contains
    subroutine test_hco_uhf(error)
       type(error_type), allocatable, intent(out) :: error
       type(pair_t) :: p
-      call make_pair(error, 'hco.xyz', 'basis_sets/cc-pvdz.json', .true., '', 0, 2, p)
+      ! The skeleton Fock build, forced, for an open shell. See the header.
+      call make_pair(error, 'hco.xyz', 'basis_sets/cc-pvdz.json', .true., '', 0, 2, p, skeleton=.true.)
       if (allocated(error)) return
-      call compare_pair(error, p, 'UHF HCO cc-pVDZ', TOL_E_HF)
+      call compare_pair(error, p, 'UHF HCO cc-pVDZ, skeleton build', TOL_E_HF)
       if (.not. allocated(error)) call compare_anchor(error, p, 'hco_uhf', TOL_ANCHOR_HF)
       call p%bas%release()
    end subroutine test_hco_uhf

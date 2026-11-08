@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["sym_c2v_so_dims"] -> gen_sym_c2v_so_dims
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 6acc4ec591b854cbbc778f40584c7fe3aea0bbf6207139b033ffd266e71774e7
+# hash: cc7ac74fecb7ed4105029cfa9d271dfab008f7d8a32225e6957dba1f397e58c1
 # files: test/check_sym_c2v.F90 test/water.xyz test/formaldehyde.xyz test/nh2.xyz test/ch2cl2.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
 NAO_water_631gs_cart 19
 SO_water_631gs_cart 4

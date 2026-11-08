@@ -1,5 +1,6 @@
 !
-! The symmetry entries of the C ABI (ABI 1.22; 1.23 adds trc_set_symmetry_skeleton;
+! The symmetry entries of the C ABI (ABI 1.22; 1.23 adds trc_set_symmetry_skeleton,
+! which 1.25 turns from the default's name into a force-either-way switch;
 ! 1.24 makes symmetry the default and adds the report-frame pair), called through the Fortran
 ! interfaces of include/trc_c_interfaces.f90: trc_set_symmetry,
 ! trc_set_irrep_nelec and the getters. The C side of the same round trip (water,
@@ -276,10 +277,12 @@ contains
    end subroutine test_rerun
 
    subroutine test_skeleton_switch(error)
-      !! The skeleton Fock build is the default under a symmetry request; with
-      !! it switched off (the full build, then symmetrized) the energy and the
-      !! gradient are the same, and the gradient that follows a skeleton SCF
-      !! does not reuse its orbit-closed engine.
+      !! The skeleton Fock build forced on against the full build (then
+      !! symmetrized): the energy and the gradient are the same, and the
+      !! gradient that follows a skeleton SCF does not reuse its orbit-closed
+      !! engine. Forced on explicitly because HOCl is a molecule the size rule
+      !! declines (3 atoms in 3 orbits), and without the call this would
+      !! compare the full build with itself.
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
       real(dp), allocatable :: geom(:, :)
@@ -288,6 +291,8 @@ contains
 
       call make_context(h, 'hocl.xyz', 'basis_sets/6-31gs.json', geom)
       rc = trc_set_symmetry(h, 'auto'//c_null_char, 0.0_c_double)
+      rc = trc_set_symmetry_skeleton(h, 1_c_int)
+      call check(error, rc, TRC_OK, 'trc_set_symmetry_skeleton(1)')
       rc = trc_run_scf(h)
       call check(error, rc, TRC_OK, 'skeleton run: '//message(h))
       rc = trc_energy(h, e1)
