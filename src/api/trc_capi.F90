@@ -346,9 +346,19 @@ module trc_capi
    !! 1.25: the skeleton Fock build under a symmetry request is chosen by a
    !! measured size rule instead of being unconditional (trc_sym_run's
    !! sym_skeleton_size_rule). MINOR: no signature and no enum value changes,
-   !! and no reported quantity changes -- the group, the frame, the irrep
-   !! labels, the orbital symmetries and the energy are the same either way,
-   !! only which quartets are launched. trc_set_symmetry_skeleton(1) now
+   !! and no change to the API surface: only which quartets are launched.
+   !! The group and the frame are the same either way. The ENERGY and the
+   !! PER-ORBITAL IRREP LABELS can differ in their last bits, because the
+   !! two Fock paths accumulate in different orders and trc_sym_scf's energy
+   !! merge then breaks a near-tie between degenerate partners the other way:
+   !! measured on SF6 (cc-pVDZ, D2h, the one molecule in the rule's own table
+   !! that it declines), 30 of 102 mo_irrep entries swap within degenerate
+   !! pairs and the energy moves 1.2e-11 Eh. That difference is pre-existing
+   !! between the two paths, not introduced here, but this is the change that
+   !! alters which path SF6 takes by default. A caller that pins occupations
+   !! with trc_set_irrep_nelec on a molecule with accidental degeneracy should
+   !! know the labels are only reproducible for a FIXED choice of Fock path --
+   !! force it with trc_set_symmetry_skeleton if that matters. trc_set_symmetry_skeleton(1) now
    !! FORCES the skeleton build rather than naming the default, and
    !! TRC_SYM_SKELETON=0/1 in the environment overrides both.
    !! 1.24: symmetry is ON by default (a fresh context asks for `auto`, as
