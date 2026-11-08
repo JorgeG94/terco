@@ -80,7 +80,10 @@ module trc_ecp
                              ecp_radial_type1_rad_part_levels, ecp_radial_type2_facs_rad, &
                              ecp_radial_type2_lab_levels, ECP_NLEVEL
    use trc_sph, only: sph_cart_to_sph
+   use trc_cart_perm, only: cart_perm_l2b
    use trc_error, only: error_t, ERROR_VALIDATION
+   use pic_logger, only: global_logger
+   use pic_strings, only: to_string
    implicit none
    private
    public :: trc_ecp_matrix, trc_ecp_matrix_cart
@@ -123,6 +126,19 @@ contains
       n = (l + 1)*(l + 2)/2
    end function ncart_l
 
+   pure subroutine ecp_k1_item(ur, rs, row0, row1, nrow, maxnp, ecp_rpow, ecp_np, ecp_e, ecp_c)
+      !! K1's item: one channel group's U(r) on the whole grid. A same-module
+      !! wrapper so the do concurrent body calls only this module's own
+      !! items (AGENTS.md); the work is trc_ecp_radial's.
+      !$acc routine seq
+      integer, intent(in) :: row0, row1, nrow, maxnp
+      real(dp), intent(in) :: rs(0:ECP_NRS - 1)
+      integer, intent(in) :: ecp_rpow(nrow), ecp_np(nrow)
+      real(dp), intent(in) :: ecp_e(maxnp, nrow), ecp_c(maxnp, nrow)
+      real(dp), intent(out) :: ur(0:ECP_NRS - 1)
+      call ecp_radial_rad_part(ur, rs, row0, row1, nrow, maxnp, ecp_rpow, ecp_np, ecp_e, ecp_c)
+   end subroutine ecp_k1_item
+
    !
    ! The whole ECP one-electron matrix, Cartesian internally and folded to
    ! spherical if `b%spherical`. `u` comes back allocated to b%nao_sph (or
@@ -141,7 +157,13 @@ contains
 
       if (b%spherical) then
          allocate (u(b%nao_sph, b%nao_sph))
+         ! sph_cart_to_sph is a do concurrent kernel: under mem:separate
+         ! everything it reads must be mapped, as trc_scf_context's own call
+         ! does (and b's shell arrays are not left mapped by the build above).
+         !$acc enter data copyin(b, b%sh_l, b%sh_ao, b%sh_ao_sph, mcart) create(u)
          call sph_cart_to_sph(b, mcart, u)
+         !$acc update self(u)
+         !$acc exit data delete(b%sh_l, b%sh_ao, b%sh_ao_sph, mcart, u, b)
       else
          allocate (u(b%nao, b%nao))
          u = mcart
@@ -182,10 +204,32 @@ contains
       mcart = 0.0_dp
 
       if (ecp%has_ecp) then
+         ! A malformed or foreign ECP file must fail here, not read past the
+         ! caches below: they are sized to ECP_LMAX, and the rows index
+         ! b%at_r by atom.
+         if (ecp%natm /= b%natm) then
+            call error%set(ERROR_VALIDATION, "trc_ecp_matrix: the ECP describes "// &
+                           to_string(ecp%natm)//" atoms, the basis "//to_string(b%natm))
+            return
+         end if
          if (ecp%nrow > 0) then
             if (maxval(ecp%ecp_np) > NPMAX) then
                call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP row has more "// &
                               "primitives than this port's fixed NPMAX ceiling")
+               return
+            end if
+            if (minval(ecp%ecp_np) < 1) then
+               call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP row has no primitives")
+               return
+            end if
+            if (minval(ecp%ecp_at) < 1 .or. maxval(ecp%ecp_at) > b%natm) then
+               call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP row names an atom "// &
+                              "outside 1.."//to_string(b%natm))
+               return
+            end if
+            if (minval(ecp%ecp_l) < -1 .or. maxval(ecp%ecp_l) > ECP_LMAX) then
+               call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an ECP channel has l outside "// &
+                              "-1 (local) .. "//to_string(ECP_LMAX)//", this port's ECP_LMAX")
                return
             end if
          end if
@@ -226,8 +270,8 @@ contains
       !$acc enter data copyin(rs, ecp, ecp%ecp_rpow, ecp%ecp_np, ecp%ecp_e, ecp%ecp_c) &
       !$acc            copyin(grp_row0, grp_row1) create(ur_cache)
       do concurrent(g=1:ngroup)
-         call ecp_radial_rad_part(ur_cache(:, g), rs, grp_row0(g), grp_row1(g), &
-                           ecp%nrow, ecp%maxnp, ecp%ecp_rpow, ecp%ecp_np, ecp%ecp_e, ecp%ecp_c)
+         call ecp_k1_item(ur_cache(:, g), rs, grp_row0(g), grp_row1(g), &
+                          ecp%nrow, ecp%maxnp, ecp%ecp_rpow, ecp%ecp_np, ecp%ecp_e, ecp%ecp_c)
       end do
       !$acc exit data delete(ecp%ecp_rpow, ecp%ecp_np, ecp%ecp_e, ecp%ecp_c, grp_row0, grp_row1, ecp)
 
@@ -294,14 +338,15 @@ contains
       !$acc                  grp_l, grp_atom, atm_ecp, atm_grp0, atm_grp1, rs, ur_cache, block_buffer, conv_fail) &
       !$acc            delete(fac1_cache, fac2_cache, ang2_cache)
 
+      ! A block whose levels never agree twice in a row keeps the finest
+      ! level, as pyscf's nr_ecp.c does. It is not an error: on I2, Xe2,
+      ! CsI, IBr, IO and CH3I in def2-SVP, a shell on one heavy atom against
+      ! the other's channel hits this, and the finest level matches pyscf to
+      ! 1e-13 (#194 review). Reported, so a change of grid can be traced.
       nfail = sum(conv_fail)
       if (nfail > 0) then
-         call error%set(ERROR_VALIDATION, "trc_ecp_matrix: the ECP radial quadrature did not "// &
-                        "converge within this port's ECP_LEVEL_MAX for at least one shell "// &
-                        "pair/channel; raise trc_ecp_quadrature's ECP_LEVEL_MAX")
-         deallocate (ur_cache, fac1_cache, fac2_cache, ang2_cache, grp_atom, grp_l, grp_row0, grp_row1)
-         deallocate (atm_ecp, atm_grp0, atm_grp1, pr_i, pr_j, block_buffer, conv_fail)
-         return
+         call global_logger%info("   ECP radial quadrature: "//to_string(nfail)// &
+                                 " (shell pair, ECP atom) blocks kept the finest level")
       end if
 
       ! K3: reduce the per-atom slots and write the Cartesian block (and
@@ -320,7 +365,7 @@ contains
       real(dp), intent(inout) :: mcart(b%nao, b%nao)
       integer, intent(in) :: i, j, natm_ecp
       real(dp), intent(in) :: slots(SLOT_SIZE, max(natm_ecp, 1))
-      integer :: li, lj, nfi, nfj, ai, aj, mi, mj, a
+      integer :: li, lj, nfi, nfj, ai, aj, mi, mj, a, pi, pj
       real(dp) :: acc
 
       li = b%sh_l(i)
@@ -335,8 +380,12 @@ contains
             do a = 1, natm_ecp
                acc = acc + slots((mj - 1)*NFMAX + mi, a)
             end do
-            mcart(ai + mi - 1, aj + mj - 1) = mcart(ai + mi - 1, aj + mj - 1) + acc
-            if (i /= j) mcart(aj + mj - 1, ai + mi - 1) = mcart(aj + mj - 1, ai + mi - 1) + acc
+            ! The slots are lexicographic (this module's angular tables);
+            ! the matrix is in this build's order, like S, T and V.
+            pi = ai + cart_perm_l2b(li, mi - 1)
+            pj = aj + cart_perm_l2b(lj, mj - 1)
+            mcart(pi, pj) = mcart(pi, pj) + acc
+            if (i /= j) mcart(pj, pi) = mcart(pj, pi) + acc
          end do
       end do
    end subroutine deposit_block
@@ -762,7 +811,10 @@ contains
       real(dp) :: common_fac
       real(dp) :: rad_levels(0:D2MAX2 - 1, 0:ECP_NLEVEL - 1)
       real(dp) :: rad_all(0:D3MAX2 - 1)
-      real(dp) :: buffer(0:NFMAX*(2*ECP_LMAX + 1) - 1)
+      real(dp) :: buffer(0:NFMAX*(2*ECP_LMAX + 1)*LC1MAX - 1)
+      !! Written at n*ljlc1 + mj, n < ncart(li)*(2lc+1), mj < lj+lc+1: pyscf's
+      !! nfi*(2*ECP_LMAX+1)*(lj+ECP_LMAX+1). Without the LC1MAX factor a d-d
+      !! pair against a d channel already overran it (#194 review).
       integer :: lilc1, ljlc1, d2, im, mq, dlc
       integer :: lab, i, j, n, mi, mj, picked
       real(dp) :: acc
