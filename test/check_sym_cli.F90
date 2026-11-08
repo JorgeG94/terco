@@ -319,9 +319,11 @@ contains
    end subroutine test_toml_type
 
    subroutine test_skeleton_flag(error)
-      !! The skeleton Fock build is the default under --symmetry; --no-sym-skeleton
-      !! (or symmetry_skeleton = false) takes the full build and gives the same
-      !! SCF; either flag without a symmetry request is refused.
+      !! --sym-skeleton forces the skeleton Fock build and --no-sym-skeleton
+      !! (or symmetry_skeleton = false) the full build, and the two give the
+      !! same SCF; either flag without a symmetry request is refused. Both are
+      !! given explicitly because HOCl is a molecule the size rule declines,
+      !! so a bare --symmetry auto would take the full build on both sides.
       type(error_type), allocatable, intent(out) :: error
       type(json_file) :: json
       real(dp) :: e_on, e_off, e_toml
@@ -329,9 +331,9 @@ contains
       integer :: rc
 
       call setup()
-      call run_cli('hocl.xyz'//BASIS//' --symmetry auto'//TIGHT//' --json '//work_dir//'/sk_on.json > '// &
+      call run_cli('hocl.xyz'//BASIS//' --symmetry auto --sym-skeleton'//TIGHT//' --json '//work_dir//'/sk_on.json > '// &
                    work_dir//'/sk_on.out 2>&1', rc)
-      call check(error, rc == 0, "the default run failed:"//new_line('a')//slurp(work_dir//'/sk_on.out'))
+      call check(error, rc == 0, "--sym-skeleton failed:"//new_line('a')//slurp(work_dir//'/sk_on.out'))
       if (allocated(error)) return
       call run_cli('hocl.xyz'//BASIS//' --symmetry auto --no-sym-skeleton'//TIGHT//' --json '//work_dir// &
                    '/sk_off.json > '//work_dir//'/sk_off.out 2>&1', rc)

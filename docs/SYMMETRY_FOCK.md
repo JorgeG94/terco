@@ -320,6 +320,135 @@ the non-reps are never a bra, so tiles over reps stay compact, but the
 sort-by-weight option `TRC_BIN_SORT` must be disabled or made orbit-aware.
 (iii) Closure by construction (sec. 1).
 
+### 4.2a When scheme 2a is used: the size rule
+
+Scheme 2a is not used on every symmetric run. A measured size rule
+(`sym_skeleton_size_rule` in `src/symmetry/trc_sym_run.F90`, applied by
+`trc_scf_run`) decides, and it decides only *that*: the group, the standard
+or input frame, the SO basis, the irrep labels, the orbital symmetries and
+every reported quantity are the same whichever Fock build runs, and the two
+agree to the project's gate. A declined skeleton build is the S4 path -- the
+full build with F symmetrized after it -- and it is reported as
+`trc_scf_result_t%sym_skeleton = .false.` and in the run's own log line
+(`symmetry: full Fock build (size rule: 7 atoms in 4 orbits)`).
+
+**The rule.** Use the skeleton build when the molecule has at least two atoms
+per symmetry-inequivalent atom:
+
+    natm >= 2 * norbit,    norbit = atom orbits of the group
+
+`norbit` is `sym_geom_atom_orbits` of `trc_sym_geom`, counted from the atom
+permutation `geom%perm` that detection has already built -- O(natm * |G|),
+once per geometry, on tables that exist either way.
+
+**Provenance.** cc-pVDZ, `--econv 1e-10`, `--symmetry auto` against the same
+build's `--symmetry off`, Tesla V100-DGXS-32GB (cc70), nvfortran 26.5,
+`-stdpar=gpu -acc -gpu=cc70,mem:separate`, `TERCO_LMAX=3`, ERI time per
+steady-state Fock build, with W2 of `.claude/context/segment-fusion-plan.md`
+landed. `*` marks what the rule chooses:
+
+| system | atoms | orbits | atoms/orbit | quartets on/off | ERI on/off | rule |
+|---|---|---|---|---|---|---|
+| tops_sf6 | 7 | 4 | 1.75 | 2.44x | **0.44x** | full* |
+| benzene | 12 | 4 | 3.00 | 3.55x | 1.41x | skeleton* |
+| naphthalene_d2h | 18 | 5 | 3.60 | 3.81x | 2.07x | skeleton* |
+| pentacene_d2h | 36 | 10 | 3.60 | 3.87x | 2.78x | skeleton* |
+
+Energies are unaffected either way: |dE| between the symmetric and the C1 run
+on the same symmetrized geometry was 2.9e-13 to 1.4e-12 Eh against a 1e-10
+gate, with identical iteration counts (S15, unchanged by W2).
+
+**Why orbit size and not size.** What scheme 2a saves is the orbit reduction
+and what it costs is the extra launches the weights and
+`bins_skel_cut_first`'s bra/ket swap create. The mean atom orbit size is a
+cheap proxy for the saving, and it is available where the decision has to be
+made -- before the engine is built, since the engine is built with the group
+or without it and no plan exists yet. It tracks the measured scheme-2a
+reduction across every system section 2.2 counted:
+
+| system | group | atoms/orbit | s2a quartet reduction |
+|---|---|---|---|
+| water | C2v | 1.50 | 1.47x |
+| tops_sf6 | D2h | 1.75 | 2.44x |
+| b2h6_d2h | D2h | 2.67 | 3.34x |
+| benzene | D2h | 3.00 | 3.53x |
+| naphthalene_d2h | D2h | 3.60 | 3.79x |
+| pentacene_d2h | D2h | 3.60 | 3.85x |
+
+A molecule whose atoms sit on many symmetry elements at once has small orbits
+however many atoms or functions it has -- SF6's sulfur is fixed by all eight
+operations of D2h and each fluorine by four, and a planar molecule's own plane
+fixes every atom, which is the same fact as section 2.2's "effective order 4,
+not 8". That is also why the basis does not enter: S15 measured benzene at
+0.46x (cc-pVDZ, 114 bf) and 0.48x (cc-pVTZ, 264 bf) and naphthalene at 0.98x
+and 0.99x across the same 2.3x increase, while naphthalene at 412 bf was a
+wash and pentacene at 378 bf a 2.14x win.
+
+**Where the threshold comes from.** SF6 loses with a 2.44x reduction and
+benzene wins with 3.53x, so break-even is a reduction in (2.44x, 3.53x), i.e.
+a mean orbit size in (1.75, 3.00). The threshold is set at the **low** end of
+that interval: the rule declines only what was measured to lose and keeps the
+skeleton build wherever it might still pay. That asymmetry is deliberate --
+post-W2 benzene at 12 atoms is a 1.41x win, so an over-eager rule would now
+cost time, which is the mistake a rule fitted to the *pre*-W2 numbers would
+make.
+
+**Rejected predictors, on this same data.**
+- *The atom count.* The four ERI rows allow a threshold anywhere in (7, 12],
+  and every such threshold also declines 8-atom B2H6, whose 3.34x reduction
+  is closer to benzene's than to SF6's.
+- *The number of inequivalent atoms.* It does not separate the data at all:
+  SF6 and benzene both have 4.
+- *Predicted quartets per launch against the device's fill threshold* (~164k
+  work items, 80 SMs at 128-thread blocks). This is the most principled
+  candidate on paper, and W0's own measurement rules it out as the
+  discriminator: after fusion benzene and SF6 sit at the *same* ~46% of
+  quartets in launches too small to fill the card, yet benzene gains 1.41x
+  and SF6 loses 2.3x. What separates them is the reduction (3.55x against
+  2.44x) and the launch inflation over the C1 plan (1.57x against 3.43x), and
+  both follow from the orbit sizes. It is also not available at the decision
+  point.
+
+**The small groups.** Cs, Ci, C2, C2v and C2h are declined wherever an atom
+sits on a symmetry element, which is most molecules in those groups: water
+reaches 1.47x, and a planar Cs molecule has no nontrivial shell-pair orbit at
+all (its mirror is a pure sign operation, section 6 open question 1). This
+answers section 6's open question 2 from measurement rather than by
+assumption: a ~1.5x reduction cannot pay for the launches when SF6's 2.44x
+does not.
+
+**What the threshold does not rest on.** One measured loss. These are the runs
+that would firm it up, in order of value -- all on the GPU, none of them done
+here:
+
+1. **B2H6 cc-pVDZ, D2h, skeleton forced on against off.** It is the only
+   system inside the (1.75, 3.00) interval: 2.67 atoms per orbit, 3.34x
+   reduction. If it wins the threshold belongs at 2 as set; if it loses the
+   threshold belongs nearer 3 and benzene becomes the boundary case. One pair
+   of runs decides it.
+2. **C2H4 cc-pVDZ (3.00 atoms per orbit, 6 atoms)** against benzene (3.00,
+   12 atoms). Same predictor, half the atoms: it says whether the atom count
+   needs to appear in the rule at all, or whether the orbit size carries it.
+3. **A large molecule with small orbits** -- SiF4 or SF6 at cc-pVTZ/cc-pVQZ,
+   or a bigger octahedral cluster -- to check that size never rescues small
+   orbits, and that the ratio is still basis-invariant where the rule
+   declines (S15 showed basis-invariance for benzene and naphthalene only).
+4. **A non-D2h pair either side of the threshold**: a nonplanar C2v or C2h
+   molecule with every atom off the elements (mean orbit 2, accepted) against
+   a planar one (declined). Every ERI measurement so far is D2h.
+5. **A re-measurement of the four systems above with the rule in place**, to
+   confirm the three accepted ones are bit-unchanged in time as well as in
+   energy (the rule must be inert where it accepts).
+
+**Forcing it.** `TRC_SYM_SKELETON=1` forces the skeleton build and `=0` forces
+the full one, over any request, so both paths stay measurable from one binary
+(the same shape as `TRC_MDJ` over the J engine's own size rule). From code:
+`trc_sym_scf_t%skeleton = SYM_SKEL_ON / SYM_SKEL_OFF`. From the CLI:
+`--sym-skeleton` / `--no-sym-skeleton`. From the input file:
+`[scf] symmetry_skeleton = true/false`. From the C ABI:
+`trc_set_symmetry_skeleton(h, 1/0)` (ABI 1.25). The tests are
+`check_sym_skeleton_rule_{auto,on,off}`.
+
 ### 4.3 Scheme 2: unique pair-of-pairs with the fold (the plan's candidate 2)
 
 *Math.* One quartet per orbit of the unordered {ab, cd}; weight
@@ -550,6 +679,10 @@ The design (scheme 2a) is approved. The answers to section 6:
    of S14.
 2. **Yes, always on**: under `symmetry=on` the skeleton build is used for
    every group, with a flag to disable it. Revisit from S15's measurements.
+   *Revisited*: S15 measured a loss below roughly twenty atoms, W2 of
+   `.claude/context/segment-fusion-plan.md` removed most of it, and what
+   remained is now gated by the size rule of section 4.2a -- "always on"
+   became "on where it was measured to pay, with the flag either way".
 3. **Yes**: orbit-closed bin splitting may exceed BIN_CAP by fewer than |G|
    pairs. The cap semantics become "at most BIN_CAP + |G|".
 4. **Yes**: an extended D2h molecule (pentacene, and hexacene if it runs in

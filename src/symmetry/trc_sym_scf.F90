@@ -42,6 +42,7 @@ module trc_sym_scf
    use trc_sym_group, only: trc_sym_group_t
    use trc_sym_ao, only: trc_sym_ao_t
    use trc_sym_geom, only: trc_sym_geom_t
+   use trc_sym_run, only: SYM_SKEL_AUTO
    use trc_basis_types, only: trc_basis_t
    implicit none
    private
@@ -59,14 +60,17 @@ module trc_sym_scf
       !! orthogonalisation drops functions: the per-irrep drop can differ from the
       !! C1 one (see above), and a request nobody made explicitly (the default of
       !! S17) must give the C1 numbers. Read by `trc_scf_run`.
-      logical :: skeleton = .true.
-      !! The Fock build is the SKELETON build (docs/SYMMETRY_FOCK.md): the
-      !! integral engine is built with the point group, launches only the
-      !! orbit representatives, and the SCF symmetrizes G after the fold.
-      !! False: the full Fock build, then symmetrization of F (the S4 path),
-      !! with an engine built without the group. Only read by `trc_scf_run`
-      !! with a group of more than one operation, one rank and four-centre
-      !! integrals (density fitting has its own path).
+      integer :: skeleton = SYM_SKEL_AUTO
+      !! Whether the Fock build is the SKELETON build
+      !! (docs/SYMMETRY_FOCK.md): the integral engine is built with the point
+      !! group, launches only the orbit representatives, and the SCF
+      !! symmetrizes G after the fold. SYM_SKEL_OFF is the full Fock build,
+      !! then symmetrization of F (the S4 path), with an engine built without
+      !! the group. SYM_SKEL_AUTO, the default, leaves the choice to
+      !! `sym_skeleton_size_rule` (trc_sym_run), which declines the skeleton
+      !! build on the molecules it was measured to lose on. Only read by
+      !! `trc_scf_run` with a group of more than one operation, one rank and
+      !! four-centre integrals (density fitting has its own path).
       type(trc_sym_geom_t) :: geom
       !! Optional: the detected geometry (group and atom permutations) the
       !! skeleton build needs. Unset (no `geom%perm`), `geometry` derives the

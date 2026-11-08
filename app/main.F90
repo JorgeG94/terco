@@ -177,10 +177,11 @@ program trc_main
    call r%cli%add_option("irrep-nelec", "electrons per irrep (an explicit --symmetry auto), e.g. A'=6,A""=4 (restricted: even "// &
                          "counts) or A'=4/3,A""=3/3 (alpha/beta); unlisted irreps hold none. Default: aufbau. "// &
                          "A gradient is refused for occupations that are not the aufbau ones")
-   call r%cli%add_flag("sym-skeleton", "in a symmetric run, build the Fock matrix from the orbit representatives "// &
-                       "of the integral quartets and symmetrize it (the default)")
-   call r%cli%add_flag("no-sym-skeleton", "in a symmetric run, build the full Fock matrix and symmetrize it "// &
-                       "(the same result, more quartets)")
+   call r%cli%add_flag("sym-skeleton", "in a symmetric run, always build the Fock matrix from the orbit "// &
+                       "representatives of the integral quartets and symmetrize it, whatever the size rule says")
+   call r%cli%add_flag("no-sym-skeleton", "in a symmetric run, always build the full Fock matrix and symmetrize it "// &
+                       "(the same result, more quartets). Without either flag a measured size rule chooses: the "// &
+                       "skeleton build when the molecule has at least two atoms per symmetry-inequivalent atom")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
    call r%cli%add_option("lindep", "linear-dependence threshold: eigenvalues of S normalised to a unit "// &
                          "diagonal (pyscf/ORCA's convention) below it are dropped (canonical orthogonalisation; "// &
@@ -1168,6 +1169,7 @@ program trc_main
    if (r%sym_wanted) then
       if (allocated(r%irrep_nelec)) call run_api(r, trc_set_irrep_nelec(r%h, app_c_string(r%irrep_nelec)))
       if (r%cli%is_set("no-sym-skeleton")) call run_api(r, trc_set_symmetry_skeleton(r%h, 0_c_int))
+      if (r%cli%is_set("sym-skeleton")) call run_api(r, trc_set_symmetry_skeleton(r%h, 1_c_int))
    end if
    call run_api(r, trc_set_force_cartesian(r%h, merge(1_c_int, 0_c_int, cart)))
    call run_api(r, trc_set_basis_json(r%h, app_c_string(r%basis_path)))
