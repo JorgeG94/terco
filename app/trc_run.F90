@@ -29,7 +29,7 @@ module trc_run
    use pic_logger, only: global_logger
    use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t, abort_comm, pic_mpi_finalize
-   use trc_capi, only: trc_message, TRC_OK
+   use trc_capi, only: trc_message, TRC_OK, trc_nmo, trc_nao, trc_mo_energies, trc_mo_occupations
    use trc_app, only: app_f_string
    use trc_thermo, only: trc_thermo_result_t
    use trc_error, only: mass_error_t => error_t
@@ -41,9 +41,11 @@ module trc_run
    public :: run_opt_capability_check, run_build_opt_residues, run_opt_summary, run_write_opt_xyz, run_write_traj_xyz
    public :: run_parse_opt_global_options
    public :: run_opt_geometry_is_linear, run_write_labelled_xyz, run_to_lower_alloc
+   public :: run_parse_charges
    public :: run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
              run_check_neb_endpoint, run_write_neb_path_xyz
    public :: run_read_xyz_frames
+   public :: run_frontier
 
 #ifndef TERCO_VERSION
 #define TERCO_VERSION "unknown"
@@ -79,14 +81,29 @@ module trc_run
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
       logical :: vv10 = .false.  !! --func has VV10 nonlocal correlation, on its own --nlc-grid
       real(c_double) :: pt2_cos = 0.0_c_double, pt2_css = 0.0_c_double, etot_dh = 0.0_c_double
+      real(c_double) :: etot_total = 0.0_c_double
+         !! trc_energy once the run's correlation is in: the SCF energy, plus
+         !! the RI-MP2 correlation for --rimp2 (c_os E_os + c_ss E_ss for a
+         !! double hybrid) -- the energy --grad/--opt/--hessian differentiate,
+         !! so the one --opt reports and thermochemistry starts from.
+      ! Frontier orbitals of the final SCF, per spin (run_frontier): column 1
+      ! is the restricted or alpha set, column 2 beta. A spin with no occupied
+      ! (or no virtual) level has has_homo (has_lumo) false.
+      integer :: nspin = 1
+      real(dp) :: homo(2) = 0.0_dp, lumo(2) = 0.0_dp
+      logical :: has_homo(2) = .false., has_lumo(2) = .false.
       type(timer_type) :: wall
       type(comm_t) :: wcomm
       integer :: nranks
       logical :: rank0
       logical :: grad
       real(dp), allocatable :: gradient(:, :)   !! (3, natm), Eh/Bohr, after --grad
-      character(len=:), allocatable :: charges  !! "" (none) or "hirshfeld", --charges
+      character(len=:), allocatable :: charges
+         !! "" (none), or --charges's comma-separated schemes: hirshfeld, chelpg
+      logical :: want_hirshfeld = .false.  !! --charges names hirshfeld
+      logical :: want_chelpg = .false.     !! --charges names chelpg
       real(dp), allocatable :: hirshfeld_charges(:)  !! (natm), e, after --charges hirshfeld
+      real(dp), allocatable :: chelpg_charges(:)     !! (natm), e, after --charges chelpg
       character(len=:), allocatable :: fukui  !! "" (none) or "hirshfeld", --fukui
       ! (natm) each, after --fukui hirshfeld: f+/f-/f0 and the three
       ! states' own Hirshfeld charges (N, N+1, N-1) trc_fukui_hirshfeld
@@ -272,6 +289,12 @@ module trc_run
          type(run_t), intent(inout) :: r
       end subroutine run_parse_opt_global_options
 
+      module subroutine run_parse_charges(r)
+         !! --charges's schemes into r%want_hirshfeld / r%want_chelpg (trc_run_opt.F90)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_parse_charges
+
       module subroutine run_parse_frozen_list(spec, natm, frozen, err)
          implicit none
          character(len=*), intent(in) :: spec
@@ -424,6 +447,37 @@ contains
       call pic_mpi_finalize()
       call c_exit(int(code, c_int))
    end subroutine run_quit
+
+   subroutine run_frontier(r, nspin)
+      !! The HOMO and LUMO energies of the SCF this context just ran, per
+      !! spin, from trc_mo_energies and trc_mo_occupations. Left unset when
+      !! the library has no orbitals to give (no converged SCF) or no
+      !! integer occupations (fractional ones are refused there).
+      type(run_t), intent(inout) :: r
+      integer(c_int), intent(in) :: nspin
+      integer(c_int) :: nmo, nao
+      real(c_double), allocatable :: eps(:, :), occ(:, :)
+      integer :: s, n
+      r%nspin = int(nspin)
+      r%has_homo = .false.
+      r%has_lumo = .false.
+      if (trc_nmo(r%h, nmo) /= TRC_OK) return
+      if (trc_nao(r%h, nao) /= TRC_OK) return
+      allocate (eps(nao, nspin), occ(nmo, nspin))
+      if (trc_mo_energies(r%h, eps) /= TRC_OK) return
+      if (trc_mo_occupations(r%h, occ) /= TRC_OK) return
+      do s = 1, int(nspin)
+         n = count(occ(:, s) > 0.0_c_double)
+         if (n >= 1) then
+            r%homo(s) = real(eps(n, s), dp)
+            r%has_homo(s) = .true.
+         end if
+         if (n < nmo) then
+            r%lumo(s) = real(eps(n + 1, s), dp)
+            r%has_lumo(s) = .true.
+         end if
+      end do
+   end subroutine run_frontier
 
    subroutine run_check(r, what)
       type(run_t), intent(in) :: r

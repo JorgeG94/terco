@@ -46,6 +46,7 @@ module trc_scf_grad
    use trc_xc_grad, only: xc_grad_add, xc_grad_add_on_grid, xc_grad_step_names, xc_grad_options, xc_grad_options_t
    use trc_step_table, only: step_table_t
    use trc_scf_context, only: trc_pair_eri_cache_t
+   use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange, decontract_options_equal
    use trc_scf_df, only: df_jk_t
    use trc_scf_grad_df, only: scf_grad_df_two_electron
    use trc_vv10_grad, only: vv10_grad_add, vv10_grad_add_on_grid
@@ -340,14 +341,15 @@ contains
       call gst%step_on(lp, 2, tc)
       ! REUSE, see `pair_eri_cache`'s own header above: `matches` is the
       ! threshold-and-geometry gate (bit-identical thresholds, exact
-      ! fingerprint match), `batch_res_built == 1` the extra gate the
-      ! four-centre engine alone needs on top (this routine's own fresh
-      ! build never batches, so a cache built at any other value would
-      ! not reproduce it to round-off).
+      ! fingerprint), then batch_res 1 and the split policy for the engine:
+      ! a fresh build (two_electron_fresh) never batches and splits as
+      ! `gradient_policy` says, and only that build is reproduced exactly.
       reuse_pl = present(pair_eri_cache)
       if (reuse_pl) reuse_pl = pair_eri_cache%matches(b, thresh)
       reuse_eri = .false.
       if (reuse_pl) reuse_eri = pair_eri_cache%has_eri .and. pair_eri_cache%batch_res_built == 1
+      if (reuse_eri) reuse_eri = decontract_options_equal(pair_eri_cache%decontract_built, &
+                                                          gradient_policy(pair_eri_cache, exx_use, exx_lr_use))
       if (present(reused)) reused = reuse_pl .and. (reuse_eri .or. present(dfjk))
       if (.not. reuse_pl) then
          call pl_own%build(b, thresh)
@@ -375,7 +377,7 @@ contains
          if (reuse_eri) then
             call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, eri_cache=pair_eri_cache%eri)
          else
-            call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad)
+            call two_electron_fresh(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, pair_eri_cache)
          end if
          ! --- one-electron, added on top. `wmat` is already present (and
          ! already holds the right numbers, from scf_grad_energy_weighted_density
@@ -446,6 +448,33 @@ contains
       end if
    end subroutine trc_scf_gradient
 
+   function gradient_policy(pair_eri_cache, exx, exx_lr) result(policy)
+      !! The split policy a gradient's own engine is built with: the one the
+      !! SCF was run with (`trc_scf_options_t%decontract`, carried by its
+      !! cache whether or not the cache can be reused here), resolved for
+      !! this method's exchange as the SCF resolved it
+      !! (`decontract_options_for_exchange`). The defaults without a cache.
+      type(trc_pair_eri_cache_t), intent(in), optional :: pair_eri_cache
+      real(dp), intent(in) :: exx, exx_lr
+      type(trc_decontract_options_t) :: policy
+      policy = trc_decontract_options_t()
+      if (present(pair_eri_cache)) policy = pair_eri_cache%decontract_base
+      policy = decontract_options_for_exchange(policy, exx, exx_lr)
+   end function gradient_policy
+
+   subroutine two_electron_fresh(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, pair_eri_cache)
+      !! two_electron_4c over an engine built here, with `gradient_policy`.
+      type(trc_basis_t), intent(inout) :: b
+      real(dp), intent(in) :: thresh, exx_use, exx_lr_use, omega_use
+      real(dp), intent(in) :: density(:, :, :)
+      real(dp), intent(out) :: grad(3, b%natm)
+      type(trc_pair_eri_cache_t), intent(in), optional :: pair_eri_cache
+      type(trc_eri_t) :: eri_own
+      call eri_own%build(b, thresh, decontract=gradient_policy(pair_eri_cache, exx_use, exx_lr_use))
+      call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, eri_own)
+      call eri_own%release()
+   end subroutine two_electron_fresh
+
    recursive subroutine two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, eri_cache)
       !! The four-centre two-electron gradient (eri%gradient), halved into
       !! the actual-energy convention -- trc_scf_gradient's non-`--df`
@@ -469,7 +498,7 @@ contains
       if (.not. present(eri_cache)) then
          block
             type(trc_eri_t) :: eri_own
-            call eri_own%build(b, thresh)
+            call eri_own%build(b, thresh, decontract=gradient_policy(exx=exx_use, exx_lr=exx_lr_use))
             call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, eri_own)
             call eri_own%release()
          end block

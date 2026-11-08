@@ -186,13 +186,14 @@ module trc_capi
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, trc_bind_device_env, &
                         trc_1e, trc_df_2c, trc_df_3c, trc_multipoles, &
                         TRC_NMULT
-   use trc_eri, only: trc_eri_t, eri_lmax_refusal
+   use trc_eri, only: trc_eri_t, eri_lmax_refusal, eri_grad_lmax_refusal
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t, trc_pair_eri_cache_t
    use trc_scf_grad, only: trc_scf_gradient
-   use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t
+   use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t, rimp2_grad_reference_refusal
    use trc_pcm_grad, only: pcm_grad_scf_add
    use trc_scf_settings, only: scf_settings_spin_rule, scf_settings_eri_thresh_env
    use trc_scf_df, only: df_jk_t
+   use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_ecp_types, only: trc_ecp_t
    use trc_ecp_json, only: trc_ecp_from_json
@@ -217,11 +218,12 @@ module trc_capi
                           ao_norm_vector, ao_norm_scale_cov, ao_norm_scale_contra, ao_norm_scale_contra_row
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
    use trc_hirshfeld, only: trc_hirshfeld_populations
+   use trc_chelpg, only: trc_chelpg_charges_from => trc_chelpg_charges
    use trc_fukui, only: trc_fukui_indices
    use trc_pcm, only: trc_pcm_t, pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV, PCM_XI_ORDERS
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
-   use trc_cpks, only: trc_scf_polarizability_rks, cpks_refuse_reason
+   use trc_cpks, only: trc_scf_polarizability_rks
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_constants, only: BOHR_TO_ANGSTROM, HARTREE_TO_EV, HARTREE_TO_KCALMOL, AMU_TO_ME, KB_SI, NA_SI
    implicit none
@@ -259,7 +261,7 @@ module trc_capi
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: trc_run_gradient, trc_gradient
    public :: trc_set_geometry
-   public :: trc_set_hessian_step, trc_hessian_step, trc_run_hessian, trc_hessian
+   public :: trc_set_hessian_step, trc_hessian_step, trc_run_hessian, trc_hessian, trc_check_rimp2_gradient
    public :: trc_save_scf, trc_load_scf
    public :: trc_set_pcm, trc_set_pcm_radii, trc_pcm_energy
    public :: trc_set_ao_norm, trc_get_ao_norm
@@ -272,6 +274,7 @@ module trc_capi
    public :: trc_run_polarizability, trc_polarizability
    public :: trc_nmo, trc_mo_occupations
    public :: trc_hirshfeld_charges
+   public :: trc_chelpg_charges
    public :: trc_fukui_hirshfeld
 
    ! Status codes. Zero is success; everything else is a reason.
@@ -330,10 +333,22 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 18
-   !! 18: trc_set_ecp_json, a new entry point (an explicit effective core
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 22
+   !! 1.22: trc_set_ecp_json, a new entry point (an explicit effective core
    !! potential, overriding auto-attach from the orbital basis file's own
-   !! ecp_potentials). Additive.
+   !! ecp_potentials). Additive. 1.21: trc_chelpg_charges, CHELPG charges fitted to the converged
+   !! density's electrostatic potential (a new entry point, nothing else
+   !! changes). 1.20: the incremental Fock build is ON by default (trc_set_incremental
+   !! was 0 by default before); trc_set_incremental(handle, 0) restores full
+   !! builds every iteration, and density fitting never increments. The
+   !! energies are unchanged (convergence is declared on a full build), so
+   !! no signature or enum changes meaning. 1.19: trc_run_hessian accepts an
+   !! RI-MP2/double-hybrid reference (one the RI-MP2 gradient supports)
+   !! instead of refusing it, rerunning trc_run_rimp2 at every displacement;
+   !! trc_check_rimp2_gradient asks, before any SCF, whether that gradient
+   !! will be refused. Additive. (1.18 was never released on main.) 1.17:
+   !! trc_run_gradient accepts a PCM reference; trc_run_hessian still
+   !! refuses PCM.
 
    ! trc_physical_constant's own selector: which of trc_constants' values
    ! a caller is asking for. Appended at the end, like TRC_GUESS_*, so a
@@ -2801,14 +2816,20 @@ contains
    end function trc_set_screening
 
    !
-   ! Incremental Fock builds: after the first iterations, G is accumulated
+   ! Incremental Fock builds: after the first iteration, G is accumulated
    ! from the density DIFFERENCE, which screens far harder as the SCF
-   ! converges (trc_scf_options_t%incremental has the measurements and the
-   ! safeguards: a 1e-4 tighter screen on each difference build, a start
-   ! gated on the commutator, a full rebuild every 20). 0 off, the library's
-   ! default; nonzero on, the terco CLI's default.
+   ! converges (trc_scf_options_t%incremental has the measurements,
+   ! trc_scf_incremental the schedule and its error argument; convergence
+   ! is declared on a full build only). Nonzero on, the default of the
+   ! library and of the terco CLI; 0 off. Not used under trc_set_df.
    !
    function trc_set_incremental(handle, on) result(status) bind(c, name="trc_set_incremental")
+      !! Incremental Fock builds, on (nonzero, the default) or off (0): after the
+      !! first iteration the two-electron matrix is built from the change in the
+      !! density and accumulated, with a full build on the iteration convergence
+      !! is declared on (see trc_scf_incremental.F90). Not used with
+      !! trc_set_df, whose builds are always full. Takes effect at the next
+      !! trc_run_scf.
       type(c_ptr), value :: handle
       integer(c_int), value :: on
       integer(c_int) :: status
@@ -2817,6 +2838,9 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       cx%opts%incremental = on /= 0
+      ! Asked for, not defaulted: under trc_set_df this is the case that
+      ! warns (scf_settings_t%incr_df_requested).
+      cx%opts%incremental_requested = on /= 0
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_incremental
@@ -3819,6 +3843,10 @@ contains
          return
       end if
       have_func = len_trim(cx%opts%functional) > 0
+      ! Before anything else: with no kernels for the basis's l, every other
+      ! path below would end in grad_bins' error stop, not a refusal.
+      refusal = eri_grad_lmax_refusal(cx%bb%b)
+      if (len(refusal) > 0) return
       if (have_func) then
          ! `cx%opts%functional` only ever holds a name trc_set_method/
          ! scf_entry already validated (xc_functional_by_name succeeded,
@@ -3834,31 +3862,14 @@ contains
          ! restricted KS one -- a double hybrid, E_KS + c E_RI-MP2, or a
          ! plain functional's E_KS + E_RI-MP2 -- four-centre or --df, plus
          ! the fitted correlation, one rank. Anything else that reached
-         ! RI-MP2 has no correlation gradient yet. PCM first, and here rather
-         ! than only in the general checks below: the RI-MP2 gradient's
-         ! Z-vector and densities carry no PCM response, so a PCM reference
-         ! must be refused on this path even where the SCF-level PCM
-         ! gradient is supported.
-         if (len_trim(cx%opts%pcm_model) > 0) then
-            refusal = "the RI-MP2/double-hybrid gradient over a PCM reference is not implemented "// &
-                      "(no PCM response in the Z-vector)"
-         else if (have_func) then
-            if (func%pt2_cos /= func%pt2_css) then
-               refusal = "a spin-component-scaled double hybrid ('"//trim(cx%opts%functional)//"', c_os /= "// &
-                         "c_ss) has no gradient yet -- the RI-MP2 gradient scales one correlation energy"
-            else if (len_trim(cpks_refuse_reason(func)) > 0) then
-               refusal = "the RI-MP2 gradient over this Kohn-Sham reference needs its CPKS response: "// &
-                         trim(cpks_refuse_reason(func))
-            end if
-         end if
+         ! RI-MP2 has no correlation gradient yet. The reference's own scope
+         ! (PCM, a spin-component-scaled double hybrid, a KS kernel trc_cpks
+         ! lacks, an unrestricted reference) is rimp2_grad_reference_refusal's,
+         ! shared with the CLI's up-front --opt/--hessian check so the two
+         ! give the same message; what only a finished SCF knows follows.
+         refusal = rimp2_grad_reference_refusal(have_func, func, cx%res%nspin, len_trim(cx%opts%pcm_model) > 0)
          if (len(refusal) > 0) return
-         if (cx%res%nspin /= 1 .and. have_func) then
-            refusal = "the double-hybrid (KS + RI-MP2) gradient is restricted only; an unrestricted (UKS) "// &
-                      "reference has no correlation gradient -- trc_cpks has no spin-resolved kernel response"
-         else if (cx%res%nspin /= 1) then
-            refusal = "the RI-MP2 gradient is restricted (closed-shell RHF reference) only; "// &
-                      "an unrestricted reference has no correlation gradient yet"
-         else if (cx%opts%df .and. .not. cx%df_fit_ok) then
+         if (cx%opts%df .and. .not. cx%df_fit_ok) then
             refusal = "the RI-MP2 gradient over a --df reference needs the density fit the SCF ran with"
             refusal_status = TRC_ERR_STATE
          else if (cx%fcomm /= -1) then
@@ -4321,6 +4332,82 @@ contains
       status = TRC_OK
    end function trc_gradient
 
+   function trc_check_rimp2_gradient(handle) result(status) bind(c, name="trc_check_rimp2_gradient")
+      !! Whether an RI-MP2/double-hybrid gradient (trc_run_scf, trc_run_rimp2,
+      !! trc_run_gradient) will be refused for this context's CURRENT
+      !! settings, answered from the settings alone, before any SCF runs:
+      !! TRC_OK when nothing known up front refuses it, otherwise the status
+      !! and message (trc_message) trc_run_rimp2 or trc_run_gradient would
+      !! give -- no auxiliary basis, l above this build's kernels, a
+      !! reference outside the gradient's scope (unrestricted, PCM, a
+      !! spin-component-scaled double hybrid, a functional with no CPKS
+      !! kernel), more than one rank. A geometry optimiser asks this before
+      !! its first step (trc_opt_run with trc_opt_set_rimp2): a refusal
+      !! there would otherwise reach DL-FIND, whose only answer to a failed
+      !! evaluation is `error stop`. What only a finished SCF knows
+      !! (functions dropped by canonical orthogonalisation, trc_set_lindep)
+      !! is not, and cannot be, checked here.
+      type(c_ptr), value :: handle
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_xc_functional_t) :: func
+      logical :: have_func
+      character(len=:), allocatable :: refusal
+      integer :: nelec, nalpha, nbeta, nspin
+      integer :: nocc(2)
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. (cx%have_mol .and. cx%have_basis)) then
+         cx%message = "trc_check_rimp2_gradient: set the molecule and the basis first"
+         return
+      end if
+      if (.not. cx%have_aux) then
+         cx%message = "trc_run_rimp2: no auxiliary basis was set"
+         return
+      end if
+      status = TRC_ERR_UNSUPPORTED
+      if (maxval(cx%bb%b%sh_l) > DF_LMAX) then
+         cx%message = "trc_run_rimp2: the orbital basis has l = "// &
+                      trim(itoa(int(maxval(cx%bb%b%sh_l))))//", above this build's density-fitting "// &
+                      "ceiling "//trim(itoa(DF_LMAX))//" (TERCO_DF_LMAX)"
+         return
+      end if
+      if (maxval(cx%ab%b%sh_l) > DF_LMAX_AUX) then
+         cx%message = "trc_run_rimp2: the auxiliary basis has l = "// &
+                      trim(itoa(int(maxval(cx%ab%b%sh_l))))//", above this build's density-fitting "// &
+                      "auxiliary ceiling "//trim(itoa(DF_LMAX_AUX))//" (TERCO_DF_LMAX + 1)"
+         return
+      end if
+      refusal = eri_grad_lmax_refusal(cx%bb%b)
+      if (len(refusal) > 0) then
+         cx%message = "trc_run_gradient: "//refusal
+         return
+      end if
+      have_func = len_trim(cx%opts%functional) > 0
+      if (have_func) have_func = xc_functional_by_name(cx%opts%functional, func)
+      ! trc_run_scf's own spin rule, on the same charge, multiplicity and
+      ! trc_set_unrestricted; a count that does not fit is trc_run_scf's to
+      ! refuse, so it is left to it.
+      nelec = nint(sum(cx%at_z)) - cx%charge
+      nalpha = (nelec + cx%multiplicity - 1)/2
+      nbeta = nelec - nalpha
+      call scf_settings_spin_rule(nalpha, nbeta, cx%opts%unrestricted, cx%opts%frac_occ, cx%opts%nelec_frac, nspin, nocc)
+      refusal = rimp2_grad_reference_refusal(have_func, func, nspin, len_trim(cx%opts%pcm_model) > 0)
+      if (len(refusal) == 0 .and. cx%fcomm /= -1) refusal = "the RI-MP2 gradient runs on one rank only (no trc_set_comm)"
+      if (len(refusal) == 0 .and. have_func) then
+         if (func%family == XC_FAMILY_MGGA .and. xc_is_double_hybrid(func)) then
+            refusal = "meta-GGA double hybrid ('"//trim(cx%opts%functional)//"') gradient not implemented"
+         end if
+      end if
+      if (len(refusal) > 0) then
+         cx%message = "trc_run_gradient: "//refusal
+         return
+      end if
+      status = TRC_OK
+   end function trc_check_rimp2_gradient
+
    function trc_set_hessian_step(handle, step) result(status) bind(c, name="trc_set_hessian_step")
       !! The Cartesian displacement trc_run_hessian's central differences
       !! use, in Bohr; must be positive. Default 0.005: its truncation
@@ -4380,12 +4467,25 @@ contains
       !!     written so a later split is "rank r takes k = r, r+P, ..."
       !!     plus a reduction over the gradients, but nothing here runs
       !!     that split yet (TRC_ERR_UNSUPPORTED);
-      !!   - anything trc_run_gradient itself would refuse (RI-MP2/
-      !!     double-hybrid, PCM, --df outside its own scope --
-      !!     gradient_capability_check, the SAME check trc_run_gradient
-      !!     makes, so the two can never disagree about what runs);
+      !!   - anything trc_run_gradient itself would refuse (an RI-MP2/
+      !!     double-hybrid reference outside the RI-MP2 gradient's scope,
+      !!     --df outside its own scope -- gradient_capability_check, the
+      !!     SAME check trc_run_gradient makes, so the two can never
+      !!     disagree about what runs);
+      !!   - PCM: the analytic PCM gradient is validated, a finite
+      !!     difference of it is not yet;
       !!   - a non-positive step (trc_set_hessian_step already refuses
       !!     one, so this is the backstop, not the primary gate).
+      !!
+      !! RI-MP2 AND DOUBLE HYBRIDS. When this context holds an RI-MP2
+      !! result (trc_run_rimp2 after the reference SCF), every displaced
+      !! SCF is followed by its own trc_run_rimp2, so each gradient is the
+      !! correlated one trc_run_gradient returns there -- the derivative of
+      !! E_ref + c E_RI-MP2, the energy trc_energy reports (c a double
+      !! hybrid's PT2 fractions, or one) -- and the Hessian is that
+      !! energy's. The restored reference gets its trc_run_rimp2 again too.
+      !! (ABI 1.19: this was refused before.) Without an RI-MP2 result the
+      !! Hessian is the SCF energy's, as trc_run_gradient's gradient is.
       !!
       !! SCF CONVERGENCE AT THE DISPLACED POINTS. FD noise is of order
       !! (gradient error)/(2h) = 100x the gradient error at h = 0.005, so
@@ -4458,6 +4558,7 @@ contains
       type(timer_type) :: wall_timer, k_timer
       integer :: niter_plus, niter_minus
       character(len=256) :: logline
+      logical :: correlated, restore_rimp2_failed
 
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
@@ -4489,13 +4590,11 @@ contains
          cx%message = "trc_run_hessian: a PCM Hessian is not validated yet (the PCM gradient is)"
          return
       end if
-      if (cx%rimp2_ok) then
-         ! Each displacement below reruns the SCF, which clears the RI-MP2
-         ! result, so its gradient would silently be the reference's alone.
-         cx%message = "trc_run_hessian: the RI-MP2 finite-difference Hessian is not implemented yet "// &
-                      "(each displaced point would need its own trc_run_rimp2)"
-         return
-      end if
+      ! Each displacement reruns the SCF, which clears the RI-MP2 result, so
+      ! a correlated reference reruns trc_run_rimp2 after every displaced
+      ! SCF (and after the restoring one): the gradients differenced below
+      ! are then those of the energy trc_energy reports, E_ref + c E_RI-MP2.
+      correlated = cx%rimp2_ok
 
       status = TRC_ERR_BADARG
       h = cx%hess_step
@@ -4546,22 +4645,12 @@ contains
             call hessian_set_geometry(cx, disp_r)
             cx%guess_kind = TRC_GUESS_GIVEN
             cx%dguess = d0
-            st = trc_run_scf(handle)
+            call hessian_displaced_gradient(handle, cx, correlated, &
+                                            " at displacement "//trim(to_string(k))//"/"//trim(to_string(ndof))// &
+                                            merge(" (+h)", " (-h)", isign == 1), st, fail_message)
             if (st /= TRC_OK) then
                failed = .true.
                fail_status = st
-               fail_message = "trc_run_hessian: the SCF at displacement "//trim(to_string(k))//"/"// &
-                              trim(to_string(ndof))//merge(" (+h)", " (-h)", isign == 1)// &
-                              " did not converge: "//trim(cx%message)
-               exit k_loop
-            end if
-            st = trc_run_gradient(handle)
-            if (st /= TRC_OK) then
-               failed = .true.
-               fail_status = st
-               fail_message = "trc_run_hessian: the gradient at displacement "//trim(to_string(k))//"/"// &
-                              trim(to_string(ndof))//merge(" (+h)", " (-h)", isign == 1)// &
-                              " failed: "//trim(cx%message)
                exit k_loop
             end if
             if (isign == 1) then
@@ -4589,6 +4678,13 @@ contains
       cx%guess_kind = TRC_GUESS_GIVEN
       cx%dguess = d0
       st = trc_run_scf(handle)
+      ! The reference RI-MP2 result too, so trc_energy reports the same
+      ! correlated total it did before this call.
+      restore_rimp2_failed = .false.
+      if (correlated .and. st == TRC_OK) then
+         st = trc_run_rimp2(handle)
+         restore_rimp2_failed = st /= TRC_OK
+      end if
       cx%opts%conv_energy = ref_conv_energy
       cx%opts%conv_diis = ref_conv_diis
       cx%guess_kind = ref_guess_kind
@@ -4602,10 +4698,22 @@ contains
          cx%message = fail_message
          ! The caller must also learn that the context no longer holds a
          ! converged SCF, not only why the loop stopped.
-         if (st /= TRC_OK) cx%message = trim(fail_message)//"; restoring the reference SCF then failed too"
+         if (restore_rimp2_failed) then
+            cx%message = trim(fail_message)//"; the restored reference's RI-MP2 then failed too"
+         else if (st /= TRC_OK) then
+            cx%message = trim(fail_message)//"; restoring the reference SCF then failed too"
+         end if
          cx%hess_ok = .false.
          if (allocated(cx%hess)) deallocate (cx%hess)
          status = fail_status
+         return
+      end if
+      if (st /= TRC_OK .and. restore_rimp2_failed) then
+         cx%message = "trc_run_hessian: every displacement succeeded and the reference SCF reconverged, "// &
+                      "but its RI-MP2 failed: "//trim(cx%message)
+         cx%hess_ok = .false.
+         if (allocated(cx%hess)) deallocate (cx%hess)
+         status = st
          return
       end if
       if (st /= TRC_OK) then
@@ -4623,6 +4731,34 @@ contains
       call global_logger%info(trim(logline))
       status = TRC_OK
    end function trc_run_hessian
+
+   subroutine hessian_displaced_gradient(handle, cx, correlated, where, status, message)
+      !! One of trc_run_hessian's displaced points, the geometry already
+      !! moved: the SCF, the RI-MP2 when the reference is correlated, and
+      !! the gradient. On failure `status` is the failing call's and
+      !! `message` names the step and `where` (" at displacement k/n (+h)").
+      type(c_ptr), intent(in) :: handle
+      type(context_box), intent(inout) :: cx
+      logical, intent(in) :: correlated
+      character(len=*), intent(in) :: where
+      integer(c_int), intent(out) :: status
+      character(len=*), intent(out) :: message
+      message = ""
+      status = trc_run_scf(handle)
+      if (status /= TRC_OK) then
+         message = "trc_run_hessian: the SCF"//where//" did not converge: "//trim(cx%message)
+         return
+      end if
+      if (correlated) then
+         status = trc_run_rimp2(handle)
+         if (status /= TRC_OK) then
+            message = "trc_run_hessian: RI-MP2"//where//" failed: "//trim(cx%message)
+            return
+         end if
+      end if
+      status = trc_run_gradient(handle)
+      if (status /= TRC_OK) message = "trc_run_hessian: the gradient"//where//" failed: "//trim(cx%message)
+   end subroutine hessian_displaced_gradient
 
    function trc_hessian(handle, hess) result(status) bind(c, name="trc_hessian")
       !! (3*natm, 3*natm), Eh/Bohr^2, column-major, row/column k =
@@ -4671,6 +4807,8 @@ contains
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
       type(trc_xc_functional_t) :: func
+      type(trc_xc_functional_t) :: func_policy
+      type(trc_decontract_options_t) :: policy
       type(trc_xc_grid_t) :: xg
       type(trc_cphf_options_t) :: copts
       type(trc_cphf_result_t) :: cres
@@ -4729,7 +4867,15 @@ contains
       call cx%peri%release()
       call pl%build(cx%bb%b, cx%opts%eri_thresh)
       call pl%to_device()
-      call eri%build(cx%bb%b, cx%opts%eri_thresh)
+      ! The SCF's split policy, resolved for this method's exchange the way
+      ! the SCF resolved it, so the response runs on the SCF's working basis.
+      policy = decontract_options_for_exchange(cx%opts%decontract, 1.0_dp, 0.0_dp)
+      if (have_func) then
+         if (xc_functional_by_name(cx%opts%functional, func_policy)) then
+            policy = decontract_options_for_exchange(cx%opts%decontract, func_policy%exx, func_policy%exx_lr)
+         end if
+      end if
+      call eri%build(cx%bb%b, cx%opts%eri_thresh, decontract=policy)
       copts%conv_residual = 1.0e-8_dp
       copts%max_iteration = 100
       copts%verbose = cx%opts%verbose
@@ -4838,6 +4984,7 @@ contains
       job%opts%aux_block = max(cx%aux_block, 0)
       job%opts%pair_threshold = cx%opts%eri_thresh
       job%opts%eri_threshold = scf_settings_eri_thresh_env(cx%opts%eri_thresh)
+      job%opts%decontract = cx%opts%decontract
       job%opts%verbose = cx%opts%verbose
       if (allocated(cx%grad)) deallocate (cx%grad)
       if (cx%opts%df) then
@@ -5657,8 +5804,22 @@ contains
       real(dp), allocatable, intent(out) :: q(:)
       type(error_t), intent(inout) :: error
 
-      real(dp), allocatable :: d_total_sph(:, :), d_total_cart(:, :)
-      integer :: n, ns
+      real(dp), allocatable :: d_total_cart(:, :)
+
+      call state_total_density_cart(cx, d_total_cart)
+      call trc_hirshfeld_populations(cx%bb%b, d_total_cart, q, error)
+   end subroutine state_hirshfeld_charges
+
+   subroutine state_total_density_cart(cx, d_total_cart)
+      !! The converged total density (alpha plus beta) this context holds, in
+      !! terco's Cartesian AO space -- what a charge analysis reads. The SCF's
+      !! own space is spherical when `b%spherical`; sph_sph_to_cart is the
+      !! transform trc_scf_fock's own XC call goes through (trc_sph.F90).
+      type(context_box), intent(in) :: cx
+      real(dp), allocatable, intent(out) :: d_total_cart(:, :)
+
+      real(dp), allocatable :: d_total_sph(:, :)
+      integer :: n
 
       ! The free-atom reference (trc_hirshfeld_populations' own proatom
       ! table) is all-electron at the atom's bare Z; a molecule with an
@@ -5674,9 +5835,8 @@ contains
       end if
 
       n = scf_space_nao(cx%bb)
-      ns = cx%res%nspin
       allocate (d_total_sph(n, n))
-      if (ns == 1) then
+      if (cx%res%nspin == 1) then
          d_total_sph = cx%res%dmat(:, :, 1)
       else
          d_total_sph = cx%res%dmat(:, :, 1) + cx%res%dmat(:, :, 2)
@@ -5685,11 +5845,46 @@ contains
          allocate (d_total_cart(cx%bb%b%nao, cx%bb%b%nao))
          call sph_sph_to_cart(cx%bb%b, d_total_sph, d_total_cart)
       else
-         d_total_cart = d_total_sph
+         call move_alloc(d_total_sph, d_total_cart)
       end if
+   end subroutine state_total_density_cart
 
-      call trc_hirshfeld_populations(cx%bb%b, d_total_cart, q, error)
-   end subroutine state_hirshfeld_charges
+   function trc_chelpg_charges(handle, charges) result(status) bind(c, name="trc_chelpg_charges")
+      !! CHELPG atomic charges from the converged density, one per atom in
+      !! `trc_set_molecule`'s own order: point charges on the nuclei fitted
+      !! to the molecule's electrostatic potential on Breneman and Wiberg's
+      !! grid (J. Comput. Chem. 11, 361 (1990); 0.3 Angstrom spacing, 2.8
+      !! Angstrom head space, Bondi radii), constrained to sum to the
+      !! molecular charge -- `trc_chelpg.F90`, metalquicha's recipe. Works
+      !! for RHF/UHF/RKS/UKS (the total density) and with C-PCM/IEF-PCM (the
+      !! potential fitted is the solute's own, its nuclei and its polarised
+      !! density, without the apparent surface charges). TRC_ERR_BADARG for a ghost
+      !! atom, an element without a tabulated radius, or a basis above this
+      !! build's potential-integral ceiling. Every rank of a multi-rank run
+      !! computes the same charges (the analysis is replicated, like
+      !! trc_hirshfeld_charges). (ABI 1.21.)
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: charges(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(error_t) :: err
+      real(dp), allocatable :: q(:), d_total_cart(:, :)
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) return
+
+      call state_total_density_cart(cx, d_total_cart)
+      call trc_chelpg_charges_from(cx%bb%b, d_total_cart, real(cx%charge, dp), q, err)
+      if (err%has_error()) then
+         cx%message = err%get_message()
+         status = TRC_ERR_BADARG
+         return
+      end if
+      charges(1:cx%bb%b%natm) = real(q, c_double)
+      status = TRC_OK
+   end function trc_chelpg_charges
 
    function trc_fukui_hirshfeld(handle, f_plus, f_minus, f_zero, q_n, q_np1, q_nm1) &
       result(status) bind(c, name="trc_fukui_hirshfeld")
@@ -6043,9 +6238,11 @@ contains
             return
          end if
          if (collective) then
-            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, comm, batch_res=cx%opts%batch_res)
+            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, comm, batch_res=cx%opts%batch_res, &
+                              decontract=cx%opts%decontract)
          else
-            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, batch_res=cx%opts%batch_res)
+            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, batch_res=cx%opts%batch_res, &
+                              decontract=cx%opts%decontract)
          end if
       end if
       ep => cx%eb

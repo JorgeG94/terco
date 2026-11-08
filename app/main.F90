@@ -26,7 +26,7 @@ program trc_main
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
                        trc_set_pcm, trc_pcm_energy, trc_save_scf, trc_load_scf, &
                        trc_run_gradient, trc_gradient, trc_set_geometry, trc_set_hessian_step, trc_run_hessian, &
-                       trc_hessian, trc_hirshfeld_charges, trc_fukui_hirshfeld, &
+                       trc_hessian, trc_hirshfeld_charges, trc_chelpg_charges, trc_fukui_hirshfeld, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP, TRC_GUESS_MINAO
    use trc_api, only: trc_bind_device, trc_bind_device_env
@@ -49,7 +49,7 @@ program trc_main
                        run_opt_geometry_is_linear, run_write_labelled_xyz, run_parse_opt_global_options, &
                        run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
                        run_check_neb_endpoint, run_write_neb_path_xyz, &
-                       run_read_xyz_frames, run_to_lower_alloc
+                       run_read_xyz_frames, run_to_lower_alloc, run_frontier, run_parse_charges
    use trc_dlfind_bridge, only: trc_dlfind_available, trc_opt_options_t, trc_opt_result_t, trc_dlfind_optimize, &
                                 TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_HDLC_TC, &
                                 TRC_OPT_COORDS_DLC, TRC_OPT_COORDS_DLC_TC, &
@@ -138,7 +138,8 @@ program trc_main
                          short="f", default="hf")
    call r%cli%add_option("guess", "sad, sadq, sap, minao, gwh or core (default: sad; sadq for an ion). "// &
                          "minao always starts from neutral atoms, also for an ion; it is the default with --fukui", short="g")
-   call r%cli%add_option("charges", "atomic charge analysis: hirshfeld (none by default)")
+   call r%cli%add_option("charges", "atomic charge analysis: hirshfeld, chelpg, or both as "// &
+                         "hirshfeld,chelpg (none by default)")
    call r%cli%add_option("fukui", "Hirshfeld-condensed Fukui indices, by finite difference in the "// &
                          "electron count: hirshfeld (none by default; needs a closed-shell neutral; "// &
                          "the guess defaults to minao for all three states)")
@@ -165,7 +166,9 @@ program trc_main
                          "diagonal (pyscf/ORCA's convention) below it are dropped (canonical orthogonalisation; "// &
                          "1e-8; 0 drops none, though the minao guess keeps its own 1e-8). "// &
                          "Diffuse bases on large molecules may need ~5e-6")
-   call r%cli%add_flag("incremental", "build later Fock matrices from the density difference (closed shell)")
+   call r%cli%add_flag("incremental", "build later Fock matrices from the density difference (the default; "// &
+                       "refused with --df)")
+   call r%cli%add_flag("no-incremental", "a full Fock build every iteration")
    call r%cli%add_flag("df", "density-fitted J and K instead of the four-centre engine (restricted, "// &
                        "Cartesian only; fits both, never DF-J with 4-centre K)")
    call r%cli%add_option("jkfit", "fitting basis for --df (def2-universal-jkfit)", default="def2-universal-jkfit")
@@ -195,9 +198,10 @@ program trc_main
                        "with more than one rank it is computed on rank 0 alone, with a warning")
    call r%cli%add_flag("hessian", "finite-difference Cartesian Hessian (central differences of the "// &
                        "analytic gradient) after the SCF, then harmonic vibrational analysis and RRHO "// &
-                       "thermochemistry; refused for --rimp2, a double hybrid and --pcm (the PCM "// &
-                       "gradient is analytic, its Hessian is not validated), checked before any "// &
-                       "displacement runs; single rank only for now")
+                       "thermochemistry; with --rimp2 or a double hybrid the RI-MP2 reruns at every "// &
+                       "displacement, so it is the correlated total's Hessian (refused where --grad "// &
+                       "is); refused for --pcm (the PCM gradient is analytic, its Hessian is not "// &
+                       "validated), checked before any displacement runs; single rank only for now")
    call r%cli%add_option("step", "--hessian's displacement, Bohr (0.005)", default="0.005")
    call r%cli%add_option("temperature", "temperature for --hessian's thermochemistry, K (298.15)", &
                          default="298.15")
@@ -211,7 +215,9 @@ program trc_main
    call r%cli%add_flag("opt-freq", "--opt followed by --hessian at the optimised geometry (Gaussian's "// &
                        "Opt Freq); shorthand for giving both, and --opt-*/--hessian options still apply")
    call r%cli%add_flag("opt", "optimise the geometry with DL-FIND (needs a TERCO_ENABLE_DLFIND=ON build; "// &
-                       "refused otherwise). Warm-starts the SCF between steps; writes <geometry>_opt.xyz "// &
+                       "refused otherwise). Warm-starts the SCF between steps; with --rimp2 or a double "// &
+                       "hybrid every step reruns the RI-MP2, so it optimises the correlated total "// &
+                       "(refused where --grad is). Writes <geometry>_opt.xyz "// &
                        "and <geometry>_traj.xyz into the CURRENT WORKING DIRECTORY (named from the input "// &
                        "geometry's own base name), and an 'optimization' block to --json. "// &
                        "Combined with --hessian, the Hessian runs at the OPTIMISED geometry. If a step's "// &
@@ -472,7 +478,7 @@ program trc_main
    if (r%cli%is_set("charges")) then
       call r%cli%get("charges", sval, r%err)
       r%charges = run_to_lower_alloc(trim(sval))
-      if (r%charges /= "hirshfeld") call run_die(r, "unknown --charges '"//r%charges//"': use hirshfeld")
+      call run_parse_charges(r)
    end if
 
    r%fukui = ""
@@ -587,6 +593,9 @@ program trc_main
       call r%cli%get("aux", sval, r%err)
       call app_resolve_basis(sval, r%aux_path, r%err)
       if (r%err%has_error()) call run_die(r, "--aux: "//r%err%get_message())
+   end if
+   if (r%cli%is_set("incremental") .and. r%cli%is_set("no-incremental")) then
+      call run_die(r, "--incremental and --no-incremental contradict each other")
    end if
    if (r%df) then
       if (r%cli%is_set("incremental")) call run_die(r, "--df with --incremental is refused -- a "// &
@@ -1030,7 +1039,7 @@ program trc_main
    ! The Hirshfeld free atoms ship next to the basis sets too: without this
    ! the library falls back to a path relative to the working directory,
    ! which only exists inside the test tree.
-   if (r%charges == "hirshfeld" .or. r%fukui == "hirshfeld") then
+   if (r%want_hirshfeld .or. r%fukui == "hirshfeld") then
       block
          character(len=1024) :: e
          integer :: n, s
@@ -1109,9 +1118,10 @@ program trc_main
    if (r%soscf) call run_api(r, trc_set_soscf(r%h, 1_c_int, real(r%soscf_start, c_double)))
    call run_api(r, trc_set_screening(r%h, real(r%thresh, c_double)))
    if (r%lindep >= 0.0_dp) call run_api(r, trc_set_lindep(r%h, real(r%lindep, c_double)))
-   ! On unless asked otherwise: the library's default is off, so a host
-   ! code keeps the build it had, but a command-line run gets the speed.
-   call run_api(r, trc_set_incremental(r%h, merge(1_c_int, 0_c_int, r%cli%is_set("incremental"))))
+   ! Only when a flag says so: unset, the library's default (on) stands and
+   ! is not "asked for", so a --df run gets an info line, not a warning.
+   if (r%cli%is_set("incremental")) call run_api(r, trc_set_incremental(r%h, 1_c_int))
+   if (r%cli%is_set("no-incremental")) call run_api(r, trc_set_incremental(r%h, 0_c_int))
    call run_api(r, trc_set_guess(r%h, int(guess_kind, c_int), c_null_ptr, 1_c_int))
    if (r%rimp2) then
       ! The three-index tensor (mu nu|P) is nao^2 per auxiliary function and
@@ -1162,6 +1172,9 @@ program trc_main
       opt_opts%fallback_guess_kind = int(guess_kind, c_int)
       opt_opts%maxiter = r%opt_maxiter
       opt_opts%gtol = r%opt_gtol
+      ! --rimp2 or a double hybrid (r%rimp2 covers both): every step's
+      ! energy and gradient are the correlated total's, not the SCF's.
+      opt_opts%rimp2 = r%rimp2
       opt_opts%algorithm = r%opt_algorithm_kind
       opt_opts%target_kind = r%opt_target_kind
       opt_opts%saddle_method = r%opt_saddle_method_kind
@@ -1337,9 +1350,11 @@ program trc_main
    call run_api(r, trc_is_spherical(r%h, r%sph))
    call run_api(r, trc_nspin(r%h, nspin))
    call run_api(r, trc_energy(r%h, r%etot))
+   r%etot_total = r%etot
    call run_api(r, trc_energy_parts(r%h, r%enuc, r%eone, r%etwo, r%exc))
    call run_api(r, trc_converged(r%h, r%conv))
    call run_api(r, trc_iterations(r%h, r%niter))
+   call run_frontier(r, nspin)
    call run_api(r, trc_pcm_energy(r%h, r%epcm, r%qpcm, r%npcm))
    r%eos = 0
    r%ess = 0
@@ -1372,11 +1387,13 @@ program trc_main
       ! fractions themselves (write_json), never to duplicate the
       ! weighting trc_energy already does from the SAME table.
       if (r%dh) call run_api(r, trc_energy(r%h, r%etot_dh))
+      call run_api(r, trc_energy(r%h, r%etot_total))
    end if
    if (r%hessian .and. r%conv /= 0) then
-      ! trc_run_hessian's own refusals (--rimp2, a double hybrid,
-      ! --pcm, --df outside its own scope, more than one rank)
-      ! come back through `api`, exactly as --grad's do -- checked
+      ! trc_run_hessian's own refusals (--pcm, an RI-MP2/double-hybrid
+      ! reference outside the RI-MP2 gradient's scope, --df outside its
+      ! own scope, more than one rank) come back through `api`, exactly as
+      ! --grad's do -- checked
       ! before any displacement, so a refused run costs nothing beyond
       ! the SCF this CLI already ran for --grad/the energy anyway.
       call run_api(r, trc_set_hessian_step(r%h, real(r%hess_step, c_double)))
@@ -1400,18 +1417,27 @@ program trc_main
       call trc_vibrational_analysis(mass, xyz, r%hess, r%freq_cm1, r%redmass_amu, r%force_const, &
                                     displacement, r%is_linear, r%n_tr, herr)
       if (herr%has_error()) call run_die(r, "--hessian: vibrational analysis: "//herr%get_message())
-      call trc_thermochemistry(mass, xyz, r%freq_cm1, real(r%etot, dp), r%sym_number, r%mult, r%thermo, herr, &
+      call trc_thermochemistry(mass, xyz, r%freq_cm1, real(r%etot_total, dp), r%sym_number, r%mult, r%thermo, herr, &
                                temperature_k=r%temperature_k, pressure_pa=r%pressure_atm*ATM_TO_PA)
       if (herr%has_error()) call run_die(r, "--hessian: thermochemistry: "//herr%get_message())
       r%hess_ok = .true.
    end if
 
-   if (r%charges == "hirshfeld" .and. r%conv /= 0) then
+   if (r%want_hirshfeld .and. r%conv /= 0) then
       ! trc_hirshfeld_charges's own refusals (an element outside H-Kr) come
       ! back through `api`, same as --grad's/--hessian's.
       allocate (chargebuf(r%natm), r%hirshfeld_charges(r%natm))
       call run_api(r, trc_hirshfeld_charges(r%h, chargebuf))
       r%hirshfeld_charges = real(chargebuf, dp)
+      deallocate (chargebuf)
+   end if
+
+   if (r%want_chelpg .and. r%conv /= 0) then
+      ! trc_chelpg_charges's own refusals (a ghost, an element without a
+      ! van der Waals radius) come back through `api` the same way.
+      allocate (chargebuf(r%natm), r%chelpg_charges(r%natm))
+      call run_api(r, trc_chelpg_charges(r%h, chargebuf))
+      r%chelpg_charges = real(chargebuf, dp)
       deallocate (chargebuf)
    end if
 
@@ -1438,7 +1464,7 @@ program trc_main
 
    if (r%rank0) call run_summary(r)
    if (r%rank0 .and. r%grad .and. r%conv /= 0) call run_gradient_summary(r)
-   if (r%rank0 .and. r%charges == "hirshfeld" .and. r%conv /= 0) call run_charges_summary(r)
+   if (r%rank0 .and. (r%want_hirshfeld .or. r%want_chelpg) .and. r%conv /= 0) call run_charges_summary(r)
    if (r%rank0 .and. r%fukui == "hirshfeld" .and. r%conv /= 0) call run_fukui_summary(r)
    if (r%rank0 .and. r%opt) call run_opt_summary(r)
    if (r%rank0 .and. r%hessian .and. r%hess_ok) call run_hessian_summary(r)

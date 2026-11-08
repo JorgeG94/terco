@@ -41,6 +41,7 @@ contains
       testsuite = [ &
          new_unittest("a TOML file gives the same numbers as its flags", test_same_as_flags), &
          new_unittest("--json echoes the resolved input, with flags overriding the file", test_echo), &
+         new_unittest("[analysis] charges = chelpg gives --charges chelpg's charges", test_charges_key), &
          new_unittest("an unknown key is refused, by name", test_unknown_key), &
          new_unittest("an unknown section is refused, by name", test_unknown_section), &
          new_unittest("a value of the wrong type is refused", test_wrong_type), &
@@ -128,6 +129,49 @@ contains
       call check(error, .not. found, "input.molecule.charge was never given and has no declared default")
       call json%destroy()
    end subroutine test_echo
+
+   subroutine test_charges_key(error)
+      !! The [analysis] charges key takes the schemes --charges does, and both
+      !! sets land in the JSON beside each other.
+      type(error_type), allocatable, intent(out) :: error
+      type(json_file) :: json
+      real(dp), allocatable :: q_toml(:), q_flags(:), q_hirshfeld(:)
+      logical :: found
+      integer :: rc
+
+      call setup()
+      call write_toml(work_dir//'/case/charges.toml', [character(len=64) :: &
+                      '[molecule]', 'geometry = "water.xyz"', &
+                      '[basis]', 'main = "basis_sets/sto-3g.json"', &
+                      '[analysis]', 'charges = "hirshfeld,chelpg"', &
+                      '[output]', 'json = "charges.json"', 'silent = true'])
+      call run('cd '//work_dir//' && '//cli_exe//' case/charges.toml > charges.out 2>&1', rc)
+      if (rc /= 0) then
+         call test_failed(error, "the TOML run failed, exit code "//to_string(rc)); return
+      end if
+      call run('cd '//work_dir//'/case && '//cli_exe//' water.xyz -b basis_sets/sto-3g.json '// &
+               '--charges chelpg --json charges_flags.json --silent > ../charges_flags.out 2>&1', rc)
+      if (rc /= 0) then
+         call test_failed(error, "the flag run failed, exit code "//to_string(rc)); return
+      end if
+      call json%initialize()
+      call json%load(filename=work_dir//'/case/charges.json')
+      call json%get('chelpg charges', q_toml, found)
+      call check(error, found .and. size(q_toml) == 3, "the TOML run's JSON has no chelpg charges")
+      if (allocated(error)) return
+      call json%get('hirshfeld charges', q_hirshfeld, found)
+      call check(error, found .and. size(q_hirshfeld) == 3, "the TOML run's JSON has no hirshfeld charges")
+      if (allocated(error)) return
+      call json%destroy()
+      call json%initialize()
+      call json%load(filename=work_dir//'/case/charges_flags.json')
+      call json%get('chelpg charges', q_flags, found)
+      call check(error, found .and. size(q_flags) == 3, "the flag run's JSON has no chelpg charges")
+      if (allocated(error)) return
+      call json%destroy()
+      call check(error, maxval(abs(q_toml - q_flags)) < 1.0e-10_dp, &
+                 "chelpg charges differ between the file and the flags by "//rtoa(maxval(abs(q_toml - q_flags))))
+   end subroutine test_charges_key
 
    subroutine test_unknown_key(error)
       type(error_type), allocatable, intent(out) :: error

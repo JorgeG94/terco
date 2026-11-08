@@ -52,6 +52,32 @@ module trc_eri_data
       !! Rys gradient kernels read it.
    end type trc_shell_pairs_t
 
+   type, public :: trc_bin_tiles_t
+      !! The bins cut into exchange tiles, host only (see trc_bin_tiles,
+      !! which builds and reads it). Geometry from bin_tiles_build; db, rlo
+      !! and rhi are this build's density, from bin_tiles_reach.
+      logical :: built = .false.
+      integer :: nbin = 0, ntile = 0, nblk = 0, nbas = 0
+      integer, allocatable :: bt0(:), btn(:)
+      !! (nbin) first tile - 1 and number of tiles of each bin
+      integer, allocatable :: t0(:), tn(:)
+      !! (ntile) first pair of the tile within its bin, from 0, and its pairs
+      integer, allocatable :: tb1(:), tb2(:)
+      !! (ntile) hull of the shell blocks the tile's pairs touch
+      integer, allocatable :: pmax2(:), smin1(:)
+      !! (ntile) within its bin: largest tb2 of this and the earlier tiles,
+      !! smallest tb1 of this and the later ones (monotone, for bisection)
+      real(dp), allocatable :: tq(:)
+      !! (ntile) largest Schwarz bound of the tile's pairs
+      real(dp), allocatable :: qbin(:)
+      !! (nbin) largest Schwarz bound of each bin
+      real(dp), allocatable :: db(:, :)
+      !! (nblk, nblk) block maxima of the density bound, this build
+      integer, allocatable :: rlo(:, :), rhi(:, :)
+      !! (0:levels, ntile) each tile's reach at each level, this build;
+      !! rlo > rhi is empty
+   end type trc_bin_tiles_t
+
    type, public :: trc_pair_quartets_t
       !! The primitive pairs again, laid out bin by bin and interleaved by
       !! primitive index, so a warp's threads read neighbouring slots (see
@@ -71,6 +97,10 @@ module trc_eri_data
       !! (npair) per bin slot: A - B.
       integer, allocatable :: n(:)
       !! (npair) per bin slot: the pair's real kept count.
+      type(trc_bin_tiles_t) :: tiles
+      !! The same bins cut into exchange tiles (trc_bin_tiles), host only:
+      !! like the slots above it follows the pair order inside the bins, and
+      !! is rebuilt with them.
    end type trc_pair_quartets_t
 
    type, public :: trc_bin_launch_t
@@ -78,6 +108,8 @@ module trc_eri_data
       !! rank's share, and what the launch reports back.
       real(dp) :: thresh = 1.0e-10_dp
       !! Integral (Schwarz) threshold.
+      real(dp) :: pcut_scale = 1.0_dp
+      !! Multiplies the kernels' primitive-quartet cut (trc_eri's own).
       real(dp) :: jfac = 1.0_dp, kfac = 1.0_dp
       !! Coulomb and exchange scalings; 1 and 1 is Hartree-Fock.
       real(dp) :: omega = 0.0_dp
@@ -94,7 +126,8 @@ module trc_eri_data
       logical :: nosym = .false.
       !! The density is not symmetric: route through the enumerated kernel.
       logical :: count_kept = .false.
-      !! Also count the quartets that survive both screens, into `nkept`.
+      !! Count the quartets that survive both screens, into `nkept`, and
+      !! build nothing: binkernel_fock_bins returns after the count.
       !! A full extra pass, so it is opt-in.
       integer :: nlaunch = 0
       !! Out: kernel launches.

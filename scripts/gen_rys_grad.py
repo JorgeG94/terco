@@ -52,8 +52,8 @@ not only its description:
     not L+2, even though the table's nominal range covers both raised by
     one. Confirmed against gpu4pyscf's own bounds (gvhf-rys/...ip1.cu
     around its `order = li+lj+lk+ll; nroots = (order+1)/2+1`). This means
-    the existing n = 1..5 root tables cover every class up to (dd|dd); no
-    new table is needed.
+    (dd|dd) needs 5 roots and (ff|ff) 7, both inside the committed n =
+    1..9 tables the energy kernels already use.
   - Gamma, from the standard RHF/UHF two-electron gradient identity (not
     copied from the Fock digestion's internal 4x/divide-by-8 bookkeeping,
     which is a Fock-MATRIX convention that does not transfer to a gradient
@@ -95,6 +95,7 @@ def _load(name, path):
 
 co = _load("co", os.path.join(HERE, "cartorder.py"))
 ri = _load("ri", os.path.join(HERE, "rys_inline.py"))
+gr = _load("gr", os.path.join(HERE, "gen_rys.py"))
 
 
 def _parse_unroll_max(s):
@@ -455,14 +456,23 @@ def chunk_plan(comps, live_max=CHUNK_LIVE_MAX):
     return None if best is None else best[1]
 
 
-def _gamma_from_dmat(a, b, c, d):
-    """Gamma for one component, RHF, read straight from dmat:
+def _gamma_from_dmat(a, b, c, d, uhf=False):
+    """Gamma for one component, read straight from dmat. RHF:
     cj*D_ab*D_cd - ck*(D_ac*D_bd + D_ad*D_bc), with cj = 8 wq jfac and
-    ck = 8 wq kfac/4 (see the item routine's comments on the 8 and the 1/4)."""
-    D = lambda o0, x, o1, y: f"dmat(1, {o0} + {x}, {o1} + {y})"
-    return (f"cj*{D('mui', a, 'nuj', b)}*{D('lamk', c, 'sigl', d)} &\n"
-            f"                    - ck*({D('mui', a, 'lamk', c)}*{D('nuj', b, 'sigl', d)} &\n"
-            f"                    + {D('mui', a, 'sigl', d)}*{D('nuj', b, 'lamk', c)})")
+    ck = 8 wq kfac/4 (see the item routine's comments on the 8 and the 1/4).
+    UHF: the Coulomb term on Da + Db, the exchange term summed per spin,
+    ck = 8 wq kfac/2."""
+    D = lambda sp, o0, x, o1, y: f"dmat({sp}, {o0} + {x}, {o1} + {y})"
+    if not uhf:
+        return (f"cj*{D(1, 'mui', a, 'nuj', b)}*{D(1, 'lamk', c, 'sigl', d)} &\n"
+                f"                    - ck*({D(1, 'mui', a, 'lamk', c)}*{D(1, 'nuj', b, 'sigl', d)} &\n"
+                f"                    + {D(1, 'mui', a, 'sigl', d)}*{D(1, 'nuj', b, 'lamk', c)})")
+    return (f"cj*({D(1, 'mui', a, 'nuj', b)} + {D(2, 'mui', a, 'nuj', b)}) &\n"
+            f"                    *({D(1, 'lamk', c, 'sigl', d)} + {D(2, 'lamk', c, 'sigl', d)}) &\n"
+            f"                    - ck*({D(1, 'mui', a, 'lamk', c)}*{D(1, 'nuj', b, 'sigl', d)} &\n"
+            f"                    + {D(1, 'mui', a, 'sigl', d)}*{D(1, 'nuj', b, 'lamk', c)} &\n"
+            f"                    + {D(2, 'mui', a, 'lamk', c)}*{D(2, 'nuj', b, 'sigl', d)} &\n"
+            f"                    + {D(2, 'mui', a, 'sigl', d)}*{D(2, 'nuj', b, 'lamk', c)})")
 
 
 def _chunk_root_body(comps, lb, ld, chunk, pad, names):
@@ -542,7 +552,7 @@ def _strip_dead_decls(text):
     return "\n".join(keep)
 
 
-def chunked_rhf_item_text(tag, item, comps, inside):
+def chunked_rhf_item_text(tag, item, comps, inside, uhf=False):
     """rysgi{tag}_crhf: the CHUNKED RHF COMPACT PASS (see the section
     comment above), built from the compact item routine `item` -- its
     signature, declarations, survivor setup, same-atom skip, AO offsets,
@@ -550,6 +560,7 @@ def chunked_rhf_item_text(tag, item, comps, inside):
     density fold, the integral build and the D accumulators are replaced."""
     la, lb, lc, ld = (int(c) for c in tag)
     nroots = (la + lb + lc + ld + 1)//2 + 1
+    rname = f"rysgi{tag}_cuhf" if uhf else f"rysgi{tag}_crhf"
 
     kfac_line = "         kfac_eff = merge(0.25_dp, 0.5_dp, ndens == 1)*kfac\n"
     i_kfac = item.index(kfac_line)
@@ -565,16 +576,24 @@ def chunked_rhf_item_text(tag, item, comps, inside):
     chunks = _chunks(comps, inside)
     nmax = max(len(ch) for ch in chunks)
     names.update(f"gm_{n}" for n in range(nmax))
-    body = [
-        "         ! RHF: ndens is 1 in this routine, so kfac_eff is kfac/4\n"
-        "         ! (see the item routine above for the 1/4 and the 8).\n"
-        "         kfac_eff = 0.25_dp*kfac\n"
-        "         cj = 8.0_dp*wq*jfac\n"
-        "         ck = 8.0_dp*wq*kfac_eff\n"]
-    if lb == 2 or ld == 2:
-        body.append("         abx2 = abx*abx; aby2 = aby*aby; abz2 = abz*abz\n"
-                    "         cdx2 = cdx*cdx; cdy2 = cdy*cdy; cdz2 = cdz*cdz\n")
-        names.update(("abx2", "aby2", "abz2", "cdx2", "cdy2", "cdz2"))
+    kfac_text = ("         ! UHF: ndens is 2 in this routine, so kfac_eff is kfac/2 per spin\n"
+                 "         ! (see the item routine above for the 1/2 and the 8).\n"
+                 "         kfac_eff = 0.5_dp*kfac\n") if uhf else (
+                 "         ! RHF: ndens is 1 in this routine, so kfac_eff is kfac/4\n"
+                 "         ! (see the item routine above for the 1/4 and the 8).\n"
+                 "         kfac_eff = 0.25_dp*kfac\n")
+    body = [kfac_text +
+            "         cj = 8.0_dp*wq*jfac\n"
+            "         ck = 8.0_dp*wq*kfac_eff\n"]
+    # Every power the horizontal transfer reads, (A-B)^p and (C-D)^p up to
+    # p = lb, ld (j and l are never raised): squares at d, cubes at f.
+    for pw in range(2, max(lb, ld) + 1):
+        prev = {2: "{0}"}.get(pw, "{0}" + str(pw - 1))
+        body.append("         " + "; ".join(
+            f"{v}{pw} = {prev.format(v)}*{v}" for v in ("abx", "aby", "abz")) + "\n")
+        body.append("         " + "; ".join(
+            f"{v}{pw} = {prev.format(v)}*{v}" for v in ("cdx", "cdy", "cdz")) + "\n")
+        names.update(f"{v}{pw}" for v in ("abx", "aby", "abz", "cdx", "cdy", "cdz"))
     body.append("         vax = 0.0_dp; vay = 0.0_dp; vaz = 0.0_dp\n"
                 "         vbx = 0.0_dp; vby = 0.0_dp; vbz = 0.0_dp\n"
                 "         vcx = 0.0_dp; vcy = 0.0_dp; vcz = 0.0_dp\n")
@@ -584,7 +603,7 @@ def chunked_rhf_item_text(tag, item, comps, inside):
     for n, ch in enumerate(chunks):
         body.append(f"            case ({n + 1})\n")
         for m, (a, b, c, d) in enumerate(ch):
-            body.append(f"               gm_{m} = {_gamma_from_dmat(a, b, c, d)}\n")
+            body.append(f"               gm_{m} = {_gamma_from_dmat(a, b, c, d, uhf)}\n")
     body.append("            end select\n")
     body.append(prim_hdr)
     body.append("                  ai2 = 2.0_dp*alpha_i; aj2 = 2.0_dp*alpha_j; ak2 = 2.0_dp*alpha_k\n")
@@ -621,12 +640,477 @@ def chunked_rhf_item_text(tag, item, comps, inside):
     i_si = pre.index("si = sp_i(sOA(seg) + iab)")
     i_si = pre.rfind("\n", 0, i_si)
     pre = pre[:i_si] + "\n" + decls + pre[i_si:]
-    pre = pre.replace(f"subroutine rysgi{tag}_compact(", f"subroutine rysgi{tag}_crhf(", 1)
-    tail = tail.replace(f"end subroutine rysgi{tag}_compact", f"end subroutine rysgi{tag}_crhf")
+    pre = pre.replace(f"subroutine rysgi{tag}_compact(", f"subroutine {rname}(", 1)
+    tail = tail.replace(f"end subroutine rysgi{tag}_compact", f"end subroutine {rname}")
     return pre + "".join(body) + tail
 
 
-def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
+# ---------------------------------------------------------------------------
+# RUNTIME-OUTER CHUNKED RHF PASS
+# ---------------------------------------------------------------------------
+#
+# The chunked pass above keeps every chunk's indices literal (a `select
+# case` over chunks), so its source grows with the class: ~10 lines of fold
+# per component, which is why CHUNK_MAX_COMP stops it at 324 components and
+# every heavier class, (dd|dp) and up and nearly every f class, kept the
+# array form and its local-memory traffic. This is gen_rys.py's CHUNKED
+# FOCK PASS design carried over to the gradient: the OUTER shells' component
+# comes in at run time (jo0..jo3, the cn tables), and the horizontal
+# transfer over an outer shell uses run-time weights wb_s = C(eb, s)
+# ab^(eb-s) against literal 2D-table indices, so one chunk's source serves
+# every chunk. See gen_rys.py's section comment for the design and its
+# measurements; what the gradient adds:
+#
+#   - Per axis and component it needs h at (a+1, b), (a-1, b) and (a, b-1)
+#     on the bra and (c+1, d), (c-1, d) on the ket (l by translational
+#     invariance). A shift of a or c is a LITERAL offset into the 2D table
+#     even when that shell is outer, h(ea+1, eb) = sum_s w_s g(ea+1+s), so
+#     it costs no new weights; the factor ea in front of h(ea-1) is the run-
+#     time exponent, and the g(-1) term it would read only ever carries ea =
+#     0. Only b-1 with b outer needs a second weight set, wbm_s = C(eb-1, s)
+#     ab^(eb-1-s) (and wbbm with a outer too).
+#   - Gamma is per chunk, read from dmat at the chunk's outer components
+#     before the primitive loop, as the literal pass does.
+#   - 'loop' runs every chunk in one thread per quartet; 'thread' gives each
+#     (quartet, chunk) its own `do concurrent` iteration and atomics, as in
+#     gen_rys.py.
+#
+#: The measured shape per class, (outer shells, form); a class not listed
+#: keeps the literal chunked pass (chunk_auto) or the array form. Every
+#: canonical class with an f shell or more than 81 components was raced
+#: over all nine outer sets in both forms (none of more than 360 components
+#: per chunk: (ff|ff) in one chunk is 137K lines and did not compile in
+#: 2.5 h), the literal pass and the array form. w20 (the first 60 atoms of
+#: w172), cc-pVTZ, RHF, 1e-13, V100; ms per class over one gradient: the
+#: winner, the runner-up, and the literal pass (or the array form where the
+#: literal pass is too big). The literal pass won (dd|ds), (dd|ps), (dp|ds),
+#: (dp|dp), (fs|dp), (fp|ds), (fp|fs) and (ff|ps); the array form won none.
+#: Over the 42 classes: 1368 ms, against 2947 ms for the literal pass where
+#: it compiles and the array form elsewhere.
+#:
+#: Checked on a second system, NA-040 (89 atoms, C34H40N8O7), def2-TZVP,
+#: raced the same way (17 shapes; not the array form or the all-outer sets,
+#: which lost by 2-9x on w20): this plan takes 56.40 s over the 42 classes,
+#: the per-class best over both races 56.26 s. Only (dd|dd) and (fp|dd)
+#: would move (23:thread -> 23:loop, -0.25% there, +2.6 ms on w20), so the
+#: plan is left as measured on w20.
+#: Classes where the LITERAL pass won the race but its source is large
+#: enough that a literal UHF twin doubles the object's compile time: they
+#: keep the literal pass for RHF and take a run-time chunked UHF routine
+#: (their best run-time shape over both races) instead. With a literal UHF
+#: routine, nvfortran 26.5 took 639 s for (fp|fs), 538 s for (dp|dp) and
+#: 512 s for (ff|ps), past the ~590 s per-object budget; moving the RHF side
+#: too would cost NA-040/def2-TZVP 1.0 s (literal 2011/1697/662 ms against
+#: run-time 2616/2052/745 ms).
+GRAD_UHF_RT_PLAN = {
+    "3130": ((0, 1), "loop"),
+    "2121": ((2, 3), "loop"),
+    "3310": ((1,), "loop"),
+}
+
+GRAD_CHUNK_PLAN = {
+    "2111": ((2, 3), "loop"),  # (21|11) 86; next literal 91; literal 91
+    "2211": ((2, 3), "loop"),  # (22|11) 44; next 13:loop 49; literal 49
+    "2221": ((2, 3), "loop"),  # (22|21) 80; next 23:thread 82; array 308
+    "2222": ((2, 3), "thread"),  # (22|22) 20; next 13:thread 21; array 62
+    "3000": ((), "loop"),  # (30|00) 12; next :thread 12; literal 14
+    "3010": ((), "thread"),  # (30|10) 32; next :loop 32; literal 37
+    "3011": ((3,), "loop"),  # (30|11) 19; next 3:thread 23; literal 23
+    "3020": ((), "thread"),  # (30|20) 23; next :loop 24; literal 30
+    "3022": ((3,), "loop"),  # (30|22) 20; next 3:thread 20; array 66
+    "3030": ((), "loop"),  # (30|30) 6; next literal 6; literal 6
+    "3100": ((), "loop"),  # (31|00) 19; next :thread 19; literal 21
+    "3110": ((1,), "loop"),  # (31|10) 40; next literal 42; literal 42
+    "3111": ((2, 3), "loop"),  # (31|11) 35; next 23:thread 38; literal 43
+    "3121": ((2, 3), "loop"),  # (31|21) 72; next 23:thread 75; array 300
+    "3122": ((2, 3), "thread"),  # (31|22) 35; next 23:loop 37; array 113
+    "3131": ((2, 3), "thread"),  # (31|31) 15; next 01:thread 19; array 70
+    "3200": ((), "loop"),  # (32|00) 13; next :thread 13; literal 16
+    "3210": ((1,), "loop"),  # (32|10) 33; next literal 36; literal 36
+    "3211": ((1, 3), "thread"),  # (32|11) 40; next 13:loop 41; array 170
+    "3220": ((1,), "loop"),  # (32|20) 52; next 1:thread 56; array 151
+    "3221": ((2, 3), "thread"),  # (32|21) 76; next 01:loop 81; array 211
+    "3222": ((0, 1), "thread"),  # (32|22) 37; next 23:thread 39; array 102
+    "3230": ((0, 1), "loop"),  # (32|30) 28; next 1:thread 31; array 58
+    "3231": ((0, 1), "thread"),  # (32|31) 40; next 23:thread 40; array 114
+    "3232": ((2, 3), "thread"),  # (32|32) 15; next 23:loop 17; array 39
+    "3300": ((1,), "loop"),  # (33|00) 5; next literal 5; literal 5
+    "3311": ((1, 3), "thread"),  # (33|11) 14; next 13:loop 21; array 64
+    "3320": ((1,), "loop"),  # (33|20) 17; next 1:thread 20; array 49
+    "3321": ((0, 1), "thread"),  # (33|21) 33; next 13:loop 40; array 89
+    "3322": ((0, 1), "thread"),  # (33|22) 15; next 01:loop 16; array 39
+    "3330": ((0, 1), "thread"),  # (33|30) 14; next 1:thread 14; array 35
+    "3331": ((0, 1), "thread"),  # (33|31) 14; next 01:loop 20; array 62
+    "3332": ((0, 1), "thread"),  # (33|32) 16; next 23:loop 19; array 39
+    "3333": ((0, 1), "thread"),  # (33|33) 3; next 23:thread 3; array 48
+}
+
+
+def _rt_shell_exp(comps, comp, s, axis):
+    """The exponent of shell s on `axis` for an inner component: a literal
+    int when s is inside, the run-time name ex{s}{ax} when it is outer."""
+    if comp[s] == "o":
+        return f"ex{s}{'xyz'[axis]}"
+    return comps[s][comp[s]][axis]
+
+
+def _rt_weight_lines(tag, outer, pad):
+    """The run-time transfer weights of one chunk, per axis, outside the
+    primitive loop: gen_rys.py's wb/wbb and wd/wdd, plus wbm (and wbbm)
+    for the b-1 term when b is outer."""
+    la, lb, lc, ld = (int(c) for c in tag)
+    ni, nk = la + lb, lc + ld
+    out, names = [], []
+
+    def wset(first, second, lsec, ltot, w, W, ab, minus):
+        for ax in "xyz":
+            n = lsec - minus
+            out.append(f"{pad}select case (ex{second}{ax})")
+            for e in range(lsec + 1):
+                out.append(f"{pad}case ({e})")
+                ee = e - minus
+                for t in range(n + 1):
+                    if ee < 0 or t > ee:
+                        val = "0.0_dp"
+                    else:
+                        coef, p = ri.binom(ee, t), ee - t
+                        f = [] if coef == 1 else [f"{float(coef)}_dp"]
+                        if p == 1:
+                            f.append(f"{ab}{ax}")
+                        elif p > 1:
+                            f.append(f"{ab}{ax}{p}")
+                        val = "*".join(f) if f else "1.0_dp"
+                    out.append(f"{pad}   {w}{ax}_{t} = {val}")
+            out.append(f"{pad}end select")
+            names.extend(f"{w}{ax}_{t}" for t in range(n + 1))
+            if first in outer:
+                for i in range(ltot - minus + 1):
+                    out.append(f"{pad}{W}{ax}_{i} = 0.0_dp")
+                for t in range(n + 1):
+                    for i in range(t, ltot - minus + 1):
+                        out.append(f"{pad}if (ex{first}{ax} == {i - t}) {W}{ax}_{i} = {W}{ax}_{i} + {w}{ax}_{t}")
+                names.extend(f"{W}{ax}_{i}" for i in range(ltot - minus + 1))
+
+    if 1 in outer:
+        wset(0, 1, lb, ni, "wb", "wbb", "ab", 0)
+        if lb > 0:
+            wset(0, 1, lb, ni, "wbm", "wbbm", "ab", 1)
+    if 3 in outer:
+        wset(2, 3, ld, nk, "wd", "wdd", "cd", 0)
+    return "\n".join(out) + ("\n" if out else ""), names
+
+
+def _rt_chunk_axis(tag, comps, outer, inner, axis, pad):
+    """One axis of a chunk, per root: the 2D-table corner, then the bra and
+    ket transfers to every h the derivative fold reads. Returns (text,
+    names, H) with H(m, sa, jm, sc) the scalar holding component m's h at
+    a shifted by sa, b lowered by jm and c shifted by sc."""
+    la, lb, lc, ld = (int(c) for c in tag)
+    ni, nk = la + lb, lc + ld
+    ax = "xyz"[axis]
+    bo = (0 in outer, 1 in outer)
+    ko = (2 in outer, 3 in outer)
+    g = lambda i, k: ri.nm(f"qg{ax}", i, k)
+    lit = lambda v: isinstance(v, int)
+
+    def key(m):
+        e = [_rt_shell_exp(comps, inner[m], s, axis) for s in range(4)]
+        bk = tuple(v for s, v in enumerate(e[:2]) if lit(v))
+        kk = tuple(v for s, v in enumerate(e[2:]) if lit(v))
+        return bk, kk, e
+
+    # Which (bk, sa, jm) x (kk, sc) values each component needs.
+    need = {}
+    for m in range(len(inner)):
+        bk, kk, e = key(m)
+        ea, eb, ec = e[0], e[1], e[2]
+        variants = [(0, 0, 0), (1, 0, 0), (0, 0, 1)]
+        if not lit(ea) or ea > 0:
+            variants.append((-1, 0, 0))
+        if not lit(eb) or eb > 0:
+            variants.append((0, 1, 0))
+        if not lit(ec) or ec > 0:
+            variants.append((0, 0, -1))
+        need[m] = (bk, kk, variants)
+
+    # Bra transfer terms: list of (weight text or None, g i index) for (bk, sa, jm).
+    def bra_terms(bk, sa, jm):
+        if not bo[1]:                      # b inside (so is a, by the outer sets)
+            ea, eb = bk
+            ebm = eb - jm
+            res = []
+            for t in range(ebm + 1):
+                coef, p = ri.binom(ebm, t), ebm - t
+                f = [] if coef == 1 else [f"{float(coef)}_dp"]
+                if p == 1:
+                    f.append(f"ab{ax}")
+                elif p > 1:
+                    f.append(f"ab{ax}{p}")
+                res.append(("*".join(f) if f else None, ea + sa + t))
+            return res
+        w = "wbm" if jm else "wb"
+        if not bo[0]:                      # b outer, a inside
+            (ea,) = bk
+            return [(f"{w}{ax}_{t}", ea + sa + t) for t in range(lb - jm + 1)
+                    if ea + sa + t >= 0]
+        W = "wbbm" if jm else "wbb"
+        return [(f"{W}{ax}_{i}", i + sa) for i in range(ni - jm + 1) if i + sa >= 0]
+
+    def ket_terms(kk, sc):
+        if not ko[1]:
+            ec, ed = kk
+            res = []
+            for u in range(ed + 1):
+                coef, p = ri.binom(ed, u), ed - u
+                f = [] if coef == 1 else [f"{float(coef)}_dp"]
+                if p == 1:
+                    f.append(f"cd{ax}")
+                elif p > 1:
+                    f.append(f"cd{ax}{p}")
+                res.append(("*".join(f) if f else None, ec + sc + u))
+            return res
+        if not ko[0]:
+            (ec,) = kk
+            return [(f"wd{ax}_{u}", ec + sc + u) for u in range(ld + 1) if ec + sc + u >= 0]
+        return [(f"wdd{ax}_{k}", k + sc) for k in range(nk + 1) if k + sc >= 0]
+
+    bvars = sorted({(bk, sa, jm) for (bk, kk, vs) in need.values() for (sa, jm, sc) in vs})
+    kvars = {}
+    for (bk, kk, vs) in need.values():
+        for (sa, jm, sc) in vs:
+            kvars.setdefault((bk, sa, jm), set()).add((kk, sc))
+    # the k indices each bra target is needed at
+    tneed = {}
+    for bv, ks in kvars.items():
+        tneed[bv] = sorted({k for (kk, sc) in ks for (_, k) in ket_terms(kk, sc)})
+    imax = max(i for bv in bvars for (_, i) in bra_terms(*bv))
+    kmax = max(k for ks in tneed.values() for k in ks)
+    g00 = "f00" if ax == "z" else "1.0_dp"
+    out = [ri.rys2d_scalar_assignments(imax, kmax, f"c00{ax}", f"cp0{ax}",
+                                       "b00r", "b10r", "bp01r", g00, f"qg{ax}", len(pad))]
+    names = list(ri.rys2d_scalar_names(imax, kmax, f"qg{ax}"))
+
+    def tag_of(bk, sa, jm):
+        return "_".join(str(x) for x in bk) + f"s{sa + 1}j{jm}"
+
+    def wsum(terms, val):
+        parts = [(val(i) if w is None else f"{w}*{val(i)}") for (w, i) in terms]
+        return gr._sum_lines(parts, pad) if parts else "0.0_dp"
+
+    tname = {}
+    for bv in bvars:
+        terms = bra_terms(*bv)
+        for k in tneed.get(bv, []):
+            if len(terms) == 1 and terms[0][0] is None:
+                tname[(bv, k)] = g(terms[0][1], k)
+                continue
+            nmv = f"qt{ax}_{tag_of(*bv)}_{k}"
+            names.append(nmv)
+            tname[(bv, k)] = nmv
+            out.append(f"{pad}{nmv} = {wsum(terms, lambda i: g(i, k))}")
+    hname = {}
+    for bv, ks in kvars.items():
+        for (kk, sc) in sorted(ks):
+            terms = ket_terms(kk, sc)
+            if len(terms) == 1 and terms[0][0] is None:
+                hname[(bv, kk, sc)] = tname[(bv, terms[0][1])]
+                continue
+            nmv = f"qh{ax}_{tag_of(*bv)}_k" + "_".join(str(x) for x in kk) + f"s{sc + 1}"
+            names.append(nmv)
+            hname[(bv, kk, sc)] = nmv
+            out.append(f"{pad}{nmv} = {wsum(terms, lambda k: tname[(bv, k)])}")
+
+    def H(m, sa, jm, sc):
+        bk, kk, _ = need[m]
+        return hname[((bk, sa, jm), kk, sc)]
+    return "\n".join(out) + "\n", names, H, [key(m)[2] for m in range(len(inner))]
+
+
+def _rt_gamma(comp, uhf=False):
+    """Gamma for one inner component, read from dmat, the outer shells'
+    components at their run-time offsets jo{s}. RHF: cj D_ab D_cd - ck (D_ac
+    D_bd + D_ad D_bc) on the total density. UHF: the Coulomb term on Da + Db,
+    the exchange term summed per spin (the per-quartet routine's Gamma)."""
+    ao = ("mui", "nuj", "lamk", "sigl")
+    o = lambda s: f"{ao[s]} + jo{s}" if comp[s] == "o" else f"{ao[s]} + {comp[s]}"
+    D = lambda sp, p, q: f"dmat({sp}, {o(p)}, {o(q)})"
+    if not uhf:
+        return (f"cj*{D(1, 0, 1)}*{D(1, 2, 3)} &\n"
+                f"                    - ck*({D(1, 0, 2)}*{D(1, 1, 3)} &\n"
+                f"                    + {D(1, 0, 3)}*{D(1, 1, 2)})")
+    return (f"cj*({D(1, 0, 1)} + {D(2, 0, 1)}) &\n"
+            f"                    *({D(1, 2, 3)} + {D(2, 2, 3)}) &\n"
+            f"                    - ck*({D(1, 0, 2)}*{D(1, 1, 3)} + {D(1, 0, 3)}*{D(1, 1, 2)} &\n"
+            f"                    + {D(2, 0, 2)}*{D(2, 1, 3)} + {D(2, 0, 3)}*{D(2, 1, 2)})")
+
+
+def _parse_rt_plan(text):
+    """--rt-plan: 'none', or '<outer digits>:<loop|thread>'."""
+    if text == "none":
+        return None
+    outer, form = text.split(":")
+    assert form in ("loop", "thread"), form
+    return (tuple(int(c) for c in outer), form)
+
+
+def rt_chunked_rhf_item_text(tag, item, comps, outer, thread, uhf=False):
+    """rysgi{tag}_crhf (or, with `uhf`, rysgi{tag}_cuhf: ndens = 2, Gamma
+    from both spin densities) in the RUNTIME-OUTER form (see the section
+    comment above), from the compact item routine `item`, as
+    chunked_rhf_item_text builds the literal form. Returns (routine text,
+    chunk count, cn tables)."""
+    rname = f"rysgi{tag}_cuhf" if uhf else f"rysgi{tag}_crhf"
+    la, lb, lc, ld = (int(c) for c in tag)
+    nroots = (la + lb + lc + ld + 1)//2 + 1
+    dims = [len(c) for c in comps]
+    nch = 1
+    for x in outer:
+        nch *= dims[x]
+
+    kfac_line = "         kfac_eff = merge(0.25_dp, 0.5_dp, ndens == 1)*kfac\n"
+    i_kfac = item.index(kfac_line)
+    i_k1 = item.index("            do k1 = 1, nab\n")
+    tval_line = "tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)\n"
+    i_tv = item.index(tval_line, i_k1) + len(tval_line)
+    i_at = item.index("\n         !$acc atomic update\n")
+    pre = _strip_dead_decls(item[:i_kfac])
+    prim_hdr = item[i_k1:i_tv]
+    tail = item[i_at:]
+
+    inner, _ = gr._chunk_keys(comps, outer, 0)
+    names = {"cj", "ck", "ai2", "aj2", "ak2", "gyz", "gxz", "gxy"}
+    names.update(f"gm_{n}" for n in range(len(inner)))
+    kfac_text = ("         ! UHF: ndens is 2 in this routine, so kfac_eff is kfac/2 per spin\n"
+                 "         ! (see the item routine above for the 1/2 and the 8).\n"
+                 "         kfac_eff = 0.5_dp*kfac\n") if uhf else (
+                 "         ! RHF: ndens is 1 in this routine, so kfac_eff is kfac/4\n"
+                 "         ! (see the item routine above for the 1/4 and the 8).\n"
+                 "         kfac_eff = 0.25_dp*kfac\n")
+    body = [kfac_text +
+            "         cj = 8.0_dp*wq*jfac\n"
+            "         ck = 8.0_dp*wq*kfac_eff\n"]
+    for pw in range(2, max(lb, ld) + 1):
+        prev = {2: "{0}"}.get(pw, "{0}" + str(pw - 1))
+        body.append("         " + "; ".join(
+            f"{v}{pw} = {prev.format(v)}*{v}" for v in ("abx", "aby", "abz")) + "\n")
+        body.append("         " + "; ".join(
+            f"{v}{pw} = {prev.format(v)}*{v}" for v in ("cdx", "cdy", "cdz")) + "\n")
+        names.update(f"{v}{pw}" for v in ("abx", "aby", "abz", "cdx", "cdy", "cdz"))
+    body.append("         vax = 0.0_dp; vay = 0.0_dp; vaz = 0.0_dp\n"
+                "         vbx = 0.0_dp; vby = 0.0_dp; vbz = 0.0_dp\n"
+                "         vcx = 0.0_dp; vcy = 0.0_dp; vcz = 0.0_dp\n")
+    if thread:
+        body.append(f"         ! RUNTIME-OUTER CHUNKED RHF PASS: chunk jch of {nch}.\n")
+    else:
+        body.append(f"         ! RUNTIME-OUTER CHUNKED RHF PASS: {nch} chunks.\n"
+                    f"         do jch = 1, {nch}\n")
+    rem = "jch - 1"
+    for n, x in enumerate(outer):
+        if n == len(outer) - 1:
+            body.append(f"            jo{x} = {rem}\n")
+        else:
+            body.append(f"            jo{x} = mod({rem}, {dims[x]})\n")
+            rem = f"({rem})/{dims[x]}"
+        for ax in "xyz":
+            body.append(f"            ex{x}{ax} = cn{ax}{x}_{tag}(jo{x} + 1)\n")
+    wtxt, wn = _rt_weight_lines(tag, outer, " "*12)
+    body.append(wtxt)
+    names.update(wn)
+    for m, comp in enumerate(inner):
+        body.append(f"            gm_{m} = {_rt_gamma(comp, uhf)}\n")
+    body.append(prim_hdr)
+    body.append("                  ai2 = 2.0_dp*alpha_i; aj2 = 2.0_dp*alpha_j; ak2 = 2.0_dp*alpha_k\n")
+    body.append(ri.roots_inline_body(nroots, "tval", 18))
+    body.append(f"""\
+                  do jrt = 1, {nroots}
+                     u2 = theta*ru(jrt)/(1.0_dp - theta*ru(jrt))*rho
+                     dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
+                     b00r  = 0.5_dp*u2*dinv
+                     b10r  = 0.5_dp*(eta + u2)*dinv
+                     bp01r = 0.5_dp*(zeta + u2)*dinv
+                     f00 = pref*rw(jrt)
+                     c00x = pax - u2*eta*dinv*pqx
+                     c00y = pay - u2*eta*dinv*pqy
+                     c00z = paz - u2*eta*dinv*pqz
+                     cp0x = qcx + u2*zeta*dinv*pqx
+                     cp0y = qcy + u2*zeta*dinv*pqy
+                     cp0z = qcz + u2*zeta*dinv*pqz
+""")
+    pad = " "*21
+    Hs, Es = [], []
+    for axis in range(3):
+        txt, nms, H, E = _rt_chunk_axis(tag, comps, outer, inner, axis, pad)
+        body.append(txt)
+        names.update(nms)
+        Hs.append(H)
+        Es.append(E)
+
+    def fac(e):
+        return f"{float(e)}_dp" if isinstance(e, int) else f"real({e}, dp)"
+
+    def nonzero(e):
+        return not isinstance(e, int) or e > 0
+
+    for m in range(len(inner)):
+        v, fi, fj, fk = [], [], [], []
+        for axis, ax in enumerate("xyz"):
+            H = lambda sa, jm, sc: Hs[axis](m, sa, jm, sc)
+            ea, eb, ec = Es[axis][m][0], Es[axis][m][1], Es[axis][m][2]
+            v.append(H(0, 0, 0))
+            e = f"ai2*{H(1, 0, 0)}"
+            if nonzero(ea):
+                e += f" - {fac(ea)}*{H(-1, 0, 0)}"
+            fi.append(e)
+            e = f"aj2*({H(1, 0, 0)} + ab{ax}*{H(0, 0, 0)})"
+            if nonzero(eb):
+                e += f" - {fac(eb)}*{H(0, 1, 0)}"
+            fj.append(e)
+            e = f"ak2*{H(0, 0, 1)}"
+            if nonzero(ec):
+                e += f" - {fac(ec)}*{H(0, 0, -1)}"
+            fk.append(e)
+        body.append(f"{pad}gyz = {v[1]}*{v[2]}*gm_{m}; gxz = {v[0]}*{v[2]}*gm_{m}; "
+                    f"gxy = {v[0]}*{v[1]}*gm_{m}\n")
+        for axis, (ax, gg) in enumerate((("x", "gyz"), ("y", "gxz"), ("z", "gxy"))):
+            body.append(f"{pad}va{ax} = va{ax} + ({fi[axis]})*{gg}\n")
+            body.append(f"{pad}vb{ax} = vb{ax} + ({fj[axis]})*{gg}\n")
+            body.append(f"{pad}vc{ax} = vc{ax} + ({fk[axis]})*{gg}\n")
+    body.append("                  end do\n"
+                "               end do\n"
+                "            end do\n")
+    if not thread:
+        body.append("         end do\n")
+    body.append("\n         ! D from translational invariance, once per item, in place of\n"
+                "         ! a fourth set of accumulators: flx = -fix - fjx - fkx per term.\n"
+                "         vdx = -(vax + vbx + vcx); vdy = -(vay + vby + vcy); vdz = -(vaz + vbz + vcz)\n")
+
+    ints = [f"jo{x}" for x in outer] + [f"ex{x}{ax}" for x in outer for ax in "xyz"]
+    decls = ri.scalar_decl_lines(sorted(names), 6) + "      integer  :: jrt\n"
+    if not thread:
+        decls += "      integer  :: jch\n"
+    if ints:
+        decls += f"      integer  :: {', '.join(ints)}\n"
+    i_si = pre.index("si = sp_i(sOA(seg) + iab)")
+    i_si = pre.rfind("\n", 0, i_si)
+    pre = pre[:i_si] + "\n" + decls + pre[i_si:]
+    pre = pre.replace(f"subroutine rysgi{tag}_compact(", f"subroutine {rname}(", 1)
+    if thread:
+        a = f"subroutine {rname}(seg, "
+        assert pre.count(a) == 1, a
+        pre = pre.replace(a, f"subroutine {rname}(jch, seg, ", 1)
+        a = "      !$acc routine seq\n"
+        assert pre.count(a) == 1
+        pre = pre.replace(a, a + "      integer, intent(in) :: jch\n", 1)
+    tail = tail.replace(f"end subroutine rysgi{tag}_compact", f"end subroutine {rname}")
+    tabs = ""
+    for x in outer:
+        for cnm, a in (("cnx", 0), ("cny", 1), ("cnz", 2)):
+            vals = ", ".join(str(c[a]) for c in comps[x])
+            tabs += f"   integer, parameter :: {cnm}{x}_{tag}({dims[x]}) = [{vals}]\n"
+    return pre + "".join(body) + tail, nch, tabs
+
+
+def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt_plan=None):
     """ORDERED SURVIVOR COMPACTION (ps|ss) prototype, generalised to every
     class: split the fused rysg{tag}/rysgi{tag} this module already built
     (in `head`/`middle`) into the two kernels below. The fused pair itself
@@ -663,6 +1147,9 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
     shells' Cartesian components), the compact driver also gets the
     CHUNKED RHF COMPACT PASS, rysgi{tag}_crhf, and runs it whenever
     ndens == 1; the per-quartet rysgi{tag}_compact stays for ndens == 2.
+    With `rt_plan` set instead (a GRAD_CHUNK_PLAN entry), rysgi{tag}_crhf
+    is the RUNTIME-OUTER form. Returns (text, the cn tables that form
+    needs in the module's specification part).
 
     Every piece below is sliced out of `head`/`middle` by anchoring on
     literal text that does not depend on (la, lb, lc, ld) -- the decode,
@@ -677,6 +1164,9 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
     decode_start_marker = "      ! locate the segment\n"
     decode_start = head.index(decode_start_marker, decl_start)
     item_decls = head[decl_start:decode_start]
+    # `dscr` belongs to the Fock screen (see density_block below).
+    assert item_decls.count("      real(dp) :: qcut, bnd, dscr\n") == 1
+    item_decls = item_decls.replace("      real(dp) :: qcut, bnd, dscr\n", "      real(dp) :: qcut, bnd\n")
 
     schwarz_return = "if (qcut <= thresh) return\n"
     decode_end = head.index(schwarz_return, decode_start) + len(schwarz_return)
@@ -688,9 +1178,22 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
     density_start = head.index(density_comment, si_start)
     si_only_block = head[si_start:density_start]
 
-    density_return = "dsh(sj, sk), dsh(sj, sl)) <= thresh) return\n"
+    density_return = "if (qcut*dscr <= thresh) return\n"
     density_end = head.index(density_return, density_start) + len(density_return)
-    density_block = head[density_start:density_end]
+    # The Fock kernel's screen drops the blocks of a zero factor (jfac,
+    # kfac); a gradient has no such factors and contracts all six blocks,
+    # so it keeps the six-block test instead of the spliced one.
+    density_block = """         ! Density-weighted screen.  What actually enters the Fock matrix is
+         ! Q_ab Q_cd times a density block, so a quartet whose integrals are
+         ! above threshold still contributes nothing if every density block it
+         ! multiplies is negligible.  The J terms carry a factor 4 from the
+         ! Coulomb degeneracy, the K terms 1.  For a converged density on an
+         ! extended molecule this is where most of the screening comes from --
+         ! with a flat model density it correctly fires on nothing.
+         if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), &
+                      dsh(si, sk), dsh(si, sl), &
+                      dsh(sj, sk), dsh(sj, sl)) <= thresh) return
+"""
 
     # same_ab/same_cd/same_pair, slotab/slotcd/nab/ncd, abx..cdz, the
     # injected same-atom+mui+wq+kfac_eff+gam block, and the primitive-pair
@@ -823,8 +1326,20 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
    end subroutine rysgi{tag}_screen_chunk
 """
 
-    def compact_loop(item, indent):
+    def compact_loop(item, indent, nch=0):
         p = " "*indent
+        if nch:
+            # One iteration per (survivor, chunk), survivor fastest, so a
+            # warp's lanes share one chunk (gen_rys.py's 'thread' form).
+            return (f"{p}do concurrent(i=1:nout*{nch})\n"
+                    f"{p}   call {item}(int((i - 1)/nout) + 1, out_seg(mod(i - 1, nout) + 1), &\n"
+                    f"{p}                          out_iab(mod(i - 1, nout) + 1), out_icd(mod(i - 1, nout) + 1), &\n"
+                    f"{p}                          nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &\n"
+                    f"{p}                          npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &\n"
+                    f"{p}                          nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &\n"
+                    f"{p}                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &\n"
+                    f"{p}                          ndens, dmat, npriv, gp, {slot_expr})\n"
+                    f"{p}end do\n")
         return (f"{p}do concurrent(i=1:nout)\n"
                 f"{p}   call {item}(out_seg(i), out_iab(i), out_icd(i), nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &\n"
                 f"{p}                          npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &\n"
@@ -833,16 +1348,32 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
                 f"{p}                          ndens, dmat, npriv, gp, {slot_expr})\n"
                 f"{p}end do\n")
 
-    if chunk_inside is None:
+    rt_nch, rt_thread = 0, False
+    if rt_plan is not None:
+        rt_outer, rt_form = rt_plan
+        rt_thread = rt_form == "thread"
+        rt_nch = 1
+        for x in rt_outer:
+            rt_nch *= len(comps[x])
+    if chunk_inside is None and rt_plan is None:
         compact_loops = compact_loop(f"rysgi{tag}_compact", 6)
+    elif rt_plan is not None:
+        compact_loops = (
+            "      ! RUNTIME-OUTER CHUNKED PASS (gen_rys_grad.py): crhf for RHF, cuhf\n"
+            "      ! for UHF (ndens = 2).\n"
+            "      if (ndens == 1) then\n"
+            + compact_loop(f"rysgi{tag}_crhf", 9, rt_nch if rt_thread else 0)
+            + "      else\n"
+            + compact_loop(f"rysgi{tag}_cuhf", 9, rt_nch if rt_thread else 0)
+            + "      end if\n")
     else:
         compact_loops = (
-            "      ! RHF runs the CHUNKED RHF COMPACT PASS (gen_rys_grad.py); UHF keeps\n"
-            "      ! the per-quartet form below.\n"
+            "      ! CHUNKED COMPACT PASS (gen_rys_grad.py): crhf for RHF, cuhf for\n"
+            "      ! UHF (ndens = 2).\n"
             "      if (ndens == 1) then\n"
             + compact_loop(f"rysgi{tag}_crhf", 9)
             + "      else\n"
-            + compact_loop(f"rysgi{tag}_compact", 9)
+            + compact_loop(f"rysgi{tag}_cuhf", 9)
             + "      end if\n")
 
     compact = f"""
@@ -923,10 +1454,57 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None):
 {compact_decls}
 {si_only_block}{rest_after_density}{compact_middle}"""
 
+    tabs = ""
     if chunk_inside is not None:
         i_item = compact.index(f"   pure subroutine rysgi{tag}_compact(")
-        compact += "\n" + chunked_rhf_item_text(tag, compact[i_item:], comps, chunk_inside)
-    return screen + compact
+        item = compact[i_item:]
+        # As for the run-time form below: both from the compact routine
+        # alone, which is then not emitted (nothing calls it any more).
+        uhf_rt = GRAD_UHF_RT_PLAN.get(tag)
+        if uhf_rt is None:
+            txt_u = chunked_rhf_item_text(tag, item, comps, chunk_inside, uhf=True)
+        else:
+            txt_u, _, tabs = rt_chunked_rhf_item_text(tag, item, comps, uhf_rt[0],
+                                                      uhf_rt[1] == "thread", uhf=True)
+            assert uhf_rt[1] == "loop", "a thread-form UHF override needs its own launch"
+        compact = (compact[:i_item] + chunked_rhf_item_text(tag, item, comps, chunk_inside)
+                   + "\n" + txt_u)
+    elif rt_plan is not None:
+        i_item = compact.index(f"   pure subroutine rysgi{tag}_compact(")
+        # Both from the compact routine alone: slicing after the first is
+        # appended would carry a copy of it into the second one's tail.
+        item = compact[i_item:]
+        txt, _, tabs = rt_chunked_rhf_item_text(tag, item, comps, rt_plan[0], rt_thread)
+        txt_u, _, _ = rt_chunked_rhf_item_text(tag, item, comps, rt_plan[0], rt_thread, uhf=True)
+        # The per-quartet routine is only their source text now: RHF and UHF
+        # both run a chunked pass, so it is not emitted (nothing calls it).
+        compact = compact[:i_item] + txt + "\n" + txt_u
+    return screen + compact, tabs
+
+
+def _untile(src):
+    """The Fock kernel with its tile strides folded back into the extents.
+
+    A Fock segment may be a tile of a bin (trc_bin_tiles), so
+    the Fock kernels take the bin's pair count sSA/sSB as the stride of the
+    bin-interleaved primitive table, apart from the segment's extent sA/sNB.
+    A gradient plan never tiles -- every segment is a whole bin, stride and
+    extent equal -- so the gradient kernels keep the one pair of arrays."""
+    decl = (
+        "      integer,  intent(in)    :: sSA(nseg), sSB(nseg)\n"
+        "      !! Pairs in the whole bra / ket BIN: the stride of that interleave.\n"
+        "      !! sA/sNB are the pairs the segment covers, which is the whole bin\n"
+        "      !! unless the launcher cut the bin into exchange tiles\n"
+        "      !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.\n")
+    assert decl in src, "gen_perclass.py's sSA/sSB declaration changed"
+    src = src.replace(decl, "")
+    src = src.replace("sPA, sPB, sSA, sSB, sD", "sPA, sPB, sD")
+    src = src.replace("sSA(seg)", "sA(seg)").replace("sSB(seg)", "sNB(seg)")
+    src = src.replace(
+        "      !! Primitive base of the bra / ket pairs, into qp_* below -- the\n",
+        "      !! Primitive base of the bra bin / ket bin, into qp_* below -- the\n")
+    assert "sSA" not in src and "sSB" not in src
+    return src
 
 
 #: `pcsi{tag}`'s primitive-quartet head already computes the wB97X-V
@@ -1018,6 +1596,9 @@ def main():
                     help="classes whose RHF compact pass uses the CHUNKED "
                          "RHF COMPACT PASS: 'auto' (chunk_auto's rule), "
                          "'none', 'all', or a comma-separated list of tags")
+    ap.add_argument("--rt-plan", default=None,
+                    help="override GRAD_CHUNK_PLAN for this class: 'none', or the outer "
+                         "shells and form, e.g. '23:thread' or ':loop' (one chunk)")
     ap.add_argument("--chunk-live-max", type=int, default=CHUNK_LIVE_MAX,
                     help="live-set ceiling chunk_plan picks the chunk shape under")
     ap.add_argument("-o", "--output", required=True,
@@ -1030,15 +1611,15 @@ def main():
     nig, nkg = ni + 1, nk + 1       # the gradient-extended table's dims
     L = la + lb + lc + ld
     nroots = (L + 1)//2 + 1
-    if nroots > 5:
-        raise SystemExit(f"class {tag}: nroots={nroots} exceeds the 5 "
+    if nroots > 9:
+        raise SystemExit(f"class {tag}: nroots={nroots} exceeds the 9 "
                           "committed root tables")
     dims = [len(co.components(l, args.order)) for l in (la, lb, lc, ld)]
     nv = dims[0]*dims[1]*dims[2]*dims[3]
     unroll = nv <= _parse_unroll_max(args.unroll_max_comp)
 
     src_path = os.path.join(args.src_dir, f"trc_pc_k{tag}.F90")
-    src = open(src_path).read()
+    src = _untile(open(src_path).read())
 
     i_item = src.index(f"   pure subroutine pcsi{tag}(")
     i_end = src.index(f"end subroutine pcsi{tag}\n") + len(f"end subroutine pcsi{tag}\n")
@@ -1440,20 +2021,29 @@ contains
         chunked = sel == "all"
     else:
         chunked = tag in sel.split(",")
+    rt_plan = GRAD_CHUNK_PLAN.get(tag) if args.rt_plan is None else _parse_rt_plan(args.rt_plan)
+    if rt_plan is not None:
+        chunked = False
     inside = chunk_plan(comps, args.chunk_live_max) if chunked else None
-    sc_text = screen_and_compact_text(tag, head, middle, comps, inside)
+    sc_text, rt_tabs = screen_and_compact_text(tag, head, middle, comps, inside, rt_plan)
 
     # Emit the module prelude and the screen/compact pair only. The fused
     # rysg{tag}/rysgi{tag} in head + middle is just the text sc_text was
     # sliced from: nothing calls it, and compiling it would roughly double
     # each file's compile time for nothing.
-    prelude = head[:head.index("\ncontains\n") + len("\ncontains\n")]
+    prelude = head[:head.index("\ncontains\n")]
+    # A class past --unroll-max-comp already declares every shell's cn
+    # tables for its array form: add only the ones it lacks.
+    rt_tabs = "".join(ln + "\n" for ln in rt_tabs.splitlines()
+                      if ln.split("::")[1].split("(")[0].strip() + "(" not in prelude)
+    prelude += "\n" + rt_tabs + "\ncontains\n"
     out = prelude + sc_text + f"\nend module trc_pc_rysg{tag}\n"
     with open(args.output, "w") as fh:
         fh.write(out)
     print(f"  {args.output}: ({la}{lb}|{lc}{ld}), {nroots} roots, "
           f"{len(out.splitlines())} lines"
-          + (f", chunked inside={inside}" if inside is not None else ""))
+          + (f", chunked inside={inside}" if inside is not None else "")
+          + (f", runtime-outer {rt_plan}" if rt_plan is not None else ""))
 
 
 if __name__ == "__main__":

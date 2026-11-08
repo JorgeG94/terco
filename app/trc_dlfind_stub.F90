@@ -73,6 +73,7 @@ module trc_dlfind_bridge
       integer(c_int) :: fallback_guess_kind = 2_c_int
       integer :: maxiter = 100
       real(dp) :: gtol = 4.5e-4_dp
+      logical :: rimp2 = .false.
       integer :: algorithm = TRC_OPT_ALG_LBFGS
       integer :: target_kind = TRC_OPT_TARGET_MINIMUM
       integer :: saddle_method = TRC_OPT_SADDLE_PRFO
@@ -115,6 +116,7 @@ module trc_dlfind_bridge
       logical :: converged = .false.
       logical :: failed = .false.
       character(len=:), allocatable :: message
+      integer :: refusal_status = 0
       integer :: steps = 0
       integer :: energy_evaluations = 0
       integer :: hessian_evaluations = 0

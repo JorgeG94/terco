@@ -54,10 +54,18 @@ contains
          call json%add(root, "scf energy", real(r%etot, dp))
          call json%add(root, "total energy", real(r%etot, dp))
       end if
+      ! The final SCF's frontier orbitals, Eh: the restricted (or alpha) set,
+      ! and for an unrestricted run the beta set under its own keys.
+      if (r%has_homo(1)) call json%add(root, "homo energy", r%homo(1))
+      if (r%has_lumo(1)) call json%add(root, "lumo energy", r%lumo(1))
+      if (r%nspin == 2) then
+         if (r%has_homo(2)) call json%add(root, "beta homo energy", r%homo(2))
+         if (r%has_lumo(2)) call json%add(root, "beta lumo energy", r%lumo(2))
+      end if
       if (r%grad .and. allocated(r%gradient)) call add_gradient(json, root, r)
       if (r%hessian .and. r%hess_ok) call add_hessian(json, root, r)
       if (r%opt) call add_optimization(json, root, r)
-      if (r%charges == "hirshfeld" .and. allocated(r%hirshfeld_charges)) call add_charges(json, root, r)
+      if (allocated(r%hirshfeld_charges) .or. allocated(r%chelpg_charges)) call add_charges(json, root, r)
       if (r%fukui == "hirshfeld" .and. allocated(r%fukui_f_plus)) call add_fukui(json, root, r)
       call json%print(root, path)
       if (json%failed()) then
@@ -97,14 +105,21 @@ contains
    end subroutine add_gradient
 
    subroutine add_charges(json, root, r)
-      !! Hirshfeld charges as an array, one per atom in `r%hirshfeld_charges`'s
-      !! own (and `trc_set_molecule`'s) atom order, plus their sum.
+      !! Each requested scheme's charges as an array, one per atom in
+      !! `trc_set_molecule`'s atom order, plus its sum: Hirshfeld's and
+      !! CHELPG's side by side when --charges names both.
       type(json_core), intent(inout) :: json
       type(json_value), pointer, intent(in) :: root
       type(run_t), intent(in) :: r
       call json%add(root, "charges scheme", r%charges)
-      call json%add(root, "hirshfeld charges", r%hirshfeld_charges)
-      call json%add(root, "hirshfeld charges sum", sum(r%hirshfeld_charges))
+      if (allocated(r%hirshfeld_charges)) then
+         call json%add(root, "hirshfeld charges", r%hirshfeld_charges)
+         call json%add(root, "hirshfeld charges sum", sum(r%hirshfeld_charges))
+      end if
+      if (allocated(r%chelpg_charges)) then
+         call json%add(root, "chelpg charges", r%chelpg_charges)
+         call json%add(root, "chelpg charges sum", sum(r%chelpg_charges))
+      end if
    end subroutine add_charges
 
    subroutine add_fukui(json, root, r)
@@ -223,7 +238,7 @@ contains
       call json%add(oobj, "converged", r%opt_converged)
       call json%add(oobj, "steps", r%opt_steps)
       call json%add(oobj, "energy_evaluations", r%opt_evals)
-      call json%add(oobj, "final_energy", real(r%etot, dp))
+      call json%add(oobj, "final_energy", real(r%etot_total, dp))
       call json%add(oobj, "final_gradient_max", r%opt_gmax)
       call json%add(oobj, "final_gradient_rms", r%opt_grms)
       call json%add(oobj, "gradient_tolerance", r%opt_gtol)

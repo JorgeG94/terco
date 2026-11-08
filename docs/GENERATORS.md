@@ -90,7 +90,7 @@ Measured, not modelled (V100, w20 water cluster in cc-pVQZ unless noted):
 | seven heavy d (`FOCK_RYS_DEFAULT`), every f | chunked Rys | beat HGP on all six test systems |
 | g, la+lb+lc+ld <= 9 | chunked Rys | MD lost 2.8–3.8x to GPU4PySCF's Rys there; best chunk shape per class 2.62 s against 6.90 s in MD |
 | g, total L >= 10 | MD exchange (`trc_mdg`) | MD won 19 of the 25 classes at L 10–12 against every Rys shape |
-| J, all classes, when MD J is on | MD J (`trc_mdj`) | 2.5x over HGP/Rys J at cc-pVTZ |
+| J, all classes, when MD J is on (a pure functional, a g basis, or `eri_mdj_size_rule` in `trc_eri`: extended or diffuse systems) | MD J (`trc_mdj`) | 2.5x over HGP/Rys J at cc-pVTZ; gly50 cc-pVDZ RHF 14.6 -> 5.5 s/build (V100) |
 
 The crossover at total L 9 matches Palethorpe, Stocks and Barca's (H200,
 HGP below 6 and MD above 9) on different hardware and with Rys rather than

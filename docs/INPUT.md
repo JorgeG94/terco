@@ -55,7 +55,9 @@ json = "water.json"
 - **Flags override the file.** `terco run.toml --grid 4` runs with grid 4
   whatever `[dft] grid` says. A switch set to `true` in the file cannot be
   turned off from the command line (there is no `--no-grad`); leave it out
-  of the file instead.
+  of the file instead. `incremental` is on by default and has both forms:
+  `false` is `--no-incremental`, and the file's `false` with a command
+  line `--incremental` (or the reverse) is refused as a contradiction.
 - **The driver is explicit.** `[driver]` holds the switches that choose what
   runs after the SCF; there is no "section present means on".
 - **The resolved input is recorded.** The JSON summary (`[output] json` or
@@ -97,7 +99,7 @@ json = "water.json"
 | `energy_tol` | float | `--econv` | energy convergence, Eh (1e-10) |
 | `commutator_tol` | float | `--gconv` | norm of the orthogonalised commutator \|FDS − SDF\| (1e-5) |
 | `screening` | float | `--thresh` | integral screening threshold (1e-12) |
-| `incremental` | bool | `--incremental` | incremental Fock build |
+| `incremental` | bool | `--incremental` / `--no-incremental` | incremental Fock build (true, the default; false is a full build every iteration) |
 | `density_fitted` | bool | `--df` | density-fitted J and K (basis: `[basis] jk_auxiliary`) |
 | `restart` | string | `--restart` | read the SCF result from a `save_scf` file |
 
@@ -153,13 +155,20 @@ How the SCF gets there; the defaults suit most systems.
 | `optimize` | bool | `--opt` | geometry optimisation (needs DL-FIND) |
 
 `optimize` and `hessian` together are `--opt-freq`: optimise, then the Hessian
-at the optimised geometry.
+at the optimised geometry. With RI-MP2 (`[correlation] method`) or a double
+hybrid, every optimisation step and every Hessian displacement reruns the
+RI-MP2, so both act on the correlated total energy (a double hybrid's
+E_KS + c_os E_os + c_ss E_ss), which is also the energy the thermochemistry
+starts from. What the correlated gradient refuses (an unrestricted
+reference, PCM) is refused: by `optimize` before the first SCF, by a
+`hessian` without `optimize` after the reference SCF, before any
+displacement runs.
 
 ### `[analysis]`
 
 | Key | Type | Flag | Meaning |
 |---|---|---|---|
-| `charges` | string | `--charges` | atomic charges: `hirshfeld` |
+| `charges` | string | `--charges` | atomic charges: `hirshfeld`, `chelpg`, or both as `"hirshfeld,chelpg"` |
 | `fukui` | string | `--fukui` | condensed Fukui indices: `hirshfeld` |
 
 ### `[hessian]`

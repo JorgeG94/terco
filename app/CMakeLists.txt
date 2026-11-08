@@ -132,6 +132,14 @@ if(TERCO_ENABLE_TESTING)
     terco/cli_rhf PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
                              "TOTAL ENERGY +-75\\.98397446")
 
+  # A basis named with "*": 6-31G* resolves to the shipped 6-31gs.json (BSE's
+  # own 6-31g_st_.json first, when a basis directory has it; BSE keeps "+"). Water RHF/6-31G*
+  # is test/pyscf_refs/cphf_water_6-31gs.ref's E_SCF, -76.0105049954.
+  add_test(NAME terco/cli_basis_star COMMAND terco_cli ${_xyz}/water.xyz --basis 6-31G*)
+  set_tests_properties(
+    terco/cli_basis_star PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+                                    "TOTAL ENERGY +-76\\.010504")
+
   # The same through every other guess, so each one stays reachable from the
   # command line and converges to the same state.
   foreach(g sap gwh core minao)
@@ -172,6 +180,30 @@ if(TERCO_ENABLE_TESTING)
     PROPERTIES ENVIRONMENT "${_env}" WORKING_DIRECTORY
                ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
                "1  O +-0\\.342803")
+
+  # CHELPG charges through the CLI, alone and beside Hirshfeld's, and an
+  # unknown scheme refused before the SCF. The O charge is terco's own
+  # (check_chelpg validates the method against pyscf and mqc).
+  add_test(NAME terco/cli_charges_chelpg
+           COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --charges chelpg)
+  set_tests_properties(
+    terco/cli_charges_chelpg
+    PROPERTIES ENVIRONMENT "${_env}" WORKING_DIRECTORY
+               ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
+               "chelpg charges.*1  O +-0\\.944615")
+  add_test(NAME terco/cli_charges_hirshfeld_chelpg
+           COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --charges hirshfeld,chelpg)
+  set_tests_properties(
+    terco/cli_charges_hirshfeld_chelpg
+    PROPERTIES ENVIRONMENT "${_env}" WORKING_DIRECTORY
+               ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
+               "hirshfeld charges.*1  O +-0\\.342803.*chelpg charges.*1  O +-0\\.944615")
+  add_test(NAME terco/cli_charges_unknown
+           COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --charges mulliken)
+  set_tests_properties(
+    terco/cli_charges_unknown
+    PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+               "unknown --charges 'mulliken'")
 
   # --fukui without --guess runs from minao (the default it sets, which the
   # ions inherit; the NA-040 anion needs it), and f+, f- and f0 each sum to

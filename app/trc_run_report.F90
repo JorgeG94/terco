@@ -168,6 +168,7 @@ contains
       ! that specifically no longer has to infer it from context.
       call line("TOTAL ENERGY", merge(r%etot_dh, r%etot, r%dh .and. r%conv /= 0))
       call line("SCF ENERGY", r%etot)
+      call frontier_lines(r)
       if (r%rimp2 .and. r%conv /= 0) then
          if (r%dh) then
             call line("PT2 CORRELATION", r%eos + r%ess)
@@ -232,31 +233,34 @@ contains
    end subroutine run_gradient_summary
 
    module subroutine run_charges_summary(r)
-      !! Per-atom Hirshfeld charges (e) and their sum, which should match
-      !! the molecular charge to round-off (the charges are renormalised
-      !! to Tr(D S), trc_hirshfeld.F90's own job). `r%hirshfeld_charges`
-      !! is already filled by the time this is called (trc_main's own
-      !! job, right after `trc_hirshfeld_charges`).
+      !! Per-atom charges (e) of each scheme --charges named, and their
+      !! sum, which matches the molecular charge to round-off: Hirshfeld's
+      !! are renormalised to Tr(D S) (trc_hirshfeld.F90), CHELPG's are fitted
+      !! under that constraint (trc_chelpg.F90). Both arrays are filled by
+      !! the time this is called (trc_main's own job, right after the
+      !! trc_*_charges calls).
       type(run_t), intent(in) :: r
+      if (allocated(r%hirshfeld_charges)) call charges_table(r, "hirshfeld", r%hirshfeld_charges)
+      if (allocated(r%chelpg_charges)) call charges_table(r, "chelpg", r%chelpg_charges)
+   end subroutine run_charges_summary
+
+   subroutine charges_table(r, scheme, charges)
+      type(run_t), intent(in) :: r
+      character(len=*), intent(in) :: scheme
+      real(dp), intent(in) :: charges(:)
+      character(len=1024) :: logline
       integer :: ia
       call global_logger%info("")
-      call global_logger%info("   hirshfeld charges (e)")
+      call global_logger%info("   "//scheme//" charges (e)")
       call global_logger%info("   ----------------------------------------------------------")
       do ia = 1, r%natm
-         block
-            character(len=1024) :: logline
-            write (logline, "(a,i4,2x,a2,f16.8)") "   ", ia, app_element_symbol(r%z(ia)), &
-               r%hirshfeld_charges(ia)
-            call global_logger%info(trim(logline))
-         end block
+         write (logline, "(a,i4,2x,a2,f16.8)") "   ", ia, app_element_symbol(r%z(ia)), charges(ia)
+         call global_logger%info(trim(logline))
       end do
       call global_logger%info("   ----------------------------------------------------------")
-      block
-         character(len=1024) :: logline
-         write (logline, "(a,es12.4)") "   sum              : ", sum(r%hirshfeld_charges)
-         call global_logger%info(trim(logline))
-      end block
-   end subroutine run_charges_summary
+      write (logline, "(a,es12.4)") "   sum              : ", sum(charges)
+      call global_logger%info(trim(logline))
+   end subroutine charges_table
 
    module subroutine run_fukui_summary(r)
       !! Per-atom Hirshfeld-condensed Fukui indices (f+, f-, f0) and their
@@ -310,6 +314,23 @@ contains
       call trc_vib_log_table(r%freq_cm1, r%redmass_amu, r%force_const)
       call trc_thermo_log_summary(r%thermo)
    end subroutine run_hessian_summary
+
+   subroutine frontier_lines(r)
+      !! HOMO/LUMO rows of the energy box: one pair for a restricted run,
+      !! an alpha and a beta pair for an unrestricted one.
+      type(run_t), intent(in) :: r
+      character(len=8), parameter :: tag(2) = ["(alpha) ", "(beta)  "]
+      integer :: s
+      do s = 1, r%nspin
+         if (r%nspin == 1) then
+            if (r%has_homo(s)) call line("HOMO", real(r%homo(s), c_double))
+            if (r%has_lumo(s)) call line("LUMO", real(r%lumo(s), c_double))
+         else
+            if (r%has_homo(s)) call line("HOMO "//trim(tag(s)), real(r%homo(s), c_double))
+            if (r%has_lumo(s)) call line("LUMO "//trim(tag(s)), real(r%lumo(s), c_double))
+         end if
+      end do
+   end subroutine frontier_lines
 
    subroutine line(label, e)
       character(len=*), intent(in) :: label

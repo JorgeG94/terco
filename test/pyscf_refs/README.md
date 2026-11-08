@@ -278,6 +278,7 @@ to 1.5e-12, so they hold the general tolerance.
 | (new, PCM) | `pcm_cavity_water.ref` | `check_pcm_cavity.F90` |
 | (new, PCM) | `pcm_ints_water_631gs.ref`, `pcm_ints_water_ccpvtz.ref` (LMAX=3 build) | `check_pcm_ints.F90` |
 | (new, PCM) | `pcm_scf_main.ref`, `pcm_scf_f.ref` (LMAX=3 build) | `scf_pcm.F90` |
+| (new, CHELPG) | `chelpg.ref` (mqc's grid and fit, pyscf's SCF and `int1e_grids`; no terco binary needed) | `check_chelpg.F90` |
 
 Every `terco/*_vs_pyscf_ref`/`*_ref` ctest entry these scripts used to back
 is gone; the single `terco/check_*`/`scf_*` entry now does both halves

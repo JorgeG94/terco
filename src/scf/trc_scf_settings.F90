@@ -23,13 +23,15 @@ module trc_scf_settings
    use trc_xc, only: XC_RHO_TOL
    use trc_pcm, only: pcm_model_from_name, PCM_MODEL_NONE, PCM_DEFAULT_LEBEDEV
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
+   use trc_decontract, only: trc_decontract_options_t
    implicit none
    private
 
    public :: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_settings_spin_rule, scf_energies_t
    public :: scf_settings_eri_thresh_env
    public :: scf_settings_homo_lumo_gap
-   ! incr_env/incr_reset_env/incr_thresh_scale_env/incr_start_env stay
+   public :: scf_settings_fock_densities
+   ! incr_env/incr_reset_env/incr_real_env stay
    ! private: nothing outside this module uses them.
    public :: DEFAULT_NLC_GRID_LEVEL
    public :: DEFAULT_SOSCF_START
@@ -82,38 +84,81 @@ module trc_scf_settings
       !! when the pairs are binned. 1 is decades, which is what this always
       !! did; higher values make the pre-launch screen finer, at more and
       !! smaller batches. Settable through trc_set_batching.
-      logical :: incremental = .false.
+      type(trc_decontract_options_t) :: decontract
+      !! How the four-centre engine splits the basis into its working basis
+      !! (trc_decontract). The integrals are exact in any working basis; the
+      !! policy sets the cost and, at the screening threshold, what is
+      !! dropped (trc_decontract's DECON_SHELL_COST_DEFAULT says how much).
+      !! Gradients, the response solves and the RI-MP2 gradient build their
+      !! own engines with it too. TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE,
+      !! TRC_DECON_SHELL_COST and TRC_DECON_SCREEN_WHOLE override it; with
+      !! more than one rank, rank 0's environment decides.
+      logical :: incremental = .true.
       !! Rebuild the two-electron matrix from the DENSITY DIFFERENCE, accumulating
-      !! onto the last one. G is linear in D so this is exact; it buys screening,
-      !! because the difference shrinks as the SCF converges while D does not. On a
-      !! 123-atom silica slice the late iterations dominate the time and are the ones
-      !! the difference screens hardest. A full build is taken every `incr_reset`
-      !! iterations as a drift backstop. TRC_INCREMENTAL=1 turns it on without a
-      !! rebuild.
+      !! onto the last one. G is linear in D, so this is exact but for the
+      !! screening, and the screening is the point: the difference shrinks as the
+      !! SCF converges while D does not. trc_scf_incremental decides which builds
+      !! are increments and carries the error argument; in short, the first build
+      !! is full, every later one is an increment, and convergence is declared only
+      !! on a full build, so the reported energy and density are a full build's.
+      !! The exchange-correlation potential and the continuum are rebuilt in full
+      !! from the density every iteration either way. Off for SAD's free atoms and
+      !! under `df` (a full build every iteration, nothing to screen);
+      !! TRC_INCREMENTAL=0 or 1 overrides it without a rebuild.
       !!
-      !! It was off because the difference density was given the same absolute
-      !! screening threshold as a full build: the dropped quartets are bounded
-      !! absolutely, which is no bound once the density is heading to zero. On
-      !! w172/6-31G (450 atoms, 1950 AOs) the energy bounced by 1e-4 to 1e-6 Eh per
-      !! iteration while RMS(D) reached 1e-10, since each difference build drops a
-      !! different set and those errors do not cancel. `incr_thresh_scale` and
-      !! `incr_start` are the fix: 200 unconverged iterations became 20, at the same
-      !! energy as incremental-off (-11395.98363707), in 23.3 s against 24.4 s.
-      integer :: incr_reset = 20
-      real(dp) :: incr_thresh_scale = 1.0e-4_dp
-      !! Multiplies `eri_thresh` for an incremental build only, a fixed tighter
-      !! screen. Scaling by ||ddif||/||dref|| was tried first and is backwards: it
-      !! loosens as ddif shrinks, losing the speed an increment exists for (25.6 s
-      !! on w172). A fixed floor keeps per-quartet error small enough that unlucky
-      !! non-cancelling drops cannot add up past `conv_energy`. 1e-4 reproduces the
-      !! incremental-off energy to 2e-10 on w172 while costing less than a full build.
-      real(dp) :: incr_start = 1.0e-2_dp
-      !! Do not increment until the previous iteration's commutator norm is below
-      !! this. Early on D swings by a large fraction of itself (on w172 the energy
-      !! jumps 1267 Eh between iterations 3 and 4), so ddif is no smaller than D and
-      !! the fixed floor makes an increment survey more quartets than a full build.
-      !! Gating on `errmax < incr_start` turned a 34 s run into 23.3 s (reference
-      !! 24.4 s) at the same energy.
+      !! Measured (V100, RHF cc-pVTZ, `eri_thresh` 3.16e-11, `conv_energy` 1e-8),
+      !! full builds / these defaults: gly10 14 / 14 iterations, 69.9 / 45.4 s;
+      !! gly20 14 / 14, 216.6 / 139.9 s; water20 12 / 12, 22.3 / 13.6 s; final
+      !! energies within 2e-12 Eh. The defaults before this schedule (screen 1e-4
+      !! tighter, from |FDS - SDF| < 1e-2, a full build every 20) took 69.8 s on
+      !! gly10: the first increment came at iteration 9 and cost more than a full
+      !! build. `incr_reset` and the three below are that schedule's knobs, each
+      !! with an environment hook (TRC_INCR_RESET, TRC_INCR_THRESH_SCALE,
+      !! TRC_INCR_EARLY_SCALE, TRC_INCR_EARLY_UNTIL, TRC_INCR_START).
+      real(dp) :: incr_predict = 1.0_dp
+      !! The build after one whose commutator, times its ratio to the one
+      !! before, falls below `incr_predict * conv_diis` is full: the
+      !! iteration predicted to converge (trc_scf_incremental, rule 2). 0
+      !! turns the prediction off, so convergence is first met on an
+      !! increment and retaken on the next, full, build (rule 1);
+      !! TRC_INCR_PREDICT overrides it.
+      logical :: incremental_requested = .false.
+      !! The caller set `incremental` on itself (trc_set_incremental(1),
+      !! TRC_INCREMENTAL=1) rather than leaving the default. Read only to
+      !! decide how loudly `df` turning increments off is reported: a warning
+      !! when they were asked for, an info line when they were the default.
+      integer :: incr_reset = 30
+      !! At most this many increments in a row before a full build (0: no
+      !! limit). A loose cap only: the stall rule rebuilds as soon as the
+      !! accumulated error shows (trc_scf_incremental, rule 3), and none of the
+      !! measured runs reached 30 increments without one.
+      real(dp) :: incr_thresh_scale = 1.0_dp
+      !! Multiplies `eri_thresh` for an increment once |FDS - SDF| is below
+      !! `incr_early_until`: the full build's own screen. It was 1e-4, chosen on
+      !! a 450-atom water cluster in 6-31G where the energy bounced by 1e-4 to
+      !! 1e-6 Eh at 1 -- before the Schwarz bounds were fixed (they were 4 pi too
+      !! small). Re-measured on w172/6-31G (516 atoms, 2236 functions, 1e-12) at
+      !! 1: 12 iterations as with full builds, the energy within 6e-11 Eh, no
+      !! bounce. A tighter screen only costs time (gly10 cc-pVTZ, increments from
+      !! iteration 2, before the exchange-only density screen: 57.0 s at 1,
+      !! 72.5 s at 1e-2, 86.6 s at 1e-4, the same 14 iterations).
+      real(dp) :: incr_early_scale = 100.0_dp
+      !! Multiplies `eri_thresh` for an increment while the previous
+      !! |FDS - SDF| is at least `incr_early_until`; leaving that phase takes a
+      !! full build, which discards what the loose increments left in G. At 100
+      !! the increments' accumulated error holds the commutator at 2e-5 (water20)
+      !! to 5e-5 (gly10, gly20) when they run to convergence, so above 1e-2 it is
+      !! invisible: the iterates match full builds to three digits in
+      !! |FDS - SDF|. At 1000 that floor reaches ~5e-4 and gly20 took 16 iterations
+      !! instead of 14.
+      real(dp) :: incr_early_until = 1.0e-2_dp
+      !! The commutator norm that ends the loose phase (above). 1e-3 kept gly20
+      !! loose too long (the switch rebuild moved the commutator 10%, one more
+      !! iteration); 1e-2 matched the full-build iteration counts everywhere.
+      real(dp) :: incr_start = huge(1.0_dp)
+      !! Do not increment until the previous commutator norm is below this; the
+      !! default increments from iteration 2. The old 1e-2 held the increments
+      !! back to iterations 7 to 9, so the first five builds were all full.
       integer :: ndiis = 10
       integer :: ndamp = -1                  !! damped steps before DIIS, at least
       !! The damped start, -1 meaning "by spin": a closed shell goes to DIIS from
@@ -237,6 +282,9 @@ module trc_scf_settings
       real(dp) :: e_pcm = 0.0_dp       !! PCM dielectric energy q.v/2, included in `energy`
       real(dp) :: pcm_qtotal = 0.0_dp  !! total apparent surface charge
       integer :: pcm_npoints = 0       !! surface points the cavity kept
+      integer :: n_increments = 0
+      !! Fock builds taken from the density difference (trc_scf_incremental);
+      !! the rest of `iterations` were full builds, the last one always.
       integer :: n_lindep = 0
       !! Functions dropped by canonical orthogonalisation: S eigenvalues
       !! below `opts%lindep_thresh`. 0 for every compact basis; see
@@ -283,12 +331,25 @@ module trc_scf_settings
       !! an extra argument.
       logical :: pcm_on = .false.
       logical :: incr_on = .false.
+      logical :: incr_off_df = .false.
+      !! Increments were on (by default or asked for) but `df` turned them off.
+      logical :: incr_df_requested = .false.
+      !! ... and they had been asked for explicitly (`incremental_requested`).
       logical :: df = .false.
       logical :: talk = .false.
       logical :: root = .true.
       real(dp) :: eri_thresh_run = 0.0_dp
       real(dp) :: incr_start_run = 0.0_dp
       real(dp) :: incr_scale_run = 0.0_dp
+      real(dp) :: incr_early_scale_run = 0.0_dp
+      real(dp) :: incr_early_until_run = 0.0_dp
+      real(dp) :: incr_predict_run = 1.0_dp
+      !! `opts%incr_predict`, or TRC_INCR_PREDICT: the next build is full once the
+      !! commutator it is predicted to reach is below this times `conv_diis`.
+      real(dp) :: incr_endgame_run = 0.0_dp
+      !! TRC_INCR_ENDGAME, an experiment hook only: every build is full once
+      !! |FDS - SDF| < this times `conv_diis` (0, the default: the schedule's
+      !! own prediction alone, trc_scf_incremental's rule 2).
       integer :: incr_reset_run = 0
       real(dp) :: rho_tol = 0.0_dp   !! the XC batch screen, `opts%rho_tol`
    contains
@@ -376,7 +437,15 @@ contains
       this%diis_start = opts%diis_start
       if (this%diis_start < 0.0_dp) this%diis_start = merge(0.5_dp, huge(1.0_dp), this%nspin == 2)
       this%pcm_on = pcm_model_from_name(opts%pcm_model) /= PCM_MODEL_NONE
-      this%incr_on = (opts%incremental .or. incr_env()) .and. this%nspin == 1
+      ! Not for SAD's free-atom runs (`frac_occ`): a few functions, nothing
+      ! to screen, and the guess stays the same density whatever the
+      ! molecule's own setting.
+      ! Nor for --df, a full build every iteration with no screening for a
+      ! difference density to buy; the CLI refuses an explicit --incremental
+      ! with it.
+      this%incr_on = incr_env(opts%incremental) .and. .not. opts%frac_occ .and. .not. opts%df
+      this%incr_off_df = incr_env(opts%incremental) .and. .not. opts%frac_occ .and. opts%df
+      this%incr_df_requested = this%incr_off_df .and. (opts%incremental_requested .or. incr_env_set())
       this%df = opts%df
       if (this%df .and. this%nspin == 2) then
          msg = "trc_scf: --df supports a restricted (closed-shell) reference only, for now"
@@ -387,12 +456,6 @@ contains
          msg = "trc_scf: --df with a range-separated functional is refused -- the erf-attenuated "// &
                "fit does not exist yet, and mixing a fitted K with a 4-centre long-range one is "// &
                "never done silently"
-         ok = .false.
-         return
-      end if
-      if (this%df .and. (opts%incremental .or. incr_env())) then
-         msg = "trc_scf: --df with --incremental is refused -- a density-fitted build is a full "// &
-               "build every iteration, and the increment buys nothing"
          ok = .false.
          return
       end if
@@ -440,9 +503,13 @@ contains
          end if
       end if
       this%eri_thresh_run = scf_settings_eri_thresh_env(opts%eri_thresh)
-      this%incr_start_run = incr_start_env(opts%incr_start)
+      this%incr_start_run = incr_real_env("TRC_INCR_START", opts%incr_start)
       this%incr_reset_run = incr_reset_env(opts%incr_reset)
-      this%incr_scale_run = incr_thresh_scale_env(opts%incr_thresh_scale)
+      this%incr_scale_run = incr_real_env("TRC_INCR_THRESH_SCALE", opts%incr_thresh_scale)
+      this%incr_early_scale_run = incr_real_env("TRC_INCR_EARLY_SCALE", opts%incr_early_scale)
+      this%incr_early_until_run = incr_real_env("TRC_INCR_EARLY_UNTIL", opts%incr_early_until)
+      this%incr_endgame_run = incr_real_env("TRC_INCR_ENDGAME", 0.0_dp)
+      this%incr_predict_run = incr_real_env("TRC_INCR_PREDICT", opts%incr_predict)
    end function scf_settings_resolve
 
    !
@@ -466,13 +533,24 @@ contains
       if (frac_occ .and. nspin == 1) nocc = int(nelec_frac/2.0_dp)
    end subroutine scf_settings_spin_rule
 
-   logical function incr_env() result(res)
+   logical function incr_env(dflt) result(res)
       !! Experiment hook for the incremental build, so its effect can be
-      !! measured through a driver that does not expose the option yet.
+      !! measured through a driver that does not expose the option:
+      !! TRC_INCREMENTAL=0 turns it off, 1 on, anything else leaves `dflt`.
+      logical, intent(in) :: dflt
+      character(len=8) :: v
+      call get_environment_variable("TRC_INCREMENTAL", v)
+      res = dflt
+      if (trim(v) == "1") res = .true.
+      if (trim(v) == "0") res = .false.
+   end function incr_env
+
+   logical function incr_env_set() result(res)
+      !! TRC_INCREMENTAL=1: increments asked for through the environment.
       character(len=8) :: v
       call get_environment_variable("TRC_INCREMENTAL", v)
       res = (trim(v) == "1")
-   end function incr_env
+   end function incr_env_set
 
    integer function incr_reset_env(dflt) result(res)
       !! Full rebuild interval, and an integral threshold override. A
@@ -489,39 +567,26 @@ contains
       res = dflt
       if (len_trim(v) > 0) then
          read (v, *, iostat=ios) k
-         if (ios == 0 .and. k > 0) res = k
+         if (ios == 0 .and. k >= 0) res = k
       end if
    end function incr_reset_env
 
-   real(dp) function incr_thresh_scale_env(dflt) result(res)
-      !! Experiment hook, like `incr_reset_env`: TRC_INCR_THRESH_SCALE sweeps
-      !! `incr_thresh_scale` without a rebuild.
+   real(dp) function incr_real_env(name, dflt) result(res)
+      !! Experiment hook, like `incr_reset_env`: TRC_INCR_THRESH_SCALE,
+      !! TRC_INCR_EARLY_SCALE, TRC_INCR_EARLY_UNTIL and TRC_INCR_START sweep
+      !! their option without a rebuild. A positive number replaces `dflt`.
+      character(len=*), intent(in) :: name
       real(dp), intent(in) :: dflt
       character(len=16) :: v
       integer :: ios
       real(dp) :: t
-      call get_environment_variable("TRC_INCR_THRESH_SCALE", v)
+      call get_environment_variable(name, v)
       res = dflt
       if (len_trim(v) > 0) then
          read (v, *, iostat=ios) t
          if (ios == 0 .and. t > 0.0_dp) res = t
       end if
-   end function incr_thresh_scale_env
-
-   real(dp) function incr_start_env(dflt) result(res)
-      !! Experiment hook, like `incr_reset_env`: TRC_INCR_START sweeps
-      !! `incr_start` without a rebuild.
-      real(dp), intent(in) :: dflt
-      character(len=16) :: v
-      integer :: ios
-      real(dp) :: t
-      call get_environment_variable("TRC_INCR_START", v)
-      res = dflt
-      if (len_trim(v) > 0) then
-         read (v, *, iostat=ios) t
-         if (ios == 0 .and. t > 0.0_dp) res = t
-      end if
-   end function incr_start_env
+   end function incr_real_env
 
    real(dp) function scf_settings_eri_thresh_env(dflt) result(res)
       real(dp), intent(in) :: dflt
@@ -554,5 +619,16 @@ contains
          gap = min(gap, eps(nocc(s) + 1, s) - eps(nocc(s), s))
       end do
    end function scf_settings_homo_lumo_gap
+
+   pure function scf_settings_fock_densities(config) result(ndens)
+      !! Densities in the widest four-centre pass of one Fock build: 2 for
+      !! an unrestricted run with exact exchange (both spins' K together,
+      !! trc_eri's `fock_resident_many_lent`), 1 otherwise. What sizes the
+      !! scratch the SCF lends that build (trc_eri's `fock_work_size`).
+      type(scf_settings_t), intent(in) :: config
+      integer :: ndens
+      ndens = 1
+      if (config%nspin == 2 .and. (config%exx /= 0.0_dp .or. config%exx_lr /= 0.0_dp)) ndens = 2
+   end function scf_settings_fock_densities
 
 end module trc_scf_settings
