@@ -27,6 +27,7 @@ program trc_main
                        trc_set_pcm, trc_pcm_energy, trc_save_scf, trc_load_scf, &
                        trc_run_gradient, trc_gradient, trc_set_geometry, trc_set_hessian_step, trc_run_hessian, &
                        trc_hessian, trc_hirshfeld_charges, trc_chelpg_charges, trc_fukui_hirshfeld, &
+                       trc_set_symmetry, trc_set_irrep_nelec, trc_set_symmetry_skeleton, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP, TRC_GUESS_MINAO
    use trc_api, only: trc_bind_device, trc_bind_device_env
@@ -41,6 +42,8 @@ program trc_main
    use pic_strings, only: to_string
    use pic_string_type, only: string_type, assignment(=)
    use trc_run_input, only: run_input_is_toml, run_input_args
+   use trc_sym_run, only: trc_sym_request_t, sym_parse_request, SYM_OFF, SYM_EXPLICIT
+   use trc_error, only: sym_err_t => error_t
    use trc_run, only: run_t, VERSION, run_die, run_quit, run_check, run_api, run_int_option, run_banner, &
                        run_summary, run_write_json, &
                        run_gradient_summary, run_hessian_summary, run_build_masses, run_charges_summary, &
@@ -49,7 +52,8 @@ program trc_main
                        run_opt_geometry_is_linear, run_write_labelled_xyz, run_parse_opt_global_options, &
                        run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
                        run_check_neb_endpoint, run_write_neb_path_xyz, &
-                       run_read_xyz_frames, run_to_lower_alloc, run_frontier, run_parse_charges
+                       run_read_xyz_frames, run_to_lower_alloc, run_frontier, run_parse_charges, &
+                       run_symmetry_collect, run_symmetry_refusal, run_symmetry_unsupported, run_symmetry_summary
    use trc_dlfind_bridge, only: trc_dlfind_available, trc_opt_options_t, trc_opt_result_t, trc_dlfind_optimize, &
                                 TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_HDLC_TC, &
                                 TRC_OPT_COORDS_DLC, TRC_OPT_COORDS_DLC_TC, &
@@ -78,6 +82,8 @@ program trc_main
    real(c_double), allocatable :: fplusbuf(:), fminusbuf(:), fzerobuf(:), qnbuf(:), qnp1buf(:), qnm1buf(:)
    real(dp), allocatable :: mass(:), displacement(:, :, :)
    type(hess_err_t) :: herr
+   type(trc_sym_request_t) :: sym_req
+   type(sym_err_t) :: sym_err
    integer :: maxiter, nfrozen, guess_kind, dev, aux_block, ndof
    integer(c_int) :: st, nspin
    integer(c_int) :: base_verbose, loop_verbose
@@ -157,6 +163,24 @@ program trc_main
                        "orbital rotations once |FDS - SDF| is small enough. Restricted Hartree-Fock only; "// &
                        "refused with an open shell, a functional, --pcm, --df or more than one rank")
    call r%cli%add_option("soscf-start", "commutator norm at which --soscf hands over from DIIS (1e-2)")
+   call r%cli%add_option("symmetry", "point-group symmetry in the SCF: default (what no flag means: auto, "// &
+                         "reported in the input frame, C1 where unsupported), off, auto (the detected group, "// &
+                         "the largest Abelian group: D2h or a subgroup; symmetric tops and linear molecules run in C1 "// &
+                         "for now) or a group, which must be the detected group "// &
+                         "or a subgroup of it. The molecule is symmetrised and moved to the standard frame of the "// &
+                         "group for the SCF. By default the geometry, gradient and orbitals are reported in your "// &
+                         "input frame (the input symmetrised in it); an explicit auto or group reports the standard "// &
+                         "frame. With --opt, --hessian, --rimp2, --df, --pcm, --soscf, --fukui, --restart or more than "// &
+                         "one rank the default runs in C1 (one log line says why) and an explicit request is refused", &
+                         default="default")
+   call r%cli%add_option("symmetry-tol", "geometry tolerance for the symmetry detection, Bohr (1e-5)")
+   call r%cli%add_option("irrep-nelec", "electrons per irrep (an explicit --symmetry auto), e.g. A'=6,A""=4 (restricted: even "// &
+                         "counts) or A'=4/3,A""=3/3 (alpha/beta); unlisted irreps hold none. Default: aufbau. "// &
+                         "A gradient is refused for occupations that are not the aufbau ones")
+   call r%cli%add_flag("sym-skeleton", "in a symmetric run, build the Fock matrix from the orbit representatives "// &
+                       "of the integral quartets and symmetrize it (the default)")
+   call r%cli%add_flag("no-sym-skeleton", "in a symmetric run, build the full Fock matrix and symmetrize it "// &
+                       "(the same result, more quartets)")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
    call r%cli%add_option("lindep", "linear-dependence threshold: eigenvalues of S normalised to a unit "// &
                          "diagonal (pyscf/ORCA's convention) below it are dropped (canonical orthogonalisation; "// &
@@ -568,6 +592,60 @@ program trc_main
    else if (r%cli%is_set("eps")) then
       call run_die(r, "--eps is the dielectric constant for --pcm, which was not given")
    end if
+   ! ---- --symmetry ------------------------------------------------------
+   ! Parsed here, before the --opt block, so a symmetry request with --opt (or
+   ! anything else the symmetric SCF does not support yet) is refused by name
+   ! rather than by whatever that block would say first.
+   ! Symmetry is ON by default (S17): `default` is auto, reported in the input
+   ! frame, and a path the symmetric SCF does not support runs in C1 with one
+   ! log line. An explicit --symmetry (auto, a group) reports the standard
+   ! frame and refuses those paths.
+   r%symmetry = "default"
+   r%sym_default = .true.
+   r%sym_wanted = .true.
+   r%sym_fallback = ""
+   if (r%cli%is_set("symmetry")) then
+      call r%cli%get("symmetry", sval, r%err)
+      call run_check(r, "--symmetry")
+      r%symmetry = run_to_lower_alloc(trim(sval))
+      call sym_parse_request(r%symmetry, sym_req, sym_err)
+      if (sym_err%has_error()) call run_die(r, "--"//sym_err%get_message())
+      if (sym_req%mode == SYM_EXPLICIT) r%symmetry = trim(sym_req%group)
+      r%sym_default = sym_req%by_default
+      r%sym_wanted = sym_req%mode /= SYM_OFF .and. .not. (sym_req%mode == SYM_EXPLICIT .and. sym_req%group == "C1")
+   end if
+   if (r%cli%is_set("symmetry-tol")) then
+      call r%cli%get("symmetry-tol", r%sym_tol, r%err)
+      call run_check(r, "--symmetry-tol")
+      if (.not. (r%sym_tol > 0.0_dp)) call run_die(r, "--symmetry-tol must be positive (Bohr)")
+      if (r%symmetry == "off") call run_die(r, "--symmetry-tol has no effect with --symmetry off")
+   end if
+   if (r%cli%is_set("irrep-nelec")) then
+      call r%cli%get("irrep-nelec", r%irrep_nelec, r%err)
+      call run_check(r, "--irrep-nelec")
+      if (.not. r%sym_wanted) call run_die(r, "--irrep-nelec needs --symmetry auto or a group other than C1")
+      ! Fixed irrep occupations only mean something in a symmetric run: an
+      ! explicit auto (standard frame, refusals), never a silent C1.
+      if (r%sym_default) then
+         r%symmetry = "auto"
+         r%sym_default = .false.
+      end if
+   end if
+   if (r%cli%is_set("sym-skeleton") .and. r%cli%is_set("no-sym-skeleton")) then
+      call run_die(r, "--sym-skeleton and --no-sym-skeleton contradict each other")
+   end if
+   if ((r%cli%is_set("sym-skeleton") .or. r%cli%is_set("no-sym-skeleton")) .and. .not. r%sym_wanted) then
+      call run_die(r, "--sym-skeleton and --no-sym-skeleton need symmetry, not --symmetry off or C1")
+   end if
+   r%restart = ""
+   if (r%cli%is_set("restart")) call r%cli%get("restart", r%restart, r%err)
+   sval = run_symmetry_refusal(r)
+   if (len(sval) > 0) call run_die(r, sval)
+   if (r%sym_default) then
+      r%sym_fallback = run_symmetry_unsupported(r)
+      if (len(r%sym_fallback) > 0) r%sym_wanted = .false.
+   end if
+
    if (r%rimp2) then
       ! RI-MP2 (restricted or unrestricted, UHF/UKS) now follows the
       ! basis's own AO space, spherical or Cartesian, same as a plain
@@ -1080,6 +1158,17 @@ program trc_main
    call run_api(r, trc_set_verbose(r%h, base_verbose))
    call run_api(r, trc_set_molecule(r%h, int(r%natm, c_int), real(r%z, c_double), xyz, int(r%chrg, c_int), &
                                 int(r%mult, c_int)))
+   ! Always sent: a fresh context's own default is symmetry on.
+   if (r%sym_default .and. .not. r%sym_wanted) then
+      sval = "off"   ! a default request that falls back to C1: see run_symmetry_unsupported
+   else
+      sval = trim(r%symmetry)
+   end if
+   call run_api(r, trc_set_symmetry(r%h, app_c_string(sval), real(r%sym_tol, c_double)))
+   if (r%sym_wanted) then
+      if (allocated(r%irrep_nelec)) call run_api(r, trc_set_irrep_nelec(r%h, app_c_string(r%irrep_nelec)))
+      if (r%cli%is_set("no-sym-skeleton")) call run_api(r, trc_set_symmetry_skeleton(r%h, 0_c_int))
+   end if
    call run_api(r, trc_set_force_cartesian(r%h, merge(1_c_int, 0_c_int, cart)))
    call run_api(r, trc_set_basis_json(r%h, app_c_string(r%basis_path)))
    if (r%rimp2) call run_api(r, trc_set_aux_json(r%h, app_c_string(r%aux_path)))
@@ -1338,6 +1427,7 @@ program trc_main
    call run_api(r, trc_converged(r%h, r%conv))
    call run_api(r, trc_iterations(r%h, r%niter))
    call run_frontier(r, nspin)
+   call run_symmetry_collect(r)
    call run_api(r, trc_pcm_energy(r%h, r%epcm, r%qpcm, r%npcm))
    r%eos = 0
    r%ess = 0
@@ -1445,6 +1535,7 @@ program trc_main
       deallocate (fplusbuf, fminusbuf, fzerobuf, qnbuf, qnp1buf, qnm1buf)
    end if
 
+   if (r%rank0 .and. r%sym_ran) call run_symmetry_summary(r)
    if (r%rank0) call run_summary(r)
    if (r%rank0 .and. r%grad .and. r%conv /= 0) call run_gradient_summary(r)
    if (r%rank0 .and. (r%want_hirshfeld .or. r%want_chelpg) .and. r%conv /= 0) call run_charges_summary(r)

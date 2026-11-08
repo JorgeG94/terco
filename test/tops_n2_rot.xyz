@@ -1,0 +1,4 @@
+2
+dinitrogen, Dooh, r = 1.0977 Angstrom (experimental Re, recalled from memory), along z; then rotated by a random proper rotation (numpy RandomState(104), QR of a normal matrix) and shifted by a random vector
+N      0.10025040671554     1.49442588305222    -0.80044134450251
+N      0.91014198220088     2.21929274217377    -0.95402833127270

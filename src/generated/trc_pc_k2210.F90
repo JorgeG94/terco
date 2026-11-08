@@ -723,7 +723,13 @@ contains
                + 3.0_dp*oo2z*(v(115,1) - rz*v(115,0)) &
                + 1.0_dp*oo2ze*v(20,0)
                cur = 1
-                  do x = 1, 140
+                  do x = 40, 70
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 75, 105
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 110, 140
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

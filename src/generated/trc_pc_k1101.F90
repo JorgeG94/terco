@@ -493,7 +493,16 @@ contains
                + 1.0_dp*oo2z*(v(31,1) - rz*v(31,0)) &
                + 1.0_dp*oo2ze*v(4,0)
                cur = 1
-                  do x = 1, 40
+                  do x = 2, 10
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 12, 20
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 22, 30
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 32, 40
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

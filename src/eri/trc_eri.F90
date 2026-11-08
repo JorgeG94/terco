@@ -30,12 +30,19 @@ module trc_eri
    use trc_cart, only: cart_init
    use trc_hgp, only: hgp_build_pairs
    use trc_screen, only: screen_schwarz_bounds_rys, screen_pair_index
-   use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets
-   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
+   use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets, pair_image_source, &
+                       bins_rep_weights
+   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t, trc_bin_orbits_t
+   use trc_error, only: error_t
+   use trc_sym_geom, only: trc_sym_geom_t
+   use trc_sym_ao, only: trc_sym_ao_t, sym_ao_build
+   use trc_sym_pairs, only: sym_pairs_shell_map, sym_pairs_symmetrize_q, sym_pairs_symmetrize_dsh, sym_pairs_wanted
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    use pic_timer, only: timer_type
    use pic_profiler, only: profiler_start, profiler_stop
-   use trc_binkernel, only: binkernel_fock_bins
+   use trc_binkernel, only: binkernel_fock_bins, binkernel_have_variants
+   use trc_parity, only: parity_choose_axis, parity_axperm, parity_ao_perm, parity_mode_env, &
+                         PARITY_OFF, PARITY_FORCE_FRAME
    use trc_bin_tiles, only: bin_tiles_build
    use trc_grad, only: grad_bins
    use trc_rys_grad_kernels, only: RYSG_LMAX
@@ -78,12 +85,22 @@ module trc_eri
       !! Which engine forms J: TRC_J_ENGINE_AUTO (mdj_requested's rule),
       !! TRC_J_ENGINE_BINS or TRC_J_ENGINE_MDJ. TRC_MDJ=0/1 in the
       !! environment overrides it either way. A g basis always takes MD J.
+      logical :: skeleton = .false.
+      !! Return the SKELETON matrix: the bins launch only the orbit
+      !! representatives of one side of each bin pair, weighted (see
+      !! `fock`'s skeleton), and the result must be symmetrized by the caller
+      !! (trc_sym_scf's symmetrize) in the caller's AO space. Needs `build`
+      !! to have been given the point group, and an invariant density.
    end type trc_fock_options_t
 
    type :: trc_eri_t
       real(dp) :: thresh = 1.0e-10_dp
       integer :: nbas = 0, nao = 0
       type(pair_bins_t) :: bins
+      type(trc_bin_orbits_t) :: orb
+      !! The pair orbits of `bins` when `build` was given a point group
+      !! (`orb%built`); the bins are then closed under it, with the
+      !! representatives first, and the skeleton Fock build is available.
       type(trc_shell_pairs_t) :: pairs
       !! The working basis's shells (l, AO offset, atom) and their HGP
       !! primitive pairs: what the kernels actually read. The i-side
@@ -107,6 +124,22 @@ module trc_eri
       type(trc_mdj_t) :: md
       type(trc_mdg_t) :: mg
       !! The MD exchange pass over the same pairs, for the g classes above TERCO_RYS_G_LTOT.
+      logical :: upair = .false.
+      !! The unique-pair build (docs/SYMMETRY_UNIQUE_PAIRS.md): `pairs` holds
+      !! primitive pairs for the orbit representatives only, the Schwarz bounds
+      !! were computed for them alone, and the bin-interleaved tables of the
+      !! images were rebuilt from them. Set by `build` when it is given a point
+      !! group (TRC_UNIQUE_PAIRS=0 turns it off). The paths that read `pairs`
+      !! directly (the non-symmetric Fock build, the gradient) call
+      !! `complete_pairs` first.
+      integer :: upair_nshell_pairs = 0
+      !! Ordered shell pairs whose primitive pairs `build` formed (all of
+      !! nshell**2 without the unique-pair build).
+      integer(int64) :: upair_npp_stored = 0
+      !! Primitive pairs held by `pairs` after `build`.
+      integer(int64) :: upair_npp_bins = 0
+      !! Primitive pairs of the pairs in the bins: what the full list holds, and
+      !! what the bin-interleaved tables are made of.
       logical :: needs_md = .false.
       !! A shell above f: HGP and Rys have no kernel for its classes, so J
       !! comes from trc_mdj and K from trc_mdg whatever the environment says.
@@ -125,6 +158,22 @@ module trc_eri
       !! when fock_resident is asked for it. Diagnostic: it costs a full
       !! extra enumeration pass.
       integer(int64) :: nwork = 0
+      integer(int64) :: nwork_masked = 0, nwork_variant = 0
+      integer :: nlaunch_variant = 0
+      real(dp) :: parity_ops_base = 0.0_dp, parity_ops_masked = 0.0_dp
+      !! Parity skipping, of the last bin launch (trc_bin_launch_t): work items
+      !! of the segments with the dead z axis of the kernels' frame, the part
+      !! of them that ran in a masked kernel variant, and those launches. The
+      !! counters a test reads to see that the masks were used and not
+      !! silently dropped.
+      integer :: parity_mode = -1
+      !! Set before `build`: PARITY_OFF, PARITY_AUTO or PARITY_FORCE_FRAME
+      !! (trc_parity). -1, the default, takes TRC_PARITY from the environment
+      !! (PARITY_AUTO without it). Only an engine built with a point group
+      !! has a dead axis at all.
+      integer :: parity_axis = 0
+      !! The dead axis of the last `build` (1 to 3 of the standard frame), 0
+      !! for none: the engine's mask and frame.
       type(comm_t) :: comm
       !! Ranks. Every rank builds the same bins and takes every nranks-th
       !! item of the sorted work list from its rank; the Fock matrix is then
@@ -207,7 +256,7 @@ contains
    ! that routine's header for why this is not only faster but also closes a
    ! scale mismatch the MMD route had.
    !
-   subroutine eri_build(this, b, thresh, comm, batch_res)
+   subroutine eri_build(this, b, thresh, comm, batch_res, sym)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
@@ -216,6 +265,13 @@ contains
       !! (trc_bind_device) BEFORE any object goes to the device.
       integer, intent(in), optional :: batch_res
       !! Buckets per decade of Schwarz bound in the pair bins; 1 is decades.
+      type(trc_sym_geom_t), intent(in), optional :: sym
+      !! The point group of the molecule (trc_sym_geom's sym_detect), with `b`
+      !! on its standard frame. Present, and of order above one: the bins are
+      !! built closed under the group, with the orbit tables of the skeleton
+      !! Fock build (`fock`'s skeleton option). The full Fock builds are
+      !! unchanged by it, up to the order of summation. Absent: nothing differs
+      !! from a build without symmetry.
 
       integer :: bres
       character(len=8) :: bt_env
@@ -280,9 +336,9 @@ contains
          this%dec%on_device = .true.
       end if
       if (this%dec%active) then
-         call build_structures(this, this%pb, thresh, bres)
+         call build_structures(this, this%pb, thresh, bres, sym)
       else
-         call build_structures(this, b, thresh, bres)
+         call build_structures(this, b, thresh, bres, sym)
       end if
    end subroutine eri_build
 
@@ -319,13 +375,18 @@ contains
       end if
    end function decon_minprim
 
-   subroutine build_structures(this, b, thresh, bres)
+   subroutine build_structures(this, b, thresh, bres, sym)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
       integer, intent(in) :: bres
+      type(trc_sym_geom_t), intent(in), optional :: sym
 
       integer :: i, j
+      integer, allocatable :: shmap(:, :), shmask(:)
+      integer :: pmode
+      logical :: orbits
+      logical, allocatable :: want(:, :)
       real(dp), allocatable :: qs(:), one(:)
       ! Stage timing, kept in this%t_build: `build` is five routines with
       ! very different costs and no way to tell from the outside which one
@@ -333,6 +394,9 @@ contains
       type(timer_type) :: tm
 
       this%t_build = 0.0_dp
+      this%parity_axis = 0
+      pmode = this%parity_mode
+      if (pmode < 0) pmode = parity_mode_env()
       call tm%start()
 
       ! All three, not just Boys: the HGP primitive pairs and the Schwarz
@@ -365,7 +429,25 @@ contains
       ! The kernel multiplies each pair by sh_c, so sh_c is the amplitude
       ! the prune judges by. The cutoff sits three orders below the
       ! screening threshold.
-      call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, thresh*1.0e-3_dp, this%pairs)
+      orbits = .false.
+      if (present(sym)) orbits = sym%group%order > 1
+      this%upair = .false.
+      if (orbits) then
+         ! The point group first: the unique-pair build forms primitive pairs
+         ! and Schwarz bounds for the orbit representatives only.
+         call orbit_shell_map(b, sym, shmap)
+         this%upair = unique_pairs_requested()
+      end if
+      if (this%upair) then
+         want = sym_pairs_wanted(shmap, b%sh_l)
+         call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, thresh*1.0e-3_dp, this%pairs, want)
+         this%upair_nshell_pairs = count(want)
+         deallocate (want)
+      else
+         call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, thresh*1.0e-3_dp, this%pairs)
+         this%upair_nshell_pairs = b%nshell*b%nshell
+      end if
+      this%upair_npp_stored = this%pairs%npp
       this%t_build(1) = tm%get_elapsed_time()
       call tm%start()
 
@@ -416,14 +498,59 @@ contains
          end do
       end if
 
-      call bins_build_binned_pairs(b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
-                                   this%bins, pp_n=this%pairs%n, res=bres)
+      if (orbits) then
+         ! The bins are closed under the group: Q is made invariant first (the
+         ! equivalent bounds differ in the last bits, and the cut on Q and the
+         ! size bucket must not tell the members of an orbit apart). With the
+         ! unique-pair build the images have no bound of their own (Q = 0
+         ! there), and the maximum over the orbit is the representative's.
+         call sym_pairs_symmetrize_q(shmap, qs)
+         ! Parity skipping: the dead axis of the point group, and the shells
+         ! in its plane, which bin apart.
+         if (pmode /= PARITY_OFF .and. allocated(sym%perm)) then
+            call parity_choose_axis(sym%group, sym%perm, b%sh_at, b%sh_r, this%parity_axis, shmask)
+         end if
+         ! A mask is only meaningful in a frame whose z is the dead axis: z
+         ! itself, or the permuted frame, which is applied only when a masked
+         ! kernel exists to profit from it (or a test forces it).
+         if (this%parity_axis /= 3 .and. .not. (binkernel_have_variants() .or. pmode == PARITY_FORCE_FRAME)) then
+            this%parity_axis = 0
+         end if
+         if (this%parity_axis > 0) then
+            call bins_build_binned_pairs(b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
+                                         this%bins, pp_n=this%pairs%n, res=bres, shmap=shmap, orb=this%orb, &
+                                         shmask=shmask)
+         else
+            call bins_build_binned_pairs(b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
+                                         this%bins, pp_n=this%pairs%n, res=bres, shmap=shmap, orb=this%orb)
+         end if
+      else
+         call bins_build_binned_pairs(b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
+                                      this%bins, pp_n=this%pairs%n, res=bres)
+      end if
       this%mdj_extended = eri_mdj_size_rule(b%nshell, this%bins%npair, prim_pairs(b, this%bins), b%nao)
       this%t_build(3) = tm%get_elapsed_time()
       call tm%start()
 
-      call bins_build_pair_quartets(this%bins, this%pairs, this%quartets)
-      call bin_tiles_build(this%quartets%tiles, this%bins, b%nshell)
+      if (orbits) then
+         this%orb%ops = sym%group%ops
+         call bins_build_pair_quartets(this%bins, this%pairs, this%quartets, this%orb)
+         call bin_tiles_build(this%quartets%tiles, this%bins, b%nshell, this%orb)
+      else
+         call bins_build_pair_quartets(this%bins, this%pairs, this%quartets)
+         call bin_tiles_build(this%quartets%tiles, this%bins, b%nshell)
+      end if
+      ! The engine's frame: the dead axis is the kernels' z (a permutation of
+      ! D and G per build, hence only when the axis is not z already). Independent
+      ! of the pair-quartet build above (sets quartets%axperm/ao_perm*, which
+      ! bins_build_pair_quartets and bin_tiles_build neither read nor write).
+      if (this%parity_axis > 0 .and. this%parity_axis /= 3) then
+         this%quartets%axperm = parity_axperm(this%parity_axis)
+         allocate (this%quartets%ao_perm(b%nao), this%quartets%ao_perm_inv(b%nao))
+         call parity_ao_perm(b%nshell, b%sh_l, b%sh_ao, b%nao, this%quartets%axperm, &
+                             this%quartets%ao_perm, this%quartets%ao_perm_inv)
+      end if
+      this%upair_npp_bins = sum(int(this%quartets%n, int64))
       this%t_build(4) = tm%get_elapsed_time()
       call tm%start()
 
@@ -442,9 +569,124 @@ contains
       !$acc                   this%quartets%ax, this%quartets%ay, this%quartets%az, &
       !$acc                   this%quartets%abx, this%quartets%aby, this%quartets%abz, &
       !$acc                   this%quartets%n)
+      if (allocated(this%quartets%ao_perm)) then
+         !$acc enter data copyin(this%quartets%ao_perm, this%quartets%ao_perm_inv)
+      end if
       this%on_device = .true.
       this%t_build(5) = tm%get_elapsed_time()
    end subroutine build_structures
+
+   subroutine orbit_shell_map(b, geom, shmap)
+      !! The shell map of the point group on the working basis `b`: the AO
+      !! maps are built on a Cartesian copy, the space the four-centre build
+      !! works in (trc_sym_pairs).
+      type(trc_basis_t), intent(in) :: b
+      type(trc_sym_geom_t), intent(in) :: geom
+      integer, allocatable, intent(out) :: shmap(:, :)
+      type(trc_basis_t) :: wbc
+      type(trc_sym_ao_t) :: ao
+      type(error_t) :: err
+      wbc = b
+      wbc%spherical = .false.
+      ao = sym_ao_build(wbc, geom, err)
+      if (err%has_error()) error stop "terco: eri%build with a point group: "//err%get_message()
+      call sym_pairs_shell_map(wbc, ao, geom, shmap, err)
+      if (err%has_error()) error stop "terco: eri%build with a point group: "//err%get_message()
+   end subroutine orbit_shell_map
+
+   logical function unique_pairs_requested() result(res)
+      !! The unique-pair build is on for every engine built with a point group;
+      !! TRC_UNIQUE_PAIRS=0 forms the primitive pairs and Schwarz bounds of
+      !! every shell pair instead (the merged scheme's build), to compare.
+      character(len=8) :: e
+      e = " "
+      call get_environment_variable("TRC_UNIQUE_PAIRS", e)
+      res = trim(adjustl(e)) /= "0"
+   end function unique_pairs_requested
+
+   subroutine complete_pairs(this)
+      !! Give every pair of the bins its own primitive pairs in `pairs`, rebuilt
+      !! from its representative's (the centres flipped by the operation's
+      !! mask, as the bin-interleaved tables were): what the paths that read
+      !! `pairs` through the bins' (sp_i, sp_j) need, the non-symmetric Fock
+      !! build and the gradient. Host work, once, appended after the
+      !! representatives' entries; the device copy is replaced. A no-op
+      !! without the unique-pair build.
+      class(trc_eri_t), intent(inout) :: this
+      integer :: p, key, ksrc, nbas, npp0, npp1, kk, d, o_src, o_dst, n_src
+      integer, allocatable :: n_old(:)
+      real(dp) :: sg(3)
+      real(dp), allocatable :: pp(:), pc(:), pa(:), pr(:, :), pra(:, :), prb(:, :)
+
+      if (.not. this%upair) return
+      nbas = this%pairs%nbas
+      npp0 = this%pairs%npp
+      n_old = this%pairs%n
+      npp1 = npp0
+      do p = 1, this%bins%npair
+         key = (this%bins%sp_i(p) - 1)*nbas + this%bins%sp_j(p)
+         if (n_old(key) > 0) cycle
+         call pair_image_source(this%bins%sp_i(p), this%bins%sp_j(p), nbas, n_old, this%orb, ksrc, sg)
+         npp1 = npp1 + n_old(ksrc)
+      end do
+      allocate (pp(npp1), pc(npp1), pa(npp1), pr(npp1, 3), pra(npp1, 3), prb(npp1, 3))
+      pp(1:npp0) = this%pairs%p
+      pc(1:npp0) = this%pairs%c
+      pa(1:npp0) = this%pairs%a
+      pr(1:npp0, :) = this%pairs%r
+      pra(1:npp0, :) = this%pairs%ra
+      prb(1:npp0, :) = this%pairs%rb
+      npp1 = npp0
+      do p = 1, this%bins%npair
+         key = (this%bins%sp_i(p) - 1)*nbas + this%bins%sp_j(p)
+         if (n_old(key) > 0) cycle
+         call pair_image_source(this%bins%sp_i(p), this%bins%sp_j(p), nbas, n_old, this%orb, ksrc, sg)
+         n_src = n_old(ksrc)
+         o_src = this%pairs%off(ksrc)
+         o_dst = npp1
+         do kk = 1, n_src
+            pp(o_dst + kk) = this%pairs%p(o_src + kk)
+            pc(o_dst + kk) = this%pairs%c(o_src + kk)
+            pa(o_dst + kk) = this%pairs%a(o_src + kk)
+            do d = 1, 3
+               pr(o_dst + kk, d) = sg(d)*this%pairs%r(o_src + kk, d)
+               pra(o_dst + kk, d) = sg(d)*this%pairs%ra(o_src + kk, d)
+               prb(o_dst + kk, d) = sg(d)*this%pairs%rb(o_src + kk, d)
+            end do
+         end do
+         this%pairs%off(key) = o_dst
+         this%pairs%n(key) = n_src
+         npp1 = npp1 + n_src
+      end do
+      if (this%on_device) then
+         !$acc exit data delete(this%pairs%off, this%pairs%n, this%pairs%p, this%pairs%r, &
+         !$acc                  this%pairs%ra, this%pairs%rb, this%pairs%c)
+      end if
+      call move_alloc(pp, this%pairs%p)
+      call move_alloc(pc, this%pairs%c)
+      call move_alloc(pa, this%pairs%a)
+      call move_alloc(pr, this%pairs%r)
+      call move_alloc(pra, this%pairs%ra)
+      call move_alloc(prb, this%pairs%rb)
+      this%pairs%npp = npp1
+      if (this%on_device) then
+         !$acc enter data copyin(this%pairs%off, this%pairs%n, this%pairs%p, this%pairs%r, &
+         !$acc                   this%pairs%ra, this%pairs%rb, this%pairs%c)
+      end if
+      this%upair = .false.
+   end subroutine complete_pairs
+
+   subroutine skeleton_dsh(this)
+      !! Make the density bound dsh invariant under the group (its maximum
+      !! over the orbit of each shell pair), which the skeleton build's
+      !! screens need: the surviving quartets must be a closed set. Host
+      !! code on the device-resident bound (one copy each way).
+      class(trc_eri_t), intent(inout) :: this
+      if (.not. this%orb%built) error stop "terco: a skeleton Fock build needs eri%build to be given the point group"
+      !$acc update self(this%dsh)
+      call sym_pairs_symmetrize_dsh(this%orb%shmap, this%dsh)
+      !$acc update device(this%dsh)
+   end subroutine skeleton_dsh
 
    !
    ! G = 2J - K for a given density.
@@ -455,7 +697,7 @@ contains
    ! than a flag -- confusing the two is a segfault, not a wrong number.
    !
    subroutine eri_fock(this, b, dmat, gmat, k_scale, j_scale, hcore, &
-                       density_screen, omega)
+                       density_screen, omega, skeleton)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)  :: dmat(this%nao, this%nao)
@@ -495,14 +737,25 @@ contains
       !! stops being the same linear map from one matvec to the next and the
       !! iteration cannot converge. False recovers the plain Schwarz screen,
       !! which depends on the basis alone and leaves the operator fixed.
+      logical, intent(in), optional :: skeleton
+      !! Return the SKELETON matrix (docs/SYMMETRY_FOCK.md): only the orbit
+      !! representatives of one side of each bin pair are launched, weighted
+      !! by their orbit size, so `gmat` is not the Fock matrix until the
+      !! caller symmetrizes it over the point group, in its AO space
+      !! (trc_sym_scf's symmetrize, after this fold). Requires `build` to have
+      !! been given the point group and `dmat` to be invariant under it (the
+      !! density screen is then symmetrized too). Default false. The MD J and
+      !! MD exchange engines restrict their bra the same way (trc_mdj, trc_mdg).
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j
       real(dp) :: jfac, kfac, ow, jbins
       type(trc_bin_launch_t) :: launch
-      logical :: md_j
+      logical :: md_j, skel
 
+      skel = .false.
+      if (present(skeleton)) skel = skeleton
       jfac = 1.0_dp
       kfac = 1.0_dp
       ow = 0.0_dp
@@ -532,6 +785,10 @@ contains
       else
          this%dsh = 1.0_dp
       end if
+      if (skel) then
+         if (.not. this%orb%built) error stop "terco: a skeleton Fock build needs eri%build to be given the point group"
+         call sym_pairs_symmetrize_dsh(this%orb%shmap, this%dsh)
+      end if
       ! A g basis: J from the MD J engine below, the bins and MD exchange for
       ! exchange only. MD J has no erf operator, so with omega > 0 the bins and
       ! MD exchange form J as well (an RSH's long-range pass has j_scale = 0).
@@ -541,12 +798,17 @@ contains
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
-      launch = bin_launch(this, 1, jbins, kfac, ow)
-      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+      launch = bin_launch(this, 1, jbins, kfac, ow, skel)
+      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat, this%orb)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
-      call mdg_pass(this, b, dwork, jmat, jbins, kfac, ow)
-      if (md_j .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac)
+      this%nwork_masked = launch%nwork_masked
+      this%nwork_variant = launch%nwork_variant
+      this%nlaunch_variant = launch%nlaunch_variant
+      this%parity_ops_base = launch%ops_base
+      this%parity_ops_masked = launch%ops_masked
+      call mdg_pass(this, b, dwork, jmat, jbins, kfac, ow, skel)
+      if (md_j .and. jfac /= 0.0_dp) call add_md_j(this, b, dp_w, jmat, jfac, skel)
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -595,13 +857,15 @@ contains
       deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock
 
-   type(trc_bin_launch_t) function bin_launch(this, ndens, jfac, kfac, omega) result(launch)
+   type(trc_bin_launch_t) function bin_launch(this, ndens, jfac, kfac, omega, skeleton) result(launch)
       !! One launch over this object's bins, for `ndens` densities in the
       !! working basis: the threshold, the ranks and the operand shape are
       !! the object's own; the operator is the caller's.
       class(trc_eri_t), intent(in) :: this
       integer,  intent(in) :: ndens
       real(dp), intent(in) :: jfac, kfac, omega
+      logical, intent(in), optional :: skeleton
+      if (present(skeleton)) launch%skeleton = skeleton
       launch%thresh = this%thresh
       launch%jfac = jfac
       launch%kfac = kfac
@@ -757,7 +1021,7 @@ contains
       end do
    end function prim_pairs
 
-   subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac, omega)
+   subroutine mdg_pass(this, b, dwork, jmat, jfac, kfac, omega, skeleton)
       !! The g classes binkernel_fock_bins leaves to MD exchange (those above
       !! TERCO_RYS_G_LTOT), into the same folded matrix (both on the device).
       !! Builds the MD pair list and its sorted groups on first use.
@@ -768,15 +1032,18 @@ contains
       real(dp), intent(in)    :: jfac, kfac
       real(dp), intent(in)    :: omega
       !! the operator's erf range parameter, as binkernel_fock_bins takes it (0: Coulomb)
+      logical, intent(in), optional :: skeleton
+      !! Only the orbit representatives as bra, weighted by their orbit size: the
+      !! skeleton matrix, as in the bins. Needs the object built with the point group.
       type(trc_mdg_scales_t) :: sc
+      logical :: skel
+      skel = .false.
+      if (present(skeleton)) skel = skeleton
       if (.not. this%needs_md) return
-      if (.not. this%md%built) then
-         if (this%dec%active) then
-            call this%md%build(this%pb, this%bins, this%thresh)
-         else
-            call this%md%build(b, this%bins, this%thresh)
-         end if
-      end if
+      call ensure_md(this, b)
+      ! The representative groups are formed when first asked for; an object
+      ! first used for full builds is rebuilt then.
+      if (this%mg%built .and. skel .and. .not. this%mg%has_reps) call this%mg%release()
       if (.not. this%mg%built) then
          ! Exchange in spherical components when the caller's basis is
          ! spherical; TRC_MDG_CART=1 keeps it Cartesian, for comparing.
@@ -787,9 +1054,9 @@ contains
             call get_environment_variable("TRC_MDG_CART", ec)
             sph = b%spherical .and. trim(ec) /= "1"
             if (this%dec%active) then
-               call this%mg%build(this%md, this%pb, sph)
+               call this%mg%build(this%md, this%pb, sph, skel)
             else
-               call this%mg%build(this%md, b, sph)
+               call this%mg%build(this%md, b, sph, skel)
             end if
          end block
       end if
@@ -800,10 +1067,30 @@ contains
       sc%kfac = kfac
       sc%rank = this%rank
       sc%nranks = this%nranks
+      sc%skeleton = skel
       call this%mg%fock(this%md, this%dsh, dwork, jmat, sc)
    end subroutine mdg_pass
 
-   subroutine add_md_j(this, b, dp_w, jmat, jfac)
+   subroutine ensure_md(this, b)
+      !! The MD pair list, built on first use. An object built with the point
+      !! group gives it the pair orbit weights, for the skeleton bra.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      if (this%md%built) return
+      if (this%orb%built) then
+         if (this%dec%active) then
+            call this%md%build(this%pb, this%bins, this%thresh, bins_rep_weights(this%bins, this%orb))
+         else
+            call this%md%build(b, this%bins, this%thresh, bins_rep_weights(this%bins, this%orb))
+         end if
+      else if (this%dec%active) then
+         call this%md%build(this%pb, this%bins, this%thresh)
+      else
+         call this%md%build(b, this%bins, this%thresh)
+      end if
+   end subroutine ensure_md
+
+   subroutine add_md_j(this, b, dp_w, jmat, jfac, skeleton)
       !! jmat(1, :, :) += jfac J[dp_w] from the MD engine; dp_w is a host
       !! array (eri_fock's), jmat is on the device. This rank's share of it,
       !! as in eri_fock_resident: the caller sums the ranks.
@@ -812,19 +1099,15 @@ contains
       real(dp), intent(in)    :: dp_w(:, :)
       real(dp), intent(inout) :: jmat(:, :, :)
       real(dp), intent(in)    :: jfac
+      logical, intent(in), optional :: skeleton
+      !! the skeleton J: the orbit representatives' bra only (trc_mdj)
       real(dp), allocatable :: jw(:, :)
       integer :: nw, i, j
-      if (.not. this%md%built) then
-         if (this%dec%active) then
-            call this%md%build(this%pb, this%bins, this%thresh)
-         else
-            call this%md%build(b, this%bins, this%thresh)
-         end if
-      end if
+      call ensure_md(this, b)
       nw = size(dp_w, 1)
       allocate (jw(nw, nw))
       !$acc enter data copyin(dp_w) create(jw)
-      call this%md%coulomb(nw, dp_w, jw, this%rank, this%nranks)
+      call this%md%coulomb(nw, dp_w, jw, this%rank, this%nranks, skeleton)
       !$acc update self(jw)
       !$acc exit data delete(dp_w, jw)
       ! jmat on the device; the fold symmetrises (jmat + jmat^T)/2, and J is
@@ -866,13 +1149,7 @@ contains
       real(dp), allocatable :: dp_w(:, :), jp_w(:, :)
       integer :: nw
 
-      if (.not. this%md%built) then
-         if (this%dec%active) then
-            call this%md%build(this%pb, this%bins, this%thresh)
-         else
-            call this%md%build(b, this%bins, this%thresh)
-         end if
-      end if
+      call ensure_md(this, b)
       nw = this%nao_w
       allocate (dp_w(nw, nw), jp_w(nw, nw))
       if (this%dec%active) then
@@ -942,6 +1219,8 @@ contains
       ! not for a gradient; a recomputed centre is a caller bug either way.
       if (any(this%pairs%sh_at == 0)) error stop &
          "terco: eri%gradient: a shell centre matches no atom coordinate exactly"
+      ! The gradient kernels read the primitive pairs through the bins' pair list.
+      call complete_pairs(this)
 
       jfac = 1.0_dp
       kfac = 1.0_dp
@@ -1070,9 +1349,16 @@ contains
       !$acc update device(this%dsh)
       launch = bin_launch(this, 1, jfac, kfac, ow)
       launch%nosym = .true.
-      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+      ! The non-symmetric kernel reads the primitive pairs through the bins.
+      call complete_pairs(this)
+      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat, this%orb)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
+      this%nwork_masked = launch%nwork_masked
+      this%nwork_variant = launch%nwork_variant
+      this%nlaunch_variant = launch%nlaunch_variant
+      this%parity_ops_base = launch%ops_base
+      this%parity_ops_masked = launch%ops_masked
       !$acc wait
       !$acc update self(jmat, kmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -1123,7 +1409,7 @@ contains
    ! the SCF lends its linear-algebra workspace.
    !
    subroutine eri_fock_resident(this, b, dmat, gmat, k_scale, j_scale, &
-                                density_screen, count_survivors, omega)
+                                density_screen, count_survivors, omega, skeleton)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       !! Both must already be present on the device.
@@ -1138,6 +1424,8 @@ contains
       logical, intent(in), optional :: count_survivors
       !! Also count the quartets that survive screening, into this%nkept.
       !! A full extra pass over the work list, so it is opt-in.
+      logical, intent(in), optional :: skeleton
+      !! The skeleton matrix; see `fock`'s skeleton.
       type(trc_fock_options_t) :: opts
       real(dp), allocatable :: work(:)
       if (present(j_scale)) opts%j_scale = j_scale
@@ -1145,6 +1433,7 @@ contains
       if (present(omega)) opts%omega = omega
       opts%density_screen = screen_on(density_screen)
       if (present(count_survivors)) opts%count_survivors = count_survivors
+      if (present(skeleton)) opts%skeleton = skeleton
       allocate (work(this%fock_work_size(1)))
       !$acc enter data create(work)
       call this%fock_resident_lent(b, dmat, gmat, opts, work)
@@ -1232,6 +1521,7 @@ contains
          ! inside `do concurrent` on the GPU build.
          call fill_ones_device(this%nbas, this%dsh)
       end if
+      if (opts%skeleton) call skeleton_dsh(this)
 
       !
       ! TRC_KEPT_STATS=1 reports what fraction of the launched quartets
@@ -1250,12 +1540,17 @@ contains
          if (want) then
             ! jbins, not jfac: count what the bins will screen, and with the
             ! MD J engine forming J that is exchange alone.
-            launch = bin_launch(this, 1, jbins, kfac, ow)
+            launch = bin_launch(this, 1, jbins, kfac, ow, opts%skeleton)
             launch%count_kept = .true.
             call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, work(:, :, :, 1), &
-                                     work(:, :, :, 2), work(:, :, :, 2))
+                                     work(:, :, :, 2), work(:, :, :, 2), this%orb)
             this%nlaunch = launch%nlaunch
             this%nwork = launch%nwork
+            this%nwork_masked = launch%nwork_masked
+            this%nwork_variant = launch%nwork_variant
+            this%nlaunch_variant = launch%nlaunch_variant
+      this%parity_ops_base = launch%ops_base
+      this%parity_ops_masked = launch%ops_masked
             this%nkept = launch%nkept
             if (len_trim(ke) > 0) then
                block
@@ -1270,15 +1565,20 @@ contains
       end block
       if (.not. (md_j .and. kfac == 0.0_dp)) then
          call profiler_start("eri: bins (hgp/rys)", nvtx_only=.true.)
-         launch = bin_launch(this, 1, jbins, kfac, ow)
+         launch = bin_launch(this, 1, jbins, kfac, ow, opts%skeleton)
          call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, work(:, :, :, 1), &
-                                     work(:, :, :, 2), work(:, :, :, 2))
+                                     work(:, :, :, 2), work(:, :, :, 2), this%orb)
          this%nlaunch = launch%nlaunch
          this%nwork = launch%nwork
+         this%nwork_masked = launch%nwork_masked
+         this%nwork_variant = launch%nwork_variant
+         this%nlaunch_variant = launch%nlaunch_variant
+      this%parity_ops_base = launch%ops_base
+      this%parity_ops_masked = launch%ops_masked
          !$acc wait
          call profiler_stop("eri: bins (hgp/rys)")
          call profiler_start("eri: md exchange", nvtx_only=.true.)
-         call mdg_pass(this, b, work(:, :, :, 1), work(:, :, :, 2), jbins, kfac, ow)
+         call mdg_pass(this, b, work(:, :, :, 1), work(:, :, :, 2), jbins, kfac, ow, opts%skeleton)
          !$acc wait
          call profiler_stop("eri: md exchange")
       end if
@@ -1295,15 +1595,9 @@ contains
       ! already 0.5 (x + x) = x.
       call symmetrise_in_place_device(nw, work(:, :, :, 2))
       if (md_j) then
-         if (.not. this%md%built) then
-            if (this%dec%active) then
-               call this%md%build(this%pb, this%bins, this%thresh)
-            else
-               call this%md%build(b, this%bins, this%thresh)
-            end if
-         end if
+         call ensure_md(this, b)
          call profiler_start("eri: md J", nvtx_only=.true.)
-         call this%md%coulomb(nw, work(:, :, :, 1), work(:, :, :, 3), this%rank, this%nranks)
+         call this%md%coulomb(nw, work(:, :, :, 1), work(:, :, :, 3), this%rank, this%nranks, opts%skeleton)
          call profiler_stop("eri: md J")
          ! Each rank forms its share of J (trc_mdj splits the Hermite stage's
          ! ket chunks); sum_ranks totals them with the rest of the matrix.
@@ -1380,7 +1674,8 @@ contains
       real(dp), intent(out) :: gmats(this%nao, this%nao, ndens)
       type(trc_fock_options_t), intent(in) :: opts
       !! `density_screen` and `count_survivors` are not read: this build is
-      !! always density-screened.
+      !! always density-screened. `skeleton` is as for `fock_resident_lent`
+      !! (every density must be invariant under the group).
       real(dp), intent(inout) :: work(this%nao_w, this%nao_w, 2*ndens + 1)
       !! At least `fock_work_size(ndens)` doubles, device-resident, as for
       !! `fock_resident_lent`: the kernel's (ndens, nw, nw) operand and
@@ -1414,7 +1709,7 @@ contains
          do d = 1, ndens
             call this%fock_resident_lent(b, dmats(:, :, d), gmats(:, :, d), &
                                          trc_fock_options_t(j_scale=jfac, k_scale=kfac, omega=ow, &
-                                                            j_engine=eng), work)
+                                                            j_engine=eng, skeleton=opts%skeleton), work)
          end do
          return
       end if
@@ -1443,12 +1738,21 @@ contains
          end if
       end do
 
+      ! The skeleton plan needs the bound invariant under the group: the
+      ! maximum over the densities is symmetrized like a single density's.
+      if (opts%skeleton) call skeleton_dsh(this)
+
       call profiler_start("eri: bins (hgp/rys), several densities", nvtx_only=.true.)
-      launch = bin_launch(this, ndens, jfac, kfac, ow)
+      launch = bin_launch(this, ndens, jfac, kfac, ow, opts%skeleton)
       call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, work(:, :, 1:ndens), &
-                               work(:, :, ndens + 1:2*ndens), work(:, :, ndens + 1:2*ndens))
+                               work(:, :, ndens + 1:2*ndens), work(:, :, ndens + 1:2*ndens), this%orb)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
+      this%nwork_masked = launch%nwork_masked
+      this%nwork_variant = launch%nwork_variant
+      this%nlaunch_variant = launch%nlaunch_variant
+      this%parity_ops_base = launch%ops_base
+      this%parity_ops_masked = launch%ops_masked
       !$acc wait
       call profiler_stop("eri: bins (hgp/rys), several densities")
 
@@ -1663,6 +1967,11 @@ contains
       !! them see the same quartets whichever way this is set; that is what
       !! keeps a batch bit-comparable with the same densities passed one at a
       !! time.
+      !!
+      !! No skeleton option: this host-array entry point (the C API's
+      !! trc_fock_many) always runs the full plan, also on an engine built with
+      !! the point group. The SCF's several-density build is
+      !! `fock_resident_many_lent`, which has it.
 
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
@@ -1706,9 +2015,14 @@ contains
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
       launch = bin_launch(this, ndens, jfac, kfac, ow)
-      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat, this%orb)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
+      this%nwork_masked = launch%nwork_masked
+      this%nwork_variant = launch%nwork_variant
+      this%nlaunch_variant = launch%nlaunch_variant
+      this%parity_ops_base = launch%ops_base
+      this%parity_ops_masked = launch%ops_masked
       !$acc wait
       !$acc update self(jmat)
       !$acc exit data delete(dwork, jmat, kmat)
@@ -1738,7 +2052,11 @@ contains
       class(trc_eri_t), intent(inout) :: this
       call this%mg%release()
       call this%md%release()
+      this%orb = trc_bin_orbits_t()
       if (this%on_device) then
+         if (allocated(this%quartets%ao_perm)) then
+            !$acc exit data delete(this%quartets%ao_perm, this%quartets%ao_perm_inv)
+         end if
          !$acc exit data delete(this%pairs%sh_l, this%pairs%ao_off, this%pairs%sh_at, this%dsh, &
          !$acc                  this%bins%sp_i, this%bins%sp_j, &
          !$acc                  this%bins%sp_q, this%bins, &

@@ -210,6 +210,11 @@ module trc_scf_settings
       !! per context handle; see trc_scf_df.F90's own header on why it
       !! outlives a single run).
       integer :: grid_level = 3
+      real(dp) :: grid_rotation(3, 3) = reshape([1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, &
+                                                 0.0_dp, 0.0_dp, 1.0_dp], [3, 3])
+      !! Rotation of the Lebedev points of the DFT and VV10 grids
+      !! (`dft_grid_options_t%angular_rotation`); the identity unless a
+      !! symmetric run in a standard frame wants the grid of the user's axes.
       integer :: nlc_grid_level = DEFAULT_NLC_GRID_LEVEL
       !! Grid level for VV10's nonlocal correlation, when the functional has
       !! it. Coarser than the semilocal grid by convention (SG-1-like): VV10
@@ -275,6 +280,9 @@ module trc_scf_settings
       integer :: n_increments = 0
       !! Fock builds taken from the density difference (trc_scf_incremental);
       !! the rest of `iterations` were full builds, the last one always.
+      logical :: sym_declined = .false.
+      !! The symmetric run was not made: `sym%decline_lindep` and functions were
+      !! dropped (`message` says so, `iterations` is 0). The caller runs in C1.
       integer :: n_lindep = 0
       !! Functions dropped by canonical orthogonalisation: S eigenvalues
       !! below `opts%lindep_thresh`. 0 for every compact basis; see
@@ -282,6 +290,7 @@ module trc_scf_settings
       real(dp), allocatable :: dmat(:, :, :)   !! (nao, nao, nspin); restricted holds the total
       real(dp), allocatable :: cmo(:, :, :)    !! (nao, nao, nspin) orbitals
       real(dp), allocatable :: eps(:, :)       !! (nao, nspin) orbital energies
+      integer, allocatable :: mo_irrep(:, :)   !! (nao, nspin) irrep of each orbital (trc_sym_scf); unallocated without symmetry
       real(dp), allocatable :: grid_r(:, :)    !! (3, npts) the grid used, for a same-grid comparison
       real(dp), allocatable :: grid_w(:)
       real(dp), allocatable :: grid_r_nlc(:, :)  !! VV10's own (coarser) grid, unallocated when the

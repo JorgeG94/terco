@@ -868,7 +868,61 @@ contains
                + 2.0_dp*oo2e*(v(40,1) - re*v(40,0)) &
                + 2.0_dp*oo2ze*v(94,0)
                cur = 1
-                  do x = 1, 200
+                  do x = 15, 20
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 25, 30
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 35, 40
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 45, 50
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 55, 60
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 65, 70
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 75, 80
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 85, 90
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 95, 100
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 105, 110
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 115, 120
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 125, 130
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 135, 140
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 145, 150
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 155, 160
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 165, 170
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 175, 180
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 185, 190
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 195, 200
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

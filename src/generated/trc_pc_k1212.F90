@@ -1492,7 +1492,61 @@ contains
                + 2.0_dp*oo2e*(v(80,0) - re*v(80,1)) &
                + 3.0_dp*oo2ze*v(190,1)
                cur = 0
-                  do x = 1, 400
+                  do x = 22, 40
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 42, 60
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 62, 80
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 82, 100
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 102, 120
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 122, 140
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 142, 160
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 162, 180
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 182, 200
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 202, 220
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 222, 240
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 242, 260
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 262, 280
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 282, 300
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 302, 320
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 322, 340
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 342, 360
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 362, 380
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 382, 400
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

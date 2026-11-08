@@ -2396,7 +2396,97 @@ contains
                + 3.0_dp*oo2e*(v(200,1) - re*v(200,0)) &
                + 3.0_dp*oo2ze*v(390,0)
                cur = 1
-                  do x = 1, 700
+                  do x = 82, 100
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 102, 120
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 122, 140
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 142, 160
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 162, 180
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 182, 200
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 202, 220
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 222, 240
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 242, 260
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 262, 280
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 282, 300
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 302, 320
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 322, 340
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 342, 360
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 362, 380
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 382, 400
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 402, 420
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 422, 440
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 442, 460
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 462, 480
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 482, 500
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 502, 520
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 522, 540
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 542, 560
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 562, 580
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 582, 600
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 602, 620
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 622, 640
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 642, 660
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 662, 680
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 682, 700
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

@@ -223,6 +223,13 @@ module trc_capi
    use trc_cpks, only: trc_scf_polarizability_rks
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_constants, only: BOHR_TO_ANGSTROM, HARTREE_TO_EV, HARTREE_TO_KCALMOL, AMU_TO_ME, KB_SI, NA_SI
+   use trc_sym_geom, only: trc_sym_geom_t, sym_detect
+   use trc_sym_ao, only: sym_ao_build
+   use trc_sym_scf, only: trc_sym_scf_t
+   use trc_sym_group, only: trc_sym_group_t, sym_group_from_name
+   use trc_sym_run, only: trc_sym_request_t, SYM_OFF, SYM_AUTO, SYM_EXPLICIT, sym_parse_request, sym_choose_group, &
+                          sym_parse_irrep_nelec, sym_aufbau_matches, sym_fixed_occupation
+   use trc_sym_frame, only: sym_ao_rot_blocks, sym_ao_rotate_rows, sym_ao_rotate_dmat, sym_frame_to_input
    implicit none
    private
 
@@ -256,7 +263,12 @@ module trc_capi
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: trc_run_gradient, trc_gradient
-   public :: trc_set_geometry
+   public :: trc_set_geometry, trc_symmetry_requested, trc_symmetry_suppress_default
+   public :: trc_set_symmetry_report_frame, trc_symmetry_report_frame
+   public :: trc_set_symmetry, trc_set_irrep_nelec, trc_set_symmetry_skeleton, trc_symmetry_group, &
+             trc_symmetry_detected, trc_symmetry_residual, trc_symmetry_frame, trc_symmetry_nirrep, &
+             trc_symmetry_irrep_name, trc_symmetry_irrep_dim, trc_mo_irreps, &
+             trc_geometry
    public :: trc_set_hessian_step, trc_hessian_step, trc_run_hessian, trc_hessian, trc_check_rimp2_gradient
    public :: trc_save_scf, trc_load_scf
    public :: trc_set_pcm, trc_set_pcm_radii, trc_pcm_energy
@@ -329,7 +341,38 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 21
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 24
+   !! 1.24: symmetry is ON by default (a fresh context asks for `auto`, as
+   !! trc_set_symmetry(h, "default", 0) does), and a symmetric run reports in
+   !! the caller's INPUT frame. MINOR, not MAJOR: no signature and no enum
+   !! value changes, an existing call returns the same quantities in the same
+   !! frame (energies, orbital energies and Hirshfeld/CHELPG charges are
+   !! invariant; the geometry, gradient, orbitals, density and the borrowed
+   !! basis/ERI handles are rotated back exactly), trc_set_symmetry(h, "off")
+   !! restores the old path bit for bit, and a path the symmetric SCF cannot
+   !! take (DF, PCM, SOSCF, fractional occupations, a given or projected
+   !! guess, several ranks, the Hessian, CPHF/CPKS, RI-MP2, Fukui indices,
+   !! restarts, the optimiser) runs in C1 instead of being refused. Added:
+   !! trc_set_symmetry_report_frame and trc_symmetry_report_frame. The DFT and
+   !! VV10 grids of a default run are the grids of the caller's axes (the
+   !! Lebedev points rotated into the standard frame), so a DFT energy on a
+   !! rotated input equals the symmetry-off one to second order (3e-12 Eh
+   !! measured, B3LYP/cc-pVDZ water at the default grid; the gradient follows
+   !! the grid's own symmetry breaking, 1e-7..1e-6 at the default grid), where
+   !! an explicit request keeps the group-symmetric standard-frame grid and its
+   !! orientation error (7e-7 Eh). One observable difference remains: the atoms
+   !! are moved to the standard frame inside the context, so a basis handle
+   !! borrowed (trc_context_basis) BEFORE the first run shows those centres
+   !! afterwards. It vanishes with symmetry off.
+   !! 1.23: trc_set_symmetry_skeleton, the switch of the skeleton Fock build
+   !! under a symmetry request (additive; on by default, nothing existing
+   !! changes: the result is the same, only the integral work differs).
+   !! 1.22: point-group symmetry for the SCF (additive): trc_set_symmetry,
+   !! trc_set_irrep_nelec, and the getters trc_symmetry_group,
+   !! trc_symmetry_detected, trc_symmetry_residual, trc_symmetry_frame,
+   !! trc_symmetry_nirrep, trc_symmetry_irrep_name, trc_symmetry_irrep_dim,
+   !! trc_mo_irreps and trc_geometry. Off by default, so no existing call
+   !! changes; trc_mo_occupations follows fixed irrep occupations when set.
    !! 1.21: trc_chelpg_charges, CHELPG charges fitted to the converged
    !! density's electrostatic potential (a new entry point, nothing else
    !! changes). 1.20: the incremental Fock build is ON by default (trc_set_incremental
@@ -498,6 +541,38 @@ module trc_capi
       real(dp) :: hess_step = 0.005_dp
       real(dp), allocatable :: hess(:, :)
       logical :: hess_ok = .false.
+      ! SYMMETRY (trc_sym_run). `sym_req` is what trc_set_symmetry/
+      ! trc_set_irrep_nelec asked for; with it on, trc_run_scf detects the group,
+      ! moves the molecule (and every basis centre) to the standard frame of
+      ! `sym_geom`, and runs the SO-blocked SCF. `sym_frame_ok` says the
+      ! geometry already IS that frame, so a second run does not detect again
+      ! (a new molecule or geometry clears it). `sym_active` is a used group
+      ! of more than one operation; `sym_irrep_nocc` is the resolved fixed
+      ! occupation (unallocated = aufbau).
+      type(trc_sym_request_t) :: sym_req
+      type(trc_sym_geom_t) :: sym_geom
+      logical :: sym_frame_ok = .false., sym_active = .false., sym_ran = .false.
+      character(len=3) :: sym_used = "C1"
+      integer, allocatable :: sym_irrep_nocc(:, :)
+      integer, allocatable :: sym_irrep_dim(:)
+      ! The frame the results are reported in (S17). `sym_moved`: the geometry
+      ! the context holds is the standard frame of `sym_geom` (`at_r_input` is
+      ! what the caller gave). `sym_report`: -1 = the default rule (input frame
+      ! when the symmetry request is the default one), 0 = standard, 1 = input.
+      ! `sym_suppressed`: a default request that fell back to C1 for good (the
+      ! optimiser, the Hessian, ...) until trc_set_symmetry is called.
+      ! `bb_in`/`eb_in`: the borrowed basis and ERI handles of a run that is
+      ! reported in the input frame, built on demand (same shells, input-frame
+      ! centres).
+      ! `sym_run_opts`/`sym_run_guess`: the settings of the last symmetric run,
+      ! so that a fallback to C1 that repeats it (sym_to_c1) repeats the same SCF.
+      logical :: sym_moved = .false., sym_suppressed = .false.
+      integer :: sym_report = -1
+      type(trc_scf_options_t) :: sym_run_opts
+      integer :: sym_run_guess = TRC_GUESS_SAD
+      real(dp), allocatable :: at_r_input(:, :)
+      type(basis_box), allocatable :: bb_in
+      type(eri_box), allocatable :: eb_in
       character(len=256) :: message = ""
    end type context_box
 
@@ -1702,6 +1777,10 @@ contains
       integer(c_int) :: status
       type(context_box), pointer :: cx
       allocate (cx)
+      ! Symmetry is on by default (S17): `auto`, reported in the input frame,
+      ! with C1 for the paths the symmetric SCF does not support.
+      cx%sym_req%mode = SYM_AUTO
+      cx%sym_req%by_default = .true.
       handle = c_loc(cx)
       status = TRC_OK
    end function trc_create
@@ -1714,6 +1793,7 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       call drop_eri(cx)
+      call drop_input_frame_handles(cx)
       if (cx%df_fit_ok) call cx%dfjk%release()
       call cx%la%release()
       call cx%kgrid%release()
@@ -1731,7 +1811,21 @@ contains
          call cx%eb%e%release()
          deallocate (cx%eb)
       end if
+      call drop_input_frame_handles(cx)
    end subroutine drop_eri
+
+   subroutine drop_input_frame_handles(cx)
+      !! The input-frame copies of the borrowed handles (`bb_in`, `eb_in`).
+      type(context_box), intent(inout) :: cx
+      if (allocated(cx%eb_in)) then
+         call cx%eb_in%e%release()
+         deallocate (cx%eb_in)
+      end if
+      if (allocated(cx%bb_in)) then
+         call cx%bb_in%b%release()
+         deallocate (cx%bb_in)
+      end if
+   end subroutine drop_input_frame_handles
 
    subroutine refuse(cx, why)
       !! What a setter would not take, and what it takes instead: the reason
@@ -1837,6 +1931,8 @@ contains
       cx%charge = int(charge)
       cx%multiplicity = int(multiplicity)
       cx%have_mol = .true.
+      cx%sym_frame_ok = .false.
+      cx%sym_moved = .false.
       call invalidate_runs(cx)
       if (cx%df_fit_ok) call cx%dfjk%release()
       cx%df_fit_ok = .false.
@@ -1914,6 +2010,7 @@ contains
          cx%guess_kind = TRC_GUESS_SAD
          if (allocated(cx%dguess)) deallocate (cx%dguess)
       end if
+      cx%sym_frame_ok = .false.
       call invalidate_runs(cx)
       if (cx%df_fit_ok) call cx%dfjk%release()
       cx%df_fit_ok = .false.
@@ -3215,7 +3312,7 @@ contains
       ok = .true.
    end subroutine trc_build_comm
 
-   function trc_run_scf(handle) result(status) bind(c, name="trc_run_scf")
+   recursive function trc_run_scf(handle) result(status) bind(c, name="trc_run_scf")
       !! Needs the molecule and the basis. Builds the guess it was asked for,
       !! runs, keeps everything in the context.
       type(c_ptr), value :: handle
@@ -3228,12 +3325,19 @@ contains
       integer :: nelec, nunp, nalpha, nbeta, nspin, n, nc
       integer :: nocc(2)
       logical :: collective, talk, use_projected
+      type(trc_sym_scf_t), allocatable :: ssym
+         !! Allocated only for a run in a group of more than one operation: an
+         !! unallocated actual argument is an absent `sym`, so every other run
+         !! takes exactly the path it always took.
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
       cx%grad_ok = .false.
+      cx%sym_active = .false.
+      cx%sym_ran = .false.
+      cx%opts%grid_rotation = reshape([1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp], [3, 3])
       status = TRC_ERR_STATE
       if (.not. (cx%have_mol .and. cx%have_basis)) then
          cx%message = "trc_run_scf: set the molecule and the basis first"
@@ -3285,6 +3389,22 @@ contains
       ! rank. Every `return` from here on frees it.
       call trc_build_comm(cx%fcomm, comm, collective, status)
       if (status /= TRC_OK) return
+      ! A frame an earlier symmetric run moved the molecule to is kept only for
+      ! a run that continues it; any other run starts from the caller's own.
+      if (cx%sym_moved .and. (.not. symmetry_wanted(cx) .or. .not. cx%sym_frame_ok)) call restore_input_frame(cx)
+      ! Symmetry before the guess: it moves the molecule to the standard frame,
+      ! and the guess is built on the basis where it then stands.
+      if (symmetry_wanted(cx) .or. allocated(cx%sym_req%irrep_nelec)) then
+         call symmetry_setup(cx, nspin, nocc, collective, ssym, status)
+         if (status /= TRC_OK) then
+            if (collective) call comm%finalize()
+            return
+         end if
+         if (allocated(ssym)) then
+            cx%sym_run_opts = cx%opts
+            cx%sym_run_guess = cx%guess_kind
+         end if
+      end if
       status = TRC_ERR_BADARG   ! what the guess's own failures below report
       talk = cx%opts%verbose
       if (collective) talk = talk .and. comm%rank() == 0
@@ -3461,7 +3581,7 @@ contains
                              grid_cache=cx%kgrid, pair_eri_cache=cx%peri, cmo_project=cx%bb%cmo)
          else
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, cmo_project=cx%bb%cmo)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, cmo_project=cx%bb%cmo, sym=ssym)
          end if
       else if (allocated(dg)) then
          if (collective) then
@@ -3469,7 +3589,7 @@ contains
                              grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
          else
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, dguess=dg, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, sym=ssym)
          end if
       else if (allocated(hsap)) then
          if (collective) then
@@ -3477,7 +3597,7 @@ contains
                              grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
          else
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, hguess=hsap, la=cx%la, scf_dfjk=cx%dfjk, &
-                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
+                             grid_cache=cx%kgrid, pair_eri_cache=cx%peri, sym=ssym)
          end if
       else
          if (collective) then
@@ -3485,10 +3605,21 @@ contains
                              grid_cache=cx%kgrid, pair_eri_cache=cx%peri)
          else
             call trc_scf_run(cx%bb%b, nalpha, nbeta, opts, cx%res, la=cx%la, scf_dfjk=cx%dfjk, grid_cache=cx%kgrid, &
-                             pair_eri_cache=cx%peri)
+                             pair_eri_cache=cx%peri, sym=ssym)
          end if
       end if
       if (collective) call comm%finalize()
+      if (cx%res%sym_declined) then
+         ! The default request meets a basis with linear dependences: the SO
+         ! blocks would drop different functions than C1 does, so this run is C1.
+         call note_c1_fallback(cx, "a basis with linear dependences (functions dropped)")
+         if (allocated(ssym)) call ssym%release()
+         call restore_input_frame(cx)
+         cx%sym_suppressed = .true.
+         status = trc_run_scf(handle)
+         cx%sym_suppressed = .false.
+         return
+      end if
       cx%message = cx%res%message
       if (len_trim(cx%res%message) > 0 .and. cx%res%iterations == 0) then
          status = TRC_ERR_UNSUPPORTED
@@ -3504,6 +3635,10 @@ contains
       cx%nalpha = nalpha
       cx%nbeta = nbeta
       cx%scf_ok = .true.
+      if (allocated(ssym)) then
+         cx%sym_active = .true.
+         call ssym%release()
+      end if
       ! The settings `cx%kgrid` was just built at (empty/false if `opts%dft`
       ! was false), snapshotted for `trc_run_gradient`'s own staleness
       ! check -- see `context_box%kgrid`'s own header.
@@ -3513,6 +3648,330 @@ contains
       cx%kgrid_nlc_level = opts%nlc_grid_level
       status = merge(TRC_OK, TRC_ERR_NOCONV, cx%res%converged)
    end function trc_run_scf
+
+   logical function trc_symmetry_requested(handle) result(wanted)
+      !! Whether the caller EXPLICITLY asked for symmetry (not a bind(c) entry:
+      !! for the geometry optimiser, which moves the atoms between runs and so
+      !! cannot share a standard frame with a symmetric SCF, and refuses). The
+      !! default request is not one: see trc_symmetry_suppress_default.
+      type(c_ptr), intent(in) :: handle
+      type(context_box), pointer :: cx
+      wanted = .false.
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      wanted = symmetry_wanted(cx) .and. .not. cx%sym_req%by_default
+   end function trc_symmetry_requested
+
+   pure logical function symmetry_wanted(cx) result(wanted)
+      !! A symmetry request that is more than "no symmetry": `auto`, or a
+      !! group other than C1 (a requested C1 runs the old path unchanged).
+      type(context_box), intent(in) :: cx
+      wanted = cx%sym_req%mode /= SYM_OFF .and. .not. (cx%sym_req%mode == SYM_EXPLICIT .and. cx%sym_req%group == "C1") &
+               .and. .not. cx%sym_suppressed
+   end function symmetry_wanted
+
+   pure logical function report_input_frame(cx) result(input)
+      !! Whether the getters return the caller's input frame: the molecule is
+      !! held in a standard frame, and the report frame is `input` (1), or
+      !! left to the default rule (-1) with a default symmetry request.
+      type(context_box), intent(in) :: cx
+      input = .false.
+      if (.not. cx%sym_moved) return
+      select case (cx%sym_report)
+      case (1)
+         input = .true.
+      case (0)
+         input = .false.
+      case default
+         input = cx%sym_req%by_default
+      end select
+   end function report_input_frame
+
+   subroutine restore_input_frame(cx)
+      !! Put the molecule (and every basis centre) back on the coordinates the
+      !! caller gave, and forget the frame. Invalidates the runs.
+      type(context_box), intent(inout) :: cx
+      if (.not. cx%sym_moved) return
+      call hessian_set_geometry(cx, cx%at_r_input)
+      cx%sym_moved = .false.
+      cx%sym_frame_ok = .false.
+   end subroutine restore_input_frame
+
+   subroutine frame_rot_blocks(cx, dl, ok)
+      !! The per-shell AO rotation blocks of the held standard frame
+      !! (trc_sym_frame): `C_input = D C_standard`.
+      type(context_box), intent(in) :: cx
+      real(dp), allocatable, intent(out) :: dl(:, :, :)
+      logical, intent(out) :: ok
+      type(error_t) :: err
+      call sym_ao_rot_blocks(cx%sym_geom%rot, cx%bb%b%spherical, maxval(cx%bb%b%sh_l), dl, err)
+      ok = .not. err%has_error()
+   end subroutine frame_rot_blocks
+
+   subroutine to_input_orbitals(cx, c)
+      !! `c(n, n, nspin)` orbitals of the held standard frame, in place, to
+      !! the input frame. A no-op unless the getters report the input frame.
+      type(context_box), intent(in) :: cx
+      real(dp), intent(inout) :: c(:, :, :)
+      real(dp), allocatable :: dl(:, :, :)
+      logical :: ok
+      integer :: s
+      if (.not. report_input_frame(cx)) return
+      call frame_rot_blocks(cx, dl, ok)
+      if (.not. ok) return
+      do s = 1, size(c, 3)
+         call sym_ao_rotate_rows(cx%bb%b, dl, c(:, :, s))
+      end do
+   end subroutine to_input_orbitals
+
+   subroutine to_input_density(cx, d)
+      !! As to_input_orbitals, for `d(n, n, nspin)`: `D_in = D D_std D^T`.
+      type(context_box), intent(in) :: cx
+      real(dp), intent(inout) :: d(:, :, :)
+      real(dp), allocatable :: dl(:, :, :)
+      logical :: ok
+      integer :: s
+      if (.not. report_input_frame(cx)) return
+      call frame_rot_blocks(cx, dl, ok)
+      if (.not. ok) return
+      do s = 1, size(d, 3)
+         call sym_ao_rotate_dmat(cx%bb%b, dl, d(:, :, s))
+      end do
+   end subroutine to_input_density
+
+   function geometry_for_report(cx) result(r)
+      !! The geometry the getters return: the held one, or the symmetrised
+      !! geometry in the input frame.
+      type(context_box), intent(in) :: cx
+      real(dp) :: r(3, cx%natm)
+      if (report_input_frame(cx)) then
+         r = sym_frame_to_input(cx%sym_geom%rot, cx%sym_geom%shift, cx%at_r)
+      else
+         r = cx%at_r
+      end if
+   end function geometry_for_report
+
+   function gradient_for_report(cx) result(g)
+      !! `cx%grad` rotated back to the input frame (each atomic vector by
+      !! rot^T), when the getters report it.
+      type(context_box), intent(in) :: cx
+      real(dp) :: g(3, cx%natm)
+      integer :: a
+      g = cx%grad
+      if (.not. report_input_frame(cx)) return
+      do a = 1, cx%natm
+         g(:, a) = matmul(transpose(cx%sym_geom%rot), cx%grad(:, a))
+      end do
+   end function gradient_for_report
+
+   subroutine sym_to_c1(handle, cx, what, rerun)
+      !! A default symmetry request meets a path the symmetric SCF does not
+      !! support (`what` names it): the context runs in C1 from now on (until
+      !! trc_set_symmetry), logging one line. The caller refuses an explicit
+      !! request instead. When the last SCF was symmetric its frame, orbitals
+      !! and density are the standard frame's, so with `rerun` the SCF is
+      !! repeated in C1 on the caller's own coordinates.
+      type(c_ptr), intent(in) :: handle
+      type(context_box), intent(inout) :: cx
+      character(len=*), intent(in) :: what
+      logical, intent(in) :: rerun
+      logical :: again
+      integer(c_int) :: st, guess_now
+      type(trc_scf_options_t) :: opts_now
+      call note_c1_fallback(cx, what)
+      again = cx%sym_moved .and. cx%scf_ok .and. rerun
+      cx%sym_suppressed = .true.
+      call restore_input_frame(cx)
+      if (again) then
+         ! The SCF as it was run, whatever the caller has set since (the entry
+         ! that follows is about that SCF); a failed repeat leaves the context
+         ! without a result, which the caller's own state check reports.
+         opts_now = cx%opts
+         guess_now = cx%guess_kind
+         cx%opts = cx%sym_run_opts
+         cx%guess_kind = cx%sym_run_guess
+         st = trc_run_scf(handle)
+         cx%opts = opts_now
+         cx%guess_kind = guess_now
+         if (st /= TRC_OK .and. st /= TRC_ERR_NOCONV) cx%scf_ok = .false.
+      end if
+   end subroutine sym_to_c1
+
+   subroutine note_c1_fallback(cx, what)
+      type(context_box), intent(in) :: cx
+      character(len=*), intent(in) :: what
+      if (cx%opts%verbose) call global_logger%info("   symmetry         : default (auto), but "//what// &
+                                                   " is not supported with symmetry yet: running in C1")
+   end subroutine note_c1_fallback
+
+   subroutine trc_symmetry_suppress_default(handle)
+      !! For the geometry optimiser (a Fortran-only entry, not bind(c)): the
+      !! default symmetry request runs in C1 from now on, because the
+      !! optimiser moves the atoms between runs and a symmetric run would
+      !! move them to its own frame. An explicit request is left alone (the
+      !! caller refuses it with trc_symmetry_requested).
+      type(c_ptr), intent(in) :: handle
+      type(context_box), pointer :: cx
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      if (.not. symmetry_wanted(cx)) return
+      if (cx%sym_req%by_default) call sym_to_c1(handle, cx, "a geometry optimisation", .false.)
+   end subroutine trc_symmetry_suppress_default
+
+   subroutine sym_unsupported(cx, collective, why, what)
+      !! What a symmetric run of this context cannot do yet, or an empty `why`.
+      !! `why` is the refusal an explicit request gets; `what` names the
+      !! feature for the line a default request logs when it falls back.
+      type(context_box), intent(in) :: cx
+      logical, intent(in) :: collective
+      character(len=:), allocatable, intent(out) :: why, what
+      why = ""
+      what = ""
+      if (collective) then
+         ! The irrep labels of the orbitals live on the rank that ran the SCF and
+         ! are not broadcast; refusing is the whole of MPI support for now.
+         what = "more than one rank"
+         why = "trc_run_scf: symmetry is not supported with more than one rank yet (the orbital irrep "// &
+               "labels are not broadcast); use symmetry = off"
+      else if (cx%opts%df) then
+         what = "density fitting"
+         why = "trc_run_scf: symmetry is not supported with density fitting yet; use symmetry = off"
+      else if (len_trim(cx%opts%pcm_model) > 0) then
+         what = "PCM"
+         why = "trc_run_scf: symmetry is not supported with PCM yet; use symmetry = off"
+      else if (cx%opts%frac_occ) then
+         what = "fractional occupations"
+         why = "trc_run_scf: symmetry is not supported with fractional occupations; use symmetry = off"
+      else if (cx%guess_kind == TRC_GUESS_GIVEN .or. cx%guess_kind == TRC_GUESS_PROJECTED) then
+         what = "a given or projected guess"
+         why = "trc_run_scf: a given or projected guess is in the input frame, and a symmetric run moves "// &
+               "the molecule to the standard frame; use symmetry = off with that guess"
+      else if (cx%opts%soscf .and. cx%sym_req%by_default) then
+         ! An explicit request meets the driver's own refusal, as before.
+         what = "second-order SCF"
+         why = "trc_run_scf: second-order SCF is not supported with symmetry"
+      end if
+   end subroutine sym_unsupported
+
+   subroutine symmetry_setup(cx, nspin, nocc, collective, ssym, status)
+      !! Everything a symmetric run needs before the guess: the refusals for
+      !! the paths that do not support symmetry yet, the detection (once per
+      !! geometry), the move to the standard frame, the SO basis, and the
+      !! fixed irrep occupations. Leaves `ssym` unallocated when the group
+      !! used is C1. `status` is TRC_OK or the reason, with `cx%message` set.
+      type(context_box), intent(inout) :: cx
+      integer, intent(in) :: nspin
+      integer, intent(in) :: nocc(2)
+      logical, intent(in) :: collective
+      type(trc_sym_scf_t), allocatable, intent(inout) :: ssym
+      integer(c_int), intent(out) :: status
+      type(error_t) :: err
+      type(trc_sym_geom_t) :: geom
+      character(len=3) :: name
+      character(len=:), allocatable :: why, what
+      integer :: s
+
+      status = TRC_ERR_UNSUPPORTED
+      if (.not. symmetry_wanted(cx)) then
+         cx%message = "trc_run_scf: irrep_nelec fixes occupations per irrep and needs a symmetry request "// &
+                      "other than off/C1 (trc_set_symmetry)"
+         status = TRC_ERR_BADARG
+         return
+      end if
+      ! What the symmetric SCF cannot do yet: an explicit request is refused with
+      ! the reason; the default request runs this SCF in C1 instead.
+      call sym_unsupported(cx, collective, why, what)
+      if (len(why) > 0) then
+         if (cx%sym_req%by_default) then
+            call note_c1_fallback(cx, what)
+            call restore_input_frame(cx)
+            status = TRC_OK
+         else
+            cx%message = why
+         end if
+         return
+      end if
+
+      if (.not. cx%sym_frame_ok) then
+         if (cx%sym_req%mode == SYM_EXPLICIT) then
+            geom = sym_detect(cx%at_r, cx%elements, err, tol=cx%sym_req%tol, ghost=cx%at_z == 0.0_dp, &
+                              basis_id=cx%elements, requested=cx%sym_req%group)
+         else
+            geom = sym_detect(cx%at_r, cx%elements, err, tol=cx%sym_req%tol, ghost=cx%at_z == 0.0_dp, basis_id=cx%elements)
+         end if
+         if (err%has_error()) then
+            cx%message = "trc_run_scf: "//err%get_message()
+            status = TRC_ERR_BADARG
+            return
+         end if
+         name = sym_choose_group(cx%sym_req, geom, err)
+         if (err%has_error()) then
+            cx%message = "trc_run_scf: "//err%get_message()
+            status = TRC_ERR_BADARG
+            return
+         end if
+         cx%sym_geom = geom
+         cx%sym_used = name
+         ! The molecule (and every basis centre) goes to the symmetrised,
+         ! standard-frame geometry; the SCF and any gradient run there.
+         if (name /= "C1") then
+            if (allocated(cx%at_r_input)) deallocate (cx%at_r_input)
+            cx%at_r_input = cx%at_r
+            call hessian_set_geometry(cx, geom%r_std)
+            cx%sym_moved = .true.
+         end if
+         cx%sym_frame_ok = .true.
+      end if
+      cx%sym_ran = .true.
+      status = TRC_OK
+      if (cx%sym_used == "C1") then
+         if (allocated(cx%sym_req%irrep_nelec)) then
+            status = TRC_ERR_BADARG
+            cx%message = "trc_run_scf: irrep_nelec needs a point group other than C1; this molecule's supported "// &
+                         "group is C1"
+         end if
+         return
+      end if
+
+      allocate (ssym)
+      ssym%skeleton = cx%sym_req%skeleton
+      ssym%decline_lindep = cx%sym_req%by_default
+      ! A default request reports in the input frame, so its DFT and VV10 grids are
+      ! the grids of the input axes (the Lebedev points rotated into the standard
+      ! frame); an explicit request keeps the lab-oriented, group-symmetric grid.
+      if (cx%sym_req%by_default) cx%opts%grid_rotation = cx%sym_geom%rot
+      ssym%geom = cx%sym_geom
+      ssym%ao = sym_ao_build(cx%bb%b, cx%sym_geom, err)
+      if (err%has_error()) then
+         cx%message = "trc_run_scf: "//err%get_message()
+         status = TRC_ERR_UNSUPPORTED
+         deallocate (ssym)
+         return
+      end if
+      if (allocated(cx%sym_irrep_dim)) deallocate (cx%sym_irrep_dim)
+      cx%sym_irrep_dim = ssym%ao%irrep_dim
+      if (allocated(cx%sym_irrep_nocc)) deallocate (cx%sym_irrep_nocc)
+      if (allocated(cx%sym_req%irrep_nelec)) then
+         call sym_parse_irrep_nelec(cx%sym_req%irrep_nelec, ssym%ao%group, nspin, cx%sym_irrep_nocc, err)
+         if (err%has_error()) then
+            cx%message = "trc_run_scf: "//err%get_message()
+            status = TRC_ERR_BADARG
+            deallocate (ssym)
+            return
+         end if
+         do s = 1, nspin
+            if (sum(cx%sym_irrep_nocc(:, s)) /= nocc(s)) then
+               cx%message = "trc_run_scf: irrep_nelec does not add up to the electron count of spin channel "// &
+                            trim(itoa(s))//" ("//trim(itoa(sum(cx%sym_irrep_nocc(:, s))*merge(2, 1, nspin == 1)))// &
+                            " electrons given, "//trim(itoa(nocc(s)*merge(2, 1, nspin == 1)))//" needed)"
+               status = TRC_ERR_BADARG
+               deallocate (ssym)
+               return
+            end if
+         end do
+         ssym%irrep_nocc = cx%sym_irrep_nocc
+      end if
+   end subroutine symmetry_setup
 
    !
    ! TRC_GUESS_MINAO's density, both spins -- split out of trc_run_scf's own
@@ -3781,6 +4240,7 @@ contains
          if (cx%have_jkfit) call move_basis_centre(cx%jb%b, a, at_r(:, a))
       end do
       call invalidate_runs(cx)
+      call drop_input_frame_handles(cx)
       if (cx%df_fit_ok) call cx%dfjk%release()
       cx%df_fit_ok = .false.
    end subroutine hessian_set_geometry
@@ -3831,6 +4291,8 @@ contains
       end if
       allocate (new_r(3, cx%natm))
       new_r = reshape(real(xyz(1:3*cx%natm), dp), [3, cx%natm])
+      cx%sym_frame_ok = .false.
+      cx%sym_moved = .false.
       call hessian_set_geometry(cx, new_r)
       deallocate (new_r)
       status = TRC_OK
@@ -3951,6 +4413,10 @@ contains
       real(dp), allocatable :: gbuf(:)
       type(trc_pcm_t) :: pcm_local
       type(error_t) :: perr
+      type(trc_sym_geom_t), allocatable :: gsym
+         !! Allocated only for a symmetric run: the gradient is then symmetrised
+         !! over the group (it is in the standard frame the SCF ran in).
+      integer :: nocc_s(2)
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
@@ -3960,10 +4426,33 @@ contains
          cx%message = "trc_run_gradient: run the SCF first"
          return
       end if
+      if (cx%sym_active) then
+         ! The gradient rebuilds D from the first nocc orbitals, so fixed
+         ! irrep occupations that are not the aufbau ones would be wrong.
+         if (allocated(cx%sym_irrep_nocc)) then
+            nocc_s = [cx%nalpha, cx%nbeta]
+            if (.not. sym_aufbau_matches(cx%res%mo_irrep, nocc_s(1:cx%res%nspin), cx%sym_irrep_nocc)) then
+               cx%message = "trc_run_gradient: the fixed irrep occupations are not the aufbau occupation, and "// &
+                            "the gradient rebuilds the density by aufbau; run without irrep_nelec, or with the "// &
+                            "aufbau counts"
+               status = TRC_ERR_UNSUPPORTED
+               return
+            end if
+         end if
+      end if
       call gradient_capability_check(cx, have_func, func, refusal, status)
       if (len(refusal) > 0) then
          cx%message = "trc_run_gradient: "//refusal
          return
+      end if
+      ! The gradient is projected onto the symmetric subspace, which is exact for
+      ! a symmetric grid (HF, or an explicit request). The default request's DFT
+      ! grid is the input axes' grid, which breaks the symmetry at the grid's own
+      ! (first-order) error; projecting would move the gradient by that much
+      ! away from the symmetry-off one, so it is left as computed.
+      if (cx%sym_active .and. .not. (have_func .and. cx%sym_req%by_default)) then
+         allocate (gsym)
+         gsym = cx%sym_geom
       end if
       if (cx%rimp2_ok) then
          ! The energy this context holds is E_RHF + E_RI-MP2: differentiate
@@ -4034,29 +4523,32 @@ contains
                                         cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
                                         func=func, grid_level=cx%opts%grid_level, &
                                         grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                        nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
+                                        nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
+                                        dfjk=cx%dfjk, aux=cx%jb%b, &
                                         verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
-                                        grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri)
+                                        grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri, sym_geom=gsym)
                else if (reuse_grid) then
                   call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                         cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
                                         func=func, grid_level=cx%opts%grid_level, &
                                         grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                        nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
+                                        nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
+                                        dfjk=cx%dfjk, aux=cx%jb%b, &
                                         verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
-                                        pair_eri_cache=cx%peri)
+                                        pair_eri_cache=cx%peri, sym_geom=gsym)
                else
                   call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                         cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
                                         func=func, grid_level=cx%opts%grid_level, &
                                         grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                        nlc_grid_level=cx%opts%nlc_grid_level, dfjk=cx%dfjk, aux=cx%jb%b, &
-                                        verbose=cx%opts%verbose, pair_eri_cache=cx%peri)
+                                        nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
+                                        dfjk=cx%dfjk, aux=cx%jb%b, &
+                                        verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym)
                end if
             else
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
-                                     dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose, pair_eri_cache=cx%peri)
+                                     dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym)
             end if
          else if (have_func) then
             if (reuse_nlc) then
@@ -4064,28 +4556,31 @@ contains
                                      cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                      func=func, grid_level=cx%opts%grid_level, &
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                     nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
+                                     nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
+                                     verbose=cx%opts%verbose, &
                                      grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
-                                     grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri)
+                                     grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri, sym_geom=gsym)
             else if (reuse_grid) then
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                      func=func, grid_level=cx%opts%grid_level, &
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                     nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
-                                     grid=cx%kgrid%grid, xg=cx%kgrid%xg, pair_eri_cache=cx%peri)
+                                     nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
+                                     verbose=cx%opts%verbose, &
+                                     grid=cx%kgrid%grid, xg=cx%kgrid%xg, pair_eri_cache=cx%peri, sym_geom=gsym)
             else
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
                                      func=func, grid_level=cx%opts%grid_level, &
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
-                                     nlc_grid_level=cx%opts%nlc_grid_level, verbose=cx%opts%verbose, &
-                                     pair_eri_cache=cx%peri)
+                                     nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
+                                     verbose=cx%opts%verbose, &
+                                     pair_eri_cache=cx%peri, sym_geom=gsym)
             end if
          else
             call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                   cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
-                                  verbose=cx%opts%verbose, pair_eri_cache=cx%peri)
+                                  verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym)
          end if
          ! --- PCM, added on top of the vacuum gradient above: its own
          ! density/pair list (pcm_grad_scf_add's own header explains why
@@ -4126,7 +4621,7 @@ contains
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%grad_ok) return
-      grad(1:3*cx%natm) = real(reshape(cx%grad, [3*cx%natm]), c_double)
+      grad(1:3*cx%natm) = real(reshape(gradient_for_report(cx), [3*cx%natm]), c_double)
       status = TRC_OK
    end function trc_gradient
 
@@ -4156,6 +4651,16 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
+      if (symmetry_wanted(cx)) then
+         if (cx%sym_req%by_default) then
+            call sym_to_c1(handle, cx, "the CPHF/CPKS-based RI-MP2 gradient", .true.)
+         else
+            cx%message = "trc_check_rimp2_gradient: symmetry is not supported with CPHF/CPKS-based RI-MP2 gradients yet; "// &
+                         "use symmetry = off"
+            status = TRC_ERR_UNSUPPORTED
+            return
+         end if
+      end if
       status = TRC_ERR_STATE
       if (.not. (cx%have_mol .and. cx%have_basis)) then
          cx%message = "trc_check_rimp2_gradient: set the molecule and the basis first"
@@ -4361,6 +4866,16 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
+      if (symmetry_wanted(cx)) then
+         if (cx%sym_req%by_default) then
+            call sym_to_c1(handle, cx, "the finite-difference Hessian", .true.)
+         else
+            cx%message = "trc_run_hessian: symmetry is not supported with the finite-difference Hessian and frequencies yet; "// &
+                         "use symmetry = off"
+            status = TRC_ERR_UNSUPPORTED
+            return
+         end if
+      end if
 
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok .or. .not. cx%res%converged) then
@@ -4612,6 +5127,15 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
+      if (symmetry_wanted(cx)) then
+         if (cx%sym_req%by_default) then
+            call sym_to_c1(handle, cx, "CPHF/CPKS", .true.)
+         else
+            cx%message = "trc_run_polarizability: symmetry is not supported with CPHF/CPKS yet; use symmetry = off"
+            status = TRC_ERR_UNSUPPORTED
+            return
+         end if
+      end if
       cx%polar_ok = .false.
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) then
@@ -4825,6 +5349,15 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
+      if (symmetry_wanted(cx)) then
+         if (cx%sym_req%by_default) then
+            call sym_to_c1(handle, cx, "RI-MP2", .true.)
+         else
+            cx%message = "trc_run_rimp2: symmetry is not supported with RI-MP2 yet; use symmetry = off"
+            status = TRC_ERR_UNSUPPORTED
+            return
+         end if
+      end if
       cx%rimp2_ok = .false.
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) then
@@ -5005,9 +5538,27 @@ contains
          cx%message = "trc_save_scf: run the SCF first"
          return
       end if
-      call trc_scf_save(c_path(path), cx%bb%b, cx%at_z, cx%at_r, cx%charge, cx%multiplicity, &
-                        cx%nalpha, cx%nbeta, cx%opts%functional, cx%opts%pcm_model, cx%opts%pcm_eps, &
-                        cx%res, msg)
+      if (report_input_frame(cx)) then
+         ! The file is read back in a context holding the caller's own
+         ! coordinates, so it carries them (the position check on load is
+         ! 1e-8 Bohr; the symmetrised ones differ by up to the symmetry
+         ! tolerance) and the orbitals and density in the input frame.
+         block
+            type(trc_scf_result_t) :: res_in
+            res_in = cx%res
+            call to_input_orbitals(cx, res_in%cmo)
+            call to_input_density(cx, res_in%dmat)
+            if (allocated(res_in%grid_r)) deallocate (res_in%grid_r, res_in%grid_w)
+            call refresh_input_basis(cx)
+            call trc_scf_save(c_path(path), cx%bb_in%b, cx%at_z, cx%at_r_input, cx%charge, cx%multiplicity, &
+                              cx%nalpha, cx%nbeta, cx%opts%functional, cx%opts%pcm_model, cx%opts%pcm_eps, &
+                              res_in, msg)
+         end block
+      else
+         call trc_scf_save(c_path(path), cx%bb%b, cx%at_z, cx%at_r, cx%charge, cx%multiplicity, &
+                           cx%nalpha, cx%nbeta, cx%opts%functional, cx%opts%pcm_model, cx%opts%pcm_eps, &
+                           cx%res, msg)
+      end if
       cx%message = msg
       status = merge(TRC_OK, TRC_ERR_BADARG, len_trim(msg) == 0)
    end function trc_save_scf
@@ -5030,6 +5581,15 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
+      if (symmetry_wanted(cx)) then
+         if (cx%sym_req%by_default) then
+            call sym_to_c1(handle, cx, "restarting from a saved SCF", .false.)
+         else
+            cx%message = "trc_load_scf: symmetry is not supported with restarting from a saved SCF yet; use symmetry = off"
+            status = TRC_ERR_UNSUPPORTED
+            return
+         end if
+      end if
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
       cx%grad_ok = .false.
@@ -5361,6 +5921,17 @@ contains
       n = int(scf_space_nao(cx%bb)) - cx%res%n_lindep
       nspin = cx%res%nspin
       k = 0
+      if (cx%sym_active .and. allocated(cx%sym_irrep_nocc)) then
+         ! Fixed irrep occupations: the occupied orbitals are the lowest of each
+         ! irrep, not the lowest overall.
+         do s = 1, nspin
+            occ(k + 1:k + n) = merge(real(3 - nspin, c_double), 0.0_c_double, &
+                                     sym_fixed_occupation(cx%res%mo_irrep(1:n, s), cx%sym_irrep_nocc(:, s)))
+            k = k + n
+         end do
+         status = TRC_OK
+         return
+      end if
       do s = 1, nspin
          do i = 1, n
             k = k + 1
@@ -5499,7 +6070,9 @@ contains
    end function trc_iterations
 
    function trc_density(handle, dmat) result(status) bind(c, name="trc_density")
-      !! (nao, nao, nspin), column-major; restricted holds the total.
+      !! (nao, nao, nspin), column-major; restricted holds the total. After a
+      !! symmetric run reported in the input frame, rotated back exactly
+      !! (D_in = D D_std D^T, trc_sym_frame).
       !!
       !! CONTRAVARIANT under trc_set_ao_norm: D_out = N^-1 D_terco N^-1 per
       !! spin slice when UNIT. Scaled on a COPY -- `cx%res%dmat` itself
@@ -5519,6 +6092,7 @@ contains
       n = scf_space_nao(cx%bb)
       ns = cx%res%nspin
       d = cx%res%dmat
+      call to_input_density(cx, d)
       if (cx%bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          allocate (nrm(n))
          call ao_norm_vector(cx%bb%b%nshell, cx%bb%b%sh_l, cx%bb%b%sh_ao, n, cx%bb%ao_norm_kind, nrm)
@@ -5573,14 +6147,19 @@ contains
       !! see trc_sph.F90's own header), factored out here so
       !! trc_fukui_hirshfeld can call it at N, N+1 and N-1 without three
       !! copies of the same transform.
-      type(context_box), intent(in) :: cx
+      type(context_box), intent(inout) :: cx
       real(dp), allocatable, intent(out) :: q(:)
       type(error_t), intent(inout) :: error
 
       real(dp), allocatable :: d_total_cart(:, :)
 
       call state_total_density_cart(cx, d_total_cart)
-      call trc_hirshfeld_populations(cx%bb%b, d_total_cart, q, error)
+      if (report_input_frame(cx)) then
+         call refresh_input_basis(cx)
+         call trc_hirshfeld_populations(cx%bb_in%b, d_total_cart, q, error)
+      else
+         call trc_hirshfeld_populations(cx%bb%b, d_total_cart, q, error)
+      end if
    end subroutine state_hirshfeld_charges
 
    subroutine state_total_density_cart(cx, d_total_cart)
@@ -5591,8 +6170,9 @@ contains
       type(context_box), intent(in) :: cx
       real(dp), allocatable, intent(out) :: d_total_cart(:, :)
 
-      real(dp), allocatable :: d_total_sph(:, :)
+      real(dp), allocatable :: d_total_sph(:, :), dl(:, :, :)
       integer :: n
+      logical :: ok
 
       n = scf_space_nao(cx%bb)
       allocate (d_total_sph(n, n))
@@ -5600,6 +6180,15 @@ contains
          d_total_sph = cx%res%dmat(:, :, 1)
       else
          d_total_sph = cx%res%dmat(:, :, 1) + cx%res%dmat(:, :, 2)
+      end if
+      ! Atomic charges are invariant, but the grids that define them are not
+      ! (a Becke grid is oriented in the lab frame, the CHELPG lattice is
+      ! axis-aligned), so they are evaluated in the frame the results are
+      ! reported in: the density rotated back here, the basis of
+      ! `charge_basis` on the input-frame centres.
+      if (report_input_frame(cx)) then
+         call frame_rot_blocks(cx, dl, ok)
+         if (ok) call sym_ao_rotate_dmat(cx%bb%b, dl, d_total_sph)
       end if
       if (cx%bb%b%spherical) then
          allocate (d_total_cart(cx%bb%b%nao, cx%bb%b%nao))
@@ -5636,7 +6225,12 @@ contains
       if (.not. cx%scf_ok) return
 
       call state_total_density_cart(cx, d_total_cart)
-      call trc_chelpg_charges_from(cx%bb%b, d_total_cart, real(cx%charge, dp), q, err)
+      if (report_input_frame(cx)) then
+         call refresh_input_basis(cx)
+         call trc_chelpg_charges_from(cx%bb_in%b, d_total_cart, real(cx%charge, dp), q, err)
+      else
+         call trc_chelpg_charges_from(cx%bb%b, d_total_cart, real(cx%charge, dp), q, err)
+      end if
       if (err%has_error()) then
          cx%message = err%get_message()
          status = TRC_ERR_BADARG
@@ -5715,6 +6309,15 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
+      if (symmetry_wanted(cx)) then
+         if (cx%sym_req%by_default) then
+            call sym_to_c1(handle, cx, "Fukui indices", .true.)
+         else
+            cx%message = "trc_fukui_hirshfeld: symmetry is not supported with Fukui indices yet; use symmetry = off"
+            status = TRC_ERR_UNSUPPORTED
+            return
+         end if
+      end if
 
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok .or. .not. cx%res%converged) then
@@ -5868,6 +6471,9 @@ contains
    end function hirshfeld_status
 
    function trc_mo_coefficients(handle, cmo) result(status) bind(c, name="trc_mo_coefficients")
+      !! After a symmetric run reported in the input frame the orbitals are
+      !! rotated back exactly (C_in = D C_std, trc_sym_frame).
+      !!
       !! CONTRAVARIANT under trc_set_ao_norm, on the AO (row) index only:
       !! C_out = N^-1 C_terco per spin slice when UNIT -- see trc_density
       !! for why this scales a copy, not `cx%res%cmo` itself.
@@ -5885,6 +6491,7 @@ contains
       n = scf_space_nao(cx%bb)
       ns = cx%res%nspin
       c = cx%res%cmo
+      call to_input_orbitals(cx, c)
       if (cx%bb%ao_norm_kind == TRC_AO_NORM_UNIT) then
          allocate (nrm(n))
          call ao_norm_vector(cx%bb%b%nshell, cx%bb%b%sh_l, cx%bb%b%sh_ao, n, cx%bb%ao_norm_kind, nrm)
@@ -5932,6 +6539,339 @@ contains
       status = TRC_OK
    end function trc_rimp2_energy
 
+   function trc_set_symmetry(handle, group, tol) result(status) bind(c, name="trc_set_symmetry")
+      !! Point-group symmetry for the SCF. A fresh context has the DEFAULT
+      !! request ("default", ABI 1.24): "auto" whose results are reported in
+      !! the caller's input frame and which runs in C1, with one log line,
+      !! where the symmetric SCF is not supported. "off" never uses symmetry.
+      !! "auto" asks for it explicitly: the largest Abelian group of the
+      !! molecule, D2h or a subgroup (symmetric and spherical tops and linear
+      !! molecules run in C1 for now); a group name must be the detected group
+      !! or a subgroup of it (else trc_run_scf refuses). `tol` is the geometry
+      !! tolerance in Bohr, or 0 for the default (1e-5). With a group other
+      !! than C1, trc_run_scf moves the molecule to the symmetrised, oriented
+      !! standard frame and runs the SCF, and any gradient, there; trc_geometry,
+      !! trc_gradient, trc_mo_coefficients, trc_density and the borrowed
+      !! handles report that frame for an explicit request and the input frame
+      !! for the default one (trc_set_symmetry_report_frame overrides).
+      !! An explicit request is refused at the run, not here, for: density
+      !! fitting, PCM, fractional occupations, SOSCF, more than one rank, a
+      !! given or projected guess, RI-MP2, CPHF/CPKS, the Hessian, Fukui
+      !! indices and restarts; the default request falls back to C1 there.
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(in) :: group(*)
+      real(c_double), value :: tol
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_sym_request_t) :: req
+      type(error_t) :: err
+      character(len=32) :: text
+      integer :: i
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      text = ""
+      do i = 1, len(text)
+         if (group(i) == c_null_char) exit
+         text(i:i) = group(i)
+      end do
+      status = TRC_ERR_BADARG
+      if (tol < 0.0_c_double) then
+         call refuse(cx, "trc_set_symmetry: tol is a distance in Bohr and cannot be negative")
+         return
+      end if
+      req = cx%sym_req
+      call sym_parse_request(trim(text), req, err)
+      if (err%has_error()) then
+         call refuse(cx, "trc_set_symmetry: "//err%get_message())
+         return
+      end if
+      if (tol > 0.0_c_double) req%tol = real(tol, dp)
+      cx%sym_req = req
+      cx%sym_suppressed = .false.
+      cx%sym_frame_ok = .false.
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_symmetry
+
+   function trc_set_symmetry_skeleton(handle, on) result(status) bind(c, name="trc_set_symmetry_skeleton")
+      !! Under a symmetry request (trc_set_symmetry), build the Fock matrix
+      !! from the orbit representatives of the integral quartets and
+      !! symmetrize it (on = 1, the default), or build the full matrix and
+      !! symmetrize that (on = 0). The same SCF either way, to round-off; only
+      !! the number of integrals computed differs. No effect without a group
+      !! other than C1, with density fitting or over more than one rank
+      !! (those take the full build).
+      type(c_ptr), value :: handle
+      integer(c_int), value :: on
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%sym_req%skeleton = on /= 0_c_int
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_symmetry_skeleton
+
+   function trc_set_symmetry_report_frame(handle, frame) result(status) bind(c, name="trc_set_symmetry_report_frame")
+      !! The frame a symmetric run reports in: the geometry (trc_geometry), the
+      !! gradient, the orbitals, the density and the borrowed basis/ERI handles
+      !! (trc_context_basis/eri). 1 = the caller's input frame (the molecule
+      !! symmetrised in it), 0 = the group's standard frame, -1 = the default:
+      !! the input frame when the symmetry request is the default one, the
+      !! standard frame when trc_set_symmetry asked for it. Energies, orbital
+      !! energies, irrep labels, occupations and atomic charges do not depend
+      !! on it.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: frame
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (frame < -1 .or. frame > 1) then
+         call refuse(cx, "trc_set_symmetry_report_frame: frame must be -1 (default), 0 (standard) or 1 (input)")
+         return
+      end if
+      cx%sym_report = int(frame)
+      status = TRC_OK
+   end function trc_set_symmetry_report_frame
+
+   function trc_symmetry_report_frame(handle, frame) result(status) bind(c, name="trc_symmetry_report_frame")
+      !! The frame the getters return now: 1 = the caller's input frame (every
+      !! run without symmetry, and a symmetric run reported in it), 0 = the
+      !! standard frame of the group the last run used. TRC_ERR_STATE before
+      !! a successful run.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: frame
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      frame = 1_c_int
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) return
+      frame = merge(0_c_int, 1_c_int, cx%sym_moved .and. .not. report_input_frame(cx))
+      status = TRC_OK
+   end function trc_symmetry_report_frame
+
+   function trc_set_irrep_nelec(handle, spec) result(status) bind(c, name="trc_set_irrep_nelec")
+      !! Fix the electrons per irrep, as pyscf's irrep_nelec: "A'=6,A\"=2" for
+      !! a restricted run (even counts), "A'=4/3,A\"=1/1" (alpha/beta) for an
+      !! unrestricted one; irreps not listed hold none. An empty string
+      !! restores the aufbau occupation. The labels are checked against the
+      !! group when trc_run_scf runs. A gradient is refused for occupations
+      !! that differ from the aufbau ones.
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(in) :: spec(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      character(len=256) :: text
+      integer :: i
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      text = ""
+      do i = 1, len(text)
+         if (spec(i) == c_null_char) exit
+         text(i:i) = spec(i)
+      end do
+      if (allocated(cx%sym_req%irrep_nelec)) deallocate (cx%sym_req%irrep_nelec)
+      if (len_trim(text) > 0) then
+         cx%sym_req%irrep_nelec = trim(text)
+         ! Fixed irrep occupations only mean something in a symmetric run: an
+         ! explicit request (standard frame, refusals), never a silent C1.
+         cx%sym_req%by_default = .false.
+         cx%sym_suppressed = .false.
+      end if
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_irrep_nelec
+
+   function trc_symmetry_group(handle, buf, buflen) result(status) bind(c, name="trc_symmetry_group")
+      !! The point group the last trc_run_scf used ("C1" when it ran without
+      !! symmetry), NUL-terminated into `buf` of `buflen` chars. TRC_ERR_STATE
+      !! unless a symmetry request ran.
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(out) :: buf(*)
+      integer(c_int), value :: buflen
+      integer(c_int) :: status
+      status = sym_text_out(handle, 1, 0, buf, buflen)
+   end function trc_symmetry_group
+
+   function trc_symmetry_detected(handle, buf, buflen) result(status) bind(c, name="trc_symmetry_detected")
+      !! The largest point group found in the geometry, before the cap to the
+      !! groups this build supports (so "C2v" for water while only Cs is used).
+      type(c_ptr), value :: handle
+      character(kind=c_char), intent(out) :: buf(*)
+      integer(c_int), value :: buflen
+      integer(c_int) :: status
+      status = sym_text_out(handle, 2, 0, buf, buflen)
+   end function trc_symmetry_detected
+
+   function trc_symmetry_irrep_name(handle, irrep, buf, buflen) result(status) bind(c, name="trc_symmetry_irrep_name")
+      !! The name of irrep `irrep` (1-based, the order of trc_mo_irreps) of the
+      !! group used. TRC_ERR_STATE unless the last run was symmetric.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: irrep
+      character(kind=c_char), intent(out) :: buf(*)
+      integer(c_int), value :: buflen
+      integer(c_int) :: status
+      status = sym_text_out(handle, 3, int(irrep), buf, buflen)
+   end function trc_symmetry_irrep_name
+
+   function sym_text_out(handle, what, irrep, buf, buflen) result(status)
+      !! The three text getters above: 1 group used, 2 group detected, 3 irrep name.
+      type(c_ptr), value :: handle
+      integer, intent(in) :: what, irrep
+      character(kind=c_char), intent(out) :: buf(*)
+      integer(c_int), value :: buflen
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      character(len=3) :: text
+      integer :: i, n
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%sym_ran .or. .not. cx%scf_ok) return
+      select case (what)
+      case (1)
+         text = cx%sym_used
+      case (2)
+         text = cx%sym_geom%detected
+      case default
+         if (.not. cx%sym_active) return
+         status = TRC_ERR_BADARG
+         if (irrep < 1 .or. irrep > cx%sym_geom%group%order) return
+         text = cx%sym_geom%group%irrep_names(irrep)
+      end select
+      n = min(len_trim(text), int(buflen) - 1)
+      do i = 1, n
+         buf(i) = text(i:i)
+      end do
+      if (buflen > 0) buf(n + 1) = c_null_char
+      status = TRC_OK
+   end function sym_text_out
+
+   function trc_symmetry_residual(handle, residual) result(status) bind(c, name="trc_symmetry_residual")
+      !! The largest displacement (Bohr) symmetrisation made to any atom of the
+      !! input geometry; 0 for C1.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: residual
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      residual = 0.0_c_double
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%sym_ran) return
+      residual = real(cx%sym_geom%residual, c_double)
+      status = TRC_OK
+   end function trc_symmetry_residual
+
+   function trc_symmetry_frame(handle, rot, shift) result(status) bind(c, name="trc_symmetry_frame")
+      !! The orientation of the standard frame: x_std = rot (x - shift) for an
+      !! input-frame point x (Bohr). `rot` is 9 doubles, row-major (rot[3*i+j]);
+      !! `shift` is the centre of nuclear charge, 3 doubles. The identity and
+      !! zero for C1.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: rot(*), shift(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: i, j
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%sym_ran) return
+      do i = 1, 3
+         do j = 1, 3
+            rot(3*(i - 1) + j) = real(cx%sym_geom%rot(i, j), c_double)
+         end do
+         shift(i) = real(cx%sym_geom%shift(i), c_double)
+      end do
+      status = TRC_OK
+   end function trc_symmetry_frame
+
+   function trc_symmetry_nirrep(handle, nirrep) result(status) bind(c, name="trc_symmetry_nirrep")
+      !! The number of irreps of the group used. TRC_ERR_STATE unless the last
+      !! run was symmetric (group other than C1).
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: nirrep
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      nirrep = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%sym_active .or. .not. cx%scf_ok) return
+      nirrep = int(cx%sym_geom%group%order, c_int)
+      status = TRC_OK
+   end function trc_symmetry_nirrep
+
+   function trc_symmetry_irrep_dim(handle, dim) result(status) bind(c, name="trc_symmetry_irrep_dim")
+      !! The number of symmetry-adapted basis functions of each irrep
+      !! (trc_symmetry_nirrep entries), summing to trc_nao.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: dim(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%sym_active .or. .not. cx%scf_ok) return
+      dim(1:size(cx%sym_irrep_dim)) = int(cx%sym_irrep_dim, c_int)
+      status = TRC_OK
+   end function trc_symmetry_irrep_dim
+
+   function trc_mo_irreps(handle, irreps) result(status) bind(c, name="trc_mo_irreps")
+      !! The irrep of each molecular orbital, 1-based into the irrep order of
+      !! trc_symmetry_irrep_name, laid out like trc_mo_energies ((nao, nspin),
+      !! column-major); 0 for an orbital canonical orthogonalisation dropped.
+      !! TRC_ERR_STATE unless the last run was symmetric.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: irreps(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: n, ns
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%sym_active .or. .not. cx%scf_ok) return
+      if (.not. allocated(cx%res%mo_irrep)) return
+      n = scf_space_nao(cx%bb)
+      ns = cx%res%nspin
+      irreps(1:n*ns) = int(reshape(cx%res%mo_irrep(1:n, 1:ns), [n*ns]), c_int)
+      status = TRC_OK
+   end function trc_mo_irreps
+
+   function trc_geometry(handle, xyz) result(status) bind(c, name="trc_geometry")
+      !! The geometry the context holds now, atom-major Bohr (3*natm): the
+      !! input, or after a symmetric run the symmetrised geometry in the
+      !! frame the results are reported in (trc_symmetry_report_frame): the
+      !! caller's input frame by default, the group's standard frame under an
+      !! explicit trc_set_symmetry request.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: xyz(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%have_mol) return
+      xyz(1:3*cx%natm) = real(reshape(geometry_for_report(cx), [3*cx%natm]), c_double)
+      status = TRC_OK
+   end function trc_geometry
+
    function trc_message(handle, buf, buflen) result(status) bind(c, name="trc_message")
       !! The last message, NUL-terminated into `buf` of `buflen` chars.
       type(c_ptr), value :: handle
@@ -5956,6 +6896,12 @@ contains
    function trc_context_basis(handle, basis) result(status) bind(c, name="trc_context_basis")
       !! The basis handle inside the context: BORROWED, never destroyed by
       !! the caller, valid until the context is destroyed or the basis reset.
+      !! After a symmetric run whose results are reported in the input frame
+      !! (the default request) it is a copy of the basis on the input-frame
+      !! centres, so that it goes with trc_density, trc_mo_coefficients and
+      !! trc_geometry; it is rebuilt after the geometry changes. A handle
+      !! borrowed BEFORE such a run is the context's own basis, whose centres
+      !! the run moved to the standard frame.
       type(c_ptr), value :: handle
       type(c_ptr), intent(out) :: basis
       integer(c_int) :: status
@@ -5970,9 +6916,41 @@ contains
       ! Through a pointer: a component of the box has no TARGET attribute of
       ! its own, and c_loc of it is what nvfortran warns about.
       bp => cx%bb
+      if (report_input_frame(cx)) then
+         ! The orbitals and the density are reported in the input frame, so the
+         ! basis they go with is the input-frame one: the same shells, centred
+         ! on the symmetrised input-frame coordinates.
+         call refresh_input_basis(cx)
+         bp => cx%bb_in
+      end if
       basis = c_loc(bp)
       status = TRC_OK
    end function trc_context_basis
+
+   subroutine refresh_input_basis(cx)
+      !! `cx%bb_in`: a copy of the held basis with the centres in the input
+      !! frame, built on first use. It is dropped whenever the geometry or the
+      !! basis changes (`drop_input_frame_handles`), so a later call only
+      !! brings the AO normalisation up to date; the box and its arrays keep
+      !! their addresses, which a borrowed handle and the ERI context built on
+      !! them depend on.
+      type(context_box), intent(inout) :: cx
+      real(dp), allocatable :: r_in(:, :)
+      integer :: a
+      if (allocated(cx%bb_in)) then
+         cx%bb_in%ao_norm_kind = cx%bb%ao_norm_kind
+         return
+      end if
+      allocate (cx%bb_in)
+      cx%bb_in%b = cx%bb%b
+      cx%bb_in%b%on_device = .false.
+      cx%bb_in%ao_norm_kind = cx%bb%ao_norm_kind
+      r_in = geometry_for_report(cx)
+      do a = 1, cx%natm
+         call move_basis_centre(cx%bb_in%b, a, r_in(:, a))
+      end do
+      call cx%bb_in%b%to_device()
+   end subroutine refresh_input_basis
 
    function trc_context_eri(handle, eri) result(status) bind(c, name="trc_context_eri")
       !! The ERI context at the context's screening threshold, built on first
@@ -5990,6 +6968,11 @@ contains
       call c_f_pointer(handle, cx)
       status = TRC_ERR_STATE
       if (.not. cx%have_basis) return
+      if (report_input_frame(cx)) then
+         call input_frame_eri(cx, ep, status)
+         if (status == TRC_OK) eri = c_loc(ep)
+         return
+      end if
       if (.not. allocated(cx%eb)) then
          allocate (cx%eb)
          call trc_build_comm(cx%fcomm, comm, collective, status)
@@ -6007,5 +6990,31 @@ contains
       eri = c_loc(ep)
       status = TRC_OK
    end function trc_context_eri
+
+   subroutine input_frame_eri(cx, ep, status)
+      !! The ERI context of the input-frame basis (trc_context_basis), built on
+      !! first use and dropped when the geometry or the basis changes.
+      type(context_box), intent(inout), target :: cx
+      type(eri_box), pointer, intent(out) :: ep
+      integer(c_int), intent(out) :: status
+      type(comm_t) :: comm
+      logical :: collective
+      status = TRC_OK
+      if (.not. allocated(cx%eb_in)) then
+         call refresh_input_basis(cx)
+         allocate (cx%eb_in)
+         call trc_build_comm(cx%fcomm, comm, collective, status)
+         if (status /= TRC_OK) then
+            deallocate (cx%eb_in)
+            return
+         end if
+         if (collective) then
+            call cx%eb_in%e%build(cx%bb_in%b, cx%opts%eri_thresh, comm, batch_res=cx%opts%batch_res)
+         else
+            call cx%eb_in%e%build(cx%bb_in%b, cx%opts%eri_thresh, batch_res=cx%opts%batch_res)
+         end if
+      end if
+      ep => cx%eb_in
+   end subroutine input_frame_eri
 
 end module trc_capi

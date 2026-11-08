@@ -50,6 +50,8 @@ module trc_scf_grad
    use trc_scf_grad_df, only: scf_grad_df_two_electron
    use trc_vv10_grad, only: vv10_grad_add, vv10_grad_add_on_grid
    use trc_scf_settings, only: DEFAULT_NLC_GRID_LEVEL
+   use trc_sym_geom, only: trc_sym_geom_t
+   use trc_sym_scf, only: sym_grad_symmetrize
    use trc_dft_grid, only: dft_grid_t
    use trc_xc_batch, only: trc_xc_grid_t
    implicit none
@@ -131,8 +133,8 @@ contains
    end subroutine scf_grad_energy_weighted_density
 
    subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
-                               func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, dfjk, aux, &
-                               verbose, grid, xg, grid_nlc, xg_nlc, pair_eri_cache, reused)
+                               func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, grid_rotation, &
+                               dfjk, aux, verbose, grid, xg, grid_nlc, xg_nlc, pair_eri_cache, reused, sym_geom)
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
@@ -225,6 +227,9 @@ contains
       !! than rebuilding: the only way a caller or a test can tell the two
       !! paths apart, since they agree on the numbers by construction.
       integer, intent(in), optional :: nlc_grid_level
+      real(dp), intent(in), optional :: grid_rotation(3, 3)
+      !! The Lebedev rotation of the SCF's grids (`trc_scf_options_t%grid_rotation`),
+      !! for a grid this routine has to build itself; absent: the identity.
       !! VV10's own grid level -- see this subroutine's own header, VV10.
       !! Absent means `trc_scf_settings%DEFAULT_NLC_GRID_LEVEL`, the SAME
       !! constant `trc_scf_options_t%nlc_grid_level` defaults to, not the
@@ -247,6 +252,12 @@ contains
       !! steps, through pic's logger at PERFORMANCE. Default off.
       type(dft_grid_t), intent(in), optional :: grid, grid_nlc
       type(trc_xc_grid_t), intent(in), optional :: xg, xg_nlc
+      type(trc_sym_geom_t), intent(in), optional :: sym_geom
+      !! The symmetry the molecule was run in (trc_sym_geom): present, the
+      !! finished gradient is averaged over the group with the atom
+      !! permutation (`sym_grad_symmetrize` of trc_sym_scf), which zeroes the
+      !! components the group forbids. `b` must sit on `sym_geom%r_std`, so
+      !! `grad` is in the standard frame. Absent, nothing is done.
       !! The SCF's own semilocal grid (`grid`/`xg`) and, for VV10, its nlc
       !! grid (`grid_nlc`/`xg_nlc`), each pair present together or not at
       !! all: present, the XC terms run on it (`xc_grad_add_on_grid`/
@@ -347,7 +358,10 @@ contains
       reuse_pl = present(pair_eri_cache)
       if (reuse_pl) reuse_pl = pair_eri_cache%matches(b, thresh)
       reuse_eri = .false.
-      if (reuse_pl) reuse_eri = pair_eri_cache%has_eri .and. pair_eri_cache%batch_res_built == 1
+      ! An engine built with the point group is not reused (its bins are
+      ! orbit-closed; the gradient's use of them is S16's to take over).
+      if (reuse_pl) reuse_eri = pair_eri_cache%has_eri .and. pair_eri_cache%batch_res_built == 1 .and. &
+                                .not. pair_eri_cache%orbits_built
       if (present(reused)) reused = reuse_pl .and. (reuse_eri .or. present(dfjk))
       if (.not. reuse_pl) then
          call pl_own%build(b, thresh)
@@ -397,7 +411,7 @@ contains
       if (present(func)) then
          call gst%step_on(lp, 4, tc)
          xopts = xc_grad_options(grid_level=grid_level, grid_max_pts=grid_max_pts, grid_response=grid_response, &
-                                 rho_tol=rho_tol)
+                                 rho_tol=rho_tol, grid_rotation=grid_rotation)
          if (present(grid) .and. present(xg)) then
             xopts%partition = grid%partition
             call xc_grad_add_on_grid(b, lp, func, density, grad, xopts, xst, xg)
@@ -417,7 +431,8 @@ contains
             ! the energy path's `trc_vv10_rks/uks` is hard-coded to --
             ! see that module's own header.
             call gst%step_on(lp, 5, tc)
-            xopts = xc_grad_options(grid_level=nlc_level, grid_max_pts=grid_max_pts, grid_response=grid_response)
+            xopts = xc_grad_options(grid_level=nlc_level, grid_max_pts=grid_max_pts, grid_response=grid_response, &
+                                    grid_rotation=grid_rotation)
             if (present(grid_nlc) .and. present(xg_nlc)) then
                xopts%partition = grid_nlc%partition
                call vv10_grad_add_on_grid(b, lp, func, density, grad, xopts, vst, xg_nlc)
@@ -433,6 +448,7 @@ contains
 
       ! --- nuclear repulsion, host arithmetic, added on top ---
       call scf_grad_nuclear_repulsion(b, grad)
+      if (present(sym_geom)) call sym_grad_symmetrize(sym_geom%group, sym_geom%perm, grad)
 
       ! A reused `pair_eri_cache%pl` is the caller's: only `pl_own` is ours.
       if (.not. reuse_pl) call pl_own%release()

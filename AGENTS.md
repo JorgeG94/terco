@@ -177,7 +177,12 @@ before any non-trivial change. The rules that most often break builds:
   pyscf references, stacked PRs, and running long jobs as an agent.
 - `.claude/context/gpu-pitfalls.md`: nvfortran and `mem:separate` traps,
   MPI and build gotchas.
+- `.claude/context/segment-fusion-plan.md`: why the skeleton Fock build
+  loses wall time below ~20 atoms despite fewer quartets, and the staged
+  plan to recover it.
 - `docs/GENERATORS.md`: what each generator emits and how to extend it.
 - `docs/pic_api.md`: everything pic provides at the pinned tag.
 - `docs/functionals.md`: every registered functional (generated).
 - `test/pyscf_refs/README.md`: regenerating anchors and the per-case hash.
+- `.claude/context/symmetry-plan.md` and `symmetry-agent-briefs.md`: the
+  point-group symmetry project (stages, and per-stage agent instructions).

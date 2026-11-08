@@ -21,8 +21,9 @@ module trc_scf_context
    use trc_integrals, only: trc_1e
    use trc_sph, only: sph_cart_to_sph
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
+   use trc_sym_geom, only: trc_sym_geom_t
    use trc_error, only: error_t, ERROR_GENERIC
-   use trc_dft_grid, only: dft_grid_t, dft_grid_build, dft_grid_build_block
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build, dft_grid_build_block, dft_grid_options_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_linalg, only: trc_linalg_t
    use trc_pcm, only: trc_pcm_t, pcm_model_from_name
@@ -97,6 +98,11 @@ module trc_scf_context
       integer :: nshell_built = -1, natm_built = -1, batch_res_built = -1
       real(dp), allocatable :: at_r_built(:, :)
       logical :: built = .false., has_eri = .false.
+      logical :: orbits_built = .false.
+      !! `eri` was built with the point group (closed bins, orbit tables, the
+      !! skeleton Fock build). Its full-plan builds agree with a plain
+      !! engine's up to the order of summation, but the gradient does not
+      !! reuse such an engine (trc_scf_gradient): that is S16's.
    contains
       procedure :: release => pair_eri_cache_release
       procedure :: matches => pair_eri_cache_matches
@@ -137,7 +143,7 @@ module trc_scf_context
 
 contains
 
-   subroutine scf_context_setup(this, b, opts, config, la, grid_cache, pair_eri_cache, err, comm, dfjk)
+   subroutine scf_context_setup(this, b, opts, config, la, grid_cache, pair_eri_cache, err, comm, dfjk, sym_geom)
       class(scf_ctx_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       type(trc_scf_options_t), intent(in) :: opts
@@ -161,11 +167,17 @@ contains
       !! (`trc_pair_eri_cache_t`'s own header).
       type(error_t), intent(out) :: err
       type(comm_t), intent(in), optional :: comm
+      type(trc_sym_geom_t), intent(in), optional :: sym_geom
+      !! The point group of the molecule, `b` on its standard frame: present,
+      !! the four-centre engine is built with it (closed bins, orbit tables;
+      !! `trc_eri_t%build`'s `sym`), which the skeleton Fock build needs, and
+      !! `pair_eri_cache%orbits_built` says so. Ignored under `--df`.
       type(df_jk_t), intent(in), optional :: dfjk
       !! Already fitted by the caller; required when `config%df` is true,
       !! checked here rather than left for `scf_fock_build_g` to find out
       !! at the first Fock build.
       type(timer_type) :: tm
+      type(dft_grid_options_t) :: gopts   !! the grids' options: the production grid, rotated as `opts%grid_rotation` says
       type(timer_type) :: tphase   !! the whole setup, and the PCM and grid phases
       character(len=:), allocatable :: refusal
 
@@ -205,6 +217,7 @@ contains
       pair_eri_cache%thresh_built = config%eri_thresh_run
       pair_eri_cache%built = .true.
       pair_eri_cache%has_eri = .false.
+      pair_eri_cache%orbits_built = .false.
       ! The fingerprint a Fortran caller's reuse is checked against --
       ! see `trc_pair_eri_cache_t`'s own header, FINGERPRINT.
       pair_eri_cache%nshell_built = b%nshell
@@ -247,7 +260,12 @@ contains
       if (.not. config%df) then
          pair_eri_cache%has_eri = .true.
          pair_eri_cache%batch_res_built = opts%batch_res
-         if (present(comm)) then
+         pair_eri_cache%orbits_built = .false.
+         if (present(sym_geom)) pair_eri_cache%orbits_built = sym_geom%group%order > 1
+         if (pair_eri_cache%orbits_built) then
+            ! Single rank only (the driver's rule): a plain build call.
+            call pair_eri_cache%eri%build(b, config%eri_thresh_run, batch_res=opts%batch_res, sym=sym_geom)
+         else if (present(comm)) then
             call pair_eri_cache%eri%build(b, config%eri_thresh_run, comm, batch_res=opts%batch_res)
             ! Not when `comm` is a real split (nranks > 1): each rank then
             ! holds only ITS share of the quartets, which is not what a
@@ -325,11 +343,12 @@ contains
          call profiler_start("dft: grid", nvtx_only=.true.)
          ! The partition is split over the ranks; the summed cell weights are
          ! then rank 0's everywhere, as every reduced quantity is.
+         gopts%angular_rotation = opts%grid_rotation
          if (present(comm)) then
             call dft_grid_build_block(b%at_r, b%at_elem, grid_cache%grid, err, comm%rank(), comm%size(), &
-                                      level=opts%grid_level)
+                                      level=opts%grid_level, options=gopts)
          else
-            call dft_grid_build(b%at_r, b%at_elem, grid_cache%grid, err, level=opts%grid_level)
+            call dft_grid_build(b%at_r, b%at_elem, grid_cache%grid, err, level=opts%grid_level, options=gopts)
          end if
          this%t_grid_sub(1) = grid_cache%grid%t_points
          this%t_grid_sub(2) = grid_cache%grid%t_partition
@@ -349,7 +368,7 @@ contains
          this%t_grid_sub(4) = tm%get_elapsed_time()
          grid_cache%grid_built = .true.
          if (config%nlc) then
-            call dft_grid_build(b%at_r, b%at_elem, grid_cache%grid_nlc, err, level=opts%nlc_grid_level)
+            call dft_grid_build(b%at_r, b%at_elem, grid_cache%grid_nlc, err, level=opts%nlc_grid_level, options=gopts)
             if (err%has_error()) then
                call profiler_stop("dft: grid")
                call this%release()
@@ -406,6 +425,7 @@ contains
       call this%pl%release()
       this%built = .false.
       this%has_eri = .false.
+      this%orbits_built = .false.
       this%thresh_built = -1.0_dp
       this%nshell_built = -1
       this%natm_built = -1

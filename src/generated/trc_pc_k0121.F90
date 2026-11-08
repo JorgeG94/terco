@@ -586,7 +586,7 @@ contains
                + 2.0_dp*oo2e*(v(16,0) - re*v(16,1)) &
                + 1.0_dp*oo2ze*v(37,1)
                cur = 0
-                  do x = 1, 80
+                  do x = 17, 80
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do

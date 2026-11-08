@@ -76,7 +76,41 @@ module trc_eri_data
       integer, allocatable :: rlo(:, :), rhi(:, :)
       !! (0:levels, ntile) each tile's reach at each level, this build;
       !! rlo > rhi is empty
+      integer, allocatable :: brep(:)
+      !! (nbin) skeleton bins only: how many of a bin's leading tiles lie in
+      !! the representative range (the tiles that can be a bra)
+      integer, allocatable :: tw(:)
+      !! (ntile) skeleton bins only: the orbit size of the tile's pairs when
+      !! it is a representative tile, 0 otherwise. A tile never straddles two
+      !! weights.
    end type trc_bin_tiles_t
+
+   type, public :: trc_bin_orbits_t
+      !! The pair orbits of the skeleton Fock build, as the bins hold them
+      !! (trc_bins, host only, never mapped to a device). Present only for an
+      !! object built with a point group; `built` is false otherwise and then
+      !! nothing here is allocated.
+      !!
+      !! Every bin is closed under the group (it holds whole orbits), its
+      !! leading `bin_nrep(k)` pairs are the orbit representatives in
+      !! sections of equal orbit size, and the rest are the other members.
+      logical :: built = .false.
+      integer :: nop = 1
+      !! Operations of the group.
+      integer, allocatable :: shmap(:, :)
+      !! (nshell, nop) the shell each operation sends a shell of the working
+      !! basis to (trc_sym_pairs).
+      integer, allocatable :: ops(:)
+      !! (nop) sign mask of each operation (trc_sym_group: bit 0 flips x, bit 1
+      !! y, bit 2 z), in the order of the columns of `shmap`. The unique-pair
+      !! build rebuilds an image pair from its representative with them.
+      integer, allocatable :: bin_nrep(:)
+      !! (nbin) representatives at the start of bin k.
+      integer, allocatable :: sec0(:)
+      !! (nbin + 1) the representative sections of bin k are sec0(k)+1 .. sec0(k+1).
+      integer, allocatable :: sec_beg(:), sec_cnt(:), sec_w(:)
+      !! (nsec) first pair - 1 within its bin, pairs, and orbit size of a section.
+   end type trc_bin_orbits_t
 
    type, public :: trc_pair_quartets_t
       !! The primitive pairs again, laid out bin by bin and interleaved by
@@ -101,6 +135,19 @@ module trc_eri_data
       !! The same bins cut into exchange tiles (trc_bin_tiles), host only:
       !! like the slots above it follows the pair order inside the bins, and
       !! is rebuilt with them.
+      integer :: axperm(3) = [1, 2, 3]
+      !! The engine-internal frame of parity skipping (docs/SYMMETRY_PARITY_SKIP.md,
+      !! decision 1): the kernels' axis k is the molecule's axis axperm(k), so
+      !! that the most common dead axis is the kernels' z. Not applied to the
+      !! arrays above (the gradient kernels read them in the standard frame):
+      !! the launcher hands the kernels the coordinate arrays in this order,
+      !! and permutes the density in and the result out through `ao_perm`.
+      !! The identity unless `build` was given a point group.
+      integer, allocatable :: ao_perm(:), ao_perm_inv(:)
+      !! (nao) of the working basis, allocated only when `axperm` is not the
+      !! identity: ao_perm(i') is the AO of the standard frame that AO i' of
+      !! the kernels' frame is, so D'(i', j') = D(ao_perm(i'), ao_perm(j')).
+      !! `ao_perm_inv` is its inverse. Device-resident like the arrays above.
    end type trc_pair_quartets_t
 
    type, public :: trc_bin_launch_t
@@ -123,6 +170,11 @@ module trc_eri_data
       !! Bin-level density screen (not armed; see density_reject in trc_bins).
       logical :: nosym = .false.
       !! The density is not symmetric: route through the enumerated kernel.
+      logical :: skeleton = .false.
+      !! Build the SKELETON matrix: only the orbit representatives of the
+      !! bra side are launched, weighted by their orbit size, so the result
+      !! is G_skel and must be symmetrized (docs/SYMMETRY_FOCK.md). Needs the
+      !! bins' orbits; the density must be invariant under the group.
       logical :: count_kept = .false.
       !! Count the quartets that survive both screens, into `nkept`, and
       !! build nothing: binkernel_fock_bins returns after the count.
@@ -133,6 +185,20 @@ module trc_eri_data
       !! Out: work items (quartets before the in-kernel screens).
       integer(int64) :: nkept = 0
       !! Out: quartets that survived, when `count_kept` asked for it.
+      integer(int64) :: nwork_masked = 0
+      !! Out: work items of the segments whose quartets all have the dead z
+      !! axis of the kernels' frame (parity skipping), launched or not as a
+      !! masked variant.
+      integer(int64) :: nwork_variant = 0
+      !! Out: work items that ran in a masked variant kernel. The difference
+      !! to `nwork_masked` is the work of classes without a variant.
+      integer :: nlaunch_variant = 0
+      !! Out: launches that went to a masked variant.
+      real(dp) :: ops_base = 0.0_dp, ops_masked = 0.0_dp
+      !! Out: the modelled operations (kernel text, per primitive quartet, times
+      !! the work items) of the launches that went to a masked variant, as the
+      !! unmasked kernel of the class would have cost and as the variant costs:
+      !! the work the masks drop is 1 - ops_masked/ops_base.
    end type trc_bin_launch_t
 
 end module trc_eri_data

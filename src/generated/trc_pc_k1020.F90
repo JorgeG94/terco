@@ -484,7 +484,22 @@ contains
             v(40,1) = paz*v(37,1) + wpz*v(37,0) &
                + 2.0_dp*oo2ze*v(13,0)
                cur = 1
-                  do x = 1, 40
+                  do x = 18, 20
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 22, 24
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 26, 28
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 30, 32
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 34, 36
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 38, 40
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do
