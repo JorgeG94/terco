@@ -28,7 +28,13 @@ In this order:
 5. The files your brief lists under "Read". Read the code you will call or
    change; don't guess a signature.
 
-### 2. Environment (this Mac)
+### 2. Environment
+
+There are two. Read the one your coordinator names; if it names neither, ask
+rather than guessing, because the toolchains and the GPU situation differ
+completely.
+
+#### 2a. The Mac (Apple Silicon, no NVIDIA GPU)
 
 - Apple Silicon, macOS. **No NVIDIA GPU.** You cannot run anything marked
   [GPU]. List it as "not run" in your report; never claim it passed.
@@ -51,6 +57,70 @@ In this order:
 - The OpenMP build rewrites `src/` in place. Do it only in a scratch
   worktree, never in your working tree with uncommitted changes. The recipe
   is in `.claude/context/ci.md`.
+
+#### 2b. The Linux GPU host (4x Tesla V100)
+
+Where S15 and everything after it was measured. **Do not assume the Mac's
+toolchain here: the `gfortran` and `nvfortran` on PATH cannot build terco.**
+
+- `gfortran` on PATH is 13.3 and **rejects `do concurrent ... local()`**, the
+  F2018 locality specs terco's kernels use. gfortran 15 is the floor and is
+  not apt-installable. Use the full path:
+
+  ```sh
+  GCC=/shared/compilers/gcc/15.1.0
+  export LD_LIBRARY_PATH=$GCC/lib64:$LD_LIBRARY_PATH
+  # -DCMAKE_Fortran_COMPILER=$GCC/bin/gfortran -DCMAKE_C_COMPILER=$GCC/bin/gcc
+  ```
+- `nvfortran` on PATH is 21.7 and far too old. Use:
+
+  ```sh
+  NVROOT=/home/jorge/install/nvhpc/26.5/Linux_x86_64/26.5
+  export PATH=$NVROOT/compilers/bin:$PATH
+  export LD_LIBRARY_PATH=$NVROOT/compilers/lib:$NVROOT/math_libs/lib64:$LD_LIBRARY_PATH
+  # -DTERCO_ENABLE_GPU=ON -DCMAKE_Fortran_COMPILER=nvfortran \
+  # -DCMAKE_C_COMPILER=nvc -DTERCO_GPU_ARCH=cc70
+  ```
+  Both the compiler and the `pic` dependency live under another user's home.
+  That is fragile; say so if a run depends on it.
+- Hardware: 4x Tesla V100-DGXS-32GB, compute capability **7.0** (`cc70`,
+  terco's default `TERCO_GPU_ARCH`), 40 cores, 251 GB RAM. `nsys`
+  **2025.1.3** at `/usr/local/cuda/bin/nsys` (the NVHPC-bundled one fails
+  with `CUPTI_ERROR_INVALID_DEVICE`), `ncu` at
+  `/opt/nvidia/nsight-compute/2025.2.1/ncu`, `cuobjdump` at
+  `/usr/local/cuda/bin`.
+- **The box is shared.** Ask the coordinator which GPUs are yours, check
+  `nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader`
+  before every timed run, and record what you saw next to the number.
+- **Never run `ctest` with `-j` on a GPU build.** Every registration pins
+  `ENVIRONMENT "CUDA_VISIBLE_DEVICES=0"`, so `-j` crowds one card and
+  produces false failures: `ERROR STOP trc_linalg: cusolverDnCreate failed`
+  on tests that pass serially. It is also slower, not faster. A device suite
+  runs in about 1000 s serially. (A *host* build has no such constraint;
+  `--parallel 8` is fine there.)
+- NVHPC's linker refuses to relink an existing shared library ("input file
+  libterco.so is the same as output file"). Delete `libterco.so` before any
+  relink.
+- `TERCO_LONG_TESTS` defaults OFF, and the `LONG`-labelled tests are then
+  registered **DISABLED**, not merely filtered: a default run is 273 of 279
+  tests. Configure `-DTERCO_LONG_TESTS=ON` to get them, and budget ~2400 s
+  for `check_xc_grad_fd` alone.
+
+#### 2c. Record what you measured on
+
+Every measurement must state **the commit the binary was built from**, not
+the commit the worktree happens to be on when you read the result. The two
+differ whenever anything merges mid-session.
+
+This is not a style request. A GPU build configured 30 minutes before the
+parity-skip merge existed contained **no** masked kernels, and the resulting
+"parity skipping never engages" finding was wrong, propagated into a plan
+document, and cost a dispatched diagnosis agent plus a retraction. A second
+measurement at a different basis set "confirmed" it, because it used the same
+stale binary: a repeat against the same artefact is not independent
+verification. `grep -c 'the-thing-you-expect' $BUILD/CMakeCache.txt`, or a
+`git -C <source> rev-parse HEAD` recorded beside the number, would have
+caught it.
 
 ### 3. Git
 
@@ -204,6 +274,37 @@ followed by a "reproduced exactly" diff check. Merge decisions and
 conflict resolution that needs judgement stay with the coordinator.
 
 ### 8. Lessons from S1–S5 (each one cost a failed run)
+
+- **Do not own a long build or a full test suite.** Start it, and let the
+  coordinator wait for it. An agent that polls its own 30-minute build burns
+  hundreds of tool calls and hands back unfinished, and every handback
+  re-sends its whole context. The pattern that works: the coordinator runs
+  the build and the suite, and hands you finished logs and binaries to
+  analyse. If you must run one yourself, use `nohup` and a single wait, never
+  a polling loop (`.claude/context/workflow.md`).
+- **Say what you did not do.** Several correct, useful reports were
+  indistinguishable from finished ones because they led with results and
+  buried "the suite is still running". Put the status first.
+- **A clean textual merge proves nothing.** Two hunks ten lines apart
+  auto-merge silently; that is more dangerous than a conflict, not less.
+  After any merge across a refactor, check that every name the auto-merged
+  side uses still exists and is still imported.
+- **`cuobjdump -res-usage`'s `LOCAL` field is unused in this build**; the
+  per-thread frame is in `STACK`, and it mixes declared scratch with spill
+  slots indistinguishably. `LOCAL:0` therefore does **not** mean "no spills" —
+  reading it that way produced a wrong "spills are zero everywhere" claim
+  that was repeated into two later briefs. For the decomposition use
+  `nvfortran -gpu=...,ptxinfo`, which prints frame, spill stores and spill
+  loads separately; for what it costs use `ncu`'s local-memory counters.
+- **A coverage model is not a time measurement.** `pc_cost`-weighted
+  coverage rose 0.47 -> 0.81 on a change worth +2% of host Fock time. Find
+  which classes lack a kernel with the counters; find what adding one buys
+  with nsys.
+- **Kernel names carry the class tag**, so `nsys stats --report
+  cuda_gpu_kern_sum` grouped by that tag gives the per-class time
+  distribution directly, on a build you already have. Two minutes of shell
+  beat a dispatched agent for this, and for most questions of the form "what
+  fraction of time is in X".
 
 - **test-drive suites run serially**: call `run_testsuite(..., parallel=.false.)`.
   The default runs cases in an OpenMP parallel do, and the basis reader is
