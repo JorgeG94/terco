@@ -324,6 +324,10 @@ set_tests_properties(terco/check_sym_fock_f PROPERTIES SKIP_REGULAR_EXPRESSION "
 # move, and so pins nothing about the launches.
 terco_add_check(check_sym_fusion check_sym_fusion.F90 NEEDS_BASIS)
 target_link_libraries(check_sym_fusion PRIVATE test-drive::test-drive)
+# An active TRC_LAUNCH_CAP re-splits a class run by quartet count, which this
+# check does not model, so it skips rather than asserting -- report that as a
+# skip, as the check_sym_fock_* variants do, not as a pass.
+set_tests_properties(terco/check_sym_fusion PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 # Point group D2 (twisted ethylene and tetrafluoroethylene): detection and pyscf's
 # frame (x, y order), SALC block-diagonality, the central oracle (RHF, UHF,

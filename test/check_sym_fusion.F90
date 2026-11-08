@@ -167,18 +167,29 @@ contains
       type(error_t) :: err
       real(dp), allocatable :: r(:, :), dc(:, :), gc(:, :)
       integer, allocatable :: elem(:)
-      integer :: nat, dev, st, nseg, ngroup, ntriple, nrouted
+      integer :: nat, dev, st, ios, cap, nseg, ngroup, ntriple, nrouted
       character(len=16) :: capenv
 
       ! TRC_LAUNCH_CAP splits a class run by quartet count, which this check
       ! does not model. Nothing in the tree sets it.
+      ! Only an ACTIVE cap matters. launch_cap() returns 0 for an unset,
+      ! empty or unparseable value, and the launch loop guards on
+      ! `lcap > 0`, so TRC_LAUNCH_CAP=0 is "no cap" and must still be
+      ! asserted. Skipping on any non-empty value made TRC_LAUNCH_CAP=0
+      ! report three green cases that asserted nothing.
       capenv = " "
+      cap = 0
       call get_environment_variable("TRC_LAUNCH_CAP", capenv, status=st)
-      if (st == 0) then
-         if (len_trim(capenv) > 0) then
-            print "(a,a,a)", "  ", trim(xyz), ": TRC_LAUNCH_CAP is set, launch fusion not asserted"
-            return
-         end if
+      if (st == 0 .and. len_trim(capenv) > 0) then
+         read (capenv, *, iostat=ios) cap
+         if (ios /= 0) cap = 0
+      end if
+      if (cap > 0) then
+         ! SKIP, so the ctest entry's SKIP_REGULAR_EXPRESSION reports this
+         ! as skipped rather than as a pass that checked nothing.
+         print "(a,a,a,i0)", "  SKIP: ", trim(xyz), &
+            ": launch fusion is not asserted under TRC_LAUNCH_CAP=", cap
+         return
       end if
 
       dev = trc_bind_device(0)
