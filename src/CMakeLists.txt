@@ -816,8 +816,25 @@ file(MAKE_DIRECTORY "${_hgp_template}")
 # of every ordering exist up to f"), which is a class with (lc, ld) > (la, lb).
 # Removing those would silently send such a launch to HGP up to d and
 # `error stop` above it ("a class above d has no Rys kernel in this build",
-# trc_rys_select.F90). The gradient has no skeleton plan -- grad_bins builds
-# plan%build, whose walk only ever emits ka >= kb -- so there they are dead.
+# trc_rys_select.F90).
+#
+# The gradient filter below keeps that third condition, and the argument for
+# it is weaker than it looks. grad_bins has no skeleton plan, so the only
+# walk is plan%build's, which iterates b%live in ascending bin index; and
+# bin_key packs (la, lb) as its most significant fields, so ascending index
+# USUALLY means (la, lb) >= (lc, ld). But split_large_bins and arrange_orbits
+# append a split bin's extra chunks PAST every original index while keeping
+# their parent's (la, lb), so a chunk of a low-l bin can be the bra against a
+# high-l ket -- the same mechanism that makes the 42 bra<ket energy classes
+# above reachable. A plan with a bin over BIN_CAP (or TRC_BIN_CAP lowered, as
+# check_sym_fock_cap does for the energy path) can therefore emit a gradient
+# class the filter dropped, and grad_classes `error stop`s on one it has no
+# kernel for. At TERCO_LMAX=2 all 81 gradient classes are built so nothing
+# can fire; above d it needs an f shell and a bin of more than 32768 pairs,
+# and no gradient test sets TRC_BIN_CAP, so it is untested rather than safe.
+# Fixing it is a decision -- build the ~42 extra gradient kernels, or
+# canonicalise the plan at emit time -- and is left for whoever owns the
+# gradient path.
 set(_rys_classes "")
 foreach(_tag ${_all_classes})
   string(SUBSTRING "${_tag}" 0 1 _tag_la)
