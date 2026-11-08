@@ -2489,3 +2489,12 @@ set_tests_properties(terco/check_sym_fock_nouniq PROPERTIES ENVIRONMENT
 # Registered DISABLED; run by hand: spike_unique <xyz> <basis.json> <count|verify>.
 terco_add_check(spike_unique spike_unique.F90 NEEDS_BASIS)
 set_tests_properties(terco/spike_unique PROPERTIES DISABLED TRUE)
+
+# Skeleton gradient design spike (docs/SYMMETRY_GRADIENT.md, S16): the
+# gradient's own plan against the skeleton plan (work items, survivors,
+# launches, the bra/ket swap against the gradient class filter) and the
+# exactness of the symmetrized skeleton gradient, the weight applied by
+# segment replication so no kernel changes. Registered DISABLED; run by hand:
+# spike_symgrad <xyz> <basis.json> <sph|cart> <count|verify> [thresh].
+terco_add_check(spike_symgrad spike_symgrad.F90 NEEDS_BASIS)
+set_tests_properties(terco/spike_symgrad PROPERTIES DISABLED TRUE)
