@@ -417,11 +417,18 @@ contains
       !! the same 2.3x increase, while naphthalene at 412 bf was a wash and
       !! pentacene at 378 bf a 2.14x win.
       !!
-      !! Measured ERI time (cc-pVDZ, --econv 1e-10, Tesla V100-DGXS-32GB
+      !! MEASURED ERI TIME. These four numbers come from stage W2
+      !! (.claude/context/segment-fusion-plan.md, "W2 results"), NOT from the
+      !! change that added this rule, which ran on a host build with no GPU;
+      !! the rule itself has not been re-measured on a device. W2's settings:
+      !! cc-pVDZ, integral screening --thresh 1e-12 (terco's default, not
+      !! overridden; the tau = 1e-10 on the quartet table above is the
+      !! shell-pair pre-pass's own screen, not this one), convergence gate
+      !! --econv 1e-10, the default SAD atomic guess, Tesla V100-DGXS-32GB
       !! (cc70), nvfortran 26.5, -stdpar=gpu -acc -gpu=cc70,mem:separate,
-      !! TERCO_LMAX=3, per steady-state Fock build, baseline the same build
-      !! with --symmetry off, W2 of .claude/context/segment-fusion-plan.md
-      !! landed). `*` marks what this rule chooses:
+      !! TERCO_LMAX=3, ERI time per steady-state Fock build from nsys as the
+      !! difference between two consecutive --iterations runs, baseline the
+      !! same build with --symmetry off. `*` marks what this rule chooses:
       !!
       !!   system            natm  norbit  natm/norbit  ERI on/off
       !!   tops_sf6             7       4     1.75        0.44x   (full*)

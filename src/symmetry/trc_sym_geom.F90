@@ -152,10 +152,16 @@ contains
       !! number of orbits of `perm` (`trc_sym_geom_t%perm`), the atom
       !! permutation of each operation. Orbits are found by relabelling each
       !! atom with the lowest index it reaches, so the count does not depend
-      !! on the order of the operations. O(natm * nop) on tables the detection
-      !! has already built; the skeleton Fock build's size rule
-      !! (`trc_sym_run`'s sym_skeleton_size_rule) is the only caller, and it
-      !! runs once per geometry.
+      !! on the order of the operations.
+      !!
+      !! COST. O(natm**2 * nop): there are natm * nop merge steps and each one
+      !! relabels the WHOLE array (`where (lab == hi) lab = lo`), rather than
+      !! following parent pointers. A union-find would be near-linear, and is
+      !! not worth it here -- terco's largest symmetric test molecule is 36
+      !! atoms in a group of order 8, so this is ~10^4 integer compares, run
+      !! once per geometry on tables the detection has already built, against
+      !! a Fock build of 10^8 and up. The size rule
+      !! (`trc_sym_run`'s sym_skeleton_size_rule) is the only caller.
       integer, intent(in) :: perm(:, :)
       integer :: lab(size(perm, 1))
       integer :: natm, nop, ia, k, lo, hi

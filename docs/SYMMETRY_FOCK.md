@@ -338,14 +338,29 @@ per symmetry-inequivalent atom:
     natm >= 2 * norbit,    norbit = atom orbits of the group
 
 `norbit` is `sym_geom_atom_orbits` of `trc_sym_geom`, counted from the atom
-permutation `geom%perm` that detection has already built -- O(natm * |G|),
-once per geometry, on tables that exist either way.
+permutation `geom%perm` that detection has already built -- once per geometry,
+on tables that exist either way. Its loop is O(natm^2 |G|), not O(natm |G|):
+each of the `natm * |G|` merges relabels the whole array. That is ~10^4
+integer compares at terco's largest symmetric molecule (36 atoms, |G| = 8) and
+so is free in practice, but it is not linear, and a caller that wanted the
+orbit count per SCF iteration rather than per geometry should be told the
+right exponent.
 
-**Provenance.** cc-pVDZ, `--econv 1e-10`, `--symmetry auto` against the same
-build's `--symmetry off`, Tesla V100-DGXS-32GB (cc70), nvfortran 26.5,
-`-stdpar=gpu -acc -gpu=cc70,mem:separate`, `TERCO_LMAX=3`, ERI time per
-steady-state Fock build, with W2 of `.claude/context/segment-fusion-plan.md`
-landed. `*` marks what the rule chooses:
+**Provenance.** The four ERI-time numbers below were **not measured by the
+change that added this rule**, which ran on a host build with no GPU. They are
+stage **W2's** numbers, from `.claude/context/segment-fusion-plan.md`'s "W2
+results" table, re-read here as the ratios the rule is fitted to; the rule
+itself has not been re-measured on a GPU (item 5 of the open runs below).
+
+System and settings, as W2 ran them: SF6, benzene, naphthalene and pentacene
+in **cc-pVDZ**; integral screening threshold **`--thresh 1e-12`** (terco's
+default, not overridden -- the `tau = 1e-10` on section 2.2's quartet table is
+that pre-pass's own screen, not this one); convergence gate **`--econv
+1e-10`**; the default **SAD** atomic guess; `--symmetry auto` against the same
+build's `--symmetry off` as the baseline; Tesla V100-DGXS-32GB (cc70),
+nvfortran 26.5, `-stdpar=gpu -acc -gpu=cc70,mem:separate`, `TERCO_LMAX=3`; ERI
+time per steady-state Fock build, taken from nsys as the difference between
+two consecutive `--iterations` runs. `*` marks what the rule chooses:
 
 | system | atoms | orbits | atoms/orbit | quartets on/off | ERI on/off | rule |
 |---|---|---|---|---|---|---|
@@ -417,9 +432,11 @@ answers section 6's open question 2 from measurement rather than by
 assumption: a ~1.5x reduction cannot pay for the launches when SF6's 2.44x
 does not.
 
-**What the threshold does not rest on.** One measured loss. These are the runs
-that would firm it up, in order of value -- all on the GPU, none of them done
-here:
+**What the threshold rests on, and what would firm it up.** It rests on a
+single measured loss -- SF6 -- with benzene the nearest measured win on the
+other side, so the interval (1.75, 3.00) is bounded by one run at each end and
+nothing inside it. These are the runs that would narrow it, in order of value
+-- all on the GPU, none of them done here:
 
 1. **B2H6 cc-pVDZ, D2h, skeleton forced on against off.** It is the only
    system inside the (1.75, 3.00) interval: 2.67 atoms per orbit, 3.34x
