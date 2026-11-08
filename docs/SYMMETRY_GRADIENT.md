@@ -734,6 +734,10 @@ The GPU reality check says the launch profile has room, and says why this is
   slice (`grad_classes`), whose balance is already unmeasured
   (`trc_grad.F90`'s own note); a weighted plan changes the per-segment work,
   so that balance would want a look before `TERCO_ENABLE_MPI=ON` runs with it.
+  **Settled conservatively** by section 11 item 9: the driver declines the
+  skeleton on more than one rank, so a multi-rank gradient runs the full
+  plan and never reaches a weighted one. Lifting that restriction is what
+  needs the balance measured.
 - `compute-sanitizer` was not run: no new device array is proposed here
   beyond `plan%sSA`, `plan%sSB` and `plan%sW`, which `binkernel_fock_bins`
   already maps and unmaps the same way.
@@ -952,13 +956,14 @@ SCF energy (water/6-31G*, h = 1e-3, 18 displaced C1 SCFs): worst absolute
    weight 1/2 instead of the triangle, so the plan *grows*: HOCl/6-31G*,
    9 355 work items against the full plan's 9 142 (+2.3%), with the raw
    skeleton gradient already equal to the full one to 7.5e-15 relative. The
-   skeleton Fock build has exactly the same property and neither path has a
-   size rule for it, so none was added here; `check_sym_grad`'s
-   `test_cs_planar` pins it, so that it is a documented property rather than
-   a surprise, and it is the one configuration where the oracle's "the plan
-   must be smaller" and "a segment was reordered" assertions must *not* hold.
-   Section 3's molecule list has no planar Cs case, which is why this is not
-   in it.
+   skeleton Fock build has exactly the same property, and *it* has a size
+   rule (`sym_skeleton_size_rule`, ABI 1.25) — so the gradient takes that
+   rule's verdict rather than a second one of its own. See item 9.
+   `check_sym_grad`'s `test_cs_planar` pins the growth itself, so that it is
+   a documented property rather than a surprise, and it is the one
+   configuration where the oracle's "the plan must be smaller" and "a segment
+   was reordered" assertions must *not* hold. Section 3's molecule list has
+   no planar Cs case, which is why this is not in it.
 8. **A symmetric gradient now requires an orbit-built engine.**
    `trc_scf_gradient` used to refuse to reuse one on purpose ("that is
    S16's"). It now requires one: a symmetric gradient on an engine without
@@ -966,3 +971,47 @@ SCF energy (water/6-31G*, h = 1e-3, 18 displaced C1 SCFs): worst absolute
    admits exactly the orbit-built engine and `two_electron_4c` builds its own
    **with the group** when there is no cache. That is why the eight
    per-group gradient cases, which pass no cache, get the skeleton.
+9. **One skeleton decision, not two.** Items 7 and 8 together are a bug when
+   the skeleton Fock build has been *declined*. The size rule gates
+   `skel_on` inside `trc_scf_driver`, which then calls `scf_context%setup`
+   **without** `sym_geom`, so the SCF's engine has no orbit tables
+   (`orbits_built` false) — while the C API hands the gradient the group
+   whenever a group is active, from `cx%sym_active`, which the rule never
+   touches. So a declined molecule got a skeleton gradient anyway: item 8's
+   reuse test refused the SCF's engine, a **second** engine was built with
+   the group, and the plan it ran was the larger one of item 7 on exactly
+   the molecules the rule exists to protect.
+
+   `trc_scf_gradient` therefore takes `sym_skeleton` (default true, so a
+   direct Fortran caller that passes `sym_geom` still gets the skeleton),
+   `two_electron_4c` takes it as `skeleton` rather than deriving it from
+   `present(sym_geom)`, item 8's reuse test reads it instead of
+   `present(sym_geom)`, and `trc_capi.F90` sets it from
+   `cx%res%sym_skeleton` — the rule's verdict, or whatever
+   `TRC_SYM_SKELETON` / `--sym-skeleton` / `[scf] symmetry_skeleton` /
+   `trc_set_symmetry_skeleton` forced. One verdict governs both builds, and
+   `trc_set_symmetry_skeleton`'s documented meaning widens to say so
+   (ABI 1.26).
+
+   The *projection* is deliberately not gated on it: it costs one pass over
+   3N numbers and it is what zeroes the components the group forbids, so a
+   declined molecule takes the full C1 four-centre term and
+   `trc_scf_gradient`'s end-of-routine `sym_grad_symmetrize` — which is what
+   this routine did before S16.
+
+   Two consequences worth knowing. Under **MPI** the driver sets
+   `skel_on = .false.` on more than one rank, so the gradient now declines
+   the skeleton there too; that retires section 10's warning about
+   `grad_classes`' rank balance under a weighted plan, conservatively, by
+   not running one. And `--df` likewise declines it, which the `--df`
+   gradient branch never reached anyway.
+
+   `check_sym_grad`'s `test_declined` pins it: water (declined, 3 atoms in
+   2 orbits), HOCl (declined, 3 in 3, item 7's molecule) and B2H6 (accepted,
+   8 in 3) must each reuse the SCF's engine and match the C1 gradient, which
+   they do at 2.2e-15, 8.9e-15 and 9.5e-15 with every forbidden component
+   exactly zero. With item 8's reuse test reading `present(sym_geom)` again
+   it fails on water with `engine reused F`. `check_capi_sym`'s
+   `test_skeleton_switch` is the ABI-level half, and its gradient tolerance
+   tightens from 1e-7 to 1e-9 now that the two sides are genuinely different
+   builds rather than the same full gradient twice.

@@ -49,6 +49,11 @@
 !     four-centre term is a skeleton build projected inside
 !     two_electron_4c, against the same molecule's C1 gradient, with the
 !     components the group forbids and the equivariance of the result;
+!   - and the same path with the skeleton DECLINED by the size rule
+!     (`sym_skeleton`), where the four-centre term is the full C1 build and
+!     the end-of-routine projection is the only one left. That case pins the
+!     ROUTING, not the numbers: the engine the SCF already built is reused
+!     instead of a second one being built with the group;
 !   - a central finite difference of terco's own reconverged SCF energy
 !     against that production gradient -- the only check here that would
 !     catch an error consistent between the skeleton and the full path.
@@ -77,7 +82,7 @@ module check_sym_grad_suite
    use trc_rys_grad_kernels, only: rysg_has_class
    use trc_error, only: error_t
    use trc_linalg, only: trc_linalg_t
-   use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+   use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_pair_eri_cache_t
    use trc_scf_grad, only: trc_scf_gradient
    use trc_sph, only: sph_sph_to_cart
    use trc_sym_ao, only: trc_sym_ao_t, sym_ao_build
@@ -159,6 +164,7 @@ contains
                      new_unittest("D6h benzene as D2h", test_benzene), &
                      new_unittest("the raw skeleton gradient is NOT a gradient", test_raw), &
                      new_unittest("production path: skeleton + projection vs C1", test_production), &
+                     new_unittest("a DECLINED skeleton reuses the SCF's engine and still projects", test_declined), &
                      new_unittest("finite difference of the reconverged SCF energy", test_fd) &
                      ]
       end if
@@ -594,10 +600,15 @@ contains
       !! the rectangle reps(A) x A with weight 1/2 instead of the triangle
       !! (measured on HOCl/6-31G*: 9355 work items against 9142, +2.3%). The
       !! skeleton is then a small pessimisation, exactly as it is for the
-      !! skeleton FOCK build on such a molecule -- neither path has a size
-      !! rule for it. Pinned here so it is a documented property and not a
-      !! surprise, and because it is the one configuration in which the
-      !! "the plan must be smaller" assertion must NOT hold.
+      !! skeleton FOCK build on such a molecule -- which is why ONE size
+      !! rule now governs both builds, and why this molecule is in
+      !! `test_declined` as well: the rule declines it (3 atoms in 3
+      !! orbits), so the production path never runs the larger plan. This
+      !! case drives `run_molecule`, which asks for the skeleton directly
+      !! and so reaches it anyway. Pinned here so it is a documented
+      !! property and not a surprise, and because it is the one
+      !! configuration in which the "the plan must be smaller" assertion
+      !! must NOT hold.
       type(error_type), allocatable, intent(out) :: error
       call run_molecule("hocl", "Cs", "basis_sets/6-31gs.json", .false., .false., error)
    end subroutine test_cs_planar
@@ -799,6 +810,134 @@ contains
       call check(error, forbidden <= TOL_EQV, trim(xyz)//": forbidden gradient component "// &
                  to_string(forbidden, "es10.2"))
    end subroutine production_case
+
+   subroutine declined_case(error, xyz, basis_json, spherical, group, expect_skeleton)
+      !! The skeleton size rule governs the four-centre GRADIENT as well as
+      !! the Fock build, which is what `trc_scf_gradient`'s `sym_skeleton`
+      !! carries and what trc_capi.F90 sets from `trc_scf_result_t%sym_skeleton`.
+      !!
+      !! Two things are pinned, and both are properties of the ENGINE, not
+      !! of the numbers -- the numbers agree on either path, which is exactly
+      !! why the routing needs its own test.
+      !!
+      !! 1. A DECLINED skeleton reuses the SCF's engine. The SCF built that
+      !!    engine WITHOUT the group (trc_scf_driver calls
+      !!    scf_context%setup with no `sym_geom` when the rule declines, so
+      !!    `orbits_built` is false), and a skeleton gradient cannot run on
+      !!    it -- it would silently take the full plan -- so
+      !!    trc_scf_gradient refuses to reuse it and builds its own with the
+      !!    group. With the skeleton declined there is nothing to refuse:
+      !!    `reused` must come back TRUE, and the whole second engine build
+      !!    does not happen. On an ACCEPTED molecule the SCF's engine has
+      !!    the orbits and `reused` is true as well, so the assertion is
+      !!    `reused` on both, with `expect_skeleton` saying which reason.
+      !!
+      !! 2. The gradient is still projected. A declined skeleton takes the
+      !!    full C1 four-centre term, so two_electron_4c does not project
+      !!    and the end-of-routine sym_grad_symmetrize is the only
+      !!    projection left -- it has to still be there, or the symmetry
+      !!    stops zeroing the forbidden components on exactly the small
+      !!    molecules the rule protects.
+      type(error_type), allocatable, intent(out) :: error
+      character(len=*), intent(in) :: xyz, basis_json, group
+      logical, intent(in) :: spherical, expect_skeleton
+      type(trc_basis_t) :: bas, bas1
+      type(trc_sym_geom_t) :: geom
+      type(trc_sym_ao_t) :: ao
+      type(trc_sym_scf_t) :: sc
+      type(trc_scf_options_t) :: opts
+      type(trc_scf_result_t) :: rs, r1
+      type(trc_pair_eri_cache_t) :: cache
+      type(trc_linalg_t) :: lp
+      type(error_t) :: err
+      integer, allocatable :: elem(:)
+      real(dp), allocatable :: r(:, :), gsym(:, :), g1(:, :)
+      real(dp) :: dg, asym, forbidden
+      integer :: nat, nocc, dev
+      logical :: reused
+
+      dev = trc_bind_device(0)
+      call read_xyz(trim(xyz)//".xyz", nat, elem, r)
+      geom = sym_detect(r, elem, err, basis_id=elem)
+      call check(error, .not. err%has_error(), "sym_detect: "//err%get_message())
+      if (allocated(error)) return
+      call check(error, geom%group%name, trim(group), "group of "//trim(xyz))
+      if (allocated(error)) return
+      call trc_basis_from_json(trim(basis_json), nat, elem, geom%r_std, bas, err, force_cart=.not. spherical)
+      call check(error, .not. err%has_error(), "basis: "//err%get_message())
+      if (allocated(error)) return
+      bas%spherical = spherical
+      call bas%to_device()
+      nocc = sum(elem)/2
+      opts%conv_energy = 1.0e-10_dp
+      opts%conv_diis = 1.0e-9_dp
+      opts%max_iteration = 100
+
+      ao = sym_ao_build(bas, geom, err)
+      call check(error, .not. err%has_error(), "sym_ao_build: "//err%get_message())
+      if (allocated(error)) return
+      sc%ao = ao
+      ! The SCF with its engine kept, exactly as trc_capi.F90 keeps `cx%peri`:
+      ! the rule decides inside here, and `rs%sym_skeleton` is its verdict.
+      call trc_scf_run(bas, nocc, nocc, opts, rs, sym=sc, pair_eri_cache=cache)
+      call check(error, rs%converged, trim(xyz)//": the symmetric SCF did not converge")
+      if (allocated(error)) return
+      call check(error, rs%sym_skeleton .eqv. expect_skeleton, trim(xyz)//": the size rule's verdict is not the one "// &
+                 "this case was written for (sym_atom_orbits = "//to_string(rs%sym_atom_orbits)//")")
+      if (allocated(error)) return
+      call check(error, cache%orbits_built .eqv. expect_skeleton, trim(xyz)//": the SCF's engine has the orbit "// &
+                 "tables when and only when the skeleton build was taken")
+      if (allocated(error)) return
+
+      call trc_basis_from_json(trim(basis_json), nat, elem, geom%r_std, bas1, err, force_cart=.not. spherical)
+      call check(error, .not. err%has_error(), "basis: "//err%get_message())
+      if (allocated(error)) return
+      bas1%spherical = spherical
+      call bas1%to_device()
+      call trc_scf_run(bas1, nocc, nocc, opts, r1)
+      call check(error, r1%converged, trim(xyz)//": the C1 SCF did not converge")
+      if (allocated(error)) return
+
+      allocate (gsym(3, nat), g1(3, nat))
+      call lp%init(bas%nao)
+      call trc_scf_gradient(bas, lp, rs%nspin, nocc, nocc, rs%cmo, rs%eps, 1.0e-12_dp, gsym, &
+                            pair_eri_cache=cache, reused=reused, sym_geom=geom, sym_skeleton=rs%sym_skeleton)
+      call trc_scf_gradient(bas1, lp, r1%nspin, nocc, nocc, r1%cmo, r1%eps, 1.0e-12_dp, g1)
+      call lp%release()
+      call cache%release()
+      call sc%release()
+      call bas%release()
+      call bas1%release()
+
+      dg = maxval(abs(gsym - g1))
+      call equivariance(geom, gsym, asym, forbidden)
+      print "(a,a,a,l1,a,l1,a,es10.2,a,es10.2)", "  ", trim(xyz), ": skeleton ", rs%sym_skeleton, &
+         "  engine reused ", reused, "  |sym - C1| ", dg, "  forbidden ", forbidden
+      call check(error, reused, trim(xyz)//": the gradient did not reuse the SCF's engine, so it rebuilt one")
+      if (allocated(error)) return
+      call check(error, dg <= TOL_C1, trim(xyz)//": the symmetric gradient differs from the C1 one by "// &
+                 to_string(dg, "es10.2"))
+      if (allocated(error)) return
+      call check(error, asym <= TOL_EQV, trim(xyz)//": the gradient is not equivariant: "// &
+                 to_string(asym, "es10.2"))
+      if (allocated(error)) return
+      call check(error, forbidden <= TOL_EQV, trim(xyz)//": forbidden gradient component "// &
+                 to_string(forbidden, "es10.2"))
+   end subroutine declined_case
+
+   subroutine test_declined(error)
+      !! Water is DECLINED by the skeleton size rule (3 atoms in 2 orbits,
+      !! trc_sym_run's sym_skeleton_size_rule), HOCl too (3 in 3, and it is
+      !! the planar Cs molecule whose skeleton plan is LARGER -- see
+      !! `test_cs_planar`), and B2H6 is accepted. All three must give the
+      !! same gradient; the first two must do it over the SCF's own engine.
+      type(error_type), allocatable, intent(out) :: error
+      call declined_case(error, "water", "basis_sets/6-31gs.json", .false., "C2v", .false.)
+      if (allocated(error)) return
+      call declined_case(error, "hocl", "basis_sets/6-31gs.json", .false., "Cs", .false.)
+      if (allocated(error)) return
+      call declined_case(error, "b2h6_d2h", "basis_sets/6-31gs.json", .false., "D2h", .true.)
+   end subroutine test_declined
 
    subroutine test_production(error)
       type(error_type), allocatable, intent(out) :: error

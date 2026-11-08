@@ -135,7 +135,7 @@ contains
    subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
                                func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, grid_rotation, &
                                dfjk, aux, verbose, grid, xg, grid_nlc, xg_nlc, pair_eri_cache, reused, sym_geom, &
-                               sym_project)
+                               sym_project, sym_skeleton)
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
@@ -253,10 +253,16 @@ contains
       !! steps, through pic's logger at PERFORMANCE. Default off.
       type(dft_grid_t), intent(in), optional :: grid, grid_nlc
       type(trc_xc_grid_t), intent(in), optional :: xg, xg_nlc
+      !! The SCF's own semilocal grid (`grid`/`xg`) and, for VV10, its nlc
+      !! grid (`grid_nlc`/`xg_nlc`), each pair present together or not at
+      !! all: present, the XC terms run on it (`xc_grad_add_on_grid`/
+      !! `vv10_grad_add_on_grid`) with no rebuild; absent, each term builds
+      !! its own. trc_capi.F90's `trc_run_gradient` is the one caller.
       type(trc_sym_geom_t), intent(in), optional :: sym_geom
       !! The symmetry the molecule was run in (trc_sym_geom): present, the
       !! four-centre term is built as a SKELETON (eri%gradient's own
-      !! `skeleton`) and projected onto the symmetric subspace inside
+      !! `skeleton`) unless `sym_skeleton` declines it, and then projected
+      !! onto the symmetric subspace inside
       !! `two_electron_4c`, and the finished gradient is averaged over the
       !! group with the atom permutation (`sym_grad_symmetrize` of
       !! trc_sym_scf), which zeroes the components the group forbids. `b`
@@ -273,17 +279,30 @@ contains
       !! its own first-order error, so projecting the XC term would move the
       !! gradient away from the symmetry-off one (trc_capi.F90's
       !! trc_run_gradient).
-      !! The SCF's own semilocal grid (`grid`/`xg`) and, for VV10, its nlc
-      !! grid (`grid_nlc`/`xg_nlc`), each pair present together or not at
-      !! all: present, the XC terms run on it (`xc_grad_add_on_grid`/
-      !! `vv10_grad_add_on_grid`) with no rebuild; absent, each term builds
-      !! its own. trc_capi.F90's `trc_run_gradient` is the one caller.
+      logical, intent(in), optional :: sym_skeleton
+      !! Build the four-centre term as a skeleton (default TRUE, and
+      !! meaningless without `sym_geom`). False takes the full C1
+      !! four-centre build and leaves `sym_project` to symmetrize the
+      !! finished gradient, which is what this routine did before S16.
+      !!
+      !! The caller decides because the skeleton is not always the smaller
+      !! build. On a molecule whose every pair orbit is a singleton -- a
+      !! PLANAR Cs molecule -- the restriction to representatives drops
+      !! nothing while a diagonal bin pair still becomes the full rectangle
+      !! at weight 1/2, so the plan GROWS: HOCl/6-31G* 9355 work items
+      !! against the full gradient's 9142 (docs/SYMMETRY_GRADIENT.md section
+      !! 11). The same is true of the skeleton FOCK build, which is why
+      !! trc_scf_driver consults `sym_skeleton_size_rule` (trc_sym_run) and
+      !! reports its verdict as `trc_scf_result_t%sym_skeleton`; passing
+      !! that verdict here keeps one decision for both builds, so
+      !! TRC_SYM_SKELETON, --sym-skeleton, [scf] symmetry_skeleton and
+      !! trc_set_symmetry_skeleton govern the gradient as well.
       type(trc_pairlist_t) :: pl_own
       !! The pair list built here when the cache's is not reused.
       type(step_table_t) :: gst, xst, vst
       type(xc_grad_options_t) :: xopts
       type(timer_type) :: tc
-      logical :: talk, reuse_pl, reuse_eri, project
+      logical :: talk, reuse_pl, reuse_eri, project, skel
       integer :: nlc_level
       integer :: nao, nsp, s
       integer :: nocc(2)
@@ -294,6 +313,8 @@ contains
       if (present(verbose)) talk = verbose
       project = .true.
       if (present(sym_project)) project = sym_project
+      skel = present(sym_geom)
+      if (present(sym_skeleton)) skel = skel .and. sym_skeleton
       call gst%init("grad", [character(len=12) :: "density", "two-electron", "one-electron", "xc", "vv10"])
       call xst%init("xc grad", xc_grad_step_names())
       call vst%init("vv10 grad", xc_grad_step_names())
@@ -377,12 +398,14 @@ contains
       reuse_eri = .false.
       ! An engine built with the point group is exactly the one a skeleton
       ! four-centre gradient needs (S16): its orbit tables are what
-      ! bins_plan_build_skeleton walks. A symmetric gradient on an engine
+      ! bins_plan_build_skeleton walks. A SKELETON gradient on an engine
       ! WITHOUT them would silently fall back to the full plan, so it is
       ! refused here and two_electron_4c builds its own with the group
-      ! instead.
+      ! instead. `skel`, not `present(sym_geom)`: a declined skeleton
+      ! (`sym_skeleton`) takes the full plan on purpose and reuses an
+      ! orbit-less engine happily, which is the whole point of declining it.
       if (reuse_pl) reuse_eri = pair_eri_cache%has_eri .and. pair_eri_cache%batch_res_built == 1 .and. &
-                                (pair_eri_cache%orbits_built .or. .not. present(sym_geom))
+                                (pair_eri_cache%orbits_built .or. .not. skel)
       if (present(reused)) reused = reuse_pl .and. (reuse_eri .or. present(dfjk))
       if (.not. reuse_pl) then
          call pl_own%build(b, thresh)
@@ -408,10 +431,10 @@ contains
          end if
       else
          if (reuse_eri) then
-            call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, &
+            call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, skel, &
                                  eri_cache=pair_eri_cache%eri, sym_geom=sym_geom)
          else
-            call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, sym_geom=sym_geom)
+            call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, skel, sym_geom=sym_geom)
          end if
          ! --- one-electron, added on top. `wmat` is already present (and
          ! already holds the right numbers, from scf_grad_energy_weighted_density
@@ -486,7 +509,8 @@ contains
       end if
    end subroutine trc_scf_gradient
 
-   recursive subroutine two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, eri_cache, sym_geom)
+   recursive subroutine two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, skeleton, &
+                                        eri_cache, sym_geom)
       !! The four-centre two-electron gradient (eri%gradient), halved into
       !! the actual-energy convention -- trc_scf_gradient's non-`--df`
       !! branch. `grad` is OVERWRITTEN (host).
@@ -494,6 +518,12 @@ contains
       real(dp), intent(in) :: thresh, exx_use, exx_lr_use, omega_use
       real(dp), intent(in) :: density(:, :, :)
       real(dp), intent(out) :: grad(3, b%natm)
+      logical, intent(in) :: skeleton
+      !! Build the skeleton and project it here (trc_scf_gradient's own
+      !! `skel`: `sym_geom` present AND its `sym_skeleton` not declined).
+      !! False with `sym_geom` present is the full C1 four-centre term,
+      !! unprojected here -- trc_scf_gradient's end-of-routine
+      !! `sym_grad_symmetrize` is then the only projection, as before S16.
       type(trc_eri_t), intent(inout), optional :: eri_cache
       !! The SCF's own four-centre engine at this SAME geometry and
       !! threshold (trc_scf_gradient's own `pair_eri_cache`, checked
@@ -505,7 +535,8 @@ contains
       !! Absent, this routine builds its own and releases it (the
       !! recursive call below, with one).
       type(trc_sym_geom_t), intent(in), optional :: sym_geom
-      !! Present: the SKELETON four-centre gradient over the engine's pair
+      !! Required by `skeleton`, and read only then: the SKELETON
+      !! four-centre gradient over the engine's pair
       !! orbits, projected onto the symmetric subspace HERE rather than by
       !! trc_scf_gradient's end-of-routine call. The projection has to
       !! happen where the skeleton is formed, because a default DFT run
@@ -520,7 +551,8 @@ contains
       real(dp), allocatable :: grad_lr(:, :)
       logical :: skel
 
-      skel = present(sym_geom)
+      skel = skeleton
+      if (skel .and. .not. present(sym_geom)) error stop "trc_scf_gradient: a skeleton four-centre gradient needs the group"
       if (.not. present(eri_cache)) then
          block
             type(trc_eri_t) :: eri_own
@@ -529,7 +561,7 @@ contains
             else
                call eri_own%build(b, thresh)
             end if
-            call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, eri_own, sym_geom)
+            call two_electron_4c(b, thresh, density, exx_use, exx_lr_use, omega_use, grad, skel, eri_own, sym_geom)
             call eri_own%release()
          end block
          return
