@@ -117,7 +117,7 @@ module trc_sym_geom
    implicit none
    private
 
-   public :: trc_sym_geom_t, sym_detect
+   public :: trc_sym_geom_t, sym_detect, sym_geom_atom_orbits
    public :: SYM_GROUP_ENABLED, SYM_DEFAULT_TOL
 
    logical, parameter :: SYM_GROUP_ENABLED(SYM_NGROUPS) = &
@@ -146,6 +146,50 @@ module trc_sym_geom
    end type trc_sym_geom_t
 
 contains
+
+   pure integer function sym_geom_atom_orbits(perm) result(norbit)
+      !! Atoms of the molecule that are inequivalent under the group: the
+      !! number of orbits of `perm` (`trc_sym_geom_t%perm`), the atom
+      !! permutation of each operation. Orbits are found by relabelling each
+      !! atom with the lowest index it reaches, so the count does not depend
+      !! on the order of the operations.
+      !!
+      !! COST. O(natm**2 * nop): there are natm * nop merge steps and each one
+      !! relabels the WHOLE array (`where (lab == hi) lab = lo`), rather than
+      !! following parent pointers. A union-find would be near-linear, and is
+      !! not worth it here -- terco's largest symmetric test molecule is 36
+      !! atoms in a group of order 8, so this is ~10^4 integer compares, run
+      !! once per geometry on tables the detection has already built, against
+      !! a Fock build of 10^8 and up. The size rule
+      !! (`trc_sym_run`'s sym_skeleton_size_rule) is the only caller.
+      integer, intent(in) :: perm(:, :)
+      integer :: lab(size(perm, 1))
+      integer :: natm, nop, ia, k, lo, hi
+      natm = size(perm, 1)
+      nop = size(perm, 2)
+      norbit = 0
+      if (natm < 1) return
+      do ia = 1, natm
+         lab(ia) = ia
+      end do
+      ! A union over every (atom, image) edge, relabelling the whole array at
+      ! each merge, so the labels are the connected components of the edge set
+      ! whatever order the edges come in. The edges of all `nop` operations
+      ! generate the orbit relation, so one pass over them is enough.
+      do k = 1, nop
+         do ia = 1, natm
+            lo = min(lab(ia), lab(perm(ia, k)))
+            hi = max(lab(ia), lab(perm(ia, k)))
+            if (lo == hi) cycle
+            where (lab == hi) lab = lo
+         end do
+      end do
+      ! Every member of a component carries the component's lowest atom index,
+      ! so the fixed points of `lab` count the orbits.
+      do ia = 1, natm
+         if (lab(ia) == ia) norbit = norbit + 1
+      end do
+   end function sym_geom_atom_orbits
 
    pure subroutine eig3(a, w, v)
       !! Eigenvalues `w` (ascending) and eigenvectors (columns of `v`) of a

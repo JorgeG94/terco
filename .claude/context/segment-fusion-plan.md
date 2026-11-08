@@ -141,6 +141,7 @@ substance of W2.
 | W2 | Per-segment weight in the kernels | W0 | done (landed; spills still zero) |
 | W3 | Validation across builds | W1 or W2 | todo |
 | W4 | Re-measure the S15 matrix | W3 | todo |
+| -- | Size rule for what W2 did not fix | W2 | done (see below) |
 
 W1 and W2 were meant to be independent fixes to the two halves of the loss.
 W1 found that there are not two halves: both the extra GPU kernel time and
@@ -425,15 +426,29 @@ and the bin call is exchange-only and tiled (`bin_tiles_plan` ->
 - Report against the ideal |G| and against the |G|/2 shell-level ceiling
   that `docs/SYMMETRY_FOCK.md` section 6 open question 1 describes.
 
-## If W2 cannot land
+## The size rule  [DONE, after W2]
 
-W1 plus a size rule still recovers most of the loss, and the size rule is
-worth having regardless because it costs nothing. Key it on the atom count,
-not the basis size: the measurements above show a molecule holds its own
-ratio across a 2.3x basis increase (benzene 0.46 to 0.48, naphthalene 0.98
-to 0.99) while 18 atoms break even and 36 atoms win. terco already picks the
-J engine by a measured size rule (`check_sym_fock_mdrule` tests exactly that
-pattern), so the mechanism exists.
+W2 left exactly one of the four systems a loss: SF6 at 0.44x its
+symmetry-off ERI time, against 1.41x, 2.07x and 2.78x for benzene,
+naphthalene and pentacene. A size rule now declines the skeleton build there
+and nowhere else, documented in `docs/SYMMETRY_FOCK.md` section 4.2a with
+its provenance and its open measurements.
+
+**Not keyed on the atom count**, which is what this section said before W2
+landed. Post-W2 benzene at 12 atoms is a win, so the pre-W2 crossover near
+twenty atoms is stale: a threshold in (7, 12] is all the four rows allow, and
+any of them would also decline 8-atom B2H6, which was never measured. The
+rule is keyed on the mean ATOM ORBIT SIZE instead -- the skeleton build is
+used when `natm >= 2 * norbit` -- because that is what separates SF6 from
+benzene (1.75 against 3.00 atoms per orbit, quartet reduction 2.44x against
+3.55x, launch inflation 3.43x against 1.57x) and it is basis-invariant in the
+way S15 measured the ratio to be. The number of inequivalent atoms on its own
+does not separate them (both 4), and quartets-per-launch against the device's
+fill threshold does not either: W0 measured both molecules at the same ~46%
+of quartets in under-filling launches after fusion.
+
+`TRC_SYM_SKELETON=0/1` forces either path, as `TRC_MDJ` does over the J
+engine's own rule. Tests: `check_sym_skeleton_rule_{auto,on,off}`.
 
 ## Retracted: "parity skipping appears inert on the CLI path"
 
@@ -478,9 +493,15 @@ whenever anything merges mid-session, which on this project is often.
 
 ## Open questions for the maintainer
 
-1. Is a size rule acceptable as a stopgap before W1/W2 land, given that
+1. ~~Is a size rule acceptable as a stopgap before W1/W2 land, given that
    S17 has already made symmetry the default and small molecules are
-   currently slower than they were?
+   currently slower than they were?~~ **Moot: W2 landed first.** The size
+   rule went in after it, as a narrow rule over the post-W2 numbers rather
+   than a stopgap over the pre-W2 ones -- see "The size rule" above. It still
+   wants a maintainer's eye on one point: the threshold is fitted to one
+   measured loss, so it declines only molecules as degenerately
+   orbited as SF6, and `docs/SYMMETRY_FOCK.md` section 4.2a lists the four
+   runs that would firm it up.
 2. ~~`real(dp)` array or `integer` orbit size?~~ **Answered by W0: it must
    be `real(dp)`.** The realised weight set is {1/2, 1, 2, 4} -- the 1/2
    comes from a diagonal bin pair, not from an orbit size, so an integer

@@ -127,6 +127,22 @@ contains
       if (allocated(error)) return
       call json%get('input.molecule.charge', sval, found)
       call check(error, .not. found, "input.molecule.charge was never given and has no declared default")
+      if (allocated(error)) return
+      ! KIND_BOOL_ON echoes its default: neither --incremental nor
+      ! --no-incremental was given, and the switch is on by default.
+      call json%get('input.scf.incremental', lval, found)
+      call check(error, found .and. lval, "input.scf.incremental is KIND_BOOL_ON and should echo true")
+      if (allocated(error)) return
+      ! KIND_BOOL_TRI does NOT, and that is the whole point of the kind:
+      ! symmetry_skeleton has a third state, "neither flag given", in which
+      ! the skeleton Fock build's size rule decides (trc_sym_run's
+      ! sym_skeleton_size_rule). Echoing either value here would turn that
+      ! third state into a forced one as soon as someone writes the echo back
+      ! out as a TOML file and reruns it: an echo of `false` would force the
+      ! full Fock build on every rerun, with nothing else to show it.
+      call json%get('input.scf.symmetry_skeleton', lval, found)
+      call check(error, .not. found, "input.scf.symmetry_skeleton is KIND_BOOL_TRI and neither flag was given, "// &
+                 "so it must be absent from the echo rather than echo a value that forces a Fock build")
       call json%destroy()
    end subroutine test_echo
 

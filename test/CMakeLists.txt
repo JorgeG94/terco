@@ -299,6 +299,27 @@ foreach(_v md:TRC_MDJ=1 mdrule: mdg:)
   set_tests_properties(terco/check_sym_fock_${_n} PROPERTIES ENVIRONMENT
                        "${_env}" SKIP_REGULAR_EXPRESSION "SKIP")
 endforeach()
+# The skeleton Fock build's size rule (sym_skeleton_size_rule): the atom
+# orbits and the verdict for every system it was measured on, and the same SCF
+# whichever path it takes. Three entries: the rule in charge, and
+# TRC_SYM_SKELETON forcing each way.
+foreach(_v auto: on:TRC_SYM_SKELETON=1 off:TRC_SYM_SKELETON=0)
+  string(REPLACE ":" ";" _p "${_v}")
+  list(GET _p 0 _n)
+  list(LENGTH _p _np)
+  set(_env "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+  if(_np GREATER 1)
+    list(GET _p 1 _e)
+    if(NOT "${_e}" STREQUAL "")
+      list(APPEND _env "${_e}")
+    endif()
+  endif()
+  terco_add_check(check_sym_skeleton_rule_${_n} check_sym_skeleton_rule.F90 NEEDS_BASIS)
+  target_link_libraries(check_sym_skeleton_rule_${_n} PRIVATE test-drive::test-drive)
+  set_target_properties(check_sym_skeleton_rule_${_n} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_skeleton_rule_${_n})
+  set_tests_properties(terco/check_sym_skeleton_rule_${_n} PROPERTIES ENVIRONMENT "${_env}")
+endforeach()
 # Parity skipping (docs/SYMMETRY_PARITY_SKIP.md): the Fock matrix with the
 # dead-axis masks and the engine frame against the one without, on the planar
 # and the mixed-mask molecules; _f is the uncontracted l = 0..3 set.

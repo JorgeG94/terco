@@ -4,8 +4,8 @@
 ! representatives launched, G symmetrized after the fold.
 !
 ! THE CENTRAL ORACLE, ONE MOLECULE AT A TIME, THREE RUNS:
-!   skeleton   trc_sym_scf_t%skeleton = .true. (the default)
-!   S4         skeleton = .false.: the full Fock build, then F symmetrized
+!   skeleton   trc_sym_scf_t%skeleton = SYM_SKEL_ON
+!   S4         skeleton = SYM_SKEL_OFF: the full Fock build, then F symmetrized
 !   C1         no group
 ! The total energy (<= 1e-10 Eh HF, <= 1e-9 DFT), the orbital energies and
 ! the density of the skeleton run must match both of the others. A silent
@@ -29,6 +29,7 @@ module check_sym_scf_skeleton_suite
    use trc_error, only: error_t
    use trc_sym_ao, only: sym_ao_build
    use trc_sym_geom, only: trc_sym_geom_t, sym_detect
+   use trc_sym_run, only: SYM_SKEL_ON, SYM_SKEL_OFF
    use trc_sym_scf, only: trc_sym_scf_t
    use trc_test_basis, only: read_xyz
    implicit none
@@ -136,7 +137,13 @@ contains
          return
       end if
       s4%ao = sk%ao
-      s4%skeleton = .false.
+      ! Both runs are FORCED. The default (SYM_SKEL_AUTO) would let
+      ! sym_skeleton_size_rule decline the skeleton build on most of these
+      ! molecules -- they are small and compactly orbited on purpose, one per
+      ! group -- and this oracle is about the two builds agreeing, not about
+      ! which one a user gets.
+      sk%skeleton = SYM_SKEL_ON
+      s4%skeleton = SYM_SKEL_OFF
 
       call trc_scf_run(bas, nalpha, nbeta, opts, rk, sym=sk, pair_eri_cache=ck)
       call check(error, rk%converged, label//": the skeleton SCF did not converge: "//trim(rk%message))
