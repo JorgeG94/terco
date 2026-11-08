@@ -14,9 +14,10 @@
 module check_rys_grad_vs_pyscf_suite
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
-   use testdrive, only: new_unittest, unittest_type, error_type, check
+   use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_eri, only: trc_eri_t
+   use trc_tables, only: LMAX
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -82,6 +83,13 @@ contains
                                overrides=trc_basis_json_overrides(prune=.false.))
       call check(error, .not. err%has_error(), "basis build: "//err%get_message())
       if (allocated(error)) return
+      ! cc-pVTZ's f on a d build: no kernels to check, not wrong ones.
+      if (maxval(bas%sh_l) > LMAX) then
+         call skip_test(error, "SKIP: basis needs l = "//to_string(maxval(bas%sh_l)) &
+                        //", this build has LMAX = "//to_string(LMAX))
+         call bas%release()
+         return
+      end if
       nao = bas%nao
 
       allocate (drhf(nao, nao, 1), duhf(nao, nao, 2))

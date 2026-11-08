@@ -1558,7 +1558,7 @@ def gen_dft_grad(case, xyz, json_rel, functional, grid_level=3):
     PYSCF = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP',
              'wb97x': 'HYB_GGA_XC_WB97X', 'wb97x-v': 'wb97x-v',
              'r2scan': 'R2SCAN', 'tpss': 'TPSS', 'm06l': 'M06L', 'wb97m-v': 'wb97m-v'}
-    is_sph = 'cc-pvdz' in json_rel
+    is_sph = 'cc-pv' in json_rel   # cc-pVDZ/cc-pVTZ are tagged spherical, 6-31G* Cartesian
 
     dump = TEST / f"dft_grad_probe_{case}.bin"
     # Pruning off for the probe run: pyscf is handed the literal (unpruned)
@@ -3505,6 +3505,115 @@ def gen_hirshfeld():
     w.write()
 
 
+def gen_chelpg():
+    """test/check_chelpg.F90's pyscf-side cases: CHELPG charges by
+    metalquicha's own recipe (mqc_czt_charges' chelpg_grid/chelpg_charges),
+    with pyscf's SCF, pyscf's own `int1e_grids` electrostatic potential and
+    a numpy fit -- independent of terco's PCM-kernel potential and its
+    `do concurrent` grid and fit.
+
+    The grid is mqc's Breneman-Wiberg lattice, NOT GPU4PySCF's
+    (gpu4pyscf/qmmm/chelpg.py): spacing 0.3 A from the low corner of the
+    nuclei's bounding box grown by 2.8 A, a point kept when it is outside
+    every van der Waals sphere (mqc's radii, below) and within 2.8 A of the
+    nearest NUCLEUS. GPU4PySCF measures the head space from the vdW surface,
+    grows the box by the radius too and smooths both cutoffs by default; its
+    grid reimplemented with the potential and fit below agreed with
+    eval_chelpg_layer_gpu(ifqchem=False) to 9e-14 on water/6-31G, and this
+    recipe reproduced mqc's own Fortran charges to 7e-9 (both measured when
+    this case was written). The fit is mqc's: least squares with the
+    total-charge constraint only, by a Lagrange multiplier.
+
+    DFT runs on pyscf's own Grids at GRID_LEVEL, the level terco's side
+    uses too (the same radial/angular tables, Becke partition and NWChem
+    pruning). NPTS_i is the fit grid's point count, which terco's own grid
+    must match exactly."""
+    bohr = 0.529177210903  # CODATA 2018, as terco
+    # mqc_elements' vdw_radii (Bondi; H Rowland-Taylor; Li Mantina), Angstrom, H-Ar
+    vdw = [1.10, 1.40, 1.81, 1.53, 1.92, 1.70, 1.55, 1.52, 1.47, 1.54,
+           2.27, 1.73, 1.84, 2.10, 1.80, 1.80, 1.75, 1.88]
+    spacing, head = 0.3 / bohr, 2.8 / bohr
+    grid_level = 3
+    cases = [("water_rhf_6-31g", "water.xyz", "6-31g", 0, 0, ""),
+             ("water_b3lyp_6-31g", "water.xyz", "6-31g", 0, 0, "b3lyp"),
+             ("formamide_rhf_def2-svp", "formamide.xyz", "def2-svp", 0, 0, ""),
+             ("formamide_b3lyp_def2-svp", "formamide.xyz", "def2-svp", 0, 0, "b3lyp"),
+             ("acetate_rhf_def2-svp", "acetate.xyz", "def2-svp", -1, 0, ""),
+             ("acetate_b3lyp_def2-svp", "acetate.xyz", "def2-svp", -1, 0, "b3lyp"),
+             ("nh2_uhf_cc-pvdz", "nh2.xyz", "cc-pvdz", 0, 1, "")]
+    files = sorted({TEST / c[1] for c in cases} | {TEST / "basis_sets" / (c[2] + ".json") for c in cases})
+
+    def atoms_bohr(xyz):
+        lines = (TEST / xyz).read_text().splitlines()
+        n = int(lines[0])
+        return [(ln.split()[0], tuple(float(v) / bohr for v in ln.split()[1:4]))
+                for ln in lines[2:2 + n]]
+
+    def mqc_grid(coords, z):
+        radius = np.array([vdw[int(round(zz)) - 1] for zz in z]) / bohr
+        low = coords.min(axis=0) - head
+        high = coords.max(axis=0) + head
+        nx = [int((high[d] - low[d]) / spacing) + 1 for d in range(3)]
+        # x fastest, as mqc's loop nest (and terco's flattened index) runs
+        k, j, i = np.meshgrid(np.arange(nx[2]), np.arange(nx[1]), np.arange(nx[0]), indexing="ij")
+        pts = np.stack([low[0] + i.ravel() * spacing, low[1] + j.ravel() * spacing,
+                        low[2] + k.ravel() * spacing], axis=1)
+        dist = np.linalg.norm(pts[:, None, :] - coords[None, :, :], axis=2)
+        keep = ~(dist < radius[None, :]).any(axis=1) & (dist.min(axis=1) <= head)
+        return pts[keep]
+
+    w = RefWriter("chelpg.ref")
+    w.header("chelpg", files)
+    w.comment("grid: mqc's Breneman-Wiberg lattice, 0.3 A spacing, 2.8 A head space from the nuclei")
+    w.int_("GRID_LEVEL", grid_level)
+    w.int_("NCASE", len(cases))
+    for ic, (name, xyz, basname, charge, spin, xc) in enumerate(cases, start=1):
+        atoms = atoms_bohr(xyz)
+        elements = {sym: gto.charge(sym) for sym, _ in atoms}
+        bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+        mol = gto.M(atom=atoms, unit="Bohr", basis=bas, charge=charge, spin=spin, cart=False, verbose=0)
+
+        def make_mf(mol=mol, spin=spin, xc=xc):
+            if xc:
+                m = dft.RKS(mol) if spin == 0 else dft.UKS(mol)
+                m.xc = "HYB_GGA_XC_B3LYP"
+                m.grids.level = grid_level
+            else:
+                m = scf.RHF(mol) if spin == 0 else scf.UHF(mol)
+            return m
+
+        mf, _ = converge_tight(make_mf, None, f"gen_chelpg {name}")
+        dm = np.asarray(mf.make_rdm1())
+        if dm.ndim == 3:
+            dm = dm[0] + dm[1]
+        coords = mol.atom_coords()
+        pts = mqc_grid(coords, mol.atom_charges())
+        inv = 1.0 / np.linalg.norm(pts[None, :, :] - coords[:, None, :], axis=2)
+        v = mol.atom_charges() @ inv
+        for c0 in range(0, len(pts), 1000):
+            ints = mol.intor("int1e_grids", grids=pts[c0:c0 + 1000])
+            v[c0:c0 + 1000] -= np.einsum("gij,ij->g", ints, dm)
+        n = mol.natm
+        a = np.zeros((n + 1, n + 1))
+        b = np.zeros(n + 1)
+        a[:n, :n] = inv @ inv.T
+        a[:n, n] = 1.0
+        a[n, :n] = 1.0
+        b[:n] = inv @ v
+        b[n] = charge
+        q = np.linalg.solve(a, b)[:n]
+        rrms = np.sqrt(np.mean((v - q @ inv) ** 2) / np.mean(v ** 2))
+        print(f"  chelpg {name:26s} E {mf.e_tot:.10f}  npts {len(pts)}  rrms {rrms:.4f}  q "
+              + " ".join(f"{x:.6f}" for x in q))
+        w.str_(f"NAME_{ic}", name)
+        w.int_(f"NATM_{ic}", n)
+        w.int_(f"NPTS_{ic}", len(pts))
+        w.real(f"E_{ic}", mf.e_tot)
+        w.vector(f"Q_{ic}", q)
+    w.end()
+    w.write()
+
+
 def gen_minao():
     """test/check_minao.F90's two cases against PySCF's own
     `init_guess_by_minao`: water/cc-pVDZ and silane/def2-SVP (Si, Z=14, a
@@ -4066,12 +4175,14 @@ def gen_pcm_radii_override():
     print(f"  pcm_radii_override: E {mf.e_tot:.12f}  E_diel {mf.scf_summary['e_solvent']:.12f}")
 
 
-def gen_pcm_grad():
+def gen_pcm_grad(json_rel="basis_sets/6-31gs.json", ref_name="pcm_grad.ref", sph=False,
+                 test_name="check_pcm_grad_vs_pyscf"):
     """check_pcm_grad_vs_pyscf.F90: the analytic PCM (C-PCM and IEF-PCM)
     nuclear gradient (trc_pcm_grad%pcm_grad_add's grad_qv + grad_nuc +
     grad_solver, added on top of trc_scf_gradient's own vacuum RHF
     gradient) against pyscf's own solvent-wrapped `Gradients` class --
-    water/6-31G*, eps = PCM_EPS, pyscf's own SWIG defaults (lebedev_order
+    water/6-31G* (or `json_rel`; cc-pVTZ is the spherical f case),
+    eps = PCM_EPS, pyscf's own SWIG defaults (lebedev_order
     29 -> 302 points per sphere, vdw_scale 1.2) matching terco's.
 
     FIXED INITIAL DENSITY: NOT NEEDED, same reasoning gen_pcm_radii_override's
@@ -4079,20 +4190,20 @@ def gen_pcm_grad():
     competing stationary point, continuum or not): converged
     independently on both sides."""
     atoms = _xyz_bohr("water.xyz")
-    basis_arg = bse_json_basis(TEST / "basis_sets" / "6-31gs.json", {"O": 8, "H": 1})
-    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+    basis_arg = bse_json_basis(TEST / json_rel, {"O": 8, "H": 1})
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=not sph, verbose=0)
     nao = mol.nao_nr()
 
-    w = RefWriter("pcm_grad.ref")
-    w.header("check_pcm_grad_vs_pyscf",
-             [ROOT / "test" / "check_pcm_grad_vs_pyscf.F90", TEST / "basis_sets" / "6-31gs.json",
+    w = RefWriter(ref_name)
+    w.header(test_name,
+             [ROOT / "test" / "check_pcm_grad_vs_pyscf.F90", TEST / json_rel,
               TEST / "water.xyz"])
     w.int_("NAO", nao)
     for model, pyscf_method in (("cpcm", "C-PCM"), ("iefpcm", "IEF-PCM")):
         mf = scf.RHF(mol).PCM()
         mf.with_solvent.method = pyscf_method
         mf.with_solvent.eps = PCM_EPS
-        mf, gnorm = _pcm_converge(mf, f"pcm_grad water/6-31gs {model}")
+        mf, gnorm = _pcm_converge(mf, f"pcm_grad water/{json_rel} {model}")
         g = mf.nuc_grad_method()
         g.verbose = 0
         grad_py = g.kernel()   # (nat, 3), Eh/Bohr, terco's own atom order
@@ -4842,6 +4953,7 @@ def gen_ghost_water_dimer():
 
 CASES = {
     "hirshfeld": gen_hirshfeld,
+    "chelpg": gen_chelpg,
     "mult": gen_mult,
     "ecp_ints_hi_svp": lambda: gen_ecp_ints("hi_svp"),
     "ecp_ints_ih_far": lambda: gen_ecp_ints("ih_far"),
@@ -4851,14 +4963,19 @@ CASES = {
     "ao": gen_ao,
     "pcm_radii_override": gen_pcm_radii_override,
     "pcm_grad": gen_pcm_grad,
+    "pcm_grad_ccpvtz": lambda: gen_pcm_grad("basis_sets/cc-pvtz.json", "pcm_grad_ccpvtz.ref", sph=True,
+                                            test_name="check_pcm_grad_vs_pyscf_ccpvtz"),
     "xc_energy": gen_xc_energy,
     "vv10": gen_vv10,
     "rys_grad_631gs": lambda: gen_rys_grad("631gs", "basis_sets/6-31gs.json"),
     "rys_grad_ccpvdz": lambda: gen_rys_grad("ccpvdz", "basis_sets/cc-pvdz.json"),
+    "rys_grad_ccpvtz": lambda: gen_rys_grad("ccpvtz", "basis_sets/cc-pvtz.json"),
     "lr_exchange_grad_631gs": lambda: gen_lr_exchange_grad("631gs", "basis_sets/6-31gs.json"),
     "lr_exchange_grad_ccpvdz": lambda: gen_lr_exchange_grad("ccpvdz", "basis_sets/cc-pvdz.json"),
+    "lr_exchange_grad_ccpvtz": lambda: gen_lr_exchange_grad("ccpvtz", "basis_sets/cc-pvtz.json"),
     "onee_grad_water_631gs": lambda: gen_1e_grad("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "onee_grad_water_ccpvdz": lambda: gen_1e_grad("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json"),
+    "onee_grad_water_ccpvtz": lambda: gen_1e_grad("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json"),
     "onee_grad_formamide_ccpvdz": lambda: gen_1e_grad(
         "formamide_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json"),
     "xc_grad_water_svwn_631gs": lambda: gen_xc_grad(
@@ -4925,6 +5042,8 @@ CASES = {
         "water_wb97xv_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "wb97x-v"),
     "dft_grad_nh2_wb97xv_ccpvdz_sph": lambda: gen_dft_grad(
         "nh2_wb97xv_ccpvdz_sph", "nh2.xyz", "basis_sets/cc-pvdz.json", "wb97x-v"),
+    "dft_grad_water_wb97xv_ccpvtz_sph": lambda: gen_dft_grad(
+        "water_wb97xv_ccpvtz_sph", "water.xyz", "basis_sets/cc-pvtz.json", "wb97x-v"),
     "dft_grad_water_r2scan_ccpvdz_sph": lambda: gen_dft_grad(
         "water_r2scan_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "r2scan"),
     "dft_grad_water_tpss_ccpvdz_sph": lambda: gen_dft_grad(

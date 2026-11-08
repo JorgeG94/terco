@@ -480,7 +480,7 @@ contains
       integer :: sz(N_SIZES)
       integer :: ka, kb, ib, ni, nimax, jmax, j0, nj, njmax, key, g1, g2
       integer(int64) :: per
-      real(dp) :: wdiag
+      real(dp) :: wdiag, wscr
       integer(int64) :: hb0, hk0, perb, perk
 
       key = job(1)
@@ -496,6 +496,8 @@ contains
       kb = this%gr_k(g2)
       wdiag = 1.0_dp
       if (g1 == g2) wdiag = 0.5_dp
+      wscr = 1.0_dp
+      if (sc%jfac /= 0.0_dp) wscr = 4.0_dp
       nimax = min(block_size(), this%gr_n(g1))
       ! Per ket pair of a window: its share of R and S for a full bra block.
       per = int(nimax, int64)*ka*kb*sz(3) + int(nimax, int64)*sz(1)*ka*sz(5)
@@ -508,7 +510,10 @@ contains
       perk = int(sz(5), int64)*sz(2)*kb
       do ib = 0, this%gr_n(g1) - 1, nimax
          ni = min(nimax, this%gr_n(g1) - ib)
-         jmax = ket_prefix(this, g2, 4.0_dp*this%gq(this%gr_off(g1) + ib + 1)*sc%dmax, sc%thresh)
+         ! The kernels' density screen weights the J blocks by 4 and counts
+         ! them only when jfac /= 0, so with the MD J engine forming J the
+         ! prefix needs only the exchange weight 1.
+         jmax = ket_prefix(this, g2, wscr*this%gq(this%gr_off(g1) + ib + 1)*sc%dmax, sc%thresh)
          ! Sorted: no later bra block can do better than this one.
          if (jmax == 0) exit
          do j0 = 0, jmax - 1, njmax
@@ -518,7 +523,7 @@ contains
             this%nwin = this%nwin + 1
             if (mod(this%nwin - 1, int(sc%nranks, int64)) /= sc%rank) cycle
             if (this%stats) call count_window(this, md, [this%gr_off(g1) + ib, ni, ka, this%gr_off(g2) + j0, nj, kb], &
-                                              sz, dsh, sc%thresh)
+                                              sz, dsh, sc)
             call mdg_fused(key, this%sph, md%nhp, md%mp_z, md%mp_px, md%mp_py, md%mp_pz, md%mp_ax, md%mp_ay, &
                         md%mp_az, md%mp_bx, md%mp_by, md%mp_bz, md%mp_c, md%nsp, md%sp_ao1, md%sp_ao2, &
                         md%sp_as1, md%sp_as2, md%sp_k0, md%sp_nk, md%sp_sh1, md%sp_sh2, md%sp_q, &
@@ -543,7 +548,7 @@ contains
       !$acc enter data create(a)
    end subroutine grow
 
-   subroutine count_window(this, md, w, sz, dsh, thresh)
+   subroutine count_window(this, md, w, sz, dsh, sc)
       !! Stats: a window's quartets, how many pass the per-quartet screen
       !! (same test as the R kernel).
       type(trc_mdg_t), intent(inout) :: this
@@ -551,9 +556,10 @@ contains
       integer, intent(in) :: w(N_WINDOW), sz(N_SIZES)
       !! ib0, ni, ka, jb0, nj, kb
       real(dp), intent(in) :: dsh(:, :)
-      real(dp), intent(in) :: thresh
+      type(trc_mdg_scales_t), intent(in) :: sc
+      !! thresh, and jfac/kfac: a zero factor's blocks do not count
       integer :: i, j, sa, sc2, si, sj, sk, sl
-      real(dp) :: q
+      real(dp) :: q, dscr
       this%st_win = this%st_win + 1
       this%st_quart = this%st_quart + int(w(2), int64)*w(5)
       do j = 1, w(5)
@@ -565,9 +571,11 @@ contains
             si = md%sp_sh1(sa)
             sj = md%sp_sh2(sa)
             q = md%sp_q(sa)*md%sp_q(sc2)
-            if (q <= thresh) cycle
-            if (q*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), dsh(si, sk), dsh(si, sl), &
-                      dsh(sj, sk), dsh(sj, sl)) <= thresh) cycle
+            if (q <= sc%thresh) cycle
+            dscr = 0.0_dp
+            if (sc%jfac /= 0.0_dp) dscr = 4.0_dp*max(dsh(si, sj), dsh(sk, sl))
+            if (sc%kfac /= 0.0_dp) dscr = max(dscr, dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl))
+            if (q*dscr <= sc%thresh) cycle
             this%st_pass = this%st_pass + 1
          end do
       end do

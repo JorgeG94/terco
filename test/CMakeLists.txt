@@ -113,11 +113,21 @@ target_link_libraries(check_scf_diag_failure PRIVATE test-drive::test-drive)
 # The McMurchie-Davidson J engine against the Fock build's own J.
 terco_add_check(check_mdj check_mdj.F90 NEEDS_BASIS)
 target_link_libraries(check_mdj PRIVATE test-drive::test-drive)
+# Which engine forms J in a resident build (eri_mdj_size_rule), and that the
+# two give the same G.
+terco_add_check(check_mdj_rule check_mdj_rule.F90 NEEDS_BASIS)
+target_link_libraries(check_mdj_rule PRIVATE test-drive::test-drive)
 # Its timing harness: not a test, a tool (bench_mdj <xyz> <basis> [thresh] [repeats]).
 add_executable(bench_mdj bench_mdj.F90)
 target_compile_definitions(bench_mdj PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_mdj PRIVATE ${main_lib} terco_test_basis)
 target_include_directories(bench_mdj PRIVATE ${CMAKE_BINARY_DIR}/modules)
+
+# The exchange-only bin launch's density screens: J blocks do not keep a
+# quartet when jfac = 0, and the exchange tiles (trc_bin_tiles) prune the
+# plan without dropping a quartet the kernels would keep.
+terco_add_check(check_exchange_screen check_exchange_screen.F90 NEEDS_BASIS)
+target_link_libraries(check_exchange_screen PRIVATE test-drive::test-drive)
 
 # The step tables' SI-prefixed counts (2.45 PFLOP, not 2453056.2 GFLOP).
 terco_add_check(check_si check_si.F90)
@@ -239,6 +249,11 @@ target_link_libraries(check_decontract PRIVATE test-drive::test-drive)
 add_test(NAME terco/check_decontract_si COMMAND check_decontract sih4.xyz basis_sets/cc-pvdz.json)
 set_tests_properties(terco/check_decontract_si PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+# The split policy (trc_decontract_options_t): which groups the shell price
+# and the diffuse split cut up, by shell count, and that the RHF energy is the
+# same under every policy.
+terco_add_check(check_decontract_policy check_decontract_policy.F90 NEEDS_BASIS)
+target_link_libraries(check_decontract_policy PRIVATE test-drive::test-drive)
 # Dropping a general contraction's redundant primitives (trc_basis_json's
 # prune_block) against pyscf's cc-pVDZ counts and against the energy the
 # unpruned (BSE-literal) basis gives.
@@ -393,9 +408,15 @@ terco_add_check(check_rys_grad_fd_ccpvdz check_rys_grad_fd.F90 NEEDS_BASIS
 target_link_libraries(check_rys_grad_fd_ccpvdz PRIVATE test-drive::test-drive)
 set_target_properties(check_rys_grad_fd_ccpvdz PROPERTIES Fortran_MODULE_DIRECTORY
                       ${CMAKE_CURRENT_BINARY_DIR}/mod_check_rys_grad_fd_ccpvdz)
+terco_add_check(check_rys_grad_fd_ccpvtz check_rys_grad_fd.F90 NEEDS_BASIS
+                ARGS basis_sets/cc-pvtz.json)
+target_link_libraries(check_rys_grad_fd_ccpvtz PRIVATE test-drive::test-drive)
+set_target_properties(check_rys_grad_fd_ccpvtz PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_rys_grad_fd_ccpvtz)
 set_tests_properties(
-  terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz
+  terco/check_rys_grad_fd_631gs terco/check_rys_grad_fd_ccpvdz terco/check_rys_grad_fd_ccpvtz
   PROPERTIES ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=none")
+set_tests_properties(terco/check_rys_grad_fd_ccpvtz PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
 # eri%gradient's long-range (erf(omega*r12)/r12) exchange term alone
@@ -425,6 +446,11 @@ set_tests_properties(
 terco_add_check(check_full_grad_fd check_full_grad_fd.F90 NEEDS_BASIS)
 target_link_libraries(check_full_grad_fd PRIVATE test-drive::test-drive)
 
+# The incremental Fock build against full builds, run for run: RHF, UHF, a
+# range-separated UKS and C-PCM -- see check_scf_incremental.F90's own header.
+terco_add_check(check_scf_incremental check_scf_incremental.F90 NEEDS_BASIS)
+target_link_libraries(check_scf_incremental PRIVATE test-drive::test-drive)
+
 # The analytic PCM (C-PCM/IEF-PCM) gradient term (trc_pcm_grad's grad_qv +
 # grad_nuc + grad_solver) against finite differences of terco's own fully
 # reconverged SCF energy -- water (both models) and formamide (IEF-PCM,
@@ -438,6 +464,15 @@ target_link_libraries(check_pcm_grad_fd PRIVATE test-drive::test-drive)
 # check_pcm_grad_vs_pyscf.F90's own header.
 terco_add_check(check_pcm_grad_vs_pyscf check_pcm_grad_vs_pyscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_pcm_grad_vs_pyscf PRIVATE test-drive::test-drive)
+# Both targets compile the same source module: separate module directories.
+set_target_properties(check_pcm_grad_vs_pyscf PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_pcm_grad_vs_pyscf)
+# The same on water/cc-pVTZ, the f case (skips below LMAX=3).
+terco_add_check(check_pcm_grad_vs_pyscf_ccpvtz check_pcm_grad_vs_pyscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                ARGS basis_sets/cc-pvtz.json pcm_grad_ccpvtz.ref)
+target_link_libraries(check_pcm_grad_vs_pyscf_ccpvtz PRIVATE test-drive::test-drive)
+set_target_properties(check_pcm_grad_vs_pyscf_ccpvtz PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_pcm_grad_vs_pyscf_ccpvtz)
 
 #
 # The SCF/gradient reuse added for a sequence of nearby geometries (the FD
@@ -471,7 +506,8 @@ foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
              water_wb97xv_ccpvdz_sph nh2_wb97xv_ccpvdz_sph
              water_r2scan_ccpvdz_sph water_tpss_ccpvdz_sph water_m06l_ccpvdz_sph
              formamide_r2scan_ccpvdz_sph formamide_r2scan_631gs nh2_r2scan_ccpvdz_sph
-             water_wb97mv_ccpvdz_sph nh2_wb97mv_ccpvdz_sph)
+             water_wb97mv_ccpvdz_sph nh2_wb97mv_ccpvdz_sph
+             water_wb97xv_ccpvtz_sph)
   if(case MATCHES "^(water|nh2|formamide)_(r2scan|tpss|m06l|wb97mv)_(631gs|ccpvdz_sph)$")
     # Meta-GGAs (trc_xc_grad.F90's META-GGA): RKS and, on NH2, UKS;
     # wB97M-V is the meta-GGA with VV10 and erf exchange.
@@ -547,6 +583,13 @@ foreach(case water_pbe_ccpvdz_sph water_b3lyp_ccpvdz_sph
     set(xyz nh2.xyz)
     set(json basis_sets/cc-pvdz.json)
     set(func wb97x-v)
+  elseif(case STREQUAL "water_wb97xv_ccpvtz_sph")
+    # The f case of the one above it, RKS: every term of the wB97X-V
+    # gradient (1e, Coulomb + erf exchange 4c, GGA XC, VV10) through an f
+    # shell and the spherical fold. Skips below LMAX=3.
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvtz.json)
+    set(func wb97x-v)
   else()
     set(xyz nh2.xyz)
     set(json basis_sets/cc-pvdz.json)
@@ -620,6 +663,14 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_lowercase PRIVATE test-drive::test-drive)
   unset(_cli_lowercase_probe)
 
+  # The end-of-SCF HOMO/LUMO energies in the CLI's --json, RHF and UHF,
+  # against pyscf -- see check_cli_homo_lumo.F90's own header.
+  set(_cli_homo_lumo_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_homo_lumo_probe.json)
+  terco_add_check(check_cli_homo_lumo check_cli_homo_lumo.F90 NEEDS_BASIS
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_homo_lumo_probe})
+  target_link_libraries(check_cli_homo_lumo PRIVATE test-drive::test-drive)
+  unset(_cli_homo_lumo_probe)
+
   # The TOML input files (docs/INPUT.md): same numbers as the equivalent
   # flags, paths relative to the file, the "input" echo with a flag
   # overriding the file, and every malformed file refused by name -- see
@@ -629,6 +680,15 @@ if(TERCO_BUILD_APP)
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_input_workdir})
   target_link_libraries(check_cli_input PRIVATE test-drive::test-drive)
   unset(_cli_input_workdir)
+
+  # The incremental Fock build's switches through the CLI: on by default,
+  # off with --no-incremental or a TOML `incremental = false`, contradictory
+  # switches refused -- see check_cli_incremental.F90's own header.
+  set(_cli_incremental_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_incremental_work)
+  terco_add_check(check_cli_incremental check_cli_incremental.F90
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_incremental_workdir})
+  target_link_libraries(check_cli_incremental PRIVATE test-drive::test-drive)
+  unset(_cli_incremental_workdir)
 
   # --hessian's JSON (frequencies, ZPE, thermal corrections, G_tot)
   # against pyscf's own analytic RHF/STO-3G Hessian and harmonic_
@@ -667,18 +727,6 @@ if(TERCO_BUILD_APP)
   endif()
 
   if(TERCO_ENABLE_DLFIND)
-    # --opt refuses a double hybrid BEFORE any SCF runs at all: its steps
-    # rerun only the SCF and its gradient, not the RI-MP2 correlation, and
-    # app/trc_run_opt.F90's run_opt_capability_check knows that statically
-    # from the command line, so there is no SCF line in the output at all
-    # when this fires.
-    add_test(NAME terco/cli_opt_refused_dh
-             COMMAND $<TARGET_FILE:terco_cli> ${_opt_xyz}/water.xyz -b 6-31g -f b2plyp --opt --silent)
-    set_tests_properties(
-      terco/cli_opt_refused_dh
-      PROPERTIES ENVIRONMENT "${_opt_env}" PASS_REGULAR_EXPRESSION
-                 "reruns only the SCF.*RI-MP2/double-hybrid" FAIL_REGULAR_EXPRESSION "SCF +: +[0-9]")
-
     # The CLI's --opt --json end to end: the "optimization" JSON block,
     # and that <name>_opt.xyz/_traj.xyz were actually written -- see
     # check_cli_opt.F90's own header.
@@ -763,6 +811,13 @@ if(TERCO_BUILD_APP)
     terco_add_check(check_capi_opt check_capi_opt.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
     target_link_libraries(check_capi_opt PRIVATE test-drive::test-drive terco_c_interfaces
                                                  terco_opt_c_interfaces terco::terco_opt)
+
+    # --opt with RI-MP2 and a double hybrid through terco_opt.h
+    # (trc_opt_set_rimp2): each step's energy is the correlated total whose
+    # gradient DL-FIND gets -- see check_opt_correlated.F90's own header.
+    terco_add_check(check_opt_correlated check_opt_correlated.F90 NEEDS_BASIS)
+    target_link_libraries(check_opt_correlated PRIVATE test-drive::test-drive terco_c_interfaces
+                                                       terco_opt_c_interfaces terco::terco_opt)
 
     # Every --opt-algorithm/--opt-coords combination terco exposes
     # converges water/STO-3G to the existing opt_water anchor -- see
@@ -946,6 +1001,13 @@ target_link_libraries(check_bin_sort_grad PRIVATE test-drive::test-drive)
 terco_add_check(check_hirshfeld check_hirshfeld.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_hirshfeld PRIVATE test-drive::test-drive)
 
+# CHELPG charges (trc_chelpg) against mqc's recipe in pyscf (chelpg.ref) and
+# mqc's own Fortran numbers, plus the sum rule, translation and atom-order
+# invariance, the grid's exclusion rule and the refusals -- see the file's
+# own header.
+terco_add_check(check_chelpg check_chelpg.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_chelpg PRIVATE test-drive::test-drive terco_c_interfaces)
+
 # Hirshfeld-condensed Fukui indices (trc_capi's trc_fukui_hirshfeld) against
 # metalquicha's own fukui_indices at its own test_fukui case -- see the
 # file's own header.
@@ -955,12 +1017,14 @@ target_link_libraries(check_fukui PRIVATE test-drive::test-drive terco_c_interfa
 # eri%gradient against a committed pyscf int2e_ip1 contraction (pyscf's
 # own Gradients class assumes a converged SCF density; this is a fixed,
 # non-SCF density, same reasoning as check_rys_grad_fd). RHF and UHF,
-# water/6-31G* and water/cc-pVDZ.
-foreach(b 631gs ccpvdz)
+# water/6-31G*, water/cc-pVDZ and water/cc-pVTZ (f; skips below LMAX=3).
+foreach(b 631gs ccpvdz ccpvtz)
   if(b STREQUAL "631gs")
     set(json basis_sets/6-31gs.json)
-  else()
+  elseif(b STREQUAL "ccpvdz")
     set(json basis_sets/cc-pvdz.json)
+  else()
+    set(json basis_sets/cc-pvtz.json)
   endif()
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/rys_grad_probe_${b}.bin)
   terco_add_check(check_rys_grad_vs_pyscf_${b} check_rys_grad_vs_pyscf.F90
@@ -1104,11 +1168,14 @@ endforeach()
 # mol.with_range_coulomb(omega) -- the omega > 0 analogue of
 # check_rys_grad_vs_pyscf, RHF only. Two omega values (0.3, 0.4) in one
 # binary/reference -- see check_lr_exchange_grad_vs_pyscf.F90's own header.
-foreach(b 631gs ccpvdz)
+# cc-pVTZ is the f case and skips below LMAX=3.
+foreach(b 631gs ccpvdz ccpvtz)
   if(b STREQUAL "631gs")
     set(json basis_sets/6-31gs.json)
-  else()
+  elseif(b STREQUAL "ccpvdz")
     set(json basis_sets/cc-pvdz.json)
+  else()
+    set(json basis_sets/cc-pvtz.json)
   endif()
   set(dump ${CMAKE_CURRENT_BINARY_DIR}/lr_exchange_grad_probe_${b}.bin)
   terco_add_check(check_lr_exchange_grad_vs_pyscf_${b} check_lr_exchange_grad_vs_pyscf.F90
@@ -1121,14 +1188,18 @@ endforeach()
 # trc_1e_gradient against committed pyscf int1e_ipovlp/int1e_ipkin/
 # int1e_ipnuc(+Hellmann-Feynman) contractions, each term separated (see
 # check_1e_grad_vs_pyscf.F90's own header), at a fixed non-SCF density --
-# water/6-31G*, water/cc-pVDZ, formamide/cc-pVDZ.
-foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
+# water/6-31G*, water/cc-pVDZ, formamide/cc-pVDZ, and water/cc-pVTZ (f;
+# skips below LMAX=3).
+foreach(case water_631gs water_ccpvdz formamide_ccpvdz water_ccpvtz)
   if(case STREQUAL "water_631gs")
     set(xyz water.xyz)
     set(json basis_sets/6-31gs.json)
   elseif(case STREQUAL "water_ccpvdz")
     set(xyz water.xyz)
     set(json basis_sets/cc-pvdz.json)
+  elseif(case STREQUAL "water_ccpvtz")
+    set(xyz water.xyz)
+    set(json basis_sets/cc-pvtz.json)
   else()
     set(xyz formamide.xyz)
     set(json basis_sets/cc-pvdz.json)
@@ -1816,6 +1887,11 @@ target_link_libraries(check_rimp2_grad PRIVATE test-drive::test-drive)
 # d/dR Tr(P V_xc[D]) term (trc_xc_grad_potential.F90). See its header.
 terco_add_check(check_dh_grad check_dh_grad.F90 NEEDS_BASIS)
 target_link_libraries(check_dh_grad PRIVATE terco_c_interfaces test-drive::test-drive)
+# trc_run_hessian over a double-hybrid reference (RI-MP2 rerun at every
+# displacement): the Hessian against second differences of the DH energy,
+# the energy/gradient pairing --opt relies on, and the refusals it keeps.
+terco_add_check(check_hessian_dh check_hessian_dh.F90 NEEDS_BASIS)
+target_link_libraries(check_hessian_dh PRIVATE terco_c_interfaces test-drive::test-drive)
 # Formamide (no symmetry, spherical) against pyscf and finite differences, and
 # the exact reference: ~3 min on four host cores, so nightly only.
 add_test(NAME terco/check_dh_grad_long COMMAND check_dh_grad long)
@@ -2096,6 +2172,17 @@ if(Python3_FOUND)
     endforeach()
   endforeach()
 endif()
+
+# The f (cc-pVTZ) gradient checks skip themselves below TERCO_LMAX=3. Without
+# this, ctest would count a skip as a pass, and a plain ctest on the default
+# build would claim f gradients had been checked.
+set_tests_properties(
+  terco/check_rys_grad_vs_pyscf_ccpvtz
+  terco/check_lr_exchange_grad_vs_pyscf_ccpvtz
+  terco/check_1e_grad_vs_pyscf_water_ccpvtz
+  terco/check_dft_grad_vs_pyscf_water_wb97xv_ccpvtz_sph
+  terco/check_pcm_grad_vs_pyscf_ccpvtz
+  PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 # TERCO_LONG_TESTS=OFF (the default): every check labelled LONG above is
 # registered DISABLED, so `ctest` lists it as not run instead of spending

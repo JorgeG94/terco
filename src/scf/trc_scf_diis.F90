@@ -8,6 +8,35 @@
 ! share: the DIIS linear solve, the level shift and the damped step while
 ! neither extrapolation is active.
 !
+! HOST-RESIDENT, PACKED HISTORY. Every matrix the histories hold is
+! symmetric (F, D) or antisymmetric (the commutator), so each is kept as
+! its lower triangle, n(n+1)/2 values, and on the HOST, not the device. A
+! full-square device history was the largest single item of an SCF's
+! device memory: 2 x ndiis x nao^2 doubles, 20 of the 50 nao^2 live at the
+! peak of RHF/cc-pVTZ on gly20 (3298 functions), which is what ran
+! gly100 (16,258 functions) out of a 141 GB H200. Packed on the host it is
+! no device memory at all. A push packs the new pair on the device into
+! the caller's nao x nao scratch (`staging`), brings it down, and copies
+! it into its slot; the new B (or P) row is one host pass over the
+! history; the extrapolated step is another, into `staging`, uploaded and
+! unpacked into `fock`. GPU4PySCF's CDIIS packs the same way
+! (pack_tril), and moves its history to the host when the device is short
+! of memory. The cost is three triangles over the bus and two passes over
+! the history per DIIS iteration: on a V100 box, RHF/cc-pVTZ gly20 (3298
+! functions, the window full at ten) spends 0.12-0.18 s more per iteration
+! than the device history did, against 24 s per Fock build; gly10 (1678)
+! 0.04 s against 5.9 s. Iteration counts and energies did not move.
+!
+! What packing changes, numerically. F is stored as (F + F^T)/2 and the
+! commutator as (E - E^T)/2, their exactly symmetric and antisymmetric
+! parts: the full-square history carried each one's round-off-sized other
+! part along. <E_i, E_j> is 2 x the strict lower triangle's dot product,
+! and <D_i, F_j> the diagonal's plus 2 x the strict lower triangle's (the
+! density's off-diagonal is stored doubled for exactly that, and is read
+! by nothing but that dot product). The extrapolated F comes out exactly
+! symmetric. The dot products are host BLAS instead of cuBLAS. All of it is
+! round-off: iteration counts and energies are unchanged.
+!
 ! RING BUFFER. Neither history is ever shifted. `head` is the physical
 ! slot the newest entry landed in; a push advances it one slot (wrapping
 ! at `ndiis`) and writes there, so the oldest entry's slot is simply the
@@ -19,29 +48,23 @@
 ! CACHED B / P. cdiis_t's `bcache(ndiis,ndiis)` and adiis_t's
 ! `pcache(ndiis,ndiis)` hold every dot product <e_i,e_j> / <D_i,F_j> this
 ! run has ever needed, indexed by PHYSICAL slot, kept across iterations.
-! A push computes only the new row and column against whatever is
-! currently in the window (cdiis: one triangle, symmetric; adiis: both,
-! P is not), reusing every older pair untouched since nothing about an
-! entry still in the window has changed. CDIIS dropping its oldest entry
-! on a failed solve (see cdiis_extrapolate's own comment) is then just
-! `n_used = n_used - 1` -- the window shrinks, no data moves, and the
-! freed slot's stale cache entries are silently overwritten the next time
-! a push lands there.
+! A push computes only the new row and column against every slot written
+! so far (cdiis: one, symmetric; adiis: both, P is not), reusing every
+! older pair untouched since nothing about an entry still in the window
+! has changed. CDIIS dropping its oldest entry on a failed solve (see
+! cdiis_extrapolate's own comment) is then just `n_used = n_used - 1` --
+! the window shrinks, no data moves, and the freed slot's stale cache
+! entries are silently overwritten the next time a push lands there.
 !
 ! EXPLICIT-SHAPE DUMMIES. Every one of these takes `fock`/`dold`/`errv`/
-! history arrays as plain arguments, never touching `st%anything` or a
-! type's own OTHER component inside a `do concurrent` body -- see
-! trc_scf_fock's own header for why that matters on the GPU build.
-! `cdiis_t`/`adiis_t` get their OWN enter/exit data pair rather than
-! folding into trc_scf_state's single one: the two histories are built
-! only when DIIS/ADIIS actually run (ADIIS not at all unless `opts%adiis`),
-! so trc_scf_run maps them separately, exactly as the original code did.
-! `bcache`/`pcache`, like `bmat`/`rhs`/`cad`, are host-only: trc_linalg's
-! dot returns its result to the host regardless of build, so nothing here
-! needs `!$acc enter data`.
+! `staging` as plain arguments, never touching `st%anything` or a type's
+! own OTHER component inside a `do concurrent` body -- see trc_scf_fock's
+! own header for why that matters on the GPU build. The histories and
+! caches are host-only, so nothing here needs `!$acc enter data`;
+! `staging` must be device-resident (the SCF state's `w1`).
 !
 module trc_scf_diis
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use pic_sorting, only: sort
    use trc_linalg, only: trc_linalg_t
    implicit none
@@ -50,32 +73,47 @@ module trc_scf_diis
    public :: cdiis_t, adiis_t, scf_diis_level_shift, scf_diis_damp
    ! solve_diis stays private: nothing outside this module uses it.
 
+   real(dp), parameter :: SYMMETRIC = 1.0_dp
+   !! `pack_device`'s sign: store (A + A^T)/2
+   real(dp), parameter :: ANTISYMMETRIC = -1.0_dp
+   !! `pack_device`'s sign: store (A - A^T)/2
+   integer, parameter :: HOST_BLOCK = 4096
+   !! elements per block of the host passes over the history: 32 KB a
+   !! vector, so a block of every slot stays in L2
+
    type :: cdiis_t
-      real(dp), allocatable :: fstore(:, :, :, :), estore(:, :, :, :)
+      real(dp), allocatable :: fhist(:, :, :), ehist(:, :, :)
+      !! (npack, ndiis, nspin): the packed Fock matrices and commutators,
+      !! host only. Slot-major inside a spin so one spin's window is a
+      !! contiguous block for the host passes.
       real(dp), allocatable :: bmat(:, :), rhs(:)
       real(dp), allocatable :: bcache(:, :)   !! <e_i,e_j> by physical slot, see this module's own header
+      real(dp), allocatable :: row(:), coeff(:)   !! a new B row and the extrapolation weights, by physical slot
       integer :: n_used = 0
       integer :: ndiis = 0
       integer :: head = 0   !! physical slot of the newest entry, 0 before the first push
+      integer :: nfilled = 0   !! physical slots 1..nfilled have been written at least once
+      integer :: npack = 0   !! nao(nao+1)/2
    contains
       procedure :: alloc => cdiis_alloc
-      procedure :: to_device => cdiis_to_device
-      procedure :: release_device => cdiis_release_device
       procedure :: push => cdiis_push
       procedure :: extrapolate => cdiis_extrapolate
    end type cdiis_t
 
    type :: adiis_t
-      real(dp), allocatable :: fstore_a(:, :, :, :), dstore_a(:, :, :, :)
+      real(dp), allocatable :: fhist(:, :, :), dhist(:, :, :)
+      !! (npack, ndiis, nspin), as cdiis_t's; dhist holds the density with
+      !! its off-diagonal doubled (this module's header).
       real(dp), allocatable :: cad(:)
       real(dp), allocatable :: pcache(:, :)   !! <D_i,F_j> by physical slot, see this module's own header
+      real(dp), allocatable :: row(:), column(:), coeff(:)
       integer :: n_used = 0
       integer :: ndiis = 0
       integer :: head = 0
+      integer :: nfilled = 0
+      integer :: npack = 0
    contains
       procedure :: alloc => adiis_alloc
-      procedure :: to_device => adiis_to_device
-      procedure :: release_device => adiis_release_device
       procedure :: push => adiis_push
       procedure :: extrapolate => adiis_extrapolate
    end type adiis_t
@@ -88,48 +126,43 @@ contains
       this%ndiis = ndiis
       this%n_used = 0
       this%head = 0
-      allocate (this%fstore(nao, nao, nspin, ndiis), this%estore(nao, nao, nspin, ndiis))
+      this%nfilled = 0
+      this%npack = npacked(nao)
+      allocate (this%fhist(this%npack, ndiis, nspin), this%ehist(this%npack, ndiis, nspin))
       allocate (this%bmat(ndiis + 1, ndiis + 1), this%rhs(ndiis + 1))
-      allocate (this%bcache(ndiis, ndiis))
-      this%fstore = 0.0_dp
-      this%estore = 0.0_dp
+      allocate (this%bcache(ndiis, ndiis), this%row(ndiis), this%coeff(ndiis))
       this%bcache = 0.0_dp
    end subroutine cdiis_alloc
 
-   subroutine cdiis_to_device(this)
-      class(cdiis_t), intent(inout) :: this
-      !$acc enter data copyin(this%fstore, this%estore)
-   end subroutine cdiis_to_device
-
-   subroutine cdiis_release_device(this)
-      class(cdiis_t), intent(inout) :: this
-      !$acc exit data delete(this%fstore, this%estore)
-   end subroutine cdiis_release_device
-
-   subroutine cdiis_push(this, lp, nao, nspin, fock, errv)
+   subroutine cdiis_push(this, nao, nspin, fock, errv, staging)
       !! The ring advances one slot (wrapping at ndiis, overwriting the
       !! oldest entry once the history is full) and (fock, errv) land
-      !! there; bcache's new row/column against the rest of the window
-      !! is the only part of it this push computes -- see this module's
-      !! own header.
+      !! there, packed; bcache's new row/column is the only part of it
+      !! this push computes -- see this module's own header. `staging` is
+      !! device-resident nao x nao scratch, clobbered.
       class(cdiis_t), intent(inout) :: this
-      type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nao, nspin
       real(dp), intent(in) :: fock(nao, nao, nspin), errv(nao, nao, nspin)
-      integer :: l, p
+      real(dp), intent(inout) :: staging(nao, nao)
+      integer :: l, p, s
       this%head = modulo(this%head, this%ndiis) + 1
       if (this%n_used < this%ndiis) this%n_used = this%n_used + 1
-      call diis_store(nao, nspin, this%head, fock, errv, this%fstore, this%estore)
-      ! dot argument order as the old full rebuild used: the older-or-self
-      ! entry first, the new one (head) second -- see this module's header.
+      this%nfilled = max(this%nfilled, this%head)
+      do s = 1, nspin
+         call pack_to_host(nao, this%npack, fock(:, :, s), SYMMETRIC, 1.0_dp, staging, this%fhist(:, this%head, s))
+         call pack_to_host(nao, this%npack, errv(:, :, s), ANTISYMMETRIC, 1.0_dp, staging, this%ehist(:, this%head, s))
+      end do
+      ! <e_p, e_head> for every slot written so far; the diagonal of an
+      ! antisymmetric triangle is zero, so the full dot product is twice it.
+      call history_dots(this%npack, this%ndiis, nspin, this%nfilled, this%ehist, this%ehist, this%head, this%row)
       do l = 1, this%n_used
          p = ring_phys(this%head, this%n_used, this%ndiis, l)
-         this%bcache(p, this%head) = lp%dot_3d(this%estore(:, :, :, p), this%estore(:, :, :, this%head))
+         this%bcache(p, this%head) = 2.0_dp*this%row(p)
          this%bcache(this%head, p) = this%bcache(p, this%head)
       end do
    end subroutine cdiis_push
 
-   subroutine cdiis_extrapolate(this, nao, nspin, fock, ok)
+   subroutine cdiis_extrapolate(this, nao, nspin, fock, staging, ok)
       !!
       !! An ill-conditioned subspace loses its oldest entry, not the step.
       !! A failed solve followed by a plain Roothaan step is not neutral: on
@@ -144,6 +177,7 @@ contains
       class(cdiis_t), intent(inout) :: this
       integer, intent(in) :: nao, nspin
       real(dp), intent(inout) :: fock(nao, nao, nspin)
+      real(dp), intent(inout) :: staging(nao, nao)
       logical, intent(out) :: ok
       integer :: m, i, j, pi, pj
       do
@@ -164,8 +198,11 @@ contains
          ! data moves, since ring_phys reads head/n_used fresh every call.
          this%n_used = this%n_used - 1
       end do
-      if (ok) call diis_combine(nao, nspin, this%n_used, this%rhs(1:this%n_used), this%fstore, this%head, &
-                                this%ndiis, fock)
+      if (ok) then
+         call weights_by_slot(this%n_used, this%rhs(1:this%n_used), this%head, this%ndiis, this%coeff)
+         call combine_to_device(nao, nspin, this%ndiis, this%nfilled, this%fhist, this%coeff, &
+                                staging, fock)
+      end if
    end subroutine cdiis_extrapolate
 
    subroutine adiis_alloc(this, nao, nspin, ndiis)
@@ -174,25 +211,15 @@ contains
       this%ndiis = ndiis
       this%n_used = 0
       this%head = 0
-      allocate (this%fstore_a(nao, nao, nspin, ndiis), this%dstore_a(nao, nao, nspin, ndiis))
+      this%nfilled = 0
+      this%npack = npacked(nao)
+      allocate (this%fhist(this%npack, ndiis, nspin), this%dhist(this%npack, ndiis, nspin))
       allocate (this%cad(ndiis))
-      allocate (this%pcache(ndiis, ndiis))
-      this%fstore_a = 0.0_dp
-      this%dstore_a = 0.0_dp
+      allocate (this%pcache(ndiis, ndiis), this%row(ndiis), this%column(ndiis), this%coeff(ndiis))
       this%pcache = 0.0_dp
    end subroutine adiis_alloc
 
-   subroutine adiis_to_device(this)
-      class(adiis_t), intent(inout) :: this
-      !$acc enter data copyin(this%fstore_a, this%dstore_a)
-   end subroutine adiis_to_device
-
-   subroutine adiis_release_device(this)
-      class(adiis_t), intent(inout) :: this
-      !$acc exit data delete(this%fstore_a, this%dstore_a)
-   end subroutine adiis_release_device
-
-   subroutine adiis_push(this, lp, nao, nspin, fock, dold)
+   subroutine adiis_push(this, nao, nspin, fock, dold, staging)
       !! The ring advances and stores (fock, dold) -- the Fock/density pair
       !! ADIIS's convex combination runs over, kept apart from cdiis_t's own
       !! history (see trc_scf_options_t%adiis's own comment on why) -- then
@@ -200,25 +227,28 @@ contains
       !! symmetric (D first, F second, always -- see this module's header),
       !! so, unlike bcache, both are needed.
       class(adiis_t), intent(inout) :: this
-      type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: nao, nspin
       real(dp), intent(in) :: fock(nao, nao, nspin), dold(nao, nao, nspin)
-      integer :: l, p
+      real(dp), intent(inout) :: staging(nao, nao)
+      integer :: l, p, s
       this%head = modulo(this%head, this%ndiis) + 1
       if (this%n_used < this%ndiis) this%n_used = this%n_used + 1
-      call diis_store(nao, nspin, this%head, fock, dold, this%fstore_a, this%dstore_a)
+      this%nfilled = max(this%nfilled, this%head)
+      do s = 1, nspin
+         call pack_to_host(nao, this%npack, fock(:, :, s), SYMMETRIC, 1.0_dp, staging, this%fhist(:, this%head, s))
+         call pack_to_host(nao, this%npack, dold(:, :, s), SYMMETRIC, 2.0_dp, staging, this%dhist(:, this%head, s))
+      end do
+      ! column(p) = <D_p, F_head>, row(p) = <D_head, F_p>
+      call history_dots(this%npack, this%ndiis, nspin, this%nfilled, this%dhist, this%fhist, this%head, this%column)
+      call history_dots(this%npack, this%ndiis, nspin, this%nfilled, this%fhist, this%dhist, this%head, this%row)
       do l = 1, this%n_used
          p = ring_phys(this%head, this%n_used, this%ndiis, l)
-         if (p /= this%head) then
-            this%pcache(p, this%head) = lp%dot_3d(this%dstore_a(:, :, :, p), this%fstore_a(:, :, :, this%head))
-            this%pcache(this%head, p) = lp%dot_3d(this%dstore_a(:, :, :, this%head), this%fstore_a(:, :, :, p))
-         end if
+         this%pcache(p, this%head) = this%column(p)
+         this%pcache(this%head, p) = this%row(p)
       end do
-      this%pcache(this%head, this%head) = lp%dot_3d(this%dstore_a(:, :, :, this%head), &
-                                                     this%fstore_a(:, :, :, this%head))
    end subroutine adiis_push
 
-   subroutine adiis_extrapolate(this, nao, nspin, fock)
+   subroutine adiis_extrapolate(this, nao, nspin, fock, staging)
       !! One entry: the simplex is a point, c = 1 on it, a no-op. Skip the
       !! solve and leave `fock` as it is, which is also what `adiis_coeffs`
       !! would return from "start at the newest entry" after finding no
@@ -226,49 +256,156 @@ contains
       class(adiis_t), intent(inout) :: this
       integer, intent(in) :: nao, nspin
       real(dp), intent(inout) :: fock(nao, nao, nspin)
+      real(dp), intent(inout) :: staging(nao, nao)
       if (this%n_used > 1) then
          call adiis_coeffs(this%n_used, this%pcache, this%head, this%ndiis, this%cad(1:this%n_used))
-         call diis_combine(nao, nspin, this%n_used, this%cad(1:this%n_used), this%fstore_a, this%head, &
-                           this%ndiis, fock)
+         call weights_by_slot(this%n_used, this%cad(1:this%n_used), this%head, this%ndiis, this%coeff)
+         call combine_to_device(nao, nspin, this%ndiis, this%nfilled, this%fhist, this%coeff, &
+                                staging, fock)
       end if
    end subroutine adiis_extrapolate
 
-   subroutine diis_store(nao, nspin, k, fock, companion, fstore, cstore)
-      !! One push, shared by CDIIS (companion = the commutator `errv`) and
-      !! ADIIS (companion = the density `dold`): slot k <- the current
-      !! iterate in both histories at once.
-      integer, intent(in) :: nao, nspin, k
-      real(dp), intent(in) :: fock(nao, nao, nspin), companion(nao, nao, nspin)
-      real(dp), intent(inout) :: fstore(nao, nao, nspin, *), cstore(nao, nao, nspin, *)
-      integer :: i, j, s
-      do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-         fstore(i, j, s, k) = fock(i, j, s)
-         cstore(i, j, s, k) = companion(i, j, s)
-      end do
-   end subroutine diis_store
+   pure function npacked(nao) result(npack)
+      !! The lower triangle's length, diagonal included.
+      integer, intent(in) :: nao
+      integer :: npack
+      npack = int(int(nao, int64)*int(nao + 1, int64)/2_int64)
+   end function npacked
 
-   subroutine diis_combine(nao, nspin, m, coeff, fstore, head, ndiis, fock)
-      !! fock := sum_l coeff(l) * fstore(:,:,:,ring_phys(l)), the
-      !! extrapolated/combined step both CDIIS (coeff = the solved weights)
-      !! and ADIIS (coeff = the simplex coefficients) take once they have
-      !! more than one history slot; coeff is indexed by LOGICAL position
-      !! (1 = oldest), fstore by physical slot, so this maps one to the
-      !! other through `head`/`ndiis` rather than assuming they coincide.
-      integer, intent(in) :: nao, nspin, m, head, ndiis
-      real(dp), intent(in) :: coeff(m)
-      real(dp), intent(in) :: fstore(nao, nao, nspin, *)
-      real(dp), intent(inout) :: fock(nao, nao, nspin)
-      integer :: i, j, s, k, p
-      do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-         fock(i, j, s) = 0.0_dp
+   subroutine pack_to_host(nao, npack, a, sign, offdiag, staging, slot)
+      !! slot := the lower triangle of offdiag (A + sign A^T)/2 (diagonal
+      !! unscaled), packed on the device into `staging` and brought down.
+      integer, intent(in) :: nao, npack
+      real(dp), intent(in) :: a(nao, nao)
+      real(dp), intent(in) :: sign, offdiag
+      real(dp), intent(inout) :: staging(npack)
+      !! the caller's nao x nao scratch, seen as its first npack elements
+      real(dp), intent(out) :: slot(npack)
+      integer :: k
+      call pack_device(nao, npack, a, sign, offdiag, staging)
+      !$acc update self(staging(1:npack))
+      ! A plain loop on the host: `staging` is the host copy here.
+      do k = 1, npack
+         slot(k) = staging(k)
       end do
-      do k = 1, m
-         p = ring_phys(head, m, ndiis, k)
-         do concurrent(i=1:nao, j=1:nao, s=1:nspin)
-            fock(i, j, s) = fock(i, j, s) + coeff(k)*fstore(i, j, s, p)
+   end subroutine pack_to_host
+
+   subroutine pack_device(nao, npack, a, sign, offdiag, packed)
+      !! packed(k) = w 0.5 (a(i,j) + sign a(j,i)) for i >= j, column by
+      !! column (k from `packed_index`), w = offdiag below the diagonal and
+      !! 1 on it. 0.5 (x + x) is x exactly, so a symmetric pack keeps the
+      !! diagonal bit for bit and an antisymmetric one zeroes it.
+      integer, intent(in) :: nao, npack
+      real(dp), intent(in) :: a(nao, nao)
+      real(dp), intent(in) :: sign, offdiag
+      real(dp), intent(out) :: packed(npack)
+      integer :: i, j
+      do concurrent(j=1:nao, i=1:nao)
+         if (i > j) then
+            packed(packed_index(nao, i, j)) = offdiag*(0.5_dp*(a(i, j) + sign*a(j, i)))
+         else if (i == j) then
+            packed(packed_index(nao, i, j)) = 0.5_dp*(a(i, j) + sign*a(j, i))
+         end if
+      end do
+   end subroutine pack_device
+
+   subroutine unpack_device(nao, npack, packed, a)
+      !! a := the symmetric matrix whose lower triangle is `packed`.
+      integer, intent(in) :: nao, npack
+      real(dp), intent(in) :: packed(npack)
+      real(dp), intent(out) :: a(nao, nao)
+      integer :: i, j
+      do concurrent(j=1:nao, i=1:nao)
+         a(i, j) = packed(packed_index(nao, max(i, j), min(i, j)))
+      end do
+   end subroutine unpack_device
+
+   pure function packed_index(nao, i, j) result(k)
+      !! Position of (i, j), i >= j, in the column-major lower triangle:
+      !! the j-1 columns before it hold (j-1)(2 nao - j + 2)/2 entries (an
+      !! even product), then i - j + 1 into column j. int64: 2 nao^2
+      !! overflows a default integer past 32768 functions.
+      !$acc routine seq
+      integer, intent(in) :: nao, i, j
+      integer(int64) :: k
+      k = int(j - 1, int64)*int(2*nao - j + 2, int64)/2_int64 + int(i - j + 1, int64)
+   end function packed_index
+
+   subroutine history_dots(npack, ndiis, nspin, nfilled, hist, other, slot, dots)
+      !! dots(p) = sum over spins of <hist(:, p, s), other(:, slot, s)>, p =
+      !! 1..nfilled: every slot written so far against one, in one pass
+      !! over the history, block by block so the block of `other` stays in
+      !! cache. `other` may be `hist` itself (both are read only).
+      !!
+      !! Plain host loops, not the host BLAS: the GPU build's host BLAS is
+      !! whatever the toolchain links (MKL's threaded GEMV, on the V100
+      !! box), and its OpenMP runtime next to NVHPC's crashed at the first
+      !! call. Serial, the pass streams the history at memory bandwidth.
+      integer, intent(in) :: npack, ndiis, nspin, nfilled, slot
+      real(dp), intent(in) :: hist(npack, ndiis, nspin), other(npack, ndiis, nspin)
+      real(dp), intent(out) :: dots(ndiis)
+      integer :: s, p, k, k0, k1
+      real(dp) :: acc
+      dots = 0.0_dp
+      do s = 1, nspin
+         do k0 = 1, npack, HOST_BLOCK
+            k1 = min(npack, k0 + HOST_BLOCK - 1)
+            do p = 1, nfilled
+               acc = 0.0_dp
+               do k = k0, k1
+                  acc = acc + hist(k, p, s)*other(k, slot, s)
+               end do
+               dots(p) = dots(p) + acc
+            end do
          end do
       end do
-   end subroutine diis_combine
+   end subroutine history_dots
+
+   subroutine weights_by_slot(m, weights, head, ndiis, coeff)
+      !! coeff(p) = the weight of whichever logical position slot p holds,
+      !! zero for a slot outside the window -- what combine_to_device's
+      !! pass over every written slot reads.
+      integer, intent(in) :: m, head, ndiis
+      real(dp), intent(in) :: weights(m)
+      real(dp), intent(out) :: coeff(ndiis)
+      integer :: k
+      coeff = 0.0_dp
+      do k = 1, m
+         coeff(ring_phys(head, m, ndiis, k)) = weights(k)
+      end do
+   end subroutine weights_by_slot
+
+   subroutine combine_to_device(nao, nspin, ndiis, nfilled, fhist, coeff, staging, fock)
+      !! fock(:, :, s) := sum_p coeff(p) fhist(:, p, s), per spin: the
+      !! extrapolated/combined step both CDIIS (coeff = the solved weights)
+      !! and ADIIS (coeff = the simplex coefficients) take once they have
+      !! more than one history slot. Formed on the host in `staging`, uploaded
+      !! and unpacked on the device. Slots outside the window carry weight
+      !! zero and are skipped.
+      integer, intent(in) :: nao, nspin, ndiis, nfilled
+      real(dp), intent(in) :: fhist(npacked(nao), ndiis, nspin), coeff(ndiis)
+      real(dp), intent(inout) :: staging(npacked(nao))
+      real(dp), intent(inout) :: fock(nao, nao, nspin)
+      integer :: s, npack, p, k, k0, k1
+      npack = npacked(nao)
+      do s = 1, nspin
+         ! Host loops, blocked, for the reason history_dots gives.
+         do k0 = 1, npack, HOST_BLOCK
+            k1 = min(npack, k0 + HOST_BLOCK - 1)
+            do k = k0, k1
+               staging(k) = 0.0_dp
+            end do
+            do p = 1, nfilled
+               if (coeff(p) == 0.0_dp) cycle
+               do k = k0, k1
+                  staging(k) = staging(k) + coeff(p)*fhist(k, p, s)
+               end do
+            end do
+         end do
+         !$acc update device(staging(1:npack))
+         call unpack_device(nao, npack, staging, fock(:, :, s))
+      end do
+   end subroutine combine_to_device
 
    subroutine scf_diis_level_shift(lp, nao, nspin, mu, occ, smat, dmat, w1, w2, fock)
       !! F += mu (S - S D S / occ) on the virtual space while DIIS is off,

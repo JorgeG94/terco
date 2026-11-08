@@ -90,11 +90,15 @@ module trc_bins
       integer(int64) :: nwork = 0
       !! Work items over all segments: sOff(nseg + 1).
       integer, allocatable :: sA(:), sNB(:)
-      !! (nseg) pairs in the bra bin and in the ket bin.
+      !! (nseg) pairs the segment covers on the bra and on the ket side: the
+      !! whole bins, or one tile of each (trc_bin_tiles).
       integer, allocatable :: sOA(:), sOB(:)
-      !! (nseg) first pair - 1 of the bra and ket bins in pair_bins_t's lists.
+      !! (nseg) first pair - 1 of the bra and ket sides in pair_bins_t's lists.
       integer, allocatable :: sPA(:), sPB(:)
-      !! (nseg) first slot - 1 of the two bins in the bin-interleaved tables.
+      !! (nseg) first slot - 1 of the two sides in the bin-interleaved tables.
+      integer, allocatable :: sSA(:), sSB(:)
+      !! (nseg) pairs in the whole bra and ket BINS: the stride of the
+      !! bin-interleaved tables, equal to sA/sNB unless the segment is a tile.
       integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
       !! (nseg) the class (la, lb | lc, ld).
       logical, allocatable :: sD(:)
@@ -823,7 +827,7 @@ contains
       end do
 
       allocate (this%sA(nseg), this%sNB(nseg), this%sOA(nseg), this%sOB(nseg))
-      allocate (this%sPA(nseg), this%sPB(nseg), this%sD(nseg))
+      allocate (this%sPA(nseg), this%sPB(nseg), this%sSA(nseg), this%sSB(nseg), this%sD(nseg))
       allocate (this%sLA(nseg), this%sLB(nseg), this%sLC(nseg), this%sLD(nseg))
       allocate (this%sOff(nseg + 1))
 
@@ -848,6 +852,8 @@ contains
             this%sOB(is) = b%bin_off(kb)
             this%sPA(is) = bin_pbase(ka)
             this%sPB(is) = bin_pbase(kb)
+            this%sSA(is) = nA
+            this%sSB(is) = nB
             this%sD(is) = (ka == kb)
             this%sLA(is) = b%bin_la(ka)
             this%sLB(is) = b%bin_lb(ka)
@@ -916,6 +922,10 @@ contains
       this%sPA = t
       t = this%sPB(ord)
       this%sPB = t
+      t = this%sSA(ord)
+      this%sSA = t
+      t = this%sSB(ord)
+      this%sSB = t
       t = this%sLA(ord)
       this%sLA = t
       t = this%sLB(ord)
@@ -946,6 +956,7 @@ contains
    subroutine bins_plan_release(this)
       class(trc_bin_plan_t), intent(inout) :: this
       if (allocated(this%sA)) deallocate (this%sA, this%sNB, this%sOA, this%sOB, this%sPA, this%sPB, &
+                                          this%sSA, this%sSB, &
                                           this%sD, this%sLA, this%sLB, this%sLC, this%sLD, this%sOff)
       this%nseg = 0
       this%nwork = 0

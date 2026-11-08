@@ -6,11 +6,14 @@
 !
 ! WHAT CROSSES THE BUS
 ! --------------------
-! Per iteration: two energies, a norm, and a DIIS matrix of at most ten by
-! ten. The density, Fock matrices, orbitals, DIIS history and orthogonaliser
-! stay on the device; the Fock build is the resident driver, the XC integrator
-! finds its density already present, and the products, commutator and
-! eigenproblem are trc_linalg (cuBLAS/cuSOLVER under OpenACC). This follows
+! Per iteration: two energies, a norm, and, once DIIS runs, three packed
+! triangles (the new Fock matrix and commutator down, the extrapolated Fock
+! matrix up): the DIIS history lives on the host, where it costs no device
+! memory (trc_scf_diis's own header). The density, Fock matrices, orbitals
+! and orthogonaliser stay on the device; the Fock build is the resident
+! driver, the XC integrator finds its density already present, and the
+! products, commutator and eigenproblem are trc_linalg (cuBLAS/cuSOLVER
+! under OpenACC). This follows
 ! metalquicha's device SCF, which measured host LAPACK plus copies at three
 ! times the cost of the GPU Fock build. A host build runs the same source with
 ! LAPACK, and the numbers agree to rounding, so the host suite tests this module.
@@ -94,10 +97,11 @@ module trc_scf_driver
    use trc_scf_context, only: scf_ctx_t, scf_context_bcast_flat, trc_grid_cache_t, trc_pair_eri_cache_t, scf_context_project_density
    use trc_scf_state, only: scf_state_t, scf_timers_t
    use trc_scf_fock, only: scf_fock_build_g, scf_fock_build_vxc, scf_fock_build_pcm, scf_fock_energy, scf_fock_assemble, &
-                           scf_fock_commutator_error, scf_fock_to_cart, scf_fock_to_sph
+                           scf_fock_commutator_error, scf_fock_to_cart, scf_fock_fold_g
    use trc_scf_df, only: df_jk_t
    use trc_scf_diis, only: cdiis_t, adiis_t, scf_diis_level_shift, scf_diis_damp
    use trc_scf_soscf, only: trc_scf_soscf_run
+   use trc_scf_incremental, only: scf_incremental_t
    use pic_types, only: default_int
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
@@ -209,6 +213,7 @@ contains
       character(len=256) :: msg
       character(len=160) :: line
       logical :: incr_now
+      type(scf_incremental_t) :: incremental   !! which builds are increments, trc_scf_incremental
       type(cdiis_t) :: cdiis
       type(adiis_t) :: adiis
       !! ADIIS's history (fock, density) is kept apart from CDIIS's own (fock,
@@ -322,8 +327,8 @@ contains
       allocate (scf_result%dmat(nao, nao, scf_config%nspin), scf_result%cmo(nao, nao, scf_config%nspin), &
              scf_result%eps(nao, scf_config%nspin))
       ! Only when asked for: a second ndiis-deep history the size of
-      ! cdiis's own, which matters on a system the size of w172, where
-      ! one nao^2*ndiis block is already hundreds of megabytes.
+      ! cdiis's own. Both live on the host, packed (trc_scf_diis's own
+      ! header), but at gly100's 16,258 functions one is still 10 GB.
       if (scf_options%adiis) call adiis%alloc(nao, scf_config%nspin, scf_options%ndiis)
 
       ! --- the guess, on the host, then everything goes up -------------------
@@ -368,13 +373,11 @@ contains
       scf_result%eps = 0.0_dp
 
       call scf_state%to_device(scf_context, scf_result)
-      call cdiis%to_device()
-      if (scf_options%adiis) call adiis%to_device()
 
       eold = 0.0_dp
-      ! Read by the first iteration's `incr_now` before any commutator exists
-      ! (Fortran's .and. does not short-circuit), so give it a value.
+      ! Read by the first iteration's `incr_now` before any commutator exists.
       errmax = huge(1.0_dp)
+      call incremental%setup(scf_config)
       diis_on = .false.
       soscf_switch_iteration = 0
       ! What the SCF is actually running on. Two callers can hand over the
@@ -383,14 +386,7 @@ contains
       if (scf_config%talk) call global_logger%info("   basis: "//to_string(nao)//" functions, " &
          //to_string(scf_basis%nshell)//" shells, "//to_string(sum(scf_basis%sh_np))//" primitives, max " &
          //to_string(maxval(scf_basis%sh_np)))
-      ! Say so when increments are on: they are opt-in and change the timings.
-      ! An `i` after an iteration's line marks a Fock matrix built from the
-      ! density difference.
-      if (scf_config%talk .and. scf_config%incr_on) then
-         write (line, "(a,es8.1,a,i0,a)") "   incremental Fock: from |FDS-SDF| < ", scf_config%incr_start_run, &
-            ", full build every ", max(1, scf_config%incr_reset_run), " iterations (marked i)"
-         call global_logger%info(trim(line))
-      end if
+      if (scf_config%talk) call log_incremental_mode(scf_config)
       if (scf_config%talk) then
          if (scf_config%dft) then
             call global_logger%info("   it        E(total)            dE          RMS(D)      |FDS-SDF|" &
@@ -418,16 +414,12 @@ contains
          ! density it is handed, and the difference is small and getting
          ! smaller while the density is neither. See `scf_fock_build_g`'s own header.
          !
-         incr_now = scf_config%incr_on .and. it > 1 &
-                    .and. errmax < scf_config%incr_start_run &
-                    .and. mod(it - 1, max(1, scf_config%incr_reset_run)) /= 0
-         call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incr_now, pair_eri_cache%eri, la, &
+         incr_now = incremental%next_build(it, errmax, it == scf_options%max_iteration)
+         call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incremental%scale, pair_eri_cache%eri, la, &
                                scf_dfjk)
          ! --- G_sph := T^T G_cart T, back up to the space the rest of the
-         ! iteration runs in.
-         do s = 1, scf_config%nspin
-            call scf_fock_to_sph(scf_basis, sph, nao, nao_c, scf_state%gmat_c(:, :, s), scf_state%gmat(:, :, s))
-         end do
+         ! iteration runs in, into `fock` until the assembly below.
+         call scf_fock_fold_g(scf_basis, scf_context, scf_config, scf_state)
          scf_timers%tf_it = scf_timers%fock%get_elapsed_time()
          scf_timers%t_fock = scf_timers%t_fock + scf_timers%tf_it
          call scf_timers%xc%start()
@@ -490,8 +482,8 @@ contains
          diag_info = 0
          if (scf_config%root) then
             if (adiis_active) then
-               call adiis%push(la, nao, scf_config%nspin, scf_state%fock, scf_state%dold)
-               call adiis%extrapolate(nao, scf_config%nspin, scf_state%fock)
+               call adiis%push(nao, scf_config%nspin, scf_state%fock, scf_state%dold, scf_state%w1)
+               call adiis%extrapolate(nao, scf_config%nspin, scf_state%fock, scf_state%w1)
             end if
             ! --- level shift while DIIS and A/EDIIS are off: F += mu (S - S D S / occ)
             if (.not. diis_on .and. .not. adiis_active .and. scf_options%level_shift > 0.0_dp) then
@@ -499,8 +491,8 @@ contains
                       scf_context%smat, scf_result%dmat, scf_state%w1, scf_state%w2, scf_state%fock)
             end if
             if (diis_on) then
-               call cdiis%push(la, nao, scf_config%nspin, scf_state%fock, scf_state%errv)
-               call cdiis%extrapolate(nao, scf_config%nspin, scf_state%fock, ok)
+               call cdiis%push(nao, scf_config%nspin, scf_state%fock, scf_state%errv, scf_state%w1)
+               call cdiis%extrapolate(nao, scf_config%nspin, scf_state%fock, scf_state%w1, ok)
             end if
             ! --- diagonalise, per spin, and the new density ---------------------
             do s = 1, scf_config%nspin
@@ -590,7 +582,9 @@ contains
             !$acc update self(scf_result%dmat)
             call dump_density(nao, scf_result%dmat(:, :, 1))
          end if
-         if (it > 1 .and. abs(scf_energies%total - eold) < scf_options%conv_energy .and. errmax < scf_options%conv_diis) then
+         ! Converged only on a full build (trc_scf_incremental's rule 1).
+         if (incremental%accept(it > 1 .and. abs(scf_energies%total - eold) < scf_options%conv_energy &
+                                .and. errmax < scf_options%conv_diis, errmax)) then
             scf_result%converged = .true.
             exit
          end if
@@ -601,6 +595,7 @@ contains
          end if
          eold = scf_energies%total
       end do
+      scf_result%n_increments = incremental%n_increments
       if (soscf_switch_iteration > 0 .and. .not. scf_result%converged) then
          call trc_scf_soscf_run(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, la, &
                                pair_eri_cache%eri)
@@ -615,8 +610,6 @@ contains
          end if
       end if
       call scf_state%release_device(scf_context, scf_result)
-      call cdiis%release_device()
-      if (scf_options%adiis) call adiis%release_device()
       scf_result%dmat = scf_state%dold
       scf_energies%pcm_qtotal = scf_context%pcm%q_total
       call scf_result%update(scf_energies, scf_state%dold)
@@ -894,5 +887,22 @@ contains
       if (info_s /= 0 .and. .not. diag_failed) diag_info = info_s
       if (info_s /= 0) diag_failed = .true.
    end subroutine scf_driver_note_failure
+
+   subroutine log_incremental_mode(scf_config)
+      !! Say so when increments are on: they change the timings. An `i` after
+      !! an iteration's line marks a Fock matrix built from the density difference.
+      !! Under --df they are off: a warning when the caller asked for them
+      !! (trc_set_incremental(1), TRC_INCREMENTAL=1), one info line when they
+      !! were only the default, so every --df run is not a warning.
+      type(scf_settings_t), intent(in) :: scf_config
+      if (scf_config%incr_on) then
+         call global_logger%info("   incremental Fock (marked i); converged only on a full build")
+      else if (scf_config%incr_df_requested) then
+         call global_logger%warning("   incremental Fock builds are not supported with density fitting; "// &
+                                    "every iteration is a full build")
+      else if (scf_config%incr_off_df) then
+         call global_logger%info("   incremental Fock: off with density fitting (always full builds)")
+      end if
+   end subroutine log_incremental_mode
 
 end module trc_scf_driver

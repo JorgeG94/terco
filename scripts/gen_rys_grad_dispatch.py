@@ -4,9 +4,11 @@
 driver (`trc_grad.F90`'s `grad_bins`) instead of `trc_rys_select.F90`: there
 is no HGP fallback for the gradient, so `grad_bins` runs the screen and
 compact dispatchers unconditionally for every class run and relies on every
-one of the 81 classes up to (dd|dd) having a kernel -- `rysg_has_class`
-exists anyway, as a cheap defensive check against a class CMake's loop did
-not actually cover.
+class up to RYSG_LMAX that the pair bins launch having a kernel --
+`rysg_has_class` exists anyway, as a cheap defensive check against a class
+CMake's loop did not actually cover. RYSG_LMAX (the highest l in the class
+list) is what the C API's gradient refusal reads, so a basis above it is
+refused before the SCF rather than stopped inside `grad_bins`.
 """
 import argparse
 import importlib.util
@@ -34,6 +36,7 @@ def main():
 
     keys = []
     use_lines = []
+    lmax = max(int(c) for tag in tags for c in tag)
     for tag in tags:
         la, lb, lc, ld = (int(c) for c in tag)
         key = ((la*gp.CLASS_RADIX + lb)*gp.CLASS_RADIX + lc)*gp.CLASS_RADIX + ld
@@ -76,6 +79,9 @@ module trc_rys_grad_kernels
    private
    public :: rysg_has_class
    public :: rysg_screen_dispatch, rysg_compact_dispatch
+
+   integer, parameter, public :: RYSG_LMAX = {lmax}
+      !! Highest l with gradient kernels: above it the analytic gradient is refused.
 
 contains
 

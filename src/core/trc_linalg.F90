@@ -67,15 +67,20 @@ module trc_linalg
     !! long lived object that on device enabled builds holds a buffer space and cublas and cusolver handles
       integer :: n = 0
       logical :: ready = .false.
+      real(dp), allocatable :: dwork(:)
+      !! The eigensolver's workspace on the device build, and scratch a
+      !! caller may borrow between library calls once it has asked for
+      !! enough of it (`reserve`): device-resident, contents undefined
+      !! across calls. Both builds have it, so a borrower's code is the
+      !! same in each; the host build's own eigensolver never reads it.
 #ifdef TRC_DEVICE
       type(cublasHandle) :: hb
       type(cusolverDnHandle) :: hs
-      real(dp), allocatable :: dwork(:)
-      integer :: lwork = 0
       integer :: devinfo = 0
 #endif
    contains
       procedure :: init => linalg_init
+      procedure :: reserve => linalg_reserve
       procedure :: release => linalg_release
       ! gemm and dot CANNOT be made into true `generic ::` bindings: every
       ! existing call site that offsets into a larger array -- a scalar
@@ -123,15 +128,21 @@ contains
 
 
    subroutine linalg_init(this, n)
-    !! Handles, the solver's workspace for an n x n eigenproblem, and the
-    !! library streams set to the OpenACC synchronous queue so a kernel that
-    !! wrote a matrix has finished before cuBLAS reads it.
+    !! Handles, and the library streams set to the OpenACC synchronous queue
+    !! so a kernel that wrote a matrix has finished before cuBLAS reads it.
+    !! `n` is the largest eigenproblem the caller will solve.
     !!
-    !! CREATED ONCE. A second init on a ready object keeps its handles and only
-    !! grows the eigensolver's workspace if n is larger than any seen so far,
-    !! so one object can be made at the start of a calculation and carried
-    !! through all of it -- the SAD atoms, the SCF, the XC quadrature, RI-MP2 --
+    !! CREATED ONCE. A second init on a ready object keeps its handles, so one
+    !! object can be made at the start of a calculation and carried through
+    !! all of it -- the SAD atoms, the SCF, the XC quadrature, RI-MP2 --
     !! instead of each of them creating and destroying cuBLAS and cuSOLVER.
+    !!
+    !! The eigensolver's workspace is NOT made here: `syev` grows `dwork` to
+    !! what its own n needs, when it first needs it. Made here at the
+    !! context's full n, before the SAD atoms, it sat in the OpenACC
+    !! runtime's cache once the SCF's `reserve` replaced it with the larger
+    !! buffer it shares with the Fock build: 4 nao^2 of device memory held
+    !! for nothing.
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n
 #ifdef TRC_DEVICE
@@ -150,33 +161,29 @@ contains
          this%n = 0
          this%ready = .true.
       end if
-      if (n > this%n) call grow_workspace(this, n)
+      this%n = max(this%n, n)
    end subroutine linalg_init
 
-   subroutine grow_workspace(this, n)
-   !! The dsyevd workspace for n x n, replacing a smaller one.
+   subroutine linalg_reserve(this, nelem)
+    !! Grow `dwork` to at least `nelem` doubles (never shrinks it), so a
+    !! caller can lend it out as scratch. ONE buffer for the eigensolver
+    !! and the borrower: the SCF lends it to the Fock build
+    !! (trc_eri's `fock_resident_lent`), whose scratch is dead whenever the
+    !! eigensolver runs. Separately they were 4.0 + 5.0 nao^2 of device
+    !! memory on gly20/cc-pVTZ (cuSOLVER's dsyevd asks 4 n^2 at every n);
+    !! shared, 5.0. Call it before the first large eigensolve when the size
+    !! is known up front: growing frees the old buffer into the OpenACC
+    !! runtime's cache, which keeps that memory.
       class(trc_linalg_t), intent(inout) :: this
-      integer, intent(in) :: n
-#ifdef TRC_DEVICE
-      real(dp), allocatable :: a(:, :), w(:)
-      integer :: st
+      integer(int64), intent(in) :: nelem
       if (allocated(this%dwork)) then
+         if (size(this%dwork, kind=int64) >= nelem) return
          !$acc exit data delete(this%dwork)
          deallocate (this%dwork)
       end if
-      allocate (a(n, n), w(n))
-      !$acc enter data create(a, w)
-      !$acc host_data use_device(a, w)
-      st = cusolverDnDsyevd_bufferSize(this%hs, CUSOLVER_EIG_MODE_VECTOR, CUBLAS_FILL_MODE_UPPER, &
-                                       n, a, n, w, this%lwork)
-      !$acc end host_data
-      !$acc exit data delete(a, w)
-      if (st /= 0) error stop "trc_linalg: cusolverDnDsyevd_bufferSize failed"
-      allocate (this%dwork(max(this%lwork, 1)))
+      allocate (this%dwork(nelem))
       !$acc enter data create(this%dwork)
-#endif
-      this%n = n
-   end subroutine grow_workspace
+   end subroutine linalg_reserve
 
    !
    ! Wait for everything this object's library calls queued on the device.
@@ -209,15 +216,17 @@ contains
 #ifdef TRC_DEVICE
       integer :: st
       if (this%ready) then
-         if (allocated(this%dwork)) then
-            !$acc exit data delete(this%dwork)
-            deallocate (this%dwork)
-         end if
          !$acc exit data delete(this%devinfo)
          st = cublasDestroy(this%hb)
          st = cusolverDnDestroy(this%hs)
       end if
 #endif
+      ! `reserve` can run before `init`, so the workspace is released
+      ! whether or not the handles were ever made.
+      if (allocated(this%dwork)) then
+         !$acc exit data delete(this%dwork)
+         deallocate (this%dwork)
+      end if
       this%ready = .false.
       this%n = 0
    end subroutine linalg_release
@@ -634,11 +643,18 @@ contains
       real(dp), intent(out) :: w(*)
       integer, intent(out), optional :: info
 #ifdef TRC_DEVICE
-      integer :: st, devinfo
-      if (n > this%n) error stop "trc_linalg: eigenproblem larger than the workspace"
+      integer :: st, devinfo, lwork
+      if (n > this%n) error stop "trc_linalg: eigenproblem larger than init's n"
+      ! The workspace this n needs (about 4 n^2 doubles at every n), grown
+      ! on first need; see linalg_init.
+      !$acc host_data use_device(a, w)
+      st = cusolverDnDsyevd_bufferSize(this%hs, CUSOLVER_EIG_MODE_VECTOR, CUBLAS_FILL_MODE_UPPER, n, a, lda, w, lwork)
+      !$acc end host_data
+      if (st /= 0) error stop "trc_linalg: cusolverDnDsyevd_bufferSize failed"
+      call this%reserve(int(max(lwork, 1), int64))
       !$acc host_data use_device(a, w, this%dwork, this%devinfo)
       st = cusolverDnDsyevd(this%hs, CUSOLVER_EIG_MODE_VECTOR, CUBLAS_FILL_MODE_UPPER, n, a, lda, w, &
-                            this%dwork, this%lwork, this%devinfo)
+                            this%dwork, lwork, this%devinfo)
       !$acc end host_data
       if (st /= 0) error stop "trc_linalg: cusolverDnDsyevd failed"
       ! Non-convergence is reported through the device int, not the status.
