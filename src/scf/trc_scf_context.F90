@@ -101,8 +101,10 @@ module trc_scf_context
       logical :: orbits_built = .false.
       !! `eri` was built with the point group (closed bins, orbit tables, the
       !! skeleton Fock build). Its full-plan builds agree with a plain
-      !! engine's up to the order of summation, but the gradient does not
-      !! reuse such an engine (trc_scf_gradient): that is S16's.
+      !! engine's up to the order of summation. The gradient now REQUIRES
+      !! such an engine for its own skeleton build (S16), so
+      !! trc_scf_gradient reuses it when the molecule is symmetric and
+      !! refuses it when it is symmetric and this is false.
    contains
       procedure :: release => pair_eri_cache_release
       procedure :: matches => pair_eri_cache_matches

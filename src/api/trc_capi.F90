@@ -342,7 +342,23 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 25
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 26
+   !! 1.26: the four-centre GRADIENT under a symmetry request is built from
+   !! the orbit representatives too (S16, docs/SYMMETRY_GRADIENT.md), under
+   !! 1.25's verdict: one skeleton decision now governs both builds, so
+   !! trc_set_symmetry_skeleton, TRC_SYM_SKELETON, --sym-skeleton and
+   !! [scf] symmetry_skeleton name the gradient as well as the Fock matrix.
+   !! MINOR: no signature and no enum value changes, and the gradient a
+   !! caller reads back is the same gradient -- the skeleton sum is projected
+   !! where it is formed, which is exact, measured at 3.1e-15 to 9.5e-15
+   !! relative against the same molecule run in C1, with every
+   !! symmetry-forbidden component still exactly zero. Only the number of
+   !! integral quartets differs (1.47x fewer on water, 2.42x on SF6, 3.85x on
+   !! D2h pentacene). A DEFAULT DFT gradient now receives the group where
+   !! before it did not: its four-centre term is projected (that term alone,
+   !! not the finished gradient, whose input-axes XC grid breaks the symmetry
+   !! at its own first-order error), which moves no number it reports today
+   !! because that term is equivariant to round-off.
    !! 1.25: the skeleton Fock build under a symmetry request is chosen by a
    !! measured size rule instead of being unconditional (trc_sym_run's
    !! sym_skeleton_size_rule). MINOR: no signature and no enum value changes,
@@ -4439,8 +4455,15 @@ contains
       type(trc_pcm_t) :: pcm_local
       type(error_t) :: perr
       type(trc_sym_geom_t), allocatable :: gsym
-         !! Allocated only for a symmetric run: the gradient is then symmetrised
-         !! over the group (it is in the standard frame the SCF ran in).
+         !! Allocated for a symmetric run: the four-centre term is then built
+         !! as a skeleton over the group's pair orbits and projected (unless
+         !! `gskel` declines the skeleton), and so is the finished gradient
+         !! unless `gproject` is false. It is in the standard frame the SCF
+         !! ran in.
+      logical :: gproject
+         !! Project the FINISHED gradient (see where it is set).
+      logical :: gskel
+         !! Build the four-centre term as a skeleton (see where it is set).
       integer :: nocc_s(2)
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
@@ -4470,14 +4493,40 @@ contains
          cx%message = "trc_run_gradient: "//refusal
          return
       end if
-      ! The gradient is projected onto the symmetric subspace, which is exact for
-      ! a symmetric grid (HF, or an explicit request). The default request's DFT
-      ! grid is the input axes' grid, which breaks the symmetry at the grid's own
-      ! (first-order) error; projecting would move the gradient by that much
-      ! away from the symmetry-off one, so it is left as computed.
-      if (cx%sym_active .and. .not. (have_func .and. cx%sym_req%by_default)) then
+      ! The FINISHED gradient is projected onto the symmetric subspace, which
+      ! is exact for a symmetric grid (HF, or an explicit request). The default
+      ! request's DFT grid is the input axes' grid, which breaks the symmetry at
+      ! the grid's own (first-order) error; projecting would move the gradient
+      ! by that much away from the symmetry-off one, so it is left as computed.
+      !
+      ! The GROUP is handed over in that case too (S16): the four-centre term
+      ! is then a SKELETON build, which is not a gradient until it is
+      ! projected, and trc_scf_gradient projects that term alone, inside
+      ! two_electron_4c, leaving the DFT grid story exactly as it was. The
+      ! four-centre term is equivariant to round-off, so this moves no number
+      ! a default DFT run reports today.
+      gproject = .true.
+      ! The skeleton four-centre GRADIENT follows the same verdict as the
+      ! skeleton Fock build, `cx%res%sym_skeleton` -- the size rule's, or
+      ! whatever TRC_SYM_SKELETON / --sym-skeleton / [scf] symmetry_skeleton /
+      ! trc_set_symmetry_skeleton forced (trc_scf_driver consults
+      ! sym_skeleton_size_rule and reports the result). One decision for both
+      ! builds, because the two share the property that made the rule
+      ! necessary: a skeleton is not always the smaller plan. On a PLANAR Cs
+      ! molecule every pair orbit is a singleton, so the restriction to
+      ! representatives drops nothing while a diagonal bin pair still becomes
+      ! the full rectangle at weight 1/2, and the gradient plan GROWS --
+      ! HOCl/6-31G* 9355 work items against 9142 (docs/SYMMETRY_GRADIENT.md
+      ! section 11). Letting the gradient decide for itself would have run the
+      ! bigger plan on exactly the molecules the rule exists to protect.
+      ! The projection is NOT gated on it: it costs one pass over 3N numbers
+      ! and is what zeroes the components the group forbids.
+      gskel = .false.
+      if (cx%sym_active) then
          allocate (gsym)
          gsym = cx%sym_geom
+         gproject = .not. (have_func .and. cx%sym_req%by_default)
+         gskel = cx%res%sym_skeleton
       end if
       if (cx%rimp2_ok) then
          ! The energy this context holds is E_RHF + E_RI-MP2: differentiate
@@ -4551,7 +4600,8 @@ contains
                                         nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
                                         dfjk=cx%dfjk, aux=cx%jb%b, &
                                         verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
-                                        grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri, sym_geom=gsym)
+                                        grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                        sym_project=gproject, sym_skeleton=gskel)
                else if (reuse_grid) then
                   call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                         cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
@@ -4560,7 +4610,8 @@ contains
                                         nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
                                         dfjk=cx%dfjk, aux=cx%jb%b, &
                                         verbose=cx%opts%verbose, grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
-                                        pair_eri_cache=cx%peri, sym_geom=gsym)
+                                        pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                        sym_project=gproject, sym_skeleton=gskel)
                else
                   call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                         cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
@@ -4568,12 +4619,14 @@ contains
                                         grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                         nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
                                         dfjk=cx%dfjk, aux=cx%jb%b, &
-                                        verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym)
+                                        verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                        sym_project=gproject, sym_skeleton=gskel)
                end if
             else
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, cx%opts%eri_thresh, cx%grad, &
-                                     dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym)
+                                     dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                     sym_project=gproject, sym_skeleton=gskel)
             end if
          else if (have_func) then
             if (reuse_nlc) then
@@ -4584,7 +4637,8 @@ contains
                                      nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
                                      verbose=cx%opts%verbose, &
                                      grid=cx%kgrid%grid, xg=cx%kgrid%xg, &
-                                     grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri, sym_geom=gsym)
+                                     grid_nlc=cx%kgrid%grid_nlc, xg_nlc=cx%kgrid%xg_nlc, pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                     sym_project=gproject, sym_skeleton=gskel)
             else if (reuse_grid) then
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
@@ -4592,7 +4646,8 @@ contains
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                      nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
                                      verbose=cx%opts%verbose, &
-                                     grid=cx%kgrid%grid, xg=cx%kgrid%xg, pair_eri_cache=cx%peri, sym_geom=gsym)
+                                     grid=cx%kgrid%grid, xg=cx%kgrid%xg, pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                     sym_project=gproject, sym_skeleton=gskel)
             else
                call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                      cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
@@ -4600,12 +4655,14 @@ contains
                                      grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                      nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=cx%opts%grid_rotation, &
                                      verbose=cx%opts%verbose, &
-                                     pair_eri_cache=cx%peri, sym_geom=gsym)
+                                     pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                     sym_project=gproject, sym_skeleton=gskel)
             end if
          else
             call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                   cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
-                                  verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym)
+                                  verbose=cx%opts%verbose, pair_eri_cache=cx%peri, sym_geom=gsym, &
+                                  sym_project=gproject, sym_skeleton=gskel)
          end if
          ! --- PCM, added on top of the vacuum gradient above: its own
          ! density/pair list (pcm_grad_scf_add's own header explains why
@@ -6620,16 +6677,20 @@ contains
    end function trc_set_symmetry
 
    function trc_set_symmetry_skeleton(handle, on) result(status) bind(c, name="trc_set_symmetry_skeleton")
-      !! Under a symmetry request (trc_set_symmetry), force the Fock matrix to
-      !! be built from the orbit representatives of the integral quartets and
-      !! symmetrized (on = 1), or force the full matrix and symmetrize that
-      !! (on = 0). Without this call the choice is a measured size rule's
+      !! Under a symmetry request (trc_set_symmetry), force the Fock matrix
+      !! AND the four-centre gradient to be built from the orbit
+      !! representatives of the integral quartets and symmetrized (on = 1), or
+      !! force the full builds and symmetrize those (on = 0). Without this
+      !! call the choice is a measured size rule's
       !! (trc_sym_run's sym_skeleton_size_rule, ABI 1.25: before it, the
       !! skeleton build was unconditional under a group), and
-      !! TRC_SYM_SKELETON=0/1 in the environment overrides both. The same SCF
-      !! either way, to round-off; only the number of integrals computed
-      !! differs. No effect without a group other than C1, with density
-      !! fitting or over more than one rank (those take the full build).
+      !! TRC_SYM_SKELETON=0/1 in the environment overrides both. One verdict
+      !! covers both builds (ABI 1.26), because both grow rather than shrink
+      !! on a molecule whose every pair orbit is a singleton. The same SCF and
+      !! the same gradient either way, to round-off; only the number of
+      !! integrals computed differs. No effect without a group other than C1,
+      !! with density fitting or over more than one rank (those take the full
+      !! build).
       type(c_ptr), value :: handle
       integer(c_int), value :: on
       integer(c_int) :: status

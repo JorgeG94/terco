@@ -490,7 +490,35 @@ Each of these is its own design-then-implement pair, decided after S15:
 - XC: integrate only over the grid points of unique atoms with weights. The
   grid must then be symmetric, which Lebedev grids in the standard frame
   are, but pruning and Becke partitions must be checked.
-- Skeleton gradients.
+- Skeleton gradients. **Design spike done: `docs/SYMMETRY_GRADIENT.md`**
+  (branch `sym/s16-grad-spike`, prototype `test/spike_symgrad.F90`, registered
+  DISABLED). Awaiting sign-off; no product code, generator or kernel changed.
+  In short: `eri%gradient` takes no `skeleton` argument, so the gradient
+  integral build runs the full quartet set, and nsys on a V100 confirms it --
+  the gradient's kernel time is the same to +-1% with symmetry on and off,
+  while the Fock kernels of a pentacene/cc-pVDZ step fall 1940 -> 665 ms. The
+  gradient is therefore 35% of a pentacene gradient step's GPU kernel time and
+  untouched. Same restriction and same weight as scheme 2a; the symmetrizer is
+  the force projector `sym_grad_symmetrize`, which `trc_scf_gradient` already
+  applies. Measured reductions (gradient's own plan, cc-pVDZ, 1e-10): water
+  1.47x, B2H6 3.49x, SF6 2.42x, benzene 3.53x, naphthalene 3.79x, pentacene
+  3.85x, holding after the in-kernel screen; projected 1.15x/1.24x/1.34x on a
+  whole benzene/naphthalene/pentacene HF gradient step. Verified exact
+  (symmetrized skeleton against full, 5e-15..2e-11 on four molecules) with a
+  prototype that applies the weight by repetition. **One blocker found and
+  measured**: the generated gradient kernels take no `sSA`/`sSB` and index the
+  bin-interleaved tables with `sA`/`sNB`, so they cannot express the sub-range
+  segment every skeleton plan emits -- a generator change is mandatory, and
+  it also unlocks exchange tiles on the gradient. The recommendation handles
+  the gradient class-filter `error stop` that `src/CMakeLists.txt`'s
+  `_rys_grad_classes` comment records by emitting the plan
+  angular-momentum-canonically rather than by building 30 extra f kernels,
+  which also closes that latent hole in `plan%build`. Section 8 ranks the
+  other two S16 items with numbers: DF-JK is not an S16-sized item (symmetry
+  and `--df` do not coexist at all), and the XC reduction is worth more for
+  DFT (XC is 48% of a B3LYP naphthalene step against the 4c gradient's 10%)
+  but needs an exactly symmetric grid, which the S17 default deliberately does
+  not build.
 - Turning symmetry on by default: decided, done as S17 (below).
 
 ## Open questions for the maintainer
