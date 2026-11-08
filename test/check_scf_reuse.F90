@@ -53,6 +53,12 @@
 !       at one geometry, trc_set_geometry to a moved one, TRC_GUESS_PROJECTED,
 !       trc_run_scf again -- converges to the same energy as a fresh SAD
 !       run at the moved geometry.
+!   11. the split policy (`trc_scf_options_t%decontract`): an engine built
+!       with a non-default policy is reused, and matches a fresh engine the
+!       gradient builds with the SCF's policy (carried by the cache). An HF
+!       engine is not reused for a PBE gradient (PBE splits every general
+!       contraction, `md_coulomb`), and gives the fresh PBE engine's result;
+!       a PBE engine is reused for a PBE gradient.
 !
 module check_scf_reuse_suite
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char, c_null_ptr
@@ -64,6 +70,7 @@ module check_scf_reuse_suite
    use trc_scf_grad, only: trc_scf_gradient
    use trc_scf_context, only: scf_context_project_density
    use trc_linalg, only: trc_linalg_t
+   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
@@ -116,7 +123,9 @@ contains
          new_unittest("C API: TRC_GUESS_PROJECTED refuses a size/spin mismatch", &
                       test_capi_projected_size_mismatch), &
          new_unittest("C API: trc_run_scf -> trc_set_geometry -> TRC_GUESS_PROJECTED -> trc_run_scf "// &
-                      "converges like SAD", test_capi_projected_after_set_geometry) &
+                      "converges like SAD", test_capi_projected_after_set_geometry), &
+         new_unittest("the split policy gates engine reuse, HF and a pure functional", &
+                      test_policy_gates_reuse) &
          ]
    end subroutine collect_scf_reuse
 
@@ -697,6 +706,95 @@ contains
                  message="TRC_GUESS_PROJECTED after trc_set_geometry converges to a different "// &
                  "energy than a fresh SAD run")
    end subroutine test_capi_projected_after_set_geometry
+
+   subroutine test_policy_gates_reuse(error)
+      !! Case 11. Water in cc-pVDZ: O's s is a general contraction, kept
+      !! whole by default, so the policy decides the working basis.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: b
+      type(trc_pair_eri_cache_t), target :: pec, pec_other
+      type(trc_scf_options_t) :: opts
+      type(trc_scf_result_t) :: res
+      type(trc_linalg_t) :: lp
+      type(error_t) :: err
+      type(trc_xc_functional_t) :: pbe
+      integer, allocatable :: z(:)
+      real(dp), allocatable :: r0(:, :)
+      real(dp), allocatable :: g_cached(:, :), g_fresh(:, :)
+      integer :: nat, nalpha, nbeta
+      logical :: reused_flag
+
+      call water_geom(nat, z, r0, nalpha, nbeta)
+      call trc_basis_from_json("basis_sets/cc-pvdz.json", nat, z, r0, b, err)
+      if (err%has_error()) then
+         call test_failed(error, "basis load: "//err%get_message()); return
+      end if
+      call b%to_device()
+      allocate (g_cached(3, nat), g_fresh(3, nat))
+      if (.not. xc_functional_by_name("pbe", pbe)) then
+         call test_failed(error, "pbe is not registered"); return
+      end if
+      call lp%init(b%nao)
+
+      cases: block
+         ! Hartree-Fock with every general contraction split (price 0): the
+         ! cache is reused, and matches a fresh engine built with the same
+         ! policy -- which the gradient takes from a cache it cannot reuse
+         ! (batch_res 2), not the defaults.
+         opts%max_iteration = 50; opts%conv_energy = 1.0e-11_dp; opts%conv_diis = 1.0e-8_dp
+         opts%decontract%shell_cost = 0.0_dp
+         call trc_scf_run(b, nalpha, nbeta, opts, res, pair_eri_cache=pec)
+         call trc_scf_gradient(b, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, THRESH, g_cached, &
+                               pair_eri_cache=pec, reused=reused_flag)
+         call check(error, reused_flag, "the SCF's engine must be reused under the SCF's own policy")
+         if (allocated(error)) exit cases
+         opts%batch_res = 2
+         call trc_scf_run(b, nalpha, nbeta, opts, res, pair_eri_cache=pec_other)
+         call trc_scf_gradient(b, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, THRESH, g_fresh, &
+                               pair_eri_cache=pec_other, reused=reused_flag)
+         call check(error, .not. reused_flag, "a batch_res-2 engine must not be reused")
+         if (allocated(error)) exit cases
+         call check(error, maxval(abs(g_cached - g_fresh)), 0.0_dp, thr=TOL_GRAD, &
+                    message="a fresh engine must be built with the SCF's own policy")
+         if (allocated(error)) exit cases
+         call pec%release()
+         call pec_other%release()
+
+         ! A Hartree-Fock engine, asked for a PBE gradient: PBE builds every
+         ! general contraction split (md_coulomb), the HF engine keeps O's s
+         ! whole, so it must not be reused, and the result must be the
+         ! fresh PBE engine's.
+         opts = trc_scf_options_t()
+         opts%max_iteration = 50; opts%conv_energy = 1.0e-11_dp; opts%conv_diis = 1.0e-8_dp
+         call trc_scf_run(b, nalpha, nbeta, opts, res, pair_eri_cache=pec)
+         call trc_scf_gradient(b, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, THRESH, g_cached, func=pbe, &
+                               grid_level=opts%grid_level, pair_eri_cache=pec, reused=reused_flag)
+         call trc_scf_gradient(b, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, THRESH, g_fresh, func=pbe, &
+                               grid_level=opts%grid_level)
+         call check(error, .not. reused_flag, "an HF engine must not be reused for a PBE gradient")
+         if (allocated(error)) exit cases
+         call check(error, maxval(abs(g_cached - g_fresh)), 0.0_dp, thr=TOL_GRAD, &
+                    message="a policy mismatch must give the fresh engine's gradient")
+         if (allocated(error)) exit cases
+         call pec%release()
+
+         ! PBE throughout: reused, and the same as fresh.
+         opts%functional = "pbe"
+         call trc_scf_run(b, nalpha, nbeta, opts, res, pair_eri_cache=pec)
+         call trc_scf_gradient(b, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, THRESH, g_cached, func=pbe, &
+                               grid_level=opts%grid_level, pair_eri_cache=pec, reused=reused_flag)
+         call trc_scf_gradient(b, lp, res%nspin, nalpha, nbeta, res%cmo, res%eps, THRESH, g_fresh, func=pbe, &
+                               grid_level=opts%grid_level)
+         call check(error, reused_flag, "PBE: the SCF's (all split) engine must be reused")
+         if (allocated(error)) exit cases
+         call check(error, maxval(abs(g_cached - g_fresh)), 0.0_dp, thr=TOL_GRAD, &
+                    message="PBE: reused vs fresh gradient is not round-off")
+      end block cases
+      call lp%release()
+      call pec%release()
+      call pec_other%release()
+      call b%release()
+   end subroutine test_policy_gates_reuse
 
 end module check_scf_reuse_suite
 

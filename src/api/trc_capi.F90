@@ -193,6 +193,7 @@ module trc_capi
    use trc_pcm_grad, only: pcm_grad_scf_add
    use trc_scf_settings, only: scf_settings_spin_rule, scf_settings_eri_thresh_env
    use trc_scf_df, only: df_jk_t
+   use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
@@ -4605,6 +4606,8 @@ contains
       type(trc_pairlist_t) :: pl
       type(trc_eri_t) :: eri
       type(trc_xc_functional_t) :: func
+      type(trc_xc_functional_t) :: func_policy
+      type(trc_decontract_options_t) :: policy
       type(trc_xc_grid_t) :: xg
       type(trc_cphf_options_t) :: copts
       type(trc_cphf_result_t) :: cres
@@ -4663,7 +4666,15 @@ contains
       call cx%peri%release()
       call pl%build(cx%bb%b, cx%opts%eri_thresh)
       call pl%to_device()
-      call eri%build(cx%bb%b, cx%opts%eri_thresh)
+      ! The SCF's split policy, resolved for this method's exchange the way
+      ! the SCF resolved it, so the response runs on the SCF's working basis.
+      policy = decontract_options_for_exchange(cx%opts%decontract, 1.0_dp, 0.0_dp)
+      if (have_func) then
+         if (xc_functional_by_name(cx%opts%functional, func_policy)) then
+            policy = decontract_options_for_exchange(cx%opts%decontract, func_policy%exx, func_policy%exx_lr)
+         end if
+      end if
+      call eri%build(cx%bb%b, cx%opts%eri_thresh, decontract=policy)
       copts%conv_residual = 1.0e-8_dp
       copts%max_iteration = 100
       copts%verbose = cx%opts%verbose
@@ -4772,6 +4783,7 @@ contains
       job%opts%aux_block = max(cx%aux_block, 0)
       job%opts%pair_threshold = cx%opts%eri_thresh
       job%opts%eri_threshold = scf_settings_eri_thresh_env(cx%opts%eri_thresh)
+      job%opts%decontract = cx%opts%decontract
       job%opts%verbose = cx%opts%verbose
       if (allocated(cx%grad)) deallocate (cx%grad)
       if (cx%opts%df) then
@@ -5998,9 +6010,11 @@ contains
             return
          end if
          if (collective) then
-            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, comm, batch_res=cx%opts%batch_res)
+            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, comm, batch_res=cx%opts%batch_res, &
+                              decontract=cx%opts%decontract)
          else
-            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, batch_res=cx%opts%batch_res)
+            call cx%eb%e%build(cx%bb%b, cx%opts%eri_thresh, batch_res=cx%opts%batch_res, &
+                              decontract=cx%opts%decontract)
          end if
       end if
       ep => cx%eb

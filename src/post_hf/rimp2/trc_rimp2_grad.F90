@@ -99,6 +99,7 @@ module trc_rimp2_grad
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_1e_gradient
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
+   use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange
    use trc_linalg, only: trc_linalg_t
    use trc_sph, only: sph_mo_to_cart
    use trc_step_table, only: step_table_t
@@ -152,6 +153,10 @@ module trc_rimp2_grad
       real(dp) :: eri_threshold = 1.0e-12_dp
       !! The four-centre engine's Schwarz threshold (Z-vector, potentials,
       !! the separable derivative).
+      type(trc_decontract_options_t) :: decontract
+      !! The reference SCF's split policy (`trc_scf_options_t%decontract`),
+      !! resolved here for the reference's exchange, so the four-centre
+      !! engine runs on the SCF's working basis.
       real(dp) :: cphf_residual = 1.0e-9_dp
       !! The Z-vector's residual norm: it enters the gradient linearly.
       !! Measured on gly10/cc-pVDZ against a 1e-12 solve: the gradient
@@ -332,7 +337,10 @@ contains
       call cartesian_orbitals(b, job%opts, cmo, eps, w)
       call pl%build(b, job%opts%pair_threshold)
       call pl%to_device()
-      if (.not. fitted) call eri%build(b, job%opts%eri_threshold)
+      if (.not. fitted) then
+         call eri%build(b, job%opts%eri_threshold, &
+                        decontract=decontract_options_for_exchange(job%opts%decontract, w%exx, 0.0_dp))
+      end if
       call tbl%step_off(la, ST_ORB, tc)
       if (w%kohn_sham) then
          call tbl%step_on(la, ST_KSGRID, tc)

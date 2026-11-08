@@ -237,6 +237,11 @@ target_link_libraries(check_decontract PRIVATE test-drive::test-drive)
 add_test(NAME terco/check_decontract_si COMMAND check_decontract sih4.xyz basis_sets/cc-pvdz.json)
 set_tests_properties(terco/check_decontract_si PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+# The split policy (trc_decontract_options_t): which groups the shell price
+# and the diffuse split cut up, by shell count, and that the RHF energy is the
+# same under every policy.
+terco_add_check(check_decontract_policy check_decontract_policy.F90 NEEDS_BASIS)
+target_link_libraries(check_decontract_policy PRIVATE test-drive::test-drive)
 # Dropping a general contraction's redundant primitives (trc_basis_json's
 # prune_block) against pyscf's cc-pVDZ counts and against the energy the
 # unpruned (BSE-literal) basis gives.
