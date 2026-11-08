@@ -800,8 +800,33 @@ file(MAKE_DIRECTORY "${_hgp_template}")
 # d these are the only kernels a class has (trc_rys_select.F90 routes
 # them unconditionally); up to d, HGP is the default except for
 # FOCK_RYS_DEFAULT's classes, and TRC_RYS_CLASSES picks either per class.
+#
+# Only in the PAIR-CANONICAL orderings la >= lb and lc >= ld. Every bin holds
+# its pairs with the higher-l shell first (`lorder` in trc_bins.F90) and the
+# plans copy a bin's (bin_la, bin_lb) straight into (sLA, sLB) and (sLC, sLD)
+# (bins_plan_emit), so no launch site can present lb > la or ld > lc and a
+# kernel for one of those orderings can never run. That is 38 of 67 classes at
+# TERCO_LMAX=2 and 149 of 242 at TERCO_LMAX=3, each worth up to 60 kB of
+# per-thread stack and 255 registers of compile time.
+#
+# NOT the bra >= ket half of the gradient filter below, which would be wrong
+# here: the skeleton (symmetry) Fock plan deliberately launches a bin pair with
+# its bra and ket SWAPPED when that side has fewer representatives
+# (bins_skel_cut_first, up to SKEL_SWAP_LMAX = 3 precisely because "the kernels
+# of every ordering exist up to f"), which is a class with (lc, ld) > (la, lb).
+# Removing those would silently send such a launch to HGP up to d and
+# `error stop` above it ("a class above d has no Rys kernel in this build",
+# trc_rys_select.F90). The gradient has no skeleton plan -- grad_bins builds
+# plan%build, whose walk only ever emits ka >= kb -- so there they are dead.
 set(_rys_classes "")
 foreach(_tag ${_all_classes})
+  string(SUBSTRING "${_tag}" 0 1 _tag_la)
+  string(SUBSTRING "${_tag}" 1 1 _tag_lb)
+  string(SUBSTRING "${_tag}" 2 1 _tag_lc)
+  string(SUBSTRING "${_tag}" 3 1 _tag_ld)
+  if(_tag_lb GREATER _tag_la OR _tag_ld GREATER _tag_lc)
+    continue()
+  endif()
   string(REGEX MATCH "[2-9]" _has_d "${_tag}")
   if(_has_d
      OR _tag STREQUAL "1111"

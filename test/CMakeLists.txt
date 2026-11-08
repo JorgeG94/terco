@@ -2078,6 +2078,15 @@ target_link_libraries(link_c PRIVATE m)
 if(TERCO_ENABLE_MULTICORE AND CMAKE_C_COMPILER_ID STREQUAL "NVHPC")
   target_link_options(link_c PRIVATE -acc=multicore)
 endif()
+# The same holds for the GPU, and matters more: a C main linked without -acc=gpu
+# gets libacchost (the HOST OpenACC runtime), so acc_get_num_devices() answers 0,
+# trc_bind_device leaves the device -1, and trc_select_device reports -1 on a
+# machine that has GPUs -- against its own documented contract -- after which the
+# first cuSOLVER call fails. -gpu must carry the options the library was built
+# with (TERCO_GPU_OPTS, exported by cmake/CMakeLists.txt), not just the arch.
+if(TERCO_ENABLE_GPU AND CMAKE_C_COMPILER_ID STREQUAL "NVHPC")
+  target_link_options(link_c PRIVATE -acc=gpu -gpu=${TERCO_GPU_OPTS})
+endif()
 set_target_properties(link_c PROPERTIES BUILD_RPATH "$<TARGET_FILE_DIR:${main_lib}>")
 add_test(NAME terco/link_c COMMAND link_c)
 set_tests_properties(terco/link_c PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
