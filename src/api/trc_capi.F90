@@ -352,8 +352,14 @@ module trc_capi
    !! two Fock paths accumulate in different orders and trc_sym_scf's energy
    !! merge then breaks a near-tie between degenerate partners the other way:
    !! measured on SF6 (cc-pVDZ, D2h, the one molecule in the rule's own table
-   !! that it declines), 30 of 102 mo_irrep entries swap within degenerate
-   !! pairs and the energy moves 1.2e-11 Eh. That difference is pre-existing
+   !! that it declines; gfortran 15.1 host build, TERCO_LMAX=2, --econv
+   !! 1e-10), 18 of 102 mo_irrep entries move and the energy moves 1.4e-11 Eh.
+   !! Every one of those 18 is a PERMUTATION INSIDE a degenerate level -- nine
+   !! transpositions, in levels that are twofold and threefold in D2h -- so
+   !! the irrep DECOMPOSITION does not move: the orbital count per irrep,
+   !! occupied and total, is identical on the two paths
+   !! (check_sym_skeleton_rule asserts exactly that, block by block).
+   !! That difference is pre-existing
    !! between the two paths, not introduced here, but this is the change that
    !! alters which path SF6 takes by default. A caller that pins occupations
    !! with trc_set_irrep_nelec on a molecule with accidental degeneracy should
