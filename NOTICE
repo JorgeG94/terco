@@ -1,0 +1,19 @@
+terco
+Copyright 2026 Jorge Luis Galvez Vallejo
+
+terco is licensed under the MIT License (see LICENSE).
+
+Effective core potential (ECP) integrals
+Copyright 2026 Jorge Galvez (libfint); Copyright 2014- The PySCF Developers
+https://github.com/pyscf/pyscf
+Licensed under the Apache License, Version 2.0 (see LICENSES/Apache-2.0.txt).
+
+The ECP integrals -- src/core/trc_ecp_quadrature.F90, src/eri/trc_ecp_angular.F90,
+src/eri/trc_ecp_radial.F90 and src/eri/trc_ecp.F90 -- are a Fortran translation of
+libfint's src/cint_ecp_num.f90, cint_ecp_ang.f90, cint_ecp_rad.f90, cint_ecp.f90
+and cint_ecp_drv.f90, themselves a translation of PySCF's pyscf/lib/gto/nr_ecp.c
+(libcint proper has no ECP code, so this is the one part of terco's one-electron
+path whose upstream is PySCF rather than libcint). Both libfint and PySCF are
+licensed under the Apache License, Version 2.0; that licence applies to this
+translation, under the otherwise-MIT terco tree, which is why it is named here
+rather than assumed. Each file above carries its own one-line provenance header.

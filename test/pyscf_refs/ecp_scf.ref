@@ -1,0 +1,14 @@
+# terco pyscf reference v1
+# case: check_ecp_scf
+# generator: test/pyscf_refs/generate.py CASES["ecp_scf"] -> gen_ecp_scf
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 942b171b166dbe6f258f94d553a51349413c55b791afdb094dfba6a4dc9d776f
+# files: test/check_ecp_scf.F90 test/basis_sets/def2-svp.json
+E_hi -2.97231531663358737e+02
+E_i_atom -2.96649606475643338e+02
+E_hi_pbe -2.98278875556426669e+02
+E_hi_b3lyp -2.98392681495649413e+02
+E_i2 -5.93316193058264275e+02
+E_h2_ghost_i -1.12891981955631771e+00
+END

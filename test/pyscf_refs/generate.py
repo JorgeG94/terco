@@ -71,6 +71,14 @@ BUILD_DIR = Path(os.environ.get("TERCO_PYSCF_REF_BUILD", str(ROOT / "build-cpu")
 _SYMBOL = {1: 'H', 6: 'C', 7: 'N', 8: 'O', 9: 'F', 10: 'Ne',
            14: 'Si', 15: 'P', 16: 'S', 17: 'Cl'}
 
+#: gen_ecp_ints's own extension of _SYMBOL (Sn/I/Xe/Cs, the first elements
+#: here that carry an effective core potential) -- kept SEPARATE from
+#: _SYMBOL itself, which most other cases also reach: extending the shared
+#: dict in place would change its parsed node and so restale every one of
+#: their references (refhash.py's own closure, nothing to do with whether
+#: their actual numbers moved). gen_ecp_ints is the only reader.
+_SYMBOL_ECP = {**_SYMBOL, 50: 'Sn', 53: 'I', 54: 'Xe', 55: 'Cs'}
+
 
 # =========================================================================
 # Shared AO-order / AO-normalisation machinery.
@@ -199,6 +207,41 @@ def ao_norm_from_overlap(s_terco, s_pyscf):
     pred = n[:, None] * s_pyscf * n[None, :]
     err = np.abs(s_terco - pred).max()
     return n, err
+
+
+def bse_json_ecp(path, elements):
+    """BSE JSON's ecp_potentials -> pyscf's internal ECP format
+    (`gto.basis.load_ecp` returns the same shape): `{symbol: [core_charge,
+    [[l, [block_rpow0, block_rpow1, ...]], ...]]}`, `block_rpow` a list of
+    [exponent, coefficient] pairs for the primitives that carry that one
+    r-power. `l = -1` marks the LOCAL channel -- the one with the highest
+    angular momentum in the potential, not necessarily listed first (same
+    rule trc_ecp_json.F90 applies). An element the file has no
+    `ecp_potentials` for is simply absent from the returned dict, so a
+    mixed molecule (an ECP atom next to an all-electron one) needs no
+    special casing -- pyscf treats a missing key as all-electron."""
+    d = json.load(open(path))
+    out = {}
+    for sym, z in elements.items():
+        el = d['elements'][str(z)]
+        pots = el.get('ecp_potentials')
+        if not pots:
+            continue
+        core_charge = int(el['ecp_electrons'])
+        ls = [p['angular_momentum'][0] for p in pots]
+        local_index = ls.index(max(ls))
+        channels = []
+        for idx, p in enumerate(pots):
+            l = -1 if idx == local_index else p['angular_momentum'][0]
+            rexp = [int(x) for x in p['r_exponents']]
+            gexp = [float(e) for e in p['gaussian_exponents']]
+            coef = [float(c) for c in p['coefficients'][0]]
+            buckets = [[] for _ in range(max(rexp) + 1)]
+            for e, c, rp in zip(gexp, coef, rexp):
+                buckets[rp].append([e, c])
+            channels.append([l, buckets])
+        out[sym] = [core_charge, channels]
+    return out
 
 
 # =========================================================================
@@ -507,6 +550,144 @@ def gen_mult():
     w.matrix3("MM", np.moveaxis(ref, 0, 2))   # (nao, nao, 39), matching trc_multipoles' layout
     w.end()
     w.write()
+
+
+def gen_ecp_ints(case):
+    """check_ecp_matrix.F90's trc_ecp_matrix against pyscf's
+    intor('ECPscalar'), fed the SAME def2-svp.json (`bse_json_ecp`), not
+    pyscf's own bundled ECP tables -- see that file's own header and
+    ECP_DESIGN.md.
+
+    Geometry comes from the Fortran dump (check_ecp_matrix.F90's own
+    hardcoded case_geometry), not re-typed here, so there is one source of
+    truth for it rather than two numbers that have to agree by
+    inspection -- the SAME reasoning rys_fock_ref.py and every other
+    dump-based case here already follows."""
+    dump = TEST / f"ecp_matrix_probe_{case}.bin"
+    run_bin("check_ecp_matrix_" + case, [case, dump.name])
+    r = BinReader(dump)
+    nat, nao = r.i8(), r.i8()
+    at_z = np.atleast_1d(r.i8(nat))   # a single-atom case (xe) makes i8(1) a scalar
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    s_terco = r.mat(nao)
+    u_terco = r.mat(nao)
+    r.close()
+
+    elements = {_SYMBOL_ECP[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(HERE.parent / "basis_sets" / "def2-svp.json", elements)
+    ecp_arg = bse_json_ecp(HERE.parent / "basis_sets" / "def2-svp.json", elements)
+    atoms = [(_SYMBOL_ECP[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    mol = gto.M(atom=atoms, basis=basis_arg, ecp=ecp_arg, unit='Bohr', cart=True,
+                spin=None, charge=0, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_ecp_ints {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+
+    s_pyscf = mol.intor('int1e_ovlp')
+    n, s_err = ao_norm_from_overlap(s_terco_p, s_pyscf)
+    if s_err >= 1.0e-9:
+        raise RuntimeError(f"gen_ecp_ints {case}: overlap check failed, {s_err:.3e}")
+
+    u_pyscf = mol.intor('ECPscalar')
+    u_ref_terco = (u_pyscf * n[:, None] * n[None, :])[np.ix_(perm, perm)]
+
+    w = RefWriter(f"ecp_ints_{case}.ref")
+    w.header("check_ecp_matrix_" + case,
+             [ROOT / "test" / "check_ecp_matrix.F90", HERE.parent / "basis_sets" / "def2-svp.json"])
+    w.int_("NAT", nat)
+    w.int_("NAO", nao)
+    w.matrix("U", u_ref_terco)
+    w.end()
+    w.write()
+    worst = np.abs(u_terco - u_ref_terco).max()
+    print(f"  ecp_ints {case}: max|U_terco - U_pyscf| (at generation time, overlap-rescaled) = {worst:.3e}")
+    dump.unlink()
+
+
+def gen_ecp_scf():
+    """check_ecp_scf.F90's ECP energy cases -- RHF HI, UHF the free I atom,
+    RKS PBE/B3LYP on HI, RHF I2, and RHF H2 next to a ghost iodine (labelled
+    GHOST-, its basis kept, no ECP entry: pyscf's ghost) -- against pyscf fed the IDENTICAL JSON
+    basis+ECP (bse_json_basis/bse_json_ecp) at mqc's own HI geometry
+    (check_ecp_scf.F90's own HI_BOND_BOHR), `cart=False`: this build's own
+    default for def2-svp, which is tagged gto_spherical, NOT the `cart=True`
+    an earlier version of this generator (and that check's own header) used
+    by mistake -- a genuinely larger, different (33 vs 31 AO) basis, which
+    is the entire reason that version measured a "second stationary point"
+    that was never there; see check_ecp_scf.F90's own header for the full
+    correction.
+
+    The two DFT cases use THIS build's own dumped grid
+    (ecp_scf_probe.bin's grid_r/grid_w, trc_scf_result_t's own semilocal
+    grid), the same same-grid comparison every other DFT anchor in this
+    tree uses (gen_rks's own m.grids.coords/weights/non0tab pattern), so a
+    grid-quadrature difference is never a variable in the comparison
+    check_ecp_scf.F90 makes against this reference."""
+    PYSCF_FUNC = {"hi_pbe": "PBE", "hi_b3lyp": "HYB_GGA_XC_B3LYP"}
+    run_bin("check_ecp_scf", [])
+    dump = TEST / "ecp_scf_probe.bin"
+    r = BinReader(dump)
+    ncase = r.i8()
+    w = RefWriter("ecp_scf.ref")
+    w.header("check_ecp_scf", [ROOT / "test" / "check_ecp_scf.F90",
+                                HERE.parent / "basis_sets" / "def2-svp.json"])
+    for _ in range(ncase):
+        name = r.str_(16)
+        natm = r.i8()
+        elements = np.atleast_1d(r.i8(natm))
+        ghost = np.atleast_1d(r.i8(natm)).astype(bool)
+        at_r = r.mat(3, natm)
+        charge, _mult, na, nb = (r.i8() for _ in range(4))
+        npts = r.i8()
+        if npts:
+            # .T: pyscf's own grids.coords is (npts, 3), point-major --
+            # gen_rks's own identical read (its own `pts` a few hundred
+            # lines up) transposes the same way; the first version of
+            # this generator's own gen_ecp_scf omitted it and fed pyscf a
+            # (3, npts) array it silently broadcast/misread as something
+            # else entirely (measured: E(PBE) off by ~22 Hartree against
+            # terco's own, the same grid producing the right answer when
+            # transposed -- see check_ecp_scf.F90's own header for why
+            # this was never the "pyscf lands on a different grid" story).
+            pts = r.f8(3*npts).reshape(3, npts, order='F').T
+            wts = r.f8(npts)
+
+        labels = [f"{_SYMBOL_ECP[int(z)]}{i + 1}" for i, z in enumerate(elements)]
+        sym_elements = dict(zip(labels, (int(z) for z in elements)))
+        basis_arg = bse_json_basis(HERE.parent / "basis_sets" / "def2-svp.json", sym_elements)
+        ecp_arg = bse_json_ecp(HERE.parent / "basis_sets" / "def2-svp.json", sym_elements)
+        # A ghost keeps its element's basis under a GHOST- label and has no
+        # ECP entry, so pyscf gives it neither nucleus nor core potential.
+        for lab, g in zip(labels, ghost):
+            if g:
+                basis_arg[f"GHOST-{lab}"] = basis_arg.pop(lab)
+                ecp_arg.pop(lab, None)
+        atoms = [((f"GHOST-{lab}" if g else lab), tuple(at_r[:, i]))
+                 for i, (lab, g) in enumerate(zip(labels, ghost))]
+        mol = gto.M(atom=atoms, basis=basis_arg, ecp=ecp_arg, unit='Bohr', cart=False,
+                    charge=int(charge), spin=int(na - nb), verbose=0)
+
+        if name in PYSCF_FUNC:
+            def make_mf():
+                m = dft.RKS(mol)
+                m.xc = PYSCF_FUNC[name]
+                m.grids.coords = np.ascontiguousarray(pts)
+                m.grids.weights = wts
+                m.grids.non0tab = None
+                return m
+        else:
+            def make_mf():
+                return scf.UHF(mol) if nb != na else scf.RHF(mol)
+
+        mf, grad_norm = converge_tight(make_mf, None, f"ecp_scf {name}")
+        w.real(f"E_{name}", mf.e_tot)
+        print(f"  ecp_scf {name:10s}: E(pyscf) = {mf.e_tot:18.12f}  |g| {grad_norm:.2e}")
+    w.end()
+    w.write()
+    dump.unlink()
 
 
 def gen_ao():
@@ -3516,6 +3697,90 @@ def gen_chelpg():
     w.write()
 
 
+def gen_fukui_chelpg():
+    """test/check_fukui.F90's CHELPG-condensed Fukui case: RHF/cc-pVDZ water
+    at that file's Bohr geometry (mqc's test_fukui geometry, the one its
+    Hirshfeld reference uses), its anion (N+1) and cation (N-1) as UHF
+    doublets, CHELPG charges at each of the three densities, and
+    f+ = q(N) - q(N+1), f- = q(N-1) - q(N).
+
+    The CHELPG step is gen_chelpg's own recipe (mqc's Breneman-Wiberg grid,
+    pyscf's `int1e_grids` potential, the fit constrained to the state's own
+    charge), repeated here rather than shared so that editing it never
+    re-hashes chelpg.ref. The grid depends on geometry and radii only, so
+    all three states are fitted on the same points."""
+    bohr = 0.529177210903  # CODATA 2018, as terco
+    vdw = [1.10, 1.40, 1.81, 1.53, 1.92, 1.70, 1.55, 1.52, 1.47, 1.54,
+           2.27, 1.73, 1.84, 2.10, 1.80, 1.80, 1.75, 1.88]
+    spacing, head = 0.3 / bohr, 2.8 / bohr
+    atoms = [("O", (0.0, 0.0, 0.0)), ("H", (0.0, 1.4308, 1.1078)), ("H", (0.0, -1.4308, 1.1078))]
+    basname = "cc-pvdz"
+    files = [ROOT / "test" / "check_fukui.F90", TEST / "basis_sets" / (basname + ".json")]
+    states = [("N", 0, 0), ("N+1", -1, 1), ("N-1", 1, 1)]
+
+    def grid(coords, z):
+        radius = np.array([vdw[int(round(zz)) - 1] for zz in z]) / bohr
+        low = coords.min(axis=0) - head
+        high = coords.max(axis=0) + head
+        nx = [int((high[d] - low[d]) / spacing) + 1 for d in range(3)]
+        k, j, i = np.meshgrid(np.arange(nx[2]), np.arange(nx[1]), np.arange(nx[0]), indexing="ij")
+        pts = np.stack([low[0] + i.ravel() * spacing, low[1] + j.ravel() * spacing,
+                        low[2] + k.ravel() * spacing], axis=1)
+        dist = np.linalg.norm(pts[:, None, :] - coords[None, :, :], axis=2)
+        keep = ~(dist < radius[None, :]).any(axis=1) & (dist.min(axis=1) <= head)
+        return pts[keep]
+
+    w = RefWriter("fukui_chelpg.ref")
+    w.header("fukui_chelpg", files)
+    w.comment("water RHF/cc-pVDZ (N) and UHF doublets (N+1, N-1); CHELPG charges per state")
+    elements = {sym: gto.charge(sym) for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    qs = {}
+    npts = 0
+    for label, charge, spin in states:
+        mol = gto.M(atom=atoms, unit="Bohr", basis=bas, charge=charge, spin=spin, cart=False, verbose=0)
+
+        def make_mf(mol=mol, spin=spin):
+            return scf.RHF(mol) if spin == 0 else scf.UHF(mol)
+
+        mf, _ = converge_tight(make_mf, None, f"gen_fukui_chelpg {label}")
+        dm = np.asarray(mf.make_rdm1())
+        if dm.ndim == 3:
+            dm = dm[0] + dm[1]
+        coords = mol.atom_coords()
+        pts = grid(coords, mol.atom_charges())
+        npts = len(pts)
+        inv = 1.0 / np.linalg.norm(pts[None, :, :] - coords[:, None, :], axis=2)
+        v = mol.atom_charges() @ inv
+        for c0 in range(0, len(pts), 1000):
+            ints = mol.intor("int1e_grids", grids=pts[c0:c0 + 1000])
+            v[c0:c0 + 1000] -= np.einsum("gij,ij->g", ints, dm)
+        n = mol.natm
+        a = np.zeros((n + 1, n + 1))
+        b = np.zeros(n + 1)
+        a[:n, :n] = inv @ inv.T
+        a[:n, n] = 1.0
+        a[n, :n] = 1.0
+        b[:n] = inv @ v
+        b[n] = charge
+        qs[label] = np.linalg.solve(a, b)[:n]
+        w.real("E_" + label.replace("+", "P").replace("-", "M"), mf.e_tot)
+    f_plus = qs["N"] - qs["N+1"]
+    f_minus = qs["N-1"] - qs["N"]
+    print("  fukui_chelpg q(N) " + " ".join(f"{x:.6f}" for x in qs["N"]))
+    print("  fukui_chelpg f+   " + " ".join(f"{x:.6f}" for x in f_plus))
+    print("  fukui_chelpg f-   " + " ".join(f"{x:.6f}" for x in f_minus))
+    w.int_("NATM", len(atoms))
+    w.int_("NPTS", npts)
+    w.vector("Q_N", qs["N"])
+    w.vector("Q_NP1", qs["N+1"])
+    w.vector("Q_NM1", qs["N-1"])
+    w.vector("F_PLUS", f_plus)
+    w.vector("F_MINUS", f_minus)
+    w.end()
+    w.write()
+
+
 def gen_minao():
     """test/check_minao.F90's two cases against PySCF's own
     `init_guess_by_minao`: water/cc-pVDZ and silane/def2-SVP (Si, Z=14, a
@@ -4856,7 +5121,16 @@ def gen_ghost_water_dimer():
 CASES = {
     "hirshfeld": gen_hirshfeld,
     "chelpg": gen_chelpg,
+    "fukui_chelpg": gen_fukui_chelpg,
     "mult": gen_mult,
+    "ecp_ints_hi_svp": lambda: gen_ecp_ints("hi_svp"),
+    "ecp_ints_ih_far": lambda: gen_ecp_ints("ih_far"),
+    "ecp_ints_xe": lambda: gen_ecp_ints("xe"),
+    "ecp_ints_csh": lambda: gen_ecp_ints("csh"),
+    "ecp_ints_snh4": lambda: gen_ecp_ints("snh4"),
+    "ecp_ints_i2": lambda: gen_ecp_ints("i2"),
+    "ecp_ints_ch3i": lambda: gen_ecp_ints("ch3i"),
+    "ecp_scf": gen_ecp_scf,
     "ao": gen_ao,
     "pcm_radii_override": gen_pcm_radii_override,
     "pcm_grad": gen_pcm_grad,

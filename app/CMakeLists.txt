@@ -216,6 +216,34 @@ if(TERCO_ENABLE_TESTING)
                ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
                "guess +: minao.*sum +1\\.000000 +1\\.000000 +1\\.000000")
 
+  # The CHELPG-condensed variant: each of N, N+1 and N-1 is fitted on its own
+  # density (check_fukui validates the three charge sets and the indices
+  # against pyscf). The O values are terco's own at water/6-31G; O's f+ is
+  # negative, which Hirshfeld's (0.295041, above) never is.
+  add_test(NAME terco/cli_fukui_chelpg
+           COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --fukui chelpg)
+  set_tests_properties(
+    terco/cli_fukui_chelpg
+    PROPERTIES ENVIRONMENT "${_env}" WORKING_DIRECTORY
+               ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
+               "guess +: minao.*CHELPG-condensed Fukui.*1  O +-0\\.159473 +0\\.776391 +0\\.308459.*sum +1\\.000000 +1\\.000000 +1\\.000000")
+  # Each Fukui SCF stage is labelled in the log, so the three SCF tables can
+  # be told apart; the charges and electron counts are relative to the
+  # reference (water: 0 and 10).
+  add_test(NAME terco/cli_fukui_stage_labels
+           COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --fukui hirshfeld)
+  set_tests_properties(
+    terco/cli_fukui_stage_labels
+    PROPERTIES ENVIRONMENT "${_env}" WORKING_DIRECTORY
+               ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
+               "Fukui: N \\(reference, the SCF above\\) SCF -- charge 0, 10 electrons.*Fukui: N\\+1 \\(anion\\) SCF -- charge -1, 11 electrons.*Fukui: N-1 \\(cation\\) SCF -- charge 1, 9 electrons")
+  add_test(NAME terco/cli_fukui_unknown
+           COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --fukui mulliken)
+  set_tests_properties(
+    terco/cli_fukui_unknown
+    PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+               "unknown --fukui 'mulliken': use hirshfeld or chelpg")
+
   # Every convergence aid reaches the SCF and converges to the same state --
   # but NOT in the same number of iterations as the defaults, which is what
   # this test actually has to show: an energy match alone would still pass

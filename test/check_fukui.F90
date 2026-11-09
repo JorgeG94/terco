@@ -14,15 +14,27 @@
 ! Also: the sum rule, the handle's state after the call (on success and when
 ! an ion fails to converge), and the refusal of an open-shell neutral.
 !
+! CHELPG-condensed indices (trc_capi's trc_fukui_scheme at "chelpg") against
+! test/pyscf_refs/fukui_chelpg.ref, written offline by
+! `generate.py fukui_chelpg`: pyscf's own RHF (N) and UHF doublets (N+-1) on
+! the same geometry and basis, CHELPG fitted at each of the three densities
+! by the recipe check_chelpg.F90 validates, on the same grid. Plus: the
+! indices are exactly the differences of the three charge sets the call
+! hands back, the neutral's set is what trc_chelpg_charges gives on the
+! converged handle, and the Hirshfeld path is unchanged beside it.
+!
 module check_fukui_suite
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char
    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_bind_device
+   use trc_capi, only: trc_fukui_scheme
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, ref_read_vector
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
                                trc_set_method, trc_set_convergence, trc_run_scf, trc_energy, &
                                trc_nspin, trc_fukui_hirshfeld, trc_set_lindep, trc_set_scf_accel, &
+                               trc_chelpg_charges, &
                                TRC_OK, TRC_ERR_BADARG, TRC_ERR_NOCONV
    implicit none
    private
@@ -62,6 +74,11 @@ module check_fukui_suite
       !! MQC_CHARGE_TOL agreement on the neutral and cation alone, so the
       !! extra anion SCF and the finite difference are not costing much
       !! beyond what the neutral/cation comparison already pays.
+   real(dp), parameter :: CHELPG_TOL = 3.0e-8_dp
+      !! terco vs pyscf, CHELPG charges at each of the three states, and the
+      !! indices differenced from them: check_chelpg.F90's own CHARGE_TOL.
+      !! Measured worst charge difference over the three states (gfortran
+      !! 15, host): 1.9e-9, so an index differs by at most twice that.
    real(dp), parameter :: SUM_TOL = 1.0e-9_dp
       !! f+ and f- each sum to one electron moved; trc_fukui_indices's own
       !! check_sum_rule already refuses a run outside 1e-6, so this is a
@@ -79,6 +96,11 @@ contains
                   new_unittest("an ion that does not converge is reported and the handle restored", &
                                test_ion_noconv), &
                   new_unittest("a non-singlet neutral is refused", test_radical_refused), &
+                  new_unittest("CHELPG-condensed indices match pyscf", test_chelpg_vs_pyscf), &
+                  new_unittest("CHELPG indices are the differences of the three charge sets", &
+                               test_chelpg_consistency), &
+                  new_unittest("an unknown population scheme is refused", test_scheme_refused), &
+                  new_unittest("the handle is restored after a CHELPG Fukui run", test_chelpg_restore), &
                   new_unittest("trc_set_lindep refuses NaN and out-of-range", test_lindep_refused), &
                   new_unittest("trc_set_scf_accel refuses NaN and out-of-range", test_scf_accel_refused) &
                   ]
@@ -262,6 +284,149 @@ contains
       call check(error, rc == TRC_ERR_BADARG, "a triplet neutral must be refused, not computed")
       rc = trc_destroy(h)
    end subroutine test_radical_refused
+
+   subroutine test_chelpg_vs_pyscf(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      integer(c_int) :: rc
+      real(c_double) :: fp(3), fm(3), fz(3), qn(3), qnp1(3), qnm1(3)
+      real(dp) :: ref_qn(3), ref_qnp1(3), ref_qnm1(3), ref_fp(3), ref_fm(3), e(3)
+      real(dp) :: worst_q, worst_f
+      integer :: u, natm, npts
+
+      call ref_require("fukui_chelpg.ref", u)
+      call ref_read_real(u, "E_N", e(1))
+      call ref_read_real(u, "E_NP1", e(2))
+      call ref_read_real(u, "E_NM1", e(3))
+      call ref_read_int(u, "NATM", natm)
+      call ref_read_int(u, "NPTS", npts)
+      call ref_read_vector(u, "Q_N", 3, ref_qn)
+      call ref_read_vector(u, "Q_NP1", 3, ref_qnp1)
+      call ref_read_vector(u, "Q_NM1", 3, ref_qnm1)
+      call ref_read_vector(u, "F_PLUS", 3, ref_fp)
+      call ref_read_vector(u, "F_MINUS", 3, ref_fm)
+      call ref_close(u)
+
+      call run_water(h, 0, 1, error)
+      if (allocated(error)) return
+      rc = trc_fukui_scheme(h, "chelpg", fp, fm, fz, qn, qnp1, qnm1)
+      call check(error, rc == TRC_OK, "trc_fukui_scheme(chelpg) failed")
+      if (allocated(error)) then
+         rc = trc_destroy(h)
+         return
+      end if
+
+      worst_q = max(maxval(abs(real(qn, dp) - ref_qn)), maxval(abs(real(qnp1, dp) - ref_qnp1)), &
+                    maxval(abs(real(qnm1, dp) - ref_qnm1)))
+      worst_f = max(maxval(abs(real(fp, dp) - ref_fp)), maxval(abs(real(fm, dp) - ref_fm)))
+      call check(error, worst_q < CHELPG_TOL, "CHELPG charges: worst |q_terco - q_pyscf| = "// &
+                 to_text(worst_q)//" exceeds "//to_text(CHELPG_TOL))
+      if (.not. allocated(error)) then
+         call check(error, worst_f < CHELPG_TOL, "CHELPG Fukui: worst |f_terco - f_pyscf| = "// &
+                    to_text(worst_f)//" exceeds "//to_text(CHELPG_TOL))
+      end if
+      rc = trc_destroy(h)
+   end subroutine test_chelpg_vs_pyscf
+
+   subroutine test_chelpg_consistency(error)
+      !! f+ = q(N) - q(N+1), f- = q(N-1) - q(N), f0 their mean, from the
+      !! three charge sets the call itself returns; the neutral's set is
+      !! trc_chelpg_charges' on the same converged handle (so the fit the
+      !! Fukui path runs is the validated one); each index sums to one. And
+      !! the Hirshfeld indices on the same handle stay what they were: a
+      !! different scheme gives different numbers (CHELPG puts a negative
+      !! f+ on O, Hirshfeld does not), so the selector really selects.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      integer(c_int) :: rc
+      real(c_double) :: fp(3), fm(3), fz(3), qn(3), qnp1(3), qnm1(3), qchelpg(3)
+      real(c_double) :: hfp(3), hfm(3), hfz(3), hqn(3), hqnp1(3), hqnm1(3)
+
+      call run_water(h, 0, 1, error)
+      if (allocated(error)) return
+      rc = trc_chelpg_charges(h, qchelpg)
+      call check(error, rc == TRC_OK, "trc_chelpg_charges failed")
+      if (.not. allocated(error)) then
+         rc = trc_fukui_scheme(h, "chelpg", fp, fm, fz, qn, qnp1, qnm1)
+         call check(error, rc == TRC_OK, "trc_fukui_scheme(chelpg) failed")
+      end if
+      if (.not. allocated(error)) then
+         call check(error, maxval(abs(real(qn - qchelpg, dp))), 0.0_dp, thr=1.0e-12_dp, &
+                    message="the Fukui neutral's CHELPG charges are not trc_chelpg_charges'")
+      end if
+      if (.not. allocated(error)) then
+         call check(error, maxval(abs(real(fp - (qn - qnp1), dp))), 0.0_dp, thr=1.0e-14_dp, &
+                    message="f+ is not q(N) - q(N+1)")
+      end if
+      if (.not. allocated(error)) then
+         call check(error, maxval(abs(real(fm - (qnm1 - qn), dp))), 0.0_dp, thr=1.0e-14_dp, &
+                    message="f- is not q(N-1) - q(N)")
+      end if
+      if (.not. allocated(error)) then
+         call check(error, maxval(abs(real(fz - 0.5_c_double*(fp + fm), dp))), 0.0_dp, thr=1.0e-14_dp, &
+                    message="f0 is not (f+ + f-)/2")
+      end if
+      if (.not. allocated(error)) then
+         call check(error, abs(sum(real(fp, dp)) - 1.0_dp), 0.0_dp, thr=SUM_TOL, &
+                    message="CHELPG f+ does not sum to one electron")
+      end if
+      if (.not. allocated(error)) then
+         call check(error, abs(sum(real(fm, dp)) - 1.0_dp), 0.0_dp, thr=SUM_TOL, &
+                    message="CHELPG f- does not sum to one electron")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_fukui_hirshfeld(h, hfp, hfm, hfz, hqn, hqnp1, hqnm1)
+         call check(error, rc == TRC_OK, "trc_fukui_hirshfeld failed after the CHELPG run")
+      end if
+      if (.not. allocated(error)) then
+         call check(error, maxval(abs(real(hfp, dp) - F_PLUS)), 0.0_dp, thr=CHARGE_TOL, &
+                    message="Hirshfeld f+ moved after a CHELPG run on the same handle")
+      end if
+      if (.not. allocated(error)) then
+         call check(error, fp(1) < 0.0_c_double .and. hfp(1) > 0.0_c_double, &
+                    "the two schemes must differ on O's f+ (CHELPG negative, Hirshfeld positive)")
+      end if
+      rc = trc_destroy(h)
+   end subroutine test_chelpg_consistency
+
+   subroutine test_scheme_refused(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      integer(c_int) :: rc
+      real(c_double) :: fp(3), fm(3), fz(3), qn(3), qnp1(3), qnm1(3)
+
+      call run_water(h, 0, 1, error)
+      if (allocated(error)) return
+      rc = trc_fukui_scheme(h, "mulliken", fp, fm, fz, qn, qnp1, qnm1)
+      call check(error, rc == TRC_ERR_BADARG, "an unknown scheme must be TRC_ERR_BADARG")
+      rc = trc_destroy(h)
+   end subroutine test_scheme_refused
+
+   subroutine test_chelpg_restore(error)
+      !! As test_restore, for the CHELPG path: nspin and the neutral's
+      !! energy are back, and a following SCF still runs.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      integer(c_int) :: rc, nspin_after
+      real(c_double) :: e_before, e_after
+      real(c_double) :: fp(3), fm(3), fz(3), qn(3), qnp1(3), qnm1(3)
+
+      call run_water(h, 0, 1, error)
+      if (allocated(error)) return
+      rc = trc_energy(h, e_before)
+      rc = trc_fukui_scheme(h, "chelpg", fp, fm, fz, qn, qnp1, qnm1)
+      call check(error, rc == TRC_OK, "trc_fukui_scheme(chelpg) failed")
+      if (.not. allocated(error)) then
+         rc = trc_nspin(h, nspin_after)
+         call check(error, nspin_after == 1, "nspin was not restored to the neutral's")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_energy(h, e_after)
+         call check(error, abs(real(e_after, dp) - real(e_before, dp)), 0.0_dp, thr=1.0e-9_dp, &
+                    message="the neutral's energy was not restored after the CHELPG ion SCFs")
+      end if
+      rc = trc_destroy(h)
+   end subroutine test_chelpg_restore
 
    function to_text(x) result(s)
       real(dp), intent(in) :: x

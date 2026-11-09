@@ -83,6 +83,7 @@ json = "water.json"
 | Key | Type | Flag | Meaning |
 |---|---|---|---|
 | `main` | string | `--basis` | orbital basis: BSE JSON file or a basis name |
+| `ecp` | string | `--ecp` | effective core potential: BSE JSON file or a basis name, overriding auto-attach from `main`'s own `ecp_potentials` |
 | `auxiliary` | string | `--aux` | RI-MP2 auxiliary basis (cc-pvdz-rifit) |
 | `jk_auxiliary` | string | `--jkfit` | J/K fitting basis for `density_fitted` (def2-universal-jkfit) |
 | `cartesian` | bool | `--cart` | Cartesian AOs even for a spherical basis |
@@ -168,7 +169,7 @@ displacement runs.
 | Key | Type | Flag | Meaning |
 |---|---|---|---|
 | `charges` | string | `--charges` | atomic charges: `hirshfeld`, `chelpg`, or both as `"hirshfeld,chelpg"` |
-| `fukui` | string | `--fukui` | condensed Fukui indices: `hirshfeld` |
+| `fukui` | string | `--fukui` | condensed Fukui indices from `hirshfeld` or `chelpg` charges |
 
 ### `[hessian]`
 
@@ -194,7 +195,7 @@ displacement runs.
 | `gradient_tol` | float | `--opt-gtol` | max gradient component, Eh/Bohr (4.5e-4) |
 | `energy_tol` | float | `--opt-etol` | energy change, Eh |
 | `scf_guess` | string | `--opt-guess` | warm start between steps: `density` or `projected` |
-| `algorithm` | string | `--opt-algorithm` | `sd`, `cg`, `cg-auto`, `lbfgs`, `nr`, `damped`, `prfo`, `stochastic`, `genetic` |
+| `algorithm` | string | `--opt-algorithm` | `sd`, `cg`, `cg-auto`, `lbfgs`, `nr`, `damped`, `stochastic`, `genetic` (P-RFO is a saddle search: `saddle_method`) |
 | `target` | string | `--opt-target` | `minimum` or `saddle` |
 | `saddle_method` | string | `--opt-saddle-method` | `prfo` or `dimer` |
 | `connect` | bool | `--opt-connect` | minimise both ways from the saddle |

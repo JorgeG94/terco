@@ -46,6 +46,16 @@ module trc_basis_json
       !! Whether `prune` overrides `TRC_PRUNE_PRIMITIVES`.
       logical :: prune = .true.
       !! The override, when `prune_set`.
+      logical :: allow_ecp = .false.
+      !! Read an element's valence-only shells even though the file also
+      !! carries `ecp_potentials` for it, skipping the refusal below
+      !! (fix/refuse-ecp-basis) WITHOUT skipping normalisation (unlike
+      !! `raw`). For the ECP integral path's own tests only
+      !! (test/check_ecp_matrix.F90), until phase 3 wires an ECP into the
+      !! reader's own auto-attach and this knob's callers move onto that
+      !! instead. Every other caller still gets the refusal: the default
+      !! is false, and trc_ecp_from_json never sets it (it reads
+      !! `ecp_potentials` itself, not through this module).
    end type trc_basis_overrides_t
 
    type :: shell_t
@@ -71,17 +81,19 @@ contains
    ! The basis comes back built (host side; the caller moves it to the
    ! device).
    !
-   function trc_basis_json_overrides(charges, prune) result(overrides)
+   function trc_basis_json_overrides(charges, prune, allow_ecp) result(overrides)
       !! A trc_basis_overrides_t with just the knobs given (see the type's
       !! comment for why this, not the structure constructor).
       real(dp), intent(in), optional :: charges(:)
       logical, intent(in), optional :: prune
+      logical, intent(in), optional :: allow_ecp
       type(trc_basis_overrides_t) :: overrides
       if (present(charges)) overrides%charges = charges
       if (present(prune)) then
          overrides%prune_set = .true.
          overrides%prune = prune
       end if
+      if (present(allow_ecp)) overrides%allow_ecp = allow_ecp
    end function trc_basis_json_overrides
 
    subroutine trc_basis_from_json(path, natm, elements, at_r, b, error, force_cart, overrides)
@@ -113,11 +125,13 @@ contains
       integer :: nel, ia, ie, is, nsh, maxnp, k
       integer, allocatable :: sh_l(:), sh_np(:), which(:)
       real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :), z(:)
-      logical :: ok, any_sph, force, do_prune
+      logical :: ok, any_sph, force, do_prune, allow_ecp
 
       force = .false.
       if (present(force_cart)) force = force_cart
       do_prune = prune_enabled()
+      allow_ecp = .false.
+      if (present(overrides)) allow_ecp = overrides%allow_ecp
       if (present(overrides)) then
          if (overrides%prune_set) do_prune = overrides%prune
       end if
@@ -145,7 +159,7 @@ contains
          if (ok) cycle
          nel = nel + 1
          which(ia) = nel
-         call read_element(json, path, elements(ia), el(nel), error, prune=do_prune)
+         call read_element(json, path, elements(ia), el(nel), error, prune=do_prune, allow_ecp=allow_ecp)
          if (error%has_error()) then
             call json%destroy()
             return
@@ -244,7 +258,7 @@ contains
       end if
    end subroutine trc_fitted_shell_from_json
 
-   subroutine read_element(json, path, z, el, error, raw, prune)
+   subroutine read_element(json, path, z, el, error, raw, prune, allow_ecp)
       type(json_file), intent(inout) :: json
       character(len=*), intent(in) :: path
       integer, intent(in) :: z
@@ -261,17 +275,22 @@ contains
       !! then drop every coefficient that comes out exactly zero. Default
       !! .false. (the caller decides; `trc_basis_from_json` passes
       !! `prune_enabled()`). Never applied with `raw` -- see PRUNING, below.
+      logical, intent(in), optional :: allow_ecp
+      !! Skip the ECP refusal below -- trc_basis_overrides_t%allow_ecp's
+      !! own comment on why and who this is for.
 
       character(len=:), allocatable :: key, sp, text, ftype
       integer, allocatable :: lam(:)
       integer :: nsh_json, ish, ncol, icol, ip, np, k, ios, nsh, k0, ks
       real(dp) :: v
-      logical :: found, skip_norm, found_ft, sph_ish, do_prune
+      logical :: found, skip_norm, found_ft, sph_ish, do_prune, skip_ecp_refusal
 
       skip_norm = .false.
       if (present(raw)) skip_norm = raw
       do_prune = .false.
       if (present(prune)) do_prune = prune .and. .not. skip_norm
+      skip_ecp_refusal = skip_norm
+      if (present(allow_ecp)) skip_ecp_refusal = skip_ecp_refusal .or. allow_ecp
       el%z = z
       key = "elements."//itoa(z)
       call json%info(key//".electron_shells", found=found, n_children=nsh_json)
@@ -284,7 +303,7 @@ contains
       ! expects the ECP in H_core and the core electrons gone. terco has no
       ! ECPs, so without this check such a basis ran all-electron with valence-
       ! only shells: HI/def2-SVP gave -1996.90 Eh against -297.23 (pyscf, mqc).
-      if (.not. skip_norm) then
+      if (.not. skip_ecp_refusal) then
          call json%info(key//".ecp_potentials", found=found)
          if (found) then
             k = 0

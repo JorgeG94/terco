@@ -59,10 +59,12 @@ module trc_run
       type(error_t) :: err
       type(c_ptr) :: h
       character(len=:), allocatable :: geom, basis_arg, basis_path, aux_path, jkfit_path, func, guess, title, json
+      character(len=:), allocatable :: ecp_path   !! "" when --ecp was not given (auto-attach decides)
       character(len=:), allocatable :: pcm
       character(len=:), allocatable :: save_scf, restart   !! "" when not asked for
       integer, allocatable :: z(:)
       integer :: natm, chrg, uhf, nelec, mult, grid, nlc_grid
+      integer :: ecp_core = 0   !! core electrons the ECP replaces, summed over atoms (0 with none)
       integer(c_int) :: nao, conv, niter, sph, npcm
       real(dp) :: econv, gconv, thresh, eps
       real(dp) :: lindep = -1.0_dp  !! --lindep, negative = the library's default
@@ -103,9 +105,9 @@ module trc_run
       logical :: want_chelpg = .false.     !! --charges names chelpg
       real(dp), allocatable :: hirshfeld_charges(:)  !! (natm), e, after --charges hirshfeld
       real(dp), allocatable :: chelpg_charges(:)     !! (natm), e, after --charges chelpg
-      character(len=:), allocatable :: fukui  !! "" (none) or "hirshfeld", --fukui
-      ! (natm) each, after --fukui hirshfeld: f+/f-/f0 and the three
-      ! states' own Hirshfeld charges (N, N+1, N-1) trc_fukui_hirshfeld
+      character(len=:), allocatable :: fukui  !! "" (none), "hirshfeld" or "chelpg", --fukui
+      ! (natm) each, after --fukui: f+/f-/f0 and the three
+      ! states' own charges (N, N+1, N-1) trc_fukui_scheme
       ! condensed them from.
       real(dp), allocatable :: fukui_f_plus(:), fukui_f_minus(:), fukui_f_zero(:)
       real(dp), allocatable :: fukui_q_n(:), fukui_q_np1(:), fukui_q_nm1(:)
