@@ -29,8 +29,9 @@ module check_capi_opt_suite
    use pic_types, only: dp
    use pic_strings, only: to_string
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_method, &
-                               TRC_OK
+                               TRC_OK, TRC_ERR_BADARG
    use trc_opt_c_interfaces, only: trc_opt_options_create, trc_opt_options_destroy, trc_opt_set_gtol, &
+                                   trc_opt_set_algorithm, TRC_OPT_ALG_PRFO, &
                                    trc_opt_result_create, trc_opt_result_destroy, trc_opt_run, &
                                    trc_opt_result_converged, trc_opt_result_energy, trc_opt_result_gradient_max, &
                                    trc_opt_result_geometry, trc_opt_result_message
@@ -56,7 +57,8 @@ contains
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
          new_unittest("terco_opt.h vs pyscf+scipy (opt_water.ref), through the C ABI only", test_water), &
-         new_unittest("terco_opt.h vs pyscf+scipy (opt_hcn.ref), through the C ABI only", test_hcn) &
+         new_unittest("terco_opt.h vs pyscf+scipy (opt_hcn.ref), through the C ABI only", test_hcn), &
+         new_unittest("trc_opt_run refuses TRC_OPT_ALG_PRFO with a minimum target", test_prfo_minimum_refused) &
          ]
    end subroutine collect_capi_opt
 
@@ -69,6 +71,38 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call run_case("hcn.xyz", "opt_hcn", error)
    end subroutine test_hcn
+
+   !
+   ! DL-FIND's P-RFO is a transition-state search (it always climbs the
+   ! lowest Hessian mode), so as a minimiser it is refused before any
+   ! energy is evaluated, the same as the CLI's --opt-algorithm prfo:
+   ! TRC_ERR_BADARG, not a 400-step run that may or may not converge.
+   !
+   subroutine test_prfo_minimum_refused(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: ctx, opts, res
+      integer :: nat, rc, nfail
+      integer, allocatable :: z(:)
+      real(dp), allocatable :: r(:, :)
+      nfail = 0
+      call read_xyz('water.xyz', nat, z, r)
+      rc = trc_create(ctx)
+      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (prfo): trc_create", real(rc, dp))
+      rc = trc_opt_options_create(opts)
+      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (prfo): trc_opt_options_create", real(rc, dp))
+      rc = trc_opt_set_algorithm(opts, TRC_OPT_ALG_PRFO)
+      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (prfo): trc_opt_set_algorithm", real(rc, dp))
+      rc = trc_opt_result_create(res)
+      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (prfo): trc_opt_result_create", real(rc, dp))
+      ! The default target is a minimum (TRC_OPT_TARGET_MINIMUM).
+      rc = trc_opt_run(ctx, int(nat, c_int), int(z, c_int), reshape(real(r, c_double), [3*nat]), opts, res)
+      call ref_report(nfail, rc == TRC_ERR_BADARG, &
+                      "check_capi_opt (prfo): trc_opt_run returns TRC_ERR_BADARG", real(rc, dp))
+      rc = trc_opt_result_destroy(res)
+      rc = trc_opt_options_destroy(opts)
+      rc = trc_destroy(ctx)
+      if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
+   end subroutine test_prfo_minimum_refused
 
    subroutine run_case(xyzfile, ref_base, error)
       character(len=*), intent(in) :: xyzfile, ref_base
