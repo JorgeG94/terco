@@ -43,6 +43,14 @@ BSE-format JSON basis files and the QCSchema basis format are both read
 directly, and the `terco` program ships a library of Basis Set Exchange sets
 (see {doc}`install`).
 
+## Notes on MPI
+
+The Fock build is naively distributed, i.e. I did no galaxy brain techniques to reduce 
+communication, optimize for size or anything, it is a good ol' every rank has a copy of
+the Fock matrix, all reduce at the end of each iteraiton, and the diagonalization 
+runs on a single GPU because ain't no-one is doing multi-GPU diagonalization because
+it does not scale. Open issue: implement diag free approaches, I welcome pull requests.
+
 ## Caveats
 
 - The code has not been validated on AMD or Intel GPUs.
