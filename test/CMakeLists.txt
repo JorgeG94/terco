@@ -2596,6 +2596,20 @@ set_target_properties(check_sym_fock_nouniq PROPERTIES Fortran_MODULE_DIRECTORY
                       ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_fock_nouniq)
 set_tests_properties(terco/check_sym_fock_nouniq PROPERTIES ENVIRONMENT
                      "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_UNIQUE_PAIRS=0")
+# These checks pin counts measured on the FULLY split working basis: the S13
+# prototype's admitted quartets, the MD J size rule's verdict, the unique-pair
+# storage ratio and the engines' work counters. trc_decontract's policy
+# (split a general contraction only when it pays, DECON_SHELL_COST_DEFAULT)
+# keeps some cc-pVDZ contractions whole and so changes the shell list those
+# counts are over (water C2v: 3081 admitted quartets against 14627); the
+# integrals over either working basis are exact (trc_decontract). So they run
+# with every contraction split, the basis the numbers were taken on.
+# The symmetric SCF and gradient checks against pyscf run on the default policy.
+foreach(_t check_sym_pairs check_sym_fock check_sym_fock_hgp check_sym_fock_rys check_sym_fock_cap
+           check_sym_fock_sort check_sym_fock_md check_sym_fock_mdrule check_sym_fock_mdg
+           check_sym_unique check_sym_fock_nouniq)
+  set_property(TEST terco/${_t} APPEND PROPERTY ENVIRONMENT "TRC_DECON_SHELL_COST=0")
+endforeach()
 
 # Symmetry-unique pair list design study (docs/SYMMETRY_UNIQUE_PAIRS.md):
 # counts, memory model, pair-data reconstruction and exactness prototype.
