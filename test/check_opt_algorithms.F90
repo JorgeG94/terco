@@ -40,6 +40,11 @@ module check_opt_algorithms_suite
       !! (test-drive's own parallel=.false.), never concurrent.
    real(dp), parameter :: E_TOL = 2.0e-6_dp
       !! loose: "does it converge", not a tight anchor match.
+   integer, parameter :: OUT_TAIL_LINES = 60
+      !! How much of a failed run's output to repeat in the failure
+      !! message: enough for the last SCF iterations and DL-FIND steps.
+   integer, parameter :: OUT_LINE_LEN = 512
+      !! Longer lines of that output are truncated, not wrapped.
 
 contains
 
@@ -156,7 +161,14 @@ contains
             '--json '//probe//' > '//tag//'.out 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
       if (rc /= 0) then
-         call test_failed(error, "the CLI run itself failed, exit code "//to_string(rc)); return
+         ! The CLI's own reason (exit 2 is "SCF did not converge" or "--opt
+         ! did not converge", app/main.F90) is in <tag>.out, which ctest
+         ! never shows: without it an intermittent failure in CI says
+         ! nothing about which of the two it was, or at which step.
+         call test_failed(error, "the CLI run itself failed, exit code "//to_string(rc)// &
+                          new_line('a')//"last lines of "//work_dir//'/'//tag//".out:"//new_line('a')// &
+                          out_tail(work_dir//'/'//tag//'.out', OUT_TAIL_LINES))
+         return
       end if
 
       call json%initialize()
@@ -178,6 +190,37 @@ contains
                       abs(e - water_anchor_energy()))
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine run_one
+
+   function out_tail(path, nkeep) result(text)
+      !! The last `nkeep` lines of the text file `path`, newline-joined,
+      !! or a one-line note when it cannot be opened.
+      character(len=*), intent(in) :: path
+      integer, intent(in) :: nkeep
+      character(len=:), allocatable :: text
+      character(len=OUT_LINE_LEN), allocatable :: ring(:)
+      character(len=OUT_LINE_LEN) :: line
+      integer :: u, ios, nread, k, first
+      open (newunit=u, file=path, status='old', action='read', iostat=ios)
+      if (ios /= 0) then
+         text = "(cannot open "//path//")"
+         return
+      end if
+      allocate (ring(nkeep))
+      nread = 0
+      do
+         read (u, '(a)', iostat=ios) line
+         if (ios /= 0) exit
+         nread = nread + 1
+         ring(mod(nread - 1, nkeep) + 1) = line
+      end do
+      close (u)
+      text = ""
+      first = max(1, nread - nkeep + 1)
+      do k = first, nread
+         text = text//trim(ring(mod(k - 1, nkeep) + 1))//new_line('a')
+      end do
+      if (nread == 0) text = "(empty)"
+   end function out_tail
 
    !
    ! opt_water.ref's own converged energy (test/pyscf_refs/README.md's
