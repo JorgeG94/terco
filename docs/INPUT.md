@@ -194,7 +194,7 @@ displacement runs.
 | `gradient_tol` | float | `--opt-gtol` | max gradient component, Eh/Bohr (4.5e-4) |
 | `energy_tol` | float | `--opt-etol` | energy change, Eh |
 | `scf_guess` | string | `--opt-guess` | warm start between steps: `density` or `projected` |
-| `algorithm` | string | `--opt-algorithm` | `sd`, `cg`, `cg-auto`, `lbfgs`, `nr`, `damped`, `prfo`, `stochastic`, `genetic` |
+| `algorithm` | string | `--opt-algorithm` | `sd`, `cg`, `cg-auto`, `lbfgs`, `nr`, `damped`, `stochastic`, `genetic` (P-RFO is a saddle search: `saddle_method`) |
 | `target` | string | `--opt-target` | `minimum` or `saddle` |
 | `saddle_method` | string | `--opt-saddle-method` | `prfo` or `dimer` |
 | `connect` | bool | `--opt-connect` | minimise both ways from the saddle |

@@ -205,6 +205,11 @@ contains
       !! TRC_OPT_ALG_* (--opt-algorithm). Only meaningful for a minimum
       !! search (--opt-target minimum); a saddle search picks its own
       !! algorithm from --opt-saddle-method instead, same as the CLI.
+      !! TRC_OPT_ALG_PRFO with a minimum target makes trc_opt_run return
+      !! TRC_ERR_BADARG: DL-FIND's P-RFO is a transition-state search that
+      !! always climbs the lowest Hessian mode, so it is reached only
+      !! through TRC_OPT_TARGET_SADDLE with TRC_OPT_SADDLE_PRFO. Use
+      !! TRC_OPT_ALG_NR for a Hessian-based minimum.
       type(c_ptr), value :: handle
       integer(c_int), value :: algorithm
       integer(c_int) :: status
@@ -608,6 +613,8 @@ contains
          call c_f_pointer(options, ob)
          opts = ob%opts
       end if
+      ! P-RFO as a minimiser: refused, same as the CLI (trc_opt_set_algorithm).
+      if (opts%target_kind == TRC_OPT_TARGET_MINIMUM .and. opts%algorithm == TRC_OPT_ALG_PRFO) return
 
       allocate (z_in(natm), source=int(z(1:natm)))
       allocate (xyz_in(3, natm), source=reshape(real(xyz(1:3*natm), dp), [3, int(natm)]))

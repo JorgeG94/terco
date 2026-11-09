@@ -1,13 +1,20 @@
 !
-! Every --opt-algorithm terco exposes (sd, cg, cg-auto, lbfgs, damped,
-! nr, prfo-as-a-minimiser) converges water/STO-3G to the existing
+! Every minimiser terco exposes (sd, cg, cg-auto, lbfgs, damped, nr)
+! converges water/STO-3G to the existing
 ! opt_water anchor energy (test/pyscf_refs/opt_water.ref) within a
 ! tolerance scaled to the --opt-gtol used -- the harmonic estimate
 ! check_opt_vs_pyscf.F90 already uses (dE ~ g^2/(2k)), generously
 ! loosened here since this check's job is "does the algorithm converge
 ! at all", not a tight anchor comparison (that is check_opt_vs_pyscf's).
-! sd gets a generous maxiter (it is the slowest of the seven by a wide
+! sd gets a generous maxiter (it is the slowest of the six by a wide
 ! margin); every other algorithm uses the CLI's own default (100).
+!
+! Not P-RFO: it walks uphill along a chosen Hessian mode, so it is a saddle
+! method, and asked to minimise water it depended on which mode it picked.
+! That choice changed with the runner's BLAS kernels (OpenBLAS's Sandy
+! Bridge kernels took 22 steps where Haswell's took 28), and on some CI
+! runners it failed outright. check_opt_ts (HCN, against a pyscf anchor)
+! and check_opt_connect test P-RFO on the saddles it is for.
 !
 ! Every --opt-coords terco exposes (cartesian, hdlc, hdlc-tc, dlc,
 ! dlc-tc) converges the SAME water minimisation with --opt-algorithm
@@ -33,6 +40,11 @@ module check_opt_algorithms_suite
       !! (test-drive's own parallel=.false.), never concurrent.
    real(dp), parameter :: E_TOL = 2.0e-6_dp
       !! loose: "does it converge", not a tight anchor match.
+   integer, parameter :: OUT_TAIL_LINES = 60
+      !! How much of a failed run's output to repeat in the failure
+      !! message: enough for the last SCF iterations and DL-FIND steps.
+   integer, parameter :: OUT_LINE_LEN = 512
+      !! Longer lines of that output are truncated, not wrapped.
 
 contains
 
@@ -45,8 +57,6 @@ contains
          new_unittest("--opt-algorithm lbfgs converges water to the opt_water anchor", test_lbfgs), &
          new_unittest("--opt-algorithm damped converges water to the opt_water anchor", test_damped), &
          new_unittest("--opt-algorithm nr converges water to the opt_water anchor", test_nr), &
-         new_unittest("--opt-algorithm prfo (as a plain minimiser) converges water to the "// &
-                      "opt_water anchor", test_prfo), &
          new_unittest("--opt-coords hdlc (lbfgs) converges water to the opt_water anchor", test_hdlc), &
          new_unittest("--opt-coords hdlc-tc (lbfgs) converges water to the opt_water anchor", test_hdlc_tc), &
          new_unittest("--opt-coords dlc (lbfgs) converges water to the opt_water anchor", test_dlc), &
@@ -73,10 +83,6 @@ contains
    subroutine test_nr(error); type(error_type), allocatable, intent(out) :: error
       call run_one('nr', 'cartesian', 100, error)
    end subroutine test_nr
-   subroutine test_prfo(error); type(error_type), allocatable, intent(out) :: error
-      ! P-RFO is valid as a plain minimiser too, just unusual.
-      call run_one('prfo', 'cartesian', 400, error)
-   end subroutine test_prfo
    subroutine test_hdlc(error); type(error_type), allocatable, intent(out) :: error
       call run_one('lbfgs', 'hdlc', 100, error)
    end subroutine test_hdlc
@@ -99,8 +105,8 @@ contains
    !
    subroutine test_no_stray(error)
       type(error_type), allocatable, intent(out) :: error
-      character(len=*), parameter :: algs(7) = &
-         [character(len=8) :: 'sd', 'cg', 'cg-auto', 'lbfgs', 'damped', 'nr', 'prfo']
+      character(len=*), parameter :: algs(6) = &
+         [character(len=8) :: 'sd', 'cg', 'cg-auto', 'lbfgs', 'damped', 'nr']
       character(len=*), parameter :: coordsets(4) = &
          [character(len=8) :: 'hdlc', 'hdlc-tc', 'dlc', 'dlc-tc']
       integer :: k, nfail
@@ -155,7 +161,14 @@ contains
             '--json '//probe//' > '//tag//'.out 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
       if (rc /= 0) then
-         call test_failed(error, "the CLI run itself failed, exit code "//to_string(rc)); return
+         ! The CLI's own reason (exit 2 is "SCF did not converge" or "--opt
+         ! did not converge", app/main.F90) is in <tag>.out, which ctest
+         ! never shows: without it an intermittent failure in CI says
+         ! nothing about which of the two it was, or at which step.
+         call test_failed(error, "the CLI run itself failed, exit code "//to_string(rc)// &
+                          new_line('a')//"last lines of "//work_dir//'/'//tag//".out:"//new_line('a')// &
+                          out_tail(work_dir//'/'//tag//'.out', OUT_TAIL_LINES))
+         return
       end if
 
       call json%initialize()
@@ -177,6 +190,37 @@ contains
                       abs(e - water_anchor_energy()))
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine run_one
+
+   function out_tail(path, nkeep) result(text)
+      !! The last `nkeep` lines of the text file `path`, newline-joined,
+      !! or a one-line note when it cannot be opened.
+      character(len=*), intent(in) :: path
+      integer, intent(in) :: nkeep
+      character(len=:), allocatable :: text
+      character(len=OUT_LINE_LEN), allocatable :: ring(:)
+      character(len=OUT_LINE_LEN) :: line
+      integer :: u, ios, nread, k, first
+      open (newunit=u, file=path, status='old', action='read', iostat=ios)
+      if (ios /= 0) then
+         text = "(cannot open "//path//")"
+         return
+      end if
+      allocate (ring(nkeep))
+      nread = 0
+      do
+         read (u, '(a)', iostat=ios) line
+         if (ios /= 0) exit
+         nread = nread + 1
+         ring(mod(nread - 1, nkeep) + 1) = line
+      end do
+      close (u)
+      text = ""
+      first = max(1, nread - nkeep + 1)
+      do k = first, nread
+         text = text//trim(ring(mod(k - 1, nkeep) + 1))//new_line('a')
+      end do
+      if (nread == 0) text = "(empty)"
+   end function out_tail
 
    !
    ! opt_water.ref's own converged energy (test/pyscf_refs/README.md's

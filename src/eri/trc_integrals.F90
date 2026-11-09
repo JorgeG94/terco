@@ -118,6 +118,13 @@ contains
       real(dp), intent(out) :: smat(b%nao, b%nao)
       real(dp), intent(out) :: tmat(b%nao, b%nao)
       real(dp), intent(out) :: vmat(b%nao, b%nao)
+      ! one_e_dispatch has no case above ONE_E_LMAX: an f shell in an LMAX=2
+      ! build wrote past the driver's block (-fcheck=bounds, Xe/def2-SVP)
+      ! and returned garbage S, T and V. The SCF never gets here with such a
+      ! basis (it refuses above the four-centre LMAX first); a direct
+      ! caller did.
+      if (maxval(b%sh_l) > ONE_E_LMAX) error stop &
+         "terco: trc_1e: basis above ONE_E_LMAX (rebuild with a higher TERCO_LMAX)"
       call one_e_driver(b%nshell, b%nao, b%natm, b%maxnp, b%sh_l, b%sh_np, &
                         b%sh_ao, b%sh_e, b%sh_c, b%sh_r, b%at_z, b%at_r, &
                         p%npair, p%p_i, p%p_j, smat, tmat, vmat)
@@ -143,6 +150,8 @@ contains
       !! are both linear in the density, so the spin split eri%gradient
       !! needs for its exchange term does not apply here.
       real(dp), intent(inout) :: grad(3, b%natm)
+      if (maxval(b%sh_l) > ONE_E_GRAD_LMAX) error stop &
+         "terco: trc_1e_gradient: basis above ONE_E_GRAD_LMAX (rebuild with a higher TERCO_LMAX)"
       call one_e_grad_driver(b%nshell, b%nao, b%natm, b%maxnp, b%sh_l, b%sh_np, &
                              b%sh_ao, b%sh_at, b%sh_e, b%sh_c, b%sh_r, b%at_z, b%at_r, &
                              p%npair, p%p_i, p%p_j, wmat, dmat, grad)
