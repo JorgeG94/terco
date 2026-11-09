@@ -37,11 +37,12 @@ without a GPU.
 - **Interfaces**: a Fortran API (`trc_api`), a `bind(c)` ABI for callers
   built with another compiler, and the `terco` command-line program.
 
-terco **ships no basis set**. A caller passes exponents, coefficients and
-centres -- or hands over libcint's `atm`/`bas`/`env` layout directly -- and
-terco builds the basis object, the shell-pair container and the screening
-tables from that. BSE-format JSON basis files and the QCSchema basis format
-are both read directly.
+The library takes its basis from the caller: exponents, coefficients and
+centres, or libcint's `atm`/`bas`/`env` layout directly, and builds the
+basis object, the shell-pair container and the screening tables from that.
+BSE-format JSON basis files and the QCSchema basis format are both read
+directly, and the `terco` program ships a library of Basis Set Exchange sets
+(see {doc}`install`).
 
 ## Caveats
 
