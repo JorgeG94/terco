@@ -421,6 +421,9 @@ contains
       !$acc enter data copyin(xbt0, xbtn, xt0, xtn, xtb1, xtb2, xpmax2, xsmin1, xtq, xqbin, xrlo, xrhi, &
       !$acc                   pr_ka, pr_kb, sl_pr, sl_ta) &
       !$acc            create(sl_area, sl_kept, sl_nrun)
+      ! The item routines take the loop index by value: passed by reference,
+      ! optimised ifx 2026.0 ran every iteration as slot 1 (the counts came
+      ! back 341 kept tile pairs instead of 662 in check_exchange_screen).
       do concurrent(s=1:nslot)
          call count_item(s, nbin, ntile, npr, nslot, xbt0, xbtn, xtn, &
                          xtb1, xtb2, xpmax2, xsmin1, xtq, xqbin, &
@@ -538,7 +541,8 @@ contains
       !! Slot s, bra tile ta of bin pair p: the area and the kept tile pairs it
       !! adds to p's whole-or-cut test, and the segments it emits if p is cut.
       !$acc routine seq
-      integer, intent(in) :: s, nbin, ntile, npr, nslot
+      integer, value :: s
+      integer, intent(in) :: nbin, ntile, npr, nslot
       integer, intent(in) :: bt0(nbin), btn(nbin), tn(ntile), tb1(ntile), tb2(ntile)
       integer, intent(in) :: pmax2(ntile), smin1(ntile), rlo(0:TILE_NLEV, ntile), rhi(0:TILE_NLEV, ntile)
       real(dp), intent(in) :: tq(ntile), qbin(nbin)
@@ -593,7 +597,8 @@ contains
       !! Slot s of a cut bin pair: its runs, then its diagonal triangle, from
       !! segment sl_off(s) + 1 on -- count_item's segments, in walk's order.
       !$acc routine seq
-      integer, intent(in) :: s, nbin, ntile, npr, nslot, nseg
+      integer, value :: s
+      integer, intent(in) :: nbin, ntile, npr, nslot, nseg
       integer, intent(in) :: bt0(nbin), btn(nbin), t0(ntile), tn(ntile), tb1(ntile), tb2(ntile)
       integer, intent(in) :: pmax2(ntile), smin1(ntile), rlo(0:TILE_NLEV, ntile), rhi(0:TILE_NLEV, ntile)
       real(dp), intent(in) :: tq(ntile), qbin(nbin)
@@ -658,7 +663,8 @@ contains
                               sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sLA, sLB, sLC, sLD)
       !! A bin pair launched whole: its one segment.
       !$acc routine seq
-      integer, intent(in) :: p, nbin, npr, nseg
+      integer, value :: p
+      integer, intent(in) :: nbin, npr, nseg
       integer, intent(in) :: pr_ka(npr), pr_kb(npr), pr_mode(npr), pr_off(npr)
       integer, intent(in) :: bin_cnt(nbin), bin_off(nbin), bin_la(nbin), bin_lb(nbin), bin_pbase(nbin)
       integer, intent(inout) :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg), sPA(nseg), sPB(nseg)
