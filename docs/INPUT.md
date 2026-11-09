@@ -3,7 +3,7 @@
 `terco` takes its settings either as command-line flags or from a TOML file:
 
 ```sh
-terco water.xyz -b def2-svp -f wb97x-v --df --grad   # flags
+terco water.xyz -b def2-svp -f wb97x-v --grad        # flags
 terco water.toml                                     # the same run from a file
 terco water.toml --grad                              # file, plus a flag on top
 ```

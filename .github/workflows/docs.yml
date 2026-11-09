@@ -36,16 +36,18 @@ jobs:
         run: sphinx-build -W --keep-going -b html docs/sphinx docs/sphinx/_build
 
       - name: Upload the built site
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs/sphinx/_build
 
-  # Only a push to main or a v* tag publishes -- a pull_request run only has
-  # to prove the build is clean (the job above).
+  # Only a push to main publishes; a pull_request or v* tag run only has to
+  # prove the build is clean (the job above). The github-pages environment's
+  # default protection accepts deployments from the default branch alone, so
+  # a tag deploy would be refused, and main carries the tag's docs anyway.
   deploy:
     name: deploy
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
