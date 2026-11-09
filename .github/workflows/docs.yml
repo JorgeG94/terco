@@ -1,0 +1,60 @@
+name: docs
+
+# The docs build needs no Fortran compiler: the CLI help text and every
+# command-line example on the site are static text, already run against a
+# CPU build and verified by hand (docs/sphinx's own pages say so). This
+# workflow only ever runs sphinx-build.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Sphinx and the Fortran domain
+        run: pip install -r docs/sphinx/requirements.txt
+
+      - name: Build (warnings are errors)
+        run: sphinx-build -W --keep-going -b html docs/sphinx docs/sphinx/_build
+
+      - name: Upload the built site
+        if: github.event_name == 'push'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/sphinx/_build
+
+  # Only a push to main or a v* tag publishes -- a pull_request run only has
+  # to prove the build is clean (the job above).
+  deploy:
+    name: deploy
+    if: github.event_name == 'push'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
