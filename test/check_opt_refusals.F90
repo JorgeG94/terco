@@ -57,8 +57,10 @@ contains
                       test_soft_modes_wrong_algorithm), &
          new_unittest("--opt-algorithm without --opt is refused, not silently ignored", &
                       test_opt_option_without_opt), &
-         new_unittest("--opt-algorithm prfo on a single atom is refused (no internal DOF)", &
-                      test_single_atom_prfo), &
+         new_unittest("--opt-algorithm nr on a single atom is refused (no internal DOF)", &
+                      test_single_atom_nr), &
+         new_unittest("--opt-algorithm prfo is refused: DL-FIND's P-RFO is a saddle search, not a "// &
+                      "minimiser", test_prfo_as_minimiser), &
          new_unittest("--opt-max-updates 0 is accepted (DL-FIND's own 'always recompute')", &
                       test_max_updates_zero_accepted), &
          new_unittest("--opt-global-pop-size without --opt-algorithm stochastic/genetic is refused", &
@@ -263,10 +265,22 @@ contains
    ! A single atom has no internal degrees of freedom for P-RFO/NR/the
    ! dimer method's own eigenvector-following to search over.
    !
-   subroutine test_single_atom_prfo(error)
+   subroutine test_single_atom_nr(error)
       type(error_type), allocatable, intent(out) :: error
-      call refuse('o_atom.xyz', '--opt --opt-algorithm prfo', 'need more than one atom', error)
-   end subroutine test_single_atom_prfo
+      call refuse('o_atom.xyz', '--opt --opt-algorithm nr', 'need more than one atom', error)
+   end subroutine test_single_atom_nr
+
+   !
+   ! DL-FIND's P-RFO always climbs its lowest Hessian mode (dlf_prfo_step,
+   ! follow=0/tsmode=1): a transition-state search, reached through
+   ! --opt-target saddle --opt-saddle-method prfo. As a "minimiser" it only
+   ! converged when that mode happened to be a near-flat rotation, and on
+   ! water/STO-3G it cycled for 400 steps on AVX-512 OpenBLAS kernels.
+   !
+   subroutine test_prfo_as_minimiser(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('water.xyz', '--opt --opt-algorithm prfo', 'is a saddle search, not a minimiser', error)
+   end subroutine test_prfo_as_minimiser
 
    !
    ! DL-FIND itself accepts maxupd=0 (dlf_formstep.f90's own
@@ -379,7 +393,7 @@ contains
 
    subroutine test_neb_bad_algorithm(error)
       type(error_type), allocatable, intent(out) :: error
-      call refuse('water.xyz', '--opt --opt-neb water.xyz --opt-algorithm prfo', &
+      call refuse('water.xyz', '--opt --opt-neb water.xyz --opt-algorithm nr', &
                   'needs a Hessian-free, non-global --opt-algorithm', error)
    end subroutine test_neb_bad_algorithm
 

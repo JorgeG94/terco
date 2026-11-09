@@ -1,13 +1,20 @@
 !
-! Every --opt-algorithm terco exposes (sd, cg, cg-auto, lbfgs, damped,
-! nr, prfo-as-a-minimiser) converges water/STO-3G to the existing
+! Every minimiser terco exposes (sd, cg, cg-auto, lbfgs, damped, nr)
+! converges water/STO-3G to the existing
 ! opt_water anchor energy (test/pyscf_refs/opt_water.ref) within a
 ! tolerance scaled to the --opt-gtol used -- the harmonic estimate
 ! check_opt_vs_pyscf.F90 already uses (dE ~ g^2/(2k)), generously
 ! loosened here since this check's job is "does the algorithm converge
 ! at all", not a tight anchor comparison (that is check_opt_vs_pyscf's).
-! sd gets a generous maxiter (it is the slowest of the seven by a wide
+! sd gets a generous maxiter (it is the slowest of the six by a wide
 ! margin); every other algorithm uses the CLI's own default (100).
+!
+! Not P-RFO: it walks uphill along a chosen Hessian mode, so it is a saddle
+! method, and asked to minimise water it depended on which mode it picked.
+! That choice changed with the runner's BLAS kernels (OpenBLAS's Sandy
+! Bridge kernels took 22 steps where Haswell's took 28), and on some CI
+! runners it failed outright. check_opt_ts (HCN, against a pyscf anchor)
+! and check_opt_connect test P-RFO on the saddles it is for.
 !
 ! Every --opt-coords terco exposes (cartesian, hdlc, hdlc-tc, dlc,
 ! dlc-tc) converges the SAME water minimisation with --opt-algorithm
@@ -50,8 +57,6 @@ contains
          new_unittest("--opt-algorithm lbfgs converges water to the opt_water anchor", test_lbfgs), &
          new_unittest("--opt-algorithm damped converges water to the opt_water anchor", test_damped), &
          new_unittest("--opt-algorithm nr converges water to the opt_water anchor", test_nr), &
-         new_unittest("--opt-algorithm prfo (as a plain minimiser) converges water to the "// &
-                      "opt_water anchor", test_prfo), &
          new_unittest("--opt-coords hdlc (lbfgs) converges water to the opt_water anchor", test_hdlc), &
          new_unittest("--opt-coords hdlc-tc (lbfgs) converges water to the opt_water anchor", test_hdlc_tc), &
          new_unittest("--opt-coords dlc (lbfgs) converges water to the opt_water anchor", test_dlc), &
@@ -78,10 +83,6 @@ contains
    subroutine test_nr(error); type(error_type), allocatable, intent(out) :: error
       call run_one('nr', 'cartesian', 100, error)
    end subroutine test_nr
-   subroutine test_prfo(error); type(error_type), allocatable, intent(out) :: error
-      ! P-RFO is valid as a plain minimiser too, just unusual.
-      call run_one('prfo', 'cartesian', 400, error)
-   end subroutine test_prfo
    subroutine test_hdlc(error); type(error_type), allocatable, intent(out) :: error
       call run_one('lbfgs', 'hdlc', 100, error)
    end subroutine test_hdlc
@@ -104,8 +105,8 @@ contains
    !
    subroutine test_no_stray(error)
       type(error_type), allocatable, intent(out) :: error
-      character(len=*), parameter :: algs(7) = &
-         [character(len=8) :: 'sd', 'cg', 'cg-auto', 'lbfgs', 'damped', 'nr', 'prfo']
+      character(len=*), parameter :: algs(6) = &
+         [character(len=8) :: 'sd', 'cg', 'cg-auto', 'lbfgs', 'damped', 'nr']
       character(len=*), parameter :: coordsets(4) = &
          [character(len=8) :: 'hdlc', 'hdlc-tc', 'dlc', 'dlc-tc']
       integer :: k, nfail
