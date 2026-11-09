@@ -1,6 +1,10 @@
 # Policy on AI-assisted contributions to terco
 
-Adapted, with thanks, from the MOM6 consortium's policy on AI-generated code.
+This policy is taken from, and inspired by, the MOM6 consortium's "Policy
+for AI-generated code in MOM6" ([MOM6](https://github.com/mom-ocean/MOM6)).
+Its structure and most of its wording are theirs; we adapted the examples to
+terco and added the sections on disclosure trailers and licensing. Our thanks
+to the MOM6 developers.
 
 ## Guiding principle
 
