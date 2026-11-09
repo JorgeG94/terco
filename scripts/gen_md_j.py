@@ -75,9 +75,10 @@ TWO_PI_2_5 = "34.986836655249725_dp"
 
 # The largest lp + lq whose Hermite stage is one symmetric kernel (each
 # unordered (P, Q) once, both Jt filled); above it, a gather kernel for each
-# order. -1, none: the symmetric form is parked, opt-in only (CMake
-# TERCO_MDJ_SYM_LMAX), because it did not pay; see src/eri/trc_mdj.F90.
-DEFAULT_SYM_LMAX = -1
+# order. 99, every class: the default since the Boys function's asymptotic
+# branch made the gather form's second evaluation the cost to save (see
+# src/eri/trc_mdj.F90). -1 is none (CMake TERCO_MDJ_SYM_LMAX).
+DEFAULT_SYM_LMAX = 99
 
 
 def sym_kernels(lmax, sym_lmax):

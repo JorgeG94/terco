@@ -26,7 +26,7 @@
 ! at a time, each Hermite row of a block contiguous over the block's pairs.
 ! Everything lives on the device from `build` to `release`.
 !
-! P <-> Q SYMMETRY (parked, off by default). The Hermite stage evaluates each
+! P <-> Q SYMMETRY (the default; CMake TERCO_MDJ_SYM_LMAX). The Hermite stage evaluates each
 ! [P|Q] twice: once in the [lp|lq] launch for Jt[P], once in [lq|lp] for
 ! Jt[Q]. gen_md_j.py can instead emit symmetric kernels (trc_mdj_s<lp><lq>,
 ! lp >= lq, CMake TERCO_MDJ_SYM_LMAX >= 0) that evaluate each unordered pair
@@ -58,7 +58,16 @@
 ! all-gather (median): gly20 cc-pVDZ 0.85, water20 cc-pVDZ 0.74, gly50
 ! cc-pVDZ 0.91 (0.67 with symmetry up to lp + lq = 5-7, noisy), gly20
 ! cc-pVTZ ~1.00 at every cut, water40 cc-pVTZ 1.15 (worse at every cut).
-! Not a clear win where J matters (cc-pVTZ), so the default is gather.
+! Not a clear win where J matters (cc-pVTZ), so the default was gather.
+!
+! It is the default now. Once boys_eval stopped calling erf and exp for every
+! distant pair, the gather form's second evaluation of each kept pair was
+! the cost left to save, and the symmetric kernels win on a dedicated V100
+! (RHF, 1e-11, full builds, Fock s/build, gather -> symmetric): gly50
+! cc-pVDZ 4.49 -> 4.23, def2-SVP 2.98 -> 2.75, gly30 def2-TZVP 20.7 -> 20.6,
+! water40 cc-pVTZ 11.8 -> 11.8, gly20 cc-pVTZ 16.5 -> 16.5; energies equal to
+! 1e-12. Compile time, ninja: LMAX=2 71 s -> 15 s of MD J modules; LMAX=3
+! 327 s -> 338 s, the slowest module 34 s -> 61 s.
 ! TERCO_MDJ_GATHER_ALL keeps both sets so TRC_MDJ_SYM_LMAX races them at run
 ! time. Left to try: the symmetric off-diagonal kernels reading Dt[P] from
 ! memory (built, fewer registers, e.g. [4|1] 192 -> 150, not timed on a

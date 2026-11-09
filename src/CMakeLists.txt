@@ -909,12 +909,13 @@ set(_mdj_batch_flag "")
 if(NOT "${TERCO_MDJ_BATCHES}" STREQUAL "")
   set(_mdj_batch_flag "--batches" "${TERCO_MDJ_BATCHES}")
 endif()
-# The P <-> Q symmetric Hermite kernels are parked (see src/eri/trc_mdj.F90):
-# off by default, so the default build generates exactly the gather kernels.
-# TERCO_MDJ_SYM_LMAX >= 0 uses them for every class with lp + lq up to it;
+# The P <-> Q symmetric Hermite kernels (see src/eri/trc_mdj.F90) are the
+# default for every class (99 is above any lp + lq); -1 builds the gather
+# kernels alone. TERCO_MDJ_SYM_LMAX >= 0 uses them for every class with lp + lq
+# up to it;
 # TERCO_MDJ_GATHER_ALL also keeps every gather kernel, so TRC_MDJ_SYM_LMAX can
 # race the two forms at run time (that build compiles both sets).
-set(TERCO_MDJ_SYM_LMAX "-1" CACHE STRING "MD J: largest lp+lq on the symmetric Hermite kernels (-1: none)")
+set(TERCO_MDJ_SYM_LMAX "99" CACHE STRING "MD J: largest lp+lq on the symmetric Hermite kernels (99: all, -1: none)")
 option(TERCO_MDJ_GATHER_ALL "MD J: keep every gather Hermite kernel beside the symmetric ones" OFF)
 if(NOT "${TERCO_MDJ_SYM_LMAX}" STREQUAL "-1")
   list(APPEND _mdj_batch_flag "--sym-lmax" "${TERCO_MDJ_SYM_LMAX}")
