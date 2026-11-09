@@ -537,6 +537,23 @@ jobs:
       - name: Regenerate and diff
         run: python3 tools/gen_capi_headers.py --check
 
+  basis-library:
+    name: shipped basis sets match the Basis Set Exchange
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # basis_sets/ is BSE's own JSON, unmodified, at a pinned version
+      # (tools/fetch_basis.py). A hand edit or a file outside the list would
+      # ship a basis nobody can reproduce.
+      - name: Compare with basis_set_exchange
+        run: |
+          python3 -m pip install basis_set_exchange==0.12
+          python3 tools/fetch_basis.py --check
+
   rys-generators:
     name: Rys root tables are up to date
     runs-on: ubuntu-latest
