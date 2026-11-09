@@ -1,0 +1,134 @@
+name: release
+
+# On a v* tag: the fpm tarballs (tools/make_fpm_tarball.py), one per angular-
+# momentum ceiling, each the tagged source with its kernels already generated,
+# attached with their checksums to a DRAFT release the maintainer publishes.
+# Generation only runs CMake's configure, so any Fortran compiler serves; the
+# LMAX=2 tarball is then built by fpm as a user would and its energy checked.
+# LMAX=3 and 4 take hours of nvfortran and are built by hand before a tag.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'tag or commit to package (no release is touched)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  tarball:
+    name: tarball (TERCO_LMAX=${{ matrix.lmax }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        lmax: [2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Setup Fortran compiler
+        uses: fortran-lang/setup-fortran@v1.11.0
+        with:
+          compiler: gcc
+          version: 15
+
+      - name: Install Ninja and LAPACK
+        run: sudo apt-get update && sudo apt-get install -y ninja-build liblapack-dev libblas-dev
+
+      - name: Generate and pack
+        run: >-
+          python3 tools/make_fpm_tarball.py --lmax ${{ matrix.lmax }}
+          --ref ${{ github.event.inputs.ref || github.ref_name }} --out dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tarball-lmax${{ matrix.lmax }}
+          path: dist/*.tar.gz
+
+  # The LMAX=2 tarball as a user gets it: fpm only, gfortran 15 + OpenMPI (the
+  # fpm-build job's toolchain), then a water RHF against a pyscf anchor through
+  # the tarball's own basis_sets/.
+  smoke:
+    name: fpm build of the LMAX=2 tarball
+    needs: tarball
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tarball-lmax2
+          path: dist
+
+      - name: Setup gfortran 15 and OpenMPI
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: terco-fpm
+          create-args: >-
+            -c conda-forge
+            gfortran=15 gcc=15 openmpi=5 openblas python git
+
+      - name: Install fpm
+        run: |
+          curl -sSL -o "$HOME/fpm" \
+            https://github.com/fortran-lang/fpm/releases/download/v0.13.0/fpm-0.13.0-linux-x86_64-gcc-12
+          chmod +x "$HOME/fpm"
+          echo "$HOME" >> "$GITHUB_PATH"
+
+      - name: Unpack and install
+        run: |
+          mkdir -p "$RUNNER_TEMP/u" && tar xzf dist/*.tar.gz -C "$RUNNER_TEMP/u"
+          cd "$RUNNER_TEMP"/u/terco-*-lmax2
+          fpm install --prefix "$RUNNER_TEMP/inst" --compiler mpifort --profile release \
+            --flag "-ffree-line-length-none"
+
+      # Water RHF/6-31+G* (Cartesian) by name from the tarball's library:
+      # pyscf 2.x with the same BSE 0.12 file gives -76.0174413767
+      # (app/CMakeLists.txt, cli_library_pople).
+      - name: SCF against the pyscf anchor
+        run: |
+          export TERCO_BASIS_PATH=$(echo "$RUNNER_TEMP"/u/terco-*-lmax2/basis_sets)
+          "$RUNNER_TEMP/inst/bin/terco" test/water.xyz -b 6-31+G* --cart \
+            --econv 1e-11 --gconv 1e-8 > "$RUNNER_TEMP/scf.log" 2>&1 || { cat "$RUNNER_TEMP/scf.log"; exit 1; }
+          grep -E "TOTAL ENERGY +-76\.01744137" "$RUNNER_TEMP/scf.log" || { cat "$RUNNER_TEMP/scf.log"; exit 1; }
+
+  publish:
+    name: attach to the draft release
+    needs: [tarball, smoke]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: tarball-lmax*
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz | tee SHA256SUMS
+
+      # A draft, so nothing is public until the maintainer reviews and
+      # publishes it; reruns replace the files.
+      - name: Create or update the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --draft --verify-tag --title "terco $TAG" --notes ""
+          gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS --clobber

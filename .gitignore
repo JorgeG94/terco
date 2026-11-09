@@ -116,3 +116,6 @@ test/pyscf_refs/df_vs_pyscf.ref
 
 # tools/fpm_generate.sh output
 src/generated/fpm/
+
+# tools/make_fpm_tarball.py output
+dist/
