@@ -4,6 +4,7 @@
 
 Docs: <https://jorgeg94.github.io/terco/>. Build them locally with
 `pip install -r docs/sphinx/requirements.txt && sphinx-build -b html docs/sphinx docs/sphinx/_build`.
+Contributions, AI-assisted or not, follow [AI_POLICY.md](AI_POLICY.md).
 
 ```
 Adjective, from Spanish: Stubborn

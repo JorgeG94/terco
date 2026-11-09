@@ -167,6 +167,8 @@ before any non-trivial change. The rules that most often break builds:
   is fine. Commit messages say what changed and why. See SKILL.md section 9
   for the rest.
 - Never merge without the maintainer's say-so.
+- `AI_POLICY.md` applies to every contribution an agent drafts: disclose
+  the tool, and leave review and merging to a human maintainer.
 
 ## More context
 
