@@ -26,6 +26,55 @@
 ! at a time, each Hermite row of a block contiguous over the block's pairs.
 ! Everything lives on the device from `build` to `release`.
 !
+! P <-> Q SYMMETRY (the default; CMake TERCO_MDJ_SYM_LMAX). The Hermite stage evaluates each
+! [P|Q] twice: once in the [lp|lq] launch for Jt[P], once in [lq|lp] for
+! Jt[Q]. gen_md_j.py can instead emit symmetric kernels (trc_mdj_s<lp><lq>,
+! lp >= lq, CMake TERCO_MDJ_SYM_LMAX >= 0) that evaluate each unordered pair
+! once and add [P|Q] Dt[Q] to Jt[P] (in registers) and [Q|P] Dt[P] to Jt[Q]
+! (an FP64 atomic per Hermite slot of Q per pair, on the smaller block);
+! [Q|P]_{t+tau} = (-1)^|t+tau| [P|Q]_{t+tau}. Each direction keeps its own
+! screen (I_P ||rho_Q|| for Jt[P], I_Q ||rho_P|| for Jt[Q]); R is formed if
+! either passes, so J equals the gather form's to round-off (measured
+! max|dJ| ~1e-12 of max|J| 58.6, gly20 cc-pVDZ). Two layout details mattered:
+! each thread starts its ket chunk at its own offset (all of a warp's
+! atomics on one address made the stage 2.4x slower), and a diagonal block
+! pairs P with Q = P + s (mod n), s = 0..n/2, so no thread idles on a triangle.
+! Tiling 2-4 bra pairs per thread to share the scatter's atomics doubled the
+! registers and lost.
+!
+! Why it is not 2x: the screen is density-weighted per direction, so the two
+! launches skip different pairs, and only pairs kept by both are shared. On
+! water20 cc-pVDZ with the SCF density the union of the two kept sets is
+! 0.553 of what the gather form evaluates (0.54-0.56 in every class): that is
+! the ceiling. The kernels are FP64-pipe bound (ncu, [1|0]: math-pipe
+! throttle dominant, atomics ~7% of L2), and the symmetric one costs more per
+! evaluation: 1.6x the instructions, 20.3 against 24.4 active lanes per warp,
+! 28.6% against 40% occupancy, and 200-255 registers with spills in the
+! heavy classes.
+!
+! Measured (V100; GPU partly shared with another job, so +-10%): J, SCF
+! builds 2-4 (nsys), gly20 cc-pVDZ 0.426 s gather against 0.384 s symmetric.
+! In-process interleaved A/B on a synthetic density, all-symmetric over
+! all-gather (median): gly20 cc-pVDZ 0.85, water20 cc-pVDZ 0.74, gly50
+! cc-pVDZ 0.91 (0.67 with symmetry up to lp + lq = 5-7, noisy), gly20
+! cc-pVTZ ~1.00 at every cut, water40 cc-pVTZ 1.15 (worse at every cut).
+! Not a clear win where J matters (cc-pVTZ), so the default was gather.
+!
+! It is the default now. Once boys_eval stopped calling erf and exp for every
+! distant pair, the gather form's second evaluation of each kept pair was
+! the cost left to save, and the symmetric kernels win on a dedicated V100
+! (RHF, 1e-11, full builds, Fock s/build, gather -> symmetric): gly50
+! cc-pVDZ 4.49 -> 4.23, def2-SVP 2.98 -> 2.75, gly30 def2-TZVP 20.7 -> 20.6,
+! water40 cc-pVTZ 11.8 -> 11.8, gly20 cc-pVTZ 16.5 -> 16.5; energies equal to
+! 1e-12. Compile time, ninja: LMAX=2 71 s -> 15 s of MD J modules; LMAX=3
+! 327 s -> 338 s, the slowest module 34 s -> 61 s.
+! TERCO_MDJ_GATHER_ALL keeps both sets so TRC_MDJ_SYM_LMAX races them at run
+! time. Left to try: the symmetric off-diagonal kernels reading Dt[P] from
+! memory (built, fewer registers, e.g. [4|1] 192 -> 150, not timed on a
+! quiet GPU); a per-class cut chosen by measurement; a screen that is
+! symmetric by construction (a direction-free bound), which would make
+! every pair shared and lift the 0.55 ceiling at a looser screen.
+!
 ! REFERENCES (inspiration; the formulation and code here are terco's own)
 !   L. E. McMurchie, E. R. Davidson, J. Comput. Phys. 26, 218 (1978).
 !   E. Palethorpe, G. M. J. Barca, J. Chem. Theory Comput. 21, 9388 (2025).
@@ -38,7 +87,8 @@ module trc_mdj
    use pic_types, only: dp
    use trc_basis_types, only: trc_basis_t
    use trc_bins, only: pair_bins_t
-   use trc_mdj_kernels, only: mdj_ket, mdj_bra, mdj_bound, mdj_hermite, MDJ_LPMAX
+   use trc_mdj_kernels, only: mdj_ket, mdj_bra, mdj_bound, mdj_hermite, mdj_hermite_sym, &
+                              MDJ_LPMAX, MDJ_SYM_LMAX, MDJ_GATHER_ALL
    use pic_profiler, only: profiler_start, profiler_stop
    implicit none
    private
@@ -68,6 +118,8 @@ module trc_mdj
       !! length of the Hermite arrays dt and jt
       integer :: ntype = 0
       real(dp) :: cut = 0.0_dp
+      integer :: sym_lmax = MDJ_SYM_LMAX
+      !! classes with lp + lq up to this use the symmetric Hermite kernels
       real(dp), allocatable :: mp_z(:), mp_px(:), mp_py(:), mp_pz(:)
       !! exponent p and centre P of each primitive pair
       real(dp), allocatable :: mp_ax(:), mp_ay(:), mp_az(:), mp_bx(:), mp_by(:), mp_bz(:)
@@ -123,6 +175,7 @@ contains
       allocate (this%dt(max(this%ndt, 1)), this%jt(max(this%ndt, 1)))
       allocate (this%mp_ip(max(this%nhp, 1)), this%mp_nq(max(this%nhp, 1)))
       this%cut = thresh*margin()
+      this%sym_lmax = sym_lmax_choice()
 
       !$acc enter data copyin(this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
       !$acc                   this%mp_ax, this%mp_ay, this%mp_az, &
@@ -156,6 +209,7 @@ contains
       integer,  intent(in), optional :: rank, nranks
 
       integer :: t, lp, lq, lpt, qfix, c0, cstep
+      logical :: sym
 
       qfix = qlen_override()
       c0 = 0
@@ -185,12 +239,25 @@ contains
          if (this%cl_nk(lp) == 0) cycle
          do lq = 0, MDJ_LPMAX
             if (this%cl_nk(lq) == 0) cycle
-            call mdj_hermite(lp, lq, this%cl_nk(lp), this%cl_k0(lp), this%cl_hb(lp), &
-                             this%cl_nk(lq), this%cl_k0(lq), this%cl_hb(lq), &
-                             chunk_length(this%cl_nk(lp), this%cl_nk(lq), qfix, cstep), c0, cstep, &
-                             this%nhp, &
-                             this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
-                             this%mp_ip, this%mp_nq, this%ndt, this%dt, this%jt, this%cut)
+            ! A symmetric class is one launch for lq <= lp, filling both
+            ! blocks' Jt; the others are a gather launch for each order.
+            sym = lp + lq <= this%sym_lmax
+            if (sym .and. lq > lp) cycle
+            if (sym) then
+               call mdj_hermite_sym(lp, lq, this%cl_nk(lp), this%cl_k0(lp), this%cl_hb(lp), &
+                                    this%cl_nk(lq), this%cl_k0(lq), this%cl_hb(lq), &
+                                    chunk_length(this%cl_nk(lp), this%cl_nk(lq), lp == lq, qfix, cstep), &
+                                    c0, cstep, this%nhp, &
+                                    this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
+                                    this%mp_ip, this%mp_nq, this%ndt, this%dt, this%jt, this%cut)
+            else
+               call mdj_hermite(lp, lq, this%cl_nk(lp), this%cl_k0(lp), this%cl_hb(lp), &
+                                this%cl_nk(lq), this%cl_k0(lq), this%cl_hb(lq), &
+                                chunk_length(this%cl_nk(lp), this%cl_nk(lq), .false., qfix, cstep), &
+                                c0, cstep, this%nhp, &
+                                this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
+                                this%mp_ip, this%mp_nq, this%ndt, this%dt, this%jt, this%cut)
+            end if
          end do
       end do
       !$acc wait
@@ -380,18 +447,22 @@ contains
       end function keep
    end subroutine fill_prims
 
-   pure integer function chunk_length(np, nq, qfix, nshare) result(qlen)
+   pure integer function chunk_length(np, nq, half, qfix, nshare) result(qlen)
       !! Kets per thread for an np x nq Hermite launch: enough chunks to reach
       !! MDJ_THREADS_TARGET threads on each of nshare ranks, never under
-      !! MDJ_QLEN_MIN kets each.
+      !! MDJ_QLEN_MIN kets each. A symmetric launch of one block against
+      !! itself (half) gives each P only np/2 + 1 kets.
       integer, intent(in) :: np, nq, qfix, nshare
-      integer :: nchunk
+      logical, intent(in) :: half
+      integer :: nchunk, nk
       if (qfix > 0) then
          qlen = qfix
          return
       end if
+      nk = nq
+      if (half) nk = nq/2 + 1
       nchunk = max(1, (MDJ_THREADS_TARGET*nshare + np - 1)/np)
-      qlen = max(MDJ_QLEN_MIN, (nq + nchunk - 1)/nchunk)
+      qlen = max(MDJ_QLEN_MIN, (nk + nchunk - 1)/nchunk)
    end function chunk_length
 
    integer function qlen_override() result(res)
@@ -435,6 +506,22 @@ contains
          if (ios /= 0) res = MDJ_MARGIN_DEFAULT
       end if
    end function margin
+
+   integer function sym_lmax_choice() result(res)
+      !! MDJ_SYM_LMAX, or less with TRC_MDJ_SYM_LMAX in a build whose every
+      !! class also has its gather kernels (gen_md_j.py --gather-all), for
+      !! racing the two forms; -1 is all gather.
+      character(len=32) :: e
+      integer :: ios, v
+      res = MDJ_SYM_LMAX
+      if (.not. MDJ_GATHER_ALL) return
+      e = " "
+      call get_environment_variable("TRC_MDJ_SYM_LMAX", e)
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) v
+         if (ios == 0) res = max(-1, min(v, MDJ_SYM_LMAX))
+      end if
+   end function sym_lmax_choice
 
    subroutine zero_device(n, a)
       integer,  intent(in)    :: n

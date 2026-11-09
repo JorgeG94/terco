@@ -17,3 +17,10 @@ path whose upstream is PySCF rather than libcint). Both libfint and PySCF are
 licensed under the Apache License, Version 2.0; that licence applies to this
 translation, under the otherwise-MIT terco tree, which is why it is named here
 rather than assumed. Each file above carries its own one-line provenance header.
+
+Basis set data
+basis_sets/*.json are the Basis Set Exchange's JSON exports, unmodified
+(basis_set_exchange 0.12, https://www.basissetexchange.org,
+https://github.com/MolSSI-BSE/basis_set_exchange; tools/fetch_basis.py).
+The data are the published basis sets of their original authors, whose papers
+each file lists; see basis_sets/README.md for how to cite them and the BSE.

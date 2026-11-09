@@ -169,7 +169,7 @@ contains
       !! name: lower-cased, with ".json" added unless it is already there, and
       !! looked up in each directory of $TERCO_BASIS_PATH (colon-separated) in
       !! order, then in the installed basis directory, then in the source
-      !! tree's test/basis_sets. The files are Basis Set
+      !! tree's basis_sets and test/basis_sets. The files are Basis Set
       !! Exchange JSON, as trc_basis_from_json reads them.
       !!
       !! A name with "*" or "/" (6-31G*, 6-311+G**) is looked up under Basis

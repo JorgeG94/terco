@@ -113,6 +113,15 @@ target_link_libraries(check_scf_diag_failure PRIVATE test-drive::test-drive)
 # The McMurchie-Davidson J engine against the Fock build's own J.
 terco_add_check(check_mdj check_mdj.F90 NEEDS_BASIS)
 target_link_libraries(check_mdj PRIVATE test-drive::test-drive)
+# The same cases on the gather Hermite kernels. Only a TERCO_MDJ_GATHER_ALL
+# build has them beside the symmetric default, and TRC_MDJ_SYM_LMAX=-1 selects
+# them at run time (trc_mdj's sym_lmax_choice).
+if(TERCO_MDJ_GATHER_ALL)
+  add_test(NAME terco/check_mdj_gather COMMAND check_mdj)
+  set_tests_properties(
+    terco/check_mdj_gather PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                      ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TRC_MDJ_SYM_LMAX=-1")
+endif()
 # Which engine forms J in a resident build (eri_mdj_size_rule), and that the
 # two give the same G.
 terco_add_check(check_mdj_rule check_mdj_rule.F90 NEEDS_BASIS)
