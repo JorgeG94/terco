@@ -1,13 +1,11 @@
 # Overview
 
-terco is a GPU electron-repulsion-integral (ERI) and SCF library written in
-standard Fortran. The compute kernels are `do concurrent`, compiled by
-nvfortran with `-stdpar=gpu -acc -gpu=mem:separate`; OpenACC is used only to
-move data between host and device, never to launch compute. The same source
-also builds and validates on the CPU with gfortran or ifx -- `do concurrent`
-is then an ordinary serial loop and every OpenACC directive is an inert
-comment, so the host build is how the library's integrals are checked
-without a GPU.
+Terco is a GPU accelerated quantum chemistry library written in standard Fortran.
+
+The goal of terco is to showcase modern Fortran and GPU performance without writing
+a single line of CUDA and relying on OpenACC/OpenMP for data transfers. The second goal
+is to motivate compiler developers across the vendors to solidify `do concurrent` support
+across hardware, since in theory, it should be portable.
 
 ## What v0.1.0 covers
 
@@ -36,6 +34,7 @@ without a GPU.
   frozen core; Cartesian or spherical; restricted; single GPU.
 - **Interfaces**: a Fortran API (`trc_api`), a `bind(c)` ABI for callers
   built with another compiler, and the `terco` command-line program.
+- **Geometry optimization**: Through LIBDLFIND.
 
 The library takes its basis from the caller: exponents, coefficients and
 centres, or libcint's `atm`/`bas`/`env` layout directly, and builds the
