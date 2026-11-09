@@ -24,5 +24,6 @@ library
 api
 functionals
 theory
+citations
 ai_policy
 ```
