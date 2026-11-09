@@ -64,6 +64,7 @@ module trc_run
       character(len=:), allocatable :: save_scf, restart   !! "" when not asked for
       integer, allocatable :: z(:)
       integer :: natm, chrg, uhf, nelec, mult, grid, nlc_grid
+      integer :: ecp_core = 0   !! core electrons the ECP replaces, summed over atoms (0 with none)
       integer(c_int) :: nao, conv, niter, sph, npcm
       real(dp) :: econv, gconv, thresh, eps
       real(dp) :: lindep = -1.0_dp  !! --lindep, negative = the library's default

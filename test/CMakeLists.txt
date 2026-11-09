@@ -703,6 +703,15 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_input PRIVATE test-drive::test-drive)
   unset(_cli_input_workdir)
 
+  # Effective core potentials through the CLI: the basis's own ECP and the
+  # valence electron count, --ecp and a TOML [basis] ecp, and a partial ECP
+  # refused -- see check_cli_ecp.F90's own header.
+  set(_cli_ecp_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_ecp_work)
+  terco_add_check(check_cli_ecp check_cli_ecp.F90 NEEDS_PYSCF_REF
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_ecp_workdir})
+  target_link_libraries(check_cli_ecp PRIVATE test-drive::test-drive)
+  unset(_cli_ecp_workdir)
+
   # The incremental Fock build's switches through the CLI: on by default,
   # off with --no-incremental or a TOML `incremental = false`, contradictory
   # switches refused -- see check_cli_incremental.F90's own header.
