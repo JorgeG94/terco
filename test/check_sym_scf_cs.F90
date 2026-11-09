@@ -527,10 +527,17 @@ contains
 
       ! a C1 group is the old path: no labels, and the same result as a run
       ! without `sym`. Not bitwise: under OpenMP (and on the device) the Fock
-      ! build accumulates in a run-dependent order, so two plain C1 runs of
-      ! this case differ by up to 4.5e-13 Eh and 3.1e-13 in D (measured at 4
-      ! and 8 threads; 0 at 1 thread). The gate is ~20x that noise and far
-      ! below any real symmetry effect (the Cs oracle cases above).
+      ! build accumulates in a run-dependent order. When two runs take the
+      ! same number of iterations they differ by <= 1.6e-12 Eh and 2.5e-13 in
+      ! D; but that noise sometimes costs one run an extra DIIS step (5 of 18
+      ! runs at 4 threads, two plain C1 runs included), and then the
+      ! densities agree only to the convergence level, 1.06e-11 to 1.46e-11.
+      ! Converging tighter does not help: DIIS stalls near 1e-11 for this
+      ! case under OpenMP, and conv_diis = 1e-11 or 1e-12 leaves runs at the
+      ! iteration cap with D still 5e-12 to 4e-11 apart. So D is gated at
+      ! conv_diis (~7x the worst split), the energy at 1e-11 (~6x its
+      ! worst). Both are far below any real symmetry effect (the Cs oracle
+      ! cases above).
       opts%soscf = .false.
       opts%conv_energy = 1.0e-12_dp
       opts%conv_diis = 1.0e-10_dp
@@ -544,8 +551,11 @@ contains
          return
       end if
       call check(error, abs(rr%energy - r0%energy) <= 1.0e-11_dp .and. &
-                 maxval(abs(rr%dmat - r0%dmat)) <= 1.0e-11_dp, &
-                 "a one-operation group must give the C1 result (to accumulation-order noise)")
+                 maxval(abs(rr%dmat - r0%dmat)) <= opts%conv_diis, &
+                 "a one-operation group must give the C1 result (to convergence noise): |dE| = "// &
+                 to_string(abs(rr%energy - r0%energy), "es10.2")//", max|dD| = "// &
+                 to_string(maxval(abs(rr%dmat - r0%dmat)), "es10.2")//", iterations "// &
+                 to_string(rr%iterations)//" vs "//to_string(r0%iterations))
       call p%bas%release()
    end subroutine test_refusals
 
