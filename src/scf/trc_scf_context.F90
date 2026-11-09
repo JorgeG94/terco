@@ -21,6 +21,8 @@ module trc_scf_context
    use trc_integrals, only: trc_1e
    use trc_sph, only: sph_cart_to_sph
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
+   use trc_ecp_types, only: trc_ecp_t
+   use trc_ecp, only: trc_ecp_matrix_cart
    use trc_error, only: error_t, ERROR_GENERIC
    use trc_dft_grid, only: dft_grid_t, dft_grid_build, dft_grid_build_block
    use trc_xc_batch, only: trc_xc_grid_t
@@ -146,7 +148,7 @@ module trc_scf_context
 
 contains
 
-   subroutine scf_context_setup(this, b, opts, config, la, grid_cache, pair_eri_cache, err, comm, dfjk)
+   subroutine scf_context_setup(this, b, opts, config, la, grid_cache, pair_eri_cache, err, comm, dfjk, ecp)
       class(scf_ctx_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       type(trc_scf_options_t), intent(in) :: opts
@@ -174,6 +176,15 @@ contains
       !! Already fitted by the caller; required when `config%df` is true,
       !! checked here rather than left for `scf_fock_build_g` to find out
       !! at the first Fock build.
+      type(trc_ecp_t), intent(in), optional :: ecp
+      !! An effective core potential (trc_capi.F90's context-level
+      !! auto-attach or `trc_set_ecp_json`); absent, or present with
+      !! `has_ecp` false, leaves H_core exactly as before. Added to the
+      !! CARTESIAN T + V_ne, before the one fold that already covers both
+      !! (trc_ecp_matrix_cart's own header) -- `b%at_z` is already the
+      !! ECP-reduced nuclear charge by the time this runs (the caller's
+      !! own contract), so V_ne above and `nuclear_repulsion` below need no
+      !! ECP awareness of their own.
       type(timer_type) :: tm
       type(timer_type) :: tphase   !! the whole setup, and the PCM and grid phases
       character(len=:), allocatable :: refusal
@@ -227,10 +238,21 @@ contains
       ! changes); `smat`/`hcore` are folded up to the run's own space once,
       ! here, for the whole run -- S and H never change after this.
       block
-         real(dp), allocatable :: s_c(:, :), h_c(:, :), v_c(:, :)
+         real(dp), allocatable :: s_c(:, :), h_c(:, :), v_c(:, :), u_c(:, :)
          allocate (s_c(this%nao_c, this%nao_c), h_c(this%nao_c, this%nao_c), v_c(this%nao_c, this%nao_c))
          call trc_1e(b, pair_eri_cache%pl, s_c, h_c, v_c)
          h_c = h_c + v_c
+         if (present(ecp)) then
+            if (ecp%has_ecp) then
+               call trc_ecp_matrix_cart(b, ecp, u_c, err)
+               if (err%has_error()) then
+                  call this%release()
+                  return
+               end if
+               h_c = h_c + u_c
+               deallocate (u_c)
+            end if
+         end if
          this%ts(2) = tm%get_elapsed_time()
          call tm%start()
          if (this%sph) then

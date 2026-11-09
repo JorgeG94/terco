@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 21
+#define TRC_ABI_MINOR 22
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -239,6 +239,11 @@ int trc_destroy(trc_handle_t handle);
 
 /**
  * Atoms in Bohr, nuclear charges as doubles, atom-major coordinates.
+ * Releases any effective core potential, and an orbital basis loaded
+ * with one attached (it is valence-only and was built for the reduced
+ * charges): load the basis again, which attaches the ECP for the new
+ * molecule. A basis loaded without an ECP is kept, and trc_run_scf
+ * refuses it (TRC_ERR_STATE) if it was built for other charges.
  */
 int trc_set_molecule(trc_handle_t handle, int natm, const double* z, const double* xyz, int charge, int multiplicity);
 
@@ -327,6 +332,30 @@ int trc_set_aux_arrays(trc_handle_t handle, int nshell, int maxnp, const int* l,
 int trc_set_basis_json(trc_handle_t handle, const char* path);
 
 int trc_set_aux_json(trc_handle_t handle, const char* path);
+
+/**
+ * An explicit effective core potential, a MolSSI BSE JSON file's own
+ * `ecp_potentials`/`ecp_electrons` -- overriding auto-attach from the
+ * orbital basis file itself (ECP_DESIGN.md's DECIDED rule 2: a basis
+ * file that carries its own ecp_potentials attaches automatically
+ * when trc_set_basis_json loads it; this picks a DIFFERENT file
+ * instead). Call this BEFORE trc_set_basis_json: the attach itself
+ * happens there, once the molecule's elements are known, so a basis
+ * already loaded is refused (TRC_ERR_STATE) rather than left stale.
+ * A caller still passes the BARE atomic number to trc_set_molecule
+ * either way -- terco reduces it internally (at_z -= ncore per atom)
+ * and lowers the electron count by the same sum; nothing about
+ * trc_set_molecule or trc_set_charge changes.
+ *
+ * trc_set_basis_json refuses (TRC_ERR_BADARG) an orbital basis that is
+ * valence-only for an element this file has no ECP for, or one with
+ * another core count: every real atom whose basis entry carries
+ * ecp_potentials needs an ECP replacing exactly that many electrons.
+ * While this path is set, trc_set_basis_arrays and
+ * trc_set_basis_libcint are refused (TRC_ERR_STATE): neither can attach
+ * an ECP. trc_set_molecule clears it.
+ */
+int trc_set_ecp_json(trc_handle_t handle, const char* path);
 
 /**
  * An empty functional name is Hartree-Fock.
@@ -1088,8 +1117,9 @@ int trc_density(trc_handle_t handle, double* dmat);
  * (1977)), with the free atoms H-Kr's fixed wB97X/def2-TZVP recipe.
  * Works for RHF/UHF/RKS/UKS and with C-PCM/IEF-PCM (the charge
  * analysis never touches the solvent operator, only the converged
- * density). TRC_ERR_BADARG for an element outside H-Kr (terco has
- * no effective-core-potential support to refuse separately);
+ * density). TRC_ERR_BADARG for an element outside H-Kr, or for an
+ * effective core potential attached (refused separately -- the
+ * free-atom reference is all-electron, state_hirshfeld_charges);
  * TRC_ERR_STATE when the free-atom data file cannot be read (set
  * TRC_HIRSHFELD_DATA).
  */
@@ -1184,6 +1214,9 @@ int trc_message(trc_handle_t handle, char* buf, int buflen);
 /**
  * The basis handle inside the context: BORROWED, never destroyed by
  * the caller, valid until the context is destroyed or the basis reset.
+ * Refused (TRC_ERR_STATE) while an effective core potential is
+ * attached: a basis handle cannot carry it, so trc_scf/trc_compute_1e
+ * on it would leave the core potential out.
  */
 int trc_context_basis(trc_handle_t handle, trc_handle_t* basis);
 

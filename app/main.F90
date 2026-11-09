@@ -16,7 +16,7 @@ program trc_main
    use pic_knowledge, only: get_knowledge
    use pic_profiler, only: profiler_init
    use pic_logger, only: global_logger
-   use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
+   use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_ecp_json, &
                        trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_scf_accel, &
                        trc_set_soscf, &
                        trc_set_level_shift, trc_set_lindep, trc_set_screening, &
@@ -36,6 +36,8 @@ program trc_main
    use trc_thermo, only: trc_thermochemistry
    use trc_constants, only: ATM_TO_PA
    use trc_error, only: hess_err_t => error_t
+   use trc_ecp_types, only: trc_ecp_t
+   use trc_ecp_json, only: trc_ecp_from_json
    use pic_logger, only: global_logger, verbose_level
    use trc_app, only: app_read_xyz, app_resolve_basis, app_c_string, app_set_env, app_help_for_topic, app_set_log_level
    use pic_strings, only: to_string
@@ -127,6 +129,10 @@ program trc_main
    call r%cli%add_option("basis", "basis set: a Basis Set Exchange JSON file, or a name looked up "// &
                          "in $TERCO_BASIS_PATH and then the installed basis sets (def2-svp)", short="b", &
                          default="def2-svp")
+   call r%cli%add_option("ecp", "effective core potential: a Basis Set Exchange JSON file, or a name "// &
+                         "looked up like --basis, carrying its own ecp_potentials; overrides auto-attach "// &
+                         "from --basis's own ecp_potentials when the two differ (none by default: an "// &
+                         "ECP basis still attaches its own)")
    call r%cli%add_option("chrg", "molecular charge (default: a .CHRG file here, else 0)", short="c")
    call r%cli%add_option("uhf", "number of unpaired electrons (default: a .UHF file here, else 0 "// &
                          "or 1 by electron count)", short="u")
@@ -401,8 +407,37 @@ program trc_main
    call app_resolve_basis(r%basis_arg, r%basis_path, r%err)
    if (r%err%has_error()) call run_die(r, r%err%get_message())
 
+   r%ecp_path = ""
+   if (r%cli%is_set("ecp")) then
+      block
+         character(len=:), allocatable :: ecp_arg
+         call r%cli%get("ecp", ecp_arg, r%err)
+         call app_resolve_basis(ecp_arg, r%ecp_path, r%err)
+         if (r%err%has_error()) call run_die(r, "--ecp: "//r%err%get_message())
+      end block
+   end if
+
+   ! The electrons an ECP takes away, from the same file the library's
+   ! attach reads (--ecp if given, else --basis's own ecp_potentials):
+   ! the count, its parity and the default --uhf must be the valence
+   ! ones the SCF actually runs (HI/def2-SVP: 26, not 54). An element the
+   ! file has no ECP for counts 0; a file that does not fit the basis is
+   ! refused when the basis loads, naming the atom.
+   r%ecp_core = 0
+   block
+      type(trc_ecp_t) :: ecp
+      type(hess_err_t) :: ecp_err
+      character(len=:), allocatable :: ecp_source
+      ecp_source = r%basis_path
+      if (len_trim(r%ecp_path) > 0) ecp_source = r%ecp_path
+      call trc_ecp_from_json(ecp_source, r%natm, r%z, ecp, ecp_err)
+      if (ecp_err%has_error()) call run_die(r, ecp_err%get_message())
+      if (ecp%has_ecp) r%ecp_core = sum(ecp%at_ncore)
+      call ecp%release()
+   end block
+
    r%chrg = run_int_option(r, "chrg", ".CHRG", 0)
-   r%nelec = sum(r%z) - r%chrg
+   r%nelec = sum(r%z) - r%ecp_core - r%chrg
    if (r%nelec < 1) call run_die(r, "charge "//to_string(r%chrg)//" leaves "//to_string(r%nelec)//" electrons")
    r%uhf = run_int_option(r, "uhf", ".UHF", mod(r%nelec, 2))
    if (r%uhf < 0 .or. r%uhf > r%nelec .or. mod(r%nelec - r%uhf, 2) /= 0) then
@@ -1093,6 +1128,9 @@ program trc_main
    call run_api(r, trc_set_molecule(r%h, int(r%natm, c_int), real(r%z, c_double), xyz, int(r%chrg, c_int), &
                                 int(r%mult, c_int)))
    call run_api(r, trc_set_force_cartesian(r%h, merge(1_c_int, 0_c_int, cart)))
+   ! Before --basis: trc_set_ecp_json refuses once the orbital basis has
+   ! loaded, the same ordering trc_set_elements already requires.
+   if (len_trim(r%ecp_path) > 0) call run_api(r, trc_set_ecp_json(r%h, app_c_string(r%ecp_path)))
    call run_api(r, trc_set_basis_json(r%h, app_c_string(r%basis_path)))
    if (r%rimp2) call run_api(r, trc_set_aux_json(r%h, app_c_string(r%aux_path)))
    if (r%df) then

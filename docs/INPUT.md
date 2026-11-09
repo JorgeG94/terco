@@ -83,6 +83,7 @@ json = "water.json"
 | Key | Type | Flag | Meaning |
 |---|---|---|---|
 | `main` | string | `--basis` | orbital basis: BSE JSON file or a basis name |
+| `ecp` | string | `--ecp` | effective core potential: BSE JSON file or a basis name, overriding auto-attach from `main`'s own `ecp_potentials` |
 | `auxiliary` | string | `--aux` | RI-MP2 auxiliary basis (cc-pvdz-rifit) |
 | `jk_auxiliary` | string | `--jkfit` | J/K fitting basis for `density_fitted` (def2-universal-jkfit) |
 | `cartesian` | bool | `--cart` | Cartesian AOs even for a spherical basis |
