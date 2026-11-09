@@ -62,6 +62,13 @@ contains
       type(trc_xc_functional_t) :: func
       logical :: have_func
       refusal = ""
+      if (r%ecp_core > 0) then
+         ! trc_run_gradient's own refusal (gradient_upfront_refusal), known
+         ! here from the ECP file alone: no SCF needs to run to find out.
+         refusal = "--opt: the analytic gradient has no effective-core-potential term yet "// &
+                   "(U_ECP's derivative is not implemented), and this molecule has an ECP attached"
+         return
+      end if
       if (r%rimp2) then
          ! r%func was validated when it was parsed, so this lookup only
          ! reads the fields the check needs. nspin follows trc_scf_driver's

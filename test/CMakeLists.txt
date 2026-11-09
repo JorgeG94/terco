@@ -850,6 +850,13 @@ if(TERCO_BUILD_APP)
     target_link_libraries(check_opt_correlated PRIVATE test-drive::test-drive terco_c_interfaces
                                                        terco_opt_c_interfaces terco::terco_opt)
 
+    # trc_opt_run refuses a molecule with an ECP attached before its first
+    # step (no ECP gradient) instead of reaching DL-FIND's error stop -- see
+    # check_opt_ecp_refused.F90's own header.
+    terco_add_check(check_opt_ecp_refused check_opt_ecp_refused.F90)
+    target_link_libraries(check_opt_ecp_refused PRIVATE test-drive::test-drive terco_c_interfaces
+                                                        terco_opt_c_interfaces terco::terco_opt)
+
     # Every --opt-algorithm/--opt-coords combination terco exposes
     # converges water/STO-3G to the existing opt_water anchor -- see
     # check_opt_algorithms.F90's own header. One shared work dir: the

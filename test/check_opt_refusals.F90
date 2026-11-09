@@ -107,6 +107,7 @@ contains
                       test_dh_pcm), &
          new_unittest("--rimp2 over an unrestricted reference is refused", test_rimp2_unrestricted), &
          new_unittest("a double hybrid over an unrestricted (UKS) reference is refused", test_dh_unrestricted), &
+         new_unittest("a molecule with an effective core potential is refused (no ECP gradient)", test_ecp), &
          new_unittest("none of the refusal cases above started an SCF or left xyz output in test/ itself", &
                       test_no_stray) &
          ]
@@ -183,6 +184,16 @@ contains
    ! --opt with RI-MP2 or a double hybrid runs the correlated gradient at
    ! every step; what that gradient refuses, the CLI refuses before the
    ! first SCF, with the gradient's own message (rimp2_grad_reference_refusal).
+   ! The analytic gradient has no ECP term (trc_run_gradient refuses it), so
+   ! --opt with one is refused up front: the ECP's core count is known from
+   ! the file alone. HI with --ecp naming def2-SVP's own ECP; the STO-3G
+   ! basis this helper always passes is never loaded.
+   subroutine test_ecp(error)
+      type(error_type), allocatable, intent(out) :: error
+      call refuse('hi.xyz', '--ecp basis_sets/def2-svp.json --opt', 'no effective-core-potential term', error, &
+                  extra='basis_sets/def2-svp.json')
+   end subroutine test_ecp
+
    subroutine test_dh_pcm(error)
       type(error_type), allocatable, intent(out) :: error
       call refuse('water.xyz', '-f b2plyp --pcm cpcm --eps 78.3553 --opt', &
