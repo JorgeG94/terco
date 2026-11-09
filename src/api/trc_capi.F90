@@ -6194,6 +6194,7 @@ contains
          return
       end if
 
+      call fukui_stage_label("N (reference, the SCF above)", cx%charge, nelec)
       call state_scheme_charges(cx, scheme, q_neutral, err)
       if (err%has_error()) then
          status = scheme_status(scheme, err)
@@ -6227,6 +6228,7 @@ contains
       fail_message = ""
 
       ! The anion, N+1 electrons, a doublet, unseeded.
+      call fukui_stage_label("N+1 (anion)", ref_charge - 1, nelec + 1)
       st = trc_set_charge(handle, int(ref_charge - 1, c_int), 2_c_int)
       if (st == TRC_OK) then
          cx%guess_kind = ion_guess_kind
@@ -6247,6 +6249,7 @@ contains
 
       ! The cation, N-1 electrons, a doublet.
       if (.not. failed) then
+         call fukui_stage_label("N-1 (cation)", ref_charge + 1, nelec - 1)
          st = trc_set_charge(handle, int(ref_charge + 1, c_int), 2_c_int)
          if (st == TRC_OK) then
             cx%guess_kind = ion_guess_kind
@@ -6312,6 +6315,18 @@ contains
       q_nm1(1:size(q_cation)) = real(q_cation, c_double)
       status = TRC_OK
    end function trc_fukui_scheme
+
+   subroutine fukui_stage_label(stage, charge, nelec)
+      !! One log line naming the Fukui SCF stage about to run (or, for N,
+      !! already run), so a log with three SCF tables says which is which.
+      !! "Anion" and "cation" are relative to the reference: for a reference
+      !! of charge -1, N+1 is the dianion and N-1 the neutral.
+      character(len=*), intent(in) :: stage
+      integer, intent(in) :: charge, nelec
+      call global_logger%info("")
+      call global_logger%info("   Fukui: "//stage//" SCF -- charge "//to_string(charge)// &
+                              ", "//to_string(nelec)//" electrons")
+   end subroutine fukui_stage_label
 
 
    subroutine state_scheme_charges(cx, scheme, q, error)
