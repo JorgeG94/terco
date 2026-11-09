@@ -127,7 +127,7 @@ contains
                   new_unittest("SAP guess is refused with an ECP attached", test_sap_refused), &
                   new_unittest("Hirshfeld charges are refused with an ECP attached", test_hirshfeld_refused), &
                   new_unittest("the analytic gradient is refused with an ECP attached", test_gradient_refused), &
-                  new_unittest("a restart file round-trips an ECP SCF (format version 3)", test_restart_roundtrip) &
+                  new_unittest("a restart file round-trips an ECP SCF (format version 4)", test_restart_roundtrip) &
                   ]
    end subroutine collect_ecp_scf_tests
 
@@ -480,7 +480,7 @@ contains
 
    !
    ! Save, destroy, create a fresh handle, load: the restart file (format
-   ! version 3, trc_scf_file.F90) must carry enough ECP state that the
+   ! version 4, trc_scf_file.F90) must carry enough ECP state that the
    ! loaded result is accepted and reports the SAME energy, round-tripped
    ! through disk rather than compared in memory.
    !
@@ -506,7 +506,7 @@ contains
 
       call make_hi(h2)
       rc = trc_load_scf(h2, path//c_null_char)
-      call check(error, rc, TRC_OK, "trc_load_scf (format version 3, ECP state matches)")
+      call check(error, rc, TRC_OK, "trc_load_scf (format version 4, ECP state matches)")
       if (allocated(error)) then
          rc = trc_destroy(h2); return
       end if

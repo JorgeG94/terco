@@ -425,6 +425,11 @@ module trc_c_interfaces
 
       integer(c_int) function trc_set_molecule(handle, natm, z, xyz, charge, multiplicity) bind(c) result(res)
          !! Atoms in Bohr, nuclear charges as doubles, atom-major coordinates.
+         !! Releases any effective core potential, and an orbital basis loaded
+         !! with one attached (it is valence-only and was built for the reduced
+         !! charges): load the basis again, which attaches the ECP for the new
+         !! molecule. A basis loaded without an ECP is kept, and trc_run_scf
+         !! refuses it (TRC_ERR_STATE) if it was built for other charges.
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
@@ -592,6 +597,14 @@ module trc_c_interfaces
          !! either way -- terco reduces it internally (at_z -= ncore per atom)
          !! and lowers the electron count by the same sum; nothing about
          !! trc_set_molecule or trc_set_charge changes.
+         !!
+         !! trc_set_basis_json refuses (TRC_ERR_BADARG) an orbital basis that is
+         !! valence-only for an element this file has no ECP for, or one with
+         !! another core count: every real atom whose basis entry carries
+         !! ecp_potentials needs an ECP replacing exactly that many electrons.
+         !! While this path is set, trc_set_basis_arrays and
+         !! trc_set_basis_libcint are refused (TRC_ERR_STATE): neither can attach
+         !! an ECP. trc_set_molecule clears it.
          import :: c_char, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
@@ -1697,6 +1710,9 @@ module trc_c_interfaces
       integer(c_int) function trc_context_basis(handle, basis) bind(c) result(res)
          !! The basis handle inside the context: BORROWED, never destroyed by
          !! the caller, valid until the context is destroyed or the basis reset.
+         !! Refused (TRC_ERR_STATE) while an effective core potential is
+         !! attached: a basis handle cannot carry it, so trc_scf/trc_compute_1e
+         !! on it would leave the core potential out.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
