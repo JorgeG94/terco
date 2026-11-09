@@ -932,9 +932,9 @@ endif()
 # race the two forms at run time (that build compiles both sets).
 set(TERCO_MDJ_SYM_LMAX "99" CACHE STRING "MD J: largest lp+lq on the symmetric Hermite kernels (99: all, -1: none)")
 option(TERCO_MDJ_GATHER_ALL "MD J: keep every gather Hermite kernel beside the symmetric ones" OFF)
-if(NOT "${TERCO_MDJ_SYM_LMAX}" STREQUAL "-1")
-  list(APPEND _mdj_batch_flag "--sym-lmax" "${TERCO_MDJ_SYM_LMAX}")
-endif()
+# Always passed: the generator's own default is 99, so leaving the flag out
+# for -1 built the symmetric kernels anyway.
+list(APPEND _mdj_batch_flag "--sym-lmax" "${TERCO_MDJ_SYM_LMAX}")
 if(TERCO_MDJ_GATHER_ALL)
   list(APPEND _mdj_batch_flag "--gather-all")
 endif()

@@ -25,12 +25,11 @@ primitive pair and loops over the ket, so it accumulates Jt[P] in registers
 and writes it once per launch: no atomics, deterministic, and the batches
 of a class are consecutive launches over the same arrays.
 
---sym-lmax N (parked; off by default) emits symmetric kernels
-trc_mdj_s<lp><lq> (lp >= lq) for every class with lp + lq <= N instead: each
-unordered (P, Q) once, scattering [Q|P] Dt[P] to Jt[Q] by atomics. They did
-not pay (the per-direction screen shares only ~55% of the pairs, and the
-kernels are FP64-bound); see src/eri/trc_mdj.F90. --gather-all keeps every
-gather kernel beside them, for racing the two forms at run time.
+--sym-lmax N (default 99, every class; -1 for none) emits symmetric kernels
+trc_mdj_s<lp><lq> (lp >= lq) for every class with lp + lq <= N instead of the
+gather pair: each unordered (P, Q) once, scattering [Q|P] Dt[P] to Jt[Q] by
+atomics; see src/eri/trc_mdj.F90 for the measurements. --gather-all keeps
+every gather kernel beside them, for racing the two forms at run time.
 
 Usage:
     gen_md_j.py --lmax 2 [--order lexicographic] [--batches 7:6,8:6] -o DIR
