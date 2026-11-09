@@ -25,6 +25,12 @@ primitive pair and loops over the ket, so it accumulates Jt[P] in registers
 and writes it once per launch: no atomics, deterministic, and the batches
 of a class are consecutive launches over the same arrays.
 
+--sym-lmax N (default 99, every class; -1 for none) emits symmetric kernels
+trc_mdj_s<lp><lq> (lp >= lq) for every class with lp + lq <= N instead of the
+gather pair: each unordered (P, Q) once, scattering [Q|P] Dt[P] to Jt[Q] by
+atomics; see src/eri/trc_mdj.F90 for the measurements. --gather-all keeps
+every gather kernel beside them, for racing the two forms at run time.
+
 Usage:
     gen_md_j.py --lmax 2 [--order lexicographic] [--batches 7:6,8:6] -o DIR
 
@@ -64,6 +70,27 @@ DEFAULT_BATCHES = {5: 3, 6: 3, 7: 6, 8: 6}
 DEFAULT_BATCHES_HIGH = 9
 
 TWO_PI_2_5 = "34.986836655249725_dp"
+
+
+# The largest lp + lq whose Hermite stage is one symmetric kernel (each
+# unordered (P, Q) once, both Jt filled); above it, a gather kernel for each
+# order. 99, every class: the default since the Boys function's asymptotic
+# branch made the gather form's second evaluation the cost to save (see
+# src/eri/trc_mdj.F90). -1 is none (CMake TERCO_MDJ_SYM_LMAX).
+DEFAULT_SYM_LMAX = 99
+
+
+def sym_kernels(lmax, sym_lmax):
+    """(lp, lq) of every symmetric Hermite kernel: lp >= lq, lp + lq <= sym_lmax."""
+    n = 2 * lmax + 1
+    return [(lp, lq) for lp in range(n) for lq in range(lp + 1) if lp + lq <= sym_lmax]
+
+
+def gather_kernels(lmax, sym_lmax, every=False):
+    """(lp, lq) of every gather Hermite kernel: both orders of each class above
+    sym_lmax, or of every class with `every` (for racing the two forms)."""
+    n = 2 * lmax + 1
+    return [(lp, lq) for lp in range(n) for lq in range(n) if every or lp + lq > sym_lmax]
 
 
 def nbatch_for(L, table):
@@ -691,6 +718,220 @@ def decl(typ, names, per=8):
 # ----------------------------------------------------------- Hermite stage --
 
 def gen_r_module(lp, lq, nbatch, header, sieve=True):
+    """[lp|lq] Hermite stage, lp >= lq, each unordered (P, Q) once for both Jt."""
+    assert lp >= lq
+    diag = lp == lq
+    L = lp + lq
+    tag = f"{lp}{lq}"
+    hp, hq = herm(lp), herm(lq)
+    iq = herm_index(lq)
+    dags = rtree.batch_dags(L, nbatch, sieve=sieve)
+    out = [header.format(what=f"Class [{lp}|{lq}] symmetric Hermite stage of the MD J engine, "
+                         f"{len(dags)} R batch(es)")]
+    out.append(f"module trc_mdj_s{tag}")
+    out.append("   use pic_types, only: dp")
+    out.append("   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV")
+    out.append("   implicit none")
+    out.append("   private")
+    out.append(f"   public :: mdj_s_{tag}")
+    out.append("")
+    out.append(f"   real(dp), parameter :: TWO_PI_2_5 = {TWO_PI_2_5}")
+    out.append("")
+    out.append("contains")
+    out.append("")
+    out.append('#include "inc/trc_boys_eval.inc"')
+    out.append("")
+    args = ("np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, mp_z, mp_px, mp_py, mp_pz, mp_ip, mp_nq, "
+            "ndt, dt, jt, cut")
+    out.append(f"   subroutine mdj_s_{tag}(np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, mp_z, mp_px, &")
+    out.append("                        mp_py, mp_pz, mp_ip, mp_nq, ndt, dt, jt, cut)")
+    if diag:
+        out.append(f"      !! Jt[P] += [P|Q] Dt[Q] and Jt[Q] += [Q|P] Dt[P] within the lp = lq = {lp}")
+        out.append("      !! pairs kp0+1..kp0+np (nq = np, kq0 = kp0, hbq = hbp), each unordered pair")
+        out.append("      !! once. P meets Q = P + s (mod np) for s = 0..np/2: every row the same")
+        out.append("      !! length, so no thread idles on a triangle, and a warp's consecutive P")
+        out.append("      !! scatter to consecutive Q. s = 0 is P with itself, gathered only; for")
+        out.append("      !! an even np, s = np/2 meets each pair twice and is kept for P <= np/2.")
+    else:
+        out.append(f"      !! Jt[P] += [P|Q] Dt[Q] and Jt[Q] += [Q|P] Dt[P] between the lp = {lp} pairs")
+        out.append(f"      !! kp0+1..kp0+np and the lq = {lq} pairs kq0+1..kq0+nq, so no [{lq}|{lp}]")
+        out.append("      !! kernel exists.")
+    out.append("      !! One launch per R batch. hbp and hbq are the two blocks' first Hermite")
+    out.append("      !! slot, less one; each row has the block's own pair count as stride. One")
+    out.append("      !! thread per (P, chunk of `qlen` kets): one per P alone left a heavy")
+    out.append("      !! class with a few hundred threads (measured: 128 threads, 27 ms, on w20).")
+    out.append("      !! Only chunks c0, c0 + cstep, ... (0-based): an MPI rank's share, its")
+    out.append("      !! partial Jt summed over ranks by the caller; (0, 1) is every chunk.")
+    out.append("      integer,  intent(in) :: np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, ndt")
+    out.append("      real(dp), intent(in) :: mp_z(nhp), mp_px(nhp), mp_py(nhp), mp_pz(nhp)")
+    out.append("      real(dp), intent(in) :: mp_ip(nhp), mp_nq(nhp), dt(ndt), cut")
+    out.append("      real(dp), intent(inout) :: jt(ndt)")
+    out.append("      integer :: i, nchunk, nmine")
+    if diag:
+        out.append("      nchunk = (np/2 + qlen)/qlen")
+    else:
+        out.append("      nchunk = (nq + qlen - 1)/qlen")
+    out.append("      nmine = max(0, (nchunk - c0 + cstep - 1)/cstep)")
+    for b in range(len(dags)):
+        out.append("      do concurrent(i = 1:np*nmine)")
+        out.extend(wrap_args(f"call mdj_s_item_{tag}_b{b + 1}", "i, " + args, " " * 9))
+        out.append("      end do")
+    out.append(f"   end subroutine mdj_s_{tag}")
+    for b, g in enumerate(dags):
+        out.append("")
+        out.extend(s_item(lp, lq, b + 1, g, hp, hq, iq, args, diag))
+    out.append("")
+    out.append(f"end module trc_mdj_s{tag}")
+    return "\n".join(out) + "\n"
+
+
+def s_item(lp, lq, b, g, hp, hq, iq, args, diag):
+    """One thread: bra pair P against one chunk of kets Q, both directions.
+
+    Each (P, Q) is evaluated once and feeds Jt[P] (gather, in registers, one
+    atomic per Hermite slot per thread at the end) and Jt[Q] (scatter, one
+    atomic per Hermite slot of Q per quartet). The scatter goes to the
+    smaller block (lq <= lp), so it is the fewer atomics.
+    """
+    tag = f"{lp}{lq}"
+    stmts = g.statements()
+    leaves = g.leaves()
+    mb = max(leaves)
+    inter, flops = g.counts()
+    # Which Jt slots and Dt slots this batch touches: the pairs (t, tau) of
+    # each target r = t + tau, the same pairs in both directions.
+    contr = {}
+    for (r, _) in g.targets:
+        lst = []
+        for i, t in enumerate(hp):
+            tau = tuple(r[d] - t[d] for d in range(3))
+            if min(tau) < 0 or sum(tau) > lq:
+                continue
+            lst.append((i, iq[tau]))
+        contr[r] = lst
+    jused = sorted({i for lst in contr.values() for i, _ in lst})
+    dused = sorted({j for lst in contr.values() for _, j in lst})
+    rnames = [s.lhs for s in stmts]
+    ind = " " * 12
+    o = []
+    o.extend(wrap_args(f"pure subroutine mdj_s_item_{tag}_b{b}", "i, " + args, " " * 3))
+    o.append(f"      !! Batch {b}: {len(g.targets)} targets, {inter} intermediates, "
+             f"{flops} R flops per primitive quartet.")
+    o.append("      !$acc routine seq")
+    o.append("      integer,  intent(in) :: i, np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, ndt")
+    o.append("      real(dp), intent(in) :: mp_z(nhp), mp_px(nhp), mp_py(nhp), mp_pz(nhp)")
+    o.append("      real(dp), intent(in) :: mp_ip(nhp), mp_nq(nhp), dt(ndt), cut")
+    o.append("      real(dp), intent(inout) :: jt(ndt)")
+    o.append("      integer  :: kp, kq, k, kk, ip1, k1, k2")
+    o.append("      real(dp) :: p, px, py, pz, bp, rp, q, zpe, alpha, pref, tval, m2a, w")
+    o.append("      real(dp) :: pqx, pqy, pqz")
+    o.append("      logical  :: gath, scat")
+    o.append(f"      real(dp) :: f(0:BOYS_MMAX)")
+    o.append(decl("real(dp)", [rtree.leaf_name(m) for m in leaves]))
+    o.append(decl("real(dp)", rnames))
+    o.append(decl("real(dp)", [f"j{i + 1}" for i in jused]))
+    inl = not diag
+    if not inl:
+        o.append(decl("real(dp)", [f"e{i + 1}" for i in jused]))
+    o.append(decl("real(dp)", [f"g{j + 1}" for j in dused]))
+    o.append(decl("real(dp)", [f"s{j + 1}" for j in dused]))
+    o.append("")
+    o.append("      ! P fastest, so the threads of a warp share one chunk.")
+    o.append("      ip1 = mod(i - 1, np) + 1")
+    o.append("      k1 = (c0 + ((i - 1)/np)*cstep)*qlen")
+    if diag:
+        o.append("      k2 = min(np/2, k1 + qlen - 1)")
+    else:
+        o.append("      k1 = k1 + 1")
+        o.append("      k2 = min(nq, k1 + qlen - 1)")
+    o.append("      kp = kp0 + ip1")
+    o.append("      p = mp_z(kp)")
+    o.append("      px = mp_px(kp); py = mp_py(kp); pz = mp_pz(kp)")
+    o.append("      bp = mp_ip(kp)")
+    o.append("      rp = mp_nq(kp)")
+    for i in jused:
+        o.append(f"      j{i + 1} = 0.0_dp")
+        if not inl:
+            o.append(f"      e{i + 1} = dt(hbp + {i}*np + ip1)")
+    if diag:
+        o.append("      do kk = k1, k2")
+        o.append("         k = ip1 + kk")
+        o.append("         if (k > np) k = k - np")
+    else:
+        o.append("      ! Each thread starts its chunk at its own ket, so the scatter's atomics")
+        o.append("      ! from one warp land on consecutive Jt[Q] slots, not all on one (all on")
+        o.append("      ! one made gly20 cc-pVDZ's Hermite stage 2.4x slower).")
+        o.append("      k = k1 + mod(ip1 - 1, k2 - k1 + 1) - 1")
+        o.append("      do kk = k1, k2")
+        o.append("         k = k + 1")
+        o.append("         if (k > k2) k = k1")
+    o.append("         kq = kq0 + k")
+    o.append("         ! Each direction on its own Cauchy-Schwarz bound: I_P ||rho_Q|| for")
+    o.append("         ! Jt[P], I_Q ||rho_P|| for Jt[Q]; the R values serve both.")
+    o.append("         gath = bp*mp_nq(kq) > cut")
+    if diag:
+        o.append("         scat = mp_ip(kq)*rp > cut .and. kk > 0")
+        o.append("         ! s = np/2 of an even np: the pair is also P + np/2's.")
+        o.append("         if (2*kk == np .and. ip1 > kk) cycle")
+    else:
+        o.append("         scat = mp_ip(kq)*rp > cut")
+    o.append("         if (gath .or. scat) then")
+    o.append("            q = mp_z(kq)")
+    o.append("            zpe = p + q")
+    o.append("            alpha = p*q/zpe")
+    o.append("            pref = TWO_PI_2_5/(p*q*sqrt(zpe))")
+    o.append("            pqx = px - mp_px(kq); pqy = py - mp_py(kq); pqz = pz - mp_pz(kq)")
+    o.append("            tval = alpha*(pqx*pqx + pqy*pqy + pqz*pqz)")
+    o.append(f"            call boys_eval({mb}, tval, f)")
+    o.append("            m2a = -2.0_dp*alpha")
+    o.append("            w = pref")
+    for m in range(mb + 1):
+        if m > 0:
+            o.append("            w = w*m2a")
+        if m in leaves:
+            o.append(f"            {rtree.leaf_name(m)} = w*f({m})")
+    for j in dused:
+        o.append(f"            g{j + 1} = merge(dt(hbq + {j}*nq + k), 0.0_dp, gath)")
+        o.append(f"            s{j + 1} = 0.0_dp")
+
+    def contract(r):
+        # [Q|P]_{tau+t} = (-1)^|r| [P|Q]_r with r = t + tau: R is odd in PQ
+        # by |r|, and Dt carries (-1)^|tau| on the ket side.
+        val = rtree.leaf_name(0) if r == (0, 0, 0) else rtree.r_name(r, 0)
+        op = "-" if sum(r) % 2 else "+"
+        for i, j in contr[r]:
+            o.append(f"{ind}j{i + 1} = j{i + 1} + {val}*g{j + 1}")
+            e = f"dt(hbp + {i}*np + ip1)" if inl else f"e{i + 1}"
+            o.append(f"{ind}s{j + 1} = s{j + 1} {op} {val}*{e}")
+
+    if ((0, 0, 0), 0) in g.tset:
+        contract((0, 0, 0))
+    for s in stmts:
+        o.extend(emit_sum(s.lhs, expr_of(s.terms), ind))
+        name = s.lhs
+        # level-0 statements are targets: contract and let them die at once.
+        fields = name[1:].split("_")
+        if fields[3] == "0":
+            r = tuple(int(v) for v in fields[:3])
+            if (r, 0) in g.tset:
+                contract(r)
+    o.append("            if (scat) then")
+    o.append("               ! Many P meet one Q: one atomic per Hermite slot of Q per quartet.")
+    for j in dused:
+        o.append("               !$acc atomic update")
+        o.append(f"               jt(hbq + {j}*nq + k) = jt(hbq + {j}*nq + k) + s{j + 1}")
+    o.append("            end if")
+    o.append("         end if")
+    o.append("      end do")
+    o.append("      ! Several chunks share one P: atomics, once per Hermite slot per thread.")
+    for i in jused:
+        o.append("      !$acc atomic update")
+        o.append(f"      jt(hbp + {i}*np + ip1) = jt(hbp + {i}*np + ip1) + j{i + 1}")
+    o.append(f"   end subroutine mdj_s_item_{tag}_b{b}")
+    return o
+
+
+def gen_r_module_gather(lp, lq, nbatch, header, sieve=True):
     L = lp + lq
     tag = f"{lp}{lq}"
     hp, hq = herm(lp), herm(lq)
@@ -737,13 +978,13 @@ def gen_r_module(lp, lq, nbatch, header, sieve=True):
     out.append(f"   end subroutine mdj_r_{tag}")
     for b, g in enumerate(dags):
         out.append("")
-        out.extend(r_item(lp, lq, b + 1, g, hp, hq, iq, args))
+        out.extend(r_item_gather(lp, lq, b + 1, g, hp, hq, iq, args))
     out.append("")
     out.append(f"end module trc_mdj_r{tag}")
     return "\n".join(out) + "\n"
 
 
-def r_item(lp, lq, b, g, hp, hq, iq, args):
+def r_item_gather(lp, lq, b, g, hp, hq, iq, args):
     tag = f"{lp}{lq}"
     stmts = g.statements()
     leaves = g.leaves()
@@ -839,7 +1080,7 @@ def r_item(lp, lq, b, g, hp, hq, iq, args):
 
 # ------------------------------------------------------------- dispatcher --
 
-def gen_dispatch(lmax, header):
+def gen_dispatch(lmax, header, sym, every):
     o = [header.format(what="Host dispatch of the MD J engine kernels")]
     o.append(f"#if TRC_LMAX != {lmax}")
     o.append('#error "trc_mdj_kernels was generated for a different TRC_LMAX. Regenerate it."')
@@ -849,15 +1090,22 @@ def gen_dispatch(lmax, header):
     for la in range(lmax + 1):
         for lb in range(la + 1):
             o.append(f"   use trc_mdj_e{la}{lb}, only: mdj_ket_{la}{lb}, mdj_bra_{la}{lb}, mdj_bound_{la}{lb}")
-    for lp in range(2 * lmax + 1):
-        for lq in range(2 * lmax + 1):
-            o.append(f"   use trc_mdj_r{lp}{lq}, only: mdj_r_{lp}{lq}")
+    for lp, lq in gather_kernels(lmax, sym, every):
+        o.append(f"   use trc_mdj_r{lp}{lq}, only: mdj_r_{lp}{lq}")
+    for lp, lq in sym_kernels(lmax, sym):
+        o.append(f"   use trc_mdj_s{lp}{lq}, only: mdj_s_{lp}{lq}")
     o.append("   implicit none")
     o.append("   private")
-    o.append("   public :: mdj_ket, mdj_bra, mdj_bound, mdj_hermite, MDJ_LPMAX")
+    o.append("   public :: mdj_ket, mdj_bra, mdj_bound, mdj_hermite, mdj_hermite_sym, &")
+    o.append("             MDJ_LPMAX, MDJ_SYM_LMAX, MDJ_GATHER_ALL")
     o.append("")
     o.append(f"   integer, parameter :: MDJ_LPMAX = {2 * lmax}")
     o.append("   !! Largest Hermite degree of one shell pair these kernels cover.")
+    o.append(f"   integer, parameter :: MDJ_SYM_LMAX = {sym}")
+    o.append("   !! Classes [lp|lq] with lp + lq up to this have a symmetric kernel (lp >= lq,")
+    o.append("   !! mdj_hermite_sym); the rest a gather kernel for each order (mdj_hermite).")
+    o.append(f"   logical, parameter :: MDJ_GATHER_ALL = .{'true' if every else 'false'}.")
+    o.append("   !! Every class has its gather kernels too, so the two forms can be raced.")
     o.append("")
     o.append("contains")
     o.append("")
@@ -932,22 +1180,26 @@ def gen_dispatch(lmax, header):
     o.append("      end select")
     o.append("   end subroutine mdj_bound")
     o.append("")
-    o.append("   subroutine mdj_hermite(lp, lq, np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, mp_z, mp_px, &")
-    o.append("                          mp_py, mp_pz, mp_ip, mp_nq, ndt, dt, jt, cut)")
-    o.append("      integer,  intent(in) :: lp, lq, np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, ndt")
-    o.append("      real(dp), intent(in) :: mp_z(nhp), mp_px(nhp), mp_py(nhp), mp_pz(nhp)")
-    o.append("      real(dp), intent(in) :: mp_ip(nhp), mp_nq(nhp), dt(ndt), cut")
-    o.append("      real(dp), intent(inout) :: jt(ndt)")
-    n = 2 * lmax + 1
-    o.append(f"      select case (lp*{n} + lq)")
-    for lp in range(n):
-        for lq in range(n):
+    for name, kind, lst in (("mdj_hermite", "r", gather_kernels(lmax, sym, every)),
+                            ("mdj_hermite_sym", "s", sym_kernels(lmax, sym))):
+        pad = " " * (len(name) + 15)
+        o.append(f"   subroutine {name}(lp, lq, np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, mp_z, mp_px, &")
+        o.append(f"{pad}mp_py, mp_pz, mp_ip, mp_nq, ndt, dt, jt, cut)")
+        o.append("      integer,  intent(in) :: lp, lq, np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, ndt")
+        o.append("      real(dp), intent(in) :: mp_z(nhp), mp_px(nhp), mp_py(nhp), mp_pz(nhp)")
+        o.append("      real(dp), intent(in) :: mp_ip(nhp), mp_nq(nhp), dt(ndt), cut")
+        o.append("      real(dp), intent(inout) :: jt(ndt)")
+        n = 2 * lmax + 1
+        o.append(f"      select case (lp*{n} + lq)")
+        for lp, lq in lst:
             o.append(f"      case ({lp * n + lq})")
-            o.extend(wrap(f"call mdj_r_{lp}{lq}({r_args})"))
-    o.append("      case default")
-    o.append('         error stop "trc_mdj_kernels: no Hermite kernel for this class"')
-    o.append("      end select")
-    o.append("   end subroutine mdj_hermite")
+            o.extend(wrap(f"call mdj_{kind}_{lp}{lq}({r_args})"))
+        o.append("      case default")
+        o.append(f'         error stop "trc_mdj_kernels: no {name} kernel for this class"')
+        o.append("      end select")
+        o.append(f"   end subroutine {name}")
+        o.append("")
+
     o.append("")
     o.append("end module trc_mdj_kernels")
     return "\n".join(o) + "\n"
@@ -960,6 +1212,10 @@ def main():
     ap.add_argument("--batches", default="",
                     help="comma list L:n overriding the batch count per total L")
     ap.add_argument("--no-sieve", action="store_true")
+    ap.add_argument("--sym-lmax", type=int, default=DEFAULT_SYM_LMAX,
+                    help="largest lp + lq whose Hermite stage uses the P <-> Q symmetry")
+    ap.add_argument("--gather-all", action="store_true",
+                    help="gather kernels for every class too, to race against the symmetric ones")
     ap.add_argument("-o", "--outdir", required=True)
     a = ap.parse_args()
 
@@ -975,6 +1231,10 @@ def main():
         cmd += f" --batches {a.batches}"
     if a.no_sieve:
         cmd += " --no-sieve"
+    if a.sym_lmax != DEFAULT_SYM_LMAX:
+        cmd += f" --sym-lmax {a.sym_lmax}"
+    if a.gather_all:
+        cmd += " --gather-all"
     code = ORDER_CODE[a.order]
     header = ("!\n! {what}.\n!\n"
               f"! GENERATED by {cmd} -- do not edit.\n"
@@ -992,12 +1252,13 @@ def main():
     for la in range(a.lmax + 1):
         for lb in range(la + 1):
             write(f"trc_mdj_e{la}{lb}.F90", gen_e_module_loops(la, lb, a.order, e_header))
-    for lp in range(2 * a.lmax + 1):
-        for lq in range(2 * a.lmax + 1):
-            L = lp + lq
-            write(f"trc_mdj_r{lp}{lq}.F90",
-                  gen_r_module(lp, lq, nbatch_for(L, table), header, sieve=not a.no_sieve))
-    write("trc_mdj_kernels.F90", gen_dispatch(a.lmax, header))
+    for lp, lq in sym_kernels(a.lmax, a.sym_lmax):
+        write(f"trc_mdj_s{lp}{lq}.F90",
+              gen_r_module(lp, lq, nbatch_for(lp + lq, table), header, sieve=not a.no_sieve))
+    for lp, lq in gather_kernels(a.lmax, a.sym_lmax, a.gather_all):
+        write(f"trc_mdj_r{lp}{lq}.F90",
+              gen_r_module_gather(lp, lq, nbatch_for(lp + lq, table), header, sieve=not a.no_sieve))
+    write("trc_mdj_kernels.F90", gen_dispatch(a.lmax, header, a.sym_lmax, a.gather_all))
     return 0
 
 

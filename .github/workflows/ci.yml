@@ -280,6 +280,10 @@ jobs:
     # network:
     # cmake/modules/Findlibdlfind.cmake fetches libdlfind from GitHub at
     # its pinned commit, which GitHub-hosted runners have.
+    # It also builds the MD J gather Hermite kernels beside the symmetric
+    # default (TERCO_MDJ_GATHER_ALL=ON), which registers check_mdj_gather:
+    # no other job compiles or tests them. About a minute of extra build at
+    # LMAX=2 (the gather set was 71 s of ninja time against the symmetric 15 s).
     steps:
       - uses: actions/checkout@v4
 
@@ -304,6 +308,7 @@ jobs:
           -DTERCO_ENABLE_GPU=OFF
           -DTERCO_LONG_TESTS=ON
           -DTERCO_ENABLE_DLFIND=ON
+          -DTERCO_MDJ_GATHER_ALL=ON
           -S . -B build
 
       - name: Build
