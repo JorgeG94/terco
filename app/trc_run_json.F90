@@ -66,7 +66,7 @@ contains
       if (r%hessian .and. r%hess_ok) call add_hessian(json, root, r)
       if (r%opt) call add_optimization(json, root, r)
       if (allocated(r%hirshfeld_charges) .or. allocated(r%chelpg_charges)) call add_charges(json, root, r)
-      if (r%fukui == "hirshfeld" .and. allocated(r%fukui_f_plus)) call add_fukui(json, root, r)
+      if (len(r%fukui) > 0 .and. allocated(r%fukui_f_plus)) call add_fukui(json, root, r)
       call json%print(root, path)
       if (json%failed()) then
          call json%destroy(root)
@@ -123,9 +123,10 @@ contains
    end subroutine add_charges
 
    subroutine add_fukui(json, root, r)
-      !! Hirshfeld-condensed Fukui indices, one array per index in
+      !! Fukui indices condensed with `r%fukui`'s charges (hirshfeld or
+      !! chelpg), one array per index in
       !! `r%fukui_f_plus`'s own (and `trc_set_molecule`'s) atom order, plus
-      !! each array's sum and the three states' own Hirshfeld charges
+      !! each array's sum and the three states' own charges
       !! (N, N+1, N-1) they were differenced from.
       type(json_core), intent(inout) :: json
       type(json_value), pointer, intent(in) :: root

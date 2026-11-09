@@ -1009,9 +1009,10 @@ terco_add_check(check_chelpg check_chelpg.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_chelpg PRIVATE test-drive::test-drive terco_c_interfaces)
 
 # Hirshfeld-condensed Fukui indices (trc_capi's trc_fukui_hirshfeld) against
-# metalquicha's own fukui_indices at its own test_fukui case -- see the
-# file's own header.
-terco_add_check(check_fukui check_fukui.F90)
+# metalquicha's own fukui_indices at its own test_fukui case, and the
+# CHELPG-condensed variant (trc_fukui_scheme) against pyscf
+# (fukui_chelpg.ref) -- see the file's own header.
+terco_add_check(check_fukui check_fukui.F90 NEEDS_PYSCF_REF)
 target_link_libraries(check_fukui PRIVATE test-drive::test-drive terco_c_interfaces)
 
 # eri%gradient against a committed pyscf int2e_ip1 contraction (pyscf's
