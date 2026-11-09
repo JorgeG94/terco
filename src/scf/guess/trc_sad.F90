@@ -136,7 +136,7 @@ contains
       type(trc_ecp_t) :: ab_ecp
       type(trc_scf_options_t) :: opts
       type(trc_scf_result_t) :: res
-      integer :: ia, ish, ncached, k, a0, a1, z, nz, nel_i, na, nb
+      integer :: ia, ish, ncached, k, a0, a1, z, nz, nel_i, na, nb, ncore
       real(dp) :: want
       logical :: talk, sadq, hund, sph
 
@@ -204,11 +204,23 @@ contains
             ! better atom (spin-restricting oxygen costs 0.124 Ha and an extra SCF
             ! iteration for water). Only a fractional count needs the restricted
             ! fractional path, so SADQ on a neutral molecule is SAD exactly.
-            hund = abs(want - real(z, dp)) < 1.0e-12_dp
-            opts%unrestricted = hund
+            ! An ECP atom's own neutral count is the element less the
+            ! ECP's core, and that core is closed shells: the Hund split is
+            ! the element's, less half the core from each spin. An odd core
+            ! falls back to the restricted fractional path.
+            ncore = 0
+            if (present(ecp)) then
+               if (ecp%has_ecp) ncore = ecp%at_ncore(ia)
+            end if
+            hund = abs(want - real(z - ncore, dp)) < 1.0e-12_dp .and. mod(ncore, 2) == 0
             if (hund) then
                call hund_split(z, na, nb)
-            else
+               na = na - ncore/2
+               nb = nb - ncore/2
+               hund = na >= 0 .and. nb >= 0
+            end if
+            opts%unrestricted = hund
+            if (.not. hund) then
                ! nspin is 1 here, and `nocc` is taken from nelec_frac, so
                ! these two only have to be legal.
                nel_i = int(want/2.0_dp)
