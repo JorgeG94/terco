@@ -34,7 +34,7 @@ module trc_bins
 
    public :: SMAX, bins_build_binned_pairs, pair_bins_t, bins_sort_by_weight
    public :: bins_build_pair_quartets, bins_rep_weights, pair_image_source
-   public :: bins_skel_cut_first, bins_plan_emit, bins_plan_allocate
+   public :: bins_skel_cut_first, bins_plan_emit, bins_plan_allocate, bins_any_masked
    ! bin_key/bin_dmax stay private: nothing outside this module uses them.
 
    !
@@ -1422,6 +1422,22 @@ contains
       m = 0
       if (iand(b%bin_g(ka), BIN_G_MASKED) /= 0 .and. iand(b%bin_g(kb), BIN_G_MASKED) /= 0) m = 1
    end function pair_mask
+
+   pure logical function bins_any_masked(b) result(res)
+      !! Whether any live bin is parity-masked (BIN_G_MASKED). A plan over such
+      !! bins carries a per-segment mask (sM) that trc_bin_tiles' device
+      !! planner does not produce, so trc_bin_tiles builds it by the host walk.
+      type(pair_bins_t), intent(in) :: b
+      integer :: i
+      res = .false.
+      if (.not. allocated(b%bin_g)) return
+      do i = 1, b%nlive
+         if (iand(b%bin_g(b%live(i)), BIN_G_MASKED) /= 0) then
+            res = .true.
+            return
+         end if
+      end do
+   end function bins_any_masked
 
    subroutine bins_plan_release(this)
       class(trc_bin_plan_t), intent(inout) :: this

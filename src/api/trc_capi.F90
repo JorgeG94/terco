@@ -292,6 +292,7 @@ module trc_capi
    public :: trc_hirshfeld_charges
    public :: trc_chelpg_charges
    public :: trc_fukui_hirshfeld
+   public :: trc_fukui_scheme
 
    ! Status codes. Zero is success; everything else is a reason.
    integer(c_int), parameter, public :: TRC_OK            = 0
@@ -6802,6 +6803,31 @@ contains
       real(c_double), intent(out) :: q_n(*), q_np1(*), q_nm1(*)
       integer(c_int) :: status
 
+      status = trc_fukui_scheme(handle, "hirshfeld", f_plus, f_minus, f_zero, q_n, q_np1, q_nm1)
+   end function trc_fukui_hirshfeld
+
+   function trc_fukui_scheme(handle, scheme, f_plus, f_minus, f_zero, q_n, q_np1, q_nm1) &
+      result(status)
+      !! Condensed Fukui indices from the atomic charges of `scheme`:
+      !! "hirshfeld" (`trc_fukui_hirshfeld`, whose header documents the three
+      !! SCFs, the ion guesses, the closed-shell requirement and the restore
+      !! of the handle) or "chelpg". With "chelpg" each of the N, N+1 and
+      !! N-1 densities gets its own CHELPG fit (`trc_chelpg_charges`, on
+      !! that state's own molecular charge) on the same grid -- the grid
+      !! depends on geometry and radii only -- and the indices are the same
+      !! combinations of the three charge sets, `trc_fukui_indices`. Unlike
+      !! Hirshfeld's stockholder shares, CHELPG charges are not a partition
+      !! of the density difference, so a CHELPG f can be negative; the sum
+      !! rule (each of f+ and f- sums to one) still holds, because the fit
+      !! is constrained to the molecular charge. TRC_ERR_BADARG for any other
+      !! `scheme`. Same statuses and collective-call rule as
+      !! `trc_fukui_hirshfeld`; the C ABI is unchanged.
+      type(c_ptr), value :: handle
+      character(len=*), intent(in) :: scheme
+      real(c_double), intent(out) :: f_plus(*), f_minus(*), f_zero(*)
+      real(c_double), intent(out) :: q_n(*), q_np1(*), q_nm1(*)
+      integer(c_int) :: status
+
       type(context_box), pointer :: cx
       type(error_t) :: err
       real(dp), allocatable :: q_neutral(:), q_anion(:), q_cation(:)
@@ -6811,6 +6837,7 @@ contains
       integer(c_int) :: st, fail_status
       logical :: failed
       character(len=256) :: fail_message
+      character(len=:), allocatable :: tag
 
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
@@ -6825,30 +6852,39 @@ contains
          end if
       end if
 
+      tag = "trc_fukui_"//trim(scheme)
+      if (scheme /= "hirshfeld" .and. scheme /= "chelpg") then
+         status = TRC_ERR_BADARG
+         cx%message = "trc_fukui_scheme: unknown population scheme '"//trim(scheme)// &
+                      "': use hirshfeld or chelpg"
+         return
+      end if
+
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok .or. .not. cx%res%converged) then
-         cx%message = "trc_fukui_hirshfeld: run a converged SCF first"
+         cx%message = trim(tag)//": run a converged SCF first"
          return
       end if
 
       status = TRC_ERR_BADARG
       if (cx%multiplicity /= 1) then
-         cx%message = "trc_fukui_hirshfeld: Fukui indices need a closed-shell neutral "// &
+         cx%message = trim(tag)//": Fukui indices need a closed-shell neutral "// &
                       "(multiplicity 1); this handle's multiplicity is "// &
                       trim(itoa(cx%multiplicity))//", and its ions would not both be doublets"
          return
       end if
       nelec = nint(sum(cx%at_z)) - cx%charge
       if (nelec < 2) then
-         cx%message = "trc_fukui_hirshfeld: fewer than two electrons; no closed shell to "// &
+         cx%message = trim(tag)//": fewer than two electrons; no closed shell to "// &
                       "remove one from"
          return
       end if
 
-      call state_hirshfeld_charges(cx, q_neutral, err)
+      call fukui_stage_label("N (reference, the SCF above)", cx%charge, nelec)
+      call state_scheme_charges(cx, scheme, q_neutral, err)
       if (err%has_error()) then
-         status = hirshfeld_status(err)
-         cx%message = "trc_fukui_hirshfeld: the neutral's charges: "//err%get_message()
+         status = scheme_status(scheme, err)
+         cx%message = trim(tag)//": the neutral's charges: "//err%get_message()
          return
       end if
 
@@ -6878,6 +6914,7 @@ contains
       fail_message = ""
 
       ! The anion, N+1 electrons, a doublet, unseeded.
+      call fukui_stage_label("N+1 (anion)", ref_charge - 1, nelec + 1)
       st = trc_set_charge(handle, int(ref_charge - 1, c_int), 2_c_int)
       if (st == TRC_OK) then
          cx%guess_kind = ion_guess_kind
@@ -6886,18 +6923,19 @@ contains
       if (st /= TRC_OK .or. .not. cx%res%converged) then
          failed = .true.
          fail_status = merge(TRC_ERR_NOCONV, st, st == TRC_OK)
-         fail_message = "trc_fukui_hirshfeld: the anion (N+1): "//trim(cx%message)
+         fail_message = trim(tag)//": the anion (N+1): "//trim(cx%message)
       else
-         call state_hirshfeld_charges(cx, q_anion, err)
+         call state_scheme_charges(cx, scheme, q_anion, err)
          if (err%has_error()) then
             failed = .true.
-            fail_status = hirshfeld_status(err)
-            fail_message = "trc_fukui_hirshfeld: the anion's charges: "//err%get_message()
+            fail_status = scheme_status(scheme, err)
+            fail_message = trim(tag)//": the anion's charges: "//err%get_message()
          end if
       end if
 
       ! The cation, N-1 electrons, a doublet.
       if (.not. failed) then
+         call fukui_stage_label("N-1 (cation)", ref_charge + 1, nelec - 1)
          st = trc_set_charge(handle, int(ref_charge + 1, c_int), 2_c_int)
          if (st == TRC_OK) then
             cx%guess_kind = ion_guess_kind
@@ -6906,13 +6944,13 @@ contains
          if (st /= TRC_OK .or. .not. cx%res%converged) then
             failed = .true.
             fail_status = merge(TRC_ERR_NOCONV, st, st == TRC_OK)
-            fail_message = "trc_fukui_hirshfeld: the cation (N-1): "//trim(cx%message)
+            fail_message = trim(tag)//": the cation (N-1): "//trim(cx%message)
          else
-            call state_hirshfeld_charges(cx, q_cation, err)
+            call state_scheme_charges(cx, scheme, q_cation, err)
             if (err%has_error()) then
                failed = .true.
-               fail_status = hirshfeld_status(err)
-               fail_message = "trc_fukui_hirshfeld: the cation's charges: "//err%get_message()
+               fail_status = scheme_status(scheme, err)
+               fail_message = trim(tag)//": the cation's charges: "//err%get_message()
             end if
          end if
       end if
@@ -6922,7 +6960,7 @@ contains
          if (err%has_error()) then
             failed = .true.
             fail_status = TRC_ERR_BADARG
-            fail_message = "trc_fukui_hirshfeld: "//err%get_message()
+            fail_message = trim(tag)//": "//err%get_message()
          end if
       end if
 
@@ -6949,7 +6987,7 @@ contains
          return
       end if
       if (st /= TRC_OK) then
-         cx%message = "trc_fukui_hirshfeld: the ions converged, but restoring the reference "// &
+         cx%message = trim(tag)//": the ions converged, but restoring the reference "// &
                       "SCF did not reconverge: "//trim(cx%message)
          status = st
          return
@@ -6962,7 +7000,56 @@ contains
       q_np1(1:size(q_anion)) = real(q_anion, c_double)
       q_nm1(1:size(q_cation)) = real(q_cation, c_double)
       status = TRC_OK
-   end function trc_fukui_hirshfeld
+   end function trc_fukui_scheme
+
+   subroutine fukui_stage_label(stage, charge, nelec)
+      !! One log line naming the Fukui SCF stage about to run (or, for N,
+      !! already run), so a log with three SCF tables says which is which.
+      !! "Anion" and "cation" are relative to the reference: for a reference
+      !! of charge -1, N+1 is the dianion and N-1 the neutral.
+      character(len=*), intent(in) :: stage
+      integer, intent(in) :: charge, nelec
+      call global_logger%info("")
+      call global_logger%info("   Fukui: "//stage//" SCF -- charge "//to_string(charge)// &
+                              ", "//to_string(nelec)//" electrons")
+   end subroutine fukui_stage_label
+
+
+   subroutine state_scheme_charges(cx, scheme, q, error)
+      !! The charges of the converged density THIS context holds, by
+      !! `scheme` ("hirshfeld" or "chelpg"): `trc_fukui_scheme` calls it at
+      !! each of N, N+1 and N-1. CHELPG is constrained to `cx%charge`, which
+      !! `trc_set_charge` has already moved to the state being analysed.
+      !! `inout` for state_hirshfeld_charges, which may rebuild the
+      !! input-frame basis of a symmetric run.
+      type(context_box), intent(inout) :: cx
+      character(len=*), intent(in) :: scheme
+      real(dp), allocatable, intent(out) :: q(:)
+      type(error_t), intent(inout) :: error
+
+      real(dp), allocatable :: d_total_cart(:, :)
+
+      if (scheme == "chelpg") then
+         call state_total_density_cart(cx, d_total_cart)
+         call trc_chelpg_charges_from(cx%bb%b, d_total_cart, real(cx%charge, dp), q, error)
+      else
+         call state_hirshfeld_charges(cx, q, error)
+      end if
+   end subroutine state_scheme_charges
+
+   pure integer(c_int) function scheme_status(scheme, err) result(status)
+      !! The C status for a failed charge analysis by `scheme`: CHELPG's
+      !! refusals (a ghost, an element without a radius, a basis above the
+      !! potential-integral ceiling) are all TRC_ERR_BADARG, as in
+      !! `trc_chelpg_charges`; Hirshfeld's go through `hirshfeld_status`.
+      character(len=*), intent(in) :: scheme
+      type(error_t), intent(in) :: err
+      if (scheme == "chelpg") then
+         status = TRC_ERR_BADARG
+      else
+         status = hirshfeld_status(err)
+      end if
+   end function scheme_status
 
    pure integer(c_int) function hirshfeld_status(err) result(status)
       !! The C status for a failed Hirshfeld analysis: the data file is the

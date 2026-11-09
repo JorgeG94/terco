@@ -61,7 +61,7 @@
 !
 module trc_bin_tiles
    use pic_types, only: dp, int64
-   use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_skel_cut_first, bins_plan_emit, bins_plan_allocate
+   use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_skel_cut_first, bins_plan_emit, bins_plan_allocate, bins_any_masked
    use trc_eri_data, only: trc_bin_tiles_t, trc_bin_orbits_t
    implicit none
    private
@@ -379,6 +379,10 @@ contains
       !! (one side of each bin pair restricted to representatives, weights in
       !! sW), cut the same way: the tiles are those of the representative
       !! ranges against the whole other bin.
+      !!
+      !! A plan with orbit weights (skeleton) or parity masks is built here,
+      !! by the host walk; any other goes to plan_device, which builds the
+      !! same segments on the device.
       type(trc_bin_tiles_t), intent(in) :: this
       type(trc_bin_plan_t), intent(inout) :: plan
       type(pair_bins_t), intent(in) :: b
@@ -393,6 +397,11 @@ contains
       skel = .false.
       if (present(orb)) skel = orb%built
       call plan%release()
+      if (.not. (skel .or. bins_any_masked(b))) then
+         ! No orbit weights and no parity masks: the device planner.
+         call plan_device(this, plan, b, thresh, bin_pbase)
+         return
+      end if
       nseg = 0
       if (skel) then
          call walk_skeleton(this, plan, b, orb, thresh, bin_pbase, .false., nseg)
@@ -664,5 +673,486 @@ contains
       type(segment_t), intent(in) :: sg
       call bins_plan_emit(plan, b, bin_pbase, fill, nseg, sg%ka, sg%kb, sg%oa, sg%na, sg%ob, sg%nb, sg%diag, sg%w, .false.)
    end subroutine emit
+
+
+   subroutine plan_device(this, plan, b, thresh, bin_pbase)
+      !! bin_tiles_plan for a plan with neither orbit weights nor parity masks:
+      !! every segment's mask (sM) is 0 and sW stays unallocated.
+      !!
+      !! The launch plan of trc_bin_plan_t%build, with every Schwarz-admitted
+      !! bin pair either kept whole or cut into the tile pairs that can carry
+      !! exchange at this density (see the module header). Needs this
+      !! build's `reach`.
+      !!
+      !! ON THE DEVICE. The plan was a serial host walk over every admitted
+      !! bin pair's tile pairs, twice (count, then fill), with the GPU idle:
+      !! 0.14-0.40 s of a 4.4 s Fock build on gly50 cc-pVDZ (V100), growing
+      !! as the density spreads. It is now two `do concurrent` passes over
+      !! (bin pair, bra tile) slots -- count, then fill -- with only the
+      !! per-pair decision and the prefix sums between them on the host,
+      !! O(slots). The segments come out in the host walk's order: bin pairs
+      !! as `walk` visited them, a cut pair's bra tiles ascending, each
+      !! tile's runs ascending, its diagonal triangle last.
+      type(trc_bin_tiles_t), intent(in) :: this
+      type(trc_bin_plan_t), intent(inout) :: plan
+      type(pair_bins_t), intent(in) :: b
+      real(dp), intent(in) :: thresh
+      integer, intent(in) :: bin_pbase(:)
+      !! (nbin) first slot - 1 of each bin in the bin-interleaved tables
+
+      integer, allocatable :: pr_ka(:), pr_kb(:), pr_s0(:), pr_ns(:), pr_mode(:), pr_off(:)
+      integer, allocatable :: sl_pr(:), sl_ta(:), sl_kept(:), sl_nrun(:), sl_off(:)
+      integer(int64), allocatable :: sl_area(:)
+      integer, allocatable :: qA(:), qNB(:), qOA(:), qOB(:), qPA(:), qPB(:), qSA(:), qSB(:)
+      integer, allocatable :: qLA(:), qLB(:), qLC(:), qLD(:)
+      logical, allocatable :: qD(:)
+      ! Device copies of what the kernels read, as plain local arrays: the
+      ! derived-type components themselves were not found by the do
+      ! concurrent loops (nvfortran 26.5 read the host address under
+      ! mem:separate), whether `copyin`-mapped or not.
+      integer, allocatable :: xbt0(:), xbtn(:), xt0(:), xtn(:), xtb1(:), xtb2(:), xpmax2(:), xsmin1(:)
+      integer, allocatable :: xrlo(:, :), xrhi(:, :), xcnt(:), xoff(:), xla(:), xlb(:), xpb(:)
+      real(dp), allocatable :: xtq(:), xqbin(:)
+      integer :: ia, ib, ka, kb, npr, nslot, p, s, t, nseg, nbin, ntile, smax_keep
+      integer(int64) :: area, full, nt
+      integer :: nkept
+
+      call plan%release()
+      nbin = this%nbin
+      ntile = max(this%ntile, 1)
+
+      ! The admitted bin pairs, in walk's order, and their slots: one per bra
+      ! tile of a pair that can be cut, none for one that cannot (whole).
+      smax_keep = int(-log10(thresh))*b%sres
+      npr = 0
+      do ia = 1, b%nlive
+         do ib = 1, ia
+            if (admitted(b, b%live(ia), b%live(ib), smax_keep)) npr = npr + 1
+         end do
+      end do
+      allocate (pr_ka(max(npr, 1)), pr_kb(max(npr, 1)), pr_s0(max(npr, 1)), pr_ns(max(npr, 1)))
+      allocate (pr_mode(max(npr, 1)), pr_off(max(npr, 1)))
+      npr = 0
+      nslot = 0
+      do ia = 1, b%nlive
+         ka = b%live(ia)
+         do ib = 1, ia
+            kb = b%live(ib)
+            if (.not. admitted(b, ka, kb, smax_keep)) cycle
+            npr = npr + 1
+            pr_ka(npr) = ka
+            pr_kb(npr) = kb
+            pr_s0(npr) = nslot
+            pr_ns(npr) = 0
+            if (this%btn(ka) > 1 .or. this%btn(kb) > 1) pr_ns(npr) = this%btn(ka)
+            nslot = nslot + pr_ns(npr)
+         end do
+      end do
+      allocate (sl_pr(max(nslot, 1)), sl_ta(max(nslot, 1)), sl_kept(max(nslot, 1)), sl_nrun(max(nslot, 1)))
+      allocate (sl_off(max(nslot, 1)), sl_area(max(nslot, 1)))
+      do p = 1, npr
+         do t = 1, pr_ns(p)
+            sl_pr(pr_s0(p) + t) = p
+            sl_ta(pr_s0(p) + t) = this%bt0(pr_ka(p)) + t
+         end do
+      end do
+
+      xbt0 = this%bt0
+      xbtn = this%btn
+      xqbin = this%qbin
+      allocate (xt0(ntile), xtn(ntile), xtb1(ntile), xtb2(ntile), xpmax2(ntile), xsmin1(ntile), xtq(ntile))
+      allocate (xrlo(0:TILE_NLEV, ntile), xrhi(0:TILE_NLEV, ntile))
+      xt0 = 0
+      xtn = 0
+      xtb1 = 0
+      xtb2 = 0
+      xpmax2 = 0
+      xsmin1 = 0
+      xtq = 0.0_dp
+      xrlo = 0
+      xrhi = 0
+      if (this%ntile > 0) then
+         xt0 = this%t0
+         xtn = this%tn
+         xtb1 = this%tb1
+         xtb2 = this%tb2
+         xpmax2 = this%pmax2
+         xsmin1 = this%smin1
+         xtq = this%tq
+         xrlo = this%rlo
+         xrhi = this%rhi
+      end if
+      xcnt = b%bin_cnt(1:nbin)
+      xoff = b%bin_off(1:nbin)
+      xla = b%bin_la(1:nbin)
+      xlb = b%bin_lb(1:nbin)
+      xpb = bin_pbase(1:nbin)
+      !$acc enter data copyin(xbt0, xbtn, xt0, xtn, xtb1, xtb2, xpmax2, xsmin1, xtq, xqbin, xrlo, xrhi, &
+      !$acc                   pr_ka, pr_kb, sl_pr, sl_ta) &
+      !$acc            create(sl_area, sl_kept, sl_nrun)
+      ! The item routines take the loop index by value: passed by reference,
+      ! optimised ifx 2026.0 ran every iteration as slot 1 (the counts came
+      ! back 341 kept tile pairs instead of 662 in check_exchange_screen).
+      do concurrent(s=1:nslot)
+         call count_item(s, nbin, ntile, npr, nslot, xbt0, xbtn, xtn, &
+                         xtb1, xtb2, xpmax2, xsmin1, xtq, xqbin, &
+                         xrlo, xrhi, pr_ka, pr_kb, sl_pr, sl_ta, thresh, &
+                         sl_area, sl_kept, sl_nrun)
+      end do
+      !$acc update self(sl_area, sl_kept, sl_nrun)
+
+      ! Per pair, walk's decision; then each segment's place in walk's order.
+      nseg = 0
+      do p = 1, npr
+         ka = pr_ka(p)
+         kb = pr_kb(p)
+         if (ka == kb) then
+            full = int(b%bin_cnt(ka), int64)*int(b%bin_cnt(ka) + 1, int64)/2
+         else
+            full = int(b%bin_cnt(ka), int64)*int(b%bin_cnt(kb), int64)
+         end if
+         if (pr_ns(p) == 0) then
+            area = full
+            nkept = 0
+         else
+            area = sum(sl_area(pr_s0(p) + 1:pr_s0(p) + pr_ns(p)))
+            nkept = sum(sl_kept(pr_s0(p) + 1:pr_s0(p) + pr_ns(p)))
+         end if
+         pr_off(p) = nseg
+         if (real(area, dp) > TILE_KEEP_MAX*real(full, dp)) then
+            pr_mode(p) = 1
+            nseg = nseg + 1
+         else if (nkept == 0) then
+            pr_mode(p) = 0
+         else
+            pr_mode(p) = 2
+            do s = pr_s0(p) + 1, pr_s0(p) + pr_ns(p)
+               sl_off(s) = nseg
+               nseg = nseg + sl_nrun(s)
+            end do
+         end if
+      end do
+
+      ! Filled as plain local arrays and moved into `plan` afterwards: the
+      ! plan's own allocatable components, mapped with `create`, were not
+      ! found by the do concurrent below (nvfortran 26.5 wrote to the host
+      ! address: an illegal address under mem:separate).
+      allocate (qA(max(nseg, 1)), qNB(max(nseg, 1)), qOA(max(nseg, 1)), qOB(max(nseg, 1)))
+      allocate (qPA(max(nseg, 1)), qPB(max(nseg, 1)), qSA(max(nseg, 1)), qSB(max(nseg, 1)), qD(max(nseg, 1)))
+      allocate (qLA(max(nseg, 1)), qLB(max(nseg, 1)), qLC(max(nseg, 1)), qLD(max(nseg, 1)))
+      allocate (plan%sOff(nseg + 1))
+      !$acc enter data copyin(pr_mode, pr_off, sl_off, xcnt, xoff, xla, xlb, xpb) &
+      !$acc            create(qA, qNB, qOA, qOB, qPA, qPB, qSA, qSB, qD, qLA, qLB, qLC, qLD)
+      do concurrent(p=1:npr)
+         call whole_item(p, nbin, npr, max(nseg, 1), pr_ka, pr_kb, pr_mode, pr_off, &
+                         xcnt, xoff, xla, xlb, xpb, &
+                         qA, qNB, qOA, qOB, qPA, qPB, qSA, qSB, &
+                         qD, qLA, qLB, qLC, qLD)
+      end do
+      do concurrent(s=1:nslot)
+         call fill_item(s, nbin, ntile, npr, nslot, max(nseg, 1), xbt0, xbtn, xt0, xtn, &
+                        xtb1, xtb2, xpmax2, xsmin1, xtq, xqbin, &
+                        xrlo, xrhi, pr_ka, pr_kb, pr_mode, sl_pr, sl_ta, sl_off, thresh, &
+                        xcnt, xoff, xla, xlb, xpb, &
+                        qA, qNB, qOA, qOB, qPA, qPB, qSA, qSB, &
+                        qD, qLA, qLB, qLC, qLD)
+      end do
+      !$acc update self(qA, qNB, qOA, qOB, qPA, qPB, qSA, qSB, &
+      !$acc             qD, qLA, qLB, qLC, qLD)
+      !$acc exit data delete(qA, qNB, qOA, qOB, qPA, qPB, qSA, qSB, &
+      !$acc                  qD, qLA, qLB, qLC, qLD, &
+      !$acc                  pr_mode, pr_off, sl_off, xcnt, xoff, xla, xlb, xpb, &
+      !$acc                  xbt0, xbtn, xt0, xtn, xtb1, xtb2, &
+      !$acc                  xpmax2, xsmin1, xtq, xqbin, xrlo, xrhi, &
+      !$acc                  pr_ka, pr_kb, sl_pr, sl_ta, sl_area, sl_kept, sl_nrun)
+
+      call move_alloc(qA, plan%sA)
+      call move_alloc(qNB, plan%sNB)
+      call move_alloc(qOA, plan%sOA)
+      call move_alloc(qOB, plan%sOB)
+      call move_alloc(qPA, plan%sPA)
+      call move_alloc(qPB, plan%sPB)
+      call move_alloc(qSA, plan%sSA)
+      call move_alloc(qSB, plan%sSB)
+      call move_alloc(qD, plan%sD)
+      call move_alloc(qLA, plan%sLA)
+      call move_alloc(qLB, plan%sLB)
+      call move_alloc(qLC, plan%sLC)
+      call move_alloc(qLD, plan%sLD)
+      plan%sOff(1) = 0
+      do s = 1, nseg
+         if (plan%sD(s)) then
+            nt = int(plan%sA(s), int64)*int(plan%sA(s) + 1, int64)/2
+         else
+            nt = int(plan%sA(s), int64)*int(plan%sNB(s), int64)
+         end if
+         ! See bins_plan_build: the kernels index within a segment by a
+         ! default integer, and bins are capped so that no segment needs more.
+         if (nt > 2147483000_int64) error stop &
+            "terco: bin-pair segment exceeds a default integer; widen the kernels' t"
+         plan%sOff(s + 1) = plan%sOff(s) + nt
+      end do
+      ! The fork's parity masks: none on a plan this routine builds.
+      allocate (plan%sM(max(nseg, 1)))
+      plan%sM = 0
+      plan%nseg = nseg
+      plan%nwork = plan%sOff(nseg + 1)
+      deallocate (pr_ka, pr_kb, pr_s0, pr_ns, pr_mode, pr_off, sl_pr, sl_ta, sl_kept, sl_nrun, sl_off, sl_area)
+      deallocate (xbt0, xbtn, xt0, xtn, xtb1, xtb2, xpmax2, xsmin1, xtq, xqbin, xrlo, xrhi, xcnt, xoff, xla, xlb, xpb)
+   end subroutine plan_device
+
+   pure logical function admitted(b, ka, kb, smax_keep) result(res)
+      !! Whether bin pair (ka, kb) passes the Schwarz cut and has pairs at all.
+      type(pair_bins_t), intent(in) :: b
+      integer, intent(in) :: ka, kb, smax_keep
+      res = b%bin_s(ka) + b%bin_s(kb) <= smax_keep .and. b%bin_cnt(ka) > 0 .and. b%bin_cnt(kb) > 0
+   end function admitted
+
+   pure subroutine count_item(s, nbin, ntile, npr, nslot, bt0, btn, tn, tb1, tb2, pmax2, smin1, &
+                              tq, qbin, rlo, rhi, pr_ka, pr_kb, sl_pr, sl_ta, thresh, sl_area, sl_kept, sl_nrun)
+      !! Slot s, bra tile ta of bin pair p: the area and the kept tile pairs it
+      !! adds to p's whole-or-cut test, and the segments it emits if p is cut.
+      !$acc routine seq
+      integer, value :: s
+      integer, intent(in) :: nbin, ntile, npr, nslot
+      integer, intent(in) :: bt0(nbin), btn(nbin), tn(ntile), tb1(ntile), tb2(ntile)
+      integer, intent(in) :: pmax2(ntile), smin1(ntile), rlo(0:TILE_NLEV, ntile), rhi(0:TILE_NLEV, ntile)
+      real(dp), intent(in) :: tq(ntile), qbin(nbin)
+      real(dp), intent(in) :: thresh
+      integer, intent(in) :: pr_ka(npr), pr_kb(npr), sl_pr(nslot), sl_ta(nslot)
+      integer(int64), intent(inout) :: sl_area(nslot)
+      integer, intent(inout) :: sl_kept(nslot), sl_nrun(nslot)
+      integer :: p, ka, kb, ta, tb, t1, t2, tlast, nrun
+      integer(int64) :: area
+      logical :: same, keep, inrun
+
+      p = sl_pr(s)
+      ka = pr_ka(p)
+      kb = pr_kb(p)
+      ta = sl_ta(s)
+      same = ka == kb
+      call cand_d(nbin, ntile, bt0, btn, pmax2, smin1, tq, qbin, rlo, rhi, ta, kb, thresh, t1, t2)
+      if (same) t2 = min(t2, ta)
+      area = 0
+      sl_kept(s) = 0
+      do tb = t1, t2
+         if (.not. kept_d(ntile, tq, tb1, tb2, rlo, rhi, ta, tb, thresh)) cycle
+         sl_kept(s) = sl_kept(s) + 1
+         if (same .and. tb == ta) then
+            area = area + int(tn(ta), int64)*int(tn(ta) + 1, int64)/2
+         else
+            area = area + int(tn(ta), int64)*int(tn(tb), int64)
+         end if
+      end do
+      sl_area(s) = area
+      ! The cut's segments: one per run of consecutive kept ket tiles, and
+      ! the diagonal triangle of a bin against itself.
+      nrun = 0
+      tlast = t2
+      if (same .and. t2 == ta) tlast = ta - 1
+      inrun = .false.
+      do tb = t1, tlast
+         keep = kept_d(ntile, tq, tb1, tb2, rlo, rhi, ta, tb, thresh)
+         if (keep .and. .not. inrun) nrun = nrun + 1
+         inrun = keep
+      end do
+      if (same .and. t2 == ta) then
+         if (kept_d(ntile, tq, tb1, tb2, rlo, rhi, ta, ta, thresh)) nrun = nrun + 1
+      end if
+      sl_nrun(s) = nrun
+   end subroutine count_item
+
+   pure subroutine fill_item(s, nbin, ntile, npr, nslot, nseg, bt0, btn, t0, tn, tb1, tb2, pmax2, smin1, &
+                             tq, qbin, rlo, rhi, pr_ka, pr_kb, pr_mode, sl_pr, sl_ta, sl_off, thresh, &
+                             bin_cnt, bin_off, bin_la, bin_lb, bin_pbase, &
+                             sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sLA, sLB, sLC, sLD)
+      !! Slot s of a cut bin pair: its runs, then its diagonal triangle, from
+      !! segment sl_off(s) + 1 on -- count_item's segments, in walk's order.
+      !$acc routine seq
+      integer, value :: s
+      integer, intent(in) :: nbin, ntile, npr, nslot, nseg
+      integer, intent(in) :: bt0(nbin), btn(nbin), t0(ntile), tn(ntile), tb1(ntile), tb2(ntile)
+      integer, intent(in) :: pmax2(ntile), smin1(ntile), rlo(0:TILE_NLEV, ntile), rhi(0:TILE_NLEV, ntile)
+      real(dp), intent(in) :: tq(ntile), qbin(nbin)
+      real(dp), intent(in) :: thresh
+      integer, intent(in) :: pr_ka(npr), pr_kb(npr), pr_mode(npr), sl_pr(nslot), sl_ta(nslot), sl_off(nslot)
+      integer, intent(in) :: bin_cnt(nbin), bin_off(nbin), bin_la(nbin), bin_lb(nbin), bin_pbase(nbin)
+      integer, intent(inout) :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg), sPA(nseg), sPB(nseg)
+      integer, intent(inout) :: sSA(nseg), sSB(nseg), sLA(nseg), sLB(nseg), sLC(nseg), sLD(nseg)
+      logical, intent(inout) :: sD(nseg)
+      integer :: p, ka, kb, ta, tb, t1, t2, tlast, run0, run1, k
+      logical :: same, keep, inrun
+
+      p = sl_pr(s)
+      if (pr_mode(p) /= 2) return
+      ka = pr_ka(p)
+      kb = pr_kb(p)
+      ta = sl_ta(s)
+      same = ka == kb
+      k = sl_off(s)
+      call cand_d(nbin, ntile, bt0, btn, pmax2, smin1, tq, qbin, rlo, rhi, ta, kb, thresh, t1, t2)
+      if (same) t2 = min(t2, ta)
+      ! Runs of consecutive kept ket tiles, tracked with an explicit in-run
+      ! flag as count_item does. The host walk closed a run on an extra
+      ! iteration past the end with keep forced false; on the device (nvfortran
+      ! 26.5) that lost runs, leaving their segments unwritten.
+      tlast = t2
+      if (same .and. t2 == ta) tlast = ta - 1
+      inrun = .false.
+      run0 = 0
+      run1 = 0
+      do tb = t1, tlast
+         keep = kept_d(ntile, tq, tb1, tb2, rlo, rhi, ta, tb, thresh)
+         if (keep) then
+            if (.not. inrun) run0 = tb
+            run1 = tb
+         else if (inrun) then
+            k = k + 1
+            call put_seg(k, nseg, nbin, ka, kb, t0(ta), tn(ta), t0(run0), t0(run1) + tn(run1) - t0(run0), &
+                         .false., bin_cnt, bin_off, bin_la, bin_lb, bin_pbase, &
+                         sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sLA, sLB, sLC, sLD)
+         end if
+         inrun = keep
+      end do
+      if (inrun) then
+         k = k + 1
+         call put_seg(k, nseg, nbin, ka, kb, t0(ta), tn(ta), t0(run0), t0(run1) + tn(run1) - t0(run0), &
+                      .false., bin_cnt, bin_off, bin_la, bin_lb, bin_pbase, &
+                      sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sLA, sLB, sLC, sLD)
+      end if
+      if (same .and. t2 == ta) then
+         if (kept_d(ntile, tq, tb1, tb2, rlo, rhi, ta, ta, thresh)) then
+            k = k + 1
+            call put_seg(k, nseg, nbin, ka, kb, t0(ta), tn(ta), t0(ta), tn(ta), .true., &
+                         bin_cnt, bin_off, bin_la, bin_lb, bin_pbase, &
+                         sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sLA, sLB, sLC, sLD)
+         end if
+      end if
+   end subroutine fill_item
+
+   pure subroutine whole_item(p, nbin, npr, nseg, pr_ka, pr_kb, pr_mode, pr_off, &
+                              bin_cnt, bin_off, bin_la, bin_lb, bin_pbase, &
+                              sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sLA, sLB, sLC, sLD)
+      !! A bin pair launched whole: its one segment.
+      !$acc routine seq
+      integer, value :: p
+      integer, intent(in) :: nbin, npr, nseg
+      integer, intent(in) :: pr_ka(npr), pr_kb(npr), pr_mode(npr), pr_off(npr)
+      integer, intent(in) :: bin_cnt(nbin), bin_off(nbin), bin_la(nbin), bin_lb(nbin), bin_pbase(nbin)
+      integer, intent(inout) :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg), sPA(nseg), sPB(nseg)
+      integer, intent(inout) :: sSA(nseg), sSB(nseg), sLA(nseg), sLB(nseg), sLC(nseg), sLD(nseg)
+      logical, intent(inout) :: sD(nseg)
+      integer :: ka, kb
+      if (pr_mode(p) /= 1) return
+      ka = pr_ka(p)
+      kb = pr_kb(p)
+      call put_seg(pr_off(p) + 1, nseg, nbin, ka, kb, 0, bin_cnt(ka), 0, bin_cnt(kb), ka == kb, &
+                   bin_cnt, bin_off, bin_la, bin_lb, bin_pbase, &
+                   sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sLA, sLB, sLC, sLD)
+   end subroutine whole_item
+
+   pure subroutine put_seg(k, nseg, nbin, ka, kb, oa, na, ob, nb, diag, bin_cnt, bin_off, bin_la, bin_lb, &
+                           bin_pbase, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sLA, sLB, sLC, sLD)
+      !! Segment k: pairs oa+1..oa+na of bin ka against ob+1..ob+nb of bin kb
+      !! (walk's emit, less the work offset, which the host adds after).
+      !$acc routine seq
+      integer, intent(in) :: k, nseg, nbin, ka, kb, oa, na, ob, nb
+      logical, intent(in) :: diag
+      integer, intent(in) :: bin_cnt(nbin), bin_off(nbin), bin_la(nbin), bin_lb(nbin), bin_pbase(nbin)
+      integer, intent(inout) :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg), sPA(nseg), sPB(nseg)
+      integer, intent(inout) :: sSA(nseg), sSB(nseg), sLA(nseg), sLB(nseg), sLC(nseg), sLD(nseg)
+      logical, intent(inout) :: sD(nseg)
+      sA(k) = na
+      sNB(k) = nb
+      sOA(k) = bin_off(ka) + oa
+      sOB(k) = bin_off(kb) + ob
+      sPA(k) = bin_pbase(ka) + oa
+      sPB(k) = bin_pbase(kb) + ob
+      sSA(k) = bin_cnt(ka)
+      sSB(k) = bin_cnt(kb)
+      sD(k) = diag
+      sLA(k) = bin_la(ka)
+      sLB(k) = bin_lb(ka)
+      sLC(k) = bin_la(kb)
+      sLD(k) = bin_lb(kb)
+   end subroutine put_seg
+
+   pure subroutine cand_d(nbin, ntile, bt0, btn, pmax2, smin1, tq, qbin, rlo, rhi, ta, kb, thresh, t1, t2)
+      !! `candidates`, on explicit arrays for the device.
+      !$acc routine seq
+      integer, intent(in) :: nbin, ntile, ta, kb
+      integer, intent(in) :: bt0(nbin), btn(nbin), pmax2(ntile), smin1(ntile)
+      integer, intent(in) :: rlo(0:TILE_NLEV, ntile), rhi(0:TILE_NLEV, ntile)
+      real(dp), intent(in) :: tq(ntile), qbin(nbin)
+      real(dp), intent(in) :: thresh
+      integer, intent(out) :: t1, t2
+      integer :: m, lo, hi, a, z, mid
+
+      t1 = bt0(kb) + 1
+      t2 = bt0(kb) + btn(kb)
+      if (tq(ta)*qbin(kb) <= thresh) then
+         t2 = t1 - 1
+         return
+      end if
+      m = cut_level_d(thresh/(tq(ta)*qbin(kb)))
+      if (m > TILE_NLEV) return
+      lo = rlo(m, ta)
+      hi = rhi(m, ta)
+      if (lo > hi) then
+         t2 = t1 - 1
+         return
+      end if
+      a = t1
+      z = t2 + 1
+      do while (a < z)
+         mid = (a + z)/2
+         if (pmax2(mid) >= lo) then
+            z = mid
+         else
+            a = mid + 1
+         end if
+      end do
+      t1 = a
+      a = bt0(kb)
+      z = t2
+      do while (a < z)
+         mid = (a + z + 1)/2
+         if (smin1(mid) <= hi) then
+            a = mid
+         else
+            z = mid - 1
+         end if
+      end do
+      t2 = a
+   end subroutine cand_d
+
+   pure logical function kept_d(ntile, tq, tb1, tb2, rlo, rhi, ta, tb, thresh) result(res)
+      !! `tile_pair_kept`, on explicit arrays for the device.
+      !$acc routine seq
+      integer, intent(in) :: ntile, ta, tb
+      integer, intent(in) :: tb1(ntile), tb2(ntile), rlo(0:TILE_NLEV, ntile), rhi(0:TILE_NLEV, ntile)
+      real(dp), intent(in) :: tq(ntile)
+      real(dp), intent(in) :: thresh
+      integer :: m
+      res = .false.
+      if (tq(ta)*tq(tb) <= thresh) return
+      m = cut_level_d(thresh/(tq(ta)*tq(tb)))
+      res = .true.
+      if (m > TILE_NLEV) return
+      res = rlo(m, ta) <= tb2(tb) .and. rhi(m, ta) >= tb1(tb)
+   end function kept_d
+
+   pure integer function cut_level_d(cut) result(m)
+      !! `cut_level`, as a device routine.
+      !$acc routine seq
+      real(dp), intent(in) :: cut
+      if (cut >= 1.0_dp) then
+         m = 0
+      else if (cut <= 0.0_dp) then
+         m = TILE_NLEV + 1
+      else
+         m = min(TILE_NLEV + 1, int(floor(-log10(cut))) + 1)
+      end if
+   end function cut_level_d
 
 end module trc_bin_tiles

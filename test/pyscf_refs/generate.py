@@ -3697,6 +3697,90 @@ def gen_chelpg():
     w.write()
 
 
+def gen_fukui_chelpg():
+    """test/check_fukui.F90's CHELPG-condensed Fukui case: RHF/cc-pVDZ water
+    at that file's Bohr geometry (mqc's test_fukui geometry, the one its
+    Hirshfeld reference uses), its anion (N+1) and cation (N-1) as UHF
+    doublets, CHELPG charges at each of the three densities, and
+    f+ = q(N) - q(N+1), f- = q(N-1) - q(N).
+
+    The CHELPG step is gen_chelpg's own recipe (mqc's Breneman-Wiberg grid,
+    pyscf's `int1e_grids` potential, the fit constrained to the state's own
+    charge), repeated here rather than shared so that editing it never
+    re-hashes chelpg.ref. The grid depends on geometry and radii only, so
+    all three states are fitted on the same points."""
+    bohr = 0.529177210903  # CODATA 2018, as terco
+    vdw = [1.10, 1.40, 1.81, 1.53, 1.92, 1.70, 1.55, 1.52, 1.47, 1.54,
+           2.27, 1.73, 1.84, 2.10, 1.80, 1.80, 1.75, 1.88]
+    spacing, head = 0.3 / bohr, 2.8 / bohr
+    atoms = [("O", (0.0, 0.0, 0.0)), ("H", (0.0, 1.4308, 1.1078)), ("H", (0.0, -1.4308, 1.1078))]
+    basname = "cc-pvdz"
+    files = [ROOT / "test" / "check_fukui.F90", TEST / "basis_sets" / (basname + ".json")]
+    states = [("N", 0, 0), ("N+1", -1, 1), ("N-1", 1, 1)]
+
+    def grid(coords, z):
+        radius = np.array([vdw[int(round(zz)) - 1] for zz in z]) / bohr
+        low = coords.min(axis=0) - head
+        high = coords.max(axis=0) + head
+        nx = [int((high[d] - low[d]) / spacing) + 1 for d in range(3)]
+        k, j, i = np.meshgrid(np.arange(nx[2]), np.arange(nx[1]), np.arange(nx[0]), indexing="ij")
+        pts = np.stack([low[0] + i.ravel() * spacing, low[1] + j.ravel() * spacing,
+                        low[2] + k.ravel() * spacing], axis=1)
+        dist = np.linalg.norm(pts[:, None, :] - coords[None, :, :], axis=2)
+        keep = ~(dist < radius[None, :]).any(axis=1) & (dist.min(axis=1) <= head)
+        return pts[keep]
+
+    w = RefWriter("fukui_chelpg.ref")
+    w.header("fukui_chelpg", files)
+    w.comment("water RHF/cc-pVDZ (N) and UHF doublets (N+1, N-1); CHELPG charges per state")
+    elements = {sym: gto.charge(sym) for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    qs = {}
+    npts = 0
+    for label, charge, spin in states:
+        mol = gto.M(atom=atoms, unit="Bohr", basis=bas, charge=charge, spin=spin, cart=False, verbose=0)
+
+        def make_mf(mol=mol, spin=spin):
+            return scf.RHF(mol) if spin == 0 else scf.UHF(mol)
+
+        mf, _ = converge_tight(make_mf, None, f"gen_fukui_chelpg {label}")
+        dm = np.asarray(mf.make_rdm1())
+        if dm.ndim == 3:
+            dm = dm[0] + dm[1]
+        coords = mol.atom_coords()
+        pts = grid(coords, mol.atom_charges())
+        npts = len(pts)
+        inv = 1.0 / np.linalg.norm(pts[None, :, :] - coords[:, None, :], axis=2)
+        v = mol.atom_charges() @ inv
+        for c0 in range(0, len(pts), 1000):
+            ints = mol.intor("int1e_grids", grids=pts[c0:c0 + 1000])
+            v[c0:c0 + 1000] -= np.einsum("gij,ij->g", ints, dm)
+        n = mol.natm
+        a = np.zeros((n + 1, n + 1))
+        b = np.zeros(n + 1)
+        a[:n, :n] = inv @ inv.T
+        a[:n, n] = 1.0
+        a[n, :n] = 1.0
+        b[:n] = inv @ v
+        b[n] = charge
+        qs[label] = np.linalg.solve(a, b)[:n]
+        w.real("E_" + label.replace("+", "P").replace("-", "M"), mf.e_tot)
+    f_plus = qs["N"] - qs["N+1"]
+    f_minus = qs["N-1"] - qs["N"]
+    print("  fukui_chelpg q(N) " + " ".join(f"{x:.6f}" for x in qs["N"]))
+    print("  fukui_chelpg f+   " + " ".join(f"{x:.6f}" for x in f_plus))
+    print("  fukui_chelpg f-   " + " ".join(f"{x:.6f}" for x in f_minus))
+    w.int_("NATM", len(atoms))
+    w.int_("NPTS", npts)
+    w.vector("Q_N", qs["N"])
+    w.vector("Q_NP1", qs["N+1"])
+    w.vector("Q_NM1", qs["N-1"])
+    w.vector("F_PLUS", f_plus)
+    w.vector("F_MINUS", f_minus)
+    w.end()
+    w.write()
+
+
 def gen_minao():
     """test/check_minao.F90's two cases against PySCF's own
     `init_guess_by_minao`: water/cc-pVDZ and silane/def2-SVP (Si, Z=14, a
@@ -6064,6 +6148,7 @@ def gen_sym_tops():
 CASES = {
     "hirshfeld": gen_hirshfeld,
     "chelpg": gen_chelpg,
+    "fukui_chelpg": gen_fukui_chelpg,
     "mult": gen_mult,
     "ecp_ints_hi_svp": lambda: gen_ecp_ints("hi_svp"),
     "ecp_ints_ih_far": lambda: gen_ecp_ints("ih_far"),

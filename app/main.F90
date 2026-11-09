@@ -26,7 +26,7 @@ program trc_main
                        trc_energy_parts, trc_converged, trc_iterations, trc_rimp2_energy, &
                        trc_set_pcm, trc_pcm_energy, trc_save_scf, trc_load_scf, &
                        trc_run_gradient, trc_gradient, trc_set_geometry, trc_set_hessian_step, trc_run_hessian, &
-                       trc_hessian, trc_hirshfeld_charges, trc_chelpg_charges, trc_fukui_hirshfeld, &
+                       trc_hessian, trc_hirshfeld_charges, trc_chelpg_charges, trc_fukui_scheme, &
                        trc_set_symmetry, trc_set_irrep_nelec, trc_set_symmetry_skeleton, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP, TRC_GUESS_MINAO
@@ -148,8 +148,8 @@ program trc_main
                          "minao always starts from neutral atoms, also for an ion; it is the default with --fukui", short="g")
    call r%cli%add_option("charges", "atomic charge analysis: hirshfeld, chelpg, or both as "// &
                          "hirshfeld,chelpg (none by default)")
-   call r%cli%add_option("fukui", "Hirshfeld-condensed Fukui indices, by finite difference in the "// &
-                         "electron count: hirshfeld (none by default; needs a closed-shell neutral; "// &
+   call r%cli%add_option("fukui", "condensed Fukui indices, by finite difference in the "// &
+                         "electron count, from hirshfeld or chelpg charges (none by default; needs a closed-shell neutral; "// &
                          "the guess defaults to minao for all three states)")
    call r%cli%add_flag("cart", "Cartesian AOs even when the basis is defined spherical")
    call r%cli%add_option("grid", "DFT integration grid level (3)", default="3")
@@ -531,7 +531,9 @@ program trc_main
    if (r%cli%is_set("fukui")) then
       call r%cli%get("fukui", sval, r%err)
       r%fukui = run_to_lower_alloc(trim(sval))
-      if (r%fukui /= "hirshfeld") call run_die(r, "unknown --fukui '"//r%fukui//"': use hirshfeld")
+      if (r%fukui /= "hirshfeld" .and. r%fukui /= "chelpg") then
+         call run_die(r, "unknown --fukui '"//r%fukui//"': use hirshfeld or chelpg")
+      end if
    end if
 
    call r%cli%get("grid", r%grid, r%err)
@@ -1564,9 +1566,10 @@ program trc_main
       deallocate (chargebuf)
    end if
 
-   if (r%fukui == "hirshfeld" .and. r%conv /= 0) then
-      ! trc_fukui_hirshfeld's own refusals (a non-singlet neutral, an
-      ! unconverged ion, an element outside H-Kr) come back through
+   if (len(r%fukui) > 0 .and. r%conv /= 0) then
+      ! trc_fukui_scheme's own refusals (a non-singlet neutral, an
+      ! unconverged ion, an element outside H-Kr for hirshfeld, a ghost or an
+      ! element without a radius for chelpg) come back through
       ! `api`, same as --charges's/--grad's/--hessian's. It runs two more
       ! SCFs on r%h (N+1, N-1) and restores the handle's charge,
       ! multiplicity and converged state before returning -- its own
@@ -1575,7 +1578,7 @@ program trc_main
       allocate (qnbuf(r%natm), qnp1buf(r%natm), qnm1buf(r%natm))
       allocate (r%fukui_f_plus(r%natm), r%fukui_f_minus(r%natm), r%fukui_f_zero(r%natm))
       allocate (r%fukui_q_n(r%natm), r%fukui_q_np1(r%natm), r%fukui_q_nm1(r%natm))
-      call run_api(r, trc_fukui_hirshfeld(r%h, fplusbuf, fminusbuf, fzerobuf, qnbuf, qnp1buf, qnm1buf))
+      call run_api(r, trc_fukui_scheme(r%h, r%fukui, fplusbuf, fminusbuf, fzerobuf, qnbuf, qnp1buf, qnm1buf))
       r%fukui_f_plus = real(fplusbuf, dp)
       r%fukui_f_minus = real(fminusbuf, dp)
       r%fukui_f_zero = real(fzerobuf, dp)
@@ -1589,7 +1592,7 @@ program trc_main
    if (r%rank0) call run_summary(r)
    if (r%rank0 .and. r%grad .and. r%conv /= 0) call run_gradient_summary(r)
    if (r%rank0 .and. (r%want_hirshfeld .or. r%want_chelpg) .and. r%conv /= 0) call run_charges_summary(r)
-   if (r%rank0 .and. r%fukui == "hirshfeld" .and. r%conv /= 0) call run_fukui_summary(r)
+   if (r%rank0 .and. len(r%fukui) > 0 .and. r%conv /= 0) call run_fukui_summary(r)
    if (r%rank0 .and. r%opt) call run_opt_summary(r)
    if (r%rank0 .and. r%hessian .and. r%hess_ok) call run_hessian_summary(r)
    if (r%rank0 .and. len(r%json) > 0) call run_write_json(r, r%json)

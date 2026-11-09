@@ -48,7 +48,7 @@ target_compile_definitions(
   terco_cli
   PRIVATE TERCO_VERSION="${PROJECT_VERSION}"
           TERCO_BASIS_DIR="${CMAKE_INSTALL_PREFIX}/${TERCO_BASIS_INSTALL_DIR}"
-          TERCO_SOURCE_BASIS_DIR="${PROJECT_SOURCE_DIR}/test/basis_sets")
+          TERCO_SOURCE_BASIS_DIR="${PROJECT_SOURCE_DIR}/basis_sets:${PROJECT_SOURCE_DIR}/test/basis_sets")
 # pic-mpi: the CLI initialises and finalises MPI, and asks for the world
 # communicator's Fortran handle, itself (app/main.F90) -- the library only
 # ever sees the handle trc_set_comm hands it.
@@ -111,11 +111,20 @@ foreach(_opt_pyscf_case water hcn)
 endforeach()
 unset(_opt_pyscf_case)
 
-# The basis sets the tests use, so `--basis def2-svp` works out of the box
-# after an install. sap_helfem_large.json is not a basis but the fitted atomic
-# potentials `--guess sap` reads; it is found the same way.
+# The shipped basis library (basis_sets/, tools/fetch_basis.py: Basis Set
+# Exchange JSON, unmodified), so `--basis def2-tzvpd` works out of the box
+# after an install. The tests' own files go in first: sap_helfem_large.json,
+# minao.json and hirshfeld_proatoms.json are not basis sets but data the
+# guesses and Hirshfeld read, found the same way. The library is installed
+# second so that where a name is in both (cc-pvtz.json: the test copy is
+# four elements, converted from pyscf) the full BSE file is the one left.
 install(
   DIRECTORY ${PROJECT_SOURCE_DIR}/test/basis_sets/
+  DESTINATION ${TERCO_BASIS_INSTALL_DIR}
+  FILES_MATCHING
+  PATTERN "*.json")
+install(
+  DIRECTORY ${PROJECT_SOURCE_DIR}/basis_sets/
   DESTINATION ${TERCO_BASIS_INSTALL_DIR}
   FILES_MATCHING
   PATTERN "*.json")
@@ -142,6 +151,23 @@ if(TERCO_ENABLE_TESTING)
   set_tests_properties(
     terco/cli_basis_star PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
                                     "TOTAL ENERGY +-76\\.010504")
+
+  # The shipped library (basis_sets/, Basis Set Exchange 0.12) by name, under
+  # BSE's own file names: "+" kept, "*" as _st_. Water RHF, pyscf 2.x anchors:
+  # aug-cc-pVDZ with pyscf's bundled data (-76.0413935200), 6-31+G* Cartesian
+  # with the BSE file itself (-76.0174413767; pyscf's bundled Pople data is
+  # cut to 7 digits and sits 1.6e-8 away).
+  set(_lib_env "TERCO_BASIS_PATH=${PROJECT_SOURCE_DIR}/basis_sets" "CUDA_VISIBLE_DEVICES=0")
+  add_test(NAME terco/cli_library_aug COMMAND terco_cli ${_xyz}/water.xyz -b aug-cc-pVDZ
+                                                --econv 1e-11 --gconv 1e-8)
+  set_tests_properties(
+    terco/cli_library_aug PROPERTIES ENVIRONMENT "${_lib_env}" PASS_REGULAR_EXPRESSION
+                                     "TOTAL ENERGY +-76\\.0413935[12]")
+  add_test(NAME terco/cli_library_pople COMMAND terco_cli ${_xyz}/water.xyz -b 6-31+G* --cart
+                                                  --econv 1e-11 --gconv 1e-8)
+  set_tests_properties(
+    terco/cli_library_pople PROPERTIES ENVIRONMENT "${_lib_env}" PASS_REGULAR_EXPRESSION
+                                       "TOTAL ENERGY +-76\\.01744137")
 
   # The same through every other guess, so each one stays reachable from the
   # command line and converges to the same state.
@@ -218,6 +244,34 @@ if(TERCO_ENABLE_TESTING)
     PROPERTIES ENVIRONMENT "${_env}" WORKING_DIRECTORY
                ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
                "guess +: minao.*sum +1\\.000000 +1\\.000000 +1\\.000000")
+
+  # The CHELPG-condensed variant: each of N, N+1 and N-1 is fitted on its own
+  # density (check_fukui validates the three charge sets and the indices
+  # against pyscf). The O values are terco's own at water/6-31G; O's f+ is
+  # negative, which Hirshfeld's (0.295041, above) never is.
+  add_test(NAME terco/cli_fukui_chelpg
+           COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --fukui chelpg)
+  set_tests_properties(
+    terco/cli_fukui_chelpg
+    PROPERTIES ENVIRONMENT "${_env}" WORKING_DIRECTORY
+               ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
+               "guess +: minao.*CHELPG-condensed Fukui.*1  O +-0\\.159473 +0\\.776391 +0\\.308459.*sum +1\\.000000 +1\\.000000 +1\\.000000")
+  # Each Fukui SCF stage is labelled in the log, so the three SCF tables can
+  # be told apart; the charges and electron counts are relative to the
+  # reference (water: 0 and 10).
+  add_test(NAME terco/cli_fukui_stage_labels
+           COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --fukui hirshfeld)
+  set_tests_properties(
+    terco/cli_fukui_stage_labels
+    PROPERTIES ENVIRONMENT "${_env}" WORKING_DIRECTORY
+               ${CMAKE_CURRENT_BINARY_DIR} PASS_REGULAR_EXPRESSION
+               "Fukui: N \\(reference, the SCF above\\) SCF -- charge 0, 10 electrons.*Fukui: N\\+1 \\(anion\\) SCF -- charge -1, 11 electrons.*Fukui: N-1 \\(cation\\) SCF -- charge 1, 9 electrons")
+  add_test(NAME terco/cli_fukui_unknown
+           COMMAND terco_cli ${_xyz}/water.xyz -b 6-31g --fukui mulliken)
+  set_tests_properties(
+    terco/cli_fukui_unknown
+    PROPERTIES ENVIRONMENT "${_env}" PASS_REGULAR_EXPRESSION
+               "unknown --fukui 'mulliken': use hirshfeld or chelpg")
 
   # Every convergence aid reaches the SCF and converges to the same state --
   # but NOT in the same number of iterations as the defaults, which is what

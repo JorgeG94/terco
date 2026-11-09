@@ -130,9 +130,9 @@ module trc_run
       logical :: want_chelpg = .false.     !! --charges names chelpg
       real(dp), allocatable :: hirshfeld_charges(:)  !! (natm), e, after --charges hirshfeld
       real(dp), allocatable :: chelpg_charges(:)     !! (natm), e, after --charges chelpg
-      character(len=:), allocatable :: fukui  !! "" (none) or "hirshfeld", --fukui
-      ! (natm) each, after --fukui hirshfeld: f+/f-/f0 and the three
-      ! states' own Hirshfeld charges (N, N+1, N-1) trc_fukui_hirshfeld
+      character(len=:), allocatable :: fukui  !! "" (none), "hirshfeld" or "chelpg", --fukui
+      ! (natm) each, after --fukui: f+/f-/f0 and the three
+      ! states' own charges (N, N+1, N-1) trc_fukui_scheme
       ! condensed them from.
       real(dp), allocatable :: fukui_f_plus(:), fukui_f_minus(:), fukui_f_zero(:)
       real(dp), allocatable :: fukui_q_n(:), fukui_q_np1(:), fukui_q_nm1(:)

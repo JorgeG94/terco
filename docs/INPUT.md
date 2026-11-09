@@ -179,7 +179,7 @@ displacement runs.
 | Key | Type | Flag | Meaning |
 |---|---|---|---|
 | `charges` | string | `--charges` | atomic charges: `hirshfeld`, `chelpg`, or both as `"hirshfeld,chelpg"` |
-| `fukui` | string | `--fukui` | condensed Fukui indices: `hirshfeld` |
+| `fukui` | string | `--fukui` | condensed Fukui indices from `hirshfeld` or `chelpg` charges |
 
 ### `[hessian]`
 

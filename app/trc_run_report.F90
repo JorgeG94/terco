@@ -355,15 +355,19 @@ contains
    end subroutine charges_table
 
    module subroutine run_fukui_summary(r)
-      !! Per-atom Hirshfeld-condensed Fukui indices (f+, f-, f0) and their
+      !! Per-atom Fukui indices (f+, f-, f0), condensed with `r%fukui`'s charges, and their
       !! sums, each of which should be one electron to round-off --
       !! `r%fukui_f_plus`/`fukui_f_minus`/`fukui_f_zero` are already
       !! filled by the time this is called (trc_main's own job, right
-      !! after `trc_fukui_hirshfeld`).
+      !! after `trc_fukui_scheme`).
       type(run_t), intent(in) :: r
       integer :: ia
       call global_logger%info("")
-      call global_logger%info("   Hirshfeld-condensed Fukui indices")
+      if (r%fukui == "chelpg") then
+         call global_logger%info("   CHELPG-condensed Fukui indices")
+      else
+         call global_logger%info("   Hirshfeld-condensed Fukui indices")
+      end if
       call global_logger%info("   ----------------------------------------------------------")
       call global_logger%info("     atom            f+          f-          f0")
       do ia = 1, r%natm
