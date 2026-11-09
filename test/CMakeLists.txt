@@ -139,6 +139,18 @@ target_link_libraries(check_si PRIVATE test-drive::test-drive)
 terco_add_check(check_basis_ecp_refused check_basis_ecp_refused.F90 NEEDS_BASIS)
 target_link_libraries(check_basis_ecp_refused PRIVATE test-drive::test-drive)
 
+# The scalar ECP one-electron matrix (trc_ecp_matrix) against pyscf's
+# intor('ECPscalar'), fed the same def2-svp.json -- see
+# check_ecp_matrix.F90's own header for the seven molecules.
+foreach(case hi_svp ih_far xe csh snh4 i2 ch3i)
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/ecp_matrix_probe_${case}.bin)
+  terco_add_check(check_ecp_matrix_${case} check_ecp_matrix.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${case} ${dump})
+  target_link_libraries(check_ecp_matrix_${case} PRIVATE test-drive::test-drive)
+  set_target_properties(check_ecp_matrix_${case} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_ecp_matrix_${case})
+endforeach()
+
 # The step-timing tables' layout: work/rate columns only where something
 # counted -- see check_step_table_report.F90's own header.
 terco_add_check(check_step_table_report check_step_table_report.F90)
