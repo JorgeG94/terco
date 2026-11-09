@@ -49,7 +49,7 @@ concurrency:
 jobs:
   host-build:
     name: host ${{ matrix.toolchain.compiler }}-${{ matrix.toolchain.version }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.toolchain.os || 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -58,7 +58,10 @@ jobs:
         # kernels use them.
         toolchain:
           - {compiler: gcc, version: 15}
-          - {compiler: intel, version: '2025.0'}
+          # ifx 2025.0 segfaults in libc before any work on the Ubuntu 26.04
+          # image (198 of 232 tests, gcc fine on the same image); keep it on
+          # 24.04, where it last passed, until a newer ifx is validated.
+          - {compiler: intel, version: '2025.0', os: ubuntu-24.04}
           - {compiler: nvidia-hpc, version: 'latest'}
     steps:
       - uses: actions/checkout@v4
@@ -68,7 +71,7 @@ jobs:
           python-version: '3.x'
 
       - name: Setup Fortran compiler
-        uses: fortran-lang/setup-fortran@v1.9.0
+        uses: fortran-lang/setup-fortran@v1.11.0
         id: setup-fortran
         with:
           compiler: ${{ matrix.toolchain.compiler }}
@@ -118,7 +121,7 @@ jobs:
           python-version: '3.x'
 
       - name: Setup Fortran compiler
-        uses: fortran-lang/setup-fortran@v1.9.0
+        uses: fortran-lang/setup-fortran@v1.11.0
         id: setup-fortran
         with:
           compiler: gcc
@@ -192,7 +195,7 @@ jobs:
           python-version: '3.x'
 
       - name: Setup Fortran compiler
-        uses: fortran-lang/setup-fortran@v1.9.0
+        uses: fortran-lang/setup-fortran@v1.11.0
         id: setup-fortran
         with:
           compiler: gcc
@@ -285,7 +288,7 @@ jobs:
           python-version: '3.x'
 
       - name: Setup Fortran compiler
-        uses: fortran-lang/setup-fortran@v1.9.0
+        uses: fortran-lang/setup-fortran@v1.11.0
         id: setup-fortran
         with:
           compiler: gcc

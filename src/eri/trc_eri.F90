@@ -51,7 +51,7 @@ module trc_eri
    use trc_binkernel, only: TRC_PRIM_MARGIN
    use trc_basis_types, only: trc_basis_t
    use trc_decontract, only: decon_t, decontract_basis, decontract_expand, decontract_fold, decontract_release, &
-                             DECON_CUTOFF_DEFAULT, DECON_MINPRIM_DEFAULT, &
+                             trc_decontract_options_t, decontract_whole_screen, &
                              decontract_expand_host, decontract_fold_host
    implicit none
    private
@@ -66,6 +66,13 @@ module trc_eri
    ! shared J+K pass, fitted to the measurements in its own comment.
    real(dp), parameter :: RULE_C0 = 3.97_dp, RULE_CFILL = 0.464_dp, RULE_CPPP = 1.144_dp
    real(dp), parameter :: RULE_CFPA = -2.227_dp, RULE_CNPAIR = -0.254_dp
+   real(dp), parameter :: WHOLE_BINS_CREDIT = 0.157_dp
+   !! ln(1.17): the least the bins have measured faster over the split
+   !! policy's working basis than over the all-split one the size rule was
+   !! fitted on (V100, RHF, 1e-11, cc-pVDZ/aug-cc-pVDZ, C/N/O s kept whole:
+   !! water40 1.17x, NA-040 1.19x, gly20 1.31x, aug 1.34-1.44x). eri_build
+   !! gives J to MD J over the policy's bins only when the rule predicts
+   !! it faster than the all-split bins by more than this.
 
    integer, parameter :: NBUILD_STAGES = 5  !! timed stages of eri%build, see t_build
 
@@ -143,10 +150,19 @@ module trc_eri
       logical :: needs_md = .false.
       !! A shell above f: HGP and Rys have no kernel for its classes, so J
       !! comes from trc_mdj and K from trc_mdg whatever the environment says.
+      integer :: mdj_force = -1
+      !! TRC_MDJ at build time (`mdj_force_env`), rank 0's on every rank.
+      real(dp) :: pcut_scale = 1.0_dp
+      !! Multiplies every kernel's primitive-quartet cut: below 1 when a
+      !! general contraction kept whole needs it (trc_decontract's
+      !! `decontract_whole_screen`).
       logical :: has_f = .false.
       !! A shell of f or higher: the J-engine rule of a coupled-perturbed
       !! build and of several densities (see mdj_requested).
       logical :: mdj_extended = .false.
+      real(dp) :: mdj_score = 0.0_dp
+      !! eri_mdj_size_score on the working basis `build` judged: the
+      !! predicted ln(t_MDJ / t_bins); mdj_extended is its sign.
       !! eri_mdj_size_rule's verdict on this basis and geometry, set by `build`:
       !! the bins' shared J+K pass is slower than MD J plus exchange-only bins.
       !! The McMurchie-Davidson J engine over the same bins, built on the
@@ -270,7 +286,7 @@ contains
    ! that routine's header for why this is not only faster but also closes a
    ! scale mismatch the MMD route had.
    !
-   subroutine eri_build(this, b, thresh, comm, batch_res, sym)
+   subroutine eri_build(this, b, thresh, comm, batch_res, decontract, sym)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
@@ -279,6 +295,11 @@ contains
       !! (trc_bind_device) BEFORE any object goes to the device.
       integer, intent(in), optional :: batch_res
       !! Buckets per decade of Schwarz bound in the pair bins; 1 is decades.
+      type(trc_decontract_options_t), intent(in), optional :: decontract
+      !! How the working basis is split (trc_decontract); the defaults if
+      !! absent. The integrals over any working basis are exact; the policy
+      !! changes the cost, and what the screens drop at `thresh` (see
+      !! trc_decontract's DECON_SHELL_COST_DEFAULT for what is guaranteed).
       type(trc_sym_geom_t), intent(in), optional :: sym
       !! The point group of the molecule (trc_sym_geom's sym_detect), with `b`
       !! on its standard frame. Present, and of order above one: the bins are
@@ -288,6 +309,8 @@ contains
       !! from a build without symmetry.
 
       integer :: bres
+      type(trc_decontract_options_t) :: decon, split
+      logical :: no_decontract
       character(len=8) :: bt_env
       character(len=:), allocatable :: refusal
 
@@ -331,12 +354,100 @@ contains
       !
       bt_env = " "
       call get_environment_variable("TRC_NO_DECONTRACT", bt_env)
-      if (len_trim(bt_env) == 0) then
-         ! TRC_DECON_CUTOFF overrides the diffuse threshold the split rule
-         ! uses, so the rule can be swept without a rebuild.
-         call decontract_basis(b, this%pb, this%dec, cutoff=decon_cutoff(), &
-                               minprim=decon_minprim())
+      no_decontract = len_trim(bt_env) > 0
+      ! The policy is the caller's, or the defaults, and the environment can
+      ! override either (decon_options).
+      if (present(decontract)) then
+         decon = decon_options(decontract)
+      else
+         decon = decon_options(trc_decontract_options_t())
       end if
+      this%mdj_force = mdj_force_env()
+      ! Every rank must build the SAME working basis: G is summed over
+      ! ranks element by element, and two working bases of the same size
+      ! would add up to a wrong matrix with nothing to show for it. The
+      ! environment is per process, so rank 0's reading of it is the one.
+      if (this%distributed) call share_policy(this%comm, no_decontract, decon, this%mdj_force)
+      if (no_decontract) then
+         call build_over(this, b, thresh, bres, sym)
+         return
+      end if
+      !
+      ! WHICH ENGINE FORMS J DECIDES THE SPLIT, AND THE SPLIT FEEDS THE RULE
+      ! THAT DECIDES THE ENGINE.
+      !
+      ! MD J wants every general contraction split (`md_coulomb`: its cost
+      ! goes with primitive pairs), the bins want the policy's own working
+      ! basis. eri_mdj_size_rule picks the engine from the working basis's
+      ! counts, and it was fitted on the all-split working basis. So the
+      ! all-split basis is built first and the rule judged on exactly what
+      ! it was fitted on. Only when it then gives J to the bins, and the
+      ! policy would keep something whole, is the engine rebuilt over the
+      ! policy's basis, with the verdict kept: the rule is not re-asked on
+      ! counts it was never fitted to. A g basis (MD exchange), TRC_MDJ=1
+      ! and a caller's md_coulomb (no exact exchange) are MD J already, and
+      ! TRC_MDJ=0 is the bins already: one pass each.
+      !
+      if (this%needs_md .or. this%mdj_force == 1) decon%md_coulomb = .true.
+      if (decon%md_coulomb .or. this%mdj_force == 0) then
+         call decontract_basis(b, this%pb, this%dec, decon)
+         call build_over(this, b, thresh, bres, sym)
+         return
+      end if
+      split = decon
+      split%md_coulomb = .true.
+      call decontract_basis(b, this%pb, this%dec, split)
+      call build_over(this, b, thresh, bres, sym)
+      block
+         type(trc_basis_t) :: pb_policy
+         type(decon_t) :: dec_policy
+         logical :: same
+         call decontract_basis(b, pb_policy, dec_policy, decon)
+         same = (dec_policy%active .eqv. this%dec%active)
+         if (same .and. dec_policy%active) same = pb_policy%nshell == this%pb%nshell .and. &
+                                                  dec_policy%nao_p == this%dec%nao_p
+         call decontract_release(dec_policy)
+         call pb_policy%release()
+         if (same) return
+      end block
+      ! The rule compares MD J with the bins over the all-split basis; the
+      ! bins over the policy's basis are faster than that by at least
+      ! WHOLE_BINS_CREDIT, so MD J keeps J only if it wins by more.
+      call log_engine_choice(this%mdj_score, this%mdj_score < -WHOLE_BINS_CREDIT)
+      if (this%mdj_score < -WHOLE_BINS_CREDIT) return
+      call this%release()
+      this%thresh = thresh
+      this%nao = b%nao
+      this%needs_md = maxval(b%sh_l) > 3
+      this%has_f = maxval(b%sh_l) >= 3
+      call decontract_basis(b, this%pb, this%dec, decon)
+      call build_over(this, b, thresh, bres, sym)
+      this%mdj_extended = .false.
+   end subroutine eri_build
+
+   subroutine log_engine_choice(score, md_j)
+      !! Under TRC_BUILD_TIMING, the size rule's score on the all-split
+      !! basis and what eri_build made of it.
+      real(dp), intent(in) :: score
+      logical, intent(in) :: md_j
+      character(len=8) :: e
+      e = " "
+      call get_environment_variable("TRC_BUILD_TIMING", e)
+      if (len_trim(e) == 0) return
+      call global_logger%info("  [J engine] size score "//to_string(score)//": "// &
+                              merge("MD J over the all-split basis  ", "bins over the policy's basis   ", md_j))
+   end subroutine log_engine_choice
+
+   subroutine build_over(this, b, thresh, bres, sym)
+      !! Everything eri_build does once `this%dec` holds the working basis:
+      !! the transform to the device, then the structures over the working
+      !! basis (this%pb when split, `b` otherwise).
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in) :: thresh
+      integer, intent(in) :: bres
+      type(trc_sym_geom_t), intent(in), optional :: sym
+      !! eri_build's `sym`, passed through to build_structures.
       if (this%dec%active) then
          ! The transform runs inside `fock_resident`, where everything is
          ! device-resident; the maps have to be up there with it.
@@ -354,40 +465,68 @@ contains
       else
          call build_structures(this, b, thresh, bres, sym)
       end if
-   end subroutine eri_build
+   end subroutine build_over
 
    !
    ! Everything eri_build does once the basis to build over has been chosen.
    !
-   real(dp) function decon_cutoff() result(res)
-      !! Diffuse threshold for the decontraction rule; DECON_CUTOFF_DEFAULT
-      !! unless TRC_DECON_CUTOFF says otherwise.
+   function decon_options(base) result(opts)
+      !! The split policy the build uses: `base` (the caller's, or the
+      !! defaults), with TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE (0 or 1),
+      !! TRC_DECON_SHELL_COST and TRC_DECON_SCREEN_WHOLE (0 or 1) overriding
+      !! it, so a policy can be swept without a rebuild. An unreadable value leaves the field as it was.
+      type(trc_decontract_options_t), intent(in) :: base
+      type(trc_decontract_options_t) :: opts
       character(len=32) :: e
-      integer :: ios
+      integer :: ios, flag
+      real(dp) :: x
+      opts = base
       e = " "
       call get_environment_variable("TRC_DECON_CUTOFF", e)
-      res = DECON_CUTOFF_DEFAULT
       if (len_trim(e) > 0) then
-         read (e, *, iostat=ios) res
-         if (ios /= 0) res = DECON_CUTOFF_DEFAULT
+         read (e, *, iostat=ios) x
+         if (ios == 0) opts%cutoff = x
       end if
-   end function decon_cutoff
-
-   integer function decon_minprim() result(res)
-      !! Smallest compact primitive count a general contraction must have for
-      !! the split to be worth its tightened screen. TRC_DECON_MINPRIM
-      !! overrides it, so the gate can be swept without a rebuild; 0 splits
-      !! every group, as this module did before the gate existed.
-      character(len=32) :: e
-      integer :: ios
       e = " "
-      call get_environment_variable("TRC_DECON_MINPRIM", e)
-      res = DECON_MINPRIM_DEFAULT
+      call get_environment_variable("TRC_DECON_DIFFUSE", e)
       if (len_trim(e) > 0) then
-         read (e, *, iostat=ios) res
-         if (ios /= 0) res = DECON_MINPRIM_DEFAULT
+         read (e, *, iostat=ios) flag
+         if (ios == 0) opts%diffuse = flag /= 0
       end if
-   end function decon_minprim
+      e = " "
+      call get_environment_variable("TRC_DECON_SHELL_COST", e)
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) x
+         if (ios == 0) opts%shell_cost = x
+      end if
+      e = " "
+      call get_environment_variable("TRC_DECON_SCREEN_WHOLE", e)
+      if (len_trim(e) > 0) then
+         read (e, *, iostat=ios) flag
+         if (ios == 0) opts%screen_whole = flag /= 0
+      end if
+   end function decon_options
+
+   subroutine share_policy(comm, no_decontract, decon, mdj_force)
+      !! Rank 0's split policy, TRC_NO_DECONTRACT and TRC_MDJ, on every rank.
+      type(comm_t), intent(in) :: comm
+      logical, intent(inout) :: no_decontract
+      type(trc_decontract_options_t), intent(inout) :: decon
+      integer, intent(inout) :: mdj_force
+      integer, parameter :: NPOLICY = 7
+      real(dp) :: buffer(NPOLICY)
+      buffer = [merge(1.0_dp, 0.0_dp, no_decontract), decon%cutoff, merge(1.0_dp, 0.0_dp, decon%diffuse), &
+             decon%shell_cost, merge(1.0_dp, 0.0_dp, decon%screen_whole), merge(1.0_dp, 0.0_dp, decon%md_coulomb), &
+             real(mdj_force, dp)]
+      call bcast(comm, buffer, NPOLICY, 0)
+      no_decontract = buffer(1) /= 0.0_dp
+      decon%cutoff = buffer(2)
+      decon%diffuse = buffer(3) /= 0.0_dp
+      decon%shell_cost = buffer(4)
+      decon%screen_whole = buffer(5) /= 0.0_dp
+      decon%md_coulomb = buffer(6) /= 0.0_dp
+      mdj_force = nint(buffer(7))
+   end subroutine share_policy
 
    subroutine build_structures(this, b, thresh, bres, sym)
       class(trc_eri_t), intent(inout) :: this
@@ -401,7 +540,8 @@ contains
       integer :: pmode
       logical :: orbits
       logical, allocatable :: want(:, :)
-      real(dp), allocatable :: qs(:), one(:)
+      real(dp) :: uneven
+      real(dp), allocatable :: qs(:), one(:), camp(:, :)
       ! Stage timing, kept in this%t_build: `build` is five routines with
       ! very different costs and no way to tell from the outside which one
       ! is the slow one.
@@ -441,8 +581,18 @@ contains
       one = 1.0_dp
 
       ! The kernel multiplies each pair by sh_c, so sh_c is the amplitude
-      ! the prune judges by. The cutoff sits three orders below the
-      ! screening threshold.
+      ! the prune judges by -- except on a general contraction kept whole,
+      ! which is judged by the coefficients its split would carry, and
+      ! whose unevenness tightens the kernels' primitive cut to match
+      ! (trc_decontract's `decontract_whole_screen`). The cutoff sits three
+      ! orders below the screening threshold.
+      allocate (camp(b%maxnp, b%nshell))
+      camp = b%sh_c
+      this%pcut_scale = 1.0_dp
+      if (this%dec%screen_whole) then
+         call decontract_whole_screen(b, camp, uneven)
+         this%pcut_scale = uneven**(-4)
+      end if
       orbits = .false.
       if (present(sym)) orbits = sym%group%order > 1
       this%upair = .false.
@@ -454,13 +604,14 @@ contains
       end if
       if (this%upair) then
          want = sym_pairs_wanted(shmap, b%sh_l)
-         call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, thresh*1.0e-3_dp, this%pairs, want)
+         call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, camp, thresh*1.0e-3_dp, this%pairs, want)
          this%upair_nshell_pairs = count(want)
          deallocate (want)
       else
-         call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, thresh*1.0e-3_dp, this%pairs)
+         call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, camp, thresh*1.0e-3_dp, this%pairs)
          this%upair_nshell_pairs = b%nshell*b%nshell
       end if
+      deallocate (camp)
       this%upair_npp_stored = this%pairs%npp
       this%t_build(1) = tm%get_elapsed_time()
       call tm%start()
@@ -503,7 +654,10 @@ contains
       ! the pair prune in bins_build_binned_pairs and the exact per-quartet
       ! test in the kernel, which reads sp_q -- then get it for free.
       !
-      if (this%dec%active) then
+      ! `amp` is also there, over the caller's own shells, when nothing was
+      ! split but a general contraction was kept whole: it then screens as
+      ! its split would have (trc_decontract's `whole_amplitude`).
+      if (allocated(this%dec%amp)) then
          do i = 1, b%nshell
             do j = 1, i
                qs(screen_pair_index(i, j)) = qs(screen_pair_index(i, j)) &
@@ -542,7 +696,8 @@ contains
          call bins_build_binned_pairs(b%sh_l, b%sh_np, b%sh_r, qs, thresh, &
                                       this%bins, pp_n=this%pairs%n, res=bres)
       end if
-      this%mdj_extended = eri_mdj_size_rule(b%nshell, this%bins%npair, prim_pairs(b, this%bins), b%nao)
+      this%mdj_score = eri_mdj_size_score(b%nshell, this%bins%npair, prim_pairs(b, this%bins), b%nao)
+      this%mdj_extended = this%mdj_score < 0.0_dp
       this%t_build(3) = tm%get_elapsed_time()
       call tm%start()
 
@@ -890,28 +1045,29 @@ contains
       launch%nao = this%nao_w
       launch%rank = this%rank
       launch%nranks = this%nranks
+      launch%pcut_scale = this%pcut_scale
    end function bin_launch
 
-   logical function mdj_requested(pure_functional, size_rule, j_engine) result(res)
+   logical function mdj_requested(force, pure_functional, size_rule, j_engine) result(res)
       !! Whether the Coulomb part of a resident Fock build comes from the
       !! McMurchie-Davidson J engine instead of the bins. TRC_MDJ=1 forces it
-      !! on and TRC_MDJ=0 off, so both stay measurable; then `j_engine`
-      !! (trc_fock_options_t's), if it names an engine; otherwise on when the
-      !! functional is pure (no exact exchange, so the bins are skipped
-      !! altogether) or when `size_rule` says so. The callers pass
-      !! eri_mdj_size_rule's verdict (eri%mdj_extended) for a density-screened
-      !! build; a coupled-perturbed build (density_screen = .false.) keeps
-      !! the rule that predates it, MD J for an f basis (eri%has_f), so its
-      !! numbers do not move. See eri_mdj_size_rule for the measurements.
+      !! on and TRC_MDJ=0 off (`force`, read once at build time by
+      !! `mdj_force_env` and made the same on every rank), so both stay
+      !! measurable; then `j_engine` (trc_fock_options_t's), if it names an
+      !! engine; otherwise on when the functional is pure (no exact exchange,
+      !! so the bins are skipped altogether) or when `size_rule` says so. The
+      !! callers pass eri_mdj_size_rule's verdict (eri%mdj_extended) for a
+      !! density-screened build; a coupled-perturbed build (density_screen =
+      !! .false.) keeps the rule that predates it, MD J for an f basis
+      !! (eri%has_f), so its numbers do not move. See eri_mdj_size_rule for
+      !! the measurements.
+      integer, intent(in) :: force
       logical, intent(in) :: pure_functional, size_rule
       integer, intent(in) :: j_engine
-      character(len=8) :: e
-      e = " "
-      call get_environment_variable("TRC_MDJ", e)
-      select case (trim(e))
-      case ("1")
+      select case (force)
+      case (1)
          res = .true.
-      case ("0")
+      case (0)
          res = .false.
       case default
          select case (j_engine)
@@ -924,6 +1080,21 @@ contains
          end select
       end select
    end function mdj_requested
+
+   integer function mdj_force_env() result(force)
+      !! TRC_MDJ as `mdj_requested` takes it: 1, 0, or -1 when unset.
+      character(len=8) :: e
+      e = " "
+      call get_environment_variable("TRC_MDJ", e)
+      select case (trim(e))
+      case ("1")
+         force = 1
+      case ("0")
+         force = 0
+      case default
+         force = -1
+      end select
+   end function mdj_force_env
 
    pure logical function eri_mdj_size_rule(nshell, npair, nprim_pairs, nao) result(res)
       !! Whether MD J plus exchange-only bins beats the bins' shared J+K
@@ -1015,16 +1186,23 @@ contains
       !! threshold's own 2.7e-9 is the same with either engine.
       integer, intent(in) :: nshell, npair, nao
       real(dp), intent(in) :: nprim_pairs
-      real(dp) :: fill, ppp, fpa, score
-      res = .false.
+      res = eri_mdj_size_score(nshell, npair, nprim_pairs, nao) < 0.0_dp
+   end function eri_mdj_size_rule
+
+   pure real(dp) function eri_mdj_size_score(nshell, npair, nprim_pairs, nao) result(score)
+      !! eri_mdj_size_rule's predicted ln(t_MDJ / t_bins); the rule is its
+      !! sign. Zero (no verdict) for an empty basis.
+      integer, intent(in) :: nshell, npair, nao
+      real(dp), intent(in) :: nprim_pairs
+      real(dp) :: fill, ppp, fpa
+      score = 0.0_dp
       if (nshell < 1 .or. npair < 1) return
       fill = real(npair, dp)/(0.5_dp*real(nshell, dp)*real(nshell + 1, dp))
       ppp = nprim_pairs/real(npair, dp)
       fpa = real(nao, dp)/real(nshell, dp)
       score = RULE_C0 + RULE_CFILL*log(fill) + RULE_CPPP*log(ppp) + RULE_CFPA*log(fpa) &
               + RULE_CNPAIR*log(real(npair, dp))
-      res = score < 0.0_dp
-   end function eri_mdj_size_rule
+   end function eri_mdj_size_score
 
    real(dp) function prim_pairs(b, bins) result(n)
       !! Primitive pairs of `bins`' shell pairs, before the primitive prune.
@@ -1077,7 +1255,7 @@ contains
          end block
       end if
       sc%thresh = this%thresh
-      sc%pcut = this%thresh*TRC_PRIM_MARGIN
+      sc%pcut = this%thresh*TRC_PRIM_MARGIN*this%pcut_scale
       sc%omega = omega
       sc%jfac = jfac
       sc%kfac = kfac
@@ -1547,8 +1725,9 @@ contains
       ! See mdj_requested: the Coulomb part from the McMurchie-Davidson J engine, and
       ! the bins only for exchange (or not at all without it). Ordinary
       ! Coulomb operator only; an erf pass keeps the bins.
-      md_j = (mdj_requested(kfac == 0.0_dp, merge(this%mdj_extended, this%has_f, opts%density_screen), &
-                            opts%j_engine) .or. this%needs_md) .and. jfac /= 0.0_dp .and. ow == 0.0_dp
+      md_j = (mdj_requested(this%mdj_force, kfac == 0.0_dp, merge(this%mdj_extended, this%has_f, &
+                            opts%density_screen), opts%j_engine) .or. this%needs_md) &
+             .and. jfac /= 0.0_dp .and. ow == 0.0_dp
       jbins = jfac
       if (md_j) jbins = 0.0_dp
 
@@ -1764,7 +1943,8 @@ contains
       ! (unmeasured with two densities), and it is passed on as forced so
       ! each density's build makes the same choice.
       use_md = jfac /= 0.0_dp .and. ow == 0.0_dp .and. &
-               mdj_requested(kfac == 0.0_dp, this%mdj_extended .or. this%has_f, opts%j_engine)
+               mdj_requested(this%mdj_force, kfac == 0.0_dp, this%mdj_extended .or. this%has_f, &
+                             opts%j_engine)
       if (ndens == 1 .or. this%needs_md .or. use_md) then
          eng = opts%j_engine
          if (use_md) eng = TRC_J_ENGINE_MDJ

@@ -72,7 +72,7 @@ contains
       logical, intent(in) :: with_elements
       integer(c_int) :: rc
       rc = trc_create(h)
-      ! Symmetry is on by default (ABI 1.24) and a symmetric run puts the DFT
+      ! Symmetry is on by default (ABI 1.25) and a symmetric run puts the DFT
       ! grid on the standard frame; the pyscf parity of the B3LYP cases below is
       ! a 1e-10 statement about the grid in THIS frame (a rotated grid moves the
       ! energy by ~2e-10), so these cases run with symmetry off, as they always did.

@@ -435,6 +435,40 @@ target_link_libraries(check_sym_tops PRIVATE test-drive::test-drive)
 terco_add_check(check_basis_ecp_refused check_basis_ecp_refused.F90 NEEDS_BASIS)
 target_link_libraries(check_basis_ecp_refused PRIVATE test-drive::test-drive)
 
+# The scalar ECP one-electron matrix (trc_ecp_matrix) against pyscf's
+# intor('ECPscalar'), fed the same def2-svp.json -- see
+# check_ecp_matrix.F90's own header for the seven molecules.
+foreach(case hi_svp ih_far xe csh snh4 i2 ch3i)
+  set(dump ${CMAKE_CURRENT_BINARY_DIR}/ecp_matrix_probe_${case}.bin)
+  terco_add_check(check_ecp_matrix_${case} check_ecp_matrix.F90
+                  NEEDS_BASIS NEEDS_PYSCF_REF ARGS ${case} ${dump})
+  target_link_libraries(check_ecp_matrix_${case} PRIVATE test-drive::test-drive)
+  set_target_properties(check_ecp_matrix_${case} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_ecp_matrix_${case})
+endforeach()
+
+# ECP phase 3: RHF/UHF/RKS on HI, the I atom, I2 and H2 with a ghost iodine
+# in def2-SVP against pyscf (ecp_scf.ref, generate.py's gen_ecp_scf; mqc's
+# own numbers are a secondary print only), plus the guess/Hirshfeld/gradient
+# refusals and a restart-file round trip -- see check_ecp_scf.F90's own
+# header.
+add_executable(check_ecp_scf check_ecp_scf.F90)
+target_compile_definitions(check_ecp_scf PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_ecp_scf PRIVATE ${main_lib} terco_c_interfaces terco_pyscf_ref_io
+                                             test-drive::test-drive)
+target_include_directories(check_ecp_scf PRIVATE ${CMAKE_BINARY_DIR}/modules)
+add_test(NAME terco/check_ecp_scf COMMAND check_ecp_scf)
+set_tests_properties(terco/check_ecp_scf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+# The C API's ECP state: trc_set_ecp_json, the partial-ECP refusal, a
+# refused basis load leaving the context as it was, the basis/charge guard,
+# the arrays/libcint/trc_context_basis refusals, RI-MP2's frozen-core
+# refusal and the restart file's ECP checks -- see check_ecp_capi.F90's own
+# header.
+terco_add_check(check_ecp_capi check_ecp_capi.F90 NEEDS_PYSCF_REF)
+target_link_libraries(check_ecp_capi PRIVATE terco_c_interfaces test-drive::test-drive)
+
 # The step-timing tables' layout: work/rate columns only where something
 # counted -- see check_step_table_report.F90's own header.
 terco_add_check(check_step_table_report check_step_table_report.F90)
@@ -533,6 +567,11 @@ target_link_libraries(check_decontract PRIVATE test-drive::test-drive)
 add_test(NAME terco/check_decontract_si COMMAND check_decontract sih4.xyz basis_sets/cc-pvdz.json)
 set_tests_properties(terco/check_decontract_si PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+# The split policy (trc_decontract_options_t): which groups the shell price
+# and the diffuse split cut up, by shell count, and that the RHF energy is the
+# same under every policy.
+terco_add_check(check_decontract_policy check_decontract_policy.F90 NEEDS_BASIS)
+target_link_libraries(check_decontract_policy PRIVATE test-drive::test-drive)
 # Dropping a general contraction's redundant primitives (trc_basis_json's
 # prune_block) against pyscf's cc-pVDZ counts and against the energy the
 # unpruned (BSE-literal) basis gives.
@@ -971,6 +1010,15 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_sym_cli PRIVATE test-drive::test-drive)
   unset(_sym_cli_workdir)
 
+  # Effective core potentials through the CLI: the basis's own ECP and the
+  # valence electron count, --ecp and a TOML [basis] ecp, and a partial ECP
+  # refused -- see check_cli_ecp.F90's own header.
+  set(_cli_ecp_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_ecp_work)
+  terco_add_check(check_cli_ecp check_cli_ecp.F90 NEEDS_PYSCF_REF
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_ecp_workdir})
+  target_link_libraries(check_cli_ecp PRIVATE test-drive::test-drive)
+  unset(_cli_ecp_workdir)
+
   # The incremental Fock build's switches through the CLI: on by default,
   # off with --no-incremental or a TOML `incremental = false`, contradictory
   # switches refused -- see check_cli_incremental.F90's own header.
@@ -1108,6 +1156,13 @@ if(TERCO_BUILD_APP)
     terco_add_check(check_opt_correlated check_opt_correlated.F90 NEEDS_BASIS)
     target_link_libraries(check_opt_correlated PRIVATE test-drive::test-drive terco_c_interfaces
                                                        terco_opt_c_interfaces terco::terco_opt)
+
+    # trc_opt_run refuses a molecule with an ECP attached before its first
+    # step (no ECP gradient) instead of reaching DL-FIND's error stop -- see
+    # check_opt_ecp_refused.F90's own header.
+    terco_add_check(check_opt_ecp_refused check_opt_ecp_refused.F90)
+    target_link_libraries(check_opt_ecp_refused PRIVATE test-drive::test-drive terco_c_interfaces
+                                                        terco_opt_c_interfaces terco::terco_opt)
 
     # Every --opt-algorithm/--opt-coords combination terco exposes
     # converges water/STO-3G to the existing opt_water anchor -- see
@@ -1819,6 +1874,14 @@ set_tests_properties(terco/check_df_2c_ceiling PROPERTIES
 terco_add_check(check_df_3c_ceiling check_df_3c_ceiling.F90 NEEDS_BASIS)
 set_tests_properties(terco/check_df_3c_ceiling PROPERTIES
   PASS_REGULAR_EXPRESSION "trc_df_3c: orbital basis above DF_LMAX")
+# The same for the one-electron integrals and their gradient, which had no
+# guard: an f shell in an LMAX=2 build wrote past trc_1e's block.
+terco_add_check(check_one_e_ceiling check_one_e_ceiling.F90 NEEDS_BASIS)
+set_tests_properties(terco/check_one_e_ceiling PROPERTIES
+  PASS_REGULAR_EXPRESSION "trc_1e: basis above ONE_E_LMAX")
+terco_add_check(check_one_e_grad_ceiling check_one_e_grad_ceiling.F90 NEEDS_BASIS)
+set_tests_properties(terco/check_one_e_grad_ceiling PROPERTIES
+  PASS_REGULAR_EXPRESSION "trc_1e_gradient: basis above ONE_E_GRAD_LMAX")
 
 #
 # A complete RHF through the public API, and the makeEFP pathway on top of it.

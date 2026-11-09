@@ -276,7 +276,7 @@ contains
                call rysg_compact_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, plan%sA, plan%sNB, &
                                           plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
                                           plan%sD, plan%sW, &
-                                          b%npair, b%sp_i, b%sp_j, b%sp_q, launch%thresh*1.0e-3_dp, &
+                                          b%npair, b%sp_i, b%sp_j, b%sp_q, launch%thresh*1.0e-3_dp*launch%pcut_scale, &
                                           launch%jfac, launch%kfac, launch%omega, pairs%nbas, launch%nao, &
                                           pairs%ao_off, pairs%sh_at, pairs%natm, &
                                           quartets%nqp, quartets%z, quartets%c, quartets%a, &

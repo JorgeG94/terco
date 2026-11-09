@@ -1,5 +1,5 @@
 !
-! The symmetry entries of the C ABI (ABI 1.22; 1.23 adds trc_set_symmetry_skeleton,
+! The symmetry entries of the C ABI (ABI 1.23; 1.24 adds trc_set_symmetry_skeleton,
 ! which 1.25 turns from the default's name into a force-either-way switch;
 ! 1.24 makes symmetry the default and adds the report-frame pair), called through the Fortran
 ! interfaces of include/trc_c_interfaces.f90: trc_set_symmetry,
@@ -15,7 +15,7 @@
 ! C1 path silently, the cases the SCF cannot do with symmetry, and an explicit
 ! group that is not a subgroup or not supported yet.
 !
-! S17 (ABI 1.24, symmetry on by default): a fresh context asks for `auto`, reports in
+! S17 (ABI 1.25, symmetry on by default): a fresh context asks for `auto`, reports in
 ! the caller's INPUT frame, and runs the paths the symmetric SCF cannot do in C1.
 ! test_default_round_trip: a rotated water, a default context against one with
 ! symmetry off: energy 1e-10, gradient 1e-9, orbital energies, density and the
@@ -201,7 +201,7 @@ contains
 
       ! The central oracle: a plain run on the geometry the context reports.
       call make_context(h1, 'hocl.xyz', 'basis_sets/6-31gs.json', geom)
-      ! the C1 oracle: symmetry switched off (a fresh context has the default request, ABI 1.24)
+      ! the C1 oracle: symmetry switched off (a fresh context has the default request, ABI 1.25)
       rc = trc_set_symmetry(h1, 'off'//c_null_char, 0.0_c_double)
       rc = trc_set_molecule(h1, 3_c_int, [1.0_c_double, 8.0_c_double, 17.0_c_double], std, 0_c_int, 1_c_int)
       rc = trc_set_basis_json(h1, 'basis_sets/6-31gs.json'//c_null_char)
@@ -336,7 +336,7 @@ contains
 
       call make_context(h, 'hocl.xyz', 'basis_sets/6-31gs.json', geom)
       ! irrep_nelec with symmetry switched off is a mistake, not a no-op. (Before
-      ! ABI 1.24 a context without a request had no symmetry; now it has the
+      ! ABI 1.25 a context without a request had no symmetry; now it has the
       ! default one, and irrep_nelec alone turns it into an explicit auto.)
       rc = trc_set_symmetry(h, 'off'//c_null_char, 0.0_c_double)
       rc = trc_set_irrep_nelec(h, "A'=20,A"""//'=6'//c_null_char)
@@ -514,7 +514,7 @@ contains
    end subroutine test_entry_refusals
 
 
-   ! ---- S17: symmetry on by default (ABI 1.24) --------------------------
+   ! ---- S17: symmetry on by default (ABI 1.25) --------------------------
 
    subroutine make_pair(hd, ho, xyz_file, basis, cart)
       !! A default context and a symmetry-off one on the same molecule.

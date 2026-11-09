@@ -90,6 +90,7 @@
 module trc_scf_driver
    use pic_types, only: dp, int64
    use trc_basis_types, only: trc_basis_t
+   use trc_ecp_types, only: trc_ecp_t
    use trc_error, only: error_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_energies_t, &
@@ -154,7 +155,7 @@ contains
    ! the result's convention; without it the guess is the core Hamiltonian.
    !
    recursive subroutine trc_scf_run(scf_basis, nalpha, nbeta, scf_options, scf_result, dguess, comm, hguess, la, &
-                                    scf_dfjk, grid_cache, pair_eri_cache, cmo_project, sym)
+                                    scf_dfjk, grid_cache, pair_eri_cache, cmo_project, sym, ecp)
       type(trc_basis_t), intent(in) :: scf_basis
       integer, intent(in) :: nalpha, nbeta
       type(trc_scf_options_t), intent(in) :: scf_options
@@ -208,6 +209,7 @@ contains
       !! group, the run is the C1 code path unchanged. The Fock build is C1
       !! either way. Refused (`scf_result%message`): --soscf, whose Newton
       !! rotations ignore the blocks, and fractional occupations.
+      type(trc_ecp_t), intent(in), optional :: ecp   !! passed through to `scf_context%setup`
 
       integer :: nao, nao_c, s, it, i, j, n2
       logical :: ok, sph
@@ -261,7 +263,7 @@ contains
          block
             type(trc_linalg_t) :: la_run
             call trc_scf_run(scf_basis, nalpha, nbeta, scf_options, scf_result, dguess, comm, hguess, la_run, &
-                             scf_dfjk, grid_cache, pair_eri_cache, cmo_project, sym)
+                             scf_dfjk, grid_cache, pair_eri_cache, cmo_project, sym, ecp)
             call la_run%release()
          end block
          return
@@ -270,7 +272,7 @@ contains
          block
             type(trc_grid_cache_t) :: grid_run
             call trc_scf_run(scf_basis, nalpha, nbeta, scf_options, scf_result, dguess, comm, hguess, la, &
-                             scf_dfjk, grid_run, pair_eri_cache, cmo_project, sym)
+                             scf_dfjk, grid_run, pair_eri_cache, cmo_project, sym, ecp)
             call grid_run%release()
          end block
          return
@@ -279,7 +281,7 @@ contains
          block
             type(trc_pair_eri_cache_t) :: pair_eri_run
             call trc_scf_run(scf_basis, nalpha, nbeta, scf_options, scf_result, dguess, comm, hguess, la, &
-                             scf_dfjk, grid_cache, pair_eri_run, cmo_project, sym)
+                             scf_dfjk, grid_cache, pair_eri_run, cmo_project, sym, ecp)
             call pair_eri_run%release()
          end block
          return
@@ -374,10 +376,10 @@ contains
       scf_result%sym_atom_orbits = skel_norbit
       if (skel_on) then
          call scf_context%setup(scf_basis, scf_options, scf_config, la, grid_cache, pair_eri_cache, err, comm=comm, &
-                                dfjk=scf_dfjk, sym_geom=sym_geom)
+                                dfjk=scf_dfjk, sym_geom=sym_geom, ecp=ecp)
       else
          call scf_context%setup(scf_basis, scf_options, scf_config, la, grid_cache, pair_eri_cache, err, comm=comm, &
-                                dfjk=scf_dfjk)
+                                dfjk=scf_dfjk, ecp=ecp)
       end if
       if (err%has_error()) then
          scf_result%message = "trc_scf: "//err%get_message()

@@ -537,7 +537,7 @@ the default request is `auto`. Binding rules, as implemented:
 
 1. **Default `auto`** in the CLI (`--symmetry` absent = `default`), the
    input files (TOML/JSON; `input.scf.symmetry` echoes `default`) and the C
-   ABI context (`trc_create`; ABI **1.24**, minor: no signature or enum
+   ABI context (`trc_create`; ABI **1.25**, minor: no signature or enum
    changes, `trc_set_symmetry(h, "off")` restores the old path). The Fortran
    library entry `trc_scf_run` is unchanged (`sym` absent unless passed);
    the skeleton stays on with symmetry.

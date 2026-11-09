@@ -248,7 +248,7 @@ int main(void) {
       }
    }
 
-   /* ABI 1.24: a fresh context has symmetry on. This file's first run is the
+   /* ABI 1.25: a fresh context has symmetry on. This file's first run is the
     * plain C1 one its symmetry block below compares against, so it asks for
     * "off"; the default has its own block at the end. */
    rc = trc_set_symmetry(h, "off", 0.0);
@@ -270,7 +270,7 @@ int main(void) {
       return 1;
    }
 
-   /* --- symmetry (ABI 1.22): water is C2v (A1 A2 B1 B2). The C1 gradient first, then the same context with
+   /* --- symmetry (ABI 1.23): water is C2v (A1 A2 B1 B2). The C1 gradient first, then the same context with
     * symmetry = auto: the energy and the norm of the gradient (which the move
     * to the standard frame rotates but cannot change) must agree. ----------*/
    {
@@ -412,7 +412,7 @@ int main(void) {
          return 1;
       }
 
-      /* the default request (a fresh context's own, ABI 1.24): symmetric, and
+      /* the default request (a fresh context's own, ABI 1.25): symmetric, and
        * reported in the input frame -- the geometry is the input, not the
        * standard frame, and the energy and the gradient norm are the C1 ones */
       rc = trc_set_symmetry(h, "default", 0.0);

@@ -12,6 +12,7 @@ target_sources(
   PRIVATE core/trc_boys.F90       # Boys function, tabulated and asymptotic
           core/trc_tables.F90     # Cartesian index tables
           core/trc_cart.F90
+          core/trc_ecp_quadrature.F90 # ECP radial quadrature and scaled spherical Bessel function
           eri/trc_eri_data.F90   # the containers the four-centre launchers share
           eri/trc_batch.F90      # primitive-pair batching
           eri/trc_hgp.F90        # Head-Gordon-Pople driver
@@ -26,6 +27,11 @@ target_sources(
           eri/trc_integrals.F90  # the 1e, multipole, PCM and DF integral drivers
           api/trc_api.F90        # the Fortran API: re-exports the three above
           basis/trc_decontract.F90 # splitting a general contraction into primitives
+          basis/trc_ecp_types.F90 # trc_ecp_t: the ECP data model, flat rows, separate from the orbital shells
+          basis/trc_ecp_json.F90 # an effective core potential from a MolSSI BSE JSON file
+          eri/trc_ecp_angular.F90 # ECP angular factors (type 1 and type 2)
+          eri/trc_ecp_radial.F90  # ECP radial factors (type 1 and type 2)
+          eri/trc_ecp.F90          # the scalar ECP one-electron matrix
           eri/trc_mdj.F90       # the McMurchie-Davidson J engine (no quartets)
           eri/trc_mdg.F90       # MD exchange for the g classes above TERCO_RYS_G_LTOT
           eri/trc_eri.F90       # the four-centre Fock builds
@@ -649,6 +655,15 @@ if(_regen)
     terco_gen("gen_sph.py" ${Python3_EXECUTABLE} ${_scripts}/gen_sph.py ${_order_flag}
               -o ${_gen_out}/trc_sph_tables.F90)
 
+    # The ECP angular path's own Cartesian-to-pure-spherical-harmonic
+    # coefficients, l = 0..8 (src/eri/trc_ecp_angular.F90's only consumer).
+    # Fixed, like gen_sph.py's table above, regardless of TERCO_LMAX: an
+    # ECP channel's own angular momentum (up to ECP_LMAX = 5,
+    # trc_ecp_quadrature.F90) can push the total past TERCO_LMAX's own
+    # ceiling even at TERCO_LMAX=0.
+    terco_gen("gen_ecp_tables.py" ${Python3_EXECUTABLE} ${_scripts}/gen_ecp_tables.py
+              -o ${_gen_out}/trc_ecp_tables.F90)
+
     # The unrolled recurrences are textual includes, and only the non-symmetric
     # kernel (one_bin_item_nosym) uses them -- at LMAX<=1, for the reason the top-level CMakeLists gives.
     # They carry a `#if TRC_LMAX != n / #error` guard, so a stale one is a
@@ -683,7 +698,7 @@ if(_regen)
     "${_gen_out}" "${_gen_dir}" ${_prune} ${_stampable}
     ${_scripts}/gen_perclass.py ${_scripts}/gen_vrr.py ${_scripts}/gen_hrr.py
     ${_scripts}/gen_1e.py ${_scripts}/gen_df.py ${_scripts}/gen_df_grad.py ${_scripts}/rys_inline.py
-    ${_scripts}/gen_cartcomp.py ${_scripts}/gen_sph.py ${_scripts}/cartorder.py)
+    ${_scripts}/gen_cartcomp.py ${_scripts}/gen_sph.py ${_scripts}/gen_ecp_tables.py ${_scripts}/cartorder.py)
 endif()
 
 # Always on the include path, not just when regenerating for LMAX<=1: the

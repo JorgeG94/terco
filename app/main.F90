@@ -16,7 +16,7 @@ program trc_main
    use pic_knowledge, only: get_knowledge
    use pic_profiler, only: profiler_init
    use pic_logger, only: global_logger
-   use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
+   use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_ecp_json, &
                        trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_scf_accel, &
                        trc_set_soscf, &
                        trc_set_level_shift, trc_set_lindep, trc_set_screening, &
@@ -37,6 +37,8 @@ program trc_main
    use trc_thermo, only: trc_thermochemistry
    use trc_constants, only: ATM_TO_PA
    use trc_error, only: hess_err_t => error_t
+   use trc_ecp_types, only: trc_ecp_t
+   use trc_ecp_json, only: trc_ecp_from_json
    use pic_logger, only: global_logger, verbose_level
    use trc_app, only: app_read_xyz, app_resolve_basis, app_c_string, app_set_env, app_help_for_topic, app_set_log_level
    use pic_strings, only: to_string
@@ -59,7 +61,7 @@ program trc_main
                                 TRC_OPT_COORDS_DLC, TRC_OPT_COORDS_DLC_TC, &
                                 TRC_OPT_GUESS_DENSITY, TRC_OPT_GUESS_PROJECTED, &
                                 TRC_OPT_ALG_SD, TRC_OPT_ALG_CG_AUTO, TRC_OPT_ALG_CG, TRC_OPT_ALG_LBFGS, &
-                                TRC_OPT_ALG_PRFO, TRC_OPT_ALG_NR, TRC_OPT_ALG_DAMPED, &
+                                TRC_OPT_ALG_NR, TRC_OPT_ALG_DAMPED, &
                                 TRC_OPT_TARGET_MINIMUM, TRC_OPT_TARGET_SADDLE, &
                                 TRC_OPT_SADDLE_PRFO, TRC_OPT_SADDLE_DIMER, &
                                 TRC_OPT_HESS_TERCO, TRC_OPT_HESS_DLFIND, &
@@ -133,6 +135,10 @@ program trc_main
    call r%cli%add_option("basis", "basis set: a Basis Set Exchange JSON file, or a name looked up "// &
                          "in $TERCO_BASIS_PATH and then the installed basis sets (def2-svp)", short="b", &
                          default="def2-svp")
+   call r%cli%add_option("ecp", "effective core potential: a Basis Set Exchange JSON file, or a name "// &
+                         "looked up like --basis, carrying its own ecp_potentials; overrides auto-attach "// &
+                         "from --basis's own ecp_potentials when the two differ (none by default: an "// &
+                         "ECP basis still attaches its own)")
    call r%cli%add_option("chrg", "molecular charge (default: a .CHRG file here, else 0)", short="c")
    call r%cli%add_option("uhf", "number of unpaired electrons (default: a .UHF file here, else 0 "// &
                          "or 1 by electron count)", short="u")
@@ -255,7 +261,7 @@ program trc_main
    call r%cli%add_option("opt-guess", "SCF warm start between --opt steps: density (the previous step's "// &
                          "converged density) or projected (its orbitals re-orthonormalised in the new "// &
                          "overlap) (density)", default="density")
-   call r%cli%add_option("opt-algorithm", "--opt's minimiser: sd, cg, cg-auto, lbfgs, nr, damped, prfo, "// &
+   call r%cli%add_option("opt-algorithm", "--opt's minimiser: sd, cg, cg-auto, lbfgs, nr, damped, "// &
                          "stochastic or genetic (lbfgs); refused together with --opt-target saddle, "// &
                          "which picks its own algorithm from --opt-saddle-method. stochastic/genetic "// &
                          "take --opt-seed and the --opt-global-* parameters instead of the single-state "// &
@@ -277,7 +283,7 @@ program trc_main
                          "(DL-FIND's own default, 50)")
    call r%cli%add_option("opt-zero-modes", "modes assumed to have zero vibrational frequency, for "// &
                          "prfo/nr's Hessian (nzero); default 6 with --opt-coords cartesian and "// &
-                         "--opt-algorithm prfo/nr (minimum or saddle) or --opt-saddle-method dimer (5 "// &
+                         "--opt-algorithm nr or --opt-target saddle (prfo or dimer) (5 "// &
                          "if the start geometry is linear -- otherwise the search climbs a rotation), "// &
                          "DL-FIND's own default (0) otherwise")
    call r%cli%add_option("opt-soft-modes", "eigenmodes of prfo/nr's Hessian below this value (Eh/Bohr^2) "// &
@@ -426,8 +432,37 @@ program trc_main
    call app_resolve_basis(r%basis_arg, r%basis_path, r%err)
    if (r%err%has_error()) call run_die(r, r%err%get_message())
 
+   r%ecp_path = ""
+   if (r%cli%is_set("ecp")) then
+      block
+         character(len=:), allocatable :: ecp_arg
+         call r%cli%get("ecp", ecp_arg, r%err)
+         call app_resolve_basis(ecp_arg, r%ecp_path, r%err)
+         if (r%err%has_error()) call run_die(r, "--ecp: "//r%err%get_message())
+      end block
+   end if
+
+   ! The electrons an ECP takes away, from the same file the library's
+   ! attach reads (--ecp if given, else --basis's own ecp_potentials):
+   ! the count, its parity and the default --uhf must be the valence
+   ! ones the SCF actually runs (HI/def2-SVP: 26, not 54). An element the
+   ! file has no ECP for counts 0; a file that does not fit the basis is
+   ! refused when the basis loads, naming the atom.
+   r%ecp_core = 0
+   block
+      type(trc_ecp_t) :: ecp
+      type(hess_err_t) :: ecp_err
+      character(len=:), allocatable :: ecp_source
+      ecp_source = r%basis_path
+      if (len_trim(r%ecp_path) > 0) ecp_source = r%ecp_path
+      call trc_ecp_from_json(ecp_source, r%natm, r%z, ecp, ecp_err)
+      if (ecp_err%has_error()) call run_die(r, ecp_err%get_message())
+      if (ecp%has_ecp) r%ecp_core = sum(ecp%at_ncore)
+      call ecp%release()
+   end block
+
    r%chrg = run_int_option(r, "chrg", ".CHRG", 0)
-   r%nelec = sum(r%z) - r%chrg
+   r%nelec = sum(r%z) - r%ecp_core - r%chrg
    if (r%nelec < 1) call run_die(r, "charge "//to_string(r%chrg)//" leaves "//to_string(r%nelec)//" electrons")
    r%uhf = run_int_option(r, "uhf", ".UHF", mod(r%nelec, 2))
    if (r%uhf < 0 .or. r%uhf > r%nelec .or. mod(r%nelec - r%uhf, 2) /= 0) then
@@ -772,7 +807,17 @@ program trc_main
             case ("lbfgs")
                r%opt_algorithm_kind = TRC_OPT_ALG_LBFGS
             case ("prfo")
-               r%opt_algorithm_kind = TRC_OPT_ALG_PRFO   ! P-RFO as a plain minimiser: valid, just unusual
+               ! DL-FIND's P-RFO is a transition-state search only: it
+               ! always climbs its lowest Hessian mode (dlf_prfo_step,
+               ! follow=0/tsmode=1, which the nzero soft-mode screen
+               ! never excludes). On water/STO-3G that mode is a
+               ! near-flat rotation, so it "converged" by luck on some
+               ! BLAS kernel sets and cycled at max|g| ~1.2e-5 for 400
+               ! steps on the AVX-512 ones.
+               call run_die(r, "--opt-algorithm prfo is a saddle search, not a minimiser: DL-FIND's "// &
+                        "P-RFO always climbs the lowest Hessian mode. Use --opt-algorithm nr for a "// &
+                        "Hessian-based minimum, or --opt-target saddle --opt-saddle-method prfo for a "// &
+                        "transition state")
             case ("nr")
                r%opt_algorithm_kind = TRC_OPT_ALG_NR
             case ("damped")
@@ -782,7 +827,7 @@ program trc_main
             case ("genetic")
                r%opt_algorithm_kind = TRC_OPT_ALG_GENETIC
             case default
-               call run_die(r, "--opt-algorithm must be sd, cg, cg-auto, lbfgs, nr, damped, prfo, stochastic "// &
+               call run_die(r, "--opt-algorithm must be sd, cg, cg-auto, lbfgs, nr, damped, stochastic "// &
                         "or genetic, got '"//r%opt_algorithm_arg//"'")
             end select
          else
@@ -825,7 +870,7 @@ program trc_main
             call run_die(r, "--opt-neb needs --opt-target minimum: the saddle point is this run's OWN "// &
                      "highest-energy image (--opt-neb-climb), not a separate --opt-target saddle search")
          end if
-         if (any(r%opt_algorithm_kind == [TRC_OPT_ALG_PRFO, TRC_OPT_ALG_NR, TRC_OPT_ALG_STOCHASTIC, &
+         if (any(r%opt_algorithm_kind == [TRC_OPT_ALG_NR, TRC_OPT_ALG_STOCHASTIC, &
                                           TRC_OPT_ALG_GENETIC])) then
             call run_die(r, "--opt-neb needs a Hessian-free, non-global --opt-algorithm (sd, cg, cg-auto, "// &
                      "lbfgs or damped), got '"//r%opt_algorithm_arg//"'")
@@ -898,7 +943,7 @@ program trc_main
       ! silent fall-back to DL-FIND's own FD Hessian: refuse up front instead.
       if (len(r%pcm) > 0 .and. r%opt_hessian_source_kind == TRC_OPT_HESS_TERCO .and. &
           ((r%opt_target_kind == TRC_OPT_TARGET_SADDLE .and. r%opt_saddle_method_kind == TRC_OPT_SADDLE_PRFO) .or. &
-           any(r%opt_algorithm_kind == [TRC_OPT_ALG_PRFO, TRC_OPT_ALG_NR]))) then
+           r%opt_algorithm_kind == TRC_OPT_ALG_NR)) then
          call run_die(r, "--opt with --pcm: terco's own FD Hessian (--opt-init-hessian terco) is not "// &
                   "validated with PCM; pass --opt-init-hessian dlfind for a P-RFO or NR search")
       end if
@@ -950,13 +995,13 @@ program trc_main
       opt_hessian_relevant = (r%opt_target_kind == TRC_OPT_TARGET_SADDLE .and. &
                               r%opt_saddle_method_kind == TRC_OPT_SADDLE_PRFO) .or. &
                              (r%opt_target_kind == TRC_OPT_TARGET_MINIMUM .and. &
-                              (r%opt_algorithm_kind == TRC_OPT_ALG_PRFO .or. r%opt_algorithm_kind == TRC_OPT_ALG_NR))
+                              r%opt_algorithm_kind == TRC_OPT_ALG_NR)
       if (.not. opt_hessian_relevant) then
-         if (r%cli%is_set("opt-init-hessian")) call run_die(r, "--opt-init-hessian needs --opt-algorithm prfo/nr "// &
+         if (r%cli%is_set("opt-init-hessian")) call run_die(r, "--opt-init-hessian needs --opt-algorithm nr "// &
                   "or --opt-target saddle --opt-saddle-method prfo")
          if (r%cli%is_set("opt-hessian-update")) call run_die(r, "--opt-hessian-update needs --opt-algorithm "// &
-                  "prfo/nr or --opt-target saddle --opt-saddle-method prfo")
-         if (r%cli%is_set("opt-max-updates")) call run_die(r, "--opt-max-updates needs --opt-algorithm prfo/nr "// &
+                  "nr or --opt-target saddle --opt-saddle-method prfo")
+         if (r%cli%is_set("opt-max-updates")) call run_die(r, "--opt-max-updates needs --opt-algorithm nr "// &
                   "or --opt-target saddle --opt-saddle-method prfo")
       end if
 
@@ -965,11 +1010,11 @@ program trc_main
       ! refused the same way for every algorithm that never reads them.
       opt_zero_soft_relevant = (r%opt_target_kind == TRC_OPT_TARGET_SADDLE) .or. &
                                (r%opt_target_kind == TRC_OPT_TARGET_MINIMUM .and. &
-                                (r%opt_algorithm_kind == TRC_OPT_ALG_PRFO .or. r%opt_algorithm_kind == TRC_OPT_ALG_NR))
+                                r%opt_algorithm_kind == TRC_OPT_ALG_NR)
       if (.not. opt_zero_soft_relevant) then
-         if (r%cli%is_set("opt-zero-modes")) call run_die(r, "--opt-zero-modes needs --opt-algorithm prfo/nr "// &
+         if (r%cli%is_set("opt-zero-modes")) call run_die(r, "--opt-zero-modes needs --opt-algorithm nr "// &
                   "or --opt-target saddle")
-         if (r%cli%is_set("opt-soft-modes")) call run_die(r, "--opt-soft-modes needs --opt-algorithm prfo/nr "// &
+         if (r%cli%is_set("opt-soft-modes")) call run_die(r, "--opt-soft-modes needs --opt-algorithm nr "// &
                   "or --opt-target saddle")
       end if
 
@@ -980,7 +1025,7 @@ program trc_main
       ! attempted -- refused here rather than left to DL-FIND, which has
       ! no graceful way to decline a run it cannot do.
       if (r%natm == 1 .and. r%opt_coords_kind == TRC_OPT_COORDS_CARTESIAN .and. opt_zero_soft_relevant) then
-         call run_die(r, "--opt-algorithm prfo/nr and --opt-target saddle need more than one atom in Cartesian "// &
+         call run_die(r, "--opt-algorithm nr and --opt-target saddle need more than one atom in Cartesian "// &
                   "coordinates: a single atom has no internal degrees of freedom to search over")
       end if
       if (r%cli%is_set("opt-zero-modes") .and. r%opt_zero_modes > 3*r%natm - 1) then
@@ -1172,6 +1217,9 @@ program trc_main
       if (r%cli%is_set("sym-skeleton")) call run_api(r, trc_set_symmetry_skeleton(r%h, 1_c_int))
    end if
    call run_api(r, trc_set_force_cartesian(r%h, merge(1_c_int, 0_c_int, cart)))
+   ! Before --basis: trc_set_ecp_json refuses once the orbital basis has
+   ! loaded, the same ordering trc_set_elements already requires.
+   if (len_trim(r%ecp_path) > 0) call run_api(r, trc_set_ecp_json(r%h, app_c_string(r%ecp_path)))
    call run_api(r, trc_set_basis_json(r%h, app_c_string(r%basis_path)))
    if (r%rimp2) call run_api(r, trc_set_aux_json(r%h, app_c_string(r%aux_path)))
    if (r%df) then

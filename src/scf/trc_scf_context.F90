@@ -22,6 +22,8 @@ module trc_scf_context
    use trc_sph, only: sph_cart_to_sph
    use trc_eri, only: trc_eri_t, eri_lmax_refusal
    use trc_sym_geom, only: trc_sym_geom_t
+   use trc_ecp_types, only: trc_ecp_t
+   use trc_ecp, only: trc_ecp_matrix_cart
    use trc_error, only: error_t, ERROR_GENERIC
    use trc_dft_grid, only: dft_grid_t, dft_grid_build, dft_grid_build_block, dft_grid_options_t
    use trc_xc_batch, only: trc_xc_grid_t
@@ -29,6 +31,7 @@ module trc_scf_context
    use trc_pcm, only: trc_pcm_t, pcm_model_from_name
    use trc_scf_settings, only: trc_scf_options_t, scf_settings_t, scf_settings_fock_densities
    use trc_scf_df, only: df_jk_t
+   use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange
    implicit none
    private
 
@@ -96,6 +99,14 @@ module trc_scf_context
       type(trc_eri_t) :: eri
       real(dp) :: thresh_built = -1.0_dp
       integer :: nshell_built = -1, natm_built = -1, batch_res_built = -1
+      type(trc_decontract_options_t) :: decontract_built
+      !! The split policy the engine was built with, resolved for the
+      !! method (`decontract_options_for_exchange`): a gradient reuses the
+      !! engine only if its own fresh build would use the same one.
+      type(trc_decontract_options_t) :: decontract_base
+      !! The SCF's own `opts%decontract`, before that resolution: what a
+      !! gradient's fresh engine is built with (trc_scf_grad's
+      !! `gradient_policy`), so a Fortran caller's policy reaches it.
       real(dp), allocatable :: at_r_built(:, :)
       logical :: built = .false., has_eri = .false.
       logical :: orbits_built = .false.
@@ -145,7 +156,7 @@ module trc_scf_context
 
 contains
 
-   subroutine scf_context_setup(this, b, opts, config, la, grid_cache, pair_eri_cache, err, comm, dfjk, sym_geom)
+   subroutine scf_context_setup(this, b, opts, config, la, grid_cache, pair_eri_cache, err, comm, dfjk, sym_geom, ecp)
       class(scf_ctx_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       type(trc_scf_options_t), intent(in) :: opts
@@ -178,10 +189,20 @@ contains
       !! Already fitted by the caller; required when `config%df` is true,
       !! checked here rather than left for `scf_fock_build_g` to find out
       !! at the first Fock build.
+      type(trc_ecp_t), intent(in), optional :: ecp
+      !! An effective core potential (trc_capi.F90's context-level
+      !! auto-attach or `trc_set_ecp_json`); absent, or present with
+      !! `has_ecp` false, leaves H_core exactly as before. Added to the
+      !! CARTESIAN T + V_ne, before the one fold that already covers both
+      !! (trc_ecp_matrix_cart's own header) -- `b%at_z` is already the
+      !! ECP-reduced nuclear charge by the time this runs (the caller's
+      !! own contract), so V_ne above and `nuclear_repulsion` below need no
+      !! ECP awareness of their own.
       type(timer_type) :: tm
       type(dft_grid_options_t) :: gopts   !! the grids' options: the production grid, rotated as `opts%grid_rotation` says
       type(timer_type) :: tphase   !! the whole setup, and the PCM and grid phases
       character(len=:), allocatable :: refusal
+      type(trc_decontract_options_t) :: decontract
 
       ! Before anything is allocated or uploaded: a shell above this build's
       ! four-centre kernels has no kernel, and its integrals would come out
@@ -232,10 +253,21 @@ contains
       ! changes); `smat`/`hcore` are folded up to the run's own space once,
       ! here, for the whole run -- S and H never change after this.
       block
-         real(dp), allocatable :: s_c(:, :), h_c(:, :), v_c(:, :)
+         real(dp), allocatable :: s_c(:, :), h_c(:, :), v_c(:, :), u_c(:, :)
          allocate (s_c(this%nao_c, this%nao_c), h_c(this%nao_c, this%nao_c), v_c(this%nao_c, this%nao_c))
          call trc_1e(b, pair_eri_cache%pl, s_c, h_c, v_c)
          h_c = h_c + v_c
+         if (present(ecp)) then
+            if (ecp%has_ecp) then
+               call trc_ecp_matrix_cart(b, ecp, u_c, err)
+               if (err%has_error()) then
+                  call this%release()
+                  return
+               end if
+               h_c = h_c + u_c
+               deallocate (u_c)
+            end if
+         end if
          this%ts(2) = tm%get_elapsed_time()
          call tm%start()
          if (this%sph) then
@@ -260,15 +292,22 @@ contains
       ! every deallocation on `allocated`/`on_device`, and scf_fock_build_g reads
       ! nothing off `eri` before checking `df_on`.
       if (.not. config%df) then
+         ! Without exact exchange the bins are skipped and J is the MD
+         ! engine's alone, which wants every general contraction split.
+         decontract = decontract_options_for_exchange(opts%decontract, config%exx, config%exx_lr)
+         pair_eri_cache%decontract_built = decontract
+         pair_eri_cache%decontract_base = opts%decontract
          pair_eri_cache%has_eri = .true.
          pair_eri_cache%batch_res_built = opts%batch_res
          pair_eri_cache%orbits_built = .false.
          if (present(sym_geom)) pair_eri_cache%orbits_built = sym_geom%group%order > 1
          if (pair_eri_cache%orbits_built) then
             ! Single rank only (the driver's rule): a plain build call.
-            call pair_eri_cache%eri%build(b, config%eri_thresh_run, batch_res=opts%batch_res, sym=sym_geom)
+            call pair_eri_cache%eri%build(b, config%eri_thresh_run, batch_res=opts%batch_res, &
+                                           decontract=decontract, sym=sym_geom)
          else if (present(comm)) then
-            call pair_eri_cache%eri%build(b, config%eri_thresh_run, comm, batch_res=opts%batch_res)
+            call pair_eri_cache%eri%build(b, config%eri_thresh_run, comm, batch_res=opts%batch_res, &
+                                           decontract=decontract)
             ! Not when `comm` is a real split (nranks > 1): each rank then
             ! holds only ITS share of the quartets, which is not what a
             ! reuser (a single-rank gradient right after, trc_capi.F90's
@@ -283,7 +322,8 @@ contains
             ! which nvfortran's handler turns into a silent spin.
             if (comm%size() > 1) pair_eri_cache%has_eri = .false.
          else
-            call pair_eri_cache%eri%build(b, config%eri_thresh_run, batch_res=opts%batch_res)
+            call pair_eri_cache%eri%build(b, config%eri_thresh_run, batch_res=opts%batch_res, &
+                                           decontract=decontract)
          end if
       end if
       this%e_nuc = nuclear_repulsion(b)

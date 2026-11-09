@@ -212,7 +212,7 @@ module trc_dlfind_bridge
    use trc_capi, only: trc_set_geometry, trc_run_scf, trc_run_gradient, trc_gradient, &
                        trc_energy, trc_converged, trc_iterations, trc_nspin, trc_nao, &
                        trc_set_guess, trc_density, trc_message, trc_run_hessian, trc_hessian, &
-                       trc_run_rimp2, trc_check_rimp2_gradient, trc_symmetry_requested, &
+                       trc_run_rimp2, trc_check_rimp2_gradient, trc_check_gradient_upfront, trc_symmetry_requested, &
                        trc_symmetry_suppress_default, TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
    ! trc_opt_io, not trc_app (app/trc_app.F90): this module is built into
    ! libterco_opt, which must not depend on app/ -- CODE_STRUCTURE.md's
@@ -817,6 +817,26 @@ contains
          ! learns about the geometry, not a diagonalisation info code).
          call check_neb_initial_path(n, znuc, start_coords, opts%neb_via, opts%neb_product, n_images_dlf, &
                                      res%failed, res%message)
+      end if
+      if (.not. res%failed) then
+         ! Every step runs the analytic gradient, and what the molecule,
+         ! basis and ECP alone already refuse (an ECP attached, l above the
+         ! gradient kernels) would refuse the first evaluation -- DL-FIND's
+         ! `error stop` (fail_eval), which ends a C caller's process. Asked
+         ! here, before any SCF, for the same reason as the RI-MP2 check
+         ! below.
+         block
+            integer(c_int) :: st
+            character(kind=c_char) :: message_buffer(MSG_LEN)
+            st = trc_check_gradient_upfront(handle)
+            if (st /= TRC_OK) then
+               res%failed = .true.
+               res%refusal_status = int(st)
+               st = trc_message(handle, message_buffer, int(size(message_buffer), c_int))
+               res%message = "geometry optimisation refused before its first step: "// &
+                             opt_io_f_string(message_buffer)
+            end if
+         end block
       end if
       if (.not. res%failed .and. opts%rimp2) then
          ! Every step runs the RI-MP2 gradient; whatever refuses it refuses

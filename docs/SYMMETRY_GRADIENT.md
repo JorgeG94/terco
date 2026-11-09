@@ -957,7 +957,7 @@ SCF energy (water/6-31G*, h = 1e-3, 18 displaced C1 SCFs): worst absolute
    9 355 work items against the full plan's 9 142 (+2.3%), with the raw
    skeleton gradient already equal to the full one to 7.5e-15 relative. The
    skeleton Fock build has exactly the same property, and *it* has a size
-   rule (`sym_skeleton_size_rule`, ABI 1.25) — so the gradient takes that
+   rule (`sym_skeleton_size_rule`, ABI 1.26) — so the gradient takes that
    rule's verdict rather than a second one of its own. See item 9.
    `check_sym_grad`'s `test_cs_planar` pins the growth itself, so that it is
    a documented property rather than a surprise, and it is the one
@@ -991,7 +991,7 @@ SCF energy (water/6-31G*, h = 1e-3, 18 displaced C1 SCFs): worst absolute
    `TRC_SYM_SKELETON` / `--sym-skeleton` / `[scf] symmetry_skeleton` /
    `trc_set_symmetry_skeleton` forced. One verdict governs both builds, and
    `trc_set_symmetry_skeleton`'s documented meaning widens to say so
-   (ABI 1.26).
+   (ABI 1.27).
 
    The *projection* is deliberately not gated on it: it costs one pass over
    3N numbers and it is what zeroes the components the group forbids, so a

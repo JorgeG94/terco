@@ -77,6 +77,11 @@ int trc_opt_set_target(trc_handle_t handle, int target_kind);
  * TRC_OPT_ALG_* (--opt-algorithm). Only meaningful for a minimum
  * search (--opt-target minimum); a saddle search picks its own
  * algorithm from --opt-saddle-method instead, same as the CLI.
+ * TRC_OPT_ALG_PRFO with a minimum target makes trc_opt_run return
+ * TRC_ERR_BADARG: DL-FIND's P-RFO is a transition-state search that
+ * always climbs the lowest Hessian mode, so it is reached only
+ * through TRC_OPT_TARGET_SADDLE with TRC_OPT_SADDLE_PRFO. Use
+ * TRC_OPT_ALG_NR for a Hessian-based minimum.
  */
 int trc_opt_set_algorithm(trc_handle_t handle, int algorithm);
 

@@ -494,7 +494,7 @@ contains
          else if (rys_route) then
             call rys_dispatch(dkey, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
                               plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, plan%sW, &
-                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
+                              b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN*launch%pcut_scale, &
                               launch%jfac, launch%kfac, launch%omega, dsh, pairs%nbas, launch%nao, &
                               pairs%sh_l, pairs%ao_off, &
                               quartets%nqp, quartets%z, quartets%c, qpx, qpy, qpz, &
@@ -504,7 +504,7 @@ contains
          else
             call pc_dispatch(dkey, c0, c1, nseg, plan%sOff, plan%sA, plan%sNB, plan%sOA, plan%sOB, &
                              plan%sPA, plan%sPB, plan%sSA, plan%sSB, plan%sD, plan%sW, &
-                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN, &
+                             b%npair, b%sp_i, b%sp_j, b%sp_q, thresh, thresh*TRC_PRIM_MARGIN*launch%pcut_scale, &
                              launch%jfac, launch%kfac, launch%omega, dsh, pairs%nbas, launch%nao, &
                              pairs%sh_l, pairs%ao_off, &
                              quartets%nqp, quartets%z, quartets%c, qpx, qpy, qpz, &
