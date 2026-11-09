@@ -607,6 +607,89 @@ def gen_ecp_ints(case):
     dump.unlink()
 
 
+def gen_ecp_scf():
+    """check_ecp_scf.F90's ECP energy cases -- RHF HI, UHF the free I atom,
+    RKS PBE/B3LYP on HI, RHF I2, and RHF H2 next to a ghost iodine (labelled
+    GHOST-, its basis kept, no ECP entry: pyscf's ghost) -- against pyscf fed the IDENTICAL JSON
+    basis+ECP (bse_json_basis/bse_json_ecp) at mqc's own HI geometry
+    (check_ecp_scf.F90's own HI_BOND_BOHR), `cart=False`: this build's own
+    default for def2-svp, which is tagged gto_spherical, NOT the `cart=True`
+    an earlier version of this generator (and that check's own header) used
+    by mistake -- a genuinely larger, different (33 vs 31 AO) basis, which
+    is the entire reason that version measured a "second stationary point"
+    that was never there; see check_ecp_scf.F90's own header for the full
+    correction.
+
+    The two DFT cases use THIS build's own dumped grid
+    (ecp_scf_probe.bin's grid_r/grid_w, trc_scf_result_t's own semilocal
+    grid), the same same-grid comparison every other DFT anchor in this
+    tree uses (gen_rks's own m.grids.coords/weights/non0tab pattern), so a
+    grid-quadrature difference is never a variable in the comparison
+    check_ecp_scf.F90 makes against this reference."""
+    PYSCF_FUNC = {"hi_pbe": "PBE", "hi_b3lyp": "HYB_GGA_XC_B3LYP"}
+    run_bin("check_ecp_scf", [])
+    dump = TEST / "ecp_scf_probe.bin"
+    r = BinReader(dump)
+    ncase = r.i8()
+    w = RefWriter("ecp_scf.ref")
+    w.header("check_ecp_scf", [ROOT / "test" / "check_ecp_scf.F90",
+                                HERE.parent / "basis_sets" / "def2-svp.json"])
+    for _ in range(ncase):
+        name = r.str_(16)
+        natm = r.i8()
+        elements = np.atleast_1d(r.i8(natm))
+        ghost = np.atleast_1d(r.i8(natm)).astype(bool)
+        at_r = r.mat(3, natm)
+        charge, _mult, na, nb = (r.i8() for _ in range(4))
+        npts = r.i8()
+        if npts:
+            # .T: pyscf's own grids.coords is (npts, 3), point-major --
+            # gen_rks's own identical read (its own `pts` a few hundred
+            # lines up) transposes the same way; the first version of
+            # this generator's own gen_ecp_scf omitted it and fed pyscf a
+            # (3, npts) array it silently broadcast/misread as something
+            # else entirely (measured: E(PBE) off by ~22 Hartree against
+            # terco's own, the same grid producing the right answer when
+            # transposed -- see check_ecp_scf.F90's own header for why
+            # this was never the "pyscf lands on a different grid" story).
+            pts = r.f8(3*npts).reshape(3, npts, order='F').T
+            wts = r.f8(npts)
+
+        labels = [f"{_SYMBOL_ECP[int(z)]}{i + 1}" for i, z in enumerate(elements)]
+        sym_elements = dict(zip(labels, (int(z) for z in elements)))
+        basis_arg = bse_json_basis(HERE.parent / "basis_sets" / "def2-svp.json", sym_elements)
+        ecp_arg = bse_json_ecp(HERE.parent / "basis_sets" / "def2-svp.json", sym_elements)
+        # A ghost keeps its element's basis under a GHOST- label and has no
+        # ECP entry, so pyscf gives it neither nucleus nor core potential.
+        for lab, g in zip(labels, ghost):
+            if g:
+                basis_arg[f"GHOST-{lab}"] = basis_arg.pop(lab)
+                ecp_arg.pop(lab, None)
+        atoms = [((f"GHOST-{lab}" if g else lab), tuple(at_r[:, i]))
+                 for i, (lab, g) in enumerate(zip(labels, ghost))]
+        mol = gto.M(atom=atoms, basis=basis_arg, ecp=ecp_arg, unit='Bohr', cart=False,
+                    charge=int(charge), spin=int(na - nb), verbose=0)
+
+        if name in PYSCF_FUNC:
+            def make_mf():
+                m = dft.RKS(mol)
+                m.xc = PYSCF_FUNC[name]
+                m.grids.coords = np.ascontiguousarray(pts)
+                m.grids.weights = wts
+                m.grids.non0tab = None
+                return m
+        else:
+            def make_mf():
+                return scf.UHF(mol) if nb != na else scf.RHF(mol)
+
+        mf, grad_norm = converge_tight(make_mf, None, f"ecp_scf {name}")
+        w.real(f"E_{name}", mf.e_tot)
+        print(f"  ecp_scf {name:10s}: E(pyscf) = {mf.e_tot:18.12f}  |g| {grad_norm:.2e}")
+    w.end()
+    w.write()
+    dump.unlink()
+
+
 def gen_ao():
     """check_ao.F90's AO values/gradients at a probe cloud against pyscf's
     eval_ao. Needs the actual probe points (an LCG sequence) and terco's
@@ -4962,6 +5045,7 @@ CASES = {
     "ecp_ints_snh4": lambda: gen_ecp_ints("snh4"),
     "ecp_ints_i2": lambda: gen_ecp_ints("i2"),
     "ecp_ints_ch3i": lambda: gen_ecp_ints("ch3i"),
+    "ecp_scf": gen_ecp_scf,
     "ao": gen_ao,
     "pcm_radii_override": gen_pcm_radii_override,
     "pcm_grad": gen_pcm_grad,

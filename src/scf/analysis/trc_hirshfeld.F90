@@ -32,10 +32,12 @@ module trc_hirshfeld
    !! count, Tr(D S): the grid misses a little of a diffuse density, and
    !! the charges then still sum to the molecular charge.
    !!
-   !! terco has no effective-core-potential support at all (every basis it
-   !! reads is all-electron), so mqc's own ECP refusal has nothing to
-   !! check here. A ghost atom (zero nuclear charge) carries no free atom
-   !! and takes no share, exactly as mqc's.
+   !! An effective core potential is refused at the C API boundary
+   !! (trc_capi.F90's state_hirshfeld_charges), before this module is ever
+   !! reached: the free-atom reference below is all-electron, at the
+   !! atom's bare Z, and would not match a valence-only ECP basis's
+   !! electron-count budget. A ghost atom (zero nuclear charge) carries no
+   !! free atom and takes no share, exactly as mqc's.
    use pic_types, only: dp
    use pic_logger, only: logger => global_logger
    use pic_strings, only: to_string

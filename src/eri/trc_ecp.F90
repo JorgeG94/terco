@@ -86,7 +86,7 @@ module trc_ecp
    use pic_strings, only: to_string
    implicit none
    private
-   public :: trc_ecp_matrix
+   public :: trc_ecp_matrix, trc_ecp_matrix_cart
 
    integer, parameter :: NFMAX = (ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 2)/2     !! 10
    integer, parameter :: NPMAX = 16       !! primitives per orbital shell or ECP row
@@ -152,6 +152,41 @@ contains
 
       real(dp), allocatable :: mcart(:, :)
 
+      call trc_ecp_matrix_cart(b, ecp, mcart, error)
+      if (error%has_error()) return
+
+      if (b%spherical) then
+         allocate (u(b%nao_sph, b%nao_sph))
+         ! sph_cart_to_sph is a do concurrent kernel: under mem:separate
+         ! everything it reads must be mapped, as trc_scf_context's own call
+         ! does (and b's shell arrays are not left mapped by the build above).
+         !$acc enter data copyin(b, b%sh_l, b%sh_ao, b%sh_ao_sph, mcart) create(u)
+         call sph_cart_to_sph(b, mcart, u)
+         !$acc update self(u)
+         !$acc exit data delete(b%sh_l, b%sh_ao, b%sh_ao_sph, mcart, u, b)
+      else
+         allocate (u(b%nao, b%nao))
+         u = mcart
+      end if
+      deallocate (mcart)
+   end subroutine trc_ecp_matrix
+
+   !
+   ! The same matrix, always Cartesian (never folded), `mcart(b%nao, b%nao)`
+   ! coming back freshly allocated and zeroed. `trc_ecp_matrix` is this plus
+   ! the spherical fold; `trc_scf_context` calls this directly so its own
+   ! Cartesian H_core (T + V_ne) picks up U BEFORE the ONE fold that already
+   ! covers both (ECP_DESIGN.md: "added to H_core ... BEFORE the spherical
+   ! fold" -- folding is linear, so U folded with T+V_ne together or on its
+   ! own gives the same number to round-off, but doing it together is one
+   ! fewer sph_cart_to_sph call per SCF geometry).
+   !
+   subroutine trc_ecp_matrix_cart(b, ecp, mcart, error)
+      type(trc_basis_t), intent(in) :: b
+      type(trc_ecp_t), intent(in) :: ecp
+      real(dp), allocatable, intent(out) :: mcart(:, :)
+      type(error_t), intent(inout) :: error
+
       if (b%nshell > 0) then
          if (maxval(b%sh_l) > ECP_ORB_LMAX) then
             call error%set(ERROR_VALIDATION, "trc_ecp_matrix: an orbital shell carries l > "// &
@@ -201,22 +236,7 @@ contains
          call ecp_matrix_cart(b, ecp, mcart, error)
          if (error%has_error()) return
       end if
-
-      if (b%spherical) then
-         allocate (u(b%nao_sph, b%nao_sph))
-         ! sph_cart_to_sph is a do concurrent kernel: under mem:separate
-         ! everything it reads must be mapped, as trc_scf_context's own call
-         ! does (and b's shell arrays are not left mapped by the build above).
-         !$acc enter data copyin(b, b%sh_l, b%sh_ao, b%sh_ao_sph, mcart) create(u)
-         call sph_cart_to_sph(b, mcart, u)
-         !$acc update self(u)
-         !$acc exit data delete(b%sh_l, b%sh_ao, b%sh_ao_sph, mcart, u, b)
-      else
-         allocate (u(b%nao, b%nao))
-         u = mcart
-      end if
-      deallocate (mcart)
-   end subroutine trc_ecp_matrix
+   end subroutine trc_ecp_matrix_cart
 
    !
    ! The Cartesian build: groups the ECP rows into (atom, l) channels, then
