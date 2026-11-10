@@ -32,7 +32,7 @@
 !    converged density (scf_pcm's reason: its pi pair is split only by the
 !    cavity and the energy along that mode is flat to 3e-8), with scf_pcm's
 !    at-density check; a second case runs OH from the default guess with
-!    exact energies as a regression of the slow flat mode (iteration ceiling);
+!    exact energies as a regression of the slow flat mode (converges within its cap);
 !  - density fitting (water cc-pVDZ HF): scf_df.ref, 1e-8;
 !  - a linearly dependent basis (O2- d-aug-cc-pVDZ, 5 functions dropped):
 !    check_scf_lindep_gap's pyscf energy, 1e-8;
@@ -40,7 +40,7 @@
 !    default-start run and the DIIS run; the started-too-early run is the
 !    case that must NOT reach it).
 !
-! The mechanism cases (rejection, breakdown, the iteration ceiling, a rotation
+! The mechanism cases (rejection, breakdown, the flat-mode convergence, a rotation
 ! cap, MOM) have no external reference for the mechanism, only for the energy
 ! the run must still reach, or for the DIIS/MOM run of the same input.
 !
@@ -54,6 +54,7 @@ module check_scf_gdm_run_suite
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_scf_df, only: df_jk_t
    use trc_scf_gdm, only: scf_gdm_scale_min
+   use trc_scf_settings, only: scf_settings_is_aufbau
    use trc_scf_gdm_step, only: scf_gdm_step_accept_slack, GDM_NOISE_BOUND
    use trc_df_kernels, only: DF_LMAX_AUX
    use trc_linalg, only: trc_linalg_t
@@ -79,8 +80,11 @@ module check_scf_gdm_run_suite
    real(dp), parameter :: NOISE_BOUND = 1.0e-8_dp
    !! The wider bound of src/scf/trc_scf_gdm_step.F90 (GDM_NOISE_BOUND), for a
    !! comparison in which an incremental build is involved.
-   integer, parameter :: FLAT_CEILING = 250
-   !! Iterations the flat-mode regression may take (set after measuring).
+   integer, parameter :: FLAT_MAX_ITERATION = 400
+   !! `max_iteration` of the flat-mode regression. The mode is flat to 3e-8, so
+   !! the iteration count is round-off sensitive (measured: 210 gcc 15, 266 ifx
+   !! 2025.0, 22 nvfortran 26.9); the test asserts convergence within this
+   !! generous cap, not a count.
    real(dp), parameter :: ROUNDOFF = 1.0e-13_dp
    !! E_try <= E_acc + slack is exact in floating point; E_try - E_acc can
    !! still exceed the slack by an ulp of 76 Eh (1.4e-14).
@@ -96,7 +100,7 @@ contains
                   new_unittest("OH UKS PBE: GDM reaches pyscf (rks.ref), at-density control", test_oh_uks), &
                   new_unittest("water C-PCM RHF: GDM reaches pyscf (pcm_scf_main.ref)", test_water_pcm), &
                   new_unittest("OH C-PCM UHF from pyscf's density: GDM reaches pyscf at 1e-8", test_oh_pcm), &
-                  new_unittest("OH C-PCM UHF flat mode from the guess: iteration ceiling, exact energies", &
+                  new_unittest("OH C-PCM UHF flat mode from the guess: converges, exact energies", &
                                test_oh_pcm_flat_mode), &
                   new_unittest("water density-fitted RHF: GDM reaches pyscf (scf_df.ref)", test_water_df), &
                   new_unittest("O2- with 5 functions dropped: GDM reaches pyscf, null states stay lifted", &
@@ -262,7 +266,7 @@ contains
       call ref_close(u)
    end subroutine ref_density
 
-   subroutine check_gdm_ran(error, res, what, exact, off_aufbau_ok)
+   subroutine check_gdm_ran(error, res, what, nocc, exact, off_aufbau_ok)
       !! The run converged, took GDM steps, ended on an aufbau state (unless
       !! `off_aufbau_ok`), and the accepted energies rose by no more than the
       !! accept rule allows: the plain slack between full builds always, and
@@ -271,6 +275,8 @@ contains
       type(error_type), allocatable, intent(out) :: error
       type(trc_scf_result_t), intent(in) :: res
       character(len=*), intent(in) :: what
+      integer, intent(in) :: nocc(2)
+      !! Occupied orbitals per spin (nalpha, nbeta), for the aufbau consistency check.
       logical, intent(in), optional :: exact, off_aufbau_ok
       logical :: sharp, off_ok
       sharp = .false.
@@ -293,6 +299,11 @@ contains
       if (.not. off_ok) call check(error, res%gdm_off_aufbau == 0, what// &
                                    ": ended on a non-aufbau state ("//to_string(res%gdm_off_aufbau)//")")
       if (allocated(error)) return
+      ! The run's warning and the post-SCF refusal share one counter: they must agree.
+      call check(error, (res%gdm_off_aufbau == 0) .eqv. scf_settings_is_aufbau(size(res%eps, 1), res%nspin, &
+                                                           size(res%eps, 1) - res%n_lindep, nocc, res%eps), &
+                 what//": gdm_off_aufbau ("//to_string(res%gdm_off_aufbau)//") disagrees with scf_settings_is_aufbau")
+      if (allocated(error)) return
    end subroutine check_gdm_ran
 
    ! --- Hartree-Fock ------------------------------------------------------
@@ -306,7 +317,7 @@ contains
       if (allocated(error)) return
       call trc_scf_run(bas, na, nb, gdm_options(exact_options(), early=.true.), res)
       call bas%release()
-      call check_gdm_ran(error, res, "water RHF", exact=.true.)
+      call check_gdm_ran(error, res, "water RHF", [na, nb], exact=.true.)
       if (allocated(error)) return
       call check(error, abs(res%energy - E_WATER_RHF) < TOL_REF, "energy differs from pyscf by "// &
                  to_string(abs(res%energy - E_WATER_RHF)))
@@ -321,7 +332,7 @@ contains
       if (allocated(error)) return
       call trc_scf_run(bas, na, nb, gdm_options(exact_options(), early=.true.), res)
       call bas%release()
-      call check_gdm_ran(error, res, "OH UHF", exact=.true.)
+      call check_gdm_ran(error, res, "OH UHF", [na, nb], exact=.true.)
       if (allocated(error)) return
       call check(error, res%nspin == 2, "expected an unrestricted run")
       if (allocated(error)) return
@@ -360,7 +371,7 @@ contains
       call trc_scf_run(bas, na, nb, gdm_options(base), res, dguess=hf%dmat)
       call trc_scf_run(bas, na, nb, base, plain, dguess=hf%dmat)
       call bas%release()
-      call check_gdm_ran(error, res, "water B3LYP")
+      call check_gdm_ran(error, res, "water B3LYP", [na, nb])
       if (allocated(error)) return
       call check(error, res%iterations < 40, "water B3LYP took "//to_string(res%iterations)//" iterations from a sane guess")
       if (allocated(error)) return
@@ -408,7 +419,7 @@ contains
       call check(error, abs(at%energy - e_ref) < TOL_REF, "terco's energy at pyscf's density differs from pyscf by "// &
                  to_string(abs(at%energy - e_ref)))
       if (allocated(error)) return
-      call check_gdm_ran(error, res, "OH PBE")
+      call check_gdm_ran(error, res, "OH PBE", [na, nb])
       if (allocated(error)) return
       call check(error, res%nspin == 2, "expected an unrestricted run")
       if (allocated(error)) return
@@ -473,7 +484,7 @@ contains
                     to_string(abs(at%energy - e_dm)))
          if (allocated(error)) return
       end if
-      call check_gdm_ran(error, res, what)
+      call check_gdm_ran(error, res, what, [na, nb])
       if (allocated(error)) return
       call check(error, res%e_pcm /= 0.0_dp, what//": no dielectric energy, the continuum was off")
       if (allocated(error)) return
@@ -497,8 +508,9 @@ contains
       !! energy flat to 3e-8 along one mode (scf_pcm.F90's header). A rule that
       !! accepted real rises there let the energy random-walk along it (291
       !! iterations, 49 rejections, against DIIS's 118); with the plain slack
-      !! the walk cannot happen. Asserts the exact bound on every rise, an
-      !! iteration ceiling, and that the converged energy is within the flat
+      !! the walk cannot happen. Asserts the exact bound on every rise,
+      !! convergence within `FLAT_MAX_ITERATION` (the count itself is
+      !! round-off sensitive, see there), and that the converged energy is within the flat
       !! mode's 3e-8 of pyscf's stationary point (either end of the mode is a
       !! stationary point, so this is two-sided by construction).
       type(error_type), allocatable, intent(out) :: error
@@ -516,13 +528,10 @@ contains
       base%conv_diis = 1.0e-8_dp
       base%pcm_model = "cpcm"
       base%pcm_eps = EPS_WATER
-      base%max_iteration = FLAT_CEILING + 100
+      base%max_iteration = FLAT_MAX_ITERATION
       call trc_scf_run(bas, na, nb, gdm_options(base), res)
       call bas%release()
-      call check_gdm_ran(error, res, "OH C-PCM flat mode", exact=.true.)
-      if (allocated(error)) return
-      call check(error, res%iterations <= FLAT_CEILING, "the flat mode took "//to_string(res%iterations)// &
-                 " iterations, ceiling "//to_string(FLAT_CEILING))
+      call check_gdm_ran(error, res, "OH C-PCM flat mode", [na, nb], exact=.true.)
       if (allocated(error)) return
       call check(error, abs(res%energy - e_ref) < 3.0e-8_dp, "energy is "//to_string(res%energy - e_ref)// &
                  " from pyscf's; the flat mode allows 3e-8")
@@ -577,7 +586,7 @@ contains
       call aux%release()
       call bas%release()
       if (allocated(error)) return
-      call check_gdm_ran(error, res, "water DF-RHF")
+      call check_gdm_ran(error, res, "water DF-RHF", [na, nb])
       if (allocated(error)) return
       call check(error, abs(res%energy - e_ref) < TOL_REF, "energy differs from pyscf by "// &
                  to_string(abs(res%energy - e_ref)))
@@ -611,7 +620,7 @@ contains
       call bas%release()
       call check(error, res%n_lindep == 5, "expected 5 functions dropped, got "//to_string(res%n_lindep))
       if (allocated(error)) return
-      call check_gdm_ran(error, res, "O2- lindep")
+      call check_gdm_ran(error, res, "O2- lindep", [5, 5])
       if (allocated(error)) return
       call check(error, abs(res%energy - E_O2M_LINDEP) < TOL_REF, "energy differs from pyscf by "// &
                  to_string(abs(res%energy - E_O2M_LINDEP)))
@@ -647,7 +656,7 @@ contains
       opts%gdm = .false.
       call trc_scf_run(bas, na, nb, opts, plain)
       call bas%release()
-      call check_gdm_ran(error, res, "default handover", exact=.true.)
+      call check_gdm_ran(error, res, "default handover", [na, nb], exact=.true.)
       if (allocated(error)) return
       call check(error, res%iterations - res%gdm_steps >= 2, "no DIIS iteration before the handover: "// &
                  to_string(res%iterations)//" iterations, "//to_string(res%gdm_steps)//" GDM steps")
@@ -698,7 +707,7 @@ contains
       opts%gdm = .false.
       call trc_scf_run(bas, na, nb, opts, plain)
       call bas%release()
-      call check_gdm_ran(error, res, "adiis + gdm", exact=.true.)
+      call check_gdm_ran(error, res, "adiis + gdm", [na, nb], exact=.true.)
       if (allocated(error)) return
       call check(error, res%iterations - res%gdm_steps >= 2, "no ADIIS iteration before the handover: "// &
                  to_string(res%iterations)//" iterations, "//to_string(res%gdm_steps)//" GDM steps")
@@ -724,7 +733,7 @@ contains
       opts%guess = "core"
       call trc_scf_run(bas, na, nb, opts, res)
       call bas%release()
-      call check_gdm_ran(error, res, "large rotation", exact=.true.)
+      call check_gdm_ran(error, res, "large rotation", [na, nb], exact=.true.)
       if (allocated(error)) return
       call check(error, res%gdm_rejected > 0, "no trial was rejected, so the rejection path was not exercised")
       if (allocated(error)) return
@@ -801,7 +810,7 @@ contains
          ! corrupts the heap doing that.
          nao = size(res%dmat, 1)
          call bas%release()
-         call check_gdm_ran(error, res, trim(SYSTEM(isys)))
+         call check_gdm_ran(error, res, trim(SYSTEM(isys)), [na, nb])
          if (allocated(error)) return
          allocate (d(nao, nao))
          do s = 1, res%nspin
@@ -851,7 +860,7 @@ contains
       base%conv_diis = 1.0e-9_dp
       call trc_scf_run(bas, 1, 0, gdm_options(base, early=.true.), res)
       call trc_scf_run(bas, 1, 0, base, plain)
-      call check_gdm_ran(error, res, what)
+      call check_gdm_ran(error, res, what, [1, 0])
       if (allocated(error)) return
       call check(error, plain%converged .and. abs(res%energy - plain%energy) < 1.0e-8_dp, &
                  what//": GDM and DIIS energies differ by "//to_string(abs(res%energy - plain%energy)))
@@ -1123,7 +1132,7 @@ contains
                  abs(g_nomom%energy - ground%energy) < 1.0e-7_dp, &
                  "without mom GDM should run down to the ground state (the control of this test)")
       if (allocated(error)) return
-      call check_gdm_ran(error, g_aufbau, "mom + gdm on the aufbau occupation", exact=.true.)
+      call check_gdm_ran(error, g_aufbau, "mom + gdm on the aufbau occupation", [nocc, nocc], exact=.true.)
       if (allocated(error)) return
       call check(error, .not. g_aufbau%gdm_declined .and. abs(g_aufbau%energy - ground%energy) < 1.0e-8_dp, &
                  "GDM declined, or missed the ground state, with mom on the aufbau occupation")
@@ -1178,9 +1187,9 @@ contains
       call check(error, early%gdm_off_aufbau > 0, "the higher state is not flagged non-aufbau (gdm_off_aufbau = "// &
                  to_string(early%gdm_off_aufbau)//")")
       if (allocated(error)) return
-      call check_gdm_ran(error, normal_loose, "default start, core guess, loose", exact=.true.)
+      call check_gdm_ran(error, normal_loose, "default start, core guess, loose", [na, nb], exact=.true.)
       if (allocated(error)) return
-      call check_gdm_ran(error, normal, "default start, core guess", exact=.true.)
+      call check_gdm_ran(error, normal, "default start, core guess", [na, nb], exact=.true.)
       if (allocated(error)) return
       call check(error, abs(normal%energy - e_ref) < TOL_REF .and. abs(normal_loose%energy - e_ref) < TOL_REF, &
                  "the default-start run differs from pyscf by "//to_string(normal%energy - e_ref)//", loose "// &

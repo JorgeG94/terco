@@ -174,7 +174,7 @@ program trc_main
                        "refused with --soscf. Keeps the occupation it starts from; with --mom it declines "// &
                        "when MOM holds a non-aufbau state")
    call r%cli%add_option("gdm-start", "commutator norm at which --gdm hands over from DIIS (0.1)")
-   call r%cli%add_option("gdm-max-rotation", "largest orbital rotation angle of one --gdm step, radians (0.2)")
+   call r%cli%add_option("gdm-max-rotation", "largest element of the orbital rotation (kappa) of one --gdm step (0.2)")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
    call r%cli%add_option("lindep", "linear-dependence threshold: eigenvalues of S normalised to a unit "// &
                          "diagonal (pyscf/ORCA's convention) below it are dropped (canonical orthogonalisation; "// &

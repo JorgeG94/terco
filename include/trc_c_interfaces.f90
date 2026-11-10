@@ -863,7 +863,7 @@ module trc_c_interfaces
          !!   on            1 turns GDM on; 0 off (the default).
          !!   start         commutator norm at which DIIS hands over; 0 for the
          !!                 library's default (0.1). Must be >= 0.
-         !!   max_rotation  largest rotation angle of one step, radians; 0 for the
+         !!   max_rotation  largest element of the orbital rotation (kappa) of one step; 0 for the
          !!                 library's default (0.2). Must be >= 0.
          !!
          !! Works with restricted and unrestricted references, functionals

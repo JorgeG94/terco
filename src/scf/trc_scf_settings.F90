@@ -29,7 +29,7 @@ module trc_scf_settings
 
    public :: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_settings_spin_rule, scf_energies_t
    public :: scf_settings_eri_thresh_env
-   public :: scf_settings_homo_lumo_gap, scf_settings_is_aufbau, AUFBAU_TOL
+   public :: scf_settings_homo_lumo_gap, scf_settings_is_aufbau, scf_settings_count_off_aufbau, AUFBAU_TOL
    public :: scf_settings_fock_densities
    ! incr_env/incr_reset_env/incr_real_env stay
    ! private: nothing outside this module uses them.
@@ -48,7 +48,7 @@ module trc_scf_settings
    !! as `MOM_START` in trc_scf_driver; a poor guess has a far larger one.
    real(dp), parameter :: DEFAULT_GDM_MAX_ROTATION = 0.2_dp
    !! `trc_scf_options_t%gdm_max_rotation`'s default (sentinel 0), radians:
-   !! the largest occupied-virtual rotation angle one GDM step may take. The
+   !! the largest element of the orbital rotation (kappa) of one GDM step. The
    !! value `trc_scf_soscf` uses for its own `MAX_ROTATION`.
    real(dp), parameter :: DEFAULT_GDM_SLACK = 1.0e-10_dp
    !! `trc_scf_options_t%gdm_slack`'s default (sentinel 0), Eh: the energy
@@ -255,7 +255,7 @@ module trc_scf_settings
       !! occupation; a run that ends non-aufbau logs a warning suggesting a
       !! smaller value.
       real(dp) :: gdm_max_rotation = 0.0_dp
-      !! Largest rotation angle of one GDM step, radians; 0 means
+      !! Largest element of the orbital rotation (kappa) of one GDM step, radians; 0 means
       !! `DEFAULT_GDM_MAX_ROTATION`. A step that overshoots is rejected and
       !! halved, so a large value only costs Fock builds; the check that
       !! exercises the rejection path sets it large on purpose.
@@ -480,7 +480,8 @@ module trc_scf_settings
       real(dp) :: gdm_start = DEFAULT_GDM_START
       real(dp) :: gdm_max_rotation = DEFAULT_GDM_MAX_ROTATION
       real(dp) :: gdm_slack = DEFAULT_GDM_SLACK
-      !! `opts%gdm` and its three knobs with their sentinels (0) resolved.
+      !! `opts%gdm_slack` with its sentinel (0) resolved (`gdm`, `gdm_start` and
+      !! `gdm_max_rotation` above are resolved the same way).
       real(dp) :: conv_energy = 0.0_dp
       real(dp) :: conv_diis = 0.0_dp
       integer :: max_iteration = 0
@@ -795,6 +796,27 @@ contains
       end do
    end function scf_settings_homo_lumo_gap
 
+   pure integer function scf_settings_count_off_aufbau(nmo, nocc, eps) result(n)
+      !! Number of virtual levels (indices nocc+1:nmo) lying more than
+      !! `AUFBAU_TOL` below the highest occupied one (0 for an aufbau state).
+      !! Explicit-shape dummy and plain index loops on purpose: the GDM
+      !! warning and the post-SCF refusal share it, and an array-section
+      !! `count` of an allocatable component miscounted under nvfortran 26.9.
+      integer, intent(in) :: nmo, nocc
+      real(dp), intent(in) :: eps(nmo)
+      integer :: i
+      real(dp) :: homo
+      n = 0
+      if (nocc < 1 .or. nocc >= nmo) return
+      homo = eps(1)
+      do i = 2, nocc
+         if (eps(i) > homo) homo = eps(i)
+      end do
+      do i = nocc + 1, nmo
+         if (eps(i) < homo - AUFBAU_TOL) n = n + 1
+      end do
+   end function scf_settings_count_off_aufbau
+
    pure function scf_settings_is_aufbau(nao, nspin, nmo, nocc, eps) result(aufbau)
       !! Whether the occupation is the aufbau one: for every spin, no virtual
       !! level lies more than `AUFBAU_TOL` below an occupied one. The occupied
@@ -808,8 +830,7 @@ contains
       integer :: s
       aufbau = .true.
       do s = 1, nspin
-         if (nocc(s) < 1 .or. nocc(s) >= nmo) cycle
-         if (maxval(eps(1:nocc(s), s)) > minval(eps(nocc(s) + 1:nmo, s)) + AUFBAU_TOL) aufbau = .false.
+         if (scf_settings_count_off_aufbau(nmo, nocc(s), eps(1:nmo, s)) > 0) aufbau = .false.
       end do
    end function scf_settings_is_aufbau
 

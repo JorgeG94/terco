@@ -129,7 +129,7 @@ module trc_scf_gdm_step
    use trc_linalg, only: trc_linalg_t
    use trc_cphf, only: cphf_copy_matrix
    use trc_scf_context, only: scf_ctx_t, scf_context_bcast_flat
-   use trc_scf_settings, only: scf_settings_t, trc_scf_result_t, scf_energies_t, AUFBAU_TOL
+   use trc_scf_settings, only: scf_settings_t, trc_scf_result_t, scf_energies_t, scf_settings_count_off_aufbau
    use trc_scf_state, only: scf_state_t
    use trc_scf_gdm, only: trc_scf_gdm_history_t, scf_gdm_preconditioner_build, scf_gdm_step_judge, &
                           scf_gdm_step_limit, scf_gdm_is_descent
@@ -156,7 +156,6 @@ module trc_scf_gdm_step
    !! (trc_scf_incremental: ~1e-7 early, about a hundred times less once the
    !! screen tightens) with margin. Full builds are deterministic and get the
    !! option's plain slack.
-   real(dp), parameter :: GDM_AUFBAU_TOL = AUFBAU_TOL
    !! A virtual orbital counts as below the highest occupied one only when it
    !! is lower by more than this, hartree: a degenerate pair split by
    !! round-off (an open-shell pi pair) is not a non-aufbau state. The same
@@ -659,23 +658,14 @@ contains
       if (info == 0) then
          call scf_soscf_copy_eps(this%nao, this%n_mo, this%energies_mo, scf_result%eps(:, s))
          ! Per-block sorted: a virtual below the highest occupied is a non-aufbau state.
-         !$acc update self(this%energies_mo)
-         if (this%nocc(s) >= 1 .and. this%nvir(s) >= 1) then
-            this%off_aufbau = this%off_aufbau + gdm_count_below(this%energies_mo(1:this%nocc(s)), &
-                                                                this%energies_mo(this%nocc(s) + 1:this%n_mo))
-         end if
+         ! Counted on the committed eps, by the same helper as the post-SCF refusal.
+         this%off_aufbau = this%off_aufbau + scf_settings_count_off_aufbau(this%n_mo, this%nocc(s), &
+                                                                           scf_result%eps(1:this%n_mo, s))
       else
          call global_logger%warning("trc_scf_gdm_step: the final semicanonicalisation did not converge "// &
                                     "(eigensolver info="//to_string(info)//"); the orbital energies are stale")
       end if
    end subroutine gdm_semicanonical
-
-   integer function gdm_count_below(e_occ, e_vir) result(n)
-      !! Virtual levels lying more than `GDM_AUFBAU_TOL` below the highest
-      !! occupied one (0 for an aufbau state).
-      real(dp), intent(in) :: e_occ(:), e_vir(:)
-      n = count(e_vir < maxval(e_occ) - GDM_AUFBAU_TOL)
-   end function gdm_count_below
 
    subroutine gdm_diagonalise_whole(this, la, s, info)
       !! The single block of a spin with nothing to rotate: C <- C U with U
