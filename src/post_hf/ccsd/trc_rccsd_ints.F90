@@ -53,6 +53,12 @@
 ! transients hold the whole auxiliary basis at once. Both go when the
 ! contractions stop needing the dense block.
 !
+! BUILD STAMP. Every successful `build` gives the type a new, nonzero `stamp`
+! (`release` resets it to 0). A consumer that packs integral-only arrays once
+! at its own `init` (the scratch types of trc_rccsd_inter and trc_rccsd_w)
+! records the stamp it saw and refuses to run when it no longer matches: after
+! `ints%build` is called again, re-`init` the scratch.
+!
 ! Single rank only.
 module trc_rccsd_ints
    use pic_types, only: dp, int64
@@ -64,6 +70,8 @@ module trc_rccsd_ints
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
    private
+
+   integer :: build_counter = 0  !! last stamp handed out; only ever increases, so a rebuilt type never repeats one
 
    public :: trc_rccsd_ints_t, trc_rccsd_ints_options_t
 
@@ -84,6 +92,7 @@ module trc_rccsd_ints
       integer :: nv = 0       !! virtual orbitals
       integer :: naux = 0     !! auxiliary functions (spherical count when the auxiliary basis is)
       integer :: nfrozen = 0  !! frozen occupied orbitals, the lowest by index
+      integer :: stamp = 0    !! 0 when empty, else a new value per successful `build`; scratch types compare it
       real(dp), allocatable :: oooo(:, :, :, :)   !! (ij|kl)
       real(dp), allocatable :: ooov(:, :, :, :)   !! (ij|ka)
       real(dp), allocatable :: oovv(:, :, :, :)   !! (ij|ab)
@@ -150,6 +159,7 @@ contains
       ints%nv = 0
       ints%naux = 0
       ints%nfrozen = 0
+      ints%stamp = 0
    end subroutine rccsd_ints_release
 
    pure integer function ncart(l) result(res)
@@ -366,6 +376,8 @@ contains
       call la%gemm("N", "T", no*nv, nv*nv, naux, 1.0_dp, ints%b_ov, no*nv, ints%b_vv, nv*nv, 0.0_dp, ints%ovvv, no*nv)
       call la%sync()
       !$acc update self(ints%b_oo, ints%b_ov, ints%b_vv, ints%oooo, ints%ooov, ints%oovv, ints%ovov, ints%ovvv)
+      build_counter = build_counter + 1
+      ints%stamp = build_counter
    end subroutine rccsd_ints_build
 
    function rccsd_ints_mp2_energy(ints) result(energy)

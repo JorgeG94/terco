@@ -167,6 +167,12 @@ terco_add_check(check_rccsd_inter check_rccsd_inter.F90 NEEDS_BASIS NEEDS_PYSCF_
 target_link_libraries(check_rccsd_inter PRIVATE test-drive::test-drive terco_rccsd_test_support)
 set_tests_properties(terco/check_rccsd_inter PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# Woooo, Wvoov and Wvovo (src/post_hf/ccsd/trc_rccsd_w.F90) at the same FIXED
+# amplitudes against the same references, plus independent host einsum loops. Same SKIP guard.
+terco_add_check(check_rccsd_w check_rccsd_w.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_rccsd_w PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_w PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
 # check_basis_ecp_refused.F90's own header.

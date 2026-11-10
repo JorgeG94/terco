@@ -31,6 +31,8 @@
 !     as pyscf's einsums (t2 and t1 t1 terms separate, no tau, no L)
 !   7 refusals: an empty integral type, mismatched sizes of amplitudes or intermediates
 !     (status set, message non-empty, nothing changed)
+!   8 stale scratch: after `ints%build` is called again the routines that take `ints` refuse
+!     until the scratch is re-initialised, then reproduce the earlier numbers
 !
 module check_rccsd_inter_suite
    use pic_types, only: dp
@@ -49,7 +51,7 @@ module check_rccsd_inter_suite
    private
    public :: collect_check_rccsd_inter
 
-   integer, parameter :: NCASE = 7
+   integer, parameter :: NCASE = 8
    character(len=4), parameter :: SKIP_TAG(5) = [character(len=4) :: "oooo", "ooov", "oovv", "ovov", "ovvv"]
    real(dp), parameter :: TOL_ENERGY = 1.0e-10_dp   !! E_MP2, E_fixed against pyscf
    real(dp), parameter :: TOL_HOST = 1.0e-12_dp     !! against independent host loops, relative to max(1, |A|max)
@@ -70,13 +72,15 @@ contains
                   new_unittest("water: t1 = 0 reductions", w5), &
                   new_unittest("water: intermediates vs host einsum loops", w6), &
                   new_unittest("water: refusals", w7), &
+                  new_unittest("water: stale scratch", w8), &
                   new_unittest("h2o2: t1, t2, tau", h1), &
                   new_unittest("h2o2: Foo, Fvv vs pyscf", h2), &
                   new_unittest("h2o2: Fov, Loo, Lvv vs pyscf", h3), &
                   new_unittest("h2o2: E_MP2 and energy functional vs pyscf", h4), &
                   new_unittest("h2o2: t1 = 0 reductions", h5), &
                   new_unittest("h2o2: intermediates vs host einsum loops", h6), &
-                  new_unittest("h2o2: refusals", h7) &
+                  new_unittest("h2o2: refusals", h7), &
+                  new_unittest("h2o2: stale scratch", h8) &
                   ]
    end subroutine collect_check_rccsd_inter
 
@@ -115,6 +119,11 @@ contains
       call run_case(error, 7, 1)
    end subroutine w7
 
+   subroutine w8(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 8, 1)
+   end subroutine w8
+
    subroutine h1(error)
       type(error_type), allocatable, intent(out) :: error
       call run_case(error, 1, 2)
@@ -149,6 +158,11 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call run_case(error, 7, 2)
    end subroutine h7
+
+   subroutine h8(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 8, 2)
+   end subroutine h8
 
    subroutine run_case(error, ic, im)
       type(error_type), allocatable, intent(out) :: error
@@ -377,6 +391,7 @@ contains
                   to_string(d_loo, "es9.2")//" "//to_string(d_lvv, "es9.2"))
 
       call refusal_case(im, label, ints, amps, inter, scr, la)
+      call stale_case(im, label, bas, aux, pl, res, la, bopts, ints, amps, inter, scr, t1fix)
 
       call ref_close(ref_unit)
       call inter%release()
@@ -388,6 +403,93 @@ contains
       call aux%release()
       call bas%release()
    end subroutine compute_molecule
+
+   subroutine stale_case(im, label, bas, aux, pl, res, la, bopts, ints, amps, inter, scr, t1fix)
+      !! After a second `ints%build` the packs of `scr` are stale: the routines that take `ints` refuse
+      !! and change nothing; re-initialising the scratch restores the earlier numbers
+      integer, intent(in) :: im
+      character(len=*), intent(in) :: label
+      type(trc_basis_t), intent(in) :: bas, aux
+      type(trc_pairlist_t), intent(in) :: pl
+      type(trc_scf_result_t), intent(in) :: res
+      type(trc_linalg_t), intent(inout) :: la
+      type(trc_rccsd_ints_options_t), intent(in) :: bopts
+      type(trc_rccsd_ints_t), intent(inout) :: ints
+      type(trc_rccsd_amps_t), intent(inout) :: amps
+      type(trc_rccsd_inter_t), intent(inout) :: inter
+      type(trc_rccsd_scratch_t), intent(inout) :: scr
+      real(dp), intent(in) :: t1fix(:, :)
+
+      real(dp), allocatable :: foo_b(:, :), fvv_b(:, :), fov_b(:, :), loo_b(:, :), lvv_b(:, :)
+      real(dp), allocatable :: tau_b(:, :, :, :), t2_b(:, :, :, :), t1_b(:, :)
+      integer :: stamp_before
+      real(dp) :: d, e_mp2
+      character(len=500) :: why
+
+      why = ""
+      amps%t1 = t1fix
+      call amps%push()
+      call rccsd_inter_build_tau(ints, amps, inter, scr)
+      call rccsd_inter_one_particle(ints, amps, inter, scr, la)
+      if (scr%status%has_error()) error stop "check_rccsd_inter: stale: "//scr%status%get_message()
+      call inter%pull()
+      call amps%pull()
+      foo_b = inter%foo
+      fvv_b = inter%fvv
+      fov_b = inter%fov
+      loo_b = inter%loo
+      lvv_b = inter%lvv
+      tau_b = inter%tau
+      t1_b = amps%t1
+      t2_b = amps%t2
+      stamp_before = ints%stamp
+      call la%release()
+      call ints%build(bas, aux, pl, res%cmo(:, :, 1), res%eps(:, 1), la, bopts)
+      if (ints%status%has_error()) error stop "check_rccsd_inter: rebuild: "//ints%status%get_message()
+      if (ints%stamp == stamp_before .or. ints%stamp == 0) why = trim(why)//" [the stamp did not change on rebuild]"
+
+      call rccsd_inter_one_particle(ints, amps, inter, scr, la)
+      call expect_refusal(scr, "one_particle with stale packs", why)
+      call rccsd_inter_foo(ints, inter, scr, la)
+      call expect_refusal(scr, "Foo with stale packs", why)
+      call rccsd_inter_fvv(ints, inter, scr, la)
+      call expect_refusal(scr, "Fvv with stale packs", why)
+      call rccsd_inter_build_tau(ints, amps, inter, scr)
+      call expect_refusal(scr, "build_tau with stale packs", why)
+      call rccsd_inter_mp2_guess(ints, amps, scr, e_mp2)
+      call expect_refusal(scr, "mp2_guess with stale packs", why)
+      call inter%pull()
+      call amps%pull()
+      if (any(inter%foo /= foo_b) .or. any(inter%fvv /= fvv_b) .or. any(inter%fov /= fov_b) .or. &
+          any(inter%loo /= loo_b) .or. any(inter%lvv /= lvv_b) .or. any(inter%tau /= tau_b)) &
+         why = trim(why)//" [a refused call changed the intermediates]"
+      if (any(amps%t1 /= t1_b) .or. any(amps%t2 /= t2_b)) why = trim(why)//" [a refused call changed the amplitudes]"
+
+      call scr%init(ints)
+      if (scr%status%has_error()) error stop "check_rccsd_inter: stale: scratch: "//scr%status%get_message()
+      call rccsd_inter_build_tau(ints, amps, inter, scr)
+      call rccsd_inter_one_particle(ints, amps, inter, scr, la)
+      if (scr%status%has_error()) why = trim(why)//" [one_particle after re-init fails: "//scr%status%get_message()//"]"
+      call inter%pull()
+      d = max(rel_diff(inter%foo, foo_b), rel_diff(inter%fvv, fvv_b), rel_diff(inter%fov, fov_b), &
+              rel_diff(inter%loo, loo_b), rel_diff(inter%lvv, lvv_b))
+      if (d > 1.0e-14_dp) why = trim(why)//" [numbers after re-init differ]"
+      call record(im, 8, len_trim(why) == 0, label//"after a second ints%build the stale scratch is refused with a "// &
+                  "message and nothing changes; after re-init the intermediates reproduce the earlier numbers, worst "// &
+                  "relative "//to_string(d, "es9.2")//trim(why))
+   end subroutine stale_case
+
+   subroutine expect_refusal(scr, what, why)
+      !! Appends to `why` when `scr` does not carry a refusal with a message
+      type(trc_rccsd_scratch_t), intent(in) :: scr
+      character(len=*), intent(in) :: what
+      character(len=*), intent(inout) :: why
+      if (.not. scr%status%has_error()) then
+         why = trim(why)//" ["//what//" not refused]"
+      else if (len_trim(scr%status%get_message()) == 0) then
+         why = trim(why)//" ["//what//": refusal has no message]"
+      end if
+   end subroutine expect_refusal
 
    subroutine refusal_case(im, label, ints, amps, inter, scr, la)
       !! Refusals set `scr%status` and leave the arrays as they were

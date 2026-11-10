@@ -3726,7 +3726,8 @@ def gen_rccsd_ints():
     basis, aux_basis = "cc-pvdz", "cc-pvdz-rifit"
     # Every file that reads these references or the probes they hold: the integral check, the
     # intermediates check and the helpers they share (editing one re-hashes the .ref).
-    test_files = [TEST / "check_rccsd_ints.F90", TEST / "check_rccsd_inter.F90", TEST / "rccsd_test_support.F90"]
+    test_files = [TEST / "check_rccsd_ints.F90", TEST / "check_rccsd_inter.F90", TEST / "check_rccsd_w.F90",
+                  TEST / "rccsd_test_support.F90"]
     files = sorted({TEST / c[1] for c in cases}
                    | {TEST / "basis_sets" / (basis + ".json"), TEST / "basis_sets" / (aux_basis + ".json")}
                    | set(test_files))

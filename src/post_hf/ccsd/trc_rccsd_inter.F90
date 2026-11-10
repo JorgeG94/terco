@@ -69,6 +69,13 @@
 ! Every block is addressed with a default integer: a block above 2^31-1
 ! elements is refused by `init` (status), not wrapped.
 !
+! STALE PACKS. `init` packs lov, lq and lam from the integrals once and records
+! `ints%stamp`. After `ints%build` is called again (new geometry or orbitals,
+! even with the same no and nv) the stamp differs and every routine that takes
+! `ints` refuses with a message: re-`init` the scratch. `rccsd_inter_energy`
+! takes no `ints`, so it cannot check; its caller keeps the scratch and the
+! integrals in step.
+!
 ! Failures are reported in `scratch%status` (a routine whose `ints`, `amps`, `inter`
 ! or `scr` differ in (no, nv), or are not built, sets it and returns without touching
 ! anything); none stops.
@@ -81,6 +88,9 @@ module trc_rccsd_inter
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
    private
+
+   character(len=*), parameter :: STALE_MSG = "trc_rccsd_inter: the integrals were rebuilt after the scratch was "// &
+                                              "initialised; re-init the scratch after ints%build"
 
    public :: trc_rccsd_amps_t, trc_rccsd_inter_t, trc_rccsd_scratch_t
    public :: rccsd_inter_build_tau, rccsd_inter_foo, rccsd_inter_fvv, rccsd_inter_fov, rccsd_inter_loo, rccsd_inter_lvv
@@ -120,6 +130,7 @@ module trc_rccsd_inter
       type(error_t) :: status  !! set by `init` and by every routine that refuses its arguments
       integer :: no = 0
       integer :: nv = 0
+      integer :: stamp = 0  !! `ints%stamp` of the integrals `init` packed from
       real(dp), allocatable :: lov(:, :, :, :)  !! L(k,c,l,d) = 2 (kc|ld) - (kd|lc)
       real(dp), allocatable :: pack1(:)         !! o^2 v^2
       real(dp), allocatable :: lq(:)            !! o^2 v^2, lq(k,l,d,c) = L(k,c,l,d), built by `init`
@@ -264,6 +275,7 @@ contains
       end if
       this%no = no
       this%nv = nv
+      this%stamp = ints%stamp
       allocate (this%lov(no, nv, no, nv), this%pack1(no*no*nv*nv), this%lq(no*no*nv*nv))
       allocate (this%lam(no*no*no*nv), this%part_s(no*nv), this%part_d(no*nv))
       !$acc enter data create(this%lov, this%pack1, this%lq, this%lam, this%part_s, this%part_d)
@@ -302,6 +314,7 @@ contains
       end if
       this%no = 0
       this%nv = 0
+      this%stamp = 0
    end subroutine scratch_release
 
    function ready_inter(ints, inter, scr) result(ok)
@@ -323,6 +336,10 @@ contains
       if (inter%no /= ints%no .or. inter%nv /= ints%nv .or. scr%no /= ints%no .or. scr%nv /= ints%nv) then
          call scr%status%set(ERROR_VALIDATION, "trc_rccsd_inter: (no, nv) differ between integrals, "// &
                              "intermediates and scratch")
+         return
+      end if
+      if (scr%stamp /= ints%stamp) then
+         call scr%status%set(ERROR_VALIDATION, STALE_MSG)
          return
       end if
       ok = .true.
@@ -350,6 +367,10 @@ contains
           scr%no /= ints%no .or. scr%nv /= ints%nv) then
          call scr%status%set(ERROR_VALIDATION, "trc_rccsd_inter: (no, nv) differ between integrals, amplitudes, "// &
                              "intermediates and scratch")
+         return
+      end if
+      if (scr%stamp /= ints%stamp) then
+         call scr%status%set(ERROR_VALIDATION, STALE_MSG)
          return
       end if
       ok = .true.
@@ -550,6 +571,10 @@ contains
       end if
       if (amps%no /= ints%no .or. amps%nv /= ints%nv .or. scr%no /= ints%no .or. scr%nv /= ints%nv) then
          call scr%status%set(ERROR_VALIDATION, "trc_rccsd_inter: rccsd_inter_mp2_guess: (no, nv) differ")
+         return
+      end if
+      if (scr%stamp /= ints%stamp) then
+         call scr%status%set(ERROR_VALIDATION, STALE_MSG)
          return
       end if
       call kernel_mp2(ints%no, ints%nv, ints%eps_o, ints%eps_v, ints%ovov, amps%t1, amps%t2)
