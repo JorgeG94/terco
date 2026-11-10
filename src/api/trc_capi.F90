@@ -441,6 +441,12 @@ module trc_capi
       integer :: guess_kind = TRC_GUESS_SAD
       real(dp), allocatable :: dguess(:, :, :)
       integer :: fcomm = -1
+      ! Whether this rank is rank 0 of `fcomm` (or there is no `fcomm`), as
+      ! the last trc_run_scf found it: what per-context log lines outside
+      ! the SCF itself (the Fukui stage labels) gate on, so N ranks do not
+      ! print them N times. Kept here because asking `fcomm` again means
+      ! trc_build_comm, which is collective and rebinds the device.
+      logical :: log_root = .true.
       integer :: nfrozen = -1, aux_block = 256
       ! TRC_AO_NORM_SHELL by default: terco's own per-l convention, so no
       ! existing caller sees a difference. trc_set_ao_norm sets this AND,
@@ -3657,7 +3663,9 @@ contains
       if (status /= TRC_OK) return
       status = TRC_ERR_BADARG   ! what the guess's own failures below report
       talk = cx%opts%verbose
-      if (collective) talk = talk .and. comm%rank() == 0
+      cx%log_root = .true.
+      if (collective) cx%log_root = comm%rank() == 0
+      if (collective) talk = talk .and. cx%log_root
       ! Once per context; a later run only grows the workspace to n.
       call cx%la%init(n)
       ! The sizes first, before any guess runs: a SAD guess on a large
@@ -6235,7 +6243,7 @@ contains
          return
       end if
 
-      call fukui_stage_label("N (reference, the SCF above)", cx%charge, nelec)
+      call fukui_stage_label(cx, "N (reference, the SCF above)", cx%charge, nelec)
       call state_scheme_charges(cx, scheme, q_neutral, err)
       if (err%has_error()) then
          status = scheme_status(scheme, err)
@@ -6269,7 +6277,7 @@ contains
       fail_message = ""
 
       ! The anion, N+1 electrons, a doublet, unseeded.
-      call fukui_stage_label("N+1 (anion)", ref_charge - 1, nelec + 1)
+      call fukui_stage_label(cx, "N+1 (anion)", ref_charge - 1, nelec + 1)
       st = trc_set_charge(handle, int(ref_charge - 1, c_int), 2_c_int)
       if (st == TRC_OK) then
          cx%guess_kind = ion_guess_kind
@@ -6290,7 +6298,7 @@ contains
 
       ! The cation, N-1 electrons, a doublet.
       if (.not. failed) then
-         call fukui_stage_label("N-1 (cation)", ref_charge + 1, nelec - 1)
+         call fukui_stage_label(cx, "N-1 (cation)", ref_charge + 1, nelec - 1)
          st = trc_set_charge(handle, int(ref_charge + 1, c_int), 2_c_int)
          if (st == TRC_OK) then
             cx%guess_kind = ion_guess_kind
@@ -6357,13 +6365,16 @@ contains
       status = TRC_OK
    end function trc_fukui_scheme
 
-   subroutine fukui_stage_label(stage, charge, nelec)
+   subroutine fukui_stage_label(cx, stage, charge, nelec)
       !! One log line naming the Fukui SCF stage about to run (or, for N,
       !! already run), so a log with three SCF tables says which is which.
       !! "Anion" and "cation" are relative to the reference: for a reference
-      !! of charge -1, N+1 is the dianion and N-1 the neutral.
+      !! of charge -1, N+1 is the dianion and N-1 the neutral. Rank 0 only,
+      !! as the SCF tables it heads are.
+      type(context_box), intent(in) :: cx
       character(len=*), intent(in) :: stage
       integer, intent(in) :: charge, nelec
+      if (.not. cx%log_root) return
       call global_logger%info("")
       call global_logger%info("   Fukui: "//stage//" SCF -- charge "//to_string(charge)// &
                               ", "//to_string(nelec)//" electrons")

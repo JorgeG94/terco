@@ -358,6 +358,12 @@ which is where the conventions and the comparison points come from.
 > **The Journal of Physical Chemistry A** **123** (2019), 8460–8475.
 > [doi:10.1021/acs.jpca.9b05801](https://doi.org/10.1021/acs.jpca.9b05801)
 
+> **[8]** M. Alkan, B. Q. Pham, J. R. Hammond and M. S. Gordon,
+> *Enabling Fortran standard parallelism in GAMESS for accelerated quantum
+> chemistry calculations*,
+> **Journal of Chemical Theory and Computation** **19** (2023), 3798–3805.
+> [doi:10.1021/acs.jctc.3c00380](https://doi.org/10.1021/acs.jctc.3c00380)
+
 <details>
 <summary>BibTeX for all of the above</summary>
 
@@ -440,6 +446,17 @@ which is where the conventions and the comparison points come from.
   pages   = {8460--8475},
   year    = {2019},
   doi     = {10.1021/acs.jpca.9b05801},
+}
+
+@article{alkan_stdpar_2023,
+  author  = {Alkan, Melisa and Pham, Buu Q. and Hammond, Jeff R. and Gordon, Mark S.},
+  title   = {Enabling {Fortran} {Standard} {Parallelism} in {GAMESS} for {Accelerated} {Quantum} {Chemistry} {Calculations}},
+  journal = {Journal of Chemical Theory and Computation},
+  volume  = {19},
+  number  = {13},
+  pages   = {3798--3805},
+  year    = {2023},
+  doi     = {10.1021/acs.jctc.3c00380},
 }
 ```
 
