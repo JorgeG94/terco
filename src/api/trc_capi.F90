@@ -192,7 +192,7 @@ module trc_capi
    use trc_scf_grad, only: trc_scf_gradient, trc_scf_grad_sym_t, trc_scf_grad_reuse_t
    use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t, rimp2_grad_reference_refusal
    use trc_pcm_grad, only: pcm_grad_scf_add
-   use trc_scf_settings, only: scf_settings_spin_rule, scf_settings_eri_thresh_env
+   use trc_scf_settings, only: scf_settings_spin_rule, scf_settings_eri_thresh_env, ROTATION_SIZE
    use trc_scf_df, only: df_jk_t
    use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
@@ -228,7 +228,7 @@ module trc_capi
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_constants, only: BOHR_TO_ANGSTROM, HARTREE_TO_EV, HARTREE_TO_KCALMOL, AMU_TO_ME, KB_SI, NA_SI
    use trc_sym_geom, only: trc_sym_geom_t, sym_geom_detect
-   use trc_sym_ao, only: sym_ao_build
+   use trc_sym_ao, only: sym_ao_build, sym_ao_atom_classes
    use trc_sym_scf, only: trc_sym_scf_t
    use trc_sym_group, only: trc_sym_group_t, sym_group_from_name
    use trc_sym_run, only: trc_sym_request_t, SYM_OFF, SYM_AUTO, SYM_EXPLICIT, sym_run_parse_request, sym_run_choose_group, &
@@ -534,6 +534,7 @@ module trc_capi
       type(trc_grid_cache_t) :: kgrid
       integer :: kgrid_level = -1, kgrid_max_pts = -1, kgrid_nlc_level = -1
       real(dp) :: kgrid_rho_tol = -1.0_dp
+      real(dp) :: kgrid_rotation(ROTATION_SIZE) = 0.0_dp  !! the Lebedev rotation the held grids were built with
       ! `trc_run_scf`'s own pair list and (outside `--df`) four-centre
       ! engine, kept alive the same way and for the same reason as
       ! `kgrid` right above -- see trc_scf_context.F90's
@@ -569,7 +570,7 @@ module trc_capi
       character(len=3) :: sym_used = "C1"
       integer, allocatable :: sym_irrep_nocc(:, :)
       integer, allocatable :: sym_irrep_dim(:)
-      ! The frame the results are reported in (S17). `sym_moved`: the geometry
+      ! The frame the results are reported in. `sym_moved`: the geometry
       ! the context holds is the standard frame of `sym_geom` (`at_r_input` is
       ! what the caller gave). `sym_report`: -1 = the default rule (input frame
       ! when the symmetry request is the default one), 0 = standard, 1 = input.
@@ -581,6 +582,10 @@ module trc_capi
       ! `sym_run_opts`/`sym_run_guess`: the settings of the last symmetric run,
       ! so that a fallback to C1 that repeats it (sym_to_c1) repeats the same SCF.
       logical :: sym_moved = .false., sym_suppressed = .false.
+      logical :: cmo_standard = .false.
+         !! `bb%cmo` holds the orbitals of a run in the held standard frame (not
+         !! the input one): restore_input_frame rotates them back, so that a
+         !! projected guess after it projects input-frame orbitals.
       integer :: sym_report = -1
       type(trc_scf_options_t) :: sym_run_opts
       integer :: sym_run_guess = TRC_GUESS_SAD
@@ -3959,6 +3964,7 @@ contains
       allocate (cx%bb%cmo(n, n, nspin), cx%bb%eps(n, nspin))
       cx%bb%cmo = cx%res%cmo
       cx%bb%eps = cx%res%eps
+      cx%cmo_standard = cx%sym_moved
       cx%bb%nalpha = nalpha
       cx%bb%nbeta = nbeta
       cx%nalpha = nalpha
@@ -3975,6 +3981,7 @@ contains
       cx%kgrid_max_pts = opts%grid_max_pts
       cx%kgrid_rho_tol = opts%rho_tol
       cx%kgrid_nlc_level = opts%nlc_grid_level
+      cx%kgrid_rotation = opts%grid_rotation
       status = merge(TRC_OK, TRC_ERR_NOCONV, cx%res%converged)
    end function trc_run_scf
 
@@ -3988,8 +3995,17 @@ contains
       wanted = .false.
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
-      wanted = symmetry_wanted(cx) .and. .not. cx%sym_req%lenient
+      wanted = symmetry_wanted(cx) .and. .not. sym_lenient(cx)
    end function trc_symmetry_requested
+
+   pure logical function sym_lenient(cx) result(lenient)
+      !! Whether the request is an on/auto one that reports in the input frame
+      !! and runs in C1 where symmetry is not supported. Fixed irrep occupations
+      !! (trc_set_irrep_nelec) make it strict, as a named group is: they only
+      !! mean something in a symmetric run, never in a silent C1.
+      type(context_box), intent(in) :: cx
+      lenient = cx%sym_req%lenient .and. .not. allocated(cx%sym_req%irrep_nelec)
+   end function sym_lenient
 
    pure logical function symmetry_wanted(cx) result(wanted)
       !! A symmetry request that is more than "no symmetry": `auto`, or a
@@ -4012,7 +4028,7 @@ contains
       case (0)
          input = .false.
       case default
-         input = cx%sym_req%lenient
+         input = sym_lenient(cx)
       end select
    end function report_input_frame
 
@@ -4020,7 +4036,24 @@ contains
       !! Put the molecule (and every basis centre) back on the coordinates the
       !! caller gave, and forget the frame. Invalidates the runs.
       type(context_box), intent(inout) :: cx
+      real(dp), allocatable :: dl(:, :, :)
+      logical :: ok
+      integer :: s
       if (.not. cx%sym_moved) return
+      if (cx%cmo_standard .and. allocated(cx%bb%cmo)) then
+         ! The orbitals stay for a later projected guess, which projects them
+         ! onto the input geometry: C_input = D C_standard, whatever the report
+         ! frame (the getters' to_input_orbitals depends on it, this does not).
+         call frame_rot_blocks(cx, dl, ok)
+         if (ok) then
+            do s = 1, size(cx%bb%cmo, 3)
+               call sym_frame_rotate_rows(cx%bb%b, dl, cx%bb%cmo(:, :, s))
+            end do
+         else
+            deallocate (cx%bb%cmo, cx%bb%eps)
+         end if
+      end if
+      cx%cmo_standard = .false.
       call hessian_set_geometry(cx, cx%at_r_input)
       cx%sym_moved = .false.
       cx%sym_frame_ok = .false.
@@ -4121,6 +4154,8 @@ contains
          cx%guess_kind = cx%sym_run_guess
          st = trc_run_scf(handle)
          cx%opts = opts_now
+         ! the held grids (kgrid) are now the C1 rerun's, built on the input axes
+         cx%opts%grid_rotation = [1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp]
          cx%guess_kind = guess_now
          if (st /= TRC_OK .and. st /= TRC_ERR_NOCONV) cx%scf_ok = .false.
       end if
@@ -4129,7 +4164,7 @@ contains
    subroutine note_c1_fallback(cx, what)
       type(context_box), intent(in) :: cx
       character(len=*), intent(in) :: what
-      if (cx%opts%verbose) call global_logger%info("   symmetry         : default (auto), but "//what// &
+      if (cx%opts%verbose) call global_logger%info("   symmetry         : on (auto), but "//what// &
                                                    " is not supported with symmetry yet: running in C1")
    end subroutine note_c1_fallback
 
@@ -4144,7 +4179,7 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       if (.not. symmetry_wanted(cx)) return
-      if (cx%sym_req%lenient) call sym_to_c1(handle, cx, "a geometry optimisation", .false.)
+      if (sym_lenient(cx)) call sym_to_c1(handle, cx, "a geometry optimisation", .false.)
    end subroutine trc_symmetry_suppress_default
 
    subroutine sym_unsupported(cx, collective, why, what)
@@ -4175,7 +4210,7 @@ contains
          what = "a given or projected guess"
          why = "trc_run_scf: a given or projected guess is in the input frame, and a symmetric run moves "// &
                "the molecule to the standard frame; use symmetry = off with that guess"
-      else if (cx%opts%soscf .and. cx%sym_req%lenient) then
+      else if (cx%opts%soscf .and. sym_lenient(cx)) then
          ! An explicit request meets the driver's own refusal, as before.
          what = "second-order SCF"
          why = "trc_run_scf: second-order SCF is not supported with symmetry"
@@ -4211,7 +4246,7 @@ contains
       ! the reason; an on/auto request runs this SCF in C1 instead.
       call sym_unsupported(cx, collective, why, what)
       if (len(why) > 0) then
-         if (cx%sym_req%lenient) then
+         if (sym_lenient(cx)) then
             call note_c1_fallback(cx, what)
             call restore_input_frame(cx)
             status = TRC_OK
@@ -4224,9 +4259,11 @@ contains
       if (.not. cx%sym_frame_ok) then
          if (cx%sym_req%mode == SYM_EXPLICIT) then
             geom = sym_geom_detect(cx%at_r, cx%elements, err, tol=cx%sym_req%tol, ghost=cx%at_z == 0.0_dp, &
-                              basis_id=cx%elements, requested=cx%sym_req%group)
+                                   basis_id=sym_ao_atom_classes(cx%bb%b, cx%elements, cx%ecp), &
+                                   requested=cx%sym_req%group)
          else
-            geom = sym_geom_detect(cx%at_r, cx%elements, err, tol=cx%sym_req%tol, ghost=cx%at_z == 0.0_dp, basis_id=cx%elements)
+            geom = sym_geom_detect(cx%at_r, cx%elements, err, tol=cx%sym_req%tol, ghost=cx%at_z == 0.0_dp, &
+                                   basis_id=sym_ao_atom_classes(cx%bb%b, cx%elements, cx%ecp))
          end if
          if (err%has_error()) then
             cx%message = "trc_run_scf: "//err%get_message()
@@ -4263,16 +4300,27 @@ contains
       end if
 
       allocate (ssym)
-      ssym%decline_lindep = cx%sym_req%lenient
+      ssym%decline_lindep = sym_lenient(cx)
       ! An on/auto request reports in the input frame, so its DFT and VV10 grids are
       ! the grids of the input axes (the Lebedev points rotated into the standard
       ! frame); an explicit request keeps the lab-oriented, group-symmetric grid.
-      if (cx%sym_req%lenient) cx%opts%grid_rotation = reshape(cx%sym_geom%rot, [9])
+      if (sym_lenient(cx)) cx%opts%grid_rotation = reshape(cx%sym_geom%rot, [9])
       ssym%ao = sym_ao_build(cx%bb%b, cx%sym_geom, err)
       if (err%has_error()) then
-         cx%message = "trc_run_scf: "//err%get_message()
-         status = TRC_ERR_UNSUPPORTED
+         ! Detection already keeps apart atoms whose shells differ, so this is
+         ! a basis the SO construction cannot map. Put the molecule back (the
+         ! next run detects again); an on/auto request then runs in C1.
          deallocate (ssym)
+         cx%opts%grid_rotation = [1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp]
+         call restore_input_frame(cx)
+         if (sym_lenient(cx)) then
+            call note_c1_fallback(cx, "this basis ("//err%get_message()//")")
+            cx%sym_used = "C1"
+            status = TRC_OK
+         else
+            cx%message = "trc_run_scf: "//err%get_message()
+            status = TRC_ERR_UNSUPPORTED
+         end if
          return
       end if
       if (allocated(cx%sym_irrep_dim)) deallocate (cx%sym_irrep_dim)
@@ -4289,8 +4337,8 @@ contains
          do s = 1, nspin
             if (sum(cx%sym_irrep_nocc(:, s)) /= nocc(s)) then
                cx%message = "trc_run_scf: irrep_nelec does not add up to the electron count of spin channel "// &
-                            trim(itoa(s))//" ("//trim(itoa(sum(cx%sym_irrep_nocc(:, s))*merge(2, 1, nspin == 1)))// &
-                            " electrons given, "//trim(itoa(nocc(s)*merge(2, 1, nspin == 1)))//" needed)"
+                            to_string(s)//" ("//to_string(sum(cx%sym_irrep_nocc(:, s))*merge(2, 1, nspin == 1))// &
+                            " electrons given, "//to_string(nocc(s)*merge(2, 1, nspin == 1))//" needed)"
                status = TRC_ERR_BADARG
                deallocate (ssym)
                return
@@ -4861,7 +4909,7 @@ contains
       ! grid is the input axes' grid, which breaks the symmetry at the grid's own
       ! (first-order) error; projecting would move the gradient by that much
       ! away from the symmetry-off one, so it is left as computed.
-      if (cx%sym_active .and. .not. (have_func .and. cx%sym_req%lenient)) then
+      if (cx%sym_active .and. .not. (have_func .and. sym_lenient(cx))) then
          allocate (gsym)
          gsym%geometry = cx%sym_geom
       end if
@@ -4875,7 +4923,7 @@ contains
       ! GRID REUSE -- see this function's own header.
       reuse_grid = have_func .and. cx%kgrid%grid_built .and. &
                    cx%kgrid_level == cx%opts%grid_level .and. cx%kgrid_max_pts == cx%opts%grid_max_pts .and. &
-                   cx%kgrid_rho_tol == cx%opts%rho_tol
+                   cx%kgrid_rho_tol == cx%opts%rho_tol .and. all(cx%kgrid_rotation == cx%opts%grid_rotation)
       reuse_nlc = reuse_grid .and. cx%kgrid%nlc_built .and. (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) .and. &
                   cx%kgrid_nlc_level == cx%opts%nlc_grid_level
       greuse%semilocal = reuse_grid
@@ -5007,7 +5055,7 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       if (symmetry_wanted(cx)) then
-         if (cx%sym_req%lenient) then
+         if (sym_lenient(cx)) then
             call sym_to_c1(handle, cx, "the CPHF/CPKS-based RI-MP2 gradient", .true.)
          else
             cx%message = "trc_check_rimp2_gradient: symmetry is not supported with CPHF/CPKS-based RI-MP2 gradients yet; "// &
@@ -5222,7 +5270,7 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       if (symmetry_wanted(cx)) then
-         if (cx%sym_req%lenient) then
+         if (sym_lenient(cx)) then
             call sym_to_c1(handle, cx, "the finite-difference Hessian", .true.)
          else
             cx%message = "trc_run_hessian: symmetry is not supported with the finite-difference Hessian and frequencies yet; "// &
@@ -5485,7 +5533,7 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       if (symmetry_wanted(cx)) then
-         if (cx%sym_req%lenient) then
+         if (sym_lenient(cx)) then
             call sym_to_c1(handle, cx, "CPHF/CPKS", .true.)
          else
             cx%message = "trc_run_polarizability: symmetry is not supported with CPHF/CPKS yet; use symmetry = off"
@@ -5716,7 +5764,7 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       if (symmetry_wanted(cx)) then
-         if (cx%sym_req%lenient) then
+         if (sym_lenient(cx)) then
             call sym_to_c1(handle, cx, "RI-MP2", .true.)
          else
             cx%message = "trc_run_rimp2: symmetry is not supported with RI-MP2 yet; use symmetry = off"
@@ -5961,7 +6009,7 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       if (symmetry_wanted(cx)) then
-         if (cx%sym_req%lenient) then
+         if (sym_lenient(cx)) then
             call sym_to_c1(handle, cx, "restarting from a saved SCF", .false.)
          else
             cx%message = "trc_load_scf: symmetry is not supported with restarting from a saved SCF yet; use symmetry = off"
@@ -6006,6 +6054,7 @@ contains
       allocate (cx%bb%cmo(n, n, nspin), cx%bb%eps(n, nspin))
       cx%bb%cmo = cx%res%cmo
       cx%bb%eps = cx%res%eps
+      cx%cmo_standard = cx%sym_moved
       cx%bb%nalpha = nalpha
       cx%bb%nbeta = nbeta
       cx%nalpha = nalpha
@@ -6727,7 +6776,7 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       if (symmetry_wanted(cx)) then
-         if (cx%sym_req%lenient) then
+         if (sym_lenient(cx)) then
             call sym_to_c1(handle, cx, "Fukui indices", .true.)
          else
             cx%message = "trc_fukui_hirshfeld: symmetry is not supported with Fukui indices yet; use symmetry = off"
@@ -7039,6 +7088,7 @@ contains
       !! fitting, PCM, fractional occupations, SOSCF, more than one rank, a
       !! given or projected guess, RI-MP2, CPHF/CPKS, the Hessian, Fukui
       !! indices and restarts; an on/auto request falls back to C1 there.
+      !! A request longer than 32 characters is refused.
       type(c_ptr), value :: handle
       character(kind=c_char), intent(in) :: group(*)
       real(c_double), value :: tol
@@ -7052,11 +7102,17 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       text = ""
+      status = TRC_ERR_BADARG
       do i = 1, len(text)
          if (group(i) == c_null_char) exit
          text(i:i) = group(i)
       end do
-      status = TRC_ERR_BADARG
+      if (i > len(text)) then
+         if (group(i) /= c_null_char) then
+            call refuse(cx, "trc_set_symmetry: the request is longer than "//to_string(len(text))//" characters")
+            return
+         end if
+      end if
       if (tol < 0.0_c_double) then
          call refuse(cx, "trc_set_symmetry: tol is a distance in Bohr and cannot be negative")
          return
@@ -7125,7 +7181,10 @@ contains
       !! unrestricted one; irreps not listed hold none. An empty string
       !! restores the aufbau occupation. The labels are checked against the
       !! group when trc_run_scf runs. A gradient is refused for occupations
-      !! that differ from the aufbau ones.
+      !! that differ from the aufbau ones. Set, they make an on/auto request
+      !! strict (refused, never run in C1, where symmetry is not supported),
+      !! whether trc_set_symmetry comes before or after. A specification
+      !! longer than 256 characters is refused.
       type(c_ptr), value :: handle
       character(kind=c_char), intent(in) :: spec(*)
       integer(c_int) :: status
@@ -7140,12 +7199,19 @@ contains
          if (spec(i) == c_null_char) exit
          text(i:i) = spec(i)
       end do
+      if (i > len(text)) then
+         if (spec(i) /= c_null_char) then
+            call refuse(cx, "trc_set_irrep_nelec: the specification is longer than "//to_string(len(text))//" characters")
+            status = TRC_ERR_BADARG
+            return
+         end if
+      end if
       if (allocated(cx%sym_req%irrep_nelec)) deallocate (cx%sym_req%irrep_nelec)
       if (len_trim(text) > 0) then
          cx%sym_req%irrep_nelec = trim(text)
-         ! Fixed irrep occupations only mean something in a symmetric run: an
-         ! explicit request (standard frame, refusals), never a silent C1.
-         cx%sym_req%lenient = .false.
+         ! Fixed irrep occupations only mean something in a symmetric run, so
+         ! they make the request strict (`sym_lenient`), decided at the run:
+         ! in whichever order trc_set_symmetry comes, and undone by "".
          cx%sym_suppressed = .false.
       end if
       call invalidate_runs(cx)

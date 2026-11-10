@@ -89,7 +89,7 @@ contains
       type(error_t) :: err, e2, e3, e4, e5, e6, e7
       character(len=3) :: g
 
-      ! A water-like geometry: C2v found and reported (C2v is enabled since S8).
+      ! A water-like geometry: C2v found and reported.
       geom%detected = 'C2v'
       geom%group = sym_group_from_name('C2v', err)
       req%mode = SYM_AUTO
@@ -118,7 +118,7 @@ contains
       g = sym_run_choose_group(req, geom, e7)
       call check(error, e7%has_error() .and. index(e7%get_message(), 'subgroups') > 0, 'Ci is not in C2v: '//e7%get_message())
       if (allocated(error)) return
-      ! All eight groups are enabled since S11, so no request is "not yet supported" any more; a D2h
+      ! All eight groups are enabled, so no request is "not yet supported"; a D2h
       ! molecule is accepted as D2h, and D2 (pyscf has no D2 subgroup of D2h) is refused for want of a frame.
       geom%detected = 'D2h'
       geom%group = sym_group_from_name('D2h', err)

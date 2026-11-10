@@ -40,6 +40,7 @@ module trc_sym_ao
    use pic_strings, only: to_string
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_basis_types, only: trc_basis_t
+   use trc_ecp_types, only: trc_ecp_t
    use trc_cart_perm, only: cart_perm_powers
    use trc_sph_tables, only: SPH_T, SPH_LMAX, SPH_NCART_MAX
    use trc_sym_group, only: trc_sym_group_t
@@ -47,7 +48,7 @@ module trc_sym_ao
    implicit none
    private
 
-   public :: trc_sym_ao_t, sym_ao_build
+   public :: trc_sym_ao_t, sym_ao_build, sym_ao_atom_classes
 
    real(dp), parameter :: PARITY_TOL = 1.0e-12_dp  !! how close a harmonic must be to +-itself
    real(dp), parameter :: SHELL_TOL = 1.0e-13_dp  !! relative tolerance of equal exponents/coefficients
@@ -306,5 +307,84 @@ contains
          ao%irrep_dim(ir) = ncol - ao%irrep_off(ir)
       end do
    end subroutine build_so
+
+   function sym_ao_atom_classes(bas, elem, ecp) result(id)
+      !! A label per atom for the `basis_id` of `sym_geom_detect`: two atoms
+      !! share one only when `sym_ao_build` can map one onto the other, that is
+      !! the same element, the same shells in the same order (l, primitive
+      !! count, exponents and coefficients within SHELL_TOL, as `shell_map`
+      !! tests them) and the same ECP (core electrons and rows). The C ABI
+      !! takes shells per atom (trc_set_basis_arrays, trc_set_basis_libcint),
+      !! so equal elements do not imply equal shells; an atom that differs is
+      !! then not equivalent, and the group is smaller instead of refused.
+      type(trc_basis_t), intent(in) :: bas
+      integer, intent(in) :: elem(:)
+      type(trc_ecp_t), intent(in) :: ecp
+      integer :: id(size(elem))
+      integer, allocatable :: rep(:)
+      integer :: i, j, nclass
+      allocate (rep(size(elem)))
+      nclass = 0
+      do i = 1, size(elem)
+         id(i) = 0
+         do j = 1, nclass
+            if (same_atom_basis(bas, elem, ecp, rep(j), i)) then
+               id(i) = j
+               exit
+            end if
+         end do
+         if (id(i) == 0) then
+            nclass = nclass + 1
+            rep(nclass) = i
+            id(i) = nclass
+         end if
+      end do
+   end function sym_ao_atom_classes
+
+   pure logical function close_enough(a, b) result(ok)
+      !! `a` and `b` agree within SHELL_TOL, relative to `a` (the test of `shell_map`).
+      real(dp), intent(in) :: a(:), b(:)
+      ok = all(abs(b - a) <= SHELL_TOL*max(abs(a), 1.0e-300_dp))
+   end function close_enough
+
+   logical function same_atom_basis(bas, elem, ecp, ia, ja) result(same)
+      !! Whether atoms `ia` and `ja` carry the same element, shells and ECP.
+      type(trc_basis_t), intent(in) :: bas
+      integer, intent(in) :: elem(:)
+      type(trc_ecp_t), intent(in) :: ecp
+      integer, intent(in) :: ia, ja
+      integer, allocatable :: si(:), sj(:), ri(:), rj(:)
+      integer :: k, n, s, t
+      same = .false.
+      if (elem(ia) /= elem(ja)) return
+      si = pack([(s, s=1, bas%nshell)], bas%sh_at(1:bas%nshell) == ia)
+      sj = pack([(s, s=1, bas%nshell)], bas%sh_at(1:bas%nshell) == ja)
+      if (size(si) /= size(sj)) return
+      do k = 1, size(si)
+         s = si(k)
+         t = sj(k)
+         n = bas%sh_np(s)
+         if (bas%sh_l(t) /= bas%sh_l(s) .or. bas%sh_np(t) /= n) return
+         if (.not. (close_enough(bas%sh_e(1:n, s), bas%sh_e(1:n, t)) .and. &
+                    close_enough(bas%sh_c(1:n, s), bas%sh_c(1:n, t)))) return
+      end do
+      if (ecp%has_ecp) then
+         if (allocated(ecp%at_ncore)) then
+            if (ecp%at_ncore(ia) /= ecp%at_ncore(ja)) return
+         end if
+         ri = pack([(s, s=1, ecp%nrow)], ecp%ecp_at(1:ecp%nrow) == ia)
+         rj = pack([(s, s=1, ecp%nrow)], ecp%ecp_at(1:ecp%nrow) == ja)
+         if (size(ri) /= size(rj)) return
+         do k = 1, size(ri)
+            s = ri(k)
+            t = rj(k)
+            n = ecp%ecp_np(s)
+            if (ecp%ecp_l(t) /= ecp%ecp_l(s) .or. ecp%ecp_rpow(t) /= ecp%ecp_rpow(s) .or. ecp%ecp_np(t) /= n) return
+            if (.not. (close_enough(ecp%ecp_e(1:n, s), ecp%ecp_e(1:n, t)) .and. &
+                       close_enough(ecp%ecp_c(1:n, s), ecp%ecp_c(1:n, t)))) return
+         end do
+      end if
+      same = .true.
+   end function same_atom_basis
 
 end module trc_sym_ao

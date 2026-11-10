@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["sym_subgroup"] -> gen_sym_subgroup
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: c6b991d32d7d2ee9ff7664fee54305c4e4483a522e7223bff8950d3b762a700b
+# hash: 58298d4a9f0eceb5d0dbbe8dbb70b0b1a62f8c88dd3f3094c07c1bbcb78fe205
 # files: test/check_sym_subgroup.F90 test/water.xyz test/ch2cl2.xyz test/nh2.xyz test/ch2cl2_aligned.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
 AXES_water_Cs 9
 -6.12323399573676604e-17 0.00000000000000000e+00 1.00000000000000000e+00 0.00000000000000000e+00 1.00000000000000000e+00 0.00000000000000000e+00

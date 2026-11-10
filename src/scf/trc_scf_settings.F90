@@ -30,7 +30,7 @@ module trc_scf_settings
    private
 
    public :: trc_scf_options_t, trc_scf_guess_t, trc_scf_result_t, scf_settings_t, scf_settings_spin_rule, scf_energies_t
-   public :: scf_settings_eri_thresh_env
+   public :: scf_settings_eri_thresh_env, ROTATION_SIZE
    public :: scf_settings_homo_lumo_gap
    public :: scf_settings_fock_densities
    ! incr_env/incr_reset_env/incr_real_env stay

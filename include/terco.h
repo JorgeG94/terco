@@ -1231,6 +1231,7 @@ int trc_rimp2_energy(trc_handle_t handle, double* e_os, double* e_ss);
  * fitting, PCM, fractional occupations, SOSCF, more than one rank, a
  * given or projected guess, RI-MP2, CPHF/CPKS, the Hessian, Fukui
  * indices and restarts; an on/auto request falls back to C1 there.
+ * A request longer than 32 characters is refused.
  */
 int trc_set_symmetry(trc_handle_t handle, const char* group, double tol);
 
@@ -1260,7 +1261,10 @@ int trc_symmetry_report_frame(trc_handle_t handle, int* frame);
  * unrestricted one; irreps not listed hold none. An empty string
  * restores the aufbau occupation. The labels are checked against the
  * group when trc_run_scf runs. A gradient is refused for occupations
- * that differ from the aufbau ones.
+ * that differ from the aufbau ones. Set, they make an on/auto request
+ * strict (refused, never run in C1, where symmetry is not supported),
+ * whether trc_set_symmetry comes before or after. A specification
+ * longer than 256 characters is refused.
  */
 int trc_set_irrep_nelec(trc_handle_t handle, const char* spec);
 

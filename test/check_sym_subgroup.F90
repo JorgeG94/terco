@@ -1,5 +1,5 @@
 !
-! Requested subgroups (S5b): Cs and C2 requested on C2v molecules, against
+! Requested subgroups: Cs and C2 requested on C2v molecules, against
 ! pyscf 2.14.0 (symmetry='Cs' / 'C2', `as_subgroup`) and against the C2v and C1 runs of terco
 ! C2v and C1 runs.
 !

@@ -191,14 +191,14 @@ target_link_libraries(check_sym_scf_cs PRIVATE test-drive::test-drive)
 # B3LYP) and pyscf anchors (pyscf_refs/sym_c2.ref), gradient symmetrisation.
 terco_add_check(check_sym_c2 check_sym_c2.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_sym_c2 PRIVATE test-drive::test-drive)
-# The point group C2v (S8): frame and origin against pyscf, the SO basis
+# The point group C2v: frame and origin against pyscf, the SO basis
 # (pyscf_refs/sym_c2v_so_dims.ref), the central oracle for RHF/UHF/B3LYP on
 # water, formaldehyde, NH2 and nonplanar CH2Cl2 with the HOMO irrep, electrons
 # per irrep and orbital energies per irrep against pyscf (pyscf_refs/sym_c2v.ref),
 # the B1/B2 labels for a rotated input, gradient symmetrisation, fixed occupations.
 terco_add_check(check_sym_c2v check_sym_c2v.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_sym_c2v PRIVATE test-drive::test-drive)
-# Requested subgroups (S5b): Cs and C2 requested on C2v molecules (water, nonplanar
+# Requested subgroups: Cs and C2 requested on C2v molecules (water, nonplanar
 # and axis-aligned CH2Cl2, NH2): pyscf's frame, SO dimensions, irrep occupations
 # and orbital energies (pyscf_refs/sym_subgroup.ref), energy equal to C2v and C1.
 terco_add_check(check_sym_subgroup check_sym_subgroup.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
@@ -1947,7 +1947,7 @@ set_tests_properties(terco/check_capi_ghost PROPERTIES WORKING_DIRECTORY ${CMAKE
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 # The symmetry entries of the C ABI (trc_set_symmetry, trc_set_irrep_nelec and
-# the getters, ABI 1.21), through include/trc_c_interfaces.f90: the round trip
+# the getters, ABI 1.23), through include/trc_c_interfaces.f90: the round trip
 # against a C1 run on the reported geometry, the frame, labels, fixed irrep
 # occupations and every refusal. The C side is link_c.c. See
 # check_capi_sym.F90's own header.

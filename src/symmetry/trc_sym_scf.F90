@@ -55,8 +55,8 @@ module trc_sym_scf
       logical :: decline_lindep = .false.
       !! Decline (`trc_scf_result_t%sym_declined`) instead of running when canonical
       !! orthogonalisation drops functions: the per-irrep drop can differ from the
-      !! C1 one (see above), and a request nobody made explicitly (the default of
-      !! S17) must give the C1 numbers. Read by `trc_scf_run`.
+      !! C1 one (see above), and an on/auto request, which promises C1 wherever
+      !! symmetry cannot run, must then give the C1 numbers. Read by `trc_scf_run`.
       integer, allocatable :: irrep_nocc(:, :)
       !! Optional fixed occupations, (nirrep, nspin): orbitals per irrep, per
       !! spin channel (restricted: doubly occupied orbitals). Unallocated is

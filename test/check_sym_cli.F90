@@ -758,7 +758,7 @@ contains
    end subroutine fallback_case
 
    subroutine test_default_fallbacks(error)
-      !! Each path S5 refuses under a named group, under `--symmetry on` (and, for
+      !! Each path refused under a named group, under `--symmetry on` (and, for
       !! --hessian, `auto`). (Their refusal under `--symmetry Cs` is
       !! test_path_refusals above.)
       type(error_type), allocatable, intent(out) :: error

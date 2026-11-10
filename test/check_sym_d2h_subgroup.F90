@@ -1,5 +1,5 @@
 !
-! Requested subgroups of D2h (S11): C2v, C2h, Cs, C2 and Ci requested on D2h
+! Requested subgroups of D2h: C2v, C2h, Cs, C2 and Ci requested on D2h
 ! molecules, against pyscf 2.14.0 (symmetry='C2v' / 'C2h' / 'Cs' / 'C2' / 'Ci')
 ! and against the D2h and C1 runs of terco. pyscf has no D2 subgroup of D2h
 ! (its SUBGROUP table; symmetry='D2' raises "Unable to identify input
@@ -410,7 +410,7 @@ contains
       if (allocated(error)) return
       call check(error, geom%group%name == "D2h" .and. geom%group%order == 8, "D2h on ethylene")
       if (allocated(error)) return
-      ! Without a request a D2h molecule is reported as D2h (it was capped to Cs before S11).
+      ! Without a request a D2h molecule is reported as D2h, not as a subgroup.
       call detect('b2h6_d2h_rot', '', geom, elem, error)
       if (allocated(error)) return
       call check(error, geom%group%name == "D2h", "diborane is reported as D2h")

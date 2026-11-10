@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["sym_tops"] -> gen_sym_tops
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 707679ae2bde52747aa113489fb44ed6d942c5346f56d39e6d0f78f6dab92e93
+# hash: e6ab8d1face0cc2f63f65bcf2750c4e820c6381fced85e0fd8fb8ca67ec041d6
 # files: test/check_sym_tops.F90 test/tops_benzene.xyz test/tops_benzene_rot.xyz test/tops_nh3.xyz test/tops_nh3_rot.xyz test/tops_ch4.xyz test/tops_ch4_rot.xyz test/tops_sf6.xyz test/tops_sf6_rot.xyz test/tops_n2.xyz test/tops_n2_rot.xyz test/tops_co.xyz test/tops_co_rot.xyz test/tops_hcn.xyz test/tops_hcn_rot.xyz test/o2.xyz test/tops_o2_rot.xyz test/tops_ne.xyz test/o_atom.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
 AXES_tops_benzene 9
 1.00000000000000000e+00 0.00000000000000000e+00 0.00000000000000000e+00 0.00000000000000000e+00 1.00000000000000000e+00 0.00000000000000000e+00

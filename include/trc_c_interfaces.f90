@@ -1723,6 +1723,7 @@ module trc_c_interfaces
          !! fitting, PCM, fractional occupations, SOSCF, more than one rank, a
          !! given or projected guess, RI-MP2, CPHF/CPKS, the Hessian, Fukui
          !! indices and restarts; an on/auto request falls back to C1 there.
+         !! A request longer than 32 characters is refused.
          import :: c_char, c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
@@ -1762,7 +1763,10 @@ module trc_c_interfaces
          !! unrestricted one; irreps not listed hold none. An empty string
          !! restores the aufbau occupation. The labels are checked against the
          !! group when trc_run_scf runs. A gradient is refused for occupations
-         !! that differ from the aufbau ones.
+         !! that differ from the aufbau ones. Set, they make an on/auto request
+         !! strict (refused, never run in C1, where symmetry is not supported),
+         !! whether trc_set_symmetry comes before or after. A specification
+         !! longer than 256 characters is refused.
          import :: c_char, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle

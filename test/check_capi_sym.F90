@@ -30,6 +30,10 @@
 ! (Hessian, polarizability, RI-MP2, Fukui indices, restarts) give the symmetry-off
 ! numbers. test_irrep_nelec: irrep_nelec needs a symmetry request (a fresh context
 ! and an explicit off refuse); with "on" it makes the request strict.
+! Edge cases: atoms with the same element but other shells (trc_set_basis_arrays)
+! are not equivalent; a projected guess after a symmetric run starts from
+! input-frame orbitals; irrep_nelec is strict in either order with the request;
+! after an entry reruns the SCF in C1, a DFT gradient uses the input axes' grid.
 !
 module check_capi_sym_suite
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_char, c_null_char, c_null_ptr, c_loc
@@ -50,6 +54,7 @@ module check_capi_sym_suite
                                trc_context_basis, trc_pairs_create, trc_pairs_destroy, trc_compute_1e, &
                                trc_compute_multipoles, trc_set_force_cartesian, trc_set_aux_json, trc_hessian, &
                                trc_polarizability, trc_rimp2_energy, trc_set_jkfit_json, trc_save_scf, &
+                               trc_set_basis_arrays, trc_iterations, TRC_GUESS_PROJECTED, &
                                TRC_OK, TRC_ERR_BADARG, TRC_ERR_STATE, TRC_ERR_UNSUPPORTED, TRC_GUESS_GIVEN
    implicit none
    private
@@ -75,7 +80,12 @@ contains
                   new_unittest("on: the unsupported paths run in C1 with the symmetry-off numbers", &
                                test_default_fallbacks), &
                   new_unittest("fresh context: symmetry is off, and default/off/on/auto are the documented requests", &
-                               test_fresh_is_off) &
+                               test_fresh_is_off), &
+                  new_unittest("per-atom shells: atoms with other shells are not equivalent", test_per_atom_shells), &
+                  new_unittest("a projected guess after on projects input-frame orbitals", test_projected_after_on), &
+                  new_unittest("irrep_nelec makes on strict in either order; cleared, lenient again", &
+                               test_irrep_nelec_order), &
+                  new_unittest("after a C1 rerun the gradient's grid is the input axes'", test_grid_after_c1_rerun) &
                   ]
    end subroutine collect_capi_sym
 
@@ -860,6 +870,198 @@ contains
       call check(error, abs(ed - eo) < 1.0e-10_dp .and. abs(ed2 - eo2) < 1.0e-10_dp, 'the RI-MP2 energy differs from the symmetry-off one')
       rc = trc_destroy(hd); rc = trc_destroy(ho)
    end subroutine test_default_fallbacks
+
+   ! ---- review regressions: per-atom shells, frames of stored orbitals, ----
+   ! ---- irrep_nelec order, the grid after a C1 rerun                     ----
+
+   subroutine water_arrays(geom, h2_scale, nsh, l, np, ex, co, cen)
+      !! STO-3G water on `geom` (O, H, H; Bohr) as trc_set_basis_arrays takes
+      !! it; the second H's exponents are scaled by `h2_scale`.
+      real(dp), intent(in) :: geom(:, :), h2_scale
+      integer(c_int), intent(out) :: nsh
+      integer(c_int), allocatable, intent(out) :: l(:), np(:)
+      real(c_double), allocatable, intent(out) :: ex(:, :), co(:, :), cen(:, :)
+      real(dp), parameter :: E1S(3) = [130.70932_dp, 23.808861_dp, 6.4436083_dp]
+      real(dp), parameter :: ESP(3) = [5.0331513_dp, 1.1695961_dp, 0.380389_dp]
+      real(dp), parameter :: EH(3) = [3.42525091_dp, 0.62391373_dp, 0.1688554_dp]
+      real(dp), parameter :: C1S(3) = [0.15432897_dp, 0.53532814_dp, 0.44463454_dp]
+      real(dp), parameter :: C2S(3) = [-0.09996723_dp, 0.39951283_dp, 0.70011547_dp]
+      real(dp), parameter :: C2P(3) = [0.15591627_dp, 0.60768372_dp, 0.39195739_dp]
+      nsh = 5
+      l = [0, 0, 1, 0, 0]
+      np = [3, 3, 3, 3, 3]
+      ex = reshape([E1S, ESP, ESP, EH, EH*h2_scale], [3, 5])
+      co = reshape([C1S, C2S, C2P, C1S, C1S], [3, 5])
+      cen = reshape([geom(:, 1), geom(:, 1), geom(:, 1), geom(:, 2), geom(:, 3)], [3, 5])
+   end subroutine water_arrays
+
+   subroutine test_per_atom_shells(error)
+      !! Water whose two H carry different shells (trc_set_basis_arrays allows
+      !! that): only the molecular plane is a symmetry of the basis. "on" runs
+      !! Cs, with the symmetry-off energy; C2v is refused as not a subgroup.
+      !! Matching atoms on the element alone called the H equivalent, and the
+      !! SO construction then refused the run.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: hd, ho
+      real(dp), allocatable :: geom(:, :)
+      integer(c_int), allocatable :: l(:), np(:)
+      real(c_double), allocatable :: ex(:, :), co(:, :), cen(:, :)
+      real(c_double) :: ed, eo
+      integer(c_int) :: rc, nsh
+
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/6-31gs.json')
+      call read_geom('water_rot.xyz', geom)
+      call water_arrays(geom, 1.1_dp, nsh, l, np, ex, co, cen)
+      rc = trc_set_basis_arrays(hd, nsh, 3_c_int, l, np, ex, co, cen)
+      call check(error, rc, TRC_OK, 'basis arrays: '//message(hd))
+      rc = trc_set_basis_arrays(ho, nsh, 3_c_int, l, np, ex, co, cen)
+      if (allocated(error)) return
+      rc = trc_run_scf(hd)
+      call check(error, rc, TRC_OK, 'on with different shells on the two H: '//message(hd))
+      if (allocated(error)) return
+      rc = trc_run_scf(ho)
+      call check(error, name_of(hd, 1, 0), 'Cs', 'the H with other shells leaves only the plane')
+      if (allocated(error)) return
+      rc = trc_energy(hd, ed)
+      rc = trc_energy(ho, eo)
+      call check(error, abs(ed - eo) <= TOL_E, 'E(on) - E(off) '//to_string(abs(ed - eo), 'es10.2'))
+      if (allocated(error)) return
+      rc = trc_set_symmetry(hd, 'C2v'//c_null_char, 0.0_c_double)
+      rc = trc_run_scf(hd)
+      call check(error, rc /= TRC_OK, 'C2v is not a symmetry of this basis')
+      if (allocated(error)) return
+      ! equal shells on both H: C2v again
+      call water_arrays(geom, 1.0_dp, nsh, l, np, ex, co, cen)
+      rc = trc_set_symmetry(hd, 'on'//c_null_char, 0.0_c_double)
+      rc = trc_set_basis_arrays(hd, nsh, 3_c_int, l, np, ex, co, cen)
+      rc = trc_run_scf(hd)
+      call check(error, rc, TRC_OK, 'on with equal shells: '//message(hd))
+      if (allocated(error)) return
+      call check(error, name_of(hd, 1, 0), 'C2v', 'equal shells keep C2v')
+      rc = trc_destroy(hd); rc = trc_destroy(ho)
+   end subroutine test_per_atom_shells
+
+   subroutine test_projected_after_on(error)
+      !! A projected guess after a symmetric "on" run (it falls back to C1)
+      !! projects the stored orbitals onto the input geometry, so they must be
+      !! the input frame's: the run converges as fast as the same sequence
+      !! with symmetry off, to the same energy. Orbitals left in the standard
+      !! frame of a rotated water are a poor start.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: hd, ho
+      real(c_double) :: ed, eo
+      integer(c_int) :: rc, itd, ito
+
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/6-31gs.json')
+      rc = trc_run_scf(hd)
+      rc = trc_run_scf(ho)
+      call check(error, name_of(hd, 1, 0), 'C2v', 'the first on run is symmetric')
+      if (allocated(error)) return
+      rc = trc_set_guess(hd, TRC_GUESS_PROJECTED, c_null_ptr, 1_c_int)
+      rc = trc_set_guess(ho, TRC_GUESS_PROJECTED, c_null_ptr, 1_c_int)
+      rc = trc_run_scf(hd)
+      call check(error, rc, TRC_OK, 'projected guess after on: '//message(hd))
+      rc = trc_run_scf(ho)
+      if (allocated(error)) return
+      rc = trc_energy(hd, ed)
+      rc = trc_energy(ho, eo)
+      rc = trc_iterations(hd, itd)
+      rc = trc_iterations(ho, ito)
+      print '(a,i0,a,i0)', '  projected guess: iterations after on ', itd, ', after off ', ito
+      call check(error, abs(ed - eo) <= TOL_E, 'E differs: '//to_string(abs(ed - eo), 'es10.2'))
+      if (allocated(error)) return
+      call check(error, itd <= ito + 1, 'the projected start after on is no worse than after off ('// &
+                 to_string(itd)//' against '//to_string(ito)//' iterations)')
+      rc = trc_destroy(hd); rc = trc_destroy(ho)
+   end subroutine test_projected_after_on
+
+   subroutine test_irrep_nelec_order(error)
+      !! irrep_nelec makes "on" strict whether it is set before or after the
+      !! request, and clearing it makes "on" lenient again: density fitting is
+      !! refused, then runs in C1 with the symmetry-off energy.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: hd, ho
+      real(c_double) :: ed, eo
+      integer(c_int) :: rc
+      integer :: k
+
+      do k = 1, 2
+         call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/6-31gs.json', cart=.true.)
+         rc = trc_set_jkfit_json(hd, 'basis_sets/def2-universal-jkfit.json'//c_null_char)
+         rc = trc_set_jkfit_json(ho, 'basis_sets/def2-universal-jkfit.json'//c_null_char)
+         rc = trc_set_df(hd, 1_c_int)
+         rc = trc_set_df(ho, 1_c_int)
+         if (k == 1) then  ! irrep_nelec first, then the request
+            rc = trc_set_symmetry(hd, 'off'//c_null_char, 0.0_c_double)
+            rc = trc_set_irrep_nelec(hd, 'A1=6,B1=2,B2=2'//c_null_char)
+            rc = trc_set_symmetry(hd, 'on'//c_null_char, 0.0_c_double)
+         else
+            rc = trc_set_irrep_nelec(hd, 'A1=6,B1=2,B2=2'//c_null_char)
+         end if
+         rc = trc_run_scf(hd)
+         call check(error, rc /= TRC_OK, 'irrep_nelec ('//merge('before', 'after ', k == 1)// &
+                    ' on) with density fitting is refused, not run in C1')
+         if (allocated(error)) return
+         rc = trc_set_irrep_nelec(hd, ''//c_null_char)
+         rc = trc_run_scf(hd)
+         call check(error, rc, TRC_OK, 'cleared irrep_nelec: on is lenient again: '//message(hd))
+         if (allocated(error)) return
+         rc = trc_run_scf(ho)
+         rc = trc_energy(hd, ed)
+         rc = trc_energy(ho, eo)
+         call check(error, abs(ed - eo) < 1.0e-11_dp, 'C1 fallback energy differs from off: '// &
+                    to_string(abs(ed - eo), 'es10.2'))
+         if (allocated(error)) return
+         rc = trc_destroy(hd); rc = trc_destroy(ho)
+      end do
+   end subroutine test_irrep_nelec_order
+
+   subroutine test_grid_after_c1_rerun(error)
+      !! B3LYP on a rotated water: after an entry that reruns the SCF in C1
+      !! (the polarizability, the Hessian), the gradient is the symmetry-off
+      !! gradient. The C1 rerun builds its grid on the input axes, so a later
+      !! grid for the gradient must not carry the symmetric run's rotation.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: hd, ho
+      real(c_double) :: gd(9), go(9), a(9), hs(81)
+      integer(c_int) :: rc
+      integer :: k
+
+      do k = 1, 2
+         call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/6-31gs.json')
+         rc = trc_set_method(hd, 'b3lyp'//c_null_char, 3_c_int)
+         rc = trc_set_method(ho, 'b3lyp'//c_null_char, 3_c_int)
+         rc = trc_run_scf(hd)
+         rc = trc_run_scf(ho)
+         call check(error, name_of(hd, 1, 0), 'C2v', 'the B3LYP on run is symmetric')
+         if (allocated(error)) return
+         if (k == 1) then
+            rc = trc_run_polarizability(hd)
+            call check(error, rc, TRC_OK, 'polarizability: '//message(hd))
+            rc = trc_run_polarizability(ho)
+            rc = trc_polarizability(hd, a)
+         else
+            rc = trc_run_hessian(hd)
+            call check(error, rc, TRC_OK, 'Hessian: '//message(hd))
+            rc = trc_run_hessian(ho)
+            rc = trc_hessian(hd, hs)
+         end if
+         if (allocated(error)) return
+         rc = trc_run_gradient(hd)
+         call check(error, rc, TRC_OK, 'gradient: '//message(hd))
+         rc = trc_run_gradient(ho)
+         if (allocated(error)) return
+         rc = trc_gradient(hd, gd)
+         rc = trc_gradient(ho, go)
+         print '(a,a,es10.2)', '  gradient after the C1 rerun of the ', merge('polarizability', 'Hessian       ', k == 1), &
+            maxval(abs(gd - go))
+         call check(error, maxval(abs(gd - go)) < 1.0e-9_dp, 'gradient after '// &
+                    merge('polarizability', 'Hessian       ', k == 1)//' differs from off: '// &
+                    to_string(maxval(abs(gd - go)), 'es10.2'))
+         if (allocated(error)) return
+         rc = trc_destroy(hd); rc = trc_destroy(ho)
+      end do
+   end subroutine test_grid_after_c1_rerun
 
    subroutine compare_runs(label, hd, ho, error)
       !! SCF on both contexts: the same energy to 1e-11, no symmetry result on the on one.

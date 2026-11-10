@@ -30,6 +30,7 @@ module trc_sym_run
    !! parsed against the irrep names of the group actually used, so a typo is
    !! reported with the valid names.
    use pic_types, only: dp
+   use pic_ascii, only: to_lower
    use pic_strings, only: to_string
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_sym_group, only: trc_sym_group_t, sym_group_from_name, SYM_NGROUPS, sym_group_names
@@ -60,17 +61,6 @@ module trc_sym_run
 
 contains
 
-   pure function lower(s) result(t)
-      character(len=*), intent(in) :: s
-      character(len=len(s)) :: t
-      integer :: i, c
-      t = s
-      do i = 1, len(s)
-         c = iachar(s(i:i))
-         if (c >= iachar("A") .and. c <= iachar("Z")) t(i:i) = achar(c + 32)
-      end do
-   end function lower
-
    pure function sym_run_request_text(req) result(text)
       !! The request as the user wrote it: "off", "auto", "default" or the group name.
       type(trc_sym_request_t), intent(in) :: req
@@ -78,7 +68,6 @@ contains
       select case (req%mode)
       case (SYM_AUTO)
          text = "auto"
-         text = trim(text)
       case (SYM_EXPLICIT)
          text = trim(req%group)
       case default
@@ -96,7 +85,7 @@ contains
       type(trc_sym_group_t) :: g
       character(len=:), allocatable :: t
 
-      t = lower(trim(adjustl(text)))
+      t = to_lower(trim(adjustl(text)))
       req%lenient = .false.
       select case (t)
       case ("off", "none", "", "default")
@@ -231,7 +220,7 @@ contains
          rhs = trim(adjustl(item(eq + 1:)))
          ir = 0
          do s = 1, group%order
-            if (lower(trim(group%irrep_names(s))) == lower(label)) ir = s
+            if (to_lower(trim(group%irrep_names(s))) == to_lower(label)) ir = s
          end do
          if (ir == 0) then
             call error%set(ERROR_VALIDATION, "irrep_nelec: '"//label//"' is not an irrep of "//trim(group%name)// &

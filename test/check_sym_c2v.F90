@@ -1,5 +1,5 @@
 !
-! The point group C2v (S8): detection and orientation, the SO basis, the
+! The point group C2v: detection and orientation, the SO basis, the
 ! SO-blocked SCF, and the gradient, against pyscf 2.14.0 (symmetry=True) and
 ! against terco's own C1 runs.
 !

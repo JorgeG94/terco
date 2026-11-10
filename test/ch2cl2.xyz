@@ -1,5 +1,5 @@
 5
-CH2Cl2, nonplanar C2v (Cs after the S3 cap), distorted-orientation geometry copied from check_sym_geom, Angstrom; the Cs mirror swaps the two equivalent atoms
+CH2Cl2, nonplanar C2v, distorted-orientation geometry copied from check_sym_geom, Angstrom; the Cs mirror swaps the two equivalent atoms
 C    0.3000000000  -0.2000000000   0.5000000000
 Cl  -0.9303249111  -0.1525786544   1.7202671139
 Cl   0.7904300607  -1.8070483858   0.0735333056

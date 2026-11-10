@@ -1,6 +1,6 @@
 !
 ! Symmetric and spherical tops, linear molecules and atoms (trc_sym_geom +
-! trc_sym_tops, S12). The group and frame are those pyscf 2.14.0 gives with
+! trc_sym_tops). The group and frame are those pyscf 2.14.0 gives with
 ! symmetry=True (its `detect_symm` full group, reduced by `get_subgroup` to the
 ! Abelian `mol.groupname`). Molecules (sources in the .xyz comment lines; each
 ! non-linear one and each linear one also rotated and shifted: *_rot):

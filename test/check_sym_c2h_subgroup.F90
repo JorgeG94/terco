@@ -1,5 +1,5 @@
 !
-! Requested subgroups of C2h (S9): Cs, C2 and Ci requested on C2h molecules,
+! Requested subgroups of C2h: Cs, C2 and Ci requested on C2h molecules,
 ! against pyscf 2.14.0 (symmetry='Cs' / 'C2' / 'Ci'; for these pyscf keeps the
 ! C2h frame, `as_subgroup` changes the axes for C2h only) and against the C2h
 ! and C1 runs of terco.
@@ -394,7 +394,7 @@ contains
       if (allocated(error)) return
       call check(error, geom%group%name == "C2h" .and. geom%group%order == 4, "C2h on trans-N2H2")
       if (allocated(error)) return
-      ! Without a request a C2h molecule is reported as C2h (it was capped to Cs before S9).
+      ! Without a request a C2h molecule is reported as C2h, not as a subgroup.
       call detect('clh2c_ch2cl_anti', '', geom, elem, error)
       if (allocated(error)) return
       call check(error, geom%group%name == "C2h", "anti ClH2C-CH2Cl is reported as C2h")

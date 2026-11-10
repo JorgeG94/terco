@@ -720,8 +720,9 @@ contains
       integer(c_int) :: nvar, nvar2, nspec
       integer :: ncons_total, nimg
 
-      ! The default symmetry request runs in C1 under the optimiser (S17); an
-      ! explicit one is refused just below.
+      ! An on/auto symmetry request runs in C1 under the optimiser, which moves
+      ! the atoms between runs and so cannot share a standard frame with a
+      ! symmetric SCF; an explicit one is refused just below.
       call trc_symmetry_suppress_default(handle)
       if (trc_symmetry_requested(handle)) then
          ! The optimiser moves the atoms between runs; a symmetric SCF moves them to
