@@ -32,7 +32,7 @@ module check_rys_vs_hgp_suite
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -111,11 +111,11 @@ contains
       dmat = 0.5_dp*(dmat + transpose(dmat))
 
       call set_rys('none')
-      call eri%fock(bas, dmat, g_hgp, density_screen=.false.)
+      call eri%fock(bas, dmat, g_hgp, opts=trc_fock_options_t(density_screen=.false.))
       call set_rys('all')
-      call eri%fock(bas, dmat, g_rys, density_screen=.false.)
+      call eri%fock(bas, dmat, g_rys, opts=trc_fock_options_t(density_screen=.false.))
       call set_rys('default')
-      call eri%fock(bas, dmat, g_def, density_screen=.false.)
+      call eri%fock(bas, dmat, g_def, opts=trc_fock_options_t(density_screen=.false.))
       call set_rys('none')
 
       worst_rys = maxval(abs(g_hgp - g_rys))

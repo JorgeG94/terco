@@ -8,7 +8,7 @@ program bench_gc
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_bind_device
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -85,20 +85,21 @@ program bench_gc
    call tm%start()
    call e1%build(b, thr, batch_res=bres)
    t1 = tm%get_elapsed_time(); tb1 = t1
-   call e1%fock_resident(b, d, g1, k_scale=1.0_dp, count_survivors=.true.)   ! warm up, and count
+   call e1%fock_resident(b, d, g1, &
+                         opts=trc_fock_options_t(k_scale=1.0_dp, count_survivors=.true.))  ! warm up, and count
    call tm%start()
    do r = 1, reps
-      call e1%fock_resident(b, d, g1, k_scale=1.0_dp)
+      call e1%fock_resident(b, d, g1, opts=trc_fock_options_t(k_scale=1.0_dp))
    end do
    t1 = tm%get_elapsed_time(); tf1 = (t1)/reps
 
    call tm%start()
    call e2%build(b, thr, batch_res=bres)
    t1 = tm%get_elapsed_time(); tb2 = t1
-   call e2%fock_resident(b, d, g2, k_scale=1.0_dp, count_survivors=.true.)
+   call e2%fock_resident(b, d, g2, opts=trc_fock_options_t(k_scale=1.0_dp, count_survivors=.true.))
    call tm%start()
    do r = 1, reps
-      call e2%fock_resident(b, d, g2, k_scale=1.0_dp)
+      call e2%fock_resident(b, d, g2, opts=trc_fock_options_t(k_scale=1.0_dp))
    end do
    t1 = tm%get_elapsed_time(); tf2 = (t1)/reps
 
@@ -106,7 +107,7 @@ program bench_gc
    ! margin tight enough to be a reference. The margin is read per call,
    ! so this needs no rebuild of the object.
    call trc_set_prim_margin(1.0e-9_dp)
-   call e1%fock_resident(b, d, gref, k_scale=1.0_dp)
+   call e1%fock_resident(b, d, gref, opts=trc_fock_options_t(k_scale=1.0_dp))
    call trc_set_prim_margin(pmargin)
    !$acc update self(g1, g2, gref)
    print '(a,es10.2,a,es10.2)', '  margin error vs 1e-9   ', maxval(abs(g1 - gref)), &

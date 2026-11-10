@@ -1731,6 +1731,22 @@ module trc_c_interfaces
          real(c_double), value :: tol
       end function trc_set_symmetry
 
+      integer(c_int) function trc_set_symmetry_skeleton(handle, on) bind(c) result(res)
+         !! Under a symmetry request (trc_set_symmetry), force the Fock matrix to
+         !! be built from the orbit representatives of the integral quartets and
+         !! symmetrized (on = 1), or force the full matrix and symmetrize that
+         !! (on = 0). Without this call the choice is a measured size rule's
+         !! (trc_sym_run's sym_run_skeleton_size_rule), and
+         !! TRC_SYM_SKELETON=0/1 in the environment overrides both. The same SCF
+         !! either way, to round-off; only the number of integrals computed
+         !! differs. No effect without a group other than C1, with density
+         !! fitting or over more than one rank (those take the full build).
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: on
+      end function trc_set_symmetry_skeleton
+
       integer(c_int) function trc_set_symmetry_report_frame(handle, frame) bind(c) result(res)
          !! The frame a symmetric run reports in: the geometry (trc_geometry), the
          !! gradient, the orbitals, the density and the borrowed basis/ERI handles

@@ -1236,6 +1236,19 @@ int trc_rimp2_energy(trc_handle_t handle, double* e_os, double* e_ss);
 int trc_set_symmetry(trc_handle_t handle, const char* group, double tol);
 
 /**
+ * Under a symmetry request (trc_set_symmetry), force the Fock matrix to
+ * be built from the orbit representatives of the integral quartets and
+ * symmetrized (on = 1), or force the full matrix and symmetrize that
+ * (on = 0). Without this call the choice is a measured size rule's
+ * (trc_sym_run's sym_run_skeleton_size_rule), and
+ * TRC_SYM_SKELETON=0/1 in the environment overrides both. The same SCF
+ * either way, to round-off; only the number of integrals computed
+ * differs. No effect without a group other than C1, with density
+ * fitting or over more than one rank (those take the full build).
+ */
+int trc_set_symmetry_skeleton(trc_handle_t handle, int on);
+
+/**
  * The frame a symmetric run reports in: the geometry (trc_geometry), the
  * gradient, the orbitals, the density and the borrowed basis/ERI handles
  * (trc_context_basis/eri). 1 = the caller's input frame (the molecule

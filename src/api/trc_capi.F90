@@ -186,7 +186,7 @@ module trc_capi
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device, trc_bind_device_env, &
                         trc_1e, trc_df_2c, trc_df_3c, trc_multipoles, &
                         TRC_NMULT
-   use trc_eri, only: trc_eri_t, eri_lmax_refusal, eri_grad_lmax_refusal
+   use trc_eri, only: trc_eri_t, trc_fock_options_t, eri_lmax_refusal, eri_grad_lmax_refusal
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_guess_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t, &
                              trc_pair_eri_cache_t
    use trc_scf_grad, only: trc_scf_gradient, trc_scf_grad_sym_t, trc_scf_grad_reuse_t
@@ -232,7 +232,8 @@ module trc_capi
    use trc_sym_scf, only: trc_sym_scf_t
    use trc_sym_group, only: trc_sym_group_t, sym_group_from_name
    use trc_sym_run, only: trc_sym_request_t, SYM_OFF, SYM_AUTO, SYM_EXPLICIT, sym_run_parse_request, sym_run_choose_group, &
-                          sym_run_parse_irrep_nelec, sym_run_aufbau_matches, sym_run_fixed_occupation
+                          sym_run_parse_irrep_nelec, sym_run_aufbau_matches, sym_run_fixed_occupation, &
+                          SYM_SKEL_ON, SYM_SKEL_OFF
    use trc_sym_frame, only: sym_frame_rot_blocks, sym_frame_rotate_rows, sym_frame_rotate_dmat, sym_frame_to_input
    implicit none
    private
@@ -270,7 +271,7 @@ module trc_capi
    public :: trc_run_gradient, trc_gradient
    public :: trc_set_geometry, trc_symmetry_requested, trc_symmetry_suppress_default
    public :: trc_set_symmetry_report_frame, trc_symmetry_report_frame
-   public :: trc_set_symmetry, trc_set_irrep_nelec, trc_symmetry_group, &
+   public :: trc_set_symmetry, trc_set_irrep_nelec, trc_set_symmetry_skeleton, trc_symmetry_group, &
              trc_symmetry_detected, trc_symmetry_residual, trc_symmetry_frame, trc_symmetry_nirrep, &
              trc_symmetry_irrep_name, trc_symmetry_irrep_dim, trc_mo_irreps, &
              trc_geometry
@@ -356,7 +357,9 @@ module trc_capi
    !! Requests: trc_set_symmetry(h, spec, tol) with "off" (the default; also
    !! "default"), "on"/"auto", or a group (D2h and its subgroups);
    !! trc_set_irrep_nelec for fixed electrons per irrep;
-   !! and trc_set_symmetry_report_frame. Getters: trc_symmetry_group,
+   !! trc_set_symmetry_skeleton (-1 the size rule, 0 off, 1 on) for the
+   !! skeleton Fock build; and
+   !! trc_set_symmetry_report_frame. Getters: trc_symmetry_group,
    !! trc_symmetry_detected, trc_symmetry_residual, trc_symmetry_frame,
    !! trc_symmetry_report_frame, trc_symmetry_nirrep,
    !! trc_symmetry_irrep_name, trc_symmetry_irrep_dim, trc_mo_irreps and
@@ -371,7 +374,13 @@ module trc_capi
    !! Energies, orbital energies and Hirshfeld/CHELPG charges are invariant.
    !! A symmetric DFT run uses the grid of the caller's axes, so its energy
    !! equals the symmetry-off one to second order (3e-12 Eh, B3LYP/cc-pVDZ
-   !! water at the default grid).
+   !! water at the default grid). The skeleton Fock build
+   !! (docs/SYMMETRY_FOCK.md) changes which integral quartets are launched,
+   !! not the result. With accidental degeneracy, the per-orbital irrep labels can
+   !! differ between the skeleton and full Fock paths (a permutation inside a
+   !! degenerate level; the decomposition per irrep is the same), so a caller
+   !! pinning occupations there should also fix the path with
+   !! trc_set_symmetry_skeleton.
    !! 1.22: trc_set_ecp_json, a new entry point (an explicit effective core
    !! potential, overriding auto-attach from the orbital basis file's own
    !! ecp_potentials). Additive.
@@ -1347,8 +1356,9 @@ contains
       real(dp), intent(in)  :: d(n, n)
       real(dp), intent(out) :: g(n, n)
       type(trc_fock_scale_t), intent(in) :: scale
-      call e%fock(b, d, g, k_scale=scale%kfac, j_scale=scale%jfac, density_screen=scale%dscreen, &
-                 omega=scale%omega)
+      call e%fock(b, d, g, &
+           opts=trc_fock_options_t(k_scale=scale%kfac, j_scale=scale%jfac, &
+                     density_screen=scale%dscreen, omega=scale%omega))
    end subroutine fock_shaped
 
    !
@@ -4300,11 +4310,13 @@ contains
       end if
 
       allocate (ssym)
+      ssym%skeleton = cx%sym_req%skeleton
       ssym%decline_lindep = sym_lenient(cx)
       ! An on/auto request reports in the input frame, so its DFT and VV10 grids are
       ! the grids of the input axes (the Lebedev points rotated into the standard
       ! frame); an explicit request keeps the lab-oriented, group-symmetric grid.
       if (sym_lenient(cx)) cx%opts%grid_rotation = reshape(cx%sym_geom%rot, [9])
+      ssym%geom = cx%sym_geom
       ssym%ao = sym_ao_build(cx%bb%b, cx%sym_geom, err)
       if (err%has_error()) then
          ! Detection already keeps apart atoms whose shells differ, so this is
@@ -7130,6 +7142,28 @@ contains
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_symmetry
+
+   function trc_set_symmetry_skeleton(handle, on) result(status) bind(c, name="trc_set_symmetry_skeleton")
+      !! Under a symmetry request (trc_set_symmetry), force the Fock matrix to
+      !! be built from the orbit representatives of the integral quartets and
+      !! symmetrized (on = 1), or force the full matrix and symmetrize that
+      !! (on = 0). Without this call the choice is a measured size rule's
+      !! (trc_sym_run's sym_run_skeleton_size_rule), and
+      !! TRC_SYM_SKELETON=0/1 in the environment overrides both. The same SCF
+      !! either way, to round-off; only the number of integrals computed
+      !! differs. No effect without a group other than C1, with density
+      !! fitting or over more than one rank (those take the full build).
+      type(c_ptr), value :: handle
+      integer(c_int), value :: on
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%sym_req%skeleton = merge(SYM_SKEL_ON, SYM_SKEL_OFF, on /= 0_c_int)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_symmetry_skeleton
 
    function trc_set_symmetry_report_frame(handle, frame) result(status) bind(c, name="trc_set_symmetry_report_frame")
       !! The frame a symmetric run reports in: the geometry (trc_geometry), the

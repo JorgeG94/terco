@@ -553,21 +553,41 @@ def _weight_lines(tag, outer, pad):
     return "\n".join(out) + ("\n" if out else ""), names
 
 
-def chunked_fock_middle(tag, comps, outer, nroots, pre_loop, prim_hdr, thread=False):
+def _inner_zpar(comps, inner):
+    """Parity of the z power the INSIDE shells of each inner component carry."""
+    return [sum(comps[x][c][2] for x, c in enumerate(comp) if c != "o") % 2 for comp in inner]
+
+
+def chunked_fock_middle(tag, comps, outer, nroots, pre_loop, prim_hdr, thread=False, dead=False):
     """The CHUNKED FOCK PASS's item body after the decode (see the section
     comment above): the chunk loop (or, for `thread`, the one chunk `jch`
     this iteration owns), the outer components and their transfer weights,
     the primitive loop (`prim_hdr`, the spliced text from `do k1` through
     the tval line) and roots, and the chunk's digestion. Returns (text, real
-    names, integer names, chunk count, the outer shells' cn tables)."""
+    names, integer names, chunk count, the outer shells' cn tables).
+
+    `dead` is the z-masked variant (docs/SYMMETRY_PARITY_SKIP.md): every
+    centre has z = 0, so a component whose combined z power is odd is exactly
+    zero. The z power of the chunk's outer components is known only at run
+    time, so the body exists once per parity of it: for outer parity P the
+    chunk keeps the inside components of z parity P, evaluates only the 2D and
+    transfer entries those need and digests only those. The two bodies are
+    selected by a test on the outer exponents, uniform over a chunk (a warp
+    shares its chunk in the `thread` form)."""
     la, lb, lc, ld = (int(c) for c in tag)
     dims = [len(c) for c in comps]
     nch = 1
     for x in outer:
         nch *= dims[x]
     inner, _ = _chunk_keys(comps, outer, 0)
-    vn = [f"vq_{n}" for n in range(len(inner))]
-    names = set(vn) | {"cj", "ck"}
+    zpar = _inner_zpar(comps, inner)
+    if dead:
+        pars = [0, 1] if outer else [0]
+        keeps = [[m for m in range(len(inner)) if zpar[m] == P] for P in pars]
+    else:
+        pars = [None]
+        keeps = [list(range(len(inner)))]
+    names = {"cj", "ck"}
     dnames = set()
     pw = []
     for ax in "xyz":
@@ -601,10 +621,15 @@ def chunked_fock_middle(tag, comps, outer, nroots, pre_loop, prim_hdr, thread=Fa
     wtxt, wn = _weight_lines(tag, outer, " "*12)
     body.append(wtxt)
     names.update(wn)
-    body.append("".join(f"            {v} = 0.0_dp\n" for v in vn))
-    body.append(prim_hdr)
-    body.append(ri.roots_inline_body(nroots, "tval", 18))
-    body.append(f"""\
+
+    def branch(keep):
+        """One body: the primitive loop, roots, the axes and the digestion
+        of the inner components `keep`."""
+        vn = [f"vq_{n}" for n in range(len(keep))]
+        names.update(vn)
+        out = ["".join(f"            {v} = 0.0_dp\n" for v in vn), prim_hdr,
+               ri.roots_inline_body(nroots, "tval", 18)]
+        out.append(f"""\
                   pref = pref*sqrt(theta)
                   do jrt = 1, {nroots}
                      ! RANGE SEPARATION -- see unrolled_energy_middle's own
@@ -622,35 +647,48 @@ def chunked_fock_middle(tag, comps, outer, nroots, pre_loop, prim_hdr, thread=Fa
                      cp0y = qcy + u2*zeta*dinv*pqy
                      cp0z = qcz + u2*zeta*dinv*pqz
 """)
-    pad = " "*21
-    hmaps, keyss = [], []
-    for axis, ax in enumerate("xyz"):
-        _, keys = _chunk_keys(comps, outer, axis)
-        txt, nms, hmap = _chunk_axis(tag, outer, keys, ax, pad)
-        body.append(txt)
-        names.update(nms)
-        hmaps.append(hmap)
-        keyss.append(keys)
-    for m in range(len(inner)):
-        h = [hmaps[axis][keyss[axis][m]] for axis in range(3)]
-        body.append(f"{pad}{vn[m]} = {vn[m]} + {h[0]}*{h[1]}*{h[2]}\n")
-    body.append("""\
+        pad = " "*21
+        hmaps, keyss = [], []
+        for axis, ax in enumerate("xyz"):
+            _, keys = _chunk_keys(comps, outer, axis)
+            keys = [keys[m] for m in keep]
+            txt, nms, hmap = _chunk_axis(tag, outer, keys, ax, pad)
+            out.append(txt)
+            names.update(nms)
+            hmaps.append(hmap)
+            keyss.append(keys)
+        for m in range(len(keep)):
+            h = [hmaps[axis][keyss[axis][m]] for axis in range(3)]
+            out.append(f"{pad}{vn[m]} = {vn[m]} + {h[0]}*{h[1]}*{h[2]}\n")
+        out.append("""\
                   end do
                end do
             end do
             do idens = 1, ndens
 """)
-    pad = " "*15
-    # jfac and kfac are uniform over the launch: no warp diverges on either.
-    # jfac = 0 whenever the MD J engine forms J (always for a g basis), and
-    # the Coulomb half is then 61 of the 93 atomics of an (fd|fp) chunk and
-    # as many density loads, all adding zero.
-    body.append(f"{pad}if (jfac /= 0.0_dp) then\n")
-    body.append(_chunk_digest(inner, vn, pad + "   ", dnames, (0, 1)))
-    body.append(f"{pad}end if\n"
-                f"{pad}if (kfac /= 0.0_dp) then\n")
-    body.append(_chunk_digest(inner, vn, pad + "   ", dnames, (2, 3, 4, 5)))
-    body.append(f"{pad}end if\n            end do\n")
+        pad = " "*15
+        sub = [inner[m] for m in keep]
+        # jfac and kfac are uniform over the launch: no warp diverges on either.
+        # jfac = 0 whenever the MD J engine forms J (always for a g basis), and
+        # the Coulomb half is then 61 of the 93 atomics of an (fd|fp) chunk and
+        # as many density loads, all adding zero.
+        out.append(f"{pad}if (jfac /= 0.0_dp) then\n")
+        out.append(_chunk_digest(sub, vn, pad + "   ", dnames, (0, 1)))
+        out.append(f"{pad}end if\n"
+                   f"{pad}if (kfac /= 0.0_dp) then\n")
+        out.append(_chunk_digest(sub, vn, pad + "   ", dnames, (2, 3, 4, 5)))
+        out.append(f"{pad}end if\n            end do\n")
+        return out
+
+    if dead and outer:
+        zsum = " + ".join(f"ex{x}z" for x in outer)
+        body.append(f"            if (mod({zsum}, 2) == 0) then\n")
+        body += branch(keeps[0])
+        body.append("            else\n")
+        body += branch(keeps[1])
+        body.append("            end if\n")
+    else:
+        body += branch(keeps[0])
     if not thread:
         body.append("         end do\n")
     tabs = ""
@@ -771,6 +809,12 @@ def main():
     ap.add_argument("--chunk-live-max", type=int, default=CHUNK_LIVE_MAX,
                     help="live-set ceiling chunk_plan_fock picks the shape "
                          "under, for a class FOCK_CHUNK_PLAN does not list")
+    ap.add_argument("--dead", choices=("none", "z"), default="none",
+                    help="the z-masked variant of a chunked class "
+                         "(docs/SYMMETRY_PARITY_SKIP.md): rys{tag}z in "
+                         "trc_pc_rys{tag}z, for launches whose every centre "
+                         "has z = 0; dispatched at class key + "
+                         "CLASS_RADIX**4 (gen_rys_dispatch.py)")
     ap.add_argument("-o", "--output", required=True,
                     help="required, and never a path under src/generated: "
                          "unlike the Rys root tables, these per-class "
@@ -779,6 +823,8 @@ def main():
                          "same as a non-default TERCO_LMAX's HGP kernels")
     args = ap.parse_args()
     tag = args.class_tag
+    dead = args.dead == "z"
+    sfx = "z" if dead else ""
     la, lb, lc, ld = (int(c) for c in tag)
     ni, nk = la + lb, lc + ld
     nroots = (la + lb + lc + ld)//2 + 1
@@ -809,6 +855,8 @@ def main():
         assert chunk_outer in _FOCK_OUTER_SETS, chunk_outer
         if args.chunk_form is not None:
             chunk_form = args.chunk_form
+    if dead and chunk_outer is None:
+        raise SystemExit(f"gen_rys.py: --dead z is for the chunked classes; ({tag}) is not in FOCK_CHUNK_PLAN")
     # The chunked form is never unrolled: it already has literal indices.
     unroll = chunk_outer is None and nv <= _parse_unroll_max(args.unroll_max_comp)
 
@@ -905,12 +953,12 @@ def main():
     assert n1 == 1
 
     def ren(t):
-        t = t.replace(f"trc_pc_k{tag}", f"trc_pc_rys{tag}")
-        t = t.replace(f"pcsi{tag}", f"rysi{tag}")
-        t = t.replace(f"pcs{tag}", f"rys{tag}")
+        t = t.replace(f"trc_pc_k{tag}", f"trc_pc_rys{tag}{sfx}")
+        t = t.replace(f"pcsi{tag}", f"rysi{tag}{sfx}")
+        t = t.replace(f"pcs{tag}", f"rys{tag}{sfx}")
         return t
 
-    head = re.sub(r"public :: pcs" + tag + r".*\n", f"public :: rys{tag}\n", head, count=1)
+    head = re.sub(r"public :: pcs" + tag + r".*\n", f"public :: rys{tag}{sfx}\n", head, count=1)
     head, decode, tail = ren(head), ren(decode), ren(tail)
 
     # The file-top comment still describes the HGP file it was read from;
@@ -923,9 +971,9 @@ def main():
         chunk_note = ("\n!\n! CHUNKED FOCK PASS (gen_rys.py): the integral and the digestion are\n"
                       "! replaced, chunk by chunk; the prologue is still spliced.")
     new_header = f"""!
-! Class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}) kernel, Rys quadrature.
+! Class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}) kernel, Rys quadrature{", z-masked variant (every centre has z = 0)" if dead else ""}.
 !
-! GENERATED by scripts/gen_rys.py {tag} -- do not edit.
+! GENERATED by scripts/gen_rys.py {tag}{" --dead z" if dead else ""} -- do not edit.
 !
 ! Spliced from the scalar HGP kernel in src/generated/trc_pc_k{tag}.F90: the
 ! prologue (segment decode, screens, the primitive-pair loads, the
@@ -1010,15 +1058,16 @@ def main():
     if chunk_outer is not None:
         pre, prim_hdr = head.split("@@CHUNK_SPLIT@@")
         pre_loop = decode + """\
-         ! Degeneracy weight, as the block digestion forms it.
-         wq = 1.0_dp
+         ! Degeneracy weight and the segment's orbit weight, as the block
+         ! digestion forms them (gen_perclass.py's emit_digestion).
+         wq = sW(seg)
          if (.not. dij) wq = wq*0.5_dp
          if (.not. dkl) wq = wq*0.5_dp
          if (.not. dpq) wq = wq*0.5_dp
 """
         thread = chunk_form == "thread"
         middle, cnames, cints, nch, ctabs = chunked_fock_middle(
-            tag, comps, chunk_outer, nroots, pre_loop, prim_hdr, thread)
+            tag, comps, chunk_outer, nroots, pre_loop, prim_hdr, thread, dead)
         cdecl = ri.scalar_decl_lines(cnames, 6)
         if cints:
             cdecl += f"      integer  :: {', '.join(cints)}\n"
@@ -1027,16 +1076,16 @@ def main():
             # One thread per (quartet, chunk), quartet fastest, so a warp's
             # lanes share one chunk and its select case does not diverge.
             for a, b in (("      do concurrent(i=1:nr)\n", f"      do concurrent(i=1:nr*{nch})\n"),
-                         (f"call rysi{tag}(g0 + (i - 1)*nranks, ",
-                          f"call rysi{tag}(g0 + mod(i - 1, nr)*nranks, int((i - 1)/nr) + 1, "),
-                         (f"pure subroutine rysi{tag}(gt, ", f"pure subroutine rysi{tag}(gt, jch, "),
+                         (f"call rysi{tag}{sfx}(g0 + (i - 1)*nranks, ",
+                          f"call rysi{tag}{sfx}(g0 + mod(i - 1, nr)*nranks, int((i - 1)/nr) + 1, "),
+                         (f"pure subroutine rysi{tag}{sfx}(gt, ", f"pure subroutine rysi{tag}{sfx}(gt, jch, "),
                          ("      integer  :: jch, jrt\n", "      integer  :: jrt\n")):
                 assert head.count(a) == 1, a
                 head = head.replace(a, b)
             a = "      !$acc routine seq\n      integer(int64), intent(in) :: gt\n"
             assert head.count(a) == 1
             head = head.replace(a, a + "      integer, intent(in) :: jch\n")
-        decode, tail = "", f"   end subroutine rysi{tag}\n"
+        decode, tail = "", f"   end subroutine rysi{tag}{sfx}\n"
 
     tabs = ctabs if chunk_outer is not None else ""
     if not unroll and chunk_outer is None:
@@ -1062,7 +1111,7 @@ contains
     assert head.count("\ncontains\n") == 1
     head = head.replace("\ncontains\n", helpers, 1)
 
-    out = head + middle + decode + tail + f"\nend module trc_pc_rys{tag}\n"
+    out = head + middle + decode + tail + f"\nend module trc_pc_rys{tag}{sfx}\n"
     dest = args.output
     with open(dest, "w") as fh:
         fh.write(out)
