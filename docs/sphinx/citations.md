@@ -64,6 +64,12 @@ integrals and on offloading GAMESS.
 > **The Journal of Physical Chemistry A** **123** (2019), 8460–8475.
 > [doi:10.1021/acs.jpca.9b05801](https://doi.org/10.1021/acs.jpca.9b05801)
 
+> **[8]** M. Alkan, B. Q. Pham, J. R. Hammond and M. S. Gordon,
+> *Enabling Fortran standard parallelism in GAMESS for accelerated quantum
+> chemistry calculations*,
+> **Journal of Chemical Theory and Computation** **19** (2023), 3798–3805.
+> [doi:10.1021/acs.jctc.3c00380](https://doi.org/10.1021/acs.jctc.3c00380)
+
 ## Integral algorithms
 
 The recurrences and quadratures terco's ERI kernels are built on.
@@ -89,6 +95,7 @@ Inspiration: the formulation and the code in terco are its own, and each source 
 ## Density fitting, RI-HF/RI-MP2 and DFT on GPUs
 
 - R. Stocks, E. Palethorpe and G. M. J. Barca, *Multi-GPU RI-HF Energies and Analytic Gradients─Toward High-Throughput Ab Initio Molecular Dynamics*, Journal of Chemical Theory and Computation **20**, 7503–7515 (2024). [doi:10.1021/acs.jctc.4c00877](https://doi.org/10.1021/acs.jctc.4c00877)
+- J. J. Hayes and M. S. Gordon, *Speeding Up Hartree–Fock in JuliaChem with Density Fitting*, Journal of Chemical Theory and Computation **22**, 3897–3915 (2026). [doi:10.1021/acs.jctc.5c02025](https://doi.org/10.1021/acs.jctc.5c02025)
 - R. Stocks, E. Palethorpe and G. M. J. Barca, *High-Performance Multi-GPU Analytic RI-MP2 Energy Gradients*, Journal of Chemical Theory and Computation **20**, 2505–2519 (2024). [doi:10.1021/acs.jctc.3c01424](https://doi.org/10.1021/acs.jctc.3c01424)
 - R. Stocks and G. M. J. Barca, *Efficient Algorithms for GPU Accelerated Evaluation of the DFT Exchange-Correlation Functional*, Journal of Chemical Theory and Computation **21**, 10263–10280 (2025). [doi:10.1021/acs.jctc.5c01229](https://doi.org/10.1021/acs.jctc.5c01229)
 
