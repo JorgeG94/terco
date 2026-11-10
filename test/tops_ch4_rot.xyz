@@ -1,0 +1,7 @@
+5
+methane, Td, constructed: r(CH) 1.087 Angstrom (recalled from memory), H on the cube diagonals, C at the origin; then rotated by a random proper rotation (numpy RandomState(102), QR of a normal matrix) and shifted by a random vector
+C     -3.35730523691939     1.45974732129646    -0.03627721808516
+H     -3.82547211617118     1.41319075262583     0.94363158332712
+H     -2.35716825337632     1.87466086044707     0.05933538139259
+H     -3.29581889739507     0.45909435837028    -0.45637491843469
+H     -3.95076168073499     2.09204331374267    -0.69170091862568

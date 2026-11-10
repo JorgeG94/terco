@@ -49,7 +49,8 @@ contains
          new_unittest("--opt: a run that does not converge exits non-zero and says so", &
                       test_nonconverged_exit_code), &
          new_unittest("--opt: a step that fails even after the retry still writes _opt.xyz/_traj.xyz/json, "// &
-                      "marked failed, before the process stops", test_failed_scf_outputs) &
+                      "marked failed, before the process stops", test_failed_scf_outputs), &
+         new_unittest("--opt: no _opt.xyz/_traj.xyz left in test/ itself", test_no_stray) &
          ]
    end subroutine collect_cli_opt
 
@@ -209,7 +210,8 @@ contains
       real(dp), allocatable :: row(:)
 
       probe_out = probe_json//'.out'
-      cmd = trim(cli_exe)//' water_stretched.xyz -b basis_sets/6-31g.json --opt --opt-max-step 10.0 '// &
+      cmd = 'cd '//stretched_dir()//' && '//trim(cli_exe)//' water_stretched.xyz -b basis_sets/6-31g.json '// &
+            '--opt --opt-max-step 10.0 '// &
             '--opt-maxiter 5 --silent --json '//probe_json//' > '//probe_out//' 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
 
@@ -370,7 +372,8 @@ contains
       type(json_file) :: json
 
       probe_out = probe_json//'.short.out'
-      cmd = trim(cli_exe)//' water_stretched.xyz -b basis_sets/sto-3g.json --opt --opt-maxiter 1 --silent --json '// &
+      cmd = 'cd '//stretched_dir()//' && '//trim(cli_exe)//' water_stretched.xyz -b basis_sets/sto-3g.json '// &
+            '--opt --opt-maxiter 1 --silent --json '// &
             probe_json//'.short > '//probe_out//' 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
       if (rc == 0) then
@@ -479,7 +482,8 @@ contains
       logical :: found
       type(json_file) :: json
 
-      cmd = trim(cli_exe)//' '//xyz//' -b basis_sets/6-31g.json --opt --opt-maxiter '//to_string(maxiter)//' '// &
+      cmd = 'cd '//stretched_dir()//' && '//trim(cli_exe)//' '//xyz//' -b basis_sets/6-31g.json --opt '// &
+            '--opt-maxiter '//to_string(maxiter)//' '// &
             trim(extra_flags)//' --silent --json '//probe//' > '//probe//'.out 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
       steps = -1; evals = -1
@@ -510,7 +514,8 @@ contains
       logical :: found
       type(json_file) :: json
 
-      cmd = trim(cli_exe)//' '//xyz//' -b basis_sets/6-31g.json --opt --opt-maxiter '//to_string(maxiter)//' '// &
+      cmd = 'cd '//stretched_dir()//' && '//trim(cli_exe)//' '//xyz//' -b basis_sets/6-31g.json --opt '// &
+            '--opt-maxiter '//to_string(maxiter)//' '// &
             trim(extra_flags)//' --silent --json '//probe//' > '//probe//'.out 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
       steps = -1; evals = -1; final_energy = 0.0_dp
@@ -526,6 +531,37 @@ contains
       call json%get('optimization.final_energy', final_energy, found)
       call json%destroy()
    end subroutine run_opt_cli_e
+
+   function stretched_dir() result(dir)
+      !! work_dir/stretched, holding copies of water_stretched.xyz and the two
+      !! basis files the water_stretched runs use. --opt writes
+      !! <geometry>_opt.xyz/_traj.xyz into the CLI's CWD, so those runs `cd`
+      !! here rather than writing into test/ itself, where they raced
+      !! check_opt_constrain's own stray-file check under ctest --parallel.
+      character(len=:), allocatable :: dir
+      integer :: rc
+      dir = work_dir//'/stretched'
+      call execute_command_line('mkdir -p '//dir//'/basis_sets', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f water_stretched.xyz '//dir//'/water_stretched.xyz', exitstat=rc, wait=.true.)
+      call execute_command_line('cp -f basis_sets/6-31g.json basis_sets/sto-3g.json '//dir//'/basis_sets/', &
+                                exitstat=rc, wait=.true.)
+   end function stretched_dir
+
+   subroutine test_no_stray(error)
+      ! Runs last: none of the runs above may have written its xyz output
+      ! into test/ itself (this program's WORKING_DIRECTORY).
+      type(error_type), allocatable, intent(out) :: error
+      character(len=*), parameter :: stray(4) = [character(len=24) :: 'water_opt.xyz', 'water_traj.xyz', &
+                                                 'water_stretched_opt.xyz', 'water_stretched_traj.xyz']
+      integer :: k
+      logical :: exists
+      do k = 1, size(stray)
+         inquire (file=trim(stray(k)), exist=exists)
+         if (exists) then
+            call test_failed(error, trim(stray(k))//" was left in test/ itself"); return
+         end if
+      end do
+   end subroutine test_no_stray
 
 end module check_cli_opt_suite
 

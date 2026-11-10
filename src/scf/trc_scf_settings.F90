@@ -25,9 +25,11 @@ module trc_scf_settings
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    use trc_decontract, only: trc_decontract_options_t
    implicit none
+   integer, parameter :: ROTATION_SIZE = 9
+   !! A 3x3 rotation stored in column order (see the rotation components below).
    private
 
-   public :: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_settings_spin_rule, scf_energies_t
+   public :: trc_scf_options_t, trc_scf_guess_t, trc_scf_result_t, scf_settings_t, scf_settings_spin_rule, scf_energies_t
    public :: scf_settings_eri_thresh_env
    public :: scf_settings_homo_lumo_gap
    public :: scf_settings_fock_densities
@@ -220,6 +222,13 @@ module trc_scf_settings
       !! per context handle; see trc_scf_df.F90's own header on why it
       !! outlives a single run).
       integer :: grid_level = 3
+      real(dp) :: grid_rotation(ROTATION_SIZE) = [1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp]
+      !! Rotation of the Lebedev points of the DFT and VV10 grids
+      !! (`dft_grid_options_t%angular_rotation`); the identity unless a
+      !! symmetric run in a standard frame wants the grid of the user's axes.
+      !! Rank 1, the 3x3 matrix in column order: ifx 2025.0 rejects an empty
+      !! structure constructor of a type with a rank-2 component default
+      !! (error #6595).
       integer :: nlc_grid_level = DEFAULT_NLC_GRID_LEVEL
       !! Grid level for VV10's nonlocal correlation, when the functional has
       !! it. Coarser than the semilocal grid by convention (SG-1-like): VV10
@@ -257,6 +266,29 @@ module trc_scf_settings
       !! backend's own radii convention, rather than terco's).
    end type trc_scf_options_t
 
+   type :: trc_scf_guess_t
+      !! The two rarer guesses a caller can hand `trc_scf_run` besides a
+      !! density (`dguess`), bundled as one optional argument (`guess`) so the
+      !! run's argument list stays within the limit. Plain values (copies);
+      !! an unallocated component is a guess not given. `dguess` beats
+      !! `hamiltonian` beats `orbitals`, each beating the plain
+      !! `trc_scf_options_t%guess` string.
+      real(dp), allocatable :: hamiltonian(:, :)
+      !! A guess HAMILTONIAN to occupy instead of hcore or the GWH matrix --
+      !! how SAP gets in (see trc_sap), which cannot come through `dguess`
+      !! because what it produces is a one-electron operator and not a
+      !! density. Ignored if `dguess` is also given: a density the caller
+      !! already has is more specific than a matrix to make one from.
+      real(dp), allocatable :: orbitals(:, :, :)
+      !! A PREVIOUS geometry's converged orbitals (SAME molecule/basis, so
+      !! the same nao), re-orthonormalised into a guess density at THIS
+      !! geometry's own overlap once `scf_context%setup` has built it
+      !! (`trc_scf_context%scf_context_project_density`) -- trc_capi.F90's
+      !! TRC_GUESS_PROJECTED, lowest priority of the three guess-density
+      !! arguments (checked after `dguess` and `hamiltonian`, same as every
+      !! other guess kind the plain `trc_scf_options_t%guess` string selects).
+   end type trc_scf_guess_t
+
    type :: scf_energies_t
       !! What the SCF loop computes at each density, gathered so `trc_scf_run`
       !! hands it to the result in one `update` call. All zero until set.
@@ -285,6 +317,9 @@ module trc_scf_settings
       integer :: n_increments = 0
       !! Fock builds taken from the density difference (trc_scf_incremental);
       !! the rest of `iterations` were full builds, the last one always.
+      logical :: sym_declined = .false.
+      !! The symmetric run was not made: `sym%decline_lindep` and functions were
+      !! dropped (`message` says so, `iterations` is 0). The caller runs in C1.
       integer :: n_lindep = 0
       !! Functions dropped by canonical orthogonalisation: S eigenvalues
       !! below `opts%lindep_thresh`. 0 for every compact basis; see
@@ -292,6 +327,7 @@ module trc_scf_settings
       real(dp), allocatable :: dmat(:, :, :)   !! (nao, nao, nspin); restricted holds the total
       real(dp), allocatable :: cmo(:, :, :)    !! (nao, nao, nspin) orbitals
       real(dp), allocatable :: eps(:, :)       !! (nao, nspin) orbital energies
+      integer, allocatable :: mo_irrep(:, :)   !! (nao, nspin) irrep of each orbital (trc_sym_scf); unallocated without symmetry
       real(dp), allocatable :: grid_r(:, :)    !! (3, npts) the grid used, for a same-grid comparison
       real(dp), allocatable :: grid_w(:)
       real(dp), allocatable :: grid_r_nlc(:, :)  !! VV10's own (coarser) grid, unallocated when the

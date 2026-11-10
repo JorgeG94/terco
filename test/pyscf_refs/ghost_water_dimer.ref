@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["ghost_water_dimer"] -> gen_ghost_water_dimer
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: f70b62847b99a497da9bf05fdaa0bc62a2c7d5304d86d76eea6401521950b78a
+# hash: 3a9280b963d1b1a72f5a0f4358e784ef768c6d40b7b9f16621e6de21422ec772
 # files: test/check_capi_ghost.F90 test/basis_sets/cc-pvdz.json
 NATM 6
 E_RHF -7.60268898419183046e+01

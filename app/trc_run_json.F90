@@ -3,6 +3,7 @@ submodule (trc_run) trc_run_json
    use json_module, only: json_core, json_value
    use trc_app, only: BOHR_PER_ANGSTROM
    use trc_run_input, only: run_input_echo
+   use trc_sym_run, only: sym_run_occupied_counts
    implicit none
 
 contains
@@ -62,6 +63,7 @@ contains
          if (r%has_homo(2)) call json%add(root, "beta homo energy", r%homo(2))
          if (r%has_lumo(2)) call json%add(root, "beta lumo energy", r%lumo(2))
       end if
+      if (r%sym_ran) call add_symmetry(json, root, r)
       if (r%grad .and. allocated(r%gradient)) call add_gradient(json, root, r)
       if (r%hessian .and. r%hess_ok) call add_hessian(json, root, r)
       if (r%opt) call add_optimization(json, root, r)
@@ -74,6 +76,76 @@ contains
       end if
       call json%destroy(root)
    end subroutine run_write_json
+
+   subroutine add_symmetry(json, root, r)
+      !! The "symmetry" object, only when a symmetry request ran: groups, the
+      !! symmetrisation residual, and for a group of more than one operation the
+      !! frame, the geometry (Angstrom; the input symmetrised in the input frame
+      !! for an on/auto request, else the standard frame the SCF ran on, which
+      !! is also the frame of the gradient and the orbitals), the irreps with their
+      !! SO dimensions and occupied orbitals, and each orbital's irrep.
+      type(json_core), intent(inout) :: json
+      type(json_value), pointer, intent(in) :: root
+      type(run_t), intent(in) :: r
+      type(json_value), pointer :: sobj, rows, occ
+      integer :: ia, ir, s, m, nmo
+      integer, allocatable :: cnt(:, :)
+      character(len=:), allocatable :: key
+
+      call json%create_object(sobj, "symmetry")
+      call json%add(root, sobj)
+      call json%add(sobj, "requested", r%symmetry)
+      call json%add(sobj, "detected group", trim(r%sym_detected))
+      call json%add(sobj, "group", trim(r%sym_used))
+      call json%add(sobj, "residual", r%sym_residual)
+      if (r%sym_active) then
+         if (r%sym_input_frame) then
+            call json%add(sobj, "frame", "input: the geometry (the input symmetrised in it) and the gradient of this "// &
+                          "run are in your input frame; frame rotation and frame origin map it to the standard frame")
+         else
+            call json%add(sobj, "frame", "standard: the geometry, gradient and orbitals of this run are in it")
+         end if
+         call json%create_array(rows, "frame rotation")
+         do ia = 1, 3
+            call json%add(rows, "", r%sym_rot(ia, :))
+         end do
+         call json%add(sobj, rows)
+         call json%add(sobj, "frame origin", r%sym_shift)
+         call json%create_array(rows, "geometry")
+         do ia = 1, r%natm
+            call json%add(rows, "", r%geom_std(:, ia)/BOHR_PER_ANGSTROM)
+         end do
+         call json%add(sobj, rows)
+         call json%create_array(rows, "irreps")
+         do ir = 1, r%sym_nirrep
+            call json%add(rows, "", trim(r%sym_irrep_names(ir)))
+         end do
+         call json%add(sobj, rows)
+         if (allocated(r%sym_irrep_dim)) call json%add(sobj, "irrep dimensions", r%sym_irrep_dim)
+         if (allocated(r%sym_mo_irrep)) then
+            nmo = size(r%sym_occ, 1)
+            allocate (cnt(r%sym_nirrep, r%nspin))
+            do s = 1, r%nspin
+               key = merge("orbital irreps     ", "beta orbital irreps", s == 1)
+               call json%create_array(rows, trim(key))
+               do m = 1, nmo
+                  call json%add(rows, "", trim(r%sym_irrep_names(max(1, r%sym_mo_irrep(m, s)))))
+               end do
+               call json%add(sobj, rows)
+               cnt(:, s) = sym_run_occupied_counts(r%sym_mo_irrep(1:nmo, s), r%sym_occ(:, s) > 0.0_dp, r%sym_nirrep)
+            end do
+            call json%create_object(occ, "occupied orbitals per irrep")
+            do ir = 1, r%sym_nirrep
+               if (r%nspin == 1) then
+                  call json%add(occ, trim(r%sym_irrep_names(ir)), cnt(ir, 1))
+               else
+                  call json%add(occ, trim(r%sym_irrep_names(ir)), cnt(ir, :))
+               end if
+            end do
+            call json%add(sobj, occ)
+         end if
+      end if
+   end subroutine add_symmetry
 
    subroutine add_gradient(json, root, r)
       !! The analytic gradient as an array of [x, y, z] triples, one per atom

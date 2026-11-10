@@ -8,7 +8,7 @@ module sapcmp_suite
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
    use trc_sap, only: trc_sap_build, trc_sap_grid
-   use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+   use trc_scf_driver, only: trc_scf_options_t, trc_scf_guess_t, trc_scf_result_t, trc_scf_run
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
    implicit none
@@ -95,8 +95,8 @@ contains
       nocc = sum(zint)/2
       opts%conv_energy = 1.0e-8_dp
       opts%max_iteration = 30
-      call trc_scf_run(bas, nocc, nocc, opts, rg, hguess=hgrid)
-      call trc_scf_run(bas, nocc, nocc, opts, rf, hguess=hfit)
+      call trc_scf_run(bas, nocc, nocc, opts, rg, guess=trc_scf_guess_t(hamiltonian=hgrid))
+      call trc_scf_run(bas, nocc, nocc, opts, rf, guess=trc_scf_guess_t(hamiltonian=hfit))
       print '(a,f20.10,a,i0,a,l1)', "grid  E ", rg%energy, " (", rg%iterations, ")  conv ", rg%converged
       print '(a,f20.10,a,i0,a,l1)', "fit   E ", rf%energy, " (", rf%iterations, ")  conv ", rf%converged
 
