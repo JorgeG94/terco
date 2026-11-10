@@ -659,6 +659,8 @@ contains
          call scf_soscf_copy_eps(this%nao, this%n_mo, this%energies_mo, scf_result%eps(:, s))
          ! Per-block sorted: a virtual below the highest occupied is a non-aufbau state.
          ! Counted on the committed eps, by the same helper as the post-SCF refusal.
+         ! `scf_soscf_copy_eps` wrote them on the device; the count reads the host.
+         !$acc update self(scf_result%eps(1:this%n_mo, s))
          this%off_aufbau = this%off_aufbau + scf_settings_count_off_aufbau(this%n_mo, this%nocc(s), &
                                                                            scf_result%eps(1:this%n_mo, s))
       else
