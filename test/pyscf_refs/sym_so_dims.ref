@@ -1,0 +1,32 @@
+# terco pyscf reference v1
+# case: check_sym_ao
+# generator: test/pyscf_refs/generate.py CASES["sym_so_dims"] -> gen_sym_so_dims
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 0ff02dff8d795271e457c8bf5af926117b6bafe76a04f6f83fadbdd2454a40bd
+# files: test/check_sym_ao.F90 test/hocl.xyz test/chfcl2.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
+NAO_hocl_631gs_cart 36
+SO_hocl_631gs_cart 2
+2.70000000000000000e+01 9.00000000000000000e+00
+NAO_hocl_631gs_sph 34
+SO_hocl_631gs_sph 2
+2.50000000000000000e+01 9.00000000000000000e+00
+NAO_hocl_ccpvdz_cart 39
+SO_hocl_ccpvdz_cart 2
+2.90000000000000000e+01 1.00000000000000000e+01
+NAO_hocl_ccpvdz_sph 37
+SO_hocl_ccpvdz_sph 2
+2.70000000000000000e+01 1.00000000000000000e+01
+NAO_chfcl2_631gs_cart 70
+SO_chfcl2_631gs_cart 2
+4.30000000000000000e+01 2.70000000000000000e+01
+NAO_chfcl2_631gs_sph 66
+SO_chfcl2_631gs_sph 2
+4.00000000000000000e+01 2.60000000000000000e+01
+NAO_chfcl2_ccpvdz_cart 73
+SO_chfcl2_ccpvdz_cart 2
+4.50000000000000000e+01 2.80000000000000000e+01
+NAO_chfcl2_ccpvdz_sph 69
+SO_chfcl2_ccpvdz_sph 2
+4.20000000000000000e+01 2.70000000000000000e+01
+END
