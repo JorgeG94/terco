@@ -3724,10 +3724,12 @@ def gen_rccsd_ints():
     bohr = 0.529177210903  # CODATA 2018, as terco
     cases = [("w1", "hirshfeld_water.xyz", 1), ("h2o2_c1", "h2o2_c1.xyz", 2)]
     basis, aux_basis = "cc-pvdz", "cc-pvdz-rifit"
-    test_file = TEST / "check_rccsd_ints.F90"
+    # Every file that reads these references or the probes they hold: the integral check, the
+    # intermediates check and the helpers they share (editing one re-hashes the .ref).
+    test_files = [TEST / "check_rccsd_ints.F90", TEST / "check_rccsd_inter.F90", TEST / "rccsd_test_support.F90"]
     files = sorted({TEST / c[1] for c in cases}
-                   | {TEST / "basis_sets" / (basis + ".json"), TEST / "basis_sets" / (aux_basis + ".json"),
-                      test_file})
+                   | {TEST / "basis_sets" / (basis + ".json"), TEST / "basis_sets" / (aux_basis + ".json")}
+                   | set(test_files))
 
     def probes(a, spaces, dip):
         blk = lambda m, p, q: m[dip[p]][:, dip[q]]

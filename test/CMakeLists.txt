@@ -46,6 +46,15 @@ set_target_properties(terco_pyscf_ref_io PROPERTIES Fortran_MODULE_DIRECTORY
                                                      ${CMAKE_BINARY_DIR}/modules)
 
 #
+# What the RI-CCSD(T) checks share: molecules, tight SCF, MO dipole probes.
+#
+add_library(terco_rccsd_test_support STATIC rccsd_test_support.F90)
+target_compile_definitions(terco_rccsd_test_support PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(terco_rccsd_test_support PUBLIC ${main_lib})
+set_target_properties(terco_rccsd_test_support PROPERTIES Fortran_MODULE_DIRECTORY
+                                                          ${CMAKE_BINARY_DIR}/modules)
+
+#
 # The library's definitions are PRIVATE -- TRC_FOCK6 is an
 # implementation choice and no consumer should need them. A test can, though:
 # `check_binfock` compares against a raw oracle and has to know whether the
@@ -148,8 +157,15 @@ target_link_libraries(check_si PRIVATE test-drive::test-drive)
 # E_MP2 from the ovov block against trc_rimp2_run. cc-pVDZ-RIFIT carries f
 # auxiliary shells on O: a build below that ceiling prints SKIP.
 terco_add_check(check_rccsd_ints check_rccsd_ints.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
-target_link_libraries(check_rccsd_ints PRIVATE test-drive::test-drive)
+target_link_libraries(check_rccsd_ints PRIVATE test-drive::test-drive terco_rccsd_test_support)
 set_tests_properties(terco/check_rccsd_ints PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# tau, Foo, Fvv, Fov, Loo, Lvv, the energy functional and the MP2 amplitudes
+# (src/post_hf/ccsd/trc_rccsd_inter.F90) at FIXED amplitudes against the same
+# references (gen_rccsd_ints), plus independent host loops. Same SKIP guard.
+terco_add_check(check_rccsd_inter check_rccsd_inter.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_rccsd_inter PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_inter PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
