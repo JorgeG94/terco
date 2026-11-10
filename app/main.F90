@@ -18,7 +18,7 @@ program trc_main
    use pic_logger, only: global_logger
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_ecp_json, &
                        trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_scf_accel, &
-                       trc_set_soscf, trc_set_scf_stabilise, &
+                       trc_set_soscf, trc_set_scf_stabilise, trc_set_gdm, &
                        trc_set_level_shift, trc_set_lindep, trc_set_screening, &
                        trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
                        trc_set_guess, trc_set_verbose, trc_set_rimp2, trc_set_force_cartesian, trc_set_comm, &
@@ -169,6 +169,12 @@ program trc_main
    call r%cli%add_option("level-shift-until", "keep --level-shift on through DIIS until |FDS - SDF| falls "// &
                          "below this (0: off once DIIS starts); dropped for the rest of the run if the "// &
                          "commutator does not improve by a factor 2 in 10 such iterations")
+   call r%cli%add_flag("gdm", "geometric direct minimisation (L-BFGS over orbital rotations) once |FDS - SDF| < "// &
+                       "--gdm-start, for SCFs DIIS cannot converge. Slower than DIIS where DIIS works; "// &
+                       "refused with --soscf. Keeps the occupation it starts from; with --mom it declines "// &
+                       "when MOM holds a non-aufbau state")
+   call r%cli%add_option("gdm-start", "commutator norm at which --gdm hands over from DIIS (0.1)")
+   call r%cli%add_option("gdm-max-rotation", "largest orbital rotation angle of one --gdm step, radians (0.2)")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
    call r%cli%add_option("lindep", "linear-dependence threshold: eigenvalues of S normalised to a unit "// &
                          "diagonal (pyscf/ORCA's convention) below it are dropped (canonical orthogonalisation; "// &
@@ -557,6 +563,17 @@ program trc_main
       call r%cli%get("soscf-start", r%soscf_start, r%err)
       call run_check(r, "--soscf-start")
       if (.not. (r%soscf_start > 0.0_dp)) call run_die(r, "--soscf-start must be > 0")
+   end if
+   r%gdm = r%cli%is_set("gdm")
+   if (r%cli%is_set("gdm-start")) then
+      call r%cli%get("gdm-start", r%gdm_start, r%err)
+      call run_check(r, "--gdm-start")
+      if (.not. (r%gdm_start > 0.0_dp)) call run_die(r, "--gdm-start must be > 0")
+   end if
+   if (r%cli%is_set("gdm-max-rotation")) then
+      call r%cli%get("gdm-max-rotation", r%gdm_max_rotation, r%err)
+      call run_check(r, "--gdm-max-rotation")
+      if (.not. (r%gdm_max_rotation > 0.0_dp)) call run_die(r, "--gdm-max-rotation must be > 0")
    end if
    r%mom = r%cli%is_set("mom")
    if (r%cli%is_set("level-shift-until")) then
@@ -1161,6 +1178,8 @@ program trc_main
                                                   int(r%ndamp, c_int), real(r%damp, c_double), &
                                                   real(r%diis_start, c_double)))
    if (r%soscf) call run_api(r, trc_set_soscf(r%h, 1_c_int, real(r%soscf_start, c_double)))
+   if (r%gdm) call run_api(r, trc_set_gdm(r%h, 1_c_int, real(r%gdm_start, c_double), &
+                                          real(r%gdm_max_rotation, c_double)))
    if (r%mom .or. r%level_shift_until > 0.0_dp) then
       call run_api(r, trc_set_scf_stabilise(r%h, merge(1_c_int, 0_c_int, r%mom), &
                                             real(r%level_shift_until, c_double)))

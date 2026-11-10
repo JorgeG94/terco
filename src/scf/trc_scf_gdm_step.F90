@@ -129,7 +129,7 @@ module trc_scf_gdm_step
    use trc_linalg, only: trc_linalg_t
    use trc_cphf, only: cphf_copy_matrix
    use trc_scf_context, only: scf_ctx_t, scf_context_bcast_flat
-   use trc_scf_settings, only: scf_settings_t, trc_scf_result_t, scf_energies_t
+   use trc_scf_settings, only: scf_settings_t, trc_scf_result_t, scf_energies_t, AUFBAU_TOL
    use trc_scf_state, only: scf_state_t
    use trc_scf_gdm, only: trc_scf_gdm_history_t, scf_gdm_preconditioner_build, scf_gdm_step_judge, &
                           scf_gdm_step_limit, scf_gdm_is_descent
@@ -156,10 +156,11 @@ module trc_scf_gdm_step
    !! (trc_scf_incremental: ~1e-7 early, about a hundred times less once the
    !! screen tightens) with margin. Full builds are deterministic and get the
    !! option's plain slack.
-   real(dp), parameter :: GDM_AUFBAU_TOL = 1.0e-6_dp
+   real(dp), parameter :: GDM_AUFBAU_TOL = AUFBAU_TOL
    !! A virtual orbital counts as below the highest occupied one only when it
    !! is lower by more than this, hartree: a degenerate pair split by
-   !! round-off (an open-shell pi pair) is not a non-aufbau state.
+   !! round-off (an open-shell pi pair) is not a non-aufbau state. The same
+   !! number the post-SCF gate uses, so the warning and the refusal agree.
    real(dp), parameter :: GDM_HESSIAN_FLOOR = 0.1_dp
    !! The smallest Hessian estimate hessian_factor*(e_a - e_i) the
    !! preconditioner divides by, Eh per radian squared (a gap of 25 mEh

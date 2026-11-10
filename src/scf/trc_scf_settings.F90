@@ -29,7 +29,7 @@ module trc_scf_settings
 
    public :: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_settings_spin_rule, scf_energies_t
    public :: scf_settings_eri_thresh_env
-   public :: scf_settings_homo_lumo_gap
+   public :: scf_settings_homo_lumo_gap, scf_settings_is_aufbau, AUFBAU_TOL
    public :: scf_settings_fock_densities
    ! incr_env/incr_reset_env/incr_real_env stay
    ! private: nothing outside this module uses them.
@@ -57,6 +57,17 @@ module trc_scf_settings
    !! With full Fock builds it is the whole rule; a comparison that involves an
    !! incremental build gets a wider bound, 1e-8, instead
    !! (`trc_scf_gdm_step`'s header has the reasoning).
+   real(dp), parameter :: AUFBAU_TOL = 1.0e-6_dp
+   !! How far below an occupied level a virtual one may lie and the occupation
+   !! still count as aufbau, Eh. Degenerate orbitals (an open-shell pi pair)
+   !! split by round-off can be filled in either order, and the error of an
+   !! orbital energy is second order in the commutator, so far below this at
+   !! any convergence threshold in use; a swapped state lies a real excitation
+   !! (0.1 Eh or more) away. A plain DIIS run fills by aufbau and can never
+   !! fail the test: only a mom, gdm or SOSCF end point can. A converged
+   !! Kohn-Sham ground state that is itself not aufbau (the 4s/3d kind) is
+   !! refused by the post-SCF methods too, which is intended: their
+   !! denominators assume the ordering.
 
    integer, parameter :: DEFAULT_NLC_GRID_LEVEL = 1
    !! VV10's own default grid level, coarser than the semilocal grid's
@@ -783,6 +794,24 @@ contains
          gap = min(gap, eps(nocc(s) + 1, s) - eps(nocc(s), s))
       end do
    end function scf_settings_homo_lumo_gap
+
+   pure function scf_settings_is_aufbau(nao, nspin, nmo, nocc, eps) result(aufbau)
+      !! Whether the occupation is the aufbau one: for every spin, no virtual
+      !! level lies more than `AUFBAU_TOL` below an occupied one. The occupied
+      !! orbitals sit in columns 1:nocc, so a maximum-overlap run that holds
+      !! an excited determinant has a virtual column under the HOMO. Only the
+      !! first `nmo` levels are real (see scf_settings_homo_lumo_gap).
+      integer, intent(in) :: nao, nspin, nmo
+      integer, intent(in) :: nocc(2)
+      real(dp), intent(in) :: eps(nao, nspin)
+      logical :: aufbau
+      integer :: s
+      aufbau = .true.
+      do s = 1, nspin
+         if (nocc(s) < 1 .or. nocc(s) >= nmo) cycle
+         if (maxval(eps(1:nocc(s), s)) > minval(eps(nocc(s) + 1:nmo, s)) + AUFBAU_TOL) aufbau = .false.
+      end do
+   end function scf_settings_is_aufbau
 
    pure function scf_settings_fock_densities(config) result(ndens)
       !! Densities in the widest four-centre pass of one Fock build: 2 for

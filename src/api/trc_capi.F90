@@ -191,7 +191,7 @@ module trc_capi
    use trc_scf_grad, only: trc_scf_gradient
    use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t, rimp2_grad_reference_refusal
    use trc_pcm_grad, only: pcm_grad_scf_add
-   use trc_scf_settings, only: scf_settings_spin_rule, scf_settings_eri_thresh_env
+   use trc_scf_settings, only: scf_settings_spin_rule, scf_settings_eri_thresh_env, scf_settings_is_aufbau
    use trc_scf_df, only: df_jk_t
    use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
@@ -253,7 +253,7 @@ module trc_capi
              trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_ecp_json, &
              trc_set_method, trc_set_nlc_grid, &
              trc_set_unrestricted, trc_set_level_shift, &
-             trc_set_convergence, trc_set_scf_accel, trc_set_soscf, trc_set_scf_stabilise, &
+             trc_set_convergence, trc_set_scf_accel, trc_set_soscf, trc_set_scf_stabilise, trc_set_gdm, &
              trc_set_lindep, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
              trc_set_jkfit_libcint, &
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
@@ -339,8 +339,9 @@ module trc_capi
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
    integer(c_int), parameter, public :: TRC_ABI_MINOR = 23
-   !! 1.23: trc_set_scf_stabilise, a new entry point (maximum overlap
-   !! occupation and a level shift kept on through DIIS). Additive.
+   !! 1.23: trc_set_scf_stabilise (maximum overlap occupation and a level
+   !! shift kept on through DIIS) and trc_set_gdm (geometric direct
+   !! minimisation), new entry points. Additive.
    !! 1.22: trc_set_ecp_json, a new entry point (an explicit effective core
    !! potential, overriding auto-attach from the orbital basis file's own
    !! ecp_potentials). Additive. 1.21: trc_chelpg_charges, CHELPG charges fitted to the converged
@@ -3179,6 +3180,65 @@ contains
       status = TRC_OK
    end function trc_set_scf_stabilise
 
+   function trc_set_gdm(handle, on, start, max_rotation) result(status) bind(c, name="trc_set_gdm")
+      !! Geometric direct minimisation (Van Voorhis and Head-Gordon, Mol. Phys.
+      !! 100, 1713 (2002)), an aid for SCFs that DIIS cannot converge: an
+      !! L-BFGS minimisation over occupied-virtual orbital rotations that takes
+      !! over from DIIS once |FDS - SDF| < `start`, and accepts a step only if
+      !! the energy does not rise (trc_scf_options_t%gdm has the details).
+      !!
+      !!   on            1 turns GDM on; 0 off (the default).
+      !!   start         commutator norm at which DIIS hands over; 0 for the
+      !!                 library's default (0.1). Must be >= 0.
+      !!   max_rotation  largest rotation angle of one step, radians; 0 for the
+      !!                 library's default (0.2). Must be >= 0.
+      !!
+      !! Works with restricted and unrestricted references, functionals
+      !! (VV10 included), continuum solvents, density fitting and several
+      !! ranks; refused at the next trc_run_scf together with fractional
+      !! occupations and with trc_set_soscf. Measured caveats: it keeps the
+      !! occupation it starts from, so started too early from a poor guess it
+      !! can land on a higher state (the run warns when the final orbitals are
+      !! not in aufbau order); with trc_set_scf_stabilise's mom, a non-aufbau
+      !! occupation held by MOM at the handover makes GDM decline and the run
+      !! continues as a MOM run; and where DIIS works it is slower (about 1.8
+      !! times the iterations on a flat mode), so it is an aid for stalled
+      !! cases, not a default. A 39-atom open-shell cation (UKS
+      !! wB97X-V/def2-SVP, IEF-PCM) that DIIS left unconverged after 100
+      !! iterations converged in 46, to the same energy on 1, 2 and 3 GPUs.
+      !!
+      !! Takes effect at the next trc_run_scf, for every SCF the handle runs
+      !! after it (trc_fukui_hirshfeld's three included). (ABI 1.23.)
+      type(c_ptr), value :: handle
+      integer(c_int), value :: on
+      real(c_double), value :: start
+      real(c_double), value :: max_rotation
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (on /= 0 .and. on /= 1) then
+         call refuse(cx, "trc_set_gdm: on must be 0 or 1")
+         return
+      end if
+      ! Written so a NaN fails these too, and an infinity.
+      if (.not. (start >= 0.0_c_double .and. start <= huge(start))) then
+         call refuse(cx, "trc_set_gdm: start must be finite and >= 0")
+         return
+      end if
+      if (.not. (max_rotation >= 0.0_c_double .and. max_rotation <= huge(max_rotation))) then
+         call refuse(cx, "trc_set_gdm: max_rotation must be finite and >= 0")
+         return
+      end if
+      cx%opts%gdm = on == 1
+      cx%opts%gdm_start = real(start, dp)
+      cx%opts%gdm_max_rotation = real(max_rotation, dp)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_gdm
+
    !
    ! Density-fitted J and K (`--df`). Needs a jkfit basis too
    ! (`trc_set_jkfit_json`, separate from `trc_set_aux_json`'s rifit set
@@ -5052,6 +5112,22 @@ contains
       status = TRC_OK
    end function trc_hessian
 
+   function reference_is_aufbau(cx) result(aufbau)
+      !! Whether the converged SCF this context holds occupies its lowest
+      !! orbitals. A maximum-overlap run can hold an excited determinant;
+      !! the post-SCF methods that divide by eps_a - eps_i (RI-MP2, the
+      !! CPHF/CPKS response) are only meaningful on an aufbau one. Fractional
+      !! occupations have no integer split to test and pass.
+      type(context_box), intent(in) :: cx
+      logical :: aufbau
+      integer :: nocc(2)
+      aufbau = .true.
+      if (cx%opts%frac_occ .or. .not. allocated(cx%res%eps)) return
+      nocc = [cx%nalpha, cx%nbeta]
+      aufbau = scf_settings_is_aufbau(size(cx%res%eps, 1), cx%res%nspin, &
+                                  size(cx%res%eps, 1) - cx%res%n_lindep, nocc, cx%res%eps)
+   end function reference_is_aufbau
+
    function trc_run_polarizability(handle) result(status) bind(c, name="trc_run_polarizability")
       !! The static dipole polarizability at the converged SCF this
       !! context already holds: CPHF (trc_cphf%trc_scf_polarizability)
@@ -5103,6 +5179,12 @@ contains
          ! rather than risked.
          cx%message = "trc_run_polarizability: CPHF/CPKS are Cartesian-only; "// &
                       "set force_cartesian before loading the basis"
+         return
+      end if
+      if (.not. reference_is_aufbau(cx)) then
+         cx%message = "trc_run_polarizability: the response needs an aufbau reference; this SCF holds a "// &
+                      "non-aufbau occupation (kept by mom, or reached by gdm), whose orbital energy "// &
+                      "denominators are not those of a ground state"
          return
       end if
       if (cx%rimp2_ok) then
@@ -5323,6 +5405,13 @@ contains
       ! nbeta, UHF/UKS) -- trc_scf_driver's own rule -- so nothing is
       ! refused here on the reference's shape; ROHF does not exist in this
       ! build, so the spin check alone is enough.
+      if (.not. reference_is_aufbau(cx)) then
+         status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_run_rimp2: RI-MP2 needs an aufbau reference; this SCF holds a non-aufbau "// &
+                      "occupation (kept by mom, or reached by gdm), whose orbital energy "// &
+                      "denominators are not those of a ground state"
+         return
+      end if
       status = TRC_ERR_UNSUPPORTED
       ! A status, not the DF kernels' own error stop: a host passing an
       ! auxiliary basis (a *-rifit set carries f/g on heavy atoms) above
