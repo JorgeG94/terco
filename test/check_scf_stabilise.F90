@@ -55,6 +55,7 @@ module check_scf_stabilise_suite
                              scf_driver_mom_permute, scf_shift_guard_t, scf_driver_shift_stalled, scf_driver_shift_now, &
                              SHIFT_STALL_WINDOW, SHIFT_STALL_FACTOR, scf_driver_mom_active, MOM_START
    use trc_scf_diis, only: cdiis_t
+   use trc_sad, only: trc_sad_build
    use trc_capi, only: trc_guess_is_user_chosen
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_real
    use trc_linalg, only: trc_linalg_t
@@ -76,10 +77,10 @@ module check_scf_stabilise_suite
    real(dp), parameter :: E_OH_UHF = -75.393846033475_dp
    real(dp), parameter :: TOL_REF = 1.0e-8_dp
    real(dp), parameter :: MU = 0.5_dp
-   integer, parameter :: UHF_NDAMP = 4
-   !! The damped start of an unrestricted run (`ndamp` < 0 resolves to 4).
    !! The level shift of the probes. A shifted virtual sits MU above the
    !! unshifted one; the tolerance on that is 1e-5, the unshifted 1e-6.
+   integer, parameter :: UHF_NDAMP = 4
+   !! The damped start of an unrestricted run (`ndamp` < 0 resolves to 4).
    real(dp), parameter :: MIN_EXCITATION = 0.3_dp
    !! The doubly excited water state must sit at least this far above the
    !! ground state (measured: see the cases), or it is not a different state.
@@ -830,8 +831,8 @@ contains
 
    subroutine capi_o3(h, until, error)
       !! The O3+ doublet, 6-31G*, as the CLI runs `terco o3.xyz -b 6-31gs.json -c 1 -u 1`: the
-      !! default level shift (1 Eh), the default SADQ guess for an ion, the CLI convergence
-      !! settings, and `level_shift_until` as given.
+      !! default level shift (1 Eh), the CLI convergence settings, and `level_shift_until` as given. The guess
+      !! is the handle's default, SAD; the CLI itself uses SADQ for an ion.
       type(c_ptr), intent(out) :: h
       real(dp), intent(in) :: until
       type(error_type), allocatable, intent(out) :: error
@@ -891,21 +892,58 @@ contains
       call capi_free(h)
    end subroutine capi_o3_run
 
+   subroutine direct_o3_run(until, res, error)
+      !! The run `capi_o3` sets up (SAD guess, spin split, convergence settings),
+      !! through `trc_scf_run` itself, because the C ABI does not expose
+      !! `shift_dropped`.
+      real(dp), intent(in) :: until
+      type(trc_scf_result_t), intent(out) :: res
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: bas
+      type(trc_scf_options_t) :: o
+      type(error_t) :: err
+      real(dp), allocatable :: dsad(:, :), dg(:, :, :)
+      integer :: nelec, na, nb
+      call make_basis('o3.xyz', '6-31gs', nelec, bas, error)
+      if (allocated(error)) return
+      nelec = nelec - 1
+      na = (nelec + 1)/2
+      nb = nelec - na
+      call trc_sad_build(bas, dsad, err)
+      call check(error, .not. err%has_error(), "SAD guess: "//err%get_message())
+      if (.not. allocated(error)) then
+         allocate (dg(size(dsad, 1), size(dsad, 2), 2))
+         dg(:, :, 1) = 0.5_dp*dsad
+         dg(:, :, 2) = 0.5_dp*dsad
+         o%conv_energy = 1.0e-10_dp
+         o%conv_diis = 1.0e-5_dp
+         o%max_iteration = 100
+         o%ndiis = 10
+         o%level_shift_until = until
+         call trc_scf_run(bas, na, nb, o, res, dguess=dg)
+      end if
+      call bas%release()
+   end subroutine direct_o3_run
+
    subroutine test_o3_stall_guard(error)
       !! Without the guard `level_shift_until` = 1e-3 or 1e-4 never converges
       !! (the commutator parks at 2e-3 to 4e-3 above the threshold, so the shift
       !! never switches off: measured not converged after 100 iterations; 1e-2
       !! converges in 50). With it the shift is dropped after about 20 shifted
-      !! iterations and the run converges. The SAD guess of this handle gives
-      !! 36 iterations plain, 52 with the guard (60 if the DIIS history is not
-      !! restarted when the shift is dropped, 100 and unconverged without the
-      !! guard), so the bound of 56 leaves four iterations of round-off
-      !! either way.
+      !! iterations and the run converges. The guard costs 16 to 17 iterations
+      !! over the plain run on both gfortran (36 plain, 52 guarded, SAD guess of
+      !! this handle) and ifx (41 and 58); the absolute counts move with the
+      !! compiler's round-off, the difference does not. So the bound is
+      !! GUARD_EXTRA_ITERATIONS over the plain run of the same build, which
+      !! still fails for a guard that does not restart DIIS (60 on gfortran, 24
+      !! over) or does not fire (unconverged). `shift_dropped` is read from a
+      !! direct `trc_scf_run` of the same case, since the C ABI does not report it.
       type(error_type), allocatable, intent(out) :: error
       logical :: conv_plain, conv_1e3, conv_1e4
       integer :: n_plain, n_1e3, n_1e4
       real(dp) :: e_plain, e_1e3, e_1e4
-      integer, parameter :: MAX_ITERATIONS = 56
+      type(trc_scf_result_t) :: d_plain, d_1e3, d_1e4
+      integer, parameter :: GUARD_EXTRA_ITERATIONS = 20
       call capi_o3_run(0.0_dp, conv_plain, n_plain, e_plain, error)
       if (allocated(error)) return
       call capi_o3_run(1.0e-3_dp, conv_1e3, n_1e3, e_1e3, error)
@@ -914,19 +952,37 @@ contains
       if (allocated(error)) return
       call check(error, conv_plain, "the plain O3+ run must converge")
       if (allocated(error)) return
-      call check(error, conv_1e3 .and. n_1e3 <= MAX_ITERATIONS, &
-                 "level_shift_until = 1e-3 did not converge within "//to_string(MAX_ITERATIONS)//" iterations ("// &
-                 to_string(n_1e3)//" run, plain "//to_string(n_plain)//")")
+      call check(error, conv_1e3 .and. n_1e3 <= n_plain + GUARD_EXTRA_ITERATIONS, &
+                 "level_shift_until = 1e-3 did not converge within "//to_string(GUARD_EXTRA_ITERATIONS)// &
+                 " iterations of the plain run ("//to_string(n_1e3)//" run, plain "//to_string(n_plain)//")")
       if (allocated(error)) return
-      call check(error, conv_1e4 .and. n_1e4 <= MAX_ITERATIONS, &
-                 "level_shift_until = 1e-4 did not converge within "//to_string(MAX_ITERATIONS)//" iterations ("// &
-                 to_string(n_1e4)//" run, plain "//to_string(n_plain)//")")
+      call check(error, conv_1e4 .and. n_1e4 <= n_plain + GUARD_EXTRA_ITERATIONS, &
+                 "level_shift_until = 1e-4 did not converge within "//to_string(GUARD_EXTRA_ITERATIONS)// &
+                 " iterations of the plain run ("//to_string(n_1e4)//" run, plain "//to_string(n_plain)//")")
       if (allocated(error)) return
       call check(error, abs(e_1e3 - e_plain) < 1.0e-8_dp, "1e-3 energy differs from the plain run: "// &
                  to_string(e_1e3 - e_plain, "es10.2"))
       if (allocated(error)) return
       call check(error, abs(e_1e4 - e_plain) < 1.0e-8_dp, "1e-4 energy differs from the plain run: "// &
                  to_string(e_1e4 - e_plain, "es10.2"))
+      if (allocated(error)) return
+      ! The guard must be what made them converge, not a lucky shift schedule.
+      call direct_o3_run(0.0_dp, d_plain, error)
+      if (allocated(error)) return
+      call direct_o3_run(1.0e-3_dp, d_1e3, error)
+      if (allocated(error)) return
+      call direct_o3_run(1.0e-4_dp, d_1e4, error)
+      if (allocated(error)) return
+      call check(error, d_1e3%iterations == n_1e3 .and. d_1e4%iterations == n_1e4 .and. &
+                 d_plain%iterations == n_plain, "the direct runs are not the C ABI runs: "// &
+                 to_string(d_plain%iterations)//"/"//to_string(d_1e3%iterations)//"/"//to_string(d_1e4%iterations)// &
+                 " against "//to_string(n_plain)//"/"//to_string(n_1e3)//"/"//to_string(n_1e4)//" iterations")
+      if (allocated(error)) return
+      call check(error, d_1e3%shift_dropped, "the guard did not drop the shift of level_shift_until = 1e-3")
+      if (allocated(error)) return
+      call check(error, d_1e4%shift_dropped, "the guard did not drop the shift of level_shift_until = 1e-4")
+      if (allocated(error)) return
+      call check(error, .not. d_plain%shift_dropped, "the plain run reports a dropped shift")
    end subroutine test_o3_stall_guard
 
    subroutine test_guard_quiet_on_progress(error)

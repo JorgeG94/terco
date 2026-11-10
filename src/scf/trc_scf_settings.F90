@@ -210,8 +210,9 @@ module trc_scf_settings
       !! A stall guard stops it from trapping a run that would converge
       !! without it. The shift only damps the step, so with the threshold
       !! below the commutator a shifted DIIS can sit above it indefinitely
-      !! (O3+ UHF/6-31G* converges in 38 iterations by default, and not in 100
-      !! with a threshold of 1e-3, the commutator parked at 2e-3 to 4e-3). So
+      !! (O3+ UHF/6-31G* converges in 36 iterations by default (SAD guess; 35
+      !! from SADQ), and not in 100 with a threshold of 1e-3, the commutator
+      !! parked at 2e-3 to 4e-3). So
       !! the shift this option keeps on is dropped for the rest of the run,
       !! and the SCF says so once, when the best commutator of the last
       !! `SHIFT_STALL_WINDOW` (10) iterations shifted through this option is
