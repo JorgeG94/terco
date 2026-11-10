@@ -97,6 +97,7 @@ module trc_scf_diis
    contains
       procedure :: alloc => cdiis_alloc
       procedure :: push => cdiis_push
+      procedure :: restart => cdiis_restart
       procedure :: extrapolate => cdiis_extrapolate
    end type cdiis_t
 
@@ -133,6 +134,15 @@ contains
       allocate (this%bcache(ndiis, ndiis), this%row(ndiis), this%coeff(ndiis))
       this%bcache = 0.0_dp
    end subroutine cdiis_alloc
+
+   subroutine cdiis_restart(this)
+      !! Forget the history; the next push starts a new one. Nothing is
+      !! reallocated or zeroed: `push` rewrites every slot it then reads.
+      class(cdiis_t), intent(inout) :: this
+      this%n_used = 0
+      this%head = 0
+      this%nfilled = 0
+   end subroutine cdiis_restart
 
    subroutine cdiis_push(this, nao, nspin, fock, errv, staging)
       !! The ring advances one slot (wrapping at ndiis, overwriting the
