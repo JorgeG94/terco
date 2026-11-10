@@ -50,6 +50,7 @@ module trc_sym_tops
    !! D2h for a Cartesian basis).
    use pic_types, only: dp
    use pic_sorting, only: sort
+   use pic_strings, only: to_string
    implicit none
    private
 
@@ -57,12 +58,15 @@ module trc_sym_tops
 
    type :: trc_sym_tops_moments_t
       !! The second-moment tensor of the atoms about the charge centre, as
-      !! `trc_sym_geom` diagonalises it: the four items `sym_tops_axes` reads
-      !! together (bundled to keep that call within the argument limit).
+      !! `trc_sym_geom` diagonalises it, and the tests `trc_sym_geom` made on it
+      !! (decided there, once, so that both modules agree): the items
+      !! `sym_tops_axes` reads together (bundled to keep that call within the argument limit).
       real(dp) :: ev(3) = 0.0_dp  !! eigenvalues, ascending
       real(dp) :: vec(3, 3) = 0.0_dp  !! eigenvectors, columns
       logical :: eq12 = .false.  !! the moments 1 and 2 are equal
       logical :: eq23 = .false.  !! the moments 2 and 3 are equal
+      logical :: point = .false.  !! all three moments vanish (below tol^2): a single atom
+      logical :: linear = .false.  !! the two smallest vanish (below tol^2): a linear molecule
    end type trc_sym_tops_moments_t
 
    real(dp), parameter :: PI = 3.14159265358979323846_dp
@@ -872,17 +876,16 @@ contains
       integer, intent(in) :: n
       character(len=1), intent(in) :: suf
       character(len=4) :: name
-      character(len=2) :: ns
-      write (ns, "(i0)") n
-      name = trim(fam//trim(ns)//trim(suf))
+      name = fam//to_string(n)//trim(suf)
    end function cn_name
 
    subroutine sym_tops_axes(d, cls, tol, mom, kind, topname, abel, ax)
       !! The degenerate branch of pyscf `detect_symm` (l.188-346) followed by
       !! `get_subgroup`. `d` are the atoms about the charge centre, `cls` the
       !! atom classes, `tol` pyscf's `TOLERANCE`, `mom` the eigenvalues
-      !! (ascending) and eigenvectors (columns) of the second-moment tensor and
-      !! whether the moments 1,2 and 2,3 are equal.
+      !! (ascending) and eigenvectors (columns) of the second-moment tensor,
+      !! whether the moments 1,2 and 2,3 are equal, and whether the molecule
+      !! is a single atom or linear.
       !!
       !! `kind` = 1: the full group `topname` was found; `abel` and `ax` (rows
       !! x, y, z) are pyscf's `groupname` and `_symm_axes`. `kind` = 2: no axis
@@ -900,8 +903,7 @@ contains
 
       type(sys_t) :: s
       real(dp) :: zhat(3), c2x(3), mir(3), e(3), axes(3, 3), z(3), proj(3), xk(3)
-      real(dp) :: tolp
-      integer :: natm, n, i, k, m
+      integer :: n, i, k, m
       logical :: have_c2x, have_mir, found, is_top
       character(len=1) :: suf
 
@@ -909,20 +911,21 @@ contains
       topname = ""
       abel = ""
       ax = 0.0_dp
-      natm = size(d, 2)
-      tolp = tol/sqrt(1.0_dp + real(natm, dp))
       call build_sys(d, cls, tol, s)
       do i = 1, 3
          ax(i, i) = 1.0_dp
       end do
 
-      if (mom%ev(3) <= tolp) then  ! l.201: allclose(w1, 0): a single atom
+      ! pyscf (l.201, l.206) compares the moments, in Bohr^2, with a length;
+      ! `mom` compares them with tol^2, so a linear molecule does not depend
+      ! on the orientation of a small bend (trc_sym_geom).
+      if (mom%point) then  ! l.201: allclose(w1, 0): a single atom
          kind = 1
          topname = "SO3"
          abel = "D2h"
          return
       end if
-      if (mom%ev(2) <= tolp) then  ! l.206: linear
+      if (mom%linear) then  ! l.206: linear
          ! z along the molecule, largest component positive
          z = mom%vec(:, 3)
          m = maxloc(abs(z), 1)

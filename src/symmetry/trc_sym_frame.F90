@@ -242,8 +242,12 @@ contains
    end subroutine sym_frame_rotate_cols
 
    subroutine sym_frame_rotate_dmat(bas, dl, a)
-      !! `a <- D a D^T` for a square `a(nao, nao)`: a density or any other
-      !! operator matrix, standard frame to input frame.
+      !! `a <- D a D^T` for a square `a(nao, nao)`, standard frame to input
+      !! frame: right for a contravariant matrix (a density, which pairs with
+      !! AO functions as D_uv chi_u chi_v). Not for a covariant one (Fock,
+      !! overlap: integrals over AOs) in a Cartesian basis, where D is not
+      !! orthogonal and such a matrix goes as `D^-T a D^-1` (module header:
+      !! `S_std = D^T S_in D`).
       type(trc_basis_t), intent(in) :: bas
       real(dp), intent(in) :: dl(:, :, 0:)
       real(dp), intent(inout) :: a(:, :)

@@ -14,6 +14,7 @@ module trc_sym_group
    !! and its characters are +1 or -1.
    !!
    !! Pure data and logic: nothing here touches the basis or the SCF.
+   use pic_ascii, only: to_lower
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
    private
@@ -53,17 +54,6 @@ contains
       k = 0
    end function group_op_index
 
-   pure function lower(s) result(t)
-      character(len=*), intent(in) :: s
-      character(len=len(s)) :: t
-      integer :: i, c
-      t = s
-      do i = 1, len(s)
-         c = iachar(s(i:i))
-         if (c >= iachar("A") .and. c <= iachar("Z")) t(i:i) = achar(c + 32)
-      end do
-   end function lower
-
    function sym_group_from_name(name, error) result(g)
       !! The group called `name` (case-insensitive: "C2v", "c2v"). An unknown
       !! name sets `error` and returns an empty group.
@@ -75,7 +65,7 @@ contains
 
       ig = 0
       do i = 1, SYM_NGROUPS
-         if (lower(trim(adjustl(name))) == lower(trim(sym_group_names(i)))) ig = i
+         if (to_lower(trim(adjustl(name))) == to_lower(trim(sym_group_names(i)))) ig = i
       end do
       if (ig == 0) then
          call error%set(ERROR_VALIDATION, "unknown point group '"//trim(name)// &

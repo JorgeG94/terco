@@ -2,10 +2,11 @@
 ! trc_sym_ao: AO signed permutations and the SO basis, on terco's own 1e
 ! integrals.
 !
-! For HOCl (planar, so every atom is its own mirror image: only the signs are
-! exercised) and nonplanar CHFCl2 (the mirror swaps the two Cl), both Cs (C2v
-! has its own check, check_sym_c2v), in 6-31G* and cc-pVDZ, in the Cartesian
-! and the spherical AO space, with the basis built on the standard frame of trc_sym_geom:
+! For HOCl (Cs, planar, so every atom is its own mirror image: only the signs
+! are exercised), nonplanar CHFCl2 (Cs, the mirror swaps the two Cl), water
+! (C2v) and ethylene (D2h, turned off the input axes), so that every sign mask
+! acts on some AO, in 6-31G* and cc-pVDZ, in the Cartesian and the spherical
+! AO space, with the basis built on the standard frame of trc_sym_geom:
 !   - U^T U = I, and the irrep dimensions add up to the AO count;
 !   - the dimensions equal those of pyscf 2.14.0's mol.symm_orb
 !     (pyscf_refs/sym_so_dims.ref);
@@ -43,8 +44,10 @@ module check_sym_ao_suite
    character(len=8) :: g_mode = 'main'
       !! "main" or "f", set from argv before run_testsuite.
 
-   integer, parameter :: NMOL = 2, NBAS = 2
-   character(len=8), parameter :: MOL(NMOL) = [character(len=8) :: "hocl", "chfcl2"]
+   integer, parameter :: NMOL = 4, NBAS = 2
+   character(len=8), parameter :: MOL(NMOL) = [character(len=8) :: "hocl", "chfcl2", "water", "ethylene"]
+   character(len=3), parameter :: MOL_GROUP(NMOL) = [character(len=3) :: "Cs", "Cs", "C2v", "D2h"]
+   integer, parameter :: NIRREP(NMOL) = [2, 2, 4, 8]
    character(len=8), parameter :: BAS_NAME(NBAS) = [character(len=8) :: "631gs", "ccpvdz"]
    character(len=32), parameter :: BAS_FILE(NBAS) = [character(len=32) :: &
                                                       "basis_sets/6-31gs.json", "basis_sets/cc-pvdz.json"]
@@ -66,9 +69,10 @@ contains
       end if
    end subroutine collect_sym_ao
 
-   subroutine setup_geom(name, elem, geom, error)
-      !! Read molecule `name`, detect its group, and return the geometry result.
-      character(len=*), intent(in) :: name
+   subroutine setup_geom(name, group, elem, geom, error)
+      !! Read molecule `name`, detect its group (which must be `group`), and
+      !! return the geometry result.
+      character(len=*), intent(in) :: name, group
       integer, allocatable, intent(out) :: elem(:)
       type(trc_sym_geom_t), intent(out) :: geom
       type(error_type), allocatable, intent(out) :: error
@@ -79,7 +83,7 @@ contains
       geom = sym_geom_detect(r, elem, err, basis_id=elem)
       call check(error, .not. err%has_error(), "sym_geom_detect: "//err%get_message())
       if (allocated(error)) return
-      call check(error, geom%group%name, "Cs", "group of "//trim(name))
+      call check(error, geom%group%name, group, "group of "//trim(name))
    end subroutine setup_geom
 
    subroutine make_basis(path, elem, geom, spherical, bas, error)
@@ -205,13 +209,13 @@ contains
       type(trc_basis_t) :: bas
       type(trc_sym_geom_t) :: geom
       integer, allocatable :: elem(:), dims(:)
-      real(dp) :: ref(2)
+      real(dp), allocatable :: ref(:)
       integer :: im, ib, ik, u, nao_ref, nao
       character(len=64) :: label
 
       call ref_require('sym_so_dims.ref', u)
       do im = 1, NMOL
-         call setup_geom(MOL(im), elem, geom, error)
+         call setup_geom(MOL(im), MOL_GROUP(im), elem, geom, error)
          if (allocated(error)) return
          do ib = 1, NBAS
             do ik = 1, 2
@@ -223,10 +227,13 @@ contains
                call bas%release()
                if (allocated(error)) return
                call ref_read_int(u, 'NAO_'//trim(MOL(im))//'_'//trim(BAS_NAME(ib))//'_'//KIND_NAME(ik), nao_ref)
-               call ref_read_vector(u, 'SO_'//trim(MOL(im))//'_'//trim(BAS_NAME(ib))//'_'//KIND_NAME(ik), 2, ref)
+               if (allocated(ref)) deallocate (ref)
+               allocate (ref(NIRREP(im)))
+               call ref_read_vector(u, 'SO_'//trim(MOL(im))//'_'//trim(BAS_NAME(ib))//'_'//KIND_NAME(ik), &
+                                    NIRREP(im), ref)
                call check(error, nao, nao_ref, trim(label)//": AO count against pyscf")
                if (allocated(error)) return
-               call check(error, size(dims), 2, trim(label)//": number of irreps")
+               call check(error, size(dims), NIRREP(im), trim(label)//": number of irreps")
                if (allocated(error)) return
                call check(error, all(dims == nint(ref)), trim(label)//": SO dimensions against pyscf")
                if (allocated(error)) return
@@ -242,7 +249,7 @@ contains
       type(trc_sym_geom_t) :: geom
       type(decon_t) :: m
       integer, allocatable :: elem(:)
-      call setup_geom('hocl', elem, geom, error)
+      call setup_geom('hocl', 'Cs', elem, geom, error)
       if (allocated(error)) return
       call make_basis('basis_sets/cc-pvdz.json', elem, geom, .false., bas, error)
       if (allocated(error)) return
@@ -314,7 +321,7 @@ contains
       integer, allocatable :: elem(:)
       integer :: nat
       real(dp), allocatable :: r(:, :)
-      call setup_geom('hocl', elem, geom, error)
+      call setup_geom('hocl', 'Cs', elem, geom, error)
       if (allocated(error)) return
       call read_xyz('hocl.xyz', nat, elem, r)  ! the input frame, not the standard one
       call trc_basis_from_json('basis_sets/6-31gs.json', nat, elem, r, bas, err)
@@ -334,7 +341,7 @@ contains
       real(dp), allocatable :: sh_e(:, :), sh_c(:, :), sh_r(:, :)
       integer :: im, ik, nsh, maxnp
       do im = 1, NMOL
-         call setup_geom(MOL(im), elem, geom, error)
+         call setup_geom(MOL(im), MOL_GROUP(im), elem, geom, error)
          if (allocated(error)) return
          do ik = 1, 2
             call build_aux(size(elem), elem, geom%r_std, 3, nsh, sh_l, sh_np, sh_e, sh_c, sh_r, maxnp)

@@ -1,0 +1,5 @@
+3
+water of water.xyz (yz plane) turned by 1e-4 rad about y: its axes pass pyscf's input-axis test, its mirrors do not hold in the input frame (check_sym_geom)
+O    0.000011730000   0.000000000000   0.117299999414
+H   -0.000046920000   0.757200000000  -0.469199997654
+H   -0.000046920000  -0.757200000000  -0.469199997654

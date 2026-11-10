@@ -1,24 +1,32 @@
 module check_sym_geom_suite
-   !! trc_sym_geom: detection, orientation and symmetrization of nondegenerate
-   !! tops. Water and HOCl against pyscf 2.14.0, with the molecules rotated
-   !! and shifted so that the frame is not trivially the input one.
+   !! trc_sym_geom: detection, orientation and symmetrization. HOCl, water and
+   !! CH2Cl2 against pyscf 2.14.0, with the molecules rotated and shifted so
+   !! that the frame is not trivially the input one (test/sym_*_rot.xyz).
    !!
    !! The expected frames (rows x, y, z, compared up to sign, and the origin
-   !! in Bohr) were printed by pyscf 2.14.0 on the geometries below with
-   !! symmetry=True (all three; water and CH2Cl2 are C2v). Static
-   !! data, so no .ref file; pyscf never runs in CI. The sign of an axis is
-   !! LAPACK's in pyscf and does not affect any label, so it is not compared.
+   !! in Bohr) are pyscf's `_symm_axes` and `_symm_orig`, in
+   !! pyscf_refs/sym_geom_frames.ref (generate.py `sym_geom_frames`). The sign
+   !! of an axis is LAPACK's in pyscf and does not affect any label, so it is
+   !! not compared.
+   !!
+   !! Tolerance edge cases: a requested subgroup on input axes tilted below
+   !! pyscf's axis test, symmetric and spherical tops with noise below `tol`,
+   !! a nearly linear molecule bent in different directions, and a `tol` so
+   !! large that two atoms share a nearest image.
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
-   use trc_constants, only: ANGSTROM_TO_BOHR
    use trc_error, only: error_t
    use trc_sym_geom, only: trc_sym_geom_t, sym_geom_detect, SYM_GROUP_ENABLED
+   use trc_test_basis, only: read_xyz
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_vector, ref_read_matrix
    implicit none
    private
    public :: collect_sym_geom
 
    integer, parameter :: NMOL = 3
    character(len=6), parameter :: MOL_NAME(NMOL) = [character(len=6) :: "HOCl", "water", "CH2Cl2"]
+   character(len=14), parameter :: MOL_FILE(NMOL) = [character(len=14) :: "sym_hocl_rot", "sym_water_rot", &
+                                                     "sym_ch2cl2_rot"]
    integer, parameter :: NATM(NMOL) = [3, 3, 5]
    character(len=3), parameter :: DETECTED(NMOL) = [character(len=3) :: "Cs", "C2v", "C2v"]
    integer, parameter :: ORDER(NMOL) = [2, 4, 4]  !! operations of the reported group
@@ -37,35 +45,22 @@ contains
                   new_unittest("basis identity and ghost break symmetry", test_classes), &
                   new_unittest("degenerate moments: linear molecule and atom in D2h/C2v", test_degenerate), &
                   new_unittest("tolerance decides detection", test_tolerance), &
+                  new_unittest("requested C2 on water tilted by 1e-4 rad: pyscf's frame", test_requested_tilted), &
+                  new_unittest("tops with noise below tol keep their group", test_noisy_tops), &
+                  new_unittest("a bent near-linear molecule: same group in every direction", test_bent_linear), &
+                  new_unittest("a large tol never gives a perm that is not a permutation", test_large_tol), &
                   new_unittest("bad arguments are refused", test_bad_args) &
                   ]
    end subroutine collect_sym_geom
 
    subroutine geometry(imol, elem, r)
-      !! Geometry in Bohr (input from pyscf's run, Angstrom), and elements.
+      !! Geometry in Bohr (test/sym_*_rot.xyz, Angstrom, the input of pyscf's
+      !! run), and elements.
       integer, intent(in) :: imol
       integer, allocatable, intent(out) :: elem(:)
       real(dp), allocatable, intent(out) :: r(:, :)
-      select case (imol)
-      case (1)  ! HOCl, planar, rotated by an arbitrary rotation and shifted
-         elem = [1, 8, 17]
-         r = reshape([-0.4097355013_dp, 0.3301706256_dp, 0.8801192260_dp, &
-                      0.3000000000_dp, -0.2000000000_dp, 0.5000000000_dp, &
-                      1.4898435896_dp, -0.1547782806_dp, 1.6978932458_dp], [3, 3])
-      case (2)  ! water
-         elem = [8, 1, 1]
-         r = reshape([0.2543212284_dp, -0.2962864483_dp, 0.5490067312_dp, &
-                      0.0334200294_dp, 0.6171335452_dp, 0.7339409511_dp, &
-                      0.9320101430_dp, -0.2468419586_dp, -0.1259948004_dp], [3, 3])
-      case default  ! CH2Cl2, not planar
-         elem = [6, 17, 17, 1, 1]
-         r = reshape([0.3000000000_dp, -0.2000000000_dp, 0.5000000000_dp, &
-                      -0.9303249111_dp, -0.1525786544_dp, 1.7202671139_dp, &
-                      0.7904300607_dp, -1.8070483858_dp, 0.0735333056_dp, &
-                      1.1684143839_dp, 0.3327600172_dp, 0.8721870790_dp, &
-                      -0.0855356395_dp, 0.2851018405_dp, -0.3902463002_dp], [3, 5])
-      end select
-      r = r*ANGSTROM_TO_BOHR
+      integer :: nat
+      call read_xyz(trim(MOL_FILE(imol))//".xyz", nat, elem, r)
    end subroutine geometry
 
    function detect(imol, err) result(res)
@@ -99,39 +94,49 @@ contains
       call check(error, SYM_GROUP_ENABLED(5) .and. SYM_GROUP_ENABLED(8), "C1 and Cs are enabled")
    end subroutine test_groups
 
+   subroutine pyscf_frames(ax, orig)
+      !! pyscf 2.14.0 _symm_axes (rows x, y, z) and _symm_orig (Bohr) of the
+      !! NMOL molecules, then of the tilted water, in the order of the file.
+      real(dp), intent(out) :: ax(3, 3, NMOL + 1), orig(3, NMOL + 1)
+      character(len=14), parameter :: TILT = "sym_water_tilt"
+      integer :: im, u
+      call ref_require("sym_geom_frames.ref", u)
+      do im = 1, NMOL + 1
+         call ref_read_matrix(u, "AXES_"//trim(merge(MOL_FILE(min(im, NMOL)), TILT, im <= NMOL)), 3, 3, ax(:, :, im))
+         call ref_read_vector(u, "ORIG_"//trim(merge(MOL_FILE(min(im, NMOL)), TILT, im <= NMOL)), 3, orig(:, im))
+      end do
+      call ref_close(u)
+   end subroutine pyscf_frames
+
    subroutine test_pyscf_frame(error)
       type(error_type), allocatable, intent(out) :: error
       type(trc_sym_geom_t) :: res
       type(error_t) :: err
-      real(dp) :: ax(3, 3, NMOL), orig(3, NMOL)
-      integer :: im, k
-      ! pyscf 2.14.0 _symm_axes (rows x, y, z) and _symm_orig (Bohr)
-      ax(:, :, 1) = transpose(reshape([-0.53940512_dp, 0.5709197_dp, 0.61894492_dp, &
-                                       0.74658923_dp, -0.0156706_dp, 0.66510071_dp, &
-                                       0.38941834_dp, 0.82085634_dp, -0.41778969_dp], [3, 3], order=[2, 1]))
-      ! water: C2 along z, the molecular plane normal x (pyscf _adjust_planar_c2v)
-      ax(:, :, 2) = transpose(reshape([-0.70446631_dp, -0.02677426_dp, -0.70923224_dp, &
-                                       0.59336378_dp, -0.5705068_dp, -0.56783924_dp, &
-                                       -0.38941834_dp, -0.82085634_dp, 0.41778969_dp], [3, 3], order=[2, 1]))
-      ! CH2Cl2: C2 along z, x and y by the principal moments (cyclic order)
-      ax(:, :, 3) = transpose(reshape([0.59336378_dp, -0.5705068_dp, -0.56783924_dp, &
-                                       0.70446631_dp, 0.02677426_dp, 0.70923224_dp, &
-                                       -0.38941834_dp, -0.82085634_dp, 0.41778969_dp], [3, 3], order=[2, 1]))
-      orig(:, 1) = [1.98549203_dp, -0.28353597_dp, 2.45259591_dp]
-      orig(:, 2) = [0.56691784_dp, -0.37794522_dp, 0.94486306_dp]
-      orig(:, 3) = [0.02270669_dp, -1.52508987_dp, 1.5287231_dp]
+      real(dp) :: ax(3, 3, NMOL + 1), orig(3, NMOL + 1)
+      integer :: im
+      call pyscf_frames(ax, orig)
       do im = 1, NMOL
          res = detect(im, err)
-         call check(error, maxval(abs(res%shift - orig(:, im))) < 1.0e-6_dp, "origin of "//MOL_NAME(im))
+         call check_frame(error, res, ax(:, :, im), orig(:, im), MOL_NAME(im))
          if (allocated(error)) return
-         do k = 1, 3
-            ! rows are unit vectors, so parallel up to sign means |dot| = 1
-            call check(error, abs(abs(dot_product(res%rot(k, :), ax(:, k, im))) - 1.0_dp) < 1.0e-7_dp, &
-                       "axis of "//MOL_NAME(im))
-            if (allocated(error)) return
-         end do
       end do
    end subroutine test_pyscf_frame
+
+   subroutine check_frame(error, res, ax, orig, label)
+      !! `res`'s frame is pyscf's: the same origin, each axis parallel up to sign.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_sym_geom_t), intent(in) :: res
+      real(dp), intent(in) :: ax(3, 3), orig(3)
+      character(len=*), intent(in) :: label
+      integer :: k
+      call check(error, maxval(abs(res%shift - orig)) < 1.0e-6_dp, "origin of "//label)
+      if (allocated(error)) return
+      do k = 1, 3
+         ! rows are unit vectors, so parallel up to sign means |dot| = 1
+         call check(error, abs(abs(dot_product(res%rot(k, :), ax(k, :))) - 1.0_dp) < 1.0e-7_dp, "axis of "//label)
+         if (allocated(error)) return
+      end do
+   end subroutine check_frame
 
    subroutine test_rotation(error)
       type(error_type), allocatable, intent(out) :: error
@@ -272,7 +277,7 @@ contains
       type(error_type), allocatable, intent(out) :: error
       type(trc_sym_geom_t) :: res
       type(error_t) :: err
-      ! CO2 is linear: two vanishing moments; since S12 the group is D2h (inversion centre)
+      ! CO2 is linear: two vanishing moments; the group is D2h (inversion centre)
       res = sym_geom_detect(reshape([0.0_dp, 0.0_dp, -2.2_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 2.2_dp], &
                                [3, 3]), [8, 6, 8], err)
       call check(error, res%degenerate, "flagged")
@@ -306,6 +311,189 @@ contains
       res = sym_geom_detect(r, elem, err, tol=1.0e-6_dp)
       call check(error, res%group%name, "C2v", "but is at 1e-6")
    end subroutine test_tolerance
+
+   subroutine test_requested_tilted(error)
+      !! Water turned by 1e-4 rad off the yz plane, with C2 requested. Its
+      !! principal axes pass the axis test of pyscf (and of `input_frame_holds`),
+      !! but its mirrors do not hold in the input frame, so pyscf keeps the C2v
+      !! frame instead of the input axes. Keeping the input axes on the axis
+      !! test alone, the C2 fails on the atoms ("no image of an atom").
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_sym_geom_t) :: res
+      type(error_t) :: err
+      integer, allocatable :: elem(:)
+      real(dp), allocatable :: r(:, :)
+      real(dp) :: ax(3, 3, NMOL + 1), orig(3, NMOL + 1)
+      integer :: nat
+      call read_xyz("sym_water_tilt.xyz", nat, elem, r)
+      res = sym_geom_detect(r, elem, err, requested="C2")
+      call check(error, .not. err%has_error(), "no error: "//err%get_message())
+      if (allocated(error)) return
+      call check(error, res%detected, "C2v", "detected")
+      if (allocated(error)) return
+      call check(error, res%group%name, "C2", "reported")
+      if (allocated(error)) return
+      call check(error, res%residual < 1.0e-9_dp, "the tilted geometry is already symmetric")
+      if (allocated(error)) return
+      call pyscf_frames(ax, orig)
+      call check_frame(error, res, ax(:, :, NMOL + 1), orig(:, NMOL + 1), "tilted water")
+   end subroutine test_requested_tilted
+
+   pure function hash_noise(amp, i, k, trial) result(x)
+      !! A reproducible value in [-amp, amp] (no RNG: the same on every compiler).
+      real(dp), intent(in) :: amp
+      integer, intent(in) :: i, k, trial
+      real(dp) :: x, t
+      t = sin(12.9898_dp*i + 78.233_dp*k + 37.719_dp*trial)*43758.5453_dp
+      x = amp*(2.0_dp*(t - floor(t)) - 1.0_dp)
+   end function hash_noise
+
+   pure function turn(axis, theta) result(m)
+      !! The rotation by `theta` about `axis` (Rodrigues).
+      real(dp), intent(in) :: axis(3), theta
+      real(dp) :: m(3, 3), a(3), kx(3, 3)
+      integer :: i
+      a = axis/norm2(axis)
+      kx = reshape([0.0_dp, a(3), -a(2), -a(3), 0.0_dp, a(1), a(2), -a(1), 0.0_dp], [3, 3])
+      m = sin(theta)*kx + (1.0_dp - cos(theta))*matmul(kx, kx)
+      do i = 1, 3
+         m(i, i) = m(i, i) + 1.0_dp
+      end do
+   end function turn
+
+   subroutine top_geometry(im, elem, r)
+      !! NH3 (C3v), CH4 (Td) or SF6 (Oh), exact, in Bohr, turned off the input axes.
+      integer, intent(in) :: im
+      integer, allocatable, intent(out) :: elem(:)
+      real(dp), allocatable, intent(out) :: r(:, :)
+      real(dp) :: th
+      integer :: i
+      select case (im)
+      case (1)  ! NH3: N above the plane of the three H
+         elem = [7, 1, 1, 1]
+         allocate (r(3, 4))
+         r(:, 1) = [0.0_dp, 0.0_dp, 0.72_dp]
+         do i = 1, 3
+            th = 2.0_dp*acos(-1.0_dp)*real(i - 1, dp)/3.0_dp
+            r(:, i + 1) = [1.77_dp*cos(th), 1.77_dp*sin(th), 0.0_dp]
+         end do
+      case (2)  ! CH4: H on alternate corners of a cube
+         elem = [6, 1, 1, 1, 1]
+         r = 1.19_dp*real(reshape([0, 0, 0, 1, 1, 1, -1, -1, 1, -1, 1, -1, 1, -1, -1], [3, 5]), dp)
+      case default  ! SF6: F on the axes
+         elem = [16, 9, 9, 9, 9, 9, 9]
+         r = 2.96_dp*real(reshape([0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 1, 0, 0, -1], [3, 7]), dp)
+      end select
+      r = matmul(turn([0.3_dp, -0.5_dp, 0.8_dp], 0.7_dp), r)
+   end subroutine top_geometry
+
+   subroutine test_noisy_tops(error)
+      !! NH3, CH4 and SF6 with each coordinate moved by up to 1e-6 Bohr, well
+      !! inside the default tol of 1e-5. pyscf 2.14.0 runs them in Cs, D2 and
+      !! D2h. A threshold on equal moments that is not tied to tol splits the
+      !! degenerate moments and gives C1, Cs or Ci in most trials. (At 3e-6 an
+      !! F image is off by twice the noise plus the error of a frame found on
+      !! noisy atoms, close to tol: pyscf itself keeps D2h in 81 of 200 such
+      !! trials, terco in 155, so the check stays at 1e-6, where both always do.)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_sym_geom_t) :: res
+      type(error_t) :: err
+      integer, parameter :: NTRIAL = 10
+      character(len=4), parameter :: NAME(3) = [character(len=4) :: "NH3", "CH4", "SF6"]
+      character(len=3), parameter :: WANT(3) = [character(len=3) :: "Cs", "D2", "D2h"]
+      real(dp), parameter :: AMP(3) = [1.0e-6_dp, 1.0e-6_dp, 1.0e-6_dp]
+      integer, allocatable :: elem(:)
+      real(dp), allocatable :: r0(:, :), r(:, :)
+      integer :: im, trial, i, k
+      character(len=2) :: tr
+      do im = 1, 3
+         call top_geometry(im, elem, r0)
+         res = sym_geom_detect(r0, elem, err)
+         call check(error, res%group%name, WANT(im), trim(NAME(im))//" without noise")
+         if (allocated(error)) return
+         do trial = 1, NTRIAL
+            r = r0
+            do i = 1, size(r, 2)
+               do k = 1, 3
+                  r(k, i) = r(k, i) + hash_noise(AMP(im), i, k, trial + 100*im)
+               end do
+            end do
+            res = sym_geom_detect(r, elem, err)
+            write (tr, "(i0)") trial
+            call check(error, .not. err%has_error(), trim(NAME(im))//" trial "//trim(tr)//": "//err%get_message())
+            if (allocated(error)) return
+            call check(error, res%group%name, WANT(im), trim(NAME(im))//" with noise, trial "//trim(tr))
+            if (allocated(error)) return
+         end do
+      end do
+   end subroutine test_noisy_tops
+
+   subroutine test_bent_linear(error)
+      !! H-C-N with the H 1e-3 Bohr off the axis, the bend turned to several
+      !! azimuths. Any three atoms are planar, so this is Cs whatever the
+      !! direction. Its second moment off the axis (~1e-7 Bohr^2) is far above
+      !! tol^2 but below tol: a linearity test against tol runs it as a linear
+      !! molecule, whose mirrors pass or fail with the azimuth (Cs or C1). It
+      !! has no pair of equivalent atoms for the top search's mirror candidates,
+      !! so its plane comes from the principal frame.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_sym_geom_t) :: res
+      type(error_t) :: err
+      real(dp) :: r(3, 3), phi
+      integer :: ia
+      character(len=2) :: tag
+      do ia = 0, 6
+         phi = real(ia, dp)*acos(-1.0_dp)/12.0_dp
+         r(:, 1) = [1.0e-3_dp*cos(phi), 1.0e-3_dp*sin(phi), -2.01_dp]
+         r(:, 2) = [0.0_dp, 0.0_dp, 0.0_dp]
+         r(:, 3) = [0.0_dp, 0.0_dp, 2.19_dp]
+         res = sym_geom_detect(r, [1, 6, 7], err)
+         write (tag, "(i0)") 15*ia
+         call check(error, .not. err%has_error(), "no error at azimuth "//trim(tag))
+         if (allocated(error)) return
+         call check(error, res%group%name, "Cs", "bent H-C-N at azimuth "//trim(tag)//" deg")
+         if (allocated(error)) return
+      end do
+   end subroutine test_bent_linear
+
+   subroutine test_large_tol(error)
+      !! Four H atoms (Bohr) and tol = 0.75: under one sign mask of the
+      !! principal frame two atoms have the same nearest image. Such a mask is
+      !! not a symmetry: accepted, its `perm` is not a permutation and the
+      !! symmetrised geometry averages the wrong atoms. Which group remains at this tol is not
+      !! the point; that every operation permutes the atoms, and maps the
+      !! symmetrised geometry onto itself, is.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_sym_geom_t) :: res
+      type(error_t) :: err
+      real(dp), parameter :: R(3, 4) = reshape([-1.66_dp, -1.05_dp, 0.0_dp, 0.33_dp, -1.62_dp, 0.0_dp, &
+                                                -0.08_dp, -1.36_dp, 0.0_dp, -1.55_dp, -0.44_dp, 0.0_dp], [3, 4])
+      logical :: seen(4)
+      real(dp) :: y(3), worst
+      integer :: k, i, dd
+      res = sym_geom_detect(R, [1, 1, 1, 1], err, tol=0.75_dp)
+      call check(error, .not. err%has_error(), "no error: "//err%get_message())
+      if (allocated(error)) return
+      do k = 1, res%group%order
+         seen = .false.
+         do i = 1, 4
+            seen(res%perm(i, k)) = .true.
+         end do
+         call check(error, all(seen), "perm is a permutation")
+         if (allocated(error)) return
+      end do
+      worst = 0.0_dp
+      do k = 1, res%group%order
+         do i = 1, 4
+            y = res%r_std(:, i)
+            do dd = 1, 3
+               if (btest(res%group%ops(k), dd - 1)) y(dd) = -y(dd)
+            end do
+            worst = max(worst, maxval(abs(y - res%r_std(:, res%perm(i, k)))))
+         end do
+      end do
+      call check(error, worst < 1.0e-12_dp, "g x = x[perm] on the symmetrised geometry")
+   end subroutine test_large_tol
 
    subroutine test_bad_args(error)
       type(error_type), allocatable, intent(out) :: error

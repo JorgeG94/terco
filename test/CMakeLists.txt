@@ -148,8 +148,9 @@ terco_add_check(check_sym_group check_sym_group.F90)
 target_link_libraries(check_sym_group PRIVATE test-drive::test-drive)
 
 # Point-group detection, orientation and symmetrization (trc_sym_geom): water,
-# HOCl and CH2Cl2 against the frames pyscf 2.14.0 picks, invariance, perm.
-terco_add_check(check_sym_geom check_sym_geom.F90)
+# HOCl and CH2Cl2 against the frames pyscf 2.14.0 picks (sym_geom_frames.ref),
+# a requested subgroup on tilted axes, noisy tops, invariance, perm.
+terco_add_check(check_sym_geom check_sym_geom.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_sym_geom PRIVATE test-drive::test-drive)
 
 # AO signed permutations and the SO basis (trc_sym_ao): U^T U = I, U^T S U and
@@ -168,7 +169,7 @@ set_target_properties(check_sym_ao_f PROPERTIES Fortran_MODULE_DIRECTORY
 set_tests_properties(terco/check_sym_ao_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 # The exact AO rotation between the standard frame and the user's input frame
-# (trc_sym_frame, S17): a basis built on rotated atoms has S = D^T S_in D and the
+# (trc_sym_frame): a basis built on rotated atoms has S = D^T S_in D and the
 # same for T + V, Cartesian and spherical, every l up to this build's LMAX.
 terco_add_check(check_sym_frame check_sym_frame.F90 NEEDS_BASIS)
 target_link_libraries(check_sym_frame PRIVATE test-drive::test-drive)

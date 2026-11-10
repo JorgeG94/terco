@@ -106,9 +106,13 @@ module trc_sym_geom
    !!
    !! Moments that are not all distinct (symmetric and spherical tops, linear
    !! molecules, single atoms): `trc_sym_tops` ports pyscf's axis search and
-   !! `get_subgroup`, which give the Abelian group and the axes (S12). The frame
+   !! `get_subgroup`, which give the Abelian group and the axes. The frame
    !! is then used as it is (pyscf's `_symm_axes`, signs aside); only a requested
    !! C2v -> Cs turns it. Linear molecules and atoms accept no requested subgroup.
+   !! "Not all distinct" means within what noise of `tol` per coordinate can
+   !! move them (see the tests in `sym_geom_detect`). When moments are that close but
+   !! the principal frame verifies a larger group than the top search (an
+   !! accidental near-degeneracy), the principal frame is kept.
    use pic_types, only: dp
    use pic_logger, only: global_logger
    use trc_error, only: error_t, ERROR_VALIDATION, ERROR_GENERIC
@@ -124,14 +128,12 @@ module trc_sym_geom
                          [.true., .true., .true., .true., .true., .true., .true., .true.]
       !! THE CAP: which groups may be reported, in the order of
       !! `sym_group_names` (D2h, C2h, C2v, D2, Cs, Ci, C2, C1). All eight Abelian
-      !! groups are enabled since S11, so the cap no longer changes what is
-      !! reported; it stays as the switch `enabled` and `frame_order` consult
-      !! (`frame_order` refuses a group it has no convention for).
+      !! groups are enabled, so the cap does not change what is reported; it
+      !! is the switch `enabled` and `frame_order` consult (`frame_order`
+      !! refuses a group it has no convention for).
 
    integer, parameter :: N_MASK = 7  !! non-identity sign masks
    real(dp), parameter :: SYM_DEFAULT_TOL = 1.0e-5_dp  !! default geometry tolerance, Bohr
-   real(dp), parameter :: DEGENERACY_TOL = 1.0e-6_dp
-      !! eigenvalues closer than this fraction of the largest count as equal
 
    type :: trc_sym_geom_t
       type(trc_sym_group_t) :: group  !! the reported group
@@ -242,20 +244,63 @@ contains
    end function image_of
 
    pure function is_symmetry(mask, q, cls, tol) result(ok)
+      !! Whether `mask` maps the atoms onto themselves: every atom has an image
+      !! (`image_of`) and no two atoms share one. With a large `tol` two atoms
+      !! can have the same nearest image; the operation is then refused rather
+      !! than reported with a `perm` that is not a permutation.
       integer, intent(in) :: mask
       integer, intent(in) :: cls(:)
       real(dp), intent(in) :: q(:, :)
       real(dp), intent(in) :: tol
       logical :: ok
-      integer :: i
-      ok = .true.
+      integer :: i, j
+      logical :: hit(size(q, 2))
+      ok = .false.
+      hit = .false.
       do i = 1, size(q, 2)
-         if (image_of(mask, q, cls, i, tol) == 0) then
-            ok = .false.
-            return
-         end if
+         j = image_of(mask, q, cls, i, tol)
+         if (j == 0) return
+         if (hit(j)) return
+         hit(j) = .true.
       end do
+      ok = .true.
    end function is_symmetry
+
+   pure function principal_axes(vec) result(ax)
+      !! The principal axes (rows, from the eigenvector columns `vec`), sign
+      !! fixed: the largest component is positive.
+      real(dp), intent(in) :: vec(3, 3)
+      real(dp) :: ax(3, 3)
+      integer :: k, m, j
+      do k = 1, 3
+         ax(k, :) = vec(:, k)
+         m = maxloc(abs(ax(k, :)), 1)
+         do j = 1, 3
+            if (abs(ax(k, j)) >= abs(ax(k, m)) - 1.0e-6_dp) then
+               m = j
+               exit
+            end if
+         end do
+         if (ax(k, m) < 0.0_dp) ax(k, :) = -ax(k, :)
+      end do
+   end function principal_axes
+
+   pure subroutine masks_in_frame(ax, d, cls, tol, q, found)
+      !! The atoms `d` in the frame `ax` (rows), and which sign masks hold there.
+      real(dp), intent(in) :: ax(3, 3)
+      real(dp), intent(in) :: d(:, :)
+      integer, intent(in) :: cls(:)
+      real(dp), intent(in) :: tol
+      real(dp), intent(out) :: q(:, :)
+      logical, intent(out) :: found(N_MASK)
+      integer :: i, m
+      do i = 1, size(d, 2)
+         q(:, i) = matmul(ax, d(:, i))
+      end do
+      do m = 1, N_MASK
+         found(m) = is_symmetry(m, q, cls, tol)
+      end do
+   end subroutine masks_in_frame
 
    pure function popcnt(m) result(n)
       integer, intent(in) :: m
@@ -318,8 +363,8 @@ contains
 
    function reported_name(detected, nmirror) result(name)
       !! The group to report: the detected one if enabled, else the largest
-      !! enabled subgroup. Since S11 every Abelian group is enabled, so this is
-      !! the detected group; the fallback to Cs (a mirror exists) or C1 only
+      !! enabled subgroup. Every Abelian group is enabled, so this is the
+      !! detected group; the fallback to Cs (a mirror exists) or C1 only
       !! matters if a group is switched off in `SYM_GROUP_ENABLED`. Its frame
       !! would then be a Cs frame of the detected group, which only the groups
       !! with a single mirror define (`frame_order`).
@@ -355,15 +400,21 @@ contains
       end select
    end function has_subgroup_rule
 
-   pure function input_frame_holds(ax, ops, found) result(ok)
+   pure function input_frame_holds(ax, ops, found, d, cls, tol) result(ok)
       !! pyscf keeps the input axes for a requested group when the detected
       !! axes are the input axes and every operation of the group holds there.
       !! `ax` are the principal axes (rows), `ops` the sign masks of the group
       !! in its own frame, `found` the masks of the detected group in the
-      !! principal frame.
+      !! principal frame, `d` the atoms about the charge centre in the input
+      !! frame. The axis test (1e-5 per component) lets the axes tilt by a few
+      !! milliradians, so, as pyscf's `check_symm` does after it, every
+      !! operation is then tested on the atoms in the input frame itself.
       real(dp), intent(in) :: ax(3, 3)
       integer, intent(in) :: ops(:)
       logical, intent(in) :: found(N_MASK)
+      real(dp), intent(in) :: d(:, :)
+      integer, intent(in) :: cls(:)
+      real(dp), intent(in) :: tol
       logical :: ok
       integer :: k(3)
       integer :: j, i, mq
@@ -380,6 +431,7 @@ contains
          end do
          if (mq < 1 .or. mq > N_MASK) return
          if (.not. found(mq)) return
+         if (.not. is_symmetry(ops(i), d, cls, tol)) return
       end do
       ok = .true.
    end function input_frame_holds
@@ -571,15 +623,17 @@ contains
       real(dp), allocatable :: w(:), d(:, :), q(:, :), qf(:, :)
       real(dp) :: t(3, 3), vec(3, 3), ax(3, 3)
       real(dp) :: ev(3), cm(3)
-      real(dp) :: tl, wsum, det, big
+      real(dp) :: tl, wsum, det, rmax, gap
       integer :: order(3)
-      logical :: found(N_MASK)
+      logical :: found(N_MASK), foundp(N_MASK)
+      real(dp) :: axp(3, 3)
+      real(dp), allocatable :: qp(:, :)
       character(len=3) :: rep, abel
       character(len=4) :: topname
-      logical :: subreq, top_frame, eq12, eq23, top
+      logical :: subreq, top_frame, eq12, eq23, top, point, linear
+      logical, allocatable :: hit(:)
       type(trc_sym_tops_moments_t) :: mom
       integer :: kind
-      real(dp) :: tolp
 
       natm = size(r, 2)
       tl = SYM_DEFAULT_TOL
@@ -629,7 +683,7 @@ contains
          cm = cm + w(i)*r(:, i)
       end do
       cm = cm/wsum
-      allocate (d(3, natm), q(3, natm), qf(3, natm))
+      allocate (d(3, natm), q(3, natm), qp(3, natm), qf(3, natm))
       do i = 1, natm
          d(:, i) = r(:, i) - cm
       end do
@@ -643,16 +697,32 @@ contains
       end do
       call eig3(t, ev, vec)
 
-      big = ev(3)
-      tolp = tl/sqrt(1.0_dp + real(natm, dp))  ! pyscf: TOLERANCE / sqrt(1 + natm)
-      eq12 = ev(2) - ev(1) <= DEGENERACY_TOL*big
-      eq23 = ev(3) - ev(2) <= DEGENERACY_TOL*big
-      top = big <= tolp .or. ev(2) <= tolp .or. eq12 .or. eq23
+      ! The moments are second moments (Bohr^2), so their tests scale with the
+      ! geometry tolerance as follows. Moving each atom by up to tl per component
+      ! (|delta| <= sqrt(3) tl) changes the tensor by at most 2 sqrt(3) r_max tl
+      ! + 3 tl^2 in norm, and a gap between two eigenvalues by twice that: two
+      ! moments within `gap` can belong to a top whose atoms are noisy within
+      ! tl. (A threshold not tied to tl, such as 1e-6 of the largest moment,
+      ! splits NH3, CH4 and SF6 with 1e-6 Bohr noise into C1, Cs or Ci.) A
+      ! molecule is linear when its second moment off the axis is below tl^2:
+      ! compared with a length, a bent molecule with an atom 1e-3 Bohr off the
+      ! axis would count as linear, and its C2v test would pass or fail with
+      ! the azimuth of the bend.
+      rmax = 0.0_dp
+      do i = 1, natm
+         rmax = max(rmax, norm2(d(:, i)))
+      end do
+      gap = 2.0_dp*(2.0_dp*sqrt(3.0_dp)*rmax*tl + 3.0_dp*tl*tl)
+      point = ev(3) <= tl*tl
+      linear = ev(2) <= tl*tl
+      eq12 = ev(2) - ev(1) <= gap
+      eq23 = ev(3) - ev(2) <= gap
+      top = point .or. linear .or. eq12 .or. eq23
       top_frame = .false.
       if (top) then
          ! symmetric or spherical top, linear molecule, atom: the pyscf search of trc_sym_tops
          res%degenerate = .true.
-         mom = trc_sym_tops_moments_t(ev, vec, eq12, eq23)  ! bundle for sym_tops_axes
+         mom = trc_sym_tops_moments_t(ev, vec, eq12, eq23, point, linear)  ! bundle for sym_tops_axes
          call sym_tops_axes(d, cls, tl, mom, kind, topname, abel, ax)
          if (kind == 0) then
             call global_logger%warning("symmetry: the point group of this symmetric or spherical top is not "// &
@@ -661,33 +731,33 @@ contains
          end if
          top_frame = kind == 1
       else
-         ! Principal axes, sign fixed: the largest component is positive.
-         do k = 1, 3
-            ax(k, :) = vec(:, k)
-            m = maxloc(abs(ax(k, :)), 1)
-            do j = 1, 3
-               if (abs(ax(k, j)) >= abs(ax(k, m)) - 1.0e-6_dp) then
-                  m = j
-                  exit
-               end if
-            end do
-            if (ax(k, m) < 0.0_dp) ax(k, :) = -ax(k, :)
-         end do
+         ax = principal_axes(vec)
       end if
-      do i = 1, natm
-         q(:, i) = matmul(ax, d(:, i))
-      end do
-
-      found = .false.
-      do m = 1, N_MASK
-         found(m) = is_symmetry(m, q, cls, tl)
-      end do
+      call masks_in_frame(ax, d, cls, tl, q, found)
       res%detected = detected_name(found)
       if (top_frame) then
          if (res%detected /= abel) then
             ! the verified group differs from pyscf's (tolerance): use the generic frame rules
             call global_logger%warning("symmetry: the group "//trim(abel)//" that the pyscf search found does not "// &
                                        "hold to the tolerance; using "//trim(res%detected))
+            top_frame = .false.
+         end if
+      end if
+      if (top .and. .not. (point .or. linear)) then
+         ! Moments within `gap` need not be equal: a planar molecule with a
+         ! small out-of-line atom (H-C-N bent by 1e-3 Bohr) has two moments
+         ! within `gap` and no pair of equivalent atoms, so the top search
+         ! finds no mirror, while its plane normal is an exact principal axis.
+         ! Test the principal frame too and keep the larger verified group
+         ! (the top search's frame on a tie: it is pyscf's).
+         axp = principal_axes(vec)
+         call masks_in_frame(axp, d, cls, tl, qp, foundp)
+         if (count(foundp) > count(found)) then
+            ax = axp
+            q = qp
+            found = foundp
+            res%detected = detected_name(found)
+            res%degenerate = .false.
             top_frame = .false.
          end if
       end if
@@ -721,7 +791,7 @@ contains
               + res%rot(1, 3)*(res%rot(2, 1)*res%rot(3, 2) - res%rot(2, 2)*res%rot(3, 1))
       if (det < 0.0_dp) res%rot(2, :) = -res%rot(2, :)
       if (subreq) then
-         if (input_frame_holds(ax, res%group%ops, found)) then  ! pyscf keeps the input axes
+         if (input_frame_holds(ax, res%group%ops, found, d, cls, tl)) then  ! pyscf keeps the input axes
             res%rot = 0.0_dp
             do i = 1, 3
                res%rot(i, i) = 1.0_dp
@@ -735,8 +805,9 @@ contains
 
       n = res%group%order
       deallocate (res%perm)
-      allocate (res%perm(natm, n))
+      allocate (res%perm(natm, n), hit(natm))
       do k = 1, n
+         hit = .false.
          do i = 1, natm
             j = image_of(res%group%ops(k), qf, cls, i, tl)
             if (j == 0) then
@@ -744,6 +815,13 @@ contains
                               "of an atom in the standard frame")
                return
             end if
+            if (hit(j)) then
+               ! the average below would mix the wrong atoms
+               call error%set(ERROR_GENERIC, "sym_geom_detect: two atoms have the same image under an operation "// &
+                              "(the tolerance is too large for this geometry)")
+               return
+            end if
+            hit(j) = .true.
             res%perm(i, k) = j
          end do
       end do
