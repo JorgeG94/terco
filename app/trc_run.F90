@@ -77,6 +77,8 @@ module trc_run
       real(dp) :: diis_start = -1.0_dp   !! --diis-start; -1 = by spin
       logical :: soscf = .false.         !! --soscf
       real(dp) :: soscf_start = -1.0_dp  !! --soscf-start; -1 = the library's default (1e-2)
+      logical :: mom = .false.           !! --mom
+      real(dp) :: level_shift_until = 0.0_dp  !! --level-shift-until; 0 = off once DIIS starts
       real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess, epcm, qpcm
       logical :: rimp2, df
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2

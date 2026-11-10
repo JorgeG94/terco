@@ -18,7 +18,7 @@ program trc_main
    use pic_logger, only: global_logger
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_ecp_json, &
                        trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_scf_accel, &
-                       trc_set_soscf, &
+                       trc_set_soscf, trc_set_scf_stabilise, &
                        trc_set_level_shift, trc_set_lindep, trc_set_screening, &
                        trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
                        trc_set_guess, trc_set_verbose, trc_set_rimp2, trc_set_force_cartesian, trc_set_comm, &
@@ -163,6 +163,10 @@ program trc_main
                        "orbital rotations once |FDS - SDF| is small enough. Restricted Hartree-Fock only; "// &
                        "refused with an open shell, a functional, --pcm, --df or more than one rank")
    call r%cli%add_option("soscf-start", "commutator norm at which --soscf hands over from DIIS (1e-2)")
+   call r%cli%add_flag("mom", "maximum overlap method once DIIS is on: occupy the orbitals closest to the "// &
+                       "previous density, not the lowest (small gaps, charged open shells, Fukui ions)")
+   call r%cli%add_option("level-shift-until", "keep --level-shift on through DIIS until |FDS - SDF| falls "// &
+                         "below this (0: off once DIIS starts)")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
    call r%cli%add_option("lindep", "linear-dependence threshold: eigenvalues of S normalised to a unit "// &
                          "diagonal (pyscf/ORCA's convention) below it are dropped (canonical orthogonalisation; "// &
@@ -551,6 +555,12 @@ program trc_main
       call r%cli%get("soscf-start", r%soscf_start, r%err)
       call run_check(r, "--soscf-start")
       if (.not. (r%soscf_start > 0.0_dp)) call run_die(r, "--soscf-start must be > 0")
+   end if
+   r%mom = r%cli%is_set("mom")
+   if (r%cli%is_set("level-shift-until")) then
+      call r%cli%get("level-shift-until", r%level_shift_until, r%err)
+      call run_check(r, "--level-shift-until")
+      if (.not. (r%level_shift_until >= 0.0_dp)) call run_die(r, "--level-shift-until must be >= 0")
    end if
    call r%cli%get("thresh", r%thresh, r%err)
    call run_check(r, "--thresh")
@@ -1149,6 +1159,10 @@ program trc_main
                                                   int(r%ndamp, c_int), real(r%damp, c_double), &
                                                   real(r%diis_start, c_double)))
    if (r%soscf) call run_api(r, trc_set_soscf(r%h, 1_c_int, real(r%soscf_start, c_double)))
+   if (r%mom .or. r%level_shift_until > 0.0_dp) then
+      call run_api(r, trc_set_scf_stabilise(r%h, merge(1_c_int, 0_c_int, r%mom), &
+                                            real(r%level_shift_until, c_double)))
+   end if
    call run_api(r, trc_set_screening(r%h, real(r%thresh, c_double)))
    if (r%lindep >= 0.0_dp) call run_api(r, trc_set_lindep(r%h, real(r%lindep, c_double)))
    ! Only when a flag says so: unset, the library's default (on) stands and

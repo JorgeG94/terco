@@ -123,6 +123,8 @@ How the SCF gets there; the defaults suit most systems.
 | `diis_start` | float | `--diis-start` | commutator norm below which DIIS may start |
 | `soscf` | bool | `--soscf` | second-order SCF after DIIS (RHF only) |
 | `soscf_start` | float | `--soscf-start` | commutator norm at which SOSCF takes over (1e-2) |
+| `mom` | bool | `--mom` | maximum overlap occupation once DIIS is on (small-gap open shells) |
+| `level_shift_until` | float | `--level-shift-until` | keep the level shift on through DIIS until the commutator is below this (0: off) |
 
 ### `[dft]`
 

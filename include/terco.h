@@ -38,7 +38,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 22
+#define TRC_ABI_MINOR 23
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -504,6 +504,24 @@ int trc_set_scf_accel(trc_handle_t handle, int adiis, int ndamp, double damp, do
  * runs after it.
  */
 int trc_set_soscf(trc_handle_t handle, int enable, double soscf_start);
+
+/*
+ * Two aids for small-gap SCFs (charged open shells, a Fukui ion) where
+ * CDIIS stalls with the occupation flipping between iterations. Both
+ * work on rank 0's eigenproblem alone, so unlike trc_set_soscf they
+ * combine with an open shell, a functional, VV10, a continuum solvent,
+ * --df and more than one rank.
+ *
+ *   mom                1 occupies by maximum overlap with the previous
+ *                      density once DIIS is on; 0 aufbau (the default).
+ *   level_shift_until  keep trc_set_level_shift's shift on through DIIS
+ *                      until |FDS - SDF| falls below this; 0 (the
+ *                      default) drops it when DIIS starts.
+ *
+ * Takes effect at the next trc_run_scf, for every SCF the handle runs
+ * after it. (ABI 1.23.)
+ */
+int trc_set_scf_stabilise(trc_handle_t handle, int mom, double level_shift_until);
 
 int trc_set_df(trc_handle_t handle, int on);
 

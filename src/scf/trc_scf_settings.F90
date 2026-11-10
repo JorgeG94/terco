@@ -198,6 +198,22 @@ module trc_scf_settings
       !! From a Wolfsberg-Helmholz guess cholesterol sits 20 hartree above
       !! its answer and a damped Roothaan step alone throws it 300 hartree
       !! away; raising the virtuals keeps the occupied space from collapsing.
+      real(dp) :: level_shift_until = 0.0_dp
+      !! Keep `level_shift` on through DIIS/ADIIS until the commutator norm
+      !! falls below this (or `conv_diis`, whichever is larger, so the
+      !! converged eigenvalues are unshifted); 0 (the default) drops it the
+      !! iteration DIIS starts. The shift goes onto the extrapolated Fock matrix, so the
+      !! DIIS history and the commutator stay unshifted. For small-gap open
+      !! shells, where CDIIS swaps occupied and virtual orbitals every few
+      !! iterations and stalls with |FDS - SDF| near 1e-1.
+      logical :: mom = .false.
+      !! Maximum overlap method (Gilbert, Besley & Gill, JPCA 112, 13164)
+      !! while DIIS is on: occupy the orbitals that overlap most with the
+      !! previous density, p_j = c_j^T S D S c_j / occ, instead of the lowest
+      !! ones. Stops aufbau flipping the occupation of near-degenerate
+      !! frontier orbitals between iterations. The occupied orbitals stay
+      !! in columns 1:nocc of `cmo` (energy order within each block), so
+      !! `eps` need not ascend across the occupied/virtual boundary.
       real(dp) :: lindep_thresh = 1.0e-8_dp
       !! Canonical orthogonalisation: an eigenvalue of S, normalised to a unit
       !! diagonal first (Sn = D S D, D = diag(1/sqrt(S_ii)) -- pyscf's

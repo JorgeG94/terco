@@ -252,7 +252,7 @@ module trc_capi
              trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_ecp_json, &
              trc_set_method, trc_set_nlc_grid, &
              trc_set_unrestricted, trc_set_level_shift, &
-             trc_set_convergence, trc_set_scf_accel, trc_set_soscf, &
+             trc_set_convergence, trc_set_scf_accel, trc_set_soscf, trc_set_scf_stabilise, &
              trc_set_lindep, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
              trc_set_jkfit_libcint, &
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
@@ -337,7 +337,7 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 22
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 23
    !! 1.22: trc_set_ecp_json, a new entry point (an explicit effective core
    !! potential, overriding auto-attach from the orbital basis file's own
    !! ecp_potentials). Additive. 1.21: trc_chelpg_charges, CHELPG charges fitted to the converged
@@ -3116,6 +3116,47 @@ contains
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_soscf
+
+   function trc_set_scf_stabilise(handle, mom, level_shift_until) result(status) &
+      bind(c, name="trc_set_scf_stabilise")
+      !! Two aids for small-gap SCFs (charged open shells, a Fukui ion)
+      !! where CDIIS stalls with the occupation flipping between iterations.
+      !! Both work on rank 0's eigenproblem alone, so unlike trc_set_soscf
+      !! they combine with an open shell, a functional, VV10, a continuum
+      !! solvent, --df and more than one rank (trc_scf_options_t's own
+      !! comments):
+      !!
+      !!   mom                1 occupies by maximum overlap with the previous
+      !!                      density once DIIS is on; 0 aufbau (the default).
+      !!   level_shift_until  keep trc_set_level_shift's shift on through
+      !!                      DIIS until |FDS - SDF| falls below this; 0 (the
+      !!                      default) drops it when DIIS starts.
+      !!
+      !! Takes effect at the next trc_run_scf, for every SCF the handle runs
+      !! after it (trc_fukui_hirshfeld's three included). (ABI 1.23.)
+      type(c_ptr), value :: handle
+      integer(c_int), value :: mom
+      real(c_double), value :: level_shift_until
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (mom /= 0 .and. mom /= 1) then
+         call refuse(cx, "trc_set_scf_stabilise: mom must be 0 or 1")
+         return
+      end if
+      ! Written so a NaN fails it too.
+      if (.not. (level_shift_until >= 0.0_c_double)) then
+         call refuse(cx, "trc_set_scf_stabilise: level_shift_until must be >= 0")
+         return
+      end if
+      cx%opts%mom = mom == 1
+      cx%opts%level_shift_until = real(level_shift_until, dp)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_scf_stabilise
 
    !
    ! Density-fitted J and K (`--df`). Needs a jkfit basis too
