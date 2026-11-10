@@ -1,0 +1,492 @@
+% Generated from Crossref records (api.crossref.org), checked against the citations in terco's source.
+
+% The README's references ([1]-[7]).
+
+@article{galvez_vallejo_high-performance_2022,
+  author  = {Galvez Vallejo, Jorge Luis and Barca, Giuseppe M. J. and Gordon, Mark S.},
+  title   = {High-performance {GPU}-accelerated evaluation of electron repulsion integrals},
+  journal = {Molecular Physics},
+  volume  = {121},
+  number  = {9--10},
+  pages   = {e2112987},
+  year    = {2022},
+  issn    = {0026-8976},
+  doi     = {10.1080/00268976.2022.2112987},
+}
+
+@article{del_angel_cruz_f_type_2026,
+  author  = {Del Angel Cruz, Daniel and Galvez Vallejo, Jorge L. and Gordon, Mark S.},
+  title   = {Electron repulsion integral evaluation over f-type functions on {GPUs} via {OpenMP} offloading},
+  journal = {The Journal of Chemical Physics},
+  volume  = {164},
+  number  = {21},
+  pages   = {214118},
+  year    = {2026},
+  doi     = {10.1063/5.0334077},
+}
+
+@article{alkan_liberi_2024,
+  author  = {Alkan, Melisa and Pham, Buu Q. and Del Angel Cruz, Daniel and Hammond, Jeff R. and Barnes, Taylor A. and Gordon, Mark S.},
+  title   = {{LibERI}---A portable and performant multi-{GPU} accelerated library for electron repulsion integrals via {OpenMP} offloading and standard language parallelism},
+  journal = {The Journal of Chemical Physics},
+  volume  = {161},
+  number  = {8},
+  pages   = {082501},
+  year    = {2024},
+  doi     = {10.1063/5.0215352},
+}
+
+@inproceedings{sattasathuchana_performance_portability_2024,
+  author    = {Sattasathuchana, Tosaporn and Xu, Peng and Oryspayev, Dossay and Bertoni, Colleen and Roskop, Luke B. and Gordon, Mark S.},
+  title     = {Performance {Portability} of {Electron} {Repulsion} {Integrals} and {Their} {Related} {Methods} across {Peta} to {Exascale} {Architectures}},
+  booktitle = {SC24-W: Workshops of the International Conference for High Performance Computing, Networking, Storage and Analysis},
+  publisher = {IEEE},
+  pages     = {1943--1954},
+  year      = {2024},
+  doi       = {10.1109/SCW63240.2024.00244},
+}
+
+@article{sosonkina_runtime_2024,
+  author  = {Sosonkina, Masha and Mateescu, Gabriel and Xu, Peng and Sattasathuchana, Tosaporn and Pham, Buu and Gordon, Mark S. and Leang, Sarom S.},
+  title   = {Runtime performance of a {GAMESS} quantum chemistry application offloaded to {GPUs}},
+  journal = {Concurrency and Computation: Practice and Experience},
+  volume  = {36},
+  number  = {23},
+  pages   = {e8244},
+  year    = {2024},
+  doi     = {10.1002/cpe.8244},
+}
+
+@incollection{chapman_openmp_hackathon_2021,
+  author    = {Chapman, Barbara and Pham, Buu and Yang, Charlene and Daley, Christopher and Bertoni, Colleen and Kulkarni, Dhruva and Oryspayev, Dossay and D'Azevedo, Ed and Doerfert, Johannes and Zhou, Keren and Ravikumar, Kiran and Gordon, Mark and Del Ben, Mauro and Lin, Meifeng and Alkan, Melisa and Kruse, Michael and Hernandez, Oscar and Yeung, P. K. and Lin, Paul and Xu, Peng and Pophale, Swaroop and Sattasathuchana, Tosaporn and Kale, Vivek and Huhn, William and He, Yun},
+  title     = {Outcomes of {OpenMP} {Hackathon}: {OpenMP} {Application} {Experiences} with the {Offloading} {Model} ({Part} {II})},
+  booktitle = {OpenMP: Enabling Massive Node-Level Parallelism},
+  editor    = {McIntosh-Smith, Simon and de Supinski, Bronis R. and Klinkenberg, Jannis},
+  series    = {Lecture Notes in Computer Science},
+  volume    = {12870},
+  publisher = {Springer International Publishing},
+  pages     = {81--95},
+  year      = {2021},
+  isbn      = {978-3-030-85261-0},
+  doi       = {10.1007/978-3-030-85262-7_6},
+}
+
+@article{sattasathuchana_gefp_2019,
+  author  = {Sattasathuchana, Tosaporn and Xu, Peng and Gordon, Mark S.},
+  title   = {An {Accurate} {Quantum}-{Based} {Approach} to {Explicit} {Solvent} {Effects}: {Interfacing} the {General} {Effective} {Fragment} {Potential} {Method} with \emph{Ab Initio} {Electronic} {Structure} {Theory}},
+  journal = {The Journal of Physical Chemistry A},
+  volume  = {123},
+  number  = {39},
+  pages   = {8460--8475},
+  year    = {2019},
+  doi     = {10.1021/acs.jpca.9b05801},
+}
+
+% The methods terco implements or builds on.
+
+@article{md78,
+  author  = {McMurchie, Larry E and Davidson, Ernest R},
+  title   = {One- and two-electron integrals over cartesian gaussian functions},
+  journal = {Journal of Computational Physics},
+  volume  = {26},
+  pages   = {218--231},
+  year    = {1978},
+  doi     = {10.1016/0021-9991(78)90092-x}
+}
+
+@article{os86,
+  author  = {Obara, S. and Saika, A.},
+  title   = {Efficient recursive computation of molecular integrals over Cartesian Gaussian functions},
+  journal = {The Journal of Chemical Physics},
+  volume  = {84},
+  pages   = {3963--3974},
+  year    = {1986},
+  doi     = {10.1063/1.450106}
+}
+
+@article{hgp88,
+  author  = {Head-Gordon, Martin and Pople, John A.},
+  title   = {A method for two-electron Gaussian integral and integral derivative evaluation using recurrence relations},
+  journal = {The Journal of Chemical Physics},
+  volume  = {89},
+  pages   = {5777--5786},
+  year    = {1988},
+  doi     = {10.1063/1.455553}
+}
+
+@article{dupuis76,
+  author  = {Dupuis, Michel and Rys, John and King, Harry F.},
+  title   = {Evaluation of molecular integrals over Gaussian basis functions},
+  journal = {The Journal of Chemical Physics},
+  volume  = {65},
+  pages   = {111--116},
+  year    = {1976},
+  doi     = {10.1063/1.432807}
+}
+
+@article{ufimtsev08,
+  author  = {Ufimtsev, Ivan S. and Martínez, Todd J.},
+  title   = {Quantum Chemistry on Graphical Processing Units. 1. Strategies for Two-Electron Integral Evaluation},
+  journal = {Journal of Chemical Theory and Computation},
+  volume  = {4},
+  pages   = {222--231},
+  year    = {2008},
+  doi     = {10.1021/ct700268q}
+}
+
+@article{ufimtsev09,
+  author  = {Ufimtsev, Ivan S. and Martínez, Todd J.},
+  title   = {Quantum Chemistry on Graphical Processing Units. 2. Direct Self-Consistent-Field Implementation},
+  journal = {Journal of Chemical Theory and Computation},
+  volume  = {5},
+  pages   = {1004--1015},
+  year    = {2009},
+  doi     = {10.1021/ct800526s}
+}
+
+@article{wang24,
+  author  = {Wang, Yuanheng and Hait, Diptarka and Johnson, K. Grace and Fajen, O. Jonathan and Zhang, Juncheng Harry and Guerrero, Rubén D. and Martínez, Todd J.},
+  title   = {Extending GPU-accelerated Gaussian integrals in the TeraChem software package to f type orbitals: Implementation and applications},
+  journal = {The Journal of Chemical Physics},
+  volume  = {161},
+  pages   = {174118},
+  year    = {2024},
+  doi     = {10.1063/5.0233523}
+}
+
+@article{asadchev23,
+  author  = {Asadchev, Andrey and Valeev, Edward F.},
+  title   = {High-Performance Evaluation of High Angular Momentum 4-Center Gaussian Integrals on Modern Accelerated Processors},
+  journal = {The Journal of Physical Chemistry A},
+  volume  = {127},
+  pages   = {10889--10895},
+  year    = {2023},
+  doi     = {10.1021/acs.jpca.3c04574}
+}
+
+@article{asadchev24,
+  author  = {Asadchev, Andrey and Valeev, Edward F.},
+  title   = {3-center and 4-center 2-particle Gaussian AO integrals on modern accelerated processors},
+  journal = {The Journal of Chemical Physics},
+  volume  = {160},
+  pages   = {244109},
+  year    = {2024},
+  doi     = {10.1063/5.0217001}
+}
+
+@article{li25,
+  author  = {Li, Rui and Sun, Qiming and Zhang, Xing and Chan, Garnet Kin-Lic},
+  title   = {Introducing GPU Acceleration into the Python-Based Simulations of Chemistry Framework},
+  journal = {The Journal of Physical Chemistry A},
+  volume  = {129},
+  pages   = {1459--1468},
+  year    = {2025},
+  doi     = {10.1021/acs.jpca.4c05876}
+}
+
+@article{palethorpe25,
+  author  = {Palethorpe, Elise and Barca, Giuseppe M. J.},
+  title   = {High-Performance, High-Angular-Momentum J Engine on Graphics Processing Units},
+  journal = {Journal of Chemical Theory and Computation},
+  volume  = {21},
+  pages   = {9388--9403},
+  year    = {2025},
+  doi     = {10.1021/acs.jctc.5c00775}
+}
+
+@misc{k_engine,
+  author  = {Palethorpe, E. and Stocks, R. and Barca, G. M. J.},
+  title   = {High-Performance, High-Angular-Momentum K Engine on Graphics Processing Units},
+  howpublished = {ChemRxiv (preprint)},
+  year    = {2026},
+  doi     = {10.26434/chemrxiv.15004739/v2}
+}
+
+@article{stocks24mp2,
+  author  = {Stocks, Ryan and Palethorpe, Elise and Barca, Giuseppe M. J.},
+  title   = {Multi-GPU RI-HF Energies and Analytic Gradients─Toward High-Throughput Ab Initio Molecular Dynamics},
+  journal = {Journal of Chemical Theory and Computation},
+  volume  = {20},
+  pages   = {7503--7515},
+  year    = {2024},
+  doi     = {10.1021/acs.jctc.4c00877}
+}
+
+@article{stocks24grad,
+  author  = {Stocks, Ryan and Palethorpe, Elise and Barca, Giuseppe M. J.},
+  title   = {High-Performance Multi-GPU Analytic RI-MP2 Energy Gradients},
+  journal = {Journal of Chemical Theory and Computation},
+  volume  = {20},
+  pages   = {2505--2519},
+  year    = {2024},
+  doi     = {10.1021/acs.jctc.3c01424}
+}
+
+@article{stocks25xc,
+  author  = {Stocks, Ryan and Barca, Giuseppe M. J.},
+  title   = {Efficient Algorithms for GPU Accelerated Evaluation of the DFT Exchange-Correlation Functional},
+  journal = {Journal of Chemical Theory and Computation},
+  volume  = {21},
+  pages   = {10263--10280},
+  year    = {2025},
+  doi     = {10.1021/acs.jctc.5c01229}
+}
+
+@article{pulay80,
+  author  = {Pulay, Péter},
+  title   = {Convergence acceleration of iterative sequences. The case of SCF iteration},
+  journal = {Chemical Physics Letters},
+  volume  = {73},
+  pages   = {393--398},
+  year    = {1980},
+  doi     = {10.1016/0009-2614(80)80396-4}
+}
+
+@article{pulay82,
+  author  = {Pulay, P.},
+  title   = {Improved SCF convergence acceleration},
+  journal = {Journal of Computational Chemistry},
+  volume  = {3},
+  pages   = {556--560},
+  year    = {1982},
+  doi     = {10.1002/jcc.540030413}
+}
+
+@article{adiis,
+  author  = {Hu, Xiangqian and Yang, Weitao},
+  title   = {Accelerating self-consistent field convergence with the augmented Roothaan–Hall energy function},
+  journal = {The Journal of Chemical Physics},
+  volume  = {132},
+  pages   = {054109},
+  year    = {2010},
+  doi     = {10.1063/1.3304922}
+}
+
+@article{sap,
+  author  = {Lehtola, Susi},
+  title   = {Assessment of Initial Guesses for Self-Consistent Field Calculations. Superposition of Atomic Potentials: Simple yet Efficient},
+  journal = {Journal of Chemical Theory and Computation},
+  volume  = {15},
+  pages   = {1593--1604},
+  year    = {2019},
+  doi     = {10.1021/acs.jctc.8b01089}
+}
+
+@article{becke88,
+  author  = {Becke, A. D.},
+  title   = {A multicenter numerical integration scheme for polyatomic molecules},
+  journal = {The Journal of Chemical Physics},
+  volume  = {88},
+  pages   = {2547--2553},
+  year    = {1988},
+  doi     = {10.1063/1.454033}
+}
+
+@article{treutler95,
+  author  = {Treutler, Oliver and Ahlrichs, Reinhart},
+  title   = {Efficient molecular numerical integration schemes},
+  journal = {The Journal of Chemical Physics},
+  volume  = {102},
+  pages   = {346--354},
+  year    = {1995},
+  doi     = {10.1063/1.469408}
+}
+
+@article{stratmann96,
+  author  = {Stratmann, R.Eric and Scuseria, Gustavo E. and Frisch, Michael J.},
+  title   = {Achieving linear scaling in exchange-correlation density functional quadratures},
+  journal = {Chemical Physics Letters},
+  volume  = {257},
+  pages   = {213--223},
+  year    = {1996},
+  doi     = {10.1016/0009-2614(96)00600-8}
+}
+
+@article{lebedev99,
+  author  = {Lebedev, V. I. and Laikov, D. N.},
+  title   = {A quadrature formula for the sphere of the 131st algebraic order of accuracy},
+  journal = {Doklady Mathematics},
+  volume  = {59},
+  pages   = {477--481},
+  year    = {1999}
+}
+
+@article{libxc,
+  author  = {Lehtola, Susi and Steigemann, Conrad and Oliveira, Micael J.T. and Marques, Miguel A.L.},
+  title   = {Recent developments in libxc — A comprehensive library of functionals for density functional theory},
+  journal = {SoftwareX},
+  volume  = {7},
+  pages   = {1--5},
+  year    = {2018},
+  doi     = {10.1016/j.softx.2017.11.002}
+}
+
+@article{vv10,
+  author  = {Vydrov, Oleg A. and Van Voorhis, Troy},
+  title   = {Nonlocal van der Waals density functional: The simpler the better},
+  journal = {The Journal of Chemical Physics},
+  volume  = {133},
+  pages   = {244103},
+  year    = {2010},
+  doi     = {10.1063/1.3521275}
+}
+
+@article{wb97mv,
+  author  = {Mardirossian, Narbe and Head-Gordon, Martin},
+  title   = {ωB97M-V: A combinatorially optimized, range-separated hybrid, meta-GGA density functional with VV10 nonlocal correlation},
+  journal = {The Journal of Chemical Physics},
+  volume  = {144},
+  pages   = {214110},
+  year    = {2016},
+  doi     = {10.1063/1.4952647}
+}
+
+@article{b2plyp,
+  author  = {Grimme, Stefan},
+  title   = {Semiempirical hybrid density functional with perturbative second-order correlation},
+  journal = {The Journal of Chemical Physics},
+  volume  = {124},
+  pages   = {034108},
+  year    = {2006},
+  doi     = {10.1063/1.2148954}
+}
+
+@article{b2gp,
+  author  = {Karton, Amir and Tarnopolsky, Alex and Lamère, Jean-François and Schatz, George C. and Martin, Jan M. L.},
+  title   = {Highly Accurate First-Principles Benchmark Data Sets for the Parametrization and Validation of Density Functional and Other Approximate Methods. Derivation of a Robust, Generally Applicable, Double-Hybrid Functional for Thermochemistry and Thermochemical Kinetics},
+  journal = {The Journal of Physical Chemistry A},
+  volume  = {112},
+  pages   = {12868--12886},
+  year    = {2008},
+  doi     = {10.1021/jp801805p}
+}
+
+@article{mpw2plyp,
+  author  = {Schwabe, Tobias and Grimme, Stefan},
+  title   = {Towards chemical accuracy for the thermodynamics of large molecules: new hybrid density functionals including non-local correlation effects},
+  journal = {Physical Chemistry Chemical Physics},
+  volume  = {8},
+  pages   = {4398},
+  year    = {2006},
+  doi     = {10.1039/b608478h}
+}
+
+@article{cphf79,
+  author  = {Pople, J. A. and Krishnan, R. and Schlegel, H. B. and Binkley, J. S.},
+  title   = {Derivative studies in Hartree–Fock and Møller–Plesset theories},
+  journal = {International Journal of Quantum Chemistry},
+  volume  = {16},
+  pages   = {225--241},
+  year    = {1979},
+  doi     = {10.1002/qua.560160825}
+}
+
+@article{hirshfeld,
+  author  = {Hirshfeld, F. L.},
+  title   = {Bonded-atom fragments for describing molecular charge densities},
+  journal = {Theoretica Chimica Acta},
+  volume  = {44},
+  pages   = {129--138},
+  year    = {1977},
+  doi     = {10.1007/bf00549096}
+}
+
+@article{chelpg,
+  author  = {Breneman, Curt M. and Wiberg, Kenneth B.},
+  title   = {Determining atom‐centered monopoles from molecular electrostatic potentials. The need for high sampling density in formamide conformational analysis},
+  journal = {Journal of Computational Chemistry},
+  volume  = {11},
+  pages   = {361--373},
+  year    = {1990},
+  doi     = {10.1002/jcc.540110311}
+}
+
+@article{bondi64,
+  author  = {Bondi, A.},
+  title   = {van der Waals Volumes and Radii},
+  journal = {The Journal of Physical Chemistry},
+  volume  = {68},
+  pages   = {441--451},
+  year    = {1964},
+  doi     = {10.1021/j100785a001}
+}
+
+@article{rowland96,
+  author  = {Rowland, R. Scott and Taylor, Robin},
+  title   = {Intermolecular Nonbonded Contact Distances in Organic Crystal Structures: Comparison with Distances Expected from van der Waals Radii},
+  journal = {The Journal of Physical Chemistry},
+  volume  = {100},
+  pages   = {7384--7391},
+  year    = {1996},
+  doi     = {10.1021/jp953141+}
+}
+
+@article{mantina09,
+  author  = {Mantina, Manjeera and Chamberlin, Adam C. and Valero, Rosendo and Cramer, Christopher J. and Truhlar, Donald G.},
+  title   = {Consistent van der Waals Radii for the Whole Main Group},
+  journal = {The Journal of Physical Chemistry A},
+  volume  = {113},
+  pages   = {5806--5812},
+  year    = {2009},
+  doi     = {10.1021/jp8111556}
+}
+
+@article{lange10,
+  author  = {Lange, Adrian W. and Herbert, John M.},
+  title   = {A smooth, nonsingular, and faithful discretization scheme for polarizable continuum models: The switching/Gaussian approach},
+  journal = {The Journal of Chemical Physics},
+  volume  = {133},
+  pages   = {244111},
+  year    = {2010},
+  doi     = {10.1063/1.3511297}
+}
+
+@article{gregersen05,
+  author  = {Gregersen, Brent A. and York, Darrin M.},
+  title   = {High-order discretization schemes for biochemical applications of boundary element solvation and variational electrostatic projection methods},
+  journal = {The Journal of Chemical Physics},
+  volume  = {122},
+  pages   = {194110},
+  year    = {2005},
+  doi     = {10.1063/1.1899146}
+}
+
+@article{dlfind,
+  author  = {Kästner, Johannes and Carr, Joanne M. and Keal, Thomas W. and Thiel, Walter and Wander, Adrian and Sherwood, Paul},
+  title   = {DL-FIND: An Open-Source Geometry Optimizer for Atomistic Simulations},
+  journal = {The Journal of Physical Chemistry A},
+  volume  = {113},
+  pages   = {11856--11865},
+  year    = {2009},
+  doi     = {10.1021/jp9028968}
+}
+
+@article{bse,
+  author  = {Pritchard, Benjamin P. and Altarawy, Doaa and Didier, Brett and Gibson, Tara D. and Windus, Theresa L.},
+  title   = {New Basis Set Exchange: An Open, Up-to-Date Resource for the Molecular Sciences Community},
+  journal = {Journal of Chemical Information and Modeling},
+  volume  = {59},
+  pages   = {4814--4820},
+  year    = {2019},
+  doi     = {10.1021/acs.jcim.9b00725}
+}
+
+@article{libcint,
+  author  = {Sun, Qiming},
+  title   = {Libcint: An efficient general integral library for Gaussian basis functions},
+  journal = {Journal of Computational Chemistry},
+  volume  = {36},
+  pages   = {1664--1671},
+  year    = {2015},
+  doi     = {10.1002/jcc.23981}
+}
+
+@article{pyscf20,
+  author  = {Sun, Qiming and Zhang, Xing and Banerjee, Samragni and Bao, Peng and Barbry, Marc and Blunt, Nick S. and Bogdanov, Nikolay A. and Booth, George H. and Chen, Jia and Cui, Zhi-Hao and Eriksen, Janus J. and Gao, Yang and Guo, Sheng and Hermann, Jan and Hermes, Matthew R. and Koh, Kevin and Koval, Peter and Lehtola, Susi and Li, Zhendong and Liu, Junzi and Mardirossian, Narbe and McClain, James D. and Motta, Mario and Mussard, Bastien and Pham, Hung Q. and Pulkin, Artem and Purwanto, Wirawan and Robinson, Paul J. and Ronca, Enrico and Sayfutyarova, Elvira R. and Scheurer, Maximilian and Schurkus, Henry F. and Smith, James E. T. and Sun, Chong and Sun, Shi-Ning and Upadhyay, Shiv and Wagner, Lucas K. and Wang, Xiao and White, Alec and Whitfield, James Daniel and Williamson, Mark J. and Wouters, Sebastian and Yang, Jun and Yu, Jason M. and Zhu, Tianyu and Berkelbach, Timothy C. and Sharma, Sandeep and Sokolov, Alexander Yu. and Chan, Garnet Kin-Lic},
+  title   = {Recent developments in the PySCF program package},
+  journal = {The Journal of Chemical Physics},
+  volume  = {153},
+  pages   = {024109},
+  year    = {2020},
+  doi     = {10.1063/5.0006074}
+}

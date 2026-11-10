@@ -2,6 +2,10 @@
 
 <img src="docs/assets/powered_by_Fortran_switch_LC.svg" alt="powered by Fortran" width="320">
 
+Docs: <https://jorgeg94.github.io/terco/>. Build them locally with
+`pip install -r docs/sphinx/requirements.txt && sphinx-build -b html docs/sphinx docs/sphinx/_build`.
+Contributions, AI-assisted or not, follow [AI_POLICY.md](AI_POLICY.md).
+
 ```
 Adjective, from Spanish: Stubborn
 ```

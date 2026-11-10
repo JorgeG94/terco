@@ -1,0 +1,9 @@
+# Pinned so the docs build is reproducible (CI and local). Bump deliberately.
+Sphinx==7.4.7
+sphinx_rtd_theme==3.1.0
+myst-parser==4.0.1
+sphinx-fortran-domain==0.2.2
+# The "ford" lexer (fortran_lexer = "ford" in conf.py) needs FORD itself at
+# build time -- it is not a dependency of sphinx-fortran-domain, which keeps
+# that lexer optional.
+ford==7.0.13

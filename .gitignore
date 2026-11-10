@@ -119,3 +119,6 @@ src/generated/fpm/
 
 # tools/make_fpm_tarball.py output
 dist/
+
+# Sphinx build output (docs/sphinx -> html), local or CI.
+docs/sphinx/_build/
