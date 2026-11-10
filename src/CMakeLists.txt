@@ -62,6 +62,7 @@ target_sources(
           post_hf/rimp2/trc_rimp2_driver.F90      # RI-MP2 on the RHF reference, resident
           post_hf/rimp2/trc_rimp2_relax.F90       # the RI-MP2 gradient's fitted side: amplitudes, Lagrangian, 3c/2c terms
           post_hf/rimp2/trc_rimp2_grad.F90                # the analytic RI-MP2 gradient: Z-vector, relaxed densities, assembly
+          post_hf/ccsd/trc_rccsd_ints.F90         # RI-CCSD(T): the fitted MO integral blocks (oooo, ooov, oovv, ovov, ovvv, B)
           basis/trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
           scf/guess/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
           scf/guess/trc_sad.F90 # the SAD guess built here, one atomic SCF per element

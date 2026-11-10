@@ -142,6 +142,15 @@ target_link_libraries(check_exchange_screen PRIVATE test-drive::test-drive)
 terco_add_check(check_si check_si.F90)
 target_link_libraries(check_si PRIVATE test-drive::test-drive)
 
+# The fitted integral blocks of RI-CCSD(T) (src/post_hf/ccsd/trc_rccsd_ints.F90)
+# against pyscf's DF-RCCSD integrals, as sign-invariant dipole probes of each
+# block (test/pyscf_refs/rccsd_ints_*.ref, generate.py's gen_rccsd_ints), plus
+# E_MP2 from the ovov block against trc_rimp2_run. cc-pVDZ-RIFIT carries f
+# auxiliary shells on O: a build below that ceiling prints SKIP.
+terco_add_check(check_rccsd_ints check_rccsd_ints.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_rccsd_ints PRIVATE test-drive::test-drive)
+set_tests_properties(terco/check_rccsd_ints PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
 # check_basis_ecp_refused.F90's own header.
