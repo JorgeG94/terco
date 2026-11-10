@@ -130,9 +130,10 @@ module trc_scf_driver
 
    integer, parameter :: SHIFT_STALL_WINDOW = 10
    !! Iterations, shifted only because of `level_shift_until`, over which the
-   !! stall guard asks for progress. The plain O3+ UHF/6-31G* run (38
-   !! iterations, including a plateau of seven iterations at 4e-3) never has a
-   !! window of ten whose best commutator is above 0.28 of the best before it,
+   !! stall guard asks for progress. The plain O3+ UHF/6-31G* run (36
+   !! iterations from the SAD guess, 35 from SADQ; including a plateau of seven
+   !! iterations at 4e-3) never has a window of ten whose best commutator is
+   !! above 0.28 of the best before it,
    !! while the shifted run with `level_shift_until` = 1e-3 sits at 3e-3 to
    !! 4e-3 for twenty iterations. Shorter windows (5, 6, 8) saved two or three
    !! iterations there and fire on slower but steady convergence (a window of
