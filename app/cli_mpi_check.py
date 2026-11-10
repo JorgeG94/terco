@@ -29,8 +29,8 @@
 #
 # Hirshfeld-condensed Fukui indices (three SCFs on one handle, each rank
 # running them collectively, the Hirshfeld analysis replicated) must match
-# between np 1, np 2 and np 3 to 1e-8, read from --json, and the table must
-# be printed once.
+# between np 1, np 2 and np 3 to 1e-8, read from --json, and the table and
+# each SCF stage label must be printed once.
 #
 # RI-MP2's correlation energy must match between np 1 and np 2 to 1e-10,
 # with (mu nu|P) split by auxiliary shell and B distributed over the ranks
@@ -166,6 +166,14 @@ def main():
                 print(f"cli_mpi_check: Fukui np{np} printed its table "
                       f"{pf.stdout.count('f+ is where the molecule accepts charge')} times, not once")
                 ok = False
+            # Each stage label once too: they are logged outside the SCF,
+            # so nothing else gates them to rank 0.
+            for stage in ("N (reference", "N+1 (anion)", "N-1 (cation)"):
+                count = pf.stdout.count("Fukui: " + stage)
+                if count != 1:
+                    print(f"cli_mpi_check: Fukui np{np} printed the '{stage}' stage label "
+                          f"{count} times, not once")
+                    ok = False
             with open(js) as fh:
                 fukui[np] = json.load(fh)["fukui"]
     if 1 in fukui:
