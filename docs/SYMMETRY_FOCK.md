@@ -654,7 +654,8 @@ and a measurement on it concluded that parity skipping was inert; a second run
 on the same binary "confirmed" it. Zero launches had meant the feature was
 absent. Record the commit the measured binary was built from (not the
 worktree's), and check that the expected generated files exist in the build;
-a silent fall back to the full plan is otherwise invisible. `eri%parity_axis`,
+`check_sym_grad` pins `eri%nwork` and `eri%nkept` for the same reason, since a
+silent fall back to the full plan is otherwise invisible. `eri%parity_axis`,
 `nwork_masked`, `nwork_variant` and `nlaunch_variant` exist on the engine but
 are surfaced outside `check_sym_parity` nowhere.
 

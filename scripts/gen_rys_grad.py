@@ -1201,6 +1201,18 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
     # compact pass only (the screen pass stops at the same-atom check).
     rest_after_density = head[density_end:]
 
+    # The primitive-slot expressions must index on the BIN stride sSA/sSB,
+    # not on the segment's extent sA/sNB: see the sSA/sSB declaration below
+    # for what the latter costs on a sub-range segment. Asserted rather than
+    # assumed, because this text is gen_perclass.py's.
+    assert "(k1 - 1)*sSA(seg)" in rest_after_density
+    assert "(k2 - 1)*sSB(seg)" in rest_after_density
+    assert "(k1 - 1)*sA(seg)" not in rest_after_density
+    assert "(k2 - 1)*sNB(seg)" not in rest_after_density
+    # The screen pass reaches the pairs through sOA/sOB alone and never the
+    # interleaved primitive tables, so a sub-range costs it nothing.
+    assert "sSA" not in decode_block and "sSB" not in decode_block
+
     decode_block_c = _return_to(decode_block, "cycle", 1)
     density_block_c = _return_to(density_block, "cycle", 1)
     same_atom_c = _same_atom_check("cycle")
@@ -1334,14 +1346,14 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
             return (f"{p}do concurrent(i=1:nout*{nch})\n"
                     f"{p}   call {item}(int((i - 1)/nout) + 1, out_seg(mod(i - 1, nout) + 1), &\n"
                     f"{p}                          out_iab(mod(i - 1, nout) + 1), out_icd(mod(i - 1, nout) + 1), &\n"
-                    f"{p}                          nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &\n"
+                    f"{p}                          nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &\n"
                     f"{p}                          npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &\n"
                     f"{p}                          nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &\n"
                     f"{p}                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &\n"
                     f"{p}                          ndens, dmat, npriv, gp, {slot_expr})\n"
                     f"{p}end do\n")
         return (f"{p}do concurrent(i=1:nout)\n"
-                f"{p}   call {item}(out_seg(i), out_iab(i), out_icd(i), nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &\n"
+                f"{p}   call {item}(out_seg(i), out_iab(i), out_icd(i), nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &\n"
                 f"{p}                          npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &\n"
                 f"{p}                          nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &\n"
                 f"{p}                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &\n"
@@ -1387,7 +1399,7 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
    ! applied them). See scripts/gen_rys_grad.py's
    ! screen_and_compact_text docstring.
    !
-   subroutine rysg{tag}_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+   subroutine rysg{tag}_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                              npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &
                              nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                              sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -1397,7 +1409,22 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
       integer,  intent(in)    :: nseg, npair, nbas, nao
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
+      integer,  intent(in)    :: sSA(nseg), sSB(nseg)
+      !! Pairs in the whole bra / ket BIN: the stride of the bin-interleaved
+      !! primitive tables, which sA/sNB are NOT once a segment covers only
+      !! part of its bin. Every segment of a skeleton gradient plan
+      !! (bins_plan_build_skeleton) is such a sub-range, and so is an
+      !! exchange tile. Indexing on sA/sNB there reads another pair's
+      !! primitives: measured, a symmetrized skeleton gradient wrong by
+      !! 16.6 (water), 3.4 (B2H6), 2.3e+05 (SF6) and 1.8e+03 (benzene)
+      !! against components of order one (docs/SYMMETRY_GRADIENT.md).
       logical,  intent(in)    :: sD(nseg)
+      real(dp), intent(in)    :: sW(nseg)
+      !! The segment's orbit weight, folded into the degeneracy factor `wq`
+      !! below. One for an ordinary plan -- grad_bins hands an array of ones
+      !! rather than branch in here, as binkernel_fock_bins does -- and a
+      !! multiple of one half for a skeleton plan, where it stands in for the
+      !! images of the bra representatives the plan dropped.
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac, omega
       integer,  intent(in)    :: ao_off(nbas), sh_at(nbas), natm
@@ -1427,7 +1454,7 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
       integer(int64) :: i
 {compact_loops}   end subroutine rysg{tag}_compact
 
-   pure subroutine rysgi{tag}_compact(seg, iab, icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+   pure subroutine rysgi{tag}_compact(seg, iab, icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                              npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &
                              nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                              sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -1437,7 +1464,22 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
       integer,  intent(in)    :: nseg, npair, nbas, nao
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
+      integer,  intent(in)    :: sSA(nseg), sSB(nseg)
+      !! Pairs in the whole bra / ket BIN: the stride of the bin-interleaved
+      !! primitive tables, which sA/sNB are NOT once a segment covers only
+      !! part of its bin. Every segment of a skeleton gradient plan
+      !! (bins_plan_build_skeleton) is such a sub-range, and so is an
+      !! exchange tile. Indexing on sA/sNB there reads another pair's
+      !! primitives: measured, a symmetrized skeleton gradient wrong by
+      !! 16.6 (water), 3.4 (B2H6), 2.3e+05 (SF6) and 1.8e+03 (benzene)
+      !! against components of order one (docs/SYMMETRY_GRADIENT.md).
       logical,  intent(in)    :: sD(nseg)
+      real(dp), intent(in)    :: sW(nseg)
+      !! The segment's orbit weight, folded into the degeneracy factor `wq`
+      !! below. One for an ordinary plan -- grad_bins hands an array of ones
+      !! rather than branch in here, as binkernel_fock_bins does -- and a
+      !! multiple of one half for a skeleton plan, where it stands in for the
+      !! images of the bra representatives the plan dropped.
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac, omega
       integer,  intent(in)    :: ao_off(nbas), sh_at(nbas), natm
@@ -1480,45 +1522,6 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
         # both run a chunked pass, so it is not emitted (nothing calls it).
         compact = compact[:i_item] + txt + "\n" + txt_u
     return screen + compact, tabs
-
-
-def _untile(src):
-    """The Fock kernel with its tile strides folded back into the extents.
-
-    A Fock segment may be a tile of a bin (trc_bin_tiles), so
-    the Fock kernels take the bin's pair count sSA/sSB as the stride of the
-    bin-interleaved primitive table, apart from the segment's extent sA/sNB.
-    A gradient plan never tiles -- every segment is a whole bin, stride and
-    extent equal -- so the gradient kernels keep the one pair of arrays.
-
-    The per-segment orbit weight `sW` goes the same way: it exists for the
-    skeleton Fock plan (trc_bins.F90's bins_plan_build_skeleton), the
-    gradient has no skeleton path and `grad_bins` builds an unweighted plan,
-    so threading the array through would be a dummy no gradient kernel
-    reads."""
-    decl = (
-        "      integer,  intent(in)    :: sSA(nseg), sSB(nseg)\n"
-        "      !! Pairs in the whole bra / ket BIN: the stride of that interleave.\n"
-        "      !! sA/sNB are the pairs the segment covers, which is the whole bin\n"
-        "      !! unless the launcher cut the bin into exchange tiles\n"
-        "      !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.\n")
-    assert decl in src, "gen_perclass.py's sSA/sSB declaration changed"
-    src = src.replace(decl, "")
-    src, n = re.subn(r"      real\(dp\), intent\(in\)    :: sW\(nseg\)\n(      !!.*\n)+",
-                     "", src)
-    assert n == 2, n
-    src = src.replace("sPA, sPB, sSA, sSB, sD, sW", "sPA, sPB, sD")
-    # The Fock digestion, which this generator replaces wholesale, reads the
-    # weight into its degeneracy factor: put the unweighted value back so that
-    # no surviving text names a dummy this file no longer has.
-    src = src.replace("wq = sW(seg)", "wq = 1.0_dp")
-    src = src.replace("sSA(seg)", "sA(seg)").replace("sSB(seg)", "sNB(seg)")
-    src = src.replace(
-        "      !! Primitive base of the bra / ket pairs, into qp_* below -- the\n",
-        "      !! Primitive base of the bra bin / ket bin, into qp_* below -- the\n")
-    assert "sSA" not in src and "sSB" not in src
-    assert "sW" not in src, "an sW reference survived the splice"
-    return src
 
 
 #: `pcsi{tag}`'s primitive-quartet head already computes the wB97X-V
@@ -1633,7 +1636,7 @@ def main():
     unroll = nv <= _parse_unroll_max(args.unroll_max_comp)
 
     src_path = os.path.join(args.src_dir, f"trc_pc_k{tag}.F90")
-    src = _untile(open(src_path).read())
+    src = open(src_path).read()
 
     i_item = src.index(f"   pure subroutine pcsi{tag}(")
     i_end = src.index(f"end subroutine pcsi{tag}\n") + len(f"end subroutine pcsi{tag}\n")
@@ -1770,6 +1773,12 @@ def main():
          if (same_ab) wq = wq*0.5_dp
          if (same_cd) wq = wq*0.5_dp
          if (same_pair) wq = wq*0.5_dp
+         ! The segment's orbit weight, one load and one multiply. It rides on
+         ! the integral exactly as it does on the Fock side (W2 of
+         ! docs/SYMMETRY_FOCK.md, 'Segment fusion and launch cost'), so one launch still covers
+         ! a whole class run whatever weights it holds, and jfac/kfac stay
+         ! unweighted launch scalars. One on every plan but a skeleton one.
+         wq = wq*sW(seg)
          ! The 8 below is NOT part of wq: terco visits one representative
          ! quartet per (ab|cd)/(cd|ab)/(ba|cd)/... 8-fold permutation class
          ! (wq already halves it where two of those labels coincide), but

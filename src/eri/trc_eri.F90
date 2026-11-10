@@ -187,10 +187,17 @@ module trc_eri
       logical :: on_device = .false.
       integer :: nlaunch = 0
       integer(int64) :: nkept = 0
-      !! Quartets that survive both screens in the last build, counted only
-      !! when fock_resident is asked for it. Diagnostic: it costs a full
-      !! extra enumeration pass.
+      !! Quartets that survive both screens in the last build. On the FOCK
+      !! path, counted only when fock_resident is asked for it, because there
+      !! it costs a full extra enumeration pass. On the GRADIENT path it is
+      !! always set: the ordered-survivor compaction already copies its screen
+      !! pass's atomic counter back to the host once per batch, so summing it
+      !! is free, and `gradient` had no counter of its own at all before S16.
       integer(int64) :: nwork = 0
+      !! Work items (quartets before the in-kernel screens) of the last
+      !! build, Fock or gradient. For a skeleton build this is the restricted
+      !! count; comparing it against the full build's is how a test sees that
+      !! the restriction engaged rather than silently falling back.
       integer(int64) :: nwork_masked = 0, nwork_variant = 0
       integer :: nlaunch_variant = 0
       real(dp) :: parity_ops_base = 0.0_dp, parity_ops_masked = 0.0_dp
@@ -1347,7 +1354,7 @@ contains
    ! repulsion, XC and PCM are the caller's, same scope line eri_fock draws
    ! around Hcore.
    !
-   subroutine eri_gradient(this, b, density, grad, k_scale, j_scale, omega)
+   subroutine eri_gradient(this, b, density, grad, k_scale, j_scale, omega, skeleton)
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)  :: density(:, :, :)
@@ -1369,16 +1376,43 @@ contains
       !! unattenuated path -- that substitution collapses to an exact
       !! multiply by one at every step. omega < 0 (erfc/short-range) is
       !! not implemented, same restriction as eri_fock's own.
+      logical, intent(in), optional :: skeleton
+      !! Return the SKELETON gradient (docs/SYMMETRY_GRADIENT.md): only the
+      !! orbit representatives of one side of each bin pair are launched,
+      !! weighted by their orbit size, so `grad` is NOT a gradient until the
+      !! caller projects it onto the symmetric subspace
+      !! (`sym_scf_grad_symmetrize` of trc_sym_scf, which trc_scf_gradient
+      !! already applies). Unlike `fock`'s skeleton that projection is not a
+      !! correction but the whole of the symmetry: measured, the raw skeleton
+      !! gradient differs from the full one by 0.58 to 1.84 against
+      !! components of 0.27 to 2.14. Requires `build` to have been given the
+      !! point group and `density` to be invariant under it (the density
+      !! bound is then symmetrized too). Default false.
+      !!
+      !! NOT ALWAYS CHEAPER, and there is no size rule for it (the skeleton
+      !! Fock build has none either). When every pair orbit is a singleton --
+      !! a PLANAR Cs molecule, where the only operation is the molecular
+      !! plane and every atom is its own image -- the restriction drops
+      !! nothing, while a diagonal bin pair still becomes the rectangle
+      !! reps(A) x A at weight 1/2 instead of the triangle, so the plan grows
+      !! slightly: measured on HOCl/6-31G*, 9355 work items against the full
+      !! plan's 9142 (+2.3%), with the raw skeleton gradient already equal to
+      !! the full one. check_sym_grad's test_cs_planar pins that.
 
       real(dp), allocatable :: dwork(:, :, :)
       integer :: ndens, nw, id
       real(dp) :: jfac, kfac, ow
+      logical :: skel
       type(trc_bin_launch_t) :: launch
       if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       ow = 0.0_dp
       if (present(omega)) ow = omega
       if (.not. (ow >= 0.0_dp)) error stop "terco: eri%gradient: omega < 0 or NaN (erfc/short-range) is not implemented"
+      skel = .false.
+      if (present(skeleton)) skel = skeleton
+      if (skel .and. .not. this%quartets%orb%built) error stop &
+         "terco: a skeleton gradient needs eri%build to be given the point group"
 
       ndens = size(density, 3)
 
@@ -1413,15 +1447,30 @@ contains
 
       grad = 0.0_dp
       call density_blocks(this, dwork, ndens)
+      ! The skeleton's screens must drop a representative and all its images
+      ! together, so the bound they test has to be invariant: the surviving
+      ! quartet set is then closed under the group, which is what makes the
+      ! orbit weights exact. The host call, as eri_fock's skeleton makes it:
+      ! density_blocks has just written dsh on the HOST and the copy up is
+      ! below, so skeleton_dsh (which starts by copying dsh back DOWN) would
+      ! overwrite it with the previous build's bound.
+      if (skel) call sym_pairs_symmetrize_dsh(this%quartets%orb%shmap, this%dsh)
 
       !$acc enter data copyin(dwork) copyin(grad)
       !$acc update device(this%dsh)
-      launch = bin_launch(this, ndens, jfac, kfac, ow)
+      launch = bin_launch(this, ndens, jfac, kfac, ow, skel)
       call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, grad)
       !$acc wait
       !$acc update self(grad)
       !$acc exit data delete(dwork, grad)
       deallocate (dwork)
+      ! The gradient's own work and survivor counts. The Fock entries have
+      ! reported these since S15; without them a skeleton gradient that
+      ! silently fell back to the full plan would look identical from
+      ! outside, which is the failure mode check_sym_grad's "the skeleton is
+      ! smaller" assertion exists to catch.
+      this%nwork = launch%nwork
+      this%nkept = launch%nkept
 
       if (this%distributed) call sum_ranks(this, grad, 3*b%natm)
    end subroutine eri_gradient

@@ -292,12 +292,19 @@ contains
    end subroutine test_rerun
 
    subroutine test_skeleton_switch(error)
-      !! The skeleton Fock build forced on against the full build (then
-      !! symmetrized): the energy and the gradient are the same, and the
-      !! gradient that follows a skeleton SCF does not reuse its orbit-closed
-      !! engine. Forced on explicitly because HOCl is a molecule the size rule
-      !! declines (3 atoms in 3 orbits), and without the call this would
-      !! compare the full build with itself.
+      !! The skeleton builds forced on against the full builds (then
+      !! symmetrized): the energy and the gradient are the same. Since S16 the
+      !! one switch governs the four-centre GRADIENT as well as the Fock
+      !! matrix (trc_capi.F90 sets `gskel` from `cx%res%sym_skeleton`), so
+      !! this is now also the ABI-level check that a skeleton gradient and a
+      !! full gradient agree -- the Fortran-level one is check_sym_grad's
+      !! `test_declined`. Forced on explicitly because HOCl is a molecule the
+      !! size rule declines (3 atoms in 3 orbits), and without the call this
+      !! would compare the full builds with themselves. HOCl is also the
+      !! molecule whose skeleton gradient plan is LARGER than the full one
+      !! (docs/SYMMETRY_GRADIENT.md section 11), which is why the rule
+      !! declining it is the right default and why forcing it on here costs
+      !! only a little more work rather than failing.
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
       real(dp), allocatable :: geom(:, :)
@@ -323,7 +330,12 @@ contains
       call check(error, abs(e1 - e2) < 1.0e-9_dp, 'the same energy with the skeleton switched off')
       rc = trc_run_gradient(h)
       rc = trc_gradient(h, g2)
-      call check(error, maxval(abs(g1 - g2)) < 1.0e-7_dp, 'and the same gradient')
+      ! 1e-9, this file's standard for a gradient, not the 1e-7 this case
+      ! carried while both paths ran the SAME full four-centre gradient: the
+      ! two are now genuinely different builds, and the skeleton sum is
+      ! projected where it is formed, which is exact (check_sym_grad measures
+      ! 8.9e-15 on this molecule).
+      call check(error, maxval(abs(g1 - g2)) < 1.0e-9_dp, 'and the same gradient')
       ! -1 hands the choice back to the size rule; anything else is refused
       rc = trc_set_symmetry_skeleton(h, -1_c_int)
       call check(error, rc, TRC_OK, 'trc_set_symmetry_skeleton(-1)')

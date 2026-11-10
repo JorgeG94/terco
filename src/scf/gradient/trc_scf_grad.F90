@@ -60,14 +60,44 @@ module trc_scf_grad
 
    type :: trc_scf_grad_sym_t
       !! The symmetry the molecule was run in, as `trc_scf_gradient` takes it
-      !! (its `sym`). Present, the finished gradient is averaged over the group
-      !! with the atom permutation (`sym_scf_grad_symmetrize` of trc_sym_scf),
-      !! which zeroes the components the group forbids. The molecule's basis
-      !! must sit on `geometry%r_std`, so the gradient is in the standard
-      !! frame. The density must be invariant under the group, which is what an
-      !! SO-blocked SCF produces. The four-centre term is the full C1 build
-      !! either way. Absent, nothing is done.
+      !! (its `sym`): the group and the two switches that go with it, which
+      !! mean nothing apart from it and so travel as one optional argument.
+      !! Present, the four-centre term is built as a SKELETON (eri%gradient's
+      !! own `skeleton`) unless `skeleton` declines it, and then projected
+      !! onto the symmetric subspace inside `two_electron_4c`, and the
+      !! finished gradient is averaged over the group with the atom
+      !! permutation (`sym_scf_grad_symmetrize` of trc_sym_scf) unless
+      !! `project` declines that, which zeroes the components the group
+      !! forbids. The molecule's basis must sit on `geometry%r_std`, so the
+      !! gradient is in the standard frame. The density must be invariant
+      !! under the group, which is what an SO-blocked SCF produces. Absent,
+      !! nothing is done and the four-centre term is the full C1 build.
       type(trc_sym_geom_t) :: geometry   !! the group and its atom permutations (trc_sym_geom)
+      logical :: project = .true.
+      !! Project the FINISHED gradient (default true). False keeps the
+      !! four-centre term's own projection -- which a skeleton build cannot
+      !! do without -- and leaves every other term as computed: that is what
+      !! a DEFAULT DFT run wants, whose grid sits on the user's axes and
+      !! breaks the symmetry at its own first-order error, so projecting the
+      !! XC term would move the gradient away from the symmetry-off one
+      !! (trc_capi.F90's trc_run_gradient).
+      logical :: skeleton = .true.
+      !! Build the four-centre term as a skeleton (default TRUE). False takes
+      !! the full C1 four-centre build and leaves `project` to symmetrize the
+      !! finished gradient, which is what this routine did before S16.
+      !!
+      !! The caller decides because the skeleton is not always the smaller
+      !! build. On a molecule whose every pair orbit is a singleton -- a
+      !! PLANAR Cs molecule -- the restriction to representatives drops
+      !! nothing while a diagonal bin pair still becomes the full rectangle
+      !! at weight 1/2, so the plan GROWS: HOCl/6-31G* 9355 work items
+      !! against the full gradient's 9142 (docs/SYMMETRY_GRADIENT.md section
+      !! 11). The same is true of the skeleton FOCK build, which is why
+      !! trc_scf_driver consults `sym_run_skeleton_size_rule` (trc_sym_run) and
+      !! reports its verdict as `trc_scf_result_t%sym_skeleton`; passing
+      !! that verdict here keeps one decision for both builds, so
+      !! TRC_SYM_SKELETON, --sym-skeleton, [scf] symmetry_skeleton and
+      !! trc_set_symmetry_skeleton govern the gradient as well.
    end type trc_scf_grad_sym_t
 
    type :: trc_scf_grad_reuse_t
@@ -292,7 +322,7 @@ contains
       type(step_table_t) :: gst, xst, vst
       type(xc_grad_options_t) :: xopts
       type(timer_type) :: tc
-      logical :: talk, reuse_pl, reuse_eri, reuse_semilocal, reuse_nlc
+      logical :: talk, reuse_pl, reuse_eri, project, skel, reuse_semilocal, reuse_nlc
       integer :: nlc_level
       integer :: nao
       integer :: nocc(2)
@@ -306,6 +336,12 @@ contains
       if (present(grid_cache) .and. present(grid_reuse)) then
          reuse_semilocal = grid_reuse%semilocal
          reuse_nlc = grid_reuse%nlc
+      end if
+      project = .true.
+      skel = present(sym)
+      if (present(sym)) then
+         project = sym%project
+         skel = sym%skeleton
       end if
       call gst%init("grad", [character(len=12) :: "density", "two-electron", "one-electron", "xc", "vv10"])
       call xst%init("xc grad", xc_grad_step_names())
@@ -336,7 +372,7 @@ contains
 
       call gst%step_off(lp, 1, tc)
       call gst%step_on(lp, 2, tc)
-      call scf_grad_reuse_decide(b, thresh, xch, pair_eri_cache, reuse_pl, reuse_eri)
+      call scf_grad_reuse_decide(b, thresh, skel, xch, pair_eri_cache, reuse_pl, reuse_eri)
       if (present(reused)) reused = reuse_pl .and. (reuse_eri .or. present(dfjk))
       if (.not. reuse_pl) then
          call pl_own%build(b, thresh)
@@ -362,9 +398,9 @@ contains
          end if
       else
          if (reuse_eri) then
-            call two_electron_4c(b, thresh, density, xch, grad, eri_cache=pair_eri_cache%eri)
+            call two_electron_4c(b, thresh, density, xch, grad, skel, eri_cache=pair_eri_cache%eri, sym=sym)
          else
-            call two_electron_fresh(b, thresh, density, xch, grad, pair_eri_cache)
+            call two_electron_fresh(b, thresh, density, xch, grad, skel, pair_eri_cache, sym=sym)
          end if
          ! --- one-electron, added on top. `wmat` is already present (and
          ! already holds the right numbers, from scf_grad_energy_weighted_density
@@ -423,7 +459,9 @@ contains
 
       ! --- nuclear repulsion, host arithmetic, added on top ---
       call scf_grad_nuclear_repulsion(b, grad)
-      if (present(sym)) call sym_scf_grad_symmetrize(sym%geometry%group, sym%geometry%perm, grad)
+      ! Idempotent on the four-centre term, which two_electron_4c already
+      ! projected: an orthogonal projector applied twice is itself.
+      if (present(sym) .and. project) call sym_scf_grad_symmetrize(sym%geometry%group, sym%geometry%perm, grad)
 
       ! A reused `pair_eri_cache%pl` is the caller's: only `pl_own` is ours.
       if (.not. reuse_pl) call pl_own%release()
@@ -500,12 +538,13 @@ contains
 
    end subroutine scf_grad_density_weighted
 
-   subroutine scf_grad_reuse_decide(b, thresh, xch, pair_eri_cache, reuse_pl, reuse_eri)
+   subroutine scf_grad_reuse_decide(b, thresh, skel, xch, pair_eri_cache, reuse_pl, reuse_eri)
       !! Whether the SCF's own pair list (`reuse_pl`) and four-centre engine
       !! (`reuse_eri`) in `pair_eri_cache` can serve this gradient instead of
       !! a fresh build. A pure performance decision, never a correctness one.
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
+      logical, intent(in) :: skel   !! the skeleton four-centre gradient (trc_scf_gradient's own)
       type(grad_exchange_t), intent(in) :: xch
       type(trc_pair_eri_cache_t), intent(in), optional :: pair_eri_cache
       logical, intent(out) :: reuse_pl, reuse_eri
@@ -517,11 +556,18 @@ contains
       reuse_pl = present(pair_eri_cache)
       if (reuse_pl) reuse_pl = pair_eri_cache%matches(b, thresh)
       reuse_eri = .false.
-      ! An engine built with the point group is not reused (its bins are orbit-closed).
+      ! An engine built with the point group is exactly the one a skeleton
+      ! four-centre gradient needs (S16): its orbit tables are what
+      ! bins_plan_build_skeleton walks. A SKELETON gradient on an engine
+      ! WITHOUT them would silently fall back to the full plan, so it is
+      ! refused here and two_electron_fresh builds its own with the group
+      ! instead. `skel`, not `present(sym)`: a declined skeleton
+      ! (`sym%skeleton`) takes the full plan on purpose and reuses an
+      ! orbit-less engine happily, which is the whole point of declining it.
       ! The engine must also have been split by the policy this gradient
       ! would build with.
       if (reuse_pl) reuse_eri = pair_eri_cache%has_eri .and. pair_eri_cache%batch_res_built == 1 .and. &
-                                .not. pair_eri_cache%orbits_built
+                                (pair_eri_cache%orbits_built .or. .not. skel)
       if (reuse_eri) reuse_eri = decontract_options_equal(pair_eri_cache%decontract_built, &
                                                           gradient_policy(pair_eri_cache, xch%exx, xch%exx_lr))
    end subroutine scf_grad_reuse_decide
@@ -540,21 +586,29 @@ contains
       policy = decontract_options_for_exchange(policy, exx, exx_lr)
    end function gradient_policy
 
-   subroutine two_electron_fresh(b, thresh, density, xch, grad, pair_eri_cache)
-      !! two_electron_4c over an engine built here, with `gradient_policy`.
+   subroutine two_electron_fresh(b, thresh, density, xch, grad, skeleton, pair_eri_cache, sym)
+      !! two_electron_4c over an engine built here, with `gradient_policy`,
+      !! and with the point group's orbit tables for a skeleton gradient.
       type(trc_basis_t), intent(inout) :: b
       real(dp), intent(in) :: thresh
       real(dp), intent(in) :: density(:, :, :)
       type(grad_exchange_t), intent(in) :: xch
       real(dp), intent(out) :: grad(3, b%natm)
+      logical, intent(in) :: skeleton
       type(trc_pair_eri_cache_t), intent(in), optional :: pair_eri_cache
+      type(trc_scf_grad_sym_t), intent(in), optional :: sym
       type(trc_eri_t) :: eri_own
-      call eri_own%build(b, thresh, decontract=gradient_policy(pair_eri_cache, xch%exx, xch%exx_lr))
-      call two_electron_4c(b, thresh, density, xch, grad, eri_own)
+      if (skeleton) then
+         call eri_own%build(b, thresh, decontract=gradient_policy(pair_eri_cache, xch%exx, xch%exx_lr), &
+                            sym=sym%geometry)
+      else
+         call eri_own%build(b, thresh, decontract=gradient_policy(pair_eri_cache, xch%exx, xch%exx_lr))
+      end if
+      call two_electron_4c(b, thresh, density, xch, grad, skeleton, eri_own, sym)
       call eri_own%release()
    end subroutine two_electron_fresh
 
-   recursive subroutine two_electron_4c(b, thresh, density, xch, grad, eri_cache)
+   recursive subroutine two_electron_4c(b, thresh, density, xch, grad, skeleton, eri_cache, sym)
       !! The four-centre two-electron gradient (eri%gradient), halved into
       !! the actual-energy convention -- trc_scf_gradient's non-`--df`
       !! branch. `grad` is OVERWRITTEN (host).
@@ -563,6 +617,12 @@ contains
       real(dp), intent(in) :: density(:, :, :)
       type(grad_exchange_t), intent(in) :: xch   !! the exchange weights of the full-range and long-range passes
       real(dp), intent(out) :: grad(3, b%natm)
+      logical, intent(in) :: skeleton
+      !! Build the skeleton and project it here (trc_scf_gradient's own
+      !! `skel`: `sym` present AND its `skeleton` not declined).
+      !! False with `sym` present is the full C1 four-centre term,
+      !! unprojected here -- trc_scf_gradient's end-of-routine
+      !! `sym_scf_grad_symmetrize` is then the only projection, as before S16.
       type(trc_eri_t), intent(inout), optional :: eri_cache
       !! The SCF's own four-centre engine at this SAME geometry and
       !! threshold (trc_scf_gradient's own `pair_eri_cache`, checked
@@ -573,19 +633,41 @@ contains
       !! call and reads nothing from `build` that depends on them.
       !! Absent, this routine builds its own and releases it (the
       !! recursive call below, with one).
+      type(trc_scf_grad_sym_t), intent(in), optional :: sym
+      !! Required by `skeleton`, and read only then: the SKELETON
+      !! four-centre gradient over the engine's pair
+      !! orbits, projected onto the symmetric subspace HERE rather than by
+      !! trc_scf_gradient's end-of-routine call. The projection has to
+      !! happen where the skeleton is formed, because a default DFT run
+      !! suppresses the end-of-routine one on purpose (the input-axes grid
+      !! breaks the symmetry at its own error) and a skeleton four-centre
+      !! term cannot be left unprojected: it is not a correction but the
+      !! whole of the symmetry -- the raw skeleton gradient differs from the
+      !! full one by 0.58 to 1.84 against components of 0.27 to 2.14
+      !! (docs/SYMMETRY_GRADIENT.md section 4). Both range-separation passes
+      !! below share the plan, so both are skeleton, and the projector is
+      !! applied once to their sum.
       real(dp), allocatable :: grad_lr(:, :)
+      logical :: skel
 
+      skel = skeleton
+      if (skel .and. .not. present(sym)) error stop "trc_scf_gradient: a skeleton four-centre gradient needs the group"
       if (.not. present(eri_cache)) then
          block
             type(trc_eri_t) :: eri_own
-            call eri_own%build(b, thresh, decontract=gradient_policy(exx=xch%exx, exx_lr=xch%exx_lr))
-            call two_electron_4c(b, thresh, density, xch, grad, eri_own)
+            if (skel) then
+               call eri_own%build(b, thresh, decontract=gradient_policy(exx=xch%exx, exx_lr=xch%exx_lr), &
+                                  sym=sym%geometry)
+            else
+               call eri_own%build(b, thresh, decontract=gradient_policy(exx=xch%exx, exx_lr=xch%exx_lr))
+            end if
+            call two_electron_4c(b, thresh, density, xch, grad, skel, eri_own, sym)
             call eri_own%release()
          end block
          return
       end if
       ! --- two-electron, first: this call starts `grad` from zero ---
-      call eri_cache%gradient(b, density, grad, k_scale=xch%exx)
+      call eri_cache%gradient(b, density, grad, k_scale=xch%exx, skeleton=skel)
 
       ! --- the long-range exchange gradient, for a range-separated
       ! hybrid: a SECOND eri%gradient pass (j_scale=0, k_scale=exx_lr,
@@ -599,13 +681,18 @@ contains
       ! second allocation, same cost as before this argument existed. ---
       if (xch%exx_lr /= 0.0_dp) then
          allocate (grad_lr(3, b%natm))
-         call eri_cache%gradient(b, density, grad_lr, j_scale=0.0_dp, k_scale=xch%exx_lr, omega=xch%omega)
+         call eri_cache%gradient(b, density, grad_lr, j_scale=0.0_dp, k_scale=xch%exx_lr, omega=xch%omega, &
+                                 skeleton=skel)
          grad = grad + grad_lr
          deallocate (grad_lr)
       end if
       grad = 0.5_dp*grad   ! see this module's own header: eri%gradient's
                            ! convention is twice d(e_two)/dR -- true of
                            ! both passes above, added before this halving.
+      ! The skeleton sum, projected: grad = (1/|G|) sum_g P_g grad_skel. The
+      ! projector is linear, so it commutes with the halving above and with
+      ! the sum of the two passes.
+      if (skel) call sym_scf_grad_symmetrize(sym%geometry%group, sym%geometry%perm, grad)
    end subroutine two_electron_4c
 
 end module trc_scf_grad
