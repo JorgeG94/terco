@@ -34,10 +34,13 @@
 ! operands 2 no^3 cb + no nv + nv cb no, all doubles. For no = 25, nv = 130 and cb = 32 that is 85 MB + 16 MB shared
 ! and about 34 MB per thread.
 !
-! HOST ONLY. It reads `ints%ovvv`, `ints%ooov`, `ints%ovov`, `ints%eps_o`, `ints%eps_v` and `amps%t1`, `amps%t2` as
-! they are in host memory, and never touches device data: the host copies must be current. They are after
-! `trc_rccsd_solve` (`amps%pull`), and after `ints%build`; a caller that rewrote one of them on the device must
-! `update self` first. Nothing here is a `do concurrent`, so under the GPU build it runs on the host unchanged.
+! HOST ONLY (this routine). `rccsd_triples_finish` runs the device version (trc_rccsd_triples_dev) in a device build
+! (`opts%use_device` defaults to true there, false in a host build) and this reference otherwise.
+! The reference reads `ints%ovvv`, `ints%ooov`, `ints%ovov`, `ints%eps_o`,
+! `ints%eps_v` and `amps%t1`, `amps%t2` as they are in host memory, and never touches device data: the host copies must
+! be current. They are after `trc_rccsd_solve` (`amps%pull`), and after `ints%build`; a caller that rewrote one of them
+! on the device must `update self` first. Nothing here is a `do concurrent`, so under the GPU build it runs on the host
+! unchanged. The device version needs the opposite: the device copies current.
 !
 ! THREADS. The loop over the pairs (a,b) is an OpenMP loop, each thread with its own W and scratch. The energy of
 ! each pair is stored in `e_pair` and summed in pair order afterwards, so the result does not depend on the thread
@@ -53,25 +56,51 @@ module trc_rccsd_triples
    use trc_rccsd_ints, only: trc_rccsd_ints_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t
    use trc_rccsd_driver, only: trc_rccsd_state_t
+   use trc_rccsd_triples_dev, only: trc_rccsd_triples_dev_options_t, rccsd_triples_dev_run
    implicit none
    private
 
    public :: trc_rccsd_triples_options_t, RCCSD_TRIPLES_C_BATCH
    public :: rccsd_triples_reference, rccsd_triples_finish
+   public :: RCCSD_TRIPLES_WMAP, rccsd_triples_energy_block
 
    integer, parameter :: N_TRIPLE_PERMS = 6
    integer, parameter :: RCCSD_TRIPLES_C_BATCH = 32
    !! The default number of c per batched gemm; sized so a thread's W (6 no^3 doubles per c) stays in cache
 
+   integer, parameter :: RCCSD_TRIPLES_WMAP(N_TRIPLE_PERMS, N_TRIPLE_PERMS) = reshape([ &
+                                                                        1, 2, 3, 4, 5, 6, &
+                                                                        2, 1, 5, 6, 3, 4, &
+                                                                        3, 4, 1, 2, 6, 5, &
+                                                                        4, 3, 6, 5, 1, 2, &
+                                                                        5, 6, 2, 1, 4, 3, &
+                                                                        6, 5, 4, 3, 2, 1], &
+                                                                        [N_TRIPLE_PERMS, N_TRIPLE_PERMS], order=[2, 1])
+      !! Which W pairs with which occupied permutation, for each Z. Row is the
+      !! Z's virtual permutation, column the occupied one, entry the W's. The
+      !! S3 multiplication table, written out rather than derived: getting the
+      !! positions-versus-labels convention backwards transposes half of it
+      !! into a still-symmetric, still-plausible, wrong answer.
+
+#ifdef TRC_DEVICE
+   logical, parameter :: DEFAULT_USE_DEVICE = .true.   !! the GPU build runs the device version by default
+#else
+   logical, parameter :: DEFAULT_USE_DEVICE = .false.  !! a host build runs the reference by default: it is faster there
+#endif
+
    type :: trc_rccsd_triples_options_t
       !! Plain values only
       integer :: c_batch = RCCSD_TRIPLES_C_BATCH  !! c per batched gemm; any value >= 1 gives the same energy
       logical :: verbose = .false.                !! one line with E(T) and the wall time
+      logical :: use_device = DEFAULT_USE_DEVICE  !! `rccsd_triples_finish` runs the device version; false: this host reference
+      !! The default follows the build: true under `TRC_DEVICE` (the GPU build), false in a host build, where the device
+      !! version has no OpenMP over pairs and its batched gemm is a serial loop (h2o2 0.46 s against 0.17 s)
+      type(trc_rccsd_triples_dev_options_t) :: device  !! budget, forced tile size and verbosity of the device version
    end type trc_rccsd_triples_options_t
 
 contains
 
-   subroutine rccsd_triples_reference(ints, amps, e_t, status, opts, seconds)
+   subroutine rccsd_triples_reference(ints, amps, e_t, status, opts, seconds, pair_energies)
       !! E(T) in Hartree from the host copies of `ints` and `amps`; `status` says why not when it is refused
       !!
       !! Refused, with `e_t` = 0: empty integrals, amplitudes missing or of another size than the integrals, no
@@ -83,6 +112,8 @@ contains
       type(error_t), intent(out) :: status
       type(trc_rccsd_triples_options_t), intent(in), optional :: opts
       real(dp), intent(out), optional :: seconds  !! wall time of the triples
+      real(dp), intent(out), allocatable, optional :: pair_energies(:)
+      !! the energy of each pair (a,b), a >= b, in the order a, b (b fastest), before the factor 2; for the device check
 
       type(trc_rccsd_triples_options_t) :: o
       type(timer_type) :: clock
@@ -98,7 +129,7 @@ contains
          return
       end if
       call clock%start()
-      call triples_correction(ints, amps%t1, amps%t2, ints%no, ints%nv, o%c_batch, e_t)
+      call triples_correction(ints, amps%t1, amps%t2, ints%no, ints%nv, o%c_batch, e_t, pair_energies)
       if (present(seconds)) seconds = clock%get_elapsed_time()
       if (.not. abs(e_t) <= huge(1.0_dp)) then
          e_t = 0.0_dp
@@ -136,13 +167,37 @@ contains
          call status%set(ERROR_VALIDATION, "trc_rccsd_triples: the CCSD run did not converge; (T) needs its amplitudes")
          return
       end if
-      call rccsd_triples_reference(state%ints, state%amps, e_t, status, opts, seconds)
+      if (use_device(opts)) then
+         call rccsd_triples_dev_run(state%ints, state%amps, e_t, status, device_options(opts), seconds)
+      else
+         call rccsd_triples_reference(state%ints, state%amps, e_t, status, opts, seconds)
+      end if
       if (status%has_error()) return
       state%result%e_t = e_t
       state%result%e_ccsd_t = state%result%e_ccsd + e_t
       state%result%seconds_triples = seconds
       state%result%has_triples = .true.
    end subroutine rccsd_triples_finish
+
+   pure function use_device(opts) result(device)
+      !! The build's default (device version under `TRC_DEVICE`, else the reference) unless the caller chose
+      type(trc_rccsd_triples_options_t), intent(in), optional :: opts
+      logical :: device
+
+      device = DEFAULT_USE_DEVICE
+      if (present(opts)) device = opts%use_device
+   end function use_device
+
+   function device_options(opts) result(d)
+      !! The device options inside `opts`, with its `verbose` joined to the host one; the defaults when absent
+      type(trc_rccsd_triples_options_t), intent(in), optional :: opts
+      type(trc_rccsd_triples_dev_options_t) :: d
+
+      if (present(opts)) then
+         d = opts%device
+         d%verbose = opts%device%verbose .or. opts%verbose
+      end if
+   end function device_options
 
    function refusal(ints, amps, o) result(why)
       !! Empty when the inputs can be used, else the reason
@@ -280,7 +335,7 @@ contains
       end do
    end subroutine triples_pack_ovvv
 
-   subroutine triples_correction(ints, t1, t2, no, nv, c_batch, e_triples)
+   subroutine triples_correction(ints, t1, t2, no, nv, c_batch, e_triples, pair_energies)
       !! The (T) correction, batched over the innermost virtual
       !!
       !! The outer loop runs a >= b >= c and weights the denominator to recover
@@ -308,20 +363,7 @@ contains
       ! gemm by its first element.
       real(dp), intent(in) :: t2(no, no, nv, nv)
       real(dp), intent(out) :: e_triples
-
-      integer, parameter :: WMAP(N_TRIPLE_PERMS, N_TRIPLE_PERMS) = reshape([ &
-                                                                           1, 2, 3, 4, 5, 6, &
-                                                                           2, 1, 5, 6, 3, 4, &
-                                                                           3, 4, 1, 2, 6, 5, &
-                                                                           4, 3, 6, 5, 1, 2, &
-                                                                           5, 6, 2, 1, 4, 3, &
-                                                                           6, 5, 4, 3, 2, 1], &
-                                                                           [N_TRIPLE_PERMS, N_TRIPLE_PERMS], order=[2, 1])
-         !! Which W pairs with which occupied permutation, for each Z. Row is the
-         !! Z's virtual permutation, column the occupied one, entry the W's. The
-         !! S3 multiplication table, written out rather than derived: getting the
-         !! positions-versus-labels convention backwards transposes half of it
-         !! into a still-symmetric, still-plausible, wrong answer.
+      real(dp), intent(out), allocatable, optional :: pair_energies(:)
 
       real(dp), allocatable :: w(:, :, :, :, :), z(:, :, :, :), x(:, :, :), d3(:, :, :)
       real(dp), allocatable :: tt(:, :), mfix(:, :), mmt(:, :), r1(:, :), r2(:, :)
@@ -489,7 +531,7 @@ contains
 
                ! The thirty-six terms: every Z against every occupied
                ! permutation of the W the table pairs it with.
-               e_pair(ipair) = e_pair(ipair) + triples_energy_block(no, WMAP, w(1, 1, 1, 1, cl), z)
+               e_pair(ipair) = e_pair(ipair) + rccsd_triples_energy_block(no, RCCSD_TRIPLES_WMAP, w(1, 1, 1, 1, cl), z)
             end do
          end do
       end do
@@ -511,10 +553,15 @@ contains
       end do
       e_triples = 2.0_dp*e_triples
 
+      if (present(pair_energies)) then
+         if (allocated(pair_energies)) deallocate (pair_energies)
+         allocate (pair_energies(npair))
+         pair_energies = e_pair
+      end if
       deallocate (tt, alist, blist, e_pair, oop)
    end subroutine triples_correction
 
-   pure function triples_energy_block(no, wmap, w, z) result(acc)
+   pure function rccsd_triples_energy_block(no, wmap, w, z) result(acc)
       !! sum_pq sum_ijk W_wmap(p,q)(perm_q(i,j,k)) Z_p(i,j,k), one triple's share
       !!
       !! The thirty-six-term sum, taken one (i,j,k) at a time: the six Z there
@@ -545,7 +592,7 @@ contains
             end do
          end do
       end do
-   end function triples_energy_block
+   end function rccsd_triples_energy_block
 
    subroutine scatter_w_third(r, no, nc, p, w)
       !! R(i, (c,j,k)) -> w(i,j,k,p,c), for the permutations where c is third

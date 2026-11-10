@@ -69,6 +69,7 @@ target_sources(
           post_hf/ccsd/trc_rccsd_update.F90       # RI-CCSD(T): the T1/T2 amplitude update (Hirata Eqs. 35-36) from the modules above
           post_hf/ccsd/trc_rccsd_diis.F90         # RI-CCSD(T): amplitude DIIS and the step measure, on the device
           post_hf/ccsd/trc_rccsd_driver.F90       # RI-CCSD(T): the iteration driver, convergence, result and handle
+          post_hf/ccsd/trc_rccsd_triples_dev.F90  # RI-CCSD(T): the (T) correction on the device, tiled gemms and one energy kernel
           post_hf/ccsd/trc_rccsd_triples.F90      # RI-CCSD(T): the (T) correction, host reference (Rendell-Lee-Komornicki)
           basis/trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
           scf/guess/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks

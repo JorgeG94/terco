@@ -19,10 +19,21 @@
 !   4 t1 = 0: against the same evaluation and against E_T_FIXED_NO_T1; E(T) <= 0
 !   5 the result is the same for c batches of 1, 7 and 32, and bitwise the same for 1 to 6 threads (OpenMP builds)
 !   6 refusals: an empty type, mismatched amplitudes, a NaN amplitude, a non-converged state, a batch of 0
+!   7 the DEVICE version (trc_rccsd_triples_dev) against the host reference to 1e-16, against pyscf with the
+!     tolerances of cases 1, 2 and 4, and against the independent evaluation, at the fixed amplitudes (with and
+!     without t1) and at the converged ones
+!   8 tile independence: forced tiles of 1, 7 and 37 triples (37 cuts the (b,c) slabs unevenly), the default
+!     budget, and a budget that holds exactly one triple, all within 1e-16
+!   9 the energy of every triple of the device against the host routine's per-(a,b)-pair energies summed over c
+!  10 `rccsd_triples_finish` with the device and with the reference: the same result fields
+!  11 device refusals: a stale scratch after a second `ints%build`, amplitudes of another size, empty integrals, a
+!     budget below one triple, a NaN amplitude, unallocated amplitudes
 ! and, once, without a molecule:
 !   - two electrons (one occupied orbital): E(T) = 0 for any integrals and amplitudes
 !   - random integrals with the symmetries of the real ones and more virtuals than one c batch (nv = 40): the
-!     routine against the independent evaluation, with batches of 32 and 5
+!     routine against the independent evaluation, with batches of 32 and 5, and the device version with tiles of 1,
+!     7 and the default
+!   - the 36-term sum of the device item routine, unrolled, against the table-driven host sum on random W
 !   - no occupied or no virtual orbitals is a refusal
 !
 module rccsd_host_triples
@@ -132,10 +143,13 @@ module check_rccsd_triples_suite
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device
    use trc_scf_driver, only: trc_scf_result_t
    use trc_error, only: error_t
-   use trc_rccsd_ints, only: trc_rccsd_ints_t
+   use trc_rccsd_ints, only: trc_rccsd_ints_t, trc_rccsd_ints_options_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t
    use trc_rccsd_driver, only: trc_rccsd_options_t, trc_rccsd_state_t, trc_rccsd_solve
-   use trc_rccsd_triples, only: trc_rccsd_triples_options_t, rccsd_triples_reference, rccsd_triples_finish
+   use trc_rccsd_triples, only: trc_rccsd_triples_options_t, rccsd_triples_reference, rccsd_triples_finish, &
+                                RCCSD_TRIPLES_WMAP, rccsd_triples_energy_block
+   use trc_rccsd_triples_dev, only: trc_rccsd_triples_dev_options_t, trc_rccsd_triples_scratch_t, rccsd_triples_dev_run, &
+                                    rccsd_triples_dev_run_scratch, rccsd_triples_dev_point_energy
    use trc_linalg, only: trc_linalg_t
    use rccsd_test_support, only: NMOL, MOL_LABEL, MOL_REF, MOL_NFROZEN, load_molecule, run_scf, mo_dipoles
    use rccsd_host_triples, only: host_triples
@@ -145,7 +159,7 @@ module check_rccsd_triples_suite
    private
    public :: collect_check_rccsd_triples
 
-   integer, parameter :: NCASE = 6
+   integer, parameter :: NCASE = 11
    integer, parameter :: REF_E_SCF = 1, REF_E_CCSD_CORR = 2, REF_E_T = 3, REF_E_CCSD_T = 4, REF_E_T_FIXED = 5, &
                          REF_E_T_NO_T1 = 6, NREF = 6  !! indices into the scalars read from a .ref
    ! Tolerances sit about one order above what is measured (host gfortran build and a V100), so a regression at the
@@ -163,6 +177,17 @@ module check_rccsd_triples_suite
    !! E(T) against the independent all-(a,b,c) evaluation, absolute, for the molecules [8.5e-17]: only summation order
    real(dp), parameter :: TOL_HOST_REL = 1.0e-13_dp
    !! the same, relative, for the random symmetric case where |E(T)| is about 471
+   real(dp), parameter :: TOL_DEV_REF = 1.0e-16_dp
+   !! device E(T) against the host reference on the same inputs, absolute, molecules: the same arithmetic, only the
+   !! gemm shapes and the order of the sum over (i,j,k) differ [3.5e-18 host, 3.5e-18 V100]
+   real(dp), parameter :: TOL_DEV_REL = 1.0e-13_dp
+   !! the same, relative, for the random symmetric case where |E(T)| is about 471
+   real(dp), parameter :: TOL_DEV_TILE = 1.0e-16_dp
+   !! device E(T) for another tile size, absolute: the tile only cuts the gemms [0 host, 1.7e-18 V100: cuBLAS may pick
+   !! other kernels as the shapes change]
+   real(dp), parameter :: TOL_DEV_PAIR = 1.0e-17_dp
+   !! the energy of a pair (a,b) from the device's per-triple energies against the host routine's, largest difference
+   !! [2.2e-19 host, 7.1e-20 V100]
    real(dp), parameter :: TOL_BATCH = 1.0e-15_dp
    !! the same E(T) for another c batch, absolute [0]: the batch only cuts the gemms, the sums are the same
 
@@ -187,9 +212,20 @@ contains
                   new_unittest("h2o2: t1 = 0", h4), &
                   new_unittest("h2o2: c batch 1, 7, 32 and thread counts", h5), &
                   new_unittest("h2o2: refusals", h6), &
+                  new_unittest("water: device (T) vs reference, pyscf and the independent evaluation", w7), &
+                  new_unittest("water: tile sizes and the one-triple budget", w8), &
+                  new_unittest("water: per-triple energies vs the host pair energies", w9), &
+                  new_unittest("water: finish with device and with reference", w10), &
+                  new_unittest("water: device refusals", w11), &
+                  new_unittest("h2o2: device (T) vs reference, pyscf and the independent evaluation", h7), &
+                  new_unittest("h2o2: tile sizes and the one-triple budget", h8), &
+                  new_unittest("h2o2: per-triple energies vs the host pair energies", h9), &
+                  new_unittest("h2o2: finish with device and with reference", h10), &
+                  new_unittest("h2o2: device refusals", h11), &
                   new_unittest("two electrons: (T) is zero", two_electrons), &
                   new_unittest("random symmetric integrals, nv above the c batch", random_symmetric), &
-                  new_unittest("an empty space is a refusal", empty_space) &
+                  new_unittest("an empty space is a refusal", empty_space), &
+                  new_unittest("device item routine: unrolled 36-term sum equals the WMAP table", unrolled_vs_table) &
                   ]
    end subroutine collect_check_rccsd_triples
 
@@ -241,6 +277,47 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call run_case(error, 6, 2)
    end subroutine h6
+
+   subroutine w7(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 7, 1)
+   end subroutine w7
+   subroutine w8(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 8, 1)
+   end subroutine w8
+   subroutine w9(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 9, 1)
+   end subroutine w9
+   subroutine w10(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 10, 1)
+   end subroutine w10
+   subroutine w11(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 11, 1)
+   end subroutine w11
+   subroutine h7(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 7, 2)
+   end subroutine h7
+   subroutine h8(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 8, 2)
+   end subroutine h8
+   subroutine h9(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 9, 2)
+   end subroutine h9
+   subroutine h10(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 10, 2)
+   end subroutine h10
+   subroutine h11(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 11, 2)
+   end subroutine h11
 
    subroutine run_case(error, ic, im)
       type(error_type), allocatable, intent(out) :: error
@@ -366,11 +443,16 @@ contains
       ! the fixed amplitudes of the other checks: t2 = MP2, t1_ia = (0.03 x + 0.02 y + 0.01 z)_ia / (e_i - e_a)
       call fixed%init(no, nv)
       call fixed_amplitudes(state%ints, dip, fixed)
+      call fixed%push()  ! the device version reads the device copy
 
       call fixed_cases(im, label, state%ints, fixed, refs)
       call converged_case(im, label, state, refs)
       call batch_case(im, label, state%ints, fixed)
       call refusal_cases(im, label, state, fixed)
+      call device_cases(im, label, state, fixed, refs)
+      call device_tile_cases(im, label, state%ints, fixed)
+      call device_finish_case(im, label, state)
+      call device_refusal_cases(im, label, state, fixed, bas, aux, pl, res, nocc, nfz)
       call fixed%release()
       call state%release()
       call la%release()
@@ -378,6 +460,235 @@ contains
       call aux%release()
       call bas%release()
    end subroutine compute_molecule
+
+   ! ---------------------------------------------------------------------
+   ! The device version (cases 7 to 11)
+   ! ---------------------------------------------------------------------
+
+   subroutine device_cases(im, label, state, fixed, refs)
+      !! Cases 7 and 9: the device E(T) against the reference, pyscf and the independent evaluation, at the fixed
+      !! amplitudes with and without t1 and at the converged ones; and its per-triple energies against the pair energies
+      integer, intent(in) :: im
+      character(len=*), intent(in) :: label
+      type(trc_rccsd_state_t), intent(in) :: state
+      type(trc_rccsd_amps_t), intent(in) :: fixed
+      real(dp), intent(in) :: refs(:)
+
+      type(trc_rccsd_amps_t) :: no_t1
+      type(error_t) :: status
+      real(dp), allocatable :: e_trip(:), e_pair(:)
+      real(dp) :: e_dev, e_ref, e_host, e_dev0, e_ref0, e_host0, e_devc, e_refc, secs
+      real(dp) :: d_ref, d_py, d_host, d_ref0, d_py0, d_host0, d_refc, d_pyc, worst_pair, pair
+      integer(int64) :: n
+      integer :: a, b, c
+
+      call rccsd_triples_dev_run(state%ints, fixed, e_dev, status, seconds=secs, triple_energies=e_trip)
+      if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+      call rccsd_triples_reference(state%ints, fixed, e_ref, status, pair_energies=e_pair)
+      call host_triples(state%ints, fixed%t1, fixed%t2, e_host)
+      call no_t1%init(state%ints%no, state%ints%nv)
+      no_t1%t2 = fixed%t2
+      call no_t1%push()
+      call rccsd_triples_dev_run(state%ints, no_t1, e_dev0, status)
+      call rccsd_triples_reference(state%ints, no_t1, e_ref0, status)
+      call host_triples(state%ints, no_t1%t1, no_t1%t2, e_host0)
+      call no_t1%release()
+      call rccsd_triples_dev_run(state%ints, state%amps, e_devc, status)
+      call rccsd_triples_reference(state%ints, state%amps, e_refc, status)
+      d_ref = abs(e_dev - e_ref)
+      d_py = abs(e_dev - refs(REF_E_T_FIXED))
+      d_host = abs(e_dev - e_host)
+      d_ref0 = abs(e_dev0 - e_ref0)
+      d_py0 = abs(e_dev0 - refs(REF_E_T_NO_T1))
+      d_host0 = abs(e_dev0 - e_host0)
+      d_refc = abs(e_devc - e_refc)
+      d_pyc = abs(e_devc - refs(REF_E_T))
+      call record(im, 7, d_ref < TOL_DEV_REF .and. d_py < TOL_PYSCF_FIXED .and. d_host < TOL_HOST .and. &
+                  d_ref0 < TOL_DEV_REF .and. d_py0 < TOL_PYSCF_FIXED .and. d_host0 < TOL_HOST .and. &
+                  d_refc < TOL_DEV_REF .and. d_pyc < TOL_PYSCF_CONV .and. e_dev < 0.0_dp .and. e_dev0 < 0.0_dp .and. &
+                  abs(e_dev - e_dev0) > 1.0e-6_dp, &
+                  label//"device E(T) fixed "//to_string(e_dev, "f20.14")//": |reference| "//to_string(d_ref, "es9.2")// &
+                  ", |pyscf| "//to_string(d_py, "es9.2")//", |independent| "//to_string(d_host, "es9.2")//"; t1 = 0 "// &
+                  to_string(e_dev0, "f20.14")//": "//to_string(d_ref0, "es9.2")//", "//to_string(d_py0, "es9.2")//", "// &
+                  to_string(d_host0, "es9.2")//"; converged "//to_string(e_devc, "f20.14")//": |reference| "// &
+                  to_string(d_refc, "es9.2")//", |pyscf| "//to_string(d_pyc, "es9.2")//"; wall "//to_string(secs, "f9.3")//" s")
+
+      ! the energy of pair (a,b) is the sum over c of the triples' (the order of the host routine's e_pair)
+      worst_pair = 0.0_dp
+      n = 0
+      do a = 1, state%ints%nv
+         do b = 1, a
+            pair = 0.0_dp
+            do c = 1, b
+               n = n + 1
+               pair = pair + e_trip(n)
+            end do
+            worst_pair = max(worst_pair, abs(pair - e_pair((a*(a - 1))/2 + b)))
+         end do
+      end do
+      call record(im, 9, worst_pair < TOL_DEV_PAIR .and. n == size(e_trip, kind=int64) .and. &
+                  n == int(state%ints%nv, int64)*(state%ints%nv + 1)*(state%ints%nv + 2)/6 .and. &
+                  abs(sum(e_pair)*2.0_dp - e_ref) < TOL_DEV_REF, &
+                  label//to_string(n)//" triples in "//to_string(size(e_pair))//" pairs: the largest difference of a pair "// &
+                  "energy, device against reference, is "//to_string(worst_pair, "es9.2"))
+   end subroutine device_cases
+
+   subroutine device_tile_cases(im, label, ints, fixed)
+      !! Case 8: the tile changes how the products are cut, not the energy
+      integer, intent(in) :: im
+      character(len=*), intent(in) :: label
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: fixed
+
+      integer(int64), parameter :: TILES(5) = [1_int64, 7_int64, 37_int64, 100000_int64, 0_int64]
+      type(trc_rccsd_triples_dev_options_t) :: dopts
+      type(trc_rccsd_triples_scratch_t) :: ts
+      type(trc_linalg_t) :: la
+      type(error_t) :: status
+      real(dp) :: e(size(TILES)), e_default, e_one, e_again, spread
+      integer(int64) :: ncap(size(TILES)), ntiles(size(TILES)), ntotal
+      integer :: k
+
+      call la%init(1)
+      ntotal = int(ints%nv, int64)*(ints%nv + 1)*(ints%nv + 2)/6
+      do k = 1, size(TILES)
+         dopts%tile_triples = TILES(k)
+         call ts%init(ints, dopts)
+         if (ts%status%has_error()) error stop "check_rccsd_triples: "//ts%status%get_message()
+         call rccsd_triples_dev_run_scratch(ints, fixed, ts, la, e(k), status)
+         if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+         ncap(k) = ts%ncap
+         ntiles(k) = ts%ntiles
+         call ts%release()
+      end do
+      e_default = e(size(TILES))
+      ! a budget that holds exactly one triple (6 no^3 doubles), and a second call with the same plan
+      dopts%tile_triples = 0
+      dopts%budget_bytes = 48_int64*int(ints%no, int64)**3
+      call ts%init(ints, dopts)
+      if (ts%status%has_error()) error stop "check_rccsd_triples: "//ts%status%get_message()
+      call rccsd_triples_dev_run_scratch(ints, fixed, ts, la, e_one, status)
+      call rccsd_triples_dev_run_scratch(ints, fixed, ts, la, e_again, status)
+      k = int(ts%ncap)
+      call ts%release()
+      call la%release()
+      spread = max(maxval(abs(e - e_default)), abs(e_one - e_default))
+      call record(im, 8, spread < TOL_DEV_TILE .and. ncap(1) == 1 .and. ntiles(1) == ntotal .and. ncap(2) == 7 .and. &
+                  ncap(3) == 37 .and. ntiles(3) == (ntotal + 36)/37 .and. ncap(4) == ntotal .and. ntiles(4) == 1 .and. &
+                  k == 1 .and. e_again == e_one, &
+                  label//"tiles of 1, 7, 37, all and the default budget ("//to_string(ncap(5))//" triples, "// &
+                  to_string(ntiles(5))//" tile) and a one-triple budget: E(T) "//to_string(e_default, "f20.14")// &
+                  ", largest difference "//to_string(spread, "es9.2")//"; a second call with the same scratch differs by "// &
+                  to_string(abs(e_again - e_one), "es9.2"))
+   end subroutine device_tile_cases
+
+   subroutine device_finish_case(im, label, state)
+      !! Case 10: `rccsd_triples_finish` with the device (set explicitly: the default follows the build) and with the reference
+      integer, intent(in) :: im
+      character(len=*), intent(in) :: label
+      type(trc_rccsd_state_t), intent(inout) :: state
+
+      type(trc_rccsd_triples_options_t) :: topts
+      type(error_t) :: status
+      real(dp) :: e_dev, e_total_dev, e_ref, e_total_ref
+      logical :: flag_dev, flag_ref
+
+      state%result%has_triples = .false.
+      topts%use_device = .true.
+      call rccsd_triples_finish(state, status, topts)
+      if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+      e_dev = state%result%e_t
+      e_total_dev = state%result%e_ccsd_t
+      flag_dev = state%result%has_triples .and. state%result%seconds_triples > 0.0_dp
+      state%result%has_triples = .false.
+      topts%use_device = .false.
+      call rccsd_triples_finish(state, status, topts)
+      if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+      e_ref = state%result%e_t
+      e_total_ref = state%result%e_ccsd_t
+      flag_ref = state%result%has_triples .and. state%result%seconds_triples > 0.0_dp
+      ! The sums e_ccsd + e_t (about -0.2 to -0.4) are held to a few units in the last place, not to
+      ! TOL_DEV_REF: one rounding of the sum is already 5.5e-17.
+      call record(im, 10, flag_dev .and. flag_ref .and. abs(e_dev - e_ref) < TOL_DEV_REF .and. &
+                  abs(e_total_dev - e_total_ref) <= 4.0_dp*spacing(e_total_ref) .and. e_dev /= 0.0_dp .and. &
+                  abs(e_total_dev - state%result%e_ccsd - e_dev) < 1.0e-15_dp, &
+                  label//"finish: E(T) device "//to_string(e_dev, "f20.14")//", reference "//to_string(e_ref, "f20.14")// &
+                  ", |difference| "//to_string(abs(e_dev - e_ref), "es9.2")//", E_CCSD(T) |difference| "// &
+                  to_string(abs(e_total_dev - e_total_ref), "es9.2"))
+   end subroutine device_finish_case
+
+   subroutine device_refusal_cases(im, label, state, fixed, bas, aux, pl, res, nocc, nfz)
+      !! Case 11: every device refusal returns E(T) = 0 with a message; a scratch planned for an earlier build of the
+      !! integrals is refused after a second `ints%build`
+      integer, intent(in) :: im, nocc, nfz
+      character(len=*), intent(in) :: label
+      type(trc_rccsd_state_t), intent(inout) :: state
+      type(trc_rccsd_amps_t), intent(in) :: fixed
+      type(trc_basis_t), intent(in) :: bas, aux
+      type(trc_pairlist_t), intent(in) :: pl
+      type(trc_scf_result_t), intent(in) :: res
+
+      type(trc_rccsd_ints_t) :: empty
+      type(trc_rccsd_amps_t) :: bad
+      type(trc_rccsd_triples_dev_options_t) :: dopts
+      type(trc_rccsd_triples_scratch_t) :: ts
+      type(trc_rccsd_ints_options_t) :: bopts
+      type(trc_linalg_t) :: la
+      type(error_t) :: st(8)
+      real(dp) :: e(8), e_before, e_after
+      logical :: ok
+      integer :: k
+      character(len=1200) :: text
+
+      call rccsd_triples_dev_run(state%ints, fixed, e_before, st(8))
+      ! 1 empty integrals
+      call rccsd_triples_dev_run(empty, fixed, e(1), st(1))
+      ! 2 amplitudes of another size
+      call bad%init(state%ints%no, state%ints%nv + 1)
+      call rccsd_triples_dev_run(state%ints, bad, e(2), st(2))
+      call bad%release()
+      ! 3 a NaN amplitude on the device: reported, not returned as a number
+      call bad%init(state%ints%no, state%ints%nv)
+      bad%t1 = fixed%t1
+      bad%t2 = fixed%t2
+      bad%t2(1, 1, 1, 1) = ieee_nan()
+      call bad%push()
+      call rccsd_triples_dev_run(state%ints, bad, e(3), st(3))
+      call bad%release()
+      ! 4 a budget that does not hold one triple
+      dopts%budget_bytes = 48_int64*int(state%ints%no, int64)**3 - 1_int64
+      call rccsd_triples_dev_run(state%ints, fixed, e(4), st(4), dopts)
+      ! 5 amplitudes that were never allocated
+      call rccsd_triples_dev_run(state%ints, bad, e(5), st(5))
+      ! 6 a negative tile size
+      dopts%budget_bytes = 0
+      dopts%tile_triples = -1
+      call rccsd_triples_dev_run(state%ints, fixed, e(6), st(6), dopts)
+      ! 7 a scratch planned before a second build of the integrals
+      dopts%tile_triples = 0
+      call la%init(1)
+      call ts%init(state%ints, dopts)
+      bopts%nalpha = nocc
+      bopts%nbeta = nocc
+      bopts%nfrozen = nfz
+      call state%ints%build(bas, aux, pl, res%cmo(:, :, 1), res%eps(:, 1), la, bopts)
+      call rccsd_triples_dev_run_scratch(state%ints, fixed, ts, la, e(7), st(7))
+      call ts%release()
+      call la%release()
+      call rccsd_triples_dev_run(state%ints, fixed, e_after, st(8))
+      ok = .true.
+      text = ""
+      do k = 1, 7
+         ok = ok .and. st(k)%has_error() .and. e(k) == 0.0_dp
+         if (st(k)%has_error()) text = trim(text)//" ["//st(k)%get_message()//"]"
+      end do
+      ok = ok .and. index(st(3)%get_message(), "NaN") > 0 .and. index(st(4)%get_message(), "one triple") > 0 .and. &
+           index(st(7)%get_message(), "stale") > 0 .and. .not. st(8)%has_error() .and. abs(e_after - e_before) < TOL_DEV_REF
+      call record(im, 11, ok, label//"device refusals (empty integrals, amplitudes of another size, a NaN amplitude, a "// &
+                  "budget below one triple, unallocated amplitudes, a negative tile, a stale scratch after a second "// &
+                  "build; the rebuilt integrals give E(T) back to "//to_string(abs(e_after - e_before), "es9.2")//"): "// &
+                  trim(text))
+   end subroutine device_refusal_cases
 
    subroutine fixed_amplitudes(ints, dip, amps)
       !! t2(i,j,a,b) = (ia|jb) / (e_i + e_j - e_a - e_b); t1 from the dipole blocks
@@ -712,30 +1023,153 @@ contains
 
    subroutine random_symmetric(error)
       !! nv = 40 is above one c batch of 32 and a batch of 5 cuts every b: the routine against the independent
-      !! evaluation, on integrals nothing about which is molecular
+      !! evaluation, on integrals nothing about which is molecular; and the device version on the same inputs with
+      !! tiles of 1 and 7 triples and the default budget
       type(error_type), allocatable, intent(out) :: error
 
+      integer(int64), parameter :: RANDOM_TILES(3) = [1_int64, 7_int64, 0_int64]
       type(trc_rccsd_ints_t) :: ints
       type(trc_rccsd_amps_t) :: amps
       type(trc_rccsd_triples_options_t) :: topts
+      type(trc_rccsd_triples_dev_options_t) :: dopts
       type(error_t) :: status
       integer(int64) :: seed
-      real(dp) :: e_32, e_5, e_host
+      real(dp) :: e_32, e_5, e_host, e_dev(3), worst_dev
+      integer :: k
 
       seed = 987654321_int64
       call random_problem(3, 40, seed, .true., ints, amps)
+      call map_ints(ints)
+      call amps%push()
       call rccsd_triples_reference(ints, amps, e_32, status)
       if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
       topts%c_batch = 5
       call rccsd_triples_reference(ints, amps, e_5, status, topts)
       call host_triples(ints, amps%t1, amps%t2, e_host)
+      do k = 1, 3
+         dopts%tile_triples = RANDOM_TILES(k)
+         call rccsd_triples_dev_run(ints, amps, e_dev(k), status, dopts)
+         if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+      end do
+      worst_dev = max(maxval(abs(e_dev - e_host)), maxval(abs(e_dev - e_32)))
       call amps%release()
+      call ints%release()
       call check(error, abs(e_32 - e_host) < TOL_HOST_REL*abs(e_host) .and. abs(e_5 - e_host) < TOL_HOST_REL*abs(e_host) .and. &
-                 abs(e_host) > 1.0e-6_dp, &
+                 abs(e_host) > 1.0e-6_dp .and. worst_dev < TOL_DEV_REL*abs(e_host) .and. &
+                 maxval(abs(e_dev - e_dev(3))) < TOL_DEV_REL*abs(e_host), &
                  "random symmetric no = 3, nv = 40: batch 32 "//to_string(e_32, "f20.14")//", batch 5 "// &
                  to_string(e_5, "f20.14")//", independent "//to_string(e_host, "f20.14")//", |difference| "// &
-                 to_string(max(abs(e_32 - e_host), abs(e_5 - e_host)), "es9.2"))
+                 to_string(max(abs(e_32 - e_host), abs(e_5 - e_host)), "es9.2")//"; device tiles 1, 7, default "// &
+                 to_string(e_dev(1), "f20.14")//" "//to_string(e_dev(2), "f20.14")//" "//to_string(e_dev(3), "f20.14")// &
+                 ", largest difference from the independent evaluation and the reference "//to_string(worst_dev, "es9.2"))
    end subroutine random_symmetric
+
+   subroutine map_ints(ints)
+      !! Puts the blocks the (T) reads on the device, as `ints%build` leaves them; `ints%release` takes them off
+      type(trc_rccsd_ints_t), intent(inout) :: ints
+
+      !$acc enter data copyin(ints%ooov, ints%ovov, ints%ovvv, ints%eps_o, ints%eps_v)
+   end subroutine map_ints
+
+   subroutine unrolled_vs_table(error)
+      !! The 36 terms of the device item routine, written out row by row, against the table-driven sum of the host
+      !! routine (RCCSD_TRIPLES_WMAP) on random W, V inputs: distinct, two-equal and all-equal (a,b,c)
+      type(error_type), allocatable, intent(out) :: error
+
+      integer, parameter :: NO = 4, NV = 5
+      integer, parameter :: ABC(3, 5) = reshape([4, 2, 1, 3, 3, 1, 5, 2, 2, 2, 2, 2, 1, 1, 1], [3, 5])
+      real(dp), allocatable :: w(:, :, :, :), x(:, :, :), z(:, :, :, :)
+      real(dp) :: wflat(6*NO**3)
+      real(dp) :: ovov(NO, NV, NO, NV), t1(NO, NV), eps_o(NO), eps_v(NV)
+      real(dp) :: e_table, e_unrolled, worst, d3, scale
+      integer(int64) :: seed
+      integer :: trial, p, i, j, k, a, b, c, perm(3, 6)
+
+      seed = 20240607_int64
+      allocate (w(NO, NO, NO, 6), x(NO, NO, NO), z(NO, NO, NO, 6))
+      worst = 0.0_dp
+      do trial = 1, size(ABC, 2)
+         do p = 1, 6
+            do k = 1, NO
+               do j = 1, NO
+                  do i = 1, NO
+                     w(i, j, k, p) = lcg(seed)
+                  end do
+               end do
+            end do
+         end do
+         do k = 1, NV
+            do i = 1, NO
+               t1(i, k) = lcg(seed)
+            end do
+         end do
+         do b = 1, NV
+            do j = 1, NO
+               do a = 1, NV
+                  do i = 1, NO
+                     ovov(i, a, j, b) = lcg(seed)
+                  end do
+               end do
+            end do
+         end do
+         do i = 1, NO
+            eps_o(i) = -2.0_dp + 0.3_dp*real(i, dp) + 0.01_dp*lcg(seed)
+         end do
+         do a = 1, NV
+            eps_v(a) = 1.0_dp + 0.4_dp*real(a, dp) + 0.01_dp*lcg(seed)
+         end do
+         a = ABC(1, trial)
+         b = ABC(2, trial)
+         c = ABC(3, trial)
+         perm(:, 1) = [a, b, c]
+         perm(:, 2) = [a, c, b]
+         perm(:, 3) = [b, a, c]
+         perm(:, 4) = [b, c, a]
+         perm(:, 5) = [c, a, b]
+         perm(:, 6) = [c, b, a]
+         scale = 1.0_dp
+         if (a == c) then
+            scale = 6.0_dp
+         else if (a == b .or. b == c) then
+            scale = 2.0_dp
+         end if
+         ! the host routine's steps: X = W + V/2, Z = r3(X)/D, then the table-driven sum
+         do p = 1, 6
+            do k = 1, NO
+               do j = 1, NO
+                  do i = 1, NO
+                     x(i, j, k) = w(i, j, k, p) + 0.5_dp*(ovov(i, perm(1, p), j, perm(2, p))*t1(k, perm(3, p)))
+                  end do
+               end do
+            end do
+            do k = 1, NO
+               do j = 1, NO
+                  do i = 1, NO
+                     d3 = scale*(eps_o(i) + eps_o(j) + eps_o(k) - eps_v(a) - eps_v(b) - eps_v(c))
+                     z(i, j, k, p) = (4.0_dp*x(i, j, k) + x(k, i, j) + x(j, k, i) - 2.0_dp*x(k, j, i) &
+                                      - 2.0_dp*x(i, k, j) - 2.0_dp*x(j, i, k))/d3
+                  end do
+               end do
+            end do
+         end do
+         e_table = rccsd_triples_energy_block(NO, RCCSD_TRIPLES_WMAP, w, z)
+         wflat = reshape(w, [6*NO**3])
+         e_unrolled = 0.0_dp
+         do k = 1, NO
+            do j = 1, NO
+               do i = 1, NO
+                  e_unrolled = e_unrolled + rccsd_triples_dev_point_energy(i, j, k, NO, NV, 0_int64, int(NO**3, int64), a, b, &
+                                                                           c, wflat, 6_int64*NO**3, ovov, t1, &
+                                                                           eps_o, eps_v)
+               end do
+            end do
+         end do
+         worst = max(worst, abs(e_table - e_unrolled)/max(abs(e_table), 1.0e-30_dp))
+         if (abs(e_table) < 1.0e-8_dp) worst = max(worst, 1.0_dp)
+      end do
+      call check(error, worst < 1.0e-13_dp, "unrolled 36-term sum against the table-driven sum over 5 random triples "// &
+                 "(distinct, two equal, three equal): worst relative difference "//to_string(worst, "es9.2"))
+   end subroutine unrolled_vs_table
 
    subroutine empty_space(error)
       !! No occupied or no virtual orbitals is not a zero energy: it is refused, with the E(T) left at 0
