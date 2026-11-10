@@ -167,6 +167,14 @@ before any non-trivial change. The rules that most often break builds:
   is fine. Commit messages say what changed and why. See SKILL.md section 9
   for the rest.
 - Never merge without the maintainer's say-so.
+- No plan or design documents in the repository: agent plans, briefs,
+  progress logs, design notes or experiment write-ups (in `.claude/`,
+  `docs/` or anywhere else). Keep them outside the tree. What a reader
+  needs belongs in code comments (the why, with the measurement), the PR
+  body and the user-facing docs.
+- No local paths in committed files: nothing from your machine
+  (`/Users/...`, `/home/...`, `/tmp/...`, scratchpad or log directories).
+  Name the repository-relative file, or describe the run and its result.
 - `AI_POLICY.md` applies to every contribution an agent drafts: disclose
   the tool, and leave review and merging to a human maintainer.
 

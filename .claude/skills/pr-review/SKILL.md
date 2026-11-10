@@ -244,6 +244,13 @@ placement; grep cannot tell which declaration a block is about.
   `claude.ai/code/session_...` URLs) in commit messages or PR bodies. A
   `Co-Authored-By:` trailer is fine.
 - Never mention "kgen" in commits, comments, docs or file headers.
+- No plan or design documents (agent plans, briefs, progress logs, design
+  notes, experiment write-ups) added anywhere in the tree, `.claude/` and
+  `docs/` included. Must-fix: ask for them to be dropped and for what a
+  reader needs to move into comments, the PR body or user-facing docs.
+- No local paths in committed files (`/Users/`, `/home/`, `/tmp/`,
+  `/private/`, scratchpad or log directories): must-fix. Find them with
+  `gh pr diff <N> | grep -nE '^\+.*(/Users/|/home/|/private/|/tmp/)'`.
 
 ## 10. Use pic, don't re-roll it
 
