@@ -305,6 +305,12 @@ target_link_libraries(check_scf_lindep_gap PRIVATE test-drive::test-drive)
 # check_soscf.F90's own header for the pyscf references.
 terco_add_check(check_soscf check_soscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_soscf PRIVATE test-drive::test-drive)
+# The SCF convergence aids (`mom`, `level_shift_until`): the MOM ordering on a
+# synthetic problem, ground states against the plain runs and pyscf, the shift
+# kept on through DIIS, MOM holding a swapped HOMO/LUMO occupation, and
+# trc_set_scf_stabilise through the C ABI.
+terco_add_check(check_scf_stabilise check_scf_stabilise.F90 NEEDS_BASIS)
+target_link_libraries(check_scf_stabilise PRIVATE terco_c_interfaces test-drive::test-drive)
 # build_631g against trc_basis_from_json, on water through a five-water
 # cluster -- the one check allowed to call build_631g for its own basis
 # (see that subroutine's comment in trc_test_basis.F90). Water through

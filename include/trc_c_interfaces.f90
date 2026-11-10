@@ -35,7 +35,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_SHELL = 0
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 22
+   integer(c_int), parameter :: TRC_ABI_MINOR = 23
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -754,14 +754,13 @@ module trc_c_interfaces
          !! / occ), applied ONLY WHILE DIIS (AND ADIIS) ARE OFF -- the
          !! damped start before either has engaged (trc_scf_driver.F90's own
          !! "level shift while DIIS and A/EDIIS are off" block). It is a
-         !! CONVERGENCE AID for that early phase, not a persistent shift
-         !! held through the whole SCF: once the commutator is small enough
-         !! for CDIIS (or ADIIS takes over first), this stops being applied
-         !! at all, however large `shift` is set. A caller wanting a shift
-         !! that stays on throughout -- the sense a persistent level shift
-         !! has in, for instance, a Fukui-ion deck's convergence recipe --
-         !! is asking for something this entry does not do; nothing here
-         !! changes that behaviour, only exposes the existing knob.
+         !! CONVERGENCE AID for that early phase: once the commutator is
+         !! small enough for CDIIS (or ADIIS takes over first), this stops
+         !! being applied, however large `shift` is set. To keep the shift on
+         !! through DIIS until the commutator falls below a threshold -- the
+         !! sense a persistent level shift has in, for instance, a Fukui-ion
+         !! deck's convergence recipe -- also set `level_shift_until` with
+         !! trc_set_scf_stabilise.
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
@@ -817,6 +816,34 @@ module trc_c_interfaces
          integer(c_int), value :: enable
          real(c_double), value :: soscf_start
       end function trc_set_soscf
+
+      integer(c_int) function trc_set_scf_stabilise(handle, mom, level_shift_until) bind(c) result(res)
+         !! Two aids for small-gap SCFs (charged open shells, a Fukui ion)
+         !! where CDIIS stalls with the occupation flipping between iterations.
+         !! Both work on rank 0's eigenproblem alone, so unlike trc_set_soscf
+         !! they combine with an open shell, a functional, VV10, a continuum
+         !! solvent, --df and more than one rank (trc_scf_options_t's own
+         !! comments):
+         !!
+         !!   mom                1 occupies by maximum overlap with the previous
+         !!                      density, starting at the first iteration with
+         !!                      DIIS on and either a caller-given starting density
+         !!                      (trc_set_guess GIVEN, SAD) or |FDS - SDF| < 0.1,
+         !!                      and staying on; aufbau before that. 0 aufbau
+         !!                      throughout (the default).
+         !!   level_shift_until  keep trc_set_level_shift's shift on through
+         !!                      DIIS until |FDS - SDF| falls below this; 0 (the
+         !!                      default) drops it when DIIS starts. An iteration
+         !!                      that can converge is never shifted.
+         !!
+         !! Takes effect at the next trc_run_scf, for every SCF the handle runs
+         !! after it (trc_fukui_hirshfeld's three included). (ABI 1.23.)
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: mom
+         real(c_double), value :: level_shift_until
+      end function trc_set_scf_stabilise
 
       integer(c_int) function trc_set_df(handle, on) bind(c) result(res)
          import :: c_int, c_ptr

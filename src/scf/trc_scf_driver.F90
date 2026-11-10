@@ -112,6 +112,19 @@ module trc_scf_driver
    private
 
    public :: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t, trc_pair_eri_cache_t
+   ! check_scf_stabilise unit-tests the MOM reordering on a synthetic problem.
+   public :: scf_driver_mom_weights, scf_driver_mom_permute
+
+   real(dp), parameter :: MOM_START = 0.1_dp
+   !! Commutator norm below which MOM starts following the density of a run
+   !! that began from a guess it built itself. Below this the occupied space
+   !! is settled enough to follow; the stalls MOM is for sit at 1e-2..1e-1,
+   !! while a poor guess has a far larger commutator and MOM would lock it in.
+
+   integer, parameter :: ORB_AUFBAU = 0, ORB_FRAC = 1, ORB_MOM = 2
+   !! How a diagonalisation's eigenvectors are occupied: lowest first, the
+   !! fractional occupations of the free-atom runs, or maximum overlap with
+   !! the previous density.
 
 contains
 
@@ -119,6 +132,13 @@ contains
       !! The density at a chosen iteration, written where a benchmark can read
       !! it back. Off unless TRC_DUMP_DENSITY names a file. Stream format:
       !! an 8-byte nao, then the matrix, which is what the test readers expect.
+      !! The SCF writes the density leaving iteration 2. The model density
+      !! bench_gc invents is small and banded, so it screens far harder than
+      !! anything an SCF actually meets, and a Fock build timed on it flatters
+      !! the code by about three times. The density lives on the DEVICE (every
+      !! update since the guess was a gemm up there), so the caller pulls it
+      !! back first; dumping without that wrote the block-diagonal atomic SAD
+      !! guess and called it iteration 2.
       integer, intent(in) :: nao
       real(dp), intent(in) :: d(nao, nao)
       character(len=512) :: path
@@ -225,11 +245,10 @@ contains
       !! separate means `scf_options%adiis = .false.` leaves the CDIIS path
       !! untouched, to the bit.
       logical :: adiis_active
-      logical :: shift_now, mom_now
-      !! This iteration's level shift and maximum-overlap occupation (the
-      !! `level_shift_until` and `mom` options' own comments).
-      integer :: mom_swaps(2)
-      !! Orbitals MOM occupied above the aufbau set, per spin, this iteration.
+      logical :: shifted, skip_gap, mom_active
+      !! F carried the level shift this iteration; MOM follows the density yet (`scf_driver_mom_active`).
+      integer :: orb_mode, nswap_s
+      integer :: mom_swaps(2)   !! orbitals MOM occupied above aufbau, per spin
       type(error_t) :: err
       type(scf_energies_t) :: scf_energies
       !! Every energy and integrated electron count the loop produces; all zero
@@ -242,7 +261,7 @@ contains
       logical :: diag_failed      !! this iteration's Fock diagonalisation (every rank's own copy)
       integer :: diag_info        !! the FIRST failing spin's own eigensolver info, kept across the spin loop
       integer :: info_s           !! this spin's own raw info from the call just made
-      real(dp) :: diag_flag(2)    !! [0.0/1.0 failed, info], broadcast from root the same way `ctl` is
+      real(dp) :: diag_flag(4)    !! [0.0/1.0 failed, info, mom_swaps(1:2)], broadcast from root the same way `ctl` is
 
       ! The handles and caches the run reads: the caller's when given, else
       ! the run's own, made here and released when the run (the recursive
@@ -388,6 +407,8 @@ contains
       call incremental%setup(scf_config)
       diis_on = .false.
       mom_swaps = 0
+      shifted = .false.
+      mom_active = .false.
       soscf_switch_iteration = 0
       ! What the SCF is actually running on. Two callers can hand over the
       ! same molecule and basis name and different shells -- one had a
@@ -483,6 +504,9 @@ contains
          ! converging in 21 CDIIS iterations into one that never converged).
          !
          adiis_active = scf_options%adiis .and. .not. diis_on .and. it > scf_config%ndamp
+         mom_active = scf_driver_mom_active(mom_active, scf_options, diis_on, present(dguess) .or. present(cmo_project), &
+                                            errmax)
+         shifted = scf_driver_shift_now(scf_options, diis_on, adiis_active, errmax)
          ! The new density is rank 0's alone: extrapolation, eigensolve and density
          ! run on one device and the density is broadcast, since dsyevd need not
          ! return the same vectors on two devices. Orbitals and energies come over
@@ -498,26 +522,19 @@ contains
                call cdiis%push(nao, scf_config%nspin, scf_state%fock, scf_state%errv, scf_state%w1)
                call cdiis%extrapolate(nao, scf_config%nspin, scf_state%fock, scf_state%w1, ok)
             end if
-            ! --- level shift, F += mu (S - S D S / occ): while DIIS and A/EDIIS
-            ! are off, and with `level_shift_until` on through them as well,
-            ! onto the extrapolated F so the DIIS history stays unshifted. Never
-            ! below `conv_diis`: an iteration that can converge diagonalises an
-            ! unshifted F, or the reported virtual eps would carry the shift.
-            shift_now = .not. diis_on .and. .not. adiis_active
-            if (scf_options%level_shift_until > 0.0_dp) then
-               shift_now = shift_now .or. errmax >= max(scf_options%level_shift_until, scf_options%conv_diis)
-            end if
-            if (shift_now .and. scf_options%level_shift > 0.0_dp) then
+            ! --- level shift, F += mu (S - S D S / occ), onto the extrapolated F
+            if (shifted) then
                call scf_diis_level_shift(la, nao, scf_config%nspin, scf_options%level_shift, scf_config%occ, &
                       scf_context%smat, scf_result%dmat, scf_state%w1, scf_state%w2, scf_state%fock)
             end if
-            mom_now = scf_options%mom .and. diis_on .and. .not. scf_options%frac_occ
+            orb_mode = scf_driver_occupation_mode(scf_options, mom_active)
             ! --- diagonalise, per spin, and the new density ---------------------
             mom_swaps = 0
             do s = 1, scf_config%nspin
-               call orbitals_and_density(scf_state%fock(:, :, s), scf_config%nocc(s), scf_options%frac_occ, &
+               call orbitals_and_density(scf_state%fock(:, :, s), scf_config%nocc(s), orb_mode, &
                                          scf_state%w1, scf_state%w2, scf_result%eps(:, s), scf_result%cmo(:, :, s), &
-                                         scf_result%dmat(:, :, s), scf_state%ofrac, info_s, mom_now, mom_swaps(s))
+                                         scf_result%dmat(:, :, s), scf_state%ofrac, info_s)
+               mom_swaps(s) = nswap_s
                ! The FIRST failing spin's own info -- scf_driver_note_failure's own header.
                call scf_driver_note_failure(info_s, diag_failed, diag_info)
             end do
@@ -533,10 +550,11 @@ contains
          ! avoid for the energy/commutator-norm pair.
          if (present(comm)) then
             if (comm%size() > 1) then
-               diag_flag = [merge(1.0_dp, 0.0_dp, diag_failed), real(diag_info, dp)]
-               call scf_context_bcast_flat(comm, diag_flag, 2)
+               diag_flag = [merge(1.0_dp, 0.0_dp, diag_failed), real(diag_info, dp), real(mom_swaps, dp)]
+               call scf_context_bcast_flat(comm, diag_flag, 4)
                diag_failed = diag_flag(1) > 0.5_dp
                diag_info = nint(diag_flag(2))
+               mom_swaps = nint(diag_flag(3:4))
             end if
          end if
          if (diag_failed) then
@@ -583,25 +601,12 @@ contains
                   scf_timers%tr_it, merge(" i", "  ", incr_now)
             end if
             call global_logger%info(trim(line))
-            if (any(mom_swaps > 0)) then
-               call global_logger%info("         mom: kept "//to_string(sum(mom_swaps))// &
-                                       " orbital(s) occupied above the aufbau set")
-            end if
+            if (any(mom_swaps > 0)) call global_logger%info("         mom: kept "//to_string(sum(mom_swaps))// &
+                                                            " orbital(s) occupied above the aufbau set")
          end if
          scf_result%iterations = it
-         ! A real density, on the way past, for the benchmarks. The model
-         ! density bench_gc invents is small and banded, so it screens far
-         ! harder than anything an SCF actually meets, and a Fock build
-         ! timed on it flatters the code by about three times. Set
-         ! TRC_DUMP_DENSITY to a path and the density leaving iteration 2 is
-         ! written there, in the stream format read_density already reads.
+         ! A real density for the benchmarks (dump_density's comment says why).
          if (it == 2) then
-            ! The density lives on the DEVICE -- every update to it since the
-            ! guess was a gemm up there -- so the host copy is the SAD guess
-            ! until it is pulled back. Dumping without this wrote a
-            ! block-diagonal atomic density and called it iteration 2, which
-            ! screens about three times harder than anything real and made
-            ! every benchmark built on the file flattering and wrong.
             !$acc update self(scf_result%dmat)
             call dump_density(nao, scf_result%dmat(:, :, 1))
          end if
@@ -622,8 +627,9 @@ contains
       if (soscf_switch_iteration > 0 .and. .not. scf_result%converged) then
          call trc_scf_soscf_run(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, la, &
                                pair_eri_cache%eri)
+         shifted = .false.
+         mom_swaps = 0
       end if
-
       ! The density the energy was evaluated at, and the orbitals that made it.
       !$acc update self(scf_state%dold, scf_result%cmo, scf_result%eps)
       if (present(comm)) then
@@ -636,12 +642,9 @@ contains
       scf_result%dmat = scf_state%dold
       scf_energies%pcm_qtotal = scf_context%pcm%q_total
       call scf_result%update(scf_energies, scf_state%dold)
-      ! Only plain non-convergence gets this; `diag_failed` set a sharper message.
-      if (.not. scf_result%converged .and. len_trim(scf_result%message) == 0) then
-         scf_result%message = "trc_scf: not converged"
-      end if
-      call scf_driver_gap_check(scf_config, scf_options%frac_occ .or. scf_result%iterations == 0, nao, &
-                                nao - scf_context%n_lindep, scf_result%eps)
+      skip_gap = scf_options%frac_occ .or. scf_result%iterations == 0
+      call scf_driver_eps_notes(scf_config%root, scf_result%converged, shifted, mom_swaps, scf_result%message, skip_gap)
+      call scf_driver_gap_check(scf_config, skip_gap, nao, nao - scf_context%n_lindep, scf_result%eps)
       if (scf_config%dft) then
          ! The run's own totals, read once here: grid build was added after
          ! setup, above. xc is all of scf_fock_build_vxc but VV10 (t_xc includes it),
@@ -688,15 +691,14 @@ contains
          real(dp), intent(out) :: dout(nao, nao)
          integer, intent(out) :: info
          real(dp), allocatable :: fp(:, :), c(:, :), t(:, :), e(:), d(:, :)
-         integer :: nswap
          allocate (fp(nao, nao), c(nao, nao), t(nao, nao), e(nao), d(nao, nao))
          !$acc data copyin(h, scf_context%x) create(fp, c, t, e) copyout(d)
-         call orbitals_and_density(h, nocc_s, .false., t, fp, e, c, d, scf_state%ofrac, info, .false., nswap)
+         call orbitals_and_density(h, nocc_s, ORB_AUFBAU, t, fp, e, c, d, scf_state%ofrac, info)
          !$acc end data
          dout = d
       end subroutine guess_from
 
-      subroutine orbitals_and_density(f, nocc_s, frac, t, fp, eps_s, cmo_s, d_s, ofrac, info, mom, nswap)
+      subroutine orbitals_and_density(f, nocc_s, mode, t, fp, eps_s, cmo_s, d_s, ofrac, info)
          !! One spin's step from a Fock-like matrix to its density: F' = X^T F X,
          !! its eigenvectors, C = X C', then D = occ C(:,1:nocc) C(:,1:nocc)^T
          !! (or, with `frac`, the fractional occupations of the free-atom runs).
@@ -716,17 +718,16 @@ contains
          !! actually filled in.
          real(dp), intent(in) :: f(nao, nao)
          integer, intent(in) :: nocc_s
-         logical, intent(in) :: frac
+         integer, intent(in) :: mode
+         !! ORB_AUFBAU, ORB_FRAC or ORB_MOM. With ORB_MOM `d_s` comes in as the
+         !! previous density and the occupied columns are chosen by overlap with
+         !! it (`scf_driver_mom_weights`); `nswap_s` counts those aufbau would skip.
          real(dp), intent(inout) :: t(nao, nao), fp(nao, nao)
          real(dp), intent(inout) :: eps_s(nao), cmo_s(nao, nao), d_s(nao, nao)
          real(dp), intent(inout) :: ofrac(nao)
          integer, intent(out) :: info
-         logical, intent(in) :: mom
-         !! Occupy by overlap with `d_s` as it comes in (the previous
-         !! density), not by aufbau: `scf_driver_mom_order`.
-         integer, intent(out) :: nswap
          integer :: i, j
-         nswap = 0
+         nswap_s = 0
          ! F' = X^T F X
          call la%gemm_mat(f, scf_context%x, t)
          call la%gemm_mat(scf_context%x, t, fp, transa="T")
@@ -734,11 +735,11 @@ contains
          call la%syev(fp, eps_s, info)
          if (info /= 0) return
          call la%gemm_mat(scf_context%x, fp, cmo_s)
-         if (mom .and. .not. frac) then
-            call scf_driver_mom_order(la, nao, nocc_s, scf_config%occ, scf_context%smat, d_s, cmo_s, eps_s, &
-                                      t, fp, ofrac, nswap)
+         if (mode == ORB_MOM .and. nocc_s > 0 .and. nocc_s < nao) then
+            call scf_driver_mom_weights(la, nao, scf_context%smat, d_s, cmo_s, t, fp, ofrac)
+            call scf_driver_mom_permute(nao, nocc_s, ofrac, cmo_s, eps_s, t, nswap_s)
          end if
-         if (frac) then
+         if (mode == ORB_FRAC) then
             ! D = sum_i o_i c_i c_i^T through a column-scaled copy of C.
             !$acc update self(eps_s)
             if (scf_config%nspin == 1) then
@@ -890,35 +891,99 @@ contains
       end if
    end subroutine scf_driver_gap_check
 
-   subroutine scf_driver_mom_order(la, nao, nocc, occ, smat, d_old, cmo, eps, t, sc, p, nswap)
-      !! Maximum overlap method (Gilbert, Besley & Gill, JPCA 112, 13164):
-      !! reorder the fresh eigenvectors `cmo` (and `eps`) so the `nocc`
-      !! columns that overlap most with the previous density come first,
+   pure function scf_driver_shift_now(opts, diis_on, adiis_active, errmax) result(shift)
+      !! Whether this iteration's Fock matrix carries the level shift
+      !! F += mu (S - S D S / occ). While DIIS and A/EDIIS are off it always
+      !! does. With `level_shift_until` it stays on through them as well, onto
+      !! the extrapolated F so the DIIS history stays unshifted, while the
+      !! commutator is at least `level_shift_until`. In every case an iteration
+      !! that can converge (commutator below `conv_diis`) diagonalises an
+      !! unshifted F, or the reported virtual eps would carry the shift (a
+      !! restart from a converged density inside the damped start did this).
+      type(trc_scf_options_t), intent(in) :: opts
+      logical, intent(in) :: diis_on, adiis_active
+      real(dp), intent(in) :: errmax
+      logical :: shift
+      shift = .false.
+      if (opts%level_shift <= 0.0_dp .or. errmax < opts%conv_diis) return
+      shift = .not. diis_on .and. .not. adiis_active
+      if (opts%level_shift_until > 0.0_dp) shift = shift .or. errmax >= opts%level_shift_until
+   end function scf_driver_shift_now
+
+   pure function scf_driver_mom_active(was_active, opts, diis_on, given, errmax) result(active)
+      !! Whether MOM follows the density this iteration; once true it stays
+      !! true (a latch). MOM locks the occupation of the density it starts
+      !! from, so it must start from one worth following: DIIS is on AND either
+      !! the caller GAVE the starting density (a restart, a projection, SAD)
+      !! or the commutator is below `MOM_START`. A restricted run has DIIS on
+      !! from iteration 1, and following a poor core guess there converged
+      !! water/6-31G* to a determinant 7.9 Eh above the ground state.
+      logical, intent(in) :: was_active, diis_on, given
+      type(trc_scf_options_t), intent(in) :: opts
+      real(dp), intent(in) :: errmax
+      logical :: active
+      active = was_active
+      if (opts%mom .and. diis_on .and. (given .or. errmax < MOM_START)) active = .true.
+   end function scf_driver_mom_active
+
+   pure function scf_driver_occupation_mode(opts, mom_active) result(mode)
+      !! `ORB_FRAC` for the free-atom runs, else `ORB_MOM` once MOM is active
+      !! (`scf_driver_mom_active`), else aufbau.
+      type(trc_scf_options_t), intent(in) :: opts
+      logical, intent(in) :: mom_active
+      integer :: mode
+      mode = ORB_AUFBAU
+      if (opts%frac_occ) then
+         mode = ORB_FRAC
+      else if (mom_active) then
+         mode = ORB_MOM
+      end if
+   end function scf_driver_occupation_mode
+
+   subroutine scf_driver_eps_notes(root, converged, shifted, mom_swaps, message, skip_gap)
+      !! What the returned orbital energies are not: after a MOM run that kept a
+      !! non-aufbau occupation they do not ascend across the occupied/virtual
+      !! boundary, and after a non-converged run that ended on a shifted
+      !! iteration the virtuals carry +level_shift. Either way the HOMO-LUMO gap
+      !! check would say something false, so it is skipped and the run says why.
+      logical, intent(in) :: root, converged, shifted
+      integer, intent(in) :: mom_swaps(2)
+      character(len=*), intent(inout) :: message
+      logical, intent(inout) :: skip_gap
+      if (any(mom_swaps > 0)) then
+         skip_gap = .true.
+         if (root) call global_logger%info("trc_scf: mom kept a non-aufbau occupation; the orbital "// &
+                                           "energies are not in aufbau order and the HOMO-LUMO gap is not checked")
+      end if
+      if (.not. converged) then
+         if (shifted) skip_gap = .true.
+         if (len_trim(message) == 0) then
+            message = "trc_scf: not converged"
+            if (shifted) message = trim(message)//" (the last iteration was level shifted: "// &
+                                   "the virtual orbital energies include the shift)"
+         end if
+      end if
+   end subroutine scf_driver_eps_notes
+
+   subroutine scf_driver_mom_weights(la, nao, smat, d_old, cmo, t, sc, p)
+      !! The maximum overlap method's occupation weights (Gilbert, Besley & Gill,
+      !! JPCA 112, 13164), here as a projection onto the previous occupied
+      !! space,
       !!
-      !!   p_j = c_j^T S D_old S c_j / occ,
+      !!   p_j = c_j^T S D_old S c_j,
       !!
-      !! the weight of orbital j in the previous occupied space (1 for an
-      !! orbital inside it, 0 outside). Each block keeps energy order. With
-      !! an idempotent D_old this is MOM's projection onto the previous
-      !! occupied orbitals; a damped D_old only blurs the weights. Device
-      !! arrays in and out; `t`, `sc` (n x n) and `p` (n) are workspace.
-      !! `nswap` counts occupied columns that aufbau would have left empty.
+      !! the sum of SQUARED overlaps of orbital j with the previous occupied
+      !! orbitals times occ (the paper's choice is the linear sum; the ordering
+      !! agrees whenever D_old is idempotent: 1 inside the space, 0 outside,
+      !! and a damped D_old only blurs it). Device arrays in; `t` and `sc`
+      !! (n x n) are workspace and `p` (n) comes back on the host as well.
       type(trc_linalg_t), intent(inout) :: la
-      integer, intent(in) :: nao, nocc
-      real(dp), intent(in) :: occ
-      real(dp), intent(in) :: smat(nao, nao), d_old(nao, nao)
-      real(dp), intent(inout) :: cmo(nao, nao), eps(nao)
+      integer, intent(in) :: nao
+      real(dp), intent(in) :: smat(nao, nao), d_old(nao, nao), cmo(nao, nao)
       real(dp), intent(inout) :: t(nao, nao), sc(nao, nao), p(nao)
-      integer, intent(out) :: nswap
-      integer(int_index), allocatable :: order(:)
-      integer, allocatable :: perm(:)
-      logical, allocatable :: occupied(:)
-      real(dp), allocatable :: e_old(:)
       real(dp) :: acc
-      integer :: i, j, k
-      nswap = 0
-      if (nocc <= 0 .or. nocc >= nao) return
-      ! sc = S C, t = D_old S C, p_j = sum_k sc(k,j) t(k,j) / occ
+      integer :: j, k
+      ! sc = S C, t = D_old S C, p_j = sum_k sc(k,j) t(k,j)
       call la%gemm_mat(smat, cmo, sc)
       call la%gemm_mat(d_old, sc, t)
       do concurrent(j=1:nao) local(acc, k)
@@ -926,9 +991,28 @@ contains
          do k = 1, nao
             acc = acc + sc(k, j)*t(k, j)
          end do
-         p(j) = acc/occ
+         p(j) = acc
       end do
-      !$acc update self(p, eps)
+      !$acc update self(p)
+   end subroutine scf_driver_mom_weights
+
+   subroutine scf_driver_mom_permute(nao, nocc, p, cmo, eps, t, nswap)
+      !! Reorder the eigenvectors `cmo` (and `eps`) so the `nocc` columns with
+      !! the largest weight `p` (host, `scf_driver_mom_weights`) come first;
+      !! each block keeps energy order. `cmo`, `eps` and the n x n workspace
+      !! `t` are device arrays. `nswap` counts occupied columns that aufbau
+      !! would have left empty; nothing moves when it is 0.
+      integer, intent(in) :: nao, nocc
+      real(dp), intent(in) :: p(nao)
+      real(dp), intent(inout) :: cmo(nao, nao), eps(nao), t(nao, nao)
+      integer, intent(out) :: nswap
+      integer(int_index), allocatable :: order(:)
+      integer, allocatable :: perm(:)
+      logical, allocatable :: occupied(:)
+      real(dp), allocatable :: e_old(:)
+      integer :: i, j, k
+      nswap = 0
+      if (nocc <= 0 .or. nocc >= nao) return
       allocate (order(nao), occupied(nao), perm(nao))
       ! sort_index sorts its argument in place, so sort a copy.
       e_old = p
@@ -952,6 +1036,7 @@ contains
             perm(k) = i
          end if
       end do
+      !$acc update self(eps)
       e_old = eps
       eps = e_old(perm)
       !$acc update device(eps)
@@ -963,7 +1048,7 @@ contains
          cmo(i, j) = t(i, j)
       end do
       !$acc exit data delete(perm)
-   end subroutine scf_driver_mom_order
+   end subroutine scf_driver_mom_permute
 
    subroutine scf_driver_gwh_matrix(nao, hcore, smat, w1)
       !! The Wolfsberg-Helmholz guess Fock-like matrix, F_ij = 1.75/2 S_ij

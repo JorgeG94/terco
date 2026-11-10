@@ -200,20 +200,28 @@ module trc_scf_settings
       !! away; raising the virtuals keeps the occupied space from collapsing.
       real(dp) :: level_shift_until = 0.0_dp
       !! Keep `level_shift` on through DIIS/ADIIS until the commutator norm
-      !! falls below this (or `conv_diis`, whichever is larger, so the
-      !! converged eigenvalues are unshifted); 0 (the default) drops it the
-      !! iteration DIIS starts. The shift goes onto the extrapolated Fock matrix, so the
+      !! falls below this; 0 (the default) drops it the iteration DIIS starts.
+      !! An iteration whose commutator is below `conv_diis` is never shifted,
+      !! with or without this option, so converged eigenvalues are unshifted.
+      !! The shift goes onto the extrapolated Fock matrix, so the
       !! DIIS history and the commutator stay unshifted. For small-gap open
       !! shells, where CDIIS swaps occupied and virtual orbitals every few
       !! iterations and stalls with |FDS - SDF| near 1e-1.
       logical :: mom = .false.
       !! Maximum overlap method (Gilbert, Besley & Gill, JPCA 112, 13164)
       !! while DIIS is on: occupy the orbitals that overlap most with the
-      !! previous density, p_j = c_j^T S D S c_j / occ, instead of the lowest
-      !! ones. Stops aufbau flipping the occupation of near-degenerate
-      !! frontier orbitals between iterations. The occupied orbitals stay
-      !! in columns 1:nocc of `cmo` (energy order within each block), so
-      !! `eps` need not ascend across the occupied/virtual boundary.
+      !! previous density, p_j = c_j^T S D S c_j (the sum of squared overlaps
+      !! with the previous occupied space, `scf_driver_mom_weights`), instead
+      !! of the lowest ones. Stops aufbau flipping the occupation of
+      !! near-degenerate frontier orbitals between iterations. MOM starts, and
+      !! then stays on, at the first iteration with DIIS on AND either a
+      !! starting density the caller gave (restart, projection, SAD), which it
+      !! keeps even when its occupation is not aufbau, or a commutator norm
+      !! below 0.1 (`MOM_START` in trc_scf_driver). Before that it is aufbau:
+      !! DIIS is on from iteration 1 of a restricted run, and following a poor
+      !! core guess there converged water to a determinant 8 Eh up. The occupied orbitals stay in columns 1:nocc of `cmo`
+      !! (energy order within each block), so `eps` need not ascend across the
+      !! occupied/virtual boundary; the HOMO-LUMO gap check is skipped then.
       real(dp) :: lindep_thresh = 1.0e-8_dp
       !! Canonical orthogonalisation: an eigenvalue of S, normalised to a unit
       !! diagonal first (Sn = D S D, D = diag(1/sqrt(S_ii)) -- pyscf's
