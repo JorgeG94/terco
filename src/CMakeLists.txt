@@ -55,6 +55,7 @@ target_sources(
           scf/gradient/trc_scf_grad_df.F90       # the density-fitted (--df) two-electron gradient: fitted J and K
           scf/response/trc_cphf.F90               # coupled-perturbed HF: the orbital-response solve and the static polarizability
           scf/response/trc_cpks.F90               # coupled-perturbed KS: trc_cphf plus the XC kernel response, RKS LDA/GGA
+          scf/trc_scf_gdm.F90            # geometric direct minimisation core: L-BFGS history, preconditioner, step control
           scf/trc_scf_soscf.F90          # second-order SCF (--soscf): trust-region Newton on the orbital rotations, RHF
           scf/gradient/trc_scf_grad.F90          # the full analytic gradient: 1e + eri%gradient + nuclear repulsion
           scf/vibration/trc_vib.F90                # harmonic vibrational analysis of a Cartesian Hessian, host only
