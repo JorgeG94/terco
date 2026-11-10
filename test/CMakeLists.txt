@@ -310,6 +310,12 @@ target_link_libraries(check_soscf PRIVATE test-drive::test-drive)
 # convex quadratic, and the preconditioner, step-control and descent helpers.
 terco_add_check(check_scf_gdm check_scf_gdm.F90)
 target_link_libraries(check_scf_gdm PRIVATE test-drive::test-drive)
+# GDM as a step mode of trc_scf_run (trc_scf_gdm_step.F90), end to end: HF, UHF,
+# RKS/UKS, PCM, density fitting and a linearly dependent basis against pyscf, the
+# default handover, the rejected-step path, the returned orbitals, the refusals
+# and the "no downhill step" stop -- see check_scf_gdm_run.F90's own header.
+terco_add_check(check_scf_gdm_run check_scf_gdm_run.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_scf_gdm_run PRIVATE test-drive::test-drive)
 # The SCF convergence aids (`mom`, `level_shift_until`): the MOM ordering on a
 # synthetic problem, ground states against the plain runs and pyscf, the shift
 # kept on through DIIS, MOM holding a swapped HOMO/LUMO occupation, and
