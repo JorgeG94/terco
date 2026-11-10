@@ -173,6 +173,14 @@ terco_add_check(check_rccsd_w check_rccsd_w.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_rccsd_w PRIVATE test-drive::test-drive terco_rccsd_test_support)
 set_tests_properties(terco/check_rccsd_w PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# The particle-particle ladder (assembled and direct forms) and its t1 dressing
+# (src/post_hf/ccsd/trc_rccsd_ladder.F90) at the same FIXED amplitudes against the same
+# references (gen_rccsd_ints: P_ladder, P_ladder_w, P_dressing), plus independent host
+# loops, batch-size independence and refusals. Same SKIP guard.
+terco_add_check(check_rccsd_ladder check_rccsd_ladder.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_rccsd_ladder PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_ladder PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
 # check_basis_ecp_refused.F90's own header.

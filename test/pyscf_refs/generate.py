@@ -3727,7 +3727,7 @@ def gen_rccsd_ints():
     # Every file that reads these references or the probes they hold: the integral check, the
     # intermediates check and the helpers they share (editing one re-hashes the .ref).
     test_files = [TEST / "check_rccsd_ints.F90", TEST / "check_rccsd_inter.F90", TEST / "check_rccsd_w.F90",
-                  TEST / "rccsd_test_support.F90"]
+                  TEST / "check_rccsd_ladder.F90", TEST / "rccsd_test_support.F90"]
     files = sorted({TEST / c[1] for c in cases}
                    | {TEST / "basis_sets" / (basis + ".json"), TEST / "basis_sets" / (aux_basis + ".json")}
                    | set(test_files))
@@ -3778,6 +3778,13 @@ def gen_rccsd_ints():
         ovov = np.asarray(eris.ovov)
         t2 = ovov.transpose(0, 2, 1, 3) / (eo[:, None, None, None] + eo[None, :, None, None]
                                            - ev[None, None, :, None] - ev[None, None, None, :])
+        tau = t2 + np.einsum("ia,jb->ijab", t1, t1)
+        ladder_w = np.einsum("abcd,ijcd->ijab", imd.cc_Wvvvv(t1, t2, eris), tau)
+        ovvv_t = np.asarray(eris.get_ovvv())
+        w_dress = -np.einsum("kdac,kb->abcd", ovvv_t, t1) - np.einsum("kcbd,ka->abcd", ovvv_t, t1)
+        ladder_dressing = np.einsum("abcd,ijcd->ijab", w_dress, tau)
+        if np.abs(ladder_w - mycc._add_vvvv(t1, t2, eris) - ladder_dressing).max() > 1.0e-10:
+            raise RuntimeError(f"gen_rccsd_ints {name}: cc_Wvvvv is not _add_vvvv plus the ovvv dressing")
         out = []   # (name, spaces, tensor), the order the Fortran side reads them in
         out += [("oooo", "oooo", np.asarray(eris.oooo)),
                 ("ooov", "ooov", np.asarray(eris.ovoo).transpose(2, 3, 0, 1)),
@@ -3789,8 +3796,11 @@ def gen_rccsd_ints():
                 ("Fov", "ov", imd.cc_Fov(t1, t2, eris)), ("Loo", "oo", imd.Loo(t1, t2, eris)),
                 ("Lvv", "vv", imd.Lvv(t1, t2, eris)), ("Woooo", "oooo", imd.cc_Woooo(t1, t2, eris)),
                 ("Wvoov", "voov", imd.cc_Wvoov(t1, t2, eris)), ("Wvovo", "vovo", imd.cc_Wvovo(t1, t2, eris)),
-                # sum_cd (ac|bd) tau_ijcd with the t1 dressing pyscf folds in
-                ("ladder", "oovv", mycc._add_vvvv(t1, t2, eris))]
+                # _add_vvvv is the UNDRESSED ladder sum_cd (ac|bd) tau_ijcd ('ijcd,acbd->ijab' on tau = t2 + t1 t1):
+                # the ovvv terms of Wvvvv are not in it. ladder_w is update_amps's einsum('abcd,ijcd->ijab', Wvvvv, tau)
+                # (ladder plus dressing) and dressing is the ovvv terms alone, so the ladder port can be checked piece by piece.
+                ("ladder", "oovv", mycc._add_vvvv(t1, t2, eris)),
+                ("ladder_w", "oovv", ladder_w), ("dressing", "oovv", ladder_dressing)]
         t1n, t2n = mycc.update_amps(t1, t2, eris)
         out += [("t1_new", "ov", t1n), ("t2_new", "oovv", t2n)]
         e_mp2 = mycc.energy(np.zeros_like(t1), t2, eris)
