@@ -230,6 +230,7 @@ module trc_capi
    private
 
    public :: trc_basis_create, trc_basis_destroy, trc_basis_nao
+   public :: trc_guess_is_user_chosen
    public :: trc_basis_create_libcint, trc_basis_maxl
    public :: trc_basis_shell_count, trc_basis_shell_max_primitives
    public :: trc_basis_shell_info, trc_basis_shell_primitives
@@ -3128,21 +3129,29 @@ contains
       bind(c, name="trc_set_scf_stabilise")
       !! Two aids for small-gap SCFs (charged open shells, a Fukui ion)
       !! where CDIIS stalls with the occupation flipping between iterations.
-      !! Both work on rank 0's eigenproblem alone, so unlike trc_set_soscf
-      !! they combine with an open shell, a functional, VV10, a continuum
-      !! solvent, --df and more than one rank (trc_scf_options_t's own
-      !! comments):
+      !! Both act on the eigenproblem of rank 0 alone, so unlike trc_set_soscf
+      !! they are not refused with an open shell, a functional, a continuum
+      !! solvent, --df or more than one rank (O3+ 6-31G* with both aids gives
+      !! the same energy and iteration count on one, two and three devices,
+      !! with and without IEF-PCM):
       !!
       !!   mom                1 occupies by maximum overlap with the previous
       !!                      density, starting at the first iteration with
-      !!                      DIIS on and either a caller-given starting density
-      !!                      (trc_set_guess GIVEN, SAD) or |FDS - SDF| < 0.1,
-      !!                      and staying on; aufbau before that. 0 aufbau
-      !!                      throughout (the default).
+      !!                      DIIS on and either a starting density the caller
+      !!                      chose (trc_set_guess GIVEN, PROJECTED) or
+      !!                      |FDS - SDF| < 0.1, and staying on; aufbau before
+      !!                      that. The guesses terco builds itself (SAD, SADQ,
+      !!                      SAP, MINAO, GWH, core) wait for the 0.1 gate. 0
+      !!                      aufbau throughout (the default).
       !!   level_shift_until  keep trc_set_level_shift's shift on through
       !!                      DIIS until |FDS - SDF| falls below this; 0 (the
       !!                      default) drops it when DIIS starts. An iteration
-      !!                      that can converge is never shifted.
+      !!                      that can converge is never shifted. A shift this
+      !!                      keeps on is dropped for the rest of the run, with
+      !!                      one message, once the commutator has not improved
+      !!                      by a factor 2 over 10 such iterations: a
+      !!                      threshold below where the shifted run parks must
+      !!                      not stop a run from converging.
       !!
       !! Takes effect at the next trc_run_scf, for every SCF the handle runs
       !! after it (trc_fukui_hirshfeld's three included). (ABI 1.23.)
@@ -3713,7 +3722,7 @@ contains
       ! `opts%guess` here, `cx%dfjk`/`cx%df_fit_ok` below) and neither reads
       ! the other's, so swapping their order changes nothing but the order
       ! memory gets claimed in.
-      opts = cx%opts
+      opts = run_options(cx)
       use_projected = .false.
       select case (cx%guess_kind)
       case (TRC_GUESS_CORE)
@@ -3917,6 +3926,27 @@ contains
          dg(:, :, 2) = 0.5_dp*dminao
       end if
    end subroutine minao_guess_build
+
+   pure function trc_guess_is_user_chosen(kind) result(chosen)
+      !! Whether a TRC_GUESS_* kind starts the SCF from a density the caller
+      !! chose, for `trc_scf_options_t%mom_follow_guess`: a given one (which a
+      !! restart or a Hessian displacement is) or a projected previous orbital
+      !! set. The densities terco builds itself (SAD, SADQ, MINAO, and the
+      !! core, GWH and SAP operators) are not: maximum overlap occupation must
+      !! wait for the commutator gate before it follows them.
+      integer, intent(in) :: kind
+      logical :: chosen
+      chosen = kind == TRC_GUESS_GIVEN .or. kind == TRC_GUESS_PROJECTED
+   end function trc_guess_is_user_chosen
+
+   function run_options(cx) result(opts)
+      !! The options one trc_run_scf hands to trc_scf_run: the context's own,
+      !! plus `mom_follow_guess` (`trc_guess_is_user_chosen`).
+      type(context_box), intent(in) :: cx
+      type(trc_scf_options_t) :: opts
+      opts = cx%opts
+      opts%mom_follow_guess = trc_guess_is_user_chosen(cx%guess_kind)
+   end function run_options
 
    !
    ! TRC_GUESS_SAD/SADQ's density, both spins -- split out of trc_run_scf's

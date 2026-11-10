@@ -73,6 +73,11 @@ module trc_scf_state
       real(dp), allocatable :: dold(:, :, :), errv(:, :, :)
       real(dp), allocatable :: w1(:, :), w2(:, :)
       real(dp), allocatable :: ofrac(:)
+      logical :: eps_rewritten = .false.
+      !! The second-order phase (`trc_scf_soscf_run`) replaced `scf_result%eps`
+      !! with its own semicanonical values. False when it never ran or gave up
+      !! before that (no rotations to take, no iterations left, or a failed
+      !! diagonalisation), when `eps` still belongs to the main loop.
    contains
       procedure :: alloc => scf_state_alloc
       procedure :: to_device => scf_state_to_device

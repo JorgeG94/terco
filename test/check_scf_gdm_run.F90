@@ -1096,6 +1096,7 @@ contains
       allocate (dex(size(ground%dmat, 1), size(ground%dmat, 2), 1))
       dex(:, :, 1) = 2.0_dp*matmul(ground%cmo(:, occ_cols, 1), transpose(ground%cmo(:, occ_cols, 1)))
       o%mom = .true.
+      o%mom_follow_guess = .true.   ! `dex` is a density the caller chose: mom follows it from the first DIIS iteration
       call trc_scf_run(bas, nocc, nocc, o, held, dguess=dex)
       call trc_scf_run(bas, nocc, nocc, gdm_options(o), g_default, dguess=dex)
       call trc_scf_run(bas, nocc, nocc, gdm_options(o, early=.true.), g_early, dguess=dex)

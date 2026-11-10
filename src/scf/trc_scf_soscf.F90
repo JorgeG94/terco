@@ -390,6 +390,7 @@ contains
       if (info == 0) then
          call cphf_copy_matrix(dims%nao, dims%n_mo, coeff_work, scf_result%cmo(:, 1:dims%n_mo, 1))
          call scf_soscf_copy_eps(dims%nao, dims%n_mo, energies_mo, scf_result%eps(:, 1))
+         scf_state%eps_rewritten = .true.
       else
          ! The orbitals returned are still the last ACCEPTED ones (coeff_work
          ! is only ever written on acceptance): not semicanonical, but not

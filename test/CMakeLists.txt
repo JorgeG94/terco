@@ -318,9 +318,10 @@ terco_add_check(check_scf_gdm_run check_scf_gdm_run.F90 NEEDS_BASIS NEEDS_PYSCF_
 target_link_libraries(check_scf_gdm_run PRIVATE test-drive::test-drive)
 # The SCF convergence aids (`mom`, `level_shift_until`): the MOM ordering on a
 # synthetic problem, ground states against the plain runs and pyscf, the shift
-# kept on through DIIS, MOM holding a swapped HOMO/LUMO occupation, and
-# trc_set_scf_stabilise through the C ABI.
-terco_add_check(check_scf_stabilise check_scf_stabilise.F90 NEEDS_BASIS)
+# kept on through DIIS and its stall guard, MOM holding a swapped HOMO/LUMO
+# occupation against pyscf's maximum overlap method (pyscf_refs/scf_mom.ref),
+# and trc_set_scf_stabilise through the C ABI.
+terco_add_check(check_scf_stabilise check_scf_stabilise.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_scf_stabilise PRIVATE terco_c_interfaces test-drive::test-drive)
 # build_631g against trc_basis_from_json, on water through a five-water
 # cluster -- the one check allowed to call build_631g for its own basis
@@ -710,6 +711,12 @@ if(TERCO_BUILD_APP)
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_lowercase_probe})
   target_link_libraries(check_cli_lowercase PRIVATE test-drive::test-drive)
   unset(_cli_lowercase_probe)
+
+  # The SCF's own account of a non-converged run, and the stall guard's line,
+  # on the CLI's output -- see check_cli_stabilise.F90's own header.
+  terco_add_check(check_cli_stabilise check_cli_stabilise.F90
+                  ARGS $<TARGET_FILE:terco_cli> ${CMAKE_CURRENT_BINARY_DIR}/cli_stabilise.out)
+  target_link_libraries(check_cli_stabilise PRIVATE test-drive::test-drive)
 
   # The end-of-SCF HOMO/LUMO energies in the CLI's --json, RHF and UHF,
   # against pyscf -- see check_cli_homo_lumo.F90's own header.

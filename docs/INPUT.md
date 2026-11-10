@@ -123,8 +123,8 @@ How the SCF gets there; the defaults suit most systems.
 | `diis_start` | float | `--diis-start` | commutator norm below which DIIS may start |
 | `soscf` | bool | `--soscf` | second-order SCF after DIIS (RHF only) |
 | `soscf_start` | float | `--soscf-start` | commutator norm at which SOSCF takes over (1e-2) |
-| `mom` | bool | `--mom` | maximum overlap occupation (small-gap open shells). Starts at the first iteration with DIIS on and either a caller-given starting density (restart, projection, SAD) or a commutator norm below 0.1, and stays on; aufbau before that, so a poor guess is not locked in. The orbital energies are then not in aufbau order |
-| `level_shift_until` | float | `--level-shift-until` | keep the level shift on through DIIS until the commutator is below this (0: off) |
+| `mom` | bool | `--mom` | maximum overlap occupation (small-gap open shells). Starts at the first iteration with DIIS on and either a starting density you handed in (the library's given density, a restart or a projected warm start) or a commutator norm below 0.1, and stays on; aufbau before that, so a poor guess is not locked in. The guesses terco builds (`sad`, `sadq`, `sap`, `minao`, `gwh`, `core`) wait for the 0.1 gate. The orbital energies are then not in aufbau order |
+| `level_shift_until` | float | `--level-shift-until` | keep the level shift on through DIIS until the commutator is below this (0: off). Dropped for the rest of the run, with one message, if the commutator does not improve by a factor 2 over 10 such iterations (a threshold below where the shifted run parks would otherwise never converge) |
 
 ### `[dft]`
 

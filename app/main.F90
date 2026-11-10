@@ -44,7 +44,7 @@ program trc_main
    use pic_string_type, only: string_type, assignment(=)
    use trc_run_input, only: run_input_is_toml, run_input_args
    use trc_run, only: run_t, VERSION, run_die, run_quit, run_check, run_api, run_int_option, run_banner, &
-                       run_summary, run_write_json, &
+                       run_note_noconv, run_summary, run_write_json, &
                        run_gradient_summary, run_hessian_summary, run_build_masses, run_charges_summary, &
                        run_fukui_summary, &
                        run_opt_capability_check, run_build_opt_residues, run_opt_summary, run_write_opt_xyz, run_write_traj_xyz, &
@@ -163,10 +163,12 @@ program trc_main
                        "orbital rotations once |FDS - SDF| is small enough. Restricted Hartree-Fock only; "// &
                        "refused with an open shell, a functional, --pcm, --df or more than one rank")
    call r%cli%add_option("soscf-start", "commutator norm at which --soscf hands over from DIIS (1e-2)")
-   call r%cli%add_flag("mom", "maximum overlap method once DIIS is on: occupy the orbitals closest to the "// &
-                       "previous density, not the lowest (small gaps, charged open shells, Fukui ions)")
+   call r%cli%add_flag("mom", "maximum overlap method once DIIS is on and |FDS - SDF| < 0.1: occupy the "// &
+                       "orbitals closest to the previous density, not the lowest (small gaps, charged open "// &
+                       "shells, Fukui ions)")
    call r%cli%add_option("level-shift-until", "keep --level-shift on through DIIS until |FDS - SDF| falls "// &
-                         "below this (0: off once DIIS starts)")
+                         "below this (0: off once DIIS starts); dropped for the rest of the run if the "// &
+                         "commutator does not improve by a factor 2 in 10 such iterations")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
    call r%cli%add_option("lindep", "linear-dependence threshold: eigenvalues of S normalised to a unit "// &
                          "diagonal (pyscf/ORCA's convention) below it are dropped (canonical orthogonalisation; "// &
@@ -1391,6 +1393,7 @@ program trc_main
       st = trc_run_scf(r%h)
    end if
    if (st /= TRC_OK .and. st /= TRC_ERR_NOCONV) call run_api(r, st)
+   if (st == TRC_ERR_NOCONV) call run_note_noconv(r)
    ! Rank 0 alone: every rank holds the same result.
    if (len(r%save_scf) > 0 .and. r%rank0) call run_api(r, trc_save_scf(r%h, app_c_string(r%save_scf)))
    call run_api(r, trc_nao(r%h, r%nao))

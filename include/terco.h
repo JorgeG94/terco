@@ -507,21 +507,29 @@ int trc_set_soscf(trc_handle_t handle, int enable, double soscf_start);
 /**
  * Two aids for small-gap SCFs (charged open shells, a Fukui ion)
  * where CDIIS stalls with the occupation flipping between iterations.
- * Both work on rank 0's eigenproblem alone, so unlike trc_set_soscf
- * they combine with an open shell, a functional, VV10, a continuum
- * solvent, --df and more than one rank (trc_scf_options_t's own
- * comments):
+ * Both act on the eigenproblem of rank 0 alone, so unlike trc_set_soscf
+ * they are not refused with an open shell, a functional, a continuum
+ * solvent, --df or more than one rank (O3+ 6-31G* with both aids gives
+ * the same energy and iteration count on one, two and three devices,
+ * with and without IEF-PCM):
  *
  *   mom                1 occupies by maximum overlap with the previous
  *                      density, starting at the first iteration with
- *                      DIIS on and either a caller-given starting density
- *                      (trc_set_guess GIVEN, SAD) or |FDS - SDF| < 0.1,
- *                      and staying on; aufbau before that. 0 aufbau
- *                      throughout (the default).
+ *                      DIIS on and either a starting density the caller
+ *                      chose (trc_set_guess GIVEN, PROJECTED) or
+ *                      |FDS - SDF| < 0.1, and staying on; aufbau before
+ *                      that. The guesses terco builds itself (SAD, SADQ,
+ *                      SAP, MINAO, GWH, core) wait for the 0.1 gate. 0
+ *                      aufbau throughout (the default).
  *   level_shift_until  keep trc_set_level_shift's shift on through
  *                      DIIS until |FDS - SDF| falls below this; 0 (the
  *                      default) drops it when DIIS starts. An iteration
- *                      that can converge is never shifted.
+ *                      that can converge is never shifted. A shift this
+ *                      keeps on is dropped for the rest of the run, with
+ *                      one message, once the commutator has not improved
+ *                      by a factor 2 over 10 such iterations: a
+ *                      threshold below where the shifted run parks must
+ *                      not stop a run from converging.
  *
  * Takes effect at the next trc_run_scf, for every SCF the handle runs
  * after it (trc_fukui_hirshfeld's three included). (ABI 1.23.)

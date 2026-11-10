@@ -115,6 +115,9 @@ module trc_scf_driver
    public :: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t, trc_pair_eri_cache_t
    ! check_scf_stabilise unit-tests the MOM reordering on a synthetic problem.
    public :: scf_driver_mom_weights, scf_driver_mom_permute
+   ! ... and the stall guard of the shift that level_shift_until keeps on.
+   public :: scf_shift_guard_t, scf_driver_shift_stalled, scf_driver_shift_now, SHIFT_STALL_WINDOW, SHIFT_STALL_FACTOR
+   public :: scf_driver_mom_active, MOM_START
 
    real(dp), parameter :: MOM_START = 0.1_dp
    !! Commutator norm below which MOM starts following the density of a run
@@ -124,6 +127,36 @@ module trc_scf_driver
 
    integer, parameter :: N_DIAG_FLAG = 6
    !! What the iteration's root-to-all flag broadcast carries (`diag_flag`).
+
+   integer, parameter :: SHIFT_STALL_WINDOW = 10
+   !! Iterations, shifted only because of `level_shift_until`, over which the
+   !! stall guard asks for progress. The plain O3+ UHF/6-31G* run (38
+   !! iterations, including a plateau of seven iterations at 4e-3) never has a
+   !! window of ten whose best commutator is above 0.28 of the best before it,
+   !! while the shifted run with `level_shift_until` = 1e-3 sits at 3e-3 to
+   !! 4e-3 for twenty iterations. Shorter windows (5, 6, 8) saved two or three
+   !! iterations there and fire on slower but steady convergence (a window of
+   !! 5 fires at a rate above 0.87 per iteration, one of 10 only above 0.93).
+   real(dp), parameter :: SHIFT_STALL_FACTOR = 0.5_dp
+   !! The best commutator of the last `SHIFT_STALL_WINDOW` iterations must be
+   !! below this fraction of the best before them, or the guard fires. On
+   !! O3+ the factor hardly matters (0.3, 0.5 and 0.7 end in 48, 48 and 49
+   !! iterations): the shifted run is either parked or falling fast.
+
+   type :: scf_shift_guard_t
+      !! The memory of the stall guard of `level_shift_until`: the last
+      !! `SHIFT_STALL_WINDOW` commutator norms seen on iterations shifted
+      !! only because of that option, and the best of all the earlier ones.
+      !! It reads nothing but the commutator (broadcast, so identical on every
+      !! rank) and a count, so every rank drops the shift on the same
+      !! iteration. Once `dropped` it stays so for the run.
+      integer :: n_seen = 0
+      real(dp) :: recent(SHIFT_STALL_WINDOW) = huge(1.0_dp)   !! a ring buffer, the oldest overwritten first
+      real(dp) :: older_best = huge(1.0_dp)   !! the smallest commutator that has left the window
+      logical :: dropped = .false.
+   contains
+      procedure :: observe => scf_driver_shift_observe
+   end type scf_shift_guard_t
 
    integer, parameter :: ORB_AUFBAU = 0, ORB_FRAC = 1, ORB_MOM = 2
    !! How a diagonalisation's eigenvectors are occupied: lowest first, the
@@ -249,8 +282,9 @@ contains
       !! separate means `scf_options%adiis = .false.` leaves the CDIIS path
       !! untouched, to the bit.
       logical :: adiis_active
-      logical :: shifted, skip_gap, mom_active
+      logical :: shifted, mom_active
       !! F carried the level shift this iteration; MOM follows the density yet (`scf_driver_mom_active`).
+      type(scf_shift_guard_t) :: shift_guard
       integer :: orb_mode, nswap_s
       integer :: mom_swaps(2)   !! orbitals MOM occupied above aufbau, per spin
       type(error_t) :: err
@@ -501,18 +535,19 @@ contains
          ! converging in 21 CDIIS iterations into one that never converged).
          !
          adiis_active = scf_options%adiis .and. .not. diis_on .and. it > scf_config%ndamp
-         mom_active = scf_driver_mom_active(mom_active, scf_options, diis_on, present(dguess) .or. present(cmo_project), &
-                                            errmax)
-         shifted = scf_driver_shift_now(scf_options, diis_on, adiis_active, errmax)
+         mom_active = scf_driver_mom_active(mom_active, scf_options, diis_on, errmax)
          ! GDM (trc_scf_gdm_step) replaces DIIS, damping and the level shift. MOM
          ! stays for the handover diagonalisation, whose occupation GDM keeps (or
-         ! declines, below, when that occupation is an excited state).
+         ! declines, below, when that occupation is an excited state). The level
+         ! shift is not consulted under GDM, so its stall guard sees none of it.
          gdm_mode = gdm%mode(scf_config, it, errmax)
          if (gdm_mode /= GDM_OFF) then
             diis_on = .false.
             adiis_active = .false.
             shifted = .false.
             if (gdm_mode == GDM_ITERATE) mom_active = .false.
+         else
+            call scf_driver_shift_now(scf_options, diis_on, adiis_active, errmax, shift_guard, cdiis, scf_config%root, shifted)
          end if
          ! The new density is rank 0's alone: extrapolation, eigensolve and density
          ! run on one device and the density is broadcast, since dsyevd need not
@@ -646,11 +681,11 @@ contains
          if (.not. gdm%rejected) eold = scf_energies%total
       end do
       scf_result%n_increments = incremental%n_increments
+      scf_result%shift_dropped = shift_guard%dropped
       if (soscf_switch_iteration > 0 .and. .not. scf_result%converged) then
          call trc_scf_soscf_run(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, la, &
                                pair_eri_cache%eri)
-         shifted = .false.
-         mom_swaps = 0
+         if (scf_state%eps_rewritten) shifted = .false.
       end if
       ! GDM: the last ACCEPTED point's density, energies and semicanonical orbitals (every rank calls).
       call gdm%finish(scf_context, scf_config, scf_state, scf_result, scf_energies, la, comm)
@@ -667,13 +702,8 @@ contains
       scf_result%dmat = scf_state%dold
       if (scf_result%gdm_steps == 0) scf_energies%pcm_qtotal = scf_context%pcm%q_total
       call scf_result%update(scf_energies, scf_state%dold)
-      skip_gap = scf_options%frac_occ .or. scf_result%iterations == 0
       scf_result%gdm_declined = gdm%declined
-      ! A GDM run that ends non-aufbau (it has warned): its orbital energies are not in aufbau order, so the gap
-      ! check would say something false.
-      skip_gap = skip_gap .or. scf_result%gdm_off_aufbau > 0
-      call scf_driver_eps_notes(scf_config%root, scf_result%converged, shifted, mom_swaps, scf_result%message, skip_gap)
-      call scf_driver_gap_check(scf_config, skip_gap, nao, nao - scf_context%n_lindep, scf_result%eps)
+      call scf_driver_eps_notes(scf_config, scf_options, shifted, nao - scf_context%n_lindep, scf_result)
       call scf_driver_report(scf_config, scf_context, scf_timers, scf_energies, scf_result, pair_eri_cache%eri%t_build, &
                              comm, scf_dfjk)
       call scf_context%release()
@@ -956,39 +986,87 @@ contains
       end if
    end subroutine scf_driver_gap_check
 
-   pure function scf_driver_shift_now(opts, diis_on, adiis_active, errmax) result(shift)
+   subroutine scf_driver_shift_now(opts, diis_on, adiis_active, errmax, guard, cdiis, root, shift)
       !! Whether this iteration's Fock matrix carries the level shift
       !! F += mu (S - S D S / occ). While DIIS and A/EDIIS are off it always
       !! does. With `level_shift_until` it stays on through them as well, onto
       !! the extrapolated F so the DIIS history stays unshifted, while the
-      !! commutator is at least `level_shift_until`. In every case an iteration
+      !! commutator is at least `level_shift_until` and the stall guard
+      !! (`scf_shift_guard_t`) has not dropped it. In every case an iteration
       !! that can converge (commutator below `conv_diis`) diagonalises an
       !! unshifted F, or the reported virtual eps would carry the shift (a
       !! restart from a converged density inside the damped start did this).
+      !! Only the iterations shifted by `level_shift_until` alone feed the
+      !! guard; the shift of the damped start is never watched.
       type(trc_scf_options_t), intent(in) :: opts
-      logical, intent(in) :: diis_on, adiis_active
+      logical, intent(in) :: diis_on, adiis_active, root
       real(dp), intent(in) :: errmax
-      logical :: shift
+      type(scf_shift_guard_t), intent(inout) :: guard
+      type(cdiis_t), intent(inout) :: cdiis
+      logical, intent(out) :: shift
+      logical :: fired
       shift = .false.
       if (opts%level_shift <= 0.0_dp .or. errmax < opts%conv_diis) return
       shift = .not. diis_on .and. .not. adiis_active
-      if (opts%level_shift_until > 0.0_dp) shift = shift .or. errmax >= opts%level_shift_until
-   end function scf_driver_shift_now
+      if (shift .or. opts%level_shift_until <= 0.0_dp .or. guard%dropped .or. errmax < opts%level_shift_until) return
+      call guard%observe(errmax, fired)
+      shift = .not. fired
+      if (.not. fired) return
+      ! The history holds ten iterations of a shifted, stalled run. Plain DIIS
+      ! extrapolating over it stays parked until they have been pushed out
+      ! (O3+ 6-31G*: 83 iterations with the history kept), so start it afresh.
+      if (diis_on) call cdiis%restart()
+      if (root) call global_logger%info("trc_scf: level_shift_until dropped the level shift after "// &
+                                        to_string(guard%n_seen)//" iterations shifted through DIIS: the commutator is not "// &
+                                        "below "//to_string(SHIFT_STALL_FACTOR, "f4.2")//" of its earlier best over the last "// &
+                                        to_string(SHIFT_STALL_WINDOW)//" ("//to_string(minval(guard%recent), "es9.2")// &
+                                        " against "//to_string(guard%older_best, "es9.2")//")")
+   end subroutine scf_driver_shift_now
 
-   pure function scf_driver_mom_active(was_active, opts, diis_on, given, errmax) result(active)
+   pure function scf_driver_shift_stalled(recent_best, older_best) result(stalled)
+      !! The criterion of the stall guard: the best commutator of the window has
+      !! not fallen below `SHIFT_STALL_FACTOR` times the best before it.
+      real(dp), intent(in) :: recent_best, older_best
+      logical :: stalled
+      stalled = recent_best > SHIFT_STALL_FACTOR*older_best
+   end function scf_driver_shift_stalled
+
+   pure subroutine scf_driver_shift_observe(this, errmax, fired)
+      !! Record the commutator norm of one more iteration shifted only because
+      !! of `level_shift_until`. `fired` is true on the call that drops the
+      !! shift: from the (`SHIFT_STALL_WINDOW` + 1)th observation on, once the
+      !! best of the window fails `scf_driver_shift_stalled` against the best
+      !! before it. Nothing is observed after that.
+      class(scf_shift_guard_t), intent(inout) :: this
+      real(dp), intent(in) :: errmax
+      logical, intent(out) :: fired
+      integer :: slot
+      fired = .false.
+      if (this%dropped) return
+      slot = mod(this%n_seen, SHIFT_STALL_WINDOW) + 1
+      if (this%n_seen >= SHIFT_STALL_WINDOW) this%older_best = min(this%older_best, this%recent(slot))
+      this%recent(slot) = errmax
+      this%n_seen = this%n_seen + 1
+      if (this%n_seen > SHIFT_STALL_WINDOW) fired = scf_driver_shift_stalled(minval(this%recent), this%older_best)
+      this%dropped = fired
+   end subroutine scf_driver_shift_observe
+
+   pure function scf_driver_mom_active(was_active, opts, diis_on, errmax) result(active)
       !! Whether MOM follows the density this iteration; once true it stays
       !! true (a latch). MOM locks the occupation of the density it starts
       !! from, so it must start from one worth following: DIIS is on AND either
-      !! the caller GAVE the starting density (a restart, a projection, SAD)
-      !! or the commutator is below `MOM_START`. A restricted run has DIIS on
-      !! from iteration 1, and following a poor core guess there converged
-      !! water/6-31G* to a determinant 7.9 Eh above the ground state.
-      logical, intent(in) :: was_active, diis_on, given
+      !! the caller chose the starting density (`opts%mom_follow_guess`: a
+      !! density handed in, a restart, a projection) or the commutator is below
+      !! `MOM_START`. A density terco builds itself, SAD included, has no claim
+      !! to be followed: a restricted run has DIIS on from iteration 1, and
+      !! following a poor core guess there converged water/6-31G* to a
+      !! determinant 7.9 Eh above the ground state.
+      logical, intent(in) :: was_active, diis_on
       type(trc_scf_options_t), intent(in) :: opts
       real(dp), intent(in) :: errmax
       logical :: active
       active = was_active
-      if (opts%mom .and. diis_on .and. (given .or. errmax < MOM_START)) active = .true.
+      if (opts%mom .and. diis_on .and. (opts%mom_follow_guess .or. errmax < MOM_START)) active = .true.
    end function scf_driver_mom_active
 
    pure function scf_driver_occupation_mode(opts, mom_active) result(mode)
@@ -1005,29 +1083,44 @@ contains
       end if
    end function scf_driver_occupation_mode
 
-   subroutine scf_driver_eps_notes(root, converged, shifted, mom_swaps, message, skip_gap)
-      !! What the returned orbital energies are not: after a MOM run that kept a
-      !! non-aufbau occupation they do not ascend across the occupied/virtual
-      !! boundary, and after a non-converged run that ended on a shifted
-      !! iteration the virtuals carry +level_shift. Either way the HOMO-LUMO gap
-      !! check would say something false, so it is skipped and the run says why.
-      logical, intent(in) :: root, converged, shifted
-      integer, intent(in) :: mom_swaps(2)
-      character(len=*), intent(inout) :: message
-      logical, intent(inout) :: skip_gap
-      if (any(mom_swaps > 0)) then
-         skip_gap = .true.
-         if (root) call global_logger%info("trc_scf: mom kept a non-aufbau occupation; the orbital "// &
-                                           "energies are not in aufbau order and the HOMO-LUMO gap is not checked")
-      end if
-      if (.not. converged) then
-         if (shifted) skip_gap = .true.
-         if (len_trim(message) == 0) then
-            message = "trc_scf: not converged"
-            if (shifted) message = trim(message)//" (the last iteration was level shifted: "// &
-                                   "the virtual orbital energies include the shift)"
+   subroutine scf_driver_eps_notes(scf_config, scf_options, shifted, nmo, scf_result)
+      !! What the returned orbital energies are not, then the HOMO-LUMO gap
+      !! warning where they can be read as one. With `mom` they need not ascend
+      !! across the occupied/virtual boundary: a spin whose LUMO lies below its
+      !! HOMO (a negative gap, read off the final `eps` itself, so it holds
+      !! after the second-order phase too, which keeps the occupied space but
+      !! rewrites `eps`) holds a non-aufbau occupation. After a non-converged
+      !! run that ended on a shifted iteration whose `eps` the main loop
+      !! produced (`shifted`), the virtuals carry +level_shift. Either way the
+      !! gap check would say something false, so it is skipped and the run says
+      !! why. Also skipped for fractional occupations and a run with no
+      !! iteration.
+      type(scf_settings_t), intent(in) :: scf_config
+      type(trc_scf_options_t), intent(in) :: scf_options
+      logical, intent(in) :: shifted
+      integer, intent(in) :: nmo
+      type(trc_scf_result_t), intent(inout) :: scf_result
+      logical :: skip_gap
+      ! A GDM run that ends non-aufbau has warned already (`gdm_off_aufbau`): its orbital energies are not in
+      ! aufbau order either, so the gap check would say something false.
+      skip_gap = scf_options%frac_occ .or. scf_result%iterations == 0 .or. scf_result%gdm_off_aufbau > 0
+      if (scf_options%mom .and. .not. skip_gap) then
+         if (scf_settings_homo_lumo_gap(size(scf_result%eps, 1), scf_config%nspin, nmo, scf_config%nocc, &
+                                        scf_result%eps) < 0.0_dp) then
+            skip_gap = .true.
+            if (scf_config%root) call global_logger%info("trc_scf: mom kept a non-aufbau occupation; the orbital "// &
+                                                         "energies are not in aufbau order and the HOMO-LUMO gap is not checked")
          end if
       end if
+      if (.not. scf_result%converged) then
+         if (shifted) skip_gap = .true.
+         if (len_trim(scf_result%message) == 0) then
+            scf_result%message = "trc_scf: not converged"
+            if (shifted) scf_result%message = trim(scf_result%message)//" (the last iteration was level shifted: "// &
+                                              "the virtual orbital energies include the shift)"
+         end if
+      end if
+      call scf_driver_gap_check(scf_config, skip_gap, size(scf_result%eps, 1), nmo, scf_result%eps)
    end subroutine scf_driver_eps_notes
 
    subroutine scf_driver_mom_weights(la, nao, smat, d_old, cmo, t, sc, p)
@@ -1038,10 +1131,16 @@ contains
       !!   p_j = c_j^T S D_old S c_j,
       !!
       !! the sum of SQUARED overlaps of orbital j with the previous occupied
-      !! orbitals times occ (the paper's choice is the linear sum; the ordering
-      !! agrees whenever D_old is idempotent: 1 inside the space, 0 outside,
-      !! and a damped D_old only blurs it). Device arrays in; `t` and `sc`
-      !! (n x n) are workspace and `p` (n) comes back on the host as well.
+      !! orbitals times occ, i.e. occ times the squared length of the
+      !! projection of c_j onto the previous occupied space. The weight of the paper
+      !! is the linear sum of the overlaps themselves, which depends on the
+      !! arbitrary sign of each previous orbital (and on how the occupied space
+      !! is rotated into orbitals); this one does not. The two agree where it
+      !! matters, an orbital inside the previous occupied space (full weight)
+      !! or orthogonal to it (zero), and can order partly overlapping orbitals
+      !! differently. A damped D_old (not idempotent) only blurs the weights.
+      !! Device arrays in; `t` and `sc` (n x n) are workspace and `p` (n)
+      !! comes back on the host as well.
       type(trc_linalg_t), intent(inout) :: la
       integer, intent(in) :: nao
       real(dp), intent(in) :: smat(nao, nao), d_old(nao, nao), cmo(nao, nao)
@@ -1075,7 +1174,7 @@ contains
       integer, allocatable :: perm(:)
       logical, allocatable :: occupied(:)
       real(dp), allocatable :: e_old(:)
-      integer :: i, j, k
+      integer :: i, j, k, ij
       nswap = 0
       if (nocc <= 0 .or. nocc >= nao) return
       allocate (order(nao), occupied(nao), perm(nao))
@@ -1106,10 +1205,15 @@ contains
       eps = e_old(perm)
       !$acc update device(eps)
       !$acc enter data copyin(perm)
-      do concurrent(i=1:nao, j=1:nao)
+      ! One flattened index (ij = i + (j - 1) nao), not a two-index loop.
+      do concurrent(ij=1:nao*nao) local(i, j)
+         i = mod(ij - 1, nao) + 1
+         j = (ij - 1)/nao + 1
          t(i, j) = cmo(i, perm(j))
       end do
-      do concurrent(i=1:nao, j=1:nao)
+      do concurrent(ij=1:nao*nao) local(i, j)
+         i = mod(ij - 1, nao) + 1
+         j = (ij - 1)/nao + 1
          cmo(i, j) = t(i, j)
       end do
       !$acc exit data delete(perm)

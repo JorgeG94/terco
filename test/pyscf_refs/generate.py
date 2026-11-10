@@ -2846,6 +2846,72 @@ def gen_soscf():
           f"E(pyscf,diis) {mf_diis.e_tot:20.12f} (converged={mf_diis.converged})  |g| {o2_grad_norm:.2e}")
 
 
+def gen_mom_excited():
+    """check_scf_stabilise.F90's MOM case: the closed-shell determinant of
+    water/cc-pVDZ (spherical, test/water.xyz in CODATA-2018 bohr as terco
+    reads it) with the HOMO (1b1) and the LUMO (4a1) swapped, found by
+    pyscf's maximum overlap method from the converged ground-state orbitals.
+
+    pyscf's `scf.addons.mom_occ` on an RHF object reads `setocc` as spin
+    orbital occupations (it sums them to get the electron count, so 2.0 for
+    a doubly occupied orbital gives ten orbitals), which is not this case.
+    ROHF takes the alpha and beta occupations separately; with the same
+    pattern in both it IS the closed-shell determinant, and pyscf's UHF with
+    the same pattern is run as a cross-check that must agree to 1e-9. The
+    selection is the one terco makes: the nocc orbitals with the largest sum
+    of squared overlaps with the previous occupied space.
+    """
+    atoms = []
+    with open(TEST / "water.xyz") as g:
+        nat = int(g.readline())
+        g.readline()
+        for _ in range(nat):
+            parts = g.readline().split()
+            atoms.append((parts[0], tuple(float(x) / 0.529177210903 for x in parts[1:4])))
+    elements = {sym: {"O": 8, "H": 1}[sym] for sym, _ in atoms}
+    basis = bse_json_basis(TEST / "basis_sets" / "cc-pvdz.json", elements)
+    mol = gto.M(atom=atoms, basis=basis, unit="Bohr", cart=False, verbose=0)
+    nocc = mol.nelectron // 2
+
+    ground, ground_grad = converge_tight(lambda: scf.RHF(mol), None, "mom_excited ground")
+    mo0 = np.asarray(ground.mo_coeff)
+    occ = np.asarray(ground.mo_occ).copy()
+    occ[nocc - 1] = 0.0
+    occ[nocc] = 2.0
+    setocc = np.array([(occ > 0) * 1.0, (occ > 0) * 1.0])
+
+    def make_rohf():
+        return scf.addons.mom_occ(scf.ROHF(mol), mo0, setocc)
+
+    def make_uhf():
+        return scf.addons.mom_occ(scf.UHF(mol), [mo0, mo0], setocc)
+
+    excited, excited_grad = converge_tight(make_rohf, scf.ROHF(mol).make_rdm1(mo0, occ), "mom_excited ROHF")
+    cross, cross_grad = converge_tight(make_uhf, np.array([mo0[:, occ > 0] @ mo0[:, occ > 0].T] * 2),
+                                        "mom_excited UHF")
+    if not np.array_equal(np.asarray(excited.mo_occ), occ):
+        raise ConvergenceError(f"mom_excited: the maximum overlap occupation moved to {excited.mo_occ}")
+    if abs(excited.e_tot - cross.e_tot) > 1.0e-9:
+        raise ConvergenceError(f"mom_excited: pyscf's ROHF ({excited.e_tot:.12f}) and UHF ({cross.e_tot:.12f}) "
+                               f"maximum overlap energies disagree")
+    if excited.e_tot < ground.e_tot + 0.3:
+        raise ConvergenceError("mom_excited: the excited determinant is not above the ground state")
+
+    w = RefWriter("scf_mom.ref")
+    w.header("mom_excited", [TEST / "check_scf_stabilise.F90", TEST / "water.xyz",
+                              TEST / "basis_sets" / "cc-pvdz.json"])
+    w.comment(f"water RHF/cc-pVDZ (spherical), conv_tol 1e-12, |g| {ground_grad:.2e}")
+    w.real("E_GROUND", ground.e_tot)
+    w.comment(f"the HOMO (orbital {nocc}) and LUMO (orbital {nocc + 1}) swapped, pyscf scf.addons.mom_occ on ROHF "
+              f"started from the ground-state orbitals; |g| {excited_grad:.2e}; UHF with the same pattern "
+              f"E = {cross.e_tot:.12f}")
+    w.real("E_MOM", excited.e_tot)
+    w.end()
+    w.write()
+    print(f"  mom_excited: E(ground) {ground.e_tot:20.12f}  E(mom, ROHF) {excited.e_tot:20.12f}  "
+          f"E(mom, UHF) {cross.e_tot:20.12f}  |g| {excited_grad:.2e} {cross_grad:.2e}")
+
+
 def _gen_cpks_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
     """One scf_cpks.F90 case: rebuild the IDENTICAL molecule/basis
     (bse_json_basis, mol.cart=True) and pyscf's own RKS at terco's OWN
@@ -5270,6 +5336,7 @@ CASES = {
     "cphf": gen_cphf,
     "cphf_uhf": gen_cphf_uhf,
     "soscf": gen_soscf,
+    "mom_excited": gen_mom_excited,
     "cpks": gen_cpks,
     "rimp2_uhf": gen_rimp2_uhf,
     "scf_df": gen_scf_df,
