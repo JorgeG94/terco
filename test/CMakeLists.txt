@@ -188,6 +188,13 @@ terco_add_check(check_rccsd_run check_rccsd_run.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_rccsd_run PRIVATE test-drive::test-drive terco_rccsd_test_support)
 set_tests_properties(terco/check_rccsd_run PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# The perturbative triples (src/post_hf/ccsd/trc_rccsd_triples.F90, the host reference) against pyscf's (T) at the
+# converged and at the fixed amplitudes of the same references, an independent all-(a,b,c) host evaluation, c batch
+# invariance and the refusals. Same SKIP guard.
+terco_add_check(check_rccsd_triples check_rccsd_triples.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_rccsd_triples PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_triples PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
 # check_basis_ecp_refused.F90's own header.

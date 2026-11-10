@@ -111,6 +111,10 @@ module trc_rccsd_driver
       real(dp) :: step_norm2 = 0.0_dp    !! ||t' - t||_2 at the last iteration: PySCF's normt
       real(dp) :: t1_diagnostic = 0.0_dp  !! sqrt(||t1||^2 / (2 no)), PySCF's get_t1_diagnostic
       real(dp) :: seconds(RCCSD_NTIME) = 0.0_dp  !! device seconds per stage, RCCSD_TIME_*
+      logical :: has_triples = .false.   !! (T) was run: `e_t`, `e_ccsd_t` and `seconds_triples` are valid only when true
+      real(dp) :: e_t = 0.0_dp            !! the (T) correction; set by `rccsd_triples_finish` (trc_rccsd_triples), else 0
+      real(dp) :: e_ccsd_t = 0.0_dp       !! e_ccsd + e_t, the CCSD(T) correlation energy; set with e_t
+      real(dp) :: seconds_triples = 0.0_dp  !! host wall seconds of the (T), set with e_t
       character(len=300) :: message = ""
    end type trc_rccsd_result_t
 

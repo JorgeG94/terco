@@ -3720,7 +3720,8 @@ def gen_rccsd_ints():
     Tags: INT NO NV NAUX NFROZEN, REAL E_SCF E_MP2 E_FIXED, then one VECTOR
     P_<name> per probe (3 numbers for a 2-index tensor, 4 for a 4-index one),
     the five integral blocks first, then E_CCSD_CORR, E_T, E_CCSD_T, and last E_UPDATE1 (the
-    energy after one update_amps from the fixed amplitudes) and T1_DIAG (get_t1_diagnostic of t1_conv)."""
+    energy after one update_amps from the fixed amplitudes) and T1_DIAG (get_t1_diagnostic of t1_conv), then
+    E_T_FIXED and E_T_FIXED_NO_T1 (pyscf's (T) at the fixed amplitudes, and at the same t2 with t1 = 0)."""
     from pyscf.cc import rintermediates as imd, dfccsd
     bohr = 0.529177210903  # CODATA 2018, as terco
     cases = [("w1", "hirshfeld_water.xyz", 1), ("h2o2_c1", "h2o2_c1.xyz", 2)]
@@ -3728,7 +3729,8 @@ def gen_rccsd_ints():
     # Every file that reads these references or the probes they hold: the integral check, the
     # intermediates check and the helpers they share (editing one re-hashes the .ref).
     test_files = [TEST / "check_rccsd_ints.F90", TEST / "check_rccsd_inter.F90", TEST / "check_rccsd_w.F90",
-                  TEST / "check_rccsd_ladder.F90", TEST / "check_rccsd_run.F90", TEST / "rccsd_test_support.F90"]
+                  TEST / "check_rccsd_ladder.F90", TEST / "check_rccsd_run.F90", TEST / "check_rccsd_triples.F90",
+                  TEST / "rccsd_test_support.F90"]
     files = sorted({TEST / c[1] for c in cases}
                    | {TEST / "basis_sets" / (basis + ".json"), TEST / "basis_sets" / (aux_basis + ".json")}
                    | set(test_files))
@@ -3807,6 +3809,11 @@ def gen_rccsd_ints():
         e_update1 = mycc.energy(t1n, t2n, eris)   # the correlation energy after exactly one update from the fixed amplitudes
         e_mp2 = mycc.energy(np.zeros_like(t1), t2, eris)
         e_fixed = mycc.energy(t1, t2, eris)
+        # (T) at the FIXED amplitudes, not the converged ones: the triples routine alone, independent of the CCSD
+        # solver. The kernel may rewrite t2 in place, so it gets copies. The second has t1 = 0 (t2 = MP2 only).
+        from pyscf.cc import ccsd_t as pyscf_ccsd_t
+        e_t_fixed = pyscf_ccsd_t.kernel(mycc, eris, t1.copy(), t2.copy())
+        e_t_fixed_no_t1 = pyscf_ccsd_t.kernel(mycc, eris, np.zeros_like(t1), t2.copy())
         mycc.kernel()
         if not mycc.converged:
             raise ConvergenceError(f"gen_rccsd_ints {name}: pyscf DF-CCSD did not converge")
@@ -3832,10 +3839,14 @@ def gen_rccsd_ints():
         # pyscf's get_t1_diagnostic of the converged t1, sqrt(|t1|^2 / (2 no)) with no the active occupied count
         w.real("E_UPDATE1", e_update1)
         w.real("T1_DIAG", mycc.get_t1_diagnostic())
+        # after T1_DIAG for the same reason: pyscf's (T) at the fixed amplitudes (t1 dipole guess, t2 MP2), then at
+        # t1 = 0 with the same t2
+        w.real("E_T_FIXED", e_t_fixed)
+        w.real("E_T_FIXED_NO_T1", e_t_fixed_no_t1)
         w.end()
         w.write()
         print(f"  rccsd_ints {name:8s} no {no} nv {nv} naux {mycc.with_df.get_naoaux()} E_SCF {mf.e_tot:.14f} "
-              f"E_MP2 {e_mp2:.14e}")
+              f"E_MP2 {e_mp2:.14e} E_T_fixed {e_t_fixed:.14e}")
 
 
 def gen_fukui_chelpg():
