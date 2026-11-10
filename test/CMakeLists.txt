@@ -181,6 +181,13 @@ terco_add_check(check_rccsd_ladder check_rccsd_ladder.F90 NEEDS_BASIS NEEDS_PYSC
 target_link_libraries(check_rccsd_ladder PRIVATE test-drive::test-drive terco_rccsd_test_support)
 set_tests_properties(terco/check_rccsd_ladder PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# The amplitude update, DIIS and the iteration driver (src/post_hf/ccsd/trc_rccsd_update.F90, _diis.F90,
+# _driver.F90) against pyscf's update_amps, the converged DF-CCSD energy and amplitudes of the same references,
+# plus an independent host implementation of update_amps and DIIS on a linear problem. Same SKIP guard.
+terco_add_check(check_rccsd_run check_rccsd_run.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_rccsd_run PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_run PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
 # check_basis_ecp_refused.F90's own header.

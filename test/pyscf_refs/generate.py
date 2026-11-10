@@ -3719,7 +3719,8 @@ def gen_rccsd_ints():
 
     Tags: INT NO NV NAUX NFROZEN, REAL E_SCF E_MP2 E_FIXED, then one VECTOR
     P_<name> per probe (3 numbers for a 2-index tensor, 4 for a 4-index one),
-    the five integral blocks first, and E_CCSD_CORR, E_T, E_CCSD_T last."""
+    the five integral blocks first, then E_CCSD_CORR, E_T, E_CCSD_T, and last E_UPDATE1 (the
+    energy after one update_amps from the fixed amplitudes) and T1_DIAG (get_t1_diagnostic of t1_conv)."""
     from pyscf.cc import rintermediates as imd, dfccsd
     bohr = 0.529177210903  # CODATA 2018, as terco
     cases = [("w1", "hirshfeld_water.xyz", 1), ("h2o2_c1", "h2o2_c1.xyz", 2)]
@@ -3727,7 +3728,7 @@ def gen_rccsd_ints():
     # Every file that reads these references or the probes they hold: the integral check, the
     # intermediates check and the helpers they share (editing one re-hashes the .ref).
     test_files = [TEST / "check_rccsd_ints.F90", TEST / "check_rccsd_inter.F90", TEST / "check_rccsd_w.F90",
-                  TEST / "check_rccsd_ladder.F90", TEST / "rccsd_test_support.F90"]
+                  TEST / "check_rccsd_ladder.F90", TEST / "check_rccsd_run.F90", TEST / "rccsd_test_support.F90"]
     files = sorted({TEST / c[1] for c in cases}
                    | {TEST / "basis_sets" / (basis + ".json"), TEST / "basis_sets" / (aux_basis + ".json")}
                    | set(test_files))
@@ -3803,6 +3804,7 @@ def gen_rccsd_ints():
                 ("ladder_w", "oovv", ladder_w), ("dressing", "oovv", ladder_dressing)]
         t1n, t2n = mycc.update_amps(t1, t2, eris)
         out += [("t1_new", "ov", t1n), ("t2_new", "oovv", t2n)]
+        e_update1 = mycc.energy(t1n, t2n, eris)   # the correlation energy after exactly one update from the fixed amplitudes
         e_mp2 = mycc.energy(np.zeros_like(t1), t2, eris)
         e_fixed = mycc.energy(t1, t2, eris)
         mycc.kernel()
@@ -3826,6 +3828,10 @@ def gen_rccsd_ints():
         w.real("E_CCSD_CORR", mycc.e_corr)
         w.real("E_T", e_t)
         w.real("E_CCSD_T", mycc.e_tot + e_t)
+        # after E_CCSD_T so the readers that stop earlier are unaffected: the energy of the single update above, and
+        # pyscf's get_t1_diagnostic of the converged t1, sqrt(|t1|^2 / (2 no)) with no the active occupied count
+        w.real("E_UPDATE1", e_update1)
+        w.real("T1_DIAG", mycc.get_t1_diagnostic())
         w.end()
         w.write()
         print(f"  rccsd_ints {name:8s} no {no} nv {nv} naux {mycc.with_df.get_naoaux()} E_SCF {mf.e_tot:.14f} "

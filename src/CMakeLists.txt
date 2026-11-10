@@ -66,6 +66,9 @@ target_sources(
           post_hf/ccsd/trc_rccsd_inter.F90        # RI-CCSD(T): tau, Foo/Fvv/Fov/Loo/Lvv, the energy functional, MP2 amplitudes
           post_hf/ccsd/trc_rccsd_w.F90            # RI-CCSD(T): the two-particle intermediates Woooo, Wvoov, Wvovo
           post_hf/ccsd/trc_rccsd_ladder.F90       # RI-CCSD(T): the particle-particle ladder (assembled and direct forms) and its t1 dressing
+          post_hf/ccsd/trc_rccsd_update.F90       # RI-CCSD(T): the T1/T2 amplitude update (Hirata Eqs. 35-36) from the modules above
+          post_hf/ccsd/trc_rccsd_diis.F90         # RI-CCSD(T): amplitude DIIS and the step measure, on the device
+          post_hf/ccsd/trc_rccsd_driver.F90       # RI-CCSD(T): the iteration driver, convergence, result and handle
           basis/trc_basis_json.F90 # a basis from a MolSSI BSE JSON file
           scf/guess/trc_guess_json.F90 # a SAD guess from mqc's per-element JSON blocks
           scf/guess/trc_sad.F90 # the SAD guess built here, one atomic SCF per element
