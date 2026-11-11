@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["sym_d2h"] -> gen_sym_d2h
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: b75c7fb006d7611d7f1345769ea76107b2b31f486e722ce8ca1c4bd74cb958dd
+# hash: 009f2a8d8ba0623ded129208f52b9f0d83b28c0ab0494ad8ce4cca2dc91a0c8e
 # files: test/check_sym_d2h.F90 test/c2h4_d2h.xyz test/c2h4_d2h_aligned.xyz test/naphthalene_d2h.xyz test/b2h6_d2h.xyz test/b2h6_d2h_rot.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
 AXES_c2h4_d2h 9
 4.74236709947716717e-01 -6.29333370125632952e-01 6.15661475312755169e-01 6.34497044909531183e-01 7.29105601640369860e-01 2.56551206697038625e-01

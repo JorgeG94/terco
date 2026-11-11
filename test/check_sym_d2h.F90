@@ -455,16 +455,18 @@ contains
       end do
    end subroutine test_lmax3
 
-   subroutine make_pair(error, xyz, basis_json, spherical, functional, charge, mult, p, conv_diis)
+   subroutine make_pair(error, xyz, basis_json, spherical, functional, charge, mult, p, conv_diis, max_iteration)
       !! Detect D2h, build the basis on the standard frame, and run the SCF
       !! with symmetry and as C1. `conv_diis` tightens the commutator
-      !! convergence of both runs when given (default 1e-9).
+      !! convergence of both runs when given (default 1e-9); `max_iteration`
+      !! raises their iteration budget (default 100).
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in) :: xyz, basis_json, functional
       logical, intent(in) :: spherical
       integer, intent(in) :: charge, mult
       type(pair_t), intent(inout) :: p
       real(dp), intent(in), optional :: conv_diis
+      integer, intent(in), optional :: max_iteration
       integer :: nat, nelec, dev
       integer, allocatable :: elem(:)
       real(dp), allocatable :: r(:, :)
@@ -499,6 +501,7 @@ contains
       opts%conv_diis = 1.0e-9_dp
       if (present(conv_diis)) opts%conv_diis = conv_diis
       opts%max_iteration = 100
+      if (present(max_iteration)) opts%max_iteration = max_iteration
 
       sc%ao = p%ao
       call trc_scf_run(p%bas, p%nalpha, p%nbeta, opts, p%rs, sym=sc)
@@ -647,7 +650,11 @@ contains
       ! The full Fock build's noise on 18 atoms leaves the orbital energies
       ! 1.2e-8 apart at the 1e-9 commutator gate (51 iterations against C1's
       ! 38), over the 1e-8 TOL_EPS; the gates stay, the SCF converges tighter.
-      call make_pair(error, 'naphthalene_d2h.xyz', 'basis_sets/6-31gs.json', .false., '', 0, 1, p, conv_diis=1.0e-10_dp)
+      ! At 1e-10 the symmetric run takes 108 iterations and C1 82 (gfortran
+      ! 15, host), past the default budget of 100 on every CI compiler, so
+      ! this case gets 160: about 1.5x the measured count.
+      call make_pair(error, 'naphthalene_d2h.xyz', 'basis_sets/6-31gs.json', .false., '', 0, 1, p, conv_diis=1.0e-10_dp, &
+                     max_iteration=160)
       if (allocated(error)) return
       call compare_pair(error, p, 'RHF naphthalene 6-31G*', TOL_E_HF)
       call golden_put('E_nap_rhf', p%rs%energy)
