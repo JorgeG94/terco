@@ -136,8 +136,8 @@ module trc_eri_data
       !! like the slots above it follows the pair order inside the bins, and
       !! is rebuilt with them.
       integer :: axperm(3) = [1, 2, 3]
-      !! The engine-internal frame of parity skipping (docs/SYMMETRY_PARITY_SKIP.md,
-      !! decision 1): the kernels' axis k is the molecule's axis axperm(k), so
+      !! The engine-internal frame of parity skipping:
+      !! the kernels' axis k is the molecule's axis axperm(k), so
       !! that the most common dead axis is the kernels' z. Not applied to the
       !! arrays above (the gradient kernels read them in the standard frame):
       !! the launcher hands the kernels the coordinate arrays in this order,
@@ -182,7 +182,7 @@ module trc_eri_data
       logical :: skeleton = .false.
       !! Build the SKELETON matrix: only the orbit representatives of the
       !! bra side are launched, weighted by their orbit size, so the result
-      !! is G_skel and must be symmetrized (docs/SYMMETRY_FOCK.md). Needs the
+      !! is G_skel and must be symmetrized. Needs the
       !! bins' orbits; the density must be invariant under the group.
       logical :: count_kept = .false.
       !! Count the quartets that survive both screens, into `nkept`, and

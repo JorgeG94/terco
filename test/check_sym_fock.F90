@@ -1,5 +1,5 @@
 !
-! The skeleton Fock build (docs/SYMMETRY_FOCK.md, scheme 2a): the S14 oracle.
+! The skeleton Fock build: the S14 oracle.
 !
 ! `eri%fock(..., skeleton=.true.)` launches only the orbit representatives of
 ! one side of each bin pair, weighted by their orbit size; the matrix it
@@ -98,7 +98,7 @@ module check_sym_fock_suite
    real(dp), parameter :: TOL_REF = 1.0e-8_dp
       !! Allowed |G_full(sym-built bins) - G_full(bins without symmetry)|, relative to
       !! max(1, |G|_max): the symmetry-aware bins screen on the orbit maximum of
-      !! Q and dsh (docs/SYMMETRY_FOCK.md, section 1), which keeps a handful of
+      !! Q and dsh, which keeps a handful of
       !! quartets the plain bins drop, each below the 1e-10 threshold.
 
    type :: ctx_t
@@ -306,7 +306,8 @@ contains
       type(trc_sym_scf_t) :: scr
       integer :: nocc
       nocc = sum(ctx%elem)/2
-      ! Just above the accumulation-order noise floor (docs/SYMMETRY_FOCK.md section 7).
+      ! Just above the accumulation-order noise floor:
+      ! the OpenMP and device builds accumulate F in a run-dependent order, so identical runs differ by 1e-13 to 1e-12 Eh.
       opts%conv_energy = 1.0e-10_dp
       opts%conv_diis = 1.0e-9_dp
       opts%max_iteration = 100

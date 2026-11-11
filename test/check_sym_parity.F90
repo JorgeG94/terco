@@ -1,5 +1,5 @@
 !
-! Parity skipping (docs/SYMMETRY_PARITY_SKIP.md): the Fock matrix built with
+! Parity skipping: the Fock matrix built with
 ! the dead-axis masks and the engine frame equals the one built without them.
 !
 ! `ctx%eri` is built with the point group and the dead axis of the molecule
@@ -215,7 +215,8 @@ contains
       type(trc_sym_scf_t) :: scr
       integer :: nocc
       nocc = sum(ctx%elem)/2
-      ! Just above the accumulation-order noise floor (docs/SYMMETRY_FOCK.md section 7).
+      ! Just above the accumulation-order noise floor:
+      ! the OpenMP and device builds accumulate F in a run-dependent order, so identical runs differ by 1e-13 to 1e-12 Eh.
       opts%conv_energy = 1.0e-10_dp
       opts%conv_diis = 1.0e-9_dp
       opts%max_iteration = 100
@@ -363,7 +364,7 @@ contains
          ! share hides the gap this gate exists for: with variants for the ten
          ! dominant classes only it read 0.677-0.720 while the cost-weighted
          ! share was 0.472-0.544, because the classes with a d shell on both
-         ! sides had no variant (docs/SYMMETRY_PARITY_SKIP.md section 11).
+         ! sides had no variant.
          ! An AGGREGATE gate, and only that. Each caller's floor is under its
          ! own measured value and above what the earlier variant set reached
          ! (0.47-0.50), so losing the whole new set fails here -- measured, by
@@ -375,8 +376,8 @@ contains
          ! while (dp|dd), tag 2122, had a masked kernel; it is held out of
          ! parity_hgp_tags (PARITY_HGP_DROP in gen_perclass.py) because it
          ! measures slower than the unmasked kernel it replaces, -18 % on
-         ! benzene with a 25 kB stack frame against 15.9 kB
-         ! (docs/SYMMETRY_PARITY_SKIP.md section 12). Its masked cost no
+         ! benzene with a 25 kB stack frame against 15.9 kB.
+         ! Its masked cost no
          ! longer counts as covered, which is why the floors moved from 0.75.
          ! The tightest margin is now b2h6's 0.052, so a class worth less than
          ! about five points of masked cost goes unnoticed. Gate per class if

@@ -71,11 +71,10 @@ PROLOGUE = """      integer,  intent(in)    :: lo, hi, nseg, npair, nbas, nao
       !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.
       logical,  intent(in)    :: sD(nseg)
       real(dp), intent(in)    :: sW(nseg)
-      !! The segment's weight: on a skeleton plan (docs/SYMMETRY_FOCK.md
-      !! scheme 2a) the orbit size of its bra pairs, halved on a diagonal bin
-      !! pair, so a multiple of ONE HALF and not an integer; 1 on every other
-      !! plan. Read once per work item into `wq` below, beside the quartet's
-      !! own degeneracy factor.
+      !! The segment's weight: on a skeleton plan the orbit size of its bra
+      !! pairs, halved on a diagonal bin pair, so a multiple of ONE HALF and
+      !! not an integer; 1 on every other plan. Read once per work item into
+      !! `wq` below, beside the quartet's own degeneracy factor.
       !!
       !! Per segment rather than per launch because the launcher used to fold
       !! it into jfac/kfac, which forced one launch per (class, mask, weight):
@@ -1395,7 +1394,7 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True, dead=0, o
 #: broke an A100 build. Every other role class here compiles for both. If a
 #: later compiler fixes it the class is worth about 1.8 s of a 68 s Fock
 #: build on the silica slice.
-#: PARITY SKIPPING (docs/SYMMETRY_PARITY_SKIP.md, decisions 1 and 2): the
+#: PARITY SKIPPING: the
 #: classes that get a z-masked variant, pcs{tag}z, dispatched at
 #: key + CLASS_RADIX**4; every class not reachable from these two lists runs
 #: unmasked, which is right for every quartet. The first set was decision 2's
@@ -1469,7 +1468,7 @@ RYS_ROUTED = ("2111", "2120", "2121", "2210", "2211", "2221", "2222")
 #: Swapped orderings that get no masked HGP kernel although their partner is
 #: listed above. (dp|dd), the swap of (dd|dp), measures slower than the
 #: unmasked kernel it would replace: -18 % on benzene, with a 25 kB stack
-#: frame against 15.9 kB (docs/SYMMETRY_PARITY_SKIP.md section 12). Its
+#: frame against 15.9 kB. Its
 #: launches take the unmasked pcs2122.
 PARITY_HGP_DROP = ("2122",)
 
@@ -1734,7 +1733,8 @@ def trim_accumulation(prims, hrr_body, nv):
     summing stale `v` for nothing. The statements below add exactly the
     entries the HRR reads, in runs of consecutive indices, so every value the
     HRR sees is the same sum in the same order: bit-identical. Measured
-    kernel-level in docs/SYMMETRY_PARITY_SKIP.md 3.6.
+    kernel-level on random geometries satisfying the mask, VRR + accumulation
+    + HRR only: 1.10 to 1.15x for the trimming by itself (mask 0).
 
     A skeleton module (no HRR text) keeps the full loop, which gen_rys.py and
     gen_rys_grad.py splice around.

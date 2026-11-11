@@ -123,8 +123,8 @@ On a planar molecule under a point group, every centre of a launch can lie in
 the z = 0 mirror plane. An integral component whose combined z power is odd is
 then exactly zero, and so is every recurrence term that carries a factor of a
 z displacement. A **z variant** (the "dead axis" is z) is the kernel of a class
-that does not form those components. The why and the measured coverage are in
-`docs/SYMMETRY_PARITY_SKIP.md`; the launcher picks a variant at the class key
+that does not form those components. The measured coverage is in the comments above
+`PARITY_HGP_TOP` and `PARITY_RYS_TOP` in `gen_perclass.py`; the launcher picks a variant at the class key
 plus `CLASS_RADIX**4` and falls back to the unmasked kernel otherwise, which is
 right for every quartet and only slower.
 
@@ -146,7 +146,7 @@ numbers are in the comment above `PARITY_HGP_TOP` in `gen_perclass.py`). The
 exact HGP list is `parity_hgp_tags`; read it there rather than from this page.
 Classes in `RYS_ROUTED` get their variant from `gen_rys.py`, not here, and the
 swapped orderings in `PARITY_HGP_DROP` get none: `(dp|dd)` measures slower
-masked than unmasked (`docs/SYMMETRY_PARITY_SKIP.md` section 12).
+masked than unmasked (-18 % on benzene, a 25 kB stack frame against 15.9 kB).
 
 **Keep two lists in sync by hand.** `_rys_masked_classes` (in
 `src/CMakeLists.txt`) and `PARITY_RYS_TOP` (in `scripts/gen_perclass.py`) name

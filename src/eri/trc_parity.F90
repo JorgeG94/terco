@@ -1,5 +1,5 @@
 module trc_parity
-   !! Parity skipping, host side (docs/SYMMETRY_PARITY_SKIP.md): which axis of
+   !! Parity skipping, host side: which axis of
    !! the molecule is the dead one, which shells lie in its plane, and the
    !! axis permutation inside the integral engine that makes it the z axis of
    !! the kernels.

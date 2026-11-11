@@ -305,7 +305,7 @@ foreach(_v auto: on:TRC_SYM_SKELETON=1 off:TRC_SYM_SKELETON=0)
                         ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_skeleton_rule_${_n})
   set_tests_properties(terco/check_sym_skeleton_rule_${_n} PROPERTIES ENVIRONMENT "${_env}")
 endforeach()
-# Parity skipping (docs/SYMMETRY_PARITY_SKIP.md): the Fock matrix with the
+# Parity skipping: the Fock matrix with the
 # dead-axis masks and the engine frame against the one without, on the planar
 # and the mixed-mask molecules; _f is the uncontracted l = 0..3 set.
 terco_add_check(check_sym_parity check_sym_parity.F90 NEEDS_BASIS)
@@ -2588,7 +2588,7 @@ if(NOT TERCO_LONG_TESTS)
   endforeach()
 endif()
 
-# The unique-pair build (docs/SYMMETRY_UNIQUE_PAIRS.md): primitive pairs and
+# The unique-pair build: primitive pairs and
 # Schwarz bounds of the orbit representatives only, images rebuilt from them.
 terco_add_check(check_sym_unique check_sym_unique.F90 NEEDS_BASIS)
 target_link_libraries(check_sym_unique PRIVATE test-drive::test-drive)

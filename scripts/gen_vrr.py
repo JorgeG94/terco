@@ -182,7 +182,7 @@ def _pathways(node, P, I, dead=0):
     """Every way to form `node`; each is (kind, direction, [input nodes]).
 
     `dead` is the mask of dead coordinates (bit d set: coordinate d of all
-    four centres is exactly zero; docs/SYMMETRY_PARITY_SKIP.md, section 2).
+    four centres is exactly zero).
     There PA_d = QC_d = WP_d = WQ_d = 0, so the first-order terms
     PA_d*[a-1_d] + WP_d*[...] and QC_d*[...] + WQ_d*[...] drop out and only
     the second-order and the cross term survive; a pathway left with no input

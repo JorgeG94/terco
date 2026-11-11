@@ -108,7 +108,7 @@ contains
       logical, intent(in), optional :: want(:, :)
       !! (nbas, nbas) Present: only the shell pairs (i, j) with want(i, j)
       !! get primitive pairs; every other pair has n = 0, as if it were pruned.
-      !! The unique-pair build (docs/SYMMETRY_UNIQUE_PAIRS.md) wants the orbit
+      !! The unique-pair build wants the orbit
       !! representatives and rebuilds the images from them. The `keep` scratch
       !! is then sized by the wanted pairs, not by nbas**2. Absent: every pair,
       !! exactly as before.

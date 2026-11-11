@@ -149,7 +149,7 @@ module trc_eri
       type(trc_mdg_t) :: mg
       !! The MD exchange pass over the same pairs, for the g classes above TERCO_RYS_G_LTOT.
       logical :: upair = .false.
-      !! The unique-pair build (docs/SYMMETRY_UNIQUE_PAIRS.md): `pairs` holds
+      !! The unique-pair build: `pairs` holds
       !! primitive pairs for the orbit representatives only, the Schwarz bounds
       !! were computed for them alone, and the bin-interleaved tables of the
       !! images were rebuilt from them. Set by `build` when it is given a point

@@ -424,8 +424,8 @@ contains
       ! same 15 digits), but inside one process the three SCFs here do not
       ! reproduce each other exactly: two repeats of the identical forced-full
       ! run on SF6 came out 9.1e-12 Eh apart in this host build, the noise
-      ! floor docs/SYMMETRY_FOCK.md section 7 describes for a ~1000 Eh system.
-      ! Comparing two runs bitwise is what that section forbids; the structural
+      ! floor for a ~1000 Eh system (run-dependent accumulation order, 1e-13 to 1e-12 Eh).
+      ! Comparing two runs bitwise is not meaningful at that level; the structural
       ! claim is carried by the `sym_skeleton` and `sym_atom_orbits` checks
       ! above instead, and the numbers by the gates above.
    end subroutine run_three

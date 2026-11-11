@@ -1,5 +1,5 @@
 !
-! The unique-pair build (docs/SYMMETRY_UNIQUE_PAIRS.md): with a point group
+! The unique-pair build: with a point group
 ! `eri%build` forms the primitive pairs and the Schwarz bounds of the orbit
 ! representatives only and rebuilds the images from them (the product centre
 ! and the shell centres sign-flipped by the operation's mask). Checked here,

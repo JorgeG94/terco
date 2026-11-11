@@ -1,5 +1,5 @@
 !
-! The SCF with the SKELETON Fock build (S14.3, docs/SYMMETRY_FOCK.md): the
+! The SCF with the SKELETON Fock build (S14.3): the
 ! four-centre engine built with the point group, only the orbit
 ! representatives launched, G symmetrized after the fold.
 !
@@ -77,8 +77,7 @@ contains
       !! `min_gain`: the least ratio of the full build's quartets to the
       !! skeleton's. A molecule whose atoms all lie on the mirror plane (every
       !! atom its own image) has trivial shell-pair orbits under Cs, so its
-      !! skeleton plan is no smaller than the full one (docs/SYMMETRY_FOCK.md,
-      !! planar molecules gain |G|/2 = 1, here at a few percent of overhead
+      !! skeleton plan is no smaller than the full one (planar molecules gain |G|/2 = 1, here at a few percent of overhead
       !! for the plan's rep x bin shape); those pass 0.9. Every other case
       !! passes 1.2 (measured 1.35 to 3.35).
       type(error_type), allocatable, intent(out) :: error

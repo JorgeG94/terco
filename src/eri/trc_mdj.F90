@@ -145,7 +145,7 @@ module trc_mdj
       !! per lp block: first primitive pair less one, count, first Hermite slot less one
       real(dp), allocatable :: dt(:), jt(:)
       !
-      ! The skeleton Fock build's bra (docs/SYMMETRY_FOCK.md 4.5). Built only
+      ! The skeleton Fock build's bra. Built only
       ! when `build` is given the pair orbit weights. The orbit
       ! representatives' primitive pairs are COPIED after the nhp ordinary ones
       ! (so the exchange engine's view of the lists is unchanged), the copy's
@@ -260,7 +260,7 @@ contains
       logical,  intent(in), optional :: skeleton
       !! Only the bra of the orbit representatives, each block times its orbit
       !! size: jmat is then the SKELETON J, which the caller's symmetrization
-      !! turns into J (docs/SYMMETRY_FOCK.md 4.5). The ket side stays whole.
+      !! turns into J. The ket side stays whole.
       !! Needs `build` to have been given the orbit weights. Default false.
 
       integer :: t, lp, lq, lpt, qfix, c0, cstep
