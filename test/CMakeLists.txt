@@ -142,6 +142,38 @@ target_link_libraries(check_exchange_screen PRIVATE test-drive::test-drive)
 terco_add_check(check_si check_si.F90)
 target_link_libraries(check_si PRIVATE test-drive::test-drive)
 
+# The Abelian point-group tables (trc_sym_group): closure, character
+# orthogonality, irrep names and order against pyscf 2.14.0's param.py.
+terco_add_check(check_sym_group check_sym_group.F90)
+target_link_libraries(check_sym_group PRIVATE test-drive::test-drive)
+
+# Point-group detection, orientation and symmetrization (trc_sym_geom): water,
+# HOCl and CH2Cl2 against the frames pyscf 2.14.0 picks (sym_geom_frames.ref),
+# a requested subgroup on tilted axes, noisy tops, invariance, perm.
+terco_add_check(check_sym_geom check_sym_geom.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_geom PRIVATE test-drive::test-drive)
+
+# AO signed permutations and the SO basis (trc_sym_ao): U^T U = I, U^T S U and
+# U^T H U block-diagonal, per-irrep SO counts against pyscf's mol.symm_orb
+# (pyscf_refs/sym_so_dims.ref), Cartesian and spherical, 6-31G* and cc-pVDZ,
+# and the uncontracted l = 0..3 set (skips itself below TERCO_LMAX=3).
+terco_add_check(check_sym_ao check_sym_ao.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_ao PRIVATE test-drive::test-drive)
+set_tests_properties(terco/check_sym_ao PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+set_target_properties(check_sym_ao PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ao)
+terco_add_check(check_sym_ao_f check_sym_ao.F90 NEEDS_BASIS NEEDS_PYSCF_REF ARGS f)
+target_link_libraries(check_sym_ao_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_ao_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ao_f)
+set_tests_properties(terco/check_sym_ao_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# The exact AO rotation between the standard frame and the user's input frame
+# (trc_sym_frame): a basis built on rotated atoms has S = D^T S_in D and the
+# same for T + V, Cartesian and spherical, every l up to this build's LMAX.
+terco_add_check(check_sym_frame check_sym_frame.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_frame PRIVATE test-drive::test-drive)
+
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
 # check_basis_ecp_refused.F90's own header.

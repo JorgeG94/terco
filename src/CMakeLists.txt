@@ -75,7 +75,12 @@ target_sources(
           core/trc_cart_perm.F90  # AO-index permutation, lexicographic <-> this build's order
           core/trc_ao_norm.F90    # AO-index normalisation, this build's <-> GAMESS's per-component convention
           core/trc_sph.F90        # the spherical (pure) AO space: block-sparse Cartesian <-> spherical transforms
-          core/trc_acc_shim.F90)  # see the file: this one is not optional
+          core/trc_acc_shim.F90   # see the file: this one is not optional
+          symmetry/trc_sym_group.F90   # the eight Abelian point groups: operations, characters, irrep names
+          symmetry/trc_sym_tops.F90    # pyscf's axis search for symmetric/spherical tops, linear molecules, atoms
+          symmetry/trc_sym_geom.F90    # point-group detection, orientation, symmetrization of a geometry
+          symmetry/trc_sym_ao.F90      # AO signed permutations and the SO basis
+          symmetry/trc_sym_frame.F90)   # exact AO rotation between the standard frame and the user's input frame
 
 # --- the molecular quadrature -------------------------------------------------
 #

@@ -5118,6 +5118,68 @@ def gen_ghost_water_dimer():
     print(f"  ghost_water_dimer: E_RHF={e_rhf:.12f} E_B3LYP={e_b3lyp:.12f}")
 
 
+def gen_sym_so_dims():
+    """check_sym_ao.F90's anchor: the number of symmetry-adapted orbitals per
+    irrep that pyscf's `mol.symm_orb` gives, in the Cartesian and the
+    spherical AO space, 6-31G* and cc-pVDZ, for one molecule per kind of
+    operation mask: the Cs molecules HOCl (planar) and CHFCl2 (its mirror
+    moves atoms), water (C2v: B1 and B2 depend on which mirror is the
+    molecular plane) and ethylene (D2h, turned off the input axes: the
+    B1u/B2u/B3u counts depend on which axis is the plane normal).
+    Basis from terco's own BSE JSON (bse_json_basis), so both codes see
+    the same shells. Irrep order is pyscf's (`mol.irrep_name`).
+    """
+    json_for = {"631gs": "basis_sets/6-31gs.json", "ccpvdz": "basis_sets/cc-pvdz.json"}
+    group_of = {"hocl": "Cs", "chfcl2": "Cs", "water": "C2v", "ethylene": "D2h"}
+    w = RefWriter("sym_so_dims.ref")
+    w.header("check_sym_ao", [ROOT / "test" / "check_sym_ao.F90"]
+             + [TEST / f"{m}.xyz" for m in group_of] + [TEST / j for j in json_for.values()])
+    for m, group in group_of.items():
+        atoms = _xyz_atoms(m)
+        elements = {sym: {v: k for k, v in _SYMBOL.items()}[sym] for sym, _ in atoms}
+        for bname, jrel in json_for.items():
+            basis_arg = bse_json_basis(TEST / jrel, elements)
+            for kind, cart in (("cart", True), ("sph", False)):
+                mol = gto.M(atom=atoms, basis=basis_arg, unit='Angstrom', cart=cart,
+                            symmetry=group, verbose=0)
+                if mol.groupname != group:
+                    raise RuntimeError(f"gen_sym_so_dims {m}: pyscf group {mol.groupname}, not {group}")
+                dims = [o.shape[1] for o in mol.symm_orb]
+                if sum(dims) != mol.nao_nr():
+                    raise RuntimeError(f"gen_sym_so_dims {m}: SO count {dims} != nao {mol.nao_nr()}")
+                tag = f"SO_{m}_{bname}_{kind}"
+                w.int_("NAO_" + tag[3:], mol.nao_nr())
+                w.vector(tag, dims)
+                print(f"  {tag}: {mol.irrep_name} nao {mol.nao_nr()} dims {dims}")
+    w.end()
+    w.write()
+
+
+def gen_sym_geom_frames():
+    """check_sym_geom.F90's anchor: pyscf's standard frame (`_symm_axes`, rows
+    x, y, z, and `_symm_orig`, Bohr) for each molecule check_sym_geom compares
+    frames on. `symmetry=True` for the rotated and shifted HOCl (Cs), water
+    and CH2Cl2 (C2v, planar and not). `symmetry='C2'` for water turned by
+    1e-4 rad: its axes pass pyscf's input-axis test but its mirrors fail
+    `check_symm` in the input frame, so pyscf takes the C2v frame, not the
+    input axes. The axis signs are LAPACK's and the check ignores them.
+    """
+    cases = [("sym_hocl_rot", True, "Cs"), ("sym_water_rot", True, "C2v"),
+             ("sym_ch2cl2_rot", True, "C2v"), ("sym_water_tilt", "C2", "C2")]
+    w = RefWriter("sym_geom_frames.ref")
+    w.header("check_sym_geom", [ROOT / "test" / "check_sym_geom.F90"]
+             + [TEST / f"{m}.xyz" for m, _, _ in cases])
+    for m, symmetry, group in cases:
+        mol = gto.M(atom=_xyz_atoms(m), basis='sto-3g', unit='Angstrom', symmetry=symmetry, verbose=0)
+        if mol.groupname != group:
+            raise RuntimeError(f"gen_sym_geom_frames {m}: pyscf group {mol.groupname}, not {group}")
+        w.matrix(f"AXES_{m}", mol._symm_axes)
+        w.vector(f"ORIG_{m}", mol._symm_orig)
+        print(f"  {m}: {mol.groupname}\n{mol._symm_axes}\n  orig {mol._symm_orig}")
+    w.end()
+    w.write()
+
+
 CASES = {
     "hirshfeld": gen_hirshfeld,
     "chelpg": gen_chelpg,
@@ -5279,6 +5341,8 @@ CASES = {
     "xc_kernels": gen_xc_kernels,
     "pcm_cavity": gen_pcm_cavity,
     "ghost_water_dimer": gen_ghost_water_dimer,
+    "sym_so_dims": gen_sym_so_dims,
+    "sym_geom_frames": gen_sym_geom_frames,
     "pcm_ints_water_631gs": lambda: gen_pcm_ints("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "pcm_ints_water_ccpvtz": lambda: gen_pcm_ints("water_ccpvtz", "water.xyz", "basis_sets/cc-pvtz.json"),
     "pcm_scf_main": lambda: gen_pcm_scf("main"),
