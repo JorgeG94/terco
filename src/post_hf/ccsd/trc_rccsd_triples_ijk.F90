@@ -230,10 +230,13 @@ contains
          this%nslot = int(min(max(DEFAULT_SLICE_BYTES/(8_int64*nv*nv*(nv + no)), 4_int64), 2*no))
       end if
       if (ierr == 0) allocate (this%gs(this%nslot*nv*nv*(nv + no)), stat=ierr)
-      if (ierr == 0) allocate (this%orb_slot(2*no), this%slot_orb(this%nslot), this%slot_used(this%nslot), stat=ierr)
+      if (ierr == 0) allocate (this%orb_slot(2*no), stat=ierr)
+      if (ierr == 0) allocate (this%slot_orb(this%nslot), stat=ierr)
+      if (ierr == 0) allocate (this%slot_used(this%nslot), stat=ierr)
       if (ierr == 0) allocate (this%q(3_int64*nv3*this%ncap), stat=ierr)
       if (ierr == 0) allocate (this%part(nv*nv*this%ncap), stat=ierr)
-      if (ierr == 0) allocate (this%vm(nv*nv*3*this%ncap), this%vt(nv*3*this%ncap), stat=ierr)
+      if (ierr == 0) allocate (this%vm(nv*nv*3*this%ncap), stat=ierr)
+      if (ierr == 0) allocate (this%vt(nv*3*this%ncap), stat=ierr)
       if (ierr == 0) allocate (this%col(nv*this%ncap), stat=ierr)
       if (ierr == 0) allocate (this%etrip(this%ncap), stat=ierr)
       if (ierr == 0) allocate (this%trip(3, this%ncap), stat=ierr)
@@ -507,12 +510,12 @@ contains
       ts%seconds_gather = ts%seconds_gather + clock%get_elapsed_time()
       call clock%start()
       ! U1 = T(i,j,k) nat [A'(i), tvb(j,k)] + T(j,i,k) swp [A2'(j), tvb(i,k)], k = k0..kb: B' columns from tvb2
-      call wide_gemm(ts, la, 1, 1, sa, tvb2_pos(ts, k0, j), kb - k0 + 1, 0.0_dp, ts%tvb2)
-      call wide_gemm(ts, la, 1, 1, sc, tvb2_pos(ts, k0, i), kb - k0 + 1, 1.0_dp, ts%tvb2)
+      call wide_gemm(ts, la, 1, 1, sa, kb - k0 + 1, 0.0_dp, ts%tvb2(tvb2_pos(ts, k0, j)))
+      call wide_gemm(ts, la, 1, 1, sc, kb - k0 + 1, 1.0_dp, ts%tvb2(tvb2_pos(ts, k0, i)))
       ! U2 nat T(i,k,j) [A'(i), tvb(k,j)], k = k0..k2
-      if (k2 >= k0) call wide_gemm(ts, la, 2, 1, sa, tvb2_pos(ts, k0, j), k2 - k0 + 1, 0.0_dp, ts%tvb)
+      if (k2 >= k0) call wide_gemm(ts, la, 2, 1, sa, k2 - k0 + 1, 0.0_dp, ts%tvb(tvb2_pos(ts, k0, j)))
       ! U3 nat T(j,k,i) [A'(j), tvb(k,i)], k = k0..kb, unless U3 = U2 (i = j)
-      if (i /= j) call wide_gemm(ts, la, 3, 1, sb, tvb2_pos(ts, k0, i), kb - k0 + 1, 0.0_dp, ts%tvb)
+      if (i /= j) call wide_gemm(ts, la, 3, 1, sb, kb - k0 + 1, 0.0_dp, ts%tvb(tvb2_pos(ts, k0, i)))
       call la%sync()
       ts%seconds_wide = ts%seconds_wide + clock%get_elapsed_time()
       ts%flops_wide = ts%flops_wide + 2.0_dp*v*v*v*kk*(2*(kb - k0 + 1) + max(k2 - k0 + 1, 0) + &
@@ -524,9 +527,9 @@ contains
          k = k0 + s - 1
          sk = ensure_slot(ints, amps, ts, k, 2, [i, j, j + no, k + no], la, gsec)
          ! U2 += T(k,i,j) swp [A2'(k), tvb(i,j)]
-         if (k <= k2) call wide_gemm(ts, la, 2, s, sk, tvb2_pos(ts, i, j), 1, 1.0_dp, ts%tvb)
+         if (k <= k2) call wide_gemm(ts, la, 2, s, sk, 1, 1.0_dp, ts%tvb(tvb2_pos(ts, i, j)))
          ! U3 += T(k,j,i) swp [A2'(k), tvb(j,i)]
-         if (i /= j) call wide_gemm(ts, la, 3, s, sk, tvb2_pos(ts, j, i), 1, 1.0_dp, ts%tvb)
+         if (i /= j) call wide_gemm(ts, la, 3, s, sk, 1, 1.0_dp, ts%tvb(tvb2_pos(ts, j, i)))
          ts%flops_per = ts%flops_per + 2.0_dp*v*v*v*kk*(merge(1, 0, k <= k2) + merge(1, 0, i /= j))
       end do
       call la%sync()
@@ -543,13 +546,12 @@ contains
       pos = 1_int64 + int(ts%nv + ts%no, int64)*ts%nv*((a - 1) + int(ts%no, int64)*(b - 1))
    end function tvb2_pos
 
-   subroutine wide_gemm(ts, la, u, s0, slot1, bpos, nk, beta, bt)
-      !! Frame u of the tile's triples s0..s0+nk-1 (consecutive in storage) += A B, A the slot, B nk column blocks of
-      !! B' starting at bt(bpos): gemm (nv^2 x (nv + no))((nv + no) x nv nk)
+   subroutine wide_gemm(ts, la, u, s0, slot1, nk, beta, bt)
+      !! Frame u of the tile's triples s0..s0+nk-1 (consecutive in storage) += A B, A the slot, B the nk column blocks
+      !! of B' that start at `bt` (the caller passes the table from that position): gemm (nv^2 x (nv + no))((nv + no) x nv nk)
       type(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: ts
       type(trc_linalg_t), intent(in) :: la
       integer, intent(in) :: u, s0, slot1, nk
-      integer(int64), intent(in) :: bpos
       real(dp), intent(in) :: beta
       real(dp), intent(in) :: bt(*)
       integer :: nv, no, nv2, kk
@@ -562,7 +564,7 @@ contains
       nv3 = int(nv, int64)**3
       gbase = 1_int64 + int(slot1 - 1, int64)*nv2*kk
       qbase = 1_int64 + (int(u - 1, int64)*ts%ncap + (s0 - 1))*nv3
-      call la%gemm("N", "N", nv2, nv*nk, kk, 1.0_dp, ts%gs(gbase), nv2, bt(bpos), kk, beta, ts%q(qbase), nv2)
+      call la%gemm("N", "N", nv2, nv*nk, kk, 1.0_dp, ts%gs(gbase), nv2, bt, kk, beta, ts%q(qbase), nv2)
    end subroutine wide_gemm
 
    function ensure_slot(ints, amps, ts, o, layout, protect, la, gsec) result(slot)
@@ -571,7 +573,8 @@ contains
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
       type(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: ts
-      integer, intent(in) :: o, layout, protect(4)
+      integer, intent(in) :: o, layout
+      integer, intent(in) :: protect(4)
       type(trc_linalg_t), intent(in), optional :: la
       real(dp), intent(inout), optional :: gsec
       integer :: slot, key
@@ -602,7 +605,8 @@ contains
       !! The slot for the slice `key`: the one holding it, else an empty one, else the least recently used one that
       !! holds none of the keys in `protect` (there is one: at least four slots)
       type(trc_rccsd_triples_ijk_scratch_t), intent(in) :: ts
-      integer, intent(in) :: key, protect(4)
+      integer, intent(in) :: key
+      integer, intent(in) :: protect(4)
       integer :: slot
       integer :: k
 

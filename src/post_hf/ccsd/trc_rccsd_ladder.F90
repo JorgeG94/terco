@@ -802,7 +802,7 @@ contains
       if (ls%form == RCCSD_LADDER_ASSEMBLED) then
          call ladder_assembled(ints, inter, lad, ls, la)
       else if (ls%form == RCCSD_LADDER_HALF) then
-         call ladder_half(ints, inter, lad, ls, la, tau_symmetric, ints%nv*ints%nv, ints%naux, ints%b_vv)
+         call ladder_half(ints, inter, lad, ls, la, tau_symmetric, ints%b_vv)
       else
          call ladder_direct(ints, inter, lad, ls, la)
       end if
@@ -851,7 +851,7 @@ contains
       end do
    end subroutine ladder_assembled
 
-   subroutine ladder_half(ints, inter, lad, ls, la, tau_symmetric, nrow, ncolf, fac)
+   subroutine ladder_half(ints, inter, lad, ls, la, tau_symmetric, fac)
       !! The half form (module header): per pass of d = d0..d1, C by one GEMM, its c >= d columns re-sorted with
       !! their weight into W2 and the tau columns gathered, then one GEMM with tau (two for a general tau).
       !! `fac` is the factor whose products sum_P fac(a,c;P) fac(b,d;P) are contracted: b_vv for L, the dressed bt
@@ -862,8 +862,7 @@ contains
       type(trc_rccsd_lscratch_t), intent(inout) :: ls
       type(trc_linalg_t), intent(in) :: la
       logical, intent(in) :: tau_symmetric
-      integer, intent(in) :: nrow, ncolf
-      real(dp), intent(in) :: fac(nrow, ncolf)
+      real(dp), intent(in) :: fac(ints%nv*ints%nv, ints%naux)
 
       integer :: no, nv, naux, no2, nv2, d0, nd, nvc, ncol
 
@@ -1086,7 +1085,7 @@ contains
       call rccsd_steps_close(stab, la, RCCSD_ST_DRESSING, tc)
       call rccsd_steps_open(stab, la, RCCSD_ST_LADDER, tc)
       call kernel_zero(no2*nv2, lad%h)
-      call ladder_half(ints, inter, lad, ls, la, tau_symmetric, nv2, naux, ls%bt)
+      call ladder_half(ints, inter, lad, ls, la, tau_symmetric, ls%bt)
       call rccsd_steps_close(stab, la, RCCSD_ST_LADDER, tc, ls%flops_pp)
       call rccsd_steps_open(stab, la, RCCSD_ST_DRESSING, tc)
       ! Y(ij; k,l) = sum_cd tau(ij; cd) ovov(k,c,l,d); G(ij,k; b) = sum_l Y(ij,k; l) t1(l,b);
