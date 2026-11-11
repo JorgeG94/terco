@@ -26,9 +26,9 @@
 !   - Cartesian and spherical caller AO spaces. The density is made invariant
 !     by the production symmetrizer (`trc_sym_scf_t%symmetrize`) in the
 !     caller's space and folded to the Cartesian working basis the integrals
-!     are formed in -- section 10 of the design records that the spike's own
-!     hand-rolled prototype projection was NOT invariant in the spherical space, which
-!     is why both spaces are swept here;
+!     are formed in. The spike's own hand-rolled prototype projection was NOT
+!     invariant in the spherical space, which is why both spaces are swept
+!     here;
 !   - J+K, J only (k_scale = 0), K only (j_scale = 0) and long range
 !     (j_scale = 0, k_scale, omega > 0);
 !   - RHF (ndens = 1, the total density) and UHF (ndens = 2, two spin
