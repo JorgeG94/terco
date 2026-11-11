@@ -56,6 +56,34 @@ module trc_run
 #endif
    character(len=*), parameter :: VERSION = TERCO_VERSION
 
+#ifndef TERCO_BUILD_DEVICE
+#define TERCO_BUILD_DEVICE "unknown"
+#define TERCO_BUILD_GPU_ARCH "unknown"
+#define TERCO_BUILD_LMAX "unknown"
+#define TERCO_BUILD_DF_LMAX "unknown"
+#define TERCO_BUILD_DF_LMAX_AUX "unknown"
+#define TERCO_BUILD_CART_ORDER "unknown"
+#define TERCO_BUILD_MPI "unknown"
+#define TERCO_BUILD_MULTICORE "unknown"
+#define TERCO_BUILD_COMMIT "unknown"
+#define TERCO_BUILD_COMPILER "unknown"
+#define TERCO_BUILD_COMPILER_VERSION "unknown"
+#define TERCO_BUILD_TYPE "unknown"
+#endif
+   character(len=*), parameter, public :: BUILD_DEVICE = TERCO_BUILD_DEVICE   !! "yes" for a GPU build, else "no"
+   character(len=*), parameter, public :: BUILD_GPU_ARCH = TERCO_BUILD_GPU_ARCH   !! the -gpu=ccNN flag; unused on a host build
+   character(len=*), parameter, public :: BUILD_LMAX = TERCO_BUILD_LMAX
+   character(len=*), parameter, public :: BUILD_DF_LMAX = TERCO_BUILD_DF_LMAX
+   character(len=*), parameter, public :: BUILD_DF_LMAX_AUX = TERCO_BUILD_DF_LMAX_AUX
+   character(len=*), parameter, public :: BUILD_CART_ORDER = TERCO_BUILD_CART_ORDER   !! within-shell Cartesian order
+   character(len=*), parameter, public :: BUILD_MPI = TERCO_BUILD_MPI   !! "yes" with TERCO_ENABLE_MPI
+   character(len=*), parameter, public :: BUILD_MULTICORE = TERCO_BUILD_MULTICORE   !! "yes" for the -stdpar=multicore build
+   character(len=*), parameter, public :: BUILD_COMMIT = TERCO_BUILD_COMMIT
+   !! `git describe --always --dirty` at the last CMake configure, "unknown" outside a checkout.
+   character(len=*), parameter, public :: BUILD_COMPILER = TERCO_BUILD_COMPILER
+   character(len=*), parameter, public :: BUILD_COMPILER_VERSION = TERCO_BUILD_COMPILER_VERSION
+   character(len=*), parameter, public :: BUILD_TYPE = TERCO_BUILD_TYPE
+
    type :: run_t
       !! Every setting and result `trc_main`'s procedures need, passed
       !! explicitly -- see this module's own header comment for why.
@@ -119,6 +147,7 @@ module trc_run
       real(dp), allocatable :: sym_eps(:, :), sym_occ(:, :)           !! (nmo, nspin)
       real(dp), allocatable :: geom_std(:, :)  !! (3, natm), Bohr, as reported: input frame, or the SCF's standard frame
       type(timer_type) :: wall
+      type(timer_type) :: grad_timer   !! trc_run_gradient + the copy of the result to the host (--grad)
       type(comm_t) :: wcomm
       integer :: nranks
       logical :: rank0

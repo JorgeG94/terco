@@ -464,7 +464,7 @@ the full one, over any request, so both paths stay measurable from one binary
 `trc_sym_scf_t%skeleton = SYM_SKEL_ON / SYM_SKEL_OFF`. From the CLI:
 `--sym-skeleton` / `--no-sym-skeleton`. From the input file:
 `[scf] symmetry_skeleton = true/false`. From the C ABI:
-`trc_set_symmetry_skeleton(h, 1/0)` (ABI 1.23). The tests are
+`trc_set_symmetry_skeleton(h, 1/0)` (ABI 1.25). The tests are
 `check_sym_skeleton_rule_{auto,on,off}`.
 
 ### 4.2b Segment fusion and launch cost (W0-W2)

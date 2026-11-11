@@ -267,7 +267,7 @@ module trc_capi
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
              trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
-             trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
+             trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri, trc_timing, trc_timing_count
    public :: trc_run_gradient, trc_gradient
    public :: trc_set_geometry, trc_symmetry_requested, trc_symmetry_suppress_default
    public :: trc_set_symmetry_report_frame, trc_symmetry_report_frame
@@ -350,16 +350,26 @@ module trc_capi
    ! additive change, MAJOR (with MINOR reset to 0) for anything that
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
+   integer(c_int), parameter, public :: TRC_TIMING_NAME_MAX = 64
+   !! trc_timing: the most characters a timing name has, the NUL included;
+   !! a name buffer of this size always suffices.
+   integer, parameter :: MAX_TIMINGS = 128
+   !! trc_timing's list capacity. A run that would list more is an error
+   !! (TRC_ERR_UNSUPPORTED), never a silently shortened list.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 23
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 25
+   !! 1.25: trc_set_symmetry_skeleton (-1 the size rule, 0 off, 1 on) for
+   !! the skeleton Fock build and four-centre gradient of a symmetric run
+   !! (a new entry point, nothing else changes).
+   !! 1.24: trc_timing and trc_timing_count, the stage times of the last
+   !! run, one named value per call (new entry points, nothing else
+   !! changes).
    !! 1.23: Abelian point-group symmetry for the SCF (additive; off by
    !! default, so no existing call or output frame changes).
    !! Requests: trc_set_symmetry(h, spec, tol) with "off" (the default; also
    !! "default"), "on"/"auto", or a group (D2h and its subgroups);
    !! trc_set_irrep_nelec for fixed electrons per irrep;
-   !! trc_set_symmetry_skeleton (-1 the size rule, 0 off, 1 on) for the
-   !! skeleton Fock build and four-centre gradient; and
-   !! trc_set_symmetry_report_frame. Getters: trc_symmetry_group,
+   !! and trc_set_symmetry_report_frame. Getters: trc_symmetry_group,
    !! trc_symmetry_detected, trc_symmetry_residual, trc_symmetry_frame,
    !! trc_symmetry_report_frame, trc_symmetry_nirrep,
    !! trc_symmetry_irrep_name, trc_symmetry_irrep_dim, trc_mo_irreps and
@@ -514,6 +524,13 @@ module trc_capi
       logical :: scf_ok = .false., rimp2_ok = .false.
       real(dp) :: e_os = 0.0_dp, e_ss = 0.0_dp
       logical :: rimp2_deferred = .false.
+      logical :: rimp2_timed = .false.
+      !! With `rimp2_ok`: `rimp2_t_total` and the steps below describe the
+      !! RI-MP2 energy call that ran (trc_timing). False when the pair
+      !! energies came from a gradient's amplitudes instead.
+      real(dp) :: rimp2_t_total = 0.0_dp
+      character(len=24), allocatable :: rimp2_step_name(:)
+      real(dp), allocatable :: rimp2_step_t(:)
       ! With `rimp2_ok`: trc_run_rimp2 has accepted the run but e_os/e_ss
       ! are not computed yet (one rank, closed shell: trc_run_rimp2's own
       ! header). trc_run_gradient fills them from its own amplitudes, and
@@ -2013,6 +2030,7 @@ contains
       cx%grad_ok = .false.
       cx%polar_ok = .false.
       cx%hess_ok = .false.
+      cx%rimp2_timed = .false.
       call cx%kgrid%release()
       call cx%peri%release()
       cx%kgrid_level = -1
@@ -3744,6 +3762,7 @@ contains
       call c_f_pointer(handle, cx)
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
+      cx%rimp2_timed = .false.   ! trc_timing must not report the previous run's rimp2.*
       cx%grad_ok = .false.
       cx%sym_active = .false.
       cx%sym_ran = .false.
@@ -5813,6 +5832,7 @@ contains
          end if
       end if
       cx%rimp2_ok = .false.
+      cx%rimp2_timed = .false.
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) then
          cx%message = "trc_run_rimp2: run the SCF first"
@@ -5985,6 +6005,12 @@ contains
       call pl%release()
       cx%e_os = res%e_os
       cx%e_ss = res%e_ss
+      cx%rimp2_timed = allocated(res%step_t)
+      if (cx%rimp2_timed) then
+         cx%rimp2_t_total = res%t_total
+         cx%rimp2_step_name = res%step_name
+         cx%rimp2_step_t = res%step_t
+      end if
    end subroutine rimp2_pair_energies
 
    function trc_save_scf(handle, path) result(status) bind(c, name="trc_save_scf")
@@ -6059,6 +6085,7 @@ contains
       end if
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
+      cx%rimp2_timed = .false.
       cx%grad_ok = .false.
       cx%polar_ok = .false.
       ! A loaded result has no grid of its own -- any grid `trc_run_scf`
@@ -7488,6 +7515,206 @@ contains
       if (buflen > 0) buf(n + 1) = c_null_char
       status = TRC_OK
    end function trc_message
+
+   function trc_timing_count(handle, n) result(status) bind(c, name="trc_timing_count")
+      !! The number of entries trc_timing lists for the context's last run,
+      !! so a caller loops index = 0 .. n-1 and never has to read an error
+      !! as the end of the list. TRC_ERR_STATE before any SCF has run
+      !! (or after a setter invalidated it), TRC_ERR_UNSUPPORTED if the
+      !! run has more entries than the library lists (never a shortened list).
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: n
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      character(len=TRC_TIMING_NAME_MAX) :: names(MAX_TIMINGS)
+      real(dp) :: vals(MAX_TIMINGS)
+      integer :: m
+      logical :: overflow
+      n = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) then
+         cx%message = "trc_timing_count: run the SCF first"
+         return
+      end if
+      call collect_timings(cx, names, vals, m, overflow)
+      if (overflow) then
+         status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_timing_count: the run has more timings than the library lists ("// &
+                      to_string(MAX_TIMINGS)//") or a name longer than TRC_TIMING_NAME_MAX"
+         return
+      end if
+      n = int(m, c_int)
+      status = TRC_OK
+   end function trc_timing_count
+
+   function trc_timing(handle, index, name, name_len, value) result(status) bind(c, name="trc_timing")
+      !! The stage times of the context's last run, one named value per call,
+      !! in the order the stages ran: `index` counts from 0 up to
+      !! trc_timing_count - 1, `name` receives a NUL-terminated dotted name
+      !! ("scf.fock_first", "rimp2.step.cholesky", ...) in `name_len` chars,
+      !! `value` the seconds, or a count when the last name component starts
+      !! with "n_". A buffer of TRC_TIMING_NAME_MAX chars always suffices;
+      !! a shorter one that cannot hold the name and its NUL is refused with
+      !! TRC_ERR_BADARG (trc_message says the length needed), never cut.
+      !! An index outside 0 .. n-1 is TRC_ERR_BADARG too. Only stages the run
+      !! had are listed: "scf.*" after trc_run_scf, "dft.*" with a functional,
+      !! "dfjk.*" with density fitting, "pcm.*" with a continuum, "rimp2.*"
+      !! once the RI-MP2 energy step of the latest trc_run_rimp2 has run (not
+      !! when a gradient took the pair energies from its amplitudes).
+      !! TRC_ERR_STATE before any SCF. The times are the library's own timers
+      !! (the ones the verbose tables print): each Fock, XC and step-table
+      !! timer stops after a synchronous device call or an explicit device
+      !! wait. A new method adds names under its own prefix; no existing name
+      !! changes.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: index, name_len
+      character(kind=c_char), intent(out) :: name(*)
+      real(c_double), intent(out) :: value
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      character(len=TRC_TIMING_NAME_MAX) :: names(MAX_TIMINGS)
+      real(dp) :: vals(MAX_TIMINGS)
+      integer :: n, i, nc
+      logical :: overflow
+      value = 0.0_c_double
+      if (name_len > 0) name(1) = c_null_char
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) then
+         cx%message = "trc_timing: run the SCF first"
+         return
+      end if
+      call collect_timings(cx, names, vals, n, overflow)
+      if (overflow) then
+         status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_timing: the run has more timings than the library lists ("// &
+                      to_string(MAX_TIMINGS)//") or a name longer than TRC_TIMING_NAME_MAX"
+         return
+      end if
+      status = TRC_ERR_BADARG
+      if (index < 0 .or. index >= n) then
+         cx%message = "trc_timing: index "//to_string(int(index))//" is outside 0 .. "//to_string(n - 1)
+         return
+      end if
+      nc = len_trim(names(index + 1))
+      if (name_len < nc + 1) then
+         cx%message = "trc_timing: name_len "//to_string(int(name_len))//" cannot hold '"// &
+                      trim(names(index + 1))//"'; it needs "//to_string(nc + 1)// &
+                      " (TRC_TIMING_NAME_MAX always suffices)"
+         return
+      end if
+      do i = 1, nc
+         name(i) = names(index + 1)(i:i)
+      end do
+      name(nc + 1) = c_null_char
+      value = real(vals(index + 1), c_double)
+      status = TRC_OK
+   end function trc_timing
+
+   subroutine collect_timings(cx, names, vals, n, overflow)
+      !! `trc_timing`'s list, built on demand from what the last run left in
+      !! the context. Stages the run did not have are left out. `overflow`:
+      !! an entry did not fit (too many, or a name longer than `names`);
+      !! the callers turn it into an error instead of a shortened list.
+      type(context_box), intent(in) :: cx
+      character(len=*), intent(out) :: names(:)
+      real(dp), intent(out) :: vals(:)
+      integer, intent(out) :: n
+      logical, intent(out) :: overflow
+      integer :: k
+      character(len=24), allocatable :: dnames(:)
+      real(dp), allocatable :: dt(:)
+      n = 0
+      overflow = .false.
+      ! A result loaded from a file (trc_load_scf) ran no loop: wall is 0.
+      if (cx%res%timings%wall > 0.0_dp) then
+         associate (tm => cx%res%timings)
+            call add_timing("scf.wall", tm%wall)
+            call add_timing("scf.setup", tm%setup)
+            call add_timing("scf.n_iterations", real(cx%res%iterations, dp))
+            call add_timing("scf.n_fock_builds", real(tm%n_fock, dp))
+            call add_timing("scf.fock_first", tm%fock_first)
+            call add_timing("scf.fock_total", tm%fock_total)
+            if (tm%n_fock >= 2) then
+               call add_timing("scf.fock_mean_after_first", (tm%fock_total - tm%fock_first)/real(tm%n_fock - 1, dp))
+            end if
+            if (tm%has_grid) then
+               call add_timing("dft.grid", tm%grid)
+               call add_timing("dft.xc", tm%xc)
+               if (tm%has_vv10) call add_timing("dft.vv10", tm%vv10)
+            end if
+            if (tm%has_df) then
+               call add_timing("dfjk.total", tm%fock_total)
+               call cx%dfjk%step_times(dnames, dt)
+               if (allocated(dt)) then
+                  do k = 1, size(dt)
+                     call add_timing("dfjk.step."//trim(timing_key(dnames(k))), dt(k))
+                  end do
+               end if
+            end if
+            if (tm%has_pcm) then
+               call add_timing("pcm.setup", tm%pcm_setup)
+               call add_timing("pcm.per_iteration", tm%pcm_total/real(max(1, cx%res%iterations), dp))
+               call add_timing("pcm.total", tm%pcm_total)
+            end if
+         end associate
+      end if
+      if (cx%rimp2_ok .and. cx%rimp2_timed) then
+         call add_timing("rimp2.total", cx%rimp2_t_total)
+         do k = 1, size(cx%rimp2_step_t)
+            call add_timing("rimp2.step."//trim(timing_key(cx%rimp2_step_name(k))), cx%rimp2_step_t(k))
+         end do
+      end if
+
+   contains
+
+      subroutine add_timing(key, t)
+         character(len=*), intent(in) :: key
+         real(dp), intent(in) :: t
+         if (n >= size(vals) .or. len(key) > len(names)) then
+            overflow = .true.
+            return
+         end if
+         n = n + 1
+         names(n) = key
+         vals(n) = t
+      end subroutine add_timing
+
+   end subroutine collect_timings
+
+   pure function timing_key(label) result(key)
+      !! A step table's printed label as a JSON-friendly key: lower case,
+      !! every run of other characters one underscore ("metric (P|Q)" ->
+      !! "metric_p_q").
+      character(len=*), intent(in) :: label
+      character(len=len(label)) :: key
+      integer :: i, m
+      logical :: sep
+      character :: ch
+      key = ""
+      m = 0
+      sep = .false.
+      do i = 1, len_trim(label)
+         ch = label(i:i)
+         if (ch >= "A" .and. ch <= "Z") ch = achar(iachar(ch) + 32)
+         if ((ch >= "a" .and. ch <= "z") .or. (ch >= "0" .and. ch <= "9")) then
+            if (sep .and. m > 0) then
+               m = m + 1
+               key(m:m) = "_"
+            end if
+            m = m + 1
+            key(m:m) = ch
+            sep = .false.
+         else
+            sep = .true.
+         end if
+      end do
+   end function timing_key
 
    ! ---- borrowed handles for the Fock family ------------------------------
 
