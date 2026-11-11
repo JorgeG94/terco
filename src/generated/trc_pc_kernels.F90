@@ -108,7 +108,6 @@ module trc_pc_kernels
    use trc_pc_k2021z, only: pcs2021z
    use trc_pc_k1022z, only: pcs1022z
    use trc_pc_k1122z, only: pcs1122z
-   use trc_pc_k2122z, only: pcs2122z
    implicit none
    private
    public :: pc_dispatch, CLASS_RADIX, pc_has_variant, pc_cost
@@ -125,7 +124,7 @@ contains
       !! Whether the dispatch key (class key + CLASS_RADIX**4 for the z-masked
       !! variant of the class) names a kernel in this build.
       integer, intent(in) :: key
-      has = any(key == [14652, 14663, 15972, 15983, 15984, 15994, 15995, 15996, 16104, 16115, 16116, 16117, 17303, 17314, 17315, 17326, 17435, 17448])
+      has = any(key == [14652, 14663, 15972, 15983, 15984, 15994, 15995, 15996, 16104, 16115, 16116, 16117, 17303, 17314, 17315, 17326, 17435])
    end function pc_has_variant
 
    pure function pc_cost(key) result(c)
@@ -234,7 +233,6 @@ contains
       case (17315); c = 438.0_dp
       case (17326); c = 866.0_dp
       case (17435); c = 328.0_dp
-      case (17448); c = 6204.0_dp
       case default; c = 0.0_dp
       end select
    end function pc_cost
@@ -711,10 +709,6 @@ contains
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
       case (16117); call pcs1122z(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
-                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
-                          nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
-                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)
-      case (17448); call pcs2122z(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)

@@ -368,19 +368,25 @@ contains
          ! own measured value and above what the earlier variant set reached
          ! (0.47-0.50), so losing the whole new set fails here -- measured, by
          ! making all seven unreachable with TRC_RYS_CLASSES: five of six cases
-         ! drop below their floor. It does NOT catch losing ONE variant: the
-         ! tightest shipped margins are benzene 0.059 and b2h6 0.053, so a
-         ! class worth less than about five points of masked cost goes
-         ! unnoticed -- dropping (dd|pp), tag 2211, leaves the whole suite
-         ! passing (b2h6 0.8031 -> 0.7534 against its 0.75). Only (dp|dd) and
-         ! (dd|dd) are individually heavy enough to trip it. Gate per class if
+         ! drop below their floor. It does NOT catch losing ONE variant.
+         !
+         ! Measured values: benzene 0.7157, naphthalene 0.7233, trans-N2H2
+         ! 0.7085, b2h6 0.7020, against floors of 0.65. They were 0.75-0.80
+         ! while (dp|dd), tag 2122, had a masked kernel; it is held out of
+         ! parity_hgp_tags (PARITY_HGP_DROP in gen_perclass.py) because it
+         ! measures slower than the unmasked kernel it replaces, -18 % on
+         ! benzene with a 25 kB stack frame against 15.9 kB
+         ! (docs/SYMMETRY_PARITY_SKIP.md section 12). Its masked cost no
+         ! longer counts as covered, which is why the floors moved from 0.75.
+         ! The tightest margin is now b2h6's 0.052, so a class worth less than
+         ! about five points of masked cost goes unnoticed. Gate per class if
          ! that matters.
          !
          ! The value also depends on rys_default_class, so a pure ROUTING
          ! change with no parity content can move it: gen_rys.py's own comment
          ! says (pp|pp), (dd|ds) and (ds|pp) "win on some systems and lose or
-         ! tie on others". One such move of 2211 puts b2h6 at 0.7534; two
-         ! would fail here with a message that names coverage, not routing.
+         ! tie on others". Such a move would fail here with a message that
+         ! names coverage, not routing.
          cover = ctx%eri%parity_cost_variant/max(ctx%eri%parity_cost_masked, 1.0_dp)
          print "(a,a,a,f7.4)", "  ", trim(ctx%label), " cost-weighted masked work reaching a variant: ", cover
          call check(error, cover > min_cover, trim(ctx%label)//": only "//to_string(cover, "f7.4")// &
@@ -455,15 +461,15 @@ contains
       !! Benzene is D6h, detected as D2h with the plane normal on x: the
       !! engine frame moves x to z. Every pair of atoms is in the plane.
       type(error_type), allocatable, intent(out) :: error
-      call run_molecule("benzene", "D2h", "basis_sets/6-31gs.json", .false., 1, 0.95_dp, 0.75_dp, error)
+      call run_molecule("benzene", "D2h", "basis_sets/6-31gs.json", .false., 1, 0.95_dp, 0.65_dp, error)
       if (allocated(error)) return
       ! the same molecule in the other orientation of the test set: the normal on z
-      call run_molecule("tops_benzene", "D2h", "basis_sets/6-31gs.json", .false., 3, 0.95_dp, 0.75_dp, error)
+      call run_molecule("tops_benzene", "D2h", "basis_sets/6-31gs.json", .false., 3, 0.95_dp, 0.65_dp, error)
    end subroutine test_benzene
 
    subroutine test_naphthalene(error)
       type(error_type), allocatable, intent(out) :: error
-      call run_molecule("naphthalene_d2h", "D2h", "basis_sets/6-31gs.json", .false., 1, 0.95_dp, 0.75_dp, error)
+      call run_molecule("naphthalene_d2h", "D2h", "basis_sets/6-31gs.json", .false., 1, 0.95_dp, 0.65_dp, error)
    end subroutine test_naphthalene
 
    subroutine test_pentacene(error)
@@ -498,14 +504,14 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call run_molecule("water", "C2v", "basis_sets/cc-pvdz.json", .false., 1, 0.5_dp, 0.70_dp, error)
       if (allocated(error)) return
-      call run_molecule("n2h2_trans", "C2h", "basis_sets/6-31gs.json", .true., 3, 0.5_dp, 0.75_dp, error)
+      call run_molecule("n2h2_trans", "C2h", "basis_sets/6-31gs.json", .true., 3, 0.5_dp, 0.65_dp, error)
    end subroutine test_c2
 
    subroutine test_b2h6(error)
       !! Six of the eight atoms lie in one mirror plane: part of the plan is masked (doc 3.8: 52 % of the
       !! full plan, 59 % of the skeleton), the rest runs unmasked in the same launch list.
       type(error_type), allocatable, intent(out) :: error
-      call run_molecule("b2h6_d2h", "D2h", "basis_sets/6-31gs.json", .true., 1, 0.35_dp, 0.75_dp, error)
+      call run_molecule("b2h6_d2h", "D2h", "basis_sets/6-31gs.json", .true., 1, 0.35_dp, 0.65_dp, error)
    end subroutine test_b2h6
 
    subroutine test_nosym(error)

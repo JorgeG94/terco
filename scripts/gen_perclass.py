@@ -1452,9 +1452,10 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True, dead=0, o
 #: per thread) and (pp|dd) (9808 -> 5040), and LESS on (dp|dd):
 #: 15904 -> 25472 B. The four Rys variants are 144-568 B against 192-384.
 #: (dp|dd)'s frame is the one number here that is worse than what it replaces,
-#: on the largest uncovered class, and no host build can say what it costs:
-#: compacting the masked buffers to the live set is the fix, and holding
-#: "2122" out of parity_hgp_tags is the one-line retreat.
+#: on the largest uncovered class: a V100 measures it slower than the kernel
+#: it shadows, so PARITY_HGP_DROP holds "2122" out of parity_hgp_tags.
+#: Compacting the masked buffers to the live set is the fix that would bring
+#: it back.
 #:
 #: NOT added, deliberately: (ds|dd) and (ss|dd) would need (dd|ds) and
 #: (dd|ss) in PARITY_HGP_TOP, and (dd|ds) is a ROLE_SPLITS class -- a masked
@@ -1465,6 +1466,12 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True, dead=0, o
 PARITY_HGP_TOP = ("1000", "2010", "1110", "1010", "2110", "2011", "2000")
 PARITY_RYS_TOP = ("2111", "2120", "2121", "2210", "2211", "2221", "2222")
 RYS_ROUTED = ("2111", "2120", "2121", "2210", "2211", "2221", "2222")
+#: Swapped orderings that get no masked HGP kernel although their partner is
+#: listed above. (dp|dd), the swap of (dd|dp), measures slower than the
+#: unmasked kernel it would replace: -18 % on benzene, with a 25 kB stack
+#: frame against 15.9 kB (docs/SYMMETRY_PARITY_SKIP.md section 12). Its
+#: launches take the unmasked pcs2122.
+PARITY_HGP_DROP = ("2122",)
 
 
 def parity_hgp_tags(lmax):
@@ -1472,7 +1479,7 @@ def parity_hgp_tags(lmax):
     out = []
     for t in PARITY_HGP_TOP + PARITY_RYS_TOP:
         for u in (t, t[2:] + t[:2]):
-            if u in RYS_ROUTED or u in out or max(int(c) for c in u) > lmax:
+            if u in RYS_ROUTED or u in PARITY_HGP_DROP or u in out or max(int(c) for c in u) > lmax:
                 continue
             out.append(u)
     return out

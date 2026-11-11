@@ -144,7 +144,9 @@ the other Rys kernels, one `gen_rys.py {tag} --dead z` per tag in
 Which classes get a variant is a measured choice (the coverage and compile-cost
 numbers are in the comment above `PARITY_HGP_TOP` in `gen_perclass.py`). The
 exact HGP list is `parity_hgp_tags`; read it there rather than from this page.
-Classes in `RYS_ROUTED` get their variant from `gen_rys.py`, not here.
+Classes in `RYS_ROUTED` get their variant from `gen_rys.py`, not here, and the
+swapped orderings in `PARITY_HGP_DROP` get none: `(dp|dd)` measures slower
+masked than unmasked (`docs/SYMMETRY_PARITY_SKIP.md` section 12).
 
 **Keep two lists in sync by hand.** `_rys_masked_classes` (in
 `src/CMakeLists.txt`) and `PARITY_RYS_TOP` (in `scripts/gen_perclass.py`) name

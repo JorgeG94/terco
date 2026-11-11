@@ -774,7 +774,7 @@ with 7.5 kB. **So (dp|dd) must not be believed until a GPU has run it**, even
 though it is the largest single uncovered class; compacting the masked
 kernel's buffers to the live node set is the generator work that would fix it
 properly, and holding the (dp|dd) swap out of `parity_hgp_tags` is the
-one-line alternative.
+one-line alternative, which section 12 takes.
 
 **The above was measured in a device link of these kernels and their module
 dependencies only, not of `libterco.so`**, because this stage had no GPU
@@ -872,13 +872,16 @@ growing while the spill traffic falls:
 So the claim that spills are zero anywhere in this library is false, and
 `-res-usage`'s `LOCAL` field (0 throughout) does not say otherwise.
 
-**The `(dp|dd)` retreat is not worth taking.** Dropping it changes the total
-gain by +0.35 ms summed over all six configurations, and the two losses land
-on pentacene, the most production-relevant case, at 0.19 to 0.29 points --
-below the 0.5 to 0.7 % wall-clock trial spread. It would trade the coverage
-gate for no measurable speed. What it would buy is 65.6 s of the stage's 135 s
-of compile and 3 327 of its 6 457 generated lines, so it is defensible on
-compile cost alone.
+**The `(dp|dd)` retreat is taken.** `pcs2122z` measures slower than the
+unmasked kernel it replaces (-18 % on benzene, a 25 472 B frame against
+15 904 B), so `parity_hgp_tags` holds it out (`PARITY_HGP_DROP` in
+`scripts/gen_perclass.py`) and its launches take the unmasked `pcs2122`. The
+total gain moves by +0.35 ms summed over all six configurations, below the
+trial spread, and it saves 65.6 s of the stage's 135 s of compile and 3 327 of
+its 6 457 generated lines. Its masked cost no longer counts as covered, so
+`check_sym_parity`'s cost-weighted coverage reads 0.70-0.72 on benzene,
+naphthalene, trans-N2H2 and B2H6, and the gate's floor is 0.65: still above
+the 0.47-0.50 that losing the whole new variant set gives.
 
 **The better follow-up** is the compaction section 10 already names: compact
 the masked kernel's `v`/`g1`/`vbuf` to the live node set as `role_plan`'s
