@@ -1,20 +1,20 @@
 module trc_parity
-   !! Parity skipping, host side: which axis of
-   !! the molecule is the dead one, which shells lie in its plane, and the
+   !! Parity skipping, host side: which axis of the molecule is the dead one,
+   !! which shells lie in its plane, and the
    !! axis permutation inside the integral engine that makes it the z axis of
    !! the kernels.
    !!
    !! A coordinate d is DEAD for a quartet when all four centres have it
    !! equal to zero. Every component integral of odd combined parity in a
    !! dead coordinate is then exactly zero, and a masked kernel variant leaves
-   !! those out. The rule is tied to the detected group (decision 3 of the
-   !! design): axis d is a candidate only if the group contains the mirror
+   !! those out. The rule is tied to the detected group:
+   !! axis d is a candidate only if the group contains the mirror
    !! sigma_d (the operation that flips d alone), and a shell is in its plane
    !! when its centre has coordinate d EXACTLY zero, which is what `sym_geom_detect`
    !! writes for an atom on a symmetry element. With the symmetry off, or the
    !! group C1, there is no group and nothing is masked.
    !!
-   !! One axis only (decision 1): the one with the most shells in its plane,
+   !! One axis only: the one with the most shells in its plane,
    !! ties to z. The engine's frame then reads the molecule's axes in a
    !! cyclic order, kernel axis k being molecule axis axperm(k), with
    !! axperm(3) the dead axis.

@@ -215,8 +215,9 @@ contains
       type(trc_sym_scf_t) :: scr
       integer :: nocc
       nocc = sum(ctx%elem)/2
-      ! Just above the accumulation-order noise floor:
-      ! the OpenMP and device builds accumulate F in a run-dependent order, so identical runs differ by 1e-13 to 1e-12 Eh.
+      ! Just above the accumulation-order noise floor: the OpenMP and device
+      ! builds accumulate F in a run-dependent order, so identical runs differ
+      ! by 1e-13 to 1e-12 Eh.
       opts%conv_energy = 1.0e-10_dp
       opts%conv_diis = 1.0e-9_dp
       opts%max_iteration = 100
@@ -353,7 +354,7 @@ contains
          ! kernel text (VRR, accumulation, HRR) of the launches that ran in
          ! a variant: a variant that fell back to the full kernel, or one
          ! that dropped nothing, shows as a ratio near one. The z-masked
-         ! kernels measure 0.4 to 0.7 of the unmasked ones (3.6 of the design).
+         ! kernels measure 0.4 to 0.7 of the unmasked ones.
          ratio = ctx%eri%parity_ops_masked/max(ctx%eri%parity_ops_base, 1.0_dp)
          print "(a,a,a,f7.4)", "  ", trim(ctx%label), " modelled operations of the variant launches, masked/unmasked: ", ratio
          call check(error, ratio < 0.8_dp, trim(ctx%label)//": the masked variants drop too little work: "// &
@@ -376,9 +377,8 @@ contains
          ! while (dp|dd), tag 2122, had a masked kernel; it is held out of
          ! parity_hgp_tags (PARITY_HGP_DROP in gen_perclass.py) because it
          ! measures slower than the unmasked kernel it replaces, -18 % on
-         ! benzene with a 25 kB stack frame against 15.9 kB.
-         ! Its masked cost no
-         ! longer counts as covered, which is why the floors moved from 0.75.
+         ! benzene with a 25 kB stack frame against 15.9 kB. Its masked cost
+         ! no longer counts as covered, which is why the floors moved from 0.75.
          ! The tightest margin is now b2h6's 0.052, so a class worth less than
          ! about five points of masked cost goes unnoticed. Gate per class if
          ! that matters.
@@ -483,7 +483,7 @@ contains
       if (allocated(error)) return
       ! 6-31G has no d shell, so this is the one case that cannot reach the
       ! (dd|..) variants at all: its uncovered masked cost is (pp|pp), which
-      ! has no variant either (section 11 of the design).
+      ! has no variant either.
       call check_counters(ctx, 1, 0.95_dp, 0.55_dp, error)
       if (allocated(error)) return
       allocate (dc(ctx%nc, ctx%nc))

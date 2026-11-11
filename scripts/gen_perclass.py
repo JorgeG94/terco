@@ -1394,12 +1394,11 @@ def _emit_block(la, lb, lc, ld, cidx, vrr_body, hrr_body, unroll=True, dead=0, o
 #: broke an A100 build. Every other role class here compiles for both. If a
 #: later compiler fixes it the class is worth about 1.8 s of a 68 s Fock
 #: build on the silica slice.
-#: PARITY SKIPPING: the
-#: classes that get a z-masked variant, pcs{tag}z, dispatched at
-#: key + CLASS_RADIX**4; every class not reachable from these two lists runs
-#: unmasked, which is right for every quartet. The first set was decision 2's
-#: ten classes with the largest share of the modelled cost on the planar test
-#: molecules (naphthalene, skeleton plan, section 3.2): seven HGP here, and
+#: PARITY SKIPPING: the classes that get a z-masked variant, pcs{tag}z,
+#: dispatched at key + CLASS_RADIX**4; every class not reachable from these
+#: two lists runs unmasked, which is right for every quartet. The first set was
+#: the ten classes with the largest share of the modelled cost on the planar
+#: test molecules (naphthalene, skeleton plan): seven HGP here, and
 #: (dp|pp), (dp|ds), (dp|dp), which production routes to Rys and which take
 #: their variants from gen_rys.py. The skeleton plan may launch a bin pair
 #: with bra and ket swapped (bins_skel_cut_first), which is the same class in
@@ -1468,8 +1467,7 @@ RYS_ROUTED = ("2111", "2120", "2121", "2210", "2211", "2221", "2222")
 #: Swapped orderings that get no masked HGP kernel although their partner is
 #: listed above. (dp|dd), the swap of (dd|dp), measures slower than the
 #: unmasked kernel it would replace: -18 % on benzene, with a 25 kB stack
-#: frame against 15.9 kB. Its
-#: launches take the unmasked pcs2122.
+#: frame against 15.9 kB. Its launches take the unmasked pcs2122.
 PARITY_HGP_DROP = ("2122",)
 
 

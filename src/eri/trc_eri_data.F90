@@ -136,8 +136,8 @@ module trc_eri_data
       !! like the slots above it follows the pair order inside the bins, and
       !! is rebuilt with them.
       integer :: axperm(3) = [1, 2, 3]
-      !! The engine-internal frame of parity skipping:
-      !! the kernels' axis k is the molecule's axis axperm(k), so
+      !! The engine-internal frame of parity skipping: the kernels' axis k is
+      !! the molecule's axis axperm(k), so
       !! that the most common dead axis is the kernels' z. Not applied to the
       !! arrays above (the gradient kernels read them in the standard frame):
       !! the launcher hands the kernels the coordinate arrays in this order,
