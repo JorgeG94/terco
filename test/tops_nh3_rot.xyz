@@ -1,0 +1,6 @@
+4
+ammonia, C3v, constructed: r(NH) 1.0124 Angstrom, HNH 106.7 degrees (experimental equilibrium, recalled from memory), C3 axis along z; then rotated by a random proper rotation (numpy RandomState(101), QR of a normal matrix) and shifted by a random vector
+N      1.11018308558416     0.79322024113404    -0.88350079992987
+H      0.34794660954520     0.32771686901591    -0.40678712785578
+H      1.55541083775164     0.09745332294122    -1.46885061350152
+H      1.78410871031040     1.05003838174682    -0.17299221096733

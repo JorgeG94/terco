@@ -1,0 +1,6 @@
+4
+H2O2 gauche, C2 (point group C2 only), built from literature internal coordinates (not optimized here): r(OO) 1.456, r(OH) 0.962 A, angle OOH 100.0, dihedral HOOH 112 deg (close to the accepted equilibrium structure of Koput et al. 1998; not a fresh optimization); arbitrary rotation so the standard frame is not the input frame
+O     0.5427898695    0.0554717472    0.4819606237
+O    -0.5427898695   -0.0554717472   -0.4819606237
+H     0.0362061909    0.1248207009    1.2968272995
+H    -0.4159120860   -0.9636824646   -0.7726482929
