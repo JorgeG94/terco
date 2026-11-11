@@ -14,6 +14,7 @@ submodule (trc_run) trc_run_cc
    character(len=*), parameter :: N_ITER = "--cc-iterations ([riccsd] max_iterations)"
    character(len=*), parameter :: N_DIIS = "--cc-diis ([riccsd] diis_size)"
    character(len=*), parameter :: N_LADDER = "--cc-ladder ([riccsd] ladder)"
+   character(len=*), parameter :: N_TRIPLES = "--cc-triples ([riccsd] triples)"
    character(len=*), parameter :: N_BUDGET = "--cc-triples-budget ([riccsd] triples_budget)"
    integer, parameter :: MAX_DIIS = 50
    !! DIIS keeps two copies of the amplitudes per vector, o v + o^2 v^2 doubles each: 50 is far past what helps
@@ -46,6 +47,29 @@ contains
       end if
    end function ladder_code
 
+   pure integer function triples_code(word) result(code)
+      !! The `--cc-triples` word as trc_set_rccsd_algorithm's `triples_routine` (0 auto, 1 reference, 2 tiled), -1 for
+      !! anything else, in any case. Fixed-size local and an integer result, for the reason given at `ladder_code`.
+      character(len=*), intent(in) :: word
+      character(len=16) :: low
+      integer :: i, c
+
+      code = -1
+      if (len_trim(word) > len(low)) return
+      low = word
+      do i = 1, len(low)
+         c = iachar(low(i:i))
+         if (c >= iachar("A") .and. c <= iachar("Z")) low(i:i) = achar(c + 32)
+      end do
+      if (low == "auto") then
+         code = 0
+      else if (low == "reference") then
+         code = 1
+      else if (low == "tiled") then
+         code = 2
+      end if
+   end function triples_code
+
    module subroutine run_cc_parse(r, nfrozen)
       !! Reads `--riccsd`, `--riccsd-t` (which implies `--riccsd`) and the `--cc-*` options. Every combination the
       !! method does not cover is refused here, before the SCF: a correlated step that fails after an hour of SCF is
@@ -57,7 +81,7 @@ contains
       real(dp) :: gib
       logical :: any_option
       character(len=*), parameter :: OPTIONS(*) = [character(len=18) :: &
-         "cc-econv", "cc-tconv", "cc-iterations", "cc-diis", "cc-ladder", "cc-triples-budget"]
+         "cc-econv", "cc-tconv", "cc-iterations", "cc-diis", "cc-ladder", "cc-triples", "cc-triples-budget"]
       integer :: k
 
       r%cc_triples = r%cli%is_set("riccsd-t")
@@ -121,14 +145,22 @@ contains
          r%cc_ladder = ladder_code(sval)
          if (r%cc_ladder < 0) call run_die(r, N_LADDER//" must be auto, assembled or direct, got '"//trim(sval)//"'")
       end if
+      if (r%cli%is_set("cc-triples")) then
+         if (.not. r%cc_triples) call run_die(r, N_TRIPLES//" needs --riccsd-t ([correlation] method = 'ri-ccsd(t)')")
+         call r%cli%get("cc-triples", sval, r%err)
+         call run_check(r, N_TRIPLES)
+         r%cc_triples_routine = triples_code(sval)
+         if (r%cc_triples_routine < 0) call run_die(r, N_TRIPLES//" must be auto, reference or tiled, got '"// &
+                                                    trim(sval)//"'")
+      end if
       if (r%cli%is_set("cc-triples-budget")) then
          if (.not. r%cc_triples) call run_die(r, N_BUDGET//" needs --riccsd-t ([correlation] method = 'ri-ccsd(t)')")
          call r%cli%get("cc-triples-budget", gib, r%err)
          call run_check(r, N_BUDGET)
-         ! The library takes whole MiB, so anything below one would round to the library's default.
-         if (.not. (gib >= 1.0_dp/1024.0_dp .and. gib <= 1.0e6_dp)) call run_die(r, N_BUDGET//" must be between 1 MiB "// &
-                                                                            "(0.001 GiB) and 1e6 GiB")
-         r%cc_budget_mib = nint(gib*1024.0_dp)
+         ! Any positive size is a budget: one below a single triple (48 o^3 bytes) is how the (T) refusal is reached.
+         if (.not. (gib > 0.0_dp .and. gib <= 1.0e6_dp)) call run_die(r, N_BUDGET//" must be positive and at "// &
+                                                                      "most 1e6 GiB")
+         r%cc_budget_mib = gib*1024.0_dp
       end if
    end subroutine run_cc_parse
 
@@ -144,8 +176,9 @@ contains
          call run_api(r, trc_set_rccsd_convergence(r%h, real(r%cc_econv, c_double), real(r%cc_tconv, c_double), &
                                                    int(r%cc_iterations, c_int), int(r%cc_diis, c_int)))
       end if
-      if (r%cc_ladder /= 0 .or. r%cc_budget_mib > 0) then
-         call run_api(r, trc_set_rccsd_algorithm(r%h, int(r%cc_ladder, c_int), int(r%cc_budget_mib, c_int)))
+      if (r%cc_ladder /= 0 .or. r%cc_triples_routine /= 0 .or. r%cc_budget_mib > 0.0_dp) then
+         call run_api(r, trc_set_rccsd_algorithm(r%h, int(r%cc_ladder, c_int), int(r%cc_triples_routine, c_int), &
+                                                 real(r%cc_budget_mib, c_double)))
       end if
    end subroutine run_cc_configure
 

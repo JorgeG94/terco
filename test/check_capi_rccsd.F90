@@ -23,7 +23,12 @@
 !   - a second trc_run_scf, a new auxiliary basis and every RI-CCSD setter drop the stored result;
 !   - max_iterations = 2 returns TRC_ERR_NOCONV with a message, the last energies stay readable with converged = 0,
 !     (T) is not run, and trc_energy does not include the correlation;
-!   - after a converged run trc_run_gradient refuses and says why.
+!   - after a converged run trc_run_gradient refuses and says why;
+!   - the (T) step refusing after a converged RI-CCSD: the tiled routine with a budget below one triple. The
+!     call returns TRC_ERR_UNSUPPORTED with a message naming the budget, trc_rccsd_energy still gives the converged
+!     RI-CCSD (has_triples = 0, e_t = 0) and trc_energy is its total; a run with enough budget, and one with the
+!     reference routine (which has no budget), give (T). The two routines agree on E(T) to 1e-12. The routine is
+!     always set explicitly, so the case means the same in a host build and in a device build.
 !
 ! A build whose density-fitting ceilings are below the cc-pVDZ / cc-pVDZ-RIFIT shells prints SKIP.
 !
@@ -57,6 +62,8 @@ module check_capi_rccsd_suite
    !! the CCSD(T) total energy against pyscf, check_rccsd_triples' TOL_PYSCF_TOTAL
    real(dp), parameter :: TOL_T1 = 1.0e-9_dp
    !! the T1 diagnostic, first order in the amplitude error (1e-10 here)
+   real(dp), parameter :: TOL_ROUTINES = 1.0e-12_dp
+   !! the reference and the tiled (T) routines, and a tiled run of another budget, on the same amplitudes
    real(dp), parameter :: TOL_SUM = 1.0e-13_dp
    !! trc_energy against the SCF energy plus the reported parts: the same numbers added in another order
 
@@ -85,6 +92,10 @@ contains
                   new_unittest("a gradient after a converged RI-CCSD is refused, after an unconverged one it is not", &
                                test_gradient_refused), &
                   new_unittest("RI-MP2 and RI-CCSD: the later run wins, a refusal changes nothing", test_methods_alternate), &
+                  new_unittest("(T) refused after a converged RI-CCSD: the CCSD result stands, the call says so", &
+                               test_triples_refused), &
+                  new_unittest("the reference and the tiled (T) routines agree; the routine and the budget are validated", &
+                               test_triples_routines), &
                   new_unittest("the dimensions report the frozen core, the spaces and the auxiliary functions", &
                                test_dimensions), &
                   new_unittest("dropped linearly dependent functions are refused and the message names the option", &
@@ -298,16 +309,17 @@ contains
                    h, "max_iterations")
       call refused(error, "diis_size -1", trc_set_rccsd_convergence(h, 0.0_c_double, 0.0_c_double, 0_c_int, -1_c_int), h, &
                    "diis_size")
-      call refused(error, "ladder 3", trc_set_rccsd_algorithm(h, 3_c_int, 0_c_int), h, "ladder")
-      call refused(error, "ladder -1", trc_set_rccsd_algorithm(h, -1_c_int, 0_c_int), h, "ladder")
-      call refused(error, "budget -1", trc_set_rccsd_algorithm(h, 0_c_int, -1_c_int), h, "triples_budget_mib")
+      call refused(error, "ladder 3", trc_set_rccsd_algorithm(h, 3_c_int, 0_c_int, 0.0_c_double), h, "ladder")
+      call refused(error, "ladder -1", trc_set_rccsd_algorithm(h, -1_c_int, 0_c_int, 0.0_c_double), h, "ladder")
+      call refused(error, "budget -1", trc_set_rccsd_algorithm(h, 0_c_int, 0_c_int, -1.0_c_double), h, &
+                   "triples_budget_mib")
       if (allocated(error)) return
       ! One call per statement: the order in which a compiler evaluates the operands of one expression is its own.
       rc = trc_set_rccsd(c_null_handle(), 1_c_int, 1_c_int, 0_c_int)
       call check(error, rc == TRC_ERR_NULL, "trc_set_rccsd on a null handle is not TRC_ERR_NULL")
       rc = trc_set_rccsd_convergence(c_null_handle(), 0.0_c_double, 0.0_c_double, 0_c_int, 0_c_int)
       call check(error, rc == TRC_ERR_NULL, "trc_set_rccsd_convergence on a null handle is not TRC_ERR_NULL")
-      rc = trc_set_rccsd_algorithm(c_null_handle(), 0_c_int, 0_c_int)
+      rc = trc_set_rccsd_algorithm(c_null_handle(), 0_c_int, 0_c_int, 0.0_c_double)
       call check(error, rc == TRC_ERR_NULL, "trc_set_rccsd_algorithm on a null handle is not TRC_ERR_NULL")
       rc = trc_run_rccsd(c_null_handle())
       call check(error, rc == TRC_ERR_NULL, "trc_run_rccsd on a null handle is not TRC_ERR_NULL")
@@ -323,9 +335,9 @@ contains
                  "a refused setter changed the settings: E_CCSD "//to_string(e_ccsd, "f20.12")//", E(T) "// &
                  to_string(e_t, "f20.14"))
       ! the accepted extremes
-      rc = trc_set_rccsd_algorithm(h, 1_c_int, 2048_c_int)
+      rc = trc_set_rccsd_algorithm(h, 1_c_int, 0_c_int, 2048.0_c_double)
       call check(error, rc == TRC_OK, "ladder 1 with a 2048 MiB tile was refused")
-      rc = trc_set_rccsd_algorithm(h, 2_c_int, 0_c_int)
+      rc = trc_set_rccsd_algorithm(h, 2_c_int, 0_c_int, 0.0_c_double)
       call check(error, rc == TRC_OK, "ladder 2 was refused")
       rc = trc_set_rccsd_convergence(h, 1.0e-12_c_double, 1.0e-10_c_double, 100_c_int, 1_c_int)
       call check(error, rc == TRC_OK, "a DIIS size of 1 was refused")
@@ -555,7 +567,7 @@ contains
       rc = trc_run_rccsd(h)
       ! Two statements: the order in which the operands of one expression are evaluated is the
       ! compiler's choice, and nvfortran read the result before the setter had run.
-      rc_set = trc_set_rccsd_algorithm(h, 0_c_int, 0_c_int)
+      rc_set = trc_set_rccsd_algorithm(h, 0_c_int, 0_c_int, 0.0_c_double)
       rc_get = trc_rccsd_energy(h, e_mp2, e_ccsd, e_t, t1, iterations, converged, has_triples)
       call check(error, rc_set == TRC_OK .and. rc_get == TRC_ERR_STATE, &
                  "trc_set_rccsd_algorithm left the result readable")
@@ -743,6 +755,152 @@ contains
       call check(error, rc == TRC_OK, "a refused trc_run_rccsd dropped the RI-MP2 result")
       rc = trc_destroy(h)
    end subroutine test_methods_alternate
+
+   subroutine ccsd_numbers(h, e_ccsd, e_t, converged, has_triples, rc)
+      !! The correlation energies of the stored RI-CCSD result and its two flags
+      type(c_ptr), intent(in) :: h
+      real(c_double), intent(out) :: e_ccsd, e_t
+      integer(c_int), intent(out) :: converged, has_triples, rc
+      real(c_double) :: e_mp2, t1
+      integer(c_int) :: iterations
+      rc = trc_rccsd_energy(h, e_mp2, e_ccsd, e_t, t1, iterations, converged, has_triples)
+   end subroutine ccsd_numbers
+
+   subroutine set_triples(error, h, routine, budget_mib)
+      !! The (T) routine and budget of the handle, ladder at its default
+      type(error_type), allocatable, intent(inout) :: error
+      type(c_ptr), intent(in) :: h
+      integer(c_int), intent(in) :: routine
+      real(c_double), intent(in) :: budget_mib
+      integer(c_int) :: rc
+      if (allocated(error)) return
+      rc = trc_set_rccsd_algorithm(h, 0_c_int, routine, budget_mib)
+      call check(error, rc == TRC_OK, "trc_set_rccsd_algorithm(routine "//to_string(int(routine))//", "// &
+                 to_string(real(budget_mib, dp), "es9.2")//" MiB): "//message(h))
+   end subroutine set_triples
+
+   subroutine run_for_triples(error, h, routine, budget_mib, e_ccsd, e_t)
+      !! A run with the given routine and budget that must succeed with (T): its correlation energies
+      type(error_type), allocatable, intent(inout) :: error
+      type(c_ptr), intent(in) :: h
+      integer(c_int), intent(in) :: routine
+      real(c_double), intent(in) :: budget_mib
+      real(c_double), intent(out) :: e_ccsd, e_t
+      integer(c_int) :: rc, converged, has_triples
+      character(len=*), parameter :: ASKED = "routine "
+      e_ccsd = 0.0_c_double
+      e_t = 0.0_c_double
+      call set_triples(error, h, routine, budget_mib)
+      if (allocated(error)) return
+      rc = trc_run_rccsd(h)
+      call check(error, rc == TRC_OK, ASKED//to_string(int(routine))//", "//to_string(real(budget_mib, dp), "es9.2")// &
+                 " MiB: trc_run_rccsd returned "//to_string(int(rc))//": "//message(h))
+      if (allocated(error)) return
+      call ccsd_numbers(h, e_ccsd, e_t, converged, has_triples, rc)
+      call check(error, rc == TRC_OK .and. converged == 1 .and. has_triples == 1, ASKED//to_string(int(routine))// &
+                 ": the run did not leave a converged (T) result")
+   end subroutine run_for_triples
+
+   subroutine test_triples_refused(error)
+      !! One water triple takes 48*4^3 = 3072 bytes of W; 0.001 MiB is 1048 bytes
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      type(rccsd_refs_t) :: refs
+      real(c_double) :: e_ccsd_off, e_ccsd, e_t, e_total, e_total_off, e_t_default, e_t_tiled, e_t_ref
+      integer(c_int) :: rc, rc_run, converged, has_triples, nf, na, nvv, nx
+      logical :: ok
+
+      call water_scf(error, h, 0, 1, ok)
+      if (.not. ok .or. allocated(error)) return
+      call read_rccsd_refs(REF, refs)
+      ! the CCSD alone on this handle's settings, and its total
+      rc = trc_run_rccsd(h)
+      call check(error, rc == TRC_OK, "the triples-off run: "//message(h))
+      if (allocated(error)) return
+      call ccsd_numbers(h, e_ccsd_off, e_t, converged, has_triples, rc)
+      rc = trc_energy(h, e_total_off)
+      ! the same handle with (T) on, the tiled routine and a budget below one triple
+      rc = trc_set_rccsd(h, 1_c_int, 1_c_int, 0_c_int)
+      call set_triples(error, h, 2_c_int, 0.001_c_double)
+      if (allocated(error)) return
+      rc_run = trc_run_rccsd(h)
+      call check(error, rc_run == TRC_ERR_UNSUPPORTED, "a (T) step with no room for one triple returned "// &
+                 to_string(int(rc_run))//", not TRC_ERR_UNSUPPORTED")
+      if (allocated(error)) return
+      call check(error, index(message(h), "(T) failed") > 0 .and. index(message(h), "budget") > 0, &
+                 "the message does not say that (T) failed for its budget: '"//message(h)//"'")
+      if (allocated(error)) return
+      ! One call per statement: the order in which a compiler evaluates the operands of one expression is its own.
+      e_t = 1.0_c_double
+      call ccsd_numbers(h, e_ccsd, e_t, converged, has_triples, rc)
+      call check(error, rc == TRC_OK .and. converged == 1 .and. has_triples == 0, &
+                 "after the refused (T): trc_rccsd_energy status "//to_string(int(rc))//", converged "// &
+                 to_string(int(converged))//", has_triples "//to_string(int(has_triples)))
+      if (allocated(error)) return
+      call check(error, abs(e_ccsd - e_ccsd_off) < TOL_ROUTINES, "the RI-CCSD correlation after the refused (T) is "// &
+                 to_string(e_ccsd, "f20.12")//", the triples-off run's "//to_string(e_ccsd_off, "f20.12"))
+      if (allocated(error)) return
+      call check(error, e_t == 0.0_c_double, "e_t is "//to_string(e_t, "es9.2")//" after the refused (T)")
+      if (allocated(error)) return
+      rc = trc_energy(h, e_total)
+      call check(error, rc == TRC_OK .and. abs(e_total - (e_total_off - e_ccsd_off + e_ccsd)) < TOL_ROUTINES .and. &
+                 abs(e_total - e_total_off) < TOL_ROUTINES .and. abs(e_total - e_ccsd - refs%e_scf) < 1.0e-9_dp, &
+                 "trc_energy after the refused (T) is "//to_string(e_total, "f20.12")//", not E_SCF + E_CCSD "// &
+                 to_string(e_total_off, "f20.12"))
+      if (allocated(error)) return
+      rc = trc_rccsd_dimensions(h, nf, na, nvv, nx)
+      call check(error, rc == TRC_OK .and. nf == 1 .and. na == 4 .and. nvv == 19 .and. nx == 84, &
+                 "trc_rccsd_dimensions after the refused (T): status "//to_string(int(rc))//", "//to_string(int(na))// &
+                 " active occupied")
+      if (allocated(error)) return
+      ! enough budget: (T), and the default routine of the build gives the same number
+      call run_for_triples(error, h, 2_c_int, 64.0_c_double, e_ccsd, e_t_tiled)
+      call run_for_triples(error, h, 0_c_int, 0.0_c_double, e_ccsd, e_t_default)
+      ! the reference routine has no budget, so the budget that stopped the tiled one does not stop it
+      call run_for_triples(error, h, 1_c_int, 0.001_c_double, e_ccsd, e_t_ref)
+      if (allocated(error)) return
+      call check(error, abs(e_t_tiled - e_t_default) < TOL_ROUTINES .and. abs(e_t_ref - e_t_default) < TOL_ROUTINES, &
+                 "E(T): tiled "//to_string(e_t_tiled, "f20.14")//", reference with the tiny budget "// &
+                 to_string(e_t_ref, "f20.14")//", default "//to_string(e_t_default, "f20.14"))
+      if (allocated(error)) return
+      call check(error, abs(e_t_default - refs%e_t) < TOL_T, "E(T) "//to_string(e_t_default, "f20.14")//" vs pyscf "// &
+                 to_string(refs%e_t, "f20.14"))
+      rc = trc_destroy(h)
+      print "(a)", "  measured: |tiled - default| "//to_string(abs(e_t_tiled - e_t_default), "es9.2")// &
+         ", |reference (0.001 MiB) - default| "//to_string(abs(e_t_ref - e_t_default), "es9.2")
+   end subroutine test_triples_refused
+
+   subroutine test_triples_routines(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      real(c_double) :: e_ccsd, e_t_ref, e_t_tiled, e_t_frac
+      integer(c_int) :: rc
+      logical :: ok
+
+      call water_scf(error, h, 1, 1, ok)
+      if (.not. ok .or. allocated(error)) return
+      call refused(error, "routine 3", trc_set_rccsd_algorithm(h, 0_c_int, 3_c_int, 0.0_c_double), h, "triples_routine")
+      call refused(error, "routine -1", trc_set_rccsd_algorithm(h, 0_c_int, -1_c_int, 0.0_c_double), h, "triples_routine")
+      call refused(error, "budget NaN", trc_set_rccsd_algorithm(h, 0_c_int, 0_c_int, nan()), h, "triples_budget_mib")
+      call refused(error, "budget Inf", trc_set_rccsd_algorithm(h, 0_c_int, 0_c_int, infinity()), h, "triples_budget_mib")
+      call refused(error, "budget -0.5", trc_set_rccsd_algorithm(h, 0_c_int, 0_c_int, -0.5_c_double), h, "triples_budget_mib")
+      call refused(error, "budget 1e13", trc_set_rccsd_algorithm(h, 0_c_int, 0_c_int, 1.0e13_c_double), h, "triples_budget_mib")
+      if (allocated(error)) return
+      call run_for_triples(error, h, 1_c_int, 0.0_c_double, e_ccsd, e_t_ref)
+      call run_for_triples(error, h, 2_c_int, 0.0_c_double, e_ccsd, e_t_tiled)
+      if (allocated(error)) return
+      call check(error, abs(e_t_ref - e_t_tiled) < TOL_ROUTINES, "E(T): reference "//to_string(e_t_ref, "f20.14")// &
+                 ", tiled "//to_string(e_t_tiled, "f20.14")//", |difference| "//to_string(abs(e_t_ref - e_t_tiled), "es9.2"))
+      if (allocated(error)) return
+      ! a fractional budget that holds a few triples is accepted and changes nothing but the tile size
+      call run_for_triples(error, h, 2_c_int, 0.01_c_double, e_ccsd, e_t_frac)
+      if (allocated(error)) return
+      call check(error, abs(e_t_frac - e_t_tiled) < TOL_ROUTINES, "a 0.01 MiB tile moved E(T) by "// &
+                 to_string(e_t_frac - e_t_tiled, "es9.2"))
+      rc = trc_destroy(h)
+      print "(a)", "  measured: |reference - tiled| "//to_string(abs(e_t_ref - e_t_tiled), "es9.2")// &
+         ", |0.01 MiB tile - tiled| "//to_string(abs(e_t_frac - e_t_tiled), "es9.2")
+   end subroutine test_triples_routines
 
    subroutine test_dimensions(error)
       !! Water cc-pVDZ: 24 orbitals, 5 occupied, 1 frozen oxygen 1s; cc-pVDZ-RIFIT has 84 functions

@@ -191,8 +191,14 @@ program trc_main
    call r%cli%add_option("cc-diis", "--riccsd DIIS history length (8, at most 50); 1 switches DIIS off")
    call r%cli%add_option("cc-ladder", "how --riccsd forms the particle ladder: auto (by operation count), "// &
                          "assembled or direct; the energy does not depend on it (auto)")
-   call r%cli%add_option("cc-triples-budget", "device memory for the (T) tile of --riccsd-t, GiB (1, at least 0.001); "// &
-                         "the repacked amplitudes come on top; no effect in a host build")
+   call r%cli%add_option("cc-triples", "which routine computes the (T) of --riccsd-t: auto (the device routine in a GPU "// &
+                         "build, the host reference one otherwise), reference (host, from the host copies; "// &
+                         "cross-checks a GPU build) or tiled (the device routine, also on the host, slower there); "// &
+                         "the energy does not depend on it (auto)")
+   call r%cli%add_option("cc-triples-budget", "memory for the working tile of the tiled (T) routine of --riccsd-t, GiB "// &
+                         "(1; any positive value, the repacked amplitudes come on top); a budget below one triple "// &
+                         "(48 o^3 bytes, o active occupied orbitals) makes the (T) step fail after the RI-CCSD has "// &
+                         "converged, with exit status 1; no effect on the reference routine")
    call r%cli%add_option("aux", "auxiliary basis for --rimp2, --riccsd and --riccsd-t (cc-pvdz-rifit whatever the "// &
                          "orbital basis: give the RI fitting set that matches it)", default="cc-pvdz-rifit")
    call r%cli%add_option("frozen", "frozen core orbitals for --rimp2, --riccsd and --riccsd-t; -1, the default, "// &

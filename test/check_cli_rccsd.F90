@@ -1,6 +1,6 @@
 !
 ! RI-CCSD and RI-CCSD(T) through the real `terco` binary: the flags --riccsd, --riccsd-t, --cc-econv, --cc-tconv,
-! --cc-iterations, --cc-diis, --cc-ladder, --cc-triples-budget, the [correlation] method and [riccsd] keys of a TOML
+! --cc-iterations, --cc-diis, --cc-ladder, --cc-triples, --cc-triples-budget, the [correlation] method and [riccsd] keys of a TOML
 ! file, the summary and the --json output, and every combination the command line refuses.
 !
 ! Reference. Water, cc-pVDZ with cc-pVDZ-RIFIT, frozen core 1 (the geometry of test/hirshfeld_water.xyz): pyscf's
@@ -23,6 +23,12 @@
 !   - --cc-ladder and --cc-triples-budget do not change the energy;
 !   - a CCSD that does not converge: exit status 2, "NOT CONVERGED" in the summary, "ri-ccsd converged": false and no
 !     total energy in the JSON, and the message on the error stream;
+!   - a (T) that refuses after a converged RI-CCSD (the tiled routine, a budget of 1e-6 GiB = 1073 bytes, below the
+!     3072 bytes one water triple needs), by flags and by a TOML file: exit status 1, the RI-CCSD energies in the box,
+!     the summary and the JSON, a "(T) FAILED" line, the reason on the error stream and in the JSON key
+!     "ri-ccsd triples error", and no (T) correction or RI-CCSD(T) total anywhere; --cc-triples reference with the
+!     same budget succeeds (the reference routine has no budget); the routine is always named, so the case means the
+!     same in a host build and in a device build;
 !   - --silent prints the summary but not the iteration table;
 !   - each refusal: --rimp2, a functional, --uhf, --grad, --hessian, --opt, an ECP, the --cc-* options without
 !     --riccsd, a bad --cc-ladder, --cc-triples-budget without (T), bad values: a non-zero exit status and the
@@ -70,6 +76,8 @@ contains
                   new_unittest("the convergence flags reach the solver", test_convergence_flags), &
                   new_unittest("--cc-ladder and --cc-triples-budget do not change the energy", test_algorithm_flags), &
                   new_unittest("a CCSD that does not converge is unmistakable and exits 2", test_noconv), &
+                  new_unittest("a (T) that refuses after a converged RI-CCSD keeps the RI-CCSD and exits 1", &
+                               test_triples_failed), &
                   new_unittest("--silent prints the summary and no iteration table", test_silent), &
                   new_unittest("combinations the method does not cover are refused", test_refusals), &
                   new_unittest("bad --cc-* values are refused", test_bad_values) &
@@ -547,6 +555,93 @@ contains
       call check(error, found .and. e < 0.0_dp, "the last iterate is not in the JSON")
    end subroutine test_noconv
 
+   subroutine check_t_failed(error, name, label)
+      !! case/<name>.out and .json are those of a converged RI-CCSD whose (T) refused: the RI-CCSD stands, no (T) anywhere
+      type(error_type), allocatable, intent(inout) :: error
+      character(len=*), intent(in) :: name, label
+      character(len=:), allocatable :: reason
+      real(dp) :: v, e_json
+      logical :: found, ok, f2
+
+      if (allocated(error)) return
+      call compare_to_reference(error, name, .false., label)
+      if (allocated(error)) return
+      call json_logical(name, "ri-ccsd converged", ok, found)
+      call check(error, found .and. ok, label//': the JSON does not say "ri-ccsd converged": true')
+      if (allocated(error)) return
+      call json_real(name, "ri-ccsd triples correction", v, found)
+      call json_real(name, "ri-ccsd triples total energy", v, f2)
+      call check(error, .not. found .and. .not. f2, label//": the JSON carries a (T) correction or total of a failed (T)")
+      if (allocated(error)) return
+      call json_string(name, "ri-ccsd triples error", reason, found)
+      call check(error, found, label//': no "ri-ccsd triples error" in the JSON')
+      if (allocated(error)) return
+      call check(error, index(reason, "budget") > 0 .and. index(reason, "(T)") > 0, label//": the JSON's reason is '"// &
+                 reason//"'")
+      if (allocated(error)) return
+      ! the energy box and the summary keep the RI-CCSD, and the box says what happened
+      call json_real(name, "ri-ccsd correlation energy", e_json, found)
+      call summary_value(name, "RI-CCSD CORRELATION", v, ok)
+      call check(error, ok .and. found .and. abs(v - e_json) < PRINT_ROUNDING + 1.0e-14_dp, label// &
+                 ": the box's RI-CCSD CORRELATION "//to_string(v, "f20.12")//" is not the JSON's "//to_string(e_json, "f20.12"))
+      if (allocated(error)) return
+      call json_real(name, "ri-ccsd total energy", e_json, found)
+      call summary_value(name, "TOTAL RI-CCSD ENERGY", v, ok)
+      call check(error, ok .and. found .and. abs(v - e_json) < PRINT_ROUNDING + 1.0e-14_dp, label// &
+                 ": the box's TOTAL RI-CCSD ENERGY "//to_string(v, "f20.12")//" is not the JSON's "//to_string(e_json, "f20.12"))
+      if (allocated(error)) return
+      call check(error, has_text(name, "(T) FAILED"), label//': no "(T) FAILED" line in case/'//name//".out")
+      if (allocated(error)) return
+      call check(error, has_text(name, "ri-ccsd correlation energy") .and. has_text(name, "ri-ccsd total energy") .and. &
+                 has_text(name, "ri-ccsd triples error"), label//": the SUMMARY lacks the RI-CCSD rows or the (T) error row")
+      if (allocated(error)) return
+      call check(error, .not. has_text(name, "(T) CORRECTION") .and. .not. has_text(name, "TOTAL RI-CCSD(T) ENERGY") .and. &
+                 .not. has_text(name, "ri-ccsd triples correction") .and. .not. has_text(name, "ri-ccsd triples total"), &
+                 label//": a (T) correction or an RI-CCSD(T) total is printed for a failed (T)")
+      if (allocated(error)) return
+      call check(error, has_text(name, "does not hold one triple"), label//": the reason is not on the error stream")
+   end subroutine check_t_failed
+
+   subroutine test_triples_failed(error)
+      !! 1e-6 GiB is 1073 bytes; one water triple needs 48*4^3 = 3072 bytes of W
+      type(error_type), allocatable, intent(out) :: error
+      character(len=64), allocatable :: lines(:)
+      character(len=:), allocatable :: text
+      integer :: rc
+      logical :: ok
+
+      if (.not. supported()) return
+      call setup()
+      call terco(COMMON//' --frozen 1 --riccsd-t --cc-triples tiled --cc-triples-budget 1e-6'//TIGHT, 't_flags', rc)
+      call check(error, rc == 1, "a refused (T) exited "//to_string(rc)//", not 1 (case/t_flags.out)")
+      call check_t_failed(error, 't_flags', "flags")
+      if (allocated(error)) return
+      lines = [character(len=64) :: '[molecule]', 'geometry = "water.xyz"', '[basis]', &
+               'main = "basis_sets/cc-pvdz.json"', 'auxiliary = "basis_sets/cc-pvdz-rifit.json"', &
+               '[scf]', 'energy_tol = 1e-13', 'commutator_tol = 1e-11', &
+               '[correlation]', 'method = "ri-ccsd(t)"', 'frozen_core = 1', &
+               '[riccsd]', 'energy_tol = 1e-12', 'amplitude_tol = 1e-10', 'triples = "tiled"', 'triples_budget = 1e-6']
+      call write_toml(work_dir//'/case/t_run.toml', lines)
+      call run('cd '//work_dir//'/case && '//cli_exe//' t_run.toml --json t_toml.json > t_toml.out 2>&1', rc)
+      call check(error, rc == 1, "a refused (T) from a TOML file exited "//to_string(rc)//", not 1 (case/t_toml.out)")
+      call check_t_failed(error, 't_toml', "TOML")
+      if (allocated(error)) return
+      call json_string('t_toml', "input.riccsd.triples", text, ok)
+      call check(error, ok, 'the JSON echo lacks input.riccsd.triples')
+      if (allocated(error)) return
+      call check(error, text == "tiled", "the echo says triples '"//text//"'")
+      if (allocated(error)) return
+      ! the reference routine has no budget: the same tiny budget is harmless, and (T) is pyscf's
+      call require_run(error, COMMON//' --frozen 1 --riccsd-t --cc-triples reference --cc-triples-budget 1e-6'//TIGHT, &
+                       't_reference', ok)
+      if (.not. ok) return
+      call compare_to_reference(error, 't_reference', .true., "--cc-triples reference")
+      if (allocated(error)) return
+      call require_run(error, COMMON//' --frozen 1 --riccsd-t --cc-triples tiled'//TIGHT, 't_tiled', ok)
+      if (.not. ok) return
+      call compare_to_reference(error, 't_tiled', .true., "--cc-triples tiled")
+   end subroutine test_triples_failed
+
    subroutine test_silent(error)
       type(error_type), allocatable, intent(out) :: error
       logical :: ok
@@ -595,6 +690,8 @@ contains
       call refused(error, COMMON//' --cc-econv 1e-8', 'r_nocc', "need --riccsd")
       call refused(error, COMMON//' --cc-ladder direct', 'r_nocc2', "need --riccsd")
       call refused(error, COMMON//' --riccsd --cc-triples-budget 1', 'r_budget', "needs --riccsd-t")
+      call refused(error, COMMON//' --riccsd --cc-triples tiled', 'r_triples', "needs --riccsd-t")
+      call refused(error, COMMON//' --cc-triples tiled', 'r_triples2', "need --riccsd")
    end subroutine test_refusals
 
    subroutine test_bad_values(error)
@@ -611,8 +708,11 @@ contains
       call refused(error, COMMON//' --riccsd --cc-diis 51', 'b_diis2', "and 50")
       call refused(error, COMMON//' --riccsd --cc-ladder fast', 'b_ladder', &
                    "--cc-ladder ([riccsd] ladder) must be auto, assembled or direct")
-      call refused(error, COMMON//' --riccsd-t --cc-triples-budget 0', 'b_budget', "must be between 1 MiB")
-      call refused(error, COMMON//' --riccsd-t --cc-triples-budget 0.0001', 'b_budget2', "must be between 1 MiB")
+      call refused(error, COMMON//' --riccsd-t --cc-triples fast', 'b_triples', &
+                   "--cc-triples ([riccsd] triples) must be auto, reference or tiled")
+      call refused(error, COMMON//' --riccsd-t --cc-triples-budget 0', 'b_budget', "must be positive and at most 1e6 GiB")
+      call refused(error, COMMON//' --riccsd-t --cc-triples-budget -1', 'b_budget2', "must be positive and at most 1e6 GiB")
+      call refused(error, COMMON//' --riccsd-t --cc-triples-budget 2e6', 'b_budget3', "must be positive and at most 1e6 GiB")
       call refused(error, COMMON//' --riccsd --frozen 5', 'b_frozen', "leaves no correlated orbital")
    end subroutine test_bad_values
 

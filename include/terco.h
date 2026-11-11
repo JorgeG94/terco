@@ -621,16 +621,26 @@ int trc_set_rccsd(trc_handle_t handle, int triples, int nfrozen, int aux_block);
 int trc_set_rccsd_convergence(trc_handle_t handle, double conv_energy, double conv_amplitude, int max_iterations, int diis_size);
 
 /**
- * How the particle-particle ladder is formed and how much device memory
- * the (T) tile may take; neither changes the energy. `ladder` is 0 to
- * choose by operation count, 1 to assemble the (ac|bd) integrals in
- * column batches, 2 to contract the three-index factors directly and
- * never form them. `triples_budget_mib` is the memory, in MiB, of the
- * (T) step's working tile (6 o^3 doubles per triple of virtuals); 0 is
- * 1024 MiB. The tile is not all of (T)'s memory: the repacked
- * amplitudes come on top. Clears a stored RI-CCSD result.
+ * How the particle-particle ladder is formed, which routine computes (T)
+ * and how much memory the tiled one may take; none of them changes the
+ * energy. `ladder` is 0 to choose by operation count, 1 to assemble the
+ * (ac|bd) integrals in column batches, 2 to contract the three-index
+ * factors directly and never form them. `triples_routine` is 0 for the
+ * build's default (the tiled routine in a device build, the reference
+ * one in a host build), 1 for the reference routine, which runs on the
+ * host from the host copies, 2 for the tiled routine, which is the
+ * device one and also runs on the host, more slowly. `triples_budget_mib`
+ * is the memory, in MiB and not necessarily whole, of the tiled
+ * routine's working tile (6 o^3 doubles per triple of virtuals, 48 o^3
+ * bytes for o active occupied orbitals); 0 is 1024 MiB. It applies to
+ * the tiled routine only: the reference routine has no budget. A budget
+ * below one triple makes the (T) step refuse once the RI-CCSD has
+ * converged (trc_run_rccsd returns TRC_ERR_UNSUPPORTED, the converged
+ * RI-CCSD stays readable). The tile is not all of (T)'s memory: the
+ * repacked amplitudes come on top. A negative, NaN or infinite budget,
+ * or one above 1e12 MiB, is refused. Clears a stored RI-CCSD result.
  */
-int trc_set_rccsd_algorithm(trc_handle_t handle, int ladder, int triples_budget_mib);
+int trc_set_rccsd_algorithm(trc_handle_t handle, int ladder, int triples_routine, double triples_budget_mib);
 
 /**
  * Needs the molecule and the basis. Builds the guess it was asked for,

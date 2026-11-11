@@ -85,7 +85,8 @@ module trc_run
       logical :: cc = .false.           !! RI-CCSD, or RI-CCSD(T) with `cc_triples`
       logical :: cc_triples = .false.   !! --riccsd-t
       real(dp) :: cc_econv = 0.0_dp, cc_tconv = 0.0_dp   !! --cc-econv, --cc-tconv
-      integer :: cc_iterations = 0, cc_diis = 0, cc_ladder = 0, cc_budget_mib = 0
+      integer :: cc_iterations = 0, cc_diis = 0, cc_ladder = 0, cc_triples_routine = 0
+      real(dp) :: cc_budget_mib = 0.0_dp   !! --cc-triples-budget in MiB
       logical :: cc_ran = .false.       !! trc_run_rccsd left energies (converged or not)
       logical :: cc_converged = .false., cc_has_triples = .false.
       logical :: cc_t_failed = .false.  !! the CCSD converged and (T) failed: `cc_message` says why

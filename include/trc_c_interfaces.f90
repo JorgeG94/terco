@@ -995,20 +995,31 @@ module trc_c_interfaces
          integer(c_int), value :: diis_size
       end function trc_set_rccsd_convergence
 
-      integer(c_int) function trc_set_rccsd_algorithm(handle, ladder, triples_budget_mib) bind(c) result(res)
-         !! How the particle-particle ladder is formed and how much device memory
-         !! the (T) tile may take; neither changes the energy. `ladder` is 0 to
-         !! choose by operation count, 1 to assemble the (ac|bd) integrals in
-         !! column batches, 2 to contract the three-index factors directly and
-         !! never form them. `triples_budget_mib` is the memory, in MiB, of the
-         !! (T) step's working tile (6 o^3 doubles per triple of virtuals); 0 is
-         !! 1024 MiB. The tile is not all of (T)'s memory: the repacked
-         !! amplitudes come on top. Clears a stored RI-CCSD result.
-         import :: c_int, c_ptr
+      integer(c_int) function trc_set_rccsd_algorithm(handle, ladder, triples_routine, triples_budget_mib) bind(c) result(res)
+         !! How the particle-particle ladder is formed, which routine computes (T)
+         !! and how much memory the tiled one may take; none of them changes the
+         !! energy. `ladder` is 0 to choose by operation count, 1 to assemble the
+         !! (ac|bd) integrals in column batches, 2 to contract the three-index
+         !! factors directly and never form them. `triples_routine` is 0 for the
+         !! build's default (the tiled routine in a device build, the reference
+         !! one in a host build), 1 for the reference routine, which runs on the
+         !! host from the host copies, 2 for the tiled routine, which is the
+         !! device one and also runs on the host, more slowly. `triples_budget_mib`
+         !! is the memory, in MiB and not necessarily whole, of the tiled
+         !! routine's working tile (6 o^3 doubles per triple of virtuals, 48 o^3
+         !! bytes for o active occupied orbitals); 0 is 1024 MiB. It applies to
+         !! the tiled routine only: the reference routine has no budget. A budget
+         !! below one triple makes the (T) step refuse once the RI-CCSD has
+         !! converged (trc_run_rccsd returns TRC_ERR_UNSUPPORTED, the converged
+         !! RI-CCSD stays readable). The tile is not all of (T)'s memory: the
+         !! repacked amplitudes come on top. A negative, NaN or infinite budget,
+         !! or one above 1e12 MiB, is refused. Clears a stored RI-CCSD result.
+         import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          integer(c_int), value :: ladder
-         integer(c_int), value :: triples_budget_mib
+         integer(c_int), value :: triples_routine
+         real(c_double), value :: triples_budget_mib
       end function trc_set_rccsd_algorithm
 
       integer(c_int) function trc_run_scf(handle) bind(c) result(res)

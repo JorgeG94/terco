@@ -64,7 +64,7 @@ module trc_run_input
       integer :: kind
    end type run_input_key_t
 
-   integer, parameter :: NKEYS = 94
+   integer, parameter :: NKEYS = 95
    type(run_input_key_t), parameter :: RUN_INPUT_KEYS(NKEYS) = [ &
       run_input_key_t("molecule", "geometry", "", KIND_PATH), &
       run_input_key_t("molecule", "charge", "chrg", KIND_INT), &
@@ -104,6 +104,7 @@ module trc_run_input
       run_input_key_t("riccsd", "max_iterations", "cc-iterations", KIND_INT), &
       run_input_key_t("riccsd", "diis_size", "cc-diis", KIND_INT), &
       run_input_key_t("riccsd", "ladder", "cc-ladder", KIND_STRING), &
+      run_input_key_t("riccsd", "triples", "cc-triples", KIND_STRING), &
       run_input_key_t("riccsd", "triples_budget", "cc-triples-budget", KIND_FLOAT), &
       run_input_key_t("driver", "gradient", "grad", KIND_BOOL), &
       run_input_key_t("driver", "hessian", "hessian", KIND_BOOL), &

@@ -143,7 +143,8 @@ command line, in the input file and in the output, says RI-CCSD.
 | `--cc-iterations` | maximum `--riccsd` iterations (100); a run that does not converge is reported as such and exits with status 2 |
 | `--cc-diis` | `--riccsd` DIIS history length (8, at most 50); 1 switches DIIS off |
 | `--cc-ladder` | how `--riccsd` forms the particle ladder: auto (by operation count), assembled or direct; the energy does not depend on it (auto) |
-| `--cc-triples-budget` | device memory for the (T) tile of `--riccsd-t`, GiB (1, at least 0.001); the repacked amplitudes come on top; no effect in a host build |
+| `--cc-triples` | which routine computes the (T) of `--riccsd-t`: auto (the device routine in a GPU build, the host reference one otherwise), reference (host, from the host copies; cross-checks a GPU build) or tiled (the device routine, also on the host, slower there); the energy does not depend on it (auto) |
+| `--cc-triples-budget` | memory for the working tile of the tiled (T) routine of `--riccsd-t`, GiB (1; any positive value, the repacked amplitudes come on top); a budget below one triple (48 o^3 bytes, o active occupied orbitals) makes the (T) step fail after the RI-CCSD has converged, with exit status 1; no effect on the reference routine |
 
 `--aux`, `--frozen` and `--aux-block` (above) apply to `--riccsd` and
 `--riccsd-t` as to `--rimp2`. The auxiliary basis defaults to `cc-pvdz-rifit`
@@ -176,7 +177,7 @@ correlation energy is part of its own report), a functional (`-f`), unpaired
 electrons (`--uhf`, or an odd electron count from `--chrg`), `--grad`,
 `--hessian`, `--opt`, a molecule with an effective core potential and a
 `--frozen` that leaves no correlated orbital; the `--cc-*` options need
-`--riccsd` or `--riccsd-t`, and `--cc-triples-budget` needs `--riccsd-t`. More
+`--riccsd` or `--riccsd-t`, and `--cc-triples` and `--cc-triples-budget` need `--riccsd-t`. More
 than one rank is refused as well. A basis with linearly dependent functions
 dropped by `--lindep` (`[basis] linear_dependence`) is refused after the SCF,
 since the method needs every orbital of the basis: lower the threshold (0 drops
@@ -210,7 +211,7 @@ orbitals and `naux` the auxiliary functions: the device holds about
 `14.8 o^2 v^2 + o v^3 + (o^2 + o v + v^2) naux + 2 diis (o v + o^2 v^2)`
 doubles (`diis` is `--cc-diis`) plus about 1.2 GB of ladder scratch; (T) adds
 `2 o^2 v^2 + o^3 v` doubles and its tile (`--cc-triples-budget`, 1 GiB by
-default). For 25 active occupied, 130 virtual and 630 auxiliary functions that
+default, tiled routine). For 25 active occupied, 130 virtual and 630 auxiliary functions that
 is about 4.4 GB for the RI-CCSD and about 1.3 GB more for (T) at the default
 tile. In a GPU build the host keeps a copy of the same arrays; in a host (CPU)
 build this is all host memory.
@@ -219,8 +220,13 @@ One measured data point (adenine, cc-pVDZ with cc-pVDZ-RIFIT, frozen core: 25
 active occupied, 130 virtual, 630 auxiliary functions; one V100, untuned): 0.43
 s per RI-CCSD iteration, 15 iterations, 13.3 s for (T).
 
-In a host (CPU) build the host (T) routine is used and `--cc-triples-budget`
-has no effect. The coupled-cluster work is mostly matrix products, so link a
+The (T) step has two routines. The tiled one is the device routine; it also
+runs on the host, more slowly there, and `--cc-triples-budget` sizes its tile.
+The reference one runs on the host from the host copies and has no budget; a
+GPU build can be forced to it with `--cc-triples reference` to cross-check.
+By default (`--cc-triples auto`) a host (CPU) build uses the reference routine.
+
+The coupled-cluster work is mostly matrix products, so link a
 threaded BLAS and set `OMP_NUM_THREADS`. With NVHPC, `-DTERCO_ENABLE_GPU=OFF
 -DTERCO_ENABLE_MULTICORE=ON` builds the host version with `do concurrent`
 running on CPU threads (`OMP_NUM_THREADS` or `ACC_NUM_CORES` sets the count).

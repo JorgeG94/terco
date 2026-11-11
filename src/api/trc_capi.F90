@@ -493,7 +493,8 @@ module trc_capi
       logical :: cc_triples = .false.
       real(dp) :: cc_conv_energy = 0.0_dp, cc_conv_amplitude = 0.0_dp
       integer :: cc_max_iterations = 0, cc_diis_size = 0
-      integer :: cc_ladder = 0, cc_triples_mib = 0
+      integer :: cc_ladder = 0, cc_triples_routine = 0
+      real(dp) :: cc_triples_mib = 0.0_dp
       logical :: ccsd_ok = .false.
       type(trc_rccsd_result_t) :: ccsd
       ! trc_run_gradient's own result: (3, natm), Eh/Bohr, in terco's atom
@@ -3590,18 +3591,29 @@ contains
       status = TRC_OK
    end function trc_set_rccsd_convergence
 
-   function trc_set_rccsd_algorithm(handle, ladder, triples_budget_mib) result(status) &
+   function trc_set_rccsd_algorithm(handle, ladder, triples_routine, triples_budget_mib) result(status) &
       bind(c, name="trc_set_rccsd_algorithm")
-      !! How the particle-particle ladder is formed and how much device memory
-      !! the (T) tile may take; neither changes the energy. `ladder` is 0 to
-      !! choose by operation count, 1 to assemble the (ac|bd) integrals in
-      !! column batches, 2 to contract the three-index factors directly and
-      !! never form them. `triples_budget_mib` is the memory, in MiB, of the
-      !! (T) step's working tile (6 o^3 doubles per triple of virtuals); 0 is
-      !! 1024 MiB. The tile is not all of (T)'s memory: the repacked
-      !! amplitudes come on top. Clears a stored RI-CCSD result.
+      !! How the particle-particle ladder is formed, which routine computes (T)
+      !! and how much memory the tiled one may take; none of them changes the
+      !! energy. `ladder` is 0 to choose by operation count, 1 to assemble the
+      !! (ac|bd) integrals in column batches, 2 to contract the three-index
+      !! factors directly and never form them. `triples_routine` is 0 for the
+      !! build's default (the tiled routine in a device build, the reference
+      !! one in a host build), 1 for the reference routine, which runs on the
+      !! host from the host copies, 2 for the tiled routine, which is the
+      !! device one and also runs on the host, more slowly. `triples_budget_mib`
+      !! is the memory, in MiB and not necessarily whole, of the tiled
+      !! routine's working tile (6 o^3 doubles per triple of virtuals, 48 o^3
+      !! bytes for o active occupied orbitals); 0 is 1024 MiB. It applies to
+      !! the tiled routine only: the reference routine has no budget. A budget
+      !! below one triple makes the (T) step refuse once the RI-CCSD has
+      !! converged (trc_run_rccsd returns TRC_ERR_UNSUPPORTED, the converged
+      !! RI-CCSD stays readable). The tile is not all of (T)'s memory: the
+      !! repacked amplitudes come on top. A negative, NaN or infinite budget,
+      !! or one above 1e12 MiB, is refused. Clears a stored RI-CCSD result.
       type(c_ptr), value :: handle
-      integer(c_int), value :: ladder, triples_budget_mib
+      integer(c_int), value :: ladder, triples_routine
+      real(c_double), value :: triples_budget_mib
       integer(c_int) :: status
       type(context_box), pointer :: cx
       status = TRC_ERR_NULL
@@ -3612,12 +3624,21 @@ contains
          call refuse(cx, "trc_set_rccsd_algorithm: ladder must be 0 (auto), 1 (assembled) or 2 (direct)")
          return
       end if
-      if (triples_budget_mib < 0) then
-         call refuse(cx, "trc_set_rccsd_algorithm: triples_budget_mib must be >= 0 (0 keeps 1024)")
+      if (triples_routine < 0 .or. triples_routine > 2) then
+         call refuse(cx, "trc_set_rccsd_algorithm: triples_routine must be 0 (the build's default), 1 (reference) "// &
+                     "or 2 (tiled)")
+         return
+      end if
+      ! Written so a NaN and an infinity fail: every comparison with a NaN is false. The upper bound keeps the byte
+      ! count inside 64 bits.
+      if (.not. (triples_budget_mib >= 0.0_c_double .and. triples_budget_mib <= 1.0e12_c_double)) then
+         call refuse(cx, "trc_set_rccsd_algorithm: triples_budget_mib must be finite, >= 0 and at most 1e12 "// &
+                     "(0 keeps 1024)")
          return
       end if
       cx%cc_ladder = int(ladder)
-      cx%cc_triples_mib = int(triples_budget_mib)
+      cx%cc_triples_routine = int(triples_routine)
+      cx%cc_triples_mib = real(triples_budget_mib, dp)
       cx%ccsd_ok = .false.
       status = TRC_OK
    end function trc_set_rccsd_algorithm
@@ -5567,7 +5588,12 @@ contains
       if (cx%cc_diis_size > 0) opts%diis_size = cx%cc_diis_size
       opts%ladder%form = cx%cc_ladder
       triples_opts%verbose = cx%opts%verbose
-      if (cx%cc_triples_mib > 0) triples_opts%device%budget_bytes = int(cx%cc_triples_mib, int64)*1048576_int64
+      if (cx%cc_triples_routine == 1) triples_opts%use_device = .false.
+      if (cx%cc_triples_routine == 2) triples_opts%use_device = .true.
+      ! A positive budget never rounds to 0 bytes, which would mean the 1 GiB default.
+      if (cx%cc_triples_mib > 0.0_dp) then
+         triples_opts%device%budget_bytes = max(1_int64, int(cx%cc_triples_mib*1048576.0_dp, int64))
+      end if
    end subroutine rccsd_options
 
    subroutine rccsd_execute(cx, status)
