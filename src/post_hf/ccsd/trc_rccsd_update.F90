@@ -128,6 +128,10 @@ module trc_rccsd_update
       integer :: no = 0
       integer :: nv = 0
       integer :: stamp = 0  !! `ints%stamp` of the integrals `init` packed from
+      logical :: tau_symmetric = .true.
+      !! `step` tells the ladder that tau(j,i,d,c) = tau(i,j,c,d). True for the MP2 start and everything the
+      !! iteration makes of it; the driver clears it for a run that starts from amplitudes without that symmetry
+      !! (the half ladder would otherwise return the ladder of the symmetrised tau)
       type(trc_rccsd_inter_t) :: inter     !! tau, Foo, Fvv, Fov, Loo, Lvv of the last `step`
       type(trc_rccsd_scratch_t) :: scr
       type(trc_rccsd_w_t) :: w             !! Woooo, Wvoov, Wvovo of the last `step`
@@ -357,8 +361,10 @@ contains
          return
       end if
       call rccsd_steps_close(stab, la, RCCSD_ST_W, tc, rccsd_w_flops(no, nv))
-      ! the ladder and its dressing are two steps of their own, opened and closed inside
-      call rccsd_ladder_build(ints, amps, this%inter, this%lad, this%ls, la, stab)
+      ! the ladder and its dressing are two steps of their own, opened and closed inside. tau = t2 + t1 t1 has
+      ! tau(j,i,d,c) = tau(i,j,c,d): the starting t2 (MP2) has it, every term of the t2 equation keeps it and DIIS
+      ! mixes such t2 linearly. Start amplitudes of the caller's may not: the driver checks them and clears the flag.
+      call rccsd_ladder_build(ints, amps, this%inter, this%lad, this%ls, la, stab, tau_symmetric=this%tau_symmetric)
       if (sub_failed(this)) return
 
       ! From here the W scratch (b1, b2, r) and the inter scratch's pack1 are free.

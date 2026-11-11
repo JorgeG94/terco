@@ -63,7 +63,7 @@ module trc_rccsd_driver
    use trc_rccsd_inter, only: trc_rccsd_amps_t, rccsd_inter_energy, rccsd_inter_mp2_guess
    use trc_rccsd_ladder, only: trc_rccsd_ladder_options_t
    use trc_rccsd_update, only: trc_rccsd_update_t
-   use trc_rccsd_ladder, only: RCCSD_LADDER_ASSEMBLED
+   use trc_rccsd_ladder, only: RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_HALF
    use trc_rccsd_diis, only: trc_rccsd_diis_t
    implicit none
    private
@@ -249,6 +249,32 @@ contains
       res%seconds(RCCSD_TIME_DIIS) = stab%t(RCCSD_ST_DIIS)
    end subroutine fill_seconds
 
+   function start_is_pair_symmetric(t1, t2, no, nv) result(sym)
+      !! True when tau = t2 + t1 t1 of these host amplitudes has tau(j,i,b,a) = tau(i,j,a,b) to round-off
+      !! (t1 t1 always has, so only t2 is looked at). A NaN anywhere answers false: the general path assumes nothing.
+      integer, intent(in) :: no, nv
+      real(dp), intent(in) :: t1(no, nv), t2(no, no, nv, nv)
+      logical :: sym
+
+      real(dp), parameter :: REL = 1.0e-12_dp  !! far above the round-off of an update, far below a real asymmetry
+      integer :: i, j, a, b
+      real(dp) :: gap, big
+
+      gap = 0.0_dp
+      big = 0.0_dp
+      do b = 1, nv
+         do a = 1, nv
+            do j = 1, no
+               do i = 1, no
+                  gap = max(gap, abs(t2(i, j, a, b) - t2(j, i, b, a)))
+                  big = max(big, abs(t2(i, j, a, b)))
+               end do
+            end do
+         end do
+      end do
+      sym = gap <= REL*big .and. is_finite(sum(t2)) .and. is_finite(sum(t1))
+   end function start_is_pair_symmetric
+
    subroutine refuse(res, text)
       !! The run did not start
       type(trc_rccsd_result_t), intent(inout) :: res
@@ -337,11 +363,20 @@ contains
       ! the step is named for the form that ran, which the options may have left to the selector
       state%steps%names(RCCSD_ST_LADDER) = merge("ladder, assembled", "ladder, direct   ", &
                                                work%upd%ls%form == RCCSD_LADDER_ASSEMBLED)
+      if (work%upd%ls%form == RCCSD_LADDER_HALF) state%steps%names(RCCSD_ST_LADDER) = "ladder, half"
       if (use_start) then
          if (.not. allocated(state%amps%t1) .or. .not. allocated(state%amps%t2) .or. state%amps%no /= no .or. &
              state%amps%nv /= nv) then
             call refuse(state%result, "use_start: state%amps is not allocated with the (no, nv) of this calculation")
             return
+         end if
+         ! The half ladder halves its contraction with tau(j,i,d,c) = tau(i,j,c,d). Amplitudes of the caller's
+         ! need not have it, and the terms of the t2 equation carry an asymmetry on, so such a run takes the
+         ! general path throughout (one more contraction a pass).
+         work%upd%tau_symmetric = start_is_pair_symmetric(state%amps%t1, state%amps%t2, no, nv)
+         if (.not. work%upd%tau_symmetric .and. opts%verbose) then
+            call global_logger%info("  rccsd: the starting t2 is not symmetric under (i,a) <-> (j,b); the ladder "// &
+                                    "takes its general path")
          end if
          call state%amps%push()
       else

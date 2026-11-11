@@ -540,7 +540,7 @@ module check_rccsd_run_suite
    use trc_scf_driver, only: trc_scf_result_t
    use trc_rccsd_ints, only: trc_rccsd_ints_t, trc_rccsd_ints_options_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t, rccsd_inter_energy
-   use trc_rccsd_ladder, only: RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_DIRECT, trc_rccsd_ladder_options_t
+   use trc_rccsd_ladder, only: RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_DIRECT, RCCSD_LADDER_HALF, trc_rccsd_ladder_options_t
    use trc_rccsd_update, only: trc_rccsd_update_t
    use trc_rccsd_steps, only: RCCSD_ST_INTEGRALS, RCCSD_ST_METRIC, RCCSD_ST_CHOLESKY, RCCSD_ST_3C, RCCSD_ST_HALF, &
                               RCCSD_ST_TRSM, RCCSD_ST_BLOCKS, RCCSD_ST_INTER, RCCSD_ST_W, RCCSD_ST_LADDER, &
@@ -1061,8 +1061,10 @@ contains
 
       type(trc_rccsd_options_t) :: opts
       type(trc_rccsd_result_t) :: short, loose, refused
-      type(trc_rccsd_state_t) :: state, nan_state, early
-      real(dp) :: d_early
+      type(trc_rccsd_state_t) :: state, nan_state, early, skew
+      real(dp) :: d_early, e_skew(2)
+      logical :: ok_skew
+      integer :: i, j, a, b
       logical :: ok_early
       type(trc_rccsd_result_t) :: normal
       logical :: ok_short, ok_nan, ok_refuse
@@ -1092,7 +1094,34 @@ contains
       ok_nan = .not. nan_state%result%converged .and. .not. nan_state%result%finite .and. &
                index(nan_state%result%message, "NaN") > 0 .and. nan_state%result%iterations == 0 .and. &
                nan_state%result%e_ccsd == 0.0_dp .and. index(nan_state%result%message, "no finite energy") > 0
-      call record(im, 7, ok_short .and. ok_nan .and. ok_early, label//"max_iterations 2: converged = "// &
+      ! a start WITHOUT the pair symmetry t2(j,i,b,a) = t2(i,j,a,b): two iterations from it must not depend on the
+      ! ladder form. The half form's fast path assumes the symmetry (it would return the ladder of the symmetrised
+      ! tau); the driver has to notice and take the general path. Two iterations, not one: the energy weights are
+      ! pair-symmetric, so the first energy cannot see a symmetrised ladder; the second update can.
+      do k = 1, 2
+         opts = options_for(im, nocc)
+         opts%max_iterations = 2
+         opts%ladder%form = merge(RCCSD_LADDER_HALF, RCCSD_LADDER_ASSEMBLED, k == 1)
+         call skew%amps%init(no, nv)
+         skew%amps%t1 = 0.0_dp
+         do b = 1, nv
+            do a = 1, nv
+               do j = 1, no
+                  do i = 1, no
+                     skew%amps%t2(i, j, a, b) = 1.0e-2_dp*sin(real(i + 2*j + 3*a + 5*b, dp))
+                  end do
+               end do
+            end do
+         end do
+         skew%use_start = .true.
+         call trc_rccsd_solve(bas, aux, pl, res%cmo(:, :, 1), res%eps(:, 1), opts, la, skew)
+         e_skew(k) = skew%result%e_ccsd
+         call skew%release()
+      end do
+      ok_skew = abs(e_skew(1) - e_skew(2)) < 1.0e-12_dp .and. e_skew(1) == e_skew(1)
+      call record(im, 7, ok_short .and. ok_nan .and. ok_early .and. ok_skew, label//"non-symmetric start, two "// &
+                  "iterations, half minus assembled ladder "//to_string(e_skew(1) - e_skew(2), "es9.2")// &
+                  " (E "//to_string(e_skew(2), "f16.10")//"); max_iterations 2: converged = "// &
                   merge("T", "F", short%converged)//", iterations "//to_string(short%iterations)//", E "// &
                   to_string(short%e_ccsd, "f16.10")//", message '"//trim(short%message)//"'; NaN start: converged = "// &
                   merge("T", "F", nan_state%result%converged)//", finite = "//merge("T", "F", nan_state%result%finite)// &
@@ -1149,11 +1178,12 @@ contains
                   to_string(loose%step_max, "es9.2")//", E "//to_string(loose%e_ccsd, "f20.14"))
    end subroutine failure_cases
 
-   pure function pass_flops(k, form, o, v, naux, nao) result(f)
+   pure function pass_flops(k, form, o, v, naux, nao, d_batch) result(f)
       !! Flops of ONE pass of step `k`, written here from the contractions themselves and not from the library's
       !! counters: 2 m n k of each GEMM, as polynomials in o, v, the auxiliary count and the Cartesian AO count.
-      !! A step that has no GEMM (the kernels, the integral steps, DIIS, the energy) is 0.
-      integer, intent(in) :: k, form, o, v, naux, nao
+      !! A step that has no GEMM (the kernels, the integral steps, DIIS, the energy) is 0. The half form's ladder
+      !! also depends on its batch plan, `d_batch` (`half_ladder_flops`).
+      integer, intent(in) :: k, form, o, v, naux, nao, d_batch
       integer(int64) :: f
 
       integer(int64) :: oo, vv, px, ao
@@ -1179,11 +1209,19 @@ contains
       case (RCCSD_ST_LADDER)
          if (form == RCCSD_LADDER_ASSEMBLED) then
             f = 2*(px + oo**2)*vv**4
+         else if (form == RCCSD_LADDER_HALF) then
+            f = half_ladder_flops(o, v, naux, d_batch)
          else
             f = 4*px*oo**2*vv**3
          end if
       case (RCCSD_ST_DRESSING)
-         f = 4*oo**3*vv**3 + 4*oo**3*vv**2
+         if (form == RCCSD_LADDER_HALF) then
+            ! the dressed build: bt = b_vv - t1^T b_ov (v, v naux, o), Y = tau ovov^T (o^2, o^2, v^2),
+            ! G = Y t1 (o^3, v, o), X_b = G_b t1 (o^2, v, o) for each of v values of b
+            f = 2*vv*vv*px*oo + 2*oo**4*vv**2 + 2*oo**4*vv + 2*oo**3*vv**2
+         else
+            f = 4*oo**3*vv**3 + 4*oo**3*vv**2
+         end if
       case (RCCSD_ST_T1)
          f = 2*oo**2*vv**3 + 2*oo**3*vv**2
       case (RCCSD_ST_T2)
@@ -1194,6 +1232,31 @@ contains
          f = 0
       end select
    end function pass_flops
+
+   pure function half_ladder_flops(o, v, naux, d_batch) result(f)
+      !! The half form's passes on a symmetric tau, written from its contractions: the first pass covers d_batch
+      !! values of d; a pass from d0 has nc = v - d0 + 1 rows c and takes the most d, nd <= nc, with nc nd <= v d_batch
+      !! (the C buffer) and at most the first pass's number of (c >= d) columns (the W2 buffer). Each pass is
+      !! C = (v nc, v nd, naux) and one contraction (o^2, v^2, ncol), ncol = nd nc - nd (nd - 1)/2.
+      integer, intent(in) :: o, v, naux, d_batch
+      integer(int64) :: f
+
+      integer(int64) :: d0, nc, nd, cap
+
+      f = 0
+      cap = int(d_batch, int64)*v - (int(d_batch, int64)*(d_batch - 1))/2
+      d0 = 1
+      do while (d0 <= v)
+         nc = v - d0 + 1
+         nd = min(nc, (int(v, int64)*d_batch)/nc)
+         do while (nd > 1 .and. nd*nc - (nd*(nd - 1))/2 > cap)
+            nd = nd - 1
+         end do
+         nd = max(nd, 1_int64)
+         f = f + 2*(v*nc)*(v*nd)*naux + 2*(int(o, int64)*o)*(int(v, int64)*v)*(nd*nc - (nd*(nd - 1))/2)
+         d0 = d0 + nd
+      end do
+   end function half_ladder_flops
 
    subroutine step_cases(im, label, bas, aux, pl, res, la, nocc)
       !! Cases 10 and 11: the step table of a run counts the flops of its GEMMs, for both ladder forms and a split
@@ -1217,11 +1280,12 @@ contains
       bad = ""
       ok_times = .true.
       tot = 0.0_dp
-      do form = RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_DIRECT
+      do form = RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_HALF
          opts = options_for(im, nocc)
          opts%conv_energy = 1.0e-8_dp
          opts%conv_amplitude = 1.0e-6_dp
          opts%ladder%form = form
+         opts%ladder%d_batch = 3
          ! a split auxiliary basis in one of the runs: the integral counts must not depend on the blocks
          opts%aux_block = merge(0, 30, form == RCCSD_LADDER_ASSEMBLED)
          call trc_rccsd_solve(bas, aux, pl, res%cmo(:, :, 1), res%eps(:, 1), opts, la, state)
@@ -1231,7 +1295,7 @@ contains
          nv = state%result%nv
          naux = state%result%naux
          do k = 1, RCCSD_NSTEP
-            want = pass_flops(k, form, no, nv, naux, bas%nao)
+            want = pass_flops(k, form, no, nv, naux, bas%nao, 3)
             if (k >= RCCSD_ST_INTER) want = want*n
             got = state%steps%fl(k)%get()
             if (got /= want) then
@@ -1304,12 +1368,13 @@ contains
       amps%t1 = 0.0_dp
       amps%t1(1, 1) = 0.01_dp
       call amps%push()
-      do form = RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_DIRECT
+      do form = RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_HALF
          do plan = 1, 2
             lopts = trc_rccsd_ladder_options_t()
             lopts%form = form
             if (plan == 2) then
                lopts%cd_batch = 7
+               lopts%d_batch = 2
                lopts%p_batch = 5
                lopts%virtual_batch = 3
             end if
@@ -1319,12 +1384,13 @@ contains
             call upd%step(ints, amps, newamps, la, steps)
             if (upd%status%has_error()) error stop "check_rccsd_run: step pass: step: "//upd%status%get_message()
             tag = " ("//to_string(form)//","//to_string(plan)//")"
-            want = pass_flops(RCCSD_ST_LADDER, form, no, nv, naux, bas%nao)
+            ! the half form's plan 1 takes d_batch from the budget: the plan is an input of the formula
+            want = pass_flops(RCCSD_ST_LADDER, form, no, nv, naux, bas%nao, upd%ls%d_batch)
             if (upd%ls%flops_pp /= want) call flag("ladder GEMMs made"//trim(tag), upd%ls%flops_pp, want)
-            want = pass_flops(RCCSD_ST_DRESSING, form, no, nv, naux, bas%nao)
+            want = pass_flops(RCCSD_ST_DRESSING, form, no, nv, naux, bas%nao, upd%ls%d_batch)
             if (upd%ls%flops_dressing /= want) call flag("dressing GEMMs made"//trim(tag), upd%ls%flops_dressing, want)
             do k = RCCSD_ST_INTER, RCCSD_ST_RING
-               want = pass_flops(k, form, no, nv, naux, bas%nao)
+               want = pass_flops(k, form, no, nv, naux, bas%nao, upd%ls%d_batch)
                got = steps%fl(k)%get()
                if (got /= want) call flag(trim(adjustl(RCCSD_STEP_NAME(k)))//trim(tag), got, want)
             end do
