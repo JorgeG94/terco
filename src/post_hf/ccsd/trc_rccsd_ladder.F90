@@ -1347,13 +1347,13 @@ contains
       !$acc routine seq
       integer, intent(in) :: t, nv, nvc, d0
       integer :: dest
-      integer :: a, cp, b, dp
+      integer :: a, cp, b, dq
 
-      call split4(t, nv, nvc, nv, a, cp, b, dp)
+      call split4(t, nv, nvc, nv, a, cp, b, dq)
       dest = 0
-      if (cp < dp) return
-      dest = a + nv*(b - 1) + nv*nv*(half_col(d0 + cp - 1, d0 + dp - 1, d0, nv) - 1)
-      if (cp == dp) dest = -dest
+      if (cp < dq) return
+      dest = a + nv*(b - 1) + nv*nv*(half_col(d0 + cp - 1, d0 + dq - 1, d0, nv) - 1)
+      if (cp == dq) dest = -dest
    end function resort_dest
 
    pure function gather_dest(t, no, nv, nvc, d0) result(dest)
@@ -1361,12 +1361,12 @@ contains
       !$acc routine seq
       integer, intent(in) :: t, no, nv, nvc, d0
       integer :: dest
-      integer :: i, j, cp, dp
+      integer :: i, j, cp, dq
 
-      call split4(t, no, no, nvc, i, j, cp, dp)
+      call split4(t, no, no, nvc, i, j, cp, dq)
       dest = 0
-      if (cp < dp) return
-      dest = i + no*(j - 1) + no*no*(half_col(d0 + cp - 1, d0 + dp - 1, d0, nv) - 1)
+      if (cp < dq) return
+      dest = i + no*(j - 1) + no*no*(half_col(d0 + cp - 1, d0 + dq - 1, d0, nv) - 1)
    end function gather_dest
 
    pure function gather_value(t, no, nv, nvc, d0, mode, tau) result(v)
@@ -1375,11 +1375,11 @@ contains
       integer, intent(in) :: t, no, nv, nvc, d0, mode
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
-      integer :: i, j, cp, dp, c, d
+      integer :: i, j, cp, dq, c, d
 
-      call split4(t, no, no, nvc, i, j, cp, dp)
+      call split4(t, no, no, nvc, i, j, cp, dq)
       c = d0 + cp - 1
-      d = d0 + dp - 1
+      d = d0 + dq - 1
       if (mode == HALF_TAU_CD) then
          v = tau(i, j, c, d)
       else if (mode == HALF_TAU_DC) then
