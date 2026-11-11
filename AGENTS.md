@@ -61,6 +61,8 @@ Before pushing, run what CI runs on the files you touched:
 - The OpenMP port, if you touched `do concurrent` code or `!$omp`/`!$acc`
   directives. CI compiles it with `-fopenmp` and runs ctest at 4 threads.
   Reproduce it with `.claude/context/ci.md`.
+- A performance-sensitive change: `python3 bench/regression/run.py --gpu N`
+  on a GPU (never 0), table in the PR body (`bench/regression/README.md`).
 
 ## Non-negotiable rules
 

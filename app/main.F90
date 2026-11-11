@@ -46,7 +46,9 @@ program trc_main
    use trc_run_input, only: run_input_is_toml, run_input_args
    use trc_sym_run, only: trc_sym_request_t, sym_run_parse_request, SYM_OFF, SYM_EXPLICIT
    use trc_error, only: sym_err_t => error_t
-   use trc_run, only: run_t, VERSION, run_die, run_quit, run_check, run_api, run_int_option, run_banner, &
+   use trc_run, only: run_t, VERSION, BUILD_DEVICE, BUILD_GPU_ARCH, BUILD_LMAX, BUILD_DF_LMAX, BUILD_DF_LMAX_AUX, &
+                   BUILD_CART_ORDER, BUILD_MPI, BUILD_MULTICORE, BUILD_COMMIT, BUILD_COMPILER, &
+                   BUILD_COMPILER_VERSION, run_die, run_quit, run_check, run_api, run_int_option, run_banner, &
                        run_summary, run_write_json, &
                        run_gradient_summary, run_hessian_summary, run_build_masses, run_charges_summary, &
                        run_fukui_summary, &
@@ -406,7 +408,21 @@ program trc_main
       call run_quit(r, 0)
    end if
    if (r%cli%is_set("version")) then
-      if (r%rank0) call global_logger%info("terco version "//VERSION)
+      if (r%rank0) then
+         call global_logger%info("terco version "//VERSION)
+         ! gpu_arch only for a device build: a host build carries the unused cache default.
+         if (BUILD_DEVICE == "yes") then
+            call global_logger%info("build: device=yes gpu_arch="//BUILD_GPU_ARCH//" lmax="//BUILD_LMAX// &
+                                    " df_lmax="//BUILD_DF_LMAX//" df_lmax_aux="//BUILD_DF_LMAX_AUX// &
+                                    " cart_order="//BUILD_CART_ORDER//" mpi="//BUILD_MPI//" multicore="//BUILD_MULTICORE// &
+                                    " commit="//BUILD_COMMIT//" compiler="//BUILD_COMPILER//" "//BUILD_COMPILER_VERSION)
+         else
+            call global_logger%info("build: device=no lmax="//BUILD_LMAX//" df_lmax="//BUILD_DF_LMAX// &
+                                    " df_lmax_aux="//BUILD_DF_LMAX_AUX//" cart_order="//BUILD_CART_ORDER// &
+                                    " mpi="//BUILD_MPI//" multicore="//BUILD_MULTICORE//" commit="//BUILD_COMMIT// &
+                                    " compiler="//BUILD_COMPILER//" "//BUILD_COMPILER_VERSION)
+         end if
+      end if
       call run_quit(r, 0)
    end if
    call r%cli%get("logger", sval, r%err)
@@ -1486,9 +1502,11 @@ program trc_main
       ! and range-separated hybrids and VV10 included) is NOT refused:
       ! trc_run_gradient builds the KS-DFT gradient at the SCF's own
       ! functional and grids, and with --df the fitted one.
+      call r%grad_timer%start()
       call run_api(r, trc_run_gradient(r%h))
       allocate (gradbuf(3*r%natm), r%gradient(3, r%natm))
       call run_api(r, trc_gradient(r%h, gradbuf))
+      call r%grad_timer%stop()   ! the result is on the host here, so the device is done
       r%gradient = reshape(real(gradbuf, dp), [3, r%natm])
       deallocate (gradbuf)
    end if

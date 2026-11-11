@@ -37,8 +37,9 @@ typedef void* trc_handle_t;
 #define TRC_GUESS_MINAO 7
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
+#define TRC_TIMING_NAME_MAX 64
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 23
+#define TRC_ABI_MINOR 24
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -1334,6 +1335,37 @@ int trc_geometry(trc_handle_t handle, double* xyz);
  * The last message, NUL-terminated into `buf` of `buflen` chars.
  */
 int trc_message(trc_handle_t handle, char* buf, int buflen);
+
+/**
+ * The number of entries trc_timing lists for the context's last run,
+ * so a caller loops index = 0 .. n-1 and never has to read an error
+ * as the end of the list. TRC_ERR_STATE before any SCF has run
+ * (or after a setter invalidated it), TRC_ERR_UNSUPPORTED if the
+ * run has more entries than the library lists (never a shortened list).
+ */
+int trc_timing_count(trc_handle_t handle, int* n);
+
+/**
+ * The stage times of the context's last run, one named value per call,
+ * in the order the stages ran: `index` counts from 0 up to
+ * trc_timing_count - 1, `name` receives a NUL-terminated dotted name
+ * ("scf.fock_first", "rimp2.step.cholesky", ...) in `name_len` chars,
+ * `value` the seconds, or a count when the last name component starts
+ * with "n_". A buffer of TRC_TIMING_NAME_MAX chars always suffices;
+ * a shorter one that cannot hold the name and its NUL is refused with
+ * TRC_ERR_BADARG (trc_message says the length needed), never cut.
+ * An index outside 0 .. n-1 is TRC_ERR_BADARG too. Only stages the run
+ * had are listed: "scf.*" after trc_run_scf, "dft.*" with a functional,
+ * "dfjk.*" with density fitting, "pcm.*" with a continuum, "rimp2.*"
+ * once the RI-MP2 energy step of the latest trc_run_rimp2 has run (not
+ * when a gradient took the pair energies from its amplitudes).
+ * TRC_ERR_STATE before any SCF. The times are the library's own timers
+ * (the ones the verbose tables print): each Fock, XC and step-table
+ * timer stops after a synchronous device call or an explicit device
+ * wait. A new method adds names under its own prefix; no existing name
+ * changes.
+ */
+int trc_timing(trc_handle_t handle, int index, char* name, int name_len, double* value);
 
 /**
  * The basis handle inside the context: BORROWED, never destroyed by
