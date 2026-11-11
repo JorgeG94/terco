@@ -81,6 +81,9 @@
 !   chunked.
 !                MACs  2 o^3 v^3 + 2 o^3 v^2        (both halves)
 !                scratch  taut + (o v^2 + o^3 + o^2 v) virtual_batch
+!   Flops are twice the MACs: `rccsd_ladder_flops` for the undressed form that ran (its counter, `rccsd_ladder_macs`,
+!   matches the GEMMs both forms call for any batch plan; `ls%flops_pp` tallies the calls to show it) and
+!   `rccsd_ladder_dressing_flops` for the dressing, whose MACs `rccsd_ladder_macs` does not include.
 !
 ! NUMBERS for no = 25, nv = 130, naux = 630 (default budget 512 MiB):
 !     assembled   717 GFLOP (build 360 + contraction 357),  wbatch 3970 columns = 537 MB
@@ -118,6 +121,9 @@ module trc_rccsd_ladder
    use pic_types, only: dp, int32, int64
    use trc_rccsd_ints, only: trc_rccsd_ints_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t, trc_rccsd_inter_t
+   use trc_rccsd_steps, only: RCCSD_ST_LADDER, RCCSD_ST_DRESSING, rccsd_steps_gemm_flops, rccsd_steps_open, rccsd_steps_close
+   use pic_timer, only: timer_type
+   use trc_step_table, only: step_table_t
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
@@ -133,7 +139,8 @@ module trc_rccsd_ladder
 
    public :: trc_rccsd_ladder_t, trc_rccsd_lscratch_t, trc_rccsd_ladder_options_t
    public :: rccsd_ladder_pp, rccsd_ladder_dressing, rccsd_ladder_build
-   public :: rccsd_ladder_prefers_direct, rccsd_ladder_macs
+   public :: rccsd_ladder_prefers_direct, rccsd_ladder_macs, rccsd_ladder_flops
+   public :: rccsd_ladder_dressing_macs, rccsd_ladder_dressing_flops
 
    type :: trc_rccsd_ladder_options_t
       !! What `init` of the scratch needs to know besides the integrals. Plain values only. A zero is "choose".
@@ -169,6 +176,8 @@ module trc_rccsd_ladder
       integer :: p_batch = 0        !! auxiliary functions per pass, direct form
       integer :: virtual_batch = 0  !! virtuals per pass, dressing
       integer(int64) :: bytes = 0   !! bytes of the work arrays, host and device each
+      integer(int64) :: flops_pp = 0        !! 2 m n k summed over the GEMMs the last undressed ladder called, batches counted
+      integer(int64) :: flops_dressing = 0  !! the same for the last dressing: the tallies the step table reports
       real(dp), allocatable :: taut(:)    !! o^2 v^2, taut(c,d,ij) = tau(i,j,c,d), per call
       real(dp), allocatable :: ovpack(:)  !! o v^2 virtual_batch, ovvv packed per virtual (dressing)
       real(dp), allocatable :: zmat(:)    !! o^3 virtual_batch, Z(k; ij) per virtual
@@ -386,6 +395,8 @@ contains
       this%p_batch = 0
       this%virtual_batch = 0
       this%bytes = 0
+      this%flops_pp = 0_int64
+      this%flops_dressing = 0_int64
    end subroutine lscratch_release
 
    ! ---------------------------------------------------------------------
@@ -401,6 +412,33 @@ contains
       if (form == RCCSD_LADDER_ASSEMBLED) macs = (real(naux, dp) + real(no, dp)**2)*real(nv, dp)**4
       if (form == RCCSD_LADDER_DIRECT) macs = 2.0_dp*real(naux, dp)*real(nv, dp)**3*real(no, dp)**2
    end function rccsd_ladder_macs
+
+   pure function rccsd_ladder_flops(form, no, nv, naux) result(flops)
+      !! Flops of one undressed ladder, twice `rccsd_ladder_macs`: every GEMM of both forms is counted in it (the
+      !! build of (ac|bd) and its contraction, or the two products around the pack), and `ls%flops_pp` tallies the
+      !! calls actually made, which agree for any batch plan. 0 for another form.
+      integer, intent(in) :: form, no, nv, naux
+      integer(int64) :: flops
+
+      flops = nint(2.0_dp*rccsd_ladder_macs(form, no, nv, naux), int64)
+   end function rccsd_ladder_flops
+
+   pure function rccsd_ladder_dressing_macs(no, nv) result(macs)
+      !! Multiply-adds of the dressing, both halves: Z = pk . taut is o * o^2 * v^2 per virtual, cmat = Z^T t1 is
+      !! o^2 * v * o per virtual, for v virtuals each: 2 o^3 v^3 + 2 o^3 v^2 (the macs the header quotes)
+      integer, intent(in) :: no, nv
+      real(dp) :: macs
+
+      macs = 2.0_dp*real(no, dp)**3*real(nv, dp)**3 + 2.0_dp*real(no, dp)**3*real(nv, dp)**2
+   end function rccsd_ladder_dressing_macs
+
+   pure function rccsd_ladder_dressing_flops(no, nv) result(flops)
+      !! Flops of one dressing, twice `rccsd_ladder_dressing_macs`; `ls%flops_dressing` tallies the calls actually made
+      integer, intent(in) :: no, nv
+      integer(int64) :: flops
+
+      flops = nint(2.0_dp*rccsd_ladder_dressing_macs(no, nv), int64)
+   end function rccsd_ladder_dressing_flops
 
    pure function rccsd_ladder_prefers_direct(no, nv, naux) result(direct)
       !! Whether the direct form needs fewer multiply-adds than the assembled one (mqc's rule: counts only,
@@ -563,6 +601,7 @@ contains
       type(trc_rccsd_lscratch_t), intent(inout) :: ls
       type(trc_linalg_t), intent(in) :: la
 
+      ls%flops_pp = 0_int64
       call kernel_zero(ints%no*ints%no*ints%nv*ints%nv, lad%h)
       if (ls%form == RCCSD_LADDER_ASSEMBLED) then
          call ladder_assembled(ints, inter, lad, ls, la)
@@ -601,6 +640,7 @@ contains
                                    sa=int(nv, int64), sb=0_int64, sc=int(nv2, int64), transb="T")
             call la%gemm_batched(shape, ints%b_vv((c - 1)*nv + 1, 1), ints%b_vv((d - 1)*nv + 1, 1), &
                                  ls%wbatch(col*nv2 + 1))
+            ls%flops_pp = ls%flops_pp + rccsd_steps_gemm_flops(shape%m, shape%n, shape%k, shape%count)
             col = col + nrun
             cd = cd + nrun
          end do
@@ -609,6 +649,7 @@ contains
          c = mod(cd0 - 1, nv) + 1
          d = (cd0 - 1)/nv + 1
          call la%gemm("N", "T", no*no, nv2, nb, 1.0_dp, inter%tau(1, 1, c, d), no*no, ls%wbatch, nv2, 1.0_dp, lad%h, no*no)
+         ls%flops_pp = ls%flops_pp + rccsd_steps_gemm_flops(no*no, nv2, nb)
       end do
    end subroutine ladder_assembled
 
@@ -633,10 +674,12 @@ contains
          shape = trc_gemm_batch(nv, nv*no*no, nv, np, lda=nv, ldb=nv, ldc=nv, &
                                 sa=int(nv, int64)*nv, sb=0_int64, sc=int(nv, int64)*nv*no*no)
          call la%gemm_batched(shape, ints%b_vv(1, p0), ls%taut, ls%gtau)
+         ls%flops_pp = ls%flops_pp + rccsd_steps_gemm_flops(shape%m, shape%n, shape%k, shape%count)
          call kernel_pack_y2(no, nv, np, ls%gtau, ls%gpack)
          ! L(ij a; b) += sum_{d,P} Y2(ij a; d P) b_vv(b, d; P): columns p0.. of b_vv are the matrix (v; d P), ld v
          call la%gemm("N", "T", no*no*nv, nv, nv*np, 1.0_dp, ls%gpack, no*no*nv, ints%b_vv(1, p0), nv, 1.0_dp, &
                       lad%h, no*no*nv)
+         ls%flops_pp = ls%flops_pp + rccsd_steps_gemm_flops(no*no*nv, nv, nv*np)
       end do
    end subroutine ladder_direct
 
@@ -671,6 +714,7 @@ contains
 
       integer :: half
 
+      ls%flops_dressing = 0_int64
       call kernel_pack_taut(ints%no, ints%nv, inter%tau, ls%taut)
       do half = 1, 2
          call dressing_half(half, ints, amps, lad, ls, la)
@@ -704,10 +748,12 @@ contains
          shape_z = trc_gemm_batch(no, no2, nv2, nvb, lda=no, ldb=nv2, ldc=no, &
                                   sa=int(no, int64)*nv2, sb=0_int64, sc=int(no, int64)*no2)
          call la%gemm_batched(shape_z, ls%ovpack, ls%taut, ls%zmat)
+         ls%flops_dressing = ls%flops_dressing + rccsd_steps_gemm_flops(shape_z%m, shape_z%n, shape_z%k, shape_z%count)
          ! cmat(ij; x) = sum_k Z(k; ij) t1(k,x), t1 shared
          shape_c = trc_gemm_batch(no2, nv, no, nvb, transa="T", lda=no, ldb=no, ldc=no2, &
                                   sa=int(no, int64)*no2, sb=0_int64, sc=int(no2, int64)*nv)
          call la%gemm_batched(shape_c, ls%zmat, amps%t1, ls%cmat)
+         ls%flops_dressing = ls%flops_dressing + rccsd_steps_gemm_flops(shape_c%m, shape_c%n, shape_c%k, shape_c%count)
          if (half == 1) then
             call kernel_sub_z1(no, nv, v0, nvb, ls%cmat, lad%h)
          else
@@ -716,22 +762,33 @@ contains
       end do
    end subroutine dressing_half
 
-   subroutine rccsd_ladder_build(ints, amps, inter, lad, ls, la)
+   subroutine rccsd_ladder_build(ints, amps, inter, lad, ls, la, stab)
       !! L + D = sum_cd Wvvvv(a,b,c,d) tau(i,j,c,d) in `lad%h`, overwriting it (pyscf rccsd.update_amps's
       !! einsum('abcd,ijcd->ijab', Wvvvv, tau)). Every check is made before the first write, so a refusal changes nothing.
+      !! With `stab` the undressed ladder and the dressing are two steps of that table (RCCSD_ST_LADDER and
+      !! RCCSD_ST_DRESSING), each with its counted flops.
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
       type(trc_rccsd_inter_t), intent(in) :: inter
       type(trc_rccsd_ladder_t), intent(inout) :: lad
       type(trc_rccsd_lscratch_t), intent(inout) :: ls
       type(trc_linalg_t), intent(in) :: la
+      type(step_table_t), intent(inout), optional :: stab
+
+      type(timer_type) :: tc
 
       call ls%status%clear()
       if (.not. ready(ints, lad, ls)) return
       if (.not. ready_tau(ints, inter, ls)) return
       if (.not. ready_amps(ints, amps, ls)) return
+      call rccsd_steps_open(stab, la, RCCSD_ST_LADDER, tc)
       call ladder_pp_run(ints, inter, lad, ls, la)
+      ! The tallies of the GEMMs actually called, not the formulas: the table then stays right when the
+      ! GEMMs change (the check compares the tallies with the formulas).
+      call rccsd_steps_close(stab, la, RCCSD_ST_LADDER, tc, ls%flops_pp)
+      call rccsd_steps_open(stab, la, RCCSD_ST_DRESSING, tc)
       call ladder_dressing_run(ints, amps, inter, lad, ls, la)
+      call rccsd_steps_close(stab, la, RCCSD_ST_DRESSING, tc, ls%flops_dressing)
    end subroutine rccsd_ladder_build
 
    ! ---------------------------------------------------------------------

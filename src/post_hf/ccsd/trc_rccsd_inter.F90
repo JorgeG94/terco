@@ -84,6 +84,7 @@
 module trc_rccsd_inter
    use pic_types, only: dp, int32, int64
    use trc_rccsd_ints, only: trc_rccsd_ints_t
+   use trc_rccsd_steps, only: rccsd_steps_gemm_flops
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
@@ -94,7 +95,7 @@ module trc_rccsd_inter
 
    public :: trc_rccsd_amps_t, trc_rccsd_inter_t, trc_rccsd_scratch_t
    public :: rccsd_inter_build_tau, rccsd_inter_foo, rccsd_inter_fvv, rccsd_inter_fov, rccsd_inter_loo, rccsd_inter_lvv
-   public :: rccsd_inter_one_particle, rccsd_inter_energy, rccsd_inter_mp2_guess
+   public :: rccsd_inter_one_particle, rccsd_inter_energy, rccsd_inter_mp2_guess, rccsd_inter_flops
 
    type :: trc_rccsd_amps_t
       !! The amplitudes t1(i,a), t2(i,j,a,b) on host and device
@@ -493,6 +494,17 @@ contains
       if (.not. ready(ints, amps, inter, scr)) return
       call kernel_lvv(ints%no, ints%nv, inter%fvv, ints%ovvv, amps%t1, inter%lvv)
    end subroutine rccsd_inter_lvv
+
+   pure function rccsd_inter_flops(no, nv) result(flops)
+      !! Flops of one `rccsd_inter_one_particle`, 2 m n k of each of its GEMMs (the packs, tau and Lvv are kernels, not counted):
+      !!   Foo  (o, o, v o v)      2 o^3 v^2         Fvv  (v, v, o o v)      2 o^2 v^3
+      !!   Fov  (o v, 1, o v)      2 o^2 v^2         Loo  (o o, 1, o v)      2 o^3 v
+      integer, intent(in) :: no, nv
+      integer(int64) :: flops
+
+      flops = rccsd_steps_gemm_flops(no, no, nv*no*nv) + rccsd_steps_gemm_flops(nv, nv, no*no*nv) + &
+              rccsd_steps_gemm_flops(no*nv, 1, no*nv) + rccsd_steps_gemm_flops(no*no, 1, no*nv)
+   end function rccsd_inter_flops
 
    subroutine rccsd_inter_one_particle(ints, amps, inter, scr, la)
       !! tau, Foo, Fvv, Fov, Loo, Lvv for the current amplitudes (`amps` on the device: `push` after a host edit)

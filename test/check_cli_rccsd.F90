@@ -690,11 +690,11 @@ contains
       call check(error, has_text('silent', "TOTAL RI-CCSD(T) ENERGY"), "--silent lost the summary")
       if (allocated(error)) return
       call check(error, .not. has_text('silent', "E_CCSD(corr)") .and. .not. has_text('silent', "iter  ") .and. &
-                 .not. has_text('silent', "rccsd time"), "--silent printed the iteration table or the stage timings")
+                 .not. has_text('silent', "rccsd: step"), "--silent printed the iteration table or the stage timings")
       if (allocated(error)) return
       call require_run(error, COMMON//' --frozen 1 --riccsd-t'//TIGHT, 'verbose', ok)
       if (.not. ok) return
-      call check(error, has_text('verbose', "E_CCSD(corr)") .and. has_text('verbose', "rccsd time"), &
+      call check(error, has_text('verbose', "E_CCSD(corr)") .and. has_text('verbose', "rccsd: step"), &
                  "the default run lacks the iteration table or the stage timings")
    end subroutine test_silent
 

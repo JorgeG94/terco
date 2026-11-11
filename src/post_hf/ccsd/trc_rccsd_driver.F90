@@ -37,9 +37,12 @@
 ! returns, on every path. `trc_rccsd_run` is the same run for a caller that only wants the numbers: it releases
 ! everything.
 !
-! TIMING. Each stage is timed on the device (`la%sync()` before the clock is read, since cuBLAS returns before its
-! kernels end), summed over the iterations, in `result%seconds`; `verbose` prints one line per iteration and the
-! table at the end through global_logger.
+! TIMING. Each stage is a step of a `step_table_t` the run owns (trc_rccsd_steps names them), timed on the device
+! (`la%sync()` before the clock is read, since cuBLAS returns before its kernels end) with an NVTX range, and
+! carrying the flops of its GEMMs where it has any. The times are summed over the iterations into `result%seconds`
+! (the ladder and its dressing, and the T1 and T2 equations with the rings, each in one entry as before); `verbose`
+! prints one line per iteration, then the step table of RI-MP2's shape and the mean time of an iteration, through
+! global_logger.
 !
 ! The arguments are those of `trc_rimp2_run` except that the doubly occupied count is `opts%nocc` (more than eight
 ! dummies is a rule of this tree) and the options carry what trc_rccsd_ints refuses on: more than one rank, an ECP,
@@ -48,6 +51,10 @@
 module trc_rccsd_driver
    use pic_types, only: dp
    use pic_timer, only: timer_type
+   use trc_step_table, only: step_table_t
+   use trc_rccsd_steps, only: RCCSD_ST_INTEGRALS, RCCSD_ST_METRIC, RCCSD_ST_BLOCKS, RCCSD_ST_INTER, RCCSD_ST_W, &
+                              RCCSD_ST_LADDER, RCCSD_ST_DRESSING, RCCSD_ST_T1, RCCSD_ST_T2, RCCSD_ST_RING, RCCSD_ST_DIIS, &
+                              RCCSD_ST_ENERGY, RCCSD_STEP_NAME
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
@@ -55,7 +62,8 @@ module trc_rccsd_driver
    use trc_rccsd_ints, only: trc_rccsd_ints_t, trc_rccsd_ints_options_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t, rccsd_inter_energy, rccsd_inter_mp2_guess
    use trc_rccsd_ladder, only: trc_rccsd_ladder_options_t
-   use trc_rccsd_update, only: trc_rccsd_update_t, RCCSD_STAGE_INTER, RCCSD_STAGE_W, RCCSD_STAGE_LADDER, RCCSD_STAGE_AMPS
+   use trc_rccsd_update, only: trc_rccsd_update_t
+   use trc_rccsd_ladder, only: RCCSD_LADDER_ASSEMBLED
    use trc_rccsd_diis, only: trc_rccsd_diis_t
    implicit none
    private
@@ -123,6 +131,7 @@ module trc_rccsd_driver
       type(trc_rccsd_result_t) :: result
       type(trc_rccsd_ints_t) :: ints   !! empty after a refusal
       type(trc_rccsd_amps_t) :: amps   !! the last iterate, host and device
+      type(step_table_t) :: steps     !! time and counted flops per step of the last run (trc_rccsd_steps names the rows)
       logical :: use_start = .false.   !! start from `amps`, sized and filled on the host by the caller; the run clears it
    contains
       procedure :: release => state_release
@@ -187,7 +196,7 @@ contains
       type(trc_rccsd_state_t), intent(inout) :: state
 
       type(run_work_t) :: work
-      type(timer_type) :: total
+      type(timer_type) :: total, tc
       logical :: use_start
 
       use_start = state%use_start
@@ -195,7 +204,11 @@ contains
       call state%ints%release()
       if (.not. use_start) call state%amps%release()
       call total%start()
+      call state%steps%init("rccsd", RCCSD_STEP_NAME)
+      call state%steps%step_on(la, RCCSD_ST_INTEGRALS, tc)
       call build_integrals(b, aux, pl, cmo, eps, opts, la, state)
+      call state%steps%step_off(la, RCCSD_ST_INTEGRALS, tc)
+      if (.not. state%result%refused) call add_integral_pieces(state%ints, state%steps)
       if (.not. state%result%refused) call run_stages(opts, la, state, work, use_start)
       if (state%result%refused) then
          ! a refusal from inside run_stages comes after the blocks were built: give them back, as the header promises
@@ -205,9 +218,36 @@ contains
       call work%release()
       call la%sync()
       state%result%seconds(RCCSD_TIME_TOTAL) = total%get_elapsed_time()
+      call fill_seconds(state%steps, state%result)
       state%use_start = .false.
-      if (opts%verbose) call log_summary(state%result)
+      if (opts%verbose) call log_summary(state%result, state%steps)
    end subroutine trc_rccsd_solve
+
+   subroutine add_integral_pieces(ints, stab)
+      !! The pieces of the integral build (time and flops each, trc_rccsd_ints) as rows under its own
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(step_table_t), intent(inout) :: stab
+
+      integer :: k
+
+      do k = RCCSD_ST_METRIC, RCCSD_ST_BLOCKS
+         call stab%add_time(k, ints%seconds(k))
+         call stab%add_flop(k, ints%flops(k))
+      end do
+   end subroutine add_integral_pieces
+
+   subroutine fill_seconds(stab, res)
+      !! `res%seconds` from the table's totals, in the stages `RCCSD_TIME_*` have always meant
+      type(step_table_t), intent(in) :: stab
+      type(trc_rccsd_result_t), intent(inout) :: res
+
+      res%seconds(RCCSD_TIME_INTEGRALS) = stab%t(RCCSD_ST_INTEGRALS)
+      res%seconds(RCCSD_TIME_INTER) = stab%t(RCCSD_ST_INTER)
+      res%seconds(RCCSD_TIME_W) = stab%t(RCCSD_ST_W)
+      res%seconds(RCCSD_TIME_LADDER) = stab%t(RCCSD_ST_LADDER) + stab%t(RCCSD_ST_DRESSING)
+      res%seconds(RCCSD_TIME_AMPS) = stab%t(RCCSD_ST_T1) + stab%t(RCCSD_ST_T2) + stab%t(RCCSD_ST_RING)
+      res%seconds(RCCSD_TIME_DIIS) = stab%t(RCCSD_ST_DIIS)
+   end subroutine fill_seconds
 
    subroutine refuse(res, text)
       !! The run did not start
@@ -256,7 +296,6 @@ contains
       type(trc_rccsd_state_t), intent(inout) :: state
 
       type(trc_rccsd_ints_options_t) :: bopts
-      type(timer_type) :: clock
 
       if (.not. options_ok(opts, state%result)) return
       bopts%nalpha = opts%nocc
@@ -265,10 +304,7 @@ contains
       bopts%aux_block = opts%aux_block
       bopts%nranks = opts%nranks
       bopts%has_ecp = opts%has_ecp
-      call clock%start()
       call state%ints%build(b, aux, pl, cmo, eps, la, bopts)
-      call la%sync()
-      state%result%seconds(RCCSD_TIME_INTEGRALS) = clock%get_elapsed_time()
       if (state%ints%status%has_error()) then
          call refuse(state%result, state%ints%status%get_message())
          return
@@ -298,6 +334,9 @@ contains
          call refuse(state%result, work%upd%status%get_message())
          return
       end if
+      ! the step is named for the form that ran, which the options may have left to the selector
+      state%steps%names(RCCSD_ST_LADDER) = merge("ladder, assembled", "ladder, direct   ", &
+                                               work%upd%ls%form == RCCSD_LADDER_ASSEMBLED)
       if (use_start) then
          if (.not. allocated(state%amps%t1) .or. .not. allocated(state%amps%t2) .or. state%amps%no /= no .or. &
              state%amps%nv /= nv) then
@@ -338,10 +377,6 @@ contains
       call state%amps%pull()
       state%result%t1_diagnostic = sqrt(sum(state%amps%t1**2)/(2.0_dp*real(no, dp)))
       state%result%diis_restarts = work%diis%restarts
-      state%result%seconds(RCCSD_TIME_INTER) = work%upd%seconds(RCCSD_STAGE_INTER)
-      state%result%seconds(RCCSD_TIME_W) = work%upd%seconds(RCCSD_STAGE_W)
-      state%result%seconds(RCCSD_TIME_LADDER) = work%upd%seconds(RCCSD_STAGE_LADDER)
-      state%result%seconds(RCCSD_TIME_AMPS) = work%upd%seconds(RCCSD_STAGE_AMPS)
    end subroutine run_stages
 
    pure function is_finite(x) result(finite)
@@ -360,7 +395,7 @@ contains
       type(run_work_t), intent(inout) :: work
       real(dp), intent(in) :: e_start
 
-      type(timer_type) :: clock, iteration_clock
+      type(timer_type) :: tc, iteration_clock
       real(dp) :: e_old, e_new, es, ed
       integer :: it, restarts_seen
       logical :: extrapolated, converged
@@ -372,13 +407,12 @@ contains
       do it = 1, opts%max_iterations
          state%result%iterations = it
          call iteration_clock%start()
-         call work%upd%step(state%ints, state%amps, work%newamps, la)
+         call work%upd%step(state%ints, state%amps, work%newamps, la, state%steps)
          if (work%upd%status%has_error()) then
             state%result%message = "trc_rccsd: the amplitude update refused: "//work%upd%status%get_message()
             exit
          end if
-         call la%sync()
-         call clock%start()
+         call state%steps%step_on(la, RCCSD_ST_DIIS, tc)
          call work%diis%push(la, state%amps, work%newamps, it >= opts%diis_start)
          state%result%step_max = work%diis%step_max
          state%result%step_norm2 = work%diis%step_norm2
@@ -386,18 +420,18 @@ contains
             state%result%finite = .false.
             state%result%message = "trc_rccsd: the amplitude step is NaN or infinite at iteration "//to_string(it)// &
                                    "; stopped, not converged"
-            call la%sync()
-            state%result%seconds(RCCSD_TIME_DIIS) = state%result%seconds(RCCSD_TIME_DIIS) + clock%get_elapsed_time()
+            call state%steps%step_off(la, RCCSD_ST_DIIS, tc)
             exit
          end if
          call work%diis%next(la, work%newamps, state%amps, extrapolated)
-         call la%sync()
-         state%result%seconds(RCCSD_TIME_DIIS) = state%result%seconds(RCCSD_TIME_DIIS) + clock%get_elapsed_time()
+         call state%steps%step_off(la, RCCSD_ST_DIIS, tc)
          if (work%diis%restarts > restarts_seen) then
             restarts_seen = work%diis%restarts
             call global_logger%warning("trc_rccsd: iteration "//to_string(it)//": "//work%diis%status%get_message())
          end if
+         call state%steps%step_on(la, RCCSD_ST_ENERGY, tc)
          call rccsd_inter_energy(state%amps, work%upd%scr, es, ed)
+         call state%steps%step_off(la, RCCSD_ST_ENERGY, tc)
          e_new = es + ed
          state%result%de = e_new - e_old
          if (.not. (is_finite(e_new) .and. is_finite(state%result%de))) then
@@ -456,24 +490,25 @@ contains
       call global_logger%info(trim(line))
    end subroutine log_iteration
 
-   subroutine log_summary(res)
-      !! The result, then the stage times
+   subroutine log_summary(res, stab)
+      !! The result, then the step table and the mean time of an iteration
       type(trc_rccsd_result_t), intent(in) :: res
+      type(step_table_t), intent(in) :: stab
 
       character(len=200) :: line
-      character(len=16), parameter :: NAMES(RCCSD_NTIME) = [character(len=16) :: "integrals", "intermediates", "W", &
-                                                           "ladder", "T1/T2 equations", "DIIS", "total"]
-      integer :: k
 
       if (res%refused) return
       write (line, "(a,f20.12,a,f20.12)") "  rccsd: E_MP2 ", res%e_mp2, "   E_CCSD(corr) ", res%e_ccsd
       call global_logger%info(trim(line))
       write (line, "(a,f10.6,a,i0)") "  rccsd: T1 diagnostic ", res%t1_diagnostic, "   DIIS restarts ", res%diis_restarts
       call global_logger%info(trim(line))
-      do k = 1, RCCSD_NTIME
-         write (line, "(a,a16,f12.3,a)") "  rccsd time ", NAMES(k), res%seconds(k), " s"
+      call stab%report(res%seconds(RCCSD_TIME_TOTAL), 0, 1)
+      if (res%iterations > 0) then
+         ! the stages of the iteration only: the integrals are built once
+         write (line, "(a,f10.3,a,i0,a)") "  rccsd: mean time of an iteration ", &
+            sum(stab%t(RCCSD_ST_INTER:RCCSD_ST_ENERGY))/real(res%iterations, dp), " s over ", res%iterations, " iterations"
          call global_logger%performance(trim(line))
-      end do
+      end if
    end subroutine log_summary
 
 end module trc_rccsd_driver

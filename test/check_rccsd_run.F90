@@ -540,10 +540,17 @@ module check_rccsd_run_suite
    use trc_scf_driver, only: trc_scf_result_t
    use trc_rccsd_ints, only: trc_rccsd_ints_t, trc_rccsd_ints_options_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t, rccsd_inter_energy
-   use trc_rccsd_ladder, only: RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_DIRECT
+   use trc_rccsd_ladder, only: RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_DIRECT, trc_rccsd_ladder_options_t
    use trc_rccsd_update, only: trc_rccsd_update_t
+   use trc_rccsd_steps, only: RCCSD_ST_INTEGRALS, RCCSD_ST_METRIC, RCCSD_ST_CHOLESKY, RCCSD_ST_3C, RCCSD_ST_HALF, &
+                              RCCSD_ST_TRSM, RCCSD_ST_BLOCKS, RCCSD_ST_INTER, RCCSD_ST_W, RCCSD_ST_LADDER, &
+                              RCCSD_ST_DRESSING, RCCSD_ST_T1, RCCSD_ST_T2, RCCSD_ST_RING, RCCSD_ST_DIIS, RCCSD_ST_ENERGY, &
+                              RCCSD_NSTEP, RCCSD_STEP_NAME
+   use trc_step_table, only: step_table_t
    use trc_rccsd_diis, only: trc_rccsd_diis_t
-   use trc_rccsd_driver, only: trc_rccsd_options_t, trc_rccsd_result_t, trc_rccsd_state_t, trc_rccsd_run, trc_rccsd_solve
+   use trc_rccsd_driver, only: trc_rccsd_options_t, trc_rccsd_result_t, trc_rccsd_state_t, trc_rccsd_run, trc_rccsd_solve, &
+                               RCCSD_TIME_INTEGRALS, RCCSD_TIME_INTER, RCCSD_TIME_W, RCCSD_TIME_LADDER, RCCSD_TIME_AMPS, &
+                               RCCSD_TIME_DIIS, RCCSD_TIME_TOTAL
    use trc_linalg, only: trc_linalg_t
    use rccsd_test_support, only: NMOL, MOL_LABEL, MOL_REF, MOL_NFROZEN, TOL_PROBE, PROBE_FLOOR, load_molecule, &
                                  run_scf, mo_dipoles, probe2, probe4
@@ -553,7 +560,7 @@ module check_rccsd_run_suite
    private
    public :: collect_check_rccsd_run
 
-   integer, parameter :: NCASE = 9
+   integer, parameter :: NCASE = 11
    integer, parameter :: REF_E_CCSD = 1, REF_E_UPDATE1 = 2, REF_T1_DIAG = 3, REF_E_MP2 = 4  !! indices into the scalars read from a .ref
    character(len=4), parameter :: SKIP_TAG(5) = [character(len=4) :: "oooo", "ooov", "oovv", "ovov", "ovvv"]
    character(len=4), parameter :: SKIP_ONE(7) = [character(len=4) :: "t1", "t2", "Foo", "Fvv", "Fov", "Loo", "Lvv"]
@@ -584,6 +591,8 @@ contains
                   new_unittest("water: non-convergence and NaN", w7), &
                   new_unittest("water: refusals", w8), &
                   new_unittest("water: loose energy, tight amplitudes", w9), &
+                  new_unittest("water: step table counts the flops of every GEMM", w10), &
+                  new_unittest("water: step table times add up", w11), &
                   new_unittest("h2o2: one update vs pyscf", h1), &
                   new_unittest("h2o2: one update vs host einsum loops", h2), &
                   new_unittest("h2o2: converged run vs pyscf", h3), &
@@ -593,6 +602,8 @@ contains
                   new_unittest("h2o2: non-convergence and NaN", h7), &
                   new_unittest("h2o2: refusals", h8), &
                   new_unittest("h2o2: loose energy, tight amplitudes", h9), &
+                  new_unittest("h2o2: step table counts the flops of every GEMM", h10), &
+                  new_unittest("h2o2: step table times add up", h11), &
                   new_unittest("diis: linear fixed-point problem in at most n + 1 steps", diis_linear), &
                   new_unittest("diis: parallel errors restart the history", diis_singular), &
                   new_unittest("diis: a NaN step is flagged and never appended", diis_nan), &
@@ -644,6 +655,26 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call run_case(error, 9, 1)
    end subroutine w9
+
+   subroutine w10(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 10, 1)
+   end subroutine w10
+
+   subroutine w11(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 11, 1)
+   end subroutine w11
+
+   subroutine h10(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 10, 2)
+   end subroutine h10
+
+   subroutine h11(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 11, 2)
+   end subroutine h11
 
    subroutine h1(error)
       type(error_type), allocatable, intent(out) :: error
@@ -833,6 +864,7 @@ contains
       call fixed_point_case(im, label, la, state)
       call variant_cases(im, label, bas, aux, pl, res, la, nocc, state%result)
       call failure_cases(im, label, bas, aux, pl, res, la, nocc, no, nv)
+      call step_cases(im, label, bas, aux, pl, res, la, nocc)
       call state%release()
       call la%release()
       call pl%release()
@@ -1116,6 +1148,203 @@ contains
                   " after "//to_string(loose%iterations)//" iterations, last step max "// &
                   to_string(loose%step_max, "es9.2")//", E "//to_string(loose%e_ccsd, "f20.14"))
    end subroutine failure_cases
+
+   pure function pass_flops(k, form, o, v, naux, nao) result(f)
+      !! Flops of ONE pass of step `k`, written here from the contractions themselves and not from the library's
+      !! counters: 2 m n k of each GEMM, as polynomials in o, v, the auxiliary count and the Cartesian AO count.
+      !! A step that has no GEMM (the kernels, the integral steps, DIIS, the energy) is 0.
+      integer, intent(in) :: k, form, o, v, naux, nao
+      integer(int64) :: f
+
+      integer(int64) :: oo, vv, px, ao
+
+      oo = o
+      vv = v
+      px = naux
+      ao = nao
+      select case (k)
+      case (RCCSD_ST_CHOLESKY)
+         f = px**3/3
+      case (RCCSD_ST_HALF)
+         ! C^T (mu nu|P) over all active orbitals, then the oo, ov and vv MO transforms of each (p nu|P)
+         f = 2*(oo + vv)*ao*ao*px + 2*ao*px*(oo*oo + oo*vv + vv*vv)
+      case (RCCSD_ST_TRSM)
+         f = (oo*oo + oo*vv + vv*vv)*px*px
+      case (RCCSD_ST_BLOCKS)
+         f = 2*px*(oo**4 + oo**3*vv + 2*oo**2*vv**2 + oo*vv**3)
+      case (RCCSD_ST_INTER)
+         f = 2*oo**3*vv**2 + 2*oo**2*vv**3 + 2*oo**2*vv**2 + 2*oo**3*vv
+      case (RCCSD_ST_W)
+         f = 2*oo**4*vv**2 + 6*oo**3*vv**3
+      case (RCCSD_ST_LADDER)
+         if (form == RCCSD_LADDER_ASSEMBLED) then
+            f = 2*(px + oo**2)*vv**4
+         else
+            f = 4*px*oo**2*vv**3
+         end if
+      case (RCCSD_ST_DRESSING)
+         f = 4*oo**3*vv**3 + 4*oo**3*vv**2
+      case (RCCSD_ST_T1)
+         f = 2*oo**2*vv**3 + 2*oo**3*vv**2
+      case (RCCSD_ST_T2)
+         f = 4*oo**2*vv**3 + 10*oo**3*vv**2 + 2*oo**4*vv**2
+      case (RCCSD_ST_RING)
+         f = 6*oo**3*vv**3
+      case default
+         f = 0
+      end select
+   end function pass_flops
+
+   subroutine step_cases(im, label, bas, aux, pl, res, la, nocc)
+      !! Cases 10 and 11: the step table of a run counts the flops of its GEMMs, for both ladder forms and a split
+      !! auxiliary basis, and its times add up
+      integer, intent(in) :: im, nocc
+      character(len=*), intent(in) :: label
+      type(trc_basis_t), intent(in) :: bas, aux
+      type(trc_pairlist_t), intent(in) :: pl
+      type(trc_scf_result_t), intent(in) :: res
+      type(trc_linalg_t), intent(inout) :: la
+
+      type(trc_rccsd_state_t) :: state
+      type(trc_rccsd_options_t) :: opts
+      integer(int64) :: want, got
+      integer :: form, k, n, no, nv, naux, nbad
+      logical :: ok_times
+      character(len=900) :: bad
+      real(dp) :: rows, pieces, tot
+
+      nbad = 0
+      bad = ""
+      ok_times = .true.
+      tot = 0.0_dp
+      do form = RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_DIRECT
+         opts = options_for(im, nocc)
+         opts%conv_energy = 1.0e-8_dp
+         opts%conv_amplitude = 1.0e-6_dp
+         opts%ladder%form = form
+         ! a split auxiliary basis in one of the runs: the integral counts must not depend on the blocks
+         opts%aux_block = merge(0, 30, form == RCCSD_LADDER_ASSEMBLED)
+         call trc_rccsd_solve(bas, aux, pl, res%cmo(:, :, 1), res%eps(:, 1), opts, la, state)
+         if (state%result%refused) error stop "check_rccsd_run: step table: refused: "//trim(state%result%message)
+         n = state%result%iterations
+         no = state%result%no
+         nv = state%result%nv
+         naux = state%result%naux
+         do k = 1, RCCSD_NSTEP
+            want = pass_flops(k, form, no, nv, naux, bas%nao)
+            if (k >= RCCSD_ST_INTER) want = want*n
+            got = state%steps%fl(k)%get()
+            if (got /= want) then
+               nbad = nbad + 1
+               if (nbad <= 4) bad = trim(bad)//" ["//trim(adjustl(RCCSD_STEP_NAME(k)))//", form "//to_string(form)//": counted "// &
+                                    to_string(got)//" expected "//to_string(want)//"]"
+            end if
+         end do
+         if (form == RCCSD_LADDER_ASSEMBLED) then
+            ! the times of the first run
+            ok_times = all(state%steps%t >= 0.0_dp)
+            rows = state%steps%t(RCCSD_ST_INTEGRALS) + sum(state%steps%t(RCCSD_ST_INTER:RCCSD_ST_ENERGY))
+            pieces = sum(state%steps%t(RCCSD_ST_METRIC:RCCSD_ST_BLOCKS))
+            tot = state%result%seconds(RCCSD_TIME_TOTAL)
+            ok_times = ok_times .and. rows <= tot*(1.0_dp + 1.0e-9_dp) .and. pieces <= state%steps%t(RCCSD_ST_INTEGRALS)* &
+                       (1.0_dp + 1.0e-9_dp) .and. state%steps%t(RCCSD_ST_LADDER) > 0.0_dp .and. &
+                       state%steps%t(RCCSD_ST_RING) > 0.0_dp
+            ok_times = ok_times .and. state%result%seconds(RCCSD_TIME_INTEGRALS) == state%steps%t(RCCSD_ST_INTEGRALS) .and. &
+                       state%result%seconds(RCCSD_TIME_INTER) == state%steps%t(RCCSD_ST_INTER) .and. &
+                       state%result%seconds(RCCSD_TIME_W) == state%steps%t(RCCSD_ST_W) .and. &
+                       state%result%seconds(RCCSD_TIME_LADDER) == state%steps%t(RCCSD_ST_LADDER) + &
+                       state%steps%t(RCCSD_ST_DRESSING) .and. &
+                       state%result%seconds(RCCSD_TIME_AMPS) == state%steps%t(RCCSD_ST_T1) + state%steps%t(RCCSD_ST_T2) + &
+                       state%steps%t(RCCSD_ST_RING) .and. state%result%seconds(RCCSD_TIME_DIIS) == state%steps%t(RCCSD_ST_DIIS)
+         end if
+         call state%release()
+      end do
+      nbad = nbad + step_pass_cases(im, bas, aux, pl, res, la, nocc, bad)
+      call record(im, 10, nbad == 0, label//"step table flops, one run per ladder form (the direct one with a split auxiliary "// &
+                  "basis) and one update per batch plan: "//to_string(nbad)//" counts differ from the independent "// &
+                  "formulas"//trim(bad))
+      call record(im, 11, ok_times, label//"step table times: rows non-negative, stage rows within the total "// &
+                  to_string(tot, "f9.4")//" s, build pieces within the integrals row, result%seconds equal the table's totals")
+   end subroutine step_cases
+
+   function step_pass_cases(im, bas, aux, pl, res, la, nocc, bad) result(nbad)
+      !! One update per ladder form and batch plan, with the tiny batches that make the batched GEMM calls many: what
+      !! the ladder tallied from its own calls (`flops_pp`, `flops_dressing`) and what each step of the table holds
+      !! are the formulas of `pass_flops`
+      integer, intent(in) :: im, nocc
+      type(trc_basis_t), intent(in) :: bas, aux
+      type(trc_pairlist_t), intent(in) :: pl
+      type(trc_scf_result_t), intent(in) :: res
+      type(trc_linalg_t), intent(inout) :: la
+      character(len=*), intent(inout) :: bad
+      integer :: nbad
+
+      type(trc_rccsd_ints_t) :: ints
+      type(trc_rccsd_ints_options_t) :: bopts
+      type(trc_rccsd_amps_t) :: amps, newamps
+      type(trc_rccsd_update_t) :: upd
+      type(trc_rccsd_ladder_options_t) :: lopts
+      type(step_table_t) :: steps
+      integer(int64) :: want, got
+      integer :: form, plan, k, no, nv, naux
+      character(len=16) :: tag
+
+      nbad = 0
+      bopts%nalpha = nocc
+      bopts%nbeta = nocc
+      bopts%nfrozen = MOL_NFROZEN(im)
+      call ints%build(bas, aux, pl, res%cmo(:, :, 1), res%eps(:, 1), la, bopts)
+      if (ints%status%has_error()) error stop "check_rccsd_run: step pass: build: "//ints%status%get_message()
+      no = ints%no
+      nv = ints%nv
+      naux = ints%naux
+      call amps%init(no, nv)
+      call newamps%init(no, nv)
+      call mp2_t2(ints, amps%t2)
+      amps%t1 = 0.0_dp
+      amps%t1(1, 1) = 0.01_dp
+      call amps%push()
+      do form = RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_DIRECT
+         do plan = 1, 2
+            lopts = trc_rccsd_ladder_options_t()
+            lopts%form = form
+            if (plan == 2) then
+               lopts%cd_batch = 7
+               lopts%p_batch = 5
+               lopts%virtual_batch = 3
+            end if
+            call upd%init(ints, lopts)
+            if (upd%status%has_error()) error stop "check_rccsd_run: step pass: init: "//upd%status%get_message()
+            call steps%init("rccsd", RCCSD_STEP_NAME)
+            call upd%step(ints, amps, newamps, la, steps)
+            if (upd%status%has_error()) error stop "check_rccsd_run: step pass: step: "//upd%status%get_message()
+            tag = " ("//to_string(form)//","//to_string(plan)//")"
+            want = pass_flops(RCCSD_ST_LADDER, form, no, nv, naux, bas%nao)
+            if (upd%ls%flops_pp /= want) call flag("ladder GEMMs made"//trim(tag), upd%ls%flops_pp, want)
+            want = pass_flops(RCCSD_ST_DRESSING, form, no, nv, naux, bas%nao)
+            if (upd%ls%flops_dressing /= want) call flag("dressing GEMMs made"//trim(tag), upd%ls%flops_dressing, want)
+            do k = RCCSD_ST_INTER, RCCSD_ST_RING
+               want = pass_flops(k, form, no, nv, naux, bas%nao)
+               got = steps%fl(k)%get()
+               if (got /= want) call flag(trim(adjustl(RCCSD_STEP_NAME(k)))//trim(tag), got, want)
+            end do
+            call upd%release()
+         end do
+      end do
+      call amps%release()
+      call newamps%release()
+      call ints%release()
+
+   contains
+
+      subroutine flag(what, got, want)
+         character(len=*), intent(in) :: what
+         integer(int64), intent(in) :: got, want
+         nbad = nbad + 1
+         if (nbad <= 4) bad = trim(bad)//" ["//what//": counted "//to_string(got)//" expected "//to_string(want)//"]"
+      end subroutine flag
+
+   end function step_pass_cases
 
    function returned_gap(state, la) result(gap)
       !! |energy functional of state%amps - state%result%e_ccsd|: the reported energy belongs to the returned amplitudes

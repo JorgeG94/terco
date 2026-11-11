@@ -106,9 +106,13 @@ module trc_rccsd_update
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_rccsd_ints, only: trc_rccsd_ints_t
-   use trc_rccsd_inter, only: trc_rccsd_amps_t, trc_rccsd_inter_t, trc_rccsd_scratch_t, rccsd_inter_one_particle
-   use trc_rccsd_w, only: trc_rccsd_w_t, trc_rccsd_wscratch_t, rccsd_w_build
+   use trc_rccsd_inter, only: trc_rccsd_amps_t, trc_rccsd_inter_t, trc_rccsd_scratch_t, rccsd_inter_one_particle, &
+                              rccsd_inter_flops
+   use trc_rccsd_w, only: trc_rccsd_w_t, trc_rccsd_wscratch_t, rccsd_w_build, rccsd_w_flops
    use trc_rccsd_ladder, only: trc_rccsd_ladder_t, trc_rccsd_lscratch_t, trc_rccsd_ladder_options_t, rccsd_ladder_build
+   use trc_rccsd_steps, only: RCCSD_ST_INTER, RCCSD_ST_W, RCCSD_ST_T1, RCCSD_ST_T2, RCCSD_ST_RING, rccsd_steps_gemm_flops, &
+                              rccsd_steps_open, rccsd_steps_close
+   use trc_step_table, only: step_table_t
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
@@ -116,13 +120,7 @@ module trc_rccsd_update
 
    character(len=*), parameter :: STALE_MSG = "trc_rccsd_update: the integrals were rebuilt after init; re-init"
 
-   integer, parameter, public :: RCCSD_STAGE_INTER = 1   !! `seconds`: tau and the one-particle intermediates
-   integer, parameter, public :: RCCSD_STAGE_W = 2       !! `seconds`: Woooo, Wvoov, Wvovo
-   integer, parameter, public :: RCCSD_STAGE_LADDER = 3  !! `seconds`: the ladder and its dressing
-   integer, parameter, public :: RCCSD_STAGE_AMPS = 4    !! `seconds`: the T1 and T2 equations proper
-   integer, parameter, public :: RCCSD_NSTAGE = 4        !! number of timed stages of `step`
-
-   public :: trc_rccsd_update_t
+   public :: trc_rccsd_update_t, rccsd_update_t1_flops, rccsd_update_t2_flops, rccsd_update_ring_flops
 
    type :: trc_rccsd_update_t
       !! Everything one amplitude update needs besides the integrals and the amplitudes
@@ -139,7 +137,6 @@ module trc_rccsd_update
       real(dp), allocatable :: lamp(:)  !! o^3 v, lamp(k,l,c,i) = 2 ooov(k,i,l,c) - ooov(l,i,k,c)
       real(dp), allocatable :: sm1(:)   !! o^3 v work
       real(dp), allocatable :: sm2(:)   !! o^3 v work
-      real(dp) :: seconds(RCCSD_NSTAGE) = 0.0_dp  !! device time spent in each stage, summed over the calls of `step`
    contains
       procedure :: init => update_init
       procedure :: release => update_release
@@ -191,7 +188,6 @@ contains
       allocate (this%lamp(no*no*no*nv), this%sm1(no*no*no*nv), this%sm2(no*no*no*nv))
       !$acc enter data create(this%lamp, this%sm1, this%sm2)
       call kernel_pack_lamp(no, nv, this%scr%lam, this%lamp)
-      this%seconds = 0.0_dp
    end subroutine update_init
 
    subroutine fail(this, source)
@@ -269,17 +265,6 @@ contains
       ok = .true.
    end function step_ready
 
-   subroutine lap(la, clock, total)
-      !! Adds the time since the last `lap` (or the start) to `total`, after the device finished its queue
-      type(trc_linalg_t), intent(in) :: la
-      type(timer_type), intent(inout) :: clock
-      real(dp), intent(inout) :: total
-
-      call la%sync()
-      total = total + clock%get_elapsed_time()
-      call clock%start()
-   end subroutine lap
-
    function sub_failed(this) result(failed)
       !! True, with `this%status` set, when a module `step` drives reported a refusal
       class(trc_rccsd_update_t), intent(inout) :: this
@@ -301,44 +286,97 @@ contains
    ! the update
    ! ---------------------------------------------------------------------
 
-   subroutine update_step(this, ints, amps, newamps, la)
+   pure function rccsd_update_t1_flops(no, nv) result(flops)
+      !! Flops of the GEMMs of `t1_equation` (the small T1 kernel, the packs and the denominator are not counted):
+      !!   ovvv term, one (o, v, o v) per virtual   2 o^2 v^3         lam term (o, v, o o v)   2 o^3 v^2
+      integer, intent(in) :: no, nv
+      integer(int64) :: flops
+
+      flops = rccsd_steps_gemm_flops(no, nv, no*nv, nv) + rccsd_steps_gemm_flops(no, nv, no*no*nv)
+   end function rccsd_update_t1_flops
+
+   pure function rccsd_update_t2_flops(no, nv) result(flops)
+      !! Flops of the GEMMs of the T2 equation without its rings: `t2_base_terms`, `t2_two_body_terms`,
+      !! `t2_one_body_terms` (the ladder is `rccsd_ladder_flops`'s). Shapes (m, n, k) x batch count:
+      !!   A: ovvv t1 (o v, o, v) x v          2 o^2 v^3       U: oovv t1 (o o, o, v) x v        2 o^3 v^2
+      !!   A: term (o o, v, o) x v             2 o^3 v^2       B: ovov t1 (o, o, v) x o v        2 o^3 v^2
+      !!   B: (o o v, v, o)                    2 o^3 v^2       Woooo tau (o o, v v, o o)         2 o^4 v^2
+      !!   Lvv: (o o, v, v) x v                2 o^2 v^3       Loo: (o, o v v, o)                2 o^3 v^2
+      integer, intent(in) :: no, nv
+      integer(int64) :: flops
+
+      flops = rccsd_steps_gemm_flops(no*nv, no, nv, nv) + rccsd_steps_gemm_flops(no*no, no, nv, nv) + &
+              rccsd_steps_gemm_flops(no*no, nv, no, nv) + rccsd_steps_gemm_flops(no, no, nv, no*nv) + &
+              rccsd_steps_gemm_flops(no*no*nv, nv, no) + rccsd_steps_gemm_flops(no*no, nv*nv, no*no) + &
+              rccsd_steps_gemm_flops(no*no, nv, nv, nv) + rccsd_steps_gemm_flops(no, no*nv*nv, no)
+   end function rccsd_update_t2_flops
+
+   pure function rccsd_update_ring_flops(no, nv) result(flops)
+      !! Flops of the three ring GEMMs of `t2_ring_terms`, each (o v, o v, o v): 6 (o v)^3
+      integer, intent(in) :: no, nv
+      integer(int64) :: flops
+
+      flops = 3_int64*rccsd_steps_gemm_flops(no*nv, no*nv, no*nv)
+   end function rccsd_update_ring_flops
+
+   subroutine update_step(this, ints, amps, newamps, la, stab)
       !! (newamps%t1, newamps%t2) = update(amps%t1, amps%t2), on the device. `amps` must be on the device
       !! (`push` after a host edit) and is not written. A refusal is in `this%status` and nothing is written.
+      !! With `stab` every stage is a step of that table (trc_rccsd_steps), timed at the same device syncs the
+      !! stages always had, and its flops are added; without it nothing is timed or counted.
       class(trc_rccsd_update_t), intent(inout) :: this
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
       type(trc_rccsd_amps_t), intent(inout) :: newamps
       type(trc_linalg_t), intent(in) :: la
+      type(step_table_t), intent(inout), optional :: stab
 
-      type(timer_type) :: clock
+      type(timer_type) :: tc
+      integer :: no, nv
 
       call this%status%clear()
       call this%scr%status%clear()
       call this%ws%status%clear()
       call this%ls%status%clear()
       if (.not. step_ready(this, ints, amps, newamps)) return
-      call la%sync()
-      call clock%start()
+      no = this%no
+      nv = this%nv
 
       ! The three builders read `amps` and write only their own arrays; none of them is told about `newamps`.
+      call rccsd_steps_open(stab, la, RCCSD_ST_INTER, tc)
       call rccsd_inter_one_particle(ints, amps, this%inter, this%scr, la)
-      if (sub_failed(this)) return
-      call lap(la, clock, this%seconds(RCCSD_STAGE_INTER))
+      if (sub_failed(this)) then
+         call rccsd_steps_close(stab, la, RCCSD_ST_INTER, tc)  ! a refusal still closes the NVTX range
+         return
+      end if
+      call rccsd_steps_close(stab, la, RCCSD_ST_INTER, tc, rccsd_inter_flops(no, nv))
+      call rccsd_steps_open(stab, la, RCCSD_ST_W, tc)
       call rccsd_w_build(ints, amps, this%inter, this%w, this%ws, la)
+      if (sub_failed(this)) then
+         call rccsd_steps_close(stab, la, RCCSD_ST_W, tc)  ! a refusal still closes the NVTX range
+         return
+      end if
+      call rccsd_steps_close(stab, la, RCCSD_ST_W, tc, rccsd_w_flops(no, nv))
+      ! the ladder and its dressing are two steps of their own, opened and closed inside
+      call rccsd_ladder_build(ints, amps, this%inter, this%lad, this%ls, la, stab)
       if (sub_failed(this)) return
-      call lap(la, clock, this%seconds(RCCSD_STAGE_W))
-      call rccsd_ladder_build(ints, amps, this%inter, this%lad, this%ls, la)
-      if (sub_failed(this)) return
-      call lap(la, clock, this%seconds(RCCSD_STAGE_LADDER))
 
       ! From here the W scratch (b1, b2, r) and the inter scratch's pack1 are free.
+      call rccsd_steps_open(stab, la, RCCSD_ST_T1, tc)
       call t1_equation(this, ints, amps, newamps, la)
+      call rccsd_steps_close(stab, la, RCCSD_ST_T1, tc, rccsd_update_t1_flops(no, nv))
+      call rccsd_steps_open(stab, la, RCCSD_ST_T2, tc)
       call t2_base_terms(this, ints, amps, newamps, la)
       call t2_two_body_terms(this, newamps, la)
       call t2_one_body_terms(this, amps, newamps, la)
+      call rccsd_steps_close(stab, la, RCCSD_ST_T2, tc, rccsd_update_t2_flops(no, nv))
+      call rccsd_steps_open(stab, la, RCCSD_ST_RING, tc)
       call t2_ring_terms(this, amps, newamps, la)
-      call kernel_denominator_t2(this%no, this%nv, ints%eps_o, ints%eps_v, newamps%t2)
-      call lap(la, clock, this%seconds(RCCSD_STAGE_AMPS))
+      call rccsd_steps_close(stab, la, RCCSD_ST_RING, tc, rccsd_update_ring_flops(no, nv))
+      ! the denominators divide the finished sum, so they follow the rings; they belong to the T2 equation
+      call rccsd_steps_open(stab, la, RCCSD_ST_T2, tc)
+      call kernel_denominator_t2(no, nv, ints%eps_o, ints%eps_v, newamps%t2)
+      call rccsd_steps_close(stab, la, RCCSD_ST_T2, tc)
    end subroutine update_step
 
    subroutine t1_equation(this, ints, amps, newamps, la)

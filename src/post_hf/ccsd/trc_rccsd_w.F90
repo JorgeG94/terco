@@ -109,6 +109,7 @@
 module trc_rccsd_w
    use pic_types, only: dp, int32, int64
    use trc_rccsd_ints, only: trc_rccsd_ints_t
+   use trc_rccsd_steps, only: rccsd_steps_gemm_flops
    use trc_rccsd_inter, only: trc_rccsd_amps_t, trc_rccsd_inter_t
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t, ERROR_VALIDATION
@@ -119,7 +120,7 @@ module trc_rccsd_w
                                               "initialised; re-init the scratch after ints%build"
 
    public :: trc_rccsd_w_t, trc_rccsd_wscratch_t
-   public :: rccsd_w_woooo, rccsd_w_wvoov, rccsd_w_wvovo, rccsd_w_build
+   public :: rccsd_w_woooo, rccsd_w_wvoov, rccsd_w_wvovo, rccsd_w_build, rccsd_w_flops
 
    type :: trc_rccsd_w_t
       !! Woooo, Wvoov and Wvovo on host and device, valid after the matching routine
@@ -454,6 +455,17 @@ contains
       call la%gemm("N", "N", nov, nov, nov, 1.0_dp, ws%a2, nov, ws%b1, nov, 0.0_dp, ws%r, nov)
       call kernel_acc_vovo(no, nv, ws%r, w%wvovo)
    end subroutine rccsd_w_wvovo
+
+   pure function rccsd_w_flops(no, nv) result(flops)
+      !! Flops of one `rccsd_w_build`, 2 m n k of each of its GEMMs (the base kernels, packs and accumulates are not counted):
+      !!   Woooo  (o o, o o, v v)             2 o^4 v^2
+      !!   Wvoov  two (o v, o v, o v)         4 (o v)^3
+      !!   Wvovo  one (o v, o v, o v)         2 (o v)^3
+      integer, intent(in) :: no, nv
+      integer(int64) :: flops
+
+      flops = rccsd_steps_gemm_flops(no*no, no*no, nv*nv) + 3_int64*rccsd_steps_gemm_flops(no*nv, no*nv, no*nv)
+   end function rccsd_w_flops
 
    subroutine rccsd_w_build(ints, amps, inter, w, ws, la)
       !! Woooo, Wvoov and Wvovo for the current amplitudes (`amps` on the device: `push` after a host

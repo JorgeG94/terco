@@ -62,6 +62,11 @@
 ! Single rank only.
 module trc_rccsd_ints
    use pic_types, only: dp, int64
+   use pic_timer, only: timer_type
+   use pic_profiler, only: profiler_start, profiler_stop
+   use trc_rccsd_steps, only: RCCSD_ST_METRIC, RCCSD_ST_CHOLESKY, RCCSD_ST_3C, RCCSD_ST_HALF, RCCSD_ST_TRSM, &
+                              RCCSD_ST_BLOCKS, RCCSD_STEP_NAME, rccsd_steps_gemm_flops, rccsd_steps_trsm_flops, &
+                              rccsd_steps_potrf_flops
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
@@ -103,6 +108,10 @@ module trc_rccsd_ints
       real(dp), allocatable :: b_vv(:, :)         !! (ab, P), a fastest
       real(dp), allocatable :: eps_o(:)           !! active occupied orbital energies
       real(dp), allocatable :: eps_v(:)           !! virtual orbital energies
+      real(dp) :: seconds(RCCSD_ST_METRIC:RCCSD_ST_BLOCKS) = 0.0_dp
+      !! device seconds of the last `build` per piece, indexed by the RCCSD_ST_* row (trc_rccsd_steps) it fills
+      integer(int64) :: flops(RCCSD_ST_METRIC:RCCSD_ST_BLOCKS) = 0_int64
+      !! 2 m n k summed over the GEMMs (and the solves and the factorisation) that piece executed, as called
    contains
       procedure :: build => rccsd_ints_build
       procedure :: release => rccsd_ints_release
@@ -160,7 +169,35 @@ contains
       ints%naux = 0
       ints%nfrozen = 0
       ints%stamp = 0
+      ints%seconds = 0.0_dp
+      ints%flops = 0_int64
    end subroutine rccsd_ints_release
+
+   subroutine piece_on(la, k, tc)
+      !! Opens piece `k` of the build: once the device is idle the clock starts and the NVTX range opens, as a step
+      !! table's `step_on` does (the build cannot take the driver's table: it already has eight arguments)
+      type(trc_linalg_t), intent(in) :: la
+      integer, intent(in) :: k
+      type(timer_type), intent(out) :: tc
+
+      call la%sync()
+      call tc%start()
+      call profiler_start("rccsd: "//trim(adjustl(RCCSD_STEP_NAME(k))), nvtx_only=.true.)
+   end subroutine piece_on
+
+   subroutine piece_off(ints, la, k, tc, flops)
+      !! Closes piece `k` after the same sync and adds its time and the flops it executed to `ints`
+      class(trc_rccsd_ints_t), intent(inout) :: ints
+      type(trc_linalg_t), intent(in) :: la
+      integer, intent(in) :: k
+      type(timer_type), intent(in) :: tc
+      integer(int64), intent(in) :: flops
+
+      call la%sync()
+      ints%seconds(k) = ints%seconds(k) + tc%get_elapsed_time()
+      ints%flops(k) = ints%flops(k) + flops
+      call profiler_stop("rccsd: "//trim(adjustl(RCCSD_STEP_NAME(k))))
+   end subroutine piece_off
 
    pure integer function ncart(l) result(res)
       integer, intent(in) :: l
@@ -239,6 +276,7 @@ contains
       real(dp), allocatable :: csph(:, :), cact(:, :)
       type(trc_basis_t) :: aux_subset
       type(trc_gemm_batch_t) :: shape
+      type(timer_type) :: tc
 
       call ints%release()
       call ints%status%clear()
@@ -290,6 +328,7 @@ contains
 
       ! The metric and its Cholesky factor, L in the lower triangle.
       call la%init(naux)
+      call piece_on(la, RCCSD_ST_METRIC, tc)
       allocate (jm(naux, naux))
       !$acc enter data create(jm)
       if (aux%spherical) then
@@ -302,7 +341,10 @@ contains
       else
          call trc_df_2c(aux, jm)
       end if
+      call piece_off(ints, la, RCCSD_ST_METRIC, tc, 0_int64)
+      call piece_on(la, RCCSD_ST_CHOLESKY, tc)
       call la%potrf(naux, jm, naux)
+      call piece_off(ints, la, RCCSD_ST_CHOLESKY, tc, rccsd_steps_potrf_flops(naux))
 
       ! X(pq, P) = sum_mu,nu C(mu,p) (mu nu|P) C(nu,q) for the three blocks,
       ! a block of auxiliary shells at a time.
@@ -326,6 +368,7 @@ contains
          end if
          allocate (tens(nao, nao, np), half(nact, nao, np))
          !$acc enter data create(tens, half)
+         call piece_on(la, RCCSD_ST_3C, tc)
          if (aux%spherical) then
             allocate (tcart3(nao, nao, npc))
             !$acc enter data create(tcart3)
@@ -336,6 +379,8 @@ contains
          else
             call trc_df_3c(b, pl, aux_subset, tens)
          end if
+         call piece_off(ints, la, RCCSD_ST_3C, tc, 0_int64)
+         call piece_on(la, RCCSD_ST_HALF, tc)
          ! half(p, nu, P) = sum_mu C(mu, p) (mu nu|P), all active p at once
          call la%gemm("T", "N", nact, nao*np, nao, 1.0_dp, cact, nao, tens, nao, 0.0_dp, half, nact)
          ! then one strided batch over P per block: out(p, q, P) = sum_nu half(p, nu, P) C(nu, q)
@@ -348,6 +393,9 @@ contains
          shape = trc_gemm_batch(nv, nv, nao, np, lda=nact, ldb=nao, ldc=nv, &
                                 sa=int(nact, int64)*nao, sb=0_int64, sc=int(nv, int64)*nv)
          call la%gemm_batched(shape, half(no + 1, 1, 1), cact(1, no + 1), ints%b_vv(1, p0))
+         call piece_off(ints, la, RCCSD_ST_HALF, tc, rccsd_steps_gemm_flops(nact, nao*np, nao) + &
+                        rccsd_steps_gemm_flops(no, no, nao, np) + rccsd_steps_gemm_flops(no, nv, nao, np) + &
+                        rccsd_steps_gemm_flops(nv, nv, nao, np))
          !$acc exit data delete(tens, half)
          deallocate (tens, half)
          call aux_subset%release()
@@ -357,9 +405,12 @@ contains
       deallocate (cact)
 
       ! B = X L^-T: solve B L^T = X from the right.
+      call piece_on(la, RCCSD_ST_TRSM, tc)
       call la%trsm("R", "L", "T", no*no, naux, 1.0_dp, jm, naux, ints%b_oo, no*no)
       call la%trsm("R", "L", "T", no*nv, naux, 1.0_dp, jm, naux, ints%b_ov, no*nv)
       call la%trsm("R", "L", "T", nv*nv, naux, 1.0_dp, jm, naux, ints%b_vv, nv*nv)
+      call piece_off(ints, la, RCCSD_ST_TRSM, tc, rccsd_steps_trsm_flops(no*no, naux) + rccsd_steps_trsm_flops(no*nv, naux) + &
+                     rccsd_steps_trsm_flops(nv*nv, naux))
       !$acc exit data delete(jm)
       deallocate (jm)
 
@@ -369,12 +420,15 @@ contains
       allocate (ints%oooo(no, no, no, no), ints%ooov(no, no, no, nv), ints%oovv(no, no, nv, nv))
       allocate (ints%ovov(no, nv, no, nv), ints%ovvv(no, nv, nv, nv))
       !$acc enter data create(ints%oooo, ints%ooov, ints%oovv, ints%ovov, ints%ovvv)
+      call piece_on(la, RCCSD_ST_BLOCKS, tc)
       call la%gemm("N", "T", no*no, no*no, naux, 1.0_dp, ints%b_oo, no*no, ints%b_oo, no*no, 0.0_dp, ints%oooo, no*no)
       call la%gemm("N", "T", no*no, no*nv, naux, 1.0_dp, ints%b_oo, no*no, ints%b_ov, no*nv, 0.0_dp, ints%ooov, no*no)
       call la%gemm("N", "T", no*no, nv*nv, naux, 1.0_dp, ints%b_oo, no*no, ints%b_vv, nv*nv, 0.0_dp, ints%oovv, no*no)
       call la%gemm("N", "T", no*nv, no*nv, naux, 1.0_dp, ints%b_ov, no*nv, ints%b_ov, no*nv, 0.0_dp, ints%ovov, no*nv)
       call la%gemm("N", "T", no*nv, nv*nv, naux, 1.0_dp, ints%b_ov, no*nv, ints%b_vv, nv*nv, 0.0_dp, ints%ovvv, no*nv)
-      call la%sync()
+      call piece_off(ints, la, RCCSD_ST_BLOCKS, tc, rccsd_steps_gemm_flops(no*no, no*no, naux) + &
+                     rccsd_steps_gemm_flops(no*no, no*nv, naux) + rccsd_steps_gemm_flops(no*no, nv*nv, naux) + &
+                     rccsd_steps_gemm_flops(no*nv, no*nv, naux) + rccsd_steps_gemm_flops(no*nv, nv*nv, naux))
       !$acc update self(ints%b_oo, ints%b_ov, ints%b_vv, ints%oooo, ints%ooov, ints%oovv, ints%ovov, ints%ovvv)
       build_counter = build_counter + 1
       ints%stamp = build_counter

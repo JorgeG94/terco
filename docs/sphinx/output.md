@@ -48,6 +48,49 @@ The SCF converges when `dE` is below `--econv` **and** \|FDS-SDF\| is below
 XC/solvation/correlation term that applies), and the wall time. The exit
 status is 0, or 2 if the SCF did not converge within `--iterations`.
 
+## Step tables
+
+At the `performance` log level (the default `--logger info` prints them) the
+correlated methods end with a table of timed steps, one row per step: the
+device time to completion, the floating-point operations the step executed
+(counted from the dimensions of its matrix products, `2 m n k` each, batched
+calls times their count) and the rate they give, each count with the SI prefix
+that keeps it under 1000. RI-MP2 prints `rimp2:` rows (metric, Cholesky,
+three-index integrals, transforms, the K matrix products, the pair sums) and a
+total with the work over the whole wall time.
+
+`--riccsd` and `--riccsd-t` print the same table with `rccsd:` rows after the
+iteration table:
+
+```
+  rccsd: step                           time (s)           work            rate
+  rccsd:   integrals                      0.004              -               -
+  rccsd:     cholesky                     0.000   197.57 kFLOP    2.49 GFLOP/s
+  ...
+  rccsd:   tau, intermediates             0.003     3.08 MFLOP  902.91 MFLOP/s
+  rccsd:   W intermediates                0.012    31.01 MFLOP    2.64 GFLOP/s
+  rccsd:   ladder, assembled              0.026   286.71 MFLOP   10.83 GFLOP/s
+  ...
+  rccsd:   total                          0.079   396.93 MFLOP    5.06 GFLOP/s   rank 0 of 1
+  rccsd: mean time of an iteration      0.007 s over 11 iterations
+```
+
+The `integrals` row is the whole build of the fitted blocks; the indented rows
+under it (metric, Cholesky, three-index integrals, half transform, `B = X L^-T`,
+the five blocks) are pieces it times itself, so they do not add up to it (the
+orbital transforms and the copy of the blocks back to the host are in the first
+only). The other rows are the stages of one iteration summed over all of them:
+tau and the one-particle intermediates, the W intermediates, the particle
+ladder (named for the form that ran, assembled or direct) and its dressing, the
+T1 equation, the T2 equation, its three ring terms, DIIS and the energy. A
+stage's work counts its matrix products only; the packs, scatters, denominators
+and per-element kernels (and the spherical-basis conversions of the integral
+rows) add time but no count, so a row that mixes them (the intermediates, W,
+the T1 and T2 equations) shows a rate below the card's matrix-product rate by
+the share of its time those take. The ladder and the ring terms are nearly all
+matrix products. Each step is also an NVTX range (`rccsd: <name>`) in a build
+with `TERCO_NVTX`. The (T) correction reports its own timings.
+
 ## `--json`
 
 `--json <file>` writes a summary alongside the log. Every run's own
