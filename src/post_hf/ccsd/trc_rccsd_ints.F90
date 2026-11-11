@@ -324,6 +324,10 @@ contains
       end if
 
       allocate (ints%b_oo(no*no, naux), ints%b_ov(no*nv, naux), ints%b_vv(nv*nv, naux))
+      ! Touch the host mirror before the closing `update self` writes it (why: at the rank-four blocks).
+      ints%b_oo = 0.0_dp
+      ints%b_ov = 0.0_dp
+      ints%b_vv = 0.0_dp
       !$acc enter data create(ints%b_oo, ints%b_ov, ints%b_vv)
 
       ! The metric and its Cholesky factor, L in the lower triangle.
@@ -419,6 +423,18 @@ contains
       ! (ov|vv) would be the peak allocation.
       allocate (ints%oooo(no, no, no, no), ints%ooov(no, no, no, nv), ints%oovv(no, no, nv, nv))
       allocate (ints%ovov(no, nv, no, nv), ints%ovvv(no, nv, nv, nv))
+      ! The host pages must exist before the `update self` below. On a GH200 a
+      ! pageable device-to-host copy into memory that was allocated but never
+      ! touched faults the pages in from the GPU side: the 2.98 GB ovvv of a
+      ! (no 20, nv 265) run took 10.6 s that way, 0.01 s once touched, while
+      ! the touch itself costs 0.1 s on the host. An x86 host stages the copy
+      ! and does not show it. Zero on the host, before the GEMMs: on the host
+      ! build these arrays are the GEMM output itself.
+      ints%oooo = 0.0_dp
+      ints%ooov = 0.0_dp
+      ints%oovv = 0.0_dp
+      ints%ovov = 0.0_dp
+      ints%ovvv = 0.0_dp
       !$acc enter data create(ints%oooo, ints%ooov, ints%oovv, ints%ovov, ints%ovvv)
       call piece_on(la, RCCSD_ST_BLOCKS, tc)
       call la%gemm("N", "T", no*no, no*no, naux, 1.0_dp, ints%b_oo, no*no, ints%b_oo, no*no, 0.0_dp, ints%oooo, no*no)
@@ -429,6 +445,7 @@ contains
       call piece_off(ints, la, RCCSD_ST_BLOCKS, tc, rccsd_steps_gemm_flops(no*no, no*no, naux) + &
                      rccsd_steps_gemm_flops(no*no, no*nv, naux) + rccsd_steps_gemm_flops(no*no, nv*nv, naux) + &
                      rccsd_steps_gemm_flops(no*nv, no*nv, naux) + rccsd_steps_gemm_flops(no*nv, nv*nv, naux))
+      ! Into host pages already touched at allocation (why: at the rank-four blocks).
       !$acc update self(ints%b_oo, ints%b_ov, ints%b_vv, ints%oooo, ints%ooov, ints%oovv, ints%ovov, ints%ovvv)
       build_counter = build_counter + 1
       ints%stamp = build_counter
