@@ -1,0 +1,8 @@
+6
+Ethylene twisted by 30 degrees about the C=C axis, point group D2: r(CC) 1.339, r(CH) 1.085 A, angle HCH 117.6 deg (approximate experimental values for planar ethylene (NIST CCCBDB; recalled, not looked up again)), built by rotating each CH2 group by 15 degrees in opposite senses (not optimized); then rotated by Euler angles (zxz) 37, 52, -71 degrees and shifted by (0.40, -0.25, 0.15) A so that the standard frame is not the input frame
+C     -0.0988302602    -0.4217610329     0.5621853577
+H      0.0941344002    -0.9596181909     1.4845189836
+H     -1.1293518718    -0.1722978609     0.3319282539
+C      0.8988302602    -0.0782389671    -0.2621853577
+H      1.8001377688    -0.6779677492    -0.3342628353
+H      0.8350797027     0.8098838010    -0.8821844022

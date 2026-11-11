@@ -194,7 +194,7 @@ group (its stage table) without changing any key above. Example, a
 ```
 
 The library side is the C entry points `trc_timing_count` and `trc_timing`
-(ABI 1.23), which hand out the same named values one at a time: loop `index`
+(ABI 1.24), which hand out the same named values one at a time: loop `index`
 from 0 to the count minus one with a name buffer of `TRC_TIMING_NAME_MAX`
 characters. A buffer too short for a name is refused (`TRC_ERR_BADARG`, and
 `trc_message` says the length needed), never truncated. The `rimp2.*` entries
