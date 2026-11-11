@@ -66,7 +66,21 @@
 !
 ! RESIDENCY. The history exists on the host AND on the device (`enter data` in
 ! `init`, `exit data` in `release`, on the same `this%name` expression); the device
-! copy is the one used, the host mirror is never read. A kernel gets an array only as
+! copy is the one used, the host mirror is never read.
+!
+! HOST HISTORY (`init(..., host=.true.)`). `vec` and `err` live on the host, and a column (one slot) is on the
+! device only while it is used (`enter data` on the section), instead of 2 n size doubles resident: at o 40,
+! v 530, size 8 packed, at most three vectors (5.4 GB) on the device instead of 28.8 GB. A push maps the next
+! slot's two columns, computes the step and the packed new amplitudes into them with the same kernels, copies them
+! down and unmaps them; the new row of B is computed on the device, each older error column copied up in turn and
+! dotted with cuBLAS. The extrapolation is one host GEMV over the contiguous columns into `comb`, copied up and
+! unpacked by the same kernel with one vector of weight 1 (exact). No host-side copy of a vector and no host dot:
+! on GH200 those run on one thread (14-20 GB/s) while the link moves 125-300 GB/s, and a version that copied into
+! the ring and dotted on the host cost 0.8 s an iteration at (H2O)9
+! cc-pVTZ against 0.02 for the device history. `step_max` and `step_norm2` are computed on the device as before,
+! so they are bitwise those of the device history; B and the weights differ from it at round-off (cuBLAS dots on
+! the same vectors, but an extrapolation summed by the host BLAS). The host buffers are zeroed in `init`: a copy
+! into host memory never written runs at a fraction of the link's speed on GH200. A kernel gets an array only as
 ! an explicit-shape dummy of a `kernel_*` routine. The extrapolation writes straight into
 ! the device copy of the amplitudes the caller hands in; the coefficients go up through a
 ! small mapped array.
@@ -79,6 +93,7 @@ module trc_rccsd_diis
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use pic_strings, only: to_string
+   use pic_blas_interfaces, only: pic_gemv
    implicit none
    private
 
@@ -87,6 +102,8 @@ module trc_rccsd_diis
    real(dp), parameter :: SQRT2 = 1.4142135623730951_dp  !! off-diagonal weight of a packed error element
 
    public :: trc_rccsd_diis_t
+   public :: rccsd_diis_history_bytes, rccsd_diis_free_device_bytes
+
 
    type :: trc_rccsd_diis_t
       !! The amplitude history and the last step
@@ -96,6 +113,7 @@ module trc_rccsd_diis
       integer :: n = 0            !! length of one STORED vector: o v + n_ov (n_ov + 1)/2 packed, o v + o^2 v^2 full
       integer(int64) :: nfull = 0  !! length of the full vector, o v + o^2 v^2
       logical :: packed = .false.  !! t2 kept as the unique half (pair-symmetric amplitudes only, see the header)
+      logical :: host = .false.   !! the history lives on the host, a slot on the device only while used (header)
       integer :: size = 0         !! history length asked for; below 2 there is no extrapolation
       integer :: nstored = 0      !! entries in the history
       integer :: newest = 0       !! slot of the newest entry
@@ -109,6 +127,8 @@ module trc_rccsd_diis
       real(dp), allocatable :: part(:)        !! partial maxima of the last step
       real(dp), allocatable :: coef(:)        !! (max(size, 1)) extrapolation weights, by slot
       real(dp), allocatable :: overlap(:, :)  !! (size, size) host only: <e_i, e_j> by slot
+      real(dp), allocatable :: comb(:)        !! (n) host history only: the extrapolation, host GEMV then up
+      real(dp), allocatable :: unit(:)        !! (1) host history only: the weight 1 that writes `comb` out
    contains
       procedure :: init => diis_init
       procedure :: release => diis_release
@@ -119,12 +139,45 @@ module trc_rccsd_diis
 
 contains
 
-   subroutine diis_init(this, no, nv, size, packed)
+   pure function rccsd_diis_history_bytes(no, nv, size, packed) result(bytes)
+      !! Device bytes of the history kept on the device (`init` without `host`): 2 n size doubles, n the stored
+      !! length (header, MEMORY); 0 below size 2, which keeps no vectors
+      integer, intent(in) :: no, nv, size
+      logical, intent(in) :: packed
+      integer(int64) :: bytes
+      integer(int64) :: nov, nstore
+
+      bytes = 0
+      if (size < 2) return
+      nov = int(no, int64)*nv
+      nstore = nov + nov*nov
+      if (packed) nstore = nov + nov*(nov + 1)/2
+      bytes = 16_int64*nstore*size
+   end function rccsd_diis_history_bytes
+
+   function rccsd_diis_free_device_bytes() result(bytes)
+      !! The free device memory now; -1 on the host build or when the query gives nothing (no device to fit)
+#ifdef TRC_DEVICE
+      use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, acc_property_free_memory
+#endif
+      integer(int64) :: bytes
+
+      bytes = -1
+#ifdef TRC_DEVICE
+      bytes = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
+                                   acc_property_free_memory), int64)
+      if (bytes <= 0) bytes = -1
+#endif
+   end function rccsd_diis_free_device_bytes
+
+   subroutine diis_init(this, no, nv, size, packed, host)
       !! An empty history for amplitudes of these dimensions. size < 2 keeps no vectors: only the step is measured.
       !! `packed` (default false) stores t2 as its unique half: only for amplitudes with t2(i,j,a,b) = t2(j,i,b,a).
+      !! `host` (default false) keeps the history on the host (header, HOST HISTORY)
       class(trc_rccsd_diis_t), intent(inout) :: this
       integer, intent(in) :: no, nv, size
       logical, intent(in), optional :: packed
+      logical, intent(in), optional :: host
 
       integer(int64) :: nstore, nov
       integer :: nslot
@@ -153,6 +206,22 @@ contains
       this%size = size
       this%npart = int((this%nfull + CHUNK - 1)/CHUNK)
       nslot = max(size, 1)
+      this%host = .false.
+      if (present(host)) this%host = host .and. size >= 2
+      if (this%host) then
+         ! the ring on the host, zeroed now (first touch); only the partials and the weights stay on the device
+         allocate (this%err(this%n, nslot), this%vec(this%n, size), this%overlap(size, size))
+         allocate (this%comb(this%n), this%part(this%npart), this%coef(nslot), this%unit(1))
+         this%err = 0.0_dp
+         this%vec = 0.0_dp
+         this%comb = 0.0_dp
+         this%overlap = 0.0_dp
+         this%unit = 1.0_dp
+         !$acc enter data create(this%part, this%coef)
+         !$acc enter data copyin(this%unit)
+         call this%reset()
+         return
+      end if
       allocate (this%err(this%n, nslot), this%part(this%npart), this%coef(nslot))
       !$acc enter data create(this%err, this%part, this%coef)
       if (size >= 2) then
@@ -167,6 +236,16 @@ contains
       !! Frees host and device copies; safe on an empty type
       class(trc_rccsd_diis_t), intent(inout) :: this
 
+      if (this%host) then
+         ! nothing of the ring is mapped between calls
+         if (allocated(this%err)) deallocate (this%err)
+         if (allocated(this%vec)) deallocate (this%vec)
+         if (allocated(this%comb)) deallocate (this%comb)
+         if (allocated(this%unit)) then
+            !$acc exit data delete(this%unit)
+            deallocate (this%unit)
+         end if
+      end if
       if (allocated(this%err)) then
          !$acc exit data delete(this%err)
          deallocate (this%err)
@@ -189,6 +268,7 @@ contains
       this%n = 0
       this%nfull = 0
       this%packed = .false.
+      this%host = .false.
       this%size = 0
       this%nstored = 0
       this%newest = 0
@@ -246,6 +326,10 @@ contains
       this%step_max = huge(1.0_dp)
       this%step_norm2 = huge(1.0_dp)
       if (.not. diis_ready(this, old, new)) return
+      if (this%host) then
+         call push_host(this, la, old, new, keep)
+         return
+      end if
       slot = 1
       if (keep .and. this%size >= 2) slot = modulo(this%newest, this%size) + 1
       n1 = this%no*this%nv
@@ -290,6 +374,71 @@ contains
       end do
    end subroutine diis_push
 
+   subroutine push_host(this, la, old, new, keep)
+      !! `push` with the history on the host: the next slot's buffers are mapped, the step and the packed new
+      !! amplitudes computed into them by the same kernels and measured there, copied down and unmapped; the new
+      !! row of B is computed on the device, each older error mapped in turn
+      class(trc_rccsd_diis_t), intent(inout) :: this
+      type(trc_linalg_t), intent(in) :: la
+      type(trc_rccsd_amps_t), intent(in) :: old, new
+      logical, intent(in) :: keep
+
+      integer :: slot, i, other, n1
+      integer(int64) :: n2
+      real(dp) :: ee, dot
+
+      n1 = this%no*this%nv
+      n2 = this%nfull - n1
+      ! the slot the entry would take; before the first kept push it is free, after it `keep` stays true
+      slot = modulo(this%newest, this%size) + 1
+      !$acc enter data create(this%err(:, slot), this%vec(:, slot))
+      if (this%packed) then
+         call kernel_step_packed(this%no, this%nv, n2, this%n, old%t1, old%t2, new%t1, new%t2, this%err(1, slot))
+         call kernel_chunk_max_diff(n1, n2, this%npart, old%t1, old%t2, new%t1, new%t2, this%part)
+      else
+         call kernel_step(n1, this%n - n1, old%t1, old%t2, new%t1, new%t2, this%err(1, slot))
+         call kernel_chunk_max(this%n, this%npart, this%err(1, slot), this%part)
+      end if
+      ee = la%dot(this%n, this%err(1, slot), this%err(1, slot))
+      !$acc update self(this%part)
+      this%finite = ee <= huge(1.0_dp) .and. ee >= 0.0_dp
+      if (.not. this%finite .or. .not. keep) then
+         ! the host buffers were not written: a refused or unkept step leaves the ring as it was
+         !$acc exit data delete(this%err(:, slot), this%vec(:, slot))
+         if (.not. this%finite) call this%status%set(ERROR_VALIDATION, "trc_rccsd_diis: the amplitude step is not finite")
+         if (this%finite) then
+            this%step_norm2 = sqrt(ee)
+            this%step_max = maxval(this%part)
+         end if
+         return
+      end if
+      this%step_norm2 = sqrt(ee)
+      this%step_max = maxval(this%part)
+      if (this%packed) then
+         call kernel_pack_amps(this%no, this%nv, n2, this%n, new%t1, new%t2, this%vec(1, slot))
+      else
+         call kernel_copy_amps(n1, this%n - n1, new%t1, new%t2, this%vec(1, slot))
+      end if
+      !$acc exit data copyout(this%vec(:, slot))
+      !$acc update self(this%err(:, slot))
+      this%newest = slot
+      if (this%nstored < this%size) this%nstored = this%nstored + 1
+      ! the new row on the device: each older error up in turn, dotted with the new one where it already is
+      do i = 1, this%nstored
+         other = slot_of_age(this, i)
+         if (other == slot) then
+            dot = ee
+         else
+            !$acc enter data copyin(this%err(:, other))
+            dot = la%dot(this%n, this%err(1, slot), this%err(1, other))
+            !$acc exit data delete(this%err(:, other))
+         end if
+         this%overlap(slot, other) = dot
+         this%overlap(other, slot) = dot
+      end do
+      !$acc exit data delete(this%err(:, slot))
+   end subroutine push_host
+
    pure function slot_of_age(this, age) result(slot)
       !! Slot of the age-th oldest entry, age = 1 .. nstored (the history is a ring, nothing is shifted)
       class(trc_rccsd_diis_t), intent(in) :: this
@@ -324,6 +473,11 @@ contains
             do i = 1, this%nstored
                this%coef(slot_of_age(this, i)) = weights(i)
             end do
+            if (this%host) then
+               call next_host(this, la, amps)
+               extrapolated = .true.
+               return
+            end if
             !$acc update device(this%coef)
             ! slots 1..nstored are exactly the ones in use (a ring fills them in order before it wraps)
             call la%gemm("N", "N", n1, 1, this%nstored, 1.0_dp, this%vec(1, 1), this%n, this%coef, this%nstored, &
@@ -346,6 +500,31 @@ contains
       end if
       if (.not. extrapolated) call kernel_copy_amps_out(n1, this%nfull - n1, new%t1, new%t2, amps%t1, amps%t2)
    end subroutine diis_next
+
+   subroutine next_host(this, la, amps)
+      !! The extrapolation with the history on the host: comb = vec(:, 1:nstored) coef, one host GEMV over the
+      !! contiguous columns (threaded where the host BLAS is), copied up and written to the amplitudes as one vector
+      !! of weight 1, so the device side is a copy, exactly
+      class(trc_rccsd_diis_t), intent(inout) :: this
+      type(trc_linalg_t), intent(in) :: la
+      type(trc_rccsd_amps_t), intent(inout) :: amps
+
+      integer :: n1, n2
+
+      n1 = this%no*this%nv
+      n2 = this%n - n1
+      ! slots 1..nstored are exactly the ones in use (a ring fills them in order before it wraps)
+      call pic_gemv(this%vec(:, 1:this%nstored), this%coef(1:this%nstored), this%comb, alpha=1.0_dp, beta=0.0_dp)
+      ! out through the unit weight: `coef` keeps the DIIS weights, by slot, as with the device history
+      !$acc enter data copyin(this%comb)
+      call la%gemm("N", "N", n1, 1, 1, 1.0_dp, this%comb, this%n, this%unit, 1, 0.0_dp, amps%t1, n1)
+      if (this%packed) then
+         call kernel_extrapolate_unpack(this%no, this%nv, this%nfull - n1, this%n, 1, this%comb, this%unit, amps%t2)
+      else
+         call la%gemm("N", "N", n2, 1, 1, 1.0_dp, this%comb(n1 + 1), this%n, this%unit, 1, 0.0_dp, amps%t2, n2)
+      end if
+      !$acc exit data delete(this%comb)
+   end subroutine next_host
 
    subroutine solve_weights(this, weights, ok)
       !! The DIIS weights, oldest entry first, from the cached overlaps; `ok` false on a non-finite B or a small pivot
