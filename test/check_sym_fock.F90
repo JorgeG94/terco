@@ -306,8 +306,9 @@ contains
       type(trc_sym_scf_t) :: scr
       integer :: nocc
       nocc = sum(ctx%elem)/2
-      ! Just above the accumulation-order noise floor:
-      ! the OpenMP and device builds accumulate F in a run-dependent order, so identical runs differ by 1e-13 to 1e-12 Eh.
+      ! Just above the accumulation-order noise floor: the OpenMP and device
+      ! builds accumulate F in a run-dependent order, so identical runs differ
+      ! by 1e-13 to 1e-12 Eh.
       opts%conv_energy = 1.0e-10_dp
       opts%conv_diis = 1.0e-9_dp
       opts%max_iteration = 100

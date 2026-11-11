@@ -404,11 +404,11 @@ contains
       !! `bins_skel_cut_first`'s bra/ket swap create. The mean atom orbit size
       !! is a cheap proxy for the saving, available before the engine is built
       !! (the decision has to be made then: the engine is built with the group
-      !! or without it). It tracks the measured scheme-2a quartet reduction
-      !! across every system the project has counted --
-      !! cc-pVDZ, tau = 1e-10, density-screened:
+      !! or without it). It tracks the measured skeleton-plan quartet reduction
+      !! across every system the project has counted -- cc-pVDZ, tau = 1e-10,
+      !! density-screened:
       !!
-      !!   system       group  natm/norbit  s2a quartet reduction
+      !!   system       group  natm/norbit  skel. quartet reduction
       !!   water         C2v      1.50          1.47x
       !!   tops_sf6      D2h      1.75          2.44x
       !!   b2h6_d2h      D2h      2.67          3.34x
@@ -480,9 +480,9 @@ contains
       !! The groups of order 2 and 4 (Cs, Ci, C2, C2v, C2h) are declined
       !! wherever an atom sits on a symmetry element, which is most of them --
       !! water at 1.47x, and a planar Cs molecule has no nontrivial shell-pair
-      !! orbit at all. That settles from measurement whether such
-      !! groups should default to the skeleton build: a ~1.5x reduction cannot pay for the
-      !! launches when 2.44x does not.
+      !! orbit at all. So, measured, such groups do not default to the skeleton
+      !! build: a ~1.5x reduction cannot pay for the launches when 2.44x does
+      !! not.
       !!
       !! TRC_SYM_SKELETON=0/1 forces either path.
       integer, intent(in) :: natm, norbit

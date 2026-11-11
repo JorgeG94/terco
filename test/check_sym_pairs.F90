@@ -59,7 +59,7 @@ module check_sym_pairs_suite
       integer(int64) :: nfull = -1  !! admitted quartets of the full enumeration (= eri%nwork)
       integer :: npair = -1  !! significant shell pairs of the working basis
       integer :: nrep = -1  !! orbit representatives
-      integer(int64) :: nraw = -1  !! quartets of the s2a plan before the diagonal fold (reps x all, cheaper side)
+      integer(int64) :: nraw = -1  !! quartets of the skeleton plan before the diagonal fold (reps x all, cheaper side)
    end type expect_t
 
 contains
@@ -443,7 +443,7 @@ contains
       end if
       if (nraw_ref >= 0) then
          call check(error, tot_raw == nraw_ref, label//": rep quartets "//to_string(tot_raw)// &
-                    " against the prototype's s2a "//to_string(nraw_ref))
+                    " against the prototype's "//to_string(nraw_ref))
          if (allocated(error)) return
       end if
       ! the skeleton must actually save quartets (|G| > 1 and some orbit larger than 1)
