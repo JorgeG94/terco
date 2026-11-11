@@ -72,8 +72,9 @@
 ! the other layout of the same orbital is cached it is a permuting copy from that slot (2 nv^3 doubles moved instead of
 ! the gemm), else the gemm and an in-place exchange of x and y. The run needs A'_j and A2'_j together, so most second
 ! layouts are copies. A kernel appends the t2 columns. S = clamp(slice_bytes / (8 nv^2 (nv + no)), 4, 2 no); with
-! `slice_bytes` = 0 the device build gives the slices the free device memory (queried before the plan is mapped, so
-! what the CCSD left mapped is counted) less the rest of the plan and a 2 GiB reserve, and the host build 16 GiB.
+! `slice_bytes` = 0 the device build sizes the whole plan to 80% of the free device memory, and at least 2 GiB short
+! of all of it (queried before the plan is mapped, so what the CCSD left mapped is counted); the slices get what the
+! rest of the plan leaves of that. The host build gives them 16 GiB.
 !
 ! Measured on GH200 with every slice cached (seconds of slice work, "repacks and slice builds", which also holds the
 ! tvb repacks): no 20, nv 265, naux 705, S = 40 = 2 no: 0.029 for 40 builds, against 0.022 gathering them from the
@@ -151,8 +152,12 @@ module trc_rccsd_triples_ijk
    integer(int64), parameter :: DEFAULT_BUDGET = 2147483648_int64  !! bytes of the Q tile when `budget_bytes` is 0
    integer(int64), parameter :: DEFAULT_SLICE_BYTES = 17179869184_int64
    !! bytes of cached slices when `slice_bytes` is 0 on the host, or when the free device memory is unknown (header)
+   real(dp), parameter :: SLICE_FREE_FRACTION = 0.8_dp
+   !! share of the free device memory the whole plan (slices and the rest) may take when the cache is sized from it:
+   !! the rest stays for cuBLAS workspaces, later allocations and other processes on the device
    integer(int64), parameter :: SLICE_RESERVE = 2147483648_int64
-   !! device bytes left free for the libraries (cuBLAS workspace) when the slice cache is sized from free memory
+   !! the least device memory left free when the slice cache is sized from free memory (the floor of the 20% margin
+   !! on small devices)
 
    type :: trc_rccsd_triples_ijk_scratch_t
       !! The device arrays of one occupied-driven (T) and the plan they were sized for, see the module header
@@ -294,9 +299,10 @@ contains
    end subroutine scratch_init
 
    function slice_cache_bytes(requested, other) result(bytes)
-      !! Bytes for the slice cache: `requested` when above 0; else, on a device build, the free device memory less
-      !! `other` (the rest of the plan) and SLICE_RESERVE for the libraries, queried before the plan is mapped, so
-      !! that whatever the CCSD left mapped is already counted; 16 GiB on the host or when the query gives nothing.
+      !! Bytes for the slice cache: `requested` when above 0; else, on a device build, SLICE_FREE_FRACTION of the free
+      !! device memory (at most all of it less SLICE_RESERVE) less `other` (the rest of the plan), queried before the
+      !! plan is mapped, so that whatever the CCSD left mapped is already counted; 16 GiB on the host or when the
+      !! query gives nothing.
       !! The caller clamps the result to 4..2 no slices
 #ifdef TRC_DEVICE
       use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, acc_property_free_memory
@@ -315,7 +321,8 @@ contains
 #ifdef TRC_DEVICE
       free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
                                   acc_property_free_memory), int64)
-      if (free > 0) bytes = max(free - other - SLICE_RESERVE, 0_int64)
+      ! the whole plan within SLICE_FREE_FRACTION of what is free, and never closer than SLICE_RESERVE to all of it
+      if (free > 0) bytes = max(min(int(SLICE_FREE_FRACTION*real(free, dp), int64), free - SLICE_RESERVE) - other, 0_int64)
 #endif
    end function slice_cache_bytes
 
