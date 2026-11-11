@@ -174,7 +174,7 @@ and the JSON and ends the run with exit status 1.
 RI-CCSD is closed-shell Hartree-Fock only, on one rank, with no effective core
 potential and no gradient. It is refused with `[scf] functional`, `[molecule]
 unpaired`, `[driver]` `gradient`, `hessian` or `optimize`, and with `method =
-"rimp2"` (it reports the MP2 correlation energy itself). A basis in which
+"rimp2"` (it reports the RI-MP2 correlation energy itself). A basis in which
 `[basis] linear_dependence` dropped functions is refused after the SCF, because
 the method needs every orbital: lower the threshold (0 drops none). See
 `docs/sphinx/cli.md` for the memory it needs and what has been measured.

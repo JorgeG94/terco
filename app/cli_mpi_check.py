@@ -48,7 +48,7 @@ import tempfile
 TOL = 1.0e-8
 ENERGY_RE = re.compile(r"TOTAL ENERGY\s+(-?\d+\.\d+)")
 EXC_RE = re.compile(r"exchange-correlation\s+(-?\d+\.\d+)")
-MP2_RE = re.compile(r"MP2 CORRELATION\s+(-?\d+\.\d+)")
+MP2_RE = re.compile(r"RI-MP2 CORRELATION\s+(-?\d+\.\d+)")
 MP2_TOL = 1.0e-10
 
 

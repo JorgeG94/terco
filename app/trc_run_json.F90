@@ -90,7 +90,7 @@ contains
       call json%add(root, "ri-ccsd active occupied", int(r%cc_nactive))
       call json%add(root, "ri-ccsd virtual orbitals", int(r%cc_nvirtual))
       call json%add(root, "ri-ccsd auxiliary functions", int(r%cc_naux))
-      call json%add(root, "ri-ccsd mp2 correlation energy", real(r%cc_e_mp2, dp))
+      call json%add(root, "ri-mp2 correlation energy", real(r%cc_e_mp2, dp))
       call json%add(root, "ri-ccsd correlation energy", real(r%cc_e_ccsd, dp))
       call json%add(root, "ri-ccsd t1 diagnostic", real(r%cc_t1_diagnostic, dp))
       if (r%cc_has_triples) call json%add(root, "ri-ccsd triples correction", real(r%cc_e_t, dp))

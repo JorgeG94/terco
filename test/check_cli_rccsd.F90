@@ -274,8 +274,13 @@ contains
       call check(error, found .and. abs(v - refs%e_ccsd_t) < TOL_TOTAL + PRINT_ROUNDING, &
                  "the summary's TOTAL RI-CCSD(T) ENERGY "//to_string(v, "f20.12")//" vs pyscf "//to_string(refs%e_ccsd_t, "f20.12"))
       if (allocated(error)) return
-      call summary_value('triples', "MP2 CORRELATION", v, found)
-      call check(error, found .and. abs(v - refs%e_mp2) < 1.0e-10_dp + PRINT_ROUNDING, "the summary's MP2 CORRELATION "// &
+      call summary_value('triples', "RI-MP2 CORRELATION", v, found)
+      call check(error, found .and. abs(v - refs%e_mp2) < 1.0e-10_dp + PRINT_ROUNDING, "the summary's RI-MP2 CORRELATION "// &
+                 to_string(v, "f20.12")//" vs pyscf "//to_string(refs%e_mp2, "f20.12"))
+      if (allocated(error)) return
+      ! The MP2 of an RI-CCSD run is the density-fitted one and the JSON names it so.
+      call json_real('triples', "ri-mp2 correlation energy", v, found)
+      call check(error, found .and. abs(v - refs%e_mp2) < 1.0e-10_dp, 'the JSON "ri-mp2 correlation energy" '// &
                  to_string(v, "f20.12")//" vs pyscf "//to_string(refs%e_mp2, "f20.12"))
       if (allocated(error)) return
       call json_int('triples', "ri-ccsd iterations", iterations, found)
@@ -536,7 +541,7 @@ contains
       if (allocated(error)) return
       call check(error, index(text, "not converged in 2 iterations") > 0, "no error message with the count (the library's)")
       if (allocated(error)) return
-      call check(error, index(text, "TOTAL MP2 ENERGY") > 0, "the MP2 total is missing although the MP2 part is finished")
+      call check(error, index(text, "TOTAL RI-MP2 ENERGY") > 0, "the RI-MP2 total is missing although the MP2 part is finished")
       if (allocated(error)) return
       call check(error, index(text, "TOTAL RI-CCSD ENERGY") == 0 .and. index(text, "(T) CORRECTION") == 0, &
                  "a total or a (T) correction is printed for an unconverged CCSD")

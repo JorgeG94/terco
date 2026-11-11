@@ -33,8 +33,9 @@ evaluation, VV10) and, with `--df`, a `dfjk:` breakdown of the fitted J/K
 build (metric Cholesky, the three-centre integrals, the half-transform,
 ...), each with its own achieved FLOP rate or bandwidth where that is
 meaningful. An unrestricted run prints HOMO/LUMO per spin; `--rimp2` adds a
-`TOTAL MP2 ENERGY` line and the opposite-/same-spin components;
-`--riccsd`/`--riccsd-t` add the MP2 and RI-CCSD correlation energies, the
+`RI-MP2 CORRELATION` and a `TOTAL RI-MP2 ENERGY` line and the opposite-/same-spin
+components (the MP2 here is always the density-fitted one, and is labelled so);
+`--riccsd`/`--riccsd-t` add the RI-MP2 and RI-CCSD correlation energies, the
 (T) correction and the RI-CCSD and RI-CCSD(T) totals to the energy box (`TOTAL
 ENERGY` stays the SCF energy, as with `--rimp2`; the correlated totals are
 `TOTAL RI-CCSD ENERGY` and `TOTAL RI-CCSD(T) ENERGY`); `--pcm`
@@ -108,7 +109,7 @@ A `--grad` run adds a `"gradient"` array; `--rimp2` adds an
 `"mp2 opposite spin"`/`"mp2 same spin"` pair and a correlated total;
 `--riccsd`/`--riccsd-t` add `"ri-ccsd converged"`, `"ri-ccsd iterations"`,
 `"ri-ccsd frozen core orbitals"`, `"ri-ccsd active occupied"`, `"ri-ccsd virtual
-orbitals"`, `"ri-ccsd auxiliary functions"`, `"ri-ccsd mp2 correlation
+orbitals"`, `"ri-ccsd auxiliary functions"`, `"ri-mp2 correlation
 energy"`, `"ri-ccsd correlation energy"`, `"ri-ccsd t1 diagnostic"` and, when the
 RI-CCSD converged, `"ri-ccsd total energy"` (and with (T) `"ri-ccsd triples
 correction"` and `"ri-ccsd triples total energy"`; `"total energy"` stays the

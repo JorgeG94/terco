@@ -175,8 +175,8 @@ contains
             call line("PT2 CORRELATION", r%eos + r%ess)
             call line("DOUBLE HYBRID TOTAL", r%etot_dh)
          else
-            call line("MP2 CORRELATION", r%eos + r%ess)
-            call line("TOTAL MP2 ENERGY", r%etot + r%eos + r%ess)
+            call line("RI-MP2 CORRELATION", r%eos + r%ess)
+            call line("TOTAL RI-MP2 ENERGY", r%etot + r%eos + r%ess)
          end if
       end if
       if (r%cc .and. r%cc_ran) call cc_lines(r)
@@ -193,8 +193,8 @@ contains
       if (len(r%func) > 0) call row("exchange-correlation", r%exc)
       if (len(r%pcm) > 0) call row("solvation (E_diel)", r%epcm)
       if (r%rimp2 .and. r%conv /= 0) then
-         call row(merge("PT2 opposite spin", "MP2 opposite spin", r%dh), r%eos)
-         call row(merge("PT2 same spin    ", "MP2 same spin    ", r%dh), r%ess)
+         call row(merge("PT2 opposite spin   ", "RI-MP2 opposite spin", r%dh), r%eos)
+         call row(merge("PT2 same spin   ", "RI-MP2 same spin", r%dh), r%ess)
          if (r%dh) call row("double hybrid total", r%etot_dh)
       end if
       if (r%cc .and. r%cc_ran) call cc_rows(r)
@@ -210,9 +210,9 @@ contains
       if (.not. r%cc_converged) then
          call cc_note("RI-CCSD DID NOT CONVERGE: last iterate below")
       end if
-      call cc_line("MP2 CORRELATION", r%cc_e_mp2)
+      call cc_line("RI-MP2 CORRELATION", r%cc_e_mp2)
       call cc_line("RI-CCSD CORRELATION", r%cc_e_ccsd)
-      call cc_line("TOTAL MP2 ENERGY", r%etot + r%cc_e_mp2)
+      call cc_line("TOTAL RI-MP2 ENERGY", r%etot + r%cc_e_mp2)
       if (r%cc_converged) then
          call cc_line("TOTAL RI-CCSD ENERGY", r%etot + r%cc_e_ccsd)
          if (r%cc_has_triples) then
@@ -259,7 +259,7 @@ contains
       call cc_count_row("ri-ccsd active occupied", r%cc_nactive)
       call cc_count_row("ri-ccsd virtual orbitals", r%cc_nvirtual)
       call cc_count_row("ri-ccsd auxiliary functions", r%cc_naux)
-      call cc_row("ri-ccsd mp2 correlation energy", r%cc_e_mp2)
+      call cc_row("ri-mp2 correlation energy", r%cc_e_mp2)
       call cc_row("ri-ccsd correlation energy", r%cc_e_ccsd)
       if (r%cc_has_triples) call cc_row("ri-ccsd triples correction", r%cc_e_t)
       if (r%cc_converged) then
