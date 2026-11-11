@@ -93,7 +93,7 @@ module trc_scf_driver
    use trc_ecp_types, only: trc_ecp_t
    use trc_error, only: error_t
    use trc_linalg, only: trc_linalg_t
-   use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_energies_t, &
+   use trc_scf_settings, only: trc_scf_options_t, trc_scf_result_t, trc_scf_timings_t, scf_settings_t, scf_energies_t, &
                                scf_settings_homo_lumo_gap
    use trc_scf_context, only: scf_ctx_t, scf_context_bcast_flat, trc_grid_cache_t, trc_pair_eri_cache_t, scf_context_project_density
    use trc_scf_state, only: scf_state_t, scf_timers_t
@@ -424,6 +424,8 @@ contains
          call scf_fock_fold_g(scf_basis, scf_context, scf_config, scf_state)
          scf_timers%tf_it = scf_timers%fock%get_elapsed_time()
          scf_timers%t_fock = scf_timers%t_fock + scf_timers%tf_it
+         scf_timers%n_fock = scf_timers%n_fock + 1
+         if (scf_timers%n_fock == 1) scf_timers%tf_first = scf_timers%tf_it
          call scf_timers%xc%start()
          ! --- exchange-correlation: finds its (Cartesian) density present ----
          if (scf_config%dft) then
@@ -630,6 +632,7 @@ contains
          call scf_timers%xcst%add_time(2, scf_timers%t_xc - scf_timers%t_vv10)
          call scf_timers%xcst%add_time(3, scf_timers%t_vv10)
       end if
+      call scf_driver_fill_timings(scf_context, scf_timers, scf_config, scf_result%timings)
       if (scf_config%talk) then
          call report_timing(scf_context, scf_timers, scf_config%dft, pair_eri_cache%eri%t_build)
          if (scf_config%dft) then
@@ -731,6 +734,30 @@ contains
       end subroutine orbitals_and_density
 
    end subroutine trc_scf_run
+
+   subroutine scf_driver_fill_timings(scf_context, scf_timers, scf_config, tm)
+      !! The run's stage times into the result, for `--json` and the
+      !! regression bench: the totals `report_timing` prints, plus the
+      !! first build kept apart.
+      type(scf_ctx_t), intent(in) :: scf_context
+      type(scf_timers_t), intent(in) :: scf_timers
+      type(scf_settings_t), intent(in) :: scf_config
+      type(trc_scf_timings_t), intent(out) :: tm
+      tm%wall = scf_timers%run%get_elapsed_time()
+      tm%setup = scf_context%t_setup
+      tm%fock_total = scf_timers%t_fock
+      tm%fock_first = scf_timers%tf_first
+      tm%n_fock = scf_timers%n_fock
+      tm%has_grid = scf_config%dft
+      tm%has_vv10 = scf_config%dft .and. scf_config%nlc
+      tm%has_pcm = scf_config%pcm_on
+      tm%has_df = scf_config%df
+      tm%grid = scf_context%t_grid
+      tm%xc = scf_timers%t_xc - scf_timers%t_vv10
+      tm%vv10 = scf_timers%t_vv10
+      tm%pcm_setup = scf_context%t_pcm_setup
+      tm%pcm_total = scf_timers%t_pcm
+   end subroutine scf_driver_fill_timings
 
    subroutine report_timing(scf_context, scf_timers, dft, t_eri_build)
       !! Where the run's time went, through pic's logger at PERFORMANCE,

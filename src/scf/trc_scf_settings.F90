@@ -27,7 +27,7 @@ module trc_scf_settings
    implicit none
    private
 
-   public :: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_settings_spin_rule, scf_energies_t
+   public :: trc_scf_options_t, trc_scf_result_t, trc_scf_timings_t, scf_settings_t, scf_settings_spin_rule, scf_energies_t
    public :: scf_settings_eri_thresh_env
    public :: scf_settings_homo_lumo_gap
    public :: scf_settings_fock_densities
@@ -269,6 +269,21 @@ module trc_scf_settings
       real(dp) :: pcm_qtotal = 0.0_dp  !! total apparent surface charge
    end type scf_energies_t
 
+   type :: trc_scf_timings_t
+      !! The SCF's own stage times, seconds, read off the loop's pic timers
+      !! once the run ends (the Fock timer stops after a synchronous device
+      !! kernel; the XC build syncs explicitly). `has_*` say which stages the run had; a stage it did not
+      !! have stays 0 and is not reported.
+      real(dp) :: wall = 0.0_dp        !! `trc_scf_run` from entry to the last iteration
+      real(dp) :: setup = 0.0_dp       !! once per geometry: pairs, 1e, ERI context, linalg
+      real(dp) :: fock_total = 0.0_dp  !! all Fock (two-electron) builds of the loop
+      real(dp) :: fock_first = 0.0_dp  !! build 1, which carries one-off device and kernel setup
+      integer :: n_fock = 0            !! Fock builds taken by the main loop
+      real(dp) :: grid = 0.0_dp, xc = 0.0_dp, vv10 = 0.0_dp   !! xc excludes vv10
+      real(dp) :: pcm_setup = 0.0_dp, pcm_total = 0.0_dp      !! cavity and K once; the loop's solves summed
+      logical :: has_grid = .false., has_vv10 = .false., has_pcm = .false., has_df = .false.
+   end type trc_scf_timings_t
+
    type :: trc_scf_result_t
       logical :: converged = .false.
       integer :: iterations = 0
@@ -282,6 +297,7 @@ module trc_scf_settings
       real(dp) :: e_pcm = 0.0_dp       !! PCM dielectric energy q.v/2, included in `energy`
       real(dp) :: pcm_qtotal = 0.0_dp  !! total apparent surface charge
       integer :: pcm_npoints = 0       !! surface points the cavity kept
+      type(trc_scf_timings_t) :: timings
       integer :: n_increments = 0
       !! Fock builds taken from the density difference (trc_scf_incremental);
       !! the rest of `iterations` were full builds, the last one always.

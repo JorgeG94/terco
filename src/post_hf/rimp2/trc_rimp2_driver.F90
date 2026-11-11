@@ -140,6 +140,9 @@ module trc_rimp2_driver
       real(dp) :: e_ss = 0.0_dp     !! same-spin pair energy
       real(dp) :: e_corr = 0.0_dp   !! E_os + E_ss
       integer :: naux = 0, nocc = 0, nvir = 0  !! number of auxiliary, occupied, and virtual orbitals
+      real(dp) :: t_total = 0.0_dp   !! wall time of the whole call, read after the device queue drained (since()), seconds
+      character(len=24), allocatable :: step_name(:)   !! the step table's names, as printed
+      real(dp), allocatable :: step_t(:)               !! and each step's seconds (the job's slowest rank)
       character(len=200) :: message = ""
    end type trc_rimp2_result_t
 
@@ -660,9 +663,7 @@ contains
          dense_mask(ST_KGEMM) = .true.
          call stab%report(since(la, tw0), rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
       end if
-      res%e_os = e_os
-      res%e_ss = e_ss
-      res%e_corr = e_os + e_ss
+      call rimp2_store_result(res, stab, since(la, tw0), e_os, e_ss)
    end subroutine trc_rimp2_run
 
    subroutine rimp2_unpack_block(nao, npack, naux, np, p0, packed_b, tens)
@@ -1125,10 +1126,23 @@ contains
          dense_mask(ST_KGEMM) = .true.
          call stab%report(since(la, tw0), rank, nranks, subtotal_mask=dense_mask, subtotal_label="all dense algebra")
       end if
-      res%e_os = e_ab
-      res%e_ss = e_aa + e_bb
-      res%e_corr = res%e_os + res%e_ss
+      call rimp2_store_result(res, stab, since(la, tw0), e_ab, e_aa + e_bb)
    end subroutine trc_urimp2_run
+
+   subroutine rimp2_store_result(res, stab, t_total, e_os, e_ss)
+      !! The pair energies and, for `--json` and the regression bench, the
+      !! step table's times into the result (each step waits for the device
+      !! before its clock starts and stops).
+      type(trc_rimp2_result_t), intent(inout) :: res
+      type(step_table_t), intent(in) :: stab
+      real(dp), intent(in) :: t_total, e_os, e_ss
+      res%e_os = e_os
+      res%e_ss = e_ss
+      res%e_corr = e_os + e_ss
+      res%t_total = t_total
+      res%step_name = stab%names
+      res%step_t = stab%t
+   end subroutine rimp2_store_result
 
    !
    ! The time `tm` has run, read after everything queued on the device has
