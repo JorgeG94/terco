@@ -34,6 +34,9 @@
 !  13 its tiles of 1, 2 and 7 occupied triples, all of them, the default budget, a one-triple budget and a slice
 !     cache of 4 (evicting) agree; a budget
 !     below one triple is refused; `rccsd_triples_finish` with it agrees with the reference
+!  14 its slice caches of 4, 8 and 12 slots (blocks of 1, 2 and 3 occupied orbitals, triples visited block triple by
+!     block triple) give E(T) and per-triple energies BITWISE equal to the all-cached run, with and without the
+!     i = j = k triples; that run against the reference and pyscf
 ! and, once, without a molecule:
 !   - two electrons (one occupied orbital): E(T) = 0 for any integrals and amplitudes
 !   - random integrals with the symmetries of the real ones and more virtuals than one c batch (nv = 40): the
@@ -171,7 +174,7 @@ module check_rccsd_triples_suite
    private
    public :: collect_check_rccsd_triples
 
-   integer, parameter :: NCASE = 13
+   integer, parameter :: NCASE = 14
    integer, parameter :: REF_E_SCF = 1, REF_E_CCSD_CORR = 2, REF_E_T = 3, REF_E_CCSD_T = 4, REF_E_T_FIXED = 5, &
                          REF_E_T_NO_T1 = 6, NREF = 6  !! indices into the scalars read from a .ref
    ! Tolerances sit about one order above what is measured (host gfortran build and a V100), so a regression at the
@@ -243,6 +246,8 @@ contains
                   new_unittest("water: occupied-driven tiles, budgets and finish", w13), &
                   new_unittest("h2o2: occupied-driven device (T) vs reference, pyscf and the independent evaluation", h12), &
                   new_unittest("h2o2: occupied-driven tiles, budgets and finish", h13), &
+                  new_unittest("water: occupied-driven slice-cache blocks give bit-identical energies", w14), &
+                  new_unittest("h2o2: occupied-driven slice-cache blocks give bit-identical energies", h14), &
                   new_unittest("two electrons: (T) is zero", two_electrons), &
                   new_unittest("random symmetric integrals, nv above the c batch", random_symmetric), &
                   new_unittest("an empty space is a refusal", empty_space), &
@@ -356,6 +361,14 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call run_case(error, 13, 2)
    end subroutine h13
+   subroutine w14(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 14, 1)
+   end subroutine w14
+   subroutine h14(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 14, 2)
+   end subroutine h14
 
    subroutine run_case(error, ic, im)
       type(error_type), allocatable, intent(out) :: error
@@ -492,6 +505,7 @@ contains
       call device_finish_case(im, label, state)
       call ijk_cases(im, label, state, fixed, refs)
       call ijk_tile_cases(im, label, state, fixed)
+      call ijk_block_cases(im, label, state, fixed, refs)
       call device_refusal_cases(im, label, state, fixed, bas, aux, pl, res, nocc, nfz)
       call fixed%release()
       call state%release()
@@ -814,6 +828,91 @@ contains
                   ", largest difference "//to_string(spread, "es9.2")//"; a budget one byte short: ["// &
                   st_small%get_message()//"]; finish against the reference "//to_string(abs(e_fin - e_ref), "es9.2"))
    end subroutine ijk_tile_cases
+
+   subroutine ijk_block_cases(im, label, state, fixed, refs)
+      !! Case 14: slice caches of 4, 8 and 12 slots (blocks of 1, 2 and 3 occupied orbitals, the last block shorter
+      !! where no is not a multiple) visit the triples out of order, block triple by block triple; E(T) and every
+      !! triple's energy must be BITWISE those of the all-cached run (one block, the canonical order), with and without
+      !! the i = j = k triples, and the all-cached E(T) must match the reference and pyscf
+      integer, intent(in) :: im
+      character(len=*), intent(in) :: label
+      type(trc_rccsd_state_t), intent(in) :: state
+      type(trc_rccsd_amps_t), intent(in) :: fixed
+      real(dp), intent(in) :: refs(:)
+
+      integer, parameter :: NRUN = 4
+      type(trc_rccsd_triples_dev_options_t) :: dopts
+      type(trc_rccsd_triples_ijk_scratch_t) :: ts
+      type(trc_linalg_t) :: la
+      type(error_t) :: status
+      real(dp), allocatable :: e_trip(:, :)
+      real(dp), allocatable :: e_one(:)
+      real(dp) :: e(NRUN), e_ref, d_ref, d_py
+      integer :: slots(NRUN), nslot(NRUN), nblock(NRUN), r, id, no, nblocks
+      integer(int64) :: builds(NRUN), bound, slice
+      logical :: ok, same, counts
+      character(len=:), allocatable :: text
+      character(len=:), allocatable :: diff_text
+
+      no = state%ints%no
+      slice = 8_int64*state%ints%nv*state%ints%nv*(state%ints%nv + no)
+      slots = [4, 8, 12, 2*no]
+      ok = .true.
+      text = label//"ijk slice-cache blocks:"
+      call la%init(1)
+      call rccsd_triples_reference(state%ints, fixed, e_ref, status)
+      do id = 1, 2
+         dopts%diagonal_triples = id == 2
+         do r = 1, NRUN
+            dopts%slice_bytes = slots(r)*slice
+            call ts%init(state%ints, dopts)
+            if (ts%status%has_error()) error stop "check_rccsd_triples: "//ts%status%get_message()
+            call rccsd_triples_ijk_run_scratch(state%ints, fixed, ts, la, e(r), status, e_one)
+            if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+            if (.not. allocated(e_trip)) allocate (e_trip(size(e_one), NRUN))
+            e_trip(:, r) = e_one
+            nslot(r) = ts%nslot
+            nblock(r) = ts%nblock
+            builds(r) = ts%ngathers
+            ! pinning builds at most the 4 nblock slices of each block triple, and every build is a GEMM or a copy
+            nblocks = (no + ts%nblock - 1)/ts%nblock
+            bound = 4_int64*ts%nblock*(int(nblocks, int64)*(nblocks + 1)*(nblocks + 2)/6)
+            counts = ts%ngathers == ts%ngemm_builds + ts%ncopy_builds .and. ts%ngathers <= bound
+            if (ts%nslot >= 2*no) then
+               counts = counts .and. ts%nblock == no .and. ts%ngathers == 2*no
+            else
+               counts = counts .and. ts%nblock == max(1, ts%nslot/4)
+            end if
+            ok = ok .and. counts .and. nslot(r) == min(slots(r), 2*no)
+            call ts%release()
+         end do
+         ! bitwise: a triple's energy does not depend on the tile or the block triple it is computed in
+         same = all(e == e(NRUN))
+         do r = 1, NRUN
+            same = same .and. all(e_trip(:, r) == e_trip(:, NRUN))
+         end do
+         ! which cache size differs, by how much and in how many triples, so a failure points at its block size
+         diff_text = ""
+         do r = 1, NRUN - 1
+            diff_text = diff_text//" "//to_string(nslot(r))//" slots: |dE| "//to_string(abs(e(r) - e(NRUN)), "es9.2")// &
+                        " triples "//to_string(count(e_trip(:, r) /= e_trip(:, NRUN)))//" worst "// &
+                        to_string(maxval(abs(e_trip(:, r) - e_trip(:, NRUN))), "es9.2")//";"
+         end do
+         d_ref = abs(e(NRUN) - e_ref)
+         d_py = abs(e(NRUN) - refs(REF_E_T_FIXED))
+         ok = ok .and. same .and. d_ref < TOL_IJK_REF .and. d_py < TOL_PYSCF_FIXED
+         text = text//merge(" diagonal on: ", " default:     ", id == 2)//"slots "//to_string(nslot(1))//"/"// &
+                to_string(nslot(2))//"/"//to_string(nslot(3))//"/"//to_string(nslot(4))//", blocks "// &
+                to_string(nblock(1))//"/"//to_string(nblock(2))//"/"//to_string(nblock(3))//"/"// &
+                to_string(nblock(4))//", builds "//to_string(builds(1))//"/"//to_string(builds(2))//"/"// &
+                to_string(builds(3))//"/"//to_string(builds(4))//", bitwise equal "//merge("yes", "no ", same)// &
+                ", E(T) "//to_string(e(NRUN), "f20.14")//" |reference| "//to_string(d_ref, "es9.2")//" |pyscf| "// &
+                to_string(d_py, "es9.2")//";"
+         if (.not. same) text = text//" against "//to_string(nslot(NRUN))//" slots:"//diff_text
+      end do
+      call la%release()
+      call record(im, 14, ok, text)
+   end subroutine ijk_block_cases
 
    pure function run_tiles(no, cap) result(n)
       !! Tiles of the occupied-driven routine for tiles of up to `cap` triples: ceil(j / cap) for each pair i >= j

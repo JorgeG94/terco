@@ -71,21 +71,36 @@
 ! (nv, nv^2, naux, 2 nv^3 naux flops) with b_vv read in place, straight into the slot. A2'_o(x,y,f) = A'_o(y,x,f): when
 ! the other layout of the same orbital is cached it is a permuting copy from that slot (2 nv^3 doubles moved instead of
 ! the gemm), else the gemm and an in-place exchange of x and y. The run needs A'_j and A2'_j together, so most second
-! layouts are copies. A kernel appends the t2 columns. S = clamp(slice_bytes / (8 nv^2 (nv + no)), 4, 2 no),
-! `slice_bytes` 16 GiB by default, least-recently-used eviction that never evicts a slice the current work needs (A'_i,
-! A'_j, A2'_j and A2'_k). Measured on GH200 (seconds of slice work, "repacks and slice builds", which also holds the
+! layouts are copies. A kernel appends the t2 columns. S = clamp(slice_bytes / (8 nv^2 (nv + no)), 4, 2 no); with
+! `slice_bytes` = 0 the device build gives the slices the free device memory (queried before the plan is mapped, so
+! what the CCSD left mapped is counted) less the rest of the plan and a 2 GiB reserve, and the host build 16 GiB.
+!
+! Measured on GH200 with every slice cached (seconds of slice work, "repacks and slice builds", which also holds the
 ! tvb repacks): no 20, nv 265, naux 705, S = 40 = 2 no: 0.029 for 40 builds, against 0.022 gathering them from the
 ! dense block (the 20 gemms are 0.52 TFLOP); (H2O)6 cc-pVTZ, no 24, nv 318, naux 846: 0.187 for 272 builds with
 ! 8 GiB (S = 31 of 48), against 0.246 gathering, and 0.042 for 48 builds with S = 48 = 2 no, where the whole (T) went
 ! from 9.34 s to 9.06 s: hence 16 GiB (13.3 GB of slots there, 5.1 GB more than at 8 GiB; the dense block it
 ! replaces was 6.2 GB). Three role slots in the first version took 1520 gathers and 0.69 s.
 !
-! WIDE GEMMS. A tile is a run of consecutive k at one (i,j), cut where (i,j) changes or at capacity, stored as
-! q(nv^3, triple, frame) so one frame's arrays are consecutive in k. Over a run k = k0..kb four of the six products
-! are one gemm each with n = nv (kb - k0 + 1): U1 [A'_i, tvb2(:,:,k,j)] and [A2'_j, tvb2(:,:,k,i)], U2 [A'_i,
-! tvb(:,:,k,j)], U3 [A'_j, tvb(:,:,k,i)]; the swapped parts of U2 and U3 have the slot A2'_k and stay one gemm per
-! triple. At i = j U3 is not computed (it is U2); at the j = k end of a run the U2 products stop at k = j - 1 (U2 is
-! U1 there); a skipped i = j = k triple is left out of the run. No array is computed twice.
+! BLOCKED ORDER. A triple reads A'_i, A'_j, A2'_j and A2'_k. With S < 2 no the canonical order cycles A2'_k, k = 1..j,
+! for every (i,j), and least-recently-used eviction then drops exactly the slice needed next. So the occupied orbitals
+! are cut into blocks of B = S / 4 (B = no, one block and the canonical order, when S >= 2 no) and the triples are
+! visited block triple by block triple, IB >= JB >= KB with KB fastest, inside one i, j, k-fastest with i in IB, j in
+! JB, k in KB (and i >= j >= k). A block triple reads at most 4 B <= S slices (A' of IB and JB, A2' of JB and KB):
+! `pin_block` stamps the cached ones, then builds the rest (A' before A2' of one orbital, so the second is a copy), so
+! nothing is evicted inside a block triple and the eviction between them only drops slices the next one does not read.
+! Builds become about B per IB, per (IB,JB) and per block triple. Measured on GH200, (H2O)9 cc-pVTZ / cc-pVTZ-RIFIT
+! (no 36, nv 477, naux 1269), E(T) the same to all 12 printed digits, seconds of the (T) less the mapping in `init`
+! (4 to 47 s for the same plan from run to run): S = 18 (16 GiB) in the canonical order 6208 builds, 53.7 s of slice
+! work, 233 (the sum of the stages); the same S blocked (B = 4) 729 builds (559 GEMM, 170 copies), 5.2 s, 186-189;
+! S sized from free memory, 72 = 2 no (74.9 GB of scratch, device peak 90.1 of 97.9 GB), 72 builds, 0.31 s, 184-185.
+!
+! WIDE GEMMS. A tile is a run of consecutive k at one (i,j), cut where (i,j) changes, at the end of the block KB or at
+! capacity, stored as q(nv^3, triple, frame) so one frame's arrays are consecutive in k. Over a run k = k0..kb four of
+! the six products are one gemm each with n = nv (kb - k0 + 1): U1 [A'_i, tvb2(:,:,k,j)] and [A2'_j, tvb2(:,:,k,i)],
+! U2 [A'_i, tvb(:,:,k,j)], U3 [A'_j, tvb(:,:,k,i)]; the swapped parts of U2 and U3 have the slot A2'_k and stay one
+! gemm per triple. At i = j U3 is not computed (it is U2); at the j = k end of a run the U2 products stop at k = j - 1
+! (U2 is U1 there); a skipped i = j = k triple is left out of the run. No array is computed twice.
 ! Measured (energy and gemms per tile size, seconds): tiles of 1 triple 3.91 in all (gemms 2.02 + 1.05), 2 triples
 ! 3.61, 4 triples 3.42 (wide 1.73 at 35 TFLOP/s), 8 triples 3.40, 18 triples 3.40: the default budget, 2 GiB, holds
 ! 4 triples at nv = 265 (447 MB each).
@@ -98,8 +113,10 @@
 ! index the item loops over was measured with six arrays (energy kernels, s): over a 2.94, over c 3.42, over b 4.76;
 ! threads sweeping 2-D (c,b) blocks were slower (8x4 2.82, 16x2 2.82, 4x8 3.04 against 2.33). Energy kernels went
 ! 2.25 (six arrays) -> 2.05 (compact V) -> 0.97 (four arrays) -> 0.59 (three, tiles of 4). The per-triple energies
-! come to the host and are added with m_o in ascending triple order (i, then j, then k); then times 1/3. No atomics,
-! no dependence on thread scheduling, and the tile size only changes how the work is cut.
+! come to the host, are stored at the triple's canonical position (i, then j, then k fastest) whatever block triple
+! computed them, and are added with m_o in that order; then times 1/3. No atomics, no dependence on thread
+! scheduling: the tile size and the block size only change how the work is cut, and E(T) and the per-triple
+! energies are bitwise the same for any slice cache (tested).
 !
 ! TILES. Q is 3 nv^3 T doubles (24 nv^3 bytes per triple); T = budget / (24 nv^3), `tile_triples` forces it
 ! (tests). `budget_bytes` = 0 means 2 GiB, raised to one triple if that is more (a default must not refuse a large
@@ -132,7 +149,10 @@ module trc_rccsd_triples_ijk
    public :: rccsd_triples_ijk_run, rccsd_triples_ijk_run_scratch
 
    integer(int64), parameter :: DEFAULT_BUDGET = 2147483648_int64  !! bytes of the Q tile when `budget_bytes` is 0
-   integer(int64), parameter :: DEFAULT_SLICE_BYTES = 17179869184_int64  !! bytes of cached slices when `slice_bytes` is 0 (header)
+   integer(int64), parameter :: DEFAULT_SLICE_BYTES = 17179869184_int64
+   !! bytes of cached slices when `slice_bytes` is 0 on the host, or when the free device memory is unknown (header)
+   integer(int64), parameter :: SLICE_RESERVE = 2147483648_int64
+   !! device bytes left free for the libraries (cuBLAS workspace) when the slice cache is sized from free memory
 
    type :: trc_rccsd_triples_ijk_scratch_t
       !! The device arrays of one occupied-driven (T) and the plan they were sized for, see the module header
@@ -145,8 +165,11 @@ module trc_rccsd_triples_ijk
       integer(int64) :: bytes = 0        !! device bytes of the arrays below
       integer(int64) :: ntiles = 0       !! tiles of the last run
       integer(int64) :: ngathers = 0     !! integral slices built in the last run
+      integer(int64) :: ngemm_builds = 0  !! of those, built by the GEMM from the factors
+      integer(int64) :: ncopy_builds = 0  !! of those, permuting copies of the other layout of the same orbital
       integer :: nslot = 0               !! A' slices the cache holds, 4..2 no
-      integer(int64) :: tick = 0         !! triples processed: the clock of the cache
+      integer :: nblock = 0              !! occupied orbitals per block: no when every slice fits, else nslot / 4
+      integer(int64) :: tick = 0         !! block triples begun: the clock of the cache
       integer, allocatable :: orb_slot(:)
       !! slot holding the slice of key o + no (layout - 1), layout 1 A' and 2 A2', 0 for none (2 no)
       integer, allocatable :: slot_orb(:)            !! key in each slot, 0 for none (nslot)
@@ -186,7 +209,7 @@ contains
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_triples_dev_options_t), intent(in) :: opts
 
-      integer(int64) :: no, nv, nv3, budget, per_triple
+      integer(int64) :: no, nv, nv3, budget, per_triple, slice, other
       integer :: ierr
 
       call this%release()
@@ -233,13 +256,18 @@ contains
          this%nv = 0
          return
       end if
+      ! every device byte of the plan but the slices (module header, DEVICE MEMORY); the slice cache takes what is left
+      slice = 8_int64*nv*nv*(nv + no)
+      other = 8_int64*(2*(nv + no)*nv*no*no + 3_int64*nv3*this%ncap + nv*ints%naux + nv*nv*this%ncap + &
+                       3*nv*nv*this%ncap + 4*nv*this%ncap + this%ncap) + 28_int64*this%ncap
+      this%nslot = int(min(max(slice_cache_bytes(opts%slice_bytes, other)/slice, 4_int64), 2*no))
+      if (this%nslot >= 2*no) then
+         this%nblock = this%no
+      else
+         this%nblock = max(1, this%nslot/4)
+      end if
       allocate (this%tvb((nv + no)*nv*no*no), stat=ierr)
       if (ierr == 0) allocate (this%tvb2((nv + no)*nv*no*no), stat=ierr)
-      if (opts%slice_bytes > 0) then
-         this%nslot = int(min(max(opts%slice_bytes/(8_int64*nv*nv*(nv + no)), 4_int64), 2*no))
-      else
-         this%nslot = int(min(max(DEFAULT_SLICE_BYTES/(8_int64*nv*nv*(nv + no)), 4_int64), 2*no))
-      end if
       if (ierr == 0) allocate (this%gs(this%nslot*nv*nv*(nv + no)), stat=ierr)
       if (ierr == 0) allocate (this%bo(nv*ints%naux), stat=ierr)
       if (ierr == 0) allocate (this%orb_slot(2*no), stat=ierr)
@@ -262,9 +290,34 @@ contains
       !$acc enter data create(this%tvb, this%tvb2, this%gs, this%q, this%part, this%vm, this%vt, this%col, this%etrip, this%trip, &
       !$acc                   this%amap, this%bo)
       this%stamp = ints%stamp
-      this%bytes = 8_int64*(2*(nv + no)*nv*no*no + this%nslot*nv*nv*(nv + no) + 3_int64*nv3*this%ncap + nv*ints%naux + &
-                            nv*nv*this%ncap + 3*nv*nv*this%ncap + 4*nv*this%ncap + this%ncap) + 28_int64*this%ncap
+      this%bytes = other + this%nslot*slice
    end subroutine scratch_init
+
+   function slice_cache_bytes(requested, other) result(bytes)
+      !! Bytes for the slice cache: `requested` when above 0; else, on a device build, the free device memory less
+      !! `other` (the rest of the plan) and SLICE_RESERVE for the libraries, queried before the plan is mapped, so
+      !! that whatever the CCSD left mapped is already counted; 16 GiB on the host or when the query gives nothing.
+      !! The caller clamps the result to 4..2 no slices
+#ifdef TRC_DEVICE
+      use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, acc_property_free_memory
+#endif
+      integer(int64), intent(in) :: requested, other
+      integer(int64) :: bytes
+#ifdef TRC_DEVICE
+      integer(int64) :: free
+#endif
+
+      if (requested > 0) then
+         bytes = requested
+         return
+      end if
+      bytes = DEFAULT_SLICE_BYTES
+#ifdef TRC_DEVICE
+      free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
+                                  acc_property_free_memory), int64)
+      if (free > 0) bytes = max(free - other - SLICE_RESERVE, 0_int64)
+#endif
+   end function slice_cache_bytes
 
    subroutine scratch_free(this)
       !! Frees what is allocated; the device copies only for the arrays `init` mapped (all or none)
@@ -290,6 +343,7 @@ contains
       if (allocated(this%slot_orb)) deallocate (this%slot_orb)
       if (allocated(this%slot_used)) deallocate (this%slot_used)
       this%nslot = 0
+      this%nblock = 0
       if (allocated(this%amap)) deallocate (this%amap)
       this%no = 0
       this%nv = 0
@@ -361,10 +415,11 @@ contains
 
       character(len=:), allocatable :: why
       type(timer_type) :: clock
-      integer(int64) :: done, nt
-      integer :: cursor(3)
-      integer :: s, i, j, k
+      real(dp), allocatable :: e_canon(:)
+      integer(int64) :: n
+      integer :: s, i, j, k, nt, ib, jb, kb, nblocks, k1
       real(dp) :: mo, e_sum
+      logical :: cached
 
       e_t = 0.0_dp
       why = inputs_refusal(ints, amps, ts)
@@ -384,6 +439,8 @@ contains
       ts%flops_per = 0.0_dp
       ts%ntiles = 0
       ts%ngathers = 0
+      ts%ngemm_builds = 0
+      ts%ncopy_builds = 0
       call la%sync()
       call clock%start()
       call kernel_pack_tvb(ts%no, ts%nv, amps%t2, ints%ooov, ts%tvb)
@@ -395,45 +452,63 @@ contains
       ts%slot_orb = 0
       ts%slot_used = 0
       ts%tick = 0
-      cursor = [1, 1, 1]
-      done = 0
-      e_sum = 0.0_dp
-      do while (done < ts%ntotal)
-         ! A tile is a run of consecutive k at one (i,j): cut where (i,j) changes or at capacity.
-         nt = min(ts%ncap, ts%ntotal - done, int(cursor(2) - cursor(3) + 1, int64))
-         do s = 1, int(nt)
-            ts%trip(:, s) = cursor
-            ! k fastest, then j, then i: i >= j >= k
-            cursor(3) = cursor(3) + 1
-            if (cursor(3) > cursor(2)) then
-               cursor(3) = 1
-               cursor(2) = cursor(2) + 1
-               if (cursor(2) > cursor(1)) then
-                  cursor(2) = 1
-                  cursor(1) = cursor(1) + 1
+      ! E_ijk at the triple's canonical position, so the sum below is in canonical order whatever the visiting order
+      allocate (e_canon(ts%ntotal))
+      e_canon = 0.0_dp
+      nblocks = (ts%no + ts%nblock - 1)/ts%nblock
+      do ib = 1, nblocks
+         do jb = 1, ib
+            do kb = 1, jb
+               ! every slice the block triple reads is cached before its first tile, and none is evicted until its end
+               call pin_block(ints, amps, ts, la, ib, jb, kb, cached)
+               if (.not. cached) then
+                  call status%set(ERROR_VALIDATION, "trc_rccsd_triples_ijk: the slice cache cannot hold the "// &
+                                  "slices of a block triple ("//to_string(ts%nslot)//" slots, blocks of "// &
+                                  to_string(ts%nblock)//")")
+                  return
                end if
-            end if
+               do i = block_first(ts, ib), block_last(ts, ib)
+                  do j = block_first(ts, jb), min(block_last(ts, jb), i)
+                     ! A tile is a run of consecutive k at one (i,j): cut at the end of the block KB or at capacity.
+                     k = block_first(ts, kb)
+                     k1 = min(block_last(ts, kb), j)
+                     do while (k <= k1)
+                        nt = int(min(ts%ncap, int(k1 - k + 1, int64)))
+                        do s = 1, nt
+                           ts%trip(:, s) = [i, j, k + s - 1]
+                        end do
+                        call run_products(ts, la, nt)
+                        !$acc update device(ts%trip(1:3, 1:nt), ts%amap(1:4, 1:nt))
+                        call tile_energy(ints, amps, ts, la, nt)
+                        !$acc update self(ts%etrip(1:nt))
+                        do s = 1, nt
+                           e_canon(canonical_index(i, j, k + s - 1)) = ts%etrip(s)
+                        end do
+                        k = k + nt
+                        ts%ntiles = ts%ntiles + 1
+                     end do
+                  end do
+               end do
+            end do
          end do
-         call run_products(ints, amps, ts, la, int(nt))
-         !$acc update device(ts%trip(1:3, 1:nt), ts%amap(1:4, 1:nt))
-         call tile_energy(ints, amps, ts, la, int(nt))
-         !$acc update self(ts%etrip(1:nt))
-         ! Added in triple order with the multiplicity of the ordered triples each one stands for.
-         do s = 1, int(nt)
-            i = ts%trip(1, s)
-            j = ts%trip(2, s)
-            k = ts%trip(3, s)
-            mo = 6.0_dp
-            if (i == k) then
-               mo = 1.0_dp
-            else if (i == j .or. j == k) then
-               mo = 3.0_dp
-            end if
-            e_sum = e_sum + mo*ts%etrip(s)
-            if (present(triple_energies)) triple_energies(done + s) = mo*ts%etrip(s)/3.0_dp
+      end do
+      ! Added in triple order (i, then j, then k fastest) with the multiplicity of the ordered triples each one stands for.
+      e_sum = 0.0_dp
+      n = 0
+      do i = 1, ts%no
+         do j = 1, i
+            do k = 1, j
+               n = n + 1
+               mo = 6.0_dp
+               if (i == k) then
+                  mo = 1.0_dp
+               else if (i == j .or. j == k) then
+                  mo = 3.0_dp
+               end if
+               e_sum = e_sum + mo*e_canon(n)
+               if (present(triple_energies)) triple_energies(n) = mo*e_canon(n)/3.0_dp
+            end do
          end do
-         done = done + nt
-         ts%ntiles = ts%ntiles + 1
       end do
       e_t = e_sum/3.0_dp
       if (.not. abs(e_t) <= huge(1.0_dp)) then
@@ -481,18 +556,17 @@ contains
    ! one triple's steps
    ! ---------------------------------------------------------------------
 
-   subroutine run_products(ints, amps, ts, la, nt)
+   subroutine run_products(ts, la, nt)
       !! The arrays of the `nt` triples (i,j,k0..k1) of the tile: the products whose operands do not depend on k are one
-      !! wide gemm over the run, the two whose slot does (A2'(k)) one gemm per triple (module header)
-      type(trc_rccsd_ints_t), intent(in) :: ints
-      type(trc_rccsd_amps_t), intent(in) :: amps
+      !! wide gemm over the run, the two whose slot does (A2'(k)) one gemm per triple (module header). Every slice the
+      !! tile reads is cached (`pin_block`)
       type(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: ts
       type(trc_linalg_t), intent(in) :: la
       integer, intent(in) :: nt
 
       type(timer_type) :: clock
       integer :: i, j, k, k0, kb, k2, s, nv, no, kk, sa, sb, sc, sk
-      real(dp) :: v, gsec
+      real(dp) :: v
 
       nv = ts%nv
       no = ts%no
@@ -515,14 +589,10 @@ contains
       k2 = min(kb, j - 1)   ! U2 is its own array only for k < j
       v = real(nv, dp)
       ! the run's fixed slices, A'(i), A'(j), A2'(j)
+      sa = ts%orb_slot(i)
+      sb = ts%orb_slot(j)
+      sc = ts%orb_slot(j + no)
       call la%sync()
-      call clock%start()
-      ts%tick = ts%tick + 1
-      sa = ensure_slot(ints, amps, ts, i, 1, [i, j, j + no, j + no], la)
-      sb = ensure_slot(ints, amps, ts, j, 1, [i, j, j + no, j + no], la)
-      sc = ensure_slot(ints, amps, ts, j, 2, [i, j, j + no, j + no], la)
-      call la%sync()
-      ts%seconds_gather = ts%seconds_gather + clock%get_elapsed_time()
       call clock%start()
       ! U1 = T(i,j,k) nat [A'(i), tvb(j,k)] + T(j,i,k) swp [A2'(j), tvb(i,k)], k = k0..kb: B' columns from tvb2
       call wide_gemm(ts, la, 1, 1, sa, kb - k0 + 1, 0.0_dp, ts%tvb2(tvb2_pos(ts, k0, j)))
@@ -536,11 +606,10 @@ contains
       ts%flops_wide = ts%flops_wide + 2.0_dp*v*v*v*kk*(2*(kb - k0 + 1) + max(k2 - k0 + 1, 0) + &
                                                        merge(kb - k0 + 1, 0, i /= j))
       ! the swapped terms of U2 and U3 have the slot A2'(k): one gemm per triple
-      gsec = 0.0_dp
       call clock%start()
       do s = 1, kb - k0 + 1
          k = k0 + s - 1
-         sk = ensure_slot(ints, amps, ts, k, 2, [i, j, j + no, k + no], la, gsec)
+         sk = ts%orb_slot(k + no)
          ! U2 += T(k,i,j) swp [A2'(k), tvb(i,j)]
          if (k <= k2) call wide_gemm(ts, la, 2, s, sk, 1, 1.0_dp, ts%tvb(tvb2_pos(ts, i, j)))
          ! U3 += T(k,j,i) swp [A2'(k), tvb(j,i)]
@@ -548,8 +617,7 @@ contains
          ts%flops_per = ts%flops_per + 2.0_dp*v*v*v*kk*(merge(1, 0, k <= k2) + merge(1, 0, i /= j))
       end do
       call la%sync()
-      ts%seconds_per = ts%seconds_per + clock%get_elapsed_time() - gsec
-      ts%seconds_gather = ts%seconds_gather + gsec
+      ts%seconds_per = ts%seconds_per + clock%get_elapsed_time()
    end subroutine run_products
 
    pure function tvb2_pos(ts, a, b) result(pos)
@@ -582,35 +650,105 @@ contains
       call la%gemm("N", "N", nv2, nv*nk, kk, 1.0_dp, ts%gs(gbase), nv2, bt, kk, beta, ts%q(qbase), nv2)
    end subroutine wide_gemm
 
-   function ensure_slot(ints, amps, ts, o, layout, protect, la, gsec) result(slot)
-      !! The slot holding the slice (o, layout), built if missing; `protect` are the keys the current work needs.
-      !! With `gsec`, a build is synchronised and its seconds added to `gsec`
+   subroutine pin_block(ints, amps, ts, la, ib, jb, kb, cached)
+      !! Caches every slice the block triple (ib,jb,kb) reads: A'(o) for o in blocks ib and jb, A2'(o) for o in blocks
+      !! jb and kb, at most 4 nblock <= nslot. The cached ones are stamped first, so the builds that follow evict only
+      !! slices this block triple does not read; layout 1 is built before layout 2 of the same orbital, so the second
+      !! is a copy. `cached` is false when a slot could not be found (impossible while 4 nblock <= nslot)
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: ts
+      type(trc_linalg_t), intent(in) :: la
+      integer, intent(in) :: ib, jb, kb
+      logical, intent(out) :: cached
+
+      type(timer_type) :: clock
+      integer :: o, layout, ob, key
+
+      cached = .true.
+      ts%tick = ts%tick + 1
+      do o = 1, ts%no
+         ob = (o - 1)/ts%nblock + 1
+         do layout = 1, 2
+            key = o + ts%no*(layout - 1)
+            if (block_reads(ob, layout, ib, jb, kb) .and. ts%orb_slot(key) /= 0) ts%slot_used(ts%orb_slot(key)) = ts%tick
+         end do
+      end do
+      call la%sync()
+      call clock%start()
+      do o = 1, ts%no
+         ob = (o - 1)/ts%nblock + 1
+         do layout = 1, 2
+            if (.not. block_reads(ob, layout, ib, jb, kb)) cycle
+            if (ensure_slot(ints, amps, ts, o, layout, la) == 0) then
+               cached = .false.
+               return
+            end if
+         end do
+      end do
+      call la%sync()
+      ts%seconds_gather = ts%seconds_gather + clock%get_elapsed_time()
+   end subroutine pin_block
+
+   pure function block_reads(ob, layout, ib, jb, kb) result(reads)
+      !! Whether the block triple (ib,jb,kb) reads the slice of layout `layout` of an orbital of block `ob`: A'(i),
+      !! A'(j) and A2'(j), A2'(k) (module header, THREE FRAMES)
+      integer, intent(in) :: ob, layout, ib, jb, kb
+      logical :: reads
+
+      if (layout == 1) then
+         reads = ob == ib .or. ob == jb
+      else
+         reads = ob == jb .or. ob == kb
+      end if
+   end function block_reads
+
+   pure function block_first(ts, b) result(o)
+      !! The first occupied orbital of block b
+      type(trc_rccsd_triples_ijk_scratch_t), intent(in) :: ts
+      integer, intent(in) :: b
+      integer :: o
+
+      o = (b - 1)*ts%nblock + 1
+   end function block_first
+
+   pure function block_last(ts, b) result(o)
+      !! The last occupied orbital of block b (the last block may be shorter)
+      type(trc_rccsd_triples_ijk_scratch_t), intent(in) :: ts
+      integer, intent(in) :: b
+      integer :: o
+
+      o = min(b*ts%nblock, ts%no)
+   end function block_last
+
+   pure function canonical_index(i, j, k) result(n)
+      !! The position of the triple i >= j >= k in the order i = 1..no, j = 1..i, k = 1..j, k fastest: the triples
+      !! before i are sum_{i' < i} i' (i' + 1) / 2 = (i - 1) i (i + 1) / 6, those of i before j are (j - 1) j / 2
+      integer, intent(in) :: i, j, k
+      integer(int64) :: n
+
+      n = int(i - 1, int64)*i*(i + 1)/6 + int(j - 1, int64)*j/2 + k
+   end function canonical_index
+
+   function ensure_slot(ints, amps, ts, o, layout, la) result(slot)
+      !! The slot holding the slice (o, layout), built if missing and stamped with the current tick; 0 when every slot
+      !! holds a slice stamped with it (the block triple's)
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
       type(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: ts
       integer, intent(in) :: o, layout
-      integer, intent(in) :: protect(4)
       type(trc_linalg_t), intent(in) :: la
-      real(dp), intent(inout), optional :: gsec
       integer :: slot, key
-      type(timer_type) :: clock
 
       key = o + ts%no*(layout - 1)
-      slot = cache_slot(ts, key, protect)
+      slot = cache_slot(ts, key)
+      if (slot == 0) return
       if (ts%slot_orb(slot) /= key) then
-         if (present(gsec)) then
-            call la%sync()
-            call clock%start()
-         end if
          if (ts%slot_orb(slot) /= 0) ts%orb_slot(ts%slot_orb(slot)) = 0
          call build_slice(ints, amps, ts, o, layout, slot, la)
          ts%slot_orb(slot) = key
          ts%orb_slot(key) = slot
          ts%ngathers = ts%ngathers + 1
-         if (present(gsec)) then
-            call la%sync()
-            gsec = gsec + clock%get_elapsed_time()
-         end if
       end if
       ts%slot_used(slot) = ts%tick
    end function ensure_slot
@@ -636,7 +774,9 @@ contains
          ! a permuting copy moves 2 nv^3 doubles; the GEMM below costs 2 nv^3 naux flops
          other0 = 1_int64 + int(other - 1, int64)*nv2*(nv + ts%no)
          call kernel_copy_swapped(nv, size(ts%gs, kind=int64), other0, g0, ts%gs)
+         ts%ncopy_builds = ts%ncopy_builds + 1
       else
+         ts%ngemm_builds = ts%ngemm_builds + 1
          ! A'(x,(y,f)) = sum_P b_ov(o,x;P) b_vv((y,f),P) = (o x|y f) = (o x|f y): ONE GEMM, b_vv read in place
          call kernel_gather_bo(ts%no, nv, ints%naux, o, ints%b_ov, ts%bo)
          call la%gemm("N", "T", nv, nv2, ints%naux, 1.0_dp, ts%bo, nv, ints%b_vv, nv2, 0.0_dp, ts%gs(g0), nv)
@@ -646,12 +786,11 @@ contains
       call kernel_gather_slice_t2(ts%no, nv, o, layout, amps%t2, ts%gs(g0))
    end subroutine build_slice
 
-   function cache_slot(ts, key, protect) result(slot)
-      !! The slot for the slice `key`: the one holding it, else an empty one, else the least recently used one that
-      !! holds none of the keys in `protect` (there is one: at least four slots)
+   function cache_slot(ts, key) result(slot)
+      !! The slot for the slice `key`: the one holding it, else an empty one, else the least recently used one not
+      !! stamped with the current tick (those hold the block triple's slices); 0 if there is none
       type(trc_rccsd_triples_ijk_scratch_t), intent(in) :: ts
       integer, intent(in) :: key
-      integer, intent(in) :: protect(4)
       integer :: slot
       integer :: k
 
@@ -664,7 +803,7 @@ contains
          end if
       end do
       do k = 1, ts%nslot
-         if (any(protect == ts%slot_orb(k))) cycle
+         if (ts%slot_used(k) == ts%tick) cycle
          if (slot == 0) then
             slot = k
          else if (ts%slot_used(k) < ts%slot_used(slot)) then
@@ -706,14 +845,14 @@ contains
       write (line, "(a,i0,a,i0,a,f20.12,a,f9.2,a)") "  rccsd (T) device ijk: no ", ints%no, " nv ", ints%nv, "   E(T) ", &
          e_t, "   ", seconds, " s"
       call global_logger%info(trim(line))
-      write (line, "(a,i0,a,i0,a,i0,a,f9.1,a,i0,a)") "    ", ts%ntiles, " tiles of up to ", ts%ncap, &
+      write (line, "(a,i0,a,i0,a,i0,a,f9.1,a,i0,a,i0,a)") "    ", ts%ntiles, " tiles of up to ", ts%ncap, &
          " occupied triples (", ts%ntotal, " in all), device scratch ", real(ts%bytes, dp)/1.0e6_dp, " MB with ", &
-         ts%nslot, " integral slices cached"
+         ts%nslot, " integral slices cached, blocks of ", ts%nblock, " occupied orbitals"
       call global_logger%info(trim(line))
-      write (line, "(a,f9.3,a,f9.3,a,f9.3,a,f9.3,a,i0,a)") "    seconds: wide gemms ", ts%seconds_wide, &
+      write (line, "(a,f9.3,a,f9.3,a,f9.3,a,f9.3,a,i0,a,i0,a,i0,a)") "    seconds: wide gemms ", ts%seconds_wide, &
          "  per-array gemms ", ts%seconds_per, "  energy kernels ", ts%seconds_energy, "  repacks and slice builds ", &
-         ts%seconds_gather, " (", ts%ngathers, &
-         " slices built)"
+         ts%seconds_gather, " (", ts%ngathers, " slices built: ", ts%ngemm_builds, " by GEMM, ", ts%ncopy_builds, &
+         " copies)"
       call global_logger%info(trim(line))
       write (line, "(a,es10.3,a,f9.1,a,es10.3,a,f9.1,a,f9.1,a)") "    flops: wide ", ts%flops_wide, " (", &
          1.0e-9_dp*ts%flops_wide/max(ts%seconds_wide, tiny(1.0_dp)), " GFLOP/s)  per-array ", ts%flops_per, " (", &
