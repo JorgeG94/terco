@@ -55,6 +55,16 @@ set_target_properties(terco_rccsd_test_support PROPERTIES Fortran_MODULE_DIRECTO
                                                           ${CMAKE_BINARY_DIR}/modules)
 
 #
+# The converged-energy records of those references, for the checks that drive
+# RI-CCSD(T) through the C ABI and the CLI.
+#
+add_library(terco_rccsd_ref_energies STATIC rccsd_ref_energies.F90)
+target_compile_definitions(terco_rccsd_ref_energies PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(terco_rccsd_ref_energies PUBLIC ${main_lib} terco_pyscf_ref_io)
+set_target_properties(terco_rccsd_ref_energies PROPERTIES Fortran_MODULE_DIRECTORY
+                                                         ${CMAKE_BINARY_DIR}/modules)
+
+#
 # The library's definitions are PRIVATE -- TRC_FOCK6 is an
 # implementation choice and no consumer should need them. A test can, though:
 # `check_binfock` compares against a raw oracle and has to know whether the
@@ -194,6 +204,13 @@ set_tests_properties(terco/check_rccsd_run PROPERTIES SKIP_REGULAR_EXPRESSION "S
 terco_add_check(check_rccsd_triples check_rccsd_triples.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_rccsd_triples PRIVATE test-drive::test-drive terco_rccsd_test_support)
 set_tests_properties(terco/check_rccsd_triples PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# RI-CCSD(T) through the C ABI (trc_set_rccsd, trc_set_rccsd_convergence, trc_set_rccsd_algorithm, trc_run_rccsd,
+# trc_rccsd_energy): the energies against the same references, the setters' arguments, every refusal, the
+# invalidation of a stored result and a run that does not converge. Same SKIP guard.
+terco_add_check(check_capi_rccsd check_capi_rccsd.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_capi_rccsd PRIVATE test-drive::test-drive terco_rccsd_ref_energies terco_c_interfaces)
+set_tests_properties(terco/check_capi_rccsd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
@@ -764,6 +781,16 @@ if(TERCO_BUILD_APP)
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_input_workdir})
   target_link_libraries(check_cli_input PRIVATE test-drive::test-drive)
   unset(_cli_input_workdir)
+
+  # RI-CCSD(T) through the CLI: the flags, a TOML file, the summary and the JSON against pyscf's DF-CCSD(T),
+  # the convergence flags, a CCSD that does not converge and every refusal -- see check_cli_rccsd.F90's own
+  # header. Same SKIP guard as the integral-level checks.
+  set(_cli_rccsd_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_rccsd_work)
+  terco_add_check(check_cli_rccsd check_cli_rccsd.F90 NEEDS_PYSCF_REF
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_rccsd_workdir})
+  target_link_libraries(check_cli_rccsd PRIVATE test-drive::test-drive terco_rccsd_ref_energies)
+  set_tests_properties(terco/check_cli_rccsd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+  unset(_cli_rccsd_workdir)
 
   # Effective core potentials through the CLI: the basis's own ECP and the
   # valence electron count, --ecp and a TOML [basis] ecp, and a partial ECP

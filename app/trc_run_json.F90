@@ -54,6 +54,7 @@ contains
          call json%add(root, "scf energy", real(r%etot, dp))
          call json%add(root, "total energy", real(r%etot, dp))
       end if
+      if (r%cc .and. r%cc_ran) call add_ccsd(json, root, r)
       ! The final SCF's frontier orbitals, Eh: the restricted (or alpha) set,
       ! and for an unrestricted run the beta set under its own keys.
       if (r%has_homo(1)) call json%add(root, "homo energy", r%homo(1))
@@ -74,6 +75,30 @@ contains
       end if
       call json%destroy(root)
    end subroutine run_write_json
+
+   subroutine add_ccsd(json, root, r)
+      !! RI-CCSD(T): the correlation energies, and the totals only when the CCSD converged, so a script that reads a
+      !! total cannot take the last iterate of a failed run for an energy ("ri-ccsd converged" says which it was).
+      !! The keys are the labels of the summary rows. None has a parenthesis: json-fortran reads one in a key path
+      !! as an array index.
+      type(json_core), intent(inout) :: json
+      type(json_value), pointer, intent(in) :: root
+      type(run_t), intent(in) :: r
+      call json%add(root, "ri-ccsd converged", r%cc_converged)
+      call json%add(root, "ri-ccsd iterations", int(r%cc_niter))
+      call json%add(root, "ri-ccsd frozen core orbitals", int(r%cc_nfrozen))
+      call json%add(root, "ri-ccsd active occupied", int(r%cc_nactive))
+      call json%add(root, "ri-ccsd virtual orbitals", int(r%cc_nvirtual))
+      call json%add(root, "ri-ccsd auxiliary functions", int(r%cc_naux))
+      call json%add(root, "ri-ccsd mp2 correlation energy", real(r%cc_e_mp2, dp))
+      call json%add(root, "ri-ccsd correlation energy", real(r%cc_e_ccsd, dp))
+      call json%add(root, "ri-ccsd t1 diagnostic", real(r%cc_t1_diagnostic, dp))
+      if (r%cc_has_triples) call json%add(root, "ri-ccsd triples correction", real(r%cc_e_t, dp))
+      if (r%cc_t_failed) call json%add(root, "ri-ccsd triples error", trim(r%cc_message))
+      if (.not. r%cc_converged) return
+      call json%add(root, "ri-ccsd total energy", real(r%etot + r%cc_e_ccsd, dp))
+      if (r%cc_has_triples) call json%add(root, "ri-ccsd triples total energy", real(r%etot + r%cc_e_ccsd + r%cc_e_t, dp))
+   end subroutine add_ccsd
 
    subroutine add_gradient(json, root, r)
       !! The analytic gradient as an array of [x, y, z] triples, one per atom

@@ -51,7 +51,8 @@ program trc_main
                        run_opt_geometry_is_linear, run_write_labelled_xyz, run_parse_opt_global_options, &
                        run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
                        run_check_neb_endpoint, run_write_neb_path_xyz, &
-                       run_read_xyz_frames, run_to_lower_alloc, run_frontier, run_parse_charges
+                       run_read_xyz_frames, run_to_lower_alloc, run_frontier, run_parse_charges, &
+                       run_cc_parse, run_cc_configure, run_cc_execute
    use trc_dlfind_bridge, only: trc_dlfind_available, trc_opt_options_t, trc_opt_result_t, trc_dlfind_optimize, &
                                 TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_HDLC_TC, &
                                 TRC_OPT_COORDS_DLC, TRC_OPT_COORDS_DLC_TC, &
@@ -179,11 +180,26 @@ program trc_main
    call r%cli%add_option("eps", "solvent dielectric constant for --pcm, e.g. 78.3553 for water")
    call r%cli%add_flag("rimp2", "RI-MP2 correlation energy after the SCF (restricted or "// &
                        "unrestricted; unrestricted refuses more than one rank)")
-   call r%cli%add_option("aux", "auxiliary basis for --rimp2 (cc-pvdz-rifit)", default="cc-pvdz-rifit")
-   call r%cli%add_option("frozen", "frozen core orbitals for --rimp2; -1, the default, counts them by element", &
+   call r%cli%add_flag("riccsd", "closed-shell RI-CCSD correlation energy after the SCF (RHF, one rank, no ECP; "// &
+                       "also reports the RI-MP2 correlation; cannot be combined with --rimp2, a functional, "// &
+                       "--uhf or --grad/--hessian/--opt)")
+   call r%cli%add_flag("riccsd-t", "--riccsd followed by the perturbative triples (T): RI-CCSD(T)")
+   call r%cli%add_option("cc-econv", "--riccsd energy convergence: |dE| between iterations, Eh (1e-8)")
+   call r%cli%add_option("cc-tconv", "--riccsd amplitude convergence: the largest amplitude change (1e-6)")
+   call r%cli%add_option("cc-iterations", "maximum --riccsd iterations (100); a run that does not converge "// &
+                         "is reported as such and exits with status 2")
+   call r%cli%add_option("cc-diis", "--riccsd DIIS history length (8, at most 50); 1 switches DIIS off")
+   call r%cli%add_option("cc-ladder", "how --riccsd forms the particle ladder: auto (by operation count), "// &
+                         "assembled or direct; the energy does not depend on it (auto)")
+   call r%cli%add_option("cc-triples-budget", "device memory for the (T) tile of --riccsd-t, GiB (1, at least 0.001); "// &
+                         "the repacked amplitudes come on top; no effect in a host build")
+   call r%cli%add_option("aux", "auxiliary basis for --rimp2, --riccsd and --riccsd-t (cc-pvdz-rifit whatever the "// &
+                         "orbital basis: give the RI fitting set that matches it)", default="cc-pvdz-rifit")
+   call r%cli%add_option("frozen", "frozen core orbitals for --rimp2, --riccsd and --riccsd-t; -1, the default, "// &
+                         "counts them by element (1 per Li-Ne atom, 5 per Na-Ar, ...); 0 correlates all electrons", &
                          default="-1")
-   call r%cli%add_option("aux-block", "auxiliary functions per three-index block for --rimp2 (default: as many "// &
-                         "as keep the block under 2 GB)")
+   call r%cli%add_option("aux-block", "auxiliary functions per three-index block for --rimp2, --riccsd and "// &
+                         "--riccsd-t (default: as many as keep the block under 2 GB)")
    call r%cli%add_option("save-scf", "write the SCF result (orbitals, density, energies) to this file, "// &
                          "for a later --restart")
    call r%cli%add_option("restart", "read the SCF result from a --save-scf file instead of running the "// &
@@ -605,7 +621,8 @@ program trc_main
    else if (r%cli%is_set("eps")) then
       call run_die(r, "--eps is the dielectric constant for --pcm, which was not given")
    end if
-   if (r%rimp2) then
+   call run_cc_parse(r, nfrozen)
+   if (r%rimp2 .or. r%cc) then
       ! RI-MP2 (restricted or unrestricted, UHF/UKS) now follows the
       ! basis's own AO space, spherical or Cartesian, same as a plain
       ! SCF -- trc_run_rimp2 folds the MO coefficients into the Cartesian
@@ -1132,7 +1149,7 @@ program trc_main
    ! loaded, the same ordering trc_set_elements already requires.
    if (len_trim(r%ecp_path) > 0) call run_api(r, trc_set_ecp_json(r%h, app_c_string(r%ecp_path)))
    call run_api(r, trc_set_basis_json(r%h, app_c_string(r%basis_path)))
-   if (r%rimp2) call run_api(r, trc_set_aux_json(r%h, app_c_string(r%aux_path)))
+   if (r%rimp2 .or. r%cc) call run_api(r, trc_set_aux_json(r%h, app_c_string(r%aux_path)))
    if (r%df) then
       call run_api(r, trc_set_jkfit_json(r%h, app_c_string(r%jkfit_path)))
       call run_api(r, trc_set_df(r%h, 1_c_int))
@@ -1156,7 +1173,7 @@ program trc_main
    if (r%cli%is_set("incremental")) call run_api(r, trc_set_incremental(r%h, 1_c_int))
    if (r%cli%is_set("no-incremental")) call run_api(r, trc_set_incremental(r%h, 0_c_int))
    call run_api(r, trc_set_guess(r%h, int(guess_kind, c_int), c_null_ptr, 1_c_int))
-   if (r%rimp2) then
+   if (r%rimp2 .or. r%cc) then
       ! The three-index tensor (mu nu|P) is nao^2 per auxiliary function and
       ! is held one block of them at a time; the library's own default is
       ! one block of all of them, which at a thousand functions and a
@@ -1170,7 +1187,8 @@ program trc_main
          call run_api(r, trc_nao(r%h, r%nao))
          aux_block = int(max(16.0_dp, min(real(huge(1), dp), 2.0e9_dp/(8.0_dp*real(r%nao, dp)**2))))
       end if
-      call run_api(r, trc_set_rimp2(r%h, int(nfrozen, c_int), int(aux_block, c_int)))
+      if (r%rimp2) call run_api(r, trc_set_rimp2(r%h, int(nfrozen, c_int), int(aux_block, c_int)))
+      if (r%cc) call run_cc_configure(r, nfrozen, aux_block)
    end if
 
    if (r%opt) then
@@ -1396,6 +1414,7 @@ program trc_main
    ! computes them from its own amplitudes, so asking for them first would
    ! run the energy step for nothing (trc_run_rimp2's own header).
    if (r%rimp2 .and. r%conv /= 0) call run_api(r, trc_run_rimp2(r%h))
+   if (r%cc .and. r%conv /= 0) call run_cc_execute(r)
    if (r%grad .and. r%conv /= 0) then
       ! trc_run_gradient's own refusals (an unrestricted RI-MP2 or
       ! double-hybrid reference, PCM) come
@@ -1535,6 +1554,16 @@ program trc_main
    if (r%conv == 0) then
       if (r%rank0) call global_logger%error("terco: the SCF did not converge in "//to_string(int(r%niter))//" iterations")
       call run_quit(r, 2)
+   end if
+   if (r%cc_ran .and. .not. r%cc_converged) then
+      ! The summary and the JSON above already say so; the exit status agrees with them.
+      if (r%rank0) call global_logger%error("terco: "//trim(r%cc_message))
+      call run_quit(r, 2)
+   end if
+   if (r%cc_t_failed) then
+      ! The CCSD energies are in the summary and the JSON; the run did not do what it was asked.
+      if (r%rank0) call global_logger%error("terco: "//trim(r%cc_message))
+      call run_quit(r, 1)
    end if
    if (r%opt .and. .not. r%opt_converged) then
       ! Matches the SCF's own non-convergence above: a CLI run that did

@@ -39,6 +39,7 @@ add_executable(
   trc_run_report.F90
   trc_run_opt.F90
   trc_run_json.F90
+  trc_run_cc.F90
   trc_run_input.F90
   ${_dlfind_bridge_src})
 set_target_properties(

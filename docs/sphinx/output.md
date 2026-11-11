@@ -33,7 +33,11 @@ evaluation, VV10) and, with `--df`, a `dfjk:` breakdown of the fitted J/K
 build (metric Cholesky, the three-centre integrals, the half-transform,
 ...), each with its own achieved FLOP rate or bandwidth where that is
 meaningful. An unrestricted run prints HOMO/LUMO per spin; `--rimp2` adds a
-`TOTAL MP2 ENERGY` line and the opposite-/same-spin components; `--pcm`
+`TOTAL MP2 ENERGY` line and the opposite-/same-spin components;
+`--riccsd`/`--riccsd-t` add the MP2 and RI-CCSD correlation energies, the
+(T) correction and the RI-CCSD and RI-CCSD(T) totals to the energy box (`TOTAL
+ENERGY` stays the SCF energy, as with `--rimp2`; the correlated totals are
+`TOTAL RI-CCSD ENERGY` and `TOTAL RI-CCSD(T) ENERGY`); `--pcm`
 adds the dielectric solvation energy; `--grad` prints the Cartesian
 gradient per atom (Eh/Bohr) with its RMS and max component.
 
@@ -102,6 +106,14 @@ defaults -- so the file written back as TOML reruns the same calculation.
 
 A `--grad` run adds a `"gradient"` array; `--rimp2` adds an
 `"mp2 opposite spin"`/`"mp2 same spin"` pair and a correlated total;
+`--riccsd`/`--riccsd-t` add `"ri-ccsd converged"`, `"ri-ccsd iterations"`,
+`"ri-ccsd frozen core orbitals"`, `"ri-ccsd active occupied"`, `"ri-ccsd virtual
+orbitals"`, `"ri-ccsd auxiliary functions"`, `"ri-ccsd mp2 correlation
+energy"`, `"ri-ccsd correlation energy"`, `"ri-ccsd t1 diagnostic"` and, when the
+RI-CCSD converged, `"ri-ccsd total energy"` (and with (T) `"ri-ccsd triples
+correction"` and `"ri-ccsd triples total energy"`; `"total energy"` stays the
+SCF energy); an RI-CCSD that did not converge has `"ri-ccsd converged": false`
+and no totals; the SUMMARY rows carry these same names;
 `--opt`/`--hessian` add `"optimization"`/`"vibrational"` blocks. Keys
 whose default is decided from the system (the charge, the guess, ...)
 appear in `"input"` only when the run was given one explicitly.

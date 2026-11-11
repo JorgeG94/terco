@@ -212,6 +212,8 @@ module trc_capi
    use trc_linalg, only: trc_linalg_t, trc_release_local_mem_reservation
    use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_driver_mo_to_cart, &
                                trc_rimp2_options_t
+   use trc_rccsd_driver, only: trc_rccsd_options_t, trc_rccsd_result_t, trc_rccsd_state_t, trc_rccsd_solve
+   use trc_rccsd_triples, only: trc_rccsd_triples_options_t, rccsd_triples_finish
    use trc_scf_file, only: trc_scf_save, trc_scf_load
    use trc_cart_perm, only: trc_cart_order_id
    use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
@@ -256,7 +258,9 @@ module trc_capi
              trc_set_lindep, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
              trc_set_jkfit_libcint, &
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
-             trc_set_rimp2, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, trc_energy_parts, &
+             trc_set_rimp2, trc_set_rccsd, trc_set_rccsd_convergence, trc_set_rccsd_algorithm, &
+             trc_run_rccsd, trc_rccsd_energy, trc_rccsd_dimensions, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, &
+             trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri
    public :: trc_run_gradient, trc_gradient
@@ -337,8 +341,12 @@ module trc_capi
    ! changes an existing signature or enum meaning -- see trc_abi_version's
    ! own comment.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 22
-   !! 1.22: trc_set_ecp_json, a new entry point (an explicit effective core
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 23
+   !! 1.23: closed-shell RI-CCSD and RI-CCSD(T): trc_set_rccsd,
+   !! trc_set_rccsd_convergence, trc_set_rccsd_algorithm, trc_run_rccsd,
+   !! trc_rccsd_energy and trc_rccsd_dimensions, new entry points; trc_energy adds a converged
+   !! result, and trc_run_gradient, trc_run_hessian and trc_run_polarizability
+   !! refuse after one. Additive. 1.22: trc_set_ecp_json, a new entry point (an explicit effective core
    !! potential, overriding auto-attach from the orbital basis file's own
    !! ecp_potentials). Additive. 1.21: trc_chelpg_charges, CHELPG charges fitted to the converged
    !! density's electrostatic potential (a new entry point, nothing else
@@ -474,6 +482,20 @@ module trc_capi
       ! header). trc_run_gradient fills them from its own amplitudes, and
       ! any reader first runs the energy (rimp2_settle). Meaningless while
       ! `rimp2_ok` is false, so the sites that clear that need not touch it.
+      ! RI-CCSD(T) (trc_run_rccsd). Its frozen core and block size are its own
+      ! (trc_set_rccsd), not RI-MP2's, so a handle that also runs RI-MP2 keeps
+      ! each method's setting; 0 in a solver field below means the driver's
+      ! default. `ccsd_ok` holds from a run that produced energies (converged
+      ! or not: `ccsd%converged` says which) until anything the result
+      ! depended on changes (invalidate_runs, the auxiliary basis, a setter
+      ! of this group). trc_energy adds a converged result only.
+      integer :: cc_nfrozen = -1, cc_aux_block = 0
+      logical :: cc_triples = .false.
+      real(dp) :: cc_conv_energy = 0.0_dp, cc_conv_amplitude = 0.0_dp
+      integer :: cc_max_iterations = 0, cc_diis_size = 0
+      integer :: cc_ladder = 0, cc_triples_mib = 0
+      logical :: ccsd_ok = .false.
+      type(trc_rccsd_result_t) :: ccsd
       ! trc_run_gradient's own result: (3, natm), Eh/Bohr, in terco's atom
       ! order. `grad_ok` is cleared by anything that invalidates `scf_ok`
       ! too (invalidate_runs) -- a gradient at a geometry/density this
@@ -1909,6 +1931,7 @@ contains
       type(context_box), intent(inout) :: cx
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
+      cx%ccsd_ok = .false.
       cx%grad_ok = .false.
       cx%polar_ok = .false.
       cx%hess_ok = .false.
@@ -2134,6 +2157,7 @@ contains
          cx%ab%ao_norm_kind = cx%ao_norm_kind
          cx%have_aux = .true.
          cx%rimp2_ok = .false.
+         cx%ccsd_ok = .false.
          call b%release()
          return
       end if
@@ -3486,6 +3510,118 @@ contains
       status = TRC_OK
    end function trc_set_rimp2
 
+   function trc_set_rccsd(handle, triples, nfrozen, aux_block) result(status) bind(c, name="trc_set_rccsd")
+      !! Closed-shell RI-CCSD, and with `triples` 1 the perturbative (T), for
+      !! trc_run_rccsd; the auxiliary basis is trc_set_aux_json's, the one
+      !! RI-MP2 reads. `nfrozen` is the number of frozen core orbitals; -1
+      !! counts the core from the elements, as trc_set_rimp2 does. `aux_block`
+      !! is the auxiliary functions per three-index block while the integrals
+      !! are built; 0 is the whole auxiliary basis at once, and the energy
+      !! does not depend on it. These are this method's own settings: RI-MP2's
+      !! (trc_set_rimp2) are left as they are. Clears a stored RI-CCSD result.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: triples, nfrozen, aux_block
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (triples /= 0 .and. triples /= 1) then
+         call refuse(cx, "trc_set_rccsd: triples must be 0 (CCSD only) or 1 (CCSD(T))")
+         return
+      end if
+      if (nfrozen < -1) then
+         call refuse(cx, "trc_set_rccsd: nfrozen must be a count >= 0, or -1 for the elements' own core")
+         return
+      end if
+      if (aux_block < 0) then
+         call refuse(cx, "trc_set_rccsd: aux_block must be >= 0 (0 is the whole auxiliary basis at once)")
+         return
+      end if
+      cx%cc_triples = triples == 1
+      cx%cc_nfrozen = int(nfrozen)
+      cx%cc_aux_block = int(aux_block)
+      cx%ccsd_ok = .false.
+      status = TRC_OK
+   end function trc_set_rccsd
+
+   function trc_set_rccsd_convergence(handle, conv_energy, conv_amplitude, max_iterations, diis_size) &
+      result(status) bind(c, name="trc_set_rccsd_convergence")
+      !! The RI-CCSD iteration's stopping rule: it stops as converged when BOTH
+      !! the change of the correlation energy between iterations is below
+      !! `conv_energy` (Eh) and the largest change of any amplitude is below
+      !! `conv_amplitude`. `max_iterations` caps the iterations and `diis_size`
+      !! is the DIIS history length (1 switches DIIS off). Each 0 keeps the
+      !! default: 1e-8, 1e-6, 100 and 8. A negative, NaN or infinite value is
+      !! refused. A run that does not converge returns TRC_ERR_NOCONV.
+      !! Clears a stored RI-CCSD result.
+      type(c_ptr), value :: handle
+      real(c_double), value :: conv_energy, conv_amplitude
+      integer(c_int), value :: max_iterations, diis_size
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      ! Written so a NaN and an infinity fail: every comparison with a NaN is false.
+      if (.not. (conv_energy >= 0.0_c_double .and. conv_energy <= huge(1.0_c_double))) then
+         call refuse(cx, "trc_set_rccsd_convergence: conv_energy must be finite and >= 0 (0 keeps 1e-8)")
+         return
+      end if
+      if (.not. (conv_amplitude >= 0.0_c_double .and. conv_amplitude <= huge(1.0_c_double))) then
+         call refuse(cx, "trc_set_rccsd_convergence: conv_amplitude must be finite and >= 0 (0 keeps 1e-6)")
+         return
+      end if
+      if (max_iterations < 0) then
+         call refuse(cx, "trc_set_rccsd_convergence: max_iterations must be >= 0 (0 keeps 100)")
+         return
+      end if
+      if (diis_size < 0) then
+         call refuse(cx, "trc_set_rccsd_convergence: diis_size must be >= 0 (0 keeps 8, 1 is no DIIS)")
+         return
+      end if
+      cx%cc_conv_energy = real(conv_energy, dp)
+      cx%cc_conv_amplitude = real(conv_amplitude, dp)
+      cx%cc_max_iterations = int(max_iterations)
+      cx%cc_diis_size = int(diis_size)
+      cx%ccsd_ok = .false.
+      status = TRC_OK
+   end function trc_set_rccsd_convergence
+
+   function trc_set_rccsd_algorithm(handle, ladder, triples_budget_mib) result(status) &
+      bind(c, name="trc_set_rccsd_algorithm")
+      !! How the particle-particle ladder is formed and how much device memory
+      !! the (T) tile may take; neither changes the energy. `ladder` is 0 to
+      !! choose by operation count, 1 to assemble the (ac|bd) integrals in
+      !! column batches, 2 to contract the three-index factors directly and
+      !! never form them. `triples_budget_mib` is the memory, in MiB, of the
+      !! (T) step's working tile (6 o^3 doubles per triple of virtuals); 0 is
+      !! 1024 MiB. The tile is not all of (T)'s memory: the repacked
+      !! amplitudes come on top. Clears a stored RI-CCSD result.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: ladder, triples_budget_mib
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (ladder < 0 .or. ladder > 2) then
+         call refuse(cx, "trc_set_rccsd_algorithm: ladder must be 0 (auto), 1 (assembled) or 2 (direct)")
+         return
+      end if
+      if (triples_budget_mib < 0) then
+         call refuse(cx, "trc_set_rccsd_algorithm: triples_budget_mib must be >= 0 (0 keeps 1024)")
+         return
+      end if
+      cx%cc_ladder = int(ladder)
+      cx%cc_triples_mib = int(triples_budget_mib)
+      cx%ccsd_ok = .false.
+      status = TRC_OK
+   end function trc_set_rccsd_algorithm
+
    subroutine trc_build_comm(fcomm, comm, ok, status)
       !! THE ONE PLACE `fcomm` (a caller's Fortran communicator handle, as
       !! every C entry point below receives it) becomes terco's own comm_t.
@@ -3566,6 +3702,7 @@ contains
       call c_f_pointer(handle, cx)
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
+      cx%ccsd_ok = .false.
       cx%grad_ok = .false.
       call scf_inputs_check(cx, "trc_run_scf", status)
       if (status /= TRC_OK) return
@@ -3637,7 +3774,7 @@ contains
             call global_logger%info("   auxiliary (JK)   : "//to_string(scf_space_nao(cx%jb))//" functions")
          end if
          if (cx%have_aux) then
-            call global_logger%info("   auxiliary (MP2)  : "//to_string(scf_space_nao(cx%ab))//" functions")
+            call global_logger%info("   auxiliary (RI)   : "//to_string(scf_space_nao(cx%ab))//" functions")
          end if
       end if
       ! --- the guess, BEFORE the --df fit below -----------------------------
@@ -4041,6 +4178,11 @@ contains
       have_func = len_trim(cx%opts%functional) > 0
       refusal = gradient_upfront_refusal(cx)
       if (len(refusal) > 0) return
+      if (ccsd_energy_held(cx)) then
+         refusal = "there is no "//ccsd_method_name(cx)//" gradient: the energy this context holds is "// &
+                   ccsd_method_name(cx)//", which has no analytic nuclear derivative here (run the SCF again to drop it)"
+         return
+      end if
       if (have_func) then
          ! `cx%opts%functional` only ever holds a name trc_set_method/
          ! scf_entry already validated (xc_functional_by_name succeeded,
@@ -5032,6 +5174,10 @@ contains
          cx%message = "trc_run_polarizability: RI-MP2/double-hybrid response not implemented"
          return
       end if
+      if (ccsd_energy_held(cx)) then
+         cx%message = "trc_run_polarizability: "//ccsd_method_name(cx)//" response not implemented"
+         return
+      end if
       if (cx%opts%df) then
          cx%message = "trc_run_polarizability: --df response not implemented"
          return
@@ -5136,18 +5282,20 @@ contains
       end if
    end function core_orbitals
 
-   integer function rimp2_frozen_count(cx) result(nfrozen)
-      !! The frozen core trc_set_rimp2 asked for, or (-1) the elements' own.
+   integer function frozen_core_count(setting, cx) result(nfrozen)
+      !! The frozen core a method asked for (`setting`: trc_set_rimp2's or trc_set_rccsd's), or, for -1, the elements'
+      !! own. RI-MP2 and RI-CCSD each keep their own setting and share this rule.
+      integer, intent(in) :: setting
       type(context_box), intent(in) :: cx
       integer :: i
-      nfrozen = cx%nfrozen
+      nfrozen = setting
       if (nfrozen < 0) then
          nfrozen = 0
          do i = 1, cx%natm
             nfrozen = nfrozen + core_orbitals(cx%at_z(i))
          end do
       end if
-   end function rimp2_frozen_count
+   end function frozen_core_count
 
    subroutine rimp2_gradient_run(cx, status)
       !! trc_run_gradient's RI-MP2 branch: d(E_ref + c E_RI-MP2)/dR at the
@@ -5174,7 +5322,7 @@ contains
          job%opts%rho_tol = cx%opts%rho_tol
       end if
       job%opts%nocc = cx%nalpha
-      job%opts%nfrozen = rimp2_frozen_count(cx)
+      job%opts%nfrozen = frozen_core_count(cx%nfrozen, cx)
       job%opts%aux_block = max(cx%aux_block, 0)
       job%opts%pair_threshold = cx%opts%eri_thresh
       job%opts%eri_threshold = scf_settings_eri_thresh_env(cx%opts%eri_thresh)
@@ -5278,7 +5426,7 @@ contains
          return
       end if
       status = TRC_ERR_BADARG
-      nfrozen = rimp2_frozen_count(cx)
+      nfrozen = frozen_core_count(cx%nfrozen, cx)
       if (nfrozen >= cx%nalpha .or. nfrozen >= cx%nbeta) then
          cx%message = "trc_run_rimp2: every occupied orbital is frozen in at least one spin channel"
          return
@@ -5308,6 +5456,9 @@ contains
       ! with the settings in force now -- every setter they depend on
       ! clears `rimp2_ok`. More than one rank stays eager: a reader is not
       ! a collective call, and the ring is.
+      ! One correlated method owns trc_energy at a time: the later run wins, and only a run that got past every
+      ! refusal above replaces the other's result.
+      cx%ccsd_ok = .false.
       cx%rimp2_ok = .true.
       if (cx%res%nspin == 1 .and. .not. collective) then
          cx%rimp2_deferred = .true.
@@ -5319,6 +5470,294 @@ contains
       if (collective) call comm%finalize()
       status = TRC_OK
    end function trc_run_rimp2
+
+   subroutine rccsd_refusal(cx, status)
+      !! Why trc_run_rccsd cannot run on this context, in `cx%message` and
+      !! `status`; TRC_OK (and the message untouched) when it can. Every
+      !! request the method does not cover is named here, before any work.
+      type(context_box), intent(inout) :: cx
+      integer(c_int), intent(out) :: status
+      type(comm_t) :: comm
+      logical :: collective
+      integer :: nfrozen, nranks
+
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok) then
+         cx%message = "trc_run_rccsd: run the SCF first"
+         return
+      end if
+      if (.not. cx%res%converged) then
+         cx%message = "trc_run_rccsd: the SCF did not converge; coupled cluster needs a converged reference"
+         return
+      end if
+      if (.not. cx%have_aux) then
+         cx%message = "trc_run_rccsd: no auxiliary basis was set (trc_set_aux_json)"
+         return
+      end if
+      status = TRC_ERR_UNSUPPORTED
+      if (cx%res%nspin == 2 .or. cx%nalpha /= cx%nbeta) then
+         cx%message = "trc_run_rccsd: RI-CCSD is closed-shell only; this is an unrestricted or open-shell reference"
+         return
+      end if
+      if (len_trim(cx%opts%functional) > 0) then
+         cx%message = "trc_run_rccsd: RI-CCSD needs a Hartree-Fock reference; this one is Kohn-Sham ("// &
+                      trim(cx%opts%functional)//")"
+         return
+      end if
+      if (cx%ecp%has_ecp) then
+         cx%message = "trc_run_rccsd: RI-CCSD does not support an effective core potential"
+         return
+      end if
+      if (cx%res%n_lindep > 0) then
+         cx%message = "trc_run_rccsd: canonical orthogonalisation dropped "//trim(itoa(cx%res%n_lindep))// &
+                      " linearly dependent functions, and RI-CCSD needs every orbital of the basis; set a smaller "// &
+                      "threshold (trc_set_lindep; --lindep or [basis] linear_dependence on the command line, 0 drops "// &
+                      "none) or use a basis without the near-duplicate functions, then run the SCF again"
+         return
+      end if
+      ! A status, not the DF kernels' own error stop (see trc_run_rimp2).
+      if (maxval(cx%bb%b%sh_l) > DF_LMAX) then
+         cx%message = "trc_run_rccsd: the orbital basis has l = "//trim(itoa(int(maxval(cx%bb%b%sh_l))))// &
+                      ", above this build's density-fitting ceiling "//trim(itoa(DF_LMAX))//" (TERCO_DF_LMAX)"
+         return
+      end if
+      if (maxval(cx%ab%b%sh_l) > DF_LMAX_AUX) then
+         cx%message = "trc_run_rccsd: the auxiliary basis has l = "//trim(itoa(int(maxval(cx%ab%b%sh_l))))// &
+                      ", above this build's density-fitting auxiliary ceiling "//trim(itoa(DF_LMAX_AUX))// &
+                      " (TERCO_DF_LMAX_AUX)"
+         return
+      end if
+      status = TRC_ERR_BADARG
+      nfrozen = frozen_core_count(cx%cc_nfrozen, cx)
+      if (nfrozen >= cx%nalpha) then
+         cx%message = "trc_run_rccsd: every occupied orbital is frozen"
+         return
+      end if
+      nranks = 1
+      call trc_build_comm(cx%fcomm, comm, collective, status)
+      if (status /= TRC_OK) return
+      if (collective) then
+         nranks = comm%size()
+         call comm%finalize()
+      end if
+      if (nranks > 1) then
+         status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_run_rccsd: RI-CCSD runs on one rank only ("//trim(itoa(nranks))//" ranks given)"
+         return
+      end if
+      status = TRC_OK
+   end subroutine rccsd_refusal
+
+   subroutine rccsd_options(cx, opts, triples_opts)
+      !! The driver's and the (T) step's options from the context's settings;
+      !! a 0 setting leaves the driver's own default in place.
+      type(context_box), intent(in) :: cx
+      type(trc_rccsd_options_t), intent(out) :: opts
+      type(trc_rccsd_triples_options_t), intent(out) :: triples_opts
+
+      opts%nocc = cx%nalpha
+      opts%nbeta = cx%nbeta
+      opts%nfrozen = frozen_core_count(cx%cc_nfrozen, cx)
+      opts%aux_block = cx%cc_aux_block
+      opts%has_ecp = cx%ecp%has_ecp
+      opts%verbose = cx%opts%verbose
+      if (cx%cc_conv_energy > 0.0_dp) opts%conv_energy = cx%cc_conv_energy
+      if (cx%cc_conv_amplitude > 0.0_dp) opts%conv_amplitude = cx%cc_conv_amplitude
+      if (cx%cc_max_iterations > 0) opts%max_iterations = cx%cc_max_iterations
+      if (cx%cc_diis_size > 0) opts%diis_size = cx%cc_diis_size
+      opts%ladder%form = cx%cc_ladder
+      triples_opts%verbose = cx%opts%verbose
+      if (cx%cc_triples_mib > 0) triples_opts%device%budget_bytes = int(cx%cc_triples_mib, int64)*1048576_int64
+   end subroutine rccsd_options
+
+   subroutine rccsd_execute(cx, status)
+      !! The solve and, for a converged CCSD that asked for it, (T), on a
+      !! context rccsd_refusal accepted. The integrals and amplitudes the
+      !! solver leaves behind are released on every path out. A (T) that fails
+      !! after a converged CCSD returns the (T) status and message and keeps the
+      !! CCSD result (`has_triples` false), so the CCSD energy is not lost.
+      type(context_box), intent(inout) :: cx
+      integer(c_int), intent(out) :: status
+      type(trc_pairlist_t) :: pl
+      type(trc_rccsd_options_t) :: opts
+      type(trc_rccsd_triples_options_t) :: triples_opts
+      type(trc_rccsd_state_t) :: state
+      type(error_t) :: err
+
+      call rccsd_options(cx, opts, triples_opts)
+      ! The SCF's four-centre kernels leave CUDA local memory reserved for their largest stack frame (about 9 GiB
+      ! on a V100, see trc_release_local_mem_reservation), and nothing below launches a four-centre kernel: the
+      ! integrals are the density-fitting ones, whose frames fit the reduced limit. Giving it back before the
+      ! solver allocates leaves that memory to the amplitudes and the integrals. Reading the code is the evidence:
+      ! the --df path makes the same call for the same reason and a later trc_run_scf grows the limit again on
+      ! its own first four-centre launch, after state%release() has returned the memory. A no-op on the host.
+      call trc_release_local_mem_reservation()
+      call pl%build(cx%bb%b, cx%opts%eri_thresh)
+      call pl%to_device()
+      ! cx%res%cmo/eps are at the SCF's own space, the spherical count for a
+      ! spherical basis, which is the space the driver takes.
+      call trc_rccsd_solve(cx%bb%b, cx%ab%b, pl, cx%res%cmo(:, :, 1), cx%res%eps(:, 1), opts, cx%la, state)
+      call pl%release()
+      cx%ccsd = state%result
+      if (state%result%refused) then
+         cx%message = trim(state%result%message)
+         status = TRC_ERR_UNSUPPORTED
+         call state%release()
+         return
+      end if
+      cx%ccsd_ok = .true.
+      ! One correlated method owns trc_energy at a time: the later run wins, here as in trc_run_rimp2.
+      cx%rimp2_ok = .false.
+      cx%message = trim(state%result%message)
+      status = TRC_OK
+      if (.not. state%result%converged) then
+         status = TRC_ERR_NOCONV
+         call state%release()
+         return
+      end if
+      if (cx%cc_triples) then
+         call rccsd_triples_finish(state, err, triples_opts)
+         if (err%has_error()) then
+            cx%message = "trc_run_rccsd: (T) failed: "//err%get_message()
+            status = TRC_ERR_UNSUPPORTED
+         else
+            cx%ccsd = state%result
+         end if
+      end if
+      call state%release()
+   end subroutine rccsd_execute
+
+   function trc_run_rccsd(handle) result(status) bind(c, name="trc_run_rccsd")
+      !! Closed-shell RI-CCSD, and (T) when trc_set_rccsd asked for it, on the
+      !! converged restricted Hartree-Fock reference in the context, with the
+      !! auxiliary basis trc_set_aux_json set. The equations are those of the
+      !! DF-CCSD and (T) of PySCF's rccsd/ccsd_t.
+      !!
+      !! Refused, with TRC_ERR_STATE: no SCF has run, it did not converge, or
+      !! no auxiliary basis was set. Refused, with TRC_ERR_UNSUPPORTED, each
+      !! with its reason in trc_message: an unrestricted or open-shell
+      !! reference, a Kohn-Sham one, an effective core potential, linearly
+      !! dependent functions dropped (the message names trc_set_lindep), more
+      !! than one rank, a basis above this build's density-fitting ceilings
+      !! (TERCO_DF_LMAX, TERCO_DF_LMAX_AUX). A frozen core that leaves no
+      !! occupied orbital is TRC_ERR_BADARG. A continuum solvent is not
+      !! refused, as for RI-MP2: the correlation is computed on the orbitals of
+      !! the solvated SCF without a solvent response of its own.
+      !!
+      !! RI-MP2 and RI-CCSD share trc_energy, and the later run wins: a
+      !! successful trc_run_rccsd drops a stored RI-MP2 result, and
+      !! trc_run_rimp2 drops a stored RI-CCSD one. A refused run changes neither.
+      !!
+      !! TRC_ERR_NOCONV when the iteration does not converge; the last
+      !! energies are then in trc_rccsd_energy (converged = 0), (T) is not run
+      !! and trc_energy is the SCF energy. When the CCSD converged but (T)
+      !! failed (for example for device memory), the return is the (T) status
+      !! (TRC_ERR_UNSUPPORTED) with its message; trc_rccsd_energy still gives
+      !! the converged CCSD with has_triples = 0, and trc_energy is the CCSD
+      !! total. Needs device memory of about 14.8 o^2 v^2 + o v^3 + (o^2 + o v
+      !! + v^2) naux + 2 diis (o v + o^2 v^2) doubles (o active occupied, v
+      !! virtual, naux auxiliary functions, diis the DIIS size) plus about
+      !! 1.2 GB of ladder scratch; (T) adds 2 o^2 v^2 + o^3 v doubles and its
+      !! tile (trc_set_rccsd_algorithm). docs/sphinx/cli.md has the formula
+      !! worked out. Single rank. After a converged run trc_run_gradient,
+      !! trc_run_hessian and trc_run_polarizability refuse.
+      type(c_ptr), value :: handle
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%ccsd_ok = .false.
+      call rccsd_refusal(cx, status)
+      if (status /= TRC_OK) return
+      call rccsd_execute(cx, status)
+   end function trc_run_rccsd
+
+   function trc_rccsd_energy(handle, e_mp2, e_ccsd, e_t, t1_diagnostic, iterations, converged, has_triples) &
+      result(status) bind(c, name="trc_rccsd_energy")
+      !! The last trc_run_rccsd, converged or not. All energies are
+      !! CORRELATION energies in Hartree: `e_mp2` the RI-MP2 correlation of the
+      !! same reference and frozen core, `e_ccsd` the RI-CCSD one (the last
+      !! iterate when `converged` is 0), `e_t` the (T) correction (0 unless
+      !! `has_triples` is 1). Add trc_energy's SCF part for totals: after a
+      !! converged run trc_energy is already the CCSD (or CCSD(T)) total.
+      !! `t1_diagnostic` is sqrt(|t1|^2 / (2 o)); `iterations` the CCSD
+      !! iterations run. TRC_ERR_STATE when no run has left a result.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: e_mp2, e_ccsd, e_t, t1_diagnostic
+      integer(c_int), intent(out) :: iterations, converged, has_triples
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      e_mp2 = 0.0_c_double
+      e_ccsd = 0.0_c_double
+      e_t = 0.0_c_double
+      t1_diagnostic = 0.0_c_double
+      iterations = 0
+      converged = 0
+      has_triples = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%ccsd_ok) return
+      e_mp2 = real(cx%ccsd%e_mp2, c_double)
+      e_ccsd = real(cx%ccsd%e_ccsd, c_double)
+      t1_diagnostic = real(cx%ccsd%t1_diagnostic, c_double)
+      iterations = int(cx%ccsd%iterations, c_int)
+      converged = merge(1_c_int, 0_c_int, cx%ccsd%converged)
+      if (cx%ccsd%has_triples) then
+         has_triples = 1_c_int
+         e_t = real(cx%ccsd%e_t, c_double)
+      end if
+      status = TRC_OK
+   end function trc_rccsd_energy
+
+   function trc_rccsd_dimensions(handle, nfrozen, nactive_occ, nvirtual, naux) result(status) &
+      bind(c, name="trc_rccsd_dimensions")
+      !! The orbital spaces of the last trc_run_rccsd, converged or not:
+      !! `nfrozen` the frozen core orbitals actually used (the elements' own
+      !! count when trc_set_rccsd asked for -1), `nactive_occ` the correlated
+      !! occupied orbitals, `nvirtual` the virtual orbitals and `naux` the
+      !! auxiliary functions. TRC_ERR_STATE when no run has left a result.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: nfrozen, nactive_occ, nvirtual, naux
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      nfrozen = 0
+      nactive_occ = 0
+      nvirtual = 0
+      naux = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%ccsd_ok) return
+      nfrozen = int(cx%ccsd%nfrozen, c_int)
+      nactive_occ = int(cx%ccsd%no, c_int)
+      nvirtual = int(cx%ccsd%nv, c_int)
+      naux = int(cx%ccsd%naux, c_int)
+      status = TRC_OK
+   end function trc_rccsd_dimensions
+
+   logical function ccsd_energy_held(cx) result(held)
+      !! True when trc_energy includes an RI-CCSD result: a stored one that converged. After one that did not,
+      !! trc_energy is the SCF energy and an SCF gradient or response is legitimate.
+      type(context_box), intent(in) :: cx
+      held = .false.
+      if (.not. cx%ccsd_ok) return
+      held = cx%ccsd%converged
+   end function ccsd_energy_held
+
+   function ccsd_method_name(cx) result(name)
+      !! "RI-CCSD(T)" or "RI-CCSD", as the stored result was computed
+      type(context_box), intent(in) :: cx
+      character(len=:), allocatable :: name
+      if (cx%ccsd%has_triples) then
+         name = "RI-CCSD(T)"
+      else
+         name = "RI-CCSD"
+      end if
+   end function ccsd_method_name
 
    subroutine rimp2_settle(cx)
       !! Run the RI-MP2 energy trc_run_rimp2 deferred, if it did and
@@ -5350,7 +5789,7 @@ contains
       ! A Cartesian basis copies straight through (nc == the SCF's own
       ! space already).
       nc = cx%bb%b%nao
-      rimp2_opts%nfrozen = rimp2_frozen_count(cx)
+      rimp2_opts%nfrozen = frozen_core_count(cx%nfrozen, cx)
       rimp2_opts%aux_block = cx%aux_block
       if (rimp2_opts%aux_block <= 0) rimp2_opts%aux_block = cx%ab%b%nao
       rimp2_opts%verbose = cx%opts%verbose
@@ -5452,6 +5891,7 @@ contains
       call c_f_pointer(handle, cx)
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
+      cx%ccsd_ok = .false.
       cx%grad_ok = .false.
       cx%polar_ok = .false.
       ! A loaded result has no grid of its own -- any grid `trc_run_scf`
@@ -5839,6 +6279,11 @@ contains
       !! nothing beyond the ordinary trc_run_scf/trc_run_rimp2/trc_energy
       !! sequence any RI-MP2 run already uses -- the weighting is applied
       !! here, once, from the functional's own pt2_cos/pt2_css.
+      !!
+      !! After a CONVERGED trc_run_rccsd it is the SCF total plus the CCSD
+      !! correlation energy, plus the (T) correction when the run asked for
+      !! it: the CCSD or the CCSD(T) total. A CCSD that did not converge adds
+      !! nothing here (trc_rccsd_energy has its last iterate).
       type(c_ptr), value :: handle
       real(c_double), intent(out) :: energy
       integer(c_int) :: status
@@ -5861,6 +6306,14 @@ contains
             end if
          end if
          energy = energy + real(cx%e_os + cx%e_ss, c_double)
+      end if
+      if (cx%ccsd_ok) then
+         ! Only a converged CCSD is an energy; the last iterate of a failed
+         ! one is reachable through trc_rccsd_energy, not here.
+         if (cx%ccsd%converged) then
+            energy = energy + real(cx%ccsd%e_ccsd, c_double)
+            if (cx%ccsd%has_triples) energy = energy + real(cx%ccsd%e_t, c_double)
+         end if
       end if
       status = TRC_OK
    end function trc_energy

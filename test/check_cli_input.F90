@@ -205,7 +205,7 @@ contains
    subroutine test_bad_method(error)
       type(error_type), allocatable, intent(out) :: error
       call refused([character(len=64) :: '[molecule]', 'geometry = "water.xyz"', &
-                    '[correlation]', 'method = "ccsd"'], "method must be 'rimp2' or 'none'", error)
+                    '[correlation]', 'method = "ccsd"'], "method must be 'rimp2', 'ri-ccsd', 'ri-ccsd(t)' or 'none'", error)
    end subroutine test_bad_method
 
    subroutine test_not_array(error)

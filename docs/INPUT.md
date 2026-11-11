@@ -84,7 +84,7 @@ json = "water.json"
 |---|---|---|---|
 | `main` | string | `--basis` | orbital basis: BSE JSON file or a basis name |
 | `ecp` | string | `--ecp` | effective core potential: BSE JSON file or a basis name, overriding auto-attach from `main`'s own `ecp_potentials` |
-| `auxiliary` | string | `--aux` | RI-MP2 auxiliary basis (cc-pvdz-rifit) |
+| `auxiliary` | string | `--aux` | auxiliary basis of RI-MP2, RI-CCSD and RI-CCSD(T) (cc-pvdz-rifit whatever the orbital basis: give the RI fitting set that matches it) |
 | `jk_auxiliary` | string | `--jkfit` | J/K fitting basis for `density_fitted` (def2-universal-jkfit) |
 | `cartesian` | bool | `--cart` | Cartesian AOs even for a spherical basis |
 | `linear_dependence` | float | `--lindep` | drop eigenvectors of the unit-diagonal overlap below this (1e-8; 0 drops none) |
@@ -142,9 +142,55 @@ How the SCF gets there; the defaults suit most systems.
 
 | Key | Type | Flag | Meaning |
 |---|---|---|---|
-| `method` | string | `--rimp2` | `rimp2`; absent means none |
-| `frozen_core` | integer | `--frozen` | frozen core orbitals; −1 counts by element |
+| `method` | string | `--rimp2`, `--riccsd`, `--riccsd-t` | `rimp2`, `ri-ccsd` (closed-shell RI-CCSD), `ri-ccsd(t)` (RI-CCSD with the perturbative triples) or `none`; absent means none. The plain `ccsd` and `ccsd(t)` are refused: the method is density-fitted |
+| `frozen_core` | integer | `--frozen` | frozen core orbitals; −1 (the default) counts by element (1 per Li-Ne atom, 5 per Na-Ar, ...; H and He none); 0 correlates all electrons |
 | `aux_block` | integer | `--aux-block` | auxiliary functions per three-index block |
+
+`frozen_core`, `aux_block` and `[basis] auxiliary` are shared by the three
+methods. `auxiliary` defaults to `cc-pvdz-rifit` whatever the orbital basis, so
+give the RI fitting set that matches it.
+
+### `[riccsd]`
+
+The RI-CCSD solver, used with `method = "ri-ccsd"` or `"ri-ccsd(t)"`; any of
+these keys with another method is refused.
+
+| Key | Type | Flag | Meaning |
+|---|---|---|---|
+| `energy_tol` | float | `--cc-econv` | stop when the change of the correlation energy is below this, Eh (1e-8) |
+| `amplitude_tol` | float | `--cc-tconv` | and the largest change of any amplitude is below this (1e-6) |
+| `max_iterations` | integer | `--cc-iterations` | maximum iterations (100) |
+| `diis_size` | integer | `--cc-diis` | DIIS history length (8, at most 50); 1 switches DIIS off |
+| `ladder` | string | `--cc-ladder` | `auto` (by operation count), `assembled` or `direct`; does not change the energy |
+| `triples_budget` | float | `--cc-triples-budget` | device memory of the (T) working tile, GiB (1, at least 0.001); needs `ri-ccsd(t)`; no effect in a host build |
+
+Both tolerances must be met. An RI-CCSD that does not converge is reported as
+`NOT CONVERGED` in the summary, `"ri-ccsd converged": false` in the JSON
+(without total energies), skips (T), and ends the run with exit status 2. A (T)
+that fails after a converged RI-CCSD keeps the RI-CCSD energies in the summary
+and the JSON and ends the run with exit status 1.
+
+RI-CCSD is closed-shell Hartree-Fock only, on one rank, with no effective core
+potential and no gradient. It is refused with `[scf] functional`, `[molecule]
+unpaired`, `[driver]` `gradient`, `hessian` or `optimize`, and with `method =
+"rimp2"` (it reports the MP2 correlation energy itself). A basis in which
+`[basis] linear_dependence` dropped functions is refused after the SCF, because
+the method needs every orbital: lower the threshold (0 drops none). See
+`docs/sphinx/cli.md` for the memory it needs and what has been measured.
+
+The `"input"` echo of the JSON output gives `"method": "ri-ccsd(t)"` and a
+`"riccsd"` object with the same keys.
+
+```toml
+[molecule]
+geometry = "water.xyz"
+
+[basis]
+main = "cc-pvdz"
+
+[correlation]
+method = "ri-ccsd(t)"      # frozen core counted by element, cc-pvdz-rifit
+```
 
 ### `[driver]`
 

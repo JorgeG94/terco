@@ -11,10 +11,12 @@ terco --help opt           # the --opt-* geometry-optimisation flags
 
 A basis name (`-b def2-svp`) is looked up as `<name>.json` in each
 directory of `$TERCO_BASIS_PATH`, then in `share/terco/basis_sets` under
-the install prefix. The exit status is 0 on success, 1 on an error and 2
-if the SCF did not converge.
+the install prefix. The exit status is 0 on success, 1 on an error or a
+refused request, and 2 if the SCF, a `--riccsd` iteration or an `--opt` did not
+converge.
 
-Every flag below is `terco --help`'s own text, copied verbatim; the
+Every flag below is `terco --help`'s own text, copied verbatim (the code
+names are set in code font); the
 examples were run against a CPU (gfortran) build with `test/`'s own
 molecules and basis sets, and each one reproduced the output shown.
 
@@ -118,14 +120,115 @@ terco water.xyz -f b3lyp --pcm cpcm --eps 78.3553
 
 | Flag | Meaning |
 |---|---|
-| `--rimp2` | RI-MP2 correlation energy after the SCF |
-| `--aux` | auxiliary basis for `--rimp2` (`cc-pvdz-rifit`) |
-| `--frozen` | frozen core orbitals (-1: count by element) |
-| `--aux-block` | auxiliary functions per three-index block |
+| `--rimp2` | RI-MP2 correlation energy after the SCF (restricted or unrestricted; unrestricted refuses more than one rank) |
+| `--aux` | auxiliary basis for `--rimp2`, `--riccsd` and `--riccsd-t` (`cc-pvdz-rifit` whatever the orbital basis: give the RI fitting set that matches it) |
+| `--frozen` | frozen core orbitals for `--rimp2`, `--riccsd` and `--riccsd-t`; -1, the default, counts them by element (1 per Li-Ne atom, 5 per Na-Ar, ...); 0 correlates all electrons |
+| `--aux-block` | auxiliary functions per three-index block for `--rimp2`, `--riccsd` and `--riccsd-t` (default: as many as keep the block under 2 GB) |
 
 ```sh
 terco water.xyz -b 6-31g --rimp2             # RHF + RI-MP2 (cc-pvdz-rifit)
 ```
+
+## RI-CCSD and RI-CCSD(T)
+
+The method is the density-fitted one throughout: every name of it, on the
+command line, in the input file and in the output, says RI-CCSD.
+
+| Flag | Meaning |
+|---|---|
+| `--riccsd` | closed-shell RI-CCSD correlation energy after the SCF (RHF, one rank, no ECP; also reports the RI-MP2 correlation; cannot be combined with `--rimp2`, a functional, `--uhf` or `--grad`/`--hessian`/`--opt`) |
+| `--riccsd-t` | `--riccsd` followed by the perturbative triples (T): RI-CCSD(T) |
+| `--cc-econv` | `--riccsd` energy convergence: \|dE\| between iterations, Eh (1e-8) |
+| `--cc-tconv` | `--riccsd` amplitude convergence: the largest amplitude change (1e-6) |
+| `--cc-iterations` | maximum `--riccsd` iterations (100); a run that does not converge is reported as such and exits with status 2 |
+| `--cc-diis` | `--riccsd` DIIS history length (8, at most 50); 1 switches DIIS off |
+| `--cc-ladder` | how `--riccsd` forms the particle ladder: auto (by operation count), assembled or direct; the energy does not depend on it (auto) |
+| `--cc-triples-budget` | device memory for the (T) tile of `--riccsd-t`, GiB (1, at least 0.001); the repacked amplitudes come on top; no effect in a host build |
+
+`--aux`, `--frozen` and `--aux-block` (above) apply to `--riccsd` and
+`--riccsd-t` as to `--rimp2`. The auxiliary basis defaults to `cc-pvdz-rifit`
+whatever the orbital basis, so give the RI fitting set that matches it
+(`-b cc-pvtz --aux cc-pvtz-rifit`).
+
+```sh
+terco hirshfeld_water.xyz -b cc-pvdz --riccsd-t                 # RHF + RI-CCSD(T), cc-pvdz-rifit, core counted by element
+terco hirshfeld_water.xyz -b cc-pvdz --riccsd --frozen 0        # all electrons correlated, RI-CCSD only
+terco hirshfeld_water.xyz -b cc-pvdz --riccsd-t --cc-econv 1e-10 --cc-tconv 1e-8
+```
+
+The same from an input file (see `docs/INPUT.md`): `[correlation]
+method = "ri-ccsd(t)"`, and the solver settings in a `[riccsd]` table. The
+plain names `ccsd` and `ccsd(t)` are refused.
+
+Both criteria must hold for the iteration to stop: the change of the
+correlation energy is below `--cc-econv` **and** the largest change of any
+amplitude is below `--cc-tconv`. An RI-CCSD that does not converge in
+`--cc-iterations` is not an error you can miss: the energy box prints
+`RI-CCSD DID NOT CONVERGE` above the last iterate, the SUMMARY block says
+`NOT CONVERGED`, `--json` has `"ri-ccsd converged": false` and carries no total
+energies, (T) is not run, the library's message is printed, and the exit status
+is 2. If the RI-CCSD converged and the (T) step then failed (for example for
+device memory), the summary and the JSON keep the RI-CCSD energies, say that (T)
+failed and why, and the exit status is 1.
+
+`--riccsd` is refused, before the SCF, together with `--rimp2` (the MP2
+correlation energy is part of its own report), a functional (`-f`), unpaired
+electrons (`--uhf`, or an odd electron count from `--chrg`), `--grad`,
+`--hessian`, `--opt`, a molecule with an effective core potential and a
+`--frozen` that leaves no correlated orbital; the `--cc-*` options need
+`--riccsd` or `--riccsd-t`, and `--cc-triples-budget` needs `--riccsd-t`. More
+than one rank is refused as well. A basis with linearly dependent functions
+dropped by `--lindep` (`[basis] linear_dependence`) is refused after the SCF,
+since the method needs every orbital of the basis: lower the threshold (0 drops
+none) or remove the near-duplicate functions. Over a `--pcm` reference the
+correlation is computed on the orbitals of the solvated SCF and has no solvent
+response of its own (as `--rimp2`); terco warns.
+
+### What it is, and what it is not yet
+
+Closed-shell RI-CCSD(T): the equations are those of PySCF's `rccsd` and
+`ccsd_t` with density-fitted integrals, and the energies are validated against
+PySCF's DF-CCSD(T) (water and hydrogen peroxide, cc-pVDZ with
+cc-pVDZ-RIFIT: CCSD(T) total energies within 5e-12 Eh when run with
+`--econv 1e-13 --gconv 1e-11 --cc-econv 1e-12 --cc-tconv 1e-10`; at the default
+thresholds, 1e-8 and 1e-6, the agreement is about 1e-8 Eh).
+
+Today it covers: a restricted Hartree-Fock reference with canonical orbitals,
+one rank and one GPU, no effective core potential, **no gradients** (so no
+optimisation or Hessian), no restart of the RI-CCSD itself. The dense
+`(ia|bc)` block is what limits the system size for now.
+
+The shipped kernels stop at d functions in the orbital basis, so cc-pVTZ needs
+`-DTERCO_LMAX=3` (the SCF itself needs it for f functions, and `TERCO_DF_LMAX`
+follows it by default). The auxiliary ceiling `TERCO_DF_LMAX_AUX` defaults to
+4, so cc-pVDZ with cc-pVDZ-RIFIT works in a default build. Otherwise the run is
+refused with, for example, `the orbital basis has l = 3, above this build's
+density-fitting ceiling 2 (TERCO_DF_LMAX)`.
+
+Memory, with `o` the active (not frozen) occupied orbitals, `v` the virtual
+orbitals and `naux` the auxiliary functions: the device holds about
+`14.8 o^2 v^2 + o v^3 + (o^2 + o v + v^2) naux + 2 diis (o v + o^2 v^2)`
+doubles (`diis` is `--cc-diis`) plus about 1.2 GB of ladder scratch; (T) adds
+`2 o^2 v^2 + o^3 v` doubles and its tile (`--cc-triples-budget`, 1 GiB by
+default). For 25 active occupied, 130 virtual and 630 auxiliary functions that
+is about 4.4 GB for the RI-CCSD and about 1.3 GB more for (T) at the default
+tile. In a GPU build the host keeps a copy of the same arrays; in a host (CPU)
+build this is all host memory.
+
+One measured data point (adenine, cc-pVDZ with cc-pVDZ-RIFIT, frozen core: 25
+active occupied, 130 virtual, 630 auxiliary functions; one V100, untuned): 0.43
+s per RI-CCSD iteration, 15 iterations, 13.3 s for (T).
+
+In a host (CPU) build the host (T) routine is used and `--cc-triples-budget`
+has no effect. The coupled-cluster work is mostly matrix products, so link a
+threaded BLAS and set `OMP_NUM_THREADS`. With NVHPC, `-DTERCO_ENABLE_GPU=OFF
+-DTERCO_ENABLE_MULTICORE=ON` builds the host version with `do concurrent`
+running on CPU threads (`OMP_NUM_THREADS` or `ACC_NUM_CORES` sets the count).
+
+The `TOTAL ENERGY` line of the energy box and the `"total energy"` key of the
+JSON stay the SCF energy, as with `--rimp2`. The correlated totals are the
+`TOTAL RI-CCSD ENERGY` and `TOTAL RI-CCSD(T) ENERGY` lines, and
+`"ri-ccsd total energy"` and `"ri-ccsd triples total energy"` in the JSON.
 
 ## Output and restart
 

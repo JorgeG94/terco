@@ -216,6 +216,13 @@ contains
 
       res%refused = .true.
       res%converged = .false.
+      ! The integral layer's messages already name their module (trc_rccsd_ints: ...).
+      if (len(text) >= 4) then
+         if (text(1:4) == "trc_") then
+            res%message = text
+            return
+         end if
+      end if
       res%message = "trc_rccsd: "//text
    end subroutine refuse
 

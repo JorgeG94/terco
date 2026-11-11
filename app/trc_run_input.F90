@@ -46,7 +46,9 @@ module trc_run_input
    integer, parameter :: KIND_STRING_LIST = 8
       !! A string array, joined with semicolons (`--opt-constrain`).
    integer, parameter :: KIND_METHOD = 9
-      !! `[correlation] method`: "rimp2" gives `--rimp2`, "none" nothing.
+      !! `[correlation] method`: "rimp2" gives `--rimp2`, "ri-ccsd" `--riccsd`,
+      !! "ri-ccsd(t)" `--riccsd-t`, "none" nothing. The plain names "ccsd" and "ccsd(t)" are refused on purpose: this
+      !! is the density-fitted method, and the name must not suggest a conventional CCSD.
    integer, parameter :: KIND_BOOL_ON = 10
       !! A switch that is on by default: true gives the flag, false gives
       !! its `--no-` form (`incremental = false` is `--no-incremental`).
@@ -62,7 +64,7 @@ module trc_run_input
       integer :: kind
    end type run_input_key_t
 
-   integer, parameter :: NKEYS = 88
+   integer, parameter :: NKEYS = 94
    type(run_input_key_t), parameter :: RUN_INPUT_KEYS(NKEYS) = [ &
       run_input_key_t("molecule", "geometry", "", KIND_PATH), &
       run_input_key_t("molecule", "charge", "chrg", KIND_INT), &
@@ -97,6 +99,12 @@ module trc_run_input
       run_input_key_t("correlation", "method", "rimp2", KIND_METHOD), &
       run_input_key_t("correlation", "frozen_core", "frozen", KIND_INT), &
       run_input_key_t("correlation", "aux_block", "aux-block", KIND_INT), &
+      run_input_key_t("riccsd", "energy_tol", "cc-econv", KIND_FLOAT), &
+      run_input_key_t("riccsd", "amplitude_tol", "cc-tconv", KIND_FLOAT), &
+      run_input_key_t("riccsd", "max_iterations", "cc-iterations", KIND_INT), &
+      run_input_key_t("riccsd", "diis_size", "cc-diis", KIND_INT), &
+      run_input_key_t("riccsd", "ladder", "cc-ladder", KIND_STRING), &
+      run_input_key_t("riccsd", "triples_budget", "cc-triples-budget", KIND_FLOAT), &
       run_input_key_t("driver", "gradient", "grad", KIND_BOOL), &
       run_input_key_t("driver", "hessian", "hessian", KIND_BOOL), &
       run_input_key_t("driver", "optimize", "opt", KIND_BOOL), &
@@ -162,9 +170,9 @@ module trc_run_input
       character(len=:), allocatable :: message
    end type input_state_t
 
-   integer, parameter :: NSECTIONS = 15
+   integer, parameter :: NSECTIONS = 16
    character(len=16), parameter :: SECTIONS(NSECTIONS) = [character(len=16) :: &
-      "molecule", "basis", "scf", "scf.convergence", "dft", "solvation", "correlation", "driver", &
+      "molecule", "basis", "scf", "scf.convergence", "dft", "solvation", "correlation", "riccsd", "driver", &
       "analysis", "hessian", "thermo", "opt", "opt.neb", "opt.global", "output"]
 
    character(len=*), parameter :: REAL_FORMAT = "es24.16e3"
@@ -300,10 +308,14 @@ contains
             select case (to_lower(sval))
             case ("rimp2")
                call push(state, flag)
+            case ("ri-ccsd")
+               call push(state, "--riccsd")
+            case ("ri-ccsd(t)")
+               call push(state, "--riccsd-t")
             case ("none")
             case default
-               state%message = context%report("[correlation] method must be 'rimp2' or 'none', got '"//sval//"'", &
-                                        key%origin)
+               state%message = context%report("[correlation] method must be 'rimp2', 'ri-ccsd', 'ri-ccsd(t)' or 'none', "// &
+                                        "got '"//sval//"'", key%origin)
             end select
             return
          end if
@@ -411,7 +423,7 @@ contains
          end if
          if (spec%kind == KIND_METHOD) then
             call section_object(json, input, trim(spec%section), section)
-            call json%add(section, trim(spec%key), trim(merge("rimp2", "none ", cli%is_set(trim(spec%flag)))))
+            call json%add(section, trim(spec%key), method_name(cli, trim(spec%flag)))
             cycle
          end if
          if (len_trim(spec%flag) == 0) then
@@ -446,6 +458,22 @@ contains
          end select
       end do
    end subroutine run_input_echo
+
+   function method_name(cli, rimp2_flag) result(name)
+      !! The `[correlation] method` the parsed command line stands for.
+      type(cli_t), intent(in) :: cli
+      character(len=*), intent(in) :: rimp2_flag
+      character(len=:), allocatable :: name
+      if (cli%is_set("riccsd-t")) then
+         name = "ri-ccsd(t)"
+      else if (cli%is_set("riccsd")) then
+         name = "ri-ccsd"
+      else if (cli%is_set(rimp2_flag)) then
+         name = "rimp2"
+      else
+         name = "none"
+      end if
+   end function method_name
 
    recursive subroutine section_object(json, input, name, section)
       !! The object for section `name` (dotted for a sub-table) under
