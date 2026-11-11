@@ -43,9 +43,36 @@
 !     -     sum_ld ovov(l,c,k,d) t1(i,d) t1(l,a)           'lckd,id,la->akci'
 !
 ! HOW EACH BECOMES GEMMS. The terms with the contracted index inside two
-! compound pairs are the O(N^6) ones; the rest are O(N^5) or less and are one
-! `do concurrent` thread per element of W, summing the contracted index in
-! ascending order (like Lvv in trc_rccsd_inter), so they are deterministic.
+! compound pairs are the O(N^6) ones. The ovvv t1 (o^2 v^3) and ooov t1 (o^3 v^2)
+! terms are GEMMs too, into the scratch `r` (below), and the base kernel only
+! permutes. A thread per element of W summing d itself read ovvv with a stride
+! of o v doubles between neighbouring threads (a different cache sector per
+! lane), about 44 GB of traffic for each of Wvoov and Wvovo at o = 25, v = 130,
+! against the 0.9 GB of reading (ia|bc) once for each. Measured on adenine
+! cc-pVDZ (o = 25, v = 130, 15 iterations, one V100): the W step took 2.148 s
+! that way and takes 0.811 s as GEMMs, with the same energy (-1.469113199066
+! Eh); the ring GEMMs of the same shape run at 5.6 TFLOP/s and W now at 4.2
+! (its count grew 3 % with the new GEMMs, so compare the times). Now the base
+! kernels read contiguously, their index running over the FIRST index of what
+! they read, and scatter the writes (each W element is written once).
+!
+!   Wvoov   T(k,c,a,i) = sum_d ovvv(k,c,a,d) t1(i,d) - sum_l ooov(l,i,k,c) t1(l,a):
+!             ovvv as the (k c a; d) matrix, one GEMM "N","T" M = o v^2, N = o, K = v
+!             (beta = 0), then over i, a batch of o GEMMs "T","N" (the (l; k c) block
+!             ooov(:,i,:,:) has column stride o^2, A item i starts at ooov(1,i,1,1),
+!             stride o) M = o v, N = v, K = o into T(:,:,:,i), alpha = -1, beta = 1.
+!             T lives in `r`; W(a,k,i,c) = ovov(k,c,i,a) + T(k,c,a,i) is the base
+!             kernel (threads over (k,c,i,a), k fastest); T is dead after that
+!             kernel, and the first big GEMM (beta = 0) replaces `r`.
+!   Wvovo   T(k,i,a,c) = sum_d ovvv(k,d,a,c) t1(i,d) - sum_l ooov(k,i,l,c) t1(l,a):
+!             over the v^2 pairs (a,c), ovvv(:,:,a,c) is the (k; d) matrix: a batch
+!             of v^2 GEMMs "N","T" M = o, N = o, K = v (A stride o v, C stride o^2,
+!             beta = 0); the d-sum is not a matrix product over (a,c) alone, so a
+!             single GEMM would need an o v^3 permuted copy of (ia|bc). Then over
+!             c, a batch of v GEMMs "N","N"
+!             M = o^2, N = v, K = o on ooov(:,:,:,c) (stride o^3), alpha = -1,
+!             beta = 1, into T(:,:,:,c). W(a,k,c,i) = oovv(k,i,a,c) + T(k,i,a,c).
+!   The accumulate kernels read R(k,c,i,a) in storage order and scatter into W.
 !
 !   Woooo   the tau term is one GEMM, M = o^2, N = o^2, K = v^2 (o^4 v^2):
 !             W(kl;ij) += akl(kl;cd) . tau(ij;cd)^T         akl(k,l,c,d) = ovov(k,c,l,d)
@@ -91,7 +118,8 @@
 !     a2       o^2 v^2   ovov(l,c,k,d) as (kc;ld), for life of the integrals     84.5 MB
 !     b1       o^2 v^2   b1 (Wvoov), then b3 (Wvovo): per call
 !     b2       o^2 v^2   b2 (Wvoov): per call
-!     r        o^2 v^2   the GEMM result R(kc;ia): per call
+!     r        o^2 v^2   T (the ovvv t1 and ooov t1 terms) until the base kernel has read it,
+!                        then the GEMM result R(kc;ia): per call
 !
 ! and `trc_rccsd_w_t` holds Woooo (o^4), Wvoov, Wvovo (o^2 v^2 each). In all
 ! 7 o^2 v^2 + o^4 doubles: 594.6 MB a side at no = 25, nv = 130. A block above
@@ -111,7 +139,7 @@ module trc_rccsd_w
    use trc_rccsd_ints, only: trc_rccsd_ints_t
    use trc_rccsd_steps, only: rccsd_steps_gemm_flops
    use trc_rccsd_inter, only: trc_rccsd_amps_t, trc_rccsd_inter_t
-   use trc_linalg, only: trc_linalg_t
+   use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
    private
@@ -147,7 +175,7 @@ module trc_rccsd_w
       real(dp), allocatable :: a2(:)   !! o^2 v^2, a2(k,c,l,d) = ovov(l,c,k,d), built by `init`
       real(dp), allocatable :: b1(:)   !! o^2 v^2, b1(l,d,i,a) of Wvoov, then b3 of Wvovo
       real(dp), allocatable :: b2(:)   !! o^2 v^2, b2(l,d,i,a)
-      real(dp), allocatable :: r(:)    !! o^2 v^2, R(k,c,i,a)
+      real(dp), allocatable :: r(:)    !! o^2 v^2: the staged t1 terms T, then R(k,c,i,a)
    contains
       procedure :: init => wscratch_init
       procedure :: release => wscratch_release
@@ -423,7 +451,8 @@ contains
       no = ints%no
       nv = ints%nv
       nov = no*nv
-      call kernel_voov_base(no, nv, ints%ovov, ints%ovvv, ints%ooov, amps%t1, w%wvoov)
+      call stage_voov(ints, amps, ws, la)
+      call kernel_voov_base(no, nv, ints%ovov, ws%r, w%wvoov)
       call kernel_pack_b1(no, nv, amps%t1, amps%t2, ws%b1)
       call kernel_pack_b2(no, nv, amps%t2, ws%b2)
       call la%gemm("T", "N", nov, nov, nov, 1.0_dp, ints%ovov, nov, ws%b1, nov, 0.0_dp, ws%r, nov)
@@ -450,21 +479,68 @@ contains
       no = ints%no
       nv = ints%nv
       nov = no*nv
-      call kernel_vovo_base(no, nv, ints%oovv, ints%ovvv, ints%ooov, amps%t1, w%wvovo)
+      call stage_vovo(ints, amps, ws, la)
+      call kernel_vovo_base(no, nv, ints%oovv, ws%r, w%wvovo)
       call kernel_pack_b3(no, nv, amps%t1, amps%t2, ws%b1)
       call la%gemm("N", "N", nov, nov, nov, 1.0_dp, ws%a2, nov, ws%b1, nov, 0.0_dp, ws%r, nov)
       call kernel_acc_vovo(no, nv, ws%r, w%wvovo)
    end subroutine rccsd_w_wvovo
 
+   subroutine stage_voov(ints, amps, ws, la)
+      !! ws%r(k,c,a,i) = sum_d ovvv(k,c,a,d) t1(i,d) - sum_l ooov(l,i,k,c) t1(l,a); shapes in the module header
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_rccsd_wscratch_t), intent(inout) :: ws
+      type(trc_linalg_t), intent(in) :: la
+
+      type(trc_gemm_batch_t) :: shape
+      integer :: no, nv, nov
+
+      no = ints%no
+      nv = ints%nv
+      nov = no*nv
+      call la%gemm("N", "T", nov*nv, no, nv, 1.0_dp, ints%ovvv, nov*nv, amps%t1, no, 0.0_dp, ws%r, nov*nv)
+      shape = trc_gemm_batch(nov, nv, no, no, lda=no*no, ldb=no, ldc=nov, &
+                             sa=int(no, int64), sb=0_int64, sc=int(nov, int64)*nv, transa="T", transb="N")
+      call la%gemm_batched(shape, ints%ooov, amps%t1, ws%r, -1.0_dp, 1.0_dp)
+   end subroutine stage_voov
+
+   subroutine stage_vovo(ints, amps, ws, la)
+      !! ws%r(k,i,a,c) = sum_d ovvv(k,d,a,c) t1(i,d) - sum_l ooov(k,i,l,c) t1(l,a); shapes in the module header
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_rccsd_wscratch_t), intent(inout) :: ws
+      type(trc_linalg_t), intent(in) :: la
+
+      type(trc_gemm_batch_t) :: shape
+      integer :: no, nv, no2
+
+      no = ints%no
+      nv = ints%nv
+      no2 = no*no
+      shape = trc_gemm_batch(no, no, nv, nv*nv, lda=no, ldb=no, ldc=no, &
+                             sa=int(no, int64)*nv, sb=0_int64, sc=int(no2, int64), transa="N", transb="T")
+      call la%gemm_batched(shape, ints%ovvv, amps%t1, ws%r)
+      shape = trc_gemm_batch(no2, nv, no, nv, lda=no2, ldb=no, ldc=no2, &
+                             sa=int(no2, int64)*no, sb=0_int64, sc=int(no2, int64)*nv, transa="N", transb="N")
+      call la%gemm_batched(shape, ints%ooov, amps%t1, ws%r, -1.0_dp, 1.0_dp)
+   end subroutine stage_vovo
+
    pure function rccsd_w_flops(no, nv) result(flops)
-      !! Flops of one `rccsd_w_build`, 2 m n k of each of its GEMMs (the base kernels, packs and accumulates are not counted):
-      !!   Woooo  (o o, o o, v v)             2 o^4 v^2
-      !!   Wvoov  two (o v, o v, o v)         4 (o v)^3
-      !!   Wvovo  one (o v, o v, o v)         2 (o v)^3
+      !! Flops of one `rccsd_w_build`, 2 m n k of each of its GEMMs (the kernels are not counted):
+      !!   Woooo  (o o, o o, v v)                        2 o^4 v^2
+      !!   Wvoov  two (o v, o v, o v)                    4 (o v)^3
+      !!          ovvv t1 (o v^2, o, v)                  2 o^2 v^3
+      !!          ooov t1, o of (o v, v, o)              2 o^3 v^2
+      !!   Wvovo  one (o v, o v, o v)                    2 (o v)^3
+      !!          ovvv t1, v^2 of (o, o, v)              2 o^2 v^3
+      !!          ooov t1, v of (o^2, v, o)              2 o^3 v^2
       integer, intent(in) :: no, nv
       integer(int64) :: flops
 
-      flops = rccsd_steps_gemm_flops(no*no, no*no, nv*nv) + 3_int64*rccsd_steps_gemm_flops(no*nv, no*nv, no*nv)
+      flops = rccsd_steps_gemm_flops(no*no, no*no, nv*nv) + 3_int64*rccsd_steps_gemm_flops(no*nv, no*nv, no*nv) + &
+              rccsd_steps_gemm_flops(no*nv*nv, no, nv) + rccsd_steps_gemm_flops(no*nv, nv, no, no) + &
+              rccsd_steps_gemm_flops(no, no, nv, nv*nv) + rccsd_steps_gemm_flops(no*no, nv, no, nv)
    end function rccsd_w_flops
 
    subroutine rccsd_w_build(ints, amps, inter, w, ws, la)
@@ -566,58 +642,60 @@ contains
       end do
    end subroutine kernel_woooo_base
 
-   subroutine kernel_voov_base(no, nv, ovov, ovvv, ooov, t1, w)
-      !! w(a,k,i,c) = ovov(k,c,i,a) + sum_d ovvv(k,c,a,d) t1(i,d) - sum_l ooov(l,i,k,c) t1(l,a)
+   subroutine kernel_voov_base(no, nv, ovov, stage, w)
+      !! w(a,k,i,c) = ovov(k,c,i,a) + stage(k,c,a,i); threads over the source (k,c,i,a), k fastest
       integer, intent(in) :: no, nv
-      real(dp), intent(in) :: ovov(no, nv, no, nv), ovvv(no, nv, nv, nv), ooov(no, no, no, nv), t1(no, nv)
+      real(dp), intent(in) :: ovov(no*nv*no*nv), stage(no*nv*nv*no)
       real(dp), intent(out) :: w(nv*no*no*nv)
       integer :: t
 
-      do concurrent(t=1:nv*no*no*nv)
-         w(t) = voov_item(t, no, nv, ovov, ovvv, ooov, t1)
+      do concurrent(t=1:no*nv*no*nv)
+         w(voov_dst(t, no, nv)) = ovov(t) + stage(voov_stage(t, no, nv))
       end do
    end subroutine kernel_voov_base
 
-   subroutine kernel_vovo_base(no, nv, oovv, ovvv, ooov, t1, w)
-      !! w(a,k,c,i) = oovv(k,i,a,c) + sum_d ovvv(k,d,a,c) t1(i,d) - sum_l ooov(k,i,l,c) t1(l,a)
+   subroutine kernel_vovo_base(no, nv, oovv, stage, w)
+      !! w(a,k,c,i) = oovv(k,i,a,c) + stage(k,i,a,c); threads over the source (k,i,a,c), k fastest
       integer, intent(in) :: no, nv
-      real(dp), intent(in) :: oovv(no, no, nv, nv), ovvv(no, nv, nv, nv), ooov(no, no, no, nv), t1(no, nv)
+      real(dp), intent(in) :: oovv(no*no*nv*nv), stage(no*no*nv*nv)
       real(dp), intent(out) :: w(nv*no*nv*no)
       integer :: t
 
-      do concurrent(t=1:nv*no*nv*no)
-         w(t) = vovo_item(t, no, nv, oovv, ovvv, ooov, t1)
+      do concurrent(t=1:no*no*nv*nv)
+         w(vovo_dst_kiac(t, no, nv)) = oovv(t) + stage(t)
       end do
    end subroutine kernel_vovo_base
 
    subroutine kernel_acc_voov(no, nv, r, w)
-      !! w(a,k,i,c) += R(k,c,i,a)
+      !! w(a,k,i,c) += R(k,c,i,a); threads over R in storage order
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: r(no*nv*no*nv)
       real(dp), intent(inout) :: w(nv*no*no*nv)
       integer :: t
 
-      do concurrent(t=1:nv*no*no*nv)
-         w(t) = w(t) + acc_voov_item(t, no, nv, r)
+      do concurrent(t=1:no*nv*no*nv)
+         w(voov_dst(t, no, nv)) = w(voov_dst(t, no, nv)) + r(t)
       end do
    end subroutine kernel_acc_voov
 
    subroutine kernel_acc_vovo(no, nv, r, w)
-      !! w(a,k,c,i) += R(k,c,i,a)
+      !! w(a,k,c,i) += R(k,c,i,a); threads over R in storage order
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: r(no*nv*no*nv)
       real(dp), intent(inout) :: w(nv*no*nv*no)
       integer :: t
 
-      do concurrent(t=1:nv*no*nv*no)
-         w(t) = w(t) + acc_vovo_item(t, no, nv, r)
+      do concurrent(t=1:no*nv*no*nv)
+         w(vovo_dst_kcia(t, no, nv)) = w(vovo_dst_kcia(t, no, nv)) + r(t)
       end do
    end subroutine kernel_acc_vovo
 
    ! ---------------------------------------------------------------------
    ! the item routines: pure, `routine seq`, explicit-shape dummies, no
    ! arrays of their own. A flat 1-based index t is the position in the
-   ! DESTINATION, first index fastest.
+   ! DESTINATION (first index fastest) for the packs, and in the SOURCE for
+   ! the base, stage and accumulate maps (`*_dst`, `voov_stage`), which return
+   ! where that element goes.
    ! ---------------------------------------------------------------------
 
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
@@ -711,64 +789,48 @@ contains
       end do
    end function woooo_item
 
-   pure function voov_item(t, no, nv, ovov, ovvv, ooov, t1) result(v)
-      !! The GEMM-free part of Wvoov(a,k,i,c) at position t of (nv, no, no, nv); d, then l, ascending
+   pure function voov_dst(t, no, nv) result(j)
+      !! Position in Wvoov(a,k,i,c) of the element at position t of a (k,c,i,a) array (ovov, R)
       !$acc routine seq
       integer, intent(in) :: t, no, nv
-      real(dp), intent(in) :: ovov(no, nv, no, nv), ovvv(no, nv, nv, nv), ooov(no, no, no, nv), t1(no, nv)
-      real(dp) :: v
-      integer :: a, k, i, c, d, l
-
-      call split4(t, nv, no, no, a, k, i, c)
-      v = ovov(k, c, i, a)
-      do d = 1, nv
-         v = v + ovvv(k, c, a, d)*t1(i, d)
-      end do
-      do l = 1, no
-         v = v - ooov(l, i, k, c)*t1(l, a)
-      end do
-   end function voov_item
-
-   pure function vovo_item(t, no, nv, oovv, ovvv, ooov, t1) result(v)
-      !! The GEMM-free part of Wvovo(a,k,c,i) at position t of (nv, no, nv, no); d, then l, ascending
-      !$acc routine seq
-      integer, intent(in) :: t, no, nv
-      real(dp), intent(in) :: oovv(no, no, nv, nv), ovvv(no, nv, nv, nv), ooov(no, no, no, nv), t1(no, nv)
-      real(dp) :: v
-      integer :: a, k, c, i, d, l
-
-      call split4(t, nv, no, nv, a, k, c, i)
-      v = oovv(k, i, a, c)
-      do d = 1, nv
-         v = v + ovvv(k, d, a, c)*t1(i, d)
-      end do
-      do l = 1, no
-         v = v - ooov(k, i, l, c)*t1(l, a)
-      end do
-   end function vovo_item
-
-   pure function acc_voov_item(t, no, nv, r) result(v)
-      !! R(k,c,i,a) for the element Wvoov(a,k,i,c) at position t of (nv, no, no, nv)
-      !$acc routine seq
-      integer, intent(in) :: t, no, nv
-      real(dp), intent(in) :: r(no*nv, no*nv)
-      real(dp) :: v
+      integer :: j
       integer :: a, k, i, c
 
-      call split4(t, nv, no, no, a, k, i, c)
-      v = r((c - 1)*no + k, (a - 1)*no + i)
-   end function acc_voov_item
+      call split4(t, no, nv, no, k, c, i, a)
+      j = a + nv*((k - 1) + no*((i - 1) + no*(c - 1)))
+   end function voov_dst
 
-   pure function acc_vovo_item(t, no, nv, r) result(v)
-      !! R(k,c,i,a) for the element Wvovo(a,k,c,i) at position t of (nv, no, nv, no)
+   pure function voov_stage(t, no, nv) result(j)
+      !! Position in the (k,c,a,i) array of the element at position t of a (k,c,i,a) array
       !$acc routine seq
       integer, intent(in) :: t, no, nv
-      real(dp), intent(in) :: r(no*nv, no*nv)
-      real(dp) :: v
+      integer :: j
+      integer :: a, k, i, c
+
+      call split4(t, no, nv, no, k, c, i, a)
+      j = k + no*((c - 1) + nv*((a - 1) + nv*(i - 1)))
+   end function voov_stage
+
+   pure function vovo_dst_kiac(t, no, nv) result(j)
+      !! Position in Wvovo(a,k,c,i) of the element at position t of a (k,i,a,c) array (oovv, stage)
+      !$acc routine seq
+      integer, intent(in) :: t, no, nv
+      integer :: j
       integer :: a, k, c, i
 
-      call split4(t, nv, no, nv, a, k, c, i)
-      v = r((c - 1)*no + k, (a - 1)*no + i)
-   end function acc_vovo_item
+      call split4(t, no, no, nv, k, i, a, c)
+      j = a + nv*((k - 1) + no*((c - 1) + nv*(i - 1)))
+   end function vovo_dst_kiac
+
+   pure function vovo_dst_kcia(t, no, nv) result(j)
+      !! Position in Wvovo(a,k,c,i) of the element at position t of a (k,c,i,a) array (R)
+      !$acc routine seq
+      integer, intent(in) :: t, no, nv
+      integer :: j
+      integer :: a, k, c, i
+
+      call split4(t, no, nv, no, k, c, i, a)
+      j = a + nv*((k - 1) + no*((c - 1) + nv*(i - 1)))
+   end function vovo_dst_kcia
 
 end module trc_rccsd_w

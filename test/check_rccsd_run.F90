@@ -1175,7 +1175,7 @@ contains
       case (RCCSD_ST_INTER)
          f = 2*oo**3*vv**2 + 2*oo**2*vv**3 + 2*oo**2*vv**2 + 2*oo**3*vv
       case (RCCSD_ST_W)
-         f = 2*oo**4*vv**2 + 6*oo**3*vv**3
+         f = 2*oo**4*vv**2 + 6*oo**3*vv**3 + 4*oo**2*vv**3 + 4*oo**3*vv**2
       case (RCCSD_ST_LADDER)
          if (form == RCCSD_LADDER_ASSEMBLED) then
             f = 2*(px + oo**2)*vv**4
