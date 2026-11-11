@@ -123,6 +123,14 @@ module check_sym_grad_suite
       !! central difference of a reconverged SCF energy has a ~1e-7 absolute
       !! truncation floor.
 
+   integer(int64), parameter :: WORK_WATER(2) = [3081_int64, 1868_int64]
+      !! Water/cc-pVDZ, full and skeleton work items of the gradient plan, on
+      !! the default split-when-it-pays basis (docs/SYMMETRY_GRADIENT.md's
+      !! 14 627 and 9 968 are the fully split basis, TRC_DECON_SHELL_COST=0).
+      !! A 1.65x reduction; Cartesian and spherical alike.
+   integer(int64), parameter :: WORK_B2H6(2) = [45108_int64, 12690_int64]
+      !! B2H6/6-31G*, the same way: a 3.55x reduction.
+
    type :: ctx_t
       !! One molecule in one AO space, with its symmetric engine.
       type(trc_basis_t) :: bas
@@ -136,6 +144,9 @@ module check_sym_grad_suite
       character(len=96) :: label = " "
       real(dp) :: worst = 0.0_dp
       real(dp) :: worst_raw = 0.0_dp
+      integer(int64) :: want_full = -1, want_skel = -1
+      !! When set (>= 0), the exact work items of the full and the skeleton
+      !! plan: `<` alone would let the reduction regress unnoticed.
    end type ctx_t
 
 contains
@@ -350,7 +361,9 @@ contains
       type(trc_bin_plan_t) :: pf, ps
       integer :: i, nbad_f, nbad_s, nmiss_f, nmiss_s, nket, nbra
 
-      call pf%build(ctx%eri%bins, ctx%eri%thresh, ctx%eri%quartets%bin_pbase, .false.)
+      ! Both plans as grad_bins builds them: only the gradient asks for the
+      ! canonical order, the energy path keeps the walk order.
+      call pf%build(ctx%eri%bins, ctx%eri%thresh, ctx%eri%quartets%bin_pbase, .false., canonical=.true.)
       call ps%build_skeleton(ctx%eri%bins, ctx%eri%quartets%orb, ctx%eri%thresh, ctx%eri%quartets%bin_pbase, &
                              canonical=.true.)
       nbad_f = 0
@@ -452,6 +465,12 @@ contains
                  ": projected skeleton gradient differs from the full one by "//to_string(err_sym, "es10.3")// &
                  " (max|g| "//to_string(gmax, "es10.3")//")")
       if (allocated(error)) return
+      if (ctx%want_full >= 0) then
+         call check(error, nw_full == ctx%want_full .and. nw_skel == ctx%want_skel, trim(ctx%label)//" "// &
+                    trim(tag)//": work items "//to_string(nw_full)//" -> "//to_string(nw_skel)//", pinned "// &
+                    to_string(ctx%want_full)//" -> "//to_string(ctx%want_skel))
+         if (allocated(error)) return
+      end if
       ! A silent fall back to the full plan would leave both counts equal.
       if (smaller) then
          call check(error, nw_skel < nw_full, trim(ctx%label)//" "//trim(tag)// &
@@ -553,17 +572,23 @@ contains
       ctx%label = base
    end subroutine run_densities
 
-   subroutine run_molecule(xyz, group, basis_json, scf, smaller, error)
+   subroutine run_molecule(xyz, group, basis_json, scf, smaller, error, work)
       !! One molecule, Cartesian and spherical.
       character(len=*), intent(in) :: xyz, group, basis_json
       logical, intent(in) :: scf, smaller
       type(error_type), allocatable, intent(out) :: error
+      integer(int64), intent(in), optional :: work(2)
+      !! The expected work items, full and skeleton (`ctx_t%want_full`).
       type(ctx_t) :: ctx
       integer :: ik, dev
       dev = trc_bind_device(0)
       do ik = 1, 2
          call setup_ctx(ctx, xyz, group, basis_json, -1, ik == 2, error)
          if (allocated(error)) return
+         if (present(work)) then
+            ctx%want_full = work(1)
+            ctx%want_skel = work(2)
+         end if
          ! RELEASE ON EVERY PATH OUT. An early return would leave the basis
          ! and the engine mapped; the next molecule's `to_device` then meets a
          ! host address the device present table still holds, with the wrong
@@ -620,7 +645,7 @@ contains
 
    subroutine test_c2v(error)
       type(error_type), allocatable, intent(out) :: error
-      call run_molecule("water", "C2v", "basis_sets/cc-pvdz.json", .true., .true., error)
+      call run_molecule("water", "C2v", "basis_sets/cc-pvdz.json", .true., .true., error, WORK_WATER)
    end subroutine test_c2v
 
    subroutine test_c2h(error)
@@ -643,7 +668,7 @@ contains
       !! permutation error cannot cancel the way it can on a planar molecule
       !! (docs/SYMMETRY_FOCK.md section 7).
       type(error_type), allocatable, intent(out) :: error
-      call run_molecule("b2h6_d2h", "D2h", "basis_sets/6-31gs.json", .false., .true., error)
+      call run_molecule("b2h6_d2h", "D2h", "basis_sets/6-31gs.json", .false., .true., error, WORK_B2H6)
    end subroutine test_b2h6
 
    subroutine test_sf6(error)
@@ -660,6 +685,8 @@ contains
 
    subroutine test_quick(error)
       type(error_type), allocatable, intent(out) :: error
+      ! Not pinned here: check_sym_grad_cap runs this with TRC_BIN_CAP=40, whose
+      ! split bins admit a different count (test_c2v and test_b2h6 pin them).
       call run_molecule("water", "C2v", "basis_sets/cc-pvdz.json", .false., .true., error)
       if (allocated(error)) return
       call run_molecule("b2h6_d2h", "D2h", "basis_sets/6-31gs.json", .false., .true., error)

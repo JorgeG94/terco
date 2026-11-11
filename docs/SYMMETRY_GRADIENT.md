@@ -243,12 +243,11 @@ launch evaluates before the in-kernel screens -- `plan%nwork` of the plan
 to its survivor list, counted by running `rysg_screen_dispatch` and reading
 its atomic counter.
 
-**There is no `TRC_KEPT_STATS` for the gradient, and no counter at all.**
-`eri%gradient` sets neither `eri%nwork` nor `eri%nkept` (only the `fock*`
-entries do), and no test sets `TRC_KEPT_STATS`. The survivor counts below
-come from the prototype; a `TRC_KEPT_STATS`-equivalent on the gradient would
-be two lines (`plan%nwork`, and the sum of the screen pass's `ctr`) and is
-recommended as part of S16 (section 7, item 6).
+**The gradient's counters.** `eri%gradient` sets `eri%nwork` (the plan's
+work items) and `eri%nkept` (the sum of the screen pass's `ctr`), as the
+`fock*` entries do (section 7, item 6), and check_sym_grad asserts on them.
+The survivor counts below come from the prototype, measured before those
+counters existed.
 
 ### 3.1 Work items the gradient launches
 

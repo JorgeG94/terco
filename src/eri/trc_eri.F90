@@ -192,7 +192,9 @@ module trc_eri
       !! it costs a full extra enumeration pass. On the GRADIENT path it is
       !! always set: the ordered-survivor compaction already copies its screen
       !! pass's atomic counter back to the host once per batch, so summing it
-      !! is free, and `gradient` had no counter of its own at all before S16.
+      !! is free. On a distributed engine it would be this rank's count while
+      !! `nwork` covers the whole plan; the gradient runs on rank 0 only
+      !! (trc_run_gradient), so today both are the whole build's.
       integer(int64) :: nwork = 0
       !! Work items (quartets before the in-kernel screens) of the last
       !! build, Fock or gradient. For a skeleton build this is the restricted

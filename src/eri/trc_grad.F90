@@ -123,7 +123,7 @@ contains
          ! and no new class run -- and so no extra launch -- comes with it.
          call plan%build_skeleton(b, quartets%orb, launch%thresh, quartets%bin_pbase, canonical=.true.)
       else
-         call plan%build(b, launch%thresh, quartets%bin_pbase, .false.)
+         call plan%build(b, launch%thresh, quartets%bin_pbase, .false., canonical=.true.)
       end if
       launch%nwork = plan%nwork
       launch%nkept = 0
@@ -270,7 +270,7 @@ contains
                                          pairs%sh_at, out_seg, out_iab, out_icd, nmax, ctr)
                !$acc update host(ctr)
                nout = min(ctr(1), int(nmax, int64))
-               launch%nkept = launch%nkept + nout
+               launch%nkept = launch%nkept + nout  ! this rank's survivors (trc_eri_t%nkept)
                call rysg_compact_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, plan%sA, plan%sNB, &
                                           plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
                                           plan%sD, plan%sW, &

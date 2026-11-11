@@ -837,19 +837,21 @@ file(MAKE_DIRECTORY "${_hgp_template}")
 # safe is that EVERY gradient plan is emitted ANGULAR-MOMENTUM CANONICALLY:
 # bins_plan_emit's `canon` reorders the two sides of each segment so that
 # (sLA, sLB) >= (sLC, sLD), whichever side the walk cut (trc_bins.F90).
-# plain_walk asks for it, and so does the skeleton plan grad_bins builds.
+# grad_bins asks for it from both plans it builds, the full one
+# (bins_plan_build's `canonical`) and the skeleton one; the energy plans keep
+# the walk order, which the bra<ket energy classes above serve.
 #
-# It did not used to. The old argument was that plan%build iterates b%live in
-# ascending bin index, and bin_key packs (la, lb) as its most significant
-# fields, so ascending index USUALLY means (la, lb) >= (lc, ld). But
-# split_large_bins and arrange_orbits append a split bin's extra chunks PAST
-# every original index while keeping their parent's (la, lb), so a chunk of a
-# low-l bin could be the bra against a high-l ket -- the same mechanism that
-# makes the 42 bra<ket energy classes above reachable -- and grad_classes
-# `error stop`ped on a class it has no kernel for. At TERCO_LMAX=2 all 81
-# gradient classes are built so nothing could fire; above d it needed an f
-# shell and a bin of more than 32768 pairs, which no gradient test had ever
-# built. test/check_sym_grad.F90's capped case now does, at TERCO_LMAX=3.
+# Ascending bin index alone is not enough. plan%build iterates b%live in
+# ascending index, and bin_key packs (la, lb) as its most significant fields,
+# so ascending index USUALLY means (la, lb) >= (lc, ld). But split_large_bins
+# and arrange_orbits append a split bin's extra chunks PAST every original
+# index while keeping their parent's (la, lb), so a chunk of a low-l bin can
+# be the bra against a high-l ket -- the same mechanism that makes the 42
+# bra<ket energy classes above reachable -- and grad_classes would `error
+# stop` on a class it has no kernel for. At TERCO_LMAX=2 all 81 gradient
+# classes are built, so nothing can fire; above d it takes an f shell and a
+# bin of more than 32768 pairs, which test/check_sym_grad.F90's capped case
+# builds at TERCO_LMAX=3.
 # The 30 gradient classes that filter drops (NOT ~42: that is the energy
 # side's bra<ket count above, over a different class set) are the
 # f-containing ones with (lc, ld) > (la, lb):

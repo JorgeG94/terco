@@ -1283,7 +1283,7 @@ contains
    ! launch. The screening granularity is worth keeping; the launch
    ! granularity is not. A prefix sum lets a thread find its own segment.
    !
-   subroutine bins_plan_build(this, b, thresh, bin_pbase, use_density)
+   subroutine bins_plan_build(this, b, thresh, bin_pbase, use_density, canonical)
       class(trc_bin_plan_t), intent(inout) :: this
       type(pair_bins_t), intent(in) :: b
       real(dp), intent(in) :: thresh
@@ -1292,19 +1292,28 @@ contains
       !! (trc_pair_quartets_t's bin_pbase).
       logical,  intent(in) :: use_density
       !! Also apply the bin-level density screen (density_reject).
+      logical,  intent(in), optional :: canonical
+      !! Write every segment angular-momentum canonically (bins_plan_emit's
+      !! `canon`): the gradient asks for it, because its filter builds no
+      !! class with (lc, ld) > (la, lb) above d. Absent or false, the walk
+      !! order is kept, so the energy path's plan, kernels and summation
+      !! order are what they were.
       integer :: nseg
+      logical :: canon
 
+      canon = .false.
+      if (present(canonical)) canon = canonical
       call this%release()
       nseg = 0
-      call plain_walk(this, b, thresh, bin_pbase, use_density, .false., nseg)
+      call plain_walk(this, b, thresh, bin_pbase, use_density, canon, .false., nseg)
       call bins_plan_allocate(this, nseg, .false.)
       nseg = 0
-      call plain_walk(this, b, thresh, bin_pbase, use_density, .true., nseg)
+      call plain_walk(this, b, thresh, bin_pbase, use_density, canon, .true., nseg)
       this%nseg = nseg
       this%nwork = this%sOff(nseg + 1)
    end subroutine bins_plan_build
 
-   subroutine plain_walk(plan, b, thresh, bin_pbase, use_density, fill, nseg)
+   subroutine plain_walk(plan, b, thresh, bin_pbase, use_density, canon, fill, nseg)
       !! Count the segments of the full plan, or (fill) write them: one whole
       !! bin against one whole bin, over the lower triangle of the live list.
       type(trc_bin_plan_t), intent(inout) :: plan
@@ -1312,6 +1321,7 @@ contains
       real(dp), intent(in) :: thresh
       integer, intent(in) :: bin_pbase(:)
       logical, intent(in) :: use_density
+      logical, intent(in) :: canon
       logical, intent(in) :: fill
       integer, intent(inout) :: nseg
       integer :: ia, ib, ka, kb, smax_keep
@@ -1328,18 +1338,18 @@ contains
             if (use_density) then
                if (density_reject(b, ka, kb, thresh)) cycle
             end if
-            ! CANONICAL: ascending live index usually means (la, lb) >=
-            ! (lc, ld) already -- bin_key packs (la, lb) as its most
-            ! significant fields -- but split_large_bins and arrange_orbits
-            ! append a split bin's extra chunks PAST every original index
-            ! while keeping their parent's (la, lb), so without this a chunk
-            ! of a low-l bin can be the bra against a high-l ket. On the
-            ! energy path that reaches one of the bra<ket Rys kernels; on the
-            ! gradient path, whose filter builds no class with (lc, ld) >
-            ! (la, lb) above d, grad_classes `error stop`s on a class it has
-            ! no kernel for (src/CMakeLists.txt's _rys_grad_classes).
+            ! `canon`: ascending live index usually means (la, lb) >= (lc, ld)
+            ! already -- bin_key packs (la, lb) as its most significant
+            ! fields -- but split_large_bins and arrange_orbits append a split
+            ! bin's extra chunks PAST every original index while keeping their
+            ! parent's (la, lb), so a chunk of a low-l bin can be the bra
+            ! against a high-l ket. The energy path has kernels for both
+            ! orderings (the bra<ket Rys ones) and keeps the walk order; the
+            ! gradient's filter builds no class with (lc, ld) > (la, lb) above
+            ! d, and grad_classes would `error stop` on one (src/CMakeLists.txt's
+            ! _rys_grad_classes), so it asks for the canonical order.
             call bins_plan_emit(plan, b, bin_pbase, fill, nseg, &
-                                trc_bin_segment_t(ka, kb, 0, b%bin_cnt(ka), 0, b%bin_cnt(kb), ka == kb, 1.0_dp), .true.)
+                                trc_bin_segment_t(ka, kb, 0, b%bin_cnt(ka), 0, b%bin_cnt(kb), ka == kb, 1.0_dp), canon)
          end do
       end do
    end subroutine plain_walk
@@ -1662,8 +1672,12 @@ contains
       else
          nt = int(ja_n, int64)*int(jb_n, int64)
       end if
-      ! See bins_plan_build: the kernels index within a segment by a
-      ! default integer, and bins are capped so that no segment needs more.
+      ! The kernels take their within-segment index as a default integer, so
+      ! a segment must fit in one. Widening it would cost registers in the
+      ! hot kernel, which are the binding constraint; instead
+      ! bins_build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
+      ! (split_large_bins), so no segment exceeds 2**30. This guard is the
+      ! backstop if that cap is ever raised.
       if (nt > 2147483000_int64) error stop &
          "terco: bin-pair segment exceeds a default integer; widen the kernels' t"
       plan%sOff(nseg + 1) = plan%sOff(nseg) + nt

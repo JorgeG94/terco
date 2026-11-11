@@ -4941,7 +4941,7 @@ contains
       ! the grid's own (first-order) error; projecting would move the gradient
       ! by that much away from the symmetry-off one, so it is left as computed.
       !
-      ! The GROUP is handed over in that case too (S16): the four-centre term
+      ! The GROUP is handed over in that case too: the four-centre term
       ! is then a SKELETON build, which is not a gradient until it is
       ! projected, and trc_scf_gradient projects that term alone, inside
       ! two_electron_4c, leaving the DFT grid story exactly as it was. The

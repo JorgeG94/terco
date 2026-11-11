@@ -84,7 +84,7 @@ module trc_scf_grad
       logical :: skeleton = .true.
       !! Build the four-centre term as a skeleton (default TRUE). False takes
       !! the full C1 four-centre build and leaves `project` to symmetrize the
-      !! finished gradient, which is what this routine did before S16.
+      !! finished gradient (the comparison path of check_sym_grad).
       !!
       !! The caller decides because the skeleton is not always the smaller
       !! build. On a molecule whose every pair orbit is a singleton -- a
@@ -557,7 +557,7 @@ contains
       if (reuse_pl) reuse_pl = pair_eri_cache%matches(b, thresh)
       reuse_eri = .false.
       ! An engine built with the point group is exactly the one a skeleton
-      ! four-centre gradient needs (S16): its orbit tables are what
+      ! four-centre gradient needs: its orbit tables are what
       ! bins_plan_build_skeleton walks. A SKELETON gradient on an engine
       ! WITHOUT them would silently fall back to the full plan, so it is
       ! refused here and two_electron_fresh builds its own with the group
@@ -622,7 +622,7 @@ contains
       !! `skel`: `sym` present AND its `skeleton` not declined).
       !! False with `sym` present is the full C1 four-centre term,
       !! unprojected here -- trc_scf_gradient's end-of-routine
-      !! `sym_scf_grad_symmetrize` is then the only projection, as before S16.
+      !! `sym_scf_grad_symmetrize` is then the only projection.
       type(trc_eri_t), intent(inout), optional :: eri_cache
       !! The SCF's own four-centre engine at this SAME geometry and
       !! threshold (trc_scf_gradient's own `pair_eri_cache`, checked
