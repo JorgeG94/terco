@@ -49,7 +49,7 @@
 ! an open shell (`nbeta`). Frozen core: the caller passes the number (`opts%nfrozen`); the count-by-element helper
 ! lives in the API layer, which this one may not use. Single rank only.
 module trc_rccsd_driver
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_step_table, only: step_table_t
    use trc_rccsd_steps, only: RCCSD_ST_INTEGRALS, RCCSD_ST_METRIC, RCCSD_ST_BLOCKS, RCCSD_ST_INTER, RCCSD_ST_W, &
@@ -64,10 +64,15 @@ module trc_rccsd_driver
    use trc_rccsd_ladder, only: trc_rccsd_ladder_options_t
    use trc_rccsd_update, only: trc_rccsd_update_t
    use trc_rccsd_ladder, only: RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_HALF
-   use trc_rccsd_diis, only: trc_rccsd_diis_t
+   use trc_rccsd_diis, only: trc_rccsd_diis_t, rccsd_diis_history_bytes, rccsd_diis_free_device_bytes
    implicit none
    private
 
+   real(dp), parameter :: DIIS_FREE_FRACTION = 0.7_dp
+   !! the DIIS history stays on the device when it takes at most this share of the free device memory at its start;
+   !! the rest is for what the iterations allocate after it. GH200, (H2O)9 cc-pVTZ: a history of 18.9 GB with
+   !! 41.0 GB free, and the run peaked 3.3 GB above the two (17% of the history, 8% of the free memory); (H2O)10, a
+   !! history of 28.8 GB with 14.0 GB free, goes to the host at 9.02 s an iteration and fits
    integer, parameter, public :: RCCSD_TIME_INTEGRALS = 1  !! `result%seconds`: the fitted integral blocks
    integer, parameter, public :: RCCSD_TIME_INTER = 2      !! tau and the one-particle intermediates
    integer, parameter, public :: RCCSD_TIME_W = 3          !! Woooo, Wvoov, Wvovo
@@ -92,6 +97,8 @@ module trc_rccsd_driver
       integer :: max_iterations = 100
       integer :: diis_size = 8            !! history length; 0 or 1 is no DIIS
       integer :: diis_start = 1           !! first iteration whose step enters the history
+      logical :: diis_host = .false.      !! force the DIIS history onto the host; else it goes there only when it does
+      !! not fit in DIIS_FREE_FRACTION of the free device memory (trc_rccsd_diis, HOST HISTORY)
       integer :: aux_block = 0            !! auxiliary functions per (mu nu|P) block; 0 means all at once
       type(trc_rccsd_ladder_options_t) :: ladder  !! form and batch sizes of the particle ladder, passed through
       logical :: verbose = .false.        !! one line per iteration and the timing table
@@ -352,6 +359,8 @@ contains
 
       integer :: no, nv
       real(dp) :: e_start
+      logical :: diis_host
+      integer(int64) :: need, free
 
       no = state%ints%no
       nv = state%ints%nv
@@ -384,7 +393,20 @@ contains
       end if
       call work%newamps%init(no, nv)
       ! the history keeps half of t2 exactly when the amplitudes have the pair symmetry the ladder was told about
-      call work%diis%init(no, nv, opts%diis_size, packed=work%upd%tau_symmetric)
+      ! the history on the host when it does not fit in DIIS_FREE_FRACTION of the free device memory, or when asked
+      need = rccsd_diis_history_bytes(no, nv, opts%diis_size, work%upd%tau_symmetric)
+      free = rccsd_diis_free_device_bytes()
+      diis_host = opts%diis_host
+      if (.not. diis_host .and. free > 0 .and. need > 0) then
+         if (real(need, dp) > DIIS_FREE_FRACTION*real(free, dp)) then
+            diis_host = .true.
+            call global_logger%warning("trc_rccsd: the DIIS history ("//to_string(real(need, dp)/1.0e9_dp, "f0.1")// &
+                                       " GB) does not fit in "//to_string(nint(100*DIIS_FREE_FRACTION))// &
+                                       "% of the free device memory ("//to_string(real(free, dp)/1.0e9_dp, "f0.1")// &
+                                       " GB): kept on the host, about 2% slower an iteration")
+         end if
+      end if
+      call work%diis%init(no, nv, opts%diis_size, packed=work%upd%tau_symmetric, host=diis_host)
       if (work%diis%status%has_error()) then
          call refuse(state%result, work%diis%status%get_message())
          return

@@ -622,6 +622,7 @@ contains
                   new_unittest("h2o2: step table times add up", h11), &
                   new_unittest("diis: linear fixed-point problem in at most n + 1 steps", diis_linear), &
                   new_unittest("diis: packed and full histories agree on a symmetric problem", diis_packed), &
+                  new_unittest("diis: host and device histories agree, with a ring that wraps", diis_host), &
                   new_unittest("diis: parallel errors restart the history", diis_singular), &
                   new_unittest("diis: a NaN step is flagged and never appended", diis_nan), &
                   new_unittest("diis: step measure against a known vector", diis_step) &
@@ -1676,6 +1677,93 @@ contains
       call half%release()
       call la%release()
    end subroutine diis_packed
+
+   subroutine diis_host(error)
+      !! The pair-symmetric linear fixed-point problem of `diis_packed` driven through a device and a host history in
+      !! lockstep, packed with room for every step and full with a ring of 3 that wraps: the step measures bitwise
+      !! equal (both computed on the device), the weights and the extrapolated vector the same to round-off (dots on
+      !! the same vectors; the host sums the extrapolation), the same restarts, and the packed pair converges
+      type(error_type), allocatable, intent(out) :: error
+
+      integer, parameter :: NO1 = 2, NV1 = 2, NOV = NO1*NV1, N = NOV + NOV*NOV, NP = NOV + NOV*(NOV + 1)/2
+      type(trc_linalg_t) :: la
+      type(trc_rccsd_diis_t) :: dev, host
+      type(trc_rccsd_amps_t) :: cur, nxt, out_dev, out_host
+      real(dp) :: a(N, N), b(N), x(N), xs(N), xn(N), xd(N)
+      real(dp) :: dvec, dw, worst
+      integer :: i, j, k, cfg, nsize, reached
+      integer(int64) :: seed
+      logical :: ex_dev, ex_host, ok, same_step, packed
+      character(len=:), allocatable :: text
+
+      seed = 4242_int64
+      do j = 1, N
+         do i = 1, N
+            a(i, j) = 0.7_dp*lcg(seed)/real(N, dp)
+         end do
+         b(j) = lcg(seed)
+      end do
+      xs = 0.0_dp
+      do k = 1, 400
+         xs = matmul(a, xs) + b
+         call symmetrize_vector(NO1, NV1, xs)
+      end do
+      call la%init(2)
+      call cur%init(NO1, NV1)
+      call nxt%init(NO1, NV1)
+      call out_dev%init(NO1, NV1)
+      call out_host%init(NO1, NV1)
+      ok = .true.
+      text = "diis host:"
+      do cfg = 1, 2
+         packed = cfg == 1
+         nsize = merge(N + 2, 3, packed)
+         call dev%init(NO1, NV1, nsize, packed=packed)
+         call host%init(NO1, NV1, nsize, packed=packed, host=.true.)
+         ok = ok .and. host%host .and. .not. dev%host
+         x = 0.0_dp
+         reached = -1
+         dvec = 0.0_dp
+         dw = 0.0_dp
+         same_step = .true.
+         worst = huge(1.0_dp)
+         do k = 1, NP + 2
+            xn = matmul(a, x) + b
+            call symmetrize_vector(NO1, NV1, xn)
+            call pack_vector(x, cur)
+            call pack_vector(xn, nxt)
+            call dev%push(la, cur, nxt, .true.)
+            call host%push(la, cur, nxt, .true.)
+            same_step = same_step .and. dev%step_norm2 == host%step_norm2 .and. dev%step_max == host%step_max
+            call dev%next(la, nxt, out_dev, ex_dev)
+            call host%next(la, nxt, out_host, ex_host)
+            ok = ok .and. (ex_dev .eqv. ex_host) .and. dev%restarts == host%restarts .and. dev%nstored == host%nstored
+            call out_dev%pull()
+            call out_host%pull()
+            call unpack_vector(out_dev, xd)
+            call unpack_vector(out_host, x)
+            dvec = max(dvec, maxval(abs(x - xd)))
+            ! the weights while the errors are well above round-off: at the solution B is singular
+            if (ex_dev .and. worst > 1.0e-6_dp) dw = max(dw, maxval(abs(dev%coef - host%coef))/maxval(abs(dev%coef)))
+            worst = maxval(abs(x - xs))
+            if (reached < 0 .and. worst < 1.0e-9_dp) reached = k
+         end do
+         ok = ok .and. same_step .and. dvec < 1.0e-12_dp .and. dw < 1.0e-10_dp
+         if (packed) ok = ok .and. reached > 0 .and. reached <= NP + 1
+         text = text//merge(" packed, ring of ", " full, ring of   ", packed)//to_string(nsize)// &
+                ": host minus device, extrapolated vector "//to_string(dvec, "es9.2")//", weights (relative) "// &
+                to_string(dw, "es9.2")//", step measures bitwise "//merge("yes", "no ", same_step)// &
+                ", solution to 1e-9 after "//to_string(reached)//" steps, restarts "//to_string(host%restarts)//";"
+         call dev%release()
+         call host%release()
+      end do
+      call check(error, ok, text)
+      call cur%release()
+      call nxt%release()
+      call out_dev%release()
+      call out_host%release()
+      call la%release()
+   end subroutine diis_host
 
    subroutine diis_singular(error)
       !! Two identical steps make B singular: next() must restart, report, and return the plain new amplitudes. The
