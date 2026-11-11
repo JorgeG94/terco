@@ -383,7 +383,8 @@ contains
          call state%amps%init(no, nv)
       end if
       call work%newamps%init(no, nv)
-      call work%diis%init(no, nv, opts%diis_size)
+      ! the history keeps half of t2 exactly when the amplitudes have the pair symmetry the ladder was told about
+      call work%diis%init(no, nv, opts%diis_size, packed=work%upd%tau_symmetric)
       if (work%diis%status%has_error()) then
          call refuse(state%result, work%diis%status%get_message())
          return

@@ -31,39 +31,60 @@
 ! an error slot (the oldest entry's when the ring is full), and the next finite push
 ! overwrites that slot.
 !
+! PACKED HISTORY (`init(..., packed=.true.)`). The solver's amplitudes have t2(i,j,a,b) = t2(j,i,b,a): the MP2
+! start has it, the update keeps it to round-off and a DIIS combination is linear. With p = (i,a) and q = (j,b)
+! (n_ov = o v values each) t2 is then a symmetric matrix T(p,q), and the history keeps only p >= q, column by
+! column: a stored vector is the t1 block, then n_ov (n_ov + 1)/2 elements of t2, np = o v + n_ov (n_ov + 1)/2
+! in all instead of n = o v + n_ov^2. The amplitude vector holds (T(p,q) + T(q,p))/2 off the diagonal and
+! T(p,p) on it; the extrapolation combines the packed vectors (a GEMM for t1, one kernel for t2) and writes
+! both (p,q) and (q,p) of the result, which is therefore exactly pair-symmetric (the iterates move at
+! round-off only). The error vector holds the symmetrised step with its off-diagonal elements multiplied by
+! sqrt(2), so that the plain dot of two packed errors is the full dot of the two symmetric steps
+! (sum_pq e f = sum_p e_pp f_pp + 2 sum_{p>q} e_pq f_pq): B, hence the weights, are the full history's to
+! round-off, through the same dot on vectors half as long. Packing is the caller's decision and is valid only
+! for pair-symmetric amplitudes: the driver asks for it exactly when its ladder is told the amplitudes have
+! the symmetry (`tau_symmetric`), so a run started from amplitudes of the caller's that lack it keeps the
+! full history. The default is the full history, unchanged.
+!
 ! THE STEP. Every push, with or without a history, reports in `step_max` the
-! largest |e_p| and in `step_norm2` the Euclidean norm ||e||_2. PySCF's
+! largest |e_p| and in `step_norm2` the Euclidean norm ||e||_2, both over the FULL vector also when the
+! history is packed (the scaled packed dot is ||e||_2 of a symmetric step; the maximum is taken from the old
+! and new amplitudes themselves, not from the averaged and scaled half). PySCF's
 ! conv_tol_normt (default 1e-5) is on ||t_new - t_old||_2 of the same concatenated
 ! vector, before the extrapolation, so `step_norm2` is PySCF's number and `step_max`
 ! is the stricter-per-element quantity the driver tests (max |e_p| <= ||e||_2 <=
-! sqrt(n) max |e_p|). `step_max` is the maximum of fixed chunks of CHUNK elements
-! evaluated by one thread each and then of those partials on the host, so it does not
-! depend on the thread count.
+! sqrt(n) max |e_p|). `step_max` is the maximum of npart = ceil(n_full/CHUNK) fixed partials, partial p over
+! the elements p, p + npart, p + 2 npart, ..., one thread each, then of the partials on the host: a maximum is
+! exact in any order, so it does not depend on the thread count. Interleaved, neighbouring threads read
+! neighbouring elements: with a contiguous run of 4096 elements a thread, the partials of a push took 0.83 ms
+! at o 20, v 265 (GH200), interleaved over 512 0.14 ms.
 !
-! MEMORY, o = active occupied, v = virtual, n = o v + o^2 v^2, 8 bytes a double,
-! host and device each: 2 n size doubles of history (the vectors and the errors) and
-! n/CHUNK partials. With size <= 1 there is no history of vectors and one error slot
-! (n doubles). At no = 25, nv = 130, size 8: 2 * 8 * 10 565 750 doubles = 1.35 GB.
+! MEMORY, o = active occupied, v = virtual, 8 bytes a double, host and device each: 2 np size doubles of
+! history packed (2 n size full; the vectors and the errors) and npart partials. With size <= 1 there is no
+! history of vectors and one error slot. At o 40, v 530, size 8 (10 waters, cc-pVTZ): packed 28.8 GB, full
+! 57.5 GB.
 !
 ! RESIDENCY. The history exists on the host AND on the device (`enter data` in
 ! `init`, `exit data` in `release`, on the same `this%name` expression); the device
 ! copy is the one used, the host mirror is never read. A kernel gets an array only as
-! an explicit-shape dummy of a `kernel_*` routine. The extrapolation is two GEMMs
-! (one per amplitude block) writing straight into the device copy of the amplitudes
-! the caller hands in; the coefficients go up through a small mapped array.
+! an explicit-shape dummy of a `kernel_*` routine. The extrapolation writes straight into
+! the device copy of the amplitudes the caller hands in; the coefficients go up through a
+! small mapped array.
 !
-! A history vector is addressed with default integers: n above 2^31-1 is refused by
-! `init` (status). Single rank only.
+! A stored vector is addressed with default integers: a stored length (np packed, n full) above 2^31-1 is
+! refused by `init` (status); the full amplitudes are indexed with 64-bit integers. Single rank only.
 module trc_rccsd_diis
    use pic_types, only: dp, int64
    use trc_rccsd_inter, only: trc_rccsd_amps_t
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t, ERROR_VALIDATION
+   use pic_strings, only: to_string
    implicit none
    private
 
-   integer, parameter :: CHUNK = 4096  !! elements per partial maximum of the step
+   integer, parameter :: CHUNK = 512  !! elements per partial maximum of the step (every npart-th element)
    real(dp), parameter :: PIVOT_FLOOR = 1.0e-14_dp  !! mqc's: below this a pivot is singular
+   real(dp), parameter :: SQRT2 = 1.4142135623730951_dp  !! off-diagonal weight of a packed error element
 
    public :: trc_rccsd_diis_t
 
@@ -72,7 +93,9 @@ module trc_rccsd_diis
       type(error_t) :: status  !! set by `init`, and by `push` and `next` on a breakdown (the run goes on)
       integer :: no = 0
       integer :: nv = 0
-      integer :: n = 0            !! length of one vector: o v + o^2 v^2
+      integer :: n = 0            !! length of one STORED vector: o v + n_ov (n_ov + 1)/2 packed, o v + o^2 v^2 full
+      integer(int64) :: nfull = 0 !! length of the full vector, o v + o^2 v^2
+      logical :: packed = .false. !! t2 kept as the unique half (pair-symmetric amplitudes only, see the header)
       integer :: size = 0         !! history length asked for; below 2 there is no extrapolation
       integer :: nstored = 0      !! entries in the history
       integer :: newest = 0       !! slot of the newest entry
@@ -96,12 +119,14 @@ module trc_rccsd_diis
 
 contains
 
-   subroutine diis_init(this, no, nv, size)
+   subroutine diis_init(this, no, nv, size, packed)
       !! An empty history for amplitudes of these dimensions. size < 2 keeps no vectors: only the step is measured.
+      !! `packed` (default false) stores t2 as its unique half: only for amplitudes with t2(i,j,a,b) = t2(j,i,b,a).
       class(trc_rccsd_diis_t), intent(inout) :: this
       integer, intent(in) :: no, nv, size
+      logical, intent(in), optional :: packed
 
-      integer(int64) :: n64
+      integer(int64) :: nstore, nov
       integer :: nslot
 
       call this%release()
@@ -110,16 +135,23 @@ contains
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_diis: need positive orbital counts and a history length >= 0")
          return
       end if
-      n64 = int(no, int64)*nv + int(no, int64)*no*nv*nv
-      if (n64 > int(huge(0), int64)) then
-         call this%status%set(ERROR_VALIDATION, "trc_rccsd_diis: an amplitude vector has more than 2^31-1 elements")
+      this%packed = .false.
+      if (present(packed)) this%packed = packed
+      nov = int(no, int64)*nv
+      this%nfull = nov + nov*nov
+      nstore = this%nfull
+      if (this%packed) nstore = nov + nov*(nov + 1)/2
+      if (nstore > int(huge(0), int64)) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_diis: a stored amplitude vector would have "// &
+                              to_string(nstore)//" elements, above the limit of 2^31-1 (o v + o v (o v + 1)/2 packed, "// &
+                              "o v + o^2 v^2 full)")
          return
       end if
       this%no = no
       this%nv = nv
-      this%n = int(n64)
+      this%n = int(nstore)
       this%size = size
-      this%npart = (this%n + CHUNK - 1)/CHUNK
+      this%npart = int((this%nfull + CHUNK - 1)/CHUNK)
       nslot = max(size, 1)
       allocate (this%err(this%n, nslot), this%part(this%npart), this%coef(nslot))
       !$acc enter data create(this%err, this%part, this%coef)
@@ -155,6 +187,8 @@ contains
       this%no = 0
       this%nv = 0
       this%n = 0
+      this%nfull = 0
+      this%packed = .false.
       this%size = 0
       this%nstored = 0
       this%newest = 0
@@ -203,7 +237,8 @@ contains
       type(trc_rccsd_amps_t), intent(in) :: old, new
       logical, intent(in) :: keep
 
-      integer :: slot, i, other
+      integer :: slot, i, other, n1
+      integer(int64) :: n2
       real(dp) :: ee, dot
 
       call this%status%clear()
@@ -213,8 +248,16 @@ contains
       if (.not. diis_ready(this, old, new)) return
       slot = 1
       if (keep .and. this%size >= 2) slot = modulo(this%newest, this%size) + 1
-      call kernel_step(this%no*this%nv, this%n - this%no*this%nv, old%t1, old%t2, new%t1, new%t2, this%err(1, slot))
-      call kernel_chunk_max(this%n, CHUNK, this%npart, this%err(1, slot), this%part)
+      n1 = this%no*this%nv
+      n2 = this%nfull - n1
+      if (this%packed) then
+         call kernel_step_packed(this%no, this%nv, n2, this%n, old%t1, old%t2, new%t1, new%t2, this%err(1, slot))
+         ! the maximum of the full step, not of the averaged and sqrt(2)-scaled half
+         call kernel_chunk_max_diff(n1, n2, this%npart, old%t1, old%t2, new%t1, new%t2, this%part)
+      else
+         call kernel_step(n1, this%n - n1, old%t1, old%t2, new%t1, new%t2, this%err(1, slot))
+         call kernel_chunk_max(this%n, this%npart, this%err(1, slot), this%part)
+      end if
       ee = la%dot(this%n, this%err(1, slot), this%err(1, slot))
       !$acc update self(this%part)
       ! A NaN makes `ee` NaN and an infinity or an overflow makes it huge: neither compares <= huge
@@ -227,7 +270,11 @@ contains
       this%step_max = maxval(this%part)
       if (.not. keep .or. this%size < 2) return
 
-      call kernel_copy_amps(this%no*this%nv, this%n - this%no*this%nv, new%t1, new%t2, this%vec(1, slot))
+      if (this%packed) then
+         call kernel_pack_amps(this%no, this%nv, n2, this%n, new%t1, new%t2, this%vec(1, slot))
+      else
+         call kernel_copy_amps(n1, this%n - n1, new%t1, new%t2, this%vec(1, slot))
+      end if
       this%newest = slot
       if (this%nstored < this%size) this%nstored = this%nstored + 1
       ! the new row and column: <e_slot, e_j> for every entry held (the diagonal is `ee`)
@@ -281,8 +328,14 @@ contains
             ! slots 1..nstored are exactly the ones in use (a ring fills them in order before it wraps)
             call la%gemm("N", "N", n1, 1, this%nstored, 1.0_dp, this%vec(1, 1), this%n, this%coef, this%nstored, &
                          0.0_dp, amps%t1, n1)
-            call la%gemm("N", "N", n2, 1, this%nstored, 1.0_dp, this%vec(n1 + 1, 1), this%n, this%coef, this%nstored, &
-                         0.0_dp, amps%t2, n2)
+            if (this%packed) then
+               ! the half, combined and written to (i,j,a,b) and (j,i,b,a) in one pass: no packed scratch
+               call kernel_extrapolate_unpack(this%no, this%nv, this%nfull - n1, this%n, this%nstored, this%vec, &
+                                              this%coef, amps%t2)
+            else
+               call la%gemm("N", "N", n2, 1, this%nstored, 1.0_dp, this%vec(n1 + 1, 1), this%n, this%coef, &
+                            this%nstored, 0.0_dp, amps%t2, n2)
+            end if
             extrapolated = .true.
          else
             this%restarts = this%restarts + 1
@@ -291,7 +344,7 @@ contains
                                  "history restarted")
          end if
       end if
-      if (.not. extrapolated) call kernel_copy_amps_out(n1, n2, new%t1, new%t2, amps%t1, amps%t2)
+      if (.not. extrapolated) call kernel_copy_amps_out(n1, this%nfull - n1, new%t1, new%t2, amps%t1, amps%t2)
    end subroutine diis_next
 
    subroutine solve_weights(this, weights, ok)
@@ -391,28 +444,100 @@ contains
 
    subroutine kernel_copy_amps_out(n1, n2, a1, a2, b1, b2)
       !! (b1, b2) = (a1, a2)
-      integer, intent(in) :: n1, n2
+      integer, intent(in) :: n1
+      integer(int64), intent(in) :: n2
       real(dp), intent(in) :: a1(n1), a2(n2)
       real(dp), intent(out) :: b1(n1), b2(n2)
       integer :: t
+      integer(int64) :: s
 
       do concurrent(t=1:n1)
          b1(t) = a1(t)
       end do
-      do concurrent(t=1:n2)
-         b2(t) = a2(t)
+      do concurrent(s=1:n2)
+         b2(s) = a2(s)
       end do
    end subroutine kernel_copy_amps_out
 
-   subroutine kernel_chunk_max(n, chunk_size, npart, e, part)
-      !! part(p) = max |e| over the p-th run of `chunk_size` elements
-      integer, intent(in) :: n, chunk_size, npart
+   subroutine kernel_step_packed(no, nv, n2, nstore, old1, old2, new1, new2, e)
+      !! e = (new1 - old1, the packed half of the symmetrised t2 step scaled by sqrt(2) off the diagonal)
+      integer, intent(in) :: no, nv, nstore
+      integer(int64), intent(in) :: n2
+      real(dp), intent(in) :: old1(no*nv), old2(n2), new1(no*nv), new2(n2)
+      real(dp), intent(out) :: e(nstore)
+      integer :: t
+      integer(int64) :: s, k, r
+
+      do concurrent(t=1:no*nv)
+         e(t) = new1(t) - old1(t)
+      end do
+      ! one thread per element of the FULL t2, in its storage order, the ones of the upper half idle: the partner
+      ! (j,i,b,a) of a run over (i,j) lies in the one contiguous no x no block (b,a), so both reads stay local
+      do concurrent(s=1:n2) local(k, r)
+         call pair_indices(s, no, nv, k, r)
+         if (k > 0) e(no*nv + k) = packed_step_item(s, r, n2, old2, new2)
+      end do
+   end subroutine kernel_step_packed
+
+   subroutine kernel_pack_amps(no, nv, n2, nstore, a1, a2, v)
+      !! v = (a1, the packed half of (a2(i,j,a,b) + a2(j,i,b,a))/2)
+      integer, intent(in) :: no, nv, nstore
+      integer(int64), intent(in) :: n2
+      real(dp), intent(in) :: a1(no*nv), a2(n2)
+      real(dp), intent(out) :: v(nstore)
+      integer :: t
+      integer(int64) :: s, k, r
+
+      do concurrent(t=1:no*nv)
+         v(t) = a1(t)
+      end do
+      do concurrent(s=1:n2) local(k, r)
+         call pair_indices(s, no, nv, k, r)
+         if (k > 0) v(no*nv + k) = 0.5_dp*(a2(s) + a2(r))
+      end do
+   end subroutine kernel_pack_amps
+
+   subroutine kernel_extrapolate_unpack(no, nv, n2, nstore, nuse, vec, coef, t2)
+      !! t2(i,j,a,b) = t2(j,i,b,a) = sum_m coef(m) vec(o v + k, m), m = 1 .. nuse, k the packed position of the pair
+      integer, intent(in) :: no, nv, nstore, nuse
+      integer(int64), intent(in) :: n2
+      real(dp), intent(in) :: vec(nstore, nuse), coef(nuse)
+      real(dp), intent(inout) :: t2(n2)
+      integer(int64) :: s, k, r
+      real(dp) :: x
+
+      do concurrent(s=1:n2) local(k, r, x)
+         call pair_indices(s, no, nv, k, r)
+         if (k > 0) then
+            x = combine_item(no*nv + k, nstore, nuse, vec, coef)
+            t2(s) = x
+            t2(r) = x
+         end if
+      end do
+   end subroutine kernel_extrapolate_unpack
+
+   subroutine kernel_chunk_max_diff(n1, n2, npart, old1, old2, new1, new2, part)
+      !! part(p) = max |new - old| over every npart-th element of the full concatenated vector, from the p-th
+      integer, intent(in) :: n1, npart
+      integer(int64), intent(in) :: n2
+      real(dp), intent(in) :: old1(n1), old2(n2), new1(n1), new2(n2)
+      real(dp), intent(out) :: part(npart)
+      integer :: p
+
+      do concurrent(p=1:npart)
+         part(p) = chunk_max_diff_item(p, n1, n2, npart, old1, old2, new1, new2)
+      end do
+   end subroutine kernel_chunk_max_diff
+
+   subroutine kernel_chunk_max(n, npart, e, part)
+      !! part(p) = max |e| over every npart-th element, from the p-th
+      integer, intent(in) :: n, npart
       real(dp), intent(in) :: e(n)
       real(dp), intent(out) :: part(npart)
       integer :: p
 
       do concurrent(p=1:npart)
-         part(p) = chunk_max_item(p, n, chunk_size, e)
+         part(p) = chunk_max_item(p, n, npart, e)
       end do
    end subroutine kernel_chunk_max
 
@@ -444,18 +569,88 @@ contains
       end if
    end function join_item
 
-   pure function chunk_max_item(p, n, chunk_size, e) result(v)
-      !! max |e| over elements (p-1) chunk_size + 1 .. min(p chunk_size, n), in ascending order
+   pure function chunk_max_item(p, n, npart, e) result(v)
+      !! max |e| over elements p, p + npart, p + 2 npart, ... <= n: neighbouring partials read neighbouring elements
       !$acc routine seq
-      integer, intent(in) :: p, n, chunk_size
+      integer, intent(in) :: p, n, npart
       real(dp), intent(in) :: e(n)
       real(dp) :: v
-      integer :: k
+      integer(int64) :: k
 
       v = 0.0_dp
-      do k = (p - 1)*chunk_size + 1, min(p*chunk_size, n)
+      do k = p, n, npart
          v = max(v, abs(e(k)))
       end do
    end function chunk_max_item
+
+   pure subroutine pair_indices(s, no, nv, k, r)
+      !! For position s of t2(i,j,a,b) with p = (i,a), q = (j,b): k, the position of (p,q) in the packed lower half
+      !! (column-major, p >= q), 0 for p < q; r, the position of the partner t2(j,i,b,a). One 64-bit division:
+      !! the rest of the decoding fits default integers (o^2 and v^2 do).
+      !$acc routine seq
+      integer(int64), intent(in) :: s
+      integer, intent(in) :: no, nv
+      integer(int64), intent(out) :: k, r
+      integer(int64) :: ab, p, q, nov
+      integer :: ij, i, j, a, b
+
+      ab = (s - 1)/(no*no)
+      ij = int(s - 1 - ab*no*no)
+      i = mod(ij, no)
+      j = ij/no
+      a = mod(int(ab), nv)
+      b = int(ab)/nv
+      nov = int(no, int64)*nv
+      p = i + 1 + int(no, int64)*a
+      q = j + 1 + int(no, int64)*b
+      k = 0
+      if (p >= q) k = p + (q - 1)*(2*nov - q)/2
+      r = 1 + j + no*i + int(no*no, int64)*(b + int(nv, int64)*a)
+   end subroutine pair_indices
+
+   pure function packed_step_item(s, r, n2, old2, new2) result(v)
+      !! (e(s) + e(r))/2 for e = new2 - old2 and r the pair partner of s, times sqrt(2) off the diagonal (r /= s)
+      !$acc routine seq
+      integer(int64), intent(in) :: s, r, n2
+      real(dp), intent(in) :: old2(n2), new2(n2)
+      real(dp) :: v
+
+      v = 0.5_dp*((new2(s) - old2(s)) + (new2(r) - old2(r)))
+      if (r /= s) v = SQRT2*v
+   end function packed_step_item
+
+   pure function combine_item(row, nstore, nuse, vec, coef) result(v)
+      !! sum_m coef(m) vec(row, m), m = 1 .. nuse in ascending order
+      !$acc routine seq
+      integer(int64), intent(in) :: row
+      integer, intent(in) :: nstore, nuse
+      real(dp), intent(in) :: vec(nstore, nuse), coef(nuse)
+      real(dp) :: v
+      integer :: m
+
+      v = 0.0_dp
+      do m = 1, nuse
+         v = v + coef(m)*vec(row, m)
+      end do
+   end function combine_item
+
+   pure function chunk_max_diff_item(p, n1, n2, npart, old1, old2, new1, new2) result(v)
+      !! max |new - old| over elements p, p + npart, p + 2 npart, ... of the concatenation (t1, t2)
+      !$acc routine seq
+      integer, intent(in) :: p, n1, npart
+      integer(int64), intent(in) :: n2
+      real(dp), intent(in) :: old1(n1), old2(n2), new1(n1), new2(n2)
+      real(dp) :: v
+      integer(int64) :: k
+
+      v = 0.0_dp
+      do k = p, n1 + n2, npart
+         if (k <= n1) then
+            v = max(v, abs(new1(k) - old1(k)))
+         else
+            v = max(v, abs(new2(k - n1) - old2(k - n1)))
+         end if
+      end do
+   end function chunk_max_diff_item
 
 end module trc_rccsd_diis

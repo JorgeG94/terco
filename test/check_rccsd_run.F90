@@ -621,6 +621,7 @@ contains
                   new_unittest("h2o2: step table counts the flops of every GEMM", h10), &
                   new_unittest("h2o2: step table times add up", h11), &
                   new_unittest("diis: linear fixed-point problem in at most n + 1 steps", diis_linear), &
+                  new_unittest("diis: packed and full histories agree on a symmetric problem", diis_packed), &
                   new_unittest("diis: parallel errors restart the history", diis_singular), &
                   new_unittest("diis: a NaN step is flagged and never appended", diis_nan), &
                   new_unittest("diis: step measure against a known vector", diis_step) &
@@ -1078,7 +1079,8 @@ contains
       type(trc_rccsd_options_t) :: opts
       type(trc_rccsd_result_t) :: short, loose, refused
       type(trc_rccsd_state_t) :: state, nan_state, early, skew
-      real(dp) :: d_early, e_skew(2)
+      real(dp) :: d_early
+      real(dp) :: e_skew(2), gap_skew(2)
       logical :: ok_skew
       integer :: i, j, a, b
       logical :: ok_early
@@ -1132,11 +1134,15 @@ contains
          skew%use_start = .true.
          call trc_rccsd_solve(bas, aux, pl, res%cmo(:, :, 1), res%eps(:, 1), opts, la, skew)
          e_skew(k) = skew%result%e_ccsd
+         ! The second iterate is a DIIS extrapolation. A history that kept half of t2 (valid only for symmetric
+         ! amplitudes) would hand back an exactly pair-symmetric t2; the full history keeps the start's asymmetry.
+         gap_skew(k) = pair_gap(skew%amps%t2)
          call skew%release()
       end do
-      ok_skew = abs(e_skew(1) - e_skew(2)) < 1.0e-12_dp .and. e_skew(1) == e_skew(1)
+      ok_skew = abs(e_skew(1) - e_skew(2)) < 1.0e-12_dp .and. e_skew(1) == e_skew(1) .and. minval(gap_skew) > 1.0e-6_dp
       call record(im, 7, ok_short .and. ok_nan .and. ok_early .and. ok_skew, label//"non-symmetric start, two "// &
                   "iterations, half minus assembled ladder "//to_string(e_skew(1) - e_skew(2), "es9.2")// &
+                  ", max |t2(i,j,a,b) - t2(j,i,b,a)| after them "//to_string(minval(gap_skew), "es9.2")// &
                   " (E "//to_string(e_skew(2), "f16.10")//"); max_iterations 2: converged = "// &
                   merge("T", "F", short%converged)//", iterations "//to_string(short%iterations)//", E "// &
                   to_string(short%e_ccsd, "f16.10")//", message '"//trim(short%message)//"'; NaN start: converged = "// &
@@ -1453,6 +1459,24 @@ contains
       call upd%release()
    end function returned_gap
 
+   function pair_gap(t2) result(gap)
+      !! max |t2(i,j,a,b) - t2(j,i,b,a)|
+      real(dp), intent(in) :: t2(:, :, :, :)
+      real(dp) :: gap
+      integer :: i, j, a, b
+
+      gap = 0.0_dp
+      do b = 1, size(t2, 4)
+         do a = 1, size(t2, 3)
+            do j = 1, size(t2, 2)
+               do i = 1, size(t2, 1)
+                  gap = max(gap, abs(t2(i, j, a, b) - t2(j, i, b, a)))
+               end do
+            end do
+         end do
+      end do
+   end function pair_gap
+
    function ieee_nan() result(x)
       !! A quiet NaN without a compile-time constant folding it away
       use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
@@ -1543,115 +1567,301 @@ contains
       call la%release()
    end subroutine diis_linear
 
+   subroutine symmetrize_vector(no, nv, x)
+      !! The t2 block of the concatenated (t1, t2) made pair-symmetric: t2(i,j,a,b) <- (t2(i,j,a,b) + t2(j,i,b,a))/2
+      integer, intent(in) :: no, nv
+      real(dp), intent(inout) :: x(:)
+      real(dp), allocatable :: t2(:, :, :, :)
+      integer :: n1
+
+      n1 = no*nv
+      t2 = reshape(x(n1 + 1:), [no, no, nv, nv])
+      t2 = 0.5_dp*(t2 + reshape(t2, [no, no, nv, nv], order=[2, 1, 4, 3]))
+      x(n1 + 1:) = reshape(t2, [size(t2)])
+   end subroutine symmetrize_vector
+
+   function two_point(w1, w2) result(x)
+      !! The DIIS combination of two entries whose old amplitudes were zero (each error is its vector)
+      real(dp), intent(in) :: w1(:), w2(:)
+      real(dp) :: x(size(w1))
+      real(dp) :: c1
+
+      c1 = (dot_product(w2, w2) - dot_product(w1, w2))/(dot_product(w1, w1) - 2.0_dp*dot_product(w1, w2) + &
+                                                           dot_product(w2, w2))
+      x = c1*w1 + (1.0_dp - c1)*w2
+   end function two_point
+
+   subroutine diis_packed(error)
+      !! A pair-symmetric linear fixed-point problem driven through a full and a packed history in lockstep: the
+      !! same weights and the same extrapolated vector to round-off, the packed one exactly pair-symmetric, and
+      !! the solution within (packed length) + 1 steps
+      type(error_type), allocatable, intent(out) :: error
+
+      integer, parameter :: NO1 = 2, NV1 = 2, NOV = NO1*NV1, N = NOV + NOV*NOV, NP = NOV + NOV*(NOV + 1)/2
+      type(trc_linalg_t) :: la
+      type(trc_rccsd_diis_t) :: full, half
+      type(trc_rccsd_amps_t) :: cur, nxt, out_full, out_half
+      real(dp) :: a(N, N), b(N), x(N), xs(N), xn(N), xf(N)
+      real(dp) :: dvec, dw, dnorm, dmax, gap, worst
+      integer :: i, j, k, reached
+      integer(int64) :: seed
+      logical :: ex_full, ex_half, ok
+
+      seed = 4242_int64
+      do j = 1, N
+         do i = 1, N
+            a(i, j) = 0.7_dp*lcg(seed)/real(N, dp)
+         end do
+         b(j) = lcg(seed)
+      end do
+      xs = 0.0_dp
+      do k = 1, 400
+         xs = matmul(a, xs) + b
+         call symmetrize_vector(NO1, NV1, xs)
+      end do
+      call la%init(2)
+      call full%init(NO1, NV1, N + 2)
+      call half%init(NO1, NV1, N + 2, packed=.true.)
+      call cur%init(NO1, NV1)
+      call nxt%init(NO1, NV1)
+      call out_full%init(NO1, NV1)
+      call out_half%init(NO1, NV1)
+      ok = half%n == NP .and. full%n == N .and. half%packed .and. .not. full%packed
+      x = 0.0_dp
+      reached = -1
+      dvec = 0.0_dp
+      dw = 0.0_dp
+      dnorm = 0.0_dp
+      dmax = 0.0_dp
+      gap = 0.0_dp
+      worst = huge(1.0_dp)
+      do k = 1, NP + 2
+         xn = matmul(a, x) + b
+         call symmetrize_vector(NO1, NV1, xn)
+         call pack_vector(x, cur)
+         call pack_vector(xn, nxt)
+         call full%push(la, cur, nxt, .true.)
+         call half%push(la, cur, nxt, .true.)
+         dnorm = max(dnorm, abs(full%step_norm2 - half%step_norm2)/full%step_norm2)
+         dmax = max(dmax, abs(full%step_max - half%step_max))
+         call full%next(la, nxt, out_full, ex_full)
+         call half%next(la, nxt, out_half, ex_half)
+         ! at the solution B turns singular and both restart, at the same step
+         ok = ok .and. (ex_full .eqv. ex_half) .and. full%restarts == half%restarts
+         call out_full%pull()
+         call out_half%pull()
+         call unpack_vector(out_full, xf)
+         call unpack_vector(out_half, x)
+         dvec = max(dvec, maxval(abs(x - xf)))
+         gap = max(gap, pair_gap(out_half%t2))
+         ! compare the weights while the errors are well above round-off: at the solution B is singular
+         if (ex_full .and. worst > 1.0e-6_dp) then
+            dw = max(dw, maxval(abs(full%coef - half%coef))/maxval(abs(full%coef)))
+         end if
+         worst = maxval(abs(x - xs))
+         if (reached < 0 .and. worst < 1.0e-9_dp) reached = k
+      end do
+      ok = ok .and. dvec < 1.0e-12_dp .and. dw < 1.0e-10_dp .and. dnorm < 1.0e-13_dp .and. dmax < 1.0e-15_dp .and. &
+           gap == 0.0_dp .and. reached > 0 .and. reached <= NP + 1
+      call check(error, ok, "diis packed: packed minus full, extrapolated vector "//to_string(dvec, "es9.2")// &
+                 ", weights (relative) "//to_string(dw, "es9.2")//", ||step||_2 (relative) "//to_string(dnorm, "es9.2")// &
+                 ", max|step| "//to_string(dmax, "es9.2")//"; packed output pair asymmetry "//to_string(gap, "es9.2")// &
+                 "; solution to 1e-9 after "//to_string(reached)//" steps (packed length "//to_string(NP)//"), restarts "// &
+                 to_string(full%restarts)//" and "//to_string(half%restarts))
+      call cur%release()
+      call nxt%release()
+      call out_full%release()
+      call out_half%release()
+      call full%release()
+      call half%release()
+      call la%release()
+   end subroutine diis_packed
+
    subroutine diis_singular(error)
-      !! Two identical steps make B singular: next() must restart, report, and return the plain new amplitudes
+      !! Two identical steps make B singular: next() must restart, report, and return the plain new amplitudes. The
+      !! restarted history then extrapolates again from two new entries. Full and packed histories.
       type(error_type), allocatable, intent(out) :: error
 
       integer, parameter :: NO1 = 1, NV1 = 2, N = NO1*NV1 + NO1*NO1*NV1*NV1
       type(trc_linalg_t) :: la
       type(trc_rccsd_diis_t) :: diis
       type(trc_rccsd_amps_t) :: cur, nxt
-      real(dp) :: v(N), x(N)
-      integer :: k, nstored_before
-      logical :: ex, ok
+      real(dp) :: v(N), w(N), x(N)
+      integer :: k, nstored_before, mode
+      logical :: ex, ok, ok_after
+      real(dp) :: d_after
+      character(len=:), allocatable :: text
 
-      do k = 1, N
-         v(k) = 0.1_dp*real(k, dp)
-      end do
+      ok = .true.
+      text = ""
       call la%init(2)
-      call diis%init(NO1, NV1, 4)
-      call cur%init(NO1, NV1)
-      call nxt%init(NO1, NV1)
-      call pack_vector(v, nxt)
-      call diis%push(la, cur, nxt, .true.)
-      call diis%next(la, nxt, cur, ex)
-      ok = .not. ex .and. diis%nstored == 1
-      call cur%init(NO1, NV1)                ! back to the same old amplitudes
-      call diis%push(la, cur, nxt, .true.)   ! the same step again: parallel to the first
-      nstored_before = diis%nstored
-      call diis%next(la, nxt, cur, ex)
-      call cur%pull()
-      call unpack_vector(cur, x)
-      ok = ok .and. nstored_before == 2 .and. .not. ex .and. diis%restarts == 1 .and. diis%nstored == 0 .and. &
-           diis%status%has_error() .and. maxval(abs(x - v)) < 1.0e-14_dp
-      call check(error, ok, "diis singular: two parallel steps give restarts = "//to_string(diis%restarts)// &
-                 ", history length after "//to_string(diis%nstored)//", output differs from the plain new amplitudes by "// &
-                 to_string(maxval(abs(x - v)), "es9.2"))
-      call cur%release()
-      call nxt%release()
-      call diis%release()
+      do mode = 1, 2
+         do k = 1, N
+            v(k) = 0.1_dp*real(k, dp)
+            w(k) = 0.1_dp*real(k, dp) + 0.03_dp*real(k*k, dp)
+         end do
+         if (mode == 2) then
+            call symmetrize_vector(NO1, NV1, v)
+            call symmetrize_vector(NO1, NV1, w)
+         end if
+         call diis%init(NO1, NV1, 4, packed=mode == 2)
+         call cur%init(NO1, NV1)
+         call nxt%init(NO1, NV1)
+         call pack_vector(v, nxt)
+         call diis%push(la, cur, nxt, .true.)
+         call diis%next(la, nxt, cur, ex)
+         ok = ok .and. .not. ex .and. diis%nstored == 1
+         call cur%init(NO1, NV1)                ! back to the same old amplitudes
+         call diis%push(la, cur, nxt, .true.)   ! the same step again: parallel to the first
+         nstored_before = diis%nstored
+         call diis%next(la, nxt, cur, ex)
+         call cur%pull()
+         call unpack_vector(cur, x)
+         ok = ok .and. nstored_before == 2 .and. .not. ex .and. diis%restarts == 1 .and. diis%nstored == 0 .and. &
+              diis%status%has_error() .and. maxval(abs(x - v)) < 1.0e-14_dp
+         text = text//" ["//merge("packed", "full  ", mode == 2)//": restarts = "//to_string(diis%restarts)// &
+                ", history length after "//to_string(diis%nstored)//", output differs from the plain new amplitudes by "// &
+                to_string(maxval(abs(x - v)), "es9.2")
+         ! after the restart: two entries that are not parallel extrapolate again, to the two-point combination
+         call cur%init(NO1, NV1)
+         call diis%push(la, cur, nxt, .true.)
+         call diis%next(la, nxt, cur, ex)
+         ok_after = .not. ex .and. diis%nstored == 1
+         call cur%init(NO1, NV1)
+         call pack_vector(w, nxt)
+         call diis%push(la, cur, nxt, .true.)
+         call diis%next(la, nxt, cur, ex)
+         call cur%pull()
+         call unpack_vector(cur, x)
+         d_after = maxval(abs(x - two_point(v, w)))
+         ok_after = ok_after .and. ex .and. diis%nstored == 2 .and. diis%restarts == 1 .and. d_after < 1.0e-13_dp
+         ok = ok .and. ok_after
+         text = text//"; then two new entries extrapolate = "//merge("T", "F", ex)//", off the two-point "// &
+                "combination by "//to_string(d_after, "es9.2")//"]"
+         call cur%release()
+         call nxt%release()
+         call diis%release()
+      end do
+      call check(error, ok, "diis singular:"//text)
       call la%release()
    end subroutine diis_singular
 
    subroutine diis_nan(error)
-      !! A NaN in the new amplitudes: measured as not finite, never appended
+      !! A NaN in the new amplitudes: measured as not finite, never appended; the history it left still extrapolates.
+      !! Full and packed histories.
       type(error_type), allocatable, intent(out) :: error
 
       type(trc_linalg_t) :: la
       type(trc_rccsd_diis_t) :: diis
       type(trc_rccsd_amps_t) :: cur, nxt
-      logical :: ok
+      real(dp) :: v(2*3 + 36), w(2*3 + 36), x(2*3 + 36)
+      real(dp) :: d_after
+      integer :: mode
+      logical :: ok, ex
+      character(len=:), allocatable :: text
 
+      ok = .true.
+      text = ""
       call la%init(2)
-      call diis%init(2, 3, 4)
-      call cur%init(2, 3)
-      call nxt%init(2, 3)
-      nxt%t2 = 0.5_dp
-      call nxt%push()
-      call diis%push(la, cur, nxt, .true.)
-      ok = diis%finite .and. diis%nstored == 1
-      nxt%t2(2, 1, 3, 2) = ieee_nan()
-      call nxt%push()
-      call diis%push(la, cur, nxt, .true.)
-      ok = ok .and. .not. diis%finite .and. diis%status%has_error() .and. diis%nstored == 1 .and. diis%step_max > 1.0e300_dp
-      nxt%t2(2, 1, 3, 2) = huge(1.0_dp)   ! an overflow of the squared norm is just as unusable
-      call nxt%push()
-      call diis%push(la, cur, nxt, .true.)
-      ok = ok .and. .not. diis%finite .and. diis%nstored == 1
-      call check(error, ok, "diis NaN: a NaN or an overflowing step is flagged not finite and the history keeps its "// &
-                 to_string(diis%nstored)//" entry")
-      call cur%release()
-      call nxt%release()
-      call diis%release()
+      do mode = 1, 2
+         call diis%init(2, 3, 4, packed=mode == 2)
+         call cur%init(2, 3)
+         call nxt%init(2, 3)
+         nxt%t2 = 0.5_dp
+         call nxt%push()
+         call unpack_vector(nxt, v)
+         call diis%push(la, cur, nxt, .true.)
+         ok = ok .and. diis%finite .and. diis%nstored == 1
+         nxt%t2(2, 1, 3, 2) = ieee_nan()
+         call nxt%push()
+         call diis%push(la, cur, nxt, .true.)
+         ok = ok .and. .not. diis%finite .and. diis%status%has_error() .and. diis%nstored == 1 .and. &
+              diis%step_max > 1.0e300_dp
+         nxt%t2(2, 1, 3, 2) = huge(1.0_dp)   ! an overflow of the squared norm is just as unusable
+         call nxt%push()
+         call diis%push(la, cur, nxt, .true.)
+         ok = ok .and. .not. diis%finite .and. diis%nstored == 1
+         ! a finite step after them: the entry kept from before the bad steps is intact
+         nxt%t2 = 0.5_dp
+         nxt%t1 = 0.1_dp
+         call nxt%push()
+         call unpack_vector(nxt, w)
+         call diis%push(la, cur, nxt, .true.)
+         call diis%next(la, nxt, cur, ex)
+         call cur%pull()
+         call unpack_vector(cur, x)
+         d_after = maxval(abs(x - two_point(v, w)))
+         ok = ok .and. diis%finite .and. ex .and. diis%nstored == 2 .and. d_after < 1.0e-13_dp
+         text = text//" ["//merge("packed", "full  ", mode == 2)//": "//to_string(diis%nstored)// &
+                " entries after a finite step, extrapolation off the two-point combination by "// &
+                to_string(d_after, "es9.2")//"]"
+         call cur%release()
+         call nxt%release()
+         call diis%release()
+      end do
+      call check(error, ok, "diis NaN: a NaN or an overflowing step is flagged not finite and never appended:"//text)
       call la%release()
    end subroutine diis_nan
 
    subroutine diis_step(error)
-      !! The step measure of a known vector, spread over several chunks
+      !! The step measure of a known vector, spread over several chunks; full and packed histories (the packed one on
+      !! a pair-symmetric vector whose largest element is off the diagonal, where the stored step is scaled by
+      !! sqrt(2)). A packed vector above 2^31-1 elements is refused.
       type(error_type), allocatable, intent(out) :: error
 
       type(trc_linalg_t) :: la
       type(trc_rccsd_diis_t) :: diis
       type(trc_rccsd_amps_t) :: cur, nxt
       real(dp), allocatable :: v(:)
-      integer :: n, k
+      integer :: n, k, mode
       integer(int64) :: seed
       real(dp) :: vmax, vnorm
-      logical :: ok
+      logical :: ok, ok_mode
+      character(len=:), allocatable :: text
 
+      ok = .true.
+      text = ""
       call la%init(2)
-      call diis%init(4, 19, 0)
-      call cur%init(4, 19)
-      call nxt%init(4, 19)
       n = 4*19 + 4*4*19*19
       allocate (v(n))
-      seed = 777_int64
-      do k = 1, n
-         v(k) = 0.001_dp*lcg(seed)
+      do mode = 1, 2
+         call diis%init(4, 19, 0, packed=mode == 2)
+         call cur%init(4, 19)
+         call nxt%init(4, 19)
+         seed = 777_int64
+         do k = 1, n
+            v(k) = 0.001_dp*lcg(seed)
+         end do
+         if (mode == 1) then
+            v(n) = -0.75_dp   ! the maximum sits in the last chunk
+         else
+            call symmetrize_vector(4, 19, v)
+            ! t2(3,4,19,19) and its partner t2(4,3,19,19), off the diagonal, in the last chunk
+            v(4*19 + 3 + 4*3 + 16*18 + 16*19*18) = -0.75_dp
+            v(4*19 + 4 + 4*2 + 16*18 + 16*19*18) = -0.75_dp
+         end if
+         call pack_vector(v, nxt)
+         call diis%push(la, cur, nxt, .true.)
+         vmax = maxval(abs(v))
+         vnorm = sqrt(sum(v*v))
+         ok_mode = diis%finite .and. abs(diis%step_max - vmax) < 1.0e-15_dp .and. &
+                   abs(diis%step_norm2 - vnorm) < 1.0e-13_dp .and. diis%nstored == 0 .and. diis%npart > 1
+         ok = ok .and. ok_mode
+         text = text//" ["//merge("packed", "full  ", mode == 2)//": max "//to_string(diis%step_max, "es12.5")// &
+                " (expected "//to_string(vmax, "es12.5")//"), 2-norm "//to_string(diis%step_norm2, "es12.5")// &
+                " (expected "//to_string(vnorm, "es12.5")//"), "//to_string(diis%npart)//" chunks]"
+         call cur%release()
+         call nxt%release()
+         call diis%release()
       end do
-      v(n) = -0.75_dp   ! the maximum sits in the last chunk
-      call pack_vector(v, nxt)
-      call diis%push(la, cur, nxt, .true.)
-      vmax = maxval(abs(v))
-      vnorm = sqrt(sum(v*v))
-      ok = diis%finite .and. abs(diis%step_max - vmax) < 1.0e-15_dp .and. abs(diis%step_norm2 - vnorm) < 1.0e-13_dp .and. &
-           diis%nstored == 0 .and. diis%npart > 1
-      call check(error, ok, "diis step: max "//to_string(diis%step_max, "es12.5")//" (expected "// &
-                 to_string(vmax, "es12.5")//"), 2-norm "//to_string(diis%step_norm2, "es12.5")//" (expected "// &
-                 to_string(vnorm, "es12.5")//"), "//to_string(diis%npart)//" chunks, no history with size 0")
-      call cur%release()
-      call nxt%release()
+      ! o v = 70000: o v (o v + 1)/2 alone is 2.45e9
+      call diis%init(1, 70000, 0, packed=.true.)
+      ok_mode = diis%status%has_error() .and. .not. allocated(diis%err) .and. &
+                index(diis%status%get_message(), "2^31-1") > 0
+      ok = ok .and. ok_mode
+      text = text//" [packed o 1 v 70000 refused: "//merge("T", "F", ok_mode)//"]"
       call diis%release()
+      call check(error, ok, "diis step, no history with size 0:"//text)
       call la%release()
    end subroutine diis_step
 
