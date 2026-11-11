@@ -117,6 +117,46 @@ libterco.so`): with `-rdc` the objects and CUPTI report 0.
 
 ---
 
+## Z variants: the parity skip
+
+On a planar molecule under a point group, every centre of a launch can lie in
+the z = 0 mirror plane. An integral component whose combined z power is odd is
+then exactly zero, and so is every recurrence term that carries a factor of a
+z displacement. A **z variant** (the "dead axis" is z) is the kernel of a class
+that does not form those components. The why and the measured coverage are in
+`docs/SYMMETRY_PARITY_SKIP.md`; the launcher picks a variant at the class key
+plus `CLASS_RADIX**4` and falls back to the unmasked kernel otherwise, which is
+right for every quartet and only slower.
+
+| Where | What it does |
+|---|---|
+| `gen_vrr.py`, `gen_hrr.py` | `dead` is a bit mask of the dead coordinates (z is 4). `gen_vrr.py` drops the first-order terms that carry PA/QC/WP/WQ in a dead direction and, with them, the nodes of odd parity; `gen_hrr.py` drops the odd-parity output components and the terms carrying AB or CD. `dead = 0` is the full text, unchanged. |
+| `gen_perclass.py` | emits `pcs{tag}z` in `trc_pc_k{tag}z.F90` for each class in `parity_hgp_tags(lmax)`, built from the `dead` VRR and HRR; the digestion skips the odd components. The generated `pc_dispatch` module also carries `pc_has_variant(key)` (is there a variant at this key) and `pc_cost(key)` (modelled operations of one primitive quartet, 0 without a kernel), which the launcher uses to count the work a masked launch saves. |
+| `gen_rys.py --dead z` | the same for a chunked Rys class: `trc_pc_rys{tag}z.F90`, `rys{tag}z`. The chunk body exists once per parity of the outer components' z power. It refuses (`SystemExit`) a class with no `FOCK_CHUNK_PLAN` entry, since only the chunked form has the per-chunk split. |
+| `gen_rys_dispatch.py` | `--masked-classes` adds the `z` kernels to `rys_dispatch` and `rys_has_variant(key)`. |
+
+The HGP z kernels are part of the committed set in `src/generated/`
+(`trc_pc_k*z.F90`, refreshed with the rest by `-DTERCO_REGENERATE=ON`). The Rys
+z kernels are not committed: CMake generates them into the build tree beside
+the other Rys kernels, one `gen_rys.py {tag} --dead z` per tag in
+`_rys_masked_classes`.
+
+Which classes get a variant is a measured choice (the coverage and compile-cost
+numbers are in the comment above `PARITY_HGP_TOP` in `gen_perclass.py`). The
+exact HGP list is `parity_hgp_tags`; read it there rather than from this page.
+Classes in `RYS_ROUTED` get their variant from `gen_rys.py`, not here.
+
+**Keep two lists in sync by hand.** `_rys_masked_classes` (in
+`src/CMakeLists.txt`) and `PARITY_RYS_TOP` (in `scripts/gen_perclass.py`) name
+the same Rys classes: CMake's decides which `gen_rys.py --dead z` kernels are
+built, and `PARITY_RYS_TOP` decides which of those classes (plus their
+bra/ket-swapped orderings, which production routes to HGP) `parity_hgp_tags`
+covers. Nothing checks that they agree; keep these two in sync. If they drift,
+nothing fails: a class in one list only loses part of its coverage, and its
+launches fall back to the unmasked kernel.
+
+---
+
 ## Adding a new integral type
 
 Work outward from something that already exists rather than from the algebra.

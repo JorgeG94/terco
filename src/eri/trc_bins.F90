@@ -812,21 +812,20 @@ contains
    ! passes it back in on a rebuild so the reuse-the-allocation logic below
    ! still applies.
    !
-   subroutine bins_build_pair_quartets(b, pairs, quartets, orb)
+   subroutine bins_build_pair_quartets(b, pairs, quartets)
       type(pair_bins_t), intent(in) :: b
       type(trc_shell_pairs_t), intent(in) :: pairs
       !! The primitive pairs from hgp_build_pairs.
-      type(trc_bin_orbits_t), intent(in), optional :: orb
-      !! Present, with `orb%built`: `pairs` holds primitive pairs for the orbit
-      !! representatives only (hgp_build_pairs' `want`); a bin pair without
-      !! any is an image, and its slot is filled from the representative's
-      !! pair (bins_pair_image_source) with the centres sign-flipped by the
-      !! operation's mask. Absent: every pair of a bin has its own.
       type(trc_pair_quartets_t), intent(inout) :: quartets
       !! Filled in place: `intent(inout)` because a rebuild after a resort
       !! reuses the allocation (see below). A padding slot (k past a pair's
       !! own kept count) is never read, since the kernel's loop bound is
       !! always the pair's real count (`n`); its `a` is 0.
+      !! With `quartets%orb%built`, `pairs` holds primitive pairs for the orbit
+      !! representatives only (hgp_build_pairs' `want`); a bin pair without
+      !! any is an image, and its slot is filled from the representative's
+      !! pair (bins_pair_image_source) with the centres sign-flipped by the
+      !! operation's mask. Otherwise every pair of a bin has its own.
 
       integer :: nbas, nqp, ib, bb, s, p, key, k1, kreal, off, ix, gop
       real(dp) :: sg(3)
@@ -856,13 +855,12 @@ contains
       ! Per pair slot: the A centre, A - B, and the real kept count -- what
       ! pairs%off(key)/pairs%n(key) would give the kernel, read here once
       ! rather than once per quartet.
-      images = .false.
-      if (present(orb)) images = orb%built
+      images = quartets%orb%built
       do p = 1, b%npair
          key = (b%sp_i(p) - 1)*nbas + b%sp_j(p)
          sg = 1.0_dp
          if (images) then
-            if (pairs%n(key) == 0) call bins_pair_image_source(b%sp_i(p), b%sp_j(p), nbas, pairs%n, orb, key, sg)
+            if (pairs%n(key) == 0) call bins_pair_image_source(b%sp_i(p), b%sp_j(p), nbas, pairs%n, quartets%orb, key, sg)
          end if
          off = pairs%off(key)
          quartets%ax(p) = sg(1)*pairs%ra(off + 1, 1)
@@ -905,7 +903,7 @@ contains
             key = (b%sp_i(p) - 1)*nbas + b%sp_j(p)
             sg = 1.0_dp
             if (images) then
-               if (pairs%n(key) == 0) call bins_pair_image_source(b%sp_i(p), b%sp_j(p), nbas, pairs%n, orb, key, sg)
+               if (pairs%n(key) == 0) call bins_pair_image_source(b%sp_i(p), b%sp_j(p), nbas, pairs%n, quartets%orb, key, sg)
             end if
             off = pairs%off(key)
             kreal = quartets%n(p)

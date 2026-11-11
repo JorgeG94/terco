@@ -32,7 +32,7 @@ module trc_eri
    use trc_screen, only: screen_schwarz_bounds_rys, screen_pair_index
    use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets, bins_pair_image_source, &
                        bins_rep_weights, trc_bin_shells_t, trc_bin_symmetry_t
-   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t, trc_bin_orbits_t
+   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
    use trc_error, only: error_t
    use trc_sym_geom, only: trc_sym_geom_t
    use trc_sym_ao, only: trc_sym_ao_t, sym_ao_build
@@ -125,10 +125,6 @@ module trc_eri
       real(dp) :: thresh = 1.0e-10_dp
       integer :: nbas = 0, nao = 0
       type(pair_bins_t) :: bins
-      type(trc_bin_orbits_t) :: orb
-      !! The pair orbits of `bins` when `build` was given a point group
-      !! (`orb%built`); the bins are then closed under it, with the
-      !! representatives first, and the skeleton Fock build is available.
       type(trc_shell_pairs_t) :: pairs
       !! The working basis's shells (l, AO offset, atom) and their HGP
       !! primitive pairs: what the kernels actually read. The i-side
@@ -707,7 +703,7 @@ contains
          end if
          bsym%shmap = shmap
          if (this%parity_axis > 0) bsym%shmask = shmask
-         call bins_build_binned_pairs(bsh, qs, thresh, this%bins, pp_n=this%pairs%n, res=bres, sym=bsym, orb=this%orb)
+         call bins_build_binned_pairs(bsh, qs, thresh, this%bins, pp_n=this%pairs%n, res=bres, sym=bsym, orb=this%quartets%orb)
       else
          call bins_build_binned_pairs(bsh, qs, thresh, this%bins, pp_n=this%pairs%n, res=bres)
       end if
@@ -717,9 +713,9 @@ contains
       call tm%start()
 
       if (orbits) then
-         this%orb%ops = sym%group%ops
-         call bins_build_pair_quartets(this%bins, this%pairs, this%quartets, this%orb)
-         call bin_tiles_build(this%quartets%tiles, this%bins, b%nshell, this%orb)
+         this%quartets%orb%ops = sym%group%ops
+         call bins_build_pair_quartets(this%bins, this%pairs, this%quartets)
+         call bin_tiles_build(this%quartets%tiles, this%bins, b%nshell, this%quartets%orb)
       else
          call bins_build_pair_quartets(this%bins, this%pairs, this%quartets)
          call bin_tiles_build(this%quartets%tiles, this%bins, b%nshell)
@@ -810,7 +806,7 @@ contains
       do p = 1, this%bins%npair
          key = (this%bins%sp_i(p) - 1)*nbas + this%bins%sp_j(p)
          if (n_old(key) > 0) cycle
-         call bins_pair_image_source(this%bins%sp_i(p), this%bins%sp_j(p), nbas, n_old, this%orb, ksrc, sg)
+         call bins_pair_image_source(this%bins%sp_i(p), this%bins%sp_j(p), nbas, n_old, this%quartets%orb, ksrc, sg)
          npp1 = npp1 + n_old(ksrc)
       end do
       allocate (pp(npp1), pc(npp1), pa(npp1), pr(npp1, 3), pra(npp1, 3), prb(npp1, 3))
@@ -824,7 +820,7 @@ contains
       do p = 1, this%bins%npair
          key = (this%bins%sp_i(p) - 1)*nbas + this%bins%sp_j(p)
          if (n_old(key) > 0) cycle
-         call bins_pair_image_source(this%bins%sp_i(p), this%bins%sp_j(p), nbas, n_old, this%orb, ksrc, sg)
+         call bins_pair_image_source(this%bins%sp_i(p), this%bins%sp_j(p), nbas, n_old, this%quartets%orb, ksrc, sg)
          n_src = n_old(ksrc)
          o_src = this%pairs%off(ksrc)
          o_dst = npp1
@@ -866,9 +862,9 @@ contains
       !! screens need: the surviving quartets must be a closed set. Host
       !! code on the device-resident bound (one copy each way).
       class(trc_eri_t), intent(inout) :: this
-      if (.not. this%orb%built) error stop "terco: a skeleton Fock build needs eri%build to be given the point group"
+      if (.not. this%quartets%orb%built) error stop "terco: a skeleton Fock build needs eri%build to be given the point group"
       !$acc update self(this%dsh)
-      call sym_pairs_symmetrize_dsh(this%orb%shmap, this%dsh)
+      call sym_pairs_symmetrize_dsh(this%quartets%orb%shmap, this%dsh)
       !$acc update device(this%dsh)
    end subroutine skeleton_dsh
 
@@ -934,8 +930,8 @@ contains
          this%dsh = 1.0_dp
       end if
       if (skel) then
-         if (.not. this%orb%built) error stop "terco: a skeleton Fock build needs eri%build to be given the point group"
-         call sym_pairs_symmetrize_dsh(this%orb%shmap, this%dsh)
+         if (.not. this%quartets%orb%built) error stop "terco: a skeleton Fock build needs eri%build to be given the point group"
+         call sym_pairs_symmetrize_dsh(this%quartets%orb%shmap, this%dsh)
       end if
       ! A g basis: J from the MD J engine below, the bins and MD exchange for
       ! exchange only. MD J has no erf operator, so with omega > 0 the bins and
@@ -947,7 +943,7 @@ contains
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
       launch = bin_launch(this, 1, jbins, kfac, ow, skel)
-      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat, this%orb)
+      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
       this%nwork_masked = launch%nwork_masked
@@ -1250,11 +1246,11 @@ contains
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       if (this%md%built) return
-      if (this%orb%built) then
+      if (this%quartets%orb%built) then
          if (this%dec%active) then
-            call this%md%build(this%pb, this%bins, this%thresh, bins_rep_weights(this%bins, this%orb))
+            call this%md%build(this%pb, this%bins, this%thresh, bins_rep_weights(this%bins, this%quartets%orb))
          else
-            call this%md%build(b, this%bins, this%thresh, bins_rep_weights(this%bins, this%orb))
+            call this%md%build(b, this%bins, this%thresh, bins_rep_weights(this%bins, this%quartets%orb))
          end if
       else if (this%dec%active) then
          call this%md%build(this%pb, this%bins, this%thresh)
@@ -1524,7 +1520,7 @@ contains
       launch%nosym = .true.
       ! The non-symmetric kernel reads the primitive pairs through the bins.
       call complete_pairs(this)
-      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat, this%orb)
+      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
       this%nwork_masked = launch%nwork_masked
@@ -1709,7 +1705,7 @@ contains
             launch = bin_launch(this, 1, jbins, kfac, ow, opts%skeleton)
             launch%count_kept = .true.
             call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, work(:, :, :, 1), &
-                                     work(:, :, :, 2), work(:, :, :, 2), this%orb)
+                                     work(:, :, :, 2), work(:, :, :, 2))
             this%nlaunch = launch%nlaunch
             this%nwork = launch%nwork
             this%nwork_masked = launch%nwork_masked
@@ -1735,7 +1731,7 @@ contains
          call profiler_start("eri: bins (hgp/rys)", nvtx_only=.true.)
          launch = bin_launch(this, 1, jbins, kfac, ow, opts%skeleton)
          call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, work(:, :, :, 1), &
-                                     work(:, :, :, 2), work(:, :, :, 2), this%orb)
+                                     work(:, :, :, 2), work(:, :, :, 2))
          this%nlaunch = launch%nlaunch
          this%nwork = launch%nwork
          this%nwork_masked = launch%nwork_masked
@@ -1916,7 +1912,7 @@ contains
       call profiler_start("eri: bins (hgp/rys), several densities", nvtx_only=.true.)
       launch = bin_launch(this, ndens, jfac, kfac, ow, opts%skeleton)
       call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, work(:, :, 1:ndens), &
-                               work(:, :, ndens + 1:2*ndens), work(:, :, ndens + 1:2*ndens), this%orb)
+                               work(:, :, ndens + 1:2*ndens), work(:, :, ndens + 1:2*ndens))
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
       this%nwork_masked = launch%nwork_masked
@@ -2188,7 +2184,7 @@ contains
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
       launch = bin_launch(this, ndens, jfac, kfac, ow)
-      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat, this%orb)
+      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
       this%nwork_masked = launch%nwork_masked
@@ -2227,7 +2223,6 @@ contains
       class(trc_eri_t), intent(inout) :: this
       call this%mg%release()
       call this%md%release()
-      this%orb = trc_bin_orbits_t()
       if (this%on_device) then
          if (allocated(this%quartets%ao_perm)) then
             !$acc exit data delete(this%quartets%ao_perm, this%quartets%ao_perm_inv)

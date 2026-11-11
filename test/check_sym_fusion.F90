@@ -118,7 +118,7 @@ contains
       real(dp) :: w, pw
 
       if (skel) then
-         call plan%build_skeleton(eri%bins, eri%orb, eri%thresh, eri%quartets%bin_pbase)
+         call plan%build_skeleton(eri%bins, eri%quartets%orb, eri%thresh, eri%quartets%bin_pbase)
       else
          call plan%build(eri%bins, eri%thresh, eri%quartets%bin_pbase, .false.)
       end if

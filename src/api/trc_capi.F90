@@ -233,7 +233,7 @@ module trc_capi
    use trc_sym_group, only: trc_sym_group_t, sym_group_from_name
    use trc_sym_run, only: trc_sym_request_t, SYM_OFF, SYM_AUTO, SYM_EXPLICIT, sym_run_parse_request, sym_run_choose_group, &
                           sym_run_parse_irrep_nelec, sym_run_aufbau_matches, sym_run_fixed_occupation, &
-                          SYM_SKEL_ON, SYM_SKEL_OFF
+                          sym_run_skeleton_request
    use trc_sym_frame, only: sym_frame_rot_blocks, sym_frame_rotate_rows, sym_frame_rotate_dmat, sym_frame_to_input
    implicit none
    private
@@ -7147,9 +7147,10 @@ contains
       !! Under a symmetry request (trc_set_symmetry), force the Fock matrix to
       !! be built from the orbit representatives of the integral quartets and
       !! symmetrized (on = 1), or force the full matrix and symmetrize that
-      !! (on = 0). Without this call the choice is a measured size rule's
-      !! (trc_sym_run's sym_run_skeleton_size_rule), and
-      !! TRC_SYM_SKELETON=0/1 in the environment overrides both. The same SCF
+      !! (on = 0); on = -1 hands the choice back to the size rule
+      !! (trc_sym_run's sym_run_skeleton_size_rule), which is also the choice
+      !! without this call. Any other value is refused (TRC_ERR_BADARG).
+      !! TRC_SYM_SKELETON=0/1 in the environment overrides all three. The same SCF
       !! either way, to round-off; only the number of integrals computed
       !! differs. No effect without a group other than C1, with density
       !! fitting or over more than one rank (those take the full build).
@@ -7160,7 +7161,12 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
-      cx%sym_req%skeleton = merge(SYM_SKEL_ON, SYM_SKEL_OFF, on /= 0_c_int)
+      if (sym_run_skeleton_request(int(on)) < 0) then
+         call refuse(cx, "trc_set_symmetry_skeleton: on must be -1 (the size rule), 0 (off) or 1 (on)")
+         status = TRC_ERR_BADARG
+         return
+      end if
+      cx%sym_req%skeleton = sym_run_skeleton_request(int(on))
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_symmetry_skeleton

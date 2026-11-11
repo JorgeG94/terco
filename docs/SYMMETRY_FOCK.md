@@ -4,8 +4,8 @@ Status: **design approved (section 6a) and implemented.** Scheme 2a is built
 in `src/eri/trc_bins.F90`, `src/eri/trc_bin_tiles.F90`,
 `src/eri/trc_binkernel.F90` and `src/symmetry/trc_sym_pairs.F90`, and pinned
 by `check_sym_fock`, `check_sym_fusion` and `check_sym_skeleton_rule`. The
-measurements in sections 1-7 come from a CPU prototype (`test/spike_symfock.F90`,
-AlbertThie/terco commit 496bef9); the prototype is not part of the build.
+measurements in sections 1-7 come from a CPU prototype (`spike_symfock`,
+fork-only history, commit 496bef9; not in this tree).
 
 The Fock build is still full C1 under symmetry. This document designs how to
 form G(D) from symmetry-unique integrals only and compares the candidate
@@ -89,7 +89,7 @@ section 3). The cheapest place is the caller's AO space, after
 
 ## 2. What was built and measured
 
-The prototype (`test/spike_symfock.F90`, AlbertThie/terco commit 496bef9) builds terco's own bins (`eri%bins`) for a
+The prototype (`spike_symfock`, fork-only history, commit 496bef9; not in this tree) builds terco's own bins (`eri%bins`) for a
 molecule, assigns every shell pair the bin of its orbit's representative,
 and enumerates the quartets of five schemes with the production
 bin-pair admission test (`bin_s(A)+bin_s(B) <= -log10 τ`). For the full
@@ -931,7 +931,7 @@ The design (scheme 2a) is approved. The answers to section 6:
   "ideal" column accounts for it by counting distinct shell permutations.
 - Test molecules: pyrene and pentacene coordinates are idealised
   (CC 1.40, CH 1.08 Å on a hexagonal lattice), generated for this spike
-  (`test/pyrene_d2h.xyz`, `test/pentacene_d2h.xyz`).
+  (`test/pentacene_d2h.xyz` is in the tree; the pyrene file is fork-only history, not in this tree).
 - Run-to-run noise floor: the OpenMP and device builds accumulate the Fock matrix in a
   run-dependent order, so identical runs differ by about 1e-13 to 1e-12 Eh and, for ~1000 Eh
   systems, the commutator floors at a few 1e-10. Checks must not compare runs bitwise or

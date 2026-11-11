@@ -148,6 +148,13 @@ module trc_eri_data
       !! identity: ao_perm(i') is the AO of the standard frame that AO i' of
       !! the kernels' frame is, so D'(i', j') = D(ao_perm(i'), ao_perm(j')).
       !! `ao_perm_inv` is its inverse. Device-resident like the arrays above.
+      type(trc_bin_orbits_t) :: orb
+      !! The pair orbits of the bins when they were built closed under a point
+      !! group (`orb%built`): the representatives come first in each bin, the
+      !! slots of an image pair are filled from its representative, and the
+      !! skeleton Fock build is available. Host only. Kept here, with the
+      !! other tables derived from the orbits (`axperm`, `ao_perm`), so the
+      !! launcher reads them from one argument.
    end type trc_pair_quartets_t
 
    type, public :: trc_bin_launch_t

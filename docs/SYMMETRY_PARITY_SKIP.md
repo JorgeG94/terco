@@ -7,7 +7,7 @@ CPU prototype, candidate schemes and a recommendation. The design is
 **implemented** (section 10): the masked kernels and the axis choice are in
 `src/eri/trc_parity.F90` and the generated `trc_pc_k*z*` kernels, checked by
 `check_sym_parity`. Sections 1-9 are the study as signed off; the prototype
-programs they cite are kept in the fork's history (AlbertThie/terco commit 496bef9).
+programs they cite (`spike_parity*`) are fork-only history (commit 496bef9) and are not in this tree.
 
 ## 1. Summary
 
@@ -74,15 +74,14 @@ prototype confirms it: the largest |v| over the components it skipped is
 
 ## 3. Measurements
 
-Tools (all CPU; prototypes kept in the fork's history, AlbertThie/terco commit 496bef9):
-`test/spike_parity.F90` (quartet enumeration on terco's own bins),
-`scripts/spike_parity_gen.py` (operation counts per class and mask from
-copies of the generator logic, and the report), `test/spike_parity_kernel.F90`
-(masked kernels vs the shipped ones).
+Tools (all CPU; spike programs, fork-only history, commit 496bef9, not in
+this tree): a quartet enumeration on terco's own bins, a script that counts
+operations per class and mask from copies of the generator logic, and a
+masked-vs-shipped kernel comparison.
 
 ### 3.1 Method
 
-The prototype `spike_parity` (AlbertThie/terco commit 496bef9) builds `eri%bins`, closes them under the group and
+The prototype builds `eri%bins`, closes them under the group and
 enumerates the quartets of two plans: **full** (the production enumeration)
 and **s2a** (the skeleton plan of S14.2: bin-pair fold kept, one side cut to
 orbit representatives). Quartets are counted after the exact Schwarz
@@ -90,9 +89,9 @@ product, tau = 1e-10, cc-pVDZ, working (decontracted) basis, Cartesian.
 No density screening (it removes 2-12 % of quartets uniformly, S13 §2.2;
 that moves no fraction here). For each quartet it records class
 (la,lb,lc,ld) in canonical order, the dead-coordinate mask Z, the
-stabilizer S, and the number of primitive quartets; the CSVs are in the
-logs listed at the end. Component zero counts, and the costs, are computed
-from the tables by `spike_parity_gen.py report`.
+stabilizer S, and the number of primitive quartets; the CSVs were
+measured logs, not in the tree. Component zero counts, and the costs, are
+computed from the tables by the spike's report script.
 
 Cost model (operation counts, not time): per primitive quartet a fixed
 overhead (prefactor, geometry, Boys: 90 + 4 L_tot, **assumed**), the VRR
@@ -195,7 +194,7 @@ x3: 1.26x. Whatever the true value, T1 stays at 1.07-1.14x.
 
 ### 3.5 Exactness
 
-`spike_parity verify` evaluates every quartet with `hgp_batch`, builds
+The prototype's `verify` mode evaluates every quartet with `hgp_batch`, builds
 G = J - K/2 from a symmetric density (not an SCF density: the identity does
 not depend on it) three ways and compares with the S14.2 gate
 5e-11 x max(1, max|G|):
@@ -216,9 +215,9 @@ result.
 
 ### 3.6 The kernel prototype
 
-`spike_parity_gen.py` emits the HGP VRR + HRR for a class and a mask with
-the dead terms removed; at mask 0 the text is identical to `gen_perclass`
-(`check0` asserts it). `test/spike_parity_kernel` compares the masked
+The spike generator emitted the HGP VRR + HRR for a class and a mask with
+the dead terms removed; at mask 0 the text was identical to `gen_perclass`
+(asserted). A kernel test compared the masked
 kernel with the shipped one on random geometries that satisfy the mask
 (6 primitive quartets per call, VRR + accumulation + HRR, no Boys or
 digestion; gfortran-15 -O3, Apple Silicon, machine otherwise idle):
@@ -246,8 +245,8 @@ project. Worth a separate look.
 
 ### 3.7 Host compile time of the variants
 
-`scripts/spike_parity_compile_time.sh`: gfortran-15 -O3 -c of one emitted
-kernel module, CPU seconds, while the coordinator's LMAX=4 build was running
+A spike script (fork-only history, commit 496bef9; not in this tree) ran
+gfortran-15 -O3 -c on one emitted kernel module, CPU seconds, while the coordinator's LMAX=4 build was running
 (CPU time, not wall):
 
 | class | mask | lines | seconds | object bytes |
@@ -275,7 +274,7 @@ live nodes), not rises; this was not measured on a GPU.
 ### 3.8 Axis-permutation round trip
 
 Decision 1 of §8a (engine-internal axis permutation) is exact; this is the
-measurement. `spike_parity ... roundtrip` (prototype `test/spike_parity.F90`, AlbertThie/terco commit 496bef9) builds J,
+measurement. The prototype's `roundtrip` mode builds J,
 K and G = J - K/2 with the four-centre engine (same bins, `hgp_batch`
 digestion, full and s2a plans as in §3.1) on the standard-frame coordinates.
 It then rebuilds basis, pairs, bins, AO maps and orbit tables on coordinates
@@ -315,7 +314,7 @@ the skipped fractions are those of §3.2 (0.449 benzene, 0.450 naphthalene,
 0.338 / 0.398 B2H6 full / s2a, 0.553 / 0.586 H2CO) and the largest skipped
 |v| is 0, so skip plus permutation equals the unskipped original frame to
 the same noise. The same table was reproduced with `TERCO_CART_ORDER=gamess`
-(HOCl, benzene, B2H6, all within 5e-14, log below).
+(HOCl, benzene, B2H6, all within 5e-14, measured log, not in the tree).
 
 **Mask counts.** The histogram of dead-coordinate masks (Z, quartets after
 Schwarz) of the permuted frame is the histogram of the original with the
@@ -336,9 +335,9 @@ H2CO). B2H6, full plan (s2a in parentheses):
 z now holds 42.45 % + 9.21 % = 51.7 % of the quartets (s2a: 58.6 %), the
 same as x before; this is the share that runs masked under decision 1.
 
-Logs: `/Users/albert/terco-parity-logs/lmax3.log` (H2CO f case, a helper
-build at LMAX=3), `/Users/albert/terco-parity-logs/gamess.log` (gamess
-order). Reproduce: the `roundtrip` mode of `spike_parity` (AlbertThie/terco commit 496bef9).
+Measured logs, not in the tree: the H2CO f case (a helper build at LMAX=3)
+and the gamess order. Reproduce: the `roundtrip` mode of the `spike_parity`
+program (fork-only history, commit 496bef9; not in this tree).
 
 ## 4. Candidate schemes
 

@@ -1735,9 +1735,10 @@ module trc_c_interfaces
          !! Under a symmetry request (trc_set_symmetry), force the Fock matrix to
          !! be built from the orbit representatives of the integral quartets and
          !! symmetrized (on = 1), or force the full matrix and symmetrize that
-         !! (on = 0). Without this call the choice is a measured size rule's
-         !! (trc_sym_run's sym_run_skeleton_size_rule), and
-         !! TRC_SYM_SKELETON=0/1 in the environment overrides both. The same SCF
+         !! (on = 0); on = -1 hands the choice back to the size rule
+         !! (trc_sym_run's sym_run_skeleton_size_rule), which is also the choice
+         !! without this call. Any other value is refused (TRC_ERR_BADARG).
+         !! TRC_SYM_SKELETON=0/1 in the environment overrides all three. The same SCF
          !! either way, to round-off; only the number of integrals computed
          !! differs. No effect without a group other than C1, with density
          !! fitting or over more than one rank (those take the full build).

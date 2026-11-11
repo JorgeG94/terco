@@ -65,7 +65,8 @@ module trc_sym_pairs
    !!  `check_sym_pairs` tests exactly that without any integral.
    !!
    !! Host code only. Nothing here is called by the SCF or the Fock build yet.
-   use pic_types, only: dp, int64
+   use pic_types, only: dp, int64, int_index
+   use pic_sorting, only: sort_index
    use pic_strings, only: to_string
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_basis_types, only: trc_basis_t
@@ -369,56 +370,17 @@ contains
       ! ascending canonical key
       block
          integer(int64), allocatable :: kk(:)
+         integer(int_index), allocatable :: ord(:)
          integer :: a
-         allocate (kk(tab%nrep))
+         allocate (kk(tab%nrep), ord(tab%nrep))
          do a = 1, tab%nrep
             kk(a) = sym_pairs_tri(sp_i(tab%rep_list(a)), sp_j(tab%rep_list(a)))
          end do
-         call sort_by_key(kk, tab%rep_list)
+         ! ascending pair key; the keys of distinct pairs are distinct
+         call sort_index(kk, ord)
+         tab%rep_list = tab%rep_list(ord)
       end block
    end function sym_pairs_build
-
-   subroutine sort_by_key(key, order)
-      !! Sort order by ascending key (heap sort; both arrays are permuted).
-      integer(int64), intent(inout) :: key(:)
-      integer, intent(inout) :: order(:)
-      integer :: n, i
-      n = size(key)
-      do i = n/2, 1, -1
-         call sift(i, n)
-      end do
-      do i = n, 2, -1
-         call swap(1, i)
-         call sift(1, i - 1)
-      end do
-   contains
-      subroutine swap(a, b)
-         integer, intent(in) :: a, b
-         integer(int64) :: tk
-         integer :: ti
-         tk = key(a)
-         key(a) = key(b)
-         key(b) = tk
-         ti = order(a)
-         order(a) = order(b)
-         order(b) = ti
-      end subroutine swap
-      subroutine sift(lo, hi)
-         integer, intent(in) :: lo, hi
-         integer :: r, c
-         r = lo
-         do
-            c = 2*r
-            if (c > hi) exit
-            if (c < hi) then
-               if (key(c) < key(c + 1)) c = c + 1
-            end if
-            if (key(r) >= key(c)) exit
-            call swap(r, c)
-            r = c
-         end do
-      end subroutine sift
-   end subroutine sort_by_key
 
    function pairs_size_counts(this) result(cnt)
       !! cnt(n): the number of orbits of size n (n = 1..nop).

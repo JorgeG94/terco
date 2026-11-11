@@ -76,7 +76,7 @@ per pair of pair-orbits, and distinct ones lie in distinct G-orbits (if g sends
 p' = p, then q' = q). A pair of pair-orbits (P, Q) holds |P||Q| / |G|
 quartet orbits when the action is free, so all of them are reached only if
 |P||Q| <= |G|; for any two large orbits (the generic case) most are not. Measured
-(Burnside count against nrep (nrep + 1) / 2, cc-pVDZ, prototype `test/spike_unique.F90`, AlbertThie/terco commit 496bef9):
+(Burnside count against nrep (nrep + 1) / 2, cc-pVDZ, a spike program, fork-only history, commit 496bef9; not in this tree):
 
 | system | pairs | orbits | quartet orbits N_orb | rep x rep | fraction reached |
 |---|---|---|---|---|---|
@@ -153,7 +153,7 @@ map, +6 multiplications per ket primitive. Host compile-time measurement (the
 only one available here): the (dd|dd) kernel with all 24 read sites patched
 and the mask decoded from a segment integer, `gfortran-15 -O3`:
 46.6 s -> 41.3 s, object 373 304 -> 373 400 bytes, i.e. no change beyond noise
-(`/private/tmp/.../kc`, one run each). The nvfortran build of the heavy classes
+(one run each). The nvfortran build of the heavy classes
 (15-20 min today) and their register use (some already at 255 with a local
 stack) is the unmeasured risk: the signs are dead after the ket reads, so the
 expectation is no growth, but that is an expectation. A full regeneration of
@@ -214,10 +214,10 @@ and larger than anything left in the pair lists at large size.
 
 ## 3. Measurements (CPU, cc-pVDZ, tau = 1e-10, decontracted working basis)
 
-Programs: the prototype `test/spike_unique.F90` (counts, memory model, reconstruction,
-exactness; AlbertThie/terco commit 496bef9), `test/check_sym_unique.F90` (the product path). Logs in
-`/private/tmp/claude-501/-Users-albert/7d6fb590-10eb-43d2-9978-c8a19dd2f7cf/scratchpad/logs/`
-(`spike_*.log`, `engine_counts.log`, `planning_times.log`).
+Programs: the prototype `spike_unique` (counts, memory model, reconstruction,
+exactness; fork-only history, commit 496bef9; not in this tree) and
+`test/check_sym_unique.F90` (the product path). The logs are measured
+output, not in the tree.
 
 ### 3.1 Reconstruction and exactness
 
@@ -266,7 +266,7 @@ Pair data in MB (host + device; `pairs` object at 96 B per primitive pair plus
 the 8 B nshell^2 off/n tables; bin-interleaved tables at 48 B per slot-primitive
 plus 52 B per pair; bins 20 B per pair). "U1" is measured sizes of the
 implemented build; "U2" is the model with representatives-only tables and bins
-(prototype `spike_unique`, `[model]`):
+(prototype `spike_unique`, fork-only history, `[model]`):
 
 | system | pairs object merged -> U1 | total merged -> U1 -> U2 [model] |
 |---|---|---|

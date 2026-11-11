@@ -42,7 +42,7 @@ module trc_sym_run
    public :: SYM_SKEL_AUTO, SYM_SKEL_ON, SYM_SKEL_OFF
    public :: sym_run_parse_request, sym_run_choose_group, sym_run_is_subgroup, sym_run_request_text
    public :: sym_run_parse_irrep_nelec, sym_run_aufbau_matches, sym_run_fixed_occupation, sym_run_occupied_counts
-   public :: sym_run_skeleton_mode, sym_run_skeleton_size_rule, SYM_SKEL_MIN_ORBIT
+   public :: sym_run_skeleton_mode, sym_run_skeleton_size_rule, SYM_SKEL_MIN_ORBIT, sym_run_skeleton_request
 
    integer, parameter :: SYM_OFF = 0       !! no symmetry
    integer, parameter :: SYM_AUTO = 1      !! the detected group, capped to what is enabled
@@ -55,7 +55,8 @@ module trc_sym_run
    integer, parameter :: SYM_SKEL_MIN_ORBIT = 2
       !! The threshold of `sym_run_skeleton_size_rule`: the smallest mean atom
       !! orbit size (atoms per symmetry-inequivalent atom) at which the
-      !! skeleton Fock build is used. See that routine for the measurements.
+      !! skeleton Fock build is used. Provisional: measured only on either side
+      !! (SF6 at 1.75 loses, benzene at 3.00 wins); see that routine.
 
    type :: trc_sym_request_t
       !! What the user asked for.
@@ -345,6 +346,23 @@ contains
       end do
    end function sym_run_occupied_counts
 
+   pure integer function sym_run_skeleton_request(on) result(mode)
+      !! The request of trc_set_symmetry_skeleton's `on`: -1 the size rule
+      !! (SYM_SKEL_AUTO, also the default), 0 off, 1 on; -1 for any other
+      !! value, which the caller refuses (-1 is no SYM_SKEL_* mode).
+      integer, intent(in) :: on
+      select case (on)
+      case (-1)
+         mode = SYM_SKEL_AUTO
+      case (0)
+         mode = SYM_SKEL_OFF
+      case (1)
+         mode = SYM_SKEL_ON
+      case default
+         mode = -1
+      end select
+   end function sym_run_skeleton_request
+
    integer function sym_run_skeleton_mode(request) result(mode)
       !! The skeleton Fock build's mode in force: `request`
       !! (`trc_sym_request_t%skeleton`, i.e. what the user asked for), unless
@@ -430,6 +448,10 @@ contains
       !! Energies are unaffected either way: |dE| between the symmetric and
       !! the C1 run on the same symmetrized geometry was 2.9e-13 to 1.4e-12 Eh
       !! against a 1e-10 gate, with identical iteration counts (S15).
+      !!
+      !! THE THRESHOLD IS PROVISIONAL. It sits inside an interval no run has
+      !! measured (below), and the rule has not been timed on a device since it
+      !! replaced the atom-count rule; B2H6 is the run that would settle it.
       !!
       !! WHERE THE THRESHOLD COMES FROM. SF6 loses with a 2.44x reduction and
       !! benzene wins with 3.53x, so break-even is a reduction somewhere in

@@ -9,6 +9,7 @@ module check_sym_run_suite
    use trc_error, only: error_t
    use trc_sym_group, only: trc_sym_group_t, sym_group_from_name
    use trc_sym_geom, only: trc_sym_geom_t
+   use trc_sym_run, only: sym_run_skeleton_request, SYM_SKEL_AUTO, SYM_SKEL_ON, SYM_SKEL_OFF
    use trc_sym_run, only: trc_sym_request_t, SYM_OFF, SYM_AUTO, SYM_EXPLICIT, sym_run_parse_request, sym_run_choose_group, &
                           sym_run_is_subgroup, sym_run_request_text, sym_run_parse_irrep_nelec, &
                           sym_run_aufbau_matches, sym_run_fixed_occupation, &
@@ -26,7 +27,8 @@ contains
                   new_unittest("subgroup table", test_subgroups), &
                   new_unittest("choosing the group for a detected geometry", test_choose), &
                   new_unittest("irrep_nelec text: restricted, unrestricted, errors", test_nelec), &
-                  new_unittest("occupation helpers", test_occupations) &
+                  new_unittest("occupation helpers", test_occupations), &
+                  new_unittest("trc_set_symmetry_skeleton's values: -1 the rule, 0 off, 1 on", test_skeleton_request) &
                   ]
    end subroutine collect_sym_run
 
@@ -183,6 +185,20 @@ contains
       if (allocated(error)) return
       call check(error, all(sym_run_occupied_counts(lab(:, 1), occ, 2) == [3, 0]), 'counts of the mask')
    end subroutine test_occupations
+
+   subroutine test_skeleton_request(error)
+      !! -1 must hand the choice back to the size rule: mapped to "on" (any
+      !! nonzero), it would force the skeleton build on the molecules the rule
+      !! declines, with no value left to undo it.
+      type(error_type), allocatable, intent(out) :: error
+      call check(error, sym_run_skeleton_request(-1) == SYM_SKEL_AUTO, "-1 is the size rule")
+      if (allocated(error)) return
+      call check(error, sym_run_skeleton_request(0) == SYM_SKEL_OFF, "0 is off")
+      if (allocated(error)) return
+      call check(error, sym_run_skeleton_request(1) == SYM_SKEL_ON, "1 is on")
+      if (allocated(error)) return
+      call check(error, sym_run_skeleton_request(2) < 0 .and. sym_run_skeleton_request(-2) < 0, "other values are invalid")
+   end subroutine test_skeleton_request
 
 end module check_sym_run_suite
 

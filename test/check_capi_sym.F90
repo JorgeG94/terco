@@ -324,6 +324,13 @@ contains
       rc = trc_run_gradient(h)
       rc = trc_gradient(h, g2)
       call check(error, maxval(abs(g1 - g2)) < 1.0e-7_dp, 'and the same gradient')
+      ! -1 hands the choice back to the size rule; anything else is refused
+      rc = trc_set_symmetry_skeleton(h, -1_c_int)
+      call check(error, rc, TRC_OK, 'trc_set_symmetry_skeleton(-1)')
+      if (allocated(error)) return
+      rc = trc_set_symmetry_skeleton(h, 2_c_int)
+      call check(error, rc, TRC_ERR_BADARG, 'trc_set_symmetry_skeleton(2) is refused')
+      if (allocated(error)) return
       rc = trc_destroy(h)
       rc = trc_set_symmetry_skeleton(c_null_ptr, 1_c_int)
       call check(error, rc /= TRC_OK, 'a null handle is refused')

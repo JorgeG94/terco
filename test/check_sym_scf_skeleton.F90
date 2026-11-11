@@ -149,7 +149,7 @@ contains
       call check(error, rk%converged, label//": the skeleton SCF did not converge: "//trim(rk%message))
       if (.not. allocated(error)) then
          nw_skel = ck%eri%nwork
-         call check(error, ck%eri%orb%built .and. ck%orbits_built, &
+         call check(error, ck%eri%quartets%orb%built .and. ck%orbits_built, &
                     label//": the skeleton run's engine was not built with the point group (silent fallback)")
       end if
       if (.not. allocated(error)) then
@@ -158,7 +158,7 @@ contains
       end if
       if (.not. allocated(error)) then
          nw_full = c4%eri%nwork
-         call check(error, .not. c4%eri%orb%built .and. .not. c4%orbits_built, &
+         call check(error, .not. c4%eri%quartets%orb%built .and. .not. c4%orbits_built, &
                     label//": skeleton = .false. must leave the engine without the group")
       end if
       if (.not. allocated(error)) then

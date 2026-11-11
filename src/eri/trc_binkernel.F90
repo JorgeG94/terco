@@ -26,7 +26,7 @@ module trc_binkernel
                          ncum_of, cart_ncart_of
    use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_sort_by_weight, bins_build_pair_quartets
    use trc_bin_tiles, only: bin_tiles_requested, bin_tiles_build, bin_tiles_reach, bin_tiles_plan
-   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t, trc_bin_orbits_t
+   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
    use trc_pc_kernels, only: pc_dispatch, CLASS_RADIX, pc_has_variant, pc_cost
    use trc_rys_select, only: rys_select_init, rys_select_route
    use trc_rys_kernels, only: rys_dispatch, rys_has_variant
@@ -179,14 +179,18 @@ contains
    ! each.  The host loop is over BINS -- tens of thousands of iterations at
    ! most -- not over quartets.
    !
-   subroutine binkernel_fock_bins(b, pairs, quartets, launch, dsh, dmat, jmat, kmat, orb)
+   subroutine binkernel_fock_bins(b, pairs, quartets, launch, dsh, dmat, jmat, kmat)
       type(pair_bins_t), intent(inout) :: b
       !! `intent(inout)`: the optional one-time resort below reorders it.
       type(trc_shell_pairs_t), intent(in) :: pairs
       !! The shells and their primitive pairs, device-resident.
       type(trc_pair_quartets_t), intent(inout) :: quartets
       !! The bin-interleaved pairs, device-resident. `intent(inout)`, not
-      !! `in`: a resort rebuilds them in place.
+      !! `in`: a resort rebuilds them in place. `quartets%orb` are the bins'
+      !! pair orbits when they were built closed under a point group: with
+      !! `launch%skeleton` the plan is then the skeleton one, and the sum is
+      !! G_skel, to be symmetrized by the caller. Without `launch%skeleton` the
+      !! same bins are walked in full, as ever.
       type(trc_bin_launch_t), intent(inout) :: launch
       !! What to build (thresh, jfac/kfac, omega, nosym, ranks, operand
       !! shape); nlaunch, nwork and, if launch%count_kept, nkept come back.
@@ -204,19 +208,13 @@ contains
       real(dp), intent(in)    :: dmat(launch%ndens, launch%nao, launch%nao)
       real(dp), intent(inout) :: jmat(launch%ndens, launch%nao, launch%nao)
       real(dp), intent(inout) :: kmat(launch%ndens, launch%nao, launch%nao)
-      type(trc_bin_orbits_t), intent(in), optional :: orb
-      !! The bins' pair orbits (trc_eri%orb) when they were built closed under
-      !! a point group. With `launch%skeleton` the plan is the skeleton one:
-      !! the sum is G_skel, to be symmetrized by the caller. Without
-      !! `launch%skeleton` the same bins are walked in full, as ever.
 
       type(trc_bin_plan_t) :: plan
       real(dp) :: thresh
       integer :: nseg
       logical :: tiled, skel, orbits
 
-      orbits = .false.
-      if (present(orb)) orbits = orb%built
+      orbits = quartets%orb%built
       skel = launch%skeleton
       if (skel .and. .not. orbits) error stop "terco: a skeleton Fock build needs the bins built with a point group"
       if (skel .and. launch%nosym) error stop "terco: a skeleton Fock build needs an invariant density (not nosym)"
@@ -242,7 +240,7 @@ contains
       ! representatives first and every weight contiguous.
       if (.not. b%sorted .and. bin_sort_on()) then
          if (orbits) then
-            call bins_sort_by_weight(b, pairs%nbas, dsh, orb)
+            call bins_sort_by_weight(b, pairs%nbas, dsh, quartets%orb)
          else
             call bins_sort_by_weight(b, pairs%nbas, dsh)
          end if
@@ -250,18 +248,14 @@ contains
          ! The slot order inside a bin just changed, and the bin-interleaved
          ! tables are keyed on it -- rebuild them from the same pairs
          ! hgp_build_pairs filled, and refresh the device copy.
-         if (orbits) then
-            call bins_build_pair_quartets(b, pairs, quartets, orb)
-         else
-            call bins_build_pair_quartets(b, pairs, quartets)
-         end if
+         call bins_build_pair_quartets(b, pairs, quartets)
          !$acc update device(quartets%z, quartets%c, quartets%a, &
          !$acc                quartets%px, quartets%py, quartets%pz, &
          !$acc                quartets%ax, quartets%ay, quartets%az, &
          !$acc                quartets%abx, quartets%aby, quartets%abz, quartets%n)
          if (quartets%tiles%built) then
             if (orbits) then
-               call bin_tiles_build(quartets%tiles, b, pairs%nbas, orb)
+               call bin_tiles_build(quartets%tiles, b, pairs%nbas, quartets%orb)
             else
                call bin_tiles_build(quartets%tiles, b, pairs%nbas)
             end if
@@ -277,12 +271,12 @@ contains
       if (tiled) then
          call bin_tiles_reach(quartets%tiles, dsh)
          if (skel) then
-            call bin_tiles_plan(quartets%tiles, plan, b, thresh, quartets%bin_pbase, orb)
+            call bin_tiles_plan(quartets%tiles, plan, b, thresh, quartets%bin_pbase, quartets%orb)
          else
             call bin_tiles_plan(quartets%tiles, plan, b, thresh, quartets%bin_pbase)
          end if
       else if (skel) then
-         call plan%build_skeleton(b, orb, thresh, quartets%bin_pbase)
+         call plan%build_skeleton(b, quartets%orb, thresh, quartets%bin_pbase)
       else
          call plan%build(b, thresh, quartets%bin_pbase, launch%use_density)
       end if
