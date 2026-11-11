@@ -1379,7 +1379,7 @@ contains
       !! multiply by one at every step. omega < 0 (erfc/short-range) is
       !! not implemented, same restriction as eri_fock's own.
       logical, intent(in), optional :: skeleton
-      !! Return the SKELETON gradient (docs/SYMMETRY_GRADIENT.md): only the
+      !! Return the SKELETON gradient: only the
       !! orbit representatives of one side of each bin pair are launched,
       !! weighted by their orbit size, so `grad` is NOT a gradient until the
       !! caller projects it onto the symmetric subspace

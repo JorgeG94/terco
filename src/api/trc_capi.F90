@@ -384,10 +384,10 @@ module trc_capi
    !! Energies, orbital energies and Hirshfeld/CHELPG charges are invariant.
    !! A symmetric DFT run uses the grid of the caller's axes, so its energy
    !! equals the symmetry-off one to second order (3e-12 Eh, B3LYP/cc-pVDZ
-   !! water at the default grid). The skeleton builds (docs/SYMMETRY_FOCK.md,
-   !! docs/SYMMETRY_GRADIENT.md) change which integral quartets are launched,
-   !! not the result: the gradient matches the C1 one to 3e-15..1e-14
-   !! relative. With accidental degeneracy, the per-orbital irrep labels can
+   !! water at the default grid). The skeleton builds change which integral
+   !! quartets are launched, not the result: the gradient matches the C1 one
+   !! to 3e-15..1e-14 relative. With accidental degeneracy, the per-orbital
+   !! irrep labels can
    !! differ between the skeleton and full Fock paths (a permutation inside a
    !! degenerate level; the decomposition per irrep is the same), so a caller
    !! pinning occupations there should also fix the path with
@@ -4920,8 +4920,8 @@ contains
          !! molecule every pair orbit is a singleton, so the restriction to
          !! representatives drops nothing while a diagonal bin pair still becomes
          !! the full rectangle at weight 1/2, and the gradient plan GROWS --
-         !! HOCl/6-31G* 9355 work items against 9142 (docs/SYMMETRY_GRADIENT.md
-         !! section 11). Letting the gradient decide for itself would have run the
+         !! HOCl/6-31G* 9355 work items against 9142.
+         !! Letting the gradient decide for itself would have run the
          !! bigger plan on exactly the molecules the rule exists to protect.
          !! The projection is NOT gated on it: it costs one pass over 3N numbers
          !! and is what zeroes the components the group forbids.

@@ -1417,7 +1417,7 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
       !! exchange tile. Indexing on sA/sNB there reads another pair's
       !! primitives: measured, a symmetrized skeleton gradient wrong by
       !! 16.6 (water), 3.4 (B2H6), 2.3e+05 (SF6) and 1.8e+03 (benzene)
-      !! against components of order one (docs/SYMMETRY_GRADIENT.md).
+      !! against components of order one.
       logical,  intent(in)    :: sD(nseg)
       real(dp), intent(in)    :: sW(nseg)
       !! The segment's orbit weight, folded into the degeneracy factor `wq`
@@ -1472,7 +1472,7 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
       !! exchange tile. Indexing on sA/sNB there reads another pair's
       !! primitives: measured, a symmetrized skeleton gradient wrong by
       !! 16.6 (water), 3.4 (B2H6), 2.3e+05 (SF6) and 1.8e+03 (benzene)
-      !! against components of order one (docs/SYMMETRY_GRADIENT.md).
+      !! against components of order one.
       logical,  intent(in)    :: sD(nseg)
       real(dp), intent(in)    :: sW(nseg)
       !! The segment's orbit weight, folded into the degeneracy factor `wq`
@@ -1774,8 +1774,7 @@ def main():
          if (same_cd) wq = wq*0.5_dp
          if (same_pair) wq = wq*0.5_dp
          ! The segment's orbit weight, one load and one multiply. It rides on
-         ! the integral exactly as it does on the Fock side (W2 of
-         ! docs/SYMMETRY_FOCK.md, 'Segment fusion and launch cost'), so one launch still covers
+         ! the integral exactly as it does on the Fock side (W2), so one launch still covers
          ! a whole class run whatever weights it holds, and jfac/kfac stay
          ! unweighted launch scalars. One on every plan but a skeleton one.
          wq = wq*sW(seg)

@@ -1,5 +1,5 @@
 !
-! The skeleton nuclear gradient (docs/SYMMETRY_GRADIENT.md): the S16 oracle.
+! The skeleton nuclear gradient: the S16 oracle.
 !
 ! `eri%gradient(..., skeleton=.true.)` launches only the orbit
 ! representatives of the cheaper side of each admitted bin pair, weighted by
@@ -18,7 +18,7 @@
 !
 ! Unlike the Fock skeleton, the projection here is not a tidy-up: the raw
 ! skeleton gradient is wrong by order one (0.58 to 1.84 against components of
-! 0.27 to 2.14, docs/SYMMETRY_GRADIENT.md section 4), so `raw_case` asserts
+! 0.27 to 2.14), so `raw_case` asserts
 ! that it IS wrong -- a test that accidentally compared two full builds would
 ! pass everything else.
 !
@@ -40,8 +40,7 @@
 !   - the work and survivor counts (`eri%nwork`, `eri%nkept`): the skeleton
 !     plan must be SMALLER. A silent fall back to the full plan is otherwise
 !     invisible, and it is the failure mode that made parity skipping look
-!     active when it was not (docs/SYMMETRY_FOCK.md, 'Segment
-!     fusion and launch cost', 'Measuring what is active');
+!     active when it was not;
 !   - translational invariance of the RAW skeleton gradient, which holds on
 !     its own (every quartet's contribution is translation invariant) and so
 !     does not depend on the projection;
@@ -125,8 +124,8 @@ module check_sym_grad_suite
 
    integer(int64), parameter :: WORK_WATER(2) = [3081_int64, 1868_int64]
       !! Water/cc-pVDZ, full and skeleton work items of the gradient plan, on
-      !! the default split-when-it-pays basis (docs/SYMMETRY_GRADIENT.md's
-      !! 14 627 and 9 968 are the fully split basis, TRC_DECON_SHELL_COST=0).
+      !! the default split-when-it-pays basis (14 627 and 9 968 are the
+      !! fully split basis, TRC_DECON_SHELL_COST=0).
       !! A 1.65x reduction; Cartesian and spherical alike.
    integer(int64), parameter :: WORK_B2H6(2) = [45108_int64, 12690_int64]
       !! B2H6/6-31G*, the same way: a 3.55x reduction.
@@ -283,7 +282,8 @@ contains
       type(trc_sym_scf_t) :: scr
       integer :: nocc
       nocc = sum(ctx%elem)/2
-      ! Just above the accumulation-order noise floor (docs/SYMMETRY_FOCK.md section 7).
+      ! Just above the accumulation-order noise floor:
+      ! the OpenMP and device builds accumulate F in a run-dependent order, so identical runs differ by 1e-13 to 1e-12 Eh.
       opts%conv_energy = 1.0e-10_dp
       opts%conv_diis = 1.0e-9_dp
       opts%max_iteration = 100
@@ -665,8 +665,7 @@ contains
 
    subroutine test_b2h6(error)
       !! Nonplanar D2h: every operation MOVES atoms, so a sign or a
-      !! permutation error cannot cancel the way it can on a planar molecule
-      !! (docs/SYMMETRY_FOCK.md section 7).
+      !! permutation error cannot cancel the way it can on a planar molecule.
       type(error_type), allocatable, intent(out) :: error
       call run_molecule("b2h6_d2h", "D2h", "basis_sets/6-31gs.json", .false., .true., error, WORK_B2H6)
    end subroutine test_b2h6
@@ -736,7 +735,7 @@ contains
       !! The raw skeleton gradient must be WRONG. Without this a test that
       !! accidentally compared two full builds would pass everything above:
       !! the projection is not a correction here, it is the whole of the
-      !! symmetry (docs/SYMMETRY_GRADIENT.md section 4 measures 0.58 to 1.84
+      !! symmetry (measured: 0.58 to 1.84
       !! against components of 0.27 to 2.14).
       type(error_type), allocatable, intent(out) :: error
       type(ctx_t) :: ctx

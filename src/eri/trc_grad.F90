@@ -75,7 +75,7 @@ contains
    ! bin-level bound a symmetric Fock density does (same reasoning as
    ! `eri_fock_nosym`), so this always walks the plain Schwarz-screened plan.
    !
-   ! SKELETON (launch%skeleton, docs/SYMMETRY_GRADIENT.md): the same
+   ! SKELETON (launch%skeleton): the same
    ! restriction and the same per-segment weight the skeleton FOCK build uses
    ! -- only the orbit representatives of the cheaper side of each admitted
    ! bin pair, weighted by their orbit size. 1.47x (C2v water) to 3.85x
@@ -114,7 +114,7 @@ contains
       natm = pairs%natm
       if (launch%skeleton) then
          if (.not. quartets%orb%built) error stop "terco: a skeleton gradient needs the bins' pair orbits"
-         ! CANONICAL emission (docs/SYMMETRY_GRADIENT.md section 5c): the
+         ! CANONICAL emission: the
          ! cheaper side is still the one that is cut, so the whole 1.47x-3.85x
          ! work reduction is kept, but the emitted descriptor is ordered by
          ! angular momentum so that (sLA, sLB) >= (sLC, sLD). Every class the

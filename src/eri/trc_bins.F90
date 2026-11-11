@@ -1516,7 +1516,7 @@ contains
       !! The GRADIENT asks for this: above d its class filter builds no
       !! ordering with (lc, ld) > (la, lb), and the cheaper-side cut swaps
       !! bra and ket by design on a quarter to a half of all skeleton
-      !! segments (docs/SYMMETRY_GRADIENT.md section 3.3). Default false,
+      !! segments. Default false,
       !! which is the Fock skeleton plan this was written for: its kernels
       !! exist in both orderings and canonicalising would only move its
       !! accumulation order.

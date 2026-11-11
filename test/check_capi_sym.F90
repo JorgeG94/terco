@@ -309,7 +309,7 @@ contains
       !! size rule declines (3 atoms in 3 orbits), and without the call this
       !! would compare the full builds with themselves. HOCl is also the
       !! molecule whose skeleton gradient plan is LARGER than the full one
-      !! (docs/SYMMETRY_GRADIENT.md section 11), which is why the rule
+      !! (9355 work items against 9142), which is why the rule
       !! declining it is the right default and why forcing it on here costs
       !! only a little more work rather than failing.
       type(error_type), allocatable, intent(out) :: error

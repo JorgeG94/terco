@@ -91,8 +91,7 @@ module trc_scf_grad
       !! PLANAR Cs molecule -- the restriction to representatives drops
       !! nothing while a diagonal bin pair still becomes the full rectangle
       !! at weight 1/2, so the plan GROWS: HOCl/6-31G* 9355 work items
-      !! against the full gradient's 9142 (docs/SYMMETRY_GRADIENT.md section
-      !! 11). The same is true of the skeleton FOCK build, which is why
+      !! against the full gradient's 9142. The same is true of the skeleton FOCK build, which is why
       !! trc_scf_driver consults `sym_run_skeleton_size_rule` (trc_sym_run) and
       !! reports its verdict as `trc_scf_result_t%sym_skeleton`; passing
       !! that verdict here keeps one decision for both builds, so
@@ -644,7 +643,7 @@ contains
       !! term cannot be left unprojected: it is not a correction but the
       !! whole of the symmetry -- the raw skeleton gradient differs from the
       !! full one by 0.58 to 1.84 against components of 0.27 to 2.14
-      !! (docs/SYMMETRY_GRADIENT.md section 4). Both range-separation passes
+      !! Both range-separation passes
       !! below share the plan, so both are skeleton, and the projector is
       !! applied once to their sum.
       real(dp), allocatable :: grad_lr(:, :)
