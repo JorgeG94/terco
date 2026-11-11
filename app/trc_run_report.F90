@@ -246,7 +246,8 @@ contains
    end subroutine cc_line
 
    subroutine cc_rows(r)
-      !! The RI-CCSD(T) rows of the SUMMARY block. Each label is the key the JSON uses for the same quantity.
+      !! The RI-CCSD(T) rows of the SUMMARY block, in the 22-character label field of the other rows: the JSON keys
+      !! for the same quantities are longer (docs/sphinx/output.md pairs them).
       type(run_t), intent(in) :: r
 
       call cc_count_row("ri-ccsd iterations", r%cc_niter)
@@ -255,18 +256,18 @@ contains
       else
          call cc_text_row("ri-ccsd converged", "NO, NOT CONVERGED")
       end if
-      call cc_count_row("ri-ccsd frozen core orbitals", r%cc_nfrozen)
-      call cc_count_row("ri-ccsd active occupied", r%cc_nactive)
-      call cc_count_row("ri-ccsd virtual orbitals", r%cc_nvirtual)
-      call cc_count_row("ri-ccsd auxiliary functions", r%cc_naux)
-      call cc_row("ri-mp2 correlation energy", r%cc_e_mp2)
-      call cc_row("ri-ccsd correlation energy", r%cc_e_ccsd)
-      if (r%cc_has_triples) call cc_row("ri-ccsd triples correction", r%cc_e_t)
+      call cc_count_row("ri-ccsd frozen core", r%cc_nfrozen)
+      call cc_count_row("ri-ccsd active occ.", r%cc_nactive)
+      call cc_count_row("ri-ccsd virtuals", r%cc_nvirtual)
+      call cc_count_row("ri-ccsd auxiliary", r%cc_naux)
+      call cc_row("ri-mp2 correlation", r%cc_e_mp2)
+      call cc_row("ri-ccsd correlation", r%cc_e_ccsd)
+      if (r%cc_has_triples) call cc_row("ri-ccsd (t) correction", r%cc_e_t)
       if (r%cc_converged) then
          call cc_row("ri-ccsd total energy", r%etot + r%cc_e_ccsd)
-         if (r%cc_has_triples) call cc_row("ri-ccsd triples total energy", r%etot + r%cc_e_ccsd + r%cc_e_t)
+         if (r%cc_has_triples) call cc_row("ri-ccsd(t) total", r%etot + r%cc_e_ccsd + r%cc_e_t)
       end if
-      if (r%cc_t_failed) call cc_text_row("ri-ccsd triples error", "FAILED")
+      if (r%cc_t_failed) call cc_text_row("ri-ccsd (t) error", "FAILED")
       call cc_small_row("ri-ccsd t1 diagnostic", r%cc_t1_diagnostic)
    end subroutine cc_rows
 
@@ -274,7 +275,7 @@ contains
       character(len=*), intent(in) :: label
       real(c_double), intent(in) :: e
       character(len=1024) :: logline
-      write (logline, "(a,a30,f22.12,a)") "   :: ", label, e, " Eh  ::"
+      write (logline, "(a,a22,f22.12,a)") "   :: ", label, e, " Eh  ::"
       call global_logger%info(trim(logline))
    end subroutine cc_row
 
@@ -282,7 +283,7 @@ contains
       character(len=*), intent(in) :: label
       real(c_double), intent(in) :: x
       character(len=1024) :: logline
-      write (logline, "(a,a30,f22.6,a)") "   :: ", label, x, "       ::"
+      write (logline, "(a,a22,f22.6,a)") "   :: ", label, x, "     ::"
       call global_logger%info(trim(logline))
    end subroutine cc_small_row
 
@@ -290,14 +291,14 @@ contains
       character(len=*), intent(in) :: label
       integer(c_int), intent(in) :: n
       character(len=1024) :: logline
-      write (logline, "(a,a30,i22,a)") "   :: ", label, n, "       ::"
+      write (logline, "(a,a22,i22,a)") "   :: ", label, n, "     ::"
       call global_logger%info(trim(logline))
    end subroutine cc_count_row
 
    subroutine cc_text_row(label, text)
       character(len=*), intent(in) :: label, text
       character(len=1024) :: logline
-      write (logline, "(a,a30,a22,a)") "   :: ", label, adjustr(text), "       ::"
+      write (logline, "(a,a22,a22,a)") "   :: ", label, adjustr(text), "     ::"
       call global_logger%info(trim(logline))
    end subroutine cc_text_row
 

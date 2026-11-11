@@ -203,6 +203,37 @@ contains
       found = index(out_text(name), needle) > 0
    end function has_text
 
+   function summary_rows_aligned(name) result(aligned)
+      !! Every row of the SUMMARY block (the lines that start "   ::") is as wide as the first one: a row with a
+      !! longer label field sticks out of the box.
+      character(len=*), intent(in) :: name
+      logical :: aligned
+      character(len=:), allocatable :: text
+      integer :: pos, eol, width, first_width, nrows
+
+      text = out_text(name)
+      aligned = .true.
+      first_width = -1
+      nrows = 0
+      pos = 1
+      do while (pos <= len(text))
+         eol = index(text(pos:), new_line("a"))
+         if (eol == 0) then
+            eol = len(text) - pos + 2
+         end if
+         if (eol - 1 >= 5) then
+            if (text(pos:pos + 4) == "   ::") then
+               width = len_trim(text(pos:pos + eol - 2))
+               nrows = nrows + 1
+               if (first_width < 0) first_width = width
+               if (width /= first_width) aligned = .false.
+            end if
+         end if
+         pos = pos + eol
+      end do
+      if (nrows < 10) aligned = .false.
+   end function summary_rows_aligned
+
    subroutine require_run(error, args, name, ok)
       !! The CLI run succeeded (exit 0)
       type(error_type), allocatable, intent(out) :: error
@@ -305,8 +336,9 @@ contains
       call check(error, found .and. iterations == 84, "ri-ccsd auxiliary functions is "//to_string(iterations))
       if (allocated(error)) return
       ! the summary rows carry the JSON's names for the same quantities
-      call check(error, has_text('triples', "ri-ccsd triples total energy") .and. has_text('triples', "ri-ccsd active occupied") &
-                 .and. has_text('triples', "ri-ccsd auxiliary functions"), "the SUMMARY rows do not use the JSON key names")
+      call check(error, has_text('triples', "ri-ccsd(t) total") .and. has_text('triples', "ri-ccsd active occ.") &
+                 .and. has_text('triples', "ri-ccsd auxiliary") .and. summary_rows_aligned('triples'), &
+                 "the SUMMARY lacks the RI-CCSD rows, or they are not as wide as the other rows of the block")
    end subroutine test_triples
 
    subroutine test_implies(error)
@@ -597,11 +629,11 @@ contains
       if (allocated(error)) return
       call check(error, has_text(name, "(T) FAILED"), label//': no "(T) FAILED" line in case/'//name//".out")
       if (allocated(error)) return
-      call check(error, has_text(name, "ri-ccsd correlation energy") .and. has_text(name, "ri-ccsd total energy") .and. &
-                 has_text(name, "ri-ccsd triples error"), label//": the SUMMARY lacks the RI-CCSD rows or the (T) error row")
+      call check(error, has_text(name, "ri-ccsd correlation") .and. has_text(name, "ri-ccsd total energy") .and. &
+                 has_text(name, "ri-ccsd (t) error"), label//": the SUMMARY lacks the RI-CCSD rows or the (T) error row")
       if (allocated(error)) return
       call check(error, .not. has_text(name, "(T) CORRECTION") .and. .not. has_text(name, "TOTAL RI-CCSD(T) ENERGY") .and. &
-                 .not. has_text(name, "ri-ccsd triples correction") .and. .not. has_text(name, "ri-ccsd triples total"), &
+                 .not. has_text(name, "ri-ccsd (t) correction") .and. .not. has_text(name, "ri-ccsd(t) total"), &
                  label//": a (T) correction or an RI-CCSD(T) total is printed for a failed (T)")
       if (allocated(error)) return
       call check(error, has_text(name, "does not hold one triple"), label//": the reason is not on the error stream")

@@ -114,7 +114,8 @@ energy"`, `"ri-ccsd correlation energy"`, `"ri-ccsd t1 diagnostic"` and, when th
 RI-CCSD converged, `"ri-ccsd total energy"` (and with (T) `"ri-ccsd triples
 correction"` and `"ri-ccsd triples total energy"`; `"total energy"` stays the
 SCF energy); an RI-CCSD that did not converge has `"ri-ccsd converged": false`
-and no totals; the SUMMARY rows carry these same names;
+and no totals; the SUMMARY rows show the same quantities under shorter labels that fit the
+block (`ri-ccsd (t) correction`, `ri-ccsd(t) total`, `ri-ccsd frozen core`, ...);
 `--opt`/`--hessian` add `"optimization"`/`"vibrational"` blocks. Keys
 whose default is decided from the system (the charge, the guess, ...)
 appear in `"input"` only when the run was given one explicitly.
