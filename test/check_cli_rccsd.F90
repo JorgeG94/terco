@@ -27,8 +27,8 @@
 !     3072 bytes one water triple needs), by flags and by a TOML file: exit status 1, the RI-CCSD energies in the box,
 !     the summary and the JSON, a "(T) FAILED" line, the reason on the error stream and in the JSON key
 !     "ri-ccsd triples error", and no (T) correction or RI-CCSD(T) total anywhere; --cc-triples reference with the
-!     same budget succeeds (the reference routine has no budget); the routine is always named, so the case means the
-!     same in a host build and in a device build;
+!     same budget succeeds (the reference routine has no budget), and --cc-triples tiled and ijk give pyscf's (T);
+!     the routine is always named, so the case means the same in a host build and in a device build;
 !   - --silent prints the summary but not the iteration table;
 !   - each refusal: --rimp2, a functional, --uhf, --grad, --hessian, --opt, an ECP, the --cc-* options without
 !     --riccsd, a bad --cc-ladder, --cc-triples-budget without (T), bad values: a non-zero exit status and the
@@ -677,6 +677,11 @@ contains
       call require_run(error, COMMON//' --frozen 1 --riccsd-t --cc-triples tiled'//TIGHT, 't_tiled', ok)
       if (.not. ok) return
       call compare_to_reference(error, 't_tiled', .true., "--cc-triples tiled")
+      if (allocated(error)) return
+      ! the occupied-driven device routine, by name: also pyscf's (T)
+      call require_run(error, COMMON//' --frozen 1 --riccsd-t --cc-triples ijk'//TIGHT, 't_ijk', ok)
+      if (.not. ok) return
+      call compare_to_reference(error, 't_ijk', .true., "--cc-triples ijk")
    end subroutine test_triples_failed
 
    subroutine test_silent(error)
@@ -751,7 +756,7 @@ contains
       call refused(error, COMMON//' --riccsd --cc-ladder fast', 'b_ladder', &
                    "--cc-ladder ([riccsd] ladder) must be auto, assembled or direct")
       call refused(error, COMMON//' --riccsd-t --cc-triples fast', 'b_triples', &
-                   "--cc-triples ([riccsd] triples) must be auto, reference or tiled")
+                   "--cc-triples ([riccsd] triples) must be auto, reference, tiled or ijk")
       call refused(error, COMMON//' --riccsd-t --cc-triples-budget 0', 'b_budget', "must be positive and at most 1e6 GiB")
       call refused(error, COMMON//' --riccsd-t --cc-triples-budget -1', 'b_budget2', "must be positive and at most 1e6 GiB")
       call refused(error, COMMON//' --riccsd-t --cc-triples-budget 2e6', 'b_budget3', "must be positive and at most 1e6 GiB")
