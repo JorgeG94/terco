@@ -32,8 +32,9 @@
 !     E(T)  = (1/3) sum_{i>=j>=k} m_o E_ijk,                                      m_o = 6, 3, 1 (distinct, two, three equal)
 !
 ! The 1/3 is the reference's factor 2 times the 1/6 of symmetrising X over the six pair permutations. V in three
-! terms uses (ia|jb) = (jb|ia), which the fitted ovov has; the products below read ovvv and t2 in the index order of
-! q and use no symmetry of them. The a = b = c terms are kept. An i = j = k triple contributes zero (W is then
+! terms uses (ia|jb) = (jb|ia), which the fitted ovov has; the products below read t2 in the index order of q and use
+! no symmetry of it, and the integral slices are built from the factors with b_vv(a,c;P) = b_vv(c,a;P) (SLICE CACHE),
+! which the fitted factor has to round-off. The a = b = c terms are kept. An i = j = k triple contributes zero (W is then
 ! symmetric in (a,b,c) and R vanishes): it is skipped, and `diagonal_triples` computes it (round-off zeros, tested).
 !
 ! TERMS. Only the sum W matters, so each array may carry the particle part of one arrangement and the hole part of
@@ -64,11 +65,20 @@
 ! card with or without pre-transposed operands, against 28.6 for the tall 70225 x 265 and 33-35 for tall and wide
 ! (70225 x 1060 or more). The four-array version took 3.08 s of gemms for the same flops and 4.11 s in all.
 !
-! SLICE CACHE. ovvv has the occupied index fastest, so A'_o and A2'_o are gathered (one `do concurrent` kernel, both
-! column blocks, either layout) into S slots keyed by (orbital, layout); S = clamp(slice_bytes / (8 nv^2 (nv + no)),
-! 4, 2 no), `slice_bytes` 8 GiB by default, least-recently-used eviction that never evicts a slice the current work
-! needs (A'_i, A'_j, A2'_j and A2'_k). With S = 2 no (the benchmark: 40 slots, 6.4 GB) each slice is gathered once
-! per call (40 gathers, 0.02 s; three role slots in the first version took 1520 gathers and 0.69 s).
+! SLICE CACHE. No (ia|bc) block exists (trc_rccsd_ints): the integral columns of A'_o and A2'_o are built from the
+! factors into S slots keyed by (orbital, layout). The rows b_ov(o,x;P) are strided (o fastest), so one kernel gathers
+! them into bo(x,P) (nv naux); then A'_o((x,(y,f))) = sum_P bo(x,P) b_vv((y,f),P) = (o x|y f) = (o x|f y) is ONE gemm
+! (nv, nv^2, naux, 2 nv^3 naux flops) with b_vv read in place, straight into the slot. A2'_o(x,y,f) = A'_o(y,x,f): when
+! the other layout of the same orbital is cached it is a permuting copy from that slot (2 nv^3 doubles moved instead of
+! the gemm), else the gemm and an in-place exchange of x and y. The run needs A'_j and A2'_j together, so most second
+! layouts are copies. A kernel appends the t2 columns. S = clamp(slice_bytes / (8 nv^2 (nv + no)), 4, 2 no),
+! `slice_bytes` 16 GiB by default, least-recently-used eviction that never evicts a slice the current work needs (A'_i,
+! A'_j, A2'_j and A2'_k). Measured on GH200 (seconds of slice work, "repacks and slice builds", which also holds the
+! tvb repacks): no 20, nv 265, naux 705, S = 40 = 2 no: 0.029 for 40 builds, against 0.022 gathering them from the
+! dense block (the 20 gemms are 0.52 TFLOP); (H2O)6 cc-pVTZ, no 24, nv 318, naux 846: 0.187 for 272 builds with
+! 8 GiB (S = 31 of 48), against 0.246 gathering, and 0.042 for 48 builds with S = 48 = 2 no, where the whole (T) went
+! from 9.34 s to 9.06 s: hence 16 GiB (13.3 GB of slots there, 5.1 GB more than at 8 GiB; the dense block it
+! replaces was 6.2 GB). Three role slots in the first version took 1520 gathers and 0.69 s.
 !
 ! WIDE GEMMS. A tile is a run of consecutive k at one (i,j), cut where (i,j) changes or at capacity, stored as
 ! q(nv^3, triple, frame) so one frame's arrays are consecutive in k. Over a run k = k0..kb four of the six products
@@ -97,8 +107,8 @@
 ! too, so the plan does not depend on which triples a tile holds.
 !
 ! DEVICE MEMORY, doubles: tvb and tvb2 (nv + no) nv no^2 each, the slots S nv^2 (nv + no), Q 3 nv^3 T, vm 3 nv^2 T,
-! vt 3 nv T, row sums nv^2 T, column sums nv T, plus T energies and 7 T integers. At no = 20, nv = 265, S = 40,
-! T = 4: 484 MB + 6401 MB + 1787 MB + 7 MB + 3 MB = 8683 MB (logged as the device scratch).
+! vt 3 nv T, row sums nv^2 T, column sums nv T, bo nv naux, plus T energies and 7 T integers. At no = 20, nv = 265,
+! naux = 705, S = 40, T = 4: 484 MB + 6401 MB + 1787 MB + 7 MB + 3 MB + 1.5 MB = 8685 MB (logged as the device scratch).
 !
 ! RESIDENCY, as trc_rccsd_triples_dev: `ints` and `amps` must be current on the device; the scratch maps its own
 ! arrays (`enter data create` in `init`, `exit data delete` in `release`) and records `ints%stamp`.
@@ -122,7 +132,7 @@ module trc_rccsd_triples_ijk
    public :: rccsd_triples_ijk_run, rccsd_triples_ijk_run_scratch
 
    integer(int64), parameter :: DEFAULT_BUDGET = 2147483648_int64  !! bytes of the Q tile when `budget_bytes` is 0
-   integer(int64), parameter :: DEFAULT_SLICE_BYTES = 8589934592_int64  !! bytes of cached slices when `slice_bytes` is 0
+   integer(int64), parameter :: DEFAULT_SLICE_BYTES = 17179869184_int64  !! bytes of cached slices when `slice_bytes` is 0 (header)
 
    type :: trc_rccsd_triples_ijk_scratch_t
       !! The device arrays of one occupied-driven (T) and the plan they were sized for, see the module header
@@ -134,7 +144,7 @@ module trc_rccsd_triples_ijk
       integer(int64) :: ntotal = 0       !! no (no + 1) (no + 2) / 6
       integer(int64) :: bytes = 0        !! device bytes of the arrays below
       integer(int64) :: ntiles = 0       !! tiles of the last run
-      integer(int64) :: ngathers = 0     !! ovvv slices gathered in the last run
+      integer(int64) :: ngathers = 0     !! integral slices built in the last run
       integer :: nslot = 0               !! A' slices the cache holds, 4..2 no
       integer(int64) :: tick = 0         !! triples processed: the clock of the cache
       integer, allocatable :: orb_slot(:)
@@ -147,7 +157,8 @@ module trc_rccsd_triples_ijk
       real(dp), allocatable :: tvb(:)    !! B' of every (o2,o3), (nv + no, nv, no, no): t2(o3,o2,w,f), then -ooov(o2,m,o3,w)
       real(dp), allocatable :: tvb2(:)   !! tvb2(:,:,o3,o2) = tvb(:,:,o2,o3): runs over o3 contiguous
       real(dp), allocatable :: gs(:)
-      !! slots, (nv, nv, nv + no, nslot): A'(x,y,:) = [ovvv(o,x,f,y) | t2(m,o,y,x)] or A2'(x,y,:) = A'(y,x,:)
+      !! slots, (nv, nv, nv + no, nslot): A'(x,y,:) = [(o x|f y) | t2(m,o,y,x)] or A2'(x,y,:) = A'(y,x,:)
+      real(dp), allocatable :: bo(:)     !! (nv, naux): b_ov(o,x;P) of the orbital whose slice is being built
       real(dp), allocatable :: q(:)      !! the Q tile, (nv^3, 6, ncap)
       real(dp), allocatable :: part(:)   !! row sums of the energy, (nv[c], nv[b], ncap)
       real(dp), allocatable :: vm(:)     !! per triple of the tile ovov(i,p,j,q), ovov(i,p,k,q), ovov(j,p,k,q): (nv, nv, 3, ncap)
@@ -180,7 +191,7 @@ contains
 
       call this%release()
       call this%status%clear()
-      if (ints%stamp == 0 .or. .not. allocated(ints%ovvv) .or. .not. allocated(ints%ooov) .or. &
+      if (ints%stamp == 0 .or. .not. allocated(ints%b_ov) .or. .not. allocated(ints%b_vv) .or. .not. allocated(ints%ooov) .or. &
           .not. allocated(ints%ovov) .or. .not. allocated(ints%eps_o) .or. .not. allocated(ints%eps_v)) then
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_ijk: the integral blocks are empty (no successful build)")
          return
@@ -230,6 +241,7 @@ contains
          this%nslot = int(min(max(DEFAULT_SLICE_BYTES/(8_int64*nv*nv*(nv + no)), 4_int64), 2*no))
       end if
       if (ierr == 0) allocate (this%gs(this%nslot*nv*nv*(nv + no)), stat=ierr)
+      if (ierr == 0) allocate (this%bo(nv*ints%naux), stat=ierr)
       if (ierr == 0) allocate (this%orb_slot(2*no), stat=ierr)
       if (ierr == 0) allocate (this%slot_orb(this%nslot), stat=ierr)
       if (ierr == 0) allocate (this%slot_used(this%nslot), stat=ierr)
@@ -248,9 +260,9 @@ contains
          return
       end if
       !$acc enter data create(this%tvb, this%tvb2, this%gs, this%q, this%part, this%vm, this%vt, this%col, this%etrip, this%trip, &
-      !$acc                   this%amap)
+      !$acc                   this%amap, this%bo)
       this%stamp = ints%stamp
-      this%bytes = 8_int64*(2*(nv + no)*nv*no*no + this%nslot*nv*nv*(nv + no) + 3_int64*nv3*this%ncap + &
+      this%bytes = 8_int64*(2*(nv + no)*nv*no*no + this%nslot*nv*nv*(nv + no) + 3_int64*nv3*this%ncap + nv*ints%naux + &
                             nv*nv*this%ncap + 3*nv*nv*this%ncap + 4*nv*this%ncap + this%ncap) + 28_int64*this%ncap
    end subroutine scratch_init
 
@@ -261,9 +273,10 @@ contains
       if (this%stamp /= 0) then
          !$acc exit data delete(this%tvb, this%tvb2, this%gs, this%q, this%part, this%vm, this%vt, this%col, &
          !$acc                  this%etrip, this%trip, &
-         !$acc                  this%amap)
+         !$acc                  this%amap, this%bo)
       end if
       if (allocated(this%tvb)) deallocate (this%tvb)
+      if (allocated(this%bo)) deallocate (this%bo)
       if (allocated(this%tvb2)) deallocate (this%tvb2)
       if (allocated(this%gs)) deallocate (this%gs)
       if (allocated(this%q)) deallocate (this%q)
@@ -440,8 +453,9 @@ contains
       why = ""
       if (ts%stamp == 0 .or. .not. allocated(ts%q)) then
          why = "the scratch is not initialised"
-      else if (ints%stamp == 0 .or. .not. allocated(ints%ovvv) .or. .not. allocated(ints%ooov) .or. &
-               .not. allocated(ints%ovov) .or. .not. allocated(ints%eps_o) .or. .not. allocated(ints%eps_v)) then
+      else if (ints%stamp == 0 .or. .not. allocated(ints%b_ov) .or. .not. allocated(ints%b_vv) .or. &
+               .not. allocated(ints%ooov) .or. .not. allocated(ints%ovov) .or. .not. allocated(ints%eps_o) .or. &
+               .not. allocated(ints%eps_v)) then
          why = "the integral blocks are empty (no successful build)"
       else if (ts%stamp /= ints%stamp) then
          why = "the scratch was planned for an earlier build of the integrals (stale stamp): init it again"
@@ -453,7 +467,8 @@ contains
          why = "the amplitudes are of another size than the integrals"
       else if (any(shape(amps%t1) /= [ints%no, ints%nv]) .or. any(shape(amps%t2) /= [ints%no, ints%no, ints%nv, ints%nv])) then
          why = "the amplitude arrays do not have the shape (no, nv) and (no, no, nv, nv)"
-      else if (any(shape(ints%ovvv) /= [ints%no, ints%nv, ints%nv, ints%nv]) .or. &
+      else if (any(shape(ints%b_ov) /= [ints%no*ints%nv, ints%naux]) .or. &
+               any(shape(ints%b_vv) /= [ints%nv*ints%nv, ints%naux]) .or. &
                any(shape(ints%ooov) /= [ints%no, ints%no, ints%no, ints%nv]) .or. &
                any(shape(ints%ovov) /= [ints%no, ints%nv, ints%no, ints%nv]) .or. &
                size(ints%eps_o) /= ints%no .or. size(ints%eps_v) /= ints%nv) then
@@ -503,9 +518,9 @@ contains
       call la%sync()
       call clock%start()
       ts%tick = ts%tick + 1
-      sa = ensure_slot(ints, amps, ts, i, 1, [i, j, j + no, j + no])
-      sb = ensure_slot(ints, amps, ts, j, 1, [i, j, j + no, j + no])
-      sc = ensure_slot(ints, amps, ts, j, 2, [i, j, j + no, j + no])
+      sa = ensure_slot(ints, amps, ts, i, 1, [i, j, j + no, j + no], la)
+      sb = ensure_slot(ints, amps, ts, j, 1, [i, j, j + no, j + no], la)
+      sc = ensure_slot(ints, amps, ts, j, 2, [i, j, j + no, j + no], la)
       call la%sync()
       ts%seconds_gather = ts%seconds_gather + clock%get_elapsed_time()
       call clock%start()
@@ -568,14 +583,14 @@ contains
    end subroutine wide_gemm
 
    function ensure_slot(ints, amps, ts, o, layout, protect, la, gsec) result(slot)
-      !! The slot holding the slice (o, layout), gathered if missing; `protect` are the keys the current work needs.
-      !! With `la` and `gsec`, a gather is synchronised and its seconds added to `gsec`
+      !! The slot holding the slice (o, layout), built if missing; `protect` are the keys the current work needs.
+      !! With `gsec`, a build is synchronised and its seconds added to `gsec`
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
       type(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: ts
       integer, intent(in) :: o, layout
       integer, intent(in) :: protect(4)
-      type(trc_linalg_t), intent(in), optional :: la
+      type(trc_linalg_t), intent(in) :: la
       real(dp), intent(inout), optional :: gsec
       integer :: slot, key
       type(timer_type) :: clock
@@ -583,23 +598,53 @@ contains
       key = o + ts%no*(layout - 1)
       slot = cache_slot(ts, key, protect)
       if (ts%slot_orb(slot) /= key) then
-         if (present(la)) then
+         if (present(gsec)) then
             call la%sync()
             call clock%start()
          end if
          if (ts%slot_orb(slot) /= 0) ts%orb_slot(ts%slot_orb(slot)) = 0
-         call kernel_gather_slice(ts%no, ts%nv, o, layout, ints%ovvv, amps%t2, &
-                                  ts%gs(1_int64 + int(slot - 1, int64)*ts%nv*ts%nv*(ts%nv + ts%no)))
+         call build_slice(ints, amps, ts, o, layout, slot, la)
          ts%slot_orb(slot) = key
          ts%orb_slot(key) = slot
          ts%ngathers = ts%ngathers + 1
-         if (present(la)) then
+         if (present(gsec)) then
             call la%sync()
             gsec = gsec + clock%get_elapsed_time()
          end if
       end if
       ts%slot_used(slot) = ts%tick
    end function ensure_slot
+
+   subroutine build_slice(ints, amps, ts, o, layout, slot, la)
+      !! Slot `slot` = A'_o (layout 1) or A2'_o (layout 2) from the fitted factors (module header, SLICE CACHE):
+      !! the (o x|f y) columns are 2 nv^3 naux flops of GEMM, the t2 columns a gather
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: ts
+      integer, intent(in) :: o, layout, slot
+      type(trc_linalg_t), intent(in) :: la
+
+      integer(int64) :: g0, other0
+      integer :: nv, nv2, other
+
+      nv = ts%nv
+      nv2 = nv*nv
+      g0 = 1_int64 + int(slot - 1, int64)*nv2*(nv + ts%no)
+      ! the other layout of the same orbital, if cached: its integral columns are this one's with x and y exchanged
+      other = ts%orb_slot(o + ts%no*(2 - layout))
+      if (other /= 0) then
+         ! a permuting copy moves 2 nv^3 doubles; the GEMM below costs 2 nv^3 naux flops
+         other0 = 1_int64 + int(other - 1, int64)*nv2*(nv + ts%no)
+         call kernel_copy_swapped(nv, size(ts%gs, kind=int64), other0, g0, ts%gs)
+      else
+         ! A'(x,(y,f)) = sum_P b_ov(o,x;P) b_vv((y,f),P) = (o x|y f) = (o x|f y): ONE GEMM, b_vv read in place
+         call kernel_gather_bo(ts%no, nv, ints%naux, o, ints%b_ov, ts%bo)
+         call la%gemm("N", "T", nv, nv2, ints%naux, 1.0_dp, ts%bo, nv, ints%b_vv, nv2, 0.0_dp, ts%gs(g0), nv)
+         ! A2'(x,y,f) = A'(y,x,f): exchanged in place
+         if (layout == 2) call kernel_swap_in_place(nv, ts%gs(g0))
+      end if
+      call kernel_gather_slice_t2(ts%no, nv, o, layout, amps%t2, ts%gs(g0))
+   end subroutine build_slice
 
    function cache_slot(ts, key, protect) result(slot)
       !! The slot for the slice `key`: the one holding it, else an empty one, else the least recently used one that
@@ -663,12 +708,12 @@ contains
       call global_logger%info(trim(line))
       write (line, "(a,i0,a,i0,a,i0,a,f9.1,a,i0,a)") "    ", ts%ntiles, " tiles of up to ", ts%ncap, &
          " occupied triples (", ts%ntotal, " in all), device scratch ", real(ts%bytes, dp)/1.0e6_dp, " MB with ", &
-         ts%nslot, " ovvv slices cached"
+         ts%nslot, " integral slices cached"
       call global_logger%info(trim(line))
       write (line, "(a,f9.3,a,f9.3,a,f9.3,a,f9.3,a,i0,a)") "    seconds: wide gemms ", ts%seconds_wide, &
-         "  per-array gemms ", ts%seconds_per, "  energy kernels ", ts%seconds_energy, "  repacks and gathers ", &
+         "  per-array gemms ", ts%seconds_per, "  energy kernels ", ts%seconds_energy, "  repacks and slice builds ", &
          ts%seconds_gather, " (", ts%ngathers, &
-         " ovvv slices)"
+         " slices built)"
       call global_logger%info(trim(line))
       write (line, "(a,es10.3,a,f9.1,a,es10.3,a,f9.1,a,f9.1,a)") "    flops: wide ", ts%flops_wide, " (", &
          1.0e-9_dp*ts%flops_wide/max(ts%seconds_wide, tiny(1.0_dp)), " GFLOP/s)  per-array ", ts%flops_per, " (", &
@@ -710,19 +755,64 @@ contains
       end do
    end subroutine kernel_pack_tvb2
 
-   subroutine kernel_gather_slice(no, nv, o, layout, ovvv, t2, g)
-      !! One slot: layout 1 A'((x,y),r) = [ovvv(o,x,f,y) | t2(m,o,y,x)], layout 2 A2'((x,y),r) = A'((y,x),r)
-      integer, intent(in) :: no, nv, o, layout
-      real(dp), intent(in) :: ovvv(int(no, int64)*nv*nv*nv)
-      real(dp), intent(in) :: t2(int(no, int64)*no*nv*nv)
-      real(dp), intent(out) :: g(int(nv, int64)*nv*(nv + no))
+   subroutine kernel_gather_bo(no, nv, naux, o, b_ov, bo)
+      !! bo(x,P) = b_ov(o + no (x-1), P): the strided rows of one occupied orbital, contiguous for the slice GEMM
+      integer, intent(in) :: no, nv, naux, o
+      real(dp), intent(in) :: b_ov(int(no, int64)*nv*naux)
+      real(dp), intent(out) :: bo(int(nv, int64)*naux)
       integer(int64) :: t, n
 
-      n = int(nv, int64)*nv*(nv + no)
+      n = int(nv, int64)*naux
       do concurrent(t=1:n)
-         g(t) = slice_item(t, no, nv, o, layout, ovvv, t2)
+         bo(t) = bo_item(t, no, nv, naux, o, b_ov)
       end do
-   end subroutine kernel_gather_slice
+   end subroutine kernel_gather_bo
+
+   subroutine kernel_copy_swapped(nv, ng, src0, dst0, g)
+      !! g(dst0 - 1 + (x,y,f)) = g(src0 - 1 + (y,x,f)) over the nv^3 integral columns of two slots of one array
+      !! (one dummy for both: the slots are disjoint parts of the same actual)
+      integer, intent(in) :: nv
+      integer(int64), intent(in) :: ng, src0, dst0
+      real(dp), intent(inout) :: g(ng)
+      integer(int64) :: t, n
+
+      n = int(nv, int64)*nv*nv
+      do concurrent(t=1:n)
+         g(dst0 - 1 + t) = g(src0 - 1 + swapped_pos(t, nv))
+      end do
+   end subroutine kernel_copy_swapped
+
+   subroutine kernel_swap_in_place(nv, g)
+      !! g(x,y,f) <-> g(y,x,f) over the nv^3 integral columns of one slot; one thread per x < y
+      integer, intent(in) :: nv
+      real(dp), intent(inout) :: g(int(nv, int64)*nv*nv)
+      integer(int64) :: t, n, q
+      real(dp) :: held
+
+      n = int(nv, int64)*nv*nv
+      do concurrent(t=1:n) local(q, held)
+         q = swapped_pos(t, nv)
+         if (q > t) then
+            held = g(t)
+            g(t) = g(q)
+            g(q) = held
+         end if
+      end do
+   end subroutine kernel_swap_in_place
+
+   subroutine kernel_gather_slice_t2(no, nv, o, layout, t2, g)
+      !! The t2 columns of one slot: A'((x,y),nv+m) = t2(m,o,y,x) (layout 1), A2'((x,y),nv+m) = A'((y,x),nv+m) (layout 2)
+      integer, intent(in) :: no, nv, o, layout
+      real(dp), intent(in) :: t2(int(no, int64)*no*nv*nv)
+      real(dp), intent(inout) :: g(int(nv, int64)*nv*(nv + no))
+      integer(int64) :: t, n, off
+
+      n = int(nv, int64)*nv*no
+      off = int(nv, int64)*nv*nv
+      do concurrent(t=1:n)
+         g(off + t) = slice_t2_item(t, no, nv, o, layout, t2)
+      end do
+   end subroutine kernel_gather_slice_t2
 
    subroutine kernel_gather_vm(no, nv, nt, ncap, ovov, trip, vm)
       !! vm(:,:,1,s) = ovov(i,:,j,:), vm(:,:,2,s) = ovov(i,:,k,:), vm(:,:,3,s) = ovov(j,:,k,:) for (i,j,k) = trip(:,s)
@@ -851,18 +941,44 @@ contains
       v = tvb(r + int(nv + no, int64)*(w - 1) + int(nv + no, int64)*nv*((b - 1) + int(no, int64)*(a - 1)))
    end function tvb2_item
 
-   pure function slice_item(t, no, nv, o, layout, ovvv, t2) result(v)
-      !! A'((x,y),r) of orbital o, ovvv(o,x,r,y) for r <= nv else t2(r-nv,o,y,x), with x and y exchanged for layout 2;
-      !! position t of (nv, nv, nv + no)
+   pure function swapped_pos(t, nv) result(q)
+      !! The position of (y,x,f) for the position t of (x,y,f) in (nv, nv, nv)
+      !$acc routine seq
+      integer(int64), intent(in) :: t
+      integer, intent(in) :: nv
+      integer(int64) :: q
+      integer(int64) :: x, y, f
+
+      x = mod(t - 1, int(nv, int64))
+      y = mod((t - 1)/nv, int(nv, int64))
+      f = (t - 1)/(int(nv, int64)*nv)
+      q = 1 + y + nv*(x + nv*f)
+   end function swapped_pos
+
+   pure function bo_item(t, no, nv, naux, o, b_ov) result(v)
+      !! b_ov(o + no (x-1), P) at position t of (nv, naux)
+      !$acc routine seq
+      integer(int64), intent(in) :: t
+      integer, intent(in) :: no, nv, naux, o
+      real(dp), intent(in) :: b_ov(int(no, int64)*nv*naux)
+      real(dp) :: v
+      integer(int64) :: x, p
+
+      x = mod(t - 1, int(nv, int64)) + 1
+      p = (t - 1)/nv + 1
+      v = b_ov(o + int(no, int64)*(x - 1) + int(no, int64)*nv*(p - 1))
+   end function bo_item
+
+   pure function slice_t2_item(t, no, nv, o, layout, t2) result(v)
+      !! A'((x,y),nv+m) = t2(m,o,y,x) of orbital o, with x and y exchanged for layout 2; position t of (nv, nv, no)
       !$acc routine seq
       integer(int64), intent(in) :: t
       integer, intent(in) :: no, nv, o, layout
-      real(dp), intent(in) :: ovvv(int(no, int64)*nv*nv*nv)
       real(dp), intent(in) :: t2(int(no, int64)*no*nv*nv)
       real(dp) :: v
-      integer :: x, y, r, unused, u, w
+      integer :: x, y, m, unused, u, w
 
-      call split4(t, nv, nv, nv + no, x, y, r, unused)
+      call split4(t, nv, nv, no, x, y, m, unused)
       if (layout == 1) then
          u = x
          w = y
@@ -870,12 +986,8 @@ contains
          u = y
          w = x
       end if
-      if (r <= nv) then
-         v = ovvv(o + int(no, int64)*(u - 1) + int(no, int64)*nv*(r - 1) + int(no, int64)*nv*nv*(w - 1))
-      else
-         v = t2(r - nv + int(no, int64)*(o - 1) + int(no, int64)*no*(w - 1) + int(no, int64)*no*nv*(u - 1))
-      end if
-   end function slice_item
+      v = t2(m + int(no, int64)*(o - 1) + int(no, int64)*no*(w - 1) + int(no, int64)*no*nv*(u - 1))
+   end function slice_t2_item
 
    pure function run_sum_item(t, n, nx, x) result(e)
       !! x((t-1) n + 1) + ... + x(t n), added in index order

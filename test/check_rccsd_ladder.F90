@@ -1004,6 +1004,7 @@ contains
       real(dp), intent(in) :: t1(:, :), t2(:, :, :, :)
       logical, intent(in) :: with_t1
       real(dp), allocatable, intent(out) :: h_l(:, :, :, :), h_d(:, :, :, :)
+      real(dp), allocatable :: ovvv(:, :, :, :)
 
       real(dp), allocatable :: vvvv(:, :, :, :), wd(:, :, :, :), tau(:, :, :, :)
       integer :: no, nv, i, j, a, b, c, d, k, p
@@ -1011,6 +1012,9 @@ contains
 
       no = ints%no
       nv = ints%nv
+      allocate (ovvv(no, nv, nv, nv))
+      ! (ia|bc) from the factors: trc_rccsd_ints no longer holds the dense block
+      call ints%fill_ovvv(ovvv)
       allocate (vvvv(nv, nv, nv, nv), wd(nv, nv, nv, nv), tau(no, no, nv, nv))
       allocate (h_l(no, no, nv, nv), h_d(no, no, nv, nv))
       do d = 1, nv
@@ -1043,7 +1047,7 @@ contains
                   s = 0.0_dp
                   if (with_t1) then
                      do k = 1, no
-                        s = s - ints%ovvv(k, d, a, c)*t1(k, b) - ints%ovvv(k, c, b, d)*t1(k, a)
+                        s = s - ovvv(k, d, a, c)*t1(k, b) - ovvv(k, c, b, d)*t1(k, a)
                      end do
                   end if
                   wd(a, b, c, d) = s

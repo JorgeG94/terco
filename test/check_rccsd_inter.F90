@@ -612,12 +612,16 @@ contains
       type(trc_rccsd_ints_t), intent(in) :: ints
       real(dp), intent(in) :: t1(:, :), t2(:, :, :, :)
       real(dp), allocatable, intent(out) :: foo(:, :), fvv(:, :), fov(:, :), loo(:, :), lvv(:, :)
+      real(dp), allocatable :: ovvv(:, :, :, :)
 
       integer :: no, nv, i, k, l, a, c, d
       real(dp) :: s
 
       no = ints%no
       nv = ints%nv
+      allocate (ovvv(no, nv, nv, nv))
+      ! (ia|bc) from the factors: trc_rccsd_ints no longer holds the dense block
+      call ints%fill_ovvv(ovvv)
       allocate (foo(no, no), fvv(nv, nv), fov(no, nv), loo(no, no), lvv(nv, nv))
       ! Fki = 2 kcld,ilcd - kdlc,ilcd + 2 kcld,ic,ld - kdlc,ic,ld
       do i = 1, no
@@ -679,7 +683,7 @@ contains
             s = fvv(a, c)
             do d = 1, nv
                do k = 1, no
-                  s = s + 2.0_dp*ints%ovvv(k, d, a, c)*t1(k, d) - ints%ovvv(k, c, a, d)*t1(k, d)
+                  s = s + 2.0_dp*ovvv(k, d, a, c)*t1(k, d) - ovvv(k, c, a, d)*t1(k, d)
                end do
             end do
             lvv(a, c) = s

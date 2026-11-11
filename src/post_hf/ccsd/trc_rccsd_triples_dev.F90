@@ -56,12 +56,15 @@
 ! names no `x%component`. The library's own cuBLAS handle is made and destroyed inside `rccsd_triples_dev_run`.
 !
 ! MEMORY NOT IN THE BUDGET. `budget_bytes` counts the W tile only. The three repacks (tt2, t2r: 2 no^2 nv^2 doubles,
-! oop: no^3 nv doubles) and the row sums are on top of it. A device allocation failure in `enter data create` is not a
+! oop: no^3 nv doubles) and the row sums are on top of it, and so is the dense (ia|bc), no nv^3 doubles, which `ints`
+! no longer holds: `rccsd_triples_dev_run_scratch` builds a device copy from the factors (`ints%fill_ovvv`, one gemm)
+! on entry and frees it on exit (2.98 GB at no = 20, nv = 265). A device allocation failure in `enter data create` is not a
 ! refusal but an abort, as everywhere else in the code base.
 !
 ! INDEX RANGES. The W tile is indexed with 64-bit integers throughout (6 no^3 T can pass 2^31 for a large budget);
 ! the gemm dimensions are 32-bit and checked in `init` (no^2 nv, no nv^2 and the sizes of the repacked arrays,
-! no^2 nv^2 and no^3 nv, below 2^31 - 1).
+! no^2 nv^2 and no^3 nv, below 2^31 - 1), and so is the size of the (ia|bc) copy, no nv^3, whose blocks the gemms
+! address from default-integer offsets.
 module trc_rccsd_triples_dev
    use pic_types, only: dp, int32, int64
    use pic_timer, only: timer_type
@@ -84,7 +87,7 @@ module trc_rccsd_triples_dev
       !! Plain values only
       integer(int64) :: budget_bytes = 0   !! bytes the W tile may take (6 no^3 doubles a triple); 0 means 1 GiB
       integer(int64) :: tile_triples = 0   !! triples per tile; above 0 it replaces the budget (tests)
-      integer(int64) :: slice_bytes = 0    !! occupied-driven routine only: bytes of cached ovvv slices; 0 means 4 GiB
+      integer(int64) :: slice_bytes = 0    !! occupied-driven routine only: bytes of cached integral slices; 0 means 16 GiB
       logical :: diagonal_triples = .false.  !! occupied-driven routine only: also compute the i = j = k triples (tests)
       logical :: verbose = .false.         !! the summary: tiles, triples, times, flops, GFLOP/s
    end type trc_rccsd_triples_dev_options_t
@@ -130,7 +133,7 @@ contains
 
       call this%release()
       call this%status%clear()
-      if (ints%stamp == 0 .or. .not. allocated(ints%ovvv) .or. .not. allocated(ints%ooov) .or. &
+      if (ints%stamp == 0 .or. .not. allocated(ints%b_ov) .or. .not. allocated(ints%b_vv) .or. .not. allocated(ints%ooov) .or. &
           .not. allocated(ints%ovov) .or. .not. allocated(ints%eps_o) .or. .not. allocated(ints%eps_v)) then
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_dev: the integral blocks are empty (no successful build)")
          return
@@ -148,9 +151,11 @@ contains
       no2 = no*no
       no3 = no2*no
       if (no2*nv > int(huge(0_int32), int64) .or. no*nv*nv > int(huge(0_int32), int64) .or. &
-          no2*nv*nv > int(huge(0_int32), int64) .or. no3*nv > int(huge(0_int32), int64)) then
-         call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_dev: a gemm dimension or a repacked array would pass "// &
-                              "2^31-1 elements ("//to_string(ints%no)//" occupied, "//to_string(ints%nv)//" virtual)")
+          no2*nv*nv > int(huge(0_int32), int64) .or. no3*nv > int(huge(0_int32), int64) .or. &
+          no*nv*nv*nv > int(huge(0_int32), int64)) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_dev: a gemm dimension, a repacked array or the (ia|bc) "// &
+                              "copy (o v^3) would pass 2^31-1 elements ("//to_string(ints%no)//" occupied, "// &
+                              to_string(ints%nv)//" virtual); the occupied-driven routine has no o v^3 limit")
          return
       end if
       this%no = ints%no
@@ -272,6 +277,7 @@ contains
       real(dp), intent(out), allocatable, optional :: triple_energies(:)
 
       real(dp), allocatable :: e_pair(:)
+      real(dp), allocatable :: ovvv(:, :, :, :)
       integer, allocatable :: seg(:, :)
       character(len=:), allocatable :: why
       integer(int64) :: done, ipair, npair
@@ -285,6 +291,10 @@ contains
          return
       end if
       call pack_inputs(ints, amps, ts)
+      ! the dense (ia|bc) for this call only, from the factors on the device (module header); freed below
+      allocate (ovvv(ts%no, ts%nv, ts%nv, ts%nv))
+      !$acc enter data create(ovvv)
+      call ints%fill_ovvv(ovvv, la)
       npair = int(ts%nv, int64)*(ts%nv + 1)/2
       allocate (e_pair(npair), seg(5, min(ts%ncap, npair)))
       e_pair = 0.0_dp
@@ -304,7 +314,7 @@ contains
          nt = int(min(ts%ncap, ts%ntotal - done))
          call tile_segments(ts%nv, nt, cursor, seg, nseg, ts%trip)
          !$acc update device(ts%trip(1:3, 1:nt))
-         call tile_products(ints, amps, ts, la, seg, nseg, nt)
+         call tile_products(ovvv, amps, ts, la, seg, nseg, nt)
          call tile_energy(ints, amps, ts, la, nt)
          !$acc update self(ts%etrip(1:nt))
          do s = 1, nt
@@ -317,6 +327,8 @@ contains
          done = done + nt
          ts%ntiles = ts%ntiles + 1
       end do
+      !$acc exit data delete(ovvv)
+      deallocate (ovvv)
       ! Summed in pair order, as the host routine does, so the total is the same for every tile size up to the gemms.
       do ipair = 1, npair
          e_t = e_t + e_pair(ipair)
@@ -340,8 +352,9 @@ contains
       why = ""
       if (ts%stamp == 0 .or. .not. allocated(ts%w)) then
          why = "the scratch is not initialised"
-      else if (ints%stamp == 0 .or. .not. allocated(ints%ovvv) .or. .not. allocated(ints%ooov) .or. &
-               .not. allocated(ints%ovov) .or. .not. allocated(ints%eps_o) .or. .not. allocated(ints%eps_v)) then
+      else if (ints%stamp == 0 .or. .not. allocated(ints%b_ov) .or. .not. allocated(ints%b_vv) .or. &
+               .not. allocated(ints%ooov) .or. .not. allocated(ints%ovov) .or. .not. allocated(ints%eps_o) .or. &
+               .not. allocated(ints%eps_v)) then
          why = "the integral blocks are empty (no successful build)"
       else if (ts%stamp /= ints%stamp) then
          why = "the scratch was planned for an earlier build of the integrals (stale stamp): init it again"
@@ -353,7 +366,8 @@ contains
          why = "the amplitudes are of another size than the integrals"
       else if (any(shape(amps%t1) /= [ints%no, ints%nv]) .or. any(shape(amps%t2) /= [ints%no, ints%no, ints%nv, ints%nv])) then
          why = "the amplitude arrays do not have the shape (no, nv) and (no, no, nv, nv)"
-      else if (any(shape(ints%ovvv) /= [ints%no, ints%nv, ints%nv, ints%nv]) .or. &
+      else if (any(shape(ints%b_ov) /= [ints%no*ints%nv, ints%naux]) .or. &
+               any(shape(ints%b_vv) /= [ints%nv*ints%nv, ints%naux]) .or. &
                any(shape(ints%ooov) /= [ints%no, ints%no, ints%no, ints%nv]) .or. &
                any(shape(ints%ovov) /= [ints%no, ints%nv, ints%no, ints%nv]) .or. &
                size(ints%eps_o) /= ints%no .or. size(ints%eps_v) /= ints%nv) then
@@ -415,11 +429,11 @@ contains
       end do
    end subroutine tile_segments
 
-   subroutine tile_products(ints, amps, ts, la, seg, nseg, nt)
+   subroutine tile_products(ovvv, amps, ts, la, seg, nseg, nt)
       !! The particle and the hole products of every segment of the tile, timed apart
-      type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
       type(trc_rccsd_triples_scratch_t), intent(inout) :: ts
+      real(dp), intent(in) :: ovvv(ts%no, ts%nv, ts%nv, ts%nv)  !! the call's (ia|bc), device copy
       type(trc_linalg_t), intent(in) :: la
       integer, intent(in) :: seg(:, :)
       integer, intent(in) :: nseg, nt
@@ -431,7 +445,7 @@ contains
       v = real(ts%nv, dp)
       call la%sync()
       call clock%start()
-      call particle_products(ints, ts, la, seg, nseg)
+      call particle_products(ovvv, ts, la, seg, nseg)
       call la%sync()
       ts%seconds_particle = ts%seconds_particle + clock%get_elapsed_time()
       call clock%start()
@@ -469,10 +483,10 @@ contains
       pos = (int(p - 1, int64)*ts_ncap + s)*int(no, int64)**3 + 1_int64
    end function wpos
 
-   subroutine particle_products(ints, ts, la, seg, nseg)
+   subroutine particle_products(ovvv, ts, la, seg, nseg)
       !! W_p = ovvv block x tt2 of every segment: 2 gemms and 4 batched gemms each, beta = 0
-      type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_triples_scratch_t), intent(inout) :: ts
+      real(dp), intent(in) :: ovvv(ts%no, ts%nv, ts%nv, ts%nv)  !! the call's (ia|bc), device copy
       type(trc_linalg_t), intent(in) :: la
       integer, intent(in) :: seg(:, :)
       integer, intent(in) :: nseg
@@ -495,20 +509,20 @@ contains
          tt_a = 1_int64 + int(nv, int64)*o2*(a - 1)
          tt_b = 1_int64 + int(nv, int64)*o2*(b - 1)
          ! p = 1 (a,b,c) and 3 (b,a,c): the integral block is fixed, the c blocks of tt2 stack as columns
-         call la%gemm("N", "N", o, int(o2)*nc, nv, 1.0_dp, ints%ovvv(1, a, 1, b), o*nv, ts%tt2(tt_c0), nv, 0.0_dp, &
+         call la%gemm("N", "N", o, int(o2)*nc, nv, 1.0_dp, ovvv(1, a, 1, b), o*nv, ts%tt2(tt_c0), nv, 0.0_dp, &
                       ts%w(wpos(ts%ncap, o, 1, s0)), o)
-         call la%gemm("N", "N", o, int(o2)*nc, nv, 1.0_dp, ints%ovvv(1, b, 1, a), o*nv, ts%tt2(tt_c0), nv, 0.0_dp, &
+         call la%gemm("N", "N", o, int(o2)*nc, nv, 1.0_dp, ovvv(1, b, 1, a), o*nv, ts%tt2(tt_c0), nv, 0.0_dp, &
                       ts%w(wpos(ts%ncap, o, 3, s0)), o)
          ! p = 2 (a,c,b), 4 (b,c,a): u fixed, v = c varies (A stride o nv^2), the tt2 block of w shared
          by_a = trc_gemm_batch(m=o, n=int(o2), k=nv, count=nc, lda=o*nv, ldb=nv, ldc=o, &
                                sa=int(o, int64)*nv*nv, sb=0_int64, sc=o3)
-         call la%gemm_batched(by_a, ints%ovvv(1, a, 1, c0), ts%tt2(tt_b), ts%w(wpos(ts%ncap, o, 2, s0)))
-         call la%gemm_batched(by_a, ints%ovvv(1, b, 1, c0), ts%tt2(tt_a), ts%w(wpos(ts%ncap, o, 4, s0)))
+         call la%gemm_batched(by_a, ovvv(1, a, 1, c0), ts%tt2(tt_b), ts%w(wpos(ts%ncap, o, 2, s0)))
+         call la%gemm_batched(by_a, ovvv(1, b, 1, c0), ts%tt2(tt_a), ts%w(wpos(ts%ncap, o, 4, s0)))
          ! p = 5 (c,a,b), 6 (c,b,a): u = c varies (A stride o), v fixed
          by_c = trc_gemm_batch(m=o, n=int(o2), k=nv, count=nc, lda=o*nv, ldb=nv, ldc=o, &
                                sa=int(o, int64), sb=0_int64, sc=o3)
-         call la%gemm_batched(by_c, ints%ovvv(1, c0, 1, a), ts%tt2(tt_b), ts%w(wpos(ts%ncap, o, 5, s0)))
-         call la%gemm_batched(by_c, ints%ovvv(1, c0, 1, b), ts%tt2(tt_a), ts%w(wpos(ts%ncap, o, 6, s0)))
+         call la%gemm_batched(by_c, ovvv(1, c0, 1, a), ts%tt2(tt_b), ts%w(wpos(ts%ncap, o, 5, s0)))
+         call la%gemm_batched(by_c, ovvv(1, c0, 1, b), ts%tt2(tt_a), ts%w(wpos(ts%ncap, o, 6, s0)))
       end do
    end subroutine particle_products
 

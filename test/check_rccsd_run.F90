@@ -87,12 +87,16 @@ contains
       type(trc_rccsd_ints_t), intent(in) :: ints
       real(dp), intent(in) :: t1(:, :), t2(:, :, :, :)
       real(dp), intent(out) :: foo(:, :), fvv(:, :), fov(:, :), loo(:, :), lvv(:, :)
+      real(dp), allocatable :: ovvv(:, :, :, :)
 
       integer :: no, nv, i, k, l, a, c, d
       real(dp) :: s
 
       no = ints%no
       nv = ints%nv
+      allocate (ovvv(no, nv, nv, nv))
+      ! (ia|bc) from the factors: trc_rccsd_ints no longer holds the dense block
+      call ints%fill_ovvv(ovvv)
       ! cc_Foo: 2 'kcld,ilcd->ki' - 'kdlc,ilcd->ki' + 2 'kcld,ic,ld->ki' - 'kdlc,ic,ld->ki' + foo
       do i = 1, no
          do k = 1, no
@@ -155,7 +159,7 @@ contains
             s = fvv(a, c)
             do d = 1, nv
                do k = 1, no
-                  s = s + 2.0_dp*ints%ovvv(k, d, a, c)*t1(k, d) - ints%ovvv(k, c, a, d)*t1(k, d)
+                  s = s + 2.0_dp*ovvv(k, d, a, c)*t1(k, d) - ovvv(k, c, a, d)*t1(k, d)
                end do
             end do
             lvv(a, c) = s
@@ -176,12 +180,16 @@ contains
       type(trc_rccsd_ints_t), intent(in) :: ints
       real(dp), intent(in) :: t1(:, :), t2(:, :, :, :)
       real(dp), intent(out) :: woooo(:, :, :, :), wvoov(:, :, :, :), wvovo(:, :, :, :), wvvvv(:, :, :, :)
+      real(dp), allocatable :: ovvv(:, :, :, :)
 
       integer :: no, nv, i, j, k, l, a, b, c, d, p
       real(dp) :: s
 
       no = ints%no
       nv = ints%nv
+      allocate (ovvv(no, nv, nv, nv))
+      ! (ia|bc) from the factors: trc_rccsd_ints no longer holds the dense block
+      call ints%fill_ovvv(ovvv)
       ! cc_Woooo: 'lcki,jc->klij' + 'kclj,ic->klij' + 'kcld,ijcd->klij' + 'kcld,ic,jd->klij' + oooo.transpose(0,2,1,3)
       do j = 1, no
          do i = 1, no
@@ -207,7 +215,7 @@ contains
                   ! ovvo.transpose(2,0,3,1): ovvo(k,c,a,i) = (kc|ai) = ovov(k,c,i,a)
                   s = ints%ovov(k, c, i, a)
                   do d = 1, nv
-                     s = s + ints%ovvv(k, c, a, d)*t1(i, d)            ! 'kcad,id->akic'
+                     s = s + ovvv(k, c, a, d)*t1(i, d)            ! 'kcad,id->akic'
                   end do
                   do l = 1, no
                      s = s - ints%ooov(l, i, k, c)*t1(l, a)            ! 'kcli,la->akic', ovoo(k,c,l,i) = ooov(l,i,k,c)
@@ -228,7 +236,7 @@ contains
                do a = 1, nv
                   s = ints%oovv(k, i, a, c)                              ! oovv.transpose(2,0,3,1)
                   do d = 1, nv
-                     s = s + ints%ovvv(k, d, a, c)*t1(i, d)            ! 'kdac,id->akci'
+                     s = s + ovvv(k, d, a, c)*t1(i, d)            ! 'kdac,id->akci'
                   end do
                   do l = 1, no
                      s = s - ints%ooov(k, i, l, c)*t1(l, a)            ! 'lcki,la->akci', ovoo(l,c,k,i) = ooov(k,i,l,c)
@@ -251,7 +259,7 @@ contains
                      s = s + ints%b_vv(a + nv*(c - 1), p)*ints%b_vv(b + nv*(d - 1), p)
                   end do
                   do k = 1, no
-                     s = s - ints%ovvv(k, d, a, c)*t1(k, b) - ints%ovvv(k, c, b, d)*t1(k, a)
+                     s = s - ovvv(k, d, a, c)*t1(k, b) - ovvv(k, c, b, d)*t1(k, a)
                   end do
                   wvvvv(a, b, c, d) = s
                end do
@@ -265,12 +273,16 @@ contains
       type(trc_rccsd_ints_t), intent(in) :: ints
       real(dp), intent(in) :: t1(:, :), t2(:, :, :, :), foo(:, :), fvv(:, :), fov(:, :)
       real(dp), intent(out) :: t1n(:, :)
+      real(dp), allocatable :: ovvv(:, :, :, :)
 
       integer :: no, nv, i, k, l, a, c, d
       real(dp) :: s
 
       no = ints%no
       nv = ints%nv
+      allocate (ovvv(no, nv, nv, nv))
+      ! (ia|bc) from the factors: trc_rccsd_ints no longer holds the dense block
+      call ints%fill_ovvv(ovvv)
       do a = 1, nv
          do i = 1, no
             s = 0.0_dp
@@ -291,8 +303,8 @@ contains
             do d = 1, nv
                do c = 1, nv
                   do k = 1, no
-                     s = s + 2.0_dp*ints%ovvv(k, d, a, c)*t2(i, k, c, d) - ints%ovvv(k, c, a, d)*t2(i, k, c, d) &
-                         + 2.0_dp*ints%ovvv(k, d, a, c)*t1(k, d)*t1(i, c) - ints%ovvv(k, c, a, d)*t1(k, d)*t1(i, c)
+                     s = s + 2.0_dp*ovvv(k, d, a, c)*t2(i, k, c, d) - ovvv(k, c, a, d)*t2(i, k, c, d) &
+                         + 2.0_dp*ovvv(k, d, a, c)*t1(k, d)*t1(i, c) - ovvv(k, c, a, d)*t1(k, d)*t1(i, c)
                      ! '2 kdac,ikcd->ia', '-kcad,ikcd->ia', '2 kdac,kd,ic->ia', '-kcad,kd,ic->ia'
                   end do
                end do
@@ -317,6 +329,7 @@ contains
       real(dp), intent(in) :: t1(:, :), t2(:, :, :, :), tau(:, :, :, :), loo(:, :), lvv(:, :)
       real(dp), intent(in) :: woooo(:, :, :, :), wvoov(:, :, :, :), wvovo(:, :, :, :), wvvvv(:, :, :, :)
       real(dp), intent(out) :: t2n(:, :, :, :)
+      real(dp), allocatable :: ovvv(:, :, :, :)
 
       real(dp), allocatable :: tmp(:, :, :, :), tmp2(:, :, :, :)
       integer :: no, nv, i, j, k, l, a, b, c, d
@@ -324,6 +337,9 @@ contains
 
       no = ints%no
       nv = ints%nv
+      allocate (ovvv(no, nv, nv, nv))
+      ! (ia|bc) from the factors: trc_rccsd_ints no longer holds the dense block
+      call ints%fill_ovvv(ovvv)
       allocate (tmp(no, no, nv, nv))
       ! tmp2 = 'kibc,ka->abic' (-t1) + ovvv.transpose(1,3,0,2), i.e. tmp2(a,b,i,c) = ovvv(i,a,c,b) - sum_k oovv(k,i,b,c) t1(k,a)
       ! tmp = 'abic,jc->ijab'; t2new = tmp + tmp.transpose(1,0,3,2)
@@ -332,7 +348,7 @@ contains
          do i = 1, no
             do b = 1, nv
                do a = 1, nv
-                  s = ints%ovvv(i, a, c, b)
+                  s = ovvv(i, a, c, b)
                   do k = 1, no
                      s = s - ints%oovv(k, i, b, c)*t1(k, a)
                   end do
@@ -1201,11 +1217,16 @@ contains
       case (RCCSD_ST_TRSM)
          f = (oo*oo + oo*vv + vv*vv)*px*px
       case (RCCSD_ST_BLOCKS)
-         f = 2*px*(oo**4 + oo**3*vv + 2*oo**2*vv**2 + oo*vv**3)
+         ! oooo, ooov, oovv, ovov: (ia|bc) is not built
+         f = 2*px*(oo**4 + oo**3*vv + 2*oo**2*vv**2)
       case (RCCSD_ST_INTER)
-         f = 2*oo**3*vv**2 + 2*oo**2*vv**3 + 2*oo**2*vv**2 + 2*oo**3*vv
+         ! Foo, Fvv, Fov, Loo; then Lvv from the factors: N1 = t1 b_vv (o, v naux, v), u = b_ov^T t1, 2 b_vv u,
+         ! and the exchange N1 b_ov over (k,P) (v, v, o naux)
+         f = 2*oo**3*vv**2 + 2*oo**2*vv**3 + 2*oo**2*vv**2 + 2*oo**3*vv + 4*oo*vv**2*px + 2*oo*vv*px + 2*vv**2*px
       case (RCCSD_ST_W)
-         f = 2*oo**4*vv**2 + 6*oo**3*vv**3 + 4*oo**2*vv**3 + 4*oo**3*vv**2
+         ! Woooo, three rings, two ooov t1 batches; the (ia|bc) t1 terms from the factors: N1a (v, o, v) x naux and
+         ! b_ov N1a^T (o v, v o, naux) for Wvoov, O1 (o, o, v) x naux and O1 b_vv^T (o^2, v^2, naux) for Wvovo
+         f = 2*oo**4*vv**2 + 6*oo**3*vv**3 + 4*oo**3*vv**2 + 2*oo*vv**2*px + 4*oo**2*vv**2*px + 2*oo**2*vv*px
       case (RCCSD_ST_LADDER)
          if (form == RCCSD_LADDER_ASSEMBLED) then
             f = 2*(px + oo**2)*vv**4
@@ -1220,12 +1241,16 @@ contains
             ! G = Y t1 (o^3, v, o), X_b = G_b t1 (o^2, v, o) for each of v values of b
             f = 2*vv*vv*px*oo + 2*oo**4*vv**2 + 2*oo**4*vv + 2*oo**3*vv**2
          else
-            f = 4*oo**3*vv**3 + 4*oo**3*vv**2
+            ! Z and cmat per virtual, both halves, and the pack of each virtual batch from the factors,
+            ! b_ov b_vv^T (o v, v nvb, naux), both halves: 4 o v^3 naux over the batches
+            f = 4*oo**3*vv**3 + 4*oo**3*vv**2 + 4*oo*vv**3*px
          end if
       case (RCCSD_ST_T1)
-         f = 2*oo**2*vv**3 + 2*oo**3*vv**2
+         ! Y = ycomb b_ov (o v, naux, o v), Y b_vv^T (o, v, v naux), the lam term (o, v, o^2 v)
+         f = 2*oo**2*vv**2*px + 2*oo*vv**2*px + 2*oo**3*vv**2
       case (RCCSD_ST_T2)
-         f = 4*oo**2*vv**3 + 10*oo**3*vv**2 + 2*oo**4*vv**2
+         ! term A's (ia|bc) t1 is b_ov N1^T (o v, o v, naux); the rest as before
+         f = 2*oo**2*vv**3 + 2*oo**2*vv**2*px + 10*oo**3*vv**2 + 2*oo**4*vv**2
       case (RCCSD_ST_RING)
          f = 6*oo**3*vv**3
       case default

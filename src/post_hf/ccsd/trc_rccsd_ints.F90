@@ -16,7 +16,6 @@
 !
 !     oooo(i,j,k,l) = (ij|kl)      ooov(i,j,k,a) = (ij|ka)
 !     oovv(i,j,a,b) = (ij|ab)      ovov(i,a,j,b) = (ia|jb)
-!     ovvv(i,a,b,c) = (ia|bc)
 !
 ! and the three-index factors that make them keep their compound index with
 ! the FIRST orbital fastest:
@@ -25,7 +24,11 @@
 !
 ! so that b_oo b_ov^T is ooov seen as a (no*no, no*nv) matrix, and so on.
 ! (ab|cd) is never formed: the ladder term builds it from `b_vv` a batch of
-! (cd) columns at a time. B enters only as B B^T, so the Cholesky triangular
+! (cd) columns at a time. Nor is (ia|bc) (o v^3): every contraction that needs it
+! is done from b_ov and b_vv directly (trc_rccsd_inter's N1, the W stages, the
+! T1 and T2 terms, the ladder dressing, the (T) slices). `fill_ovvv` builds the
+! dense block into a caller's array for the two legacy (T) routines and the tests.
+! B enters only as B B^T, so the Cholesky triangular
 ! solve is as good as any other factor (the eigen-decomposed J^-1/2 would
 ! also do).
 !
@@ -47,11 +50,10 @@
 ! address under mem:separate, which the host build does not show (the rule
 ! `relax_work_t` in trc_rimp2_relax follows).
 !
-! MEMORY. The dense (ia|bc) block (no nv^3) and the host mirror of every
-! block are what this layout cannot scale with (adenine/cc-pVDZ: 0.73 GB a
-! side, 0.44 GB of it ovvv), and with `aux_block` = 0 the three-index
-! transients hold the whole auxiliary basis at once. Both go when the
-! contractions stop needing the dense block.
+! MEMORY. The largest array is b_vv (nv^2 naux: 396 MB at nv 265, naux 705),
+! then the o^2 v^2 blocks; the host mirror of every array is kept, and with
+! `aux_block` = 0 the three-index transients hold the whole auxiliary basis at
+! once.
 !
 ! BUILD STAMP. Every successful `build` gives the type a new, nonzero `stamp`
 ! (`release` resets it to 0). A consumer that packs integral-only arrays once
@@ -64,6 +66,7 @@ module trc_rccsd_ints
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use pic_profiler, only: profiler_start, profiler_stop
+   use pic_blas_interfaces, only: pic_gemm_x
    use trc_rccsd_steps, only: RCCSD_ST_METRIC, RCCSD_ST_CHOLESKY, RCCSD_ST_3C, RCCSD_ST_HALF, RCCSD_ST_TRSM, &
                               RCCSD_ST_BLOCKS, RCCSD_STEP_NAME, rccsd_steps_gemm_flops, rccsd_steps_trsm_flops, &
                               rccsd_steps_potrf_flops
@@ -102,7 +105,6 @@ module trc_rccsd_ints
       real(dp), allocatable :: ooov(:, :, :, :)   !! (ij|ka)
       real(dp), allocatable :: oovv(:, :, :, :)   !! (ij|ab)
       real(dp), allocatable :: ovov(:, :, :, :)   !! (ia|jb)
-      real(dp), allocatable :: ovvv(:, :, :, :)   !! (ia|bc)
       real(dp), allocatable :: b_oo(:, :)         !! (ij, P), i fastest
       real(dp), allocatable :: b_ov(:, :)         !! (ia, P), i fastest
       real(dp), allocatable :: b_vv(:, :)         !! (ab, P), a fastest
@@ -116,6 +118,7 @@ module trc_rccsd_ints
       procedure :: build => rccsd_ints_build
       procedure :: release => rccsd_ints_release
       procedure :: mp2_energy => rccsd_ints_mp2_energy
+      procedure :: fill_ovvv => rccsd_ints_fill_ovvv
    end type trc_rccsd_ints_t
 
 contains
@@ -139,10 +142,6 @@ contains
       if (allocated(ints%ovov)) then
          !$acc exit data delete(ints%ovov)
          deallocate (ints%ovov)
-      end if
-      if (allocated(ints%ovvv)) then
-         !$acc exit data delete(ints%ovvv)
-         deallocate (ints%ovvv)
       end if
       if (allocated(ints%b_oo)) then
          !$acc exit data delete(ints%b_oo)
@@ -419,37 +418,57 @@ contains
       deallocate (jm)
 
       ! (pq|rs) = sum_P B_pq,P B_rs,P. The rank-four destinations go to the
-      ! GEMM by sequence association: no reshaping temporary, which at
-      ! (ov|vv) would be the peak allocation.
+      ! GEMM by sequence association: no reshaping temporary.
       allocate (ints%oooo(no, no, no, no), ints%ooov(no, no, no, nv), ints%oovv(no, no, nv, nv))
-      allocate (ints%ovov(no, nv, no, nv), ints%ovvv(no, nv, nv, nv))
+      allocate (ints%ovov(no, nv, no, nv))
       ! The host pages must exist before the `update self` below. On a GH200 a
       ! pageable device-to-host copy into memory that was allocated but never
-      ! touched faults the pages in from the GPU side: the 2.98 GB ovvv of a
-      ! (no 20, nv 265) run took 10.6 s that way, 0.01 s once touched, while
-      ! the touch itself costs 0.1 s on the host. An x86 host stages the copy
-      ! and does not show it. Zero on the host, before the GEMMs: on the host
-      ! build these arrays are the GEMM output itself.
+      ! touched faults the pages in from the GPU side: the 2.98 GB (ia|bc) of a
+      ! (no 20, nv 265) run, when it was built here, took 10.6 s that way, 0.01 s
+      ! once touched, while the touch itself costs 0.1 s on the host. An x86 host
+      ! stages the copy and does not show it. Zero on the host, before the GEMMs:
+      ! on the host build these arrays are the GEMM output itself.
       ints%oooo = 0.0_dp
       ints%ooov = 0.0_dp
       ints%oovv = 0.0_dp
       ints%ovov = 0.0_dp
-      ints%ovvv = 0.0_dp
-      !$acc enter data create(ints%oooo, ints%ooov, ints%oovv, ints%ovov, ints%ovvv)
+      !$acc enter data create(ints%oooo, ints%ooov, ints%oovv, ints%ovov)
       call piece_on(la, RCCSD_ST_BLOCKS, tc)
       call la%gemm("N", "T", no*no, no*no, naux, 1.0_dp, ints%b_oo, no*no, ints%b_oo, no*no, 0.0_dp, ints%oooo, no*no)
       call la%gemm("N", "T", no*no, no*nv, naux, 1.0_dp, ints%b_oo, no*no, ints%b_ov, no*nv, 0.0_dp, ints%ooov, no*no)
       call la%gemm("N", "T", no*no, nv*nv, naux, 1.0_dp, ints%b_oo, no*no, ints%b_vv, nv*nv, 0.0_dp, ints%oovv, no*no)
       call la%gemm("N", "T", no*nv, no*nv, naux, 1.0_dp, ints%b_ov, no*nv, ints%b_ov, no*nv, 0.0_dp, ints%ovov, no*nv)
-      call la%gemm("N", "T", no*nv, nv*nv, naux, 1.0_dp, ints%b_ov, no*nv, ints%b_vv, nv*nv, 0.0_dp, ints%ovvv, no*nv)
       call piece_off(ints, la, RCCSD_ST_BLOCKS, tc, rccsd_steps_gemm_flops(no*no, no*no, naux) + &
                      rccsd_steps_gemm_flops(no*no, no*nv, naux) + rccsd_steps_gemm_flops(no*no, nv*nv, naux) + &
-                     rccsd_steps_gemm_flops(no*nv, no*nv, naux) + rccsd_steps_gemm_flops(no*nv, nv*nv, naux))
+                     rccsd_steps_gemm_flops(no*nv, no*nv, naux))
       ! Into host pages already touched at allocation (why: at the rank-four blocks).
-      !$acc update self(ints%b_oo, ints%b_ov, ints%b_vv, ints%oooo, ints%ooov, ints%oovv, ints%ovov, ints%ovvv)
+      !$acc update self(ints%b_oo, ints%b_ov, ints%b_vv, ints%oooo, ints%ooov, ints%oovv, ints%ovov)
       build_counter = build_counter + 1
       ints%stamp = build_counter
    end subroutine rccsd_ints_build
+
+   subroutine rccsd_ints_fill_ovvv(ints, ovvv, la)
+      !! Fills the caller's array with ovvv(i,a,b,c) = (ia|bc) = sum_P b_ov(ia,P) b_vv(bc,P), one GEMM
+      !! (m = o v, n = v^2, k = naux). With `la` the device copies are used and the DEVICE copy of `ovvv` is
+      !! written (the caller has mapped it); without, the host copies and the host BLAS fill the HOST copy.
+      !!
+      !! For the consumers that still want the dense block (the (T) reference and the virtual-triple device
+      !! routine, and the tests): it is o v^3 doubles, which is what the CCSD iterations no longer hold.
+      class(trc_rccsd_ints_t), intent(in) :: ints
+      real(dp), intent(inout) :: ovvv(ints%no*ints%nv, ints%nv*ints%nv)
+      !! (no, nv, nv, nv) in the caller, by sequence association: the GEMM's (o v, v^2) matrix
+      type(trc_linalg_t), intent(in), optional :: la
+
+      integer :: nov, nv2
+
+      nov = ints%no*ints%nv
+      nv2 = ints%nv*ints%nv
+      if (present(la)) then
+         call la%gemm("N", "T", nov, nv2, ints%naux, 1.0_dp, ints%b_ov, nov, ints%b_vv, nv2, 0.0_dp, ovvv, nov)
+      else
+         call pic_gemm_x("N", "T", nov, nv2, ints%naux, 1.0_dp, ints%b_ov, nov, ints%b_vv, nv2, 0.0_dp, ovvv, nov)
+      end if
+   end subroutine rccsd_ints_fill_ovvv
 
    function rccsd_ints_mp2_energy(ints) result(energy)
       !! E_MP2 = sum_ijab (ia|jb) [2 (ia|jb) - (ib|ja)] / (e_i + e_j - e_a - e_b)

@@ -43,9 +43,9 @@
 !     -     sum_ld ovov(l,c,k,d) t1(i,d) t1(l,a)           'lckd,id,la->akci'
 !
 ! HOW EACH BECOMES GEMMS. The terms with the contracted index inside two
-! compound pairs are the O(N^6) ones. The ovvv t1 (o^2 v^3) and ooov t1 (o^3 v^2)
-! terms are GEMMs too, into the scratch `r` (below), and the base kernel only
-! permutes. A thread per element of W summing d itself read ovvv with a stride
+! compound pairs are the O(N^6) ones. The (ia|bc) t1 (o^2 v^2 naux) and ooov t1
+! (o^3 v^2) terms are GEMMs too, into the scratch `r` (below), and the base kernel
+! only permutes. A thread per element of W summing d itself read (ia|bc) with a stride
 ! of o v doubles between neighbouring threads (a different cache sector per
 ! lane), about 44 GB of traffic for each of Wvoov and Wvovo at o = 25, v = 130,
 ! against the 0.9 GB of reading (ia|bc) once for each. Measured on adenine
@@ -56,19 +56,24 @@
 ! kernels read contiguously, their index running over the FIRST index of what
 ! they read, and scatter the writes (each W element is written once).
 !
-!   Wvoov   T(k,c,a,i) = sum_d ovvv(k,c,a,d) t1(i,d) - sum_l ooov(l,i,k,c) t1(l,a):
-!             ovvv as the (k c a; d) matrix, one GEMM "N","T" M = o v^2, N = o, K = v
-!             (beta = 0), then over i, a batch of o GEMMs "T","N" (the (l; k c) block
+! No (ia|bc) block exists (trc_rccsd_ints): its t1 terms are contracted from the
+! factors, (kc|ad) = sum_P b_ov(kc,P) b_vv(ad,P), t1 first.
+!
+!   Wvoov   T(k,c,a,i) = sum_d (kc|ad) t1(i,d) - sum_l ooov(l,i,k,c) t1(l,a):
+!             N1a(a,i;P) = sum_d b_vv(a,d;P) t1(i,d), a batch over P of GEMMs
+!             "N","T" M = v, N = o, K = v (in `f1`), then ONE GEMM "N","T"
+!             M = o v, N = v o, K = naux, b_ov against N1a (beta = 0),
+!             then over i, a batch of o GEMMs "T","N" (the (l; k c) block
 !             ooov(:,i,:,:) has column stride o^2, A item i starts at ooov(1,i,1,1),
 !             stride o) M = o v, N = v, K = o into T(:,:,:,i), alpha = -1, beta = 1.
 !             T lives in `r`; W(a,k,i,c) = ovov(k,c,i,a) + T(k,c,a,i) is the base
 !             kernel (threads over (k,c,i,a), k fastest); T is dead after that
 !             kernel, and the first big GEMM (beta = 0) replaces `r`.
-!   Wvovo   T(k,i,a,c) = sum_d ovvv(k,d,a,c) t1(i,d) - sum_l ooov(k,i,l,c) t1(l,a):
-!             over the v^2 pairs (a,c), ovvv(:,:,a,c) is the (k; d) matrix: a batch
-!             of v^2 GEMMs "N","T" M = o, N = o, K = v (A stride o v, C stride o^2,
-!             beta = 0); the d-sum is not a matrix product over (a,c) alone, so a
-!             single GEMM would need an o v^3 permuted copy of (ia|bc). Then over
+!   Wvovo   T(k,i,a,c) = sum_d (kd|ac) t1(i,d) - sum_l ooov(k,i,l,c) t1(l,a):
+!             O1(k,i;P) = sum_d b_ov(k,d;P) t1(i,d), a batch over P of GEMMs "N","T"
+!             M = o, N = o, K = v (in `f1`), then ONE GEMM "N","T" M = o^2, N = v^2,
+!             K = naux, O1 against b_vv (beta = 0); it replaces a batch of v^2 small
+!             GEMMs over the (k; d) blocks of the dense (ia|bc). Then over
 !             c, a batch of v GEMMs "N","N"
 !             M = o^2, N = v, K = o on ooov(:,:,:,c) (stride o^3), alpha = -1,
 !             beta = 1, into T(:,:,:,c). W(a,k,c,i) = oovv(k,i,a,c) + T(k,i,a,c).
@@ -87,7 +92,7 @@
 !             a2(k,c,l,d) = ovov(l,c,k,d)                   (a pack, built once)
 !             b1(l,d,i,a) = -1/2 t2(i,l,d,a) - t1(i,d) t1(l,a) + t2(i,l,a,d)
 !             b2(l,d,i,a) = -1/2 t2(i,l,a,d)
-!           then Wvoov(a,k,i,c) += R(k,c,i,a). The base kernel (ovov, ovvv t1, ooov t1)
+!           then Wvoov(a,k,i,c) += R(k,c,i,a). The base kernel (ovov, (ia|bc) t1, ooov t1)
 !           runs first.
 !   Wvovo   one product, a2(kc;ld) . b3(ld;ia) with b3 = -1/2 t2(i,l,d,a) - t1(i,d) t1(l,a)
 !           (packed into the b1 buffer), then Wvovo(a,k,c,i) += R(k,c,i,a).
@@ -118,11 +123,13 @@
 !     a2       o^2 v^2   ovov(l,c,k,d) as (kc;ld), for life of the integrals     84.5 MB
 !     b1       o^2 v^2   b1 (Wvoov), then b3 (Wvovo): per call
 !     b2       o^2 v^2   b2 (Wvoov): per call
-!     r        o^2 v^2   T (the ovvv t1 and ooov t1 terms) until the base kernel has read it,
+!     r        o^2 v^2   T (the (ia|bc) t1 and ooov t1 terms) until the base kernel has read it,
 !                        then the GEMM result R(kc;ia): per call
+!     f1  max(o,v) o naux  N1a (Wvoov), then O1 (Wvovo): per call
 !
 ! and `trc_rccsd_w_t` holds Woooo (o^4), Wvoov, Wvovo (o^2 v^2 each). In all
-! 7 o^2 v^2 + o^4 doubles: 594.6 MB a side at no = 25, nv = 130. A block above
+! 7 o^2 v^2 + o^4 + max(o,v) o naux doubles: 594.6 MB + 16.4 MB (naux 630) a side
+! at no = 25, nv = 130. A block above
 ! 2^31-1 elements is refused by either `init` (the scratch's in `ws%status`, W's in
 ! `w%status`), not wrapped.
 !
@@ -176,6 +183,7 @@ module trc_rccsd_w
       real(dp), allocatable :: b1(:)   !! o^2 v^2, b1(l,d,i,a) of Wvoov, then b3 of Wvovo
       real(dp), allocatable :: b2(:)   !! o^2 v^2, b2(l,d,i,a)
       real(dp), allocatable :: r(:)    !! o^2 v^2: the staged t1 terms T, then R(k,c,i,a)
+      real(dp), allocatable :: f1(:)   !! max(o, v) o naux: N1a(a,i;P) (Wvoov), then O1(k,i;P) (Wvovo)
    contains
       procedure :: init => wscratch_init
       procedure :: release => wscratch_release
@@ -256,7 +264,7 @@ contains
 
       call this%release()
       call this%status%clear()
-      if (.not. allocated(ints%ovov)) then
+      if (.not. allocated(ints%ovov) .or. .not. allocated(ints%b_ov) .or. .not. allocated(ints%b_vv)) then
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_w: the integral blocks are not built")
          return
       end if
@@ -271,7 +279,8 @@ contains
       this%stamp = ints%stamp
       allocate (this%akl(no*no*nv*nv), this%a2(no*no*nv*nv), this%b1(no*no*nv*nv), this%b2(no*no*nv*nv))
       allocate (this%r(no*no*nv*nv))
-      !$acc enter data create(this%akl, this%a2, this%b1, this%b2, this%r)
+      allocate (this%f1(int(max(no, nv), int64)*no*ints%naux))
+      !$acc enter data create(this%akl, this%a2, this%b1, this%b2, this%r, this%f1)
       call kernel_pack_akl(no, nv, ints%ovov, this%akl)
       call kernel_pack_a2(no, nv, ints%ovov, this%a2)
    end subroutine wscratch_init
@@ -299,6 +308,10 @@ contains
       if (allocated(this%r)) then
          !$acc exit data delete(this%r)
          deallocate (this%r)
+      end if
+      if (allocated(this%f1)) then
+         !$acc exit data delete(this%f1)
+         deallocate (this%f1)
       end if
       this%no = 0
       this%nv = 0
@@ -331,12 +344,12 @@ contains
 
       ok = .false.
       if (.not. allocated(ints%oooo) .or. .not. allocated(ints%ooov) .or. .not. allocated(ints%oovv) .or. &
-          .not. allocated(ints%ovov) .or. .not. allocated(ints%ovvv)) then
+          .not. allocated(ints%ovov) .or. .not. allocated(ints%b_ov) .or. .not. allocated(ints%b_vv)) then
          call ws%status%set(ERROR_VALIDATION, "trc_rccsd_w: the integral blocks are not built")
          return
       end if
       if (.not. allocated(ws%akl) .or. .not. allocated(ws%a2) .or. .not. allocated(ws%b1) .or. &
-          .not. allocated(ws%b2) .or. .not. allocated(ws%r)) then
+          .not. allocated(ws%b2) .or. .not. allocated(ws%r) .or. .not. allocated(ws%f1)) then
          call ws%status%set(ERROR_VALIDATION, "trc_rccsd_w: the scratch is not initialised")
          return
       end if
@@ -359,7 +372,8 @@ contains
           size(ints%ooov, kind=int64) /= elements(no, no, no, nv) .or. &
           size(ints%oovv, kind=int64) /= elements(no, no, nv, nv) .or. &
           size(ints%ovov, kind=int64) /= elements(no, no, nv, nv) .or. &
-          size(ints%ovvv, kind=int64) /= elements(no, nv, nv, nv)) then
+          size(ints%b_ov, kind=int64) /= elements(no, nv, ints%naux, 1) .or. &
+          size(ints%b_vv, kind=int64) /= elements(nv, nv, ints%naux, 1)) then
          call ws%status%set(ERROR_VALIDATION, "trc_rccsd_w: an integral block does not have the size (no, nv) says")
          return
       end if
@@ -371,7 +385,8 @@ contains
       end if
       if (size(ws%akl, kind=int64) /= elements(no, no, nv, nv) .or. size(ws%a2, kind=int64) /= elements(no, no, nv, nv) .or. &
           size(ws%b1, kind=int64) /= elements(no, no, nv, nv) .or. size(ws%b2, kind=int64) /= elements(no, no, nv, nv) .or. &
-          size(ws%r, kind=int64) /= elements(no, no, nv, nv)) then
+          size(ws%r, kind=int64) /= elements(no, no, nv, nv) .or. &
+          size(ws%f1, kind=int64) /= elements(max(no, nv), no, ints%naux, 1)) then
          call ws%status%set(ERROR_VALIDATION, "trc_rccsd_w: a scratch array does not have the size (no, nv) says")
          return
       end if
@@ -487,60 +502,74 @@ contains
    end subroutine rccsd_w_wvovo
 
    subroutine stage_voov(ints, amps, ws, la)
-      !! ws%r(k,c,a,i) = sum_d ovvv(k,c,a,d) t1(i,d) - sum_l ooov(l,i,k,c) t1(l,a); shapes in the module header
+      !! ws%r(k,c,a,i) = sum_d (kc|ad) t1(i,d) - sum_l ooov(l,i,k,c) t1(l,a); shapes in the module header
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
       type(trc_rccsd_wscratch_t), intent(inout) :: ws
       type(trc_linalg_t), intent(in) :: la
 
       type(trc_gemm_batch_t) :: shape
-      integer :: no, nv, nov
+      integer :: no, nv, nov, naux
 
       no = ints%no
       nv = ints%nv
       nov = no*nv
-      call la%gemm("N", "T", nov*nv, no, nv, 1.0_dp, ints%ovvv, nov*nv, amps%t1, no, 0.0_dp, ws%r, nov*nv)
+      naux = ints%naux
+      ! N1a(a,i;P) = sum_d b_vv(a,d;P) t1(i,d), over P
+      shape = trc_gemm_batch(nv, no, nv, naux, lda=nv, ldb=no, ldc=nv, &
+                             sa=int(nv, int64)*nv, sb=0_int64, sc=int(nv, int64)*no, transa="N", transb="T")
+      call la%gemm_batched(shape, ints%b_vv, amps%t1, ws%f1)
+      ! r((k,c),(a,i)) = sum_P b_ov(kc,P) N1a(ai,P)
+      call la%gemm("N", "T", nov, nv*no, naux, 1.0_dp, ints%b_ov, nov, ws%f1, nv*no, 0.0_dp, ws%r, nov)
       shape = trc_gemm_batch(nov, nv, no, no, lda=no*no, ldb=no, ldc=nov, &
                              sa=int(no, int64), sb=0_int64, sc=int(nov, int64)*nv, transa="T", transb="N")
       call la%gemm_batched(shape, ints%ooov, amps%t1, ws%r, -1.0_dp, 1.0_dp)
    end subroutine stage_voov
 
    subroutine stage_vovo(ints, amps, ws, la)
-      !! ws%r(k,i,a,c) = sum_d ovvv(k,d,a,c) t1(i,d) - sum_l ooov(k,i,l,c) t1(l,a); shapes in the module header
+      !! ws%r(k,i,a,c) = sum_d (kd|ac) t1(i,d) - sum_l ooov(k,i,l,c) t1(l,a); shapes in the module header
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
       type(trc_rccsd_wscratch_t), intent(inout) :: ws
       type(trc_linalg_t), intent(in) :: la
 
       type(trc_gemm_batch_t) :: shape
-      integer :: no, nv, no2
+      integer :: no, nv, no2, naux
 
       no = ints%no
       nv = ints%nv
       no2 = no*no
-      shape = trc_gemm_batch(no, no, nv, nv*nv, lda=no, ldb=no, ldc=no, &
+      naux = ints%naux
+      ! O1(k,i;P) = sum_d b_ov(k,d;P) t1(i,d), over P
+      shape = trc_gemm_batch(no, no, nv, naux, lda=no, ldb=no, ldc=no, &
                              sa=int(no, int64)*nv, sb=0_int64, sc=int(no2, int64), transa="N", transb="T")
-      call la%gemm_batched(shape, ints%ovvv, amps%t1, ws%r)
+      call la%gemm_batched(shape, ints%b_ov, amps%t1, ws%f1)
+      ! r((k,i),(a,c)) = sum_P O1(ki,P) b_vv(ac,P)
+      call la%gemm("N", "T", no2, nv*nv, naux, 1.0_dp, ws%f1, no2, ints%b_vv, nv*nv, 0.0_dp, ws%r, no2)
       shape = trc_gemm_batch(no2, nv, no, nv, lda=no2, ldb=no, ldc=no2, &
                              sa=int(no2, int64)*no, sb=0_int64, sc=int(no2, int64)*nv, transa="N", transb="N")
       call la%gemm_batched(shape, ints%ooov, amps%t1, ws%r, -1.0_dp, 1.0_dp)
    end subroutine stage_vovo
 
-   pure function rccsd_w_flops(no, nv) result(flops)
+   pure function rccsd_w_flops(no, nv, naux) result(flops)
       !! Flops of one `rccsd_w_build`, 2 m n k of each of its GEMMs (the kernels are not counted):
       !!   Woooo  (o o, o o, v v)                        2 o^4 v^2
       !!   Wvoov  two (o v, o v, o v)                    4 (o v)^3
-      !!          ovvv t1 (o v^2, o, v)                  2 o^2 v^3
+      !!          N1a, naux of (v, o, v)                 2 o v^2 naux
+      !!          b_ov N1a^T (o v, v o, naux)            2 o^2 v^2 naux
       !!          ooov t1, o of (o v, v, o)              2 o^3 v^2
       !!   Wvovo  one (o v, o v, o v)                    2 (o v)^3
-      !!          ovvv t1, v^2 of (o, o, v)              2 o^2 v^3
+      !!          O1, naux of (o, o, v)                  2 o^2 v naux
+      !!          O1 b_vv^T (o^2, v^2, naux)             2 o^2 v^2 naux
       !!          ooov t1, v of (o^2, v, o)              2 o^3 v^2
-      integer, intent(in) :: no, nv
+      integer, intent(in) :: no, nv, naux
       integer(int64) :: flops
 
       flops = rccsd_steps_gemm_flops(no*no, no*no, nv*nv) + 3_int64*rccsd_steps_gemm_flops(no*nv, no*nv, no*nv) + &
-              rccsd_steps_gemm_flops(no*nv*nv, no, nv) + rccsd_steps_gemm_flops(no*nv, nv, no, no) + &
-              rccsd_steps_gemm_flops(no, no, nv, nv*nv) + rccsd_steps_gemm_flops(no*no, nv, no, nv)
+              rccsd_steps_gemm_flops(nv, no, nv, naux) + rccsd_steps_gemm_flops(no*nv, nv*no, naux) + &
+              rccsd_steps_gemm_flops(no*nv, nv, no, no) + &
+              rccsd_steps_gemm_flops(no, no, nv, naux) + rccsd_steps_gemm_flops(no*no, nv*nv, naux) + &
+              rccsd_steps_gemm_flops(no*no, nv, no, nv)
    end function rccsd_w_flops
 
    subroutine rccsd_w_build(ints, amps, inter, w, ws, la)

@@ -77,7 +77,7 @@ iteration table:
 
 The `integrals` row is the whole build of the fitted blocks; the indented rows
 under it (metric, Cholesky, three-index integrals, half transform, `B = X L^-T`,
-the five blocks) are pieces it times itself, so they do not add up to it (the
+the four blocks) are pieces it times itself, so they do not add up to it (the
 orbital transforms and the copy of the blocks back to the host are in the first
 only). The other rows are the stages of one iteration summed over all of them:
 tau and the one-particle intermediates, the W intermediates, the particle

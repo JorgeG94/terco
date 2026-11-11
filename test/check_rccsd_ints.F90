@@ -167,6 +167,7 @@ contains
       type(trc_linalg_t) :: la
       integer, allocatable :: zint(:)
       real(dp), allocatable :: cmo_c(:, :), eps_c(:), dip(:, :, :), rebuilt(:, :)
+      real(dp), allocatable :: ovvv(:, :, :, :), ovvv_blocked(:, :, :, :)
       integer :: nocc, nfz, nmo, ref_unit, no, nv, nact, ib, k
       integer :: ref_no, ref_nv, ref_naux, ref_nfz
       real(dp) :: e_scf_ref, e_mp2_ref, e_fixed_ref, e_mp2, probe(4), ref(4), d, dscf, dmp2, drimp2
@@ -224,6 +225,11 @@ contains
                   to_string(ref_naux)//"/"//to_string(ref_nfz)//" "//trim(mp%message))
 
       ! ---- the probes ---------------------------------------------------------
+      ! (ia|bc) is not held by the integrals: the helper builds it from b_ov and b_vv (host BLAS), and the probe
+      ! of that block checks the factors' (ov|vv) product against pyscf as the stored block did
+      allocate (ovvv(no, nv, nv, nv), ovvv_blocked(no, nv, nv, nv))
+      call ints%fill_ovvv(ovvv)
+      call blocked%fill_ovvv(ovvv_blocked)
       allocate (dip(nact, nact, 4))
       call mo_dipoles(bas, pl, res%cmo(:, nfz + 1:nmo, 1), dip)
       worst_block = 0.0_dp
@@ -234,7 +240,7 @@ contains
          case (2); probe = probe4(ints%ooov, BLOCK_NAME(ib), dip, no)
          case (3); probe = probe4(ints%oovv, BLOCK_NAME(ib), dip, no)
          case (4); probe = probe4(ints%ovov, BLOCK_NAME(ib), dip, no)
-         case default; probe = probe4(ints%ovvv, BLOCK_NAME(ib), dip, no)
+         case default; probe = probe4(ovvv, BLOCK_NAME(ib), dip, no)
          end select
          do k = 1, 4
             d = abs(probe(k) - ref(k))/max(abs(ref(k)), PROBE_FLOOR)
@@ -259,14 +265,14 @@ contains
       rebuilt(:, :) = matmul(ints%b_oo, transpose(ints%b_vv))
       b_oovv = maxval(abs(rebuilt - reshape(ints%oovv, [no*no, nv*nv])))
       deallocate (rebuilt)
-      blocking = max(maxval(abs(ints%ovvv - blocked%ovvv)), maxval(abs(ints%oooo - blocked%oooo)), &
+      blocking = max(maxval(abs(ovvv - ovvv_blocked)), maxval(abs(ints%oooo - blocked%oooo)), &
                      maxval(abs(ints%b_vv - blocked%b_vv)))
       ok = b_ovov < TOL_ALGEBRA .and. b_oovv < TOL_ALGEBRA .and. blocking < TOL_ALGEBRA
       call record(im, 4, ok, label//"ovov from b_ov: "//to_string(b_ovov, "es9.2")// &
                   ", oovv from b_oo b_vv: "//to_string(b_oovv, "es9.2")// &
                   ", aux blocks of 20 vs whole: "//to_string(blocking, "es9.2"))
 
-      call symmetry_case(im, ints)
+      call symmetry_case(im, ints, ovvv)
       if (im == 1) call refusal_cases()
 
       call ints%release()
@@ -355,10 +361,11 @@ contains
       if (.not. good) why = trim(why)//" ["//what//" not refused with '"//keyword//"']"
    end subroutine note_refusal
 
-   subroutine symmetry_case(im, ints)
+   subroutine symmetry_case(im, ints, ovvv)
       !! oooo(ijkl) = oooo(jikl) = oooo(klij); ovvv(iabc) = ovvv(iacb); ovov(iajb) = ovov(jbia)
       integer, intent(in) :: im
       type(trc_rccsd_ints_t), intent(in) :: ints
+      real(dp), intent(in) :: ovvv(:, :, :, :)  !! (ia|bc) built by `ints%fill_ovvv`
       integer :: i, j, k, l, a, b, c, no, nv
       real(dp) :: s_ij, s_pair, s_cb, s_ovov
 
@@ -382,7 +389,7 @@ contains
          do b = 1, nv
             do a = 1, nv
                do i = 1, no
-                  s_cb = max(s_cb, abs(ints%ovvv(i, a, b, c) - ints%ovvv(i, a, c, b)))
+                  s_cb = max(s_cb, abs(ovvv(i, a, b, c) - ovvv(i, a, c, b)))
                end do
             end do
          end do

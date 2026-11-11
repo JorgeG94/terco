@@ -30,7 +30,7 @@
 ! first (as `trc_rccsd_ints_t%build` does).
 !
 ! How each becomes GEMMs (the work is O(o^3 v^2) for Foo, Fvv and O(o^2 v^2)
-! or O(o v^3) for the rest; only Foo and Fvv are O(N^5)):
+! or O(o v^2 naux) for the rest; only Foo and Fvv are O(N^5)):
 !
 !     L(k,c,l,d) = 2 (kc|ld) - (kd|lc)   built once (`init` of the scratch),
 !                  it is the combination of Foo, Fvv, Fov and the energy
@@ -39,9 +39,15 @@
 !                                               lq(k,l,d,c)   = L(k,c,l,d)
 !     Fov  = L_(kc;ld) . t1_(ld)                (a matrix-vector product)
 !     Loo  = Foo + lam_(ki;lc) . t1_(lc)        lam = 2 (ki|lc) - (li|kc)
-!     Lvv  = Fvv + sum_kd [2 (kd|ac) - (kc|ad)] t1(k,d)   one thread per (a,c):
-!            the exchange half needs ovvv(k,c,a,d), strided in k, d, and a
-!            pack of it would be as large as ovvv itself; O(o v^3), not GEMM
+!     Lvv  = Fvv + sum_kd [2 (kd|ac) - (kc|ad)] t1(k,d), from the fitted factors
+!            ((kd|ac) = sum_P b_ov(kd,P) b_vv(ac,P); no (ia|bc) block exists):
+!              N1(k,a;P) = sum_d t1(k,d) b_vv(d,a;P)    ONE GEMM (o, v naux, v), kept
+!                                                       in `n1` for the T2 equation
+!              direct    2 b_vv(ac;P) u(P), u = b_ov^T t1   two matrix-vector products
+!              exchange  - sum_(k,P) N1(k,a;P) b_ov(k,c;P)   ONE GEMM (v, v, o naux) of
+!                        N1 and b_ov permuted to (k,P,.) (`n1p`, and `bovp` packed once);
+!                        2 o v^2 naux flops, o times fewer than one GEMM into an
+!                        o^2 v^2 R((k,c),(k',a)) followed by its trace over k = k'
 !
 ! RESIDENCY. Every array of the three types here exists on the host AND on the
 ! device (`enter data` in `init`, `exit data` in `release`, on the same
@@ -65,6 +71,10 @@
 !     lq       o^2 v^2    lq(k,l,d,c), kept for the life of the integrals (Fvv); not general scratch
 !     lam      o^3 v      Loo's combination, kept for the life of the integrals
 !     part_s, part_d  o v   energy partials
+!     n1       o v naux   N1(k,a;P), written by Lvv and read by the T2 equation
+!     n1p      o v naux   N1 as (k,P,a) for Lvv; per call, the T1 equation borrows it
+!     bovp     o v naux   b_ov as (k,P,c), kept for the life of the integrals
+!     u        naux
 !
 ! Every block is addressed with a default integer: a block above 2^31-1
 ! elements is refused by `init` (status), not wrapped.
@@ -138,6 +148,10 @@ module trc_rccsd_inter
       real(dp), allocatable :: lam(:)           !! o^3 v, lam(k,i,l,c) = 2 (ki|lc) - (li|kc), built by `init`
       real(dp), allocatable :: part_s(:)        !! o v energy partials, singles part
       real(dp), allocatable :: part_d(:)        !! o v energy partials, doubles part
+      real(dp), allocatable :: n1(:)            !! o v naux, N1(k,a;P) = sum_d t1(k,d) b_vv(d,a;P), from `rccsd_inter_lvv`
+      real(dp), allocatable :: n1p(:)           !! o v naux, N1 permuted to (k,P,a) for Lvv: per-call scratch
+      real(dp), allocatable :: bovp(:)          !! o v naux, b_ov permuted to (k,P,c), built by `init`
+      real(dp), allocatable :: u(:)             !! naux, u(P) = sum_kd b_ov(kd,P) t1(k,d)
    contains
       procedure :: init => scratch_init
       procedure :: release => scratch_release
@@ -259,19 +273,23 @@ contains
       class(trc_rccsd_scratch_t), intent(inout) :: this
       type(trc_rccsd_ints_t), intent(in) :: ints
 
-      integer :: no, nv
+      integer :: no, nv, naux
 
       call this%release()
       call this%status%clear()
-      if (.not. allocated(ints%ovov) .or. .not. allocated(ints%ooov)) then
+      if (.not. allocated(ints%ovov) .or. .not. allocated(ints%ooov) .or. .not. allocated(ints%b_ov) .or. &
+          .not. allocated(ints%b_vv)) then
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_inter: the integral blocks are not built")
          return
       end if
       no = ints%no
       nv = ints%nv
-      if (int(no, int64)*no*nv*nv > int(huge(0_int32), int64) .or. int(no, int64)*nv*nv*nv > int(huge(0_int32), int64) .or. &
-          int(no, int64)*no*no*nv > int(huge(0_int32), int64)) then
-         call this%status%set(ERROR_VALIDATION, "trc_rccsd_inter: a block has more than 2^31-1 elements")
+      naux = ints%naux
+      ! the kernels index o^2 v^2, o^3 v and o v naux arrays with default integers
+      if (int(no, int64)*no*nv*nv > int(huge(0_int32), int64) .or. int(no, int64)*no*no*nv > int(huge(0_int32), int64) .or. &
+          int(no, int64)*nv*naux > int(huge(0_int32), int64)) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_inter: an o^2 v^2, o^3 v or o v naux array has more than "// &
+                              "2^31-1 elements (default-integer kernel index)")
          return
       end if
       this%no = no
@@ -279,10 +297,13 @@ contains
       this%stamp = ints%stamp
       allocate (this%lov(no, nv, no, nv), this%pack1(no*no*nv*nv), this%lq(no*no*nv*nv))
       allocate (this%lam(no*no*no*nv), this%part_s(no*nv), this%part_d(no*nv))
+      allocate (this%n1(no*nv*naux), this%n1p(no*nv*naux), this%bovp(no*nv*naux), this%u(naux))
       !$acc enter data create(this%lov, this%pack1, this%lq, this%lam, this%part_s, this%part_d)
+      !$acc enter data create(this%n1, this%n1p, this%bovp, this%u)
       call kernel_lov(no, nv, ints%ovov, this%lov)
       call kernel_pack_lq(no, nv, this%lov, this%lq)
       call kernel_pack_lam(no, nv, ints%ooov, this%lam)
+      call kernel_pack_kpa(no, nv, naux, ints%b_ov, this%bovp)
    end subroutine scratch_init
 
    subroutine scratch_release(this)
@@ -312,6 +333,22 @@ contains
       if (allocated(this%part_d)) then
          !$acc exit data delete(this%part_d)
          deallocate (this%part_d)
+      end if
+      if (allocated(this%n1)) then
+         !$acc exit data delete(this%n1)
+         deallocate (this%n1)
+      end if
+      if (allocated(this%n1p)) then
+         !$acc exit data delete(this%n1p)
+         deallocate (this%n1p)
+      end if
+      if (allocated(this%bovp)) then
+         !$acc exit data delete(this%bovp)
+         deallocate (this%bovp)
+      end if
+      if (allocated(this%u)) then
+         !$acc exit data delete(this%u)
+         deallocate (this%u)
       end if
       this%no = 0
       this%nv = 0
@@ -356,7 +393,7 @@ contains
 
       ok = .false.
       if (.not. allocated(scr%lov) .or. .not. allocated(scr%lq) .or. .not. allocated(scr%lam) .or. &
-          .not. allocated(ints%ovov)) then
+          .not. allocated(scr%n1) .or. .not. allocated(ints%ovov)) then
          call scr%status%set(ERROR_VALIDATION, "trc_rccsd_inter: the scratch or the integrals are not initialised")
          return
       end if
@@ -372,6 +409,10 @@ contains
       end if
       if (scr%stamp /= ints%stamp) then
          call scr%status%set(ERROR_VALIDATION, STALE_MSG)
+         return
+      end if
+      if (size(scr%n1, kind=int64) /= int(ints%no, int64)*ints%nv*ints%naux) then
+         call scr%status%set(ERROR_VALIDATION, "trc_rccsd_inter: the scratch was sized for another auxiliary count")
          return
       end if
       ok = .true.
@@ -479,31 +520,54 @@ contains
       call la%gemm("N", "N", no*no, 1, no*nv, 1.0_dp, scr%lam, no*no, amps%t1, no*nv, 1.0_dp, inter%loo, no*no)
    end subroutine rccsd_inter_loo
 
-   subroutine rccsd_inter_lvv(ints, amps, inter, scr)
-      !! Lvv(a,c) = Fvv(a,c) + sum_kd [2 (kd|ac) - (kc|ad)] t1(k,d)
+   subroutine rccsd_inter_lvv(ints, amps, inter, scr, la)
+      !! Lvv(a,c) = Fvv(a,c) + sum_kd [2 (kd|ac) - (kc|ad)] t1(k,d), and N1 in `scr%n1`
       !!
       !! pyscf Lvv: Fvv + 2 einsum('kdac,kd->ac', ovvv, t1) - einsum('kcad,kd->ac', ovvv, t1),
-      !! the `fov t1` term zero. One thread per (a,c) summing d then k, not a GEMM (module
-      !! header). Needs `rccsd_inter_fvv`.
+      !! the `fov t1` term zero. From the factors, (kd|ac) = sum_P b_ov(kd,P) b_vv(ac,P) (module
+      !! header): N1(k,a;P) = sum_d t1(k,d) b_vv(d,a;P) is ONE GEMM, the direct term 2 b_vv u
+      !! (u = b_ov^T t1) two matrix-vector products, the exchange term one GEMM over (k,P) of N1
+      !! and b_ov, both permuted to (k,P,.). N1 stays in `scr%n1` for the T2 equation of the same
+      !! amplitudes (trc_rccsd_update). Needs `rccsd_inter_fvv`.
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
       type(trc_rccsd_inter_t), intent(inout) :: inter
       type(trc_rccsd_scratch_t), intent(inout) :: scr
+      type(trc_linalg_t), intent(in) :: la
+
+      integer :: no, nv, naux, nov, nv2
 
       call scr%status%clear()
       if (.not. ready(ints, amps, inter, scr)) return
-      call kernel_lvv(ints%no, ints%nv, inter%fvv, ints%ovvv, amps%t1, inter%lvv)
+      no = ints%no
+      nv = ints%nv
+      naux = ints%naux
+      nov = no*nv
+      nv2 = nv*nv
+      ! N1(k,(a,P)) = sum_d t1(k,d) b_vv(d,(a,P)): b_vv is the matrix (d; (a,P)) with leading dimension nv
+      call la%gemm("N", "N", no, nv*naux, nv, 1.0_dp, amps%t1, no, ints%b_vv, nv, 0.0_dp, scr%n1, no)
+      call kernel_copy(nv2, inter%fvv, inter%lvv)
+      ! + 2 sum_P b_vv(ac,P) u(P)
+      call la%gemm("T", "N", naux, 1, nov, 1.0_dp, ints%b_ov, nov, amps%t1, nov, 0.0_dp, scr%u, naux)
+      call la%gemm("N", "N", nv2, 1, naux, 2.0_dp, ints%b_vv, nv2, scr%u, naux, 1.0_dp, inter%lvv, nv2)
+      ! - sum_(k,P) N1(k,a;P) b_ov(k,c;P), the (k,P) pair made contiguous in both
+      call kernel_pack_kpa(no, nv, naux, scr%n1, scr%n1p)
+      call la%gemm("T", "N", nv, nv, no*naux, -1.0_dp, scr%n1p, no*naux, scr%bovp, no*naux, 1.0_dp, inter%lvv, nv)
    end subroutine rccsd_inter_lvv
 
-   pure function rccsd_inter_flops(no, nv) result(flops)
-      !! Flops of one `rccsd_inter_one_particle`, 2 m n k of each of its GEMMs (the packs, tau and Lvv are kernels, not counted):
+   pure function rccsd_inter_flops(no, nv, naux) result(flops)
+      !! Flops of one `rccsd_inter_one_particle`, 2 m n k of each of its GEMMs (the packs and tau are kernels, not counted):
       !!   Foo  (o, o, v o v)      2 o^3 v^2         Fvv  (v, v, o o v)      2 o^2 v^3
       !!   Fov  (o v, 1, o v)      2 o^2 v^2         Loo  (o o, 1, o v)      2 o^3 v
-      integer, intent(in) :: no, nv
+      !!   N1   (o, v naux, v)     2 o v^2 naux      Lvv  u (naux, 1, o v)   2 o v naux
+      !!   Lvv  direct (v^2, 1, naux) 2 v^2 naux     Lvv  exchange (v, v, o naux)  2 o v^2 naux
+      integer, intent(in) :: no, nv, naux
       integer(int64) :: flops
 
       flops = rccsd_steps_gemm_flops(no, no, nv*no*nv) + rccsd_steps_gemm_flops(nv, nv, no*no*nv) + &
-              rccsd_steps_gemm_flops(no*nv, 1, no*nv) + rccsd_steps_gemm_flops(no*no, 1, no*nv)
+              rccsd_steps_gemm_flops(no*nv, 1, no*nv) + rccsd_steps_gemm_flops(no*no, 1, no*nv) + &
+              rccsd_steps_gemm_flops(no, nv*naux, nv) + rccsd_steps_gemm_flops(naux, 1, no*nv) + &
+              rccsd_steps_gemm_flops(nv*nv, 1, naux) + rccsd_steps_gemm_flops(nv, nv, no*naux)
    end function rccsd_inter_flops
 
    subroutine rccsd_inter_one_particle(ints, amps, inter, scr, la)
@@ -524,7 +588,7 @@ contains
       if (scr%status%has_error()) return
       call rccsd_inter_loo(ints, amps, inter, scr, la)
       if (scr%status%has_error()) return
-      call rccsd_inter_lvv(ints, amps, inter, scr)
+      call rccsd_inter_lvv(ints, amps, inter, scr, la)
    end subroutine rccsd_inter_one_particle
 
    ! ---------------------------------------------------------------------
@@ -684,17 +748,17 @@ contains
       end do
    end subroutine kernel_copy
 
-   subroutine kernel_lvv(no, nv, fvv, ovvv, t1, lvv)
-      !! lvv(a,c) = fvv(a,c) + sum_kd [2 ovvv(k,d,a,c) - ovvv(k,c,a,d)] t1(k,d)
-      integer, intent(in) :: no, nv
-      real(dp), intent(in) :: fvv(nv, nv), ovvv(no, nv, nv, nv), t1(no, nv)
-      real(dp), intent(out) :: lvv(nv*nv)
+   subroutine kernel_pack_kpa(no, nv, naux, x, y)
+      !! y(k,P,a) = x(k,a,P), for an (o v, naux) factor such as b_ov or N1
+      integer, intent(in) :: no, nv, naux
+      real(dp), intent(in) :: x(no, nv, naux)
+      real(dp), intent(out) :: y(no*naux*nv)
       integer :: t
 
-      do concurrent(t=1:nv*nv)
-         lvv(t) = lvv_item(t, no, nv, fvv, ovvv, t1)
+      do concurrent(t=1:no*naux*nv)
+         y(t) = kpa_item(t, no, nv, naux, x)
       end do
-   end subroutine kernel_lvv
+   end subroutine kernel_pack_kpa
 
    subroutine kernel_energy(no, nv, lov, t1, t2, part_s, part_d)
       !! one (singles, doubles) partial per (j,b), j fastest
@@ -817,23 +881,17 @@ contains
       v = 2.0_dp*ooov(k, i, l, c) - ooov(l, i, k, c)
    end function lam_item
 
-   pure function lvv_item(t, no, nv, fvv, ovvv, t1) result(v)
-      !! Lvv(a,c) at position t of (nv, nv); d outer, k inner
+   pure function kpa_item(t, no, nv, naux, x) result(v)
+      !! x(k,a,P) at position t of (no, naux, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
-      real(dp), intent(in) :: fvv(nv, nv), ovvv(no, nv, nv, nv), t1(no, nv)
+      integer, intent(in) :: t, no, nv, naux
+      real(dp), intent(in) :: x(no, nv, naux)
       real(dp) :: v
-      integer :: a, c, k, d
+      integer :: k, p, a, unused
 
-      a = mod(t - 1, nv) + 1
-      c = (t - 1)/nv + 1
-      v = fvv(a, c)
-      do d = 1, nv
-         do k = 1, no
-            v = v + (2.0_dp*ovvv(k, d, a, c) - ovvv(k, c, a, d))*t1(k, d)
-         end do
-      end do
-   end function lvv_item
+      call split4(t, no, naux, nv, k, p, a, unused)
+      v = x(k, a, p)
+   end function kpa_item
 
    pure subroutine energy_item(t, no, nv, lov, t1, t2, es, ed)
       !! The (singles, doubles) partial of the pair t = j + no (b-1); a outer, i inner

@@ -42,7 +42,7 @@ module trc_rccsd_steps
    integer, parameter, public :: RCCSD_ST_3C = 4         !! (mu nu|P), with its conversion to the spherical space
    integer, parameter, public :: RCCSD_ST_HALF = 5       !! the half transform and the three MO transforms per auxiliary block
    integer, parameter, public :: RCCSD_ST_TRSM = 6       !! B = X L^-T
-   integer, parameter, public :: RCCSD_ST_BLOCKS = 7     !! the five blocks (oo|oo) .. (ov|vv) from B
+   integer, parameter, public :: RCCSD_ST_BLOCKS = 7     !! the four blocks (oo|oo), (oo|ov), (oo|vv), (ov|ov) from B
    integer, parameter, public :: RCCSD_ST_INTER = 8      !! tau and the one-particle intermediates
    integer, parameter, public :: RCCSD_ST_W = 9          !! Woooo, Wvoov, Wvovo
    integer, parameter, public :: RCCSD_ST_LADDER = 10    !! the particle ladder; its name says the form that ran
@@ -56,7 +56,7 @@ module trc_rccsd_steps
    integer, parameter, public :: RCCSD_NAME_LEN = 24     !! the step table's name width
 
    character(len=RCCSD_NAME_LEN), parameter, public :: RCCSD_STEP_NAME(RCCSD_NSTEP) = [character(len=RCCSD_NAME_LEN) :: &
-      "integrals", "  metric", "  cholesky", "  3-index integrals", "  half transform", "  B = X L^-T", "  five blocks", &
+      "integrals", "  metric", "  cholesky", "  3-index integrals", "  half transform", "  B = X L^-T", "  four blocks", &
       "tau, intermediates", "W intermediates", "ladder", "ladder dressing", "T1 equation", "T2 equation", &
       "T2 ring terms", "DIIS", "energy"]
 

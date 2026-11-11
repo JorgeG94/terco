@@ -601,12 +601,16 @@ contains
       type(trc_rccsd_ints_t), intent(in) :: ints
       real(dp), intent(in) :: t1(:, :), t2(:, :, :, :)
       real(dp), allocatable, intent(out) :: woooo(:, :, :, :), wvoov(:, :, :, :), wvovo(:, :, :, :)
+      real(dp), allocatable :: ovvv(:, :, :, :)
 
       integer :: no, nv, i, j, k, l, a, c, d
       real(dp) :: s
 
       no = ints%no
       nv = ints%nv
+      allocate (ovvv(no, nv, nv, nv))
+      ! (ia|bc) from the factors: trc_rccsd_ints no longer holds the dense block
+      call ints%fill_ovvv(ovvv)
       allocate (woooo(no, no, no, no), wvoov(nv, no, no, nv), wvovo(nv, no, nv, no))
       do j = 1, no
          do i = 1, no
@@ -634,7 +638,7 @@ contains
                do a = 1, nv
                   s = ints%ovov(k, c, i, a)
                   do d = 1, nv
-                     s = s + ints%ovvv(k, c, a, d)*t1(i, d)                      ! kcad,id->akic
+                     s = s + ovvv(k, c, a, d)*t1(i, d)                      ! kcad,id->akic
                   end do
                   do l = 1, no
                      s = s - ints%ooov(l, i, k, c)*t1(l, a)                      ! kcli,la->akic
@@ -658,7 +662,7 @@ contains
                do a = 1, nv
                   s = ints%oovv(k, i, a, c)
                   do d = 1, nv
-                     s = s + ints%ovvv(k, d, a, c)*t1(i, d)                      ! kdac,id->akci
+                     s = s + ovvv(k, d, a, c)*t1(i, d)                      ! kdac,id->akci
                   end do
                   do l = 1, no
                      s = s - ints%ooov(k, i, l, c)*t1(l, a)                      ! lcki,la->akci

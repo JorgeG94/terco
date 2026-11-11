@@ -61,23 +61,26 @@ contains
       real(dp), intent(in) :: t1(:, :), t2(:, :, :, :)
       real(dp), intent(out) :: e_t
 
-      real(dp), allocatable :: w(:, :, :, :), v(:, :, :), z(:, :, :)
+      real(dp), allocatable :: w(:, :, :, :), v(:, :, :), z(:, :, :), ovvv(:, :, :, :)
       real(dp) :: d3, s
       integer :: no, nv, a, b, c, i, j, k
 
       no = ints%no
       nv = ints%nv
       allocate (w(no, no, no, 6), v(no, no, no), z(no, no, no))
+      ! (ia|bc) from the factors (host BLAS): trc_rccsd_ints no longer holds the dense block
+      allocate (ovvv(no, nv, nv, nv))
+      call ints%fill_ovvv(ovvv)
       e_t = 0.0_dp
       do c = 1, nv
          do b = 1, nv
             do a = 1, nv
-               call get_w(ints, t2, a, b, c, w(:, :, :, 1))
-               call get_w(ints, t2, a, c, b, w(:, :, :, 2))
-               call get_w(ints, t2, b, a, c, w(:, :, :, 3))
-               call get_w(ints, t2, b, c, a, w(:, :, :, 4))
-               call get_w(ints, t2, c, a, b, w(:, :, :, 5))
-               call get_w(ints, t2, c, b, a, w(:, :, :, 6))
+               call get_w(ints, ovvv, t2, a, b, c, w(:, :, :, 1))
+               call get_w(ints, ovvv, t2, a, c, b, w(:, :, :, 2))
+               call get_w(ints, ovvv, t2, b, a, c, w(:, :, :, 3))
+               call get_w(ints, ovvv, t2, b, c, a, w(:, :, :, 4))
+               call get_w(ints, ovvv, t2, c, a, b, w(:, :, :, 5))
+               call get_w(ints, ovvv, t2, c, b, a, w(:, :, :, 6))
                ! v(i,j,k) = (ia|jb) t1(k,c); x = w + v/2; z = r3(x)/D with D = e_i + e_j + e_k - e_a - e_b - e_c
                do k = 1, no
                   do j = 1, no
@@ -113,10 +116,11 @@ contains
       e_t = 2.0_dp*e_t
    end subroutine host_triples
 
-   subroutine get_w(ints, t2, a, b, c, w)
+   subroutine get_w(ints, ovvv, t2, a, b, c, w)
       !! pyscf get_w: einsum('if,fkj->ijk', vvov[a,b], t2T[c]) - einsum('ijm,mk->ijk', vooo[a], t2T[b,c]) with
       !! vvov[a,b][i,f] = ovvv(i,a,f,b), t2T[c,f,k,j] = t2(k,j,c,f), vooo[a][i,j,m] = ooov(j,m,i,a)
       type(trc_rccsd_ints_t), intent(in) :: ints
+      real(dp), intent(in) :: ovvv(:, :, :, :)  !! (ia|bc), `ints%fill_ovvv`
       real(dp), intent(in) :: t2(:, :, :, :)
       integer, intent(in) :: a, b, c
       real(dp), intent(out) :: w(:, :, :)
@@ -129,7 +133,7 @@ contains
             do i = 1, ints%no
                s = 0.0_dp
                do f = 1, ints%nv
-                  s = s + ints%ovvv(i, a, f, b)*t2(k, j, c, f)
+                  s = s + ovvv(i, a, f, b)*t2(k, j, c, f)
                end do
                do m = 1, ints%no
                   s = s - ints%ooov(j, m, i, a)*t2(m, k, b, c)
@@ -1100,21 +1104,24 @@ contains
    end function lcg
 
    subroutine random_problem(no, nv, seed, symmetric, ints, amps)
-      !! Random blocks, orbital energies in canonical order (occupied below -0.5, virtual above 0.3). With
-      !! `symmetric`, the blocks have the permutation symmetry of real integrals: (ij|ka) = (ji|ka),
-      !! (ia|jb) = (jb|ia), (ia|bc) = (ia|cb).
+      !! Random blocks, orbital energies in canonical order (occupied below -0.5, virtual above 0.3). (ia|bc) is not a
+      !! block of the integrals: it is given by random factors b_ov(ia,P), b_vv(bc,P) (naux = nv + 3), as the routines
+      !! read it. With `symmetric`, the blocks have the permutation symmetry of real integrals: (ij|ka) = (ji|ka),
+      !! (ia|jb) = (jb|ia), (ia|bc) = (ia|cb) (b_vv(bc,P) = b_vv(cb,P)).
       integer, intent(in) :: no, nv
       integer(int64), intent(inout) :: seed
       logical, intent(in) :: symmetric
       type(trc_rccsd_ints_t), intent(out) :: ints
       type(trc_rccsd_amps_t), intent(out) :: amps
 
-      integer :: i, j, k, a, b, c
+      integer :: i, j, k, a, b, c, p
 
       ints%no = no
       ints%nv = nv
+      ints%naux = nv + 3
       ints%stamp = 1
-      allocate (ints%ooov(no, no, no, nv), ints%ovov(no, nv, no, nv), ints%ovvv(no, nv, nv, nv))
+      allocate (ints%ooov(no, no, no, nv), ints%ovov(no, nv, no, nv))
+      allocate (ints%b_ov(no*nv, ints%naux), ints%b_vv(nv*nv, ints%naux))
       allocate (ints%eps_o(no), ints%eps_v(nv))
       do i = 1, no
          ints%eps_o(i) = -2.0_dp + 1.4_dp*real(i - 1, dp)/real(max(no, 2) - 1, dp) + 0.05_dp*lcg(seed)
@@ -1140,13 +1147,12 @@ contains
             end do
          end do
       end do
-      do c = 1, nv
-         do b = 1, nv
-            do a = 1, nv
-               do i = 1, no
-                  ints%ovvv(i, a, b, c) = 0.1_dp*lcg(seed)
-               end do
-            end do
+      do p = 1, ints%naux
+         do i = 1, no*nv
+            ints%b_ov(i, p) = 0.1_dp*lcg(seed)
+         end do
+         do i = 1, nv*nv
+            ints%b_vv(i, p) = lcg(seed)/sqrt(real(ints%naux, dp))
          end do
       end do
       if (symmetric) then
@@ -1168,12 +1174,10 @@ contains
                end do
             end do
          end do
-         do c = 1, nv
-            do b = 1, c
-               do a = 1, nv
-                  do i = 1, no
-                     ints%ovvv(i, a, c, b) = ints%ovvv(i, a, b, c)
-                  end do
+         do p = 1, ints%naux
+            do c = 1, nv
+               do b = 1, c
+                  ints%b_vv(c + nv*(b - 1), p) = ints%b_vv(b + nv*(c - 1), p)
                end do
             end do
          end do
@@ -1286,7 +1290,7 @@ contains
       !! Puts the blocks the (T) reads on the device, as `ints%build` leaves them; `ints%release` takes them off
       type(trc_rccsd_ints_t), intent(inout) :: ints
 
-      !$acc enter data copyin(ints%ooov, ints%ovov, ints%ovvv, ints%eps_o, ints%eps_v)
+      !$acc enter data copyin(ints%ooov, ints%ovov, ints%b_ov, ints%b_vv, ints%eps_o, ints%eps_v)
    end subroutine map_ints
 
    subroutine unrolled_vs_table(error)

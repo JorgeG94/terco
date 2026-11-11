@@ -132,10 +132,15 @@
 !   Per virtual a (b) the pack pk(k; cd) = ovvv(k,d,a,c) (ovvv(k,c,b,d)) is
 !   o v^2, then Z = pk . taut (m = o, n = o^2, k = v^2) and cmat(ij; b) =
 !   Z^T t1 (m = o^2, n = v, k = o); `virtual_batch` virtuals go in one strided
-!   batched GEMM each (B shared), and a scatter kernel subtracts cmat. Packing
-!   ovvv for all virtuals at once would be an o v^3 array, which is why it is
-!   chunked.
-!                MACs  2 o^3 v^3 + 2 o^3 v^2        (both halves)
+!   batched GEMM each (B shared), and a scatter kernel subtracts cmat. No (ia|bc)
+!   block exists (trc_rccsd_ints): the packs of a batch are ONE GEMM of the factors,
+!   pk(k,x,y,w) = sum_P b_ov((k,x),P) b_vv((y,w),P) = (kx|wy) (m = o v, n = v nvb,
+!   k = naux; the rows (y,w) of b_vv for the batch's w are contiguous because w is
+!   its slow index). Half 2 reads it as (kc|bd) at (k,c,d,b), half 1 as (kd|ac) at
+!   (k,d,c,a): the pair comes in the order (d,c), so half 1 contracts it with tau
+!   packed as taut(x,y,ij) = tau(i,j,y,x), exact for any tau. A pack for all
+!   virtuals at once would be an o v^3 array, which is why it is chunked.
+!                MACs  2 o^3 v^3 + 2 o^3 v^2 + 2 o v^3 naux   (both halves)
 !                scratch  taut + (o v^2 + o^3 + o^2 v) virtual_batch
 !   Flops are twice the MACs: `rccsd_ladder_flops` for the undressed form that ran (its counter, `rccsd_ladder_macs`,
 !   matches the GEMMs the assembled and direct forms call for any batch plan; `ls%flops_pp` tallies the calls to show
@@ -262,7 +267,7 @@ module trc_rccsd_ladder
       integer(int64) :: flops_pp = 0        !! 2 m n k summed over the GEMMs the last undressed ladder called, batches counted
       integer(int64) :: flops_dressing = 0  !! the same for the last dressing: the tallies the step table reports
       real(dp), allocatable :: taut(:)    !! o^2 v^2, taut(c,d,ij) = tau(i,j,c,d), per call; the half form's N (or N')
-      real(dp), allocatable :: ovpack(:)  !! o v^2 virtual_batch, ovvv packed per virtual (dressing)
+      real(dp), allocatable :: ovpack(:)  !! o v^2 virtual_batch, (kx|wy) per virtual w of the batch (dressing)
       real(dp), allocatable :: zmat(:)    !! o^3 virtual_batch, Z(k; ij) per virtual
       real(dp), allocatable :: cmat(:)    !! o^2 v virtual_batch, Z^T t1 per virtual
       real(dp), allocatable :: wbatch(:)  !! v^2 cd_batch, (ac|bd) per column (assembled only)
@@ -369,8 +374,7 @@ contains
 
       call this%release()
       call this%status%clear()
-      if (.not. allocated(ints%b_vv) .or. .not. allocated(ints%ovvv) .or. .not. allocated(ints%b_ov) .or. &
-          .not. allocated(ints%ovov)) then
+      if (.not. allocated(ints%b_vv) .or. .not. allocated(ints%b_ov) .or. .not. allocated(ints%ovov)) then
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: the integral blocks are not built")
          return
       end if
@@ -390,10 +394,10 @@ contains
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: no active occupied or no virtual orbitals")
          return
       end if
-      ! (ia|bc) too: the dressing kernels index it with default integers, and
-      ! o v^3 passes 2^31 before o^2 v^2 does once v > o.
-      if (no2*nv2 > int(huge(0_int32), int64) .or. int(no, int64)*nv2*nv > int(huge(0_int32), int64)) then
-         call this%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: a block has more than 2^31-1 elements")
+      ! the kernels index o^2 v^2 arrays (tau, the result, the packs) with default integers
+      if (no2*nv2 > int(huge(0_int32), int64)) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: an o^2 v^2 array has more than 2^31-1 elements "// &
+                              "(default-integer kernel index)")
          return
       end if
       budget = merge(opts%budget_bytes, DEFAULT_BUDGET, opts%budget_bytes > 0)
@@ -575,21 +579,23 @@ contains
       flops = nint(2.0_dp*rccsd_ladder_macs(form, no, nv, naux), int64)
    end function rccsd_ladder_flops
 
-   pure function rccsd_ladder_dressing_macs(no, nv) result(macs)
-      !! Multiply-adds of the dressing, both halves: Z = pk . taut is o * o^2 * v^2 per virtual, cmat = Z^T t1 is
-      !! o^2 * v * o per virtual, for v virtuals each: 2 o^3 v^3 + 2 o^3 v^2 (the macs the header quotes)
-      integer, intent(in) :: no, nv
+   pure function rccsd_ladder_dressing_macs(no, nv, naux) result(macs)
+      !! Multiply-adds of the dressing, both halves: the pack pk = b_ov b_vv^T is o v * v * naux per virtual,
+      !! Z = pk . taut o * o^2 * v^2 per virtual, cmat = Z^T t1 o^2 * v * o per virtual, for v virtuals each:
+      !! 2 o v^3 naux + 2 o^3 v^3 + 2 o^3 v^2 (the macs the header quotes)
+      integer, intent(in) :: no, nv, naux
       real(dp) :: macs
 
-      macs = 2.0_dp*real(no, dp)**3*real(nv, dp)**3 + 2.0_dp*real(no, dp)**3*real(nv, dp)**2
+      macs = 2.0_dp*real(no, dp)*real(nv, dp)**3*real(naux, dp) + 2.0_dp*real(no, dp)**3*real(nv, dp)**3 + &
+             2.0_dp*real(no, dp)**3*real(nv, dp)**2
    end function rccsd_ladder_dressing_macs
 
-   pure function rccsd_ladder_dressing_flops(no, nv) result(flops)
+   pure function rccsd_ladder_dressing_flops(no, nv, naux) result(flops)
       !! Flops of one dressing, twice `rccsd_ladder_dressing_macs`; `ls%flops_dressing` tallies the calls actually made
-      integer, intent(in) :: no, nv
+      integer, intent(in) :: no, nv, naux
       integer(int64) :: flops
 
-      flops = nint(2.0_dp*rccsd_ladder_dressing_macs(no, nv), int64)
+      flops = nint(2.0_dp*rccsd_ladder_dressing_macs(no, nv, naux), int64)
    end function rccsd_ladder_dressing_flops
 
    pure function half_pass_size(d_batch, nv, d0) result(nd)
@@ -645,8 +651,7 @@ contains
       integer(int64) :: no2, nv2
 
       ok = .false.
-      if (.not. allocated(ints%b_vv) .or. .not. allocated(ints%ovvv) .or. .not. allocated(ints%b_ov) .or. &
-          .not. allocated(ints%ovov)) then
+      if (.not. allocated(ints%b_vv) .or. .not. allocated(ints%b_ov) .or. .not. allocated(ints%ovov)) then
          call ls%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: the integral blocks are not built")
          return
       end if
@@ -667,7 +672,7 @@ contains
       end if
       no2 = int(no, int64)*no
       nv2 = int(nv, int64)*nv
-      if (size(ints%b_vv, kind=int64) /= nv2*ints%naux .or. size(ints%ovvv, kind=int64) /= elements(no, nv, nv, nv) .or. &
+      if (size(ints%b_vv, kind=int64) /= nv2*ints%naux .or. &
           size(ints%b_ov, kind=int64) /= int(no, int64)*nv*ints%naux .or. &
           size(ints%ovov, kind=int64) /= elements(no, nv, no, nv)) then
          call ls%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: an integral block does not have the size (no, nv) says")
@@ -967,8 +972,13 @@ contains
       integer :: half
 
       ls%flops_dressing = 0_int64
-      call kernel_pack_taut(ints%no, ints%nv, inter%tau, ls%taut)
       do half = 1, 2
+         ! the pack of half 1 comes out with its (c,d) pair in the order (d,c): tau is packed to match
+         if (half == 1) then
+            call kernel_pack_taut_swapped(ints%no, ints%nv, inter%tau, ls%taut)
+         else
+            call kernel_pack_taut(ints%no, ints%nv, inter%tau, ls%taut)
+         end if
          call dressing_half(half, ints, amps, lad, ls, la)
       end do
    end subroutine ladder_dressing_run
@@ -983,19 +993,21 @@ contains
       type(trc_linalg_t), intent(in) :: la
 
       type(trc_gemm_batch_t) :: shape_z, shape_c
-      integer :: no, nv, no2, nv2, v0, nvb
+      integer :: no, nv, no2, nv2, nov, v0, nvb
 
       no = ints%no
       nv = ints%nv
       no2 = no*no
       nv2 = nv*nv
+      nov = no*nv
       do v0 = 1, nv, ls%virtual_batch
          nvb = min(ls%virtual_batch, nv - v0 + 1)
-         if (half == 1) then
-            call kernel_pack_z1(no, nv, v0, nvb, ints%ovvv, ls%ovpack)
-         else
-            call kernel_pack_z2(no, nv, v0, nvb, ints%ovvv, ls%ovpack)
-         end if
+         ! pk(k,x,y,w) = sum_P b_ov((k,x),P) b_vv((y,w),P) = (kx|wy) for the batch's w: the rows (y,w) of b_vv are
+         ! contiguous because w is its SLOW index there. Half 2 reads it as (kc|bd) at (k,c,d,b); half 1 as
+         ! (kd|ac) at (k,d,c,a), the pair in the order (d,c), against the tau packed to match
+         call la%gemm("N", "T", nov, nv*nvb, ints%naux, 1.0_dp, ints%b_ov, nov, ints%b_vv(1 + nv*(v0 - 1), 1), nv2, &
+                      0.0_dp, ls%ovpack, nov)
+         ls%flops_dressing = ls%flops_dressing + rccsd_steps_gemm_flops(nov, nv*nvb, ints%naux)
          ! Z(k; ij) = sum_cd pk(k; cd) taut(cd; ij), one item per virtual, taut shared
          shape_z = trc_gemm_batch(no, no2, nv2, nvb, lda=no, ldb=nv2, ldc=no, &
                                   sa=int(no, int64)*nv2, sb=0_int64, sc=int(no, int64)*no2)
@@ -1247,29 +1259,17 @@ contains
       end do
    end subroutine kernel_pack_y2
 
-   subroutine kernel_pack_z1(no, nv, v0, nvb, ovvv, ovpack)
-      !! ovpack(k, c+v(d-1), al) = ovvv(k, d, v0+al-1, c)
-      integer, intent(in) :: no, nv, v0, nvb
-      real(dp), intent(in) :: ovvv(no, nv, nv, nv)
-      real(dp), intent(out) :: ovpack(no*nv*nv*nvb)
+   subroutine kernel_pack_taut_swapped(no, nv, tau, taut)
+      !! taut(x,y,ij) = tau(i,j,y,x), ij = i + o (j-1): the pair in the order of the dressing's half-1 pack
+      integer, intent(in) :: no, nv
+      real(dp), intent(in) :: tau(no, no, nv, nv)
+      real(dp), intent(out) :: taut(nv*nv*no*no)
       integer :: t
 
-      do concurrent(t=1:no*nv*nv*nvb)
-         ovpack(t) = z1_item(t, no, nv, v0, ovvv)
+      do concurrent(t=1:nv*nv*no*no)
+         taut(t) = taut_swapped_item(t, no, nv, tau)
       end do
-   end subroutine kernel_pack_z1
-
-   subroutine kernel_pack_z2(no, nv, v0, nvb, ovvv, ovpack)
-      !! ovpack(k, c+v(d-1), bl) = ovvv(k, c, v0+bl-1, d)
-      integer, intent(in) :: no, nv, v0, nvb
-      real(dp), intent(in) :: ovvv(no, nv, nv, nv)
-      real(dp), intent(out) :: ovpack(no*nv*nv*nvb)
-      integer :: t
-
-      do concurrent(t=1:no*nv*nv*nvb)
-         ovpack(t) = z2_item(t, no, nv, v0, ovvv)
-      end do
-   end subroutine kernel_pack_z2
+   end subroutine kernel_pack_taut_swapped
 
    subroutine kernel_sub_z1(no, nv, v0, nvb, cmat, h)
       !! h(i,j,a,b) -= cmat(ij; b, al), a = v0 + al - 1
@@ -1434,29 +1434,17 @@ contains
       v = y(a + nv*(d - 1) + nv*nv*(ij - 1) + nv*nv*no*no*(p - 1))
    end function y2_item
 
-   pure function z1_item(t, no, nv, v0, ovvv) result(v)
-      !! ovvv(k,d,a,c) at position t of (no, nv[c], nv[d], nvb[a - v0 + 1])
+   pure function taut_swapped_item(t, no, nv, tau) result(v)
+      !! taut(x,y,ij) = tau(i,j,y,x), position t of (nv, nv, no, no)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv, v0
-      real(dp), intent(in) :: ovvv(no, nv, nv, nv)
+      integer, intent(in) :: t, no, nv
+      real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
-      integer :: k, c, d, al
+      integer :: x, y, i, j
 
-      call split4(t, no, nv, nv, k, c, d, al)
-      v = ovvv(k, d, v0 + al - 1, c)
-   end function z1_item
-
-   pure function z2_item(t, no, nv, v0, ovvv) result(v)
-      !! ovvv(k,c,b,d) at position t of (no, nv[c], nv[d], nvb[b - v0 + 1])
-      !$acc routine seq
-      integer, intent(in) :: t, no, nv, v0
-      real(dp), intent(in) :: ovvv(no, nv, nv, nv)
-      real(dp) :: v
-      integer :: k, c, d, bl
-
-      call split4(t, no, nv, nv, k, c, d, bl)
-      v = ovvv(k, c, v0 + bl - 1, d)
-   end function z2_item
+      call split4(t, nv, nv, no, x, y, i, j)
+      v = tau(i, j, y, x)
+   end function taut_swapped_item
 
    pure function sub_z1_dest(t, no, nv, v0) result(dest)
       !! Position in h(i,j,a,b) of cmat position t of (no*no, nv[b], nvb[a - v0 + 1])

@@ -24,12 +24,12 @@
 ! lost; the values are identical.
 !
 ! THREE INDEX IDENTITIES let the blocks be read straight out of the ones held, so no transposed copy of ovvv
-! (the largest block) is made:
+! (the largest block; built for the call from the factors by `ints%fill_ovvv`, since `ints` no longer holds it) is made:
 !
 !     vvov(a,b,i,f) = ovvv(i,a,f,b)     vooo(a,i,j,m) = ooov(j,m,i,a)     vvoo(a,b,i,j) = ovov(i,a,j,b)
 !
 ! COST AND MEMORY. The particle half of W is O(no^3 nv^4) flops (about 2 no^3 nv^4 in all), the hole half O(no^4 nv^3).
-! No t3 is ever held. Shared arrays: tt (nv, no^2 nv) the repacked t2 and oop (no^3, nv) the repacked ooov. Per
+! No t3 is ever held. Shared arrays: ovvv (no nv^3), tt (nv, no^2 nv) the repacked t2 and oop (no^3, nv) the repacked ooov. Per
 ! thread, with cb the c batch (capped at nv for the allocation): W 6 no^3 cb, Z 6 no^3, X and D3 2 no^3, the gemm
 ! operands 2 no^3 cb + no nv + nv cb no, all doubles. For no = 25, nv = 130 and cb = 32 that is 85 MB + 16 MB shared
 ! and about 34 MB per thread.
@@ -37,7 +37,7 @@
 ! HOST ONLY (this routine). `rccsd_triples_finish` runs a device version in a device build (`opts%use_device` defaults
 ! to true there, false in a host build) and this reference otherwise: `opts%device_routine` picks the one driven by
 ! occupied triples (trc_rccsd_triples_ijk, the default) or the one driven by virtual triples (trc_rccsd_triples_dev).
-! The reference reads `ints%ovvv`, `ints%ooov`, `ints%ovov`, `ints%eps_o`,
+! The reference reads `ints%b_ov`, `ints%b_vv`, `ints%ooov`, `ints%ovov`, `ints%eps_o`,
 ! `ints%eps_v` and `amps%t1`, `amps%t2` as they are in host memory, and never touches device data: the host copies must
 ! be current. They are after `trc_rccsd_solve` (`amps%pull`), and after `ints%build`; a caller that rewrote one of them
 ! on the device must `update self` first. Nothing here is a `do concurrent`, so under the GPU build it runs on the host
@@ -48,7 +48,7 @@
 ! count or the schedule. The BLAS is the host BLAS through pic_gemm (the host path of trc_linalg_t, which has no
 ! entry for host operands in the GPU build), called from the threads.
 module trc_rccsd_triples
-   use pic_types, only: dp
+   use pic_types, only: dp, int32, int64
    use pic_timer, only: timer_type
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
@@ -131,6 +131,8 @@ contains
       type(timer_type) :: clock
       character(len=200) :: line
       character(len=:), allocatable :: why
+      real(dp), allocatable :: ovvv(:, :, :, :)
+      integer :: ierr
 
       e_t = 0.0_dp
       if (present(seconds)) seconds = 0.0_dp
@@ -141,7 +143,17 @@ contains
          return
       end if
       call clock%start()
-      call triples_correction(ints, amps%t1, amps%t2, ints%no, ints%nv, o%c_batch, e_t, pair_energies)
+      ! The dense (ia|bc) is no longer held by `ints`: this reference builds its own host copy from the factors (host
+      ! BLAS) for the call and frees it (o v^3 doubles; `refusal` keeps it within default-integer indexing).
+      allocate (ovvv(ints%no, ints%nv, ints%nv, ints%nv), stat=ierr)
+      if (ierr /= 0) then
+         call status%set(ERROR_VALIDATION, "trc_rccsd_triples: the host copy of (ia|bc) ("//to_string(ints%no)// &
+                         " x "//to_string(ints%nv)//"^3 doubles) could not be allocated")
+         return
+      end if
+      call ints%fill_ovvv(ovvv)
+      call triples_correction(ints, amps%t1, amps%t2, ovvv, o%c_batch, e_t, pair_energies)
+      deallocate (ovvv)
       if (present(seconds)) seconds = clock%get_elapsed_time()
       if (.not. abs(e_t) <= huge(1.0_dp)) then
          e_t = 0.0_dp
@@ -230,18 +242,23 @@ contains
       character(len=:), allocatable :: why
 
       why = ""
-      if (ints%stamp == 0 .or. .not. allocated(ints%ovvv) .or. .not. allocated(ints%ooov) .or. &
-          .not. allocated(ints%ovov) .or. .not. allocated(ints%eps_o) .or. .not. allocated(ints%eps_v)) then
+      if (ints%stamp == 0 .or. .not. allocated(ints%b_ov) .or. .not. allocated(ints%b_vv) .or. &
+          .not. allocated(ints%ooov) .or. .not. allocated(ints%ovov) .or. .not. allocated(ints%eps_o) .or. &
+          .not. allocated(ints%eps_v)) then
          why = "the integral blocks are empty (no successful build)"
       else if (ints%no < 1 .or. ints%nv < 1) then
          why = "no occupied or no virtual orbitals: there are no triples"
+      else if (int(ints%no, int64)*ints%nv*ints%nv*ints%nv > int(huge(0_int32), int64)) then
+         why = "o v^3 is above 2^31-1: the host reference indexes its copy of (ia|bc) with default integers; "// &
+               "the occupied-driven device routine has no such limit"
       else if (.not. allocated(amps%t1) .or. .not. allocated(amps%t2)) then
          why = "the amplitudes are not allocated"
       else if (amps%no /= ints%no .or. amps%nv /= ints%nv) then
          why = "the amplitudes are of another size than the integrals"
       else if (any(shape(amps%t1) /= [ints%no, ints%nv]) .or. any(shape(amps%t2) /= [ints%no, ints%no, ints%nv, ints%nv])) then
          why = "the amplitude arrays do not have the shape (no, nv) and (no, no, nv, nv)"
-      else if (any(shape(ints%ovvv) /= [ints%no, ints%nv, ints%nv, ints%nv]) .or. &
+      else if (any(shape(ints%b_ov) /= [ints%no*ints%nv, ints%naux]) .or. &
+               any(shape(ints%b_vv) /= [ints%nv*ints%nv, ints%naux]) .or. &
                any(shape(ints%ooov) /= [ints%no, ints%no, ints%no, ints%nv]) .or. &
                any(shape(ints%ovov) /= [ints%no, ints%nv, ints%no, ints%nv]) .or. &
                size(ints%eps_o) /= ints%no .or. size(ints%eps_v) /= ints%nv) then
@@ -330,15 +347,15 @@ contains
       end do
    end subroutine triples_pack_t2
 
-   subroutine triples_pack_ovvv(ints, no, nv, c0, nc, fixed, fixed_first, mmt)
+   subroutine triples_pack_ovvv(ovvv, no, nv, c0, nc, fixed, fixed_first, mmt)
       !! mmt(f, (c,i)) = (iu|fv) for the four permutations whose pair carries c
       !!
       !! `fixed_first` says which side of the pair the loop's fixed virtual sits
       !! on: true gives (i,fixed|f,c), false gives (i,c|f,fixed). Transposed --
       !! `f` leading rather than `i` -- so that the column range for this batch
       !! is contiguous and the product can take it without a copy.
-      type(trc_rccsd_ints_t), intent(in) :: ints
       integer, intent(in) :: no, nv, c0, nc, fixed
+      real(dp), intent(in) :: ovvv(no, nv, nv, nv)
       logical, intent(in) :: fixed_first
       real(dp), intent(out) :: mmt(:, :)
 
@@ -349,16 +366,16 @@ contains
          do f = 1, nv
             do i = 1, no
                if (fixed_first) then
-                  mmt(f, (cl - 1)*no + i) = ints%ovvv(i, fixed, f, c)
+                  mmt(f, (cl - 1)*no + i) = ovvv(i, fixed, f, c)
                else
-                  mmt(f, (cl - 1)*no + i) = ints%ovvv(i, c, f, fixed)
+                  mmt(f, (cl - 1)*no + i) = ovvv(i, c, f, fixed)
                end if
             end do
          end do
       end do
    end subroutine triples_pack_ovvv
 
-   subroutine triples_correction(ints, t1, t2, no, nv, c_batch, e_triples, pair_energies)
+   subroutine triples_correction(ints, t1, t2, ovvv, c_batch, e_triples, pair_energies)
       !! The (T) correction, batched over the innermost virtual
       !!
       !! The outer loop runs a >= b >= c and weights the denominator to recover
@@ -381,10 +398,11 @@ contains
       !! sum -- is unchanged and still runs one (a,b,c) at a time.
       type(trc_rccsd_ints_t), intent(in) :: ints
       real(dp), intent(in) :: t1(:, :)
-      integer, intent(in) :: no, nv, c_batch
       ! Explicit shape, so a (m,k) block of it can be handed to the hole-half
       ! gemm by its first element.
-      real(dp), intent(in) :: t2(no, no, nv, nv)
+      real(dp), intent(in) :: t2(ints%no, ints%no, ints%nv, ints%nv)
+      real(dp), intent(in) :: ovvv(ints%no, ints%nv, ints%nv, ints%nv)  !! (ia|bc), the caller's copy
+      integer, intent(in) :: c_batch
       real(dp), intent(out) :: e_triples
       real(dp), intent(out), allocatable, optional :: pair_energies(:)
 
@@ -395,11 +413,13 @@ contains
       real(dp), allocatable :: oop(:, :, :, :)
          !! (n_occ, n_occ, n_occ, n_vir) ooov(j,m,i,u) stored as (i,j,m,u), so the
          !! hole half of W is a gemm over m with (i,j) as one row index
-      integer :: a, b, c, cl, c0, c1, i, j, k, m, p, nc, no2, cb
+      integer :: a, b, c, cl, c0, c1, i, j, k, m, p, nc, no, nv, no2, cb
       integer :: ipair, npair
       integer :: trip(3), perm(3, N_TRIPLE_PERMS)
       real(dp) :: scale
 
+      no = ints%no
+      nv = ints%nv
       no2 = no*no
       ! A batch never exceeds nv, so a larger c_batch would only over-allocate (W is 6 no^3 cb per thread).
       cb = min(c_batch, nv)
@@ -447,7 +467,7 @@ contains
       ! thread keeps its own W and its own scratch, which is what c_batch is
       ! sized against.
       !$omp parallel default(none) &
-      !$omp    shared(ints, t1, t2, no, nv, no2, c_batch, cb, tt, alist, blist, npair, oop) &
+      !$omp    shared(ints, t1, t2, ovvv, no, nv, no2, c_batch, cb, tt, alist, blist, npair, oop) &
       !$omp    shared(e_pair) &
       !$omp    private(w, z, x, d3, mfix, mmt, r1, r2, &
       !$omp            a, b, c, cl, c0, c1, nc, i, j, k, p, trip, perm, scale)
@@ -469,7 +489,7 @@ contains
             ! ---- p = 1 and 3: the pair is fixed, the amplitudes stack -------
             do k = 1, nv
                do i = 1, no
-                  mfix(i, k) = ints%ovvv(i, a, k, b)
+                  mfix(i, k) = ovvv(i, a, k, b)
                end do
             end do
             call pic_gemm(mfix, tt(:, (c0 - 1)*no2 + 1:c1*no2), r1(:, 1:no2*nc))
@@ -477,7 +497,7 @@ contains
 
             do k = 1, nv
                do i = 1, no
-                  mfix(i, k) = ints%ovvv(i, b, k, a)
+                  mfix(i, k) = ovvv(i, b, k, a)
                end do
             end do
             call pic_gemm(mfix, tt(:, (c0 - 1)*no2 + 1:c1*no2), r1(:, 1:no2*nc))
@@ -486,22 +506,22 @@ contains
             ! ---- p = 2, 4, 5, 6: the amplitudes are fixed, the pair stacks --
             ! The third index is b for p = 2 and 5, a for p = 4 and 6, so each
             ! takes the matching contiguous block of `tt`.
-            call triples_pack_ovvv(ints, no, nv, c0, nc, a, .true., mmt)
+            call triples_pack_ovvv(ovvv, no, nv, c0, nc, a, .true., mmt)
             call pic_gemm(mmt(:, 1:nc*no), tt(:, (b - 1)*no2 + 1:b*no2), &
                           r2(1:nc*no, :), transa="T")
             call scatter_w_pair(r2, no, nc, 2, w)
 
-            call triples_pack_ovvv(ints, no, nv, c0, nc, b, .true., mmt)
+            call triples_pack_ovvv(ovvv, no, nv, c0, nc, b, .true., mmt)
             call pic_gemm(mmt(:, 1:nc*no), tt(:, (a - 1)*no2 + 1:a*no2), &
                           r2(1:nc*no, :), transa="T")
             call scatter_w_pair(r2, no, nc, 4, w)
 
-            call triples_pack_ovvv(ints, no, nv, c0, nc, a, .false., mmt)
+            call triples_pack_ovvv(ovvv, no, nv, c0, nc, a, .false., mmt)
             call pic_gemm(mmt(:, 1:nc*no), tt(:, (b - 1)*no2 + 1:b*no2), &
                           r2(1:nc*no, :), transa="T")
             call scatter_w_pair(r2, no, nc, 5, w)
 
-            call triples_pack_ovvv(ints, no, nv, c0, nc, b, .false., mmt)
+            call triples_pack_ovvv(ovvv, no, nv, c0, nc, b, .false., mmt)
             call pic_gemm(mmt(:, 1:nc*no), tt(:, (a - 1)*no2 + 1:a*no2), &
                           r2(1:nc*no, :), transa="T")
             call scatter_w_pair(r2, no, nc, 6, w)

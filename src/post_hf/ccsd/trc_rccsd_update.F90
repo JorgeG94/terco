@@ -31,10 +31,10 @@
 !                                t1n(i,a) +=  sum_kc [2 ovov(k,c,i,a) - oovv(k,i,a,c)] t1(k,c)
 !     the four lines above are ONE kernel, one thread per (i,a), o v items of o v MACs
 !   '2 kdac,ikcd->ia' - 'kcad,ikcd->ia' (+ the same pair with t2 -> t1 t1, together tau)
-!                                t1n(i,a) +=  sum_kcd [2 ovvv(k,d,a,c) - ovvv(k,c,a,d)] tau(i,k,c,d)
-!     for each virtual x one GEMM (m = o, n = v, K = o v, 2 o^2 v^2 MACs each, v of them), because for a fixed x
-!     the block ovvv(:,:,:,x) IS the matrix (k d; a); the two ovvv terms share one
-!     packed operand, y(k,x',i,x) = 2 tau(i,k,x,x') - tau(i,k,x',x), so it is one GEMM per x
+!                                t1n(i,a) +=  sum_kcd [2 (kd|ac) - (kc|ad)] tau(i,k,c,d)
+!     no (ia|bc) block exists: with y(i,c,k,d) = 2 tau(i,k,c,d) - tau(i,k,d,c) the sum is sum_kcd (kd|ac) y(i,c,k,d),
+!     so Y((i,c),P) = y((i,c),(k,d)) b_ov((k,d),P) is ONE GEMM (m = o v, n = naux, K = o v) and
+!     t1n(i,a) += sum_(c,P) Y(i,(c,P)) b_vv(a,(c,P)) ONE more (m = o, n = v, K = v naux), both operands read in place
 !   '-2 lcki,klac->ia' + 'kcli,klac->ia' (+ the same pair with t1 t1, together tau)
 !                                t1n(i,a) -=  sum_klc lam(k,i,l,c) tau(k,l,a,c),  lam = 2 ooov(k,i,l,c) - ooov(l,i,k,c)
 !     one GEMM, m = o, n = v, K = o^2 v, from the packs lamp(k,l,c; i) and taur(k,l,c; a)
@@ -43,10 +43,10 @@
 ! THE T2 EQUATION (Eq. 36), in mqc's order of accumulation into t2n:
 !
 !   'ovov.transpose(0,2,1,3)'    t2n(i,j,a,b)  = ovov(i,a,j,b)                                     kernel
-!   A: term = tmp2 . t1, t2n += term + term.T      tmp2(a,b,i,c) = ovvv(i,a,c,b) - sum_k oovv(k,i,b,c) t1(k,a)
-!        term(i,j,a,b) = sum_c ovvv(i,a,c,b) t1(j,c) - sum_k t1(k,a) [sum_c oovv(k,i,b,c) t1(j,c)]
-!        'abic,jc->ijab': R(i,a,j,b) = sum_c ovvv(i,a,c,b) t1(j,c) is a strided batched GEMM over b (A_b is
-!        the matrix (i a; c) of ovvv itself, m = o v, n = o, K = v) and a permutation; the oovv half is
+!   A: term = tmp2 . t1, t2n += term + term.T      tmp2(a,b,i,c) = (ia|cb) - sum_k oovv(k,i,b,c) t1(k,a)
+!        term(i,j,a,b) = sum_c (ia|cb) t1(j,c) - sum_k t1(k,a) [sum_c oovv(k,i,b,c) t1(j,c)]
+!        'abic,jc->ijab': R(i,a,j,b) = sum_c (ia|cb) t1(j,c) = sum_P b_ov(ia,P) N1(jb,P) is ONE GEMM (m = n = o v,
+!        K = naux; N1 = t1 b_vv from trc_rccsd_inter's Lvv, `scr%n1`) and a permutation; the oovv half is
 !        U(k,i,j,b) = sum_c oovv(k,i,b,c) t1(j,c), a batch over b (m = o^2, n = o, K = v), then
 !        term(ij;a,b) -= U_b(k;ij)^T t1(k;a), a batch over b (m = o^2, n = v, K = o). The regrouping of
 !        mqc's tmp2 (an o v^3 array) changes the order of the sums, not the sums
@@ -80,8 +80,10 @@
 ! each free once the module that owns it has returned. o = active occupied, v = virtual; 8 bytes a double, host and
 ! device each; "owner" is the type that allocates and releases it.
 !
-!   ws%b1  o^2 v^2   owner trc_rccsd_wscratch_t (W's b1). Free after rccsd_w_build. Here: the ycomb pack of the T1 ovvv
-!                    term, then R(i,a,j,b) of term A, then the x pack of the rings. Written before it is read each time.
+!   ws%b1  o^2 v^2   owner trc_rccsd_wscratch_t (W's b1). Free after rccsd_w_build. Here: the ycomb pack of the T1
+!                    (ia|bc) term, then R(i,a,j,b) of term A, then the x pack of the rings. Written before it is read.
+!   scr%n1p o v naux owner trc_rccsd_scratch_t. Per-call scratch of Lvv. Here: Y of the T1 (ia|bc) term.
+!   scr%n1  o v naux owner trc_rccsd_scratch_t. N1 of these amplitudes, written by Lvv: read by term A.
 !   ws%b2  o^2 v^2   owner trc_rccsd_wscratch_t (W's b2). Free after rccsd_w_build. Here: taur of the T1 ooov term,
 !                    then the y pack of the rings.
 !   ws%r   o^2 v^2   owner trc_rccsd_wscratch_t (W's r). Free after rccsd_w_build. Here: the ring GEMM result R.
@@ -164,7 +166,7 @@ contains
 
       call this%release()
       call this%status%clear()
-      if (.not. allocated(ints%ovvv) .or. ints%stamp == 0) then
+      if (.not. allocated(ints%b_ov) .or. .not. allocated(ints%b_vv) .or. ints%stamp == 0) then
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_update: the integral blocks are not built")
          return
       end if
@@ -245,7 +247,7 @@ contains
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_update: step before init")
          return
       end if
-      if (.not. allocated(ints%ovvv) .or. ints%stamp == 0) then
+      if (.not. allocated(ints%b_ov) .or. .not. allocated(ints%b_vv) .or. ints%stamp == 0) then
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_update: the integral blocks are not built")
          return
       end if
@@ -290,26 +292,28 @@ contains
    ! the update
    ! ---------------------------------------------------------------------
 
-   pure function rccsd_update_t1_flops(no, nv) result(flops)
+   pure function rccsd_update_t1_flops(no, nv, naux) result(flops)
       !! Flops of the GEMMs of `t1_equation` (the small T1 kernel, the packs and the denominator are not counted):
-      !!   ovvv term, one (o, v, o v) per virtual   2 o^2 v^3         lam term (o, v, o o v)   2 o^3 v^2
-      integer, intent(in) :: no, nv
+      !!   Y = ycomb b_ov (o v, naux, o v)      2 o^2 v^2 naux    Y b_vv^T (o, v, v naux)   2 o v^2 naux
+      !!   lam term (o, v, o o v)               2 o^3 v^2
+      integer, intent(in) :: no, nv, naux
       integer(int64) :: flops
 
-      flops = rccsd_steps_gemm_flops(no, nv, no*nv, nv) + rccsd_steps_gemm_flops(no, nv, no*no*nv)
+      flops = rccsd_steps_gemm_flops(no*nv, naux, no*nv) + rccsd_steps_gemm_flops(no, nv, nv*naux) + &
+              rccsd_steps_gemm_flops(no, nv, no*no*nv)
    end function rccsd_update_t1_flops
 
-   pure function rccsd_update_t2_flops(no, nv) result(flops)
+   pure function rccsd_update_t2_flops(no, nv, naux) result(flops)
       !! Flops of the GEMMs of the T2 equation without its rings: `t2_base_terms`, `t2_two_body_terms`,
       !! `t2_one_body_terms` (the ladder is `rccsd_ladder_flops`'s). Shapes (m, n, k) x batch count:
-      !!   A: ovvv t1 (o v, o, v) x v          2 o^2 v^3       U: oovv t1 (o o, o, v) x v        2 o^3 v^2
+      !!   A: b_ov N1^T (o v, o v, naux)       2 o^2 v^2 naux  U: oovv t1 (o o, o, v) x v        2 o^3 v^2
       !!   A: term (o o, v, o) x v             2 o^3 v^2       B: ovov t1 (o, o, v) x o v        2 o^3 v^2
       !!   B: (o o v, v, o)                    2 o^3 v^2       Woooo tau (o o, v v, o o)         2 o^4 v^2
       !!   Lvv: (o o, v, v) x v                2 o^2 v^3       Loo: (o, o v v, o)                2 o^3 v^2
-      integer, intent(in) :: no, nv
+      integer, intent(in) :: no, nv, naux
       integer(int64) :: flops
 
-      flops = rccsd_steps_gemm_flops(no*nv, no, nv, nv) + rccsd_steps_gemm_flops(no*no, no, nv, nv) + &
+      flops = rccsd_steps_gemm_flops(no*nv, no*nv, naux) + rccsd_steps_gemm_flops(no*no, no, nv, nv) + &
               rccsd_steps_gemm_flops(no*no, nv, no, nv) + rccsd_steps_gemm_flops(no, no, nv, no*nv) + &
               rccsd_steps_gemm_flops(no*no*nv, nv, no) + rccsd_steps_gemm_flops(no*no, nv*nv, no*no) + &
               rccsd_steps_gemm_flops(no*no, nv, nv, nv) + rccsd_steps_gemm_flops(no, no*nv*nv, no)
@@ -353,14 +357,14 @@ contains
          call rccsd_steps_close(stab, la, RCCSD_ST_INTER, tc)  ! a refusal still closes the NVTX range
          return
       end if
-      call rccsd_steps_close(stab, la, RCCSD_ST_INTER, tc, rccsd_inter_flops(no, nv))
+      call rccsd_steps_close(stab, la, RCCSD_ST_INTER, tc, rccsd_inter_flops(no, nv, ints%naux))
       call rccsd_steps_open(stab, la, RCCSD_ST_W, tc)
       call rccsd_w_build(ints, amps, this%inter, this%w, this%ws, la)
       if (sub_failed(this)) then
          call rccsd_steps_close(stab, la, RCCSD_ST_W, tc)  ! a refusal still closes the NVTX range
          return
       end if
-      call rccsd_steps_close(stab, la, RCCSD_ST_W, tc, rccsd_w_flops(no, nv))
+      call rccsd_steps_close(stab, la, RCCSD_ST_W, tc, rccsd_w_flops(no, nv, ints%naux))
       ! the ladder and its dressing are two steps of their own, opened and closed inside. tau = t2 + t1 t1 has
       ! tau(j,i,d,c) = tau(i,j,c,d): the starting t2 (MP2) has it, every term of the t2 equation keeps it and DIIS
       ! mixes such t2 linearly. Start amplitudes of the caller's may not: the driver checks them and clears the flag.
@@ -370,12 +374,12 @@ contains
       ! From here the W scratch (b1, b2, r) and the inter scratch's pack1 are free.
       call rccsd_steps_open(stab, la, RCCSD_ST_T1, tc)
       call t1_equation(this, ints, amps, newamps, la)
-      call rccsd_steps_close(stab, la, RCCSD_ST_T1, tc, rccsd_update_t1_flops(no, nv))
+      call rccsd_steps_close(stab, la, RCCSD_ST_T1, tc, rccsd_update_t1_flops(no, nv, ints%naux))
       call rccsd_steps_open(stab, la, RCCSD_ST_T2, tc)
       call t2_base_terms(this, ints, amps, newamps, la)
       call t2_two_body_terms(this, newamps, la)
       call t2_one_body_terms(this, amps, newamps, la)
-      call rccsd_steps_close(stab, la, RCCSD_ST_T2, tc, rccsd_update_t2_flops(no, nv))
+      call rccsd_steps_close(stab, la, RCCSD_ST_T2, tc, rccsd_update_t2_flops(no, nv, ints%naux))
       call rccsd_steps_open(stab, la, RCCSD_ST_RING, tc)
       call t2_ring_terms(this, amps, newamps, la)
       call rccsd_steps_close(stab, la, RCCSD_ST_RING, tc, rccsd_update_ring_flops(no, nv))
@@ -393,19 +397,19 @@ contains
       type(trc_rccsd_amps_t), intent(inout) :: newamps
       type(trc_linalg_t), intent(in) :: la
 
-      integer :: no, nv, nov, x
+      integer :: no, nv, nov, naux
 
       no = this%no
       nv = this%nv
       nov = no*nv
+      naux = ints%naux
       call kernel_t1_small(no, nv, amps%t1, amps%t2, this%inter%fvv, this%inter%foo, this%inter%fov, &
                            ints%ovov, ints%oovv, newamps%t1)
-      ! 2 ovvv(k,d,a,c) tau(i,k,c,d) - ovvv(k,c,a,d) tau(i,k,c,d): per virtual x, C(i,a) += y_x(kd;i)^T ovvv_x(kd;a)
+      ! sum_kcd [2 (kd|ac) - (kc|ad)] tau(i,k,c,d) = sum_kcd (kd|ac) y(i,c,k,d), y = 2 tau(i,k,c,d) - tau(i,k,d,c):
+      ! Y((i,c),P) = sum_kd y((i,c),(k,d)) b_ov((k,d),P), then C(i,a) += sum_(c,P) Y(i,(c,P)) b_vv(a,(c,P))
       call kernel_pack_ycomb(no, nv, this%inter%tau, this%ws%b1)
-      do x = 1, nv
-         call la%gemm("T", "N", no, nv, nov, 1.0_dp, this%ws%b1(1 + (x - 1)*nov*no), nov, &
-                      ints%ovvv(1, 1, 1, x), nov, 1.0_dp, newamps%t1, no)
-      end do
+      call la%gemm("N", "N", nov, naux, nov, 1.0_dp, this%ws%b1, nov, ints%b_ov, nov, 0.0_dp, this%scr%n1p, nov)
+      call la%gemm("N", "T", no, nv, nv*naux, 1.0_dp, this%scr%n1p, no, ints%b_vv, nv, 1.0_dp, newamps%t1, no)
       ! - lam(k,i,l,c) tau(k,l,a,c)
       call kernel_pack_taur(no, nv, this%inter%tau, this%ws%b2)
       call la%gemm("T", "N", no, nv, no*no*nv, -1.0_dp, this%lamp, no*no*nv, this%ws%b2, no*no*nv, 1.0_dp, &
@@ -414,7 +418,7 @@ contains
    end subroutine t1_equation
 
    subroutine t2_base_terms(this, ints, amps, newamps, la)
-      !! ovov, then the t1-dressed ovvv/oovv term A and the ovov/ooov term B (each symmetrised)
+      !! ovov, then the t1-dressed (ia|bc)/oovv term A and the ovov/ooov term B (each symmetrised)
       class(trc_rccsd_update_t), intent(inout) :: this
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
@@ -431,10 +435,8 @@ contains
       ! t2new = ovov.transpose(0,2,1,3)
       call kernel_t2_base(no, nv, ints%ovov, newamps%t2)
 
-      ! A. R(i,a,j,b) = sum_c ovvv(i,a,c,b) t1(j,c): over b, A_b = ovvv(:,:,:,b) as the matrix (i a; c)
-      shape = trc_gemm_batch(nov, no, nv, nv, lda=nov, ldb=no, ldc=nov, &
-                             sa=int(nov, int64)*nv, sb=0_int64, sc=int(nov, int64)*no, transa="N", transb="T")
-      call la%gemm_batched(shape, ints%ovvv, amps%t1, this%ws%b1)
+      ! A. R(i,a,j,b) = sum_c (ia|cb) t1(j,c) = sum_P b_ov(ia,P) N1(jb,P), N1 from `rccsd_inter_lvv` of these amplitudes
+      call la%gemm("N", "T", nov, nov, ints%naux, 1.0_dp, ints%b_ov, nov, this%scr%n1, nov, 0.0_dp, this%ws%b1, nov)
       call kernel_perm_r1(no, nv, this%ws%b1, this%scr%pack1)
       ! U(k,i,j,b) = sum_c oovv(k,i,b,c) t1(j,c), over b
       shape = trc_gemm_batch(no2, no, nv, nv, lda=no2*nv, ldb=no, ldc=no2, &
@@ -555,7 +557,7 @@ contains
    end subroutine kernel_t1_small
 
    subroutine kernel_pack_ycomb(no, nv, tau, y)
-      !! y(k,x',i,x) = 2 tau(i,k,x,x') - tau(i,k,x',x)
+      !! y(i,c,k,d) = 2 tau(i,k,c,d) - tau(i,k,d,c)
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp), intent(out) :: y(no*nv*no*nv)
@@ -769,15 +771,15 @@ contains
    end function t1_small_item
 
    pure function ycomb_item(t, no, nv, tau) result(v)
-      !! y(k,x',i,x) = 2 tau(i,k,x,x') - tau(i,k,x',x), position t of (no, nv, no, nv)
+      !! y(i,c,k,d) = 2 tau(i,k,c,d) - tau(i,k,d,c), position t of (no, nv, no, nv)
       !$acc routine seq
       integer, intent(in) :: t, no, nv
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
-      integer :: k, xp, i, x
+      integer :: i, c, k, d
 
-      call split4(t, no, nv, no, k, xp, i, x)
-      v = 2.0_dp*tau(i, k, x, xp) - tau(i, k, xp, x)
+      call split4(t, no, nv, no, i, c, k, d)
+      v = 2.0_dp*tau(i, k, c, d) - tau(i, k, d, c)
    end function ycomb_item
 
    pure function taur_item(t, no, nv, tau) result(v)
