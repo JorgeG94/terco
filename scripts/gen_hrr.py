@@ -73,8 +73,7 @@ def powexpr(var, n):
 
 def parity_zero(dead, *powers):
     """True when the combined power of the given components is odd in a dead
-    coordinate (bit d of `dead`): the integral is then exactly zero
-    (docs/SYMMETRY_PARITY_SKIP.md, section 2)."""
+    coordinate (bit d of `dead`): the integral is then exactly zero."""
     return any((dead >> d) & 1 and sum(p[d] for p in powers) % 2 for d in range(3))
 
 

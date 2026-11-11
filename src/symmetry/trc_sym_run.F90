@@ -390,7 +390,7 @@ contains
    end function sym_run_skeleton_mode
 
    pure logical function sym_run_skeleton_size_rule(natm, norbit) result(res)
-      !! Whether the skeleton Fock build (docs/SYMMETRY_FOCK.md) is worth
+      !! Whether the skeleton Fock build is worth
       !! using on a molecule of `natm` atoms sitting in `norbit` orbits of the
       !! group (`sym_geom_atom_orbits` of trc_sym_geom). It is, when the mean
       !! atom orbit size is at least SYM_SKEL_MIN_ORBIT, i.e. when
@@ -405,8 +405,8 @@ contains
       !! is a cheap proxy for the saving, available before the engine is built
       !! (the decision has to be made then: the engine is built with the group
       !! or without it). It tracks the measured scheme-2a quartet reduction
-      !! across every system the project has counted -- docs/SYMMETRY_FOCK.md
-      !! section 2.2, cc-pVDZ, tau = 1e-10, density-screened:
+      !! across every system the project has counted --
+      !! cc-pVDZ, tau = 1e-10, density-screened:
       !!
       !!   system       group  natm/norbit  s2a quartet reduction
       !!   water         C2v      1.50          1.47x
@@ -426,8 +426,7 @@ contains
       !! the same 2.3x increase, while naphthalene at 412 bf was a wash and
       !! pentacene at 378 bf a 2.14x win.
       !!
-      !! MEASURED ERI TIME. These four numbers come from stage W2
-      !! (docs/SYMMETRY_FOCK.md, "Segment fusion and launch cost"), NOT from the
+      !! MEASURED ERI TIME. These four numbers come from stage W2, NOT from the
       !! change that added this rule, which ran on a host build with no GPU;
       !! the rule itself has not been re-measured on a device. W2's settings:
       !! cc-pVDZ, integral screening --thresh 1e-12 (terco's default, not
@@ -461,7 +460,7 @@ contains
       !! wherever it might still pay -- an over-eager rule would now cost time,
       !! since post-W2 benzene at 12 atoms is a win. B2H6 (2.67, 3.34x) is the
       !! one system inside the interval, and the run that would settle the
-      !! threshold; docs/SYMMETRY_FOCK.md section 4.2a lists it and the rest.
+      !! threshold; the table above lists it and the rest.
       !!
       !! REJECTED PREDICTORS, on this same data:
       !!  - the atom count: the four ERI rows allow a threshold anywhere in
@@ -481,8 +480,8 @@ contains
       !! The groups of order 2 and 4 (Cs, Ci, C2, C2v, C2h) are declined
       !! wherever an atom sits on a symmetry element, which is most of them --
       !! water at 1.47x, and a planar Cs molecule has no nontrivial shell-pair
-      !! orbit at all. That answers docs/SYMMETRY_FOCK.md section 6's open
-      !! question 2 from measurement: a ~1.5x reduction cannot pay for the
+      !! orbit at all. That settles from measurement whether such
+      !! groups should default to the skeleton build: a ~1.5x reduction cannot pay for the
       !! launches when 2.44x does not.
       !!
       !! TRC_SYM_SKELETON=0/1 forces either path.

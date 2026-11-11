@@ -1,6 +1,6 @@
 module trc_sym_pairs
    !! Shell-pair orbit tables of a point group: the host-side input of the
-   !! skeleton Fock build (docs/SYMMETRY_FOCK.md, scheme 2a).
+   !! skeleton Fock build.
    !!
    !! Every operation g of the group sends shell s of the working basis to
    !! shell `shmap(s, g)` and a shell pair {a, b} to the pair {ga, gb}. Pairs

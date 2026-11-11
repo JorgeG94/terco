@@ -53,7 +53,7 @@ module trc_bins
    !! up to f, and for g only the canonical one the bins form (src/CMakeLists.txt).
    integer, parameter :: BIN_G_MASKED = 2
    !! Bit of `bin_g` (and of bin_key's `g`): every pair of the bin has both
-   !! shells in the dead plane of parity skipping (docs/SYMMETRY_PARITY_SKIP.md),
+   !! shells in the dead plane of parity skipping,
    !! so every quartet of a bin pair of two such bins has the dead z axis of
    !! the kernels' frame. A property of the pair that the point group leaves
    !! invariant, so an orbit never straddles two bins.
@@ -444,7 +444,7 @@ contains
    ! representatives of each bin first.
    !
    ! The same pairs, keys and sizes as bins_build_binned_pairs, with three
-   ! differences (docs/SYMMETRY_FOCK.md, scheme 2a):
+   ! differences:
    !  - the contraction degree in a pair's key is that of its orbit's
    !    representative, so the whole orbit lands in one bin (the Schwarz bucket
    !    is shared because Q is invariant; a bucket that is not is refused);
@@ -1502,7 +1502,7 @@ contains
 
 
    !
-   ! The skeleton launch plan (docs/SYMMETRY_FOCK.md, scheme 2a).
+   ! The skeleton launch plan.
    !
    ! The bins are closed under the group, so for two different bins A and B
    ! the sum over A x B of a function f with f(g p, g q) = R f(p, q) R^T is

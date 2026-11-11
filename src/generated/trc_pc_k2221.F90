@@ -49,11 +49,10 @@ contains
       !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.
       logical,  intent(in)    :: sD(nseg)
       real(dp), intent(in)    :: sW(nseg)
-      !! The segment's weight: on a skeleton plan (docs/SYMMETRY_FOCK.md
-      !! scheme 2a) the orbit size of its bra pairs, halved on a diagonal bin
-      !! pair, so a multiple of ONE HALF and not an integer; 1 on every other
-      !! plan. Read once per work item into `wq` below, beside the quartet's
-      !! own degeneracy factor.
+      !! The segment's weight: on a skeleton plan the orbit size of its bra
+      !! pairs, halved on a diagonal bin pair, so a multiple of ONE HALF and
+      !! not an integer; 1 on every other plan. Read once per work item into
+      !! `wq` below, beside the quartet's own degeneracy factor.
       !!
       !! Per segment rather than per launch because the launcher used to fold
       !! it into jfac/kfac, which forced one launch per (class, mask, weight):
@@ -158,11 +157,10 @@ contains
       !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.
       logical,  intent(in)    :: sD(nseg)
       real(dp), intent(in)    :: sW(nseg)
-      !! The segment's weight: on a skeleton plan (docs/SYMMETRY_FOCK.md
-      !! scheme 2a) the orbit size of its bra pairs, halved on a diagonal bin
-      !! pair, so a multiple of ONE HALF and not an integer; 1 on every other
-      !! plan. Read once per work item into `wq` below, beside the quartet's
-      !! own degeneracy factor.
+      !! The segment's weight: on a skeleton plan the orbit size of its bra
+      !! pairs, halved on a diagonal bin pair, so a multiple of ONE HALF and
+      !! not an integer; 1 on every other plan. Read once per work item into
+      !! `wq` below, beside the quartet's own degeneracy factor.
       !!
       !! Per segment rather than per launch because the launcher used to fold
       !! it into jfac/kfac, which forced one launch per (class, mask, weight):
@@ -7227,11 +7225,10 @@ contains
       !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.
       logical,  intent(in)    :: sD(nseg)
       real(dp), intent(in)    :: sW(nseg)
-      !! The segment's weight: on a skeleton plan (docs/SYMMETRY_FOCK.md
-      !! scheme 2a) the orbit size of its bra pairs, halved on a diagonal bin
-      !! pair, so a multiple of ONE HALF and not an integer; 1 on every other
-      !! plan. Read once per work item into `wq` below, beside the quartet's
-      !! own degeneracy factor.
+      !! The segment's weight: on a skeleton plan the orbit size of its bra
+      !! pairs, halved on a diagonal bin pair, so a multiple of ONE HALF and
+      !! not an integer; 1 on every other plan. Read once per work item into
+      !! `wq` below, beside the quartet's own degeneracy factor.
       !!
       !! Per segment rather than per launch because the launcher used to fold
       !! it into jfac/kfac, which forced one launch per (class, mask, weight):
@@ -7359,11 +7356,10 @@ contains
       !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.
       logical,  intent(in)    :: sD(nseg)
       real(dp), intent(in)    :: sW(nseg)
-      !! The segment's weight: on a skeleton plan (docs/SYMMETRY_FOCK.md
-      !! scheme 2a) the orbit size of its bra pairs, halved on a diagonal bin
-      !! pair, so a multiple of ONE HALF and not an integer; 1 on every other
-      !! plan. Read once per work item into `wq` below, beside the quartet's
-      !! own degeneracy factor.
+      !! The segment's weight: on a skeleton plan the orbit size of its bra
+      !! pairs, halved on a diagonal bin pair, so a multiple of ONE HALF and
+      !! not an integer; 1 on every other plan. Read once per work item into
+      !! `wq` below, beside the quartet's own degeneracy factor.
       !!
       !! Per segment rather than per launch because the launcher used to fold
       !! it into jfac/kfac, which forced one launch per (class, mask, weight):

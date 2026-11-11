@@ -337,7 +337,7 @@ module trc_scf_settings
       !! The symmetric run was not made: `sym%decline_lindep` and functions were
       !! dropped (`message` says so, `iterations` is 0). The caller runs in C1.
       logical :: sym_skeleton = .false.
-      !! The symmetric run used the SKELETON Fock build (docs/SYMMETRY_FOCK.md)
+      !! The symmetric run used the SKELETON Fock build
       !! rather than the full build with F symmetrized after it: what
       !! `trc_sym_scf_t%skeleton` asked for, or what the size rule decided
       !! (trc_sym_run's sym_run_skeleton_size_rule). False for every run without a

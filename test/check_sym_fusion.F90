@@ -1,6 +1,5 @@
 !
-! Weighted-segment fusion in the bin Fock launch (W2 of
-! docs/SYMMETRY_FOCK.md, 'Segment fusion and launch cost'): ONE LAUNCH PER (class, mask).
+! Weighted-segment fusion in the bin Fock launch (W2): ONE LAUNCH PER (class, mask).
 !
 ! The skeleton plan's segments carry a weight -- the bra pairs' orbit size,
 ! halved on a diagonal bin pair, so a multiple of one half. The weight used to

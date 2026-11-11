@@ -566,7 +566,7 @@ def chunked_fock_middle(tag, comps, outer, nroots, pre_loop, prim_hdr, thread=Fa
     the tval line) and roots, and the chunk's digestion. Returns (text, real
     names, integer names, chunk count, the outer shells' cn tables).
 
-    `dead` is the z-masked variant (docs/SYMMETRY_PARITY_SKIP.md): every
+    `dead` is the z-masked variant: every
     centre has z = 0, so a component whose combined z power is odd is exactly
     zero. The z power of the chunk's outer components is known only at run
     time, so the body exists once per parity of it: for outer parity P the
@@ -811,7 +811,7 @@ def main():
                          "under, for a class FOCK_CHUNK_PLAN does not list")
     ap.add_argument("--dead", choices=("none", "z"), default="none",
                     help="the z-masked variant of a chunked class "
-                         "(docs/SYMMETRY_PARITY_SKIP.md): rys{tag}z in "
+                         "rys{tag}z in "
                          "trc_pc_rys{tag}z, for launches whose every centre "
                          "has z = 0; dispatched at class key + "
                          "CLASS_RADIX**4 (gen_rys_dispatch.py)")

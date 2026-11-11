@@ -61,8 +61,8 @@ module trc_sym_scf
       !! C1 one (see above), and an on/auto request, which promises C1 wherever
       !! symmetry cannot run, must then give the C1 numbers. Read by `trc_scf_run`.
       integer :: skeleton = SYM_SKEL_AUTO
-      !! Whether the Fock build is the SKELETON build
-      !! (docs/SYMMETRY_FOCK.md): the integral engine is built with the point
+      !! Whether the Fock build is the SKELETON build:
+      !! the integral engine is built with the point
       !! group, launches only the orbit representatives, and the SCF
       !! symmetrizes G after the fold. SYM_SKEL_OFF is the full Fock build,
       !! then symmetrization of F (the S4 path), with an engine built without

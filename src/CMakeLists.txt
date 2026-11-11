@@ -873,7 +873,7 @@ foreach(_tag ${_rys_classes})
 endforeach()
 list(JOIN _rys_classes "," _rys_classes_csv)
 
-# Parity skipping (docs/SYMMETRY_PARITY_SKIP.md): the z-masked variants of the
+# Parity skipping: the z-masked variants of the
 # Rys-routed classes that get one (gen_perclass.py's PARITY_RYS_TOP, whose
 # comment has the coverage measurement that chose them; the HGP ones are in
 # ${_gen_dir}), where this build has them. Keep this list and PARITY_RYS_TOP

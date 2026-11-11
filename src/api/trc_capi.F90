@@ -385,7 +385,7 @@ module trc_capi
    !! A symmetric DFT run uses the grid of the caller's axes, so its energy
    !! equals the symmetry-off one to second order (3e-12 Eh, B3LYP/cc-pVDZ
    !! water at the default grid). The skeleton Fock build
-   !! (docs/SYMMETRY_FOCK.md) changes which integral quartets are launched,
+   !! changes which integral quartets are launched,
    !! not the result. With accidental degeneracy, the per-orbital irrep labels can
    !! differ between the skeleton and full Fock paths (a permutation inside a
    !! degenerate level; the decomposition per irrep is the same), so a caller

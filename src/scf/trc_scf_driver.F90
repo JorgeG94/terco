@@ -321,7 +321,7 @@ contains
       end if
       ! --- everything once per geometry: pairs, 1e, S/H fold, ERI, linalg,
       ! orthogonaliser, and (when asked for) the PCM cavity and DFT grid ---
-      ! The skeleton Fock build (docs/SYMMETRY_FOCK.md) is decided first: the
+      ! The skeleton Fock build is decided first: the
       ! engine is built with the point group or not. The cavity, K and its
       ! LU are built and solved whole on every rank (replicated: cheap next
       ! to the integrals); pcm%operator splits the two integral passes over
@@ -718,7 +718,7 @@ contains
    end subroutine trc_scf_run
 
    subroutine scf_driver_skeleton_decide(scf_basis, sym, sym_on, scf_config, comm, skeleton, err)
-      !! THE SKELETON FOCK BUILD (docs/SYMMETRY_FOCK.md) under a symmetric
+      !! THE SKELETON FOCK BUILD under a symmetric
       !! group: the four-centre engine is built with the point group, launches
       !! only the orbit representatives, and F is symmetrized after the assembly
       !! (as for the full build). Not with density fitting (its own path) nor over several ranks
@@ -1077,7 +1077,7 @@ contains
          "   eri (s) hgp pairs   schwarz      bins  quartets    upload")
       write (line, "(a,5f10.3)") "          ", eri%t_build
       call global_logger%performance(trim(line))
-      ! Parity skipping (docs/SYMMETRY_PARITY_SKIP.md), from the engine's own
+      ! Parity skipping, from the engine's own
       ! counters: a dead axis of 0 means no mask was taken at all, and a
       ! masked share with no variant launches means the masks were taken but
       ! no class that reached a kernel has a masked variant in this build.
