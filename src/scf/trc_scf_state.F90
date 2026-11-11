@@ -35,6 +35,10 @@ module trc_scf_state
       !! `run` times the whole of `trc_scf_run`, setup to the last iteration.
       real(dp) :: t_fock = 0.0_dp, t_xc = 0.0_dp, t_rest = 0.0_dp
       real(dp) :: t_pcm = 0.0_dp
+      real(dp) :: tf_first = 0.0_dp
+      !! The first build's time, kept apart: it pays one-off device setup.
+      integer :: n_fock = 0
+      !! Fock builds the main loop has taken.
       real(dp) :: tf_it = 0.0_dp, tx_it = 0.0_dp, tr_it = 0.0_dp
       real(dp) :: tx_pts = 0.0_dp, tx_prs = 0.0_dp
       real(dp) :: t_vv10 = 0.0_dp

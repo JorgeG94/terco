@@ -945,6 +945,15 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_homo_lumo PRIVATE test-drive::test-drive)
   unset(_cli_homo_lumo_probe)
 
+  # The "timings" and "build" objects of the CLI's --json: which keys per
+  # option, finite and positive values, the nesting of the stage times --
+  # see check_cli_timings.F90's own header.
+  set(_cli_timings_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_timings_probe.json)
+  terco_add_check(check_cli_timings check_cli_timings.F90 NEEDS_BASIS
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_timings_probe})
+  target_link_libraries(check_cli_timings PRIVATE test-drive::test-drive)
+  unset(_cli_timings_probe)
+
   # The TOML input files (docs/INPUT.md): same numbers as the equivalent
   # flags, paths relative to the file, the "input" echo with a flag
   # overriding the file, and every malformed file refused by name -- see
@@ -2083,6 +2092,19 @@ target_link_libraries(check_capi_rimp2_grad PRIVATE ${main_lib} terco_test_basis
 add_test(NAME terco/check_capi_rimp2_grad COMMAND check_capi_rimp2_grad ${CMAKE_CURRENT_BINARY_DIR})
 set_tests_properties(terco/check_capi_rimp2_grad PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                        ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
+# trc_timing / trc_timing_count through the C ABI: the status before any SCF,
+# an enumeration that ends by its count, a short name buffer refused rather
+# than cut, and the RI-MP2 timings not outliving their run. See
+# check_capi_timing.F90's own header.
+add_executable(check_capi_timing check_capi_timing.F90)
+target_compile_definitions(check_capi_timing PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_timing PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
+                                                test-drive::test-drive)
+add_test(NAME terco/check_capi_timing COMMAND check_capi_timing)
+set_tests_properties(terco/check_capi_timing PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
 # trc_run_hessian/trc_hessian (the finite-difference Cartesian Hessian),
