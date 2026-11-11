@@ -28,6 +28,12 @@
 !  10 `rccsd_triples_finish` with the device and with the reference: the same result fields
 !  11 device refusals: a stale scratch after a second `ints%build`, amplitudes of another size, empty integrals, a
 !     budget below one triple, a NaN amplitude, unallocated amplitudes
+!  12 the occupied-driven DEVICE version (trc_rccsd_triples_ijk) against the host reference, pyscf and the
+!     independent evaluation, at the fixed amplitudes (with and without t1) and at the converged ones; its i = j = k
+!     triples, skipped by default, contribute round-off zeros when computed
+!  13 its tiles of 1, 2 and 7 occupied triples, all of them, the default budget, a one-triple budget and a slice
+!     cache of 4 (evicting) agree; a budget
+!     below one triple is refused; `rccsd_triples_finish` with it agrees with the reference
 ! and, once, without a molecule:
 !   - two electrons (one occupied orbital): E(T) = 0 for any integrals and amplitudes
 !   - random integrals with the symmetries of the real ones and more virtuals than one c batch (nv = 40): the
@@ -147,7 +153,9 @@ module check_rccsd_triples_suite
    use trc_rccsd_inter, only: trc_rccsd_amps_t
    use trc_rccsd_driver, only: trc_rccsd_options_t, trc_rccsd_state_t, trc_rccsd_solve
    use trc_rccsd_triples, only: trc_rccsd_triples_options_t, rccsd_triples_reference, rccsd_triples_finish, &
-                                RCCSD_TRIPLES_WMAP, rccsd_triples_energy_block
+                                RCCSD_TRIPLES_WMAP, rccsd_triples_energy_block, RCCSD_TRIPLES_DEVICE_ABC, &
+                                RCCSD_TRIPLES_DEVICE_IJK
+   use trc_rccsd_triples_ijk, only: trc_rccsd_triples_ijk_scratch_t, rccsd_triples_ijk_run, rccsd_triples_ijk_run_scratch
    use trc_rccsd_triples_dev, only: trc_rccsd_triples_dev_options_t, trc_rccsd_triples_scratch_t, rccsd_triples_dev_run, &
                                     rccsd_triples_dev_run_scratch, rccsd_triples_dev_point_energy
    use trc_linalg, only: trc_linalg_t
@@ -159,7 +167,7 @@ module check_rccsd_triples_suite
    private
    public :: collect_check_rccsd_triples
 
-   integer, parameter :: NCASE = 11
+   integer, parameter :: NCASE = 13
    integer, parameter :: REF_E_SCF = 1, REF_E_CCSD_CORR = 2, REF_E_T = 3, REF_E_CCSD_T = 4, REF_E_T_FIXED = 5, &
                          REF_E_T_NO_T1 = 6, NREF = 6  !! indices into the scalars read from a .ref
    ! Tolerances sit about one order above what is measured (host gfortran build and a V100), so a regression at the
@@ -188,6 +196,11 @@ module check_rccsd_triples_suite
    real(dp), parameter :: TOL_DEV_PAIR = 1.0e-17_dp
    !! the energy of a pair (a,b) from the device's per-triple energies against the host routine's, largest difference
    !! [2.2e-19 host, 7.1e-20 V100]
+   real(dp), parameter :: TOL_IJK_REF = 1.0e-16_dp
+   !! the occupied-driven device E(T) against the host reference, absolute, molecules: the same quantity summed in
+   !! another order (over occupied triples, the 36 terms regrouped) [1.7e-18 GH200]
+   real(dp), parameter :: TOL_IJK_TILE = 1.0e-16_dp
+   !! the occupied-driven E(T) for another tile size, absolute: the tile only cuts the work [0 GH200]
    real(dp), parameter :: TOL_BATCH = 1.0e-15_dp
    !! the same E(T) for another c batch, absolute [0]: the batch only cuts the gemms, the sums are the same
 
@@ -222,6 +235,10 @@ contains
                   new_unittest("h2o2: per-triple energies vs the host pair energies", h9), &
                   new_unittest("h2o2: finish with device and with reference", h10), &
                   new_unittest("h2o2: device refusals", h11), &
+                  new_unittest("water: occupied-driven device (T) vs reference, pyscf and the independent evaluation", w12), &
+                  new_unittest("water: occupied-driven tiles, budgets and finish", w13), &
+                  new_unittest("h2o2: occupied-driven device (T) vs reference, pyscf and the independent evaluation", h12), &
+                  new_unittest("h2o2: occupied-driven tiles, budgets and finish", h13), &
                   new_unittest("two electrons: (T) is zero", two_electrons), &
                   new_unittest("random symmetric integrals, nv above the c batch", random_symmetric), &
                   new_unittest("an empty space is a refusal", empty_space), &
@@ -318,6 +335,23 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call run_case(error, 11, 2)
    end subroutine h11
+
+   subroutine w12(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 12, 1)
+   end subroutine w12
+   subroutine w13(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 13, 1)
+   end subroutine w13
+   subroutine h12(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 12, 2)
+   end subroutine h12
+   subroutine h13(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 13, 2)
+   end subroutine h13
 
    subroutine run_case(error, ic, im)
       type(error_type), allocatable, intent(out) :: error
@@ -452,6 +486,8 @@ contains
       call device_cases(im, label, state, fixed, refs)
       call device_tile_cases(im, label, state%ints, fixed)
       call device_finish_case(im, label, state)
+      call ijk_cases(im, label, state, fixed, refs)
+      call ijk_tile_cases(im, label, state, fixed)
       call device_refusal_cases(im, label, state, fixed, bas, aux, pl, res, nocc, nfz)
       call fixed%release()
       call state%release()
@@ -595,6 +631,7 @@ contains
 
       state%result%has_triples = .false.
       topts%use_device = .true.
+      topts%device_routine = RCCSD_TRIPLES_DEVICE_ABC
       call rccsd_triples_finish(state, status, topts)
       if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
       e_dev = state%result%e_t
@@ -616,6 +653,178 @@ contains
                   ", |difference| "//to_string(abs(e_dev - e_ref), "es9.2")//", E_CCSD(T) |difference| "// &
                   to_string(abs(e_total_dev - e_total_ref), "es9.2"))
    end subroutine device_finish_case
+
+   ! ---------------------------------------------------------------------
+   ! The occupied-driven device version (cases 12 and 13)
+   ! ---------------------------------------------------------------------
+
+   subroutine ijk_cases(im, label, state, fixed, refs)
+      !! Case 12: the occupied-driven E(T) against the reference, pyscf and the independent evaluation, at the fixed
+      !! amplitudes with and without t1 and at the converged ones; the i = j = k triples give round-off zeros
+      integer, intent(in) :: im
+      character(len=*), intent(in) :: label
+      type(trc_rccsd_state_t), intent(in) :: state
+      type(trc_rccsd_amps_t), intent(in) :: fixed
+      real(dp), intent(in) :: refs(:)
+
+      type(trc_rccsd_amps_t) :: no_t1
+      type(trc_rccsd_triples_dev_options_t) :: dopts
+      type(error_t) :: status
+      real(dp), allocatable :: e_trip(:), e_trip_diag(:)
+      real(dp) :: e_ijk, e_ijk_diag, e_ref, e_host, e_ijk0, e_ref0, e_host0, e_ijkc, e_refc, total, diag
+      real(dp) :: d_ref, d_py, d_host, d_ref0, d_py0, d_host0, d_refc, d_pyc
+      integer(int64) :: n
+      integer :: i, j, k
+
+      call rccsd_triples_ijk_run(state%ints, fixed, e_ijk, status, triple_energies=e_trip)
+      if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+      ! the i = j = k triples are skipped by default (their energy is zero); computed on request they are round-off zeros
+      dopts%diagonal_triples = .true.
+      call rccsd_triples_ijk_run(state%ints, fixed, e_ijk_diag, status, dopts, triple_energies=e_trip_diag)
+      if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+      call rccsd_triples_reference(state%ints, fixed, e_ref, status)
+      call host_triples(state%ints, fixed%t1, fixed%t2, e_host)
+      call no_t1%init(state%ints%no, state%ints%nv)
+      no_t1%t2 = fixed%t2
+      call no_t1%push()
+      call rccsd_triples_ijk_run(state%ints, no_t1, e_ijk0, status)
+      if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+      call rccsd_triples_reference(state%ints, no_t1, e_ref0, status)
+      call host_triples(state%ints, no_t1%t1, no_t1%t2, e_host0)
+      call no_t1%release()
+      call rccsd_triples_ijk_run(state%ints, state%amps, e_ijkc, status)
+      if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+      call rccsd_triples_reference(state%ints, state%amps, e_refc, status)
+      ! the per-triple energies add up to E(T) in their order; the i = j = k ones are zero up to round-off
+      total = 0.0_dp
+      diag = 0.0_dp
+      n = 0
+      do i = 1, state%ints%no
+         do j = 1, i
+            do k = 1, j
+               n = n + 1
+               total = total + e_trip(n)
+               if (i == k) diag = max(diag, abs(e_trip_diag(n)) + abs(e_trip(n)))
+            end do
+         end do
+      end do
+      d_ref = abs(e_ijk - e_ref)
+      d_py = abs(e_ijk - refs(REF_E_T_FIXED))
+      d_host = abs(e_ijk - e_host)
+      d_ref0 = abs(e_ijk0 - e_ref0)
+      d_py0 = abs(e_ijk0 - refs(REF_E_T_NO_T1))
+      d_host0 = abs(e_ijk0 - e_host0)
+      d_refc = abs(e_ijkc - e_refc)
+      d_pyc = abs(e_ijkc - refs(REF_E_T))
+      call record(im, 12, d_ref < TOL_IJK_REF .and. d_py < TOL_PYSCF_FIXED .and. d_host < TOL_HOST .and. &
+                  d_ref0 < TOL_IJK_REF .and. d_py0 < TOL_PYSCF_FIXED .and. d_host0 < TOL_HOST .and. &
+                  d_refc < TOL_IJK_REF .and. d_pyc < TOL_PYSCF_CONV .and. e_ijk < 0.0_dp .and. e_ijk0 < 0.0_dp .and. &
+                  abs(e_ijk - e_ijk0) > 1.0e-6_dp .and. n == size(e_trip, kind=int64) .and. abs(total - e_ijk) < 1.0e-16_dp .and. &
+                  diag < 1.0e-17_dp .and. abs(e_ijk_diag - e_ijk) < TOL_IJK_TILE, &
+                  label//"ijk E(T) fixed "//to_string(e_ijk, "f20.14")//": |reference| "//to_string(d_ref, "es9.2")// &
+                  ", |pyscf| "//to_string(d_py, "es9.2")//", |independent| "//to_string(d_host, "es9.2")//"; t1 = 0 "// &
+                  to_string(e_ijk0, "f20.14")//": "//to_string(d_ref0, "es9.2")//", "//to_string(d_py0, "es9.2")//", "// &
+                  to_string(d_host0, "es9.2")//"; converged "//to_string(e_ijkc, "f20.14")//": |reference| "// &
+                  to_string(d_refc, "es9.2")//", |pyscf| "//to_string(d_pyc, "es9.2")//"; largest i = j = k triple (computed "// &
+                  "on request) "//to_string(diag, "es9.2")//", E(T) with them "//to_string(abs(e_ijk_diag - e_ijk), "es9.2"))
+   end subroutine ijk_cases
+
+   subroutine ijk_tile_cases(im, label, state, fixed)
+      !! Case 13: tiles, budgets and the finish with the occupied-driven routine
+      integer, intent(in) :: im
+      character(len=*), intent(in) :: label
+      type(trc_rccsd_state_t), intent(inout) :: state
+      type(trc_rccsd_amps_t), intent(in) :: fixed
+
+      integer(int64), parameter :: TILES(5) = [1_int64, 2_int64, 7_int64, 100000_int64, 0_int64]
+      type(trc_rccsd_triples_dev_options_t) :: dopts
+      type(trc_rccsd_triples_ijk_scratch_t) :: ts
+      type(trc_rccsd_triples_options_t) :: topts
+      type(trc_linalg_t) :: la
+      type(error_t) :: status, st_small
+      real(dp) :: e(size(TILES)), e_one, e_again, e_small, spread, e_fin, e_ref, e_lru
+      integer :: nslot_lru, nslot_default
+      integer(int64) :: ncap(size(TILES)), ntiles(size(TILES)), ntotal, per_triple
+      integer :: k, ncap_one
+      logical :: ok
+
+      call la%init(1)
+      ntotal = int(state%ints%no, int64)*(state%ints%no + 1)*(state%ints%no + 2)/6
+      per_triple = 24_int64*int(state%ints%nv, int64)**3
+      do k = 1, size(TILES)
+         dopts%tile_triples = TILES(k)
+         call ts%init(state%ints, dopts)
+         if (ts%status%has_error()) error stop "check_rccsd_triples: "//ts%status%get_message()
+         call rccsd_triples_ijk_run_scratch(state%ints, fixed, ts, la, e(k), status)
+         if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+         ncap(k) = ts%ncap
+         ntiles(k) = ts%ntiles
+         call ts%release()
+      end do
+      ! a budget that holds exactly one occupied triple (3 nv^3 doubles), and a second call with the same plan
+      dopts%tile_triples = 0
+      dopts%budget_bytes = per_triple
+      call ts%init(state%ints, dopts)
+      if (ts%status%has_error()) error stop "check_rccsd_triples: "//ts%status%get_message()
+      call rccsd_triples_ijk_run_scratch(state%ints, fixed, ts, la, e_one, status)
+      call rccsd_triples_ijk_run_scratch(state%ints, fixed, ts, la, e_again, status)
+      ncap_one = int(ts%ncap)
+      call ts%release()
+      ! a slice cache of four (the least it takes), so slices are evicted and gathered again, against the default
+      dopts%budget_bytes = 0
+      dopts%slice_bytes = 1
+      call la%init(1)
+      call ts%init(state%ints, dopts)
+      if (ts%status%has_error()) error stop "check_rccsd_triples: "//ts%status%get_message()
+      call rccsd_triples_ijk_run_scratch(state%ints, fixed, ts, la, e_lru, status)
+      nslot_lru = ts%nslot
+      call ts%release()
+      dopts%slice_bytes = 0
+      call ts%init(state%ints, dopts)
+      nslot_default = ts%nslot
+      call ts%release()
+      call la%release()
+      ! a budget one byte short of a triple
+      dopts%budget_bytes = per_triple - 1_int64
+      call rccsd_triples_ijk_run(state%ints, fixed, e_small, st_small, dopts)
+      ! the finish with the occupied-driven routine against the reference
+      state%result%has_triples = .false.
+      topts%use_device = .true.
+      topts%device_routine = RCCSD_TRIPLES_DEVICE_IJK
+      call rccsd_triples_finish(state, status, topts)
+      if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+      e_fin = state%result%e_t
+      ok = state%result%has_triples
+      call rccsd_triples_reference(state%ints, state%amps, e_ref, status)
+      spread = max(maxval(abs(e - e(size(TILES)))), abs(e_one - e(size(TILES))), abs(e_lru - e(size(TILES))))
+      ! a tile is a run of k at one (i,j), cut at capacity: the run of (i,j) has j triples
+      ok = ok .and. spread < TOL_IJK_TILE .and. ncap(1) == 1 .and. ntiles(1) == ntotal .and. ncap(2) == min(2_int64, ntotal) &
+           .and. ncap(3) == min(7_int64, ntotal) .and. ntiles(3) == run_tiles(state%ints%no, ncap(3)) .and. &
+           ncap(4) == ntotal .and. ntiles(4) == run_tiles(state%ints%no, ncap(4)) .and. &
+           ntiles(2) == run_tiles(state%ints%no, ncap(2)) .and. ncap_one == 1 .and. e_again == e_one .and. &
+           st_small%has_error() .and. e_small == 0.0_dp .and. index(st_small%get_message(), "one occupied triple") > 0 .and. &
+           abs(e_fin - e_ref) < TOL_IJK_REF .and. nslot_lru == 4 .and. nslot_default == 2*state%ints%no
+      call record(im, 13, ok, label//"ijk tiles of 1, 2, 7, all ("//to_string(ntotal)//" triples) and the default ("// &
+                  to_string(ncap(5))//" a tile), a one-triple budget and a cache of 4 slices (default "// &
+                  to_string(nslot_default)//"): E(T) "//to_string(e(size(TILES)), "f20.14")// &
+                  ", largest difference "//to_string(spread, "es9.2")//"; a budget one byte short: ["// &
+                  st_small%get_message()//"]; finish against the reference "//to_string(abs(e_fin - e_ref), "es9.2"))
+   end subroutine ijk_tile_cases
+
+   pure function run_tiles(no, cap) result(n)
+      !! Tiles of the occupied-driven routine for tiles of up to `cap` triples: ceil(j / cap) for each pair i >= j
+      integer, intent(in) :: no
+      integer(int64), intent(in) :: cap
+      integer(int64) :: n
+      integer :: i, j
+
+      n = 0
+      do i = 1, no
+         do j = 1, i
+            n = n + (j + cap - 1)/cap
+         end do
+      end do
+   end function run_tiles
 
    subroutine device_refusal_cases(im, label, state, fixed, bas, aux, pl, res, nocc, nfz)
       !! Case 11: every device refusal returns E(T) = 0 with a message; a scratch planned for an earlier build of the
@@ -1034,7 +1243,7 @@ contains
       type(trc_rccsd_triples_dev_options_t) :: dopts
       type(error_t) :: status
       integer(int64) :: seed
-      real(dp) :: e_32, e_5, e_host, e_dev(3), worst_dev
+      real(dp) :: e_32, e_5, e_host, e_dev(3), worst_dev, e_ijk(3), worst_ijk
       integer :: k
 
       seed = 987654321_int64
@@ -1052,16 +1261,25 @@ contains
          if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
       end do
       worst_dev = max(maxval(abs(e_dev - e_host)), maxval(abs(e_dev - e_32)))
+      ! the occupied-driven routine: no = 3 has distinct, two-equal and three-equal occupied triples
+      do k = 1, 3
+         dopts%tile_triples = RANDOM_TILES(k)
+         call rccsd_triples_ijk_run(ints, amps, e_ijk(k), status, dopts)
+         if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+      end do
+      worst_ijk = max(maxval(abs(e_ijk - e_host)), maxval(abs(e_ijk - e_32)))
       call amps%release()
       call ints%release()
       call check(error, abs(e_32 - e_host) < TOL_HOST_REL*abs(e_host) .and. abs(e_5 - e_host) < TOL_HOST_REL*abs(e_host) .and. &
                  abs(e_host) > 1.0e-6_dp .and. worst_dev < TOL_DEV_REL*abs(e_host) .and. &
-                 maxval(abs(e_dev - e_dev(3))) < TOL_DEV_REL*abs(e_host), &
+                 maxval(abs(e_dev - e_dev(3))) < TOL_DEV_REL*abs(e_host) .and. worst_ijk < TOL_DEV_REL*abs(e_host), &
                  "random symmetric no = 3, nv = 40: batch 32 "//to_string(e_32, "f20.14")//", batch 5 "// &
                  to_string(e_5, "f20.14")//", independent "//to_string(e_host, "f20.14")//", |difference| "// &
                  to_string(max(abs(e_32 - e_host), abs(e_5 - e_host)), "es9.2")//"; device tiles 1, 7, default "// &
                  to_string(e_dev(1), "f20.14")//" "//to_string(e_dev(2), "f20.14")//" "//to_string(e_dev(3), "f20.14")// &
-                 ", largest difference from the independent evaluation and the reference "//to_string(worst_dev, "es9.2"))
+                 ", largest difference from the independent evaluation and the reference "//to_string(worst_dev, "es9.2")// &
+                 "; occupied-driven tiles 1, 7, default "//to_string(e_ijk(1), "f20.14")//" "//to_string(e_ijk(2), "f20.14")// &
+                 " "//to_string(e_ijk(3), "f20.14")//", largest difference "//to_string(worst_ijk, "es9.2"))
    end subroutine random_symmetric
 
    subroutine map_ints(ints)

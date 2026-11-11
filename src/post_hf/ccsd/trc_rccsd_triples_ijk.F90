@@ -1,0 +1,1031 @@
+!
+! The perturbative triples (T) of closed-shell RI-CCSD(T) on the DEVICE, driven by OCCUPIED triples i >= j >= k: the
+! same quantity as `rccsd_triples_reference` (trc_rccsd_triples) and `rccsd_triples_dev_run` (trc_rccsd_triples_dev,
+! the virtual-triple-driven routine), restructured so that every library call is sized by the VIRTUAL space.
+!
+! WHY. The virtual-triple routine stores W(i,j,k) blocks of no^3 per triple a >= b >= c, so its gemms have m = no
+! and k = nv or no: millions of skinny products. Here one occupied triple holds three arrays over ALL virtuals (nv^3
+! each), filled by tall gemms of (nv^2 x (nv + no))((nv + no) x n), n = nv or nv times a run of triples, with only
+! no (no + 1) (no + 2) / 6 triples. Measured on one GH200 (H10O5, cc-pVTZ / cc-pVTZ-RIFIT, frozen core, no 20,
+! nv 265, naux 705, default budget, E(T) the same to all 12 printed digits), seconds: the virtual-triple routine
+! 11.90 (gemms 6.82 + 2.14, energy 2.92); this one 3.42 (wide gemms 1.73 at 35 TFLOP/s, per-array gemms 1.04 at
+! 27 TFLOP/s, energy 0.59, repacks and slice gathers 0.02).
+!
+! THE ALGEBRA (an exact rewrite of the reference, no approximation). For an ORDERED occupied triple (o1,o2,o3) and
+! ordered virtuals (x,y,z), pairs (o1,x), (o2,y), (o3,z):
+!
+!     q[o1,o2,o3](x,y,z) = sum_f (o1 x|f y) t2(o3,o2,z,f) - sum_m (o1 x|o2 m) t2(m,o3,y,z)
+!         (o1 x|f y) = ovvv(o1,x,f,y),  (o1 x|o2 m) = ooov(o2,m,o1,x)
+!
+! the reference's get_w(a,b,c)(i,j,k). For an occupied triple (i,j,k) and Q1 = q[i,j,k], Q2 = q[i,k,j],
+! Q3 = q[j,i,k], Q4 = q[j,k,i], Q5 = q[k,i,j], Q6 = q[k,j,i], for any ordered virtual triple (p,q,r)
+!
+!     W(p,q,r) = Q1(p,q,r) + Q2(p,r,q) + Q3(q,p,r) + Q4(q,r,p) + Q5(r,p,q) + Q6(r,q,p)
+!     V(p,q,r) = ovov(i,p,j,q) t1(k,r) + ovov(i,p,k,r) t1(j,q) + ovov(j,q,k,r) t1(i,p),   X = W + V
+!     D(p,q,r) = e_i + e_j + e_k - e_p - e_q - e_r
+!
+! (the array of the occupied arrangement sigma(i,j,k) is read at the same arrangement sigma of the virtual arguments).
+! Then, with R(P) = 3 W(P) + S_same - 2 S_opp, S_even = W(abc) + W(bca) + W(cab), S_odd = W(acb) + W(bac) + W(cba)
+! and "same" the parity class of the ordering P,
+!
+!     E_ijk = sum_{a>=b>=c} 1/(s_v D) sum_{P in orderings of (a,b,c)} X(P) R(P),   s_v = 1, 2, 6 (distinct, two, three equal)
+!     E(T)  = (1/3) sum_{i>=j>=k} m_o E_ijk,                                      m_o = 6, 3, 1 (distinct, two, three equal)
+!
+! The 1/3 is the reference's factor 2 times the 1/6 of symmetrising X over the six pair permutations. V in three
+! terms uses (ia|jb) = (jb|ia), which the fitted ovov has; the products below read ovvv and t2 in the index order of
+! q and use no symmetry of them. The a = b = c terms are kept. An i = j = k triple contributes zero (W is then
+! symmetric in (a,b,c) and R vanishes): it is skipped, and `diagonal_triples` computes it (round-off zeros, tested).
+!
+! TERMS. Only the sum W matters, so each array may carry the particle part of one arrangement and the hole part of
+! another. For rho = (r1,r2,r3) the term T_rho pairs the particle part of rho with the hole part of (r3,r2,r1) (a
+! bijection of the six, so every hole part appears once), read in rho's argument order:
+!
+!   T_rho(u,v,w) = sum_f ovvv(r1,u,f,v) t2(r3,r2,w,f) - sum_m t2(m,r1,v,u) ooov(r2,m,r3,w)
+!                = sum_{K = 1..nv+no} A'_{r1}((u,v), K) B'_{r2 r3}(K, w)
+!   A'_o = [ovvv(o,x,f,y) | t2(m,o,y,x)]             (nv^2 x (nv + no)): depends on r1 only
+!   B'_{o2 o3} = [t2(o3,o2,w,f) ; -ooov(o2,m,o3,w)]  ((nv + no) x nv): depends on (r2,r3) only
+!
+! The particle and hole parts share one gemm with nv + no contraction columns; the hole alone, (nv x no)(no x nv^2),
+! was bound by writing Q twice (3.70 s of separate particle and hole gemms became 2.78 s fused). All B' are built
+! once per call into tvb (nv + no, nv, no, no), and tvb2(:,:,o3,o2) = tvb(:,:,o2,o3) so that a run over o3 is also
+! contiguous (242 MB each here). Every gemm operand is read in place.
+!
+! THREE FRAMES. With A'_o, T_rho comes out of F((u,v),w) = A'_{r1} B'_{r2 r3} in the frame rho (storage positions
+! 1,2,3 carry the virtuals of r1,r2,r3). With the slot held swapped, A2'_o((v,u),K) = A'_o((u,v),K), the same tall
+! gemm writes it in the frame (r2,r1,r3). Two terms that end in the same frame share an array (beta = 0, then 1):
+!
+!   U1 frame (i,j,k) = T(i,j,k) [A'_i, B'_jk] + T(j,i,k) [A2'_j, B'_ik]
+!   U2 frame (i,k,j) = T(i,k,j) [A'_i, B'_kj] + T(k,i,j) [A2'_k, B'_ij]
+!   U3 frame (j,k,i) = T(j,k,i) [A'_j, B'_ki] + T(k,j,i) [A2'_k, B'_ji]
+!   W(p,q,r) = U1(p,q,r) + U2(p,r,q) + U3(q,r,p),   (p,q,r) the virtuals of (i,j,k);  i = j: U3 = U2;  j = k: U2 = U1
+!
+! 18 Q loads per point. Tall rather than cyclic: writing a term in another frame by the transposed product
+! F(w,(u,v)) = B'^T A'^T (four arrays, 24 loads) has the short-m shape 265 x 70225, which measured 21 TFLOP/s on this
+! card with or without pre-transposed operands, against 28.6 for the tall 70225 x 265 and 33-35 for tall and wide
+! (70225 x 1060 or more). The four-array version took 3.08 s of gemms for the same flops and 4.11 s in all.
+!
+! SLICE CACHE. ovvv has the occupied index fastest, so A'_o and A2'_o are gathered (one `do concurrent` kernel, both
+! column blocks, either layout) into S slots keyed by (orbital, layout); S = clamp(slice_bytes / (8 nv^2 (nv + no)),
+! 4, 2 no), `slice_bytes` 8 GiB by default, least-recently-used eviction that never evicts a slice the current work
+! needs (A'_i, A'_j, A2'_j and A2'_k). With S = 2 no (the benchmark: 40 slots, 6.4 GB) each slice is gathered once
+! per call (40 gathers, 0.02 s; three role slots in the first version took 1520 gathers and 0.69 s).
+!
+! WIDE GEMMS. A tile is a run of consecutive k at one (i,j), cut where (i,j) changes or at capacity, stored as
+! q(nv^3, triple, frame) so one frame's arrays are consecutive in k. Over a run k = k0..kb four of the six products
+! are one gemm each with n = nv (kb - k0 + 1): U1 [A'_i, tvb2(:,:,k,j)] and [A2'_j, tvb2(:,:,k,i)], U2 [A'_i,
+! tvb(:,:,k,j)], U3 [A'_j, tvb(:,:,k,i)]; the swapped parts of U2 and U3 have the slot A2'_k and stay one gemm per
+! triple. At i = j U3 is not computed (it is U2); at the j = k end of a run the U2 products stop at k = j - 1 (U2 is
+! U1 there); a skipped i = j = k triple is left out of the run. No array is computed twice.
+! Measured (energy and gemms per tile size, seconds): tiles of 1 triple 3.91 in all (gemms 2.02 + 1.05), 2 triples
+! 3.61, 4 triples 3.42 (wide 1.73 at 35 TFLOP/s), 8 triples 3.40, 18 triples 3.40: the default budget, 2 GiB, holds
+! 4 triples at nv = 265 (447 MB each).
+!
+! ENERGY. Per tile, V's blocks are gathered compactly (vm = the three nv x nv matrices ovov(i,:,j,:), ovov(i,:,k,:),
+! ovov(j,:,k,:) and vt = the three t1 rows, 1.7 MB per triple) so that the item reads them from cache, with what
+! depends on (b,c) only read outside the loop over a. Then a `do concurrent` over the flattened (c, b, triple) index;
+! items with c > b return 0, the others loop a = b..nv, form the six W, X and R and return the row sum. Two more
+! `do concurrent` add the rows of each triple in index order (first over c for each (b, triple), then over b). Which
+! index the item loops over was measured with six arrays (energy kernels, s): over a 2.94, over c 3.42, over b 4.76;
+! threads sweeping 2-D (c,b) blocks were slower (8x4 2.82, 16x2 2.82, 4x8 3.04 against 2.33). Energy kernels went
+! 2.25 (six arrays) -> 2.05 (compact V) -> 0.97 (four arrays) -> 0.59 (three, tiles of 4). The per-triple energies
+! come to the host and are added with m_o in ascending triple order (i, then j, then k); then times 1/3. No atomics,
+! no dependence on thread scheduling, and the tile size only changes how the work is cut.
+!
+! TILES. Q is 3 nv^3 T doubles (24 nv^3 bytes per triple); T = budget / (24 nv^3), `tile_triples` forces it
+! (tests). `budget_bytes` = 0 means 2 GiB, raised to one triple if that is more (a default must not refuse a large
+! virtual space); an explicit budget below one triple is a refusal. The three slots are kept for a degenerate triple
+! too, so the plan does not depend on which triples a tile holds.
+!
+! DEVICE MEMORY, doubles: tvb and tvb2 (nv + no) nv no^2 each, the slots S nv^2 (nv + no), Q 3 nv^3 T, vm 3 nv^2 T,
+! vt 3 nv T, row sums nv^2 T, column sums nv T, plus T energies and 7 T integers. At no = 20, nv = 265, S = 40,
+! T = 4: 484 MB + 6401 MB + 1787 MB + 7 MB + 3 MB = 8683 MB (logged as the device scratch).
+!
+! RESIDENCY, as trc_rccsd_triples_dev: `ints` and `amps` must be current on the device; the scratch maps its own
+! arrays (`enter data create` in `init`, `exit data delete` in `release`) and records `ints%stamp`.
+!
+! INDEX RANGES. Q, the slots and every flat kernel index are 64-bit (3 nv^3 T passes 2^31 already at nv = 265). The
+! gemm dimensions and leading dimensions are 32-bit: nv^2 and no^2 are checked in `init`.
+module trc_rccsd_triples_ijk
+   use pic_types, only: dp, int32, int64
+   use pic_timer, only: timer_type
+   use pic_logger, only: global_logger
+   use pic_strings, only: to_string
+   use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_linalg, only: trc_linalg_t
+   use trc_rccsd_ints, only: trc_rccsd_ints_t
+   use trc_rccsd_inter, only: trc_rccsd_amps_t
+   use trc_rccsd_triples_dev, only: trc_rccsd_triples_dev_options_t
+   implicit none
+   private
+
+   public :: trc_rccsd_triples_ijk_scratch_t
+   public :: rccsd_triples_ijk_run, rccsd_triples_ijk_run_scratch
+
+   integer(int64), parameter :: DEFAULT_BUDGET = 2147483648_int64  !! bytes of the Q tile when `budget_bytes` is 0
+   integer(int64), parameter :: DEFAULT_SLICE_BYTES = 8589934592_int64  !! bytes of cached slices when `slice_bytes` is 0
+
+   type :: trc_rccsd_triples_ijk_scratch_t
+      !! The device arrays of one occupied-driven (T) and the plan they were sized for, see the module header
+      type(error_t) :: status   !! set by `init`: a refusal leaves its message here and the type empty
+      integer :: no = 0
+      integer :: nv = 0
+      integer :: stamp = 0               !! `ints%stamp` of the integrals `init` planned for
+      integer(int64) :: ncap = 0         !! occupied triples per tile
+      integer(int64) :: ntotal = 0       !! no (no + 1) (no + 2) / 6
+      integer(int64) :: bytes = 0        !! device bytes of the arrays below
+      integer(int64) :: ntiles = 0       !! tiles of the last run
+      integer(int64) :: ngathers = 0     !! ovvv slices gathered in the last run
+      integer :: nslot = 0               !! A' slices the cache holds, 4..2 no
+      integer(int64) :: tick = 0         !! triples processed: the clock of the cache
+      integer, allocatable :: orb_slot(:)
+      !! slot holding the slice of key o + no (layout - 1), layout 1 A' and 2 A2', 0 for none (2 no)
+      integer, allocatable :: slot_orb(:)            !! key in each slot, 0 for none (nslot)
+      integer(int64), allocatable :: slot_used(:)    !! tick of the last triple that used each slot (nslot)
+      real(dp) :: seconds_wide = 0.0_dp, seconds_per = 0.0_dp, seconds_energy = 0.0_dp  !! device seconds, last run
+      real(dp) :: seconds_gather = 0.0_dp                              !! repacks and slice gathers, last run
+      real(dp) :: flops_wide = 0.0_dp, flops_per = 0.0_dp  !! counted flops of the wide and the per-array gemms, last run
+      real(dp), allocatable :: tvb(:)    !! B' of every (o2,o3), (nv + no, nv, no, no): t2(o3,o2,w,f), then -ooov(o2,m,o3,w)
+      real(dp), allocatable :: tvb2(:)   !! tvb2(:,:,o3,o2) = tvb(:,:,o2,o3): runs over o3 contiguous
+      real(dp), allocatable :: gs(:)
+      !! slots, (nv, nv, nv + no, nslot): A'(x,y,:) = [ovvv(o,x,f,y) | t2(m,o,y,x)] or A2'(x,y,:) = A'(y,x,:)
+      real(dp), allocatable :: q(:)      !! the Q tile, (nv^3, 6, ncap)
+      real(dp), allocatable :: part(:)   !! row sums of the energy, (nv[c], nv[b], ncap)
+      real(dp), allocatable :: vm(:)     !! per triple of the tile ovov(i,p,j,q), ovov(i,p,k,q), ovov(j,p,k,q): (nv, nv, 3, ncap)
+      real(dp), allocatable :: vt(:)     !! per triple of the tile t1(i,p), t1(j,p), t1(k,p): (nv, 3, ncap)
+      real(dp), allocatable :: col(:)    !! column sums of the rows, (nv, ncap)
+      real(dp), allocatable :: etrip(:)  !! E_ijk of each triple of the tile, ncap
+      integer, allocatable :: trip(:, :)  !! (i,j,k) of each triple of the tile, 3 x ncap
+      integer, allocatable :: amap(:, :)
+      !! per triple of the tile: for U1..U3 the array that holds it, then 1 (0 for a skipped i = j = k triple), 4 x ncap
+      logical :: diagonal = .false.      !! compute the i = j = k triples (`diagonal_triples`)
+   contains
+      procedure :: init => scratch_init
+      procedure :: release => scratch_release
+   end type trc_rccsd_triples_ijk_scratch_t
+
+contains
+
+   ! ---------------------------------------------------------------------
+   ! the scratch
+   ! ---------------------------------------------------------------------
+
+   subroutine scratch_init(this, ints, opts)
+      !! Plans the tile and maps the arrays; a refusal is in `this%status` and leaves the type empty
+      class(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: this
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_triples_dev_options_t), intent(in) :: opts
+
+      integer(int64) :: no, nv, nv3, budget, per_triple
+      integer :: ierr
+
+      call this%release()
+      call this%status%clear()
+      if (ints%stamp == 0 .or. .not. allocated(ints%ovvv) .or. .not. allocated(ints%ooov) .or. &
+          .not. allocated(ints%ovov) .or. .not. allocated(ints%eps_o) .or. .not. allocated(ints%eps_v)) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_ijk: the integral blocks are empty (no successful build)")
+         return
+      end if
+      if (ints%no < 1 .or. ints%nv < 1) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_ijk: no occupied or no virtual orbitals: there are no triples")
+         return
+      end if
+      if (opts%budget_bytes < 0 .or. opts%tile_triples < 0 .or. opts%slice_bytes < 0) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_ijk: a negative budget or tile size")
+         return
+      end if
+      no = ints%no
+      nv = ints%nv
+      nv3 = nv*nv*nv
+      if (nv*nv > int(huge(0_int32), int64) .or. no*no > int(huge(0_int32), int64)) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_ijk: a gemm dimension would pass 2^31-1 ("// &
+                              to_string(ints%no)//" occupied, "//to_string(ints%nv)//" virtual)")
+         return
+      end if
+      this%no = ints%no
+      this%nv = ints%nv
+      this%ntotal = no*(no + 1)*(no + 2)/6
+      per_triple = 24_int64*nv3
+      if (opts%budget_bytes > 0) then
+         budget = opts%budget_bytes
+      else
+         budget = max(DEFAULT_BUDGET, per_triple)
+      end if
+      if (opts%tile_triples > 0) then
+         this%ncap = min(opts%tile_triples, this%ntotal)
+      else
+         this%ncap = min(budget/per_triple, this%ntotal)
+      end if
+      if (this%ncap < 1) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_ijk: the budget of "//to_string(budget)// &
+                              " bytes does not hold one occupied triple ("//to_string(per_triple)//" bytes of Q)")
+         this%no = 0
+         this%nv = 0
+         return
+      end if
+      allocate (this%tvb((nv + no)*nv*no*no), stat=ierr)
+      if (ierr == 0) allocate (this%tvb2((nv + no)*nv*no*no), stat=ierr)
+      if (opts%slice_bytes > 0) then
+         this%nslot = int(min(max(opts%slice_bytes/(8_int64*nv*nv*(nv + no)), 4_int64), 2*no))
+      else
+         this%nslot = int(min(max(DEFAULT_SLICE_BYTES/(8_int64*nv*nv*(nv + no)), 4_int64), 2*no))
+      end if
+      if (ierr == 0) allocate (this%gs(this%nslot*nv*nv*(nv + no)), stat=ierr)
+      if (ierr == 0) allocate (this%orb_slot(2*no), this%slot_orb(this%nslot), this%slot_used(this%nslot), stat=ierr)
+      if (ierr == 0) allocate (this%q(3_int64*nv3*this%ncap), stat=ierr)
+      if (ierr == 0) allocate (this%part(nv*nv*this%ncap), stat=ierr)
+      if (ierr == 0) allocate (this%vm(nv*nv*3*this%ncap), this%vt(nv*3*this%ncap), stat=ierr)
+      if (ierr == 0) allocate (this%col(nv*this%ncap), stat=ierr)
+      if (ierr == 0) allocate (this%etrip(this%ncap), stat=ierr)
+      if (ierr == 0) allocate (this%trip(3, this%ncap), stat=ierr)
+      if (ierr == 0) allocate (this%amap(4, this%ncap), stat=ierr)
+      this%diagonal = opts%diagonal_triples
+      if (ierr /= 0) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_ijk: the host arrays of the plan could not be allocated")
+         call scratch_free(this)
+         return
+      end if
+      !$acc enter data create(this%tvb, this%tvb2, this%gs, this%q, this%part, this%vm, this%vt, this%col, this%etrip, this%trip, &
+      !$acc                   this%amap)
+      this%stamp = ints%stamp
+      this%bytes = 8_int64*(2*(nv + no)*nv*no*no + this%nslot*nv*nv*(nv + no) + 3_int64*nv3*this%ncap + &
+                            nv*nv*this%ncap + 3*nv*nv*this%ncap + 4*nv*this%ncap + this%ncap) + 28_int64*this%ncap
+   end subroutine scratch_init
+
+   subroutine scratch_free(this)
+      !! Frees what is allocated; the device copies only for the arrays `init` mapped (all or none)
+      class(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: this
+
+      if (this%stamp /= 0) then
+         !$acc exit data delete(this%tvb, this%tvb2, this%gs, this%q, this%part, this%vm, this%vt, this%col, &
+         !$acc                  this%etrip, this%trip, &
+         !$acc                  this%amap)
+      end if
+      if (allocated(this%tvb)) deallocate (this%tvb)
+      if (allocated(this%tvb2)) deallocate (this%tvb2)
+      if (allocated(this%gs)) deallocate (this%gs)
+      if (allocated(this%q)) deallocate (this%q)
+      if (allocated(this%part)) deallocate (this%part)
+      if (allocated(this%col)) deallocate (this%col)
+      if (allocated(this%vm)) deallocate (this%vm)
+      if (allocated(this%vt)) deallocate (this%vt)
+      if (allocated(this%etrip)) deallocate (this%etrip)
+      if (allocated(this%trip)) deallocate (this%trip)
+      if (allocated(this%orb_slot)) deallocate (this%orb_slot)
+      if (allocated(this%slot_orb)) deallocate (this%slot_orb)
+      if (allocated(this%slot_used)) deallocate (this%slot_used)
+      this%nslot = 0
+      if (allocated(this%amap)) deallocate (this%amap)
+      this%no = 0
+      this%nv = 0
+      this%stamp = 0
+      this%ncap = 0
+      this%ntotal = 0
+      this%bytes = 0
+   end subroutine scratch_free
+
+   subroutine scratch_release(this)
+      !! Frees both copies; safe on an empty type
+      class(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: this
+
+      call scratch_free(this)
+   end subroutine scratch_release
+
+   ! ---------------------------------------------------------------------
+   ! the entry points
+   ! ---------------------------------------------------------------------
+
+   subroutine rccsd_triples_ijk_run(ints, amps, e_t, status, opts, seconds, triple_energies)
+      !! E(T) in Hartree on the device from the DEVICE copies of `ints` and `amps`, driven by occupied triples
+      !!
+      !! Refused, with `e_t` = 0 and the reason in `status`: empty integrals, amplitudes missing or of another size
+      !! than the integrals, no occupied or no virtual orbitals, a budget that does not hold one occupied triple, a
+      !! gemm dimension above 2^31-1, and a result that is NaN or infinite. `triple_energies`, when present, is
+      !! allocated to no (no + 1) (no + 2) / 6 in the order of the occupied triples i >= j >= k (i = 1..no, j = 1..i,
+      !! k = 1..j, k fastest); each entry is m_o E_ijk / 3, and E(T) is their sum taken in that order.
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      real(dp), intent(out) :: e_t
+      type(error_t), intent(out) :: status
+      type(trc_rccsd_triples_dev_options_t), intent(in), optional :: opts
+      real(dp), intent(out), optional :: seconds  !! device wall seconds of the whole call
+      real(dp), intent(out), allocatable, optional :: triple_energies(:)
+
+      type(trc_rccsd_triples_dev_options_t) :: o
+      type(trc_rccsd_triples_ijk_scratch_t) :: ts
+      type(timer_type) :: clock
+      type(trc_linalg_t) :: la
+
+      e_t = 0.0_dp
+      if (present(seconds)) seconds = 0.0_dp
+      if (present(opts)) o = opts
+      call la%init(1)
+      call clock%start()
+      call ts%init(ints, o)
+      if (ts%status%has_error()) then
+         call status%set(ERROR_VALIDATION, ts%status%get_message())
+      else
+         call rccsd_triples_ijk_run_scratch(ints, amps, ts, la, e_t, status, triple_energies)
+         call la%sync()
+         if (present(seconds)) seconds = clock%get_elapsed_time()
+         if (o%verbose .and. .not. status%has_error()) call log_summary(ints, ts, e_t, clock%get_elapsed_time())
+      end if
+      call ts%release()
+      call la%release()
+   end subroutine rccsd_triples_ijk_run
+
+   subroutine rccsd_triples_ijk_run_scratch(ints, amps, ts, la, e_t, status, triple_energies)
+      !! One (T) with a scratch that `ts%init` planned for these integrals; see `rccsd_triples_ijk_run`
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: ts
+      type(trc_linalg_t), intent(in) :: la
+      real(dp), intent(out) :: e_t
+      type(error_t), intent(out) :: status
+      real(dp), intent(out), allocatable, optional :: triple_energies(:)
+
+      character(len=:), allocatable :: why
+      type(timer_type) :: clock
+      integer(int64) :: done, nt
+      integer :: cursor(3)
+      integer :: s, i, j, k
+      real(dp) :: mo, e_sum
+
+      e_t = 0.0_dp
+      why = inputs_refusal(ints, amps, ts)
+      if (len(why) > 0) then
+         call status%set(ERROR_VALIDATION, "trc_rccsd_triples_ijk: "//why)
+         return
+      end if
+      if (present(triple_energies)) then
+         if (allocated(triple_energies)) deallocate (triple_energies)
+         allocate (triple_energies(ts%ntotal))
+      end if
+      ts%seconds_wide = 0.0_dp
+      ts%seconds_per = 0.0_dp
+      ts%seconds_energy = 0.0_dp
+      ts%seconds_gather = 0.0_dp
+      ts%flops_wide = 0.0_dp
+      ts%flops_per = 0.0_dp
+      ts%ntiles = 0
+      ts%ngathers = 0
+      call la%sync()
+      call clock%start()
+      call kernel_pack_tvb(ts%no, ts%nv, amps%t2, ints%ooov, ts%tvb)
+      call kernel_pack_tvb2(ts%no, ts%nv, ts%tvb, ts%tvb2)
+      call la%sync()
+      ts%seconds_gather = ts%seconds_gather + clock%get_elapsed_time()
+      ! The cache starts empty on every call: the amplitudes or integrals may have changed since the last.
+      ts%orb_slot = 0
+      ts%slot_orb = 0
+      ts%slot_used = 0
+      ts%tick = 0
+      cursor = [1, 1, 1]
+      done = 0
+      e_sum = 0.0_dp
+      do while (done < ts%ntotal)
+         ! A tile is a run of consecutive k at one (i,j): cut where (i,j) changes or at capacity.
+         nt = min(ts%ncap, ts%ntotal - done, int(cursor(2) - cursor(3) + 1, int64))
+         do s = 1, int(nt)
+            ts%trip(:, s) = cursor
+            ! k fastest, then j, then i: i >= j >= k
+            cursor(3) = cursor(3) + 1
+            if (cursor(3) > cursor(2)) then
+               cursor(3) = 1
+               cursor(2) = cursor(2) + 1
+               if (cursor(2) > cursor(1)) then
+                  cursor(2) = 1
+                  cursor(1) = cursor(1) + 1
+               end if
+            end if
+         end do
+         call run_products(ints, amps, ts, la, int(nt))
+         !$acc update device(ts%trip(1:3, 1:nt), ts%amap(1:4, 1:nt))
+         call tile_energy(ints, amps, ts, la, int(nt))
+         !$acc update self(ts%etrip(1:nt))
+         ! Added in triple order with the multiplicity of the ordered triples each one stands for.
+         do s = 1, int(nt)
+            i = ts%trip(1, s)
+            j = ts%trip(2, s)
+            k = ts%trip(3, s)
+            mo = 6.0_dp
+            if (i == k) then
+               mo = 1.0_dp
+            else if (i == j .or. j == k) then
+               mo = 3.0_dp
+            end if
+            e_sum = e_sum + mo*ts%etrip(s)
+            if (present(triple_energies)) triple_energies(done + s) = mo*ts%etrip(s)/3.0_dp
+         end do
+         done = done + nt
+         ts%ntiles = ts%ntiles + 1
+      end do
+      e_t = e_sum/3.0_dp
+      if (.not. abs(e_t) <= huge(1.0_dp)) then
+         e_t = 0.0_dp
+         call status%set(ERROR_VALIDATION, "trc_rccsd_triples_ijk: E(T) is NaN or infinite (a zero denominator or a "// &
+                         "non-finite amplitude or integral)")
+      end if
+   end subroutine rccsd_triples_ijk_run_scratch
+
+   function inputs_refusal(ints, amps, ts) result(why)
+      !! Empty when the inputs can be used with the scratch, else the reason
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_rccsd_triples_ijk_scratch_t), intent(in) :: ts
+      character(len=:), allocatable :: why
+
+      why = ""
+      if (ts%stamp == 0 .or. .not. allocated(ts%q)) then
+         why = "the scratch is not initialised"
+      else if (ints%stamp == 0 .or. .not. allocated(ints%ovvv) .or. .not. allocated(ints%ooov) .or. &
+               .not. allocated(ints%ovov) .or. .not. allocated(ints%eps_o) .or. .not. allocated(ints%eps_v)) then
+         why = "the integral blocks are empty (no successful build)"
+      else if (ts%stamp /= ints%stamp) then
+         why = "the scratch was planned for an earlier build of the integrals (stale stamp): init it again"
+      else if (ts%no /= ints%no .or. ts%nv /= ints%nv) then
+         why = "the scratch has the sizes of other integrals"
+      else if (.not. allocated(amps%t1) .or. .not. allocated(amps%t2)) then
+         why = "the amplitudes are not allocated"
+      else if (amps%no /= ints%no .or. amps%nv /= ints%nv) then
+         why = "the amplitudes are of another size than the integrals"
+      else if (any(shape(amps%t1) /= [ints%no, ints%nv]) .or. any(shape(amps%t2) /= [ints%no, ints%no, ints%nv, ints%nv])) then
+         why = "the amplitude arrays do not have the shape (no, nv) and (no, no, nv, nv)"
+      else if (any(shape(ints%ovvv) /= [ints%no, ints%nv, ints%nv, ints%nv]) .or. &
+               any(shape(ints%ooov) /= [ints%no, ints%no, ints%no, ints%nv]) .or. &
+               any(shape(ints%ovov) /= [ints%no, ints%nv, ints%no, ints%nv]) .or. &
+               size(ints%eps_o) /= ints%no .or. size(ints%eps_v) /= ints%nv) then
+         why = "the integral blocks do not have the shapes of (no, nv)"
+      end if
+      if (len(why) > 0) why = trim(why)//" ("//to_string(ints%no)//" occupied, "//to_string(ints%nv)//" virtual)"
+   end function inputs_refusal
+
+   ! ---------------------------------------------------------------------
+   ! one triple's steps
+   ! ---------------------------------------------------------------------
+
+   subroutine run_products(ints, amps, ts, la, nt)
+      !! The arrays of the `nt` triples (i,j,k0..k1) of the tile: the products whose operands do not depend on k are one
+      !! wide gemm over the run, the two whose slot does (A2'(k)) one gemm per triple (module header)
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: ts
+      type(trc_linalg_t), intent(in) :: la
+      integer, intent(in) :: nt
+
+      type(timer_type) :: clock
+      integer :: i, j, k, k0, kb, k2, s, nv, no, kk, sa, sb, sc, sk
+      real(dp) :: v, gsec
+
+      nv = ts%nv
+      no = ts%no
+      kk = nv + no
+      i = ts%trip(1, 1)
+      j = ts%trip(2, 1)
+      k0 = ts%trip(3, 1)
+      ! The array map: U2 = U1 when k = j, U3 = U2 when i = j; an i = j = k triple (k = j = i, the end of an i = j
+      ! run) is skipped unless asked for.
+      do s = 1, nt
+         k = ts%trip(3, s)
+         ts%amap(1, s) = 1
+         ts%amap(2, s) = merge(1, 2, k == j)
+         ts%amap(3, s) = merge(ts%amap(2, s), 3, i == j)
+         ts%amap(4, s) = merge(0, 1, i == k .and. .not. ts%diagonal)
+      end do
+      kb = ts%trip(3, nt)
+      if (ts%amap(4, nt) == 0) kb = kb - 1
+      if (kb < k0) return
+      k2 = min(kb, j - 1)   ! U2 is its own array only for k < j
+      v = real(nv, dp)
+      ! the run's fixed slices, A'(i), A'(j), A2'(j)
+      call la%sync()
+      call clock%start()
+      ts%tick = ts%tick + 1
+      sa = ensure_slot(ints, amps, ts, i, 1, [i, j, j + no, j + no])
+      sb = ensure_slot(ints, amps, ts, j, 1, [i, j, j + no, j + no])
+      sc = ensure_slot(ints, amps, ts, j, 2, [i, j, j + no, j + no])
+      call la%sync()
+      ts%seconds_gather = ts%seconds_gather + clock%get_elapsed_time()
+      call clock%start()
+      ! U1 = T(i,j,k) nat [A'(i), tvb(j,k)] + T(j,i,k) swp [A2'(j), tvb(i,k)], k = k0..kb: B' columns from tvb2
+      call wide_gemm(ts, la, 1, 1, sa, tvb2_pos(ts, k0, j), kb - k0 + 1, 0.0_dp, ts%tvb2)
+      call wide_gemm(ts, la, 1, 1, sc, tvb2_pos(ts, k0, i), kb - k0 + 1, 1.0_dp, ts%tvb2)
+      ! U2 nat T(i,k,j) [A'(i), tvb(k,j)], k = k0..k2
+      if (k2 >= k0) call wide_gemm(ts, la, 2, 1, sa, tvb2_pos(ts, k0, j), k2 - k0 + 1, 0.0_dp, ts%tvb)
+      ! U3 nat T(j,k,i) [A'(j), tvb(k,i)], k = k0..kb, unless U3 = U2 (i = j)
+      if (i /= j) call wide_gemm(ts, la, 3, 1, sb, tvb2_pos(ts, k0, i), kb - k0 + 1, 0.0_dp, ts%tvb)
+      call la%sync()
+      ts%seconds_wide = ts%seconds_wide + clock%get_elapsed_time()
+      ts%flops_wide = ts%flops_wide + 2.0_dp*v*v*v*kk*(2*(kb - k0 + 1) + max(k2 - k0 + 1, 0) + &
+                                                       merge(kb - k0 + 1, 0, i /= j))
+      ! the swapped terms of U2 and U3 have the slot A2'(k): one gemm per triple
+      gsec = 0.0_dp
+      call clock%start()
+      do s = 1, kb - k0 + 1
+         k = k0 + s - 1
+         sk = ensure_slot(ints, amps, ts, k, 2, [i, j, j + no, k + no], la, gsec)
+         ! U2 += T(k,i,j) swp [A2'(k), tvb(i,j)]
+         if (k <= k2) call wide_gemm(ts, la, 2, s, sk, tvb2_pos(ts, i, j), 1, 1.0_dp, ts%tvb)
+         ! U3 += T(k,j,i) swp [A2'(k), tvb(j,i)]
+         if (i /= j) call wide_gemm(ts, la, 3, s, sk, tvb2_pos(ts, j, i), 1, 1.0_dp, ts%tvb)
+         ts%flops_per = ts%flops_per + 2.0_dp*v*v*v*kk*(merge(1, 0, k <= k2) + merge(1, 0, i /= j))
+      end do
+      call la%sync()
+      ts%seconds_per = ts%seconds_per + clock%get_elapsed_time() - gsec
+      ts%seconds_gather = ts%seconds_gather + gsec
+   end subroutine run_products
+
+   pure function tvb2_pos(ts, a, b) result(pos)
+      !! Position of column block (:, :, a, b) in tvb or tvb2, both (nv + no, nv, no, no)
+      type(trc_rccsd_triples_ijk_scratch_t), intent(in) :: ts
+      integer, intent(in) :: a, b
+      integer(int64) :: pos
+
+      pos = 1_int64 + int(ts%nv + ts%no, int64)*ts%nv*((a - 1) + int(ts%no, int64)*(b - 1))
+   end function tvb2_pos
+
+   subroutine wide_gemm(ts, la, u, s0, slot1, bpos, nk, beta, bt)
+      !! Frame u of the tile's triples s0..s0+nk-1 (consecutive in storage) += A B, A the slot, B nk column blocks of
+      !! B' starting at bt(bpos): gemm (nv^2 x (nv + no))((nv + no) x nv nk)
+      type(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: ts
+      type(trc_linalg_t), intent(in) :: la
+      integer, intent(in) :: u, s0, slot1, nk
+      integer(int64), intent(in) :: bpos
+      real(dp), intent(in) :: beta
+      real(dp), intent(in) :: bt(*)
+      integer :: nv, no, nv2, kk
+      integer(int64) :: nv3, gbase, qbase
+
+      nv = ts%nv
+      no = ts%no
+      nv2 = nv*nv
+      kk = nv + no
+      nv3 = int(nv, int64)**3
+      gbase = 1_int64 + int(slot1 - 1, int64)*nv2*kk
+      qbase = 1_int64 + (int(u - 1, int64)*ts%ncap + (s0 - 1))*nv3
+      call la%gemm("N", "N", nv2, nv*nk, kk, 1.0_dp, ts%gs(gbase), nv2, bt(bpos), kk, beta, ts%q(qbase), nv2)
+   end subroutine wide_gemm
+
+   function ensure_slot(ints, amps, ts, o, layout, protect, la, gsec) result(slot)
+      !! The slot holding the slice (o, layout), gathered if missing; `protect` are the keys the current work needs.
+      !! With `la` and `gsec`, a gather is synchronised and its seconds added to `gsec`
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: ts
+      integer, intent(in) :: o, layout, protect(4)
+      type(trc_linalg_t), intent(in), optional :: la
+      real(dp), intent(inout), optional :: gsec
+      integer :: slot, key
+      type(timer_type) :: clock
+
+      key = o + ts%no*(layout - 1)
+      slot = cache_slot(ts, key, protect)
+      if (ts%slot_orb(slot) /= key) then
+         if (present(la)) then
+            call la%sync()
+            call clock%start()
+         end if
+         if (ts%slot_orb(slot) /= 0) ts%orb_slot(ts%slot_orb(slot)) = 0
+         call kernel_gather_slice(ts%no, ts%nv, o, layout, ints%ovvv, amps%t2, &
+                                  ts%gs(1_int64 + int(slot - 1, int64)*ts%nv*ts%nv*(ts%nv + ts%no)))
+         ts%slot_orb(slot) = key
+         ts%orb_slot(key) = slot
+         ts%ngathers = ts%ngathers + 1
+         if (present(la)) then
+            call la%sync()
+            gsec = gsec + clock%get_elapsed_time()
+         end if
+      end if
+      ts%slot_used(slot) = ts%tick
+   end function ensure_slot
+
+   function cache_slot(ts, key, protect) result(slot)
+      !! The slot for the slice `key`: the one holding it, else an empty one, else the least recently used one that
+      !! holds none of the keys in `protect` (there is one: at least four slots)
+      type(trc_rccsd_triples_ijk_scratch_t), intent(in) :: ts
+      integer, intent(in) :: key, protect(4)
+      integer :: slot
+      integer :: k
+
+      slot = ts%orb_slot(key)
+      if (slot /= 0) return
+      do k = 1, ts%nslot
+         if (ts%slot_orb(k) == 0) then
+            slot = k
+            return
+         end if
+      end do
+      do k = 1, ts%nslot
+         if (any(protect == ts%slot_orb(k))) cycle
+         if (slot == 0) then
+            slot = k
+         else if (ts%slot_used(k) < ts%slot_used(slot)) then
+            slot = k
+         end if
+      end do
+   end function cache_slot
+
+   subroutine tile_energy(ints, amps, ts, la, nt)
+      !! The energy kernels over the `nt` triples of the tile; the sums stay on the device
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_rccsd_triples_ijk_scratch_t), intent(inout) :: ts
+      type(trc_linalg_t), intent(in) :: la
+      integer, intent(in) :: nt
+
+      type(timer_type) :: clock
+
+      call la%sync()
+      call clock%start()
+      call kernel_gather_vm(ts%no, ts%nv, nt, ts%ncap, ints%ovov, ts%trip, ts%vm)
+      call kernel_gather_vt(ts%no, ts%nv, nt, ts%ncap, amps%t1, ts%trip, ts%vt)
+      call kernel_energy_rows(ts%no, ts%nv, nt, ts%ncap, ts%q, ts%vm, ts%vt, ints%eps_o, ints%eps_v, ts%trip, &
+                              ts%amap, ts%part)
+      call kernel_energy_cols(ts%nv, nt, ts%ncap, ts%part, ts%col)
+      call kernel_energy_sum(ts%nv, nt, ts%ncap, ts%col, ts%etrip)
+      call la%sync()
+      ts%seconds_energy = ts%seconds_energy + clock%get_elapsed_time()
+   end subroutine tile_energy
+
+   subroutine log_summary(ints, ts, e_t, seconds)
+      !! The verbose table: tiles, triples, device time by stage, counted flops and the rates
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_triples_ijk_scratch_t), intent(in) :: ts
+      real(dp), intent(in) :: e_t, seconds
+
+      character(len=240) :: line
+
+      write (line, "(a,i0,a,i0,a,f20.12,a,f9.2,a)") "  rccsd (T) device ijk: no ", ints%no, " nv ", ints%nv, "   E(T) ", &
+         e_t, "   ", seconds, " s"
+      call global_logger%info(trim(line))
+      write (line, "(a,i0,a,i0,a,i0,a,f9.1,a,i0,a)") "    ", ts%ntiles, " tiles of up to ", ts%ncap, &
+         " occupied triples (", ts%ntotal, " in all), device scratch ", real(ts%bytes, dp)/1.0e6_dp, " MB with ", &
+         ts%nslot, " ovvv slices cached"
+      call global_logger%info(trim(line))
+      write (line, "(a,f9.3,a,f9.3,a,f9.3,a,f9.3,a,i0,a)") "    seconds: wide gemms ", ts%seconds_wide, &
+         "  per-array gemms ", ts%seconds_per, "  energy kernels ", ts%seconds_energy, "  repacks and gathers ", &
+         ts%seconds_gather, " (", ts%ngathers, &
+         " ovvv slices)"
+      call global_logger%info(trim(line))
+      write (line, "(a,es10.3,a,f9.1,a,es10.3,a,f9.1,a,f9.1,a)") "    flops: wide ", ts%flops_wide, " (", &
+         1.0e-9_dp*ts%flops_wide/max(ts%seconds_wide, tiny(1.0_dp)), " GFLOP/s)  per-array ", ts%flops_per, " (", &
+         1.0e-9_dp*ts%flops_per/max(ts%seconds_per, tiny(1.0_dp)), " GFLOP/s)  both ", &
+         1.0e-9_dp*(ts%flops_wide + ts%flops_per)/max(ts%seconds_wide + ts%seconds_per, tiny(1.0_dp)), " GFLOP/s"
+      call global_logger%info(trim(line))
+   end subroutine log_summary
+
+   ! ---------------------------------------------------------------------
+   ! the kernels. Each takes its arrays as explicit-shape dummies and runs one
+   ! `do concurrent` over ONE flattened index, whose body calls an item routine
+   ! of this module and assigns one array element. No `x%name` appears in any.
+   ! ---------------------------------------------------------------------
+
+   subroutine kernel_pack_tvb(no, nv, t2, ooov, tvb)
+      !! tvb(f,w,o2,o3) = t2(o3,o2,w,f) for f <= nv, tvb(nv+m,w,o2,o3) = -ooov(o2,m,o3,w): B' of every (o2,o3)
+      integer, intent(in) :: no, nv
+      real(dp), intent(in) :: t2(int(no, int64)*no*nv*nv)
+      real(dp), intent(in) :: ooov(int(no, int64)*no*no*nv)
+      real(dp), intent(out) :: tvb(int(nv + no, int64)*nv*no*no)
+      integer(int64) :: t, n
+
+      n = int(nv + no, int64)*nv*no*no
+      do concurrent(t=1:n)
+         tvb(t) = tvb_item(t, no, nv, t2, ooov)
+      end do
+   end subroutine kernel_pack_tvb
+
+   subroutine kernel_pack_tvb2(no, nv, tvb, tvb2)
+      !! tvb2(:,:,a,b) = tvb(:,:,b,a)
+      integer, intent(in) :: no, nv
+      real(dp), intent(in) :: tvb(int(nv + no, int64)*nv*no*no)
+      real(dp), intent(out) :: tvb2(int(nv + no, int64)*nv*no*no)
+      integer(int64) :: t, n
+
+      n = int(nv + no, int64)*nv*no*no
+      do concurrent(t=1:n)
+         tvb2(t) = tvb2_item(t, no, nv, tvb)
+      end do
+   end subroutine kernel_pack_tvb2
+
+   subroutine kernel_gather_slice(no, nv, o, layout, ovvv, t2, g)
+      !! One slot: layout 1 A'((x,y),r) = [ovvv(o,x,f,y) | t2(m,o,y,x)], layout 2 A2'((x,y),r) = A'((y,x),r)
+      integer, intent(in) :: no, nv, o, layout
+      real(dp), intent(in) :: ovvv(int(no, int64)*nv*nv*nv)
+      real(dp), intent(in) :: t2(int(no, int64)*no*nv*nv)
+      real(dp), intent(out) :: g(int(nv, int64)*nv*(nv + no))
+      integer(int64) :: t, n
+
+      n = int(nv, int64)*nv*(nv + no)
+      do concurrent(t=1:n)
+         g(t) = slice_item(t, no, nv, o, layout, ovvv, t2)
+      end do
+   end subroutine kernel_gather_slice
+
+   subroutine kernel_gather_vm(no, nv, nt, ncap, ovov, trip, vm)
+      !! vm(:,:,1,s) = ovov(i,:,j,:), vm(:,:,2,s) = ovov(i,:,k,:), vm(:,:,3,s) = ovov(j,:,k,:) for (i,j,k) = trip(:,s)
+      integer, intent(in) :: no, nv, nt
+      integer(int64), intent(in) :: ncap
+      real(dp), intent(in) :: ovov(no, nv, no, nv)
+      integer, intent(in) :: trip(3, ncap)
+      real(dp), intent(out) :: vm(int(nv, int64)*nv*3*ncap)
+      integer(int64) :: t, n
+
+      n = int(nv, int64)*nv*3*nt
+      do concurrent(t=1:n)
+         vm(t) = vm_item(t, no, nv, ncap, ovov, trip)
+      end do
+   end subroutine kernel_gather_vm
+
+   subroutine kernel_gather_vt(no, nv, nt, ncap, t1, trip, vt)
+      !! vt(:,1,s) = t1(i,:), vt(:,2,s) = t1(j,:), vt(:,3,s) = t1(k,:) for (i,j,k) = trip(:,s)
+      integer, intent(in) :: no, nv, nt
+      integer(int64), intent(in) :: ncap
+      real(dp), intent(in) :: t1(no, nv)
+      integer, intent(in) :: trip(3, ncap)
+      real(dp), intent(out) :: vt(int(nv, int64)*3*ncap)
+      integer(int64) :: t, n
+
+      n = int(nv, int64)*3*nt
+      do concurrent(t=1:n)
+         vt(t) = vt_item(t, no, nv, ncap, t1, trip)
+      end do
+   end subroutine kernel_gather_vt
+
+   subroutine kernel_energy_rows(no, nv, nt, ncap, q, vm, vt, eps_o, eps_v, trip, amap, part)
+      !! part(c,b,s) = sum_{a>=b} of the energy of (a,b,c) for occupied triple s (0 for c > b), s = 1..nt
+      integer, intent(in) :: no, nv, nt
+      integer(int64), intent(in) :: ncap
+      real(dp), intent(in) :: q(3_int64*nv*nv*nv*ncap)
+      real(dp), intent(in) :: vm(nv, nv, 3, ncap), vt(nv, 3, ncap), eps_o(no), eps_v(nv)
+      integer, intent(in) :: trip(3, ncap), amap(4, ncap)
+      real(dp), intent(out) :: part(int(nv, int64)*nv*ncap)
+      integer(int64) :: t, n
+
+      n = int(nv, int64)*nv*nt
+      do concurrent(t=1:n)
+         part(t) = row_energy_item(t, no, nv, ncap, q, vm, vt, eps_o, eps_v, trip, amap)
+      end do
+   end subroutine kernel_energy_rows
+
+   subroutine kernel_energy_cols(nv, nt, ncap, part, col)
+      !! col(b,s) = sum_c part(c,b,s), in index order
+      integer, intent(in) :: nv, nt
+      integer(int64), intent(in) :: ncap
+      real(dp), intent(in) :: part(int(nv, int64)*nv*ncap)
+      real(dp), intent(out) :: col(int(nv, int64)*ncap)
+      integer(int64) :: t, n
+
+      n = int(nv, int64)*nt
+      do concurrent(t=1:n)
+         col(t) = run_sum_item(t, nv, int(nv, int64)*nv*ncap, part)
+      end do
+   end subroutine kernel_energy_cols
+
+   subroutine kernel_energy_sum(nv, nt, ncap, col, etrip)
+      !! etrip(s) = sum_b col(b,s), in index order
+      integer, intent(in) :: nv, nt
+      integer(int64), intent(in) :: ncap
+      real(dp), intent(in) :: col(int(nv, int64)*ncap)
+      real(dp), intent(out) :: etrip(ncap)
+      integer(int64) :: s
+
+      do concurrent(s=1:int(nt, int64))
+         etrip(s) = run_sum_item(s, nv, int(nv, int64)*ncap, col)
+      end do
+   end subroutine kernel_energy_sum
+
+   ! ---------------------------------------------------------------------
+   ! the item routines: pure, `routine seq`, explicit-shape dummies, scalars
+   ! only. A flat 1-based index t is the position in the array that is written,
+   ! first index fastest.
+   ! ---------------------------------------------------------------------
+
+   pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
+      !! t - 1 = (i1-1) + n1 ((i2-1) + n2 ((i3-1) + n3 (i4-1))), 64-bit t
+      !$acc routine seq
+      integer(int64), intent(in) :: t
+      integer, intent(in) :: n1, n2, n3
+      integer, intent(out) :: i1, i2, i3, i4
+      integer(int64) :: r
+
+      r = t - 1
+      i1 = int(mod(r, int(n1, int64))) + 1
+      r = r/n1
+      i2 = int(mod(r, int(n2, int64))) + 1
+      r = r/n2
+      i3 = int(mod(r, int(n3, int64))) + 1
+      i4 = int(r/n3) + 1
+   end subroutine split4
+
+   pure function tvb_item(t, no, nv, t2, ooov) result(v)
+      !! tvb(r,w,o2,o3): t2(o3,o2,w,r) for r <= nv, else -ooov(o2,r-nv,o3,w); position t of (nv + no, nv, no, no)
+      !$acc routine seq
+      integer(int64), intent(in) :: t
+      integer, intent(in) :: no, nv
+      real(dp), intent(in) :: t2(int(no, int64)*no*nv*nv)
+      real(dp), intent(in) :: ooov(int(no, int64)*no*no*nv)
+      real(dp) :: v
+      integer :: r, w, o2, o3
+
+      call split4(t, nv + no, nv, no, r, w, o2, o3)
+      if (r <= nv) then
+         v = t2(o3 + int(no, int64)*(o2 - 1) + int(no, int64)*no*(w - 1) + int(no, int64)*no*nv*(r - 1))
+      else
+         v = -ooov(o2 + int(no, int64)*(r - nv - 1) + int(no, int64)*no*(o3 - 1) + int(no, int64)*no*no*(w - 1))
+      end if
+   end function tvb_item
+
+   pure function tvb2_item(t, no, nv, tvb) result(v)
+      !! tvb2(r,w,a,b) = tvb(r,w,b,a), position t of (nv + no, nv, no, no)
+      !$acc routine seq
+      integer(int64), intent(in) :: t
+      integer, intent(in) :: no, nv
+      real(dp), intent(in) :: tvb(int(nv + no, int64)*nv*no*no)
+      real(dp) :: v
+      integer :: r, w, a, b
+
+      call split4(t, nv + no, nv, no, r, w, a, b)
+      v = tvb(r + int(nv + no, int64)*(w - 1) + int(nv + no, int64)*nv*((b - 1) + int(no, int64)*(a - 1)))
+   end function tvb2_item
+
+   pure function slice_item(t, no, nv, o, layout, ovvv, t2) result(v)
+      !! A'((x,y),r) of orbital o, ovvv(o,x,r,y) for r <= nv else t2(r-nv,o,y,x), with x and y exchanged for layout 2;
+      !! position t of (nv, nv, nv + no)
+      !$acc routine seq
+      integer(int64), intent(in) :: t
+      integer, intent(in) :: no, nv, o, layout
+      real(dp), intent(in) :: ovvv(int(no, int64)*nv*nv*nv)
+      real(dp), intent(in) :: t2(int(no, int64)*no*nv*nv)
+      real(dp) :: v
+      integer :: x, y, r, unused, u, w
+
+      call split4(t, nv, nv, nv + no, x, y, r, unused)
+      if (layout == 1) then
+         u = x
+         w = y
+      else
+         u = y
+         w = x
+      end if
+      if (r <= nv) then
+         v = ovvv(o + int(no, int64)*(u - 1) + int(no, int64)*nv*(r - 1) + int(no, int64)*nv*nv*(w - 1))
+      else
+         v = t2(r - nv + int(no, int64)*(o - 1) + int(no, int64)*no*(w - 1) + int(no, int64)*no*nv*(u - 1))
+      end if
+   end function slice_item
+
+   pure function run_sum_item(t, n, nx, x) result(e)
+      !! x((t-1) n + 1) + ... + x(t n), added in index order
+      !$acc routine seq
+      integer(int64), intent(in) :: t, nx
+      integer, intent(in) :: n
+      real(dp), intent(in) :: x(nx)
+      real(dp) :: e
+      integer :: r
+
+      e = 0.0_dp
+      do r = 1, n
+         e = e + x((t - 1)*n + r)
+      end do
+   end function run_sum_item
+
+   pure function w_at(p, q, r, nv, b1, b2, b3, qq, qn) result(w)
+      !! W(p,q,r) = U1(p,q,r) + U2(p,r,q) + U3(q,r,p), (p,q,r) the virtuals of (i,j,k) and U1..U3 the arrays of the
+      !! frames (i,j,k), (i,k,j), (j,k,i) starting `bn` elements into `qq` (module header)
+      !$acc routine seq
+      integer, intent(in) :: p, q, r, nv
+      integer(int64), intent(in) :: b1, b2, b3, qn
+      real(dp), intent(in) :: qq(qn)
+      real(dp) :: w
+      integer(int64) :: n1, n2
+
+      n1 = int(nv, int64)
+      n2 = n1*nv
+      w = qq(b1 + p + n1*(q - 1) + n2*(r - 1)) &
+          + qq(b2 + p + n1*(r - 1) + n2*(q - 1)) &
+          + qq(b3 + q + n1*(r - 1) + n2*(p - 1))
+   end function w_at
+
+   pure function vm_item(t, no, nv, ncap, ovov, trip) result(v)
+      !! vm(p,q,m,s), position t of (nv, nv, 3, nt): ovov(i,p,j,q), ovov(i,p,k,q), ovov(j,p,k,q) for m = 1, 2, 3
+      !$acc routine seq
+      integer(int64), intent(in) :: t, ncap
+      integer, intent(in) :: no, nv
+      real(dp), intent(in) :: ovov(no, nv, no, nv)
+      integer, intent(in) :: trip(3, ncap)
+      real(dp) :: v
+      integer :: p, q, m, s
+
+      call split4(t, nv, nv, 3, p, q, m, s)
+      if (m == 1) then
+         v = ovov(trip(1, s), p, trip(2, s), q)
+      else if (m == 2) then
+         v = ovov(trip(1, s), p, trip(3, s), q)
+      else
+         v = ovov(trip(2, s), p, trip(3, s), q)
+      end if
+   end function vm_item
+
+   pure function vt_item(t, no, nv, ncap, t1, trip) result(v)
+      !! vt(p,m,s), position t of (nv, 3, nt): t1(o,p) for o the m-th orbital of triple s
+      !$acc routine seq
+      integer(int64), intent(in) :: t, ncap
+      integer, intent(in) :: no, nv
+      real(dp), intent(in) :: t1(no, nv)
+      integer, intent(in) :: trip(3, ncap)
+      real(dp) :: v
+      integer :: p, m, s, unused
+
+      call split4(t, nv, 3, 1, p, m, unused, s)
+      v = t1(trip(m, s), p)
+   end function vt_item
+
+   pure function row_energy_item(t, no, nv, ncap, qq, vm, vt, eps_o, eps_v, trip, amap) result(e)
+      !! sum_{a >= b} 1/(s_v D) sum_P X(P) R(P) for the virtual pair (b,c), b >= c, of one occupied triple: position t
+      !! of (nv[c], nv[b], nt[s]); 0 when c > b
+      !!
+      !! V(p,q,r) = M1(p,q) tk(r) + M2(p,r) tj(q) + M3(q,r) ti(p) from the triple's compact copies (vm, vt), with
+      !! everything that depends on (b,c) only read once outside the loop over a; the operations are those of the
+      !! three-term V in the module header, in the same order
+      !$acc routine seq
+      integer(int64), intent(in) :: t, ncap
+      integer, intent(in) :: no, nv
+      real(dp), intent(in) :: qq(3_int64*nv*nv*nv*ncap)
+      real(dp), intent(in) :: vm(nv, nv, 3, ncap), vt(nv, 3, ncap), eps_o(no), eps_v(nv)
+      integer, intent(in) :: trip(3, ncap), amap(4, ncap)
+      real(dp) :: e
+      integer :: a, b, c, s, unused
+      integer(int64) :: base, qn, n3, b1, b2, b3
+      real(dp) :: w1, w2, w3, w4, w5, w6, s_even, s_odd, x, d, sv, eo, epsb, epsc
+      real(dp) :: m1bc, m1cb, m2bc, m2cb, m3bc, m3cb, tib, tic, tjb, tjc, tkb, tkc
+      real(dp) :: m1ab, m1ac, m1ba, m1ca, m2ab, m2ac, m2ba, m2ca, m3ab, m3ac, m3ba, m3ca, tia, tja, tka
+
+      e = 0.0_dp
+      call split4(t, nv, nv, 1, c, b, unused, s)
+      if (c > b) return
+      if (amap(4, s) == 0) return
+      qn = 3_int64*nv*nv*nv*ncap
+      n3 = int(nv, int64)*nv*nv
+      ! the tile is q(nv^3, ncap, frame)
+      base = int(s - 1, int64)*n3
+      b1 = base + (amap(1, s) - 1)*ncap*n3
+      b2 = base + (amap(2, s) - 1)*ncap*n3
+      b3 = base + (amap(3, s) - 1)*ncap*n3
+      eo = eps_o(trip(1, s)) + eps_o(trip(2, s)) + eps_o(trip(3, s))
+      epsb = eps_v(b)
+      epsc = eps_v(c)
+      m1bc = vm(b, c, 1, s)
+      m1cb = vm(c, b, 1, s)
+      m2bc = vm(b, c, 2, s)
+      m2cb = vm(c, b, 2, s)
+      m3bc = vm(b, c, 3, s)
+      m3cb = vm(c, b, 3, s)
+      tib = vt(b, 1, s)
+      tic = vt(c, 1, s)
+      tjb = vt(b, 2, s)
+      tjc = vt(c, 2, s)
+      tkb = vt(b, 3, s)
+      tkc = vt(c, 3, s)
+      do a = b, nv
+         ! the orderings: even (a,b,c), (b,c,a), (c,a,b); odd (a,c,b), (b,a,c), (c,b,a)
+         w1 = w_at(a, b, c, nv, b1, b2, b3, qq, qn)
+         w2 = w_at(b, c, a, nv, b1, b2, b3, qq, qn)
+         w3 = w_at(c, a, b, nv, b1, b2, b3, qq, qn)
+         w4 = w_at(a, c, b, nv, b1, b2, b3, qq, qn)
+         w5 = w_at(b, a, c, nv, b1, b2, b3, qq, qn)
+         w6 = w_at(c, b, a, nv, b1, b2, b3, qq, qn)
+         m1ab = vm(a, b, 1, s)
+         m1ac = vm(a, c, 1, s)
+         m1ba = vm(b, a, 1, s)
+         m1ca = vm(c, a, 1, s)
+         m2ab = vm(a, b, 2, s)
+         m2ac = vm(a, c, 2, s)
+         m2ba = vm(b, a, 2, s)
+         m2ca = vm(c, a, 2, s)
+         m3ab = vm(a, b, 3, s)
+         m3ac = vm(a, c, 3, s)
+         m3ba = vm(b, a, 3, s)
+         m3ca = vm(c, a, 3, s)
+         tia = vt(a, 1, s)
+         tja = vt(a, 2, s)
+         tka = vt(a, 3, s)
+         s_even = w1 + w2 + w3
+         s_odd = w4 + w5 + w6
+         ! V(p,q,r) = M1(p,q) tk(r) + M2(p,r) tj(q) + M3(q,r) ti(p) at each ordering
+         x = (w1 + (m1ab*tkc + m2ac*tjb + m3bc*tia))*(3.0_dp*w1 + s_even - 2.0_dp*s_odd) &
+             + (w2 + (m1bc*tka + m2ba*tjc + m3ca*tib))*(3.0_dp*w2 + s_even - 2.0_dp*s_odd) &
+             + (w3 + (m1ca*tkb + m2cb*tja + m3ab*tic))*(3.0_dp*w3 + s_even - 2.0_dp*s_odd) &
+             + (w4 + (m1ac*tkb + m2ab*tjc + m3cb*tia))*(3.0_dp*w4 + s_odd - 2.0_dp*s_even) &
+             + (w5 + (m1ba*tkc + m2bc*tja + m3ac*tib))*(3.0_dp*w5 + s_odd - 2.0_dp*s_even) &
+             + (w6 + (m1cb*tka + m2ca*tjb + m3ba*tic))*(3.0_dp*w6 + s_odd - 2.0_dp*s_even)
+         sv = 1.0_dp
+         if (a == c) then
+            sv = 6.0_dp
+         else if (a == b .or. b == c) then
+            sv = 2.0_dp
+         end if
+         d = eo - eps_v(a) - epsb - epsc
+         e = e + x/(sv*d)
+      end do
+   end function row_energy_item
+
+end module trc_rccsd_triples_ijk

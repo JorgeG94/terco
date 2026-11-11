@@ -1001,10 +1001,12 @@ module trc_c_interfaces
          !! energy. `ladder` is 0 to choose by operation count, 1 to assemble the
          !! (ac|bd) integrals in column batches, 2 to contract the three-index
          !! factors directly and never form them. `triples_routine` is 0 for the
-         !! build's default (the tiled routine in a device build, the reference
+         !! build's default (the ijk routine in a device build, the reference
          !! one in a host build), 1 for the reference routine, which runs on the
-         !! host from the host copies, 2 for the tiled routine, which is the
-         !! device one and also runs on the host, more slowly. `triples_budget_mib`
+         !! host from the host copies, 2 for the tiled routine, the device one
+         !! over virtual triples, which also runs on the host, more slowly, 3 for
+         !! the ijk routine, the device one over occupied triples (24 v^3 bytes a
+         !! triple, v virtual orbitals). `triples_budget_mib`
          !! is the memory, in MiB and not necessarily whole, of the tiled
          !! routine's working tile (6 o^3 doubles per triple of virtuals, 48 o^3
          !! bytes for o active occupied orbitals); 0 is 1024 MiB. It applies to

@@ -873,13 +873,13 @@ contains
    subroutine test_triples_routines(error)
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
-      real(c_double) :: e_ccsd, e_t_ref, e_t_tiled, e_t_frac
+      real(c_double) :: e_ccsd, e_t_ref, e_t_tiled, e_t_frac, e_t_ijk
       integer(c_int) :: rc
       logical :: ok
 
       call water_scf(error, h, 1, 1, ok)
       if (.not. ok .or. allocated(error)) return
-      call refused(error, "routine 3", trc_set_rccsd_algorithm(h, 0_c_int, 3_c_int, 0.0_c_double), h, "triples_routine")
+      call refused(error, "routine 4", trc_set_rccsd_algorithm(h, 0_c_int, 4_c_int, 0.0_c_double), h, "triples_routine")
       call refused(error, "routine -1", trc_set_rccsd_algorithm(h, 0_c_int, -1_c_int, 0.0_c_double), h, "triples_routine")
       call refused(error, "budget NaN", trc_set_rccsd_algorithm(h, 0_c_int, 0_c_int, nan()), h, "triples_budget_mib")
       call refused(error, "budget Inf", trc_set_rccsd_algorithm(h, 0_c_int, 0_c_int, infinity()), h, "triples_budget_mib")
@@ -888,9 +888,12 @@ contains
       if (allocated(error)) return
       call run_for_triples(error, h, 1_c_int, 0.0_c_double, e_ccsd, e_t_ref)
       call run_for_triples(error, h, 2_c_int, 0.0_c_double, e_ccsd, e_t_tiled)
+      call run_for_triples(error, h, 3_c_int, 0.0_c_double, e_ccsd, e_t_ijk)
       if (allocated(error)) return
-      call check(error, abs(e_t_ref - e_t_tiled) < TOL_ROUTINES, "E(T): reference "//to_string(e_t_ref, "f20.14")// &
-                 ", tiled "//to_string(e_t_tiled, "f20.14")//", |difference| "//to_string(abs(e_t_ref - e_t_tiled), "es9.2"))
+      call check(error, abs(e_t_ref - e_t_tiled) < TOL_ROUTINES .and. abs(e_t_ref - e_t_ijk) < TOL_ROUTINES, &
+                 "E(T): reference "//to_string(e_t_ref, "f20.14")//", tiled "//to_string(e_t_tiled, "f20.14")// &
+                 ", ijk "//to_string(e_t_ijk, "f20.14")//", |difference| "// &
+                 to_string(max(abs(e_t_ref - e_t_tiled), abs(e_t_ref - e_t_ijk)), "es9.2"))
       if (allocated(error)) return
       ! a fractional budget that holds a few triples is accepted and changes nothing but the tile size
       call run_for_triples(error, h, 2_c_int, 0.01_c_double, e_ccsd, e_t_frac)
@@ -899,6 +902,7 @@ contains
                  to_string(e_t_frac - e_t_tiled, "es9.2"))
       rc = trc_destroy(h)
       print "(a)", "  measured: |reference - tiled| "//to_string(abs(e_t_ref - e_t_tiled), "es9.2")// &
+         ", |reference - ijk| "//to_string(abs(e_t_ref - e_t_ijk), "es9.2")// &
          ", |0.01 MiB tile - tiled| "//to_string(abs(e_t_frac - e_t_tiled), "es9.2")
    end subroutine test_triples_routines
 

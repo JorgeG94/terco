@@ -162,7 +162,7 @@ these keys with another method is refused.
 | `max_iterations` | integer | `--cc-iterations` | maximum iterations (100) |
 | `diis_size` | integer | `--cc-diis` | DIIS history length (8, at most 50); 1 switches DIIS off |
 | `ladder` | string | `--cc-ladder` | `auto` (by operation count), `assembled` or `direct`; does not change the energy |
-| `triples` | string | `--cc-triples` | the (T) routine: `auto` (the device routine in a GPU build, the host reference one otherwise), `reference` (host, from the host copies; cross-checks a GPU build) or `tiled` (the device routine, also on the host, slower there); needs `ri-ccsd(t)`; does not change the energy |
+| `triples` | string | `--cc-triples` | the (T) routine: `auto` (the ijk device routine in a GPU build, the host reference one otherwise), `reference` (host, from the host copies; cross-checks a GPU build) `tiled` (the device routine over virtual triples, also on the host, slower there) or `ijk` (the device routine over occupied triples, the default in a GPU build); needs `ri-ccsd(t)`; does not change the energy |
 | `triples_budget` | float | `--cc-triples-budget` | memory of the tiled routine's working tile, GiB (1); any positive value; needs `ri-ccsd(t)`. A budget below one triple (48 o^3 bytes, o active occupied orbitals) makes (T) fail after the RI-CCSD has converged. No effect on the reference routine |
 
 Both tolerances must be met. An RI-CCSD that does not converge is reported as

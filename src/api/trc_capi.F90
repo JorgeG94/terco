@@ -213,7 +213,8 @@ module trc_capi
    use trc_rimp2_driver, only: trc_rimp2_run, trc_urimp2_run, trc_rimp2_result_t, rimp2_driver_mo_to_cart, &
                                trc_rimp2_options_t
    use trc_rccsd_driver, only: trc_rccsd_options_t, trc_rccsd_result_t, trc_rccsd_state_t, trc_rccsd_solve
-   use trc_rccsd_triples, only: trc_rccsd_triples_options_t, rccsd_triples_finish
+   use trc_rccsd_triples, only: trc_rccsd_triples_options_t, rccsd_triples_finish, RCCSD_TRIPLES_DEVICE_ABC, &
+                                RCCSD_TRIPLES_DEVICE_IJK
    use trc_scf_file, only: trc_scf_save, trc_scf_load
    use trc_cart_perm, only: trc_cart_order_id
    use trc_ao_norm, only: ao_norm_shell_ => TRC_AO_NORM_SHELL, ao_norm_unit_ => TRC_AO_NORM_UNIT, &
@@ -3598,10 +3599,12 @@ contains
       !! energy. `ladder` is 0 to choose by operation count, 1 to assemble the
       !! (ac|bd) integrals in column batches, 2 to contract the three-index
       !! factors directly and never form them. `triples_routine` is 0 for the
-      !! build's default (the tiled routine in a device build, the reference
+      !! build's default (the ijk routine in a device build, the reference
       !! one in a host build), 1 for the reference routine, which runs on the
-      !! host from the host copies, 2 for the tiled routine, which is the
-      !! device one and also runs on the host, more slowly. `triples_budget_mib`
+      !! host from the host copies, 2 for the tiled routine, the device one
+      !! over virtual triples, which also runs on the host, more slowly, 3 for
+      !! the ijk routine, the device one over occupied triples (24 v^3 bytes a
+      !! triple, v virtual orbitals). `triples_budget_mib`
       !! is the memory, in MiB and not necessarily whole, of the tiled
       !! routine's working tile (6 o^3 doubles per triple of virtuals, 48 o^3
       !! bytes for o active occupied orbitals); 0 is 1024 MiB. It applies to
@@ -3624,9 +3627,9 @@ contains
          call refuse(cx, "trc_set_rccsd_algorithm: ladder must be 0 (auto), 1 (assembled) or 2 (direct)")
          return
       end if
-      if (triples_routine < 0 .or. triples_routine > 2) then
-         call refuse(cx, "trc_set_rccsd_algorithm: triples_routine must be 0 (the build's default), 1 (reference) "// &
-                     "or 2 (tiled)")
+      if (triples_routine < 0 .or. triples_routine > 3) then
+         call refuse(cx, "trc_set_rccsd_algorithm: triples_routine must be 0 (the build's default), 1 (reference), "// &
+                     "2 (tiled) or 3 (ijk)")
          return
       end if
       ! Written so a NaN and an infinity fail: every comparison with a NaN is false. The upper bound keeps the byte
@@ -5589,7 +5592,14 @@ contains
       opts%ladder%form = cx%cc_ladder
       triples_opts%verbose = cx%opts%verbose
       if (cx%cc_triples_routine == 1) triples_opts%use_device = .false.
-      if (cx%cc_triples_routine == 2) triples_opts%use_device = .true.
+      if (cx%cc_triples_routine == 2) then
+         triples_opts%use_device = .true.
+         triples_opts%device_routine = RCCSD_TRIPLES_DEVICE_ABC
+      end if
+      if (cx%cc_triples_routine == 3) then
+         triples_opts%use_device = .true.
+         triples_opts%device_routine = RCCSD_TRIPLES_DEVICE_IJK
+      end if
       ! A positive budget never rounds to 0 bytes, which would mean the 1 GiB default.
       if (cx%cc_triples_mib > 0.0_dp) then
          triples_opts%device%budget_bytes = max(1_int64, int(cx%cc_triples_mib*1048576.0_dp, int64))

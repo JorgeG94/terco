@@ -34,8 +34,9 @@
 ! operands 2 no^3 cb + no nv + nv cb no, all doubles. For no = 25, nv = 130 and cb = 32 that is 85 MB + 16 MB shared
 ! and about 34 MB per thread.
 !
-! HOST ONLY (this routine). `rccsd_triples_finish` runs the device version (trc_rccsd_triples_dev) in a device build
-! (`opts%use_device` defaults to true there, false in a host build) and this reference otherwise.
+! HOST ONLY (this routine). `rccsd_triples_finish` runs a device version in a device build (`opts%use_device` defaults
+! to true there, false in a host build) and this reference otherwise: `opts%device_routine` picks the one driven by
+! occupied triples (trc_rccsd_triples_ijk, the default) or the one driven by virtual triples (trc_rccsd_triples_dev).
 ! The reference reads `ints%ovvv`, `ints%ooov`, `ints%ovov`, `ints%eps_o`,
 ! `ints%eps_v` and `amps%t1`, `amps%t2` as they are in host memory, and never touches device data: the host copies must
 ! be current. They are after `trc_rccsd_solve` (`amps%pull`), and after `ints%build`; a caller that rewrote one of them
@@ -57,10 +58,12 @@ module trc_rccsd_triples
    use trc_rccsd_inter, only: trc_rccsd_amps_t
    use trc_rccsd_driver, only: trc_rccsd_state_t
    use trc_rccsd_triples_dev, only: trc_rccsd_triples_dev_options_t, rccsd_triples_dev_run
+   use trc_rccsd_triples_ijk, only: rccsd_triples_ijk_run
    implicit none
    private
 
    public :: trc_rccsd_triples_options_t, RCCSD_TRIPLES_C_BATCH
+   public :: RCCSD_TRIPLES_DEVICE_ABC, RCCSD_TRIPLES_DEVICE_IJK
    public :: rccsd_triples_reference, rccsd_triples_finish
    public :: RCCSD_TRIPLES_WMAP, rccsd_triples_energy_block
 
@@ -82,6 +85,13 @@ module trc_rccsd_triples
       !! positions-versus-labels convention backwards transposes half of it
       !! into a still-symmetric, still-plausible, wrong answer.
 
+   integer, parameter :: RCCSD_TRIPLES_DEVICE_ABC = 1
+   !! the device routine driven by virtual triples a >= b >= c (trc_rccsd_triples_dev)
+   integer, parameter :: RCCSD_TRIPLES_DEVICE_IJK = 2
+   !! the device routine driven by occupied triples i >= j >= k (trc_rccsd_triples_ijk)
+   integer, parameter :: DEFAULT_DEVICE_ROUTINE = RCCSD_TRIPLES_DEVICE_IJK
+   !! the occupied-driven one: GEMMs sized by the virtual space (H10O5 cc-pVTZ, no 20, nv 265, GH200: see that module)
+
 #ifdef TRC_DEVICE
    logical, parameter :: DEFAULT_USE_DEVICE = .true.   !! the GPU build runs the device version by default
 #else
@@ -95,6 +105,8 @@ module trc_rccsd_triples
       logical :: use_device = DEFAULT_USE_DEVICE  !! `rccsd_triples_finish` runs the device version; false: this host reference
       !! The default follows the build: true under `TRC_DEVICE` (the GPU build), false in a host build, where the device
       !! version has no OpenMP over pairs and its batched gemm is a serial loop (h2o2 0.46 s against 0.17 s)
+      integer :: device_routine = DEFAULT_DEVICE_ROUTINE
+      !! which device routine `use_device` runs: RCCSD_TRIPLES_DEVICE_IJK (occupied triples) or _ABC (virtual triples)
       type(trc_rccsd_triples_dev_options_t) :: device  !! budget, forced tile size and verbosity of the device version
    end type trc_rccsd_triples_options_t
 
@@ -167,7 +179,9 @@ contains
          call status%set(ERROR_VALIDATION, "trc_rccsd_triples: the CCSD run did not converge; (T) needs its amplitudes")
          return
       end if
-      if (use_device(opts)) then
+      if (use_device(opts) .and. device_routine(opts) == RCCSD_TRIPLES_DEVICE_IJK) then
+         call rccsd_triples_ijk_run(state%ints, state%amps, e_t, status, device_options(opts), seconds)
+      else if (use_device(opts)) then
          call rccsd_triples_dev_run(state%ints, state%amps, e_t, status, device_options(opts), seconds)
       else
          call rccsd_triples_reference(state%ints, state%amps, e_t, status, opts, seconds)
@@ -187,6 +201,15 @@ contains
       device = DEFAULT_USE_DEVICE
       if (present(opts)) device = opts%use_device
    end function use_device
+
+   pure function device_routine(opts) result(routine)
+      !! The default device routine unless the caller chose
+      type(trc_rccsd_triples_options_t), intent(in), optional :: opts
+      integer :: routine
+
+      routine = DEFAULT_DEVICE_ROUTINE
+      if (present(opts)) routine = opts%device_routine
+   end function device_routine
 
    function device_options(opts) result(d)
       !! The device options inside `opts`, with its `verbose` joined to the host one; the defaults when absent

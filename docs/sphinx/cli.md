@@ -143,7 +143,7 @@ command line, in the input file and in the output, says RI-CCSD.
 | `--cc-iterations` | maximum `--riccsd` iterations (100); a run that does not converge is reported as such and exits with status 2 |
 | `--cc-diis` | `--riccsd` DIIS history length (8, at most 50); 1 switches DIIS off |
 | `--cc-ladder` | how `--riccsd` forms the particle ladder: auto (by operation count), assembled or direct; the energy does not depend on it (auto) |
-| `--cc-triples` | which routine computes the (T) of `--riccsd-t`: auto (the device routine in a GPU build, the host reference one otherwise), reference (host, from the host copies; cross-checks a GPU build) or tiled (the device routine, also on the host, slower there); the energy does not depend on it (auto) |
+| `--cc-triples` | which routine computes the (T) of `--riccsd-t`: auto (the ijk device routine in a GPU build, the host reference one otherwise), reference (host, from the host copies; cross-checks a GPU build) tiled (the device routine over virtual triples, also on the host, slower there) or ijk (the device routine over occupied triples, the default in a GPU build); the energy does not depend on it (auto) |
 | `--cc-triples-budget` | memory for the working tile of the tiled (T) routine of `--riccsd-t`, GiB (1; any positive value, the repacked amplitudes come on top); a budget below one triple (48 o^3 bytes, o active occupied orbitals) makes the (T) step fail after the RI-CCSD has converged, with exit status 1; no effect on the reference routine |
 
 `--aux`, `--frozen` and `--aux-block` (above) apply to `--riccsd` and

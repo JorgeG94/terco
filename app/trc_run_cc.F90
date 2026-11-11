@@ -48,7 +48,7 @@ contains
    end function ladder_code
 
    pure integer function triples_code(word) result(code)
-      !! The `--cc-triples` word as trc_set_rccsd_algorithm's `triples_routine` (0 auto, 1 reference, 2 tiled), -1 for
+      !! The `--cc-triples` word as trc_set_rccsd_algorithm's `triples_routine` (0 auto, 1 reference, 2 tiled, 3 ijk), -1 for
       !! anything else, in any case. Fixed-size local and an integer result, for the reason given at `ladder_code`.
       character(len=*), intent(in) :: word
       character(len=16) :: low
@@ -67,6 +67,8 @@ contains
          code = 1
       else if (low == "tiled") then
          code = 2
+      else if (low == "ijk") then
+         code = 3
       end if
    end function triples_code
 
@@ -156,7 +158,7 @@ contains
          call r%cli%get("cc-triples", sval, r%err)
          call run_check(r, N_TRIPLES)
          r%cc_triples_routine = triples_code(sval)
-         if (r%cc_triples_routine < 0) call run_die(r, N_TRIPLES//" must be auto, reference or tiled, got '"// &
+         if (r%cc_triples_routine < 0) call run_die(r, N_TRIPLES//" must be auto, reference, tiled or ijk, got '"// &
                                                     trim(sval)//"'")
       end if
       if (r%cli%is_set("cc-triples-budget")) then

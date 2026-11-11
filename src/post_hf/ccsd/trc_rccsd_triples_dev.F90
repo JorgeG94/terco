@@ -84,6 +84,8 @@ module trc_rccsd_triples_dev
       !! Plain values only
       integer(int64) :: budget_bytes = 0   !! bytes the W tile may take (6 no^3 doubles a triple); 0 means 1 GiB
       integer(int64) :: tile_triples = 0   !! triples per tile; above 0 it replaces the budget (tests)
+      integer(int64) :: slice_bytes = 0    !! occupied-driven routine only: bytes of cached ovvv slices; 0 means 4 GiB
+      logical :: diagonal_triples = .false.  !! occupied-driven routine only: also compute the i = j = k triples (tests)
       logical :: verbose = .false.         !! the summary: tiles, triples, times, flops, GFLOP/s
    end type trc_rccsd_triples_dev_options_t
 
