@@ -1,6 +1,6 @@
 !
 ! The symmetry entries of the C ABI (ABI 1.23: trc_set_symmetry, trc_set_irrep_nelec,
-! trc_set_symmetry_skeleton, the report-frame pair and the getters), called through the
+! the report-frame pair and the getters; 1.25: trc_set_symmetry_skeleton), called through the
 ! Fortran interfaces of include/trc_c_interfaces.f90. The C side of the same round trip
 ! (water, the header compiled by a C compiler) is in link_c.c.
 !

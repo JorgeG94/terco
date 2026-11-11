@@ -357,7 +357,10 @@ module trc_capi
    !! trc_timing's list capacity. A run that would list more is an error
    !! (TRC_ERR_UNSUPPORTED), never a silently shortened list.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 24
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 25
+   !! 1.25: trc_set_symmetry_skeleton (-1 the size rule, 0 off, 1 on) for
+   !! the skeleton Fock build of a symmetric run (a new entry point,
+   !! nothing else changes).
    !! 1.24: trc_timing and trc_timing_count, the stage times of the last
    !! run, one named value per call (new entry points, nothing else
    !! changes).
@@ -366,9 +369,7 @@ module trc_capi
    !! Requests: trc_set_symmetry(h, spec, tol) with "off" (the default; also
    !! "default"), "on"/"auto", or a group (D2h and its subgroups);
    !! trc_set_irrep_nelec for fixed electrons per irrep;
-   !! trc_set_symmetry_skeleton (-1 the size rule, 0 off, 1 on) for the
-   !! skeleton Fock build; and
-   !! trc_set_symmetry_report_frame. Getters: trc_symmetry_group,
+   !! and trc_set_symmetry_report_frame. Getters: trc_symmetry_group,
    !! trc_symmetry_detected, trc_symmetry_residual, trc_symmetry_frame,
    !! trc_symmetry_report_frame, trc_symmetry_nirrep,
    !! trc_symmetry_irrep_name, trc_symmetry_irrep_dim, trc_mo_irreps and
