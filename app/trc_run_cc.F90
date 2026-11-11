@@ -80,19 +80,25 @@ contains
       character(len=:), allocatable :: sval
       real(dp) :: gib
       logical :: any_option
-      character(len=*), parameter :: OPTIONS(*) = [character(len=18) :: &
-         "cc-econv", "cc-tconv", "cc-iterations", "cc-diis", "cc-ladder", "cc-triples", "cc-triples-budget"]
-      integer :: k
+      character(len=*), parameter :: NEED_1 = "the --cc-* options (the [riccsd] table) need --riccsd or --riccsd-t"
+      character(len=*), parameter :: NEED_2 = " ([correlation] method = 'ri-ccsd' or 'ri-ccsd(t)')"
+      character(len=len(NEED_1) + len(NEED_2)) :: need
+      !! The message for `--cc-*` options without `--riccsd`, joined into a variable of the exact length before
+      !! the call. Written as a concatenation in the call, and again as one named constant, nvfortran 26.9 handed
+      !! `run_die` a length some twenty characters too long for it: the text, then a null and neighbouring string
+      !! constants (and a crash in the string copy on a GH200). nvfortran 26.5 did neither. The other messages of
+      !! this routine are passed the same way and are not affected; the CLI check looks for a null in every refusal.
 
       r%cc_triples = r%cli%is_set("riccsd-t")
       r%cc = r%cli%is_set("riccsd") .or. r%cc_triples
-      any_option = .false.
-      do k = 1, size(OPTIONS)
-         any_option = any_option .or. r%cli%is_set(trim(OPTIONS(k)))
-      end do
+      any_option = r%cli%is_set("cc-econv") .or. r%cli%is_set("cc-tconv") .or. r%cli%is_set("cc-iterations") .or. &
+                   r%cli%is_set("cc-diis") .or. r%cli%is_set("cc-ladder") .or. r%cli%is_set("cc-triples") .or. &
+                   r%cli%is_set("cc-triples-budget")
       if (.not. r%cc) then
-         if (any_option) call run_die(r, "the --cc-* options (the [riccsd] table) need --riccsd or --riccsd-t "// &
-                                     "([correlation] method = 'ri-ccsd' or 'ri-ccsd(t)')")
+         if (any_option) then
+            need = NEED_1//NEED_2
+            call run_die(r, need)
+         end if
          return
       end if
       if (r%cli%is_set("rimp2")) call run_die(r, "--riccsd and --rimp2 cannot be combined: the RI-MP2 correlation "// &

@@ -709,6 +709,11 @@ contains
       if (allocated(error)) return
       call check(error, has_text(name, reason), "terco"//args//": the refusal does not contain '"//reason//"' (case/"// &
                  name//".out)")
+      if (allocated(error)) return
+      ! A message handed over with a wrong length prints a null and stray text after it (nvfortran 26.9 did this
+      ! to one refusal, and crashed on another machine).
+      call check(error, .not. has_text(name, achar(0)), "terco"//args//": the output holds a null character (case/"// &
+                 name//".out): a message was passed with a wrong length")
    end subroutine refused
 
    subroutine test_refusals(error)
