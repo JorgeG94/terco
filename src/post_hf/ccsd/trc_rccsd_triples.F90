@@ -191,6 +191,13 @@ contains
          call status%set(ERROR_VALIDATION, "trc_rccsd_triples: the CCSD run did not converge; (T) needs its amplitudes")
          return
       end if
+      if (present(opts)) then
+         if (opts%device%parts > 1) then
+            call status%set(ERROR_VALIDATION, "trc_rccsd_triples: device%parts is "//to_string(opts%device%parts)// &
+                            "; a part's E(T) is partial and nothing sums the parts yet: use the scratch API per part")
+            return
+         end if
+      end if
       if (use_device(opts) .and. device_routine(opts) == RCCSD_TRIPLES_DEVICE_IJK) then
          call rccsd_triples_ijk_run(state%ints, state%amps, e_t, status, device_options(opts), seconds)
       else if (use_device(opts)) then

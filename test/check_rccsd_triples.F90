@@ -38,6 +38,11 @@
 !     block triple) give the E(T) and the per-triple energies of the all-cached run (to TOL_IJK_TILE and
 !     TOL_IJK_TRIPLE: bitwise on the device, last-bit differences with a host BLAS), with and without the
 !     i = j = k triples; that run against the reference and pyscf
+!  15 its work share: the pairs (i,j) dealt to 2, 3, no + 1 and more parts than pairs (with and without the i = j = k
+!     triples, default cache and 4, 8, 12 slots) give per-triple energies and E(T) that add to the one-part run's
+!     (to TOL_IJK_TRIPLE and TOL_IJK_TILE), every triple in exactly the part that owns its pair, a balanced table,
+!     no slice built for another part's block triples, empty parts that do nothing; parts = 1 bitwise the default
+!     run; parts = 0, part = parts and part = -1 are refused
 ! and, once, without a molecule:
 !   - two electrons (one occupied orbital): E(T) = 0 for any integrals and amplitudes
 !   - random integrals with the symmetries of the real ones and more virtuals than one c batch (nv = 40): the
@@ -163,7 +168,8 @@ module check_rccsd_triples_suite
    use trc_rccsd_triples, only: trc_rccsd_triples_options_t, rccsd_triples_reference, rccsd_triples_finish, &
                                 RCCSD_TRIPLES_WMAP, rccsd_triples_energy_block, RCCSD_TRIPLES_DEVICE_ABC, &
                                 RCCSD_TRIPLES_DEVICE_IJK
-   use trc_rccsd_triples_ijk, only: trc_rccsd_triples_ijk_scratch_t, rccsd_triples_ijk_run, rccsd_triples_ijk_run_scratch
+   use trc_rccsd_triples_ijk, only: trc_rccsd_triples_ijk_scratch_t, rccsd_triples_ijk_run, rccsd_triples_ijk_run_scratch, &
+                                    rccsd_triples_ijk_pair_owners, rccsd_triples_ijk_pair_cost, rccsd_triples_ijk_pair_index
    use trc_rccsd_triples_dev, only: trc_rccsd_triples_dev_options_t, trc_rccsd_triples_scratch_t, rccsd_triples_dev_run, &
                                     rccsd_triples_dev_run_scratch, rccsd_triples_dev_point_energy
    use trc_linalg, only: trc_linalg_t
@@ -175,7 +181,7 @@ module check_rccsd_triples_suite
    private
    public :: collect_check_rccsd_triples
 
-   integer, parameter :: NCASE = 14
+   integer, parameter :: NCASE = 15
    integer, parameter :: REF_E_SCF = 1, REF_E_CCSD_CORR = 2, REF_E_T = 3, REF_E_CCSD_T = 4, REF_E_T_FIXED = 5, &
                          REF_E_T_NO_T1 = 6, NREF = 6  !! indices into the scalars read from a .ref
    ! Tolerances sit about one order above what is measured (host gfortran build and a V100), so a regression at the
@@ -218,7 +224,7 @@ module check_rccsd_triples_suite
 
    logical :: computed = .false.
    logical :: ok_case(NCASE, NMOL)
-   character(len=1200) :: msg_case(NCASE, NMOL)
+   character(len=4800) :: msg_case(NCASE, NMOL)
 
 contains
 
@@ -253,6 +259,8 @@ contains
                   new_unittest("h2o2: occupied-driven tiles, budgets and finish", h13), &
                   new_unittest("water: occupied-driven slice-cache blocks give the all-cached energies", w14), &
                   new_unittest("h2o2: occupied-driven slice-cache blocks give the all-cached energies", h14), &
+                  new_unittest("water: occupied-driven work share adds up to the one-part run", w15), &
+                  new_unittest("h2o2: occupied-driven work share adds up to the one-part run", h15), &
                   new_unittest("two electrons: (T) is zero", two_electrons), &
                   new_unittest("random symmetric integrals, nv above the c batch", random_symmetric), &
                   new_unittest("an empty space is a refusal", empty_space), &
@@ -374,6 +382,14 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call run_case(error, 14, 2)
    end subroutine h14
+   subroutine w15(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 15, 1)
+   end subroutine w15
+   subroutine h15(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 15, 2)
+   end subroutine h15
 
    subroutine run_case(error, ic, im)
       type(error_type), allocatable, intent(out) :: error
@@ -511,6 +527,7 @@ contains
       call ijk_cases(im, label, state, fixed, refs)
       call ijk_tile_cases(im, label, state, fixed)
       call ijk_block_cases(im, label, state, fixed, refs)
+      call ijk_share_cases(im, label, state, fixed)
       call device_refusal_cases(im, label, state, fixed, bas, aux, pl, res, nocc, nfz)
       call fixed%release()
       call state%release()
@@ -922,6 +939,222 @@ contains
       call record(im, 14, ok, text)
    end subroutine ijk_block_cases
 
+   subroutine ijk_share_cases(im, label, state, fixed)
+      !! Case 15: the work share. Each configuration (diagonal triples or not, slice cache, part count) runs every
+      !! part and `share_config` checks it against the one-part run; also: parts = 1 spelled out is bitwise the
+      !! default run, and invalid shares are refused by `init`
+      integer, intent(in) :: im
+      character(len=*), intent(in) :: label
+      type(trc_rccsd_state_t), intent(in) :: state
+      type(trc_rccsd_amps_t), intent(in) :: fixed
+
+      type(trc_rccsd_triples_dev_options_t) :: dopts
+      type(trc_rccsd_triples_ijk_scratch_t) :: ts
+      type(trc_linalg_t) :: la
+      type(error_t) :: status
+      real(dp), allocatable :: t_one(:), t_default(:)
+      real(dp) :: e_one, e_default
+      integer(int64) :: slice
+      integer :: no, npos, ic, np, id, nc
+      integer :: nparts(4)
+      logical :: ok, one_bitwise, refused_all, cfg_ok
+      character(len=:), allocatable :: text, cfg_text
+
+      no = state%ints%no
+      slice = 8_int64*state%ints%nv*state%ints%nv*(state%ints%nv + no)
+      npos = no*(no + 1)/2 - 1   ! pairs with a positive cost (without the diagonal only (1,1) has none)
+      nparts = [2, 3, no + 1, npos + 2]
+      call la%init(1)
+      ! the one-part run, with default options and with parts = 1 spelled out
+      call ts%init(state%ints, dopts)
+      if (ts%status%has_error()) error stop "check_rccsd_triples: "//ts%status%get_message()
+      call rccsd_triples_ijk_run_scratch(state%ints, fixed, ts, la, e_default, status, t_default)
+      if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+      call ts%release()
+      dopts%parts = 1
+      dopts%part = 0
+      call ts%init(state%ints, dopts)
+      if (ts%status%has_error()) error stop "check_rccsd_triples: "//ts%status%get_message()
+      call rccsd_triples_ijk_run_scratch(state%ints, fixed, ts, la, e_one, status, t_one)
+      ok = ts%ncomputed == ts%ntotal - no
+      call ts%release()
+      one_bitwise = e_one == e_default .and. all(t_one == t_default)
+      ok = ok .and. one_bitwise
+      text = label//"ijk work share: parts = 1 bitwise the default run "//merge("yes", "NO ", one_bitwise)//";"
+      ! (diagonal, cache, parts): the caches are the default, 4 slots (blocks of 1), 8 and 12 (blocks of 2 and 3, the
+      ! last one shorter where no is not a multiple); the larger part counts leave parts with nothing to do
+      do id = 1, 2
+         nc = merge(4, 2, id == 1)
+         do ic = 1, nc
+            do np = 1, 4
+               if (np > 2 .and. (id == 2 .or. ic > 2)) cycle
+               call share_config(state%ints, fixed, la, id == 2, merge(0_int64, 4_int64*(ic - 1)*slice, ic == 1), &
+                                 nparts(np), cfg_ok, cfg_text)
+               ok = ok .and. cfg_ok
+               text = text//cfg_text
+            end do
+         end do
+      end do
+      ! invalid shares are refused by init, naming the values
+      refused_all = share_refused(state%ints, 0, 0, "parts 0") .and. share_refused(state%ints, 2, 2, "part 2") .and. &
+                    share_refused(state%ints, 2, -1, "part -1")
+      ok = ok .and. refused_all
+      text = text//" parts 0, part = parts, part -1 refused "//merge("yes", "NO ", refused_all)
+      call la%release()
+      call record(im, 15, ok, text)
+   end subroutine ijk_share_cases
+
+   subroutine share_config(ints, fixed, la, diag, sbytes, np, ok, text)
+      !! One configuration of case 15: the one-part run, then every part of `np`. Required: the per-triple vectors add
+      !! to the one-part vector (TOL_IJK_TRIPLE) and E(T) to its E(T) (TOL_IJK_TILE); a triple is non-zero only in the
+      !! part that owns its pair and in exactly one part; the table is in range, sums to the computed triples and its
+      !! largest part is within Graham's bound of the mean; a part computes what its table says; a part with nothing
+      !! to do has no tile, no slice build and E(T) = 0; a part builds at most 4 nblock slices per block triple that
+      !! holds one of its triples
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: fixed
+      type(trc_linalg_t), intent(in) :: la
+      logical, intent(in) :: diag
+      integer(int64), intent(in) :: sbytes
+      integer, intent(in) :: np
+      logical, intent(out) :: ok
+      character(len=:), allocatable, intent(out) :: text
+
+      type(trc_rccsd_triples_dev_options_t) :: o
+      type(trc_rccsd_triples_ijk_scratch_t) :: ts
+      type(error_t) :: status
+      real(dp), allocatable :: t_one(:), t_part(:), t_sum(:)
+      integer, allocatable :: owner(:), nz(:)
+      integer(int64), allocatable :: load(:)
+      integer(int64) :: nexpect, g_one, g_max, bound_max, bound_g
+      real(dp) :: e_one, e_part, e_sum, mean, bound, cmax
+      integer :: no, ip, i, j, k, n, nb, nempty
+      logical :: table_ok, once, skip_ok, empty_ok, same, close
+      logical, allocatable :: blk(:, :, :)
+
+      no = ints%no
+      o%diagonal_triples = diag
+      o%slice_bytes = sbytes
+      call ts%init(ints, o)
+      if (ts%status%has_error()) error stop "check_rccsd_triples: "//ts%status%get_message()
+      call rccsd_triples_ijk_run_scratch(ints, fixed, ts, la, e_one, status, t_one)
+      if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+      g_one = ts%ngathers
+      nexpect = ts%ntotal - merge(0, no, diag)
+      call ts%release()
+      call rccsd_triples_ijk_pair_owners(no, np, diag, owner)
+      allocate (load(0:np - 1), t_sum(size(t_one)), nz(size(t_one)))
+      load = 0
+      table_ok = size(owner) == no*(no + 1)/2
+      if (table_ok) table_ok = all(owner >= 0 .and. owner < np)
+      if (table_ok) then
+         do i = 1, no
+            do j = 1, i
+               n = owner(rccsd_triples_ijk_pair_index(i, j))
+               load(n) = load(n) + rccsd_triples_ijk_pair_cost(i, j, diag)
+            end do
+         end do
+      end if
+      ! greedy list scheduling (Graham): the largest part is at most the mean plus (1 - 1/parts) of the costliest pair
+      cmax = real(max(0, merge(no, no - 1, diag)), dp)
+      mean = real(sum(load), dp)/real(np, dp)
+      bound = mean + (1.0_dp - 1.0_dp/real(np, dp))*cmax
+      table_ok = table_ok .and. sum(load) == nexpect .and. real(maxval(load), dp) <= bound + 1.0e-12_dp
+      t_sum = 0.0_dp
+      nz = 0
+      e_sum = 0.0_dp
+      once = .true.
+      skip_ok = .true.
+      empty_ok = .true.
+      nempty = 0
+      g_max = 0
+      bound_max = 0
+      do ip = 0, np - 1
+         o%parts = np
+         o%part = ip
+         call ts%init(ints, o)
+         if (ts%status%has_error()) error stop "check_rccsd_triples: "//ts%status%get_message()
+         call rccsd_triples_ijk_run_scratch(ints, fixed, ts, la, e_part, status, t_part)
+         if (status%has_error()) error stop "check_rccsd_triples: "//status%get_message()
+         once = once .and. ts%ncomputed == load(ip)
+         ! the block triples holding a computed triple of this part's pairs, from the triples themselves
+         nb = (no + ts%nblock - 1)/ts%nblock
+         allocate (blk(nb, nb, nb))
+         blk = .false.
+         do i = 1, no
+            do j = 1, i
+               if (owner(rccsd_triples_ijk_pair_index(i, j)) /= ip) cycle
+               do k = 1, j
+                  if (i == k .and. .not. diag) cycle
+                  blk((i - 1)/ts%nblock + 1, (j - 1)/ts%nblock + 1, (k - 1)/ts%nblock + 1) = .true.
+               end do
+            end do
+         end do
+         bound_g = 4_int64*ts%nblock*count(blk)
+         deallocate (blk)
+         skip_ok = skip_ok .and. ts%ngathers <= bound_g
+         g_max = max(g_max, ts%ngathers)
+         bound_max = max(bound_max, bound_g)
+         if (load(ip) == 0) then
+            nempty = nempty + 1
+            empty_ok = empty_ok .and. ts%ncomputed == 0 .and. ts%ntiles == 0 .and. ts%ngathers == 0 .and. &
+                       e_part == 0.0_dp .and. all(t_part == 0.0_dp)
+         end if
+         call ts%release()
+         e_sum = e_sum + e_part
+         t_sum = t_sum + t_part
+         ! a triple is non-zero only in the part that owns its pair
+         n = 0
+         do i = 1, no
+            do j = 1, i
+               do k = 1, j
+                  n = n + 1
+                  if (t_part(n) == 0.0_dp) cycle
+                  nz(n) = nz(n) + 1
+                  once = once .and. owner(rccsd_triples_ijk_pair_index(i, j)) == ip
+               end do
+            end do
+         end do
+      end do
+      once = once .and. count(nz > 1) == 0 .and. count(nz /= 1 .and. t_one /= 0.0_dp) == 0
+      same = e_sum == e_one .and. all(t_sum == t_one)
+      close = abs(e_sum - e_one) < TOL_IJK_TILE .and. all(abs(t_sum - t_one) < TOL_IJK_TRIPLE)
+      ok = table_ok .and. once .and. skip_ok .and. empty_ok .and. close
+      text = " ["//merge("diag ", "     ", diag)//to_string(np)//" parts, "//slots_text(sbytes, ints)//": "// &
+             merge("ok", "NO", ok)//", max part "//to_string(maxval(load))//" of mean "//to_string(mean, "f7.2")// &
+             ", empty "//to_string(nempty)//", |dE| "//to_string(abs(e_sum - e_one), "es9.2")//", worst triple "// &
+             to_string(maxval(abs(t_sum - t_one)), "es9.2")//", bitwise "//merge("yes", "no ", same)//", builds max "// &
+             to_string(g_max)//" bound "//to_string(bound_max)//" one part "//to_string(g_one)//"]"
+   end subroutine share_config
+
+   function slots_text(sbytes, ints) result(text)
+      !! "default", or the slice cache of `sbytes` in slots
+      integer(int64), intent(in) :: sbytes
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      character(len=:), allocatable :: text
+
+      text = "default"
+      if (sbytes > 0) text = to_string(sbytes/(8_int64*ints%nv*ints%nv*(ints%nv + ints%no)))//" slots"
+   end function slots_text
+
+   function share_refused(ints, parts, part, expect) result(refused)
+      !! Whether `init` refuses these share options with a message that contains `expect`
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      integer, intent(in) :: parts, part
+      character(len=*), intent(in) :: expect
+      logical :: refused
+
+      type(trc_rccsd_triples_dev_options_t) :: o
+      type(trc_rccsd_triples_ijk_scratch_t) :: ts
+
+      o%parts = parts
+      o%part = part
+      call ts%init(ints, o)
+      refused = ts%status%has_error()
+      if (refused) refused = index(ts%status%get_message(), expect) > 0
+      call ts%release()
+   end function share_refused
+
    pure function run_tiles(no, cap) result(n)
       !! Tiles of the occupied-driven routine for tiles of up to `cap` triples: ceil(j / cap) for each pair i >= j
       integer, intent(in) :: no
@@ -951,14 +1184,15 @@ contains
       type(trc_rccsd_ints_t) :: empty
       type(trc_rccsd_amps_t) :: bad
       type(trc_rccsd_triples_dev_options_t) :: dopts
+      type(trc_rccsd_triples_options_t) :: topts_fin
       type(trc_rccsd_triples_scratch_t) :: ts
       type(trc_rccsd_ints_options_t) :: bopts
       type(trc_linalg_t) :: la
-      type(error_t) :: st(8)
-      real(dp) :: e(8), e_before, e_after
+      type(error_t) :: st(10), st_fin
+      real(dp) :: e(10), e_before, e_after
       logical :: ok
       integer :: k
-      character(len=1200) :: text
+      character(len=2400) :: text
 
       call rccsd_triples_dev_run(state%ints, fixed, e_before, st(8))
       ! 1 empty integrals
@@ -1002,11 +1236,27 @@ contains
          ok = ok .and. st(k)%has_error() .and. e(k) == 0.0_dp
          if (st(k)%has_error()) text = trim(text)//" ["//st(k)%get_message()//"]"
       end do
+      ! 9, 10 a work share, which only the occupied-driven routine has: parts 2, and part 1 of 1
+      dopts%parts = 2
+      call rccsd_triples_dev_run(state%ints, fixed, e(9), st(9), dopts)
+      dopts%parts = 1
+      dopts%part = 1
+      call rccsd_triples_dev_run(state%ints, fixed, e(10), st(10), dopts)
+      do k = 9, 10
+         ok = ok .and. st(k)%has_error() .and. e(k) == 0.0_dp .and. index(st(k)%get_message(), "parts") > 0
+         text = trim(text)//" ["//st(k)%get_message()//"]"
+      end do
+      ! `rccsd_triples_finish` refuses parts > 1 (a part's E(T) is partial) and leaves the result alone
+      state%result%has_triples = .false.
+      topts_fin%device%parts = 2
+      call rccsd_triples_finish(state, st_fin, topts_fin)
+      ok = ok .and. st_fin%has_error() .and. .not. state%result%has_triples .and. index(st_fin%get_message(), "parts") > 0
+      text = trim(text)//" ["//st_fin%get_message()//"]"
       ok = ok .and. index(st(3)%get_message(), "NaN") > 0 .and. index(st(4)%get_message(), "one triple") > 0 .and. &
            index(st(7)%get_message(), "stale") > 0 .and. .not. st(8)%has_error() .and. abs(e_after - e_before) < TOL_DEV_REF
       call record(im, 11, ok, label//"device refusals (empty integrals, amplitudes of another size, a NaN amplitude, a "// &
                   "budget below one triple, unallocated amplitudes, a negative tile, a stale scratch after a second "// &
-                  "build; the rebuilt integrals give E(T) back to "//to_string(abs(e_after - e_before), "es9.2")//"): "// &
+                  "build, a work share for the virtual-triple routine twice and for the finish; the rebuilt integrals give E(T) back to "//to_string(abs(e_after - e_before), "es9.2")//"): "// &
                   trim(text))
    end subroutine device_refusal_cases
 

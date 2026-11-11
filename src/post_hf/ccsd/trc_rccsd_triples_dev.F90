@@ -90,6 +90,10 @@ module trc_rccsd_triples_dev
       integer(int64) :: slice_bytes = 0    !! occupied-driven routine only: bytes of cached integral slices; 0 sizes them
       !! from 80% of the free device memory (16 GiB on the host build)
       logical :: diagonal_triples = .false.  !! occupied-driven routine only: also compute the i = j = k triples (tests)
+      integer :: parts = 1                 !! occupied-driven routine only: the work is dealt to this many parts (one per rank);
+      !! the virtual-triple routine and `rccsd_triples_finish` refuse more than one
+      integer :: part = 0                  !! occupied-driven routine only: this run's part, 0 <= part < parts (the
+      !! virtual-triple routine refuses a non-zero one)
       logical :: verbose = .false.         !! the summary: tiles, triples, times, flops, GFLOP/s
    end type trc_rccsd_triples_dev_options_t
 
@@ -141,6 +145,12 @@ contains
       end if
       if (ints%no < 1 .or. ints%nv < 1) then
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_dev: no occupied or no virtual orbitals: there are no triples")
+         return
+      end if
+      if (opts%parts /= 1 .or. opts%part /= 0) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_dev: no work share here (parts "// &
+                              to_string(opts%parts)//", part "//to_string(opts%part)//"): only the occupied-driven "// &
+                              "routine splits the triples")
          return
       end if
       if (opts%budget_bytes < 0 .or. opts%tile_triples < 0) then

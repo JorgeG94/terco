@@ -120,6 +120,22 @@
 ! energies are the same for any slice cache (tested): bitwise on the V100 and the GH200, to the last bit of a triple
 ! (3e-20) with a host BLAS, whose gemm may round a column differently as the tile's width changes.
 !
+! WORK SHARE. `parts` runs (one per MPI rank, one device each) can split the triples: the unit is the occupied PAIR
+! (i,j), i >= j, whose cost is its number of computed triples (j, less the i = j = k one unless `diagonal_triples`).
+! The pairs are visited by decreasing cost, ties in canonical order, and each goes to the part with the fewest triples
+! so far (ties to the lowest part): every rank recomputes the same table (`rccsd_triples_ijk_pair_owners`), and the
+! largest part exceeds the mean by at most (1 - 1/parts) times the costliest pair (no - 1, or no with the diagonal;
+! equality at no = 1, diagonal on, 2 parts). Pairs, not triples, because a tile is a run of k at one (i,j) and so never
+! spans two owners. The deal does NOT shrink the slice work: pairs of equal j go round-robin, so every part reads
+! nearly every slice and builds about the slices of the one-part run (model, no 36, 18 slots, blocks of 4: 729 builds
+! for one part, 729 for each part of 2 and of 4). That is accepted: slice building is a small share of (T) (0.3 s of
+! 184 s at that size, 0.03 s of 3.4 s with every slice cached); smaller cases build fewer (h2o2 test, 4 slots: 94 builds
+! for one part, at most 50 for a part of 2); a block-aware deal is the lever if it ever matters. A
+! block triple with no owned triple is skipped before its slices are built. A part computes only its triples, leaves 0
+! at the others' canonical positions of `triple_energies` and sums its own in canonical order, so the per-triple
+! vectors of all parts add to the one-part run's (tested, to round-off of the gemm width) and their E(T) add to its
+! E(T).
+!
 ! TILES. Q is 3 nv^3 T doubles (24 nv^3 bytes per triple); T = budget / (24 nv^3), `tile_triples` forces it
 ! (tests). `budget_bytes` = 0 means 2 GiB, raised to one triple if that is more (a default must not refuse a large
 ! virtual space); an explicit budget below one triple is a refusal. The three slots are kept for a degenerate triple
@@ -149,6 +165,7 @@ module trc_rccsd_triples_ijk
 
    public :: trc_rccsd_triples_ijk_scratch_t
    public :: rccsd_triples_ijk_run, rccsd_triples_ijk_run_scratch
+   public :: rccsd_triples_ijk_pair_owners, rccsd_triples_ijk_pair_cost, rccsd_triples_ijk_pair_index
 
    integer(int64), parameter :: DEFAULT_BUDGET = 2147483648_int64  !! bytes of the Q tile when `budget_bytes` is 0
    integer(int64), parameter :: DEFAULT_SLICE_BYTES = 17179869184_int64
@@ -176,6 +193,10 @@ module trc_rccsd_triples_ijk
       integer :: nslot = 0               !! A' slices the cache holds, 4..2 no
       integer :: nblock = 0              !! occupied orbitals per block: no when every slice fits, else nslot / 4
       integer(int64) :: tick = 0         !! block triples begun: the clock of the cache
+      integer :: parts = 1               !! work parts the pairs are dealt to (module header, WORK SHARE)
+      integer :: my_part = 0             !! this run's part, 0-based
+      integer(int64) :: ncomputed = 0    !! triples this part computed in the last run
+      integer, allocatable :: owner(:)   !! part (0-based) of the pair (i,j), at `rccsd_triples_ijk_pair_index`; host only
       integer, allocatable :: orb_slot(:)
       !! slot holding the slice of key o + no (layout - 1), layout 1 A' and 2 A2', 0 for none (2 no)
       integer, allocatable :: slot_orb(:)            !! key in each slot, 0 for none (nslot)
@@ -233,6 +254,11 @@ contains
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_ijk: a negative budget or tile size")
          return
       end if
+      if (opts%parts < 1 .or. opts%part < 0 .or. opts%part >= opts%parts) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_ijk: parts "//to_string(opts%parts)//", part "// &
+                              to_string(opts%part)//": need parts >= 1 and 0 <= part < parts")
+         return
+      end if
       no = ints%no
       nv = ints%nv
       nv3 = nv*nv*nv
@@ -288,6 +314,12 @@ contains
       if (ierr == 0) allocate (this%trip(3, this%ncap), stat=ierr)
       if (ierr == 0) allocate (this%amap(4, this%ncap), stat=ierr)
       this%diagonal = opts%diagonal_triples
+      this%parts = opts%parts
+      this%my_part = opts%part
+      if (ierr == 0) then
+         call rccsd_triples_ijk_pair_owners(ints%no, opts%parts, opts%diagonal_triples, this%owner)
+         if (.not. allocated(this%owner)) ierr = 1
+      end if
       if (ierr /= 0) then
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_triples_ijk: the host arrays of the plan could not be allocated")
          call scratch_free(this)
@@ -353,6 +385,9 @@ contains
       this%nslot = 0
       this%nblock = 0
       if (allocated(this%amap)) deallocate (this%amap)
+      if (allocated(this%owner)) deallocate (this%owner)
+      this%parts = 1
+      this%my_part = 0
       this%no = 0
       this%nv = 0
       this%stamp = 0
@@ -449,6 +484,7 @@ contains
       ts%ngathers = 0
       ts%ngemm_builds = 0
       ts%ncopy_builds = 0
+      ts%ncomputed = 0
       call la%sync()
       call clock%start()
       call kernel_pack_tvb(ts%no, ts%nv, amps%t2, ints%ooov, ts%tvb)
@@ -467,6 +503,7 @@ contains
       do ib = 1, nblocks
          do jb = 1, ib
             do kb = 1, jb
+               if (.not. block_owned(ts, ib, jb, kb)) cycle   ! no slice is built for another part's block triple
                ! every slice the block triple reads is cached before its first tile, and none is evicted until its end
                call pin_block(ints, amps, ts, la, ib, jb, kb, cached)
                if (.not. cached) then
@@ -477,6 +514,7 @@ contains
                end if
                do i = block_first(ts, ib), block_last(ts, ib)
                   do j = block_first(ts, jb), min(block_last(ts, jb), i)
+                     if (ts%owner(rccsd_triples_ijk_pair_index(i, j)) /= ts%my_part) cycle
                      ! A tile is a run of consecutive k at one (i,j): cut at the end of the block KB or at capacity.
                      k = block_first(ts, kb)
                      k1 = min(block_last(ts, kb), j)
@@ -494,6 +532,7 @@ contains
                         end do
                         k = k + nt
                         ts%ntiles = ts%ntiles + 1
+                        ts%ncomputed = ts%ncomputed + count(ts%amap(4, 1:nt) /= 0)
                      end do
                   end do
                end do
@@ -738,6 +777,106 @@ contains
       n = int(i - 1, int64)*i*(i + 1)/6 + int(j - 1, int64)*j/2 + k
    end function canonical_index
 
+   pure function rccsd_triples_ijk_pair_index(i, j) result(p)
+      !! The position of the pair i >= j in the order i = 1..no, j = 1..i
+      integer, intent(in) :: i, j
+      integer :: p
+
+      p = (i - 1)*i/2 + j
+   end function rccsd_triples_ijk_pair_index
+
+   pure function rccsd_triples_ijk_pair_cost(i, j, diagonal) result(c)
+      !! The triples the run computes for the pair (i,j), i >= j: k = 1..j, less the i = j = k one unless `diagonal`
+      integer, intent(in) :: i, j
+      logical, intent(in) :: diagonal
+      integer :: c
+
+      c = j
+      if (i == j .and. .not. diagonal) c = j - 1
+   end function rccsd_triples_ijk_pair_cost
+
+   pure subroutine rccsd_triples_ijk_pair_owners(no, parts, diagonal, owner)
+      !! The part (0-based) that computes each pair, at `rccsd_triples_ijk_pair_index`, size no (no + 1) / 2: pairs by
+      !! decreasing cost, ties in canonical order, each to the part with the fewest triples so far (ties to the
+      !! lowest). Deterministic, so every rank recomputes the same table (module header, WORK SHARE). `owner` is left
+      !! unallocated if the memory is not there
+      integer, intent(in) :: no, parts
+      logical, intent(in) :: diagonal
+      integer, intent(out), allocatable :: owner(:)
+
+      integer(int64), allocatable :: load(:)
+      integer, allocatable :: pi(:), pj(:)
+      integer :: c, i, n, m, p, ierr
+
+      allocate (owner(no*(no + 1)/2), stat=ierr)
+      if (ierr == 0) allocate (load(0:max(parts, 1) - 1), stat=ierr)
+      if (ierr == 0) allocate (pi(no + 1), stat=ierr)
+      if (ierr == 0) allocate (pj(no + 1), stat=ierr)
+      if (ierr /= 0) then
+         if (allocated(owner)) deallocate (owner)
+         return
+      end if
+      owner = 0
+      load = 0
+      if (parts <= 1) return
+      do c = no, 0, -1
+         ! the pairs of cost c in canonical order: (i,c) for i >= c (diagonal) or i > c, with (c+1,c+1) after (c+1,c)
+         ! (no diagonal); at c = 0 only (1,1) without it
+         n = 0
+         if (diagonal) then
+            do i = c, no
+               if (c < 1) exit
+               n = n + 1
+               pi(n) = i
+               pj(n) = c
+            end do
+         else
+            do i = c + 1, no
+               if (c >= 1) then
+                  n = n + 1
+                  pi(n) = i
+                  pj(n) = c
+               end if
+               if (i == c + 1) then
+                  n = n + 1
+                  pi(n) = c + 1
+                  pj(n) = c + 1
+               end if
+            end do
+         end if
+         do m = 1, n
+            p = minloc(load, 1) - 1
+            owner(rccsd_triples_ijk_pair_index(pi(m), pj(m))) = p
+            load(p) = load(p) + c
+         end do
+      end do
+   end subroutine rccsd_triples_ijk_pair_owners
+
+   function block_owned(ts, ib, jb, kb) result(owned)
+      !! Whether the block triple (ib,jb,kb) holds a computed triple of a pair (i,j) of this part: i in IB, j in JB,
+      !! j <= i, and a k in KB with k <= j (k <= j - 1 for i = j when the i = j = k triple is skipped). Always true for
+      !! one part
+      type(trc_rccsd_triples_ijk_scratch_t), intent(in) :: ts
+      integer, intent(in) :: ib, jb, kb
+      logical :: owned
+      integer :: i, j, kmax
+
+      owned = .true.
+      if (ts%parts <= 1) return
+      owned = .false.
+      do i = block_first(ts, ib), block_last(ts, ib)
+         do j = block_first(ts, jb), min(block_last(ts, jb), i)
+            if (ts%owner(rccsd_triples_ijk_pair_index(i, j)) /= ts%my_part) cycle
+            kmax = min(block_last(ts, kb), j)
+            if (i == j .and. .not. ts%diagonal) kmax = min(kmax, j - 1)
+            if (block_first(ts, kb) <= kmax) then
+               owned = .true.
+               return
+            end if
+         end do
+      end do
+   end function block_owned
+
    function ensure_slot(ints, amps, ts, o, layout, la) result(slot)
       !! The slot holding the slice (o, layout), built if missing and stamped with the current tick; 0 when every slot
       !! holds a slice stamped with it (the block triple's)
@@ -850,9 +989,14 @@ contains
 
       character(len=240) :: line
 
-      write (line, "(a,i0,a,i0,a,f20.12,a,f9.2,a)") "  rccsd (T) device ijk: no ", ints%no, " nv ", ints%nv, "   E(T) ", &
-         e_t, "   ", seconds, " s"
+      write (line, "(a,i0,a,i0,a,f20.12,a,f9.2,a)") "  rccsd (T) device ijk: no ", ints%no, " nv ", ints%nv, &
+         merge("   E(T) of this part ", "   E(T)              ", ts%parts > 1), e_t, "   ", seconds, " s"
       call global_logger%info(trim(line))
+      if (ts%parts > 1) then
+         write (line, "(a,i0,a,i0,a,i0,a,i0,a)") "    part ", ts%my_part + 1, " of ", ts%parts, ": ", ts%ncomputed, &
+            " of the ", ts%ntotal, " triples"
+         call global_logger%info(trim(line))
+      end if
       write (line, "(a,i0,a,i0,a,i0,a,f9.1,a,i0,a,i0,a)") "    ", ts%ntiles, " tiles of up to ", ts%ncap, &
          " occupied triples (", ts%ntotal, " in all), device scratch ", real(ts%bytes, dp)/1.0e6_dp, " MB with ", &
          ts%nslot, " integral slices cached, blocks of ", ts%nblock, " occupied orbitals"
