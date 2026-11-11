@@ -94,8 +94,8 @@ module trc_rccsd_diis
       integer :: no = 0
       integer :: nv = 0
       integer :: n = 0            !! length of one STORED vector: o v + n_ov (n_ov + 1)/2 packed, o v + o^2 v^2 full
-      integer(int64) :: nfull = 0 !! length of the full vector, o v + o^2 v^2
-      logical :: packed = .false. !! t2 kept as the unique half (pair-symmetric amplitudes only, see the header)
+      integer(int64) :: nfull = 0  !! length of the full vector, o v + o^2 v^2
+      logical :: packed = .false.  !! t2 kept as the unique half (pair-symmetric amplitudes only, see the header)
       integer :: size = 0         !! history length asked for; below 2 there is no extrapolation
       integer :: nstored = 0      !! entries in the history
       integer :: newest = 0       !! slot of the newest entry

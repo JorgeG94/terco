@@ -35,7 +35,8 @@
 !     cache of 4 (evicting) agree; a budget
 !     below one triple is refused; `rccsd_triples_finish` with it agrees with the reference
 !  14 its slice caches of 4, 8 and 12 slots (blocks of 1, 2 and 3 occupied orbitals, triples visited block triple by
-!     block triple) give E(T) and per-triple energies BITWISE equal to the all-cached run, with and without the
+!     block triple) give the E(T) and the per-triple energies of the all-cached run (to TOL_IJK_TILE and
+!     TOL_IJK_TRIPLE: bitwise on the device, last-bit differences with a host BLAS), with and without the
 !     i = j = k triples; that run against the reference and pyscf
 ! and, once, without a molecule:
 !   - two electrons (one occupied orbital): E(T) = 0 for any integrals and amplitudes
@@ -208,6 +209,10 @@ module check_rccsd_triples_suite
    !! another order (over occupied triples, the 36 terms regrouped) [1.7e-18 GH200]
    real(dp), parameter :: TOL_IJK_TILE = 1.0e-16_dp
    !! the occupied-driven E(T) for another tile size, absolute: the tile only cuts the work [0 GH200]
+   real(dp), parameter :: TOL_IJK_TRIPLE = 1.0e-17_dp
+   !! one triple's energy for another slice-cache block size, absolute: the block size cuts the tiles, so the wide
+   !! gemms change shape and a host BLAS may round a column differently [2.7e-20 gfortran + MKL, 1 or 4 threads;
+   !! 0 V100 and GH200]. A triple stored at another triple's position differs by the size of a triple energy, 1e-6
    real(dp), parameter :: TOL_BATCH = 1.0e-15_dp
    !! the same E(T) for another c batch, absolute [0]: the batch only cuts the gemms, the sums are the same
 
@@ -246,8 +251,8 @@ contains
                   new_unittest("water: occupied-driven tiles, budgets and finish", w13), &
                   new_unittest("h2o2: occupied-driven device (T) vs reference, pyscf and the independent evaluation", h12), &
                   new_unittest("h2o2: occupied-driven tiles, budgets and finish", h13), &
-                  new_unittest("water: occupied-driven slice-cache blocks give bit-identical energies", w14), &
-                  new_unittest("h2o2: occupied-driven slice-cache blocks give bit-identical energies", h14), &
+                  new_unittest("water: occupied-driven slice-cache blocks give the all-cached energies", w14), &
+                  new_unittest("h2o2: occupied-driven slice-cache blocks give the all-cached energies", h14), &
                   new_unittest("two electrons: (T) is zero", two_electrons), &
                   new_unittest("random symmetric integrals, nv above the c batch", random_symmetric), &
                   new_unittest("an empty space is a refusal", empty_space), &
@@ -850,7 +855,7 @@ contains
       real(dp) :: e(NRUN), e_ref, d_ref, d_py
       integer :: slots(NRUN), nslot(NRUN), nblock(NRUN), r, id, no, nblocks
       integer(int64) :: builds(NRUN), bound, slice
-      logical :: ok, same, counts
+      logical :: ok, same, close, counts
       character(len=:), allocatable :: text
       character(len=:), allocatable :: diff_text
 
@@ -886,10 +891,13 @@ contains
             ok = ok .and. counts .and. nslot(r) == min(slots(r), 2*no)
             call ts%release()
          end do
-         ! bitwise: a triple's energy does not depend on the tile or the block triple it is computed in
+         ! a triple's energy does not depend on the tile or the block triple it is computed in: bitwise where the
+         ! gemm rounds a column the same whatever its width (reported), to the tolerances everywhere (required)
          same = all(e == e(NRUN))
+         close = all(abs(e - e(NRUN)) < TOL_IJK_TILE)
          do r = 1, NRUN
             same = same .and. all(e_trip(:, r) == e_trip(:, NRUN))
+            close = close .and. all(abs(e_trip(:, r) - e_trip(:, NRUN)) < TOL_IJK_TRIPLE)
          end do
          ! which cache size differs, by how much and in how many triples, so a failure points at its block size
          diff_text = ""
@@ -900,7 +908,7 @@ contains
          end do
          d_ref = abs(e(NRUN) - e_ref)
          d_py = abs(e(NRUN) - refs(REF_E_T_FIXED))
-         ok = ok .and. same .and. d_ref < TOL_IJK_REF .and. d_py < TOL_PYSCF_FIXED
+         ok = ok .and. close .and. d_ref < TOL_IJK_REF .and. d_py < TOL_PYSCF_FIXED
          text = text//merge(" diagonal on: ", " default:     ", id == 2)//"slots "//to_string(nslot(1))//"/"// &
                 to_string(nslot(2))//"/"//to_string(nslot(3))//"/"//to_string(nslot(4))//", blocks "// &
                 to_string(nblock(1))//"/"//to_string(nblock(2))//"/"//to_string(nblock(3))//"/"// &

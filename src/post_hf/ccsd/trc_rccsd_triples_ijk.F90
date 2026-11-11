@@ -117,7 +117,8 @@
 ! come to the host, are stored at the triple's canonical position (i, then j, then k fastest) whatever block triple
 ! computed them, and are added with m_o in that order; then times 1/3. No atomics, no dependence on thread
 ! scheduling: the tile size and the block size only change how the work is cut, and E(T) and the per-triple
-! energies are bitwise the same for any slice cache (tested).
+! energies are the same for any slice cache (tested): bitwise on the V100 and the GH200, to the last bit of a triple
+! (3e-20) with a host BLAS, whose gemm may round a column differently as the tile's width changes.
 !
 ! TILES. Q is 3 nv^3 T doubles (24 nv^3 bytes per triple); T = budget / (24 nv^3), `tile_triples` forces it
 ! (tests). `budget_bytes` = 0 means 2 GiB, raised to one triple if that is more (a default must not refuse a large
