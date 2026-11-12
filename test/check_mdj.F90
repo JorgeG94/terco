@@ -24,7 +24,7 @@ module check_mdj_suite
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_tables, only: LMAX
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
@@ -124,7 +124,7 @@ contains
 
       call bas%to_device()
       call eri%build(bas, THRESH)
-      call eri%fock(bas, d, jref, density_screen=.false., j_scale=1.0_dp, k_scale=0.0_dp)
+      call eri%fock(bas, d, jref, opts=trc_fock_options_t(density_screen=.false., j_scale=1.0_dp, k_scale=0.0_dp))
       call eri%coulomb(bas, d, jmd)
       call eri%release()
       call bas%release()

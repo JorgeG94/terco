@@ -32,7 +32,7 @@ module check_rys_fock_vs_pyscf_suite
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_tables, only: LMAX
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
@@ -132,7 +132,7 @@ contains
 
       call bas%to_device()
       call eri%build(bas, THRESH)
-      call eri%fock(bas, d, g, density_screen=.false.)
+      call eri%fock(bas, d, g, opts=trc_fock_options_t(density_screen=.false.))
       call eri%release()
       call golden_fock('G', d, g)
       call golden_end()

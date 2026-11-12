@@ -212,8 +212,8 @@ module trc_dlfind_bridge
    use trc_capi, only: trc_set_geometry, trc_run_scf, trc_run_gradient, trc_gradient, &
                        trc_energy, trc_converged, trc_iterations, trc_nspin, trc_nao, &
                        trc_set_guess, trc_density, trc_message, trc_run_hessian, trc_hessian, &
-                       trc_run_rimp2, trc_check_rimp2_gradient, trc_check_gradient_upfront, TRC_OK, &
-                       TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
+                       trc_run_rimp2, trc_check_rimp2_gradient, trc_check_gradient_upfront, trc_symmetry_requested, &
+                       trc_symmetry_suppress_default, TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
    ! trc_opt_io, not trc_app (app/trc_app.F90): this module is built into
    ! libterco_opt, which must not depend on app/ -- CODE_STRUCTURE.md's
    ! "entry points are leaves" rule, and the only way a caller outside
@@ -720,6 +720,18 @@ contains
       integer(c_int) :: nvar, nvar2, nspec
       integer :: ncons_total, nimg
 
+      ! An on/auto symmetry request runs in C1 under the optimiser, which moves
+      ! the atoms between runs and so cannot share a standard frame with a
+      ! symmetric SCF; an explicit one is refused just below.
+      call trc_symmetry_suppress_default(handle)
+      if (trc_symmetry_requested(handle)) then
+         ! The optimiser moves the atoms between runs; a symmetric SCF moves them to
+         ! a standard frame of its own. They would fight over the frame.
+         res%failed = .true.
+         res%message = "trc_dlfind_optimize: symmetry is not supported with geometry optimisation yet; "// &
+                       "use symmetry = off"
+         return
+      end if
       if (active) then
          res%failed = .true.
          res%message = "trc_dlfind_optimize: an optimisation is already running on this process"

@@ -43,7 +43,7 @@ module check_rys_grad_fd_suite
    use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
    use trc_api, only: trc_basis_t
    use trc_tables, only: LMAX
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -142,7 +142,7 @@ contains
       call eri%build(bas, THRESH)
 
       if (ndens == 1) then
-         call eri%fock(bas, dmat(:, :, 1), vhf, density_screen=.false.)
+         call eri%fock(bas, dmat(:, :, 1), vhf, opts=trc_fock_options_t(density_screen=.false.))
          e2_at = trace_prod(nao, dmat(:, :, 1), vhf)
       else
          ! UHF: E2 = Tr(Dt, J(Dt)) - Tr(Da, Ka(Da)) - Tr(Db, Kb(Db)). No 1/2
@@ -152,13 +152,13 @@ contains
          ! eri%fock returns J - K/2, so k_scale=2 cancels that /2 and leaves
          ! -K(D) directly.
          dtot = dmat(:, :, 1) + dmat(:, :, 2)
-         call eri%fock(bas, dtot, vhf, k_scale=0.0_dp, density_screen=.false.)
+         call eri%fock(bas, dtot, vhf, opts=trc_fock_options_t(k_scale=0.0_dp, density_screen=.false.))
          e2_at = trace_prod(nao, dtot, vhf)
-         call eri%fock(bas, dmat(:, :, 1), vhf, j_scale=0.0_dp, k_scale=2.0_dp, &
-                      density_screen=.false.)
+         call eri%fock(bas, dmat(:, :, 1), vhf, &
+                       opts=trc_fock_options_t(j_scale=0.0_dp, k_scale=2.0_dp, density_screen=.false.))
          e2_at = e2_at + trace_prod(nao, dmat(:, :, 1), vhf)
-         call eri%fock(bas, dmat(:, :, 2), vhf, j_scale=0.0_dp, k_scale=2.0_dp, &
-                      density_screen=.false.)
+         call eri%fock(bas, dmat(:, :, 2), vhf, &
+                       opts=trc_fock_options_t(j_scale=0.0_dp, k_scale=2.0_dp, density_screen=.false.))
          e2_at = e2_at + trace_prod(nao, dmat(:, :, 2), vhf)
       end if
 

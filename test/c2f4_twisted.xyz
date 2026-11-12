@@ -1,0 +1,8 @@
+6
+Tetrafluoroethylene twisted by 30 degrees about the C=C axis, point group D2: r(CC) 1.311, r(CF) 1.319 A, angle FCF 112.4 deg (approximate experimental values for planar C2F4 (NIST CCCBDB, electron diffraction; recalled, not looked up again; not optimized)), each CF2 group rotated by 15 degrees in opposite senses; axes aligned with the input axes (C=C along y, the others along the bisectors)
+C      0.0000000000     0.6555000000     0.0000000000
+F      0.2836834064     1.3892539168     1.0587208860
+F     -0.2836834064     1.3892539168    -1.0587208860
+C      0.0000000000    -0.6555000000     0.0000000000
+F     -0.2836834064    -1.3892539168     1.0587208860
+F      0.2836834064    -1.3892539168    -1.0587208860

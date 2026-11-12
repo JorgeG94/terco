@@ -66,7 +66,7 @@ module check_scf_reuse_suite
    use testdrive, only: new_unittest, unittest_type, error_type, check, test_failed
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_basis_json, only: trc_basis_from_json
-   use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run, trc_pair_eri_cache_t
+   use trc_scf_driver, only: trc_scf_options_t, trc_scf_guess_t, trc_scf_result_t, trc_scf_run, trc_pair_eri_cache_t
    use trc_scf_grad, only: trc_scf_gradient
    use trc_scf_context, only: scf_context_project_density
    use trc_linalg, only: trc_linalg_t
@@ -496,7 +496,7 @@ contains
       end do
       deallocate (s, h, v, dproj, sd, sds)
 
-      call trc_scf_run(bb, nalpha, nbeta, opts, res_proj, cmo_project=res_a%cmo)
+      call trc_scf_run(bb, nalpha, nbeta, opts, res_proj, guess=trc_scf_guess_t(orbitals=res_a%cmo))
       call trc_scf_run(bb, nalpha, nbeta, opts, res_sad)
       call bb%release()
 

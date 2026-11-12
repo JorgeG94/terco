@@ -1,0 +1,196 @@
+# Cases of the performance-regression bench (see README.md and run.py).
+#
+# A case runs `terco <geometry> <args...> --json <file> --silent`. `stages` are
+# the keys of the JSON "timings" object that are recorded and reported, dotted
+# ("scf.fock_mean_after_first" is timings.scf.fock_mean_after_first;
+# "total_wall" is timings.total_wall); "scf.fock_per_iteration" is computed
+# (fock_total / n_fock_builds). `judge` lists the subset that can FAIL: the
+# per-stage means and the device-dominated totals, chosen so that one
+# regression gives one FAIL row. Every other recorded stage (total_wall,
+# scf.wall, scf.setup, scf.fock_first, dfjk.total, ...) is reported as INFO
+# and never fails. The energy and the SCF iteration count of every case are
+# checked as well, without being listed (`iteration_verdict = "FAIL"` makes a
+# changed iteration count fail for a case that guards it).
+#
+# Budget: at most 5 minutes per input on one V100, one repeat. The sizes were
+# measured on a Tesla V100-DGXS-32GB (2026-11-10); each case states its time.
+
+[defaults]
+fail = 1.10          # now/golden above this is a FAIL
+warn = 1.05          # ... above this a WARN
+min_seconds = 0.05   # a judged stage is SMALL (not judged) only if the golden AND the new time are below this
+energy_tol = 1.0e-8  # Eh; a larger |E_now - E_golden| is a FAIL whatever the timings say
+gradient_tol = 1.0e-6  # Eh/Bohr, on "gradient rms", for cases that run --grad
+max_seconds = 300    # per run of a case; longer is killed and reported as an error
+
+# Per-stage thresholds, for every case. The values below are the defaults
+# written out; replace them with ones derived from measured run-to-run spread
+# (README.md, "How the thresholds were chosen") once that has been measured.
+# [thresholds."scf.fock_mean_after_first"]
+# fail = 1.10
+# warn = 1.05
+
+# --- full Fock builds: the integral engine, class by class -------------------
+
+[[case]]
+name = "fock_631g"
+description = "glycine chain x100, 6-31G (segmented SP shells, Cartesian), full Fock builds"
+geometry = "systems/gly100.xyz"
+args = ["-b", "6-31g", "--no-incremental", "--thresh", "1e-11"]
+stages = ["scf.fock_mean_after_first", "scf.fock_first", "scf.wall", "total_wall"]
+judge = ["scf.fock_mean_after_first"]
+# Measured on a V100 (one run): 105 s, 6.09 s per Fock build (15 or 16 SCF iterations from run to run).
+
+[[case]]
+name = "fock_631gs"
+description = "glycine chain x100, 6-31G* (SP shells plus d polarisation, Cartesian), full Fock builds"
+geometry = "systems/gly100.xyz"
+args = ["-b", "6-31g*", "--no-incremental", "--thresh", "1e-11"]
+stages = ["scf.fock_mean_after_first", "scf.fock_first", "scf.wall", "total_wall"]
+judge = ["scf.fock_mean_after_first"]
+# Measured on a V100 (one run): 151 s, 7.20 s per Fock build.
+
+[[case]]
+name = "fock_dz"
+description = "glycine chain x50, cc-pVDZ (spherical, up to d), full Fock builds"
+geometry = "systems/gly50.xyz"
+args = ["-b", "cc-pvdz", "--no-incremental", "--thresh", "1e-11"]
+stages = ["scf.fock_mean_after_first", "scf.fock_first", "scf.wall", "total_wall"]
+judge = ["scf.fock_mean_after_first"]
+quick = true
+# Measured on a V100 (one run): 70 s, 3.94 s per Fock build.
+
+[[case]]
+name = "fock_dz_incr"
+description = "glycine chain x50, cc-pVDZ, the DEFAULT incremental Fock path (fock_dz without --no-incremental)"
+geometry = "systems/gly50.xyz"
+args = ["-b", "cc-pvdz", "--thresh", "1e-11"]
+stages = ["scf.fock_per_iteration", "scf.fock_total", "scf.fock_first", "scf.wall", "total_wall"]
+judge = ["scf.fock_per_iteration"]
+iteration_verdict = "FAIL"   # the schedule of full and incremental builds sets the count: a change is a regression
+# Measured on a V100 (one run): 56 s, 2.67 s of Fock time per iteration.
+
+[[case]]
+name = "fock_tz"
+description = "water x40, cc-pVTZ (f functions), full Fock builds"
+geometry = "systems/water40.xyz"
+args = ["-b", "cc-pvtz", "--no-incremental", "--thresh", "1e-11"]
+needs = ["lmax3"]
+stages = ["scf.fock_mean_after_first", "scf.fock_first", "scf.wall", "total_wall"]
+judge = ["scf.fock_mean_after_first"]
+# Measured on a V100 (one run): 148 s, 11.56 s per Fock build.
+
+[[case]]
+name = "fock_tzvp"
+description = "glycine chain x20, def2-TZVP (f functions), full Fock builds"
+geometry = "systems/gly20.xyz"
+args = ["-b", "def2-tzvp", "--no-incremental", "--thresh", "1e-11"]
+needs = ["lmax3"]
+stages = ["scf.fock_mean_after_first", "scf.fock_first", "scf.wall", "total_wall"]
+judge = ["scf.fock_mean_after_first"]
+
+# --- the rest of the SCF ----------------------------------------------------
+# Measured on a V100 (one run): 176 s, 11.73 s per Fock build.
+
+[[case]]
+name = "dft"
+description = "glycine chain x20, wB97X-V / def2-SVP: semilocal XC, range-separated exchange, VV10"
+geometry = "systems/gly20.xyz"
+args = ["-b", "def2-svp", "-f", "wb97x-v"]
+stages = ["dft.grid", "dft.xc", "dft.vv10", "scf.fock_mean_after_first", "scf.wall", "total_wall"]
+judge = ["dft.grid", "dft.xc", "dft.vv10", "scf.fock_mean_after_first"]
+
+# Measured on a V100 (one run): 71 s, VV10 45 s of it. gly50 takes 386 s (VV10 283 s), over the 5-minute bound.
+
+[[case]]
+name = "df_w6_dz"
+description = "water hexamer (prism), cc-pVDZ with density-fitted J and K (def2-universal-jkfit)"
+geometry = "systems/w6_prism.xyz"
+args = ["-b", "cc-pvdz", "--df"]
+stages = ["dfjk.total", "dfjk.step.mu_nu_p", "dfjk.step.unpack_b", "dfjk.step.k_half_transform",
+          "dfjk.step.k_accum_gemm", "scf.fock_mean_after_first", "scf.wall", "total_wall"]
+judge = ["scf.fock_mean_after_first", "dfjk.step.mu_nu_p", "dfjk.step.k_half_transform", "dfjk.step.k_accum_gemm"]
+min_seconds = 0.002
+quick = true
+# Density fitting pays below about a thousand basis functions, so the DF cases are water hexamers and their
+# stages are milliseconds (measured on a V100, one run: 2.2 s in all, 5 ms per Fock build). The judging floor
+# is lowered for them and the thresholds come from the spread recorded in the golden.
+
+[[case]]
+name = "df_w6_tz"
+description = "water hexamer (prism), cc-pVTZ with density-fitted J and K (f orbital functions)"
+geometry = "systems/w6_prism.xyz"
+args = ["-b", "cc-pvtz", "--df"]
+needs = ["lmax3"]
+stages = ["dfjk.total", "dfjk.step.mu_nu_p", "dfjk.step.unpack_b", "dfjk.step.k_half_transform",
+          "dfjk.step.k_accum_gemm", "scf.fock_mean_after_first", "scf.wall", "total_wall"]
+judge = ["scf.fock_mean_after_first", "dfjk.step.mu_nu_p", "dfjk.step.k_half_transform", "dfjk.step.k_accum_gemm"]
+min_seconds = 0.002
+# Measured on a V100 (one run): 2.9 s in all, 13 ms per Fock build.
+
+[[case]]
+name = "df_w6_atz"
+description = "water hexamer (prism), aug-cc-pVTZ with density-fitted J and K (diffuse functions)"
+geometry = "systems/w6_prism.xyz"
+args = ["-b", "aug-cc-pvtz", "--df"]
+needs = ["lmax3"]
+stages = ["dfjk.total", "dfjk.step.mu_nu_p", "dfjk.step.unpack_b", "dfjk.step.k_half_transform",
+          "dfjk.step.k_accum_gemm", "scf.fock_mean_after_first", "scf.wall", "total_wall"]
+judge = ["scf.fock_mean_after_first", "dfjk.step.mu_nu_p", "dfjk.step.k_half_transform", "dfjk.step.k_accum_gemm"]
+min_seconds = 0.002
+# Measured on a V100 (one run): 3.4 s in all, 30 ms per Fock build.
+
+[[case]]
+name = "pcm"
+description = "glycine chain x20, def2-SVP with IEF-PCM, water (eps 78.39)"
+geometry = "systems/gly20.xyz"
+args = ["-b", "def2-svp", "--pcm", "iefpcm", "--eps", "78.39"]
+stages = ["pcm.setup", "pcm.per_iteration", "scf.fock_mean_after_first", "scf.wall", "total_wall"]
+judge = ["pcm.setup", "pcm.per_iteration", "scf.fock_mean_after_first"]
+quick = true
+
+# Measured on a V100 (one run): 19 s. gly50 does not fit a 32 GB card (a 14 GB PCM allocation fails).
+
+[[case]]
+name = "grad"
+description = "glycine chain x50, def2-SVP RHF, analytic gradient"
+geometry = "systems/gly50.xyz"
+args = ["-b", "def2-svp", "--grad"]
+stages = ["gradient.total", "scf.wall", "total_wall"]
+judge = ["gradient.total"]
+quick = true
+# Measured on a V100 (one run): 62 s, the gradient 13.9 s of it.
+
+[[case]]
+name = "rimp2"
+description = "glycine chain x20, RI-MP2 / cc-pVDZ with cc-pVDZ-RIFIT"
+geometry = "systems/gly20.xyz"
+args = ["-b", "cc-pvdz", "--rimp2", "--aux", "cc-pvdz-rifit"]
+stages = ["rimp2.total", "rimp2.step.mu_nu_p", "rimp2.step.cholesky", "rimp2.step.transform_ia_p",
+          "rimp2.step.k_i_gemms", "scf.wall", "total_wall"]
+# rimp2.total is the sum of the steps: INFO, the steps localise.
+judge = ["rimp2.step.mu_nu_p", "rimp2.step.cholesky", "rimp2.step.transform_ia_p", "rimp2.step.k_i_gemms"]
+
+# --- effective core potential -------------------------------------------------
+# Measured on a V100 (one run): 82 s, RI-MP2 64 s of it (the K GEMMs 58.6 s).
+
+[[case]]
+name = "dh"
+description = "glycine chain x20, B2PLYP / cc-pVDZ double hybrid: four-centre (not density-fitted) SCF, RI-MP2 for the PT2 part"
+geometry = "systems/gly20.xyz"
+args = ["-b", "cc-pvdz", "-f", "b2plyp", "--aux", "cc-pvdz-rifit"]
+stages = ["dft.grid", "dft.xc", "scf.fock_mean_after_first", "rimp2.total", "rimp2.step.mu_nu_p",
+          "rimp2.step.transform_ia_p", "rimp2.step.k_i_gemms", "scf.wall", "total_wall"]
+judge = ["dft.xc", "scf.fock_mean_after_first", "rimp2.step.mu_nu_p", "rimp2.step.transform_ia_p", "rimp2.step.k_i_gemms"]
+# Measured on a V100 (one run): 88 s, RI-MP2 65 s and the SCF 19 s of it.
+
+[[case]]
+name = "ecp"
+description = "24 CH3I (120 atoms), def2-SVP, iodine ECP attached from the basis file"
+geometry = "systems/ch3i_24.xyz"
+args = ["-b", "def2-svp", "--no-incremental", "--thresh", "1e-11"]
+stages = ["scf.setup", "scf.fock_mean_after_first", "scf.fock_first", "scf.wall", "total_wall"]
+# scf.setup holds the ECP matrix (host-side work too): judged here because the ECP matrix is
+# what this case guards; if it proves noisy on a V100, move it to INFO.
+judge = ["scf.setup", "scf.fock_mean_after_first"]
+
