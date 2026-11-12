@@ -720,10 +720,14 @@ contains
       end do
    end subroutine kernel_chunk_max
 
+   ! The loop index is a VALUE dummy in the item routines below: see the item routines of trc_rccsd_update (an ifx
+   ! miscompilation of an index passed by reference).
+
    pure function step_item(t, n1, n2, old1, old2, new1, new2) result(v)
       !! new - old at position t of the concatenated vector
       !$acc routine seq
-      integer, intent(in) :: t, n1, n2
+      integer, intent(in), value :: t
+      integer, intent(in) :: n1, n2
       real(dp), intent(in) :: old1(n1), old2(n2), new1(n1), new2(n2)
       real(dp) :: v
 
@@ -737,7 +741,8 @@ contains
    pure function join_item(t, n1, n2, a1, a2) result(v)
       !! element t of the concatenation (a1, a2)
       !$acc routine seq
-      integer, intent(in) :: t, n1, n2
+      integer, intent(in), value :: t
+      integer, intent(in) :: n1, n2
       real(dp), intent(in) :: a1(n1), a2(n2)
       real(dp) :: v
 
@@ -751,7 +756,8 @@ contains
    pure function chunk_max_item(p, n, npart, e) result(v)
       !! max |e| over elements p, p + npart, p + 2 npart, ... <= n: neighbouring partials read neighbouring elements
       !$acc routine seq
-      integer, intent(in) :: p, n, npart
+      integer, intent(in), value :: p
+      integer, intent(in) :: n, npart
       real(dp), intent(in) :: e(n)
       real(dp) :: v
       integer(int64) :: k
@@ -767,7 +773,7 @@ contains
       !! (column-major, p >= q), 0 for p < q; r, the position of the partner t2(j,i,b,a). One 64-bit division:
       !! the rest of the decoding fits default integers (o^2 and v^2 do).
       !$acc routine seq
-      integer(int64), intent(in) :: s
+      integer(int64), intent(in), value :: s
       integer, intent(in) :: no, nv
       integer(int64), intent(out) :: k, r
       integer(int64) :: ab, p, q, nov
@@ -790,7 +796,8 @@ contains
    pure function packed_step_item(s, r, n2, old2, new2) result(v)
       !! (e(s) + e(r))/2 for e = new2 - old2 and r the pair partner of s, times sqrt(2) off the diagonal (r /= s)
       !$acc routine seq
-      integer(int64), intent(in) :: s, r, n2
+      integer(int64), intent(in), value :: s
+      integer(int64), intent(in) :: r, n2
       real(dp), intent(in) :: old2(n2), new2(n2)
       real(dp) :: v
 
@@ -816,7 +823,8 @@ contains
    pure function chunk_max_diff_item(p, n1, n2, npart, old1, old2, new1, new2) result(v)
       !! max |new - old| over elements p, p + npart, p + 2 npart, ... of the concatenation (t1, t2)
       !$acc routine seq
-      integer, intent(in) :: p, n1, npart
+      integer, intent(in), value :: p
+      integer, intent(in) :: n1, npart
       integer(int64), intent(in) :: n2
       real(dp), intent(in) :: old1(n1), old2(n2), new1(n1), new2(n2)
       real(dp) :: v

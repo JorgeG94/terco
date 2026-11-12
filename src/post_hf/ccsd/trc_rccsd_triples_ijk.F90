@@ -1182,6 +1182,8 @@ contains
    ! the item routines: pure, `routine seq`, explicit-shape dummies, scalars
    ! only. A flat 1-based index t is the position in the array that is written,
    ! first index fastest.
+   ! The loop index is a VALUE dummy: see the item routines of trc_rccsd_update
+   ! (an ifx miscompilation of an index passed by reference).
    ! ---------------------------------------------------------------------
 
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
@@ -1204,7 +1206,7 @@ contains
    pure function tvb_item(t, no, nv, t2, ooov) result(v)
       !! tvb(r,w,o2,o3): t2(o3,o2,w,r) for r <= nv, else -ooov(o2,r-nv,o3,w); position t of (nv + no, nv, no, no)
       !$acc routine seq
-      integer(int64), intent(in) :: t
+      integer(int64), intent(in), value :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: t2(int(no, int64)*no*nv*nv)
       real(dp), intent(in) :: ooov(int(no, int64)*no*no*nv)
@@ -1222,7 +1224,7 @@ contains
    pure function tvb2_item(t, no, nv, tvb) result(v)
       !! tvb2(r,w,a,b) = tvb(r,w,b,a), position t of (nv + no, nv, no, no)
       !$acc routine seq
-      integer(int64), intent(in) :: t
+      integer(int64), intent(in), value :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: tvb(int(nv + no, int64)*nv*no*no)
       real(dp) :: v
@@ -1235,7 +1237,7 @@ contains
    pure function swapped_pos(t, nv) result(q)
       !! The position of (y,x,f) for the position t of (x,y,f) in (nv, nv, nv)
       !$acc routine seq
-      integer(int64), intent(in) :: t
+      integer(int64), intent(in), value :: t
       integer, intent(in) :: nv
       integer(int64) :: q
       integer(int64) :: x, y, f
@@ -1249,7 +1251,7 @@ contains
    pure function bo_item(t, no, nv, naux, o, b_ov) result(v)
       !! b_ov(o + no (x-1), P) at position t of (nv, naux)
       !$acc routine seq
-      integer(int64), intent(in) :: t
+      integer(int64), intent(in), value :: t
       integer, intent(in) :: no, nv, naux, o
       real(dp), intent(in) :: b_ov(int(no, int64)*nv*naux)
       real(dp) :: v
@@ -1263,7 +1265,7 @@ contains
    pure function slice_t2_item(t, no, nv, o, layout, t2) result(v)
       !! A'((x,y),nv+m) = t2(m,o,y,x) of orbital o, with x and y exchanged for layout 2; position t of (nv, nv, no)
       !$acc routine seq
-      integer(int64), intent(in) :: t
+      integer(int64), intent(in), value :: t
       integer, intent(in) :: no, nv, o, layout
       real(dp), intent(in) :: t2(int(no, int64)*no*nv*nv)
       real(dp) :: v
@@ -1283,7 +1285,8 @@ contains
    pure function run_sum_item(t, n, nx, x) result(e)
       !! x((t-1) n + 1) + ... + x(t n), added in index order
       !$acc routine seq
-      integer(int64), intent(in) :: t, nx
+      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: nx
       integer, intent(in) :: n
       real(dp), intent(in) :: x(nx)
       real(dp) :: e
@@ -1315,7 +1318,8 @@ contains
    pure function vm_item(t, no, nv, ncap, ovov, trip) result(v)
       !! vm(p,q,m,s), position t of (nv, nv, 3, nt): ovov(i,p,j,q), ovov(i,p,k,q), ovov(j,p,k,q) for m = 1, 2, 3
       !$acc routine seq
-      integer(int64), intent(in) :: t, ncap
+      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: ncap
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: ovov(no, nv, no, nv)
       integer, intent(in) :: trip(3, ncap)
@@ -1335,7 +1339,8 @@ contains
    pure function vt_item(t, no, nv, ncap, t1, trip) result(v)
       !! vt(p,m,s), position t of (nv, 3, nt): t1(o,p) for o the m-th orbital of triple s
       !$acc routine seq
-      integer(int64), intent(in) :: t, ncap
+      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: ncap
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: t1(no, nv)
       integer, intent(in) :: trip(3, ncap)
@@ -1354,7 +1359,8 @@ contains
       !! everything that depends on (b,c) only read once outside the loop over a; the operations are those of the
       !! three-term V in the module header, in the same order
       !$acc routine seq
-      integer(int64), intent(in) :: t, ncap
+      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: ncap
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: qq(3_int64*nv*nv*nv*ncap)
       real(dp), intent(in) :: vm(nv, nv, 3, ncap), vt(nv, 3, ncap), eps_o(no), eps_v(nv)

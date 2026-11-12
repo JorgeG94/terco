@@ -1348,10 +1348,14 @@ contains
             ok_times = ok_times .and. state%result%seconds(RCCSD_TIME_INTEGRALS) == state%steps%t(RCCSD_ST_INTEGRALS) .and. &
                        state%result%seconds(RCCSD_TIME_INTER) == state%steps%t(RCCSD_ST_INTER) .and. &
                        state%result%seconds(RCCSD_TIME_W) == state%steps%t(RCCSD_ST_W) .and. &
-                       state%result%seconds(RCCSD_TIME_LADDER) == state%steps%t(RCCSD_ST_LADDER) + &
-                       state%steps%t(RCCSD_ST_DRESSING) .and. &
-                       state%result%seconds(RCCSD_TIME_AMPS) == state%steps%t(RCCSD_ST_T1) + state%steps%t(RCCSD_ST_T2) + &
-                       state%steps%t(RCCSD_ST_RING) .and. state%result%seconds(RCCSD_TIME_DIIS) == state%steps%t(RCCSD_ST_DIIS)
+                       state%result%seconds(RCCSD_TIME_DIIS) == state%steps%t(RCCSD_ST_DIIS)
+            ! the two rows that are sums: equal to rounding, not bitwise. A compiler that may reassociate (ifx's default
+            ! fp-model fast) adds the three terms in another order here than in the driver, and the last bit then differs
+            ! in some runs (seen with ifx 2026.0: 1 run in 3)
+            rows = state%steps%t(RCCSD_ST_LADDER) + state%steps%t(RCCSD_ST_DRESSING)
+            ok_times = ok_times .and. abs(state%result%seconds(RCCSD_TIME_LADDER) - rows) <= 4.0_dp*epsilon(1.0_dp)*rows
+            rows = state%steps%t(RCCSD_ST_T1) + state%steps%t(RCCSD_ST_T2) + state%steps%t(RCCSD_ST_RING)
+            ok_times = ok_times .and. abs(state%result%seconds(RCCSD_TIME_AMPS) - rows) <= 4.0_dp*epsilon(1.0_dp)*rows
          end if
          call state%release()
       end do

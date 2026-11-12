@@ -960,6 +960,12 @@ contains
    ! the item routines: pure, `routine seq`, explicit-shape dummies, no
    ! arrays of their own. A flat 1-based index t is the position in the
    ! DESTINATION, first index fastest.
+   ! The index of the `do concurrent` (and any scalar its body computes and
+   ! passes on) is a VALUE dummy. ifx 2025.0 and 2026.0 at -O2 treat a call
+   ! that takes the loop index by reference as loop-invariant when they do not
+   ! inline it, and every element gets the value of the first (T1 wrong by
+   ! 3e-2 relative, (T) by 1e-2 Eh in the host build; -O1 and ifx 2022.1 are
+   ! right).
    ! ---------------------------------------------------------------------
 
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
@@ -981,7 +987,8 @@ contains
    pure function lamp_item(t, no, nv, lam) result(v)
       !! lamp(k,l,c,i) = lam(k,i,l,c), position t of (no, no, nv, no)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: lam(no, no, no, nv)
       real(dp) :: v
       integer :: k, l, c, i
@@ -993,7 +1000,8 @@ contains
    pure function t1_small_item(t, no, nv, t1, t2, fvv, foo, fov, ovov, oovv) result(v)
       !! The four small T1 lines at (i,a), position t of (no, nv); each in the order of the module header
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: t1(no, nv), t2(no, no, nv, nv), fvv(nv, nv), foo(no, no), fov(no, nv)
       real(dp), intent(in) :: ovov(no, nv, no, nv), oovv(no, no, nv, nv)
       real(dp) :: v
@@ -1026,7 +1034,8 @@ contains
    pure function ycomb_item(t, no, nv, tau) result(v)
       !! y(i,c,k,d) = 2 tau(i,k,c,d) - tau(i,k,d,c), position t of (no, nv, no, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
       integer :: i, c, k, d
@@ -1038,7 +1047,8 @@ contains
    pure function taur_item(t, no, nv, tau) result(v)
       !! taur(k,l,c,a) = tau(k,l,a,c), position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
       integer :: k, l, c, a
@@ -1050,7 +1060,8 @@ contains
    pure function base_item(t, no, nv, ovov) result(v)
       !! ovov(i,a,j,b) at t2n(i,j,a,b), position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: ovov(no, nv, no, nv)
       real(dp) :: v
       integer :: i, j, a, b
@@ -1062,7 +1073,8 @@ contains
    pure function perm_r1_item(t, no, nv, r1) result(v)
       !! r1(i,a,j,b) at term(i,j,a,b), position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: r1(no, nv, no, nv)
       real(dp) :: v
       integer :: i, j, a, b
@@ -1074,7 +1086,8 @@ contains
    pure function x_b_item(t, no, nv, y, ooov) result(v)
       !! x(k,i,j,a) = y(k,j,i,a) + ooov(j,k,i,a), position t of (no, no, no, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: y(no, no, no, nv), ooov(no, no, no, nv)
       real(dp) :: v
       integer :: k, i, j, a
@@ -1086,7 +1099,8 @@ contains
    pure function sym_item(t, no, nv, factor, term) result(v)
       !! factor [term(i,j,a,b) + term(j,i,b,a)] at position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: factor
       real(dp), intent(in) :: term(no, no, nv, nv)
       real(dp) :: v
@@ -1099,7 +1113,8 @@ contains
    pure function ladder_item(t, no, nv, h) result(v)
       !! h(i,j,a,b) at position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: h(no, no, nv, nv)
       real(dp) :: v
       integer :: i, j, a, b
@@ -1111,7 +1126,8 @@ contains
    pure function ring_x_item(t, no, nv, which, wvoov, wvovo) result(v)
       !! x(a,i,k,c) at position t of (nv, no, no, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv, which
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv, which
       real(dp), intent(in) :: wvoov(nv, no, no, nv), wvovo(nv, no, nv, no)
       real(dp) :: v
       integer :: a, i, k, c
@@ -1129,7 +1145,8 @@ contains
    pure function ring_y_item(t, no, nv, which, t2) result(v)
       !! y(k,c,j,b) at position t of (no, nv, no, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv, which
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv, which
       real(dp), intent(in) :: t2(no, no, nv, nv)
       real(dp) :: v
       integer :: k, c, j, b
@@ -1145,7 +1162,8 @@ contains
    pure function ring_item(t, no, nv, which, factor, r) result(v)
       !! factor [S(i,j,a,b) + S(j,i,b,a)] at position t of (no, no, nv, nv), S scattered from r as in `kernel_add_ring`
       !$acc routine seq
-      integer, intent(in) :: t, no, nv, which
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv, which
       real(dp), intent(in) :: factor
       real(dp), intent(in) :: r(no*nv, no*nv)
       real(dp) :: v
@@ -1162,7 +1180,8 @@ contains
    pure function denominator_item(t, no, nv, eps_o, eps_v) result(v)
       !! e_i + e_j - e_a - e_b at position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: eps_o(no), eps_v(nv)
       real(dp) :: v
       integer :: i, j, a, b

@@ -1438,6 +1438,8 @@ contains
    ! the item routines: pure, `routine seq`, explicit-shape dummies, no
    ! arrays of their own. A flat 1-based index t is the position in the
    ! array that is written (or, for the scatters, read), first index fastest.
+   ! The loop index is a VALUE dummy: see the item routines of trc_rccsd_update
+   ! (an ifx miscompilation of an index passed by reference).
    ! ---------------------------------------------------------------------
 
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
@@ -1459,7 +1461,8 @@ contains
    pure function taut_item(t, no, nv, tau) result(v)
       !! taut(c,d,ij) = tau(i,j,c,d), position t of (nv, nv, no, no)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
       integer :: c, d, i, j
@@ -1483,7 +1486,8 @@ contains
       !! Position in w2(nv, nv, ncol) of cbuf position t of (nv[a], nvc[c - d0 + 1], nv[b], nd[d - d0 + 1]); 0 for
       !! c < d, negated for c = d (the columns of weight 1/2)
       !$acc routine seq
-      integer, intent(in) :: t, nv, nvc, d0
+      integer, intent(in), value :: t
+      integer, intent(in) :: nv, nvc, d0
       integer :: dest
       integer :: a, cp, b, dq
 
@@ -1497,7 +1501,8 @@ contains
    pure function gather_dest(t, no, nv, nvc, d0) result(dest)
       !! Position in taus(no*no, ncol) of position t of (no[i], no[j], nvc[c - d0 + 1], nd[d - d0 + 1]); 0 for c < d
       !$acc routine seq
-      integer, intent(in) :: t, no, nv, nvc, d0
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv, nvc, d0
       integer :: dest
       integer :: i, j, cp, dq
 
@@ -1510,7 +1515,8 @@ contains
    pure function gather_value(t, no, nv, nvc, d0, mode, tau) result(v)
       !! The tau value `kernel_half_gather` stores for position t of (no[i], no[j], nvc[c - d0 + 1], nd[d - d0 + 1])
       !$acc routine seq
-      integer, intent(in) :: t, no, nv, nvc, d0, mode
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv, nvc, d0, mode
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
       integer :: i, j, cp, dq, c, d
@@ -1530,7 +1536,8 @@ contains
    pure function ovovp_item(t, no, nv, ovov) result(v)
       !! ovov(k,c,l,d) at position t of (no[k], no[l], nv[c], nv[d])
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: ovov(no, nv, no, nv)
       real(dp) :: v
       integer :: k, l, c, d
@@ -1542,7 +1549,8 @@ contains
    pure function swap_pair(t, no, nv) result(s)
       !! Position of (j,i,b,a) for position t of (i,j,a,b) in (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       integer :: s
       integer :: i, j, a, b
 
@@ -1553,7 +1561,8 @@ contains
    pure function swap_ab(t, no, nv) result(s)
       !! Position of (i,j,b,a) for position t of (i,j,a,b) in (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       integer :: s
       integer :: ij, a, b, unused
 
@@ -1564,7 +1573,8 @@ contains
    pure function y2_item(t, no, nv, np, y) result(v)
       !! y2(ij,a,d,P) = y(a,d,ij,P), position t of (no*no, nv, nv, np)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv, np
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv, np
       real(dp), intent(in) :: y(nv*nv*no*no*np)
       real(dp) :: v
       integer :: ij, a, d, p
@@ -1576,7 +1586,8 @@ contains
    pure function taut_swapped_item(t, no, nv, tau) result(v)
       !! taut(x,y,ij) = tau(i,j,y,x), position t of (nv, nv, no, no)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
       integer :: x, y, i, j
@@ -1588,7 +1599,8 @@ contains
    pure function sub_z1_dest(t, no, nv, v0) result(dest)
       !! Position in h(i,j,a,b) of cmat position t of (no*no, nv[b], nvb[a - v0 + 1])
       !$acc routine seq
-      integer, intent(in) :: t, no, nv, v0
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv, v0
       integer :: dest
       integer :: ij, b, al, unused
 
@@ -1599,7 +1611,8 @@ contains
    pure function sub_z2_dest(t, no, nv, v0) result(dest)
       !! Position in h(i,j,a,b) of cmat position t of (no*no, nv[a], nvb[b - v0 + 1])
       !$acc routine seq
-      integer, intent(in) :: t, no, nv, v0
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv, v0
       integer :: dest
 
       dest = t + no*no*nv*(v0 - 1)

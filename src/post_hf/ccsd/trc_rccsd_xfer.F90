@@ -413,10 +413,14 @@ contains
       q = j + no*(b - 1)
    end subroutine pair_of
 
+   ! The loop index is a VALUE dummy in the item routines below: see the item routines of trc_rccsd_update (an ifx
+   ! miscompilation of an index passed by reference).
+
    pure function pair_first(t, no, nv) result(k)
       !! The packed position of position t when p <= q, else 0
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       integer :: k
       integer :: p, q
 
@@ -428,7 +432,8 @@ contains
    pure function pair_any(t, no, nv) result(k)
       !! The packed position of the pair of position t, whichever of p, q is the larger
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       integer :: k
       integer :: p, q
 

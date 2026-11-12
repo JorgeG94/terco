@@ -792,6 +792,8 @@ contains
    ! the item routines: pure, `routine seq`, explicit-shape dummies, no
    ! arrays of their own. A flat 1-based index t is the position in the
    ! DESTINATION, first index fastest.
+   ! The loop index is a VALUE dummy: see the item routines of trc_rccsd_update
+   ! (an ifx miscompilation of an index passed by reference).
    ! ---------------------------------------------------------------------
 
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
@@ -813,7 +815,8 @@ contains
    pure function lov_item(t, no, nv, ovov) result(v)
       !! L(k,c,l,d) at position t of (no, nv, no, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: ovov(no, nv, no, nv)
       real(dp) :: v
       integer :: k, c, l, d
@@ -825,7 +828,8 @@ contains
    pure function tau_item(t, no, nv, t1, t2) result(v)
       !! tau(i,j,a,b) at position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: t1(no, nv), t2(no, no, nv, nv)
       real(dp) :: v
       integer :: i, j, a, b
@@ -837,7 +841,8 @@ contains
    pure function taup_item(t, no, nv, tau) result(v)
       !! taup(i,c,l,d) = tau(i,l,c,d), position t of (no, nv, no, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
       integer :: i, c, l, d
@@ -849,7 +854,8 @@ contains
    pure function taur_item(t, no, nv, tau) result(v)
       !! taur(k,l,d,a) = tau(k,l,a,d), position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
       integer :: k, l, d, a
@@ -861,7 +867,8 @@ contains
    pure function lq_item(t, no, nv, lov) result(v)
       !! lq(k,l,d,c) = L(k,c,l,d), position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: lov(no, nv, no, nv)
       real(dp) :: v
       integer :: k, l, d, c
@@ -873,7 +880,8 @@ contains
    pure function lam_item(t, no, nv, ooov) result(v)
       !! lam(k,i,l,c) = 2 ooov(k,i,l,c) - ooov(l,i,k,c), position t of (no, no, no, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: ooov(no, no, no, nv)
       real(dp) :: v
       integer :: k, i, l, c
@@ -885,7 +893,8 @@ contains
    pure function kpa_item(t, no, nv, naux, x) result(v)
       !! x(k,a,P) at position t of (no, naux, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv, naux
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv, naux
       real(dp), intent(in) :: x(no, nv, naux)
       real(dp) :: v
       integer :: k, p, a, unused
@@ -897,7 +906,8 @@ contains
    pure subroutine energy_item(t, no, nv, lov, t1, t2, es, ed)
       !! The (singles, doubles) partial of the pair t = j + no (b-1); a outer, i inner
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: lov(no, nv, no, nv), t1(no, nv), t2(no, no, nv, nv)
       real(dp), intent(out) :: es, ed
       integer :: i, j, a, b
@@ -919,7 +929,8 @@ contains
    pure function mp2_item(t, no, nv, eps_o, eps_v, ovov) result(v)
       !! t2(i,j,a,b) at position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in) :: t, no, nv
+      integer, intent(in), value :: t
+      integer, intent(in) :: no, nv
       real(dp), intent(in) :: eps_o(no), eps_v(nv), ovov(no, nv, no, nv)
       real(dp) :: v
       integer :: i, j, a, b

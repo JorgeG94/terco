@@ -688,6 +688,8 @@ contains
    ! the item routines: pure, `routine seq`, explicit-shape dummies, scalars
    ! only. A flat 1-based index t is the position in the array that is written,
    ! first index fastest.
+   ! The loop index is a VALUE dummy: see the item routines of trc_rccsd_update
+   ! (an ifx miscompilation of an index passed by reference).
    ! ---------------------------------------------------------------------
 
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
@@ -710,7 +712,7 @@ contains
    pure function tt2_item(t, no, nv, t2) result(v)
       !! tt2(f,(j,k,w)) = t2(k,j,w,f), position t of (nv, no, no, nv)
       !$acc routine seq
-      integer(int64), intent(in) :: t
+      integer(int64), intent(in), value :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: t2(no*no*nv*nv)
       real(dp) :: v
@@ -723,7 +725,7 @@ contains
    pure function t2r_item(t, no, nv, t2) result(v)
       !! t2r(m,k,c,vv) = t2(m,k,vv,c), position t of (no, no, nv, nv)
       !$acc routine seq
-      integer(int64), intent(in) :: t
+      integer(int64), intent(in), value :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: t2(no*no*nv*nv)
       real(dp) :: v
@@ -736,7 +738,7 @@ contains
    pure function oop_item(t, no, nv, ooov) result(v)
       !! oop(i,j,m,u) = ooov(j,m,i,u), position t of (no, no, no, nv)
       !$acc routine seq
-      integer(int64), intent(in) :: t
+      integer(int64), intent(in), value :: t
       integer, intent(in) :: no
       integer, intent(in) :: nv
       real(dp), intent(in) :: ooov(no*no*no*nv)
@@ -750,7 +752,8 @@ contains
    pure function sum_item(s, no, ncap, part) result(e)
       !! The no^2 row energies of triple s, added in index order
       !$acc routine seq
-      integer, intent(in) :: s, no
+      integer, intent(in), value :: s
+      integer, intent(in) :: no
       integer(int64), intent(in) :: ncap
       real(dp), intent(in) :: part(no*no*ncap)
       real(dp) :: e
@@ -765,7 +768,8 @@ contains
    pure function row_energy_item(t, no, nv, ncap, w, ovov, t1, eps_o, eps_v, trip) result(e)
       !! The energy of the points (i, j, 1..no) of one triple: position t of (no[i], no[j], nt[s])
       !$acc routine seq
-      integer(int64), intent(in) :: t, ncap
+      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: ncap
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: w(6_int64*no*no*no*ncap)
       real(dp), intent(in) :: ovov(no, nv, no, nv), t1(no, nv), eps_o(no), eps_v(nv)
