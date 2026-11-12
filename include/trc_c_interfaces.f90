@@ -1080,17 +1080,30 @@ module trc_c_interfaces
          !! one in a host build), 1 for the reference routine, which runs on the
          !! host from the host copies, 2 for the tiled routine, the device one
          !! over virtual triples, which also runs on the host, more slowly, 3 for
-         !! the ijk routine, the device one over occupied triples (24 v^3 bytes a
-         !! triple, v virtual orbitals). `triples_budget_mib`
-         !! is the memory, in MiB and not necessarily whole, of the tiled
-         !! routine's working tile (6 o^3 doubles per triple of virtuals, 48 o^3
-         !! bytes for o active occupied orbitals); 0 is 1024 MiB. It applies to
-         !! the tiled routine only: the reference routine has no budget. A budget
-         !! below one triple makes the (T) step refuse once the RI-CCSD has
-         !! converged (trc_run_rccsd returns TRC_ERR_UNSUPPORTED, the converged
-         !! RI-CCSD stays readable). The tile is not all of (T)'s memory: the
-         !! repacked amplitudes come on top. A negative, NaN or infinite budget,
-         !! or one above 1e12 MiB, is refused. Clears a stored RI-CCSD result.
+         !! the ijk routine, the device one over occupied triples. `triples_budget_mib`
+         !! is the memory, in MiB and not necessarily whole, of the working tile of
+         !! the routine that runs: the tiled routine's W (6 o^3 doubles, 48 o^3
+         !! bytes per triple of virtuals, o active occupied orbitals) or the ijk
+         !! routine's Q (24 v^3 bytes per occupied triple, v virtual orbitals).
+         !! 0 is the routine's default: 1024 MiB for the tiled routine, 2048 MiB
+         !! for the ijk one. Only the ijk routine raises its default to one
+         !! triple when that is more, so its default never refuses; the tiled
+         !! routine does not, and its 1024 MiB default does not hold one triple
+         !! from o = 282. The reference routine has no budget. A budget below one
+         !! triple of the routine that runs (the default one counts: the ijk
+         !! routine in a device build and over several ranks; 1024 MiB holds one
+         !! ijk triple only up to v = 355) makes the (T) step refuse once the
+         !! RI-CCSD has converged (trc_run_rccsd returns TRC_ERR_UNSUPPORTED, the
+         !! converged RI-CCSD stays readable). The tile is not all of (T)'s
+         !! memory: the tiled routine's repacked amplitudes come on top, and the
+         !! ijk routine's cache of integral slices is sized by the code, not by
+         !! the budget: on a device build from the free device memory as
+         !! max(min(0.8 free, free - 2 GiB) - the rest of its plan, 0) bytes,
+         !! never fewer than 4 slices (so it can exceed 80 % of the free memory)
+         !! nor more than 2 o; in a host build, or when the free memory is
+         !! unknown, 16 GiB under the same clamp. A
+         !! negative, NaN or infinite budget, or one above 1e12 MiB, is refused.
+         !! Clears a stored RI-CCSD result.
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
@@ -1462,16 +1475,20 @@ module trc_c_interfaces
          !! no auxiliary basis was set. Refused, with TRC_ERR_UNSUPPORTED, each
          !! with its reason in trc_message: an unrestricted or open-shell
          !! reference, a Kohn-Sham one, an effective core potential, linearly
-         !! dependent functions dropped (the message names trc_set_lindep), the (T) routine
-         !! over several ranks (above), a basis above this build's density-fitting ceilings
-         !! (TERCO_DF_LMAX, TERCO_DF_LMAX_AUX). A frozen core that leaves no
+         !! dependent functions dropped (the message names trc_set_lindep), a
+         !! non-aufbau reference (an occupation kept by mom or reached by gdm, as
+         !! for trc_run_rimp2), the (T) routine over several ranks (above), a basis
+         !! above this build's density-fitting ceilings (TERCO_DF_LMAX,
+         !! TERCO_DF_LMAX_AUX). A frozen core that leaves no
          !! occupied orbital is TRC_ERR_BADARG. A continuum solvent is not
          !! refused, as for RI-MP2: the correlation is computed on the orbitals of
          !! the solvated SCF without a solvent response of its own.
          !!
          !! RI-MP2 and RI-CCSD share trc_energy, and the later run wins: a
          !! successful trc_run_rccsd drops a stored RI-MP2 result, and
-         !! trc_run_rimp2 drops a stored RI-CCSD one. A refused run changes neither.
+         !! trc_run_rimp2 drops a stored RI-CCSD one. A refused run leaves the
+         !! other method's result alone; it drops its own method's earlier one
+         !! (as trc_run_rimp2 does), the result being that of the call just made.
          !!
          !! TRC_ERR_NOCONV when the iteration does not converge; the last
          !! energies are then in trc_rccsd_energy (converged = 0), (T) is not run
@@ -1479,11 +1496,18 @@ module trc_c_interfaces
          !! failed (for example for device memory), the return is the (T) status
          !! (TRC_ERR_UNSUPPORTED) with its message; trc_rccsd_energy still gives
          !! the converged CCSD with has_triples = 0, and trc_energy is the CCSD
-         !! total. Needs device memory of about 14.8 o^2 v^2 + o v^3 + (o^2 + o v
-         !! + v^2) naux + 2 diis (o v + o^2 v^2) doubles (o active occupied, v
-         !! virtual, naux auxiliary functions, diis the DIIS size) plus about
-         !! 1.2 GB of ladder scratch; (T) adds 2 o^2 v^2 + o^3 v doubles and its
-         !! tile (trc_set_rccsd_algorithm). docs/sphinx/cli.md has the formula
+         !! total. Device memory, with o active occupied orbitals, v virtual
+         !! orbitals, naux auxiliary functions and diis the DIIS size: the
+         !! iterations hold 14.8 o^2 v^2 + (o^2 + o v + v^2) naux + 2 diis (o v +
+         !! o^2 v^2) doubles plus about 1.2 GB of ladder scratch (the coefficient
+         !! 14.8 was fitted before the dense (ia|bc) block of o v^3 doubles was
+         !! removed and has not been re-derived since, so it may be off by an
+         !! unknown amount). (T) adds, by routine: the ijk one (the default in a
+         !! device build and over ranks) 2 o^2 v^2 + 2 o^3 v doubles, its tile of
+         !! trc_set_rccsd_algorithm (2 GiB by default) and a cache of integral
+         !! slices sized from the free device memory (16 GiB on a host); the
+         !! tiled one 2 o^2 v^2 + o^3 v doubles, its tile (1 GiB by default) and
+         !! a dense (ia|bc) copy of o v^3 doubles built on entry. docs/sphinx/cli.md has the details
          !! worked out. Over ranks (trc_set_comm, one rank per device, every rank
          !! calls this together): the integrals are built on every rank, the CCSD
          !! iterations run on the first and its result and amplitudes reach the

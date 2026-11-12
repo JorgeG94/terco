@@ -34,6 +34,19 @@ locally: `TERCO_LONG_TESTS` (OFF) registers them DISABLED, so a plain
 `ctest` lists them as not run. Configure with `-DTERCO_LONG_TESTS=ON` and
 run `ctest -L LONG` when you touch the XC gradient or another LONG check.
 
+## RI-CCSD changes
+
+A change under `src/post_hf/ccsd/` (or to a `do concurrent` call there) is
+checked with the `rccsd` tests (`check_rccsd_*`, `check_capi_rccsd`,
+`check_cli_rccsd`, and `rccsd_mpi_*` in an MPI build) on each compiler, not
+on one: gfortran host, ifx host (Release, -O3), the nvfortran **host** build
+(`-DCMAKE_Fortran_COMPILER=nvfortran -DTERCO_ENABLE_GPU=OFF`) and the device
+build. The nvfortran host build caught `value` dummies in item routines that
+gfortran, ifx and the device build all accepted, and ifx caught an index
+passed by reference that the others did not
+(`.claude/context/gpu-pitfalls.md`, Codegen). CI's `host intel-2025.0` and
+`host nvidia-hpc-latest` jobs cover the two host cases on a pull request.
+
 ## Generators
 
 ```sh

@@ -17,7 +17,7 @@
 !     settings alone (the run after it still reproduces pyscf);
 !   - each request the method does not cover is refused with its status and message: no SCF, an SCF that did not
 !     converge, no auxiliary basis, an unrestricted reference, a Kohn-Sham one, an effective core potential,
-!     RI-MP2 already run, every occupied orbital frozen, an auxiliary basis above this build's ceiling. (Over several ranks
+!     RI-MP2 already run, a non-aufbau (mom-held excited) reference, every occupied orbital frozen, an auxiliary basis above this build's ceiling. (Over several ranks
 !     trc_run_rccsd is collective and needs an MPI build and a communicator: test/rccsd_mpi.F90 runs it.)
 !   - a continuum solvent is NOT refused (as for RI-MP2), the energy is finite;
 !   - a second trc_run_scf, a new auxiliary basis and every RI-CCSD setter drop the stored result;
@@ -30,10 +30,12 @@
 !     reference routine (which has no budget), give (T). The two routines agree on E(T) to 1e-12. The routine is
 !     always set explicitly, so the case means the same in a host build and in a device build.
 !
-! A build whose density-fitting ceilings are below the cc-pVDZ / cc-pVDZ-RIFIT shells prints SKIP.
+! A build whose density-fitting ceilings are below the cc-pVDZ / cc-pVDZ-RIFIT shells can run none of it: the program
+! prints SKIP once and exits, which ctest reports as skipped (SKIP_REGULAR_EXPRESSION). A single case that cannot run in
+! a build that can run the others passes quietly with a NOTE instead, so it never hides the rest of the suite.
 !
 module check_capi_rccsd_suite
-   use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_char, c_null_char, c_null_ptr
+   use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_char, c_null_char, c_null_ptr, c_loc
    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_positive_inf
    use pic_types, only: dp
    use pic_strings, only: to_string
@@ -45,13 +47,13 @@ module check_capi_rccsd_suite
                                trc_set_convergence, trc_set_rimp2, trc_set_rccsd, trc_set_lindep, &
                                trc_rccsd_dimensions, trc_set_rccsd_convergence, &
                                trc_set_rccsd_algorithm, trc_set_method, trc_set_pcm, trc_set_unrestricted, &
-                               trc_set_symmetry, &
+                               trc_set_symmetry, trc_set_force_cartesian, trc_set_scf_stabilise, trc_set_guess, trc_nao, trc_mo_coefficients, &
                                trc_run_scf, trc_run_rimp2, trc_run_rccsd, trc_rccsd_energy, trc_run_gradient, &
                                trc_energy, trc_message, TRC_OK, TRC_ERR_NULL, TRC_ERR_BADARG, TRC_ERR_UNSUPPORTED, &
-                               TRC_ERR_NOCONV, TRC_ERR_STATE
+                               TRC_ERR_NOCONV, TRC_ERR_STATE, TRC_GUESS_GIVEN
    implicit none
    private
-   public :: collect_capi_rccsd
+   public :: collect_capi_rccsd, supported
 
    real(dp), parameter :: TOL_MP2 = 1.0e-10_dp
    !! E_MP2 against pyscf, check_rccsd_ints' TOL_MP2
@@ -84,6 +86,8 @@ contains
                   new_unittest("the setters refuse bad arguments and keep the old settings", test_setters), &
                   new_unittest("no SCF, an unconverged SCF and no auxiliary basis are refused", test_state_refusals), &
                   new_unittest("unrestricted, open-shell, Kohn-Sham and ECP references are refused", test_reference_refusals), &
+                  new_unittest("a mom-held non-aufbau reference is refused, the ground state of it runs", &
+                               test_aufbau_refusal), &
                   new_unittest("every occupied orbital frozen, and an auxiliary basis above the ceiling, are refused", &
                                test_size_refusals), &
                   new_unittest("a continuum solvent is not refused", test_pcm), &
@@ -173,7 +177,6 @@ contains
 
       ok = supported()
       if (.not. ok) then
-         print "(a)", "SKIP: this build's density-fitting ceilings are below cc-pVDZ-RIFIT"
          return
       end if
       call make_handle(h, WATER, "cc-pvdz", "cc-pvdz-rifit", 0, 1, rc)
@@ -239,7 +242,6 @@ contains
 
       ok = supported()
       if (.not. ok) then
-         print "(a)", "SKIP: this build's density-fitting ceilings are below cc-pVDZ-RIFIT"
          return
       end if
       ! a named group: the symmetric SCF runs, RI-CCSD refuses
@@ -442,7 +444,6 @@ contains
 
       ok = supported()
       if (.not. ok) then
-         print "(a)", "SKIP: this build's density-fitting ceilings are below cc-pVDZ-RIFIT"
          return
       end if
       ! no SCF
@@ -472,7 +473,6 @@ contains
 
       ok = supported()
       if (.not. ok) then
-         print "(a)", "SKIP: this build's density-fitting ceilings are below cc-pVDZ-RIFIT"
          return
       end if
       ! an unrestricted reference (closed-shell water forced to UHF), and a genuine open shell
@@ -525,6 +525,68 @@ contains
       rc = trc_rimp2_energy(h, e_os, e_ss)
    end function trc_rimp2_energy_of
 
+   subroutine test_aufbau_refusal(error)
+      !! As RI-MP2 (check_post_scf_aufbau): the converged HOMO and LUMO of water swapped, given as the guess with mom
+      !! on, hold a doubly excited determinant, whose orbital energies are no ground state's denominators. The refusal
+      !! is TRC_ERR_UNSUPPORTED and names the reason; the ground state of the same handle runs. Both handles are
+      !! destroyed on every path out.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      integer(c_int) :: rc, nao
+      real(c_double) :: e0, e
+      real(c_double), allocatable :: cmo(:, :)
+      real(c_double), allocatable, target :: dex(:, :)
+      integer :: k
+      real(c_double), parameter :: MIN_EXCITATION = 0.3_c_double
+      !! the swapped determinant must lie at least this far above the ground state or it is not another state
+
+      if (.not. supported()) return
+      call make_handle(h, WATER, "6-31g", "cc-pvdz-rifit", 0, 1, rc)
+      if (rc == TRC_OK) rc = trc_set_force_cartesian(h, 1_c_int)
+      if (rc == TRC_OK) rc = trc_set_convergence(h, 1.0e-12_c_double, 1.0e-9_c_double, 100_c_int, 10_c_int)
+      if (rc == TRC_OK) rc = trc_run_scf(h)
+      call check(error, rc == TRC_OK, "the ground-state water SCF failed")
+      if (.not. allocated(error)) then
+         rc = trc_nao(h, nao)
+         call check(error, rc == TRC_OK .and. nao > 5, "trc_nao: status "//to_string(int(rc)))
+      end if
+      if (.not. allocated(error)) then
+         allocate (cmo(nao, nao), dex(nao, nao))
+         rc = trc_mo_coefficients(h, cmo)
+         call check(error, rc == TRC_OK, "trc_mo_coefficients: status "//to_string(int(rc)))
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_energy(h, e0)
+         call check(error, rc == TRC_OK, "trc_energy of the ground state: status "//to_string(int(rc)))
+      end if
+      if (.not. allocated(error)) then
+         dex = 2.0_c_double*matmul(cmo(:, [(k, k=1, 4), 6]), transpose(cmo(:, [(k, k=1, 4), 6])))
+         rc = trc_run_rccsd(h)
+         call check(error, rc == TRC_OK, "RI-CCSD on the aufbau water must run: "//message(h))
+      end if
+      rc = trc_destroy(h)
+      if (allocated(error)) return
+
+      call make_handle(h, WATER, "6-31g", "cc-pvdz-rifit", 0, 1, rc)
+      if (rc == TRC_OK) rc = trc_set_force_cartesian(h, 1_c_int)
+      if (rc == TRC_OK) rc = trc_set_convergence(h, 1.0e-12_c_double, 1.0e-9_c_double, 100_c_int, 10_c_int)
+      if (rc == TRC_OK) rc = trc_set_scf_stabilise(h, 1_c_int, 0.0_c_double)
+      if (rc == TRC_OK) rc = trc_set_guess(h, TRC_GUESS_GIVEN, c_loc(dex(1, 1)), 1_c_int)
+      if (rc == TRC_OK) rc = trc_run_scf(h)
+      call check(error, rc == TRC_OK, "the mom SCF from the swapped density failed")
+      if (.not. allocated(error)) then
+         rc = trc_energy(h, e)
+         call check(error, rc == TRC_OK, "trc_energy of the mom state: status "//to_string(int(rc)))
+      end if
+      if (.not. allocated(error)) then
+         call check(error, e > e0 + MIN_EXCITATION, "the mom run did not hold the excited occupation: E - E0 = "// &
+                    to_string(e - e0, "f12.8"))
+      end if
+      if (.not. allocated(error)) call expect(error, "non-aufbau reference", trc_run_rccsd(h), TRC_ERR_UNSUPPORTED, h, &
+                                              "needs an aufbau reference")
+      rc = trc_destroy(h)
+   end subroutine test_aufbau_refusal
+
    subroutine test_size_refusals(error)
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
@@ -538,7 +600,9 @@ contains
       if (allocated(error)) return
       ! cc-pVQZ-RIFIT goes to l = 7, above the shipped auxiliary ceiling of 4
       if (DF_LMAX_AUX >= 7) then
-         print "(a)", "SKIP: this build's auxiliary ceiling covers cc-pVQZ-RIFIT"
+         ! a build that can run the ceiling's refusal has no case to refuse here: the rest of the suite stands, so
+         ! this passes without the word the suite-level skip looks for
+         print "(a)", "NOTE: this build's auxiliary ceiling covers cc-pVQZ-RIFIT, the ceiling refusal is not exercised"
          return
       end if
       call make_handle(h, WATER, "6-31g", "../basis_sets/cc-pvqz-rifit", 0, 1, rc)
@@ -557,7 +621,6 @@ contains
 
       ok = supported()
       if (.not. ok) then
-         print "(a)", "SKIP: this build's density-fitting ceilings are below cc-pVDZ-RIFIT"
          return
       end if
       call make_handle(h, WATER, "6-31g", "cc-pvdz-rifit", 0, 1, rc)
@@ -1000,7 +1063,6 @@ contains
 
       ok = supported()
       if (.not. ok) then
-         print "(a)", "SKIP: this build's density-fitting ceilings are below cc-pVDZ-RIFIT"
          return
       end if
       call make_handle(h, WATER, "cc-pvdz", "cc-pvdz-rifit", 0, 1, rc)
@@ -1022,10 +1084,14 @@ end module check_capi_rccsd_suite
 program check_capi_rccsd
    use, intrinsic :: iso_fortran_env, only: error_unit
    use testdrive, only: run_testsuite
-   use check_capi_rccsd_suite, only: collect_capi_rccsd
+   use check_capi_rccsd_suite, only: collect_capi_rccsd, supported
    implicit none
    integer :: stat
    stat = 0
+   if (.not. supported()) then
+      print "(a)", "SKIP: this build's density-fitting ceilings are below cc-pVDZ-RIFIT, no case can run"
+      stop 0
+   end if
    call run_testsuite(collect_capi_rccsd, error_unit, stat, parallel=.false.)
    if (stat > 0) then
       write (error_unit, "(i0, a)") stat, " test(s) failed"

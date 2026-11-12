@@ -25,7 +25,10 @@ across hardware, since in theory, it should be portable.
   functionals), global and range-separated hybrids, double hybrids, and
   VV10; restricted and unrestricted. Every kernel is checked against libxc
   -- see {doc}`functionals` for the full, generated list.
-- **Correlation**: RI-MP2, and double-hybrid DFT energies.
+- **Correlation**: RI-MP2, and double-hybrid DFT energies; closed-shell
+  RI-CCSD and RI-CCSD(T) energies (RHF reference, no gradients), on one GPU or
+  over several with one MPI rank per GPU. See {doc}`theory` for the method and
+  its limits, and {doc}`cli` for the options.
 - **Solvation**: C-PCM and IEF-PCM SCF energies, RKS and UKS, any
   functional, CPU and GPU.
 - **Analytic gradients**: HF/UHF and KS-DFT (LDA/GGA/meta-GGA/hybrid/
@@ -57,6 +60,9 @@ it does not scale. Open issue: implement diag free approaches, I welcome pull re
 - **g functions** need `TERCO_LMAX=4` and are for energies only (range-
   separated hybrids included): the non-symmetric Fock build and gradients
   refuse a g basis, and the multipole integrals stop at d.
+- **RI-CCSD(T)** is closed-shell and RHF only, energies only, with no point-group
+  symmetry (a named group is refused), no effective core potential and an aufbau
+  reference; its size is bounded by the memory of one GPU ({doc}`theory`).
 - `trc_basis_maxl` lets a host code check the highest angular momentum in a
   basis before it commits to building anything expensive with it.
 

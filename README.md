@@ -52,7 +52,7 @@ rely exclusively on do concurrent to do the parallelization of the quartets.
 | **Multipoles** | full Cartesian tensors through the **octupole** — 3 + 9 + 27 components |
 | **Density fitting** | two- and three-centre Coulomb integrals |
 | **Kohn-Sham DFT** | LDA, GGA and meta-GGA (tau-dependent: r2SCAN, SCAN, TPSS, the Minnesota M05-M15 family, ...) functionals, global, range-separated and double hybrids and VV10, RKS and UKS; every kernel checked against libxc ([docs/functionals.md](docs/functionals.md)) |
-| **Correlation methods** | Terco runs ri-mp2 and also supports Double-Hybrid DFT energies; closed-shell RI-CCSD and RI-CCSD(T) energies (`--riccsd`, `--riccsd-t`: RHF reference, no gradients; the ladder of the iterations and the (T) are shared over MPI ranks, one GPU each; W and the rings are not), validated against PySCF's DF-CCSD(T) |
+| **Correlation methods** | RI-MP2 and double-hybrid DFT energies; closed-shell **RI-CCSD** and **RI-CCSD(T)** energies (`--riccsd`, `--riccsd-t`): RHF reference, energies only (no gradients), one GPU or several with one MPI rank per GPU (the particle-particle ladder of every iteration and the (T) are shared over the ranks; W, the ring terms and DIIS run on the first), validated against PySCF's DF-CCSD(T); theory and limits in [docs/sphinx/theory.md](docs/sphinx/theory.md) |
 | **Solvation** | C-PCM and IEF-PCM SCF energies (pyscf's SWIG cavity, term for term), RKS and UKS, any functional, CPU and GPU |
 | **Analytic gradients** | HF/UHF, LDA/GGA/meta-GGA/hybrid/range-separated KS-DFT with VV10, the `--df` fitted RHF/RKS gradient, RHF + RI-MP2 (`--rimp2 --grad`) and double hybrids (`-f b2plyp --grad`: KS + c RI-MP2, b2plyp/b2gp-plyp/mpw2plyp), four-centre or `--df` reference, the latter with a density-fitted Z-vector; frozen core, Cartesian or spherical, restricted, one GPU; with C-PCM/IEF-PCM, the continuum's own analytic term (grad_qv + grad_nuc + grad_solver) on top of the SCF gradient; validated against pyscf, metalquicha's RI-MP2 references and finite differences; single GPU (a multi-GPU run computes the SCF gradient on rank 0 and warns); no RI-MP2 or double-hybrid gradient over an unrestricted or PCM reference |
 | **Interfaces** | a Fortran API, and a `bind(c)` ABI for host codes built with another compiler |
@@ -67,6 +67,7 @@ Terco will read the qcshema basis set format so if you have those, you can use t
 
 **The code has not been tested on AMD or Intel GPUs**. This is future work, if anyone is happy to try.
 
+- **RI-CCSD(T)** is closed-shell RHF only, energies only, with no point-group symmetry (a named group is refused, `--symmetry on` runs in C1), no effective core potential, an aufbau reference, and a system size bounded by the memory of one GPU. See [docs/sphinx/theory.md](docs/sphinx/theory.md).
 - **g functions** need `TERCO_LMAX=4` and are for energies (range-separated
   hybrids included): the non-symmetric Fock build and gradients refuse a g
   basis, and the multipole integrals stop at d. An LMAX=4 build compiles for about 50 minutes.

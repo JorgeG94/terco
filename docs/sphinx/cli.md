@@ -146,7 +146,7 @@ command line, in the input file and in the output, says RI-CCSD.
 | `--cc-diis` | `--riccsd` DIIS history length (8, at most 50); 1 switches DIIS off |
 | `--cc-ladder` | how `--riccsd` forms the particle ladder: auto (by operation count), assembled or direct; the energy does not depend on it (auto); over several ranks only auto (the half form) is accepted |
 | `--cc-triples` | which routine computes the (T) of `--riccsd-t`: auto (the ijk device routine in a GPU build, the host reference one otherwise; the ijk routine whenever there is more than one rank), reference (host, from the host copies; cross-checks a GPU build) tiled (the device routine over virtual triples, also on the host, slower there) or ijk (the device routine over occupied triples, the default in a GPU build); the energy does not depend on it (auto) |
-| `--cc-triples-budget` | memory for the working tile of the tiled (T) routine of `--riccsd-t`, GiB (1; any positive value, the repacked amplitudes come on top); a budget below one triple (48 o^3 bytes, o active occupied orbitals) makes the (T) step fail after the RI-CCSD has converged, with exit status 1; no effect on the reference routine |
+| `--cc-triples-budget` | memory for the working tile of the (T) routine of `--riccsd-t` that runs, GiB; any positive value. Unset it is 1 for the tiled routine and 2 for the ijk routine. One triple takes 48 o^3 bytes in the tiled routine (o active occupied orbitals) and 24 v^3 bytes in the ijk routine (v virtual orbitals). Only the ijk routine raises its default to one triple when that is more, so its default never refuses; the tiled routine does not, and its 1 GiB default does not hold one triple from o = 282. An explicit budget below one triple of the routine that runs (the ijk one by default in a GPU build and over several ranks; 1 GiB holds one only up to v = 355) makes the (T) step fail after the RI-CCSD has converged, with exit status 1, and the run warns before the iterations; no effect on the reference routine. The tiled routine's repacked amplitudes come on top of its tile. The ijk routine's slice cache is separate, sized by the code and not by the budget (see Memory below) |
 
 `--aux`, `--frozen` and `--aux-block` (above) apply to `--riccsd` and
 `--riccsd-t` as to `--rimp2`. The auxiliary basis defaults to `cc-pvdz-rifit`
@@ -249,6 +249,8 @@ lowest-numbered rank that met it; it does not leave the others waiting.
 
 ### What it is, and what it is not yet
 
+The method, its equations and its limits are described in {doc}`theory`.
+
 Closed-shell RI-CCSD(T): the equations are those of PySCF's `rccsd` and
 `ccsd_t` with density-fitted integrals, and the energies are validated against
 PySCF's DF-CCSD(T) (water and hydrogen peroxide, cc-pVDZ with
@@ -258,8 +260,8 @@ thresholds, 1e-8 and 1e-6, the agreement is about 1e-8 Eh).
 
 Today it covers: a restricted Hartree-Fock reference with canonical orbitals,
 one GPU per rank (the ladder of every iteration and the (T) are shared over ranks; W, the rings and DIIS are not yet), no effective core potential, **no gradients** (so no
-optimisation or Hessian), no restart of the RI-CCSD itself. The dense
-`(ia|bc)` block is what limits the system size for now.
+optimisation or Hessian), no restart of the RI-CCSD itself. The largest
+integral array, the `(bc|P)` factors (`v^2 naux` doubles, replicated on every rank), is what limits the system size for now.
 
 The shipped kernels stop at d functions in the orbital basis, so cc-pVTZ needs
 `-DTERCO_LMAX=3` (the SCF itself needs it for f functions, and `TERCO_DF_LMAX`
@@ -269,24 +271,52 @@ refused with, for example, `the orbital basis has l = 3, above this build's
 density-fitting ceiling 2 (TERCO_DF_LMAX)`.
 
 Memory, with `o` the active (not frozen) occupied orbitals, `v` the virtual
-orbitals and `naux` the auxiliary functions: the device holds about
-`14.8 o^2 v^2 + o v^3 + (o^2 + o v + v^2) naux + 2 diis (o v + o^2 v^2)`
-doubles (`diis` is `--cc-diis`) plus about 1.2 GB of ladder scratch; (T) adds
-`2 o^2 v^2 + o^3 v` doubles and its tile (`--cc-triples-budget`, 1 GiB by
-default, tiled routine). For 25 active occupied, 130 virtual and 630 auxiliary functions that
-is about 4.4 GB for the RI-CCSD and about 1.3 GB more for (T) at the default
-tile. In a GPU build the host keeps a copy of the same arrays; in a host (CPU)
-build this is all host memory.
+orbitals and `naux` the auxiliary functions. The RI-CCSD iterations hold, on the
+device, the three-index factors `(o^2 + o v + v^2) naux` doubles (`v^2 naux` is the
+largest array), the four integral blocks (`oooo`, `ooov`, `oovv`, `ovov`), the
+intermediates and the amplitude update, the DIIS history `2 diis (o v + o^2 v^2)`
+doubles (`diis` is `--cc-diis`; half of it when the amplitudes are pair symmetric,
+which they are in every production run) and about 1.2 GB of ladder scratch. They no
+longer hold the dense `(ia|bc)` block (`o v^3` doubles). The total is
+`14.8 o^2 v^2 + (o^2 + o v + v^2) naux + 2 diis (o v + o^2 v^2)` doubles plus the
+ladder scratch, **with a gap: the coefficient 14.8 was fitted when the `o v^3` block
+still existed and has not been re-derived since it was removed, so the formula
+may be off by an unknown amount (the old formula with `+ o v^3` gave 4.4 GB for o 25,
+v 130, naux 630)**. The (T) step adds, by routine:
+
+- ijk (the default in a GPU build and over several ranks): `2 (v + o) v o^2` doubles
+  (`tvb` and `tvb2`, that is `2 o^2 v^2 + 2 o^3 v`), the tile `Q` of
+  `--cc-triples-budget` (2 GiB by default, `24 v^3` bytes per triple, a triple being
+  a fixed occupied triple over all virtuals), a few small arrays that scale with
+  the tile, and a cache of integral slices of `8 v^2 (v + o)` bytes each. The cache is not
+  part of the budget. On a GPU build it is sized from the free device memory at the
+  start of (T): `max(min(0.8 free, free - 2 GiB) - (everything else in this
+  list), 0)` bytes, but never fewer than 4 slices and never more than `2 o` (all of
+  them), so it can exceed 80 % of the free memory when 4 slices are bigger than
+  that. When the free memory is unknown, and always in a host build (where `auto`
+  also picks this routine over several ranks), the cache is 16 GiB, clamped to the
+  same 4 to `2 o` slices. For o 25, v 130 that is 175 MB for `tvb` and `tvb2` and a
+  2 GiB tile, which holds 40 of the 2925 triples.
+- tiled: `2 o^2 v^2 + o^3 v` doubles for the repacked amplitudes and `ooov`, the tile
+  `W` of `--cc-triples-budget` (1 GiB by default, `48 o^3` bytes per triple of
+  virtuals) and a dense `(ia|bc)` copy of `o v^3` doubles that it builds from the
+  factors on entry and frees on exit (439 MB at o 25, v 130).
+- reference (host only): no tile; it holds the host copy of the `(ia|bc)` block.
+
+In a GPU build the host keeps a copy of the same arrays; in a host (CPU) build this
+is all host memory.
 
 One measured data point (adenine, cc-pVDZ with cc-pVDZ-RIFIT, frozen core: 25
 active occupied, 130 virtual, 630 auxiliary functions; one V100, untuned): 0.43
 s per RI-CCSD iteration, 15 iterations, 13.3 s for (T).
 
-The (T) step has two routines. The tiled one is the device routine; it also
-runs on the host, more slowly there, and `--cc-triples-budget` sizes its tile.
-The reference one runs on the host from the host copies and has no budget; a
+The (T) step has three routines. The ijk one (`--cc-triples ijk`) is the device routine over
+occupied triples, the default in a GPU build and the only one that shares the work over ranks; it also
+runs on the host. The tiled one (`tiled`) is the device routine over virtual triples; it also runs on
+the host, more slowly there. `--cc-triples-budget` sizes the tile of either (their triples differ in
+size, see the option). The reference one runs on the host from the host copies and has no budget; a
 GPU build can be forced to it with `--cc-triples reference` to cross-check.
-By default (`--cc-triples auto`) a host (CPU) build uses the reference routine.
+By default (`--cc-triples auto`) a host (CPU) build uses the reference routine, except over several ranks.
 
 The coupled-cluster work is mostly matrix products, so link a
 threaded BLAS and set `OMP_NUM_THREADS`. With NVHPC, `-DTERCO_ENABLE_GPU=OFF

@@ -234,9 +234,9 @@ contains
             block
                character(len=47) :: note
                if (r%cc_has_triples) then
-                  write (note, "(a,i0,a)") "ladder and (T) shared by ", r%nranks, " ranks"
+                  note = "ladder and (T) shared by "//to_string(r%nranks)//" ranks"
                else
-                  write (note, "(a,i0,a)") "ladder shared by ", r%nranks, " ranks"
+                  note = "ladder shared by "//to_string(r%nranks)//" ranks"
                end if
                call cc_note(note)
             end block

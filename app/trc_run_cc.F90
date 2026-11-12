@@ -162,7 +162,8 @@ contains
          if (.not. r%cc_triples) call run_die(r, N_BUDGET//" needs --riccsd-t ([correlation] method = 'ri-ccsd(t)')")
          call r%cli%get("cc-triples-budget", gib, r%err)
          call run_check(r, N_BUDGET)
-         ! Any positive size is a budget: one below a single triple (48 o^3 bytes) is how the (T) refusal is reached.
+         ! Any positive size is a budget: one below a single triple of the routine that runs (48 o^3 bytes tiled,
+         ! 24 v^3 bytes ijk) is how the (T) refusal is reached.
          if (.not. (gib > 0.0_dp .and. gib <= 1.0e6_dp)) call run_die(r, N_BUDGET//" must be positive and at "// &
                                                                       "most 1e6 GiB")
          r%cc_budget_mib = gib*1024.0_dp

@@ -177,6 +177,15 @@ terco_add_check(check_rccsd_inter check_rccsd_inter.F90 NEEDS_BASIS NEEDS_PYSCF_
 target_link_libraries(check_rccsd_inter PRIVATE test-drive::test-drive terco_rccsd_test_support)
 set_tests_properties(terco/check_rccsd_inter PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# The packed DIIS kernels of RI-CCSD (src/post_hf/ccsd/trc_rccsd_diis.F90) against plain loops over (i,j,a,b): an ifx
+# miscompilation of a value computed in a do concurrent and passed by reference shows here, not in the energies.
+terco_add_check(check_rccsd_diis check_rccsd_diis.F90)
+target_link_libraries(check_rccsd_diis PRIVATE test-drive::test-drive)
+
+# The staging array of the RI-CCSD transfers (src/post_hf/ccsd/trc_rccsd_xfer.F90): its size and its refusal.
+terco_add_check(check_rccsd_xfer check_rccsd_xfer.F90)
+target_link_libraries(check_rccsd_xfer PRIVATE test-drive::test-drive)
+
 # Woooo, Wvoov and Wvovo (src/post_hf/ccsd/trc_rccsd_w.F90) at the same FIXED
 # amplitudes against the same references, plus independent host einsum loops. Same SKIP guard.
 terco_add_check(check_rccsd_w check_rccsd_w.F90 NEEDS_BASIS NEEDS_PYSCF_REF)

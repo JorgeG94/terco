@@ -89,7 +89,10 @@ rows) add time but no count, so a row that mixes them (the intermediates, W,
 the T1 and T2 equations) shows a rate below the card's matrix-product rate by
 the share of its time those take. The ladder and the ring terms are nearly all
 matrix products. Each step is also an NVTX range (`rccsd: <name>`) in a build
-with `TERCO_NVTX`. The (T) correction reports its own timings.
+with `TERCO_NVTX`. The (T) correction reports its own timings. Over several ranks (`mpiexec -n N`)
+the table is rank 0's, the total row ends `rank 0 of N`, the step table gains the three transfer rows
+(`amplitudes to ranks`, `ladder wait (idle)`, `ladder to first rank`) and the energy box says
+`ladder and (T) shared by N ranks` ({doc}`cli`).
 
 ## `--json`
 
@@ -156,7 +159,8 @@ orbitals"`, `"ri-ccsd auxiliary functions"`, `"ri-mp2 correlation
 energy"`, `"ri-ccsd correlation energy"`, `"ri-ccsd t1 diagnostic"` and, when the
 RI-CCSD converged, `"ri-ccsd total energy"` (and with (T) `"ri-ccsd triples
 correction"` and `"ri-ccsd triples total energy"`; `"total energy"` stays the
-SCF energy); an RI-CCSD that did not converge has `"ri-ccsd converged": false`
+SCF energy); a (T) that failed after a converged RI-CCSD adds `"ri-ccsd triples error"`
+with the library's message, in place of the two (T) keys; an RI-CCSD that did not converge has `"ri-ccsd converged": false`
 and no totals; the SUMMARY rows show the same quantities under shorter labels that fit the
 block (`ri-ccsd (t) correction`, `ri-ccsd(t) total`, `ri-ccsd frozen core`, ...);
 `--opt`/`--hessian` add `"optimization"`/`"vibrational"` blocks. Keys

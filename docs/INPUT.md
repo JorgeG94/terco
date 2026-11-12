@@ -178,7 +178,7 @@ these keys with another method is refused.
 | `diis_size` | integer | `--cc-diis` | DIIS history length (8, at most 50); 1 switches DIIS off |
 | `ladder` | string | `--cc-ladder` | `auto` (by operation count), `assembled` or `direct`; does not change the energy |
 | `triples` | string | `--cc-triples` | the (T) routine: `auto` (the ijk device routine in a GPU build, the host reference one otherwise), `reference` (host, from the host copies; cross-checks a GPU build) `tiled` (the device routine over virtual triples, also on the host, slower there) or `ijk` (the device routine over occupied triples, the default in a GPU build); needs `ri-ccsd(t)`; does not change the energy |
-| `triples_budget` | float | `--cc-triples-budget` | memory of the tiled routine's working tile, GiB (1); any positive value; needs `ri-ccsd(t)`. A budget below one triple (48 o^3 bytes, o active occupied orbitals) makes (T) fail after the RI-CCSD has converged. No effect on the reference routine |
+| `triples_budget` | float | `--cc-triples-budget` | memory for the working tile of the (T) routine of `ri-ccsd(t)` that runs, GiB; any positive value. Unset it is 1 for the tiled routine and 2 for the ijk routine. One triple takes 48 o^3 bytes in the tiled routine (o active occupied orbitals) and 24 v^3 bytes in the ijk routine (v virtual orbitals). Only the ijk routine raises its default to one triple when that is more, so its default never refuses; the tiled routine does not, and its 1 GiB default does not hold one triple from o = 282. An explicit budget below one triple of the routine that runs (the ijk one by default in a GPU build and over several ranks; 1 GiB holds one only up to v = 355) makes the (T) step fail after the RI-CCSD has converged, with exit status 1, and the run warns before the iterations; no effect on the reference routine. The tiled routine's repacked amplitudes come on top of its tile. The ijk routine's slice cache is separate, sized by the code and not by the budget (see `docs/sphinx/cli.md`, Memory); needs `ri-ccsd(t)` |
 
 Both tolerances must be met. An RI-CCSD that does not converge is reported as
 `NOT CONVERGED` in the summary, `"ri-ccsd converged": false` in the JSON
@@ -186,13 +186,15 @@ Both tolerances must be met. An RI-CCSD that does not converge is reported as
 that fails after a converged RI-CCSD keeps the RI-CCSD energies in the summary
 and the JSON and ends the run with exit status 1.
 
-RI-CCSD is closed-shell Hartree-Fock only, on one rank, with no effective core
+RI-CCSD is closed-shell Hartree-Fock only (over several ranks the ladder of every iteration and the (T) are shared), with no effective core
 potential and no gradient. It is refused with `[scf] functional`, `[molecule]
 unpaired`, `[driver]` `gradient`, `hessian` or `optimize`, and with `method =
 "rimp2"` (it reports the RI-MP2 correlation energy itself). A basis in which
 `[basis] linear_dependence` dropped functions is refused after the SCF, because
 the method needs every orbital: lower the threshold (0 drops none). See
 `docs/sphinx/cli.md` for the memory it needs and what has been measured.
+
+The method and its limits are described in `docs/sphinx/theory.md`.
 
 The `"input"` echo of the JSON output gives `"method": "ri-ccsd(t)"` and a
 `"riccsd"` object with the same keys.
