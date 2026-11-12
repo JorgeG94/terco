@@ -56,7 +56,7 @@ module check_lr_exchange_grad_fd_suite
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -186,7 +186,8 @@ contains
       end if
       call bas%to_device()
       call eri%build(bas, THRESH)
-      call eri%fock(bas, d, vhf, j_scale=0.0_dp, k_scale=1.0_dp, omega=omega, density_screen=.false.)
+      call eri%fock(bas, d, vhf, &
+                    opts=trc_fock_options_t(j_scale=0.0_dp, k_scale=1.0_dp, omega=omega, density_screen=.false.))
       e2_lr_at = trace_prod(nao, d, vhf)
       call eri%release()
       call bas%release()

@@ -35,6 +35,10 @@ module trc_scf_state
       !! `run` times the whole of `trc_scf_run`, setup to the last iteration.
       real(dp) :: t_fock = 0.0_dp, t_xc = 0.0_dp, t_rest = 0.0_dp
       real(dp) :: t_pcm = 0.0_dp
+      real(dp) :: tf_first = 0.0_dp
+      !! The first build's time, kept apart: it pays one-off device setup.
+      integer :: n_fock = 0
+      !! Fock builds the main loop has taken.
       real(dp) :: tf_it = 0.0_dp, tx_it = 0.0_dp, tr_it = 0.0_dp
       real(dp) :: tx_pts = 0.0_dp, tx_prs = 0.0_dp
       real(dp) :: t_vv10 = 0.0_dp
@@ -78,6 +82,11 @@ module trc_scf_state
       !! with its own semicanonical values. False when it never ran or gave up
       !! before that (no rotations to take, no iterations left, or a failed
       !! diagonalisation), when `eps` still belongs to the main loop.
+      logical :: skeleton = .false.
+      !! This run builds the SKELETON G (`trc_scf_fock%scf_fock_build_g`): set by
+      !! the driver once per run, after its size rule, before the first
+      !! build; kept here, not as an argument, because it is the run's
+      !! state like `incr_on` and not one build's own input.
    contains
       procedure :: alloc => scf_state_alloc
       procedure :: to_device => scf_state_to_device

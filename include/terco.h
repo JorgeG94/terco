@@ -37,8 +37,9 @@ typedef void* trc_handle_t;
 #define TRC_GUESS_MINAO 7
 #define TRC_AO_NORM_SHELL 0
 #define TRC_AO_NORM_UNIT 1
+#define TRC_TIMING_NAME_MAX 64
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 23
+#define TRC_ABI_MINOR 26
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -532,7 +533,8 @@ int trc_set_soscf(trc_handle_t handle, int enable, double soscf_start);
  *                      not stop a run from converging.
  *
  * Takes effect at the next trc_run_scf, for every SCF the handle runs
- * after it (trc_fukui_hirshfeld's three included). (ABI 1.23.)
+ * after it (trc_fukui_hirshfeld's three included). With `mom` a symmetry
+ * request of on/auto runs in C1 and a named group is refused. (ABI 1.26.)
  */
 int trc_set_scf_stabilise(trc_handle_t handle, int mom, double level_shift_until);
 
@@ -1132,7 +1134,9 @@ int trc_converged(trc_handle_t handle, int* flag);
 int trc_iterations(trc_handle_t handle, int* niter);
 
 /**
- * (nao, nao, nspin), column-major; restricted holds the total.
+ * (nao, nao, nspin), column-major; restricted holds the total. After a
+ * symmetric run reported in the input frame, rotated back exactly
+ * (D_in = D D_std D^T, trc_sym_frame).
  *
  * CONTRAVARIANT under trc_set_ao_norm: D_out = N^-1 D_terco N^-1 per
  * spin slice when UNIT. Scaled on a COPY -- `cx%res%dmat` itself
@@ -1227,6 +1231,9 @@ int trc_chelpg_charges(trc_handle_t handle, double* charges);
 int trc_fukui_hirshfeld(trc_handle_t handle, double* f_plus, double* f_minus, double* f_zero, double* q_n, double* q_np1, double* q_nm1);
 
 /**
+ * After a symmetric run reported in the input frame the orbitals are
+ * rotated back exactly (C_in = D C_std, trc_sym_frame).
+ *
  * CONTRAVARIANT under trc_set_ao_norm, on the AO (row) index only:
  * C_out = N^-1 C_terco per spin slice when UNIT -- see trc_density
  * for why this scales a copy, not `cx%res%cmo` itself.
@@ -1238,13 +1245,186 @@ int trc_mo_energies(trc_handle_t handle, double* eps);
 int trc_rimp2_energy(trc_handle_t handle, double* e_os, double* e_ss);
 
 /**
+ * Point-group symmetry for the SCF (ABI 1.23). Off by default: a fresh
+ * context's request is "off" ("default" is a name for it), so nothing
+ * changes until a caller asks. "on" (or "auto") asks for the largest
+ * Abelian group of the molecule, D2h or a subgroup (symmetric and
+ * spherical tops and linear molecules use their largest Abelian
+ * subgroup), reports in the caller's input frame and runs in C1, with
+ * one log line, where the symmetric SCF is not supported. A group name
+ * is strict, and must be the detected group
+ * or a subgroup of it (else trc_run_scf refuses). `tol` is the geometry
+ * tolerance in Bohr, or 0 for the default (1e-5). With a group other
+ * than C1, trc_run_scf moves the molecule to the symmetrised, oriented
+ * standard frame and runs the SCF, and any gradient, there; trc_geometry,
+ * trc_gradient, trc_mo_coefficients, trc_density and the borrowed
+ * handles report that frame for a named group and the input frame for
+ * "on"/"auto" (trc_set_symmetry_report_frame overrides).
+ * A named group is refused at the run, not here, for: density
+ * fitting, PCM, fractional occupations, SOSCF, more than one rank, a
+ * given or projected guess, RI-MP2, CPHF/CPKS, the Hessian, Fukui
+ * indices and restarts; an on/auto request falls back to C1 there.
+ * A request longer than 32 characters is refused.
+ */
+int trc_set_symmetry(trc_handle_t handle, const char* group, double tol);
+
+/**
+ * Under a symmetry request (trc_set_symmetry), force the Fock matrix
+ * AND the four-centre gradient to be built from the orbit
+ * representatives of the integral quartets and symmetrized (on = 1), or
+ * force the full builds and symmetrize those (on = 0); on = -1 hands the
+ * choice back to the size rule (trc_sym_run's sym_run_skeleton_size_rule),
+ * which is also the choice without this call. Any other value is refused
+ * (TRC_ERR_BADARG). TRC_SYM_SKELETON=0/1 in the environment overrides
+ * all three. One verdict covers both builds, because both grow rather
+ * than shrink on a molecule whose every pair orbit is a singleton. The
+ * same SCF and the same gradient either way, to round-off; only the
+ * number of integrals computed differs. No effect without a group other
+ * than C1, with density fitting or over more than one rank (those take
+ * the full build).
+ */
+int trc_set_symmetry_skeleton(trc_handle_t handle, int on);
+
+/**
+ * The frame a symmetric run reports in: the geometry (trc_geometry), the
+ * gradient, the orbitals, the density and the borrowed basis/ERI handles
+ * (trc_context_basis/eri). 1 = the caller's input frame (the molecule
+ * symmetrised in it), 0 = the group's standard frame, -1 = the default:
+ * the input frame when the symmetry request is the default one, the
+ * standard frame when trc_set_symmetry asked for it. Energies, orbital
+ * energies, irrep labels, occupations and atomic charges do not depend
+ * on it.
+ */
+int trc_set_symmetry_report_frame(trc_handle_t handle, int frame);
+
+/**
+ * The frame the getters return now: 1 = the caller's input frame (every
+ * run without symmetry, and a symmetric run reported in it), 0 = the
+ * standard frame of the group the last run used. TRC_ERR_STATE before
+ * a successful run.
+ */
+int trc_symmetry_report_frame(trc_handle_t handle, int* frame);
+
+/**
+ * Fix the electrons per irrep, as pyscf's irrep_nelec: "A'=6,A\"=2" for
+ * a restricted run (even counts), "A'=4/3,A\"=1/1" (alpha/beta) for an
+ * unrestricted one; irreps not listed hold none. An empty string
+ * restores the aufbau occupation. The labels are checked against the
+ * group when trc_run_scf runs. A gradient is refused for occupations
+ * that differ from the aufbau ones. Set, they make an on/auto request
+ * strict (refused, never run in C1, where symmetry is not supported),
+ * whether trc_set_symmetry comes before or after. A specification
+ * longer than 256 characters is refused.
+ */
+int trc_set_irrep_nelec(trc_handle_t handle, const char* spec);
+
+/**
+ * The point group the last trc_run_scf used ("C1" when it ran without
+ * symmetry), NUL-terminated into `buf` of `buflen` chars. TRC_ERR_STATE
+ * unless a symmetry request ran.
+ */
+int trc_symmetry_group(trc_handle_t handle, char* buf, int buflen);
+
+/**
+ * The largest point group found in the geometry, before the cap to the
+ * groups this build supports (so "C2v" for water while only Cs is used).
+ */
+int trc_symmetry_detected(trc_handle_t handle, char* buf, int buflen);
+
+/**
+ * The name of irrep `irrep` (1-based, the order of trc_mo_irreps) of the
+ * group used. TRC_ERR_STATE unless the last run was symmetric.
+ */
+int trc_symmetry_irrep_name(trc_handle_t handle, int irrep, char* buf, int buflen);
+
+/**
+ * The largest displacement (Bohr) symmetrisation made to any atom of the
+ * input geometry; 0 for C1.
+ */
+int trc_symmetry_residual(trc_handle_t handle, double* residual);
+
+/**
+ * The orientation of the standard frame: x_std = rot (x - shift) for an
+ * input-frame point x (Bohr). `rot` is 9 doubles, row-major (rot[3*i+j]);
+ * `shift` is the centre of nuclear charge, 3 doubles. The identity and
+ * zero for C1.
+ */
+int trc_symmetry_frame(trc_handle_t handle, double* rot, double* shift);
+
+/**
+ * The number of irreps of the group used. TRC_ERR_STATE unless the last
+ * run was symmetric (group other than C1).
+ */
+int trc_symmetry_nirrep(trc_handle_t handle, int* nirrep);
+
+/**
+ * The number of symmetry-adapted basis functions of each irrep
+ * (trc_symmetry_nirrep entries), summing to trc_nao.
+ */
+int trc_symmetry_irrep_dim(trc_handle_t handle, int* dim);
+
+/**
+ * The irrep of each molecular orbital, 1-based into the irrep order of
+ * trc_symmetry_irrep_name, laid out like trc_mo_energies ((nao, nspin),
+ * column-major); 0 for an orbital canonical orthogonalisation dropped.
+ * TRC_ERR_STATE unless the last run was symmetric.
+ */
+int trc_mo_irreps(trc_handle_t handle, int* irreps);
+
+/**
+ * The geometry the context holds now, atom-major Bohr (3*natm): the
+ * input, or after a symmetric run the symmetrised geometry in the
+ * frame the results are reported in (trc_symmetry_report_frame): the
+ * caller's input frame by default, the group's standard frame under an
+ * explicit trc_set_symmetry request.
+ */
+int trc_geometry(trc_handle_t handle, double* xyz);
+
+/**
  * The last message, NUL-terminated into `buf` of `buflen` chars.
  */
 int trc_message(trc_handle_t handle, char* buf, int buflen);
 
 /**
+ * The number of entries trc_timing lists for the context's last run,
+ * so a caller loops index = 0 .. n-1 and never has to read an error
+ * as the end of the list. TRC_ERR_STATE before any SCF has run
+ * (or after a setter invalidated it), TRC_ERR_UNSUPPORTED if the
+ * run has more entries than the library lists (never a shortened list).
+ */
+int trc_timing_count(trc_handle_t handle, int* n);
+
+/**
+ * The stage times of the context's last run, one named value per call,
+ * in the order the stages ran: `index` counts from 0 up to
+ * trc_timing_count - 1, `name` receives a NUL-terminated dotted name
+ * ("scf.fock_first", "rimp2.step.cholesky", ...) in `name_len` chars,
+ * `value` the seconds, or a count when the last name component starts
+ * with "n_". A buffer of TRC_TIMING_NAME_MAX chars always suffices;
+ * a shorter one that cannot hold the name and its NUL is refused with
+ * TRC_ERR_BADARG (trc_message says the length needed), never cut.
+ * An index outside 0 .. n-1 is TRC_ERR_BADARG too. Only stages the run
+ * had are listed: "scf.*" after trc_run_scf, "dft.*" with a functional,
+ * "dfjk.*" with density fitting, "pcm.*" with a continuum, "rimp2.*"
+ * once the RI-MP2 energy step of the latest trc_run_rimp2 has run (not
+ * when a gradient took the pair energies from its amplitudes).
+ * TRC_ERR_STATE before any SCF. The times are the library's own timers
+ * (the ones the verbose tables print): each Fock, XC and step-table
+ * timer stops after a synchronous device call or an explicit device
+ * wait. A new method adds names under its own prefix; no existing name
+ * changes.
+ */
+int trc_timing(trc_handle_t handle, int index, char* name, int name_len, double* value);
+
+/**
  * The basis handle inside the context: BORROWED, never destroyed by
  * the caller, valid until the context is destroyed or the basis reset.
+ * After a symmetric run whose results are reported in the input frame
+ * (an on/auto request) it is a copy of the basis on the input-frame
+ * centres, so that it goes with trc_density, trc_mo_coefficients and
+ * trc_geometry; it is rebuilt after the geometry changes. A handle
+ * borrowed BEFORE such a run is the context's own basis, whose centres
+ * the run moved to the standard frame.
  * Refused (TRC_ERR_STATE) while an effective core potential is
  * attached: a basis handle cannot carry it, so trc_scf/trc_compute_1e
  * on it would leave the core potential out.

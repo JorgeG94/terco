@@ -75,7 +75,7 @@ module trc_cphf
    use pic_logger, only: global_logger
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_multipoles, TRC_NMULT
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_result_t
    use trc_scf_df, only: df_jk_t
@@ -227,7 +227,8 @@ contains
          call lp%gemm_mat(temporary_no, cmo(:, 1:nocc), d_u, transb="T")
          call lp%transpose(nao, nao, d_u, nao, d_ut, nao)
          call cphf_add_matrix(nao, nao, d_u, d_ut, d_u)
-         call eri%fock_resident(b, d_u, g_u, k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.)
+         call eri%fock_resident(b, d_u, g_u, &
+                                opts=trc_fock_options_t(k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.))
          call lp%gemm_mat(g_u, cmo(:, 1:nocc), temporary_no2)
          call lp%gemm_mat(cmo(:, nocc + 1:nao), temporary_no2, apout, transa="T", alpha=2.0_dp)
          call cphf_add_diag(nvirt, nocc, diagv, pin, apout)
@@ -469,9 +470,12 @@ contains
          call lp%transpose(nao, nao, d_ub, nao, d_temporary, nao)
          call cphf_add_matrix(nao, nao, d_ub, d_temporary, d_ub)
          call cphf_add_matrix(nao, nao, d_ua, d_ub, d_t)
-         call eri%fock_resident(b, d_t, g_j, j_scale=1.0_dp, k_scale=0.0_dp, density_screen=.false.)
-         call eri%fock_resident(b, d_ua, g_ka, j_scale=0.0_dp, k_scale=2.0_dp, density_screen=.false.)
-         call eri%fock_resident(b, d_ub, g_kb, j_scale=0.0_dp, k_scale=2.0_dp, density_screen=.false.)
+         call eri%fock_resident(b, d_t, g_j, &
+                                opts=trc_fock_options_t(j_scale=1.0_dp, k_scale=0.0_dp, density_screen=.false.))
+         call eri%fock_resident(b, d_ua, g_ka, &
+                                opts=trc_fock_options_t(j_scale=0.0_dp, k_scale=2.0_dp, density_screen=.false.))
+         call eri%fock_resident(b, d_ub, g_kb, &
+                                opts=trc_fock_options_t(j_scale=0.0_dp, k_scale=2.0_dp, density_screen=.false.))
          call cphf_add_matrix(nao, nao, g_j, g_ka, g_eff_a)
          call cphf_add_matrix(nao, nao, g_j, g_kb, g_eff_b)
          call lp%gemm_mat(g_eff_a, cmo_a(:, 1:noa), temporary_a2)

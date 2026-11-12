@@ -11,7 +11,7 @@ program bench_sph
    use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_sph, only: sph_cart_to_sph, sph_sph_to_cart
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -57,7 +57,7 @@ program bench_sph
    call eri%build(b, 1.0e-10_dp)
 
    call tm%start()
-   call eri%fock_resident(b, d_c, g_c, k_scale=1.0_dp)
+   call eri%fock_resident(b, d_c, g_c, opts=trc_fock_options_t(k_scale=1.0_dp))
    !$acc wait
    t1 = tm%get_elapsed_time()
    t_fock = t1

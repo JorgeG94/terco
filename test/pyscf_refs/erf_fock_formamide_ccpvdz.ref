@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["erf_fock_formamide_ccpvdz"] -> gen_erf_fock
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 51246af9686f311eb66bd430a42a66072fcd5e6823f23b55c5c28e56616deaaf
+# hash: a348127be2389324be44066c8a0676a3fd737ad2d6b898925d00f422e39e5e22
 # files: test/check_erf_fock_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/formamide.xyz
 NAT 6
 NAO 60

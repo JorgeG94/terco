@@ -24,7 +24,7 @@ module check_capi_ghost_suite
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_elements, &
                                trc_set_basis_json, trc_set_basis_arrays, trc_set_basis_libcint, &
                                trc_set_method, &
-                               trc_set_convergence, trc_set_pcm, &
+                               trc_set_convergence, trc_set_pcm, trc_set_symmetry, &
                                trc_run_scf, trc_run_gradient, trc_gradient, &
                                trc_energy, TRC_OK, TRC_ERR_BADARG, TRC_ERR_STATE
    implicit none
@@ -72,6 +72,11 @@ contains
       logical, intent(in) :: with_elements
       integer(c_int) :: rc
       rc = trc_create(h)
+      ! A named group puts the DFT grid on the group's standard frame (`on`
+      ! keeps the input axes); the pyscf parity of the B3LYP cases below is a
+      ! 1e-10 statement about the grid in THIS frame (a rotated grid moves the
+      ! energy by ~2e-10), so these cases state symmetry off explicitly.
+      rc = trc_set_symmetry(h, 'off'//c_null_char, 0.0_c_double)
       rc = trc_set_molecule(h, int(NATM, c_int), real(Z6, c_double), reshape(XYZ6, [3*NATM]), &
                             0_c_int, 1_c_int)
       if (with_elements) rc = trc_set_elements(h, int(NATM, c_int), int(ELEM6, c_int))

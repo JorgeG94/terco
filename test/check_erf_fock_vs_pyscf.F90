@@ -29,7 +29,7 @@ module check_erf_fock_vs_pyscf_suite
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_tables, only: LMAX
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
@@ -135,10 +135,12 @@ contains
          call eri%fock_nosym(bas, d, gk, density_screen=.false., &
                              j_scale=0.0_dp, k_scale=1.0_dp, omega=OMEGA_TEST)
       else
-         call eri%fock(bas, d, gj, density_screen=.false., &
-                       j_scale=1.0_dp, k_scale=0.0_dp, omega=OMEGA_TEST)
-         call eri%fock(bas, d, gk, density_screen=.false., &
-                       j_scale=0.0_dp, k_scale=1.0_dp, omega=OMEGA_TEST)
+         call eri%fock(bas, d, gj, &
+              opts=trc_fock_options_t(density_screen=.false., j_scale=1.0_dp, &
+                        k_scale=0.0_dp, omega=OMEGA_TEST))
+         call eri%fock(bas, d, gk, &
+              opts=trc_fock_options_t(density_screen=.false., j_scale=0.0_dp, &
+                        k_scale=1.0_dp, omega=OMEGA_TEST))
       end if
       call eri%release()
 

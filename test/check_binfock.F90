@@ -27,9 +27,9 @@ module check_binfock_suite
    use trc_tables, only: LTOT, NHERM_MAX, tables_init
    use trc_batch, only: batch_build_pairs, batch_ncart, common_fac_sp, trc_batch_pairs_t
    use trc_cart, only: cart_init
-   use trc_hgp, only: hgp_build_pairs
+   use trc_hgp, only: hgp_build_pairs, trc_pair_prune_t
    use trc_tables, only: LMAX
-   use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets
+   use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets, trc_bin_shells_t
    use trc_binkernel, only: binkernel_fock_bins
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
    use trc_screen, only: screen_schwarz_bounds, screen_density_blockmax, screen_pair_index
@@ -131,11 +131,13 @@ contains
       real(dp), allocatable :: jref(:, :), kref(:, :), ref(:)
       real(dp), allocatable :: qs(:), dmax(:, :), cfac(:)
       type(trc_shell_pairs_t) :: pairs
+      type(trc_pair_prune_t) :: prune
       type(trc_pair_quartets_t) :: quartets
       !! The HGP primitive pairs and their bin-interleaved copy
       !! (bins_build_pair_quartets), as trc_eri_t holds them.
       type(trc_bin_launch_t) :: launch
       type(pair_bins_t) :: bins
+      type(trc_bin_shells_t) :: bsh
       integer :: maxnp, nq, nout, nao, i, j, k, l, iat, iq, m
       integer :: sh(4), d(4), nc4, nqrt
       integer :: na, nb, nc, nd, ia, ib, ic, id, idx
@@ -196,8 +198,13 @@ contains
       call screen_schwarz_bounds(sh_l, mmd, qs)
       pairs%sh_l = sh_l
       pairs%ao_off = ao_off
-      call hgp_build_pairs(sh_np, sh_e, sh_c, sh_r, cfac, sh_c, 1.0e-33_dp, pairs)
-      call bins_build_binned_pairs(sh_l, sh_np, sh_r, qs, 1.0e-30_dp, bins, pp_n=pairs%n)
+      ! Component by component: nvfortran 26.5 has an internal compiler
+      ! error (search_arr) on this structure constructor with a basis-array argument.
+      prune%camp = sh_c
+      prune%cut = 1.0e-33_dp
+      call hgp_build_pairs(sh_np, sh_e, sh_c, sh_r, cfac, prune, pairs)
+      bsh = trc_bin_shells_t(sh_l, sh_np, sh_r)
+      call bins_build_binned_pairs(bsh, qs, 1.0e-30_dp, bins, pp_n=pairs%n)
       call bins_build_pair_quartets(bins, pairs, quartets)
       print '(a,i0,a,i0,a,i0)', '  system ', isys, ': shell pairs ', bins%npair, &
          '   live bins ', bins%nlive

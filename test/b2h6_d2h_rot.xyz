@@ -1,0 +1,10 @@
+8
+Diborane B2H6, point group D2h (nonplanar: the bridging H atoms sit above and below the BH2 plane): r(BB) 1.77, r(B-Hbridge) 1.32, r(B-Hterminal) 1.19 A, angle HtBHt 121.5 deg (approximate experimental values; recalled from the gas-phase literature, not looked up again), built analytically (not optimized); then rotated by Euler angles (zxz) -29, 63, 112 degrees and shifted by (-0.30, 0.45, 0.20) A
+B     -0.4093560032     0.9365454600     0.9311222742
+B     -0.1906439968    -0.0365454600    -0.5311222742
+H     -0.7230590975    -0.3132188151     0.6446268551
+H      0.1230590975     1.2132188151    -0.2446268551
+H     -1.4087784748     1.5684869230     1.0649307590
+H      0.4463691519     0.9439404301     1.7580320477
+H     -1.0463691519    -0.0439404301    -1.3580320477
+H      0.8087784748    -0.6684869230    -0.6649307590

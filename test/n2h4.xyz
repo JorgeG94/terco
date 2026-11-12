@@ -1,0 +1,8 @@
+6
+N2H4 gauche, C2 (point group C2 only), built from experimental-type internal coordinates (not optimized here): r(NN) 1.449, r(NH) 1.022 A, angle NNH 112, angle HNH 106, lone-pair torsion about 90 deg (close to the microwave structure of hydrazine; not a fresh optimization); arbitrary rotation so the standard frame is not the input frame
+N     0.5401803028    0.0552050561    0.4796435053
+N    -0.5401803028   -0.0552050561   -0.4796435053
+H     0.3949704331    0.8279505782    1.1325312843
+H     0.6298391040   -0.7855525140    1.0537271296
+H    -0.2252744209   -0.4530512207   -1.3667944028
+H    -1.2874633667   -0.6672978525   -0.1458854627

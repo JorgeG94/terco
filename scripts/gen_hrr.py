@@ -71,8 +71,20 @@ def powexpr(var, n):
     return "*".join([var] * n)
 
 
-def emit_class(la, lb, lc, ld, idx, order="lexicographic"):
+def parity_zero(dead, *powers):
+    """True when the combined power of the given components is odd in a dead
+    coordinate (bit d of `dead`): the integral is then exactly zero."""
+    return any((dead >> d) & 1 and sum(p[d] for p in powers) % 2 for d in range(3))
+
+
+def emit_class(la, lb, lc, ld, idx, order="lexicographic", dead=0):
     """Straight-line HRR + digestion for one (la,lb,lc,ld).
+
+    `dead` (bit d: coordinate d of all four centres is zero) drops the
+    components of odd parity in a dead coordinate, which are exactly zero and
+    which the masked digestion never reads, and from the others the terms
+    that carry a power of AB_d or CD_d (zero there). `dead` = 0 is the full
+    HRR, text unchanged.
 
     `order` governs ONLY the four outer loops below: `iia`/`iib`/`iic`/`iid`
     become the AO offsets `mu = mui + iia` etc at the call site
@@ -89,10 +101,14 @@ def emit_class(la, lb, lc, ld, idx, order="lexicographic"):
         for iic, (cx, cy, cz) in enumerate(cart(lc, order)):
             for iib, (bx, by, bz) in enumerate(cart(lb, order)):
                 for iia, (ax, ay, az) in enumerate(cart(la, order)):
+                    if parity_zero(dead, (ax, ay, az), (bx, by, bz), (cx, cy, cz), (dx, dy, dz)):
+                        continue
                     terms = []
                     for px in range(bx + 1):
                         for py in range(by + 1):
                             for pz in range(bz + 1):
+                                if any((dead >> d) & 1 and (px, py, pz)[d] != (bx, by, bz)[d] for d in range(3)):
+                                    continue
                                 cb = binom(bx, px)*binom(by, py)*binom(bz, pz)
                                 ja = idx[(ax + px, ay + py, az + pz)]
                                 fb = [powexpr("abx", bx - px),
@@ -101,6 +117,9 @@ def emit_class(la, lb, lc, ld, idx, order="lexicographic"):
                                 for qx in range(dx + 1):
                                     for qy in range(dy + 1):
                                         for qz in range(dz + 1):
+                                            if any((dead >> d) & 1 and (qx, qy, qz)[d] != (dx, dy, dz)[d]
+                                                   for d in range(3)):
+                                                continue
                                             cd = binom(dx, qx)*binom(dy, qy)*binom(dz, qz)
                                             jc = idx[(cx + qx, cy + qy, cz + qz)]
                                             fd = [powexpr("cdx", dx - qx),

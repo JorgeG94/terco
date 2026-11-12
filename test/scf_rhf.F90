@@ -31,7 +31,7 @@ program scf_rhf
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
@@ -136,9 +136,9 @@ program scf_rhf
          ! k_scale = 0 leaves pure Coulomb, k_scale = 1 with j_scale = 0
          ! leaves pure exchange. Checking the two separately is what pins the
          ! scalings: a common factor would pass a J - K/2 comparison.
-         call eri%fock(bas, dmat, gmat, k_scale=0.0_dp)
+         call eri%fock(bas, dmat, gmat, opts=trc_fock_options_t(k_scale=0.0_dp))
          print '(a,es24.16)', '  [oneshot] sum(J)    ', sum(gmat)
-         call eri%fock(bas, dmat, gmat, j_scale=0.0_dp)
+         call eri%fock(bas, dmat, gmat, opts=trc_fock_options_t(j_scale=0.0_dp))
          print '(a,es24.16)', '  [oneshot] sum(-K/2) ', sum(gmat)
          !
          ! A deliberately ASYMMETRIC density. The folded kernel assumes

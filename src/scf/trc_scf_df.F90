@@ -154,6 +154,7 @@ module trc_scf_df
       procedure :: build => df_jk_build
       procedure :: release => df_jk_release
       procedure :: report => df_jk_report
+      procedure :: step_times => df_jk_step_times
       procedure :: dims => df_jk_dims
       procedure :: is_ready => df_jk_is_ready
    end type df_jk_t
@@ -607,6 +608,16 @@ contains
    ! (Cholesky, trsm, the half-transform, the K panels) -- J's two GEMVs and the
    ! density factor are bandwidth- or eigensolver-bound and left out of it,
    ! exactly as RI-MP2 leaves its own screening-dependent integral step out.
+   subroutine df_jk_step_times(this, names, t)
+      !! The step table's labels and accumulated seconds, for `--json`.
+      class(df_jk_t), intent(in) :: this
+      character(len=*), allocatable, intent(out) :: names(:)
+      real(dp), allocatable, intent(out) :: t(:)
+      if (.not. allocated(this%tbl%names)) return
+      names = this%tbl%names
+      t = this%tbl%t
+   end subroutine df_jk_step_times
+
    subroutine df_jk_report(this, t_total, rank, nranks)
       class(df_jk_t), intent(in) :: this
       real(dp), intent(in) :: t_total
