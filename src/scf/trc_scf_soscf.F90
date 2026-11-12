@@ -109,6 +109,11 @@ module trc_scf_soscf
    ! nothing else in terco calls it.
    public :: scf_soscf_rotation_matrix
    public :: scf_soscf_trust_after_rejection
+   ! Exported for trc_scf_gdm_step.F90, the other orbital-rotation step: its
+   ! rotation, semicanonicalisation and eps commit are these same device
+   ! kernels, not second copies. Neither module calls the other's driver.
+   public :: trc_soscf_dims_t, scf_soscf_semicanonicalize, scf_soscf_diagonal, scf_soscf_copy_eps
+   public :: scf_soscf_ov_one_norm
 
    real(dp), parameter :: HESSIAN_SCALE = 4.0_dp
    !! `scf_soscf_hessian_apply_rhf`'s `(e_a-e_i) p + [A p]` to the true
@@ -311,13 +316,13 @@ contains
          scaling = maxval(abs(step_host))
          ! A valid 1-norm bound on the FULL n_mo x n_mo kappa `soscf_embed_kappa`
          ! builds from a step of this (ov-block) shape, computed from the
-         ! (small) ov block alone -- see `soscf_ov_one_norm`'s own header.
+         ! (small) ov block alone -- see `scf_soscf_ov_one_norm`'s own header.
          ! `scf_soscf_rotation_matrix` needs this, not `scaling` (the
          ! largest single element, which bounds nothing): the largest
          ! element can be arbitrarily smaller than the operator norm the
          ! scaling-and-squaring Taylor series needs small, which is how
          ! `exp(kappa)` lost orthogonality at larger nvirt/nocc.
-         one_norm = soscf_ov_one_norm(dims%nvirt, dims%nocc, step_host)
+         one_norm = scf_soscf_ov_one_norm(dims%nvirt, dims%nocc, step_host)
 
          accepted = .false.
          do trial = 1, MAX_BACKTRACKS
@@ -384,7 +389,7 @@ contains
       call scf_soscf_semicanonicalize(la, dims, fock_cur, coeff_work, fock_mo, energies_mo, info)
       if (info == 0) then
          call cphf_copy_matrix(dims%nao, dims%n_mo, coeff_work, scf_result%cmo(:, 1:dims%n_mo, 1))
-         call soscf_copy_eps(dims%nao, dims%n_mo, energies_mo, scf_result%eps(:, 1))
+         call scf_soscf_copy_eps(dims%nao, dims%n_mo, energies_mo, scf_result%eps(:, 1))
          scf_state%eps_rewritten = .true.
       else
          ! The orbitals returned are still the last ACCEPTED ones (coeff_work
@@ -507,7 +512,7 @@ contains
       ! be the transformed one.
       call la%gemm_mat(fock_ao, coeff, work)
       call la%gemm_mat(coeff, work, fock_mo, transa="T")
-      call soscf_diagonal(n_mo, fock_mo, energies_mo)
+      call scf_soscf_diagonal(n_mo, fock_mo, energies_mo)
 
       !$acc exit data delete(work, rotated)
       deallocate (work, rotated)
@@ -526,7 +531,7 @@ contains
       end do
    end subroutine soscf_copy_block
 
-   subroutine soscf_diagonal(n, a, d)
+   subroutine scf_soscf_diagonal(n, a, d)
       integer, intent(in) :: n
       real(dp), intent(in) :: a(n, n)
       real(dp), intent(inout) :: d(n)
@@ -534,9 +539,9 @@ contains
       do concurrent(k=1:n)
          d(k) = a(k, k)
       end do
-   end subroutine soscf_diagonal
+   end subroutine scf_soscf_diagonal
 
-   subroutine soscf_copy_eps(nao, n_mo, energies_mo, eps)
+   subroutine scf_soscf_copy_eps(nao, n_mo, energies_mo, eps)
       !! eps(1:n_mo) := energies_mo, device-resident: the final commit of
       !! the semicanonical orbital energies into `scf_result%eps(:,1)`.
       !! Done as a kernel on the device-resident arrays, not a host
@@ -555,7 +560,7 @@ contains
       do concurrent(k=1:n_mo)
          eps(k) = energies_mo(k)
       end do
-   end subroutine soscf_copy_eps
+   end subroutine scf_soscf_copy_eps
 
    subroutine scf_soscf_gradient(n_mo, nocc, nvirt, fock_mo, gradient)
       !! `dE/d kappa_ai = 4 F_ai`, virtual fastest -- see this module's own
@@ -861,7 +866,7 @@ contains
       a_host = a
    end subroutine soscf_pull_matrix
 
-   pure function soscf_ov_one_norm(nvirt, nocc, step) result(norm)
+   pure function scf_soscf_ov_one_norm(nvirt, nocc, step) result(norm)
       !! A 1-norm bound (the largest absolute COLUMN sum -- a true matrix
       !! norm, unlike the largest single element) on the antisymmetric
       !! `n_mo`-by-`n_mo` matrix `soscf_embed_kappa` builds from a step of
@@ -887,7 +892,7 @@ contains
       do a = 1, nvirt
          norm = max(norm, sum(abs(step(a, :))))
       end do
-   end function soscf_ov_one_norm
+   end function scf_soscf_ov_one_norm
 
    real(dp) function soscf_trust0_env() result(res)
       !! TRC_SOSCF_TRUST0: override the trust radius a --soscf phase
@@ -941,7 +946,7 @@ contains
    ! orthogonal to machine precision for any step size (ported from
    ! metalquicha's `mqc_orbital_rotation%rotation_matrix`, same algorithm,
    ! device-resident GEMMs). `norm` is a 1-norm bound on `kappa`
-   ! (`soscf_ov_one_norm`), passed in rather than recomputed here: the
+   ! (`scf_soscf_ov_one_norm`), passed in rather than recomputed here: the
    ! caller already knows it (from the small occupied-virtual step, not
    ! the full n x n matrix), and pulling the full n x n `kappa` back to
    ! the host just to recompute a bound on it would be the one

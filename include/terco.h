@@ -39,7 +39,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_UNIT 1
 #define TRC_TIMING_NAME_MAX 64
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 26
+#define TRC_ABI_MINOR 27
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -537,6 +537,39 @@ int trc_set_soscf(trc_handle_t handle, int enable, double soscf_start);
  * request of on/auto runs in C1 and a named group is refused. (ABI 1.26.)
  */
 int trc_set_scf_stabilise(trc_handle_t handle, int mom, double level_shift_until);
+
+/**
+ * Geometric direct minimisation (Van Voorhis and Head-Gordon, Mol. Phys.
+ * 100, 1713 (2002)), an aid for SCFs that DIIS cannot converge: an
+ * L-BFGS minimisation over occupied-virtual orbital rotations that takes
+ * over from DIIS once |FDS - SDF| < `start`, and accepts a step only if
+ * the energy does not rise (trc_scf_options_t%gdm has the details).
+ *
+ *   on            1 turns GDM on; 0 off (the default).
+ *   start         commutator norm at which DIIS hands over; 0 for the
+ *                 library's default (0.1). Must be >= 0.
+ *   max_rotation  largest element of the orbital rotation (kappa) of one step; 0 for the
+ *                 library's default (0.2). Must be >= 0.
+ *
+ * Works with restricted and unrestricted references, functionals
+ * (VV10 included), continuum solvents, density fitting and several
+ * ranks; refused at the next trc_run_scf together with fractional
+ * occupations and with trc_set_soscf. Measured caveats: it keeps the
+ * occupation it starts from, so started too early from a poor guess it
+ * can land on a higher state (the run warns when the final orbitals are
+ * not in aufbau order); with trc_set_scf_stabilise's mom, a non-aufbau
+ * occupation held by MOM at the handover makes GDM decline and the run
+ * continues as a MOM run; and where DIIS works it is slower (about 1.8
+ * times the iterations on a flat mode), so it is an aid for stalled
+ * cases, not a default. A 39-atom open-shell cation (UKS
+ * wB97X-V/def2-SVP, IEF-PCM) that DIIS left unconverged after 100
+ * iterations converged in 46, to the same energy on 1, 2 and 3 GPUs.
+ *
+ * Takes effect at the next trc_run_scf, for every SCF the handle runs
+ * after it (trc_fukui_hirshfeld's three included). With `on` a symmetry
+ * request of on/auto runs in C1 and a named group is refused. (ABI 1.27.)
+ */
+int trc_set_gdm(trc_handle_t handle, int on, double start, double max_rotation);
 
 int trc_set_df(trc_handle_t handle, int on);
 

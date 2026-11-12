@@ -577,6 +577,17 @@ target_link_libraries(check_scf_lindep_gap PRIVATE test-drive::test-drive)
 # check_soscf.F90's own header for the pyscf references.
 terco_add_check(check_soscf check_soscf.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_soscf PRIVATE test-drive::test-drive)
+# Geometric direct minimisation's numerical core (trc_scf_gdm.F90): the L-BFGS
+# two-loop recursion against a dense BFGS update, the curvature guard, a
+# convex quadratic, and the preconditioner, step-control and descent helpers.
+terco_add_check(check_scf_gdm check_scf_gdm.F90)
+target_link_libraries(check_scf_gdm PRIVATE test-drive::test-drive)
+# GDM as a step mode of trc_scf_run (trc_scf_gdm_step.F90), end to end: HF, UHF,
+# RKS/UKS, PCM, density fitting and a linearly dependent basis against pyscf, the
+# default handover, the rejected-step path, the returned orbitals, the refusals
+# and the "no downhill step" stop -- see check_scf_gdm_run.F90's own header.
+terco_add_check(check_scf_gdm_run check_scf_gdm_run.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_scf_gdm_run PRIVATE test-drive::test-drive)
 # The SCF convergence aids (`mom`, `level_shift_until`): the MOM ordering on a
 # synthetic problem, ground states against the plain runs and pyscf, the shift
 # kept on through DIIS and its stall guard, MOM holding a swapped HOMO/LUMO
@@ -584,6 +595,17 @@ target_link_libraries(check_soscf PRIVATE test-drive::test-drive)
 # and trc_set_scf_stabilise through the C ABI.
 terco_add_check(check_scf_stabilise check_scf_stabilise.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_scf_stabilise PRIVATE terco_c_interfaces test-drive::test-drive)
+
+# trc_set_gdm through the C ABI: bad arguments, and each of its three values
+# reaching the SCF -- see check_capi_gdm.F90's own header.
+terco_add_check(check_capi_gdm check_capi_gdm.F90 NEEDS_BASIS
+                ARGS ${CMAKE_CURRENT_BINARY_DIR})
+target_link_libraries(check_capi_gdm PRIVATE terco_c_interfaces test-drive::test-drive)
+
+# RI-MP2 and the CPHF response refuse a mom-held non-aufbau reference -- see
+# check_post_scf_aufbau.F90's own header.
+terco_add_check(check_post_scf_aufbau check_post_scf_aufbau.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_post_scf_aufbau PRIVATE terco_c_interfaces test-drive::test-drive)
 # build_631g against trc_basis_from_json, on water through a five-water
 # cluster -- the one check allowed to call build_631g for its own basis
 # (see that subroutine's comment in trc_test_basis.F90). Water through
@@ -978,6 +1000,12 @@ if(TERCO_BUILD_APP)
   terco_add_check(check_cli_stabilise check_cli_stabilise.F90
                   ARGS $<TARGET_FILE:terco_cli> ${CMAKE_CURRENT_BINARY_DIR}/cli_stabilise.out)
   target_link_libraries(check_cli_stabilise PRIVATE test-drive::test-drive)
+
+  # --gdm, --gdm-start, --gdm-max-rotation and their [scf.convergence] keys
+  # reaching the SCF -- see check_cli_gdm.F90's own header.
+  terco_add_check(check_cli_gdm check_cli_gdm.F90
+                  ARGS $<TARGET_FILE:terco_cli> ${CMAKE_CURRENT_BINARY_DIR}/cli_gdm_work)
+  target_link_libraries(check_cli_gdm PRIVATE test-drive::test-drive)
 
   # The end-of-SCF HOMO/LUMO energies in the CLI's --json, RHF and UHF,
   # against pyscf -- see check_cli_homo_lumo.F90's own header.

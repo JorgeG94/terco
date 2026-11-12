@@ -111,6 +111,9 @@ module trc_run
       real(dp) :: soscf_start = -1.0_dp  !! --soscf-start; -1 = the library's default (1e-2)
       logical :: mom = .false.           !! --mom
       real(dp) :: level_shift_until = 0.0_dp  !! --level-shift-until; 0 = off once DIIS starts
+      logical :: gdm = .false.           !! --gdm
+      real(dp) :: gdm_start = 0.0_dp     !! --gdm-start; 0 = the library's default (0.1)
+      real(dp) :: gdm_max_rotation = 0.0_dp  !! --gdm-max-rotation; 0 = the library's default (0.2)
       real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess, epcm, qpcm
       logical :: rimp2, df
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
@@ -565,6 +568,8 @@ contains
          why = "--soscf"
       else if (r%mom) then
          why = "--mom"
+      else if (r%gdm) then
+         why = "--gdm"
       else if (len(r%fukui) > 0) then
          why = "--fukui"
       else if (len(r%restart) > 0) then
