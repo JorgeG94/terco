@@ -239,6 +239,7 @@ module trc_capi
    private
 
    public :: trc_basis_create, trc_basis_destroy, trc_basis_nao
+   public :: trc_guess_is_user_chosen
    public :: trc_basis_create_libcint, trc_basis_maxl
    public :: trc_basis_shell_count, trc_basis_shell_max_primitives
    public :: trc_basis_shell_info, trc_basis_shell_primitives
@@ -261,7 +262,7 @@ module trc_capi
              trc_set_basis_json, trc_set_aux_libcint, trc_set_aux_arrays, trc_set_aux_json, trc_set_ecp_json, &
              trc_set_method, trc_set_nlc_grid, &
              trc_set_unrestricted, trc_set_level_shift, &
-             trc_set_convergence, trc_set_scf_accel, trc_set_soscf, &
+             trc_set_convergence, trc_set_scf_accel, trc_set_soscf, trc_set_scf_stabilise, &
              trc_set_lindep, trc_set_screening, trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
              trc_set_jkfit_libcint, &
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
@@ -357,7 +358,9 @@ module trc_capi
    !! trc_timing's list capacity. A run that would list more is an error
    !! (TRC_ERR_UNSUPPORTED), never a silently shortened list.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 25
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 26
+   !! 1.26: trc_set_scf_stabilise, a new entry point (maximum overlap
+   !! occupation and a level shift kept on through DIIS). Additive.
    !! 1.25: trc_set_symmetry_skeleton (-1 the size rule, 0 off, 1 on) for
    !! the skeleton Fock build and four-centre gradient of a symmetric run
    !! (a new entry point, nothing else changes).
@@ -3125,14 +3128,13 @@ contains
       !! / occ), applied ONLY WHILE DIIS (AND ADIIS) ARE OFF -- the
       !! damped start before either has engaged (trc_scf_driver.F90's own
       !! "level shift while DIIS and A/EDIIS are off" block). It is a
-      !! CONVERGENCE AID for that early phase, not a persistent shift
-      !! held through the whole SCF: once the commutator is small enough
-      !! for CDIIS (or ADIIS takes over first), this stops being applied
-      !! at all, however large `shift` is set. A caller wanting a shift
-      !! that stays on throughout -- the sense a persistent level shift
-      !! has in, for instance, a Fukui-ion deck's convergence recipe --
-      !! is asking for something this entry does not do; nothing here
-      !! changes that behaviour, only exposes the existing knob.
+      !! CONVERGENCE AID for that early phase: once the commutator is
+      !! small enough for CDIIS (or ADIIS takes over first), this stops
+      !! being applied, however large `shift` is set. To keep the shift on
+      !! through DIIS until the commutator falls below a threshold -- the
+      !! sense a persistent level shift has in, for instance, a Fukui-ion
+      !! deck's convergence recipe -- also set `level_shift_until` with
+      !! trc_set_scf_stabilise.
       type(c_ptr), value :: handle
       real(c_double), value :: shift
       integer(c_int) :: status
@@ -3244,6 +3246,61 @@ contains
       call invalidate_runs(cx)
       status = TRC_OK
    end function trc_set_soscf
+
+   function trc_set_scf_stabilise(handle, mom, level_shift_until) result(status) &
+      bind(c, name="trc_set_scf_stabilise")
+      !! Two aids for small-gap SCFs (charged open shells, a Fukui ion)
+      !! where CDIIS stalls with the occupation flipping between iterations.
+      !! Both act on the eigenproblem of rank 0 alone, so unlike trc_set_soscf
+      !! they are not refused with an open shell, a functional, a continuum
+      !! solvent, --df or more than one rank (O3+ 6-31G* with both aids gives
+      !! the same energy and iteration count on one, two and three devices,
+      !! with and without IEF-PCM):
+      !!
+      !!   mom                1 occupies by maximum overlap with the previous
+      !!                      density, starting at the first iteration with
+      !!                      DIIS on and either a starting density the caller
+      !!                      chose (trc_set_guess GIVEN, PROJECTED) or
+      !!                      |FDS - SDF| < 0.1, and staying on; aufbau before
+      !!                      that. The guesses terco builds itself (SAD, SADQ,
+      !!                      SAP, MINAO, GWH, core) wait for the 0.1 gate. 0
+      !!                      aufbau throughout (the default).
+      !!   level_shift_until  keep trc_set_level_shift's shift on through
+      !!                      DIIS until |FDS - SDF| falls below this; 0 (the
+      !!                      default) drops it when DIIS starts. An iteration
+      !!                      that can converge is never shifted. A shift this
+      !!                      keeps on is dropped for the rest of the run, with
+      !!                      one message, once the commutator has not improved
+      !!                      by a factor 2 over 10 such iterations: a
+      !!                      threshold below where the shifted run parks must
+      !!                      not stop a run from converging.
+      !!
+      !! Takes effect at the next trc_run_scf, for every SCF the handle runs
+      !! after it (trc_fukui_hirshfeld's three included). With `mom` a symmetry
+      !! request of on/auto runs in C1 and a named group is refused. (ABI 1.26.)
+      type(c_ptr), value :: handle
+      integer(c_int), value :: mom
+      real(c_double), value :: level_shift_until
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (mom /= 0 .and. mom /= 1) then
+         call refuse(cx, "trc_set_scf_stabilise: mom must be 0 or 1")
+         return
+      end if
+      ! Written so a NaN fails it too.
+      if (.not. (level_shift_until >= 0.0_c_double)) then
+         call refuse(cx, "trc_set_scf_stabilise: level_shift_until must be >= 0")
+         return
+      end if
+      cx%opts%mom = mom == 1
+      cx%opts%level_shift_until = real(level_shift_until, dp)
+      call invalidate_runs(cx)
+      status = TRC_OK
+   end function trc_set_scf_stabilise
 
    !
    ! Density-fitted J and K (`--df`). Needs a jkfit basis too
@@ -3873,7 +3930,7 @@ contains
       ! `opts%guess` here, `cx%dfjk`/`cx%df_fit_ok` below) and neither reads
       ! the other's, so swapping their order changes nothing but the order
       ! memory gets claimed in.
-      opts = cx%opts
+      opts = run_options(cx)
       select case (cx%guess_kind)
       case (TRC_GUESS_CORE)
          opts%guess = "core"
@@ -4244,6 +4301,11 @@ contains
          ! An explicit request meets the driver's own refusal, as before.
          what = "second-order SCF"
          why = "trc_run_scf: second-order SCF is not supported with symmetry"
+      else if (cx%opts%mom .and. sym_lenient(cx)) then
+         ! MOM chooses occupations across irreps; an explicit request meets
+         ! the driver's own refusal, as --soscf does.
+         what = "the maximum overlap method"
+         why = "trc_run_scf: mom is not supported with symmetry"
       end if
    end subroutine sym_unsupported
 
@@ -4402,6 +4464,27 @@ contains
          dg(:, :, 2) = 0.5_dp*dminao
       end if
    end subroutine minao_guess_build
+
+   pure function trc_guess_is_user_chosen(kind) result(chosen)
+      !! Whether a TRC_GUESS_* kind starts the SCF from a density the caller
+      !! chose, for `trc_scf_options_t%mom_follow_guess`: a given one (which a
+      !! restart or a Hessian displacement is) or a projected previous orbital
+      !! set. The densities terco builds itself (SAD, SADQ, MINAO, and the
+      !! core, GWH and SAP operators) are not: maximum overlap occupation must
+      !! wait for the commutator gate before it follows them.
+      integer, intent(in) :: kind
+      logical :: chosen
+      chosen = kind == TRC_GUESS_GIVEN .or. kind == TRC_GUESS_PROJECTED
+   end function trc_guess_is_user_chosen
+
+   function run_options(cx) result(opts)
+      !! The options one trc_run_scf hands to trc_scf_run: the context's own,
+      !! plus `mom_follow_guess` (`trc_guess_is_user_chosen`).
+      type(context_box), intent(in) :: cx
+      type(trc_scf_options_t) :: opts
+      opts = cx%opts
+      opts%mom_follow_guess = trc_guess_is_user_chosen(cx%guess_kind)
+   end function run_options
 
    !
    ! TRC_GUESS_SAD/SADQ's density, both spins -- split out of trc_run_scf's

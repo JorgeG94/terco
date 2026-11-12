@@ -39,7 +39,7 @@ module trc_run
    implicit none
    private
    public :: run_t, VERSION, run_die, run_quit, run_check, run_api, run_int_option, run_banner, run_summary, run_write_json, &
-             run_gradient_summary, run_hessian_summary, run_build_masses, run_charges_summary, &
+             run_note_noconv, run_gradient_summary, run_hessian_summary, run_build_masses, run_charges_summary, &
              run_fukui_summary
    public :: run_opt_capability_check, run_build_opt_residues, run_opt_summary, run_write_opt_xyz, run_write_traj_xyz
    public :: run_parse_opt_global_options
@@ -109,6 +109,8 @@ module trc_run
       real(dp) :: diis_start = -1.0_dp   !! --diis-start; -1 = by spin
       logical :: soscf = .false.         !! --soscf
       real(dp) :: soscf_start = -1.0_dp  !! --soscf-start; -1 = the library's default (1e-2)
+      logical :: mom = .false.           !! --mom
+      real(dp) :: level_shift_until = 0.0_dp  !! --level-shift-until; 0 = off once DIIS starts
       real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess, epcm, qpcm
       logical :: rimp2, df
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
@@ -561,6 +563,8 @@ contains
          why = "--pcm"
       else if (r%soscf) then
          why = "--soscf"
+      else if (r%mom) then
+         why = "--mom"
       else if (len(r%fukui) > 0) then
          why = "--fukui"
       else if (len(r%restart) > 0) then
@@ -662,6 +666,20 @@ contains
       s = trc_message(r%h, buffer, int(size(buffer), c_int))
       call run_die(r, app_f_string(buffer))
    end subroutine run_api
+
+   subroutine run_note_noconv(r)
+      !! The own account of the SCF of why it did not converge, on rank 0: the
+      !! message of the library carries what the energies and orbital energies of a
+      !! non-converged run are not (for example that the virtuals include a
+      !! level shift), which the bare "NOT converged" of the summary does not.
+      type(run_t), intent(in) :: r
+      integer, parameter :: MSG_LEN = 1024
+      character(kind=c_char) :: buffer(MSG_LEN)
+      integer(c_int) :: s
+      if (.not. r%rank0) return
+      s = trc_message(r%h, buffer, int(size(buffer), c_int))
+      if (s == TRC_OK .and. len_trim(app_f_string(buffer)) > 0) call global_logger%warning(trim(app_f_string(buffer)))
+   end subroutine run_note_noconv
 
    integer function run_int_option(r, name, file, default) result(v)
       !! An integer option, else the first integer in `file` in the working

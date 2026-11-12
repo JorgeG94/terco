@@ -200,6 +200,58 @@ module trc_scf_settings
       !! From a Wolfsberg-Helmholz guess cholesterol sits 20 hartree above
       !! its answer and a damped Roothaan step alone throws it 300 hartree
       !! away; raising the virtuals keeps the occupied space from collapsing.
+      real(dp) :: level_shift_until = 0.0_dp
+      !! Keep `level_shift` on through DIIS/ADIIS until the commutator norm
+      !! falls below this; 0 (the default) drops it the iteration DIIS starts.
+      !! An iteration whose commutator is below `conv_diis` is never shifted,
+      !! with or without this option, so converged eigenvalues are unshifted.
+      !! The shift goes onto the extrapolated Fock matrix, so the
+      !! DIIS history and the commutator stay unshifted. For small-gap open
+      !! shells, where CDIIS swaps occupied and virtual orbitals every few
+      !! iterations and stalls with |FDS - SDF| near 1e-1.
+      !! A stall guard stops it from trapping a run that would converge
+      !! without it. The shift only damps the step, so with the threshold
+      !! below the commutator a shifted DIIS can sit above it indefinitely
+      !! (O3+ UHF/6-31G* converges in 36 iterations by default (SAD guess; 35
+      !! from SADQ), and not in 100 with a threshold of 1e-3, the commutator
+      !! parked at 2e-3 to 4e-3). So
+      !! the shift this option keeps on is dropped for the rest of the run,
+      !! and the SCF says so once, when the best commutator of the last
+      !! `SHIFT_STALL_WINDOW` (10) iterations shifted through this option is
+      !! not below `SHIFT_STALL_FACTOR` (0.5) times the best before them
+      !! (`scf_shift_guard_t` in trc_scf_driver). Both read only the broadcast
+      !! commutator and the iteration counts, so every rank drops it together.
+      !! The shift of the damped start is not watched.
+      logical :: mom = .false.
+      !! Maximum overlap method (Gilbert, Besley & Gill, JPCA 112, 13164)
+      !! while DIIS is on: occupy the orbitals that overlap most with the
+      !! previous density, p_j = c_j^T S D S c_j (the sum of squared overlaps
+      !! with the previous occupied space, `scf_driver_mom_weights`), instead
+      !! of the lowest ones. Stops aufbau flipping the occupation of
+      !! near-degenerate frontier orbitals between iterations. MOM starts, and
+      !! then stays on, at the first iteration with DIIS on AND either
+      !! `mom_follow_guess` (below) or a commutator norm below 0.1 (`MOM_START`
+      !! in trc_scf_driver). Before that it is aufbau: DIIS is on from
+      !! iteration 1 of a restricted run, and following a poor core guess
+      !! there converged water to a determinant 8 Eh up. The SAD, SADQ, SAP,
+      !! MINAO, GWH and core guesses are all built by terco and so wait for
+      !! that gate. The occupied orbitals stay in columns 1:nocc of `cmo`
+      !! (energy order within each block), so `eps` need not ascend across the
+      !! occupied/virtual boundary; the HOMO-LUMO gap check is skipped then.
+      !! Open shells, `--pcm`, `--df` and several ranks all combine with it:
+      !! it only reorders the columns of the eigenvectors of rank 0 (the number of
+      !! columns moved is broadcast with the other control values), and the
+      !! density that follows goes through the same Fock build as before.
+      !! With `--soscf`, MOM runs only until SOSCF takes over (see
+      !! `trc_scf_soscf_run`).
+      logical :: mom_follow_guess = .false.
+      !! The starting density is one the CALLER chose, so `mom` follows its
+      !! occupation from the first DIIS iteration even when it is not aufbau:
+      !! a density handed in (trc_capi: TRC_GUESS_GIVEN, which includes the
+      !! Hessian and Fukui restores) or a projected previous orbital set
+      !! (TRC_GUESS_PROJECTED). False for every density terco builds, however
+      !! it reaches `trc_scf_run` (SAD arrives as `dguess` too), so those wait
+      !! for the commutator gate. Only read when `mom` is on.
       real(dp) :: lindep_thresh = 1.0e-8_dp
       !! Canonical orthogonalisation: an eigenvalue of S, normalised to a unit
       !! diagonal first (Sn = D S D, D = diag(1/sqrt(S_ii)) -- pyscf's
@@ -333,6 +385,9 @@ module trc_scf_settings
       integer :: n_increments = 0
       !! Fock builds taken from the density difference (trc_scf_incremental);
       !! the rest of `iterations` were full builds, the last one always.
+      logical :: shift_dropped = .false.
+      !! The stall guard of `level_shift_until` dropped the level shift during
+      !! this run (it says so once in the log); false when the option is off.
       logical :: sym_declined = .false.
       !! The symmetric run was not made: `sym%decline_lindep` and functions were
       !! dropped (`message` says so, `iterations` is 0). The caller runs in C1.

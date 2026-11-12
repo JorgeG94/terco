@@ -12,7 +12,7 @@
 ! energy to 1e-10 Eh and in the gradient.
 !
 ! Refused, each by name and before any SCF: --symmetry with --opt, --hessian,
-! --rimp2 (and a double hybrid), --df, --pcm, --soscf, --fukui and --restart;
+! --rimp2 (and a double hybrid), --df, --pcm, --soscf, --mom, --fukui and --restart;
 ! a group that is not the detected one or a subgroup; a subgroup below the
 ! reported group (Cs on C2v water: only the reported group is run); a gradient with fixed irrep occupations that
 ! are not the aufbau ones; an irrep_nelec that is malformed or does not add up.
@@ -600,6 +600,8 @@ contains
       if (allocated(error)) return
       call refused(B//' --soscf', '--symmetry is not supported with --soscf', error)
       if (allocated(error)) return
+      call refused(B//' --mom', '--symmetry is not supported with --mom', error)
+      if (allocated(error)) return
       call refused(B//' --fukui hirshfeld', '--symmetry is not supported with --fukui', error)
       if (allocated(error)) return
       call refused(B//' --restart none.scf', '--symmetry is not supported with --restart', error)
@@ -859,6 +861,8 @@ contains
       call fallback_case(W//' --pcm cpcm --eps 78.4', '--pcm', error)
       if (allocated(error)) return
       call fallback_case(W//' --soscf', '--soscf', error)
+      if (allocated(error)) return
+      call fallback_case(W//' --mom', '--mom', error)
       if (allocated(error)) return
       call fallback_case(W//' --fukui hirshfeld', '--fukui', error)
       if (allocated(error)) return
