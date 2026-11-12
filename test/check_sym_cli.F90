@@ -85,6 +85,7 @@ contains
          new_unittest("a bare --irrep-nelec is refused; the input echo of a plain run says off", test_default_inputs), &
          new_unittest("TOML: symmetry keys give the flags' numbers and are echoed", test_toml), &
          new_unittest("TOML: a wrongly typed symmetry key is refused", test_toml_type), &
+         new_unittest("--no-sym-skeleton: the same energy; needs --symmetry; the TOML key matches", test_skeleton_flag), &
          new_unittest("an explicit subgroup runs; C1 runs without symmetry", test_explicit), &
          new_unittest("an explicit group that is not a subgroup is refused", test_not_subgroup), &
          new_unittest("a subgroup below the detected group runs (Cs on water); a non-subgroup is refused", test_not_yet), &
@@ -364,6 +365,86 @@ contains
       text = slurp(work_dir//'/bad.out')
       call check(error, index(text, "'symmetry_tol' must be a number") > 0, "the message does not name the key")
    end subroutine test_toml_type
+
+   subroutine test_skeleton_flag(error)
+      !! --sym-skeleton forces the skeleton Fock build and --no-sym-skeleton
+      !! (or symmetry_skeleton = false) the full build, and the two give the
+      !! same SCF; either flag without a symmetry request is refused. Both are
+      !! given explicitly because HOCl is a molecule the size rule declines,
+      !! so a bare --symmetry Cs would take the full build on both sides.
+      !! Also the `--json` echo of the key, which is KIND_BOOL_TRI: it carries
+      !! the flag that WAS given, and only that (the third state, neither flag,
+      !! is checked in check_cli_input's test_echo).
+      type(error_type), allocatable, intent(out) :: error
+      type(json_file) :: json
+      real(dp) :: e_on, e_off, e_toml
+      logical :: found, echoed
+      integer :: rc
+
+      call setup()
+      call run_cli('hocl.xyz'//BASIS//' --symmetry Cs --sym-skeleton'//TIGHT//' --json '//work_dir//'/sk_on.json > '// &
+                   work_dir//'/sk_on.out 2>&1', rc)
+      call check(error, rc == 0, "--sym-skeleton failed:"//new_line('a')//slurp(work_dir//'/sk_on.out'))
+      if (allocated(error)) return
+      call run_cli('hocl.xyz'//BASIS//' --symmetry Cs --no-sym-skeleton'//TIGHT//' --json '//work_dir// &
+                   '/sk_off.json > '//work_dir//'/sk_off.out 2>&1', rc)
+      call check(error, rc == 0, "--no-sym-skeleton failed:"//new_line('a')//slurp(work_dir//'/sk_off.out'))
+      if (allocated(error)) return
+      call json%initialize()
+      call json%load(filename=work_dir//'/sk_on.json')
+      call json%get('total energy', e_on, found)
+      ! The echo must name the flag that was given, so that rerunning the echo
+      ! as a TOML file reproduces this run's Fock build rather than falling
+      ! back to the size rule.
+      call json%get('input.scf.symmetry_skeleton', echoed, found)
+      call json%destroy()
+      call check(error, found .and. echoed, "--sym-skeleton must echo input.scf.symmetry_skeleton = true")
+      if (allocated(error)) return
+      call json%initialize()
+      call json%load(filename=work_dir//'/sk_off.json')
+      call json%get('total energy', e_off, found)
+      call json%get('input.scf.symmetry_skeleton', echoed, found)
+      call json%destroy()
+      call check(error, found .and. .not. echoed, "--no-sym-skeleton must echo input.scf.symmetry_skeleton = false")
+      if (allocated(error)) return
+      call check(error, abs(e_on - e_off) < 1.0e-9_dp, "--no-sym-skeleton changed the energy by "// &
+                 to_string(abs(e_on - e_off), 'es10.2'))
+      if (allocated(error)) return
+      ! Symmetry is opt-in, so a bare --sym-skeleton / --no-sym-skeleton is
+      ! refused; with --symmetry on (lenient) the flag is valid.
+      call refused('hocl.xyz'//BASIS//' --no-sym-skeleton', 'need symmetry', error)
+      if (allocated(error)) return
+      call refused('hocl.xyz'//BASIS//' --sym-skeleton', 'need symmetry', error)
+      if (allocated(error)) return
+      call setup_run_ok('hocl.xyz'//BASIS//' --symmetry on --no-sym-skeleton --silent', error)
+      if (allocated(error)) return
+      call refused('hocl.xyz'//BASIS//' --symmetry off --no-sym-skeleton', 'need symmetry', error)
+      if (allocated(error)) return
+      call refused('hocl.xyz'//BASIS//' --symmetry Cs --sym-skeleton --no-sym-skeleton', 'contradict', error)
+      if (allocated(error)) return
+      ! The TOML key is the flag: symmetry_skeleton = false is --no-sym-skeleton.
+      call write_toml(work_dir//'/case/sk.toml', [character(len=96) :: &
+                      '[molecule]', 'geometry = "hocl.xyz"', &
+                      '[basis]', 'main = "basis_sets/cc-pvdz.json"', &
+                      '[scf]', 'symmetry = "Cs"', 'symmetry_skeleton = false', &
+                      'energy_tol = 1e-12', 'commutator_tol = 1e-10', &
+                      '[output]', 'json = "sk_toml.json"', 'silent = true'])
+      call run_cli_raw('cd '//work_dir//' && '//cli_exe//' case/sk.toml > sk_toml.out 2>&1', rc)
+      call check(error, rc == 0, "the TOML run failed:"//new_line('a')//slurp(work_dir//'/sk_toml.out'))
+      if (allocated(error)) return
+      call json%initialize()
+      call json%load(filename=work_dir//'/case/sk_toml.json')
+      call json%get('total energy', e_toml, found)
+      call json%destroy()
+      call check(error, found .and. abs(e_toml - e_off) < 1.0e-9_dp, "the TOML run's energy differs")
+      if (allocated(error)) return
+      call json%initialize()
+      call json%load(filename=work_dir//'/case/sk_toml.json')
+      call json%get('input.scf.symmetry_skeleton', echoed, found)
+      call json%destroy()
+      call check(error, found .and. .not. echoed, &
+                 "symmetry_skeleton = false in the file must echo back as false, not as the third state")
+   end subroutine test_skeleton_flag
 
    subroutine test_explicit(error)
       type(error_type), allocatable, intent(out) :: error

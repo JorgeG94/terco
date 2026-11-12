@@ -39,12 +39,24 @@ module trc_sym_run
    private
 
    public :: trc_sym_request_t, SYM_OFF, SYM_AUTO, SYM_EXPLICIT
+   public :: SYM_SKEL_AUTO, SYM_SKEL_ON, SYM_SKEL_OFF
    public :: sym_run_parse_request, sym_run_choose_group, sym_run_is_subgroup, sym_run_request_text
    public :: sym_run_parse_irrep_nelec, sym_run_aufbau_matches, sym_run_fixed_occupation, sym_run_occupied_counts
+   public :: sym_run_skeleton_mode, sym_run_skeleton_size_rule, SYM_SKEL_MIN_ORBIT, sym_run_skeleton_request
 
    integer, parameter :: SYM_OFF = 0       !! no symmetry
    integer, parameter :: SYM_AUTO = 1      !! the detected group, capped to what is enabled
    integer, parameter :: SYM_EXPLICIT = 2  !! a named group
+
+   integer, parameter :: SYM_SKEL_AUTO = 0  !! the skeleton Fock build where `sym_run_skeleton_size_rule` says it pays
+   integer, parameter :: SYM_SKEL_ON = 1    !! the skeleton Fock build whatever the rule says
+   integer, parameter :: SYM_SKEL_OFF = 2   !! never the skeleton Fock build: the full build, then symmetrize
+
+   integer, parameter :: SYM_SKEL_MIN_ORBIT = 2
+      !! The threshold of `sym_run_skeleton_size_rule`: the smallest mean atom
+      !! orbit size (atoms per symmetry-inequivalent atom) at which the
+      !! skeleton Fock build is used. Provisional: measured only on either side
+      !! (SF6 at 1.75 loses, benzene at 3.00 wins); see that routine.
 
    type :: trc_sym_request_t
       !! What the user asked for.
@@ -52,6 +64,10 @@ module trc_sym_run
       character(len=3) :: group = "C1"  !! canonical name, with `SYM_EXPLICIT`
       real(dp) :: tol = SYM_DEFAULT_TOL  !! geometry tolerance, Bohr
       character(len=:), allocatable :: irrep_nelec  !! electrons per irrep, unparsed; absent = aufbau
+      integer :: skeleton = SYM_SKEL_AUTO
+      !! Whether the Fock build is the skeleton one (trc_sym_scf_t%skeleton):
+      !! SYM_SKEL_AUTO leaves it to `sym_run_skeleton_size_rule`, SYM_SKEL_ON and
+      !! SYM_SKEL_OFF force it either way.
       logical :: lenient = .false.
       !! An `on`/`auto` request: results reported in the caller's input frame,
       !! and a path the symmetric SCF cannot take runs in C1 with one log line.
@@ -329,5 +345,150 @@ contains
          counts(ir) = count(occupied .and. mo_irrep == ir)
       end do
    end function sym_run_occupied_counts
+
+   pure integer function sym_run_skeleton_request(on) result(mode)
+      !! The request of trc_set_symmetry_skeleton's `on`: -1 the size rule
+      !! (SYM_SKEL_AUTO, also the default), 0 off, 1 on; -1 for any other
+      !! value, which the caller refuses (-1 is no SYM_SKEL_* mode).
+      integer, intent(in) :: on
+      select case (on)
+      case (-1)
+         mode = SYM_SKEL_AUTO
+      case (0)
+         mode = SYM_SKEL_OFF
+      case (1)
+         mode = SYM_SKEL_ON
+      case default
+         mode = -1
+      end select
+   end function sym_run_skeleton_request
+
+   integer function sym_run_skeleton_mode(request) result(mode)
+      !! The skeleton Fock build's mode in force: `request`
+      !! (`trc_sym_request_t%skeleton`, i.e. what the user asked for), unless
+      !! TRC_SYM_SKELETON names one. TRC_SYM_SKELETON=1 forces the skeleton
+      !! build on and 0 forces it off, so both sides of
+      !! `sym_run_skeleton_size_rule` stay measurable from one binary without
+      !! rebuilding; `auto` puts the rule back in charge. This mirrors TRC_MDJ
+      !! over the J engine's own size rule (trc_eri's mdj_requested).
+      integer, intent(in) :: request
+      character(len=8) :: e
+      mode = request
+      e = " "
+      call get_environment_variable("TRC_SYM_SKELETON", e)
+      select case (trim(e))
+      case ("1", "on")
+         mode = SYM_SKEL_ON
+      case ("0", "off")
+         mode = SYM_SKEL_OFF
+      case ("auto")
+         mode = SYM_SKEL_AUTO
+      case default
+         ! Unset, blank, or a word nobody documented: the request stands.
+         ! A typo must not silently turn a measured default into a forced run.
+      end select
+   end function sym_run_skeleton_mode
+
+   pure logical function sym_run_skeleton_size_rule(natm, norbit) result(res)
+      !! Whether the skeleton Fock build is worth
+      !! using on a molecule of `natm` atoms sitting in `norbit` orbits of the
+      !! group (`sym_geom_atom_orbits` of trc_sym_geom). It is, when the mean
+      !! atom orbit size is at least SYM_SKEL_MIN_ORBIT, i.e. when
+      !!   natm >= 2 * norbit.
+      !! Nothing else about the molecule enters: not the basis, not the atom
+      !! count on its own.
+      !!
+      !! WHY ORBIT SIZE AND NOT SIZE. The skeleton build computes one shell
+      !! quartet per orbit and weights it, so what it SAVES is the orbit
+      !! reduction, and what it COSTS is the extra launches the weights and
+      !! `bins_skel_cut_first`'s bra/ket swap create. The mean atom orbit size
+      !! is a cheap proxy for the saving, available before the engine is built
+      !! (the decision has to be made then: the engine is built with the group
+      !! or without it). It tracks the measured skeleton-plan quartet reduction
+      !! across every system the project has counted -- cc-pVDZ, tau = 1e-10,
+      !! density-screened:
+      !!
+      !!   system       group  natm/norbit  skel. quartet reduction
+      !!   water         C2v      1.50          1.47x
+      !!   tops_sf6      D2h      1.75          2.44x
+      !!   b2h6_d2h      D2h      2.67          3.34x
+      !!   benzene       D2h      3.00          3.53x
+      !!   naphthalene   D2h      3.60          3.79x
+      !!   pentacene     D2h      3.60          3.85x
+      !!
+      !! A molecule whose atoms sit on many symmetry elements at once has
+      !! small orbits however many atoms or functions it has: SF6's sulfur is
+      !! fixed by all eight operations of D2h and each fluorine by four, and a
+      !! planar molecule's own plane fixes every atom (which is why planar D2h
+      !! reaches an effective order of 4 and not 8). That is also why the
+      !! basis does not enter: S15 measured benzene at 0.46x (cc-pVDZ, 114 bf)
+      !! and 0.48x (cc-pVTZ, 264 bf) and naphthalene at 0.98x and 0.99x across
+      !! the same 2.3x increase, while naphthalene at 412 bf was a wash and
+      !! pentacene at 378 bf a 2.14x win.
+      !!
+      !! MEASURED ERI TIME. These four numbers come from stage W2, NOT from the
+      !! change that added this rule, which ran on a host build with no GPU;
+      !! the rule itself has not been re-measured on a device. W2's settings:
+      !! cc-pVDZ, integral screening --thresh 1e-12 (terco's default, not
+      !! overridden; the tau = 1e-10 on the quartet table above is the
+      !! shell-pair pre-pass's own screen, not this one), convergence gate
+      !! --econv 1e-10, the default SAD atomic guess, Tesla V100-DGXS-32GB
+      !! (cc70), nvfortran 26.5, -stdpar=gpu -acc -gpu=cc70,mem:separate,
+      !! TERCO_LMAX=3, ERI time per steady-state Fock build from nsys as the
+      !! difference between two consecutive --iterations runs, baseline the
+      !! same build with --symmetry off. `*` marks what this rule chooses:
+      !!
+      !!   system            natm  norbit  natm/norbit  ERI on/off
+      !!   tops_sf6             7       4     1.75        0.44x   (full*)
+      !!   benzene             12       4     3.00        1.41x   (skeleton*)
+      !!   naphthalene_d2h     18       5     3.60        2.07x   (skeleton*)
+      !!   pentacene_d2h       36      10     3.60        2.78x   (skeleton*)
+      !!
+      !! Energies are unaffected either way: |dE| between the symmetric and
+      !! the C1 run on the same symmetrized geometry was 2.9e-13 to 1.4e-12 Eh
+      !! against a 1e-10 gate, with identical iteration counts (S15).
+      !!
+      !! THE THRESHOLD IS PROVISIONAL. It sits inside an interval no run has
+      !! measured (below), and the rule has not been timed on a device since it
+      !! replaced the atom-count rule; B2H6 is the run that would settle it.
+      !!
+      !! WHERE THE THRESHOLD COMES FROM. SF6 loses with a 2.44x reduction and
+      !! benzene wins with 3.53x, so break-even is a reduction somewhere in
+      !! (2.44x, 3.53x), i.e. a mean orbit size somewhere in (1.75, 3.00).
+      !! The threshold is set at the LOW end of that interval, so the rule
+      !! declines only what was measured to lose and keeps the skeleton build
+      !! wherever it might still pay -- an over-eager rule would now cost time,
+      !! since post-W2 benzene at 12 atoms is a win. B2H6 (2.67, 3.34x) is the
+      !! one system inside the interval, and the run that would settle the
+      !! threshold; the table above lists it and the rest.
+      !!
+      !! REJECTED PREDICTORS, on this same data:
+      !!  - the atom count: the four ERI rows allow a threshold anywhere in
+      !!    (7, 12], and every such threshold also declines 8-atom b2h6_d2h,
+      !!    whose 3.34x reduction is closer to benzene's than to SF6's. The
+      !!    pre-W2 crossover near twenty atoms is stale: benzene is now a win.
+      !!  - the number of inequivalent atoms, `norbit`: it does not separate
+      !!    the data at all (SF6 and benzene both have 4).
+      !!  - predicted quartets per launch against the device's fill threshold
+      !!    (~164k work items, 80 SMs at 128-thread blocks): W0 measured
+      !!    benzene and SF6 at the SAME ~46% of quartets in launches too small
+      !!    to fill the card after fusion, yet benzene gains 1.41x and SF6
+      !!    loses 2.3x, so fill is not what separates them. The reduction
+      !!    (3.55x against 2.44x) and the launch inflation over the C1 plan
+      !!    (1.57x against 3.43x) are, and both follow from the orbit sizes.
+      !!
+      !! The groups of order 2 and 4 (Cs, Ci, C2, C2v, C2h) are declined
+      !! wherever an atom sits on a symmetry element, which is most of them --
+      !! water at 1.47x, and a planar Cs molecule has no nontrivial shell-pair
+      !! orbit at all. So, measured, such groups do not default to the skeleton
+      !! build: a ~1.5x reduction cannot pay for the launches when 2.44x does
+      !! not.
+      !!
+      !! TRC_SYM_SKELETON=0/1 forces either path.
+      integer, intent(in) :: natm, norbit
+      res = .false.
+      if (natm < 1 .or. norbit < 1) return
+      res = natm >= SYM_SKEL_MIN_ORBIT*norbit
+   end function sym_run_skeleton_size_rule
 
 end module trc_sym_run

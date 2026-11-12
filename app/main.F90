@@ -27,7 +27,7 @@ program trc_main
                        trc_set_pcm, trc_pcm_energy, trc_save_scf, trc_load_scf, &
                        trc_run_gradient, trc_gradient, trc_set_geometry, trc_set_hessian_step, trc_run_hessian, &
                        trc_hessian, trc_hirshfeld_charges, trc_chelpg_charges, trc_fukui_scheme, &
-                       trc_set_symmetry, trc_set_irrep_nelec, &
+                       trc_set_symmetry, trc_set_irrep_nelec, trc_set_symmetry_skeleton, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP, TRC_GUESS_MINAO
    use trc_api, only: trc_bind_device, trc_bind_device_env
@@ -185,6 +185,11 @@ program trc_main
                          "becomes strict), e.g. A'=6,A""=4 (restricted: even "// &
                          "counts) or A'=4/3,A""=3/3 (alpha/beta); unlisted irreps hold none. Default: aufbau. "// &
                          "A gradient is refused for occupations that are not the aufbau ones")
+   call r%cli%add_flag("sym-skeleton", "in a symmetric run, always build the Fock matrix from the orbit "// &
+                       "representatives of the integral quartets and symmetrize it, whatever the size rule says")
+   call r%cli%add_flag("no-sym-skeleton", "in a symmetric run, always build the full Fock matrix and symmetrize it "// &
+                       "(the same result, more quartets). Without either flag a measured size rule chooses: the "// &
+                       "skeleton build when the molecule has at least two atoms per symmetry-inequivalent atom")
    call r%cli%add_option("thresh", "integral screening threshold (1e-12)", default="1e-12")
    call r%cli%add_option("lindep", "linear-dependence threshold: eigenvalues of S normalised to a unit "// &
                          "diagonal (pyscf/ORCA's convention) below it are dropped (canonical orthogonalisation; "// &
@@ -681,6 +686,12 @@ program trc_main
          r%symmetry = "auto"
          r%sym_lenient = .false.
       end if
+   end if
+   if (r%cli%is_set("sym-skeleton") .and. r%cli%is_set("no-sym-skeleton")) then
+      call run_die(r, "--sym-skeleton and --no-sym-skeleton contradict each other")
+   end if
+   if ((r%cli%is_set("sym-skeleton") .or. r%cli%is_set("no-sym-skeleton")) .and. .not. r%sym_wanted) then
+      call run_die(r, "--sym-skeleton and --no-sym-skeleton need symmetry, not --symmetry off or C1")
    end if
    r%restart = ""
    if (r%cli%is_set("restart")) call r%cli%get("restart", r%restart, r%err)
@@ -1222,6 +1233,8 @@ program trc_main
    call run_api(r, trc_set_symmetry(r%h, app_c_string(sval), real(r%sym_tol, c_double)))
    if (r%sym_wanted) then
       if (allocated(r%irrep_nelec)) call run_api(r, trc_set_irrep_nelec(r%h, app_c_string(r%irrep_nelec)))
+      if (r%cli%is_set("no-sym-skeleton")) call run_api(r, trc_set_symmetry_skeleton(r%h, 0_c_int))
+      if (r%cli%is_set("sym-skeleton")) call run_api(r, trc_set_symmetry_skeleton(r%h, 1_c_int))
    end if
    call run_api(r, trc_set_force_cartesian(r%h, merge(1_c_int, 0_c_int, cart)))
    ! Before --basis: trc_set_ecp_json refuses once the orbital basis has

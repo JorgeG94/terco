@@ -1,6 +1,6 @@
 !
 ! The symmetry entries of the C ABI (ABI 1.23: trc_set_symmetry, trc_set_irrep_nelec,
-! the report-frame pair and the getters), called through the
+! the report-frame pair and the getters; 1.25: trc_set_symmetry_skeleton), called through the
 ! Fortran interfaces of include/trc_c_interfaces.f90. The C side of the same round trip
 ! (water, the header compiled by a C compiler) is in link_c.c.
 !
@@ -43,7 +43,7 @@ module check_capi_sym_suite
    use trc_test_basis, only: read_xyz
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_method, &
                                trc_set_convergence, trc_run_scf, trc_run_gradient, trc_gradient, trc_energy, &
-                               trc_set_symmetry, trc_set_irrep_nelec, trc_symmetry_group, trc_symmetry_detected, &
+                               trc_set_symmetry, trc_set_irrep_nelec, trc_set_symmetry_skeleton, trc_symmetry_group, trc_symmetry_detected, &
                                trc_symmetry_residual, trc_symmetry_frame, trc_symmetry_nirrep, &
                                trc_symmetry_irrep_name, trc_symmetry_irrep_dim, trc_mo_irreps, trc_geometry, &
                                trc_mo_occupations, trc_nao, trc_message, trc_set_geometry, trc_set_df, trc_set_pcm, &
@@ -70,6 +70,7 @@ contains
                   new_unittest("getters have nothing before a symmetric run", test_state), &
                   new_unittest("round trip: energy vs C1 on the reported geometry, frame, labels", test_round_trip), &
                   new_unittest("a second run reuses the frame; trc_set_geometry starts over", test_rerun), &
+                  new_unittest("trc_set_symmetry_skeleton: off gives the same SCF and gradient", test_skeleton_switch), &
                   new_unittest("irrep_nelec: aufbau counts, occupations, a gradient refused for others", test_irrep_nelec), &
                   new_unittest("explicit groups: not a subgroup, a subgroup of the detected group, C1", test_explicit), &
                   new_unittest("the unsupported SCF settings are refused, not run in C1", test_scf_refusals), &
@@ -289,6 +290,51 @@ contains
       call check(error, rc, TRC_OK, 'residual after the new geometry')
       rc = trc_destroy(h)
    end subroutine test_rerun
+
+   subroutine test_skeleton_switch(error)
+      !! The skeleton Fock build forced on against the full build (then
+      !! symmetrized): the energy and the gradient are the same, and the
+      !! gradient that follows a skeleton SCF does not reuse its orbit-closed
+      !! engine. Forced on explicitly because HOCl is a molecule the size rule
+      !! declines (3 atoms in 3 orbits), and without the call this would
+      !! compare the full build with itself.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      real(dp), allocatable :: geom(:, :)
+      real(c_double) :: e1, e2, g1(9), g2(9)
+      integer(c_int) :: rc
+
+      call make_context(h, 'hocl.xyz', 'basis_sets/6-31gs.json', geom)
+      rc = trc_set_symmetry(h, 'Cs'//c_null_char, 0.0_c_double)
+      rc = trc_set_symmetry_skeleton(h, 1_c_int)
+      call check(error, rc, TRC_OK, 'trc_set_symmetry_skeleton(1)')
+      rc = trc_run_scf(h)
+      call check(error, rc, TRC_OK, 'skeleton run: '//message(h))
+      rc = trc_energy(h, e1)
+      rc = trc_run_gradient(h)
+      call check(error, rc, TRC_OK, 'gradient after the skeleton run')
+      rc = trc_gradient(h, g1)
+      if (allocated(error)) return
+      rc = trc_set_symmetry_skeleton(h, 0_c_int)
+      call check(error, rc, TRC_OK, 'trc_set_symmetry_skeleton(0)')
+      rc = trc_run_scf(h)
+      call check(error, rc, TRC_OK, 'full-build run: '//message(h))
+      rc = trc_energy(h, e2)
+      call check(error, abs(e1 - e2) < 1.0e-9_dp, 'the same energy with the skeleton switched off')
+      rc = trc_run_gradient(h)
+      rc = trc_gradient(h, g2)
+      call check(error, maxval(abs(g1 - g2)) < 1.0e-7_dp, 'and the same gradient')
+      ! -1 hands the choice back to the size rule; anything else is refused
+      rc = trc_set_symmetry_skeleton(h, -1_c_int)
+      call check(error, rc, TRC_OK, 'trc_set_symmetry_skeleton(-1)')
+      if (allocated(error)) return
+      rc = trc_set_symmetry_skeleton(h, 2_c_int)
+      call check(error, rc, TRC_ERR_BADARG, 'trc_set_symmetry_skeleton(2) is refused')
+      if (allocated(error)) return
+      rc = trc_destroy(h)
+      rc = trc_set_symmetry_skeleton(c_null_ptr, 1_c_int)
+      call check(error, rc /= TRC_OK, 'a null handle is refused')
+   end subroutine test_skeleton_switch
 
    subroutine test_irrep_nelec(error)
       type(error_type), allocatable, intent(out) :: error

@@ -39,7 +39,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_UNIT 1
 #define TRC_TIMING_NAME_MAX 64
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 24
+#define TRC_ABI_MINOR 25
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -1235,6 +1235,20 @@ int trc_rimp2_energy(trc_handle_t handle, double* e_os, double* e_ss);
  * A request longer than 32 characters is refused.
  */
 int trc_set_symmetry(trc_handle_t handle, const char* group, double tol);
+
+/**
+ * Under a symmetry request (trc_set_symmetry), force the Fock matrix to
+ * be built from the orbit representatives of the integral quartets and
+ * symmetrized (on = 1), or force the full matrix and symmetrize that
+ * (on = 0); on = -1 hands the choice back to the size rule
+ * (trc_sym_run's sym_run_skeleton_size_rule), which is also the choice
+ * without this call. Any other value is refused (TRC_ERR_BADARG).
+ * TRC_SYM_SKELETON=0/1 in the environment overrides all three. The same SCF
+ * either way, to round-off; only the number of integrals computed
+ * differs. No effect without a group other than C1, with density
+ * fitting or over more than one rank (those take the full build).
+ */
+int trc_set_symmetry_skeleton(trc_handle_t handle, int on);
 
 /**
  * The frame a symmetric run reports in: the geometry (trc_geometry), the

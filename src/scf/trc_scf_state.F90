@@ -77,6 +77,11 @@ module trc_scf_state
       real(dp), allocatable :: dold(:, :, :), errv(:, :, :)
       real(dp), allocatable :: w1(:, :), w2(:, :)
       real(dp), allocatable :: ofrac(:)
+      logical :: skeleton = .false.
+      !! This run builds the SKELETON G (`trc_scf_fock%scf_fock_build_g`): set by
+      !! the driver once per run, after its size rule, before the first
+      !! build; kept here, not as an argument, because it is the run's
+      !! state like `incr_on` and not one build's own input.
    contains
       procedure :: alloc => scf_state_alloc
       procedure :: to_device => scf_state_to_device

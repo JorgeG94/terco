@@ -517,9 +517,11 @@ contains
       reuse_pl = present(pair_eri_cache)
       if (reuse_pl) reuse_pl = pair_eri_cache%matches(b, thresh)
       reuse_eri = .false.
+      ! An engine built with the point group is not reused (its bins are orbit-closed).
       ! The engine must also have been split by the policy this gradient
       ! would build with.
-      if (reuse_pl) reuse_eri = pair_eri_cache%has_eri .and. pair_eri_cache%batch_res_built == 1
+      if (reuse_pl) reuse_eri = pair_eri_cache%has_eri .and. pair_eri_cache%batch_res_built == 1 .and. &
+                                .not. pair_eri_cache%orbits_built
       if (reuse_eri) reuse_eri = decontract_options_equal(pair_eri_cache%decontract_built, &
                                                           gradient_policy(pair_eri_cache, xch%exx, xch%exx_lr))
    end subroutine scf_grad_reuse_decide

@@ -336,6 +336,17 @@ module trc_scf_settings
       logical :: sym_declined = .false.
       !! The symmetric run was not made: `sym%decline_lindep` and functions were
       !! dropped (`message` says so, `iterations` is 0). The caller runs in C1.
+      logical :: sym_skeleton = .false.
+      !! The symmetric run used the SKELETON Fock build
+      !! rather than the full build with F symmetrized after it: what
+      !! `trc_sym_scf_t%skeleton` asked for, or what the size rule decided
+      !! (trc_sym_run's sym_run_skeleton_size_rule). False for every run without a
+      !! group. It changes no reported quantity -- the two paths agree to
+      !! round-off -- so it is here to be measured and tested, not to be read
+      !! as a result.
+      integer :: sym_atom_orbits = 0
+      !! Atoms inequivalent under the group, as the size rule counted them
+      !! (`sym_geom_atom_orbits`); 0 when the rule was not consulted.
       integer :: n_lindep = 0
       !! Functions dropped by canonical orthogonalisation: S eigenvalues
       !! below `opts%lindep_thresh`. 0 for every compact basis; see
