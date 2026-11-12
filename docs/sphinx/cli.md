@@ -63,6 +63,27 @@ terco oh.xyz -u 1 -f b3lyp                   # UHF/B3LYP doublet
 | `--thresh` | integral screening threshold (1e-12) |
 | `--incremental` / `--no-incremental` | incremental Fock build (on by default; refused with `--df`) |
 
+## Point-group symmetry
+
+Off by default. See {doc}`theory` for the method and {doc}`output` for what a
+symmetric run prints.
+
+| Flag | Meaning |
+|---|---|
+| `--symmetry` | `off` (the default); `on` or `auto`: the largest Abelian group of the molecule (D2h or a subgroup; tops, linear molecules and atoms use their Abelian subgroup), results reported in your input frame, and a path the symmetric SCF does not support runs in C1 with one log line saying why; or a group name (`C2v`, `D2h`, ...), which must be the detected group or a subgroup of it, reports the standard frame of the group and refuses those paths |
+| `--symmetry-tol` | geometry tolerance for the detection, Bohr (1e-5); an error with `--symmetry off` |
+| `--irrep-nelec` | electrons per irrep, e.g. `A'=6,A"=4` (restricted: even counts) or `A'=4/3,A"=3/3` (alpha/beta); unlisted irreps hold none. Makes an `on`/`auto` request strict. A gradient is refused for occupations that are not the aufbau ones. Default: aufbau |
+| `--sym-skeleton` / `--no-sym-skeleton` | force the skeleton build (Fock matrix and four-centre gradient from the orbit representatives of the integral quartets) or the full build; the result is the same to round-off. Without either, a size rule chooses: the skeleton build when the molecule has at least two atoms per symmetry-inequivalent atom. Needs a group other than C1; density fitting and several ranks take the full build |
+
+`--opt`, `--hessian`, `--rimp2`, `--df`, `--pcm`, `--soscf`, `--mom`,
+`--gdm`, `--fukui`, `--restart` and more than one MPI rank are not supported
+with symmetry: `--symmetry on` runs them in C1, a named group refuses them.
+
+```sh
+terco water.xyz -b 6-31gs --symmetry on --grad       # C2v, input frame
+terco water.xyz -b 6-31gs --symmetry C2v             # standard frame of C2v
+```
+
 ## Density fitting
 
 | Flag | Meaning |
