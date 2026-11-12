@@ -75,14 +75,26 @@ contains
    ! bin-level bound a symmetric Fock density does (same reasoning as
    ! `eri_fock_nosym`), so this always walks the plain Schwarz-screened plan.
    !
+   ! SKELETON (launch%skeleton): the same
+   ! restriction and the same per-segment weight the skeleton FOCK build uses
+   ! -- only the orbit representatives of the cheaper side of each admitted
+   ! bin pair, weighted by their orbit size. 1.47x (C2v water) to 3.85x
+   ! (D2h pentacene) fewer work items, and the result is not a gradient until
+   ! the caller projects it over the group; trc_scf_gradient's
+   ! two_electron_4c does that. Only the launch COUNT is unchanged: the
+   ! segments are sub-ranges of their bins, which is why the compact pass
+   ! takes the bin strides sSA/sSB (see scripts/gen_rys_grad.py) and not just
+   ! the segment extents sA/sNB.
+   !
    subroutine grad_bins(b, pairs, quartets, launch, dsh, dmat, grad)
       type(pair_bins_t), intent(in) :: b
       type(trc_shell_pairs_t), intent(in) :: pairs
       !! The shells (ao_off, sh_at, natm) and their pairs, device-resident.
       type(trc_pair_quartets_t), intent(in) :: quartets
       !! The bin-interleaved pairs, `a` included, device-resident.
-      type(trc_bin_launch_t), intent(in) :: launch
-      !! thresh, jfac, kfac, omega, ranks and the density's shape. omega is
+      type(trc_bin_launch_t), intent(inout) :: launch
+      !! thresh, jfac, kfac, omega, ranks, the density's shape and
+      !! `skeleton`; nwork and nkept come back. omega is
       !! the range-separation parameter, bohr^-1, as eri_fock's; zero is the
       !! ordinary Coulomb operator the screen is already built for -- see
       !! grad_classes for why the SCREEN pass takes no omega of its
@@ -100,14 +112,41 @@ contains
       !! grad_bins: nvfortran 26.5 has hung or ICE'd on both.
 
       natm = pairs%natm
-      call plan%build(b, launch%thresh, quartets%bin_pbase, .false.)
+      if (launch%skeleton) then
+         if (.not. quartets%orb%built) error stop "terco: a skeleton gradient needs the bins' pair orbits"
+         ! CANONICAL emission: the
+         ! cheaper side is still the one that is cut, so the whole 1.47x-3.85x
+         ! work reduction is kept, but the emitted descriptor is ordered by
+         ! angular momentum so that (sLA, sLB) >= (sLC, sLD). Every class the
+         ! plan can then present is inside the gradient filter's own built set
+         ! by construction rather than by the bin ordering, so no new kernel
+         ! and no new class run -- and so no extra launch -- comes with it.
+         call plan%build_skeleton(b, quartets%orb, launch%thresh, quartets%bin_pbase, canonical=.true.)
+      else
+         call plan%build(b, launch%thresh, quartets%bin_pbase, .false., canonical=.true.)
+      end if
+      launch%nwork = plan%nwork
+      launch%nkept = 0
       if (plan%nwork == 0) then
          call plan%release()
          return
       end if
       call plan%sort_by_class(GCLASS_RADIX)
 
-      !$acc enter data copyin(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, plan%sOff)
+      ! The kernels read the segment's orbit weight themselves, so one launch
+      ! still covers a whole class run. A plan with no weights -- every
+      ! non-skeleton build -- is handed an array of ones rather than a branch
+      ! in the kernels' per-segment prologue, exactly as the Fock launcher
+      ! does it (binkernel_fock_bins). AFTER the sort, for the same reason:
+      ! sort_by_class folds nint(2*sW) into its key whenever sW is allocated,
+      ! and an unweighted plan has to keep the segment order it has today.
+      if (.not. allocated(plan%sW)) then
+         allocate (plan%sW(plan%nseg))
+         plan%sW = 1.0_dp
+      end if
+
+      !$acc enter data copyin(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, &
+      !$acc                   plan%sSA, plan%sSB, plan%sD, plan%sW, plan%sOff)
       allocate (gp(3, natm, GRAD_NPRIV))
       !$acc enter data create(gp)
       do concurrent(gs=1:GRAD_NPRIV, ga=1:natm, gc=1:3)
@@ -125,7 +164,8 @@ contains
       end do
       !$acc exit data delete(gp)
       deallocate (gp)
-      !$acc exit data delete(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, plan%sOff)
+      !$acc exit data delete(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, &
+      !$acc                  plan%sSA, plan%sSB, plan%sD, plan%sW, plan%sOff)
       call plan%release()
    end subroutine grad_bins
 
@@ -168,7 +208,13 @@ contains
       type(pair_bins_t), intent(in) :: b
       type(trc_shell_pairs_t), intent(in) :: pairs
       type(trc_pair_quartets_t), intent(in) :: quartets
-      type(trc_bin_launch_t), intent(in) :: launch
+      type(trc_bin_launch_t), intent(inout) :: launch
+      !! `intent(inout)`: the screen pass's own survivor count is summed into
+      !! launch%nkept here, which is what the oracle's "the skeleton plan is
+      !! smaller than the full one" assertion reads (eri%nkept). It is the
+      !! atomic counter this pass already copies back per batch, so it costs
+      !! nothing -- unlike the Fock path's count_kept, which is a whole extra
+      !! pass and stays behind TRC_KEPT_STATS.
       real(dp), intent(in)    :: dsh(pairs%nbas, pairs%nbas)
       real(dp), intent(in)    :: dmat(launch%ndens, launch%nao, launch%nao)
       real(dp), intent(inout) :: gp(3, pairs%natm, GRAD_NPRIV)
@@ -224,8 +270,10 @@ contains
                                          pairs%sh_at, out_seg, out_iab, out_icd, nmax, ctr)
                !$acc update host(ctr)
                nout = min(ctr(1), int(nmax, int64))
+               launch%nkept = launch%nkept + nout  ! this rank's survivors (trc_eri_t%nkept)
                call rysg_compact_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, plan%sA, plan%sNB, &
-                                          plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, &
+                                          plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
+                                          plan%sD, plan%sW, &
                                           b%npair, b%sp_i, b%sp_j, b%sp_q, launch%thresh*1.0e-3_dp*launch%pcut_scale, &
                                           launch%jfac, launch%kfac, launch%omega, pairs%nbas, launch%nao, &
                                           pairs%ao_off, pairs%sh_at, pairs%natm, &

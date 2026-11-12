@@ -17,6 +17,7 @@ target_sources(
           eri/trc_batch.F90      # primitive-pair batching
           eri/trc_hgp.F90        # Head-Gordon-Pople driver
           eri/trc_screen.F90     # Schwarz bounds
+          eri/trc_parity.F90     # parity skipping: dead axis, shell mask, axis permutation
           eri/trc_bins.F90       # the binned shell-pair container
           eri/trc_bin_tiles.F90  # exchange tiles: density pruning of the launch plan
           eri/trc_binkernel.F90  # the shared quartet kernel and the digestion
@@ -75,7 +76,15 @@ target_sources(
           core/trc_cart_perm.F90  # AO-index permutation, lexicographic <-> this build's order
           core/trc_ao_norm.F90    # AO-index normalisation, this build's <-> GAMESS's per-component convention
           core/trc_sph.F90        # the spherical (pure) AO space: block-sparse Cartesian <-> spherical transforms
-          core/trc_acc_shim.F90)  # see the file: this one is not optional
+          core/trc_acc_shim.F90   # see the file: this one is not optional
+          symmetry/trc_sym_group.F90   # the eight Abelian point groups: operations, characters, irrep names
+          symmetry/trc_sym_tops.F90    # pyscf's axis search for symmetric/spherical tops, linear molecules, atoms
+          symmetry/trc_sym_geom.F90    # point-group detection, orientation, symmetrization of a geometry
+          symmetry/trc_sym_ao.F90      # AO signed permutations and the SO basis
+          symmetry/trc_sym_pairs.F90   # shell-pair orbits under the group: images, representatives, weights, orbit-invariant Q and dsh
+          symmetry/trc_sym_scf.F90     # SO-blocked SCF step: per-irrep diagonalisation, labels, symmetrisation
+          symmetry/trc_sym_frame.F90   # exact AO rotation between the standard frame and the user's input frame
+          symmetry/trc_sym_run.F90)    # what a run asks for: off/auto/default/group, subgroup rules, per-irrep occupations
 
 # --- the molecular quadrature -------------------------------------------------
 #
@@ -806,8 +815,58 @@ file(MAKE_DIRECTORY "${_hgp_template}")
 # d these are the only kernels a class has (trc_rys_select.F90 routes
 # them unconditionally); up to d, HGP is the default except for
 # FOCK_RYS_DEFAULT's classes, and TRC_RYS_CLASSES picks either per class.
+#
+# Only in the PAIR-CANONICAL orderings la >= lb and lc >= ld. Every bin holds
+# its pairs with the higher-l shell first (`lorder` in trc_bins.F90) and the
+# plans copy a bin's (bin_la, bin_lb) straight into (sLA, sLB) and (sLC, sLD)
+# (bins_plan_emit), so no launch site can present lb > la or ld > lc and a
+# kernel for one of those orderings can never run. That is 38 of 67 classes at
+# TERCO_LMAX=2 and 149 of 242 at TERCO_LMAX=3, each worth up to 60 kB of
+# per-thread stack and 255 registers of compile time.
+#
+# NOT the bra >= ket half of the gradient filter below, which would be wrong
+# here: the skeleton (symmetry) Fock plan deliberately launches a bin pair with
+# its bra and ket SWAPPED when that side has fewer representatives
+# (bins_skel_cut_first, up to SKEL_SWAP_LMAX = 3 precisely because "the kernels
+# of every ordering exist up to f"), which is a class with (lc, ld) > (la, lb).
+# Removing those would silently send such a launch to HGP up to d and
+# `error stop` above it ("a class above d has no Rys kernel in this build",
+# trc_rys_select.F90).
+#
+# The gradient filter below keeps that third condition, and what makes it
+# safe is that EVERY gradient plan is emitted ANGULAR-MOMENTUM CANONICALLY:
+# bins_plan_emit's `canon` reorders the two sides of each segment so that
+# (sLA, sLB) >= (sLC, sLD), whichever side the walk cut (trc_bins.F90).
+# grad_bins asks for it from both plans it builds, the full one
+# (bins_plan_build's `canonical`) and the skeleton one; the energy plans keep
+# the walk order, which the bra<ket energy classes above serve.
+#
+# Ascending bin index alone is not enough. plan%build iterates b%live in
+# ascending index, and bin_key packs (la, lb) as its most significant fields,
+# so ascending index USUALLY means (la, lb) >= (lc, ld). But split_large_bins
+# and arrange_orbits append a split bin's extra chunks PAST every original
+# index while keeping their parent's (la, lb), so a chunk of a low-l bin can
+# be the bra against a high-l ket -- the same mechanism that makes the 42
+# bra<ket energy classes above reachable -- and grad_classes would `error
+# stop` on a class it has no kernel for. At TERCO_LMAX=2 all 81 gradient
+# classes are built, so nothing can fire; above d it takes an f shell and a
+# bin of more than 32768 pairs, which test/check_sym_grad.F90's capped case
+# builds at TERCO_LMAX=3.
+# The 30 gradient classes that filter drops (NOT ~42: that is the energy
+# side's bra<ket count above, over a different class set) are the
+# f-containing ones with (lc, ld) > (la, lb):
+#   0030 0031 0032 0033 1030 1031 1032 1033 1130 1131 1132 1133
+#   2030 2031 2032 2033 2130 2131 2132 2133 2230 2231 2232 2233
+#   3031 3032 3033 3132 3133 3233
 set(_rys_classes "")
 foreach(_tag ${_all_classes})
+  string(SUBSTRING "${_tag}" 0 1 _tag_la)
+  string(SUBSTRING "${_tag}" 1 1 _tag_lb)
+  string(SUBSTRING "${_tag}" 2 1 _tag_lc)
+  string(SUBSTRING "${_tag}" 3 1 _tag_ld)
+  if(_tag_lb GREATER _tag_la OR _tag_ld GREATER _tag_lc)
+    continue()
+  endif()
   string(REGEX MATCH "[2-9]" _has_d "${_tag}")
   if(_has_d
      OR _tag STREQUAL "1111"
@@ -821,6 +880,21 @@ foreach(_tag ${_rys_classes})
   list(APPEND _rys_sources "${_rys_dir}/trc_pc_rys${_tag}.F90")
 endforeach()
 list(JOIN _rys_classes "," _rys_classes_csv)
+
+# Parity skipping: the z-masked variants of the
+# Rys-routed classes that get one (gen_perclass.py's PARITY_RYS_TOP, whose
+# comment has the coverage measurement that chose them; the HGP ones are in
+# ${_gen_dir}), where this build has them. Keep this list and PARITY_RYS_TOP
+# in step: a tag missing here only means the launch falls back to the unmasked
+# kernel, which is the right answer and the slower one.
+set(_rys_masked_classes "")
+foreach(_tag 2111 2120 2121 2210 2211 2221 2222)
+  if(_tag IN_LIST _rys_classes)
+    list(APPEND _rys_masked_classes "${_tag}")
+    list(APPEND _rys_sources "${_rys_dir}/trc_pc_rys${_tag}z.F90")
+  endif()
+endforeach()
+list(JOIN _rys_masked_classes "," _rys_masked_classes_csv)
 
 list(LENGTH _rys_sources _nrys)
 message(STATUS "terco: ${_nrys} Rys class kernels in ${_rys_dir}")
@@ -888,8 +962,14 @@ macro(_terco_gen_rys)
               ${_tag} ${_order_flag} --src-dir ${_hgp_template}
               --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_stage}/trc_pc_rys${_tag}.F90)
   endforeach()
+  foreach(_tag ${_rys_masked_classes})
+    terco_gen("gen_rys.py ${_tag} --dead z" ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/gen_rys.py
+              ${_tag} ${_order_flag} --src-dir ${_hgp_template} --dead z
+              --unroll-max-comp ${TERCO_RYS_UNROLL_MAX} -o ${_rys_stage}/trc_pc_rys${_tag}z.F90)
+  endforeach()
   terco_gen("gen_rys_dispatch.py" ${Python3_EXECUTABLE}
             ${PROJECT_SOURCE_DIR}/scripts/gen_rys_dispatch.py --classes ${_rys_classes_csv}
+            --masked-classes "${_rys_masked_classes_csv}"
             -o ${_rys_stage}/trc_rys_kernels.F90)
   foreach(_tag ${_rys_grad_classes})
     terco_gen("gen_rys_grad.py ${_tag}" ${Python3_EXECUTABLE}

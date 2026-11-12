@@ -46,13 +46,24 @@ module trc_hgp
    implicit none
    private
 
-   public :: hgp_batch, hgp_scratch_size, hgp_build_pairs
+   public :: hgp_batch, hgp_scratch_size, hgp_build_pairs, trc_pair_prune_t
    ! comp/binom/powi stay private: nothing outside this module uses them
    ! (trc_binkernel.F90 keeps its own local copies, deliberately -- see
    ! that module's own header).
 
    integer, parameter :: NPRIM_MAX = 1
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
+
+   type :: trc_pair_prune_t
+      !! The two inputs of hgp_build_pairs' primitive-pair prune, which only
+      !! make sense together: the amplitudes the Schwarz factor is built from
+      !! and the cut it is compared with. Host-side; bundled to keep the
+      !! entry point under the argument limit.
+      real(dp), allocatable :: camp(:, :)
+      !! (maxnp, nbas) amplitude of each primitive, for the prune.
+      real(dp) :: cut = 0.0_dp
+      !! Drop a primitive pair whose Schwarz factor is at or below this.
+   end type trc_pair_prune_t
 
 contains
 
@@ -85,28 +96,54 @@ contains
    ! over the columns on the primitive-shell path, where sh_c is unity and
    ! the coefficients are applied in the kernel.
    !
-   subroutine hgp_build_pairs(sh_np, sh_e, sh_c, sh_r, cfac, camp, cut, pairs)
+   subroutine hgp_build_pairs(sh_np, sh_e, sh_c, sh_r, cfac, prune, pairs, want)
       integer,  intent(in)  :: sh_np(:)
       !! (nbas) primitives per shell; its size is the shell count.
       real(dp), intent(in)  :: sh_e(:, :), sh_c(:, :), sh_r(:, :), cfac(:)
-      real(dp), intent(in)  :: camp(:, :)   !! (maxnp, nbas) amplitude of each primitive, for the prune
-      real(dp), intent(in)  :: cut          !! drop a primitive pair whose Schwarz factor is at or below this
+      type(trc_pair_prune_t), intent(in) :: prune
+      !! The prune amplitudes `camp` and the cut `cut`.
       type(trc_shell_pairs_t), intent(inout) :: pairs
       !! Out: nbas, npp and the pair arrays. The shell part (sh_l, ao_off,
       !! sh_at, natm) is the caller's and is left as it is.
+      logical, intent(in), optional :: want(:, :)
+      !! (nbas, nbas) Present: only the shell pairs (i, j) with want(i, j)
+      !! get primitive pairs; every other pair has n = 0, as if it were pruned.
+      !! The unique-pair build wants the orbit
+      !! representatives and rebuilds the images from them. The `keep` scratch
+      !! is then sized by the wanted pairs, not by nbas**2. Absent: every pair,
+      !! exactly as before.
 
       integer  :: nbas, npp, i, j, ki, kj, key, k, d, k1, k2, kb
       real(dp) :: a, b, p, mu, ab2, ukey, ubest
       real(dp), allocatable :: emin(:), amax(:)
       real(dp), parameter :: SQRT2_PI54 = 1.4142135623730951_dp*4.1827004988466890_dp  ! sqrt(2) pi^(5/4)
       logical, allocatable :: keep(:, :, :)
+      integer, allocatable :: kslot(:)
+      !! Row of `keep` of each shell pair (key); only with `want`.
+      integer :: ks, nslot
 
       nbas = size(sh_np)
       pairs%nbas = nbas
       if (allocated(pairs%off)) deallocate (pairs%off, pairs%n)
       if (allocated(pairs%p)) deallocate (pairs%p, pairs%r, pairs%ra, pairs%rb, pairs%c, pairs%a)
       allocate (pairs%off(nbas*nbas), pairs%n(nbas*nbas))
-      allocate (keep(size(sh_e, 1), size(sh_e, 1), nbas*nbas))
+      nslot = nbas*nbas
+      if (present(want)) then
+         allocate (kslot(nbas*nbas))
+         nslot = 0
+         do i = 1, nbas
+            do j = 1, nbas
+               key = (i - 1)*nbas + j
+               if (want(i, j)) then
+                  nslot = nslot + 1
+                  kslot(key) = nslot
+               else
+                  kslot(key) = 0
+               end if
+            end do
+         end do
+      end if
+      allocate (keep(size(sh_e, 1), size(sh_e, 1), nslot))
       keep = .false.
       !
       ! ONE EXPONENTIAL PER SHELL PAIR BEFORE ANY PRIMITIVE PAIR.
@@ -124,7 +161,7 @@ contains
       allocate (emin(nbas), amax(nbas))
       do i = 1, nbas
          emin(i) = minval(sh_e(1:sh_np(i), i))
-         amax(i) = maxval(abs(camp(1:sh_np(i), i)))
+         amax(i) = maxval(abs(prune%camp(1:sh_np(i), i)))
       end do
       npp = 0
       do i = 1, nbas
@@ -136,10 +173,15 @@ contains
                ab2 = ab2 + (sh_r(d, i) - sh_r(d, j))**2
             end do
             pairs%n(key) = 0
+            ks = key
+            if (present(want)) then
+               ks = kslot(key)
+               if (ks == 0) cycle
+            end if
             a = emin(i)
             b = emin(j)
             p = a + b
-            if (amax(i)*amax(j)*exp(-(a*b/p)*ab2)*SQRT2_PI54/(p*sqrt(sqrt(2.0_dp*p))) <= cut) then
+            if (amax(i)*amax(j)*exp(-(a*b/p)*ab2)*SQRT2_PI54/(p*sqrt(sqrt(2.0_dp*p))) <= prune%cut) then
                cycle
             end if
             do ki = 1, sh_np(i)
@@ -148,9 +190,9 @@ contains
                   b = sh_e(kj, j)
                   p = a + b
                   mu = a*b/p
-                  keep(ki, kj, key) = abs(camp(ki, i)*camp(kj, j))*exp(-mu*ab2) &
-                                      *SQRT2_PI54/(p*sqrt(sqrt(2.0_dp*p))) > cut
-                  if (keep(ki, kj, key)) pairs%n(key) = pairs%n(key) + 1
+                  keep(ki, kj, ks) = abs(prune%camp(ki, i)*prune%camp(kj, j))*exp(-mu*ab2) &
+                                     *SQRT2_PI54/(p*sqrt(sqrt(2.0_dp*p))) > prune%cut
+                  if (keep(ki, kj, ks)) pairs%n(key) = pairs%n(key) + 1
                end do
             end do
             npp = npp + pairs%n(key)
@@ -165,6 +207,8 @@ contains
          do j = 1, nbas
             key = (i - 1)*nbas + j
             if (pairs%n(key) == 0) cycle
+            ks = key
+            if (present(want)) ks = kslot(key)
             k = pairs%off(key)
             ab2 = 0.0_dp
             do d = 1, 3
@@ -173,7 +217,7 @@ contains
             do ki = 1, sh_np(i)
                a = sh_e(ki, i)
                do kj = 1, sh_np(j)
-                  if (.not. keep(ki, kj, key)) cycle
+                  if (.not. keep(ki, kj, ks)) cycle
                   b = sh_e(kj, j)
                   k = k + 1
                   p = a + b

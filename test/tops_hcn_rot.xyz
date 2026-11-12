@@ -1,0 +1,5 @@
+3
+hydrogen cyanide, Coov, r(CH) 1.0655, r(CN) 1.1559 Angstrom (experimental, recalled from memory), along z; then rotated by a random proper rotation (numpy RandomState(106), QR of a normal matrix) and shifted by a random vector
+H      0.09320219020281    -2.20561023634652    -0.11591761416422
+C     -0.12606628598278    -1.87006907001513     0.87131270903712
+N     -0.36393811294000    -1.50605965268763     1.94230241395352

@@ -1,9 +1,16 @@
 submodule (trc_run) trc_run_json
    !! The `--json` summary writer of the `terco` command (bodies of `trc_run`).
    use json_module, only: json_core, json_value
+   use pic_strings, only: to_string
    use trc_app, only: BOHR_PER_ANGSTROM
+   use, intrinsic :: iso_c_binding, only: c_null_char
+   use trc_capi, only: trc_timing, trc_timing_count, TRC_OK, TRC_TIMING_NAME_MAX
    use trc_run_input, only: run_input_echo
+   use trc_sym_run, only: sym_run_occupied_counts
    implicit none
+
+   integer, parameter :: KEY_LEN = int(TRC_TIMING_NAME_MAX)
+   !! The longest dotted timing name `trc_timing` hands out, its NUL included.
 
 contains
 
@@ -62,11 +69,14 @@ contains
          if (r%has_homo(2)) call json%add(root, "beta homo energy", r%homo(2))
          if (r%has_lumo(2)) call json%add(root, "beta lumo energy", r%lumo(2))
       end if
+      if (r%sym_ran) call add_symmetry(json, root, r)
       if (r%grad .and. allocated(r%gradient)) call add_gradient(json, root, r)
       if (r%hessian .and. r%hess_ok) call add_hessian(json, root, r)
       if (r%opt) call add_optimization(json, root, r)
       if (allocated(r%hirshfeld_charges) .or. allocated(r%chelpg_charges)) call add_charges(json, root, r)
       if (len(r%fukui) > 0 .and. allocated(r%fukui_f_plus)) call add_fukui(json, root, r)
+      call add_build(json, root)
+      call add_timings(json, root, r)
       call json%print(root, path)
       if (json%failed()) then
          call json%destroy(root)
@@ -74,6 +84,192 @@ contains
       end if
       call json%destroy(root)
    end subroutine run_write_json
+
+   subroutine add_build(json, root)
+      !! What this binary was built as, so a benchmark can tell a device
+      !! build from a host one and an LMAX=2 build from an LMAX=3 one.
+      type(json_core), intent(inout) :: json
+      type(json_value), pointer, intent(in) :: root
+      type(json_value), pointer :: bobj
+      call json%create_object(bobj, "build")
+      call json%add(bobj, "device", BUILD_DEVICE == "yes")
+      if (BUILD_DEVICE == "yes") call json%add(bobj, "gpu_arch", BUILD_GPU_ARCH)   ! a host build has none
+      call json%add(bobj, "lmax", BUILD_LMAX)
+      call json%add(bobj, "df_lmax", BUILD_DF_LMAX)
+      call json%add(bobj, "df_lmax_aux", BUILD_DF_LMAX_AUX)
+      call json%add(bobj, "cart_order", BUILD_CART_ORDER)
+      call json%add(bobj, "mpi", BUILD_MPI == "yes")
+      call json%add(bobj, "multicore", BUILD_MULTICORE == "yes")
+      call json%add(bobj, "commit", BUILD_COMMIT)
+      call json%add(bobj, "compiler", BUILD_COMPILER)
+      call json%add(bobj, "compiler_version", BUILD_COMPILER_VERSION)
+      call json%add(bobj, "build_type", BUILD_TYPE)
+      call json%add(root, bobj)
+   end subroutine add_build
+
+   subroutine add_timings(json, root, r)
+      !! The "timings" object, seconds (counts under keys starting "n_"):
+      !! "total_wall" always; the library's stage times (trc_timing, each
+      !! dotted name "group.key" or "group.sub.key" becomes nested objects,
+      !! so a later method adds its own group without touching these); and
+      !! "gradient": {"total"} with --grad. Not the library's stages for
+      !! --opt, --hessian or --fukui: those run SCFs at other geometries or
+      !! charges after the one the run is about, so the context's last SCF
+      !! is not a timing of it.
+      type(json_core), intent(inout) :: json
+      type(json_value), pointer, intent(in) :: root
+      type(run_t), intent(in) :: r
+      type(json_value), pointer :: tobj, group, sub
+      character(len=1, kind=c_char) :: buffer(KEY_LEN)
+      character(len=KEY_LEN) :: key
+      character(len=24) :: gname, sname
+      real(c_double) :: value
+      integer :: ientry, nc, p1, p2, nentries
+      integer(c_int) :: rc, cnt
+      logical :: in_group, in_sub
+
+      call json%create_object(tobj, "timings")
+      call json%add(tobj, "total_wall", r%wall%get_elapsed_time())
+      if (.not. (r%opt .or. r%hessian .or. len(r%fukui) > 0)) then
+         in_group = .false.
+         in_sub = .false.
+         gname = ""
+         sname = ""
+         rc = trc_timing_count(r%h, cnt)
+         if (rc /= TRC_OK) call run_die(r, "trc_timing_count failed, status "//to_string(int(rc)))
+         nentries = int(cnt)
+         do ientry = 0, nentries - 1
+            rc = trc_timing(r%h, int(ientry, c_int), buffer, int(KEY_LEN, c_int), value)
+            if (rc /= TRC_OK) call run_die(r, "trc_timing("//to_string(ientry)//") failed, status "//to_string(int(rc)))
+            nc = 0
+            do while (nc < KEY_LEN)
+               if (buffer(nc + 1) == c_null_char) exit
+               nc = nc + 1
+            end do
+            key = ""
+            do p1 = 1, nc
+               key(p1:p1) = buffer(p1)
+            end do
+            ! group.key, or group.sub.key
+            p1 = index(key, ".")
+            p2 = p1 + index(key(p1 + 1:), ".")
+            if (p2 == p1) p2 = 0
+            if (.not. in_group .or. key(1:p1 - 1) /= gname) then
+               if (in_group) call json%add(tobj, group)
+               in_sub = .false.
+               gname = key(1:p1 - 1)
+               call json%create_object(group, trim(gname))
+               in_group = .true.
+            end if
+            if (p2 > 0) then
+               if (.not. in_sub .or. key(p1 + 1:p2 - 1) /= sname) then
+                  if (in_sub) call json%add(group, sub)
+                  sname = key(p1 + 1:p2 - 1)
+                  call json%create_object(sub, trim(sname))
+                  in_sub = .true.
+               end if
+               call add_value(json, sub, key(p2 + 1:nc), value)
+            else
+               if (in_sub) call json%add(group, sub)
+               in_sub = .false.
+               call add_value(json, group, key(p1 + 1:nc), value)
+            end if
+         end do
+         if (in_sub) call json%add(group, sub)
+         if (in_group) call json%add(tobj, group)
+      end if
+      if (r%grad .and. allocated(r%gradient)) then
+         call json%create_object(group, "gradient")
+         call json%add(group, "total", r%grad_timer%get_elapsed_time())
+         call json%add(tobj, group)
+      end if
+      call json%add(root, tobj)
+
+   end subroutine add_timings
+
+   subroutine add_value(json, parent, name, v)
+      !! One timing leaf: an integer when the key starts with "n_" (a count),
+      !! else seconds.
+      type(json_core), intent(inout) :: json
+      type(json_value), pointer, intent(in) :: parent
+      character(len=*), intent(in) :: name
+      real(c_double), intent(in) :: v
+      if (name(1:min(2, len(name))) == "n_") then
+         call json%add(parent, name, nint(v))
+      else
+         call json%add(parent, name, real(v, dp))
+      end if
+   end subroutine add_value
+
+   subroutine add_symmetry(json, root, r)
+      !! The "symmetry" object, only when a symmetry request ran: groups, the
+      !! symmetrisation residual, and for a group of more than one operation the
+      !! frame, the geometry (Angstrom; the input symmetrised in the input frame
+      !! for an on/auto request, else the standard frame the SCF ran on, which
+      !! is also the frame of the gradient and the orbitals), the irreps with their
+      !! SO dimensions and occupied orbitals, and each orbital's irrep.
+      type(json_core), intent(inout) :: json
+      type(json_value), pointer, intent(in) :: root
+      type(run_t), intent(in) :: r
+      type(json_value), pointer :: sobj, rows, occ
+      integer :: ia, ir, s, m, nmo
+      integer, allocatable :: cnt(:, :)
+      character(len=:), allocatable :: key
+
+      call json%create_object(sobj, "symmetry")
+      call json%add(root, sobj)
+      call json%add(sobj, "requested", r%symmetry)
+      call json%add(sobj, "detected group", trim(r%sym_detected))
+      call json%add(sobj, "group", trim(r%sym_used))
+      call json%add(sobj, "residual", r%sym_residual)
+      if (r%sym_active) then
+         if (r%sym_input_frame) then
+            call json%add(sobj, "frame", "input: the geometry (the input symmetrised in it) and the gradient of this "// &
+                          "run are in your input frame; frame rotation and frame origin map it to the standard frame")
+         else
+            call json%add(sobj, "frame", "standard: the geometry, gradient and orbitals of this run are in it")
+         end if
+         call json%create_array(rows, "frame rotation")
+         do ia = 1, 3
+            call json%add(rows, "", r%sym_rot(ia, :))
+         end do
+         call json%add(sobj, rows)
+         call json%add(sobj, "frame origin", r%sym_shift)
+         call json%create_array(rows, "geometry")
+         do ia = 1, r%natm
+            call json%add(rows, "", r%geom_std(:, ia)/BOHR_PER_ANGSTROM)
+         end do
+         call json%add(sobj, rows)
+         call json%create_array(rows, "irreps")
+         do ir = 1, r%sym_nirrep
+            call json%add(rows, "", trim(r%sym_irrep_names(ir)))
+         end do
+         call json%add(sobj, rows)
+         if (allocated(r%sym_irrep_dim)) call json%add(sobj, "irrep dimensions", r%sym_irrep_dim)
+         if (allocated(r%sym_mo_irrep)) then
+            nmo = size(r%sym_occ, 1)
+            allocate (cnt(r%sym_nirrep, r%nspin))
+            do s = 1, r%nspin
+               key = merge("orbital irreps     ", "beta orbital irreps", s == 1)
+               call json%create_array(rows, trim(key))
+               do m = 1, nmo
+                  call json%add(rows, "", trim(r%sym_irrep_names(max(1, r%sym_mo_irrep(m, s)))))
+               end do
+               call json%add(sobj, rows)
+               cnt(:, s) = sym_run_occupied_counts(r%sym_mo_irrep(1:nmo, s), r%sym_occ(:, s) > 0.0_dp, r%sym_nirrep)
+            end do
+            call json%create_object(occ, "occupied orbitals per irrep")
+            do ir = 1, r%sym_nirrep
+               if (r%nspin == 1) then
+                  call json%add(occ, trim(r%sym_irrep_names(ir)), cnt(ir, 1))
+               else
+                  call json%add(occ, trim(r%sym_irrep_names(ir)), cnt(ir, :))
+               end if
+            end do
+            call json%add(sobj, occ)
+         end if
+      end if
+   end subroutine add_symmetry
 
    subroutine add_gradient(json, root, r)
       !! The analytic gradient as an array of [x, y, z] triples, one per atom

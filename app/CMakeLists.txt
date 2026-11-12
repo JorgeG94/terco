@@ -44,9 +44,60 @@ add_executable(
 set_target_properties(
   terco_cli PROPERTIES OUTPUT_NAME terco Fortran_MODULE_DIRECTORY
                                          ${CMAKE_CURRENT_BINARY_DIR}/modules)
+# What this build is, for `terco --version` and the JSON summary's "build"
+# object (the performance-regression bench keys its goldens on it).
+if(TERCO_ENABLE_GPU)
+  set(_terco_device "yes")
+else()
+  set(_terco_device "no")
+endif()
+if(TERCO_ENABLE_MPI)
+  set(_terco_mpi "yes")
+else()
+  set(_terco_mpi "no")
+endif()
+if(TERCO_ENABLE_MULTICORE)
+  set(_terco_multicore "yes")
+else()
+  set(_terco_multicore "no")
+endif()
+# The binary's own commit. Captured when CMake configures, so it is the commit
+# of the last configure: a later `git pull` that does not reconfigure leaves it
+# stale. "unknown" outside a git checkout (a tarball).
+find_package(Git QUIET)
+set(_terco_commit "unknown")
+if(GIT_FOUND)
+  execute_process(
+    COMMAND ${GIT_EXECUTABLE} describe --always --dirty
+    WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    OUTPUT_VARIABLE _terco_describe
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE _terco_describe_rc
+    ERROR_QUIET)
+  if(_terco_describe_rc EQUAL 0 AND NOT "${_terco_describe}" STREQUAL "")
+    set(_terco_commit "${_terco_describe}")
+  endif()
+endif()
+if("${TERCO_DF_LMAX}" STREQUAL "")
+  set(_terco_df_lmax "${TERCO_LMAX}")
+else()
+  set(_terco_df_lmax "${TERCO_DF_LMAX}")
+endif()
 target_compile_definitions(
   terco_cli
   PRIVATE TERCO_VERSION="${PROJECT_VERSION}"
+          TERCO_BUILD_DEVICE="${_terco_device}"
+          TERCO_BUILD_GPU_ARCH="${TERCO_GPU_ARCH}"
+          TERCO_BUILD_LMAX="${TERCO_LMAX}"
+          TERCO_BUILD_DF_LMAX="${_terco_df_lmax}"
+          TERCO_BUILD_DF_LMAX_AUX="${TERCO_DF_LMAX_AUX}"
+          TERCO_BUILD_CART_ORDER="${TERCO_CART_ORDER}"
+          TERCO_BUILD_MPI="${_terco_mpi}"
+          TERCO_BUILD_MULTICORE="${_terco_multicore}"
+          TERCO_BUILD_COMMIT="${_terco_commit}"
+          TERCO_BUILD_COMPILER="${CMAKE_Fortran_COMPILER_ID}"
+          TERCO_BUILD_COMPILER_VERSION="${CMAKE_Fortran_COMPILER_VERSION}"
+          TERCO_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
           TERCO_BASIS_DIR="${CMAKE_INSTALL_PREFIX}/${TERCO_BASIS_INSTALL_DIR}"
           TERCO_SOURCE_BASIS_DIR="${PROJECT_SOURCE_DIR}/basis_sets:${PROJECT_SOURCE_DIR}/test/basis_sets")
 # pic-mpi: the CLI initialises and finalises MPI, and asks for the world
@@ -88,6 +139,9 @@ if(TERCO_ENABLE_TESTING AND TARGET check_cli_grad_df)
 endif()
 if(TERCO_ENABLE_TESTING AND TARGET check_cli_lowercase)
   add_dependencies(check_cli_lowercase terco_cli)
+endif()
+if(TERCO_ENABLE_TESTING AND TARGET check_sym_cli)
+  add_dependencies(check_sym_cli terco_cli)
 endif()
 if(TERCO_ENABLE_TESTING AND TARGET check_cli_hessian)
   add_dependencies(check_cli_hessian terco_cli)

@@ -161,7 +161,11 @@ terco's changes are justified by measurement. When a PR claims a speedup:
   baseline, and show that the energies are unchanged;
 - per-class claims should come from nsys or ncu, not wall time alone;
 - be sceptical of a speedup that coincides with fewer quartets surviving
-  screening: that's an accuracy change, not a speedup.
+  screening: that's an accuracy change, not a speedup;
+- a performance-sensitive change (kernels, Fock/XC/DF/RI-MP2 drivers, SCF
+  loop) should show the table from `bench/regression/run.py` run on a GPU
+  (never GPU 0) against the golden of that architecture, in the PR body; a
+  golden changes only for an intended change the PR states.
 
 ## 6. Style
 
@@ -244,6 +248,13 @@ placement; grep cannot tell which declaration a block is about.
   `claude.ai/code/session_...` URLs) in commit messages or PR bodies. A
   `Co-Authored-By:` trailer is fine.
 - Never mention "kgen" in commits, comments, docs or file headers.
+- No plan or design documents (agent plans, briefs, progress logs, design
+  notes, experiment write-ups) added anywhere in the tree, `.claude/` and
+  `docs/` included. Must-fix: ask for them to be dropped and for what a
+  reader needs to move into comments, the PR body or user-facing docs.
+- No local paths in committed files (`/Users/`, `/home/`, `/tmp/`,
+  `/private/`, scratchpad or log directories): must-fix. Find them with
+  `gh pr diff <N> | grep -nE '^\+.*(/Users/|/home/|/private/|/tmp/)'`.
 
 ## 10. Use pic, don't re-roll it
 

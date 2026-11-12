@@ -25,12 +25,16 @@ module trc_bins
    use trc_tables, only: LMAX
    use pic_types, only: int64, int_index
    use pic_sorting, only: sort_index
-   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t
+   use pic_strings, only: to_string
+   use trc_error, only: error_t
+   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_orbits_t
+   use trc_sym_pairs, only: trc_sym_pairs_t, sym_pairs_build
    implicit none
    private
 
    public :: SMAX, bins_build_binned_pairs, pair_bins_t, bins_sort_by_weight
-   public :: bins_build_pair_quartets
+   public :: bins_build_pair_quartets, bins_rep_weights, bins_pair_image_source
+   public :: bins_skel_cut_first, bins_plan_emit, bins_plan_allocate, bins_any_masked
    ! bin_key/bin_dmax stay private: nothing outside this module uses them.
 
    !
@@ -42,13 +46,28 @@ module trc_bins
    integer, parameter :: SDEC = 9       !! decades of Schwarz bound worth binning
    integer, parameter :: SMAX = SDEC*SMAX_RES  !! deepest bucket at any resolution
    integer, parameter :: KCAP = 64   !! largest contraction degree binned exactly
+   integer, parameter :: SKEL_SWAP_LMAX = 3
+   !! The skeleton plan may launch a bin pair with its bra and ket swapped
+   !! (the bra carrying the representatives is the side with fewer quartets)
+   !! only up to this angular momentum: the kernels of every ordering exist
+   !! up to f, and for g only the canonical one the bins form (src/CMakeLists.txt).
+   integer, parameter :: BIN_G_MASKED = 2
+   !! Bit of `bin_g` (and of bin_key's `g`): every pair of the bin has both
+   !! shells in the dead plane of parity skipping,
+   !! so every quartet of a bin pair of two such bins has the dead z axis of
+   !! the kernels' frame. A property of the pair that the point group leaves
+   !! invariant, so an orbit never straddles two bins.
+   integer, parameter :: NBIN_KEYS = 4*(LMAX + 1)*(LMAX + 1)*(KCAP + 1)*(SMAX + 1) + 1
    integer, parameter :: BIN_CAP = 32768
    !! Most pairs one bin may hold. A segment is the cross product of two
    !! bins, and the kernels index within a segment by a default integer
    !! (each Fock kernel's within-segment `t`), so a segment must stay below 2**31 quartets:
    !! 32768**2 is 2**30. A bin past this is split by split_large_bins.
    !! TRC_BIN_CAP in the environment lowers it, for testing the split on a
-   !! system small enough for CI (terco/check_binfock_split).
+   !! system small enough for CI (terco/check_binfock_split). Bins that hold
+   !! whole pair orbits (the skeleton build) are cut only between orbits, so
+   !! they may exceed it by less than the order of the group: BIN_CAP + |G|
+   !! pairs, and 32776**2 is still below 2**31.
 
    type :: pair_bins_t
       integer :: nbin = 0
@@ -67,11 +86,44 @@ module trc_bins
       integer, allocatable :: bin_cnt(:)           !! pairs in bin b
       integer, allocatable :: bin_s(:)             !! size index of bin b
       integer, allocatable :: bin_la(:), bin_lb(:)  !! type of bin b
-      integer, allocatable :: bin_g(:)             !! 1 if a pair of bin b has a general side
+      integer, allocatable :: bin_g(:)             !! bit 0: a general side; bit 1: parity-masked (BIN_G_MASKED)
       integer, allocatable :: live(:)              !! indices of non-empty bins
       integer :: nlive = 0
       real(dp), allocatable :: bin_dm(:)           !! largest |D| block over a bin's pairs
    end type pair_bins_t
+
+   type, public :: trc_bin_shells_t
+      !! The shell data bins_build_binned_pairs reads, bundled so the entry
+      !! point stays under the argument limit. A host-side copy made once per
+      !! build; no kernel sees it.
+      integer, allocatable :: sh_l(:), sh_np(:)
+      !! (nbas) angular momentum and primitives per shell; their size is the
+      !! shell count.
+      real(dp), allocatable :: sh_r(:, :)
+      !! (3, nbas) shell centres, for the intra-bin sort.
+   end type trc_bin_shells_t
+
+   type, public :: trc_bin_symmetry_t
+      !! The point-group inputs of bins_build_binned_pairs, bundled because
+      !! they only ever travel together: host-side copies, made once per build.
+      integer, allocatable :: shmap(:, :)
+      !! (nbas, nop) the shell map of a point group (trc_sym_pairs).
+      integer, allocatable :: shmask(:)
+      !! (nbas) 1 for a shell in the dead plane of parity skipping. A pair of
+      !! two such shells goes to a bin of its own (BIN_G_MASKED), so that no
+      !! bin pair mixes masked and unmasked quartets. Unallocated: no pair is.
+   end type trc_bin_symmetry_t
+
+   type, public :: trc_bin_segment_t
+      !! One segment of a plan, the geometry bins_plan_emit takes as a value
+      !! instead of eight arguments: pairs oa+1..oa+na of bin ka against
+      !! ob+1..ob+nb of bin kb, a triangle when diag. Host-side planning only;
+      !! the kernels read the plan's own arrays.
+      integer :: ka = 0, kb = 0, oa = 0, na = 0, ob = 0, nb = 0
+      logical :: diag = .false.
+      real(dp) :: w = 1.0_dp
+      !! Weight of a skeleton plan's segment; ignored when the plan has none.
+   end type trc_bin_segment_t
 
    !
    ! The launch plan: which bin pairs survive the admission test, how their
@@ -101,18 +153,49 @@ module trc_bins
       !! bin-interleaved tables, equal to sA/sNB unless the segment is a tile.
       integer, allocatable :: sLA(:), sLB(:), sLC(:), sLD(:)
       !! (nseg) the class (la, lb | lc, ld).
+      integer, allocatable :: sM(:)
+      !! (nseg) 1 when both bins are masked (BIN_G_MASKED): every quartet of
+      !! the segment has the dead z axis of the kernels' frame and may run in
+      !! a masked variant; 0 otherwise. A launch is uniform in it because the
+      !! plan sorts by it (sort_by_class with `by_mask`).
       logical, allocatable :: sD(:)
       !! (nseg) bra bin == ket bin: the segment is a triangle, not a rectangle.
       integer(int64), allocatable :: sOff(:)
       !! (nseg + 1) prefix sum of the work items; sOff(1) = 0.
+      real(dp), allocatable :: sW(:)
+      !! (nseg) the weight of the segment's bra pairs: their orbit size,
+      !! halved on a diagonal bin pair, hence a multiple of one half. Only a
+      !! skeleton plan builds it; unallocated means 1, and the Fock launcher
+      !! fills an array of ones in that case rather than branch in the
+      !! kernels (trc_binkernel). It is MAPPED and the kernels read it per
+      !! segment, which is what lets one launch cover every weight of a
+      !! (class, mask) run; it used to multiply that launch's jfac and kfac
+      !! instead, and cost benzene 85 launches a Fock build against 33.
    contains
       procedure :: build         => bins_plan_build
+      procedure :: build_skeleton => bins_plan_build_skeleton
       procedure :: sort_by_class => bins_plan_sort_by_class
       procedure :: class_key     => bins_plan_class_key
       procedure :: release       => bins_plan_release
    end type trc_bin_plan_t
 
 contains
+
+   function bins_rep_weights(b, orb) result(w)
+      !! Per pair of the bins: its orbit size when it is an orbit
+      !! representative, 0 otherwise. For the MD engines' skeleton restriction,
+      !! which cut by pair rather than by bin segment.
+      type(pair_bins_t), intent(in) :: b
+      type(trc_bin_orbits_t), intent(in) :: orb
+      integer :: w(b%npair)
+      integer :: k, r
+      w = 0
+      do k = 1, b%nbin
+         do r = orb%sec0(k) + 1, orb%sec0(k + 1)
+            w(b%bin_off(k) + orb%sec_beg(r) + 1:b%bin_off(k) + orb%sec_beg(r) + orb%sec_cnt(r)) = orb%sec_w(r)
+         end do
+      end do
+   end function bins_rep_weights
 
    !
    ! Bin identity is (type, size), and TYPE CARRIES THE CONTRACTION DEGREE as
@@ -132,7 +215,10 @@ contains
    !
    pure integer function bin_key(la, lb, kab, s, g) result(res)
       integer, intent(in) :: la, lb, kab, s, g
-      res = (((la*(LMAX + 1) + lb)*(KCAP + 1) + min(kab, KCAP))*(SMAX + 1) + s)*2 + g + 1
+      !! `g` carries two bits: 1, a pair with a general side, and BIN_G_MASKED. Radix 4 keeps
+      !! the order of the keys without the mask bit what it was (the mapping
+      !! from radix 2 is monotone), so a build without a mask is bit-identical.
+      res = (((la*(LMAX + 1) + lb)*(KCAP + 1) + min(kab, KCAP))*(SMAX + 1) + s)*4 + g + 1
    end function bin_key
 
    !
@@ -141,9 +227,8 @@ contains
    ! O(N^2) throughout -- this is the whole point.  For 675 shells that is 228k
    ! pairs, against the 586M quartets the old path enumerated.
    !
-   subroutine bins_build_binned_pairs(sh_l, sh_np, sh_r, q, thresh, b, pp_n, res)
-      integer,  intent(in)  :: sh_l(:), sh_np(:)  !! (nbas) per shell; their size is the shell count
-      real(dp), intent(in)  :: sh_r(:, :)         !! (3, nbas) shell centres, for the intra-bin sort
+   subroutine bins_build_binned_pairs(shells, q, thresh, b, pp_n, res, sym, orb)
+      type(trc_bin_shells_t), intent(in) :: shells
       real(dp), intent(in)  :: q(:)               !! Schwarz bound, canonical pair index
       real(dp), intent(in)  :: thresh
       type(pair_bins_t), intent(out) :: b
@@ -154,17 +239,31 @@ contains
       !! it is the kept count that sets the kernel's trip count.
       integer,  intent(in), optional :: res
       !! Buckets per decade of Schwarz bound; 1 (the default) is decades.
+      type(trc_bin_symmetry_t), intent(in), optional :: sym
+      !! With `sym%shmap` allocated the bins are built closed under that point
+      !! group, for the skeleton Fock build (see build_orbit_bins); `q` must
+      !! then already be invariant (sym_pairs_symmetrize_q) and `orb` is
+      !! required.
+      !! `sym%shmask`, if allocated, marks the parity-skipping dead plane.
+      type(trc_bin_orbits_t), intent(out), optional :: orb
 
       integer :: nbas, nb, i, j, s, k, p, n, key, gg, ia, ib, sres
       integer, allocatable :: cnt(:), pos(:), keyv(:), ti(:), tj(:)
       real(dp), allocatable :: tq(:)
       real(dp) :: qq, qmax
 
-      nbas = size(sh_l)
+      nbas = size(shells%sh_l)
       sres = 1
       if (present(res)) sres = max(1, min(SMAX_RES, res))
       b%sres = sres
-      nb = 2*(LMAX + 1)*(LMAX + 1)*(KCAP + 1)*(SMAX + 1) + 1
+      if (present(sym)) then
+         if (allocated(sym%shmap)) then
+            if (.not. present(orb)) error stop "terco: bins_build_binned_pairs: shmap without orb"
+            call build_orbit_bins(shells, q, thresh, b, pp_n, sres, sym, orb)
+            return
+         end if
+      end if
+      nb = NBIN_KEYS
       allocate (cnt(nb), pos(nb))
       cnt = 0
 
@@ -204,8 +303,8 @@ contains
             if (qq*qmax <= thresh) cycle
             call lorder(i, j, ia, ib)
             s = size_index(qq, sres)
-            gg = 0
-            key = bin_key(sh_l(ia), sh_l(ib), kab_of(ia, ib), s, gg)
+            gg = pair_g(ia, ib)
+            key = bin_key(shells%sh_l(ia), shells%sh_l(ib), kab_of(ia, ib), s, gg)
             cnt(key) = cnt(key) + 1
             n = n + 1
          end do
@@ -230,8 +329,8 @@ contains
             if (qq*qmax <= thresh) cycle
             call lorder(i, j, ia, ib)
             s = size_index(qq, sres)
-            gg = 0
-            key = bin_key(sh_l(ia), sh_l(ib), kab_of(ia, ib), s, gg)
+            gg = pair_g(ia, ib)
+            key = bin_key(shells%sh_l(ia), shells%sh_l(ib), kab_of(ia, ib), s, gg)
             pos(key) = pos(key) + 1
             b%sp_i(pos(key)) = ia
             b%sp_j(pos(key)) = ib
@@ -240,10 +339,58 @@ contains
       end do
 
 #ifdef TRC_SPATIAL_SORT
-      call sort_bins_spatially(b, nbas, sh_r)
+      call sort_bins_spatially(b, nbas, shells%sh_r)
 #endif
 
-      ! bin metadata and the live list
+      call fill_bin_metadata(b, sres)
+
+      call split_large_bins(b)
+
+      call make_live_list(b)
+
+      deallocate (cnt, pos)
+
+   contains
+      pure subroutine lorder(i_, j_, a_, b_)
+         !! The pair with the higher angular momentum first; index order
+         !! breaks the tie, so a pair of equal-l shells keeps i >= j.
+         integer, intent(in) :: i_, j_
+         integer, intent(out) :: a_, b_
+         if (shells%sh_l(j_) > shells%sh_l(i_)) then
+            a_ = j_
+            b_ = i_
+         else
+            a_ = i_
+            b_ = j_
+         end if
+      end subroutine lorder
+
+      pure integer function pair_g(i, j) result(res)
+         integer, intent(in) :: i, j
+         res = 0
+         if (present(sym)) then
+            if (allocated(sym%shmask)) then
+               if (sym%shmask(i) /= 0 .and. sym%shmask(j) /= 0) res = BIN_G_MASKED
+            end if
+         end if
+      end function pair_g
+
+      pure integer function kab_of(i, j) result(res)
+         integer, intent(in) :: i, j
+         if (present(pp_n)) then
+            res = pp_n((i - 1)*nbas + j)
+         else
+            res = shells%sh_np(i)*shells%sh_np(j)
+         end if
+      end function kab_of
+   end subroutine bins_build_binned_pairs
+
+
+   subroutine fill_bin_metadata(b, sres)
+      !! The type, size, generality and mask of every bin key (bin_key's inverse).
+      type(pair_bins_t), intent(inout) :: b
+      integer, intent(in) :: sres
+      integer :: i, j, k, s, gg, key
       b%bin_s = -1
       b%bin_la = -1
       b%bin_lb = -1
@@ -252,7 +399,7 @@ contains
          do j = 0, LMAX
             do k = 0, KCAP
                do s = 0, SDEC*sres
-                  do gg = 0, 1
+                  do gg = 0, 3
                      key = bin_key(i, j, k, s, gg)
                      b%bin_la(key) = i
                      b%bin_lb(key) = j
@@ -263,9 +410,13 @@ contains
             end do
          end do
       end do
+   end subroutine fill_bin_metadata
 
-      call split_large_bins(b)
-
+   subroutine make_live_list(b)
+      !! The indices of the non-empty bins.
+      type(pair_bins_t), intent(inout) :: b
+      integer :: k
+      if (allocated(b%live)) deallocate (b%live)
       allocate (b%live(b%nbin))
       b%nlive = 0
       do k = 1, b%nbin
@@ -274,33 +425,301 @@ contains
             b%live(b%nlive) = k
          end if
       end do
+   end subroutine make_live_list
 
-      deallocate (cnt, pos)
+   integer function bin_cap_value() result(cap)
+      !! BIN_CAP, lowered by TRC_BIN_CAP in the environment.
+      character(len=16) :: env
+      integer :: st, v, ios
+      cap = BIN_CAP
+      call get_environment_variable("TRC_BIN_CAP", env, status=st)
+      if (st == 0) then
+         read (env, *, iostat=ios) v
+         if (ios == 0 .and. v >= 1) cap = min(cap, v)
+      end if
+   end function bin_cap_value
 
-   contains
-      pure subroutine lorder(i_, j_, a_, b_)
-         !! The pair with the higher angular momentum first; index order
-         !! breaks the tie, so a pair of equal-l shells keeps i >= j.
-         integer, intent(in) :: i_, j_
-         integer, intent(out) :: a_, b_
-         if (sh_l(j_) > sh_l(i_)) then
-            a_ = j_
-            b_ = i_
-         else
-            a_ = i_
-            b_ = j_
-         end if
-      end subroutine lorder
+   !
+   ! The bins of the skeleton Fock build: closed under the point group, the
+   ! representatives of each bin first.
+   !
+   ! The same pairs, keys and sizes as bins_build_binned_pairs, with three
+   ! differences:
+   !  - the contraction degree in a pair's key is that of its orbit's
+   !    representative, so the whole orbit lands in one bin (the Schwarz bucket
+   !    is shared because Q is invariant; a bucket that is not is refused);
+   !  - a bin is cut into chunks of whole orbits, each past the cap by less
+   !    than the order of the group (so, a chunk is a closed set too);
+   !  - inside a chunk the representatives come first, grouped by orbit size
+   !    (ascending, so each weight is a contiguous range), then the other
+   !    members; the order inside each of these ranges is the canonical one.
+   ! `orb` records the ranges. Nothing changes for the full Fock build, which
+   ! walks the same pairs in another order.
+   !
+   subroutine build_orbit_bins(shells, q, thresh, b, pp_n, sres, sym, orb)
+      type(trc_bin_shells_t), intent(in) :: shells
+      real(dp), intent(in)  :: q(:)
+      real(dp), intent(in)  :: thresh
+      type(pair_bins_t), intent(inout) :: b
+      integer,  intent(in), optional :: pp_n(:)
+      integer,  intent(in)  :: sres
+      type(trc_bin_symmetry_t), intent(in) :: sym
+      !! See bins_build_binned_pairs; `sym%shmap` is allocated.
+      type(trc_bin_orbits_t), intent(out) :: orb
 
-      pure integer function kab_of(i, j) result(res)
-         integer, intent(in) :: i, j
+      type(trc_sym_pairs_t) :: tab
+      type(error_t) :: err
+      integer :: nbas, nb, i, j, k, p, n, key, m, gg
+      integer, allocatable :: cnt(:), pos(:), li(:), lj(:), pkey(:), slot_pre(:)
+      real(dp), allocatable :: lq(:)
+      real(dp) :: qq, qmax
+
+      nbas = size(shells%sh_l)
+      nb = NBIN_KEYS
+      qmax = 0.0_dp
+      do i = 1, nbas
+         do j = 1, i
+            qmax = max(qmax, q(i*(i - 1)/2 + j))
+         end do
+      end do
+
+      ! the significant pairs, the higher-l shell first as in the full build
+      n = 0
+      do i = 1, nbas
+         do j = 1, i
+            if (q(i*(i - 1)/2 + j)*qmax > thresh) n = n + 1
+         end do
+      end do
+      allocate (li(n), lj(n), lq(n))
+      n = 0
+      do i = 1, nbas
+         do j = 1, i
+            qq = q(i*(i - 1)/2 + j)
+            if (qq*qmax <= thresh) cycle
+            n = n + 1
+            if (shells%sh_l(j) > shells%sh_l(i)) then
+               li(n) = j
+               lj(n) = i
+            else
+               li(n) = i
+               lj(n) = j
+            end if
+            lq(n) = qq
+         end do
+      end do
+
+      tab = sym_pairs_build(sym%shmap, li, lj, lq, err)
+      if (err%has_error()) error stop "terco: orbit bins: "//err%get_message()
+
+      allocate (pkey(n), cnt(nb), pos(nb), slot_pre(n))
+      cnt = 0
+      do p = 1, n
+         m = tab%rep(p)
          if (present(pp_n)) then
-            res = pp_n((i - 1)*nbas + j)
+            pkey(p) = pp_n((li(m) - 1)*nbas + lj(m))
          else
-            res = sh_np(i)*sh_np(j)
+            pkey(p) = shells%sh_np(li(m))*shells%sh_np(lj(m))
          end if
-      end function kab_of
-   end subroutine bins_build_binned_pairs
+         gg = 0
+         if (allocated(sym%shmask)) then
+            if (sym%shmask(li(p)) /= 0 .and. sym%shmask(lj(p)) /= 0) gg = BIN_G_MASKED
+         end if
+         key = bin_key(shells%sh_l(li(p)), shells%sh_l(lj(p)), pkey(p), size_index(lq(p), sres), gg)
+         pkey(p) = key
+         cnt(key) = cnt(key) + 1
+      end do
+      ! an orbit lies in one bin
+      do p = 1, n
+         if (pkey(p) /= pkey(tab%rep(p))) error stop &
+            "terco: orbit bins: the pair ("//to_string(li(p))//","//to_string(lj(p))// &
+            ") falls in another bin than its orbit's representative (Q is not invariant under the group)"
+      end do
+
+      b%nbin = nb
+      b%npair = n
+      allocate (b%sp_i(n), b%sp_j(n), b%sp_q(n))
+      allocate (b%bin_off(nb), b%bin_cnt(nb), b%bin_s(nb), b%bin_la(nb), b%bin_lb(nb), b%bin_g(nb))
+      b%bin_cnt = cnt
+      b%bin_off(1) = 0
+      do k = 2, nb
+         b%bin_off(k) = b%bin_off(k - 1) + cnt(k - 1)
+      end do
+      pos = b%bin_off
+      do p = 1, n
+         key = pkey(p)
+         pos(key) = pos(key) + 1
+         b%sp_i(pos(key)) = li(p)
+         b%sp_j(pos(key)) = lj(p)
+         b%sp_q(pos(key)) = lq(p)
+         slot_pre(pos(key)) = p
+      end do
+      call fill_bin_metadata(b, sres)
+      call arrange_orbits(b, tab, slot_pre, sym%shmap, orb)
+      call make_live_list(b)
+   end subroutine build_orbit_bins
+
+   subroutine arrange_orbits(b, tab, slot_pre, shmap, orb)
+      !! Cut every bin into chunks of whole orbits, order each chunk
+      !! representatives (by orbit size) first, and record the ranges in orb.
+      !! `slot_pre(s)` is the index in `tab` of the pair stored in slot s.
+      type(pair_bins_t), intent(inout) :: b
+      type(trc_sym_pairs_t), intent(in) :: tab
+      integer, intent(inout) :: slot_pre(:)
+      integer, intent(in) :: shmap(:, :)
+      type(trc_bin_orbits_t), intent(out) :: orb
+
+      integer, allocatable :: chunk_of_pre(:), nch(:), off(:), cnt(:), sz(:), la(:), lb(:), g(:)
+      integer, allocatable :: ti(:), tj(:), tp(:)
+      real(dp), allocatable :: tq(:)
+      integer(int64), allocatable :: kbuf(:)
+      integer(int_index), allocatable :: index(:)
+      integer :: k, lo, n, s, pre, ich, c, cap, nop, nb0, nbt, nextra, m, rk, nmax
+      integer :: sec, nsec, nrep, w
+
+      nop = tab%nop
+      cap = bin_cap_value()
+      nb0 = b%nbin
+      allocate (chunk_of_pre(tab%npair), nch(nb0))
+      chunk_of_pre = 0
+      nch = 0
+      nextra = 0
+      nmax = 1
+      do k = 1, nb0
+         n = b%bin_cnt(k)
+         if (n == 0) cycle
+         lo = b%bin_off(k)
+         ich = 1
+         c = 0
+         do s = lo + 1, lo + n
+            pre = slot_pre(s)
+            if (tab%rep(pre) /= pre) cycle
+            chunk_of_pre(pre) = ich
+            c = c + tab%osz(pre)
+            if (c >= cap) then
+               ich = ich + 1
+               c = 0
+            end if
+         end do
+         nch(k) = merge(ich - 1, ich, c == 0 .and. ich > 1)
+         nextra = nextra + nch(k) - 1
+         nmax = max(nmax, n)
+      end do
+
+      nbt = nb0 + nextra
+      allocate (off(nbt), cnt(nbt), sz(nbt), la(nbt), lb(nbt), g(nbt))
+      off(1:nb0) = b%bin_off
+      cnt(1:nb0) = b%bin_cnt
+      sz(1:nb0) = b%bin_s
+      la(1:nb0) = b%bin_la
+      lb(1:nb0) = b%bin_lb
+      g(1:nb0) = b%bin_g
+      allocate (ti(nmax), tj(nmax), tp(nmax), tq(nmax), kbuf(nmax), index(nmax))
+      m = nb0
+      do k = 1, nb0
+         n = b%bin_cnt(k)
+         if (n == 0) cycle
+         lo = b%bin_off(k)
+         ! chunk, then representatives by orbit size, then the rest, then slot
+         do s = 1, n
+            pre = slot_pre(lo + s)
+            ich = chunk_of_pre(tab%rep(pre))
+            if (tab%rep(pre) == pre) then
+               rk = tab%osz(pre)
+            else
+               rk = nop + 1
+            end if
+            kbuf(s) = (int(ich - 1, int64)*(nop + 1) + rk)*int(n, int64) + (s - 1)
+         end do
+         call sort_index(kbuf(1:n), index(1:n))
+         do s = 1, n
+            c = lo + int(index(s))
+            ti(s) = b%sp_i(c)
+            tj(s) = b%sp_j(c)
+            tq(s) = b%sp_q(c)
+            tp(s) = slot_pre(c)
+         end do
+         b%sp_i(lo + 1:lo + n) = ti(1:n)
+         b%sp_j(lo + 1:lo + n) = tj(1:n)
+         b%sp_q(lo + 1:lo + n) = tq(1:n)
+         slot_pre(lo + 1:lo + n) = tp(1:n)
+         ! chunk boundaries: chunk ich is the run of slots with that chunk number
+         c = 0
+         ich = 1
+         do s = 1, n
+            if (chunk_of_pre(tab%rep(tp(s))) /= ich) then
+               ! close chunk ich, open the next as a new bin
+               if (ich == 1) then
+                  cnt(k) = c
+               else
+                  cnt(m) = c
+               end if
+               ich = chunk_of_pre(tab%rep(tp(s)))
+               m = m + 1
+               off(m) = lo + s - 1
+               sz(m) = b%bin_s(k)
+               la(m) = b%bin_la(k)
+               lb(m) = b%bin_lb(k)
+               g(m) = b%bin_g(k)
+               c = 0
+            end if
+            c = c + 1
+         end do
+         if (ich == 1) then
+            cnt(k) = c
+         else
+            cnt(m) = c
+         end if
+      end do
+
+      b%nbin = nbt
+      call move_alloc(off, b%bin_off)
+      call move_alloc(cnt, b%bin_cnt)
+      call move_alloc(sz, b%bin_s)
+      call move_alloc(la, b%bin_la)
+      call move_alloc(lb, b%bin_lb)
+      call move_alloc(g, b%bin_g)
+
+      ! the ranges
+      orb%built = .true.
+      orb%nop = nop
+      orb%shmap = shmap
+      allocate (orb%bin_nrep(nbt), orb%sec0(nbt + 1))
+      nsec = 0
+      do k = 1, nbt
+         lo = b%bin_off(k)
+         nrep = 0
+         w = 0
+         do s = lo + 1, lo + b%bin_cnt(k)
+            pre = slot_pre(s)
+            if (tab%rep(pre) /= pre) exit
+            nrep = nrep + 1
+            if (tab%osz(pre) /= w) then
+               nsec = nsec + 1
+               w = tab%osz(pre)
+            end if
+         end do
+         orb%bin_nrep(k) = nrep
+      end do
+      allocate (orb%sec_beg(nsec), orb%sec_cnt(nsec), orb%sec_w(nsec))
+      sec = 0
+      do k = 1, nbt
+         orb%sec0(k) = sec
+         lo = b%bin_off(k)
+         w = 0
+         do s = 1, orb%bin_nrep(k)
+            pre = slot_pre(lo + s)
+            if (tab%osz(pre) /= w) then
+               sec = sec + 1
+               w = tab%osz(pre)
+               orb%sec_beg(sec) = s - 1
+               orb%sec_cnt(sec) = 0
+               orb%sec_w(sec) = w
+            end if
+            orb%sec_cnt(sec) = orb%sec_cnt(sec) + 1
+         end do
+      end do
+      orb%sec0(nbt + 1) = sec
+   end subroutine arrange_orbits
 
    !
    ! Split every bin of more than BIN_CAP pairs into consecutive chunks of at
@@ -325,16 +744,7 @@ contains
       integer :: k, c, nextra, nb, ich, nch, cap
       integer, allocatable :: off(:), cnt(:), sz(:), la(:), lb(:), g(:)
 
-      cap = BIN_CAP
-      block
-         character(len=16) :: env
-         integer :: st, v, ios
-         call get_environment_variable("TRC_BIN_CAP", env, status=st)
-         if (st == 0) then
-            read (env, *, iostat=ios) v
-            if (ios == 0 .and. v >= 1) cap = min(cap, v)
-         end if
-      end block
+      cap = bin_cap_value()
 
       nextra = 0
       do k = 1, b%nbin
@@ -411,8 +821,15 @@ contains
       !! reuses the allocation (see below). A padding slot (k past a pair's
       !! own kept count) is never read, since the kernel's loop bound is
       !! always the pair's real count (`n`); its `a` is 0.
+      !! With `quartets%orb%built`, `pairs` holds primitive pairs for the orbit
+      !! representatives only (hgp_build_pairs' `want`); a bin pair without
+      !! any is an image, and its slot is filled from the representative's
+      !! pair (bins_pair_image_source) with the centres sign-flipped by the
+      !! operation's mask. Otherwise every pair of a bin has its own.
 
-      integer :: nbas, nqp, ib, bb, s, p, key, k1, kreal, off, ix
+      integer :: nbas, nqp, ib, bb, s, p, key, k1, kreal, off, ix, gop
+      real(dp) :: sg(3)
+      logical :: images
 
       !
       ! REUSE THE ALLOCATION ON A REBUILD.
@@ -438,15 +855,20 @@ contains
       ! Per pair slot: the A centre, A - B, and the real kept count -- what
       ! pairs%off(key)/pairs%n(key) would give the kernel, read here once
       ! rather than once per quartet.
+      images = quartets%orb%built
       do p = 1, b%npair
          key = (b%sp_i(p) - 1)*nbas + b%sp_j(p)
+         sg = 1.0_dp
+         if (images) then
+            if (pairs%n(key) == 0) call bins_pair_image_source(b%sp_i(p), b%sp_j(p), nbas, pairs%n, quartets%orb, key, sg)
+         end if
          off = pairs%off(key)
-         quartets%ax(p) = pairs%ra(off + 1, 1)
-         quartets%ay(p) = pairs%ra(off + 1, 2)
-         quartets%az(p) = pairs%ra(off + 1, 3)
-         quartets%abx(p) = pairs%ra(off + 1, 1) - pairs%rb(off + 1, 1)
-         quartets%aby(p) = pairs%ra(off + 1, 2) - pairs%rb(off + 1, 2)
-         quartets%abz(p) = pairs%ra(off + 1, 3) - pairs%rb(off + 1, 3)
+         quartets%ax(p) = sg(1)*pairs%ra(off + 1, 1)
+         quartets%ay(p) = sg(2)*pairs%ra(off + 1, 2)
+         quartets%az(p) = sg(3)*pairs%ra(off + 1, 3)
+         quartets%abx(p) = sg(1)*(pairs%ra(off + 1, 1) - pairs%rb(off + 1, 1))
+         quartets%aby(p) = sg(2)*(pairs%ra(off + 1, 2) - pairs%rb(off + 1, 2))
+         quartets%abz(p) = sg(3)*(pairs%ra(off + 1, 3) - pairs%rb(off + 1, 3))
          quartets%n(p) = pairs%n(key)
       end do
 
@@ -479,6 +901,10 @@ contains
          do s = 1, b%bin_cnt(bb)
             p = b%bin_off(bb) + s
             key = (b%sp_i(p) - 1)*nbas + b%sp_j(p)
+            sg = 1.0_dp
+            if (images) then
+               if (pairs%n(key) == 0) call bins_pair_image_source(b%sp_i(p), b%sp_j(p), nbas, pairs%n, quartets%orb, key, sg)
+            end if
             off = pairs%off(key)
             kreal = quartets%n(p)
             do k1 = 1, quartets%bin_k(bb)
@@ -486,9 +912,9 @@ contains
                if (k1 <= kreal) then
                   quartets%z(ix) = pairs%p(off + k1)
                   quartets%c(ix) = pairs%c(off + k1)
-                  quartets%px(ix) = pairs%r(off + k1, 1)
-                  quartets%py(ix) = pairs%r(off + k1, 2)
-                  quartets%pz(ix) = pairs%r(off + k1, 3)
+                  quartets%px(ix) = sg(1)*pairs%r(off + k1, 1)
+                  quartets%py(ix) = sg(2)*pairs%r(off + k1, 2)
+                  quartets%pz(ix) = sg(3)*pairs%r(off + k1, 3)
                   quartets%a(ix) = pairs%a(off + k1)
                else
                   quartets%z(ix) = 1.0_dp
@@ -502,6 +928,41 @@ contains
          end do
       end do
    end subroutine bins_build_pair_quartets
+
+   subroutine bins_pair_image_source(i, j, nbas, pp_n, orb, key_src, sg)
+      !! The pair (i, j) has no primitive pairs of its own: it is an image of a
+      !! representative that has. Finds an operation g that sends (i, j) to a
+      !! shell pair (u, v) whose primitive pairs were built, and returns that
+      !! pair's key and the signs that turn its centres into (i, j)'s.
+      !!
+      !! The operations are diagonal sign matrices, so g is its own inverse: g
+      !! sends i to u and u back to i, and the image of the pair (u, v) -- the
+      !! same exponents, the same combined coefficient, the product centre and
+      !! the two shell centres with the axes flipped by g's mask -- is the
+      !! pair (i, j), in this very order. Nothing about the angular components
+      !! enters: the image shell is a shell of the basis with its own centre,
+      !! and its integrals are the integrals of the flipped geometry. (The
+      !! component signs of trc_sym_ao relate the *Fock matrix elements* of
+      !! equivalent shells; they are not part of the pair data.)
+      integer, intent(in) :: i, j, nbas
+      integer, intent(in) :: pp_n(:)
+      type(trc_bin_orbits_t), intent(in) :: orb
+      integer, intent(out) :: key_src
+      real(dp), intent(out) :: sg(3)
+      integer :: g, u, v, d
+      do g = 1, orb%nop
+         u = orb%shmap(i, g)
+         v = orb%shmap(j, g)
+         if (pp_n((u - 1)*nbas + v) > 0) then
+            key_src = (u - 1)*nbas + v
+            do d = 1, 3
+               sg(d) = merge(-1.0_dp, 1.0_dp, btest(orb%ops(g), d - 1))
+            end do
+            return
+         end if
+      end do
+      error stop "terco: unique pairs: a shell pair without primitive pairs has no image with any"
+   end subroutine bins_pair_image_source
 
    !
    ! Order the pairs INSIDE each bin along a Morton curve through the pair
@@ -556,12 +1017,19 @@ contains
    ! good heuristic for the whole SCF. That makes the cost a fixed charge
    ! against every later build rather than a per-build tax.
    !
-   subroutine bins_sort_by_weight(b, nbas, dsh)
+   subroutine bins_sort_by_weight(b, nbas, dsh, orb)
       type(pair_bins_t), intent(inout) :: b
       integer,  intent(in) :: nbas
       real(dp), intent(in) :: dsh(nbas, nbas)
+      type(trc_bin_orbits_t), intent(in), optional :: orb
+      !! The bins of the skeleton build: the order is then changed only
+      !! inside each range of equal orbit size (and inside the non-representatives),
+      !! so the representatives stay first and each weight stays contiguous.
 
-      integer :: k, lo, n, p, m
+      integer :: k, lo, n, p, m, r, nr, r0
+      integer, parameter :: MAXRANGE = 9
+      !! at most 4 orbit sizes of the representatives, plus the rest, for the order-8 groups
+      integer :: rbeg(MAXRANGE), rcnt(MAXRANGE)
       real(dp) :: wmax, w
       logical :: qonly
       integer(int64), allocatable :: code(:), kbuf(:)
@@ -603,16 +1071,39 @@ contains
       tq = b%sp_q
       allocate (kbuf(maxval(b%bin_cnt)), index(maxval(b%bin_cnt)))
       do k = 1, b%nbin
-         n = b%bin_cnt(k)
-         if (n <= 1) cycle
-         lo = b%bin_off(k) + 1
-         kbuf(1:n) = code(lo:lo + n - 1)
-         call sort_index(kbuf(1:n), index(1:n))
-         do m = 1, n
-            p = lo + int(index(m)) - 1
-            b%sp_i(lo + m - 1) = ti(p)
-            b%sp_j(lo + m - 1) = tj(p)
-            b%sp_q(lo + m - 1) = tq(p)
+         if (b%bin_cnt(k) <= 1) cycle
+         ! the ranges that may be permuted: the whole bin, or (skeleton) each
+         ! weight section of the representatives and the rest
+         nr = 1
+         rbeg(1) = 0
+         rcnt(1) = b%bin_cnt(k)
+         if (present(orb)) then
+            if (orb%built) then
+               nr = 0
+               do r = orb%sec0(k) + 1, orb%sec0(k + 1)
+                  nr = nr + 1
+                  rbeg(nr) = orb%sec_beg(r)
+                  rcnt(nr) = orb%sec_cnt(r)
+               end do
+               if (orb%bin_nrep(k) < b%bin_cnt(k)) then
+                  nr = nr + 1
+                  rbeg(nr) = orb%bin_nrep(k)
+                  rcnt(nr) = b%bin_cnt(k) - orb%bin_nrep(k)
+               end if
+            end if
+         end if
+         do r0 = 1, nr
+            n = rcnt(r0)
+            if (n <= 1) cycle
+            lo = b%bin_off(k) + rbeg(r0) + 1
+            kbuf(1:n) = code(lo:lo + n - 1)
+            call sort_index(kbuf(1:n), index(1:n))
+            do m = 1, n
+               p = lo + int(index(m)) - 1
+               b%sp_i(lo + m - 1) = ti(p)
+               b%sp_j(lo + m - 1) = tj(p)
+               b%sp_q(lo + m - 1) = tq(p)
+            end do
          end do
       end do
 
@@ -792,7 +1283,7 @@ contains
    ! launch. The screening granularity is worth keeping; the launch
    ! granularity is not. A prefix sum lets a thread find its own segment.
    !
-   subroutine bins_plan_build(this, b, thresh, bin_pbase, use_density)
+   subroutine bins_plan_build(this, b, thresh, bin_pbase, use_density, canonical)
       class(trc_bin_plan_t), intent(inout) :: this
       type(pair_bins_t), intent(in) :: b
       real(dp), intent(in) :: thresh
@@ -801,18 +1292,43 @@ contains
       !! (trc_pair_quartets_t's bin_pbase).
       logical,  intent(in) :: use_density
       !! Also apply the bin-level density screen (density_reject).
+      logical,  intent(in), optional :: canonical
+      !! Write every segment angular-momentum canonically (bins_plan_emit's
+      !! `canon`): the gradient asks for it, because its filter builds no
+      !! class with (lc, ld) > (la, lb) above d. Absent or false, the walk
+      !! order is kept, so the energy path's plan, kernels and summation
+      !! order are what they were.
+      integer :: nseg
+      logical :: canon
 
-      integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
-      integer(int64) :: nt
-
+      canon = .false.
+      if (present(canonical)) canon = canonical
       call this%release()
+      nseg = 0
+      call plain_walk(this, b, thresh, bin_pbase, use_density, canon, .false., nseg)
+      call bins_plan_allocate(this, nseg, .false.)
+      nseg = 0
+      call plain_walk(this, b, thresh, bin_pbase, use_density, canon, .true., nseg)
+      this%nseg = nseg
+      this%nwork = this%sOff(nseg + 1)
+   end subroutine bins_plan_build
+
+   subroutine plain_walk(plan, b, thresh, bin_pbase, use_density, canon, fill, nseg)
+      !! Count the segments of the full plan, or (fill) write them: one whole
+      !! bin against one whole bin, over the lower triangle of the live list.
+      type(trc_bin_plan_t), intent(inout) :: plan
+      type(pair_bins_t), intent(in) :: b
+      real(dp), intent(in) :: thresh
+      integer, intent(in) :: bin_pbase(:)
+      logical, intent(in) :: use_density
+      logical, intent(in) :: canon
+      logical, intent(in) :: fill
+      integer, intent(inout) :: nseg
+      integer :: ia, ib, ka, kb, smax_keep
 
       ! In buckets, not decades: the bins carry the resolution they were
       ! built at, and the admission test has to speak the same units.
       smax_keep = int(-log10(thresh))*b%sres
-
-      ! pass 1: count admitted bin pairs
-      nseg = 0
       do ia = 1, b%nlive
          ka = b%live(ia)
          do ib = 1, ia
@@ -822,64 +1338,21 @@ contains
             if (use_density) then
                if (density_reject(b, ka, kb, thresh)) cycle
             end if
-            nseg = nseg + 1
+            ! `canon`: ascending live index usually means (la, lb) >= (lc, ld)
+            ! already -- bin_key packs (la, lb) as its most significant
+            ! fields -- but split_large_bins and arrange_orbits append a split
+            ! bin's extra chunks PAST every original index while keeping their
+            ! parent's (la, lb), so a chunk of a low-l bin can be the bra
+            ! against a high-l ket. The energy path has kernels for both
+            ! orderings (the bra<ket Rys ones) and keeps the walk order; the
+            ! gradient's filter builds no class with (lc, ld) > (la, lb) above
+            ! d, and grad_classes would `error stop` on one (src/CMakeLists.txt's
+            ! _rys_grad_classes), so it asks for the canonical order.
+            call bins_plan_emit(plan, b, bin_pbase, fill, nseg, &
+                                trc_bin_segment_t(ka, kb, 0, b%bin_cnt(ka), 0, b%bin_cnt(kb), ka == kb, 1.0_dp), canon)
          end do
       end do
-
-      allocate (this%sA(nseg), this%sNB(nseg), this%sOA(nseg), this%sOB(nseg))
-      allocate (this%sPA(nseg), this%sPB(nseg), this%sSA(nseg), this%sSB(nseg), this%sD(nseg))
-      allocate (this%sLA(nseg), this%sLB(nseg), this%sLC(nseg), this%sLD(nseg))
-      allocate (this%sOff(nseg + 1))
-
-      ! pass 2: fill the descriptors and prefix-sum the work
-      is = 0
-      this%sOff(1) = 0
-      do ia = 1, b%nlive
-         ka = b%live(ia)
-         nA = b%bin_cnt(ka)
-         do ib = 1, ia
-            kb = b%live(ib)
-            if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
-            nB = b%bin_cnt(kb)
-            if (nA == 0 .or. nB == 0) cycle
-            if (use_density) then
-               if (density_reject(b, ka, kb, thresh)) cycle
-            end if
-            is = is + 1
-            this%sA(is) = nA
-            this%sNB(is) = nB
-            this%sOA(is) = b%bin_off(ka)
-            this%sOB(is) = b%bin_off(kb)
-            this%sPA(is) = bin_pbase(ka)
-            this%sPB(is) = bin_pbase(kb)
-            this%sSA(is) = nA
-            this%sSB(is) = nB
-            this%sD(is) = (ka == kb)
-            this%sLA(is) = b%bin_la(ka)
-            this%sLB(is) = b%bin_lb(ka)
-            this%sLC(is) = b%bin_la(kb)
-            this%sLD(is) = b%bin_lb(kb)
-            if (ka == kb) then
-               nt = int(nA, int64)*int(nA + 1, int64)/2
-            else
-               nt = int(nA, int64)*int(nB, int64)
-            end if
-            !
-            ! The kernels take their within-segment index as a default integer,
-            ! so a segment must fit in one. Widening it would cost registers
-            ! in the hot kernel, which are the binding constraint; instead
-            ! bins_build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
-            ! (split_large_bins), so no segment exceeds 2**30. This guard is
-            ! the backstop if that cap is ever raised.
-            !
-            if (nt > 2147483000_int64) error stop &
-               "terco: bin-pair segment exceeds a default integer; widen the kernels' t"
-            this%sOff(is + 1) = this%sOff(is) + nt
-         end do
-      end do
-      this%nseg = nseg
-      this%nwork = this%sOff(nseg + 1)
-   end subroutine bins_plan_build
+   end subroutine plain_walk
 
    !
    ! Sort the segments by class, so each class occupies a contiguous run and
@@ -891,20 +1364,35 @@ contains
    ! class keep their admission order. The prefix sum is rebuilt in the new
    ! order.
    !
-   subroutine bins_plan_sort_by_class(this, radix)
+   subroutine bins_plan_sort_by_class(this, radix, by_mask)
       class(trc_bin_plan_t), intent(inout) :: this
       integer, intent(in) :: radix
+      logical, intent(in), optional :: by_mask
+      !! Also sort by the segment mask `sM` (after the class, before the
+      !! weight), so that a run of one class is uniform in it. The Fock
+      !! launcher asks; the gradient has no masked kernels and does not.
       !! The class key is ((la*radix + lb)*radix + lc)*radix + ld: the
       !! radix of the dispatcher that will read the key.
       integer(int_index), allocatable :: ord(:)
       integer, allocatable :: ckey(:), t(:)
       logical, allocatable :: tl(:)
+      real(dp), allocatable :: tw(:)
       integer :: a, k, n
 
       n = this%nseg
       allocate (ord(n), ckey(n), t(n), tl(n))
       do a = 1, n
          ckey(a) = this%class_key(a, radix)
+         ! The weight (an orbit size, halved on a diagonal bin pair) is a
+         ! multiple of 1/2 below 9, so twice it is a small integer. The Fock
+         ! launcher no longer splits a run on it -- the kernels read it per
+         ! segment -- but keeping it in the key costs nothing and keeps each
+         ! weight contiguous, which is what makes a launch's slice of sW a
+         ! contiguous range.
+         if (present(by_mask)) then
+            if (by_mask) ckey(a) = ckey(a)*2 + this%sM(a)
+         end if
+         if (allocated(this%sW)) ckey(a) = ckey(a)*32 + nint(2.0_dp*this%sW(a))
       end do
       ! Stable like the insertion sort it replaces: equal keys keep segment
       ! order, so the plan is bit-identical.
@@ -934,8 +1422,14 @@ contains
       this%sLC = t
       t = this%sLD(ord)
       this%sLD = t
+      t = this%sM(ord)
+      this%sM = t
       tl = this%sD(ord)
       this%sD = tl
+      if (allocated(this%sW)) then
+         tw = this%sW(ord)
+         this%sW = tw
+      end if
       this%sOff(1) = 0
       do k = 1, n
          if (this%sD(k)) then
@@ -953,14 +1447,241 @@ contains
       res = ((this%sLA(seg)*radix + this%sLB(seg))*radix + this%sLC(seg))*radix + this%sLD(seg)
    end function bins_plan_class_key
 
+   pure integer function ab_key(b, k) result(res)
+      !! Bin k's (la, lb) as one orderable integer, so that comparing two
+      !! bins' keys is the lexicographic comparison of their (la, lb).
+      type(pair_bins_t), intent(in) :: b
+      integer, intent(in) :: k
+      res = b%bin_la(k)*(LMAX + 1) + b%bin_lb(k)
+   end function ab_key
+
+   pure integer function pair_mask(b, ka, kb) result(m)
+      !! 1 when bins ka and kb are both masked: their bin pair has the dead z axis.
+      type(pair_bins_t), intent(in) :: b
+      integer, intent(in) :: ka, kb
+      m = 0
+      if (iand(b%bin_g(ka), BIN_G_MASKED) /= 0 .and. iand(b%bin_g(kb), BIN_G_MASKED) /= 0) m = 1
+   end function pair_mask
+
+   pure logical function bins_any_masked(b) result(res)
+      !! Whether any live bin is parity-masked (BIN_G_MASKED). A plan over such
+      !! bins carries a per-segment mask (sM) that trc_bin_tiles' device
+      !! planner does not produce, so trc_bin_tiles builds it by the host walk.
+      type(pair_bins_t), intent(in) :: b
+      integer :: i
+      res = .false.
+      if (.not. allocated(b%bin_g)) return
+      do i = 1, b%nlive
+         if (iand(b%bin_g(b%live(i)), BIN_G_MASKED) /= 0) then
+            res = .true.
+            return
+         end if
+      end do
+   end function bins_any_masked
+
    subroutine bins_plan_release(this)
       class(trc_bin_plan_t), intent(inout) :: this
       if (allocated(this%sA)) deallocate (this%sA, this%sNB, this%sOA, this%sOB, this%sPA, this%sPB, &
                                           this%sSA, this%sSB, &
-                                          this%sD, this%sLA, this%sLB, this%sLC, this%sLD, this%sOff)
+                                          this%sD, this%sLA, this%sLB, this%sLC, this%sLD, this%sM, this%sOff)
+      if (allocated(this%sW)) deallocate (this%sW)
       this%nseg = 0
       this%nwork = 0
    end subroutine bins_plan_release
+
+
+   !
+   ! The skeleton launch plan.
+   !
+   ! The bins are closed under the group, so for two different bins A and B
+   ! the sum over A x B of a function f with f(g p, g q) = R f(p, q) R^T is
+   ! the sum over the representatives p of A, weighted by their orbit size, of
+   ! the sum over all of B -- and the same with the roles exchanged, so the
+   ! side with fewer quartets is cut. A bin against itself is the rectangle
+   ! reps(A) x A with an extra 1/2 (the triangle's own factor, which no
+   ! rectangle carries; the kernels apply the ab = cd 1/2 only on a
+   ! triangle). A segment holds the representatives of one orbit size, so its
+   ! weight is one number, kept in sW and applied by the kernels per segment.
+   ! The result, symmetrized once, is the full matrix.
+   !
+   subroutine bins_plan_build_skeleton(this, b, orb, thresh, bin_pbase, canonical)
+      class(trc_bin_plan_t), intent(inout) :: this
+      type(pair_bins_t), intent(in) :: b
+      type(trc_bin_orbits_t), intent(in) :: orb
+      real(dp), intent(in) :: thresh
+      integer,  intent(in) :: bin_pbase(:)
+      logical,  intent(in), optional :: canonical
+      !! Emit each segment ANGULAR-MOMENTUM CANONICALLY, (sLA, sLB) >=
+      !! (sLC, sLD), whichever side was cut (bins_plan_emit's own `canon`).
+      !! The GRADIENT asks for this: above d its class filter builds no
+      !! ordering with (lc, ld) > (la, lb), and the cheaper-side cut swaps
+      !! bra and ket by design on a quarter to a half of all skeleton
+      !! segments. Default false,
+      !! which is the Fock skeleton plan this was written for: its kernels
+      !! exist in both orderings and canonicalising would only move its
+      !! accumulation order.
+      integer :: nseg
+      logical :: canon
+
+      canon = .false.
+      if (present(canonical)) canon = canonical
+      call this%release()
+      nseg = 0
+      call skeleton_walk(this, b, orb, thresh, bin_pbase, canon, .false., nseg)
+      call bins_plan_allocate(this, nseg, .true.)
+      nseg = 0
+      call skeleton_walk(this, b, orb, thresh, bin_pbase, canon, .true., nseg)
+      this%nseg = nseg
+      this%nwork = this%sOff(nseg + 1)
+   end subroutine bins_plan_build_skeleton
+
+   subroutine skeleton_walk(plan, b, orb, thresh, bin_pbase, canon, fill, nseg)
+      !! Count the segments of the skeleton plan, or (fill) write them.
+      type(trc_bin_plan_t), intent(inout) :: plan
+      type(pair_bins_t), intent(in) :: b
+      type(trc_bin_orbits_t), intent(in) :: orb
+      real(dp), intent(in) :: thresh
+      integer, intent(in) :: bin_pbase(:)
+      logical, intent(in) :: canon
+      logical, intent(in) :: fill
+      integer, intent(inout) :: nseg
+      integer :: ia, ib, ka, kb, kx, ky, smax_keep, r
+      real(dp) :: half
+
+      smax_keep = int(-log10(thresh))*b%sres
+      do ia = 1, b%nlive
+         ka = b%live(ia)
+         do ib = 1, ia
+            kb = b%live(ib)
+            if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
+            if (b%bin_cnt(ka) == 0 .or. b%bin_cnt(kb) == 0) cycle
+            kx = ka
+            ky = kb
+            if (.not. bins_skel_cut_first(b, orb, ka, kb, canon)) then
+               kx = kb
+               ky = ka
+            end if
+            half = merge(0.5_dp, 1.0_dp, ka == kb)
+            do r = orb%sec0(kx) + 1, orb%sec0(kx + 1)
+               call bins_plan_emit(plan, b, bin_pbase, fill, nseg, &
+                                   trc_bin_segment_t(kx, ky, orb%sec_beg(r), orb%sec_cnt(r), 0, b%bin_cnt(ky), &
+                                                     .false., half*real(orb%sec_w(r), dp)), canon)
+            end do
+         end do
+      end do
+   end subroutine skeleton_walk
+
+   logical function bins_skel_cut_first(b, orb, ka, kb, canon) result(cuta)
+      !! Whether the bin pair {ka, kb} is cut on ka (the bra of the full
+      !! plan's segment) rather than on kb: the side whose representatives
+      !! times the other bin is smaller, ka on a tie. Always ka for a bin
+      !! against itself, and for any bin pair with a shell above the highest
+      !! angular momentum that has a kernel in every ordering
+      !! (SKEL_SWAP_LMAX) -- unless `canon`, in which case the emitted
+      !! descriptor is reordered by angular momentum anyway and the cut side
+      !! no longer decides which kernel runs, so the limit does not apply.
+      type(pair_bins_t), intent(in) :: b
+      type(trc_bin_orbits_t), intent(in) :: orb
+      integer, intent(in) :: ka, kb
+      logical, intent(in), optional :: canon
+      logical :: cnon
+      cnon = .false.
+      if (present(canon)) cnon = canon
+      cuta = .true.
+      if (ka == kb) return
+      if (.not. cnon .and. max(b%bin_la(ka), b%bin_la(kb)) > SKEL_SWAP_LMAX) return
+      cuta = int(orb%bin_nrep(ka), int64)*int(b%bin_cnt(kb), int64) &
+             <= int(b%bin_cnt(ka), int64)*int(orb%bin_nrep(kb), int64)
+   end function bins_skel_cut_first
+
+   subroutine bins_plan_allocate(plan, nseg, weighted)
+      !! Allocate the descriptors of `nseg` segments (sOff(1) = 0), and the
+      !! weights if `weighted`.
+      type(trc_bin_plan_t), intent(inout) :: plan
+      integer, intent(in) :: nseg
+      logical, intent(in) :: weighted
+      allocate (plan%sA(nseg), plan%sNB(nseg), plan%sOA(nseg), plan%sOB(nseg))
+      allocate (plan%sPA(nseg), plan%sPB(nseg), plan%sSA(nseg), plan%sSB(nseg), plan%sD(nseg))
+      allocate (plan%sLA(nseg), plan%sLB(nseg), plan%sLC(nseg), plan%sLD(nseg), plan%sM(nseg))
+      allocate (plan%sOff(nseg + 1))
+      plan%sOff(1) = 0
+      if (weighted) allocate (plan%sW(nseg))
+   end subroutine bins_plan_allocate
+
+   subroutine bins_plan_emit(plan, b, bin_pbase, fill, nseg, seg, canon)
+      !! Count one segment, or (fill) write it as segment nseg: pairs
+      !! oa+1..oa+na of bin ka against ob+1..ob+nb of bin kb, a triangle when
+      !! diag, with weight w when the plan has weights.
+      type(trc_bin_plan_t), intent(inout) :: plan
+      type(pair_bins_t), intent(in) :: b
+      integer, intent(in) :: bin_pbase(:)
+      logical, intent(in) :: fill
+      integer, intent(inout) :: nseg
+      type(trc_bin_segment_t), intent(in) :: seg
+      !! The segment's bins, ranges, triangle flag and weight.
+      logical, intent(in) :: canon
+      !! Write the two sides ANGULAR-MOMENTUM CANONICALLY, so that
+      !! (sLA, sLB) >= (sLC, sLD) whatever the caller's order was. Which side
+      !! is CUT and which side is written as the bra are independent, because
+      !! the kernels take the bra and the ket bin strides separately (sSA,
+      !! sSB), so a sub-range is expressible on either side, and because `w`
+      !! is one number for the whole segment and does not care which side the
+      !! representatives sit on. The quartet set, and so the work-item count,
+      !! is unchanged: only which half of the descriptor the data goes in.
+      integer :: ja, jb, ja_o, ja_n, jb_o, jb_n
+      integer(int64) :: nt
+      logical :: diag
+
+      nseg = nseg + 1
+      if (.not. fill) return
+      diag = seg%diag
+      ja = seg%ka
+      jb = seg%kb
+      ja_o = seg%oa
+      ja_n = seg%na
+      jb_o = seg%ob
+      jb_n = seg%nb
+      ! A triangle is one bin against itself, so there is nothing to order.
+      if (canon .and. .not. diag) then
+         if (ab_key(b, seg%kb) > ab_key(b, seg%ka)) then
+            ja = seg%kb
+            jb = seg%ka
+            ja_o = seg%ob
+            ja_n = seg%nb
+            jb_o = seg%oa
+            jb_n = seg%na
+         end if
+      end if
+      plan%sA(nseg) = ja_n
+      plan%sNB(nseg) = jb_n
+      plan%sOA(nseg) = b%bin_off(ja) + ja_o
+      plan%sOB(nseg) = b%bin_off(jb) + jb_o
+      plan%sPA(nseg) = bin_pbase(ja) + ja_o
+      plan%sPB(nseg) = bin_pbase(jb) + jb_o
+      plan%sSA(nseg) = b%bin_cnt(ja)
+      plan%sSB(nseg) = b%bin_cnt(jb)
+      plan%sD(nseg) = diag
+      plan%sLA(nseg) = b%bin_la(ja)
+      plan%sLB(nseg) = b%bin_lb(ja)
+      plan%sLC(nseg) = b%bin_la(jb)
+      plan%sLD(nseg) = b%bin_lb(jb)
+      plan%sM(nseg) = pair_mask(b, ja, jb)
+      if (allocated(plan%sW)) plan%sW(nseg) = seg%w
+      if (diag) then
+         nt = int(ja_n, int64)*int(ja_n + 1, int64)/2
+      else
+         nt = int(ja_n, int64)*int(jb_n, int64)
+      end if
+      ! The kernels take their within-segment index as a default integer, so
+      ! a segment must fit in one. Widening it would cost registers in the
+      ! hot kernel, which are the binding constraint; instead
+      ! bins_build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
+      ! (split_large_bins), so no segment exceeds 2**30. This guard is the
+      ! backstop if that cap is ever raised.
+      if (nt > 2147483000_int64) error stop &
+         "terco: bin-pair segment exceeds a default integer; widen the kernels' t"
+      plan%sOff(nseg + 1) = plan%sOff(nseg) + nt
+   end subroutine bins_plan_emit
 
    !
    ! Density screen at bin-pair granularity.

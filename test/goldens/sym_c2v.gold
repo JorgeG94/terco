@@ -1,0 +1,9 @@
+# terco golden v1
+# case: sym_c2v
+# from: gfortran-15 build build at 94d4471, by test/goldens/regen_goldens.py
+E_water_rhf -7.6026772053371928e+01
+E_formaldehyde_rhf -1.1386557512001666e+02
+E_ch2cl2_rhf -9.5798381638864794e+02
+E_nh2_uhf -5.5567090596896769e+01
+E_water_b3lyp -7.6420368891662122e+01
+END
