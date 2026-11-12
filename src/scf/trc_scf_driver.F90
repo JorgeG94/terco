@@ -304,7 +304,7 @@ contains
       logical :: shifted, mom_active
       !! F carried the level shift this iteration; MOM follows the density yet (`scf_driver_mom_active`).
       type(scf_shift_guard_t) :: shift_guard
-      integer :: orb_mode, nswap_s
+      integer :: orb_mode
       integer :: mom_swaps(2)   !! orbitals MOM occupied above aufbau, per spin
       type(error_t) :: err
       type(scf_energies_t) :: scf_energies
@@ -666,6 +666,8 @@ contains
                       scf_context%smat, scf_result%dmat, scf_state%w1, scf_state%w2, scf_state%fock)
             end if
             orb_mode = scf_driver_occupation_mode(scf_options, mom_active)
+            scf_state%mom_now = orb_mode == ORB_MOM
+            scf_state%mom_swaps = 0
             ! --- diagonalise, per spin, and the new density ---------------------
             mom_swaps = 0
             if (gdm_mode == GDM_ITERATE) then
@@ -675,12 +677,10 @@ contains
                   if (sym_on) then
                      ! MOM and GDM are refused with symmetry at the top of this routine.
                      call scf_driver_sym_spin_step(la, scf_config, scf_state, scf_result, sym, s, info_s)
-                     nswap_s = 0
                   else
-                     call scf_driver_spin_step(la, scf_context, scf_config, scf_state, scf_result, scf_options, s, &
-                                               orb_mode == ORB_MOM, nswap_s, info_s)
+                     call scf_driver_spin_step(la, scf_context, scf_config, scf_state, scf_result, scf_options, s, info_s)
                   end if
-                  mom_swaps(s) = nswap_s
+                  mom_swaps(s) = scf_state%mom_swaps(s)
                   ! The FIRST failing spin's own info -- scf_driver_note_failure's own header.
                   call scf_driver_note_failure(info_s, diag_failed, diag_info)
                end do
@@ -1016,14 +1016,14 @@ contains
       call la%density(t, nfrac, 1.0_dp, d_s)
    end subroutine scf_driver_fractional_density
 
-   subroutine scf_driver_spin_step(la, scf_context, scf_config, scf_state, scf_result, scf_options, spin, mom, nswap, &
-                                   info)
+   subroutine scf_driver_spin_step(la, scf_context, scf_config, scf_state, scf_result, scf_options, spin, info)
       !! One spin's step from its Fock matrix to its density: the eigenproblem
       !! (`scf_driver_diagonalize`), then D = occ C(:,1:nocc) C(:,1:nocc)^T,
       !! or, with fractional occupations, `scf_driver_fractional_density`.
-      !! With `mom` the occupied columns are first chosen by overlap with the
-      !! density `scf_result%dmat` still holds, the previous one
-      !! (`scf_driver_mom_weights`); `nswap` counts those aufbau would skip.
+      !! With `scf_state%mom_now` the occupied columns are first chosen by
+      !! overlap with the density `scf_result%dmat` still holds, the previous
+      !! one (`scf_driver_mom_weights`); `scf_state%mom_swaps(spin)` counts
+      !! those aufbau would skip.
       !! Everything is on the device already. `info` as in the former.
       type(trc_linalg_t), intent(inout) :: la
       type(scf_ctx_t), intent(in) :: scf_context
@@ -1032,21 +1032,19 @@ contains
       type(trc_scf_result_t), intent(inout) :: scf_result
       type(trc_scf_options_t), intent(in) :: scf_options
       integer, intent(in) :: spin
-      logical, intent(in) :: mom
-      integer, intent(out) :: nswap
       integer, intent(out) :: info
       integer :: nao, nocc
-      nswap = 0
+      scf_state%mom_swaps(spin) = 0
       nao = scf_context%nao
       nocc = scf_config%nocc(spin)
       call scf_driver_diagonalize(la, scf_context, scf_state%fock(:, :, spin), scf_state%w1, scf_state%w2, &
                                   scf_result%eps(:, spin), scf_result%cmo(:, :, spin), info)
       if (info /= 0) return
-      if (mom .and. nocc > 0 .and. nocc < nao) then
+      if (scf_state%mom_now .and. nocc > 0 .and. nocc < nao) then
          call scf_driver_mom_weights(la, nao, scf_context%smat, scf_result%dmat(:, :, spin), scf_result%cmo(:, :, spin), &
                                      scf_state%w1, scf_state%w2, scf_state%ofrac)
          call scf_driver_mom_permute(nao, nocc, scf_state%ofrac, scf_result%cmo(:, :, spin), scf_result%eps(:, spin), &
-                                     scf_state%w1, nswap)
+                                     scf_state%w1, scf_state%mom_swaps(spin))
       end if
       if (scf_options%frac_occ) then
          ! `ofrac` is an explicit argument (not read off `scf_state` by the

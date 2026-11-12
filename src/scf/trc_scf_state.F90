@@ -87,6 +87,14 @@ module trc_scf_state
       !! the driver once per run, after its size rule, before the first
       !! build; kept here, not as an argument, because it is the run's
       !! state like `incr_on` and not one build's own input.
+      logical :: mom_now = .false.
+      !! This iteration occupies by maximum overlap with the previous density
+      !! (`trc_scf_driver`'s `scf_driver_spin_step`): set by the driver each
+      !! iteration from the MOM gate, kept here like `skeleton` rather than
+      !! passed, as the iteration's state.
+      integer :: mom_swaps(2) = 0
+      !! Per spin, the occupied orbitals this iteration's MOM step chose that
+      !! aufbau would have left empty; 0 without MOM.
    contains
       procedure :: alloc => scf_state_alloc
       procedure :: to_device => scf_state_to_device
