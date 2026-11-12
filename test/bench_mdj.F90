@@ -10,7 +10,7 @@ program bench_mdj
    use pic_types, only: dp
    use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -71,14 +71,14 @@ program bench_mdj
    call eri%coulomb(bas, d, jmd)
    print '(a,f9.4,a)', "md first call (incl. build) ", tm%get_elapsed_time(), " s"
    call tm%start()
-   call eri%fock(bas, d, jref, j_scale=1.0_dp, k_scale=0.0_dp)
+   call eri%fock(bas, d, jref, opts=trc_fock_options_t(j_scale=1.0_dp, k_scale=0.0_dp))
    print '(a,f9.4,a)', "fock J first call           ", tm%get_elapsed_time(), " s"
 
    t_fock = huge(1.0_dp)
    t_md = huge(1.0_dp)
    do k = 1, nrep
       call tm%start()
-      call eri%fock(bas, d, jref, j_scale=1.0_dp, k_scale=0.0_dp)
+      call eri%fock(bas, d, jref, opts=trc_fock_options_t(j_scale=1.0_dp, k_scale=0.0_dp))
       t_fock = min(t_fock, tm%get_elapsed_time())
       call tm%start()
       call eri%coulomb(bas, d, jmd)
@@ -96,7 +96,7 @@ program bench_mdj
       call eri%fock(bas, d, g)
       t_jk = min(t_jk, tm%get_elapsed_time())
       call tm%start()
-      call eri%fock(bas, d, g, j_scale=0.0_dp, k_scale=1.0_dp)
+      call eri%fock(bas, d, g, opts=trc_fock_options_t(j_scale=0.0_dp, k_scale=1.0_dp))
       t_k = min(t_k, tm%get_elapsed_time())
    end do
    print '(a,f9.4,a,f9.4,a)', "best of reps: fock J+K ", t_jk, " s   fock K only ", t_k, " s"

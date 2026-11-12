@@ -20,7 +20,7 @@ module check_schwarz_rys_vs_hgp_suite
    use trc_rys_select, only: rys_select_tables_init
    use trc_api, only: trc_basis_t
    use trc_basis_json, only: trc_basis_from_json
-   use trc_hgp, only: hgp_build_pairs
+   use trc_hgp, only: hgp_build_pairs, trc_pair_prune_t
    use trc_eri_data, only: trc_shell_pairs_t
    use trc_screen, only: screen_schwarz_bounds_hgp, screen_schwarz_bounds_rys
    use trc_error, only: error_t
@@ -92,6 +92,7 @@ contains
       real(dp), allocatable :: at_r(:, :)
       real(dp), allocatable :: one(:)
       type(trc_shell_pairs_t) :: pairs
+      type(trc_pair_prune_t) :: prune
       real(dp), allocatable :: q_hgp(:), q_rys(:)
       integer :: natm, npair, n
       real(dp) :: worst_abs, worst_rel, qmax, d
@@ -109,7 +110,11 @@ contains
 
       allocate (one(b%nshell)); one = 1.0_dp
       pairs%sh_l = b%sh_l
-      call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, b%sh_c, 1.0e-30_dp, pairs)
+      ! Component by component: nvfortran 26.5 has an internal compiler
+      ! error (search_arr) on this structure constructor with a basis-array argument.
+      prune%camp = b%sh_c
+      prune%cut = 1.0e-30_dp
+      call hgp_build_pairs(b%sh_np, b%sh_e, b%sh_c, b%sh_r, one, prune, pairs)
 
       npair = b%nshell*(b%nshell + 1)/2
       allocate (q_hgp(npair), q_rys(npair))

@@ -1489,7 +1489,13 @@ def _untile(src):
     the Fock kernels take the bin's pair count sSA/sSB as the stride of the
     bin-interleaved primitive table, apart from the segment's extent sA/sNB.
     A gradient plan never tiles -- every segment is a whole bin, stride and
-    extent equal -- so the gradient kernels keep the one pair of arrays."""
+    extent equal -- so the gradient kernels keep the one pair of arrays.
+
+    The per-segment orbit weight `sW` goes the same way: it exists for the
+    skeleton Fock plan (trc_bins.F90's bins_plan_build_skeleton), the
+    gradient has no skeleton path and `grad_bins` builds an unweighted plan,
+    so threading the array through would be a dummy no gradient kernel
+    reads."""
     decl = (
         "      integer,  intent(in)    :: sSA(nseg), sSB(nseg)\n"
         "      !! Pairs in the whole bra / ket BIN: the stride of that interleave.\n"
@@ -1498,12 +1504,20 @@ def _untile(src):
         "      !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.\n")
     assert decl in src, "gen_perclass.py's sSA/sSB declaration changed"
     src = src.replace(decl, "")
-    src = src.replace("sPA, sPB, sSA, sSB, sD", "sPA, sPB, sD")
+    src, n = re.subn(r"      real\(dp\), intent\(in\)    :: sW\(nseg\)\n(      !!.*\n)+",
+                     "", src)
+    assert n == 2, n
+    src = src.replace("sPA, sPB, sSA, sSB, sD, sW", "sPA, sPB, sD")
+    # The Fock digestion, which this generator replaces wholesale, reads the
+    # weight into its degeneracy factor: put the unweighted value back so that
+    # no surviving text names a dummy this file no longer has.
+    src = src.replace("wq = sW(seg)", "wq = 1.0_dp")
     src = src.replace("sSA(seg)", "sA(seg)").replace("sSB(seg)", "sNB(seg)")
     src = src.replace(
         "      !! Primitive base of the bra / ket pairs, into qp_* below -- the\n",
         "      !! Primitive base of the bra bin / ket bin, into qp_* below -- the\n")
     assert "sSA" not in src and "sSB" not in src
+    assert "sW" not in src, "an sW reference survived the splice"
     return src
 
 

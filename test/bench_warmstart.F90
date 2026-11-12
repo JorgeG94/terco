@@ -14,7 +14,7 @@ program bench_warmstart
    use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
-   use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+   use trc_scf_driver, only: trc_scf_options_t, trc_scf_guess_t, trc_scf_result_t, trc_scf_run
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
    implicit none
@@ -69,7 +69,7 @@ contains
       call b1%to_device()
 
       call trc_scf_run(b1, nalpha, nbeta, opts, res_density, dguess=d0)
-      call trc_scf_run(b1, nalpha, nbeta, opts, res_projected, cmo_project=ref%cmo)
+      call trc_scf_run(b1, nalpha, nbeta, opts, res_projected, guess=trc_scf_guess_t(orbitals=ref%cmo))
 
       print '(a6,a,f10.3,a,i0,a,i0)', func, '    ', h, repeat(' ', 20), res_density%iterations, &
          repeat(' ', 20), res_projected%iterations

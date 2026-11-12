@@ -19,7 +19,7 @@ module check_exchange_screen_suite
    use pic_types, only: dp, int64
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_bin_tiles, only: bin_tiles_set_enabled
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
@@ -90,7 +90,7 @@ contains
       real(dp), intent(in) :: jfac, kfac
       integer(int64), intent(out) :: nkept, nwork
       !$acc enter data copyin(d) create(g)
-      call eri%fock_resident(bas, d, g, k_scale=kfac, j_scale=jfac, count_survivors=.true.)
+      call eri%fock_resident(bas, d, g, opts=trc_fock_options_t(k_scale=kfac, j_scale=jfac, count_survivors=.true.))
       !$acc update self(g)
       !$acc exit data delete(d, g)
       nkept = eri%nkept

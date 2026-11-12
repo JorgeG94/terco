@@ -1,0 +1,8 @@
+6
+Ethylene planar, point group D2h: r(CC) 1.339, r(CH) 1.085 A, angle HCH 117.6 deg (approximate experimental values; NIST CCCBDB, recalled, not looked up again), built analytically (not optimized); then rotated by Euler angles (zxz) 37, 52, -71 degrees and shifted by (0.40, -0.25, 0.15) A so that the standard frame is not the input frame
+C      0.8086216029    -0.4300750043    -0.3488302602
+C     -0.0086216029    -0.0699249957     0.6488302602
+H      1.7405258305     0.0954094470    -0.5295112003
+H      0.5628102035    -1.2579129486    -1.0057062712
+H      0.2371897965     0.7579129486     1.3057062712
+H     -0.9405258305    -0.5954094470     0.8295112003

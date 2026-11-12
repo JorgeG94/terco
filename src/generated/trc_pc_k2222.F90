@@ -26,7 +26,7 @@ module trc_pc_k2222
    real(dp), parameter :: TWO_PI_2_5 = 34.986836655249725_dp
 
 contains
-   subroutine pcs2222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+   subroutine pcs2222(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -48,6 +48,23 @@ contains
       !! unless the launcher cut the bin into exchange tiles
       !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.
       logical,  intent(in)    :: sD(nseg)
+      real(dp), intent(in)    :: sW(nseg)
+      !! The segment's weight: on a skeleton plan the orbit size of its bra
+      !! pairs, halved on a diagonal bin pair, so a multiple of ONE HALF and
+      !! not an integer; 1 on every other plan. Read once per work item into
+      !! `wq` below, beside the quartet's own degeneracy factor.
+      !!
+      !! Per segment rather than per launch because the launcher used to fold
+      !! it into jfac/kfac, which forced one launch per (class, mask, weight):
+      !! 85 launches a Fock build for benzene against 33, and both the extra
+      !! kernel time (the launches are too small to fill the card) and
+      !! nvfortran's ~8 memsets, 4 H2D copies and 3 syncs per offload region
+      !! scale with that count.
+      !!
+      !! NOT folded into jfac/kfac here either: those two are SCREENED on
+      !! (`jfac /= 0.0_dp`, `kfac == 0.0_dp`) to pick the J-only, K-only and
+      !! combined branches, and a weight reaching those tests would decide a
+      !! branch. `wq` is on the data path only.
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
       real(dp), intent(in)    :: pcut
@@ -112,14 +129,14 @@ contains
       nr = 0
       if (g1 >= g0) nr = (g1 - g0)/nranks + 1
       do concurrent(i=1:nr)
-         call pcsi2222(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+         call pcsi2222(g0 + (i - 1)*nranks, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                        npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                        nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                        sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
       end do
    end subroutine pcs2222
 
-   pure subroutine pcsi2222(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+   pure subroutine pcsi2222(gt, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                       npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                       nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                       sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -139,6 +156,23 @@ contains
       !! unless the launcher cut the bin into exchange tiles
       !! (trc_bin_tiles), and sPA/sOA then point at the tile's first pair.
       logical,  intent(in)    :: sD(nseg)
+      real(dp), intent(in)    :: sW(nseg)
+      !! The segment's weight: on a skeleton plan the orbit size of its bra
+      !! pairs, halved on a diagonal bin pair, so a multiple of ONE HALF and
+      !! not an integer; 1 on every other plan. Read once per work item into
+      !! `wq` below, beside the quartet's own degeneracy factor.
+      !!
+      !! Per segment rather than per launch because the launcher used to fold
+      !! it into jfac/kfac, which forced one launch per (class, mask, weight):
+      !! 85 launches a Fock build for benzene against 33, and both the extra
+      !! kernel time (the launches are too small to fill the card) and
+      !! nvfortran's ~8 memsets, 4 H2D copies and 3 syncs per offload region
+      !! scale with that count.
+      !!
+      !! NOT folded into jfac/kfac here either: those two are SCREENED on
+      !! (`jfac /= 0.0_dp`, `kfac == 0.0_dp`) to pick the J-only, K-only and
+      !! combined branches, and a weight reaching those tests would decide a
+      !! branch. `wq` is on the data path only.
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
       real(dp), intent(in)    :: pcut
@@ -4046,7 +4080,97 @@ contains
                + 3.0_dp*oo2e*(v(350,0) - re*v(350,1)) &
                + 4.0_dp*oo2ze*v(685,1)
                cur = 0
-                  do x = 1, 1225
+                  do x = 145, 175
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 180, 210
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 215, 245
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 250, 280
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 285, 315
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 320, 350
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 355, 385
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 390, 420
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 425, 455
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 460, 490
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 495, 525
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 530, 560
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 565, 595
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 600, 630
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 635, 665
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 670, 700
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 705, 735
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 740, 770
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 775, 805
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 810, 840
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 845, 875
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 880, 910
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 915, 945
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 950, 980
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 985, 1015
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 1020, 1050
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 1055, 1085
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 1090, 1120
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 1125, 1155
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 1160, 1190
+                     g1(x) = g1(x) + v(x, cur)
+                  end do
+                  do x = 1195, 1225
                      g1(x) = g1(x) + v(x, cur)
                   end do
                end do
@@ -19951,9 +20075,16 @@ contains
          ! 54 loads and 54 atomics for (pp|pp) instead of 486.
          !
          ! The degeneracy factors are per-quartet, so they collapse into one
-         ! scalar applied as the components are consumed.
+         ! scalar applied as the components are consumed -- and so does the
+         ! segment's orbit weight, which the launcher used to fold into
+         ! jfac/kfac at the cost of one launch per weight (see the weight
+         ! dummy's own comment above).
+         ! Both are exact powers of two (the realised weight set is
+         ! (0.5, 1, 2, 4), the degeneracy halves), so scaling the integral
+         ! here instead of the two operator factors is bit-identical to the
+         ! old form, and the component loops below are untouched.
          !
-         wq = 1.0_dp
+         wq = sW(seg)
          if (.not. dij) wq = wq*0.5_dp
          if (.not. dkl) wq = wq*0.5_dp
          if (.not. dpq) wq = wq*0.5_dp

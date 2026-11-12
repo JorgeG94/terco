@@ -161,7 +161,11 @@ terco's changes are justified by measurement. When a PR claims a speedup:
   baseline, and show that the energies are unchanged;
 - per-class claims should come from nsys or ncu, not wall time alone;
 - be sceptical of a speedup that coincides with fewer quartets surviving
-  screening: that's an accuracy change, not a speedup.
+  screening: that's an accuracy change, not a speedup;
+- a performance-sensitive change (kernels, Fock/XC/DF/RI-MP2 drivers, SCF
+  loop) should show the table from `bench/regression/run.py` run on a GPU
+  (never GPU 0) against the golden of that architecture, in the PR body; a
+  golden changes only for an intended change the PR states.
 
 ## 6. Style
 

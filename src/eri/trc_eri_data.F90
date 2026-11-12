@@ -76,7 +76,41 @@ module trc_eri_data
       integer, allocatable :: rlo(:, :), rhi(:, :)
       !! (0:levels, ntile) each tile's reach at each level, this build;
       !! rlo > rhi is empty
+      integer, allocatable :: brep(:)
+      !! (nbin) skeleton bins only: how many of a bin's leading tiles lie in
+      !! the representative range (the tiles that can be a bra)
+      integer, allocatable :: tw(:)
+      !! (ntile) skeleton bins only: the orbit size of the tile's pairs when
+      !! it is a representative tile, 0 otherwise. A tile never straddles two
+      !! weights.
    end type trc_bin_tiles_t
+
+   type, public :: trc_bin_orbits_t
+      !! The pair orbits of the skeleton Fock build, as the bins hold them
+      !! (trc_bins, host only, never mapped to a device). Present only for an
+      !! object built with a point group; `built` is false otherwise and then
+      !! nothing here is allocated.
+      !!
+      !! Every bin is closed under the group (it holds whole orbits), its
+      !! leading `bin_nrep(k)` pairs are the orbit representatives in
+      !! sections of equal orbit size, and the rest are the other members.
+      logical :: built = .false.
+      integer :: nop = 1
+      !! Operations of the group.
+      integer, allocatable :: shmap(:, :)
+      !! (nshell, nop) the shell each operation sends a shell of the working
+      !! basis to (trc_sym_pairs).
+      integer, allocatable :: ops(:)
+      !! (nop) sign mask of each operation (trc_sym_group: bit 0 flips x, bit 1
+      !! y, bit 2 z), in the order of the columns of `shmap`. The unique-pair
+      !! build rebuilds an image pair from its representative with them.
+      integer, allocatable :: bin_nrep(:)
+      !! (nbin) representatives at the start of bin k.
+      integer, allocatable :: sec0(:)
+      !! (nbin + 1) the representative sections of bin k are sec0(k)+1 .. sec0(k+1).
+      integer, allocatable :: sec_beg(:), sec_cnt(:), sec_w(:)
+      !! (nsec) first pair - 1 within its bin, pairs, and orbit size of a section.
+   end type trc_bin_orbits_t
 
    type, public :: trc_pair_quartets_t
       !! The primitive pairs again, laid out bin by bin and interleaved by
@@ -101,6 +135,26 @@ module trc_eri_data
       !! The same bins cut into exchange tiles (trc_bin_tiles), host only:
       !! like the slots above it follows the pair order inside the bins, and
       !! is rebuilt with them.
+      integer :: axperm(3) = [1, 2, 3]
+      !! The engine-internal frame of parity skipping: the kernels' axis k is
+      !! the molecule's axis axperm(k), so
+      !! that the most common dead axis is the kernels' z. Not applied to the
+      !! arrays above (the gradient kernels read them in the standard frame):
+      !! the launcher hands the kernels the coordinate arrays in this order,
+      !! and permutes the density in and the result out through `ao_perm`.
+      !! The identity unless `build` was given a point group.
+      integer, allocatable :: ao_perm(:), ao_perm_inv(:)
+      !! (nao) of the working basis, allocated only when `axperm` is not the
+      !! identity: ao_perm(i') is the AO of the standard frame that AO i' of
+      !! the kernels' frame is, so D'(i', j') = D(ao_perm(i'), ao_perm(j')).
+      !! `ao_perm_inv` is its inverse. Device-resident like the arrays above.
+      type(trc_bin_orbits_t) :: orb
+      !! The pair orbits of the bins when they were built closed under a point
+      !! group (`orb%built`): the representatives come first in each bin, the
+      !! slots of an image pair are filled from its representative, and the
+      !! skeleton Fock build is available. Host only. Kept here, with the
+      !! other tables derived from the orbits (`axperm`, `ao_perm`), so the
+      !! launcher reads them from one argument.
    end type trc_pair_quartets_t
 
    type, public :: trc_bin_launch_t
@@ -125,6 +179,11 @@ module trc_eri_data
       !! Bin-level density screen (not armed; see density_reject in trc_bins).
       logical :: nosym = .false.
       !! The density is not symmetric: route through the enumerated kernel.
+      logical :: skeleton = .false.
+      !! Build the SKELETON matrix: only the orbit representatives of the
+      !! bra side are launched, weighted by their orbit size, so the result
+      !! is G_skel and must be symmetrized. Needs the
+      !! bins' orbits; the density must be invariant under the group.
       logical :: count_kept = .false.
       !! Count the quartets that survive both screens, into `nkept`, and
       !! build nothing: binkernel_fock_bins returns after the count.
@@ -135,6 +194,31 @@ module trc_eri_data
       !! Out: work items (quartets before the in-kernel screens).
       integer(int64) :: nkept = 0
       !! Out: quartets that survived, when `count_kept` asked for it.
+      integer(int64) :: nwork_masked = 0
+      !! Out: work items of the segments whose quartets all have the dead z
+      !! axis of the kernels' frame (parity skipping), launched or not as a
+      !! masked variant.
+      integer(int64) :: nwork_variant = 0
+      !! Out: work items that ran in a masked variant kernel. The difference
+      !! to `nwork_masked` is the work of classes without a variant.
+      integer :: nlaunch_variant = 0
+      !! Out: launches that went to a masked variant.
+      real(dp) :: ops_base = 0.0_dp, ops_masked = 0.0_dp
+      !! Out: the modelled operations (kernel text, per primitive quartet, times
+      !! the work items) of the launches that went to a masked variant, as the
+      !! unmasked kernel of the class would have cost and as the variant costs:
+      !! the work the masks drop is 1 - ops_masked/ops_base.
+      real(dp) :: cost_masked = 0.0_dp, cost_variant = 0.0_dp
+      !! Out: the same modelled operations of the UNMASKED kernel, over all the
+      !! masked launches and over the part of them a variant took. Their ratio
+      !! is how much of the masked work the variant set reaches, which
+      !! `nwork_variant / nwork_masked` overstates badly: a work item of
+      !! (ss|ss) is 2 operations and one of (dd|dd) is 63644, so counting work
+      !! items read 67.7-72.0% where this reads 47.2-54.4% on the same three
+      !! planar molecules (gen_perclass.py's PARITY_RYS_TOP comment has the
+      !! per-class table). Weighted with HGP's model for every class, the
+      !! Rys-routed ones included, so it is a relative measure of which classes
+      !! are covered and not a prediction of either kernel's time.
    end type trc_bin_launch_t
 
 end module trc_eri_data

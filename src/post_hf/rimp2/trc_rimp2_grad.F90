@@ -98,7 +98,7 @@ module trc_rimp2_grad
    use pic_logger, only: global_logger
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_1e_gradient
-   use trc_eri, only: trc_eri_t, eri_lmax_refusal
+   use trc_eri, only: trc_eri_t, trc_fock_options_t, eri_lmax_refusal
    use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange
    use trc_linalg, only: trc_linalg_t
    use trc_sph, only: sph_mo_to_cart
@@ -785,7 +785,7 @@ contains
       real(dp), allocatable :: g(:, :), vresp(:, :)
       allocate (g(w%n, w%n))
       !$acc enter data create(g)
-      call eri%fock_resident(b, d, g, k_scale=w%exx, j_scale=1.0_dp, density_screen=.false.)
+      call eri%fock_resident(b, d, g, opts=trc_fock_options_t(k_scale=w%exx, j_scale=1.0_dp, density_screen=.false.))
       if (w%kohn_sham) then
          allocate (vresp(w%n, w%n))
          !$acc enter data create(vresp)

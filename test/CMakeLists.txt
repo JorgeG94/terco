@@ -211,6 +211,248 @@ set_tests_properties(terco/check_rccsd_triples PROPERTIES SKIP_REGULAR_EXPRESSIO
 terco_add_check(check_capi_rccsd check_capi_rccsd.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_capi_rccsd PRIVATE test-drive::test-drive terco_rccsd_ref_energies terco_c_interfaces)
 set_tests_properties(terco/check_capi_rccsd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+# The Abelian point-group tables (trc_sym_group): closure, character
+# orthogonality, irrep names and order against pyscf 2.14.0's param.py.
+terco_add_check(check_sym_group check_sym_group.F90)
+target_link_libraries(check_sym_group PRIVATE test-drive::test-drive)
+
+# Point-group detection, orientation and symmetrization (trc_sym_geom): water,
+# HOCl and CH2Cl2 against the frames pyscf 2.14.0 picks (sym_geom_frames.ref),
+# a requested subgroup on tilted axes, noisy tops, invariance, perm.
+terco_add_check(check_sym_geom check_sym_geom.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_geom PRIVATE test-drive::test-drive)
+
+# AO signed permutations and the SO basis (trc_sym_ao): U^T U = I, U^T S U and
+# U^T H U block-diagonal, per-irrep SO counts against pyscf's mol.symm_orb
+# (pyscf_refs/sym_so_dims.ref), Cartesian and spherical, 6-31G* and cc-pVDZ,
+# and the uncontracted l = 0..3 set (skips itself below TERCO_LMAX=3).
+terco_add_check(check_sym_ao check_sym_ao.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_ao PRIVATE test-drive::test-drive)
+set_tests_properties(terco/check_sym_ao PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+set_target_properties(check_sym_ao PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ao)
+terco_add_check(check_sym_ao_f check_sym_ao.F90 NEEDS_BASIS NEEDS_PYSCF_REF ARGS f)
+target_link_libraries(check_sym_ao_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_ao_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ao_f)
+set_tests_properties(terco/check_sym_ao_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# The exact AO rotation between the standard frame and the user's input frame
+# (trc_sym_frame): a basis built on rotated atoms has S = D^T S_in D and the
+# same for T + V, Cartesian and spherical, every l up to this build's LMAX.
+terco_add_check(check_sym_frame check_sym_frame.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_frame PRIVATE test-drive::test-drive)
+
+# What a symmetry request means (trc_sym_run): subgroups, groups not supported
+# yet, the electrons-per-irrep text and the occupation helpers. No SCF.
+terco_add_check(check_sym_run check_sym_run.F90)
+target_link_libraries(check_sym_run PRIVATE test-drive::test-drive)
+
+# The SO-blocked SCF for Cs (trc_sym_scf, trc_scf_run's sym argument): the
+# central oracle (symmetry vs C1 on the symmetrised geometry; RHF, UHF,
+# B3LYP), irrep occupations and per-irrep orbital energies against pyscf
+# (pyscf_refs/sym_scf_cs.ref), gradient symmetrisation, fixed occupations.
+terco_add_check(check_sym_scf_cs check_sym_scf_cs.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_scf_cs PRIVATE test-drive::test-drive)
+
+# The SCF with the skeleton Fock build (S14.3): for every group, the skeleton
+# run against the C1 run and the S4 run (skeleton = .false.: full build, then
+# symmetrize), RHF/UHF/B3LYP/wB97X, incremental on and off, and the plan's
+# quartet counts (a silent fallback to the full build fails).
+terco_add_check(check_sym_scf_skeleton check_sym_scf_skeleton.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_scf_skeleton PRIVATE test-drive::test-drive)
+
+# Point group C2 (gauche H2O2 and N2H4: the rotation moves every atom): detection
+# and pyscf's frame, SALC block-diagonality, the central oracle (RHF, UHF,
+# B3LYP) and pyscf anchors (pyscf_refs/sym_c2.ref), gradient symmetrisation.
+terco_add_check(check_sym_c2 check_sym_c2.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_c2 PRIVATE test-drive::test-drive)
+# The point group C2v: frame and origin against pyscf, the SO basis
+# (pyscf_refs/sym_c2v_so_dims.ref), the central oracle for RHF/UHF/B3LYP on
+# water, formaldehyde, NH2 and nonplanar CH2Cl2 with the HOMO irrep, electrons
+# per irrep and orbital energies per irrep against pyscf (pyscf_refs/sym_c2v.ref),
+# the B1/B2 labels for a rotated input, gradient symmetrisation, fixed occupations.
+terco_add_check(check_sym_c2v check_sym_c2v.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_c2v PRIVATE test-drive::test-drive)
+# Requested subgroups: Cs and C2 requested on C2v molecules (water, nonplanar
+# and axis-aligned CH2Cl2, NH2): pyscf's frame, SO dimensions, irrep occupations
+# and orbital energies (pyscf_refs/sym_subgroup.ref), energy equal to C2v and C1.
+terco_add_check(check_sym_subgroup check_sym_subgroup.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_subgroup PRIVATE test-drive::test-drive)
+# The point group Ci (an inversion centre only): detection, the AO signs
+# (-1)^l, block-diagonal S and H, the central oracle for RHF, UHF and B3LYP,
+# and the gradient, on meso-CHFCl-CHFCl and N2H2F2 against pyscf
+# (pyscf_refs/sym_ci.ref). Registered twice, as check_sym_ao is: the _f one is
+# the uncontracted l = 0..3 set and skips below TERCO_LMAX=3.
+terco_add_check(check_sym_ci check_sym_ci.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_ci PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_ci PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ci)
+terco_add_check(check_sym_ci_f check_sym_ci.F90 NEEDS_BASIS NEEDS_PYSCF_REF ARGS f)
+target_link_libraries(check_sym_ci_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_ci_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_ci_f)
+set_tests_properties(terco/check_sym_ci_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# Shell-pair orbit tables of the skeleton Fock build (trc_sym_pairs), no integrals:
+# closure, partition, the sum-of-weights identity against the full quartet
+# count, orbit-invariant Q and dsh, orbit counts of the S13 prototype, on water,
+# B2H6, benzene and naphthalene. Registered twice, as check_sym_ci is (_f: the
+# uncontracted l = 0..3 set, skipped below TERCO_LMAX=3).
+terco_add_check(check_sym_pairs check_sym_pairs.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_pairs PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_pairs PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_pairs)
+terco_add_check(check_sym_pairs_f check_sym_pairs.F90 NEEDS_BASIS ARGS f)
+target_link_libraries(check_sym_pairs_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_pairs_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_pairs_f)
+set_tests_properties(terco/check_sym_pairs_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# The skeleton Fock build (S14.2): symmetrized skeleton G against the full G for
+# every enabled group, Cartesian and spherical, J/K/J+K, tiles on and off,
+# incremental, random and converged densities, pentacene/hexacene so the
+# exchange tiles cut, and the plan's quartet counts against the S13 prototype.
+# The quick variants rerun a small matrix under the engine routing (Rys / HGP),
+# an orbit-closed bin split (TRC_BIN_CAP) and the orbit-aware sort (TRC_BIN_SORT);
+# _f is the uncontracted l = 0..3 set (skipped below TERCO_LMAX=3).
+terco_add_check(check_sym_fock check_sym_fock.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_fock PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_fock PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_fock)
+foreach(_v hgp:TRC_RYS_CLASSES=none rys:TRC_RYS_CLASSES=all cap:TRC_BIN_CAP=40 sort:TRC_BIN_SORT=1)
+  string(REPLACE ":" ";" _p "${_v}")
+  list(GET _p 0 _n)
+  list(GET _p 1 _e)
+  terco_add_check(check_sym_fock_${_n} check_sym_fock.F90 NEEDS_BASIS ARGS quick)
+  target_link_libraries(check_sym_fock_${_n} PRIVATE test-drive::test-drive)
+  set_target_properties(check_sym_fock_${_n} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_fock_${_n})
+  set_tests_properties(terco/check_sym_fock_${_n} PROPERTIES ENVIRONMENT
+                       "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};${_e}")
+endforeach()
+# The McMurchie-Davidson engines' skeleton bra (S14.4): MD J forced on the
+# uncontracted l = 0..3 set (skipped below TERCO_LMAX=3), MD J chosen by the
+# size rule on an extended system, and MD J + MD exchange on water cc-pVQZ
+# (skipped below TERCO_LMAX=4). Each checks the engine's own work counter.
+foreach(_v md:TRC_MDJ=1 mdrule: mdg:)
+  string(REPLACE ":" ";" _p "${_v}")
+  list(GET _p 0 _n)
+  list(LENGTH _p _np)
+  set(_env "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+  if(_np GREATER 1)
+    list(GET _p 1 _e)
+    if(NOT "${_e}" STREQUAL "")
+      list(APPEND _env "${_e}")
+    endif()
+  endif()
+  terco_add_check(check_sym_fock_${_n} check_sym_fock.F90 NEEDS_BASIS ARGS ${_n})
+  target_link_libraries(check_sym_fock_${_n} PRIVATE test-drive::test-drive)
+  set_target_properties(check_sym_fock_${_n} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_fock_${_n})
+  set_tests_properties(terco/check_sym_fock_${_n} PROPERTIES ENVIRONMENT
+                       "${_env}" SKIP_REGULAR_EXPRESSION "SKIP")
+endforeach()
+# The skeleton Fock build's size rule (sym_run_skeleton_size_rule): the atom
+# orbits and the verdict for every system it was measured on, and the same SCF
+# whichever path it takes. Three entries: the rule in charge, and
+# TRC_SYM_SKELETON forcing each way.
+foreach(_v auto: on:TRC_SYM_SKELETON=1 off:TRC_SYM_SKELETON=0)
+  string(REPLACE ":" ";" _p "${_v}")
+  list(GET _p 0 _n)
+  list(LENGTH _p _np)
+  set(_env "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+  if(_np GREATER 1)
+    list(GET _p 1 _e)
+    if(NOT "${_e}" STREQUAL "")
+      list(APPEND _env "${_e}")
+    endif()
+  endif()
+  terco_add_check(check_sym_skeleton_rule_${_n} check_sym_skeleton_rule.F90 NEEDS_BASIS)
+  target_link_libraries(check_sym_skeleton_rule_${_n} PRIVATE test-drive::test-drive)
+  set_target_properties(check_sym_skeleton_rule_${_n} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_skeleton_rule_${_n})
+  set_tests_properties(terco/check_sym_skeleton_rule_${_n} PROPERTIES ENVIRONMENT "${_env}")
+endforeach()
+# Parity skipping: the Fock matrix with the
+# dead-axis masks and the engine frame against the one without, on the planar
+# and the mixed-mask molecules; _f is the uncontracted l = 0..3 set.
+terco_add_check(check_sym_parity check_sym_parity.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_parity PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_parity PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_parity)
+terco_add_check(check_sym_parity_f check_sym_parity.F90 NEEDS_BASIS ARGS f)
+target_link_libraries(check_sym_parity_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_parity_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_parity_f)
+set_tests_properties(terco/check_sym_parity_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+terco_add_check(check_sym_fock_f check_sym_fock.F90 NEEDS_BASIS ARGS f)
+target_link_libraries(check_sym_fock_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_fock_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_fock_f)
+set_tests_properties(terco/check_sym_fock_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# Weighted-segment fusion in the bin Fock launch (W2 of the segment-fusion
+# plan): the launch count of a skeleton build equals the number of distinct
+# (class, mask) groups in its plan, so no group is split by the segment weight
+# as it was before W2. check_sym_fock pins eri%nwork, which fusion does not
+# move, and so pins nothing about the launches.
+terco_add_check(check_sym_fusion check_sym_fusion.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_fusion PRIVATE test-drive::test-drive)
+# An active TRC_LAUNCH_CAP re-splits a class run by quartet count, which this
+# check does not model, so it skips rather than asserting -- report that as a
+# skip, as the check_sym_fock_* variants do, not as a pass.
+set_tests_properties(terco/check_sym_fusion PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# Point group D2 (twisted ethylene and tetrafluoroethylene): detection and pyscf's
+# frame (x, y order), SALC block-diagonality, the central oracle (RHF, UHF,
+# B3LYP) and pyscf anchors (pyscf_refs/sym_d2.ref), the requested subgroup
+# D2 -> C2, gradient symmetrisation.
+terco_add_check(check_sym_d2 check_sym_d2.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_d2 PRIVATE test-drive::test-drive)
+# The point group C2h (trans-N2H2, trans-glyoxal, anti ClH2C-CH2Cl): detection,
+# frame against pyscf, SO dimensions (pyscf_refs/sym_c2h.ref), SALC
+# block-diagonality, the central oracle for RHF/UHF/B3LYP with irrep occupations
+# and orbital energies per irrep against pyscf, gradient symmetrisation.
+# Registered twice, as check_sym_ci is (_f: the uncontracted l = 0..3 set).
+terco_add_check(check_sym_c2h check_sym_c2h.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_c2h PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_c2h PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_c2h)
+terco_add_check(check_sym_c2h_f check_sym_c2h.F90 NEEDS_BASIS NEEDS_PYSCF_REF ARGS f)
+target_link_libraries(check_sym_c2h_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_c2h_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_c2h_f)
+set_tests_properties(terco/check_sym_c2h_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+# Cs, C2 and Ci requested on C2h molecules in pyscf's frame
+# (pyscf_refs/sym_c2h_subgroup.ref), energy equal to C2h and C1.
+terco_add_check(check_sym_c2h_subgroup check_sym_c2h_subgroup.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_c2h_subgroup PRIVATE test-drive::test-drive)
+# The point group D2h, the last Abelian group (planar ethylene and naphthalene,
+# nonplanar diborane): detection, pyscf's frame (principal axes plus
+# _adjust_planar_d2h), SALC block-diagonality, the central oracle for
+# RHF/UHF/B3LYP with irrep occupations and orbital energies per irrep against
+# pyscf (pyscf_refs/sym_d2h.ref), gradient symmetrisation. Registered twice
+# (_f: the uncontracted l = 0..3 set), as check_sym_ci is.
+terco_add_check(check_sym_d2h check_sym_d2h.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_d2h PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_d2h PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_d2h)
+terco_add_check(check_sym_d2h_f check_sym_d2h.F90 NEEDS_BASIS NEEDS_PYSCF_REF ARGS f)
+target_link_libraries(check_sym_d2h_f PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_d2h_f PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_d2h_f)
+set_tests_properties(terco/check_sym_d2h_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+# C2v, C2h, Cs, C2 and Ci requested on D2h molecules in pyscf's frame
+# (pyscf_refs/sym_d2h_subgroup.ref), energy equal to D2h and C1.
+terco_add_check(check_sym_d2h_subgroup check_sym_d2h_subgroup.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_d2h_subgroup PRIVATE test-drive::test-drive)
+# Symmetric and spherical tops, linear molecules and atoms (benzene, NH3, CH4, SF6,
+# N2, CO, HCN, O2, Ne, O): the group and frame pyscf's detect_symm / get_subgroup
+# give (trc_sym_tops), SO dimensions, the central oracle for RHF/UHF/B3LYP with the
+# anchors in pyscf_refs/sym_tops.ref, benzene as C2v and Cs, gradient symmetrisation.
+terco_add_check(check_sym_tops check_sym_tops.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_sym_tops PRIVATE test-drive::test-drive)
 
 # The basis reader refuses an element whose basis needs an effective core
 # potential (def2 from Rb on) instead of running it all-electron -- see
@@ -772,6 +1014,15 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_homo_lumo PRIVATE test-drive::test-drive)
   unset(_cli_homo_lumo_probe)
 
+  # The "timings" and "build" objects of the CLI's --json: which keys per
+  # option, finite and positive values, the nesting of the stage times --
+  # see check_cli_timings.F90's own header.
+  set(_cli_timings_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_timings_probe.json)
+  terco_add_check(check_cli_timings check_cli_timings.F90 NEEDS_BASIS
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_timings_probe})
+  target_link_libraries(check_cli_timings PRIVATE test-drive::test-drive)
+  unset(_cli_timings_probe)
+
   # The TOML input files (docs/INPUT.md): same numbers as the equivalent
   # flags, paths relative to the file, the "input" echo with a flag
   # overriding the file, and every malformed file refused by name -- see
@@ -791,6 +1042,16 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_rccsd PRIVATE test-drive::test-drive terco_rccsd_ref_energies)
   set_tests_properties(terco/check_cli_rccsd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
   unset(_cli_rccsd_workdir)
+  # The symmetry keywords through the CLI (--symmetry, --symmetry-tol,
+  # --irrep-nelec, the TOML keys): HOCl symmetry=auto against pyscf's electrons
+  # per irrep and energy and against a symmetry-off run on the symmetrised
+  # geometry, the report, symmetry off unchanged, and every refusal -- see
+  # check_sym_cli.F90's own header.
+  set(_sym_cli_workdir ${CMAKE_CURRENT_BINARY_DIR}/sym_cli_work)
+  terco_add_check(check_sym_cli check_sym_cli.F90 NEEDS_PYSCF_REF
+                  ARGS $<TARGET_FILE:terco_cli> ${_sym_cli_workdir})
+  target_link_libraries(check_sym_cli PRIVATE test-drive::test-drive)
+  unset(_sym_cli_workdir)
 
   # Effective core potentials through the CLI: the basis's own ECP and the
   # valence electron count, --ecp and a TOML [basis] ecp, and a partial ECP
@@ -1889,6 +2150,14 @@ add_test(NAME terco/check_capi_ghost COMMAND check_capi_ghost)
 set_tests_properties(terco/check_capi_ghost PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
+# The symmetry entries of the C ABI (trc_set_symmetry, trc_set_irrep_nelec and
+# the getters, ABI 1.23), through include/trc_c_interfaces.f90: the round trip
+# against a C1 run on the reported geometry, the frame, labels, fixed irrep
+# occupations and every refusal. The C side is link_c.c. See
+# check_capi_sym.F90's own header.
+terco_add_check(check_capi_sym check_capi_sym.F90 NEEDS_BASIS)
+target_link_libraries(check_capi_sym PRIVATE terco_c_interfaces test-drive::test-drive)
+
 #
 # trc_run_rimp2 then trc_run_gradient: no separate RI-MP2 energy step, and
 # the energy trc_rimp2_energy/trc_energy report after the gradient equals an
@@ -1901,6 +2170,19 @@ target_link_libraries(check_capi_rimp2_grad PRIVATE ${main_lib} terco_test_basis
 add_test(NAME terco/check_capi_rimp2_grad COMMAND check_capi_rimp2_grad ${CMAKE_CURRENT_BINARY_DIR})
 set_tests_properties(terco/check_capi_rimp2_grad PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                        ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
+# trc_timing / trc_timing_count through the C ABI: the status before any SCF,
+# an enumeration that ends by its count, a short name buffer refused rather
+# than cut, and the RI-MP2 timings not outliving their run. See
+# check_capi_timing.F90's own header.
+add_executable(check_capi_timing check_capi_timing.F90)
+target_compile_definitions(check_capi_timing PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_timing PRIVATE ${main_lib} terco_test_basis terco_c_interfaces
+                                                test-drive::test-drive)
+add_test(NAME terco/check_capi_timing COMMAND check_capi_timing)
+set_tests_properties(terco/check_capi_timing PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
 # trc_run_hessian/trc_hessian (the finite-difference Cartesian Hessian),
@@ -1953,6 +2235,11 @@ else()
   endif()
 endif()
 target_include_directories(link_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+# link_c.c calls sqrt/fabs directly, so it needs libm on its own command line.
+# Linking libterco by FILE (above) does not propagate the library's own NEEDED
+# entries as link inputs, and a linker defaulting to --no-copy-dt-needed-entries
+# then fails with "DSO missing from command line".
+target_link_libraries(link_c PRIVATE m)
 # With nvc as the C compiler, a C main has to be linked with the OpenACC
 # multicore runtime itself: without -acc=multicore the energy comes back as
 # the nuclear repulsion alone (9.19 for water). Any other C compiler gets the
@@ -1960,6 +2247,15 @@ target_include_directories(link_c PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include
 # and would reject the flag; gcc 13 links and passes without it.
 if(TERCO_ENABLE_MULTICORE AND CMAKE_C_COMPILER_ID STREQUAL "NVHPC")
   target_link_options(link_c PRIVATE -acc=multicore)
+endif()
+# The same holds for the GPU, and matters more: a C main linked without -acc=gpu
+# gets libacchost (the HOST OpenACC runtime), so acc_get_num_devices() answers 0,
+# trc_bind_device leaves the device -1, and trc_select_device reports -1 on a
+# machine that has GPUs -- against its own documented contract -- after which the
+# first cuSOLVER call fails. -gpu must carry the options the library was built
+# with (TERCO_GPU_OPTS, exported by cmake/CMakeLists.txt), not just the arch.
+if(TERCO_ENABLE_GPU AND CMAKE_C_COMPILER_ID STREQUAL "NVHPC")
+  target_link_options(link_c PRIVATE -acc=gpu -gpu=${TERCO_GPU_OPTS})
 endif()
 set_target_properties(link_c PROPERTIES BUILD_RPATH "$<TARGET_FILE_DIR:${main_lib}>")
 add_test(NAME terco/link_c COMMAND link_c)
@@ -2324,6 +2620,7 @@ if(Python3_FOUND)
                                                          SKIP_REGULAR_EXPRESSION "^SKIP")
   endfunction()
   terco_add_golden(scf_rks scf_rks)
+  terco_add_golden(check_sym_ci sym_ci)
   terco_add_golden(scf_mgga scf_mgga)
   terco_add_golden(scf_df scf_df)
   terco_add_golden(scf_robust scf_robust)
@@ -2331,6 +2628,8 @@ if(Python3_FOUND)
   # run that selects a test requiring it, so an unlabelled golden check
   # would run scf_robust under -LE LONG anyway.
   set_tests_properties(terco/golden/scf_robust PROPERTIES LABELS LONG)
+  terco_add_golden(check_sym_c2v sym_c2v)
+  terco_add_golden(check_sym_c2h sym_c2h)
   terco_add_golden(scf_rimp2 scf_rimp2)
   terco_add_golden(scf_rimp2_ccpvdz scf_rimp2_ccpvdz)
   foreach(set main f)
@@ -2339,6 +2638,10 @@ if(Python3_FOUND)
   foreach(case water_ccpvdz water_ccpvtz formamide_def2tzvp)
     terco_add_golden(check_rys_fock_vs_pyscf_${case} rys_fock_${case})
   endforeach()
+  terco_add_golden(check_sym_c2 sym_c2)
+  terco_add_golden(check_sym_d2 sym_d2)
+  terco_add_golden(check_sym_d2h sym_d2h)
+  terco_add_golden(check_sym_tops sym_tops)
   foreach(case water_631gs water_ccpvdz formamide_ccpvdz)
     foreach(path hgp nosym rys)
       terco_add_golden(check_erf_fock_vs_pyscf_${case}_${path} erf_fock_${case}_${path})
@@ -2370,3 +2673,31 @@ if(NOT TERCO_LONG_TESTS)
     endif()
   endforeach()
 endif()
+
+# The unique-pair build: primitive pairs and
+# Schwarz bounds of the orbit representatives only, images rebuilt from them.
+terco_add_check(check_sym_unique check_sym_unique.F90 NEEDS_BASIS)
+target_link_libraries(check_sym_unique PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_unique PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_unique)
+# The skeleton oracle on the merged scheme's build (all pairs formed).
+terco_add_check(check_sym_fock_nouniq check_sym_fock.F90 NEEDS_BASIS ARGS quick)
+target_link_libraries(check_sym_fock_nouniq PRIVATE test-drive::test-drive)
+set_target_properties(check_sym_fock_nouniq PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_sym_fock_nouniq)
+set_tests_properties(terco/check_sym_fock_nouniq PROPERTIES ENVIRONMENT
+                     "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_UNIQUE_PAIRS=0")
+# These checks pin counts measured on the FULLY split working basis: the S13
+# prototype's admitted quartets, the MD J size rule's verdict, the unique-pair
+# storage ratio and the engines' work counters. trc_decontract's policy
+# (split a general contraction only when it pays, DECON_SHELL_COST_DEFAULT)
+# keeps some cc-pVDZ contractions whole and so changes the shell list those
+# counts are over (water C2v: 3081 admitted quartets against 14627); the
+# integrals over either working basis are exact (trc_decontract). So they run
+# with every contraction split, the basis the numbers were taken on.
+# The symmetric SCF and gradient checks against pyscf run on the default policy.
+foreach(_t check_sym_pairs check_sym_fock check_sym_fock_hgp check_sym_fock_rys check_sym_fock_cap
+           check_sym_fock_sort check_sym_fock_md check_sym_fock_mdrule check_sym_fock_mdg
+           check_sym_unique check_sym_fock_nouniq)
+  set_property(TEST terco/${_t} APPEND PROPERTY ENVIRONMENT "TRC_DECON_SHELL_COST=0")
+endforeach()

@@ -21,7 +21,7 @@ module sap_guess_suite
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device
-   use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+   use trc_scf_driver, only: trc_scf_options_t, trc_scf_guess_t, trc_scf_result_t, trc_scf_run
    use trc_basis_json, only: trc_basis_from_json
    use trc_sad, only: trc_sad_build, trc_atom_ranges
    use trc_sap, only: trc_sap_build, trc_sap_screen_table
@@ -146,7 +146,7 @@ contains
       call trc_scf_run(bas, nz/2, nz/2, opts, r_gwh)
       allocate (dg3(bas%nao, bas%nao, 1)); dg3(:, :, 1) = dsad
       call trc_scf_run(bas, nz/2, nz/2, opts, r_sad, dguess=dg3)
-      call trc_scf_run(bas, nz/2, nz/2, opts, r_sap, hguess=hsap)
+      call trc_scf_run(bas, nz/2, nz/2, opts, r_sap, guess=trc_scf_guess_t(hamiltonian=hsap))
       print '(a,f18.12,a,i0,a)', "sap_guess: gwh E = ", r_gwh%energy, " (", r_gwh%iterations, ")"
       print '(a,f18.12,a,i0,a)', "sap_guess: sad E = ", r_sad%energy, " (", r_sad%iterations, ")"
       print '(a,f18.12,a,i0,a)', "sap_guess: sap E = ", r_sap%energy, " (", r_sap%iterations, ")"

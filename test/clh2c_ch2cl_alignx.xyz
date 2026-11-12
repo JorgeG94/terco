@@ -1,0 +1,10 @@
+8
+anti ClH2C-CH2Cl, C2h, axis-aligned input (C2 axis along x, mirror plane yz): the principal axes of inertia are x, y, z; same idealized geometry as clh2c_ch2cl_anti.xyz (r(CC)=1.51 r(CCl)=1.79 r(CH)=1.09 A, CCCl=111 CCH=110 deg, not optimized). pyscf keeps these axes for a requested group that holds in them
+C    0.0000000000  -0.5636122441   0.5023606655
+C    0.0000000000   0.5636122441  -0.5023606655
+Cl   0.0000000000   0.0694396777   2.1766800091
+H   -0.8870394727  -1.1826731180   0.3681049085
+H    0.8870394727  -1.1826731180   0.3681049085
+Cl   0.0000000000  -0.0694396777  -2.1766800091
+H    0.8870394727   1.1826731180  -0.3681049085
+H   -0.8870394727   1.1826731180  -0.3681049085
