@@ -2187,6 +2187,28 @@ if(TERCO_ENABLE_MPI)
                                                      TIMEOUT 300)
 endif()
 
+# RI-CCSD(T) over ranks, one device each (rccsd_mpi.F90's header): the energies, bitwise E_CCSD and amplitudes and the
+# (T) sum against the single-rank run and pyscf, the same result on every rank, and with the argument "fail" the
+# failure paths (a rank refused, a CCSD that does not converge, a (T) routine that differs, ...), which must end on all
+# ranks. The TIMEOUT is the test of the second: a rank left in a collective call fails ctest, it does not wedge it.
+#
+add_executable(rccsd_mpi rccsd_mpi.F90)
+target_compile_definitions(rccsd_mpi PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(rccsd_mpi PRIVATE ${main_lib} terco_rccsd_test_support terco_rccsd_ref_energies)
+target_include_directories(rccsd_mpi PRIVATE ${CMAKE_BINARY_DIR}/modules)
+if(TERCO_ENABLE_MPI)
+  foreach(np 1 2)
+    add_test(NAME terco/rccsd_mpi_np${np}
+             COMMAND ${_mpiexec} ${_npflag} ${np} $<TARGET_FILE:rccsd_mpi>)
+    set_tests_properties(terco/rccsd_mpi_np${np} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                           TIMEOUT 900)
+  endforeach()
+  add_test(NAME terco/rccsd_mpi_fail_np2
+           COMMAND ${_mpiexec} ${_npflag} 2 $<TARGET_FILE:rccsd_mpi> fail)
+  set_tests_properties(terco/rccsd_mpi_fail_np2 PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                           TIMEOUT 600)
+endif()
+
 add_executable(demo_makefp demo_makefp.F90)
 target_compile_definitions(demo_makefp PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(demo_makefp PRIVATE ${main_lib} terco_test_basis LAPACK::LAPACK)

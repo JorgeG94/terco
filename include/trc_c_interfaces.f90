@@ -1387,8 +1387,8 @@ module trc_c_interfaces
          !! no auxiliary basis was set. Refused, with TRC_ERR_UNSUPPORTED, each
          !! with its reason in trc_message: an unrestricted or open-shell
          !! reference, a Kohn-Sham one, an effective core potential, linearly
-         !! dependent functions dropped (the message names trc_set_lindep), more
-         !! than one rank, a basis above this build's density-fitting ceilings
+         !! dependent functions dropped (the message names trc_set_lindep), the (T) routine
+         !! over several ranks (above), a basis above this build's density-fitting ceilings
          !! (TERCO_DF_LMAX, TERCO_DF_LMAX_AUX). A frozen core that leaves no
          !! occupied orbital is TRC_ERR_BADARG. A continuum solvent is not
          !! refused, as for RI-MP2: the correlation is computed on the orbitals of
@@ -1409,8 +1409,14 @@ module trc_c_interfaces
          !! virtual, naux auxiliary functions, diis the DIIS size) plus about
          !! 1.2 GB of ladder scratch; (T) adds 2 o^2 v^2 + o^3 v doubles and its
          !! tile (trc_set_rccsd_algorithm). docs/sphinx/cli.md has the formula
-         !! worked out. Single rank. After a converged run trc_run_gradient,
-         !! trc_run_hessian and trc_run_polarizability refuse.
+         !! worked out. Over ranks (trc_set_comm, one rank per device, every rank
+         !! calls this together): the integrals are built on every rank, the CCSD
+         !! iterations run on the first and its result and amplitudes reach the
+         !! others, and the (T) is shared (only the occupied-driven device routine
+         !! does so, and triples_routine 0 picks it over several ranks; 1 or 2 is
+         !! TRC_ERR_UNSUPPORTED there). Every rank returns the same status and
+         !! energies. After a converged run trc_run_gradient, trc_run_hessian and
+         !! trc_run_polarizability refuse.
          import :: c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle

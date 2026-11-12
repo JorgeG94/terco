@@ -136,14 +136,14 @@ command line, in the input file and in the output, says RI-CCSD.
 
 | Flag | Meaning |
 |---|---|
-| `--riccsd` | closed-shell RI-CCSD correlation energy after the SCF (RHF, one rank, no ECP; also reports the RI-MP2 correlation; cannot be combined with `--rimp2`, a functional, `--uhf` or `--grad`/`--hessian`/`--opt`) |
+| `--riccsd` | closed-shell RI-CCSD correlation energy after the SCF (RHF, no ECP; over several ranks the (T) is shared; also reports the RI-MP2 correlation; cannot be combined with `--rimp2`, a functional, `--uhf` or `--grad`/`--hessian`/`--opt`) |
 | `--riccsd-t` | `--riccsd` followed by the perturbative triples (T): RI-CCSD(T) |
 | `--cc-econv` | `--riccsd` energy convergence: \|dE\| between iterations, Eh (1e-8) |
 | `--cc-tconv` | `--riccsd` amplitude convergence: the largest amplitude change (1e-6) |
 | `--cc-iterations` | maximum `--riccsd` iterations (100); a run that does not converge is reported as such and exits with status 2 |
 | `--cc-diis` | `--riccsd` DIIS history length (8, at most 50); 1 switches DIIS off |
 | `--cc-ladder` | how `--riccsd` forms the particle ladder: auto (by operation count), assembled or direct; the energy does not depend on it (auto) |
-| `--cc-triples` | which routine computes the (T) of `--riccsd-t`: auto (the ijk device routine in a GPU build, the host reference one otherwise), reference (host, from the host copies; cross-checks a GPU build) tiled (the device routine over virtual triples, also on the host, slower there) or ijk (the device routine over occupied triples, the default in a GPU build); the energy does not depend on it (auto) |
+| `--cc-triples` | which routine computes the (T) of `--riccsd-t`: auto (the ijk device routine in a GPU build, the host reference one otherwise; the ijk routine whenever there is more than one rank), reference (host, from the host copies; cross-checks a GPU build) tiled (the device routine over virtual triples, also on the host, slower there) or ijk (the device routine over occupied triples, the default in a GPU build); the energy does not depend on it (auto) |
 | `--cc-triples-budget` | memory for the working tile of the tiled (T) routine of `--riccsd-t`, GiB (1; any positive value, the repacked amplitudes come on top); a budget below one triple (48 o^3 bytes, o active occupied orbitals) makes the (T) step fail after the RI-CCSD has converged, with exit status 1; no effect on the reference routine |
 
 `--aux`, `--frozen` and `--aux-block` (above) apply to `--riccsd` and
@@ -177,13 +177,39 @@ correlation energy is part of its own report), a functional (`-f`), unpaired
 electrons (`--uhf`, or an odd electron count from `--chrg`), `--grad`,
 `--hessian`, `--opt`, a molecule with an effective core potential and a
 `--frozen` that leaves no correlated orbital; the `--cc-*` options need
-`--riccsd` or `--riccsd-t`, and `--cc-triples` and `--cc-triples-budget` need `--riccsd-t`. More
-than one rank is refused as well. A basis with linearly dependent functions
+`--riccsd` or `--riccsd-t`, and `--cc-triples` and `--cc-triples-budget` need `--riccsd-t`. Over
+several ranks `--cc-triples reference` and `tiled` are refused (see below). A basis with linearly dependent functions
 dropped by `--lindep` (`[basis] linear_dependence`) is refused after the SCF,
 since the method needs every orbital of the basis: lower the threshold (0 drops
 none) or remove the near-duplicate functions. Over a `--pcm` reference the
 correlation is computed on the orbitals of the solvated SCF and has no solvent
 response of its own (as `--rimp2`); terco warns.
+
+### Several GPUs
+
+`mpiexec -n 4 terco water.xyz -b cc-pvdz --riccsd-t` runs on four ranks, one
+rank per GPU (terco binds each rank to its own device; do not put two ranks on
+one GPU). What is distributed today is the (T) correction only. Every rank
+builds the density-fitted integrals (replicated, so each GPU needs the memory of
+a one-GPU run), the RI-CCSD iterations run on the first rank while the others
+wait, the converged amplitudes are broadcast, and the (T) work, the occupied
+pairs, is dealt over the ranks. The (T) energy is the same on every rank and
+equals the one-rank value to rounding. The RI-CCSD energy is computed by the
+first rank alone, so given the same orbitals it is the one-rank number; the
+multi-rank SCF that precedes it in the CLI differs from a one-rank SCF at about
+1e-14 Eh, and so does everything after it. Output (tables, summary, JSON) comes
+from the first rank, and with `--logger verbose` the (T) step lists each rank's
+triples and seconds.
+
+Plain `--riccsd` over several ranks gains nothing today: the iterations run on
+the first rank and the others only matter for (T). Distributing the iterations
+is the next step.
+
+Only the ijk (T) routine shares the work. `--cc-triples auto` picks it whenever
+there is more than one rank, in a host build too; an explicit `reference` or
+`tiled` is refused over several ranks, before any work. A failure on one rank (an
+allocation, a refused setting) stops all ranks with the reason of the
+lowest-numbered rank that met it; it does not leave the others waiting.
 
 ### What it is, and what it is not yet
 
@@ -195,7 +221,7 @@ cc-pVDZ-RIFIT: CCSD(T) total energies within 5e-12 Eh when run with
 thresholds, 1e-8 and 1e-6, the agreement is about 1e-8 Eh).
 
 Today it covers: a restricted Hartree-Fock reference with canonical orbitals,
-one rank and one GPU, no effective core potential, **no gradients** (so no
+one GPU per rank (the (T) is shared over ranks, the iterations are not yet), no effective core potential, **no gradients** (so no
 optimisation or Hessian), no restart of the RI-CCSD itself. The dense
 `(ia|bc)` block is what limits the system size for now.
 

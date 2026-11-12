@@ -90,7 +90,8 @@
 ! or `scr` differ in (no, nv), or are not built, sets it and returns without touching
 ! anything); none stops.
 !
-! Single rank only.
+! RANKS. No MPI call here: every rank that holds the integrals can run these routines on its own device; under
+! several ranks only rank 0 iterates today (trc_rccsd_driver).
 module trc_rccsd_inter
    use pic_types, only: dp, int32, int64
    use trc_rccsd_ints, only: trc_rccsd_ints_t

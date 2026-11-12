@@ -1162,7 +1162,7 @@ contains
          select case (k)
          case (1); opts%has_ecp = .true.
          case (2); opts%nbeta = nocc - 1
-         case (3); opts%nranks = 2
+         case (3); opts%max_iterations = 0
          case (4); opts%nfrozen = nocc
          case (5); opts%nocc = nmo
          case (6); opts%nocc = 0
@@ -1186,7 +1186,7 @@ contains
       opts%conv_amplitude = 1.0e-6_dp
       call trc_rccsd_run(bas, aux, pl, res%cmo(:, :, 1), res%eps(:, 1), normal, opts, la)
       ok_refuse = ok_refuse .and. normal%converged .and. .not. normal%refused
-      call record(im, 8, ok_refuse, label//"refusals (ECP, open shell, 2 ranks, frozen = occupied, no virtuals, "// &
+      call record(im, 8, ok_refuse, label//"refusals (ECP, open shell, max_iterations 0, frozen = occupied, no virtuals, "// &
                   "nocc 0, invalid ladder form, wrong eps size), then a default run converged = "//merge("T", "F", normal%converged)//": "// &
                   trim(refuse_text))
       call state%release()

@@ -43,6 +43,20 @@
 ! on the device must `update self` first. Nothing here is a `do concurrent`, so under the GPU build it runs on the host
 ! unchanged. The device version needs the opposite: the device copies current.
 !
+! RANKS. `rccsd_triples_finish` with `opts%has_comm` and more than one rank in `opts%comm` (one rank per device) is
+! collective. Every rank holds the same integrals and amplitudes (trc_rccsd_driver shares the amplitudes), runs the
+! occupied-driven device routine with `device%parts` = the number of ranks and `device%part` = its rank (the caller sets
+! neither), and keeps the energy of every triple at its canonical position, zero for the triples of other ranks.
+! The vectors are summed over the ranks (MPI_SUM; each entry has one non-zero term, so the sum is exact whatever the
+! order) and E(T) is the sum of the reduced vector in canonical order, on every rank: the same bits everywhere, and
+! the one-rank value to the rounding of the per-triple sums. Failure is agreed, never inferred: every refusal of
+! `rccsd_triples_finish` (a refused, non-finite or unconverged state, a caller-set work share, a routine without a
+! work share: the virtual-triple routine and the host reference) is folded into the FIRST agreement, which every rank
+! reaches (rccsd_mpi_agree_text: MIN of the refusing rank index, then that rank's message to all). If any rank
+! refuses, all do, with the message of the lowest-numbered refusing rank. The run itself ends in a second agreement
+! (a rank whose routine failed) before the vector reduction, so no rank returns early while another waits in a
+! collective call. With `verbose`, rank 0 logs one line per rank: its triples and its seconds.
+!
 ! THREADS. The loop over the pairs (a,b) is an OpenMP loop, each thread with its own W and scratch. The energy of
 ! each pair is stored in `e_pair` and summed in pair order afterwards, so the result does not depend on the thread
 ! count or the schedule. The BLAS is the host BLAS through pic_gemm (the host path of trc_linalg_t, which has no
@@ -54,11 +68,14 @@ module trc_rccsd_triples
    use pic_strings, only: to_string
    use pic_blas_interfaces, only: pic_gemm
    use trc_error, only: error_t, ERROR_VALIDATION
+   use pic_mpi_lib, only: comm_t, allreduce
+   use trc_rccsd_mpi, only: rccsd_mpi_agree_text
    use trc_rccsd_ints, only: trc_rccsd_ints_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t
    use trc_rccsd_driver, only: trc_rccsd_state_t
    use trc_rccsd_triples_dev, only: trc_rccsd_triples_dev_options_t, rccsd_triples_dev_run
-   use trc_rccsd_triples_ijk, only: rccsd_triples_ijk_run
+   use trc_rccsd_triples_ijk, only: rccsd_triples_ijk_run, rccsd_triples_ijk_pair_owners, rccsd_triples_ijk_pair_cost, &
+                                    rccsd_triples_ijk_pair_index
    implicit none
    private
 
@@ -68,6 +85,7 @@ module trc_rccsd_triples
    public :: RCCSD_TRIPLES_WMAP, rccsd_triples_energy_block
 
    integer, parameter :: N_TRIPLE_PERMS = 6
+   integer, parameter :: MSG_LEN = 300  !! the length of a refusal message exchanged between ranks (trc_rccsd_result_t%message's)
    integer, parameter :: RCCSD_TRIPLES_C_BATCH = 32
    !! The default number of c per batched gemm; sized so a thread's W (6 no^3 doubles per c) stays in cache
 
@@ -107,7 +125,12 @@ module trc_rccsd_triples
       !! version has no OpenMP over pairs and its batched gemm is a serial loop (h2o2 0.46 s against 0.17 s)
       integer :: device_routine = DEFAULT_DEVICE_ROUTINE
       !! which device routine `use_device` runs: RCCSD_TRIPLES_DEVICE_IJK (occupied triples) or _ABC (virtual triples)
-      type(trc_rccsd_triples_dev_options_t) :: device  !! budget, forced tile size and verbosity of the device version
+      type(trc_rccsd_triples_dev_options_t) :: device
+      !! budget, forced tile size and verbosity of the device version; `parts` and `part` are `rccsd_triples_finish`'s
+      !! to set from the communicator and are refused if the caller sets them
+      type(comm_t) :: comm
+      !! The caller's communicator, a copy of its handle; read only by `rccsd_triples_finish` and only when `has_comm`
+      logical :: has_comm = .false.               !! `rccsd_triples_finish` is collective over `comm` (module header, RANKS)
    end type trc_rccsd_triples_options_t
 
 contains
@@ -172,31 +195,36 @@ contains
       !! (T) for a state `trc_rccsd_solve` left: fills `state%result%e_t`, `e_ccsd_t` and `seconds_triples`
       !!
       !! Refused, with the result untouched, when the run was refused, did not converge or is not finite: (T) of
-      !! amplitudes that are not a CCSD solution is not the (T) correction.
+      !! amplitudes that are not a CCSD solution is not the (T) correction. Also refused: a caller that sets
+      !! `device%parts` or `device%part` (the share is set from the communicator), and, over several ranks, any (T)
+      !! routine but the occupied-driven device one. Over several ranks every one of these is folded into one agreed
+      !! failure flag that every rank reaches before anything else is collective: if any rank refuses, all do, and
+      !! all report the message of the lowest-numbered refusing rank (module header, RANKS).
       type(trc_rccsd_state_t), intent(inout) :: state
       type(error_t), intent(out) :: status
       type(trc_rccsd_triples_options_t), intent(in), optional :: opts
 
+      character(len=MSG_LEN) :: reason
       real(dp) :: e_t, seconds
+      logical :: ranks, failed, anyone
 
-      if (state%result%refused) then
-         call status%set(ERROR_VALIDATION, "trc_rccsd_triples: the CCSD run was refused; there are no amplitudes for (T)")
-         return
-      end if
-      if (.not. state%result%finite) then
-         call status%set(ERROR_VALIDATION, "trc_rccsd_triples: the CCSD run hit a non-finite value; (T) needs its amplitudes")
-         return
-      end if
-      if (.not. state%result%converged) then
-         call status%set(ERROR_VALIDATION, "trc_rccsd_triples: the CCSD run did not converge; (T) needs its amplitudes")
-         return
-      end if
+      ranks = .false.
       if (present(opts)) then
-         if (opts%device%parts > 1) then
-            call status%set(ERROR_VALIDATION, "trc_rccsd_triples: device%parts is "//to_string(opts%device%parts)// &
-                            "; a part's E(T) is partial and nothing sums the parts yet: use the scratch API per part")
-            return
-         end if
+         if (opts%has_comm) ranks = opts%comm%size() > 1
+      end if
+      call refusal_reason(state, opts, ranks, reason)
+      failed = len_trim(reason) > 0
+      anyone = failed
+      if (ranks) then
+         anyone = rccsd_mpi_agree_text(opts%comm, reason, failed)
+      end if
+      if (anyone) then
+         call status%set(ERROR_VALIDATION, trim(reason))
+         return
+      end if
+      if (ranks) then
+         call finish_ranks(state, status, opts)
+         return
       end if
       if (use_device(opts) .and. device_routine(opts) == RCCSD_TRIPLES_DEVICE_IJK) then
          call rccsd_triples_ijk_run(state%ints, state%amps, e_t, status, device_options(opts), seconds)
@@ -211,6 +239,135 @@ contains
       state%result%seconds_triples = seconds
       state%result%has_triples = .true.
    end subroutine rccsd_triples_finish
+
+   subroutine refusal_reason(state, opts, ranks, reason)
+      !! Why this rank cannot run (T): blank when it can. Local, no MPI call.
+      type(trc_rccsd_state_t), intent(in) :: state
+      type(trc_rccsd_triples_options_t), intent(in), optional :: opts
+      logical, intent(in) :: ranks
+      character(len=*), intent(out) :: reason
+
+      reason = ""
+      if (state%result%refused) then
+         reason = "trc_rccsd_triples: the CCSD run was refused; there are no amplitudes for (T)"
+      else if (.not. state%result%finite) then
+         reason = "trc_rccsd_triples: the CCSD run hit a non-finite value; (T) needs its amplitudes"
+      else if (.not. state%result%converged) then
+         reason = "trc_rccsd_triples: the CCSD run did not converge; (T) needs its amplitudes"
+      end if
+      if (len_trim(reason) > 0 .or. .not. present(opts)) return
+      if (opts%device%parts /= 1 .or. opts%device%part /= 0) then
+         reason = "trc_rccsd_triples: device%parts is "//to_string(opts%device%parts)//" and device%part "// &
+                  to_string(opts%device%part)//"; rccsd_triples_finish sets the work share from the communicator "// &
+                  "(opts%comm), use the scratch API to run one part by hand"
+      else if (ranks) then
+         if (.not. (opts%use_device .and. opts%device_routine == RCCSD_TRIPLES_DEVICE_IJK)) then
+            reason = "trc_rccsd_triples: over several MPI ranks only the occupied-driven device routine "// &
+                     "(--cc-triples ijk) shares the work; the virtual-triple routine and the host reference "// &
+                     "run on one rank"
+         end if
+      end if
+   end subroutine refusal_reason
+
+   subroutine finish_ranks(state, status, opts)
+      !! `rccsd_triples_finish` over the ranks of `opts%comm` once every rank has agreed it can run; collective
+      type(trc_rccsd_state_t), intent(inout) :: state
+      type(error_t), intent(out) :: status
+      type(trc_rccsd_triples_options_t), intent(in) :: opts
+
+      type(trc_rccsd_triples_dev_options_t) :: dev
+      type(error_t) :: mine
+      character(len=MSG_LEN) :: reason
+      real(dp), allocatable :: energies(:), share(:)
+      real(dp) :: e_local, seconds, e_t
+      integer :: rank, nranks, i
+      logical :: failed, share_ok
+
+      rank = opts%comm%rank()
+      nranks = opts%comm%size()
+      dev = device_options(opts)
+      dev%parts = nranks
+      dev%part = rank
+      dev%verbose = .false.   ! the per-part summary of the routine is each rank's; the report below is rank 0's
+      call rccsd_triples_ijk_run(state%ints, state%amps, e_local, mine, dev, seconds, energies)
+      call rank_shares(state%ints%no, nranks, rank, dev%diagonal_triples, seconds, share, share_ok)
+      ! one agreed flag before any vector moves: every rank leaves together or none does
+      reason = ""
+      failed = mine%has_error() .or. .not. share_ok
+      if (mine%has_error()) then
+         reason = mine%get_message()
+      else if (.not. share_ok) then
+         reason = "trc_rccsd_triples: the work-share table could not be allocated"
+      end if
+      if (rccsd_mpi_agree_text(opts%comm, reason, failed)) then
+         call status%set(ERROR_VALIDATION, trim(reason))
+         return
+      end if
+      call allreduce(opts%comm, energies)
+      call allreduce(opts%comm, share)
+      ! canonical order, the reduced vector: the same on every rank
+      e_t = 0.0_dp
+      do i = 1, size(energies)
+         e_t = e_t + energies(i)
+      end do
+      if (.not. abs(e_t) <= huge(1.0_dp)) then
+         call status%set(ERROR_VALIDATION, "trc_rccsd_triples: E(T) is NaN or infinite (a zero denominator or a "// &
+                         "non-finite amplitude or integral)")
+         return
+      end if
+      state%result%e_t = e_t
+      state%result%e_ccsd_t = state%result%e_ccsd + e_t
+      state%result%seconds_triples = maxval(share(nranks + 1:2*nranks))
+      state%result%has_triples = .true.
+      if (opts%verbose .and. rank == 0) call log_ranks(e_t, share, nranks)
+   end subroutine finish_ranks
+
+   subroutine rank_shares(no, nranks, rank, diagonal, seconds, share, ok)
+      !! A vector of 2 nranks: this rank's triple count at index rank + 1 and its seconds at nranks + rank + 1, zero
+      !! elsewhere, so that a sum over the ranks gathers every rank's. The count is that of the work-share table the run
+      !! itself used (trc_rccsd_triples_ijk, WORK SHARE), recomputed here: the routine does not hand its scratch back.
+      !! `ok` is false when the table could not be allocated (the caller agrees on that with the other ranks).
+      integer, intent(in) :: no, nranks, rank
+      logical, intent(in) :: diagonal
+      real(dp), intent(in) :: seconds
+      real(dp), allocatable, intent(out) :: share(:)
+      logical, intent(out) :: ok
+
+      integer, allocatable :: owner(:)
+      integer :: i, j
+
+      allocate (share(2*nranks))
+      share = 0.0_dp
+      share(nranks + rank + 1) = seconds
+      call rccsd_triples_ijk_pair_owners(no, nranks, diagonal, owner)
+      ok = allocated(owner)
+      if (.not. ok) return
+      do i = 1, no
+         do j = 1, i
+            if (owner(rccsd_triples_ijk_pair_index(i, j)) == rank) then
+               share(rank + 1) = share(rank + 1) + real(rccsd_triples_ijk_pair_cost(i, j, diagonal), dp)
+            end if
+         end do
+      end do
+   end subroutine rank_shares
+
+   subroutine log_ranks(e_t, share, nranks)
+      !! Rank 0's report of a shared (T): E(T), then one line per rank with its triples and its seconds
+      real(dp), intent(in) :: e_t
+      real(dp), intent(in) :: share(:)
+      integer, intent(in) :: nranks
+
+      character(len=200) :: line
+      integer :: q
+
+      write (line, "(a,i0,a,f20.12)") "  rccsd (T): shared over ", nranks, " ranks   E(T) ", e_t
+      call global_logger%info(trim(line))
+      do q = 1, nranks
+         write (line, "(a,i0,a,i0,a,f9.2,a)") "    rank ", q - 1, ": ", nint(share(q)), " triples, ", &
+            share(nranks + q), " s"
+         call global_logger%info(trim(line))
+      end do
+   end subroutine log_ranks
 
    pure function use_device(opts) result(device)
       !! The build's default (device version under `TRC_DEVICE`, else the reference) unless the caller chose

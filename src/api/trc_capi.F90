@@ -5564,12 +5564,16 @@ contains
          nranks = comm%size()
          call comm%finalize()
       end if
-      if (nranks > 1) then
-         status = TRC_ERR_UNSUPPORTED
-         cx%message = "trc_run_rccsd: RI-CCSD runs on one rank only ("//trim(itoa(nranks))//" ranks given)"
-         return
-      end if
       status = TRC_OK
+      if (nranks > 1 .and. cx%cc_triples .and. (cx%cc_triples_routine == 1 .or. cx%cc_triples_routine == 2)) then
+         ! The settings are the same on every rank, so every rank refuses together, before any work. Over ranks only
+         ! the occupied-driven routine shares the (T) (trc_rccsd_triples, RANKS); triples_routine 0 (auto) picks it
+         ! there, host build or not, so only an explicit reference or virtual-triple choice is refused.
+         status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_run_rccsd: over "//trim(itoa(nranks))//" ranks the (T) runs only with the occupied-driven "// &
+                      "routine (trc_set_rccsd_algorithm triples_routine 0 or 3); the reference (1) and the "// &
+                      "virtual-triple routine (2) run on one rank"
+      end if
    end subroutine rccsd_refusal
 
    subroutine rccsd_options(cx, opts, triples_opts)
@@ -5619,8 +5623,28 @@ contains
       type(trc_rccsd_triples_options_t) :: triples_opts
       type(trc_rccsd_state_t) :: state
       type(error_t) :: err
+      type(comm_t) :: comm
+      logical :: collective
 
       call rccsd_options(cx, opts, triples_opts)
+      ! The context's communicator, as RI-MP2 takes it (trc_build_comm: collective, binds this rank's device). A
+      ! failure here is the same on every rank (the same handle), so each returns without a collective call begun.
+      call trc_build_comm(cx%fcomm, comm, collective, status)
+      if (status /= TRC_OK) then
+         cx%message = "trc_run_rccsd: the communicator of trc_set_comm could not be used"
+         return
+      end if
+      if (collective) then
+         opts%comm = comm
+         opts%has_comm = .true.
+         triples_opts%comm = comm
+         triples_opts%has_comm = .true.
+         if (comm%size() > 1 .and. cx%cc_triples_routine == 0) then
+            ! auto over ranks: the occupied-driven routine, which runs on the host too in a host build
+            triples_opts%use_device = .true.
+            triples_opts%device_routine = RCCSD_TRIPLES_DEVICE_IJK
+         end if
+      end if
       ! The SCF's four-centre kernels leave CUDA local memory reserved for their largest stack frame (about 9 GiB
       ! on a V100, see trc_release_local_mem_reservation), and nothing below launches a four-centre kernel: the
       ! integrals are the density-fitting ones, whose frames fit the reduced limit. Giving it back before the
@@ -5639,6 +5663,7 @@ contains
          cx%message = trim(state%result%message)
          status = TRC_ERR_UNSUPPORTED
          call state%release()
+         if (collective) call comm%finalize()
          return
       end if
       cx%ccsd_ok = .true.
@@ -5649,6 +5674,7 @@ contains
       if (.not. state%result%converged) then
          status = TRC_ERR_NOCONV
          call state%release()
+         if (collective) call comm%finalize()
          return
       end if
       if (cx%cc_triples) then
@@ -5661,6 +5687,7 @@ contains
          end if
       end if
       call state%release()
+      if (collective) call comm%finalize()
    end subroutine rccsd_execute
 
    function trc_run_rccsd(handle) result(status) bind(c, name="trc_run_rccsd")
@@ -5673,8 +5700,8 @@ contains
       !! no auxiliary basis was set. Refused, with TRC_ERR_UNSUPPORTED, each
       !! with its reason in trc_message: an unrestricted or open-shell
       !! reference, a Kohn-Sham one, an effective core potential, linearly
-      !! dependent functions dropped (the message names trc_set_lindep), more
-      !! than one rank, a basis above this build's density-fitting ceilings
+      !! dependent functions dropped (the message names trc_set_lindep), the (T) routine
+      !! over several ranks (above), a basis above this build's density-fitting ceilings
       !! (TERCO_DF_LMAX, TERCO_DF_LMAX_AUX). A frozen core that leaves no
       !! occupied orbital is TRC_ERR_BADARG. A continuum solvent is not
       !! refused, as for RI-MP2: the correlation is computed on the orbitals of
@@ -5695,8 +5722,14 @@ contains
       !! virtual, naux auxiliary functions, diis the DIIS size) plus about
       !! 1.2 GB of ladder scratch; (T) adds 2 o^2 v^2 + o^3 v doubles and its
       !! tile (trc_set_rccsd_algorithm). docs/sphinx/cli.md has the formula
-      !! worked out. Single rank. After a converged run trc_run_gradient,
-      !! trc_run_hessian and trc_run_polarizability refuse.
+      !! worked out. Over ranks (trc_set_comm, one rank per device, every rank
+      !! calls this together): the integrals are built on every rank, the CCSD
+      !! iterations run on the first and its result and amplitudes reach the
+      !! others, and the (T) is shared (only the occupied-driven device routine
+      !! does so, and triples_routine 0 picks it over several ranks; 1 or 2 is
+      !! TRC_ERR_UNSUPPORTED there). Every rank returns the same status and
+      !! energies. After a converged run trc_run_gradient, trc_run_hessian and
+      !! trc_run_polarizability refuse.
       type(c_ptr), value :: handle
       integer(c_int) :: status
       type(context_box), pointer :: cx

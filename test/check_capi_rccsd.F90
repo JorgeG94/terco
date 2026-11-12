@@ -17,8 +17,8 @@
 !     settings alone (the run after it still reproduces pyscf);
 !   - each request the method does not cover is refused with its status and message: no SCF, an SCF that did not
 !     converge, no auxiliary basis, an unrestricted reference, a Kohn-Sham one, an effective core potential,
-!     RI-MP2 already run, every occupied orbital frozen, an auxiliary basis above this build's ceiling. (More than
-!     one rank is refused in trc_run_rccsd as well but needs an MPI build and a communicator, so it is not run here.)
+!     RI-MP2 already run, every occupied orbital frozen, an auxiliary basis above this build's ceiling. (Over several ranks
+!     trc_run_rccsd is collective and needs an MPI build and a communicator: test/rccsd_mpi.F90 runs it.)
 !   - a continuum solvent is NOT refused (as for RI-MP2), the energy is finite;
 !   - a second trc_run_scf, a new auxiliary basis and every RI-CCSD setter drop the stored result;
 !   - max_iterations = 2 returns TRC_ERR_NOCONV with a message, the last energies stay readable with converged = 0,

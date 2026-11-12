@@ -69,6 +69,7 @@ target_sources(
           post_hf/ccsd/trc_rccsd_ladder.F90       # RI-CCSD(T): the particle-particle ladder (assembled and direct forms) and its t1 dressing
           post_hf/ccsd/trc_rccsd_update.F90       # RI-CCSD(T): the T1/T2 amplitude update (Hirata Eqs. 35-36) from the modules above
           post_hf/ccsd/trc_rccsd_diis.F90         # RI-CCSD(T): amplitude DIIS and the step measure, on the device
+          post_hf/ccsd/trc_rccsd_mpi.F90            # RI-CCSD(T): the collective calls of the multi-rank run
           post_hf/ccsd/trc_rccsd_driver.F90       # RI-CCSD(T): the iteration driver, convergence, result and handle
           post_hf/ccsd/trc_rccsd_triples_dev.F90  # RI-CCSD(T): the (T) correction on the device, tiled gemms and one energy kernel
           post_hf/ccsd/trc_rccsd_triples_ijk.F90  # RI-CCSD(T): the (T) correction on the device, driven by occupied triples

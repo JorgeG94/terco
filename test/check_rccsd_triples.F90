@@ -1246,9 +1246,15 @@ contains
          ok = ok .and. st(k)%has_error() .and. e(k) == 0.0_dp .and. index(st(k)%get_message(), "parts") > 0
          text = trim(text)//" ["//st(k)%get_message()//"]"
       end do
-      ! `rccsd_triples_finish` refuses parts > 1 (a part's E(T) is partial) and leaves the result alone
+      ! `rccsd_triples_finish` sets the work share from the communicator: a caller's parts /= 1 or part /= 0 is refused
+      ! (a part's E(T) is partial) and the result is left alone
       state%result%has_triples = .false.
       topts_fin%device%parts = 2
+      call rccsd_triples_finish(state, st_fin, topts_fin)
+      ok = ok .and. st_fin%has_error() .and. .not. state%result%has_triples .and. index(st_fin%get_message(), "parts") > 0
+      text = trim(text)//" ["//st_fin%get_message()//"]"
+      topts_fin%device%parts = 1
+      topts_fin%device%part = 1
       call rccsd_triples_finish(state, st_fin, topts_fin)
       ok = ok .and. st_fin%has_error() .and. .not. state%result%has_triples .and. index(st_fin%get_message(), "parts") > 0
       text = trim(text)//" ["//st_fin%get_message()//"]"

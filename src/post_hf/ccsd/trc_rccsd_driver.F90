@@ -45,9 +45,28 @@
 ! global_logger.
 !
 ! The arguments are those of `trc_rimp2_run` except that the doubly occupied count is `opts%nocc` (more than eight
-! dummies is a rule of this tree) and the options carry what trc_rccsd_ints refuses on: more than one rank, an ECP,
-! an open shell (`nbeta`). Frozen core: the caller passes the number (`opts%nfrozen`); the count-by-element helper
-! lives in the API layer, which this one may not use. Single rank only.
+! dummies is a rule of this tree) and the options carry what trc_rccsd_ints refuses on: an ECP, an open shell
+! (`nbeta`). Frozen core: the caller passes the number (`opts%nfrozen`); the count-by-element helper lives in the API
+! layer, which this one may not use.
+!
+! RANKS. With `opts%has_comm` and more than one rank in `opts%comm` (one rank per device, none shared), the run is
+! collective: every rank calls it with the same arguments, and no MPI call is made otherwise.
+!   - ORBITALS. In the CLI and the C API the SCF is collective (rank 0 diagonalises and broadcasts `cmo` and `eps`), so
+!     every rank already holds the same orbitals. The run still broadcasts rank 0's `cmo` and `eps` first (one nmo^2
+!     message) as a GUARD for a caller that hands ranks different ones: SCFs run separately on each rank agree to the
+!     threshold but can differ in the sign of a column, and rank 0's amplitudes in another rank's integrals gave a (T)
+!     share wrong by 5e-5 Eh on water.
+!   - INTEGRALS are built on EVERY rank (replicated); the (T) step of trc_rccsd_triples distributes the (T) work.
+!   - STAGES. The CCSD stages and iterations run on rank 0 only for now; the other ranks hold their blocks and wait in
+!     the broadcast that ends the run.
+!   - FAILURE is agreed, never inferred. A rank that could not build its blocks sets a flag; one agreement
+!     (rccsd_mpi_agree_text) before the first stage makes every rank refused with the message of the lowest-numbered
+!     refusing rank, blocks released, and nothing further is collective. A refusal inside rank 0's stages reaches the
+!     others in the broadcast that ends the run.
+!   - OUTCOME. That broadcast carries rank 0's whole `state%result` (scalars, timings and message) as a packet of
+!     doubles, then t1 and t2 through the host (trc_rccsd_mpi) into every rank's host arrays, which each rank copies to
+!     its device as `amps%init` mapped them: afterwards every rank holds the same result and the same amplitudes,
+!     converged or not. `verbose` output comes from rank 0 only.
 module trc_rccsd_driver
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
@@ -58,6 +77,8 @@ module trc_rccsd_driver
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
+   use pic_mpi_lib, only: comm_t, bcast
+   use trc_rccsd_mpi, only: rccsd_mpi_agree_text, rccsd_mpi_bcast_amps, rccsd_mpi_bcast_orbitals
    use trc_linalg, only: trc_linalg_t
    use trc_rccsd_ints, only: trc_rccsd_ints_t, trc_rccsd_ints_options_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t, rccsd_inter_energy, rccsd_inter_mp2_guess
@@ -68,6 +89,7 @@ module trc_rccsd_driver
    implicit none
    private
 
+   integer, parameter :: MESSAGE_LEN = 300  !! length of `trc_rccsd_result_t%message`, and of the text a rank broadcasts
    real(dp), parameter :: DIIS_FREE_FRACTION = 0.7_dp
    !! the DIIS history stays on the device when it takes at most this share of the free device memory at its start;
    !! the rest is for what the iterations allocate after it. GH200, (H2O)9 cc-pVTZ: a history of 18.9 GB with
@@ -90,7 +112,6 @@ module trc_rccsd_driver
       integer :: nocc = 0                 !! doubly occupied orbitals (alpha electrons)
       integer :: nbeta = -1                !! beta electrons; -1 means nocc; anything else is an open shell and is refused
       integer :: nfrozen = 0              !! the lowest nfrozen occupied orbitals are left out of the correlation
-      integer :: nranks = 1               !! ranks of the caller's communicator; more than one is refused
       logical :: has_ecp = .false.        !! the calculation carries an effective core potential: refused
       real(dp) :: conv_energy = 1.0e-8_dp     !! |dE| below this, and the next, converge the run
       real(dp) :: conv_amplitude = 1.0e-6_dp  !! max |t' - t| below this
@@ -101,7 +122,10 @@ module trc_rccsd_driver
       !! not fit in DIIS_FREE_FRACTION of the free device memory (trc_rccsd_diis, HOST HISTORY)
       integer :: aux_block = 0            !! auxiliary functions per (mu nu|P) block; 0 means all at once
       type(trc_rccsd_ladder_options_t) :: ladder  !! form and batch sizes of the particle ladder, passed through
-      logical :: verbose = .false.        !! one line per iteration and the timing table
+      logical :: verbose = .false.        !! one line per iteration and the timing table (rank 0 only)
+      type(comm_t) :: comm
+      !! The caller's communicator, a copy of its handle; read only when `has_comm`. Without one, one rank.
+      logical :: has_comm = .false.       !! the run is collective over `comm` (module header, RANKS)
    end type trc_rccsd_options_t
 
    type :: trc_rccsd_result_t
@@ -130,7 +154,7 @@ module trc_rccsd_driver
       real(dp) :: e_t = 0.0_dp            !! the (T) correction; set by `rccsd_triples_finish` (trc_rccsd_triples), else 0
       real(dp) :: e_ccsd_t = 0.0_dp       !! e_ccsd + e_t, the CCSD(T) correlation energy; set with e_t
       real(dp) :: seconds_triples = 0.0_dp  !! host wall seconds of the (T), set with e_t
-      character(len=300) :: message = ""
+      character(len=MESSAGE_LEN) :: message = ""
    end type trc_rccsd_result_t
 
    type :: trc_rccsd_state_t
@@ -143,6 +167,14 @@ module trc_rccsd_driver
    contains
       procedure :: release => state_release
    end type trc_rccsd_state_t
+
+   integer, parameter :: PK_NREAL = 8, PK_NFLAG = 9
+   integer, parameter :: PK_SECONDS = PK_NREAL                      !! offset of the RCCSD_NTIME seconds in the result packet
+   integer, parameter :: PK_FLAGS = PK_SECONDS + RCCSD_NTIME        !! offset of the PK_NFLAG counts and flags
+   integer, parameter :: PK_TEXT = PK_FLAGS + PK_NFLAG              !! offset of the message, one code per character
+   integer, parameter :: PACKET_LEN = PK_TEXT + MESSAGE_LEN
+   !! the result broadcast: energies and measures, seconds, counts and flags, the message; every offset follows from
+   !! the one before, and a slice assignment of the wrong size does not compile
 
    type :: run_work_t
       !! The parts of a run that never outlive it
@@ -204,8 +236,22 @@ contains
 
       type(run_work_t) :: work
       type(timer_type) :: total, tc
-      logical :: use_start
+      type(trc_rccsd_options_t) :: local
+      real(dp), allocatable :: shared_cmo(:, :), shared_eps(:)
+      logical :: use_start, multi, agreed
+      integer :: rank, nranks
 
+      rank = 0
+      nranks = 1
+      multi = .false.
+      agreed = .false.
+      if (opts%has_comm) then
+         rank = opts%comm%rank()
+         nranks = opts%comm%size()
+         multi = nranks > 1
+      end if
+      local = opts
+      if (rank /= 0) local%verbose = .false.
       use_start = state%use_start
       state%result = trc_rccsd_result_t()
       call state%ints%release()
@@ -213,10 +259,27 @@ contains
       call total%start()
       call state%steps%init("rccsd", RCCSD_STEP_NAME)
       call state%steps%step_on(la, RCCSD_ST_INTEGRALS, tc)
-      call build_integrals(b, aux, pl, cmo, eps, opts, la, state)
+      if (multi) then
+         ! A guard (module header, RANKS): a collective SCF already gives every rank these orbitals; this protects
+         ! a caller that hands ranks different ones (sign flips of a column)
+         shared_cmo = cmo
+         shared_eps = eps
+         call rccsd_mpi_bcast_orbitals(opts%comm, shared_cmo, shared_eps, 0)
+         call build_integrals(b, aux, pl, shared_cmo, shared_eps, local, la, state)
+         call agree_refusal(opts%comm, state%result)
+         agreed = state%result%refused
+      else
+         call build_integrals(b, aux, pl, cmo, eps, local, la, state)
+      end if
       call state%steps%step_off(la, RCCSD_ST_INTEGRALS, tc)
       if (.not. state%result%refused) call add_integral_pieces(state%ints, state%steps)
-      if (.not. state%result%refused) call run_stages(opts, la, state, work, use_start)
+      if (.not. state%result%refused) then
+         if (rank == 0) then
+            call run_stages(local, la, state, work, use_start)
+         else
+            call follower_amps(state, use_start)
+         end if
+      end if
       if (state%result%refused) then
          ! a refusal from inside run_stages comes after the blocks were built: give them back, as the header promises
          call state%ints%release()
@@ -226,9 +289,125 @@ contains
       call la%sync()
       state%result%seconds(RCCSD_TIME_TOTAL) = total%get_elapsed_time()
       call fill_seconds(state%steps, state%result)
+      ! an agreed refusal already left every rank with the same result and nothing to share
+      if (multi .and. .not. agreed) call share_outcome(opts%comm, rank, state, use_start)
       state%use_start = .false.
-      if (opts%verbose) call log_summary(state%result, state%steps)
+      if (local%verbose) call log_summary(state%result, state%steps, nranks)
    end subroutine trc_rccsd_solve
+
+   subroutine agree_refusal(comm, res)
+      !! Collective. If any rank is refused, every rank becomes refused with the message of the lowest-numbered refusing
+      !! rank, so none of them goes on to a stage or a collective call the refused rank will not make and the reason
+      !! is not lost
+      type(comm_t), intent(in) :: comm
+      type(trc_rccsd_result_t), intent(inout) :: res
+
+      logical :: mine, anyone
+      character(len=MESSAGE_LEN) :: text
+
+      mine = res%refused
+      text = res%message
+      if (mine .and. len_trim(text) == 0) text = "trc_rccsd: the run was refused"
+      ! the collective call in a statement of its own: an `.and.` is free to skip an operand, and a rank that
+      ! skipped the call would leave the others waiting
+      anyone = rccsd_mpi_agree_text(comm, text, mine)
+      if (anyone) then
+         res%refused = .true.
+         res%converged = .false.
+         res%message = text
+      end if
+   end subroutine agree_refusal
+
+   subroutine follower_amps(state, use_start)
+      !! A rank that does not iterate: device-mapped amplitudes of the integrals' size for the broadcast to fill. The
+      !! caller's own, when `use_start` and they have the size, are kept (the broadcast overwrites them).
+      type(trc_rccsd_state_t), intent(inout) :: state
+      logical, intent(in) :: use_start
+
+      logical :: keep
+
+      keep = .false.
+      if (use_start) then
+         keep = allocated(state%amps%t1) .and. allocated(state%amps%t2)
+         if (keep) keep = state%amps%no == state%ints%no .and. state%amps%nv == state%ints%nv
+      end if
+      if (.not. keep) call state%amps%init(state%ints%no, state%ints%nv)
+   end subroutine follower_amps
+
+   subroutine share_outcome(comm, rank, state, use_start)
+      !! Collective. Rank 0's `state%result` and amplitudes to every rank (module header, RANKS). A refused result
+      !! ends here, with the other ranks' blocks and amplitudes given back as rank 0's were.
+      type(comm_t), intent(in) :: comm
+      integer, intent(in) :: rank
+      type(trc_rccsd_state_t), intent(inout) :: state
+      logical, intent(in) :: use_start
+
+      real(dp) :: packet(PACKET_LEN)
+
+      if (rank == 0) call result_to_packet(state%result, packet)
+      call bcast(comm, packet, int(PACKET_LEN), 0)
+      if (rank /= 0) call packet_to_result(packet, state%result)
+      if (state%result%refused) then
+         call state%ints%release()
+         if (.not. use_start) call state%amps%release()
+         return
+      end if
+      call rccsd_mpi_bcast_amps(comm, state%amps%t1, state%amps%t2, 0)
+      if (rank /= 0) call state%amps%push()
+   end subroutine share_outcome
+
+   subroutine result_to_packet(res, packet)
+      !! `res` as doubles, in the order `packet_to_result` reads them back (counts and flags are exact in a double)
+      type(trc_rccsd_result_t), intent(in) :: res
+      real(dp), intent(out) :: packet(PACKET_LEN)
+
+      integer :: i
+
+      packet = 0.0_dp
+      packet(1:PK_NREAL) = [res%e_mp2, res%e_ccsd, res%e_singles, res%e_doubles, res%de, res%step_max, &
+                            res%step_norm2, res%t1_diagnostic]
+      packet(PK_SECONDS + 1:PK_SECONDS + RCCSD_NTIME) = res%seconds
+      packet(PK_FLAGS + 1:PK_FLAGS + PK_NFLAG) = [merge(1.0_dp, 0.0_dp, res%converged), &
+                                                  merge(1.0_dp, 0.0_dp, res%refused), &
+                                                  merge(1.0_dp, 0.0_dp, res%finite), real(res%iterations, dp), &
+                                                  real(res%no, dp), real(res%nv, dp), real(res%naux, dp), &
+                                                  real(res%nfrozen, dp), real(res%diis_restarts, dp)]
+      do i = 1, MESSAGE_LEN
+         packet(PK_TEXT + i) = real(iachar(res%message(i:i)), dp)
+      end do
+   end subroutine result_to_packet
+
+   subroutine packet_to_result(packet, res)
+      !! The inverse of `result_to_packet`; the fields (T) fills are left at their defaults
+      real(dp), intent(in) :: packet(PACKET_LEN)
+      type(trc_rccsd_result_t), intent(out) :: res
+
+      integer :: i
+      real(dp) :: f(PK_NFLAG)
+
+      res%e_mp2 = packet(1)
+      res%e_ccsd = packet(2)
+      res%e_singles = packet(3)
+      res%e_doubles = packet(4)
+      res%de = packet(5)
+      res%step_max = packet(6)
+      res%step_norm2 = packet(7)
+      res%t1_diagnostic = packet(8)
+      res%seconds = packet(PK_SECONDS + 1:PK_SECONDS + RCCSD_NTIME)
+      f = packet(PK_FLAGS + 1:PK_FLAGS + PK_NFLAG)
+      res%converged = f(1) > 0.5_dp
+      res%refused = f(2) > 0.5_dp
+      res%finite = f(3) > 0.5_dp
+      res%iterations = nint(f(4))
+      res%no = nint(f(5))
+      res%nv = nint(f(6))
+      res%naux = nint(f(7))
+      res%nfrozen = nint(f(8))
+      res%diis_restarts = nint(f(9))
+      do i = 1, MESSAGE_LEN
+         res%message(i:i) = achar(nint(packet(PK_TEXT + i)))
+      end do
+   end subroutine packet_to_result
 
    subroutine add_integral_pieces(ints, stab)
       !! The pieces of the integral build (time and flops each, trc_rccsd_ints) as rows under its own
@@ -335,7 +514,6 @@ contains
       bopts%nbeta = merge(opts%nocc, opts%nbeta, opts%nbeta < 0)
       bopts%nfrozen = opts%nfrozen
       bopts%aux_block = opts%aux_block
-      bopts%nranks = opts%nranks
       bopts%has_ecp = opts%has_ecp
       call state%ints%build(b, aux, pl, cmo, eps, la, bopts)
       if (state%ints%status%has_error()) then
@@ -548,10 +726,12 @@ contains
       call global_logger%info(trim(line))
    end subroutine log_iteration
 
-   subroutine log_summary(res, stab)
-      !! The result, then the step table and the mean time of an iteration
+   subroutine log_summary(res, stab, nranks)
+      !! The result, then the step table and the mean time of an iteration. Over several ranks the table is rank 0's
+      !! (it labels itself "rank 0 of N"); no other rank prints one.
       type(trc_rccsd_result_t), intent(in) :: res
       type(step_table_t), intent(in) :: stab
+      integer, intent(in) :: nranks
 
       character(len=200) :: line
 
@@ -560,7 +740,7 @@ contains
       call global_logger%info(trim(line))
       write (line, "(a,f10.6,a,i0)") "  rccsd: T1 diagnostic ", res%t1_diagnostic, "   DIIS restarts ", res%diis_restarts
       call global_logger%info(trim(line))
-      call stab%report(res%seconds(RCCSD_TIME_TOTAL), 0, 1)
+      call stab%report(res%seconds(RCCSD_TIME_TOTAL), 0, nranks)
       if (res%iterations > 0) then
          ! the stages of the iteration only: the integrals are built once
          write (line, "(a,f10.3,a,i0,a)") "  rccsd: mean time of an iteration ", &

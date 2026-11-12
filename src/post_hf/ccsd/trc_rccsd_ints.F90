@@ -61,7 +61,8 @@
 ! records the stamp it saw and refuses to run when it no longer matches: after
 ! `ints%build` is called again, re-`init` the scratch.
 !
-! Single rank only.
+! RANKS. `build` makes no MPI call: every rank of a multi-rank run builds the whole of it from its own orbitals
+! (replicated), see trc_rccsd_driver.
 module trc_rccsd_ints
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
@@ -89,7 +90,6 @@ module trc_rccsd_ints
       integer :: nbeta = 0      !! beta electrons; anything but `nalpha` is an open shell and is refused
       integer :: nfrozen = 0    !! the lowest `nfrozen` occupied orbitals are left out of the correlation
       integer :: aux_block = 0  !! auxiliary functions per (mu nu|P) block; 0 means all at once (no number changes)
-      integer :: nranks = 1     !! ranks of the caller communicator; more than one is refused
       logical :: has_ecp = .false.  !! the calculation carries an effective core potential: refused
    end type trc_rccsd_ints_options_t
 
@@ -216,10 +216,6 @@ contains
       nalpha = opts%nalpha
       nbeta = opts%nbeta
       nfrozen = opts%nfrozen
-      if (opts%nranks > 1) then
-         call error%set(ERROR_VALIDATION, "trc_rccsd_ints: one rank only, the communicator has more")
-         return
-      end if
       if (opts%has_ecp) then
          call error%set(ERROR_VALIDATION, "trc_rccsd_ints: an ECP is not supported")
          return

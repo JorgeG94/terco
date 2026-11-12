@@ -1,7 +1,10 @@
 submodule (trc_run) trc_run_cc
    !! The CLI side of closed-shell RI-CCSD and RI-CCSD(T) (`--riccsd`,
    !! `--riccsd-t`, `--cc-*`): the options, what the method refuses before any
-   !! work, and the call into the library (bodies of `trc_run`).
+   !! work, and the call into the library (bodies of `trc_run`). Over MPI ranks
+   !! every rank runs these together (the library shares the (T) and gives every
+   !! rank the same result); the report and the JSON come from rank 0 as for the
+   !! rest of the CLI.
    use pic_strings, only: to_string
    use trc_capi, only: trc_set_rccsd, trc_set_rccsd_convergence, trc_set_rccsd_algorithm, trc_run_rccsd, &
                        trc_rccsd_energy, trc_rccsd_dimensions, trc_energy, TRC_ERR_NOCONV
@@ -109,7 +112,6 @@ contains
       if (r%grad .or. r%hessian .or. r%opt) call run_die(r, "--riccsd has no gradient: it cannot be combined with "// &
                                                       "--grad, --hessian or --opt")
       if (r%ecp_core > 0) call run_die(r, "--riccsd does not support an effective core potential")
-      if (r%nranks > 1) call run_die(r, "--riccsd runs on one rank only ("//to_string(r%nranks)//" ranks given)")
       if (nfrozen >= r%nelec/2) call run_die(r, "--frozen "//to_string(nfrozen)//" leaves no correlated orbital: this "// &
                                          "molecule has "//to_string(r%nelec/2)//" occupied orbitals")
       if (len(r%pcm) > 0 .and. r%rank0) then
@@ -151,6 +153,10 @@ contains
          r%cc_triples_routine = triples_code(sval)
          if (r%cc_triples_routine < 0) call run_die(r, N_TRIPLES//" must be auto, reference, tiled or ijk, got '"// &
                                                     trim(sval)//"'")
+         if (r%nranks > 1 .and. (r%cc_triples_routine == 1 .or. r%cc_triples_routine == 2)) then
+            call run_die(r, N_TRIPLES//" reference and tiled run on one rank; over "//to_string(r%nranks)// &
+                         " ranks the (T) is shared by ijk only (auto picks it)")
+         end if
       end if
       if (r%cli%is_set("cc-triples-budget")) then
          if (.not. r%cc_triples) call run_die(r, N_BUDGET//" needs --riccsd-t ([correlation] method = 'ri-ccsd(t)')")

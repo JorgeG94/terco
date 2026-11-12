@@ -64,7 +64,7 @@ contains
                   new_unittest("h2o2: block probes vs pyscf", h_probes), &
                   new_unittest("h2o2: B consistency and aux blocking", h_algebra), &
                   new_unittest("h2o2: block symmetries", h_symmetry), &
-                  new_unittest("refusals: ECP, ranks, open shell, no occupied, no virtual, frozen, shapes", refusals) &
+                  new_unittest("refusals: ECP, open shell, no occupied, no virtual, frozen, shapes", refusals) &
                   ]
    end subroutine collect_check_rccsd_ints
 
@@ -308,10 +308,6 @@ contains
          ro%has_ecp = .true.
          call r%build(bas, aux, pl, res%cmo(:, :, 1), res%eps(:, 1), la, ro)
          call note_refusal("an ECP", "ECP", r, why)
-         ro = good_options()
-         ro%nranks = 2
-         call r%build(bas, aux, pl, res%cmo(:, :, 1), res%eps(:, 1), la, ro)
-         call note_refusal("two ranks", "one rank only", r, why)
          ro = good_options()
          ro%nalpha = nocc + 1
          call r%build(bas, aux, pl, res%cmo(:, :, 1), res%eps(:, 1), la, ro)

@@ -218,6 +218,13 @@ contains
          if (r%cc_has_triples) then
             call cc_line("RI-CCSD (T) CORRECTION", r%cc_e_t)
             call cc_line("TOTAL RI-CCSD(T) ENERGY", r%etot + r%cc_e_ccsd + r%cc_e_t)
+            if (r%nranks > 1) then
+               block
+                  character(len=47) :: note
+                  write (note, "(a,i0,a)") "(T) shared by ", r%nranks, " ranks, CCSD on rank 0"
+                  call cc_note(note)
+               end block
+            end if
          end if
       end if
       if (r%cc_triples .and. .not. r%cc_has_triples) then
