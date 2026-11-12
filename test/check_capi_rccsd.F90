@@ -45,6 +45,7 @@ module check_capi_rccsd_suite
                                trc_set_convergence, trc_set_rimp2, trc_set_rccsd, trc_set_lindep, &
                                trc_rccsd_dimensions, trc_set_rccsd_convergence, &
                                trc_set_rccsd_algorithm, trc_set_method, trc_set_pcm, trc_set_unrestricted, &
+                               trc_set_symmetry, &
                                trc_run_scf, trc_run_rimp2, trc_run_rccsd, trc_rccsd_energy, trc_run_gradient, &
                                trc_energy, trc_message, TRC_OK, TRC_ERR_NULL, TRC_ERR_BADARG, TRC_ERR_UNSUPPORTED, &
                                TRC_ERR_NOCONV, TRC_ERR_STATE
@@ -99,7 +100,9 @@ contains
                   new_unittest("the dimensions report the frozen core, the spaces and the auxiliary functions", &
                                test_dimensions), &
                   new_unittest("dropped linearly dependent functions are refused and the message names the option", &
-                               test_lindep) &
+                               test_lindep), &
+                  new_unittest("after a symmetric SCF: a named group is refused, on runs in C1 and matches pyscf", &
+                               test_symmetry) &
                   ]
    end subroutine collect_capi_rccsd
 
@@ -223,6 +226,61 @@ contains
          to_string(abs(e_ccsd - refs%e_ccsd_corr), "es9.2")//", |E(T)| "//to_string(abs(e_t - refs%e_t), "es9.2")// &
          ", |total| "//to_string(abs(e_total - refs%e_ccsd_t), "es9.2")//", |T1| "//to_string(abs(t1 - refs%t1_diag), "es9.2")
    end subroutine test_energies
+
+   subroutine test_symmetry(error)
+      !! The symmetric SCF leaves its orbitals in the standard frame, which RI-CCSD does not use (as RI-MP2): a named
+      !! group is refused; `on` repeats the SCF in C1 and the energies are the pyscf ones of `test_energies`
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      type(rccsd_refs_t) :: refs
+      real(c_double) :: e_mp2, e_ccsd, e_t, t1, e_total
+      integer(c_int) :: rc, iterations, converged, has_triples
+      logical :: ok
+
+      ok = supported()
+      if (.not. ok) then
+         print "(a)", "SKIP: this build's density-fitting ceilings are below cc-pVDZ-RIFIT"
+         return
+      end if
+      ! a named group: the symmetric SCF runs, RI-CCSD refuses
+      call make_handle(h, WATER, "cc-pvdz", "cc-pvdz-rifit", 0, 1, rc)
+      if (rc == TRC_OK) rc = trc_set_rccsd(h, 1_c_int, 1_c_int, 0_c_int)
+      if (rc == TRC_OK) rc = trc_set_symmetry(h, "C2v"//c_null_char, 0.0_c_double)
+      if (rc == TRC_OK) rc = trc_run_scf(h)
+      call check(error, rc == TRC_OK, "the C2v water SCF failed: "//message(h))
+      if (allocated(error)) return
+      call expect(error, "a named group", trc_run_rccsd(h), TRC_ERR_UNSUPPORTED, h, "symmetry is not supported with RI-CCSD")
+      if (allocated(error)) return
+      rc = trc_destroy(h)
+      ! on: the symmetric SCF runs, RI-CCSD repeats it in C1
+      call make_handle(h, WATER, "cc-pvdz", "cc-pvdz-rifit", 0, 1, rc)
+      if (rc == TRC_OK) rc = trc_set_rccsd(h, 1_c_int, 1_c_int, 0_c_int)
+      if (rc == TRC_OK) rc = trc_set_rccsd_convergence(h, 1.0e-12_c_double, 1.0e-10_c_double, 100_c_int, 0_c_int)
+      if (rc == TRC_OK) rc = trc_set_symmetry(h, "on"//c_null_char, 0.0_c_double)
+      if (rc == TRC_OK) rc = trc_run_scf(h)
+      call check(error, rc == TRC_OK, "the symmetry-on water SCF failed: "//message(h))
+      if (allocated(error)) return
+      rc = trc_run_rccsd(h)
+      call check(error, rc == TRC_OK, "symmetry on: trc_run_rccsd returned "//to_string(int(rc))//": "//message(h))
+      if (allocated(error)) return
+      call read_rccsd_refs(REF, refs)
+      rc = trc_rccsd_energy(h, e_mp2, e_ccsd, e_t, t1, iterations, converged, has_triples)
+      call check(error, rc == TRC_OK .and. converged == 1 .and. has_triples == 1, "symmetry on: not a converged (T) result")
+      if (allocated(error)) return
+      call check(error, abs(e_ccsd - refs%e_ccsd_corr) < TOL_CORR, "symmetry on: E_CCSD |difference| to pyscf "// &
+                 to_string(abs(e_ccsd - refs%e_ccsd_corr), "es9.2"))
+      if (allocated(error)) return
+      call check(error, abs(e_t - refs%e_t) < TOL_T, "symmetry on: E(T) |difference| to pyscf "// &
+                 to_string(abs(e_t - refs%e_t), "es9.2"))
+      if (allocated(error)) return
+      rc = trc_energy(h, e_total)
+      call check(error, rc == TRC_OK .and. abs(e_total - refs%e_ccsd_t) < TOL_TOTAL, "symmetry on: the CCSD(T) total "// &
+                 "|difference| to pyscf "//to_string(abs(e_total - refs%e_ccsd_t), "es9.2"))
+      if (allocated(error)) return
+      rc = trc_destroy(h)
+      print "(a)", "  measured, symmetry on: |E_CCSD| "//to_string(abs(e_ccsd - refs%e_ccsd_corr), "es9.2")//", |E(T)| "// &
+         to_string(abs(e_t - refs%e_t), "es9.2")//", |total| "//to_string(abs(e_total - refs%e_ccsd_t), "es9.2")
+   end subroutine test_symmetry
 
    subroutine test_frozen_by_element(error)
       type(error_type), allocatable, intent(out) :: error

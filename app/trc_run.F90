@@ -591,6 +591,8 @@ contains
          why = "--hessian (frequencies and thermochemistry)"
       else if (r%rimp2) then
          why = "--rimp2 (or a double-hybrid --func)"
+      else if (r%cc) then
+         why = "--riccsd / --riccsd-t"
       else if (r%df) then
          why = "--df"
       else if (len(r%pcm) > 0) then

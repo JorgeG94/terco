@@ -671,6 +671,8 @@ program trc_main
    else if (r%cli%is_set("eps")) then
       call run_die(r, "--eps is the dielectric constant for --pcm, which was not given")
    end if
+   ! Before the symmetry block: its refusal and its fall-back to C1 have to know that RI-CCSD was asked for.
+   call run_cc_parse(r, nfrozen)
    ! ---- --symmetry ------------------------------------------------------
    ! Parsed here, before the --opt block, so a symmetry request with --opt (or
    ! anything else the symmetric SCF does not support yet) is refused by name
@@ -727,7 +729,6 @@ program trc_main
       if (len(r%sym_fallback) > 0) r%sym_wanted = .false.
    end if
 
-   call run_cc_parse(r, nfrozen)
    if (r%rimp2 .or. r%cc) then
       ! RI-MP2 (restricted or unrestricted, UHF/UKS) now follows the
       ! basis's own AO space, spherical or Cartesian, same as a plain

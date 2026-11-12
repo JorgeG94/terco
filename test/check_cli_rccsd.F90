@@ -739,6 +739,8 @@ contains
       call refused(error, COMMON//' --riccsd --cc-triples-budget 1', 'r_budget', "needs --riccsd-t")
       call refused(error, COMMON//' --riccsd --cc-triples tiled', 'r_triples', "needs --riccsd-t")
       call refused(error, COMMON//' --cc-triples tiled', 'r_triples2', "need --riccsd")
+      ! a named point group is strict: refused before the SCF, as for --rimp2 (--symmetry on runs in C1 instead)
+      call refused(error, COMMON//' --riccsd-t --symmetry c2v', 'r_sym', "--symmetry is not supported with --riccsd")
    end subroutine test_refusals
 
    subroutine test_bad_values(error)

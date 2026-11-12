@@ -178,7 +178,9 @@ electrons (`--uhf`, or an odd electron count from `--chrg`), `--grad`,
 `--hessian`, `--opt`, a molecule with an effective core potential and a
 `--frozen` that leaves no correlated orbital; the `--cc-*` options need
 `--riccsd` or `--riccsd-t`, and `--cc-triples` and `--cc-triples-budget` need `--riccsd-t`. Over
-several ranks `--cc-triples reference` and `tiled` are refused (see below). A basis with linearly dependent functions
+several ranks `--cc-triples reference` and `tiled` are refused (see below). A named point group
+(`--symmetry c2v`) is refused as well, as for `--rimp2`; `--symmetry on` runs in C1 with one line
+saying so. A basis with linearly dependent functions
 dropped by `--lindep` (`[basis] linear_dependence`) is refused after the SCF,
 since the method needs every orbital of the basis: lower the threshold (0 drops
 none) or remove the near-duplicate functions. Over a `--pcm` reference the

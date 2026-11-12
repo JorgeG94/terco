@@ -6337,6 +6337,16 @@ contains
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
+      ! As RI-MP2: the symmetric SCF's orbitals are in its standard frame, which this path does not use
+      if (symmetry_wanted(cx)) then
+         if (sym_lenient(cx)) then
+            call sym_to_c1(handle, cx, "RI-CCSD", .true.)
+         else
+            cx%message = "trc_run_rccsd: symmetry is not supported with RI-CCSD yet; use symmetry = off"
+            status = TRC_ERR_UNSUPPORTED
+            return
+         end if
+      end if
       cx%ccsd_ok = .false.
       call rccsd_refusal(cx, status)
       if (status /= TRC_OK) return
