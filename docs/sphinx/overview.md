@@ -35,6 +35,10 @@ across hardware, since in theory, it should be portable.
   range-separated) with VV10, the density-fitted RHF/RKS gradient, RHF +
   RI-MP2, and double hybrids; four-centre or density-fitted reference;
   frozen core; Cartesian or spherical; restricted; single GPU.
+- **Point-group symmetry** (opt-in, `--symmetry`): Abelian groups (D2h and
+  subgroups) detected and symmetrised, an SCF blocked by irrep with orbital
+  labels, and a skeleton Fock build and gradient from orbit representatives of
+  the integral quartets; see {doc}`theory`.
 - **Interfaces**: a Fortran API (`trc_api`), a `bind(c)` ABI for callers
   built with another compiler, and the `terco` command-line program.
 - **Geometry optimization**: Through LIBDLFIND.
