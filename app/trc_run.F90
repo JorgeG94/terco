@@ -568,6 +568,8 @@ contains
          why = "--soscf"
       else if (r%mom) then
          why = "--mom"
+      else if (r%gdm) then
+         why = "--gdm"
       else if (len(r%fukui) > 0) then
          why = "--fukui"
       else if (len(r%restart) > 0) then
