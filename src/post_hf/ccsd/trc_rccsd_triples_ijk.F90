@@ -150,6 +150,8 @@
 !
 ! INDEX RANGES. Q, the slots and every flat kernel index are 64-bit (3 nv^3 T passes 2^31 already at nv = 265). The
 ! gemm dimensions and leading dimensions are 32-bit: nv^2 and no^2 are checked in `init`.
+#include "inc/trc_dc_index.inc"
+
 module trc_rccsd_triples_ijk
    use pic_types, only: dp, int32, int64
    use pic_timer, only: timer_type
@@ -166,6 +168,7 @@ module trc_rccsd_triples_ijk
    public :: trc_rccsd_triples_ijk_scratch_t
    public :: rccsd_triples_ijk_run, rccsd_triples_ijk_run_scratch
    public :: rccsd_triples_ijk_pair_owners, rccsd_triples_ijk_pair_cost, rccsd_triples_ijk_pair_index
+   public :: rccsd_triples_ijk_triple_bytes
 
    integer(int64), parameter :: DEFAULT_BUDGET = 2147483648_int64  !! bytes of the Q tile when `budget_bytes` is 0
    integer(int64), parameter :: DEFAULT_SLICE_BYTES = 17179869184_int64
@@ -226,6 +229,15 @@ module trc_rccsd_triples_ijk
 
 contains
 
+   pure function rccsd_triples_ijk_triple_bytes(nv) result(bytes)
+      !! Bytes of Q for one occupied triple, 24 nv^3: the least a budget must hold (`init` refuses below it, and the
+      !! API warns of it before the CCSD iterations)
+      integer, intent(in) :: nv
+      integer(int64) :: bytes
+
+      bytes = 24_int64*nv*nv*nv
+   end function rccsd_triples_ijk_triple_bytes
+
    ! ---------------------------------------------------------------------
    ! the scratch
    ! ---------------------------------------------------------------------
@@ -270,7 +282,7 @@ contains
       this%no = ints%no
       this%nv = ints%nv
       this%ntotal = no*(no + 1)*(no + 2)/6
-      per_triple = 24_int64*nv3
+      per_triple = rccsd_triples_ijk_triple_bytes(ints%nv)
       if (opts%budget_bytes > 0) then
          budget = opts%budget_bytes
       else
@@ -1029,7 +1041,7 @@ contains
 
       n = int(nv + no, int64)*nv*no*no
       do concurrent(t=1:n)
-         tvb(t) = tvb_item(t, no, nv, t2, ooov)
+         tvb(t) = tvb_item(TRC_DC_INDEX(t), no, nv, t2, ooov)
       end do
    end subroutine kernel_pack_tvb
 
@@ -1042,7 +1054,7 @@ contains
 
       n = int(nv + no, int64)*nv*no*no
       do concurrent(t=1:n)
-         tvb2(t) = tvb2_item(t, no, nv, tvb)
+         tvb2(t) = tvb2_item(TRC_DC_INDEX(t), no, nv, tvb)
       end do
    end subroutine kernel_pack_tvb2
 
@@ -1055,7 +1067,7 @@ contains
 
       n = int(nv, int64)*naux
       do concurrent(t=1:n)
-         bo(t) = bo_item(t, no, nv, naux, o, b_ov)
+         bo(t) = bo_item(TRC_DC_INDEX(t), no, nv, naux, o, b_ov)
       end do
    end subroutine kernel_gather_bo
 
@@ -1069,7 +1081,7 @@ contains
 
       n = int(nv, int64)*nv*nv
       do concurrent(t=1:n)
-         g(dst0 - 1 + t) = g(src0 - 1 + swapped_pos(t, nv))
+         g(dst0 - 1 + t) = g(src0 - 1 + swapped_pos(TRC_DC_INDEX(t), nv))
       end do
    end subroutine kernel_copy_swapped
 
@@ -1077,17 +1089,11 @@ contains
       !! g(x,y,f) <-> g(y,x,f) over the nv^3 integral columns of one slot; one thread per x < y
       integer, intent(in) :: nv
       real(dp), intent(inout) :: g(int(nv, int64)*nv*nv)
-      integer(int64) :: t, n, q
-      real(dp) :: held
+      integer(int64) :: t, n
 
       n = int(nv, int64)*nv*nv
-      do concurrent(t=1:n) local(q, held)
-         q = swapped_pos(t, nv)
-         if (q > t) then
-            held = g(t)
-            g(t) = g(q)
-            g(q) = held
-         end if
+      do concurrent(t=1:n)
+         call swap_item(TRC_DC_INDEX(t), nv, g)
       end do
    end subroutine kernel_swap_in_place
 
@@ -1101,7 +1107,7 @@ contains
       n = int(nv, int64)*nv*no
       off = int(nv, int64)*nv*nv
       do concurrent(t=1:n)
-         g(off + t) = slice_t2_item(t, no, nv, o, layout, t2)
+         g(off + t) = slice_t2_item(TRC_DC_INDEX(t), no, nv, o, layout, t2)
       end do
    end subroutine kernel_gather_slice_t2
 
@@ -1116,7 +1122,7 @@ contains
 
       n = int(nv, int64)*nv*3*nt
       do concurrent(t=1:n)
-         vm(t) = vm_item(t, no, nv, ncap, ovov, trip)
+         vm(t) = vm_item(TRC_DC_INDEX(t), no, nv, ncap, ovov, trip)
       end do
    end subroutine kernel_gather_vm
 
@@ -1131,7 +1137,7 @@ contains
 
       n = int(nv, int64)*3*nt
       do concurrent(t=1:n)
-         vt(t) = vt_item(t, no, nv, ncap, t1, trip)
+         vt(t) = vt_item(TRC_DC_INDEX(t), no, nv, ncap, t1, trip)
       end do
    end subroutine kernel_gather_vt
 
@@ -1147,7 +1153,7 @@ contains
 
       n = int(nv, int64)*nv*nt
       do concurrent(t=1:n)
-         part(t) = row_energy_item(t, no, nv, ncap, q, vm, vt, eps_o, eps_v, trip, amap)
+         part(t) = row_energy_item(TRC_DC_INDEX(t), no, nv, ncap, q, vm, vt, eps_o, eps_v, trip, amap)
       end do
    end subroutine kernel_energy_rows
 
@@ -1161,7 +1167,7 @@ contains
 
       n = int(nv, int64)*nt
       do concurrent(t=1:n)
-         col(t) = run_sum_item(t, nv, int(nv, int64)*nv*ncap, part)
+         col(t) = run_sum_item(TRC_DC_INDEX(t), nv, int(nv, int64)*nv*ncap, part)
       end do
    end subroutine kernel_energy_cols
 
@@ -1174,7 +1180,7 @@ contains
       integer(int64) :: s
 
       do concurrent(s=1:int(nt, int64))
-         etrip(s) = run_sum_item(s, nv, int(nv, int64)*ncap, col)
+         etrip(s) = run_sum_item(TRC_DC_INDEX(s), nv, int(nv, int64)*ncap, col)
       end do
    end subroutine kernel_energy_sum
 
@@ -1182,8 +1188,8 @@ contains
    ! the item routines: pure, `routine seq`, explicit-shape dummies, scalars
    ! only. A flat 1-based index t is the position in the array that is written,
    ! first index fastest.
-   ! The loop index is a VALUE dummy: see the item routines of trc_rccsd_update
-   ! (an ifx miscompilation of an index passed by reference).
+   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
    ! ---------------------------------------------------------------------
 
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
@@ -1206,7 +1212,7 @@ contains
    pure function tvb_item(t, no, nv, t2, ooov) result(v)
       !! tvb(r,w,o2,o3): t2(o3,o2,w,r) for r <= nv, else -ooov(o2,r-nv,o3,w); position t of (nv + no, nv, no, no)
       !$acc routine seq
-      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: t2(int(no, int64)*no*nv*nv)
       real(dp), intent(in) :: ooov(int(no, int64)*no*no*nv)
@@ -1224,7 +1230,7 @@ contains
    pure function tvb2_item(t, no, nv, tvb) result(v)
       !! tvb2(r,w,a,b) = tvb(r,w,b,a), position t of (nv + no, nv, no, no)
       !$acc routine seq
-      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: tvb(int(nv + no, int64)*nv*no*no)
       real(dp) :: v
@@ -1237,7 +1243,7 @@ contains
    pure function swapped_pos(t, nv) result(q)
       !! The position of (y,x,f) for the position t of (x,y,f) in (nv, nv, nv)
       !$acc routine seq
-      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: t
       integer, intent(in) :: nv
       integer(int64) :: q
       integer(int64) :: x, y, f
@@ -1248,10 +1254,28 @@ contains
       q = 1 + y + nv*(x + nv*f)
    end function swapped_pos
 
+   pure subroutine swap_item(t, nv, g)
+      !! g(x,y,f) <-> g(y,x,f) for the thread that owns the element of the pair with the smaller position: the other
+      !! element of the pair has no thread that touches it, and a diagonal one (x = y) moves nowhere
+      !$acc routine seq
+      integer(int64), intent(in) :: t
+      integer, intent(in) :: nv
+      real(dp), intent(inout) :: g(int(nv, int64)*nv*nv)
+      integer(int64) :: q
+      real(dp) :: held
+
+      q = swapped_pos(t, nv)
+      if (q > t) then
+         held = g(t)
+         g(t) = g(q)
+         g(q) = held
+      end if
+   end subroutine swap_item
+
    pure function bo_item(t, no, nv, naux, o, b_ov) result(v)
       !! b_ov(o + no (x-1), P) at position t of (nv, naux)
       !$acc routine seq
-      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: t
       integer, intent(in) :: no, nv, naux, o
       real(dp), intent(in) :: b_ov(int(no, int64)*nv*naux)
       real(dp) :: v
@@ -1265,7 +1289,7 @@ contains
    pure function slice_t2_item(t, no, nv, o, layout, t2) result(v)
       !! A'((x,y),nv+m) = t2(m,o,y,x) of orbital o, with x and y exchanged for layout 2; position t of (nv, nv, no)
       !$acc routine seq
-      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: t
       integer, intent(in) :: no, nv, o, layout
       real(dp), intent(in) :: t2(int(no, int64)*no*nv*nv)
       real(dp) :: v
@@ -1285,7 +1309,7 @@ contains
    pure function run_sum_item(t, n, nx, x) result(e)
       !! x((t-1) n + 1) + ... + x(t n), added in index order
       !$acc routine seq
-      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: t
       integer(int64), intent(in) :: nx
       integer, intent(in) :: n
       real(dp), intent(in) :: x(nx)
@@ -1318,7 +1342,7 @@ contains
    pure function vm_item(t, no, nv, ncap, ovov, trip) result(v)
       !! vm(p,q,m,s), position t of (nv, nv, 3, nt): ovov(i,p,j,q), ovov(i,p,k,q), ovov(j,p,k,q) for m = 1, 2, 3
       !$acc routine seq
-      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: t
       integer(int64), intent(in) :: ncap
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: ovov(no, nv, no, nv)
@@ -1339,7 +1363,7 @@ contains
    pure function vt_item(t, no, nv, ncap, t1, trip) result(v)
       !! vt(p,m,s), position t of (nv, 3, nt): t1(o,p) for o the m-th orbital of triple s
       !$acc routine seq
-      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: t
       integer(int64), intent(in) :: ncap
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: t1(no, nv)
@@ -1359,7 +1383,7 @@ contains
       !! everything that depends on (b,c) only read once outside the loop over a; the operations are those of the
       !! three-term V in the module header, in the same order
       !$acc routine seq
-      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: t
       integer(int64), intent(in) :: ncap
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: qq(3_int64*nv*nv*nv*ncap)

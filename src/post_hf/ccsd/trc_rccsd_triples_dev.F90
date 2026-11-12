@@ -65,6 +65,8 @@
 ! the gemm dimensions are 32-bit and checked in `init` (no^2 nv, no nv^2 and the sizes of the repacked arrays,
 ! no^2 nv^2 and no^3 nv, below 2^31 - 1), and so is the size of the (ia|bc) copy, no nv^3, whose blocks the gemms
 ! address from default-integer offsets.
+#include "inc/trc_dc_index.inc"
+
 module trc_rccsd_triples_dev
    use pic_types, only: dp, int32, int64
    use pic_timer, only: timer_type
@@ -79,6 +81,7 @@ module trc_rccsd_triples_dev
 
    public :: trc_rccsd_triples_dev_options_t, trc_rccsd_triples_scratch_t
    public :: rccsd_triples_dev_run, rccsd_triples_dev_run_scratch, rccsd_triples_dev_point_energy
+   public :: rccsd_triples_dev_triple_bytes
 
    integer(int64), parameter :: DEFAULT_BUDGET = 1073741824_int64  !! bytes of the W tile when `budget_bytes` is 0
    integer, parameter :: SEG_A = 1, SEG_B = 2, SEG_C0 = 3, SEG_NC = 4, SEG_S0 = 5  !! rows of the segment list
@@ -122,6 +125,15 @@ module trc_rccsd_triples_dev
    end type trc_rccsd_triples_scratch_t
 
 contains
+
+   pure function rccsd_triples_dev_triple_bytes(no) result(bytes)
+      !! Bytes of W for one virtual triple, 48 no^3 (6 no^3 doubles): the least a budget must hold (`init` refuses
+      !! below it, and the API warns of it before the CCSD iterations)
+      integer, intent(in) :: no
+      integer(int64) :: bytes
+
+      bytes = 48_int64*no*no*no
+   end function rccsd_triples_dev_triple_bytes
 
    ! ---------------------------------------------------------------------
    ! the scratch
@@ -172,7 +184,7 @@ contains
       this%no = ints%no
       this%nv = ints%nv
       this%ntotal = nv*(nv + 1)*(nv + 2)/6
-      per_triple = 48_int64*no3
+      per_triple = rccsd_triples_dev_triple_bytes(ints%no)
       budget = merge(opts%budget_bytes, DEFAULT_BUDGET, opts%budget_bytes > 0)
       if (opts%tile_triples > 0) then
          this%ncap = min(opts%tile_triples, this%ntotal)
@@ -625,7 +637,7 @@ contains
 
       n = int(nv, int64)*no*no*nv
       do concurrent(t=1:n)
-         tt2(t) = tt2_item(t, no, nv, t2)
+         tt2(t) = tt2_item(TRC_DC_INDEX(t), no, nv, t2)
       end do
    end subroutine kernel_pack_tt2
 
@@ -638,7 +650,7 @@ contains
 
       n = int(no, int64)*no*nv*nv
       do concurrent(t=1:n)
-         t2r(t) = t2r_item(t, no, nv, t2)
+         t2r(t) = t2r_item(TRC_DC_INDEX(t), no, nv, t2)
       end do
    end subroutine kernel_pack_t2r
 
@@ -651,7 +663,7 @@ contains
 
       n = int(no, int64)*no*no*nv
       do concurrent(t=1:n)
-         oop(t) = oop_item(t, no, nv, ooov)
+         oop(t) = oop_item(TRC_DC_INDEX(t), no, nv, ooov)
       end do
    end subroutine kernel_pack_oop
 
@@ -667,7 +679,7 @@ contains
 
       n = int(no, int64)*no*nt
       do concurrent(t=1:n)
-         part(t) = row_energy_item(t, no, nv, ncap, w, ovov, t1, eps_o, eps_v, trip)
+         part(t) = row_energy_item(TRC_DC_INDEX(t), no, nv, ncap, w, ovov, t1, eps_o, eps_v, trip)
       end do
    end subroutine kernel_energy_rows
 
@@ -680,7 +692,7 @@ contains
       integer :: s
 
       do concurrent(s=1:nt)
-         etrip(s) = sum_item(s, no, ncap, part)
+         etrip(s) = sum_item(TRC_DC_INDEX(s), no, ncap, part)
       end do
    end subroutine kernel_energy_sum
 
@@ -688,8 +700,8 @@ contains
    ! the item routines: pure, `routine seq`, explicit-shape dummies, scalars
    ! only. A flat 1-based index t is the position in the array that is written,
    ! first index fastest.
-   ! The loop index is a VALUE dummy: see the item routines of trc_rccsd_update
-   ! (an ifx miscompilation of an index passed by reference).
+   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
    ! ---------------------------------------------------------------------
 
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
@@ -712,7 +724,7 @@ contains
    pure function tt2_item(t, no, nv, t2) result(v)
       !! tt2(f,(j,k,w)) = t2(k,j,w,f), position t of (nv, no, no, nv)
       !$acc routine seq
-      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: t2(no*no*nv*nv)
       real(dp) :: v
@@ -725,7 +737,7 @@ contains
    pure function t2r_item(t, no, nv, t2) result(v)
       !! t2r(m,k,c,vv) = t2(m,k,vv,c), position t of (no, no, nv, nv)
       !$acc routine seq
-      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: t2(no*no*nv*nv)
       real(dp) :: v
@@ -738,7 +750,7 @@ contains
    pure function oop_item(t, no, nv, ooov) result(v)
       !! oop(i,j,m,u) = ooov(j,m,i,u), position t of (no, no, no, nv)
       !$acc routine seq
-      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: t
       integer, intent(in) :: no
       integer, intent(in) :: nv
       real(dp), intent(in) :: ooov(no*no*no*nv)
@@ -752,7 +764,7 @@ contains
    pure function sum_item(s, no, ncap, part) result(e)
       !! The no^2 row energies of triple s, added in index order
       !$acc routine seq
-      integer, intent(in), value :: s
+      integer, intent(in) :: s
       integer, intent(in) :: no
       integer(int64), intent(in) :: ncap
       real(dp), intent(in) :: part(no*no*ncap)
@@ -768,7 +780,7 @@ contains
    pure function row_energy_item(t, no, nv, ncap, w, ovov, t1, eps_o, eps_v, trip) result(e)
       !! The energy of the points (i, j, 1..no) of one triple: position t of (no[i], no[j], nt[s])
       !$acc routine seq
-      integer(int64), intent(in), value :: t
+      integer(int64), intent(in) :: t
       integer(int64), intent(in) :: ncap
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: w(6_int64*no*no*no*ncap)

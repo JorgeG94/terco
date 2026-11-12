@@ -50,10 +50,11 @@
 ! largest |e_p| and in `step_norm2` the Euclidean norm ||e||_2, both over the FULL vector also when the
 ! history is packed (the scaled packed dot is ||e||_2 of a symmetric step; the maximum is taken from the old
 ! and new amplitudes themselves, not from the averaged and scaled half). PySCF's
-! conv_tol_normt (default 1e-5) is on ||t_new - t_old||_2 of the same concatenated
-! vector, before the extrapolation, so `step_norm2` is PySCF's number and `step_max`
-! is the stricter-per-element quantity the driver tests (max |e_p| <= ||e||_2 <=
-! sqrt(n) max |e_p|). `step_max` is the maximum of npart = ceil(n_full/CHUNK) fixed partials, partial p over
+! conv_tol_normt (default 1e-5) is on the norm of t1 and the PACKED lower triangle of t2 (each off-diagonal pair
+! once) of t_new - t_old, before the extrapolation, so `step_norm2`, which counts every pair of the full t2, is not
+! PySCF's number: normt <= step_norm2 <= sqrt(2) normt (trc_rccsd_driver, CONVERGENCE). `step_max` is the
+! stricter-per-element quantity the driver tests (max |e_p| <= ||e||_2 <= sqrt(n) max |e_p|).
+! `step_max` is the maximum of npart = ceil(n_full/CHUNK) fixed partials, partial p over
 ! the elements p, p + npart, p + 2 npart, ..., one thread each, then of the partials on the host: a maximum is
 ! exact in any order, so it does not depend on the thread count. Interleaved, neighbouring threads read
 ! neighbouring elements: with a contiguous run of 4096 elements a thread, the partials of a push took 0.83 ms
@@ -86,7 +87,10 @@
 ! small mapped array.
 !
 ! A stored vector is addressed with default integers: a stored length (np packed, n full) above 2^31-1 is
-! refused by `init` (status); the full amplitudes are indexed with 64-bit integers. Single rank only.
+! refused by `init` (status); the full amplitudes are indexed with 64-bit integers.
+! No MPI call: over several ranks the first rank alone holds the history (trc_rccsd_driver, RANKS).
+#include "inc/trc_dc_index.inc"
+
 module trc_rccsd_diis
    use pic_types, only: dp, int64
    use trc_rccsd_inter, only: trc_rccsd_amps_t
@@ -605,7 +609,7 @@ contains
       integer :: t
 
       do concurrent(t=1:n1 + n2)
-         e(t) = step_item(t, n1, n2, old1, old2, new1, new2)
+         e(t) = step_item(TRC_DC_INDEX(t), n1, n2, old1, old2, new1, new2)
       end do
    end subroutine kernel_step
 
@@ -617,7 +621,7 @@ contains
       integer :: t
 
       do concurrent(t=1:n1 + n2)
-         v(t) = join_item(t, n1, n2, a1, a2)
+         v(t) = join_item(TRC_DC_INDEX(t), n1, n2, a1, a2)
       end do
    end subroutine kernel_copy_amps
 
@@ -653,8 +657,8 @@ contains
       ! one thread per element of the FULL t2, in its storage order, the ones of the upper half idle: the partner
       ! (j,i,b,a) of a run over (i,j) lies in the one contiguous no x no block (b,a), so both reads stay local
       do concurrent(s=1:n2) local(k, r)
-         call pair_indices(s, no, nv, k, r)
-         if (k > 0) e(no*nv + k) = packed_step_item(s, r, n2, old2, new2)
+         call pair_indices(TRC_DC_INDEX(s), no, nv, k, r)
+         if (k > 0) e(no*nv + k) = packed_step_item(TRC_DC_INDEX(s), TRC_DC_INDEX(r), n2, old2, new2)
       end do
    end subroutine kernel_step_packed
 
@@ -671,7 +675,7 @@ contains
          v(t) = a1(t)
       end do
       do concurrent(s=1:n2) local(k, r)
-         call pair_indices(s, no, nv, k, r)
+         call pair_indices(TRC_DC_INDEX(s), no, nv, k, r)
          if (k > 0) v(no*nv + k) = 0.5_dp*(a2(s) + a2(r))
       end do
    end subroutine kernel_pack_amps
@@ -686,7 +690,7 @@ contains
       real(dp) :: x
 
       do concurrent(s=1:n2) local(k, r, x)
-         call pair_indices(s, no, nv, k, r)
+         call pair_indices(TRC_DC_INDEX(s), no, nv, k, r)
          if (k > 0) then
             x = combine_item(no*nv + k, nstore, nuse, vec, coef)
             t2(s) = x
@@ -704,7 +708,7 @@ contains
       integer :: p
 
       do concurrent(p=1:npart)
-         part(p) = chunk_max_diff_item(p, n1, n2, npart, old1, old2, new1, new2)
+         part(p) = chunk_max_diff_item(TRC_DC_INDEX(p), n1, n2, npart, old1, old2, new1, new2)
       end do
    end subroutine kernel_chunk_max_diff
 
@@ -716,17 +720,17 @@ contains
       integer :: p
 
       do concurrent(p=1:npart)
-         part(p) = chunk_max_item(p, n, npart, e)
+         part(p) = chunk_max_item(TRC_DC_INDEX(p), n, npart, e)
       end do
    end subroutine kernel_chunk_max
 
-   ! The loop index is a VALUE dummy in the item routines below: see the item routines of trc_rccsd_update (an ifx
-   ! miscompilation of an index passed by reference).
+   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
 
    pure function step_item(t, n1, n2, old1, old2, new1, new2) result(v)
       !! new - old at position t of the concatenated vector
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: n1, n2
       real(dp), intent(in) :: old1(n1), old2(n2), new1(n1), new2(n2)
       real(dp) :: v
@@ -741,7 +745,7 @@ contains
    pure function join_item(t, n1, n2, a1, a2) result(v)
       !! element t of the concatenation (a1, a2)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: n1, n2
       real(dp), intent(in) :: a1(n1), a2(n2)
       real(dp) :: v
@@ -756,7 +760,7 @@ contains
    pure function chunk_max_item(p, n, npart, e) result(v)
       !! max |e| over elements p, p + npart, p + 2 npart, ... <= n: neighbouring partials read neighbouring elements
       !$acc routine seq
-      integer, intent(in), value :: p
+      integer, intent(in) :: p
       integer, intent(in) :: n, npart
       real(dp), intent(in) :: e(n)
       real(dp) :: v
@@ -773,7 +777,7 @@ contains
       !! (column-major, p >= q), 0 for p < q; r, the position of the partner t2(j,i,b,a). One 64-bit division:
       !! the rest of the decoding fits default integers (o^2 and v^2 do).
       !$acc routine seq
-      integer(int64), intent(in), value :: s
+      integer(int64), intent(in) :: s
       integer, intent(in) :: no, nv
       integer(int64), intent(out) :: k, r
       integer(int64) :: ab, p, q, nov
@@ -796,8 +800,8 @@ contains
    pure function packed_step_item(s, r, n2, old2, new2) result(v)
       !! (e(s) + e(r))/2 for e = new2 - old2 and r the pair partner of s, times sqrt(2) off the diagonal (r /= s)
       !$acc routine seq
-      integer(int64), intent(in), value :: s
-      integer(int64), intent(in) :: r, n2
+      integer(int64), intent(in) :: s, r
+      integer(int64), intent(in) :: n2
       real(dp), intent(in) :: old2(n2), new2(n2)
       real(dp) :: v
 
@@ -823,7 +827,7 @@ contains
    pure function chunk_max_diff_item(p, n1, n2, npart, old1, old2, new1, new2) result(v)
       !! max |new - old| over elements p, p + npart, p + 2 npart, ... of the concatenation (t1, t2)
       !$acc routine seq
-      integer, intent(in), value :: p
+      integer, intent(in) :: p
       integer, intent(in) :: n1, npart
       integer(int64), intent(in) :: n2
       real(dp), intent(in) :: old1(n1), old2(n2), new1(n1), new2(n2)

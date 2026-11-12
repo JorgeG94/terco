@@ -91,7 +91,9 @@
 ! anything); none stops.
 !
 ! RANKS. No MPI call here: every rank that holds the integrals can run these routines on its own device; under
-! several ranks only rank 0 iterates today (trc_rccsd_driver).
+! several ranks rank 0 runs these routines, the ladder alone being cut over all the ranks (trc_rccsd_driver, RANKS).
+#include "inc/trc_dc_index.inc"
+
 module trc_rccsd_inter
    use pic_types, only: dp, int32, int64
    use trc_rccsd_ints, only: trc_rccsd_ints_t
@@ -673,7 +675,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*nv*no*nv)
-         lov(t) = lov_item(t, no, nv, ovov)
+         lov(t) = lov_item(TRC_DC_INDEX(t), no, nv, ovov)
       end do
    end subroutine kernel_lov
 
@@ -685,7 +687,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nv)
-         tau(t) = tau_item(t, no, nv, t1, t2)
+         tau(t) = tau_item(TRC_DC_INDEX(t), no, nv, t1, t2)
       end do
    end subroutine kernel_tau
 
@@ -697,7 +699,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nv)
-         taup(t) = taup_item(t, no, nv, tau)
+         taup(t) = taup_item(TRC_DC_INDEX(t), no, nv, tau)
       end do
    end subroutine kernel_pack_taup
 
@@ -709,7 +711,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nv)
-         taur(t) = taur_item(t, no, nv, tau)
+         taur(t) = taur_item(TRC_DC_INDEX(t), no, nv, tau)
       end do
    end subroutine kernel_pack_taur
 
@@ -721,7 +723,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nv)
-         lq(t) = lq_item(t, no, nv, lov)
+         lq(t) = lq_item(TRC_DC_INDEX(t), no, nv, lov)
       end do
    end subroutine kernel_pack_lq
 
@@ -733,7 +735,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*no*nv)
-         lam(t) = lam_item(t, no, nv, ooov)
+         lam(t) = lam_item(TRC_DC_INDEX(t), no, nv, ooov)
       end do
    end subroutine kernel_pack_lam
 
@@ -757,7 +759,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*naux*nv)
-         y(t) = kpa_item(t, no, nv, naux, x)
+         y(t) = kpa_item(TRC_DC_INDEX(t), no, nv, naux, x)
       end do
    end subroutine kernel_pack_kpa
 
@@ -769,7 +771,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*nv)
-         call energy_item(t, no, nv, lov, t1, t2, part_s(t), part_d(t))
+         call energy_item(TRC_DC_INDEX(t), no, nv, lov, t1, t2, part_s(t), part_d(t))
       end do
    end subroutine kernel_energy
 
@@ -784,7 +786,7 @@ contains
          t1(t) = 0.0_dp
       end do
       do concurrent(t=1:no*no*nv*nv)
-         t2(t) = mp2_item(t, no, nv, eps_o, eps_v, ovov)
+         t2(t) = mp2_item(TRC_DC_INDEX(t), no, nv, eps_o, eps_v, ovov)
       end do
    end subroutine kernel_mp2
 
@@ -792,8 +794,8 @@ contains
    ! the item routines: pure, `routine seq`, explicit-shape dummies, no
    ! arrays of their own. A flat 1-based index t is the position in the
    ! DESTINATION, first index fastest.
-   ! The loop index is a VALUE dummy: see the item routines of trc_rccsd_update
-   ! (an ifx miscompilation of an index passed by reference).
+   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
    ! ---------------------------------------------------------------------
 
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
@@ -815,7 +817,7 @@ contains
    pure function lov_item(t, no, nv, ovov) result(v)
       !! L(k,c,l,d) at position t of (no, nv, no, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: ovov(no, nv, no, nv)
       real(dp) :: v
@@ -828,7 +830,7 @@ contains
    pure function tau_item(t, no, nv, t1, t2) result(v)
       !! tau(i,j,a,b) at position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: t1(no, nv), t2(no, no, nv, nv)
       real(dp) :: v
@@ -841,7 +843,7 @@ contains
    pure function taup_item(t, no, nv, tau) result(v)
       !! taup(i,c,l,d) = tau(i,l,c,d), position t of (no, nv, no, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
@@ -854,7 +856,7 @@ contains
    pure function taur_item(t, no, nv, tau) result(v)
       !! taur(k,l,d,a) = tau(k,l,a,d), position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
@@ -867,7 +869,7 @@ contains
    pure function lq_item(t, no, nv, lov) result(v)
       !! lq(k,l,d,c) = L(k,c,l,d), position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: lov(no, nv, no, nv)
       real(dp) :: v
@@ -880,7 +882,7 @@ contains
    pure function lam_item(t, no, nv, ooov) result(v)
       !! lam(k,i,l,c) = 2 ooov(k,i,l,c) - ooov(l,i,k,c), position t of (no, no, no, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: ooov(no, no, no, nv)
       real(dp) :: v
@@ -893,7 +895,7 @@ contains
    pure function kpa_item(t, no, nv, naux, x) result(v)
       !! x(k,a,P) at position t of (no, naux, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv, naux
       real(dp), intent(in) :: x(no, nv, naux)
       real(dp) :: v
@@ -906,7 +908,7 @@ contains
    pure subroutine energy_item(t, no, nv, lov, t1, t2, es, ed)
       !! The (singles, doubles) partial of the pair t = j + no (b-1); a outer, i inner
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: lov(no, nv, no, nv), t1(no, nv), t2(no, no, nv, nv)
       real(dp), intent(out) :: es, ed
@@ -929,7 +931,7 @@ contains
    pure function mp2_item(t, no, nv, eps_o, eps_v, ovov) result(v)
       !! t2(i,j,a,b) at position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: eps_o(no), eps_v(nv), ovov(no, nv, no, nv)
       real(dp) :: v

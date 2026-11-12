@@ -140,7 +140,9 @@
 !
 ! Failures are reported in `ws%status` (a routine whose arguments differ in
 ! (no, nv), or are not built, sets it and returns without writing anything);
-! none stops. Single rank only.
+! none stops. No MPI call: over several ranks the first rank alone builds W (trc_rccsd_driver, RANKS).
+#include "inc/trc_dc_index.inc"
+
 module trc_rccsd_w
    use pic_types, only: dp, int32, int64
    use trc_rccsd_ints, only: trc_rccsd_ints_t
@@ -607,7 +609,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nv)
-         akl(t) = akl_item(t, no, nv, ovov)
+         akl(t) = akl_item(TRC_DC_INDEX(t), no, nv, ovov)
       end do
    end subroutine kernel_pack_akl
 
@@ -619,7 +621,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*nv*no*nv)
-         a2(t) = a2_item(t, no, nv, ovov)
+         a2(t) = a2_item(TRC_DC_INDEX(t), no, nv, ovov)
       end do
    end subroutine kernel_pack_a2
 
@@ -631,7 +633,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*nv*no*nv)
-         b1(t) = b1_item(t, no, nv, t1, t2)
+         b1(t) = b1_item(TRC_DC_INDEX(t), no, nv, t1, t2)
       end do
    end subroutine kernel_pack_b1
 
@@ -643,7 +645,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*nv*no*nv)
-         b2(t) = b2_item(t, no, nv, t2)
+         b2(t) = b2_item(TRC_DC_INDEX(t), no, nv, t2)
       end do
    end subroutine kernel_pack_b2
 
@@ -655,7 +657,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*nv*no*nv)
-         b3(t) = b3_item(t, no, nv, t1, t2)
+         b3(t) = b3_item(TRC_DC_INDEX(t), no, nv, t1, t2)
       end do
    end subroutine kernel_pack_b3
 
@@ -667,7 +669,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*no*no)
-         w(t) = woooo_item(t, no, nv, oooo, ooov, t1)
+         w(t) = woooo_item(TRC_DC_INDEX(t), no, nv, oooo, ooov, t1)
       end do
    end subroutine kernel_woooo_base
 
@@ -679,7 +681,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*nv*no*nv)
-         w(voov_dst(t, no, nv)) = ovov(t) + stage(voov_stage(t, no, nv))
+         w(voov_dst(TRC_DC_INDEX(t), no, nv)) = ovov(t) + stage(voov_stage(TRC_DC_INDEX(t), no, nv))
       end do
    end subroutine kernel_voov_base
 
@@ -691,7 +693,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nv)
-         w(vovo_dst_kiac(t, no, nv)) = oovv(t) + stage(t)
+         w(vovo_dst_kiac(TRC_DC_INDEX(t), no, nv)) = oovv(t) + stage(t)
       end do
    end subroutine kernel_vovo_base
 
@@ -703,7 +705,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*nv*no*nv)
-         w(voov_dst(t, no, nv)) = w(voov_dst(t, no, nv)) + r(t)
+         w(voov_dst(TRC_DC_INDEX(t), no, nv)) = w(voov_dst(TRC_DC_INDEX(t), no, nv)) + r(t)
       end do
    end subroutine kernel_acc_voov
 
@@ -715,7 +717,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*nv*no*nv)
-         w(vovo_dst_kcia(t, no, nv)) = w(vovo_dst_kcia(t, no, nv)) + r(t)
+         w(vovo_dst_kcia(TRC_DC_INDEX(t), no, nv)) = w(vovo_dst_kcia(TRC_DC_INDEX(t), no, nv)) + r(t)
       end do
    end subroutine kernel_acc_vovo
 
@@ -725,8 +727,8 @@ contains
    ! DESTINATION (first index fastest) for the packs, and in the SOURCE for
    ! the base, stage and accumulate maps (`*_dst`, `voov_stage`), which return
    ! where that element goes.
-   ! The loop index is a VALUE dummy: see the item routines of trc_rccsd_update
-   ! (an ifx miscompilation of an index passed by reference).
+   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
    ! ---------------------------------------------------------------------
 
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
@@ -748,7 +750,7 @@ contains
    pure function akl_item(t, no, nv, ovov) result(v)
       !! akl(k,l,c,d) = ovov(k,c,l,d), position t of (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: ovov(no, nv, no, nv)
       real(dp) :: v
@@ -761,7 +763,7 @@ contains
    pure function a2_item(t, no, nv, ovov) result(v)
       !! a2(k,c,l,d) = ovov(l,c,k,d), position t of (no, nv, no, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: ovov(no, nv, no, nv)
       real(dp) :: v
@@ -774,7 +776,7 @@ contains
    pure function b1_item(t, no, nv, t1, t2) result(v)
       !! b1(l,d,i,a), position t of (no, nv, no, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: t1(no, nv), t2(no, no, nv, nv)
       real(dp) :: v
@@ -787,7 +789,7 @@ contains
    pure function b2_item(t, no, nv, t2) result(v)
       !! b2(l,d,i,a), position t of (no, nv, no, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: t2(no, no, nv, nv)
       real(dp) :: v
@@ -800,7 +802,7 @@ contains
    pure function b3_item(t, no, nv, t1, t2) result(v)
       !! b3(l,d,i,a), position t of (no, nv, no, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: t1(no, nv), t2(no, no, nv, nv)
       real(dp) :: v
@@ -813,7 +815,7 @@ contains
    pure function woooo_item(t, no, nv, oooo, ooov, t1) result(v)
       !! The tau-free part of Woooo(k,l,i,j) at position t of (no, no, no, no); c ascending
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: oooo(no, no, no, no), ooov(no, no, no, nv), t1(no, nv)
       real(dp) :: v
@@ -829,7 +831,7 @@ contains
    pure function voov_dst(t, no, nv) result(j)
       !! Position in Wvoov(a,k,i,c) of the element at position t of a (k,c,i,a) array (ovov, R)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       integer :: j
       integer :: a, k, i, c
@@ -841,7 +843,7 @@ contains
    pure function voov_stage(t, no, nv) result(j)
       !! Position in the (k,c,a,i) array of the element at position t of a (k,c,i,a) array
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       integer :: j
       integer :: a, k, i, c
@@ -853,7 +855,7 @@ contains
    pure function vovo_dst_kiac(t, no, nv) result(j)
       !! Position in Wvovo(a,k,c,i) of the element at position t of a (k,i,a,c) array (oovv, stage)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       integer :: j
       integer :: a, k, c, i
@@ -865,7 +867,7 @@ contains
    pure function vovo_dst_kcia(t, no, nv) result(j)
       !! Position in Wvovo(a,k,c,i) of the element at position t of a (k,c,i,a) array (R)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       integer :: j
       integer :: a, k, c, i

@@ -204,6 +204,8 @@
 ! (no, nv, naux), are not built, or hold arrays of other sizes sets it and
 ! returns without writing anything); none stops. A block of more than 2^31-1
 ! elements is refused by `init`, not wrapped.
+#include "inc/trc_dc_index.inc"
+
 module trc_rccsd_ladder
    use pic_types, only: dp, int32, int64
    use trc_rccsd_ints, only: trc_rccsd_ints_t
@@ -1282,7 +1284,7 @@ contains
       integer :: t
 
       do concurrent(t=1:nv*nv*no*no)
-         taut(t) = taut_item(t, no, nv, tau)
+         taut(t) = taut_item(TRC_DC_INDEX(t), no, nv, tau)
       end do
    end subroutine kernel_pack_taut
 
@@ -1294,7 +1296,7 @@ contains
       integer :: t, dest
 
       do concurrent(t=1:nv*nvc*nv*nd) local(dest)
-         dest = resort_dest(t, nv, nvc, d0)
+         dest = resort_dest(TRC_DC_INDEX(t), nv, nvc, d0)
          if (dest > 0) w2(dest) = cbuf(t)
          if (dest < 0) w2(-dest) = 0.5_dp*cbuf(t)
       end do
@@ -1308,8 +1310,8 @@ contains
       integer :: t, dest
 
       do concurrent(t=1:no*no*nvc*nd) local(dest)
-         dest = gather_dest(t, no, nv, nvc, d0)
-         if (dest > 0) taus(dest) = gather_value(t, no, nv, nvc, d0, mode, tau)
+         dest = gather_dest(TRC_DC_INDEX(t), no, nv, nvc, d0)
+         if (dest > 0) taus(dest) = gather_value(TRC_DC_INDEX(t), no, nv, nvc, d0, mode, tau)
       end do
    end subroutine kernel_half_gather
 
@@ -1321,7 +1323,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nv)
-         h(t) = nacc(t) + nacc(swap_pair(t, no, nv))
+         h(t) = nacc(t) + nacc(swap_pair(TRC_DC_INDEX(t), no, nv))
       end do
    end subroutine kernel_half_sym
 
@@ -1333,7 +1335,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nv)
-         h(t) = h(t) + nprime(swap_ab(t, no, nv))
+         h(t) = h(t) + nprime(swap_ab(TRC_DC_INDEX(t), no, nv))
       end do
    end subroutine kernel_half_general
 
@@ -1357,7 +1359,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nv)
-         ovovp(t) = ovovp_item(t, no, nv, ovov)
+         ovovp(t) = ovovp_item(TRC_DC_INDEX(t), no, nv, ovov)
       end do
    end subroutine kernel_pack_ovov
 
@@ -1382,7 +1384,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nv)
-         h(t) = h(t) - 0.5_dp*(x(t) + x(swap_pair(t, no, nv)))
+         h(t) = h(t) - 0.5_dp*(x(t) + x(swap_pair(TRC_DC_INDEX(t), no, nv)))
       end do
    end subroutine kernel_sub_xsym
 
@@ -1394,7 +1396,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nv*np)
-         y2(t) = y2_item(t, no, nv, np, y)
+         y2(t) = y2_item(TRC_DC_INDEX(t), no, nv, np, y)
       end do
    end subroutine kernel_pack_y2
 
@@ -1406,7 +1408,7 @@ contains
       integer :: t
 
       do concurrent(t=1:nv*nv*no*no)
-         taut(t) = taut_swapped_item(t, no, nv, tau)
+         taut(t) = taut_swapped_item(TRC_DC_INDEX(t), no, nv, tau)
       end do
    end subroutine kernel_pack_taut_swapped
 
@@ -1418,7 +1420,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nvb)
-         h(sub_z1_dest(t, no, nv, v0)) = h(sub_z1_dest(t, no, nv, v0)) - cmat(t)
+         h(sub_z1_dest(TRC_DC_INDEX(t), no, nv, v0)) = h(sub_z1_dest(TRC_DC_INDEX(t), no, nv, v0)) - cmat(t)
       end do
    end subroutine kernel_sub_z1
 
@@ -1430,7 +1432,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nvb)
-         h(sub_z2_dest(t, no, nv, v0)) = h(sub_z2_dest(t, no, nv, v0)) - cmat(t)
+         h(sub_z2_dest(TRC_DC_INDEX(t), no, nv, v0)) = h(sub_z2_dest(TRC_DC_INDEX(t), no, nv, v0)) - cmat(t)
       end do
    end subroutine kernel_sub_z2
 
@@ -1438,8 +1440,8 @@ contains
    ! the item routines: pure, `routine seq`, explicit-shape dummies, no
    ! arrays of their own. A flat 1-based index t is the position in the
    ! array that is written (or, for the scatters, read), first index fastest.
-   ! The loop index is a VALUE dummy: see the item routines of trc_rccsd_update
-   ! (an ifx miscompilation of an index passed by reference).
+   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
    ! ---------------------------------------------------------------------
 
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
@@ -1461,7 +1463,7 @@ contains
    pure function taut_item(t, no, nv, tau) result(v)
       !! taut(c,d,ij) = tau(i,j,c,d), position t of (nv, nv, no, no)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
@@ -1486,7 +1488,7 @@ contains
       !! Position in w2(nv, nv, ncol) of cbuf position t of (nv[a], nvc[c - d0 + 1], nv[b], nd[d - d0 + 1]); 0 for
       !! c < d, negated for c = d (the columns of weight 1/2)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: nv, nvc, d0
       integer :: dest
       integer :: a, cp, b, dq
@@ -1501,7 +1503,7 @@ contains
    pure function gather_dest(t, no, nv, nvc, d0) result(dest)
       !! Position in taus(no*no, ncol) of position t of (no[i], no[j], nvc[c - d0 + 1], nd[d - d0 + 1]); 0 for c < d
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv, nvc, d0
       integer :: dest
       integer :: i, j, cp, dq
@@ -1515,7 +1517,7 @@ contains
    pure function gather_value(t, no, nv, nvc, d0, mode, tau) result(v)
       !! The tau value `kernel_half_gather` stores for position t of (no[i], no[j], nvc[c - d0 + 1], nd[d - d0 + 1])
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv, nvc, d0, mode
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
@@ -1536,7 +1538,7 @@ contains
    pure function ovovp_item(t, no, nv, ovov) result(v)
       !! ovov(k,c,l,d) at position t of (no[k], no[l], nv[c], nv[d])
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: ovov(no, nv, no, nv)
       real(dp) :: v
@@ -1549,7 +1551,7 @@ contains
    pure function swap_pair(t, no, nv) result(s)
       !! Position of (j,i,b,a) for position t of (i,j,a,b) in (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       integer :: s
       integer :: i, j, a, b
@@ -1561,7 +1563,7 @@ contains
    pure function swap_ab(t, no, nv) result(s)
       !! Position of (i,j,b,a) for position t of (i,j,a,b) in (no, no, nv, nv)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       integer :: s
       integer :: ij, a, b, unused
@@ -1573,7 +1575,7 @@ contains
    pure function y2_item(t, no, nv, np, y) result(v)
       !! y2(ij,a,d,P) = y(a,d,ij,P), position t of (no*no, nv, nv, np)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv, np
       real(dp), intent(in) :: y(nv*nv*no*no*np)
       real(dp) :: v
@@ -1586,7 +1588,7 @@ contains
    pure function taut_swapped_item(t, no, nv, tau) result(v)
       !! taut(x,y,ij) = tau(i,j,y,x), position t of (nv, nv, no, no)
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: tau(no, no, nv, nv)
       real(dp) :: v
@@ -1599,7 +1601,7 @@ contains
    pure function sub_z1_dest(t, no, nv, v0) result(dest)
       !! Position in h(i,j,a,b) of cmat position t of (no*no, nv[b], nvb[a - v0 + 1])
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv, v0
       integer :: dest
       integer :: ij, b, al, unused
@@ -1611,7 +1613,7 @@ contains
    pure function sub_z2_dest(t, no, nv, v0) result(dest)
       !! Position in h(i,j,a,b) of cmat position t of (no*no, nv[a], nvb[b - v0 + 1])
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv, v0
       integer :: dest
 

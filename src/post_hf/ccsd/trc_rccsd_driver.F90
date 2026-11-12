@@ -19,10 +19,16 @@
 !     max |t' - t| < conv_amplitude      (default 1e-6; the largest element of the step over t1 and t2)
 !
 ! hold. mqc tests the energy alone, and only from the second iteration; the amplitude criterion is a deliberate
-! addition. PySCF tests both, with conv_tol 1e-7 and conv_tol_normt 1e-5, the latter on the Euclidean norm
-! ||t' - t||_2 of the same concatenated step vector, before the extrapolation: `result%step_norm2` is that
-! number, and max|e| <= ||e||_2, so the default here (1e-6 on the max) is not looser than PySCF's 1e-5 on the
-! 2-norm. A step or an energy that is NaN or infinite stops the run as NOT converged with a message, whatever
+! addition. PySCF tests both, with conv_tol 1e-7 and conv_tol_normt 1e-5. Its normt is
+! ||vector(t1', t2') - vector(t1, t2)||_2 where the vector is t1 followed by the PACKED lower triangle of t2 as an
+! (o v x o v) matrix: each off-diagonal pair (i,a),(j,b) once, no sqrt(2), N' = o v + o v (o v + 1)/2 elements. The
+! `result%step_norm2` here is the norm over the FULL t2 (a pair-symmetric step counts every off-diagonal pair
+! twice), so normt <= step_norm2 <= sqrt(2) normt: it is NOT PySCF's number, and comparing it to 1e-5 is not PySCF's
+! test. Nor are the two tests nested: PySCF's normt < 1e-5 forces max|e| < 1e-5 only, while the default here
+! (max|e| < 1e-6) allows normt up to sqrt(N') 1e-6, which exceeds 1e-5 once N' > 100 (every case of interest). It is
+! the stricter test per element and can be the looser one in the 2-norm, by up to sqrt(N')/10; the energy test (1e-8
+! against PySCF's 1e-7) is the tighter of the two.
+! A step or an energy that is NaN or infinite stops the run as NOT converged with a message, whatever
 ! the comparisons would say; the test is written so a NaN can never satisfy it.
 !
 ! THE T1 DIAGNOSTIC is PySCF's `get_t1_diagnostic`: sqrt(||t1||_F^2 / (2 no)), no the number of correlated
@@ -183,7 +189,7 @@ module trc_rccsd_driver
       real(dp) :: e_doubles = 0.0_dp     !! the t2 part
       real(dp) :: de = 0.0_dp            !! E_k - E_{k-1} at the last iteration
       real(dp) :: step_max = 0.0_dp      !! max |t' - t| at the last iteration
-      real(dp) :: step_norm2 = 0.0_dp    !! ||t' - t||_2 at the last iteration: PySCF's normt
+      real(dp) :: step_norm2 = 0.0_dp    !! ||t' - t||_2 over the full t2 at the last iteration; not PySCF's normt (header)
       real(dp) :: t1_diagnostic = 0.0_dp  !! sqrt(||t1||^2 / (2 no)), PySCF's get_t1_diagnostic
       real(dp) :: seconds(RCCSD_NTIME) = 0.0_dp  !! device seconds per stage, RCCSD_TIME_*
       logical :: has_triples = .false.   !! (T) was run: `e_t`, `e_ccsd_t` and `seconds_triples` are valid only when true

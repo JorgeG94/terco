@@ -22,6 +22,8 @@
 ! device has only the second, and its `update` and `host_data` lines are no-ops.
 !
 ! The t1 (o v doubles) always goes through the host, in one message.
+#include "inc/trc_dc_index.inc"
+
 module trc_rccsd_xfer
    use pic_types, only: dp, int32, int64
    use pic_mpi_lib, only: comm_t, isend, recv, request_t, waitall, comm_isend_real_dp_array_n, comm_recv_real_dp_array_n
@@ -52,8 +54,9 @@ module trc_rccsd_xfer
 contains
 
    subroutine xfer_init(this, no, nv, ok)
-      !! Allocates the staging array for (no, nv) and reads the path switch; `ok` false when it does not fit a default
-      !! integer index or the allocation failed (nothing is left allocated)
+      !! Allocates the staging array for (no, nv) and reads the path switch; `ok` false when
+      !! o^2 v^2 (the full amplitudes, and with it the packed half) does not fit a default integer index or the
+      !! allocation failed (nothing is left allocated)
       class(trc_rccsd_xfer_t), intent(inout) :: this
       integer, intent(in) :: no, nv
       logical, intent(out) :: ok
@@ -64,7 +67,11 @@ contains
       call this%release()
       ok = .false.
       n = int(no, int64)*nv
-      if (n*(n + 1)/2 > int(huge(0_int32), int64)) return
+      ! the kernels index the full o^2 v^2 amplitudes with default integers, the staging array with n (n + 1)/2 <= n^2
+      ! (n > huge/n is n^2 > huge without forming n^2, which an absurd n would overflow in 64 bits)
+      if (n > 0) then
+         if (n > int(huge(0_int32), int64)/n) return
+      end if
       this%no = no
       this%nv = nv
       this%nhalf = int(n*(n + 1)/2)
@@ -351,11 +358,10 @@ contains
       integer, intent(in) :: no, nv, nhalf
       real(dp), intent(in) :: x(no*no*nv*nv)
       real(dp), intent(out) :: packed(nhalf)
-      integer :: t, k
+      integer :: t
 
-      do concurrent(t=1:no*no*nv*nv) local(k)
-         k = pair_first(t, no, nv)
-         if (k > 0) packed(k) = x(t)
+      do concurrent(t=1:no*no*nv*nv)
+         call pack_item(TRC_DC_INDEX(t), no, nv, nhalf, x, packed)
       end do
    end subroutine kernel_pack
 
@@ -367,7 +373,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nv)
-         x(t) = packed(pair_any(t, no, nv))
+         x(t) = packed(pair_any(TRC_DC_INDEX(t), no, nv))
       end do
    end subroutine kernel_unpack
 
@@ -379,7 +385,7 @@ contains
       integer :: t
 
       do concurrent(t=1:no*no*nv*nv)
-         x(t) = x(t) + packed(pair_any(t, no, nv))
+         x(t) = x(t) + packed(pair_any(TRC_DC_INDEX(t), no, nv))
       end do
    end subroutine kernel_unpack_add
 
@@ -413,13 +419,13 @@ contains
       q = j + no*(b - 1)
    end subroutine pair_of
 
-   ! The loop index is a VALUE dummy in the item routines below: see the item routines of trc_rccsd_update (an ifx
-   ! miscompilation of an index passed by reference).
+   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
 
    pure function pair_first(t, no, nv) result(k)
       !! The packed position of position t when p <= q, else 0
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       integer :: k
       integer :: p, q
@@ -429,10 +435,24 @@ contains
       if (p <= q) k = p + int((int(q, int64)*(q - 1))/2)
    end function pair_first
 
+   pure subroutine pack_item(t, no, nv, nhalf, x, packed)
+      !! Position t of x to its packed place when p <= q: the one thread that owns t writes one element, so no two
+      !! threads write the same one
+      !$acc routine seq
+      integer, intent(in) :: t
+      integer, intent(in) :: no, nv, nhalf
+      real(dp), intent(in) :: x(no*no*nv*nv)
+      real(dp), intent(inout) :: packed(nhalf)
+      integer :: k
+
+      k = pair_first(t, no, nv)
+      if (k > 0) packed(k) = x(t)
+   end subroutine pack_item
+
    pure function pair_any(t, no, nv) result(k)
       !! The packed position of the pair of position t, whichever of p, q is the larger
       !$acc routine seq
-      integer, intent(in), value :: t
+      integer, intent(in) :: t
       integer, intent(in) :: no, nv
       integer :: k
       integer :: p, q
