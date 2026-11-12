@@ -77,11 +77,24 @@ module trc_scf_state
       real(dp), allocatable :: dold(:, :, :), errv(:, :, :)
       real(dp), allocatable :: w1(:, :), w2(:, :)
       real(dp), allocatable :: ofrac(:)
+      logical :: eps_rewritten = .false.
+      !! The second-order phase (`trc_scf_soscf_run`) replaced `scf_result%eps`
+      !! with its own semicanonical values. False when it never ran or gave up
+      !! before that (no rotations to take, no iterations left, or a failed
+      !! diagonalisation), when `eps` still belongs to the main loop.
       logical :: skeleton = .false.
       !! This run builds the SKELETON G (`trc_scf_fock%scf_fock_build_g`): set by
       !! the driver once per run, after its size rule, before the first
       !! build; kept here, not as an argument, because it is the run's
       !! state like `incr_on` and not one build's own input.
+      logical :: mom_now = .false.
+      !! This iteration occupies by maximum overlap with the previous density
+      !! (`trc_scf_driver`'s `scf_driver_spin_step`): set by the driver each
+      !! iteration from the MOM gate, kept here like `skeleton` rather than
+      !! passed, as the iteration's state.
+      integer :: mom_swaps(2) = 0
+      !! Per spin, the occupied orbitals this iteration's MOM step chose that
+      !! aufbau would have left empty; 0 without MOM.
    contains
       procedure :: alloc => scf_state_alloc
       procedure :: to_device => scf_state_to_device

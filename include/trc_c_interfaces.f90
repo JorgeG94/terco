@@ -36,7 +36,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_TIMING_NAME_MAX = 64
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 26
+   integer(c_int), parameter :: TRC_ABI_MINOR = 28
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -755,14 +755,13 @@ module trc_c_interfaces
          !! / occ), applied ONLY WHILE DIIS (AND ADIIS) ARE OFF -- the
          !! damped start before either has engaged (trc_scf_driver.F90's own
          !! "level shift while DIIS and A/EDIIS are off" block). It is a
-         !! CONVERGENCE AID for that early phase, not a persistent shift
-         !! held through the whole SCF: once the commutator is small enough
-         !! for CDIIS (or ADIIS takes over first), this stops being applied
-         !! at all, however large `shift` is set. A caller wanting a shift
-         !! that stays on throughout -- the sense a persistent level shift
-         !! has in, for instance, a Fukui-ion deck's convergence recipe --
-         !! is asking for something this entry does not do; nothing here
-         !! changes that behaviour, only exposes the existing knob.
+         !! CONVERGENCE AID for that early phase: once the commutator is
+         !! small enough for CDIIS (or ADIIS takes over first), this stops
+         !! being applied, however large `shift` is set. To keep the shift on
+         !! through DIIS until the commutator falls below a threshold -- the
+         !! sense a persistent level shift has in, for instance, a Fukui-ion
+         !! deck's convergence recipe -- also set `level_shift_until` with
+         !! trc_set_scf_stabilise.
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
@@ -818,6 +817,81 @@ module trc_c_interfaces
          integer(c_int), value :: enable
          real(c_double), value :: soscf_start
       end function trc_set_soscf
+
+      integer(c_int) function trc_set_scf_stabilise(handle, mom, level_shift_until) bind(c) result(res)
+         !! Two aids for small-gap SCFs (charged open shells, a Fukui ion)
+         !! where CDIIS stalls with the occupation flipping between iterations.
+         !! Both act on the eigenproblem of rank 0 alone, so unlike trc_set_soscf
+         !! they are not refused with an open shell, a functional, a continuum
+         !! solvent, --df or more than one rank (O3+ 6-31G* with both aids gives
+         !! the same energy and iteration count on one, two and three devices,
+         !! with and without IEF-PCM):
+         !!
+         !!   mom                1 occupies by maximum overlap with the previous
+         !!                      density, starting at the first iteration with
+         !!                      DIIS on and either a starting density the caller
+         !!                      chose (trc_set_guess GIVEN, PROJECTED) or
+         !!                      |FDS - SDF| < 0.1, and staying on; aufbau before
+         !!                      that. The guesses terco builds itself (SAD, SADQ,
+         !!                      SAP, MINAO, GWH, core) wait for the 0.1 gate. 0
+         !!                      aufbau throughout (the default).
+         !!   level_shift_until  keep trc_set_level_shift's shift on through
+         !!                      DIIS until |FDS - SDF| falls below this; 0 (the
+         !!                      default) drops it when DIIS starts. An iteration
+         !!                      that can converge is never shifted. A shift this
+         !!                      keeps on is dropped for the rest of the run, with
+         !!                      one message, once the commutator has not improved
+         !!                      by a factor 2 over 10 such iterations: a
+         !!                      threshold below where the shifted run parks must
+         !!                      not stop a run from converging.
+         !!
+         !! Takes effect at the next trc_run_scf, for every SCF the handle runs
+         !! after it (trc_fukui_hirshfeld's three included). With `mom` a symmetry
+         !! request of on/auto runs in C1 and a named group is refused. (ABI 1.26.)
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: mom
+         real(c_double), value :: level_shift_until
+      end function trc_set_scf_stabilise
+
+      integer(c_int) function trc_set_gdm(handle, on, start, max_rotation) bind(c) result(res)
+         !! Geometric direct minimisation (Van Voorhis and Head-Gordon, Mol. Phys.
+         !! 100, 1713 (2002)), an aid for SCFs that DIIS cannot converge: an
+         !! L-BFGS minimisation over occupied-virtual orbital rotations that takes
+         !! over from DIIS once |FDS - SDF| < `start`, and accepts a step only if
+         !! the energy does not rise (trc_scf_options_t%gdm has the details).
+         !!
+         !!   on            1 turns GDM on; 0 off (the default).
+         !!   start         commutator norm at which DIIS hands over; 0 for the
+         !!                 library's default (0.1). Must be >= 0.
+         !!   max_rotation  largest element of the orbital rotation (kappa) of one step; 0 for the
+         !!                 library's default (0.2). Must be >= 0.
+         !!
+         !! Works with restricted and unrestricted references, functionals
+         !! (VV10 included), continuum solvents, density fitting and several
+         !! ranks; refused at the next trc_run_scf together with fractional
+         !! occupations and with trc_set_soscf. Measured caveats: it keeps the
+         !! occupation it starts from, so started too early from a poor guess it
+         !! can land on a higher state (the run warns when the final orbitals are
+         !! not in aufbau order); with trc_set_scf_stabilise's mom, a non-aufbau
+         !! occupation held by MOM at the handover makes GDM decline and the run
+         !! continues as a MOM run; and where DIIS works it is slower (about 1.8
+         !! times the iterations on a flat mode), so it is an aid for stalled
+         !! cases, not a default. A 39-atom open-shell cation (UKS
+         !! wB97X-V/def2-SVP, IEF-PCM) that DIIS left unconverged after 100
+         !! iterations converged in 46, to the same energy on 1, 2 and 3 GPUs.
+         !!
+         !! Takes effect at the next trc_run_scf, for every SCF the handle runs
+         !! after it (trc_fukui_hirshfeld's three included). With `on` a symmetry
+         !! request of on/auto runs in C1 and a named group is refused. (ABI 1.27.)
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: on
+         real(c_double), value :: start
+         real(c_double), value :: max_rotation
+      end function trc_set_gdm
 
       integer(c_int) function trc_set_df(handle, on) bind(c) result(res)
          import :: c_int, c_ptr

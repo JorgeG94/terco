@@ -18,7 +18,7 @@ program trc_main
    use pic_logger, only: global_logger
    use trc_capi, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_ecp_json, &
                        trc_set_aux_json, trc_set_method, trc_set_nlc_grid, trc_set_convergence, trc_set_scf_accel, &
-                       trc_set_soscf, &
+                       trc_set_soscf, trc_set_scf_stabilise, trc_set_gdm, &
                        trc_set_level_shift, trc_set_lindep, trc_set_screening, &
                        trc_set_incremental, trc_set_df, trc_set_jkfit_json, &
                        trc_set_guess, trc_set_verbose, trc_set_rimp2, trc_set_force_cartesian, trc_set_comm, &
@@ -49,7 +49,7 @@ program trc_main
    use trc_run, only: run_t, VERSION, BUILD_DEVICE, BUILD_GPU_ARCH, BUILD_LMAX, BUILD_DF_LMAX, BUILD_DF_LMAX_AUX, &
                    BUILD_CART_ORDER, BUILD_MPI, BUILD_MULTICORE, BUILD_COMMIT, BUILD_COMPILER, &
                    BUILD_COMPILER_VERSION, run_die, run_quit, run_check, run_api, run_int_option, run_banner, &
-                       run_summary, run_write_json, &
+                       run_note_noconv, run_summary, run_write_json, &
                        run_gradient_summary, run_hessian_summary, run_build_masses, run_charges_summary, &
                        run_fukui_summary, &
                        run_opt_capability_check, run_build_opt_residues, run_opt_summary, run_write_opt_xyz, run_write_traj_xyz, &
@@ -172,6 +172,18 @@ program trc_main
                        "orbital rotations once |FDS - SDF| is small enough. Restricted Hartree-Fock only; "// &
                        "refused with an open shell, a functional, --pcm, --df or more than one rank")
    call r%cli%add_option("soscf-start", "commutator norm at which --soscf hands over from DIIS (1e-2)")
+   call r%cli%add_flag("mom", "maximum overlap method once DIIS is on and |FDS - SDF| < 0.1: occupy the "// &
+                       "orbitals closest to the previous density, not the lowest (small gaps, charged open "// &
+                       "shells, Fukui ions)")
+   call r%cli%add_option("level-shift-until", "keep --level-shift on through DIIS until |FDS - SDF| falls "// &
+                         "below this (0: off once DIIS starts); dropped for the rest of the run if the "// &
+                         "commutator does not improve by a factor 2 in 10 such iterations")
+   call r%cli%add_flag("gdm", "geometric direct minimisation (L-BFGS over orbital rotations) once |FDS - SDF| < "// &
+                       "--gdm-start, for SCFs DIIS cannot converge. Slower than DIIS where DIIS works; "// &
+                       "refused with --soscf. Keeps the occupation it starts from; with --mom it declines "// &
+                       "when MOM holds a non-aufbau state")
+   call r%cli%add_option("gdm-start", "commutator norm at which --gdm hands over from DIIS (0.1)")
+   call r%cli%add_option("gdm-max-rotation", "largest element of the orbital rotation (kappa) of one --gdm step (0.2)")
    call r%cli%add_option("symmetry", "point-group symmetry in the SCF: off (the default), on/auto (the "// &
                          "detected group, the largest Abelian group: D2h or a subgroup; tops, linear molecules and "// &
                          "atoms use their Abelian subgroup) or a group, which must be the detected group "// &
@@ -617,6 +629,23 @@ program trc_main
       call r%cli%get("soscf-start", r%soscf_start, r%err)
       call run_check(r, "--soscf-start")
       if (.not. (r%soscf_start > 0.0_dp)) call run_die(r, "--soscf-start must be > 0")
+   end if
+   r%gdm = r%cli%is_set("gdm")
+   if (r%cli%is_set("gdm-start")) then
+      call r%cli%get("gdm-start", r%gdm_start, r%err)
+      call run_check(r, "--gdm-start")
+      if (.not. (r%gdm_start > 0.0_dp)) call run_die(r, "--gdm-start must be > 0")
+   end if
+   if (r%cli%is_set("gdm-max-rotation")) then
+      call r%cli%get("gdm-max-rotation", r%gdm_max_rotation, r%err)
+      call run_check(r, "--gdm-max-rotation")
+      if (.not. (r%gdm_max_rotation > 0.0_dp)) call run_die(r, "--gdm-max-rotation must be > 0")
+   end if
+   r%mom = r%cli%is_set("mom")
+   if (r%cli%is_set("level-shift-until")) then
+      call r%cli%get("level-shift-until", r%level_shift_until, r%err)
+      call run_check(r, "--level-shift-until")
+      if (.not. (r%level_shift_until >= 0.0_dp)) call run_die(r, "--level-shift-until must be >= 0")
    end if
    call r%cli%get("thresh", r%thresh, r%err)
    call run_check(r, "--thresh")
@@ -1285,6 +1314,12 @@ program trc_main
                                                   int(r%ndamp, c_int), real(r%damp, c_double), &
                                                   real(r%diis_start, c_double)))
    if (r%soscf) call run_api(r, trc_set_soscf(r%h, 1_c_int, real(r%soscf_start, c_double)))
+   if (r%gdm) call run_api(r, trc_set_gdm(r%h, 1_c_int, real(r%gdm_start, c_double), &
+                                          real(r%gdm_max_rotation, c_double)))
+   if (r%mom .or. r%level_shift_until > 0.0_dp) then
+      call run_api(r, trc_set_scf_stabilise(r%h, merge(1_c_int, 0_c_int, r%mom), &
+                                            real(r%level_shift_until, c_double)))
+   end if
    call run_api(r, trc_set_screening(r%h, real(r%thresh, c_double)))
    if (r%lindep >= 0.0_dp) call run_api(r, trc_set_lindep(r%h, real(r%lindep, c_double)))
    ! Only when a flag says so: unset, the library's default (on) stands and
@@ -1514,6 +1549,7 @@ program trc_main
       st = trc_run_scf(r%h)
    end if
    if (st /= TRC_OK .and. st /= TRC_ERR_NOCONV) call run_api(r, st)
+   if (st == TRC_ERR_NOCONV) call run_note_noconv(r)
    ! Rank 0 alone: every rank holds the same result.
    if (len(r%save_scf) > 0 .and. r%rank0) call run_api(r, trc_save_scf(r%h, app_c_string(r%save_scf)))
    call run_api(r, trc_nao(r%h, r%nao))

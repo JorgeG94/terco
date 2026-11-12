@@ -31,17 +31,45 @@ module trc_scf_settings
 
    public :: trc_scf_options_t, trc_scf_guess_t, trc_scf_result_t, trc_scf_timings_t, scf_settings_t, scf_settings_spin_rule
    public :: scf_energies_t, scf_settings_eri_thresh_env, ROTATION_SIZE
-   public :: scf_settings_homo_lumo_gap
+   public :: scf_settings_homo_lumo_gap, scf_settings_is_aufbau, scf_settings_count_off_aufbau, AUFBAU_TOL
    public :: scf_settings_fock_densities
    ! incr_env/incr_reset_env/incr_real_env stay
    ! private: nothing outside this module uses them.
    public :: DEFAULT_NLC_GRID_LEVEL
    public :: DEFAULT_SOSCF_START
+   public :: DEFAULT_GDM_START, DEFAULT_GDM_MAX_ROTATION, DEFAULT_GDM_SLACK
 
    real(dp), parameter :: DEFAULT_SOSCF_START = 1.0e-2_dp
    !! `trc_scf_options_t%soscf_start`'s own backend default, read here by
    !! `resolve` and by `trc_capi.F90`'s `trc_set_soscf` so the sentinel (0)
    !! means the same number everywhere it is spelled.
+   real(dp), parameter :: DEFAULT_GDM_START = 1.0e-1_dp
+   !! `trc_scf_options_t%gdm_start`'s backend default (sentinel 0): the
+   !! commutator norm below which DIIS hands over to geometric direct
+   !! minimisation. The stalls GDM is for sit at 1e-2..1e-1, the same scale
+   !! as `MOM_START` in trc_scf_driver; a poor guess has a far larger one.
+   real(dp), parameter :: DEFAULT_GDM_MAX_ROTATION = 0.2_dp
+   !! `trc_scf_options_t%gdm_max_rotation`'s default (sentinel 0), radians:
+   !! the largest element of the orbital rotation (kappa) of one GDM step. The
+   !! value `trc_scf_soscf` uses for its own `MAX_ROTATION`.
+   real(dp), parameter :: DEFAULT_GDM_SLACK = 1.0e-10_dp
+   !! `trc_scf_options_t%gdm_slack`'s default (sentinel 0), Eh: the energy
+   !! increase a GDM trial may show and still be accepted. It is the default
+   !! `conv_energy`: a rise below the convergence threshold cannot matter.
+   !! With full Fock builds it is the whole rule; a comparison that involves an
+   !! incremental build gets a wider bound, 1e-8, instead
+   !! (`trc_scf_gdm_step`'s header has the reasoning).
+   real(dp), parameter :: AUFBAU_TOL = 1.0e-6_dp
+   !! How far below an occupied level a virtual one may lie and the occupation
+   !! still count as aufbau, Eh. Degenerate orbitals (an open-shell pi pair)
+   !! split by round-off can be filled in either order, and the error of an
+   !! orbital energy is second order in the commutator, so far below this at
+   !! any convergence threshold in use; a swapped state lies a real excitation
+   !! (0.1 Eh or more) away. A plain DIIS run fills by aufbau and can never
+   !! fail the test: only a mom, gdm or SOSCF end point can. A converged
+   !! Kohn-Sham ground state that is itself not aufbau (the 4s/3d kind) is
+   !! refused by the post-SCF methods too, which is intended: their
+   !! denominators assume the ordering.
 
    integer, parameter :: DEFAULT_NLC_GRID_LEVEL = 1
    !! VV10's own default grid level, coarser than the semilocal grid's
@@ -195,11 +223,109 @@ module trc_scf_settings
       !! The commutator at which DIIS hands over to Newton; 0 means the
       !! backend's own default (1e-2, metalquicha's `DEFAULT_SOSCF_START`,
       !! the same scale as `ACCEL_SWITCH` there).
+      logical :: gdm = .false.
+      !! Geometric direct minimisation (Van Voorhis and Head-Gordon, Mol. Phys.
+      !! 100, 1713 (2002)) as a step mode of the SCF loop (`trc_scf_gdm_step`):
+      !! once the commutator is below `gdm_start`, and from then on, each
+      !! iteration rotates the orbitals along a quasi-Newton (L-BFGS) direction
+      !! in the occupied-virtual space instead of extrapolating and
+      !! diagonalising, and a step is kept only if the energy went down. For
+      !! the cases where every DIIS variant hovers on a shoulder. DIIS, ADIIS,
+      !! damping and the level shift are off while it runs. MOM is not
+      !! dropped at the handover: if it has latched, the handover
+      !! diagonalisation occupies by maximum overlap. A state MOM holds off the
+      !! aufbau occupation is a saddle point, which a minimiser leaves for the
+      !! ground state (measured), so then GDM DECLINES and the run continues as
+      !! `mom` (`trc_scf_result_t%gdm_declined`); if MOM merely latched on the
+      !! aufbau occupation GDM goes on. A GDM run that ends on a non-aufbau
+      !! state warns (`gdm_off_aufbau`). Refused together
+      !! with `frac_occ` and `soscf` (`resolve`). Everything else (DFT, PCM,
+      !! `df`, incremental Fock builds, unrestricted, several ranks) works as
+      !! with DIIS: the step never builds a Fock matrix itself.
+      real(dp) :: gdm_start = 0.0_dp
+      !! The commutator norm below which DIIS hands over to GDM; 0 means
+      !! `DEFAULT_GDM_START`. The handover iteration diagonalises plainly
+      !! (undamped, unshifted, unextrapolated) so the density leaving it is
+      !! exactly that of `cmo`; GDM steps run from the next iteration and never
+      !! hand back. `huge(1.0_dp)` is GDM from iteration 2 (after the damped
+      !! start of an open shell). CAUTION: GDM only rotates, so it keeps the
+      !! occupation pattern of the handover diagonalisation and cannot see
+      !! negative curvature. Started far from convergence (a large value, a
+      !! poor guess) it can converge to a higher stationary state and report
+      !! converged: water/6-31G* B3LYP from a core guess ended 0.82 Eh above
+      !! the DIIS energy. The default hands over only once DIIS has settled the
+      !! occupation; a run that ends non-aufbau logs a warning suggesting a
+      !! smaller value.
+      real(dp) :: gdm_max_rotation = 0.0_dp
+      !! Largest element of the orbital rotation (kappa) of one GDM step, radians; 0 means
+      !! `DEFAULT_GDM_MAX_ROTATION`. A step that overshoots is rejected and
+      !! halved, so a large value only costs Fock builds; the check that
+      !! exercises the rejection path sets it large on purpose.
+      real(dp) :: gdm_slack = 0.0_dp
+      !! The energy rise a GDM trial may show and still be accepted, hartree; 0
+      !! means `DEFAULT_GDM_SLACK`. It applies whenever both energies compared
+      !! come from full Fock builds; when either came from an incremental
+      !! build it is widened to at least 1e-8 (the build's accumulated
+      !! screening error). Negative demands a decrease of at least that
+      !! much and is never widened, which is how the check of the "no
+      !! downhill step" stop forces it.
       real(dp) :: level_shift = 1.0_dp
       !! Level shift on the virtual space while DIIS is off, in hartree.
       !! From a Wolfsberg-Helmholz guess cholesterol sits 20 hartree above
       !! its answer and a damped Roothaan step alone throws it 300 hartree
       !! away; raising the virtuals keeps the occupied space from collapsing.
+      real(dp) :: level_shift_until = 0.0_dp
+      !! Keep `level_shift` on through DIIS/ADIIS until the commutator norm
+      !! falls below this; 0 (the default) drops it the iteration DIIS starts.
+      !! An iteration whose commutator is below `conv_diis` is never shifted,
+      !! with or without this option, so converged eigenvalues are unshifted.
+      !! The shift goes onto the extrapolated Fock matrix, so the
+      !! DIIS history and the commutator stay unshifted. For small-gap open
+      !! shells, where CDIIS swaps occupied and virtual orbitals every few
+      !! iterations and stalls with |FDS - SDF| near 1e-1.
+      !! A stall guard stops it from trapping a run that would converge
+      !! without it. The shift only damps the step, so with the threshold
+      !! below the commutator a shifted DIIS can sit above it indefinitely
+      !! (O3+ UHF/6-31G* converges in 36 iterations by default (SAD guess; 35
+      !! from SADQ), and not in 100 with a threshold of 1e-3, the commutator
+      !! parked at 2e-3 to 4e-3). So
+      !! the shift this option keeps on is dropped for the rest of the run,
+      !! and the SCF says so once, when the best commutator of the last
+      !! `SHIFT_STALL_WINDOW` (10) iterations shifted through this option is
+      !! not below `SHIFT_STALL_FACTOR` (0.5) times the best before them
+      !! (`scf_shift_guard_t` in trc_scf_driver). Both read only the broadcast
+      !! commutator and the iteration counts, so every rank drops it together.
+      !! The shift of the damped start is not watched.
+      logical :: mom = .false.
+      !! Maximum overlap method (Gilbert, Besley & Gill, JPCA 112, 13164)
+      !! while DIIS is on: occupy the orbitals that overlap most with the
+      !! previous density, p_j = c_j^T S D S c_j (the sum of squared overlaps
+      !! with the previous occupied space, `scf_driver_mom_weights`), instead
+      !! of the lowest ones. Stops aufbau flipping the occupation of
+      !! near-degenerate frontier orbitals between iterations. MOM starts, and
+      !! then stays on, at the first iteration with DIIS on AND either
+      !! `mom_follow_guess` (below) or a commutator norm below 0.1 (`MOM_START`
+      !! in trc_scf_driver). Before that it is aufbau: DIIS is on from
+      !! iteration 1 of a restricted run, and following a poor core guess
+      !! there converged water to a determinant 8 Eh up. The SAD, SADQ, SAP,
+      !! MINAO, GWH and core guesses are all built by terco and so wait for
+      !! that gate. The occupied orbitals stay in columns 1:nocc of `cmo`
+      !! (energy order within each block), so `eps` need not ascend across the
+      !! occupied/virtual boundary; the HOMO-LUMO gap check is skipped then.
+      !! Open shells, `--pcm`, `--df` and several ranks all combine with it:
+      !! it only reorders the columns of the eigenvectors of rank 0 (the number of
+      !! columns moved is broadcast with the other control values), and the
+      !! density that follows goes through the same Fock build as before.
+      !! With `--soscf`, MOM runs only until SOSCF takes over (see
+      !! `trc_scf_soscf_run`).
+      logical :: mom_follow_guess = .false.
+      !! The starting density is one the CALLER chose, so `mom` follows its
+      !! occupation from the first DIIS iteration even when it is not aufbau:
+      !! a density handed in (trc_capi: TRC_GUESS_GIVEN, which includes the
+      !! Hessian and Fukui restores) or a projected previous orbital set
+      !! (TRC_GUESS_PROJECTED). False for every density terco builds, however
+      !! it reaches `trc_scf_run` (SAD arrives as `dguess` too), so those wait
+      !! for the commutator gate. Only read when `mom` is on.
       real(dp) :: lindep_thresh = 1.0e-8_dp
       !! Canonical orthogonalisation: an eigenvalue of S, normalised to a unit
       !! diagonal first (Sn = D S D, D = diag(1/sqrt(S_ii)) -- pyscf's
@@ -333,6 +459,36 @@ module trc_scf_settings
       integer :: n_increments = 0
       !! Fock builds taken from the density difference (trc_scf_incremental);
       !! the rest of `iterations` were full builds, the last one always.
+      integer :: gdm_steps = 0
+      !! Iterations that were GDM steps (`trc_scf_gdm_step`), counting the ones
+      !! whose trial was rejected; 0 when GDM never took over.
+      integer :: gdm_rejected = 0
+      !! Of those, the trials rejected for not lowering the energy.
+      real(dp) :: gdm_max_rise = 0.0_dp
+      !! The largest rise of the energy from one ACCEPTED GDM point to the next,
+      !! hartree; 0 when the energy only fell. A trial is accepted when it is at
+      !! most `gdm_slack` above the accepted point, widened to 1e-8 when either
+      !! energy came from an incremental Fock build (a real noise source); so
+      !! this is at most the slack if no incremental build was involved and at
+      !! most 1e-8 otherwise. Rank 0's: the other ranks never see an accepted point.
+      real(dp) :: gdm_max_rise_full = 0.0_dp
+      !! The same over the pairs of accepted points that both came from FULL
+      !! Fock builds, which have no noise: at most the plain `gdm_slack`.
+      real(dp) :: gdm_max_step = 0.0_dp
+      !! The largest orbital-rotation element applied in any GDM trial of the
+      !! run, radians; at most `gdm_max_rotation`. Rank 0's.
+      integer :: gdm_off_aufbau = 0
+      !! At the end of a GDM run: the virtual orbitals (over the spins) whose
+      !! semicanonical energy lies more than 1e-6 Eh below the highest occupied
+      !! one. Non-zero is not the aufbau state (likely an excited or saddle
+      !! solution, see `gdm_start`): a warning is logged. On every rank.
+      logical :: gdm_declined = .false.
+      !! GDM was on but gave way at the handover because `mom` held a non-aufbau
+      !! occupation (a saddle point a minimiser would leave); the run went on as
+      !! a `mom` run and `gdm_steps` is 0.
+      logical :: shift_dropped = .false.
+      !! The stall guard of `level_shift_until` dropped the level shift during
+      !! this run (it says so once in the log); false when the option is off.
       logical :: sym_declined = .false.
       !! The symmetric run was not made: `sym%decline_lindep` and functions were
       !! dropped (`message` says so, `iterations` is 0). The caller runs in C1.
@@ -384,6 +540,12 @@ module trc_scf_settings
       real(dp) :: diis_start = huge(1.0_dp)
       logical :: soscf = .false.
       real(dp) :: soscf_start = DEFAULT_SOSCF_START
+      logical :: gdm = .false.
+      real(dp) :: gdm_start = DEFAULT_GDM_START
+      real(dp) :: gdm_max_rotation = DEFAULT_GDM_MAX_ROTATION
+      real(dp) :: gdm_slack = DEFAULT_GDM_SLACK
+      !! `opts%gdm_slack` with its sentinel (0) resolved (`gdm`, `gdm_start` and
+      !! `gdm_max_rotation` above are resolved the same way).
       real(dp) :: conv_energy = 0.0_dp
       real(dp) :: conv_diis = 0.0_dp
       integer :: max_iteration = 0
@@ -525,9 +687,24 @@ contains
       this%soscf = opts%soscf
       this%soscf_start = opts%soscf_start
       if (this%soscf_start <= 0.0_dp) this%soscf_start = DEFAULT_SOSCF_START
+      this%gdm = opts%gdm
+      if (opts%gdm_start > 0.0_dp) this%gdm_start = opts%gdm_start
+      if (opts%gdm_max_rotation > 0.0_dp) this%gdm_max_rotation = opts%gdm_max_rotation
+      if (opts%gdm_slack /= 0.0_dp) this%gdm_slack = opts%gdm_slack
       this%conv_energy = opts%conv_energy
       this%conv_diis = opts%conv_diis
       this%max_iteration = opts%max_iteration
+      if (this%gdm .and. opts%frac_occ) then
+         msg = "trc_scf: --gdm refuses fractional occupations -- GDM rotates orbitals of a fixed "// &
+               "integer occupation"
+         ok = .false.
+         return
+      end if
+      if (this%gdm .and. this%soscf) then
+         msg = "trc_scf: --gdm refuses --soscf -- both replace the DIIS loop's orbital update; pick one"
+         ok = .false.
+         return
+      end if
       if (this%soscf) then
          ! Restricted Hartree-Fock only, like the backend `trc_scf_soscf`
          ! was ported from (metalquicha's `mqc_czt_soscf`/`mqc_czt_rhf`):
@@ -682,6 +859,44 @@ contains
          gap = min(gap, eps(nocc(s) + 1, s) - eps(nocc(s), s))
       end do
    end function scf_settings_homo_lumo_gap
+
+   pure integer function scf_settings_count_off_aufbau(nmo, nocc, eps) result(n)
+      !! Number of virtual levels (indices nocc+1:nmo) lying more than
+      !! `AUFBAU_TOL` below the highest occupied one (0 for an aufbau state).
+      !! Explicit-shape dummy and plain index loops on purpose: the GDM
+      !! warning and the post-SCF refusal share it, and an array-section
+      !! `count` of an allocatable component miscounted under nvfortran 26.9.
+      integer, intent(in) :: nmo, nocc
+      real(dp), intent(in) :: eps(nmo)
+      integer :: i
+      real(dp) :: homo
+      n = 0
+      if (nocc < 1 .or. nocc >= nmo) return
+      homo = eps(1)
+      do i = 2, nocc
+         if (eps(i) > homo) homo = eps(i)
+      end do
+      do i = nocc + 1, nmo
+         if (eps(i) < homo - AUFBAU_TOL) n = n + 1
+      end do
+   end function scf_settings_count_off_aufbau
+
+   pure function scf_settings_is_aufbau(nao, nspin, nmo, nocc, eps) result(aufbau)
+      !! Whether the occupation is the aufbau one: for every spin, no virtual
+      !! level lies more than `AUFBAU_TOL` below an occupied one. The occupied
+      !! orbitals sit in columns 1:nocc, so a maximum-overlap run that holds
+      !! an excited determinant has a virtual column under the HOMO. Only the
+      !! first `nmo` levels are real (see scf_settings_homo_lumo_gap).
+      integer, intent(in) :: nao, nspin, nmo
+      integer, intent(in) :: nocc(2)
+      real(dp), intent(in) :: eps(nao, nspin)
+      logical :: aufbau
+      integer :: s
+      aufbau = .true.
+      do s = 1, nspin
+         if (scf_settings_count_off_aufbau(nmo, nocc(s), eps(1:nmo, s)) > 0) aufbau = .false.
+      end do
+   end function scf_settings_is_aufbau
 
    pure function scf_settings_fock_densities(config) result(ndens)
       !! Densities in the widest four-centre pass of one Fock build: 2 for

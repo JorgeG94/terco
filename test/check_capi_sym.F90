@@ -47,7 +47,8 @@ module check_capi_sym_suite
                                trc_symmetry_residual, trc_symmetry_frame, trc_symmetry_nirrep, &
                                trc_symmetry_irrep_name, trc_symmetry_irrep_dim, trc_mo_irreps, trc_geometry, &
                                trc_mo_occupations, trc_nao, trc_message, trc_set_geometry, trc_set_df, trc_set_pcm, &
-                               trc_set_soscf, trc_run_rimp2, trc_run_hessian, trc_run_polarizability, trc_load_scf, &
+                               trc_set_soscf, trc_set_scf_stabilise, &
+                              trc_set_gdm, trc_run_rimp2, trc_run_hessian, trc_run_polarizability, trc_load_scf, &
                                trc_fukui_hirshfeld, trc_check_rimp2_gradient, trc_set_guess, &
                                trc_symmetry_report_frame, trc_set_symmetry_report_frame, trc_density, &
                                trc_mo_coefficients, trc_mo_energies, trc_nmo, trc_hirshfeld_charges, trc_chelpg_charges, &
@@ -505,6 +506,27 @@ contains
       rc = trc_destroy(h)
       if (allocated(error)) return
 
+      ! MOM picks the occupied orbitals across irreps, which a named group's
+      ! per-irrep occupations fix instead.
+      call make_context(h, 'hocl.xyz', 'basis_sets/6-31gs.json', geom)
+      rc = trc_set_symmetry(h, 'Cs'//c_null_char, 0.0_c_double)
+      rc = trc_set_scf_stabilise(h, 1_c_int, 0.0_c_double)
+      rc = trc_run_scf(h)
+      call check(error, rc /= TRC_OK, 'mom is refused with symmetry')
+      call check(error, index(message(h), 'mom') > 0, message(h))
+      rc = trc_destroy(h)
+      if (allocated(error)) return
+
+      ! GDM rotates occupied into virtual orbitals across irreps, as SOSCF does.
+      call make_context(h, 'hocl.xyz', 'basis_sets/6-31gs.json', geom)
+      rc = trc_set_symmetry(h, 'Cs'//c_null_char, 0.0_c_double)
+      rc = trc_set_gdm(h, 1_c_int, 0.0_c_double, 0.0_c_double)
+      rc = trc_run_scf(h)
+      call check(error, rc /= TRC_OK, 'gdm is refused with symmetry')
+      call check(error, index(message(h), 'gdm') > 0, message(h))
+      rc = trc_destroy(h)
+      if (allocated(error)) return
+
       call make_context(h, 'hocl.xyz', 'basis_sets/6-31gs.json', geom)
       rc = trc_set_symmetry(h, 'Cs'//c_null_char, 0.0_c_double)
       rc = trc_nao(h, nao)
@@ -865,6 +887,20 @@ contains
       rc = trc_set_soscf(hd, 1_c_int, 0.0_c_double)
       rc = trc_set_soscf(ho, 1_c_int, 0.0_c_double)
       call compare_runs('SOSCF', hd, ho, error)
+      if (allocated(error)) return
+      rc = trc_destroy(hd); rc = trc_destroy(ho)
+
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/6-31gs.json')
+      rc = trc_set_scf_stabilise(hd, 1_c_int, 0.0_c_double)
+      rc = trc_set_scf_stabilise(ho, 1_c_int, 0.0_c_double)
+      call compare_runs('the maximum overlap method', hd, ho, error)
+      if (allocated(error)) return
+      rc = trc_destroy(hd); rc = trc_destroy(ho)
+
+      call make_pair(hd, ho, 'water_rot.xyz', 'basis_sets/6-31gs.json')
+      rc = trc_set_gdm(hd, 1_c_int, 0.0_c_double, 0.0_c_double)
+      rc = trc_set_gdm(ho, 1_c_int, 0.0_c_double, 0.0_c_double)
+      call compare_runs('geometric direct minimisation', hd, ho, error)
       if (allocated(error)) return
       rc = trc_destroy(hd); rc = trc_destroy(ho)
 

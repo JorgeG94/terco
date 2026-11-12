@@ -356,7 +356,17 @@ contains
          call this%release()
          return
       end if
-      if (this%n_lindep > 0) call scf_context_null_projector(la, this%nao, this%smat, this%x, this%pnull)
+      if (this%n_lindep > 0) then
+         call scf_context_null_projector(la, this%nao, this%smat, this%x, this%pnull)
+         ! Resident for the context's lifetime (every diagonalisation reads
+         ! it). Entered HERE, as the component `release` deletes it as: entered
+         ! through the projector's allocatable dummy, nvfortran 26.5 left the
+         ! descriptor's present-table entry behind at every release, and a
+         ! later SCF in the same process whose stack overlapped it died with
+         ! "variable in data clause is partially present" (two linearly
+         ! dependent runs, then any other: 55 of 131 stack offsets).
+         !$acc enter data copyin(this%pnull)
+      end if
       if (config%talk .and. this%n_lindep > 0) then
          block
             character(len=1024) :: logline
@@ -641,7 +651,7 @@ contains
       !! w_k^-1/2 U_k^T = U_k w_k^-1/2 U_k^T Sn U_k w_k^-1/2 U_k^T, and
       !! Sn U_k = U_k w_k, so this is U_k w_k^-1/2 w_k w_k^-1/2 U_k^T =
       !! U_k U_k^T, so this is exactly the projector onto the dropped
-      !! modes. Host arrays in, `pnull` left on the device too.
+      !! modes. Host arrays in and out; the caller maps `pnull`.
       type(trc_linalg_t), intent(inout) :: la
       integer, intent(in) :: n
       real(dp), intent(in) :: s(n, n), x(n, n)
@@ -656,9 +666,6 @@ contains
       end do
       call la%gemm_mat(x, t, pnull, alpha=-1.0_dp, beta=1.0_dp, transa="T")
       !$acc end data
-      ! Resident for the context's lifetime (every diagonalisation reads it);
-      ! scf_context_release deletes it.
-      !$acc enter data copyin(pnull)
    end subroutine scf_context_null_projector
 
    ! Sum a contiguous array over the ranks, then rank 0's copy everywhere.

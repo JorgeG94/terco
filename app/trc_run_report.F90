@@ -3,6 +3,7 @@ submodule (trc_run) trc_run_report
    !! gradient, charge, Fukui and Hessian summaries (bodies of `trc_run`).
    use pic_strings, only: to_string
    use trc_app, only: app_element_symbol, BOHR_PER_ANGSTROM
+   use trc_scf_settings, only: AUFBAU_TOL
    use trc_vib, only: trc_vib_log_table
    use trc_thermo, only: trc_thermo_log_summary
    use trc_sym_run, only: sym_run_occupied_counts
@@ -540,6 +541,12 @@ contains
             if (r%has_lumo(s)) call line("LUMO "//trim(tag(s)), real(r%lumo(s), c_double))
          end if
       end do
+      ! A maximum-overlap run can hold an excited determinant, and a direct
+      ! minimisation can end on one, whose HOMO lies above its LUMO: say so
+      ! instead of leaving a negative gap to read.
+      if (any(r%has_homo(1:r%nspin) .and. r%has_lumo(1:r%nspin) .and. r%lumo(1:r%nspin) + AUFBAU_TOL < r%homo(1:r%nspin))) then
+         call global_logger%info("          | the occupation is not aufbau: a virtual level lies below the HOMO")
+      end if
    end subroutine frontier_lines
 
    subroutine line(label, e)

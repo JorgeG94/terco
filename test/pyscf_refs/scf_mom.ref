@@ -1,0 +1,12 @@
+# terco pyscf reference v1
+# case: mom_excited
+# generator: test/pyscf_refs/generate.py CASES["mom_excited"] -> gen_mom_excited
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: ff5b7f9d58e785e4dbab12f36ef6aff9a38903bb6fac90f7e31a153e3a48cbaa
+# files: test/check_scf_stabilise.F90 test/water.xyz test/basis_sets/cc-pvdz.json
+# water RHF/cc-pVDZ (spherical), conv_tol 1e-12, |g| 3.17e-09
+E_GROUND -7.60267720533924205e+01
+# the HOMO (orbital 5) and LUMO (orbital 6) swapped, pyscf scf.addons.mom_occ on ROHF started from the ground-state orbitals; |g| 9.42e-10; UHF with the same pattern E = -75.242412457146
+E_MOM -7.52424124571457753e+01
+END

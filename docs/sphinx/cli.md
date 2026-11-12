@@ -60,6 +60,8 @@ terco oh.xyz -u 1 -f b3lyp                   # UHF/B3LYP doublet
 | `--adiis` | ADIIS before CDIIS, for an SCF stuck near 1e-2 |
 | `--level-shift`, `--damp`, `--damp-steps`, `--diis-start` | the damped-start schedule before DIIS takes over |
 | `--soscf`, `--soscf-start` | second-order SCF hand-off from DIIS (RHF only) |
+| `--mom`, `--level-shift-until` | maximum overlap occupation; keep the level shift on through DIIS |
+| `--gdm`, `--gdm-start`, `--gdm-max-rotation` | geometric direct minimisation (L-BFGS over orbital rotations) in place of DIIS near convergence, for stalled SCFs; refused with `--soscf` |
 | `--thresh` | integral screening threshold (1e-12) |
 | `--incremental` / `--no-incremental` | incremental Fock build (on by default; refused with `--df`) |
 
