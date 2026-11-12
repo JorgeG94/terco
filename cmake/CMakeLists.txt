@@ -28,6 +28,9 @@ if(TERCO_ENABLE_GPU)
   # TRC_DEVICE, not _OPENACC, selects the cuBLAS/cuSOLVER/device-binding
   # paths: -acc=multicore defines _OPENACC too, with no GPU behind it.
   set(TERCO_FLAGS "-stdpar=gpu -acc -gpu=${TERCO_GPU_OPTS} -Mpreprocess -traceback -DTRC_DEVICE")
+  # test/ links a C main against libterco and needs the SAME -gpu options,
+  # so the device OpenACC runtime is selected rather than the host one.
+  set(TERCO_GPU_OPTS "${TERCO_GPU_OPTS}" PARENT_SCOPE)
 elseif(TERCO_ENABLE_MULTICORE)
   #
   # Threaded host build: `do concurrent` runs on CPU threads. `-acc=multicore`

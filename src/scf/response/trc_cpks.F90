@@ -78,7 +78,7 @@ module trc_cpks
    use pic_logger, only: global_logger
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_multipoles, TRC_NMULT
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, XC_FAMILY_MGGA
@@ -300,7 +300,8 @@ contains
          call lp%gemm_mat(temporary_no, cmo(:, 1:nocc), d_u, transb="T")
          call lp%transpose(nao, nao, d_u, nao, d_ut, nao)
          call cphf_add_matrix(nao, nao, d_u, d_ut, d_u)
-         call eri%fock_resident(b, d_u, g_u, k_scale=ax, j_scale=1.0_dp, density_screen=.false.)
+         call eri%fock_resident(b, d_u, g_u, &
+                                opts=trc_fock_options_t(k_scale=ax, j_scale=1.0_dp, density_screen=.false.))
          call trc_xc_fxc_rks(b, xg, func, dmat, d_u, v_resp, budget, lp)
          call cphf_add_matrix(nao, nao, g_u, v_resp, g_u)
          call lp%gemm_mat(g_u, cmo(:, 1:nocc), temporary_no2)

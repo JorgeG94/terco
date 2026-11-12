@@ -92,7 +92,7 @@ module trc_scf_soscf
    use pic_lapack_interfaces, only: pic_syev
    use pic_blas_interfaces, only: pic_gemv
    use trc_basis_types, only: trc_basis_t
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_linalg, only: trc_linalg_t
    use trc_cphf, only: cphf_zero_matrix, cphf_copy_matrix, cphf_add_matrix, cphf_axpy_matrix, cphf_add_diag
    use trc_scf_context, only: scf_ctx_t
@@ -752,7 +752,8 @@ contains
       call lp%transpose(dims%nao, dims%nao, scratch%d_u, dims%nao, scratch%d_ut, dims%nao)
       call cphf_add_matrix(dims%nao, dims%nao, scratch%d_u, scratch%d_ut, scratch%d_u)
       call scf_fock_to_cart(b, dims%sph, dims%nao, dims%nao_c, scratch%d_u, scratch%d_u_c)
-      call eri%fock_resident(b, scratch%d_u_c, scratch%g_u_c, k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.)
+      call eri%fock_resident(b, scratch%d_u_c, scratch%g_u_c, &
+                             opts=trc_fock_options_t(k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.))
       call scf_fock_to_sph(b, dims%sph, dims%nao, dims%nao_c, scratch%g_u_c, scratch%g_u)
       call lp%gemm_mat(scratch%g_u, cmo(:, 1:nocc), scratch%temporary_no2)
       call lp%gemm_mat(cmo(:, nocc + 1:n_mo), scratch%temporary_no2, apout, transa="T", alpha=2.0_dp)

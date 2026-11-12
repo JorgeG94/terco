@@ -23,10 +23,10 @@ program bench_binwater
    use trc_tables, only: LTOT, NHERM_MAX, tables_init
    use trc_cart, only: cart_init
    use trc_batch, only: batch_build_pairs, batch_eri, batch_ncart, common_fac_sp, trc_batch_pairs_t
-   use trc_hgp, only: hgp_build_pairs, hgp_batch
+   use trc_hgp, only: hgp_build_pairs, trc_pair_prune_t, hgp_batch
 
    use trc_screen, only: screen_schwarz_bounds
-   use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_build_binned_pairs, bins_build_pair_quartets
+   use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_build_binned_pairs, bins_build_pair_quartets, trc_bin_shells_t
    use trc_binkernel, only: binkernel_fock_bins
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
    implicit none
@@ -57,7 +57,9 @@ program bench_binwater
    integer(int64) :: nrect
    integer :: nout, r, nchunk, ic, c, l0, h0
    type(pair_bins_t) :: bins
+   type(trc_bin_shells_t) :: bsh
    type(trc_shell_pairs_t) :: pairs
+   type(trc_pair_prune_t) :: prune
    type(trc_pair_quartets_t) :: quartets
    !! The HGP primitive pairs and their bin-interleaved copy
    !! (bins_build_pair_quartets), as trc_eri_t holds them.
@@ -76,7 +78,11 @@ program bench_binwater
    call batch_build_pairs(sh_l, sh_np, sh_e, sh_c, sh_r, THRESH, mmd)
    pairs%sh_l = sh_l
    pairs%ao_off = ao_off
-   call hgp_build_pairs(sh_np, sh_e, sh_c, sh_r, cfac, sh_c, THRESH*1.0e-3_dp, pairs)
+   ! Component by component: nvfortran 26.5 has an internal compiler
+   ! error (search_arr) on this structure constructor with a basis-array argument.
+   prune%camp = sh_c
+   prune%cut = THRESH*1.0e-3_dp
+   call hgp_build_pairs(sh_np, sh_e, sh_c, sh_r, cfac, prune, pairs)
 
    allocate (qs(nbas*(nbas + 1)/2), dmax(nbas, nbas))
    dmax = 1.0_dp
@@ -86,7 +92,8 @@ program bench_binwater
    print '(a,f8.3,a)', '  schwarz bounds  : ', t1, ' s'
 
    call tm%start()
-   call bins_build_binned_pairs(sh_l, sh_np, sh_r, qs, THRESH, bins, pp_n=pairs%n)
+   bsh = trc_bin_shells_t(sh_l, sh_np, sh_r)
+   call bins_build_binned_pairs(bsh, qs, THRESH, bins, pp_n=pairs%n)
    call bins_build_pair_quartets(bins, pairs, quartets)
    t1 = tm%get_elapsed_time()
    print '(a,f8.3,a)', '  bin the pairs   : ', t1, ' s'

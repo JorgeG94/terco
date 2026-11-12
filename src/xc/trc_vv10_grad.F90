@@ -113,7 +113,7 @@ module trc_vv10_grad
    use trc_step_table, only: step_table_t
    use trc_vv10, only: vv10_density_tile, vv10_gather, VV10_RHO_TOL, PI43
    use trc_linalg, only: trc_linalg_t
-   use trc_dft_grid, only: dft_grid_t, dft_grid_build
+   use trc_dft_grid, only: dft_grid_t, dft_grid_build, dft_grid_options_t
    use trc_dft_partition, only: dft_partition_becke_grad_contract
    use trc_error, only: error_t
    implicit none
@@ -149,6 +149,7 @@ contains
       !! As xc_grad_add's; absent, a private table (the recursive call).
 
       type(xc_grad_options_t) :: opts
+      type(dft_grid_options_t) :: gopts   !! rotated like the SCF's grid
       type(dft_grid_t) :: grid_own
       type(trc_xc_grid_t) :: xg_own
       type(timer_type) :: tc
@@ -166,7 +167,8 @@ contains
       if (present(options)) opts = options
       call timing%step_on(lp, ST_GRID, tc)
       allocate (at_elem(b%natm), source=b%at_elem)
-      call dft_grid_build(b%at_r, at_elem, grid_own, err, level=opts%grid_level)
+      gopts%angular_rotation = opts%grid_rotation
+      call dft_grid_build(b%at_r, at_elem, grid_own, err, level=opts%grid_level, options=gopts)
       if (err%has_error()) error stop "trc_vv10_grad: "//trim(err%get_message())
       call xg_own%build_from_grid(grid_own, b, max_pts=opts%grid_max_pts)
       call xg_own%to_device()

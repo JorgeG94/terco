@@ -1,0 +1,8 @@
+6
+N2H2F2 (1,2-difluorohydrazine), staggered with the lone pairs anti, Ci: RHF/6-31G* optimised with pyscf 2.14.0 under inversion-symmetric constraint (BFGS, gtol 1e-4 Eh/A), Angstrom
+N  -0.7080880587 -0.0285404269  -0.0878557910
+H  -1.0052566164  0.9226719134   0.0297286370
+F  -1.1050986770 -0.6067245914   1.0937341141
+N   0.7080880587  0.0285404269   0.0878557910
+H   1.0052566164 -0.9226719134  -0.0297286370
+F   1.1050986770  0.6067245914  -1.0937341141

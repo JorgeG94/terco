@@ -25,10 +25,12 @@ module trc_scf_settings
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    use trc_decontract, only: trc_decontract_options_t
    implicit none
+   integer, parameter :: ROTATION_SIZE = 9
+   !! A 3x3 rotation stored in column order (see the rotation components below).
    private
 
-   public :: trc_scf_options_t, trc_scf_result_t, scf_settings_t, scf_settings_spin_rule, scf_energies_t
-   public :: scf_settings_eri_thresh_env
+   public :: trc_scf_options_t, trc_scf_guess_t, trc_scf_result_t, trc_scf_timings_t, scf_settings_t, scf_settings_spin_rule
+   public :: scf_energies_t, scf_settings_eri_thresh_env, ROTATION_SIZE
    public :: scf_settings_homo_lumo_gap, scf_settings_is_aufbau, scf_settings_count_off_aufbau, AUFBAU_TOL
    public :: scf_settings_fock_densities
    ! incr_env/incr_reset_env/incr_real_env stay
@@ -346,6 +348,13 @@ module trc_scf_settings
       !! per context handle; see trc_scf_df.F90's own header on why it
       !! outlives a single run).
       integer :: grid_level = 3
+      real(dp) :: grid_rotation(ROTATION_SIZE) = [1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp]
+      !! Rotation of the Lebedev points of the DFT and VV10 grids
+      !! (`dft_grid_options_t%angular_rotation`); the identity unless a
+      !! symmetric run in a standard frame wants the grid of the user's axes.
+      !! Rank 1, the 3x3 matrix in column order: ifx 2025.0 rejects an empty
+      !! structure constructor of a type with a rank-2 component default
+      !! (error #6595).
       integer :: nlc_grid_level = DEFAULT_NLC_GRID_LEVEL
       !! Grid level for VV10's nonlocal correlation, when the functional has
       !! it. Coarser than the semilocal grid by convention (SG-1-like): VV10
@@ -383,6 +392,29 @@ module trc_scf_settings
       !! backend's own radii convention, rather than terco's).
    end type trc_scf_options_t
 
+   type :: trc_scf_guess_t
+      !! The two rarer guesses a caller can hand `trc_scf_run` besides a
+      !! density (`dguess`), bundled as one optional argument (`guess`) so the
+      !! run's argument list stays within the limit. Plain values (copies);
+      !! an unallocated component is a guess not given. `dguess` beats
+      !! `hamiltonian` beats `orbitals`, each beating the plain
+      !! `trc_scf_options_t%guess` string.
+      real(dp), allocatable :: hamiltonian(:, :)
+      !! A guess HAMILTONIAN to occupy instead of hcore or the GWH matrix --
+      !! how SAP gets in (see trc_sap), which cannot come through `dguess`
+      !! because what it produces is a one-electron operator and not a
+      !! density. Ignored if `dguess` is also given: a density the caller
+      !! already has is more specific than a matrix to make one from.
+      real(dp), allocatable :: orbitals(:, :, :)
+      !! A PREVIOUS geometry's converged orbitals (SAME molecule/basis, so
+      !! the same nao), re-orthonormalised into a guess density at THIS
+      !! geometry's own overlap once `scf_context%setup` has built it
+      !! (`trc_scf_context%scf_context_project_density`) -- trc_capi.F90's
+      !! TRC_GUESS_PROJECTED, lowest priority of the three guess-density
+      !! arguments (checked after `dguess` and `hamiltonian`, same as every
+      !! other guess kind the plain `trc_scf_options_t%guess` string selects).
+   end type trc_scf_guess_t
+
    type :: scf_energies_t
       !! What the SCF loop computes at each density, gathered so `trc_scf_run`
       !! hands it to the result in one `update` call. All zero until set.
@@ -394,6 +426,21 @@ module trc_scf_settings
       real(dp) :: pcm = 0.0_dp         !! PCM dielectric energy q.v/2, included in `total`
       real(dp) :: pcm_qtotal = 0.0_dp  !! total apparent surface charge
    end type scf_energies_t
+
+   type :: trc_scf_timings_t
+      !! The SCF's own stage times, seconds, read off the loop's pic timers
+      !! once the run ends (the Fock timer stops after a synchronous device
+      !! kernel; the XC build syncs explicitly). `has_*` say which stages the run had; a stage it did not
+      !! have stays 0 and is not reported.
+      real(dp) :: wall = 0.0_dp        !! `trc_scf_run` from entry to the last iteration
+      real(dp) :: setup = 0.0_dp       !! once per geometry: pairs, 1e, ERI context, linalg
+      real(dp) :: fock_total = 0.0_dp  !! all Fock (two-electron) builds of the loop
+      real(dp) :: fock_first = 0.0_dp  !! build 1, which carries one-off device and kernel setup
+      integer :: n_fock = 0            !! Fock builds taken by the main loop
+      real(dp) :: grid = 0.0_dp, xc = 0.0_dp, vv10 = 0.0_dp   !! xc excludes vv10
+      real(dp) :: pcm_setup = 0.0_dp, pcm_total = 0.0_dp      !! cavity and K once; the loop's solves summed
+      logical :: has_grid = .false., has_vv10 = .false., has_pcm = .false., has_df = .false.
+   end type trc_scf_timings_t
 
    type :: trc_scf_result_t
       logical :: converged = .false.
@@ -408,6 +455,7 @@ module trc_scf_settings
       real(dp) :: e_pcm = 0.0_dp       !! PCM dielectric energy q.v/2, included in `energy`
       real(dp) :: pcm_qtotal = 0.0_dp  !! total apparent surface charge
       integer :: pcm_npoints = 0       !! surface points the cavity kept
+      type(trc_scf_timings_t) :: timings
       integer :: n_increments = 0
       !! Fock builds taken from the density difference (trc_scf_incremental);
       !! the rest of `iterations` were full builds, the last one always.
@@ -441,6 +489,20 @@ module trc_scf_settings
       logical :: shift_dropped = .false.
       !! The stall guard of `level_shift_until` dropped the level shift during
       !! this run (it says so once in the log); false when the option is off.
+      logical :: sym_declined = .false.
+      !! The symmetric run was not made: `sym%decline_lindep` and functions were
+      !! dropped (`message` says so, `iterations` is 0). The caller runs in C1.
+      logical :: sym_skeleton = .false.
+      !! The symmetric run used the SKELETON Fock build
+      !! rather than the full build with F symmetrized after it: what
+      !! `trc_sym_scf_t%skeleton` asked for, or what the size rule decided
+      !! (trc_sym_run's sym_run_skeleton_size_rule). False for every run without a
+      !! group. It changes no reported quantity -- the two paths agree to
+      !! round-off -- so it is here to be measured and tested, not to be read
+      !! as a result.
+      integer :: sym_atom_orbits = 0
+      !! Atoms inequivalent under the group, as the size rule counted them
+      !! (`sym_geom_atom_orbits`); 0 when the rule was not consulted.
       integer :: n_lindep = 0
       !! Functions dropped by canonical orthogonalisation: S eigenvalues
       !! below `opts%lindep_thresh`. 0 for every compact basis; see
@@ -448,6 +510,7 @@ module trc_scf_settings
       real(dp), allocatable :: dmat(:, :, :)   !! (nao, nao, nspin); restricted holds the total
       real(dp), allocatable :: cmo(:, :, :)    !! (nao, nao, nspin) orbitals
       real(dp), allocatable :: eps(:, :)       !! (nao, nspin) orbital energies
+      integer, allocatable :: mo_irrep(:, :)   !! (nao, nspin) irrep of each orbital (trc_sym_scf); unallocated without symmetry
       real(dp), allocatable :: grid_r(:, :)    !! (3, npts) the grid used, for a same-grid comparison
       real(dp), allocatable :: grid_w(:)
       real(dp), allocatable :: grid_r_nlc(:, :)  !! VV10's own (coarser) grid, unallocated when the

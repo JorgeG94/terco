@@ -1,0 +1,8 @@
+6
+Ethylene planar, point group D2h: r(CC) 1.339, r(CH) 1.085 A, angle HCH 117.6 deg (approximate experimental values; NIST CCCBDB, recalled, not looked up again), built analytically (not optimized); axis-aligned: molecule in the xy plane, C=C along x, centred at the origin
+C      0.6695000000     0.0000000000     0.0000000000
+C     -0.6695000000     0.0000000000     0.0000000000
+H      1.2315593052     0.9280702223     0.0000000000
+H      1.2315593052    -0.9280702223     0.0000000000
+H     -1.2315593052     0.9280702223     0.0000000000
+H     -1.2315593052    -0.9280702223     0.0000000000

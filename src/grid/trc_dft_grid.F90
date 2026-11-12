@@ -27,6 +27,8 @@ module trc_dft_grid
    use trc_dft_partition, only: dft_partition_becke_weights, dft_partition_options_t
    use trc_dft_prune, only: dft_prune_angular_orders, PRUNE_NONE, PRUNE_NWCHEM
    implicit none
+   integer, parameter :: ROTATION_SIZE = 9
+   !! A 3x3 rotation stored in column order (see the rotation components below).
    private
 
    public :: dft_grid_t, dft_grid_options_t
@@ -93,6 +95,16 @@ module trc_dft_grid
       type(dft_partition_options_t) :: partition
       !! The partition's cutoff and size adjustment (and screening, scratch
       !! budget); its point block is set by dft_grid_build_block.
+      real(dp) :: angular_rotation(ROTATION_SIZE) = [1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp]
+      !! Rotation applied to every atom's Lebedev points (p = A + r R u).
+      !! Rank 1, the 3x3 matrix in column order: ifx 2025.0 rejects an empty
+      !! structure constructor of a type with a rank-2 component default
+      !! (error #6595).
+      !! The identity is the lab-oriented grid. A symmetric run in the standard
+      !! frame `x_std = rot (x - shift)` passes `rot` to get the grid of the
+      !! USER's axes, so its energies do not depend on how the molecule was
+      !! rotated into the group's frame. The partition and the quadrature
+      !! weights are rotation invariant, so nothing else changes.
    end type dft_grid_options_t
 
    type :: dft_grid_t
@@ -215,6 +227,7 @@ contains
       type(dft_grid_options_t) :: opts
       integer :: n_atoms, used_level
       integer :: ia, i, j, k, nr, na, total, offset, cached_order
+      logical :: rotated
       type(timer_type) :: tm_gen
 
       n_atoms = size(atom_coords, 2)
@@ -230,6 +243,8 @@ contains
       used_level = DEFAULT_GRID_LEVEL
       if (present(level)) used_level = level
       if (present(options)) opts = options
+      ! An identity rotation leaves the points bit for bit what they were.
+      rotated = any(opts%angular_rotation /= [1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 0.0_dp, 0.0_dp, 1.0_dp])
 
       if ((opts%n_radial > 0) .neqv. (opts%n_angular > 0)) then
          call error%set(ERROR_VALIDATION, &
@@ -279,6 +294,7 @@ contains
                if (allocated(sphere)) deallocate (sphere, w_ang)
                call lebedev_grid(shell_order(i), sphere, w_ang, error)
                if (error%has_error()) return
+               if (rotated) sphere = matmul(reshape(opts%angular_rotation, [3, 3]), sphere)
                cached_order = shell_order(i)
             end if
 

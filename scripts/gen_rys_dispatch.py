@@ -9,6 +9,10 @@ has to collect the classes CMake asked for into the two entry points
   `rys_has_class(key)`  -- is there a Rys kernel for this class at all,
   `rys_dispatch(key, ...)` -- call it.
 
+  `rys_has_variant(key)` -- is there a z-masked kernel (gen_rys.py --dead z,
+                           parity skipping) at this key, the class key plus
+                           CLASS_RADIX**4; `rys_dispatch` takes such keys too,
+
   `rys_default_class(key)` -- does this class go to Rys when
                            TRC_RYS_CLASSES is unset (gen_rys.py's
                            FOCK_RYS_DEFAULT, measured).
@@ -40,6 +44,9 @@ def main():
     ap.add_argument("--classes", required=True,
                     help="comma-separated four-digit class tags, e.g. "
                          "2222,2221,1111")
+    ap.add_argument("--masked-classes", default="",
+                    help="comma-separated tags that also have a z-masked "
+                         "kernel (gen_rys.py --dead z)")
     ap.add_argument("-o", "--output", required=True)
     args = ap.parse_args()
     tags = args.classes.split(",")
@@ -52,6 +59,16 @@ def main():
         keys.append((key, tag))
         use_lines.append(f"   use trc_pc_rys{tag}, only: rys{tag}")
     keys.sort()
+    masked = [t for t in args.masked_classes.split(",") if t]
+    mkeys = []
+    for tag in masked:
+        assert tag in tags, f"masked class {tag} has no unmasked kernel in --classes"
+        la, lb, lc, ld = (int(c) for c in tag)
+        key = ((la*gp.CLASS_RADIX + lb)*gp.CLASS_RADIX + lc)*gp.CLASS_RADIX + ld + gp.CLASS_RADIX**4
+        mkeys.append((key, tag))
+        use_lines.append(f"   use trc_pc_rys{tag}z, only: rys{tag}z")
+    mkeys.sort()
+    variant_list = ", ".join(str(k) for k, _ in mkeys) or "-1"
     # The default-routed classes this build has a kernel for; an empty list
     # still needs a case that can never match.
     dkeys = [k for k, t in keys if t in gr.FOCK_RYS_DEFAULT] or [-1]
@@ -65,11 +82,18 @@ def main():
         ", ".join(str(k) for k, _ in keys[i:i + 16])
         for i in range(0, len(keys), 16))
     dispatch_cases = "\n".join(
-        f"""      case ({key}); call rys{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+        f"""      case ({key}); call rys{tag}(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)"""
         for key, tag in keys)
+    dispatch_cases += "".join(
+        f"""
+      case ({key}); call rys{tag}z(lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
+                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
+                          nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat, rank, nranks)"""
+        for key, tag in mkeys)
 
     out = f"""!
 ! Dispatcher over the Rys per-class kernels gen_rys.py wrote.
@@ -82,7 +106,7 @@ module trc_rys_kernels
 {chr(10).join(use_lines)}
    implicit none
    private
-   public :: rys_dispatch, rys_has_class, rys_default_class
+   public :: rys_dispatch, rys_has_class, rys_default_class, rys_has_variant
 
 contains
 
@@ -101,6 +125,13 @@ contains
       end select
    end function rys_has_class
 
+   pure logical function rys_has_variant(key)
+      !! Is there a z-masked kernel (parity skipping) at this dispatch key,
+      !! the class key plus CLASS_RADIX**4?
+      integer, intent(in) :: key
+      rys_has_variant = any(key == [{variant_list}])
+   end function rys_has_variant
+
    pure logical function rys_default_class(key)
       !! Does this class go to Rys rather than HGP when TRC_RYS_CLASSES is
       !! unset? gen_rys.py's FOCK_RYS_DEFAULT: the classes whose chunked Rys
@@ -115,7 +146,7 @@ contains
       end select
    end function rys_default_class
 
-   subroutine rys_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, &
+   subroutine rys_dispatch(key, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                           npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
                           nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &

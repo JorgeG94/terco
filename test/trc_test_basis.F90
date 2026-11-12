@@ -107,6 +107,7 @@ contains
          r(:, i) = [x, y, zz]*ANG
          select case (trim(adjustl(sym)))
          case ('H', 'h'); z(i) = 1
+         case ('B', 'b'); z(i) = 5
          case ('C', 'c'); z(i) = 6
          case ('N', 'n'); z(i) = 7
          case ('O', 'o'); z(i) = 8

@@ -50,6 +50,12 @@ module trc_run_input
    integer, parameter :: KIND_BOOL_ON = 10
       !! A switch that is on by default: true gives the flag, false gives
       !! its `--no-` form (`incremental = false` is `--no-incremental`).
+   integer, parameter :: KIND_BOOL_TRI = 11
+      !! A switch with three states: true gives the flag, false gives its
+      !! `--no-` form, and absent means neither, because the default is
+      !! something the code decides (`symmetry_skeleton` and its size rule).
+      !! The `--json` echo leaves it out when neither flag was given, so
+      !! writing the echo back as a TOML file keeps that third state.
 
    type :: run_input_key_t
       !! One key of the format.
@@ -62,7 +68,7 @@ module trc_run_input
       integer :: kind
    end type run_input_key_t
 
-   integer, parameter :: NKEYS = 93
+   integer, parameter :: NKEYS = 97
    type(run_input_key_t), parameter :: RUN_INPUT_KEYS(NKEYS) = [ &
       run_input_key_t("molecule", "geometry", "", KIND_PATH), &
       run_input_key_t("molecule", "charge", "chrg", KIND_INT), &
@@ -82,6 +88,10 @@ module trc_run_input
       run_input_key_t("scf", "incremental", "incremental", KIND_BOOL_ON), &
       run_input_key_t("scf", "density_fitted", "df", KIND_BOOL), &
       run_input_key_t("scf", "restart", "restart", KIND_PATH), &
+      run_input_key_t("scf", "symmetry", "symmetry", KIND_STRING), &
+      run_input_key_t("scf", "symmetry_tol", "symmetry-tol", KIND_FLOAT), &
+      run_input_key_t("scf", "irrep_nelec", "irrep-nelec", KIND_STRING), &
+      run_input_key_t("scf", "symmetry_skeleton", "sym-skeleton", KIND_BOOL_TRI), &
       run_input_key_t("scf.convergence", "diis_size", "diis", KIND_INT), &
       run_input_key_t("scf.convergence", "adiis", "adiis", KIND_BOOL), &
       run_input_key_t("scf.convergence", "level_shift", "level-shift", KIND_FLOAT), &
@@ -342,7 +352,7 @@ contains
             return
          end if
          if (lval) call push(state, flag)
-      case (KIND_BOOL_ON)
+      case (KIND_BOOL_ON, KIND_BOOL_TRI)
          call get_value(table, key%key, lval, stat=stat)
          if (stat /= 0) then
             state%message = context%report("'"//key%key//"' must be true or false", key%origin)
@@ -412,6 +422,14 @@ contains
          if (spec%kind == KIND_BOOL_ON) then
             call section_object(json, input, trim(spec%section), section)
             call json%add(section, trim(spec%key), .not. cli%is_set("no-"//trim(spec%flag)))
+            cycle
+         end if
+         if (spec%kind == KIND_BOOL_TRI) then
+            ! Neither flag set is the third state, and echoing either value
+            ! would turn it into a forced one on a rerun of the echo.
+            if (.not. (cli%is_set(trim(spec%flag)) .or. cli%is_set("no-"//trim(spec%flag)))) cycle
+            call section_object(json, input, trim(spec%section), section)
+            call json%add(section, trim(spec%key), cli%is_set(trim(spec%flag)))
             cycle
          end if
          if (spec%kind == KIND_METHOD) then
