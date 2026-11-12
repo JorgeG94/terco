@@ -39,6 +39,7 @@ add_executable(
   trc_run_report.F90
   trc_run_opt.F90
   trc_run_json.F90
+  trc_run_cc.F90
   trc_run_input.F90
   ${_dlfind_bridge_src})
 set_target_properties(
@@ -388,7 +389,9 @@ if(TERCO_ENABLE_TESTING)
   # first one on PATH), since this is a different driver over the same
   # trc_set_comm/trc_run_scf and needs its own check: np 1, np 2 and np 3
   # must agree on water RHF, B3LYP and wB97X-V (RKS, VV10), and on NH2
-  # radical wB97X-V (UKS, VV10) -- see cli_mpi_check.py's own header.
+  # radical wB97X-V (UKS, VV10), and for --riccsd-t on E_CCSD and E(T), the
+  # rank-0 report and the refusals over ranks -- see cli_mpi_check.py's own
+  # header.
   # Registered only when this build can run it.
   #
   if(TERCO_ENABLE_MPI)
@@ -411,7 +414,7 @@ if(TERCO_ENABLE_TESTING)
           ${PROJECT_SOURCE_DIR}/test/basis_sets ${_xyz}/nh2.xyz)
       set_tests_properties(terco/cli_mpi PROPERTIES WORKING_DIRECTORY
                                                      ${CMAKE_CURRENT_SOURCE_DIR}
-                                                     TIMEOUT 300)
+                                                     TIMEOUT 900)
     endif()
     unset(_cli_mpiexec)
     unset(_cli_npflag)

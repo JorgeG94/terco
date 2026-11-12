@@ -33,7 +33,12 @@ evaluation, VV10) and, with `--df`, a `dfjk:` breakdown of the fitted J/K
 build (metric Cholesky, the three-centre integrals, the half-transform,
 ...), each with its own achieved FLOP rate or bandwidth where that is
 meaningful. An unrestricted run prints HOMO/LUMO per spin; `--rimp2` adds a
-`TOTAL MP2 ENERGY` line and the opposite-/same-spin components; `--pcm`
+`RI-MP2 CORRELATION` and a `TOTAL RI-MP2 ENERGY` line and the opposite-/same-spin
+components (the MP2 here is always the density-fitted one, and is labelled so);
+`--riccsd`/`--riccsd-t` add the RI-MP2 and RI-CCSD correlation energies, the
+(T) correction and the RI-CCSD and RI-CCSD(T) totals to the energy box (`TOTAL
+ENERGY` stays the SCF energy, as with `--rimp2`; the correlated totals are
+`TOTAL RI-CCSD ENERGY` and `TOTAL RI-CCSD(T) ENERGY`); `--pcm`
 adds the dielectric solvation energy; `--grad` prints the Cartesian
 gradient per atom (Eh/Bohr) with its RMS and max component.
 
@@ -42,6 +47,52 @@ The SCF converges when `dE` is below `--econv` **and** \|FDS-SDF\| is below
 `SUMMARY` block (nuclear repulsion, one- and two-electron energy, and any
 XC/solvation/correlation term that applies), and the wall time. The exit
 status is 0, or 2 if the SCF did not converge within `--iterations`.
+
+## Step tables
+
+At the `performance` log level (the default `--logger info` prints them) the
+correlated methods end with a table of timed steps, one row per step: the
+device time to completion, the floating-point operations the step executed
+(counted from the dimensions of its matrix products, `2 m n k` each, batched
+calls times their count) and the rate they give, each count with the SI prefix
+that keeps it under 1000. RI-MP2 prints `rimp2:` rows (metric, Cholesky,
+three-index integrals, transforms, the K matrix products, the pair sums) and a
+total with the work over the whole wall time.
+
+`--riccsd` and `--riccsd-t` print the same table with `rccsd:` rows after the
+iteration table:
+
+```
+  rccsd: step                           time (s)           work            rate
+  rccsd:   integrals                      0.004              -               -
+  rccsd:     cholesky                     0.000   197.57 kFLOP    2.49 GFLOP/s
+  ...
+  rccsd:   tau, intermediates             0.003     3.08 MFLOP  902.91 MFLOP/s
+  rccsd:   W intermediates                0.012    31.01 MFLOP    2.64 GFLOP/s
+  rccsd:   ladder, assembled              0.026   286.71 MFLOP   10.83 GFLOP/s
+  ...
+  rccsd:   total                          0.079   396.93 MFLOP    5.06 GFLOP/s   rank 0 of 1
+  rccsd: mean time of an iteration      0.007 s over 11 iterations
+```
+
+The `integrals` row is the whole build of the fitted blocks; the indented rows
+under it (metric, Cholesky, three-index integrals, half transform, `B = X L^-T`,
+the four blocks) are pieces it times itself, so they do not add up to it (the
+orbital transforms and the copy of the blocks back to the host are in the first
+only). The other rows are the stages of one iteration summed over all of them:
+tau and the one-particle intermediates, the W intermediates, the particle
+ladder (named for the form that ran, assembled or direct) and its dressing, the
+T1 equation, the T2 equation, its three ring terms, DIIS and the energy. A
+stage's work counts its matrix products only; the packs, scatters, denominators
+and per-element kernels (and the spherical-basis conversions of the integral
+rows) add time but no count, so a row that mixes them (the intermediates, W,
+the T1 and T2 equations) shows a rate below the card's matrix-product rate by
+the share of its time those take. The ladder and the ring terms are nearly all
+matrix products. Each step is also an NVTX range (`rccsd: <name>`) in a build
+with `TERCO_NVTX`. The (T) correction reports its own timings. Over several ranks (`mpiexec -n N`)
+the table is rank 0's, the total row ends `rank 0 of N`, the step table gains the three transfer rows
+(`amplitudes to ranks`, `ladder wait (idle)`, `ladder to first rank`) and the energy box says
+`ladder and (T) shared by N ranks` ({doc}`cli`).
 
 ## A symmetric run
 
@@ -165,6 +216,16 @@ defaults -- so the file written back as TOML reruns the same calculation.
 
 A `--grad` run adds a `"gradient"` array; `--rimp2` adds an
 `"mp2 opposite spin"`/`"mp2 same spin"` pair and a correlated total;
+`--riccsd`/`--riccsd-t` add `"ri-ccsd converged"`, `"ri-ccsd iterations"`,
+`"ri-ccsd frozen core orbitals"`, `"ri-ccsd active occupied"`, `"ri-ccsd virtual
+orbitals"`, `"ri-ccsd auxiliary functions"`, `"ri-mp2 correlation
+energy"`, `"ri-ccsd correlation energy"`, `"ri-ccsd t1 diagnostic"` and, when the
+RI-CCSD converged, `"ri-ccsd total energy"` (and with (T) `"ri-ccsd triples
+correction"` and `"ri-ccsd triples total energy"`; `"total energy"` stays the
+SCF energy); a (T) that failed after a converged RI-CCSD adds `"ri-ccsd triples error"`
+with the library's message, in place of the two (T) keys; an RI-CCSD that did not converge has `"ri-ccsd converged": false`
+and no totals; the SUMMARY rows show the same quantities under shorter labels that fit the
+block (`ri-ccsd (t) correction`, `ri-ccsd(t) total`, `ri-ccsd frozen core`, ...);
 `--opt`/`--hessian` add `"optimization"`/`"vibrational"` blocks. Keys
 whose default is decided from the system (the charge, the guess, ...)
 appear in `"input"` only when the run was given one explicitly.

@@ -67,6 +67,26 @@ the same history. This file adds the debugging side.
   size did not trip it); if you hit something that looks like this
   elsewhere, suspect any `pure elemental` automatic-length character
   function called from a large procedure first.
+- **ifx 2025.0 / 2026.0, -O2 and above: a `do concurrent` index passed by
+  reference to a pure routine that is not inlined.** The compiler treats the
+  call as loop-invariant, so every element gets the first iteration's value
+  (found through the Intel CI job: RI-CCSD T1 wrong by 3e-2 relative, (T) by
+  1e-2 Eh; -O1 and ifx 2022.1 are right). The same holds for a scalar
+  computed in the body and passed on. A six-line reproducer is in the GitHub
+  issue titled "submit to Intel". Cure in terco: pass the index through the
+  `TRC_DC_INDEX` macro of `src/inc/trc_dc_index.inc` at the call site, which
+  is `(i)` under ifx (an expression, not the variable) and the plain
+  variable for every other compiler. The rest of terco passes the index by
+  reference and is right under ifx only where the callee is inlined, so a new
+  or larger item routine can trip it: use the macro in new code. The macro
+  exists only because of this ifx bug: when a fixed ifx is the CI compiler,
+  remove it and its call sites and go back to the plain variable.
+- **nvfortran 26.5 HOST build (`-fast -O3`; the device build is right):
+  `integer, intent(in), value` dummies in item routines.** They gave wrong
+  RI-CCSD amplitudes (bisected: 16 failing checks in `check_rccsd_run` with
+  the `value` dummies, 0 without). There is no small reproducer yet. Do not
+  use `value` dummies in item routines; `TRC_DC_INDEX` is the cure for the
+  ifx defect above, not a `value` dummy.
 
 ## MPI
 

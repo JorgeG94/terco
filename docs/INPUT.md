@@ -84,7 +84,7 @@ json = "water.json"
 |---|---|---|---|
 | `main` | string | `--basis` | orbital basis: BSE JSON file or a basis name |
 | `ecp` | string | `--ecp` | effective core potential: BSE JSON file or a basis name, overriding auto-attach from `main`'s own `ecp_potentials` |
-| `auxiliary` | string | `--aux` | RI-MP2 auxiliary basis (cc-pvdz-rifit) |
+| `auxiliary` | string | `--aux` | auxiliary basis of RI-MP2, RI-CCSD and RI-CCSD(T) (cc-pvdz-rifit whatever the orbital basis: give the RI fitting set that matches it) |
 | `jk_auxiliary` | string | `--jkfit` | J/K fitting basis for `density_fitted` (def2-universal-jkfit) |
 | `cartesian` | bool | `--cart` | Cartesian AOs even for a spherical basis |
 | `linear_dependence` | float | `--lindep` | drop eigenvectors of the unit-diagonal overlap below this (1e-8; 0 drops none) |
@@ -102,7 +102,7 @@ json = "water.json"
 | `incremental` | bool | `--incremental` / `--no-incremental` | incremental Fock build (true, the default; false is a full build every iteration) |
 | `density_fitted` | bool | `--df` | density-fitted J and K (basis: `[basis] jk_auxiliary`) |
 | `restart` | string | `--restart` | read the SCF result from a `save_scf` file |
-| `symmetry` | string | `--symmetry` | `off` (the default; `default` is a name for it): no symmetry, as before. `on` (or `auto`): the largest Abelian point group of the molecule (D2h or one of its subgroups; symmetric and spherical tops, linear molecules and atoms use the Abelian subgroup and frame pyscf gives them), with the results reported in your **input frame** (the geometry is the input symmetrised in it, within `symmetry_tol`, with the residual printed; the gradient, and through the C ABI the orbitals, density, multipoles and borrowed basis, are rotated back exactly), and a path the symmetric SCF does not support runs in C1 instead of being refused, with one log line naming the reason: `driver.optimize`, `driver.hessian`, `correlation.method` (RI-MP2 and double hybrids), `scf.density_fitted`, `solvation.model`, `scf.convergence.soscf`, `scf.convergence.mom`, `scf.convergence.gdm`, `analysis.fukui`, `scf.restart`, more than one rank, and a basis with linear dependences (functions dropped). A group name is strict: it must be the detected group or a subgroup of it, the molecule is symmetrised and moved to the standard frame of the group, the SCF, the gradient and the report are in that frame (the report says `STANDARD FRAME`), and the unsupported paths above are refused. Energies, orbital energies, irrep labels, occupations and atomic charges are the same in either frame; a named group puts the DFT grid on the group's axes, so a DFT energy on a rotated input moves with the grid orientation, which `on` does not (see below). `irrep_nelec` makes the request strict, as for a named group |
+| `symmetry` | string | `--symmetry` | `off` (the default; `default` is a name for it): no symmetry, as before. `on` (or `auto`): the largest Abelian point group of the molecule (D2h or one of its subgroups; symmetric and spherical tops, linear molecules and atoms use the Abelian subgroup and frame pyscf gives them), with the results reported in your **input frame** (the geometry is the input symmetrised in it, within `symmetry_tol`, with the residual printed; the gradient, and through the C ABI the orbitals, density, multipoles and borrowed basis, are rotated back exactly), and a path the symmetric SCF does not support runs in C1 instead of being refused, with one log line naming the reason: `driver.optimize`, `driver.hessian`, `correlation.method` (RI-MP2, double hybrids and RI-CCSD), `scf.density_fitted`, `solvation.model`, `scf.convergence.soscf`, `scf.convergence.mom`, `scf.convergence.gdm`, `analysis.fukui`, `scf.restart`, more than one rank, and a basis with linear dependences (functions dropped). A group name is strict: it must be the detected group or a subgroup of it, the molecule is symmetrised and moved to the standard frame of the group, the SCF, the gradient and the report are in that frame (the report says `STANDARD FRAME`), and the unsupported paths above are refused. Energies, orbital energies, irrep labels, occupations and atomic charges are the same in either frame; a named group puts the DFT grid on the group's axes, so a DFT energy on a rotated input moves with the grid orientation, which `on` does not (see below). `irrep_nelec` makes the request strict, as for a named group |
 | `symmetry_tol` | float | `--symmetry-tol` | geometry tolerance for the symmetry detection, Bohr (1e-5) |
 | `symmetry_skeleton` | boolean | `--sym-skeleton` / `--no-sym-skeleton` | in a symmetric run, force the Fock matrix and the four-centre gradient to be built from the orbit representatives of the integral quartets and symmetrized (`true`), or force the full builds and symmetrize those (`false`). Omitted, a measured size rule chooses: the skeleton build when the molecule has at least two atoms per symmetry-inequivalent atom (`trc_sym_run`'s `sym_run_skeleton_size_rule`, whose comment carries the measurements), and `TRC_SYM_SKELETON=0/1` in the environment overrides both. The same SCF to round-off whichever path runs; only the integral work differs. Needs symmetry on (not `off`, not C1); density fitting and more than one rank take the full build |
 | `irrep_nelec` | string | `--irrep-nelec` | electrons per irrep, e.g. `"A'=20,A\"=6"` (restricted: even counts) or `"A'=11/9,A\"=3/3"` (alpha/beta); unlisted irreps hold none; default aufbau. A gradient is refused for occupations that are not the aufbau ones |
@@ -157,9 +157,58 @@ How the SCF gets there; the defaults suit most systems.
 
 | Key | Type | Flag | Meaning |
 |---|---|---|---|
-| `method` | string | `--rimp2` | `rimp2`; absent means none |
-| `frozen_core` | integer | `--frozen` | frozen core orbitals; −1 counts by element |
+| `method` | string | `--rimp2`, `--riccsd`, `--riccsd-t` | `rimp2`, `ri-ccsd` (closed-shell RI-CCSD), `ri-ccsd(t)` (RI-CCSD with the perturbative triples) or `none`; absent means none. The plain `ccsd` and `ccsd(t)` are refused: the method is density-fitted |
+| `frozen_core` | integer | `--frozen` | frozen core orbitals; −1 (the default) counts by element (1 per Li-Ne atom, 5 per Na-Ar, ...; H and He none); 0 correlates all electrons |
 | `aux_block` | integer | `--aux-block` | auxiliary functions per three-index block |
+
+`frozen_core`, `aux_block` and `[basis] auxiliary` are shared by the three
+methods. `auxiliary` defaults to `cc-pvdz-rifit` whatever the orbital basis, so
+give the RI fitting set that matches it.
+
+### `[riccsd]`
+
+The RI-CCSD solver, used with `method = "ri-ccsd"` or `"ri-ccsd(t)"`; any of
+these keys with another method is refused.
+
+| Key | Type | Flag | Meaning |
+|---|---|---|---|
+| `energy_tol` | float | `--cc-econv` | stop when the change of the correlation energy is below this, Eh (1e-8) |
+| `amplitude_tol` | float | `--cc-tconv` | and the largest change of any amplitude is below this (1e-6) |
+| `max_iterations` | integer | `--cc-iterations` | maximum iterations (100) |
+| `diis_size` | integer | `--cc-diis` | DIIS history length (8, at most 50); 1 switches DIIS off |
+| `ladder` | string | `--cc-ladder` | `auto` (by operation count), `assembled` or `direct`; does not change the energy |
+| `triples` | string | `--cc-triples` | the (T) routine: `auto` (the ijk device routine in a GPU build, the host reference one otherwise), `reference` (host, from the host copies; cross-checks a GPU build) `tiled` (the device routine over virtual triples, also on the host, slower there) or `ijk` (the device routine over occupied triples, the default in a GPU build); needs `ri-ccsd(t)`; does not change the energy |
+| `triples_budget` | float | `--cc-triples-budget` | memory for the working tile of the (T) routine of `ri-ccsd(t)` that runs, GiB; any positive value. Unset it is 1 for the tiled routine and 2 for the ijk routine. One triple takes 48 o^3 bytes in the tiled routine (o active occupied orbitals) and 24 v^3 bytes in the ijk routine (v virtual orbitals). Only the ijk routine raises its default to one triple when that is more, so its default never refuses; the tiled routine does not, and its 1 GiB default does not hold one triple from o = 282. An explicit budget below one triple of the routine that runs (the ijk one by default in a GPU build and over several ranks; 1 GiB holds one only up to v = 355) makes the (T) step fail after the RI-CCSD has converged, with exit status 1, and the run warns before the iterations; no effect on the reference routine. The tiled routine's repacked amplitudes come on top of its tile. The ijk routine's slice cache is separate, sized by the code and not by the budget (see `docs/sphinx/cli.md`, Memory); needs `ri-ccsd(t)` |
+
+Both tolerances must be met. An RI-CCSD that does not converge is reported as
+`NOT CONVERGED` in the summary, `"ri-ccsd converged": false` in the JSON
+(without total energies), skips (T), and ends the run with exit status 2. A (T)
+that fails after a converged RI-CCSD keeps the RI-CCSD energies in the summary
+and the JSON and ends the run with exit status 1.
+
+RI-CCSD is closed-shell Hartree-Fock only (over several ranks the ladder of every iteration and the (T) are shared), with no effective core
+potential and no gradient. It is refused with `[scf] functional`, `[molecule]
+unpaired`, `[driver]` `gradient`, `hessian` or `optimize`, and with `method =
+"rimp2"` (it reports the RI-MP2 correlation energy itself). A basis in which
+`[basis] linear_dependence` dropped functions is refused after the SCF, because
+the method needs every orbital: lower the threshold (0 drops none). See
+`docs/sphinx/cli.md` for the memory it needs and what has been measured.
+
+The method and its limits are described in `docs/sphinx/theory.md`.
+
+The `"input"` echo of the JSON output gives `"method": "ri-ccsd(t)"` and a
+`"riccsd"` object with the same keys.
+
+```toml
+[molecule]
+geometry = "water.xyz"
+
+[basis]
+main = "cc-pvdz"
+
+[correlation]
+method = "ri-ccsd(t)"      # frozen core counted by element, cc-pvdz-rifit
+```
 
 ### `[driver]`
 

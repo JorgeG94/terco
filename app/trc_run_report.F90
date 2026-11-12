@@ -58,7 +58,8 @@ contains
          call global_logger%info("   symmetry         : "//r%symmetry)
       end if
       call global_logger%info("   basis            : "//r%basis_path)
-      if (r%rimp2) call global_logger%info("   auxiliary basis  : "//r%aux_path)
+      if (r%rimp2 .or. r%cc) call global_logger%info("   auxiliary basis  : "//r%aux_path)
+      if (r%cc) call global_logger%info("   correlation      : "//trim(merge("RI-CCSD(T)", "RI-CCSD   ", r%cc_triples)))
       ! The AO space itself (spherical or Cartesian) is not known until the
       ! basis is loaded, below -- `summary`'s own "AO basis" line reports
       ! it, for every run, once it is.
@@ -185,10 +186,11 @@ contains
             call line("PT2 CORRELATION", r%eos + r%ess)
             call line("DOUBLE HYBRID TOTAL", r%etot_dh)
          else
-            call line("MP2 CORRELATION", r%eos + r%ess)
-            call line("TOTAL MP2 ENERGY", r%etot + r%eos + r%ess)
+            call line("RI-MP2 CORRELATION", r%eos + r%ess)
+            call line("TOTAL RI-MP2 ENERGY", r%etot + r%eos + r%ess)
          end if
       end if
+      if (r%cc .and. r%cc_ran) call cc_lines(r)
       call global_logger%info(bar)
       call global_logger%info("")
       call global_logger%info("   ::::::::::::::::::::::::::::::::::::::::::::::::::::::")
@@ -202,13 +204,125 @@ contains
       if (len(r%func) > 0) call row("exchange-correlation", r%exc)
       if (len(r%pcm) > 0) call row("solvation (E_diel)", r%epcm)
       if (r%rimp2 .and. r%conv /= 0) then
-         call row(merge("PT2 opposite spin", "MP2 opposite spin", r%dh), r%eos)
-         call row(merge("PT2 same spin    ", "MP2 same spin    ", r%dh), r%ess)
+         call row(merge("PT2 opposite spin   ", "RI-MP2 opposite spin", r%dh), r%eos)
+         call row(merge("PT2 same spin   ", "RI-MP2 same spin", r%dh), r%ess)
          if (r%dh) call row("double hybrid total", r%etot_dh)
       end if
+      if (r%cc .and. r%cc_ran) call cc_rows(r)
       call global_logger%info("   ::::::::::::::::::::::::::::::::::::::::::::::::::::::")
    end subroutine run_summary
 
+   subroutine cc_lines(r)
+      !! The RI-CCSD(T) rows of the energy box. Totals appear only for a converged CCSD: the last iterate of a
+      !! failed one is a correlation energy to look at, not an energy to use. The MP2 part is a finished energy
+      !! either way. The box is 61 columns wide; a line of 12 + 24 + 18 + 7 keeps to it.
+      type(run_t), intent(in) :: r
+
+      if (.not. r%cc_converged) then
+         call cc_note("RI-CCSD DID NOT CONVERGE: last iterate below")
+      end if
+      call cc_line("RI-MP2 CORRELATION", r%cc_e_mp2)
+      call cc_line("RI-CCSD CORRELATION", r%cc_e_ccsd)
+      call cc_line("TOTAL RI-MP2 ENERGY", r%etot + r%cc_e_mp2)
+      if (r%cc_converged) then
+         call cc_line("TOTAL RI-CCSD ENERGY", r%etot + r%cc_e_ccsd)
+         if (r%cc_has_triples) then
+            call cc_line("RI-CCSD (T) CORRECTION", r%cc_e_t)
+            call cc_line("TOTAL RI-CCSD(T) ENERGY", r%etot + r%cc_e_ccsd + r%cc_e_t)
+         end if
+         if (r%nranks > 1) then
+            block
+               character(len=47) :: note
+               if (r%cc_has_triples) then
+                  note = "ladder and (T) shared by "//to_string(r%nranks)//" ranks"
+               else
+                  note = "ladder shared by "//to_string(r%nranks)//" ranks"
+               end if
+               call cc_note(note)
+            end block
+         end if
+      end if
+      if (r%cc_triples .and. .not. r%cc_has_triples) then
+         if (.not. r%cc_converged) then
+            call cc_note("(T) not computed: it needs a converged RI-CCSD")
+         else
+            call cc_note("(T) FAILED: the RI-CCSD result above stands")
+         end if
+      end if
+   end subroutine cc_lines
+
+   subroutine cc_note(text)
+      !! A remark inside the energy box, padded to its width
+      character(len=*), intent(in) :: text
+      character(len=1024) :: logline
+      write (logline, "(a,a47,a)") "          | ", text, " |"
+      call global_logger%info(trim(logline))
+   end subroutine cc_note
+
+   subroutine cc_line(label, e)
+      character(len=*), intent(in) :: label
+      real(c_double), intent(in) :: e
+      character(len=1024) :: logline
+      write (logline, "(a,a24,f18.12,a)") "          | ", label, e, " Eh    |"
+      call global_logger%info(trim(logline))
+   end subroutine cc_line
+
+   subroutine cc_rows(r)
+      !! The RI-CCSD(T) rows of the SUMMARY block, in the 22-character label field of the other rows: the JSON keys
+      !! for the same quantities are longer (docs/sphinx/output.md pairs them).
+      type(run_t), intent(in) :: r
+
+      call cc_count_row("ri-ccsd iterations", r%cc_niter)
+      if (r%cc_converged) then
+         call cc_text_row("ri-ccsd converged", "yes")
+      else
+         call cc_text_row("ri-ccsd converged", "NO, NOT CONVERGED")
+      end if
+      call cc_count_row("ri-ccsd frozen core", r%cc_nfrozen)
+      call cc_count_row("ri-ccsd active occ.", r%cc_nactive)
+      call cc_count_row("ri-ccsd virtuals", r%cc_nvirtual)
+      call cc_count_row("ri-ccsd auxiliary", r%cc_naux)
+      call cc_row("ri-mp2 correlation", r%cc_e_mp2)
+      call cc_row("ri-ccsd correlation", r%cc_e_ccsd)
+      if (r%cc_has_triples) call cc_row("ri-ccsd (t) correction", r%cc_e_t)
+      if (r%cc_converged) then
+         call cc_row("ri-ccsd total energy", r%etot + r%cc_e_ccsd)
+         if (r%cc_has_triples) call cc_row("ri-ccsd(t) total", r%etot + r%cc_e_ccsd + r%cc_e_t)
+      end if
+      if (r%cc_t_failed) call cc_text_row("ri-ccsd (t) error", "FAILED")
+      call cc_small_row("ri-ccsd t1 diagnostic", r%cc_t1_diagnostic)
+   end subroutine cc_rows
+
+   subroutine cc_row(label, e)
+      character(len=*), intent(in) :: label
+      real(c_double), intent(in) :: e
+      character(len=1024) :: logline
+      write (logline, "(a,a22,f22.12,a)") "   :: ", label, e, " Eh  ::"
+      call global_logger%info(trim(logline))
+   end subroutine cc_row
+
+   subroutine cc_small_row(label, x)
+      character(len=*), intent(in) :: label
+      real(c_double), intent(in) :: x
+      character(len=1024) :: logline
+      write (logline, "(a,a22,f22.6,a)") "   :: ", label, x, "     ::"
+      call global_logger%info(trim(logline))
+   end subroutine cc_small_row
+
+   subroutine cc_count_row(label, n)
+      character(len=*), intent(in) :: label
+      integer(c_int), intent(in) :: n
+      character(len=1024) :: logline
+      write (logline, "(a,a22,i22,a)") "   :: ", label, n, "     ::"
+      call global_logger%info(trim(logline))
+   end subroutine cc_count_row
+
+   subroutine cc_text_row(label, text)
+      character(len=*), intent(in) :: label, text
+      character(len=1024) :: logline
+      write (logline, "(a,a22,a22,a)") "   :: ", label, adjustr(text), "     ::"
+      call global_logger%info(trim(logline))
+   end subroutine cc_text_row
    module subroutine run_symmetry_summary(r)
       !! What the symmetry request did: the group detected and used, how far the
       !! atoms moved, the geometry (the input symmetrised in the input frame for

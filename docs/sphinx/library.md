@@ -79,6 +79,68 @@ rc = trc_eri_create(hbas, 1.0e-10_dp, heri)
 rc = trc_fock(heri, hbas, d, g, 1.0d0, 1.0d0, 1, 0.0d0)   ! last: omega, 0 = Coulomb
 ```
 
+## RI-CCSD and RI-CCSD(T) through the C ABI
+
+Closed-shell RI-CCSD, and (T) on request, are in the C ABI since version 1.28
+(`TRC_ABI_MINOR`); the Fortran facade `trc_api` does not carry them. They run on
+the converged restricted Hartree-Fock reference in the handle, with the auxiliary
+basis of `trc_set_aux_json` (the one RI-MP2 reads). Six entry points, documented in
+`include/terco.h` (and in {doc}`api`):
+
+| Call | What it does |
+|---|---|
+| `trc_set_rccsd(h, triples, nfrozen, aux_block)` | `triples` 1 asks for (T); `nfrozen` frozen core orbitals, -1 counts the core by element; `aux_block` auxiliary functions per three-index block (0: all at once; the energy does not depend on it) |
+| `trc_set_rccsd_convergence(h, conv_energy, conv_amplitude, max_iterations, diis_size)` | the stopping rule; each 0 keeps the default (1e-8, 1e-6, 100, 8); both thresholds must hold |
+| `trc_set_rccsd_algorithm(h, ladder, triples_routine, triples_budget_mib)` | the ladder form, the (T) routine and the memory of its working tile; none changes the energy |
+| `trc_run_rccsd(h)` | the CCSD and, if asked, the (T) |
+| `trc_rccsd_energy(h, ...)` | `e_mp2`, `e_ccsd`, `e_t`, the T1 diagnostic, the iteration count, `converged` and `has_triples`, all energies being correlation energies |
+| `trc_rccsd_dimensions(h, ...)` | the frozen, active occupied, virtual and auxiliary counts of the last run |
+
+```c
+double e_mp2, e_ccsd, e_t, t1_diag, e_total;
+int iterations, converged, has_triples;
+
+trc_set_aux_json(h, "cc-pvdz-rifit.json");
+trc_set_convergence(h, 1.0e-10, 1.0e-8, 100, 10);   /* the SCF */
+trc_run_scf(h);
+
+trc_set_rccsd(h, /*triples=*/1, /*nfrozen=*/-1, /*aux_block=*/0);
+trc_set_rccsd_convergence(h, 1.0e-10, 1.0e-8, 0, 0); /* 0 keeps iterations, DIIS */
+int rc = trc_run_rccsd(h);                           /* TRC_OK, or see below */
+
+trc_rccsd_energy(h, &e_mp2, &e_ccsd, &e_t, &t1_diag,
+                 &iterations, &converged, &has_triples);
+trc_energy(h, &e_total);    /* after a converged run: the CCSD(T) total */
+```
+
+After a converged run `trc_energy` returns the CCSD (or, with (T), the CCSD(T))
+total energy, not the SCF energy; RI-MP2 and RI-CCSD share it, and the later run
+wins (a successful `trc_run_rccsd` drops a stored RI-MP2 result and the reverse). A
+refused run leaves the other method's result alone and drops its own method's
+earlier one.
+
+What a call returns:
+
+- `TRC_ERR_STATE`: no SCF has run, it did not converge, or no auxiliary basis was set.
+- `TRC_ERR_UNSUPPORTED`, with the reason in `trc_message`: an unrestricted or
+  open-shell reference, a Kohn-Sham one, an effective core potential, dropped
+  linearly dependent functions, a non-aufbau reference (mom or gdm), a named point
+  group, a basis above this build's density-fitting ceilings, or, over several ranks,
+  an explicit reference or tiled (T) routine. `TRC_ERR_BADARG` when the frozen core
+  leaves no occupied orbital.
+- `TRC_ERR_NOCONV` when the iteration does not converge; the last energies are in
+  `trc_rccsd_energy` with `converged` 0, (T) is not run and `trc_energy` is the SCF
+  energy.
+- When the CCSD converged and (T) then failed (for example for device memory, or a
+  budget below one triple) the return is `TRC_ERR_UNSUPPORTED` with the (T) message;
+  `trc_rccsd_energy` still gives the converged CCSD with `has_triples` 0 and
+  `trc_energy` is the CCSD total.
+
+After a converged run `trc_run_gradient`, `trc_run_hessian` and
+`trc_run_polarizability` refuse. Over MPI ranks (`trc_set_comm`, one rank per device,
+every rank calling `trc_run_rccsd` together) the ladder of every iteration and the (T)
+are shared and every rank returns the same status and energies; see {doc}`theory`.
+
 ## Point-group symmetry (C ABI)
 
 Symmetry is off until a caller asks (ABI 1.23). Set the request before
@@ -130,5 +192,5 @@ frame.
 one line naming the reason; a named group (or any request with
 `trc_set_irrep_nelec`) refuses them at the run with `TRC_ERR_UNSUPPORTED`:
 density fitting, PCM, fractional occupations, SOSCF, MOM, GDM, a given or
-projected guess, more than one rank, RI-MP2, CPHF/CPKS, the Hessian, Fukui
+projected guess, more than one rank, RI-MP2, RI-CCSD, CPHF/CPKS, the Hessian, Fukui
 indices, restarts and the geometry optimiser.

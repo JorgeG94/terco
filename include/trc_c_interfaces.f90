@@ -36,7 +36,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_TIMING_NAME_MAX = 64
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 27
+   integer(c_int), parameter :: TRC_ABI_MINOR = 28
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -1034,6 +1034,84 @@ module trc_c_interfaces
          integer(c_int), value :: aux_block
       end function trc_set_rimp2
 
+      integer(c_int) function trc_set_rccsd(handle, triples, nfrozen, aux_block) bind(c) result(res)
+         !! Closed-shell RI-CCSD, and with `triples` 1 the perturbative (T), for
+         !! trc_run_rccsd; the auxiliary basis is trc_set_aux_json's, the one
+         !! RI-MP2 reads. `nfrozen` is the number of frozen core orbitals; -1
+         !! counts the core from the elements, as trc_set_rimp2 does. `aux_block`
+         !! is the auxiliary functions per three-index block while the integrals
+         !! are built; 0 is the whole auxiliary basis at once, and the energy
+         !! does not depend on it. These are this method's own settings: RI-MP2's
+         !! (trc_set_rimp2) are left as they are. Clears a stored RI-CCSD result.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: triples
+         integer(c_int), value :: nfrozen
+         integer(c_int), value :: aux_block
+      end function trc_set_rccsd
+
+      integer(c_int) function trc_set_rccsd_convergence(handle, conv_energy, conv_amplitude, max_iterations, diis_size &
+                                                        ) bind(c) result(res)
+         !! The RI-CCSD iteration's stopping rule: it stops as converged when BOTH
+         !! the change of the correlation energy between iterations is below
+         !! `conv_energy` (Eh) and the largest change of any amplitude is below
+         !! `conv_amplitude`. `max_iterations` caps the iterations and `diis_size`
+         !! is the DIIS history length (1 switches DIIS off). Each 0 keeps the
+         !! default: 1e-8, 1e-6, 100 and 8. A negative, NaN or infinite value is
+         !! refused. A run that does not converge returns TRC_ERR_NOCONV.
+         !! Clears a stored RI-CCSD result.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), value :: conv_energy
+         real(c_double), value :: conv_amplitude
+         integer(c_int), value :: max_iterations
+         integer(c_int), value :: diis_size
+      end function trc_set_rccsd_convergence
+
+      integer(c_int) function trc_set_rccsd_algorithm(handle, ladder, triples_routine, triples_budget_mib) bind(c) result(res)
+         !! How the particle-particle ladder is formed, which routine computes (T)
+         !! and how much memory the tiled one may take; none of them changes the
+         !! energy. `ladder` is 0 to choose by operation count, 1 to assemble the
+         !! (ac|bd) integrals in column batches, 2 to contract the three-index
+         !! factors directly and never form them. `triples_routine` is 0 for the
+         !! build's default (the ijk routine in a device build, the reference
+         !! one in a host build), 1 for the reference routine, which runs on the
+         !! host from the host copies, 2 for the tiled routine, the device one
+         !! over virtual triples, which also runs on the host, more slowly, 3 for
+         !! the ijk routine, the device one over occupied triples. `triples_budget_mib`
+         !! is the memory, in MiB and not necessarily whole, of the working tile of
+         !! the routine that runs: the tiled routine's W (6 o^3 doubles, 48 o^3
+         !! bytes per triple of virtuals, o active occupied orbitals) or the ijk
+         !! routine's Q (24 v^3 bytes per occupied triple, v virtual orbitals).
+         !! 0 is the routine's default: 1024 MiB for the tiled routine, 2048 MiB
+         !! for the ijk one. Only the ijk routine raises its default to one
+         !! triple when that is more, so its default never refuses; the tiled
+         !! routine does not, and its 1024 MiB default does not hold one triple
+         !! from o = 282. The reference routine has no budget. A budget below one
+         !! triple of the routine that runs (the default one counts: the ijk
+         !! routine in a device build and over several ranks; 1024 MiB holds one
+         !! ijk triple only up to v = 355) makes the (T) step refuse once the
+         !! RI-CCSD has converged (trc_run_rccsd returns TRC_ERR_UNSUPPORTED, the
+         !! converged RI-CCSD stays readable). The tile is not all of (T)'s
+         !! memory: the tiled routine's repacked amplitudes come on top, and the
+         !! ijk routine's cache of integral slices is sized by the code, not by
+         !! the budget: on a device build from the free device memory as
+         !! max(min(0.8 free, free - 2 GiB) - the rest of its plan, 0) bytes,
+         !! never fewer than 4 slices (so it can exceed 80 % of the free memory)
+         !! nor more than 2 o; in a host build, or when the free memory is
+         !! unknown, 16 GiB under the same clamp. A
+         !! negative, NaN or infinite budget, or one above 1e12 MiB, is refused.
+         !! Clears a stored RI-CCSD result.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: ladder
+         integer(c_int), value :: triples_routine
+         real(c_double), value :: triples_budget_mib
+      end function trc_set_rccsd_algorithm
+
       integer(c_int) function trc_run_scf(handle) bind(c) result(res)
          !! Needs the molecule and the basis. Builds the guess it was asked for,
          !! runs, keeps everything in the context.
@@ -1387,6 +1465,99 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
       end function trc_run_rimp2
 
+      integer(c_int) function trc_run_rccsd(handle) bind(c) result(res)
+         !! Closed-shell RI-CCSD, and (T) when trc_set_rccsd asked for it, on the
+         !! converged restricted Hartree-Fock reference in the context, with the
+         !! auxiliary basis trc_set_aux_json set. The equations are those of the
+         !! DF-CCSD and (T) of PySCF's rccsd/ccsd_t.
+         !!
+         !! Refused, with TRC_ERR_STATE: no SCF has run, it did not converge, or
+         !! no auxiliary basis was set. Refused, with TRC_ERR_UNSUPPORTED, each
+         !! with its reason in trc_message: an unrestricted or open-shell
+         !! reference, a Kohn-Sham one, an effective core potential, linearly
+         !! dependent functions dropped (the message names trc_set_lindep), a
+         !! non-aufbau reference (an occupation kept by mom or reached by gdm, as
+         !! for trc_run_rimp2), the (T) routine over several ranks (above), a basis
+         !! above this build's density-fitting ceilings (TERCO_DF_LMAX,
+         !! TERCO_DF_LMAX_AUX). A frozen core that leaves no
+         !! occupied orbital is TRC_ERR_BADARG. A continuum solvent is not
+         !! refused, as for RI-MP2: the correlation is computed on the orbitals of
+         !! the solvated SCF without a solvent response of its own.
+         !!
+         !! RI-MP2 and RI-CCSD share trc_energy, and the later run wins: a
+         !! successful trc_run_rccsd drops a stored RI-MP2 result, and
+         !! trc_run_rimp2 drops a stored RI-CCSD one. A refused run leaves the
+         !! other method's result alone; it drops its own method's earlier one
+         !! (as trc_run_rimp2 does), the result being that of the call just made.
+         !!
+         !! TRC_ERR_NOCONV when the iteration does not converge; the last
+         !! energies are then in trc_rccsd_energy (converged = 0), (T) is not run
+         !! and trc_energy is the SCF energy. When the CCSD converged but (T)
+         !! failed (for example for device memory), the return is the (T) status
+         !! (TRC_ERR_UNSUPPORTED) with its message; trc_rccsd_energy still gives
+         !! the converged CCSD with has_triples = 0, and trc_energy is the CCSD
+         !! total. Device memory, with o active occupied orbitals, v virtual
+         !! orbitals, naux auxiliary functions and diis the DIIS size: the
+         !! iterations hold 14.8 o^2 v^2 + (o^2 + o v + v^2) naux + 2 diis (o v +
+         !! o^2 v^2) doubles plus about 1.2 GB of ladder scratch (the coefficient
+         !! 14.8 was fitted before the dense (ia|bc) block of o v^3 doubles was
+         !! removed and has not been re-derived since, so it may be off by an
+         !! unknown amount). (T) adds, by routine: the ijk one (the default in a
+         !! device build and over ranks) 2 o^2 v^2 + 2 o^3 v doubles, its tile of
+         !! trc_set_rccsd_algorithm (2 GiB by default) and a cache of integral
+         !! slices sized from the free device memory (16 GiB on a host); the
+         !! tiled one 2 o^2 v^2 + o^3 v doubles, its tile (1 GiB by default) and
+         !! a dense (ia|bc) copy of o v^3 doubles built on entry. docs/sphinx/cli.md has the details
+         !! worked out. Over ranks (trc_set_comm, one rank per device, every rank
+         !! calls this together): the integrals are built on every rank, the CCSD
+         !! iterations run on the first and its result and amplitudes reach the
+         !! others, and the (T) is shared (only the occupied-driven device routine
+         !! does so, and triples_routine 0 picks it over several ranks; 1 or 2 is
+         !! TRC_ERR_UNSUPPORTED there). Every rank returns the same status and
+         !! energies. After a converged run trc_run_gradient, trc_run_hessian and
+         !! trc_run_polarizability refuse.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+      end function trc_run_rccsd
+
+      integer(c_int) function trc_rccsd_energy(handle, e_mp2, e_ccsd, e_t, t1_diagnostic, iterations, converged, has_triples &
+                                               ) bind(c) result(res)
+         !! The last trc_run_rccsd, converged or not. All energies are
+         !! CORRELATION energies in Hartree: `e_mp2` the RI-MP2 correlation of the
+         !! same reference and frozen core, `e_ccsd` the RI-CCSD one (the last
+         !! iterate when `converged` is 0), `e_t` the (T) correction (0 unless
+         !! `has_triples` is 1). Add trc_energy's SCF part for totals: after a
+         !! converged run trc_energy is already the CCSD (or CCSD(T)) total.
+         !! `t1_diagnostic` is sqrt(|t1|^2 / (2 o)); `iterations` the CCSD
+         !! iterations run. TRC_ERR_STATE when no run has left a result.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: e_mp2
+         real(c_double), intent(out) :: e_ccsd
+         real(c_double), intent(out) :: e_t
+         real(c_double), intent(out) :: t1_diagnostic
+         integer(c_int), intent(out) :: iterations
+         integer(c_int), intent(out) :: converged
+         integer(c_int), intent(out) :: has_triples
+      end function trc_rccsd_energy
+
+      integer(c_int) function trc_rccsd_dimensions(handle, nfrozen, nactive_occ, nvirtual, naux) bind(c) result(res)
+         !! The orbital spaces of the last trc_run_rccsd, converged or not:
+         !! `nfrozen` the frozen core orbitals actually used (the elements' own
+         !! count when trc_set_rccsd asked for -1), `nactive_occ` the correlated
+         !! occupied orbitals, `nvirtual` the virtual orbitals and `naux` the
+         !! auxiliary functions. TRC_ERR_STATE when no run has left a result.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: nfrozen
+         integer(c_int), intent(out) :: nactive_occ
+         integer(c_int), intent(out) :: nvirtual
+         integer(c_int), intent(out) :: naux
+      end function trc_rccsd_dimensions
+
       integer(c_int) function trc_save_scf(handle, path) bind(c) result(res)
          !! Write the context's SCF result -- orbitals, orbital energies,
          !! density, energies -- to `path` (NUL-terminated), with the molecule,
@@ -1606,6 +1777,11 @@ module trc_c_interfaces
          !! nothing beyond the ordinary trc_run_scf/trc_run_rimp2/trc_energy
          !! sequence any RI-MP2 run already uses -- the weighting is applied
          !! here, once, from the functional's own pt2_cos/pt2_css.
+         !!
+         !! After a CONVERGED trc_run_rccsd it is the SCF total plus the CCSD
+         !! correlation energy, plus the (T) correction when the run asked for
+         !! it: the CCSD or the CCSD(T) total. A CCSD that did not converge adds
+         !! nothing here (trc_rccsd_energy has its last iterate).
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle

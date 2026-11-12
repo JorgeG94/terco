@@ -3763,6 +3763,158 @@ def gen_chelpg():
     w.write()
 
 
+def gen_rccsd_ints():
+    """test/check_rccsd_ints.F90's pyscf side, pure pyscf: DF-RCCSD(T) with the
+    RIFIT auxiliary set, spherical, on a water and on a C1 hydrogen peroxide
+    (unequal OH bonds, 100 degree twist, so no probe vanishes by symmetry).
+
+    Every line is a probe of one intermediate, in pyscf's index order
+    (pyscf.cc.rintermediates) at FIXED amplitudes -- t2 is MP2, t1 is the dipole
+    guess below, neither converged -- so a later port step can check each
+    intermediate on its own. The probes do not depend on the sign of an
+    orbital. With X, Y, Z the MO dipole integrals (origin 0) over the ACTIVE
+    orbitals and XY = X @ Y (not symmetric, so a transposed intermediate
+    changes the number):
+      2-index A_pq:   |A|, sum A_pq X_pq, sum A_pq (XY)_pq
+      4-index A_pqrs: |A|, sum A X_pq Y_rs, sum A X_pr Z_qs, sum A Y_ps Z_qr
+    each dipole block restricted to the spaces (o = active occupied,
+    v = virtual) of the indices it carries. The integral blocks are in
+    metalquicha's order: oooo (ij|kl), ooov (ij|ka), oovv (ij|ab),
+    ovov (ia|jb), ovvv (ia|bc). Coordinates go to pyscf in Bohr converted with
+    CODATA 2018, as terco, since pyscf's own constant is CODATA 2010.
+
+    Tags: INT NO NV NAUX NFROZEN, REAL E_SCF E_MP2 E_FIXED, then one VECTOR
+    P_<name> per probe (3 numbers for a 2-index tensor, 4 for a 4-index one),
+    the five integral blocks first, then E_CCSD_CORR, E_T, E_CCSD_T, and last E_UPDATE1 (the
+    energy after one update_amps from the fixed amplitudes) and T1_DIAG (get_t1_diagnostic of t1_conv), then
+    E_T_FIXED and E_T_FIXED_NO_T1 (pyscf's (T) at the fixed amplitudes, and at the same t2 with t1 = 0)."""
+    from pyscf.cc import rintermediates as imd, dfccsd
+    bohr = 0.529177210903  # CODATA 2018, as terco
+    cases = [("w1", "hirshfeld_water.xyz", 1), ("h2o2_c1", "h2o2_c1.xyz", 2)]
+    basis, aux_basis = "cc-pvdz", "cc-pvdz-rifit"
+    # Every file that reads these references or the probes they hold: the integral check, the
+    # intermediates check and the helpers they share (editing one re-hashes the .ref).
+    test_files = [TEST / "check_rccsd_ints.F90", TEST / "check_rccsd_inter.F90", TEST / "check_rccsd_w.F90",
+                  TEST / "check_rccsd_ladder.F90", TEST / "check_rccsd_run.F90", TEST / "check_rccsd_triples.F90",
+                  TEST / "rccsd_test_support.F90"]
+    files = sorted({TEST / c[1] for c in cases}
+                   | {TEST / "basis_sets" / (basis + ".json"), TEST / "basis_sets" / (aux_basis + ".json")}
+                   | set(test_files))
+
+    def probes(a, spaces, dip):
+        blk = lambda m, p, q: m[dip[p]][:, dip[q]]
+        x, y, z = dip["X"], dip["Y"], dip["Z"]
+        if a.ndim == 2:
+            return [np.linalg.norm(a), np.sum(a * blk(x, *spaces)), np.sum(a * blk(dip["XY"], *spaces))]
+        p, q, r, s = spaces
+        return [np.linalg.norm(a),
+                np.einsum("pqrs,pq,rs->", a, blk(x, p, q), blk(y, r, s)),
+                np.einsum("pqrs,pr,qs->", a, blk(x, p, r), blk(z, q, s)),
+                np.einsum("pqrs,ps,qr->", a, blk(y, p, s), blk(z, q, r))]
+
+    for name, xyz, frozen in cases:
+        lines = (TEST / xyz).read_text().splitlines()
+        natm = int(lines[0])
+        atoms = [(ln.split()[0], tuple(float(v) / bohr for v in ln.split()[1:4])) for ln in lines[2:2 + natm]]
+        elements = {sym: gto.charge(sym) for sym, _ in atoms}
+        mol = gto.M(atom=atoms, unit="Bohr", cart=False, verbose=0,
+                    basis=bse_json_basis(TEST / "basis_sets" / (basis + ".json"), elements))
+
+        def make_mf(mol=mol):
+            return scf.RHF(mol)
+
+        mf, _ = converge_tight(make_mf, None, f"gen_rccsd_ints {name}", conv_tol=1.0e-13, conv_tol_grad=1.0e-11)
+        # 1e-11, not the 1e-9 the energies would need: the probes are FIRST order in the orbital error, and at
+        # 1e-9 two generations of this file differed by 1.3e-10 relative; at 1e-11 they agree to about 2e-12.
+        mycc = dfccsd.RCCSD(mf, frozen=frozen)
+        mycc.with_df = df.DF(mol, auxbasis=bse_json_basis(TEST / "basis_sets" / (aux_basis + ".json"), elements))
+        mycc.conv_tol = 1.0e-12
+        mycc.conv_tol_normt = 1.0e-10
+        mycc.max_cycle = 200
+        eris = mycc.ao2mo()
+        c_act = mf.mo_coeff[:, frozen:]
+        e_act = mf.mo_energy[frozen:]
+        no = mol.nelectron // 2 - frozen
+        nmo = c_act.shape[1]
+        nv = nmo - no
+        with mol.with_common_orig((0, 0, 0)):
+            dipole = mol.intor("int1e_r")
+        x, y, z = (c_act.T @ d @ c_act for d in dipole)
+        dip = {"X": x, "Y": y, "Z": z, "XY": x @ y, "o": slice(0, no), "v": slice(no, nmo)}
+        eo, ev = e_act[:no], e_act[no:]
+        # Fixed amplitudes, NOT converged: t2 = MP2, t1 from the dipole integrals.
+        t1 = (0.03 * x + 0.02 * y + 0.01 * z)[:no, no:] / (eo[:, None] - ev[None, :])
+        ovov = np.asarray(eris.ovov)
+        t2 = ovov.transpose(0, 2, 1, 3) / (eo[:, None, None, None] + eo[None, :, None, None]
+                                           - ev[None, None, :, None] - ev[None, None, None, :])
+        tau = t2 + np.einsum("ia,jb->ijab", t1, t1)
+        ladder_w = np.einsum("abcd,ijcd->ijab", imd.cc_Wvvvv(t1, t2, eris), tau)
+        ovvv_t = np.asarray(eris.get_ovvv())
+        w_dress = -np.einsum("kdac,kb->abcd", ovvv_t, t1) - np.einsum("kcbd,ka->abcd", ovvv_t, t1)
+        ladder_dressing = np.einsum("abcd,ijcd->ijab", w_dress, tau)
+        if np.abs(ladder_w - mycc._add_vvvv(t1, t2, eris) - ladder_dressing).max() > 1.0e-10:
+            raise RuntimeError(f"gen_rccsd_ints {name}: cc_Wvvvv is not _add_vvvv plus the ovvv dressing")
+        out = []   # (name, spaces, tensor), the order the Fortran side reads them in
+        out += [("oooo", "oooo", np.asarray(eris.oooo)),
+                ("ooov", "ooov", np.asarray(eris.ovoo).transpose(2, 3, 0, 1)),
+                ("oovv", "oovv", np.asarray(eris.oovv)),
+                ("ovov", "ovov", ovov),
+                ("ovvv", "ovvv", np.asarray(eris.get_ovvv())),
+                ("t1", "ov", t1), ("t2", "oovv", t2),
+                ("Foo", "oo", imd.cc_Foo(t1, t2, eris)), ("Fvv", "vv", imd.cc_Fvv(t1, t2, eris)),
+                ("Fov", "ov", imd.cc_Fov(t1, t2, eris)), ("Loo", "oo", imd.Loo(t1, t2, eris)),
+                ("Lvv", "vv", imd.Lvv(t1, t2, eris)), ("Woooo", "oooo", imd.cc_Woooo(t1, t2, eris)),
+                ("Wvoov", "voov", imd.cc_Wvoov(t1, t2, eris)), ("Wvovo", "vovo", imd.cc_Wvovo(t1, t2, eris)),
+                # _add_vvvv is the UNDRESSED ladder sum_cd (ac|bd) tau_ijcd ('ijcd,acbd->ijab' on tau = t2 + t1 t1):
+                # the ovvv terms of Wvvvv are not in it. ladder_w is update_amps's einsum('abcd,ijcd->ijab', Wvvvv, tau)
+                # (ladder plus dressing) and dressing is the ovvv terms alone, so the ladder port can be checked piece by piece.
+                ("ladder", "oovv", mycc._add_vvvv(t1, t2, eris)),
+                ("ladder_w", "oovv", ladder_w), ("dressing", "oovv", ladder_dressing)]
+        t1n, t2n = mycc.update_amps(t1, t2, eris)
+        out += [("t1_new", "ov", t1n), ("t2_new", "oovv", t2n)]
+        e_update1 = mycc.energy(t1n, t2n, eris)   # the correlation energy after exactly one update from the fixed amplitudes
+        e_mp2 = mycc.energy(np.zeros_like(t1), t2, eris)
+        e_fixed = mycc.energy(t1, t2, eris)
+        # (T) at the FIXED amplitudes, not the converged ones: the triples routine alone, independent of the CCSD
+        # solver. The kernel may rewrite t2 in place, so it gets copies. The second has t1 = 0 (t2 = MP2 only).
+        from pyscf.cc import ccsd_t as pyscf_ccsd_t
+        e_t_fixed = pyscf_ccsd_t.kernel(mycc, eris, t1.copy(), t2.copy())
+        e_t_fixed_no_t1 = pyscf_ccsd_t.kernel(mycc, eris, np.zeros_like(t1), t2.copy())
+        mycc.kernel()
+        if not mycc.converged:
+            raise ConvergenceError(f"gen_rccsd_ints {name}: pyscf DF-CCSD did not converge")
+        e_t = mycc.ccsd_t()
+        out += [("t1_conv", "ov", mycc.t1), ("t2_conv", "oovv", mycc.t2)]
+
+        w = RefWriter(f"rccsd_ints_{name}.ref")
+        w.header("rccsd_ints", files)
+        w.comment(f"{xyz} {basis}/{aux_basis} frozen {frozen}: pyscf DF-RCCSD(T), fixed-amplitude probes of every intermediate")
+        w.int_("NO", no)
+        w.int_("NV", nv)
+        w.int_("NAUX", mycc.with_df.get_naoaux())
+        w.int_("NFROZEN", frozen)
+        w.real("E_SCF", mf.e_tot)
+        w.real("E_MP2", e_mp2)
+        w.real("E_FIXED", e_fixed)
+        for pname, spaces, tensor in out:
+            w.vector("P_" + pname, probes(np.asarray(tensor), spaces, dip))
+        w.real("E_CCSD_CORR", mycc.e_corr)
+        w.real("E_T", e_t)
+        w.real("E_CCSD_T", mycc.e_tot + e_t)
+        # after E_CCSD_T so the readers that stop earlier are unaffected: the energy of the single update above, and
+        # pyscf's get_t1_diagnostic of the converged t1, sqrt(|t1|^2 / (2 no)) with no the active occupied count
+        w.real("E_UPDATE1", e_update1)
+        w.real("T1_DIAG", mycc.get_t1_diagnostic())
+        # after T1_DIAG for the same reason: pyscf's (T) at the fixed amplitudes (t1 dipole guess, t2 MP2), then at
+        # t1 = 0 with the same t2
+        w.real("E_T_FIXED", e_t_fixed)
+        w.real("E_T_FIXED_NO_T1", e_t_fixed_no_t1)
+        w.end()
+        w.write()
+        print(f"  rccsd_ints {name:8s} no {no} nv {nv} naux {mycc.with_df.get_naoaux()} E_SCF {mf.e_tot:.14f} "
+              f"E_MP2 {e_mp2:.14e} E_T_fixed {e_t_fixed:.14e}")
+
+
 def gen_fukui_chelpg():
     """test/check_fukui.F90's CHELPG-condensed Fukui case: RHF/cc-pVDZ water
     at that file's Bohr geometry (mqc's test_fukui geometry, the one its
@@ -6238,6 +6390,7 @@ def gen_sym_tops():
 CASES = {
     "hirshfeld": gen_hirshfeld,
     "chelpg": gen_chelpg,
+    "rccsd_ints": gen_rccsd_ints,
     "fukui_chelpg": gen_fukui_chelpg,
     "mult": gen_mult,
     "ecp_ints_hi_svp": lambda: gen_ecp_ints("hi_svp"),

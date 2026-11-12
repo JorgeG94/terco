@@ -25,7 +25,7 @@ Fortran API, a `bind(c)` ABI and a `terco` CLI. See `README.md`.
 | `src/basis/`, `src/grid/` | basis JSON reader, decontraction; DFT grids and Becke/Stratmann partitions |
 | `src/eri/` | screening, shell-pair bins, HGP/Rys drivers, the McMurchie–Davidson J and exchange engines (`trc_mdj`, `trc_mdg`), Fock and gradient launchers |
 | `src/scf/` | SCF driver, settings, state, Fock build, DIIS, DF-JK, SOSCF, restart; subdirectories `guess/` (SAD, SAP, minao, JSON), `gradient/`, `response/` (CPHF, CPKS), `analysis/` (Hirshfeld, CHELPG, Fukui) and `vibration/` (harmonic analysis, thermochemistry) |
-| `src/xc/`, `src/post_hf/`, `src/solvation/` | XC integration and functionals, VV10; RI-MP2; PCM |
+| `src/xc/`, `src/post_hf/`, `src/solvation/` | XC integration and functionals, VV10; RI-MP2, RI-CCSD(T); PCM |
 | `src/api/` | `trc_api` (Fortran) and `trc_capi` (C ABI); `include/` holds the C interfaces |
 | `src/opt/` | the geometry optimiser (DL-FIND via libdlfind), built as `libterco_opt` only with `-DTERCO_ENABLE_DLFIND=ON`; its own C ABI is `include/terco_opt.h` |
 | `src/generated/` | **generator output: never edit by hand** |
@@ -90,6 +90,9 @@ before any non-trivial change. The rules that most often break builds:
 - A `do concurrent` body calls only intrinsics and same-module `pure`
   `!$acc routine seq` item routines, with explicit-shape dummies and
   per-thread scratch declared inside the item routine.
+- Temporary, for an ifx bug (to be removed when ifx is fixed): a call in a
+  `do concurrent` body passes its loop index through the `TRC_DC_INDEX`
+  macro, never to a `value` dummy (`gpu-pitfalls.md`, Codegen).
 - A procedure or program, test programs included, that makes a collective
   MPI call must have no internal (`contains`) procedures (an NVHPC 26.5 +
   HPC-X defect). Put helpers in modules.

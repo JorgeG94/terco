@@ -48,6 +48,7 @@ module trc_run
    public :: run_parse_frozen_list, run_parse_constraints, run_check_opt_constrain_residues, &
              run_check_neb_endpoint, run_write_neb_path_xyz
    public :: run_read_xyz_frames
+   public :: run_cc_parse, run_cc_configure, run_cc_execute
    public :: run_frontier, run_symmetry_collect, run_symmetry_refusal, run_symmetry_unsupported
    public :: run_symmetry_summary
 
@@ -116,6 +117,21 @@ module trc_run
       real(dp) :: gdm_max_rotation = 0.0_dp  !! --gdm-max-rotation; 0 = the library's default (0.2)
       real(c_double) :: etot, enuc, eone, etwo, exc, eos, ess, epcm, qpcm
       logical :: rimp2, df
+      ! --riccsd / --riccsd-t (trc_run_cc.F90). A 0 setting is the library's default. Every component has a
+      ! default: nvfortran gives a plain one whatever the stack held, where gfortran happens to give zero.
+      logical :: cc = .false.           !! RI-CCSD, or RI-CCSD(T) with `cc_triples`
+      logical :: cc_triples = .false.   !! --riccsd-t
+      real(dp) :: cc_econv = 0.0_dp, cc_tconv = 0.0_dp   !! --cc-econv, --cc-tconv
+      integer :: cc_iterations = 0, cc_diis = 0, cc_ladder = 0, cc_triples_routine = 0
+      real(dp) :: cc_budget_mib = 0.0_dp   !! --cc-triples-budget in MiB
+      logical :: cc_ran = .false.       !! trc_run_rccsd left energies (converged or not)
+      logical :: cc_converged = .false., cc_has_triples = .false.
+      logical :: cc_t_failed = .false.  !! the CCSD converged and (T) failed: `cc_message` says why
+      character(len=512) :: cc_message = ""   !! the library's message of the last trc_run_rccsd
+      real(c_double) :: cc_e_mp2 = 0.0_c_double, cc_e_ccsd = 0.0_c_double, cc_e_t = 0.0_c_double
+      real(c_double) :: cc_t1_diagnostic = 0.0_c_double
+      integer(c_int) :: cc_niter = 0
+      integer(c_int) :: cc_nfrozen = 0, cc_nactive = 0, cc_nvirtual = 0, cc_naux = 0   !! the spaces the CCSD used
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
       logical :: vv10 = .false.  !! --func has VV10 nonlocal correlation, on its own --nlc-grid
       real(c_double) :: pt2_cos = 0.0_c_double, pt2_css = 0.0_c_double, etot_dh = 0.0_c_double
@@ -465,6 +481,26 @@ module trc_run
          character(len=*), intent(in) :: path
       end subroutine run_write_json
 
+      module subroutine run_cc_parse(r, nfrozen)
+         !! --riccsd/--riccsd-t and the --cc-* options into r%cc*, refusing what the method does not cover (trc_run_cc.F90)
+         implicit none
+         type(run_t), intent(inout) :: r
+         integer, intent(in) :: nfrozen   !! --frozen
+      end subroutine run_cc_parse
+
+      module subroutine run_cc_configure(r, nfrozen, aux_block)
+         !! trc_set_rccsd and the solver settings (trc_run_cc.F90)
+         implicit none
+         type(run_t), intent(in) :: r
+         integer, intent(in) :: nfrozen, aux_block
+      end subroutine run_cc_configure
+
+      module subroutine run_cc_execute(r)
+         !! trc_run_rccsd and the energies it leaves, into r%cc_* (trc_run_cc.F90)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_cc_execute
+
       module function method(r) result(m)
          implicit none
          type(run_t), intent(in) :: r
@@ -560,6 +596,8 @@ contains
          why = "--hessian (frequencies and thermochemistry)"
       else if (r%rimp2) then
          why = "--rimp2 (or a double-hybrid --func)"
+      else if (r%cc) then
+         why = "--riccsd / --riccsd-t"
       else if (r%df) then
          why = "--df"
       else if (len(r%pcm) > 0) then

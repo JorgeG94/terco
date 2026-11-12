@@ -46,6 +46,25 @@ set_target_properties(terco_pyscf_ref_io PROPERTIES Fortran_MODULE_DIRECTORY
                                                      ${CMAKE_BINARY_DIR}/modules)
 
 #
+# What the RI-CCSD(T) checks share: molecules, tight SCF, MO dipole probes.
+#
+add_library(terco_rccsd_test_support STATIC rccsd_test_support.F90)
+target_compile_definitions(terco_rccsd_test_support PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(terco_rccsd_test_support PUBLIC ${main_lib})
+set_target_properties(terco_rccsd_test_support PROPERTIES Fortran_MODULE_DIRECTORY
+                                                          ${CMAKE_BINARY_DIR}/modules)
+
+#
+# The converged-energy records of those references, for the checks that drive
+# RI-CCSD(T) through the C ABI and the CLI.
+#
+add_library(terco_rccsd_ref_energies STATIC rccsd_ref_energies.F90)
+target_compile_definitions(terco_rccsd_ref_energies PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(terco_rccsd_ref_energies PUBLIC ${main_lib} terco_pyscf_ref_io)
+set_target_properties(terco_rccsd_ref_energies PROPERTIES Fortran_MODULE_DIRECTORY
+                                                         ${CMAKE_BINARY_DIR}/modules)
+
+#
 # The library's definitions are PRIVATE -- TRC_FOCK6 is an
 # implementation choice and no consumer should need them. A test can, though:
 # `check_binfock` compares against a raw oracle and has to know whether the
@@ -142,6 +161,65 @@ target_link_libraries(check_exchange_screen PRIVATE test-drive::test-drive)
 terco_add_check(check_si check_si.F90)
 target_link_libraries(check_si PRIVATE test-drive::test-drive)
 
+# The fitted integral blocks of RI-CCSD(T) (src/post_hf/ccsd/trc_rccsd_ints.F90)
+# against pyscf's DF-RCCSD integrals, as sign-invariant dipole probes of each
+# block (test/pyscf_refs/rccsd_ints_*.ref, generate.py's gen_rccsd_ints), plus
+# E_MP2 from the ovov block against trc_rimp2_run. cc-pVDZ-RIFIT carries f
+# auxiliary shells on O: a build below that ceiling prints SKIP.
+terco_add_check(check_rccsd_ints check_rccsd_ints.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_rccsd_ints PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_ints PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# tau, Foo, Fvv, Fov, Loo, Lvv, the energy functional and the MP2 amplitudes
+# (src/post_hf/ccsd/trc_rccsd_inter.F90) at FIXED amplitudes against the same
+# references (gen_rccsd_ints), plus independent host loops. Same SKIP guard.
+terco_add_check(check_rccsd_inter check_rccsd_inter.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_rccsd_inter PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_inter PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# The packed DIIS kernels of RI-CCSD (src/post_hf/ccsd/trc_rccsd_diis.F90) against plain loops over (i,j,a,b): an ifx
+# miscompilation of a value computed in a do concurrent and passed by reference shows here, not in the energies.
+terco_add_check(check_rccsd_diis check_rccsd_diis.F90)
+target_link_libraries(check_rccsd_diis PRIVATE test-drive::test-drive)
+
+# The staging array of the RI-CCSD transfers (src/post_hf/ccsd/trc_rccsd_xfer.F90): its size and its refusal.
+terco_add_check(check_rccsd_xfer check_rccsd_xfer.F90)
+target_link_libraries(check_rccsd_xfer PRIVATE test-drive::test-drive)
+
+# Woooo, Wvoov and Wvovo (src/post_hf/ccsd/trc_rccsd_w.F90) at the same FIXED
+# amplitudes against the same references, plus independent host einsum loops. Same SKIP guard.
+terco_add_check(check_rccsd_w check_rccsd_w.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_rccsd_w PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_w PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# The particle-particle ladder (assembled and direct forms) and its t1 dressing
+# (src/post_hf/ccsd/trc_rccsd_ladder.F90) at the same FIXED amplitudes against the same
+# references (gen_rccsd_ints: P_ladder, P_ladder_w, P_dressing), plus independent host
+# loops, batch-size independence and refusals. Same SKIP guard.
+terco_add_check(check_rccsd_ladder check_rccsd_ladder.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_rccsd_ladder PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_ladder PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# The amplitude update, DIIS and the iteration driver (src/post_hf/ccsd/trc_rccsd_update.F90, _diis.F90,
+# _driver.F90) against pyscf's update_amps, the converged DF-CCSD energy and amplitudes of the same references,
+# plus an independent host implementation of update_amps and DIIS on a linear problem. Same SKIP guard.
+terco_add_check(check_rccsd_run check_rccsd_run.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_rccsd_run PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_run PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# The perturbative triples (src/post_hf/ccsd/trc_rccsd_triples.F90, the host reference) against pyscf's (T) at the
+# converged and at the fixed amplitudes of the same references, an independent all-(a,b,c) host evaluation, c batch
+# invariance and the refusals. Same SKIP guard.
+terco_add_check(check_rccsd_triples check_rccsd_triples.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_rccsd_triples PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_triples PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+# RI-CCSD(T) through the C ABI (trc_set_rccsd, trc_set_rccsd_convergence, trc_set_rccsd_algorithm, trc_run_rccsd,
+# trc_rccsd_energy): the energies against the same references, the setters' arguments, every refusal, the
+# invalidation of a stored result and a run that does not converge. Same SKIP guard.
+terco_add_check(check_capi_rccsd check_capi_rccsd.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_capi_rccsd PRIVATE test-drive::test-drive terco_rccsd_ref_energies terco_c_interfaces)
+set_tests_properties(terco/check_capi_rccsd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 # The Abelian point-group tables (trc_sym_group): closure, character
 # orthogonality, irrep names and order against pyscf 2.14.0's param.py.
 terco_add_check(check_sym_group check_sym_group.F90)
@@ -1034,6 +1112,15 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_input PRIVATE test-drive::test-drive)
   unset(_cli_input_workdir)
 
+  # RI-CCSD(T) through the CLI: the flags, a TOML file, the summary and the JSON against pyscf's DF-CCSD(T),
+  # the convergence flags, a CCSD that does not converge and every refusal -- see check_cli_rccsd.F90's own
+  # header. Same SKIP guard as the integral-level checks.
+  set(_cli_rccsd_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_rccsd_work)
+  terco_add_check(check_cli_rccsd check_cli_rccsd.F90 NEEDS_PYSCF_REF
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_rccsd_workdir})
+  target_link_libraries(check_cli_rccsd PRIVATE test-drive::test-drive terco_rccsd_ref_energies)
+  set_tests_properties(terco/check_cli_rccsd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+  unset(_cli_rccsd_workdir)
   # The symmetry keywords through the CLI (--symmetry, --symmetry-tol,
   # --irrep-nelec, the TOML keys): HOCl symmetry=auto against pyscf's electrons
   # per irrep and energy and against a symmetry-off run on the symmetrised
@@ -2473,6 +2560,43 @@ if(TERCO_ENABLE_MPI)
            COMMAND ${_mpiexec} ${_npflag} 4 $<TARGET_FILE:scf_mpi_frag>)
   set_tests_properties(terco/scf_mpi_frag PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                      TIMEOUT 300)
+endif()
+
+# RI-CCSD(T) over ranks, one device each (rccsd_mpi.F90's header): the energies, E_CCSD and amplitudes (to round-off:
+# the ladder is cut over the ranks) and the (T) sum against the single-rank run and pyscf, the same result on every rank, and with the argument "fail" the
+# failure paths (a rank refused, a CCSD that does not converge, a (T) routine that differs, ...), which must end on all
+# ranks. The TIMEOUT is the test of the second: a rank left in a collective call fails ctest, it does not wedge it.
+#
+add_executable(rccsd_mpi rccsd_mpi.F90)
+target_compile_definitions(rccsd_mpi PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(rccsd_mpi PRIVATE ${main_lib} terco_rccsd_test_support terco_rccsd_ref_energies)
+target_include_directories(rccsd_mpi PRIVATE ${CMAKE_BINARY_DIR}/modules)
+if(TERCO_ENABLE_MPI)
+  # One rank per device is the rule, and a CI box may have fewer GPUs than ranks: a GPU build registers np 1 and 2
+  # only; a build without a GPU (ranks are host processes) also runs 3 and 4, which cut the ladder three and four ways.
+  if(TERCO_ENABLE_GPU)
+    set(_rccsd_mpi_nps 1 2)
+  else()
+    set(_rccsd_mpi_nps 1 2 3 4)
+  endif()
+  foreach(np ${_rccsd_mpi_nps})
+    add_test(NAME terco/rccsd_mpi_np${np}
+             COMMAND ${_mpiexec} ${_npflag} ${np} $<TARGET_FILE:rccsd_mpi>)
+    set_tests_properties(terco/rccsd_mpi_np${np} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                           TIMEOUT 900)
+  endforeach()
+  if(TERCO_ENABLE_GPU)
+    # the transfers through the host (trc_mpi_device: TERCO_MPI_DEVICE=0); the default run uses MPI device buffers
+    # where the build says the MPI takes them
+    add_test(NAME terco/rccsd_mpi_np2_hostbuf
+             COMMAND ${_mpiexec} ${_npflag} 2 $<TARGET_FILE:rccsd_mpi>)
+    set_tests_properties(terco/rccsd_mpi_np2_hostbuf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                               TIMEOUT 900 ENVIRONMENT "TERCO_MPI_DEVICE=0")
+  endif()
+  add_test(NAME terco/rccsd_mpi_fail_np2
+           COMMAND ${_mpiexec} ${_npflag} 2 $<TARGET_FILE:rccsd_mpi> fail)
+  set_tests_properties(terco/rccsd_mpi_fail_np2 PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                           TIMEOUT 600)
 endif()
 
 add_executable(demo_makefp demo_makefp.F90)

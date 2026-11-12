@@ -37,10 +37,21 @@
 # and passed round them, both with the build's default transport and
 # staged through the host (TERCO_MPI_DEVICE=0), and between np 1 and np 3
 # with uneven occupied blocks and several auxiliary blocks per rank.
+# RI-CCSD(T) (water, cc-pVDZ with cc-pVDZ-RIFIT, frozen core 1): the CCSD
+# correlation energy and E(T) read from --json must match between np 1, np 2
+# and np 3 to CC_TOL (measured 7e-15; the check prints the spread it finds), with the ladder of every iteration and the (T) shared. What
+# only a CLI run over ranks shows is checked too: rank 0's energy box says
+# "ladder and (T) shared by N ranks" (and a one-rank run does not), the step
+# table carries "rank 0 of N", the result is printed once; and the options
+# refused over ranks (an explicit reference or tiled (T) routine, rejected by
+# the CLI before any work; an explicit assembled ladder, refused by the
+# library after the SCF on every rank) end the whole run with a non-zero exit
+# status and a reason, within the timeout, instead of leaving a rank waiting.
 #
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -48,14 +59,54 @@ import tempfile
 TOL = 1.0e-8
 ENERGY_RE = re.compile(r"TOTAL ENERGY\s+(-?\d+\.\d+)")
 EXC_RE = re.compile(r"exchange-correlation\s+(-?\d+\.\d+)")
-MP2_RE = re.compile(r"MP2 CORRELATION\s+(-?\d+\.\d+)")
+MP2_RE = re.compile(r"RI-MP2 CORRELATION\s+(-?\d+\.\d+)")
 MP2_TOL = 1.0e-10
+CC_TOL = 1.0e-12
+# RI-CCSD correlation energy and E(T) between rank counts. Measured with these settings (nvfortran 26.5 host build,
+# water cc-pVDZ / cc-pVDZ-RIFIT, np 2 and 3 against np 1): 7.0e-15 Eh for E_CCSD and 3.8e-16 Eh for E(T); the check
+# prints what it finds (the "diff E_CCSD" and "diff E(T)" columns). The settings below converge the amplitudes to
+# 1e-10, the energy to 1e-12 and the SCF to 1e-13 / 1e-11; what is left is the multi-rank SCF (about 1e-14 Eh,
+# docs/sphinx/cli.md) and the order of the ladder's sum. 1e-12 leaves two orders for another MPI or BLAS.
+CC_ARGS = ["--frozen", "1", "--econv", "1e-13", "--gconv", "1e-11", "--cc-econv", "1e-12", "--cc-tconv", "1e-10"]
 
 
 def run(mpiexec, npflag, np, terco_cli, xyz, basis_dir, *args, extra_env=None):
     cmd = [mpiexec, npflag, str(np), terco_cli, xyz, "-b", "6-31g", *args]
     env = {**os.environ, "TERCO_BASIS_PATH": basis_dir, **(extra_env or {})}
     return subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300)
+
+
+def _text(x):
+    """subprocess puts bytes (or None) in TimeoutExpired.stdout/.stderr even with text=True"""
+    if x is None:
+        return ""
+    return x.decode(errors="replace") if isinstance(x, bytes) else x
+
+
+def run_group(cmd, env, timeout):
+    """Run `cmd` in its own session; on a timeout kill the whole group (no orphan ranks) and return rc -999 with
+    whatever the ranks had printed."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
+                            start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        out, err = proc.communicate()
+        out = _text(exc.stdout) + _text(out)
+        err = _text(exc.stderr) + _text(err) + "\nTIMEOUT (a rank is waiting?)"
+        return subprocess.CompletedProcess(cmd, -999, out, err)
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+
+
+def run_cc(mpiexec, npflag, np, terco_cli, xyz, basis_dir, *args, timeout=300):
+    cmd = [mpiexec, npflag, str(np), terco_cli, xyz, "-b", os.path.join(basis_dir, "cc-pvdz.json"),
+           "--aux", os.path.join(basis_dir, "cc-pvdz-rifit.json"), *CC_ARGS, *args]
+    env = {**os.environ, "TERCO_BASIS_PATH": basis_dir}
+    return run_group(cmd, env, timeout)
 
 
 def energy(out):
@@ -66,6 +117,71 @@ def energy(out):
 def exc_energy(out):
     m = EXC_RE.search(out)
     return float(m.group(1)) if m else None
+
+
+def check_riccsd(mpiexec, npflag, terco_cli, xyz, basis_dir):
+    ok = True
+    res = {}
+    with tempfile.TemporaryDirectory() as tmp:
+        for np in (1, 2, 3):
+            js = os.path.join(tmp, f"cc{np}.json")
+            p = run_cc(mpiexec, npflag, np, terco_cli, xyz, basis_dir, "--riccsd-t", "--json", js)
+            if p.returncode != 0 or not os.path.exists(js):
+                print(f"cli_mpi_check: RI-CCSD(T) np{np} did not run cleanly (rc={p.returncode})")
+                print(p.stdout, p.stderr)
+                ok = False
+                continue
+            with open(js) as fh:
+                d = json.load(fh)
+            res[np] = (d["ri-ccsd correlation energy"], d["ri-ccsd triples correction"])
+            if p.stdout.count("TOTAL RI-CCSD(T) ENERGY") != 1:
+                print(f"cli_mpi_check: RI-CCSD(T) np{np} printed the total "
+                      f"{p.stdout.count('TOTAL RI-CCSD(T) ENERGY')} times, not once")
+                ok = False
+            shared = f"ladder and (T) shared by {np} ranks"
+            has_note = shared in p.stdout
+            if (np > 1) != has_note:
+                print(f"cli_mpi_check: RI-CCSD(T) np{np}: the note '{shared}' is "
+                      f"{'missing' if np > 1 else 'printed on one rank'}")
+                ok = False
+            table = f"rank 0 of {np}"
+            if table not in p.stdout:
+                print(f"cli_mpi_check: RI-CCSD(T) np{np}: the step table does not say '{table}'")
+                ok = False
+            if np > 1 and "amplitudes to ranks" not in p.stdout:
+                print(f"cli_mpi_check: RI-CCSD(T) np{np}: the step table has no transfer rows")
+                ok = False
+    if 1 in res:
+        for np in (2, 3):
+            if np not in res:
+                continue
+            dc, dt = abs(res[1][0] - res[np][0]), abs(res[1][1] - res[np][1])
+            print(f"cli_mpi_check: RI-CCSD(T)  np1 E_CCSD = {res[1][0]:.12f}  E(T) = {res[1][1]:.12f}  "
+                  f"np{np} diff E_CCSD = {dc:.2e}  diff E(T) = {dt:.2e}")
+            if dc > CC_TOL or dt > CC_TOL:
+                ok = False
+
+    # Refusals over ranks: non-zero exit, a reason, no hang.
+    # each matched against a distinctive fragment of the refusal itself (app/trc_run_cc.F90 for the first two,
+    # trc_rccsd_driver's ladder_for_ranks for the third), not against a word normal output also contains
+    refusals = [
+        ("explicit reference (T) at np 2", 2, ["--riccsd-t", "--cc-triples", "reference"],
+         "reference and tiled run on one rank"),
+        ("explicit tiled (T) at np 3", 3, ["--riccsd-t", "--cc-triples", "tiled"],
+         "reference and tiled run on one rank"),
+        ("explicit assembled ladder at np 2", 2, ["--riccsd-t", "--cc-ladder", "assembled"],
+         "needs the half form"),
+    ]
+    for label, np, args, word in refusals:
+        p = run_cc(mpiexec, npflag, np, terco_cli, xyz, basis_dir, *args, timeout=120)
+        text = p.stdout + p.stderr
+        good = p.returncode not in (0, -999) and word in text and "TOTAL RI-CCSD" not in p.stdout
+        print(f"cli_mpi_check: refusal ({label})  rc = {p.returncode}  "
+              f"{'ok' if good else 'NOT REFUSED AS EXPECTED'}")
+        if not good:
+            print(p.stdout, p.stderr)
+            ok = False
+    return ok
 
 
 def main():
@@ -210,6 +326,8 @@ def main():
         print(f"cli_mpi_check: RI-MP2 ({label})  np1 = {c1:.12f}  np{np} = {c2:.12f}  diff = {diff:.2e}")
         if diff > MP2_TOL:
             ok = False
+
+    ok = check_riccsd(mpiexec, npflag, terco_cli, xyz, basis_dir) and ok
 
     print("cli_mpi_check: PASS" if ok else "cli_mpi_check: FAIL")
     return 0 if ok else 1

@@ -60,7 +60,7 @@ class RestaleTests(unittest.TestCase):
         # vib_thermo_* cases, which share that one generator), gen_opt_ts
         # (opt_ts_hcn), gen_rsh_g (the three rsh_g_* cases), gen_soscf, gen_mom_excited, gen_chelpg, gen_ecp_scf,
         # gen_fukui_chelpg, gen_sym_scf_cs, gen_sym_c2, gen_sym_c2v, gen_sym_ci, gen_sym_subgroup, gen_sym_d2,
-        # gen_sym_c2h, gen_sym_c2h_subgroup, gen_sym_d2h, gen_sym_d2h_subgroup, gen_sym_tops, and through
+        # gen_sym_c2h, gen_sym_c2h_subgroup, gen_sym_d2h, gen_sym_d2h_subgroup, gen_sym_tops, gen_rccsd_ints, and through
         # _gen_rimp2_one / _gen_scf_df_one / _gen_cphf_one / _gen_cpks_one by
         # gen_rimp2 / gen_scf_df / gen_cphf / gen_cphf_uhf / gen_cpks. Update
         # this set when a new generator starts calling it.
@@ -73,7 +73,7 @@ class RestaleTests(unittest.TestCase):
                           "opt_ts_hcn", "rsh_g_water_wb97x", "rsh_g_nh2_wb97x", "rsh_g_water_wb97xv",
                           "soscf", "mom_excited", "chelpg", "ecp_scf", "fukui_chelpg", "sym_scf_cs", "sym_c2",
                           "sym_c2v", "sym_ci", "sym_subgroup", "sym_d2", "sym_c2h", "sym_c2h_subgroup", "sym_d2h",
-                          "sym_d2h_subgroup", "sym_tops"})
+                          "sym_d2h_subgroup", "sym_tops", "rccsd_ints"})
 
     def test_case_arguments_restale_only_that_case(self):
         src = edit_once(SOURCE, '"basis_sets/cc-pvdz.json", 1e-9),',

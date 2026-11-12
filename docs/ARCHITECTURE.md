@@ -46,7 +46,7 @@ Numbers in brackets refer to the references at the end.
 | Grids | `src/grid/` | `dft_grid_t` |
 | SCF | `src/scf/` | `trc_scf_run`, `scf_ctx_t`, `scf_state_t`, `df_jk_t`, DIIS |
 | XC | `src/xc/` | `trc_xc_grid_t`, functional registry, translated kernels, VV10 |
-| Correlation | `src/post_hf/` | RI-MP2 driver |
+| Correlation | `src/post_hf/` | RI-MP2 driver; RI-CCSD(T) (`src/post_hf/ccsd/`) |
 | Solvation | `src/solvation/` | `trc_pcm_t` |
 | Interfaces | `src/api/`, `app/`, `include/` | Fortran API, C ABI (`trc_capi`), `terco` CLI |
 
@@ -446,6 +446,40 @@ ring so that each unordered pair is computed by exactly one rank, following
 Stocks, Palethorpe and Barca [14]. A CUDA-aware MPI receives device buffers
 directly; otherwise the blocks go through the host. Unrestricted RI-MP2 runs
 on one GPU.
+
+### RI-CCSD and RI-CCSD(T)
+
+`src/post_hf/ccsd/` holds the closed-shell RI-CCSD solver and its (T) correction
+(energies only; method and limits in `docs/sphinx/theory.md`). One module per
+stage, listed here in dependency order (each uses only modules above it, except
+the two device (T) routines, which use only `ints` and `inter`, and are listed
+with the (T) code):
+
+| Module | What it holds |
+|---|---|
+| `trc_rccsd_steps` | the step table's rows and names, the GEMM flop counts every stage shares |
+| `trc_rccsd_mpi` | the small collectives of a multi-rank run (control word, agreement on failure, the closing host broadcast) |
+| `trc_rccsd_ints` | the fitted integral blocks and the three-index factors `b_oo`, `b_ov`, `b_vv` (no dense `(ia|bc)`) |
+| `trc_rccsd_inter` | tau, the one-particle intermediates, the energy functional, the MP2 start; the amplitudes type |
+| `trc_rccsd_w` | the two-particle intermediates Woooo, Wvoov, Wvovo |
+| `trc_rccsd_ladder` | the particle-particle ladder (assembled, direct, half form) and its t1 dressing |
+| `trc_rccsd_xfer` | the point-to-point transfers of a multi-rank iteration (amplitudes down, partial ladders up) |
+| `trc_rccsd_update` | the amplitude update (T1 and T2 equations), driving the modules above |
+| `trc_rccsd_diis` | DIIS on the amplitudes (full, packed, host history) and the measure of a step |
+| `trc_rccsd_share` | the cut of the ladder's virtual index over the ranks |
+| `trc_rccsd_dist` | the top of an iteration on every rank, and what a follower rank does |
+| `trc_rccsd_driver` | the iteration, the convergence test and the handle the (T) step reuses |
+| `trc_rccsd_triples_dev` | (T) on the device over virtual triples (the tiled routine) |
+| `trc_rccsd_triples_ijk` | (T) on the device over occupied triples (the default device routine) |
+| `trc_rccsd_triples` | (T) host reference, and the entry that picks a routine and shares the work over ranks |
+
+Every `do concurrent` call in these modules hands its loop index to an item routine
+through the `TRC_DC_INDEX` macro of `src/inc/trc_dc_index.inc`, which is `(i)`
+under ifx and the plain variable elsewhere. This is a temporary workaround for an
+ifx compiler bug and is to be removed, macro and call sites, once ifx is fixed (see
+`.claude/context/gpu-pitfalls.md`). The entry points are `trc_set_rccsd*`,
+`trc_run_rccsd` and `trc_rccsd_energy` in `src/api/trc_capi.F90` and `--riccsd`,
+`--riccsd-t` in `app/`.
 
 ## 10. Polarisable continuum
 
