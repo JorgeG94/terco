@@ -56,7 +56,7 @@ def main():
         for key, tag in keys)
 
     compact_cases = "\n".join(
-        f"""      case ({key}); call rysg{tag}_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+        f"""      case ({key}); call rysg{tag}_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                           npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &
                           nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, npriv, gp)"""
@@ -124,7 +124,7 @@ contains
       end select
    end subroutine rysg_screen_dispatch
 
-   subroutine rysg_compact_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sD, &
+   subroutine rysg_compact_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                           npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &
                           nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
@@ -145,7 +145,15 @@ contains
       integer,  intent(in)    :: nseg, npair, nbas, nao
       integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
       integer,  intent(in)    :: sPA(nseg), sPB(nseg)
+      integer,  intent(in)    :: sSA(nseg), sSB(nseg)
+      !! Pairs in the whole bra / ket BIN: the stride of the bin-interleaved
+      !! primitive tables, apart from the segment's own extent sA/sNB. They
+      !! differ exactly when a segment covers part of a bin, which every
+      !! segment of a skeleton gradient plan does.
       logical,  intent(in)    :: sD(nseg)
+      real(dp), intent(in)    :: sW(nseg)
+      !! The segment's orbit weight (one unless the plan is a skeleton one),
+      !! which the kernels fold into their degeneracy factor.
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac, omega
       integer,  intent(in)    :: ao_off(nbas), sh_at(nbas), natm

@@ -1283,7 +1283,7 @@ contains
    ! launch. The screening granularity is worth keeping; the launch
    ! granularity is not. A prefix sum lets a thread find its own segment.
    !
-   subroutine bins_plan_build(this, b, thresh, bin_pbase, use_density)
+   subroutine bins_plan_build(this, b, thresh, bin_pbase, use_density, canonical)
       class(trc_bin_plan_t), intent(inout) :: this
       type(pair_bins_t), intent(in) :: b
       real(dp), intent(in) :: thresh
@@ -1292,18 +1292,43 @@ contains
       !! (trc_pair_quartets_t's bin_pbase).
       logical,  intent(in) :: use_density
       !! Also apply the bin-level density screen (density_reject).
+      logical,  intent(in), optional :: canonical
+      !! Write every segment angular-momentum canonically (bins_plan_emit's
+      !! `canon`): the gradient asks for it, because its filter builds no
+      !! class with (lc, ld) > (la, lb) above d. Absent or false, the walk
+      !! order is kept, so the energy path's plan, kernels and summation
+      !! order are what they were.
+      integer :: nseg
+      logical :: canon
 
-      integer :: ia, ib, ka, kb, smax_keep, nA, nB, nseg, is
-      integer(int64) :: nt
-
+      canon = .false.
+      if (present(canonical)) canon = canonical
       call this%release()
+      nseg = 0
+      call plain_walk(this, b, thresh, bin_pbase, use_density, canon, .false., nseg)
+      call bins_plan_allocate(this, nseg, .false.)
+      nseg = 0
+      call plain_walk(this, b, thresh, bin_pbase, use_density, canon, .true., nseg)
+      this%nseg = nseg
+      this%nwork = this%sOff(nseg + 1)
+   end subroutine bins_plan_build
+
+   subroutine plain_walk(plan, b, thresh, bin_pbase, use_density, canon, fill, nseg)
+      !! Count the segments of the full plan, or (fill) write them: one whole
+      !! bin against one whole bin, over the lower triangle of the live list.
+      type(trc_bin_plan_t), intent(inout) :: plan
+      type(pair_bins_t), intent(in) :: b
+      real(dp), intent(in) :: thresh
+      integer, intent(in) :: bin_pbase(:)
+      logical, intent(in) :: use_density
+      logical, intent(in) :: canon
+      logical, intent(in) :: fill
+      integer, intent(inout) :: nseg
+      integer :: ia, ib, ka, kb, smax_keep
 
       ! In buckets, not decades: the bins carry the resolution they were
       ! built at, and the admission test has to speak the same units.
       smax_keep = int(-log10(thresh))*b%sres
-
-      ! pass 1: count admitted bin pairs
-      nseg = 0
       do ia = 1, b%nlive
          ka = b%live(ia)
          do ib = 1, ia
@@ -1313,65 +1338,21 @@ contains
             if (use_density) then
                if (density_reject(b, ka, kb, thresh)) cycle
             end if
-            nseg = nseg + 1
+            ! `canon`: ascending live index usually means (la, lb) >= (lc, ld)
+            ! already -- bin_key packs (la, lb) as its most significant
+            ! fields -- but split_large_bins and arrange_orbits append a split
+            ! bin's extra chunks PAST every original index while keeping their
+            ! parent's (la, lb), so a chunk of a low-l bin can be the bra
+            ! against a high-l ket. The energy path has kernels for both
+            ! orderings (the bra<ket Rys ones) and keeps the walk order; the
+            ! gradient's filter builds no class with (lc, ld) > (la, lb) above
+            ! d, and grad_classes would `error stop` on one (src/CMakeLists.txt's
+            ! _rys_grad_classes), so it asks for the canonical order.
+            call bins_plan_emit(plan, b, bin_pbase, fill, nseg, &
+                                trc_bin_segment_t(ka, kb, 0, b%bin_cnt(ka), 0, b%bin_cnt(kb), ka == kb, 1.0_dp), canon)
          end do
       end do
-
-      allocate (this%sA(nseg), this%sNB(nseg), this%sOA(nseg), this%sOB(nseg))
-      allocate (this%sPA(nseg), this%sPB(nseg), this%sSA(nseg), this%sSB(nseg), this%sD(nseg))
-      allocate (this%sLA(nseg), this%sLB(nseg), this%sLC(nseg), this%sLD(nseg), this%sM(nseg))
-      allocate (this%sOff(nseg + 1))
-
-      ! pass 2: fill the descriptors and prefix-sum the work
-      is = 0
-      this%sOff(1) = 0
-      do ia = 1, b%nlive
-         ka = b%live(ia)
-         nA = b%bin_cnt(ka)
-         do ib = 1, ia
-            kb = b%live(ib)
-            if (b%bin_s(ka) + b%bin_s(kb) > smax_keep) cycle
-            nB = b%bin_cnt(kb)
-            if (nA == 0 .or. nB == 0) cycle
-            if (use_density) then
-               if (density_reject(b, ka, kb, thresh)) cycle
-            end if
-            is = is + 1
-            this%sA(is) = nA
-            this%sNB(is) = nB
-            this%sOA(is) = b%bin_off(ka)
-            this%sOB(is) = b%bin_off(kb)
-            this%sPA(is) = bin_pbase(ka)
-            this%sPB(is) = bin_pbase(kb)
-            this%sSA(is) = nA
-            this%sSB(is) = nB
-            this%sD(is) = (ka == kb)
-            this%sLA(is) = b%bin_la(ka)
-            this%sLB(is) = b%bin_lb(ka)
-            this%sLC(is) = b%bin_la(kb)
-            this%sLD(is) = b%bin_lb(kb)
-            this%sM(is) = pair_mask(b, ka, kb)
-            if (ka == kb) then
-               nt = int(nA, int64)*int(nA + 1, int64)/2
-            else
-               nt = int(nA, int64)*int(nB, int64)
-            end if
-            !
-            ! The kernels take their within-segment index as a default integer,
-            ! so a segment must fit in one. Widening it would cost registers
-            ! in the hot kernel, which are the binding constraint; instead
-            ! bins_build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
-            ! (split_large_bins), so no segment exceeds 2**30. This guard is
-            ! the backstop if that cap is ever raised.
-            !
-            if (nt > 2147483000_int64) error stop &
-               "terco: bin-pair segment exceeds a default integer; widen the kernels' t"
-            this%sOff(is + 1) = this%sOff(is) + nt
-         end do
-      end do
-      this%nseg = nseg
-      this%nwork = this%sOff(nseg + 1)
-   end subroutine bins_plan_build
+   end subroutine plain_walk
 
    !
    ! Sort the segments by class, so each class occupies a contiguous run and
@@ -1466,6 +1447,14 @@ contains
       res = ((this%sLA(seg)*radix + this%sLB(seg))*radix + this%sLC(seg))*radix + this%sLD(seg)
    end function bins_plan_class_key
 
+   pure integer function ab_key(b, k) result(res)
+      !! Bin k's (la, lb) as one orderable integer, so that comparing two
+      !! bins' keys is the lexicographic comparison of their (la, lb).
+      type(pair_bins_t), intent(in) :: b
+      integer, intent(in) :: k
+      res = b%bin_la(k)*(LMAX + 1) + b%bin_lb(k)
+   end function ab_key
+
    pure integer function pair_mask(b, ka, kb) result(m)
       !! 1 when bins ka and kb are both masked: their bin pair has the dead z axis.
       type(pair_bins_t), intent(in) :: b
@@ -1515,31 +1504,45 @@ contains
    ! weight is one number, kept in sW and applied by the kernels per segment.
    ! The result, symmetrized once, is the full matrix.
    !
-   subroutine bins_plan_build_skeleton(this, b, orb, thresh, bin_pbase)
+   subroutine bins_plan_build_skeleton(this, b, orb, thresh, bin_pbase, canonical)
       class(trc_bin_plan_t), intent(inout) :: this
       type(pair_bins_t), intent(in) :: b
       type(trc_bin_orbits_t), intent(in) :: orb
       real(dp), intent(in) :: thresh
       integer,  intent(in) :: bin_pbase(:)
+      logical,  intent(in), optional :: canonical
+      !! Emit each segment ANGULAR-MOMENTUM CANONICALLY, (sLA, sLB) >=
+      !! (sLC, sLD), whichever side was cut (bins_plan_emit's own `canon`).
+      !! The GRADIENT asks for this: above d its class filter builds no
+      !! ordering with (lc, ld) > (la, lb), and the cheaper-side cut swaps
+      !! bra and ket by design on a quarter to a half of all skeleton
+      !! segments. Default false,
+      !! which is the Fock skeleton plan this was written for: its kernels
+      !! exist in both orderings and canonicalising would only move its
+      !! accumulation order.
       integer :: nseg
+      logical :: canon
 
+      canon = .false.
+      if (present(canonical)) canon = canonical
       call this%release()
       nseg = 0
-      call skeleton_walk(this, b, orb, thresh, bin_pbase, .false., nseg)
+      call skeleton_walk(this, b, orb, thresh, bin_pbase, canon, .false., nseg)
       call bins_plan_allocate(this, nseg, .true.)
       nseg = 0
-      call skeleton_walk(this, b, orb, thresh, bin_pbase, .true., nseg)
+      call skeleton_walk(this, b, orb, thresh, bin_pbase, canon, .true., nseg)
       this%nseg = nseg
       this%nwork = this%sOff(nseg + 1)
    end subroutine bins_plan_build_skeleton
 
-   subroutine skeleton_walk(plan, b, orb, thresh, bin_pbase, fill, nseg)
+   subroutine skeleton_walk(plan, b, orb, thresh, bin_pbase, canon, fill, nseg)
       !! Count the segments of the skeleton plan, or (fill) write them.
       type(trc_bin_plan_t), intent(inout) :: plan
       type(pair_bins_t), intent(in) :: b
       type(trc_bin_orbits_t), intent(in) :: orb
       real(dp), intent(in) :: thresh
       integer, intent(in) :: bin_pbase(:)
+      logical, intent(in) :: canon
       logical, intent(in) :: fill
       integer, intent(inout) :: nseg
       integer :: ia, ib, ka, kb, kx, ky, smax_keep, r
@@ -1554,7 +1557,7 @@ contains
             if (b%bin_cnt(ka) == 0 .or. b%bin_cnt(kb) == 0) cycle
             kx = ka
             ky = kb
-            if (.not. bins_skel_cut_first(b, orb, ka, kb)) then
+            if (.not. bins_skel_cut_first(b, orb, ka, kb, canon)) then
                kx = kb
                ky = ka
             end if
@@ -1562,24 +1565,31 @@ contains
             do r = orb%sec0(kx) + 1, orb%sec0(kx + 1)
                call bins_plan_emit(plan, b, bin_pbase, fill, nseg, &
                                    trc_bin_segment_t(kx, ky, orb%sec_beg(r), orb%sec_cnt(r), 0, b%bin_cnt(ky), &
-                                                     .false., half*real(orb%sec_w(r), dp)))
+                                                     .false., half*real(orb%sec_w(r), dp)), canon)
             end do
          end do
       end do
    end subroutine skeleton_walk
 
-   logical function bins_skel_cut_first(b, orb, ka, kb) result(cuta)
+   logical function bins_skel_cut_first(b, orb, ka, kb, canon) result(cuta)
       !! Whether the bin pair {ka, kb} is cut on ka (the bra of the full
       !! plan's segment) rather than on kb: the side whose representatives
       !! times the other bin is smaller, ka on a tie. Always ka for a bin
       !! against itself, and for any bin pair with a shell above the highest
-      !! angular momentum that has a kernel in every ordering (SKEL_SWAP_LMAX).
+      !! angular momentum that has a kernel in every ordering
+      !! (SKEL_SWAP_LMAX) -- unless `canon`, in which case the emitted
+      !! descriptor is reordered by angular momentum anyway and the cut side
+      !! no longer decides which kernel runs, so the limit does not apply.
       type(pair_bins_t), intent(in) :: b
       type(trc_bin_orbits_t), intent(in) :: orb
       integer, intent(in) :: ka, kb
+      logical, intent(in), optional :: canon
+      logical :: cnon
+      cnon = .false.
+      if (present(canon)) cnon = canon
       cuta = .true.
       if (ka == kb) return
-      if (max(b%bin_la(ka), b%bin_la(kb)) > SKEL_SWAP_LMAX) return
+      if (.not. cnon .and. max(b%bin_la(ka), b%bin_la(kb)) > SKEL_SWAP_LMAX) return
       cuta = int(orb%bin_nrep(ka), int64)*int(b%bin_cnt(kb), int64) &
              <= int(b%bin_cnt(ka), int64)*int(orb%bin_nrep(kb), int64)
    end function bins_skel_cut_first
@@ -1598,7 +1608,7 @@ contains
       if (weighted) allocate (plan%sW(nseg))
    end subroutine bins_plan_allocate
 
-   subroutine bins_plan_emit(plan, b, bin_pbase, fill, nseg, seg)
+   subroutine bins_plan_emit(plan, b, bin_pbase, fill, nseg, seg, canon)
       !! Count one segment, or (fill) write it as segment nseg: pairs
       !! oa+1..oa+na of bin ka against ob+1..ob+nb of bin kb, a triangle when
       !! diag, with weight w when the plan has weights.
@@ -1609,34 +1619,65 @@ contains
       integer, intent(inout) :: nseg
       type(trc_bin_segment_t), intent(in) :: seg
       !! The segment's bins, ranges, triangle flag and weight.
+      logical, intent(in) :: canon
+      !! Write the two sides ANGULAR-MOMENTUM CANONICALLY, so that
+      !! (sLA, sLB) >= (sLC, sLD) whatever the caller's order was. Which side
+      !! is CUT and which side is written as the bra are independent, because
+      !! the kernels take the bra and the ket bin strides separately (sSA,
+      !! sSB), so a sub-range is expressible on either side, and because `w`
+      !! is one number for the whole segment and does not care which side the
+      !! representatives sit on. The quartet set, and so the work-item count,
+      !! is unchanged: only which half of the descriptor the data goes in.
+      integer :: ja, jb, ja_o, ja_n, jb_o, jb_n
       integer(int64) :: nt
       logical :: diag
 
       nseg = nseg + 1
       if (.not. fill) return
       diag = seg%diag
-      plan%sA(nseg) = seg%na
-      plan%sNB(nseg) = seg%nb
-      plan%sOA(nseg) = b%bin_off(seg%ka) + seg%oa
-      plan%sOB(nseg) = b%bin_off(seg%kb) + seg%ob
-      plan%sPA(nseg) = bin_pbase(seg%ka) + seg%oa
-      plan%sPB(nseg) = bin_pbase(seg%kb) + seg%ob
-      plan%sSA(nseg) = b%bin_cnt(seg%ka)
-      plan%sSB(nseg) = b%bin_cnt(seg%kb)
+      ja = seg%ka
+      jb = seg%kb
+      ja_o = seg%oa
+      ja_n = seg%na
+      jb_o = seg%ob
+      jb_n = seg%nb
+      ! A triangle is one bin against itself, so there is nothing to order.
+      if (canon .and. .not. diag) then
+         if (ab_key(b, seg%kb) > ab_key(b, seg%ka)) then
+            ja = seg%kb
+            jb = seg%ka
+            ja_o = seg%ob
+            ja_n = seg%nb
+            jb_o = seg%oa
+            jb_n = seg%na
+         end if
+      end if
+      plan%sA(nseg) = ja_n
+      plan%sNB(nseg) = jb_n
+      plan%sOA(nseg) = b%bin_off(ja) + ja_o
+      plan%sOB(nseg) = b%bin_off(jb) + jb_o
+      plan%sPA(nseg) = bin_pbase(ja) + ja_o
+      plan%sPB(nseg) = bin_pbase(jb) + jb_o
+      plan%sSA(nseg) = b%bin_cnt(ja)
+      plan%sSB(nseg) = b%bin_cnt(jb)
       plan%sD(nseg) = diag
-      plan%sLA(nseg) = b%bin_la(seg%ka)
-      plan%sLB(nseg) = b%bin_lb(seg%ka)
-      plan%sLC(nseg) = b%bin_la(seg%kb)
-      plan%sLD(nseg) = b%bin_lb(seg%kb)
-      plan%sM(nseg) = pair_mask(b, seg%ka, seg%kb)
+      plan%sLA(nseg) = b%bin_la(ja)
+      plan%sLB(nseg) = b%bin_lb(ja)
+      plan%sLC(nseg) = b%bin_la(jb)
+      plan%sLD(nseg) = b%bin_lb(jb)
+      plan%sM(nseg) = pair_mask(b, ja, jb)
       if (allocated(plan%sW)) plan%sW(nseg) = seg%w
       if (diag) then
-         nt = int(seg%na, int64)*int(seg%na + 1, int64)/2
+         nt = int(ja_n, int64)*int(ja_n + 1, int64)/2
       else
-         nt = int(seg%na, int64)*int(seg%nb, int64)
+         nt = int(ja_n, int64)*int(jb_n, int64)
       end if
-      ! See bins_plan_build: the kernels index within a segment by a
-      ! default integer, and bins are capped so that no segment needs more.
+      ! The kernels take their within-segment index as a default integer, so
+      ! a segment must fit in one. Widening it would cost registers in the
+      ! hot kernel, which are the binding constraint; instead
+      ! bins_build_binned_pairs caps a bin at BIN_CAP = 32768 pairs
+      ! (split_large_bins), so no segment exceeds 2**30. This guard is the
+      ! backstop if that cap is ever raised.
       if (nt > 2147483000_int64) error stop &
          "terco: bin-pair segment exceeds a default integer; widen the kernels' t"
       plan%sOff(nseg + 1) = plan%sOff(nseg) + nt

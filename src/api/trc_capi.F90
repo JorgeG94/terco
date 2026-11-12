@@ -369,8 +369,8 @@ module trc_capi
    !! result, and trc_run_gradient, trc_run_hessian and trc_run_polarizability
    !! refuse after one. Additive.
    !! 1.25: trc_set_symmetry_skeleton (-1 the size rule, 0 off, 1 on) for
-   !! the skeleton Fock build of a symmetric run (a new entry point,
-   !! nothing else changes).
+   !! the skeleton Fock build and four-centre gradient of a symmetric run
+   !! (a new entry point, nothing else changes).
    !! 1.24: trc_timing and trc_timing_count, the stage times of the last
    !! run, one named value per call (new entry points, nothing else
    !! changes).
@@ -394,9 +394,10 @@ module trc_capi
    !! Energies, orbital energies and Hirshfeld/CHELPG charges are invariant.
    !! A symmetric DFT run uses the grid of the caller's axes, so its energy
    !! equals the symmetry-off one to second order (3e-12 Eh, B3LYP/cc-pVDZ
-   !! water at the default grid). The skeleton Fock build
-   !! changes which integral quartets are launched,
-   !! not the result. With accidental degeneracy, the per-orbital irrep labels can
+   !! water at the default grid). The skeleton builds change which integral
+   !! quartets are launched, not the result: the gradient matches the C1 one
+   !! to 3e-15..1e-14 relative. With accidental degeneracy, the per-orbital
+   !! irrep labels can
    !! differ between the skeleton and full Fock paths (a permutation inside a
    !! degenerate level; the decomposition per irrep is the same), so a caller
    !! pinning occupations there should also fix the path with
@@ -5071,8 +5072,26 @@ contains
       type(trc_pcm_t) :: pcm_local
       type(error_t) :: perr
       type(trc_scf_grad_sym_t), allocatable :: gsym
-         !! Allocated only for a symmetric run: the finished gradient is then
-         !! symmetrised over the group (it is in the standard frame the SCF ran in).
+         !! Allocated for a symmetric run: the four-centre term is then built
+         !! as a skeleton over the group's pair orbits and projected (unless
+         !! `gsym%skeleton` declines the skeleton), and so is the finished
+         !! gradient unless `gsym%project` is false. It is in the standard
+         !! frame the SCF ran in.
+         !! The skeleton four-centre GRADIENT follows the same verdict as the
+         !! skeleton Fock build, `cx%res%sym_skeleton` -- the size rule's, or
+         !! whatever TRC_SYM_SKELETON / --sym-skeleton / [scf] symmetry_skeleton /
+         !! trc_set_symmetry_skeleton forced (trc_scf_driver consults
+         !! sym_run_skeleton_size_rule and reports the result). One decision for both
+         !! builds, because the two share the property that made the rule
+         !! necessary: a skeleton is not always the smaller plan. On a PLANAR Cs
+         !! molecule every pair orbit is a singleton, so the restriction to
+         !! representatives drops nothing while a diagonal bin pair still becomes
+         !! the full rectangle at weight 1/2, and the gradient plan GROWS --
+         !! HOCl/6-31G* 9355 work items against 9142.
+         !! Letting the gradient decide for itself would have run the
+         !! bigger plan on exactly the molecules the rule exists to protect.
+         !! The projection is NOT gated on it: it costs one pass over 3N numbers
+         !! and is what zeroes the components the group forbids.
       integer :: nocc_s(2)
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
@@ -5102,14 +5121,23 @@ contains
          cx%message = "trc_run_gradient: "//refusal
          return
       end if
-      ! The gradient is projected onto the symmetric subspace, which is exact for
-      ! a symmetric grid (HF, or an explicit request). The default request's DFT
-      ! grid is the input axes' grid, which breaks the symmetry at the grid's own
-      ! (first-order) error; projecting would move the gradient by that much
-      ! away from the symmetry-off one, so it is left as computed.
-      if (cx%sym_active .and. .not. (have_func .and. sym_lenient(cx))) then
+      ! The FINISHED gradient is projected onto the symmetric subspace, which
+      ! is exact for a symmetric grid (HF, or an explicit request). The default
+      ! request's DFT grid is the input axes' grid, which breaks the symmetry at
+      ! the grid's own (first-order) error; projecting would move the gradient
+      ! by that much away from the symmetry-off one, so it is left as computed.
+      !
+      ! The GROUP is handed over in that case too: the four-centre term
+      ! is then a SKELETON build, which is not a gradient until it is
+      ! projected, and trc_scf_gradient projects that term alone, inside
+      ! two_electron_4c, leaving the DFT grid story exactly as it was. The
+      ! four-centre term is equivariant to round-off, so this moves no number
+      ! a default DFT run reports today.
+      if (cx%sym_active) then
          allocate (gsym)
          gsym%geometry = cx%sym_geom
+         gsym%project = .not. (have_func .and. sym_lenient(cx))
+         gsym%skeleton = cx%res%sym_skeleton
       end if
       if (cx%rimp2_ok) then
          ! The energy this context holds is E_RHF + E_RI-MP2: differentiate
@@ -7694,16 +7722,19 @@ contains
    end function trc_set_symmetry
 
    function trc_set_symmetry_skeleton(handle, on) result(status) bind(c, name="trc_set_symmetry_skeleton")
-      !! Under a symmetry request (trc_set_symmetry), force the Fock matrix to
-      !! be built from the orbit representatives of the integral quartets and
-      !! symmetrized (on = 1), or force the full matrix and symmetrize that
-      !! (on = 0); on = -1 hands the choice back to the size rule
-      !! (trc_sym_run's sym_run_skeleton_size_rule), which is also the choice
-      !! without this call. Any other value is refused (TRC_ERR_BADARG).
-      !! TRC_SYM_SKELETON=0/1 in the environment overrides all three. The same SCF
-      !! either way, to round-off; only the number of integrals computed
-      !! differs. No effect without a group other than C1, with density
-      !! fitting or over more than one rank (those take the full build).
+      !! Under a symmetry request (trc_set_symmetry), force the Fock matrix
+      !! AND the four-centre gradient to be built from the orbit
+      !! representatives of the integral quartets and symmetrized (on = 1), or
+      !! force the full builds and symmetrize those (on = 0); on = -1 hands the
+      !! choice back to the size rule (trc_sym_run's sym_run_skeleton_size_rule),
+      !! which is also the choice without this call. Any other value is refused
+      !! (TRC_ERR_BADARG). TRC_SYM_SKELETON=0/1 in the environment overrides
+      !! all three. One verdict covers both builds, because both grow rather
+      !! than shrink on a molecule whose every pair orbit is a singleton. The
+      !! same SCF and the same gradient either way, to round-off; only the
+      !! number of integrals computed differs. No effect without a group other
+      !! than C1, with density fitting or over more than one rank (those take
+      !! the full build).
       type(c_ptr), value :: handle
       integer(c_int), value :: on
       integer(c_int) :: status

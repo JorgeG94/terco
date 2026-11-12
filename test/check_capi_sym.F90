@@ -61,6 +61,11 @@ module check_capi_sym_suite
    public :: collect_capi_sym
 
    real(dp), parameter :: TOL_E = 1.0e-10_dp
+   real(dp), parameter :: TOL_GRAD = 1.0e-9_dp  !! a gradient, where only round-off separates two runs
+   real(dp), parameter :: TOL_DFT_GRID = 1.0e-5_dp
+      !! "on" against off for DFT on input turned off the axes, at grid level 3:
+      !! the grids differ in orientation, and a gradient is first order in the
+      !! grid error. Measured 3.6e-6 on wB97X B2H6/6-31G* (water: 1e-7..1e-6).
 
 contains
 
@@ -86,7 +91,9 @@ contains
                   new_unittest("a projected guess after on projects input-frame orbitals", test_projected_after_on), &
                   new_unittest("irrep_nelec makes on strict in either order; cleared, lenient again", &
                                test_irrep_nelec_order), &
-                  new_unittest("after a C1 rerun the gradient's grid is the input axes'", test_grid_after_c1_rerun) &
+                  new_unittest("after a C1 rerun the gradient's grid is the input axes'", test_grid_after_c1_rerun), &
+                  new_unittest("on: a range-separated DFT gradient with the skeleton build equals off", &
+                               test_dft_skeleton_gradient) &
                   ]
    end subroutine collect_capi_sym
 
@@ -292,12 +299,19 @@ contains
    end subroutine test_rerun
 
    subroutine test_skeleton_switch(error)
-      !! The skeleton Fock build forced on against the full build (then
-      !! symmetrized): the energy and the gradient are the same, and the
-      !! gradient that follows a skeleton SCF does not reuse its orbit-closed
-      !! engine. Forced on explicitly because HOCl is a molecule the size rule
-      !! declines (3 atoms in 3 orbits), and without the call this would
-      !! compare the full build with itself.
+      !! The skeleton builds forced on against the full builds (then
+      !! symmetrized): the energy and the gradient are the same. Since S16 the
+      !! one switch governs the four-centre GRADIENT as well as the Fock
+      !! matrix (trc_capi.F90 sets `gskel` from `cx%res%sym_skeleton`), so
+      !! this is now also the ABI-level check that a skeleton gradient and a
+      !! full gradient agree -- the Fortran-level one is check_sym_grad's
+      !! `test_declined`. Forced on explicitly because HOCl is a molecule the
+      !! size rule declines (3 atoms in 3 orbits), and without the call this
+      !! would compare the full builds with themselves. HOCl is also the
+      !! molecule whose skeleton gradient plan is LARGER than the full one
+      !! (9355 work items against 9142), which is why the rule
+      !! declining it is the right default and why forcing it on here costs
+      !! only a little more work rather than failing.
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
       real(dp), allocatable :: geom(:, :)
@@ -323,7 +337,11 @@ contains
       call check(error, abs(e1 - e2) < 1.0e-9_dp, 'the same energy with the skeleton switched off')
       rc = trc_run_gradient(h)
       rc = trc_gradient(h, g2)
-      call check(error, maxval(abs(g1 - g2)) < 1.0e-7_dp, 'and the same gradient')
+      ! 1e-9, this file's standard for a gradient: the two are different
+      ! four-centre builds, and the skeleton sum is projected where it is
+      ! formed, which is exact (check_sym_grad measures 8.9e-15 on this
+      ! molecule).
+      call check(error, maxval(abs(g1 - g2)) < 1.0e-9_dp, 'and the same gradient')
       ! -1 hands the choice back to the size rule; anything else is refused
       rc = trc_set_symmetry_skeleton(h, -1_c_int)
       call check(error, rc, TRC_OK, 'trc_set_symmetry_skeleton(-1)')
@@ -1108,6 +1126,67 @@ contains
          rc = trc_destroy(hd); rc = trc_destroy(ho)
       end do
    end subroutine test_grid_after_c1_rerun
+
+   subroutine test_dft_skeleton_gradient(error)
+      !! wB97X on B2H6 (D2h, a mean atom orbit of 2.67, which the size rule
+      !! takes as a skeleton build). A lenient DFT gradient takes the skeleton
+      !! four-centre term projected alone (`project` false) and an unprojected
+      !! XC term on the caller's-axes grid; the range separation runs both
+      !! four-centre passes. Three contexts: "on" (the rule's skeleton build),
+      !! "on" with the skeleton off (the full four-centre build on the same
+      !! grid), and symmetry off. Skeleton against full is the four-centre
+      !! build alone and agrees to round-off. "on" against off: axis-aligned
+      !! the two see the same grid and agree to round-off too; turned off the
+      !! axes they differ by the grid's first-order error.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: hd, hf, ho
+      real(c_double) :: ed, ef, eo, gd(24), gf(24), go(24)
+      real(dp), allocatable :: geom(:, :)
+      real(dp) :: tol
+      integer(c_int) :: rc
+      integer :: k
+      character(len=20) :: xyz
+
+      do k = 1, 2
+         xyz = merge('b2h6_d2h.xyz        ', 'b2h6_d2h_rot.xyz    ', k == 1)
+         tol = merge(TOL_GRAD, TOL_DFT_GRID, k == 1)
+         call make_pair(hd, ho, trim(xyz), 'basis_sets/6-31gs.json')
+         call make_context(hf, trim(xyz), 'basis_sets/6-31gs.json', geom)
+         rc = trc_set_symmetry(hf, 'on'//c_null_char, 0.0_c_double)
+         rc = trc_set_symmetry_skeleton(hf, 0_c_int)
+         rc = trc_set_method(hd, 'wb97x'//c_null_char, 3_c_int)
+         rc = trc_set_method(hf, 'wb97x'//c_null_char, 3_c_int)
+         rc = trc_set_method(ho, 'wb97x'//c_null_char, 3_c_int)
+         rc = trc_run_scf(hd)
+         call check(error, rc, TRC_OK, trim(xyz)//' on SCF: '//message(hd))
+         if (allocated(error)) return
+         rc = trc_run_scf(hf)
+         rc = trc_run_scf(ho)
+         call check(error, name_of(hd, 1, 0), 'D2h', trim(xyz)//': the on run is D2h')
+         if (allocated(error)) return
+         rc = trc_energy(hd, ed)
+         rc = trc_energy(hf, ef)
+         rc = trc_energy(ho, eo)
+         rc = trc_run_gradient(hd)
+         call check(error, rc, TRC_OK, trim(xyz)//' on gradient: '//message(hd))
+         if (allocated(error)) return
+         rc = trc_run_gradient(hf)
+         rc = trc_run_gradient(ho)
+         rc = trc_gradient(hd, gd)
+         rc = trc_gradient(hf, gf)
+         rc = trc_gradient(ho, go)
+         print '(a,a,a,es9.2,a,es9.2,a,es9.2,a,es9.2)', '  wB97X ', trim(xyz), ': skeleton vs full |dE| ', &
+            abs(ed - ef), ' max|dg| ', maxval(abs(gd - gf)), ';  on vs off |dE| ', abs(ed - eo), &
+            ' max|dg| ', maxval(abs(gd - go))
+         call check(error, maxval(abs(gd - gf)) <= TOL_GRAD, trim(xyz)//': skeleton against full four-centre '// &
+                    'gradient '//to_string(maxval(abs(gd - gf)), 'es10.2'))
+         if (allocated(error)) return
+         call check(error, maxval(abs(gd - go)) <= tol, trim(xyz)//': gradient on vs off '// &
+                    to_string(maxval(abs(gd - go)), 'es10.2')//' over '//to_string(tol, 'es8.1'))
+         if (allocated(error)) return
+         rc = trc_destroy(hd); rc = trc_destroy(hf); rc = trc_destroy(ho)
+      end do
+   end subroutine test_dft_skeleton_gradient
 
    subroutine compare_runs(label, hd, ho, error)
       !! SCF on both contexts: the same energy to 1e-11, no symmetry result on the on one.
