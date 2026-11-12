@@ -57,34 +57,70 @@
 !     threshold but can differ in the sign of a column, and rank 0's amplitudes in another rank's integrals gave a (T)
 !     share wrong by 5e-5 Eh on water.
 !   - INTEGRALS are built on EVERY rank (replicated); the (T) step of trc_rccsd_triples distributes the (T) work.
-!   - STAGES. The CCSD stages and iterations run on rank 0 only for now; the other ranks hold their blocks and wait in
-!     the broadcast that ends the run.
-!   - FAILURE is agreed, never inferred. A rank that could not build its blocks sets a flag; one agreement
-!     (rccsd_mpi_agree_text) before the first stage makes every rank refused with the message of the lowest-numbered
-!     refusing rank, blocks released, and nothing further is collective. A refusal inside rank 0's stages reaches the
-!     others in the broadcast that ends the run.
-!   - OUTCOME. That broadcast carries rank 0's whole `state%result` (scalars, timings and message) as a packet of
-!     doubles, then t1 and t2 through the host (trc_rccsd_mpi) into every rank's host arrays, which each rank copies to
-!     its device as `amps%init` mapped them: afterwards every rank holds the same result and the same amplitudes,
-!     converged or not. `verbose` output comes from rank 0 only.
+!   - THE ITERATIONS. Rank 0 runs the iteration (the intermediates, W, the T1 and T2 equations with the rings, DIIS, the
+!     energy and the convergence test); the particle-particle ladder, the largest term, is cut over ALL the ranks by
+!     the virtual index d (trc_rccsd_ladder, SHARES; the cut is trc_rccsd_share's, smaller for rank 0 because of the
+!     other work it has). Per iteration, each a collective call in a statement of its own on every rank:
+!       1. the control word (trc_rccsd_mpi, rccsd_mpi_control): 0 to stop, else 2 it + (1 when tau has the pair symmetry
+!          the half ladder's one-contraction path needs). Rank 0 sends 0 whenever it leaves the loop for a reason of its
+!          own (converged, the limit, a NaN, a refusal after the ladder's sum), so no follower is left waiting;
+!       2. the amplitudes, t1 and t2, device to device (trc_rccsd_xfer): point to point from rank 0 to each other rank,
+!          the unique half of t2 when tau has the pair symmetry (every production run), through MPI device buffers
+!          when trc_mpi_device_direct() says the MPI takes them and through the host otherwise (step RCCSD_ST_BCAST).
+!          Not sent with the stop word;
+!       3. every rank builds tau and its dressed factor bt and runs the passes of its range d_lo..d_hi on its device.
+!          Rank 0 does its own range and then EVERYTHING that does not read the ladder (the intermediates and W first,
+!          then the T1 equation, every T2 term but the ladder, the rings and the t1 t1 correction of its own share):
+!          the ladder is added to t2 last, after the rings and before the denominators, so rank 0's work overlaps the others'
+!          passes (trc_rccsd_update, `update_step`); an empty range is a rank that runs no pass;
+!       4. ONE agreement on failure (rccsd_mpi_agree_text; step RCCSD_ST_WAIT, which is also the barrier that makes the
+!          idle seconds of a rank that finishes early visible): a rank that refused anywhere above gives its reason to
+!          all, every rank leaves the iteration and the loop, and no control word is due;
+!       5. each follower with a nonempty range sends its partial ladder once to rank 0 (the unique half when pair
+!          symmetric), which receives it into a staging array and adds it on its device with a kernel; nothing comes
+!          back (step RCCSD_ST_REDUCE). The symmetrising kernel at the end of each rank's passes is applied BEFORE the
+!          transfer: it is linear, so the sum is the same, and a one-rank run (no transfer) is bitwise as it was;
+!       6. rank 0 adds the ladder to t2, applies the denominators and finishes the iteration. DIIS and its history
+!          live on rank 0.
+!     Transfers per iteration: the amplitudes down to each follower and each follower's ladder up, o^2 v^2 doubles (half
+!     of it when pair symmetric) each. Only the half form can be cut: AUTO becomes the half form over several ranks, and
+!     an explicit assembled or direct form is refused with a message (all ranks), not run on rank 0 alone. Energies
+!     agree with a one-rank run to round-off, not bitwise (the ladder is summed in another order, and the ladder is
+!     added to t2 after the rings in every run, one rank included); the iteration count is the same.
+!   - FAILURE is agreed, never inferred. A rank that could not build its blocks, or set up its part of the update (or
+!     got an explicit form that cannot be cut), sets a flag; one agreement (rccsd_mpi_agree_text) after the integrals and
+!     one after the setup make every rank refused with the message of the lowest-numbered refusing rank, blocks
+!     released, and nothing further is collective, before any rank enters a loop that waits for another. A failure
+!     inside an iteration is agreed at step 4 above.
+!   - OUTCOME. After the loop one broadcast carries rank 0's whole `state%result` (scalars, timings and message) as a
+!     packet of doubles, then t1 and t2 through the host (trc_rccsd_mpi) into every rank's host arrays, which each rank
+!     copies to its device as `amps%init` mapped them (the followers' copies were one iteration stale): afterwards
+!     every rank holds the same result and the same amplitudes, converged or not. Each rank's ladder seconds are
+!     gathered then (`state%ladder_seconds`). `verbose` output comes from rank 0 only: the step table (it labels itself
+!     "rank 0 of N", with the three rows of the distributed ladder) and one line per rank with its range and ladder
+!     seconds.
 module trc_rccsd_driver
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_step_table, only: step_table_t
    use trc_rccsd_steps, only: RCCSD_ST_INTEGRALS, RCCSD_ST_METRIC, RCCSD_ST_BLOCKS, RCCSD_ST_INTER, RCCSD_ST_W, &
                               RCCSD_ST_LADDER, RCCSD_ST_DRESSING, RCCSD_ST_T1, RCCSD_ST_T2, RCCSD_ST_RING, RCCSD_ST_DIIS, &
-                              RCCSD_ST_ENERGY, RCCSD_STEP_NAME
+                              RCCSD_ST_ENERGY, RCCSD_STEP_NAME, RCCSD_MULTI_STEP_NAME, RCCSD_ST_BCAST, RCCSD_ST_WAIT, &
+                              RCCSD_ST_REDUCE
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use pic_mpi_lib, only: comm_t, bcast
-   use trc_rccsd_mpi, only: rccsd_mpi_agree_text, rccsd_mpi_bcast_amps, rccsd_mpi_bcast_orbitals
+   use trc_rccsd_mpi, only: rccsd_mpi_agree_text, rccsd_mpi_bcast_amps, rccsd_mpi_bcast_orbitals, rccsd_mpi_control, &
+                            rccsd_mpi_gather_values
+   use trc_rccsd_dist, only: rccsd_dist_start, rccsd_dist_follow, rccsd_dist_word
+   use trc_rccsd_share, only: rccsd_share_ranges, rccsd_share_ladder_flops
    use trc_linalg, only: trc_linalg_t
    use trc_rccsd_ints, only: trc_rccsd_ints_t, trc_rccsd_ints_options_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t, rccsd_inter_energy, rccsd_inter_mp2_guess
    use trc_rccsd_ladder, only: trc_rccsd_ladder_options_t
    use trc_rccsd_update, only: trc_rccsd_update_t
-   use trc_rccsd_ladder, only: RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_HALF
+   use trc_rccsd_ladder, only: RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_HALF, RCCSD_LADDER_AUTO
    use trc_rccsd_diis, only: trc_rccsd_diis_t, rccsd_diis_history_bytes, rccsd_diis_free_device_bytes
    implicit none
    private
@@ -163,6 +199,10 @@ module trc_rccsd_driver
       type(trc_rccsd_ints_t) :: ints   !! empty after a refusal
       type(trc_rccsd_amps_t) :: amps   !! the last iterate, host and device
       type(step_table_t) :: steps     !! time and counted flops per step of the last run (trc_rccsd_steps names the rows)
+      real(dp), allocatable :: rank_seconds(:, :)
+      !! over several ranks, rank_seconds(:, r + 1) of rank r, on every rank after the run (not allocated for a one-rank
+      !! run): the seconds of the ladder (its passes, bt, the correction), of everything computed in the iterations (the
+      !! rows tau to energy), of the two transfers, and of the wait at the ladder's agreement
       logical :: use_start = .false.   !! start from `amps`, sized and filled on the host by the caller; the run clears it
    contains
       procedure :: release => state_release
@@ -257,7 +297,12 @@ contains
       call state%ints%release()
       if (.not. use_start) call state%amps%release()
       call total%start()
-      call state%steps%init("rccsd", RCCSD_STEP_NAME)
+      if (multi) then
+         call state%steps%init("rccsd", RCCSD_MULTI_STEP_NAME, bytes_steps=[RCCSD_ST_BCAST, RCCSD_ST_REDUCE])
+      else
+         call state%steps%init("rccsd", RCCSD_STEP_NAME)
+      end if
+      if (allocated(state%rank_seconds)) deallocate (state%rank_seconds)
       call state%steps%step_on(la, RCCSD_ST_INTEGRALS, tc)
       if (multi) then
          ! A guard (module header, RANKS): a collective SCF already gives every rank these orbitals; this protects
@@ -265,7 +310,10 @@ contains
          shared_cmo = cmo
          shared_eps = eps
          call rccsd_mpi_bcast_orbitals(opts%comm, shared_cmo, shared_eps, 0)
-         call build_integrals(b, aux, pl, shared_cmo, shared_eps, local, la, state)
+         ! the form of the ladder is checked where the options are, before any integral is built (the same agreement
+         ! below makes a refusal of one rank the refusal of all); AUTO becomes the half form for the rest of the run
+         call ladder_for_ranks(local%ladder, state%result)
+         if (.not. state%result%refused) call build_integrals(b, aux, pl, shared_cmo, shared_eps, local, la, state)
          call agree_refusal(opts%comm, state%result)
          agreed = state%result%refused
       else
@@ -274,10 +322,11 @@ contains
       call state%steps%step_off(la, RCCSD_ST_INTEGRALS, tc)
       if (.not. state%result%refused) call add_integral_pieces(state%ints, state%steps)
       if (.not. state%result%refused) then
-         if (rank == 0) then
-            call run_stages(local, la, state, work, use_start)
+         if (multi) then
+            call run_over_ranks(local, la, state, work, use_start)
+            agreed = state%result%refused
          else
-            call follower_amps(state, use_start)
+            call run_stages(local, la, state, work, use_start)
          end if
       end if
       if (state%result%refused) then
@@ -293,6 +342,7 @@ contains
       if (multi .and. .not. agreed) call share_outcome(opts%comm, rank, state, use_start)
       state%use_start = .false.
       if (local%verbose) call log_summary(state%result, state%steps, nranks)
+      if (local%verbose .and. multi .and. allocated(state%rank_seconds)) call log_ranks(state)
    end subroutine trc_rccsd_solve
 
    subroutine agree_refusal(comm, res)
@@ -335,8 +385,9 @@ contains
    end subroutine follower_amps
 
    subroutine share_outcome(comm, rank, state, use_start)
-      !! Collective. Rank 0's `state%result` and amplitudes to every rank (module header, RANKS). A refused result
-      !! ends here, with the other ranks' blocks and amplitudes given back as rank 0's were.
+      !! Collective. Rank 0's `state%result` and amplitudes to every rank (module header, RANKS), and every rank's
+      !! ladder seconds to every rank. A refused result ends here, with the other ranks' blocks and amplitudes given
+      !! back as rank 0's were.
       type(comm_t), intent(in) :: comm
       integer, intent(in) :: rank
       type(trc_rccsd_state_t), intent(inout) :: state
@@ -344,6 +395,11 @@ contains
 
       real(dp) :: packet(PACKET_LEN)
 
+      allocate (state%rank_seconds(4, comm%size()))
+      state%rank_seconds = rccsd_mpi_gather_values(comm, [state%result%seconds(RCCSD_TIME_LADDER), &
+                                                          sum(state%steps%t(RCCSD_ST_INTER:RCCSD_ST_ENERGY)), &
+                                                          state%steps%t(RCCSD_ST_BCAST) + state%steps%t(RCCSD_ST_REDUCE), &
+                                                          state%steps%t(RCCSD_ST_WAIT)])
       if (rank == 0) call result_to_packet(state%result, packet)
       call bcast(comm, packet, int(PACKET_LEN), 0)
       if (rank /= 0) call packet_to_result(packet, state%result)
@@ -528,25 +584,64 @@ contains
    end subroutine build_integrals
 
    subroutine run_stages(opts, la, state, work, use_start)
-      !! From built integrals to the end of the iteration; may return anywhere, `work` is released by the caller
+      !! From built integrals to the end of the iteration of a one-rank run; may return anywhere, `work` is released
+      !! by the caller
       type(trc_rccsd_options_t), intent(in) :: opts
       type(trc_linalg_t), intent(inout) :: la
       type(trc_rccsd_state_t), intent(inout) :: state
       type(run_work_t), intent(inout) :: work
       logical, intent(in) :: use_start
 
+      logical :: go
+      real(dp) :: e_start
+
+      call stages_setup(opts, la, state, work, use_start, go)
+      if (state%result%refused) return
+      e_start = state%result%e_ccsd
+      if (go) call run_iterations(opts, la, state, work, e_start)
+      call stages_finish(state, work)
+   end subroutine run_stages
+
+   subroutine stages_finish(state, work)
+      !! The converged (or last) amplitudes to the host, and what is measured on them
+      type(trc_rccsd_state_t), intent(inout) :: state
+      type(run_work_t), intent(in) :: work
+
+      call state%amps%pull()
+      state%result%t1_diagnostic = sqrt(sum(state%amps%t1**2)/(2.0_dp*real(state%ints%no, dp)))
+      state%result%diis_restarts = work%diis%restarts
+   end subroutine stages_finish
+
+   subroutine stages_setup(opts, la, state, work, use_start, go)
+      !! The first rank's part before the iterations: the update, the starting amplitudes, the DIIS history and the
+      !! energy of the start. A refusal is in `state%result`. `go` is false when no iteration is to run (a refusal, or
+      !! a start that has no finite energy: then `state%result` says so)
+      type(trc_rccsd_options_t), intent(in) :: opts
+      type(trc_linalg_t), intent(inout) :: la
+      type(trc_rccsd_state_t), intent(inout) :: state
+      type(run_work_t), intent(inout) :: work
+      logical, intent(in) :: use_start
+      logical, intent(out) :: go
+
       integer :: no, nv
       real(dp) :: e_start
       logical :: diis_host
       integer(int64) :: need, free
+      type(trc_rccsd_ladder_options_t) :: ladder
 
+      go = .false.
       no = state%ints%no
       nv = state%ints%nv
-      call work%upd%init(state%ints, opts%ladder)
+      ladder = opts%ladder
+      if (is_multi(opts)) call ladder_for_ranks(ladder, state%result)
+      if (state%result%refused) return
+      call work%upd%init(state%ints, ladder)
       if (work%upd%status%has_error()) then
          call refuse(state%result, work%upd%status%get_message())
          return
       end if
+      if (is_multi(opts)) call share_set(opts, state, work)
+      if (state%result%refused) return
       ! the step is named for the form that ran, which the options may have left to the selector
       state%steps%names(RCCSD_ST_LADDER) = merge("ladder, assembled", "ladder, direct   ", &
                                                work%upd%ls%form == RCCSD_LADDER_ASSEMBLED)
@@ -608,12 +703,107 @@ contains
          call global_logger%warning(trim(state%result%message))
       else
          state%result%e_ccsd = e_start
-         call run_iterations(opts, la, state, work, e_start)
+         go = .true.
       end if
-      call state%amps%pull()
-      state%result%t1_diagnostic = sqrt(sum(state%amps%t1**2)/(2.0_dp*real(no, dp)))
-      state%result%diis_restarts = work%diis%restarts
-   end subroutine run_stages
+   end subroutine stages_setup
+
+   function is_multi(opts) result(multi)
+      !! The run is collective: a communicator of more than one rank
+      type(trc_rccsd_options_t), intent(in) :: opts
+      logical :: multi
+
+      multi = .false.
+      if (opts%has_comm) multi = opts%comm%size() > 1
+   end function is_multi
+
+   subroutine ladder_for_ranks(ladder, res)
+      !! The ladder options of a run over several ranks (called before the integrals are built, and again by the setups as a
+      !! backstop, where it changes nothing): only the half form can be cut by its virtual index d, so
+      !! the automatic choice becomes the half form (the assembled and direct forms are what AUTO picks only when the
+      !! counts favour them: the direct one for v > about 2 o^2, and the assembled one where one d of the half form
+      !! does not fit its budget, which `plan_batch` never refuses) and an explicit assembled or direct one is
+      !! refused, with the reason, rather than run on the first rank alone with the others idle
+      type(trc_rccsd_ladder_options_t), intent(inout) :: ladder
+      type(trc_rccsd_result_t), intent(inout) :: res
+
+      if (ladder%form == RCCSD_LADDER_AUTO) ladder%form = RCCSD_LADDER_HALF
+      if (ladder%form /= RCCSD_LADDER_HALF) then
+         call refuse(res, "the ladder of a run over several ranks is cut by its virtual index and needs the half form; "// &
+                     "use --cc-ladder auto (the half form), or one rank")
+      end if
+   end subroutine ladder_for_ranks
+
+   subroutine share_set(opts, state, work)
+      !! This rank's d range of the ladder (trc_rccsd_share) into the update; a refusal is in `state%result`
+      type(trc_rccsd_options_t), intent(in) :: opts
+      type(trc_rccsd_state_t), intent(inout) :: state
+      type(run_work_t), intent(inout) :: work
+
+      integer, allocatable :: lo(:), hi(:)
+
+      allocate (lo(opts%comm%size()), hi(opts%comm%size()))
+      call rccsd_share_ranges(state%ints%no, state%ints%nv, state%ints%naux, opts%comm%size(), lo, hi)
+      call work%upd%set_share(opts%comm, opts%comm%rank() == 0, lo, hi)
+      if (work%upd%status%has_error()) call refuse(state%result, work%upd%status%get_message())
+   end subroutine share_set
+
+   subroutine run_over_ranks(opts, la, state, work, use_start)
+      !! The stages and iterations over the ranks of `opts%comm` (module header, RANKS). Every rank calls it. Each
+      !! rank sets up its part; ONE agreement makes a refusal of any rank the refusal of all (before any rank enters a
+      !! loop that waits for another); then rank 0 iterates and the others follow until its stop word.
+      type(trc_rccsd_options_t), intent(in) :: opts
+      type(trc_linalg_t), intent(inout) :: la
+      type(trc_rccsd_state_t), intent(inout) :: state
+      type(run_work_t), intent(inout) :: work
+      logical, intent(in) :: use_start
+
+      logical :: go, lead
+      integer :: word
+      real(dp) :: e_start
+
+      lead = opts%comm%rank() == 0
+      go = .false.
+      if (lead) then
+         call stages_setup(opts, la, state, work, use_start, go)
+      else
+         call follower_setup(opts, state, work, use_start)
+      end if
+      call agree_refusal(opts%comm, state%result)
+      if (state%result%refused) return
+      if (.not. lead) then
+         call rccsd_dist_follow(opts%comm, work%upd, state%ints, state%amps, la, state%steps)
+         return
+      end if
+      e_start = state%result%e_ccsd
+      if (go) call run_iterations(opts, la, state, work, e_start)
+      ! the followers wait for a word at the top of an iteration: tell them the loop is over, unless the ranks stopped
+      ! together on a failure they agreed on
+      if (.not. work%upd%agreed_stop) word = rccsd_mpi_control(opts%comm, 0)
+      call stages_finish(state, work)
+   end subroutine run_over_ranks
+
+   subroutine follower_setup(opts, state, work, use_start)
+      !! A rank other than the first before the iterations: its part of the update (tau and the ladder, not W), its
+      !! share, and device-mapped amplitudes for the broadcast to fill
+      type(trc_rccsd_options_t), intent(in) :: opts
+      type(trc_rccsd_state_t), intent(inout) :: state
+      type(run_work_t), intent(inout) :: work
+      logical, intent(in) :: use_start
+
+      type(trc_rccsd_ladder_options_t) :: ladder
+
+      ladder = opts%ladder
+      call ladder_for_ranks(ladder, state%result)
+      if (state%result%refused) return
+      call work%upd%init(state%ints, ladder, follower=.true.)
+      if (work%upd%status%has_error()) then
+         call refuse(state%result, work%upd%status%get_message())
+         return
+      end if
+      call share_set(opts, state, work)
+      if (state%result%refused) return
+      call follower_amps(state, use_start)
+   end subroutine follower_setup
 
    pure function is_finite(x) result(finite)
       !! False for a NaN and for an infinity: a NaN fails every comparison, so it is not <= huge
@@ -633,7 +823,7 @@ contains
 
       type(timer_type) :: tc, iteration_clock
       real(dp) :: e_old, e_new, es, ed
-      integer :: it, restarts_seen
+      integer :: it, restarts_seen, word
       logical :: extrapolated, converged
 
       e_old = e_start
@@ -643,6 +833,11 @@ contains
       do it = 1, opts%max_iterations
          state%result%iterations = it
          call iteration_clock%start()
+         ! over ranks: the followers get the control word and the amplitudes (a statement of its own, on every rank)
+         if (work%upd%distributed) then
+            word = rccsd_dist_start(opts%comm, .true., rccsd_dist_word(it, work%upd%tau_symmetric), work%upd, &
+                                    state%amps, la, state%steps)
+         end if
          call work%upd%step(state%ints, state%amps, work%newamps, la, state%steps)
          if (work%upd%status%has_error()) then
             state%result%message = "trc_rccsd: the amplitude update refused: "//work%upd%status%get_message()
@@ -734,6 +929,7 @@ contains
       integer, intent(in) :: nranks
 
       character(len=200) :: line
+      real(dp) :: seconds
 
       if (res%refused) return
       write (line, "(a,f20.12,a,f20.12)") "  rccsd: E_MP2 ", res%e_mp2, "   E_CCSD(corr) ", res%e_ccsd
@@ -743,10 +939,37 @@ contains
       call stab%report(res%seconds(RCCSD_TIME_TOTAL), 0, nranks)
       if (res%iterations > 0) then
          ! the stages of the iteration only: the integrals are built once
-         write (line, "(a,f10.3,a,i0,a)") "  rccsd: mean time of an iteration ", &
-            sum(stab%t(RCCSD_ST_INTER:RCCSD_ST_ENERGY))/real(res%iterations, dp), " s over ", res%iterations, " iterations"
+         seconds = sum(stab%t(RCCSD_ST_INTER:RCCSD_ST_ENERGY))
+         if (stab%n >= RCCSD_ST_REDUCE) seconds = seconds + stab%t(RCCSD_ST_BCAST) + stab%t(RCCSD_ST_WAIT) + stab%t(RCCSD_ST_REDUCE)
+         write (line, "(a,f10.3,a,i0,a)") "  rccsd: mean time of an iteration ", seconds/real(res%iterations, dp), " s over ", &
+            res%iterations, " iterations"
          call global_logger%performance(trim(line))
       end if
    end subroutine log_summary
+
+   subroutine log_ranks(state)
+      !! Over several ranks, one line per rank: its d range of the ladder and its share of the ladder's flops, the
+      !! seconds of its ladder in all, and per iteration the seconds it computed, transferred and waited (the rows
+      !! tau to energy; `RCCSD_ST_BCAST` and `_REDUCE`; `_WAIT`). The ranges are those of trc_rccsd_share, recomputed.
+      type(trc_rccsd_state_t), intent(in) :: state
+
+      integer, allocatable :: lo(:), hi(:)
+      integer :: r, n
+      real(dp) :: all_flops, its
+      character(len=220) :: line
+
+      n = size(state%rank_seconds, 2)
+      its = real(max(state%result%iterations, 1), dp)
+      allocate (lo(n), hi(n))
+      call rccsd_share_ranges(state%result%no, state%result%nv, state%result%naux, n, lo, hi)
+      all_flops = rccsd_share_ladder_flops(state%result%no, state%result%nv, state%result%naux, 1, state%result%nv)
+      do r = 1, n
+         write (line, "(a,i0,a,i0,a,i0,a,f6.1,a,f8.3,a,3f8.3,a)") "  rccsd: rank ", r - 1, ": ladder d = ", lo(r), "..", hi(r), &
+            " (", 100.0_dp*rccsd_share_ladder_flops(state%result%no, state%result%nv, state%result%naux, lo(r), hi(r))/ &
+            max(all_flops, 1.0_dp), " % of its flops) ", state%rank_seconds(1, r), " s in all; per iteration compute, "// &
+            "transfer, wait:", state%rank_seconds(2:4, r)/its, " s"
+         call global_logger%info(trim(line))
+      end do
+   end subroutine log_ranks
 
 end module trc_rccsd_driver

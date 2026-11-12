@@ -25,6 +25,12 @@
 !   7 refusals: empty integrals, mismatched sizes, a missing scratch, result or tau, a scratch of other
 !     (no, nv), bad options, then a stale scratch after a second `ints%build` (status set, message
 !     non-empty, nothing written; after re-init the earlier numbers come back)
+!   9 the SHARES of the ladder over ranks (trc_rccsd_share, no MPI): the rule's ranges are contiguous, disjoint, cover
+!     1..nv, are the same on every call, balance the counted flops and leave the first rank an empty range when its other
+!     work alone is more than an equal share; and the half form run range by range (ls%d_lo, d_hi), the partial
+!     arrays added, then the t1 t1 correction once, gives the one-range numbers to TOL_BATCH on both paths
+!     (symmetric and general), for the rule's ranges at 2, 3, 4 and nv + 3 ranks and for a hand-made cut with an
+!     empty range in the middle
 !   8 a deliberately NON-symmetric tau (t2 scaled by 1 + (i - j)/(4 no)): assembled, direct and the
 !     general half path give the host ladder of that tau at every d_batch; the symmetric half path
 !     gives the host ladder of the symmetrised tau and visibly differs from the true one (the
@@ -43,6 +49,8 @@ module check_rccsd_ladder_suite
                                rccsd_ladder_prefers_direct, rccsd_ladder_macs, &
                                RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_DIRECT, RCCSD_LADDER_AUTO, RCCSD_LADDER_HALF
    use trc_linalg, only: trc_linalg_t
+   use trc_rccsd_ladder, only: rccsd_ladder_partial, rccsd_ladder_correct
+   use trc_rccsd_share, only: rccsd_share_ranges, rccsd_share_other_flops, rccsd_share_ladder_flops, rccsd_share_columns
    use rccsd_test_support, only: NMOL, MOL_LABEL, MOL_REF, MOL_NFROZEN, TOL_PROBE, PROBE_FLOOR, load_molecule, &
                                  run_scf, mo_dipoles, probe4
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, ref_read_vector
@@ -50,7 +58,7 @@ module check_rccsd_ladder_suite
    private
    public :: collect_check_rccsd_ladder
 
-   integer, parameter :: NCASE = 8
+   integer, parameter :: NCASE = 9
    character(len=4), parameter :: SKIP_TAG(5) = [character(len=4) :: "oooo", "ooov", "oovv", "ovov", "ovvv"]
    character(len=4), parameter :: SKIP_ONE(7) = [character(len=4) :: "t1", "t2", "Foo", "Fvv", "Fov", "Loo", "Lvv"]
    character(len=6), parameter :: SKIP_W(3) = [character(len=6) :: "Woooo", "Wvoov", "Wvovo"]
@@ -77,6 +85,7 @@ contains
                   new_unittest("water: symmetry", w6), &
                   new_unittest("water: refusals and stale scratch", w7), &
                   new_unittest("water: non-symmetric tau", w8), &
+                  new_unittest("water: ladder shares", w9), &
                   new_unittest("h2o2: ladder, dressing vs pyscf", h1), &
                   new_unittest("h2o2: assembled == direct", h2), &
                   new_unittest("h2o2: batch-size independence", h3), &
@@ -84,7 +93,8 @@ contains
                   new_unittest("h2o2: t1 = 0 reductions", h5), &
                   new_unittest("h2o2: symmetry", h6), &
                   new_unittest("h2o2: refusals and stale scratch", h7), &
-                  new_unittest("h2o2: non-symmetric tau", h8) &
+                  new_unittest("h2o2: non-symmetric tau", h8), &
+                  new_unittest("h2o2: ladder shares", h9) &
                   ]
    end subroutine collect_check_rccsd_ladder
 
@@ -127,6 +137,16 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call run_case(error, 8, 1)
    end subroutine w8
+
+   subroutine w9(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 9, 1)
+   end subroutine w9
+
+   subroutine h9(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_case(error, 9, 2)
+   end subroutine h9
 
    subroutine h8(error)
       type(error_type), allocatable, intent(out) :: error
@@ -388,6 +408,8 @@ contains
       call host_half(im, ints, t1fix, t2h, pp_s, pp_g, tot_s, tot_g)
       call symmetry_case(im, label, tot_a, tot_d)
       call symmetry_half(im, tot_s, tot_g)
+      call shares_rule(im)
+      call shares_half(im, ints, amps, inter, la, pp_s, tot_s, pp_g, tot_g)
 
       ! ---- a non-symmetric tau, then t2 = MP2 back --------------------------------------------
       call nonsym_case(im, label, ints, amps, inter, scr, la, t1fix, t2h)
@@ -479,6 +501,174 @@ contains
                   to_string(bytes_s)//" bytes; half MACs "// &
                   to_string(rccsd_ladder_macs(RCCSD_LADDER_HALF, ints%no, ints%nv, ints%naux), "es9.2")//")")
    end subroutine forms_half
+
+   subroutine shares_rule(im)
+      !! Case 9, the rule: properties of `rccsd_share_ranges` over sizes from the two test molecules to (H2O)9 cc-pVTZ,
+      !! including more ranks than virtuals and a case whose other work exceeds an equal share
+      integer, intent(in) :: im
+
+      integer, parameter :: NSIZE = 6
+      integer, parameter :: SIZES(3, NSIZE) = reshape([25, 130, 630, 36, 477, 1269, 4, 19, 100, 1, 1, 10, 60, 12, 100, &
+                                                       5, 30, 60], [3, NSIZE])
+      integer, parameter :: RANKS(7) = [1, 2, 3, 4, 8, 25, 40]
+      integer :: is, ir, n, r, no, nv, naux, nbad, nempty_first, nsmall_first
+      integer, allocatable :: lo(:), hi(:), lo2(:), hi2(:)
+      real(dp) :: other, mine, worst, cost_d, equal
+      logical :: shape_ok, pure_ok, balance_ok, first_ok
+
+      nbad = 0
+      nempty_first = 0
+      nsmall_first = 0
+      worst = 0.0_dp
+      do is = 1, NSIZE
+         no = SIZES(1, is)
+         nv = SIZES(2, is)
+         naux = SIZES(3, is)
+         other = rccsd_share_other_flops(no, nv, naux)
+         cost_d = rccsd_share_ladder_flops(no, nv, naux, 1, 1)  ! the dearest d: nv columns
+         do ir = 1, size(RANKS)
+            n = RANKS(ir)
+            allocate (lo(n), hi(n), lo2(n), hi2(n))
+            call rccsd_share_ranges(no, nv, naux, n, lo, hi)
+            call rccsd_share_ranges(no, nv, naux, n, lo2, hi2)
+            pure_ok = all(lo == lo2) .and. all(hi == hi2)
+            ! contiguous, in order, disjoint, covering 1..nv; an empty range has hi = lo - 1
+            shape_ok = lo(1) == 1 .and. hi(n) == nv
+            do r = 1, n
+               shape_ok = shape_ok .and. hi(r) >= lo(r) - 1 .and. hi(r) <= nv
+               if (r > 1) shape_ok = shape_ok .and. lo(r) == hi(r - 1) + 1
+            end do
+            ! the first rank's other work plus its ladder against each other rank's ladder: within the cost of the d of
+            ! the integer cut at either end of the rank (an equal split is only possible at whole virtuals)
+            balance_ok = .true.
+            first_ok = .true.
+            if (n > 1) then
+               equal = (rccsd_share_ladder_flops(no, nv, naux, 1, nv) + other)/real(n, dp)
+               mine = other + rccsd_share_ladder_flops(no, nv, naux, lo(1), hi(1))
+               if (other >= equal) then
+                  ! the other work alone is an equal share or more: the first rank runs no pass
+                  first_ok = hi(1) < lo(1)
+                  if (hi(1) < lo(1)) nempty_first = nempty_first + 1
+               else
+                  nsmall_first = nsmall_first + 1
+                  first_ok = rccsd_share_ladder_flops(no, nv, naux, lo(1), hi(1)) <= &
+                             rccsd_share_ladder_flops(no, nv, naux, lo(2), hi(2)) + cost_d
+                  ! one boundary decides the first rank's total, cut to the nearest whole d: off by half a d at most
+                  ! (more ranks than virtuals leave single d's whose cost is that of the d itself)
+                  worst = max(worst, abs(mine - equal)/cost_d)
+                  balance_ok = abs(mine - equal) <= 0.5_dp*cost_d*(1.0_dp + 1.0e-9_dp)
+               end if
+            end if
+            if (.not. (shape_ok .and. pure_ok .and. balance_ok .and. first_ok)) then
+               nbad = nbad + 1
+               print "(a,3(i0,1x),a,i0,a,4l2)", "    share rule fails for (no, nv, naux) ", no, nv, naux, " ranks ", n, &
+                  ": shape, pure, balance, first ", shape_ok, pure_ok, balance_ok, first_ok
+            end if
+            deallocate (lo, hi, lo2, hi2)
+         end do
+      end do
+      call record(im, 9, nbad == 0 .and. nempty_first > 0 .and. nsmall_first > 0, &
+                  "share rule: "//to_string(NSIZE*size(RANKS))//" cuts contiguous, disjoint, covering, pure, balanced to "// &
+                  "one d (worst "//to_string(worst, "f6.3")//" d); the first rank empty in "//to_string(nempty_first)// &
+                  " cuts, smaller in "//to_string(nsmall_first)//", failures "//to_string(nbad))
+   end subroutine shares_rule
+
+   subroutine shares_half(im, ints, amps, inter, la, pp_s, tot_s, pp_g, tot_g)
+      !! Case 9, the passes: the half form over a cut of d, the partial arrays added and the correction applied once,
+      !! against the one-range numbers of the default run, TOL_BATCH (the one the d_batch independence of case 3 is held
+      !! to: a range boundary regroups the sum over the c >= d columns inside a GEMM exactly as a batch boundary does).
+      !! The cuts are the rule's at 2, 3, 4 and nv + 3 ranks (the last has empty ranges) and one made by hand with an
+      !! empty range in the middle, at d_batch 2 so a range holds several passes.
+      integer, intent(in) :: im
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_rccsd_inter_t), intent(in) :: inter
+      type(trc_linalg_t), intent(in) :: la
+      real(dp), intent(in) :: pp_s(:, :, :, :), tot_s(:, :, :, :), pp_g(:, :, :, :), tot_g(:, :, :, :)
+
+      integer :: icut, nv, n
+      integer, allocatable :: lo(:), hi(:)
+      real(dp) :: worst_s, worst_g, d_pp_s, d_tot_s, d_pp_g, d_tot_g
+      real(dp), allocatable :: part_s(:, :, :, :), tot_part_s(:, :, :, :), part_g(:, :, :, :), tot_part_g(:, :, :, :)
+      integer :: nempty
+
+      nv = ints%nv
+      worst_s = 0.0_dp
+      worst_g = 0.0_dp
+      nempty = 0
+      do icut = 1, 5
+         if (icut <= 3) then
+            n = icut + 1
+            allocate (lo(n), hi(n))
+            call rccsd_share_ranges(ints%no, nv, ints%naux, n, lo, hi)
+         else if (icut == 4) then
+            n = nv + 3
+            allocate (lo(n), hi(n))
+            call rccsd_share_ranges(ints%no, nv, ints%naux, n, lo, hi)
+         else
+            n = 3
+            allocate (lo(n), hi(n))
+            lo = [1, 5, 5]
+            hi = [4, 4, nv]
+         end if
+         nempty = nempty + count(hi < lo)
+         call run_cut(ints, amps, inter, la, lo, hi, .true., part_s, tot_part_s)
+         call run_cut(ints, amps, inter, la, lo, hi, .false., part_g, tot_part_g)
+         d_pp_s = abs_diff4(part_s, pp_s)
+         d_tot_s = abs_diff4(tot_part_s, tot_s)
+         d_pp_g = abs_diff4(part_g, pp_g)
+         d_tot_g = abs_diff4(tot_part_g, tot_g)
+         worst_s = max(worst_s, d_pp_s, d_tot_s)
+         worst_g = max(worst_g, d_pp_g, d_tot_g)
+         deallocate (lo, hi)
+      end do
+      call record(im, 9, max(worst_s, worst_g) < TOL_BATCH .and. nempty > 0, &
+                  "half over d ranges (2/3/4/nv+3 ranks, a hand cut; "//to_string(nempty)//" empty ranges) summed, d_batch 2: "// &
+                  "worst symmetric "//to_string(worst_s, "es9.2")//", general "//to_string(worst_g, "es9.2"))
+   end subroutine shares_half
+
+   subroutine run_cut(ints, amps, inter, la, lo, hi, sym, undressed, dressed)
+      !! The partial ladders of the ranges lo(r)..hi(r) added: `undressed` is the sum of the plain half-form ladders
+      !! (rccsd_ladder_pp on the range), `dressed` the sum of the dressed partials with the correction applied once
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_rccsd_inter_t), intent(in) :: inter
+      type(trc_linalg_t), intent(in) :: la
+      integer, intent(in) :: lo(:), hi(:)
+      logical, intent(in) :: sym
+      real(dp), allocatable, intent(out) :: undressed(:, :, :, :), dressed(:, :, :, :)
+
+      type(trc_rccsd_lscratch_t) :: ls
+      type(trc_rccsd_ladder_t) :: lad
+      integer :: r
+
+      call ls%init(ints, make_half(2, 0))
+      if (ls%status%has_error()) error stop "check_rccsd_ladder: scratch: "//ls%status%get_message()
+      call lad%init(ints%no, ints%nv)
+      allocate (undressed(ints%no, ints%no, ints%nv, ints%nv), dressed(ints%no, ints%no, ints%nv, ints%nv))
+      undressed = 0.0_dp
+      dressed = 0.0_dp
+      do r = 1, size(lo)
+         ls%d_lo = lo(r)
+         ls%d_hi = hi(r)
+         call rccsd_ladder_pp(ints, inter, lad, ls, la, sym)
+         if (ls%status%has_error()) error stop "check_rccsd_ladder: share pp: "//ls%status%get_message()
+         call lad%pull()
+         undressed = undressed + lad%h
+         call rccsd_ladder_partial(ints, amps, inter, lad, ls, la, tau_symmetric=sym)
+         if (ls%status%has_error()) error stop "check_rccsd_ladder: share partial: "//ls%status%get_message()
+         call lad%pull()
+         dressed = dressed + lad%h
+      end do
+      lad%h = dressed
+      call lad%push()
+      call rccsd_ladder_correct(ints, amps, inter, lad, ls, la, tau_symmetric=sym)
+      if (ls%status%has_error()) error stop "check_rccsd_ladder: share correct: "//ls%status%get_message()
+      call lad%pull()
+      dressed = lad%h
+      call lad%release()
+      call ls%release()
+   end subroutine run_cut
 
    subroutine batch_half(im, ints, amps, inter, la, pp_s, tot_s, pp_g, tot_g)
       !! Case 3, the half form: d_batch 1 (one d per pass), 2, 3 and nv (all d in one pass) on both paths give the

@@ -2187,8 +2187,8 @@ if(TERCO_ENABLE_MPI)
                                                      TIMEOUT 300)
 endif()
 
-# RI-CCSD(T) over ranks, one device each (rccsd_mpi.F90's header): the energies, bitwise E_CCSD and amplitudes and the
-# (T) sum against the single-rank run and pyscf, the same result on every rank, and with the argument "fail" the
+# RI-CCSD(T) over ranks, one device each (rccsd_mpi.F90's header): the energies, E_CCSD and amplitudes (to round-off:
+# the ladder is cut over the ranks) and the (T) sum against the single-rank run and pyscf, the same result on every rank, and with the argument "fail" the
 # failure paths (a rank refused, a CCSD that does not converge, a (T) routine that differs, ...), which must end on all
 # ranks. The TIMEOUT is the test of the second: a rank left in a collective call fails ctest, it does not wedge it.
 #
@@ -2197,12 +2197,27 @@ target_compile_definitions(rccsd_mpi PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(rccsd_mpi PRIVATE ${main_lib} terco_rccsd_test_support terco_rccsd_ref_energies)
 target_include_directories(rccsd_mpi PRIVATE ${CMAKE_BINARY_DIR}/modules)
 if(TERCO_ENABLE_MPI)
-  foreach(np 1 2)
+  # One rank per device is the rule, and a CI box may have fewer GPUs than ranks: a GPU build registers np 1 and 2
+  # only; a build without a GPU (ranks are host processes) also runs 3 and 4, which cut the ladder three and four ways.
+  if(TERCO_ENABLE_GPU)
+    set(_rccsd_mpi_nps 1 2)
+  else()
+    set(_rccsd_mpi_nps 1 2 3 4)
+  endif()
+  foreach(np ${_rccsd_mpi_nps})
     add_test(NAME terco/rccsd_mpi_np${np}
              COMMAND ${_mpiexec} ${_npflag} ${np} $<TARGET_FILE:rccsd_mpi>)
     set_tests_properties(terco/rccsd_mpi_np${np} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                                                            TIMEOUT 900)
   endforeach()
+  if(TERCO_ENABLE_GPU)
+    # the transfers through the host (trc_mpi_device: TERCO_MPI_DEVICE=0); the default run uses MPI device buffers
+    # where the build says the MPI takes them
+    add_test(NAME terco/rccsd_mpi_np2_hostbuf
+             COMMAND ${_mpiexec} ${_npflag} 2 $<TARGET_FILE:rccsd_mpi>)
+    set_tests_properties(terco/rccsd_mpi_np2_hostbuf PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                               TIMEOUT 900 ENVIRONMENT "TERCO_MPI_DEVICE=0")
+  endif()
   add_test(NAME terco/rccsd_mpi_fail_np2
            COMMAND ${_mpiexec} ${_npflag} 2 $<TARGET_FILE:rccsd_mpi> fail)
   set_tests_properties(terco/rccsd_mpi_fail_np2 PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}

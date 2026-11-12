@@ -6,6 +6,9 @@
 ! NVTX range at both ends, see trc_step_table) and do nothing when the caller
 ! passed no table, so a stage can still be driven on its own.
 !
+! OVER RANKS the table has three more rows, RCCSD_ST_BCAST, _WAIT and _REDUCE (RCCSD_MULTI_STEP_NAME): they
+! are the cost of the distributed ladder, 0 in a one-rank run, and a one-rank run does not print them.
+!
 ! WHAT A ROW MEANS. The rows from `RCCSD_ST_METRIC` to `RCCSD_ST_BLOCKS` are
 ! inside the `RCCSD_ST_INTEGRALS` row (indented in the print): the integrals row
 ! is the whole `ints%build`, and the rows under it are the pieces that build
@@ -53,12 +56,23 @@ module trc_rccsd_steps
    integer, parameter, public :: RCCSD_ST_DIIS = 15      !! the step measure, the history and the extrapolation
    integer, parameter, public :: RCCSD_ST_ENERGY = 16    !! the energy of the new amplitudes
    integer, parameter, public :: RCCSD_NSTEP = 16
+   integer, parameter, public :: RCCSD_ST_BCAST = 17     !! several ranks only: the amplitudes to the other ranks, once an iteration
+   integer, parameter, public :: RCCSD_ST_WAIT = 18      !! several ranks only: the ranks arriving at the end of the ladder's passes
+   integer, parameter, public :: RCCSD_ST_REDUCE = 19    !! several ranks only: the partial ladders to the first rank
+   integer, parameter, public :: RCCSD_NSTEP_MULTI = 19  !! rows of the table of a run over several ranks
    integer, parameter, public :: RCCSD_NAME_LEN = 24     !! the step table's name width
 
    character(len=RCCSD_NAME_LEN), parameter, public :: RCCSD_STEP_NAME(RCCSD_NSTEP) = [character(len=RCCSD_NAME_LEN) :: &
       "integrals", "  metric", "  cholesky", "  3-index integrals", "  half transform", "  B = X L^-T", "  four blocks", &
       "tau, intermediates", "W intermediates", "ladder", "ladder dressing", "T1 equation", "T2 equation", &
       "T2 ring terms", "DIIS", "energy"]
+
+   character(len=RCCSD_NAME_LEN), parameter, public :: RCCSD_MULTI_STEP_NAME(RCCSD_NSTEP_MULTI) = &
+      [character(len=RCCSD_NAME_LEN) :: RCCSD_STEP_NAME, "amplitudes to ranks", "ladder wait (idle)", "ladder to first rank"]
+   !! the rows of a run over several ranks: the single-rank ones, then the two transfers of an iteration (the amplitudes
+   !! from the first rank to each other, the partial ladders from each other rank to the first; point to point, packed
+   !! when pair-symmetric, bytes counted on the first rank) and the idle time at the ladder's barrier, which is where a
+   !! share too large or too small for its rank shows
 
    public :: rccsd_steps_gemm_flops, rccsd_steps_trsm_flops, rccsd_steps_potrf_flops, rccsd_steps_open, rccsd_steps_close
 

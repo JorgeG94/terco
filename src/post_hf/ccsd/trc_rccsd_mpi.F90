@@ -3,9 +3,8 @@
 ! describe the scheme they serve). Every routine is collective over `comm`: all of its ranks call it, in the same
 ! order. None is called without a communicator of more than one rank, so a one-rank run makes no MPI call.
 !
-! Host buffers throughout. The amplitudes are sent once per run (no^2 nv^2 doubles), and a host broadcast is the
-! same code on every MPI; RI-MP2's ring, which moves a block per step, is where handing MPI device buffers pays
-! (trc_mpi_device).
+! The per-iteration transfers (the amplitudes down, the partial ladders up) are in trc_rccsd_xfer; this module has the
+! small collectives and the host broadcast that ends a run.
 module trc_rccsd_mpi
    use pic_types, only: dp, int32
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_MIN
@@ -13,6 +12,10 @@ module trc_rccsd_mpi
    private
 
    public :: rccsd_mpi_agree_text, rccsd_mpi_bcast_amps, rccsd_mpi_bcast_orbitals
+   public :: rccsd_mpi_control, rccsd_mpi_gather_values
+
+   integer, parameter, public :: RCCSD_MPI_TEXT_LEN = 300  !! length of the texts the ranks agree on (the result's message)
+   integer, parameter :: BCAST_CHUNK = 33554432  !! doubles per broadcast call: 256 MiB, far below the 2^31-1 count limit
 
 contains
 
@@ -46,29 +49,32 @@ contains
    end function rccsd_mpi_agree_text
 
    subroutine rccsd_mpi_bcast_amps(comm, t1, t2, root)
-      !! Rank `root`'s host t1(no, nv) and t2(no, no, nv, nv) to every rank's. t2 goes one b-slice (no^2 nv doubles)
-      !! at a time through a flat buffer: the array is rank 4 and pic's broadcast takes a rank-1 buffer, and a slice is
-      !! far below the 2^31 element limit of an MPI count at any size this method reaches.
+      !! Rank `root`'s host t1(no, nv) and t2(no, no, nv, nv) to every rank's, each as a flat array in chunks of
+      !! BCAST_CHUNK doubles (an MPI count is a 32-bit integer; no reshaped copy). Collective. Sent a b-slice at a time
+      !! (130 calls of 0.65 MB at adenine cc-pVDZ) it took 0.26 s for 84 MB on two V100s, in flat chunks 26 ms.
       type(comm_t), intent(in) :: comm
       real(dp), intent(inout) :: t1(:, :), t2(:, :, :, :)
       integer, intent(in) :: root
 
-      real(dp), allocatable :: buffer(:)
-      integer :: b, n1, n2
-
-      n1 = size(t1)
-      allocate (buffer(max(n1, size(t2, 1)*size(t2, 2)*size(t2, 3))))
-      buffer(1:n1) = reshape(t1, [n1])
-      call bcast(comm, buffer, int(n1, int32), int(root, int32))
-      t1 = reshape(buffer(1:n1), shape(t1))
-      n2 = size(t2, 1)*size(t2, 2)*size(t2, 3)
-      do b = 1, size(t2, 4)
-         buffer(1:n2) = reshape(t2(:, :, :, b), [n2])
-         call bcast(comm, buffer, int(n2, int32), int(root, int32))
-         t2(:, :, :, b) = reshape(buffer(1:n2), shape(t2(:, :, :, b)))
-      end do
-      deallocate (buffer)
+      call bcast_flat(comm, size(t1), t1, root)
+      call bcast_flat(comm, size(t2), t2, root)
    end subroutine rccsd_mpi_bcast_amps
+
+   subroutine bcast_flat(comm, n, x, root)
+      !! x(1:n) of rank `root` to every rank, in chunks
+      type(comm_t), intent(in) :: comm
+      integer, intent(in) :: n, root
+      real(dp), intent(inout) :: x(n)
+
+      integer :: k, m
+
+      k = 1
+      do while (k <= n)
+         m = min(BCAST_CHUNK, n - k + 1)
+         call bcast(comm, x(k:k + m - 1), int(m, int32), int(root, int32))
+         k = k + m
+      end do
+   end subroutine bcast_flat
 
    subroutine rccsd_mpi_bcast_orbitals(comm, cmo, eps, root)
       !! Rank `root`'s orbitals and orbital energies to every rank's: a GUARD. The collective SCF of the CLI and the
@@ -94,5 +100,35 @@ contains
       end do
       deallocate (buffer)
    end subroutine rccsd_mpi_bcast_orbitals
+
+   function rccsd_mpi_control(comm, word) result(received)
+      !! The first rank's control word to every rank (one integer): the iteration number to run, or 0 to stop.
+      !! Collective; `word` is read on rank 0 only.
+      type(comm_t), intent(in) :: comm
+      integer, intent(in) :: word
+      integer :: received
+
+      integer(int32) :: w
+
+      w = int(word, int32)
+      call bcast(comm, w, 1_int32, 0_int32)
+      received = int(w)
+   end function rccsd_mpi_control
+
+   function rccsd_mpi_gather_values(comm, value) result(values)
+      !! A few numbers per rank, values(:, r + 1) of rank r, on every rank: each rank writes its own column of a zero
+      !! array and the arrays are summed (pic-mpi has no gather of reals). Collective; for the timings the report shows
+      !! once per run.
+      type(comm_t), intent(in) :: comm
+      real(dp), intent(in) :: value(:)
+      real(dp) :: values(size(value), comm%size())
+
+      real(dp) :: flat(size(value)*comm%size())
+
+      flat = 0.0_dp
+      flat(comm%rank()*size(value) + 1:(comm%rank() + 1)*size(value)) = value
+      call allreduce(comm, flat)
+      values = reshape(flat, shape(values))
+   end function rccsd_mpi_gather_values
 
 end module trc_rccsd_mpi

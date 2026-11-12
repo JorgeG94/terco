@@ -142,7 +142,7 @@ command line, in the input file and in the output, says RI-CCSD.
 | `--cc-tconv` | `--riccsd` amplitude convergence: the largest amplitude change (1e-6) |
 | `--cc-iterations` | maximum `--riccsd` iterations (100); a run that does not converge is reported as such and exits with status 2 |
 | `--cc-diis` | `--riccsd` DIIS history length (8, at most 50); 1 switches DIIS off |
-| `--cc-ladder` | how `--riccsd` forms the particle ladder: auto (by operation count), assembled or direct; the energy does not depend on it (auto) |
+| `--cc-ladder` | how `--riccsd` forms the particle ladder: auto (by operation count), assembled or direct; the energy does not depend on it (auto); over several ranks only auto (the half form) is accepted |
 | `--cc-triples` | which routine computes the (T) of `--riccsd-t`: auto (the ijk device routine in a GPU build, the host reference one otherwise; the ijk routine whenever there is more than one rank), reference (host, from the host copies; cross-checks a GPU build) tiled (the device routine over virtual triples, also on the host, slower there) or ijk (the device routine over occupied triples, the default in a GPU build); the energy does not depend on it (auto) |
 | `--cc-triples-budget` | memory for the working tile of the tiled (T) routine of `--riccsd-t`, GiB (1; any positive value, the repacked amplitudes come on top); a budget below one triple (48 o^3 bytes, o active occupied orbitals) makes the (T) step fail after the RI-CCSD has converged, with exit status 1; no effect on the reference routine |
 
@@ -189,21 +189,53 @@ response of its own (as `--rimp2`); terco warns.
 
 `mpiexec -n 4 terco water.xyz -b cc-pvdz --riccsd-t` runs on four ranks, one
 rank per GPU (terco binds each rank to its own device; do not put two ranks on
-one GPU). What is distributed today is the (T) correction only. Every rank
-builds the density-fitted integrals (replicated, so each GPU needs the memory of
-a one-GPU run), the RI-CCSD iterations run on the first rank while the others
-wait, the converged amplitudes are broadcast, and the (T) work, the occupied
-pairs, is dealt over the ranks. The (T) energy is the same on every rank and
-equals the one-rank value to rounding. The RI-CCSD energy is computed by the
-first rank alone, so given the same orbitals it is the one-rank number; the
-multi-rank SCF that precedes it in the CLI differs from a one-rank SCF at about
-1e-14 Eh, and so does everything after it. Output (tables, summary, JSON) comes
-from the first rank, and with `--logger verbose` the (T) step lists each rank's
-triples and seconds.
+one GPU). Every rank builds the density-fitted integrals (replicated, so each
+GPU needs the memory of a one-GPU run). What is distributed is the particle-particle
+ladder of every CCSD iteration, which is 66 % of the counted flops of an
+iteration at (H2O)9 cc-pVTZ, and the (T) correction. W, the ring terms, the T1
+and T2 equations, DIIS and the energy run on the first rank.
 
-Plain `--riccsd` over several ranks gains nothing today: the iterations run on
-the first rank and the others only matter for (T). Distributing the iterations
-is the next step.
+Each iteration the first rank sends the current amplitudes to each other rank
+(o^2 v^2 doubles, half of them when the amplitudes are pair symmetric, which they
+are in every production run), every rank runs the ladder for its own range of
+the virtual index d, and each other rank sends its partial ladder (again half) to
+the first rank, which adds them on its device. The first rank does all its other
+work (W, the T1 and T2 equations, the rings) while the others run their passes,
+and adds the ladder last. The transfers are point to point and go straight
+between the devices when the MPI library takes device buffers (the build's
+default on GPU builds with MPI, `TERCO_MPI_DEVICE=0` forces the host path);
+otherwise they go through the host. The ranges are cut from the counted flops: the first rank also
+does everything that is not the ladder, so it gets the smaller share, and no
+ladder at all when its other work alone is more than an equal share (adenine
+cc-pVDZ, whose ladder is a third of an iteration, on any rank count). The cut is
+a function of the problem size and the rank count only. `--logger verbose`
+prints each rank's range, ladder seconds and, per iteration, the seconds it
+computed, transferred and waited, and the step table gains three rows,
+`amplitudes to ranks`, `ladder wait (idle)` and `ladder to first rank` (the two
+transfers with their bytes and rate), so the transfers and the idle time of the
+iteration are measured.
+
+The ladder is summed in another order than one rank sums it (and is added to
+t2 after the rings in every run), so the RI-CCSD energy over several ranks
+agrees with the one-rank value to rounding (about 1e-16 Eh in the checks), not
+bitwise, and the iteration count is the same. The
+multi-rank SCF that precedes it in the CLI differs from a one-rank SCF at about
+1e-14 Eh, and so does everything after it. The ladder is cut by its form: only
+the half form can be shared, so over several ranks `--cc-ladder auto` ALWAYS takes
+the half form (even where the operation count favours the direct form), and an
+explicit `--cc-ladder assembled` or `direct` is refused, with the reason, on every
+rank before any integral is built. The (T) energy is the same on every rank. Output (tables, summary, JSON)
+comes from the first rank, and with `--logger verbose` the (T) step lists each
+rank's triples and seconds.
+
+How much an iteration gains levels off with the rank count: W, the ring terms, the
+T1 and T2 equations and DIIS stay on the first rank and are not shared. The first
+rank gets no ladder passes at all once its other work exceeds an equal share of
+the iteration (adenine cc-pVDZ at any rank count; (H2O)9 cc-pVTZ from four ranks),
+and the iteration then cannot get shorter than that work plus the transfers.
+Measured on V100s: the CCSD iteration of adenine cc-pVDZ takes 0.183 s on one GPU
+and 0.119 s on two; that of the water hexamer with aug-cc-pVDZ 0.748 s and 0.414 s;
+the water hexamer with cc-pVTZ is 2.87 times faster on four GPUs than on one.
 
 Only the ijk (T) routine shares the work. `--cc-triples auto` picks it whenever
 there is more than one rank, in a host build too; an explicit `reference` or
@@ -221,7 +253,7 @@ cc-pVDZ-RIFIT: CCSD(T) total energies within 5e-12 Eh when run with
 thresholds, 1e-8 and 1e-6, the agreement is about 1e-8 Eh).
 
 Today it covers: a restricted Hartree-Fock reference with canonical orbitals,
-one GPU per rank (the (T) is shared over ranks, the iterations are not yet), no effective core potential, **no gradients** (so no
+one GPU per rank (the ladder of every iteration and the (T) are shared over ranks; W, the rings and DIIS are not yet), no effective core potential, **no gradients** (so no
 optimisation or Hessian), no restart of the RI-CCSD itself. The dense
 `(ia|bc)` block is what limits the system size for now.
 

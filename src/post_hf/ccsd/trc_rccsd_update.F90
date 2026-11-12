@@ -57,7 +57,10 @@
 !        (m = o^2 v, n = v, K = o)
 !   'klij,klab->ijab'            t2n(ij;ab) += Woooo(kl;ij)^T tau(kl;ab)              ONE GEMM (m = o^2, n = v^2, K = o^2)
 !   'abcd,ijcd->ijab'            t2n += lad%h        the ladder and its t1 dressing (cc_Wvvvv . tau), unsymmetrised,
-!                                coefficient +1, as mqc adds it; trc_rccsd_ladder's GEMMs
+!                                coefficient +1; trc_rccsd_ladder's GEMMs. ADDED LAST, after the rings and just before
+!                                the denominators (mqc adds it after Woooo): over ranks the ladder arrives from the other
+!                                ranks and everything above is computed while it does; one rank takes the same order, so
+!                                there is one code path. The sum of the terms is regrouped: round-off, nothing else
 !   'ac,ijcb->ijab'              term(ij,a,b) = sum_c Lvv(a,c) t2(ij,c,b); t2n += term + term.T
 !                                a batch over b, m = o^2, n = v, K = v
 !   '-ki,kjab->ijab'             term(i;jab) = sum_k Loo(k,i) t2(k;jab); t2n -= term + term.T
@@ -103,17 +106,33 @@
 ! STALE PACKS. `init` records `ints%stamp`; `step` refuses (status, nothing written) after `ints%build` ran again,
 ! as the modules it drives do for their own packs. Re-`init`.
 !
-! `newamps` must not be `amps` (no check can see an alias; the result would be wrong). Single rank only.
+! RANKS. With `set_share` the ladder is cut over the ranks of a communicator (trc_rccsd_driver, RANKS has the whole
+! scheme): the first rank's `step` does tau, the one-particle intermediates and W, its share of the ladder with the
+! t1 t1 correction (linear, so it need not wait for the sum), the T1 equation, every T2 term but the ladder and the
+! rings, and only then ONE agreement on failure and the partial ladders of the other ranks (added into `lad%h` on the
+! device), after which it adds the ladder and applies the denominators. A rank that is not the first calls `follow` for
+! the same iteration: tau of the amplitudes it was sent, its share, the same agreement, then its partial ladder to the
+! first rank; it is initialised as a follower, without W and the packs of the T1 and T2 equations. A refusal on any
+! rank before the transfers is agreed (`agreed_stop` on all of them, the reason from the lowest-numbered rank in
+! `status`); no rank is left waiting. Without `set_share` the type behaves
+! as before and makes no MPI call.
+!
+! `newamps` must not be `amps` (no check can see an alias; the result would be wrong).
 module trc_rccsd_update
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_rccsd_ints, only: trc_rccsd_ints_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t, trc_rccsd_inter_t, trc_rccsd_scratch_t, rccsd_inter_one_particle, &
-                              rccsd_inter_flops
+                              rccsd_inter_flops, rccsd_inter_build_tau
    use trc_rccsd_w, only: trc_rccsd_w_t, trc_rccsd_wscratch_t, rccsd_w_build, rccsd_w_flops
-   use trc_rccsd_ladder, only: trc_rccsd_ladder_t, trc_rccsd_lscratch_t, trc_rccsd_ladder_options_t, rccsd_ladder_build
-   use trc_rccsd_steps, only: RCCSD_ST_INTER, RCCSD_ST_W, RCCSD_ST_T1, RCCSD_ST_T2, RCCSD_ST_RING, rccsd_steps_gemm_flops, &
-                              rccsd_steps_open, rccsd_steps_close
+   use trc_rccsd_ladder, only: trc_rccsd_ladder_t, trc_rccsd_lscratch_t, trc_rccsd_ladder_options_t, rccsd_ladder_build, &
+                               rccsd_ladder_partial, rccsd_ladder_correct, RCCSD_LADDER_HALF
+   use trc_rccsd_steps, only: RCCSD_ST_INTER, RCCSD_ST_W, RCCSD_ST_T1, RCCSD_ST_T2, RCCSD_ST_RING, RCCSD_ST_WAIT, &
+                              RCCSD_ST_REDUCE, RCCSD_NSTEP_MULTI, rccsd_steps_gemm_flops, rccsd_steps_open, rccsd_steps_close
+   use trc_rccsd_mpi, only: rccsd_mpi_agree_text, RCCSD_MPI_TEXT_LEN
+   use trc_rccsd_xfer, only: trc_rccsd_xfer_t, rccsd_xfer_ladder_up, rccsd_xfer_ladder_in, rccsd_xfer_ladder_bytes
+   use pic_mpi_lib, only: comm_t
+   use pic_strings, only: to_string
    use trc_step_table, only: step_table_t
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_error, only: error_t, ERROR_VALIDATION
@@ -143,10 +162,24 @@ module trc_rccsd_update
       real(dp), allocatable :: lamp(:)  !! o^3 v, lamp(k,l,c,i) = 2 ooov(k,i,l,c) - ooov(l,i,k,c)
       real(dp), allocatable :: sm1(:)   !! o^3 v work
       real(dp), allocatable :: sm2(:)   !! o^3 v work
+      logical :: follower_init = .false.  !! `init` was told this rank is a follower (`set_share` refuses `lead` then)
+      logical :: distributed = .false.
+      !! the ladder is cut over the ranks of `comm` (`set_share`): `step` runs this rank's share, agrees on failure and
+      !! sums the partial ladders; module header, RANKS
+      logical :: lead = .true.            !! this rank is the first of `comm`: it runs `step`; the others run `follow`
+      logical :: agreed_stop = .false.
+      !! set by `step` and `follow` when a failure was agreed by every rank of `comm`: then every rank has stopped the
+      !! iterations and no control word is due
+      type(comm_t) :: comm                !! read only when `distributed`
+      integer, allocatable :: range_lo(:), range_hi(:)
+      !! every rank's d range (rank r at r + 1), the first rank's key to which followers send a partial ladder
+      type(trc_rccsd_xfer_t) :: xf        !! the staging of the transfers (trc_rccsd_xfer); allocated by `set_share`
    contains
       procedure :: init => update_init
       procedure :: release => update_release
       procedure :: step => update_step
+      procedure :: follow => update_follow
+      procedure :: set_share => update_set_share
    end type trc_rccsd_update_t
 
 contains
@@ -155,17 +188,24 @@ contains
    ! the type
    ! ---------------------------------------------------------------------
 
-   subroutine update_init(this, ints, ladder_options)
+   subroutine update_init(this, ints, ladder_options, follower)
       !! Allocates and packs everything for these integrals. A refusal of any module goes to `status`
-      !! and leaves the type empty.
+      !! and leaves the type empty. With `follower` only what a rank that runs its ladder share and nothing else needs:
+      !! tau's scratch, the ladder and its scratch (not W, the rings' packs or the T1 packs).
       class(trc_rccsd_update_t), intent(inout) :: this
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_ladder_options_t), intent(in), optional :: ladder_options
+      logical, intent(in), optional :: follower
+
+      logical :: only_ladder
 
       integer :: no, nv
 
       call this%release()
       call this%status%clear()
+      only_ladder = .false.
+      if (present(follower)) only_ladder = follower
+      this%follower_init = only_ladder
       if (.not. allocated(ints%b_ov) .or. .not. allocated(ints%b_vv) .or. ints%stamp == 0) then
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_update: the integral blocks are not built")
          return
@@ -175,12 +215,14 @@ contains
       call this%scr%init(ints)
       if (this%scr%status%has_error()) call fail(this, this%scr%status)
       if (this%status%has_error()) return
-      call this%ws%init(ints)
-      if (this%ws%status%has_error()) call fail(this, this%ws%status)
-      if (this%status%has_error()) return
-      call this%w%init(no, nv)
-      if (this%w%status%has_error()) call fail(this, this%w%status)
-      if (this%status%has_error()) return
+      if (.not. only_ladder) then
+         call this%ws%init(ints)
+         if (this%ws%status%has_error()) call fail(this, this%ws%status)
+         if (this%status%has_error()) return
+         call this%w%init(no, nv)
+         if (this%w%status%has_error()) call fail(this, this%w%status)
+         if (this%status%has_error()) return
+      end if
       call this%lad%init(no, nv)
       if (this%lad%status%has_error()) call fail(this, this%lad%status)
       if (this%status%has_error()) return
@@ -191,10 +233,55 @@ contains
       this%no = no
       this%nv = nv
       this%stamp = ints%stamp
+      if (only_ladder) return
       allocate (this%lamp(no*no*no*nv), this%sm1(no*no*no*nv), this%sm2(no*no*no*nv))
       !$acc enter data create(this%lamp, this%sm1, this%sm2)
       call kernel_pack_lamp(no, nv, this%scr%lam, this%lamp)
    end subroutine update_init
+
+   subroutine update_set_share(this, comm, lead, lo, hi)
+      !! Cuts the ladder over the ranks of `comm`: rank r runs the passes d = lo(r+1)..hi(r+1) (an empty range has
+      !! hi < lo). `lead` is the rank that holds the sum and runs `step`. Needs the half form; `init` first. The ranges
+      !! are not checked here (the ladder checks its own, and a rank's refusal is agreed).
+      class(trc_rccsd_update_t), intent(inout) :: this
+      type(comm_t), intent(in) :: comm
+      logical, intent(in) :: lead
+      integer, intent(in) :: lo(:), hi(:)
+
+      logical :: fits
+
+      call this%status%clear()
+      if (this%stamp == 0) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_update: set_share before init")
+         return
+      end if
+      if (lead .and. this%follower_init) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_update: set_share(lead) on an update initialised as a follower "// &
+                              "(it has no W or T1/T2 packs)")
+         return
+      end if
+      if (this%ls%form /= RCCSD_LADDER_HALF) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_update: the ladder can be shared over ranks in the half form only")
+         return
+      end if
+      if (size(lo) /= comm%size() .or. size(hi) /= comm%size()) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_update: set_share needs one range per rank")
+         return
+      end if
+      call this%xf%init(this%no, this%nv, fits)
+      if (.not. fits) then
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_update: the transfer staging array does not fit "// &
+                              "(o v (o v + 1) / 2 above 2^31-1 elements) or could not be allocated")
+         return
+      end if
+      this%comm = comm
+      this%lead = lead
+      this%range_lo = lo
+      this%range_hi = hi
+      this%ls%d_lo = lo(comm%rank() + 1)
+      this%ls%d_hi = hi(comm%rank() + 1)
+      this%distributed = .true.
+   end subroutine update_set_share
 
    subroutine fail(this, source)
       !! Copies a refusal into `this%status` and frees what `init` had allocated so far
@@ -230,9 +317,15 @@ contains
       call this%ws%release()
       call this%lad%release()
       call this%ls%release()
+      call this%xf%release()
+      if (allocated(this%range_lo)) deallocate (this%range_lo, this%range_hi)
       this%no = 0
       this%nv = 0
       this%stamp = 0
+      this%distributed = .false.
+      this%follower_init = .false.
+      this%lead = .true.
+      this%agreed_stop = .false.
    end subroutine update_release
 
    function step_ready(this, ints, amps, newamps) result(ok)
@@ -304,7 +397,7 @@ contains
    end function rccsd_update_t1_flops
 
    pure function rccsd_update_t2_flops(no, nv, naux) result(flops)
-      !! Flops of the GEMMs of the T2 equation without its rings: `t2_base_terms`, `t2_two_body_terms`,
+      !! Flops of the GEMMs of the T2 equation without its rings: `t2_base_terms`, `t2_woooo_term`,
       !! `t2_one_body_terms` (the ladder is `rccsd_ladder_flops`'s). Shapes (m, n, k) x batch count:
       !!   A: b_ov N1^T (o v, o v, naux)       2 o^2 v^2 naux  U: oovv t1 (o o, o, v) x v        2 o^3 v^2
       !!   A: term (o o, v, o) x v             2 o^3 v^2       B: ovov t1 (o, o, v) x o v        2 o^3 v^2
@@ -341,53 +434,215 @@ contains
 
       type(timer_type) :: tc
       integer :: no, nv
+      logical :: ok
+
+      call clear_status(this)
+      this%agreed_stop = .false.
+      ok = step_ready(this, ints, amps, newamps)
+      no = this%no
+      nv = this%nv
+
+      ! The three builders read `amps` and write only their own arrays; none of them is told about `newamps`.
+      if (ok) call step_front(this, ints, amps, la, stab, ok)
+      ! THE LADDER IS ADDED LAST. Everything below up to the rings does not depend on it, and over ranks it is the
+      ! part the other ranks compute: this rank does its own share and all of that meanwhile, and only then takes the
+      ! sum. tau = t2 + t1 t1 has tau(j,i,d,c) = tau(i,j,c,d): the starting t2 (MP2) has it, every term of the t2
+      ! equation keeps it and DIIS mixes such t2 linearly. Start amplitudes of the caller's may not: the driver checks
+      ! them and clears the flag.
+      if (ok) then
+         if (this%distributed) then
+            call own_share(this, ints, amps, la, stab, ok)
+         else
+            call rccsd_ladder_build(ints, amps, this%inter, this%lad, this%ls, la, stab, tau_symmetric=this%tau_symmetric)
+            ok = .not. sub_failed(this)
+         end if
+      end if
+      if (ok) call step_amplitude_terms(this, ints, amps, newamps, la, stab)
+      ! over ranks: the one agreement on failure and the partial ladders of the other ranks (every rank arrives here)
+      if (this%distributed) call ladder_over_ranks(this, ints, amps, la, stab, ok)
+      if (.not. ok) return
+      call rccsd_steps_open(stab, la, RCCSD_ST_T2, tc)
+      call kernel_add_ladder(no, nv, this%lad%h, newamps%t2)
+      ! the denominators divide the finished sum, so they follow the ladder; they belong to the T2 equation
+      call kernel_denominator_t2(no, nv, ints%eps_o, ints%eps_v, newamps%t2)
+      call rccsd_steps_close(stab, la, RCCSD_ST_T2, tc)
+   end subroutine update_step
+
+   subroutine clear_status(this)
+      !! The status of this type and of the modules `step` drives
+      class(trc_rccsd_update_t), intent(inout) :: this
 
       call this%status%clear()
       call this%scr%status%clear()
       call this%ws%status%clear()
       call this%ls%status%clear()
-      if (.not. step_ready(this, ints, amps, newamps)) return
-      no = this%no
-      nv = this%nv
+   end subroutine clear_status
 
-      ! The three builders read `amps` and write only their own arrays; none of them is told about `newamps`.
+   subroutine step_front(this, ints, amps, la, stab, ok)
+      !! tau with the one-particle intermediates, then W; `ok` false (the reason in `this%status`) after a refusal
+      class(trc_rccsd_update_t), intent(inout) :: this
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_linalg_t), intent(in) :: la
+      type(step_table_t), intent(inout), optional :: stab
+      logical, intent(out) :: ok
+
+      type(timer_type) :: tc
+
+      ok = .false.
       call rccsd_steps_open(stab, la, RCCSD_ST_INTER, tc)
       call rccsd_inter_one_particle(ints, amps, this%inter, this%scr, la)
       if (sub_failed(this)) then
          call rccsd_steps_close(stab, la, RCCSD_ST_INTER, tc)  ! a refusal still closes the NVTX range
          return
       end if
-      call rccsd_steps_close(stab, la, RCCSD_ST_INTER, tc, rccsd_inter_flops(no, nv, ints%naux))
+      call rccsd_steps_close(stab, la, RCCSD_ST_INTER, tc, rccsd_inter_flops(this%no, this%nv, ints%naux))
       call rccsd_steps_open(stab, la, RCCSD_ST_W, tc)
       call rccsd_w_build(ints, amps, this%inter, this%w, this%ws, la)
       if (sub_failed(this)) then
          call rccsd_steps_close(stab, la, RCCSD_ST_W, tc)  ! a refusal still closes the NVTX range
          return
       end if
-      call rccsd_steps_close(stab, la, RCCSD_ST_W, tc, rccsd_w_flops(no, nv, ints%naux))
-      ! the ladder and its dressing are two steps of their own, opened and closed inside. tau = t2 + t1 t1 has
-      ! tau(j,i,d,c) = tau(i,j,c,d): the starting t2 (MP2) has it, every term of the t2 equation keeps it and DIIS
-      ! mixes such t2 linearly. Start amplitudes of the caller's may not: the driver checks them and clears the flag.
-      call rccsd_ladder_build(ints, amps, this%inter, this%lad, this%ls, la, stab, tau_symmetric=this%tau_symmetric)
-      if (sub_failed(this)) return
+      call rccsd_steps_close(stab, la, RCCSD_ST_W, tc, rccsd_w_flops(this%no, this%nv, ints%naux))
+      ok = .true.
+   end subroutine step_front
 
-      ! From here the W scratch (b1, b2, r) and the inter scratch's pack1 are free.
+   subroutine own_share(this, ints, amps, la, stab, ok)
+      !! The first rank's own share of the ladder with the t1 t1 correction already subtracted (the correction is linear,
+      !! so it need not wait for the sum); `ok` false, the reason in `status`, after a refusal
+      class(trc_rccsd_update_t), intent(inout) :: this
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_linalg_t), intent(in) :: la
+      type(step_table_t), intent(inout), optional :: stab
+      logical, intent(out) :: ok
+
+      call rccsd_ladder_partial(ints, amps, this%inter, this%lad, this%ls, la, stab, this%tau_symmetric)
+      ok = .not. sub_failed(this)
+      if (.not. ok) return
+      call rccsd_ladder_correct(ints, amps, this%inter, this%lad, this%ls, la, stab, this%tau_symmetric)
+      ok = .not. sub_failed(this)
+   end subroutine own_share
+
+   subroutine step_amplitude_terms(this, ints, amps, newamps, la, stab)
+      !! The T1 equation and every term of the T2 equation but the ladder: the base terms, Woooo, the one-body terms,
+      !! the rings. Nothing here reads the ladder, so over ranks they run while the other ranks compute theirs.
+      class(trc_rccsd_update_t), intent(inout) :: this
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_rccsd_amps_t), intent(inout) :: newamps
+      type(trc_linalg_t), intent(in) :: la
+      type(step_table_t), intent(inout), optional :: stab
+
+      type(timer_type) :: tc
+
       call rccsd_steps_open(stab, la, RCCSD_ST_T1, tc)
       call t1_equation(this, ints, amps, newamps, la)
-      call rccsd_steps_close(stab, la, RCCSD_ST_T1, tc, rccsd_update_t1_flops(no, nv, ints%naux))
+      call rccsd_steps_close(stab, la, RCCSD_ST_T1, tc, rccsd_update_t1_flops(this%no, this%nv, ints%naux))
       call rccsd_steps_open(stab, la, RCCSD_ST_T2, tc)
       call t2_base_terms(this, ints, amps, newamps, la)
-      call t2_two_body_terms(this, newamps, la)
+      call t2_woooo_term(this, newamps, la)
       call t2_one_body_terms(this, amps, newamps, la)
-      call rccsd_steps_close(stab, la, RCCSD_ST_T2, tc, rccsd_update_t2_flops(no, nv, ints%naux))
+      call rccsd_steps_close(stab, la, RCCSD_ST_T2, tc, rccsd_update_t2_flops(this%no, this%nv, ints%naux))
       call rccsd_steps_open(stab, la, RCCSD_ST_RING, tc)
       call t2_ring_terms(this, amps, newamps, la)
-      call rccsd_steps_close(stab, la, RCCSD_ST_RING, tc, rccsd_update_ring_flops(no, nv))
-      ! the denominators divide the finished sum, so they follow the rings; they belong to the T2 equation
-      call rccsd_steps_open(stab, la, RCCSD_ST_T2, tc)
-      call kernel_denominator_t2(no, nv, ints%eps_o, ints%eps_v, newamps%t2)
-      call rccsd_steps_close(stab, la, RCCSD_ST_T2, tc)
-   end subroutine update_step
+      call rccsd_steps_close(stab, la, RCCSD_ST_RING, tc, rccsd_update_ring_flops(this%no, this%nv))
+   end subroutine step_amplitude_terms
+
+   subroutine ladder_over_ranks(this, ints, amps, la, stab, ok)
+      !! Collective over `this%comm`, called by every rank in the same place with `ok` true when nothing it did so far
+      !! refused: ONE agreement on failure (a rank that refused anywhere before, in its share or in the first rank's other
+      !! work, gives its reason to all; every rank leaves with `ok` false, its status set to that reason and
+      !! `agreed_stop`), then the partial ladders go to the first rank: each follower with a nonempty range sends its
+      !! one, the first rank adds them to its own on the device (trc_rccsd_xfer). The agreement is also the barrier: the
+      !! seconds a rank spends in it are the others' work still running (step RCCSD_ST_WAIT).
+      class(trc_rccsd_update_t), intent(inout) :: this
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_linalg_t), intent(in) :: la
+      type(step_table_t), intent(inout), optional :: stab
+      logical, intent(inout) :: ok
+
+      character(len=RCCSD_MPI_TEXT_LEN) :: text
+      character(len=:), allocatable :: reason
+      type(timer_type) :: tc
+      logical :: anyone, timed
+      integer :: f
+
+      ! a step table without the rows of the transfers (RCCSD_MULTI_STEP_NAME) is a misuse: refused, through the
+      ! agreement, and not written to
+      timed = present(stab)
+      if (timed) timed = stab%n >= RCCSD_NSTEP_MULTI
+      if (present(stab) .and. .not. timed .and. ok) then
+         ok = .false.
+         call this%status%set(ERROR_VALIDATION, "trc_rccsd_update: the step table has no rows for the transfers over "// &
+                              "ranks (initialise it with RCCSD_MULTI_STEP_NAME)")
+      end if
+      text = ""
+      if (.not. ok) then
+         reason = this%status%get_message()
+         text = "rank "//to_string(this%comm%rank())//": "//reason
+         if (len_trim(reason) == 0) text = "rank "//to_string(this%comm%rank())//": the amplitude update refused"
+      end if
+      if (timed) call rccsd_steps_open(stab, la, RCCSD_ST_WAIT, tc)
+      ! the collective call in a statement of its own
+      anyone = rccsd_mpi_agree_text(this%comm, text, .not. ok)
+      if (timed) call rccsd_steps_close(stab, la, RCCSD_ST_WAIT, tc)
+      if (anyone) then
+         ok = .false.
+         this%agreed_stop = .true.
+         call this%status%set(ERROR_VALIDATION, trim(text))
+         return
+      end if
+      if (timed) call rccsd_steps_open(stab, la, RCCSD_ST_REDUCE, tc)
+      if (this%lead) then
+         do f = 2, this%comm%size()
+            if (this%range_hi(f) < this%range_lo(f)) cycle
+            call rccsd_xfer_ladder_in(this%comm, this%xf, this%lad%h, f - 1, this%tau_symmetric, this%ws%r)
+            if (timed) call stab%add_bytes(RCCSD_ST_REDUCE, rccsd_xfer_ladder_bytes(this%no, this%nv, this%tau_symmetric))
+         end do
+      else if (this%ls%d_hi >= this%ls%d_lo) then
+         call rccsd_xfer_ladder_up(this%comm, this%xf, this%lad%h, this%tau_symmetric)
+      end if
+      if (timed) call rccsd_steps_close(stab, la, RCCSD_ST_REDUCE, tc)
+   end subroutine ladder_over_ranks
+
+   subroutine update_follow(this, ints, amps, la, stab)
+      !! The part of an iteration a rank other than the first runs (module header, RANKS): tau of `amps` (on the device),
+      !! then this rank's share of the ladder, the agreement and the send of `ladder_over_ranks`. `amps` is not written.
+      !! A refusal is agreed with the other ranks: `agreed_stop` and the reason in `status`.
+      class(trc_rccsd_update_t), intent(inout) :: this
+      type(trc_rccsd_ints_t), intent(in) :: ints
+      type(trc_rccsd_amps_t), intent(in) :: amps
+      type(trc_linalg_t), intent(in) :: la
+      type(step_table_t), intent(inout), optional :: stab
+
+      type(timer_type) :: tc
+      logical :: ok, empty
+
+      call clear_status(this)
+      this%agreed_stop = .false.
+      ok = this%stamp /= 0 .and. this%distributed .and. ints%stamp == this%stamp
+      if (.not. ok) call this%status%set(ERROR_VALIDATION, "trc_rccsd_update: follow before init and set_share, or after "// &
+                                         "the integrals were rebuilt")
+      if (ok) ok = allocated(amps%t1) .and. allocated(amps%t2)
+      if (ok) ok = amps%no == ints%no .and. amps%nv == ints%nv
+      if (.not. ok .and. .not. this%status%has_error()) call this%status%set(ERROR_VALIDATION, &
+                                                                             "trc_rccsd_update: the amplitudes are not sized")
+      ! a follower whose range is empty was sent no amplitudes (trc_rccsd_dist) and has no tau to build or pass to run
+      empty = this%ls%d_hi < this%ls%d_lo
+      if (ok .and. .not. empty) then
+         call rccsd_steps_open(stab, la, RCCSD_ST_INTER, tc)
+         call rccsd_inter_build_tau(ints, amps, this%inter, this%scr)
+         call rccsd_steps_close(stab, la, RCCSD_ST_INTER, tc)
+         ok = .not. sub_failed(this)
+      end if
+      if (ok .and. .not. empty) then
+         call rccsd_ladder_partial(ints, amps, this%inter, this%lad, this%ls, la, stab, this%tau_symmetric)
+         ok = .not. sub_failed(this)
+      end if
+      call ladder_over_ranks(this, ints, amps, la, stab, ok)
+   end subroutine update_follow
 
    subroutine t1_equation(this, ints, amps, newamps, la)
       !! Eq. (35), the lines of the module header, into `newamps%t1`
@@ -457,8 +712,8 @@ contains
       call kernel_add_sym(no, nv, -1.0_dp, this%scr%pack1, newamps%t2)
    end subroutine t2_base_terms
 
-   subroutine t2_two_body_terms(this, newamps, la)
-      !! 'klij,klab->ijab' and the ladder, both added without symmetrisation
+   subroutine t2_woooo_term(this, newamps, la)
+      !! 'klij,klab->ijab', added without symmetrisation
       class(trc_rccsd_update_t), intent(inout) :: this
       type(trc_rccsd_amps_t), intent(inout) :: newamps
       type(trc_linalg_t), intent(in) :: la
@@ -470,9 +725,7 @@ contains
       no2 = no*no
       ! t2n(ij;ab) += sum_kl Woooo(kl;ij) tau(kl;ab)
       call la%gemm("T", "N", no2, nv*nv, no2, 1.0_dp, this%w%woooo, no2, this%inter%tau, no2, 1.0_dp, newamps%t2, no2)
-      ! 'abcd,ijcd->ijab': the ladder, h(i,j,a,b), coefficient +1, after the Woooo term and before Lvv/Loo
-      call kernel_add_ladder(no, nv, this%lad%h, newamps%t2)
-   end subroutine t2_two_body_terms
+   end subroutine t2_woooo_term
 
    subroutine t2_one_body_terms(this, amps, newamps, la)
       !! 'ac,ijcb->ijab' and '-ki,kjab->ijab', each symmetrised, from the OLD t2

@@ -181,7 +181,8 @@ program trc_main
    call r%cli%add_flag("rimp2", "RI-MP2 correlation energy after the SCF (restricted or "// &
                        "unrestricted; unrestricted refuses more than one rank)")
    call r%cli%add_flag("riccsd", "closed-shell RI-CCSD correlation energy after the SCF (RHF, no ECP; "// &
-                       "the (T) is shared over MPI ranks; also reports the RI-MP2 correlation; cannot be combined "// &
+                       "the ladder of the iterations and the (T) are shared over MPI ranks; "// &
+                       "also reports the RI-MP2 correlation; cannot be combined "// &
                        "with --rimp2, a functional, --uhf or --grad/--hessian/--opt)")
    call r%cli%add_flag("riccsd-t", "--riccsd followed by the perturbative triples (T): RI-CCSD(T)")
    call r%cli%add_option("cc-econv", "--riccsd energy convergence: |dE| between iterations, Eh (1e-8)")
