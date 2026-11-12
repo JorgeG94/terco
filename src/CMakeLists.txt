@@ -833,23 +833,31 @@ file(MAKE_DIRECTORY "${_hgp_template}")
 # `error stop` above it ("a class above d has no Rys kernel in this build",
 # trc_rys_select.F90).
 #
-# The gradient filter below keeps that third condition, and the argument for
-# it is weaker than it looks. grad_bins has no skeleton plan, so the only
-# walk is plan%build's, which iterates b%live in ascending bin index; and
-# bin_key packs (la, lb) as its most significant fields, so ascending index
-# USUALLY means (la, lb) >= (lc, ld). But split_large_bins and arrange_orbits
-# append a split bin's extra chunks PAST every original index while keeping
-# their parent's (la, lb), so a chunk of a low-l bin can be the bra against a
-# high-l ket -- the same mechanism that makes the 42 bra<ket energy classes
-# above reachable. A plan with a bin over BIN_CAP (or TRC_BIN_CAP lowered, as
-# check_sym_fock_cap does for the energy path) can therefore emit a gradient
-# class the filter dropped, and grad_classes `error stop`s on one it has no
-# kernel for. At TERCO_LMAX=2 all 81 gradient classes are built so nothing
-# can fire; above d it needs an f shell and a bin of more than 32768 pairs,
-# and no gradient test sets TRC_BIN_CAP, so it is untested rather than safe.
-# Fixing it is a decision -- build the ~42 extra gradient kernels, or
-# canonicalise the plan at emit time -- and is left for whoever owns the
-# gradient path.
+# The gradient filter below keeps that third condition, and what makes it
+# safe is that EVERY gradient plan is emitted ANGULAR-MOMENTUM CANONICALLY:
+# bins_plan_emit's `canon` reorders the two sides of each segment so that
+# (sLA, sLB) >= (sLC, sLD), whichever side the walk cut (trc_bins.F90).
+# grad_bins asks for it from both plans it builds, the full one
+# (bins_plan_build's `canonical`) and the skeleton one; the energy plans keep
+# the walk order, which the bra<ket energy classes above serve.
+#
+# Ascending bin index alone is not enough. plan%build iterates b%live in
+# ascending index, and bin_key packs (la, lb) as its most significant fields,
+# so ascending index USUALLY means (la, lb) >= (lc, ld). But split_large_bins
+# and arrange_orbits append a split bin's extra chunks PAST every original
+# index while keeping their parent's (la, lb), so a chunk of a low-l bin can
+# be the bra against a high-l ket -- the same mechanism that makes the 42
+# bra<ket energy classes above reachable -- and grad_classes would `error
+# stop` on a class it has no kernel for. At TERCO_LMAX=2 all 81 gradient
+# classes are built, so nothing can fire; above d it takes an f shell and a
+# bin of more than 32768 pairs, which test/check_sym_grad.F90's capped case
+# builds at TERCO_LMAX=3.
+# The 30 gradient classes that filter drops (NOT ~42: that is the energy
+# side's bra<ket count above, over a different class set) are the
+# f-containing ones with (lc, ld) > (la, lb):
+#   0030 0031 0032 0033 1030 1031 1032 1033 1130 1131 1132 1133
+#   2030 2031 2032 2033 2130 2131 2132 2133 2230 2231 2232 2233
+#   3031 3032 3033 3132 3133 3233
 set(_rys_classes "")
 foreach(_tag ${_all_classes})
   string(SUBSTRING "${_tag}" 0 1 _tag_la)
