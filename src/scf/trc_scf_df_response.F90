@@ -59,7 +59,8 @@
 ! def2-universal-jkfit), so setup measures the free device memory and
 ! falls back to df_response_t's apply_rotation when the MO blocks do not
 ! fit.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_scf_df_response
    use pic_types, only: dp, int64
    use trc_scf_df, only: df_jk_t
@@ -600,7 +601,7 @@ contains
       do concurrent(t=0:n8*n8 - 1) local(mu, nu)
          mu = int(mod(t, n8)) + 1
          nu = int(t/n8) + 1
-         if (nu <= mu) xpk(pack_index(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*x(mu, nu)
+         if (nu <= mu) xpk(pack_index(TRC_DC_INDEX(mu), TRC_DC_INDEX(nu))) = merge(1.0_dp, 2.0_dp, mu == nu)*x(mu, nu)
       end do
    end subroutine pack_doubled
 

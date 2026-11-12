@@ -14,6 +14,7 @@
 #if TRC_CART_ORDER != 0
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
+#include "inc/trc_dc_index.inc"
 module trc_df_2c_k31
    use pic_types, only: dp, int64
    use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DTINV, BOYS_DT
@@ -43,7 +44,7 @@ contains
       integer(int64) :: t
 
       do concurrent(t = 0:int(na, int64)*nc - 1)
-         call df_2c_i31(t, nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+         call df_2c_i31(TRC_DC_INDEX(t), nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                    na, ord_a, nc, ord_c, nao, sh_ao, jmat)
       end do
    end subroutine df_2c_k31

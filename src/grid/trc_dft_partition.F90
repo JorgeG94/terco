@@ -1,3 +1,5 @@
+#include "inc/trc_dc_index.inc"
+
 module trc_dft_partition
    !! Becke partition of space into atomic cells
    !!
@@ -227,7 +229,7 @@ contains
       do k0 = k_lo, k_hi, chunk
          n = min(chunk, k_hi - k0 + 1)
          do concurrent(g=1:n)
-            call partition_point(k0 + g - 1, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
+            call partition_point(k0 + g - 1, TRC_DC_INDEX(g), n_atoms, n_points, chunk, points, atom_coords, owner, &
                                  shift, inv_distance, r_min, scheme, adjust, numax, &
                                  atom_r, ract, cell, active, mark, weights)
          end do
@@ -697,7 +699,7 @@ contains
          n = min(chunk, n_points - k0 + 1)
 #ifdef TRC_DEVICE
          do concurrent(g=1:n)
-            call partition_grad_point(k0 + g - 1, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
+            call partition_grad_point(k0 + g - 1, TRC_DC_INDEX(g), n_atoms, n_points, chunk, points, atom_coords, owner, &
                                       coef, shift, inv_distance, r_min, scheme, adjust, numax, &
                                       ract, cell, active, sig, mark, grad)
          end do

@@ -70,7 +70,8 @@
 ! and a correlated step that follows (RI-MP2) can read `bpk` (public,
 ! read-only) for the same reason: it is already (mu nu|P) contracted
 ! against L^-T, over the same auxiliary basis, with nothing more to redo.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_scf_df
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
@@ -334,13 +335,13 @@ contains
             !$acc enter data create(tsph)
             call sph_aux3c_to_sph(aux_subset, n, tens, tsph, lp)
             do concurrent(q=1:nps, mu=1:n, nu=1:n, nu <= mu)
-               this%bpk(pack_index(mu, nu), p0s - 1 + q) = tsph(mu, nu, q)
+               this%bpk(pack_index(TRC_DC_INDEX(mu), TRC_DC_INDEX(nu)), p0s - 1 + q) = tsph(mu, nu, q)
             end do
             !$acc exit data delete(tsph)
             deallocate (tsph)
          else
             do concurrent(q=1:np, mu=1:n, nu=1:n, nu <= mu)
-               this%bpk(pack_index(mu, nu), p0 - 1 + q) = tens(mu, nu, q)
+               this%bpk(pack_index(TRC_DC_INDEX(mu), TRC_DC_INDEX(nu)), p0 - 1 + q) = tens(mu, nu, q)
             end do
          end if
          call this%tbl%step_off(lp, ST_PACK, tc)
@@ -422,7 +423,7 @@ contains
       ! --- J: two GEMVs on the packed storage -------------------------------
       call this%tbl%step_on(lp, ST_JGAM, tc)
       do concurrent(mu=1:n, nu=1:n, nu <= mu)
-         this%dpk(pack_index(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*d_c(mu, nu)
+         this%dpk(pack_index(TRC_DC_INDEX(mu), TRC_DC_INDEX(nu))) = merge(1.0_dp, 2.0_dp, mu == nu)*d_c(mu, nu)
       end do
       call lp%gemv("T", npack, naux, 1.0_dp, this%bpk, npack, this%dpk, 0.0_dp, this%gq)
       call this%tbl%step_off(lp, ST_JGAM, tc)

@@ -67,7 +67,8 @@
 ! "smallest exponent last" ordering of a BSE-JSON-read ECP channel or
 ! orbital shell (see git history/PR description for the measurement that
 ! would justify adding it back).
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_ecp
    use pic_types, only: dp
    use trc_basis_types, only: trc_basis_t
@@ -305,7 +306,7 @@ contains
       do concurrent(t=1:ntask1b) local(i, g)
          g = (t - 1)/nshell + 1
          i = t - (g - 1)*nshell
-         call ecp_k1b_item(i, g, nshell, b%sh_l, b%sh_np, b%maxnp, b%sh_e, b%sh_c, b%sh_r, &
+         call ecp_k1b_item(TRC_DC_INDEX(i), TRC_DC_INDEX(g), nshell, b%sh_l, b%sh_np, b%maxnp, b%sh_e, b%sh_c, b%sh_r, &
                            b%natm, b%at_r, ngroup, grp_atom, grp_l, rs, &
                            fac1_cache(:, i, g), fac2_cache(:, i, g), ang2_cache(:, i, g))
       end do

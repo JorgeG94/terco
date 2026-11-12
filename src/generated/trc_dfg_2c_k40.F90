@@ -11,6 +11,7 @@
 #if TRC_CART_ORDER != 0
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
+#include "inc/trc_dc_index.inc"
 module trc_dfg_2c_k40
    use pic_types, only: dp, int64
    use trc_rys_table3, only: RYS_C3, RYS_ASY_R3, RYS_ASY_W3, RYS_NROOTS3, &
@@ -39,7 +40,7 @@ contains
 
       if (nq <= 0) return
       do concurrent(t = 1:nq)
-         call dfg_2c_i40(t, nsx, nax, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, &
+         call dfg_2c_i40(TRC_DC_INDEX(t), nsx, nax, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, &
                    nq, q_i, q_j, natm, nlane, zmat, gp)
       end do
    end subroutine dfg_2c_k40

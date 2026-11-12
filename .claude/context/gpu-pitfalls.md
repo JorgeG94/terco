@@ -76,11 +76,13 @@ the same history. This file adds the debugging side.
   issue titled "submit to Intel". Cure in terco: pass the index through the
   `TRC_DC_INDEX` macro of `src/inc/trc_dc_index.inc` at the call site, which
   is `(i)` under ifx (an expression, not the variable) and the plain
-  variable for every other compiler. The rest of terco passes the index by
-  reference and is right under ifx only where the callee is inlined, so a new
-  or larger item routine can trip it: use the macro in new code. The macro
-  exists only because of this ifx bug: when a fixed ifx is the CI compiler,
-  remove it and its call sites and go back to the plain variable.
+  variable for every other compiler. Every such call in `src/` uses it, the
+  generators (`scripts/gen_*.py`) emit it, and new code must too. An input
+  that is already an expression (`t + 1`) needs nothing, an output argument
+  cannot take it, and the few older item routines with a `value` index
+  dummy are already safe. The macro exists only because of this ifx bug:
+  when a fixed ifx is the CI compiler, remove it and its call sites and go
+  back to the plain variable.
 - **nvfortran 26.5 HOST build (`-fast -O3`; the device build is right):
   `integer, intent(in), value` dummies in item routines.** They gave wrong
   RI-CCSD amplitudes (bisected: 16 failing checks in `check_rccsd_run` with

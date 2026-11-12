@@ -37,7 +37,8 @@
 ! is ~10^4 points, ~1 GB) and the wall for large clusters. Everything touching
 ! K goes through `solve` and `build_operators`, so a matrix-free K q under
 ! conjugate gradients could replace both without the SCF noticing.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_pcm
    use pic_types, only: dp
    use trc_constants, only: PI
@@ -373,7 +374,7 @@ contains
       real(dp), intent(out) :: smat(n, n)
       integer :: i, j
       do concurrent(j = 1:n, i = 1:n)
-         smat(i, j) = s_elem(i, j, n, coords, zeta, switch_f)
+         smat(i, j) = s_elem(TRC_DC_INDEX(i), TRC_DC_INDEX(j), n, coords, zeta, switch_f)
       end do
    end subroutine pcm_s_fill
 
@@ -384,7 +385,7 @@ contains
       real(dp), intent(out) :: dmat(n, n)
       integer :: i, j
       do concurrent(j = 1:n, i = 1:n)
-         dmat(i, j) = d_elem(i, j, n, coords, normals, zeta, r_parent)*area(j)
+         dmat(i, j) = d_elem(TRC_DC_INDEX(i), TRC_DC_INDEX(j), n, coords, normals, zeta, r_parent)*area(j)
       end do
    end subroutine pcm_da_fill
 

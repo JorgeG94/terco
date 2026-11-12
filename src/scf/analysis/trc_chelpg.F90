@@ -7,7 +7,8 @@
 ! mqc's; the potential is terco's own PCM surface-integral kernel with the
 ! Gaussian smearing taken to the point-charge limit, and the grid and the
 ! fit's normal equations are `do concurrent` kernels.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_chelpg
    !! Charges `q_A` on the nuclei that best reproduce the molecule's
    !! electrostatic potential on a shell of points outside it:
@@ -378,7 +379,7 @@ contains
 
       !$acc enter data copyin(low, at_r, radii) create(kept)
       do concurrent(g=1:n_lattice)
-         kept(g) = lattice_point_kept(g, nx1, nx2, low, h, margin, natm, at_r, radii)
+         kept(g) = lattice_point_kept(TRC_DC_INDEX(g), nx1, nx2, low, h, margin, natm, at_r, radii)
       end do
       !$acc update self(kept)
       !$acc exit data delete(low, at_r, radii, kept)
@@ -423,7 +424,7 @@ contains
 
       !$acc enter data copyin(at_r, at_z, pts, electronic) create(potential)
       do concurrent(g=1:npt)
-         potential(g) = nuclear_point(g, natm, at_r, at_z, npt, pts) - electronic(g)
+         potential(g) = nuclear_point(TRC_DC_INDEX(g), natm, at_r, at_z, npt, pts) - electronic(g)
       end do
       !$acc update self(potential)
       !$acc exit data delete(at_r, at_z, pts, electronic, potential)
@@ -457,10 +458,10 @@ contains
       ! dominant cost, and wide enough to fill the device from a few atoms.
       !$acc enter data copyin(at_r, pts, potential) create(gram, projection)
       do concurrent(ab=1:natm*natm)
-         gram(ab) = gram_element(ab, natm, at_r, npt, pts)
+         gram(ab) = gram_element(TRC_DC_INDEX(ab), natm, at_r, npt, pts)
       end do
       do concurrent(ab=1:natm)
-         projection(ab) = projection_element(ab, natm, at_r, npt, pts, potential)
+         projection(ab) = projection_element(TRC_DC_INDEX(ab), natm, at_r, npt, pts, potential)
       end do
       !$acc update self(gram, projection)
       !$acc exit data delete(at_r, pts, potential, gram, projection)
@@ -512,7 +513,7 @@ contains
 
       !$acc enter data copyin(at_r, charges, pts, potential) create(residual)
       do concurrent(g=1:npt)
-         residual(g) = potential(g) - nuclear_point(g, natm, at_r, charges, npt, pts)
+         residual(g) = potential(g) - nuclear_point(TRC_DC_INDEX(g), natm, at_r, charges, npt, pts)
       end do
       !$acc update self(residual)
       !$acc exit data delete(at_r, charges, pts, potential, residual)

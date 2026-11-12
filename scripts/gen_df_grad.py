@@ -419,7 +419,8 @@ def emit_3c_module(la, lb, lc, L, LA, order, order_val, order_arg, unroll_max, r
     body, tabs, nroots = emit_kernel(la, lb, lc, True, order, unroll_max, roots_max)
     text = MOD_HEADER.format(title=f"Class ({la}{lb}|{lc}) three-centre Coulomb derivative, contracted.",
                              L=L, LA=LA, order_arg=order_arg, order_val=order_val)
-    text += f"""module {mod}
+    text += f"""#include "inc/trc_dc_index.inc"
+module {mod}
    use pic_types, only: dp, int64
 {ri.roots_table_use(nroots)}   implicit none
    private
@@ -453,7 +454,7 @@ contains
 
       if (npq <= 0 .or. nac <= 0) return
       do concurrent(t = 0:int(npq, int64)*nac - 1)
-         call {itm}(t, nsh, nao, sh_ao, sh_at, sh_r, npq, q_a, q_b, q_o, q_n, npp, pd, &
+         call {itm}(TRC_DC_INDEX(t), nsh, nao, sh_ao, sh_at, sh_r, npq, q_a, q_b, q_o, q_n, npp, pd, &
                    nsx, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
                    natm, nlane, ky, ny1, ny3, ytens, jc, nqc, qoff, cq, dens, gp)
       end do
@@ -546,7 +547,8 @@ def emit_2c_module(la, lc, L, LA, order, order_val, order_arg, unroll_max, roots
     body, tabs, nroots = emit_kernel(la, 0, lc, False, order, unroll_max, roots_max)
     text = MOD_HEADER.format(title=f"Class ({la}|{lc}) two-centre Coulomb derivative, contracted.",
                              L=L, LA=LA, order_arg=order_arg, order_val=order_val)
-    text += f"""module {mod}
+    text += f"""#include "inc/trc_dc_index.inc"
+module {mod}
    use pic_types, only: dp, int64
 {ri.roots_table_use(nroots)}   implicit none
    private
@@ -572,7 +574,7 @@ contains
 
       if (nq <= 0) return
       do concurrent(t = 1:nq)
-         call {itm}(t, nsx, nax, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, &
+         call {itm}(TRC_DC_INDEX(t), nsx, nax, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, &
                    nq, q_i, q_j, natm, nlane, zmat, gp)
       end do
    end subroutine {drv}

@@ -8,6 +8,7 @@
 #if TRC_CART_ORDER != 0
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
+#include "inc/trc_dc_index.inc"
 module trc_pcm_grad_k22
    use pic_types, only: dp
    use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
@@ -36,7 +37,7 @@ contains
       real(dp), intent(inout) :: gp(3, natm, nlane)
       integer :: k, c
       do concurrent(k = 1:n, c = 1:nch)
-         call pcm_grad_item_22(idx(k), c, nshell, nao, natm, maxnp, sh_np, sh_ao, sh_at, sh_e, sh_c, sh_r, npair, p_i, p_j, npts, pts, zk, ptatm, q, dmat, nch, nlane, gp)
+         call pcm_grad_item_22(idx(k), TRC_DC_INDEX(c), nshell, nao, natm, maxnp, sh_np, sh_ao, sh_at, sh_e, sh_c, sh_r, npair, p_i, p_j, npts, pts, zk, ptatm, q, dmat, nch, nlane, gp)
       end do
    end subroutine pcm_grad_launch_22
 
