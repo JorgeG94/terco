@@ -43,6 +43,69 @@ The SCF converges when `dE` is below `--econv` **and** \|FDS-SDF\| is below
 XC/solvation/correlation term that applies), and the wall time. The exit
 status is 0, or 2 if the SCF did not converge within `--iterations`.
 
+## A symmetric run
+
+With `--symmetry` (see {doc}`cli`) the log gains four things. The settings
+block has a `symmetry` line saying what was asked
+(`on (auto, reported in the input frame)`, a group name, or, when the run
+fell back, `on (auto), but --df is not supported with symmetry yet: running
+in C1`). Before the first iteration, two lines name the group, the number of
+irreps, the dimension of each irrep's symmetry-adapted basis, and the Fock
+build chosen:
+
+```text
+   symmetry: C2v, 4 irreps, SO dimensions [10, 1, 3, 5]
+   symmetry: full Fock build (size rule: 3 atoms in 2 orbits)
+```
+
+After the SCF, a summary block (`terco water.xyz -b 6-31gs --symmetry on`,
+CPU build):
+
+```text
+   symmetry         : requested on, detected C2v, used C2v
+   symmetrisation   : largest atom displacement  0.00E+00 Bohr
+   frame            : results are in your INPUT frame (rotated back from the C2v standard frame the SCF ran in)
+   geometry, input frame, symmetrised (Angstrom)
+      1  O       0.00000000      0.00000000      0.11730000
+      2  H       0.00000000      0.75720000     -0.46920000
+      3  H       0.00000000     -0.75720000     -0.46920000
+   irrep  SO functions  occupied orbitals
+       A1          10           3
+       A2           1           0
+       B1           3           1
+       B2           5           1
+
+   orbitals: index  irrep  energy (Eh)  occupation
+          1      A1    -20.5605076874     2.0
+          2      A1     -1.3415388911     2.0
+          3      B2     -0.7065577365     2.0
+   ...
+```
+
+- `requested`, `detected`, `used`: what you asked for, the largest Abelian
+  group found, and the group the SCF ran in (a named group may be a subgroup
+  of the detected one). `detected` is the Abelian group even for a molecule of
+  higher symmetry, e.g. D2h for benzene.
+- The **frame** line says which axes every coordinate, the gradient and the
+  orbitals are in. With `on`/`auto` it is your **input frame**: the geometry
+  printed is your input symmetrised in place, and the largest atom
+  displacement this took is on the `symmetrisation` line (below
+  `--symmetry-tol`). With a named group the results are in the **standard
+  frame** of the group (centre of nuclear charge at the origin, axes along
+  the group's), and a `NOTE ... STANDARD FRAME` replaces the frame line;
+  `--json`'s `symmetry.frame rotation` and `symmetry.frame origin` map the
+  input to it. Energies, orbital energies, irrep labels, occupations and
+  atomic charges are the same in either frame.
+- The irrep table gives each irrep's number of symmetry-adapted functions and
+  occupied orbitals (alpha / beta for an unrestricted run).
+- Each orbital carries its irrep label. A molecule with more than 50
+  orbitals prints a window around the HOMO instead of all of them.
+
+A run that falls back to C1, or an `on`/`auto` run on a molecule with no
+symmetry, prints only the settings line and is otherwise as with
+`--symmetry off`. A named group that ends up as C1 prints the `symmetry`
+line followed by `no symmetry in the SCF (the group used is C1)`.
+
 ## `--json`
 
 `--json <file>` writes a summary alongside the log. Every run's own
@@ -105,6 +168,29 @@ A `--grad` run adds a `"gradient"` array; `--rimp2` adds an
 `--opt`/`--hessian` add `"optimization"`/`"vibrational"` blocks. Keys
 whose default is decided from the system (the charge, the guess, ...)
 appear in `"input"` only when the run was given one explicitly.
+
+### `"symmetry"`
+
+Written when a symmetry request ran and used a group, or when a named group
+was requested (an `on`/`auto` request that found no symmetry, or fell back to
+C1, writes no object). Its keys:
+
+| Key | Written when | Meaning |
+|---|---|---|
+| `requested` | always | the request as given (`on`, `c2v`, ...) |
+| `detected group` | always | the largest Abelian group found |
+| `group` | always | the group the SCF used (`C1` if none) |
+| `residual` | always | the largest atom displacement symmetrisation made, Bohr |
+| `frame` | the group is not C1 | a sentence saying whether the geometry, gradient and orbitals are in the `input` frame or the `standard` frame |
+| `frame rotation` | same | 3x3 matrix (array of rows), `x_std = rot (x - origin)` for an input point `x` in Bohr |
+| `frame origin` | same | the centre of nuclear charge, Bohr (the origin of the standard frame) |
+| `geometry` | same | `[x, y, z]` per atom, Angstrom, in the frame named by `frame` |
+| `irreps` | same | irrep names, in the order the labels below index |
+| `irrep dimensions` | same | symmetry-adapted functions per irrep, summing to the number of basis functions |
+| `orbital irreps` | same, after an SCF | irrep name of each orbital, in energy order (`beta orbital irreps` is the beta set of an unrestricted run) |
+| `occupied orbitals per irrep` | same | object mapping each irrep to its occupied-orbital count (a `[alpha, beta]` pair for an unrestricted run) |
+
+A `--grad` gradient is in the frame `frame` names, like `geometry`.
 
 ### `"build"` and `"timings"`
 
