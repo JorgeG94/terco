@@ -1,6 +1,8 @@
 !
 ! The analytic gradients are validated (pyscf, finite differences, CPU =
-! GPU); single rank only. See README.
+! GPU). Collective over the ranks of a communicator when one is given: every
+! rank enters, each term is root-only today (trc_grad_par), the partial
+! gradients are summed by the caller. See README.
 !
 ! The full analytic HF/UHF nuclear gradient: one-electron (trc_1e_gradient),
 ! two-electron (eri%gradient) and nuclear repulsion, assembled at a
@@ -48,6 +50,8 @@ module trc_scf_grad
    use trc_scf_context, only: trc_pair_eri_cache_t, trc_grid_cache_t
    use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange, decontract_options_equal
    use trc_scf_df, only: df_jk_t
+   use trc_grad_par, only: trc_grad_par_t, GRAD_TERM_FOUR_CENTRE, GRAD_TERM_DF, GRAD_TERM_ONE_ELECTRON, &
+                           GRAD_TERM_NUC_REP, GRAD_TERM_XC, GRAD_TERM_VV10
    use trc_scf_grad_df, only: scf_grad_df_two_electron
    use trc_vv10_grad, only: vv10_grad_add, vv10_grad_add_on_grid
    use trc_scf_settings, only: DEFAULT_NLC_GRID_LEVEL
@@ -101,11 +105,18 @@ module trc_scf_grad
 
    type :: trc_scf_grad_reuse_t
       !! Which of `trc_scf_gradient`'s `grid_cache` grids the XC terms may run
-      !! on without a rebuild (its `grid_reuse`). The caller checks that each
-      !! matches the settings the gradient's quadrature has to match the SCF's
-      !! on; `grid_cache` alone says only what is built, not what matches.
+      !! on without a rebuild (its `grid_reuse`), and the rank layout (`par`).
+      !! The caller checks that each grid matches the settings the gradient's
+      !! quadrature has to match the SCF's on; `grid_cache` alone says only
+      !! what is built, not what matches.
       logical :: semilocal = .false.   !! `grid_cache%grid`/`xg`, for the semilocal XC term
       logical :: nlc = .false.         !! `grid_cache%grid_nlc`/`xg_nlc`, for the VV10 term
+      type(trc_grad_par_t) :: par
+      !! The rank layout the gradient runs under (trc_grad_par): which terms
+      !! this rank computes. It rides here because this bundle is the one
+      !! optional argument `trc_scf_gradient` already takes that is not a
+      !! physical input, and the routine is at its argument-count baseline.
+      !! Default: one rank, every term computed.
    end type trc_scf_grad_reuse_t
 
    type :: grad_exchange_t
@@ -243,7 +254,14 @@ contains
       !! VV10 (func%nlc_b/nlc_c nonzero, e.g. wB97X-V) is NOT refused
       !! either any more: trc_vv10_grad%vv10_grad_add adds the
       !! nonlocal correlation term on top, on its own grid (`nlc_grid_level`,
-      !! below) -- single rank only, see that module's own header.
+      !! below).
+      !!
+      !! RANKS. Collective when `grid_reuse%par` carries a communicator: every
+      !! rank calls this and fills `grad` with ITS PARTIAL gradient, the terms
+      !! `grid_reuse%par%computes(...)` says it computes (trc_grad_par); the
+      !! caller sums the partials (grad_par_finish). Today every term is
+      !! root-only, so a rank other than 0 returns zeros after rebuilding the
+      !! density, and nothing here communicates.
       type(trc_basis_t),  intent(inout) :: b
       type(trc_linalg_t), intent(inout) :: lp
       integer,            intent(in)    :: nspin, nalpha, nbeta
@@ -321,7 +339,8 @@ contains
       type(step_table_t) :: gst, xst, vst
       type(xc_grad_options_t) :: xopts
       type(timer_type) :: tc
-      logical :: talk, reuse_pl, reuse_eri, project, skel, reuse_semilocal, reuse_nlc
+      logical :: talk, reuse_pl, reuse_eri, project, skel, reuse_semilocal, reuse_nlc, need_pl
+      type(trc_grad_par_t) :: par
       integer :: nlc_level
       integer :: nao
       integer :: nocc(2)
@@ -336,6 +355,9 @@ contains
          reuse_semilocal = grid_reuse%semilocal
          reuse_nlc = grid_reuse%nlc
       end if
+      if (present(grid_reuse)) par = grid_reuse%par
+      ! The timing tables are one rank's: print them once.
+      talk = talk .and. par%rank == 0
       project = .true.
       skel = present(sym)
       if (present(sym)) then
@@ -372,8 +394,15 @@ contains
       call gst%step_off(lp, 1, tc)
       call gst%step_on(lp, 2, tc)
       call scf_grad_reuse_decide(b, thresh, skel, xch, pair_eri_cache, reuse_pl, reuse_eri)
-      if (present(reused)) reused = reuse_pl .and. (reuse_eri .or. present(dfjk))
-      if (.not. reuse_pl) then
+      ! Truthful only where something was computed: a rank that skips every
+      ! term reports no reuse.
+      if (present(reused)) reused = reuse_pl .and. (reuse_eri .or. present(dfjk)) .and. &
+                                    par%computes(merge(GRAD_TERM_DF, GRAD_TERM_FOUR_CENTRE, present(dfjk)))
+      ! The pair list only the terms that use it need; a rank that computes
+      ! none of them skips the Schwarz screen.
+      need_pl = par%computes(GRAD_TERM_ONE_ELECTRON) .or. &
+                par%computes(merge(GRAD_TERM_DF, GRAD_TERM_FOUR_CENTRE, present(dfjk)))
+      if (.not. reuse_pl .and. need_pl) then
          call pl_own%build(b, thresh)
          call pl_own%to_device()
       end if
@@ -386,20 +415,28 @@ contains
          ! --- density-fitted two-electron term, in the actual-energy
          ! convention (no halving: scf_grad_df_two_electron differentiates
          ! E_2 itself, not eri%gradient's doubled trace) ---
-         call aux%to_device()
          grad = 0.0_dp
          !$acc enter data copyin(dtot, grad)
-         if (reuse_pl) then
-            call scf_grad_df_two_electron(b, aux, pair_eri_cache%pl, dfjk, lp, nalpha, cmo(:, :, 1), dtot, 1.0_dp, &
-                                          xch%exx, grad)
-         else
-            call scf_grad_df_two_electron(b, aux, pl_own, dfjk, lp, nalpha, cmo(:, :, 1), dtot, 1.0_dp, xch%exx, grad)
+         if (par%computes(GRAD_TERM_DF)) then
+            call aux%to_device()
+            if (reuse_pl) then
+               call scf_grad_df_two_electron(b, aux, pair_eri_cache%pl, dfjk, lp, nalpha, cmo(:, :, 1), dtot, 1.0_dp, &
+                                             xch%exx, grad)
+            else
+               call scf_grad_df_two_electron(b, aux, pl_own, dfjk, lp, nalpha, cmo(:, :, 1), dtot, 1.0_dp, xch%exx, grad)
+            end if
          end if
       else
-         if (reuse_eri) then
-            call two_electron_4c(b, thresh, density, xch, grad, skel, eri_cache=pair_eri_cache%eri, sym=sym)
-         else
-            call two_electron_fresh(b, thresh, density, xch, grad, skel, pair_eri_cache, sym=sym)
+         grad = 0.0_dp
+         ! The four-centre engine is built WITHOUT the communicator on purpose:
+         ! eri%gradient then does not reduce over ranks, and the one reduction
+         ! is the caller's (grad_par_finish).
+         if (par%computes(GRAD_TERM_FOUR_CENTRE)) then
+            if (reuse_eri) then
+               call two_electron_4c(b, thresh, density, xch, grad, skel, eri_cache=pair_eri_cache%eri, sym=sym)
+            else
+               call two_electron_fresh(b, thresh, density, xch, grad, skel, pair_eri_cache, sym=sym)
+            end if
          end if
          ! --- one-electron, added on top. `wmat` is already present (and
          ! already holds the right numbers, from scf_grad_energy_weighted_density
@@ -408,10 +445,12 @@ contains
       end if
       call gst%step_off(lp, 2, tc)
       call gst%step_on(lp, 3, tc)
-      if (reuse_pl) then
-         call trc_1e_gradient(b, pair_eri_cache%pl, wmat, dtot, grad)
-      else
-         call trc_1e_gradient(b, pl_own, wmat, dtot, grad)
+      if (par%computes(GRAD_TERM_ONE_ELECTRON)) then
+         if (reuse_pl) then
+            call trc_1e_gradient(b, pair_eri_cache%pl, wmat, dtot, grad)
+         else
+            call trc_1e_gradient(b, pl_own, wmat, dtot, grad)
+         end if
       end if
       call gst%step_off(lp, 3, tc)
 
@@ -419,21 +458,23 @@ contains
       ! still present and correct on the device at this point (see this
       ! routine's own DEVICE RESIDENCY note above); `grad` likewise. ---
       if (present(func)) then
-         call gst%step_on(lp, 4, tc)
-         xopts = xc_grad_options(grid_level=grid_level, grid_max_pts=grid_max_pts, grid_response=grid_response, &
-                                 rho_tol=rho_tol, grid_rotation=grid_rotation)
-         if (reuse_semilocal) then
-            xopts%partition = grid_cache%grid%partition
-            call xc_grad_add_on_grid(b, lp, func, density, grad, xopts, xst, grid_cache%xg)
-         else
-            call xc_grad_add(b, lp, func, nspin, density, grad, xopts, xst)
+         if (par%computes(GRAD_TERM_XC)) then
+            call gst%step_on(lp, 4, tc)
+            xopts = xc_grad_options(grid_level=grid_level, grid_max_pts=grid_max_pts, grid_response=grid_response, &
+                                    rho_tol=rho_tol, grid_rotation=grid_rotation)
+            if (reuse_semilocal) then
+               xopts%partition = grid_cache%grid%partition
+               call xc_grad_add_on_grid(b, lp, func, density, grad, xopts, xst, grid_cache%xg)
+            else
+               call xc_grad_add(b, lp, func, nspin, density, grad, xopts, xst)
+            end if
+            call gst%step_off(lp, 4, tc)
          end if
-         call gst%step_off(lp, 4, tc)
          ! --- VV10 nonlocal correlation, added on top. Its own grid, its
          ! own screen -- see trc_vv10_grad's own header. `density` is still
          ! present and correct on the device (same note as xc_grad_add
          ! above); `grad` likewise. ---
-         if (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) then
+         if ((func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) .and. par%computes(GRAD_TERM_VV10)) then
             nlc_level = DEFAULT_NLC_GRID_LEVEL
             if (present(nlc_grid_level)) nlc_level = nlc_grid_level
             ! vv10_grad_add has no `rho_tol` of its own: it always
@@ -457,13 +498,13 @@ contains
       !$acc exit data delete(wmat, dtot, grad, cmo, eps, density)
 
       ! --- nuclear repulsion, host arithmetic, added on top ---
-      call scf_grad_nuclear_repulsion(b, grad)
+      if (par%computes(GRAD_TERM_NUC_REP)) call scf_grad_nuclear_repulsion(b, grad)
       ! Idempotent on the four-centre term, which two_electron_4c already
       ! projected: an orthogonal projector applied twice is itself.
       if (present(sym) .and. project) call sym_scf_grad_symmetrize(sym%geometry%group, sym%geometry%perm, grad)
 
       ! A reused `pair_eri_cache%pl` is the caller's: only `pl_own` is ours.
-      if (.not. reuse_pl) call pl_own%release()
+      if (.not. reuse_pl .and. need_pl) call pl_own%release()
       deallocate (wmat, dtot, density)
 
       if (talk) then

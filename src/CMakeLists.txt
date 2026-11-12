@@ -38,6 +38,7 @@ target_sources(
           core/trc_linalg.F90     # dense linear algebra on device-resident matrices
           core/trc_si.F90         # a quantity printed with its SI prefix (2.45 PFLOP)
           core/trc_step_table.F90 # shared timed-step table (RI-MP2, DF-JK): time/FLOP/B/s, NVTX
+          core/trc_comm_agree.F90 # one agreement on a failure across ranks (status + text)
           core/trc_mpi_device.F90 # whether MPI gets device buffers directly (CUDA-aware)
           core/trc_constants.F90  # the single source of truth for math/CODATA constants and atomic masses
           solvation/trc_pcm_radii.F90  # cavity radii for the polarisable continuum
@@ -59,6 +60,7 @@ target_sources(
           scf/trc_scf_gdm.F90            # geometric direct minimisation core: L-BFGS history, preconditioner, step control
           scf/trc_scf_gdm_step.F90       # GDM as a step mode of the SCF loop: accept-on-descent orbital rotations
           scf/trc_scf_soscf.F90          # second-order SCF (--soscf): trust-region Newton on the orbital rotations, RHF
+          scf/gradient/trc_grad_par.F90          # how the gradient is shared over ranks: term table, reduction
           scf/gradient/trc_scf_grad.F90          # the full analytic gradient: 1e + eri%gradient + nuclear repulsion
           scf/vibration/trc_vib.F90                # harmonic vibrational analysis of a Cartesian Hessian, host only
           scf/vibration/trc_thermo.F90             # ideal-gas RRHO thermochemistry from trc_vib's frequencies

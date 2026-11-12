@@ -2454,6 +2454,26 @@ else()
                                                 ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 endif()
 
+# The analytic gradient over ranks (the frame every rank enters: reduction,
+# failure agreement, the per-term policy), on one, two and four ranks. A plain
+# program for the same reason as scf_mpi (collective calls).
+add_executable(grad_mpi grad_mpi.F90)
+target_compile_definitions(grad_mpi PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(grad_mpi PRIVATE ${main_lib} terco_test_basis terco_c_interfaces)
+target_include_directories(grad_mpi PRIVATE ${CMAKE_BINARY_DIR}/modules)
+if(TERCO_ENABLE_MPI)
+  foreach(np 1 2 4)
+    add_test(NAME terco/grad_mpi_np${np}
+             COMMAND ${_mpiexec} ${_npflag} ${np} $<TARGET_FILE:grad_mpi>)
+    set_tests_properties(terco/grad_mpi_np${np} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                           TIMEOUT 900)
+  endforeach()
+else()
+  add_test(NAME terco/grad_mpi COMMAND grad_mpi)
+  set_tests_properties(terco/grad_mpi PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                 ENVIRONMENT "CUDA_VISIBLE_DEVICES=0" TIMEOUT 900)
+endif()
+
 #
 # GAMESS's DDI and a fragment method, imitated: see scf_mpi_frag.F90's own
 # header for what each of the four scenarios checks. Needs exactly 4 ranks

@@ -81,17 +81,14 @@
 ! weight-response block below can read them -- the same two optional
 ! arguments xc_grad_add passes its own grid build.
 !
-! SINGLE RANK. No communicator: PASS 2 here is a second, small O(N_grid^2)
+! ROOT-ONLY. No communicator: PASS 2 here is a second, small O(N_grid^2)
 ! sum next to the energy path's (coarser grid, no potential-matrix pass 3 to
 ! pay for), and splitting it the way trc_vv10's own PASS 2 does would need an
 ! allreduce over `vrho`/`vsigma`/`dedw`/`fexp` before the batch loop that
 ! consumes them could run device-resident on every rank -- a real plumbing
-! change (a `comm_t` threaded through this module and trc_scf_gradient,
-! which takes none today) rather than something that falls out of the
-! existing single-rank call sites. `trc_run_gradient` already refuses a
-! multi-rank context outright (trc_capi.F90, "the gradient path is not
-! rank-split"), so every caller of this module is single-rank already;
-! left that way rather than half-plumbed.
+! change (a `comm_t` threaded through this module). On a multi-rank run
+! trc_run_gradient is collective but this term is computed by rank 0 alone
+! (trc_grad_par's GRAD_TERM_VV10); the other ranks never call this module.
 !
 ! GPU. Measured correct and consistent with CPU to ~1e-11/1e-12 (the
 ! fixed-density FD check, check_vv10_grad_fixedd_fd.F90, three repeated

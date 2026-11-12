@@ -325,8 +325,8 @@ contains
                                            decontract=decontract)
             ! Not when `comm` is a real split (nranks > 1): each rank then
             ! holds only ITS share of the quartets, which is not what a
-            ! reuser (a single-rank gradient right after, trc_capi.F90's
-            ! trc_run_gradient) expects of "the SCF's own engine" --
+            ! reuser (the gradient right after, which builds its engine
+            ! without a communicator, trc_capi.F90's trc_run_gradient) expects of "the SCF's own engine" --
             ! trc_run_hessian already refuses more than one rank, so this
             ! is a backstop, not the gate. `.and.` is not guaranteed to
             ! short-circuit, hence the nested `if` rather than one

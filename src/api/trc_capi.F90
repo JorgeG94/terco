@@ -190,6 +190,7 @@ module trc_capi
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_guess_t, trc_scf_result_t, trc_scf_run, trc_grid_cache_t, &
                              trc_pair_eri_cache_t
    use trc_scf_grad, only: trc_scf_gradient, trc_scf_grad_sym_t, trc_scf_grad_reuse_t
+   use trc_grad_par, only: trc_grad_par_t, grad_par_finish, GRAD_TERM_PCM
    use trc_rimp2_grad, only: trc_rimp2_gradient, trc_rimp2_grad_t, rimp2_grad_reference_refusal
    use trc_pcm_grad, only: pcm_grad_scf_add
    use trc_scf_settings, only: scf_settings_spin_rule, scf_settings_eri_thresh_env, scf_settings_is_aufbau, ROTATION_SIZE
@@ -4997,14 +4998,22 @@ contains
       !! through the already-factored K) and adds grad_qv + grad_nuc +
       !! grad_solver (`trc_pcm_grad%pcm_grad_add`'s own header).
       !!
-      !! A multi-rank context (`cx%fcomm /= -1`) is NOT refused: the
-      !! gradient is not rank-split yet, so rank 0 computes it alone and
-      !! broadcasts it, with a warning (see the comment at the call). Only
-      !! rank 0's device rebuilds the full pair list, Schwarz screen and ERI
-      !! structures for it, which is the memory a split SCF avoided; a real
-      !! split is the follow-up. `eri%gradient` itself already supports one
-      !! (`this%rank`/`this%nranks`, `sum_ranks`'s allreduce) once
-      !! `trc_scf_gradient` passes its `eri%build` a `comm`.
+      !! A multi-rank context (`cx%fcomm /= -1`) is NOT refused. The call is
+      !! COLLECTIVE: every rank must make it. Each rank accumulates a partial
+      !! gradient (trc_grad_par: a term is either dealt over the ranks or
+      !! computed by rank 0 alone, and every term is rank 0's for now, with a
+      !! warning), then the ranks agree on failure and sum the partials with
+      !! one allreduce followed by a broadcast of rank 0's copy, so a failure
+      !! reported through the local status returns on all of them with the same status
+      !! and message, and every rank holds the same bits. Agreed: a failure
+      !! reported through the local status after the communicator is built (the
+      !! PCM build refusal today). NOT agreed: an `error stop` inside a term,
+      !! and a failure of the communicator build itself, which is rank-local.
+      !! Only rank 0's device
+      !! rebuilds the full pair list, Schwarz screen and ERI structures for it,
+      !! which is the memory a split SCF avoided. What is decided from the
+      !! replicated settings alone (the refusals above) returns before any
+      !! collective call, identically on every rank.
       !!
       !! A plain LDA/GGA functional, a GLOBAL hybrid of one (b3lyp and
       !! friends), or a RANGE-SEPARATED hybrid (wb97x and friends: nonzero
@@ -5048,8 +5057,10 @@ contains
       logical :: have_func, have_pcm
       character(len=:), allocatable :: refusal
       type(comm_t) :: comm
-      logical :: collective, root
-      real(dp), allocatable :: gbuf(:)
+      logical :: collective
+      type(trc_grad_par_t) :: par
+      integer(c_int) :: lstat
+      character(len=:), allocatable :: lmsg
       type(trc_pcm_t) :: pcm_local
       type(error_t) :: perr
       type(trc_scf_grad_sym_t), allocatable :: gsym
@@ -5136,42 +5147,51 @@ contains
       greuse%semilocal = reuse_grid
       greuse%nlc = reuse_nlc
       if (have_func) gfunc = func
-      ! More than one rank: the SCF ran split, but the gradient is not split
-      ! yet, so rank 0 computes it alone on its own device and broadcasts
-      ! it, and every rank's trc_gradient returns the same numbers. That is
-      ! safe because every rank holds the whole converged SCF: the
-      ! orbitals, the full XC grids (only the XC evaluation is split, by
-      ! batch) and, for --df, the full fitted tensor (cx%dfjk%setup takes
-      ! no communicator). It costs one GPU's time and memory for the
-      ! gradient, hence the warning.
+      ! More than one rank: the SCF ran split; the gradient is collective
+      ! but not dealt out yet. Every rank enters, each term is rank 0's alone
+      ! (trc_grad_par's table), and the partial gradients are summed once at
+      ! the end. That is safe because every rank holds the whole converged
+      ! SCF: the orbitals, the full XC grids (only the XC evaluation is
+      ! split, by batch) and, for --df, the full fitted tensor
+      ! (cx%dfjk%setup takes no communicator). It costs one GPU's time and
+      ! memory for the gradient, hence the warning.
       call trc_build_comm(cx%fcomm, comm, collective, status)
       if (status /= TRC_OK) return
-      root = .true.
       if (collective) then
-         root = comm%rank() == 0
-         if (root .and. comm%size() > 1) then
-            call global_logger%warning("trc_run_gradient: the gradient is single GPU for now; rank 0 "// &
-                                       "computes it and broadcasts it to the other ranks")
+         par%comm = comm
+         par%has_comm = .true.
+         par%rank = comm%rank()
+         par%nranks = comm%size()
+         greuse%par = par
+         if (par%rank == 0 .and. par%nranks > 1) then
+            call global_logger%warning("trc_run_gradient: the gradient terms are computed by rank 0 alone for "// &
+                                       "now; the other ranks wait in the final reduction")
          end if
       end if
       if (allocated(cx%grad)) deallocate (cx%grad)
       allocate (cx%grad(3, cx%natm))
-      if (root) then
-         if (have_pcm) then
-            ! Rebuilt fresh, at the SAME settings `trc_run_scf` built its
-            ! own continuum with -- see this function's own header, "NOT
-            ! refused any more: PCM". `trc_scf_gradient` solves `pcm_local` at
-            ! its own `dtot` (one more triangular solve) and adds the term on
-            ! top; this never touches `pcm_local%on_device` across ranks,
-            ! since only `root` ever builds or uses it.
-            call gradient_pcm_build(cx, pcm_local, perr)
-            if (perr%has_error()) then
-               cx%message = "trc_run_gradient: PCM: "//perr%get_message()
-               if (collective) call comm%finalize()
-               status = TRC_ERR_STATE
-               return
-            end if
+      cx%grad = 0.0_dp
+      ! From here no rank RETURNS on its own: a failure reported through
+      ! lstat/lmsg skips the rest and every such path reaches
+      ! grad_par_finish. An `error stop` inside a term is not covered.
+      lstat = TRC_OK
+      lmsg = ""
+      if (have_pcm .and. par%computes(GRAD_TERM_PCM)) then
+         ! Rebuilt fresh, at the SAME settings `trc_run_scf` built its
+         ! own continuum with -- see this function's own header, "NOT
+         ! refused any more: PCM". `trc_scf_gradient` solves `pcm_local` at
+         ! its own `dtot` (one more triangular solve) and adds the term on
+         ! top; this never touches `pcm_local%on_device` across ranks,
+         ! since only the ranks that compute the term ever build or use it.
+         call gradient_pcm_build(cx, pcm_local, perr)
+         if (perr%has_error()) then
+            lmsg = "trc_run_gradient: PCM: "//perr%get_message()
+            lstat = TRC_ERR_STATE
+            ! init mapped `pcm_local`; release is safe after a partial build.
+            call pcm_local%release()
          end if
+      end if
+      if (lstat == TRC_OK) then
          if (cx%opts%df) then
             ! The pair list at the threshold the fit's own was built with
             ! (trc_run_scf's `pl%build(cx%bb%b, cx%opts%eri_thresh)`), so the
@@ -5196,19 +5216,19 @@ contains
          ! density/pair list (pcm_grad_scf_add's own header explains why
          ! it is not threaded through trc_scf_gradient's own argument
          ! list), then grad_qv + grad_nuc + grad_solver. ---
-         if (have_pcm) then
+         if (have_pcm .and. par%computes(GRAD_TERM_PCM)) then
             call pcm_grad_scf_add(cx%bb%b, cx%la, [cx%nalpha, cx%nbeta], cx%bb%cmo, cx%bb%eps, &
                                   scf_settings_eri_thresh_env(cx%opts%eri_thresh), pcm_local, cx%grad)
             call pcm_local%release()
          end if
       end if
-      if (collective) then
-         allocate (gbuf(3*cx%natm))
-         if (root) gbuf = reshape(cx%grad, [3*cx%natm])
-         call bcast(comm, gbuf, 3*cx%natm, 0)
-         cx%grad = reshape(gbuf, [3, cx%natm])
-         deallocate (gbuf)
-         call comm%finalize()
+      ! The one agreement on failure and the one reduction.
+      call grad_par_finish(par, cx%grad, lstat, lmsg)
+      if (collective) call comm%finalize()
+      if (lstat /= TRC_OK) then
+         cx%message = lmsg
+         status = lstat
+         return
       end if
       cx%grad_ok = .true.
       status = TRC_OK
