@@ -1,17 +1,17 @@
-!
-! eri%gradient against pyscf's int2e_ip1, contracted with the same Gamma,
-! RHF and UHF, on water. Writes the dump named by its second argument;
-! rys_grad_ref.py reads it, builds the same geometry and the same BSE JSON
-! basis in pyscf (cart=True, so the AO order already matches this build's
-! lexicographic one -- no cart_perm needed), and does the contraction itself rather than
-! trusting pyscf's own Gradients class, which assumes a converged SCF
-! density (the energy-weighted density term) that does not apply here: D
-! is the same fixed, synthetic, non-SCF density check_rys_grad_fd.F90
-! uses, for the same reason -- this is a kernel check on an arbitrary
-! density, not an SCF check. Also writes terco's overlap matrix, for
-! rys_grad_ref.py's per-AO normalisation check/fix (see its own comment).
-!
 module check_rys_grad_vs_pyscf_suite
+   !!
+   !! eri%gradient against pyscf's int2e_ip1, contracted with the same Gamma,
+   !! RHF and UHF, on water. Writes the dump named by its second argument;
+   !! rys_grad_ref.py reads it, builds the same geometry and the same BSE JSON
+   !! basis in pyscf (cart=True, so the AO order already matches this build's
+   !! lexicographic one -- no cart_perm needed), and does the contraction itself rather than
+   !! trusting pyscf's own Gradients class, which assumes a converged SCF
+   !! density (the energy-weighted density term) that does not apply here: D
+   !! is the same fixed, synthetic, non-SCF density check_rys_grad_fd.F90
+   !! uses, for the same reason -- this is a kernel check on an arbitrary
+   !! density, not an SCF check. Also writes terco's overlap matrix, for
+   !! rys_grad_ref.py's per-AO normalisation check/fix (see its own comment).
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
@@ -47,11 +47,11 @@ contains
                   ]
    end subroutine collect_rys_grad_vs_pyscf
 
-   !
-   ! Same deterministic, dense, symmetric construction as
-   ! check_rys_grad_fd.F90, so both checks exercise the same density.
-   !
    subroutine synth_density(n, phase, d)
+      !!
+      !! Same deterministic, dense, symmetric construction as
+      !! check_rys_grad_fd.F90, so both checks exercise the same density.
+      !!
       integer, intent(in) :: n, phase
       real(dp), intent(out) :: d(n, n)
       integer :: ii, jj

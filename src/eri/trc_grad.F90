@@ -1,32 +1,32 @@
-!
-! Two-electron gradient, over the same binned shell-pair plan the Fock
-! build uses: one launch per angular-momentum class, Rys only -- there is
-! no HGP gradient (out of scope).
-!
-! RANGE SEPARATION: `omega` switches the operator to erf(omega*r12)/r12,
-! same meaning and same rho -> rho_theta substitution as eri_fock's own
-! (scripts/gen_perclass.py) -- threaded only into the COMPACT pass
-! (grad_classes/rysg_compact_dispatch), never the screen pass: the
-! Schwarz bound stays the plain Coulomb one, which bounds the attenuated
-! integral too (eri_fock's own comment). omega == 0 is bit-identical to
-! the unattenuated path -- see scripts/gen_rys_grad.py's `_RANGE_SEP_BLOCK`.
-!
-! SCREENING: the same bound as the energy/Fock build (`thresh`), not a
-! separate gradient-specific tolerance. Gamma already carries the density
-! weighting per quartet exactly as the Fock digestion's jab/jcd/kac/kad/kbc/
-! kbd blocks do (see scripts/gen_rys_grad.py), so a quartet the Schwarz
-! bound already lets through at `thresh` is precisely the set whose energy
-! contribution the SCF trusted; there is no argument for trusting its
-! derivative less. A modest tightening factor was considered and rejected
-! for lack of any measurement showing the plain bound insufficient for the
-! ~1e-7 relative finite-difference tolerance -- see
-! test/check_rys_grad_fd.F90. Measured on the 450-atom water cluster,
-! 6-31G*, same converged 1e-13 density: the gradient at thresh = 1e-10
-! differs from the one at 1e-13 by at most 3.9e-7 Eh/Bohr (rms 8.5e-8,
-! against components up to 92), about 40x below a tight geometry
-! optimisation's max-force criterion (1.5e-5).
-!
 module trc_grad
+   !!
+   !! Two-electron gradient, over the same binned shell-pair plan the Fock
+   !! build uses: one launch per angular-momentum class, Rys only -- there is
+   !! no HGP gradient (out of scope).
+   !!
+   !! RANGE SEPARATION: `omega` switches the operator to erf(omega*r12)/r12,
+   !! same meaning and same rho -> rho_theta substitution as eri_fock's own
+   !! (scripts/gen_perclass.py) -- threaded only into the COMPACT pass
+   !! (grad_classes/rysg_compact_dispatch), never the screen pass: the
+   !! Schwarz bound stays the plain Coulomb one, which bounds the attenuated
+   !! integral too (eri_fock's own comment). omega == 0 is bit-identical to
+   !! the unattenuated path -- see scripts/gen_rys_grad.py's `_RANGE_SEP_BLOCK`.
+   !!
+   !! SCREENING: the same bound as the energy/Fock build (`thresh`), not a
+   !! separate gradient-specific tolerance. Gamma already carries the density
+   !! weighting per quartet exactly as the Fock digestion's jab/jcd/kac/kad/kbc/
+   !! kbd blocks do (see scripts/gen_rys_grad.py), so a quartet the Schwarz
+   !! bound already lets through at `thresh` is precisely the set whose energy
+   !! contribution the SCF trusted; there is no argument for trusting its
+   !! derivative less. A modest tightening factor was considered and rejected
+   !! for lack of any measurement showing the plain bound insufficient for the
+   !! ~1e-7 relative finite-difference tolerance -- see
+   !! test/check_rys_grad_fd.F90. Measured on the 450-atom water cluster,
+   !! 6-31G*, same converged 1e-13 density: the gradient at thresh = 1e-10
+   !! differs from the one at 1e-13 by at most 3.9e-7 Eh/Bohr (rms 8.5e-8,
+   !! against components up to 92), about 40x below a tight geometry
+   !! optimisation's max-force criterion (1.5e-5).
+   !!
    use pic_types, only: dp, int64
    use trc_bins, only: pair_bins_t, trc_bin_plan_t
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
@@ -68,25 +68,25 @@ module trc_grad
 
 contains
 
-   !
-   ! Walk admitted bin pairs on the host (same plan binkernel_fock_bins builds), sort
-   ! by class, run `grad_classes` over the contiguous class runs. No
-   ! density-weighted bin screen: Gamma is not guaranteed to admit the same
-   ! bin-level bound a symmetric Fock density does (same reasoning as
-   ! `eri_fock_nosym`), so this always walks the plain Schwarz-screened plan.
-   !
-   ! SKELETON (launch%skeleton): the same
-   ! restriction and the same per-segment weight the skeleton FOCK build uses
-   ! -- only the orbit representatives of the cheaper side of each admitted
-   ! bin pair, weighted by their orbit size. 1.47x (C2v water) to 3.85x
-   ! (D2h pentacene) fewer work items, and the result is not a gradient until
-   ! the caller projects it over the group; trc_scf_gradient's
-   ! two_electron_4c does that. Only the launch COUNT is unchanged: the
-   ! segments are sub-ranges of their bins, which is why the compact pass
-   ! takes the bin strides sSA/sSB (see scripts/gen_rys_grad.py) and not just
-   ! the segment extents sA/sNB.
-   !
    subroutine grad_bins(b, pairs, quartets, launch, dsh, dmat, grad)
+      !!
+      !! Walk admitted bin pairs on the host (same plan binkernel_fock_bins builds), sort
+      !! by class, run `grad_classes` over the contiguous class runs. No
+      !! density-weighted bin screen: Gamma is not guaranteed to admit the same
+      !! bin-level bound a symmetric Fock density does (same reasoning as
+      !! `eri_fock_nosym`), so this always walks the plain Schwarz-screened plan.
+      !!
+      !! SKELETON (launch%skeleton): the same
+      !! restriction and the same per-segment weight the skeleton FOCK build uses
+      !! -- only the orbit representatives of the cheaper side of each admitted
+      !! bin pair, weighted by their orbit size. 1.47x (C2v water) to 3.85x
+      !! (D2h pentacene) fewer work items, and the result is not a gradient until
+      !! the caller projects it over the group; trc_scf_gradient's
+      !! two_electron_4c does that. Only the launch COUNT is unchanged: the
+      !! segments are sub-ranges of their bins, which is why the compact pass
+      !! takes the bin strides sSA/sSB (see scripts/gen_rys_grad.py) and not just
+      !! the segment extents sA/sNB.
+      !!
       type(pair_bins_t), intent(in) :: b
       type(trc_shell_pairs_t), intent(in) :: pairs
       !! The shells (ao_off, sh_at, natm) and their pairs, device-resident.
@@ -169,40 +169,40 @@ contains
       call plan%release()
    end subroutine grad_bins
 
-   !
-   ! ORDERED SURVIVOR COMPACTION glue, one class run [c0, c1] of the
-   ! class-sorted plan at a time. Screens the run into a dense (seg, iab, icd) survivor list with
-   ! `rysg_screen_dispatch`, then runs `rysg_compact_dispatch` over exactly
-   ! that many survivors -- see scripts/gen_rys_grad.py's
-   ! screen_and_compact_text for the technique the per-class kernels
-   ! implement and scripts/gen_rys_grad_dispatch.py for the two
-   ! dispatchers called here.
-   !
-   ! RANKS: an MPI rank takes a CONTIGUOUS slice of this class's own
-   ! segment range [c0, c1] rather than an interleaved work-item stride.
-   ! Every
-   ! segment is assigned to exactly one rank, so every work item still
-   ! runs exactly once across all ranks and the summed gradient is
-   ! unchanged; load is balanced by segment count rather than by work
-   ! item, and a rank's own slice stays segment-contiguous so the screen
-   ! pass's RUNLEN=32 chunks keep sharing a ket within it. Its balance has
-   ! not been measured -- MPI is outside today's validation
-   ! (TERCO_ENABLE_MPI=OFF); nranks=1 reduces this to the whole [c0, c1]
-   ! range.
-   !
-   ! BATCHING: a rank's own slice is then walked forward in segment-
-   ! aligned batches of at most GRAD_COMPACT_CAP work items; a segment
-   ! larger than that on its own is walked in windows of GRAD_COMPACT_CAP
-   ! work items, which the screen pass takes as an explicit [w0, w1]. This
-   ! bounds the survivor-list scratch's memory however large a class run
-   ! or a single segment is -- see GRAD_COMPACT_CAP's own comment.
-   !
-   ! OMEGA reaches only `rysg_compact_dispatch` below, never
-   ! `rysg_screen_dispatch`: the screen's Schwarz bound is the plain Coulomb
-   ! one and stays valid at omega > 0 (pointwise larger -- see eri_fock's
-   ! own comment), so the screen pass takes no omega of its own.
-   !
    subroutine grad_classes(plan, b, pairs, quartets, launch, dsh, dmat, gp)
+      !!
+      !! ORDERED SURVIVOR COMPACTION glue, one class run [c0, c1] of the
+      !! class-sorted plan at a time. Screens the run into a dense (seg, iab, icd) survivor list with
+      !! `rysg_screen_dispatch`, then runs `rysg_compact_dispatch` over exactly
+      !! that many survivors -- see scripts/gen_rys_grad.py's
+      !! screen_and_compact_text for the technique the per-class kernels
+      !! implement and scripts/gen_rys_grad_dispatch.py for the two
+      !! dispatchers called here.
+      !!
+      !! RANKS: an MPI rank takes a CONTIGUOUS slice of this class's own
+      !! segment range [c0, c1] rather than an interleaved work-item stride.
+      !! Every
+      !! segment is assigned to exactly one rank, so every work item still
+      !! runs exactly once across all ranks and the summed gradient is
+      !! unchanged; load is balanced by segment count rather than by work
+      !! item, and a rank's own slice stays segment-contiguous so the screen
+      !! pass's RUNLEN=32 chunks keep sharing a ket within it. Its balance has
+      !! not been measured -- MPI is outside today's validation
+      !! (TERCO_ENABLE_MPI=OFF); nranks=1 reduces this to the whole [c0, c1]
+      !! range.
+      !!
+      !! BATCHING: a rank's own slice is then walked forward in segment-
+      !! aligned batches of at most GRAD_COMPACT_CAP work items; a segment
+      !! larger than that on its own is walked in windows of GRAD_COMPACT_CAP
+      !! work items, which the screen pass takes as an explicit [w0, w1]. This
+      !! bounds the survivor-list scratch's memory however large a class run
+      !! or a single segment is -- see GRAD_COMPACT_CAP's own comment.
+      !!
+      !! OMEGA reaches only `rysg_compact_dispatch` below, never
+      !! `rysg_screen_dispatch`: the screen's Schwarz bound is the plain Coulomb
+      !! one and stays valid at omega > 0 (pointwise larger -- see eri_fock's
+      !! own comment), so the screen pass takes no omega of its own.
+      !!
       type(trc_bin_plan_t), intent(in) :: plan
       !! Sorted by class, its arrays already on the device.
       type(pair_bins_t), intent(in) :: b

@@ -52,11 +52,11 @@ contains
                   ]
    end subroutine collect_capi_shells
 
-   !
-   ! A water/6-31G* context, through the ABI, with its basis handle
-   ! borrowed back out -- what every case below needs.
-   !
    subroutine water_631gs_basis(basis)
+      !!
+      !! A water/6-31G* context, through the ABI, with its basis handle
+      !! borrowed back out -- what every case below needs.
+      !!
       type(c_ptr), intent(out) :: basis
       type(c_ptr) :: h
       integer :: natm

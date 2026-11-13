@@ -1,31 +1,31 @@
-!
-! Hermite index tables.
-!
-! The R recurrence is naturally written over (t,u,v) with a branch on which
-! index to decrement.  On a device that is three-deep nesting plus divergence,
-! for an operation that is really just "walk a list".  Flattening (t,u,v) to a
-! single Hermite index and precomputing the decrement targets turns the whole
-! recurrence into
-!
-!     do h = 2, NHERM(deg)
-!        r(h,n) = pq(dir(h)) * r(hm1(h), n+1) + cfac(h) * r(hm2(h), n+1)
-!     end do
-!
-! -- one flat loop, no branches, no divergence.  That is the plan's claim that
-! MMD is loop nests plus tables rather than generated straight-line code, made
-! concrete.
-!
-! ORDERING (load-bearing)
-! -----------------------
-! Degree-major: all (t,u,v) with t+u+v = 0 first, then all with 1, and so on.
-! Two things fall out and both are used:
-!
-!   * "every index of degree <= d" is exactly the first NHERM(d) entries, so
-!     the recurrence's shrinking bounds are a single integer, not a test;
-!   * a decrement always lands on a STRICTLY smaller index, so the level-n
-!     sweep can read level n+1 with no ordering hazard.
-!
 module trc_tables
+   !!
+   !! Hermite index tables.
+   !!
+   !! The R recurrence is naturally written over (t,u,v) with a branch on which
+   !! index to decrement.  On a device that is three-deep nesting plus divergence,
+   !! for an operation that is really just "walk a list".  Flattening (t,u,v) to a
+   !! single Hermite index and precomputing the decrement targets turns the whole
+   !! recurrence into
+   !!
+   !!     do h = 2, NHERM(deg)
+   !!        r(h,n) = pq(dir(h)) * r(hm1(h), n+1) + cfac(h) * r(hm2(h), n+1)
+   !!     end do
+   !!
+   !! -- one flat loop, no branches, no divergence.  That is the plan's claim that
+   !! MMD is loop nests plus tables rather than generated straight-line code, made
+   !! concrete.
+   !!
+   !! ORDERING (load-bearing)
+   !! -----------------------
+   !! Degree-major: all (t,u,v) with t+u+v = 0 first, then all with 1, and so on.
+   !! Two things fall out and both are used:
+   !!
+   !!   * "every index of degree <= d" is exactly the first NHERM(d) entries, so
+   !!     the recurrence's shrinking bounds are a single integer, not a test;
+   !!   * a decrement always lands on a STRICTLY smaller index, so the level-n
+   !!     sweep can read level n+1 with no ordering hazard.
+   !!
    use pic_types, only: dp
    implicit none
    private
@@ -87,11 +87,11 @@ contains
       res = hidx(t, u, v)
    end function tables_herm_index
 
-   !
-   ! Build the tables and push them to the device.  Call once, before any
-   ! kernel.  Host-side loops -- this is setup, not work.
-   !
    subroutine tables_init()
+      !!
+      !! Build the tables and push them to the device.  Call once, before any
+      !! kernel.  Host-side loops -- this is setup, not work.
+      !!
       integer :: n, t, u, v, h
 
       hidx = 0

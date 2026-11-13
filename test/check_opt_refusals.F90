@@ -1,18 +1,18 @@
-!
-! Invalid --opt-* combinations are refused by app/main.F90's own CLI
-! validation BEFORE trc_dlfind_optimize/api_dl_find ever runs -- the
-! point of validating up front at all (DL-FIND itself answers an invalid
-! setting with `error stop`, which is unacceptable to let through; see
-! app/trc_dlfind_bridge.F90's own header). Every case here must exit
-! non-zero with the SPECIFIC message app/main.F90's own `die()` call
-! raises for it, and NEVER reach an "SCF :" line (the marker that
-! validation passed and a run started) -- asserting only "non-zero exit"
-! would let a missing input file or an unrelated crash pass as "refused"
-! just as easily as the intended validation.
-!
-! A test-drive suite.
-!
 module check_opt_refusals_suite
+   !!
+   !! Invalid --opt-* combinations are refused by app/main.F90's own CLI
+   !! validation BEFORE trc_dlfind_optimize/api_dl_find ever runs -- the
+   !! point of validating up front at all (DL-FIND itself answers an invalid
+   !! setting with `error stop`, which is unacceptable to let through; see
+   !! app/trc_dlfind_bridge.F90's own header). Every case here must exit
+   !! non-zero with the SPECIFIC message app/main.F90's own `die()` call
+   !! raises for it, and NEVER reach an "SCF :" line (the marker that
+   !! validation passed and a run started) -- asserting only "non-zero exit"
+   !! would let a missing input file or an unrelated crash pass as "refused"
+   !! just as easily as the intended validation.
+   !!
+   !! A test-drive suite.
+   !!
    use testdrive, only: new_unittest, unittest_type, error_type, test_failed
    implicit none
    private
@@ -167,9 +167,9 @@ contains
                   '--opt-init-hessian must be', error)
    end subroutine test_bad_init_hessian
 
-   ! trc_run_hessian refuses PCM; without this refusal cb_get_hessian would
-   ! quietly fall back to DL-FIND's own FD Hessian (app/main.F90).
    subroutine test_pcm_prfo_terco_hessian(error)
+      !! trc_run_hessian refuses PCM; without this refusal cb_get_hessian would
+      !! quietly fall back to DL-FIND's own FD Hessian (app/main.F90).
       type(error_type), allocatable, intent(out) :: error
       call refuse('water.xyz', '--pcm cpcm --eps 78.3553 --opt --opt-target saddle --opt-saddle-method prfo', &
                   'pass --opt-init-hessian dlfind', error)
@@ -181,14 +181,14 @@ contains
                   'pass --opt-init-hessian dlfind', error)
    end subroutine test_pcm_nr_terco_hessian
 
-   ! --opt with RI-MP2 or a double hybrid runs the correlated gradient at
-   ! every step; what that gradient refuses, the CLI refuses before the
-   ! first SCF, with the gradient's own message (rimp2_grad_reference_refusal).
-   ! The analytic gradient has no ECP term (trc_run_gradient refuses it), so
-   ! --opt with one is refused up front: the ECP's core count is known from
-   ! the file alone. HI with --ecp naming def2-SVP's own ECP; the STO-3G
-   ! basis this helper always passes is never loaded.
    subroutine test_ecp(error)
+      !! --opt with RI-MP2 or a double hybrid runs the correlated gradient at
+      !! every step; what that gradient refuses, the CLI refuses before the
+      !! first SCF, with the gradient's own message (rimp2_grad_reference_refusal).
+      !! The analytic gradient has no ECP term (trc_run_gradient refuses it), so
+      !! --opt with one is refused up front: the ECP's core count is known from
+      !! the file alone. HI with --ecp naming def2-SVP's own ECP; the STO-3G
+      !! basis this helper always passes is never loaded.
       type(error_type), allocatable, intent(out) :: error
       call refuse('hi.xyz', '--ecp basis_sets/def2-svp.json --opt', 'no effective-core-potential term', error, &
                   extra='basis_sets/def2-svp.json')
@@ -228,13 +228,13 @@ contains
       call refuse('water.xyz', '--opt --opt-print-level 3', '--opt-print-level must be', error)
    end subroutine test_bad_print_level
 
-   !
-   ! The Hessian-related options are meaningful only for P-RFO/NR (or
-   ! --opt-target saddle, which forces one of P-RFO/dimer) -- refused
-   ! for the CLI's own default algorithm (lbfgs) rather than silently
-   ! ignored (app/main.F90's own opt_hessian_relevant/opt_zero_soft_relevant).
-   !
    subroutine test_init_hessian_wrong_algorithm(error)
+      !!
+      !! The Hessian-related options are meaningful only for P-RFO/NR (or
+      !! --opt-target saddle, which forces one of P-RFO/dimer) -- refused
+      !! for the CLI's own default algorithm (lbfgs) rather than silently
+      !! ignored (app/main.F90's own opt_hessian_relevant/opt_zero_soft_relevant).
+      !!
       type(error_type), allocatable, intent(out) :: error
       call refuse('water.xyz', '--opt --opt-init-hessian terco', '--opt-init-hessian needs --opt-algorithm', error)
    end subroutine test_init_hessian_wrong_algorithm
@@ -262,43 +262,43 @@ contains
       call refuse('water.xyz', '--opt --opt-soft-modes 0.01', '--opt-soft-modes needs --opt-algorithm', error)
    end subroutine test_soft_modes_wrong_algorithm
 
-   !
-   ! Every --opt-* option is parsed only inside `if (r%opt) then` --
-   ! given without --opt itself, it must be refused, not silently
-   ! ignored (app/main.F90's own check just before that block).
-   !
    subroutine test_opt_option_without_opt(error)
+      !!
+      !! Every --opt-* option is parsed only inside `if (r%opt) then` --
+      !! given without --opt itself, it must be refused, not silently
+      !! ignored (app/main.F90's own check just before that block).
+      !!
       type(error_type), allocatable, intent(out) :: error
       call refuse('water.xyz', '--opt-algorithm lbfgs', '--opt-algorithm needs --opt', error)
    end subroutine test_opt_option_without_opt
 
-   !
-   ! A single atom has no internal degrees of freedom for P-RFO/NR/the
-   ! dimer method's own eigenvector-following to search over.
-   !
    subroutine test_single_atom_nr(error)
+      !!
+      !! A single atom has no internal degrees of freedom for P-RFO/NR/the
+      !! dimer method's own eigenvector-following to search over.
+      !!
       type(error_type), allocatable, intent(out) :: error
       call refuse('o_atom.xyz', '--opt --opt-algorithm nr', 'need more than one atom', error)
    end subroutine test_single_atom_nr
 
-   !
-   ! DL-FIND's P-RFO always climbs its lowest Hessian mode (dlf_prfo_step,
-   ! follow=0/tsmode=1): a transition-state search, reached through
-   ! --opt-target saddle --opt-saddle-method prfo. As a "minimiser" it only
-   ! converged when that mode happened to be a near-flat rotation, and on
-   ! water/STO-3G it cycled for 400 steps on AVX-512 OpenBLAS kernels.
-   !
    subroutine test_prfo_as_minimiser(error)
+      !!
+      !! DL-FIND's P-RFO always climbs its lowest Hessian mode (dlf_prfo_step,
+      !! follow=0/tsmode=1): a transition-state search, reached through
+      !! --opt-target saddle --opt-saddle-method prfo. As a "minimiser" it only
+      !! converged when that mode happened to be a near-flat rotation, and on
+      !! water/STO-3G it cycled for 400 steps on AVX-512 OpenBLAS kernels.
+      !!
       type(error_type), allocatable, intent(out) :: error
       call refuse('water.xyz', '--opt --opt-algorithm prfo', 'is a saddle search, not a minimiser', error)
    end subroutine test_prfo_as_minimiser
 
-   !
-   ! DL-FIND itself accepts maxupd=0 (dlf_formstep.f90's own
-   ! iupd>=maxupd test, iupd starting at 0: it recomputes the Hessian
-   ! fresh every step) -- NOT refused, unlike the cases above.
-   !
    subroutine test_max_updates_zero_accepted(error)
+      !!
+      !! DL-FIND itself accepts maxupd=0 (dlf_formstep.f90's own
+      !! iupd>=maxupd test, iupd starting at 0: it recomputes the Hessian
+      !! fresh every step) -- NOT refused, unlike the cases above.
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=:), allocatable :: cmd, out_path
       integer :: rc
@@ -318,13 +318,13 @@ contains
       end if
    end subroutine test_max_updates_zero_accepted
 
-   !
-   ! --opt-global-*/--opt-seed without --opt-algorithm stochastic/genetic
-   ! (and --opt-seed without --opt-saddle-method dimer either), an
-   ! --opt-global-* parameter the OTHER search does not read, and an
-   ! out-of-range one (terco_run_parse_opt_global_options, app/main.F90).
-   !
    subroutine test_global_opt_without_algorithm(error)
+      !!
+      !! --opt-global-*/--opt-seed without --opt-algorithm stochastic/genetic
+      !! (and --opt-seed without --opt-saddle-method dimer either), an
+      !! --opt-global-* parameter the OTHER search does not read, and an
+      !! out-of-range one (terco_run_parse_opt_global_options, app/main.F90).
+      !!
       type(error_type), allocatable, intent(out) :: error
       call refuse('water.xyz', '--opt --opt-global-pop-size 10', 'needs --opt-algorithm stochastic or genetic', &
                   error)
@@ -336,14 +336,14 @@ contains
                   'needs --opt-algorithm stochastic/genetic or --opt-saddle-method dimer', error)
    end subroutine test_seed_without_global_or_dimer
 
-   !
-   ! --opt-seed is accepted together with --opt-saddle-method dimer
-   ! (trc_dlfind_bridge's own dimer-seed fix, this file's header) -- a
-   ! connect run converges well inside --opt-maxiter 150, so reaching an
-   ! "SCF :" line here means the --opt-seed/dimer combination itself was
-   ! accepted, the opposite assertion from `refuse`.
-   !
    subroutine test_seed_with_dimer_accepted(error)
+      !!
+      !! --opt-seed is accepted together with --opt-saddle-method dimer
+      !! (trc_dlfind_bridge's own dimer-seed fix, this file's header) -- a
+      !! connect run converges well inside --opt-maxiter 150, so reaching an
+      !! "SCF :" line here means the --opt-seed/dimer combination itself was
+      !! accepted, the opposite assertion from `refuse`.
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=:), allocatable :: cmd, out_path
       integer :: rc
@@ -393,11 +393,11 @@ contains
                   '--opt-global-pop-size must be at least 1', error)
    end subroutine test_global_pop_size_zero
 
-   !
-   ! --opt-neb: mutually exclusive with a saddle target/algorithm this
-   ! bridge does not offer for a chain.
-   !
    subroutine test_neb_with_saddle(error)
+      !!
+      !! --opt-neb: mutually exclusive with a saddle target/algorithm this
+      !! bridge does not offer for a chain.
+      !!
       type(error_type), allocatable, intent(out) :: error
       call refuse('water.xyz', '--opt --opt-neb water.xyz --opt-target saddle', 'needs --opt-target minimum', error)
    end subroutine test_neb_with_saddle
@@ -433,12 +433,12 @@ contains
       call refuse('water.xyz', '--opt --opt-neb does_not_exist.xyz', 'cannot open geometry file', error)
    end subroutine test_neb_missing_file
 
-   !
-   ! hcn.xyz (H,C,N) as the endpoint of a water (O,H,H) start: SAME atom
-   ! count (3) but different elements, so terco_run_check_neb_endpoint's per-atom Z
-   ! check fires, not its atom-count check.
-   !
    subroutine test_neb_mismatched_atoms(error)
+      !!
+      !! hcn.xyz (H,C,N) as the endpoint of a water (O,H,H) start: SAME atom
+      !! count (3) but different elements, so terco_run_check_neb_endpoint's per-atom Z
+      !! check fires, not its atom-count check.
+      !!
       type(error_type), allocatable, intent(out) :: error
       call refuse('water.xyz', '--opt --opt-neb hcn.xyz', 'differs between the start geometry', error, &
                   extra='hcn.xyz')
@@ -461,18 +461,18 @@ contains
                   'start geometry', error, extra='hcn.xyz')
    end subroutine test_neb_via_mismatched_atoms
 
-   !
-   ! water.xyz with its two H atoms swapped as the NEB product endpoint:
-   ! linear interpolation toward it puts both H atoms on the SAME point
-   ! (the midpoint of their swapped positions, water's own mirror plane)
-   ! at the image halfway along the path -- a cheap, deterministic way
-   ! to make app/trc_dlfind_bridge.F90%check_neb_initial_path's "two
-   ! atoms closer than 0.5 Bohr" pre-check actually fire, not just reason
-   ! about it. This refusal comes back from trc_dlfind_optimize itself
-   ! (opt_res%failed), not a CLI `die`, but still before any SCF runs --
-   ! the SAME "no SCF line" assertion `refuse` makes applies.
-   !
    subroutine test_neb_initial_path_overlap(error)
+      !!
+      !! water.xyz with its two H atoms swapped as the NEB product endpoint:
+      !! linear interpolation toward it puts both H atoms on the SAME point
+      !! (the midpoint of their swapped positions, water's own mirror plane)
+      !! at the image halfway along the path -- a cheap, deterministic way
+      !! to make app/trc_dlfind_bridge.F90%check_neb_initial_path's "two
+      !! atoms closer than 0.5 Bohr" pre-check actually fire, not just reason
+      !! about it. This refusal comes back from trc_dlfind_optimize itself
+      !! (opt_res%failed), not a CLI `die`, but still before any SCF runs --
+      !! the SAME "no SCF line" assertion `refuse` makes applies.
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: u, rc
       call execute_command_line('mkdir -p '//work_dir, exitstat=rc, wait=.true.)
@@ -486,12 +486,12 @@ contains
       call refuse('water.xyz', '--opt --opt-neb water_hswap.xyz --opt-neb-images 10', 'Bohr apart at image', error)
    end subroutine test_neb_initial_path_overlap
 
-   !
-   ! --opt-frozen: refused together with pure DLC/DLC-TC (DL-FIND itself
-   ! rejects a frozen atom there -- dlf_coords.f90's own check), and a bad
-   ! index.
-   !
    subroutine test_frozen_with_dlc(error)
+      !!
+      !! --opt-frozen: refused together with pure DLC/DLC-TC (DL-FIND itself
+      !! rejects a frozen atom there -- dlf_coords.f90's own check), and a bad
+      !! index.
+      !!
       type(error_type), allocatable, intent(out) :: error
       call refuse('water.xyz', '--opt --opt-frozen 1 --opt-coords dlc', &
                   'refused together with --opt-coords dlc/dlc-tc', error)
@@ -512,14 +512,14 @@ contains
       call refuse('water.xyz', '--opt --opt-frozen bogus', 'is not a valid 1-based atom index', error)
    end subroutine test_frozen_bogus
 
-   !
-   ! --opt-constrain: refused with Cartesian coordinates outright, and
-   ! 'cartesian i' refused with DLC/DLC-TC specifically (dlf_hdlc_
-   ! interface.f90's own hdlc%internal=(icoord>=3) check); plus bad
-   ! types, bad indices, repeated atoms, residue boundaries and frozen
-   ! atoms.
-   !
    subroutine test_constrain_cartesian_coords(error)
+      !!
+      !! --opt-constrain: refused with Cartesian coordinates outright, and
+      !! 'cartesian i' refused with DLC/DLC-TC specifically (dlf_hdlc_
+      !! interface.f90's own hdlc%internal=(icoord>=3) check); plus bad
+      !! types, bad indices, repeated atoms, residue boundaries and frozen
+      !! atoms.
+      !!
       type(error_type), allocatable, intent(out) :: error
       ! default --opt-coords is cartesian
       call refuse('water.xyz', '--opt --opt-constrain "angle 2 1 3"', &
@@ -543,13 +543,13 @@ contains
                   'atom index out of range', error)
    end subroutine test_constrain_index_too_large
 
-   !
-   ! A typed 0 used to pass terco_run_parse_constraints' own range check (it tested
-   ! idx(k) /= 0 "is this slot even used", not "is 0 a valid atom"), then
-   ! reached DL-FIND's own assign_cons, which reports "crosses residue
-   ! boundary" for atom 0 (it belongs to no residue) and `error stop`s.
-   !
    subroutine test_constrain_index_zero(error)
+      !!
+      !! A typed 0 used to pass terco_run_parse_constraints' own range check (it tested
+      !! idx(k) /= 0 "is this slot even used", not "is 0 a valid atom"), then
+      !! reached DL-FIND's own assign_cons, which reports "crosses residue
+      !! boundary" for atom 0 (it belongs to no residue) and `error stop`s.
+      !!
       type(error_type), allocatable, intent(out) :: error
       call refuse('water.xyz', '--opt --opt-constrain "bond 0 2" --opt-coords hdlc', &
                   'atom index out of range', error)
@@ -567,15 +567,15 @@ contains
                   'the same atom appears twice', error)
    end subroutine test_constrain_repeated_atom
 
-   !
-   ! w3.xyz is three separate, far-apart water molecules -- three HDLC
-   ! residues under --opt-coords hdlc (trc_constants%trc_covalent_radius-
-   ! based connected components, build_opt_residues). Atom 1 (O of the
-   ! first molecule) and atom 4 (H of the second) are in different
-   ! residues, which DL-FIND's own assign_cons refuses with "crosses
-   ! residue boundary" before this fix caught it here instead.
-   !
    subroutine test_constrain_crosses_residue(error)
+      !!
+      !! w3.xyz is three separate, far-apart water molecules -- three HDLC
+      !! residues under --opt-coords hdlc (trc_constants%trc_covalent_radius-
+      !! based connected components, build_opt_residues). Atom 1 (O of the
+      !! first molecule) and atom 4 (H of the second) are in different
+      !! residues, which DL-FIND's own assign_cons refuses with "crosses
+      !! residue boundary" before this fix caught it here instead.
+      !!
       type(error_type), allocatable, intent(out) :: error
       call refuse('w3.xyz', '--opt --opt-constrain "bond 1 4" --opt-coords hdlc', &
                   'are in different HDLC residues', error)
@@ -587,15 +587,15 @@ contains
                   'is frozen (--opt-frozen)', error)
    end subroutine test_constrain_touches_frozen
 
-   !
-   ! None of the refusal cases above ever reaches --opt's own
-   ! write-the-xyz-outputs code (every one is refused before DL-FIND
-   ! runs at all) -- checked anyway, for the same reason every other opt
-   ! check checks it: a future refusal that stops catching an invalid
-   ! combination should fail LOUDLY here, not just silently start
-   ! optimising and littering test/ again.
-   !
    subroutine test_no_stray(error)
+      !!
+      !! None of the refusal cases above ever reaches --opt's own
+      !! write-the-xyz-outputs code (every one is refused before DL-FIND
+      !! runs at all) -- checked anyway, for the same reason every other opt
+      !! check checks it: a future refusal that stops catching an invalid
+      !! combination should fail LOUDLY here, not just silently start
+      !! optimising and littering test/ again.
+      !!
       type(error_type), allocatable, intent(out) :: error
       logical :: exists
       inquire (file='water_opt.xyz', exist=exists)
@@ -606,24 +606,24 @@ contains
       if (exists) call test_failed(error, "water_traj.xyz was left in test/ itself")
    end subroutine test_no_stray
 
-   !
-   ! Runs `xyz --opt <flags> --silent` (flags must include --opt unless
-   ! the case is testing an --opt-* option given WITHOUT --opt) and
-   ! requires: a non-zero exit, no "SCF :" line (validation refused
-   ! before any run started), and `expect_substr` present somewhere in
-   ! the redirected stdout/stderr -- the specific message, not just "it
-   ! failed somehow".
-   !
-   ! `extra`, if present, is a space-separated list of further input
-   ! files `flags` names (an --opt-neb/--opt-neb-via endpoint, say) that
-   ! are NOT the primary `xyz` argument -- copied into work_dir the same
-   ! way, so a case that depends on one can never pass only because a
-   ! PREVIOUS run (in build-cpu, say) left that file lying around from an
-   ! earlier case and a fresh work_dir (program startup, below) would
-   ! otherwise make it fail for the wrong reason (missing file) instead
-   ! of exercising its own check.
-   !
    subroutine refuse(xyz, flags, expect_substr, error, extra)
+      !!
+      !! Runs `xyz --opt <flags> --silent` (flags must include --opt unless
+      !! the case is testing an --opt-* option given WITHOUT --opt) and
+      !! requires: a non-zero exit, no "SCF :" line (validation refused
+      !! before any run started), and `expect_substr` present somewhere in
+      !! the redirected stdout/stderr -- the specific message, not just "it
+      !! failed somehow".
+      !!
+      !! `extra`, if present, is a space-separated list of further input
+      !! files `flags` names (an --opt-neb/--opt-neb-via endpoint, say) that
+      !! are NOT the primary `xyz` argument -- copied into work_dir the same
+      !! way, so a case that depends on one can never pass only because a
+      !! PREVIOUS run (in build-cpu, say) left that file lying around from an
+      !! earlier case and a fresh work_dir (program startup, below) would
+      !! otherwise make it fail for the wrong reason (missing file) instead
+      !! of exercising its own check.
+      !!
       character(len=*), intent(in) :: xyz, flags, expect_substr
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in), optional :: extra
@@ -680,12 +680,12 @@ contains
       end if
    end subroutine refuse
 
-   !
-   ! Whether `substr` appears on any line of `path` -- used where a case
-   ! must assert a message's ABSENCE (test_max_updates_zero_accepted,
-   ! test_seed_with_dimer_accepted).
-   !
    function scan_for(path, substr) result(found)
+      !!
+      !! Whether `substr` appears on any line of `path` -- used where a case
+      !! must assert a message's ABSENCE (test_max_updates_zero_accepted,
+      !! test_seed_with_dimer_accepted).
+      !!
       character(len=*), intent(in) :: path, substr
       logical :: found
       integer :: u, ios

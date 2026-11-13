@@ -1,24 +1,24 @@
-!
-! terco's own numbers for the golden tier ("Two tiers" in
-! test/pyscf_refs/README.md).
-!
-! A check that is compared against pyscf (the anchor, test/pyscf_refs/) also
-! records the same quantities here, from this build's own run. ctest sets
-! TERCO_GOLDEN_OUT to a directory in the build tree (which must exist), and
-! the paired terco/golden/<case> test (test/goldens/compare_goldens.py)
-! diffs the output against the committed test/goldens/<case>.gold at a
-! tolerance far tighter than the anchor's. With TERCO_GOLDEN_OUT unset (a
-! check run by hand) every call here does nothing.
-!
-! Output, one record per line:
-!   # terco golden output v1 <case>
-!   <key> <value, es24.16e3>
-!   END
-! A check that skips itself after golden_begin leaves no values and no END;
-! compare_goldens.py reports that as SKIP, so a skip never reads a previous
-! run's numbers.
-!
 module golden_io
+   !!
+   !! terco's own numbers for the golden tier ("Two tiers" in
+   !! test/pyscf_refs/README.md).
+   !!
+   !! A check that is compared against pyscf (the anchor, test/pyscf_refs/) also
+   !! records the same quantities here, from this build's own run. ctest sets
+   !! TERCO_GOLDEN_OUT to a directory in the build tree (which must exist), and
+   !! the paired terco/golden/<case> test (test/goldens/compare_goldens.py)
+   !! diffs the output against the committed test/goldens/<case>.gold at a
+   !! tolerance far tighter than the anchor's. With TERCO_GOLDEN_OUT unset (a
+   !! check run by hand) every call here does nothing.
+   !!
+   !! Output, one record per line:
+   !!   # terco golden output v1 <case>
+   !!   <key> <value, es24.16e3>
+   !!   END
+   !! A check that skips itself after golden_begin leaves no values and no END;
+   !! compare_goldens.py reports that as SKIP, so a skip never reads a previous
+   !! run's numbers.
+   !!
    use pic_types, only: dp
    implicit none
    private
@@ -30,10 +30,10 @@ module golden_io
 
 contains
 
-   !
-   ! Start (and truncate) this run's output for `case`.
-   !
    subroutine golden_begin(case)
+      !!
+      !! Start (and truncate) this run's output for `case`.
+      !!
       character(len=*), intent(in) :: case
       character(len=4096) :: dir
       integer :: n, st, ios
@@ -50,10 +50,10 @@ contains
       flush (gu)
    end subroutine golden_begin
 
-   !
-   ! One quantity. `key` must not contain spaces.
-   !
    subroutine golden_put(key, value)
+      !!
+      !! One quantity. `key` must not contain spaces.
+      !!
       character(len=*), intent(in) :: key
       real(dp), intent(in) :: value
       if (.not. active) return
@@ -61,13 +61,13 @@ contains
       flush (gu)
    end subroutine golden_put
 
-   !
-   ! Three scalars of a Fock-like matrix `g` built from density `d`: its
-   ! contraction with the density (energy-like), its Frobenius norm, and a
-   ! contraction with fixed, uneven weights, which moves when any element
-   ! does. Recorded as TR_D<tag>, NORM_<tag> and WSUM_<tag>.
-   !
    subroutine golden_fock(tag, d, g)
+      !!
+      !! Three scalars of a Fock-like matrix `g` built from density `d`: its
+      !! contraction with the density (energy-like), its Frobenius norm, and a
+      !! contraction with fixed, uneven weights, which moves when any element
+      !! does. Recorded as TR_D<tag>, NORM_<tag> and WSUM_<tag>.
+      !!
       character(len=*), intent(in) :: tag
       real(dp), intent(in) :: d(:, :), g(:, :)
       integer :: i, j
@@ -84,10 +84,10 @@ contains
       call golden_put("WSUM_"//tag, wsum)
    end subroutine golden_fock
 
-   !
-   ! Mark the output complete.
-   !
    subroutine golden_end()
+      !!
+      !! Mark the output complete.
+      !!
       if (.not. active) return
       write (gu, "(a)") "END"
       close (gu)

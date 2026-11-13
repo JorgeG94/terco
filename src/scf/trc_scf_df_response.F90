@@ -570,11 +570,10 @@ contains
       this%ready = .false.
    end subroutine df_response_release
 
-   ! ----------------------------------------------------------------------
-   ! do concurrent kernels: explicit-shape dummies, device-resident arrays.
-   ! ----------------------------------------------------------------------
-
    subroutine unpack_columns(n, npack, naux, np, p0, bpk, tens)
+      !! ----------------------------------------------------------------------
+      !! do concurrent kernels: explicit-shape dummies, device-resident arrays.
+      !! ----------------------------------------------------------------------
       !! tens(:, :, q) = B's column p0 - 1 + q, unpacked (both triangles).
       integer, intent(in) :: n, npack, naux, np, p0
       real(dp), intent(in) :: bpk(npack, naux)

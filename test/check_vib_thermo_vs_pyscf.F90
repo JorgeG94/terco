@@ -1,30 +1,30 @@
-!
-! trc_vib/trc_thermo against pyscf's own analytic RHF/STO-3G Hessian,
-! harmonic_analysis and thermo (test/pyscf_refs/vib_thermo_{water,hcn,
-! nh3_planar}.ref, generate.py's gen_vib_thermo -- see src/scf/trc_vib.F90
-! and src/scf/trc_thermo.F90's own headers for every formula: sigma and
-! mult as inputs, rotational constants in GHz, imaginary modes counted
-! among the true vibrations only, one mode set, and every constant from
-! trc_constants.F90 (CODATA 2018).
-!
-! Water (sigma=2) and HCN (linear, sigma=1) are minima at this geometry/
-! basis; planar NH3 (sigma=6) has one genuine imaginary umbrella mode.
-! None of the three is at a stationary point of terco's own SCF -- the
-! same geometry pyscf used, not terco's optimum -- which is fine for a
-! like-for-like regression against a fixed, external Hessian; see the
-! generator's own docstring.
-!
-! Also checks two properties no stored number can: a pure rigid-
-! translation perturbation added to the raw Hessian leaves every
-! frequency unchanged (trc_vib's TR removal is exact, not approximate --
-! see trc_vib.F90's own header), HCN's linear path gives exactly
-! 3*3-5 = 4 modes, and a slightly bent HCN is called linear by trc_vib
-! and trc_thermo alike.
-!
-! A test-drive suite: each case is one unit test, which fails when any of
-! its checks does; every check still prints its value through ref_report.
-!
 module check_vib_thermo_suite
+   !!
+   !! trc_vib/trc_thermo against pyscf's own analytic RHF/STO-3G Hessian,
+   !! harmonic_analysis and thermo (test/pyscf_refs/vib_thermo_{water,hcn,
+   !! nh3_planar}.ref, generate.py's gen_vib_thermo -- see src/scf/trc_vib.F90
+   !! and src/scf/trc_thermo.F90's own headers for every formula: sigma and
+   !! mult as inputs, rotational constants in GHz, imaginary modes counted
+   !! among the true vibrations only, one mode set, and every constant from
+   !! trc_constants.F90 (CODATA 2018).
+   !!
+   !! Water (sigma=2) and HCN (linear, sigma=1) are minima at this geometry/
+   !! basis; planar NH3 (sigma=6) has one genuine imaginary umbrella mode.
+   !! None of the three is at a stationary point of terco's own SCF -- the
+   !! same geometry pyscf used, not terco's optimum -- which is fine for a
+   !! like-for-like regression against a fixed, external Hessian; see the
+   !! generator's own docstring.
+   !!
+   !! Also checks two properties no stored number can: a pure rigid-
+   !! translation perturbation added to the raw Hessian leaves every
+   !! frequency unchanged (trc_vib's TR removal is exact, not approximate --
+   !! see trc_vib.F90's own header), HCN's linear path gives exactly
+   !! 3*3-5 = 4 modes, and a slightly bent HCN is called linear by trc_vib
+   !! and trc_thermo alike.
+   !!
+   !! A test-drive suite: each case is one unit test, which fails when any of
+   !! its checks does; every check still prints its value through ref_report.
+   !!
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, test_failed
    use trc_error, only: error_t
@@ -92,17 +92,17 @@ contains
       call verdict(error, nfail, "tr_invariance")
    end subroutine test_tr_invariance
 
-   !
-   ! HCN with the H moved 1e-5 Angstrom off the axis, the noise a geometry
-   ! pasted from another code carries. trc_vib used to keep a sixth rigid-
-   ! body direction for it (a singular-value test of its own), so returned
-   ! 3 modes, while trc_thermo's moment test still called it linear and
-   ! applied the linear rotor: the ZPE came out one bend short. Both now
-   ! decide from the same moments, so a linear call means 3N-5 modes. The
-   ! Hessian is the linear one from the reference; only the geometry
-   ! moves, which is all the rotor test reads.
-   !
    subroutine test_near_linear(error)
+      !!
+      !! HCN with the H moved 1e-5 Angstrom off the axis, the noise a geometry
+      !! pasted from another code carries. trc_vib used to keep a sixth rigid-
+      !! body direction for it (a singular-value test of its own), so returned
+      !! 3 modes, while trc_thermo's moment test still called it linear and
+      !! applied the linear rotor: the ZPE came out one bend short. Both now
+      !! decide from the same moments, so a linear call means 3N-5 modes. The
+      !! Hessian is the linear one from the reference; only the geometry
+      !! moves, which is all the rotor test reads.
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: nfail, u, natm, ndof, sigma, mult
       real(dp), allocatable :: coords(:, :), mass(:), hess(:, :), ztmp(:)
@@ -141,12 +141,12 @@ contains
       call verdict(error, nfail, "near_linear")
    end subroutine test_near_linear
 
-   !
-   ! One case's full pipeline: read the reference, run trc_vibrational_
-   ! analysis and trc_thermochemistry on pyscf's own Hessian and masses,
-   ! and compare every quantity the task asked for.
-   !
    subroutine check_case(nfail, case_name)
+      !!
+      !! One case's full pipeline: read the reference, run trc_vibrational_
+      !! analysis and trc_thermochemistry on pyscf's own Hessian and masses,
+      !! and compare every quantity the task asked for.
+      !!
       integer, intent(inout) :: nfail
       character(len=*), intent(in) :: case_name
       integer :: u, natm, ndof, n_modes_ref, is_linear_ref, n_imag_ref, k
@@ -353,15 +353,15 @@ contains
       end if
    end subroutine check_case
 
-   !
-   ! A pure rigid-translation perturbation, added to the RAW (un-mass-
-   ! weighted) Hessian, lies entirely inside the TR null space trc_vib
-   ! projects out -- see this program's own header -- so it must leave
-   ! every vibrational frequency unchanged, to the eigensolver's own
-   ! precision, not merely "close". Built directly from water's own
-   ! reference Hessian and masses.
-   !
    subroutine check_tr_invariance(nfail)
+      !!
+      !! A pure rigid-translation perturbation, added to the RAW (un-mass-
+      !! weighted) Hessian, lies entirely inside the TR null space trc_vib
+      !! projects out -- see this program's own header -- so it must leave
+      !! every vibrational frequency unchanged, to the eigensolver's own
+      !! precision, not merely "close". Built directly from water's own
+      !! reference Hessian and masses.
+      !!
       integer, intent(inout) :: nfail
       integer :: u, natm, ndof, pa, pb, sigma, mult
       real(dp), allocatable :: coords(:, :), mass(:), hess(:, :), hess_pert(:, :), ztmp(:)

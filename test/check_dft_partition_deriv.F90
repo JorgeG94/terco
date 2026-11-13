@@ -1,22 +1,22 @@
-!
-! dft_partition_becke_derivatives (trc_dft_partition.F90): the O(n_atoms^2)-
-! per-point production routine against a hand-kept COPY of the
-! O(n_atoms^3)-per-point implementation it replaced -- the one
-! trc_xc_grad.F90's grid-response term was validated against (FD at two
-! grid levels, translational invariance, and pyscf's own grid_response=True
-! to ~1e-13/1e-11 -- see that module's header) before the rewrite. Water
-! (3 atoms) and formamide (6 atoms), both PARTITION_BECKE/ADJUST_TREUTLER
-! (terco's own defaults) and PARTITION_STRATMANN/ADJUST_NONE (the other
-! combination trc_dft_partition.F90 offers), level 3, every grid point --
-! not a handful of synthetic ones, since the point of this check is that
-! the rewrite did not change the answer anywhere on a real quadrature.
-!
-! The reference below is NOT independently re-derived: it is the routine
-! this file's own git history had until the O(n_atoms^2) rewrite, kept
-! here verbatim (down to variable names) so this test is a diff against
-! what used to ship, not a second attempt at the same algebra.
-!
 module check_dft_partition_deriv_ref
+   !!
+   !! dft_partition_becke_derivatives (trc_dft_partition.F90): the O(n_atoms^2)-
+   !! per-point production routine against a hand-kept COPY of the
+   !! O(n_atoms^3)-per-point implementation it replaced -- the one
+   !! trc_xc_grad.F90's grid-response term was validated against (FD at two
+   !! grid levels, translational invariance, and pyscf's own grid_response=True
+   !! to ~1e-13/1e-11 -- see that module's header) before the rewrite. Water
+   !! (3 atoms) and formamide (6 atoms), both PARTITION_BECKE/ADJUST_TREUTLER
+   !! (terco's own defaults) and PARTITION_STRATMANN/ADJUST_NONE (the other
+   !! combination trc_dft_partition.F90 offers), level 3, every grid point --
+   !! not a handful of synthetic ones, since the point of this check is that
+   !! the rewrite did not change the answer anywhere on a real quadrature.
+   !!
+   !! The reference below is NOT independently re-derived: it is the routine
+   !! this file's own git history had until the O(n_atoms^2) rewrite, kept
+   !! here verbatim (down to variable names) so this test is a diff against
+   !! what used to ship, not a second attempt at the same algebra.
+   !!
    use pic_types, only: dp
    use trc_dft_partition, only: PARTITION_BECKE
    implicit none
@@ -25,10 +25,10 @@ module check_dft_partition_deriv_ref
 
 contains
 
-   ! Re-exposes what trc_dft_partition.F90 keeps private, duplicated here
-   ! rather than exported from the module itself: production code has no
-   ! business calling the O(n_atoms^3) form it was rewritten away from.
    subroutine reference_derivatives(points, atom_coords, shift, inv_distance, owner, scheme, dweights)
+      !! Re-exposes what trc_dft_partition.F90 keeps private, duplicated here
+      !! rather than exported from the module itself: production code has no
+      !! business calling the O(n_atoms^3) form it was rewritten away from.
       real(dp), intent(in) :: points(:, :), atom_coords(:, :)
       real(dp), intent(in) :: shift(:, :), inv_distance(:, :)
       integer, intent(in) :: owner(:), scheme
@@ -365,10 +365,10 @@ contains
       deallocate (dw, coef, g_ref, g_new)
    end subroutine contract_case
 
-   ! Bragg radii and the two adjustment rules, duplicated from
-   ! trc_dft_partition.F90%size_adjustment (private there) -- see
-   ! one_case's own comment on why a mismatch cannot hide.
    subroutine shift_and_distance(n_atoms, atom_coords, atomic_numbers, adjust, shift, inv_distance)
+      !! Bragg radii and the two adjustment rules, duplicated from
+      !! trc_dft_partition.F90%size_adjustment (private there) -- see
+      !! one_case's own comment on why a mismatch cannot hide.
       use trc_dft_radial, only: dft_radial_bragg_radius
       integer, intent(in) :: n_atoms, atomic_numbers(n_atoms), adjust
       real(dp), intent(in) :: atom_coords(3, n_atoms)

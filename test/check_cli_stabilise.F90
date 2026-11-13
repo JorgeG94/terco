@@ -1,19 +1,19 @@
-!
-! What the terco CLI says about the two SCF convergence aids, through the
-! installed binary:
-!
-! 1. A run that does not converge and ends on a level shifted iteration
-!    (--level-shift-until far below the commutator, three iterations) prints
-!    the SCF's own message, which says its virtual orbital energies include
-!    the shift. Only the library's trc_message carried it before.
-!
-! 2. O3+ UHF/6-31G* with --level-shift-until 1e-3 (never converges unless the
-!    stall guard drops the shift) converges and says, once, that it dropped
-!    the shift.
-!
-! A test-drive suite.
-!
 module check_cli_stabilise_suite
+   !!
+   !! What the terco CLI says about the two SCF convergence aids, through the
+   !! installed binary:
+   !!
+   !! 1. A run that does not converge and ends on a level shifted iteration
+   !!    (--level-shift-until far below the commutator, three iterations) prints
+   !!    the SCF's own message, which says its virtual orbital energies include
+   !!    the shift. Only the library's trc_message carried it before.
+   !!
+   !! 2. O3+ UHF/6-31G* with --level-shift-until 1e-3 (never converges unless the
+   !!    stall guard drops the shift) converges and says, once, that it dropped
+   !!    the shift.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, test_failed, check
    implicit none

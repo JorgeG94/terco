@@ -1,26 +1,26 @@
-!
-! Binned shell-pair container: quartets formed on the device.
-!
-! Materialising the quartet list was the bottleneck (75 waters / 6-31G: 26 s
-! host time and 11.7 GB against 15 s of GPU). Following Galvez Vallejo et al.
-! [1], quartets are never enumerated: the O(N^2) shell-pair list is binned and
-! each kernel launch covers the cross product of two bins, each thread
-! deriving its own (ab, cd) from its index.
-!
-! Pairs are binned by type (la, lb) and by size, the Schwarz bound
-! Q_ab = sqrt(max |(ab|ab)|) bucketed as s_ab = int(-log10(Q_ab)). Since
-! |(ab|cd)| <= Q_ab Q_cd, a bin pair is kept iff s_ab + s_cd <= -log10(tau),
-! an integer test done once per bin pair on the host. Whole cross products are
-! admitted or rejected together, so kernels contain no screening conditional.
-! int() truncates toward zero, so the test is conservative: it may admit
-! slightly more than tau demands, never less. Binning by type also means every
-! thread in a launch shares (la, lb, lc, ld).
-!
-! [1] J. L. Galvez Vallejo, G. M. J. Barca and M. S. Gordon,
-!     "High-performance GPU-accelerated evaluation of electron repulsion
-!     integrals", Mol. Phys. (2022) e2112987, doi:10.1080/00268976.2022.2112987
-!
 module trc_bins
+   !!
+   !! Binned shell-pair container: quartets formed on the device.
+   !!
+   !! Materialising the quartet list was the bottleneck (75 waters / 6-31G: 26 s
+   !! host time and 11.7 GB against 15 s of GPU). Following Galvez Vallejo et al.
+   !! [1], quartets are never enumerated: the O(N^2) shell-pair list is binned and
+   !! each kernel launch covers the cross product of two bins, each thread
+   !! deriving its own (ab, cd) from its index.
+   !!
+   !! Pairs are binned by type (la, lb) and by size, the Schwarz bound
+   !! Q_ab = sqrt(max |(ab|ab)|) bucketed as s_ab = int(-log10(Q_ab)). Since
+   !! |(ab|cd)| <= Q_ab Q_cd, a bin pair is kept iff s_ab + s_cd <= -log10(tau),
+   !! an integer test done once per bin pair on the host. Whole cross products are
+   !! admitted or rejected together, so kernels contain no screening conditional.
+   !! int() truncates toward zero, so the test is conservative: it may admit
+   !! slightly more than tau demands, never less. Binning by type also means every
+   !! thread in a launch shares (la, lb, lc, ld).
+   !!
+   !! [1] J. L. Galvez Vallejo, G. M. J. Barca and M. S. Gordon,
+   !!     "High-performance GPU-accelerated evaluation of electron repulsion
+   !!     integrals", Mol. Phys. (2022) e2112987, doi:10.1080/00268976.2022.2112987
+   !!
    use pic_types, only: dp
    use trc_tables, only: LMAX
    use pic_types, only: int64, int_index
@@ -125,18 +125,18 @@ module trc_bins
       !! Weight of a skeleton plan's segment; ignored when the plan has none.
    end type trc_bin_segment_t
 
-   !
-   ! The launch plan: which bin pairs survive the admission test, how their
-   ! quartets are numbered, and in what order the class-specialised kernels
-   ! cover them. One segment is one admitted bin pair; a thread finds its own
-   ! segment by searching the prefix sum `sOff`. binkernel_fock_bins and
-   ! grad_bins build the same plan, so it is built here once for both.
-   !
-   ! The arrays keep the names the generated kernels give their dummies
-   ! (sA, sNB, ...). Never mapped whole: a launcher enters the arrays it
-   ! hands to its kernels one by one.
-   !
    type, public :: trc_bin_plan_t
+      !!
+      !! The launch plan: which bin pairs survive the admission test, how their
+      !! quartets are numbered, and in what order the class-specialised kernels
+      !! cover them. One segment is one admitted bin pair; a thread finds its own
+      !! segment by searching the prefix sum `sOff`. binkernel_fock_bins and
+      !! grad_bins build the same plan, so it is built here once for both.
+      !!
+      !! The arrays keep the names the generated kernels give their dummies
+      !! (sA, sNB, ...). Never mapped whole: a launcher enters the arrays it
+      !! hands to its kernels one by one.
+      !!
       integer :: nseg = 0
       !! Segments: admitted bin pairs.
       integer(int64) :: nwork = 0
@@ -197,23 +197,23 @@ contains
       end do
    end function bins_rep_weights
 
-   !
-   ! Bin identity is (type, size), and TYPE CARRIES THE CONTRACTION DEGREE as
-   ! well as the angular momenta, which is the shell-type assignment of [1].
-   !
-   ! That last part is not cosmetic.  Binning on (la, lb) alone lets a bin hold
-   ! shell pairs with K = 36, 18, 6, 3 and 1 side by side, and 6-31G oxygen has
-   ! all of those.  The kernel's primitive loops then run wildly different trip
-   ! counts within one warp, which is the same divergence the class sort fixed
-   ! at the quartet level, reappearing one loop deeper.
-   !
-   !
-   ! `g` separates the pairs with a generally contracted side from the rest:
-   ! a segment is then either all single-column, and goes to the scalar
-   ! kernel, or all multi-column, and goes to the blocked one -- no launch
-   ! carries both, so neither pays the other's registers or divergence.
-   !
    pure integer function bin_key(la, lb, kab, s, g) result(res)
+      !!
+      !! Bin identity is (type, size), and TYPE CARRIES THE CONTRACTION DEGREE as
+      !! well as the angular momenta, which is the shell-type assignment of [1].
+      !!
+      !! That last part is not cosmetic.  Binning on (la, lb) alone lets a bin hold
+      !! shell pairs with K = 36, 18, 6, 3 and 1 side by side, and 6-31G oxygen has
+      !! all of those.  The kernel's primitive loops then run wildly different trip
+      !! counts within one warp, which is the same divergence the class sort fixed
+      !! at the quartet level, reappearing one loop deeper.
+      !!
+      !!
+      !! `g` separates the pairs with a generally contracted side from the rest:
+      !! a segment is then either all single-column, and goes to the scalar
+      !! kernel, or all multi-column, and goes to the blocked one -- no launch
+      !! carries both, so neither pays the other's registers or divergence.
+      !!
       integer, intent(in) :: la, lb, kab, s, g
       !! `g` carries two bits: 1, a pair with a general side, and BIN_G_MASKED. Radix 4 keeps
       !! the order of the keys without the mask bit what it was (the mapping
@@ -221,13 +221,13 @@ contains
       res = (((la*(LMAX + 1) + lb)*(KCAP + 1) + min(kab, KCAP))*(SMAX + 1) + s)*4 + g + 1
    end function bin_key
 
-   !
-   ! Build the shell-pair list and sort it into (type, size) bins.
-   !
-   ! O(N^2) throughout -- this is the whole point.  For 675 shells that is 228k
-   ! pairs, against the 586M quartets the old path enumerated.
-   !
    subroutine bins_build_binned_pairs(shells, q, thresh, b, pp_n, res, sym, orb)
+      !!
+      !! Build the shell-pair list and sort it into (type, size) bins.
+      !!
+      !! O(N^2) throughout -- this is the whole point.  For 675 shells that is 228k
+      !! pairs, against the 586M quartets the old path enumerated.
+      !!
       type(trc_bin_shells_t), intent(in) :: shells
       real(dp), intent(in)  :: q(:)               !! Schwarz bound, canonical pair index
       real(dp), intent(in)  :: thresh
@@ -439,24 +439,24 @@ contains
       end if
    end function bin_cap_value
 
-   !
-   ! The bins of the skeleton Fock build: closed under the point group, the
-   ! representatives of each bin first.
-   !
-   ! The same pairs, keys and sizes as bins_build_binned_pairs, with three
-   ! differences:
-   !  - the contraction degree in a pair's key is that of its orbit's
-   !    representative, so the whole orbit lands in one bin (the Schwarz bucket
-   !    is shared because Q is invariant; a bucket that is not is refused);
-   !  - a bin is cut into chunks of whole orbits, each past the cap by less
-   !    than the order of the group (so, a chunk is a closed set too);
-   !  - inside a chunk the representatives come first, grouped by orbit size
-   !    (ascending, so each weight is a contiguous range), then the other
-   !    members; the order inside each of these ranges is the canonical one.
-   ! `orb` records the ranges. Nothing changes for the full Fock build, which
-   ! walks the same pairs in another order.
-   !
    subroutine build_orbit_bins(shells, q, thresh, b, pp_n, sres, sym, orb)
+      !!
+      !! The bins of the skeleton Fock build: closed under the point group, the
+      !! representatives of each bin first.
+      !!
+      !! The same pairs, keys and sizes as bins_build_binned_pairs, with three
+      !! differences:
+      !!  - the contraction degree in a pair's key is that of its orbit's
+      !!    representative, so the whole orbit lands in one bin (the Schwarz bucket
+      !!    is shared because Q is invariant; a bucket that is not is refused);
+      !!  - a bin is cut into chunks of whole orbits, each past the cap by less
+      !!    than the order of the group (so, a chunk is a closed set too);
+      !!  - inside a chunk the representatives come first, grouped by orbit size
+      !!    (ascending, so each weight is a contiguous range), then the other
+      !!    members; the order inside each of these ranges is the canonical one.
+      !! `orb` records the ranges. Nothing changes for the full Fock build, which
+      !! walks the same pairs in another order.
+      !!
       type(trc_bin_shells_t), intent(in) :: shells
       real(dp), intent(in)  :: q(:)
       real(dp), intent(in)  :: thresh
@@ -721,25 +721,25 @@ contains
       orb%sec0(nbt + 1) = sec
    end subroutine arrange_orbits
 
-   !
-   ! Split every bin of more than BIN_CAP pairs into consecutive chunks of at
-   ! most BIN_CAP, appended as new bins with the same (type, size, g).
-   !
-   ! Widening the kernels' within-segment index instead would cost registers
-   ! in the hottest loop, which is the binding constraint there. Splitting
-   ! costs nothing in the kernels: the quartets are the same ones. A split
-   ! bin's own triangle becomes each chunk's triangle plus the rectangle
-   ! between every two chunks, which the launcher's bra >= ket walk over
-   ! bin pairs already produces, each quartet once. Everything per bin --
-   ! primitive layout, K, density bound, class -- is derived later from
-   ! bin_off/bin_cnt and the metadata copied here, never from the bin's
-   ! index. Bins at or below the cap are untouched, so a system that never
-   ! reaches it gets bit-identical results.
-   !
-   ! First reached around 14,000 basis functions (a 9514-shell system,
-   ! where one bin outgrew 65,536 pairs and its triangle 2**31).
-   !
    subroutine split_large_bins(b)
+      !!
+      !! Split every bin of more than BIN_CAP pairs into consecutive chunks of at
+      !! most BIN_CAP, appended as new bins with the same (type, size, g).
+      !!
+      !! Widening the kernels' within-segment index instead would cost registers
+      !! in the hottest loop, which is the binding constraint there. Splitting
+      !! costs nothing in the kernels: the quartets are the same ones. A split
+      !! bin's own triangle becomes each chunk's triangle plus the rectangle
+      !! between every two chunks, which the launcher's bra >= ket walk over
+      !! bin pairs already produces, each quartet once. Everything per bin --
+      !! primitive layout, K, density bound, class -- is derived later from
+      !! bin_off/bin_cnt and the metadata copied here, never from the bin's
+      !! index. Bins at or below the cap are untouched, so a system that never
+      !! reaches it gets bit-identical results.
+      !!
+      !! First reached around 14,000 basis functions (a 9514-shell system,
+      !! where one bin outgrew 65,536 pairs and its triangle 2**31).
+      !!
       type(pair_bins_t), intent(inout) :: b
       integer :: k, c, nextra, nb, ich, nch, cap
       integer, allocatable :: off(:), cnt(:), sz(:), la(:), lb(:), g(:)
@@ -784,35 +784,35 @@ contains
       call move_alloc(g, b%bin_g)
    end subroutine split_large_bins
 
-   !
-   ! Build the bin-interleaved primitive-pair tables from the primitive
-   ! pairs hgp_build_pairs already built. Called once after
-   ! bins_build_binned_pairs, and again whenever the slot order inside bins
-   ! changes (bins_sort_by_weight).
-   !
-   ! K is constant inside a bin except for pairs clamped at KCAP (bin_key),
-   ! so bin_k(b) -- the max kept primitive-pair count over the bin's pairs --
-   ! equals every pair's own count for the common case and only pads for the
-   ! rare KCAP-clamped bin. A padding slot (k beyond that PAIR's own count,
-   ! k <= bin_k(b)) is never read: the kernel's loop bound is the pair's own
-   ! count (`sq_n`), exactly as pp_n(key) was. It is still filled, with
-   ! qp_c = 0, qp_z = 1 and P at the A centre, so the storage has no
-   ! uninitialised entries and nothing downstream has to know which slots
-   ! are real.
-   !
-   !
-   ! The new tables are NOT fields of `b`. An earlier version added them to
-   ! pair_bins_t, which is itself mirrored whole by an `!$acc enter data
-   ! copyin(this%bins, this%bins%sp_i, ...)` at the call site -- and growing
-   ! that type's allocatable-component count that way made nvfortran 26.5
-   ! miscompile an UNRELATED host loop two modules away (an internal
-   ! "bitcast with differing sizes" in code that never touches a bin). They
-   ! live in their own trc_pair_quartets_t instead, which is never mapped
-   ! whole -- its arrays go to the device one by one -- and the caller
-   ! passes it back in on a rebuild so the reuse-the-allocation logic below
-   ! still applies.
-   !
    subroutine bins_build_pair_quartets(b, pairs, quartets)
+      !!
+      !! Build the bin-interleaved primitive-pair tables from the primitive
+      !! pairs hgp_build_pairs already built. Called once after
+      !! bins_build_binned_pairs, and again whenever the slot order inside bins
+      !! changes (bins_sort_by_weight).
+      !!
+      !! K is constant inside a bin except for pairs clamped at KCAP (bin_key),
+      !! so bin_k(b) -- the max kept primitive-pair count over the bin's pairs --
+      !! equals every pair's own count for the common case and only pads for the
+      !! rare KCAP-clamped bin. A padding slot (k beyond that PAIR's own count,
+      !! k <= bin_k(b)) is never read: the kernel's loop bound is the pair's own
+      !! count (`sq_n`), exactly as pp_n(key) was. It is still filled, with
+      !! qp_c = 0, qp_z = 1 and P at the A centre, so the storage has no
+      !! uninitialised entries and nothing downstream has to know which slots
+      !! are real.
+      !!
+      !!
+      !! The new tables are NOT fields of `b`. An earlier version added them to
+      !! pair_bins_t, which is itself mirrored whole by an `!$acc enter data
+      !! copyin(this%bins, this%bins%sp_i, ...)` at the call site -- and growing
+      !! that type's allocatable-component count that way made nvfortran 26.5
+      !! miscompile an UNRELATED host loop two modules away (an internal
+      !! "bitcast with differing sizes" in code that never touches a bin). They
+      !! live in their own trc_pair_quartets_t instead, which is never mapped
+      !! whole -- its arrays go to the device one by one -- and the caller
+      !! passes it back in on a rebuild so the reuse-the-allocation logic below
+      !! still applies.
+      !!
       type(pair_bins_t), intent(in) :: b
       type(trc_shell_pairs_t), intent(in) :: pairs
       !! The primitive pairs from hgp_build_pairs.
@@ -964,60 +964,60 @@ contains
       error stop "terco: unique pairs: a shell pair without primitive pairs has no image with any"
    end subroutine bins_pair_image_source
 
-   !
-   ! Order the pairs INSIDE each bin along a Morton curve through the pair
-   ! centroid.
-   !
-   ! WHY
-   ! ---
-   ! Screening that removes work only pays if the removal is warp-uniform. A
-   ! thread whose quartet fails the density test returns immediately, but it
-   ! keeps its slot and its warp still runs until the slowest SURVIVING lane
-   ! finishes. Scattered rejections therefore buy almost nothing: measured, 29%
-   ! of quartets rejected at w128 bought about 4% of wall clock, and 7.5% at
-   ! Gly30 bought 4%.
-   !
-   ! gpu4pyscf avoids this by compacting survivors into a task list before the
-   ! integral kernel launches, so every thread does real work. Compaction here
-   ! would cost two extra passes over ~2e9 work items, which is most of the
-   ! saving.
-   !
-   ! This is the cheap way to the same place. Consecutive threads take
-   ! consecutive ket indices within a bin, so if the ket pairs are ordered so
-   ! that neighbours are spatially close, then for a fixed bra the density
-   ! bound varies smoothly along the index and rejections come in runs rather
-   ! than scattered. Whole warps then fail together and genuinely exit early.
-   !
-   ! This is a permutation within a bin. Bin identity (type, size class) is
-   ! untouched, every pair still appears exactly once, and the diagonal
-   ! lower-triangle indexing is order-independent -- so results are unchanged
-   ! up to atomic accumulation order.
-   !
-   ! MEASURED, AND IT LOSES.  w128 went 5.03 -> 5.68 s (+13%), Gly30 unchanged,
-   ! sum(G) bit-identical so the permutation itself is right.  The reason is
-   ! that the ORIGINAL order was already the good one for memory: pairs are
-   ! generated i-major, so consecutive ket indices share a shell and their
-   ! primitive-pair data is largely reused across a warp.  Morton order
-   ! scatters those loads, and the cache locality lost exceeds the warp
-   ! clustering gained -- the survivor count is identical either way, so the
-   ! clustering bought nothing measurable at all.
-   !
-   ! ORDER THE PAIRS INSIDE EACH BIN BY HOW MUCH THEY MATTER.
-   !
-   ! A warp takes 32 consecutive pairs of a bin, and each thread decides on
-   ! its own whether its quartet survives the Schwarz and density test. If
-   ! neighbouring pairs are unrelated, a warp is a mix of threads that work
-   ! and threads that returned, and it runs at the speed of the ones that
-   ! work while the rest wait. Ordering by the product of the Schwarz bound
-   ! and the largest density block -- the quantity the per-quartet test is
-   ! built from -- makes neighbours agree far more often.
-   !
-   ! Once, and then never again: the density this is keyed on is the guess
-   ! at the first build, and it moves slowly enough that the order stays a
-   ! good heuristic for the whole SCF. That makes the cost a fixed charge
-   ! against every later build rather than a per-build tax.
-   !
    subroutine bins_sort_by_weight(b, nbas, dsh, orb)
+      !!
+      !! Order the pairs INSIDE each bin along a Morton curve through the pair
+      !! centroid.
+      !!
+      !! WHY
+      !! ---
+      !! Screening that removes work only pays if the removal is warp-uniform. A
+      !! thread whose quartet fails the density test returns immediately, but it
+      !! keeps its slot and its warp still runs until the slowest SURVIVING lane
+      !! finishes. Scattered rejections therefore buy almost nothing: measured, 29%
+      !! of quartets rejected at w128 bought about 4% of wall clock, and 7.5% at
+      !! Gly30 bought 4%.
+      !!
+      !! gpu4pyscf avoids this by compacting survivors into a task list before the
+      !! integral kernel launches, so every thread does real work. Compaction here
+      !! would cost two extra passes over ~2e9 work items, which is most of the
+      !! saving.
+      !!
+      !! This is the cheap way to the same place. Consecutive threads take
+      !! consecutive ket indices within a bin, so if the ket pairs are ordered so
+      !! that neighbours are spatially close, then for a fixed bra the density
+      !! bound varies smoothly along the index and rejections come in runs rather
+      !! than scattered. Whole warps then fail together and genuinely exit early.
+      !!
+      !! This is a permutation within a bin. Bin identity (type, size class) is
+      !! untouched, every pair still appears exactly once, and the diagonal
+      !! lower-triangle indexing is order-independent -- so results are unchanged
+      !! up to atomic accumulation order.
+      !!
+      !! MEASURED, AND IT LOSES.  w128 went 5.03 -> 5.68 s (+13%), Gly30 unchanged,
+      !! sum(G) bit-identical so the permutation itself is right.  The reason is
+      !! that the ORIGINAL order was already the good one for memory: pairs are
+      !! generated i-major, so consecutive ket indices share a shell and their
+      !! primitive-pair data is largely reused across a warp.  Morton order
+      !! scatters those loads, and the cache locality lost exceeds the warp
+      !! clustering gained -- the survivor count is identical either way, so the
+      !! clustering bought nothing measurable at all.
+      !!
+      !! ORDER THE PAIRS INSIDE EACH BIN BY HOW MUCH THEY MATTER.
+      !!
+      !! A warp takes 32 consecutive pairs of a bin, and each thread decides on
+      !! its own whether its quartet survives the Schwarz and density test. If
+      !! neighbouring pairs are unrelated, a warp is a mix of threads that work
+      !! and threads that returned, and it runs at the speed of the ones that
+      !! work while the rest wait. Ordering by the product of the Schwarz bound
+      !! and the largest density block -- the quantity the per-quartet test is
+      !! built from -- makes neighbours agree far more often.
+      !!
+      !! Once, and then never again: the density this is keyed on is the guess
+      !! at the first build, and it moves slowly enough that the order stays a
+      !! good heuristic for the whole SCF. That makes the cost a fixed charge
+      !! against every later build rather than a per-build tax.
+      !!
       type(pair_bins_t), intent(inout) :: b
       integer,  intent(in) :: nbas
       real(dp), intent(in) :: dsh(nbas, nbas)
@@ -1122,12 +1122,12 @@ contains
       end function qkey_only
    end subroutine bins_sort_by_weight
 
-   !
-   ! Kept behind -DTRC_SPATIAL_SORT rather than deleted: the idea is sound
-   ! for a kernel whose per-thread data does not already come from a shared
-   ! shell, and this records that it was tried.
-   !
    subroutine sort_bins_spatially(b, nbas, sh_r)
+      !!
+      !! Kept behind -DTRC_SPATIAL_SORT rather than deleted: the idea is sound
+      !! for a kernel whose per-thread data does not already come from a shared
+      !! shell, and this records that it was tried.
+      !!
       type(pair_bins_t), intent(inout) :: b
       integer,  intent(in) :: nbas
       real(dp), intent(in) :: sh_r(3, nbas)
@@ -1201,18 +1201,18 @@ contains
       end do
    end function morton3
 
-   !
-   ! Per-bin density maximum, for the density screen.
-   !
-   ! The Fock contribution of a quartet is bounded by Q_ab Q_cd times the
-   ! largest density block it can touch, so screening on the integral alone
-   ! discards on the wrong quantity.  Taking the max over a whole bin keeps the
-   ! test at bin-pair granularity, which is what keeps conditionals out of the
-   ! kernel.
-   !
-   ! Recomputed every SCF iteration -- D changes, the bins do not.
-   !
    subroutine bin_dmax(b, nbas, nao, sh_l, ao_off, dmat)
+      !!
+      !! Per-bin density maximum, for the density screen.
+      !!
+      !! The Fock contribution of a quartet is bounded by Q_ab Q_cd times the
+      !! largest density block it can touch, so screening on the integral alone
+      !! discards on the wrong quantity.  Taking the max over a whole bin keeps the
+      !! test at bin-pair granularity, which is what keeps conditionals out of the
+      !! kernel.
+      !!
+      !! Recomputed every SCF iteration -- D changes, the bins do not.
+      !!
       type(pair_bins_t), intent(inout) :: b
       integer,  intent(in) :: nbas, nao
       integer,  intent(in) :: sh_l(nbas), ao_off(nbas)
@@ -1240,29 +1240,29 @@ contains
       end do
    end subroutine bin_dmax
 
-   !
-   ! Schwarz bound -> decade bucket.  int() toward zero keeps the later
-   ! s_ab + s_cd test conservative.
-   !
-   !
-   ! Schwarz bound -> decade bucket, ceiling and clamped to SMAX, matching
-   ! [1].  Ceiling rather than truncation: truncation is conservative and
-   ! over-admits by up to a decade in EACH factor, which measured as 37% more
-   ! work than the exact canonical count at 75 waters.
-   !
-   !
-   ! MEASURED, on the 123-atom silica slice and the T8 cage: raising `res`
-   ! above 1 enumerates MORE quartets, not fewer, and costs up to 1.6x.
-   ! The bucket is a CEILING on -log10(Q), so at res = 1 the admission test
-   ! `s_a + s_b <= T` rejects pairs whose exact product is above threshold
-   ! -- two pairs at Q = 0.8 both round to bucket 1 and are refused at
-   ! T = 1. That over-rejection is why the coarse bucket looks cheap: it
-   ! is not screening harder, it is discarding work it should keep, about
-   ! 0.5% of the surviving quartets on the slice. A finer bucket rounds
-   ! less and hands that work back. So res is a knob for accuracy at the
-   ! pre-launch screen, not for speed, and 1 stays the default.
-   !
    pure integer function size_index(qq, res) result(res_)
+      !!
+      !! Schwarz bound -> decade bucket.  int() toward zero keeps the later
+      !! s_ab + s_cd test conservative.
+      !!
+      !!
+      !! Schwarz bound -> decade bucket, ceiling and clamped to SMAX, matching
+      !! [1].  Ceiling rather than truncation: truncation is conservative and
+      !! over-admits by up to a decade in EACH factor, which measured as 37% more
+      !! work than the exact canonical count at 75 waters.
+      !!
+      !!
+      !! MEASURED, on the 123-atom silica slice and the T8 cage: raising `res`
+      !! above 1 enumerates MORE quartets, not fewer, and costs up to 1.6x.
+      !! The bucket is a CEILING on -log10(Q), so at res = 1 the admission test
+      !! `s_a + s_b <= T` rejects pairs whose exact product is above threshold
+      !! -- two pairs at Q = 0.8 both round to bucket 1 and are refused at
+      !! T = 1. That over-rejection is why the coarse bucket looks cheap: it
+      !! is not screening harder, it is discarding work it should keep, about
+      !! 0.5% of the surviving quartets on the slice. A finer bucket rounds
+      !! less and hands that work back. So res is a knob for accuracy at the
+      !! pre-launch screen, not for speed, and 1 stays the default.
+      !!
       real(dp), intent(in) :: qq
       integer, intent(in) :: res
       real(dp) :: v
@@ -1274,16 +1274,16 @@ contains
       end if
    end function size_index
 
-   !
-   ! Admit bin pairs and number their quartets.
-   !
-   ! ONE launch over every admitted bin pair, not one launch each. Binning at
-   ! (type, size) granularity fragments the work badly -- 484 launches
-   ! averaging 2200 items apiece measured 12x slower than a single large
-   ! launch. The screening granularity is worth keeping; the launch
-   ! granularity is not. A prefix sum lets a thread find its own segment.
-   !
    subroutine bins_plan_build(this, b, thresh, bin_pbase, use_density, canonical)
+      !!
+      !! Admit bin pairs and number their quartets.
+      !!
+      !! ONE launch over every admitted bin pair, not one launch each. Binning at
+      !! (type, size) granularity fragments the work badly -- 484 launches
+      !! averaging 2200 items apiece measured 12x slower than a single large
+      !! launch. The screening granularity is worth keeping; the launch
+      !! granularity is not. A prefix sum lets a thread find its own segment.
+      !!
       class(trc_bin_plan_t), intent(inout) :: this
       type(pair_bins_t), intent(in) :: b
       real(dp), intent(in) :: thresh
@@ -1354,17 +1354,17 @@ contains
       end do
    end subroutine plain_walk
 
-   !
-   ! Sort the segments by class, so each class occupies a contiguous run and
-   ! one kernel per class covers it. Every thread in a launch then executes
-   ! code compiled for exactly its (la,lb,lc,ld) -- no select case, and
-   ! ptxas budgets registers per class instead of for the worst class.
-   !
-   ! Stable argsort (pic sort_index) on the class key, so the segments of one
-   ! class keep their admission order. The prefix sum is rebuilt in the new
-   ! order.
-   !
    subroutine bins_plan_sort_by_class(this, radix, by_mask)
+      !!
+      !! Sort the segments by class, so each class occupies a contiguous run and
+      !! one kernel per class covers it. Every thread in a launch then executes
+      !! code compiled for exactly its (la,lb,lc,ld) -- no select case, and
+      !! ptxas budgets registers per class instead of for the worst class.
+      !!
+      !! Stable argsort (pic sort_index) on the class key, so the segments of one
+      !! class keep their admission order. The prefix sum is rebuilt in the new
+      !! order.
+      !!
       class(trc_bin_plan_t), intent(inout) :: this
       integer, intent(in) :: radix
       logical, intent(in), optional :: by_mask
@@ -1490,21 +1490,21 @@ contains
    end subroutine bins_plan_release
 
 
-   !
-   ! The skeleton launch plan.
-   !
-   ! The bins are closed under the group, so for two different bins A and B
-   ! the sum over A x B of a function f with f(g p, g q) = R f(p, q) R^T is
-   ! the sum over the representatives p of A, weighted by their orbit size, of
-   ! the sum over all of B -- and the same with the roles exchanged, so the
-   ! side with fewer quartets is cut. A bin against itself is the rectangle
-   ! reps(A) x A with an extra 1/2 (the triangle's own factor, which no
-   ! rectangle carries; the kernels apply the ab = cd 1/2 only on a
-   ! triangle). A segment holds the representatives of one orbit size, so its
-   ! weight is one number, kept in sW and applied by the kernels per segment.
-   ! The result, symmetrized once, is the full matrix.
-   !
    subroutine bins_plan_build_skeleton(this, b, orb, thresh, bin_pbase, canonical)
+      !!
+      !! The skeleton launch plan.
+      !!
+      !! The bins are closed under the group, so for two different bins A and B
+      !! the sum over A x B of a function f with f(g p, g q) = R f(p, q) R^T is
+      !! the sum over the representatives p of A, weighted by their orbit size, of
+      !! the sum over all of B -- and the same with the roles exchanged, so the
+      !! side with fewer quartets is cut. A bin against itself is the rectangle
+      !! reps(A) x A with an extra 1/2 (the triangle's own factor, which no
+      !! rectangle carries; the kernels apply the ab = cd 1/2 only on a
+      !! triangle). A segment holds the representatives of one orbit size, so its
+      !! weight is one number, kept in sW and applied by the kernels per segment.
+      !! The result, symmetrized once, is the full matrix.
+      !!
       class(trc_bin_plan_t), intent(inout) :: this
       type(pair_bins_t), intent(in) :: b
       type(trc_bin_orbits_t), intent(in) :: orb
@@ -1683,27 +1683,27 @@ contains
       plan%sOff(nseg + 1) = plan%sOff(nseg) + nt
    end subroutine bins_plan_emit
 
-   !
-   ! Density screen at bin-pair granularity.
-   !
-   ! A quartet's Fock contribution is bounded by Q_ab Q_cd times the largest
-   ! density block it can reach.  Over a bin pair the reachable blocks are
-   ! (ab), (cd) and the four cross combinations, and only the first two are
-   ! known bin-locally -- the cross terms would need every (i,k) shell pair.
-   ! Using the two that are known keeps this a bin-level test; it is therefore
-   ! a partial screen, and deliberately conservative.
-   !
-   ! NOT ARMED, and it cannot be as written: bin_dm(k) bounds the density
-   ! blocks of pairs WITHIN bin k, which bounds the Coulomb terms D_ab and
-   ! D_cd but says nothing about D_ac, D_ad, D_bc, D_bd -- the exchange
-   ! blocks, between a shell of the bra pair and a shell of the ket pair.
-   ! Arming it on this bound drops real exchange contributions: measured on
-   ! the 123-atom silica slice in cc-pVDZ, the third SCF energy moved by
-   ! 0.5 Hartree. A sound bin-level test would need the largest density
-   ! block between the two bins' shell sets, which is not a per-bin
-   ! quantity. The per-quartet test in the kernel, which reads dsh for all
-   ! six blocks, is the one that screens on the density.
    pure logical function density_reject(b, ka, kb, thresh) result(res)
+      !!
+      !! Density screen at bin-pair granularity.
+      !!
+      !! A quartet's Fock contribution is bounded by Q_ab Q_cd times the largest
+      !! density block it can reach.  Over a bin pair the reachable blocks are
+      !! (ab), (cd) and the four cross combinations, and only the first two are
+      !! known bin-locally -- the cross terms would need every (i,k) shell pair.
+      !! Using the two that are known keeps this a bin-level test; it is therefore
+      !! a partial screen, and deliberately conservative.
+      !!
+      !! NOT ARMED, and it cannot be as written: bin_dm(k) bounds the density
+      !! blocks of pairs WITHIN bin k, which bounds the Coulomb terms D_ab and
+      !! D_cd but says nothing about D_ac, D_ad, D_bc, D_bd -- the exchange
+      !! blocks, between a shell of the bra pair and a shell of the ket pair.
+      !! Arming it on this bound drops real exchange contributions: measured on
+      !! the 123-atom silica slice in cc-pVDZ, the third SCF energy moved by
+      !! 0.5 Hartree. A sound bin-level test would need the largest density
+      !! block between the two bins' shell sets, which is not a per-bin
+      !! quantity. The per-quartet test in the kernel, which reads dsh for all
+      !! six blocks, is the one that screens on the density.
       type(pair_bins_t), intent(in) :: b
       integer,  intent(in) :: ka, kb
       real(dp), intent(in) :: thresh

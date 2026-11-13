@@ -1,55 +1,55 @@
-!
-! The hard-case set for SCF robustness (M2, Part B.4): four small, fast
-! systems chosen because plain damped DIIS is exactly where each one is
-! weak, each for a different reason --
-!
-!   n2_stretched  UHF/6-31G, charge +1   N2+ (13 electrons, genuinely
-!                              open shell) with the bond stretched to 2x
-!                              Re: the pi/pi* gap that is large at Re is
-!                              small here, and the commutator stays large
-!                              long after a normal molecule would have
-!                              reached the DIIS window.
-!   o3            RHF/6-31G    ozone: a small HOMO-LUMO gap and
-!                              biradicaloid character, a textbook case
-!                              simple damping oscillates on.
-!   w5            RHF/d-aug-cc-pVDZ   five waters, doubly diffuse-augmented:
-!                              S's smallest eigenvalues measured at 6.5e-7
-!                              to 2.3e-5 (dumped with a throwaway syev
-!                              driver, not shown here), so canonical
-!                              orthogonalisation is asked for at 1e-5 --
-!                              looser than the type's 1e-8 default, which
-!                              a single aug-cc-pVDZ or def2-TZVPD calc at
-!                              this size does not reach (measured: aug-cc-
-!                              pVDZ on the same five waters bottoms out at
-!                              4e-4, three orders above where this engages)
-!                              but a doubly-augmented or larger diffuse
-!                              cluster does.
-!   o2_anion      UHF/6-31G, charge -1   superoxide: charged AND open
-!                              shell, with the pi*/pi* near-degeneracy
-!                              that makes it a standard hard DFT/HF case.
-!
-! This runs each with the SETTINGS THIS MILESTONE ADDS ON (A/EDIIS ahead
-! of CDIIS where the case needs it, canonical orthogonalisation always
-! live at its measured default threshold) and asserts convergence --
-! that is the regression ctest protects. The BEFORE/AFTER comparison
-! against plain damped DIIS and against an uncorrected S is numbers for
-! the milestone report, not something this binary can run safely: the
-! old, unconditional `sym_orthog` is an `error stop` on a singular S, and
-! `error stop` takes the whole process with it, which a ctest case must
-! not risk. That sweep is a separate, disposable driver, one process per
-! configuration.
-!
-! Writes scf_robust_probe.bin for scf_robust_ref.py, same layout idea as
-! scf_rks.F90's rks_probe.bin but on terco's own (non-uncontracted) basis,
-! since what is being checked here is "does it converge to the right
-! energy on a hard case", not a bit-level fold convention.
-!
-! Four independent cases below, each its own test-drive unittest; the
-! probe write and the sequential pyscf-reference read run once -- see
-! check_xc_energy_suite's own `computed` comment for why, and why this
-! suite stays `parallel=.false.`.
-!
 module scf_robust_suite
+   !!
+   !! The hard-case set for SCF robustness (M2, Part B.4): four small, fast
+   !! systems chosen because plain damped DIIS is exactly where each one is
+   !! weak, each for a different reason --
+   !!
+   !!   n2_stretched  UHF/6-31G, charge +1   N2+ (13 electrons, genuinely
+   !!                              open shell) with the bond stretched to 2x
+   !!                              Re: the pi/pi* gap that is large at Re is
+   !!                              small here, and the commutator stays large
+   !!                              long after a normal molecule would have
+   !!                              reached the DIIS window.
+   !!   o3            RHF/6-31G    ozone: a small HOMO-LUMO gap and
+   !!                              biradicaloid character, a textbook case
+   !!                              simple damping oscillates on.
+   !!   w5            RHF/d-aug-cc-pVDZ   five waters, doubly diffuse-augmented:
+   !!                              S's smallest eigenvalues measured at 6.5e-7
+   !!                              to 2.3e-5 (dumped with a throwaway syev
+   !!                              driver, not shown here), so canonical
+   !!                              orthogonalisation is asked for at 1e-5 --
+   !!                              looser than the type's 1e-8 default, which
+   !!                              a single aug-cc-pVDZ or def2-TZVPD calc at
+   !!                              this size does not reach (measured: aug-cc-
+   !!                              pVDZ on the same five waters bottoms out at
+   !!                              4e-4, three orders above where this engages)
+   !!                              but a doubly-augmented or larger diffuse
+   !!                              cluster does.
+   !!   o2_anion      UHF/6-31G, charge -1   superoxide: charged AND open
+   !!                              shell, with the pi*/pi* near-degeneracy
+   !!                              that makes it a standard hard DFT/HF case.
+   !!
+   !! This runs each with the SETTINGS THIS MILESTONE ADDS ON (A/EDIIS ahead
+   !! of CDIIS where the case needs it, canonical orthogonalisation always
+   !! live at its measured default threshold) and asserts convergence --
+   !! that is the regression ctest protects. The BEFORE/AFTER comparison
+   !! against plain damped DIIS and against an uncorrected S is numbers for
+   !! the milestone report, not something this binary can run safely: the
+   !! old, unconditional `sym_orthog` is an `error stop` on a singular S, and
+   !! `error stop` takes the whole process with it, which a ctest case must
+   !! not risk. That sweep is a separate, disposable driver, one process per
+   !! configuration.
+   !!
+   !! Writes scf_robust_probe.bin for scf_robust_ref.py, same layout idea as
+   !! scf_rks.F90's rks_probe.bin but on terco's own (non-uncontracted) basis,
+   !! since what is being checked here is "does it converge to the right
+   !! energy on a hard case", not a bit-level fold convention.
+   !!
+   !! Four independent cases below, each its own test-drive unittest; the
+   !! probe write and the sequential pyscf-reference read run once -- see
+   !! check_xc_energy_suite's own `computed` comment for why, and why this
+   !! suite stays `parallel=.false.`.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -104,10 +104,10 @@ contains
       name = trim(xyzf(ic))//"/"//trim(basf(ic))
    end function case_name
 
-   ! One wrapper per case, each passing its own index: a unittest must not
-   ! depend on which unittests ran before it (a name-selected run, or a
-   ! reordered suite, would otherwise check the wrong case).
    subroutine case_01(error)
+      !! One wrapper per case, each passing its own index: a unittest must not
+      !! depend on which unittests ran before it (a name-selected run, or a
+      !! reordered suite, would otherwise check the wrong case).
       type(error_type), allocatable, intent(out) :: error
       call test_case(error, 1)
    end subroutine case_01

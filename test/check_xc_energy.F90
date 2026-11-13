@@ -1,57 +1,57 @@
-!
-! E_xc and V_xc from a fixed density, against libxc through pyscf on the
-! SAME grid points and the SAME density.
-!
-! Same-grid is what makes this sharp. Against a different grid the
-! comparison only says two grids are similar; on the same points, with
-! basis functions already checked elementwise, the only things left to
-! disagree are the functional kernels (checked to 1e-12 in check_xc), the
-! density assembly, and the potential expression -- which is the one with
-! the factor of two and the symmetrisation that a GGA gets wrong by
-! millihartrees while converging perfectly.
-!
-! Written to `xc_probe.bin`: the grid, the density, and for each
-! functional E_xc, the electron count and V_xc. `xc_energy_ref.py` feeds
-! the same grid and density to pyscf's numint and compares -- permuting
-! both ways at the TRC_CART_ORDER boundary, since `dmat`/`dm2`/`vxc`/`vx2`
-! below are all in THIS BUILD's own AO order, and pyscf only ever speaks
-! lexicographic.
-!
-! The density is C C^T for a fixed pseudo-random C, so it is positive
-! semidefinite and rho >= 0 everywhere without an SCF. A symmetric matrix
-! that is not PSD would put negative densities into the functionals, where
-! the two codes' thresholds are entitled to differ.
-!
-! C ITSELF IS BUILT IN A FIXED LEXICOGRAPHIC ORDER, THEN PERMUTED (c_lex ->
-! c, cb_lex -> cb, below), not filled directly in raw AO-index order. Filled
-! directly, a d shell's six components draw from the PRNG stream in a
-! DIFFERENT sequence between a lexicographic and a gamess build, so the two
-! builds would integrate two different physical densities and their E_xc/N
-! would disagree by quadrature error on top of nothing -- ~1e-1, not the
-! ~1e-14 an AO relabelling alone can ever move a number by. The permutation
-! is what makes this test compare the SAME physics both builds are asked to
-! reproduce, the same way the SiH4 RHF energy check does.
-!
-! Two internal checks need no reference:
-!
-!   * sum_g w_g rho_g must equal Tr(D S) to the grid's accuracy -- an
-!     exact identity that catches the density assembly and the weights
-!     independently of any functional;
-!   * the result must not depend on the chunking. The integrator is run
-!     again with a budget too small for two batches, so every chunk
-!     boundary is exercised, and the two must agree to rounding.
-!
-! EVERY FUNCTIONAL IS ITS OWN test-drive CASE below (collect_xc_energy),
-! so one functional's regression does not hide the other 51. The shared
-! setup (basis, grid, density, xc_probe.bin, and the pyscf reference read)
-! happens exactly ONCE, in run_all, the first time any case needs it
-! (ensure_computed) -- splitting the setup itself per functional would
-! mean 52 separate xc_probe.bin writes racing each other, and the
-! pyscf_ref_io reader is sequential-by-tag (pyscf_ref_io.F90's own header),
-! so every EXC_/VXC_/UEXC_/UVXC_ tag has to be read in the SAME order
-! generate.py wrote it in, which only a single pass can do.
-!
 module check_xc_energy_suite
+   !!
+   !! E_xc and V_xc from a fixed density, against libxc through pyscf on the
+   !! SAME grid points and the SAME density.
+   !!
+   !! Same-grid is what makes this sharp. Against a different grid the
+   !! comparison only says two grids are similar; on the same points, with
+   !! basis functions already checked elementwise, the only things left to
+   !! disagree are the functional kernels (checked to 1e-12 in check_xc), the
+   !! density assembly, and the potential expression -- which is the one with
+   !! the factor of two and the symmetrisation that a GGA gets wrong by
+   !! millihartrees while converging perfectly.
+   !!
+   !! Written to `xc_probe.bin`: the grid, the density, and for each
+   !! functional E_xc, the electron count and V_xc. `xc_energy_ref.py` feeds
+   !! the same grid and density to pyscf's numint and compares -- permuting
+   !! both ways at the TRC_CART_ORDER boundary, since `dmat`/`dm2`/`vxc`/`vx2`
+   !! below are all in THIS BUILD's own AO order, and pyscf only ever speaks
+   !! lexicographic.
+   !!
+   !! The density is C C^T for a fixed pseudo-random C, so it is positive
+   !! semidefinite and rho >= 0 everywhere without an SCF. A symmetric matrix
+   !! that is not PSD would put negative densities into the functionals, where
+   !! the two codes' thresholds are entitled to differ.
+   !!
+   !! C ITSELF IS BUILT IN A FIXED LEXICOGRAPHIC ORDER, THEN PERMUTED (c_lex ->
+   !! c, cb_lex -> cb, below), not filled directly in raw AO-index order. Filled
+   !! directly, a d shell's six components draw from the PRNG stream in a
+   !! DIFFERENT sequence between a lexicographic and a gamess build, so the two
+   !! builds would integrate two different physical densities and their E_xc/N
+   !! would disagree by quadrature error on top of nothing -- ~1e-1, not the
+   !! ~1e-14 an AO relabelling alone can ever move a number by. The permutation
+   !! is what makes this test compare the SAME physics both builds are asked to
+   !! reproduce, the same way the SiH4 RHF energy check does.
+   !!
+   !! Two internal checks need no reference:
+   !!
+   !!   * sum_g w_g rho_g must equal Tr(D S) to the grid's accuracy -- an
+   !!     exact identity that catches the density assembly and the weights
+   !!     independently of any functional;
+   !!   * the result must not depend on the chunking. The integrator is run
+   !!     again with a budget too small for two batches, so every chunk
+   !!     boundary is exercised, and the two must agree to rounding.
+   !!
+   !! EVERY FUNCTIONAL IS ITS OWN test-drive CASE below (collect_xc_energy),
+   !! so one functional's regression does not hide the other 51. The shared
+   !! setup (basis, grid, density, xc_probe.bin, and the pyscf reference read)
+   !! happens exactly ONCE, in run_all, the first time any case needs it
+   !! (ensure_computed) -- splitting the setup itself per functional would
+   !! mean 52 separate xc_probe.bin writes racing each other, and the
+   !! pyscf_ref_io reader is sequential-by-tag (pyscf_ref_io.F90's own header),
+   !! so every EXC_/VXC_/UEXC_/UVXC_ tag has to be read in the SAME order
+   !! generate.py wrote it in, which only a single pass can do.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -181,11 +181,11 @@ contains
                 ]
    end subroutine collect_xc_energy
 
-   ! One wrapper per functional, each passing its own index into `names`:
-   ! a unittest must not depend on which unittests ran before it (a
-   ! name-selected run, or a reordered suite, would otherwise check the
-   ! wrong functional).
    subroutine case_01(error)
+      !! One wrapper per functional, each passing its own index into `names`:
+      !! a unittest must not depend on which unittests ran before it (a
+      !! name-selected run, or a reordered suite, would otherwise check the
+      !! wrong functional).
       type(error_type), allocatable, intent(out) :: error
       call test_functional_case(error, 1)
    end subroutine case_01
@@ -499,13 +499,13 @@ contains
       print '(a,1x,a,t56,es10.2)', merge("ok  ", "FAIL", ok), what, value
    end subroutine note
 
-   !
-   ! The original program's entire body: builds the synthetic system, the
-   ! grid and the density, writes xc_probe.bin in the EXACT order
-   ! xc_energy_ref.py (via generate.py) expects, runs every functional's
-   ! RKS then UKS checks, and reads xc_energy.ref back -- once.
-   !
    subroutine run_all()
+      !!
+      !! The original program's entire body: builds the synthetic system, the
+      !! grid and the density, writes xc_probe.bin in the EXACT order
+      !! xc_energy_ref.py (via generate.py) expects, runs every functional's
+      !! RKS then UKS checks, and reads xc_energy.ref back -- once.
+      !!
       integer :: sh_l(NSH), sh_np(NSH), i, j, nao, unit
       real(dp) :: sh_e(MAXNP, NSH), sh_c(MAXNP, NSH), sh_r(3, NSH)
       real(dp) :: at_z(NATM), at_r(3, NATM), seed, trds

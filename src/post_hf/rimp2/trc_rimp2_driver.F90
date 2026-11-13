@@ -173,30 +173,30 @@ module trc_rimp2_driver
 
 contains
 
-   !
-   ! `cmo` (nao, nao) and `eps` (nao) are the RHF orbitals, occupied first;
-   ! `nocc` doubly occupied, `opts%nfrozen` of them left out of the
-   ! correlation (see `trc_rimp2_options_t`'s own header for `opts`, optional
-   ! throughout, as a whole; its `comm` splits the work over ranks). `pl` is
-   ! the orbital basis's pair list. `la` optional, made here if absent.
-   !
-   ! `packed_b`: the fitted B of a density-fitted J/K object
-   ! (trc_scf_df.F90's `df_jk_t%bpk`, allocated once that object is set
-   ! up), fitted on an auxiliary basis the CALLER has checked is the same
-   ! one as `aux` (same JSON path/contents -- trc_capi.F90's trc_run_rimp2
-   ! is the one library caller that does; this routine only checks the
-   ! dimensions agree, not that the basis itself is really the same one).
-   ! Passed as the array rather than the object so that post_hf does not
-   ! depend on scf. When present, steps 1 (metric, Cholesky), 2 (the
-   ! (mu nu|P) build) and 4 (B = X L^-T) are skipped entirely: `packed_b`
-   ! is already B, (npack, naux) device-resident (packed mu >= nu, L^-T
-   ! applied), and the occupied/virtual half-transform of step 3 run on it
-   ! directly IS RI-MP2's own B -- L^-T acts only on the auxiliary index,
-   ! the half-transform only on (mu, nu), and the two commute. `aux` is
-   ! still used for its shell structure (the block loop below only needs
-   ! auxiliary function COUNTS and offsets, identical either way).
-   !
    recursive subroutine trc_rimp2_run(b, aux, pl, nocc, cmo, eps, res, opts, la, packed_b)
+      !!
+      !! `cmo` (nao, nao) and `eps` (nao) are the RHF orbitals, occupied first;
+      !! `nocc` doubly occupied, `opts%nfrozen` of them left out of the
+      !! correlation (see `trc_rimp2_options_t`'s own header for `opts`, optional
+      !! throughout, as a whole; its `comm` splits the work over ranks). `pl` is
+      !! the orbital basis's pair list. `la` optional, made here if absent.
+      !!
+      !! `packed_b`: the fitted B of a density-fitted J/K object
+      !! (trc_scf_df.F90's `df_jk_t%bpk`, allocated once that object is set
+      !! up), fitted on an auxiliary basis the CALLER has checked is the same
+      !! one as `aux` (same JSON path/contents -- trc_capi.F90's trc_run_rimp2
+      !! is the one library caller that does; this routine only checks the
+      !! dimensions agree, not that the basis itself is really the same one).
+      !! Passed as the array rather than the object so that post_hf does not
+      !! depend on scf. When present, steps 1 (metric, Cholesky), 2 (the
+      !! (mu nu|P) build) and 4 (B = X L^-T) are skipped entirely: `packed_b`
+      !! is already B, (npack, naux) device-resident (packed mu >= nu, L^-T
+      !! applied), and the occupied/virtual half-transform of step 3 run on it
+      !! directly IS RI-MP2's own B -- L^-T acts only on the auxiliary index,
+      !! the half-transform only on (mu, nu), and the two commute. `aux` is
+      !! still used for its shell structure (the block loop below only needs
+      !! auxiliary function COUNTS and offsets, identical either way).
+      !!
       !! run a restricted ri-mp2 calculation
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: pl
@@ -683,32 +683,32 @@ contains
       end do
    end subroutine rimp2_unpack_block
 
-   !
-   ! `trc_rimp2_run`/`trc_urimp2_run`'s own fold for a spherical orbital
-   ! basis: `csph`/`epssph` are an SCF's own (b%nao_sph, b%nao_sph)/
-   ! (b%nao_sph) orbitals and energies (`trc_scf_result_t%cmo`/`eps`,
-   ! already at the SCF's own `scf_space_nao` size); `ccart`/`epscart`
-   ! come back (b%nao, b%nao)/(b%nao), the Cartesian AO space RI-MP2's own
-   ! three-centre tensor is built in.
-   !
-   ! Every real MO is `sph_mo_to_cart`'s T C_sph, trc_sph.F90's one-sided
-   ! fold (an MO's AO row crosses the spherical/Cartesian boundary, its
-   ! column -- the MO label -- does not: MO-space quantities do not care
-   ! which AO representation produced them). The Cartesian AO count is
-   ! always at least the spherical MO count (a Cartesian shell never has
-   ! fewer functions than its spherical one), so `b%nao - b%nao_sph`
-   ! columns are left over; they are filled with a ZERO coefficient
-   ! vector and `PAD_EPS`, a finite energy well outside any real
-   ! spectrum. `trc_rimp2_run`'s own `nv = nao - nocc` (nao = b%nao here)
-   ! then runs over these padded columns exactly as it would a real
-   ! virtual, but every (ia|jb) with a or b among them is a GEMM
-   ! contraction against a zero `C_vir` column and comes out exactly
-   ! zero -- PAD_EPS only has to keep `1/(e_i + e_j - e_a - e_b)` FINITE
-   ! (0 * finite = 0), not physically meaningful, since it is always
-   ! multiplied by that zero. This is what lets `trc_rimp2_run` itself
-   ! stay unchanged, Cartesian-interface, for a spherical caller.
-   !
    subroutine rimp2_driver_mo_to_cart(b, csph, epssph, ccart, epscart)
+      !!
+      !! `trc_rimp2_run`/`trc_urimp2_run`'s own fold for a spherical orbital
+      !! basis: `csph`/`epssph` are an SCF's own (b%nao_sph, b%nao_sph)/
+      !! (b%nao_sph) orbitals and energies (`trc_scf_result_t%cmo`/`eps`,
+      !! already at the SCF's own `scf_space_nao` size); `ccart`/`epscart`
+      !! come back (b%nao, b%nao)/(b%nao), the Cartesian AO space RI-MP2's own
+      !! three-centre tensor is built in.
+      !!
+      !! Every real MO is `sph_mo_to_cart`'s T C_sph, trc_sph.F90's one-sided
+      !! fold (an MO's AO row crosses the spherical/Cartesian boundary, its
+      !! column -- the MO label -- does not: MO-space quantities do not care
+      !! which AO representation produced them). The Cartesian AO count is
+      !! always at least the spherical MO count (a Cartesian shell never has
+      !! fewer functions than its spherical one), so `b%nao - b%nao_sph`
+      !! columns are left over; they are filled with a ZERO coefficient
+      !! vector and `PAD_EPS`, a finite energy well outside any real
+      !! spectrum. `trc_rimp2_run`'s own `nv = nao - nocc` (nao = b%nao here)
+      !! then runs over these padded columns exactly as it would a real
+      !! virtual, but every (ia|jb) with a or b among them is a GEMM
+      !! contraction against a zero `C_vir` column and comes out exactly
+      !! zero -- PAD_EPS only has to keep `1/(e_i + e_j - e_a - e_b)` FINITE
+      !! (0 * finite = 0), not physically meaningful, since it is always
+      !! multiplied by that zero. This is what lets `trc_rimp2_run` itself
+      !! stay unchanged, Cartesian-interface, for a spherical caller.
+      !!
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)  :: csph(b%nao_sph, b%nao_sph), epssph(b%nao_sph)
       real(dp), intent(out) :: ccart(b%nao, b%nao), epscart(b%nao)
@@ -729,62 +729,62 @@ contains
       if (nc > ns) epscart(ns + 1:nc) = PAD_EPS
    end subroutine rimp2_driver_mo_to_cart
 
-   !
-   ! RI-MP2 for an UNRESTRICTED (UHF or UKS) reference, on the device, one
-   ! rank only.
-   !
-   ! The metric, its Cholesky factor and (mu nu|P) do not know about spin --
-   ! they are built exactly once, as trc_rimp2_run's own steps 1-2 -- and
-   ! transformed TWICE, into B_a (from C_occ_a, C_vir_a) and B_b (from
-   ! C_occ_b, C_vir_b), by the same GEMM-plus-strided-batch half-transform
-   ! and the same triangular solve as the restricted routine's steps 3-4,
-   ! called once per spin.
-   !
-   ! Three pair blocks follow, all from B_a and B_b:
-   !
-   !   E_aa = 1/2 sum_{ij in a, ab in a} (ia|jb)[(ia|jb) - (ib|ja)] / D
-   !   E_bb = 1/2 sum_{ij in b, ab in b} (ia|jb)[(ia|jb) - (ib|ja)] / D
-   !   E_ab =     sum_{i in a, J in b, a in a, B in b} (ia|JB)^2 / D
-   !
-   ! E_aa and E_bb reuse trc_rimp2_run's own K GEMM and `pair_energy` kernel
-   ! verbatim -- same occupied-pair triangle (j >= i), same weight (2 off
-   ! the diagonal, 1 on it) -- and only the same-spin half of what that
-   ! kernel returns (`pss`) is kept; the opposite-spin half it also computes
-   ! (`pos`) has no meaning for two electrons of the SAME spin and is
-   ! discarded. The overall 1/2 is the one difference from the restricted
-   ! energy: expanding the standard spin-orbital result
-   !
-   !     E_aa = 1/4 sum_{ijab} [(ia|jb) - (ib|ja)]^2 / D     (i, j, a, b all
-   !                                                           independent,
-   !                                                           no triangle)
-   !
-   ! and using (ia|jb)^2 = (ib|ja)^2 over that full range gives exactly
-   ! 1/2 sum_{ijab} (ia|jb)[(ia|jb)-(ib|ja)]/D -- restricted's own full
-   ! double sum, weighted down to the triangle the same way restricted's
-   ! E_ss is -- hence the 1/2 that sits outside the triangle sum below. See
-   ! metalquicha's run_czt_uri_mp2 (mqc_czt_mp2.f90) for the same algebra
-   ! checked against a conventional (non-fitted) transform.
-   !
-   ! E_ab has no such symmetry -- i (alpha) and J (beta) are already
-   ! distinguishable electrons, so there is no exchange term and no pair to
-   ! fold in half: the full rectangle of i against J, one GEMM
-   ! K(iA, JB) = sum_Q B_a(iA, Q) B_b(JB, Q) per group of alpha occupied
-   ! orbitals, and a kernel that only needs K itself (no transpose, no
-   ! second read) since there is nothing to subtract.
-   !
-   ! MULTI-RANK: refused. The restricted ring distributes one occupied
-   ! block of B and lets it meet itself (aa) through a ring of nranks/2
-   ! steps; an open-shell run would need that ring run independently for aa
-   ! (over alpha's block) and bb (over beta's, a different size whenever
-   ! nalpha /= nbeta), plus a THIRD distribution for ab that is not a ring
-   ! at all -- alpha's block never needs to meet another alpha block, only
-   ! every beta block, so the "pass one step left" structure the ring
-   ! exists for buys nothing there. Three different distributions behind
-   ! one call is not a clean generalisation of the one the restricted path
-   ! has, so this round runs one rank only and refuses anything else below,
-   ! with a message that says so.
-   !
    recursive subroutine trc_urimp2_run(b, aux, pl, nalpha, nbeta, cmo, eps, res, opts, la)
+      !!
+      !! RI-MP2 for an UNRESTRICTED (UHF or UKS) reference, on the device, one
+      !! rank only.
+      !!
+      !! The metric, its Cholesky factor and (mu nu|P) do not know about spin --
+      !! they are built exactly once, as trc_rimp2_run's own steps 1-2 -- and
+      !! transformed TWICE, into B_a (from C_occ_a, C_vir_a) and B_b (from
+      !! C_occ_b, C_vir_b), by the same GEMM-plus-strided-batch half-transform
+      !! and the same triangular solve as the restricted routine's steps 3-4,
+      !! called once per spin.
+      !!
+      !! Three pair blocks follow, all from B_a and B_b:
+      !!
+      !!   E_aa = 1/2 sum_{ij in a, ab in a} (ia|jb)[(ia|jb) - (ib|ja)] / D
+      !!   E_bb = 1/2 sum_{ij in b, ab in b} (ia|jb)[(ia|jb) - (ib|ja)] / D
+      !!   E_ab =     sum_{i in a, J in b, a in a, B in b} (ia|JB)^2 / D
+      !!
+      !! E_aa and E_bb reuse trc_rimp2_run's own K GEMM and `pair_energy` kernel
+      !! verbatim -- same occupied-pair triangle (j >= i), same weight (2 off
+      !! the diagonal, 1 on it) -- and only the same-spin half of what that
+      !! kernel returns (`pss`) is kept; the opposite-spin half it also computes
+      !! (`pos`) has no meaning for two electrons of the SAME spin and is
+      !! discarded. The overall 1/2 is the one difference from the restricted
+      !! energy: expanding the standard spin-orbital result
+      !!
+      !!     E_aa = 1/4 sum_{ijab} [(ia|jb) - (ib|ja)]^2 / D     (i, j, a, b all
+      !!                                                           independent,
+      !!                                                           no triangle)
+      !!
+      !! and using (ia|jb)^2 = (ib|ja)^2 over that full range gives exactly
+      !! 1/2 sum_{ijab} (ia|jb)[(ia|jb)-(ib|ja)]/D -- restricted's own full
+      !! double sum, weighted down to the triangle the same way restricted's
+      !! E_ss is -- hence the 1/2 that sits outside the triangle sum below. See
+      !! metalquicha's run_czt_uri_mp2 (mqc_czt_mp2.f90) for the same algebra
+      !! checked against a conventional (non-fitted) transform.
+      !!
+      !! E_ab has no such symmetry -- i (alpha) and J (beta) are already
+      !! distinguishable electrons, so there is no exchange term and no pair to
+      !! fold in half: the full rectangle of i against J, one GEMM
+      !! K(iA, JB) = sum_Q B_a(iA, Q) B_b(JB, Q) per group of alpha occupied
+      !! orbitals, and a kernel that only needs K itself (no transpose, no
+      !! second read) since there is nothing to subtract.
+      !!
+      !! MULTI-RANK: refused. The restricted ring distributes one occupied
+      !! block of B and lets it meet itself (aa) through a ring of nranks/2
+      !! steps; an open-shell run would need that ring run independently for aa
+      !! (over alpha's block) and bb (over beta's, a different size whenever
+      !! nalpha /= nbeta), plus a THIRD distribution for ab that is not a ring
+      !! at all -- alpha's block never needs to meet another alpha block, only
+      !! every beta block, so the "pass one step left" structure the ring
+      !! exists for buys nothing there. Three different distributions behind
+      !! one call is not a clean generalisation of the one the restricted path
+      !! has, so this round runs one rank only and refuses anything else below,
+      !! with a message that says so.
+      !!
       !! `cmo`/`eps`: alpha in column/row 1, beta in 2 (trc_scf_result_t's layout). `res%cmo`/`res%eps`
       !! pass straight through for a Cartesian, nspin = 2 result only; fold a spherical one first.
       type(trc_basis_t), intent(in) :: b, aux
@@ -1149,11 +1149,11 @@ contains
       res%step_t = stab%t
    end subroutine rimp2_store_result
 
-   !
-   ! The time `tm` has run, read after everything queued on the device has
-   ! finished.
-   !
    function since(lp, tm) result(t)
+      !!
+      !! The time `tm` has run, read after everything queued on the device has
+      !! finished.
+      !!
       type(trc_linalg_t), intent(in) :: lp
       type(timer_type), intent(in) :: tm
       real(dp) :: t
@@ -1161,27 +1161,27 @@ contains
       t = tm%get_elapsed_time()
    end function since
 
-   !
-   ! Occupied orbitals per K GEMM. One i gives cuBLAS nvir rows, which it
-   ! tiles small; four give it a matrix tall enough for its larger tiles.
-   ! Measured at w40 cc-pVDZ on a V100, K GEMM seconds for 1, 2, 4, 8, 16
-   ! per group: 9.37, 9.09, 8.78, 9.24, 9.38 -- four is the best, and
-   ! larger groups lose to the j < i corner each one computes and throws
-   ! away. K is that many times larger, so on the device the group shrinks
-   ! to what the free memory holds next to K^T and the energies, keeping
-   ! 512 MB back for the libraries' own workspace.
-   !
-   !
-   ! One step of the ring: pass the block this rank holds to the rank on its
-   ! left and take the one on its right, through the host. At the first
-   ! step the held block is this rank's own (`xr`), after that the visiting
-   ! buffer `cur`, and what arrives goes into the other buffer, which
-   ! becomes `cur`. Blocking calls in an order that cannot deadlock: even
-   ! ranks send first and odd ranks receive first, so every send meets a
-   ! receive that is already posted or about to be. In pieces of at most
-   ! MSG_CHUNK doubles, since MPI counts are 32-bit.
-   !
    subroutine ring_shift(comm, xr, vis, cur, nsend, nrecv, first, direct)
+      !!
+      !! Occupied orbitals per K GEMM. One i gives cuBLAS nvir rows, which it
+      !! tiles small; four give it a matrix tall enough for its larger tiles.
+      !! Measured at w40 cc-pVDZ on a V100, K GEMM seconds for 1, 2, 4, 8, 16
+      !! per group: 9.37, 9.09, 8.78, 9.24, 9.38 -- four is the best, and
+      !! larger groups lose to the j < i corner each one computes and throws
+      !! away. K is that many times larger, so on the device the group shrinks
+      !! to what the free memory holds next to K^T and the energies, keeping
+      !! 512 MB back for the libraries' own workspace.
+      !!
+      !!
+      !! One step of the ring: pass the block this rank holds to the rank on its
+      !! left and take the one on its right, through the host. At the first
+      !! step the held block is this rank's own (`xr`), after that the visiting
+      !! buffer `cur`, and what arrives goes into the other buffer, which
+      !! becomes `cur`. Blocking calls in an order that cannot deadlock: even
+      !! ranks send first and odd ranks receive first, so every send meets a
+      !! receive that is already posted or about to be. In pieces of at most
+      !! MSG_CHUNK doubles, since MPI counts are 32-bit.
+      !!
       type(comm_t), intent(in) :: comm
       real(dp), intent(inout) :: xr(:), vis(:, :)
       integer, intent(inout) :: cur
@@ -1224,12 +1224,12 @@ contains
       cur = nxt
    end subroutine ring_shift
 
-   !
-   ! The held block to `dest`, from the host copy, in MSG_CHUNK pieces.
-   ! Module procedures rather than internal ones: see app/main.F90's
-   ! trc_run for what a sibling internal procedure did under NVHPC's MPI.
-   !
    subroutine send_block(comm, xr, vis, cur, n, dest, first, reqs)
+      !!
+      !! The held block to `dest`, from the host copy, in MSG_CHUNK pieces.
+      !! Module procedures rather than internal ones: see app/main.F90's
+      !! trc_run for what a sibling internal procedure did under NVHPC's MPI.
+      !!
       type(comm_t), intent(in) :: comm
       real(dp), intent(in), target :: xr(:), vis(:, :)
       integer, intent(in) :: cur, dest
@@ -1252,10 +1252,10 @@ contains
       end do
    end subroutine send_block
 
-   !
-   ! The next block from `source` into buffer `c` of `vis`, in MSG_CHUNK pieces.
-   !
    subroutine recv_block(comm, vis, c, n, source)
+      !!
+      !! The next block from `source` into buffer `c` of `vis`, in MSG_CHUNK pieces.
+      !!
       type(comm_t), intent(in) :: comm
       real(dp), intent(inout) :: vis(:, :)
       integer, intent(in) :: c, source
@@ -1269,13 +1269,13 @@ contains
       end do
    end subroutine recv_block
 
-   !
-   ! send_block and recv_block for device addresses, called inside
-   ! `host_data use_device`: pic-mpi's explicit-count procedures by their
-   ! specific names, since its generic interfaces misbehave there under
-   ! nvfortran.
-   !
    subroutine send_block_dev(comm, xr, vis, cur, n, dest, first, reqs)
+      !!
+      !! send_block and recv_block for device addresses, called inside
+      !! `host_data use_device`: pic-mpi's explicit-count procedures by their
+      !! specific names, since its generic interfaces misbehave there under
+      !! nvfortran.
+      !!
       type(comm_t), intent(in) :: comm
       real(dp), intent(in), target :: xr(:), vis(:, :)
       integer, intent(in) :: cur, dest
@@ -1312,18 +1312,18 @@ contains
       end do
    end subroutine recv_block_dev
 
-   !
-   ! Step 3's exchange. Rank r holds X(ia, P in P_r) for every i, with the
-   ! rows for O_q (q /= r) packed in `ysend` from soff(q). It needs
-   ! X(ia in O_r, P) for every P. The exchange runs nranks - 1 shifts: at
-   ! step k rank r sends its segment to rank r + k and receives from rank
-   ! r - k the columns P_{r-k} of its own X, which are contiguous in `xr`.
-   ! As in ring_shift, each send is posted non-blocking before the blocking
-   ! receive, so neither side can wait on the other. Messages go in
-   ! MSG_CHUNK pieces. Sender and receiver compute the same count,
-   ! bn(dest) nv |P_r|, so an empty one is skipped on both sides.
-   !
    subroutine exchange_x(comm, nv8, bn, plo, soff, ysend, xr, direct)
+      !!
+      !! Step 3's exchange. Rank r holds X(ia, P in P_r) for every i, with the
+      !! rows for O_q (q /= r) packed in `ysend` from soff(q). It needs
+      !! X(ia in O_r, P) for every P. The exchange runs nranks - 1 shifts: at
+      !! step k rank r sends its segment to rank r + k and receives from rank
+      !! r - k the columns P_{r-k} of its own X, which are contiguous in `xr`.
+      !! As in ring_shift, each send is posted non-blocking before the blocking
+      !! receive, so neither side can wait on the other. Messages go in
+      !! MSG_CHUNK pieces. Sender and receiver compute the same count,
+      !! bn(dest) nv |P_r|, so an empty one is skipped on both sides.
+      !!
       type(comm_t), intent(in) :: comm
       integer, intent(in) :: bn(0:), plo(0:)
       integer(int64), intent(in) :: nv8
@@ -1364,12 +1364,12 @@ contains
       end do
    end subroutine exchange_x
 
-   !
-   ! buf(off + 1 : off + n) to `dest` and from `source`, in MSG_CHUNK pieces,
-   ! host addresses (send_seg, recv_seg) or device ones inside `host_data`
-   ! (the _dev pair, by pic-mpi's specific names as send_block_dev does).
-   !
    subroutine send_seg(comm, buffer, off, n, dest, reqs)
+      !!
+      !! buf(off + 1 : off + n) to `dest` and from `source`, in MSG_CHUNK pieces,
+      !! host addresses (send_seg, recv_seg) or device ones inside `host_data`
+      !! (the _dev pair, by pic-mpi's specific names as send_block_dev does).
+      !!
       type(comm_t), intent(in) :: comm
       real(dp), intent(in), target :: buffer(:)
       integer(int64), intent(in) :: off, n
@@ -1458,33 +1458,33 @@ contains
       res = (l + 1)*(l + 2)/2
    end function ncart
 
-   !! idx(mu, nu) = mu(mu-1)/2 + nu, mu >= nu, 1-based: trc_scf_df.F90's own
-   !! `pack_idx`, duplicated here rather than used across the module
-   !! boundary -- a `do concurrent` body may not call a procedure from
-   !! another module (the same reason `ncart` above is its own copy and
-   !! not trc_scf_df.F90's).
    pure integer function rimp2_pack_index(mu, nu) result(p)
+      !! idx(mu, nu) = mu(mu-1)/2 + nu, mu >= nu, 1-based: trc_scf_df.F90's own
+      !! `pack_idx`, duplicated here rather than used across the module
+      !! boundary -- a `do concurrent` body may not call a procedure from
+      !! another module (the same reason `ncart` above is its own copy and
+      !! not trc_scf_df.F90's).
       !$acc routine seq
       integer, intent(in) :: mu, nu
       p = mu*(mu - 1)/2 + nu
    end function rimp2_pack_index
 
-   !
-   ! For occupied i and the pairs j = jfirst.., one thread per (j, a), with a
-   ! fastest and b summed inside: part(2 ja - 1) = w sum_b (ia|jb)^2 / D and
-   ! part(2 ja) = w sum_b [(ia|jb)^2 - (ia|jb)(ib|ja)] / D, w = 1 for j = i
-   ! and 2 otherwise -- the (j, i) pair is the same numbers again and is
-   ! never computed. No reduction crosses threads; the host adds 2 nji
-   ! numbers. Diagonal terms are in the sum: (ia|ia)^2 - (ia|ia)^2 = 0 for
-   ! the same-spin part, as it must.
-   !
-   ! (ia|jb) is K(roff + a, coff + (j - jfirst) nv + b) and (ib|ja) is
-   ! K(roff + b, coff + (j - jfirst) nv + a) = K_i^T(ja, b): with a fastest
-   ! across threads, both are unit-stride reads. From K alone one of the
-   ! two is always strided by nv across a warp, which held this kernel to a
-   ! fifth of the device's bandwidth.
-   !
    subroutine pair_energy(i, jfirst, no, nv, ldk, roff, coff, ldt, nji, eo, ev, ki, kt, part)
+      !!
+      !! For occupied i and the pairs j = jfirst.., one thread per (j, a), with a
+      !! fastest and b summed inside: part(2 ja - 1) = w sum_b (ia|jb)^2 / D and
+      !! part(2 ja) = w sum_b [(ia|jb)^2 - (ia|jb)(ib|ja)] / D, w = 1 for j = i
+      !! and 2 otherwise -- the (j, i) pair is the same numbers again and is
+      !! never computed. No reduction crosses threads; the host adds 2 nji
+      !! numbers. Diagonal terms are in the sum: (ia|ia)^2 - (ia|ia)^2 = 0 for
+      !! the same-spin part, as it must.
+      !!
+      !! (ia|jb) is K(roff + a, coff + (j - jfirst) nv + b) and (ib|ja) is
+      !! K(roff + b, coff + (j - jfirst) nv + a) = K_i^T(ja, b): with a fastest
+      !! across threads, both are unit-stride reads. From K alone one of the
+      !! two is always strided by nv across a warp, which held this kernel to a
+      !! fifth of the device's bandwidth.
+      !!
       integer, intent(in) :: i, jfirst, no, nv, ldk, roff, coff, ldt, nji
       real(dp), intent(in) :: eo(no), ev(nv), ki(ldk, *), kt(ldt, nv)
       real(dp), intent(out) :: part(*)
@@ -1520,16 +1520,16 @@ contains
       pss = w*pss
    end subroutine pair_energy_body
 
-   !
-   ! The mixed-spin (ab) block for occupied alpha orbital `i`: one thread
-   ! per (a, J), B summed inside. `aJ` decomposes the same way `pair_energy`'s
-   ! `ja` does (the row selector `a` fastest, the column group `J` next),
-   ! here against a rectangle that is never folded by any symmetry, so
-   ! there is no weight, no second read of a transpose, and nothing to
-   ! subtract -- only (ia|JB)^2, never (ia|JB)(iB|Ja), which does not exist
-   ! for two distinguishable electrons.
-   !
    subroutine mixed_energy(i, nva, nob, nvb, ldk, roff, eo_a, ev_a, eo_b, ev_b, ki, part)
+      !!
+      !! The mixed-spin (ab) block for occupied alpha orbital `i`: one thread
+      !! per (a, J), B summed inside. `aJ` decomposes the same way `pair_energy`'s
+      !! `ja` does (the row selector `a` fastest, the column group `J` next),
+      !! here against a rectangle that is never folded by any symmetry, so
+      !! there is no weight, no second read of a transpose, and nothing to
+      !! subtract -- only (ia|JB)^2, never (ia|JB)(iB|Ja), which does not exist
+      !! for two distinguishable electrons.
+      !!
       integer, intent(in) :: i, nva, nob, nvb, ldk, roff
       real(dp), intent(in) :: eo_a(*), ev_a(nva), eo_b(nob), ev_b(nvb), ki(ldk, *)
       real(dp), intent(out) :: part(*)

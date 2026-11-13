@@ -1,28 +1,28 @@
-!
-! The Fock build, one iteration's worth: the two-electron part
-! (scf_fock_build_g: in full or as an increment, restricted or unrestricted,
-! through the one `g_of_density`), the exchange-correlation potential (scf_fock_build_vxc), the
-! polarisable continuum's operator (scf_fock_build_pcm), the energy at the current
-! density (scf_fock_energy), assembling H + G (+ V_xc, + the continuum) into
-! the Fock matrix (scf_fock_assemble), the orthogonalised commutator FDS -
-! SDF (scf_fock_commutator_error), and the Cartesian <-> spherical folds every one
-! of them crosses through (scf_fock_to_cart/scf_fock_to_sph). See trc_scf_driver's own
-! header for what each piece means physically; this module is just where
-! the arithmetic now lives.
-!
-! THE CALLER PASSES OBJECTS, THE KERNELS SEE ARRAYS. Each public routine
-! takes the run's basis, context (`scf_ctx_t`), settings (`scf_settings_t`)
-! and per-iteration state (`scf_state_t`) and picks out what it needs, so
-! the SCF loop reads as one line per step. What the run borrows rather
-! than builds -- the linear-algebra handles, the ERI engine and pair list,
-! the DFT grids, the density fit -- comes as its own argument. A `do concurrent` body must never
-! name a derived-type component, though: under `-gpu=mem:separate` that is
-! what breaks. So `scf_fock_build_g` and `scf_fock_assemble`, the two with loops of their
-! own, hand the arrays to a private explicit-shape worker (`*_arrays`), whose
-! sizes come from the arrays themselves (1 x 1 where the run has no use for
-! one, matching trc_scf_state%alloc).
-!
 module trc_scf_fock
+   !!
+   !! The Fock build, one iteration's worth: the two-electron part
+   !! (scf_fock_build_g: in full or as an increment, restricted or unrestricted,
+   !! through the one `g_of_density`), the exchange-correlation potential (scf_fock_build_vxc), the
+   !! polarisable continuum's operator (scf_fock_build_pcm), the energy at the current
+   !! density (scf_fock_energy), assembling H + G (+ V_xc, + the continuum) into
+   !! the Fock matrix (scf_fock_assemble), the orthogonalised commutator FDS -
+   !! SDF (scf_fock_commutator_error), and the Cartesian <-> spherical folds every one
+   !! of them crosses through (scf_fock_to_cart/scf_fock_to_sph). See trc_scf_driver's own
+   !! header for what each piece means physically; this module is just where
+   !! the arithmetic now lives.
+   !!
+   !! THE CALLER PASSES OBJECTS, THE KERNELS SEE ARRAYS. Each public routine
+   !! takes the run's basis, context (`scf_ctx_t`), settings (`scf_settings_t`)
+   !! and per-iteration state (`scf_state_t`) and picks out what it needs, so
+   !! the SCF loop reads as one line per step. What the run borrows rather
+   !! than builds -- the linear-algebra handles, the ERI engine and pair list,
+   !! the DFT grids, the density fit -- comes as its own argument. A `do concurrent` body must never
+   !! name a derived-type component, though: under `-gpu=mem:separate` that is
+   !! what breaks. So `scf_fock_build_g` and `scf_fock_assemble`, the two with loops of their
+   !! own, hand the arrays to a private explicit-shape worker (`*_arrays`), whose
+   !! sizes come from the arrays themselves (1 x 1 where the run has no use for
+   !! one, matching trc_scf_state%alloc).
+   !!
    use pic_types, only: dp
    use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t
@@ -48,14 +48,14 @@ module trc_scf_fock
 
 contains
 
-   !
-   ! The two-electron build, resident and entirely in Cartesian space, from
-   ! the density itself (a full build) or from its DIFFERENCE to the last
-   ! build's (an increment, see trc_scf_incremental for when and why),
-   ! restricted or unrestricted alike: `g_of_density` is the one build, and
-   ! the increment is that build on D - D_ref accumulated onto G(D_ref).
-   !
    subroutine scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incr_scale, eri, la, dfjk)
+      !!
+      !! The two-electron build, resident and entirely in Cartesian space, from
+      !! the density itself (a full build) or from its DIFFERENCE to the last
+      !! build's (an increment, see trc_scf_incremental for when and why),
+      !! restricted or unrestricted alike: `g_of_density` is the one build, and
+      !! the increment is that build on D - D_ref accumulated onto G(D_ref).
+      !!
       type(trc_basis_t), intent(in) :: scf_basis
       type(scf_ctx_t), intent(in) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
@@ -295,16 +295,16 @@ contains
       end do
    end subroutine add_into_spin
 
-   !
-   ! The exchange-correlation potential and energy, finding its (Cartesian)
-   ! density already present: the semilocal part (trc_xc_rks/uks), then
-   ! VV10's nonlocal correlation on its own coarser grid when the functional
-   ! has it, folded back to the run's own space. Only called when `dft` is
-   ! true (the caller's own guard), so `vxc_c`/`vxc` are always full size
-   ! here -- no 1 x 1 sizing dummy needed, unlike `scf_fock_build_g`'s arrays.
-   ! The fold back to the run's space reads its sizes off those arrays.
-   !
    subroutine scf_fock_build_vxc(scf_basis, grid_cache, la, scf_config, scf_state, scf_energies, scf_timers, comm)
+      !!
+      !! The exchange-correlation potential and energy, finding its (Cartesian)
+      !! density already present: the semilocal part (trc_xc_rks/uks), then
+      !! VV10's nonlocal correlation on its own coarser grid when the functional
+      !! has it, folded back to the run's own space. Only called when `dft` is
+      !! true (the caller's own guard), so `vxc_c`/`vxc` are always full size
+      !! here -- no 1 x 1 sizing dummy needed, unlike `scf_fock_build_g`'s arrays.
+      !! The fold back to the run's space reads its sizes off those arrays.
+      !!
       type(trc_basis_t), intent(in) :: scf_basis
       type(trc_grid_cache_t), intent(in) :: grid_cache   !! the run's grids, built and on the device
       type(trc_linalg_t), intent(inout) :: la
@@ -381,13 +381,13 @@ contains
       end do
    end subroutine scf_fock_build_vxc
 
-   !
-   ! The continuum's operator at the TOTAL density (pyscf's choice for UKS
-   ! too: one set of charges, one operator added to both spins), folded back
-   ! to the run's own space. Only called when `pcm_on` is true. `nu_c` is
-   ! `dtot_c`'s true size (1 when `nspin == 1`, where it is never read).
-   !
    subroutine scf_fock_build_pcm(scf_basis, scf_context, scf_config, scf_state, scf_energies, la, pl, comm)
+      !!
+      !! The continuum's operator at the TOTAL density (pyscf's choice for UKS
+      !! too: one set of charges, one operator added to both spins), folded back
+      !! to the run's own space. Only called when `pcm_on` is true. `nu_c` is
+      !! `dtot_c`'s true size (1 when `nspin == 1`, where it is never read).
+      !!
       type(trc_basis_t), intent(in) :: scf_basis
       type(scf_ctx_t), intent(inout) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
@@ -408,11 +408,11 @@ contains
       call scf_fock_to_sph(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, scf_state%vpcm_c, scf_state%vpcm)
    end subroutine scf_fock_build_pcm
 
-   ! The one- and two-electron energy at the density `scf_result%dmat`: Tr(D H) and
-   ! Tr(D G)/2, per spin; the total adds the nuclear repulsion and the XC and
-   ! PCM energies already in `scf_energies`. G is read from `scf_state%fock`,
-   ! which holds it from `scf_fock_fold_g` until `scf_fock_assemble`.
    subroutine scf_fock_energy(scf_context, scf_config, scf_state, scf_result, scf_energies, la)
+      !! The one- and two-electron energy at the density `scf_result%dmat`: Tr(D H) and
+      !! Tr(D G)/2, per spin; the total adds the nuclear repulsion and the XC and
+      !! PCM energies already in `scf_energies`. G is read from `scf_state%fock`,
+      !! which holds it from `scf_fock_fold_g` until `scf_fock_assemble`.
       type(scf_ctx_t), intent(in) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
       type(scf_state_t), intent(in) :: scf_state
@@ -488,9 +488,9 @@ contains
       end do
    end subroutine assemble_fock_arrays
 
-   ! W = F D S - S D F, errv = X^T W X, per spin: the orthogonalised
-   ! commutator DIIS extrapolates on, and whose norm gates DIIS/A-DIIS.
    subroutine scf_fock_commutator_error(scf_context, scf_config, scf_state, scf_result, la)
+      !! W = F D S - S D F, errv = X^T W X, per spin: the orthogonalised
+      !! commutator DIIS extrapolates on, and whose norm gates DIIS/A-DIIS.
       type(scf_ctx_t), intent(in) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
       type(scf_state_t), intent(inout) :: scf_state

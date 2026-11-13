@@ -1,27 +1,27 @@
-!
-! The FULL KS-DFT nuclear gradient (trc_scf_grad%trc_scf_gradient with
-! `func` present) against pyscf's own grad.RKS/grad.UKS, evaluated at
-! TERCO'S OWN converged orbitals rather than a re-converged pyscf SCF
-! (test/pyscf_refs/generate.py's gen_xc_grad: the same "compare at terco's
-! own converged density" rule rks.ref already uses for VV10) and on
-! TERCO'S OWN quadrature (`res%grid_r`/`res%grid_w`, dumped below and
-! handed to pyscf's `mf.grids` verbatim -- test/pyscf_refs/generate.py's
-! gen_rks does the same), so neither an SCF difference nor a quadrature
-! difference can hide inside the comparison: what differs is this
-! module's formula (and the grid-response term it omits by default --
-! see trc_xc_grad.F90's header and check_xc_grad_fd.F90 for that size).
-!
-! pyscf's `grid_response` defaults to False -- the basis-function term
-! only, no travelling grid points or responding partition weights -- the
-! same omission trc_xc_grad.F90 makes. An optional 7th argument flips
-! BOTH sides to the grid-response gradient: terco's own
-! (trc_scf_gradient's `grid_response=.true.`, this module's default) and
-! pyscf's (`g%grid_response = .true.`, which needs pyscf's OWN grid, NOT
-! the dumped one -- see the block below this header's own comment on
-! why). Absent (or 0), this is the original Pulay-only comparison,
-! unchanged, against its own already-committed reference.
-!
 module check_xc_grad_vs_pyscf_suite
+   !!
+   !! The FULL KS-DFT nuclear gradient (trc_scf_grad%trc_scf_gradient with
+   !! `func` present) against pyscf's own grad.RKS/grad.UKS, evaluated at
+   !! TERCO'S OWN converged orbitals rather than a re-converged pyscf SCF
+   !! (test/pyscf_refs/generate.py's gen_xc_grad: the same "compare at terco's
+   !! own converged density" rule rks.ref already uses for VV10) and on
+   !! TERCO'S OWN quadrature (`res%grid_r`/`res%grid_w`, dumped below and
+   !! handed to pyscf's `mf.grids` verbatim -- test/pyscf_refs/generate.py's
+   !! gen_rks does the same), so neither an SCF difference nor a quadrature
+   !! difference can hide inside the comparison: what differs is this
+   !! module's formula (and the grid-response term it omits by default --
+   !! see trc_xc_grad.F90's header and check_xc_grad_fd.F90 for that size).
+   !!
+   !! pyscf's `grid_response` defaults to False -- the basis-function term
+   !! only, no travelling grid points or responding partition weights -- the
+   !! same omission trc_xc_grad.F90 makes. An optional 7th argument flips
+   !! BOTH sides to the grid-response gradient: terco's own
+   !! (trc_scf_gradient's `grid_response=.true.`, this module's default) and
+   !! pyscf's (`g%grid_response = .true.`, which needs pyscf's OWN grid, NOT
+   !! the dumped one -- see the block below this header's own comment on
+   !! why). Absent (or 0), this is the original Pulay-only comparison,
+   !! unchanged, against its own already-committed reference.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

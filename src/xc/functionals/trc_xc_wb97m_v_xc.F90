@@ -1,87 +1,87 @@
-!
-! WB97M_V_XC: range-separated hybrid meta-GGA exchange-correlation kernel.
-!
-! HAND-WRITTEN, not translated: ExchCXX (~/dev/ExchCXX, pinned commit
-! 67be5c6) has no wB97M-V kernel (checked against its upstream HEAD, which
-! is the same commit, so there is nothing newer to pull either). The
-! functional form and every numeric coefficient below are Mardirossian and
-! Head-Gordon's own, J. Chem. Phys. 144, 214110 (2016) ("wB97M-V: A
-! combinatorially-optimized, range-separated hybrid, meta-GGA density
-! functional with VV10 nonlocal correlation"), Eqs. 3-28 and the "6
-! (Final)" column of Table 3. Nothing here is translated or copied from
-! libxc (MPL-2.0): libxc/pyscf served only as the NUMERICAL reference
-! check_xc.F90 compares against (reference_xc.dat, kernel "wb97m_v_xc").
-!
-! This kernel is the SEMILOCAL exchange-correlation only -- Eqs. 4-5's
-! E_x^mGGA + E_c,ss^mGGA + E_c,os^mGGA. The exact-exchange terms
-! (c_x*E_x,sr^exact + E_x,lr^exact) and VV10's E_c,nl are added by the
-! caller through trc_xc_functional_t's exx/exx_lr/omega/nlc_b/nlc_c, the
-! same split wb97x_v_xc uses for its GGA counterpart.
-!
-! The functional (per spin sigma in {a,b}, Eqs. 6-28):
-!
-!   t_sigma  = tau_sigma^UEG / tau_sigma,   tau_sigma^UEG = (3/10)(6 pi^2)^(2/3) rho_sigma^(5/3)
-!   w_sigma  = (t_sigma - 1)/(t_sigma + 1)                                    [meta-GGA ingredient]
-!   s2_sigma = |grad rho_sigma|^2 / rho_sigma^(8/3)
-!   u_sigma  = gamma * s2_sigma / (1 + gamma * s2_sigma)                      [GGA ingredient]
-!
-! with gamma = 0.004 (exchange), 0.2 (same-spin correlation), 0.006
-! (opposite-spin, on s2_ab = (s2_a + s2_b)/2 and t_ab = (t_a + t_b)/2).
-! Exchange and same-spin correlation sum their two spins; opposite-spin is
-! one Stoll-decomposed (Eq. 20) term built from the TOTAL PW92 correlation
-! energy density, e_c,ab = rho*eps_c^PW92(rho_a,rho_b) - rho_a*eps_c^PW92
-! (rho_a,0) - rho_b*eps_c^PW92(0,rho_b). Every eps_c^PW92 value and its
-! rho-derivative is `pw91_lda_mod_exc_vxc_polar`'s -- the MODIFIED PW92
-! high-density correction, not the plain one (`trc_xc_pw91_lda`): checked
-! numerically against pyscf's WB97M_V at a w = 0 point, where every other
-! term is an exact constant (g = c_*00) and the plain PW92 missed by
-! ~3e-7 while the modified one matched to ~1e-13 -- libxc's own wb97m_v.c
-! uses LDA_C_PW_MOD internally, not LDA_C_PW, and this kernel now does
-! too. That translated ExchCXX kernel already matches libxc's
-! LDA_C_PW_MOD at check_xc's tolerance (not in `DISAGREES_WITH_LIBXC`),
-! so this kernel reuses it rather than re-deriving Perdew and Wang's
-! G(rs,zeta) closed form.
-!
-! Each inhomogeneity-correction factor is a short power series in w and u,
-! Eq. 2's f(x,y) with terco's selectable coefficients from Table 3's final
-! column (c_x,ij, c_css,ij, c_cos,ij; every other one of the 135 is zero):
-!
-!   g_x(w,u)   = c_x00 + c_x10*w + c_x01*u
-!   g_css(w,u) = c_css00 + c_css10*w + c_css20*w^2 + c_css43*w^4*u^3 + c_css04*u^4
-!   g_cos(w,u) = c_cos00 + c_cos10*w + c_cos20*w^2 + c_cos60*w^6
-!                + c_cos21*w^2*u + c_cos61*w^6*u
-!
-! No g touches sigma_ab (Eqs. 15, 24, 28 use only the diagonal s2_sigma),
-! so vsigma_ab is identically zero -- not screened out, just never
-! computed. Every analytic derivative below (vrho, vsigma, vtau per
-! spin/pair, and the unpolarised reduction two paragraphs down) was cross-
-! checked against central finite differences at 1e-6 before being
-! transcribed; see the commit message for the script.
-!
-! `exc_vxc_polar`'s core is the general two-spin formula; `exc_vxc_unpolar`
-! calls it at the symmetric point rho_a = rho_b = rho/2, sigma_aa = sigma_ab
-! = sigma_bb = sigma/4, tau_a = tau_b = tau/2 (an unpolarised density's
-! actual spin-resolution) and reduces the five polarised outputs by the
-! chain rule through that substitution:
-!
-!   eps   = eps_polar                          (same normalisation, no rho_b dependence left)
-!   vrho   = (vrho_a + vrho_b)/2
-!   vsigma = (vsigma_aa + vsigma_ab + vsigma_bb)/4
-!   vtau   = (vtau_a + vtau_b)/2
-!
-! because d(rho_a)/d(rho) = d(rho_b)/d(rho) = 1/2 and d(sigma_ss)/d(sigma)
-! = d(sigma_ab)/d(sigma) = 1/4 along that submanifold, with sigma_aa,
-! sigma_ab, sigma_bb independent of rho there (grad rho_a = grad rho_b =
-! grad rho / 2 regardless of rho itself). This is cheaper to get right
-! than a second from-scratch derivation and was validated the same way
-! (finite differences against the general formula, not assumed).
-!
-! Only `exc`/`exc_vxc` exist, the same as every other translated meta-GGA
-! kernel (tools/exchcxx_to_fortran.py's own comment): no fxc, so a
-! coupled-perturbed solve or an analytic gradient must refuse this
-! functional the way it already refuses every other meta-GGA.
-!
 module trc_xc_wb97m_v_xc
+   !!
+   !! WB97M_V_XC: range-separated hybrid meta-GGA exchange-correlation kernel.
+   !!
+   !! HAND-WRITTEN, not translated: ExchCXX (~/dev/ExchCXX, pinned commit
+   !! 67be5c6) has no wB97M-V kernel (checked against its upstream HEAD, which
+   !! is the same commit, so there is nothing newer to pull either). The
+   !! functional form and every numeric coefficient below are Mardirossian and
+   !! Head-Gordon's own, J. Chem. Phys. 144, 214110 (2016) ("wB97M-V: A
+   !! combinatorially-optimized, range-separated hybrid, meta-GGA density
+   !! functional with VV10 nonlocal correlation"), Eqs. 3-28 and the "6
+   !! (Final)" column of Table 3. Nothing here is translated or copied from
+   !! libxc (MPL-2.0): libxc/pyscf served only as the NUMERICAL reference
+   !! check_xc.F90 compares against (reference_xc.dat, kernel "wb97m_v_xc").
+   !!
+   !! This kernel is the SEMILOCAL exchange-correlation only -- Eqs. 4-5's
+   !! E_x^mGGA + E_c,ss^mGGA + E_c,os^mGGA. The exact-exchange terms
+   !! (c_x*E_x,sr^exact + E_x,lr^exact) and VV10's E_c,nl are added by the
+   !! caller through trc_xc_functional_t's exx/exx_lr/omega/nlc_b/nlc_c, the
+   !! same split wb97x_v_xc uses for its GGA counterpart.
+   !!
+   !! The functional (per spin sigma in {a,b}, Eqs. 6-28):
+   !!
+   !!   t_sigma  = tau_sigma^UEG / tau_sigma,   tau_sigma^UEG = (3/10)(6 pi^2)^(2/3) rho_sigma^(5/3)
+   !!   w_sigma  = (t_sigma - 1)/(t_sigma + 1)                                    [meta-GGA ingredient]
+   !!   s2_sigma = |grad rho_sigma|^2 / rho_sigma^(8/3)
+   !!   u_sigma  = gamma * s2_sigma / (1 + gamma * s2_sigma)                      [GGA ingredient]
+   !!
+   !! with gamma = 0.004 (exchange), 0.2 (same-spin correlation), 0.006
+   !! (opposite-spin, on s2_ab = (s2_a + s2_b)/2 and t_ab = (t_a + t_b)/2).
+   !! Exchange and same-spin correlation sum their two spins; opposite-spin is
+   !! one Stoll-decomposed (Eq. 20) term built from the TOTAL PW92 correlation
+   !! energy density, e_c,ab = rho*eps_c^PW92(rho_a,rho_b) - rho_a*eps_c^PW92
+   !! (rho_a,0) - rho_b*eps_c^PW92(0,rho_b). Every eps_c^PW92 value and its
+   !! rho-derivative is `pw91_lda_mod_exc_vxc_polar`'s -- the MODIFIED PW92
+   !! high-density correction, not the plain one (`trc_xc_pw91_lda`): checked
+   !! numerically against pyscf's WB97M_V at a w = 0 point, where every other
+   !! term is an exact constant (g = c_*00) and the plain PW92 missed by
+   !! ~3e-7 while the modified one matched to ~1e-13 -- libxc's own wb97m_v.c
+   !! uses LDA_C_PW_MOD internally, not LDA_C_PW, and this kernel now does
+   !! too. That translated ExchCXX kernel already matches libxc's
+   !! LDA_C_PW_MOD at check_xc's tolerance (not in `DISAGREES_WITH_LIBXC`),
+   !! so this kernel reuses it rather than re-deriving Perdew and Wang's
+   !! G(rs,zeta) closed form.
+   !!
+   !! Each inhomogeneity-correction factor is a short power series in w and u,
+   !! Eq. 2's f(x,y) with terco's selectable coefficients from Table 3's final
+   !! column (c_x,ij, c_css,ij, c_cos,ij; every other one of the 135 is zero):
+   !!
+   !!   g_x(w,u)   = c_x00 + c_x10*w + c_x01*u
+   !!   g_css(w,u) = c_css00 + c_css10*w + c_css20*w^2 + c_css43*w^4*u^3 + c_css04*u^4
+   !!   g_cos(w,u) = c_cos00 + c_cos10*w + c_cos20*w^2 + c_cos60*w^6
+   !!                + c_cos21*w^2*u + c_cos61*w^6*u
+   !!
+   !! No g touches sigma_ab (Eqs. 15, 24, 28 use only the diagonal s2_sigma),
+   !! so vsigma_ab is identically zero -- not screened out, just never
+   !! computed. Every analytic derivative below (vrho, vsigma, vtau per
+   !! spin/pair, and the unpolarised reduction two paragraphs down) was cross-
+   !! checked against central finite differences at 1e-6 before being
+   !! transcribed; see the commit message for the script.
+   !!
+   !! `exc_vxc_polar`'s core is the general two-spin formula; `exc_vxc_unpolar`
+   !! calls it at the symmetric point rho_a = rho_b = rho/2, sigma_aa = sigma_ab
+   !! = sigma_bb = sigma/4, tau_a = tau_b = tau/2 (an unpolarised density's
+   !! actual spin-resolution) and reduces the five polarised outputs by the
+   !! chain rule through that substitution:
+   !!
+   !!   eps   = eps_polar                          (same normalisation, no rho_b dependence left)
+   !!   vrho   = (vrho_a + vrho_b)/2
+   !!   vsigma = (vsigma_aa + vsigma_ab + vsigma_bb)/4
+   !!   vtau   = (vtau_a + vtau_b)/2
+   !!
+   !! because d(rho_a)/d(rho) = d(rho_b)/d(rho) = 1/2 and d(sigma_ss)/d(sigma)
+   !! = d(sigma_ab)/d(sigma) = 1/4 along that submanifold, with sigma_aa,
+   !! sigma_ab, sigma_bb independent of rho there (grad rho_a = grad rho_b =
+   !! grad rho / 2 regardless of rho itself). This is cheaper to get right
+   !! than a second from-scratch derivation and was validated the same way
+   !! (finite differences against the general formula, not assumed).
+   !!
+   !! Only `exc`/`exc_vxc` exist, the same as every other translated meta-GGA
+   !! kernel (tools/exchcxx_to_fortran.py's own comment): no fxc, so a
+   !! coupled-perturbed solve or an analytic gradient must refuse this
+   !! functional the way it already refuses every other meta-GGA.
+   !!
    use pic_types, only: dp
    use trc_xc_pw91_lda_mod, only: pw91_lda_mod_exc_vxc_polar
    use trc_xc_util, only: m_cbrt_3, m_cbrt_4, m_cbrt_one_ov_pi, m_pi, xc_cbrt, xc_erf
@@ -250,15 +250,15 @@ contains
       eps = e/(rho_a_c + rho_b_c)
    end subroutine wb97m_v_xc_exc_vxc_polar
 
-   !
-   ! The general two-spin formula, Eqs. 4-5 and 12-28 minus exact exchange
-   ! and VV10. Inputs are assumed already floored away from zero by the
-   ! callers above; `eps` returned here is rho*eps (an energy density, Eq.
-   ! 8's convention), not eps itself -- both exported routines divide by
-   ! their own total density afterwards.
-   !
    pure subroutine wb97m_v_core(rho_a, rho_b, sigma_aa, sigma_ab, sigma_bb, tau_a, tau_b, &
       eps, vrho_a, vrho_b, vsigma_aa, vsigma_ab, vsigma_bb, vtau_a, vtau_b)
+      !!
+      !! The general two-spin formula, Eqs. 4-5 and 12-28 minus exact exchange
+      !! and VV10. Inputs are assumed already floored away from zero by the
+      !! callers above; `eps` returned here is rho*eps (an energy density, Eq.
+      !! 8's convention), not eps itself -- both exported routines divide by
+      !! their own total density afterwards.
+      !!
       !$acc routine seq
       real(dp), intent(in) :: rho_a, rho_b, sigma_aa, sigma_ab, sigma_bb, tau_a, tau_b
       real(dp), intent(out) :: eps, vrho_a, vrho_b, vsigma_aa, vsigma_ab, vsigma_bb, vtau_a, vtau_b
@@ -338,15 +338,15 @@ contains
       vtau_b = dexb_dtau + dcssb_dtau + e_os*dgcos_dw*dwab_dtaub
    end subroutine wb97m_v_core
 
-   !
-   ! One spin's SR-mGGA exchange energy density (Eqs. 9-15) and its rho/
-   ! sigma/tau derivatives, plus t_sigma, s2_sigma and their rho/sigma/tau
-   ! derivatives for the caller to reuse building w_ab, s2_ab (css/cos
-   ! share the same t_sigma and s2_sigma terco's exchange needs; only the
-   ! GGA ingredient's gamma differs per use).
-   !
    pure subroutine exchange_spin(rho, sigma, tau, ex, dex_drho, dex_dsigma, dex_dtau, &
       t, dt_drho, dt_dtau, s2, ds2_drho, ds2_dsigma)
+      !!
+      !! One spin's SR-mGGA exchange energy density (Eqs. 9-15) and its rho/
+      !! sigma/tau derivatives, plus t_sigma, s2_sigma and their rho/sigma/tau
+      !! derivatives for the caller to reuse building w_ab, s2_ab (css/cos
+      !! share the same t_sigma and s2_sigma terco's exchange needs; only the
+      !! GGA ingredient's gamma differs per use).
+      !!
       !$acc routine seq
       real(dp), intent(in) :: rho, sigma, tau
       real(dp), intent(out) :: ex, dex_drho, dex_dsigma, dex_dtau
@@ -392,30 +392,30 @@ contains
       dex_dtau = h*dgx_dw*dw_dtau
    end subroutine exchange_spin
 
-   !
-   ! F_x(a) = 1 - (2/3) a [2 sqrt(pi) erf(1/a) - 3a + a^3 + (2a - a^3) exp(-1/a^2)],
-   ! Eq. 11, and its derivative dF_x/da (hand-differentiated and checked
-   ! against central finite differences; see the module header) -- the
-   ! SMALL-a form, exact in double precision up to a ~ 4 (checked against
-   ! 50-digit mpmath: 3.3e-12 relative at a = 4, still only 9e-12 at a = 5).
-   !
-   ! Past that, a^3 and (2a - a^3)*exp(-1/a^2) are two O(a^3) terms whose
-   ! difference is F_x itself, O(1/a^2): at a = 450 (check_xc's worst
-   ! point, rho_b = 5e-12) the cancellation costs about eleven decimal
-   ! digits, which is exactly what turned up as a 70% relative miss in
-   ! this kernel's vtau/vsigma against libxc -- not a formula bug (an
-   ! arbitrary-precision evaluation of this SAME closed form reproduced
-   ! libxc to 1e-10), a genuine double-precision instability in it.
-   !
-   ! `sr_attenuation_large_a` is the fix: F_x and dF_x/da as a power
-   ! series in x = 1/a (small when a is large), from this closed form's
-   ! own Taylor expansion around x = 0, carried to x^14/x^15 -- checked
-   ! against mpmath from a = 3 to a = 100 and at a = 450, better than
-   ! 1e-14 relative everywhere a > 4 is reached from here. The crossover
-   ! at a = 4.0 is where both forms already agree to ~1e-12, so switching
-   ! there introduces no discontinuity worth worrying about.
-   !
    pure subroutine sr_attenuation(a, fx, dfx_da)
+      !!
+      !! F_x(a) = 1 - (2/3) a [2 sqrt(pi) erf(1/a) - 3a + a^3 + (2a - a^3) exp(-1/a^2)],
+      !! Eq. 11, and its derivative dF_x/da (hand-differentiated and checked
+      !! against central finite differences; see the module header) -- the
+      !! SMALL-a form, exact in double precision up to a ~ 4 (checked against
+      !! 50-digit mpmath: 3.3e-12 relative at a = 4, still only 9e-12 at a = 5).
+      !!
+      !! Past that, a^3 and (2a - a^3)*exp(-1/a^2) are two O(a^3) terms whose
+      !! difference is F_x itself, O(1/a^2): at a = 450 (check_xc's worst
+      !! point, rho_b = 5e-12) the cancellation costs about eleven decimal
+      !! digits, which is exactly what turned up as a 70% relative miss in
+      !! this kernel's vtau/vsigma against libxc -- not a formula bug (an
+      !! arbitrary-precision evaluation of this SAME closed form reproduced
+      !! libxc to 1e-10), a genuine double-precision instability in it.
+      !!
+      !! `sr_attenuation_large_a` is the fix: F_x and dF_x/da as a power
+      !! series in x = 1/a (small when a is large), from this closed form's
+      !! own Taylor expansion around x = 0, carried to x^14/x^15 -- checked
+      !! against mpmath from a = 3 to a = 100 and at a = 450, better than
+      !! 1e-14 relative everywhere a > 4 is reached from here. The crossover
+      !! at a = 4.0 is where both forms already agree to ~1e-12, so switching
+      !! there introduces no discontinuity worth worrying about.
+      !!
       !$acc routine seq
       real(dp), intent(in) :: a
       real(dp), intent(out) :: fx, dfx_da
@@ -435,16 +435,16 @@ contains
       dfx_da = -(2.0_dp/3.0_dp)*gprime
    end subroutine sr_attenuation
 
-   !
-   ! F_x(1/x) = x^2/9 - x^4/60 + x^6/420 - x^8/3240 + x^10/27720
-   !            - x^12/262080 + x^14/2721600
-   ! dF_x/da(1/x) = -2x^3/9 + x^5/15 - x^7/70 + x^9/405 - x^11/2772
-   !                + x^13/21840 - x^15/194400
-   ! (x = 1/a), from sympy's `series` of this module's own closed form
-   ! around x = 0 -- not a different functional, the same F_x(a) written
-   ! in the variable where it is well behaved.
-   !
    pure subroutine sr_attenuation_large_a(a, fx, dfx_da)
+      !!
+      !! F_x(1/x) = x^2/9 - x^4/60 + x^6/420 - x^8/3240 + x^10/27720
+      !!            - x^12/262080 + x^14/2721600
+      !! dF_x/da(1/x) = -2x^3/9 + x^5/15 - x^7/70 + x^9/405 - x^11/2772
+      !!                + x^13/21840 - x^15/194400
+      !! (x = 1/a), from sympy's `series` of this module's own closed form
+      !! around x = 0 -- not a different functional, the same F_x(a) written
+      !! in the variable where it is well behaved.
+      !!
       !$acc routine seq
       real(dp), intent(in) :: a
       real(dp), intent(out) :: fx, dfx_da
@@ -460,15 +460,15 @@ contains
          x2/194400.0_dp))))))
    end subroutine sr_attenuation_large_a
 
-   !
-   ! One spin's same-spin correlation energy density and derivatives
-   ! (Eqs. 21-24): e_css*g_css(w,u), with e_css = rho_sigma*eps_c^PW92
-   ! (rho_sigma,0) and its own rho-derivative (dec_drho) handed in by the
-   ! caller (from pw91_lda_mod_exc_vxc_polar at the other spin's density
-   ! zero), and w, s2 (hence t, its own derivatives) shared with exchange.
-   !
    pure subroutine css_term(e_css, dec_drho, t, dt_drho, dt_dtau, s2, ds2_drho, ds2_dsigma, &
       e, de_drho, de_dsigma, de_dtau)
+      !!
+      !! One spin's same-spin correlation energy density and derivatives
+      !! (Eqs. 21-24): e_css*g_css(w,u), with e_css = rho_sigma*eps_c^PW92
+      !! (rho_sigma,0) and its own rho-derivative (dec_drho) handed in by the
+      !! caller (from pw91_lda_mod_exc_vxc_polar at the other spin's density
+      !! zero), and w, s2 (hence t, its own derivatives) shared with exchange.
+      !!
       !$acc routine seq
       real(dp), intent(in) :: e_css, dec_drho
       real(dp), intent(in) :: t, dt_drho, dt_dtau, s2, ds2_drho, ds2_dsigma

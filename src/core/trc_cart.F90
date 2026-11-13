@@ -1,20 +1,20 @@
-!
-! Cartesian index tables for the Obara-Saika / Head-Gordon-Pople path.
-!
-! Same idea as trc_tables does for Hermite indices: flatten the (nx,ny,nz)
-! triple to one index, precompute every neighbour the recurrences ask for, and
-! leave the kernels as flat table-driven loops with no index arithmetic.
-!
-! ORDERING is angular-momentum-major, and within one L it is libcint's own
-! order (x descending outer, y descending inner).  Two things follow:
-!
-!   * "every index with angular momentum <= L" is the first NCUM_OF(L) entries,
-!     which is what the VRR's shrinking bounds want;
-!   * the local component index within a shell is the global index minus
-!     NCUM_OF(L-1), so mapping a finished block onto libcint's buffer layout is
-!     a subtraction rather than a search.
-!
 module trc_cart
+   !!
+   !! Cartesian index tables for the Obara-Saika / Head-Gordon-Pople path.
+   !!
+   !! Same idea as trc_tables does for Hermite indices: flatten the (nx,ny,nz)
+   !! triple to one index, precompute every neighbour the recurrences ask for, and
+   !! leave the kernels as flat table-driven loops with no index arithmetic.
+   !!
+   !! ORDERING is angular-momentum-major, and within one L it is libcint's own
+   !! order (x descending outer, y descending inner).  Two things follow:
+   !!
+   !!   * "every index with angular momentum <= L" is the first NCUM_OF(L) entries,
+   !!     which is what the VRR's shrinking bounds want;
+   !!   * the local component index within a shell is the global index minus
+   !!     NCUM_OF(L-1), so mapping a finished block onto libcint's buffer layout is
+   !!     a subtraction rather than a search.
+   !!
    use pic_types, only: dp
    use trc_tables, only: LMAX
    implicit none

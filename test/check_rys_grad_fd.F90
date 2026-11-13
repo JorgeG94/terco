@@ -1,43 +1,43 @@
-!
-! Finite-difference oracle for eri%gradient: the two-electron part of the
-! nuclear gradient against a central difference of E2 = Tr(D * vhf(D)),
-! with D FIXED and the basis rebuilt at the displaced geometry so the basis
-! functions move with their atom.
-!
-! D is a deterministic, dense, symmetric synthetic density -- same
-! construction check_rys_vs_hgp.F90 uses -- not a converged SCF density.
-! This is a kernel check (is d(ab|cd)/dR right?), not an SCF check, and a
-! fixed synthetic D exercises every six-block path exactly as a converged
-! one would while costing nothing to construct and needing no separate SCF
-! driver here.
-!
-! RHF: E2 = Tr(D * eri%fock(D)), one Fock build per displacement.
-! UHF (Da /= Db): split by linearity --
-!     E2 = Tr(Dt*J(Dt)) - Tr(Da*Ka(Da)) - Tr(Db*Kb(Db))
-!   with NO 1/2 anywhere (checked against the Da = Db reduction to RHF --
-!   eri%gradient(Da, Da) must equal eri%gradient(2*Da) exactly, since UHF
-!   with identical spin densities IS the RHF solution -- not taken from a
-!   textbook formula's placement of the 1/2 on faith). eri%fock's k_scale/
-!   j_scale isolate J and K:
-!     J(Dt)  = eri%fock(Dt, k_scale=0)
-!     -Ka(Da) = eri%fock(Da, j_scale=0, k_scale=2)   (k_scale=2 cancels
-!                                                      eri%fock's own J-K/2)
-!     -Kb(Db) = eri%fock(Db, j_scale=0, k_scale=2)
-!   so E2 = Tr(Dt, J(Dt)) + Tr(Da, -Ka(Da)) + Tr(Db, -Kb(Db)).
-!
-! Translational invariance: sum over atoms of eri%gradient, every component,
-! against zero -- a property of the ANALYTIC gradient alone, not of the
-! finite difference.
-!
-! The basis (6-31G*, cc-pVDZ or cc-pVTZ) comes from the command line
-! (test/CMakeLists.txt registers this source as THREE executables, ARGS
-! basis_sets/6-31gs.json, basis_sets/cc-pvdz.json and basis_sets/cc-pvtz.json,
-! the last the f-shell case, which skips below TERCO_LMAX=3), each setting
-! TRC_RYS_CLASSES=none so the HGP path is what gets checked up to d (f
-! classes are Rys only), so each run checks exactly the one basis it was
-! invoked with.
-!
 module check_rys_grad_fd_suite
+   !!
+   !! Finite-difference oracle for eri%gradient: the two-electron part of the
+   !! nuclear gradient against a central difference of E2 = Tr(D * vhf(D)),
+   !! with D FIXED and the basis rebuilt at the displaced geometry so the basis
+   !! functions move with their atom.
+   !!
+   !! D is a deterministic, dense, symmetric synthetic density -- same
+   !! construction check_rys_vs_hgp.F90 uses -- not a converged SCF density.
+   !! This is a kernel check (is d(ab|cd)/dR right?), not an SCF check, and a
+   !! fixed synthetic D exercises every six-block path exactly as a converged
+   !! one would while costing nothing to construct and needing no separate SCF
+   !! driver here.
+   !!
+   !! RHF: E2 = Tr(D * eri%fock(D)), one Fock build per displacement.
+   !! UHF (Da /= Db): split by linearity --
+   !!     E2 = Tr(Dt*J(Dt)) - Tr(Da*Ka(Da)) - Tr(Db*Kb(Db))
+   !!   with NO 1/2 anywhere (checked against the Da = Db reduction to RHF --
+   !!   eri%gradient(Da, Da) must equal eri%gradient(2*Da) exactly, since UHF
+   !!   with identical spin densities IS the RHF solution -- not taken from a
+   !!   textbook formula's placement of the 1/2 on faith). eri%fock's k_scale/
+   !!   j_scale isolate J and K:
+   !!     J(Dt)  = eri%fock(Dt, k_scale=0)
+   !!     -Ka(Da) = eri%fock(Da, j_scale=0, k_scale=2)   (k_scale=2 cancels
+   !!                                                      eri%fock's own J-K/2)
+   !!     -Kb(Db) = eri%fock(Db, j_scale=0, k_scale=2)
+   !!   so E2 = Tr(Dt, J(Dt)) + Tr(Da, -Ka(Da)) + Tr(Db, -Kb(Db)).
+   !!
+   !! Translational invariance: sum over atoms of eri%gradient, every component,
+   !! against zero -- a property of the ANALYTIC gradient alone, not of the
+   !! finite difference.
+   !!
+   !! The basis (6-31G*, cc-pVDZ or cc-pVTZ) comes from the command line
+   !! (test/CMakeLists.txt registers this source as THREE executables, ARGS
+   !! basis_sets/6-31gs.json, basis_sets/cc-pvdz.json and basis_sets/cc-pvtz.json,
+   !! the last the f-shell case, which skips below TERCO_LMAX=3), each setting
+   !! TRC_RYS_CLASSES=none so the HGP path is what gets checked up to d (f
+   !! classes are Rys only), so each run checks exactly the one basis it was
+   !! invoked with.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
@@ -74,11 +74,11 @@ contains
       call check(error, len_trim(basis_json) > 0, "usage: check_rys_grad_fd <basis.json>")
    end subroutine basis_arg
 
-   !
-   ! A deterministic dense symmetric matrix, same closed form as
-   ! check_rys_vs_hgp -- `phase` separates Da from Db so UHF's Da /= Db.
-   !
    subroutine synth_density(nao, phase, d)
+      !!
+      !! A deterministic dense symmetric matrix, same closed form as
+      !! check_rys_vs_hgp -- `phase` separates Da from Db so UHF's Da /= Db.
+      !!
       integer, intent(in) :: nao, phase
       real(dp), intent(out) :: d(nao, nao)
       integer :: i, j
@@ -90,11 +90,11 @@ contains
       d = 0.5_dp*(d + transpose(d))
    end subroutine synth_density
 
-   !
-   ! Tr(a^T b) over the full square matrix -- both symmetric here, so this
-   ! is Tr(a b).
-   !
    real(dp) function trace_prod(nao, a, b)
+      !!
+      !! Tr(a^T b) over the full square matrix -- both symmetric here, so this
+      !! is Tr(a b).
+      !!
       integer, intent(in) :: nao
       real(dp), intent(in) :: a(nao, nao), b(nao, nao)
       integer :: i, j
@@ -106,12 +106,12 @@ contains
       end do
    end function trace_prod
 
-   !
-   ! E2 at the geometry in `r`, basis `basis_json`, for a FIXED set of
-   ! densities. ndens = size(dmat, 3): 1 is RHF (dmat(:,:,1) = Dtot), 2 is
-   ! UHF (dmat(:,:,1:2) = Da, Db).
-   !
    real(dp) function e2_at(basis_json, nat, at_z, r, nao, ndens, dmat, error)
+      !!
+      !! E2 at the geometry in `r`, basis `basis_json`, for a FIXED set of
+      !! densities. ndens = size(dmat, 3): 1 is RHF (dmat(:,:,1) = Dtot), 2 is
+      !! UHF (dmat(:,:,1:2) = Da, Db).
+      !!
       character(*), intent(in) :: basis_json
       integer, intent(in) :: nat, at_z(nat), nao, ndens
       real(dp), intent(in) :: r(3, nat), dmat(nao, nao, ndens)
@@ -166,12 +166,12 @@ contains
       call bas%release()
    end function e2_at
 
-   !
-   ! Runs the FD sweep once for `tag`/`ndens` and checks BOTH properties
-   ! this program has always checked: the FD/analytic agreement, then (if
-   ! that passed) the translational-invariance residual.
-   !
    subroutine run_one(tag, ndens, error)
+      !!
+      !! Runs the FD sweep once for `tag`/`ndens` and checks BOTH properties
+      !! this program has always checked: the FD/analytic agreement, then (if
+      !! that passed) the translational-invariance residual.
+      !!
       character(*), intent(in) :: tag
       integer, intent(in) :: ndens
       type(error_type), allocatable, intent(out) :: error

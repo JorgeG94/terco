@@ -1,8 +1,7 @@
-!
-! Splitting a general contraction into primitive shells, and carrying the
-! contraction as a matrix transform instead.
-!
 module trc_decontract
+   !!
+   !! Splitting a general contraction into primitive shells, and carrying the
+   !! contraction as a matrix transform instead.
    use pic_types, only: dp
    use pic_logger, only: global_logger
    use trc_basis_types, only: trc_basis_t
@@ -204,13 +203,11 @@ contains
       res = (l + 1)*(l + 2)/2
    end function ncart
 
-   !
-   ! Build the primitive basis and the transform.
-   !
-   ! `active` comes back false for a basis with nothing to split, and then
-   ! `pb` and the maps are untouched: the caller must go on using `b`.
-   !
    subroutine decontract_basis(b, pb, m, options)
+      !! Build the primitive basis and the transform.
+      !!
+      !! `active` comes back false for a basis with nothing to split, and then
+      !! `pb` and the maps are untouched: the caller must go on using `b`.
       type(trc_basis_t), intent(in)    :: b
       type(trc_basis_t), intent(inout) :: pb
       type(decon_t),     intent(inout) :: m
@@ -350,12 +347,10 @@ contains
       deallocate (bld%p_l, bld%p_np, bld%p_e, bld%p_c, bld%p_r, bld%tr_mu, bld%tr_s, bld%tr_a, bld%p_single, bld%p_screen, grp)
    end subroutine decontract_basis
 
-   !
-   ! Shells at one centre and one angular momentum that share an exponent,
-   ! transitively, are one group. Sharing is what a general contraction is;
-   ! a segmented basis puts every shell in a group of its own.
-   !
    subroutine group_shells(b, grp, ng)
+      !! Group shells at one centre and angular momentum that transitively share
+      !! an exponent. Sharing is what defines a general contraction; a segmented
+      !! basis puts every shell in a group of its own.
       type(trc_basis_t), intent(in) :: b
       integer, allocatable, intent(out) :: grp(:)
       integer, intent(out) :: ng
@@ -424,12 +419,11 @@ contains
       res = abs(a - c) <= 1.0e-10_dp*max(1.0_dp, abs(a))
    end function same_exp
 
-   !
-   ! Would any group actually be split? If not the caller keeps the basis it
-   ! has, and a segmented run is bit-for-bit what it was before this module
-   ! existed.
-   !
    logical function any_group_splits(b, grp, ng, opts) result(res)
+      !! Report whether applying this policy changes any group.
+      !!
+      !! If no group splits, the caller keeps the basis it has, and a segmented
+      !! run is bit-for-bit what it was before this module existed.
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: ng
       integer, intent(in) :: grp(:)
@@ -444,24 +438,23 @@ contains
       end do
    end function any_group_splits
 
-   !
-   ! What one group becomes: PLAN_WHOLE, PLAN_SEGMENT or PLAN_PRIMITIVES.
-   !
-   ! A group of one shell is a segmented shell. It is split only when
-   ! `opts%diffuse` asks for it and it has a diffuse primitive among several:
-   ! the compact primitives stay one segment (PLAN_SEGMENT), the diffuse
-   ! ones go out on their own, GPU4PySCF's rule for `nctr == 1`.
-   !
-   ! A general contraction -- more than one shell sharing exponents -- takes
-   ! GPU4PySCF's `_optimize_contraction` rule: if exactly one column holds
-   ! more than one compact primitive, that column keeps the primitives no
-   ! other column uses as a segment and the rest become shared shells of one
-   ! (PLAN_SEGMENT); otherwise every primitive does (PLAN_PRIMITIVES). That
-   ! rule only says how to split. Whether to is the price in
-   ! DECON_SHELL_COST_DEFAULT: the split happens only if it is cheaper than
-   ! the contracted shells by that measure.
-   !
    integer function group_plan(b, grp, g, opts) result(plan)
+      !! Choose whether a group stays whole, becomes segments, or becomes
+      !! primitive shells.
+      !!
+      !! A group of one shell is a segmented shell. It is split only when
+      !! `opts%diffuse` asks for it and it has a diffuse primitive among several:
+      !! the compact primitives stay one segment (PLAN_SEGMENT), the diffuse
+      !! ones go out on their own, GPU4PySCF's rule for `nctr == 1`.
+      !!
+      !! A general contraction -- more than one shell sharing exponents -- takes
+      !! GPU4PySCF's `_optimize_contraction` rule: if exactly one column holds
+      !! more than one compact primitive, that column keeps the primitives no
+      !! other column uses as a segment and the rest become shared shells of one
+      !! (PLAN_SEGMENT); otherwise every primitive does (PLAN_PRIMITIVES). That
+      !! rule only says how to split. Whether to is the price in
+      !! DECON_SHELL_COST_DEFAULT: the split happens only if it is cheaper than
+      !! the contracted shells by that measure.
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: g
       integer, intent(in) :: grp(:)
@@ -552,33 +545,33 @@ contains
       end do
    end function primitive_cbig
 
-   !
-   ! THE PRIMITIVE SCREEN OF A GENERAL CONTRACTION KEPT WHOLE.
-   !
-   ! Two screens act on primitives, not shells, and neither reads `amp`:
-   ! the pair prune in hgp_build_pairs, which judges a primitive pair by
-   ! `camp`, and the kernels' primitive-quartet cut, which judges it by the
-   ! pair's own coefficient product against `pcut`. Split, a primitive's
-   ! shell carries cbig, the largest coefficient any column gives it. Kept
-   ! whole, it carries its column's own coefficient, which can be far
-   ! smaller, so both screens drop more.
-   !
-   ! Over the working basis `wb` (what the integrals are evaluated in), for
-   ! every group of more than one shell -- which after decontract_basis is
-   ! exactly a general contraction kept whole, the split ones sharing no
-   ! exponent any more:
-   !
-   ! - `camp(k, mu)` is cbig_k, so the prune keeps exactly the primitive
-   !   pairs the split would;
-   ! - `uneven` is the largest cbig_k/|c_k,mu| (group_unevenness). The
-   !   kernels' cut tests a product of four coefficients, so the caller
-   !   multiplies `pcut` by uneven**(-4): every primitive quartet the whole
-   !   shells drop then has a cbig product at or below the split's own cut,
-   !   which the split would have dropped too.
-   !
-   ! Everything else gets camp = sh_c and uneven = 1, the old screen.
-   !
    subroutine decontract_whole_screen(wb, camp, uneven)
+      !! Set primitive coefficients and a cutoff scale so primitive-level
+      !! screening of a general contraction kept whole is at least as strict as
+      !! it would be after splitting.
+      !!
+      !! Two screens act on primitives, not shells, and neither reads `amp`:
+      !! the pair prune in hgp_build_pairs, which judges a primitive pair by
+      !! `camp`, and the kernels' primitive-quartet cut, which judges it by the
+      !! pair's own coefficient product against `pcut`. Split, a primitive's
+      !! shell carries cbig, the largest coefficient any column gives it. Kept
+      !! whole, it carries its column's own coefficient, which can be far
+      !! smaller, so both screens drop more.
+      !!
+      !! Over the working basis `wb` (what the integrals are evaluated in), for
+      !! every group of more than one shell -- which after decontract_basis is
+      !! exactly a general contraction kept whole, the split ones sharing no
+      !! exponent any more:
+      !!
+      !! - `camp(k, mu)` is cbig_k, so the prune keeps exactly the primitive
+      !!   pairs the split would;
+      !! - `uneven` is the largest cbig_k/|c_k,mu| (group_unevenness). The
+      !!   kernels' cut tests a product of four coefficients, so the caller
+      !!   multiplies `pcut` by uneven**(-4): every primitive quartet the whole
+      !!   shells drop then has a cbig product at or below the split's own cut,
+      !!   which the split would have dropped too.
+      !!
+      !! Everything else gets camp = sh_c and uneven = 1, the old screen.
       type(trc_basis_t), intent(in) :: wb
       real(dp), intent(out) :: camp(:, :)
       !! (wb%maxnp, wb%nshell)
@@ -638,12 +631,10 @@ contains
       end do
    end function group_unique_exponents
 
-   !
-   ! Which primitives of shell `mu` stay in its segment: the ones no other
-   ! member of the group uses, and, when `opts%diffuse` is on, only the
-   ! compact ones among those. Everything else becomes a shared shell of one.
-   !
    subroutine segment_mask(b, mem, nmem, mu, opts, in_segment)
+      !! Mark the primitives of shell `mu` that stay in its segment: those not
+      !! used by another group member and, when `opts%diffuse` is on, only the
+      !! compact ones among them. Everything else becomes a shared shell of one.
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: nmem, mu
       integer, intent(in) :: mem(:)
@@ -663,31 +654,31 @@ contains
       end do
    end subroutine segment_mask
 
-   !
-   ! THE SCREEN OF A GENERAL CONTRACTION KEPT WHOLE.
-   !
-   ! Split, every primitive p of the group becomes a shell of one scaled by
-   ! the largest coefficient any column gives it, and its Schwarz bound is
-   ! multiplied by amp_p, the sum over the columns nu it feeds of
-   ! a_nu = sum_q |c_q,nu| / max_mu |c_q,mu| (`build_maps`). That is what
-   ! makes `thresh` bound the error of the contracted matrix there, and it
-   ! screens far tighter than the contracted shells do by their own bound:
-   ! amp is 7 to 12 on cc-pVDZ oxygen's s, and water10/cc-pVDZ at 1e-11
-   ! lands 4.1e-10 Eh from the 1e-14 energy split against 1.0e-09 whole.
-   !
-   ! So that the split policy changes the cost and not the accuracy, a
-   ! column kept whole carries the largest amplitude any of its primitives
-   ! would have had split, A_mu = max over p in mu of amp_p, and its pairs
-   ! are judged by Q_mu Q_nu A_mu A_nu. That is not a proof that it drops
-   ! no more than the split: the contracted bound and the primitive ones
-   ! bound different sums. It matches the two screens' strictness, and it
-   ! only ever tightens the screen. The two primitive-level screens are
-   ! matched by construction instead (`decontract_whole_screen`). Measured
-   ! (V100, RHF, 1e-11, converged) after hgp_build_pairs' sort was fixed:
-   ! the silica slice with Si's p kept whole is 1.2e-08 Eh from the 1e-14
-   ! energy with none of the three, 3.9e-09 with them, 4.4e-09 all split.
-   !
    real(dp) function whole_amplitude(b, mem, nmem, mu) result(a)
+   !!
+   !! THE SCREEN OF A GENERAL CONTRACTION KEPT WHOLE.
+   !!
+   !! Split, every primitive p of the group becomes a shell of one scaled by
+   !! the largest coefficient any column gives it, and its Schwarz bound is
+   !! multiplied by amp_p, the sum over the columns nu it feeds of
+   !! a_nu = sum_q |c_q,nu| / max_mu |c_q,mu| (`build_maps`). That is what
+   !! makes `thresh` bound the error of the contracted matrix there, and it
+   !! screens far tighter than the contracted shells do by their own bound:
+   !! amp is 7 to 12 on cc-pVDZ oxygen's s, and water10/cc-pVDZ at 1e-11
+   !! lands 4.1e-10 Eh from the 1e-14 energy split against 1.0e-09 whole.
+   !!
+   !! So that the split policy changes the cost and not the accuracy, a
+   !! column kept whole carries the largest amplitude any of its primitives
+   !! would have had split, A_mu = max over p in mu of amp_p, and its pairs
+   !! are judged by Q_mu Q_nu A_mu A_nu. That is not a proof that it drops
+   !! no more than the split: the contracted bound and the primitive ones
+   !! bound different sums. It matches the two screens' strictness, and it
+   !! only ever tightens the screen. The two primitive-level screens are
+   !! matched by construction instead (`decontract_whole_screen`). Measured
+   !! (V100, RHF, 1e-11, converged) after hgp_build_pairs' sort was fixed:
+   !! the silica slice with Si's p kept whole is 1.2e-08 Eh from the 1e-14
+   !! energy with none of the three, 3.9e-09 with them, 4.4e-09 all split.
+   !!
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: nmem, mu
       integer, intent(in) :: mem(:)
@@ -743,11 +734,9 @@ contains
       end do
    end subroutine group_whole_amplitudes
 
-   !
-   ! Emit the shells one group becomes, and the triples that map the group's
-   ! contracted shells onto them.
-   !
    subroutine split_group(b, grp, g, opts, bld)
+      !! Emit the shells a group becomes and the triples mapping the group's
+      !! contracted shells onto them.
       type(trc_basis_t), intent(in) :: b
       integer,  intent(in) :: g
       integer,  intent(in) :: grp(:)
@@ -809,11 +798,9 @@ contains
       end do
    end subroutine split_group
 
-   !
-   ! Primitive `k` of contracted shell `mu`, as a shared shell of one: found
-   ! among the ones this group has emitted since `first`, or emitted now.
-   !
    subroutine emit_primitive(b, mem, nmem, mu, k, first, bld)
+      !! Emit primitive `k` of contracted shell `mu` as a shared shell of one,
+      !! reusing one emitted for this group since `first` when possible.
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: nmem, mu, k, first
       integer, intent(in) :: mem(:)
@@ -860,11 +847,10 @@ contains
       bld%tr_a(bld%ntr) = b%sh_c(k, mu)
    end subroutine emit_primitive
 
-   !
-   ! Contracted shell `mu` restricted to the primitives `keep` marks, with
-   ! their own coefficients: the whole shell when every one is kept.
-   !
    subroutine emit_segment(b, mu, keep, bld)
+      !! Emit contracted shell `mu` restricted to the primitives marked by
+      !! `keep`, with their own coefficients; this is the whole shell when all
+      !! primitives are kept.
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: mu
       logical, intent(in) :: keep(:)
@@ -899,10 +885,8 @@ contains
       bld%tr_a(bld%ntr) = b%sh_c(kfirst, mu)
    end subroutine emit_segment
 
-   !
-   ! Expand the per-shell triples into per-AO CSR, both directions.
-   !
    subroutine build_maps(b, pb, tr_mu, tr_s, tr_a, ntr, m)
+      !! Expand the per-shell triples into per-AO CSR maps in both directions.
       type(trc_basis_t), intent(in) :: b, pb
       integer,  intent(in) :: ntr
       integer,  intent(in) :: tr_mu(:), tr_s(:)
@@ -1040,14 +1024,13 @@ contains
       deallocate (cnt, pos)
    end subroutine build_maps
 
-   !
-   ! D_p = C D C^T, on the device, as a gather over the sparse rows of C.
-   !
-   ! Both matrices must already be present. `nao_p^2 x (nnz/nao_p)^2` work,
-   ! about twenty million operations on the silica slice, against a Fock build
-   ! of teraflops.
-   !
    subroutine decontract_expand(m, d, dp_out)
+      !! Expand a density to the primitive basis: D_p = C D C^T.
+      !!
+      !! Both matrices must already be present on the device. The gather over
+      !! the sparse rows of C costs `nao_p^2 x (nnz/nao_p)^2` work, about twenty
+      !! million operations on the silica slice, against a Fock build of
+      !! teraflops.
       type(decon_t), intent(in) :: m
       real(dp), intent(in)  :: d(m%nao_c, m%nao_c)
       real(dp), intent(out) :: dp_out(m%nao_p, m%nao_p)
@@ -1082,11 +1065,11 @@ contains
       end do
    end subroutine expand_kernel
 
-   !
-   ! G = C^T G_p C, the fold back. A gather again, over the transpose map, so
-   ! no atomics and no ordering.
-   !
    subroutine decontract_fold(m, gp, g)
+      !! Fold a primitive-basis matrix back to the contracted basis:
+      !! G = C^T G_p C.
+      !!
+      !! The gather over the transpose map needs no atomics or ordering.
       type(decon_t), intent(in) :: m
       real(dp), intent(in)  :: gp(m%nao_p, m%nao_p)
       real(dp), intent(out) :: g(m%nao_c, m%nao_c)
@@ -1114,17 +1097,13 @@ contains
       end do
    end subroutine fold_kernel
 
-   !
-   ! The same two transforms with the loops left on the host.
-   !
-   ! `eri_fock`, `eri_fock_nosym` and `eri_fock_many` take a host density and
-   ! return a host matrix; running `do concurrent` over arrays that were never
-   ! mapped would mean an implicit copy of both in and out for twenty
-   ! megaflops of work. `eri_fock_resident` uses the device pair above,
-   ! because there everything already lives on the GPU and pulling it down
-   ! would defeat the whole routine.
-   !
    subroutine decontract_expand_host(m, d, dp_out)
+      !! Host-side density expansion, D_p = C D C^T.
+      !!
+      !! `eri_fock`, `eri_fock_nosym` and `eri_fock_many` take a host density
+      !! and return a host matrix. Keeping this transform on the host avoids
+      !! implicit transfers of both matrices for its relatively small amount
+      !! of work; `eri_fock_resident` uses the device-resident transform.
       type(decon_t), intent(in) :: m
       real(dp), intent(in)  :: d(m%nao_c, m%nao_c)
       real(dp), intent(out) :: dp_out(m%nao_p, m%nao_p)
@@ -1144,6 +1123,7 @@ contains
    end subroutine decontract_expand_host
 
    subroutine decontract_fold_host(m, gp, g)
+      !! Host-side fold of a primitive-basis matrix, G = C^T G_p C.
       type(decon_t), intent(in) :: m
       real(dp), intent(in)  :: gp(m%nao_p, m%nao_p)
       real(dp), intent(out) :: g(m%nao_c, m%nao_c)
@@ -1163,6 +1143,7 @@ contains
    end subroutine decontract_fold_host
 
    subroutine decontract_release(m)
+      !! Release device mappings and allocated transform data; safe to repeat.
       type(decon_t), intent(inout) :: m
       if (m%on_device) then
          !$acc exit data delete(m%f_off, m%f_c, m%f_a, m%t_off, m%t_p, m%t_a)

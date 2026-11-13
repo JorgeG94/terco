@@ -1,69 +1,69 @@
-!
-! The density-fitted integral blocks of a closed-shell RI-CCSD(T) calculation.
-!
-! With the metric J = (P|Q) = L L^T and B^P_pq = sum_Q (pq|Q) (L^-T)_QP, every
-! two-electron integral the amplitude equations need is
-!
-!     (pq|rs) = sum_P B^P_pq B^P_rs.
-!
-! Orbitals are the RHF canonical ones, the first `nfrozen` occupied orbitals
-! are left out of the correlation, and the index ranges are
-!
-!     i, j, k, l   the ACTIVE occupied orbitals   (no = nocc - nfrozen)
-!     a, b, c      the virtual orbitals           (nv)
-!
-! The blocks, as Fortran arrays (first index fastest), are
-!
-!     oooo(i,j,k,l) = (ij|kl)      ooov(i,j,k,a) = (ij|ka)
-!     oovv(i,j,a,b) = (ij|ab)      ovov(i,a,j,b) = (ia|jb)
-!
-! and the three-index factors that make them keep their compound index with
-! the FIRST orbital fastest:
-!
-!     b_oo(i + (j-1) no, P)    b_ov(i + (a-1) no, P)    b_vv(a + (b-1) nv, P)
-!
-! so that b_oo b_ov^T is ooov seen as a (no*no, no*nv) matrix, and so on.
-! (ab|cd) is never formed: the ladder term builds it from `b_vv` a batch of
-! (cd) columns at a time. Nor is (ia|bc) (o v^3): every contraction that needs it
-! is done from b_ov and b_vv directly (trc_rccsd_inter's N1, the W stages, the
-! T1 and T2 terms, the ladder dressing, the (T) slices). `fill_ovvv` builds the
-! dense block into a caller's array for the two legacy (T) routines and the tests.
-! B enters only as B B^T, so the Cholesky triangular
-! solve is as good as any other factor (the eigen-decomposed J^-1/2 would
-! also do).
-!
-! The 3c pipeline is that of the RI-MP2 driver (trc_rimp2_driver.F90): the same
-! `trc_df_2c` metric and Cholesky factor, the same `trc_df_3c` kernels over
-! blocks of auxiliary shells with the same spherical P-fold, the same
-! orbital fold for a spherical basis. Only the half-transform differs:
-! RI-MP2 keeps (ia|P) alone, here the occupied-occupied, occupied-virtual and
-! virtual-virtual blocks come out of one half-transformed tensor, each by a
-! strided batch of GEMMs.
-!
-! RESIDENCY. After `build` every array of the type exists on the host AND on
-! the device (`enter data` in `build`, `exit data` in `release`, both on the
-! same `ints%name` expression), and the two copies are equal. A consumer that
-! rewrites one of them (none does yet) must `update` the other side before
-! anyone reads it. Each component is mapped on its own and the parent `ints`
-! is never mapped, so a kernel gets a block only as an explicit-shape dummy
-! argument: `ints%...` named inside a `do concurrent` body is an illegal
-! address under mem:separate, which the host build does not show (the rule
-! `relax_work_t` in trc_rimp2_relax follows).
-!
-! MEMORY. The largest array is b_vv (nv^2 naux: 396 MB at nv 265, naux 705),
-! then the o^2 v^2 blocks; the host mirror of every array is kept, and with
-! `aux_block` = 0 the three-index transients hold the whole auxiliary basis at
-! once.
-!
-! BUILD STAMP. Every successful `build` gives the type a new, nonzero `stamp`
-! (`release` resets it to 0). A consumer that packs integral-only arrays once
-! at its own `init` (the scratch types of trc_rccsd_inter and trc_rccsd_w)
-! records the stamp it saw and refuses to run when it no longer matches: after
-! `ints%build` is called again, re-`init` the scratch.
-!
-! RANKS. `build` makes no MPI call: every rank of a multi-rank run builds the whole of it from its own orbitals
-! (replicated), see trc_rccsd_driver.
 module trc_rccsd_ints
+   !!
+   !! The density-fitted integral blocks of a closed-shell RI-CCSD(T) calculation.
+   !!
+   !! With the metric J = (P|Q) = L L^T and B^P_pq = sum_Q (pq|Q) (L^-T)_QP, every
+   !! two-electron integral the amplitude equations need is
+   !!
+   !!     (pq|rs) = sum_P B^P_pq B^P_rs.
+   !!
+   !! Orbitals are the RHF canonical ones, the first `nfrozen` occupied orbitals
+   !! are left out of the correlation, and the index ranges are
+   !!
+   !!     i, j, k, l   the ACTIVE occupied orbitals   (no = nocc - nfrozen)
+   !!     a, b, c      the virtual orbitals           (nv)
+   !!
+   !! The blocks, as Fortran arrays (first index fastest), are
+   !!
+   !!     oooo(i,j,k,l) = (ij|kl)      ooov(i,j,k,a) = (ij|ka)
+   !!     oovv(i,j,a,b) = (ij|ab)      ovov(i,a,j,b) = (ia|jb)
+   !!
+   !! and the three-index factors that make them keep their compound index with
+   !! the FIRST orbital fastest:
+   !!
+   !!     b_oo(i + (j-1) no, P)    b_ov(i + (a-1) no, P)    b_vv(a + (b-1) nv, P)
+   !!
+   !! so that b_oo b_ov^T is ooov seen as a (no*no, no*nv) matrix, and so on.
+   !! (ab|cd) is never formed: the ladder term builds it from `b_vv` a batch of
+   !! (cd) columns at a time. Nor is (ia|bc) (o v^3): every contraction that needs it
+   !! is done from b_ov and b_vv directly (trc_rccsd_inter's N1, the W stages, the
+   !! T1 and T2 terms, the ladder dressing, the (T) slices). `fill_ovvv` builds the
+   !! dense block into a caller's array for the two legacy (T) routines and the tests.
+   !! B enters only as B B^T, so the Cholesky triangular
+   !! solve is as good as any other factor (the eigen-decomposed J^-1/2 would
+   !! also do).
+   !!
+   !! The 3c pipeline is that of the RI-MP2 driver (trc_rimp2_driver.F90): the same
+   !! `trc_df_2c` metric and Cholesky factor, the same `trc_df_3c` kernels over
+   !! blocks of auxiliary shells with the same spherical P-fold, the same
+   !! orbital fold for a spherical basis. Only the half-transform differs:
+   !! RI-MP2 keeps (ia|P) alone, here the occupied-occupied, occupied-virtual and
+   !! virtual-virtual blocks come out of one half-transformed tensor, each by a
+   !! strided batch of GEMMs.
+   !!
+   !! RESIDENCY. After `build` every array of the type exists on the host AND on
+   !! the device (`enter data` in `build`, `exit data` in `release`, both on the
+   !! same `ints%name` expression), and the two copies are equal. A consumer that
+   !! rewrites one of them (none does yet) must `update` the other side before
+   !! anyone reads it. Each component is mapped on its own and the parent `ints`
+   !! is never mapped, so a kernel gets a block only as an explicit-shape dummy
+   !! argument: `ints%...` named inside a `do concurrent` body is an illegal
+   !! address under mem:separate, which the host build does not show (the rule
+   !! `relax_work_t` in trc_rimp2_relax follows).
+   !!
+   !! MEMORY. The largest array is b_vv (nv^2 naux: 396 MB at nv 265, naux 705),
+   !! then the o^2 v^2 blocks; the host mirror of every array is kept, and with
+   !! `aux_block` = 0 the three-index transients hold the whole auxiliary basis at
+   !! once.
+   !!
+   !! BUILD STAMP. Every successful `build` gives the type a new, nonzero `stamp`
+   !! (`release` resets it to 0). A consumer that packs integral-only arrays once
+   !! at its own `init` (the scratch types of trc_rccsd_inter and trc_rccsd_w)
+   !! records the stamp it saw and refuses to run when it no longer matches: after
+   !! `ints%build` is called again, re-`init` the scratch.
+   !!
+   !! RANKS. `build` makes no MPI call: every rank of a multi-rank run builds the whole of it from its own orbitals
+   !! (replicated), see trc_rccsd_driver.
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use pic_profiler, only: profiler_start, profiler_stop

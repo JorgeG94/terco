@@ -1,16 +1,16 @@
-!
-! The CLI's --grad --df: what `terco` prints to its JSON summary for a
-! density-fitted run must be exactly what the library itself
-! (trc_run_gradient/trc_gradient over the context's own fit, the same C API
-! app/main.F90 calls) computes for the identical molecule, basis, jkfit
-! basis, functional and guess -- check_cli_grad.F90's wiring check, for the
-! fitted gradient (trc_scf_grad_df.F90; check_df_grad_fd.F90 and
-! check_df_grad_vs_pyscf.F90 are its physics checks). B3LYP, so the fitted
-! J, the fitted K (scaled by 0.2) and the XC term all run, on water/6-31G*
-! with def2-universal-jkfit, Cartesian as --df requires. Same tolerance and
-! reasoning as check_cli_grad.F90's TOL.
-!
 module check_cli_grad_df_suite
+   !!
+   !! The CLI's --grad --df: what `terco` prints to its JSON summary for a
+   !! density-fitted run must be exactly what the library itself
+   !! (trc_run_gradient/trc_gradient over the context's own fit, the same C API
+   !! app/main.F90 calls) computes for the identical molecule, basis, jkfit
+   !! basis, functional and guess -- check_cli_grad.F90's wiring check, for the
+   !! fitted gradient (trc_scf_grad_df.F90; check_df_grad_fd.F90 and
+   !! check_df_grad_vs_pyscf.F90 are its physics checks). B3LYP, so the fitted
+   !! J, the fitted K (scaled by 0.2) and the XC term all run, on water/6-31G*
+   !! with def2-universal-jkfit, Cartesian as --df requires. Same tolerance and
+   !! reasoning as check_cli_grad.F90's TOL.
+   !!
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_null_ptr
    use pic_types, only: dp
    use pic_strings, only: to_string

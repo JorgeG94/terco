@@ -1,28 +1,28 @@
-!
-! What the translated exchange-correlation kernels need that Fortran does not
-! give them: the handful of constants and the few helper functions ExchCXX
-! keeps in `impl/builtin/util.hpp` and `constants.hpp`.
-!
-! The kernels themselves are GENERATED, by tools/exchcxx_to_fortran.py, from
-! ExchCXX's Maple-emitted C++ (BSD 3-clause, Lawrence Berkeley National
-! Laboratory and Microsoft). This file is written by hand and is the only
-! piece of the XC functional layer that is.
-!
-! Everything here is `pure` and scalar, and marked `!$acc routine seq`, because
-! it is called from inside `do concurrent` over grid points. Nothing here may
-! touch a module variable or do I/O.
-!
-! The cube root and the scaled complementary error function come from
-! `bit_repro.f90`, Jorge's bit-reproducible transcendentals (vendored from
-! nci/learning_tools/ci_enabled/bitwise_adventures with one change: an
-! `!$acc routine seq` beside every `!$omp declare target`, because terco
-! offloads through OpenACC and nvfortran wants the routine information in
-! that dialect. A directive is a comment to the arithmetic, so the golden
-! hash still describes the values). Their contract is no FMA contraction and no
-! flush-to-zero; terco's `-fast` GPU build breaks the first half of that, so
-! CPU-vs-GPU bit identity is only as good as the flags until that is settled.
-!
 module trc_xc_util
+   !!
+   !! What the translated exchange-correlation kernels need that Fortran does not
+   !! give them: the handful of constants and the few helper functions ExchCXX
+   !! keeps in `impl/builtin/util.hpp` and `constants.hpp`.
+   !!
+   !! The kernels themselves are GENERATED, by tools/exchcxx_to_fortran.py, from
+   !! ExchCXX's Maple-emitted C++ (BSD 3-clause, Lawrence Berkeley National
+   !! Laboratory and Microsoft). This file is written by hand and is the only
+   !! piece of the XC functional layer that is.
+   !!
+   !! Everything here is `pure` and scalar, and marked `!$acc routine seq`, because
+   !! it is called from inside `do concurrent` over grid points. Nothing here may
+   !! touch a module variable or do I/O.
+   !!
+   !! The cube root and the scaled complementary error function come from
+   !! `bit_repro.f90`, Jorge's bit-reproducible transcendentals (vendored from
+   !! nci/learning_tools/ci_enabled/bitwise_adventures with one change: an
+   !! `!$acc routine seq` beside every `!$omp declare target`, because terco
+   !! offloads through OpenACC and nvfortran wants the routine information in
+   !! that dialect. A directive is a comment to the arithmetic, so the golden
+   !! hash still describes the values). Their contract is no FMA contraction and no
+   !! flush-to-zero; terco's `-fast` GPU build breaks the first half of that, so
+   !! CPU-vs-GPU bit identity is only as good as the flags until that is settled.
+   !!
    use pic_types, only: dp
    use bit_repro, only: erfc_reprod, erf_reprod, exp_reprod, cuberoot
    implicit none
@@ -56,14 +56,14 @@ module trc_xc_util
 
 contains
 
-   !
-   ! Real cube root. Fortran has no cbrt intrinsic, and a pow is a few ulp
-   ! off, undefined below zero, and not the same bits on every platform.
-   ! `cuberoot` from bit_repro is built from correctly-rounded operations
-   ! in a frozen order, so the CPU and the GPU agree bit for bit and CI on
-   ! that repository proves it across seven compilers.
-   !
    pure function xc_cbrt(x) result(y)
+      !!
+      !! Real cube root. Fortran has no cbrt intrinsic, and a pow is a few ulp
+      !! off, undefined below zero, and not the same bits on every platform.
+      !! `cuberoot` from bit_repro is built from correctly-rounded operations
+      !! in a frozen order, so the CPU and the GPU agree bit for bit and CI on
+      !! that repository proves it across seven compilers.
+      !!
       !$acc routine seq
       real(dp), intent(in) :: x
       real(dp) :: y
@@ -93,36 +93,36 @@ contains
       y = sqrt(sqrt(x))
    end function pow_1_4
 
-   !
-   ! exp(x^2) erfc(x). Fortran 2008 has this as `erfc_scaled`, but nvfortran
-   ! has no device implementation of it (NVFORTRAN-S-1062 inside a compute
-   ! region), and the intrinsic erfc is not the same bits on the CPU and the
-   ! GPU anyway. Both factors come from bit_repro instead. Overflow for
-   ! large positive x is not a concern: every use is inside a range-separated
-   ! exchange kernel with a bounded argument.
-   !
    pure function xc_erfcx(x) result(y)
+      !!
+      !! exp(x^2) erfc(x). Fortran 2008 has this as `erfc_scaled`, but nvfortran
+      !! has no device implementation of it (NVFORTRAN-S-1062 inside a compute
+      !! region), and the intrinsic erfc is not the same bits on the CPU and the
+      !! GPU anyway. Both factors come from bit_repro instead. Overflow for
+      !! large positive x is not a concern: every use is inside a range-separated
+      !! exchange kernel with a bounded argument.
+      !!
       !$acc routine seq
       real(dp), intent(in) :: x
       real(dp) :: y
       y = exp_reprod(x*x)*erfc_reprod(x)
    end function xc_erfcx
 
-   !
-   ! The error function, bit-reproducible. A translated kernel's `erf(x)`
-   ! calls become this rather than the Fortran intrinsic, which is not
-   ! required to be correctly rounded and is not the same bits on the CPU
-   ! and the GPU.
-   !
    pure function xc_erf(x) result(y)
+      !!
+      !! The error function, bit-reproducible. A translated kernel's `erf(x)`
+      !! calls become this rather than the Fortran intrinsic, which is not
+      !! required to be correctly rounded and is not the same bits on the CPU
+      !! and the GPU.
+      !!
       !$acc routine seq
       real(dp), intent(in) :: x
       real(dp) :: y
       y = erf_reprod(x)
    end function xc_erf
 
-   ! |sigma_ab| may not exceed the mean of the two like-spin gradients.
    pure function enforce_polar_sigma_constraints(sigma_aa, sigma_ab, sigma_bb) result(s)
+      !! |sigma_ab| may not exceed the mean of the two like-spin gradients.
       !$acc routine seq
       real(dp), intent(in) :: sigma_aa, sigma_ab, sigma_bb
       real(dp) :: s
@@ -133,8 +133,8 @@ contains
       if (s > s_ave) s = s_ave
    end function enforce_polar_sigma_constraints
 
-   ! sigma <= 8 rho tau, the meta-GGA bound.
    pure function enforce_fermi_hole_curvature(sigma, rho, tau) result(s)
+      !! sigma <= 8 rho tau, the meta-GGA bound.
       !$acc routine seq
       real(dp), intent(in) :: sigma, rho, tau
       real(dp) :: s

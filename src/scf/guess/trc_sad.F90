@@ -107,12 +107,12 @@ contains
       call build_atomic(b, dguess, error, verbose, nel=nel, la=la, ecp=ecp)
    end subroutine trc_sadq_build
 
-   !
-   ! SAD and SADQ differ only in what each free atom holds. `nel` absent is SAD:
-   ! the neutral atom, unrestricted, Hund's rule. `nel` present is SADQ: that
-   ! many electrons, restricted with fractional occupations.
-   !
    subroutine build_atomic(b, dguess, error, verbose, nel, la, ecp)
+      !!
+      !! SAD and SADQ differ only in what each free atom holds. `nel` absent is SAD:
+      !! the neutral atom, unrestricted, Hund's rule. `nel` present is SADQ: that
+      !! many electrons, restricted with fractional occupations.
+      !!
       type(trc_basis_t), intent(in) :: b
       real(dp), allocatable, intent(out) :: dguess(:, :)
       type(error_t), intent(inout) :: error
@@ -275,10 +275,10 @@ contains
       end do
    end subroutine build_atomic
 
-   !
-   ! shell -> atom by centre, and each atom's contiguous shell range.
-   !
    subroutine trc_atom_ranges(b, atom_of, first, last, error)
+      !!
+      !! shell -> atom by centre, and each atom's contiguous shell range.
+      !!
       type(trc_basis_t), intent(in) :: b
       integer, allocatable, intent(out) :: atom_of(:), first(:), last(:)
       type(error_t), intent(inout) :: error
@@ -310,35 +310,35 @@ contains
       end do
    end subroutine trc_atom_ranges
 
-   !
-   ! SPHERICAL AVERAGING. `d`, the atom's total (alpha+beta) density in `ab`'s
-   ! AO space, is replaced in place by its rotational average over every shell
-   ! pair: zero where l_i /= l_j, and (trace/(2l+1)) times the identity where
-   ! l_i == l_j.
-   !
-   ! Why: by Schur's lemma the atom's overlap S is a scalar times the identity
-   ! on an l_i == l_j shell pair and exactly zero for l_i /= l_j. A rotational
-   ! average commutes with every rotation, so the averaged density must look
-   ! like S block by block, and the multiple that preserves the block trace
-   ! (hence Tr(D S), the electron count) is trace/(2l+1). Zeroing l_i /= l_j
-   ! blocks costs nothing, since S is zero there.
-   !
-   ! Cartesian atoms: six Cartesian d = five spherical d + an s-type
-   ! contaminant (x^2+y^2+z^2), and likewise for f and up (see trc_sph.F90).
-   ! SPH_T embeds only the pure l component, so T^T T /= I for l >= 2, and
-   ! replacing `d` by T * average(T^T d T) * T^T would discard the contaminant's
-   ! density and move Tr(d S). Instead only the delta the averaging makes is
-   ! applied, through T:
-   !
-   !     d := d + T * (average(T^T d T) - T^T d T) * T^T
-   !
-   ! This preserves Tr(d S) exactly for any T, because S_sph = T^T S T is zero
-   ! for l_i /= l_j and scalar*identity for l_i == l_j, while the delta has zero
-   ! trace on every l_i == l_j block. `cart_to_sph_atom`/`sph_to_cart_atom` are
-   ! plain host copies of trc_sph.F90's block contraction (no `do concurrent`;
-   ! this runs once per cached element on an atom-sized matrix).
-   !
    subroutine sad_average_atom_density(ab, sph, d)
+      !!
+      !! SPHERICAL AVERAGING. `d`, the atom's total (alpha+beta) density in `ab`'s
+      !! AO space, is replaced in place by its rotational average over every shell
+      !! pair: zero where l_i /= l_j, and (trace/(2l+1)) times the identity where
+      !! l_i == l_j.
+      !!
+      !! Why: by Schur's lemma the atom's overlap S is a scalar times the identity
+      !! on an l_i == l_j shell pair and exactly zero for l_i /= l_j. A rotational
+      !! average commutes with every rotation, so the averaged density must look
+      !! like S block by block, and the multiple that preserves the block trace
+      !! (hence Tr(D S), the electron count) is trace/(2l+1). Zeroing l_i /= l_j
+      !! blocks costs nothing, since S is zero there.
+      !!
+      !! Cartesian atoms: six Cartesian d = five spherical d + an s-type
+      !! contaminant (x^2+y^2+z^2), and likewise for f and up (see trc_sph.F90).
+      !! SPH_T embeds only the pure l component, so T^T T /= I for l >= 2, and
+      !! replacing `d` by T * average(T^T d T) * T^T would discard the contaminant's
+      !! density and move Tr(d S). Instead only the delta the averaging makes is
+      !! applied, through T:
+      !!
+      !!     d := d + T * (average(T^T d T) - T^T d T) * T^T
+      !!
+      !! This preserves Tr(d S) exactly for any T, because S_sph = T^T S T is zero
+      !! for l_i /= l_j and scalar*identity for l_i == l_j, while the delta has zero
+      !! trace on every l_i == l_j block. `cart_to_sph_atom`/`sph_to_cart_atom` are
+      !! plain host copies of trc_sph.F90's block contraction (no `do concurrent`;
+      !! this runs once per cached element on an atom-sized matrix).
+      !!
       type(trc_basis_t), intent(in) :: ab
       logical, intent(in) :: sph
       real(dp), intent(inout) :: d(:, :)

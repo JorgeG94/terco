@@ -1,39 +1,39 @@
-!
-! VV10 (trc_vv10) against pyscf's own `numint.nr_nlc_vxc`, on the SAME grid
-! points, weights and density -- same reasoning as check_xc_energy.F90, for
-! the nonlocal piece that module does not cover.
-!
-! THREE CASES: water/6-31G* and water/cc-pVDZ through `trc_vv10_rks`
-! (closed shell), the OH radical/cc-pVDZ through `trc_vv10_uks` (D_a != D_b,
-! VV10 sees only D_a + D_b). Every basis is read `force_cart=.true.` --
-! pyscf's cart=True Mole, same convention check_df_vs_pyscf.F90 and
-! rys_fock_ref.py use -- and the density is a fixed pseudo-random PSD
-! matrix (C C^T for a seeded C), not a converged SCF one: this is a kernel
-! check on an arbitrary density, not a physical-energy check, the same
-! reasoning check_xc_energy.F90 and check_rys_grad_vs_pyscf.F90 both give.
-!
-! `vmat` is SEEDED with an arbitrary nonzero matrix before the call and
-! dumped alongside the result, so `vv10_ref.py` can check the ADD
-! contract (trc_vv10_rks/uks must add onto an existing potential, never
-! overwrite it) in the same comparison that checks the numbers: it is
-! `vmat_after - vmat_seed` that must match pyscf's nlc matrix, not
-! `vmat_after` on its own.
-!
-! AO ORDER/NORMALISATION: see rys_grad_ref.py's `terco_to_pyscf_perm` and
-! its own header -- pyscf's cart=True groups a given atom's shells by
-! ascending l where terco keeps the JSON's literal order, and a Cartesian
-! d's off-diagonal components (xy/xz/yz) are not normalised the same way
-! in the two codes. `vv10_ref.py` handles both exactly as that script
-! does: permute, then rescale by n_i = sqrt(S_terco(i,i)/S_pyscf(i,i)).
-!
-! ONE shared pass writes vv10_probe.bin and reads vv10.ref (both files
-! are sequential, so all three cases have to go through them in the SAME
-! order generate.py wrote/expects); the three test-drive cases below each
-! read back their OWN already-computed result -- see
-! check_xc_energy_suite's own `computed` comment for why the shared pass
-! runs exactly once and this suite stays `parallel=.false.`.
-!
 module check_vv10_vs_pyscf_suite
+   !!
+   !! VV10 (trc_vv10) against pyscf's own `numint.nr_nlc_vxc`, on the SAME grid
+   !! points, weights and density -- same reasoning as check_xc_energy.F90, for
+   !! the nonlocal piece that module does not cover.
+   !!
+   !! THREE CASES: water/6-31G* and water/cc-pVDZ through `trc_vv10_rks`
+   !! (closed shell), the OH radical/cc-pVDZ through `trc_vv10_uks` (D_a != D_b,
+   !! VV10 sees only D_a + D_b). Every basis is read `force_cart=.true.` --
+   !! pyscf's cart=True Mole, same convention check_df_vs_pyscf.F90 and
+   !! rys_fock_ref.py use -- and the density is a fixed pseudo-random PSD
+   !! matrix (C C^T for a seeded C), not a converged SCF one: this is a kernel
+   !! check on an arbitrary density, not a physical-energy check, the same
+   !! reasoning check_xc_energy.F90 and check_rys_grad_vs_pyscf.F90 both give.
+   !!
+   !! `vmat` is SEEDED with an arbitrary nonzero matrix before the call and
+   !! dumped alongside the result, so `vv10_ref.py` can check the ADD
+   !! contract (trc_vv10_rks/uks must add onto an existing potential, never
+   !! overwrite it) in the same comparison that checks the numbers: it is
+   !! `vmat_after - vmat_seed` that must match pyscf's nlc matrix, not
+   !! `vmat_after` on its own.
+   !!
+   !! AO ORDER/NORMALISATION: see rys_grad_ref.py's `terco_to_pyscf_perm` and
+   !! its own header -- pyscf's cart=True groups a given atom's shells by
+   !! ascending l where terco keeps the JSON's literal order, and a Cartesian
+   !! d's off-diagonal components (xy/xz/yz) are not normalised the same way
+   !! in the two codes. `vv10_ref.py` handles both exactly as that script
+   !! does: permute, then rescale by n_i = sqrt(S_terco(i,i)/S_pyscf(i,i)).
+   !!
+   !! ONE shared pass writes vv10_probe.bin and reads vv10.ref (both files
+   !! are sequential, so all three cases have to go through them in the SAME
+   !! order generate.py wrote/expects); the three test-drive cases below each
+   !! read back their OWN already-computed result -- see
+   !! check_xc_energy_suite's own `computed` comment for why the shared pass
+   !! runs exactly once and this suite stays `parallel=.false.`.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

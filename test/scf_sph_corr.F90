@@ -1,49 +1,49 @@
-!
-! SPHERICAL-basis correlation: RI-MP2 (restricted and unrestricted) and
-! density-fitted SCF (`--df`) on a spherical orbital basis, against pyscf's
-! own `cart=False` on the identical sets -- the spherical counterpart of
-! scf_rimp2.F90/scf_rimp2_uhf.F90/scf_df.F90/scf_dh.F90, which all force
-! Cartesian.
-!
-! FOUR GROUPS:
-!
-!   A. Restricted RI-MP2: water and formamide, cc-pVDZ + cc-pVDZ-RIFIT
-!      (both spherical in BSE), full core correlated -- scf_rimp2.F90's own
-!      water/cc-pVDZ case's convention, just spherical.
-!
-!   B. Unrestricted RI-MP2: OH, cc-pVDZ + cc-pVDZ-RIFIT, frozen core (O),
-!      from a FIXED initial density -- scf_rimp2_uhf.F90's own pattern:
-!      OH's unpaired electron sits in a rotationally degenerate pair of pi
-!      orbitals (a genuine zero-curvature direction for the SCF, and for
-!      which particular rotation within that pair ends up occupied), so
-!      both sides are seeded from the SAME converged density rather than
-!      two that merely happen to share an energy. Unlike that file's own
-!      Cartesian case, no AO-normalisation rescale is needed here: a
-!      spherical AO's normalisation already matches pyscf's directly, with
-!      nothing GAMESS-like to diverge on (scripts/gen_sph.py's own "NOTHING
-!      EXTRA NEEDED" header) -- this suite's own S dump still lets
-!      generate.py CHECK that empirically rather than assume it.
-!
-!   C. `--df` HF and B3LYP: water and formamide, cc-pVDZ, def2-universal-
-!      jkfit -- scf_df.F90's own cases, spherical.
-!
-!   D. B2PLYP (a double hybrid): water, cc-pVDZ, four-centre AND `--df`
-!      (cc-pVDZ-RIFIT doing double duty as both --df's jkfit and RI-MP2's
-!      aux, chained -- scf_dh.F90's own pattern), frozen core (O).
-!
-! Writes "sph_corr_oh_probe.bin": NAO and S in terco's SPHERICAL AO space
-! (trc_1e's own Cartesian S, folded once with sph_cart_to_sph -- the same
-! fold trc_scf_driver itself applies to S every geometry) -- geometry- and
-! basis-derived only, dumped unconditionally, group B's own "fixed input"
-! (scf_rimp2_uhf.F90's term for the same category).
-!
-! Nine independent cases below (A: 2, B: 1, C: 4, D: 2), each its own
-! test-drive unittest; the ONE pyscf reference file is opened once and
-! read sequentially, in the SAME A->B->C->D, within-group order the
-! original program used -- see check_xc_energy_suite's own `computed`
-! comment for why, and why this suite stays `parallel=.false.`.
-!
 module scf_sph_corr_suite
+   !!
+   !! SPHERICAL-basis correlation: RI-MP2 (restricted and unrestricted) and
+   !! density-fitted SCF (`--df`) on a spherical orbital basis, against pyscf's
+   !! own `cart=False` on the identical sets -- the spherical counterpart of
+   !! scf_rimp2.F90/scf_rimp2_uhf.F90/scf_df.F90/scf_dh.F90, which all force
+   !! Cartesian.
+   !!
+   !! FOUR GROUPS:
+   !!
+   !!   A. Restricted RI-MP2: water and formamide, cc-pVDZ + cc-pVDZ-RIFIT
+   !!      (both spherical in BSE), full core correlated -- scf_rimp2.F90's own
+   !!      water/cc-pVDZ case's convention, just spherical.
+   !!
+   !!   B. Unrestricted RI-MP2: OH, cc-pVDZ + cc-pVDZ-RIFIT, frozen core (O),
+   !!      from a FIXED initial density -- scf_rimp2_uhf.F90's own pattern:
+   !!      OH's unpaired electron sits in a rotationally degenerate pair of pi
+   !!      orbitals (a genuine zero-curvature direction for the SCF, and for
+   !!      which particular rotation within that pair ends up occupied), so
+   !!      both sides are seeded from the SAME converged density rather than
+   !!      two that merely happen to share an energy. Unlike that file's own
+   !!      Cartesian case, no AO-normalisation rescale is needed here: a
+   !!      spherical AO's normalisation already matches pyscf's directly, with
+   !!      nothing GAMESS-like to diverge on (scripts/gen_sph.py's own "NOTHING
+   !!      EXTRA NEEDED" header) -- this suite's own S dump still lets
+   !!      generate.py CHECK that empirically rather than assume it.
+   !!
+   !!   C. `--df` HF and B3LYP: water and formamide, cc-pVDZ, def2-universal-
+   !!      jkfit -- scf_df.F90's own cases, spherical.
+   !!
+   !!   D. B2PLYP (a double hybrid): water, cc-pVDZ, four-centre AND `--df`
+   !!      (cc-pVDZ-RIFIT doing double duty as both --df's jkfit and RI-MP2's
+   !!      aux, chained -- scf_dh.F90's own pattern), frozen core (O).
+   !!
+   !! Writes "sph_corr_oh_probe.bin": NAO and S in terco's SPHERICAL AO space
+   !! (trc_1e's own Cartesian S, folded once with sph_cart_to_sph -- the same
+   !! fold trc_scf_driver itself applies to S every geometry) -- geometry- and
+   !! basis-derived only, dumped unconditionally, group B's own "fixed input"
+   !! (scf_rimp2_uhf.F90's term for the same category).
+   !!
+   !! Nine independent cases below (A: 2, B: 1, C: 4, D: 2), each its own
+   !! test-drive unittest; the ONE pyscf reference file is opened once and
+   !! read sequentially, in the SAME A->B->C->D, within-group order the
+   !! original program used -- see check_xc_energy_suite's own `computed`
+   !! comment for why, and why this suite stays `parallel=.false.`.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -93,10 +93,10 @@ contains
                   ]
    end subroutine collect_scf_sph_corr
 
-   ! One wrapper per case, each passing its own index: a unittest must not
-   ! depend on which unittests ran before it (a name-selected run, or a
-   ! reordered suite, would otherwise check the wrong case).
    subroutine case_01(error)
+      !! One wrapper per case, each passing its own index: a unittest must not
+      !! depend on which unittests ran before it (a name-selected run, or a
+      !! reordered suite, would otherwise check the wrong case).
       type(error_type), allocatable, intent(out) :: error
       call test_case(error, 1)
    end subroutine case_01
@@ -154,8 +154,8 @@ contains
       computed = .true.
    end subroutine ensure_computed
 
-   ! Appends one (ok, message) pair to the next ok_case/msg_case slot.
    subroutine record(ok, msg)
+      !! Appends one (ok, message) pair to the next ok_case/msg_case slot.
       logical, intent(in) :: ok
       character(len=*), intent(in) :: msg
       next_slot = next_slot + 1
@@ -183,11 +183,11 @@ contains
          //"test/pyscf_refs/generate.py sph_corr (see test/pyscf_refs/README.md)"
    end subroutine run_all
 
-   !
-   ! A. Restricted RI-MP2, spherical: water and formamide, cc-pVDZ +
-   ! cc-pVDZ-RIFIT, full core.
-   !
    subroutine part_a(refu, has_ref)
+      !!
+      !! A. Restricted RI-MP2, spherical: water and formamide, cc-pVDZ +
+      !! cc-pVDZ-RIFIT, full core.
+      !!
       integer, intent(in) :: refu
       logical, intent(in) :: has_ref
 
@@ -271,11 +271,11 @@ contains
       end do
    end subroutine part_a
 
-   !
-   ! B. Unrestricted RI-MP2, spherical: OH, cc-pVDZ + cc-pVDZ-RIFIT,
-   ! frozen core, from a fixed initial density.
-   !
    subroutine part_b(refu, has_ref)
+      !!
+      !! B. Unrestricted RI-MP2, spherical: OH, cc-pVDZ + cc-pVDZ-RIFIT,
+      !! frozen core, from a fixed initial density.
+      !!
       integer, intent(in) :: refu
       logical, intent(in) :: has_ref
 
@@ -375,11 +375,11 @@ contains
       call pl%release(); call aux%release(); call bas%release()
    end subroutine part_b
 
-   !
-   ! C. `--df` HF and B3LYP, spherical: water and formamide, cc-pVDZ,
-   ! def2-universal-jkfit.
-   !
    subroutine part_c(refu, has_ref)
+      !!
+      !! C. `--df` HF and B3LYP, spherical: water and formamide, cc-pVDZ,
+      !! def2-universal-jkfit.
+      !!
       integer, intent(in) :: refu
       logical, intent(in) :: has_ref
 
@@ -457,12 +457,12 @@ contains
       end do
    end subroutine part_c
 
-   !
-   ! D. B2PLYP, spherical: water, cc-pVDZ, four-centre AND `--df` (chained
-   ! RI-MP2 off --df's own fit, cc-pVDZ-RIFIT as both jkfit and aux),
-   ! frozen core.
-   !
    subroutine part_d(refu, has_ref)
+      !!
+      !! D. B2PLYP, spherical: water, cc-pVDZ, four-centre AND `--df` (chained
+      !! RI-MP2 off --df's own fit, cc-pVDZ-RIFIT as both jkfit and aux),
+      !! frozen core.
+      !!
       integer, intent(in) :: refu
       logical, intent(in) :: has_ref
 

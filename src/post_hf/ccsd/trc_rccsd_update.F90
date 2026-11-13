@@ -186,11 +186,10 @@ module trc_rccsd_update
 
 contains
 
-   ! ---------------------------------------------------------------------
-   ! the type
-   ! ---------------------------------------------------------------------
-
    subroutine update_init(this, ints, ladder_options, follower)
+      !! ---------------------------------------------------------------------
+      !! the type
+      !! ---------------------------------------------------------------------
       !! Allocates and packs everything for these integrals. A refusal of any module goes to `status`
       !! and leaves the type empty. With `follower` only what a rank that runs its ladder share and nothing else needs:
       !! tau's scratch, the ladder and its scratch (not W, the rings' packs or the T1 packs).
@@ -383,11 +382,10 @@ contains
       end if
    end function sub_failed
 
-   ! ---------------------------------------------------------------------
-   ! the update
-   ! ---------------------------------------------------------------------
-
    pure function rccsd_update_t1_flops(no, nv, naux) result(flops)
+      !! ---------------------------------------------------------------------
+      !! the update
+      !! ---------------------------------------------------------------------
       !! Flops of the GEMMs of `t1_equation` (the small T1 kernel, the packs and the denominator are not counted):
       !!   Y = ycomb b_ov (o v, naux, o v)      2 o^2 v^2 naux    Y b_vv^T (o, v, v naux)   2 o v^2 naux
       !!   lam term (o, v, o o v)               2 o^3 v^2
@@ -780,13 +778,12 @@ contains
       call kernel_add_ring(no, nv, 2, -1.0_dp, this%ws%r, newamps%t2)
    end subroutine t2_ring_terms
 
-   ! ---------------------------------------------------------------------
-   ! the kernels. Each takes its arrays as explicit-shape dummies and runs one
-   ! `do concurrent` over ONE flattened index, whose body calls an item routine
-   ! of this module. No `x%name` appears in any of them.
-   ! ---------------------------------------------------------------------
-
    subroutine kernel_pack_lamp(no, nv, lam, lamp)
+      !! ---------------------------------------------------------------------
+      !! the kernels. Each takes its arrays as explicit-shape dummies and runs one
+      !! `do concurrent` over ONE flattened index, whose body calls an item routine
+      !! of this module. No `x%name` appears in any of them.
+      !! ---------------------------------------------------------------------
       !! lamp(k,l,c,i) = lam(k,i,l,c)
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: lam(no, no, no, nv)
@@ -958,15 +955,14 @@ contains
       end do
    end subroutine kernel_denominator_t2
 
-   ! ---------------------------------------------------------------------
-   ! the item routines: pure, `routine seq`, explicit-shape dummies, no
-   ! arrays of their own. A flat 1-based index t is the position in the
-   ! DESTINATION, first index fastest.
-   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
-   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
-   ! ---------------------------------------------------------------------
-
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
+      !! ---------------------------------------------------------------------
+      !! the item routines: pure, `routine seq`, explicit-shape dummies, no
+      !! arrays of their own. A flat 1-based index t is the position in the
+      !! DESTINATION, first index fastest.
+      !! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+      !! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
+      !! ---------------------------------------------------------------------
       !! t - 1 = (i1-1) + n1 ((i2-1) + n2 ((i3-1) + n3 (i4-1)))
       !$acc routine seq
       integer, intent(in) :: t, n1, n2, n3

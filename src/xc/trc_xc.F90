@@ -263,12 +263,12 @@ module trc_xc
 
 contains
 
-   !
-   ! A trc_xc_options_t from the caller's own optional settings, passed
-   ! straight through: an absent one keeps its default. `comm` is copied
-   ! (a communicator handle and its cached rank and size).
-   !
    function trc_xc_options(budget, rho_tol, comm) result(options)
+      !!
+      !! A trc_xc_options_t from the caller's own optional settings, passed
+      !! straight through: an absent one keeps its default. `comm` is copied
+      !! (a communicator handle and its cached rank and size).
+      !!
       integer(int64), intent(in), optional :: budget
       real(dp), intent(in), optional :: rho_tol
       type(comm_t), intent(in), optional :: comm
@@ -282,12 +282,12 @@ contains
       end if
    end function trc_xc_options
 
-   !
-   ! E_xc, V_xc and the integrated electron count for a closed-shell density.
-   ! `la` is the caller's GEMM handles; absent, the call makes a set and
-   ! releases it (the recursive call below, with its own).
-   !
    recursive subroutine trc_xc_rks(b, xg, func, dmat, vxc, result, options, la)
+      !!
+      !! E_xc, V_xc and the integrated electron count for a closed-shell density.
+      !! `la` is the caller's GEMM handles; absent, the call makes a set and
+      !! releases it (the recursive call below, with its own).
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
@@ -312,11 +312,11 @@ contains
       call xc_drive(b, xg, func, run, dmat, vxc, result, la)
    end subroutine trc_xc_rks
 
-   !
-   ! The same for a spin-polarised density: D(:,:,1) is alpha, D(:,:,2)
-   ! beta, and the potentials come back in the same slots.
-   !
    recursive subroutine trc_xc_uks(b, xg, func, dmat, vxc, result, options, la)
+      !!
+      !! The same for a spin-polarised density: D(:,:,1) is alpha, D(:,:,2)
+      !! beta, and the potentials come back in the same slots.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
@@ -341,16 +341,16 @@ contains
       call xc_drive(b, xg, func, run, dmat, vxc, result, la)
    end subroutine trc_xc_uks
 
-   !
-   ! rho at every point of `xg`, in xg's own (permuted) order, for a density
-   ! analysis that wants the values rather than a functional of them (the
-   ! Hirshfeld partition). xc_drive's first half -- collocate, gather, X_b =
-   ! chi_b D_b by batched GEMM -- then a point kernel that keeps rho = sum_u
-   ! X_u chi_u. No density screening and no rank split: every point is
-   ! asked for. `dmat` need not be symmetric-positive (a spin density is
-   ! fine). `b` and `xg` must already be on the device, as for trc_xc_rks.
-   !
    recursive subroutine trc_xc_rho(b, xg, dmat, rho, budget, la)
+      !!
+      !! rho at every point of `xg`, in xg's own (permuted) order, for a density
+      !! analysis that wants the values rather than a functional of them (the
+      !! Hirshfeld partition). xc_drive's first half -- collocate, gather, X_b =
+      !! chi_b D_b by batched GEMM -- then a point kernel that keeps rho = sum_u
+      !! X_u chi_u. No density screening and no rank split: every point is
+      !! asked for. `dmat` need not be symmetric-positive (a spin density is
+      !! fine). `b` and `xg` must already be on the device, as for trc_xc_rks.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       real(dp), intent(in) :: dmat(b%nao, b%nao)
@@ -749,35 +749,35 @@ contains
       result%t_pairs = t_pairs
    end subroutine xc_drive
 
-   !
-   ! The CPKS XC kernel response, restricted: f_xc[D_U]_uv = integral
-   ! phi_u phi_v (v2rho2 rho_U + v2rhosigma dsigma_U) for LDA, plus the GGA
-   ! sigma-response terms through grad rho (ground state) and grad rho_U
-   ! (trial) -- xc_resp_point_body below has the full per-point formula
-   ! (trc_cpks's own header only names f_xc[D_U] as a term, it does not
-   ! derive it). Same grid
-   ! batches, same collocate-then-GEMM pipeline as `trc_xc_rks` (xc_drive's
-   ! own header): the one difference is gathering TWO densities per batch
-   ! (`dmat`, fixed for a whole CPKS solve, and `dmat_u`, rebuilt every CG
-   ! iteration) instead of one, and a point kernel that evaluates the
-   ! second derivatives instead of the first. No density screening and no
-   ! rank splitting here -- unlike the energy path, every CPKS iteration
-   ! needs the SAME linear operator, and the trial density is a CG
-   ! iterate the solve drives towards zero as it converges, so screening
-   ! on ITS magnitude would tighten from one matvec to the next and break
-   ! that assumption -- see `eri_fock`'s own `density_screen` doc
-   ! (trc_eri.F90) for the identical reason on the ERI side, where the
-   ! coupled-perturbed equations have the same requirement. A later
-   ! optimisation can screen on the GROUND density alone (fixed across
-   ! the CG loop, unlike `dmat_u`).
-   !
-   ! `dmat` and `dmat_u` are both already device-resident (same contract as
-   ! trc_cphf's `cmo`/`D_U`): the caller copies `dmat` in once, before the
-   ! CG loop starts, and keeps `dmat_u` resident from one matvec to the
-   ! next. `v_resp` is written in full (not accumulated into); the caller
-   ! adds it into its own Fock-response matrix.
-   !
    recursive subroutine trc_xc_fxc_rks(b, xg, func, dmat, dmat_u, v_resp, budget, la)
+      !!
+      !! The CPKS XC kernel response, restricted: f_xc[D_U]_uv = integral
+      !! phi_u phi_v (v2rho2 rho_U + v2rhosigma dsigma_U) for LDA, plus the GGA
+      !! sigma-response terms through grad rho (ground state) and grad rho_U
+      !! (trial) -- xc_resp_point_body below has the full per-point formula
+      !! (trc_cpks's own header only names f_xc[D_U] as a term, it does not
+      !! derive it). Same grid
+      !! batches, same collocate-then-GEMM pipeline as `trc_xc_rks` (xc_drive's
+      !! own header): the one difference is gathering TWO densities per batch
+      !! (`dmat`, fixed for a whole CPKS solve, and `dmat_u`, rebuilt every CG
+      !! iteration) instead of one, and a point kernel that evaluates the
+      !! second derivatives instead of the first. No density screening and no
+      !! rank splitting here -- unlike the energy path, every CPKS iteration
+      !! needs the SAME linear operator, and the trial density is a CG
+      !! iterate the solve drives towards zero as it converges, so screening
+      !! on ITS magnitude would tighten from one matvec to the next and break
+      !! that assumption -- see `eri_fock`'s own `density_screen` doc
+      !! (trc_eri.F90) for the identical reason on the ERI side, where the
+      !! coupled-perturbed equations have the same requirement. A later
+      !! optimisation can screen on the GROUND density alone (fixed across
+      !! the CG loop, unlike `dmat_u`).
+      !!
+      !! `dmat` and `dmat_u` are both already device-resident (same contract as
+      !! trc_cphf's `cmo`/`D_U`): the caller copies `dmat` in once, before the
+      !! CG loop starts, and keeps `dmat_u` resident from one matvec to the
+      !! next. `v_resp` is written in full (not accumulated into); the caller
+      !! adds it into its own Fock-response matrix.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
@@ -1653,19 +1653,19 @@ contains
       end do
    end subroutine xc_fxc_apply_points
 
-   !
-   ! trc_xc_kernel_points_t at every point of `xg` for the reference density
-   ! `dmat` and a second, symmetric density `pmat` (a relaxed correlation
-   ! density: indefinite, traceless), restricted. trc_xc_fxc_rks's front half
-   ! -- collocate, gather both densities, X = chi D and chi P by batched GEMM
-   ! -- then one thread per point evaluating the functional's first
-   ! (xc_eval_point) and second (xc_eval_point_fxc) derivatives at D. Batches
-   ! with active(ib) == 0 are left zero: the caller passes the screen the
-   ! reference potential was built with, so the points that never carried
-   ! V_xc[D] carry nothing here either. Both densities HOST arrays; `b` and
-   ! `xg` on the device. `pts` is (re)allocated and mapped here.
-   !
    recursive subroutine trc_xc_kernel_points_rks(b, xg, func, dmat, pmat, active, pts, la)
+      !!
+      !! trc_xc_kernel_points_t at every point of `xg` for the reference density
+      !! `dmat` and a second, symmetric density `pmat` (a relaxed correlation
+      !! density: indefinite, traceless), restricted. trc_xc_fxc_rks's front half
+      !! -- collocate, gather both densities, X = chi D and chi P by batched GEMM
+      !! -- then one thread per point evaluating the functional's first
+      !! (xc_eval_point) and second (xc_eval_point_fxc) derivatives at D. Batches
+      !! with active(ib) == 0 are left zero: the caller passes the screen the
+      !! reference potential was built with, so the points that never carried
+      !! V_xc[D] carry nothing here either. Both densities HOST arrays; `b` and
+      !! `xg` on the device. `pts` is (re)allocated and mapped here.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
@@ -1801,12 +1801,12 @@ contains
       this%npts = 0
    end subroutine xc_kernel_points_release
 
-   !
-   ! The point kernel of trc_xc_kernel_points_rks: one thread per point of
-   ! the chunk, reading its row of chi D (xt slot 1) and chi P (slot 2).
-   !
    subroutine xc_kernel_points(np, p0, npts, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, nk, kid, &
                                coef, nchi, chi, gchi, xt, coef_d, vec_d, vrho, vsigma, grho, energy)
+      !!
+      !! The point kernel of trc_xc_kernel_points_rks: one thread per point of
+      !! the chunk, reading its row of chi D (xt slot 1) and chi P (slot 2).
+      !!
       integer, intent(in) :: np, p0, npts, nbatch, nk
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
       integer, intent(in) :: npp(nbatch), active(nbatch), kid(XC_MAX_KERNELS)
@@ -1872,10 +1872,10 @@ contains
       energy(gg) = vr*rho_p + 2.0_dp*vs*gdotp
    end subroutine xc_kernel_point_body
 
-   ! dpack(:,:,1) = a, dpack(:,:,2) = bb -- packs the ground and trial
-   ! densities into one array so a single `xc_gather` call (nspin = 2)
-   ! fetches both per-batch tiles, rather than two differently-shaped calls.
    subroutine xc_pack2(nao, a, bb, dpack)
+      !! dpack(:,:,1) = a, dpack(:,:,2) = bb -- packs the ground and trial
+      !! densities into one array so a single `xc_gather` call (nspin = 2)
+      !! fetches both per-batch tiles, rather than two differently-shaped calls.
       integer, intent(in) :: nao
       real(dp), intent(in) :: a(nao, nao), bb(nao, nao)
       real(dp), intent(inout) :: dpack(nao, nao, 2)
@@ -1886,14 +1886,14 @@ contains
       end do
    end subroutine xc_pack2
 
-   !
-   ! Kernel 3 for the response pass: one thread per point, reading the
-   ! ground state's row of X (slot 1) and the trial density's (slot 2),
-   ! writing the single response tile `zt(:,1)`. See trc_xc_fxc_rks's own
-   ! header for the formula.
-   !
    subroutine xc_resp_points(np, p0, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
                              nk, kid, coef, nchi, chi, gchi, xt, zt)
+      !!
+      !! Kernel 3 for the response pass: one thread per point, reading the
+      !! ground state's row of X (slot 1) and the trial density's (slot 2),
+      !! writing the single response tile `zt(:,1)`. See trc_xc_fxc_rks's own
+      !! header for the formula.
+      !!
       integer, intent(in) :: np, p0, npts, nbatch, nk
       real(dp), intent(in) :: w(npts)
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
@@ -1969,13 +1969,13 @@ contains
       end do
    end subroutine xc_resp_point_body
 
-   !
-   ! Kernel 4 for the response pass: V_resp(u,v) += V_b(u,v) + V_b(v,u),
-   ! one output channel -- xc_scatter's own twin, duplicated rather than
-   ! made generic over nspin because its `vxc` here is genuinely rank 2
-   ! (trc_cpks has one response matrix, not a per-spin pair).
-   !
    subroutine xc_resp_scatter(npairs, nb, ord, pb_off, nao, vxc, b_aooff, nbao, b_ao, nlp, nbatch, vloc)
+      !!
+      !! Kernel 4 for the response pass: V_resp(u,v) += V_b(u,v) + V_b(v,u),
+      !! one output channel -- xc_scatter's own twin, duplicated rather than
+      !! made generic over nspin because its `vxc` here is genuinely rank 2
+      !! (trc_cpks has one response matrix, not a per-spin pair).
+      !!
       integer, intent(in) :: npairs, nb, nao, nbao, nbatch
       integer, intent(in) :: ord(nb), pb_off(nb + 1)
       real(dp), intent(inout) :: vxc(nao, nao)
@@ -2029,8 +2029,8 @@ contains
       av = b_ao(b_aooff(ib) + v - 1)
    end subroutine xc_resp_scatter_body
 
-   ! Sum a contiguous array over the ranks, then rank 0's copy everywhere.
    subroutine sum_ranks(comm, g, n)
+      !! Sum a contiguous array over the ranks, then rank 0's copy everywhere.
       type(comm_t), intent(in) :: comm
       integer, intent(in) :: n
       real(dp), intent(inout) :: g(n)
@@ -2038,19 +2038,19 @@ contains
       call bcast(comm, g, n, 0)
    end subroutine sum_ranks
 
-   ! Batches a rank owns under the round-robin: the k with mod(k-1,nranks)=rank.
    pure integer function n_owned(nbatch, rank, nranks) result(n)
+      !! Batches a rank owns under the round-robin: the k with mod(k-1,nranks)=rank.
       integer, intent(in) :: nbatch, rank, nranks
       n = nbatch/nranks
       if (mod(nbatch, nranks) > rank) n = n + 1
    end function n_owned
 
-   !
-   ! Density screen: one thread per batch bounds |rho| on it through the
-   ! stored per-function maxima and clears its flag if the bound is under
-   ! the tolerance. A batch already inactive (another rank's) is skipped.
-   !
    subroutine xc_screen(nbatch, nspin, nao, dmat, b_aooff, nbao, b_ao, b_amax, rho_tol, active)
+      !!
+      !! Density screen: one thread per batch bounds |rho| on it through the
+      !! stored per-function maxima and clears its flag if the bound is under
+      !! the tolerance. A batch already inactive (another rank's) is skipped.
+      !!
       integer, intent(in) :: nbatch, nspin, nao, nbao
       real(dp), intent(in) :: rho_tol
       real(dp), intent(in) :: dmat(nao, nao, nspin), b_amax(nbao)
@@ -2087,8 +2087,8 @@ contains
       if (bound <= rho_tol) flag = 0
    end subroutine xc_screen_body
 
-   ! Insertion sort of `ord` by (npp, nlp) ascending; a chunk's worth of batches.
    subroutine xc_sort_by_shape(n, npp, nlp, ord)
+      !! Insertion sort of `ord` by (npp, nlp) ascending; a chunk's worth of batches.
       integer, intent(in) :: n
       integer, intent(in) :: npp(:), nlp(:)
       integer, intent(inout) :: ord(n)
@@ -2110,8 +2110,8 @@ contains
       end function later
    end subroutine xc_sort_by_shape
 
-   ! Insertion sort of `order` by descending `cost`; a few thousand batches.
    subroutine sort_desc(n, cost, order)
+      !! Insertion sort of `order` by descending `cost`; a few thousand batches.
       integer, intent(in) :: n
       real(dp), intent(in) :: cost(n)
       integer, intent(inout) :: order(n)
@@ -2128,11 +2128,11 @@ contains
       end do
    end subroutine sort_desc
 
-   !
-   ! Which stored batch (1..nb, storage order) owns pair t: the last k with
-   ! pb_off(k) < t.
-   !
    pure subroutine pair_batch(t, nb, pb_off, k, tt)
+      !!
+      !! Which stored batch (1..nb, storage order) owns pair t: the last k with
+      !! pb_off(k) < t.
+      !!
       !$acc routine seq
       integer, intent(in) :: t, nb
       integer, intent(in) :: pb_off(nb + 1)
@@ -2152,8 +2152,8 @@ contains
       tt = t - pb_off(k) - 1
    end subroutine pair_batch
 
-   ! Zero the tiles whose padding the GEMMs read.
    subroutine xc_zero(nchi, nspin, chi, zt)
+      !! Zero the tiles whose padding the GEMMs read.
       integer(int64), intent(in) :: nchi
       integer, intent(in) :: nspin
       real(dp), intent(out) :: chi(nchi), zt(nchi, nspin)
@@ -2167,9 +2167,9 @@ contains
       end do
    end subroutine xc_zero
 
-   ! Zero the gradient tiles, whose padding only a meta-GGA's GEMMs read.
-   ! One flattened index rather than (i, x): the outer extent is small.
    subroutine xc_zero_grad(nchi, gchi)
+      !! Zero the gradient tiles, whose padding only a meta-GGA's GEMMs read.
+      !! One flattened index rather than (i, x): the outer extent is small.
       integer(int64), intent(in) :: nchi
       real(dp), intent(out) :: gchi(nchi*3)
       integer(int64) :: i
@@ -2178,17 +2178,17 @@ contains
       end do
    end subroutine xc_zero_grad
 
-   !
-   ! Kernel 1: collocation -- one thread per (shell, point), Algorithm 2 of
-   ! Stocks and Barca. Work item t maps to a stored batch, then a shell of
-   ! its local list and a point of its box, point fastest: the threads of a
-   ! warp evaluate one shell -- one l, one contraction, no divergence -- at
-   ! consecutive points, and write consecutive tile addresses. Tile layout
-   ! is (points, functions), point fastest, the (npp x nlp) column-major
-   ! matrix the GEMMs read.
-   !
    subroutine xc_collocate(nwork, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
                            b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, nchi, chi, gchi)
+      !!
+      !! Kernel 1: collocation -- one thread per (shell, point), Algorithm 2 of
+      !! Stocks and Barca. Work item t maps to a stored batch, then a shell of
+      !! its local list and a point of its box, point fastest: the threads of a
+      !! warp evaluate one shell -- one l, one contraction, no divergence -- at
+      !! consecutive points, and write consecutive tile addresses. Tile layout
+      !! is (points, functions), point fastest, the (npp x nlp) column-major
+      !! matrix the GEMMs read.
+      !!
       integer, intent(in) :: nwork, nb, maxnp, nshell, npts, nbsh, nbatch
       integer, intent(in) :: ord(nb), wk_off(nb + 1)
       integer, intent(in) :: sh_l(nshell), sh_np(nshell)
@@ -2243,11 +2243,11 @@ contains
       end do
    end subroutine xc_collocate_body
 
-   !
-   ! Kernel 2: the density slice of every batch -- one thread per stored
-   ! (b, u, v), padding included and written as zero.
-   !
    subroutine xc_gather(npairs, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, dloc)
+      !!
+      !! Kernel 2: the density slice of every batch -- one thread per stored
+      !! (b, u, v), padding included and written as zero.
+      !!
       integer, intent(in) :: npairs, nb, nspin, nao, nbao, nbatch
       integer, intent(in) :: ord(nb), pb_off(nb + 1)
       real(dp), intent(in) :: dmat(nao, nao, nspin)
@@ -2286,12 +2286,12 @@ contains
       end if
    end subroutine xc_gather_body
 
-   !
-   ! Kernel 3: the functional -- one thread per point. Reads its row of
-   ! chi, grad chi and X = chi D, writes its row of Z and its energy term.
-   !
    subroutine xc_points(np, p0, nspin, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, &
                         nk, kid, coef, nchi, chi, gchi, xt, zt, eg, ng)
+      !!
+      !! Kernel 3: the functional -- one thread per point. Reads its row of
+      !! chi, grad chi and X = chi D, writes its row of Z and its energy term.
+      !!
       integer, intent(in) :: np, p0, nspin, npts, nbatch, nk
       real(dp), intent(in) :: w(npts)
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
@@ -2384,14 +2384,14 @@ contains
       end do
    end subroutine xc_point_body
 
-   !
-   ! Kernel 3 for a meta-GGA: xc_point_body plus tau. Reads its row of Y_x
-   ! = (d chi/dx) D as well, and overwrites it with W_x = w v_tau/4 d chi/dx
-   ! (the module header). A separate kernel rather than a branch in
-   ! xc_point_body, so the LDA/GGA one compiles to exactly what it did.
-   !
    subroutine xc_points_mgga(np, p0, nspin, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, &
                              nk, kid, coef, nchi, chi, gchi, xt, zt, yt, eg, ng)
+      !!
+      !! Kernel 3 for a meta-GGA: xc_point_body plus tau. Reads its row of Y_x
+      !! = (d chi/dx) D as well, and overwrites it with W_x = w v_tau/4 d chi/dx
+      !! (the module header). A separate kernel rather than a branch in
+      !! xc_point_body, so the LDA/GGA one compiles to exactly what it did.
+      !!
       integer, intent(in) :: np, p0, nspin, npts, nbatch, nk
       real(dp), intent(in) :: w(npts)
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
@@ -2492,11 +2492,11 @@ contains
       end do
    end subroutine xc_point_mgga_body
 
-   !
-   ! Kernel 4: V_uv += V_b(u,v) + V_b(v,u) -- one thread per stored (b, u, v);
-   ! a padding element has nothing to add and says so with au = 0.
-   !
    subroutine xc_scatter(npairs, nb, ord, pb_off, nspin, nao, vxc, b_aooff, nbao, b_ao, nlp, nbatch, vloc)
+      !!
+      !! Kernel 4: V_uv += V_b(u,v) + V_b(v,u) -- one thread per stored (b, u, v);
+      !! a padding element has nothing to add and says so with au = 0.
+      !!
       integer, intent(in) :: npairs, nb, nspin, nao, nbao, nbatch
       integer, intent(in) :: ord(nb), pb_off(nb + 1)
       real(dp), intent(inout) :: vxc(nao, nao, nspin)

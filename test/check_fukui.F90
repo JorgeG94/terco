@@ -1,29 +1,29 @@
-!
-! Hirshfeld-condensed Fukui indices (trc_capi's trc_fukui_hirshfeld) against
-! metalquicha's own fukui_indices, at its own test_fukui case.
-!
-! mqc's test/test_mqc_hirshfeld.f90 (test_fukui) runs RHF/cc-pVDZ water at
-! the Bohr geometry below, calls fukui_indices("hirshfeld", ...) with no
-! neutral orbitals offered to seed the ions, and pins its own F_PLUS/F_MINUS
-! there. "No neutral orbitals offered" is mqc's unseeded path, which starts
-! each ion from GWH; trc_fukui_hirshfeld instead starts the ions from the
-! handle's own guess (SAD here, so SADQ for the ions -- see its header). Both
-! are unseeded and converge to the same doublet states, which is what
-! F_PLUS/F_MINUS pin, so this is terco's actual default against mqc's.
-!
-! Also: the sum rule, the handle's state after the call (on success and when
-! an ion fails to converge), and the refusal of an open-shell neutral.
-!
-! CHELPG-condensed indices (trc_capi's trc_fukui_scheme at "chelpg") against
-! test/pyscf_refs/fukui_chelpg.ref, written offline by
-! `generate.py fukui_chelpg`: pyscf's own RHF (N) and UHF doublets (N+-1) on
-! the same geometry and basis, CHELPG fitted at each of the three densities
-! by the recipe check_chelpg.F90 validates, on the same grid. Plus: the
-! indices are exactly the differences of the three charge sets the call
-! hands back, the neutral's set is what trc_chelpg_charges gives on the
-! converged handle, and the Hirshfeld path is unchanged beside it.
-!
 module check_fukui_suite
+   !!
+   !! Hirshfeld-condensed Fukui indices (trc_capi's trc_fukui_hirshfeld) against
+   !! metalquicha's own fukui_indices, at its own test_fukui case.
+   !!
+   !! mqc's test/test_mqc_hirshfeld.f90 (test_fukui) runs RHF/cc-pVDZ water at
+   !! the Bohr geometry below, calls fukui_indices("hirshfeld", ...) with no
+   !! neutral orbitals offered to seed the ions, and pins its own F_PLUS/F_MINUS
+   !! there. "No neutral orbitals offered" is mqc's unseeded path, which starts
+   !! each ion from GWH; trc_fukui_hirshfeld instead starts the ions from the
+   !! handle's own guess (SAD here, so SADQ for the ions -- see its header). Both
+   !! are unseeded and converge to the same doublet states, which is what
+   !! F_PLUS/F_MINUS pin, so this is terco's actual default against mqc's.
+   !!
+   !! Also: the sum rule, the handle's state after the call (on success and when
+   !! an ion fails to converge), and the refusal of an open-shell neutral.
+   !!
+   !! CHELPG-condensed indices (trc_capi's trc_fukui_scheme at "chelpg") against
+   !! test/pyscf_refs/fukui_chelpg.ref, written offline by
+   !! `generate.py fukui_chelpg`: pyscf's own RHF (N) and UHF doublets (N+-1) on
+   !! the same geometry and basis, CHELPG fitted at each of the three densities
+   !! by the recipe check_chelpg.F90 validates, on the same grid. Plus: the
+   !! indices are exactly the differences of the three charge sets the call
+   !! hands back, the neutral's set is what trc_chelpg_charges gives on the
+   !! converged handle, and the Hirshfeld path is unchanged beside it.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char
    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan
    use pic_types, only: dp

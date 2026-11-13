@@ -1,47 +1,47 @@
-!
-! The KS-DFT nuclear gradient (trc_scf_grad%trc_scf_gradient with `func`
-! present: eri%gradient scaled by `func%exx` + trc_1e_gradient +
-! trc_xc_grad%xc_grad_add + nuclear repulsion) against a central
-! finite difference of terco's own fully reconverged KS-DFT energy --
-! extends check_full_grad_fd.F90's technique.
-!
-! SVWN (LDA) and PBE (GGA) on water, restricted; PBE on the NH2 radical,
-! unrestricted -- a genuinely open-shell case (non-degenerate SOMO, unlike
-! OH's rotationally degenerate pi pair -- see below) and the unrestricted
-! GGA branch (cross spin terms) at once.
-!
-! GRID-RESPONSE SIZE, MEASURED NOT ASSUMED, BEFORE AND AFTER. The
-! finite-difference reference here is of terco's own fully reconverged
-! KS-DFT energy as a function of nuclear position, with the grid rebuilt
-! (`trc_basis_from_json` + `trc_scf_run`, fresh, at every displaced
-! geometry) -- i.e. the grid MOVES with the atoms on the FD side exactly
-! the way the GRID RESPONSE term (trc_xc_grad.F90's header) says the
-! physical gradient must account for. Every case here runs the analytic
-! gradient TWICE, at the SAME converged orbitals: once with
-! `grid_response=.true.` (ON, the module's default -- the physical
-! gradient, gated tightly) and once with `.false.` (OFF, the Pulay-only
-! term this branch started with -- printed for the before/after
-! comparison, NOT gated, since omitting a real term is not this test's
-! business to forbid for a caller who explicitly asks for it, e.g. to
-! match pyscf's own `grid_response=False` default). Both at grid level 3
-! AND grid level 5, so the omission's level-dependence (OFF) and its
-! absence (ON) are both visible in this test's own output.
-!
-! META-GGA: r2SCAN, TPSS and M06-L on water and r2SCAN on NH2
-! (unrestricted), and wB97M-V (meta-GGA + VV10 + erf exchange) on water --
-! the tau term of trc_xc_grad.F90's header in all three of its channels
-! (Pulay, point motion, partition weight), against the same reconverged
-! energy, same gates.
-!
-! Each case below is its own test-drive unittest.
-!
-! NO INTERNAL PROCEDURES, here or in the program: the SCFs below make
-! collective MPI calls, and on NVHPC 26.5 + HPC-X a `contains`-ed procedure
-! in a unit that does so corrupted a later collective Fock build (measured
-! in check_full_grad_fd.F90; AGENTS.md's MPI rule). Every helper is a
-! module procedure; keep it that way.
-!
 module check_xc_grad_fd_suite
+   !!
+   !! The KS-DFT nuclear gradient (trc_scf_grad%trc_scf_gradient with `func`
+   !! present: eri%gradient scaled by `func%exx` + trc_1e_gradient +
+   !! trc_xc_grad%xc_grad_add + nuclear repulsion) against a central
+   !! finite difference of terco's own fully reconverged KS-DFT energy --
+   !! extends check_full_grad_fd.F90's technique.
+   !!
+   !! SVWN (LDA) and PBE (GGA) on water, restricted; PBE on the NH2 radical,
+   !! unrestricted -- a genuinely open-shell case (non-degenerate SOMO, unlike
+   !! OH's rotationally degenerate pi pair -- see below) and the unrestricted
+   !! GGA branch (cross spin terms) at once.
+   !!
+   !! GRID-RESPONSE SIZE, MEASURED NOT ASSUMED, BEFORE AND AFTER. The
+   !! finite-difference reference here is of terco's own fully reconverged
+   !! KS-DFT energy as a function of nuclear position, with the grid rebuilt
+   !! (`trc_basis_from_json` + `trc_scf_run`, fresh, at every displaced
+   !! geometry) -- i.e. the grid MOVES with the atoms on the FD side exactly
+   !! the way the GRID RESPONSE term (trc_xc_grad.F90's header) says the
+   !! physical gradient must account for. Every case here runs the analytic
+   !! gradient TWICE, at the SAME converged orbitals: once with
+   !! `grid_response=.true.` (ON, the module's default -- the physical
+   !! gradient, gated tightly) and once with `.false.` (OFF, the Pulay-only
+   !! term this branch started with -- printed for the before/after
+   !! comparison, NOT gated, since omitting a real term is not this test's
+   !! business to forbid for a caller who explicitly asks for it, e.g. to
+   !! match pyscf's own `grid_response=False` default). Both at grid level 3
+   !! AND grid level 5, so the omission's level-dependence (OFF) and its
+   !! absence (ON) are both visible in this test's own output.
+   !!
+   !! META-GGA: r2SCAN, TPSS and M06-L on water and r2SCAN on NH2
+   !! (unrestricted), and wB97M-V (meta-GGA + VV10 + erf exchange) on water --
+   !! the tau term of trc_xc_grad.F90's header in all three of its channels
+   !! (Pulay, point motion, partition weight), against the same reconverged
+   !! energy, same gates.
+   !!
+   !! Each case below is its own test-drive unittest.
+   !!
+   !! NO INTERNAL PROCEDURES, here or in the program: the SCFs below make
+   !! collective MPI calls, and on NVHPC 26.5 + HPC-X a `contains`-ed procedure
+   !! in a unit that does so corrupted a later collective Fock build (measured
+   !! in check_full_grad_fd.F90; AGENTS.md's MPI rule). Every helper is a
+   !! module procedure; keep it that way.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

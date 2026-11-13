@@ -1,109 +1,109 @@
-!
-! Nudged elastic band / climbing-image NEB on the HCN<->HNC isomerisation,
-! RHF/STO-3G -- see app/trc_dlfind_bridge.F90's own header for the NEB
-! mechanics (icoord 100-199, per-image warm-start density, the
-! --opt-neb-climb sentinel) this exercises end to end through the CLI.
-!
-! Endpoints: test/hcn_minimum.xyz and test/hnc_minimum.xyz, FROZEN
-! (committed) geometries from a --opt-connect run on test/hcn_ts_guess.xyz
-! (check_opt_connect.F90's own machinery: the dimer method finds the TS
-! and both downhill minima in one run) -- generated once, consistently,
-! not re-run live here. That matters: the dimer method's own rotation
-! step uses DL-FIND's "random/internal" initial direction (app/
-! trc_dlfind_bridge.F90's own header), so a FRESH --opt-connect run lands
-! on the SAME two minima rotated/translated differently in space each
-! time, and measured directly by running --opt-connect repeatedly from
-! test/hcn_ts_guess.xyz: some of those equally-valid rotations drive at
-! least one interpolated
-! NEB image into a geometry so distorted that terco's own overlap-matrix
-! diagonalisation fails outright (`trc_linalg: pic_syev failed`, an
-! unconditional `error stop` deep in pic, not a condition trc_run_scf's
-! own non-convergence handling can catch or this bridge can decline),
-! while others do not. Freezing the two endpoints removes that source of
-! run-to-run variation; this is a known-delicate 3-atom system in GENERAL
-! for this DL-FIND build (check_opt_ts.F90's own header already documents
-! Cartesian HDLC P-RFO failing to converge reliably for the SAME
-! molecule), and NEB's many simultaneous images make it more, not less,
-! likely to hit that fragility than a single-geometry optimiser.
-!
-! --opt-neb-via test/hcn_ts_guess.xyz (the same bent TS guess
-! check_opt_ts.F90 uses) gives DL-FIND's own linear-Cartesian path
-! builder a bent intermediate point instead of interpolating straight
-! between two COLLINEAR endpoints: HCN and HNC are both genuinely linear
-! (H-C-N/H-N-C angles within 2e-4 deg of 180/0), so a straight-line path
-! between them slides the bridging atom through the other two at the
-! midpoint images. That -- not the endpoints' relative rotation, which
-! dlf_cartesian_align (dlf_neb.f90:278) already removes before
-! interpolating, Kabsch, for every known point -- was the real cause of
-! the coincident-atom overlap singularities ('trc_linalg: pic_syev
-! failed') this system used to trip. The pre-check below
-! (check_neb_initial_path, app/trc_dlfind_bridge.F90) now refuses any
-! run whose own predicted initial path puts two atoms under 0.5 Bohr
-! apart, naming the image and atoms, instead of reaching the eigensolver
-! at all; it does not fire for the via-point path here (closest pair
-! measured a safe 1.4+ Bohr apart), but check_opt_refusals.F90 exercises
-! it directly on the plain (no via-point) endpoints.
-!
-! --opt-neb settings (--opt-neb-images 10, --opt-neb-spring 0.01,
-! --opt-gtol 1e-4, --opt-maxiter 2000, --opt-neb-climb, Cartesian,
-! perpendicular endpoints) are the ones measured, with the via-point
-! above and these frozen endpoints, to land the CLIMBING image on the
-! same point twice in a row (this file's own reproducibility check,
-! below, ~1e-8 Eh apart, CPU and GPU alike) with the climbing image
-! actually spawned (DL-FIND's own "Spawning climbing image" log line,
-! not just the sentinel reaching DL-FIND) and converged on its own
-! 5-criterion test.
-!
-! CONVERGENCE VERDICT: app/trc_dlfind_bridge.F90 now judges NEB
-! convergence on the gradient PERPENDICULAR to the path (projecting out
-! the along-path component with an energy-ordered tangent, replicating
-! dlf_neb_improved_tangent_neb's own Tau+/Tau-/blend rule), not the raw
-! Cartesian gradient, which never goes to zero for an interior image by
-! construction (the spring force balances its own along-path component,
-! not the QC gradient). That fixed the "false by construction" problem,
-! but this bridge's own reported quantity is the max ABSOLUTE COMPONENT
-! (matching every other --opt-gtol check in this bridge), while DL-
-! FIND's own per-image freeze/climb test is an RMS over that image's own
-! DOF (dlf_neb.f90's own fper, read directly) -- a genuinely different,
-! stricter number for the same gradient. Measured on this exact run:
-! max-component max|g| settles at ~2.3e-4 Eh/Bohr against DL-FIND's own
-! sub-1e-4 RMS criterion at --opt-gtol 1e-4, so THIS run (precise enough
-! to match the TS anchor at ANCHOR_TS_TOL) is checked against DL-FIND's
-! OWN observable verdict (the "Convergence reached" log line, --opt-
-! print-level 4) rather than this bridge's exit code -- the review's own
-! documented fallback when the two metrics do not land on the same side
-! of a shared number. test_neb_converged_reports_true below is the
-! dedicated proof that a converged NEB chain DOES report
-! optimization.converged = true once asked for a target this metric can
-! actually reach (measured: --opt-gtol 2e-3 on the SAME system, gfortran
-! 15 and nvfortran 26.5 alike -- NEB_FLAGS_CONVERGES's own comment below
-! has the measured numbers and margin).
-!
-! On the GPU build specifically, an INTERIOR image away from both
-! endpoints and the climbing point can land on a measurably different
-! point between two otherwise-identical runs (up to ~7.8e-4 Eh measured)
-! -- DL-FIND's own per-image freeze test is a hard threshold, so GPU
-! reduction-order noise landing on either side of it changes which cycle
-! that image freezes at; check_reproducible, below, bounds the climbing
-! image tightly and the rest of the chain separately, looser, rather
-! than tightening a chain-wide bound to a number that does not hold.
-!
-! app/trc_dlfind_bridge.F90's own NEB result assembly used to report the
-! REGULAR image nearest the climbing image (frozen at its pre-climb
-! snapshot once climbing spawns) as "the climbing image", not DL-FIND's
-! own separate, still-refining point at its scratch slot
-! (cb_get_gradient's own "plus once more at image n_images_dlf ... once
-! climbing starts") -- fixed to report the scratch slot once it has been
-! evaluated. Measured effect on THIS run: climbing-image energy error
-! against opt_ts_hcn.ref dropped from ~4.9e-7 Eh (frozen snapshot) to
-! ~1.9e-9 Eh (DL-FIND's own converged point) once fixed. ANCHOR_TS_TOL/
-! ANCHOR_TS_GEOM_TOL/ANCHOR_TS_ANGLE_TOL below have generous headroom
-! above that measurement (energy ~500x, geometry ~17x, angle ~90x), not
-! tightened to look better than what was observed.
-!
-! A test-drive suite.
-!
 module check_opt_neb_suite
+   !!
+   !! Nudged elastic band / climbing-image NEB on the HCN<->HNC isomerisation,
+   !! RHF/STO-3G -- see app/trc_dlfind_bridge.F90's own header for the NEB
+   !! mechanics (icoord 100-199, per-image warm-start density, the
+   !! --opt-neb-climb sentinel) this exercises end to end through the CLI.
+   !!
+   !! Endpoints: test/hcn_minimum.xyz and test/hnc_minimum.xyz, FROZEN
+   !! (committed) geometries from a --opt-connect run on test/hcn_ts_guess.xyz
+   !! (check_opt_connect.F90's own machinery: the dimer method finds the TS
+   !! and both downhill minima in one run) -- generated once, consistently,
+   !! not re-run live here. That matters: the dimer method's own rotation
+   !! step uses DL-FIND's "random/internal" initial direction (app/
+   !! trc_dlfind_bridge.F90's own header), so a FRESH --opt-connect run lands
+   !! on the SAME two minima rotated/translated differently in space each
+   !! time, and measured directly by running --opt-connect repeatedly from
+   !! test/hcn_ts_guess.xyz: some of those equally-valid rotations drive at
+   !! least one interpolated
+   !! NEB image into a geometry so distorted that terco's own overlap-matrix
+   !! diagonalisation fails outright (`trc_linalg: pic_syev failed`, an
+   !! unconditional `error stop` deep in pic, not a condition trc_run_scf's
+   !! own non-convergence handling can catch or this bridge can decline),
+   !! while others do not. Freezing the two endpoints removes that source of
+   !! run-to-run variation; this is a known-delicate 3-atom system in GENERAL
+   !! for this DL-FIND build (check_opt_ts.F90's own header already documents
+   !! Cartesian HDLC P-RFO failing to converge reliably for the SAME
+   !! molecule), and NEB's many simultaneous images make it more, not less,
+   !! likely to hit that fragility than a single-geometry optimiser.
+   !!
+   !! --opt-neb-via test/hcn_ts_guess.xyz (the same bent TS guess
+   !! check_opt_ts.F90 uses) gives DL-FIND's own linear-Cartesian path
+   !! builder a bent intermediate point instead of interpolating straight
+   !! between two COLLINEAR endpoints: HCN and HNC are both genuinely linear
+   !! (H-C-N/H-N-C angles within 2e-4 deg of 180/0), so a straight-line path
+   !! between them slides the bridging atom through the other two at the
+   !! midpoint images. That -- not the endpoints' relative rotation, which
+   !! dlf_cartesian_align (dlf_neb.f90:278) already removes before
+   !! interpolating, Kabsch, for every known point -- was the real cause of
+   !! the coincident-atom overlap singularities ('trc_linalg: pic_syev
+   !! failed') this system used to trip. The pre-check below
+   !! (check_neb_initial_path, app/trc_dlfind_bridge.F90) now refuses any
+   !! run whose own predicted initial path puts two atoms under 0.5 Bohr
+   !! apart, naming the image and atoms, instead of reaching the eigensolver
+   !! at all; it does not fire for the via-point path here (closest pair
+   !! measured a safe 1.4+ Bohr apart), but check_opt_refusals.F90 exercises
+   !! it directly on the plain (no via-point) endpoints.
+   !!
+   !! --opt-neb settings (--opt-neb-images 10, --opt-neb-spring 0.01,
+   !! --opt-gtol 1e-4, --opt-maxiter 2000, --opt-neb-climb, Cartesian,
+   !! perpendicular endpoints) are the ones measured, with the via-point
+   !! above and these frozen endpoints, to land the CLIMBING image on the
+   !! same point twice in a row (this file's own reproducibility check,
+   !! below, ~1e-8 Eh apart, CPU and GPU alike) with the climbing image
+   !! actually spawned (DL-FIND's own "Spawning climbing image" log line,
+   !! not just the sentinel reaching DL-FIND) and converged on its own
+   !! 5-criterion test.
+   !!
+   !! CONVERGENCE VERDICT: app/trc_dlfind_bridge.F90 now judges NEB
+   !! convergence on the gradient PERPENDICULAR to the path (projecting out
+   !! the along-path component with an energy-ordered tangent, replicating
+   !! dlf_neb_improved_tangent_neb's own Tau+/Tau-/blend rule), not the raw
+   !! Cartesian gradient, which never goes to zero for an interior image by
+   !! construction (the spring force balances its own along-path component,
+   !! not the QC gradient). That fixed the "false by construction" problem,
+   !! but this bridge's own reported quantity is the max ABSOLUTE COMPONENT
+   !! (matching every other --opt-gtol check in this bridge), while DL-
+   !! FIND's own per-image freeze/climb test is an RMS over that image's own
+   !! DOF (dlf_neb.f90's own fper, read directly) -- a genuinely different,
+   !! stricter number for the same gradient. Measured on this exact run:
+   !! max-component max|g| settles at ~2.3e-4 Eh/Bohr against DL-FIND's own
+   !! sub-1e-4 RMS criterion at --opt-gtol 1e-4, so THIS run (precise enough
+   !! to match the TS anchor at ANCHOR_TS_TOL) is checked against DL-FIND's
+   !! OWN observable verdict (the "Convergence reached" log line, --opt-
+   !! print-level 4) rather than this bridge's exit code -- the review's own
+   !! documented fallback when the two metrics do not land on the same side
+   !! of a shared number. test_neb_converged_reports_true below is the
+   !! dedicated proof that a converged NEB chain DOES report
+   !! optimization.converged = true once asked for a target this metric can
+   !! actually reach (measured: --opt-gtol 2e-3 on the SAME system, gfortran
+   !! 15 and nvfortran 26.5 alike -- NEB_FLAGS_CONVERGES's own comment below
+   !! has the measured numbers and margin).
+   !!
+   !! On the GPU build specifically, an INTERIOR image away from both
+   !! endpoints and the climbing point can land on a measurably different
+   !! point between two otherwise-identical runs (up to ~7.8e-4 Eh measured)
+   !! -- DL-FIND's own per-image freeze test is a hard threshold, so GPU
+   !! reduction-order noise landing on either side of it changes which cycle
+   !! that image freezes at; check_reproducible, below, bounds the climbing
+   !! image tightly and the rest of the chain separately, looser, rather
+   !! than tightening a chain-wide bound to a number that does not hold.
+   !!
+   !! app/trc_dlfind_bridge.F90's own NEB result assembly used to report the
+   !! REGULAR image nearest the climbing image (frozen at its pre-climb
+   !! snapshot once climbing spawns) as "the climbing image", not DL-FIND's
+   !! own separate, still-refining point at its scratch slot
+   !! (cb_get_gradient's own "plus once more at image n_images_dlf ... once
+   !! climbing starts") -- fixed to report the scratch slot once it has been
+   !! evaluated. Measured effect on THIS run: climbing-image energy error
+   !! against opt_ts_hcn.ref dropped from ~4.9e-7 Eh (frozen snapshot) to
+   !! ~1.9e-9 Eh (DL-FIND's own converged point) once fixed. ANCHOR_TS_TOL/
+   !! ANCHOR_TS_GEOM_TOL/ANCHOR_TS_ANGLE_TOL below have generous headroom
+   !! above that measurement (energy ~500x, geometry ~17x, angle ~90x), not
+   !! tightened to look better than what was observed.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use trc_constants, only: ANGSTROM_TO_BOHR
@@ -267,15 +267,15 @@ contains
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_climb_run_and_reproducibility
 
-   !
-   ! The same climbing-image NEB system, but with --opt-gtol loosened to
-   ! a target THIS bridge's own max-absolute-component metric can
-   ! actually cross (this file's own header, "CONVERGENCE VERDICT") --
-   ! proof that the perpendicular-gradient fix lets a genuinely converged
-   ! NEB chain report optimization.converged = true, not just a looser
-   ! log line.
-   !
    subroutine test_neb_converged_reports_true(error)
+      !!
+      !! The same climbing-image NEB system, but with --opt-gtol loosened to
+      !! a target THIS bridge's own max-absolute-component metric can
+      !! actually cross (this file's own header, "CONVERGENCE VERDICT") --
+      !! proof that the perpendicular-gradient fix lets a genuinely converged
+      !! NEB chain report optimization.converged = true, not just a looser
+      !! log line.
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=:), allocatable :: cmd
       integer :: rc

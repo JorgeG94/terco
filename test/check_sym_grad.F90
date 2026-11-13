@@ -1,75 +1,75 @@
-!
-! The skeleton nuclear gradient: the S16 oracle.
-!
-! `eri%gradient(..., skeleton=.true.)` launches only the orbit
-! representatives of the cheaper side of each admitted bin pair, weighted by
-! their orbit size, so what it returns is grad_skel and NOT a gradient. The
-! full gradient is the projection
-!
-!   grad = (1/|G|) sum_g P_g grad_skel,   (P_g X)(:, a) = s_g X(:, perm(a, g))
-!
-! which is `sym_scf_grad_symmetrize` of trc_sym_scf, the same routine
-! trc_scf_gradient already applied to the finished gradient. This check
-! builds both on the SAME engine (bins closed under the group,
-! `eri%build(..., sym=geom)`; the full build walks the same quartets in
-! another order) and compares them:
-!
-!   |sym(grad_skel) - grad_full|_max  <=  TOL_REL * max(1, |grad_full|_max)
-!
-! Unlike the Fock skeleton, the projection here is not a tidy-up: the raw
-! skeleton gradient is wrong by order one (0.58 to 1.84 against components of
-! 0.27 to 2.14), so `raw_case` asserts
-! that it IS wrong -- a test that accidentally compared two full builds would
-! pass everything else.
-!
-! The axes, per molecule:
-!   - Cartesian and spherical caller AO spaces. The density is made invariant
-!     by the production symmetrizer (`trc_sym_scf_t%symmetrize`) in the
-!     caller's space and folded to the Cartesian working basis the integrals
-!     are formed in. The spike's own hand-rolled prototype projection was NOT
-!     invariant in the spherical space, which is why both spaces are swept
-!     here;
-!   - J+K, J only (k_scale = 0), K only (j_scale = 0) and long range
-!     (j_scale = 0, k_scale, omega > 0);
-!   - RHF (ndens = 1, the total density) and UHF (ndens = 2, two spin
-!     densities), which must agree with each other as well as with their own
-!     full build;
-!   - a random symmetrized density and the symmetric SCF's converged one;
-!   - the range-separated hybrid's TWO eri%gradient passes, summed and
-!     projected ONCE;
-!   - the work and survivor counts (`eri%nwork`, `eri%nkept`): the skeleton
-!     plan must be SMALLER. A silent fall back to the full plan is otherwise
-!     invisible, and it is the failure mode that made parity skipping look
-!     active when it was not;
-!   - translational invariance of the RAW skeleton gradient, which holds on
-!     its own (every quartet's contribution is translation invariant) and so
-!     does not depend on the projection;
-!   - the production path end to end: trc_scf_gradient with `sym_geom`, whose
-!     four-centre term is a skeleton build projected inside
-!     two_electron_4c, against the same molecule's C1 gradient, with the
-!     components the group forbids and the equivariance of the result;
-!   - and the same path with the skeleton DECLINED by the size rule
-!     (`sym_skeleton`), where the four-centre term is the full C1 build and
-!     the end-of-routine projection is the only one left. That case pins the
-!     ROUTING, not the numbers: the engine the SCF already built is reused
-!     instead of a second one being built with the group;
-!   - a central finite difference of terco's own reconverged SCF energy
-!     against that production gradient -- the only check here that would
-!     catch an error consistent between the skeleton and the full path.
-!
-! Registered as check_sym_grad (mode "main"), check_sym_grad_cap (mode
-! "quick" with TRC_BIN_CAP lowered, the orbit-closed bin split that
-! `bins_plan_emit`'s canonicalisation exists for) and check_sym_grad_f (mode
-! "f": the uncontracted l = 0..3 set with TRC_BIN_CAP lowered, which prints
-! SKIP below TERCO_LMAX = 3). That last combination -- an f basis, a split
-! bin and a skeleton plan that cuts the cheaper side -- is the one that can
-! present the gradient class filter with an ordering it has no kernel for,
-! and the one that proves it cannot (src/CMakeLists.txt's
-! _rys_grad_classes).
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_grad_suite
+   !!
+   !! The skeleton nuclear gradient: the S16 oracle.
+   !!
+   !! `eri%gradient(..., skeleton=.true.)` launches only the orbit
+   !! representatives of the cheaper side of each admitted bin pair, weighted by
+   !! their orbit size, so what it returns is grad_skel and NOT a gradient. The
+   !! full gradient is the projection
+   !!
+   !!   grad = (1/|G|) sum_g P_g grad_skel,   (P_g X)(:, a) = s_g X(:, perm(a, g))
+   !!
+   !! which is `sym_scf_grad_symmetrize` of trc_sym_scf, the same routine
+   !! trc_scf_gradient already applied to the finished gradient. This check
+   !! builds both on the SAME engine (bins closed under the group,
+   !! `eri%build(..., sym=geom)`; the full build walks the same quartets in
+   !! another order) and compares them:
+   !!
+   !!   |sym(grad_skel) - grad_full|_max  <=  TOL_REL * max(1, |grad_full|_max)
+   !!
+   !! Unlike the Fock skeleton, the projection here is not a tidy-up: the raw
+   !! skeleton gradient is wrong by order one (0.58 to 1.84 against components of
+   !! 0.27 to 2.14), so `raw_case` asserts
+   !! that it IS wrong -- a test that accidentally compared two full builds would
+   !! pass everything else.
+   !!
+   !! The axes, per molecule:
+   !!   - Cartesian and spherical caller AO spaces. The density is made invariant
+   !!     by the production symmetrizer (`trc_sym_scf_t%symmetrize`) in the
+   !!     caller's space and folded to the Cartesian working basis the integrals
+   !!     are formed in. The spike's own hand-rolled prototype projection was NOT
+   !!     invariant in the spherical space, which is why both spaces are swept
+   !!     here;
+   !!   - J+K, J only (k_scale = 0), K only (j_scale = 0) and long range
+   !!     (j_scale = 0, k_scale, omega > 0);
+   !!   - RHF (ndens = 1, the total density) and UHF (ndens = 2, two spin
+   !!     densities), which must agree with each other as well as with their own
+   !!     full build;
+   !!   - a random symmetrized density and the symmetric SCF's converged one;
+   !!   - the range-separated hybrid's TWO eri%gradient passes, summed and
+   !!     projected ONCE;
+   !!   - the work and survivor counts (`eri%nwork`, `eri%nkept`): the skeleton
+   !!     plan must be SMALLER. A silent fall back to the full plan is otherwise
+   !!     invisible, and it is the failure mode that made parity skipping look
+   !!     active when it was not;
+   !!   - translational invariance of the RAW skeleton gradient, which holds on
+   !!     its own (every quartet's contribution is translation invariant) and so
+   !!     does not depend on the projection;
+   !!   - the production path end to end: trc_scf_gradient with `sym_geom`, whose
+   !!     four-centre term is a skeleton build projected inside
+   !!     two_electron_4c, against the same molecule's C1 gradient, with the
+   !!     components the group forbids and the equivariance of the result;
+   !!   - and the same path with the skeleton DECLINED by the size rule
+   !!     (`sym_skeleton`), where the four-centre term is the full C1 build and
+   !!     the end-of-routine projection is the only one left. That case pins the
+   !!     ROUTING, not the numbers: the engine the SCF already built is reused
+   !!     instead of a second one being built with the group;
+   !!   - a central finite difference of terco's own reconverged SCF energy
+   !!     against that production gradient -- the only check here that would
+   !!     catch an error consistent between the skeleton and the full path.
+   !!
+   !! Registered as check_sym_grad (mode "main"), check_sym_grad_cap (mode
+   !! "quick" with TRC_BIN_CAP lowered, the orbit-closed bin split that
+   !! `bins_plan_emit`'s canonicalisation exists for) and check_sym_grad_f (mode
+   !! "f": the uncontracted l = 0..3 set with TRC_BIN_CAP lowered, which prints
+   !! SKIP below TERCO_LMAX = 3). That last combination -- an f basis, a split
+   !! bin and a skeleton plan that cuts the cheaper side -- is the one that can
+   !! present the gradient class filter with an ordering it has no kernel for,
+   !! and the one that proves it cannot (src/CMakeLists.txt's
+   !! _rys_grad_classes).
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -180,9 +180,8 @@ contains
       end if
    end subroutine collect_sym_grad
 
-   ! ------------------------------------------------------------------ setup
-
    subroutine setup_ctx(ctx, xyz, group, basis_json, auxl, sph, error)
+      !! ------------------------------------------------------------------ setup
       !! Detect the group, build the basis on its standard frame (from a JSON
       !! file, or the uncontracted l = 0..auxl set when auxl >= 0), the
       !! production symmetrizer of the caller's AO space, and the engine with
@@ -245,9 +244,8 @@ contains
       call ctx%bas%release()
    end subroutine release_ctx
 
-   ! -------------------------------------------------------------- densities
-
    subroutine random_density(ctx, seed, scale, ds)
+      !! -------------------------------------------------------------- densities
       !! A symmetric matrix of pseudo-random numbers in the caller's AO space,
       !! projected onto the group by the production symmetrizer. A linear
       !! congruential generator, so the test does not depend on the
@@ -309,9 +307,8 @@ contains
       end if
    end subroutine to_cart
 
-   ! ------------------------------------------------------------ comparisons
-
    subroutine equivariance(geom, g, asym, forbidden)
+      !! ------------------------------------------------------------ comparisons
       !! g(image) = s g(atom) for every operation, s the sign of the
       !! component; on an atom that is its own image a component with
       !! s = -1 must vanish.
@@ -605,9 +602,8 @@ contains
       end do
    end subroutine run_molecule
 
-   ! ------------------------------------------------------------------ tests
-
    subroutine test_cs(error)
+      !! ------------------------------------------------------------------ tests
       !! CHFCl2: the mirror EXCHANGES the two chlorines, so the pair orbits
       !! are not all singletons and the skeleton plan is smaller. See
       !! `test_cs_planar` for the molecule where they are.

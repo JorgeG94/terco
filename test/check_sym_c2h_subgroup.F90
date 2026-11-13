@@ -1,30 +1,30 @@
-!
-! Requested subgroups of C2h: Cs, C2 and Ci requested on C2h molecules,
-! against pyscf 2.14.0 (symmetry='Cs' / 'C2' / 'Ci'; for these pyscf keeps the
-! C2h frame, `as_subgroup` changes the axes for C2h only) and against the C2h
-! and C1 runs of terco.
-!
-! Molecules: trans-diazene (planar) and anti ClH2C-CH2Cl (nonplanar) in a
-! general orientation, and anti ClH2C-CH2Cl with axis-aligned input twice:
-! clh2c_ch2cl_alignx (C2 along x: sigma_h and C2 do not hold in the input axes,
-! so pyscf turns to the C2h frame for Cs and C2, but keeps the input axes for
-! Ci, which holds in any frame) and clh2c_ch2cl_alignz (C2 along z: every
-! subgroup holds in the input axes). The latter two check pyscf
-! keep-the-input-axes rule (`input_frame_holds`).
-!
-! test_frame:   the reported group is the requested one, `detected` is C2h, the
-!               frame (rows x, y, z up to sign) and origin are pyscf
-!               `_symm_axes` and `_symm_orig`, and the operations are
-!               bijections that leave the symmetrised geometry invariant.
-! test_so_dims: SO dimensions per irrep equal mol.symm_orb (6-31G* Cartesian,
-!               cc-pVDZ spherical).
-! test_scf:     on the geometry symmetrised to C2h, the energy of the subgroup
-!               run equals the C2h run and the C1 run (<= 1e-10 Eh); on the raw input,
-!               the electrons per irrep, the orbital energies per irrep and the
-!               energy equal pyscf (sym_c2h_subgroup.ref).
-! test_refusals: a request that is not a proper subgroup keeps the full group.
-!
 module check_sym_c2h_subgroup_suite
+   !!
+   !! Requested subgroups of C2h: Cs, C2 and Ci requested on C2h molecules,
+   !! against pyscf 2.14.0 (symmetry='Cs' / 'C2' / 'Ci'; for these pyscf keeps the
+   !! C2h frame, `as_subgroup` changes the axes for C2h only) and against the C2h
+   !! and C1 runs of terco.
+   !!
+   !! Molecules: trans-diazene (planar) and anti ClH2C-CH2Cl (nonplanar) in a
+   !! general orientation, and anti ClH2C-CH2Cl with axis-aligned input twice:
+   !! clh2c_ch2cl_alignx (C2 along x: sigma_h and C2 do not hold in the input axes,
+   !! so pyscf turns to the C2h frame for Cs and C2, but keeps the input axes for
+   !! Ci, which holds in any frame) and clh2c_ch2cl_alignz (C2 along z: every
+   !! subgroup holds in the input axes). The latter two check pyscf
+   !! keep-the-input-axes rule (`input_frame_holds`).
+   !!
+   !! test_frame:   the reported group is the requested one, `detected` is C2h, the
+   !!               frame (rows x, y, z up to sign) and origin are pyscf
+   !!               `_symm_axes` and `_symm_orig`, and the operations are
+   !!               bijections that leave the symmetrised geometry invariant.
+   !! test_so_dims: SO dimensions per irrep equal mol.symm_orb (6-31G* Cartesian,
+   !!               cc-pVDZ spherical).
+   !! test_scf:     on the geometry symmetrised to C2h, the energy of the subgroup
+   !!               run equals the C2h run and the C1 run (<= 1e-10 Eh); on the raw input,
+   !!               the electrons per irrep, the orbital energies per irrep and the
+   !!               energy equal pyscf (sym_c2h_subgroup.ref).
+   !! test_refusals: a request that is not a proper subgroup keeps the full group.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

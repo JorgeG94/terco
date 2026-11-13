@@ -1,29 +1,29 @@
-!
-! An effective core potential from a MolSSI Basis Set Exchange JSON file --
-! the same file trc_basis_json.F90 reads `electron_shells` from, its
-! `ecp_potentials`/`ecp_electrons` blocks instead.
-!
-! Ported from metalquicha's mqc_json_ecp_reader (mqc_ecp's shape, not its
-! row layout: this module packs libcint/PySCF-style flat rows -- see
-! trc_ecp_types.F90 -- so the integral driver's grouping ports unchanged).
-!
-! THE LOCAL CHANNEL IS THE ONE WITH THE HIGHEST l, not the one listed first
-! -- BSE lists Iodine's def2-SVP potential with its l=3 (local) entry FIRST
-! and the projected l=0,1,2 entries after, but nothing says every element's
-! file is written that way, so this always scans and picks the maximum.
-!
-! A CHANNEL WHOSE PRIMITIVES MIX r-POWERS IS SPLIT INTO ONE ROW PER POWER.
-! `ecp_rad_part` (trc_ecp_radial.F90) applies a row's `ecp_rpow` to every one
-! of the row's primitives; a channel built from primitives of r^0 and r^2
-! packed into a single row would apply r^0 (or whichever power the first
-! primitive happened to carry) to all of them. def2's own ECPs here are
-! uniform per channel (checked: every primitive of every def2-svp.json
-! channel carries r_exponents = 2), so this split is dead code on today's
-! test data and exists for tabulations that are not. An element with no
-! `ecp_potentials` is not an error: it comes back with no rows for that
-! atom, same as metalquicha's `has_ecp = .false.`.
-!
 module trc_ecp_json
+   !!
+   !! An effective core potential from a MolSSI Basis Set Exchange JSON file --
+   !! the same file trc_basis_json.F90 reads `electron_shells` from, its
+   !! `ecp_potentials`/`ecp_electrons` blocks instead.
+   !!
+   !! Ported from metalquicha's mqc_json_ecp_reader (mqc_ecp's shape, not its
+   !! row layout: this module packs libcint/PySCF-style flat rows -- see
+   !! trc_ecp_types.F90 -- so the integral driver's grouping ports unchanged).
+   !!
+   !! THE LOCAL CHANNEL IS THE ONE WITH THE HIGHEST l, not the one listed first
+   !! -- BSE lists Iodine's def2-SVP potential with its l=3 (local) entry FIRST
+   !! and the projected l=0,1,2 entries after, but nothing says every element's
+   !! file is written that way, so this always scans and picks the maximum.
+   !!
+   !! A CHANNEL WHOSE PRIMITIVES MIX r-POWERS IS SPLIT INTO ONE ROW PER POWER.
+   !! `ecp_rad_part` (trc_ecp_radial.F90) applies a row's `ecp_rpow` to every one
+   !! of the row's primitives; a channel built from primitives of r^0 and r^2
+   !! packed into a single row would apply r^0 (or whichever power the first
+   !! primitive happened to carry) to all of them. def2's own ECPs here are
+   !! uniform per channel (checked: every primitive of every def2-svp.json
+   !! channel carries r_exponents = 2), so this split is dead code on today's
+   !! test data and exists for tabulations that are not. An element with no
+   !! `ecp_potentials` is not an error: it comes back with no rows for that
+   !! atom, same as metalquicha's `has_ecp = .false.`.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use trc_ecp_types, only: trc_ecp_t
@@ -50,13 +50,13 @@ module trc_ecp_json
 
 contains
 
-   !
-   ! `elements` (1..118) picks the ECP for each atom, same convention as
-   ! `trc_basis_from_json`'s own `elements` argument. `ecp` comes back built
-   ! (host side); an element the file has no `ecp_potentials` for leaves
-   ! that atom with `at_ncore = 0` and no rows, not an error.
-   !
    subroutine trc_ecp_from_json(path, natm, elements, ecp, error)
+      !!
+      !! `elements` (1..118) picks the ECP for each atom, same convention as
+      !! `trc_basis_from_json`'s own `elements` argument. `ecp` comes back built
+      !! (host side); an element the file has no `ecp_potentials` for leaves
+      !! that atom with `at_ncore = 0` and no rows, not an error.
+      !!
       character(len=*), intent(in) :: path
       integer, intent(in) :: natm
       integer, intent(in) :: elements(natm)
@@ -216,11 +216,11 @@ contains
       el%has_ecp = .true.
    end subroutine read_element_ecp
 
-   !
-   ! One ecp_potentials() entry, exactly as the file lists it: one l, and
-   ! parallel r_exponents/gaussian_exponents/coefficients(1) lists.
-   !
    subroutine read_raw_channel(json, key, ipot, ch, path, error)
+      !!
+      !! One ecp_potentials() entry, exactly as the file lists it: one l, and
+      !! parallel r_exponents/gaussian_exponents/coefficients(1) lists.
+      !!
       type(json_file), intent(inout) :: json
       character(len=*), intent(in) :: key
       integer, intent(in) :: ipot
@@ -295,14 +295,14 @@ contains
       end do
    end subroutine read_raw_channel
 
-   !
-   ! Split one channel's primitives into one row per DISTINCT r-power,
-   ! preserving the order those powers first appear in. For every channel
-   ! in today's def2-svp.json this produces exactly one row (see this
-   ! module's header); it is still applied unconditionally so a tabulation
-   ! that does mix powers is handled rather than silently wrong.
-   !
    subroutine split_by_rpow(ch, out, nout)
+      !!
+      !! Split one channel's primitives into one row per DISTINCT r-power,
+      !! preserving the order those powers first appear in. For every channel
+      !! in today's def2-svp.json this produces exactly one row (see this
+      !! module's header); it is still applied unconditionally so a tabulation
+      !! that does mix powers is handled rather than silently wrong.
+      !!
       type(channel_t), intent(in) :: ch
       type(channel_t), allocatable, intent(out) :: out(:)
       integer, intent(out) :: nout

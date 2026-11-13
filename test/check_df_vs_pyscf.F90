@@ -1,40 +1,40 @@
-!
-! trc_df_2c and trc_df_3c against pyscf's int2c2e/int3c2e, same geometry,
-! orbital and auxiliary bases read from the same JSON files pyscf reads --
-! the density-fitting analogue of check_rys_fock_vs_pyscf.F90, and the one
-! that can exercise a g SHELL (l=4) on the auxiliary side, not just an f
-! orbital shell.
-!
-! SKIPS CLEANLY (stop 0, after printing SKIP) when either basis needs more
-! angular momentum than this build's DF_LMAX/DF_LMAX_AUX reach, same
-! convention as check_rys_fock_vs_pyscf.F90's TRC_LMAX skip -- a build at
-! the shipped ceiling (DF_LMAX=2, DF_LMAX_AUX=3) has nothing with a g
-! shell to run this against, and that is not a failure. Also skips cleanly
-! when df_vs_pyscf.ref (~18 MB, not committed -- see this file's own
-! comment below) is absent locally. Both self-skips happen in run_case,
-! BEFORE run_testsuite is ever called, so that ctest's own
-! SKIP_REGULAR_EXPRESSION "SKIP" keeps seeing the same stop-0 text it
-! always has, with nothing claimed to have been checked.
-!
-! PER-AO NORMALISATION WITHOUT trc_1e. check_rys_fock_vs_pyscf.F90 derives
-! its normalisation factors from the overlap matrix (trc_1e), but trc_1e's
-! own ceiling is ONE_E_LMAX -- independent of DF_LMAX, and not raised by
-! TERCO_DF_LMAX alone (this build can have DF_LMAX=3 with ONE_E_LMAX still
-! at 2, and one_e_dispatch has no case above its own ceiling: calling it
-! here would read an uninitialised block, not a wrong number caught at
-! source). Used instead: trc_df_2c on the ORBITAL basis treated as its own
-! auxiliary set, i.e. the (i|j) two-centre Coulomb metric over the SAME
-! shells trc_df_3c's bra uses. Its diagonal (i|i) is, like any two-centre
-! integral's diagonal, strictly positive and scales as n_i^2 under a
-! per-AO rescaling exactly the way the overlap diagonal does -- n is a
-! property of the represented basis function, not of which operator the
-! integral happens to be -- so it is as valid a normalisation probe as S,
-! and it only needs DF_LMAX, which this program has already checked.
-!
-! Writes the dump df_vs_pyscf_ref.py reads: geometry, the orbital (i|j)
-! metric, trc_df_2c's (P|Q), and trc_df_3c's (mu nu|P).
-!
 module check_df_vs_pyscf_suite
+   !!
+   !! trc_df_2c and trc_df_3c against pyscf's int2c2e/int3c2e, same geometry,
+   !! orbital and auxiliary bases read from the same JSON files pyscf reads --
+   !! the density-fitting analogue of check_rys_fock_vs_pyscf.F90, and the one
+   !! that can exercise a g SHELL (l=4) on the auxiliary side, not just an f
+   !! orbital shell.
+   !!
+   !! SKIPS CLEANLY (stop 0, after printing SKIP) when either basis needs more
+   !! angular momentum than this build's DF_LMAX/DF_LMAX_AUX reach, same
+   !! convention as check_rys_fock_vs_pyscf.F90's TRC_LMAX skip -- a build at
+   !! the shipped ceiling (DF_LMAX=2, DF_LMAX_AUX=3) has nothing with a g
+   !! shell to run this against, and that is not a failure. Also skips cleanly
+   !! when df_vs_pyscf.ref (~18 MB, not committed -- see this file's own
+   !! comment below) is absent locally. Both self-skips happen in run_case,
+   !! BEFORE run_testsuite is ever called, so that ctest's own
+   !! SKIP_REGULAR_EXPRESSION "SKIP" keeps seeing the same stop-0 text it
+   !! always has, with nothing claimed to have been checked.
+   !!
+   !! PER-AO NORMALISATION WITHOUT trc_1e. check_rys_fock_vs_pyscf.F90 derives
+   !! its normalisation factors from the overlap matrix (trc_1e), but trc_1e's
+   !! own ceiling is ONE_E_LMAX -- independent of DF_LMAX, and not raised by
+   !! TERCO_DF_LMAX alone (this build can have DF_LMAX=3 with ONE_E_LMAX still
+   !! at 2, and one_e_dispatch has no case above its own ceiling: calling it
+   !! here would read an uninitialised block, not a wrong number caught at
+   !! source). Used instead: trc_df_2c on the ORBITAL basis treated as its own
+   !! auxiliary set, i.e. the (i|j) two-centre Coulomb metric over the SAME
+   !! shells trc_df_3c's bra uses. Its diagonal (i|i) is, like any two-centre
+   !! integral's diagonal, strictly positive and scales as n_i^2 under a
+   !! per-AO rescaling exactly the way the overlap diagonal does -- n is a
+   !! property of the represented basis function, not of which operator the
+   !! integral happens to be -- so it is as valid a normalisation probe as S,
+   !! and it only needs DF_LMAX, which this program has already checked.
+   !!
+   !! Writes the dump df_vs_pyscf_ref.py reads: geometry, the orbital (i|j)
+   !! metric, trc_df_2c's (P|Q), and trc_df_3c's (mu nu|P).
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -64,16 +64,16 @@ contains
                   ]
    end subroutine collect_df_vs_pyscf_tests
 
-   !
-   ! Everything the old program did through writing the dump and reading
-   ! the pyscf reference back: argument parsing, basis construction, the
-   ! two ceiling self-skips, the computation, and the "reference not
-   ! committed" self-skip. On a genuine setup failure (bad usage, a basis
-   ! JSON that will not build) this still prints and `stop`s exactly as it
-   ! always has -- those are preconditions for having a case to run at
-   ! all, not part of what this check validates.
-   !
    subroutine run_case(skip, message)
+      !!
+      !! Everything the old program did through writing the dump and reading
+      !! the pyscf reference back: argument parsing, basis construction, the
+      !! two ceiling self-skips, the computation, and the "reference not
+      !! committed" self-skip. On a genuine setup failure (bad usage, a basis
+      !! JSON that will not build) this still prints and `stop`s exactly as it
+      !! always has -- those are preconditions for having a case to run at
+      !! all, not part of what this check validates.
+      !!
       logical, intent(out) :: skip
       character(len=*), intent(out) :: message
 

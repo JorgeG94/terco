@@ -1,91 +1,91 @@
-!
-! Second-order SCF (`--soscf`): once Pulay DIIS has brought a restricted
-! Hartree-Fock reference close, converge the rest of the way by trust-
-! region Newton on the orbital rotations, matrix-free. Ported from
-! metalquicha's `mqc_czt_soscf`/`mqc_orbital_rotation` (the step control)
-! and `mqc_czt_rhf`'s `run_soscf_phase` (the phase itself), onto terco's
-! own device-resident SCF.
-!
-! SCOPE. Restricted Hartree-Fock only, exactly like the backend this was
-! ported from: `mqc_czt_rhf.f90` is a closed-shell driver with no
-! `mqc_czt_uks` equivalent, and its own test suite refuses a continuum
-! solvent outright (`test_refuses_pcm`). `trc_scf_settings%resolve`
-! refuses `--soscf` with an open shell, a functional, `--pcm`, `--df` or
-! more than one rank before any of this ever runs, so none of those
-! combinations reaches here silently as plain DIIS.
-!
-! `trc_scf_soscf_run` IS THE PUBLIC ENTRY POINT. `trc_scf_run` is its one
-! caller. `scf_soscf_rotation_matrix` is ALSO public, but only so
-! check_soscf.F90 can test the matrix exponential on its own, at sizes
-! and random rotations the SCF path itself never happens to exercise --
-! nothing else in terco calls it.
-!
-! BUNDLED ARGUMENTS. Three plain-value types below (`trc_soscf_dims_t`,
-! `trc_soscf_step_io_t`, `trc_soscf_hvp_scratch_t`) exist only to keep
-! every procedure here at the project's 8-argument limit, not to own or
-! share anything across calls. `trc_soscf_dims_t` is scalars only, so a
-! structure-constructor literal builds it safely; the other two have
-! allocatable components and are never built that way (this branch's own
-! no-pointer rule, and the nvfortran constructor defect it travels with)
-! -- each is a plain `type(...) :: x` declaration, filled by ordinary
-! `allocate` statements in the procedure that owns it, and read only
-! through intent(in)/(inout) dummies elsewhere. None of the three is ever
-! assigned FROM an existing `trc_basis_t`/`trc_eri_t`/`trc_linalg_t`/
-! `scf_ctx_t`-family object: those stay separate arguments everywhere
-! (the same `b, eri, lp` triple `trc_cphf.F90` passes around), because
-! copying one into a bundle's component would deep-copy its allocatable
-! device arrays -- for `trc_eri_t` for a large screened pair list, an
-! expensive wrong move, and for `mem:separate` as such, a residency bug:
-! the copy's arrays would carry a HOST address never entered into the
-! device present table.
-!
-! THE ORBITAL HESSIAN ACTION (`scf_soscf_hessian_apply_rhf`)
-! -------------------------------------------------------------
-! `(e_a-e_i) p + [A p]`, `trc_cphf.F90`'s own equation (its header derives
-! it, citing Pople/Krishnan/Schlegel/Binkley 1979) -- but NOT a call into
-! `trc_cphf`, which is Cartesian-AO-only (its own tests force `cart=true`
-! at basis load): the trial density here is built in the SCF's own `nao`
-! space (spherical, when the basis is), and `eri%fock_resident` only ever
-! runs in the Cartesian one. So this module folds the trial density down
-! with `scf_fock_to_cart` before the Fock-like build and folds the result
-! back up with `scf_fock_to_sph` after it -- the SAME two calls
-! `trc_scf_driver`'s own iteration makes for the physical density every
-! step; `sph = .false.` makes both a plain copy, so a Cartesian basis
-! costs nothing extra.
-!
-! THE ALGORITHM, ONE NEWTON ITERATION
-! ------------------------------------
-! 1. SEMICANONICALISE (`scf_soscf_semicanonicalize`): two small diagonalisations,
-!    occupied-occupied and virtual-virtual, that make the Fock matrix block
-!    diagonal within each -- a change of representation, not a step, and the
-!    one `scf_soscf_hessian_apply_rhf`'s Delta (e_a - e_i) needs to mean the
-!    Hessian's diagonal rather than `delta_ij F_ab - delta_ab F_ij`.
-! 2. DIFFERENTIATE: the gradient is `4 F_ai` (`scf_soscf_gradient`) and the
-!    Hessian is `4` times `scf_soscf_hessian_apply_rhf`'s `(e_a-e_i) p +
-!    [A p]`. The factor is the one `mqc_czt_soscf`'s own header derives
-!    (`HESSIAN_SCALE`); it cancels out of the Newton step and only sets the
-!    UNITS the curvature thresholds below are read in.
-! 3. STEP (`scf_soscf_newton_step_rhf`): the level-shifted trust-region Newton
-!    equations, solved in a small Krylov subspace built from
-!    Hessian-vector products -- one Fock build (`scf_soscf_hessian_apply_rhf`)
-!    per product, never written down in full.
-! 4. BACKTRACK (`trc_scf_soscf_run`): the step is scaled to the trust
-!    radius, the orbitals rotated by the exact matrix exponential
-!    (`scf_soscf_rotation_matrix`), and the energy rebuilt in full. Accepted
-!    only if it fell (or the model's own predicted gain is too small to
-!    measure); otherwise the radius halves and the step is retried.
-!
-! RESIDENCY. Every nao-by-anything matrix here -- the working orbitals,
-! the Fock matrices, the Krylov basis and its images, the rotation and its
-! scratch -- stays device-resident for the life of `trc_scf_soscf_run`,
-! the same contract `trc_cphf`/`trc_scf_driver` keep. The handful of
-! numbers that cross the bus are exactly the ones DIIS already crosses:
-! dot products (`la%dot_2d`), orbital energies after a semicanonicalisation
-! (small, read once per Newton iteration) and the trust-radius scaling
-! factor (`maxval(abs(step))`, read once per iteration too -- `step` is
-! `nvirt`-by-`nocc`, not the full rotation).
-!
 module trc_scf_soscf
+   !!
+   !! Second-order SCF (`--soscf`): once Pulay DIIS has brought a restricted
+   !! Hartree-Fock reference close, converge the rest of the way by trust-
+   !! region Newton on the orbital rotations, matrix-free. Ported from
+   !! metalquicha's `mqc_czt_soscf`/`mqc_orbital_rotation` (the step control)
+   !! and `mqc_czt_rhf`'s `run_soscf_phase` (the phase itself), onto terco's
+   !! own device-resident SCF.
+   !!
+   !! SCOPE. Restricted Hartree-Fock only, exactly like the backend this was
+   !! ported from: `mqc_czt_rhf.f90` is a closed-shell driver with no
+   !! `mqc_czt_uks` equivalent, and its own test suite refuses a continuum
+   !! solvent outright (`test_refuses_pcm`). `trc_scf_settings%resolve`
+   !! refuses `--soscf` with an open shell, a functional, `--pcm`, `--df` or
+   !! more than one rank before any of this ever runs, so none of those
+   !! combinations reaches here silently as plain DIIS.
+   !!
+   !! `trc_scf_soscf_run` IS THE PUBLIC ENTRY POINT. `trc_scf_run` is its one
+   !! caller. `scf_soscf_rotation_matrix` is ALSO public, but only so
+   !! check_soscf.F90 can test the matrix exponential on its own, at sizes
+   !! and random rotations the SCF path itself never happens to exercise --
+   !! nothing else in terco calls it.
+   !!
+   !! BUNDLED ARGUMENTS. Three plain-value types below (`trc_soscf_dims_t`,
+   !! `trc_soscf_step_io_t`, `trc_soscf_hvp_scratch_t`) exist only to keep
+   !! every procedure here at the project's 8-argument limit, not to own or
+   !! share anything across calls. `trc_soscf_dims_t` is scalars only, so a
+   !! structure-constructor literal builds it safely; the other two have
+   !! allocatable components and are never built that way (this branch's own
+   !! no-pointer rule, and the nvfortran constructor defect it travels with)
+   !! -- each is a plain `type(...) :: x` declaration, filled by ordinary
+   !! `allocate` statements in the procedure that owns it, and read only
+   !! through intent(in)/(inout) dummies elsewhere. None of the three is ever
+   !! assigned FROM an existing `trc_basis_t`/`trc_eri_t`/`trc_linalg_t`/
+   !! `scf_ctx_t`-family object: those stay separate arguments everywhere
+   !! (the same `b, eri, lp` triple `trc_cphf.F90` passes around), because
+   !! copying one into a bundle's component would deep-copy its allocatable
+   !! device arrays -- for `trc_eri_t` for a large screened pair list, an
+   !! expensive wrong move, and for `mem:separate` as such, a residency bug:
+   !! the copy's arrays would carry a HOST address never entered into the
+   !! device present table.
+   !!
+   !! THE ORBITAL HESSIAN ACTION (`scf_soscf_hessian_apply_rhf`)
+   !! -------------------------------------------------------------
+   !! `(e_a-e_i) p + [A p]`, `trc_cphf.F90`'s own equation (its header derives
+   !! it, citing Pople/Krishnan/Schlegel/Binkley 1979) -- but NOT a call into
+   !! `trc_cphf`, which is Cartesian-AO-only (its own tests force `cart=true`
+   !! at basis load): the trial density here is built in the SCF's own `nao`
+   !! space (spherical, when the basis is), and `eri%fock_resident` only ever
+   !! runs in the Cartesian one. So this module folds the trial density down
+   !! with `scf_fock_to_cart` before the Fock-like build and folds the result
+   !! back up with `scf_fock_to_sph` after it -- the SAME two calls
+   !! `trc_scf_driver`'s own iteration makes for the physical density every
+   !! step; `sph = .false.` makes both a plain copy, so a Cartesian basis
+   !! costs nothing extra.
+   !!
+   !! THE ALGORITHM, ONE NEWTON ITERATION
+   !! ------------------------------------
+   !! 1. SEMICANONICALISE (`scf_soscf_semicanonicalize`): two small diagonalisations,
+   !!    occupied-occupied and virtual-virtual, that make the Fock matrix block
+   !!    diagonal within each -- a change of representation, not a step, and the
+   !!    one `scf_soscf_hessian_apply_rhf`'s Delta (e_a - e_i) needs to mean the
+   !!    Hessian's diagonal rather than `delta_ij F_ab - delta_ab F_ij`.
+   !! 2. DIFFERENTIATE: the gradient is `4 F_ai` (`scf_soscf_gradient`) and the
+   !!    Hessian is `4` times `scf_soscf_hessian_apply_rhf`'s `(e_a-e_i) p +
+   !!    [A p]`. The factor is the one `mqc_czt_soscf`'s own header derives
+   !!    (`HESSIAN_SCALE`); it cancels out of the Newton step and only sets the
+   !!    UNITS the curvature thresholds below are read in.
+   !! 3. STEP (`scf_soscf_newton_step_rhf`): the level-shifted trust-region Newton
+   !!    equations, solved in a small Krylov subspace built from
+   !!    Hessian-vector products -- one Fock build (`scf_soscf_hessian_apply_rhf`)
+   !!    per product, never written down in full.
+   !! 4. BACKTRACK (`trc_scf_soscf_run`): the step is scaled to the trust
+   !!    radius, the orbitals rotated by the exact matrix exponential
+   !!    (`scf_soscf_rotation_matrix`), and the energy rebuilt in full. Accepted
+   !!    only if it fell (or the model's own predicted gain is too small to
+   !!    measure); otherwise the radius halves and the step is retried.
+   !!
+   !! RESIDENCY. Every nao-by-anything matrix here -- the working orbitals,
+   !! the Fock matrices, the Krylov basis and its images, the rotation and its
+   !! scratch -- stays device-resident for the life of `trc_scf_soscf_run`,
+   !! the same contract `trc_cphf`/`trc_scf_driver` keep. The handful of
+   !! numbers that cross the bus are exactly the ones DIIS already crosses:
+   !! dot products (`la%dot_2d`), orbital energies after a semicanonicalisation
+   !! (small, read once per Newton iteration) and the trust-radius scaling
+   !! factor (`maxval(abs(step))`, read once per iteration too -- `step` is
+   !! `nvirt`-by-`nocc`, not the full rotation).
+   !!
    use pic_types, only: dp, default_int
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
@@ -185,19 +185,19 @@ module trc_scf_soscf
 
 contains
 
-   !
-   ! The second-order phase: `trc_scf_run`'s own DIIS loop calls this once
-   ! the commutator has fallen below `scf_config%soscf_start`, in place of
-   ! the rest of its own iterations. The DIIS iteration this took over
-   ! after is `scf_result%iterations` on entry (every iteration already
-   ! sets it, including the one that triggered the handover); the steps
-   ! left are `scf_config%max_iteration` beyond it. Updates `scf_result`
-   ! (density, orbitals, orbital energies, `converged`, `iterations`) in
-   ! place; `scf_state`/`scf_energies` are the same per-iteration scratch
-   ! and energy bundle the DIIS loop itself writes through, reused here
-   ! rather than duplicated.
-   !
    subroutine trc_scf_soscf_run(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, la, eri)
+      !!
+      !! The second-order phase: `trc_scf_run`'s own DIIS loop calls this once
+      !! the commutator has fallen below `scf_config%soscf_start`, in place of
+      !! the rest of its own iterations. The DIIS iteration this took over
+      !! after is `scf_result%iterations` on entry (every iteration already
+      !! sets it, including the one that triggered the handover); the steps
+      !! left are `scf_config%max_iteration` beyond it. Updates `scf_result`
+      !! (density, orbitals, orbital energies, `converged`, `iterations`) in
+      !! place; `scf_state`/`scf_energies` are the same per-iteration scratch
+      !! and energy bundle the DIIS loop itself writes through, reused here
+      !! rather than duplicated.
+      !!
       type(trc_basis_t), intent(in) :: scf_basis
       type(scf_ctx_t), intent(in) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
@@ -416,16 +416,16 @@ contains
       !$acc exit data delete(energies_mo)
    end subroutine trc_scf_soscf_run
 
-   !
-   ! One full (non-incremental) Fock build and the energy at the density
-   ! `scf_result%dmat(:,:,1)`, restricted Hartree-Fock only (no XC, no
-   ! continuum -- `trc_scf_settings%resolve` has already refused both for
-   ! `--soscf`): `scf_fock_build_g`/`scf_fock_energy`/`scf_fock_assemble`,
-   ! the SAME sequence `trc_scf_run`'s own iteration runs, reused rather
-   ! than duplicated. Leaves `scf_state%fock(:,:,1)` and
-   ! `scf_energies%total` at that density.
-   !
    subroutine scf_soscf_fock_rebuild(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, la, eri)
+      !!
+      !! One full (non-incremental) Fock build and the energy at the density
+      !! `scf_result%dmat(:,:,1)`, restricted Hartree-Fock only (no XC, no
+      !! continuum -- `trc_scf_settings%resolve` has already refused both for
+      !! `--soscf`): `scf_fock_build_g`/`scf_fock_energy`/`scf_fock_assemble`,
+      !! the SAME sequence `trc_scf_run`'s own iteration runs, reused rather
+      !! than duplicated. Leaves `scf_state%fock(:,:,1)` and
+      !! `scf_energies%total` at that density.
+      !!
       type(trc_basis_t), intent(in) :: scf_basis
       type(scf_ctx_t), intent(in) :: scf_context
       type(scf_settings_t), intent(in) :: scf_config
@@ -445,17 +445,17 @@ contains
       call scf_fock_assemble(scf_context, scf_config, scf_state)
    end subroutine scf_soscf_fock_rebuild
 
-   !
-   ! Diagonalise the Fock matrix within the occupied block and within the
-   ! virtual block, so the Hessian expression `scf_soscf_hessian_apply_rhf`
-   ! computes means the Hessian again -- see this module's own header.
-   ! `coeff` (dims%nao, dims%n_mo) is rotated in place, within each block;
-   ! what comes out is the Fock matrix in the new basis (`fock_mo`), whose
-   ! occupied-virtual block is the gradient and whose diagonal
-   ! (`energies_mo`) is the orbital energies -- canonical once the
-   ! occupied-virtual block has vanished, semicanonical otherwise.
-   !
    subroutine scf_soscf_semicanonicalize(la, dims, fock_ao, coeff, fock_mo, energies_mo, info)
+      !!
+      !! Diagonalise the Fock matrix within the occupied block and within the
+      !! virtual block, so the Hessian expression `scf_soscf_hessian_apply_rhf`
+      !! computes means the Hessian again -- see this module's own header.
+      !! `coeff` (dims%nao, dims%n_mo) is rotated in place, within each block;
+      !! what comes out is the Fock matrix in the new basis (`fock_mo`), whose
+      !! occupied-virtual block is the gradient and whose diagonal
+      !! (`energies_mo`) is the orbital energies -- canonical once the
+      !! occupied-virtual block has vanished, semicanonical otherwise.
+      !!
       type(trc_linalg_t), intent(inout) :: la
       type(trc_soscf_dims_t), intent(in) :: dims
       real(dp), intent(in) :: fock_ao(dims%nao, dims%nao)
@@ -574,22 +574,22 @@ contains
       end do
    end subroutine scf_soscf_gradient
 
-   !
-   ! The trust-region Newton step, from Hessian-vector products alone:
-   ! builds a Krylov subspace off the preconditioned gradient, projects the
-   ! Hessian and the gradient into it, and solves the small, dense,
-   ! level-shifted subproblem there (`soscf_level_shifted_step`) -- the
-   ! same step control CASSCF's own optimiser would apply to a dense
-   ! Hessian, applied here to a projected one. `energies_mo` is HOST
-   ! (pulled once by the caller); `cmo` and `io%gradient`/`io%step` are
-   ! device resident. `io%lowest` is an UPPER BOUND on the true smallest
-   ! curvature (a Rayleigh-Ritz value), not the curvature itself. The
-   ! Hessian-vector product's own scratch (`trc_soscf_hvp_scratch_t`) is
-   ! local to this call, never a dummy here -- see this module's own
-   ! header on why the bundling stops at the arg-count limit, not at
-   ! "everything this touches".
-   !
    subroutine scf_soscf_newton_step_rhf(b, eri, lp, dims, cmo, energies_mo, io)
+      !!
+      !! The trust-region Newton step, from Hessian-vector products alone:
+      !! builds a Krylov subspace off the preconditioned gradient, projects the
+      !! Hessian and the gradient into it, and solves the small, dense,
+      !! level-shifted subproblem there (`soscf_level_shifted_step`) -- the
+      !! same step control CASSCF's own optimiser would apply to a dense
+      !! Hessian, applied here to a projected one. `energies_mo` is HOST
+      !! (pulled once by the caller); `cmo` and `io%gradient`/`io%step` are
+      !! device resident. `io%lowest` is an UPPER BOUND on the true smallest
+      !! curvature (a Rayleigh-Ritz value), not the curvature itself. The
+      !! Hessian-vector product's own scratch (`trc_soscf_hvp_scratch_t`) is
+      !! local to this call, never a dummy here -- see this module's own
+      !! header on why the bundling stops at the arg-count limit, not at
+      !! "everything this touches".
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
       type(trc_linalg_t), intent(inout) :: lp
@@ -724,17 +724,17 @@ contains
       deallocate (scratch%diagv)
    end subroutine scf_soscf_newton_step_rhf
 
-   !
-   ! `(e_a-e_i) p + [A p]`, the RHF orbital-Hessian action on a trial
-   ! rotation `pin`, folded through the Cartesian space `eri%fock_resident`
-   ! runs in -- see this module's own header. `scratch%d_u`/`%d_ut`/`%g_u`
-   ! are `nao`-by-`nao` (the SCF's own space, spherical when the basis
-   ! is); `%d_u_c`/`%g_u_c` are `nao_c`-by-`nao_c` (always Cartesian);
-   ! `dims%sph = .false.` makes `scf_fock_to_cart`/`scf_fock_to_sph` a
-   ! plain copy, so a Cartesian basis (`nao == nao_c`) pays nothing beyond
-   ! it.
-   !
    subroutine scf_soscf_hessian_apply_rhf(b, eri, lp, dims, cmo, pin, apout, scratch)
+      !!
+      !! `(e_a-e_i) p + [A p]`, the RHF orbital-Hessian action on a trial
+      !! rotation `pin`, folded through the Cartesian space `eri%fock_resident`
+      !! runs in -- see this module's own header. `scratch%d_u`/`%d_ut`/`%g_u`
+      !! are `nao`-by-`nao` (the SCF's own space, spherical when the basis
+      !! is); `%d_u_c`/`%g_u_c` are `nao_c`-by-`nao_c` (always Cartesian);
+      !! `dims%sph = .false.` makes `scf_fock_to_cart`/`scf_fock_to_sph` a
+      !! plain copy, so a Cartesian basis (`nao == nao_c`) pays nothing beyond
+      !! it.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
       type(trc_linalg_t), intent(inout) :: lp
@@ -941,19 +941,19 @@ contains
       res = trim(v) == "1"
    end function soscf_force_breakdown_env
 
-   !
-   ! `exp(kappa)` for antisymmetric `kappa`, by scaling and squaring:
-   ! orthogonal to machine precision for any step size (ported from
-   ! metalquicha's `mqc_orbital_rotation%rotation_matrix`, same algorithm,
-   ! device-resident GEMMs). `norm` is a 1-norm bound on `kappa`
-   ! (`scf_soscf_ov_one_norm`), passed in rather than recomputed here: the
-   ! caller already knows it (from the small occupied-virtual step, not
-   ! the full n x n matrix), and pulling the full n x n `kappa` back to
-   ! the host just to recompute a bound on it would be the one
-   ! unnecessary device-to-host transfer this module otherwise avoids.
-   ! `scaled`/`term`/`next_term` are the caller's own n x n scratch.
-   !
    subroutine scf_soscf_rotation_matrix(lp, n, norm, kappa, rotation, scaled, term, next_term)
+      !!
+      !! `exp(kappa)` for antisymmetric `kappa`, by scaling and squaring:
+      !! orthogonal to machine precision for any step size (ported from
+      !! metalquicha's `mqc_orbital_rotation%rotation_matrix`, same algorithm,
+      !! device-resident GEMMs). `norm` is a 1-norm bound on `kappa`
+      !! (`scf_soscf_ov_one_norm`), passed in rather than recomputed here: the
+      !! caller already knows it (from the small occupied-virtual step, not
+      !! the full n x n matrix), and pulling the full n x n `kappa` back to
+      !! the host just to recompute a bound on it would be the one
+      !! unnecessary device-to-host transfer this module otherwise avoids.
+      !! `scaled`/`term`/`next_term` are the caller's own n x n scratch.
+      !!
       type(trc_linalg_t), intent(inout) :: lp
       integer, intent(in) :: n
       real(dp), intent(in) :: norm
@@ -986,15 +986,15 @@ contains
       end do
    end subroutine scf_soscf_rotation_matrix
 
-   !
-   ! The level-shifted trust-region Newton step on a SMALL (at most
-   ! `DEFAULT_SOSCF_SUBSPACE` square), host-resident projected Hessian --
-   ! ported from metalquicha's `mqc_orbital_rotation%level_shifted_step`,
-   ! same algorithm, host LAPACK (`pic_syev`/`pic_gemv`) rather than
-   ! device: the same reasoning `trc_scf_diis`'s own small linear solves
-   ! use (a handful of numbers, not worth a device round trip).
-   !
    subroutine soscf_level_shifted_step(hessian, gradient, escape, step, lowest, predicted, ok)
+      !!
+      !! The level-shifted trust-region Newton step on a SMALL (at most
+      !! `DEFAULT_SOSCF_SUBSPACE` square), host-resident projected Hessian --
+      !! ported from metalquicha's `mqc_orbital_rotation%level_shifted_step`,
+      !! same algorithm, host LAPACK (`pic_syev`/`pic_gemv`) rather than
+      !! device: the same reasoning `trc_scf_diis`'s own small linear solves
+      !! use (a handful of numbers, not worth a device round trip).
+      !!
       real(dp), intent(in) :: hessian(:, :)
       real(dp), intent(in) :: gradient(:)
       real(dp), intent(in) :: escape

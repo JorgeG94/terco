@@ -1,11 +1,11 @@
-!!
-!! A basis from a MolSSI Basis Set Exchange JSON file, the files metalquicha
-!! ships under basis_sets/, so a terco run can take the orbital and auxiliary
-!! sets mqc would hand it without mqc in the process.
-!!
-!! Ported from metalquicha's mqc_json_basis_reader
-!!
 module trc_basis_json
+   !!
+   !! A basis from a MolSSI Basis Set Exchange JSON file, the files metalquicha
+   !! ships under basis_sets/, so a terco run can take the orbital and auxiliary
+   !! sets mqc would hand it without mqc in the process.
+   !!
+   !! Ported from metalquicha's mqc_json_basis_reader
+   !!
    use pic_types, only: dp
    use trc_constants, only: PI
    use trc_basis_types, only: trc_basis_t
@@ -16,21 +16,21 @@ module trc_basis_json
 
    public :: trc_basis_from_json, trc_fitted_shell_from_json, trc_basis_overrides_t, trc_basis_json_overrides
 
-   !
-   ! The rarely-set, never-combined-with-each-other knobs of
-   ! trc_basis_from_json, bundled so the call keeps one optional dummy
-   ! instead of one per knob (docs/CODE_STRUCTURE.md's arg-count limit --
-   ! `force_cart` stays its own dummy since nearly every caller sets it).
-   ! Build one with trc_basis_json_overrides(charges=..., prune=...), never
-   ! with the structure constructor: nvfortran 26.5 leaves an omitted
-   ! allocatable scalar component ALLOCATED (and .false.) when another
-   ! component comes from an allocatable component of a pointer target --
-   ! trc_capi's `trc_basis_overrides_t(charges=cx%at_z)` silently turned
-   ! pruning off -- and aborts with an internal compiler error on a
-   ! constructor mixing an allocatable and a default-initialised component.
-   ! Plain assignment inside the builder is correct under both compilers.
-   !
    type :: trc_basis_overrides_t
+      !!
+      !! The rarely-set, never-combined-with-each-other knobs of
+      !! trc_basis_from_json, bundled so the call keeps one optional dummy
+      !! instead of one per knob (docs/CODE_STRUCTURE.md's arg-count limit --
+      !! `force_cart` stays its own dummy since nearly every caller sets it).
+      !! Build one with trc_basis_json_overrides(charges=..., prune=...), never
+      !! with the structure constructor: nvfortran 26.5 leaves an omitted
+      !! allocatable scalar component ALLOCATED (and .false.) when another
+      !! component comes from an allocatable component of a pointer target --
+      !! trc_capi's `trc_basis_overrides_t(charges=cx%at_z)` silently turned
+      !! pruning off -- and aborts with an internal compiler error on a
+      !! constructor mixing an allocatable and a default-initialised component.
+      !! Plain assignment inside the builder is correct under both compilers.
+      !!
       private
       !! Private so the structure constructor is unreachable from outside
       !! this module -- the only thing that actually fixes the nvfortran
@@ -71,17 +71,17 @@ module trc_basis_json
 
 contains
 
-   !
-   ! `elements` (1..118) picks the basis for each atom; `at_r` (3, natm) is
-   ! in Bohr. `charges` is the nuclear charge the built basis carries as
-   ! `at_z`, defaulting to `elements` itself (every caller before ghost
-   ! atoms existed): a ghost passes an element with charge 0, so its shells
-   ! are looked up and placed exactly as a real atom of that element's, but
-   ! it contributes no nuclear charge and (through `at_z`) no electron.
-   ! The basis comes back built (host side; the caller moves it to the
-   ! device).
-   !
    function trc_basis_json_overrides(charges, prune, allow_ecp) result(overrides)
+      !!
+      !! `elements` (1..118) picks the basis for each atom; `at_r` (3, natm) is
+      !! in Bohr. `charges` is the nuclear charge the built basis carries as
+      !! `at_z`, defaulting to `elements` itself (every caller before ghost
+      !! atoms existed): a ghost passes an element with charge 0, so its shells
+      !! are looked up and placed exactly as a real atom of that element's, but
+      !! it contributes no nuclear charge and (through `at_z`) no electron.
+      !! The basis comes back built (host side; the caller moves it to the
+      !! device).
+      !!
       !! A trc_basis_overrides_t with just the knobs given (see the type's
       !! comment for why this, not the structure constructor).
       real(dp), intent(in), optional :: charges(:)
@@ -209,17 +209,17 @@ contains
       b%spherical = any_sph .and. .not. force
    end subroutine trc_basis_from_json
 
-   !
-   ! One element's fitted-potential shell, exactly as the file lists it.
-   !
-   ! For the SAP sets on the BSE (sap_helfem_large and friends, role
-   ! "guess"). Their coefficients are the CHARGES of a fitted distribution,
-   ! not wavefunction coefficients: they sum to -Z for every element, which
-   ! is the check that says so and the one this routine makes. Normalising
-   ! them to unit overlap, which is what every other basis in this file
-   ! wants, would be wrong in a way that leaves the numbers looking sane.
-   !
    subroutine trc_fitted_shell_from_json(path, z, e, c, error)
+      !!
+      !! One element's fitted-potential shell, exactly as the file lists it.
+      !!
+      !! For the SAP sets on the BSE (sap_helfem_large and friends, role
+      !! "guess"). Their coefficients are the CHARGES of a fitted distribution,
+      !! not wavefunction coefficients: they sum to -Z for every element, which
+      !! is the check that says so and the one this routine makes. Normalising
+      !! them to unit overlap, which is what every other basis in this file
+      !! wants, would be wrong in a way that leaves the numbers looking sane.
+      !!
       character(len=*), intent(in) :: path
       integer, intent(in) :: z
       real(dp), allocatable, intent(out) :: e(:), c(:)
@@ -396,37 +396,37 @@ contains
       end do
    end subroutine read_element
 
-   !
-   ! PRUNING a general contraction's redundant primitives.
-   !
-   ! cc-pVXZ (and other correlation-consistent sets) share one exponent list
-   ! across a block's columns, and some of those columns are a single
-   ! primitive (coefficient 1 at one exponent, 0 at the rest) that is ALSO
-   ! used, with a small nonzero coefficient, inside the block's other
-   ! (contracted) columns. That primitive is not independent information:
-   ! the function it is part of is already in the basis set as the
-   ! single-primitive column's own AO, so the contracted column's component
-   ! along it can be transformed away without touching the SPAN of the
-   ! block's functions -- replace contracted column A by
-   ! A' = A - c_A(p)*B, B the single-primitive column with a 1 at p. B is
-   ! zero everywhere else, so A' is A UNCHANGED at every other primitive and
-   ! EXACTLY zero at p; no arithmetic is needed, p is just set to zero.
-   !
-   ! This is pyscf 2.14's own "optimized general contraction" cc-pVXZ data,
-   ! reverse-engineered against the BSE files metalquicha ships: per-element
-   ! per-l primitive counts after this routine match pyscf's
-   ! `gto.basis.load` exactly (O/cc-pVQZ's 12-primitive s columns go to 9,
-   ! matching pyscf's shipped 9; the module header this feeds,
-   ! trc_decontract.F90, inherits the same win on the s/p sets of every
-   ! first-row atom). w20/cc-pVQZ: 1440 primitives at <=12/shell before this
-   ! routine, 1140 at <=9/shell after -- the same counts pyscf's bundled set
-   ! gives for the same molecule, same energy to round-off.
-   !
-   ! Scoped to one JSON block (one shared exponent list) and one angular
-   ! momentum within it, so an SP block's S and P columns -- which share
-   ! exponents but are different operators -- never prune each other.
-   !
    subroutine prune_block(sh)
+      !!
+      !! PRUNING a general contraction's redundant primitives.
+      !!
+      !! cc-pVXZ (and other correlation-consistent sets) share one exponent list
+      !! across a block's columns, and some of those columns are a single
+      !! primitive (coefficient 1 at one exponent, 0 at the rest) that is ALSO
+      !! used, with a small nonzero coefficient, inside the block's other
+      !! (contracted) columns. That primitive is not independent information:
+      !! the function it is part of is already in the basis set as the
+      !! single-primitive column's own AO, so the contracted column's component
+      !! along it can be transformed away without touching the SPAN of the
+      !! block's functions -- replace contracted column A by
+      !! A' = A - c_A(p)*B, B the single-primitive column with a 1 at p. B is
+      !! zero everywhere else, so A' is A UNCHANGED at every other primitive and
+      !! EXACTLY zero at p; no arithmetic is needed, p is just set to zero.
+      !!
+      !! This is pyscf 2.14's own "optimized general contraction" cc-pVXZ data,
+      !! reverse-engineered against the BSE files metalquicha ships: per-element
+      !! per-l primitive counts after this routine match pyscf's
+      !! `gto.basis.load` exactly (O/cc-pVQZ's 12-primitive s columns go to 9,
+      !! matching pyscf's shipped 9; the module header this feeds,
+      !! trc_decontract.F90, inherits the same win on the s/p sets of every
+      !! first-row atom). w20/cc-pVQZ: 1440 primitives at <=12/shell before this
+      !! routine, 1140 at <=9/shell after -- the same counts pyscf's bundled set
+      !! gives for the same molecule, same energy to round-off.
+      !!
+      !! Scoped to one JSON block (one shared exponent list) and one angular
+      !! momentum within it, so an SP block's S and P columns -- which share
+      !! exponents but are different operators -- never prune each other.
+      !!
       type(shell_t), intent(inout) :: sh(:)
       integer :: i, j, piv, nnz, keep
       real(dp), allocatable :: c0(:, :)
@@ -500,20 +500,20 @@ contains
       end do
    end subroutine prune_block
 
-   !
-   ! TRC_PRUNE_PRIMITIVES, read once per basis build. On by default; "0"
-   ! turns the elimination above off, for an A/B comparison against the
-   ! unpruned (BSE-literal) basis without rebuilding.
-   !
    logical function prune_enabled() result(res)
+      !!
+      !! TRC_PRUNE_PRIMITIVES, read once per basis build. On by default; "0"
+      !! turns the elimination above off, for an A/B comparison against the
+      !! unpruned (BSE-literal) basis without rebuilding.
+      !!
       character(len=8) :: value
       value = " "
       call get_environment_variable("TRC_PRUNE_PRIMITIVES", value)
       res = (trim(value) /= "0")
    end function prune_enabled
 
-   ! Coefficient columns of a JSON shell, or one per l when none are listed.
    integer function columns(json, key, ish, nl) result(n)
+      !! Coefficient columns of a JSON shell, or one per l when none are listed.
       type(json_file), intent(inout) :: json
       character(len=*), intent(in) :: key
       integer, intent(in) :: ish, nl
@@ -527,25 +527,25 @@ contains
       end if
    end function columns
 
-   !
-   ! metalquicha's normalisation (mqc_basis_normalization): each primitive
-   ! to unit self-overlap, then the contraction to unit self-overlap. That
-   ! is BSE's own convention (also gmshpc's and pyscf's): it makes <s|s> = 1
-   ! for a fully-built shell.
-   !
-   ! terco's convention is not that one. `trc_basis_t%build` unconditionally
-   ! folds libcint's `common_fac_sp` into every s and p shell's coefficients
-   ! (trc_api.F90, duplicated in trc_ao_norm.F90 and trc_batch.F90 for the
-   ! same reason it is duplicated here rather than exported: it is three
-   ! lines, and the alternative widens trc_api's public surface for one
-   ! boundary conversion), which makes terco's OWN raw <s|s> come out
-   ! 1/(4*pi), not 1. Everything else that ever builds a shell -- the
-   ! hardcoded 6-31G in test/trc_test_basis.F90, trc_decontract.F90's split
-   ! shells -- hands `build` a coefficient with NO common_fac_sp in it, by
-   ! construction, so the single fold inside `build` lands on the right
-   ! number.
-   !
    pure subroutine normalise(l, np, e, c)
+      !!
+      !! metalquicha's normalisation (mqc_basis_normalization): each primitive
+      !! to unit self-overlap, then the contraction to unit self-overlap. That
+      !! is BSE's own convention (also gmshpc's and pyscf's): it makes <s|s> = 1
+      !! for a fully-built shell.
+      !!
+      !! terco's convention is not that one. `trc_basis_t%build` unconditionally
+      !! folds libcint's `common_fac_sp` into every s and p shell's coefficients
+      !! (trc_api.F90, duplicated in trc_ao_norm.F90 and trc_batch.F90 for the
+      !! same reason it is duplicated here rather than exported: it is three
+      !! lines, and the alternative widens trc_api's public surface for one
+      !! boundary conversion), which makes terco's OWN raw <s|s> come out
+      !! 1/(4*pi), not 1. Everything else that ever builds a shell -- the
+      !! hardcoded 6-31G in test/trc_test_basis.F90, trc_decontract.F90's split
+      !! shells -- hands `build` a coefficient with NO common_fac_sp in it, by
+      !! construction, so the single fold inside `build` lands on the right
+      !! number.
+      !!
       integer, intent(in) :: l, np
       real(dp), intent(in) :: e(np)
       real(dp), intent(inout) :: c(np)

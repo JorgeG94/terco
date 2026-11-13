@@ -1,25 +1,25 @@
-!
-! The split policy of trc_decontract: which groups it splits, and that the
-! choice never shows in the answer.
-!
-! `trc_decontract_options_t` decides how the four-centre engine's working
-! basis is cut up -- whether a general contraction is split at all (the shell
-! price), and whether diffuse primitives leave a segmented shell (the
-! diffuse split). The integrals over any of those working bases are exact,
-! so the claims are:
-!
-! - each policy splits what it says: the shell counts below are worked out
-!   by hand from the basis files;
-! - the split basis still spans the caller's functions exactly: C^T S_p C = S
-!   from trc_1e, which shares nothing with the four-centre path (the same
-!   external answer check_decontract uses);
-! - an RHF energy is the same under every policy to round-off, on a small
-!   diffuse case where the diffuse split and the general-contraction split
-!   both act.
-!
-! A test-drive suite.
-!
 module check_decontract_policy_suite
+   !!
+   !! The split policy of trc_decontract: which groups it splits, and that the
+   !! choice never shows in the answer.
+   !!
+   !! `trc_decontract_options_t` decides how the four-centre engine's working
+   !! basis is cut up -- whether a general contraction is split at all (the shell
+   !! price), and whether diffuse primitives leave a segmented shell (the
+   !! diffuse split). The integrals over any of those working bases are exact,
+   !! so the claims are:
+   !!
+   !! - each policy splits what it says: the shell counts below are worked out
+   !!   by hand from the basis files;
+   !! - the split basis still spans the caller's functions exactly: C^T S_p C = S
+   !!   from trc_1e, which shares nothing with the four-centre path (the same
+   !!   external answer check_decontract uses);
+   !! - an RHF energy is the same under every policy to round-off, on a small
+   !!   diffuse case where the diffuse split and the general-contraction split
+   !!   both act.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
@@ -86,17 +86,17 @@ contains
       call decontract_release(m)
    end function nshell_split
 
-   !
-   ! After trc_basis_json's pruning, the only general contractions in
-   ! cc-pVDZ are O's s (8 primitives under 2 columns) and Si's s (11 under
-   ! 3) and p (7 under 2). At the default price of 2 primitives a shell O's
-   ! s is kept (16 + 2*2 = 20 against 8*3 = 24) and so is Si's p (14 + 4 =
-   ! 18 against 21). Si's s splits whatever the price: its 1s column gives
-   ! the outer primitives coefficients a thousand times smaller than the
-   ! 3s column does (group_unevenness 998, above DECON_WHOLE_UNEVEN_MAX).
-   ! A price of zero splits everything.
-   !
    subroutine test_shell_price(error)
+      !!
+      !! After trc_basis_json's pruning, the only general contractions in
+      !! cc-pVDZ are O's s (8 primitives under 2 columns) and Si's s (11 under
+      !! 3) and p (7 under 2). At the default price of 2 primitives a shell O's
+      !! s is kept (16 + 2*2 = 20 against 8*3 = 24) and so is Si's p (14 + 4 =
+      !! 18 against 21). Si's s splits whatever the price: its 1s column gives
+      !! the outer primitives coefficients a thousand times smaller than the
+      !! 3s column does (group_unevenness 998, above DECON_WHOLE_UNEVEN_MAX).
+      !! A price of zero splits everything.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b
       type(trc_decontract_options_t) :: opts
@@ -134,15 +134,15 @@ contains
       call check(error, n, b%nshell - 3 + 11 - 2 + 7, "SiH4/cc-pVDZ: price 0 also splits Si's p")
    end subroutine test_shell_price
 
-   !
-   ! 6-31G* is segmented. Si's 3-primitive s and p shells (1.727, 0.5729,
-   ! 0.2222) each hold one primitive below the 0.3 cutoff: the diffuse split
-   ! makes each a 2-primitive segment plus a shell of one, two more shells.
-   ! H's 3-primitive s goes down to 0.6401 and is left alone at 0.3. At a
-   ! cutoff of 0.7 Si's s and p keep one compact primitive and lose two
-   ! (four more shells), and every H s splits too (one more each).
-   !
    subroutine test_diffuse_split(error)
+      !!
+      !! 6-31G* is segmented. Si's 3-primitive s and p shells (1.727, 0.5729,
+      !! 0.2222) each hold one primitive below the 0.3 cutoff: the diffuse split
+      !! makes each a 2-primitive segment plus a shell of one, two more shells.
+      !! H's 3-primitive s goes down to 0.6401 and is left alone at 0.3. At a
+      !! cutoff of 0.7 Si's s and p keep one compact primitive and lose two
+      !! (four more shells), and every H s splits too (one more each).
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b
       type(trc_decontract_options_t) :: opts
@@ -229,14 +229,14 @@ contains
       energy = res%energy
    end subroutine run_rhf
 
-   !
-   ! Water in d-aug-cc-pVDZ: two diffuse shells per l on top of cc-pVDZ.
-   ! At a cutoff of 0.5 the diffuse split takes H's 0.4446 out of its s
-   ! segment (every other diffuse primitive is already a shell of one), and
-   ! a price of zero splits O's general s. The unsplit basis (a price
-   ! nothing beats) is the reference.
-   !
    subroutine test_energy_invariant(error)
+      !!
+      !! Water in d-aug-cc-pVDZ: two diffuse shells per l on top of cc-pVDZ.
+      !! At a cutoff of 0.5 the diffuse split takes H's 0.4446 out of its s
+      !! segment (every other diffuse primitive is already a shell of one), and
+      !! a price of zero splits O's general s. The unsplit basis (a price
+      !! nothing beats) is the reference.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(trc_decontract_options_t) :: opts
       real(dp) :: e_ref, e
@@ -272,17 +272,17 @@ contains
       call check(error, e, e_ref, thr=ENERGY_TOL, message="SiH4/6-31G*: diffuse split moves E_RHF")
    end subroutine test_energy_invariant
 
-   !
-   ! THE PRIMITIVE PAIRS OF A SHELL KEPT WHOLE ARE IN KERNEL ORDER.
-   !
-   ! The kernels walk a shell pair's primitive pairs and EXIT at the first
-   ! one whose |c|/p bound fails, so hgp_build_pairs must hand them over in
-   ! non-increasing |c|/p. It sorted by |c|^2/p, which no split basis could
-   ! show (one primitive pair per shell pair) and a general contraction kept
-   ! whole did: the silica slice was 9.2e-08 Eh off at 1e-11. Water in
-   ! cc-pVDZ, O's s kept whole, every shell pair checked.
-   !
    subroutine test_pair_order(error)
+      !!
+      !! THE PRIMITIVE PAIRS OF A SHELL KEPT WHOLE ARE IN KERNEL ORDER.
+      !!
+      !! The kernels walk a shell pair's primitive pairs and EXIT at the first
+      !! one whose |c|/p bound fails, so hgp_build_pairs must hand them over in
+      !! non-increasing |c|/p. It sorted by |c|^2/p, which no split basis could
+      !! show (one primitive pair per shell pair) and a general contraction kept
+      !! whole did: the silica slice was 9.2e-08 Eh off at 1e-11. Water in
+      !! cc-pVDZ, O's s kept whole, every shell pair checked.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b
       type(trc_shell_pairs_t) :: pairs
@@ -308,18 +308,18 @@ contains
                  "would drop live quartets")
    end subroutine test_pair_order
 
-   !
-   ! THE PRIMITIVE SCREEN OF A SHELL KEPT WHOLE IS THE SPLIT'S.
-   !
-   ! decontract_whole_screen gives every primitive of a general contraction
-   ! kept whole the coefficient the split would (the largest any column
-   ! gives it) as its prune amplitude, and reports how much smaller a
-   ! column's own coefficient can be (`uneven`), which tightens the kernels'
-   ! cut by uneven**4. Checked on the shapes the default policy keeps whole:
-   ! O's cc-pVDZ s (water) and Si's p (SiH4), and on a segmented basis, which
-   ! must come back untouched.
-   !
    subroutine test_whole_screen(error)
+      !!
+      !! THE PRIMITIVE SCREEN OF A SHELL KEPT WHOLE IS THE SPLIT'S.
+      !!
+      !! decontract_whole_screen gives every primitive of a general contraction
+      !! kept whole the coefficient the split would (the largest any column
+      !! gives it) as its prune amplitude, and reports how much smaller a
+      !! column's own coefficient can be (`uneven`), which tightens the kernels'
+      !! cut by uneven**4. Checked on the shapes the default policy keeps whole:
+      !! O's cc-pVDZ s (water) and Si's p (SiH4), and on a segmented basis, which
+      !! must come back untouched.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b, pb
       type(decon_t) :: m
@@ -372,16 +372,16 @@ contains
       call check(error, all(camp == b%sh_c), "water/6-31G: a segmented basis must keep its own amplitudes")
    end subroutine test_whole_screen
 
-   !
-   ! THE ENERGY OF A SHELL KEPT WHOLE. At a loose threshold, where screening
-   ! and not round-off sets the error, keeping a general contraction whole
-   ! must be no less accurate than splitting it, judged against the same
-   ! system at 1e-14: O's s (w5), S's p ((H2S)4) and Si's p (disiloxane),
-   ! all cc-pVDZ, at 1e-8. Measured on w5 (V100): split 6.9e-08 Eh off,
-   ! kept whole 6.1e-08, and kept whole without `screen_whole` 1.4e-07 --
-   ! which the last check asserts, so that this test can fail.
-   !
    subroutine test_screen_invariant(error)
+      !!
+      !! THE ENERGY OF A SHELL KEPT WHOLE. At a loose threshold, where screening
+      !! and not round-off sets the error, keeping a general contraction whole
+      !! must be no less accurate than splitting it, judged against the same
+      !! system at 1e-14: O's s (w5), S's p ((H2S)4) and Si's p (disiloxane),
+      !! all cc-pVDZ, at 1e-8. Measured on w5 (V100): split 6.9e-08 Eh off,
+      !! kept whole 6.1e-08, and kept whole without `screen_whole` 1.4e-07 --
+      !! which the last check asserts, so that this test can fail.
+      !!
       type(error_type), allocatable, intent(out) :: error
       real(dp) :: bare, split
       call screen_case(error, 'w5.xyz', 25, 'w5/cc-pVDZ', bare, split)

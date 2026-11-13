@@ -1,54 +1,54 @@
-!
-! The SCF driver with a polarisable continuum, end to end, against pyscf.
-!
-! trc_scf_run with `pcm_model` set: the cavity, K and the nuclear potential
-! once, then every iteration the surface potential of the current density,
-! the charges, their operator in the Fock matrix and q.v/2 in the energy.
-! Each case is compared two ways against test/pyscf_refs/pcm_scf*.ref
-! (generate.py's gen_pcm_scf: pyscf's own RHF/UHF/RKS/UKS with .PCM(),
-! same radii, scale, Lebedev order and dielectric, converged to conv_tol
-! 1e-12 and conv_tol_grad 1e-8 on terco's own DFT grid):
-!
-!   converged:   terco's converged total energy and E_diel against pyscf's;
-!   at-density:  terco's energy and E_diel AT pyscf's converged density --
-!                trc_scf_run with max_iteration=1 and that density as dguess,
-!                whose energy is evaluated at dguess before the Roothaan
-!                step (the "energy at this density" in src/scf/trc_scf_driver.F90),
-!                i.e. pyscf's energy_tot(dm) -- so a disagreement there is
-!                the functional, not the convergence.
-!
-! The sets, chosen by the first argument:
-!
-!   main  water and formamide, 6-31G* Cartesian: HF, B3LYP and wB97X-V, each
-!         C-PCM and IEF-PCM (restricted); the OH and NH2 radicals, UHF
-!         C-PCM and B3LYP IEF-PCM (unrestricted); water/cc-pVDZ in its own
-!         spherical AO space, HF C-PCM (converged energies only: pyscf's
-!         spherical AO convention is not terco's, so its density is not
-!         carried over)
-!
-! OH's converged run starts from pyscf's converged density rather than
-! from GWH. Its pi pair is degenerate in vacuum and only split by the
-! Lebedev cavity (and the DFT grid), so the energy along the rotation
-! between the two singly occupied choices is flat to 3e-8 Eh (UHF) and
-! 4e-7 Eh (B3LYP), with a stationary point at each end: gfortran's terco
-! settled in one, ifx's in the other, from the same guess. Started inside
-! pyscf's basin, the converged comparison still tests that terco's own
-! iterations hold pyscf's solution to 1e-8; NH2, whose singly occupied
-! orbital is not degenerate, is converged from GWH like every other case.
-!   f     water/cc-pVTZ Cartesian, f on oxygen: HF C-PCM and B3LYP IEF-PCM;
-!         skips (test-drive's skip_test) below TERCO_LMAX=3
-!
-! Writes pcm_scf_probe_<set>.bin first -- the geometry, the basis file, the
-! grids terco used, its converged density to start pyscf from (as scf_rks
-! does) -- which is all generate.py needs to rebuild each case; a missing
-! reference fails only after that is safely written.
-!
-! One test-drive case per (molecule, functional, PCM model) in the chosen
-! set; the shared setup -- the probe write and the sequential pyscf-
-! reference read -- runs once -- see check_xc_energy_suite's own
-! `computed` comment for why, and why this suite stays `parallel=.false.`.
-!
 module scf_pcm_suite
+   !!
+   !! The SCF driver with a polarisable continuum, end to end, against pyscf.
+   !!
+   !! trc_scf_run with `pcm_model` set: the cavity, K and the nuclear potential
+   !! once, then every iteration the surface potential of the current density,
+   !! the charges, their operator in the Fock matrix and q.v/2 in the energy.
+   !! Each case is compared two ways against test/pyscf_refs/pcm_scf*.ref
+   !! (generate.py's gen_pcm_scf: pyscf's own RHF/UHF/RKS/UKS with .PCM(),
+   !! same radii, scale, Lebedev order and dielectric, converged to conv_tol
+   !! 1e-12 and conv_tol_grad 1e-8 on terco's own DFT grid):
+   !!
+   !!   converged:   terco's converged total energy and E_diel against pyscf's;
+   !!   at-density:  terco's energy and E_diel AT pyscf's converged density --
+   !!                trc_scf_run with max_iteration=1 and that density as dguess,
+   !!                whose energy is evaluated at dguess before the Roothaan
+   !!                step (the "energy at this density" in src/scf/trc_scf_driver.F90),
+   !!                i.e. pyscf's energy_tot(dm) -- so a disagreement there is
+   !!                the functional, not the convergence.
+   !!
+   !! The sets, chosen by the first argument:
+   !!
+   !!   main  water and formamide, 6-31G* Cartesian: HF, B3LYP and wB97X-V, each
+   !!         C-PCM and IEF-PCM (restricted); the OH and NH2 radicals, UHF
+   !!         C-PCM and B3LYP IEF-PCM (unrestricted); water/cc-pVDZ in its own
+   !!         spherical AO space, HF C-PCM (converged energies only: pyscf's
+   !!         spherical AO convention is not terco's, so its density is not
+   !!         carried over)
+   !!
+   !! OH's converged run starts from pyscf's converged density rather than
+   !! from GWH. Its pi pair is degenerate in vacuum and only split by the
+   !! Lebedev cavity (and the DFT grid), so the energy along the rotation
+   !! between the two singly occupied choices is flat to 3e-8 Eh (UHF) and
+   !! 4e-7 Eh (B3LYP), with a stationary point at each end: gfortran's terco
+   !! settled in one, ifx's in the other, from the same guess. Started inside
+   !! pyscf's basin, the converged comparison still tests that terco's own
+   !! iterations hold pyscf's solution to 1e-8; NH2, whose singly occupied
+   !! orbital is not degenerate, is converged from GWH like every other case.
+   !!   f     water/cc-pVTZ Cartesian, f on oxygen: HF C-PCM and B3LYP IEF-PCM;
+   !!         skips (test-drive's skip_test) below TERCO_LMAX=3
+   !!
+   !! Writes pcm_scf_probe_<set>.bin first -- the geometry, the basis file, the
+   !! grids terco used, its converged density to start pyscf from (as scf_rks
+   !! does) -- which is all generate.py needs to rebuild each case; a missing
+   !! reference fails only after that is safely written.
+   !!
+   !! One test-drive case per (molecule, functional, PCM model) in the chosen
+   !! set; the shared setup -- the probe write and the sequential pyscf-
+   !! reference read -- runs once -- see check_xc_energy_suite's own
+   !! `computed` comment for why, and why this suite stays `parallel=.false.`.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
@@ -162,10 +162,10 @@ contains
       end if
    end function case_name
 
-   ! One wrapper per case, each passing its own index: a unittest must not
-   ! depend on which unittests ran before it (a name-selected run, or a
-   ! reordered suite, would otherwise check the wrong case).
    subroutine case_01(error)
+      !! One wrapper per case, each passing its own index: a unittest must not
+      !! depend on which unittests ran before it (a name-selected run, or a
+      !! reordered suite, would otherwise check the wrong case).
       type(error_type), allocatable, intent(out) :: error
       call test_case(error, 1)
    end subroutine case_01

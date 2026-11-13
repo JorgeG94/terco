@@ -1,31 +1,31 @@
-!
-! UHF static dipole polarizability through trc_cphf (the coupled spin
-! channels, trc_cphf_solve_uhf), against pyscf's
-! pyscf.prop.polarizability.uhf -- test/pyscf_refs/generate.py's
-! gen_cphf_uhf. OH radical (9 electrons, nalpha=5, nbeta=4).
-!
-! COMPARES EIGENVALUES OF alpha, NOT ITS RAW COMPONENTS. OH's unpaired
-! electron sits in the (in exact C-infinity-v symmetry, degenerate) pi*
-! pair; UHF breaks that degeneracy by picking ONE real combination of the
-! two perpendicular p-like orbitals, and which combination it picks is a
-! numerical accident of the iteration path, not something either code
-! controls. Measured: two independent tight UHF solves (terco's and
-! pyscf's, same geometry/basis, energies agreeing to 1e-11) landed on
-! DIFFERENT rotations within that plane -- alpha_xx/alpha_yy/alpha_xy
-! disagreed by up to 0.17 a.u. while alpha_xx+alpha_yy (the trace) and
-! alpha_zz (along the bond, not degenerate) agreed to 1e-6. The physically
-! meaningful, rotation-invariant comparison is alpha's eigenvalues, which
-! this module computes (LAPACK dsyev on the host, via pic_syev -- a
-! plain 3x3, nothing device-resident) and writes instead of trusting the
-! raw tensor to line up component-by-component. A molecule with no such
-! orbital degeneracy (every RHF case in scf_cphf.F90) has no such freedom,
-! which is why that suite's own cases compare the raw 3x3 tensor directly.
-!
-! Same pattern as scf_cphf.F90 otherwise: its own pair list, ERI engine
-! and linalg handles, built and released here rather than reused from the
-! (already-released) SCF context.
-!
 module scf_cphf_uhf_suite
+   !!
+   !! UHF static dipole polarizability through trc_cphf (the coupled spin
+   !! channels, trc_cphf_solve_uhf), against pyscf's
+   !! pyscf.prop.polarizability.uhf -- test/pyscf_refs/generate.py's
+   !! gen_cphf_uhf. OH radical (9 electrons, nalpha=5, nbeta=4).
+   !!
+   !! COMPARES EIGENVALUES OF alpha, NOT ITS RAW COMPONENTS. OH's unpaired
+   !! electron sits in the (in exact C-infinity-v symmetry, degenerate) pi*
+   !! pair; UHF breaks that degeneracy by picking ONE real combination of the
+   !! two perpendicular p-like orbitals, and which combination it picks is a
+   !! numerical accident of the iteration path, not something either code
+   !! controls. Measured: two independent tight UHF solves (terco's and
+   !! pyscf's, same geometry/basis, energies agreeing to 1e-11) landed on
+   !! DIFFERENT rotations within that plane -- alpha_xx/alpha_yy/alpha_xy
+   !! disagreed by up to 0.17 a.u. while alpha_xx+alpha_yy (the trace) and
+   !! alpha_zz (along the bond, not degenerate) agreed to 1e-6. The physically
+   !! meaningful, rotation-invariant comparison is alpha's eigenvalues, which
+   !! this module computes (LAPACK dsyev on the host, via pic_syev -- a
+   !! plain 3x3, nothing device-resident) and writes instead of trusting the
+   !! raw tensor to line up component-by-component. A molecule with no such
+   !! orbital degeneracy (every RHF case in scf_cphf.F90) has no such freedom,
+   !! which is why that suite's own cases compare the raw 3x3 tensor directly.
+   !!
+   !! Same pattern as scf_cphf.F90 otherwise: its own pair list, ERI engine
+   !! and linalg handles, built and released here rather than reused from the
+   !! (already-released) SCF context.
+   !!
    use pic_types, only: dp, int64, default_int
    use pic_strings, only: to_string
    use pic_lapack_interfaces, only: pic_syev

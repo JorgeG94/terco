@@ -1,33 +1,33 @@
-!
-! The long-range exchange gradient term alone -- eri%gradient(j_scale=0,
-! k_scale=1, omega) -- against pyscf's own range-separated int2e_ip1
-! (mol.with_range_coulomb(omega)), contracted by hand exactly the way
-! check_rys_grad_vs_pyscf.F90 contracts the full-range int2e_ip1: a fixed,
-! deterministic, non-SCF density (pyscf's Gradients class assumes a
-! converged SCF density, which does not apply here), RHF only -- a
-! range-separated UHF gradient is out of scope on this branch (feat/grad-1e
-! has no exx-scaled full-range term either, and mqc's own reference
-! implementation, backends/cenzontle/derivatives/mqc_czt_gradient.f90,
-! refuses UHF + range-separated for the same reason: no validated
-! convention to check against).
-!
-! TWO omega values, both real functionals already in this tree
-! (src/xc/trc_xc_functional.F90): 0.3 (wB97X-V/wB97X) and 0.4 (wB97). k_scale
-! is 1 here regardless -- the kernel is linear in kfac by construction (see
-! scripts/gen_perclass.py's own prescreen comment), so checking it at 1
-! checks it at any exx_lr once this passes.
-!
-! eri%gradient's own convention (this module's header comment, same as
-! check_rys_grad_vs_pyscf.F90): TWICE d(e_two)/dR, no halving -- so the
-! pyscf side below is contracted with the identical "*4.0" (not "*2.0")
-! factor check_rys_grad_vs_pyscf.F90's grad2e_rhf uses, and the comparison
-! is against that raw number on both sides.
-!
-! Basis (6-31G* or cc-pVDZ) and dump path come from the command line
-! (test/CMakeLists.txt's `foreach(b 631gs ccpvdz)`), so each run checks
-! exactly the one case it was invoked with.
-!
 module check_lr_exchange_grad_vs_pyscf_suite
+   !!
+   !! The long-range exchange gradient term alone -- eri%gradient(j_scale=0,
+   !! k_scale=1, omega) -- against pyscf's own range-separated int2e_ip1
+   !! (mol.with_range_coulomb(omega)), contracted by hand exactly the way
+   !! check_rys_grad_vs_pyscf.F90 contracts the full-range int2e_ip1: a fixed,
+   !! deterministic, non-SCF density (pyscf's Gradients class assumes a
+   !! converged SCF density, which does not apply here), RHF only -- a
+   !! range-separated UHF gradient is out of scope on this branch (feat/grad-1e
+   !! has no exx-scaled full-range term either, and mqc's own reference
+   !! implementation, backends/cenzontle/derivatives/mqc_czt_gradient.f90,
+   !! refuses UHF + range-separated for the same reason: no validated
+   !! convention to check against).
+   !!
+   !! TWO omega values, both real functionals already in this tree
+   !! (src/xc/trc_xc_functional.F90): 0.3 (wB97X-V/wB97X) and 0.4 (wB97). k_scale
+   !! is 1 here regardless -- the kernel is linear in kfac by construction (see
+   !! scripts/gen_perclass.py's own prescreen comment), so checking it at 1
+   !! checks it at any exx_lr once this passes.
+   !!
+   !! eri%gradient's own convention (this module's header comment, same as
+   !! check_rys_grad_vs_pyscf.F90): TWICE d(e_two)/dR, no halving -- so the
+   !! pyscf side below is contracted with the identical "*4.0" (not "*2.0")
+   !! factor check_rys_grad_vs_pyscf.F90's grad2e_rhf uses, and the comparison
+   !! is against that raw number on both sides.
+   !!
+   !! Basis (6-31G* or cc-pVDZ) and dump path come from the command line
+   !! (test/CMakeLists.txt's `foreach(b 631gs ccpvdz)`), so each run checks
+   !! exactly the one case it was invoked with.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
@@ -56,11 +56,11 @@ contains
                   ]
    end subroutine collect_lr_exchange_grad_vs_pyscf_tests
 
-   !
-   ! Same deterministic, dense, symmetric construction as
-   ! check_rys_grad_vs_pyscf.F90/check_rys_grad_fd.F90, phase 1.
-   !
    subroutine synth_density(n, d)
+      !!
+      !! Same deterministic, dense, symmetric construction as
+      !! check_rys_grad_vs_pyscf.F90/check_rys_grad_fd.F90, phase 1.
+      !!
       integer, intent(in) :: n
       real(dp), intent(out) :: d(n, n)
       integer :: ii, jj

@@ -1,36 +1,36 @@
-!
-! The amplitude update, DIIS and the iteration driver of RI-CCSD
-! (src/post_hf/ccsd/trc_rccsd_update.F90, _diis.F90, _driver.F90) against the DF-RCCSD of pyscf, on a
-! water and on a C1 hydrogen peroxide, cc-pVDZ with cc-pVDZ-RIFIT, spherical, frozen core 1 and 2 (the
-! molecules, SCF and probes of check_rccsd_ints, shared through rccsd_test_support).
-!
-! References (test/pyscf_refs/rccsd_ints_*.ref, generate.py's gen_rccsd_ints):
-!   P_t1_new, P_t2_new  pyscf's update_amps applied ONCE to the FIXED amplitudes of the other checks
-!                       (t2 = MP2, t1_ia = (0.03 x + 0.02 y + 0.01 z)_ia / (e_i - e_a))
-!   E_UPDATE1           the correlation energy of those updated amplitudes
-!   E_MP2, E_CCSD_CORR  the MP2 and the converged DF-CCSD correlation energies (conv_tol 1e-12, normt 1e-10)
-!   P_t1_conv, P_t2_conv, T1_DIAG   the converged amplitudes (as the sign-invariant probes) and get_t1_diagnostic
-!
-! Cases, per molecule:
-!   1 one update from the fixed amplitudes against the pyscf probes and E_UPDATE1
-!   2 the same update against an independent host implementation of update_amps written term by term from the
-!     pyscf einsums (explicit (ac|bd) from b_vv; nothing of the modules under test), elementwise
-!   3 a converged run (conv_energy 1e-12, conv_amplitude 1e-10): E_CCSD_CORR, E_MP2, the probes of the converged
-!     amplitudes, the T1 diagnostic, the converged flag and the iteration count
-!   4 the converged amplitudes are a fixed point: one more update changes them by less than 1e-9 (max abs)
-!   5 DIIS on and off (diis_size 0) reach the same energy; DIIS takes no more iterations
-!   6 ladder forced assembled and forced direct reach the same energy
-!   7 non-convergence is reported (max_iterations 2: not converged, a message, a finite energy), and a NaN in
-!     the starting amplitudes stops the run as not converged
-!   8 refusals (an ECP, an open shell, two ranks, no virtuals, a frozen core as large as the occupied space,
-!     an unsized orbital array): refused, a message, nothing left allocated, and a normal run afterwards
-!   9 a loose energy tolerance does not stop the run while the amplitudes still move (the criterion is the AND)
-! and, once, without a molecule:
-!   - DIIS on a linear fixed-point problem x = A x + b reaches the solution in at most n + 1 steps; a restart on
-!     parallel error vectors; a NaN step is measured, flagged and never appended; the step measure
-!     (max and 2-norm, across more than one chunk) against a known vector
-!
 module rccsd_host_update
+   !!
+   !! The amplitude update, DIIS and the iteration driver of RI-CCSD
+   !! (src/post_hf/ccsd/trc_rccsd_update.F90, _diis.F90, _driver.F90) against the DF-RCCSD of pyscf, on a
+   !! water and on a C1 hydrogen peroxide, cc-pVDZ with cc-pVDZ-RIFIT, spherical, frozen core 1 and 2 (the
+   !! molecules, SCF and probes of check_rccsd_ints, shared through rccsd_test_support).
+   !!
+   !! References (test/pyscf_refs/rccsd_ints_*.ref, generate.py's gen_rccsd_ints):
+   !!   P_t1_new, P_t2_new  pyscf's update_amps applied ONCE to the FIXED amplitudes of the other checks
+   !!                       (t2 = MP2, t1_ia = (0.03 x + 0.02 y + 0.01 z)_ia / (e_i - e_a))
+   !!   E_UPDATE1           the correlation energy of those updated amplitudes
+   !!   E_MP2, E_CCSD_CORR  the MP2 and the converged DF-CCSD correlation energies (conv_tol 1e-12, normt 1e-10)
+   !!   P_t1_conv, P_t2_conv, T1_DIAG   the converged amplitudes (as the sign-invariant probes) and get_t1_diagnostic
+   !!
+   !! Cases, per molecule:
+   !!   1 one update from the fixed amplitudes against the pyscf probes and E_UPDATE1
+   !!   2 the same update against an independent host implementation of update_amps written term by term from the
+   !!     pyscf einsums (explicit (ac|bd) from b_vv; nothing of the modules under test), elementwise
+   !!   3 a converged run (conv_energy 1e-12, conv_amplitude 1e-10): E_CCSD_CORR, E_MP2, the probes of the converged
+   !!     amplitudes, the T1 diagnostic, the converged flag and the iteration count
+   !!   4 the converged amplitudes are a fixed point: one more update changes them by less than 1e-9 (max abs)
+   !!   5 DIIS on and off (diis_size 0) reach the same energy; DIIS takes no more iterations
+   !!   6 ladder forced assembled and forced direct reach the same energy
+   !!   7 non-convergence is reported (max_iterations 2: not converged, a message, a finite energy), and a NaN in
+   !!     the starting amplitudes stops the run as not converged
+   !!   8 refusals (an ECP, an open shell, two ranks, no virtuals, a frozen core as large as the occupied space,
+   !!     an unsized orbital array): refused, a message, nothing left allocated, and a normal run afterwards
+   !!   9 a loose energy tolerance does not stop the run while the amplitudes still move (the criterion is the AND)
+   !! and, once, without a molecule:
+   !!   - DIIS on a linear fixed-point problem x = A x + b reaches the solution in at most n + 1 steps; a restart on
+   !!     parallel error vectors; a NaN step is measured, flagged and never appended; the step measure
+   !!     (max and 2-norm, across more than one chunk) against a known vector
+   !!
    !! update_amps of pyscf/cc/rccsd.py (non-CC2 branch, canonical RHF orbitals, level_shift 0) as plain loops,
    !! each einsum written out with the integral blocks and t1/t2 only: (ac|bd) is summed from b_vv here, the Fock
    !! matrix is diag(e) and is added to Foo, Fvv, Loo, Lvv and subtracted again exactly as pyscf does. Nothing of
@@ -1489,11 +1489,10 @@ contains
       x = ieee_value(1.0_dp, ieee_quiet_nan)
    end function ieee_nan
 
-   ! ---------------------------------------------------------------------
-   ! DIIS on its own, no molecule
-   ! ---------------------------------------------------------------------
-
    function lcg(seed) result(x)
+      !! ---------------------------------------------------------------------
+      !! DIIS on its own, no molecule
+      !! ---------------------------------------------------------------------
       !! A deterministic number in (-1, 1)
       integer(int64), intent(inout) :: seed
       real(dp) :: x

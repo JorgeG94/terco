@@ -1,110 +1,110 @@
-!
-! GAMESS's per-component AO normalisation, at the C API boundary.
-!
-! terco (like libcint) normalises a Cartesian shell per ANGULAR MOMENTUM: a
-! d shell's six components share one constant, so <XY|XY> is 1/3, not 1.
-! GAMESS normalises every component INDIVIDUALLY to 1. trc_set_ao_norm
-! switches trc_capi's own AO-indexed entries between the two; see
-! src/core/trc_ao_norm.F90's header for the closed form and src/api/trc_capi.F90's
-! "AO NORMALISATION" section for exactly which entries convert.
-!
-! FORCED CARTESIAN. cc-pVDZ's d shells are tagged "gto_spherical" in BSE, so
-! since the spherical AO space was added this basis defaults to running
-! spherical (trc_api.F90's `b%spherical`). This check's entire subject is
-! the per-COMPONENT GAMESS convention, which is defined on CARTESIAN
-! components only and refuses to combine with a spherical basis at all
-! (trc_set_ao_norm's own refusal, trc_capi.F90) -- so every basis load here
-! forces Cartesian (`force_cart=.true.`/`trc_set_force_cartesian`), which is
-! what keeps this check testing the same thing it always has rather than
-! either failing outright on the refusal or silently changing subject.
-!
-! The basis is built once, in setup_ao_norm, before run_testsuite: a basis
-! that fails to build is an environment problem the original plain-program
-! version stopped on outright, not a per-test assertion, so this keeps that
-! behaviour rather than inventing a check for it. SIX CHECKS follow, as
-! test-drive unittests (parallel=.false., so the shell/unit SCF energies
-! each test stores for (b)'s comparison are safe to share through
-! module-level state).
-!
-!   (e) THE FACTOR ITSELF, l = 0..4, against test/reference_ao_norm.dat --
-!       sqrt(gamess_norm_sq(lx,ly,lz)) from scripts/cartorder.py, generated
-!       once and recorded (the same reason check_binfock reads reference.dat
-!       rather than calling libfint from Fortran: no Python at ctest time).
-!       Indexed by the EXPONENT TRIPLE, not by within-shell offset, so the
-!       one file checks whichever TRC_CART_ORDER this build was made with --
-!       order and normalisation are independent on purpose (both headers
-!       above say why), and this test would rather prove that than assume
-!       it. Through trc_ao_norm's `ao_norm_gamess` directly -- the pure ratio,
-!       not `ao_norm_vector`'s full boundary conversion, which ALSO folds
-!       in terco's own libcint-inherited `common_fac_sp` scale for s and p
-!       (see trc_ao_norm.F90's header; that is a real but SEPARATE effect
-!       this check is not the place to re-derive). Nothing here exercises
-!       the actual kernels, because ONE_E_LMAX in this generated kernel set
-!       is 2 and the formula does not need an integral to be checked
-!       against itself -- see (a) below for where the kernels DO get
-!       exercised, up to the d this build's one-electron path supports.
-!
-!   (a) THE OVERLAP DIAGONAL, water/cc-pVDZ (real d functions), through
-!       trc_context_basis + trc_compute_1e: exactly 1 for every s, p and
-!       "pure power" d component (XX/YY/ZZ), under EITHER mode -- terco's
-!       own raw <s|s>/<p_x|p_x> already equals GAMESS's (and pyscf's)
-!       unit convention, see trc_ao_norm.F90's header for why. Only the
-!       three "mixed" d components (XY/XZ/YZ) differ by mode: 1/3 under
-!       TRC_AO_NORM_SHELL (terco shares one normalisation constant across
-!       a shell's components), 1 under TRC_AO_NORM_UNIT (GAMESS normalises
-!       every component individually) -- found by looking up each AO's own
-!       (px,py,pz) via batch_cart_pow, the same way (e) does, so this check does
-!       not depend on knowing TRC_CART_ORDER's slot assignment by hand
-!       either. Every AO in the basis is walked and the worst mismatch
-!       against its own expected value/tolerance is what (a)'s check
-!       reports, rather than one check per AO.
-!
-!       AN EARLIER VERSION OF THIS CHECK asserted 1/(4*pi) and 3/(4*pi) for
-!       SHELL-mode s and p. That number was the trc_basis_json bug this
-!       basis (loaded through trc_basis_from_json, below) used to have --
-!       folding `common_fac_sp` twice into an s or p shell's coefficients --
-!       reverse-engineered into the test as if it were the convention,
-!       without checking it against the OTHER basis constructor
-!       (test/trc_test_basis.F90's `build_631g`) or against pyscf, both of
-!       which give 1 directly. It stayed green because
-!       trc_ao_norm.F90's own `ao_norm_vector` carried a SECOND
-!       `common_fac_sp` divide that canceled it for (b)/(c)/(d)/(f), which
-!       test self-consistency and cannot see an overall basis-wide scale
-!       error; only this check's hard-coded numbers could, and did, the
-!       moment the JSON reader's fold was fixed on its own.
-!
-!   (b) THE SCF ENERGY, SHELL and UNIT, must agree to ~1e-12 Eh: the whole
-!       point of a change of AO NORMALISATION is that it is not a change of
-!       physics, only of what a getter hands back.
-!
-!   (c) Tr(D S) = N_electron, in EACH mode's own D and S -- the physical
-!       invariant a contravariant-covariant pair is built to preserve
-!       (Tr(N^-1 D N^-1 . N S N) = Tr(D S) exactly, for any diagonal N), so
-!       this is a self-consistency check on ao_norm_scale_cov/ao_norm_scale_contra
-!       agreeing about which direction is which.
-!
-!   (d) ROUND TRIP: the density trc_density hands back in a mode is fed
-!       straight into trc_set_guess in the SAME mode; the SCF must already
-!       be converged (few iterations, same energy). A mismatched
-!       conversion (covariant where it should be contravariant, or a sign
-!       error in the exponent) would still pass (b) and (c) -- both are
-!       symmetric in a way that a transposed mistake cannot break -- but
-!       would feed trc_run_scf a density that is not actually the converged
-!       one, and it would take real iterations to get back.
-!
-!   (f) THE FOCK BUILD (`check_fock`), the entry GAMESS's own driver calls
-!       for J/K (run_Fockbuild's role in hpcchem_driver.src): ONE physical
-!       density, D_shell from a converged SHELL-mode SCF, fed to trc_fock
-!       in SHELL mode directly and, EXPLICITLY converted here (D_unit =
-!       N^-1 D_shell N^-1, not from a second, independently-converged SCF
-!       -- see the subroutine's own comment for why that distinction is
-!       the whole point), to trc_fock in UNIT mode. Checks F_unit = N
-!       F_shell N to ~1e-12 relative, and that Tr(D F) -- the two-electron
-!       energy expression -- agrees between the two mode's own (D, F)
-!       pairs, which holds by the SAME congruence identity (c) uses,
-!       independent of any SCF.
-!
 module check_ao_norm_suite
+   !!
+   !! GAMESS's per-component AO normalisation, at the C API boundary.
+   !!
+   !! terco (like libcint) normalises a Cartesian shell per ANGULAR MOMENTUM: a
+   !! d shell's six components share one constant, so <XY|XY> is 1/3, not 1.
+   !! GAMESS normalises every component INDIVIDUALLY to 1. trc_set_ao_norm
+   !! switches trc_capi's own AO-indexed entries between the two; see
+   !! src/core/trc_ao_norm.F90's header for the closed form and src/api/trc_capi.F90's
+   !! "AO NORMALISATION" section for exactly which entries convert.
+   !!
+   !! FORCED CARTESIAN. cc-pVDZ's d shells are tagged "gto_spherical" in BSE, so
+   !! since the spherical AO space was added this basis defaults to running
+   !! spherical (trc_api.F90's `b%spherical`). This check's entire subject is
+   !! the per-COMPONENT GAMESS convention, which is defined on CARTESIAN
+   !! components only and refuses to combine with a spherical basis at all
+   !! (trc_set_ao_norm's own refusal, trc_capi.F90) -- so every basis load here
+   !! forces Cartesian (`force_cart=.true.`/`trc_set_force_cartesian`), which is
+   !! what keeps this check testing the same thing it always has rather than
+   !! either failing outright on the refusal or silently changing subject.
+   !!
+   !! The basis is built once, in setup_ao_norm, before run_testsuite: a basis
+   !! that fails to build is an environment problem the original plain-program
+   !! version stopped on outright, not a per-test assertion, so this keeps that
+   !! behaviour rather than inventing a check for it. SIX CHECKS follow, as
+   !! test-drive unittests (parallel=.false., so the shell/unit SCF energies
+   !! each test stores for (b)'s comparison are safe to share through
+   !! module-level state).
+   !!
+   !!   (e) THE FACTOR ITSELF, l = 0..4, against test/reference_ao_norm.dat --
+   !!       sqrt(gamess_norm_sq(lx,ly,lz)) from scripts/cartorder.py, generated
+   !!       once and recorded (the same reason check_binfock reads reference.dat
+   !!       rather than calling libfint from Fortran: no Python at ctest time).
+   !!       Indexed by the EXPONENT TRIPLE, not by within-shell offset, so the
+   !!       one file checks whichever TRC_CART_ORDER this build was made with --
+   !!       order and normalisation are independent on purpose (both headers
+   !!       above say why), and this test would rather prove that than assume
+   !!       it. Through trc_ao_norm's `ao_norm_gamess` directly -- the pure ratio,
+   !!       not `ao_norm_vector`'s full boundary conversion, which ALSO folds
+   !!       in terco's own libcint-inherited `common_fac_sp` scale for s and p
+   !!       (see trc_ao_norm.F90's header; that is a real but SEPARATE effect
+   !!       this check is not the place to re-derive). Nothing here exercises
+   !!       the actual kernels, because ONE_E_LMAX in this generated kernel set
+   !!       is 2 and the formula does not need an integral to be checked
+   !!       against itself -- see (a) below for where the kernels DO get
+   !!       exercised, up to the d this build's one-electron path supports.
+   !!
+   !!   (a) THE OVERLAP DIAGONAL, water/cc-pVDZ (real d functions), through
+   !!       trc_context_basis + trc_compute_1e: exactly 1 for every s, p and
+   !!       "pure power" d component (XX/YY/ZZ), under EITHER mode -- terco's
+   !!       own raw <s|s>/<p_x|p_x> already equals GAMESS's (and pyscf's)
+   !!       unit convention, see trc_ao_norm.F90's header for why. Only the
+   !!       three "mixed" d components (XY/XZ/YZ) differ by mode: 1/3 under
+   !!       TRC_AO_NORM_SHELL (terco shares one normalisation constant across
+   !!       a shell's components), 1 under TRC_AO_NORM_UNIT (GAMESS normalises
+   !!       every component individually) -- found by looking up each AO's own
+   !!       (px,py,pz) via batch_cart_pow, the same way (e) does, so this check does
+   !!       not depend on knowing TRC_CART_ORDER's slot assignment by hand
+   !!       either. Every AO in the basis is walked and the worst mismatch
+   !!       against its own expected value/tolerance is what (a)'s check
+   !!       reports, rather than one check per AO.
+   !!
+   !!       AN EARLIER VERSION OF THIS CHECK asserted 1/(4*pi) and 3/(4*pi) for
+   !!       SHELL-mode s and p. That number was the trc_basis_json bug this
+   !!       basis (loaded through trc_basis_from_json, below) used to have --
+   !!       folding `common_fac_sp` twice into an s or p shell's coefficients --
+   !!       reverse-engineered into the test as if it were the convention,
+   !!       without checking it against the OTHER basis constructor
+   !!       (test/trc_test_basis.F90's `build_631g`) or against pyscf, both of
+   !!       which give 1 directly. It stayed green because
+   !!       trc_ao_norm.F90's own `ao_norm_vector` carried a SECOND
+   !!       `common_fac_sp` divide that canceled it for (b)/(c)/(d)/(f), which
+   !!       test self-consistency and cannot see an overall basis-wide scale
+   !!       error; only this check's hard-coded numbers could, and did, the
+   !!       moment the JSON reader's fold was fixed on its own.
+   !!
+   !!   (b) THE SCF ENERGY, SHELL and UNIT, must agree to ~1e-12 Eh: the whole
+   !!       point of a change of AO NORMALISATION is that it is not a change of
+   !!       physics, only of what a getter hands back.
+   !!
+   !!   (c) Tr(D S) = N_electron, in EACH mode's own D and S -- the physical
+   !!       invariant a contravariant-covariant pair is built to preserve
+   !!       (Tr(N^-1 D N^-1 . N S N) = Tr(D S) exactly, for any diagonal N), so
+   !!       this is a self-consistency check on ao_norm_scale_cov/ao_norm_scale_contra
+   !!       agreeing about which direction is which.
+   !!
+   !!   (d) ROUND TRIP: the density trc_density hands back in a mode is fed
+   !!       straight into trc_set_guess in the SAME mode; the SCF must already
+   !!       be converged (few iterations, same energy). A mismatched
+   !!       conversion (covariant where it should be contravariant, or a sign
+   !!       error in the exponent) would still pass (b) and (c) -- both are
+   !!       symmetric in a way that a transposed mistake cannot break -- but
+   !!       would feed trc_run_scf a density that is not actually the converged
+   !!       one, and it would take real iterations to get back.
+   !!
+   !!   (f) THE FOCK BUILD (`check_fock`), the entry GAMESS's own driver calls
+   !!       for J/K (run_Fockbuild's role in hpcchem_driver.src): ONE physical
+   !!       density, D_shell from a converged SHELL-mode SCF, fed to trc_fock
+   !!       in SHELL mode directly and, EXPLICITLY converted here (D_unit =
+   !!       N^-1 D_shell N^-1, not from a second, independently-converged SCF
+   !!       -- see the subroutine's own comment for why that distinction is
+   !!       the whole point), to trc_fock in UNIT mode. Checks F_unit = N
+   !!       F_shell N to ~1e-12 relative, and that Tr(D F) -- the two-electron
+   !!       energy expression -- agrees between the two mode's own (D, F)
+   !!       pairs, which holds by the SAME congruence identity (c) uses,
+   !!       independent of any SCF.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char, c_loc
    use pic_types, only: dp
    use pic_strings, only: to_string

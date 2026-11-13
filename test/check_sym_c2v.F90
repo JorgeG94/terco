@@ -1,62 +1,62 @@
-!
-! The point group C2v: detection and orientation, the SO basis, the
-! SO-blocked SCF, and the gradient, against pyscf 2.14.0 (symmetry=True) and
-! against terco's own C1 runs.
-!
-! Molecules: water (planar, in the yz plane on input), formaldehyde (planar,
-! C2 along x, in the xy plane), the NH2 radical (planar, 2B1) and nonplanar
-! CH2Cl2 (both mirrors move atoms, in a general orientation).
-!
-! Orientation. pyscf puts the C2 axis on z and, for a planar molecule, the
-! plane normal on x (detect_symm / _adjust_planar_c2v), so the out-of-plane
-! orbitals are B1 and the in-plane ones B2: the HOMO of water is 1b1 and its
-! 1b2 is the in-plane O-H bonding orbital. The checks that pin this:
-!   - the frame (rows x, y, z, up to sign) and the origin that terco finds are
-!     those pyscf prints for the four geometries;
-!   - the irrep of the highest occupied orbital of each spin, the electrons
-!     per irrep and the orbital energies of each irrep equal pyscf's
-!     (pyscf_refs/sym_c2v.ref); a swap of B1 and B2 changes every one of them;
-!   - the HOMO (b1) and the lowest b2 of water are asserted by name, also for
-!     a copy of water that is rotated arbitrarily on input.
-!
-! THE CENTRAL ORACLE. A molecule on the symmetrised, standard-frame geometry
-! of trc_sym_geom is run with the irrep blocks and as plain C1; they must
-! agree in the total energy (<= 1e-10 Eh for HF, <= 1e-9 for B3LYP), the
-! orbital energies and the density. RHF water (cc-pVDZ, spherical), RHF
-! formaldehyde and RHF CH2Cl2 (6-31G*, Cartesian), UHF NH2 (cc-pVDZ), B3LYP
-! water.
-!
-! The SO basis: U^T U = I, U^T S U and U^T H U block-diagonal (<= 1e-12), S
-! invariant under the signed permutations, and the irrep dimensions equal
-! pyscf's mol.symm_orb (pyscf_refs/sym_c2v_so_dims.ref), Cartesian and
-! spherical, 6-31G* and cc-pVDZ.
-!
-! The gradient: the components that symmetry forces to zero are <= 1e-10 in
-! the raw gradient of the symmetric run, vanish after symmetrisation, the
-! symmetrised gradient equals the C1 one, and the projection is equivariant
-! and idempotent on a gradient that is not symmetric.
-!
-! WHICH FOCK BUILD EACH CASE RUNS, DELIBERATELY. Every molecule here is below
-! the skeleton build's size rule (`sym_run_skeleton_size_rule`): water and NH2 are
-! 3 atoms in 2 orbits, formaldehyde 4 in 3 and CH2Cl2 5 in 3, because the C2
-! axis and the mirrors fix most of their atoms. A default symmetric run
-! therefore takes the FULL build with F symmetrized after it, and the skeleton
-! build would not be exercised here at all unless it is asked for. So
-! `make_pair` takes `skeleton`, and every case states what it wants and
-! asserts (`trc_scf_result_t%sym_skeleton`) that it got it:
-!   skeleton = .true.   CH2Cl2 RHF (nonplanar: both mirrors move atoms, so the
-!                       orbit fold is nontrivial) and the NH2 radical (UHF).
-!                       This is the group's skeleton-build coverage against
-!                       both C1 and the pyscf anchor.
-!   absent              the rule in charge, which for these molecules means
-!                       the full build -- the path a user actually gets. The
-!                       assertion is that the rule declined, so if the rule
-!                       ever starts accepting them this test says so rather
-!                       than silently changing what it covers.
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_c2v_suite
+   !!
+   !! The point group C2v: detection and orientation, the SO basis, the
+   !! SO-blocked SCF, and the gradient, against pyscf 2.14.0 (symmetry=True) and
+   !! against terco's own C1 runs.
+   !!
+   !! Molecules: water (planar, in the yz plane on input), formaldehyde (planar,
+   !! C2 along x, in the xy plane), the NH2 radical (planar, 2B1) and nonplanar
+   !! CH2Cl2 (both mirrors move atoms, in a general orientation).
+   !!
+   !! Orientation. pyscf puts the C2 axis on z and, for a planar molecule, the
+   !! plane normal on x (detect_symm / _adjust_planar_c2v), so the out-of-plane
+   !! orbitals are B1 and the in-plane ones B2: the HOMO of water is 1b1 and its
+   !! 1b2 is the in-plane O-H bonding orbital. The checks that pin this:
+   !!   - the frame (rows x, y, z, up to sign) and the origin that terco finds are
+   !!     those pyscf prints for the four geometries;
+   !!   - the irrep of the highest occupied orbital of each spin, the electrons
+   !!     per irrep and the orbital energies of each irrep equal pyscf's
+   !!     (pyscf_refs/sym_c2v.ref); a swap of B1 and B2 changes every one of them;
+   !!   - the HOMO (b1) and the lowest b2 of water are asserted by name, also for
+   !!     a copy of water that is rotated arbitrarily on input.
+   !!
+   !! THE CENTRAL ORACLE. A molecule on the symmetrised, standard-frame geometry
+   !! of trc_sym_geom is run with the irrep blocks and as plain C1; they must
+   !! agree in the total energy (<= 1e-10 Eh for HF, <= 1e-9 for B3LYP), the
+   !! orbital energies and the density. RHF water (cc-pVDZ, spherical), RHF
+   !! formaldehyde and RHF CH2Cl2 (6-31G*, Cartesian), UHF NH2 (cc-pVDZ), B3LYP
+   !! water.
+   !!
+   !! The SO basis: U^T U = I, U^T S U and U^T H U block-diagonal (<= 1e-12), S
+   !! invariant under the signed permutations, and the irrep dimensions equal
+   !! pyscf's mol.symm_orb (pyscf_refs/sym_c2v_so_dims.ref), Cartesian and
+   !! spherical, 6-31G* and cc-pVDZ.
+   !!
+   !! The gradient: the components that symmetry forces to zero are <= 1e-10 in
+   !! the raw gradient of the symmetric run, vanish after symmetrisation, the
+   !! symmetrised gradient equals the C1 one, and the projection is equivariant
+   !! and idempotent on a gradient that is not symmetric.
+   !!
+   !! WHICH FOCK BUILD EACH CASE RUNS, DELIBERATELY. Every molecule here is below
+   !! the skeleton build's size rule (`sym_run_skeleton_size_rule`): water and NH2 are
+   !! 3 atoms in 2 orbits, formaldehyde 4 in 3 and CH2Cl2 5 in 3, because the C2
+   !! axis and the mirrors fix most of their atoms. A default symmetric run
+   !! therefore takes the FULL build with F symmetrized after it, and the skeleton
+   !! build would not be exercised here at all unless it is asked for. So
+   !! `make_pair` takes `skeleton`, and every case states what it wants and
+   !! asserts (`trc_scf_result_t%sym_skeleton`) that it got it:
+   !!   skeleton = .true.   CH2Cl2 RHF (nonplanar: both mirrors move atoms, so the
+   !!                       orbit fold is nontrivial) and the NH2 radical (UHF).
+   !!                       This is the group's skeleton-build coverage against
+   !!                       both C1 and the pyscf anchor.
+   !!   absent              the rule in charge, which for these molecules means
+   !!                       the full build -- the path a user actually gets. The
+   !!                       assertion is that the rule declined, so if the rule
+   !!                       ever starts accepting them this test says so rather
+   !!                       than silently changing what it covers.
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -124,9 +124,8 @@ contains
                   ]
    end subroutine collect_sym_c2v
 
-   ! ---------------------------------------------------------------- frame
-
    subroutine test_frame(error)
+      !! ---------------------------------------------------------------- frame
       !! pyscf 2.14.0 _symm_axes (rows x, y, z, compared up to sign) and
       !! _symm_orig (Bohr) for the four geometries as read from the .xyz files.
       type(error_type), allocatable, intent(out) :: error
@@ -219,9 +218,8 @@ contains
           + m(1, 3)*(m(2, 1)*m(3, 2) - m(2, 2)*m(3, 1))
    end function det3
 
-   ! ------------------------------------------------------------- SO basis
-
    subroutine setup_geom(name, elem, geom, error)
+      !! ------------------------------------------------------------- SO basis
       character(len=*), intent(in) :: name
       integer, allocatable, intent(out) :: elem(:)
       type(trc_sym_geom_t), intent(out) :: geom
@@ -368,9 +366,8 @@ contains
       call ref_close(u)
    end subroutine test_so_basis
 
-   ! ------------------------------------------------------------------ SCF
-
    subroutine run_pair(error, p, elem, bas_file, spherical, functional, charge, mult, with_c1, skeleton)
+      !! ------------------------------------------------------------------ SCF
       !! Build the basis on the standard frame of `p%geom`, run the SCF with
       !! symmetry and (unless `with_c1` is false) as C1. `skeleton` picks the
       !! Fock build: present and true forces the skeleton build, absent leaves
@@ -686,9 +683,8 @@ contains
       m(3, 2) = m(3, 2) + s*u(1)
    end function rotation
 
-   ! -------------------------------------------------------------- gradient
-
    subroutine test_gradient(error)
+      !! -------------------------------------------------------------- gradient
       !! Water (planar), NH2 (UHF, planar) and nonplanar CH2Cl2, then the
       !! projection itself on a gradient that is not symmetric.
       type(error_type), allocatable, intent(out) :: error
@@ -792,9 +788,8 @@ contains
                  to_string(forbidden, "es10.2")//", idempotence "//to_string(idem, "es10.2"))
    end subroutine noise_case
 
-   ! ------------------------------------------------------ fixed occupations
-
    subroutine test_fixed_occupations(error)
+      !! ------------------------------------------------------ fixed occupations
       !! pyscf's irrep_nelec for four irreps: the aufbau counts reproduce the
       !! aufbau energy; moving the b1 pair into a1 gives a higher converged
       !! state; a wrong sum is refused.

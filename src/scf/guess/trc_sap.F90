@@ -105,22 +105,22 @@ contains
       res = (l + 1)*(l + 2)/2
    end function ncart
 
-   !
-   ! The radial screening potential of one free atom, on that element's own
-   ! radial mesh.
-   !
-   !   Vscr(r) = V_H[rho](r) + v_x[rho](r)
-   !
-   ! with rho the spherically averaged free-atom density and
-   !
-   !   V_H(r) = 4 pi [ (1/r) int_0^r s^2 rho ds + int_r^inf s rho ds ]
-   !   v_x(r) = -(3 rho / pi)^(1/3)                      Dirac-Slater
-   !
-   ! `nel` comes back as 4 pi int r^2 rho dr: a check on the quadrature and the
-   ! coefficient of the tail, since past the last node the atom is a point charge
-   ! -nel, so Vscr = nel/r and V_ne + Vscr goes to zero for a neutral atom.
-   !
    subroutine trc_sap_screen_table(b, ish0, ish1, centre, z, dblk, r, vscr, nel, error)
+      !!
+      !! The radial screening potential of one free atom, on that element's own
+      !! radial mesh.
+      !!
+      !!   Vscr(r) = V_H[rho](r) + v_x[rho](r)
+      !!
+      !! with rho the spherically averaged free-atom density and
+      !!
+      !!   V_H(r) = 4 pi [ (1/r) int_0^r s^2 rho ds + int_r^inf s rho ds ]
+      !!   v_x(r) = -(3 rho / pi)^(1/3)                      Dirac-Slater
+      !!
+      !! `nel` comes back as 4 pi int r^2 rho dr: a check on the quadrature and the
+      !! coefficient of the tail, since past the last node the atom is a point charge
+      !! -nel, so Vscr = nel/r and V_ne + Vscr goes to zero for a neutral atom.
+      !!
       type(trc_basis_t), intent(in) :: b
       integer,  intent(in) :: ish0, ish1     !! the atom's shell range in `b`
       real(dp), intent(in) :: centre(3)
@@ -204,12 +204,12 @@ contains
       deallocate (dr, rho, ang, wang, phi)
    end subroutine trc_sap_screen_table
 
-   !
-   ! Vscr of one element at an arbitrary distance: linear between nodes, nel/rr
-   ! past the last one (a point charge), and the first node's value inside it
-   ! (unresolved by any molecular grid; the nuclear term dominates there).
-   !
    pure real(dp) function interp(r, v, nel, rr) result(res)
+      !!
+      !! Vscr of one element at an arbitrary distance: linear between nodes, nel/rr
+      !! past the last one (a point charge), and the first node's value inside it
+      !! (unresolved by any molecular grid; the nuclear term dominates there).
+      !!
       real(dp), intent(in) :: nel, rr
       real(dp), intent(in) :: r(:), v(:)
       integer :: lo, hi, mid
@@ -234,35 +234,35 @@ contains
       end if
    end function interp
 
-   !
-   ! The screening potential from FITTED atomic charge distributions.
-   !
-   ! Lehtola's Gaussian fits make this a three-centre contraction instead of a
-   ! quadrature:
-   !
-   !   Vscr(mu,nu) = sum_A (mu nu | rho_A),   rho_A = sum_p c_p g_p
-   !
-   ! with one contracted s shell per atom (naux = atom count). It is the same
-   ! integral density fitting does, on the device, and replaces a host-side grid
-   ! assembly that cost 80 s on a 123-atom slab; the grid path below is kept as
-   ! the independent check.
-   !
-   ! NORMALISATION, THE TRAP. The published coefficients are charges over
-   ! unit-normalised distributions, summing to -Z (checked by
-   ! trc_fitted_shell_from_json). Two things must happen:
-   !
-   ! Sign: `(mu nu | P)` is for a POSITIVE unit charge, but an electron in the
-   ! field of Z electrons has energy +Z/R, so the coefficient passed is
-   ! -c_published and the far field is +Z/R.
-   !
-   ! Normalisation: `basis_build` multiplies by common_fac_sp(l) only, so the
-   ! engine integrates (sh_c / common_fac_sp) exp(-alpha r^2), and a unit charge
-   ! distribution is (alpha/pi)^(3/2) exp(-alpha r^2). The coefficient passed is
-   ! therefore -c_published * (alpha/pi)^(3/2), NOT the wavefunction
-   ! normalisation (2 alpha/pi)^(3/4) used for every other basis, which gives a
-   ! smooth exponent-dependent error that still converges, silently.
-   !
    subroutine trc_sap_build(b, pl, tmat, vmat, hsap, error, verbose, path)
+      !!
+      !! The screening potential from FITTED atomic charge distributions.
+      !!
+      !! Lehtola's Gaussian fits make this a three-centre contraction instead of a
+      !! quadrature:
+      !!
+      !!   Vscr(mu,nu) = sum_A (mu nu | rho_A),   rho_A = sum_p c_p g_p
+      !!
+      !! with one contracted s shell per atom (naux = atom count). It is the same
+      !! integral density fitting does, on the device, and replaces a host-side grid
+      !! assembly that cost 80 s on a 123-atom slab; the grid path below is kept as
+      !! the independent check.
+      !!
+      !! NORMALISATION, THE TRAP. The published coefficients are charges over
+      !! unit-normalised distributions, summing to -Z (checked by
+      !! trc_fitted_shell_from_json). Two things must happen:
+      !!
+      !! Sign: `(mu nu | P)` is for a POSITIVE unit charge, but an electron in the
+      !! field of Z electrons has energy +Z/R, so the coefficient passed is
+      !! -c_published and the far field is +Z/R.
+      !!
+      !! Normalisation: `basis_build` multiplies by common_fac_sp(l) only, so the
+      !! engine integrates (sh_c / common_fac_sp) exp(-alpha r^2), and a unit charge
+      !! distribution is (alpha/pi)^(3/2) exp(-alpha r^2). The coefficient passed is
+      !! therefore -c_published * (alpha/pi)^(3/2), NOT the wavefunction
+      !! normalisation (2 alpha/pi)^(3/4) used for every other basis, which gives a
+      !! smooth exponent-dependent error that still converges, silently.
+      !!
       type(trc_basis_t),    intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
       real(dp), intent(in)  :: tmat(b%nao, b%nao), vmat(b%nao, b%nao)
@@ -410,13 +410,13 @@ contains
       hsap = hsap + tmat + vmat
    end subroutine trc_sap_build
 
-   !
-   ! H_sap = T + V_ne + sum_A Vscr_A.
-   !
-   ! `tmat` and `vmat` are the analytic matrices from trc_1e. `nelec` present
-   ! selects SADQ atoms (charge spread over the atoms) rather than neutral SAD ones.
-   !
    subroutine trc_sap_grid(b, tmat, vmat, hsap, error, verbose, nelec, level)
+      !!
+      !! H_sap = T + V_ne + sum_A Vscr_A.
+      !!
+      !! `tmat` and `vmat` are the analytic matrices from trc_1e. `nelec` present
+      !! selects SADQ atoms (charge spread over the atoms) rather than neutral SAD ones.
+      !!
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: tmat(b%nao, b%nao), vmat(b%nao, b%nao)
       real(dp), intent(out) :: hsap(b%nao, b%nao)
@@ -569,14 +569,14 @@ contains
       end subroutine stage
    end subroutine trc_sap_grid
 
-   !
-   ! H_munu += sum_g wv(g) chi_mu(g) chi_nu(g).
-   !
-   ! Batched through `trc_xc_grid_t`, as the XC integrator does: per batch it
-   ! returns the shells that reach it and a local numbering, so the inner matrix
-   ! is the batch's few functions, not nao^2 per point.
-   !
    subroutine assemble(b, g, wv, h, error)
+      !!
+      !! H_munu += sum_g wv(g) chi_mu(g) chi_nu(g).
+      !!
+      !! Batched through `trc_xc_grid_t`, as the XC integrator does: per batch it
+      !! returns the shells that reach it and a local numbering, so the inner matrix
+      !! is the batch's few functions, not nao^2 per point.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(dft_grid_t), intent(in) :: g
       real(dp), intent(in) :: wv(:)

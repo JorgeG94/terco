@@ -1,65 +1,65 @@
-!
-! The skeleton Fock build: the S14 oracle.
-!
-! `eri%fock(..., skeleton=.true.)` launches only the orbit representatives of
-! one side of each bin pair, weighted by their orbit size; the matrix it
-! returns is G_skel, and (1/|G|) sum_g R G_skel R^T, the symmetrization the
-! caller applies in its own AO space after the Cartesian -> spherical fold, is
-! the full G. This check builds both on the SAME object (bins closed under the
-! group, `eri%build(..., sym=geom)`; the full build walks the same pairs in
-! another order) and compares them:
-!
-!   |sym(fold(G_skel)) - fold(G_full)|_max  <=  TOL_REL * max(1, |G_full|_max)
-!
-! the tolerance relative to the largest element as check_nosym's is: the sums
-! have 1e5..1e7 terms and their order differs between the two builds. TOL_REL
-! is justified from the measured errors the test prints (see the header of
-! `TOL_REL`).
-!
-! Matrix, per molecule:
-!   - Cartesian and spherical caller AO spaces (the symmetrizer is the
-!     production one, `trc_sym_scf_t%symmetrize`, on the AO maps of the
-!     caller's space; the skeleton is formed in the Cartesian working basis);
-!   - J only, K only (the exchange-only launch, the one the exchange tiles
-!     prune) and J+K;
-!   - a random symmetrized density and a converged one (the symmetric SCF's);
-!   - incremental: sym(G_skel(D_ref) + G_skel(dD)) against G(D_ref) + G(dD);
-!   - the engine routing of the environment (TRC_RYS_CLASSES none / all runs
-!     are separate ctest entries), TRC_BIN_CAP (the orbit-closed split) and
-!     TRC_BIN_SORT (the orbit-aware sort).
-! Molecules: one or more for every enabled group (Cs CHFCl2, Ci, C2 H2O2,
-! C2v water, C2h N2H2, D2 twisted ethylene, D2h B2H6, naphthalene and
-! benzene, which is D6h detected as D2h). Pentacene and hexacene (D2h, banded
-! density) so that the exchange tiles cut: the K launch with tiles has fewer
-! work items than without, in the full and in the skeleton plan alike.
-!
-! The quartet counts of the plan itself (`eri%nwork`), on a zero density so
-! that no integral is evaluated, against the S13 prototype: cc-pVDZ at 1e-10
-! gives 14627 / 9968 (water), 360415 / 107763 (B2H6), 4741001 / 1342393
-! (benzene), 20671728 / 5451483 (naphthalene): the full count and the
-! skeleton's (1.47, 3.34, 3.53, 3.79 times fewer). A silent fall back to the
-! full build would show as a ratio of one.
-!
-! Registered as check_sym_fock (mode "main"), check_sym_fock_quick/_hgp/_rys/
-! _cap/_sort (mode "quick" under the environment that names them) and
-! check_sym_fock_f (mode "f": the uncontracted l = 0..3 set, which prints SKIP
-! when this build's LMAX is below 3).
-!
-! The McMurchie-Davidson engines (S14.4): their bra is restricted to the orbit
-! representatives too, on the engines' own counters (`eri%md%npq`, the
-! (P, Q) primitive pairs of the Hermite stage; `eri%mg%nquart`, the
-! shell-pair quartets of the exchange windows), which a silent fall back to
-! the unrestricted engine would leave unchanged. check_sym_fock_md (mode
-! "md", TRC_MDJ=1: the resident entry's J from MD J on the uncontracted
-! l = 0..3 set; SKIP below LMAX 3), check_sym_fock_mdrule (mode "mdrule",
-! TRC_MDJ unset: a system for which eri_mdj_size_rule picks MD J by itself) and
-! check_sym_fock_mdg (mode "mdg": water cc-pVQZ, whose g shell sends the
-! classes above TERCO_RYS_G_LTOT to MD exchange and J to MD J; SKIP below
-! LMAX 4, where those classes are not generated).
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_fock_suite
+   !!
+   !! The skeleton Fock build: the S14 oracle.
+   !!
+   !! `eri%fock(..., skeleton=.true.)` launches only the orbit representatives of
+   !! one side of each bin pair, weighted by their orbit size; the matrix it
+   !! returns is G_skel, and (1/|G|) sum_g R G_skel R^T, the symmetrization the
+   !! caller applies in its own AO space after the Cartesian -> spherical fold, is
+   !! the full G. This check builds both on the SAME object (bins closed under the
+   !! group, `eri%build(..., sym=geom)`; the full build walks the same pairs in
+   !! another order) and compares them:
+   !!
+   !!   |sym(fold(G_skel)) - fold(G_full)|_max  <=  TOL_REL * max(1, |G_full|_max)
+   !!
+   !! the tolerance relative to the largest element as check_nosym's is: the sums
+   !! have 1e5..1e7 terms and their order differs between the two builds. TOL_REL
+   !! is justified from the measured errors the test prints (see the header of
+   !! `TOL_REL`).
+   !!
+   !! Matrix, per molecule:
+   !!   - Cartesian and spherical caller AO spaces (the symmetrizer is the
+   !!     production one, `trc_sym_scf_t%symmetrize`, on the AO maps of the
+   !!     caller's space; the skeleton is formed in the Cartesian working basis);
+   !!   - J only, K only (the exchange-only launch, the one the exchange tiles
+   !!     prune) and J+K;
+   !!   - a random symmetrized density and a converged one (the symmetric SCF's);
+   !!   - incremental: sym(G_skel(D_ref) + G_skel(dD)) against G(D_ref) + G(dD);
+   !!   - the engine routing of the environment (TRC_RYS_CLASSES none / all runs
+   !!     are separate ctest entries), TRC_BIN_CAP (the orbit-closed split) and
+   !!     TRC_BIN_SORT (the orbit-aware sort).
+   !! Molecules: one or more for every enabled group (Cs CHFCl2, Ci, C2 H2O2,
+   !! C2v water, C2h N2H2, D2 twisted ethylene, D2h B2H6, naphthalene and
+   !! benzene, which is D6h detected as D2h). Pentacene and hexacene (D2h, banded
+   !! density) so that the exchange tiles cut: the K launch with tiles has fewer
+   !! work items than without, in the full and in the skeleton plan alike.
+   !!
+   !! The quartet counts of the plan itself (`eri%nwork`), on a zero density so
+   !! that no integral is evaluated, against the S13 prototype: cc-pVDZ at 1e-10
+   !! gives 14627 / 9968 (water), 360415 / 107763 (B2H6), 4741001 / 1342393
+   !! (benzene), 20671728 / 5451483 (naphthalene): the full count and the
+   !! skeleton's (1.47, 3.34, 3.53, 3.79 times fewer). A silent fall back to the
+   !! full build would show as a ratio of one.
+   !!
+   !! Registered as check_sym_fock (mode "main"), check_sym_fock_quick/_hgp/_rys/
+   !! _cap/_sort (mode "quick" under the environment that names them) and
+   !! check_sym_fock_f (mode "f": the uncontracted l = 0..3 set, which prints SKIP
+   !! when this build's LMAX is below 3).
+   !!
+   !! The McMurchie-Davidson engines (S14.4): their bra is restricted to the orbit
+   !! representatives too, on the engines' own counters (`eri%md%npq`, the
+   !! (P, Q) primitive pairs of the Hermite stage; `eri%mg%nquart`, the
+   !! shell-pair quartets of the exchange windows), which a silent fall back to
+   !! the unrestricted engine would leave unchanged. check_sym_fock_md (mode
+   !! "md", TRC_MDJ=1: the resident entry's J from MD J on the uncontracted
+   !! l = 0..3 set; SKIP below LMAX 3), check_sym_fock_mdrule (mode "mdrule",
+   !! TRC_MDJ unset: a system for which eri_mdj_size_rule picks MD J by itself) and
+   !! check_sym_fock_mdg (mode "mdg": water cc-pVQZ, whose g shell sends the
+   !! classes above TERCO_RYS_G_LTOT to MD exchange and J to MD J; SKIP below
+   !! LMAX 4, where those classes are not generated).
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -172,9 +172,8 @@ contains
       end if
    end subroutine collect_sym_fock
 
-   ! ------------------------------------------------------------------ setup
-
    subroutine setup_ctx(ctx, xyz, group, basis_json, auxl, sph, with_ref, error)
+      !! ------------------------------------------------------------------ setup
       !! Detect the group, build the basis on its standard frame (from a JSON
       !! file, or the uncontracted l = 0..auxl set when auxl >= 0), the
       !! production symmetrizer of the caller's AO space, and the engines: one
@@ -241,9 +240,8 @@ contains
       call ctx%bas%release()
    end subroutine release_ctx
 
-   ! -------------------------------------------------------------- densities
-
    subroutine random_density(ctx, seed, scale, ds)
+      !! -------------------------------------------------------------- densities
       !! A symmetric matrix of pseudo-random numbers in the caller's AO space,
       !! symmetrized over the group. A linear congruential generator, so that
       !! the test does not depend on the compiler's random_number.
@@ -343,9 +341,8 @@ contains
       end if
    end subroutine to_caller
 
-   ! ------------------------------------------------------------ comparisons
-
    subroutine compare_build(ctx, dc, jscale, kscale, tag, tiles, error, nfull, nskel)
+      !! ------------------------------------------------------------ comparisons
       !! The skeleton and the full build of the same operator on the same
       !! engine, the first folded and symmetrized, against the second folded.
       type(ctx_t), intent(inout) :: ctx
@@ -598,9 +595,8 @@ contains
       end do
    end subroutine run_molecule
 
-   ! ------------------------------------------------------------------ tests
-
    subroutine test_cs(error)
+      !! ------------------------------------------------------------------ tests
       type(error_type), allocatable, intent(out) :: error
       call run_molecule("chfcl2", "Cs", "basis_sets/6-31gs.json", .true., error)
    end subroutine test_cs

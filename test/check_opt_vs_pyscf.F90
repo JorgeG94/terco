@@ -1,49 +1,49 @@
-!
-! terco's --opt against an independent optimisation: pyscf's own RHF/STO-3G
-! analytic gradient driving scipy's L-BFGS-B (test/pyscf_refs/generate.py's
-! gen_opt, committed as opt_water.ref/opt_hcn.ref), run here from the same
-! xyz files check_opt_vs_mqc.F90 uses (water.xyz, hcn.xyz). gen_opt's own
-! "hcn" case starts from exactly hcn.xyz's geometry; its "water" case does
-! NOT start from water.xyz's (O at z=0.10077199490609 Bohr there, vs
-! water.xyz's 0.1173 Angstrom) -- this does not weaken the comparison below,
-! which checks the CONVERGED minimum (energy, bond lengths, angle) that a
-! correct optimiser reaches independent of where it started. Different
-! language, different SCF code, different optimiser (scipy's Cartesian
-! L-BFGS-B vs DL-FIND's own, here in Cartesian too) -- agreement is
-! independent validation of trc_dlfind_bridge end to end, not a restatement
-! of the same algorithm.
-!
-! Both references optimised to max|g| < 1e-6 Eh/Bohr (actually ~1e-9,
-! generate.py's own log); this CLI run uses --opt-gtol 1e-5, two orders
-! looser, so the comparison's error is dominated by terco's OWN
-! convergence slack, not pyscf's.
-!
-! TOLERANCES, both derived from --opt-gtol via a harmonic estimate at the
-! geometry (deltaE ~ g^2/(2k), deltaR ~ g/k) with k ~ 0.3-0.6 Eh/Bohr^2 for
-! a light-atom bond stretch (a generous range: O-H/C-H/C-N/C-triple-N all
-! fall in it) and g = 1e-5 Eh/Bohr:
-!   ENERGY_TOL = 5e-8 Eh    (g^2/(2*0.3) ~ 1.7e-10, ~300x headroom for the
-!                            optimiser's own slack below its own gtol)
-!   BOND_TOL   = 3e-4 Bohr  (g/0.4 ~ 2.5e-5, ~12x headroom)
-!   ANGLE_TOL  = 0.05 deg   (water's H-O-H; HCN's is ~180 deg, checked the
-!                            same way -- a linear molecule relaxing to a
-!                            slightly bent one would show up here too)
-! Measured water/hcn agreement at the time this was written: energy to
-! ~5e-11 Eh, O-H/H-C/C-N to <1e-5 Bohr (test/pyscf_refs/opt_water.ref,
-! opt_hcn.ref).
-!
-! The water_cpcm case is the same comparison in a C-PCM continuum (gen_opt's
-! `pcm` argument: pyscf's own PCM gradient driving scipy), run with
-! --pcm cpcm --eps 78.3553, the optional sixth argument below. The
-! tolerances above carry over unchanged: they come from --opt-gtol and the
-! bond curvature, which the continuum barely changes.
-!
-! A test-drive suite. CMakeLists.txt builds this source once per case
-! (check_opt_vs_pyscf_water/_hcn/_water_cpcm), each with its own
-! xyzfile/ref_base/extra-flag command-line arguments -- one unit test runs
-! whichever case this particular executable was given.
-!
 module check_opt_vs_pyscf_suite
+   !!
+   !! terco's --opt against an independent optimisation: pyscf's own RHF/STO-3G
+   !! analytic gradient driving scipy's L-BFGS-B (test/pyscf_refs/generate.py's
+   !! gen_opt, committed as opt_water.ref/opt_hcn.ref), run here from the same
+   !! xyz files check_opt_vs_mqc.F90 uses (water.xyz, hcn.xyz). gen_opt's own
+   !! "hcn" case starts from exactly hcn.xyz's geometry; its "water" case does
+   !! NOT start from water.xyz's (O at z=0.10077199490609 Bohr there, vs
+   !! water.xyz's 0.1173 Angstrom) -- this does not weaken the comparison below,
+   !! which checks the CONVERGED minimum (energy, bond lengths, angle) that a
+   !! correct optimiser reaches independent of where it started. Different
+   !! language, different SCF code, different optimiser (scipy's Cartesian
+   !! L-BFGS-B vs DL-FIND's own, here in Cartesian too) -- agreement is
+   !! independent validation of trc_dlfind_bridge end to end, not a restatement
+   !! of the same algorithm.
+   !!
+   !! Both references optimised to max|g| < 1e-6 Eh/Bohr (actually ~1e-9,
+   !! generate.py's own log); this CLI run uses --opt-gtol 1e-5, two orders
+   !! looser, so the comparison's error is dominated by terco's OWN
+   !! convergence slack, not pyscf's.
+   !!
+   !! TOLERANCES, both derived from --opt-gtol via a harmonic estimate at the
+   !! geometry (deltaE ~ g^2/(2k), deltaR ~ g/k) with k ~ 0.3-0.6 Eh/Bohr^2 for
+   !! a light-atom bond stretch (a generous range: O-H/C-H/C-N/C-triple-N all
+   !! fall in it) and g = 1e-5 Eh/Bohr:
+   !!   ENERGY_TOL = 5e-8 Eh    (g^2/(2*0.3) ~ 1.7e-10, ~300x headroom for the
+   !!                            optimiser's own slack below its own gtol)
+   !!   BOND_TOL   = 3e-4 Bohr  (g/0.4 ~ 2.5e-5, ~12x headroom)
+   !!   ANGLE_TOL  = 0.05 deg   (water's H-O-H; HCN's is ~180 deg, checked the
+   !!                            same way -- a linear molecule relaxing to a
+   !!                            slightly bent one would show up here too)
+   !! Measured water/hcn agreement at the time this was written: energy to
+   !! ~5e-11 Eh, O-H/H-C/C-N to <1e-5 Bohr (test/pyscf_refs/opt_water.ref,
+   !! opt_hcn.ref).
+   !!
+   !! The water_cpcm case is the same comparison in a C-PCM continuum (gen_opt's
+   !! `pcm` argument: pyscf's own PCM gradient driving scipy), run with
+   !! --pcm cpcm --eps 78.3553, the optional sixth argument below. The
+   !! tolerances above carry over unchanged: they come from --opt-gtol and the
+   !! bond curvature, which the continuum barely changes.
+   !!
+   !! A test-drive suite. CMakeLists.txt builds this source once per case
+   !! (check_opt_vs_pyscf_water/_hcn/_water_cpcm), each with its own
+   !! xyzfile/ref_base/extra-flag command-line arguments -- one unit test runs
+   !! whichever case this particular executable was given.
+   !!
    use, intrinsic :: iso_c_binding, only: c_double
    use pic_types, only: dp
    use pic_strings, only: to_string
@@ -198,15 +198,15 @@ contains
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_opt_vs_pyscf
 
-   !
-   ! For a 3-atom molecule only (water, hcn): the two SHORTEST pairwise
-   ! distances (the two bonds, whichever atom is their shared vertex),
-   ! the remaining (third) distance, and the angle at the shared vertex
-   ! -- 0 if the three atoms have no shared vertex (never happens for 3
-   ! atoms: one pair is always the longest and the other two share a
-   ! vertex), kept as a dummy guard rather than asserted away.
-   !
    subroutine two_shortest_and_angle(xyz, d1, d2, d3, angle_deg)
+      !!
+      !! For a 3-atom molecule only (water, hcn): the two SHORTEST pairwise
+      !! distances (the two bonds, whichever atom is their shared vertex),
+      !! the remaining (third) distance, and the angle at the shared vertex
+      !! -- 0 if the three atoms have no shared vertex (never happens for 3
+      !! atoms: one pair is always the longest and the other two share a
+      !! vertex), kept as a dummy guard rather than asserted away.
+      !!
       real(dp), intent(in) :: xyz(3, 3)
       real(dp), intent(out) :: d1, d2, d3, angle_deg
       real(dp) :: d(3), v1(3), v2(3)

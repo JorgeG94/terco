@@ -1,36 +1,36 @@
-!
-! Shell-pair orbit tables of the skeleton Fock build (trc_sym_pairs), checked
-! without a single integral. For water (C2v), B2H6 (D2h, nonplanar),
-! naphthalene (D2h, planar) and benzene (D6h detected as D2h, via S12), with
-! cc-pVDZ (decontracted by the four-centre build) and, for the two small
-! molecules, 6-31G* (not decontracted), Cartesian and spherical caller AO
-! spaces, on the bins of the production ERI object:
-!
-!   - the shell map is a permutation, each operation an involution, the
-!     identity first; images agree with the shell map;
-!   - every orbit is closed under the group and complete (the pairs that share
-!     a representative are exactly the images of one pair), the
-!     representatives partition the pair set, orbit sizes divide |G|;
-!   - Q is invariant under every operation and never below the raw bound;
-!     dsh is invariant, idempotent and never below the raw block maximum;
-!   - bins closed on the representative (a pair joins the bin of its
-!     representative) keep the size bucket and the angular momenta, and the
-!     weighted rep-quartet count equals the full count, for every admitted
-!     bin pair and in total (the S13 prototype's integral-free identity,
-!     with the 1/2 of ab = cd and of the diagonal bin pair);
-!   - the full admitted count reproduces the S13 prototype / production
-!     `eri%nwork` (14627, 360415, 20671728, 4741001 for cc-pVDZ at 1e-10), and
-!     the orbit counts (pairs, representatives, orbits per size) its output;
-!   - a pair list that is not closed is refused, a Q symmetrized before the
-!     selection is not, and malformed input is refused.
-!
-! Registered twice, as check_sym_ci is: `check_sym_pairs` (mode "main") and
-! `check_sym_pairs_f` (mode "f", the uncontracted l = 0..3 set, which prints
-! SKIP when this build's LMAX is below 3).
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_pairs_suite
+   !!
+   !! Shell-pair orbit tables of the skeleton Fock build (trc_sym_pairs), checked
+   !! without a single integral. For water (C2v), B2H6 (D2h, nonplanar),
+   !! naphthalene (D2h, planar) and benzene (D6h detected as D2h, via S12), with
+   !! cc-pVDZ (decontracted by the four-centre build) and, for the two small
+   !! molecules, 6-31G* (not decontracted), Cartesian and spherical caller AO
+   !! spaces, on the bins of the production ERI object:
+   !!
+   !!   - the shell map is a permutation, each operation an involution, the
+   !!     identity first; images agree with the shell map;
+   !!   - every orbit is closed under the group and complete (the pairs that share
+   !!     a representative are exactly the images of one pair), the
+   !!     representatives partition the pair set, orbit sizes divide |G|;
+   !!   - Q is invariant under every operation and never below the raw bound;
+   !!     dsh is invariant, idempotent and never below the raw block maximum;
+   !!   - bins closed on the representative (a pair joins the bin of its
+   !!     representative) keep the size bucket and the angular momenta, and the
+   !!     weighted rep-quartet count equals the full count, for every admitted
+   !!     bin pair and in total (the S13 prototype's integral-free identity,
+   !!     with the 1/2 of ab = cd and of the diagonal bin pair);
+   !!   - the full admitted count reproduces the S13 prototype / production
+   !!     `eri%nwork` (14627, 360415, 20671728, 4741001 for cc-pVDZ at 1e-10), and
+   !!     the orbit counts (pairs, representatives, orbits per size) its output;
+   !!   - a pair list that is not closed is refused, a Q symmetrized before the
+   !!     selection is not, and malformed input is refused.
+   !!
+   !! Registered twice, as check_sym_ci is: `check_sym_pairs` (mode "main") and
+   !! `check_sym_pairs_f` (mode "f", the uncontracted l = 0..3 set, which prints
+   !! SKIP when this build's LMAX is below 3).
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

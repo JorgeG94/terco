@@ -61,9 +61,8 @@ contains
       z = [8, 1, 1]
    end subroutine water
 
-   ! ------------------------------------------------------------------------
-
    subroutine test_lebedev(error)
+      !! ------------------------------------------------------------------------
       type(error_type), allocatable, intent(out) :: error
       integer, allocatable :: orders(:)
       real(dp), allocatable :: p(:, :), w(:)
@@ -125,9 +124,8 @@ contains
       call check(error, err%has_error(), "lebedev: an order that does not exist is refused")
    end subroutine test_lebedev
 
-   ! ------------------------------------------------------------------------
-
    subroutine test_radial(error)
+      !! ------------------------------------------------------------------------
       type(error_type), allocatable, intent(out) :: error
       real(dp), allocatable :: r(:), dr(:), w(:)
       type(error_t) :: err
@@ -167,9 +165,8 @@ contains
       call check(error, err%has_error(), "radial: an empty mesh is refused")
    end subroutine test_radial
 
-   ! ------------------------------------------------------------------------
-
    subroutine test_partition(error)
+      !! ------------------------------------------------------------------------
       type(error_type), allocatable, intent(out) :: error
       real(dp), allocatable :: coords(:, :), pts(:, :), w(:)
       integer, allocatable :: z(:), owner(:)
@@ -232,9 +229,8 @@ contains
       call check(error, err%has_error(), "partition: mismatched atom arrays are refused")
    end subroutine test_partition
 
-   ! ------------------------------------------------------------------------
-
    subroutine test_grid(error)
+      !! ------------------------------------------------------------------------
       type(error_type), allocatable, intent(out) :: error
       real(dp), allocatable :: coords(:, :)
       integer, allocatable :: z(:)
@@ -304,14 +300,14 @@ contains
       call check(error, err%has_error(), "grid: mismatched atom arrays are refused")
    end subroutine test_grid
 
-   !
-   ! The partition's neighbour screening against the unscreened loop, on a
-   ! molecule big enough for it to matter: gly10, 73 atoms. Both the weights
-   ! themselves and an integral over them. The unscreened build is the
-   ! O(n_atoms^2)-per-point loop this screening replaces, and the numbers
-   ! here are what the default threshold costs.
-   !
    subroutine test_screening(error)
+      !!
+      !! The partition's neighbour screening against the unscreened loop, on a
+      !! molecule big enough for it to matter: gly10, 73 atoms. Both the weights
+      !! themselves and an integral over them. The unscreened build is the
+      !! O(n_atoms^2)-per-point loop this screening replaces, and the numbers
+      !! here are what the default threshold costs.
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: nat, k, n
       integer, allocatable :: z(:)

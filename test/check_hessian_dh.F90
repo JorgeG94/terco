@@ -1,39 +1,39 @@
-!
-! The finite-difference Hessian (trc_run_hessian) over a correlated
-! reference: a double hybrid, E = E_KS + c_os E_os + c_ss E_ss with the
-! RI-MP2 on the KS orbitals. trc_run_hessian differences the analytic
-! gradient trc_run_gradient returns, and with an RI-MP2 result in the
-! context it reruns trc_run_rimp2 at every displaced geometry, so the
-! Hessian is the double hybrid's. Before that it refused the reference
-! outright ("each displaced point would need its own trc_run_rimp2").
-!
-! The references are terco's own double-hybrid ENERGY, never its gradient:
-!
-! A. Energy/gradient consistency at a non-stationary geometry (water.xyz is
-!    far from the B2PLYP/def2-SVP minimum, |g| ~ 1e-2): a central
-!    difference of trc_energy's total along one Cartesian direction against
-!    the analytic component. This is the pairing --opt hands DL-FIND at
-!    every step (trc_dlfind_bridge's trc_opt_options_t%rimp2), so it is
-!    checked on its own. trc_energy's double-hybrid total is anchored to
-!    pyscf by test/scf_dh.F90.
-!
-! B. The Hessian at the B2PLYP/def2-SVP minimum against second differences
-!    of that same energy, (E(x+h) - 2 E(x) + E(x-h))/h^2 on every diagonal
-!    element: no gradient code in the reference at all. Plus symmetry, the
-!    reference state (and its correlated energy) restored afterwards, and a
-!    sane harmonic analysis: six zero modes, three real ones, no NaN. The
-!    same at the RHF + RI-MP2/def2-SVP minimum (plain --rimp2 --hessian,
-!    E_RHF + E_os + E_ss).
-!
-! C. What the RI-MP2 gradient refuses, trc_run_hessian still refuses, with
-!    the gradient's message: an unrestricted RI-MP2 reference and RI-MP2
-!    over PCM.
-!
-! Water, def2-SVP (spherical) with def2-SVP-RIFIT, frozen 1, grid level 3.
-!
-! A test-drive suite.
-!
 module check_hessian_dh_suite
+   !!
+   !! The finite-difference Hessian (trc_run_hessian) over a correlated
+   !! reference: a double hybrid, E = E_KS + c_os E_os + c_ss E_ss with the
+   !! RI-MP2 on the KS orbitals. trc_run_hessian differences the analytic
+   !! gradient trc_run_gradient returns, and with an RI-MP2 result in the
+   !! context it reruns trc_run_rimp2 at every displaced geometry, so the
+   !! Hessian is the double hybrid's. Before that it refused the reference
+   !! outright ("each displaced point would need its own trc_run_rimp2").
+   !!
+   !! The references are terco's own double-hybrid ENERGY, never its gradient:
+   !!
+   !! A. Energy/gradient consistency at a non-stationary geometry (water.xyz is
+   !!    far from the B2PLYP/def2-SVP minimum, |g| ~ 1e-2): a central
+   !!    difference of trc_energy's total along one Cartesian direction against
+   !!    the analytic component. This is the pairing --opt hands DL-FIND at
+   !!    every step (trc_dlfind_bridge's trc_opt_options_t%rimp2), so it is
+   !!    checked on its own. trc_energy's double-hybrid total is anchored to
+   !!    pyscf by test/scf_dh.F90.
+   !!
+   !! B. The Hessian at the B2PLYP/def2-SVP minimum against second differences
+   !!    of that same energy, (E(x+h) - 2 E(x) + E(x-h))/h^2 on every diagonal
+   !!    element: no gradient code in the reference at all. Plus symmetry, the
+   !!    reference state (and its correlated energy) restored afterwards, and a
+   !!    sane harmonic analysis: six zero modes, three real ones, no NaN. The
+   !!    same at the RHF + RI-MP2/def2-SVP minimum (plain --rimp2 --hessian,
+   !!    E_RHF + E_os + E_ss).
+   !!
+   !! C. What the RI-MP2 gradient refuses, trc_run_hessian still refuses, with
+   !!    the gradient's message: an unrestricted RI-MP2 reference and RI-MP2
+   !!    over PCM.
+   !!
+   !! Water, def2-SVP (spherical) with def2-SVP-RIFIT, frozen 1, grid level 3.
+   !!
+   !! A test-drive suite.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_char, c_null_char
    use, intrinsic :: iso_fortran_env, only: output_unit
    use pic_types, only: dp

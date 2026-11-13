@@ -1,56 +1,56 @@
-!
-! --opt-constrain "angle 2 1 3" (1-based: O is the vertex), water/STO-3G,
-! --opt-coords hdlc -- app/trc_dlfind_bridge.F90's own icons block,
-! verified directly against dlf_hdlc_constraint.f90%assign_cons (type in
-! slot 1, atom indices in slots 2-5). The constrained value is always
-! whatever the START geometry has (no target-value slot anywhere in
-! DL-FIND's own public interface, see that module's header) -- test/
-! water.xyz's own H-O-H angle, held fixed while the two O-H bond lengths
-! relax.
-!
-! CONVERGENCE VERDICT: a constrained optimum's RAW Cartesian gradient
-! does not go to zero the way an unconstrained one does -- the
-! constraint acts like a Lagrange multiplier, holding a permanent,
-! nonzero force along the constrained direction even once every FREE
-! internal coordinate's own gradient is exactly zero. Measured directly
-! on this exact system with lbfgs, cg-auto and more steps alike (the
-! energy converges to 12 decimal places either way, confirming this is
-! the TRUE constrained optimum, not a stalled search): the angle
-! constraint's own RAW Cartesian residual settles at max|g| ~1.86e-2
-! Eh/Bohr, the bond constraint's at ~3.23e-2, both well above any
-! --opt-gtol tight enough to let DL-FIND actually DO the six-to-eight
-! steps this takes (a loose --opt-gtol scales ALL of DL-FIND's own
-! criteria, not just the gradient one, and was measured to make it stop
-! after a single step, nowhere near this optimum). This bridge's own
-! "CONVERGENCE AUTHORITY" header already documents that it cannot read
-! DL-FIND's own INTERNAL-coordinate gradient back -- the number that
-! correctly reaches zero here, since HDLC removes the constrained DOF
-! from the internal coordinate set entirely, rather than penalising it.
-! So this file keeps --opt-gtol TIGHT (GTOL_ARG) and checks DL-FIND's
-! OWN observable verdict instead (the "Convergence reached"/"Optimisation
-! converged" log lines, --opt-print-level 4) for whether the run itself
-! succeeded, the same fallback check_opt_neb.F90 uses for the identical
-! reason.
-!
-! EXTERNAL anchor: test/pyscf_refs/opt_constrained_water_angle.ref,
-! written by test/pyscf_refs/generate.py's own gen_opt_opt_constrained
-! (sic: gen_opt_constrained) -- a from-scratch scipy L-BFGS-B minimisation
-! over exactly the two free O-H bond lengths, with the two O->H bond
-! DIRECTIONS taken from water.xyz itself and held fixed throughout, so the
-! angle is EXACTLY water.xyz's own. Independent of terco end to end:
-! different language, different SCF code, a reduced 2-parameter optimiser
-! acting directly on the only physically free coordinates, not DL-FIND's
-! internal-coordinate machinery.
-!
-! Also a bond constraint ("bond 1 2": the O-H1 distance) -- checked only
-! for internal consistency (the bond length is held, the other O-H bond
-! and the angle both relax), no separate external anchor (a second scipy
-! generator for one more constraint type would not exercise anything
-! gen_opt_constrained does not already cover for the SAME molecule).
-!
-! A test-drive suite.
-!
 module check_opt_constrain_suite
+   !!
+   !! --opt-constrain "angle 2 1 3" (1-based: O is the vertex), water/STO-3G,
+   !! --opt-coords hdlc -- app/trc_dlfind_bridge.F90's own icons block,
+   !! verified directly against dlf_hdlc_constraint.f90%assign_cons (type in
+   !! slot 1, atom indices in slots 2-5). The constrained value is always
+   !! whatever the START geometry has (no target-value slot anywhere in
+   !! DL-FIND's own public interface, see that module's header) -- test/
+   !! water.xyz's own H-O-H angle, held fixed while the two O-H bond lengths
+   !! relax.
+   !!
+   !! CONVERGENCE VERDICT: a constrained optimum's RAW Cartesian gradient
+   !! does not go to zero the way an unconstrained one does -- the
+   !! constraint acts like a Lagrange multiplier, holding a permanent,
+   !! nonzero force along the constrained direction even once every FREE
+   !! internal coordinate's own gradient is exactly zero. Measured directly
+   !! on this exact system with lbfgs, cg-auto and more steps alike (the
+   !! energy converges to 12 decimal places either way, confirming this is
+   !! the TRUE constrained optimum, not a stalled search): the angle
+   !! constraint's own RAW Cartesian residual settles at max|g| ~1.86e-2
+   !! Eh/Bohr, the bond constraint's at ~3.23e-2, both well above any
+   !! --opt-gtol tight enough to let DL-FIND actually DO the six-to-eight
+   !! steps this takes (a loose --opt-gtol scales ALL of DL-FIND's own
+   !! criteria, not just the gradient one, and was measured to make it stop
+   !! after a single step, nowhere near this optimum). This bridge's own
+   !! "CONVERGENCE AUTHORITY" header already documents that it cannot read
+   !! DL-FIND's own INTERNAL-coordinate gradient back -- the number that
+   !! correctly reaches zero here, since HDLC removes the constrained DOF
+   !! from the internal coordinate set entirely, rather than penalising it.
+   !! So this file keeps --opt-gtol TIGHT (GTOL_ARG) and checks DL-FIND's
+   !! OWN observable verdict instead (the "Convergence reached"/"Optimisation
+   !! converged" log lines, --opt-print-level 4) for whether the run itself
+   !! succeeded, the same fallback check_opt_neb.F90 uses for the identical
+   !! reason.
+   !!
+   !! EXTERNAL anchor: test/pyscf_refs/opt_constrained_water_angle.ref,
+   !! written by test/pyscf_refs/generate.py's own gen_opt_opt_constrained
+   !! (sic: gen_opt_constrained) -- a from-scratch scipy L-BFGS-B minimisation
+   !! over exactly the two free O-H bond lengths, with the two O->H bond
+   !! DIRECTIONS taken from water.xyz itself and held fixed throughout, so the
+   !! angle is EXACTLY water.xyz's own. Independent of terco end to end:
+   !! different language, different SCF code, a reduced 2-parameter optimiser
+   !! acting directly on the only physically free coordinates, not DL-FIND's
+   !! internal-coordinate machinery.
+   !!
+   !! Also a bond constraint ("bond 1 2": the O-H1 distance) -- checked only
+   !! for internal consistency (the bond length is held, the other O-H bond
+   !! and the angle both relax), no separate external anchor (a second scipy
+   !! generator for one more constraint type would not exercise anything
+   !! gen_opt_constrained does not already cover for the SAME molecule).
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file
@@ -165,13 +165,13 @@ contains
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_angle_constraint
 
-   !
-   ! Depends on test_angle_constraint having already populated e_final/xyz
-   ! -- test-drive runs a module's tests in the order collect_opt_constrain
-   ! lists them, not in parallel (run_testsuite's own parallel=.false. in
-   ! the program below).
-   !
    subroutine test_angle_vs_anchor(error)
+      !!
+      !! Depends on test_angle_constraint having already populated e_final/xyz
+      !! -- test-drive runs a module's tests in the order collect_opt_constrain
+      !! lists them, not in parallel (run_testsuite's own parallel=.false. in
+      !! the program below).
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: uu, nat_ref, nfail
       real(dp), allocatable :: z_ref(:), coords_ref(:, :)

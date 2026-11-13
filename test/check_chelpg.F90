@@ -1,24 +1,24 @@
-!
-! CHELPG atomic charges (trc_chelpg.F90) against two references:
-!
-!  * metalquicha's recipe run in pyscf (test/pyscf_refs/chelpg.ref, written
-!    offline by `generate.py chelpg`): the same Breneman-Wiberg grid rule
-!    and constrained fit, with pyscf's own SCF and its `int1e_grids`
-!    potential. Water RHF and B3LYP/6-31G, formamide and the acetate anion
-!    RHF and B3LYP/def2-SVP, and the NH2 radical UHF/cc-pVDZ. Each case also
-!    checks that terco's grid has exactly the reference's point count.
-!  * metalquicha's OWN Fortran charges (mqc_czt_charges' chelpg_charges at
-!    mqc commit 66efbeed96, the geometry of its validation/check_charges.f90,
-!    the same 6-31G and cc-pVDZ files byte for byte), hardcoded below.
-!
-! And the properties any CHELPG fit owes: the charges sum to the molecular
-! charge (it is the constraint), they do not move when the molecule is
-! translated and they permute with the atoms, the grid lies outside every
-! van der Waals sphere and inside the head space, the fit reproduces the
-! potential (RRMS), and a ghost atom or an element without a radius is
-! refused.
-!
 module check_chelpg_suite
+   !!
+   !! CHELPG atomic charges (trc_chelpg.F90) against two references:
+   !!
+   !!  * metalquicha's recipe run in pyscf (test/pyscf_refs/chelpg.ref, written
+   !!    offline by `generate.py chelpg`): the same Breneman-Wiberg grid rule
+   !!    and constrained fit, with pyscf's own SCF and its `int1e_grids`
+   !!    potential. Water RHF and B3LYP/6-31G, formamide and the acetate anion
+   !!    RHF and B3LYP/def2-SVP, and the NH2 radical UHF/cc-pVDZ. Each case also
+   !!    checks that terco's grid has exactly the reference's point count.
+   !!  * metalquicha's OWN Fortran charges (mqc_czt_charges' chelpg_charges at
+   !!    mqc commit 66efbeed96, the geometry of its validation/check_charges.f90,
+   !!    the same 6-31G and cc-pVDZ files byte for byte), hardcoded below.
+   !!
+   !! And the properties any CHELPG fit owes: the charges sum to the molecular
+   !! charge (it is the constraint), they do not move when the molecule is
+   !! translated and they permute with the atoms, the grid lies outside every
+   !! van der Waals sphere and inside the head space, the fit reproduces the
+   !! potential (RRMS), and a ghost atom or an element without a radius is
+   !! refused.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char
    use pic_types, only: dp
    use pic_strings, only: to_string

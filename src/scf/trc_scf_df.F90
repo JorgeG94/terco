@@ -1,78 +1,78 @@
-!
-! Density-fitted J and K for a restricted (closed-shell) reference,
-! resident on the device. Every array THIS object owns -- `bpk`, the
-! packed density/J factors, the K half-transform -- is Cartesian-sized
-! (`n = b%nao`), whether the orbital basis `b` is spherical or not: a
-! spherical caller folds S/H/D/F through `trc_scf_fock.F90`'s `scf_fock_to_cart`/
-! `scf_fock_to_sph` at the boundary, and this object never sees the difference.
-! The AUXILIARY basis is a separate question (see `df_jk_setup`'s own
-! comment): it follows its own `aux%spherical`, independent of `b`'s.
-!
-! With the auxiliary basis {P}, its metric M = (P|Q) = L L^T and the
-! three-index tensor T(mu nu, P) = (mu nu|P),
-!
-!     B(mu nu, Q) = sum_P T(mu nu, P) (L^-T)_PQ      so that
-!     (mu nu|lam sig) = sum_Q B(mu nu, Q) B(lam sig, Q)
-!
-! B is symmetric in (mu, nu) -- (mu nu|P) does not see which index came
-! first -- so it is stored PACKED, one copy of mu >= nu, which halves the
-! device memory a dense (nao, nao, naux) tensor would need (21 GB packed
-! against 43 GB dense at w40 cc-pVDZ).
-!
-! THE BUILD, PER ITERATION
-! ------------------------
-! J, two GEMVs on the packed storage (bandwidth-bound: no transpose, no
-! unpacking, 8 bytes moved per (pair, aux function) touched, twice):
-!
-!     gamma(Q) = sum_{mu>=nu} w(mu,nu) B(mu nu, Q) D(mu,nu),   w = 2 off the
-!                                                               diagonal, 1 on it
-!     J(mu,nu) = sum_Q B(mu nu, Q) gamma(Q)                    (packed; mu,nu and
-!                                                               nu,mu read the same entry)
-!
-! K needs a density factor, D = Y Y^T. The SCF's density is not always
-! idempotent (damping mixes densities; SAD/SAP are not from orbitals), so
-! this always diagonalises it (`lp%syev`, one nao_c x nao_c symmetric
-! eigenproblem per iteration -- see df_jk_build's own header for pyscf's
-! rule and why the orbital-only shortcut is not taken yet) and keeps every
-! eigenvalue with |n_k| > EVAL_REL_TOL max|n|: Y_pos = U sqrt(n_k) for the positive ones,
-! Y_neg = U sqrt(|n_k|) for the negative ones (K is linear in D, so
-! K[D] = K[D_pos] - K[D_neg] exactly). Then, one auxiliary block at a time:
-!
-!     unpack B_q to a dense (n, n, qb) scratch (both triangles filled)
-!     X_q = B_q Y            one strided GEMM batch over the block, giving
-!                             Z(mu, (i,q)), n x (o qb), per factor
-!     K += Z Z^T             lower block panels only, one GEMM each (cuBLAS
-!                             dsyrk ran at 38% of peak here), accumulated
-!                             over blocks and mirrored once at the end
-!
-! and G = j_scale J[D] - (k_scale/2) K[D] for D the TOTAL density, the SAME convention `trc_eri_t%fock_resident`
-! returns (see trc_scf_fock.F90's scf_fock_build_g, which reads this object's `build`
-! in its own branch) -- `--df` and the four-centre path must agree up to the
-! fitting error, and matching the sign/scale convention exactly is how.
-!
-! PACKED INDEXING. idx(mu, nu) = mu(mu-1)/2 + nu for mu >= nu (1-based,
-! lower-triangular, mu the slower index): `pack_index`, a module-level pure
-! function (`!$acc routine seq`), not a type-bound one, for the same reason
-! RI-MP2's `pair_energy_body` is module-level -- a `do concurrent` body may
-! not call a procedure from another module, but a local pure function is
-! exactly the pattern already in use (trc_rimp2_driver.F90's `ncart`).
-!
-! SETUP, ONCE PER GEOMETRY: metric, Cholesky, (mu nu|P) by auxiliary block
-! (trc_df_3c, same blocking RI-MP2 uses for its own three-index build),
-! packed into `bpk` as each block lands, then B = T L^-T, one triangular
-! solve from the right over every packed row at once (`trc_linalg%trsm`,
-! the same call RI-MP2's step 4 makes on its own packed rows).
-!
-! OWNERSHIP AND REUSE. `setup` is create-once (the `ready` flag, exactly
-! trc_linalg_t%init's own pattern): a caller that owns this object across
-! more than one `trc_scf_run` -- trc_capi.F90's context handle is the one
-! that does -- gets the metric/Cholesky/(mu nu|P)/trsm done exactly once,
-! and a correlated step that follows (RI-MP2) can read `bpk` (public,
-! read-only) for the same reason: it is already (mu nu|P) contracted
-! against L^-T, over the same auxiliary basis, with nothing more to redo.
 #include "inc/trc_dc_index.inc"
 
 module trc_scf_df
+   !!
+   !! Density-fitted J and K for a restricted (closed-shell) reference,
+   !! resident on the device. Every array THIS object owns -- `bpk`, the
+   !! packed density/J factors, the K half-transform -- is Cartesian-sized
+   !! (`n = b%nao`), whether the orbital basis `b` is spherical or not: a
+   !! spherical caller folds S/H/D/F through `trc_scf_fock.F90`'s `scf_fock_to_cart`/
+   !! `scf_fock_to_sph` at the boundary, and this object never sees the difference.
+   !! The AUXILIARY basis is a separate question (see `df_jk_setup`'s own
+   !! comment): it follows its own `aux%spherical`, independent of `b`'s.
+   !!
+   !! With the auxiliary basis {P}, its metric M = (P|Q) = L L^T and the
+   !! three-index tensor T(mu nu, P) = (mu nu|P),
+   !!
+   !!     B(mu nu, Q) = sum_P T(mu nu, P) (L^-T)_PQ      so that
+   !!     (mu nu|lam sig) = sum_Q B(mu nu, Q) B(lam sig, Q)
+   !!
+   !! B is symmetric in (mu, nu) -- (mu nu|P) does not see which index came
+   !! first -- so it is stored PACKED, one copy of mu >= nu, which halves the
+   !! device memory a dense (nao, nao, naux) tensor would need (21 GB packed
+   !! against 43 GB dense at w40 cc-pVDZ).
+   !!
+   !! THE BUILD, PER ITERATION
+   !! ------------------------
+   !! J, two GEMVs on the packed storage (bandwidth-bound: no transpose, no
+   !! unpacking, 8 bytes moved per (pair, aux function) touched, twice):
+   !!
+   !!     gamma(Q) = sum_{mu>=nu} w(mu,nu) B(mu nu, Q) D(mu,nu),   w = 2 off the
+   !!                                                               diagonal, 1 on it
+   !!     J(mu,nu) = sum_Q B(mu nu, Q) gamma(Q)                    (packed; mu,nu and
+   !!                                                               nu,mu read the same entry)
+   !!
+   !! K needs a density factor, D = Y Y^T. The SCF's density is not always
+   !! idempotent (damping mixes densities; SAD/SAP are not from orbitals), so
+   !! this always diagonalises it (`lp%syev`, one nao_c x nao_c symmetric
+   !! eigenproblem per iteration -- see df_jk_build's own header for pyscf's
+   !! rule and why the orbital-only shortcut is not taken yet) and keeps every
+   !! eigenvalue with |n_k| > EVAL_REL_TOL max|n|: Y_pos = U sqrt(n_k) for the positive ones,
+   !! Y_neg = U sqrt(|n_k|) for the negative ones (K is linear in D, so
+   !! K[D] = K[D_pos] - K[D_neg] exactly). Then, one auxiliary block at a time:
+   !!
+   !!     unpack B_q to a dense (n, n, qb) scratch (both triangles filled)
+   !!     X_q = B_q Y            one strided GEMM batch over the block, giving
+   !!                             Z(mu, (i,q)), n x (o qb), per factor
+   !!     K += Z Z^T             lower block panels only, one GEMM each (cuBLAS
+   !!                             dsyrk ran at 38% of peak here), accumulated
+   !!                             over blocks and mirrored once at the end
+   !!
+   !! and G = j_scale J[D] - (k_scale/2) K[D] for D the TOTAL density, the SAME convention `trc_eri_t%fock_resident`
+   !! returns (see trc_scf_fock.F90's scf_fock_build_g, which reads this object's `build`
+   !! in its own branch) -- `--df` and the four-centre path must agree up to the
+   !! fitting error, and matching the sign/scale convention exactly is how.
+   !!
+   !! PACKED INDEXING. idx(mu, nu) = mu(mu-1)/2 + nu for mu >= nu (1-based,
+   !! lower-triangular, mu the slower index): `pack_index`, a module-level pure
+   !! function (`!$acc routine seq`), not a type-bound one, for the same reason
+   !! RI-MP2's `pair_energy_body` is module-level -- a `do concurrent` body may
+   !! not call a procedure from another module, but a local pure function is
+   !! exactly the pattern already in use (trc_rimp2_driver.F90's `ncart`).
+   !!
+   !! SETUP, ONCE PER GEOMETRY: metric, Cholesky, (mu nu|P) by auxiliary block
+   !! (trc_df_3c, same blocking RI-MP2 uses for its own three-index build),
+   !! packed into `bpk` as each block lands, then B = T L^-T, one triangular
+   !! solve from the right over every packed row at once (`trc_linalg%trsm`,
+   !! the same call RI-MP2's step 4 makes on its own packed rows).
+   !!
+   !! OWNERSHIP AND REUSE. `setup` is create-once (the `ready` flag, exactly
+   !! trc_linalg_t%init's own pattern): a caller that owns this object across
+   !! more than one `trc_scf_run` -- trc_capi.F90's context handle is the one
+   !! that does -- gets the metric/Cholesky/(mu nu|P)/trsm done exactly once,
+   !! and a correlated step that follows (RI-MP2) can read `bpk` (public,
+   !! read-only) for the same reason: it is already (mu nu|P) contracted
+   !! against L^-T, over the same auxiliary basis, with nothing more to redo.
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use pic_logger, only: global_logger
@@ -162,24 +162,24 @@ module trc_scf_df
 
 contains
 
-   !
-   ! `b` the orbital basis, `aux` the fitting basis (def2-universal-jkfit by
-   ! default, see the CLI/C API), `pl` the orbital pair list, `lp` the
-   ! linear-algebra handles (cuBLAS/cuSOLVER under OpenACC). `nocc_hint`
-   ! sizes the density-factor workspace up front (the expected occupied
-   ! count; `build` grows it if a density ever needs more factors than
-   ! that, so a wrong guess costs a reallocation, not a wrong answer).
-   ! `aux_block` is the (mu nu|P) build's own block size, in auxiliary
-   ! functions; independent of `qb`, the per-ITERATION K block size, which
-   ! is chosen here from the device's free memory (see `choose_qb`).
-   !
-   ! Idempotent: a second call on an object that already built its `bpk`
-   ! returns immediately, exactly `trc_linalg_t%init`'s "created once" rule
-   ! -- the object is meant to survive across more than one `trc_scf_run`
-   ! on the same geometry (trc_capi.F90's handle), and the caller need not
-   ! track whether this is the first call or the fifth.
-   !
    subroutine df_jk_setup(this, b, aux, pl, lp, err, nocc_hint, aux_block)
+      !!
+      !! `b` the orbital basis, `aux` the fitting basis (def2-universal-jkfit by
+      !! default, see the CLI/C API), `pl` the orbital pair list, `lp` the
+      !! linear-algebra handles (cuBLAS/cuSOLVER under OpenACC). `nocc_hint`
+      !! sizes the density-factor workspace up front (the expected occupied
+      !! count; `build` grows it if a density ever needs more factors than
+      !! that, so a wrong guess costs a reallocation, not a wrong answer).
+      !! `aux_block` is the (mu nu|P) build's own block size, in auxiliary
+      !! functions; independent of `qb`, the per-ITERATION K block size, which
+      !! is chosen here from the device's free memory (see `choose_qb`).
+      !!
+      !! Idempotent: a second call on an object that already built its `bpk`
+      !! returns immediately, exactly `trc_linalg_t%init`'s "created once" rule
+      !! -- the object is meant to survive across more than one `trc_scf_run`
+      !! on the same geometry (trc_capi.F90's handle), and the caller need not
+      !! track whether this is the first call or the fifth.
+      !!
       class(df_jk_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b, aux
       type(trc_pairlist_t), intent(in) :: pl
@@ -380,18 +380,18 @@ contains
       this%ready = .true.
    end subroutine df_jk_setup
 
-   !
-   ! G = j_scale J[D] - (k_scale/2) K[D], D the total density: the same convention
-   ! `trc_eri_t%fock_resident` returns (trc_scf_fock.F90's scf_fock_build_g branches
-   ! on `cfg%df` into this instead of the four-centre call, never both).
-   ! `gmat_c` is OVERWRITTEN, not accumulated into -- the caller has
-   ! nothing else to add for the restricted case `--df` is scoped to (P1).
-   !
-   ! K is skipped entirely when `k_scale == 0` (a pure functional): J is
-   ! two GEMVs and nothing else runs, which is the point of fitting both
-   ! under one flag rather than offering a DF-J-only mode.
-   !
    subroutine df_jk_build(this, lp, d_c, gmat_c, j_scale, k_scale)
+      !!
+      !! G = j_scale J[D] - (k_scale/2) K[D], D the total density: the same convention
+      !! `trc_eri_t%fock_resident` returns (trc_scf_fock.F90's scf_fock_build_g branches
+      !! on `cfg%df` into this instead of the four-centre call, never both).
+      !! `gmat_c` is OVERWRITTEN, not accumulated into -- the caller has
+      !! nothing else to add for the restricted case `--df` is scoped to (P1).
+      !!
+      !! K is skipped entirely when `k_scale == 0` (a pure functional): J is
+      !! two GEMVs and nothing else runs, which is the point of fitting both
+      !! under one flag rather than offering a DF-J-only mode.
+      !!
       class(df_jk_t), intent(inout) :: this
       type(trc_linalg_t), intent(inout) :: lp
       real(dp), intent(in) :: d_c(this%n, this%n)
@@ -604,12 +604,12 @@ contains
       this%omax = 0
    end subroutine df_jk_release
 
-   !! The setup/per-iteration table: time, GFLOP(/s) or GB/s per step, and
-   ! one "all dense algebra" row over the GEMM/factorisation-shaped steps
-   ! (Cholesky, trsm, the half-transform, the K panels) -- J's two GEMVs and the
-   ! density factor are bandwidth- or eigensolver-bound and left out of it,
-   ! exactly as RI-MP2 leaves its own screening-dependent integral step out.
    subroutine df_jk_step_times(this, names, t)
+      !! The setup/per-iteration table: time, GFLOP(/s) or GB/s per step, and
+      !! one "all dense algebra" row over the GEMM/factorisation-shaped steps
+      !! (Cholesky, trsm, the half-transform, the K panels) -- J's two GEMVs and the
+      !! density factor are bandwidth- or eigensolver-bound and left out of it,
+      !! exactly as RI-MP2 leaves its own screening-dependent integral step out.
       !! The step table's labels and accumulated seconds, for `--json`.
       class(df_jk_t), intent(in) :: this
       character(len=*), allocatable, intent(out) :: names(:)
@@ -629,14 +629,14 @@ contains
       call this%tbl%report(t_total, rank, nranks, subtotal_mask=mask, subtotal_label="all dense algebra")
    end subroutine df_jk_report
 
-   !
-   ! The density-factor workspace: Y_pos/Y_neg (n, omax) and the half-
-   ! transform's Z_pos/Z_neg (n, omax*qb). Grows, never shrinks -- the same
-   ! rule `trc_linalg_t%grow_workspace` follows -- so a density that
-   ! occasionally needs more factors than the setup hint costs one
-   ! reallocation, not a wrong answer.
-   !
    subroutine grow_yz(this, want_o)
+      !!
+      !! The density-factor workspace: Y_pos/Y_neg (n, omax) and the half-
+      !! transform's Z_pos/Z_neg (n, omax*qb). Grows, never shrinks -- the same
+      !! rule `trc_linalg_t%grow_workspace` follows -- so a density that
+      !! occasionally needs more factors than the setup hint costs one
+      !! reallocation, not a wrong answer.
+      !!
       type(df_jk_t), intent(inout) :: this
       integer, intent(in) :: want_o
       if (want_o <= this%omax .and. allocated(this%ypos)) return
@@ -650,22 +650,22 @@ contains
       !$acc enter data create(this%ypos, this%yneg, this%zpos, this%zneg)
    end subroutine grow_yz
 
-   !
-   ! Auxiliary functions per K block: enough that k = omax*qb (the K
-   ! half-transform/accumulation GEMMs' own contraction length) reaches
-   ! `K_TARGET`, since a GEMM only clears ~90% of FP64 peak once its
-   ! contraction length is in the thousands -- QB_DEFAULT alone cleared that
-   ! for omax around a hundred or more (every case this was tuned against),
-   ! but not for a molecule with a genuinely small occupied/virtual count
-   ! (`omax` is read off D's eigenvalues at every build, not a size this
-   ! function controls). Capped, as before, by whatever the device's free
-   ! memory (the unpacked block plus the two half-transform factors, `omax`
-   ! columns each) will hold with half a gigabyte kept back for the
-   ! libraries' own workspace -- the same pattern as RI-MP2's `k_group`. A
-   ! fixed default on the host build, where there is no device memory query
-   ! and the arrays are small next to host RAM regardless.
-   !
    integer function choose_qb(n, naux, omax) result(qb)
+      !!
+      !! Auxiliary functions per K block: enough that k = omax*qb (the K
+      !! half-transform/accumulation GEMMs' own contraction length) reaches
+      !! `K_TARGET`, since a GEMM only clears ~90% of FP64 peak once its
+      !! contraction length is in the thousands -- QB_DEFAULT alone cleared that
+      !! for omax around a hundred or more (every case this was tuned against),
+      !! but not for a molecule with a genuinely small occupied/virtual count
+      !! (`omax` is read off D's eigenvalues at every build, not a size this
+      !! function controls). Capped, as before, by whatever the device's free
+      !! memory (the unpacked block plus the two half-transform factors, `omax`
+      !! columns each) will hold with half a gigabyte kept back for the
+      !! libraries' own workspace -- the same pattern as RI-MP2's `k_group`. A
+      !! fixed default on the host build, where there is no device memory query
+      !! and the arrays are small next to host RAM regardless.
+      !!
       integer, intent(in) :: n, naux, omax
       integer, parameter :: QB_DEFAULT = 64
       integer, parameter :: K_TARGET = 4096
@@ -686,24 +686,24 @@ contains
       qb = max(1, min(qb, naux))
    end function choose_qb
 
-   !
-   ! Auxiliary functions per (mu nu|P) SETUP block: as many as naux/4 (the
-   ! old, size-blind default) unless the device's free memory -- AFTER
-   ! `bpk` (p x naux, the largest single allocation this object ever
-   ! makes) is already resident -- would not hold the dense (n, n, ablk)
-   ! scratch tensor that block's build needs, in which case as many as
-   ! fit with half a gigabyte kept back. Same pattern as `choose_qb`.
-   !
-   !
-   ! TERCO_DF_MEM_DEBUG=1: one line per stage, the device's free memory
-   ! right then, flushed immediately -- a device OOM kills the process
-   ! before an unflushed `print` ever reaches the pipe, which is what
-   ! made an earlier attempt at this (a plain `print` with no flush)
-   ! print nothing at all for the stage that actually failed. Debug only;
-   ! a no-op allocation-free query otherwise, on the host build too
-   ! (prints 0, which is honest: there is no device to ask).
-   !
    pure function itoa_dbg(i) result(t)
+      !!
+      !! Auxiliary functions per (mu nu|P) SETUP block: as many as naux/4 (the
+      !! old, size-blind default) unless the device's free memory -- AFTER
+      !! `bpk` (p x naux, the largest single allocation this object ever
+      !! makes) is already resident -- would not hold the dense (n, n, ablk)
+      !! scratch tensor that block's build needs, in which case as many as
+      !! fit with half a gigabyte kept back. Same pattern as `choose_qb`.
+      !!
+      !!
+      !! TERCO_DF_MEM_DEBUG=1: one line per stage, the device's free memory
+      !! right then, flushed immediately -- a device OOM kills the process
+      !! before an unflushed `print` ever reaches the pipe, which is what
+      !! made an earlier attempt at this (a plain `print` with no flush)
+      !! print nothing at all for the stage that actually failed. Debug only;
+      !! a no-op allocation-free query otherwise, on the host build too
+      !! (prints 0, which is honest: there is no device to ask).
+      !!
       !! Plain integer-to-string, for `dbg_mem`'s own labels only.
       integer, intent(in) :: i
       character(len=16) :: t
@@ -730,14 +730,14 @@ contains
       flush (output_unit)
    end subroutine dbg_mem
 
-   !
-   ! TERCO_DF_RANK_DEBUG=1: the density factor's rank (npos, nneg) every
-   ! `build` call, one line each -- the K half-transform/accumulation's
-   ! own cost is linear in npos+nneg, so this is what the relative cut
-   ! above (EVAL_REL_TOL) actually buys, iteration by iteration, next to
-   ! the old absolute 1e-12 cut. Debug only; a no-op otherwise.
-   !
    subroutine dbg_rank(npos, nneg)
+      !!
+      !! TERCO_DF_RANK_DEBUG=1: the density factor's rank (npos, nneg) every
+      !! `build` call, one line each -- the K half-transform/accumulation's
+      !! own cost is linear in npos+nneg, so this is what the relative cut
+      !! above (EVAL_REL_TOL) actually buys, iteration by iteration, next to
+      !! the old absolute 1e-12 cut. Debug only; a no-op otherwise.
+      !!
       integer, intent(in) :: npos, nneg
       character(len=8) :: v
       call get_environment_variable("TERCO_DF_RANK_DEBUG", v)
@@ -770,10 +770,10 @@ contains
       res = (l + 1)*(l + 2)/2
    end function ncart
 
-   !! idx(mu, nu) = mu(mu-1)/2 + nu, mu >= nu, 1-based: the packed row a
-   !! (mu, nu) pair (either order) lives at. Module-level and pure (not
-   !! type-bound) so a `do concurrent` body may call it directly.
    pure integer function pack_index(mu, nu) result(p)
+      !! idx(mu, nu) = mu(mu-1)/2 + nu, mu >= nu, 1-based: the packed row a
+      !! (mu, nu) pair (either order) lives at. Module-level and pure (not
+      !! type-bound) so a `do concurrent` body may call it directly.
       !$acc routine seq
       integer, intent(in) :: mu, nu
       p = mu*(mu - 1)/2 + nu

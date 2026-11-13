@@ -1,40 +1,40 @@
-!
-! A superposition-of-atomic-densities guess from a JSON file, so a terco
-! run can start where an mqc run would without mqc in the process.
-!
-! The file holds one density block per element for one basis, in that
-! element's function order (shells as trc_basis_json builds them), Cartesian
-! components always LEXICOGRAPHIC: mqc has no notion of TRC_CART_ORDER, so
-! the format carries no field for it. trc_cart_perm permutes each block into
-! this build's order on the way in. The guess for a molecule is those blocks
-! on the diagonal in atom order. One file per basis:
-!
-!   {
-!     "basis": "cc-pvdz",
-!     "elements": {
-!       "1": {"nao": 5,  "density": [ ... 25 numbers, column-major ... ]},
-!       "8": {"nao": 15, "density": [ ... 225 numbers ... ]}
-!     }
-!   }
-!
-! The density is the TOTAL (alpha + beta) density; an unrestricted caller
-! halves it per spin. A block whose size does not match the basis's count for
-! that element is refused: it means a different basis and a silently wrong start.
-!
-! Normalisation: mqc's S_ii is 1 for s and p, 4 pi/5 for d and 4 pi/7 for f;
-! terco's raw S_ii is 1 for all (`common_fac_sp` is cancelled by the basis
-! builders, and is 1 for l >= 2). So s and p need no conversion, and a block
-! element is divided by f(l_i) f(l_j), f(l) = sqrt((2l+1)/(4 pi)) /
-! common_fac_sp(l), which is 1 for s and p.
-!
-! History: this module once divided by sqrt((2l+1)/(4 pi)) alone, which was only
-! right because trc_basis_json double-folded `common_fac_sp` (two matching
-! bugs); the divide was added when that was fixed. Energies cannot see a
-! function's scale but a density can: Tr(D S) was 1.43 electrons for water and
-! 10.0046 for cc-pVDZ with every energy check passing, which is why scf_sad
-! integrates the guess against S.
-!
 module trc_guess_json
+   !!
+   !! A superposition-of-atomic-densities guess from a JSON file, so a terco
+   !! run can start where an mqc run would without mqc in the process.
+   !!
+   !! The file holds one density block per element for one basis, in that
+   !! element's function order (shells as trc_basis_json builds them), Cartesian
+   !! components always LEXICOGRAPHIC: mqc has no notion of TRC_CART_ORDER, so
+   !! the format carries no field for it. trc_cart_perm permutes each block into
+   !! this build's order on the way in. The guess for a molecule is those blocks
+   !! on the diagonal in atom order. One file per basis:
+   !!
+   !!   {
+   !!     "basis": "cc-pvdz",
+   !!     "elements": {
+   !!       "1": {"nao": 5,  "density": [ ... 25 numbers, column-major ... ]},
+   !!       "8": {"nao": 15, "density": [ ... 225 numbers ... ]}
+   !!     }
+   !!   }
+   !!
+   !! The density is the TOTAL (alpha + beta) density; an unrestricted caller
+   !! halves it per spin. A block whose size does not match the basis's count for
+   !! that element is refused: it means a different basis and a silently wrong start.
+   !!
+   !! Normalisation: mqc's S_ii is 1 for s and p, 4 pi/5 for d and 4 pi/7 for f;
+   !! terco's raw S_ii is 1 for all (`common_fac_sp` is cancelled by the basis
+   !! builders, and is 1 for l >= 2). So s and p need no conversion, and a block
+   !! element is divided by f(l_i) f(l_j), f(l) = sqrt((2l+1)/(4 pi)) /
+   !! common_fac_sp(l), which is 1 for s and p.
+   !!
+   !! History: this module once divided by sqrt((2l+1)/(4 pi)) alone, which was only
+   !! right because trc_basis_json double-folded `common_fac_sp` (two matching
+   !! bugs); the divide was added when that was fixed. Energies cannot see a
+   !! function's scale but a density can: Tr(D S) was 1.43 electrons for water and
+   !! 10.0046 for cc-pVDZ with every energy check passing, which is why scf_sad
+   !! integrates the guess against S.
+   !!
    use pic_types, only: dp
    use trc_constants, only: PI
    use trc_basis_types, only: trc_basis_t
@@ -48,11 +48,11 @@ module trc_guess_json
 
 contains
 
-   !
-   ! `dguess` (nao, nao) comes back allocated: the block-diagonal total density
-   ! of the atoms of `b`. `at_z` are the atomic numbers in basis order.
-   !
    subroutine trc_guess_from_json(path, b, at_z, dguess, error)
+      !!
+      !! `dguess` (nao, nao) comes back allocated: the block-diagonal total density
+      !! of the atoms of `b`. `at_z` are the atomic numbers in basis order.
+      !!
       character(len=*), intent(in) :: path
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: at_z(b%natm)

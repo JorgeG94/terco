@@ -595,13 +595,12 @@ contains
       end do
    end subroutine eliminate
 
-   ! ---------------------------------------------------------------------
-   ! the kernels. Each takes its arrays as explicit-shape dummies and runs one
-   ! `do concurrent` over ONE flattened index, whose body calls an item routine
-   ! of this module. No `x%name` appears in any of them.
-   ! ---------------------------------------------------------------------
-
    subroutine kernel_step(n1, n2, old1, old2, new1, new2, e)
+      !! ---------------------------------------------------------------------
+      !! the kernels. Each takes its arrays as explicit-shape dummies and runs one
+      !! `do concurrent` over ONE flattened index, whose body calls an item routine
+      !! of this module. No `x%name` appears in any of them.
+      !! ---------------------------------------------------------------------
       !! e = (new1 - old1, new2 - old2) as one vector
       integer, intent(in) :: n1, n2
       real(dp), intent(in) :: old1(n1), old2(n2), new1(n1), new2(n2)
@@ -724,10 +723,9 @@ contains
       end do
    end subroutine kernel_chunk_max
 
-   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
-   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
-
    pure function step_item(t, n1, n2, old1, old2, new1, new2) result(v)
+      !! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+      !! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
       !! new - old at position t of the concatenated vector
       !$acc routine seq
       integer, intent(in) :: t

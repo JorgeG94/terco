@@ -1,25 +1,25 @@
-!
-! Fused Fock build against a host contraction of libfint's own integrals.
-!
-!   J(mu,nu) = sum_{la,si} (mu nu|la si) D(la,si)
-!   K(mu,la) = sum_{nu,si} (mu nu|la si) D(nu,si)
-!
-! The reference side reads reference.dat and contracts it directly, so this
-! tests the DIGESTION and nothing else -- the integrals themselves are already
-! pinned by check_batch.  If the integrals were wrong both sides would move
-! together and the test would pass, which is why it is a separate check run
-! after that one rather than instead of it.
-!
-! The density is deterministic and dense (no zeros to hide an indexing slip),
-! asymmetric-looking in its generator but symmetrised, since J and K assume a
-! symmetric D.
-!
-! Tolerance is looser than the integral check on purpose: the device path
-! accumulates through `!$acc atomic update`, so the FP addition order varies
-! run to run and the result is not bit-reproducible.  That is the documented
-! cost of atomics, not a defect.
-!
 module check_binfock_suite
+   !!
+   !! Fused Fock build against a host contraction of libfint's own integrals.
+   !!
+   !!   J(mu,nu) = sum_{la,si} (mu nu|la si) D(la,si)
+   !!   K(mu,la) = sum_{nu,si} (mu nu|la si) D(nu,si)
+   !!
+   !! The reference side reads reference.dat and contracts it directly, so this
+   !! tests the DIGESTION and nothing else -- the integrals themselves are already
+   !! pinned by check_batch.  If the integrals were wrong both sides would move
+   !! together and the test would pass, which is why it is a separate check run
+   !! after that one rather than instead of it.
+   !!
+   !! The density is deterministic and dense (no zeros to hide an indexing slip),
+   !! asymmetric-looking in its generator but symmetrised, since J and K assume a
+   !! symmetric D.
+   !!
+   !! Tolerance is looser than the integral check on purpose: the device path
+   !! accumulates through `!$acc atomic update`, so the FP addition order varies
+   !! run to run and the result is not bit-reproducible.  That is the documented
+   !! cost of atomics, not a defect.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

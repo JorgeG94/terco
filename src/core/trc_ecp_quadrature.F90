@@ -1,19 +1,19 @@
-!
-! Numerical primitives for the effective-core-potential integrals: the
-! adaptive radial grid and the scaled modified spherical Bessel function.
-!
-! Ported from libfint's src/cint_ecp_num.f90 (Apache-2.0, itself translated
-! from PySCF's pyscf/lib/gto/nr_ecp.c -- libcint proper has no ECP code).
-! Nothing here depends on a basis or a shell, which is what lets it sit in
-! `core`: it is checked bit for bit against libfint's own values before any
-! integral is assembled on top of it.
-!
-! THE 2047-POINT TABLE IS NOT CARRIED. PySCF's C hard-codes a 2047-point
-! Gauss-Chebyshev grid and two Bessel-value tables (about 4500 lines); every
-! one of them is a cache of `ecp_quadrature_gauss_chebyshev`/`ecp_quadrature_sph_ine` below, so the
-! computation is kept and the cache is not.
-!
 module trc_ecp_quadrature
+   !!
+   !! Numerical primitives for the effective-core-potential integrals: the
+   !! adaptive radial grid and the scaled modified spherical Bessel function.
+   !!
+   !! Ported from libfint's src/cint_ecp_num.f90 (Apache-2.0, itself translated
+   !! from PySCF's pyscf/lib/gto/nr_ecp.c -- libcint proper has no ECP code).
+   !! Nothing here depends on a basis or a shell, which is what lets it sit in
+   !! `core`: it is checked bit for bit against libfint's own values before any
+   !! integral is assembled on top of it.
+   !!
+   !! THE 2047-POINT TABLE IS NOT CARRIED. PySCF's C hard-codes a 2047-point
+   !! Gauss-Chebyshev grid and two Bessel-value tables (about 4500 lines); every
+   !! one of them is a cache of `ecp_quadrature_gauss_chebyshev`/`ecp_quadrature_sph_ine` below, so the
+   !! computation is kept and the cache is not.
+   !!
    use pic_types, only: dp
    implicit none
    private

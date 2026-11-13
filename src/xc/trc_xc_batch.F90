@@ -89,13 +89,13 @@ contains
       res = (l + 1)*(l + 2)/2
    end function ncart
 
-   !
-   ! Radius beyond which |c| r^l exp(-a r^2) < tol, for the primitive that
-   ! reaches furthest. Found by bisection outward from the maximum of
-   ! r^l exp(-a r^2), which sits at r^2 = l/(2a); a Gaussian is monotone
-   ! past it, so the bracket is sound.
-   !
    pure function shell_cutoff(l, np, e, c, tol) result(rcut)
+      !!
+      !! Radius beyond which |c| r^l exp(-a r^2) < tol, for the primitive that
+      !! reaches furthest. Found by bisection outward from the maximum of
+      !! r^l exp(-a r^2), which sits at r^2 = l/(2a); a Gaussian is monotone
+      !! past it, so the bracket is sound.
+      !!
       integer, intent(in) :: l, np
       real(dp), intent(in) :: tol
       real(dp), intent(in) :: e(np), c(np)
@@ -133,15 +133,15 @@ contains
       end function envelope
    end function shell_cutoff
 
-   !
-   ! Build from a grid and a basis.
-   !
-   ! `tol` is the value below which a basis function is treated as zero on a
-   ! batch. 1e-10 is what GauXC ships; the error it introduces in an energy
-   ! is far below the grid's own, and check_xc_energy measures it against
-   ! the unscreened evaluation rather than assuming.
-   !
    subroutine xcgrid_build(this, npts, coords, weights, b, max_pts, tol, w_tol)
+      !!
+      !! Build from a grid and a basis.
+      !!
+      !! `tol` is the value below which a basis function is treated as zero on a
+      !! batch. 1e-10 is what GauXC ships; the error it introduces in an energy
+      !! is far below the grid's own, and check_xc_energy measures it against
+      !! the unscreened evaluation rather than assuming.
+      !!
       class(trc_xc_grid_t), intent(inout) :: this
       integer, intent(in) :: npts
       real(dp), intent(in) :: coords(3, npts), weights(npts)
@@ -390,14 +390,14 @@ contains
       end do
    end subroutine batch_maxima_body
 
-   !
-   ! Build from a DFT grid, keeping what the gradient's grid-response term
-   ! needs and the energy path does not: each point's owning atom and its
-   ! quadrature weight before the partition, through the same permutation
-   ! and screen as `r`/`w`. trc_xc_grad, trc_vv10_grad and the SCF's grid
-   ! cache build this way.
-   !
    subroutine xcgrid_build_from_grid(this, grid, b, max_pts)
+      !!
+      !! Build from a DFT grid, keeping what the gradient's grid-response term
+      !! needs and the energy path does not: each point's owning atom and its
+      !! quadrature weight before the partition, through the same permutation
+      !! and screen as `r`/`w`. trc_xc_grad, trc_vv10_grad and the SCF's grid
+      !! cache build this way.
+      !!
       class(trc_xc_grid_t), intent(inout) :: this
       type(dft_grid_t), intent(in) :: grid
       type(trc_basis_t), intent(in) :: b
