@@ -533,18 +533,41 @@ contains
       !! `MPI_Abort` tears down the whole job either way, so there is
       !! nothing to wait for. One rank keeps today's path exactly: no pic-mpi
       !! call before it that was not already a no-op there.
+      !!
+      !! Only rank 0 calls `abort_comm`, after it flushes. Every caller
+      !! prints its reason on rank 0 alone, and when another rank aborted
+      !! first the launcher could kill rank 0 before its message was
+      !! forwarded (a refusal at np 3 exited 1 with no output in CI). The
+      !! other ranks sleep until rank 0's abort ends them, and abort on
+      !! their own after `ABORT_WAIT_S` seconds, so a path that some ranks
+      !! reach without rank 0 still ends rather than hangs.
       type(run_t), intent(in) :: r
       integer, intent(in) :: code
+      integer, parameter :: ABORT_WAIT_S = 60
+      integer :: waited
       interface
          subroutine c_exit(status) bind(c, name="exit")
             import :: c_int
             implicit none
             integer(c_int), value :: status
          end subroutine c_exit
+         function c_sleep(seconds) result(left) bind(c, name="sleep")
+            import :: c_int
+            implicit none
+            integer(c_int), value :: seconds
+            integer(c_int) :: left
+         end function c_sleep
       end interface
       flush (output_unit)
       flush (error_unit)
-      if (code /= 0 .and. r%nranks > 1) call abort_comm(r%wcomm, code)
+      if (code /= 0 .and. r%nranks > 1) then
+         if (.not. r%rank0) then
+            do waited = 1, ABORT_WAIT_S
+               if (c_sleep(1_c_int) /= 0_c_int) exit
+            end do
+         end if
+         call abort_comm(r%wcomm, code)
+      end if
       call pic_mpi_finalize()
       call c_exit(int(code, c_int))
    end subroutine run_quit
