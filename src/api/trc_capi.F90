@@ -1,5 +1,6 @@
-!
-! C ABI.
+!! the C ABI
+! TODO(JORGE): probably can be split into submodules for sanity
+! TODO(JORGE): some functions need to be FORD docstrings
 !
 ! The Fortran API is the real one; this is a thin `bind(c)` skin over it so a
 ! caller that is not Fortran can use the library. It owns no logic -- every

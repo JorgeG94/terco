@@ -1,10 +1,10 @@
-!
-! A basis from a MolSSI Basis Set Exchange JSON file, the files metalquicha
-! ships under basis_sets/, so a terco run can take the orbital and auxiliary
-! sets mqc would hand it without mqc in the process.
-!
-! Ported from metalquicha's mqc_json_basis_reader
-!
+!!
+!! A basis from a MolSSI Basis Set Exchange JSON file, the files metalquicha
+!! ships under basis_sets/, so a terco run can take the orbital and auxiliary
+!! sets mqc would hand it without mqc in the process.
+!!
+!! Ported from metalquicha's mqc_json_basis_reader
+!!
 module trc_basis_json
    use pic_types, only: dp
    use trc_constants, only: PI
@@ -574,6 +574,7 @@ contains
       !! duplication. `build` folds this in once; this routine has to undo the
       !! complete BSE/pyscf normalisation's OWN copy of it first, so that the
       !! two folds net to exactly one.
+      ! TODO(JORGE): should be parameters
       integer, intent(in) :: l
       select case (l)
       case (0)
@@ -585,6 +586,7 @@ contains
       end select
    end function common_fac_sp
 
+   ! TODO(JORGE): I believe we have a pic function for this
    pure function rtoa(x) result(t)
       real(dp), intent(in) :: x
       character(len=24) :: t

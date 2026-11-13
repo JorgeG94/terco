@@ -41,6 +41,7 @@ Host build (what CI runs, no GPU needed; gfortran 15 is the floor):
 ```sh
 cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DTERCO_ENABLE_GPU=OFF -S . -B build
 cmake --build build --parallel
+# if on GPUs, ctest -j N will just hammer GPU 0 with N processes, don't do this!
 ctest --test-dir build --output-on-failure
 ```
 

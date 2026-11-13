@@ -5,6 +5,7 @@
 # is the design and not an accident -- see docs/GENERATORS.md -- so this file
 # is mostly about deciding WHICH generated set to use.
 #
+# TODO(jorge): should be made good, this is awful
 
 # --- hand written -----------------------------------------------------------
 target_sources(
