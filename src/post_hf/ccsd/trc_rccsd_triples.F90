@@ -222,6 +222,7 @@ contains
          call status%set(ERROR_VALIDATION, trim(reason))
          return
       end if
+      call log_start(state, opts, ranks)
       if (ranks) then
          call finish_ranks(state, status, opts)
          return
@@ -268,6 +269,38 @@ contains
          end if
       end if
    end subroutine refusal_reason
+
+   subroutine log_start(state, opts, ranks)
+      !! The line before (T) starts: it runs for tens of seconds to many minutes and prints nothing until it ends.
+      !! Rank 0 only, and only when the caller asked for output.
+      type(trc_rccsd_state_t), intent(in) :: state
+      type(trc_rccsd_triples_options_t), intent(in), optional :: opts
+      logical, intent(in) :: ranks
+
+      character(len=:), allocatable :: line
+      logical :: ijk
+      integer :: no
+
+      if (.not. present(opts)) return
+      if (.not. opts%verbose) return
+      if (ranks) then
+         if (opts%comm%rank() /= 0) return
+      end if
+      no = state%ints%no
+      ijk = ranks .or. (use_device(opts) .and. device_routine(opts) == RCCSD_TRIPLES_DEVICE_IJK)
+      line = "  rccsd (T): starting, "
+      if (ijk) then
+         line = line//"occupied-driven routine"
+      else if (use_device(opts)) then
+         line = line//"tiled routine"
+      else
+         line = line//"host reference routine"
+      end if
+      line = line//", no "//to_string(no)//" nv "//to_string(state%ints%nv)
+      if (ijk) line = line//", "//to_string(no*(no + 1)/2)//" (i,j) pairs"
+      if (ranks) line = line//" over "//to_string(opts%comm%size())//" ranks"
+      call global_logger%info(line)
+   end subroutine log_start
 
    subroutine finish_ranks(state, status, opts)
       !! `rccsd_triples_finish` over the ranks of `opts%comm` once every rank has agreed it can run; collective

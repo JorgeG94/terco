@@ -85,6 +85,7 @@ module trc_rimp2_driver
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use pic_logger, only: global_logger
+   use pic_strings, only: to_string
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
@@ -357,6 +358,8 @@ contains
       call la%init(naux)
 
       talk = op%verbose .and. rank == 0
+      if (talk) call global_logger%performance("  rimp2: starting, no "//to_string(no)//" nv "//to_string(nv)//" naux "// &
+                                               to_string(naux)//", ranks "//to_string(nranks))
       nv8 = nv
       nao8 = nao
       naux8 = naux

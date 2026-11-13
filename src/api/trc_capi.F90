@@ -5738,6 +5738,8 @@ contains
       fail_status = TRC_OK
       fail_message = ""
       call wall_timer%start()
+      ! 2 ndof displaced SCFs and gradients run quietly: say so before the first one
+      call global_logger%info("trc_run_hessian: starting, "//to_string(2*ndof)//" displaced gradients (finite differences)")
 
       k_loop: do k = 1, ndof
          atom = (k - 1)/3 + 1

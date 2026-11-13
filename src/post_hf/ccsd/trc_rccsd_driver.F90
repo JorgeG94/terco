@@ -309,6 +309,8 @@ contains
          call state%steps%init("rccsd", RCCSD_STEP_NAME)
       end if
       if (allocated(state%rank_seconds)) deallocate (state%rank_seconds)
+      ! the DF integral build is the first silent stage of a large run (the header below waits for its sizes)
+      if (local%verbose) call global_logger%info("  rccsd: building the integrals")
       call state%steps%step_on(la, RCCSD_ST_INTEGRALS, tc)
       if (multi) then
          ! A guard (module header, RANKS): a collective SCF already gives every rank these orbitals; this protects
