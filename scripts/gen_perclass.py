@@ -1640,9 +1640,9 @@ def emit_role_kernel(la, lb, lc, ld, vrr, hrr, pieces, shell):
          role = int(mod((i - 1)/32, {nrole}_int64)) + 1
          it = ((i - 1)/(32*{nrole}))*32 + mod(i - 1, 32_int64) + 1
          if (it <= nr) then
-            call pcri{tag}(g0 + (it - 1)*nranks, role, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
-                          npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, sh_l, ao_off, &
-                          nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
+            call pcri{tag}(g0 + (it - 1)*nranks, TRC_DC_INDEX(role), lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, &
+                          sSA, sSB, sD, sW, npair, sp_i, sp_j, sp_q, thresh, pcut, jfac, kfac, omega, dsh, nbas, nao, &
+                          sh_l, ao_off, nqp, qp_z, qp_c, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, jmat)
          end if
       end do
@@ -2047,6 +2047,7 @@ def main():
 #if TRC_CART_ORDER != {order_val}
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
+#include "inc/trc_dc_index.inc"
 module trc_pc_kernels
    use pic_types, only: dp, int64
    use trc_boys, only: boys_eval, BOYS_MMAX, boys_table, &
@@ -2241,7 +2242,7 @@ end module trc_pc_kernels
 #if TRC_CART_ORDER != {order_val}
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
-module {mod}
+{'#include "inc/trc_dc_index.inc"' + chr(10) if tag in ROLE_SPLITS else ''}module {mod}
    use pic_types, only: dp, int64
    use trc_boys, only: boys_eval, BOYS_MMAX, boys_table, &
                          BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, &

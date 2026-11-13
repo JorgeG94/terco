@@ -711,6 +711,7 @@ def emit_pcm_module(L, path, order="lexicographic"):
 #if TRC_CART_ORDER != {order_val}
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
+#include "inc/trc_dc_index.inc"
 module trc_pcm_kernels
    use pic_types, only: dp
    use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
@@ -1801,7 +1802,8 @@ def emit_pcm_grad_split(L, outdir, order="lexicographic"):
 ! gen_1e.py.
 !
 {head}!
-{_guard(order)}module trc_pcm_grad_k{tag}
+{_guard(order)}#include "inc/trc_dc_index.inc"
+module trc_pcm_grad_k{tag}
    use pic_types, only: dp
    use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
    implicit none
@@ -1821,7 +1823,7 @@ contains
 {PCM_GRAD_DECL}
       integer :: k, c
       do concurrent(k = 1:n, c = 1:nch)
-         call pcm_grad_item_{tag}(idx(k), c, {PCM_GRAD_ARGS})
+         call pcm_grad_item_{tag}(idx(k), TRC_DC_INDEX(c), {PCM_GRAD_ARGS})
       end do
    end subroutine pcm_grad_launch_{tag}
 

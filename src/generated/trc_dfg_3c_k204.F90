@@ -11,6 +11,7 @@
 #if TRC_CART_ORDER != 0
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
+#include "inc/trc_dc_index.inc"
 module trc_dfg_3c_k204
    use pic_types, only: dp, int64
    use trc_rys_table4, only: RYS_C4, RYS_ASY_R4, RYS_ASY_W4, RYS_NROOTS4, &
@@ -47,7 +48,7 @@ contains
 
       if (npq <= 0 .or. nac <= 0) return
       do concurrent(t = 0:int(npq, int64)*nac - 1)
-         call dfg_3c_i204(t, nsh, nao, sh_ao, sh_at, sh_r, npq, q_a, q_b, q_o, q_n, npp, pd, &
+         call dfg_3c_i204(TRC_DC_INDEX(t), nsh, nao, sh_ao, sh_at, sh_r, npq, q_a, q_b, q_o, q_n, npp, pd, &
                    nsx, mnx, ax_np, ax_ao, ax_at, ax_e, ax_c, ax_r, nac, ord_a, &
                    natm, nlane, ky, ny1, ny3, ytens, jc, nqc, qoff, cq, dens, gp)
       end do

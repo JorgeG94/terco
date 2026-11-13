@@ -473,8 +473,8 @@ with the (T) code):
 | `trc_rccsd_triples_ijk` | (T) on the device over occupied triples (the default device routine) |
 | `trc_rccsd_triples` | (T) host reference, and the entry that picks a routine and shares the work over ranks |
 
-Every `do concurrent` call in these modules hands its loop index to an item routine
-through the `TRC_DC_INDEX` macro of `src/inc/trc_dc_index.inc`, which is `(i)`
+Every `do concurrent` call in these modules (as everywhere in `src/`) hands its loop
+index to an item routine through the `TRC_DC_INDEX` macro of `src/inc/trc_dc_index.inc`, which is `(i)`
 under ifx and the plain variable elsewhere. This is a temporary workaround for an
 ifx compiler bug and is to be removed, macro and call sites, once ifx is fixed (see
 `.claude/context/gpu-pitfalls.md`). The entry points are `trc_set_rccsd*`,

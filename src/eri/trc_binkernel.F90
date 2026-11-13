@@ -16,7 +16,8 @@
 ! [1] J. L. Galvez Vallejo, G. M. J. Barca and M. S. Gordon,
 !     "High-performance GPU-accelerated evaluation of electron repulsion
 !     integrals", Mol. Phys. (2022) e2112987, doi:10.1080/00268976.2022.2112987
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_binkernel
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
@@ -812,7 +813,7 @@ contains
          end do
          seg = lo
          t = int(gt - sOff(seg))
-         call one_bin_item_nosym(t, sD(seg), sA(seg), sNB(seg), sOA(seg), sOB(seg), &
+         call one_bin_item_nosym(TRC_DC_INDEX(t), sD(seg), sA(seg), sNB(seg), sOA(seg), sOB(seg), &
                                  npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, omega, dsh, &
                                  nbas, npp, nao, sh_l, ao_off, &
                                  pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &

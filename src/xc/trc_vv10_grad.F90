@@ -100,7 +100,8 @@
 ! as the two modules it reuses. Not yet measured for its OWN cost next to
 ! the rest of the gradient at more than one case; see the branch report
 ! that added this module for the one case it does measure.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_vv10_grad
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
@@ -406,7 +407,7 @@ contains
       ! bisection; applied here pre-emptively rather than re-discovered.
 #ifdef TRC_DEVICE
       do concurrent(i=1:npts)
-         call vv10_grad_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
+         call vv10_grad_kernel_body(TRC_DC_INDEX(i), npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                                     vrho(i), vsigma(i), dedw(i), fexp(1, i), fexp(2, i), fexp(3, i))
       end do
 #else

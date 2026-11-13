@@ -35,7 +35,8 @@
 ! recurrence, and cheap because b and d are small: (b_x+1)(b_y+1)(b_z+1) terms,
 ! at most 4 on average through d.  It runs on contracted data, so the cost is
 ! per quartet rather than per primitive pair.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_hgp
    use pic_types, only: dp, int64
    use trc_eri_data, only: trc_shell_pairs_t
@@ -340,7 +341,7 @@ contains
       real(dp), intent(inout) :: work(nwork)
       integer :: iq
       do concurrent(iq=lo:hi)
-         call hgp_quartet(iq, nq, nbas, npp, nout, q_i, q_j, q_k, q_l, q_off, sh_l, &
+         call hgp_quartet(TRC_DC_INDEX(iq), nq, nbas, npp, nout, q_i, q_j, q_k, q_l, q_off, sh_l, &
                           pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, out, nwork, w_off, work)
       end do
    end subroutine hgp_batch

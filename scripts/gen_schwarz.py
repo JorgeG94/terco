@@ -129,7 +129,8 @@ MODULE_TEMPLATE = '''\
 ! horizontal transfer below extracts the single (ax,bx|ax,bx)-type corner
 ! each thread needs straight from the 2D table instead of building the
 ! whole Cartesian block first.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_schwarz_rys
    use pic_types, only: dp
    use trc_cart, only: ncum_of, cnx, cny, cnz
@@ -172,7 +173,7 @@ contains
       real(dp), intent(inout) :: out(nthread)
       integer :: k
       do concurrent(k = lo:hi)
-         call schwarz_rys_item(k, nthread, nbas, nhpp, t_i, t_j, t_c, sh_l, &
+         call schwarz_rys_item(TRC_DC_INDEX(k), nthread, nbas, nhpp, t_i, t_j, t_c, sh_l, &
                                hp_off, hp_n, hp_p, hp_r, hp_ra, hp_rb, hp_c, out)
       end do
    end subroutine schwarz_rys_batch

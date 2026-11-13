@@ -5,7 +5,8 @@
 ! free-atom RECIPE and the renormalisation are mqc's, verbatim; the grid
 ! integral itself is written against terco's own grid/collocation
 ! machinery (trc_dft_grid, trc_collocation) rather than mqc's AO driver.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_hirshfeld
    !! Each point of space is shared between the atoms in proportion to how
    !! much density each would put there on its own:
@@ -333,7 +334,7 @@ contains
 
       !$acc enter data copyin(coords, at_r, real_atom, r_cut, log_rho, slope) create(share)
       do concurrent(g=1:n_points)
-         call hirshfeld_share_point(g, n_points, coords, natm, at_r, real_atom, n_radial, log_r0, &
+         call hirshfeld_share_point(TRC_DC_INDEX(g), n_points, coords, natm, at_r, real_atom, n_radial, log_r0, &
                                     step, r_cut, log_rho, slope, share(:, g))
       end do
       !$acc update self(share)

@@ -59,7 +59,8 @@
 ! DEVICE RESIDENCY. Every argument array (cmo, dens, grad) and both bases
 ! and the pair list must already be device-resident, as must `dfjk`'s own
 ! B and L (they are, from its setup). Everything else is this routine's own.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_scf_grad_df
    use pic_types, only: dp, int64
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
@@ -195,7 +196,7 @@ contains
       do concurrent(t=0:n8*n8 - 1) local(mu, nu)
          mu = int(mod(t, n8)) + 1
          nu = int(t/n8) + 1
-         if (nu <= mu) dpk(pack_index(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*density(mu, nu)
+         if (nu <= mu) dpk(pack_index(TRC_DC_INDEX(mu), TRC_DC_INDEX(nu))) = merge(1.0_dp, 2.0_dp, mu == nu)*density(mu, nu)
       end do
       call tbl%step_on(lp, ST_JGAM, tc)
       call lp%gemv("T", npack, naux, 1.0_dp, dfjk%bpk, npack, dpk, 0.0_dp, cq)
@@ -709,7 +710,7 @@ contains
       do concurrent(t=0:n8*n8 - 1) local(mu, nu)
          mu = int(mod(t, n8)) + 1
          nu = int(t/n8) + 1
-         if (nu <= mu) dpk(pack_index(mu, nu)) = merge(1.0_dp, 2.0_dp, mu == nu)*d(mu, nu)
+         if (nu <= mu) dpk(pack_index(TRC_DC_INDEX(mu), TRC_DC_INDEX(nu))) = merge(1.0_dp, 2.0_dp, mu == nu)*d(mu, nu)
       end do
    end subroutine pack_doubled
 

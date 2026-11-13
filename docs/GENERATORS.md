@@ -78,6 +78,13 @@ buffer produces a result that is right for `lt = 0` and wrong above.
 terco's `basis%build` additionally folds in libcint's per-shell
 `common_fac_sp`. A generator never applies either.
 
+**A launch passes its loop index through `TRC_DC_INDEX`.** A `do concurrent`
+that hands its index (or a scalar it computed, like the warp-role `role`) to an
+item routine writes `TRC_DC_INDEX(t)`, and the module `#include`s
+`inc/trc_dc_index.inc` before `module`. It is a temporary workaround for an ifx
+defect and expands to plain `t` for every other compiler
+(`.claude/context/gpu-pitfalls.md`).
+
 ---
 
 ## Which four-centre engine runs which class

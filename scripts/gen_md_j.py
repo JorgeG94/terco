@@ -255,6 +255,7 @@ def gen_e_module_loops(la, lb, order, header):
         return lines
 
     o = [header.format(what=f"Class ({la}{lb}) ket, bra and bound stages of the MD J engine")]
+    o.append("#include \"inc/trc_dc_index.inc\"")
     o.append(f"module trc_mdj_e{tag}")
     o.append("   use pic_types, only: dp")
     o.append("   implicit none")
@@ -301,7 +302,7 @@ def gen_e_module_loops(la, lb, order, header):
         o.append(dcl)
         o.append("      integer :: t")
         o.append("      do concurrent(t = 1:n)")
-        o.extend(wrap_args(f"call mdj_{kind}_item_{tag}", "t, " + args, " " * 9))
+        o.extend(wrap_args(f"call mdj_{kind}_item_{tag}", "TRC_DC_INDEX(t), " + args, " " * 9))
         o.append("      end do")
         o.append(f"   end subroutine mdj_{kind}_{tag}")
         o.append("")
@@ -601,6 +602,7 @@ def gen_e_module(la, lb, order, header):
 
     # ---- launches ----
     out = [header.format(what=f"Class ({la}{lb}) ket and bra stages of the MD J engine")]
+    out.append("#include \"inc/trc_dc_index.inc\"")
     out.append(f"module trc_mdj_e{tag}")
     out.append("   use pic_types, only: dp")
     out.append("   implicit none")
@@ -623,7 +625,7 @@ def gen_e_module(la, lb, order, header):
     out.append("      real(dp), intent(inout) :: dt(ndt), mp_nq(nhp)")
     out.append("      integer :: i")
     out.append("      do concurrent(i = 1:n)")
-    out.append(f"         call mdj_ket_item_{tag}(i, k0, kc, nkc, hb, nhp, mp_z, mp_ax, mp_ay, mp_az, &")
+    out.append(f"         call mdj_ket_item_{tag}(TRC_DC_INDEX(i), k0, kc, nkc, hb, nhp, mp_z, mp_ax, mp_ay, mp_az, &")
     out.append("                              mp_bx, mp_by, mp_bz, mp_c, mp_sp, nsp, sp_ao1, sp_ao2, &")
     out.append("                              nao, dmat, ndt, dt, mp_nq)")
     out.append("      end do")
@@ -642,7 +644,7 @@ def gen_e_module(la, lb, order, header):
     out.append("      real(dp), intent(inout) :: jmat(nao, nao)")
     out.append("      integer :: i")
     out.append("      do concurrent(i = 1:n)")
-    out.append(f"         call mdj_bra_item_{tag}(i, s0, kl0, nkc, hb, nhp, mp_z, mp_ax, mp_ay, mp_az, &")
+    out.append(f"         call mdj_bra_item_{tag}(TRC_DC_INDEX(i), s0, kl0, nkc, hb, nhp, mp_z, mp_ax, mp_ay, mp_az, &")
     out.append("                              mp_bx, mp_by, mp_bz, mp_c, nsp, sp_ao1, sp_ao2, sp_k0, sp_nk, &")
     out.append("                              ndt, jt, nao, jmat)")
     out.append("      end do")
@@ -657,7 +659,7 @@ def gen_e_module(la, lb, order, header):
     out.append("      real(dp), intent(inout) :: mp_ip(nhp)")
     out.append("      integer :: i")
     out.append("      do concurrent(i = 1:n)")
-    out.append(f"         call mdj_bound_item_{tag}(i, k0, nhp, mp_z, mp_ax, mp_ay, mp_az, mp_bx, mp_by, mp_bz, &")
+    out.append(f"         call mdj_bound_item_{tag}(TRC_DC_INDEX(i), k0, nhp, mp_z, mp_ax, mp_ay, mp_az, mp_bx, mp_by, mp_bz, &")
     out.append("                                mp_c, mp_ip)")
     out.append("      end do")
     out.append(f"   end subroutine mdj_bound_{tag}")
@@ -728,6 +730,7 @@ def gen_r_module(lp, lq, nbatch, header, sieve=True):
     dags = rtree.batch_dags(L, nbatch, sieve=sieve)
     out = [header.format(what=f"Class [{lp}|{lq}] symmetric Hermite stage of the MD J engine, "
                          f"{len(dags)} R batch(es)")]
+    out.append("#include \"inc/trc_dc_index.inc\"")
     out.append(f"module trc_mdj_s{tag}")
     out.append("   use pic_types, only: dp")
     out.append("   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV")
@@ -774,7 +777,7 @@ def gen_r_module(lp, lq, nbatch, header, sieve=True):
     out.append("      nmine = max(0, (nchunk - c0 + cstep - 1)/cstep)")
     for b in range(len(dags)):
         out.append("      do concurrent(i = 1:np*nmine)")
-        out.extend(wrap_args(f"call mdj_s_item_{tag}_b{b + 1}", "i, " + args, " " * 9))
+        out.extend(wrap_args(f"call mdj_s_item_{tag}_b{b + 1}", "TRC_DC_INDEX(i), " + args, " " * 9))
         out.append("      end do")
     out.append(f"   end subroutine mdj_s_{tag}")
     for b, g in enumerate(dags):
@@ -939,6 +942,7 @@ def gen_r_module_gather(lp, lq, nbatch, header, sieve=True):
     dags = rtree.batch_dags(L, nbatch, sieve=sieve)
     out = [header.format(what=f"Class [{lp}|{lq}] Hermite stage of the MD J engine, "
                          f"{len(dags)} R batch(es)")]
+    out.append("#include \"inc/trc_dc_index.inc\"")
     out.append(f"module trc_mdj_r{tag}")
     out.append("   use pic_types, only: dp")
     out.append("   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV")
@@ -973,7 +977,7 @@ def gen_r_module_gather(lp, lq, nbatch, header, sieve=True):
     out.append("      nmine = max(0, (nchunk - c0 + cstep - 1)/cstep)")
     for b in range(len(dags)):
         out.append("      do concurrent(i = 1:np*nmine)")
-        out.extend(wrap_args(f"call mdj_r_item_{tag}_b{b + 1}", "i, " + args, " " * 9))
+        out.extend(wrap_args(f"call mdj_r_item_{tag}_b{b + 1}", "TRC_DC_INDEX(i), " + args, " " * 9))
         out.append("      end do")
     out.append(f"   end subroutine mdj_r_{tag}")
     for b, g in enumerate(dags):

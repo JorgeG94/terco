@@ -600,7 +600,8 @@ def emit_2c_module(la, lc, L, LA, order, order_val, order_arg, rys, unroll_max):
     text = MOD_HEADER.format(
         title=f"Class ({la}|{lc}) two-centre Coulomb kernel.",
         L=L, LA=LA, order_arg=order_arg, order_val=order_val)
-    text += f"""module {mod}
+    text += f"""#include "inc/trc_dc_index.inc"
+module {mod}
 {use_block}   implicit none
    private
    public :: {drv}
@@ -625,7 +626,7 @@ contains
       integer(int64) :: t
 
       do concurrent(t = 0:int(na, int64)*nc - 1)
-         call {itm}(t, nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+         call {itm}(TRC_DC_INDEX(t), nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                    na, ord_a, nc, ord_c, nao, sh_ao, jmat)
       end do
    end subroutine {drv}
@@ -697,7 +698,8 @@ def emit_3c_module(la, lb, lc, L, LA, order, order_val, order_arg, rys, unroll_m
     text = MOD_HEADER.format(
         title=f"Class ({la}{lb}|{lc}) three-centre Coulomb kernel.",
         L=L, LA=LA, order_arg=order_arg, order_val=order_val)
-    text += f"""module {mod}
+    text += f"""#include "inc/trc_dc_index.inc"
+module {mod}
 {use_block}   implicit none
    private
    public :: {drv}
@@ -733,7 +735,7 @@ contains
 
       if (npc <= 0 .or. nac <= 0) return
       do concurrent(t = 0:int(npc, int64)*nac - 1)
-         call {itm}(t, nsh, nao, sh_ao, sh_r, &
+         call {itm}(TRC_DC_INDEX(t), nsh, nao, sh_ao, sh_r, &
                    npair, npp, p_i, p_j, pp_off, pp_n, pp_z, pp_k, pp_p, pp_a, &
                    npc, ord_p, &
                    nsx, nax, mnx, ax_np, ax_ao, ax_e, ax_c, ax_r, &

@@ -59,7 +59,8 @@
 ! never `!$acc enter data`-registered (this module's own header: "needs
 ! no !$acc declare"), so cuBLAS's own device-pointer lookup on it directly
 ! would not resolve.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_sph
    use pic_types, only: dp, int64
    use trc_basis_types, only: trc_basis_t
@@ -407,7 +408,7 @@ contains
       nrow8 = int(nrow, int64)
       c0 = sh_ao(s0) - 1
       do concurrent(t=0:nrow8*int(s1 - s0 + 1, int64) - 1)
-         call expand_item(t, nshell, sh_l, sh_ao, sh_ao_sph, s0, c0, nrow, nsph, ncol, tl, msph, mcart)
+         call expand_item(TRC_DC_INDEX(t), nshell, sh_l, sh_ao, sh_ao_sph, s0, c0, nrow, nsph, ncol, tl, msph, mcart)
       end do
    end subroutine cols_sph_to_cart_kernel
 

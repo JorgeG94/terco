@@ -79,6 +79,8 @@
 ! Module trc_rimp2_driver, not trc_rimp2: the C entry is bound to the
 ! symbol trc_rimp2, and a binding label may not equal a module name
 ! (F2018 19.2); gfortran silently resolves the call to the wrong thing.
+#include "inc/trc_dc_index.inc"
+
 module trc_rimp2_driver
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
@@ -1488,7 +1490,7 @@ contains
       real(dp), intent(out) :: part(*)
       integer :: ja
       do concurrent(ja=1:nji)
-         call pair_energy_body(i, jfirst, ja, no, nv, ldk, roff, coff, ldt, eo, ev, ki, kt, &
+         call pair_energy_body(i, jfirst, TRC_DC_INDEX(ja), no, nv, ldk, roff, coff, ldt, eo, ev, ki, kt, &
                                part(2*ja - 1), part(2*ja))
       end do
    end subroutine pair_energy
@@ -1533,7 +1535,7 @@ contains
       real(dp), intent(out) :: part(*)
       integer :: aj
       do concurrent(aj=1:nva*nob)
-         call mixed_energy_body(i, aj, nva, nob, nvb, roff, eo_a, ev_a, eo_b, ev_b, ldk, ki, part(aj))
+         call mixed_energy_body(i, TRC_DC_INDEX(aj), nva, nob, nvb, roff, eo_a, ev_a, eo_b, ev_b, ldk, ki, part(aj))
       end do
    end subroutine mixed_energy
 
