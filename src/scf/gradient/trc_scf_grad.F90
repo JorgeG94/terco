@@ -37,6 +37,8 @@
 module trc_scf_grad
    use pic_types, only: dp
    use pic_timer, only: timer_type
+   use pic_logger, only: global_logger
+   use pic_strings, only: to_string
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_1e_gradient
    use trc_eri, only: trc_eri_t
@@ -342,6 +344,8 @@ contains
          project = sym%project
          skel = sym%skeleton
       end if
+      ! the density, two-electron, XC and VV10 terms print nothing until the table at the end
+      if (talk) call global_logger%info("  grad: starting the analytic gradient, "//to_string(b%nao)//" basis functions")
       call gst%init("grad", [character(len=12) :: "density", "two-electron", "one-electron", "xc", "vv10"])
       call xst%init("xc grad", xc_grad_step_names())
       call vst%init("vv10 grad", xc_grad_step_names())
