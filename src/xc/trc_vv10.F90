@@ -115,7 +115,8 @@
 ! identical on every rank with no reduction of its own. No comm given
 ! (i0 = 1, i1 = npts) makes every point everyone's, unchanged from the
 ! no-MPI path.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_vv10
    use pic_types, only: dp, int64
    use trc_constants, only: PI
@@ -522,7 +523,7 @@ contains
       integer :: t
 
       do concurrent(t=1:nwork)
-         call vv10_tile_collocate_body(t, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
+         call vv10_tile_collocate_body(TRC_DC_INDEX(t), nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
                                        b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, nchi, chi, gchi)
       end do
    end subroutine vv10_tile_collocate
@@ -579,7 +580,7 @@ contains
       integer :: t
 
       do concurrent(t=1:npairs)
-         call vv10_tile_gather_body(t, nb, ord, pb_off, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, npairs, dloc)
+         call vv10_tile_gather_body(TRC_DC_INDEX(t), nb, ord, pb_off, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, npairs, dloc)
       end do
    end subroutine vv10_tile_gather
 
@@ -675,7 +676,7 @@ contains
       integer :: k
 
       do concurrent(k=1:npass)
-         call vv10_gather_body(k, npts, r, w, rho, sigma, c, kvv, npass, gidx, &
+         call vv10_gather_body(TRC_DC_INDEX(k), npts, r, w, rho, sigma, c, kvv, npass, gidx, &
                                gx(k), gy(k), gz(k), gkp(k), gw0p(k), grpw(k))
       end do
    end subroutine vv10_gather
@@ -740,7 +741,7 @@ contains
 
 #ifdef TRC_DEVICE
       do concurrent(i=1:npts)
-         call vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
+         call vv10_kernel_body(TRC_DC_INDEX(i), npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                                i0, i1, vrho(i), vsigma(i), eg(i))
       end do
 #else
@@ -1006,7 +1007,7 @@ contains
 
 #ifdef TRC_DEVICE
       do concurrent(t=1:npairs) local(au, av, acc)
-         call vv10_tile_scatter_body(t, nb, ord, pb_off, b_aooff, nbao, b_ao, nlp, nbatch, npairs, vloc, au, av, acc)
+         call vv10_tile_scatter_body(TRC_DC_INDEX(t), nb, ord, pb_off, b_aooff, nbao, b_ao, nlp, nbatch, npairs, vloc, au, av, acc)
          if (au > 0) then
             !$acc atomic update
             vmat(au, av) = vmat(au, av) + acc

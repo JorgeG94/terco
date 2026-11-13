@@ -58,7 +58,8 @@
 ! Only exchange-only launches are tiled (jfac = 0, kfac /= 0): a Coulomb
 ! launch keeps nearly every bin pair, and TRC_EXCHANGE_TILES=0 turns the
 ! tiling off for measurement.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_bin_tiles
    use pic_types, only: dp, int64
    use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_skel_cut_first, bins_plan_emit, bins_plan_allocate, bins_any_masked, &
@@ -339,7 +340,7 @@ contains
       real(dp), intent(out) :: db(nblk, nblk)
       integer :: ij
       do concurrent(ij=1:nblk*nblk)
-         call block_max_item(ij, nbas, nblk, dsh, db)
+         call block_max_item(TRC_DC_INDEX(ij), nbas, nblk, dsh, db)
       end do
    end subroutine block_maxima
 

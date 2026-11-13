@@ -126,7 +126,8 @@
 ! builds on the host with what a CI runner has -- so the per-point terms
 ! come back as arrays and are summed here. They are one double per point;
 ! the traffic is nothing next to the values.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_xc
    use pic_types, only: dp, int64
    use trc_basis_types, only: trc_basis_t
@@ -1985,7 +1986,7 @@ contains
 
 #ifdef TRC_DEVICE
       do concurrent(t=1:npairs) local(au, av, acc_a)
-         call xc_resp_scatter_body(t, nb, ord, pb_off, b_aooff, nbao, b_ao, nlp, nbatch, npairs, vloc, &
+         call xc_resp_scatter_body(TRC_DC_INDEX(t), nb, ord, pb_off, b_aooff, nbao, b_ao, nlp, nbatch, npairs, vloc, &
                                    au, av, acc_a)
          if (au > 0) then
             !$acc atomic update
@@ -2057,7 +2058,7 @@ contains
       integer, intent(inout) :: active(nbatch)
       integer :: ib
       do concurrent(ib=1:nbatch)
-         call xc_screen_body(ib, nbatch, nspin, nao, dmat, b_aooff, nbao, b_ao, b_amax, rho_tol, active(ib))
+         call xc_screen_body(TRC_DC_INDEX(ib), nbatch, nspin, nao, dmat, b_aooff, nbao, b_ao, b_amax, rho_tol, active(ib))
       end do
    end subroutine xc_screen
 
@@ -2199,7 +2200,7 @@ contains
       integer :: t
 
       do concurrent(t=1:nwork)
-         call xc_collocate_body(t, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
+         call xc_collocate_body(TRC_DC_INDEX(t), nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
                                 b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, nchi, chi, gchi)
       end do
    end subroutine xc_collocate
@@ -2255,7 +2256,7 @@ contains
       integer :: t
 
       do concurrent(t=1:npairs)
-         call xc_gather_body(t, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, npairs, dloc)
+         call xc_gather_body(TRC_DC_INDEX(t), nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, npairs, dloc)
       end do
    end subroutine xc_gather
 
@@ -2516,7 +2517,7 @@ contains
       ! the locality lint reads the source before the preprocessor does.
 #ifdef TRC_DEVICE
       do concurrent(t=1:npairs) local(au, av, acc_a, acc_b)
-         call xc_scatter_body(t, nb, ord, pb_off, nspin, b_aooff, nbao, b_ao, nlp, nbatch, npairs, vloc, &
+         call xc_scatter_body(TRC_DC_INDEX(t), nb, ord, pb_off, nspin, b_aooff, nbao, b_ao, nlp, nbatch, npairs, vloc, &
                               au, av, acc_a, acc_b)
          if (au > 0) then
             !$acc atomic update

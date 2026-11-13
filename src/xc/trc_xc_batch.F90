@@ -24,7 +24,8 @@
 ! The points are stored PERMUTED, batch after batch, so that a batch is a
 ! contiguous range and a thread's neighbours in the launch are its
 ! neighbours in space. `batch_of` maps a point back to its batch.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_xc_batch
    use pic_types, only: dp
    use trc_basis_types, only: trc_basis_t
@@ -355,7 +356,7 @@ contains
 
       !$acc data copyin(sh_l, sh_np, sh_e, sh_c, sh_r, r, b_off, b_shoff, b_sh, b_aooff) copy(b_amax)
       do concurrent(ib=1:nb)
-         call batch_maxima_body(ib, nb, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
+         call batch_maxima_body(TRC_DC_INDEX(ib), nb, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
                                 b_off, b_shoff, nbsh, b_sh, b_aooff, nbao, b_amax)
       end do
       !$acc end data

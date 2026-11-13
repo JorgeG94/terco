@@ -212,7 +212,8 @@
 ! CARTESIAN ONLY. XC is Cartesian throughout terco (the SCF folds to
 ! spherical); `b` and `dens` here are exactly what trc_scf_grad.F90 hands
 ! in, with no spherical folding of its own.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_xc_grad
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
@@ -1078,13 +1079,13 @@ contains
 
       if (is_gga) then
          do concurrent(t=1:nwork)
-            call xc_grad_colloc_tile2_body(t, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
+            call xc_grad_colloc_tile2_body(TRC_DC_INDEX(t), nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
                                            npts, r, b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, &
                                            ldt, chi, gchi, hchi)
          end do
       else
          do concurrent(t=1:nwork)
-            call xc_grad_colloc_tile1_body(t, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
+            call xc_grad_colloc_tile1_body(TRC_DC_INDEX(t), nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
                                            npts, r, b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, &
                                            ldt, chi, gchi)
          end do
@@ -1192,7 +1193,7 @@ contains
 #ifdef TRC_DEVICE
       integer :: t
       do concurrent(t=1:npairs)
-         call xc_grad_gather_tile_body(t, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, &
+         call xc_grad_gather_tile_body(TRC_DC_INDEX(t), nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, &
                                        ldd, dloc)
       end do
 #else
@@ -1201,7 +1202,7 @@ contains
       ! divide, cost several times the copy itself.
       integer :: k
       do concurrent(k=1:nb)
-         call xc_grad_gather_batch(k, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, ldd, &
+         call xc_grad_gather_batch(TRC_DC_INDEX(k), nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, ldd, &
                                    dloc)
       end do
 #endif
@@ -1289,7 +1290,7 @@ contains
       real(dp), intent(inout) :: rt(ldr, nspin), pc(ldp, npc), fxc(npts)
       integer :: g
       do concurrent(g=1:np)
-         call xc_grad_point_body(g, p0, nspin, is_gga, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, &
+         call xc_grad_point_body(TRC_DC_INDEX(g), p0, nspin, is_gga, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, &
                                  nbatch, nk, kid, coef, ldt, ldr, ldp, npc, chi, gchi, xt, rt, pc, fxc)
       end do
    end subroutine xc_grad_points
@@ -1388,7 +1389,7 @@ contains
       real(dp), intent(inout) :: rt(ldr, nspin), pc(ldp, npc), fxc(npts)
       integer :: g
       do concurrent(g=1:np)
-         call xc_grad_point_mgga_body(g, p0, nspin, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, &
+         call xc_grad_point_mgga_body(TRC_DC_INDEX(g), p0, nspin, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, &
                                       nbatch, nk, kid, coef, ldt, ldr, ldy, ldp, npc, chi, gchi, xt, yt, rt, pc, fxc)
       end do
    end subroutine xc_grad_points_mgga
@@ -1488,7 +1489,7 @@ contains
       real(dp), intent(inout) :: rt(ldr, 1), pc(ldp, npc)
       integer :: g
       do concurrent(g=1:np)
-         call xc_grad_point_ext_body(g, p0, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, &
+         call xc_grad_point_ext_body(TRC_DC_INDEX(g), p0, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, &
                                      ldt, ldr, ldp, npc, gchi, grho, vrho, vsigma, rt, pc)
       end do
    end subroutine xc_grad_points_ext
@@ -1701,8 +1702,8 @@ contains
       integer :: t
 
       do concurrent(t=1:nmu*XC_GRAD_LANES) local(f)
-         call xc_grad_pulay_lane(t, nb, ord, mw_off, nspin, is_gga, is_mgga, p0, b_off, c_off, npp, nbatch, ldt, ldh, &
-                                 nhs, ldr, ldx, ldy, npc, gchi, hchi, xt, rd, rdx, yt, ldp, pc, f)
+         call xc_grad_pulay_lane(TRC_DC_INDEX(t), nb, ord, mw_off, nspin, is_gga, is_mgga, p0, b_off, c_off, npp, nbatch, &
+                                 ldt, ldh, nhs, ldr, ldx, ldy, npc, gchi, hchi, xt, rd, rdx, yt, ldp, pc, f)
          fp(t, 1) = f(1)
          fp(t, 2) = f(2)
          fp(t, 3) = f(3)
@@ -1724,7 +1725,7 @@ contains
       integer :: m, at
 
       do concurrent(m=1:nmu) local(f, at)
-         call xc_grad_pulay_sum(m, nb, ord, mw_off, b_aooff, nbao, b_ao, nao, ao_atom, nbatch, ldf, fp, f, at)
+         call xc_grad_pulay_sum(TRC_DC_INDEX(m), nb, ord, mw_off, b_aooff, nbao, b_ao, nao, ao_atom, nbatch, ldf, fp, f, at)
          !$acc atomic update
          grad(1, at) = grad(1, at) + f(1)
          !$acc atomic update
@@ -1753,7 +1754,7 @@ contains
       integer :: k
 
       do concurrent(k=1:nb)
-         call xc_grad_force_batch(k, nb, ord, mw_off, nspin, is_gga, is_mgga, gresp, p0, b_off, c_off, npp, nbatch, &
+         call xc_grad_force_batch(TRC_DC_INDEX(k), nb, ord, mw_off, nspin, is_gga, is_mgga, gresp, p0, b_off, c_off, npp, nbatch, &
                                   ldt, ldh, nhs, ldr, ldx, ldy, npc, gchi, hchi, xt, rd, rdx, yt, ldp, pc, ldf, fp, &
                                   ldq, qp, eb)
       end do
@@ -2060,7 +2061,7 @@ contains
       real(dp) :: q(3)
 #ifdef TRC_DEVICE
       do concurrent(g=1:np) local(q, at)
-         call xc_grad_pointmotion_body(g, p0, nspin, is_gga, is_mgga, npts, g_atom, batch_of, b_off, b_aooff, c_off, &
+         call xc_grad_pointmotion_body(TRC_DC_INDEX(g), p0, nspin, is_gga, is_mgga, npts, g_atom, batch_of, b_off, b_aooff, c_off, &
                                        npp, active, nbatch, ldt, ldh, nhs, ldr, ldx, ldy, npc, gchi, hchi, xt, rd, &
                                        rdx, yt, pc, ldp, q, at)
          if (at > 0) then

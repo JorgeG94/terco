@@ -62,7 +62,8 @@
 ! own header for why that matters on the GPU build. The histories and
 ! caches are host-only, so nothing here needs `!$acc enter data`;
 ! `staging` must be device-resident (the SCF state's `w1`).
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_scf_diis
    use pic_types, only: dp, int64
    use pic_sorting, only: sort
@@ -312,9 +313,9 @@ contains
       integer :: i, j
       do concurrent(j=1:nao, i=1:nao)
          if (i > j) then
-            packed(packed_index(nao, i, j)) = offdiag*(0.5_dp*(a(i, j) + sign*a(j, i)))
+            packed(packed_index(nao, TRC_DC_INDEX(i), TRC_DC_INDEX(j))) = offdiag*(0.5_dp*(a(i, j) + sign*a(j, i)))
          else if (i == j) then
-            packed(packed_index(nao, i, j)) = 0.5_dp*(a(i, j) + sign*a(j, i))
+            packed(packed_index(nao, TRC_DC_INDEX(i), TRC_DC_INDEX(j))) = 0.5_dp*(a(i, j) + sign*a(j, i))
          end if
       end do
    end subroutine pack_device

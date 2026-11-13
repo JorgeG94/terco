@@ -14,6 +14,7 @@
 #if TRC_CART_ORDER != 0
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
+#include "inc/trc_dc_index.inc"
 module trc_df_2c_k44
    use pic_types, only: dp, int64
    use trc_rys_table5, only: RYS_C5, RYS_ASY_R5, RYS_ASY_W5, RYS_NROOTS5, &
@@ -51,7 +52,7 @@ contains
       integer(int64) :: t
 
       do concurrent(t = 0:int(na, int64)*nc - 1)
-         call df_2c_i44(t, nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
+         call df_2c_i44(TRC_DC_INDEX(t), nshell, maxnp, sh_np, sh_e, sh_c, sh_r, &
                    na, ord_a, nc, ord_c, nao, sh_ao, jmat)
       end do
    end subroutine df_2c_k44

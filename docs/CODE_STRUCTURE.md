@@ -29,8 +29,8 @@ A module may use modules in its own layer or any layer above it in this table
 
 `src/inc/` is not a layer either: it holds preprocessor include files shared by
 modules: the 1e, multipole and PCM driver bodies, the Boys evaluation, and
-`trc_dc_index.inc`, the `TRC_DC_INDEX` macro of the RI-CCSD modules that hands a
-`do concurrent` index to an item routine: a temporary workaround for an ifx
+`trc_dc_index.inc`, the `TRC_DC_INDEX` macro through which every `do concurrent`
+body hands its index to an item routine: a temporary workaround for an ifx
 compiler bug, to be removed once ifx is fixed (see
 `.claude/context/gpu-pitfalls.md`).
 

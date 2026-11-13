@@ -56,7 +56,7 @@
                                  dmat, part(k, c))
       end do
       do concurrent(k = 1:npts)
-         v(k) = sum_chunks(nch, npts, part, k)
+         v(k) = sum_chunks(nch, npts, part, TRC_DC_INDEX(k))
       end do
       !$acc exit data delete(part)
    end subroutine pcm_potential_driver

@@ -65,7 +65,8 @@
 ! integral-derivative kernel, generated: trc_integrals%trc_pcm_gradient,
 ! from scripts/gen_1e.py --pcm-grad. Everything else here is dense,
 ! analytic host/device arithmetic, no Boys function, no VRR.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_pcm_grad
    use pic_types, only: dp
    use trc_constants, only: PI
@@ -369,7 +370,7 @@ contains
 #ifdef TRC_DEVICE
       do concurrent(j = 1:n, i = 1:n)
          if (i < j) then
-            call pcm_grad_pair_item(i, j, n, natm, coords, normals, zeta, parent, &
+            call pcm_grad_pair_item(TRC_DC_INDEX(i), TRC_DC_INDEX(j), n, natm, coords, normals, zeta, parent, &
                                     bra_s, q, has_d, bra_d, ket_d, grad)
          end if
       end do
@@ -519,7 +520,8 @@ contains
 #ifdef TRC_DEVICE
       do concurrent(ja = 1:natm, i = 1:n)
          if (ja /= parent(i)) then
-            call pcm_grad_fanout_item(i, ja, n, natm, coords, parent, atom_r, r_switch, r_inner, combined, grad)
+            call pcm_grad_fanout_item(TRC_DC_INDEX(i), TRC_DC_INDEX(ja), n, natm, coords, parent, atom_r, r_switch, r_inner, &
+                                      combined, grad)
          end if
       end do
 #else
@@ -602,7 +604,7 @@ contains
       ! contributions, ~1e-1 in the gradient); trc_vv10.F90's PASS 3 note.
 #ifdef TRC_DEVICE
       do concurrent(ia = 1:natm, k = 1:n)
-         call pcm_grad_nuc_item(k, ia, n, natm, coords, zeta, parent, q, at_z, at_r, grad)
+         call pcm_grad_nuc_item(TRC_DC_INDEX(k), TRC_DC_INDEX(ia), n, natm, coords, zeta, parent, q, at_z, at_r, grad)
       end do
 #else
       do ia = 1, natm

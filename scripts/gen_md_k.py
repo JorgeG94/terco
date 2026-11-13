@@ -453,13 +453,13 @@ def fused_driver(tag, suf, np_, nq_, nr, nab, ncd):
     o.append(f"      real(dp), intent(inout) :: rb({nr}, ni*ka*nj*kb), sm({np_}*ka, {ncd}, ni*nj)")
     o.append("      integer :: t")
     o.append("      do concurrent(t = 1:ni*ka*nj*kb)")
-    o.extend(wrap_args(f"call mdg_r_item_{tag}", f"t, {DATA}, {WIN}, rb", " " * 9))
+    o.extend(wrap_args(f"call mdg_r_item_{tag}", f"TRC_DC_INDEX(t), {DATA}, {WIN}, rb", " " * 9))
     o.append("      end do")
     o.append(f"      do concurrent(t = 1:{np_}*ka*ni*nj)")
-    o.extend(wrap_args(f"call mdg_fb_item_{tag}{suf}", f"t, {DATA}, {WIN}, hk, rb, sm", " " * 9))
+    o.extend(wrap_args(f"call mdg_fb_item_{tag}{suf}", f"TRC_DC_INDEX(t), {DATA}, {WIN}, hk, rb, sm", " " * 9))
     o.append("      end do")
     o.append(f"      do concurrent(t = 1:{nab}*ni*nj)")
-    o.extend(wrap_args(f"call mdg_fc_item_{tag}{suf}", f"t, {DATA}, {WIN}, hb, sm", " " * 9))
+    o.extend(wrap_args(f"call mdg_fc_item_{tag}{suf}", f"TRC_DC_INDEX(t), {DATA}, {WIN}, hb, sm", " " * 9))
     o.append("      end do")
     o.append(f"   end subroutine mdg_fused_{tag}{suf}")
     return o
@@ -480,6 +480,7 @@ def gen_class(la, lb, lc, ld, order, header):
     nabs, ncds = (2 * la + 1) * (2 * lb + 1), (2 * lc + 1) * (2 * ld + 1)
     il = herm_index(L)
     o = [header.format(what=f"Class ({la}{lb}|{lc}{ld}) MD exchange kernels")]
+    o.append("#include \"inc/trc_dc_index.inc\"")
     o.append(f"module trc_mdg_k{tag}")
     o.append("   use pic_types, only: dp, int64")
     o.append("   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV")
@@ -520,7 +521,7 @@ SPH_TRANSFORMS = """   subroutine mdg_hsph(la, lb, ncol, hc, hs)
       real(dp), intent(inout) :: hs((2*la + 1)*(2*lb + 1), ncol)
       integer :: t
       do concurrent(t = 1:(2*la + 1)*(2*lb + 1)*ncol)
-         call hsph_item(t, la, lb, ncol, hc, hs)
+         call hsph_item(TRC_DC_INDEX(t), la, lb, ncol, hc, hs)
       end do
    end subroutine mdg_hsph
 
@@ -645,6 +646,7 @@ def gen_h_module(lmax, order, header):
     """
     import gen_sph  # noqa: E402 (T per l, this build's Cartesian order)
     o = [header.format(what="E matrices of the MD exchange pass, per shell-pair type")]
+    o.append("#include \"inc/trc_dc_index.inc\"")
     o.append("module trc_mdg_h")
     o.append("   use pic_types, only: dp")
     o.append("   use trc_sph_tables, only: SPH_T, SPH_NCART_MAX, SPH_NSPH_MAX")
@@ -695,7 +697,7 @@ def gen_h_module(lmax, order, header):
         t = f"{la}{lb}"
         o.append(f"      case ({la * 16 + lb})")
         o.append("         do concurrent(t = 1:n*k)")
-        o.extend(wrap_args(f"call mdg_h_item_{t}", f"t, {DATA}, gb0, n, k, h", " " * 12))
+        o.extend(wrap_args(f"call mdg_h_item_{t}", f"TRC_DC_INDEX(t), {DATA}, gb0, n, k, h", " " * 12))
         o.append("         end do")
     o.append("      case default")
     o.append('         error stop "trc_mdg_h: no E-matrix kernel for this type"')

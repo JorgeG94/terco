@@ -19,6 +19,7 @@
 #if TRC_CART_ORDER != 0
 #error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
 #endif
+#include "inc/trc_dc_index.inc"
 module trc_pcm_kernels
    use pic_types, only: dp
    use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV

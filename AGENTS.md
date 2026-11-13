@@ -91,8 +91,9 @@ before any non-trivial change. The rules that most often break builds:
   `!$acc routine seq` item routines, with explicit-shape dummies and
   per-thread scratch declared inside the item routine.
 - Temporary, for an ifx bug (to be removed when ifx is fixed): a call in a
-  `do concurrent` body passes its loop index through the `TRC_DC_INDEX`
-  macro, never to a `value` dummy (`gpu-pitfalls.md`, Codegen).
+  `do concurrent` body passes its loop index, or a scalar the body computed,
+  through the `TRC_DC_INDEX` macro, never to a `value` dummy. This holds in
+  all of `src/` and in the generators (`gpu-pitfalls.md`, Codegen).
 - A procedure or program, test programs included, that makes a collective
   MPI call must have no internal (`contains`) procedures (an NVHPC 26.5 +
   HPC-X defect). Put helpers in modules.

@@ -30,7 +30,8 @@
 ! The R scratch is sized for the worst case (LTOT) for every quartet, whatever
 ! that quartet's actual total degree.  Correct but wasteful; the fix is to sort
 ! the work list by class and size per class.  Left until it is measured.
-!
+#include "inc/trc_dc_index.inc"
+
 module trc_batch
    use pic_types, only: dp
    use pic_logger, only: global_logger
@@ -321,7 +322,7 @@ contains
       integer :: iq
 
       do concurrent(iq=lo:hi)
-         call batch_one_quartet(iq, iq - lo + 1, nchunk, nq, nbas, npp, nout, &
+         call batch_one_quartet(TRC_DC_INDEX(iq), iq - lo + 1, nchunk, nq, nbas, npp, nout, &
                           q_i, q_j, q_k, q_l, q_off, sh_l, &
                           pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, rscr, out)
       end do
@@ -554,10 +555,10 @@ contains
       integer :: iq
 
       do concurrent(iq=lo:hi)
-         call batch_one_quartet(iq, iq - lo + 1, nchunk, nq, nbas, npp, nout, &
+         call batch_one_quartet(TRC_DC_INDEX(iq), iq - lo + 1, nchunk, nq, nbas, npp, nout, &
                           q_i, q_j, q_k, q_l, q_off, sh_l, &
                           pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, rscr, out)
-         call digest_quartet(iq, nq, nbas, nout, nao, &
+         call digest_quartet(TRC_DC_INDEX(iq), nq, nbas, nout, nao, &
                              q_i, q_j, q_k, q_l, q_off, sh_l, ao_off, &
                              out, dmat, jmat, kmat)
       end do
@@ -644,10 +645,10 @@ contains
       integer :: iq
 
       do concurrent(iq=lo:hi)
-         call batch_one_quartet(iq, iq - lo + 1, nchunk, nq, nbas, npp, nout, &
+         call batch_one_quartet(TRC_DC_INDEX(iq), iq - lo + 1, nchunk, nq, nbas, npp, nout, &
                           q_i, q_j, q_k, q_l, q_off, sh_l, &
                           pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, rscr, out)
-         call digest_sym(iq, nq, nbas, nout, nao, &
+         call digest_sym(TRC_DC_INDEX(iq), nq, nbas, nout, nao, &
                          q_i, q_j, q_k, q_l, q_off, sh_l, ao_off, &
                          out, dmat, jmat, kmat)
       end do
