@@ -67,6 +67,28 @@ def test_scan_procedures(tmp_path):
     assert ("tmp_global", 3) in procs["trc_demo"]["names"]
 
 
+def test_proc_length_ignores_comments(tmp_path):
+    src = tmp_path / "m.F90"
+    src.write_text(textwrap.dedent("""\
+        module trc_demo
+           implicit none
+        contains
+           subroutine demo_run(a)
+              !! A FORD block, which is documentation.
+              !! Two lines of it.
+              integer, intent(in) :: a
+              ! a plain comment
+              !$acc update device(a)
+              call demo_other(a)  ! a trailing comment is part of a code line
+           end subroutine demo_run
+        end module trc_demo
+    """))
+    run = {p["name"]: p for p in archcheck.scan_procedures(src)}["demo_run"]
+    assert run["end"] - run["start"] + 1 == 8
+    # the header, the declaration, the !$acc directive, the call, the end
+    assert run["code_lines"] == 5
+
+
 def test_kernel_driver(tmp_path):
     # A thin launch is a kernel driver; one with real host logic (more than
     # KERNEL_HOST_STMTS statements outside its do concurrent) is not, and a

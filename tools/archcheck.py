@@ -16,7 +16,9 @@ Rules (thresholds and word lists are the constants below):
     short-name      a procedure or variable name contains an abbreviation
                     from SHORT_NAMES (ctx, cfg, dens, ...); a bind(c)
                     procedure's dummy arguments are C ABI names, exempt
-    proc-length     a procedure is longer than MAX_PROC_LINES
+    proc-length     a procedure has more than MAX_PROC_LINES lines, not counting
+                    comment lines (a FORD `!!` block is documentation, and its
+                    place inside the procedure is not a reason to split it)
     arg-count       a procedure has more than MAX_ARGS dummy arguments
                     (`routine seq` item routines and thin `do concurrent`
                     kernel drivers excepted; see KERNEL_HOST_STMTS)
@@ -203,9 +205,27 @@ def is_kernel_driver(proc):
     return proc.get("has_dc", False) and proc.get("host_exec", 0) <= KERNEL_HOST_STMTS
 
 
+def count_lines(lines, start, end):
+    """Physical lines start..end (1-based, inclusive) that are not comments.
+
+    A line whose first non-blank character is `!` is a comment, which covers
+    a FORD `!!` block; `!$acc` and `!$omp` directives are code and count.
+    Blank lines count, as they always have.
+    """
+    n = 0
+    for line in lines[start - 1:end]:
+        t = line.lstrip()
+        if t.startswith("!") and not t.startswith("!$"):
+            continue
+        n += 1
+    return n
+
+
 def scan_procedures(path):
-    """Yield dicts: name, kind, start, end, args, names (declared), device."""
+    """Yield dicts: name, kind, start, end, args, names (declared), device,
+    and `code_lines`, the length of the procedure without its comments."""
     text = path.read_text(errors="replace")
+    lines = text.splitlines()
     stack, done, iface, pending_acc = [], [], 0, False
     unit, outer = None, []
     for ln, st in modmap.logical_lines(text):
@@ -252,6 +272,7 @@ def scan_procedures(path):
             if modmap.RE_END_PROC.match(st):
                 proc = stack.pop()
                 proc["end"] = ln
+                proc["code_lines"] = count_lines(lines, proc["start"], ln)
                 done.append(proc)
                 continue
             if modmap.RE_ACC_SEQ.match(st):
@@ -349,7 +370,7 @@ def check():
             continue
         for proc in scan_procedures(path):
             scope = f"{proc['name']}"
-            length = proc["end"] - proc["start"] + 1
+            length = proc.get("code_lines", proc["end"] - proc["start"] + 1)
             container = proc.get("container", False)
             if length > MAX_PROC_LINES and not container:
                 found.append(Violation(
