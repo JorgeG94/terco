@@ -1,27 +1,27 @@
-!
-! The --grad --df refusals, at the C API: every out-of-scope request must
-! come back as an error STATUS with a message naming the reason, never reach
-! the library's own `error stop` (which would take the host process down).
-! The fitted gradient is restricted, Cartesian and not range-separated
-! (trc_run_gradient's own guards, trc_capi.F90).
-!
-! Two routes into each refusal:
-!
-!   RUN. trc_run_scf with --df on an unrestricted (OH), spherical (water,
-!        cc-pVDZ as tagged) or range-separated (wB97X) setup. Where the SCF
-!        refuses (unrestricted, range-separated), trc_run_gradient after it
-!        refuses too (no SCF). The DF-SCF runs spherical bases, so there the
-!        gradient's own guard must refuse, TRC_ERR_UNSUPPORTED, naming it.
-!   LOAD. The same setup's SCF, run WITHOUT --df and saved (trc_save_scf),
-!        then loaded into a --df context (trc_set_df, trc_load_scf):
-!        trc_run_gradient is now past the SCF's refusals and its own guard
-!        is what must refuse, TRC_ERR_UNSUPPORTED, naming the reason. A
-!        restricted Cartesian result loaded the same way has no fit, and
-!        must be refused with TRC_ERR_STATE.
-!
-! Plus the positive control: RHF water/6-31G* with --df runs the gradient.
-!
 module check_grad_df_refusals_suite
+   !!
+   !! The --grad --df refusals, at the C API: every out-of-scope request must
+   !! come back as an error STATUS with a message naming the reason, never reach
+   !! the library's own `error stop` (which would take the host process down).
+   !! The fitted gradient is restricted, Cartesian and not range-separated
+   !! (trc_run_gradient's own guards, trc_capi.F90).
+   !!
+   !! Two routes into each refusal:
+   !!
+   !!   RUN. trc_run_scf with --df on an unrestricted (OH), spherical (water,
+   !!        cc-pVDZ as tagged) or range-separated (wB97X) setup. Where the SCF
+   !!        refuses (unrestricted, range-separated), trc_run_gradient after it
+   !!        refuses too (no SCF). The DF-SCF runs spherical bases, so there the
+   !!        gradient's own guard must refuse, TRC_ERR_UNSUPPORTED, naming it.
+   !!   LOAD. The same setup's SCF, run WITHOUT --df and saved (trc_save_scf),
+   !!        then loaded into a --df context (trc_set_df, trc_load_scf):
+   !!        trc_run_gradient is now past the SCF's refusals and its own guard
+   !!        is what must refuse, TRC_ERR_UNSUPPORTED, naming the reason. A
+   !!        restricted Cartesian result loaded the same way has no fit, and
+   !!        must be refused with TRC_ERR_STATE.
+   !!
+   !! Plus the positive control: RHF water/6-31G* with --df runs the gradient.
+   !!
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_null_ptr, c_char, c_null_char
    use pic_types, only: dp
    use pic_strings, only: to_string

@@ -193,11 +193,10 @@ module trc_rccsd_w
 
 contains
 
-   ! ---------------------------------------------------------------------
-   ! the types
-   ! ---------------------------------------------------------------------
-
    subroutine w_init(this, no, nv)
+      !! ---------------------------------------------------------------------
+      !! the types
+      !! ---------------------------------------------------------------------
       !! Zeroed W on host and device. A block above 2^31-1 elements (o^4 or o^2 v^2) is refused in `status`.
       class(trc_rccsd_w_t), intent(inout) :: this
       integer, intent(in) :: no, nv
@@ -320,12 +319,11 @@ contains
       this%stamp = 0
    end subroutine wscratch_release
 
-   ! ---------------------------------------------------------------------
-   ! size checks. A refusal sets ws%status and the caller returns before it
-   ! writes anything.
-   ! ---------------------------------------------------------------------
-
    pure function elements(n1, n2, n3, n4) result(n)
+      !! ---------------------------------------------------------------------
+      !! size checks. A refusal sets ws%status and the caller returns before it
+      !! writes anything.
+      !! ---------------------------------------------------------------------
       !! n1 n2 n3 n4 as a 64-bit count
       integer, intent(in) :: n1, n2, n3, n4
       integer(int64) :: n
@@ -419,11 +417,10 @@ contains
       ok = .true.
    end function ready_tau
 
-   ! ---------------------------------------------------------------------
-   ! the intermediates
-   ! ---------------------------------------------------------------------
-
    subroutine rccsd_w_woooo(ints, amps, inter, w, ws, la)
+      !! ---------------------------------------------------------------------
+      !! the intermediates
+      !! ---------------------------------------------------------------------
       !! Woooo(k,l,i,j) = (ki|lj) + sum_c ooov(k,i,l,c) t1(j,c) + sum_c ooov(l,j,k,c) t1(i,c)
       !!                  + sum_cd ovov(k,c,l,d) tau(i,j,c,d)
       !!
@@ -595,13 +592,12 @@ contains
       call rccsd_w_wvovo(ints, amps, w, ws, la)
    end subroutine rccsd_w_build
 
-   ! ---------------------------------------------------------------------
-   ! the kernels. Each takes its arrays as explicit-shape dummies and runs one
-   ! `do concurrent` over ONE flattened index, whose body calls an item routine
-   ! of this module. No `x%name` appears in any of them.
-   ! ---------------------------------------------------------------------
-
    subroutine kernel_pack_akl(no, nv, ovov, akl)
+      !! ---------------------------------------------------------------------
+      !! the kernels. Each takes its arrays as explicit-shape dummies and runs one
+      !! `do concurrent` over ONE flattened index, whose body calls an item routine
+      !! of this module. No `x%name` appears in any of them.
+      !! ---------------------------------------------------------------------
       !! akl(k,l,c,d) = ovov(k,c,l,d)
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: ovov(no, nv, no, nv)
@@ -721,17 +717,16 @@ contains
       end do
    end subroutine kernel_acc_vovo
 
-   ! ---------------------------------------------------------------------
-   ! the item routines: pure, `routine seq`, explicit-shape dummies, no
-   ! arrays of their own. A flat 1-based index t is the position in the
-   ! DESTINATION (first index fastest) for the packs, and in the SOURCE for
-   ! the base, stage and accumulate maps (`*_dst`, `voov_stage`), which return
-   ! where that element goes.
-   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
-   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
-   ! ---------------------------------------------------------------------
-
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
+      !! ---------------------------------------------------------------------
+      !! the item routines: pure, `routine seq`, explicit-shape dummies, no
+      !! arrays of their own. A flat 1-based index t is the position in the
+      !! DESTINATION (first index fastest) for the packs, and in the SOURCE for
+      !! the base, stage and accumulate maps (`*_dst`, `voov_stage`), which return
+      !! where that element goes.
+      !! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+      !! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
+      !! ---------------------------------------------------------------------
       !! t - 1 = (i1-1) + n1 ((i2-1) + n2 ((i3-1) + n3 (i4-1)))
       !$acc routine seq
       integer, intent(in) :: t, n1, n2, n3

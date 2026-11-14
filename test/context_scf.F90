@@ -1,23 +1,23 @@
-!
-! The context surface against the Fortran drivers: water/cc-pVDZ RHF and
-! RI-MP2 through one handle, set up in steps, must reproduce trc_scf_run
-! and trc_rimp2_run to the last digit, and every misuse must be a status.
-!
-! FORCED CARTESIAN. This test is about the C API surface, not about
-! cc-pVDZ's physics, and RI-MP2 (trc_run_rimp2/trc_rimp2_run) refuses a
-! spherical orbital basis outright (trc_capi.F90's own guard) -- so every
-! basis load here, Fortran-driver and handle alike, forces Cartesian,
-! which is what keeps this test exercising the API it always has rather
-! than failing on that refusal.
-!
-! Six independent test-drive cases below. Each accumulates its own
-! `expect()` failures (continuing past the first, like the original
-! program's `ok` flag) into one message, reported through a single
-! `check` at the end -- test-drive's `check(error, ...)` has
-! `intent(out)` on `error`, so calling it more than once per test would
-! silently wipe an earlier failure rather than add to it.
-!
 module context_scf_suite
+   !!
+   !! The context surface against the Fortran drivers: water/cc-pVDZ RHF and
+   !! RI-MP2 through one handle, set up in steps, must reproduce trc_scf_run
+   !! and trc_rimp2_run to the last digit, and every misuse must be a status.
+   !!
+   !! FORCED CARTESIAN. This test is about the C API surface, not about
+   !! cc-pVDZ's physics, and RI-MP2 (trc_run_rimp2/trc_rimp2_run) refuses a
+   !! spherical orbital basis outright (trc_capi.F90's own guard) -- so every
+   !! basis load here, Fortran-driver and handle alike, forces Cartesian,
+   !! which is what keeps this test exercising the API it always has rather
+   !! than failing on that refusal.
+   !!
+   !! Six independent test-drive cases below. Each accumulates its own
+   !! `expect()` failures (continuing past the first, like the original
+   !! program's `ok` flag) into one message, reported through a single
+   !! `check` at the end -- test-drive's `check(error, ...)` has
+   !! `intent(out)` on `error`, so calling it more than once per test would
+   !! silently wipe an earlier failure rather than add to it.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char, c_char
    use pic_types, only: dp
    use pic_strings, only: to_string
@@ -249,23 +249,23 @@ contains
       call run_double_hybrid(error, 'b2gpplyp', 0.36_c_double, 0.36_c_double)
    end subroutine test_dh_b2gpplyp
 
-   ! water/cc-pVDZ through a fresh handle, `name` a double hybrid: checks
-   ! trc_energy's combined total against E_scf + pt2_cos_lit*E_os +
-   ! pt2_css_lit*E_ss, the LITERAL coefficients the caller passes in
-   ! (never read back from trc_xc_functional's own table), and that E_os
-   ! and E_ss are not coincidentally equal.
-   !
-   ! Every double hybrid terco has today (b2plyp, b2gp-plyp, mpw2plyp) has
-   ! pt2_cos == pt2_css, and nothing public (no functional, no C-API
-   ! setter) can set them unequally -- trc_xc_functional.F90's own header
-   ! comment on why the field is split in the first place is forward-
-   ! looking, not something exercised yet. A cos/css coefficient swap is
-   ! therefore NOT distinguishable by this test on EITHER case below (the
-   ! weighted sum is symmetric in cos/css when they are equal); what IS
-   ! checked is that E_os and E_ss enter as two genuinely different
-   ! numbers (asserted separately, not just a coincidental E_os == E_ss),
-   ! each multiplied by its own literal coefficient.
    subroutine run_double_hybrid(error, name, pt2_cos_lit, pt2_css_lit)
+      !! water/cc-pVDZ through a fresh handle, `name` a double hybrid: checks
+      !! trc_energy's combined total against E_scf + pt2_cos_lit*E_os +
+      !! pt2_css_lit*E_ss, the LITERAL coefficients the caller passes in
+      !! (never read back from trc_xc_functional's own table), and that E_os
+      !! and E_ss are not coincidentally equal.
+      !!
+      !! Every double hybrid terco has today (b2plyp, b2gp-plyp, mpw2plyp) has
+      !! pt2_cos == pt2_css, and nothing public (no functional, no C-API
+      !! setter) can set them unequally -- trc_xc_functional.F90's own header
+      !! comment on why the field is split in the first place is forward-
+      !! looking, not something exercised yet. A cos/css coefficient swap is
+      !! therefore NOT distinguishable by this test on EITHER case below (the
+      !! weighted sum is symmetric in cos/css when they are equal); what IS
+      !! checked is that E_os and E_ss enter as two genuinely different
+      !! numbers (asserted separately, not just a coincidental E_os == E_ss),
+      !! each multiplied by its own literal coefficient.
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in) :: name
       real(c_double), intent(in) :: pt2_cos_lit, pt2_css_lit

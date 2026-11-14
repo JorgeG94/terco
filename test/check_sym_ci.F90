@@ -1,29 +1,29 @@
-!
-! The point group Ci (an inversion centre, nothing else): trc_sym_geom,
-! trc_sym_ao and the SO-blocked SCF of trc_sym_scf on two molecules whose only
-! symmetry element is the inversion. Both are staggered, anti conformers that
-! pyscf 2.14.0 detects as Ci (see the comments of the .xyz files):
-!   chfcl2_ci   meso-CHFCl-CHFCl, 8 atoms (C, H, F, Cl and their images)
-!   n2h2f2_ci   N2H2F2, 6 atoms
-! No atom is fixed by the inversion and every AO moves to another atom, with
-! the sign (-1)^l, so d shells (cc-pVDZ) and the l = 0..3 set test l-parity.
-!
-! Detection: group Ci, irreps Ag, Au; the permutation has no fixed point, the
-! symmetrised geometry is inversion symmetric to round-off, a broken geometry
-! falls back to C1. AO: U^T U = I, the sign of every AO under the inversion is
-! (-1)^l, U^T S U and U^T H U are block-diagonal (<= 1e-12), the dimensions
-! per irrep equal pyscf's mol.symm_orb (pyscf_refs/sym_ci.ref), Cartesian and
-! spherical, 6-31G* and cc-pVDZ. Registered twice, like check_sym_ao:
-! `check_sym_ci` (mode "main") and `check_sym_ci_f` (mode "f", the uncontracted
-! l = 0..3 set, which prints SKIP when this build's LMAX is below 3).
-! SCF: the central oracle (symmetry vs C1 on the symmetrised geometry: |dE|
-! <= 1e-10 Eh for HF, 1e-9 for B3LYP, orbital energies, density) for RHF,
-! UHF (radical cations) and B3LYP, each against the pyscf anchors (electrons
-! per irrep, orbital energies per irrep); the gradient symmetrisation.
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_ci_suite
+   !!
+   !! The point group Ci (an inversion centre, nothing else): trc_sym_geom,
+   !! trc_sym_ao and the SO-blocked SCF of trc_sym_scf on two molecules whose only
+   !! symmetry element is the inversion. Both are staggered, anti conformers that
+   !! pyscf 2.14.0 detects as Ci (see the comments of the .xyz files):
+   !!   chfcl2_ci   meso-CHFCl-CHFCl, 8 atoms (C, H, F, Cl and their images)
+   !!   n2h2f2_ci   N2H2F2, 6 atoms
+   !! No atom is fixed by the inversion and every AO moves to another atom, with
+   !! the sign (-1)^l, so d shells (cc-pVDZ) and the l = 0..3 set test l-parity.
+   !!
+   !! Detection: group Ci, irreps Ag, Au; the permutation has no fixed point, the
+   !! symmetrised geometry is inversion symmetric to round-off, a broken geometry
+   !! falls back to C1. AO: U^T U = I, the sign of every AO under the inversion is
+   !! (-1)^l, U^T S U and U^T H U are block-diagonal (<= 1e-12), the dimensions
+   !! per irrep equal pyscf's mol.symm_orb (pyscf_refs/sym_ci.ref), Cartesian and
+   !! spherical, 6-31G* and cc-pVDZ. Registered twice, like check_sym_ao:
+   !! `check_sym_ci` (mode "main") and `check_sym_ci_f` (mode "f", the uncontracted
+   !! l = 0..3 set, which prints SKIP when this build's LMAX is below 3).
+   !! SCF: the central oracle (symmetry vs C1 on the symmetrised geometry: |dE|
+   !! <= 1e-10 Eh for HF, 1e-9 for B3LYP, orbital energies, density) for RHF,
+   !! UHF (radical cations) and B3LYP, each against the pyscf anchors (electrons
+   !! per irrep, orbital energies per irrep); the gradient symmetrisation.
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

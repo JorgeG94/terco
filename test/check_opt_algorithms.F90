@@ -1,28 +1,28 @@
-!
-! Every minimiser terco exposes (sd, cg, cg-auto, lbfgs, damped, nr)
-! converges water/STO-3G to the existing
-! opt_water anchor energy (test/pyscf_refs/opt_water.ref) within a
-! tolerance scaled to the --opt-gtol used -- the harmonic estimate
-! check_opt_vs_pyscf.F90 already uses (dE ~ g^2/(2k)), generously
-! loosened here since this check's job is "does the algorithm converge
-! at all", not a tight anchor comparison (that is check_opt_vs_pyscf's).
-! sd gets a generous maxiter (it is the slowest of the six by a wide
-! margin); every other algorithm uses the CLI's own default (100).
-!
-! Not P-RFO: it walks uphill along a chosen Hessian mode, so it is a saddle
-! method, and asked to minimise water it depended on which mode it picked.
-! That choice changed with the runner's BLAS kernels (OpenBLAS's Sandy
-! Bridge kernels took 22 steps where Haswell's took 28), and on some CI
-! runners it failed outright. check_opt_ts (HCN, against a pyscf anchor)
-! and check_opt_connect test P-RFO on the saddles it is for.
-!
-! Every --opt-coords terco exposes (cartesian, hdlc, hdlc-tc, dlc,
-! dlc-tc) converges the SAME water minimisation with --opt-algorithm
-! lbfgs, to the same anchor.
-!
-! A test-drive suite.
-!
 module check_opt_algorithms_suite
+   !!
+   !! Every minimiser terco exposes (sd, cg, cg-auto, lbfgs, damped, nr)
+   !! converges water/STO-3G to the existing
+   !! opt_water anchor energy (test/pyscf_refs/opt_water.ref) within a
+   !! tolerance scaled to the --opt-gtol used -- the harmonic estimate
+   !! check_opt_vs_pyscf.F90 already uses (dE ~ g^2/(2k)), generously
+   !! loosened here since this check's job is "does the algorithm converge
+   !! at all", not a tight anchor comparison (that is check_opt_vs_pyscf's).
+   !! sd gets a generous maxiter (it is the slowest of the six by a wide
+   !! margin); every other algorithm uses the CLI's own default (100).
+   !!
+   !! Not P-RFO: it walks uphill along a chosen Hessian mode, so it is a saddle
+   !! method, and asked to minimise water it depended on which mode it picked.
+   !! That choice changed with the runner's BLAS kernels (OpenBLAS's Sandy
+   !! Bridge kernels took 22 steps where Haswell's took 28), and on some CI
+   !! runners it failed outright. check_opt_ts (HCN, against a pyscf anchor)
+   !! and check_opt_connect test P-RFO on the saddles it is for.
+   !!
+   !! Every --opt-coords terco exposes (cartesian, hdlc, hdlc-tc, dlc,
+   !! dlc-tc) converges the SAME water minimisation with --opt-algorithm
+   !! lbfgs, to the same anchor.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file
@@ -96,14 +96,14 @@ contains
       call run_one('lbfgs', 'dlc-tc', 100, error)
    end subroutine test_dlc_tc
 
-   !
-   ! water_opt.xyz/water_traj.xyz and every alg_*.json probe must not have
-   ! landed in test/ itself -- the whole point of each run_one's own
-   ! `cd work_dir &&`. Listed last (collect_opt_algorithms' own order,
-   ! test-drive's sequential, non-parallel run) so every other case has
-   ! already run and could have leaked a file by the time this checks.
-   !
    subroutine test_no_stray(error)
+      !!
+      !! water_opt.xyz/water_traj.xyz and every alg_*.json probe must not have
+      !! landed in test/ itself -- the whole point of each run_one's own
+      !! `cd work_dir &&`. Listed last (collect_opt_algorithms' own order,
+      !! test-drive's sequential, non-parallel run) so every other case has
+      !! already run and could have leaked a file by the time this checks.
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=*), parameter :: algs(6) = &
          [character(len=8) :: 'sd', 'cg', 'cg-auto', 'lbfgs', 'damped', 'nr']
@@ -222,14 +222,14 @@ contains
       if (nread == 0) text = "(empty)"
    end function out_tail
 
-   !
-   ! opt_water.ref's own converged energy (test/pyscf_refs/README.md's
-   ! two-tier scheme) -- read from the committed reference rather than
-   ! restated as a literal, so this can never drift from it. Cached after
-   ! the first read: every run_one call needs it, and the file never
-   ! changes mid-process.
-   !
    function water_anchor_energy() result(e)
+      !!
+      !! opt_water.ref's own converged energy (test/pyscf_refs/README.md's
+      !! two-tier scheme) -- read from the committed reference rather than
+      !! restated as a literal, so this can never drift from it. Cached after
+      !! the first read: every run_one call needs it, and the file never
+      !! changes mid-process.
+      !!
       use pyscf_ref_io, only: ref_read_int, ref_read_vector, ref_read_matrix
       real(dp) :: e
       real(dp), save :: cached = 0.0_dp

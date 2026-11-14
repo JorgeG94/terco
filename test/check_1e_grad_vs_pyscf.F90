@@ -1,41 +1,41 @@
-!
-! trc_1e_gradient against pyscf, each one-electron gradient term SEPARATELY,
-! at a FIXED synthetic W (energy-weighted density) and D (density) -- same
-! kernel-check reasoning as check_rys_grad_vs_pyscf.F90: this is "is d(S|T|V)
-! /dR right", not an SCF check, so the density is deterministic and
-! non-variational.
-!
-! SEPARATING THE THREE TERMS. trc_1e_gradient always contracts -W:dS/dR +
-! D:dT/dR + D:dV/dR together (see its own header: no derivative matrix is
-! ever materialised, so there is nothing to pull a single term out of after
-! the call). Three calls isolate them instead, by zeroing whichever input
-! makes the unwanted terms vanish identically:
-!
-!   dS   : W = synthetic, D = 0            -- kills T and V (both need D)
-!   dT   : W = 0, D = synthetic, Z = 0      -- kills S (needs W) and V (needs Z)
-!   dT+dV: W = 0, D = synthetic, Z = real   -- dV = (dT+dV) - dT
-!
-! Z = 0 is `bas%at_z` overwritten after `trc_basis_from_json` builds the
-! basis from the REAL elements (so the basis functions themselves are
-! unchanged) and restored before the third call -- `!$acc update
-! device(bas%at_z)` both times, since trc_1e_gradient reads it off the
-! device copy.
-!
-! THE OPERATOR TERM. dV above is the Hellmann-Feynman term ALREADY SUMMED
-! with the basis-function derivative (trc_1e_gradient's ga/gb from the bra/
-! ket shift, gc from every nucleus, added together by the driver before
-! this program ever sees them) -- there is no separate hook to pull the
-! Hellmann-Feynman piece out on its own, so the reference below is built
-! the same way: pyscf's int1e_ipnuc (basis derivative) plus its own
-! `with_rinv_at_nucleus` Hellmann-Feynman loop (test/pyscf_refs/generate.py's
-! gen_1e_grad), summed per atom before the comparison.
-!
-! One ctest case per executable run: the molecule/basis/dump-path/case-name
-! come from the command line (test/CMakeLists.txt's `foreach(case
-! water_631gs water_ccpvdz formamide_ccpvdz ...)`), so this program checks
-! exactly the one case it was invoked with, the way it always has.
-!
 module check_1e_grad_vs_pyscf_suite
+   !!
+   !! trc_1e_gradient against pyscf, each one-electron gradient term SEPARATELY,
+   !! at a FIXED synthetic W (energy-weighted density) and D (density) -- same
+   !! kernel-check reasoning as check_rys_grad_vs_pyscf.F90: this is "is d(S|T|V)
+   !! /dR right", not an SCF check, so the density is deterministic and
+   !! non-variational.
+   !!
+   !! SEPARATING THE THREE TERMS. trc_1e_gradient always contracts -W:dS/dR +
+   !! D:dT/dR + D:dV/dR together (see its own header: no derivative matrix is
+   !! ever materialised, so there is nothing to pull a single term out of after
+   !! the call). Three calls isolate them instead, by zeroing whichever input
+   !! makes the unwanted terms vanish identically:
+   !!
+   !!   dS   : W = synthetic, D = 0            -- kills T and V (both need D)
+   !!   dT   : W = 0, D = synthetic, Z = 0      -- kills S (needs W) and V (needs Z)
+   !!   dT+dV: W = 0, D = synthetic, Z = real   -- dV = (dT+dV) - dT
+   !!
+   !! Z = 0 is `bas%at_z` overwritten after `trc_basis_from_json` builds the
+   !! basis from the REAL elements (so the basis functions themselves are
+   !! unchanged) and restored before the third call -- `!$acc update
+   !! device(bas%at_z)` both times, since trc_1e_gradient reads it off the
+   !! device copy.
+   !!
+   !! THE OPERATOR TERM. dV above is the Hellmann-Feynman term ALREADY SUMMED
+   !! with the basis-function derivative (trc_1e_gradient's ga/gb from the bra/
+   !! ket shift, gc from every nucleus, added together by the driver before
+   !! this program ever sees them) -- there is no separate hook to pull the
+   !! Hellmann-Feynman piece out on its own, so the reference below is built
+   !! the same way: pyscf's int1e_ipnuc (basis derivative) plus its own
+   !! `with_rinv_at_nucleus` Hellmann-Feynman loop (test/pyscf_refs/generate.py's
+   !! gen_1e_grad), summed per atom before the comparison.
+   !!
+   !! One ctest case per executable run: the molecule/basis/dump-path/case-name
+   !! come from the command line (test/CMakeLists.txt's `foreach(case
+   !! water_631gs water_ccpvdz formamide_ccpvdz ...)`), so this program checks
+   !! exactly the one case it was invoked with, the way it always has.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
@@ -61,12 +61,12 @@ contains
                   ]
    end subroutine collect_1e_grad_vs_pyscf_tests
 
-   !
-   ! Same deterministic, dense, symmetric construction as
-   ! check_rys_grad_fd.F90/check_rys_grad_vs_pyscf.F90, so every gradient
-   ! check in this tree exercises the same kind of density.
-   !
    subroutine synth_density(n, phase, d)
+      !!
+      !! Same deterministic, dense, symmetric construction as
+      !! check_rys_grad_fd.F90/check_rys_grad_vs_pyscf.F90, so every gradient
+      !! check in this tree exercises the same kind of density.
+      !!
       integer, intent(in) :: n, phase
       real(dp), intent(out) :: d(n, n)
       integer :: ii, jj

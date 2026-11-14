@@ -1,36 +1,36 @@
-!
-! The folded and enumerated digestions, on a SYMMETRIC density.
-!
-! They must agree for ANY symmetric density -- that is the whole premise of
-! having two of them. `fock` folds the eight-fold permutational symmetry into
-! six atomic updates and assumes D(mu,nu) = D(nu,mu); `fock_nosym` enumerates
-! the permutations and assumes nothing. Where the assumption holds the two are
-! the same operator, so a disagreement here is a bug in one of them and a
-! disagreement on an ASYMMETRIC density means nothing until this passes.
-!
-! Phase 3 recorded this agreeing to 1.24e-14 and then nothing re-ran it. This
-! is that control, as a standing test.
-!
-! IT IS ALSO THE ORACLE FOR THE HYBRID DISPATCH, which is why it takes a basis
-! ceiling. `fock` routes each class to an unrolled kernel or, when none exists,
-! to the general path over the same segments; `fock_nosym` sends every class
-! through the non-symmetric kernel, one_bin_item_nosym. So running this with f functions tests both halves
-! of the routing at once: a dropped f class shows up as a disagreement, and so
-! does an s..d class digested twice.
-!
-! Without the ceiling argument it is 6-31G, which stops at d and therefore says
-! nothing about any of that.
-!
-! Registered twice (ctest terco/check_nosym ARGS water.xyz; terco/check_nosym_f
-! ARGS water.xyz 3, the uncontracted l=0..3 set that exercises the hybrid
-! dispatch). Each invocation gets one argv pair, so this program unit reads
-! argv and probes the basis's own angular-momentum ceiling BEFORE any
-! test-drive call: when this build's LMAX cannot reach what argv asks for, it
-! prints "SKIP: ..." and does `stop 0` right there (ctest matches "SKIP" via
-! SKIP_REGULAR_EXPRESSION), never touching run_testsuite -- a clean early
-! exit, not a failed check.
-!
 module check_nosym_suite
+   !!
+   !! The folded and enumerated digestions, on a SYMMETRIC density.
+   !!
+   !! They must agree for ANY symmetric density -- that is the whole premise of
+   !! having two of them. `fock` folds the eight-fold permutational symmetry into
+   !! six atomic updates and assumes D(mu,nu) = D(nu,mu); `fock_nosym` enumerates
+   !! the permutations and assumes nothing. Where the assumption holds the two are
+   !! the same operator, so a disagreement here is a bug in one of them and a
+   !! disagreement on an ASYMMETRIC density means nothing until this passes.
+   !!
+   !! Phase 3 recorded this agreeing to 1.24e-14 and then nothing re-ran it. This
+   !! is that control, as a standing test.
+   !!
+   !! IT IS ALSO THE ORACLE FOR THE HYBRID DISPATCH, which is why it takes a basis
+   !! ceiling. `fock` routes each class to an unrolled kernel or, when none exists,
+   !! to the general path over the same segments; `fock_nosym` sends every class
+   !! through the non-symmetric kernel, one_bin_item_nosym. So running this with f functions tests both halves
+   !! of the routing at once: a dropped f class shows up as a disagreement, and so
+   !! does an s..d class digested twice.
+   !!
+   !! Without the ceiling argument it is 6-31G, which stops at d and therefore says
+   !! nothing about any of that.
+   !!
+   !! Registered twice (ctest terco/check_nosym ARGS water.xyz; terco/check_nosym_f
+   !! ARGS water.xyz 3, the uncontracted l=0..3 set that exercises the hybrid
+   !! dispatch). Each invocation gets one argv pair, so this program unit reads
+   !! argv and probes the basis's own angular-momentum ceiling BEFORE any
+   !! test-drive call: when this build's LMAX cannot reach what argv asks for, it
+   !! prints "SKIP: ..." and does `stop 0` right there (ctest matches "SKIP" via
+   !! SKIP_REGULAR_EXPRESSION), never touching run_testsuite -- a clean early
+   !! exit, not a failed check.
+   !!
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t
@@ -132,16 +132,16 @@ contains
       call eri%release(); call pl%release(); call bas%release()
    end subroutine test_nosym
 
-   !
-   ! In its own routine, explicit-shape, not inline in the main program. The
-   ! one-liner 0.3*cos(real(2*i + 3*j)) + 0.1*real(min(i, j)) crashed
-   ! nvfortran 26.5 and 26.9 at -fast -O3 ("bitcast with differing sizes",
-   ! "unexpected type for intrinsic function"), and spelling it out inline
-   ! only moved the crash ("Errors in Lowering") as the rest of the program
-   ! changed. check_rys_fock_vs_pyscf.F90 builds its density the same way,
-   ! in a module routine, and compiles. The values are the same to the bit.
-   !
    subroutine fill_density(n, dd)
+      !!
+      !! In its own routine, explicit-shape, not inline in the main program. The
+      !! one-liner 0.3*cos(real(2*i + 3*j)) + 0.1*real(min(i, j)) crashed
+      !! nvfortran 26.5 and 26.9 at -fast -O3 ("bitcast with differing sizes",
+      !! "unexpected type for intrinsic function"), and spelling it out inline
+      !! only moved the crash ("Errors in Lowering") as the rest of the program
+      !! changed. check_rys_fock_vs_pyscf.F90 builds its density the same way,
+      !! in a module routine, and compiles. The values are the same to the bit.
+      !!
       integer, intent(in) :: n
       real(dp), intent(out) :: dd(n, n)
       integer :: ii, jj, kk

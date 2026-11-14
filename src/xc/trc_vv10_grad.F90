@@ -130,13 +130,13 @@ module trc_vv10_grad
 
 contains
 
-   !
-   ! The entry point that builds its own VV10 grid at `b`'s geometry, then
-   ! runs `vv10_grad_add_on_grid` on it. `density(b%nao,b%nao,nspin)` --
-   ! the converged density, per spin channel, same convention xc_grad_add
-   ! uses. ADDS into `grad`.
-   !
    recursive subroutine vv10_grad_add(b, lp, func, nspin, density, grad, options, timing)
+      !!
+      !! The entry point that builds its own VV10 grid at `b`'s geometry, then
+      !! runs `vv10_grad_add_on_grid` on it. `density(b%nao,b%nao,nspin)` --
+      !! the converged density, per spin channel, same convention xc_grad_add
+      !! uses. ADDS into `grad`.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       type(trc_xc_functional_t), intent(in) :: func
@@ -181,14 +181,14 @@ contains
       deallocate (at_elem)
    end subroutine vv10_grad_add
 
-   !
-   ! The VV10 gradient term on a grid the caller already has (the SCF's own
-   ! VV10 grid, batched and device-resident, see trc_scf_context.F90's
-   ! `trc_grid_cache_t`; or `vv10_grad_add`'s own). VV10's own `b`/`C` are
-   ! `func%nlc_b`/`func%nlc_c` (6.0, 0.01 for wB97X-V); nothing else of
-   ! `func` is read. ADDS into `grad`.
-   !
    subroutine vv10_grad_add_on_grid(b, lp, func, density, grad, options, timing, xg)
+      !!
+      !! The VV10 gradient term on a grid the caller already has (the SCF's own
+      !! VV10 grid, batched and device-resident, see trc_scf_context.F90's
+      !! `trc_grid_cache_t`; or `vv10_grad_add`'s own). VV10's own `b`/`C` are
+      !! `func%nlc_b`/`func%nlc_c` (6.0, 0.01 for wB97X-V); nothing else of
+      !! `func` is read. ADDS into `grad`.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       type(trc_xc_functional_t), intent(in) :: func
@@ -363,13 +363,13 @@ contains
       deallocate (at_elem)
    end subroutine vv10_grad_add_on_grid
 
-   !
-   ! Host-side screen: a batch whose every point's density is below
-   ! threshold contributes nothing to the Pulay/grid-response contraction --
-   ! `rho` is already the host array the gather above just read, so this is
-   ! a cheap O(npb) bound, not a new array.
-   !
    logical function vv10_grad_batch_active(g0, npb, rho, npts) result(active)
+      !!
+      !! Host-side screen: a batch whose every point's density is below
+      !! threshold contributes nothing to the Pulay/grid-response contraction --
+      !! `rho` is already the host array the gather above just read, so this is
+      !! a cheap O(npb) bound, not a new array.
+      !!
       integer, intent(in) :: g0, npb, npts
       real(dp), intent(in) :: rho(npts)
       integer :: g
@@ -382,17 +382,17 @@ contains
       end do
    end function vv10_grad_batch_active
 
-   !
-   ! PASS 2, gradient variant: `vrho(i)`/`vsigma(i)` (the ordinary VV10
-   ! potential, fed into the SAME GGA Pulay contraction xc_grad_add's
-   ! semilocal term uses) plus `dedw(i)`/`fexp(:,i)`, the two pieces with no
-   ! semilocal counterpart -- see this module's header, THE NONLOCAL EXTRAS.
-   ! A duplicate of trc_vv10's own `vv10_kernel_body`, not a call to it:
-   ! that body has no `dedw`/`fexp` outputs (see this module's header,
-   ! ENERGY-SIDE REUSE).
-   !
    subroutine vv10_grad_kernel(npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                                vrho, vsigma, dedw, fexp)
+      !!
+      !! PASS 2, gradient variant: `vrho(i)`/`vsigma(i)` (the ordinary VV10
+      !! potential, fed into the SAME GGA Pulay contraction xc_grad_add's
+      !! semilocal term uses) plus `dedw(i)`/`fexp(:,i)`, the two pieces with no
+      !! semilocal counterpart -- see this module's header, THE NONLOCAL EXTRAS.
+      !! A duplicate of trc_vv10's own `vv10_kernel_body`, not a call to it:
+      !! that body has no `dedw`/`fexp` outputs (see this module's header,
+      !! ENERGY-SIDE REUSE).
+      !!
       integer, intent(in) :: npts, npass
       real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
       real(dp), intent(in) :: c, kvv, beta
@@ -418,17 +418,17 @@ contains
 #endif
    end subroutine vv10_grad_kernel
 
-   !
-   ! `i`'s own pair sum, matched term for term against pyscf's `_vv10nlc`.
-   ! `w(i)` plays no role here (the weight multiplies `vrho`/`vsigma`/
-   ! `dedw`/`fexp` only once they are CONTRACTED, same as trc_vv10's own
-   ! PASS 2) -- the convention that matters is `dx = inner - outer`
-   ! (`gx(j) - r(1,i)`, NOT the sign trc_vv10's own `vv10_kernel_body`
-   ! uses for its unsigned `r2`), since `fexp` is LINEAR in `dx`, not
-   ! squared.
-   !
    pure subroutine vv10_grad_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                                          vrho_i, vsigma_i, dedw_i, fx_i, fy_i, fz_i)
+      !!
+      !! `i`'s own pair sum, matched term for term against pyscf's `_vv10nlc`.
+      !! `w(i)` plays no role here (the weight multiplies `vrho`/`vsigma`/
+      !! `dedw`/`fexp` only once they are CONTRACTED, same as trc_vv10's own
+      !! PASS 2) -- the convention that matters is `dx = inner - outer`
+      !! (`gx(j) - r(1,i)`, NOT the sign trc_vv10's own `vv10_kernel_body`
+      !! uses for its unsigned `r2`), since `fexp` is LINEAR in `dx`, not
+      !! squared.
+      !!
       !$acc routine seq
       integer, intent(in) :: i, npts, npass
       real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)

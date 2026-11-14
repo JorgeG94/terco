@@ -1,66 +1,66 @@
-!
-! Harmonic vibrational analysis of a Cartesian Hessian: mass-weight it,
-! remove translation and rotation EXACTLY (not by diagonalising the full
-! 3N x 3N matrix and guessing which near-zero eigenvalues are TR -- see
-! below), and diagonalise what is left.
-!
-! THE TR SUBSPACE. Six mass-weighted generators (3 translations, 3
-! rotations about the centre of mass -- trc_vib_tr_generators), built in
-! the input Cartesian frame: translations are trivially independent, and
-! a rotation about any one lab-frame axis is a linear combination of
-! rotations about the molecule's own principal axes, so the lab-frame
-! generators span the SAME subspace a principal-axis construction would
-! (pyscf's hessian/thermo.py `_get_TR` uses principal axes; this uses lab
-! axes instead, for the same subspace with less bookkeeping). For a
-! linear molecule, rotation about the molecular axis moves nothing, so
-! one combination of the three lab-frame rotation generators is
-! identically zero: the generator MATRIX's rank drops from 6 to 5. How
-! many of the SVD's directions to keep comes from the principal moments
-! of inertia (trc_vib_rotor), the same test trc_thermo uses to pick its
-! rotor formulas. With a threshold of its own on the singular values, a
-! molecule a little off linear (H 1e-5 Angstrom off the HCN axis) kept 6
-! directions here, so lost a bend, while trc_thermo still called it
-! linear, so the ZPE came out one bend short.
-!
-! Once the TR space's own orthonormal basis U is in hand (the SVD's left
-! singular vectors above the threshold), its orthogonal complement is an
-! eigendecomposition of the projector P = I - U U^T: P's eigenvalues are
-! exactly 0 (multiplicity = TR's own dimension) or exactly 1 (multiplicity
-! 3N - that), so the eigenvectors past the TR count are a complement basis
-! by construction, not by a second threshold (pyscf's own
-! `harmonic_analysis` does the equivalent projector-eigh step, with QR in
-! place of the SVD above). Diagonalising the mass-weighted Hessian
-! RESTRICTED to that complement (its dimension is exactly 3N-5 or 3N-6)
-! gives the vibrations alone: no translation/rotation residual ever
-! reaches the eigenvalue list, so there is nothing to miscount as
-! vibrational or imaginary: there is only one mode set here, not a
-! 3N-long one a caller has to filter.
-!
-! UNITS. mass in amu, coords_bohr in Bohr, hess in Hartree/Bohr^2 (the
-! finite-difference convention row/column = 3*(atom-1) + {x,y,z}, 1
-! indexed, same as a later CLI's --hessian). Frequencies in cm^-1, signed:
-! negative is imaginary (an unconverged geometry's "frequency", never
-! literally imaginary). Reduced masses in amu; force constants in
-! Hartree/Bohr^2 (the PHYSICAL constant lambda*mu, not the mass-weighted
-! eigenvalue lambda itself -- pyscf's own `force_const_au` field is
-! lambda, a different quantity despite the name; this module's
-! `force_const_hartree_bohr2` is mu*lambda, matching what a test comparing
-! against pyscf must multiply pyscf's `force_const_au` by `reduced_mass`
-! to get). Displacements are pyscf's own `norm_mode` convention: L/sqrt(m)
-! per atom, NOT further renormalised, so a mode's reduced mass completes
-! its normalisation (||displacement(:,:,k)||^2 = 1/reduced_mass_amu(k)).
-!
-! EIGENSOLVER. pic_syev/pic_gesvd (pic-blas's LAPACK wrappers), the same
-! ones trc_linalg.F90 wraps for the device build -- but this module calls
-! them directly rather than through trc_linalg_t: every array here is a
-! small, purely HOST object (a finite-difference Hessian assembled on the
-! host), and trc_linalg_t's own contract requires every argument resident
-! on the device under -acc. Routing a host array through it would be a
-! silent illegal address under mem:separate, not a wrong number, so this
-! module stays off that path entirely -- there is nothing for a GPU build
-! to do here.
-!
 module trc_vib
+   !!
+   !! Harmonic vibrational analysis of a Cartesian Hessian: mass-weight it,
+   !! remove translation and rotation EXACTLY (not by diagonalising the full
+   !! 3N x 3N matrix and guessing which near-zero eigenvalues are TR -- see
+   !! below), and diagonalise what is left.
+   !!
+   !! THE TR SUBSPACE. Six mass-weighted generators (3 translations, 3
+   !! rotations about the centre of mass -- trc_vib_tr_generators), built in
+   !! the input Cartesian frame: translations are trivially independent, and
+   !! a rotation about any one lab-frame axis is a linear combination of
+   !! rotations about the molecule's own principal axes, so the lab-frame
+   !! generators span the SAME subspace a principal-axis construction would
+   !! (pyscf's hessian/thermo.py `_get_TR` uses principal axes; this uses lab
+   !! axes instead, for the same subspace with less bookkeeping). For a
+   !! linear molecule, rotation about the molecular axis moves nothing, so
+   !! one combination of the three lab-frame rotation generators is
+   !! identically zero: the generator MATRIX's rank drops from 6 to 5. How
+   !! many of the SVD's directions to keep comes from the principal moments
+   !! of inertia (trc_vib_rotor), the same test trc_thermo uses to pick its
+   !! rotor formulas. With a threshold of its own on the singular values, a
+   !! molecule a little off linear (H 1e-5 Angstrom off the HCN axis) kept 6
+   !! directions here, so lost a bend, while trc_thermo still called it
+   !! linear, so the ZPE came out one bend short.
+   !!
+   !! Once the TR space's own orthonormal basis U is in hand (the SVD's left
+   !! singular vectors above the threshold), its orthogonal complement is an
+   !! eigendecomposition of the projector P = I - U U^T: P's eigenvalues are
+   !! exactly 0 (multiplicity = TR's own dimension) or exactly 1 (multiplicity
+   !! 3N - that), so the eigenvectors past the TR count are a complement basis
+   !! by construction, not by a second threshold (pyscf's own
+   !! `harmonic_analysis` does the equivalent projector-eigh step, with QR in
+   !! place of the SVD above). Diagonalising the mass-weighted Hessian
+   !! RESTRICTED to that complement (its dimension is exactly 3N-5 or 3N-6)
+   !! gives the vibrations alone: no translation/rotation residual ever
+   !! reaches the eigenvalue list, so there is nothing to miscount as
+   !! vibrational or imaginary: there is only one mode set here, not a
+   !! 3N-long one a caller has to filter.
+   !!
+   !! UNITS. mass in amu, coords_bohr in Bohr, hess in Hartree/Bohr^2 (the
+   !! finite-difference convention row/column = 3*(atom-1) + {x,y,z}, 1
+   !! indexed, same as a later CLI's --hessian). Frequencies in cm^-1, signed:
+   !! negative is imaginary (an unconverged geometry's "frequency", never
+   !! literally imaginary). Reduced masses in amu; force constants in
+   !! Hartree/Bohr^2 (the PHYSICAL constant lambda*mu, not the mass-weighted
+   !! eigenvalue lambda itself -- pyscf's own `force_const_au` field is
+   !! lambda, a different quantity despite the name; this module's
+   !! `force_const_hartree_bohr2` is mu*lambda, matching what a test comparing
+   !! against pyscf must multiply pyscf's `force_const_au` by `reduced_mass`
+   !! to get). Displacements are pyscf's own `norm_mode` convention: L/sqrt(m)
+   !! per atom, NOT further renormalised, so a mode's reduced mass completes
+   !! its normalisation (||displacement(:,:,k)||^2 = 1/reduced_mass_amu(k)).
+   !!
+   !! EIGENSOLVER. pic_syev/pic_gesvd (pic-blas's LAPACK wrappers), the same
+   !! ones trc_linalg.F90 wraps for the device build -- but this module calls
+   !! them directly rather than through trc_linalg_t: every array here is a
+   !! small, purely HOST object (a finite-difference Hessian assembled on the
+   !! host), and trc_linalg_t's own contract requires every argument resident
+   !! on the device under -acc. Routing a host array through it would be a
+   !! silent illegal address under mem:separate, not a wrong number, so this
+   !! module stays off that path entirely -- there is nothing for a GPU build
+   !! to do here.
+   !!
    use pic_types, only: dp, default_int
    use pic_lapack_interfaces, only: pic_syev, pic_gesvd
    use pic_strings, only: to_string
@@ -88,16 +88,16 @@ module trc_vib
 
 contains
 
-   !
-   ! natm = size(mass). hess is (3*natm, 3*natm) and should be symmetric:
-   ! all of it enters bvec^T H bvec, of which pic_syev reads the upper
-   ! triangle, so an asymmetric hess is not the same as its symmetric part.
-   ! Every output array is allocated here to exactly n_modes = 3*natm -
-   ! n_tr columns (0 for a single atom), overwriting whatever the actual
-   ! argument held.
-   !
    subroutine trc_vibrational_analysis(mass, coords_bohr, hess, freq_cm1, reduced_mass_amu, &
                                         force_const_hartree_bohr2, displacement, is_linear, n_tr, error)
+      !!
+      !! natm = size(mass). hess is (3*natm, 3*natm) and should be symmetric:
+      !! all of it enters bvec^T H bvec, of which pic_syev reads the upper
+      !! triangle, so an asymmetric hess is not the same as its symmetric part.
+      !! Every output array is allocated here to exactly n_modes = 3*natm -
+      !! n_tr columns (0 for a single atom), overwriting whatever the actual
+      !! argument held.
+      !!
       real(dp), intent(in) :: mass(:)
       real(dp), intent(in) :: coords_bohr(:, :)
       real(dp), intent(in) :: hess(:, :)
@@ -208,9 +208,9 @@ contains
       end do
    end subroutine trc_vibrational_analysis
 
-   ! Hmw(i,j) = hess(i,j) / sqrt(mass(atom(i)) * mass(atom(j))), atom(i) =
-   ! the atom that Cartesian row/column i belongs to.
    subroutine trc_vib_mass_weight(mass, hess, hmw)
+      !! Hmw(i,j) = hess(i,j) / sqrt(mass(atom(i)) * mass(atom(j))), atom(i) =
+      !! the atom that Cartesian row/column i belongs to.
       real(dp), intent(in) :: mass(:)
       real(dp), intent(in) :: hess(:, :)
       real(dp), intent(out) :: hmw(:, :)
@@ -228,22 +228,22 @@ contains
       end do
    end subroutine trc_vib_mass_weight
 
-   !
-   ! The six mass-weighted translation/rotation generators (pyscf's `_get_TR`
-   ! convention, lab-frame rotations -- see this module's own header), as
-   ! columns of D(3*natm, 6):
-   !
-   !   translation c:  D(3*(a-1)+c, c)      = sqrt(m_a)
-   !   rotation about lab axis x (col 4):   (0, sqrt(m_a) r_z, -sqrt(m_a) r_y)
-   !   rotation about lab axis y (col 5):   (-sqrt(m_a) r_z, 0, sqrt(m_a) r_x)
-   !   rotation about lab axis z (col 6):   (sqrt(m_a) r_y, -sqrt(m_a) r_x, 0)
-   !
-   ! r_a = coords_bohr(:,a) - centre of mass. Returns u_tr(3*natm, n_tr), the
-   ! SVD's n_tr leading left singular vectors. n_tr (trc_vib_rotor) is 6
-   ! for a nonlinear molecule, 5 for a linear one (the third rotation
-   ! column collapses to zero, or nearly) and 3 for a single atom.
-   !
    subroutine trc_vib_tr_generators(mass, coords_bohr, n_tr, u_tr, info)
+      !!
+      !! The six mass-weighted translation/rotation generators (pyscf's `_get_TR`
+      !! convention, lab-frame rotations -- see this module's own header), as
+      !! columns of D(3*natm, 6):
+      !!
+      !!   translation c:  D(3*(a-1)+c, c)      = sqrt(m_a)
+      !!   rotation about lab axis x (col 4):   (0, sqrt(m_a) r_z, -sqrt(m_a) r_y)
+      !!   rotation about lab axis y (col 5):   (-sqrt(m_a) r_z, 0, sqrt(m_a) r_x)
+      !!   rotation about lab axis z (col 6):   (sqrt(m_a) r_y, -sqrt(m_a) r_x, 0)
+      !!
+      !! r_a = coords_bohr(:,a) - centre of mass. Returns u_tr(3*natm, n_tr), the
+      !! SVD's n_tr leading left singular vectors. n_tr (trc_vib_rotor) is 6
+      !! for a nonlinear molecule, 5 for a linear one (the third rotation
+      !! column collapses to zero, or nearly) and 3 for a single atom.
+      !!
       real(dp), intent(in) :: mass(:)
       real(dp), intent(in) :: coords_bohr(:, :)
       integer, intent(in) :: n_tr
@@ -294,15 +294,15 @@ contains
       u_tr = u_full(:, 1:n_tr)
    end subroutine trc_vib_tr_generators
 
-   !
-   ! bvec(3*natm, 3*natm - size(u_tr,2)): an orthonormal basis of u_tr's
-   ! orthogonal complement, from the eigendecomposition of the projector
-   ! P = I - u_tr u_tr^T. P's eigenvalues are exactly 0 or 1 (to roundoff);
-   ! pic_syev returns them ascending, so the complement is simply the
-   ! eigenvectors past the TR count -- no second threshold, see this
-   ! module's own header.
-   !
    subroutine trc_vib_complement_basis(u_tr, bvec, nfound, info)
+      !!
+      !! bvec(3*natm, 3*natm - size(u_tr,2)): an orthonormal basis of u_tr's
+      !! orthogonal complement, from the eigendecomposition of the projector
+      !! P = I - u_tr u_tr^T. P's eigenvalues are exactly 0 or 1 (to roundoff);
+      !! pic_syev returns them ascending, so the complement is simply the
+      !! eigenvectors past the TR count -- no second threshold, see this
+      !! module's own header.
+      !!
       real(dp), intent(in) :: u_tr(:, :)
       real(dp), allocatable, intent(out) :: bvec(:, :)
       integer, intent(out) :: nfound
@@ -345,14 +345,14 @@ contains
       deallocate(p_matrix, eigval)
    end subroutine trc_vib_complement_basis
 
-   !
-   ! The rotor type from the principal moments of inertia
-   ! (MOMENT_LINEAR_TOL_AMUA2): is_linear, and n_tr, the translation and
-   ! rotation directions to project out -- 3 for an atom, 5 for a linear
-   ! molecule, 6 otherwise. trc_thermo picks its rotor formulas from the
-   ! same moments and threshold, so the two cannot disagree.
-   !
    subroutine trc_vib_rotor(mass, coords_bohr, is_linear, n_tr, info)
+      !!
+      !! The rotor type from the principal moments of inertia
+      !! (MOMENT_LINEAR_TOL_AMUA2): is_linear, and n_tr, the translation and
+      !! rotation directions to project out -- 3 for an atom, 5 for a linear
+      !! molecule, 6 otherwise. trc_thermo picks its rotor formulas from the
+      !! same moments and threshold, so the two cannot disagree.
+      !!
       real(dp), intent(in) :: mass(:)
       real(dp), intent(in) :: coords_bohr(:, :)
       logical, intent(out) :: is_linear
@@ -371,12 +371,12 @@ contains
       end if
    end subroutine trc_vib_rotor
 
-   !
-   ! Principal moments of inertia, ascending, in amu*Angstrom^2 -- the same
-   ! convention pyscf's `rotation_const` builds from before converting to
-   ! GHz.
-   !
    subroutine trc_moments_of_inertia(mass, coords_bohr, moments_amua2, info)
+      !!
+      !! Principal moments of inertia, ascending, in amu*Angstrom^2 -- the same
+      !! convention pyscf's `rotation_const` builds from before converting to
+      !! GHz.
+      !!
       real(dp), intent(in) :: mass(:)
       real(dp), intent(in) :: coords_bohr(:, :)
       real(dp), intent(out) :: moments_amua2(3)
@@ -410,12 +410,12 @@ contains
       where (abs(moments_amua2) < 1.0e-9_dp) moments_amua2 = 0.0_dp
    end subroutine trc_moments_of_inertia
 
-   !
-   ! A frequency/reduced-mass/force-constant table through global_logger,
-   ! for the CLI's later --hessian report. Imaginary modes (freq_cm1 < 0)
-   ! print with an "i" suffix on the magnitude, Gaussian's own convention.
-   !
    subroutine trc_vib_log_table(freq_cm1, reduced_mass_amu, force_const_hartree_bohr2)
+      !!
+      !! A frequency/reduced-mass/force-constant table through global_logger,
+      !! for the CLI's later --hessian report. Imaginary modes (freq_cm1 < 0)
+      !! print with an "i" suffix on the magnitude, Gaussian's own convention.
+      !!
       real(dp), intent(in) :: freq_cm1(:)
       real(dp), intent(in) :: reduced_mass_amu(:)
       real(dp), intent(in) :: force_const_hartree_bohr2(:)

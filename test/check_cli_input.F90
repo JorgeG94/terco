@@ -1,23 +1,23 @@
-!
-! The CLI's TOML input files (docs/INPUT.md, app/trc_run_input.F90), through
-! the real `terco` binary.
-!
-! The reference for a file is the command line it stands for: the same run
-! given as flags must give the same numbers, since both reach the same cli_t
-! and the same code from there. On the host build they are bit-identical; the
-! GPU build is not bitwise reproducible run to run (two identical flag runs on
-! a V100, nvfortran 26.5: energy 4e-14 Eh, gradient 5e-15 Eh/Bohr apart), so
-! the comparison allows ENERGY_TOL/GRADIENT_TOL -- a thousand times that noise,
-! and far below what any setting this run changes would move. The file sits in a subdirectory and the
-! run starts from its parent, so the geometry, the basis file and the JSON
-! output only resolve if paths are taken relative to the file, as the format
-! says. Then: the "input" echo in --json shows the file's values, a flag
-! overriding one, and a declared default; and every way a file can be wrong
-! is refused with a message naming the problem, before any SCF runs.
-!
-! A test-drive suite.
-!
 module check_cli_input_suite
+   !!
+   !! The CLI's TOML input files (docs/INPUT.md, app/trc_run_input.F90), through
+   !! the real `terco` binary.
+   !!
+   !! The reference for a file is the command line it stands for: the same run
+   !! given as flags must give the same numbers, since both reach the same cli_t
+   !! and the same code from there. On the host build they are bit-identical; the
+   !! GPU build is not bitwise reproducible run to run (two identical flag runs on
+   !! a V100, nvfortran 26.5: energy 4e-14 Eh, gradient 5e-15 Eh/Bohr apart), so
+   !! the comparison allows ENERGY_TOL/GRADIENT_TOL -- a thousand times that noise,
+   !! and far below what any setting this run changes would move. The file sits in a subdirectory and the
+   !! run starts from its parent, so the geometry, the basis file and the JSON
+   !! output only resolve if paths are taken relative to the file, as the format
+   !! says. Then: the "input" echo in --json shows the file's values, a flag
+   !! overriding one, and a declared default; and every way a file can be wrong
+   !! is refused with a message naming the problem, before any SCF runs.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file

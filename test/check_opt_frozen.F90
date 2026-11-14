@@ -1,25 +1,25 @@
-!
-! --opt-frozen: water/STO-3G with atom 1 (O) frozen, Cartesian coordinates
-! -- spec(1) = -1 in app/trc_dlfind_bridge.F90's own cb_get_params, the
-! SAME mechanism the residue block already carries (no bridge code change
-! at all; app/main.F90's own --opt-frozen validation and parsing is what
-! this PR adds). Checks:
-!   - the frozen atom's coordinates are BIT-IDENTICAL before and after;
-!   - the free atoms converge to a constrained minimum (their own gradient
-!     components below --opt-gtol);
-!   - freezing a SINGLE atom leaves a RIGID ROTATION of the water
-!     molecule entirely free (one atom's absolute position constrains
-!     nothing about the molecule's internal shape), so the run is
-!     expected to reach the SAME energy as the unconstrained opt_water
-!     anchor -- this is not a weaker check than it looks: it is what
-!     this test's own water.xyz (deliberately displaced off its
-!     equilibrium ahead of the frozen atom) being able to reach the exact
-!     global minimum ANYWAY proves the constraint is doing nothing
-!     unphysical, only pinning the one atom asked for.
-!
-! A test-drive suite.
-!
 module check_opt_frozen_suite
+   !!
+   !! --opt-frozen: water/STO-3G with atom 1 (O) frozen, Cartesian coordinates
+   !! -- spec(1) = -1 in app/trc_dlfind_bridge.F90's own cb_get_params, the
+   !! SAME mechanism the residue block already carries (no bridge code change
+   !! at all; app/main.F90's own --opt-frozen validation and parsing is what
+   !! this PR adds). Checks:
+   !!   - the frozen atom's coordinates are BIT-IDENTICAL before and after;
+   !!   - the free atoms converge to a constrained minimum (their own gradient
+   !!     components below --opt-gtol);
+   !!   - freezing a SINGLE atom leaves a RIGID ROTATION of the water
+   !!     molecule entirely free (one atom's absolute position constrains
+   !!     nothing about the molecule's internal shape), so the run is
+   !!     expected to reach the SAME energy as the unconstrained opt_water
+   !!     anchor -- this is not a weaker check than it looks: it is what
+   !!     this test's own water.xyz (deliberately displaced off its
+   !!     equilibrium ahead of the frozen atom) being able to reach the exact
+   !!     global minimum ANYWAY proves the constraint is doing nothing
+   !!     unphysical, only pinning the one atom asked for.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file
@@ -155,13 +155,13 @@ contains
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_frozen_run
 
-   !
-   ! Depends on test_frozen_run having already populated e_final -- test-
-   ! drive runs a module's tests in the order collect_opt_frozen lists
-   ! them, not in parallel (run_testsuite's own parallel=.false. in the
-   ! program below).
-   !
    subroutine test_frozen_vs_anchor(error)
+      !!
+      !! Depends on test_frozen_run having already populated e_final -- test-
+      !! drive runs a module's tests in the order collect_opt_frozen lists
+      !! them, not in parallel (run_testsuite's own parallel=.false. in the
+      !! program below).
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: uu, nat_ref
       real(dp) :: e_ref

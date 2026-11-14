@@ -135,11 +135,10 @@ contains
       bytes = 48_int64*no*no*no
    end function rccsd_triples_dev_triple_bytes
 
-   ! ---------------------------------------------------------------------
-   ! the scratch
-   ! ---------------------------------------------------------------------
-
    subroutine scratch_init(this, ints, opts)
+      !! ---------------------------------------------------------------------
+      !! the scratch
+      !! ---------------------------------------------------------------------
       !! Plans the tile and maps the arrays; a refusal is in `this%status` and leaves the type empty
       class(trc_rccsd_triples_scratch_t), intent(inout) :: this
       type(trc_rccsd_ints_t), intent(in) :: ints
@@ -245,11 +244,10 @@ contains
       call scratch_free(this)
    end subroutine scratch_release
 
-   ! ---------------------------------------------------------------------
-   ! the entry points
-   ! ---------------------------------------------------------------------
-
    subroutine rccsd_triples_dev_run(ints, amps, e_t, status, opts, seconds, triple_energies)
+      !! ---------------------------------------------------------------------
+      !! the entry points
+      !! ---------------------------------------------------------------------
       !! E(T) in Hartree on the device from the DEVICE copies of `ints` and `amps` (module header)
       !!
       !! Refused, with `e_t` = 0 and the reason in `status`: empty integrals, amplitudes missing or of another size
@@ -399,11 +397,10 @@ contains
       if (len(why) > 0) why = trim(why)//" ("//to_string(ints%no)//" occupied, "//to_string(ints%nv)//" virtual)"
    end function inputs_refusal
 
-   ! ---------------------------------------------------------------------
-   ! one call's steps
-   ! ---------------------------------------------------------------------
-
    subroutine pack_inputs(ints, amps, ts)
+      !! ---------------------------------------------------------------------
+      !! one call's steps
+      !! ---------------------------------------------------------------------
       !! tt2, t2r and oop from the device amplitudes and integrals, once per call
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
@@ -622,13 +619,12 @@ contains
       call global_logger%info(trim(line))
    end subroutine log_summary
 
-   ! ---------------------------------------------------------------------
-   ! the kernels. Each takes its arrays as explicit-shape dummies and runs one
-   ! `do concurrent` over ONE flattened index, whose body calls an item routine
-   ! of this module and assigns one array element. No `x%name` appears in any.
-   ! ---------------------------------------------------------------------
-
    subroutine kernel_pack_tt2(no, nv, t2, tt2)
+      !! ---------------------------------------------------------------------
+      !! the kernels. Each takes its arrays as explicit-shape dummies and runs one
+      !! `do concurrent` over ONE flattened index, whose body calls an item routine
+      !! of this module and assigns one array element. No `x%name` appears in any.
+      !! ---------------------------------------------------------------------
       !! tt2(f,(j,k,w)) = t2(k,j,w,f)
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: t2(no*no*nv*nv)
@@ -696,15 +692,14 @@ contains
       end do
    end subroutine kernel_energy_sum
 
-   ! ---------------------------------------------------------------------
-   ! the item routines: pure, `routine seq`, explicit-shape dummies, scalars
-   ! only. A flat 1-based index t is the position in the array that is written,
-   ! first index fastest.
-   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
-   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
-   ! ---------------------------------------------------------------------
-
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
+      !! ---------------------------------------------------------------------
+      !! the item routines: pure, `routine seq`, explicit-shape dummies, scalars
+      !! only. A flat 1-based index t is the position in the array that is written,
+      !! first index fastest.
+      !! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+      !! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
+      !! ---------------------------------------------------------------------
       !! t - 1 = (i1-1) + n1 ((i2-1) + n2 ((i3-1) + n3 (i4-1))), 64-bit t
       !$acc routine seq
       integer(int64), intent(in) :: t

@@ -1,14 +1,14 @@
-!
-! Hirshfeld-condensed Fukui indices, by finite difference in the electron
-! count. Ported from metalquicha's mqc_czt_fukui, mqc_ -> trc_ renamed: the
-! arithmetic below is finish_indices/check_sum_rule verbatim. mqc's own
-! three-SCF orchestration (fukui_indices) has no counterpart here -- that
-! belongs with the context box that runs the SCFs, trc_capi.F90's
-! trc_fukui_hirshfeld, which calls trc_hirshfeld_populations at each of the
-! three states and then this module to turn the three charge sets into
-! indices.
-!
 module trc_fukui
+   !!
+   !! Hirshfeld-condensed Fukui indices, by finite difference in the electron
+   !! count. Ported from metalquicha's mqc_czt_fukui, mqc_ -> trc_ renamed: the
+   !! arithmetic below is finish_indices/check_sum_rule verbatim. mqc's own
+   !! three-SCF orchestration (fukui_indices) has no counterpart here -- that
+   !! belongs with the context box that runs the SCFs, trc_capi.F90's
+   !! trc_fukui_hirshfeld, which calls trc_hirshfeld_populations at each of the
+   !! three states and then this module to turn the three charge sets into
+   !! indices.
+   !!
    !! The Fukui function is the derivative of the density with respect to
    !! the number of electrons at fixed nuclei. Condensed onto atoms:
    !!

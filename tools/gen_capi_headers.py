@@ -531,6 +531,9 @@ def c_type_for(arg, proc_name):
 def wrap_doc_c(doc):
     if not doc:
         return ""
+    # A `*/` inside the Fortran doc text (`trc_basis_create*/trc_basis_create_libcint`)
+    # would close the C comment early and leave the rest of the block as code.
+    doc = [d.replace("*/", "* /") for d in doc]
     lines = ["/**"] + [" * " + d if d else " *" for d in doc] + [" */"]
     return "\n".join(lines) + "\n"
 

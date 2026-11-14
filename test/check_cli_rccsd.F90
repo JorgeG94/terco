@@ -1,43 +1,43 @@
-!
-! RI-CCSD and RI-CCSD(T) through the real `terco` binary: the flags --riccsd, --riccsd-t, --cc-econv, --cc-tconv,
-! --cc-iterations, --cc-diis, --cc-ladder, --cc-triples, --cc-triples-budget, the [correlation] method and [riccsd] keys of a TOML
-! file, the summary and the --json output, and every combination the command line refuses.
-!
-! Reference. Water, cc-pVDZ with cc-pVDZ-RIFIT, frozen core 1 (the geometry of test/hirshfeld_water.xyz): pyscf's
-! DF-CCSD(T) in test/pyscf_refs/rccsd_ints_w1.ref, as check_capi_rccsd uses it, with the same tolerances:
-! E_CCSD correlation 1e-10, E(T) 3e-12, the CCSD(T) total energy 3e-11. The runs converge the SCF with
-! --econv 1e-13 --gconv 1e-11 and the coupled-cluster iteration with --cc-econv 1e-12 --cc-tconv 1e-10.
-!
-! The summary prints the energies with 12 decimals, so its values are compared with the tolerance above plus the
-! 5e-13 of that rounding. The JSON carries every digit.
-!
-! Cases:
-!   - --riccsd-t: JSON energies against pyscf, and the summary's lines against pyscf and the JSON;
-!   - --riccsd alone has no (T) keys; --riccsd-t alone is the same CCSD as --riccsd (it implies it);
-!   - --frozen -1 (the default: the core counted by element) is --frozen 1 for water;
-!   - a TOML file ([correlation] method = "ri-ccsd(t)", [riccsd] keys) gives the numbers of its flags, "ri-ccsd" gives
-!     no (T), and the plain "ccsd" and "ccsd(t)" are refused with the accepted names,
-!     and the JSON "input" echo names the method;
-!   - the convergence flags reach the solver: --cc-iterations 2 stops after two iterations, a loose --cc-econv /
-!     --cc-tconv stops earlier and lands elsewhere, --cc-diis 1 takes more iterations than the default;
-!   - --cc-ladder and --cc-triples-budget do not change the energy;
-!   - a CCSD that does not converge: exit status 2, "NOT CONVERGED" in the summary, "ri-ccsd converged": false and no
-!     total energy in the JSON, and the message on the error stream;
-!   - a (T) that refuses after a converged RI-CCSD (the tiled routine, a budget of 1e-6 GiB = 1073 bytes, below the
-!     3072 bytes one water triple needs), by flags and by a TOML file: exit status 1, the RI-CCSD energies in the box,
-!     the summary and the JSON, a "(T) FAILED" line, the reason on the error stream and in the JSON key
-!     "ri-ccsd triples error", and no (T) correction or RI-CCSD(T) total anywhere; --cc-triples reference with the
-!     same budget succeeds (the reference routine has no budget), and --cc-triples tiled and ijk give pyscf's (T);
-!     the routine is always named, so the case means the same in a host build and in a device build;
-!   - --silent prints the summary but not the iteration table;
-!   - each refusal: --rimp2, a functional, --uhf, --grad, --hessian, --opt, an ECP, the --cc-* options without
-!     --riccsd, a bad --cc-ladder, --cc-triples-budget without (T), bad values: a non-zero exit status and the
-!     reason on the error stream.
-!
-! Arguments: the terco executable and a scratch directory. A build whose density-fitting ceilings are below
-! the cc-pVDZ / cc-pVDZ-RIFIT shells prints SKIP. A test-drive suite.
-!
 module check_cli_rccsd_suite
+   !!
+   !! RI-CCSD and RI-CCSD(T) through the real `terco` binary: the flags --riccsd, --riccsd-t, --cc-econv, --cc-tconv,
+   !! --cc-iterations, --cc-diis, --cc-ladder, --cc-triples, --cc-triples-budget, the [correlation] method and [riccsd] keys of a TOML
+   !! file, the summary and the --json output, and every combination the command line refuses.
+   !!
+   !! Reference. Water, cc-pVDZ with cc-pVDZ-RIFIT, frozen core 1 (the geometry of test/hirshfeld_water.xyz): pyscf's
+   !! DF-CCSD(T) in test/pyscf_refs/rccsd_ints_w1.ref, as check_capi_rccsd uses it, with the same tolerances:
+   !! E_CCSD correlation 1e-10, E(T) 3e-12, the CCSD(T) total energy 3e-11. The runs converge the SCF with
+   !! --econv 1e-13 --gconv 1e-11 and the coupled-cluster iteration with --cc-econv 1e-12 --cc-tconv 1e-10.
+   !!
+   !! The summary prints the energies with 12 decimals, so its values are compared with the tolerance above plus the
+   !! 5e-13 of that rounding. The JSON carries every digit.
+   !!
+   !! Cases:
+   !!   - --riccsd-t: JSON energies against pyscf, and the summary's lines against pyscf and the JSON;
+   !!   - --riccsd alone has no (T) keys; --riccsd-t alone is the same CCSD as --riccsd (it implies it);
+   !!   - --frozen -1 (the default: the core counted by element) is --frozen 1 for water;
+   !!   - a TOML file ([correlation] method = "ri-ccsd(t)", [riccsd] keys) gives the numbers of its flags, "ri-ccsd" gives
+   !!     no (T), and the plain "ccsd" and "ccsd(t)" are refused with the accepted names,
+   !!     and the JSON "input" echo names the method;
+   !!   - the convergence flags reach the solver: --cc-iterations 2 stops after two iterations, a loose --cc-econv /
+   !!     --cc-tconv stops earlier and lands elsewhere, --cc-diis 1 takes more iterations than the default;
+   !!   - --cc-ladder and --cc-triples-budget do not change the energy;
+   !!   - a CCSD that does not converge: exit status 2, "NOT CONVERGED" in the summary, "ri-ccsd converged": false and no
+   !!     total energy in the JSON, and the message on the error stream;
+   !!   - a (T) that refuses after a converged RI-CCSD (the tiled routine, a budget of 1e-6 GiB = 1073 bytes, below the
+   !!     3072 bytes one water triple needs), by flags and by a TOML file: exit status 1, the RI-CCSD energies in the box,
+   !!     the summary and the JSON, a "(T) FAILED" line, the reason on the error stream and in the JSON key
+   !!     "ri-ccsd triples error", and no (T) correction or RI-CCSD(T) total anywhere; --cc-triples reference with the
+   !!     same budget succeeds (the reference routine has no budget), and --cc-triples tiled and ijk give pyscf's (T);
+   !!     the routine is always named, so the case means the same in a host build and in a device build;
+   !!   - --silent prints the summary but not the iteration table;
+   !!   - each refusal: --rimp2, a functional, --uhf, --grad, --hessian, --opt, an ECP, the --cc-* options without
+   !!     --riccsd, a bad --cc-ladder, --cc-triples-budget without (T), bad values: a non-zero exit status and the
+   !!     reason on the error stream.
+   !!
+   !! Arguments: the terco executable and a scratch directory. A build whose density-fitting ceilings are below
+   !! the cc-pVDZ / cc-pVDZ-RIFIT shells prints SKIP. A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file

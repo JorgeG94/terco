@@ -1,27 +1,27 @@
-!
-! The CLI's --grad: what `terco` prints to its JSON summary must be
-! exactly what the library itself (trc_run_gradient/trc_gradient, the
-! same C API app/main.F90 calls) computes for the identical molecule,
-! basis and guess -- app/main.F90 adds no arithmetic of its own between
-! `trc_gradient` and `write_json_gradient`, only a reshape, so this is a
-! wiring check, not a physics one (check_full_grad_fd.F90 and
-! check_full_grad_vs_pyscf.F90 are that).
-!
-! Runs the installed `terco` binary (its path given as this program's
-! first command-line argument -- see test/CMakeLists.txt's `$<TARGET_FILE:
-! terco_cli>`; its second argument is a scratch path for the CLI's own
-! --json output, in the BINARY dir rather than hardcoded here, the same
-! reason check_1e_grad_vs_pyscf.F90's own `dump` argument is) with
-! --guess gwh (deterministic, no SAD atomic sub-SCF to keep in sync) on
-! water/6-31G, reads its --json gradient array back, and
-! compares it to a direct trc_create/.../trc_run_gradient/trc_gradient
-! call on the SAME molecule/basis/guess/convergence settings, in the SAME
-! order app/main.F90 itself calls them. Both paths run the identical code
-! underneath, but as two separate processes on a shared host, so the
-! tolerance below is calibrated to a measured threaded-BLAS noise floor,
-! not machine precision -- see TOL's own comment.
-!
 module check_cli_grad_suite
+   !!
+   !! The CLI's --grad: what `terco` prints to its JSON summary must be
+   !! exactly what the library itself (trc_run_gradient/trc_gradient, the
+   !! same C API app/main.F90 calls) computes for the identical molecule,
+   !! basis and guess -- app/main.F90 adds no arithmetic of its own between
+   !! `trc_gradient` and `write_json_gradient`, only a reshape, so this is a
+   !! wiring check, not a physics one (check_full_grad_fd.F90 and
+   !! check_full_grad_vs_pyscf.F90 are that).
+   !!
+   !! Runs the installed `terco` binary (its path given as this program's
+   !! first command-line argument -- see test/CMakeLists.txt's `$<TARGET_FILE:
+   !! terco_cli>`; its second argument is a scratch path for the CLI's own
+   !! --json output, in the BINARY dir rather than hardcoded here, the same
+   !! reason check_1e_grad_vs_pyscf.F90's own `dump` argument is) with
+   !! --guess gwh (deterministic, no SAD atomic sub-SCF to keep in sync) on
+   !! water/6-31G, reads its --json gradient array back, and
+   !! compares it to a direct trc_create/.../trc_run_gradient/trc_gradient
+   !! call on the SAME molecule/basis/guess/convergence settings, in the SAME
+   !! order app/main.F90 itself calls them. Both paths run the identical code
+   !! underneath, but as two separate processes on a shared host, so the
+   !! tolerance below is calibrated to a measured threaded-BLAS noise floor,
+   !! not machine precision -- see TOL's own comment.
+   !!
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_null_ptr
    use pic_types, only: dp
    use pic_strings, only: to_string

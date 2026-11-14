@@ -1,185 +1,187 @@
-!
-! C ABI.
-!
-! The Fortran API is the real one; this is a thin `bind(c)` skin over it so a
-! caller that is not Fortran can use the library. It owns no logic -- every
-! entry point unpacks C types, calls the Fortran routine, and returns a status
-! code.
-!
-! HANDLES
-! -------
-! Objects cross the boundary as opaque `void*`. Each handle is a `c_ptr` to a
-! heap-allocated Fortran derived type; the caller never sees the layout and
-! never allocates it. That is the same contract cuEST offers and it is what
-! lets the Fortran side change shape without breaking callers.
-!
-! WHAT IS DELIBERATELY ABSENT
-! ---------------------------
-! No workspace-query protocol. cuEST has one (`*CreateWorkspaceQuery` fills a
-! descriptor, the caller allocates persistent and temporary buffers and hands
-! them back) because a C library cannot own device memory on the caller's
-! behalf without an allocator contract. We are Fortran underneath with
-! allocatable components and `release`, so the objects own their own memory.
-! If a caller ever needs to place that memory itself, the protocol belongs
-! here, at this boundary, and not in the core.
-!
-! ERRORS
-! ------
-! Status codes, not exceptions or aborts. A library that stops the process on
-! bad input is unusable inside someone else's SCF.
-!
-! COMMUNICATORS
-! -------------
-! Every entry that takes an `fcomm` (trc_scf_mpi, trc_rimp2, trc_set_comm)
-! accepts the Fortran handle of ANY intra-communicator the caller already
-! has open and is willing to be collective over -- not just MPI_COMM_WORLD.
-! -1 means one rank and no MPI, in any build. terco duplicates whatever the
-! handle names (MPI_Comm_dup, so every rank of it must call together) into
-! its own comm_t and frees only that duplicate afterwards; the caller's own
-! communicator is untouched and stays open for its own use throughout. This
-! is what lets GAMESS hand in DDI's compute communicator -- whose data
-! servers sit in MPI_COMM_WORLD but never call into terco, so terco must
-! never wait on MPI_COMM_WORLD itself -- and what will let a fragment
-! method hand in a per-fragment sub-communicator. See trc_build_comm.
-!
-! CARTESIAN COMPONENT ORDER
-! -------------------------
-! Every AO-indexed array this API hands back or takes in (S/T/V, the Fock
-! and density matrices, multipoles, DF tensors, `trc_set_guess`'s density)
-! uses the WITHIN-SHELL Cartesian order the library was BUILT with
-! (TRC_CART_ORDER at compile time: lexicographic by default, or gamess).
-! `trc_cart_order` below answers which one a caller is linked against, so a
-! caller need not know it out of band; it is a build-wide constant, not
-! something that varies per handle, so it takes none.
-!
-! AO NORMALISATION
-! ----------------
-! Separate from the order above, and a RUNTIME choice, not a build one:
-! trc_set_ao_norm(handle, TRC_AO_NORM_SHELL | TRC_AO_NORM_UNIT) on a
-! context, default TRC_AO_NORM_SHELL (terco's and libcint's own convention,
-! so nothing changes for a caller that never calls it). TRC_AO_NORM_UNIT is
-! GAMESS's: every Cartesian component individually normalised to 1. See
-! trc_ao_norm.F90's header for the closed form (n = sqrt((2l-1)!! /
-! product over x,y,z of (2*power-1)!!), FURTHER divided by terco's own
-! libcint-inherited `common_fac_sp` scale, which is 1 for d and up but not
-! for s or p -- also in that header, found the hard way) and the
-! covariant/contravariant transform it implies -- M_GAMESS = N M_terco N
-! for a two-AO-index matrix, D_GAMESS = N^-1 D_terco N^-1 for a density,
-! C_GAMESS = N^-1 C_terco (one index only: the other is an orbital label,
-! not an AO).
-!
-! The setting lives on `basis_box` (propagated from a context's own choice
-! by `take_basis`, so a handle borrowed through trc_context_basis carries
-! it), not only on the context, because that is the object every AO-array
-! entry below actually holds.
-!
-! SPHERICAL BASES
-! ----------------
-! A context's orbital basis may be SPHERICAL (trc_api.F90's
-! `trc_basis_t%spherical`, set by trc_basis_json.F90 from a JSON basis's
-! own function_type, "gto_spherical" meaning yes; `trc_set_force_cartesian`
-! overrides it to Cartesian regardless). When it is, every SCF-FACING
-! AO-indexed entry below -- trc_nao, trc_density, trc_mo_coefficients,
-! trc_mo_energies, trc_set_guess's `dguess`, and `trc_run_scf` itself --
-! is sized at `nao_sph`, not the Cartesian `nao`; `trc_nao` is the single
-! place that size is computed (`scf_space_nao`) and every other entry
-! reads it from there, so a caller sizing its own buffers from `trc_nao`
-! never has to know which case it is in. `trc_is_spherical` answers
-! directly for a caller that wants to know anyway.
-!
-! The raw-basis-handle entries (trc_compute_1e, trc_compute_multipoles,
-! trc_compute_df2c/df3c, capi_fock and its _many and _nosym siblings,
-! capi_scf/capi_scf_mpi through scf_entry) are NOT affected and stay at
-! the Cartesian `nao` of `trc_basis_nao` unconditionally: a basis built
-! through `trc_basis_create*` has no JSON file to ever set `spherical`
-! from, by construction (trc_api.F90's `basis_build` always leaves it
-! `.false.`), so there is nothing for these entries to switch on.
-! RI-MP2 (trc_run_rimp2) and `--df` (trc_scf_df.F90) both support a
-! spherical orbital basis now: their three-centre tensor stays Cartesian
-! (every kernel does), but `trc_run_rimp2` folds `cx%res%cmo`/`eps` into
-! that space first (`rimp2_driver_mo_to_cart`, zero-padded past the SCF's own
-! spherical MO count -- trc_rimp2_driver.F90's own header), and `--df`'s
-! `d_c`/`gmat_c` arrive already Cartesian through `trc_scf_fock.F90`'s
-! `scf_fock_to_cart`/`scf_fock_to_sph`, which is every AO index `trc_scf_df.F90` ever reads.
-! The AUXILIARY basis (rifit for RI-MP2, jkfit for `--df`) follows the
-! ORBITAL basis's own convention (pyscf's `auxmol.cart = mol.cart`), not
-! necessarily its own JSON tag -- see `basis_json`'s and
-! `trc_set_jkfit_json`'s own comments -- and is folded on its own
-! auxiliary (P) index inside `trc_scf_df.F90`/`trc_rimp2_driver.F90` when
-! it ends up spherical.
-!
-! TRC_AO_NORM_UNIT AND A SPHERICAL BASIS DO NOT COMBINE. UNIT rescales
-! each CARTESIAN component of a shell individually (GAMESS's convention);
-! a spherical AO is already a fixed linear combination of several
-! Cartesian components, each with its own ratio, so "the UNIT-normalised
-! version of a spherical d_z2" is not a well-defined request under
-! anything this module implements. `trc_set_ao_norm(..., TRC_AO_NORM_UNIT)`
-! refuses if the context's current basis is spherical, and loading a
-! spherical basis while UNIT mode is already set is refused the other
-! way, at `trc_set_basis_json`/`trc_set_aux_json`. Neither direction
-! silently falls back to one interpretation of the two.
-!
-! EVERY entry that returns or accepts an AO-indexed array, classified:
-!
-!   WIRED (scales when the basis/context involved is TRC_AO_NORM_UNIT):
-!     trc_compute_1e        covariant, S and T and V each
-!     trc_compute_multipoles covariant, one multipole component at a time
-!     trc_density            contravariant (context)
-!     trc_mo_coefficients    contravariant, AO index only (context)
-!     trc_set_guess           covariant-IN for TRC_GUESS_GIVEN, once, at the
-!                             copy (context) -- see that entry's own comment
-!     capi_fock (trc_fock), trc_fock_many, trc_fock_nosym
-!         dmat contravariant in, gmat covariant out. This is GAMESS's own
-!         MAIN caller -- its Fock/J/K build, run_Fockbuild's role in
-!         hpcchem_driver.src -- so it is wired even though it costs the
-!         one exception to this module's usual zero-copy Fock path: in
-!         TRC_AO_NORM_UNIT, `dmat` is copied to a host scratch array and
-!         scaled to terco's own convention THERE (never touching the
-!         caller's buffer -- see fock_scale_in), and `gmat` is scaled in
-!         place AFTER the build, since it is terco's own to write anyway
-!         (fock_scale_out). One O(n^2) copy against an O(n^4) Fock build.
-!         TRC_AO_NORM_SHELL, the default, still takes the original
-!         sequence-associated NO-COPY path unchanged (see fock_shaped's
-!         own comment), so no existing caller pays anything for this.
-!         trc_fock_many's `nd` densities (density index fastest) use
-!         their own small scale-in/out pair for that layout.
-!     capi_scf (trc_scf), capi_scf_mpi (trc_scf_mpi), through scf_entry
-!         dguess contravariant in, dmat contravariant out, eps invariant;
-!         wired for the same reason as the Fock family -- a UNIT-mode
-!         caller can reach this with a context-borrowed `basis` exactly
-!         as it can reach trc_fock. `res%dmat`/`bb%cmo`/`bb%eps` stay in
-!         terco's own convention internally (trc_run_rimp2 reads them
-!         that way); only the copies handed back across the C boundary
-!         are scaled.
-!
-!   INVARIANT, untouched by design (see trc_ao_norm.F90's header for why):
-!     trc_mo_energies, trc_energy, trc_energy_parts, trc_converged,
-!     trc_iterations, trc_rimp2_energy, trc_nao, trc_nmo, trc_nspin,
-!     trc_mo_occupations (MO-indexed, like trc_mo_energies, not AO-indexed),
-!     trc_message, trc_set_pcm, trc_pcm_energy, trc_gradient, trc_polarizability
-!     (a nuclear-coordinate array and a Cartesian response tensor, neither an
-!     AO one -- an SCF energy derivative or response does not depend on
-!     which AO normalisation convention computed it)
-!
-!   NOT AO-INDEXED DATA (build or borrow a HANDLE; nothing to scale here,
-!   the handle's own ao_norm_kind is what a later entry reads):
-!     trc_basis_create*, trc_pairs_create, trc_eri_create,
-!     trc_context_basis, trc_context_eri, trc_set_ao_norm, trc_get_ao_norm
-!
-!   COVARIANT/CONTRAVARIANT BY THE SAME RULE, BUT NOT WIRED IN THIS RELEASE
-!   -- always behave as TRC_AO_NORM_SHELL regardless of what a context they
-!   were reached through is set to, which is safe (identical to every
-!   caller before this setting existed) but not yet convention-aware:
-!     trc_compute_df2c, trc_compute_df3c
-!         covariant, one N per AO index (df3c's auxiliary index scales by
-!         the AUXILIARY basis's own N, not the orbital basis's -- it is a
-!         basis function too, just a different basis). Unreached by
-!         trc_set_ao_norm in practice: context never lends out `ab` (no
-!         trc_context_aux exists), so every `aux` handle these two ever see
-!         was built by trc_basis_create* directly and is always
-!         TRC_AO_NORM_SHELL.
-!
+! TODO(JORGE): probably can be split into submodules for sanity
+! TODO(JORGE): some functions need to be FORD docstrings
+
 module trc_capi
+   !! the C ABI
+   !!
+   !! The Fortran API is the real one; this is a thin `bind(c)` skin over it so a
+   !! caller that is not Fortran can use the library. It owns no logic -- every
+   !! entry point unpacks C types, calls the Fortran routine, and returns a status
+   !! code.
+   !!
+   !! HANDLES
+   !! -------
+   !! Objects cross the boundary as opaque `void*`. Each handle is a `c_ptr` to a
+   !! heap-allocated Fortran derived type; the caller never sees the layout and
+   !! never allocates it. That is the same contract cuEST offers and it is what
+   !! lets the Fortran side change shape without breaking callers.
+   !!
+   !! WHAT IS DELIBERATELY ABSENT
+   !! ---------------------------
+   !! No workspace-query protocol. cuEST has one (`*CreateWorkspaceQuery` fills a
+   !! descriptor, the caller allocates persistent and temporary buffers and hands
+   !! them back) because a C library cannot own device memory on the caller's
+   !! behalf without an allocator contract. We are Fortran underneath with
+   !! allocatable components and `release`, so the objects own their own memory.
+   !! If a caller ever needs to place that memory itself, the protocol belongs
+   !! here, at this boundary, and not in the core.
+   !!
+   !! ERRORS
+   !! ------
+   !! Status codes, not exceptions or aborts. A library that stops the process on
+   !! bad input is unusable inside someone else's SCF.
+   !!
+   !! COMMUNICATORS
+   !! -------------
+   !! Every entry that takes an `fcomm` (trc_scf_mpi, trc_rimp2, trc_set_comm)
+   !! accepts the Fortran handle of ANY intra-communicator the caller already
+   !! has open and is willing to be collective over -- not just MPI_COMM_WORLD.
+   !! -1 means one rank and no MPI, in any build. terco duplicates whatever the
+   !! handle names (MPI_Comm_dup, so every rank of it must call together) into
+   !! its own comm_t and frees only that duplicate afterwards; the caller's own
+   !! communicator is untouched and stays open for its own use throughout. This
+   !! is what lets GAMESS hand in DDI's compute communicator -- whose data
+   !! servers sit in MPI_COMM_WORLD but never call into terco, so terco must
+   !! never wait on MPI_COMM_WORLD itself -- and what will let a fragment
+   !! method hand in a per-fragment sub-communicator. See trc_build_comm.
+   !!
+   !! CARTESIAN COMPONENT ORDER
+   !! -------------------------
+   !! Every AO-indexed array this API hands back or takes in (S/T/V, the Fock
+   !! and density matrices, multipoles, DF tensors, `trc_set_guess`'s density)
+   !! uses the WITHIN-SHELL Cartesian order the library was BUILT with
+   !! (TRC_CART_ORDER at compile time: lexicographic by default, or gamess).
+   !! `trc_cart_order` below answers which one a caller is linked against, so a
+   !! caller need not know it out of band; it is a build-wide constant, not
+   !! something that varies per handle, so it takes none.
+   !!
+   !! AO NORMALISATION
+   !! ----------------
+   !! Separate from the order above, and a RUNTIME choice, not a build one:
+   !! trc_set_ao_norm(handle, TRC_AO_NORM_SHELL | TRC_AO_NORM_UNIT) on a
+   !! context, default TRC_AO_NORM_SHELL (terco's and libcint's own convention,
+   !! so nothing changes for a caller that never calls it). TRC_AO_NORM_UNIT is
+   !! GAMESS's: every Cartesian component individually normalised to 1. See
+   !! trc_ao_norm.F90's header for the closed form (n = sqrt((2l-1)!! /
+   !! product over x,y,z of (2*power-1)!!), FURTHER divided by terco's own
+   !! libcint-inherited `common_fac_sp` scale, which is 1 for d and up but not
+   !! for s or p -- also in that header, found the hard way) and the
+   !! covariant/contravariant transform it implies -- M_GAMESS = N M_terco N
+   !! for a two-AO-index matrix, D_GAMESS = N^-1 D_terco N^-1 for a density,
+   !! C_GAMESS = N^-1 C_terco (one index only: the other is an orbital label,
+   !! not an AO).
+   !!
+   !! The setting lives on `basis_box` (propagated from a context's own choice
+   !! by `take_basis`, so a handle borrowed through trc_context_basis carries
+   !! it), not only on the context, because that is the object every AO-array
+   !! entry below actually holds.
+   !!
+   !! SPHERICAL BASES
+   !! ----------------
+   !! A context's orbital basis may be SPHERICAL (trc_api.F90's
+   !! `trc_basis_t%spherical`, set by trc_basis_json.F90 from a JSON basis's
+   !! own function_type, "gto_spherical" meaning yes; `trc_set_force_cartesian`
+   !! overrides it to Cartesian regardless). When it is, every SCF-FACING
+   !! AO-indexed entry below -- trc_nao, trc_density, trc_mo_coefficients,
+   !! trc_mo_energies, trc_set_guess's `dguess`, and `trc_run_scf` itself --
+   !! is sized at `nao_sph`, not the Cartesian `nao`; `trc_nao` is the single
+   !! place that size is computed (`scf_space_nao`) and every other entry
+   !! reads it from there, so a caller sizing its own buffers from `trc_nao`
+   !! never has to know which case it is in. `trc_is_spherical` answers
+   !! directly for a caller that wants to know anyway.
+   !!
+   !! The raw-basis-handle entries (trc_compute_1e, trc_compute_multipoles,
+   !! trc_compute_df2c/df3c, capi_fock and its _many and _nosym siblings,
+   !! capi_scf/capi_scf_mpi through scf_entry) are NOT affected and stay at
+   !! the Cartesian `nao` of `trc_basis_nao` unconditionally: a basis built
+   !! through `trc_basis_create*` has no JSON file to ever set `spherical`
+   !! from, by construction (trc_api.F90's `basis_build` always leaves it
+   !! `.false.`), so there is nothing for these entries to switch on.
+   !! RI-MP2 (trc_run_rimp2) and `--df` (trc_scf_df.F90) both support a
+   !! spherical orbital basis now: their three-centre tensor stays Cartesian
+   !! (every kernel does), but `trc_run_rimp2` folds `cx%res%cmo`/`eps` into
+   !! that space first (`rimp2_driver_mo_to_cart`, zero-padded past the SCF's own
+   !! spherical MO count -- trc_rimp2_driver.F90's own header), and `--df`'s
+   !! `d_c`/`gmat_c` arrive already Cartesian through `trc_scf_fock.F90`'s
+   !! `scf_fock_to_cart`/`scf_fock_to_sph`, which is every AO index `trc_scf_df.F90` ever reads.
+   !! The AUXILIARY basis (rifit for RI-MP2, jkfit for `--df`) follows the
+   !! ORBITAL basis's own convention (pyscf's `auxmol.cart = mol.cart`), not
+   !! necessarily its own JSON tag -- see `basis_json`'s and
+   !! `trc_set_jkfit_json`'s own comments -- and is folded on its own
+   !! auxiliary (P) index inside `trc_scf_df.F90`/`trc_rimp2_driver.F90` when
+   !! it ends up spherical.
+   !!
+   !! TRC_AO_NORM_UNIT AND A SPHERICAL BASIS DO NOT COMBINE. UNIT rescales
+   !! each CARTESIAN component of a shell individually (GAMESS's convention);
+   !! a spherical AO is already a fixed linear combination of several
+   !! Cartesian components, each with its own ratio, so "the UNIT-normalised
+   !! version of a spherical d_z2" is not a well-defined request under
+   !! anything this module implements. `trc_set_ao_norm(..., TRC_AO_NORM_UNIT)`
+   !! refuses if the context's current basis is spherical, and loading a
+   !! spherical basis while UNIT mode is already set is refused the other
+   !! way, at `trc_set_basis_json`/`trc_set_aux_json`. Neither direction
+   !! silently falls back to one interpretation of the two.
+   !!
+   !! EVERY entry that returns or accepts an AO-indexed array, classified:
+   !!
+   !!   WIRED (scales when the basis/context involved is TRC_AO_NORM_UNIT):
+   !!     trc_compute_1e        covariant, S and T and V each
+   !!     trc_compute_multipoles covariant, one multipole component at a time
+   !!     trc_density            contravariant (context)
+   !!     trc_mo_coefficients    contravariant, AO index only (context)
+   !!     trc_set_guess           covariant-IN for TRC_GUESS_GIVEN, once, at the
+   !!                             copy (context) -- see that entry's own comment
+   !!     capi_fock (trc_fock), trc_fock_many, trc_fock_nosym
+   !!         dmat contravariant in, gmat covariant out. This is GAMESS's own
+   !!         MAIN caller -- its Fock/J/K build, run_Fockbuild's role in
+   !!         hpcchem_driver.src -- so it is wired even though it costs the
+   !!         one exception to this module's usual zero-copy Fock path: in
+   !!         TRC_AO_NORM_UNIT, `dmat` is copied to a host scratch array and
+   !!         scaled to terco's own convention THERE (never touching the
+   !!         caller's buffer -- see fock_scale_in), and `gmat` is scaled in
+   !!         place AFTER the build, since it is terco's own to write anyway
+   !!         (fock_scale_out). One O(n^2) copy against an O(n^4) Fock build.
+   !!         TRC_AO_NORM_SHELL, the default, still takes the original
+   !!         sequence-associated NO-COPY path unchanged (see fock_shaped's
+   !!         own comment), so no existing caller pays anything for this.
+   !!         trc_fock_many's `nd` densities (density index fastest) use
+   !!         their own small scale-in/out pair for that layout.
+   !!     capi_scf (trc_scf), capi_scf_mpi (trc_scf_mpi), through scf_entry
+   !!         dguess contravariant in, dmat contravariant out, eps invariant;
+   !!         wired for the same reason as the Fock family -- a UNIT-mode
+   !!         caller can reach this with a context-borrowed `basis` exactly
+   !!         as it can reach trc_fock. `res%dmat`/`bb%cmo`/`bb%eps` stay in
+   !!         terco's own convention internally (trc_run_rimp2 reads them
+   !!         that way); only the copies handed back across the C boundary
+   !!         are scaled.
+   !!
+   !!   INVARIANT, untouched by design (see trc_ao_norm.F90's header for why):
+   !!     trc_mo_energies, trc_energy, trc_energy_parts, trc_converged,
+   !!     trc_iterations, trc_rimp2_energy, trc_nao, trc_nmo, trc_nspin,
+   !!     trc_mo_occupations (MO-indexed, like trc_mo_energies, not AO-indexed),
+   !!     trc_message, trc_set_pcm, trc_pcm_energy, trc_gradient, trc_polarizability
+   !!     (a nuclear-coordinate array and a Cartesian response tensor, neither an
+   !!     AO one -- an SCF energy derivative or response does not depend on
+   !!     which AO normalisation convention computed it)
+   !!
+   !!   NOT AO-INDEXED DATA (build or borrow a HANDLE; nothing to scale here,
+   !!   the handle's own ao_norm_kind is what a later entry reads):
+   !!     trc_basis_create*, trc_pairs_create, trc_eri_create,
+   !!     trc_context_basis, trc_context_eri, trc_set_ao_norm, trc_get_ao_norm
+   !!
+   !!   COVARIANT/CONTRAVARIANT BY THE SAME RULE, BUT NOT WIRED IN THIS RELEASE
+   !!   -- always behave as TRC_AO_NORM_SHELL regardless of what a context they
+   !!   were reached through is set to, which is safe (identical to every
+   !!   caller before this setting existed) but not yet convention-aware:
+   !!     trc_compute_df2c, trc_compute_df3c
+   !!         covariant, one N per AO index (df3c's auxiliary index scales by
+   !!         the AUXILIARY basis's own N, not the orbital basis's -- it is a
+   !!         basis function too, just a different basis). Unreached by
+   !!         trc_set_ao_norm in practice: context never lends out `ab` (no
+   !!         trc_context_aux exists), so every `aux` handle these two ever see
+   !!         was built by trc_basis_create* directly and is always
+   !!         TRC_AO_NORM_SHELL.
+   !!
    use, intrinsic :: iso_c_binding, only: c_associated, c_char, c_double, c_f_pointer, c_int, c_loc, &
                                           c_null_char, c_null_ptr, c_ptr
    use pic_types, only: dp, int64
@@ -436,8 +438,8 @@ module trc_capi
    integer(c_int), parameter, public :: TRC_CONST_KB_SI = 4
    integer(c_int), parameter, public :: TRC_CONST_NA_SI = 5
 
-   ! Wrappers so a bare derived type can be pointed at from C.
    type :: basis_box
+      !! Wrappers so a bare derived type can be pointed at from C.
       type(trc_basis_t) :: b
       ! The orbitals of the last trc_scf on this basis, kept for a
       ! correlated step that follows: trc_scf hands the caller a density and
@@ -462,15 +464,15 @@ module trc_capi
       type(trc_eri_t) :: e
    end type eri_box
 
-   !
-   ! THE CONTEXT. One handle for a whole calculation: the molecule, the
-   ! basis and the auxiliary basis, every setting, the guess, the
-   ! communicator, and after a run its results. Set up in steps, in any
-   ! order, then run. The basis and ERI objects inside are the same boxes the
-   ! three-handle entries use, so the Fock family can borrow them through
-   ! trc_context_basis / trc_context_eri without a second copy.
-   !
    type :: context_box
+      !!
+      !! THE CONTEXT. One handle for a whole calculation: the molecule, the
+      !! basis and the auxiliary basis, every setting, the guess, the
+      !! communicator, and after a run its results. Set up in steps, in any
+      !! order, then run. The basis and ERI objects inside are the same boxes the
+      !! three-handle entries use, so the Fock family can borrow them through
+      !! trc_context_basis / trc_context_eri without a second copy.
+      !!
       ! molecule
       integer :: natm = 0, charge = 0, multiplicity = 1
       real(dp), allocatable :: at_z(:), at_r(:, :)
@@ -705,37 +707,37 @@ module trc_capi
 
 contains
 
-   !
-   ! The SIZE of the AO space the SCF-facing entries of this file read and
-   ! write -- trc_nao, trc_density, trc_mo_coefficients, trc_mo_energies,
-   ! trc_set_guess, trc_run_scf. `nao_sph` when the basis this box holds is
-   ! spherical, `nao` (Cartesian) otherwise -- the same choice
-   ! trc_scf_driver itself makes (trc_scf_driver.F90's own `sph`/`nao` split), so
-   ! this is the one place that choice is restated at the C boundary rather
-   ! than copied into every entry that needs it. The raw-basis-handle
-   ! family (trc_basis_nao, trc_compute_1e, capi_fock and friends) does NOT
-   ! use this: those operate on whatever `trc_basis_create*` built
-   ! directly, which has no file to read a function_type from and so is
-   ! never spherical (see trc_api.F90's `basis_build`, which always leaves
-   ! `spherical` at its default .false.) -- `bb%b%nao` is already right
-   ! for them, unconditionally.
-   !
    pure integer function scf_space_nao(bb) result(n)
+      !!
+      !! The SIZE of the AO space the SCF-facing entries of this file read and
+      !! write -- trc_nao, trc_density, trc_mo_coefficients, trc_mo_energies,
+      !! trc_set_guess, trc_run_scf. `nao_sph` when the basis this box holds is
+      !! spherical, `nao` (Cartesian) otherwise -- the same choice
+      !! trc_scf_driver itself makes (trc_scf_driver.F90's own `sph`/`nao` split), so
+      !! this is the one place that choice is restated at the C boundary rather
+      !! than copied into every entry that needs it. The raw-basis-handle
+      !! family (trc_basis_nao, trc_compute_1e, capi_fock and friends) does NOT
+      !! use this: those operate on whatever `trc_basis_create*` built
+      !! directly, which has no file to read a function_type from and so is
+      !! never spherical (see trc_api.F90's `basis_build`, which always leaves
+      !! `spherical` at its default .false.) -- `bb%b%nao` is already right
+      !! for them, unconditionally.
+      !!
       type(basis_box), intent(in) :: bb
       n = merge(bb%b%nao_sph, bb%b%nao, bb%b%spherical)
    end function scf_space_nao
 
-   !
-   ! Build a basis from flat per-shell arrays.
-   !
-   ! `centres` is (3, nshell) and `exps`/`coefs` are (maxnp, nshell), both in
-   ! Fortran order -- which for C means column-major, i.e. the fastest index is
-   ! the first. A C caller writing exps[shell][prim] has it transposed; the
-   ! header comment says so rather than the library guessing.
-   !
    function trc_basis_create(nshell, maxnp, l, nprim, exps, coefs, centres, &
                                natm, zatm, ratm, handle) &
       result(status) bind(c, name="trc_basis_create")
+      !!
+      !! Build a basis from flat per-shell arrays.
+      !!
+      !! `centres` is (3, nshell) and `exps`/`coefs` are (maxnp, nshell), both in
+      !! Fortran order -- which for C means column-major, i.e. the fastest index is
+      !! the first. A C caller writing exps[shell][prim] has it transposed; the
+      !! header comment says so rather than the library guessing.
+      !!
       integer(c_int), value :: nshell, maxnp, natm
       integer(c_int), intent(in) :: l(nshell), nprim(nshell)
       real(c_double), intent(in) :: exps(maxnp, nshell), coefs(maxnp, nshell)
@@ -838,16 +840,16 @@ contains
       status = TRC_OK
    end function trc_pairs_count
 
-   !
-   ! S, T and V into caller-provided host buffers of nao*nao each.
-   !
-   ! The buffers are host memory and the library copies the result back. A
-   ! device-pointer variant belongs here later for a caller already holding
-   ! device memory; it is a second entry point, not a flag, because getting
-   ! the two confused is a segfault rather than a wrong answer.
-   !
    function trc_compute_1e(basis, pairs, smat, tmat, vmat) result(status) &
       bind(c, name="trc_compute_1e")
+      !!
+      !! S, T and V into caller-provided host buffers of nao*nao each.
+      !!
+      !! The buffers are host memory and the library copies the result back. A
+      !! device-pointer variant belongs here later for a caller already holding
+      !! device memory; it is a second entry point, not a flag, because getting
+      !! the two confused is a segfault rather than a wrong answer.
+      !!
       !! COVARIANT under `basis`'s own ao_norm_kind (set through
       !! trc_set_ao_norm on a context that lent this handle via
       !! trc_context_basis; a raw trc_basis_create* handle is always
@@ -937,23 +939,23 @@ contains
       status = TRC_OK
    end function trc_compute_df3c
 
-   !
-   ! Build a basis straight from libcint's packed `atm`/`bas`/`env`.
-   !
-   ! THIS IS THE ONE A HOST CODE ACTUALLY WANTS. Anything with a libcint
-   ! backend already holds these three arrays, so the alternative -- unpacking
-   ! them into per-shell arrays on the caller's side and handing those to
-   ! `trc_basis_create` -- is a conversion written twice, once here and once in
-   ! every caller, with two chances to disagree about normalisation.
-   !
-   ! CARTESIAN ONLY. libcint's `bas` carries the angular form in KAPPA_OF and
-   ! terco has no spherical transform; a spherical basis silently reinterpreted
-   ! as Cartesian gives wrong numbers rather than an error, so the caller is
-   ! required to state it and is refused if it is not Cartesian.
-   !
    function trc_basis_create_libcint(atm, natm, bas, nshell, env, nenv, &
                                      cartesian, handle) result(status) &
       bind(c, name="trc_basis_create_libcint")
+      !!
+      !! Build a basis straight from libcint's packed `atm`/`bas`/`env`.
+      !!
+      !! THIS IS THE ONE A HOST CODE ACTUALLY WANTS. Anything with a libcint
+      !! backend already holds these three arrays, so the alternative -- unpacking
+      !! them into per-shell arrays on the caller's side and handing those to
+      !! `trc_basis_create` -- is a conversion written twice, once here and once in
+      !! every caller, with two chances to disagree about normalisation.
+      !!
+      !! CARTESIAN ONLY. libcint's `bas` carries the angular form in KAPPA_OF and
+      !! terco has no spherical transform; a spherical basis silently reinterpreted
+      !! as Cartesian gives wrong numbers rather than an error, so the caller is
+      !! required to state it and is refused if it is not Cartesian.
+      !!
       integer(c_int), value :: natm, nshell, nenv, cartesian
       integer(c_int), intent(in) :: atm(*), bas(*)
       real(c_double), intent(in) :: env(*)
@@ -995,27 +997,27 @@ contains
       status = TRC_OK
    end function trc_basis_maxl
 
-   !
-   ! Shell-data accessors.
-   !
-   ! A caller that already has its own basis-construction path (cyclone's
-   ! GAMESS-to-terco converter is the motivating one) can otherwise check
-   ! only the AO count and the final energy against its own input; these
-   ! four let it read back the shells THIS handle actually holds, so a
-   ! conversion bug shows up as a wrong exponent or coefficient instead of
-   ! only a wrong energy several steps later. They work on ANY basis
-   ! handle -- one built directly through trc_basis_create*/
-   ! trc_basis_create_libcint, or borrowed from a context through
-   ! trc_context_basis -- since both are the same `basis_box`.
-   !
-   ! Caller-provided buffers with a size query first, as trc_hessian/
-   ! trc_multipole_count already do: trc_basis_shell_count for NSHELL,
-   ! then trc_basis_shell_info's three NSHELL-long buffers, and
-   ! trc_basis_shell_max_primitives for MAXNP to size
-   ! trc_basis_shell_primitives' two MAXNP*NSHELL buffers.
-   !
    function trc_basis_shell_count(handle, nshell) result(status) &
       bind(c, name="trc_basis_shell_count")
+      !!
+      !! Shell-data accessors.
+      !!
+      !! A caller that already has its own basis-construction path (cyclone's
+      !! GAMESS-to-terco converter is the motivating one) can otherwise check
+      !! only the AO count and the final energy against its own input; these
+      !! four let it read back the shells THIS handle actually holds, so a
+      !! conversion bug shows up as a wrong exponent or coefficient instead of
+      !! only a wrong energy several steps later. They work on ANY basis
+      !! handle -- one built directly through trc_basis_create*/
+      !! trc_basis_create_libcint, or borrowed from a context through
+      !! trc_context_basis -- since both are the same `basis_box`.
+      !!
+      !! Caller-provided buffers with a size query first, as trc_hessian/
+      !! trc_multipole_count already do: trc_basis_shell_count for NSHELL,
+      !! then trc_basis_shell_info's three NSHELL-long buffers, and
+      !! trc_basis_shell_max_primitives for MAXNP to size
+      !! trc_basis_shell_primitives' two MAXNP*NSHELL buffers.
+      !!
       !! Number of shells, so a caller can size trc_basis_shell_info's
       !! buffers. NOT split by decontraction (src/basis/trc_decontract.F90):
       !! that split lives inside trc_eri_t, built from a copy of this
@@ -1196,13 +1198,13 @@ contains
       n = int(TRC_NMULT, c_int)
    end function trc_multipole_count
 
-   !
-   ! Cartesian multipoles through the octupole about `origin`, into a caller
-   ! buffer of nao*nao*trc_nmult(). Component index is slowest, matching the
-   ! Fortran (nao, nao, ncomp).
-   !
    function trc_compute_multipoles(basis, pairs, origin, mmat) result(status) &
       bind(c, name="trc_compute_multipoles")
+      !!
+      !! Cartesian multipoles through the octupole about `origin`, into a caller
+      !! buffer of nao*nao*trc_nmult(). Component index is slowest, matching the
+      !! Fortran (nao, nao, ncomp).
+      !!
       !! COVARIANT under `basis`'s own ao_norm_kind, one component at a
       !! time (see trc_compute_1e).
       type(c_ptr), value :: basis, pairs
@@ -1239,14 +1241,14 @@ contains
       status = TRC_OK
    end function trc_compute_multipoles
 
-   !
-   ! The four-centre ERI object: Schwarz bounds, the binned pair list and the
-   ! primitive-pair data, built once per geometry and reused by every Fock
-   ! build. This is the expensive handle -- creating one per SCF iteration
-   ! would throw away the whole point of the container.
-   !
    function trc_eri_create(basis, thresh, handle) result(status) &
       bind(c, name="trc_eri_create")
+      !!
+      !! The four-centre ERI object: Schwarz bounds, the binned pair list and the
+      !! primitive-pair data, built once per geometry and reused by every Fock
+      !! build. This is the expensive handle -- creating one per SCF iteration
+      !! would throw away the whole point of the container.
+      !!
       !! The four-centre engine for `basis` at screening threshold `thresh`.
       !! TRC_ERR_UNSUPPORTED, and no handle, when the basis has a shell
       !! above this build's four-centre ceiling (trc_max_angular_momentum).
@@ -1283,16 +1285,16 @@ contains
       status = TRC_OK
    end function trc_eri_destroy
 
-   !
-   ! G = j*J - k*K/2 for one density. Host buffers of nao*nao each.
-   !
-   ! `jfac` and `kfac` are passed by value and are NOT optional here: an
-   ! optional argument has no C representation, and a caller that wants plain
-   ! Hartree-Fock passes 1 and 1. Making them mandatory at the boundary also
-   ! means a Kohn-Sham caller cannot forget them and silently get HF.
-   !
    function capi_fock(eri, basis, dmat, gmat, jfac, kfac, dscreen, omega) &
       result(status) bind(c, name="trc_fock")
+      !!
+      !! G = j*J - k*K/2 for one density. Host buffers of nao*nao each.
+      !!
+      !! `jfac` and `kfac` are passed by value and are NOT optional here: an
+      !! optional argument has no C representation, and a caller that wants plain
+      !! Hartree-Fock passes 1 and 1. Making them mandatory at the boundary also
+      !! means a Kohn-Sham caller cannot forget them and silently get HF.
+      !!
       !! CONTRAVARIANT in (dmat), COVARIANT out (gmat), under `basis`'s own
       !! ao_norm_kind: this is GAMESS's own main caller (its Fock/J/K
       !! build, run_Fockbuild's role in hpcchem_driver.src), so it is wired
@@ -1384,22 +1386,22 @@ contains
       gmat(1:n*n) = real(reshape(g, [n*n]), c_double)
    end subroutine fock_scale_out
 
-   !
-   ! NO COPY in TRC_AO_NORM_SHELL, the default. `dmat` and `gmat` arrive as
-   ! assumed-size, and handing an assumed-size actual to an explicit-shape
-   ! `(n, n)` dummy is sequence association -- the callee addresses the
-   ! caller's memory directly.
-   !
-   ! The first version reshaped both into allocatable locals, which at 2773
-   ! functions is four passes over 61 MB per Fock build for nothing. Reshaping
-   ! is the obvious way to write this and the obvious way is wrong: the bytes
-   ! are already contiguous and already in the right order, so all the copy
-   ! bought was a second name for them. TRC_AO_NORM_UNIT is the one case that
-   ! DOES need its own copy (fock_scale_in/fock_scale_out, above, called from
-   ! capi_fock and trc_fock_nosym before/after this): an O(n^2) price only a
-   ! caller who opted into UNIT mode pays, against an O(n^4) build.
-   !
    subroutine fock_shaped(b, e, n, d, g, scale)
+      !!
+      !! NO COPY in TRC_AO_NORM_SHELL, the default. `dmat` and `gmat` arrive as
+      !! assumed-size, and handing an assumed-size actual to an explicit-shape
+      !! `(n, n)` dummy is sequence association -- the callee addresses the
+      !! caller's memory directly.
+      !!
+      !! The first version reshaped both into allocatable locals, which at 2773
+      !! functions is four passes over 61 MB per Fock build for nothing. Reshaping
+      !! is the obvious way to write this and the obvious way is wrong: the bytes
+      !! are already contiguous and already in the right order, so all the copy
+      !! bought was a second name for them. TRC_AO_NORM_UNIT is the one case that
+      !! DOES need its own copy (fock_scale_in/fock_scale_out, above, called from
+      !! capi_fock and trc_fock_nosym before/after this): an O(n^2) price only a
+      !! caller who opted into UNIT mode pays, against an O(n^4) build.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: e
       integer, intent(in) :: n
@@ -1411,18 +1413,18 @@ contains
                      density_screen=scale%dscreen, omega=scale%omega))
    end subroutine fock_shaped
 
-   !
-   ! N densities in one pass over the integrals.
-   !
-   ! `dmats` and `gmats` are (ndens, nao, nao) with the DENSITY INDEX FASTEST,
-   ! which is the layout the kernel wants and not the one a C caller would
-   ! guess. Phase 2 measured the alternative: with the density index slowest
-   ! the N atomic updates for one (mu,nu) sit nao^2 apart and the batch stops
-   ! paying past N = 4. The layout is part of the contract, so it is stated
-   ! here rather than transposed silently.
-   !
    function trc_fock_many(eri, basis, ndens, dmats, gmats, jfac, kfac, dscreen, omega) &
       result(status) bind(c, name="trc_fock_many")
+      !!
+      !! N densities in one pass over the integrals.
+      !!
+      !! `dmats` and `gmats` are (ndens, nao, nao) with the DENSITY INDEX FASTEST,
+      !! which is the layout the kernel wants and not the one a C caller would
+      !! guess. Phase 2 measured the alternative: with the density index slowest
+      !! the N atomic updates for one (mu,nu) sit nao^2 apart and the batch stops
+      !! paying past N = 4. The layout is part of the contract, so it is stated
+      !! here rather than transposed silently.
+      !!
       !! CONTRAVARIANT in, COVARIANT out, under `basis`'s own ao_norm_kind
       !! -- see capi_fock; the density-index-fastest layout means the
       !! UNIT-mode scaling here is its own small routines
@@ -1522,17 +1524,17 @@ contains
       gmats(1:nd*n*n) = real(reshape(g, [nd*n*n]), c_double)
    end subroutine fock_many_scale_out
 
-   !
-   ! The same build for a density that is NOT symmetric.
-   !
-   ! A separate entry point rather than a flag on `trc_fock`, for the reason
-   ! the Fortran side gives: the folded eight-fold digestion assumes
-   ! D(mu,nu) = D(nu,mu), and a caller that passes an antisymmetric response
-   ! density to the folded path gets a plausible wrong answer with no
-   ! diagnostic. Two names cannot be confused by accident.
-   !
    function trc_fock_nosym(eri, basis, dmat, gmat, dscreen) result(status) &
       bind(c, name="trc_fock_nosym")
+      !!
+      !! The same build for a density that is NOT symmetric.
+      !!
+      !! A separate entry point rather than a flag on `trc_fock`, for the reason
+      !! the Fortran side gives: the folded eight-fold digestion assumes
+      !! D(mu,nu) = D(nu,mu), and a caller that passes an antisymmetric response
+      !! density to the folded path gets a plausible wrong answer with no
+      !! diagnostic. Two names cannot be confused by accident.
+      !!
       !! CONTRAVARIANT in, COVARIANT out, exactly as capi_fock -- the
       !! diagonal congruence ao_norm_scale_cov/fock_scale_in apply does not
       !! care whether `dmat` is symmetric, so nothing here differs from
@@ -1574,25 +1576,25 @@ contains
    end subroutine fock_nosym_shaped
 
 
-   !
-   ! The whole SCF: Hartree-Fock when `functional` is empty, Kohn-Sham
-   ! otherwise; restricted when nalpha == nbeta, unrestricted otherwise, so
-   ! `nspin` is 1 or 2 accordingly and the caller sizes `dmat` and `eps` as
-   ! (nao, nao, nspin) and (nao, nspin). `dguess` may be NULL for the core
-   ! guess, or point at a (nao, nao, nspin) density -- for a restricted
-   ! case the total density, for an unrestricted one alpha then beta.
-   !
-   ! `functional` is a NUL-terminated C string; names are the ones
-   ! trc_xc_functional knows. `grid_level` is 0 to 9 in metalquicha's sense.
-   ! `verbose` non-zero prints one line per iteration -- energy, its change
-   ! and the RMS density change -- to standard output, since the iteration
-   ! is otherwise invisible to a caller that only sees the final energy.
-   ! A non-converged SCF returns TRC_ERR_NOCONV with the last energy and
-   ! density filled in, so the caller can decide what that is worth.
-   !
    function capi_scf(basis, nalpha, nbeta, functional, grid_level, conv_energy, &
                      conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
                      niter) result(status) bind(c, name="trc_scf")
+      !!
+      !! The whole SCF: Hartree-Fock when `functional` is empty, Kohn-Sham
+      !! otherwise; restricted when nalpha == nbeta, unrestricted otherwise, so
+      !! `nspin` is 1 or 2 accordingly and the caller sizes `dmat` and `eps` as
+      !! (nao, nao, nspin) and (nao, nspin). `dguess` may be NULL for the core
+      !! guess, or point at a (nao, nao, nspin) density -- for a restricted
+      !! case the total density, for an unrestricted one alpha then beta.
+      !!
+      !! `functional` is a NUL-terminated C string; names are the ones
+      !! trc_xc_functional knows. `grid_level` is 0 to 9 in metalquicha's sense.
+      !! `verbose` non-zero prints one line per iteration -- energy, its change
+      !! and the RMS density change -- to standard output, since the iteration
+      !! is otherwise invisible to a caller that only sees the final energy.
+      !! A non-converged SCF returns TRC_ERR_NOCONV with the last energy and
+      !! density filled in, so the caller can decide what that is worth.
+      !!
       type(c_ptr), value :: basis
       integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
       character(kind=c_char), intent(in) :: functional(*)
@@ -1617,27 +1619,27 @@ contains
       niter = int(res_out%niter, c_int)
    end function capi_scf
 
-   !
-   ! The same SCF run collectively by every rank of a communicator: the
-   ! Fock build, the XC batches and the grid partition are split across
-   ! the ranks and every rank returns the identical result. `fcomm` is the
-   ! Fortran handle of the communicator (MPI_Comm_c2f from C, or the
-   ! integer a Fortran caller holds), and every rank of it must call this
-   ! together, because building terco's own communicator from it duplicates
-   ! it. Each rank binds its own device before anything else -- the caller
-   ! does not.
-   !
-   ! ANY intra-communicator is accepted, not just MPI_COMM_WORLD: this is
-   ! what lets GAMESS hand in DDI's compute communicator, whose data-server
-   ! ranks never call here at all, and what lets a fragment method hand in
-   ! a per-fragment sub-communicator later. -1 is trc_scf on one rank in
-   ! any build; in a build without MPI every other handle is also the
-   ! single rank there is, because that is what pic-mpi's serial backend's
-   ! comm_from_handle gives back.
-   !
    function capi_scf_mpi(fcomm, basis, nalpha, nbeta, functional, grid_level, conv_energy, &
                          conv_density, max_iter, dguess, verbose, energy, e_xc, dmat, eps, &
                          niter) result(status) bind(c, name="trc_scf_mpi")
+      !!
+      !! The same SCF run collectively by every rank of a communicator: the
+      !! Fock build, the XC batches and the grid partition are split across
+      !! the ranks and every rank returns the identical result. `fcomm` is the
+      !! Fortran handle of the communicator (MPI_Comm_c2f from C, or the
+      !! integer a Fortran caller holds), and every rank of it must call this
+      !! together, because building terco's own communicator from it duplicates
+      !! it. Each rank binds its own device before anything else -- the caller
+      !! does not.
+      !!
+      !! ANY intra-communicator is accepted, not just MPI_COMM_WORLD: this is
+      !! what lets GAMESS hand in DDI's compute communicator, whose data-server
+      !! ranks never call here at all, and what lets a fragment method hand in
+      !! a per-fragment sub-communicator later. -1 is trc_scf on one rank in
+      !! any build; in a build without MPI every other handle is also the
+      !! single rank there is, because that is what pic-mpi's serial backend's
+      !! comm_from_handle gives back.
+      !!
       integer(c_int), value :: fcomm
       type(c_ptr), value :: basis
       integer(c_int), value :: nalpha, nbeta, grid_level, max_iter, verbose
@@ -1678,19 +1680,19 @@ contains
       niter = int(res_out%niter, c_int)
    end function capi_scf_mpi
 
-   !
-   ! RI-MP2 on the orbitals of the last trc_scf (or trc_scf_mpi) on
-   ! `basis`, which must have been restricted. `aux` is the auxiliary basis,
-   ! made like any other through trc_basis_create*; `nfrozen` doubly
-   ! occupied orbitals are left out of the correlation; `aux_block` bounds
-   ! the depth of the three-index tensor held at once (0 for all of it).
-   ! E_os and E_ss come back separately: MP2 is their sum, SCS and SOS are
-   ! weights on them. `fcomm` is ANY intra-communicator's Fortran handle
-   ! (see capi_scf_mpi); the occupied orbitals are split over its ranks and
-   ! every rank gets the same numbers. -1 runs on one rank in any build.
-   !
    function capi_rimp2(fcomm, basis, aux, nfrozen, aux_block, e_os, e_ss) &
       result(status) bind(c, name="trc_rimp2")
+      !!
+      !! RI-MP2 on the orbitals of the last trc_scf (or trc_scf_mpi) on
+      !! `basis`, which must have been restricted. `aux` is the auxiliary basis,
+      !! made like any other through trc_basis_create*; `nfrozen` doubly
+      !! occupied orbitals are left out of the correlation; `aux_block` bounds
+      !! the depth of the three-index tensor held at once (0 for all of it).
+      !! E_os and E_ss come back separately: MP2 is their sum, SCS and SOS are
+      !! weights on them. `fcomm` is ANY intra-communicator's Fortran handle
+      !! (see capi_scf_mpi); the occupied orbitals are split over its ranks and
+      !! every rank gets the same numbers. -1 runs on one rank in any build.
+      !!
       integer(c_int), value :: fcomm
       type(c_ptr), value :: basis, aux
       integer(c_int), value :: nfrozen, aux_block
@@ -1866,11 +1868,10 @@ contains
    end function scf_entry
 
 
-   ! ======================================================================
-   ! The context surface
-   ! ======================================================================
-
    function trc_create(handle) result(status) bind(c, name="trc_create")
+      !! ======================================================================
+      !! The context surface
+      !! ======================================================================
       type(c_ptr), intent(out) :: handle
       integer(c_int) :: status
       type(context_box), pointer :: cx
@@ -2886,17 +2887,17 @@ contains
       status = TRC_OK
    end function trc_set_nlc_grid
 
-   !
-   ! A polarisable continuum around the molecule for every SCF this context
-   ! runs from here on (trc_pcm): `model` is "cpcm" or "iefpcm", or an empty
-   ! string to turn it off again. `eps` is the solvent's dielectric constant
-   ! and is required (water: 78.3553); there is no solvent-name table, so
-   ! nothing is assumed from a name. `lebedev` is the points per atomic
-   ! sphere and `radii_scale` the van der Waals radius to cavity radius
-   ! factor; 0 for either takes the default (302 and 1.2, pyscf's). Additive:
-   ! a context that never calls this runs exactly as before.
-   !
    function trc_set_pcm(handle, model, eps, lebedev, radii_scale) result(status) bind(c, name="trc_set_pcm")
+      !!
+      !! A polarisable continuum around the molecule for every SCF this context
+      !! runs from here on (trc_pcm): `model` is "cpcm" or "iefpcm", or an empty
+      !! string to turn it off again. `eps` is the solvent's dielectric constant
+      !! and is required (water: 78.3553); there is no solvent-name table, so
+      !! nothing is assumed from a name. `lebedev` is the points per atomic
+      !! sphere and `radii_scale` the van der Waals radius to cavity radius
+      !! factor; 0 for either takes the default (302 and 1.2, pyscf's). Additive:
+      !! a context that never calls this runs exactly as before.
+      !!
       type(c_ptr), value :: handle
       character(kind=c_char), intent(in) :: model(*)
       real(c_double), value :: eps, radii_scale
@@ -3123,15 +3124,15 @@ contains
       status = TRC_OK
    end function trc_set_screening
 
-   !
-   ! Incremental Fock builds: after the first iteration, G is accumulated
-   ! from the density DIFFERENCE, which screens far harder as the SCF
-   ! converges (trc_scf_options_t%incremental has the measurements,
-   ! trc_scf_incremental the schedule and its error argument; convergence
-   ! is declared on a full build only). Nonzero on, the default of the
-   ! library and of the terco CLI; 0 off. Not used under trc_set_df.
-   !
    function trc_set_incremental(handle, on) result(status) bind(c, name="trc_set_incremental")
+      !!
+      !! Incremental Fock builds: after the first iteration, G is accumulated
+      !! from the density DIFFERENCE, which screens far harder as the SCF
+      !! converges (trc_scf_options_t%incremental has the measurements,
+      !! trc_scf_incremental the schedule and its error argument; convergence
+      !! is declared on a full build only). Nonzero on, the default of the
+      !! library and of the terco CLI; 0 off. Not used under trc_set_df.
+      !!
       !! Incremental Fock builds, on (nonzero, the default) or off (0): after the
       !! first iteration the two-electron matrix is built from the change in the
       !! density and accumulated, with a full build on the iteration convergence
@@ -3393,15 +3394,15 @@ contains
       status = TRC_OK
    end function trc_set_gdm
 
-   !
-   ! Density-fitted J and K (`--df`). Needs a jkfit basis too
-   ! (`trc_set_jkfit_json`, separate from `trc_set_aux_json`'s rifit set
-   ! because one run can do DF-SCF and RI-MP2 with two different auxiliary
-   ! bases) before `trc_run_scf` -- `trc_run_scf` reports that, not this,
-   ! since nothing here can tell whether one was already set by the time
-   ! this is called.
-   !
    function trc_set_df(handle, on) result(status) bind(c, name="trc_set_df")
+      !!
+      !! Density-fitted J and K (`--df`). Needs a jkfit basis too
+      !! (`trc_set_jkfit_json`, separate from `trc_set_aux_json`'s rifit set
+      !! because one run can do DF-SCF and RI-MP2 with two different auxiliary
+      !! bases) before `trc_run_scf` -- `trc_run_scf` reports that, not this,
+      !! since nothing here can tell whether one was already set by the time
+      !! this is called.
+      !!
       type(c_ptr), value :: handle
       integer(c_int), value :: on
       integer(c_int) :: status
@@ -3414,19 +3415,19 @@ contains
       status = TRC_OK
    end function trc_set_df
 
-   !
-   ! The fitting (jkfit) basis for `--df`, a MolSSI BSE JSON file, read for
-   ! the molecule already set -- the same file format `trc_set_aux_json`
-   ! reads, into a SEPARATE slot (`cx%jb`). Follows the orbital basis's
-   ! own convention, exactly `basis_json`'s rule for the rifit (`aux`)
-   ! set: Cartesian when the orbital basis is (`force_cartesian`, or an
-   ! orbital basis already loaded that is not itself spherical), its own
-   ! JSON tag otherwise (def2-universal-jkfit is spherical, matching a
-   ! spherical orbital basis -- `trc_scf_df.F90`'s `df_jk_setup` folds it,
-   ! see that module's own header). Clears any fit already built on the
-   ! previous jkfit basis.
-   !
    function trc_set_jkfit_json(handle, path) result(status) bind(c, name="trc_set_jkfit_json")
+      !!
+      !! The fitting (jkfit) basis for `--df`, a MolSSI BSE JSON file, read for
+      !! the molecule already set -- the same file format `trc_set_aux_json`
+      !! reads, into a SEPARATE slot (`cx%jb`). Follows the orbital basis's
+      !! own convention, exactly `basis_json`'s rule for the rifit (`aux`)
+      !! set: Cartesian when the orbital basis is (`force_cartesian`, or an
+      !! orbital basis already loaded that is not itself spherical), its own
+      !! JSON tag otherwise (def2-universal-jkfit is spherical, matching a
+      !! spherical orbital basis -- `trc_scf_df.F90`'s `df_jk_setup` folds it,
+      !! see that module's own header). Clears any fit already built on the
+      !! previous jkfit basis.
+      !!
       type(c_ptr), value :: handle
       character(kind=c_char), intent(in) :: path(*)
       integer(c_int) :: status
@@ -3469,16 +3470,16 @@ contains
       status = TRC_OK
    end function trc_set_jkfit_json
 
-   !
-   ! The same fitting basis as `trc_set_jkfit_json`, from libcint's packed
-   ! `atm`/`bas`/`env` instead of a JSON file -- the same shape
-   ! `trc_set_aux_libcint` takes. `cartesian` zero tags it spherical,
-   ! exactly as `basis_libcint` above; refused rather than coerced if it
-   ! disagrees with the orbital basis already set (pyscf's `auxmol.cart =
-   ! mol.cart`), since there is no file tag here to silently override.
-   !
    function trc_set_jkfit_libcint(handle, atm, natm, bas, nshell, env, nenv, cartesian) result(status) &
       bind(c, name="trc_set_jkfit_libcint")
+      !!
+      !! The same fitting basis as `trc_set_jkfit_json`, from libcint's packed
+      !! `atm`/`bas`/`env` instead of a JSON file -- the same shape
+      !! `trc_set_aux_libcint` takes. `cartesian` zero tags it spherical,
+      !! exactly as `basis_libcint` above; refused rather than coerced if it
+      !! disagrees with the orbital basis already set (pyscf's `auxmol.cart =
+      !! mol.cart`), since there is no file tag here to silently override.
+      !!
       !! The --df fitting basis from libcint's packed arrays, the same
       !! shape and `cartesian` convention as trc_set_aux_libcint; refused
       !! rather than coerced if it disagrees with the orbital basis
@@ -3519,17 +3520,17 @@ contains
       status = TRC_OK
    end function trc_set_jkfit_libcint
 
-   !
-   ! How finely the shell pairs are batched by their Schwarz bound: `res`
-   ! buckets per decade. The pre-launch screen admits a pair of batches
-   ! when their bounds multiply above the threshold, so a coarse bucket
-   ! admits everything within its decade and leaves the rest to the test
-   ! inside the kernel, where a rejected quartet has already cost a thread.
-   ! Finer buckets catch more before the launch, at more and smaller
-   ! batches. 1 is decades and is the default; 4 is the finest the bins are
-   ! sized for. Rebuilds the ERI object, as a threshold change does.
-   !
    function trc_set_batching(handle, res) result(status) bind(c, name="trc_set_batching")
+      !!
+      !! How finely the shell pairs are batched by their Schwarz bound: `res`
+      !! buckets per decade. The pre-launch screen admits a pair of batches
+      !! when their bounds multiply above the threshold, so a coarse bucket
+      !! admits everything within its decade and leaves the rest to the test
+      !! inside the kernel, where a rejected quartet has already cost a thread.
+      !! Finer buckets catch more before the launch, at more and smaller
+      !! batches. 1 is decades and is the default; 4 is the finest the bins are
+      !! sized for. Rebuilds the ERI object, as a threshold change does.
+      !!
       type(c_ptr), value :: handle
       integer(c_int), value :: res
       integer(c_int) :: status
@@ -4684,12 +4685,12 @@ contains
       end if
    end subroutine symmetry_setup
 
-   !
-   ! TRC_GUESS_MINAO's density, both spins -- split out of trc_run_scf's own
-   ! dispatch purely to keep that procedure's own line count down; every
-   ! other guess kind's block stays inline there.
-   !
    subroutine minao_guess_build(b, n, nspin, lindep_thresh, eri_thresh, dg, err)
+      !!
+      !! TRC_GUESS_MINAO's density, both spins -- split out of trc_run_scf's own
+      !! dispatch purely to keep that procedure's own line count down; every
+      !! other guess kind's block stays inline there.
+      !!
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: n, nspin
       real(dp), intent(in) :: lindep_thresh, eri_thresh
@@ -4728,11 +4729,11 @@ contains
       opts%mom_follow_guess = trc_guess_is_user_chosen(cx%guess_kind)
    end function run_options
 
-   !
-   ! TRC_GUESS_SAD/SADQ's density, both spins -- split out of trc_run_scf's
-   ! own dispatch for the same reason as minao_guess_build.
-   !
    subroutine sad_guess_build(cx, nelec, nspin, sadq, talk, dg, err)
+      !!
+      !! TRC_GUESS_SAD/SADQ's density, both spins -- split out of trc_run_scf's
+      !! own dispatch for the same reason as minao_guess_build.
+      !!
       !! `cx%bb%b`/`cx%la`/`cx%ecp` travel together here (docs/CODE_STRUCTURE.md's
       !! "bundle the arguments that travel together"): all three are the
       !! calling context's own, so this takes `cx` itself rather than one
@@ -4762,21 +4763,21 @@ contains
       end if
    end subroutine sad_guess_build
 
-   !
-   ! TRC_GUESS_SAP's one-electron guess operator (not a density -- it goes
-   ! in through trc_run_scf's own `hguess`, not `dg`) -- split out of that
-   ! dispatch for the same reason as minao_guess_build/sad_guess_build.
-   !
-   ! `trc_sap_build` itself stays entirely Cartesian (`hsap_c`, `nc`): it is
-   ! built from the analytic one-electron matrices and a quadrature over
-   ! free-atom potentials, neither of which this feature touches. The one
-   ! transform this guess needs is here, at the boundary, the same as SAD's
-   ! own (trc_sad.F90) -- except SAD produces its density already in the
-   ! matching space because its atomic sub-SCFs run on a `subset` basis
-   ! that carries `spherical` itself, where SAP's grid/one-electron
-   ! machinery has no such basis-level hook to carry it through.
-   !
    subroutine sap_guess_build(b, eri_thresh, n, nc, talk, hsap, err)
+      !!
+      !! TRC_GUESS_SAP's one-electron guess operator (not a density -- it goes
+      !! in through trc_run_scf's own `hguess`, not `dg`) -- split out of that
+      !! dispatch for the same reason as minao_guess_build/sad_guess_build.
+      !!
+      !! `trc_sap_build` itself stays entirely Cartesian (`hsap_c`, `nc`): it is
+      !! built from the analytic one-electron matrices and a quadrature over
+      !! free-atom potentials, neither of which this feature touches. The one
+      !! transform this guess needs is here, at the boundary, the same as SAD's
+      !! own (trc_sad.F90) -- except SAD produces its density already in the
+      !! matching space because its atomic sub-SCFs run on a `subset` basis
+      !! that carries `spherical` itself, where SAP's grid/one-electron
+      !! machinery has no such basis-level hook to carry it through.
+      !!
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: eri_thresh
       integer, intent(in) :: n, nc
@@ -4813,13 +4814,13 @@ contains
       deallocate (hsap_c)
    end subroutine sap_guess_build
 
-   !
-   ! The part of gradient_capability_check that the molecule, basis and ECP
-   ! settle before any SCF runs, so trc_check_gradient_upfront (a geometry
-   ! optimiser's pre-check) gives the same message trc_run_gradient would.
-   ! Zero-length when nothing here objects.
-   !
    function gradient_upfront_refusal(cx) result(refusal)
+      !!
+      !! The part of gradient_capability_check that the molecule, basis and ECP
+      !! settle before any SCF runs, so trc_check_gradient_upfront (a geometry
+      !! optimiser's pre-check) gives the same message trc_run_gradient would.
+      !! Zero-length when nothing here objects.
+      !!
       type(context_box), intent(in) :: cx
       character(len=:), allocatable :: refusal
       ! Phase 4 (ECP_DESIGN.md's PR breakdown), not this one: U_ECP's own
@@ -4873,16 +4874,16 @@ contains
       end if
    end function trc_check_gradient_upfront
 
-   !
-   ! What trc_run_gradient refuses, factored out so trc_run_hessian can
-   ! make the SAME check up front -- before spending any SCF time on a
-   ! displacement loop that would fail at the first gradient anyway. Also
-   ! resolves cx%opts%functional into `func`/`have_func`, since
-   ! trc_run_gradient's own grid-reuse logic (its header) needs them too
-   ! and must not look the name up twice under two different outcomes.
-   ! `refusal` comes back zero-length when nothing here objects.
-   !
    subroutine gradient_capability_check(cx, have_func, func, refusal, refusal_status)
+      !!
+      !! What trc_run_gradient refuses, factored out so trc_run_hessian can
+      !! make the SAME check up front -- before spending any SCF time on a
+      !! displacement loop that would fail at the first gradient anyway. Also
+      !! resolves cx%opts%functional into `func`/`have_func`, since
+      !! trc_run_gradient's own grid-reuse logic (its header) needs them too
+      !! and must not look the name up twice under two different outcomes.
+      !! `refusal` comes back zero-length when nothing here objects.
+      !!
       type(context_box), intent(in) :: cx
       logical, intent(out) :: have_func
       type(trc_xc_functional_t), intent(out) :: func
@@ -4979,27 +4980,27 @@ contains
       end if
    end subroutine gradient_capability_check
 
-   !
-   ! Move one atom's basis centre to `r` in a basis already built --
-   ! EVERY shell whose sh_at (trc_api.F90's own exact-match shell->atom
-   ! map, set by basis_build/basis_from_libcint regardless of which
-   ! trc_set_basis_*/trc_set_aux_*/trc_set_jkfit_* path built it) equals
-   ! `atom_idx`, plus the basis's own at_r(:,atom_idx) -- rather than
-   ! rebuilding the basis from its JSON/libcint/array source. This is the
-   ! cheap, source-independent route trc_run_hessian's displacement loop
-   ! needs 6N times per Hessian: exponents and contraction coefficients
-   ! never depend on an atom's position, only the centre each shell is
-   ! built on does, so moving it is exact, not an approximation of a
-   ! rebuild. A shell with sh_at == 0 (a ghost/probe function, sapcmp's
-   ! far-field check -- trc_api.F90's own comment) is left alone: it is
-   ! not ON any molecule atom, so no displacement of one moves it.
-   !
-   ! `!$acc update device` when this basis is device-resident, which on a
-   ! GPU build it always is (take_basis calls to_device): the kernels must
-   ! not read a device copy that still holds the OLD centre under -acc's
-   ! separate memory.
-   !
    subroutine move_basis_centre(b, atom_index, r)
+      !!
+      !! Move one atom's basis centre to `r` in a basis already built --
+      !! EVERY shell whose sh_at (trc_api.F90's own exact-match shell->atom
+      !! map, set by basis_build/basis_from_libcint regardless of which
+      !! trc_set_basis_*/trc_set_aux_*/trc_set_jkfit_* path built it) equals
+      !! `atom_idx`, plus the basis's own at_r(:,atom_idx) -- rather than
+      !! rebuilding the basis from its JSON/libcint/array source. This is the
+      !! cheap, source-independent route trc_run_hessian's displacement loop
+      !! needs 6N times per Hessian: exponents and contraction coefficients
+      !! never depend on an atom's position, only the centre each shell is
+      !! built on does, so moving it is exact, not an approximation of a
+      !! rebuild. A shell with sh_at == 0 (a ghost/probe function, sapcmp's
+      !! far-field check -- trc_api.F90's own comment) is left alone: it is
+      !! not ON any molecule atom, so no displacement of one moves it.
+      !!
+      !! `!$acc update device` when this basis is device-resident, which on a
+      !! GPU build it always is (take_basis calls to_device): the kernels must
+      !! not read a device copy that still holds the OLD centre under -acc's
+      !! separate memory.
+      !!
       type(trc_basis_t), intent(inout) :: b
       integer, intent(in) :: atom_index
       real(dp), intent(in) :: r(3)
@@ -5014,21 +5015,21 @@ contains
       end if
    end subroutine move_basis_centre
 
-   !
-   ! Move every atom of this context to `at_r` (3, natm) -- the orbital
-   ! basis, and the auxiliary/jkfit bases if present, all follow -- then
-   ! invalidate exactly as trc_set_molecule does for a geometry change:
-   ! the last SCF/gradient/polarizability/Hessian result, the DFT grid
-   ! cache (a NEW geometry's grid, not the old one, is what the next
-   ! trc_run_scf must build), and the --df fit (its metric and
-   ! three-centre tensor are geometry-dependent, same as
-   ! trc_set_molecule's own comment on `df_fit_ok`). Used only by
-   ! trc_run_hessian's displacement loop today; `cx%natm`/`cx%have_mol`
-   ! are unchanged (same molecule, same atom count and order), so unlike
-   ! trc_set_molecule this never touches `cx%at_z` or the PCM radii
-   ! override.
-   !
    subroutine hessian_set_geometry(cx, at_r)
+      !!
+      !! Move every atom of this context to `at_r` (3, natm) -- the orbital
+      !! basis, and the auxiliary/jkfit bases if present, all follow -- then
+      !! invalidate exactly as trc_set_molecule does for a geometry change:
+      !! the last SCF/gradient/polarizability/Hessian result, the DFT grid
+      !! cache (a NEW geometry's grid, not the old one, is what the next
+      !! trc_run_scf must build), and the --df fit (its metric and
+      !! three-centre tensor are geometry-dependent, same as
+      !! trc_set_molecule's own comment on `df_fit_ok`). Used only by
+      !! trc_run_hessian's displacement loop today; `cx%natm`/`cx%have_mol`
+      !! are unchanged (same molecule, same atom count and order), so unlike
+      !! trc_set_molecule this never touches `cx%at_z` or the PCM radii
+      !! override.
+      !!
       type(context_box), intent(inout) :: cx
       real(dp), intent(in) :: at_r(:, :)
       integer :: a
@@ -6908,9 +6909,8 @@ contains
       end do
    end function c_path
 
-   ! ---- read back ---------------------------------------------------------
-
    function trc_cart_order() result(order_id) bind(c, name="trc_cart_order")
+      !! ---- read back ---------------------------------------------------------
       !! 0 (lexicographic) or 1 (gamess): the within-shell Cartesian order every
       !! AO-indexed array this API exchanges uses, fixed at compile time
       !! (TRC_CART_ORDER) and the same for every handle -- no handle argument,
@@ -8492,9 +8492,8 @@ contains
       end do
    end function timing_key
 
-   ! ---- borrowed handles for the Fock family ------------------------------
-
    function trc_context_basis(handle, basis) result(status) bind(c, name="trc_context_basis")
+      !! ---- borrowed handles for the Fock family ------------------------------
       !! The basis handle inside the context: BORROWED, never destroyed by
       !! the caller, valid until the context is destroyed or the basis reset.
       !! After a symmetric run whose results are reported in the input frame

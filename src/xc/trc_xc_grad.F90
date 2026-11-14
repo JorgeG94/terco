@@ -218,6 +218,7 @@ module trc_xc_grad
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_basis_types, only: trc_basis_t
+   use trc_cart, only: cart_ncart_of
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, &
                                  xc_eval_point_mgga, xc_eval_point_mgga_polar, &
@@ -366,11 +367,11 @@ module trc_xc_grad
 
 contains
 
-   !
-   ! An xc_grad_options_t from the caller's own optional settings, passed
-   ! straight through: an absent one keeps its default.
-   !
    function xc_grad_options(grid_level, grid_max_pts, rho_tol, grid_response, partition, grid_rotation) result(options)
+      !!
+      !! An xc_grad_options_t from the caller's own optional settings, passed
+      !! straight through: an absent one keeps its default.
+      !!
       integer, intent(in), optional :: grid_level, grid_max_pts
       real(dp), intent(in), optional :: grid_rotation(3, 3)
       real(dp), intent(in), optional :: rho_tol
@@ -393,14 +394,14 @@ contains
                "gemm", "points", "scatter", "partition deriv", "response"]
    end function xc_grad_step_names
 
-   !
-   ! The entry point that builds its own DFT quadrature at `b`'s geometry
-   ! (trc_scf_run keeps neither its grid nor its functional alive past
-   ! convergence, the same reason trc_scf_gradient rebuilds the pair list
-   ! and the ERI engine), then runs `xc_grad_add_on_grid` on it. Refuses
-   ! what it cannot do, and ADDS the result into `grad`.
-   !
    recursive subroutine xc_grad_add(b, lp, func, nspin, density, grad, options, timing)
+      !!
+      !! The entry point that builds its own DFT quadrature at `b`'s geometry
+      !! (trc_scf_run keeps neither its grid nor its functional alive past
+      !! convergence, the same reason trc_scf_gradient rebuilds the pair list
+      !! and the ERI engine), then runs `xc_grad_add_on_grid` on it. Refuses
+      !! what it cannot do, and ADDS the result into `grad`.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       type(trc_xc_functional_t), intent(in) :: func
@@ -452,15 +453,15 @@ contains
       deallocate (at_elem)
    end subroutine xc_grad_add
 
-   !
-   ! The XC gradient term on a grid the caller already has at this exact
-   ! geometry and settings, batched and device-resident (trc_capi.F90's
-   ! `trc_run_gradient`, reusing the SCF's own grid cache: see
-   ! trc_scf_context.F90's `trc_grid_cache_t`; or `xc_grad_add`'s own).
-   ! No rebuild and no upload; `xg` stays the caller's. `options%partition`
-   ! must be the partition `xg`'s grid was built with. ADDS into `grad`.
-   !
    subroutine xc_grad_add_on_grid(b, lp, func, density, grad, options, timing, xg)
+      !!
+      !! The XC gradient term on a grid the caller already has at this exact
+      !! geometry and settings, batched and device-resident (trc_capi.F90's
+      !! `trc_run_gradient`, reusing the SCF's own grid cache: see
+      !! trc_scf_context.F90's `trc_grid_cache_t`; or `xc_grad_add`'s own).
+      !! No rebuild and no upload; `xg` stays the caller's. `options%partition`
+      !! must be the partition `xg`'s grid was built with. ADDS into `grad`.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       type(trc_xc_functional_t), intent(in) :: func
@@ -560,30 +561,30 @@ contains
       deallocate (at_elem)
    end subroutine xc_grad_add_on_grid
 
-   !
-   ! Every surviving batch, in chunks, the energy path's way (trc_xc.F90's
-   ! xc_drive): each batch's tiles are padded to (XC_NP_PAD, XC_NL_PAD)
-   ! multiples and stored in order of padded shape, so each run of equal
-   ! shape is ONE strided-batched GEMM, and every kernel is one launch over
-   ! the whole chunk. The workspace is sized once, for the largest chunk.
-   !
-   ! THE FORCE WITHOUT THE BIG GEMMS. The Pulay term contracts, for every
-   ! local function mu and direction k,
-   !
-   !     F_k(mu) = sum_nu D(mu,nu) sum_g [P_k(g,mu) chi_nu(g) + Q_k(g,mu) R_nu(g)]
-   !             = sum_g [P_k(g,mu) X(g,mu) + Q_k(g,mu) RD(g,mu)]
-   !
-   ! with X = chi D and RD = R D (D symmetric), so the (3 nloc x nloc)
-   ! GEMMs pall^T chi and q^T R and their D-contraction collapse to a
-   ! per-(point, function) product summed over the points. RD is the GEMM
-   ! the point-motion term already needed; X is the one the density needs.
-   ! P and Q are rebuilt from per-point coefficients (w, v_rho, v_sigma,
-   ! grad rho) instead of being stored as tiles three columns per function.
-   ! The point-motion term is the SAME per-(point, function) product summed
-   ! over the functions instead, landing on the point's owner with the
-   ! opposite sign -- this module's header, GRID RESPONSE, piece A.
-   !
    subroutine xc_grad_drive(b, lp, func, density, xg, grad, timing, points)
+      !!
+      !! Every surviving batch, in chunks, the energy path's way (trc_xc.F90's
+      !! xc_drive): each batch's tiles are padded to (XC_NP_PAD, XC_NL_PAD)
+      !! multiples and stored in order of padded shape, so each run of equal
+      !! shape is ONE strided-batched GEMM, and every kernel is one launch over
+      !! the whole chunk. The workspace is sized once, for the largest chunk.
+      !!
+      !! THE FORCE WITHOUT THE BIG GEMMS. The Pulay term contracts, for every
+      !! local function mu and direction k,
+      !!
+      !!     F_k(mu) = sum_nu D(mu,nu) sum_g [P_k(g,mu) chi_nu(g) + Q_k(g,mu) R_nu(g)]
+      !!             = sum_g [P_k(g,mu) X(g,mu) + Q_k(g,mu) RD(g,mu)]
+      !!
+      !! with X = chi D and RD = R D (D symmetric), so the (3 nloc x nloc)
+      !! GEMMs pall^T chi and q^T R and their D-contraction collapse to a
+      !! per-(point, function) product summed over the points. RD is the GEMM
+      !! the point-motion term already needed; X is the one the density needs.
+      !! P and Q are rebuilt from per-point coefficients (w, v_rho, v_sigma,
+      !! grad rho) instead of being stored as tiles three columns per function.
+      !! The point-motion term is the SAME per-(point, function) product summed
+      !! over the functions instead, landing on the point's owner with the
+      !! opposite sign -- this module's header, GRID RESPONSE, piece A.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       type(trc_xc_functional_t), intent(in) :: func
@@ -746,15 +747,15 @@ contains
       call timing%step_off(lp, ST_ALLOC, tc)
    end subroutine xc_grad_drive
 
-   !
-   ! The workspace at the largest chunk (xc_grad_drive's chunk plan), and
-   ! the AO -> atom map, built from the shell -> atom map `basis_build`
-   ! already produced (sh_at), the same map the two-electron and
-   ! one-electron gradients use. `work%nspin`/`is_gga` are set and
-   ! `work%active`/`npp`/`nlp`/`c_off`/`pr_off` filled; everything goes to
-   ! the device here, array by array.
-   !
    subroutine xc_grad_work_alloc(work, b, nchi_max, npairs_max, np_max, nb_max, nmu_max)
+      !!
+      !! The workspace at the largest chunk (xc_grad_drive's chunk plan), and
+      !! the AO -> atom map, built from the shell -> atom map `basis_build`
+      !! already produced (sh_at), the same map the two-electron and
+      !! one-electron gradients use. `work%nspin`/`is_gga` are set and
+      !! `work%active`/`npp`/`nlp`/`c_off`/`pr_off` filled; everything goes to
+      !! the device here, array by array.
+      !!
       type(xc_grad_work_t), intent(inout) :: work
       type(trc_basis_t), intent(in) :: b
       integer(int64), intent(in) :: nchi_max
@@ -766,7 +767,7 @@ contains
 
       allocate (work%ao_atom(b%nao))
       do ish = 1, b%nshell
-         do i = 0, (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2 - 1
+         do i = 0, cart_ncart_of(b%sh_l(ish)) - 1
             work%ao_atom(b%sh_ao(ish) + i) = b%sh_at(ish)
          end do
       end do
@@ -815,12 +816,12 @@ contains
       deallocate (work%fp, work%qp, work%eb, work%ord, work%pb_off, work%wk_off, work%mw_off)
    end subroutine xc_grad_work_release
 
-   !
-   ! Chunk b0..b1: its storage order (by padded shape) and the offsets in
-   ! that order -- tiles (point fastest), (u,v) pairs, collocation work
-   ! (shell, point), and force work (function) -- on host and device.
-   !
    subroutine xc_grad_work_layout(work, xg, b0, b1)
+      !!
+      !! Chunk b0..b1: its storage order (by padded shape) and the offsets in
+      !! that order -- tiles (point fastest), (u,v) pairs, collocation work
+      !! (shell, point), and force work (function) -- on host and device.
+      !!
       type(xc_grad_work_t), intent(inout) :: work
       type(trc_xc_grid_t), intent(in) :: xg
       integer, intent(in) :: b0, b1
@@ -860,11 +861,11 @@ contains
       !$acc        device(work%mw_off(1:nb+1))
    end subroutine xc_grad_work_layout
 
-   !
-   ! X = chi D, per spin, for the current chunk: one strided-batched GEMM
-   ! per run of equal padded shape.
-   !
    subroutine xc_grad_gemm_x(lp, work)
+      !!
+      !! X = chi D, per spin, for the current chunk: one strided-batched GEMM
+      !! per run of equal padded shape.
+      !!
       type(trc_linalg_t), intent(inout) :: lp
       type(xc_grad_work_t), intent(inout) :: work
       type(trc_gemm_batch_t) :: gemm_shape
@@ -886,11 +887,11 @@ contains
       end do
    end subroutine xc_grad_gemm_x
 
-   !
-   ! Y_j = (d chi/dx_j) D, per direction and spin, for the current chunk
-   ! (a meta-GGA only): tau's partner, as trc_xc.F90's energy path forms it.
-   !
    subroutine xc_grad_gemm_y(lp, work)
+      !!
+      !! Y_j = (d chi/dx_j) D, per direction and spin, for the current chunk
+      !! (a meta-GGA only): tau's partner, as trc_xc.F90's energy path forms it.
+      !!
       type(trc_linalg_t), intent(inout) :: lp
       type(xc_grad_work_t), intent(inout) :: work
       type(trc_gemm_batch_t) :: gemm_shape
@@ -915,11 +916,11 @@ contains
       end do
    end subroutine xc_grad_gemm_y
 
-   !
-   ! RD = R D and, unrestricted, the cross-spin R_b D_a / R_a D_b, for the
-   ! current chunk (a GGA only).
-   !
    subroutine xc_grad_gemm_rd(lp, work)
+      !!
+      !! RD = R D and, unrestricted, the cross-spin R_b D_a / R_a D_b, for the
+      !! current chunk (a GGA only).
+      !!
       type(trc_linalg_t), intent(inout) :: lp
       type(xc_grad_work_t), intent(inout) :: work
       type(trc_gemm_batch_t) :: gemm_shape
@@ -946,15 +947,15 @@ contains
       end do
    end subroutine xc_grad_gemm_rd
 
-   !
-   ! Host-side density screen, bounding rho on a batch through the same
-   ! per-function maxima (`xg%b_amax`) trc_xc.F90's xc_screen_body uses --
-   ! plain Fortran, not a device kernel, because `dens`'s host copy already
-   ! holds the right numbers (trc_scf_gradient's `!$acc update self(dens)`,
-   ! before this is ever called) and nloc is small enough that this costs
-   ! nothing next to the GEMMs a surviving batch pays for.
-   !
    logical function xc_grad_batch_active(ib, xg, nao, nspin, density, rtol) result(active)
+      !!
+      !! Host-side density screen, bounding rho on a batch through the same
+      !! per-function maxima (`xg%b_amax`) trc_xc.F90's xc_screen_body uses --
+      !! plain Fortran, not a device kernel, because `dens`'s host copy already
+      !! holds the right numbers (trc_scf_gradient's `!$acc update self(dens)`,
+      !! before this is ever called) and nloc is small enough that this costs
+      !! nothing next to the GEMMs a surviving batch pays for.
+      !!
       integer, intent(in) :: ib, nao, nspin
       type(trc_xc_grid_t), intent(in) :: xg
       real(dp), intent(in) :: density(nao, nao, nspin)
@@ -976,9 +977,9 @@ contains
       active = bound > rtol
    end function xc_grad_batch_active
 
-   ! The run of stored batches k0..k1 that share batch ord(k0)'s padded
-   ! shape (mp, ml).
    subroutine shape_run(k0, nb, ord, npp, nlp, k1, mp, ml)
+      !! The run of stored batches k0..k1 that share batch ord(k0)'s padded
+      !! shape (mp, ml).
       integer, intent(in) :: k0, nb
       integer, intent(in) :: ord(:), npp(:), nlp(:)
       integer, intent(out) :: k1, mp, ml
@@ -991,10 +992,10 @@ contains
       end do
    end subroutine shape_run
 
-   !
-   ! coef(g) = qw(g)*fxc(g): `coef` arrives holding qw, on the device.
-   !
    subroutine xc_grad_weight_coef(npts, fxc, coef)
+      !!
+      !! coef(g) = qw(g)*fxc(g): `coef` arrives holding qw, on the device.
+      !!
       integer, intent(in) :: npts
       real(dp), intent(in) :: fxc(npts)
       real(dp), intent(inout) :: coef(npts)
@@ -1004,9 +1005,9 @@ contains
       end do
    end subroutine xc_grad_weight_coef
 
-   ! Zero the tiles whose padding a GEMM reads: chi, R for a GGA, and
-   ! grad chi for a meta-GGA.
    subroutine xc_grad_zero(nchi, ldt, ldr, nspin, is_gga, is_mgga, chi, gchi, rt)
+      !! Zero the tiles whose padding a GEMM reads: chi, R for a GGA, and
+      !! grad chi for a meta-GGA.
       integer(int64), intent(in) :: nchi, ldt, ldr
       integer, intent(in) :: nspin
       logical, intent(in) :: is_gga, is_mgga
@@ -1032,13 +1033,13 @@ contains
       end if
    end subroutine xc_grad_zero
 
-   !
-   ! Which stored batch (1..nb, storage order) owns work item t: the last k
-   ! with off(k) < t, and t's 0-based position inside it. trc_xc.F90's
-   ! pair_batch, here because a `do concurrent` body calls only this
-   ! module's own routines.
-   !
    pure subroutine grad_item_batch(t, nb, off, k, tt)
+      !!
+      !! Which stored batch (1..nb, storage order) owns work item t: the last k
+      !! with off(k) < t, and t's 0-based position inside it. trc_xc.F90's
+      !! pair_batch, here because a `do concurrent` body calls only this
+      !! module's own routines.
+      !!
       !$acc routine seq
       integer, intent(in) :: t, nb
       integer, intent(in) :: off(nb + 1)
@@ -1058,14 +1059,14 @@ contains
       tt = t - off(k) - 1
    end subroutine grad_item_batch
 
-   !
-   ! Collocation into the chunk's padded tiles: one thread per (shell,
-   ! point) of every stored batch, point fastest, as trc_xc.F90's
-   ! xc_collocate, with the Hessian for a GGA.
-   !
    subroutine xc_grad_colloc_tiles(nwork, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
                                    npts, r, b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, ldt, &
                                    is_gga, ldh, nhs, chi, gchi, hchi)
+      !!
+      !! Collocation into the chunk's padded tiles: one thread per (shell,
+      !! point) of every stored batch, point fastest, as trc_xc.F90's
+      !! xc_collocate, with the Hessian for a GGA.
+      !!
       integer, intent(in) :: nwork, nb, maxnp, nshell, npts, nbsh, nbatch, nhs
       integer, intent(in) :: ord(nb), wk_off(nb + 1)
       integer, intent(in) :: sh_l(nshell), sh_np(nshell)
@@ -1178,13 +1179,13 @@ contains
       end do
    end subroutine xc_grad_colloc_tile2_body
 
-   !
-   ! The density slice of every stored batch, one thread per (b, u, v),
-   ! padding written as zero -- trc_xc.F90's xc_gather, with the leading
-   ! dimension of the (once-allocated) workspace passed in.
-   !
    subroutine xc_grad_gather_tiles(npairs, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, &
                                    nbatch, ldd, dloc)
+      !!
+      !! The density slice of every stored batch, one thread per (b, u, v),
+      !! padding written as zero -- trc_xc.F90's xc_gather, with the leading
+      !! dimension of the (once-allocated) workspace passed in.
+      !!
       integer, intent(in) :: npairs, nb, nspin, nao, nbao, nbatch, ldd
       integer, intent(in) :: ord(nb), pb_off(nb + 1)
       real(dp), intent(in) :: dmat(nao, nao, nspin)
@@ -1208,10 +1209,10 @@ contains
 #endif
    end subroutine xc_grad_gather_tiles
 
-   ! Stored batch k's density tiles, as xc_grad_gather_tile_body writes
-   ! them element by element.
    pure subroutine xc_grad_gather_batch(k, nb, ord, pb_off, nspin, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, &
                                         ldd, dloc)
+      !! Stored batch k's density tiles, as xc_grad_gather_tile_body writes
+      !! them element by element.
       !$acc routine seq
       integer, intent(in) :: k, nb, nspin, nao, nbao, nbatch, ldd
       integer, intent(in) :: ord(nb), pb_off(nb + 1)
@@ -1270,15 +1271,15 @@ contains
       end if
    end subroutine xc_grad_gather_tile_body
 
-   !
-   ! One thread per point of the chunk: rho and grad rho from X = chi D,
-   ! the functional, the point's coefficients for the force kernels (`pc`:
-   ! w, the potential's derivatives, grad rho per spin), its energy density
-   ! for the partition response, and, for a GGA, its row of
-   ! R_u = grad rho . grad chi_u, the tile R D is formed from.
-   !
    subroutine xc_grad_points(np, p0, nspin, is_gga, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, &
                              nbatch, nk, kid, coef, ldt, ldr, ldp, npc, chi, gchi, xt, rt, pc, fxc)
+      !!
+      !! One thread per point of the chunk: rho and grad rho from X = chi D,
+      !! the functional, the point's coefficients for the force kernels (`pc`:
+      !! w, the potential's derivatives, grad rho per spin), its energy density
+      !! for the partition response, and, for a GGA, its row of
+      !! R_u = grad rho . grad chi_u, the tile R D is formed from.
+      !!
       integer, intent(in) :: np, p0, nspin, npts, nbatch, nk, ldp, npc
       logical, intent(in) :: is_gga
       real(dp), intent(in) :: w(npts)
@@ -1370,15 +1371,15 @@ contains
       end if
    end subroutine xc_grad_point_body
 
-   !
-   ! xc_grad_points for a meta-GGA: tau per spin from its row of Y_j =
-   ! (d chi/dx_j) D, tau = 1/2 sum_u Y_u . grad chi_u (trc_xc.F90's
-   ! xc_point_mgga_body), the functional with tau, and vtau appended to
-   ! the point's coefficients (pc column 7 restricted, 13/14 unrestricted).
-   ! A separate kernel, so the LDA/GGA one compiles to what it did.
-   !
    subroutine xc_grad_points_mgga(np, p0, nspin, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, &
                                   nk, kid, coef, ldt, ldr, ldy, ldp, npc, chi, gchi, xt, yt, rt, pc, fxc)
+      !!
+      !! xc_grad_points for a meta-GGA: tau per spin from its row of Y_j =
+      !! (d chi/dx_j) D, tau = 1/2 sum_u Y_u . grad chi_u (trc_xc.F90's
+      !! xc_point_mgga_body), the functional with tau, and vtau appended to
+      !! the point's coefficients (pc column 7 restricted, 13/14 unrestricted).
+      !! A separate kernel, so the LDA/GGA one compiles to what it did.
+      !!
       integer, intent(in) :: np, p0, nspin, npts, nbatch, nk, ldp, npc
       real(dp), intent(in) :: w(npts)
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
@@ -1473,13 +1474,13 @@ contains
       end do
    end subroutine xc_grad_point_mgga_body
 
-   !
-   ! As xc_grad_points for a potential already evaluated on the grid
-   ! (restricted GGA): the point's coefficients copied from it, and its
-   ! row of R_u = grad rho . grad chi_u.
-   !
    subroutine xc_grad_points_ext(np, p0, npts, w, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, &
                                  ldt, ldr, ldp, npc, gchi, grho, vrho, vsigma, rt, pc)
+      !!
+      !! As xc_grad_points for a potential already evaluated on the grid
+      !! (restricted GGA): the point's coefficients copied from it, and its
+      !! row of R_u = grad rho . grad chi_u.
+      !!
       integer, intent(in) :: np, p0, npts, nbatch, ldp, npc
       real(dp), intent(in) :: w(npts), grho(3, npts), vrho(npts), vsigma(npts)
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
@@ -1528,22 +1529,22 @@ contains
       end do
    end subroutine xc_grad_point_ext_body
 
-   !
-   ! The force density of one (point, function) pair, e_k = sum_s
-   ! [P_sk X_s + Q1_sk RD_s + Q2_sk RDx_s], P and Q rebuilt from the point's
-   ! coefficients exactly as the per-point tiles used to hold them:
-   !
-   !   restricted   P_k = w (v_rho dchi_k + 2 v_sigma (grad rho . H)_k)
-   !                Q1_k = w 2 v_sigma dchi_k
-   !   unrestricted P_ak = w (v_a dchi_k + 2 v_aa (grad rho_a . H)_k + v_ab (grad rho_b . H)_k)
-   !                Q1_ak = w 2 v_aa dchi_k,  Q2_ak = w v_ab dchi_k   (b likewise)
-   !
-   ! with H packed xx, xy, xz, yy, yz, zz; an LDA keeps only the v_rho piece.
-   ! A meta-GGA adds, per spin, the tau term of this module's header,
-   !
-   !   w 1/2 vtau_s (H . Y_s)_k,   Y_s = (d chi/dx_j) D_s at this element.
-   !
    pure subroutine xc_grad_term(nspin, is_gga, is_mgga, pcv, gx, hx, x, rm, rx, y, e)
+      !!
+      !! The force density of one (point, function) pair, e_k = sum_s
+      !! [P_sk X_s + Q1_sk RD_s + Q2_sk RDx_s], P and Q rebuilt from the point's
+      !! coefficients exactly as the per-point tiles used to hold them:
+      !!
+      !!   restricted   P_k = w (v_rho dchi_k + 2 v_sigma (grad rho . H)_k)
+      !!                Q1_k = w 2 v_sigma dchi_k
+      !!   unrestricted P_ak = w (v_a dchi_k + 2 v_aa (grad rho_a . H)_k + v_ab (grad rho_b . H)_k)
+      !!                Q1_ak = w 2 v_aa dchi_k,  Q2_ak = w v_ab dchi_k   (b likewise)
+      !!
+      !! with H packed xx, xy, xz, yy, yz, zz; an LDA keeps only the v_rho piece.
+      !! A meta-GGA adds, per spin, the tau term of this module's header,
+      !!
+      !!   w 1/2 vtau_s (H . Y_s)_k,   Y_s = (d chi/dx_j) D_s at this element.
+      !!
       !$acc routine seq
       integer, intent(in) :: nspin
       logical, intent(in) :: is_gga, is_mgga
@@ -1603,33 +1604,33 @@ contains
       end if
    end subroutine xc_grad_term
 
-   !
-   ! The forces of one chunk: Pulay onto each function's atom and, with
-   ! `gresp`, point motion onto each point's owner. The same two sums of
-   ! xc_grad_term's force density, laid out for the device or the host.
-   !
-   ! DEVICE. The Pulay sum is one thread per (function, lane): the
-   ! XC_GRAD_LANES threads of a function walk its tile column, contiguous,
-   ! point fastest, at a stride of XC_GRAD_LANES points, so adjacent
-   ! threads read adjacent points and every load coalesces. One thread per
-   ! function put adjacent threads a padded column (npp) apart: w60/def2-SVP
-   ! PBE on a V100, 470 ms -> 39 ms over the gradient's 36 launches, 16 and
-   ! 64 lanes a little slower than 32. A second kernel sums each
-   ! function's lanes and scatters, atomic: functions of different batches
-   ! share atoms. The point-motion sum stays one thread per point
-   ! (xc_grad_pointmotion), whose adjacent threads read adjacent points.
-   !
-   ! HOST. One iteration per stored batch walks each function's column once
-   ! and adds every (point, function) density into both sums, the
-   ! function's (Pulay) and the point's (point motion), so the density is
-   ! formed once and from contiguous loads. The device's point-motion form,
-   ! a point at a time across its functions a padded column apart, is what
-   ! made the host's force step 3.8 s at w20/def2-SVP PBE (0.5 s now).
-   ! Iterations write disjoint slices of fp, qp and eb (a batch's own
-   ! functions and points), so only the scatter onto atoms is a plain loop,
-   ! as xc_scatter's is. Every sum runs in the device's one-lane order.
-   !
    subroutine xc_grad_forces(work, b, xg, gresp, grad)
+      !!
+      !! The forces of one chunk: Pulay onto each function's atom and, with
+      !! `gresp`, point motion onto each point's owner. The same two sums of
+      !! xc_grad_term's force density, laid out for the device or the host.
+      !!
+      !! DEVICE. The Pulay sum is one thread per (function, lane): the
+      !! XC_GRAD_LANES threads of a function walk its tile column, contiguous,
+      !! point fastest, at a stride of XC_GRAD_LANES points, so adjacent
+      !! threads read adjacent points and every load coalesces. One thread per
+      !! function put adjacent threads a padded column (npp) apart: w60/def2-SVP
+      !! PBE on a V100, 470 ms -> 39 ms over the gradient's 36 launches, 16 and
+      !! 64 lanes a little slower than 32. A second kernel sums each
+      !! function's lanes and scatters, atomic: functions of different batches
+      !! share atoms. The point-motion sum stays one thread per point
+      !! (xc_grad_pointmotion), whose adjacent threads read adjacent points.
+      !!
+      !! HOST. One iteration per stored batch walks each function's column once
+      !! and adds every (point, function) density into both sums, the
+      !! function's (Pulay) and the point's (point motion), so the density is
+      !! formed once and from contiguous loads. The device's point-motion form,
+      !! a point at a time across its functions a padded column apart, is what
+      !! made the host's force step 3.8 s at w20/def2-SVP PBE (0.5 s now).
+      !! Iterations write disjoint slices of fp, qp and eb (a batch's own
+      !! functions and points), so only the scatter onto atoms is a plain loop,
+      !! as xc_scatter's is. Every sum runs in the device's one-lane order.
+      !!
       type(xc_grad_work_t), intent(inout) :: work
       !! The current chunk, its X (xt), RD (rd, rdx) and point
       !! coefficients (pc) formed; fp/qp/eb are its scratch.
@@ -1684,12 +1685,12 @@ contains
    end subroutine xc_grad_forces
 
 #ifdef TRC_DEVICE
-   !
-   ! DEVICE, the Pulay sum's first kernel: one thread per (function, lane)
-   ! into fp's row t.
-   !
    subroutine xc_grad_pulay_lanes(nmu, nb, ord, mw_off, nspin, is_gga, is_mgga, p0, b_off, c_off, npp, nbatch, ldt, &
                                   ldh, nhs, ldr, ldx, ldy, npc, gchi, hchi, xt, rd, rdx, yt, ldp, pc, ldf, fp)
+      !!
+      !! DEVICE, the Pulay sum's first kernel: one thread per (function, lane)
+      !! into fp's row t.
+      !!
       integer, intent(in) :: nmu, nb, nspin, p0, nbatch, nhs, npc, ldp, ldf
       logical, intent(in) :: is_gga, is_mgga
       integer, intent(in) :: ord(nb), mw_off(nb + 1), b_off(nbatch + 1), c_off(nbatch + 1), npp(nbatch)
@@ -1710,13 +1711,13 @@ contains
       end do
    end subroutine xc_grad_pulay_lanes
 
-   !
-   ! DEVICE, the Pulay sum's second kernel: each function's lanes summed
-   ! and added onto its atom, atomic -- functions of different batches
-   ! share atoms.
-   !
    subroutine xc_grad_pulay_scatter(nmu, nb, ord, mw_off, b_aooff, nbao, b_ao, nao, ao_atom, nbatch, ldf, fp, &
                                     natm, grad)
+      !!
+      !! DEVICE, the Pulay sum's second kernel: each function's lanes summed
+      !! and added onto its atom, atomic -- functions of different batches
+      !! share atoms.
+      !!
       integer, intent(in) :: nmu, nb, nbao, nao, nbatch, ldf, natm
       integer, intent(in) :: ord(nb), mw_off(nb + 1), b_aooff(nbatch + 1), b_ao(nbao), ao_atom(nao)
       real(dp), intent(in) :: fp(ldf, 3)
@@ -1736,13 +1737,13 @@ contains
    end subroutine xc_grad_pulay_scatter
 
 #else
-   !
-   ! HOST, every stored batch's force partials (xc_grad_force_batch): the
-   ! iterations write disjoint rows of fp, qp and eb.
-   !
    subroutine xc_grad_force_batches(nb, ord, mw_off, nspin, is_gga, is_mgga, gresp, p0, b_off, c_off, npp, nbatch, &
                                     ldt, ldh, nhs, ldr, ldx, ldy, npc, gchi, hchi, xt, rd, rdx, yt, ldp, pc, ldf, fp, &
                                     ldq, qp, eb)
+      !!
+      !! HOST, every stored batch's force partials (xc_grad_force_batch): the
+      !! iterations write disjoint rows of fp, qp and eb.
+      !!
       integer, intent(in) :: nb, nspin, p0, nbatch, nhs, npc, ldp, ldf, ldq
       logical, intent(in) :: is_gga, is_mgga, gresp
       integer, intent(in) :: ord(nb), mw_off(nb + 1), b_off(nbatch + 1), c_off(nbatch + 1), npp(nbatch)
@@ -1761,13 +1762,13 @@ contains
    end subroutine xc_grad_force_batches
 #endif
 
-   !
-   ! One (function, lane) of the device's Pulay sum: lane l of function m
-   ! (t = (m-1) XC_GRAD_LANES + l) sums the force density over the points
-   ! l, l + XC_GRAD_LANES, ... of m's batch.
-   !
    pure subroutine xc_grad_pulay_lane(t, nb, ord, mw_off, nspin, is_gga, is_mgga, p0, b_off, c_off, npp, nbatch, ldt, &
                                       ldh, nhs, ldr, ldx, ldy, npc, gchi, hchi, xt, rd, rdx, yt, ldp, pc, f)
+      !!
+      !! One (function, lane) of the device's Pulay sum: lane l of function m
+      !! (t = (m-1) XC_GRAD_LANES + l) sums the force density over the points
+      !! l, l + XC_GRAD_LANES, ... of m's batch.
+      !!
       !$acc routine seq
       integer, intent(in) :: t, nb, nspin, p0, nbatch, nhs, npc, ldp
       logical, intent(in) :: is_gga, is_mgga
@@ -1791,11 +1792,11 @@ contains
                               ldy, npc, gchi, hchi, xt, rd, rdx, yt, ldp, pc, f)
    end subroutine xc_grad_pulay_lane
 
-   !
-   ! Function m's lanes summed, -2 x that, and the atom m sits on.
-   !
    pure subroutine xc_grad_pulay_sum(m, nb, ord, mw_off, b_aooff, nbao, b_ao, nao, ao_atom, nbatch, ldf, fp, &
                                      f, at)
+      !!
+      !! Function m's lanes summed, -2 x that, and the atom m sits on.
+      !!
       !$acc routine seq
       integer, intent(in) :: m, nb, nbao, nao, nbatch, ldf
       integer, intent(in) :: ord(nb), mw_off(nb + 1), b_aooff(nbatch + 1), b_ao(nbao), ao_atom(nao)
@@ -1818,14 +1819,14 @@ contains
       f(3) = -2.0_dp*f(3)
    end subroutine xc_grad_pulay_sum
 
-   !
-   ! The force density of one function, summed over the points
-   ! first, first + stride, ... (1-based, at most npb) of its tile column,
-   ! which starts after element `col`; point gl's coefficients are pc's row
-   ! lg0 + gl.
-   !
    pure subroutine xc_grad_column_sum(first, stride, npb, col, lg0, nspin, is_gga, is_mgga, ldt, ldh, nhs, ldr, ldx, &
                                       ldy, npc, gchi, hchi, xt, rd, rdx, yt, ldp, pc, f)
+      !!
+      !! The force density of one function, summed over the points
+      !! first, first + stride, ... (1-based, at most npb) of its tile column,
+      !! which starts after element `col`; point gl's coefficients are pc's row
+      !! lg0 + gl.
+      !!
       !$acc routine seq
       integer, intent(in) :: first, stride, npb, lg0, nspin, nhs, npc, ldp
       integer(int64), intent(in) :: col, ldt, ldh, ldr, ldx, ldy
@@ -1856,16 +1857,16 @@ contains
       end do
    end subroutine xc_grad_column_sum
 
-   !
-   ! The host's per-batch form (xc_grad_forces, HOST): batch k's functions
-   ! into fp's rows mw_off(k) + 1.., -2 x their sums, and, with `gresp`,
-   ! its points into qp's rows b_off - p0 + 1.., 2 x theirs. A column's
-   ! densities go through eb's rows for those points first, so the loop
-   ! that forms them carries no sum and vectorises.
-   !
    pure subroutine xc_grad_force_batch(k, nb, ord, mw_off, nspin, is_gga, is_mgga, gresp, p0, b_off, c_off, npp, &
                                        nbatch, ldt, ldh, nhs, ldr, ldx, ldy, npc, gchi, hchi, xt, rd, rdx, yt, ldp, &
                                        pc, ldf, fp, ldq, qp, eb)
+      !!
+      !! The host's per-batch form (xc_grad_forces, HOST): batch k's functions
+      !! into fp's rows mw_off(k) + 1.., -2 x their sums, and, with `gresp`,
+      !! its points into qp's rows b_off - p0 + 1.., 2 x theirs. A column's
+      !! densities go through eb's rows for those points first, so the loop
+      !! that forms them carries no sum and vectorises.
+      !!
       !$acc routine seq
       integer, intent(in) :: k, nb, nspin, p0, nbatch, nhs, npc, ldp, ldf, ldq
       logical, intent(in) :: is_gga, is_mgga, gresp
@@ -1940,10 +1941,10 @@ contains
       end if
    end subroutine xc_grad_force_batch
 
-   ! One function's force density at each of its batch's npb points, into
-   ! eb's rows lg0 + 1...
    pure subroutine xc_grad_column(nspin, is_gga, is_mgga, npc, npb, col, lg0, ldt, ldh, nhs, ldr, ldx, ldy, gchi, &
                                   hchi, xt, rd, rdx, yt, ldp, pc, ldq, eb)
+      !! One function's force density at each of its batch's npb points, into
+      !! eb's rows lg0 + 1...
       !$acc routine seq
       integer, intent(in) :: nspin, npc, npb, lg0, nhs, ldp, ldq
       logical, intent(in) :: is_gga, is_mgga
@@ -2002,11 +2003,11 @@ contains
       end do
    end subroutine xc_grad_column
 
-   !
-   ! What xc_grad_term reads for tile element i, point row lg of pc.
-   !
    pure subroutine xc_grad_load(i, lg, nspin, is_gga, is_mgga, ldt, ldh, nhs, ldr, ldx, ldy, npc, gchi, hchi, xt, &
                                 rd, rdx, yt, ldp, pc, pcv, gx, hx, x, rm, rx, y)
+      !!
+      !! What xc_grad_term reads for tile element i, point row lg of pc.
+      !!
       !$acc routine seq
       integer(int64), intent(in) :: i, ldt, ldh, ldr, ldx, ldy
       integer, intent(in) :: lg, nspin, nhs, npc, ldp
@@ -2040,14 +2041,14 @@ contains
       end do
    end subroutine xc_grad_load
 
-   !
-   ! GRID RESPONSE, point-motion piece (this module's header, A): the same
-   ! force density summed over the point's local functions instead, +2 x
-   ! that onto the atom that OWNS the point. One thread per point, atomic.
-   !
    subroutine xc_grad_pointmotion(np, p0, nspin, is_gga, is_mgga, npts, g_atom, batch_of, b_off, b_aooff, c_off, npp, &
                                   active, nbatch, ldt, ldh, nhs, ldr, ldx, ldy, npc, gchi, hchi, xt, rd, rdx, yt, pc, &
                                   ldp, natm, grad)
+      !!
+      !! GRID RESPONSE, point-motion piece (this module's header, A): the same
+      !! force density summed over the point's local functions instead, +2 x
+      !! that onto the atom that OWNS the point. One thread per point, atomic.
+      !!
       integer, intent(in) :: np, p0, nspin, npts, nbatch, npc, ldp, natm, nhs
       logical, intent(in) :: is_gga, is_mgga
       integer, intent(in) :: g_atom(npts), batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1)

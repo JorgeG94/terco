@@ -17,15 +17,15 @@ submodule (trc_run) trc_run_opt
 
 contains
 
-   !
-   ! Per-atom masses for --hessian's vibrational analysis: "isotope"
-   ! (trc_atomic_mass, the most-abundant isotope -- the CLI's own
-   ! default) or "average" (trc_atomic_mass_average, the isotope-averaged
-   ! standard atomic weight). `kind` is already lower-cased by the
-   ! caller; anything else is a programming error (the CLI validates
-   ! --masses before this is ever called).
-   !
    module subroutine run_build_masses(z, kind, mass, err)
+      !!
+      !! Per-atom masses for --hessian's vibrational analysis: "isotope"
+      !! (trc_atomic_mass, the most-abundant isotope -- the CLI's own
+      !! default) or "average" (trc_atomic_mass_average, the isotope-averaged
+      !! standard atomic weight). `kind` is already lower-cased by the
+      !! caller; anything else is a programming error (the CLI validates
+      !! --masses before this is ever called).
+      !!
       integer, intent(in) :: z(:)
       character(len=*), intent(in) :: kind
       real(dp), allocatable, intent(out) :: mass(:)
@@ -42,21 +42,21 @@ contains
       end do
    end subroutine run_build_masses
 
-   !
-   ! Whether this run's method has a gradient at all, checked BEFORE any
-   ! SCF runs: every one of these conditions is already known from the
-   ! command line alone, so there is no need to spend an SCF on a probe
-   ! gradient just to find out (DL-FIND has no graceful way to decline a
-   ! run whose first evaluation fails). For --rimp2 and a double hybrid
-   ! the part of trc_run_gradient's own gradient_capability_check
-   ! (src/api/trc_capi.F90) a command line already settles --
-   ! rimp2_grad_reference_refusal, the same function and so the same
-   ! message; every step then reruns trc_run_rimp2 after its SCF
-   ! (trc_opt_options_t%rimp2), so the energy and gradient DL-FIND sees
-   ! are the correlated total's. Returns "" when a gradient is available,
-   ! the refusal message otherwise.
-   !
    module function run_opt_capability_check(r) result(refusal)
+      !!
+      !! Whether this run's method has a gradient at all, checked BEFORE any
+      !! SCF runs: every one of these conditions is already known from the
+      !! command line alone, so there is no need to spend an SCF on a probe
+      !! gradient just to find out (DL-FIND has no graceful way to decline a
+      !! run whose first evaluation fails). For --rimp2 and a double hybrid
+      !! the part of trc_run_gradient's own gradient_capability_check
+      !! (src/api/trc_capi.F90) a command line already settles --
+      !! rimp2_grad_reference_refusal, the same function and so the same
+      !! message; every step then reruns trc_run_rimp2 after its SCF
+      !! (trc_opt_options_t%rimp2), so the energy and gradient DL-FIND sees
+      !! are the correlated total's. Returns "" when a gradient is available,
+      !! the refusal message otherwise.
+      !!
       type(run_t), intent(in) :: r
       character(len=:), allocatable :: refusal
       type(trc_xc_functional_t) :: func
@@ -85,26 +85,26 @@ contains
       ! the searches that would ask for it, once --opt-init-hessian is parsed.
    end function run_opt_capability_check
 
-   !
-   ! Whether the start geometry is linear, for --opt-zero-modes' own
-   ! auto-default (5 for a linear molecule's Cartesian P-RFO/NR/dimer
-   ! search, 6 otherwise -- DL-FIND's own zero-mode count for the rigid
-   ! translations/rotations a Cartesian search carries). Reuses
-   ! trc_vib's own moment-of-inertia rotor test (trc_vib_rotor,
-   ! MOMENT_LINEAR_TOL_AMUA2) rather than a separate geometric criterion,
-   ! so "linear" means the same thing everywhere in terco: trc_thermo's
-   ! own is_atom/is_linear picks its rotor formulas from the SAME
-   ! threshold, and this and that can never disagree on the same
-   ! geometry. trc_vib_rotor needs only masses and Cartesian coordinates,
-   ! no Hessian -- what this is available with at --opt's own start.
-   !
-   ! This runs ONCE, on the start geometry: DL-FIND's own interface takes
-   ! `nzero` as a fixed parameter at cb_get_params (called once, before
-   ! the search begins, see trc_dlfind_bridge), so a search that bends a
-   ! started-linear molecule (or straightens a bent one) cannot have its
-   ! zero-mode count re-evaluated mid-search through that interface.
-   !
    module function run_opt_geometry_is_linear(natm, z, xyz, err) result(linear)
+      !!
+      !! Whether the start geometry is linear, for --opt-zero-modes' own
+      !! auto-default (5 for a linear molecule's Cartesian P-RFO/NR/dimer
+      !! search, 6 otherwise -- DL-FIND's own zero-mode count for the rigid
+      !! translations/rotations a Cartesian search carries). Reuses
+      !! trc_vib's own moment-of-inertia rotor test (trc_vib_rotor,
+      !! MOMENT_LINEAR_TOL_AMUA2) rather than a separate geometric criterion,
+      !! so "linear" means the same thing everywhere in terco: trc_thermo's
+      !! own is_atom/is_linear picks its rotor formulas from the SAME
+      !! threshold, and this and that can never disagree on the same
+      !! geometry. trc_vib_rotor needs only masses and Cartesian coordinates,
+      !! no Hessian -- what this is available with at --opt's own start.
+      !!
+      !! This runs ONCE, on the start geometry: DL-FIND's own interface takes
+      !! `nzero` as a fixed parameter at cb_get_params (called once, before
+      !! the search begins, see trc_dlfind_bridge), so a search that bends a
+      !! started-linear molecule (or straightens a bent one) cannot have its
+      !! zero-mode count re-evaluated mid-search through that interface.
+      !!
       integer, intent(in) :: natm
       integer, intent(in) :: z(natm)
       real(dp), intent(in) :: xyz(3, natm)
@@ -118,20 +118,20 @@ contains
       call trc_vib_rotor(mass, xyz, linear, n_tr, info)
    end function run_opt_geometry_is_linear
 
-   !
-   ! Connected components of the covalent-bond graph (Cordero radii,
-   ! trc_constants%trc_covalent_radius, bond threshold 1.3x the sum of two
-   ! atoms' radii), 1-based, for --opt-coords hdlc's `residues`: one
-   ! residue per covalently bonded molecule, so HDLC builds internal
-   ! coordinates within each and Cartesians between them. --opt-coords
-   ! cartesian/dlc never calls this -- trc_dlfind_bridge's driver takes
-   ! all-ones directly, which is correct for cartesian and for a single
-   ! bonded molecule in dlc (a multi-fragment cluster in pure dlc fails
-   ! inside DL-FIND itself with "cyclic failure at residue 1" -- fixing
-   ! that would need a real multi-residue partition for dlc too, out of
-   ! scope here).
-   !
    module subroutine run_build_opt_residues(natm, z, xyz, residues, err)
+      !!
+      !! Connected components of the covalent-bond graph (Cordero radii,
+      !! trc_constants%trc_covalent_radius, bond threshold 1.3x the sum of two
+      !! atoms' radii), 1-based, for --opt-coords hdlc's `residues`: one
+      !! residue per covalently bonded molecule, so HDLC builds internal
+      !! coordinates within each and Cartesians between them. --opt-coords
+      !! cartesian/dlc never calls this -- trc_dlfind_bridge's driver takes
+      !! all-ones directly, which is correct for cartesian and for a single
+      !! bonded molecule in dlc (a multi-fragment cluster in pure dlc fails
+      !! inside DL-FIND itself with "cyclic failure at residue 1" -- fixing
+      !! that would need a real multi-residue partition for dlc too, out of
+      !! scope here).
+      !!
       integer, intent(in) :: natm
       integer, intent(in) :: z(natm)
       real(dp), intent(in) :: xyz(3, natm)
@@ -175,21 +175,21 @@ contains
       end do
    end subroutine run_build_opt_residues
 
-   !
-   ! --opt-seed and --opt-global-*: refused unless --opt-algorithm is
-   ! stochastic or genetic (r%opt_is_global, set above), so a command
-   ! line that asks for a global-search parameter without the search
-   ! that reads it never means something different from what it says --
-   ! the same convention --opt-algorithm itself follows against
-   ! --opt-target saddle. Validated here (positive, and distribution in
-   ! DL-FIND's own {1,2,3}) rather than left for trc_dlfind_bridge to
-   ! pass straight through to libdlfind. --opt-seed alone is ALSO
-   ! accepted for --opt-saddle-method dimer: trc_dlfind_bridge seeds the
-   ! Fortran intrinsic generator dlf_dimer.f90's own random_number(
-   ! glob%xcoords2) reads, the only way to make that initial direction
-   ! reproducible (that module's own header).
-   !
    module subroutine run_parse_opt_global_options(r)
+      !!
+      !! --opt-seed and --opt-global-*: refused unless --opt-algorithm is
+      !! stochastic or genetic (r%opt_is_global, set above), so a command
+      !! line that asks for a global-search parameter without the search
+      !! that reads it never means something different from what it says --
+      !! the same convention --opt-algorithm itself follows against
+      !! --opt-target saddle. Validated here (positive, and distribution in
+      !! DL-FIND's own {1,2,3}) rather than left for trc_dlfind_bridge to
+      !! pass straight through to libdlfind. --opt-seed alone is ALSO
+      !! accepted for --opt-saddle-method dimer: trc_dlfind_bridge seeds the
+      !! Fortran intrinsic generator dlf_dimer.f90's own random_number(
+      !! glob%xcoords2) reads, the only way to make that initial direction
+      !! reproducible (that module's own header).
+      !!
       type(run_t), intent(inout) :: r
       integer, parameter :: ALG_STOCHASTIC = 51, ALG_GENETIC = 52
          !! trc_dlfind_bridge's own TRC_OPT_ALG_STOCHASTIC/GENETIC values,
@@ -346,14 +346,14 @@ contains
       end do
    end subroutine run_parse_charges
 
-   !
-   ! --opt-frozen "1-3,7": a comma-separated list of 1-based atom indices
-   ! and ranges, into a sorted array with no duplicates. Validated here
-   ! (range, at least one atom) so an out-of-range index is refused before
-   ! trc_dlfind_optimize ever runs, the same convention every other --opt-*
-   ! validation in this file follows.
-   !
    module subroutine run_parse_frozen_list(spec, natm, frozen, err)
+      !!
+      !! --opt-frozen "1-3,7": a comma-separated list of 1-based atom indices
+      !! and ranges, into a sorted array with no duplicates. Validated here
+      !! (range, at least one atom) so an out-of-range index is refused before
+      !! trc_dlfind_optimize ever runs, the same convention every other --opt-*
+      !! validation in this file follows.
+      !!
       character(len=*), intent(in) :: spec
       integer, intent(in) :: natm
       integer, allocatable, intent(out) :: frozen(:)
@@ -414,21 +414,21 @@ contains
       end do
    end subroutine run_parse_frozen_list
 
-   !
-   ! --opt-constrain "angle 1 2 3; bond 2 4": a ';'-separated list (pic_cli's
-   ! own options are single-valued -- its header comment, "the last
-   ! occurrence wins" -- so a repeatable CLI flag is not how this bridge
-   ! takes more than one constraint). Each entry is "<type> <atoms...>":
-   ! bond i j; angle i j k (j is the vertex); torsion i j k l (j-k is the
-   ! central bond); cartesian i (expanded to all three components by
-   ! trc_dlfind_bridge%build_icons); bond-difference i j k (bond(i,j) -
-   ! bond(j,k) -- VERIFIED from libdlfind's dlf_hdlc_constraint.f90%
-   ! assign_cons directly: this type uses three atoms, not four). The
-   ! parallel arrays returned are trc_dlfind_bridge's own TRC_OPT_CONS_*
-   ! values (1..5) by construction -- see run_t%opt_cons_kind's own comment
-   ! for why this module cannot just import that enum.
-   !
    module subroutine run_parse_constraints(spec, natm, cons_kind, cons_a, cons_b, cons_c, cons_d, err)
+      !!
+      !! --opt-constrain "angle 1 2 3; bond 2 4": a ';'-separated list (pic_cli's
+      !! own options are single-valued -- its header comment, "the last
+      !! occurrence wins" -- so a repeatable CLI flag is not how this bridge
+      !! takes more than one constraint). Each entry is "<type> <atoms...>":
+      !! bond i j; angle i j k (j is the vertex); torsion i j k l (j-k is the
+      !! central bond); cartesian i (expanded to all three components by
+      !! trc_dlfind_bridge%build_icons); bond-difference i j k (bond(i,j) -
+      !! bond(j,k) -- VERIFIED from libdlfind's dlf_hdlc_constraint.f90%
+      !! assign_cons directly: this type uses three atoms, not four). The
+      !! parallel arrays returned are trc_dlfind_bridge's own TRC_OPT_CONS_*
+      !! values (1..5) by construction -- see run_t%opt_cons_kind's own comment
+      !! for why this module cannot just import that enum.
+      !!
       character(len=*), intent(in) :: spec
       integer, intent(in) :: natm
       integer, allocatable, intent(out) :: cons_kind(:), cons_a(:), cons_b(:), cons_c(:), cons_d(:)
@@ -536,17 +536,17 @@ contains
       allocate (cons_d(ncons), source=found_d(1:ncons))
    end subroutine run_parse_constraints
 
-   !
-   ! Checks every --opt-constrain entry against the HDLC residue
-   ! partition and the --opt-frozen list, both only known once the
-   ! geometry-dependent residues are built (trc_constants%trc_covalent_
-   ! radius-based, build_opt_residues) -- run_parse_constraints above only
-   ! has `natm`, so a syntactically valid entry can still name two atoms
-   ! DL-FIND's own assign_cons would refuse once it ran. `die`s on the
-   ! first bad entry, the same convention every other --opt-* validation
-   ! in this file follows.
-   !
    module subroutine run_check_opt_constrain_residues(r, opt_residues)
+      !!
+      !! Checks every --opt-constrain entry against the HDLC residue
+      !! partition and the --opt-frozen list, both only known once the
+      !! geometry-dependent residues are built (trc_constants%trc_covalent_
+      !! radius-based, build_opt_residues) -- run_parse_constraints above only
+      !! has `natm`, so a syntactically valid entry can still name two atoms
+      !! DL-FIND's own assign_cons would refuse once it ran. `die`s on the
+      !! first bad entry, the same convention every other --opt-* validation
+      !! in this file follows.
+      !!
       type(run_t), intent(in) :: r
       integer, intent(in) :: opt_residues(:)
       integer, parameter :: N_CONS_KINDS = 5   !! TRC_OPT_CONS_{BOND,ANGLE,TORSION,CARTESIAN,BOND_DIFF}
@@ -577,14 +577,14 @@ contains
       end do
    end subroutine run_check_opt_constrain_residues
 
-   !
-   ! --opt-neb <endpoint.xyz>: the product geometry must have the SAME
-   ! atoms in the SAME order as the start geometry -- DL-FIND's own
-   ! coords2 is a flat Cartesian array with no atom labels of its own, so a
-   ! silently reordered or substituted atom would just move the wrong
-   ! nucleus. Checked element-by-element rather than just atom count.
-   !
    module subroutine run_check_neb_endpoint(natm, z, z2, natm2, err, what)
+      !!
+      !! --opt-neb <endpoint.xyz>: the product geometry must have the SAME
+      !! atoms in the SAME order as the start geometry -- DL-FIND's own
+      !! coords2 is a flat Cartesian array with no atom labels of its own, so a
+      !! silently reordered or substituted atom would just move the wrong
+      !! nucleus. Checked element-by-element rather than just atom count.
+      !!
       integer, intent(in) :: natm, natm2
       integer, intent(in) :: z(natm), z2(natm2)
       type(error_t), intent(inout) :: err
@@ -610,15 +610,15 @@ contains
       end do
    end subroutine run_check_neb_endpoint
 
-   !
-   ! --opt-neb-via <file.xyz>: one or more xyz FRAMES, standard multi-frame
-   ! xyz (each frame is its own "natm / title / natm atom lines" block,
-   ! concatenated -- the same convention write_traj_xyz already writes),
-   ! read until end of file. Each frame's own atom count/order is checked
-   ! against the start geometry by the caller (run_check_neb_endpoint, above),
-   ! not here -- this only parses.
-   !
    module subroutine run_read_xyz_frames(path, natm, z, nframes, xyz, err)
+      !!
+      !! --opt-neb-via <file.xyz>: one or more xyz FRAMES, standard multi-frame
+      !! xyz (each frame is its own "natm / title / natm atom lines" block,
+      !! concatenated -- the same convention write_traj_xyz already writes),
+      !! read until end of file. Each frame's own atom count/order is checked
+      !! against the start geometry by the caller (run_check_neb_endpoint, above),
+      !! not here -- this only parses.
+      !!
       character(len=*), intent(in) :: path
       integer, intent(in) :: natm
       integer, intent(in) :: z(natm)
@@ -702,13 +702,13 @@ contains
       allocate (xyz(3, natm, nframes), source=frames_read(:, :, 1:nframes))
    end subroutine run_read_xyz_frames
 
-   !
-   ! `<geometry base>_neb.xyz`: the converged NEB path, one frame per image
-   ! (both endpoints included), Angstrom, comment line carries the image
-   ! index and energy, with the climbing/highest-energy image marked, so
-   ! the whole path can be inspected or animated without re-running DL-FIND.
-   !
    module subroutine run_write_neb_path_xyz(r, path)
+      !!
+      !! `<geometry base>_neb.xyz`: the converged NEB path, one frame per image
+      !! (both endpoints included), Angstrom, comment line carries the image
+      !! index and energy, with the climbing/highest-energy image marked, so
+      !! the whole path can be inspected or animated without re-running DL-FIND.
+      !!
       type(run_t), intent(in) :: r
       character(len=*), intent(in) :: path
       integer :: u, ia, k
@@ -727,14 +727,14 @@ contains
       close (u)
    end subroutine run_write_neb_path_xyz
 
-   !
-   ! The optimisation's own final summary: converged or not, steps,
-   ! energy evaluations and the final energy.
-   ! Per-step lines (energy, max/rms |g|, SCF iterations, wall time) are
-   ! logged from trc_dlfind_bridge%cb_put_coords itself as each step is
-   ! accepted, not replayed here.
-   !
    module subroutine run_opt_summary(r)
+      !!
+      !! The optimisation's own final summary: converged or not, steps,
+      !! energy evaluations and the final energy.
+      !! Per-step lines (energy, max/rms |g|, SCF iterations, wall time) are
+      !! logged from trc_dlfind_bridge%cb_put_coords itself as each step is
+      !! accepted, not replayed here.
+      !!
       type(run_t), intent(in) :: r
       integer :: n_imag
       ! The step table's own closing rule (app/trc_dlfind_bridge.F90's
@@ -909,13 +909,13 @@ contains
       end select
    end function opt_algorithm_name
 
-   !
-   ! `<geometry base>_opt.xyz`: the optimised geometry in Angstrom, same
-   ! atom order as the input. Written whether or not the run converged
-   ! (the comment line says which), so a failed optimisation's last
-   ! geometry is never silently lost.
-   !
    module subroutine run_write_opt_xyz(r, path, xyz_bohr)
+      !!
+      !! `<geometry base>_opt.xyz`: the optimised geometry in Angstrom, same
+      !! atom order as the input. Written whether or not the run converged
+      !! (the comment line says which), so a failed optimisation's last
+      !! geometry is never silently lost.
+      !!
       type(run_t), intent(in) :: r
       character(len=*), intent(in) :: path
       real(dp), intent(in) :: xyz_bohr(3, r%natm)
@@ -923,15 +923,15 @@ contains
                                trim(merge("converged    ", "NOT converged", r%opt_converged)))
    end subroutine run_write_opt_xyz
 
-   !
-   ! `<geometry base>_ts.xyz`/`_minus.xyz`/`_plus.xyz`: --opt-connect's own
-   ! three structures (the transition state and its two downhill minima),
-   ! one labelled energy each -- write_opt_xyz's own format, but with an
-   ! energy that is NOT r%etot (the context is re-converged at the TS,
-   ! final_coords, after --opt returns; the two minima's own energies came
-   ! straight from DL-FIND's cb_put_coords and were never re-run).
-   !
    module subroutine run_write_labelled_xyz(r, path, xyz_bohr, e, label)
+      !!
+      !! `<geometry base>_ts.xyz`/`_minus.xyz`/`_plus.xyz`: --opt-connect's own
+      !! three structures (the transition state and its two downhill minima),
+      !! one labelled energy each -- write_opt_xyz's own format, but with an
+      !! energy that is NOT r%etot (the context is re-converged at the TS,
+      !! final_coords, after --opt returns; the two minima's own energies came
+      !! straight from DL-FIND's cb_put_coords and were never re-run).
+      !!
       type(run_t), intent(in) :: r
       character(len=*), intent(in) :: path
       real(dp), intent(in) :: xyz_bohr(3, r%natm)
@@ -947,13 +947,13 @@ contains
       close (u)
    end subroutine run_write_labelled_xyz
 
-   !
-   ! `<geometry base>_traj.xyz`: one frame per ACCEPTED step (never a
-   ! line-search trial -- trc_dlfind_bridge%cb_put_coords's own
-   ! distinction), Angstrom, comment line carries the step index and
-   ! energy.
-   !
    module subroutine run_write_traj_xyz(r, path, traj_xyz_bohr, traj_energy)
+      !!
+      !! `<geometry base>_traj.xyz`: one frame per ACCEPTED step (never a
+      !! line-search trial -- trc_dlfind_bridge%cb_put_coords's own
+      !! distinction), Angstrom, comment line carries the step index and
+      !! energy.
+      !!
       type(run_t), intent(in) :: r
       character(len=*), intent(in) :: path
       real(dp), intent(in) :: traj_xyz_bohr(3, r%natm, r%opt_n_traj)

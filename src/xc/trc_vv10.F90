@@ -159,16 +159,16 @@ module trc_vv10
 
 contains
 
-   !
-   ! Closed shell: E_nlc and the VV10 potential, ADDED into `vmat` (not
-   ! overwritten -- the caller has already put the semilocal V_xc there).
-   ! VV10's b and C are `func%nlc_b`/`func%nlc_c` (6.0, 0.01 for wB97X-V);
-   ! nothing else of `func` is read.
-   ! `la`: GEMM/solver handles for passes 1 and 3's batched GEMMs, shared
-   ! with the caller's own (trc_xc_rks's `la`) when given; made and
-   ! released here otherwise, exactly as trc_xc's xc_drive does.
-   !
    subroutine trc_vv10_rks(bas, grid, func, dmat, e_nlc, vmat, la, comm)
+      !!
+      !! Closed shell: E_nlc and the VV10 potential, ADDED into `vmat` (not
+      !! overwritten -- the caller has already put the semilocal V_xc there).
+      !! VV10's b and C are `func%nlc_b`/`func%nlc_c` (6.0, 0.01 for wB97X-V);
+      !! nothing else of `func` is read.
+      !! `la`: GEMM/solver handles for passes 1 and 3's batched GEMMs, shared
+      !! with the caller's own (trc_xc_rks's `la`) when given; made and
+      !! released here otherwise, exactly as trc_xc's xc_drive does.
+      !!
       type(trc_basis_t), intent(in) :: bas
       type(trc_xc_grid_t), intent(in) :: grid
       type(trc_xc_functional_t), intent(in) :: func
@@ -185,13 +185,13 @@ contains
       call vv10_drive(bas, grid, func, dmat, e_nlc, vmat, la, comm)
    end subroutine trc_vv10_rks
 
-   !
-   ! Spin-polarised: VV10 sees only the total density D(:,:,1) + D(:,:,2),
-   ! and the SAME potential matrix is added to both vmat(:,:,1) and
-   ! vmat(:,:,2) (pyscf's `uks.py` convention -- see this module's header).
-   ! The spin layout is trc_xc_uks's.
-   !
    subroutine trc_vv10_uks(bas, grid, func, dmat, e_nlc, vmat, la, comm)
+      !!
+      !! Spin-polarised: VV10 sees only the total density D(:,:,1) + D(:,:,2),
+      !! and the SAME potential matrix is added to both vmat(:,:,1) and
+      !! vmat(:,:,2) (pyscf's `uks.py` convention -- see this module's header).
+      !! The spin layout is trc_xc_uks's.
+      !!
       type(trc_basis_t), intent(in) :: bas
       type(trc_xc_grid_t), intent(in) :: grid
       type(trc_xc_functional_t), intent(in) :: func
@@ -225,16 +225,16 @@ contains
       deallocate (dtot, vtmp)
    end subroutine trc_vv10_uks
 
-   !
-   ! The three passes. `bas` and `grid` come in whole and their flat arrays
-   ! go out to the kernels as explicit-shape arguments -- never the derived
-   ! types themselves, the same discipline xc_drive uses, since a
-   ! derived-type component read from inside a `do concurrent`/`routine
-   ! seq` is one of the two nvfortran traps this file has to avoid (the
-   ! other is an assumed-shape dummy in a device routine; every kernel
-   ! array below is explicit-shape).
-   !
    recursive subroutine vv10_drive(bas, grid, func, dmat, e_nlc, vmat, la, comm)
+      !!
+      !! The three passes. `bas` and `grid` come in whole and their flat arrays
+      !! go out to the kernels as explicit-shape arguments -- never the derived
+      !! types themselves, the same discipline xc_drive uses, since a
+      !! derived-type component read from inside a `do concurrent`/`routine
+      !! seq` is one of the two nvfortran traps this file has to avoid (the
+      !! other is an assumed-shape dummy in a device routine; every kernel
+      !! array below is explicit-shape).
+      !!
       type(trc_basis_t), intent(in) :: bas
       type(trc_xc_grid_t), intent(in) :: grid
       type(trc_xc_functional_t), intent(in) :: func
@@ -377,18 +377,18 @@ contains
       deallocate (rho, grho, sigma, vrho, vsigma, eg)
    end subroutine vv10_drive
 
-   !
-   ! Pass 1, TILED: rho(g) and grad rho(g) for every point, through the
-   ! same cached-batch-tile + GEMM shape trc_xc.F90's semilocal pipeline
-   ! uses (its own header: "Batched Dense D", Stocks and Barca JCTC 2025).
-   ! Per chunk of batches: collocate chi/gchi ONCE per (local shell, point)
-   ! -- not once per (shell PAIR, point), which is what the plain nested
-   ! loop over local shells cost before this -- gather the density block
-   ! D_b, GEMM X_b = chi_b D_b, then one thread per point reads its row of
-   ! chi/gchi/X to form rho and grad rho. No atomics: every point writes
-   ! only its own index, same as the loop form it replaces.
-   !
    subroutine vv10_density_tile(bas, grid, dmat, cap, lp, rho, grho, sigma)
+      !!
+      !! Pass 1, TILED: rho(g) and grad rho(g) for every point, through the
+      !! same cached-batch-tile + GEMM shape trc_xc.F90's semilocal pipeline
+      !! uses (its own header: "Batched Dense D", Stocks and Barca JCTC 2025).
+      !! Per chunk of batches: collocate chi/gchi ONCE per (local shell, point)
+      !! -- not once per (shell PAIR, point), which is what the plain nested
+      !! loop over local shells cost before this -- gather the density block
+      !! D_b, GEMM X_b = chi_b D_b, then one thread per point reads its row of
+      !! chi/gchi/X to form rho and grad rho. No atomics: every point writes
+      !! only its own index, same as the loop form it replaces.
+      !!
       type(trc_basis_t), intent(in) :: bas
       type(trc_xc_grid_t), intent(in) :: grid
       !! Both already on the device; their arrays reach the kernels as
@@ -503,15 +503,15 @@ contains
       deallocate (npp, nlp, c_off, pr_off)
    end subroutine vv10_density_tile
 
-   !
-   ! Collocation: one thread per (local shell, point) work item, exactly
-   ! trc_xc.F90's xc_collocate (see its own header) with no nspin/padding
-   ! difference -- VV10 always runs on one density, so this is that
-   ! kernel's shape kept independent rather than imported, the same
-   ! module-boundary choice this file's header explains for collocation_shell.
-   !
    subroutine vv10_tile_collocate(nwork, nb, ord, wk_off, maxnp, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, npts, r, &
                                   b_off, b_shoff, nbsh, b_sh, b_shao, c_off, npp, nbatch, nchi, chi, gchi)
+      !!
+      !! Collocation: one thread per (local shell, point) work item, exactly
+      !! trc_xc.F90's xc_collocate (see its own header) with no nspin/padding
+      !! difference -- VV10 always runs on one density, so this is that
+      !! kernel's shape kept independent rather than imported, the same
+      !! module-boundary choice this file's header explains for collocation_shell.
+      !!
       integer, intent(in) :: nwork, nb, maxnp, nshell, npts, nbsh, nbatch
       integer, intent(in) :: ord(nb), wk_off(nb + 1)
       integer, intent(in) :: sh_l(nshell), sh_np(nshell)
@@ -566,12 +566,12 @@ contains
       end do
    end subroutine vv10_tile_collocate_body
 
-   !
-   ! Density gather: one thread per stored (b, u, v), padding included and
-   ! written as zero -- trc_xc's xc_gather with nspin dropped (VV10 runs
-   ! on one density, built by `trc_vv10_uks` from D_a + D_b beforehand).
-   !
    subroutine vv10_tile_gather(npairs, nb, ord, pb_off, nao, dmat, b_aooff, nbao, b_ao, nlp, nbatch, dloc)
+      !!
+      !! Density gather: one thread per stored (b, u, v), padding included and
+      !! written as zero -- trc_xc's xc_gather with nspin dropped (VV10 runs
+      !! on one density, built by `trc_vv10_uks` from D_a + D_b beforehand).
+      !!
       integer, intent(in) :: npairs, nb, nao, nbao, nbatch
       integer, intent(in) :: ord(nb), pb_off(nb + 1)
       real(dp), intent(in) :: dmat(nao, nao)
@@ -606,14 +606,14 @@ contains
       end if
    end subroutine vv10_tile_gather_body
 
-   !
-   ! rho(g)/grad rho(g)/sigma(g) from the tile: one thread per point,
-   ! reading its row of chi/gchi/X -- same arithmetic as the old
-   ! vv10_density_body's inner accumulation, just against a tile instead
-   ! of a freshly-collocated pair.
-   !
    subroutine vv10_tile_rho(np, p0, npts, batch_of, b_off, c_off, npp, b_aooff, nbatch, nchi, chi, gchi, xt, &
                             rho, grho, sigma)
+      !!
+      !! rho(g)/grad rho(g)/sigma(g) from the tile: one thread per point,
+      !! reading its row of chi/gchi/X -- same arithmetic as the old
+      !! vv10_density_body's inner accumulation, just against a tile instead
+      !! of a freshly-collocated pair.
+      !!
       integer, intent(in) :: np, p0, npts, nbatch
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), c_off(nbatch + 1), npp(nbatch), b_aooff(nbatch + 1)
       integer(int64), intent(in) :: nchi
@@ -658,16 +658,16 @@ contains
       sig_g = gx*gx + gy*gy + gz*gz
    end subroutine vv10_tile_rho_body
 
-   !
-   ! Gather: one thread per SURVIVING j (`npass` of them, `gidx` holds their
-   ! original point indices in ascending order), precomputing everything
-   ! pass 2's inner sum reads from j alone -- its position split into
-   ! gx/gy/gz (contiguous, unit-stride reads for the pair loop below,
-   ! unlike the strided r(3, npts) this is drawn from), K(j) = kvv rho(j)^
-   ! (1/6), W0(j) and rho(j) w(j). See vv10_drive's call site for why this
-   ! makes pass 2 bit-identical rather than merely faster.
-   !
    subroutine vv10_gather(npts, r, w, rho, sigma, c, kvv, npass, gidx, gx, gy, gz, gkp, gw0p, grpw)
+      !!
+      !! Gather: one thread per SURVIVING j (`npass` of them, `gidx` holds their
+      !! original point indices in ascending order), precomputing everything
+      !! pass 2's inner sum reads from j alone -- its position split into
+      !! gx/gy/gz (contiguous, unit-stride reads for the pair loop below,
+      !! unlike the strided r(3, npts) this is drawn from), K(j) = kvv rho(j)^
+      !! (1/6), W0(j) and rho(j) w(j). See vv10_drive's call site for why this
+      !! makes pass 2 bit-identical rather than merely faster.
+      !!
       integer, intent(in) :: npts, npass
       real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
       real(dp), intent(in) :: c, kvv
@@ -704,34 +704,34 @@ contains
       grpw_k = rp*w(j)
    end subroutine vv10_gather_body
 
-   !
-   ! Pass 2: the O(N^2) double sum -- one launch, the outer point i calling
-   ! vv10_kernel_body once each. The O(N) reduction over j that builds
-   ! vrho(i)/vsigma(i)/eg(i) is entirely inside that one call, owned by
-   ! iteration i alone -- nothing here can legally alias across i, so this
-   ! is as race-free as pass 1, and `do concurrent` promises the compiler
-   ! nothing a plain `do` does not already guarantee.
-   !
-   ! GPU form: `do concurrent`, same as pass 1 and pass 3's GPU form.
-   !
-   ! CPU form: a plain sequential `do`, same split as pass 3 but for a
-   ! different reason, found by bisection rather than read off the standard.
-   ! ifx (2026.0, Release, the CI host build) makes vrho(i)/vsigma(i)/eg(i)
-   ! come out exactly 0 -- not noisy, not NaN, silently dropped -- but ONLY
-   ! when the value assigned to one of them is built from vv10_kernel_body's
-   ! own `do j` reduction (fsum/usum/wsum) AND the call sits inside a `do
-   ! concurrent`. The same call through a plain `do` is correct to pyscf's
-   ! precision; an output that does not depend on that reduction (a
-   ! constant, or a bare dummy argument) survives `do concurrent` fine; and
-   ! the loop itself still runs either way (its local accumulators compute
-   ! correctly, they just never reach the caller's array through `do
-   ! concurrent`). That is a mis-optimisation of ifx's inlined-reduction
-   ! code path for this one pattern, not a standards question -- gfortran
-   ! and nvfortran both compute pass 2 correctly through `do concurrent`
-   ! already, which is why only the CPU form changes here.
-   !
    subroutine vv10_kernel(npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                           i0, i1, vrho, vsigma, eg)
+      !!
+      !! Pass 2: the O(N^2) double sum -- one launch, the outer point i calling
+      !! vv10_kernel_body once each. The O(N) reduction over j that builds
+      !! vrho(i)/vsigma(i)/eg(i) is entirely inside that one call, owned by
+      !! iteration i alone -- nothing here can legally alias across i, so this
+      !! is as race-free as pass 1, and `do concurrent` promises the compiler
+      !! nothing a plain `do` does not already guarantee.
+      !!
+      !! GPU form: `do concurrent`, same as pass 1 and pass 3's GPU form.
+      !!
+      !! CPU form: a plain sequential `do`, same split as pass 3 but for a
+      !! different reason, found by bisection rather than read off the standard.
+      !! ifx (2026.0, Release, the CI host build) makes vrho(i)/vsigma(i)/eg(i)
+      !! come out exactly 0 -- not noisy, not NaN, silently dropped -- but ONLY
+      !! when the value assigned to one of them is built from vv10_kernel_body's
+      !! own `do j` reduction (fsum/usum/wsum) AND the call sits inside a `do
+      !! concurrent`. The same call through a plain `do` is correct to pyscf's
+      !! precision; an output that does not depend on that reduction (a
+      !! constant, or a bare dummy argument) survives `do concurrent` fine; and
+      !! the loop itself still runs either way (its local accumulators compute
+      !! correctly, they just never reach the caller's array through `do
+      !! concurrent`). That is a mis-optimisation of ifx's inlined-reduction
+      !! code path for this one pattern, not a standards question -- gfortran
+      !! and nvfortran both compute pass 2 correctly through `do concurrent`
+      !! already, which is why only the CPU form changes here.
+      !!
       integer, intent(in) :: npts, npass, i0, i1
       real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
       real(dp), intent(in) :: c, kvv, beta
@@ -752,17 +752,17 @@ contains
 #endif
    end subroutine vv10_kernel
 
-   !
-   ! `j`'s own work (w0p(j), K(j), rho(j) w(j), its gathered position) now
-   ! comes in through gx/gy/gz/gkp/gw0p/grpw, precomputed once by
-   ! vv10_gather instead of once per (i, j) pair here -- the sqrt and the
-   ! 1/6 power that used to run inside this `do j` are gone from it, and
-   ! the inner loop itself is `do j = 1, npass` (survivors only), not
-   ! `do j = 1, npts` with a `cycle`. Everything else, including the sum
-   ! order (gidx is ascending), is unchanged.
-   !
    pure subroutine vv10_kernel_body(i, npts, r, w, rho, sigma, c, kvv, beta, npass, gx, gy, gz, gkp, gw0p, grpw, &
                                     i0, i1, vrho_i, vsigma_i, eg_i)
+      !!
+      !! `j`'s own work (w0p(j), K(j), rho(j) w(j), its gathered position) now
+      !! comes in through gx/gy/gz/gkp/gw0p/grpw, precomputed once by
+      !! vv10_gather instead of once per (i, j) pair here -- the sqrt and the
+      !! 1/6 power that used to run inside this `do j` are gone from it, and
+      !! the inner loop itself is `do j = 1, npass` (survivors only), not
+      !! `do j = 1, npts` with a `cycle`. Everything else, including the sum
+      !! order (gidx is ascending), is unchanged.
+      !!
       !$acc routine seq
       integer, intent(in) :: i, npts, npass, i0, i1
       real(dp), intent(in) :: r(3, npts), w(npts), rho(npts), sigma(npts)
@@ -822,17 +822,17 @@ contains
       vsigma_i = 1.5_dp*wsum*dw0dg
    end subroutine vv10_kernel_body
 
-   !
-   ! Pass 3, TILED: the contraction, through the same tile shape pass 1
-   ! above uses -- collocate chi/gchi per chunk, form the Z tile from
-   ! vrho/vsigma/grad rho (one thread per point, looping its batch's local
-   ! functions), GEMM V_b = chi_b^T Z_b, then scatter V_b + V_b^T into
-   ! `vmat` exactly as trc_xc's kernel 4 does (its own header: the atomic
-   ! form only under `TRC_DEVICE`, a plain loop otherwise, because `do
-   ! concurrent` promises a host compiler nothing about the shared,
-   ! non-atomic update two batches' overlapping local lists create here).
-   !
    subroutine vv10_potential_tile(bas, grid, vrho, vsigma, grho, cap, lp, vmat)
+      !!
+      !! Pass 3, TILED: the contraction, through the same tile shape pass 1
+      !! above uses -- collocate chi/gchi per chunk, form the Z tile from
+      !! vrho/vsigma/grad rho (one thread per point, looping its batch's local
+      !! functions), GEMM V_b = chi_b^T Z_b, then scatter V_b + V_b^T into
+      !! `vmat` exactly as trc_xc's kernel 4 does (its own header: the atomic
+      !! form only under `TRC_DEVICE`, a plain loop otherwise, because `do
+      !! concurrent` promises a host compiler nothing about the shared,
+      !! non-atomic update two batches' overlapping local lists create here).
+      !!
       type(trc_basis_t), intent(in) :: bas
       type(trc_xc_grid_t), intent(in) :: grid
       !! As vv10_density_tile's.
@@ -942,14 +942,14 @@ contains
       deallocate (npp, nlp, c_off, pr_off)
    end subroutine vv10_potential_tile
 
-   !
-   ! Z tile: one thread per point, writing Z_gu for every local function u
-   ! of its batch -- the same Z_u trc_xc's kernel 3 forms for nspin = 1,
-   ! just against chi/gchi read from the tile instead of a fresh
-   ! `collocation_shell`.
-   !
    subroutine vv10_tile_z(np, p0, npts, batch_of, b_off, c_off, npp, b_aooff, nbatch, w, vrho, vsigma, grho, &
                           nchi, chi, gchi, zt)
+      !!
+      !! Z tile: one thread per point, writing Z_gu for every local function u
+      !! of its batch -- the same Z_u trc_xc's kernel 3 forms for nspin = 1,
+      !! just against chi/gchi read from the tile instead of a fresh
+      !! `collocation_shell`.
+      !!
       integer, intent(in) :: np, p0, npts, nbatch
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), c_off(nbatch + 1), npp(nbatch), b_aooff(nbatch + 1)
       real(dp), intent(in) :: w(npts), vrho(npts), vsigma(npts), grho(3, npts)
@@ -990,13 +990,13 @@ contains
       end do
    end subroutine vv10_tile_z_body
 
-   !
-   ! Scatter: V_uv += V_b(u,v) + V_b(v,u) -- one thread per stored (b, u, v);
-   ! a padding element has nothing to add and says so with au = 0. Trc_xc's
-   ! kernel 4 exactly, nspin dropped: see this module's header (PASS 3's
-   ! RACE) for why the `do concurrent` form only runs under `TRC_DEVICE`.
-   !
    subroutine vv10_tile_scatter(npairs, nb, ord, pb_off, nao, vmat, b_aooff, nbao, b_ao, nlp, nbatch, vloc)
+      !!
+      !! Scatter: V_uv += V_b(u,v) + V_b(v,u) -- one thread per stored (b, u, v);
+      !! a padding element has nothing to add and says so with au = 0. Trc_xc's
+      !! kernel 4 exactly, nspin dropped: see this module's header (PASS 3's
+      !! RACE) for why the `do concurrent` form only runs under `TRC_DEVICE`.
+      !!
       integer, intent(in) :: npairs, nb, nao, nbao, nbatch
       integer, intent(in) :: ord(nb), pb_off(nb + 1)
       real(dp), intent(inout) :: vmat(nao, nao)
@@ -1048,9 +1048,9 @@ contains
       av = b_ao(b_aooff(ib) + v - 1)
    end subroutine vv10_tile_scatter_body
 
-   ! Zero a flat tile array -- the padding rows/columns the GEMMs read
-   ! must be zero, not whatever the allocation held.
    subroutine vv10_tile_zero(n, a)
+      !! Zero a flat tile array -- the padding rows/columns the GEMMs read
+      !! must be zero, not whatever the allocation held.
       integer(int64), intent(in) :: n
       real(dp), intent(out) :: a(n)
       integer(int64) :: i
@@ -1059,13 +1059,13 @@ contains
       end do
    end subroutine vv10_tile_zero
 
-   !
-   ! Which stored batch (1..nb, storage order) owns pair/work-item t: the
-   ! last k with off(k) < t. trc_xc's `pair_batch`, renamed so this
-   ! module's own copy cannot be confused with trc_xc's across a future
-   ! refactor that exports one of them.
-   !
    pure subroutine vv10_pair_batch(t, nb, off, k, tt)
+      !!
+      !! Which stored batch (1..nb, storage order) owns pair/work-item t: the
+      !! last k with off(k) < t. trc_xc's `pair_batch`, renamed so this
+      !! module's own copy cannot be confused with trc_xc's across a future
+      !! refactor that exports one of them.
+      !!
       !$acc routine seq
       integer, intent(in) :: t, nb
       integer, intent(in) :: off(nb + 1)
@@ -1085,9 +1085,9 @@ contains
       tt = t - off(k) - 1
    end subroutine vv10_pair_batch
 
-   ! Insertion sort of `ord` by (npp, nlp) ascending -- trc_xc's
-   ! `xc_sort_by_shape`; a chunk's worth of batches, a few hundred at most.
    subroutine vv10_sort_by_shape(n, npp, nlp, ord)
+      !! Insertion sort of `ord` by (npp, nlp) ascending -- trc_xc's
+      !! `xc_sort_by_shape`; a chunk's worth of batches, a few hundred at most.
       integer, intent(in) :: n
       integer, intent(in) :: npp(:), nlp(:)
       integer, intent(inout) :: ord(n)

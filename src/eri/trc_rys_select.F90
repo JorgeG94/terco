@@ -1,27 +1,27 @@
-!
-! Runtime selection of Rys over HGP, per class, from TRC_RYS_CLASSES.
-!
-! Up to HGP_LMAX both schemes have a kernel, and the default is per class:
-! the classes in gen_rys.py's FOCK_RYS_DEFAULT (rys_default_class) go to the
-! chunked Rys kernels, where that measured faster than HGP on every system
-! tried, and the rest to HGP. TRC_RYS_CLASSES overrides the default for the
-! whole build. Above HGP_LMAX there is no HGP kernel at all -- HGP stops at
-! d -- so a class with any shell above it goes to Rys whatever
-! TRC_RYS_CLASSES says. This module is the only place that decides which one
-! a launch uses, and it is hand-written rather than generated because the
-! decision itself -- parse an environment variable, look up a key -- has
-! nothing to do with angular momentum and nothing to regenerate if LMAX or
-! TRC_CART_ORDER changes; the default list itself is generated with the
-! kernels it names.
-!
-! READ ONCE PER FOCK BUILD, ON THE HOST. `rys_select_init` is an ordinary
-! subroutine called from trc_eri.F90 before any kernel launches; the result
-! is a plain logical table that `rys_select_route` turns into one branch at each
-! launch site in trc_binkernel.F90, before a `do concurrent` starts. Nothing
-! here runs on the device, and no kernel's own do-concurrent-only rule is
-! touched by it.
-!
 module trc_rys_select
+   !!
+   !! Runtime selection of Rys over HGP, per class, from TRC_RYS_CLASSES.
+   !!
+   !! Up to HGP_LMAX both schemes have a kernel, and the default is per class:
+   !! the classes in gen_rys.py's FOCK_RYS_DEFAULT (rys_default_class) go to the
+   !! chunked Rys kernels, where that measured faster than HGP on every system
+   !! tried, and the rest to HGP. TRC_RYS_CLASSES overrides the default for the
+   !! whole build. Above HGP_LMAX there is no HGP kernel at all -- HGP stops at
+   !! d -- so a class with any shell above it goes to Rys whatever
+   !! TRC_RYS_CLASSES says. This module is the only place that decides which one
+   !! a launch uses, and it is hand-written rather than generated because the
+   !! decision itself -- parse an environment variable, look up a key -- has
+   !! nothing to do with angular momentum and nothing to regenerate if LMAX or
+   !! TRC_CART_ORDER changes; the default list itself is generated with the
+   !! kernels it names.
+   !!
+   !! READ ONCE PER FOCK BUILD, ON THE HOST. `rys_select_init` is an ordinary
+   !! subroutine called from trc_eri.F90 before any kernel launches; the result
+   !! is a plain logical table that `rys_select_route` turns into one branch at each
+   !! launch site in trc_binkernel.F90, before a `do concurrent` starts. Nothing
+   !! here runs on the device, and no kernel's own do-concurrent-only rule is
+   !! touched by it.
+   !!
    use pic_types, only: dp
    use trc_rys_kernels, only: rys_has_class, rys_default_class
    use trc_rys_table1, only: rys_table_init1

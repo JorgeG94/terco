@@ -1,10 +1,10 @@
-!
-! What the RI-CCSD(T) checks share (check_rccsd_ints, check_rccsd_inter): the
-! two molecules and their reference files, the geometry reader that converts
-! with CODATA 2018, the tight SCF, the MO dipole blocks and the sign-invariant
-! probes of test/pyscf_refs/generate.py's gen_rccsd_ints.
-!
 module rccsd_test_support
+   !!
+   !! What the RI-CCSD(T) checks share (check_rccsd_ints, check_rccsd_inter): the
+   !! two molecules and their reference files, the geometry reader that converts
+   !! with CODATA 2018, the tight SCF, the MO dipole blocks and the sign-invariant
+   !! probes of test/pyscf_refs/generate.py's gen_rccsd_ints.
+   !!
    use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_multipoles, TRC_NMULT
    use trc_sph, only: sph_cart_to_sph

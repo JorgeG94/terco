@@ -1,23 +1,23 @@
-!
-! A LOOSE sanity check against metalquicha's own reference optimisations
-! (water and HCN, RHF/STO-3G, Cartesian, DL-FIND's own engine default gtol
-! 4.5e-4 Eh/Bohr -- terco's own CLI default, so no --opt-gtol override is
-! passed here, unlike check_opt_vs_pyscf's tight comparison).
-!
-! mqc's own STO-3G basis file differs from pyscf's (and so from terco's
-! test/basis_sets/sto-3g.json, generated from pyscf's table) by ~2e-8 Eh
-! at this geometry, measured when mqc's reference runs were made. This
-! check's tolerances carry that difference plus the two optimisers'
-! independent convergence paths
-! at a loose gtol; check_opt_vs_pyscf.F90, against a pyscf+scipy
-! reference generated through terco's OWN basis file at a tight gtol, is
-! the real anchor. This one exists only to show terco's --opt lands on
-! the same answer mqc's own run (and so, by that run's own validation,
-! DL-FIND itself) does.
-!
-! A test-drive suite.
-!
 module check_opt_vs_mqc_suite
+   !!
+   !! A LOOSE sanity check against metalquicha's own reference optimisations
+   !! (water and HCN, RHF/STO-3G, Cartesian, DL-FIND's own engine default gtol
+   !! 4.5e-4 Eh/Bohr -- terco's own CLI default, so no --opt-gtol override is
+   !! passed here, unlike check_opt_vs_pyscf's tight comparison).
+   !!
+   !! mqc's own STO-3G basis file differs from pyscf's (and so from terco's
+   !! test/basis_sets/sto-3g.json, generated from pyscf's table) by ~2e-8 Eh
+   !! at this geometry, measured when mqc's reference runs were made. This
+   !! check's tolerances carry that difference plus the two optimisers'
+   !! independent convergence paths
+   !! at a loose gtol; check_opt_vs_pyscf.F90, against a pyscf+scipy
+   !! reference generated through terco's OWN basis file at a tight gtol, is
+   !! the real anchor. This one exists only to show terco's --opt lands on
+   !! the same answer mqc's own run (and so, by that run's own validation,
+   !! DL-FIND itself) does.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file
@@ -147,12 +147,12 @@ contains
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_hcn
 
-   !
-   ! <base>_opt.xyz/<base>_traj.xyz must not have landed in test/ itself
-   ! (this program's own WORKING_DIRECTORY, ctest's convention) -- the
-   ! whole point of each case's own `cd work_dir &&` above.
-   !
    subroutine check_stray(nfail, base)
+      !!
+      !! <base>_opt.xyz/<base>_traj.xyz must not have landed in test/ itself
+      !! (this program's own WORKING_DIRECTORY, ctest's convention) -- the
+      !! whole point of each case's own `cd work_dir &&` above.
+      !!
       integer, intent(inout) :: nfail
       character(len=*), intent(in) :: base
       logical :: exists

@@ -76,12 +76,12 @@ contains
       res = (l + 1)*(l + 2)/2
    end function batch_ncart
 
-   !
-   ! libcint's per-shell angular constant.  See NOTES.md -- sqrt(1/4pi) for s,
-   ! sqrt(3/4pi) for p, and 1 from d up, so its Cartesian d functions are
-   ! deliberately not unit-normalised.
-   !
    pure real(dp) function common_fac_sp(l) result(res)
+      !!
+      !! libcint's per-shell angular constant.  See NOTES.md -- sqrt(1/4pi) for s,
+      !! sqrt(3/4pi) for p, and 1 from d up, so its Cartesian d functions are
+      !! deliberately not unit-normalised.
+      !!
       integer, intent(in) :: l
       select case (l)
       case (0)
@@ -93,24 +93,24 @@ contains
       end select
    end function common_fac_sp
 
-   !
-   ! Offset of E(i,j,t,d) within one primitive pair's block.  1-based.
-   !
    pure integer function batch_e_off(i, j, t, d) result(res)
+      !!
+      !! Offset of E(i,j,t,d) within one primitive pair's block.  1-based.
+      !!
       !$acc routine seq
       integer, intent(in) :: i, j, t, d
       res = (d - 1)*(2*LMAX + 1)*(LMAX + 1)*(LMAX + 1) &
               + t*(LMAX + 1)*(LMAX + 1) + j*(LMAX + 1) + i + 1
    end function batch_e_off
 
-   !
-   ! Host-side setup: expand every shell pair into its primitive pairs and
-   ! store p, the product centre, the combined coefficient, and E.
-   !
-   ! pp_off/pp_n are indexed by the rectangular pair key (ish-1)*nbas + jsh,
-   ! so the kernel finds a pair's primitives with two integer loads.
-   !
    subroutine batch_build_pairs(sh_l, sh_np, sh_e, sh_c, sh_r, thresh, pairs)
+      !!
+      !! Host-side setup: expand every shell pair into its primitive pairs and
+      !! store p, the product centre, the combined coefficient, and E.
+      !!
+      !! pp_off/pp_n are indexed by the rectangular pair key (ish-1)*nbas + jsh,
+      !! so the kernel finds a pair's primitives with two integer loads.
+      !!
       integer,  intent(in)  :: sh_l(:), sh_np(:)
       !! (nbas) angular momentum and primitives per shell; their size is the
       !! shell count.
@@ -265,11 +265,11 @@ contains
       end if
    end subroutine batch_build_pairs
 
-   !
-   ! One Cartesian direction's Hermite expansion coefficients E_t^{ij}.
-   ! Host-only (setup), so an assumed-shape result is fine here.
-   !
    pure subroutine hermite_e1d(li, lj, p, mu, xab, xpa, xpb, e)
+      !!
+      !! One Cartesian direction's Hermite expansion coefficients E_t^{ij}.
+      !! Host-only (setup), so an assumed-shape result is fine here.
+      !!
       integer,  intent(in)  :: li, lj
       real(dp), intent(in)  :: p, mu, xab, xpa, xpb
       real(dp), intent(out) :: e(0:, 0:, 0:)
@@ -301,16 +301,16 @@ contains
       end do
    end subroutine hermite_e1d
 
-   !
-   ! THE KERNEL.
-   !
-   ! Explicit-shape dummies with the extents declared first: an assumed-shape
-   ! dummy makes nvfortran walk the descriptor with a per-launch memcpy.
-   !
    subroutine batch_eri(lo, hi, nchunk, nq, nbas, npp, nout, &
                         q_i, q_j, q_k, q_l, q_off, &
                         sh_l, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, &
                         rscr, out)
+      !!
+      !! THE KERNEL.
+      !!
+      !! Explicit-shape dummies with the extents declared first: an assumed-shape
+      !! dummy makes nvfortran walk the descriptor with a per-launch memcpy.
+      !!
       integer,  intent(in)    :: lo, hi, nchunk, nq, nbas, npp, nout
       integer,  intent(in)    :: q_i(nq), q_j(nq), q_k(nq), q_l(nq), q_off(nq)
       integer,  intent(in)    :: sh_l(nbas)
@@ -328,13 +328,13 @@ contains
       end do
    end subroutine batch_eri
 
-   !
-   ! One work item.  Marked `acc routine seq`: stdpar only auto-inlines within a
-   ! translation unit, and this is called from the parallel loop above.
-   !
    pure subroutine batch_one_quartet(iq, ir, nchunk, nq, nbas, npp, nout, &
                           q_i, q_j, q_k, q_l, q_off, sh_l, &
                           pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, rscr, out)
+      !!
+      !! One work item.  Marked `acc routine seq`: stdpar only auto-inlines within a
+      !! translation unit, and this is called from the parallel loop above.
+      !!
       !! McMurchie-Davidson on (ab|ab) with the full Coulomb operator, same as
       !! every other quartet this module builds -- there is no omega here by
       !! design. The Schwarz bound it feeds remains a valid (looser) upper
@@ -517,31 +517,31 @@ contains
    end subroutine batch_one_quartet
 
 
-   !
-   ! FUSED FOCK BUILD.  Integrals and digestion in one pass: each thread
-   ! computes its quartet into its own slice of `out` and immediately contracts
-   ! it, so the integrals never have to exist all at once.
-   !
-   !   J(mu,nu) += (mu nu|la si) D(la,si)
-   !   K(mu,la) += (mu nu|la si) D(nu,si)
-   !
-   ! The work list here is the full rectangular quartet set, so every ordered
-   ! (i,j,k,l) appears exactly once and no permutational prefactors are needed.
-   ! That is the honest way to validate the contraction before symmetry is
-   ! exploited; exploiting it is a later, separate change with its own check.
-   !
-   ! ATOMICS.  Unlike the integral pass, whose output slots are disjoint, the
-   ! Fock elements are written by many quartets at once, so this needs
-   ! `!$acc atomic update` -- verified working and exact inside a
-   ! `do concurrent` by probe p01.  The consequence is that the result is NOT
-   ! bit-reproducible run to run, because the FP addition order varies.  This is
-   ! precisely the cost PLAN.md section 4.1 argues for designing away, and the
-   ! structure that would avoid it for J is noted in NOTES.md.
-   !
    subroutine batch_fock(lo, hi, nchunk, nq, nbas, npp, nout, nao, &
                          q_i, q_j, q_k, q_l, q_off, &
                          sh_l, ao_off, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, &
                          rscr, out, dmat, jmat, kmat)
+      !!
+      !! FUSED FOCK BUILD.  Integrals and digestion in one pass: each thread
+      !! computes its quartet into its own slice of `out` and immediately contracts
+      !! it, so the integrals never have to exist all at once.
+      !!
+      !!   J(mu,nu) += (mu nu|la si) D(la,si)
+      !!   K(mu,la) += (mu nu|la si) D(nu,si)
+      !!
+      !! The work list here is the full rectangular quartet set, so every ordered
+      !! (i,j,k,l) appears exactly once and no permutational prefactors are needed.
+      !! That is the honest way to validate the contraction before symmetry is
+      !! exploited; exploiting it is a later, separate change with its own check.
+      !!
+      !! ATOMICS.  Unlike the integral pass, whose output slots are disjoint, the
+      !! Fock elements are written by many quartets at once, so this needs
+      !! `!$acc atomic update` -- verified working and exact inside a
+      !! `do concurrent` by probe p01.  The consequence is that the result is NOT
+      !! bit-reproducible run to run, because the FP addition order varies.  This is
+      !! precisely the cost PLAN.md section 4.1 argues for designing away, and the
+      !! structure that would avoid it for J is noted in NOTES.md.
+      !!
       integer,  intent(in)    :: lo, hi, nchunk, nq, nbas, npp, nout, nao
       integer,  intent(in)    :: q_i(nq), q_j(nq), q_k(nq), q_l(nq), q_off(nq)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
@@ -607,31 +607,31 @@ contains
    end subroutine digest_quartet
 
 
-   !
-   ! SYMMETRY-REDUCED FUSED FOCK BUILD.
-   !
-   ! The work list holds only canonical quartets (i>=j, k>=l, pair_ij>=pair_kl),
-   ! so each one stands for up to eight ordered tuples that share a value:
-   !
-   !   P1 (i,j,k,l)   P2 (j,i,k,l)   P3 (i,j,l,k)   P4 (j,i,l,k)
-   !   P5 (k,l,i,j)   P6 (l,k,i,j)   P7 (k,l,j,i)   P8 (l,k,j,i)
-   !
-   ! Rather than derive a multiplicity prefactor -- which is where these
-   ! routines usually go wrong, because the degenerate cases each want a
-   ! different factor -- this enumerates the tuples and skips the ones that are
-   ! not distinct.  Three booleans decide that: i/=j, k/=l, pair_ij/=pair_kl.
-   ! Slightly more code, no factors to get wrong, and it reproduces the full
-   ! rectangular result exactly, which is what the test asserts.
-   !
-   ! For each distinct tuple (a,b,c,d) the contributions are the same two the
-   ! unsymmetrised version makes:
-   !     J(a,b) += V * D(c,d)
-   !     K(a,c) += V * D(b,d)
-   !
    subroutine batch_fock_sym(lo, hi, nchunk, nq, nbas, npp, nout, nao, &
                              q_i, q_j, q_k, q_l, q_off, &
                              sh_l, ao_off, pp_off, pp_n, pp_p, pp_r, pp_c, pp_e, &
                              rscr, out, dmat, jmat, kmat)
+      !!
+      !! SYMMETRY-REDUCED FUSED FOCK BUILD.
+      !!
+      !! The work list holds only canonical quartets (i>=j, k>=l, pair_ij>=pair_kl),
+      !! so each one stands for up to eight ordered tuples that share a value:
+      !!
+      !!   P1 (i,j,k,l)   P2 (j,i,k,l)   P3 (i,j,l,k)   P4 (j,i,l,k)
+      !!   P5 (k,l,i,j)   P6 (l,k,i,j)   P7 (k,l,j,i)   P8 (l,k,j,i)
+      !!
+      !! Rather than derive a multiplicity prefactor -- which is where these
+      !! routines usually go wrong, because the degenerate cases each want a
+      !! different factor -- this enumerates the tuples and skips the ones that are
+      !! not distinct.  Three booleans decide that: i/=j, k/=l, pair_ij/=pair_kl.
+      !! Slightly more code, no factors to get wrong, and it reproduces the full
+      !! rectangular result exactly, which is what the test asserts.
+      !!
+      !! For each distinct tuple (a,b,c,d) the contributions are the same two the
+      !! unsymmetrised version makes:
+      !!     J(a,b) += V * D(c,d)
+      !!     K(a,c) += V * D(b,d)
+      !!
       integer,  intent(in)    :: lo, hi, nchunk, nq, nbas, npp, nout, nao
       integer,  intent(in)    :: q_i(nq), q_j(nq), q_k(nq), q_l(nq), q_off(nq)
       integer,  intent(in)    :: sh_l(nbas), ao_off(nbas)
@@ -760,17 +760,17 @@ contains
       end do
    end subroutine digest_sym
 
-   !
-   ! Cartesian powers of component `ic` of a shell of angular momentum l, in
-   ! the build's Cartesian order (TRC_CART_ORDER; lexicographic by default --
-   ! x descending outer, y descending inner). OUTPUT layout: `ic` is what a
-   ! caller adds to an AO offset directly (`digest_sym`). Generated from a
-   ! `select case`, still no array: the comment this replaced ("keeps one more
-   ! array off the device") is preserved by generating the SAME branch-per-call
-   ! shape trc_hgp.F90's and trc_binkernel.F90's `comp` use, from the same
-   ! source -- see scripts/gen_cartcomp.py.
-   !
    pure subroutine batch_cart_pow(l, ic, px, py, pz)
+      !!
+      !! Cartesian powers of component `ic` of a shell of angular momentum l, in
+      !! the build's Cartesian order (TRC_CART_ORDER; lexicographic by default --
+      !! x descending outer, y descending inner). OUTPUT layout: `ic` is what a
+      !! caller adds to an AO offset directly (`digest_sym`). Generated from a
+      !! `select case`, still no array: the comment this replaced ("keeps one more
+      !! array off the device") is preserved by generating the SAME branch-per-call
+      !! shape trc_hgp.F90's and trc_binkernel.F90's `comp` use, from the same
+      !! source -- see scripts/gen_cartcomp.py.
+      !!
       !$acc routine seq
       integer, intent(in)  :: l, ic
       integer, intent(out) :: px, py, pz

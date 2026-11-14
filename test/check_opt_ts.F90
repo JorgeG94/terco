@@ -1,44 +1,44 @@
-!
-! The transition-state search: --opt-target saddle on the HCN<->HNC
-! isomerisation, RHF/STO-3G, from test/hcn_ts_guess.xyz (a bent geometry
-! about half way from a distorted HCN toward the critical point -- see
-! that file's own comment line for how it was picked: it is the point
-! where Cartesian P-RFO, started closer to HCN itself, first reaches the
-! SAME energy the dimer method finds independently, with no Hessian at
-! all). Two independent routes to the same point is the validation here:
-!   - P-RFO, Cartesian, terco's own analytic-from-FD Hessian
-!     (cb_get_hessian/trc_run_hessian), --opt-zero-modes' auto default (6:
-!     the start geometry is not linear);
-!   - the dimer method (--opt-saddle-method dimer), no Hessian at all.
-! Both must land on the same energy and geometry, and --hessian at the
-! result must show EXACTLY ONE imaginary mode -- the saddle check, not a
-! second copy of the energy comparison.
-!
-! EXTERNAL anchor: test/pyscf_refs/opt_ts_hcn.ref, written by
-! test/pyscf_refs/generate.py's own gen_opt_ts -- a from-scratch
-! partitioned-RFO (eigenvector-following) search on pyscf's OWN analytic
-! RHF gradient and Hessian, translation/rotation projected out before
-! diagonalising, converged to max|g| < 1e-8 (two orders tighter than
-! either terco run below), then pyscf's own harmonic_analysis at the
-! result -- refused by the generator unless that shows EXACTLY ONE
-! imaginary mode. Independent of terco end to end: different language,
-! different SCF code, a from-scratch optimiser, not DL-FIND's. Measured
-! agreement (this file's own run): energy to ~1e-10 Eh, imaginary
-! frequency to ~0.02 cm^-1.
-!
-! --opt-coords hdlc with --opt-target saddle prfo is NOT checked here
-! either: measured, it does not converge reliably for this 3-atom system
-! (DL-FIND's own "lam-eigval small for non-TS mode" warning, step lengths
-! of order 10 Bohr, no progress after a handful of steps) -- HDLC's
-! hybrid internal machinery is built for larger, fragmented systems, and
-! a bare triatomic is a poor fit for it independent of anything terco's
-! bridge does. Cartesian and the dimer method (which also has a Cartesian
-! option, exercised above) are the validated route for a system this
-! small.
-!
-! A test-drive suite.
-!
 module check_opt_ts_suite
+   !!
+   !! The transition-state search: --opt-target saddle on the HCN<->HNC
+   !! isomerisation, RHF/STO-3G, from test/hcn_ts_guess.xyz (a bent geometry
+   !! about half way from a distorted HCN toward the critical point -- see
+   !! that file's own comment line for how it was picked: it is the point
+   !! where Cartesian P-RFO, started closer to HCN itself, first reaches the
+   !! SAME energy the dimer method finds independently, with no Hessian at
+   !! all). Two independent routes to the same point is the validation here:
+   !!   - P-RFO, Cartesian, terco's own analytic-from-FD Hessian
+   !!     (cb_get_hessian/trc_run_hessian), --opt-zero-modes' auto default (6:
+   !!     the start geometry is not linear);
+   !!   - the dimer method (--opt-saddle-method dimer), no Hessian at all.
+   !! Both must land on the same energy and geometry, and --hessian at the
+   !! result must show EXACTLY ONE imaginary mode -- the saddle check, not a
+   !! second copy of the energy comparison.
+   !!
+   !! EXTERNAL anchor: test/pyscf_refs/opt_ts_hcn.ref, written by
+   !! test/pyscf_refs/generate.py's own gen_opt_ts -- a from-scratch
+   !! partitioned-RFO (eigenvector-following) search on pyscf's OWN analytic
+   !! RHF gradient and Hessian, translation/rotation projected out before
+   !! diagonalising, converged to max|g| < 1e-8 (two orders tighter than
+   !! either terco run below), then pyscf's own harmonic_analysis at the
+   !! result -- refused by the generator unless that shows EXACTLY ONE
+   !! imaginary mode. Independent of terco end to end: different language,
+   !! different SCF code, a from-scratch optimiser, not DL-FIND's. Measured
+   !! agreement (this file's own run): energy to ~1e-10 Eh, imaginary
+   !! frequency to ~0.02 cm^-1.
+   !!
+   !! --opt-coords hdlc with --opt-target saddle prfo is NOT checked here
+   !! either: measured, it does not converge reliably for this 3-atom system
+   !! (DL-FIND's own "lam-eigval small for non-TS mode" warning, step lengths
+   !! of order 10 Bohr, no progress after a handful of steps) -- HDLC's
+   !! hybrid internal machinery is built for larger, fragmented systems, and
+   !! a bare triatomic is a poor fit for it independent of anything terco's
+   !! bridge does. Cartesian and the dimer method (which also has a Cartesian
+   !! option, exercised above) are the validated route for a system this
+   !! small.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file
@@ -257,13 +257,13 @@ contains
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_vs_pyscf_anchor
 
-   !
-   ! hcn_ts_guess_opt.xyz/hcn_ts_guess_traj.xyz must not have landed in
-   ! test/ itself (this program's own WORKING_DIRECTORY, ctest's
-   ! convention) -- the whole point of test_prfo_vs_dimer's own
-   ! `cd work_dir &&`.
-   !
    subroutine test_no_stray(error)
+      !!
+      !! hcn_ts_guess_opt.xyz/hcn_ts_guess_traj.xyz must not have landed in
+      !! test/ itself (this program's own WORKING_DIRECTORY, ctest's
+      !! convention) -- the whole point of test_prfo_vs_dimer's own
+      !! `cd work_dir &&`.
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=*), parameter :: stray(2) = &
          [character(len=22) :: 'hcn_ts_guess_opt.xyz', 'hcn_ts_guess_traj.xyz']
@@ -297,13 +297,13 @@ contains
       end do
    end subroutine read_geometry
 
-   !
-   ! The two shortest pairwise distances (the two "bonds", whichever atom
-   ! is their shared vertex), the third distance, and the angle at the
-   ! shared vertex -- check_opt_vs_pyscf.F90's own helper, copied rather
-   ! than shared across two standalone check programs.
-   !
    subroutine two_shortest_and_angle(xyz, d1, d2, d3, angle_deg)
+      !!
+      !! The two shortest pairwise distances (the two "bonds", whichever atom
+      !! is their shared vertex), the third distance, and the angle at the
+      !! shared vertex -- check_opt_vs_pyscf.F90's own helper, copied rather
+      !! than shared across two standalone check programs.
+      !!
       real(dp), intent(in) :: xyz(3, 3)
       real(dp), intent(out) :: d1, d2, d3, angle_deg
       real(dp) :: d(3), v1(3), v2(3)
@@ -335,12 +335,12 @@ contains
       end if
    end subroutine two_shortest_and_angle
 
-   !
-   ! --hessian at the P-RFO result: exactly one imaginary mode is the
-   ! saddle check (app/main.F90's opt_summary already prints it; here it
-   ! is asserted).
-   !
    subroutine check_one_imaginary(exe, wdir, xyz, freq_anchor, nf)
+      !!
+      !! --hessian at the P-RFO result: exactly one imaginary mode is the
+      !! saddle check (app/main.F90's opt_summary already prints it; here it
+      !! is asserted).
+      !!
       character(len=*), intent(in) :: exe, wdir
       real(dp), intent(in) :: xyz(:, :)
       real(dp), intent(in) :: freq_anchor   !! pyscf's own analytic imaginary frequency, cm^-1 (negative)

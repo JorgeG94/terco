@@ -140,12 +140,12 @@ contains
       call ecp_radial_rad_part(ur, rs, row0, row1, nrow, maxnp, ecp_rpow, ecp_np, ecp_e, ecp_c)
    end subroutine ecp_k1_item
 
-   !
-   ! The whole ECP one-electron matrix, Cartesian internally and folded to
-   ! spherical if `b%spherical`. `u` comes back allocated to b%nao_sph (or
-   ! b%nao). `ecp%has_ecp` false gives back a zero matrix of the right size.
-   !
    subroutine trc_ecp_matrix(b, ecp, u, error)
+      !!
+      !! The whole ECP one-electron matrix, Cartesian internally and folded to
+      !! spherical if `b%spherical`. `u` comes back allocated to b%nao_sph (or
+      !! b%nao). `ecp%has_ecp` false gives back a zero matrix of the right size.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_ecp_t), intent(in) :: ecp
       real(dp), allocatable, intent(out) :: u(:, :)
@@ -172,17 +172,17 @@ contains
       deallocate (mcart)
    end subroutine trc_ecp_matrix
 
-   !
-   ! The same matrix, always Cartesian (never folded), `mcart(b%nao, b%nao)`
-   ! coming back freshly allocated and zeroed. `trc_ecp_matrix` is this plus
-   ! the spherical fold; `trc_scf_context` calls this directly so its own
-   ! Cartesian H_core (T + V_ne) picks up U BEFORE the ONE fold that already
-   ! covers both (ECP_DESIGN.md: "added to H_core ... BEFORE the spherical
-   ! fold" -- folding is linear, so U folded with T+V_ne together or on its
-   ! own gives the same number to round-off, but doing it together is one
-   ! fewer sph_cart_to_sph call per SCF geometry).
-   !
    subroutine trc_ecp_matrix_cart(b, ecp, mcart, error)
+      !!
+      !! The same matrix, always Cartesian (never folded), `mcart(b%nao, b%nao)`
+      !! coming back freshly allocated and zeroed. `trc_ecp_matrix` is this plus
+      !! the spherical fold; `trc_scf_context` calls this directly so its own
+      !! Cartesian H_core (T + V_ne) picks up U BEFORE the ONE fold that already
+      !! covers both (ECP_DESIGN.md: "added to H_core ... BEFORE the spherical
+      !! fold" -- folding is linear, so U folded with T+V_ne together or on its
+      !! own gives the same number to round-off, but doing it together is one
+      !! fewer sph_cart_to_sph call per SCF geometry).
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_ecp_t), intent(in) :: ecp
       real(dp), allocatable, intent(out) :: mcart(:, :)
@@ -239,11 +239,11 @@ contains
       end if
    end subroutine trc_ecp_matrix_cart
 
-   !
-   ! The Cartesian build: groups the ECP rows into (atom, l) channels, then
-   ! K1/K2/K3 as this module's own header describes.
-   !
    subroutine ecp_matrix_cart(b, ecp, mcart, error)
+      !!
+      !! The Cartesian build: groups the ECP rows into (atom, l) channels, then
+      !! K1/K2/K3 as this module's own header describes.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_ecp_t), intent(in) :: ecp
       real(dp), intent(inout) :: mcart(b%nao, b%nao)
@@ -391,12 +391,12 @@ contains
       end do
    end subroutine deposit_block
 
-   !
-   ! Group the ECP rows into (atom, l) channels: consecutive rows sharing
-   ! both -- see trc_ecp_types.F90 for why the reader always emits a
-   ! channel's rows consecutively.
-   !
    subroutine build_groups(ecp, grp_atom, grp_l, grp_row0, grp_row1, ngroup)
+      !!
+      !! Group the ECP rows into (atom, l) channels: consecutive rows sharing
+      !! both -- see trc_ecp_types.F90 for why the reader always emits a
+      !! channel's rows consecutively.
+      !!
       type(trc_ecp_t), intent(in) :: ecp
       integer, allocatable, intent(out) :: grp_atom(:), grp_l(:), grp_row0(:), grp_row1(:)
       integer, intent(out) :: ngroup
@@ -443,15 +443,15 @@ contains
       end do
    end subroutine build_atom_list
 
-   !
-   ! K1b's item: one (orbital shell, ECP channel group). Writes ONLY the
-   ! cache this group's own type (local or semi-local) needs -- the other
-   ! two output arrays are left untouched, which is fine: K2 never reads a
-   ! local group's fac2/ang2 slot or a semi-local group's fac1 slot.
-   !
    pure subroutine ecp_k1b_item(ish, g, nshell, sh_l, sh_np, maxnp, sh_e, sh_c, sh_r, &
                                 natm, at_r, ngroup, grp_atom, grp_l, rs, &
                                 fac1_slot, fac2_slot, ang2_slot)
+      !!
+      !! K1b's item: one (orbital shell, ECP channel group). Writes ONLY the
+      !! cache this group's own type (local or semi-local) needs -- the other
+      !! two output arrays are left untouched, which is fine: K2 never reads a
+      !! local group's fac2/ang2 slot or a semi-local group's fac1 slot.
+      !!
       !$acc routine seq
       integer, intent(in) :: ish, g, nshell, maxnp, natm, ngroup
       integer, intent(in) :: sh_l(nshell), sh_np(nshell)
@@ -482,19 +482,19 @@ contains
       end if
    end subroutine ecp_k1b_item
 
-   !
-   ! K2's item: one (orbital shell pair, ECP atom). Sums every one of that
-   ! atom's channels (local and projected) into its OWN output slot,
-   ! `slot` -- SLOT_SIZE = NFMAX*NFMAX reals, column-major (mi, mj) with mi the
-   ! FASTER index, zero-padded past the pair's actual (nfi, nfj). No
-   ! atomics: nothing else ever writes this slot.
-   !
    pure subroutine ecp_pair_atom_item(ish, jsh, atm_id, g0, g1, &
                                       ngroup, grp_l, &
                                       nshell, sh_l, sh_np, maxnp, sh_e, sh_c, sh_r, &
                                       natm, at_r, &
                                       rs, ws, ur_cache, fac1_cache, fac2_cache, ang2_cache, &
                                       slot, conv_fail)
+      !!
+      !! K2's item: one (orbital shell pair, ECP atom). Sums every one of that
+      !! atom's channels (local and projected) into its OWN output slot,
+      !! `slot` -- SLOT_SIZE = NFMAX*NFMAX reals, column-major (mi, mj) with mi the
+      !! FASTER index, zero-padded past the pair's actual (nfi, nfj). No
+      !! atomics: nothing else ever writes this slot.
+      !!
       !$acc routine seq
       integer, intent(in) :: ish, jsh, atm_id, g0, g1
       integer, intent(in) :: ngroup
@@ -675,18 +675,18 @@ contains
       end do
    end subroutine pick_converged_level_t2
 
-   !
-   ! The type-1 (local) term for one (shell pair, ECP channel). Per-primitive-
-   ! pair convergence, exactly as libfint's `ecp_type1_cart`: each (ip,jp)'s
-   ! own radial integral is refined to its OWN converged level (picked by
-   ! `pick_converged_level` from `ecp_radial_type1_rad_part_levels`'s whole
-   ! snapshot, computed and consumed one pair at a time) and the angular
-   ! contraction runs only once, after every pair has been picked (or the
-   ! level ceiling is hit, which sets `conv_fail`). `ifac`/`jfac` are
-   ! K1b's global cache, not rebuilt here.
-   !
    pure subroutine ecp_type1_item(gctr, li, lj, npi, npj, ei, ci, ej, cj, ri, rj, rc, &
                                   rs, ws, ur, ifac, jfac, conv_fail)
+      !!
+      !! The type-1 (local) term for one (shell pair, ECP channel). Per-primitive-
+      !! pair convergence, exactly as libfint's `ecp_type1_cart`: each (ip,jp)'s
+      !! own radial integral is refined to its OWN converged level (picked by
+      !! `pick_converged_level` from `ecp_radial_type1_rad_part_levels`'s whole
+      !! snapshot, computed and consumed one pair at a time) and the angular
+      !! contraction runs only once, after every pair has been picked (or the
+      !! level ceiling is hit, which sets `conv_fail`). `ifac`/`jfac` are
+      !! K1b's global cache, not rebuilt here.
+      !!
       !$acc routine seq
       integer, intent(in) :: li, lj, npi, npj
       real(dp), intent(in) :: ei(npi), ci(npi), ej(npj), cj(npj)
@@ -786,20 +786,20 @@ contains
       end do
    end subroutine ecp_type1_item
 
-   !
-   ! The type-2 (semi-local) term for one (shell pair, ECP channel of
-   ! angular momentum lc). No nc/ic loop (trc_basis_t never holds a general
-   ! contraction), so the convergence state is indexed by `lab` alone.
-   ! `radi`/`radj`/`angi`/`angj` are K1b's global cache -- nothing here
-   ! rebuilds a radial or angular factor, or holds one at ECP_NRS size:
-   ! each `lab` (0..li+lj) is picked to its OWN converged level one at a
-   ! time (`ecp_radial_type2_lab_levels` + `pick_converged_level_t2`), and
-   ! only the picked, SLOT_SIZE-scale `rad_all` persists across lab values
-   ! -- it has to, since the final contraction below indexes it by i+j,
-   ! which repeats across different (i,j) pairs.
-   !
    pure subroutine ecp_type2_item(gctr, li, lj, lc, &
                                   rs, ws, ur, radi, radj, angi, angj, conv_fail)
+      !!
+      !! The type-2 (semi-local) term for one (shell pair, ECP channel of
+      !! angular momentum lc). No nc/ic loop (trc_basis_t never holds a general
+      !! contraction), so the convergence state is indexed by `lab` alone.
+      !! `radi`/`radj`/`angi`/`angj` are K1b's global cache -- nothing here
+      !! rebuilds a radial or angular factor, or holds one at ECP_NRS size:
+      !! each `lab` (0..li+lj) is picked to its OWN converged level one at a
+      !! time (`ecp_radial_type2_lab_levels` + `pick_converged_level_t2`), and
+      !! only the picked, SLOT_SIZE-scale `rad_all` persists across lab values
+      !! -- it has to, since the final contraction below indexes it by i+j,
+      !! which repeats across different (i,j) pairs.
+      !!
       !$acc routine seq
       integer, intent(in) :: li, lj, lc
       real(dp), intent(in) :: rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1), ur(0:ECP_NRS - 1)

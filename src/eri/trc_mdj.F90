@@ -1,89 +1,89 @@
-!
-! The McMurchie-Davidson J engine: the Coulomb matrix without a quartet.
-!
-! J_ab = sum_cd (ab|cd) D_cd is formed in Hermite space, in three stages
-! (Palethorpe and Barca, JCTC 21, 9388 (2025); the algebra and the kernels
-! are scripts/gen_md_j.py's, checked in numpy by scripts/md/reference.py):
-!
-!   ket      per primitive pair Q:  Dt[Q] = (-1)^|tau| c_Q E^cd D_cd
-!   Hermite  per (P, Q):            Jt[P] += [P|Q] Dt[Q]
-!   bra      per shell pair:        J_ab = sum_P c_P E^ab Jt[P]
-!
-! Only the Hermite stage is quadratic in pairs, and it depends on the bra
-! and ket only through l_a + l_b and l_c + l_d. No Cartesian quartet is
-! ever formed, which is what every quartet algorithm here (HGP, Rys,
-! rotated axis) ran out of registers and local memory on.
-!
-! SCREENING. Each (P, Q) is skipped when I_P ||rho_Q|| <= cut, with I_P the
-! largest Coulomb self-norm of P's component products and ||rho_Q|| the
-! Coulomb norm of Q's share of the density. Coulomb is an inner product, so
-! by Cauchy-Schwarz that product bounds what the pair adds to any J
-! element: the screen is rigorous and density-weighted in one number, and
-! it is formed by the ket stage itself every build.
-!
-! DATA. A primitive pair list in (l_a + l_b, l_a) type order, so each lp
-! block is contiguous; Dt and Jt share one flat array layout, an lp block
-! at a time, each Hermite row of a block contiguous over the block's pairs.
-! Everything lives on the device from `build` to `release`.
-!
-! P <-> Q SYMMETRY (the default; CMake TERCO_MDJ_SYM_LMAX). The Hermite stage evaluates each
-! [P|Q] twice: once in the [lp|lq] launch for Jt[P], once in [lq|lp] for
-! Jt[Q]. gen_md_j.py can instead emit symmetric kernels (trc_mdj_s<lp><lq>,
-! lp >= lq, CMake TERCO_MDJ_SYM_LMAX >= 0) that evaluate each unordered pair
-! once and add [P|Q] Dt[Q] to Jt[P] (in registers) and [Q|P] Dt[P] to Jt[Q]
-! (an FP64 atomic per Hermite slot of Q per pair, on the smaller block);
-! [Q|P]_{t+tau} = (-1)^|t+tau| [P|Q]_{t+tau}. Each direction keeps its own
-! screen (I_P ||rho_Q|| for Jt[P], I_Q ||rho_P|| for Jt[Q]); R is formed if
-! either passes, so J equals the gather form's to round-off (measured
-! max|dJ| ~1e-12 of max|J| 58.6, gly20 cc-pVDZ). Two layout details mattered:
-! each thread starts its ket chunk at its own offset (all of a warp's
-! atomics on one address made the stage 2.4x slower), and a diagonal block
-! pairs P with Q = P + s (mod n), s = 0..n/2, so no thread idles on a triangle.
-! Tiling 2-4 bra pairs per thread to share the scatter's atomics doubled the
-! registers and lost.
-!
-! Why it is not 2x: the screen is density-weighted per direction, so the two
-! launches skip different pairs, and only pairs kept by both are shared. On
-! water20 cc-pVDZ with the SCF density the union of the two kept sets is
-! 0.553 of what the gather form evaluates (0.54-0.56 in every class): that is
-! the ceiling. The kernels are FP64-pipe bound (ncu, [1|0]: math-pipe
-! throttle dominant, atomics ~7% of L2), and the symmetric one costs more per
-! evaluation: 1.6x the instructions, 20.3 against 24.4 active lanes per warp,
-! 28.6% against 40% occupancy, and 200-255 registers with spills in the
-! heavy classes.
-!
-! Measured (V100; GPU partly shared with another job, so +-10%): J, SCF
-! builds 2-4 (nsys), gly20 cc-pVDZ 0.426 s gather against 0.384 s symmetric.
-! In-process interleaved A/B on a synthetic density, all-symmetric over
-! all-gather (median): gly20 cc-pVDZ 0.85, water20 cc-pVDZ 0.74, gly50
-! cc-pVDZ 0.91 (0.67 with symmetry up to lp + lq = 5-7, noisy), gly20
-! cc-pVTZ ~1.00 at every cut, water40 cc-pVTZ 1.15 (worse at every cut).
-! Not a clear win where J matters (cc-pVTZ), so the default was gather.
-!
-! It is the default now. Once boys_eval stopped calling erf and exp for every
-! distant pair, the gather form's second evaluation of each kept pair was
-! the cost left to save, and the symmetric kernels win on a dedicated V100
-! (RHF, 1e-11, full builds, Fock s/build, gather -> symmetric): gly50
-! cc-pVDZ 4.49 -> 4.23, def2-SVP 2.98 -> 2.75, gly30 def2-TZVP 20.7 -> 20.6,
-! water40 cc-pVTZ 11.8 -> 11.8, gly20 cc-pVTZ 16.5 -> 16.5; energies equal to
-! 1e-12. Compile time, ninja: LMAX=2 71 s -> 15 s of MD J modules; LMAX=3
-! 327 s -> 338 s, the slowest module 34 s -> 61 s.
-! TERCO_MDJ_GATHER_ALL keeps both sets so TRC_MDJ_SYM_LMAX races them at run
-! time. Left to try: the symmetric off-diagonal kernels reading Dt[P] from
-! memory (built, fewer registers, e.g. [4|1] 192 -> 150, not timed on a
-! quiet GPU); a per-class cut chosen by measurement; a screen that is
-! symmetric by construction (a direction-free bound), which would make
-! every pair shared and lift the 0.55 ceiling at a looser screen.
-!
-! REFERENCES (inspiration; the formulation and code here are terco's own)
-!   L. E. McMurchie, E. R. Davidson, J. Comput. Phys. 26, 218 (1978).
-!   E. Palethorpe, G. M. J. Barca, J. Chem. Theory Comput. 21, 9388 (2025).
-!   I. S. Ufimtsev, T. J. Martinez, J. Chem. Theory Comput. 4, 222 (2008);
-!     5, 1004 (2009).
-!   A. Asadchev, E. F. Valeev, J. Phys. Chem. A 127, 10889 (2023);
-!     J. Chem. Phys. 160, 244109 (2024).
-!
 module trc_mdj
+   !!
+   !! The McMurchie-Davidson J engine: the Coulomb matrix without a quartet.
+   !!
+   !! J_ab = sum_cd (ab|cd) D_cd is formed in Hermite space, in three stages
+   !! (Palethorpe and Barca, JCTC 21, 9388 (2025); the algebra and the kernels
+   !! are scripts/gen_md_j.py's, checked in numpy by scripts/md/reference.py):
+   !!
+   !!   ket      per primitive pair Q:  Dt[Q] = (-1)^|tau| c_Q E^cd D_cd
+   !!   Hermite  per (P, Q):            Jt[P] += [P|Q] Dt[Q]
+   !!   bra      per shell pair:        J_ab = sum_P c_P E^ab Jt[P]
+   !!
+   !! Only the Hermite stage is quadratic in pairs, and it depends on the bra
+   !! and ket only through l_a + l_b and l_c + l_d. No Cartesian quartet is
+   !! ever formed, which is what every quartet algorithm here (HGP, Rys,
+   !! rotated axis) ran out of registers and local memory on.
+   !!
+   !! SCREENING. Each (P, Q) is skipped when I_P ||rho_Q|| <= cut, with I_P the
+   !! largest Coulomb self-norm of P's component products and ||rho_Q|| the
+   !! Coulomb norm of Q's share of the density. Coulomb is an inner product, so
+   !! by Cauchy-Schwarz that product bounds what the pair adds to any J
+   !! element: the screen is rigorous and density-weighted in one number, and
+   !! it is formed by the ket stage itself every build.
+   !!
+   !! DATA. A primitive pair list in (l_a + l_b, l_a) type order, so each lp
+   !! block is contiguous; Dt and Jt share one flat array layout, an lp block
+   !! at a time, each Hermite row of a block contiguous over the block's pairs.
+   !! Everything lives on the device from `build` to `release`.
+   !!
+   !! P <-> Q SYMMETRY (the default; CMake TERCO_MDJ_SYM_LMAX). The Hermite stage evaluates each
+   !! [P|Q] twice: once in the [lp|lq] launch for Jt[P], once in [lq|lp] for
+   !! Jt[Q]. gen_md_j.py can instead emit symmetric kernels (trc_mdj_s<lp><lq>,
+   !! lp >= lq, CMake TERCO_MDJ_SYM_LMAX >= 0) that evaluate each unordered pair
+   !! once and add [P|Q] Dt[Q] to Jt[P] (in registers) and [Q|P] Dt[P] to Jt[Q]
+   !! (an FP64 atomic per Hermite slot of Q per pair, on the smaller block);
+   !! [Q|P]_{t+tau} = (-1)^|t+tau| [P|Q]_{t+tau}. Each direction keeps its own
+   !! screen (I_P ||rho_Q|| for Jt[P], I_Q ||rho_P|| for Jt[Q]); R is formed if
+   !! either passes, so J equals the gather form's to round-off (measured
+   !! max|dJ| ~1e-12 of max|J| 58.6, gly20 cc-pVDZ). Two layout details mattered:
+   !! each thread starts its ket chunk at its own offset (all of a warp's
+   !! atomics on one address made the stage 2.4x slower), and a diagonal block
+   !! pairs P with Q = P + s (mod n), s = 0..n/2, so no thread idles on a triangle.
+   !! Tiling 2-4 bra pairs per thread to share the scatter's atomics doubled the
+   !! registers and lost.
+   !!
+   !! Why it is not 2x: the screen is density-weighted per direction, so the two
+   !! launches skip different pairs, and only pairs kept by both are shared. On
+   !! water20 cc-pVDZ with the SCF density the union of the two kept sets is
+   !! 0.553 of what the gather form evaluates (0.54-0.56 in every class): that is
+   !! the ceiling. The kernels are FP64-pipe bound (ncu, [1|0]: math-pipe
+   !! throttle dominant, atomics ~7% of L2), and the symmetric one costs more per
+   !! evaluation: 1.6x the instructions, 20.3 against 24.4 active lanes per warp,
+   !! 28.6% against 40% occupancy, and 200-255 registers with spills in the
+   !! heavy classes.
+   !!
+   !! Measured (V100; GPU partly shared with another job, so +-10%): J, SCF
+   !! builds 2-4 (nsys), gly20 cc-pVDZ 0.426 s gather against 0.384 s symmetric.
+   !! In-process interleaved A/B on a synthetic density, all-symmetric over
+   !! all-gather (median): gly20 cc-pVDZ 0.85, water20 cc-pVDZ 0.74, gly50
+   !! cc-pVDZ 0.91 (0.67 with symmetry up to lp + lq = 5-7, noisy), gly20
+   !! cc-pVTZ ~1.00 at every cut, water40 cc-pVTZ 1.15 (worse at every cut).
+   !! Not a clear win where J matters (cc-pVTZ), so the default was gather.
+   !!
+   !! It is the default now. Once boys_eval stopped calling erf and exp for every
+   !! distant pair, the gather form's second evaluation of each kept pair was
+   !! the cost left to save, and the symmetric kernels win on a dedicated V100
+   !! (RHF, 1e-11, full builds, Fock s/build, gather -> symmetric): gly50
+   !! cc-pVDZ 4.49 -> 4.23, def2-SVP 2.98 -> 2.75, gly30 def2-TZVP 20.7 -> 20.6,
+   !! water40 cc-pVTZ 11.8 -> 11.8, gly20 cc-pVTZ 16.5 -> 16.5; energies equal to
+   !! 1e-12. Compile time, ninja: LMAX=2 71 s -> 15 s of MD J modules; LMAX=3
+   !! 327 s -> 338 s, the slowest module 34 s -> 61 s.
+   !! TERCO_MDJ_GATHER_ALL keeps both sets so TRC_MDJ_SYM_LMAX races them at run
+   !! time. Left to try: the symmetric off-diagonal kernels reading Dt[P] from
+   !! memory (built, fewer registers, e.g. [4|1] 192 -> 150, not timed on a
+   !! quiet GPU); a per-class cut chosen by measurement; a screen that is
+   !! symmetric by construction (a direction-free bound), which would make
+   !! every pair shared and lift the 0.55 ceiling at a looser screen.
+   !!
+   !! REFERENCES (inspiration; the formulation and code here are terco's own)
+   !!   L. E. McMurchie, E. R. Davidson, J. Comput. Phys. 26, 218 (1978).
+   !!   E. Palethorpe, G. M. J. Barca, J. Chem. Theory Comput. 21, 9388 (2025).
+   !!   I. S. Ufimtsev, T. J. Martinez, J. Chem. Theory Comput. 4, 222 (2008);
+   !!     5, 1004 (2009).
+   !!   A. Asadchev, E. F. Valeev, J. Phys. Chem. A 127, 10889 (2023);
+   !!     J. Chem. Phys. 160, 244109 (2024).
+   !!
    use pic_types, only: dp, int64
    use trc_basis_types, only: trc_basis_t
    use trc_bins, only: pair_bins_t

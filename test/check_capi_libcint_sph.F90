@@ -54,12 +54,12 @@ contains
       call read_xyz('water.xyz', natm, zint, at_r)
    end subroutine water_geometry
 
-   !
-   ! water/cc-pVDZ, spherical, RHF: trc_set_basis_json vs
-   ! trc_set_basis_libcint(cartesian=0). Energy, nao (the SCF's own
-   ! nao_sph), density and MO coefficients must agree to round-off.
-   !
    subroutine test_orbital_basis(error)
+      !!
+      !! water/cc-pVDZ, spherical, RHF: trc_set_basis_json vs
+      !! trc_set_basis_libcint(cartesian=0). Energy, nao (the SCF's own
+      !! nao_sph), density and MO coefficients must agree to round-off.
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: natm
       integer, allocatable :: zint(:)
@@ -183,13 +183,13 @@ contains
       call bj%release()
    end subroutine test_orbital_basis
 
-   !
-   ! trc_set_jkfit_libcint against trc_set_jkfit_json: the --df energy on
-   ! a spherical orbital basis (cc-pVDZ) with def2-universal-jkfit (also
-   ! spherical) must agree to round-off, whichever way the jkfit basis
-   ! itself was built.
-   !
    subroutine test_jkfit(error)
+      !!
+      !! trc_set_jkfit_libcint against trc_set_jkfit_json: the --df energy on
+      !! a spherical orbital basis (cc-pVDZ) with def2-universal-jkfit (also
+      !! spherical) must agree to round-off, whichever way the jkfit basis
+      !! itself was built.
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: natm
       integer, allocatable :: zint(:)
@@ -260,14 +260,14 @@ contains
       call bk%release()
    end subroutine test_jkfit
 
-   !
-   ! Convention mismatches must still be refused over the libcint path,
-   ! exactly as they are over JSON (trc_capi.F90's own "CARTESIAN
-   ! COMPONENT ORDER"/"AO NORMALISATION" refusals): an orbital basis
-   ! Cartesian while its aux/jkfit basis is spherical (or the reverse),
-   ! and TRC_AO_NORM_UNIT together with a spherical basis.
-   !
    subroutine test_mismatch_refusals(error)
+      !!
+      !! Convention mismatches must still be refused over the libcint path,
+      !! exactly as they are over JSON (trc_capi.F90's own "CARTESIAN
+      !! COMPONENT ORDER"/"AO NORMALISATION" refusals): an orbital basis
+      !! Cartesian while its aux/jkfit basis is spherical (or the reverse),
+      !! and TRC_AO_NORM_UNIT together with a spherical basis.
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: natm
       integer, allocatable :: zint(:)
@@ -321,16 +321,16 @@ contains
       call b_cart%release(); call b_sph%release()
    end subroutine test_mismatch_refusals
 
-   !
-   ! Pack `b`'s shells into libcint's atm/bas/env and call
-   ! trc_set_basis_libcint/trc_set_aux_libcint on `h`. `b` must come
-   ! straight from trc_basis_from_json (common_fac_sp folded in once by
-   ! `build`); `unpack_basis` takes that fold back out before packing, so
-   ! `from_libcint`'s own fold (inside `build`, again) lands on the right
-   ! number -- the same round-trip link_gfortran.F90's own
-   ! build_libcint_arrays uses.
-   !
    subroutine set_basis_libcint(h, b, aux, cartesian, error, expect_ok)
+      !!
+      !! Pack `b`'s shells into libcint's atm/bas/env and call
+      !! trc_set_basis_libcint/trc_set_aux_libcint on `h`. `b` must come
+      !! straight from trc_basis_from_json (common_fac_sp folded in once by
+      !! `build`); `unpack_basis` takes that fold back out before packing, so
+      !! `from_libcint`'s own fold (inside `build`, again) lands on the right
+      !! number -- the same round-trip link_gfortran.F90's own
+      !! build_libcint_arrays uses.
+      !!
       type(c_ptr), intent(in) :: h
       type(trc_basis_t), intent(in) :: b
       logical, intent(in) :: aux

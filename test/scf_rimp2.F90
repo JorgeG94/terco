@@ -1,21 +1,21 @@
-!
-! RI-MP2 on water: RHF through the driver, then the correlation energy
-! through trc_rimp2 with a synthetic auxiliary basis, once as a single
-! auxiliary block and once in blocks of 20 functions (bit-identical
-! required). One process: RI-MP2 over ranks is checked through the
-! command line, by app/cli_mpi_check.py. Writes
-! `rimp2_probe.bin` for rimp2_ref.py, which runs pyscf's RHF and DF-MP2 on
-! the same orbital and auxiliary sets and compares E_os, E_ss and E_corr.
-!
-! Arguments: xyz [basis.json aux.json [probe [sad.json]]]. Without files,
-! primitive 6-31G and the synthetic auxiliary ladder; with them, both sets
-! from MolSSI BSE JSON through trc_basis_json, which is how mqc's sets
-! arrive, and optionally mqc's SAD guess to start from. ONE (basis, aux)
-! case per process (the SAME executable is registered twice, with
-! different ARGS -- terco/scf_rimp2 and terco/scf_rimp2_ccpvdz), so this
-! suite has a single test-drive case.
-!
 module scf_rimp2_suite
+   !!
+   !! RI-MP2 on water: RHF through the driver, then the correlation energy
+   !! through trc_rimp2 with a synthetic auxiliary basis, once as a single
+   !! auxiliary block and once in blocks of 20 functions (bit-identical
+   !! required). One process: RI-MP2 over ranks is checked through the
+   !! command line, by app/cli_mpi_check.py. Writes
+   !! `rimp2_probe.bin` for rimp2_ref.py, which runs pyscf's RHF and DF-MP2 on
+   !! the same orbital and auxiliary sets and compares E_os, E_ss and E_corr.
+   !!
+   !! Arguments: xyz [basis.json aux.json [probe [sad.json]]]. Without files,
+   !! primitive 6-31G and the synthetic auxiliary ladder; with them, both sets
+   !! from MolSSI BSE JSON through trc_basis_json, which is how mqc's sets
+   !! arrive, and optionally mqc's SAD guess to start from. ONE (basis, aux)
+   !! case per process (the SAME executable is registered twice, with
+   !! different ARGS -- terco/scf_rimp2 and terco/scf_rimp2_ccpvdz), so this
+   !! suite has a single test-drive case.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -246,10 +246,10 @@ contains
       end block
    end subroutine test_rimp2
 
-   ! The flat arrays back out of a built basis, so the C-entry check and the
-   ! probe can be written from one set of names. sh_c has common_fac_sp
-   ! folded in; take it out so trc_basis_create folds it once.
    subroutine unpack_basis(b, natm, n, l, np, e, c, r, mnp)
+      !! The flat arrays back out of a built basis, so the C-entry check and the
+      !! probe can be written from one set of names. sh_c has common_fac_sp
+      !! folded in; take it out so trc_basis_create folds it once.
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: natm
       integer, intent(out) :: n, mnp
@@ -265,12 +265,12 @@ contains
       end do
    end subroutine unpack_basis
 
-   ! What pyscf is given as the coefficient. pyscf normalises a contraction
-   ! itself from raw coefficients, so a file-read shell hands over the file
-   ! shape: the normalised coefficients with the primitive norm divided out
-   ! (the overall scale is pyscf's to fix). A synthetic shell is a single
-   ! primitive whose coefficient IS the norm: pyscf gets 1.
    function raw_coef(l, np, e, c, from_file) result(raw)
+      !! What pyscf is given as the coefficient. pyscf normalises a contraction
+      !! itself from raw coefficients, so a file-read shell hands over the file
+      !! shape: the normalised coefficients with the primitive norm divided out
+      !! (the overall scale is pyscf's to fix). A synthetic shell is a single
+      !! primitive whose coefficient IS the norm: pyscf gets 1.
       integer, intent(in) :: l, np
       real(dp), intent(in) :: e(np), c(np)
       logical, intent(in) :: from_file

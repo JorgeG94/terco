@@ -1,25 +1,25 @@
-!
-! The SCF with the SKELETON Fock build (S14.3): the
-! four-centre engine built with the point group, only the orbit
-! representatives launched, G symmetrized after the fold.
-!
-! THE CENTRAL ORACLE, ONE MOLECULE AT A TIME, THREE RUNS:
-!   skeleton   trc_sym_scf_t%skeleton = SYM_SKEL_ON
-!   S4         skeleton = SYM_SKEL_OFF: the full Fock build, then F symmetrized
-!   C1         no group
-! The total energy (<= 1e-10 Eh HF, <= 1e-9 DFT), the orbital energies and
-! the density of the skeleton run must match both of the others. A silent
-! fallback to the full build fails two ways: the engine of the skeleton run
-! must hold the group's orbits, and its last build (`eri%nwork`, the
-! quartets the plan launched) must be smaller than the S4 run's, which is
-! measured on the same engine type with the group left out.
-!
-! Cases cover every group the SCF supports (Cs, C2, Ci, C2v, C2h, D2, D2h and
-! the rotated tops), RHF, UHF, a global hybrid (B3LYP), a range-separated
-! hybrid (wB97X: the long-range exchange pass) and the incremental Fock build
-! on and off. The molecules are those of the group's own check_sym_<group>.
-!
 module check_sym_scf_skeleton_suite
+   !!
+   !! The SCF with the SKELETON Fock build (S14.3): the
+   !! four-centre engine built with the point group, only the orbit
+   !! representatives launched, G symmetrized after the fold.
+   !!
+   !! THE CENTRAL ORACLE, ONE MOLECULE AT A TIME, THREE RUNS:
+   !!   skeleton   trc_sym_scf_t%skeleton = SYM_SKEL_ON
+   !!   S4         skeleton = SYM_SKEL_OFF: the full Fock build, then F symmetrized
+   !!   C1         no group
+   !! The total energy (<= 1e-10 Eh HF, <= 1e-9 DFT), the orbital energies and
+   !! the density of the skeleton run must match both of the others. A silent
+   !! fallback to the full build fails two ways: the engine of the skeleton run
+   !! must hold the group's orbits, and its last build (`eri%nwork`, the
+   !! quartets the plan launched) must be smaller than the S4 run's, which is
+   !! measured on the same engine type with the group left out.
+   !!
+   !! Cases cover every group the SCF supports (Cs, C2, Ci, C2v, C2h, D2, D2h and
+   !! the rotated tops), RHF, UHF, a global hybrid (B3LYP), a range-separated
+   !! hybrid (wB97X: the long-range exchange pass) and the incremental Fock build
+   !! on and off. The molecules are those of the group's own check_sym_<group>.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

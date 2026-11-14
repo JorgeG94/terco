@@ -1,17 +1,17 @@
-!
-! The single source of truth for mathematical and physical constants and
-! atomic masses: every other module takes them from here, so a unit
-! conversion can't silently differ between two parts of the code.
-!
-! Values carry their provenance: CODATA 2018 (the exact SI values where the
-! 2019 redefinition fixed them), an exact definition, or derived from other
-! constants here. HARTREE_TO_KJMOL is the published CODATA value; recomputing
-! it from HARTREE_TO_J*NA_SI differs in the 13th digit, which is immaterial.
-!
-! BOHR_TO_ANGSTROM_CODATA2010 exists on purpose: PCM converts its cavity
-! radii with pyscf's 2010 value so the radii agree with pyscf bit for bit.
-!
 module trc_constants
+   !!
+   !! The single source of truth for mathematical and physical constants and
+   !! atomic masses: every other module takes them from here, so a unit
+   !! conversion can't silently differ between two parts of the code.
+   !!
+   !! Values carry their provenance: CODATA 2018 (the exact SI values where the
+   !! 2019 redefinition fixed them), an exact definition, or derived from other
+   !! constants here. HARTREE_TO_KJMOL is the published CODATA value; recomputing
+   !! it from HARTREE_TO_J*NA_SI differs in the 13th digit, which is immaterial.
+   !!
+   !! BOHR_TO_ANGSTROM_CODATA2010 exists on purpose: PCM converts its cavity
+   !! radii with pyscf's 2010 value so the radii agree with pyscf bit for bit.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use trc_error, only: error_t, ERROR_VALIDATION

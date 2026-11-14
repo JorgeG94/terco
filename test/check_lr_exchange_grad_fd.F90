@@ -1,57 +1,57 @@
-!
-! Finite-difference oracle for the long-range exchange gradient term alone:
-! eri%gradient(j_scale=0, k_scale=1, omega) against a central difference of
-! E_K^lr(D) = Tr(D, eri%fock(D, j_scale=0, k_scale=1, omega)), D FIXED and
-! the basis rebuilt at the displaced geometry -- same technique and the same
-! synthetic density as check_rys_grad_fd.F90, specialised to the erf
-! exchange term by itself (RHF only; see check_lr_exchange_grad_vs_pyscf.F90
-! for why there is no UHF range-separated convention here to check against).
-!
-! THE FACTOR. eri%fock's own convention is vhf = j_scale*J - k_scale*K/2, so
-! eri%fock(D, j_scale=0, k_scale=1, omega) = -K_lr(D)/2 and
-! Tr(D, -K_lr(D)/2) = -(1/2) Tr(D, K_lr(D)) -- NOT the -(1/4) Tr(D, K_lr(D))
-! a textbook RHF exchange ENERGY convention would give (that 1/4 is e_two's
-! own factor of 1/2 on top of this), exactly the same "twice the actual
-! energy" convention eri%gradient's own output is in (this module's header
-! says so for the full-range term; checked here to be exactly as true of
-! the long-range one, not assumed). Both e2_lr_at and eri%gradient's own
-! raw output are compared RAW, with no extra factor on either side -- the
-! same structure check_rys_grad_fd.F90's RHF path uses for the full
-! exchange, specialised to omega > 0 and no Coulomb term.
-!
-! BIT-IDENTITY AT OMEGA = 0. Before the omega > 0 sweep, one direct check:
-! eri%gradient called with omega ABSENT (today's only call shape, the one
-! every existing caller uses) against the same call with j_scale=1,
-! k_scale=1, omega=0.0_dp explicit. See scripts/gen_rys_grad.py's
-! `_RANGE_SEP_BLOCK` for why these SHOULD agree to the last bit: theta ==
-! 1.0_dp exactly at omega == 0, so rho_theta == rho and pref*sqrt(theta) ==
-! pref, each an exact multiply by one, all the way down to the per-root Rys
-! coefficients -- and on the CPU build (deterministic, sequential host
-! accumulation) they measure EXACTLY 0.0_dp, both bases, every run: that is
-! the bit-identity this program's own header promises, checked.
-!
-! ON THE GPU BUILD the same two calls are two SEPARATE kernel launches, and
-! the lane-private gradient copies (trc_grad.F90's GRAD_NPRIV, atomically
-! summed into one grad(3,natm)) commute but do not associate in floating
-! point: nothing about either launch's own warp/block scheduling is
-! guaranteed to revisit the same quartets in the same order as the other's,
-! so two bit-identical kernels can sum to results a few ULP apart. Measured
-! on water/cc-pVDZ, three back-to-back runs of this program: 3.55e-15,
-! 1.42e-14, 5.68e-14 -- a different, non-repeating value each time (not a
-! fixed wrong number), while the SAME runs' omega > 0 finite-difference
-! comparison below stayed at 1.04e-07/1.32e-07 to the last digit printed,
-! every time. GPU_TOL below is two decades above that largest measured gap
-! and eight below the loosest FD tolerance this program checks against --
-! room for the one real failure mode (a REAL mistake threading omega
-! through only one of the two calls) without flagging atomic reordering.
-!
-! Basis (6-31G* or cc-pVDZ) comes from the command line (test/CMakeLists.txt
-! registers this source as TWO executables, ARGS basis_sets/6-31gs.json and
-! basis_sets/cc-pvdz.json), so each run checks exactly the one basis it was
-! invoked with. The omega sweep (0.3, 0.4) is internal to the program, not
-! CMake-driven, and stays that way.
-!
 module check_lr_exchange_grad_fd_suite
+   !!
+   !! Finite-difference oracle for the long-range exchange gradient term alone:
+   !! eri%gradient(j_scale=0, k_scale=1, omega) against a central difference of
+   !! E_K^lr(D) = Tr(D, eri%fock(D, j_scale=0, k_scale=1, omega)), D FIXED and
+   !! the basis rebuilt at the displaced geometry -- same technique and the same
+   !! synthetic density as check_rys_grad_fd.F90, specialised to the erf
+   !! exchange term by itself (RHF only; see check_lr_exchange_grad_vs_pyscf.F90
+   !! for why there is no UHF range-separated convention here to check against).
+   !!
+   !! THE FACTOR. eri%fock's own convention is vhf = j_scale*J - k_scale*K/2, so
+   !! eri%fock(D, j_scale=0, k_scale=1, omega) = -K_lr(D)/2 and
+   !! Tr(D, -K_lr(D)/2) = -(1/2) Tr(D, K_lr(D)) -- NOT the -(1/4) Tr(D, K_lr(D))
+   !! a textbook RHF exchange ENERGY convention would give (that 1/4 is e_two's
+   !! own factor of 1/2 on top of this), exactly the same "twice the actual
+   !! energy" convention eri%gradient's own output is in (this module's header
+   !! says so for the full-range term; checked here to be exactly as true of
+   !! the long-range one, not assumed). Both e2_lr_at and eri%gradient's own
+   !! raw output are compared RAW, with no extra factor on either side -- the
+   !! same structure check_rys_grad_fd.F90's RHF path uses for the full
+   !! exchange, specialised to omega > 0 and no Coulomb term.
+   !!
+   !! BIT-IDENTITY AT OMEGA = 0. Before the omega > 0 sweep, one direct check:
+   !! eri%gradient called with omega ABSENT (today's only call shape, the one
+   !! every existing caller uses) against the same call with j_scale=1,
+   !! k_scale=1, omega=0.0_dp explicit. See scripts/gen_rys_grad.py's
+   !! `_RANGE_SEP_BLOCK` for why these SHOULD agree to the last bit: theta ==
+   !! 1.0_dp exactly at omega == 0, so rho_theta == rho and pref*sqrt(theta) ==
+   !! pref, each an exact multiply by one, all the way down to the per-root Rys
+   !! coefficients -- and on the CPU build (deterministic, sequential host
+   !! accumulation) they measure EXACTLY 0.0_dp, both bases, every run: that is
+   !! the bit-identity this program's own header promises, checked.
+   !!
+   !! ON THE GPU BUILD the same two calls are two SEPARATE kernel launches, and
+   !! the lane-private gradient copies (trc_grad.F90's GRAD_NPRIV, atomically
+   !! summed into one grad(3,natm)) commute but do not associate in floating
+   !! point: nothing about either launch's own warp/block scheduling is
+   !! guaranteed to revisit the same quartets in the same order as the other's,
+   !! so two bit-identical kernels can sum to results a few ULP apart. Measured
+   !! on water/cc-pVDZ, three back-to-back runs of this program: 3.55e-15,
+   !! 1.42e-14, 5.68e-14 -- a different, non-repeating value each time (not a
+   !! fixed wrong number), while the SAME runs' omega > 0 finite-difference
+   !! comparison below stayed at 1.04e-07/1.32e-07 to the last digit printed,
+   !! every time. GPU_TOL below is two decades above that largest measured gap
+   !! and eight below the loosest FD tolerance this program checks against --
+   !! room for the one real failure mode (a REAL mistake threading omega
+   !! through only one of the two calls) without flagging atomic reordering.
+   !!
+   !! Basis (6-31G* or cc-pVDZ) comes from the command line (test/CMakeLists.txt
+   !! registers this source as TWO executables, ARGS basis_sets/6-31gs.json and
+   !! basis_sets/cc-pvdz.json), so each run checks exactly the one basis it was
+   !! invoked with. The omega sweep (0.3, 0.4) is internal to the program, not
+   !! CMake-driven, and stays that way.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -90,11 +90,11 @@ contains
       if (command_argument_count() >= 1) call get_command_argument(1, basis_json)
    end subroutine basis_arg
 
-   !
-   ! Same deterministic dense symmetric matrix as check_rys_grad_fd.F90's
-   ! phase-1 density (RHF total density here, so phase is fixed at 1).
-   !
    subroutine synth_density(nao, d)
+      !!
+      !! Same deterministic dense symmetric matrix as check_rys_grad_fd.F90's
+      !! phase-1 density (RHF total density here, so phase is fixed at 1).
+      !!
       integer, intent(in) :: nao
       real(dp), intent(out) :: d(nao, nao)
       integer :: i, j
@@ -118,12 +118,12 @@ contains
       end do
    end function trace_prod
 
-   !
-   ! omega absent vs omega=0.0_dp explicit, same basis/density/geometry:
-   ! must be bit-for-bit, not just numerically close -- see this module's
-   ! own header.
-   !
    subroutine test_omega_zero(error)
+      !!
+      !! omega absent vs omega=0.0_dp explicit, same basis/density/geometry:
+      !! must be bit-for-bit, not just numerically close -- see this module's
+      !! own header.
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=256) :: basis_json
       type(trc_basis_t) :: bas
@@ -161,11 +161,11 @@ contains
       deallocate (at_z, r, d, g_default, g_omega0)
    end subroutine test_omega_zero
 
-   !
-   ! E_K^lr(D) at the geometry in `r`, basis `basis_json`, FIXED D, RHF
-   ! (ndens=1) only -- see this module's own header for the factor.
-   !
    real(dp) function e2_lr_at(basis_json, nat, at_z, r, nao, d, omega, error)
+      !!
+      !! E_K^lr(D) at the geometry in `r`, basis `basis_json`, FIXED D, RHF
+      !! (ndens=1) only -- see this module's own header for the factor.
+      !!
       character(*), intent(in) :: basis_json
       integer, intent(in) :: nat, at_z(nat), nao
       real(dp), intent(in) :: r(3, nat), d(nao, nao), omega

@@ -1,20 +1,20 @@
-!
-! The packed DIIS kernels of the RI-CCSD solver (trc_rccsd_diis, `packed=.true.`) against plain loops over the
-! (i,j,a,b) index, as a test-drive suite. The kernels pass values computed inside their `do concurrent` (the pair
-! partner `r`, the packed row) to item routines through the TRC_DC_INDEX macro (src/inc/trc_dc_index.inc): ifx
-! 2025/2026 at -O2 treats such a call as loop-invariant when it is handed the plain variable and every element gets
-! the first one's result, which no energy check of a converged run need catch (the iteration still converges, to
-! what the wrong DIIS lets it). Not reproduced at this size: the check passed with the unprotected call on ifx at -O2
-! and -O3, so it pins the packed arithmetic, not the miscompilation. Checked on pair-symmetric amplitudes
-! of no = 3, nv = 4:
-!   - the stored error: (new1 - old1, then the symmetrised t2 step times sqrt(2) off the diagonal) at its packed place;
-!   - the stored vector: (new1, (t2(s) + t2(r))/2) at its packed place;
-!   - the step maxima and ||e||_2 over the full vector;
-!   - after two pushes, `next`'s t2 is sum_m coef(m) vec(k,m) at BOTH (i,j,a,b) and (j,i,b,a) for every element.
-! Tolerance 1e-14 (a sum of two pushed vectors with weights of O(1)); the first two are exact copies of the loops'
-! arithmetic and are compared to 1e-15.
-!
 module check_rccsd_diis_suite
+   !!
+   !! The packed DIIS kernels of the RI-CCSD solver (trc_rccsd_diis, `packed=.true.`) against plain loops over the
+   !! (i,j,a,b) index, as a test-drive suite. The kernels pass values computed inside their `do concurrent` (the pair
+   !! partner `r`, the packed row) to item routines through the TRC_DC_INDEX macro (src/inc/trc_dc_index.inc): ifx
+   !! 2025/2026 at -O2 treats such a call as loop-invariant when it is handed the plain variable and every element gets
+   !! the first one's result, which no energy check of a converged run need catch (the iteration still converges, to
+   !! what the wrong DIIS lets it). Not reproduced at this size: the check passed with the unprotected call on ifx at -O2
+   !! and -O3, so it pins the packed arithmetic, not the miscompilation. Checked on pair-symmetric amplitudes
+   !! of no = 3, nv = 4:
+   !!   - the stored error: (new1 - old1, then the symmetrised t2 step times sqrt(2) off the diagonal) at its packed place;
+   !!   - the stored vector: (new1, (t2(s) + t2(r))/2) at its packed place;
+   !!   - the step maxima and ||e||_2 over the full vector;
+   !!   - after two pushes, `next`'s t2 is sum_m coef(m) vec(k,m) at BOTH (i,j,a,b) and (j,i,b,a) for every element.
+   !! Tolerance 1e-14 (a sum of two pushed vectors with weights of O(1)); the first two are exact copies of the loops'
+   !! arithmetic and are compared to 1e-15.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

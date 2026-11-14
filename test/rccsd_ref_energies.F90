@@ -1,11 +1,11 @@
-!
-! The converged-energy records of test/pyscf_refs/rccsd_ints_*.ref, for the checks that drive RI-CCSD(T) through
-! the C ABI and the CLI (check_capi_rccsd, check_cli_rccsd). The reader is sequential, so the probe records of the
-! integral-level checks that sit between E_FIXED and E_CCSD_CORR are read and dropped; their names and lengths are
-! those of gen_rccsd_ints in generate.py. Keeping this reader apart from rccsd_test_support leaves the hashed
-! helper of the integral-level checks untouched.
-!
 module rccsd_ref_energies
+   !!
+   !! The converged-energy records of test/pyscf_refs/rccsd_ints_*.ref, for the checks that drive RI-CCSD(T) through
+   !! the C ABI and the CLI (check_capi_rccsd, check_cli_rccsd). The reader is sequential, so the probe records of the
+   !! integral-level checks that sit between E_FIXED and E_CCSD_CORR are read and dropped; their names and lengths are
+   !! those of gen_rccsd_ints in generate.py. Keeping this reader apart from rccsd_test_support leaves the hashed
+   !! helper of the integral-level checks untouched.
+   !!
    use pic_types, only: dp
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, ref_read_vector
    implicit none

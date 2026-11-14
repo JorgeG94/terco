@@ -1,19 +1,19 @@
-!
-! The SAD guess from mqc's JSON blocks: water from the same basis file, the
-! guess assembled by trc_guess_json, the SCF started from it and from
-! terco's own guess. Both must reach the same energy, and the SAD start
-! must take at most one iteration more than the built-in one (see the
-! comment at that comparison for why one, not zero). Fixtures
-! sad_6-31g.json and sad_cc-pvdz.json were written by mqc
-! (mqc.write_sad_guess), in terco's CARTESIAN AO convention -- so both
-! basis loads below force Cartesian: cc-pVDZ's d shells default to the
-! spherical AO space now, and mqc's guess has no spherical form to
-! compare against.
-!
-! Two independent cases below (6-31g, cc-pvdz), each its own test-drive
-! unittest.
-!
 module scf_sad_suite
+   !!
+   !! The SAD guess from mqc's JSON blocks: water from the same basis file, the
+   !! guess assembled by trc_guess_json, the SCF started from it and from
+   !! terco's own guess. Both must reach the same energy, and the SAD start
+   !! must take at most one iteration more than the built-in one (see the
+   !! comment at that comparison for why one, not zero). Fixtures
+   !! sad_6-31g.json and sad_cc-pvdz.json were written by mqc
+   !! (mqc.write_sad_guess), in terco's CARTESIAN AO convention -- so both
+   !! basis loads below force Cartesian: cc-pVDZ's d shells default to the
+   !! spherical AO space now, and mqc's guess has no spherical form to
+   !! compare against.
+   !!
+   !! Two independent cases below (6-31g, cc-pvdz), each its own test-drive
+   !! unittest.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -150,9 +150,9 @@ contains
       deallocate (dguess, dg3, smat, tmat, vmat)
    end subroutine run_case
 
-   ! Electron count of the guess needs S; the trace of D alone is only a
-   ! sanity number, printed and not checked.
    real(dp) function trace_ds(n, d)
+      !! Electron count of the guess needs S; the trace of D alone is only a
+      !! sanity number, printed and not checked.
       integer, intent(in) :: n
       real(dp), intent(in) :: d(n, n)
       integer :: i

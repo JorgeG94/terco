@@ -1,17 +1,17 @@
-!
-! The Hirshfeld free-atom (proatom) radial density tables.
-!
-! Ported from metalquicha's mqc_czt_hirshfeld (the table side only -- see
-! trc_hirshfeld.F90's own header for the partition itself), mqc_ -> trc_
-! renamed. mqc solves each free atom itself, at run time, and caches it in
-! memory; terco instead ships the already-converged tables as a data file,
-! test/basis_sets/hirshfeld_proatoms.json, generated once offline by
-! scripts/gen_hirshfeld_proatoms.py and loaded here the first time any
-! element is needed -- the same "basis_sets/<name>.json" relative default
-! plus an environment override that trc_minao's MINAO_BASIS_DEFAULT/
-! TRC_MINAO_BASIS and trc_sap's SAP_BASIS_DEFAULT/TRC_SAP_BASIS already use.
-!
 module trc_hirshfeld_data
+   !!
+   !! The Hirshfeld free-atom (proatom) radial density tables.
+   !!
+   !! Ported from metalquicha's mqc_czt_hirshfeld (the table side only -- see
+   !! trc_hirshfeld.F90's own header for the partition itself), mqc_ -> trc_
+   !! renamed. mqc solves each free atom itself, at run time, and caches it in
+   !! memory; terco instead ships the already-converged tables as a data file,
+   !! test/basis_sets/hirshfeld_proatoms.json, generated once offline by
+   !! scripts/gen_hirshfeld_proatoms.py and loaded here the first time any
+   !! element is needed -- the same "basis_sets/<name>.json" relative default
+   !! plus an environment override that trc_minao's MINAO_BASIS_DEFAULT/
+   !! TRC_MINAO_BASIS and trc_sap's SAP_BASIS_DEFAULT/TRC_SAP_BASIS already use.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use trc_error, only: error_t, ERROR_IO

@@ -1,49 +1,49 @@
-!
-! trc_linalg's shape-inferred forms against the raw forms they must stay
-! bitwise identical to.
-!
-! trc_linalg_t grows a shape-inferred form alongside each raw one. syev
-! becomes a true `generic`, since every existing caller passes it a plain,
-! exactly-ranked array. gemm and dot cannot: existing callers reach their
-! raw forms through sequence association (trc_rimp2_driver's tens(1,1,q)
-! stands for "the sub-matrix starting here"; trc_scf_driver's ADIIS feeds
-! rank-3 estore(:,:,:,i) sections to dot's flat x(*)), and Fortran will
-! not resolve a GENERIC reference that way -- only a reference to one
-! already-identified specific procedure gets that trick. So gemm_mat and
-! dot_2d/dot_3d are their own names, reached alongside -- not through --
-! the unchanged lp%gemm(...) / lp%dot(...) raw calls. Either way, the new
-! form and the raw form reach the SAME library entry point with the SAME
-! arguments, so this check does not compare with a tolerance -- it
-! compares with ==. Any difference at all is a bug in the new form, not
-! rounding.
-!
-! Every array here is deterministic (a closed-form fill, no RNG), so the
-! host and device builds see the same bit pattern and this check is
-! meaningful on both.
-!
-!   1. gemm_mat vs the raw gemm, all four transa/transb combinations,
-!      non-square shapes, default and explicit alpha/beta. One combination
-!      passes A as a(:,:,2), a contiguous section of a rank-3 array --
-!      this is what proves host_data on a contiguous assumed-shape dummy
-!      that received a SECTION (not a whole array) still resolves to a
-!      real device address on nvfortran, which is the failure mode the new
-!      forms exist to avoid (see trc_linalg.F90's own doc comments).
-!   2. dot_2d and dot_3d vs the raw dot, including a section
-!      estore(:,:,:,k) of a rank-4 array.
-!   3. syev_mat vs the raw syev.
-!   4. density vs one raw gemm done by hand; density with k = 0 against
-!      zero.
-!   5. gemm_batched: trc_gemm_batch's tight defaults for each transpose,
-!      and the batch against a plain triple loop, for all four transposes,
-!      tight tiles and a shared, non-tight operand (the trc_sph pattern).
-!      The fills are small integers, so every summation order is exact
-!      and == holds for cuBLAS's batched kernels too. count = 0 must leave
-!      C alone.
-!   6. A conformance mismatch is NOT exercised here: gemm_mat's `error
-!      stop` on a shape mismatch would simply end this program, not report
-!      a FAIL, so there is nothing a test could usefully assert.
-!
 module check_linalg_mat_suite
+   !!
+   !! trc_linalg's shape-inferred forms against the raw forms they must stay
+   !! bitwise identical to.
+   !!
+   !! trc_linalg_t grows a shape-inferred form alongside each raw one. syev
+   !! becomes a true `generic`, since every existing caller passes it a plain,
+   !! exactly-ranked array. gemm and dot cannot: existing callers reach their
+   !! raw forms through sequence association (trc_rimp2_driver's tens(1,1,q)
+   !! stands for "the sub-matrix starting here"; trc_scf_driver's ADIIS feeds
+   !! rank-3 estore(:,:,:,i) sections to dot's flat x(*)), and Fortran will
+   !! not resolve a GENERIC reference that way -- only a reference to one
+   !! already-identified specific procedure gets that trick. So gemm_mat and
+   !! dot_2d/dot_3d are their own names, reached alongside -- not through --
+   !! the unchanged lp%gemm(...) / lp%dot(...) raw calls. Either way, the new
+   !! form and the raw form reach the SAME library entry point with the SAME
+   !! arguments, so this check does not compare with a tolerance -- it
+   !! compares with ==. Any difference at all is a bug in the new form, not
+   !! rounding.
+   !!
+   !! Every array here is deterministic (a closed-form fill, no RNG), so the
+   !! host and device builds see the same bit pattern and this check is
+   !! meaningful on both.
+   !!
+   !!   1. gemm_mat vs the raw gemm, all four transa/transb combinations,
+   !!      non-square shapes, default and explicit alpha/beta. One combination
+   !!      passes A as a(:,:,2), a contiguous section of a rank-3 array --
+   !!      this is what proves host_data on a contiguous assumed-shape dummy
+   !!      that received a SECTION (not a whole array) still resolves to a
+   !!      real device address on nvfortran, which is the failure mode the new
+   !!      forms exist to avoid (see trc_linalg.F90's own doc comments).
+   !!   2. dot_2d and dot_3d vs the raw dot, including a section
+   !!      estore(:,:,:,k) of a rank-4 array.
+   !!   3. syev_mat vs the raw syev.
+   !!   4. density vs one raw gemm done by hand; density with k = 0 against
+   !!      zero.
+   !!   5. gemm_batched: trc_gemm_batch's tight defaults for each transpose,
+   !!      and the batch against a plain triple loop, for all four transposes,
+   !!      tight tiles and a shared, non-tight operand (the trc_sph pattern).
+   !!      The fills are small integers, so every summation order is exact
+   !!      and == holds for cuBLAS's batched kernels too. count = 0 must leave
+   !!      C alone.
+   !!   6. A conformance mismatch is NOT exercised here: gemm_mat's `error
+   !!      stop` on a shape mismatch would simply end this program, not report
+   !!      a FAIL, so there is nothing a test could usefully assert.
+   !!
    use pic_types, only: dp, int64
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
@@ -78,17 +78,17 @@ contains
                   ]
    end subroutine collect_linalg_mat
 
-   ! A closed-form fill: no two (offset, i, j) combinations collide, so
-   ! A, B and C never accidentally share a value that would mask a bug.
    pure real(dp) function fill(offset, i, j) result(v)
+      !! A closed-form fill: no two (offset, i, j) combinations collide, so
+      !! A, B and C never accidentally share a value that would mask a bug.
       integer, intent(in) :: offset, i, j
       v = sin(real(3*i - 2*j + offset, dp)) + 0.07_dp*real(i, dp) - 0.03_dp*real(j, dp)
    end function fill
 
-   ! =======================================================================
-   ! 1. gemm_mat vs the raw gemm
-   ! =======================================================================
    subroutine test_gemm_mat(error)
+      !! =======================================================================
+      !! 1. gemm_mat vs the raw gemm
+      !! =======================================================================
       type(error_type), allocatable, intent(out) :: error
       character, parameter :: OPS(2) = ["N", "T"]
       integer, parameter :: MM = 6, KK = 4, NN = 5
@@ -183,10 +183,10 @@ contains
       deallocate (a3, b, c_mat, c_raw)
    end subroutine test_gemm_mat
 
-   ! =======================================================================
-   ! 2. dot_2d / dot_3d vs the raw dot
-   ! =======================================================================
    subroutine test_dot_mat(error)
+      !! =======================================================================
+      !! 2. dot_2d / dot_3d vs the raw dot
+      !! =======================================================================
       type(error_type), allocatable, intent(out) :: error
       integer, parameter :: PP = 5, QQ = 3
       real(dp), allocatable :: x2(:, :), y2(:, :)
@@ -232,10 +232,10 @@ contains
       deallocate (estore)
    end subroutine test_dot_mat
 
-   ! =======================================================================
-   ! 3. syev_mat vs the raw syev
-   ! =======================================================================
    subroutine test_syev_mat(error)
+      !! =======================================================================
+      !! 3. syev_mat vs the raw syev
+      !! =======================================================================
       type(error_type), allocatable, intent(out) :: error
       integer, parameter :: N = 6
       real(dp), allocatable :: a_mat(:, :), a_raw(:, :), w_mat(:), w_raw(:)
@@ -265,23 +265,23 @@ contains
       deallocate (a_mat, a_raw, w_mat, w_raw)
    end subroutine test_syev_mat
 
-   ! =======================================================================
-   ! 3b. A diagonalisation `pic_syev`/cuSOLVER genuinely cannot do must
-   ! come back through the OPTIONAL `info` argument, not `error stop`.
-   ! dsyev returns a nonzero info ("failed to converge") for a NaN
-   ! matrix whether it started quiet or signalling -- any ordinary
-   ! arithmetic on a signalling NaN quiets it (the standard IEEE 754
-   ! trap-then-return-qNaN behaviour), so by the time a NaN seeded
-   ! earlier reaches an eigensolver it is already quiet either way;
-   ! `ieee_signaling_nan` here is just the intrinsic this test uses to
-   ! seed one deliberately, not a distinction dsyev's own result
-   ! depends on. A density read past the end of an undersized buffer
-   ! (an SCF guess, or app/trc_dlfind_bridge.F90's own per-image warm
-   ! start) is exactly how a NaN like this reaches the diagonalisation
-   ! one level up, in trc_scf_driver.F90; this is the cheap,
-   ! deterministic version of the same thing, at the trc_linalg level.
-   ! =======================================================================
    subroutine test_syev_failure(error)
+      !! =======================================================================
+      !! 3b. A diagonalisation `pic_syev`/cuSOLVER genuinely cannot do must
+      !! come back through the OPTIONAL `info` argument, not `error stop`.
+      !! dsyev returns a nonzero info ("failed to converge") for a NaN
+      !! matrix whether it started quiet or signalling -- any ordinary
+      !! arithmetic on a signalling NaN quiets it (the standard IEEE 754
+      !! trap-then-return-qNaN behaviour), so by the time a NaN seeded
+      !! earlier reaches an eigensolver it is already quiet either way;
+      !! `ieee_signaling_nan` here is just the intrinsic this test uses to
+      !! seed one deliberately, not a distinction dsyev's own result
+      !! depends on. A density read past the end of an undersized buffer
+      !! (an SCF guess, or app/trc_dlfind_bridge.F90's own per-image warm
+      !! start) is exactly how a NaN like this reaches the diagonalisation
+      !! one level up, in trc_scf_driver.F90; this is the cheap,
+      !! deterministic version of the same thing, at the trc_linalg level.
+      !! =======================================================================
       use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_signaling_nan
       type(error_type), allocatable, intent(out) :: error
       integer, parameter :: N = 6
@@ -305,10 +305,10 @@ contains
       deallocate (a, w)
    end subroutine test_syev_failure
 
-   ! =======================================================================
-   ! 4. density vs one raw gemm; density(k<=0)
-   ! =======================================================================
    subroutine test_density(error)
+      !! =======================================================================
+      !! 4. density vs one raw gemm; density(k<=0)
+      !! =======================================================================
       type(error_type), allocatable, intent(out) :: error
       integer, parameter :: N = 5, NC = 4, K = 3
       real(dp), allocatable :: c(:, :), d_mat(:, :), d_raw(:, :), d_zero(:, :)
@@ -347,8 +347,8 @@ contains
    ! 5. gemm_batched
    ! =======================================================================
 
-   ! A small integer, so products and sums are exact in any order.
    pure real(dp) function ifill(offset, i) result(v)
+      !! A small integer, so products and sums are exact in any order.
       integer, intent(in) :: offset, i
       v = real(mod(7*i + offset, 11) - 5, dp)
    end function ifill
@@ -399,9 +399,9 @@ contains
       call run_gemm_batched(error, "T", "T")
    end subroutine test_gemm_batched_tt
 
-   ! C_i = alpha op(A_i) op(B_i) + beta C_i over flat, tightly packed tiles,
-   ! against a triple loop on the host copies.
    subroutine run_gemm_batched(error, ta, tb)
+      !! C_i = alpha op(A_i) op(B_i) + beta C_i over flat, tightly packed tiles,
+      !! against a triple loop on the host copies.
       type(error_type), allocatable, intent(out) :: error
       character, intent(in) :: ta, tb
       integer, parameter :: MM = 6, KK = 4, NN = 5, CNT = 3
@@ -459,10 +459,10 @@ contains
       deallocate (a, b, c, c_ref, c0)
    end subroutine run_gemm_batched
 
-   ! The trc_sph column fold: B is one block of a taller table shared by
-   ! every item (sb = 0, ldb > k), the A and C tiles start inside larger
-   ! arrays; then count = 0 must not touch C.
    subroutine test_gemm_batched_shared(error)
+      !! The trc_sph column fold: B is one block of a taller table shared by
+      !! every item (sb = 0, ldb > k), the A and C tiles start inside larger
+      !! arrays; then count = 0 must not touch C.
       type(error_type), allocatable, intent(out) :: error
       integer, parameter :: NROW = 5, NCI = 3, NSI = 2, LDT = 7, CNT = 4, LEAD = 3
       real(dp), allocatable :: m(:), t(:, :), s(:), s_ref(:), s_keep(:)

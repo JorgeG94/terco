@@ -1,58 +1,58 @@
-!
-! RI-CCSD(T) over MPI ranks, one rank per device (src/post_hf/ccsd/trc_rccsd_driver.F90 and trc_rccsd_triples.F90,
-! RANKS). Water and a C1 hydrogen peroxide, cc-pVDZ with cc-pVDZ-RIFIT (check_rccsd_triples' molecules and pyscf
-! references, read through rccsd_ref_energies). The SCF runs over the communicator, as the CLI and the C API run it
-! (test/scf_mpi.F90). The program is generic in the rank count; ctest runs it on 1 and 2, on a host MPI build too (the
-! (T) routine is the occupied-driven one, which runs on the host).
-!
-! No argument: rank 0 runs the CCSD(T) alone first (no communicator, the single-rank code path), then every rank runs
-! it over the communicator. The CCSD iterations are shared too (the ladder of every iteration is cut over the ranks), so
-! the ranks accumulate the ladder in another order than one rank does: the numbers agree to round-off, NOT bitwise.
-! Required, on every rank:
-!   - converged, (T) done, no error;
-!   - E_CCSD within TOL_ONE_RANK_E of the single-rank value, and the same number of iterations (rank 0 computes the
-!     single-rank run alone, the others receive its numbers). Both stop on |dE| < 1e-12 and max |step| < 1e-10 at the
-!     same iteration, so they differ by the round-off of the ladder sum carried through the contraction of the
-!     iteration. Measured on water and h2o2, host and GPU builds, 2 to 4 ranks: 1.7e-16 at most. The bound is
-!     TOL_ONE_RANK_E = 1e-14, two orders over that; a ladder lost, doubled or built from stale amplitudes moves the
-!     energy by 1e-4 or more;
-!   - EVERY element of t1 and t2, read back from the rank's device, within TOL_ONE_RANK_AMP = 1e-14 of rank 0's
-!     single-rank amplitudes (the converged iterates; measured 4.2e-17 at most);
-!   - E(T) within TOL_TRIPLES_ONE_RANK = 1e-14 of the single-rank value (measured 3.5e-18 at most; the amplitudes
-!     differ by the above) -- and within TOL_TRIPLES_SAME = 1e-16, the original bound, where the amplitudes are
-!     bitwise the single-rank ones (a communicator of one rank);
-!   - the energy (and the largest step) after ONE and after TWO iterations (max_iterations 1 and 2, not converged)
-!     within 1e-14 of the one-rank run's: a follower working from amplitudes one iteration old, or none, changes these
-!     by far more, while the final energy of a converged run would absorb part of it (`prefix_case`);
-!   - the energies against pyscf;
-!   - E_CCSD, E(T), their sum and the iteration count equal over the ranks (MIN equals MAX), and the amplitudes bitwise
-!     equal among the ranks (their sums are: the final broadcast copies the first rank's).
-! Water is run once more with the sign of one occupied and one virtual orbital column flipped on every rank but the
-! first (the GUARD case: a caller that hands ranks different orbitals). The same energies and amplitudes are required;
-! without the orbital broadcast of trc_rccsd_solve the (T) of the other ranks is wrong and this case fails.
-!
-! Argument "fail": the failure paths, which must end on every rank without a rank left waiting (ctest puts a timeout
-! on it), and with the TEXT of the refusing rank's reason on every rank: a CCSD that does not converge (every rank sees
-! it; the followers stop with the first rank and (T) is refused on all of them); a refusal on ONE rank (the last, and
-! rank 0) that makes every rank refuse; a refusal of one rank's LADDER share (a negative d_batch on that rank only);
-! an explicit assembled ladder, which cannot be cut over ranks (every rank asks, then one rank); a rank whose
-! ladder range is refused INSIDE an iteration (a range beyond nv, on the last rank and then on rank 0, through the
-! public `set_share`/`step`/`follow`): every rank must stop with that rank's reason, and the same objects then run a
-! healthy iteration on the converged amplitudes and reproduce them (the transfers of an iteration between the ranks,
-! checked on their own), then the same with the last rank's range EMPTY (a hand-set table: the rule never leaves a
-! follower empty for these molecules): that rank must be sent no amplitudes, build no tau and still take the control word
-! and the agreement, with the first rank's send loop and the follower deciding from the same table; and a step table
-! without the transfer rows, refused through the agreement. WHICH PATH THIS COVERS: the agreed stop inside an
-! iteration is exercised through the update type's own API (`set_share`, `step`, `follow`), not through
-! `trc_rccsd_solve`: the cut a solve uses is the pure rule (always valid), the integrals are checked and agreed before
-! the loop, and nothing in a solve's inputs makes one rank's share fail later, so a solve cannot reach that branch
-! without a test-only hook, which production code does not have. The solve-level stops that ARE tested are the
-! agreed ones before the loop (below) and the control word's stop (not converged); a (T)
-! routine that one rank asks for differently from the others; the host reference, which has no work share; one rank's
-! state marked not converged; one rank's caller-set work share; each followed by a correct (T) on the same state.
-!
-! A collective-MPI program: no internal procedures (NVHPC 26.5 + HPC-X). The cases are module procedures.
 module rccsd_mpi_cases
+   !!
+   !! RI-CCSD(T) over MPI ranks, one rank per device (src/post_hf/ccsd/trc_rccsd_driver.F90 and trc_rccsd_triples.F90,
+   !! RANKS). Water and a C1 hydrogen peroxide, cc-pVDZ with cc-pVDZ-RIFIT (check_rccsd_triples' molecules and pyscf
+   !! references, read through rccsd_ref_energies). The SCF runs over the communicator, as the CLI and the C API run it
+   !! (test/scf_mpi.F90). The program is generic in the rank count; ctest runs it on 1 and 2, on a host MPI build too (the
+   !! (T) routine is the occupied-driven one, which runs on the host).
+   !!
+   !! No argument: rank 0 runs the CCSD(T) alone first (no communicator, the single-rank code path), then every rank runs
+   !! it over the communicator. The CCSD iterations are shared too (the ladder of every iteration is cut over the ranks), so
+   !! the ranks accumulate the ladder in another order than one rank does: the numbers agree to round-off, NOT bitwise.
+   !! Required, on every rank:
+   !!   - converged, (T) done, no error;
+   !!   - E_CCSD within TOL_ONE_RANK_E of the single-rank value, and the same number of iterations (rank 0 computes the
+   !!     single-rank run alone, the others receive its numbers). Both stop on |dE| < 1e-12 and max |step| < 1e-10 at the
+   !!     same iteration, so they differ by the round-off of the ladder sum carried through the contraction of the
+   !!     iteration. Measured on water and h2o2, host and GPU builds, 2 to 4 ranks: 1.7e-16 at most. The bound is
+   !!     TOL_ONE_RANK_E = 1e-14, two orders over that; a ladder lost, doubled or built from stale amplitudes moves the
+   !!     energy by 1e-4 or more;
+   !!   - EVERY element of t1 and t2, read back from the rank's device, within TOL_ONE_RANK_AMP = 1e-14 of rank 0's
+   !!     single-rank amplitudes (the converged iterates; measured 4.2e-17 at most);
+   !!   - E(T) within TOL_TRIPLES_ONE_RANK = 1e-14 of the single-rank value (measured 3.5e-18 at most; the amplitudes
+   !!     differ by the above) -- and within TOL_TRIPLES_SAME = 1e-16, the original bound, where the amplitudes are
+   !!     bitwise the single-rank ones (a communicator of one rank);
+   !!   - the energy (and the largest step) after ONE and after TWO iterations (max_iterations 1 and 2, not converged)
+   !!     within 1e-14 of the one-rank run's: a follower working from amplitudes one iteration old, or none, changes these
+   !!     by far more, while the final energy of a converged run would absorb part of it (`prefix_case`);
+   !!   - the energies against pyscf;
+   !!   - E_CCSD, E(T), their sum and the iteration count equal over the ranks (MIN equals MAX), and the amplitudes bitwise
+   !!     equal among the ranks (their sums are: the final broadcast copies the first rank's).
+   !! Water is run once more with the sign of one occupied and one virtual orbital column flipped on every rank but the
+   !! first (the GUARD case: a caller that hands ranks different orbitals). The same energies and amplitudes are required;
+   !! without the orbital broadcast of trc_rccsd_solve the (T) of the other ranks is wrong and this case fails.
+   !!
+   !! Argument "fail": the failure paths, which must end on every rank without a rank left waiting (ctest puts a timeout
+   !! on it), and with the TEXT of the refusing rank's reason on every rank: a CCSD that does not converge (every rank sees
+   !! it; the followers stop with the first rank and (T) is refused on all of them); a refusal on ONE rank (the last, and
+   !! rank 0) that makes every rank refuse; a refusal of one rank's LADDER share (a negative d_batch on that rank only);
+   !! an explicit assembled ladder, which cannot be cut over ranks (every rank asks, then one rank); a rank whose
+   !! ladder range is refused INSIDE an iteration (a range beyond nv, on the last rank and then on rank 0, through the
+   !! public `set_share`/`step`/`follow`): every rank must stop with that rank's reason, and the same objects then run a
+   !! healthy iteration on the converged amplitudes and reproduce them (the transfers of an iteration between the ranks,
+   !! checked on their own), then the same with the last rank's range EMPTY (a hand-set table: the rule never leaves a
+   !! follower empty for these molecules): that rank must be sent no amplitudes, build no tau and still take the control word
+   !! and the agreement, with the first rank's send loop and the follower deciding from the same table; and a step table
+   !! without the transfer rows, refused through the agreement. WHICH PATH THIS COVERS: the agreed stop inside an
+   !! iteration is exercised through the update type's own API (`set_share`, `step`, `follow`), not through
+   !! `trc_rccsd_solve`: the cut a solve uses is the pure rule (always valid), the integrals are checked and agreed before
+   !! the loop, and nothing in a solve's inputs makes one rank's share fail later, so a solve cannot reach that branch
+   !! without a test-only hook, which production code does not have. The solve-level stops that ARE tested are the
+   !! agreed ones before the loop (below) and the control word's stop (not converged); a (T)
+   !! routine that one rank asks for differently from the others; the host reference, which has no work share; one rank's
+   !! state marked not converged; one rank's caller-set work share; each followed by a correct (T) on the same state.
+   !!
+   !! A collective-MPI program: no internal procedures (NVHPC 26.5 + HPC-X). The cases are module procedures.
    use pic_types, only: dp
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_MAX, MPI_MIN
    use trc_api, only: trc_basis_t, trc_pairlist_t

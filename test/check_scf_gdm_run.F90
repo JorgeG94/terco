@@ -1,50 +1,50 @@
-!
-! Geometric direct minimisation as a step mode of the SCF loop
-! (src/scf/trc_scf_gdm_step.F90), end to end through `trc_scf_run`, as a
-! test-drive suite. check_scf_gdm.F90 covers the numerical core (L-BFGS,
-! preconditioner, step control) on its own; this is the loop around it.
-!
-! Most cases run GDM at the DEFAULT `gdm_start` (DIIS first, GDM once the
-! commutator is below 0.1, which is how it is meant to be used); the water RHF,
-! OH UHF and the reviewer's started-too-early case run it from the first plain
-! diagonalisation (`gdm_start = huge`), where the guess is good (or, for the
-! last, where the failure is the point). Each case asserts `gdm_steps > 0`, so a
-! run that never left DIIS cannot pass, and that the accepted energies rose
-! by no more than the accept rule allows: the plain slack (1e-10) between two
-! full Fock builds, 1e-8 where an incremental build is involved
-! (`check_gdm_ran`). Cases that say "exact" switch the incremental build off,
-! which makes the energy deterministic and that bound sharp.
-!
-! References, and where each comes from:
-!
-!  - water RHF and OH UHF, cc-pVDZ: the pyscf energies check_spherical.F90
-!    and check_scf_stabilise.F90 hold (cart=False, conv_tol 1e-11), 1e-8;
-!  - RKS (B3LYP, water) and UKS (PBE, OH), 6-31G uncontracted: rks.ref
-!    (pyscf on terco's own grid), at scf_rks's tolerances: 1e-8 closed shell;
-!    2e-6 for the open-shell DFT converged energy, which scf_rks justifies by
-!    the energy AT pyscf's density agreeing to 1e-8 (OH's pi pair is
-!    degenerate and the orientation costs grid error): this check replicates
-!    that at-density run and its 1e-8, and starts from the reference's own
-!    symmetry-broken density as scf_rks does. The closed-shell case starts
-!    from the converged Hartree-Fock density of the same basis;
-!  - PCM (C-PCM, 6-31G*, water RHF and OH UHF): pcm_scf_main.ref, 1e-8,
-!    symmetric, as scf_pcm.F90 holds it. OH is started from pyscf's own
-!    converged density (scf_pcm's reason: its pi pair is split only by the
-!    cavity and the energy along that mode is flat to 3e-8), with scf_pcm's
-!    at-density check; a second case runs OH from the default guess with
-!    exact energies as a regression of the slow flat mode (converges within its cap);
-!  - density fitting (water cc-pVDZ HF): scf_df.ref, 1e-8;
-!  - a linearly dependent basis (O2- d-aug-cc-pVDZ, 5 functions dropped):
-!    check_scf_lindep_gap's pyscf energy, 1e-8;
-!  - water B3LYP/6-31G*: cpks_water_6-31gs_b3lyp.ref's E_SCF, 1e-8 (the
-!    default-start run and the DIIS run; the started-too-early run is the
-!    case that must NOT reach it).
-!
-! The mechanism cases (rejection, breakdown, the flat-mode convergence, a rotation
-! cap, MOM) have no external reference for the mechanism, only for the energy
-! the run must still reach, or for the DIIS/MOM run of the same input.
-!
 module check_scf_gdm_run_suite
+   !!
+   !! Geometric direct minimisation as a step mode of the SCF loop
+   !! (src/scf/convergence/trc_scf_gdm_step.F90), end to end through `trc_scf_run`, as a
+   !! test-drive suite. check_scf_gdm.F90 covers the numerical core (L-BFGS,
+   !! preconditioner, step control) on its own; this is the loop around it.
+   !!
+   !! Most cases run GDM at the DEFAULT `gdm_start` (DIIS first, GDM once the
+   !! commutator is below 0.1, which is how it is meant to be used); the water RHF,
+   !! OH UHF and the reviewer's started-too-early case run it from the first plain
+   !! diagonalisation (`gdm_start = huge`), where the guess is good (or, for the
+   !! last, where the failure is the point). Each case asserts `gdm_steps > 0`, so a
+   !! run that never left DIIS cannot pass, and that the accepted energies rose
+   !! by no more than the accept rule allows: the plain slack (1e-10) between two
+   !! full Fock builds, 1e-8 where an incremental build is involved
+   !! (`check_gdm_ran`). Cases that say "exact" switch the incremental build off,
+   !! which makes the energy deterministic and that bound sharp.
+   !!
+   !! References, and where each comes from:
+   !!
+   !!  - water RHF and OH UHF, cc-pVDZ: the pyscf energies check_spherical.F90
+   !!    and check_scf_stabilise.F90 hold (cart=False, conv_tol 1e-11), 1e-8;
+   !!  - RKS (B3LYP, water) and UKS (PBE, OH), 6-31G uncontracted: rks.ref
+   !!    (pyscf on terco's own grid), at scf_rks's tolerances: 1e-8 closed shell;
+   !!    2e-6 for the open-shell DFT converged energy, which scf_rks justifies by
+   !!    the energy AT pyscf's density agreeing to 1e-8 (OH's pi pair is
+   !!    degenerate and the orientation costs grid error): this check replicates
+   !!    that at-density run and its 1e-8, and starts from the reference's own
+   !!    symmetry-broken density as scf_rks does. The closed-shell case starts
+   !!    from the converged Hartree-Fock density of the same basis;
+   !!  - PCM (C-PCM, 6-31G*, water RHF and OH UHF): pcm_scf_main.ref, 1e-8,
+   !!    symmetric, as scf_pcm.F90 holds it. OH is started from pyscf's own
+   !!    converged density (scf_pcm's reason: its pi pair is split only by the
+   !!    cavity and the energy along that mode is flat to 3e-8), with scf_pcm's
+   !!    at-density check; a second case runs OH from the default guess with
+   !!    exact energies as a regression of the slow flat mode (converges within its cap);
+   !!  - density fitting (water cc-pVDZ HF): scf_df.ref, 1e-8;
+   !!  - a linearly dependent basis (O2- d-aug-cc-pVDZ, 5 functions dropped):
+   !!    check_scf_lindep_gap's pyscf energy, 1e-8;
+   !!  - water B3LYP/6-31G*: cpks_water_6-31gs_b3lyp.ref's E_SCF, 1e-8 (the
+   !!    default-start run and the DIIS run; the started-too-early run is the
+   !!    case that must NOT reach it).
+   !!
+   !! The mechanism cases (rejection, breakdown, the flat-mode convergence, a rotation
+   !! cap, MOM) have no external reference for the mechanism, only for the energy
+   !! the run must still reach, or for the DIIS/MOM run of the same input.
+   !!
    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_positive_inf
    use pic_types, only: dp
    use pic_strings, only: to_string
@@ -78,7 +78,7 @@ module check_scf_gdm_run_suite
    !! The default `gdm_slack`: the most an accepted point may sit above the
    !! one before when both Fock builds were full.
    real(dp), parameter :: NOISE_BOUND = 1.0e-8_dp
-   !! The wider bound of src/scf/trc_scf_gdm_step.F90 (GDM_NOISE_BOUND), for a
+   !! The wider bound of src/scf/convergence/trc_scf_gdm_step.F90 (GDM_NOISE_BOUND), for a
    !! comparison in which an incremental build is involved.
    integer, parameter :: FLAT_MAX_ITERATION = 400
    !! `max_iteration` of the flat-mode regression. The mode is flat to 3e-8, so
@@ -130,9 +130,8 @@ contains
                   ]
    end subroutine collect_scf_gdm_run
 
-   ! --- helpers -----------------------------------------------------------
-
    function base_options() result(opts)
+      !! --- helpers -----------------------------------------------------------
       !! The options every case starts from: tight enough to compare with
       !! pyscf at 1e-8, a generous iteration budget. GDM off.
       type(trc_scf_options_t) :: opts
@@ -306,9 +305,8 @@ contains
       if (allocated(error)) return
    end subroutine check_gdm_ran
 
-   ! --- Hartree-Fock ------------------------------------------------------
-
    subroutine test_water_rhf(error)
+      !! --- Hartree-Fock ------------------------------------------------------
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_scf_result_t) :: res
@@ -340,9 +338,8 @@ contains
                  to_string(abs(res%energy - E_OH_UHF)))
    end subroutine test_oh_uhf
 
-   ! --- Kohn-Sham ---------------------------------------------------------
-
    subroutine test_water_rks(error)
+      !! --- Kohn-Sham ---------------------------------------------------------
       !! rks.ref case 4: water, B3LYP, restricted, from the converged
       !! Hartree-Fock density of the same basis (a sane guess: the default GWH
       !! guess of this uncontracted basis starts 10000 Eh high, a poor test of
@@ -430,9 +427,8 @@ contains
                  to_string(abs(res%energy - plain%energy)))
    end subroutine test_oh_uks
 
-   ! --- continuum, density fitting ----------------------------------------
-
    subroutine pcm_case(error, xyz, tag, seeded, what)
+      !! --- continuum, density fitting ----------------------------------------
       !! One pcm_scf_main.ref case (6-31G*, C-PCM, Hartree-Fock), against
       !! pyscf at scf_pcm.F90's 1e-8, symmetric. `seeded`: start from pyscf's
       !! converged density (OH, as scf_pcm does: its pi pair is split only by
@@ -592,9 +588,8 @@ contains
                  to_string(abs(res%energy - e_ref)))
    end subroutine test_water_df
 
-   ! --- linear dependence -------------------------------------------------
-
    subroutine test_lindep(error)
+      !! --- linear dependence -------------------------------------------------
       !! check_scf_lindep_gap's O2- (d-aug-cc-pVDZ, threshold 0.2, 5 functions
       !! dropped). The retained levels are the DIIS run's; the dropped states
       !! stay above every real level, where `scf_driver_null_shift` put them.
@@ -638,9 +633,8 @@ contains
                  "a dropped state fell below a real level")
    end subroutine test_lindep
 
-   ! --- handover, rejection, orbitals -------------------------------------
-
    subroutine test_default_handover(error)
+      !! --- handover, rejection, orbitals -------------------------------------
       !! `gdm_start` left at its default: DIIS (the first iterations, then the
       !! handover iteration's plain diagonalisation), GDM after.
       type(error_type), allocatable, intent(out) :: error
@@ -887,9 +881,8 @@ contains
       call bas%release()
    end subroutine test_nothing_to_rotate
 
-   ! --- refusals, breakdown -----------------------------------------------
-
    subroutine test_refusals(error)
+      !! --- refusals, breakdown -----------------------------------------------
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_scf_options_t) :: opts

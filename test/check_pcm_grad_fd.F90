@@ -1,29 +1,29 @@
-!
-! The analytic PCM (C-PCM / IEF-PCM) nuclear gradient against a central
-! finite difference of terco's own FULLY RECONVERGED SCF energy (same
-! technique as check_full_grad_fd.F90, which this file otherwise mirrors),
-! plus translational invariance of the analytic gradient alone.
-!
-! `trc_scf_gradient`'s vacuum terms (eri%gradient, trc_1e_gradient, nuclear
-! repulsion) are ALREADY validated against pyscf and FD elsewhere
-! (check_full_grad_fd.F90, check_full_grad_vs_pyscf.F90); this program is
-! the FIRST thing that fails if the PCM piece this feature adds on top
-! (trc_pcm_grad%pcm_gradient_add: grad_qv + grad_nuc + grad_solver) is
-! wrong, since `trc_scf_run` already includes E_diel in the reconverged
-! energy FD differentiates.
-!
-! Cases: water (RHF, C-PCM and IEF-PCM) and formamide (RHF, IEF-PCM) --
-! formamide's four atoms sit close enough together that several surface
-! points are in another atom's SWIG switching region, which the plain
-! water case barely exercises (its three spheres are closer to isolated).
-! eps = 78.3553 (water), 6-31G* throughout.
-!
-! NO INTERNAL PROCEDURES -- same reason check_full_grad_fd.F90's own
-! header gives (an internal procedure anywhere in the executable corrupted
-! a later collective Fock build on this toolchain, measured there): the
-! gradient and FD helpers below are plain module procedures.
-!
 module check_pcm_grad_fd_suite
+   !!
+   !! The analytic PCM (C-PCM / IEF-PCM) nuclear gradient against a central
+   !! finite difference of terco's own FULLY RECONVERGED SCF energy (same
+   !! technique as check_full_grad_fd.F90, which this file otherwise mirrors),
+   !! plus translational invariance of the analytic gradient alone.
+   !!
+   !! `trc_scf_gradient`'s vacuum terms (eri%gradient, trc_1e_gradient, nuclear
+   !! repulsion) are ALREADY validated against pyscf and FD elsewhere
+   !! (check_full_grad_fd.F90, check_full_grad_vs_pyscf.F90); this program is
+   !! the FIRST thing that fails if the PCM piece this feature adds on top
+   !! (trc_pcm_grad%pcm_gradient_add: grad_qv + grad_nuc + grad_solver) is
+   !! wrong, since `trc_scf_run` already includes E_diel in the reconverged
+   !! energy FD differentiates.
+   !!
+   !! Cases: water (RHF, C-PCM and IEF-PCM) and formamide (RHF, IEF-PCM) --
+   !! formamide's four atoms sit close enough together that several surface
+   !! points are in another atom's SWIG switching region, which the plain
+   !! water case barely exercises (its three spheres are closer to isolated).
+   !! eps = 78.3553 (water), 6-31G* throughout.
+   !!
+   !! NO INTERNAL PROCEDURES -- same reason check_full_grad_fd.F90's own
+   !! header gives (an internal procedure anywhere in the executable corrupted
+   !! a later collective Fock build on this toolchain, measured there): the
+   !! gradient and FD helpers below are plain module procedures.
+   !!
    use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
    use pic_types, only: dp
    use pic_strings, only: to_string

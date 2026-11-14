@@ -1,37 +1,37 @@
-!
-! The FULL analytic RHF/UHF nuclear gradient (trc_scf_grad%trc_scf_gradient:
-! one-electron + eri%gradient's two-electron part + nuclear repulsion)
-! against pyscf's own `Gradients` class AT A CONVERGED density, on
-! SPHERICAL cc-pVDZ bases -- water/RHF, formamide/RHF, OH/UHF.
-!
-! WHY THIS PROGRAM, ON TOP OF check_full_grad_fd.F90 AND
-! check_1e_grad_vs_pyscf.F90. Neither of those exercises trc_scf_gradient's
-! own spherical fold (D and W folded nao_sph -> the Cartesian nao the
-! kernels need, T D T^T -- src/scf/trc_scf_grad.F90's own header):
-! check_full_grad_fd.F90 only runs 6-31G* (Cartesian, no fold at all), and
-! check_1e_grad_vs_pyscf.F90 hands trc_1e_gradient a synthetic density
-! directly at the Cartesian nao, bypassing the SCF (and the fold) entirely
-! even on a basis BSE tags spherical. This program is the one path that
-! builds a converged SPHERICAL SCF, then asks trc_scf_gradient for its
-! gradient -- the fold runs for real here.
-!
-! FIXED INITIAL DENSITY. See test/pyscf_refs/generate.py's gen_full_grad
-! for the full reasoning (its own docstring): water and formamide need
-! none (a closed-shell ground state has no nearby competing stationary
-! point); OH does, the same recipe rks.ref's own OH cases use, because its
-! unpaired electron sits in a genuinely degenerate pair of pi orbitals.
-! The committed DM0 (OH only) seeds `trc_scf_run`'s own `dguess`, so both
-! sides converge toward the SAME orientation.
-!
-! The three cases share one reference file (full_grad_ccpvdz.ref), read
-! strictly in write order (pyscf_ref_io.F90's own header: tags are read
-! sequentially, not by seeking a name, and generate.py's gen_full_grad
-! writes water, formamide, then OH). All three are read once, up front
-! (load_reference, called from the program below before run_testsuite),
-! into g_cases; each test-drive case then just compares against its own
-! already-read record.
-!
 module check_full_grad_vs_pyscf_suite
+   !!
+   !! The FULL analytic RHF/UHF nuclear gradient (trc_scf_grad%trc_scf_gradient:
+   !! one-electron + eri%gradient's two-electron part + nuclear repulsion)
+   !! against pyscf's own `Gradients` class AT A CONVERGED density, on
+   !! SPHERICAL cc-pVDZ bases -- water/RHF, formamide/RHF, OH/UHF.
+   !!
+   !! WHY THIS PROGRAM, ON TOP OF check_full_grad_fd.F90 AND
+   !! check_1e_grad_vs_pyscf.F90. Neither of those exercises trc_scf_gradient's
+   !! own spherical fold (D and W folded nao_sph -> the Cartesian nao the
+   !! kernels need, T D T^T -- src/scf/trc_scf_grad.F90's own header):
+   !! check_full_grad_fd.F90 only runs 6-31G* (Cartesian, no fold at all), and
+   !! check_1e_grad_vs_pyscf.F90 hands trc_1e_gradient a synthetic density
+   !! directly at the Cartesian nao, bypassing the SCF (and the fold) entirely
+   !! even on a basis BSE tags spherical. This program is the one path that
+   !! builds a converged SPHERICAL SCF, then asks trc_scf_gradient for its
+   !! gradient -- the fold runs for real here.
+   !!
+   !! FIXED INITIAL DENSITY. See test/pyscf_refs/generate.py's gen_full_grad
+   !! for the full reasoning (its own docstring): water and formamide need
+   !! none (a closed-shell ground state has no nearby competing stationary
+   !! point); OH does, the same recipe rks.ref's own OH cases use, because its
+   !! unpaired electron sits in a genuinely degenerate pair of pi orbitals.
+   !! The committed DM0 (OH only) seeds `trc_scf_run`'s own `dguess`, so both
+   !! sides converge toward the SAME orientation.
+   !!
+   !! The three cases share one reference file (full_grad_ccpvdz.ref), read
+   !! strictly in write order (pyscf_ref_io.F90's own header: tags are read
+   !! sequentially, not by seeking a name, and generate.py's gen_full_grad
+   !! writes water, formamide, then OH). All three are read once, up front
+   !! (load_reference, called from the program below before run_testsuite),
+   !! into g_cases; each test-drive case then just compares against its own
+   !! already-read record.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

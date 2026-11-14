@@ -1,34 +1,34 @@
-!
-! Density-fitted RHF/RKS (`--df`'s library entry, trc_scf_df.F90) against
-! pyscf's own `density_fit`, same auxiliary basis (def2-universal-jkfit) on
-! both sides -- water and formamide, cc-pVDZ and 6-31G*, Hartree-Fock, PBE
-! and B3LYP. Converged energy only, at rks.ref's closed-shell tolerance
-! (1e-8): no at-density control (unlike rks.ref itself), since that needs
-! an AO-norm-corrected density transfer this case does not have.
-!
-! The dump carries the molecule/basis NAMES (and nao/natm/nalpha/nbeta as
-! a sanity check), not shell data: test/pyscf_refs/generate.py's
-! gen_scf_df rebuilds the identical basis itself, straight from the same
-! xyz file and the same BSE JSON this program reads (bse_json_basis, the
-! scf_robust.F90/check_rys_fock_vs_pyscf.F90 pattern) -- not from terco's
-! OWN per-primitive sh_c/sh_e, which fold in a primitive normalisation
-! pyscf's custom-basis-dict path applies a second time if handed those
-! values directly (found debugging this very case: every contraction with
-! more than one primitive came out wrong, confirmed against the exact
-! same basis built via bse_json_basis instead).
-!
-! NEEDS DF_LMAX_AUX >= 4: def2-universal-jkfit has g auxiliary functions
-! on O/C/N. Every case self-skips (test-drive's skip_test) rather than
-! failing when `maxval(aux%sh_l) > DF_LMAX_AUX` -- a build below that
-! ceiling.
-!
-! Twelve independent (molecule, basis, method) cases below, each its own
-! test-drive unittest; the shared setup (per-group basis/DF-JK build, the
-! probe write, the golden dump and the pyscf-reference read) runs once --
-! see check_xc_energy_suite's own `computed` comment for why, and why
-! this suite stays `parallel=.false.`.
-!
 module scf_df_suite
+   !!
+   !! Density-fitted RHF/RKS (`--df`'s library entry, trc_scf_df.F90) against
+   !! pyscf's own `density_fit`, same auxiliary basis (def2-universal-jkfit) on
+   !! both sides -- water and formamide, cc-pVDZ and 6-31G*, Hartree-Fock, PBE
+   !! and B3LYP. Converged energy only, at rks.ref's closed-shell tolerance
+   !! (1e-8): no at-density control (unlike rks.ref itself), since that needs
+   !! an AO-norm-corrected density transfer this case does not have.
+   !!
+   !! The dump carries the molecule/basis NAMES (and nao/natm/nalpha/nbeta as
+   !! a sanity check), not shell data: test/pyscf_refs/generate.py's
+   !! gen_scf_df rebuilds the identical basis itself, straight from the same
+   !! xyz file and the same BSE JSON this program reads (bse_json_basis, the
+   !! scf_robust.F90/check_rys_fock_vs_pyscf.F90 pattern) -- not from terco's
+   !! OWN per-primitive sh_c/sh_e, which fold in a primitive normalisation
+   !! pyscf's custom-basis-dict path applies a second time if handed those
+   !! values directly (found debugging this very case: every contraction with
+   !! more than one primitive came out wrong, confirmed against the exact
+   !! same basis built via bse_json_basis instead).
+   !!
+   !! NEEDS DF_LMAX_AUX >= 4: def2-universal-jkfit has g auxiliary functions
+   !! on O/C/N. Every case self-skips (test-drive's skip_test) rather than
+   !! failing when `maxval(aux%sh_l) > DF_LMAX_AUX` -- a build below that
+   !! ceiling.
+   !!
+   !! Twelve independent (molecule, basis, method) cases below, each its own
+   !! test-drive unittest; the shared setup (per-group basis/DF-JK build, the
+   !! probe write, the golden dump and the pyscf-reference read) runs once --
+   !! see check_xc_energy_suite's own `computed` comment for why, and why
+   !! this suite stays `parallel=.false.`.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
@@ -95,10 +95,10 @@ contains
       end if
    end function case_name
 
-   ! One wrapper per case, each passing its own index: a unittest must not
-   ! depend on which unittests ran before it (a name-selected run, or a
-   ! reordered suite, would otherwise check the wrong case).
    subroutine case_01(error)
+      !! One wrapper per case, each passing its own index: a unittest must not
+      !! depend on which unittests ran before it (a name-selected run, or a
+      !! reordered suite, would otherwise check the wrong case).
       type(error_type), allocatable, intent(out) :: error
       call test_case(error, 1)
    end subroutine case_01

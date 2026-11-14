@@ -1,28 +1,28 @@
-!
-! A named set of timed steps, shared by every driver that reports a table
-! like RI-MP2's: device-synced wall time per step, an optional flop count
-! (FLOP/s), an optional byte count for a bandwidth-bound step (B/s
-! instead, both SI-prefixed), an NVTX range opened and closed at the same device syncs as the
-! timer, and a report routine that prints the table the way RI-MP2 always
-! has. Lifted out of trc_rimp2_driver.F90 so trc_scf_df.F90 (DF-JK) reports
-! in exactly the same shape rather than a second copy of the same bookkeeping.
-!
-! ONE OBJECT, N STEPS. `init` takes the step names and (for a bandwidth-bound
-! step) which ones report B/s instead of FLOP/s; `step_on`/`step_off`
-! bracket one call to a step, `add_flop`/`add_bytes` record its operation
-! count once (added, so a step called many times across an iteration loop
-! accumulates both time and operations the same way); `report` prints the
-! table, an optional "all dense algebra"-style subtotal row over a caller-
-! chosen subset of steps, and a total.
-!
-! OVER MPI RANKS each rank fills its own table; `reduce` (collective) turns
-! them into the job's: a step's time is the slowest rank's, since the job
-! waits for it, and its operations are summed over the ranks, except for a
-! step every rank runs in full (`replicated_steps` in `init`), whose work
-! counts once. A per-rank table instead shows one rank's share, and its
-! rate stays flat however many ranks run.
-!
 module trc_step_table
+   !!
+   !! A named set of timed steps, shared by every driver that reports a table
+   !! like RI-MP2's: device-synced wall time per step, an optional flop count
+   !! (FLOP/s), an optional byte count for a bandwidth-bound step (B/s
+   !! instead, both SI-prefixed), an NVTX range opened and closed at the same device syncs as the
+   !! timer, and a report routine that prints the table the way RI-MP2 always
+   !! has. Lifted out of trc_rimp2_driver.F90 so trc_scf_df.F90 (DF-JK) reports
+   !! in exactly the same shape rather than a second copy of the same bookkeeping.
+   !!
+   !! ONE OBJECT, N STEPS. `init` takes the step names and (for a bandwidth-bound
+   !! step) which ones report B/s instead of FLOP/s; `step_on`/`step_off`
+   !! bracket one call to a step, `add_flop`/`add_bytes` record its operation
+   !! count once (added, so a step called many times across an iteration loop
+   !! accumulates both time and operations the same way); `report` prints the
+   !! table, an optional "all dense algebra"-style subtotal row over a caller-
+   !! chosen subset of steps, and a total.
+   !!
+   !! OVER MPI RANKS each rank fills its own table; `reduce` (collective) turns
+   !! them into the job's: a step's time is the slowest rank's, since the job
+   !! waits for it, and its operations are summed over the ranks, except for a
+   !! step every rank runs in full (`replicated_steps` in `init`), whose work
+   !! counts once. A per-rank table instead shows one rank's share, and its
+   !! rate stays flat however many ranks run.
+   !!
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
    use pic_timer, only: timer_type
@@ -67,14 +67,14 @@ module trc_step_table
 
 contains
 
-   !
-   ! `names` fixes the step count and their print order; `bytes_steps`
-   ! (optional, by 1-based index into `names`) marks which ones are
-   ! bandwidth- rather than flop-bound, and `replicated_steps` which ones
-   ! every rank runs in full. Safe to call again (e.g. a second build on the
-   ! same object): resets every total to zero.
-   !
    subroutine step_table_init(this, prefix, names, bytes_steps, replicated_steps)
+      !!
+      !! `names` fixes the step count and their print order; `bytes_steps`
+      !! (optional, by 1-based index into `names`) marks which ones are
+      !! bandwidth- rather than flop-bound, and `replicated_steps` which ones
+      !! every rank runs in full. Safe to call again (e.g. a second build on the
+      !! same object): resets every total to zero.
+      !!
       class(step_table_t), intent(inout) :: this
       character(len=*), intent(in) :: prefix
       character(len=*), intent(in) :: names(:)
@@ -121,14 +121,14 @@ contains
       end do
    end subroutine step_table_reset
 
-   !
-   ! Open step `k`: `tc` starts once everything queued on the device has
-   ! finished -- cuBLAS/cuSOLVER return to the host before their kernels
-   ! finish, so a host timer around them measures the launch, not the work,
-   ! unless it syncs first -- and its NVTX range ("<prefix>: <name>", a no-op
-   ! unless built with TERCO_NVTX) opens.
-   !
    subroutine step_table_on(this, lp, k, tc)
+      !!
+      !! Open step `k`: `tc` starts once everything queued on the device has
+      !! finished -- cuBLAS/cuSOLVER return to the host before their kernels
+      !! finish, so a host timer around them measures the launch, not the work,
+      !! unless it syncs first -- and its NVTX range ("<prefix>: <name>", a no-op
+      !! unless built with TERCO_NVTX) opens.
+      !!
       class(step_table_t), intent(in) :: this
       type(trc_linalg_t), intent(in) :: lp
       integer, intent(in) :: k
@@ -138,11 +138,11 @@ contains
       call profiler_start(this%prefix//": "//trim(this%names(k)), nvtx_only=.true.)
    end subroutine step_table_on
 
-   !
-   ! Close step `k`: after the same device sync, the time `tc` has run is
-   ! added to the step's total, and its NVTX range closes.
-   !
    subroutine step_table_off(this, lp, k, tc)
+      !!
+      !! Close step `k`: after the same device sync, the time `tc` has run is
+      !! added to the step's total, and its NVTX range closes.
+      !!
       class(step_table_t), intent(inout) :: this
       type(trc_linalg_t), intent(in) :: lp
       integer, intent(in) :: k
@@ -152,15 +152,15 @@ contains
       call profiler_stop(this%prefix//": "//trim(this%names(k)))
    end subroutine step_table_off
 
-   !
-   ! Add a time already measured elsewhere -- a caller that cannot bracket
-   ! its own kernel with `step_on`/`step_off` (it only gets a finished
-   ! elapsed time back, the way `trc_xc_rks`'s `t_points`/`t_pairs` or
-   ! `trc_scf_context`'s grid-build timer already do) still gets its total
-   ! into this table's `report`. No NVTX range: one cannot be drawn around
-   ! work that has already finished by the time this is called.
-   !
    subroutine step_table_add_time(this, k, t)
+      !!
+      !! Add a time already measured elsewhere -- a caller that cannot bracket
+      !! its own kernel with `step_on`/`step_off` (it only gets a finished
+      !! elapsed time back, the way `trc_xc_rks`'s `t_points`/`t_pairs` or
+      !! `trc_scf_context`'s grid-build timer already do) still gets its total
+      !! into this table's `report`. No NVTX range: one cannot be drawn around
+      !! work that has already finished by the time this is called.
+      !!
       class(step_table_t), intent(inout) :: this
       integer, intent(in) :: k
       real(dp), intent(in) :: t
@@ -181,16 +181,16 @@ contains
       this%bytes(k) = this%bytes(k) + n
    end subroutine step_table_add_bytes
 
-   !
-   ! Collective over `comm`: every rank's table becomes the job's. Each
-   ! step's time becomes the slowest rank's; its operations and bytes the
-   ! sum over the ranks, or this rank's own for a replicated step, which
-   ! every rank ran in full. Call it once, after the last step and before
-   ! `report`; `report` then labels the total with the rank count.
-   ! Operations travel as doubles (pic-mpi has no int64 reduction): exact
-   ! below 2^53, about 9 PFLOP per step.
-   !
    subroutine step_table_reduce(this, comm)
+      !!
+      !! Collective over `comm`: every rank's table becomes the job's. Each
+      !! step's time becomes the slowest rank's; its operations and bytes the
+      !! sum over the ranks, or this rank's own for a replicated step, which
+      !! every rank ran in full. Call it once, after the last step and before
+      !! `report`; `report` then labels the total with the rank count.
+      !! Operations travel as doubles (pic-mpi has no int64 reduction): exact
+      !! below 2^53, about 9 PFLOP per step.
+      !!
       class(step_table_t), intent(inout) :: this
       type(comm_t), intent(in) :: comm
       real(dp), allocatable :: w(:)
@@ -215,20 +215,20 @@ contains
       this%nranks_reduced = comm%size()
    end subroutine step_table_reduce
 
-   !
-   ! One line per step: device time, operations (or bytes) executed and the
-   ! rate, each count printed with the SI prefix that keeps it under 1000
-   ! (trc_si); then, when `subtotal_mask` is given, one more line summing
-   ! the time and flops of the masked steps under `subtotal_label` (RI-MP2's
-   ! "all dense algebra" row); then a total, which says whose numbers these
-   ! are: "all N ranks" after `reduce`, else "rank r of N", one rank's share.
-   !
-   ! A table where no step counted any operations or bytes (the XC gradient,
-   ! the RI-MP2 gradient's own step list) prints the time column alone: a
-   ! whole column of dashes read as if the counting had failed. Where some
-   ! steps count, a dash marks the ones that do not.
-   !
    subroutine step_table_report(this, t_total, rank, nranks, subtotal_mask, subtotal_label)
+      !!
+      !! One line per step: device time, operations (or bytes) executed and the
+      !! rate, each count printed with the SI prefix that keeps it under 1000
+      !! (trc_si); then, when `subtotal_mask` is given, one more line summing
+      !! the time and flops of the masked steps under `subtotal_label` (RI-MP2's
+      !! "all dense algebra" row); then a total, which says whose numbers these
+      !! are: "all N ranks" after `reduce`, else "rank r of N", one rank's share.
+      !!
+      !! A table where no step counted any operations or bytes (the XC gradient,
+      !! the RI-MP2 gradient's own step list) prints the time column alone: a
+      !! whole column of dashes read as if the counting had failed. Where some
+      !! steps count, a dash marks the ones that do not.
+      !!
       class(step_table_t), intent(in) :: this
       real(dp), intent(in) :: t_total
       integer, intent(in) :: rank, nranks

@@ -1,56 +1,56 @@
-!
-! The analytic RI-MP2 nuclear gradient (src/post_hf/rimp2/trc_rimp2_grad.F90, exact-
-! ERI RHF reference + fitted correlation) against two references:
-!
-! A. metalquicha's RI-MP2 gradient references, on the same molecule, basis,
-!    auxiliary set and frozen core, read off its validation suite:
-!    metalquicha validation/validation_tests_cpu.json (commit f132dbb877),
-!    entries "RI-MP2 gradient H2O cc-pvdz/cc-pvdz-rifit frozen 0", "... H2O
-!    6-31g/cc-pvdz-rifit frozen 1" and "... NH3 def2-svp/def2-svp-rifit
-!    frozen 0", geometries validation/inputs/sample_inputs/w1.xyz and
-!    nh3.xyz (copied here as water_mqc.xyz and nh3_mqc.xyz). Provenance of
-!    those numbers: tools/cpu_validation/gen_cpu_validation.py's
-!    mqc_ri_mp2_gradient, i.e. tools/cpu_validation/ri_mp2_gradient.py, an
-!    analytic RI-MP2 gradient in numpy over PySCF 2.14 integrals (exact RHF
-!    reference, exact Z-vector operator, the same BSE JSON files read by
-!    PySCF), itself validated against finite differences of PySCF's own
-!    RHF + DF-MP2 energy (PySCF implements no RI-MP2 gradient:
-!    DFMP2.nuc_grad_method raises NotImplementedError). The orbital and
-!    auxiliary JSON files are byte-identical to metalquicha's basis_sets/
-!    (def2-svp-rifit.json copied from there); spherical throughout, as
-!    PySCF built them (`mol.cart = False`, auxmol inheriting it). The total
-!    energy is checked against metalquicha's as well, the proof that the
-!    two codes differentiate the same number.
-!
-! B. Central finite differences (step 1e-4 Bohr) of terco's OWN RHF +
-!    RI-MP2 energy (trc_scf_run + trc_rimp2_run, the pair anchored to pyscf
-!    by rimp2*.ref and sph_corr.ref), on cases metalquicha has none for:
-!    Cartesian bases, formamide, frozen core on a molecule with three
-!    cores, and a spherical orbital basis with its padded virtuals.
-!
-! C. The --df reference (`dfjk`/`jkaux`, the SCF's own J and K fitted):
-!    metalquicha's "RI-MP2 gradient over a fitted reference NH3
-!    def2-svp/def2-svp-rifit" (same validation file; its reference is a
-!    Richardson-extrapolated finite difference of PySCF 2.14's own
-!    density-fitted RHF + DF-MP2 energy, both fits in def2-SVP-RIFIT,
-!    gen_cpu_validation.py's pyscf_df_ref_mp2_gradient), and central
-!    finite differences of terco's own --df RHF + RI-MP2 energy, spherical
-!    with def2-universal-jkfit for the SCF and frozen core, and Cartesian
-!    with one set doing both fits. Plus an internal identity:
-!    scf_grad_df_bilinear at X = D/2 is the --df SCF's own two-electron
-!    gradient (scf_grad_df_two_electron).
-!
-! D. trc_rimp2_relax's pair-symmetric amplitude pass (K for j >= i groups,
-!    the rest from mirror tiles) against the same pass without the
-!    symmetry, whole tile pool and narrow bands.
-!
-! Every case also checks the correlation energy the gradient's amplitudes
-! give against trc_rimp2_run's (same B, same pairs) and translational
-! invariance -- necessary, not sufficient.
-!
-! A test-drive suite.
-!
 module check_rimp2_grad_suite
+   !!
+   !! The analytic RI-MP2 nuclear gradient (src/post_hf/rimp2/trc_rimp2_grad.F90, exact-
+   !! ERI RHF reference + fitted correlation) against two references:
+   !!
+   !! A. metalquicha's RI-MP2 gradient references, on the same molecule, basis,
+   !!    auxiliary set and frozen core, read off its validation suite:
+   !!    metalquicha validation/validation_tests_cpu.json (commit f132dbb877),
+   !!    entries "RI-MP2 gradient H2O cc-pvdz/cc-pvdz-rifit frozen 0", "... H2O
+   !!    6-31g/cc-pvdz-rifit frozen 1" and "... NH3 def2-svp/def2-svp-rifit
+   !!    frozen 0", geometries validation/inputs/sample_inputs/w1.xyz and
+   !!    nh3.xyz (copied here as water_mqc.xyz and nh3_mqc.xyz). Provenance of
+   !!    those numbers: tools/cpu_validation/gen_cpu_validation.py's
+   !!    mqc_ri_mp2_gradient, i.e. tools/cpu_validation/ri_mp2_gradient.py, an
+   !!    analytic RI-MP2 gradient in numpy over PySCF 2.14 integrals (exact RHF
+   !!    reference, exact Z-vector operator, the same BSE JSON files read by
+   !!    PySCF), itself validated against finite differences of PySCF's own
+   !!    RHF + DF-MP2 energy (PySCF implements no RI-MP2 gradient:
+   !!    DFMP2.nuc_grad_method raises NotImplementedError). The orbital and
+   !!    auxiliary JSON files are byte-identical to metalquicha's basis_sets/
+   !!    (def2-svp-rifit.json copied from there); spherical throughout, as
+   !!    PySCF built them (`mol.cart = False`, auxmol inheriting it). The total
+   !!    energy is checked against metalquicha's as well, the proof that the
+   !!    two codes differentiate the same number.
+   !!
+   !! B. Central finite differences (step 1e-4 Bohr) of terco's OWN RHF +
+   !!    RI-MP2 energy (trc_scf_run + trc_rimp2_run, the pair anchored to pyscf
+   !!    by rimp2*.ref and sph_corr.ref), on cases metalquicha has none for:
+   !!    Cartesian bases, formamide, frozen core on a molecule with three
+   !!    cores, and a spherical orbital basis with its padded virtuals.
+   !!
+   !! C. The --df reference (`dfjk`/`jkaux`, the SCF's own J and K fitted):
+   !!    metalquicha's "RI-MP2 gradient over a fitted reference NH3
+   !!    def2-svp/def2-svp-rifit" (same validation file; its reference is a
+   !!    Richardson-extrapolated finite difference of PySCF 2.14's own
+   !!    density-fitted RHF + DF-MP2 energy, both fits in def2-SVP-RIFIT,
+   !!    gen_cpu_validation.py's pyscf_df_ref_mp2_gradient), and central
+   !!    finite differences of terco's own --df RHF + RI-MP2 energy, spherical
+   !!    with def2-universal-jkfit for the SCF and frozen core, and Cartesian
+   !!    with one set doing both fits. Plus an internal identity:
+   !!    scf_grad_df_bilinear at X = D/2 is the --df SCF's own two-electron
+   !!    gradient (scf_grad_df_two_electron).
+   !!
+   !! D. trc_rimp2_relax's pair-symmetric amplitude pass (K for j >= i groups,
+   !!    the rest from mirror tiles) against the same pass without the
+   !!    symmetry, whole tile pool and narrow bands.
+   !!
+   !! Every case also checks the correlation energy the gradient's amplitudes
+   !! give against trc_rimp2_run's (same B, same pairs) and translational
+   !! invariance -- necessary, not sufficient.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t
@@ -135,9 +135,8 @@ contains
                   ]
    end subroutine collect_rimp2_grad
 
-   ! ---- A. metalquicha -----------------------------------------------------
-
    subroutine test_mqc_water_ccpvdz(error)
+      !! ---- A. metalquicha -----------------------------------------------------
       type(error_type), allocatable, intent(out) :: error
       type(case_t) :: c
       c%name = "water cc-pVDZ fc0"
@@ -201,9 +200,8 @@ contains
       call check(error, maxval(abs(sum(grad, dim=2))) < TRANS_TOL, trim(c%name)//": not translationally invariant")
    end subroutine against_mqc
 
-   ! ---- C. the --df reference ----------------------------------------------
-
    subroutine test_mqc_dfref_nh3(error)
+      !! ---- C. the --df reference ----------------------------------------------
       type(error_type), allocatable, intent(out) :: error
       type(case_t) :: c
       real(dp), allocatable :: grad(:, :), r(:, :)
@@ -412,9 +410,8 @@ contains
                  ": refused for the wrong reason: "//trim(job%res%message))
    end subroutine test_df_refuses_frozen_core
 
-   ! ---- B. finite differences of terco's own energy -------------------------
-
    subroutine test_fd_formamide_cart(error)
+      !! ---- B. finite differences of terco's own energy -------------------------
       type(error_type), allocatable, intent(out) :: error
       type(case_t) :: c
       c%name = "formamide cart fc0"
@@ -485,9 +482,8 @@ contains
       call check(error, maxval(abs(sum(grad, dim=2))) < TRANS_TOL, trim(c%name)//": not translationally invariant")
    end subroutine against_fd
 
-   ! ---- shared ------------------------------------------------------------
-
    subroutine setup_system(error, c, nat, z, r, sys, e_tot)
+      !! ---- shared ------------------------------------------------------------
       !! The bases, the converged reference (four-centre, or --df over
       !! `c%jkfit`) and E_RHF + E_RI-MP2 at geometry r, the way the energy
       !! path computes them.

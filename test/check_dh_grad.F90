@@ -1,45 +1,45 @@
-!
-! The analytic double-hybrid nuclear gradient (src/post_hf/rimp2/trc_rimp2_grad.F90
-! over a Kohn-Sham reference: E = E_KS + c E_RI-MP2 on the KS orbitals)
-! against:
-!
-! A. Central finite differences of terco's OWN double-hybrid energy
-!    (trc_scf_run with the functional, then trc_rimp2_run, c E_corr: the
-!    pair test/scf_dh.F90 anchors to pyscf's B2PLYP/B2GP-PLYP/mPW2-PLYP +
-!    DF-MP2 at 1e-9..1e-8), Richardson-extrapolated over steps 2h and h:
-!    (4 D(h) - D(2h))/3 removes the h^2 truncation a DFT energy's step has
-!    to live with. The grid moves with the atoms at every displaced
-!    geometry, as the analytic grid response assumes. --df (the priority:
-!    Cartesian with one set doing both fits, spherical with
-!    def2-universal-jkfit for the SCF) and the exact-ERI reference.
-!
-! B. pyscf 2.14 (/home/jorge/install/miniconda3/envs/gpu4pyscf): Richardson
-!    finite differences (h = 1e-3 Bohr, the same formula) of pyscf's own
-!    density-fitted RKS with the double hybrid's semilocal composition
-!    (test/pyscf_refs/generate.py's DH_HYB strings, e.g. '0.53*HF +
-!    0.47*B88, 0.73*LYP'; grids.level 3, the grid terco builds, conv_tol
-!    1e-13, conv_tol_grad 1e-9) plus c DF-MP2 (mp.dfmp2.DFMP2, with_df on
-!    the same auxiliary basis, the same frozen core), from the same basis
-!    JSON files (generate.py's bse_json_basis) and the same geometry, in
-!    Bohr through terco's CODATA 2018 constant (pyscf's own is CODATA
-!    2010). PySCF has no double-hybrid gradient of its own. Its energy
-!    agrees with terco's to 2e-11 (water) at the reference geometry; its
-!    finite-difference noise shows in the components symmetry makes zero
-!    (up to 4e-10 for water, 2e-9 for formamide), which sets the gates.
-!
-! C. The identity that defines the new exchange-correlation term (src/xc/
-!    trc_xc_grad_potential.F90): E_xc[D + t P] = E_xc[D] + t Tr(P V_xc[D]) +
-!    O(t^2) at every geometry, so d/dR Tr(P V_xc[D]) is the t-derivative of
-!    trc_xc_grad's own gradient at D + t P, grid response included.
-!
-! Plus the --df Z-vector's AO fallback against its MO path, and the refusals
-! the KS reference brings (a range-separated functional). Every gradient
-! case also checks translational invariance and that the gradient's
-! amplitudes give the energy's correlation energy.
-!
-! A test-drive suite.
-!
 module check_dh_grad_suite
+   !!
+   !! The analytic double-hybrid nuclear gradient (src/post_hf/rimp2/trc_rimp2_grad.F90
+   !! over a Kohn-Sham reference: E = E_KS + c E_RI-MP2 on the KS orbitals)
+   !! against:
+   !!
+   !! A. Central finite differences of terco's OWN double-hybrid energy
+   !!    (trc_scf_run with the functional, then trc_rimp2_run, c E_corr: the
+   !!    pair test/scf_dh.F90 anchors to pyscf's B2PLYP/B2GP-PLYP/mPW2-PLYP +
+   !!    DF-MP2 at 1e-9..1e-8), Richardson-extrapolated over steps 2h and h:
+   !!    (4 D(h) - D(2h))/3 removes the h^2 truncation a DFT energy's step has
+   !!    to live with. The grid moves with the atoms at every displaced
+   !!    geometry, as the analytic grid response assumes. --df (the priority:
+   !!    Cartesian with one set doing both fits, spherical with
+   !!    def2-universal-jkfit for the SCF) and the exact-ERI reference.
+   !!
+   !! B. pyscf 2.14 (/home/jorge/install/miniconda3/envs/gpu4pyscf): Richardson
+   !!    finite differences (h = 1e-3 Bohr, the same formula) of pyscf's own
+   !!    density-fitted RKS with the double hybrid's semilocal composition
+   !!    (test/pyscf_refs/generate.py's DH_HYB strings, e.g. '0.53*HF +
+   !!    0.47*B88, 0.73*LYP'; grids.level 3, the grid terco builds, conv_tol
+   !!    1e-13, conv_tol_grad 1e-9) plus c DF-MP2 (mp.dfmp2.DFMP2, with_df on
+   !!    the same auxiliary basis, the same frozen core), from the same basis
+   !!    JSON files (generate.py's bse_json_basis) and the same geometry, in
+   !!    Bohr through terco's CODATA 2018 constant (pyscf's own is CODATA
+   !!    2010). PySCF has no double-hybrid gradient of its own. Its energy
+   !!    agrees with terco's to 2e-11 (water) at the reference geometry; its
+   !!    finite-difference noise shows in the components symmetry makes zero
+   !!    (up to 4e-10 for water, 2e-9 for formamide), which sets the gates.
+   !!
+   !! C. The identity that defines the new exchange-correlation term (src/xc/
+   !!    trc_xc_grad_potential.F90): E_xc[D + t P] = E_xc[D] + t Tr(P V_xc[D]) +
+   !!    O(t^2) at every geometry, so d/dR Tr(P V_xc[D]) is the t-derivative of
+   !!    trc_xc_grad's own gradient at D + t P, grid response included.
+   !!
+   !! Plus the --df Z-vector's AO fallback against its MO path, and the refusals
+   !! the KS reference brings (a range-separated functional). Every gradient
+   !! case also checks translational invariance and that the gradient's
+   !! amplitudes give the energy's correlation energy.
+   !!
+   !! A test-drive suite.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char, c_char
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -163,9 +163,8 @@ contains
                   ]
    end subroutine collect_dh_grad_long
 
-   ! ---- the C ABI ------------------------------------------------------------
-
    subroutine capi_water_dh(error, h, lindep)
+      !! ---- the C ABI ------------------------------------------------------------
       !! A handle through trc_run_rimp2: water, Cartesian cc-pVDZ, b2plyp,
       !! --df with cc-pVDZ-RIFIT doing both fits, frozen 1 -- the pyscf case.
       type(error_type), allocatable, intent(out) :: error
@@ -254,9 +253,8 @@ contains
                  "not refused, or for the wrong reason: '"//why//"'")
    end subroutine test_capi_refuses_lindep
 
-   ! ---- B. pyscf --------------------------------------------------------------
-
    subroutine test_pyscf_water(error)
+      !! ---- B. pyscf --------------------------------------------------------------
       type(error_type), allocatable, intent(out) :: error
       type(case_t) :: c
       c%name = "water cart --df b2plyp fc1"
@@ -308,9 +306,8 @@ contains
       call check(error, maxval(abs(sum(grad, dim=2))) < TRANS_TOL, trim(c%name)//": not translationally invariant")
    end subroutine against_pyscf
 
-   ! ---- C. the exchange-correlation identity --------------------------------
-
    subroutine test_xc_potential_identity(error)
+      !! ---- C. the exchange-correlation identity --------------------------------
       !! P = C_o M C_o^T, M symmetric with both signs (indefinite, as a
       !! relaxed density is) and inside the occupied span, so D + t P keeps
       !! the reference's tails: the difference stays where the functional is
@@ -409,9 +406,8 @@ contains
       !$acc exit data delete(d3, grad)
    end subroutine xc_gradient_at
 
-   ! ---- A. finite differences of terco's own energy ------------------------
-
    subroutine test_fd_df_water_cart(error)
+      !! ---- A. finite differences of terco's own energy ------------------------
       type(error_type), allocatable, intent(out) :: error
       type(case_t) :: c
       c%name = "water cart --df b2plyp fc1"
@@ -582,9 +578,8 @@ contains
       d = (e_plus - e_minus)/(2.0_dp*h)
    end subroutine central_difference
 
-   ! ---- shared ------------------------------------------------------------
-
    subroutine setup_system(error, c, nat, z, r, sys, e_tot, with_pt2)
+      !! ---- shared ------------------------------------------------------------
       !! The bases, the converged KS reference (four-centre, or --df over
       !! `c%jkfit`) and E_KS + c E_RI-MP2 at geometry r, the way
       !! test/scf_dh.F90 computes them; `with_pt2` false stops after the SCF.

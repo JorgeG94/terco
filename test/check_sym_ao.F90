@@ -1,30 +1,30 @@
-!
-! trc_sym_ao: AO signed permutations and the SO basis, on terco's own 1e
-! integrals.
-!
-! For HOCl (Cs, planar, so every atom is its own mirror image: only the signs
-! are exercised), nonplanar CHFCl2 (Cs, the mirror swaps the two Cl), water
-! (C2v) and ethylene (D2h, turned off the input axes), so that every sign mask
-! acts on some AO, in 6-31G* and cc-pVDZ, in the Cartesian and the spherical
-! AO space, with the basis built on the standard frame of trc_sym_geom:
-!   - U^T U = I, and the irrep dimensions add up to the AO count;
-!   - the dimensions equal those of pyscf 2.14.0's mol.symm_orb
-!     (pyscf_refs/sym_so_dims.ref);
-!   - U^T S U and U^T H U (H = T + V) are block-diagonal in the irreps,
-!     off-block elements <= 1e-12 (scaled by the largest element for the
-!     uncontracted set, whose exponents run to 1e3);
-!   - S is invariant under every signed permutation.
-! Also: a decontracted (primitive) basis keeps the shell map; equivalent
-! atoms with different shells, and a basis not on the standard frame, are
-! refused.
-!
-! Registered twice, as check_nosym is: `check_sym_ao` (mode "main") and
-! `check_sym_ao_f` (mode "f", the uncontracted l = 0..3 set, which prints
-! SKIP and exits when this build's LMAX is below 3). The Cartesian component
-! order is whatever TERCO_CART_ORDER this build has; the tests run under
-! both orders (see the stage report).
-!
 module check_sym_ao_suite
+   !!
+   !! trc_sym_ao: AO signed permutations and the SO basis, on terco's own 1e
+   !! integrals.
+   !!
+   !! For HOCl (Cs, planar, so every atom is its own mirror image: only the signs
+   !! are exercised), nonplanar CHFCl2 (Cs, the mirror swaps the two Cl), water
+   !! (C2v) and ethylene (D2h, turned off the input axes), so that every sign mask
+   !! acts on some AO, in 6-31G* and cc-pVDZ, in the Cartesian and the spherical
+   !! AO space, with the basis built on the standard frame of trc_sym_geom:
+   !!   - U^T U = I, and the irrep dimensions add up to the AO count;
+   !!   - the dimensions equal those of pyscf 2.14.0's mol.symm_orb
+   !!     (pyscf_refs/sym_so_dims.ref);
+   !!   - U^T S U and U^T H U (H = T + V) are block-diagonal in the irreps,
+   !!     off-block elements <= 1e-12 (scaled by the largest element for the
+   !!     uncontracted set, whose exponents run to 1e3);
+   !!   - S is invariant under every signed permutation.
+   !! Also: a decontracted (primitive) basis keeps the shell map; equivalent
+   !! atoms with different shells, and a basis not on the standard frame, are
+   !! refused.
+   !!
+   !! Registered twice, as check_nosym is: `check_sym_ao` (mode "main") and
+   !! `check_sym_ao_f` (mode "f", the uncontracted l = 0..3 set, which prints
+   !! SKIP and exits when this build's LMAX is below 3). The Cartesian component
+   !! order is whatever TERCO_CART_ORDER this build has; the tests run under
+   !! both orders (see the stage report).
+   !!
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e

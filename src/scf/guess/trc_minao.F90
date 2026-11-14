@@ -1,10 +1,10 @@
-!
-! The minimal-ANO starting density, PySCF's `minao` guess.
-!
-! Ported from metalquicha's mqc_czt_minao (and its own scf_context_project_density,
-! mqc_czt_projection), with mqc_ -> trc_ renames.
-!
 module trc_minao
+   !!
+   !! The minimal-ANO starting density, PySCF's `minao` guess.
+   !!
+   !! Ported from metalquicha's mqc_czt_minao (and its own scf_context_project_density,
+   !! mqc_czt_projection), with mqc_ -> trc_ renames.
+   !!
    !! A starting density built in a minimal atomic natural orbital basis and
    !! projected into the calculation's own.
    !!

@@ -1,39 +1,39 @@
-!
-! The SCF driver end to end, against pyscf on the same grid.
-!
-! trc_scf is the half of terco's contract that used to be the caller's:
-! basis and electron count in, converged energy and density out, every
-! matrix resident on the device. This runs it on two molecules in 6-31G
-! UNCONTRACTED to its primitives -- every primitive its own shell with
-! coefficient one, because pyscf renormalises a contracted shell to unit
-! self-overlap and terco does not, and a total energy compared at 1e-8
-! cannot carry the 1e-6 that leaves in the basis -- and writes what pyscf
-! needs to reproduce each case exactly: the shells as built, the grid, the
-! energy and the final density.
-!
-!   water, closed shell:  RHF, then SVWN, PBE, BLYP, B3LYP, wB97X-V, wB97X,
-!                         wB97, wB97M-V restricted
-!   OH radical, doublet:  UHF, then PBE, wB97X-V, wB97X, wB97M-V unrestricted
-!
-! wB97M-V is the meta-GGA case: same RSH/VV10 machinery as wB97X-V plus
-! tau, so it exercises res%grid_w_nlc (VV10's own, coarser grid) and the
-! meta-GGA dispatch together, the one combination nothing else here covers.
-!
-! So the restricted and unrestricted paths, Hartree-Fock and Kohn-Sham,
-! LDA, GGA, global and range-separated hybrid, with and without VV10's
-! nonlocal correlation, all go through the one driver. `rks_ref.py` rebuilds
-! the same basis in the same order and runs pyscf's RHF/UHF/RKS/UKS on the
-! same points from terco's converged density -- VV10's own (coarser) grid
-! too, for a functional that has it, set as pyscf's `nlcgrids` exactly as
-! the semilocal grid is set as `grids`.
-!
-! Fourteen independent (molecule, functional) cases below, each its own
-! test-drive unittest; the shared setup (per-molecule uncontracted basis,
-! the probe write, the golden dump and the sequential pyscf-reference
-! read) runs once -- see check_xc_energy_suite's own `computed` comment
-! for why, and why this suite stays `parallel=.false.`.
-!
 module scf_rks_suite
+   !!
+   !! The SCF driver end to end, against pyscf on the same grid.
+   !!
+   !! trc_scf is the half of terco's contract that used to be the caller's:
+   !! basis and electron count in, converged energy and density out, every
+   !! matrix resident on the device. This runs it on two molecules in 6-31G
+   !! UNCONTRACTED to its primitives -- every primitive its own shell with
+   !! coefficient one, because pyscf renormalises a contracted shell to unit
+   !! self-overlap and terco does not, and a total energy compared at 1e-8
+   !! cannot carry the 1e-6 that leaves in the basis -- and writes what pyscf
+   !! needs to reproduce each case exactly: the shells as built, the grid, the
+   !! energy and the final density.
+   !!
+   !!   water, closed shell:  RHF, then SVWN, PBE, BLYP, B3LYP, wB97X-V, wB97X,
+   !!                         wB97, wB97M-V restricted
+   !!   OH radical, doublet:  UHF, then PBE, wB97X-V, wB97X, wB97M-V unrestricted
+   !!
+   !! wB97M-V is the meta-GGA case: same RSH/VV10 machinery as wB97X-V plus
+   !! tau, so it exercises res%grid_w_nlc (VV10's own, coarser grid) and the
+   !! meta-GGA dispatch together, the one combination nothing else here covers.
+   !!
+   !! So the restricted and unrestricted paths, Hartree-Fock and Kohn-Sham,
+   !! LDA, GGA, global and range-separated hybrid, with and without VV10's
+   !! nonlocal correlation, all go through the one driver. `rks_ref.py` rebuilds
+   !! the same basis in the same order and runs pyscf's RHF/UHF/RKS/UKS on the
+   !! same points from terco's converged density -- VV10's own (coarser) grid
+   !! too, for a functional that has it, set as pyscf's `nlcgrids` exactly as
+   !! the semilocal grid is set as `grids`.
+   !!
+   !! Fourteen independent (molecule, functional) cases below, each its own
+   !! test-drive unittest; the shared setup (per-molecule uncontracted basis,
+   !! the probe write, the golden dump and the sequential pyscf-reference
+   !! read) runs once -- see check_xc_energy_suite's own `computed` comment
+   !! for why, and why this suite stays `parallel=.false.`.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -95,10 +95,10 @@ contains
       end if
    end function case_name
 
-   ! One wrapper per case, each passing its own index: a unittest must not
-   ! depend on which unittests ran before it (a name-selected run, or a
-   ! reordered suite, would otherwise check the wrong case).
    subroutine case_01(error)
+      !! One wrapper per case, each passing its own index: a unittest must not
+      !! depend on which unittests ran before it (a name-selected run, or a
+      !! reordered suite, would otherwise check the wrong case).
       type(error_type), allocatable, intent(out) :: error
       call test_case(error, 1)
    end subroutine case_01

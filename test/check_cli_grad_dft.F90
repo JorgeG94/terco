@@ -1,25 +1,25 @@
-!
-! The CLI's --grad for a KS-DFT run (--func pbe): what `terco` prints to
-! its JSON summary must be exactly what the library itself
-! (trc_run_gradient/trc_gradient, the same C API app/main.F90 calls)
-! computes for the identical molecule, basis, functional and guess --
-! see check_cli_grad.F90's own header for the reasoning (this program is
-! that one's DFT twin, same wiring check, same tolerance). What this
-! program adds is that trc_run_gradient is no longer refused for an
-! LDA/GGA --func (this branch's own lift of its DFT refusal): both the
-! CLI and the direct call below take the KS-DFT gradient path
-! (trc_scf_grad%trc_scf_gradient's `func` present), and the SAME grid
-! settings (grid_level 3, the default grid_max_pts/rho_tol) both ways.
-!
-! Runs the installed `terco` binary (its path given as this program's
-! first command-line argument; its second argument is a scratch path for
-! the CLI's own --json output) with --func pbe --guess gwh on water/
-! 6-31G, reads its --json gradient array back, and compares it to a
-! direct trc_create/.../trc_run_gradient/trc_gradient call on the SAME
-! molecule/basis/functional/guess/convergence settings, in the SAME order
-! app/main.F90 itself calls them.
-!
 module check_cli_grad_dft_suite
+   !!
+   !! The CLI's --grad for a KS-DFT run (--func pbe): what `terco` prints to
+   !! its JSON summary must be exactly what the library itself
+   !! (trc_run_gradient/trc_gradient, the same C API app/main.F90 calls)
+   !! computes for the identical molecule, basis, functional and guess --
+   !! see check_cli_grad.F90's own header for the reasoning (this program is
+   !! that one's DFT twin, same wiring check, same tolerance). What this
+   !! program adds is that trc_run_gradient is no longer refused for an
+   !! LDA/GGA --func (this branch's own lift of its DFT refusal): both the
+   !! CLI and the direct call below take the KS-DFT gradient path
+   !! (trc_scf_grad%trc_scf_gradient's `func` present), and the SAME grid
+   !! settings (grid_level 3, the default grid_max_pts/rho_tol) both ways.
+   !!
+   !! Runs the installed `terco` binary (its path given as this program's
+   !! first command-line argument; its second argument is a scratch path for
+   !! the CLI's own --json output) with --func pbe --guess gwh on water/
+   !! 6-31G, reads its --json gradient array back, and compares it to a
+   !! direct trc_create/.../trc_run_gradient/trc_gradient call on the SAME
+   !! molecule/basis/functional/guess/convergence settings, in the SAME order
+   !! app/main.F90 itself calls them.
+   !!
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_null_ptr
    use pic_types, only: dp
    use pic_strings, only: to_string

@@ -1,17 +1,17 @@
-!
-! The Rys-quadrature diagonal Schwarz bound (trc_schwarz_rys.F90,
-! trc_screen.F90's screen_schwarz_bounds_rys) against the HGP whole-block one it
-! replaces (screen_schwarz_bounds_hgp): both read the SAME hp_* primitive-pair
-! data and must agree to round-off, because they are two ways of computing
-! the SAME number -- Q(i,j) = sqrt(max_{ab} |(ij|ij)_{ab,ab}|) -- not two
-! different approximations to it (trc_screen.F90's own module header).
-!
-! Cases: water and formamide in cc-pVDZ (s/p/d, every build), and water in
-! cc-pVQZ (g on O) when the build's LMAX reaches 4 -- the class
-! screen_schwarz_bounds_hgp's header says it still has to bound even though the
-! four-centre Fock path routes it to Rys instead of HGP.
-!
 module check_schwarz_rys_vs_hgp_suite
+   !!
+   !! The Rys-quadrature diagonal Schwarz bound (trc_schwarz_rys.F90,
+   !! trc_screen.F90's screen_schwarz_bounds_rys) against the HGP whole-block one it
+   !! replaces (screen_schwarz_bounds_hgp): both read the SAME hp_* primitive-pair
+   !! data and must agree to round-off, because they are two ways of computing
+   !! the SAME number -- Q(i,j) = sqrt(max_{ab} |(ij|ij)_{ab,ab}|) -- not two
+   !! different approximations to it (trc_screen.F90's own module header).
+   !!
+   !! Cases: water and formamide in cc-pVDZ (s/p/d, every build), and water in
+   !! cc-pVQZ (g on O) when the build's LMAX reaches 4 -- the class
+   !! screen_schwarz_bounds_hgp's header says it still has to bound even though the
+   !! four-centre Fock path routes it to Rys instead of HGP.
+   !!
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_tables, only: tables_init
@@ -76,13 +76,13 @@ contains
       call compare_q(error, 'water.xyz', 'basis_sets/cc-pvqz-pyscf17.json')
    end subroutine test_water_qz
 
-   !
-   ! Build hp_* exactly as trc_eri.F90's build_structures does (cfac = 1,
-   ! since the basis already folded common_fac_sp; camp = sh_c, the
-   ! amplitude the kernel's own prune judges by), then compare the two
-   ! Schwarz routines on that one primitive-pair set.
-   !
    subroutine compare_q(error, xyzfile, basfile)
+      !!
+      !! Build hp_* exactly as trc_eri.F90's build_structures does (cfac = 1,
+      !! since the basis already folded common_fac_sp; camp = sh_c, the
+      !! amplitude the kernel's own prune judges by), then compare the two
+      !! Schwarz routines on that one primitive-pair set.
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in) :: xyzfile, basfile
 

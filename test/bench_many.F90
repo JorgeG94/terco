@@ -1,30 +1,30 @@
-!
-! Batched multi-density Fock: correctness against the loop, and where it stops
-! paying.
-!
-! WHY THIS MATTERS MORE THAN THE SINGLE-BUILD NUMBER
-! --------------------------------------------------
-! makeEFP is not one Fock build, it is about a hundred: the coupled-perturbed
-! equations for the dynamic polarizabilities need nine perturbations times
-! twelve imaginary frequencies, each a Fock build on a different response
-! density. Contracting one quartet against every density in hand is the
-! difference between one integral pass and N of them.
-!
-! WHAT TO EXPECT
-! --------------
-! Cost is `eval + N*digest`, so the ceiling is one over the digestion
-! fraction. terco's digestion measured 24% (Gly30) to 37% (RNA3), which puts
-! the ceiling between 2.7x and 4.2x -- approached slowly, since N has to be
-! large before `N*digest` dominates `eval`.
-!
-! The GPU constraint that mqc's CPU version does not have is register
-! pressure. This benchmark exists to find out whether it bites: the density
-! loop is OUTSIDE the block accumulators precisely so the batch does not add
-! registers, and that claim should be checked rather than believed.
-!
-!   bench_many <xyz> <density-file> [nmax] [thresh]
-!
 program bench_many
+   !!
+   !! Batched multi-density Fock: correctness against the loop, and where it stops
+   !! paying.
+   !!
+   !! WHY THIS MATTERS MORE THAN THE SINGLE-BUILD NUMBER
+   !! --------------------------------------------------
+   !! makeEFP is not one Fock build, it is about a hundred: the coupled-perturbed
+   !! equations for the dynamic polarizabilities need nine perturbations times
+   !! twelve imaginary frequencies, each a Fock build on a different response
+   !! density. Contracting one quartet against every density in hand is the
+   !! difference between one integral pass and N of them.
+   !!
+   !! WHAT TO EXPECT
+   !! --------------
+   !! Cost is `eval + N*digest`, so the ceiling is one over the digestion
+   !! fraction. terco's digestion measured 24% (Gly30) to 37% (RNA3), which puts
+   !! the ceiling between 2.7x and 4.2x -- approached slowly, since N has to be
+   !! large before `N*digest` dominates `eval`.
+   !!
+   !! The GPU constraint that mqc's CPU version does not have is register
+   !! pressure. This benchmark exists to find out whether it bites: the density
+   !! loop is OUTSIDE the block accumulators precisely so the batch does not add
+   !! registers, and that claim should be checked rather than believed.
+   !!
+   !!   bench_many <xyz> <density-file> [nmax] [thresh]
+   !!
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t

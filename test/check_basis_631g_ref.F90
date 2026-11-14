@@ -1,28 +1,28 @@
-!
-! build_631g against the JSON path, the ONE place in the tree that is
-! allowed to call build_631g for its own basis (see that subroutine's own
-! comment in trc_test_basis.F90 for why). build_631g is a second, literal
-! transcription of the same BSE 6-31G numbers basis_sets/6-31g.json holds,
-! typed by hand to 7 significant figures; trc_basis_from_json reads the
-! JSON file's own full-precision strings. Agreement between the two, on
-! water through a twenty-water cluster, is the external check that the
-! JSON path (one shell per coefficient column, each normalised and then
-! divided by common_fac_sp so trc_basis_t%build's own fold lands on the
-! right number -- see trc_basis_json.F90's header) builds the basis
-! build_631g was always known to build correctly.
-!
-! THE NUMBER THIS CHECK WOULD HAVE CAUGHT: before trc_basis_json's
-! `normalise` was corrected to divide by common_fac_sp, an s or p shell's
-! coefficients came out short by exactly that factor, invisible on one
-! water (the energies agreed to 4e-8 Eh) and breaking the SCF outright on
-! twenty (off by hundreds of Hartree) -- see trc_basis_json.F90's header
-! for the mechanism. A per-shell coefficient scale is not something an
-! energy check at ONE geometry reliably catches (the two paths can still
-! agree to several digits at small sizes even when wrong), which is why
-! this check runs the comparison at more than one cluster size rather than
-! trusting a single geometry's agreement.
-!
 module check_basis_631g_suite
+   !!
+   !! build_631g against the JSON path, the ONE place in the tree that is
+   !! allowed to call build_631g for its own basis (see that subroutine's own
+   !! comment in trc_test_basis.F90 for why). build_631g is a second, literal
+   !! transcription of the same BSE 6-31G numbers basis_sets/6-31g.json holds,
+   !! typed by hand to 7 significant figures; trc_basis_from_json reads the
+   !! JSON file's own full-precision strings. Agreement between the two, on
+   !! water through a twenty-water cluster, is the external check that the
+   !! JSON path (one shell per coefficient column, each normalised and then
+   !! divided by common_fac_sp so trc_basis_t%build's own fold lands on the
+   !! right number -- see trc_basis_json.F90's header) builds the basis
+   !! build_631g was always known to build correctly.
+   !!
+   !! THE NUMBER THIS CHECK WOULD HAVE CAUGHT: before trc_basis_json's
+   !! `normalise` was corrected to divide by common_fac_sp, an s or p shell's
+   !! coefficients came out short by exactly that factor, invisible on one
+   !! water (the energies agreed to 4e-8 Eh) and breaking the SCF outright on
+   !! twenty (off by hundreds of Hartree) -- see trc_basis_json.F90's header
+   !! for the mechanism. A per-shell coefficient scale is not something an
+   !! energy check at ONE geometry reliably catches (the two paths can still
+   !! agree to several digits at small sizes even when wrong), which is why
+   !! this check runs the comparison at more than one cluster size rather than
+   !! trusting a single geometry's agreement.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

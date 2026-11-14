@@ -1,30 +1,30 @@
-!
-! RKS static dipole polarizability through trc_cpks, against pyscf's
-! pyscf.prop.polarizability.rks (test/pyscf_refs/generate.py's gen_cpks).
-!
-! Converges the SCF independently (functional given on the command line),
-! builds the grid trc_cpks's XC kernel response will use from the SAME
-! `trc_scf_run` that converged the density (`res%grid_r`/`res%grid_w`),
-! and feeds that grid to pyscf unchanged -- the same "match pyscf's grid
-! to terco's" pattern VV10's rks_ref.py and scf_rks.F90's probe already
-! use, so the only disagreement left to measure is CPKS's own residual,
-! not two different quadratures. See test/scf_cphf.F90's own header for
-! why converging independently (rather than reading back a committed
-! pyscf density) is safe on these closed-shell cases.
-!
-! Builds its OWN pair list, ERI engine and linalg handle, exactly as
-! scf_cphf.F90 does, for the same reason: trc_scf_run releases everything
-! it built internally once it returns.
-!
-! Arguments: xyz [basis.json [molname [basname [funcname [probe]]]]].
-! Defaults water/6-31G*/svwn. ONE (molecule, basis, functional) case per
-! process (four ctest targets, same source, different ARGS) -- this
-! suite has two test-drive cases: the polarizability-vs-pyscf comparison
-! (plus the NaN right-hand-side refusal, which needs that same converged
-! state) and cpks_refuse_reason's own classification, which is pure and
-! needs nothing from the molecule/basis/functional on the command line.
-!
 module scf_cpks_suite
+   !!
+   !! RKS static dipole polarizability through trc_cpks, against pyscf's
+   !! pyscf.prop.polarizability.rks (test/pyscf_refs/generate.py's gen_cpks).
+   !!
+   !! Converges the SCF independently (functional given on the command line),
+   !! builds the grid trc_cpks's XC kernel response will use from the SAME
+   !! `trc_scf_run` that converged the density (`res%grid_r`/`res%grid_w`),
+   !! and feeds that grid to pyscf unchanged -- the same "match pyscf's grid
+   !! to terco's" pattern VV10's rks_ref.py and scf_rks.F90's probe already
+   !! use, so the only disagreement left to measure is CPKS's own residual,
+   !! not two different quadratures. See test/scf_cphf.F90's own header for
+   !! why converging independently (rather than reading back a committed
+   !! pyscf density) is safe on these closed-shell cases.
+   !!
+   !! Builds its OWN pair list, ERI engine and linalg handle, exactly as
+   !! scf_cphf.F90 does, for the same reason: trc_scf_run releases everything
+   !! it built internally once it returns.
+   !!
+   !! Arguments: xyz [basis.json [molname [basname [funcname [probe]]]]].
+   !! Defaults water/6-31G*/svwn. ONE (molecule, basis, functional) case per
+   !! process (four ctest targets, same source, different ARGS) -- this
+   !! suite has two test-drive cases: the polarizability-vs-pyscf comparison
+   !! (plus the NaN right-hand-side refusal, which needs that same converged
+   !! state) and cpks_refuse_reason's own classification, which is pure and
+   !! needs nothing from the molecule/basis/functional on the command line.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use pic_timer, only: timer_type

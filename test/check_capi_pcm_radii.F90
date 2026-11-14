@@ -168,12 +168,12 @@ contains
       rc = trc_destroy(h)
    end subroutine test_override_vs_pyscf
 
-   !
-   ! A wrong natm is refused; natm = 0 (or a NULL radii) clears a
-   ! previously-set override back to the table, and trc_set_charge keeps
-   ! it (the molecule, and so the cavity's atoms, are unchanged).
-   !
    subroutine test_misuse(error)
+      !!
+      !! A wrong natm is refused; natm = 0 (or a NULL radii) clears a
+      !! previously-set override back to the table, and trc_set_charge keeps
+      !! it (the molecule, and so the cavity's atoms, are unchanged).
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: natm
       integer, allocatable :: zint(:)

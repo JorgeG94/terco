@@ -61,13 +61,13 @@ contains
                   ]
    end subroutine collect_capi_ghost
 
-   !
-   ! A context with the dimer molecule set (z above), optionally with
-   ! trc_set_elements(ELEM6) already called -- the ONE place every test
-   ! below builds the molecule, so the geometry/elements never drift
-   ! between cases.
-   !
    subroutine make_molecule(h, with_elements)
+      !!
+      !! A context with the dimer molecule set (z above), optionally with
+      !! trc_set_elements(ELEM6) already called -- the ONE place every test
+      !! below builds the molecule, so the geometry/elements never drift
+      !! between cases.
+      !!
       type(c_ptr), intent(out) :: h
       logical, intent(in) :: with_elements
       integer(c_int) :: rc
@@ -169,13 +169,13 @@ contains
       rc = trc_destroy(h)
    end subroutine test_natm_mismatch
 
-   !
-   ! RHF: analytic throughout (no quadrature grid on either side), so
-   ! this is a tight, ~1e-10 match. The gradient has all 6 rows -- the
-   ! ghost ones carry only basis-function (Pulay) terms, no nuclear
-   ! repulsion/attraction term, since z = 0 there on both sides.
-   !
    subroutine test_rhf_vs_pyscf(error)
+      !!
+      !! RHF: analytic throughout (no quadrature grid on either side), so
+      !! this is a tight, ~1e-10 match. The gradient has all 6 rows -- the
+      !! ghost ones carry only basis-function (Pulay) terms, no nuclear
+      !! repulsion/attraction term, since z = 0 there on both sides.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
       integer(c_int) :: rc
@@ -233,21 +233,21 @@ contains
       rc = trc_destroy(h)
    end subroutine test_rhf_vs_pyscf
 
-   !
-   ! B3LYP: both sides build their OWN quadrature grid independently
-   ! (same radial/angular tables, Becke partition -- not the same
-   ! points, since trc's C ABI exposes no grid-injection entry). Measured
-   ! 3.95e-11 (gfortran 15, CPU, level 6): the two grids are built from
-   ! the SAME tables (trc_dft_grid.F90's own header) closely enough that
-   ! this reaches the ~1e-10 class, not merely a loose quadrature-limited
-   ! bound -- the gate below is set from that measurement, with headroom,
-   ! not asserted blind. pyscf's own default grid DOES put points on a
-   ! ghost atom (checked separately against its PCM cavity, which does
-   ! NOT exclude ghosts the way terco's does -- see the report), so this
-   ! is comparing two grids that both cover the ghost, not one that does
-   ! against one that does not.
-   !
    subroutine test_b3lyp_vs_pyscf(error)
+      !!
+      !! B3LYP: both sides build their OWN quadrature grid independently
+      !! (same radial/angular tables, Becke partition -- not the same
+      !! points, since trc's C ABI exposes no grid-injection entry). Measured
+      !! 3.95e-11 (gfortran 15, CPU, level 6): the two grids are built from
+      !! the SAME tables (trc_dft_grid.F90's own header) closely enough that
+      !! this reaches the ~1e-10 class, not merely a loose quadrature-limited
+      !! bound -- the gate below is set from that measurement, with headroom,
+      !! not asserted blind. pyscf's own default grid DOES put points on a
+      !! ghost atom (checked separately against its PCM cavity, which does
+      !! NOT exclude ghosts the way terco's does -- see the report), so this
+      !! is comparing two grids that both cover the ghost, not one that does
+      !! against one that does not.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
       integer(c_int) :: rc
@@ -286,15 +286,15 @@ contains
       rc = trc_destroy(h)
    end subroutine test_b3lyp_vs_pyscf
 
-   !
-   ! The same ghosted B3LYP, loaded the way mqc loads it: trc_set_molecule
-   ! (ghosts at charge 0), trc_set_elements, then trc_set_basis_libcint,
-   ! whose atm carries only the charge. That path built the basis without the
-   ! elements, so every ghost was element 0 -- an element-0 DFT grid and Becke
-   ! partition at a ghost oxygen, 1e-5 to 1e-4 Eh off in mqc's VMFC rows while
-   ! RHF agreed. Same pyscf reference and gate as test_b3lyp_vs_pyscf.
-   !
    subroutine test_b3lyp_libcint(error)
+      !!
+      !! The same ghosted B3LYP, loaded the way mqc loads it: trc_set_molecule
+      !! (ghosts at charge 0), trc_set_elements, then trc_set_basis_libcint,
+      !! whose atm carries only the charge. That path built the basis without the
+      !! elements, so every ghost was element 0 -- an element-0 DFT grid and Becke
+      !! partition at a ghost oxygen, 1e-5 to 1e-4 Eh off in mqc's VMFC rows while
+      !! RHF agreed. Same pyscf reference and gate as test_b3lyp_vs_pyscf.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
       type(trc_basis_t) :: b
@@ -347,15 +347,15 @@ contains
       rc = trc_destroy(h)
    end subroutine test_b3lyp_libcint
 
-   !
-   ! PCM with ghosts is refused until a cavity model is chosen. pyscf's own
-   ! PCM (pyscf.solvent.pcm), and mqc's CPU backend after it, give a ghost
-   ! the same sphere a real atom of its element gets; trc_pcm's ghost mask
-   ! would give it none (measured on this geometry before the refusal: 556
-   ! cavity points for monomer A in the dimer basis, 556 bare, 1112 for the
-   ! real dimer). The two models differ, so neither is offered yet.
-   !
    subroutine test_pcm_ghost_refused(error)
+      !!
+      !! PCM with ghosts is refused until a cavity model is chosen. pyscf's own
+      !! PCM (pyscf.solvent.pcm), and mqc's CPU backend after it, give a ghost
+      !! the same sphere a real atom of its element gets; trc_pcm's ghost mask
+      !! would give it none (measured on this geometry before the refusal: 556
+      !! cavity points for monomer A in the dimer basis, 556 bare, 1112 for the
+      !! real dimer). The two models differ, so neither is offered yet.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
       integer(c_int) :: rc

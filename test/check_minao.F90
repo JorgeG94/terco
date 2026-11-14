@@ -1,10 +1,10 @@
-!
-! The minao initial guess (TRC_GUESS_MINAO / trc_minao's trc_minao_build)
-! against PySCF's init_guess_by_minao, plus the algorithm's own closed-form
-! checks (the occupation table, and self-projection, where the answer is
-! exactly the diagonal occupation matrix whatever the projection code does).
-!
 module check_minao_suite
+   !!
+   !! The minao initial guess (TRC_GUESS_MINAO / trc_minao's trc_minao_build)
+   !! against PySCF's init_guess_by_minao, plus the algorithm's own closed-form
+   !! checks (the occupation table, and self-projection, where the answer is
+   !! exactly the diagonal occupation matrix whatever the projection code does).
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -43,13 +43,13 @@ contains
                   ]
    end subroutine collect_minao_tests
 
-   !
-   ! Tr(D S), the electron count a density carries. `d` is in the SCF's own
-   ! space (nao_sph if b%spherical, else nao, same as trc_minao_build's
-   ! own output) -- basis_spherical_overlap's fold applies the identity
-   ! when the basis is Cartesian throughout (nao_sph == nao then).
-   !
    function electrons(b, d) result(n)
+      !!
+      !! Tr(D S), the electron count a density carries. `d` is in the SCF's own
+      !! space (nao_sph if b%spherical, else nao, same as trc_minao_build's
+      !! own output) -- basis_spherical_overlap's fold applies the identity
+      !! when the basis is Cartesian throughout (nao_sph == nao then).
+      !!
       ! Tr(D S) in the basis's own space.
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: d(:, :)
@@ -283,12 +283,12 @@ contains
       call ref_close(u)
    end subroutine test_vs_pyscf
 
-   !
-   ! terco's own overlap, in its spherical AO space (identity fold if the
-   ! basis is Cartesian throughout) -- the same S trc_scf_driver itself
-   ! builds every geometry.
-   !
    subroutine basis_spherical_overlap(b, s_sph)
+      !!
+      !! terco's own overlap, in its spherical AO space (identity fold if the
+      !! basis is Cartesian throughout) -- the same S trc_scf_driver itself
+      !! builds every geometry.
+      !!
       ! On a private copy of the basis, mapped and released here: a basis
       ! left on the device after its host arrays are freed (a test's local
       ! going out of scope, or the next case rebuilding it) leaves stale

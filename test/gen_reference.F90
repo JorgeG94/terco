@@ -1,37 +1,37 @@
-!
-! Reference-integral generator.  Built with GFORTRAN, linked against libfint.
-!
-! WHY A SEPARATE PROGRAM
-! ---------------------
-! libfint cannot be built with nvfortran: `iso_fortran_env`'s real128 is -1
-! there, so all 68 of its `real(qp)` declarations are hard errors (libfint's
-! own CI keeps nvidia-hpc in the matrix as an expected failure and says so).
-! The quad kind is the Rys fallback and is not droppable.
-!
-! So the oracle cannot be linked into an nvfortran test harness.  Instead this
-! program runs once under gfortran, writes a plain-text dump of a system
-! definition and every integral libfint says it has, and the nvfortran checks
-! read that dump back.  Two consequences, both good: the tests need no second
-! compiler at run time, and the reference data is a reviewable artefact rather
-! than a number that appears from a library call.
-!
-! FORMAT
-! ------
-! Free-form text, one token per line group, deliberately dull so a human can
-! read it and a two-line reader can parse it:
-!
-!   SYSTEM <name>
-!   NATM <n> / NBAS <n> / NENV <n>
-!   ATM  <ATM_SLOTS*natm integers>
-!   BAS  <BAS_SLOTS*nbas integers>
-!   ENV  <nenv doubles, %25.17e>
-!   QUARTET <i> <j> <k> <l> <di> <dj> <dk> <dl>
-!   <di*dj*dk*dl doubles, %25.17e, libcint's own ordering>
-!   END
-!
-! %25.17e is round-trip exact for IEEE double, so the dump loses nothing.
-!
 program gen_reference
+   !!
+   !! Reference-integral generator.  Built with GFORTRAN, linked against libfint.
+   !!
+   !! WHY A SEPARATE PROGRAM
+   !! ---------------------
+   !! libfint cannot be built with nvfortran: `iso_fortran_env`'s real128 is -1
+   !! there, so all 68 of its `real(qp)` declarations are hard errors (libfint's
+   !! own CI keeps nvidia-hpc in the matrix as an expected failure and says so).
+   !! The quad kind is the Rys fallback and is not droppable.
+   !!
+   !! So the oracle cannot be linked into an nvfortran test harness.  Instead this
+   !! program runs once under gfortran, writes a plain-text dump of a system
+   !! definition and every integral libfint says it has, and the nvfortran checks
+   !! read that dump back.  Two consequences, both good: the tests need no second
+   !! compiler at run time, and the reference data is a reviewable artefact rather
+   !! than a number that appears from a library call.
+   !!
+   !! FORMAT
+   !! ------
+   !! Free-form text, one token per line group, deliberately dull so a human can
+   !! read it and a two-line reader can parse it:
+   !!
+   !!   SYSTEM <name>
+   !!   NATM <n> / NBAS <n> / NENV <n>
+   !!   ATM  <ATM_SLOTS*natm integers>
+   !!   BAS  <BAS_SLOTS*nbas integers>
+   !!   ENV  <nenv doubles, %25.17e>
+   !!   QUARTET <i> <j> <k> <l> <di> <dj> <dk> <dl>
+   !!   <di*dj*dk*dl doubles, %25.17e, libcint's own ordering>
+   !!   END
+   !!
+   !! %25.17e is round-trip exact for IEEE double, so the dump loses nothing.
+   !!
    use cint_const, only: dp
    use cint_bas, only: ATOM_OF, ANG_OF, NPRIM_OF, NCTR_OF, PTR_EXP, PTR_COEFF, &
                        BAS_SLOTS, CHARGE_OF, PTR_COORD, NUC_MOD_OF, ATM_SLOTS, &
@@ -63,12 +63,12 @@ program gen_reference
 
 contains
 
-   !
-   ! Two systems.  The first is the smallest thing that can be wrong; the
-   ! second reaches d functions, which is where the register wall of the plan's
-   ! section 0.2 actually bites and therefore the case worth being sure about.
-   !
    subroutine build_system(which, atm, bas, env, natm, nbas, nenv)
+      !!
+      !! Two systems.  The first is the smallest thing that can be wrong; the
+      !! second reaches d functions, which is where the register wall of the plan's
+      !! section 0.2 actually bites and therefore the case worth being sure about.
+      !!
       integer, intent(in) :: which
       integer, allocatable, intent(out) :: atm(:), bas(:)
       real(dp), allocatable, intent(out) :: env(:)
@@ -161,13 +161,13 @@ contains
       nenv = off
    end subroutine build_system
 
-   !
-   ! One contracted shell.  libcint wants the coefficients in env already
-   ! multiplied by the primitive normalisation, which is what cint_gto_norm
-   ! returns -- passing raw coefficients is the classic way to get answers that
-   ! are wrong by a smooth factor and look plausible.
-   !
    subroutine put_shell(bas, env, off, ib, iatom, l, e, c, nprim)
+      !!
+      !! One contracted shell.  libcint wants the coefficients in env already
+      !! multiplied by the primitive normalisation, which is what cint_gto_norm
+      !! returns -- passing raw coefficients is the classic way to get answers that
+      !! are wrong by a smooth factor and look plausible.
+      !!
       integer, intent(inout) :: bas(0:)
       real(dp), intent(inout) :: env(0:)
       integer, intent(inout) :: off

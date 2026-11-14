@@ -1,22 +1,22 @@
-!
-! trc_scf_options_t (the public knobs), trc_scf_result_t (what a run hands
-! back) and scf_settings_t (those knobs turned into what the loop actually
-! reads: a functional, a spin count, damping/DIIS thresholds, env overrides).
-! `resolve` runs once, on the host, before anything is allocated or put on
-! the device, and is the only place the run's rejections live (unknown or
-! incomplete functional, --df's own restrictions) -- every other setup
-! failure comes later, once real device state exists to release
-! (trc_scf_context).
-!
-! WHY A SHARED SPIN RULE. `trc_run_scf`/`trc_load_scf` (trc_capi.F90) need
-! nspin before trc_scf_run is even reachable -- to size the guess density and
-! to validate a density handed in from outside -- so they used to carry their
-! own copy of the nalpha/nbeta -> nspin rule, missing the `frac_occ` case
-! this module's rule already resolves. `scf_settings_spin_rule` is that rule, pulled
-! out so there is exactly one place it can drift from this module's own use
-! of it.
-!
 module trc_scf_settings
+   !!
+   !! trc_scf_options_t (the public knobs), trc_scf_result_t (what a run hands
+   !! back) and scf_settings_t (those knobs turned into what the loop actually
+   !! reads: a functional, a spin count, damping/DIIS thresholds, env overrides).
+   !! `resolve` runs once, on the host, before anything is allocated or put on
+   !! the device, and is the only place the run's rejections live (unknown or
+   !! incomplete functional, --df's own restrictions) -- every other setup
+   !! failure comes later, once real device state exists to release
+   !! (trc_scf_context).
+   !!
+   !! WHY A SHARED SPIN RULE. `trc_run_scf`/`trc_load_scf` (trc_capi.F90) need
+   !! nspin before trc_scf_run is even reachable -- to size the guess density and
+   !! to validate a density handed in from outside -- so they used to carry their
+   !! own copy of the nalpha/nbeta -> nspin rule, missing the `frac_occ` case
+   !! this module's rule already resolves. `scf_settings_spin_rule` is that rule, pulled
+   !! out so there is exactly one place it can drift from this module's own use
+   !! of it.
+   !!
    use pic_types, only: dp
    use pic_mpi_lib, only: comm_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
@@ -583,12 +583,12 @@ module trc_scf_settings
 
 contains
 
-   !
-   ! The end-of-run copy `trc_scf_run` used to spell out field by field: the
-   ! converged density and the energies. Orbitals, grids and counts are set
-   ! where they are produced.
-   !
    subroutine scf_result_update(this, energies, dmat)
+      !!
+      !! The end-of-run copy `trc_scf_run` used to spell out field by field: the
+      !! converged density and the energies. Orbitals, grids and counts are set
+      !! where they are produced.
+      !!
       class(trc_scf_result_t), intent(inout) :: this
       type(scf_energies_t), intent(in) :: energies
       real(dp), intent(in) :: dmat(:, :, :)
@@ -602,16 +602,16 @@ contains
       this%pcm_qtotal = energies%pcm_qtotal
    end subroutine scf_result_update
 
-   !
-   ! Everything `trc_scf_run` used to work out between its declarations and
-   ! its first allocation, in the same order: the functional (and its
-   ! rejections), the spin rule, the by-spin DIIS/damping defaults, whether
-   ! PCM or the incremental build are on, and the env-hook overrides. `ok` is
-   ! false only for the functional and --df rejections below; every other
-   ! setup failure (grid, PCM) needs device state built first and is
-   ! `trc_scf_context`'s to report.
-   !
    function scf_settings_resolve(this, opts, nalpha, nbeta, comm, msg) result(ok)
+      !!
+      !! Everything `trc_scf_run` used to work out between its declarations and
+      !! its first allocation, in the same order: the functional (and its
+      !! rejections), the spin rule, the by-spin DIIS/damping defaults, whether
+      !! PCM or the incremental build are on, and the env-hook overrides. `ok` is
+      !! false only for the functional and --df rejections below; every other
+      !! setup failure (grid, PCM) needs device state built first and is
+      !! `trc_scf_context`'s to report.
+      !!
       class(scf_settings_t), intent(out) :: this
       type(trc_scf_options_t), intent(in) :: opts
       integer, intent(in) :: nalpha, nbeta
@@ -752,14 +752,14 @@ contains
       this%incr_predict_run = incr_real_env("TRC_INCR_PREDICT", opts%incr_predict)
    end function scf_settings_resolve
 
-   !
-   ! nalpha/nbeta (+ whether the case is forced unrestricted, and whether
-   ! this is one of SAD's fractional-occupation atomic runs) -> nspin and
-   ! the per-spin occupation count the guess and the loop both fill to.
-   ! `trc_scf_run` and `trc_capi.F90`'s `trc_run_scf`/`trc_load_scf` all need
-   ! this before a density exists to look at; one rule, called from both.
-   !
    pure subroutine scf_settings_spin_rule(nalpha, nbeta, unrestricted, frac_occ, nelec_frac, nspin, nocc)
+      !!
+      !! nalpha/nbeta (+ whether the case is forced unrestricted, and whether
+      !! this is one of SAD's fractional-occupation atomic runs) -> nspin and
+      !! the per-spin occupation count the guess and the loop both fill to.
+      !! `trc_scf_run` and `trc_capi.F90`'s `trc_run_scf`/`trc_load_scf` all need
+      !! this before a density exists to look at; one rule, called from both.
+      !!
       integer, intent(in) :: nalpha, nbeta
       logical, intent(in) :: unrestricted, frac_occ
       real(dp), intent(in) :: nelec_frac

@@ -1,37 +1,37 @@
-!
-! The steps of an RI-CCSD run as the step table of the driver counts them, and
-! the helpers every stage shares to feed it: the indices and names, the flop
-! count of one (batched) GEMM, and `rccsd_steps_open` / `rccsd_steps_close`, which bracket a
-! stage the way RI-MP2 brackets its own steps (a device sync, the clock and an
-! NVTX range at both ends, see trc_step_table) and do nothing when the caller
-! passed no table, so a stage can still be driven on its own.
-!
-! OVER RANKS the table has three more rows, RCCSD_ST_BCAST, _WAIT and _REDUCE (RCCSD_MULTI_STEP_NAME): they
-! are the cost of the distributed ladder, 0 in a one-rank run, and a one-rank run does not print them.
-!
-! WHAT A ROW MEANS. The rows from `RCCSD_ST_METRIC` to `RCCSD_ST_BLOCKS` are
-! inside the `RCCSD_ST_INTEGRALS` row (indented in the print): the integrals row
-! is the whole `ints%build`, and the rows under it are the pieces that build
-! times itself, so they do not add up to it (the orbital transforms to the
-! Cartesian space, the allocations and the copy of the blocks back to the host
-! are in the first only). Every other row is a stage of one iteration, summed
-! over the iterations.
-!
-! WHERE THE FLOPS ARE COUNTED. A row's work is the sum of 2 m n k over the GEMMs
-! (and the triangular solves and the Cholesky factorisation) of its stage, with
-! the count of a batched call multiplied in. Kernel-only work (packs, scatters,
-! the denominators, the per-element base kernels of W, Lvv, the small T1 terms,
-! the energy, DIIS) has time but no count, so a row that mixes GEMMs and kernels
-! (every stage from the intermediates to the T2 rings) shows a rate below the
-! card's GEMM rate by the share of its time the kernels take; the ladder and
-! the T2 rings are almost pure GEMM. The integral rows `3-index integrals` and
-! `metric` are integral kernels plus the GEMMs of the Cartesian-to-spherical
-! conversion, which are not counted (a few per cent of the build's GEMM work
-! on water with cc-pVDZ-RIFIT). The counts are those of the stage
-! modules' own functions (`rccsd_inter_flops`, `rccsd_w_flops`,
-! `rccsd_ladder_flops`, `rccsd_ladder_dressing_flops`, `rccsd_update_*_flops`), and
-! trc_rccsd_ints sums the calls it makes.
 module trc_rccsd_steps
+   !!
+   !! The steps of an RI-CCSD run as the step table of the driver counts them, and
+   !! the helpers every stage shares to feed it: the indices and names, the flop
+   !! count of one (batched) GEMM, and `rccsd_steps_open` / `rccsd_steps_close`, which bracket a
+   !! stage the way RI-MP2 brackets its own steps (a device sync, the clock and an
+   !! NVTX range at both ends, see trc_step_table) and do nothing when the caller
+   !! passed no table, so a stage can still be driven on its own.
+   !!
+   !! OVER RANKS the table has three more rows, RCCSD_ST_BCAST, _WAIT and _REDUCE (RCCSD_MULTI_STEP_NAME): they
+   !! are the cost of the distributed ladder, 0 in a one-rank run, and a one-rank run does not print them.
+   !!
+   !! WHAT A ROW MEANS. The rows from `RCCSD_ST_METRIC` to `RCCSD_ST_BLOCKS` are
+   !! inside the `RCCSD_ST_INTEGRALS` row (indented in the print): the integrals row
+   !! is the whole `ints%build`, and the rows under it are the pieces that build
+   !! times itself, so they do not add up to it (the orbital transforms to the
+   !! Cartesian space, the allocations and the copy of the blocks back to the host
+   !! are in the first only). Every other row is a stage of one iteration, summed
+   !! over the iterations.
+   !!
+   !! WHERE THE FLOPS ARE COUNTED. A row's work is the sum of 2 m n k over the GEMMs
+   !! (and the triangular solves and the Cholesky factorisation) of its stage, with
+   !! the count of a batched call multiplied in. Kernel-only work (packs, scatters,
+   !! the denominators, the per-element base kernels of W, Lvv, the small T1 terms,
+   !! the energy, DIIS) has time but no count, so a row that mixes GEMMs and kernels
+   !! (every stage from the intermediates to the T2 rings) shows a rate below the
+   !! card's GEMM rate by the share of its time the kernels take; the ladder and
+   !! the T2 rings are almost pure GEMM. The integral rows `3-index integrals` and
+   !! `metric` are integral kernels plus the GEMMs of the Cartesian-to-spherical
+   !! conversion, which are not counted (a few per cent of the build's GEMM work
+   !! on water with cc-pVDZ-RIFIT). The counts are those of the stage
+   !! modules' own functions (`rccsd_inter_flops`, `rccsd_w_flops`,
+   !! `rccsd_ladder_flops`, `rccsd_ladder_dressing_flops`, `rccsd_update_*_flops`), and
+   !! trc_rccsd_ints sums the calls it makes.
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_linalg, only: trc_linalg_t

@@ -40,6 +40,7 @@ module trc_sym_ao
    use pic_strings, only: to_string
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_basis_types, only: trc_basis_t
+   use trc_cart, only: cart_ncart_of
    use trc_ecp_types, only: trc_ecp_t
    use trc_cart_perm, only: cart_perm_powers
    use trc_sph_tables, only: SPH_T, SPH_LMAX, SPH_NCART_MAX
@@ -214,7 +215,7 @@ contains
                   ao%ao_sign(a0 + c - 1, k) = par(c)
                end do
             else
-               ncomp = (l + 1)*(l + 2)/2
+               ncomp = cart_ncart_of(l)
                a0 = bas%sh_ao(s)
                b0 = bas%sh_ao(shmap(s, k))
                do c = 1, ncomp
@@ -242,7 +243,7 @@ contains
       real(dp) :: v(SPH_NCART_MAX)
       real(dp) :: norm, p, resid
 
-      nc = (l + 1)*(l + 2)/2
+      nc = cart_ncart_of(l)
       do m = 1, 2*l + 1
          norm = 0.0_dp
          p = 0.0_dp

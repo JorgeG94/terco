@@ -1,21 +1,21 @@
-!
-! Negative test: trc_df_3c refuses an orbital basis above DF_LMAX.
-!
-! Same reasoning as check_df_2c_ceiling.F90's own header, one level up:
-! trc_df_3c's own guard (trc_api.F90) exists because gen_df.py's VRR+HRR
-! and Rys bodies are generated only up to DF_LMAX on the orbital side, and
-! this is the control that the guard still fires rather than reading an
-! unwritten block.
-!
-! Orbital basis at l = DF_LMAX + 1 -- one above THIS build's ceiling, valid
-! at any ceiling -- paired with an auxiliary basis at l = 0, always within
-! DF_LMAX_AUX, so only the orbital check is under test here.
-!
-! Registered with PASS_REGULAR_EXPRESSION matching the error-stop message
-! itself (test/CMakeLists.txt), not WILL_FAIL: a different crash must not
-! count as this test passing.
-!
 program check_df_3c_ceiling
+   !!
+   !! Negative test: trc_df_3c refuses an orbital basis above DF_LMAX.
+   !!
+   !! Same reasoning as check_df_2c_ceiling.F90's own header, one level up:
+   !! trc_df_3c's own guard (trc_api.F90) exists because gen_df.py's VRR+HRR
+   !! and Rys bodies are generated only up to DF_LMAX on the orbital side, and
+   !! this is the control that the guard still fires rather than reading an
+   !! unwritten block.
+   !!
+   !! Orbital basis at l = DF_LMAX + 1 -- one above THIS build's ceiling, valid
+   !! at any ceiling -- paired with an auxiliary basis at l = 0, always within
+   !! DF_LMAX_AUX, so only the orbital check is under test here.
+   !!
+   !! Registered with PASS_REGULAR_EXPRESSION matching the error-stop message
+   !! itself (test/CMakeLists.txt), not WILL_FAIL: a different crash must not
+   !! count as this test passing.
+   !!
    use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_df_3c
    use trc_df_kernels, only: DF_LMAX

@@ -1748,17 +1748,17 @@ contains
 
    end subroutine cb_get_params
 
-   !
-   ! Converge the SCF at `xyz`, warm-started from the previous accepted
-   ! point if there is one, same contract for every caller that needs a
-   ! converged SCF on `context` at a given geometry (cb_get_gradient AND
-   ! cb_get_hessian -- factored out so the warm-start logic exists once).
-   ! Does NOT touch module `save` step/trajectory bookkeeping (last_niter,
-   ! n_steps, ...): that stays the gradient callback's own job, since only
-   ! an ACCEPTED gradient evaluation's iteration count is what
-   ! cb_put_coords later adds into total_scf_iterations.
-   !
    subroutine scf_at_geometry(xyz, image, niter, ok, why)
+      !!
+      !! Converge the SCF at `xyz`, warm-started from the previous accepted
+      !! point if there is one, same contract for every caller that needs a
+      !! converged SCF on `context` at a given geometry (cb_get_gradient AND
+      !! cb_get_hessian -- factored out so the warm-start logic exists once).
+      !! Does NOT touch module `save` step/trajectory bookkeeping (last_niter,
+      !! n_steps, ...): that stays the gradient callback's own job, since only
+      !! an ACCEPTED gradient evaluation's iteration count is what
+      !! cb_put_coords later adds into total_scf_iterations.
+      !!
       !! `image` is the DL-FIND image this geometry belongs to (always 1
       !! outside --opt-neb). For --opt-neb (and not opts%neb_shared_density,
       !! the benchmark-only override), the warm-start density/orbital-count

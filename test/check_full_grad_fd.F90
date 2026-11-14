@@ -1,38 +1,38 @@
-!
-! The FULL analytic RHF/UHF nuclear gradient (trc_scf_grad%trc_scf_gradient:
-! eri%gradient + trc_1e_gradient + nuclear repulsion) against a central
-! finite difference of terco's own FULLY RECONVERGED SCF energy -- the
-! Hellmann-Feynman/Pulay theorem's actual claim, extending
-! check_rys_grad_fd.F90's technique (which only exercises the two-electron
-! piece at a FIXED, non-SCF density) to the complete gradient at a
-! converged one.
-!
-! RHF on water, UHF on the OH radical (a genuinely open-shell case, nalpha
-! /= nbeta) -- both 6-31G*. Every displacement reconverges the SCF from
-! scratch (GWH guess, tight conv_energy/conv_diis): the FD step is small
-! enough (1e-3 bohr) that this is deterministic and costs nothing dramatic
-! for these two-and-three-atom systems.
-!
-! Also checks translational invariance of the analytic gradient alone
-! (sum over atoms ~ 0), the one property that holds exactly regardless of
-! step size or SCF tolerance.
-!
-! NO INTERNAL PROCEDURES. `run_case`/`scf_energy_at` are genuine module
-! procedures, not a `contains` block under the program (or nested under a
-! test-drive case), for the same reason app/main.F90's `trc_run` module
-! gives for its own equivalent refactor: an internal procedure anywhere in
-! the executable -- even one with no state in common with the GPU call at
-! all -- corrupted a later collective Fock build on this exact
-! NVHPC/OpenMPI toolchain, deterministically, regardless of optimisation
-! level. Measured here too: as a `contains` block, this program's SECOND
-! trc_scf_run (the UHF OH case, after water's reference + gradient +
-! 18-point FD loop) silently failed to converge on GPU 0 -- not a crash,
-! just wrong behaviour -- and the identical sequence, as plain module
-! procedures, does not. test-drive's own new_unittest callbacks are module
-! procedures too (see collect_full_grad_fd_tests below), so this stays true
-! here.
-!
 module check_full_grad_fd_suite
+   !!
+   !! The FULL analytic RHF/UHF nuclear gradient (trc_scf_grad%trc_scf_gradient:
+   !! eri%gradient + trc_1e_gradient + nuclear repulsion) against a central
+   !! finite difference of terco's own FULLY RECONVERGED SCF energy -- the
+   !! Hellmann-Feynman/Pulay theorem's actual claim, extending
+   !! check_rys_grad_fd.F90's technique (which only exercises the two-electron
+   !! piece at a FIXED, non-SCF density) to the complete gradient at a
+   !! converged one.
+   !!
+   !! RHF on water, UHF on the OH radical (a genuinely open-shell case, nalpha
+   !! /= nbeta) -- both 6-31G*. Every displacement reconverges the SCF from
+   !! scratch (GWH guess, tight conv_energy/conv_diis): the FD step is small
+   !! enough (1e-3 bohr) that this is deterministic and costs nothing dramatic
+   !! for these two-and-three-atom systems.
+   !!
+   !! Also checks translational invariance of the analytic gradient alone
+   !! (sum over atoms ~ 0), the one property that holds exactly regardless of
+   !! step size or SCF tolerance.
+   !!
+   !! NO INTERNAL PROCEDURES. `run_case`/`scf_energy_at` are genuine module
+   !! procedures, not a `contains` block under the program (or nested under a
+   !! test-drive case), for the same reason app/main.F90's `trc_run` module
+   !! gives for its own equivalent refactor: an internal procedure anywhere in
+   !! the executable -- even one with no state in common with the GPU call at
+   !! all -- corrupted a later collective Fock build on this exact
+   !! NVHPC/OpenMPI toolchain, deterministically, regardless of optimisation
+   !! level. Measured here too: as a `contains` block, this program's SECOND
+   !! trc_scf_run (the UHF OH case, after water's reference + gradient +
+   !! 18-point FD loop) silently failed to converge on GPU 0 -- not a crash,
+   !! just wrong behaviour -- and the identical sequence, as plain module
+   !! procedures, does not. test-drive's own new_unittest callbacks are module
+   !! procedures too (see collect_full_grad_fd_tests below), so this stays true
+   !! here.
+   !!
    use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
    use pic_types, only: dp
    use pic_strings, only: to_string

@@ -1,20 +1,20 @@
-!
-! Negative test: trc_1e refuses a basis above ONE_E_LMAX.
-!
-! one_e_dispatch (gen_1e.py) has no case above ONE_E_LMAX, so a shell above
-! it used to write past the driver's block and hand back garbage S, T and V
-! -- seen as an f shell in an LMAX=2 build (Xe/def2-SVP, -fcheck=bounds).
-! The SCF refuses such a basis earlier, at the four-centre LMAX; a direct
-! caller of trc_1e did not. This is the control that trc_1e's own guard
-! (trc_integrals.F90) still fires.
-!
-! A basis at l = ONE_E_LMAX + 1, one above THIS build's ceiling, so the test
-! holds at any ceiling. Registered with PASS_REGULAR_EXPRESSION on the
-! error-stop message (test/CMakeLists.txt), not WILL_FAIL: a different crash
-! must not count as a pass. check_df_3c_ceiling.F90 is the same test for
-! trc_df_3c.
-!
 program check_one_e_ceiling
+   !!
+   !! Negative test: trc_1e refuses a basis above ONE_E_LMAX.
+   !!
+   !! one_e_dispatch (gen_1e.py) has no case above ONE_E_LMAX, so a shell above
+   !! it used to write past the driver's block and hand back garbage S, T and V
+   !! -- seen as an f shell in an LMAX=2 build (Xe/def2-SVP, -fcheck=bounds).
+   !! The SCF refuses such a basis earlier, at the four-centre LMAX; a direct
+   !! caller of trc_1e did not. This is the control that trc_1e's own guard
+   !! (trc_integrals.F90) still fires.
+   !!
+   !! A basis at l = ONE_E_LMAX + 1, one above THIS build's ceiling, so the test
+   !! holds at any ceiling. Registered with PASS_REGULAR_EXPRESSION on the
+   !! error-stop message (test/CMakeLists.txt), not WILL_FAIL: a different crash
+   !! must not count as a pass. check_df_3c_ceiling.F90 is the same test for
+   !! trc_df_3c.
+   !!
    use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_1e_kernels, only: ONE_E_LMAX

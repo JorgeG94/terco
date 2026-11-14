@@ -1,20 +1,21 @@
-!
-! AO-index permutation between LEXICOGRAPHIC order (libcint's; what all
-! externally authored AO data is in, regardless of TRC_CART_ORDER: libfint
-! references, pyscf, SAD JSON guesses) and this build's own Cartesian order.
-!
-! The two orders give identical physics and differ only in which slot each
-! d/f component lands in, so any reader of external AO-indexed data must
-! permute it. This module is the one place that permutation is computed,
-! from the same generated tables as `trc_cart_comp.inc`.
-!
-! Users: trc_guess_json.F90 (permutes the SAD guess on the way in) and tests
-! (permute the lexicographic oracle, or via scripts/cart_perm.py in Python).
-!
-! Not a normalisation fix: see trc_ao_norm.F90 for the GAMESS scale.
-!
 module trc_cart_perm
+   !!
+   !! AO-index permutation between LEXICOGRAPHIC order (libcint's; what all
+   !! externally authored AO data is in, regardless of TRC_CART_ORDER: libfint
+   !! references, pyscf, SAD JSON guesses) and this build's own Cartesian order.
+   !!
+   !! The two orders give identical physics and differ only in which slot each
+   !! d/f component lands in, so any reader of external AO-indexed data must
+   !! permute it. This module is the one place that permutation is computed,
+   !! from the same generated tables as `trc_cart_comp.inc`.
+   !!
+   !! Users: trc_guess_json.F90 (permutes the SAD guess on the way in) and tests
+   !! (permute the lexicographic oracle, or via scripts/cart_perm.py in Python).
+   !!
+   !! Not a normalisation fix: see trc_ao_norm.F90 for the GAMESS scale.
+   !!
    use pic_types, only: dp
+   use trc_cart, only: cart_ncart_of
    implicit none
    private
 
@@ -93,7 +94,7 @@ contains
 
       do ish = 1, nshell
          base = sh_ao(ish) - 1
-         ncart = (sh_l(ish) + 1)*(sh_l(ish) + 2)/2
+         ncart = cart_ncart_of(sh_l(ish))
          do ic = 0, ncart - 1
             perm_l2b(base + ic + 1) = base + cart_perm_l2b(sh_l(ish), ic) + 1
             perm_b2l(base + ic + 1) = base + cart_perm_b2l(sh_l(ish), ic) + 1

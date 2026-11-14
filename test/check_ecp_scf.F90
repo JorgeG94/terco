@@ -1,68 +1,68 @@
-!
-! ECP phase 3, end to end: RHF HI and UHF the free I atom through the C
-! API (bare Z into trc_set_molecule, trc_set_basis_json's own auto-attach,
-! trc_run_scf -- the path a caller, mqc included, actually uses); RKS/PBE
-! and RKS/B3LYP on HI through the lower-level Fortran API instead
-! (trc_basis_from_json/trc_ecp_from_json/trc_scf_run), because only that
-! path hands back trc_scf_result_t%grid_r/grid_w, which generate.py's
-! gen_ecp_scf needs to feed pyscf terco's own grid; the C API has no
-! accessor for it. Also checks the refusals phase 3 adds (MINAO/SAP/
-! Hirshfeld guesses, the analytic gradient) and a restart-file round trip.
-!
-! GEOMETRY: mqc's own HI bond
-! (metalquicha/validation/inputs/sample_inputs/hi.xyz), I at the origin, H
-! at z = 1.609 Angstrom = HI_BOND_BOHR (CODATA 2018, terco's own
-! ANGSTROM_TO_BOHR).
-!
-! THE PYSCF ANCHOR (test/pyscf_refs/generate.py's gen_ecp_scf,
-! ecp_scf.ref): cart=False (pyscf's own spherical AOs, matching this
-! build's own default for a basis tagged gto_spherical -- def2-svp is),
-! the SAME JSON basis+ECP (bse_json_basis/bse_json_ecp) and the geometry
-! above. The two DFT cases feed pyscf THIS run's own dumped grid
-! (ecp_scf_probe.bin, this module's own run_all) via grids.coords/weights,
-! the same same-grid comparison every other DFT anchor in this tree uses
-! (gen_rks's own pattern). Measured agreement against the anchor
-! (2026-11-04, gfortran 15, LMAX=2): RHF HI 2.8e-13, UHF I atom 3.4e-13,
-! RKS/PBE HI 7.4e-13, RKS/B3LYP HI 1.3e-12 -- all at the double-precision
-! floor, run_all's own tolerance (1e-9) keeps 3+ orders of margin. mqc's
-! own literals (MQC_HI, MQC_I_ATOM) are a secondary print only.
-!
-! Seeding terco's spherical HI run from pyscf's own converged spherical
-! density (TRC_GUESS_GIVEN + TRC_AO_NORM_UNIT) takes MORE iterations than
-! a cold SAD guess, not fewer: terco's own spherical l>=2 AOs are not
-! unit-normalised (diag(S) = 0.398 for iodine's def2-SVP d shell, against
-! pyscf's 1), and TRC_AO_NORM_UNIT does not rescale them -- it is scoped
-! to a Cartesian shell's own per-component convention by its own ABI doc
-! comment, not a spherical one. The given density's d-shell block is
-! mis-scaled; the SCF still converges to the identical energy regardless,
-! just with more iterations. Not fixed here.
-!
-! RI-MP2, frozen core 4 (not a committed case here): measured E = mqc's
-! -297.360082905691 to |dE| = 1.32e-5 at the corrected geometry, using
-! def2-svp-rifit.json as the auxiliary basis -- an order of magnitude
-! looser than RHF/DFT, consistent with a density-fitting/auxiliary-basis
-! difference from whatever mqc's own RI-MP2 used (not confirmed to be the
-! identical aux set), rather than a bug; left unadded rather than
-! committing a loose, unexplained tolerance.
-!
-! I2 (two ECP atoms, attach_ecp's per-atom loop and the semi-local blocks
-! between two heavy atoms) is a case here now. It used to be refused at
-! every separation tried: the ECP radial quadrature failed instead of
-! keeping its finest level as pyscf does (#194 review, fixed in trc_ecp).
-!
-! H2 next to a GHOST iodine (trc_set_elements, charge 0) checks attach_ecp's
-! ghost rule: the ghost keeps iodine's basis and gets no ECP and no core
-! count, as in pyscf (an atom labelled GHOST-, with no ecp entry). Before,
-! attach_ecp gave the ghost iodine's 28-electron core and refused it for a
-! negative charge.
-!
-! Writes ecp_scf_probe.bin for generate.py's gen_ecp_scf, same idea as
-! scf_robust.F90's own probe/ref pair; the probe write and the sequential
-! pyscf-reference read run once (run_all, below), for the same reason
-! scf_robust's own suite stays parallel=.false. -- see that module's own
-! header.
-!
 module check_ecp_scf_suite
+   !!
+   !! ECP phase 3, end to end: RHF HI and UHF the free I atom through the C
+   !! API (bare Z into trc_set_molecule, trc_set_basis_json's own auto-attach,
+   !! trc_run_scf -- the path a caller, mqc included, actually uses); RKS/PBE
+   !! and RKS/B3LYP on HI through the lower-level Fortran API instead
+   !! (trc_basis_from_json/trc_ecp_from_json/trc_scf_run), because only that
+   !! path hands back trc_scf_result_t%grid_r/grid_w, which generate.py's
+   !! gen_ecp_scf needs to feed pyscf terco's own grid; the C API has no
+   !! accessor for it. Also checks the refusals phase 3 adds (MINAO/SAP/
+   !! Hirshfeld guesses, the analytic gradient) and a restart-file round trip.
+   !!
+   !! GEOMETRY: mqc's own HI bond
+   !! (metalquicha/validation/inputs/sample_inputs/hi.xyz), I at the origin, H
+   !! at z = 1.609 Angstrom = HI_BOND_BOHR (CODATA 2018, terco's own
+   !! ANGSTROM_TO_BOHR).
+   !!
+   !! THE PYSCF ANCHOR (test/pyscf_refs/generate.py's gen_ecp_scf,
+   !! ecp_scf.ref): cart=False (pyscf's own spherical AOs, matching this
+   !! build's own default for a basis tagged gto_spherical -- def2-svp is),
+   !! the SAME JSON basis+ECP (bse_json_basis/bse_json_ecp) and the geometry
+   !! above. The two DFT cases feed pyscf THIS run's own dumped grid
+   !! (ecp_scf_probe.bin, this module's own run_all) via grids.coords/weights,
+   !! the same same-grid comparison every other DFT anchor in this tree uses
+   !! (gen_rks's own pattern). Measured agreement against the anchor
+   !! (2026-11-04, gfortran 15, LMAX=2): RHF HI 2.8e-13, UHF I atom 3.4e-13,
+   !! RKS/PBE HI 7.4e-13, RKS/B3LYP HI 1.3e-12 -- all at the double-precision
+   !! floor, run_all's own tolerance (1e-9) keeps 3+ orders of margin. mqc's
+   !! own literals (MQC_HI, MQC_I_ATOM) are a secondary print only.
+   !!
+   !! Seeding terco's spherical HI run from pyscf's own converged spherical
+   !! density (TRC_GUESS_GIVEN + TRC_AO_NORM_UNIT) takes MORE iterations than
+   !! a cold SAD guess, not fewer: terco's own spherical l>=2 AOs are not
+   !! unit-normalised (diag(S) = 0.398 for iodine's def2-SVP d shell, against
+   !! pyscf's 1), and TRC_AO_NORM_UNIT does not rescale them -- it is scoped
+   !! to a Cartesian shell's own per-component convention by its own ABI doc
+   !! comment, not a spherical one. The given density's d-shell block is
+   !! mis-scaled; the SCF still converges to the identical energy regardless,
+   !! just with more iterations. Not fixed here.
+   !!
+   !! RI-MP2, frozen core 4 (not a committed case here): measured E = mqc's
+   !! -297.360082905691 to |dE| = 1.32e-5 at the corrected geometry, using
+   !! def2-svp-rifit.json as the auxiliary basis -- an order of magnitude
+   !! looser than RHF/DFT, consistent with a density-fitting/auxiliary-basis
+   !! difference from whatever mqc's own RI-MP2 used (not confirmed to be the
+   !! identical aux set), rather than a bug; left unadded rather than
+   !! committing a loose, unexplained tolerance.
+   !!
+   !! I2 (two ECP atoms, attach_ecp's per-atom loop and the semi-local blocks
+   !! between two heavy atoms) is a case here now. It used to be refused at
+   !! every separation tried: the ECP radial quadrature failed instead of
+   !! keeping its finest level as pyscf does (#194 review, fixed in trc_ecp).
+   !!
+   !! H2 next to a GHOST iodine (trc_set_elements, charge 0) checks attach_ecp's
+   !! ghost rule: the ghost keeps iodine's basis and gets no ECP and no core
+   !! count, as in pyscf (an atom labelled GHOST-, with no ecp entry). Before,
+   !! attach_ecp gave the ghost iodine's 28-electron core and refused it for a
+   !! negative charge.
+   !!
+   !! Writes ecp_scf_probe.bin for generate.py's gen_ecp_scf, same idea as
+   !! scf_robust.F90's own probe/ref pair; the probe write and the sequential
+   !! pyscf-reference read run once (run_all, below), for the same reason
+   !! scf_robust's own suite stays parallel=.false. -- see that module's own
+   !! header.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char
    use pic_types, only: dp, int64
    use trc_constants, only: ANGSTROM_TO_BOHR
@@ -173,14 +173,14 @@ contains
       computed = .true.
    end subroutine ensure_computed
 
-   !
-   ! All the energy cases, run once: builds each molecule/basis with the
-   ! ECP attached exactly as trc_capi.F90's attach_ecp does (bare Z minus
-   ! at_ncore), runs trc_scf_run directly (not the C API) so the converged
-   ! DFT grid (trc_scf_result_t%grid_r/grid_w) is available to dump, writes
-   ! ecp_scf_probe.bin, then reads ecp_scf.ref back and compares.
-   !
    subroutine run_all()
+      !!
+      !! All the energy cases, run once: builds each molecule/basis with the
+      !! ECP attached exactly as trc_capi.F90's attach_ecp does (bare Z minus
+      !! at_ncore), runs trc_scf_run directly (not the C API) so the converged
+      !! DFT grid (trc_scf_result_t%grid_r/grid_w) is available to dump, writes
+      !! ecp_scf_probe.bin, then reads ecp_scf.ref back and compares.
+      !!
       integer :: ic, unit, natm, refu
       logical :: has_ref
       real(dp) :: e_ref, de, mqc_val
@@ -223,22 +223,22 @@ contains
       close (unit)
    end subroutine run_all
 
-   !
-   ! One case's own build, SCF and probe dump; writes e_all(ic) for
-   ! run_all's own two uses (the mqc print and the pyscf-ref compare).
-   !
-   ! RHF HI and UHF the free I atom go through the C API -- bare Z into
-   ! trc_set_molecule, trc_set_basis_json's own auto-attach, trc_run_scf --
-   ! the exact path a caller (mqc included) actually uses, so this is the
-   ! one place that path's own energy is checked against anything external
-   ! at all; everything else in this suite either only checks a refusal or
-   ! only checks that an SCF converges. The two DFT cases stay on the
-   ! lower-level path (trc_basis_from_json/trc_ecp_from_json/trc_scf_run)
-   ! because only that path hands back trc_scf_result_t%grid_r/grid_w, and
-   ! generate.py's gen_ecp_scf needs this run's own grid to feed pyscf the
-   ! identical quadrature; the C API has no accessor for it.
-   !
    subroutine run_one_case(ic, natm, unit)
+      !!
+      !! One case's own build, SCF and probe dump; writes e_all(ic) for
+      !! run_all's own two uses (the mqc print and the pyscf-ref compare).
+      !!
+      !! RHF HI and UHF the free I atom go through the C API -- bare Z into
+      !! trc_set_molecule, trc_set_basis_json's own auto-attach, trc_run_scf --
+      !! the exact path a caller (mqc included) actually uses, so this is the
+      !! one place that path's own energy is checked against anything external
+      !! at all; everything else in this suite either only checks a refusal or
+      !! only checks that an SCF converges. The two DFT cases stay on the
+      !! lower-level path (trc_basis_from_json/trc_ecp_from_json/trc_scf_run)
+      !! because only that path hands back trc_scf_result_t%grid_r/grid_w, and
+      !! generate.py's gen_ecp_scf needs this run's own grid to feed pyscf the
+      !! identical quadrature; the C API has no accessor for it.
+      !!
       integer, intent(in) :: ic
       integer, intent(in) :: natm
       integer, intent(in) :: unit
@@ -315,11 +315,11 @@ contains
       end if
    end subroutine run_one_case
 
-   !
-   ! RHF HI / UHF I atom through the C API: bare Z, trc_set_basis_json's
-   ! own auto-attach, trc_run_scf -- see run_one_case's own header.
-   !
    subroutine run_case_capi(ic, natm, elements, ghost, at_r, charge, mult)
+      !!
+      !! RHF HI / UHF I atom through the C API: bare Z, trc_set_basis_json's
+      !! own auto-attach, trc_run_scf -- see run_one_case's own header.
+      !!
       integer, intent(in) :: ic, natm, elements(natm), charge, mult
       logical, intent(in) :: ghost(natm)
       real(dp), intent(in) :: at_r(3, natm)
@@ -347,11 +347,11 @@ contains
       e_all(ic) = real(e, dp)
    end subroutine run_case_capi
 
-   !
-   ! RKS/PBE and RKS/B3LYP on HI through the lower-level path, for the
-   ! grid -- see run_one_case's own header.
-   !
    subroutine run_case_grid(ic, natm, elements, at_r, nalpha, nbeta, grid_r, grid_w)
+      !!
+      !! RKS/PBE and RKS/B3LYP on HI through the lower-level path, for the
+      !! grid -- see run_one_case's own header.
+      !!
       integer, intent(in) :: ic, natm, elements(natm), nalpha, nbeta
       real(dp), intent(in) :: at_r(3, natm)
       real(dp), allocatable, intent(out) :: grid_r(:, :), grid_w(:)
@@ -403,12 +403,12 @@ contains
       end select
    end function case_natm
 
-   !
-   ! HI through the C API (make_hi), for the refusal/restart checks below
-   ! -- none of those need the grid, so the plain context-handle path is
-   ! simpler than run_one_case's own lower-level one.
-   !
    subroutine make_hi(h)
+      !!
+      !! HI through the C API (make_hi), for the refusal/restart checks below
+      !! -- none of those need the grid, so the plain context-handle path is
+      !! simpler than run_one_case's own lower-level one.
+      !!
       type(c_ptr), intent(out) :: h
       integer(c_int) :: rc
       real(c_double), parameter :: z(2) = [1.0_c_double, 53.0_c_double]
@@ -478,13 +478,13 @@ contains
       rc = trc_destroy(h)
    end subroutine test_gradient_refused
 
-   !
-   ! Save, destroy, create a fresh handle, load: the restart file (format
-   ! version 4, trc_scf_file.F90) must carry enough ECP state that the
-   ! loaded result is accepted and reports the SAME energy, round-tripped
-   ! through disk rather than compared in memory.
-   !
    subroutine test_restart_roundtrip(error)
+      !!
+      !! Save, destroy, create a fresh handle, load: the restart file (format
+      !! version 4, trc_scf_file.F90) must carry enough ECP state that the
+      !! loaded result is accepted and reports the SAME energy, round-tripped
+      !! through disk rather than compared in memory.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h1, h2
       integer(c_int) :: rc

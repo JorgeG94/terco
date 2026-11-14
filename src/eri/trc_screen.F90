@@ -1,32 +1,32 @@
-!
-! Screening: the Schwarz bounds and the density block bound.
-!
-! Three reductions, in this order because each makes the next cheaper (the
-! bins in trc_bins and the kernels in trc_binkernel apply them; this module
-! computes the bounds):
-!
-!   1. PERMUTATIONAL SYMMETRY, 8-fold: only canonical quartets are stored
-!      (i >= j, k >= l, pair(i,j) >= pair(k,l)).
-!
-!   2. SCHWARZ: |(ij|kl)| <= Q(ij) Q(kl), Q(ij) = sqrt(max |(ij|ij)|).
-!      Rigorous (Cauchy-Schwarz), so discarding below a threshold bounds the
-!      error. Q is built with the full Coulomb operator and never adjusted for
-!      the range-separation omega: in k-space erf(omega r)/r has transform
-!      4*pi/k^2 * exp(-k^2/(4 omega^2)) <= 4*pi/k^2, so (ab|ab)_erf <=
-!      (ab|ab)_Coulomb for any charge distribution. A tighter omega-specific
-!      bound would only screen more, so this costs no accuracy. The prescreens
-!      in trc_batch.F90 and the generated kernels' `pcut` rest on the same fact.
-!
-!   3. DENSITY: a quartet's Fock contribution, not the integral's size, is what
-!      matters, so the bound carries the largest density block the quartet can
-!      touch. This makes late SCF iterations cheap and is redone whenever D
-!      changes.
-!
-! Q comes from our own engine on the diagonal quartets (O(N^2)), not libfint,
-! which is gfortran-only (see NOTES.md). libfint remains the oracle that
-! checks the bounds, in check_screen.
-!
 module trc_screen
+   !!
+   !! Screening: the Schwarz bounds and the density block bound.
+   !!
+   !! Three reductions, in this order because each makes the next cheaper (the
+   !! bins in trc_bins and the kernels in trc_binkernel apply them; this module
+   !! computes the bounds):
+   !!
+   !!   1. PERMUTATIONAL SYMMETRY, 8-fold: only canonical quartets are stored
+   !!      (i >= j, k >= l, pair(i,j) >= pair(k,l)).
+   !!
+   !!   2. SCHWARZ: |(ij|kl)| <= Q(ij) Q(kl), Q(ij) = sqrt(max |(ij|ij)|).
+   !!      Rigorous (Cauchy-Schwarz), so discarding below a threshold bounds the
+   !!      error. Q is built with the full Coulomb operator and never adjusted for
+   !!      the range-separation omega: in k-space erf(omega r)/r has transform
+   !!      4*pi/k^2 * exp(-k^2/(4 omega^2)) <= 4*pi/k^2, so (ab|ab)_erf <=
+   !!      (ab|ab)_Coulomb for any charge distribution. A tighter omega-specific
+   !!      bound would only screen more, so this costs no accuracy. The prescreens
+   !!      in trc_batch.F90 and the generated kernels' `pcut` rest on the same fact.
+   !!
+   !!   3. DENSITY: a quartet's Fock contribution, not the integral's size, is what
+   !!      matters, so the bound carries the largest density block the quartet can
+   !!      touch. This makes late SCF iterations cheap and is redone whenever D
+   !!      changes.
+   !!
+   !! Q comes from our own engine on the diagonal quartets (O(N^2)), not libfint,
+   !! which is gfortran-only (see NOTES.md). libfint remains the oracle that
+   !! checks the bounds, in check_screen.
+   !!
    use pic_types, only: dp
    use trc_tables, only: LTOT, NHERM_MAX
    use trc_batch, only: batch_eri, batch_ncart, trc_batch_pairs_t
@@ -42,22 +42,22 @@ module trc_screen
 
 contains
 
-   !
-   ! Canonical compound index of a shell pair, i >= j, 1-based.
-   !
    pure integer function screen_pair_index(i, j) result(res)
+      !!
+      !! Canonical compound index of a shell pair, i >= j, 1-based.
+      !!
       !$acc routine seq
       integer, intent(in) :: i, j
       res = i*(i - 1)/2 + j
    end function screen_pair_index
 
-   !
-   ! Q(i,j) = sqrt( max_{ab} |(ij|ij)_{ab,ab}| ) for every i >= j.
-   !
-   ! Runs the ordinary engine over the diagonal quartets.  N(N+1)/2 of them, so
-   ! this is negligible against the N^4 it then removes.
-   !
    subroutine screen_schwarz_bounds(sh_l, pairs, q)
+      !!
+      !! Q(i,j) = sqrt( max_{ab} |(ij|ij)_{ab,ab}| ) for every i >= j.
+      !!
+      !! Runs the ordinary engine over the diagonal quartets.  N(N+1)/2 of them, so
+      !! this is negligible against the N^4 it then removes.
+      !!
       type(trc_batch_pairs_t), intent(in) :: pairs
       !! The MMD primitive pairs, from batch_build_pairs.
       integer,  intent(in)  :: sh_l(pairs%nbas)
@@ -177,27 +177,27 @@ contains
       deallocate (d_i, d_j, d_k, d_l, d_off, d_q, out, rscr, qc)
    end subroutine screen_schwarz_bounds
 
-   !
-   ! Q(i,j) = sqrt( max_{ab} |(ij|ij)_{ab,ab}| ) for every i >= j, computed from
-   ! the same contracted HGP primitive pairs (hp_*) the Fock kernels read, so no
-   ! second primitive-pair set is built (unlike `screen_schwarz_bounds` above, which is
-   ! no longer called in production).
-   !
-   ! Scale: `batch_build_pairs` (MMD) multiplied `common_fac_sp` into every primitive
-   ! coefficient, but `basis_build` already folds it into `sh_c`, so the old
-   ! route folded it twice and s/p bounds came out too small. That is not
-   ! conservative: a too-small Cauchy-Schwarz bound can screen away a quartet
-   ! that matters. Reading hp_c as the kernels do (build_structures passes
-   ! cfac = 1) avoids it.
-   !
-   ! `hgp_quartet` is not class-specialised (its scratch is sized per class in
-   ! `work`), so it is correct for every class including f, even though
-   ! production routes f classes to Rys.
-   !
-   ! `hp_*` must already be device-resident (they stay resident for the Fock
-   ! kernels); staging a copy here would be an implicit per-launch transfer.
-   !
    subroutine screen_schwarz_bounds_hgp(pairs, q)
+      !!
+      !! Q(i,j) = sqrt( max_{ab} |(ij|ij)_{ab,ab}| ) for every i >= j, computed from
+      !! the same contracted HGP primitive pairs (hp_*) the Fock kernels read, so no
+      !! second primitive-pair set is built (unlike `screen_schwarz_bounds` above, which is
+      !! no longer called in production).
+      !!
+      !! Scale: `batch_build_pairs` (MMD) multiplied `common_fac_sp` into every primitive
+      !! coefficient, but `basis_build` already folds it into `sh_c`, so the old
+      !! route folded it twice and s/p bounds came out too small. That is not
+      !! conservative: a too-small Cauchy-Schwarz bound can screen away a quartet
+      !! that matters. Reading hp_c as the kernels do (build_structures passes
+      !! cfac = 1) avoids it.
+      !!
+      !! `hgp_quartet` is not class-specialised (its scratch is sized per class in
+      !! `work`), so it is correct for every class including f, even though
+      !! production routes f classes to Rys.
+      !!
+      !! `hp_*` must already be device-resident (they stay resident for the Fock
+      !! kernels); staging a copy here would be an implicit per-launch transfer.
+      !!
       type(trc_shell_pairs_t), intent(in) :: pairs
       !! The shells (sh_l) and their primitive pairs, from hgp_build_pairs.
       real(dp), intent(out) :: q(pairs%nbas*(pairs%nbas + 1)/2)
@@ -323,40 +323,40 @@ contains
       deallocate (d_i, d_j, d_k, d_l, d_off, d_q, cst, w_off, out, qc, work)
    end subroutine screen_schwarz_bounds_hgp
 
-   !
-   ! Q(i,j) = sqrt( max_{ab} |(ij|ij)_{ab,ab}| ) for every i >= j, exactly as
-   ! screen_schwarz_bounds_hgp above computes it, but from `trc_schwarz_rys.F90`'s
-   ! Rys-quadrature DIAGONAL kernel instead of `hgp_quartet`'s whole (ab|ab)
-   ! Cartesian block.
-   !
-   ! WHY. `hgp_quartet` is one thread per shell pair, computing every one of
-   ! the pair's na*na = (batch_ncart(li)*batch_ncart(lj))^2 Cartesian elements to keep
-   ! the largest; for a (gg) pair na = 15, so na*na = 225 and the thread
-   ! also carries a VRR scratch sized per quartet. Cauchy-Schwarz only ever
-   ! needs the DIAGONAL of that block (see this module's header: M is a
-   ! Gram matrix, so its largest |element| sits on the diagonal), so this
-   ! routine launches one thread per (pair, component pair) instead -- na
-   ! threads for a (gg) pair, not one -- and each thread computes a single
-   ! (ab|ab) with no quartet-sized VRR scratch at all (schwarz_rys_item's
-   ! own per-thread scratch is a handful of scalars and three <=9x9 2D Rys
-   ! tables; see trc_schwarz_rys.F90's module header).
-   !
-   ! THE THREAD LIST IS FLATTENED ON THE HOST, NOT NESTED ON THE DEVICE. A
-   ! `do concurrent` nested over (pair, component), where the component
-   ! extent varies per pair and is small, risks nvfortran dropping the last
-   ! slice of a small varying outer extent (this project's own measured
-   ! trap); t_i/t_j/t_c below enumerate the flat (pair, component) list on
-   ! the host instead, and `schwarz_rys_batch` launches one `do concurrent`
-   ! over it.
-   !
-   ! Chunked on total THREAD count (sum of na over the chunk's pairs), not
-   ! pair count: the old WBUDGET chunking above exists because hgp_quartet's
-   ! VRR scratch is na*na-ish and could overrun a work buffer; this kernel's
-   ! per-thread scratch is O(1) regardless of class, so the only thing that
-   ! needs bounding is how many threads' worth of `t_i`/`t_j`/`t_c`/`outc`
-   ! this routine allocates at once.
-   !
    subroutine screen_schwarz_bounds_rys(pairs, q)
+      !!
+      !! Q(i,j) = sqrt( max_{ab} |(ij|ij)_{ab,ab}| ) for every i >= j, exactly as
+      !! screen_schwarz_bounds_hgp above computes it, but from `trc_schwarz_rys.F90`'s
+      !! Rys-quadrature DIAGONAL kernel instead of `hgp_quartet`'s whole (ab|ab)
+      !! Cartesian block.
+      !!
+      !! WHY. `hgp_quartet` is one thread per shell pair, computing every one of
+      !! the pair's na*na = (batch_ncart(li)*batch_ncart(lj))^2 Cartesian elements to keep
+      !! the largest; for a (gg) pair na = 15, so na*na = 225 and the thread
+      !! also carries a VRR scratch sized per quartet. Cauchy-Schwarz only ever
+      !! needs the DIAGONAL of that block (see this module's header: M is a
+      !! Gram matrix, so its largest |element| sits on the diagonal), so this
+      !! routine launches one thread per (pair, component pair) instead -- na
+      !! threads for a (gg) pair, not one -- and each thread computes a single
+      !! (ab|ab) with no quartet-sized VRR scratch at all (schwarz_rys_item's
+      !! own per-thread scratch is a handful of scalars and three <=9x9 2D Rys
+      !! tables; see trc_schwarz_rys.F90's module header).
+      !!
+      !! THE THREAD LIST IS FLATTENED ON THE HOST, NOT NESTED ON THE DEVICE. A
+      !! `do concurrent` nested over (pair, component), where the component
+      !! extent varies per pair and is small, risks nvfortran dropping the last
+      !! slice of a small varying outer extent (this project's own measured
+      !! trap); t_i/t_j/t_c below enumerate the flat (pair, component) list on
+      !! the host instead, and `schwarz_rys_batch` launches one `do concurrent`
+      !! over it.
+      !!
+      !! Chunked on total THREAD count (sum of na over the chunk's pairs), not
+      !! pair count: the old WBUDGET chunking above exists because hgp_quartet's
+      !! VRR scratch is na*na-ish and could overrun a work buffer; this kernel's
+      !! per-thread scratch is O(1) regardless of class, so the only thing that
+      !! needs bounding is how many threads' worth of `t_i`/`t_j`/`t_c`/`outc`
+      !! this routine allocates at once.
+      !!
       type(trc_shell_pairs_t), intent(in) :: pairs
       !! The shells (sh_l) and their primitive pairs, from hgp_build_pairs.
       real(dp), intent(out) :: q(pairs%nbas*(pairs%nbas + 1)/2)
@@ -483,14 +483,14 @@ contains
       deallocate (d_i, d_j, d_k, d_l, d_q, p_na, p_base, cst, t_i, t_j, t_c, outc, qc)
    end subroutine screen_schwarz_bounds_rys
 
-   !
-   ! Reorder the live diagonal pairs so the expensive ones come first.
-   !
-   ! Bucketed by the power of two of the primitive-pair count, descending.
-   ! That is enough: the point is to keep a launch from ending on one long
-   ! thread, not to sort exactly.
-   !
    subroutine order_by_work(nlive, nbas, pp_n, d_i, d_j, d_k, d_l, d_q)
+      !!
+      !! Reorder the live diagonal pairs so the expensive ones come first.
+      !!
+      !! Bucketed by the power of two of the primitive-pair count, descending.
+      !! That is enough: the point is to keep a launch from ending on one long
+      !! thread, not to sort exactly.
+      !!
       integer, intent(in)    :: nlive, nbas
       integer, intent(in)    :: pp_n(nbas*nbas)
       integer, intent(inout) :: d_i(*), d_j(*), d_k(*), d_l(*), d_q(*)
@@ -534,10 +534,10 @@ contains
       deallocate (bkt, si, sj, sq)
    end subroutine order_by_work
 
-   !
-   ! Largest |D| over each shell pair's block.  Recomputed whenever D changes.
-   !
    subroutine screen_density_blockmax(nbas, nao, sh_l, ao_off, dmat, dmax)
+      !!
+      !! Largest |D| over each shell pair's block.  Recomputed whenever D changes.
+      !!
       integer,  intent(in)  :: nbas, nao
       integer,  intent(in)  :: sh_l(nbas), ao_off(nbas)
       real(dp), intent(in)  :: dmat(nao, nao)

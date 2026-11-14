@@ -1,76 +1,76 @@
-!
-! Coupled-perturbed Hartree-Fock: the orbital-response linear system this
-! milestone solves, and the static dipole polarizability built on top of it
-! as the validating property. Intended foundation for RI-MP2's Z-vector
-! equation and, later, a coupled-perturbed Kohn-Sham variant for
-! double-hybrid gradients -- neither is implemented here, this module only
-! solves the ground-state orbital Hessian system and the one property that
-! needs nothing but it.
-!
-! THE EQUATION (RHF)
-! -------------------
-! For a real, symmetric one-electron perturbation (a static field has no
-! AO-basis response, so this is the whole right-hand side), the response
-! orbital-rotation amplitudes U_ai solve
-!
-!     (e_a - e_i) U_ai + [A U]_ai = -B_ai
-!
-! with the orbital Hessian action, built from one resident Fock-like build
-! rather than an AO integral derivative:
-!
-!     D_U = C_vir U C_occ^T + (C_vir U C_occ^T)^T          (symmetric, AO)
-!     [A U]_ai = 2 [C_vir^T G[D_U] C_occ]_ai,   G[D_U] = J[D_U] - K[D_U]/2
-!
-! i.e. exactly eri%fock_resident(b, D_U, G_U, j_scale=1, k_scale=1,
-! density_screen=.false.) -- the trial density is not the SCF's physical
-! one, so it must not drive the Schwarz screen (trc_eri.F90's own warning
-! on both `fock_resident` and `fock`). The derivation (4(ai|jb) -
-! (ij|ab) - (ib|ja), contracted against the full permutation symmetry of
-! real two-electron integrals) is the standard RHF orbital-Hessian
-! result -- Pople, Krishnan, Schlegel and Binkley, Int. J. Quantum Chem.
-! 16, 225 (1979), or Helgaker/Jorgensen/Olsen, Molecular Electronic-
-! Structure Theory, the CPHF section of ch. 10 -- not rederived here;
-! see trc_eri.F90's header for why `fock_resident` is the entry point
-! this was always meant to reach ("the coupled-perturbed equations run
-! a hundred of them").
-!
-! THE EQUATION (UHF)
-! -------------------
-! Each spin channel's Fock response only picks up a J contribution from
-! the OTHER spin's trial density; its own K is spin-local:
-!
-!     D_U^s = C_vir,s U^s C_occ,s^T + transpose,   D_U^tot = D_U^a + D_U^b
-!     [A U]_ai^s = [C_vir,s^T (J[D_U^tot] - K[D_U^s]) C_occ,s]_ai
-!
-! J[D_U^tot] is one fock_resident call (j_scale=1, k_scale=0) shared by
-! both spins; K[D_U^s] is fock_resident(j_scale=0, k_scale=2) per spin --
-! the same "k_scale=2 on the undoubled density" trick trc_scf_fock.F90's
-! `scf_fock_build_g` uses for the ground-state UKS exchange term. No extra factor
-! of 2 here: RHF's 2 comes from folding two identical spin channels into
-! one solve, which UHF does not do.
-!
-! THE SOLVER
-! ----------
-! Preconditioned conjugate gradient, the diagonal (e_a - e_i) as the
-! preconditioner (SPD for a stable ground state, so CG is the right
-! choice over a general Krylov method), one right-hand side at a time
-! inside a single call that reports an iteration count per column. A
-! batched build across right-hand sides -- one `fock_resident`-like pass
-! contracting a quartet against every trial density at once, as
-! `eri%fock_many` does for already-host-resident problems -- is the
-! obvious next speed-up and is NOT done: there is no device-resident
-! multi-density fock_resident, so this runs ncomp independent CG loops,
-! each paying its own integral pass per iteration.
-!
-! RESIDENCY. `cmo`, the right-hand sides and the solution are assumed
-! already on the device (the same contract eri%fock_resident itself
-! documents); only `eps` (nao-size) and the CG's own scalars (dot
-! products, read back by trc_linalg%dot_2d, exactly as DIIS's history
-! does) cross the bus. Every per-iteration matrix -- D_U, G_U, the GEMM
-! scratch, the CG vectors themselves -- stays resident for the life of
-! the solve.
-!
 module trc_cphf
+   !!
+   !! Coupled-perturbed Hartree-Fock: the orbital-response linear system this
+   !! milestone solves, and the static dipole polarizability built on top of it
+   !! as the validating property. Intended foundation for RI-MP2's Z-vector
+   !! equation and, later, a coupled-perturbed Kohn-Sham variant for
+   !! double-hybrid gradients -- neither is implemented here, this module only
+   !! solves the ground-state orbital Hessian system and the one property that
+   !! needs nothing but it.
+   !!
+   !! THE EQUATION (RHF)
+   !! -------------------
+   !! For a real, symmetric one-electron perturbation (a static field has no
+   !! AO-basis response, so this is the whole right-hand side), the response
+   !! orbital-rotation amplitudes U_ai solve
+   !!
+   !!     (e_a - e_i) U_ai + [A U]_ai = -B_ai
+   !!
+   !! with the orbital Hessian action, built from one resident Fock-like build
+   !! rather than an AO integral derivative:
+   !!
+   !!     D_U = C_vir U C_occ^T + (C_vir U C_occ^T)^T          (symmetric, AO)
+   !!     [A U]_ai = 2 [C_vir^T G[D_U] C_occ]_ai,   G[D_U] = J[D_U] - K[D_U]/2
+   !!
+   !! i.e. exactly eri%fock_resident(b, D_U, G_U, j_scale=1, k_scale=1,
+   !! density_screen=.false.) -- the trial density is not the SCF's physical
+   !! one, so it must not drive the Schwarz screen (trc_eri.F90's own warning
+   !! on both `fock_resident` and `fock`). The derivation (4(ai|jb) -
+   !! (ij|ab) - (ib|ja), contracted against the full permutation symmetry of
+   !! real two-electron integrals) is the standard RHF orbital-Hessian
+   !! result -- Pople, Krishnan, Schlegel and Binkley, Int. J. Quantum Chem.
+   !! 16, 225 (1979), or Helgaker/Jorgensen/Olsen, Molecular Electronic-
+   !! Structure Theory, the CPHF section of ch. 10 -- not rederived here;
+   !! see trc_eri.F90's header for why `fock_resident` is the entry point
+   !! this was always meant to reach ("the coupled-perturbed equations run
+   !! a hundred of them").
+   !!
+   !! THE EQUATION (UHF)
+   !! -------------------
+   !! Each spin channel's Fock response only picks up a J contribution from
+   !! the OTHER spin's trial density; its own K is spin-local:
+   !!
+   !!     D_U^s = C_vir,s U^s C_occ,s^T + transpose,   D_U^tot = D_U^a + D_U^b
+   !!     [A U]_ai^s = [C_vir,s^T (J[D_U^tot] - K[D_U^s]) C_occ,s]_ai
+   !!
+   !! J[D_U^tot] is one fock_resident call (j_scale=1, k_scale=0) shared by
+   !! both spins; K[D_U^s] is fock_resident(j_scale=0, k_scale=2) per spin --
+   !! the same "k_scale=2 on the undoubled density" trick trc_scf_fock.F90's
+   !! `scf_fock_build_g` uses for the ground-state UKS exchange term. No extra factor
+   !! of 2 here: RHF's 2 comes from folding two identical spin channels into
+   !! one solve, which UHF does not do.
+   !!
+   !! THE SOLVER
+   !! ----------
+   !! Preconditioned conjugate gradient, the diagonal (e_a - e_i) as the
+   !! preconditioner (SPD for a stable ground state, so CG is the right
+   !! choice over a general Krylov method), one right-hand side at a time
+   !! inside a single call that reports an iteration count per column. A
+   !! batched build across right-hand sides -- one `fock_resident`-like pass
+   !! contracting a quartet against every trial density at once, as
+   !! `eri%fock_many` does for already-host-resident problems -- is the
+   !! obvious next speed-up and is NOT done: there is no device-resident
+   !! multi-density fock_resident, so this runs ncomp independent CG loops,
+   !! each paying its own integral pass per iteration.
+   !!
+   !! RESIDENCY. `cmo`, the right-hand sides and the solution are assumed
+   !! already on the device (the same contract eri%fock_resident itself
+   !! documents); only `eps` (nao-size) and the CG's own scalars (dot
+   !! products, read back by trc_linalg%dot_2d, exactly as DIIS's history
+   !! does) cross the bus. Every per-iteration matrix -- D_U, G_U, the GEMM
+   !! scratch, the CG vectors themselves -- stays resident for the life of
+   !! the solve.
+   !!
    use pic_types, only: dp
    use pic_logger, only: global_logger
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
@@ -109,14 +109,14 @@ module trc_cphf
 
 contains
 
-   !
-   ! RHF CPHF: `ncomp` right-hand sides at once (one CG solve per column,
-   ! see this module's own header on why that is not one shared integral
-   ! pass). `cmo` (nao, nao), `bvec` (nvirt, nocc, ncomp) and `u` (same
-   ! shape, overwritten with the solution) must already be device-resident;
-   ! `eps` (nao) is host, read once to build the diagonal preconditioner.
-   !
    subroutine trc_cphf_solve_rhf(b, eri, lp, nao, nocc, nvirt, cmo, eps, ncomp, bvec, u, opts, res)
+      !!
+      !! RHF CPHF: `ncomp` right-hand sides at once (one CG solve per column,
+      !! see this module's own header on why that is not one shared integral
+      !! pass). `cmo` (nao, nao), `bvec` (nvirt, nocc, ncomp) and `u` (same
+      !! shape, overwritten with the solution) must already be device-resident;
+      !! `eps` (nao) is host, read once to build the diagonal preconditioner.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
       type(trc_linalg_t), intent(inout) :: lp
@@ -218,9 +218,9 @@ contains
 
    contains
 
-      ! [A p]_ai = 2 [C_vir^T G[D_p] C_occ]_ai + (e_a-e_i) p_ai, D_p the
-      ! symmetrised AO density this p rotates into (this module's header).
       subroutine matvec(pin, apout)
+         !! [A p]_ai = 2 [C_vir^T G[D_p] C_occ]_ai + (e_a-e_i) p_ai, D_p the
+         !! symmetrised AO density this p rotates into (this module's header).
          real(dp), intent(in) :: pin(nvirt, nocc)
          real(dp), intent(inout) :: apout(nvirt, nocc)
          call lp%gemm_mat(cmo(:, nocc + 1:nao), pin, temporary_no)
@@ -236,22 +236,22 @@ contains
 
    end subroutine trc_cphf_solve_rhf
 
-   !
-   ! RHF CPHF with the DENSITY-FITTED orbital Hessian: the same equation
-   ! and the same preconditioned CG as trc_cphf_solve_rhf, but
-   ! [A U] - (e_a - e_i) U = 2 C_v^T (J_fit - K_fit/2)[D_U] C_o from `resp`
-   ! (trc_scf_df_response's df_rotation_t, over `dfjk`'s fit and the
-   ! orbitals `resp` was set up with: the MO-basis fitted orbital Hessian,
-   ! or its AO form when the MO blocks do not fit). This is the response
-   ! operator of a --df SCF: its orbitals are stationary for the fitted
-   ! energy, so a Z-vector or a property over that reference has to use it,
-   ! not the exact one. No screening is involved at all.
-   !
-   ! Dimensions come from `resp` and the arrays: bvec/u (nvirt, nocc,
-   ! ncomp), nocc and nvirt `resp`'s own. bvec and u device-resident. Same
-   ! convergence test, breakdown and NaN handling as trc_cphf_solve_rhf.
-   !
    subroutine trc_cphf_solve_rhf_fitted(resp, dfjk, lp, bvec, u, opts, res)
+      !!
+      !! RHF CPHF with the DENSITY-FITTED orbital Hessian: the same equation
+      !! and the same preconditioned CG as trc_cphf_solve_rhf, but
+      !! [A U] - (e_a - e_i) U = 2 C_v^T (J_fit - K_fit/2)[D_U] C_o from `resp`
+      !! (trc_scf_df_response's df_rotation_t, over `dfjk`'s fit and the
+      !! orbitals `resp` was set up with: the MO-basis fitted orbital Hessian,
+      !! or its AO form when the MO blocks do not fit). This is the response
+      !! operator of a --df SCF: its orbitals are stationary for the fitted
+      !! energy, so a Z-vector or a property over that reference has to use it,
+      !! not the exact one. No screening is involved at all.
+      !!
+      !! Dimensions come from `resp` and the arrays: bvec/u (nvirt, nocc,
+      !! ncomp), nocc and nvirt `resp`'s own. bvec and u device-resident. Same
+      !! convergence test, breakdown and NaN handling as trc_cphf_solve_rhf.
+      !!
       type(df_rotation_t), intent(inout) :: resp
       type(df_jk_t), intent(in) :: dfjk
       type(trc_linalg_t), intent(inout) :: lp
@@ -336,15 +336,15 @@ contains
       !$acc exit data delete(r, z, p, ap)
    end subroutine trc_cphf_solve_rhf_fitted
 
-   !
-   ! UHF CPHF: the two spin channels solved together (one combined CG over
-   ! the stacked [U^a; U^b] vector), because the matvec couples them
-   ! through J -- see this module's own header. `cmo_a`/`cmo_b`, the
-   ! right-hand sides and the solutions must already be device-resident;
-   ! `eps_a`/`eps_b` are host.
-   !
    subroutine trc_cphf_solve_uhf(b, eri, lp, nao, noa, nva, nob, nvb, cmo_a, cmo_b, eps_a, eps_b, &
                                  ncomp, bvec_a, bvec_b, u_a, u_b, opts, res)
+      !!
+      !! UHF CPHF: the two spin channels solved together (one combined CG over
+      !! the stacked [U^a; U^b] vector), because the matvec couples them
+      !! through J -- see this module's own header. `cmo_a`/`cmo_b`, the
+      !! right-hand sides and the solutions must already be device-resident;
+      !! `eps_a`/`eps_b` are host.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
       type(trc_linalg_t), intent(inout) :: lp
@@ -488,19 +488,19 @@ contains
 
    end subroutine trc_cphf_solve_uhf
 
-   !
-   ! Static dipole polarizability, RHF: alpha_xy = -2 [sum_ai mu^x_ai U^y_ai
-   ! + sum_ai mu^y_ai U^x_ai] (symmetrised -- see this routine's own
-   ! comment), with U solving (e_a-e_i) U^y + [A U^y] = -mu^y (the "B" of
-   ! this module's equation is the dipole integral itself, occ-virt MO
-   ! block -- a static field adds no AO-basis response, so there is no
-   ! other term).
-   ! `cmo`/`eps` are `res%cmo(:,:,1)`/`res%eps(:,1)`, HOST, exactly as
-   ! trc_scf_run hands them back. `pl` and `eri` are the caller's, already
-   ! built on the SAME basis `b` (not necessarily the ones trc_scf_run used
-   ! internally -- that engine is released when the SCF returns).
-   !
    recursive subroutine trc_scf_polarizability_rhf(b, pl, eri, nocc, cmo, eps, alpha, opts, res, la)
+      !!
+      !! Static dipole polarizability, RHF: alpha_xy = -2 [sum_ai mu^x_ai U^y_ai
+      !! + sum_ai mu^y_ai U^x_ai] (symmetrised -- see this routine's own
+      !! comment), with U solving (e_a-e_i) U^y + [A U^y] = -mu^y (the "B" of
+      !! this module's equation is the dipole integral itself, occ-virt MO
+      !! block -- a static field adds no AO-basis response, so there is no
+      !! other term).
+      !! `cmo`/`eps` are `res%cmo(:,:,1)`/`res%eps(:,1)`, HOST, exactly as
+      !! trc_scf_run hands them back. `pl` and `eri` are the caller's, already
+      !! built on the SAME basis `b` (not necessarily the ones trc_scf_run used
+      !! internally -- that engine is released when the SCF returns).
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
       type(trc_eri_t), intent(inout) :: eri
@@ -554,14 +554,14 @@ contains
       deallocate (mmat, temporary, bvec, u)
    end subroutine trc_scf_polarizability_rhf
 
-   !
-   ! Static dipole polarizability, UHF: alpha_xy = -sum_s sum_ai mu^x_ai,s
-   ! U^y_ai,s -- the sum over both spin channels already carries RHF's
-   ! factor of 2 (one identical contribution per spin there; two distinct
-   ! ones, each counted once, here).
-   !
    recursive subroutine trc_scf_polarizability_uhf(b, pl, eri, noa, nob, cmo_a, cmo_b, eps_a, eps_b, alpha, opts, &
                                                    res, la)
+      !!
+      !! Static dipole polarizability, UHF: alpha_xy = -sum_s sum_ai mu^x_ai,s
+      !! U^y_ai,s -- the sum over both spin channels already carries RHF's
+      !! factor of 2 (one identical contribution per spin there; two distinct
+      !! ones, each counted once, here).
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
       type(trc_eri_t), intent(inout) :: eri
@@ -621,15 +621,15 @@ contains
       deallocate (mmat, temporary_a, temporary_b, bvec_a, bvec_b, u_a, u_b)
    end subroutine trc_scf_polarizability_uhf
 
-   !
-   ! Dispatch on `res%nspin`: the one entry point a caller holding a
-   ! converged `trc_scf_result_t` needs. `nalpha`/`nbeta` are the same
-   ! electron counts the SCF run itself took -- trc_scf_result_t does not
-   ! carry them (trc_scf_driver.F90's own `cfg%nocc` is private to that
-   ! run), so the caller passes them again, exactly as scf_rimp2.F90 does
-   ! for `trc_rimp2_run`'s `nocc`.
-   !
    subroutine trc_scf_polarizability(b, pl, eri, nalpha, nbeta, res_scf, alpha, opts, res, la)
+      !!
+      !! Dispatch on `res%nspin`: the one entry point a caller holding a
+      !! converged `trc_scf_result_t` needs. `nalpha`/`nbeta` are the same
+      !! electron counts the SCF run itself took -- trc_scf_result_t does not
+      !! carry them (trc_scf_driver.F90's own `cfg%nocc` is private to that
+      !! run), so the caller passes them again, exactly as scf_rimp2.F90 does
+      !! for `trc_rimp2_run`'s `nocc`.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
       type(trc_eri_t), intent(inout) :: eri
@@ -649,14 +649,13 @@ contains
       end if
    end subroutine trc_scf_polarizability
 
-   ! ----------------------------------------------------------------------
-   ! Explicit-shape elementwise helpers shared by the RHF/UHF CG loops
-   ! above: never touching anything but their own dummies, so each is a
-   ! legal `do concurrent` body on its own -- see trc_scf_fock.F90's own
-   ! header for why that split matters on the GPU build.
-   ! ----------------------------------------------------------------------
-
    subroutine cphf_zero_matrix(m, n, a)
+      !! ----------------------------------------------------------------------
+      !! Explicit-shape elementwise helpers shared by the RHF/UHF CG loops
+      !! above: never touching anything but their own dummies, so each is a
+      !! legal `do concurrent` body on its own -- see trc_scf_fock.F90's own
+      !! header for why that split matters on the GPU build.
+      !! ----------------------------------------------------------------------
       integer, intent(in) :: m, n
       real(dp), intent(inout) :: a(m, n)
       integer :: i, j

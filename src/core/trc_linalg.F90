@@ -185,13 +185,13 @@ contains
       !$acc enter data create(this%dwork)
    end subroutine linalg_reserve
 
-   !
-   ! Wait for everything this object's library calls queued on the device.
-   ! cuBLAS and cuSOLVER return to the host before their kernels finish, so a
-   ! host timer around them measures the launch; this is what a timer calls
-   ! before it reads the clock. A no-op on the host build.
-   !
    subroutine linalg_sync(this)
+      !!
+      !! Wait for everything this object's library calls queued on the device.
+      !! cuBLAS and cuSOLVER return to the host before their kernels finish, so a
+      !! host timer around them measures the launch; this is what a timer calls
+      !! before it reads the clock. A no-op on the host build.
+      !!
     !! GPU synchoronize, TODO(chore): abstract to its own type of procedure this does not belong here
       class(trc_linalg_t), intent(in) :: this
 #ifdef TRC_DEVICE
@@ -268,12 +268,12 @@ contains
 #endif
    end subroutine linalg_gemm_raw
 
-   ! C = A^T, out of place: A is m x n, C is n x m. cuBLAS's geam does it at
-   ! close to the device's bandwidth, which a `do concurrent` copy cannot:
-   ! one side of a transpose is always strided across a warp, and only a
-   ! tile staged through shared memory hides that.
-   !
    subroutine linalg_transpose(this, m, n, a, lda, c, ldc)
+      !! C = A^T, out of place: A is m x n, C is n x m. cuBLAS's geam does it at
+      !! close to the device's bandwidth, which a `do concurrent` copy cannot:
+      !! one side of a transpose is always strided across a warp, and only a
+      !! tile staged through shared memory hides that.
+      !!
     !! transpose using cublasDgeam can be done better, see the transpose in the tools/
     !! however that tranpose needs cuda and we are a do concurrent codebase
       class(trc_linalg_t), intent(in) :: this
@@ -299,21 +299,21 @@ contains
 #endif
    end subroutine linalg_transpose
 
-   !
-   ! C = S + S^T, n x n, at the device's bandwidth (the same cuBLAS geam
-   ! as `transpose`, alpha = beta = 1 instead of beta = 0): the unpack a
-   ! packed-triangular object (trc_scf_df.F90's K block) needs, once the
-   ! packed run for each column has already been copied into S's UPPER
-   ! triangle (diagonal included, lower zeroed) by a plain, both-sides-
-   ! contiguous copy -- see that caller's own comment for why the packed
-   ! layout makes that copy trivial where the old (mu, nu) gather was not.
-   ! The caller is responsible for S's diagonal: this geam reads it from
-   ! BOTH operands (S and S^T agree there), so a non-zero diagonal comes
-   ! out doubled -- zero it in S first and add it back after, or halve
-   ! C's diagonal afterward; either is the caller's O(n) problem, not
-   ! this routine's.
-   !
    subroutine linalg_sym_from_upper(this, n, s, lds, c, ldc)
+      !!
+      !! C = S + S^T, n x n, at the device's bandwidth (the same cuBLAS geam
+      !! as `transpose`, alpha = beta = 1 instead of beta = 0): the unpack a
+      !! packed-triangular object (trc_scf_df.F90's K block) needs, once the
+      !! packed run for each column has already been copied into S's UPPER
+      !! triangle (diagonal included, lower zeroed) by a plain, both-sides-
+      !! contiguous copy -- see that caller's own comment for why the packed
+      !! layout makes that copy trivial where the old (mu, nu) gather was not.
+      !! The caller is responsible for S's diagonal: this geam reads it from
+      !! BOTH operands (S and S^T agree there), so a non-zero diagonal comes
+      !! out doubled -- zero it in S first and add it back after, or halve
+      !! C's diagonal afterward; either is the caller's O(n) problem, not
+      !! this routine's.
+      !!
       class(trc_linalg_t), intent(in) :: this
       integer, intent(in) :: n, lds, ldc
       real(dp), intent(in) :: s(lds, *)
@@ -441,9 +441,9 @@ contains
 #endif
    end subroutine linalg_gemm_batched
 
-   ! Cholesky factor of a symmetric positive definite A: the lower triangle
-   ! is overwritten with L, A = L L^T. The upper triangle is left as it was.
    subroutine linalg_potrf(this, n, a, lda)
+      !! Cholesky factor of a symmetric positive definite A: the lower triangle
+      !! is overwritten with L, A = L L^T. The upper triangle is left as it was.
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n, lda
       real(dp), intent(inout) :: a(lda, *)
@@ -522,9 +522,9 @@ contains
 #endif
    end subroutine linalg_getrf
 
-   ! Solve op(A) X = B ('N' or 'T') from getrf's factors; B (n x nrhs) is
-   ! overwritten with X.
    subroutine linalg_getrs(this, trans, n, nrhs, a, lda, ipiv, b, ldb)
+      !! Solve op(A) X = B ('N' or 'T') from getrf's factors; B (n x nrhs) is
+      !! overwritten with X.
       class(trc_linalg_t), intent(inout) :: this
       character, intent(in) :: trans
       integer, intent(in) :: n, nrhs, lda, ldb
@@ -557,8 +557,8 @@ contains
 #endif
    end subroutine linalg_getrs
 
-   ! y = alpha op(A) x + beta y, A m x n, op 'N' or 'T'.
    subroutine linalg_gemv(this, trans, m, n, alpha, a, lda, x, beta, y)
+      !! y = alpha op(A) x + beta y, A m x n, op 'N' or 'T'.
       class(trc_linalg_t), intent(in) :: this
       character, intent(in) :: trans
       integer, intent(in) :: m, n, lda
@@ -588,10 +588,10 @@ contains
 #endif
    end subroutine linalg_gemv
 
-   ! Triangular solve: op(A) X = alpha B ('L') or X op(A) = alpha B ('R'),
-   ! A lower ('L') or upper ('U') triangular, op 'N' or 'T', unit diagonal
-   ! never. B (m x n) is overwritten with X.
    subroutine linalg_trsm(this, side, uplo, trans, m, n, alpha, a, lda, b, ldb)
+      !! Triangular solve: op(A) X = alpha B ('L') or X op(A) = alpha B ('R'),
+      !! A lower ('L') or upper ('U') triangular, op 'N' or 'T', unit diagonal
+      !! never. B (m x n) is overwritten with X.
       class(trc_linalg_t), intent(in) :: this
       character, intent(in) :: side, uplo, trans
       integer, intent(in) :: m, n, lda, ldb
@@ -623,20 +623,20 @@ contains
 #endif
    end subroutine linalg_trsm
 
-   ! Symmetric eigenproblem: A is overwritten with its eigenvectors, W gets
-   ! the eigenvalues ascending. Upper triangle is read.
-   !
-   ! `info` is optional so this stays source-compatible with every existing
-   ! caller that never checks it (trc_scf_df.F90's own call among them):
-   ! absent, a diagonalisation failure is still `error stop` (unchanged
-   ! behaviour). Present, the caller gets LAPACK's/cuSOLVER's own info/
-   ! devinfo code back instead of a crash -- the SCF's own two callers
-   ! (trc_scf_context.F90%sym_orthog, trc_scf_driver.F90%orbitals_and_
-   ! density) use this to report a clean `error_t`/non-convergence instead:
-   ! a malformed input matrix (a density read past the end of an
-   ! undersized buffer is one real cause) must not take the whole process
-   ! down with it.
    subroutine linalg_syev_raw(this, n, a, lda, w, info)
+      !! Symmetric eigenproblem: A is overwritten with its eigenvectors, W gets
+      !! the eigenvalues ascending. Upper triangle is read.
+      !!
+      !! `info` is optional so this stays source-compatible with every existing
+      !! caller that never checks it (trc_scf_df.F90's own call among them):
+      !! absent, a diagonalisation failure is still `error stop` (unchanged
+      !! behaviour). Present, the caller gets LAPACK's/cuSOLVER's own info/
+      !! devinfo code back instead of a crash -- the SCF's own two callers
+      !! (trc_scf_context.F90%sym_orthog, trc_scf_driver.F90%orbitals_and_
+      !! density) use this to report a clean `error_t`/non-convergence instead:
+      !! a malformed input matrix (a density read past the end of an
+      !! undersized buffer is one real cause) must not take the whole process
+      !! down with it.
       class(trc_linalg_t), intent(inout) :: this
       integer, intent(in) :: n, lda
       real(dp), intent(inout) :: a(lda, *)
@@ -676,8 +676,8 @@ contains
 #endif
    end subroutine linalg_syev_raw
 
-   ! x . y over n elements, returned to the host.
    function linalg_dot_raw(this, n, x, y) result(r)
+      !! x . y over n elements, returned to the host.
       class(trc_linalg_t), intent(in) :: this
       integer, intent(in) :: n
       real(dp), intent(in) :: x(*), y(*)
@@ -693,28 +693,28 @@ contains
 #endif
    end function linalg_dot_raw
 
-   !!
-   !! Shape-inferred matrix product: C = alpha op(A) op(B) + beta C, where
-   !! transa/transb ("N" by default) say whether A/B enter transposed and
-   !! alpha/beta (1 and 0 by default) match BLAS's. m, n and k are read off
-   !! the shapes of A and B after the requested transpose, not taken from
-   !! the caller, so a conformant call needs nothing beyond the matrices
-   !! themselves; a shape mismatch is an `error stop`, not a wrong number
-   !! silently read past the end of an array.
-   !!
-   !! A, B and C must be `contiguous`. A non-contiguous actual argument
-   !! (a strided section, or a section that is not a leading run of whole
-   !! columns) makes the compiler materialise a HOST temporary for the
-   !! dummy, and the `host_data use_device` below then hands cuBLAS a host
-   !! address -- a segfault, not a wrong answer. Pass whole matrices, or a
-   !! contiguous section such as `fock(:,:,s)` or `estore(:,:,:,k)`.
-   !!
-   !! Reaches the exact same library entry point as the raw gemm --
-   !! pic_gemm on the host, cublasDgemm_v2 on the device -- with the shapes
-   !! computed here, so the result is bitwise identical to the equivalent
-   !! raw call.
-   !!
    subroutine linalg_gemm_matrix(this, a, b, c, transa, transb, alpha, beta)
+      !!
+      !! Shape-inferred matrix product: C = alpha op(A) op(B) + beta C, where
+      !! transa/transb ("N" by default) say whether A/B enter transposed and
+      !! alpha/beta (1 and 0 by default) match BLAS's. m, n and k are read off
+      !! the shapes of A and B after the requested transpose, not taken from
+      !! the caller, so a conformant call needs nothing beyond the matrices
+      !! themselves; a shape mismatch is an `error stop`, not a wrong number
+      !! silently read past the end of an array.
+      !!
+      !! A, B and C must be `contiguous`. A non-contiguous actual argument
+      !! (a strided section, or a section that is not a leading run of whole
+      !! columns) makes the compiler materialise a HOST temporary for the
+      !! dummy, and the `host_data use_device` below then hands cuBLAS a host
+      !! address -- a segfault, not a wrong answer. Pass whole matrices, or a
+      !! contiguous section such as `fock(:,:,s)` or `estore(:,:,:,k)`.
+      !!
+      !! Reaches the exact same library entry point as the raw gemm --
+      !! pic_gemm on the host, cublasDgemm_v2 on the device -- with the shapes
+      !! computed here, so the result is bitwise identical to the equivalent
+      !! raw call.
+      !!
       class(trc_linalg_t), intent(in) :: this
       real(dp), intent(in), contiguous :: a(:, :), b(:, :)
       real(dp), intent(inout), contiguous :: c(:, :)
@@ -760,43 +760,43 @@ contains
       call this%gemm(ta, tb, m, n, k, al, a, lda, b, ldb, be, c, ldc)
    end subroutine linalg_gemm_matrix
 
-   !!
-   !! x . y over the whole of two same-shaped, contiguous rank-2 arrays,
-   !! n = size(x). Same device/host path as the raw dot: the raw form's
-   !! assumed-size dummies accept a contiguous array of any rank by
-   !! sequence association, so this simply counts the elements and hands
-   !! both arrays to it unchanged -- bitwise identical to calling the raw
-   !! dot directly with n = size(x).
-   !!
    function linalg_dot_2d(this, x, y) result(r)
+      !!
+      !! x . y over the whole of two same-shaped, contiguous rank-2 arrays,
+      !! n = size(x). Same device/host path as the raw dot: the raw form's
+      !! assumed-size dummies accept a contiguous array of any rank by
+      !! sequence association, so this simply counts the elements and hands
+      !! both arrays to it unchanged -- bitwise identical to calling the raw
+      !! dot directly with n = size(x).
+      !!
       class(trc_linalg_t), intent(in) :: this
       real(dp), intent(in), contiguous :: x(:, :), y(:, :)
       real(dp) :: r
       r = this%dot(size(x), x, y)
    end function linalg_dot_2d
 
-   !! As linalg_dot_2d, for contiguous rank-3 arrays -- e.g. a section of a
-   !! rank-4 array such as `estore(:,:,:,k)`.
    function linalg_dot_3d(this, x, y) result(r)
+      !! As linalg_dot_2d, for contiguous rank-3 arrays -- e.g. a section of a
+      !! rank-4 array such as `estore(:,:,:,k)`.
       class(trc_linalg_t), intent(in) :: this
       real(dp), intent(in), contiguous :: x(:, :, :), y(:, :, :)
       real(dp) :: r
       r = this%dot(size(x), x, y)
    end function linalg_dot_3d
 
-   !!
-   !! Symmetric eigenproblem, shape-inferred: A is square and `contiguous`,
-   !! n = size(a,1). A is overwritten with its eigenvectors, W gets the
-   !! eigenvalues ascending, exactly as the raw syev leaves them -- this
-   !! only reads n and lda off A's shape before calling it, so the result
-   !! is bitwise identical to the equivalent raw call.
-   !!
-   !! A non-contiguous actual argument would force a HOST temporary and
-   !! then hand the GPU a host address under `host_data use_device` inside
-   !! the raw call -- a segfault. Pass a whole matrix or a contiguous
-   !! section.
-   !!
    subroutine linalg_syev_matrix(this, a, w, info)
+      !!
+      !! Symmetric eigenproblem, shape-inferred: A is square and `contiguous`,
+      !! n = size(a,1). A is overwritten with its eigenvectors, W gets the
+      !! eigenvalues ascending, exactly as the raw syev leaves them -- this
+      !! only reads n and lda off A's shape before calling it, so the result
+      !! is bitwise identical to the equivalent raw call.
+      !!
+      !! A non-contiguous actual argument would force a HOST temporary and
+      !! then hand the GPU a host address under `host_data use_device` inside
+      !! the raw call -- a segfault. Pass a whole matrix or a contiguous
+      !! section.
+      !!
       class(trc_linalg_t), intent(inout) :: this
       real(dp), intent(inout), contiguous :: a(:, :)
       real(dp), intent(out), contiguous :: w(:)
@@ -806,15 +806,15 @@ contains
       call this%linalg_syev_raw(n, a, n, w, info)
    end subroutine linalg_syev_matrix
 
-   !!
-   !! The density matrix built from the occupied columns of C: D = occ *
-   !! C(:,1:k) C(:,1:k)^T, one GEMM with inner dimension k. For k <= 0
-   !! (nothing occupied) D is zeroed by a `do concurrent` here instead --
-   !! there is no GEMM that would do that, and the zeroing has to run on
-   !! whatever device D already lives on, which `do concurrent` does on its
-   !! own. C and D are contiguous; C need only have at least k columns.
-   !!
    subroutine linalg_density(this, c, k, occ, d)
+      !!
+      !! The density matrix built from the occupied columns of C: D = occ *
+      !! C(:,1:k) C(:,1:k)^T, one GEMM with inner dimension k. For k <= 0
+      !! (nothing occupied) D is zeroed by a `do concurrent` here instead --
+      !! there is no GEMM that would do that, and the zeroing has to run on
+      !! whatever device D already lives on, which `do concurrent` does on its
+      !! own. C and D are contiguous; C need only have at least k columns.
+      !!
       class(trc_linalg_t), intent(in) :: this
       real(dp), intent(in), contiguous :: c(:, :)
       integer, intent(in) :: k
@@ -831,33 +831,33 @@ contains
       end if
    end subroutine linalg_density
 
-   !
-   ! The CUDA driver's per-thread "local" stack, reserved across the WHOLE
-   ! device (every resident thread the GPU could ever run concurrently, not
-   ! what the kernel that triggered it actually launched) the first time any
-   ! kernel with a frame bigger than the current limit runs -- and never
-   ! given back on its own. Measured here: `trc_pc_k2222_pcs2222` (the
-   ! (dd|dd) four-centre class) has the largest stack frame in this whole
-   ! library, 59568 bytes (`cuobjdump -res-usage`); on a V100 (80 SMs x 2048
-   ! threads/SM = 163840 resident threads) that reservation is
-   ! 163840*59568 = 9.09 GiB, matching the ~8.9 GiB this branch measured for
-   ! the SAD guess's first non-DF Fock build (SAD always needs this class --
-   ! cc-pVDZ oxygen's own d shell against itself -- regardless of `--df`).
-   ! Nothing after the guess launches that four-centre path under `--df`
-   ! (scf_fock_build_g never calls `eri%fock_resident` there), so MOST of the
-   ! reservation -- everything above what the DF path's own largest kernel
-   ! still needs, see `SMALL_STACK` below -- is pure waste for the rest of
-   ! a `--df` run. `cudaDeviceSetLimit` on `cudaLimitStackSize` shrinks it
-   ! back down immediately to that smaller, still-sufficient size; a later
-   ! kernel that genuinely needs a bigger frame than THAT grows it again on
-   ! its own next launch, at that kernel's own one-time cost, not this
-   ! one's -- which is exactly the failure this function's own SMALL_STACK
-   ! choice has to avoid: regrowing at the worst possible moment, with
-   ! almost no free memory left, is a crash instead of a reservation.
-   !
-   ! A no-op on the host build (no device, nothing to reserve).
-   !
    subroutine trc_release_local_mem_reservation()
+      !!
+      !! The CUDA driver's per-thread "local" stack, reserved across the WHOLE
+      !! device (every resident thread the GPU could ever run concurrently, not
+      !! what the kernel that triggered it actually launched) the first time any
+      !! kernel with a frame bigger than the current limit runs -- and never
+      !! given back on its own. Measured here: `trc_pc_k2222_pcs2222` (the
+      !! (dd|dd) four-centre class) has the largest stack frame in this whole
+      !! library, 59568 bytes (`cuobjdump -res-usage`); on a V100 (80 SMs x 2048
+      !! threads/SM = 163840 resident threads) that reservation is
+      !! 163840*59568 = 9.09 GiB, matching the ~8.9 GiB this branch measured for
+      !! the SAD guess's first non-DF Fock build (SAD always needs this class --
+      !! cc-pVDZ oxygen's own d shell against itself -- regardless of `--df`).
+      !! Nothing after the guess launches that four-centre path under `--df`
+      !! (scf_fock_build_g never calls `eri%fock_resident` there), so MOST of the
+      !! reservation -- everything above what the DF path's own largest kernel
+      !! still needs, see `SMALL_STACK` below -- is pure waste for the rest of
+      !! a `--df` run. `cudaDeviceSetLimit` on `cudaLimitStackSize` shrinks it
+      !! back down immediately to that smaller, still-sufficient size; a later
+      !! kernel that genuinely needs a bigger frame than THAT grows it again on
+      !! its own next launch, at that kernel's own one-time cost, not this
+      !! one's -- which is exactly the failure this function's own SMALL_STACK
+      !! choice has to avoid: regrowing at the worst possible moment, with
+      !! almost no free memory left, is a crash instead of a reservation.
+      !!
+      !! A no-op on the host build (no device, nothing to reserve).
+      !!
 #ifdef TRC_DEVICE
       interface
          function cudadevicesetlimit(limit, lim_value) bind(c, name="cudaDeviceSetLimit") result(ierr)

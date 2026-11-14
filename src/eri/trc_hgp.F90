@@ -70,34 +70,34 @@ contains
 
 #include "inc/trc_boys_eval.inc"
 
-   !
-   ! Primitive-pair data for HGP.  Differs from the MMD builder: no Hermite E
-   ! coefficients, but the centres A and B are needed (for PA and AB) and the
-   ! coefficient carries K_ab = exp(-mu |AB|^2), which in the MMD path was
-   ! hiding inside E_000.
-   !
-   !
-   ! Every primitive pair whose own Schwarz factor is above `cut` is kept,
-   ! and only those. A generally contracted shell carries every primitive
-   ! of its atom's set -- cc-pVDZ silicon has twelve s exponents from 1e5
-   ! down to 0.03 -- and for two centres a bohr or more apart most of those
-   ! 144 pairs are zero to double precision. Kept, they cost the kernel a
-   ! 12^4 primitive quartet loop for the sake of nothing. Counted on a
-   ! 123-atom silica slice in cc-pVDZ, the pruning cuts the primitive pairs
-   ! by 3.2x and the primitive quartets by ten, which is the difference
-   ! between cc-pVDZ costing ten times 6-31G* and costing about the same.
-   !
-   ! The factor is the s-type sqrt((ab|ab)) of the primitive pair,
-   !
-   !     |ca cb| exp(-mu |AB|^2) sqrt(2) pi^(5/4) / (p (2p)^(1/4)),
-   !
-   ! which bounds the pair's contribution to any (ab|cd) by that times the
-   ! ket's bound. `camp` is what the kernel will multiply the pair by: the
-   ! coefficients themselves on the contracted path, the largest coefficient
-   ! over the columns on the primitive-shell path, where sh_c is unity and
-   ! the coefficients are applied in the kernel.
-   !
    subroutine hgp_build_pairs(sh_np, sh_e, sh_c, sh_r, cfac, prune, pairs, want)
+      !!
+      !! Primitive-pair data for HGP.  Differs from the MMD builder: no Hermite E
+      !! coefficients, but the centres A and B are needed (for PA and AB) and the
+      !! coefficient carries K_ab = exp(-mu |AB|^2), which in the MMD path was
+      !! hiding inside E_000.
+      !!
+      !!
+      !! Every primitive pair whose own Schwarz factor is above `cut` is kept,
+      !! and only those. A generally contracted shell carries every primitive
+      !! of its atom's set -- cc-pVDZ silicon has twelve s exponents from 1e5
+      !! down to 0.03 -- and for two centres a bohr or more apart most of those
+      !! 144 pairs are zero to double precision. Kept, they cost the kernel a
+      !! 12^4 primitive quartet loop for the sake of nothing. Counted on a
+      !! 123-atom silica slice in cc-pVDZ, the pruning cuts the primitive pairs
+      !! by 3.2x and the primitive quartets by ten, which is the difference
+      !! between cc-pVDZ costing ten times 6-31G* and costing about the same.
+      !!
+      !! The factor is the s-type sqrt((ab|ab)) of the primitive pair,
+      !!
+      !!     |ca cb| exp(-mu |AB|^2) sqrt(2) pi^(5/4) / (p (2p)^(1/4)),
+      !!
+      !! which bounds the pair's contribution to any (ab|cd) by that times the
+      !! ket's bound. `camp` is what the kernel will multiply the pair by: the
+      !! coefficients themselves on the contracted path, the largest coefficient
+      !! over the columns on the primitive-shell path, where sh_c is unity and
+      !! the coefficients are applied in the kernel.
+      !!
       integer,  intent(in)  :: sh_np(:)
       !! (nbas) primitives per shell; its size is the shell count.
       real(dp), intent(in)  :: sh_e(:, :), sh_c(:, :), sh_r(:, :), cfac(:)
@@ -304,19 +304,19 @@ contains
       end subroutine swap_pair
    end subroutine hgp_build_pairs
 
-   !
-   ! Not class-specialised -- unlike pc_dispatch's generated kernels, which
-   ! only exist up to d (trc_rys_select.F90's HGP_LMAX), this runs hgp_quartet
-   ! at whatever (la,lb,lc,ld) its arguments carry, up to the build's own
-   ! LMAX. trc_screen.F90's screen_schwarz_bounds_hgp is a second caller for exactly
-   ! that reason: the Schwarz bound needs (ab|ab) at every class the build
-   ! supports, f included, even for a class the production Fock path routes
-   ! to Rys instead of HGP.
-   !
    subroutine hgp_batch(lo, hi, nq, nbas, npp, nout, &
                         q_i, q_j, q_k, q_l, q_off, sh_l, &
                         pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, out, &
                         nwork, w_off, work)
+      !!
+      !! Not class-specialised -- unlike pc_dispatch's generated kernels, which
+      !! only exist up to d (trc_rys_select.F90's HGP_LMAX), this runs hgp_quartet
+      !! at whatever (la,lb,lc,ld) its arguments carry, up to the build's own
+      !! LMAX. trc_screen.F90's screen_schwarz_bounds_hgp is a second caller for exactly
+      !! that reason: the Schwarz bound needs (ab|ab) at every class the build
+      !! supports, f included, even for a class the production Fock path routes
+      !! to Rys instead of HGP.
+      !!
       !! Quartets lo..hi, each into `out` at q_off; VRR scratch is `work`
       !! at w_off, hgp_scratch_size(la+lb, lc+ld) doubles per quartet.
       !!
@@ -455,15 +455,15 @@ contains
                      pp_ra(offcd + 1, 3) - pp_rb(offcd + 1, 3), work(gb + 1), out)
    end subroutine hgp_quartet
 
-   !
-   ! Build every [a0|c0] of total degree <= lim at one m level.
-   !
-   ! `seed` is [00|00]^m, already carrying the prefactor.  Both loops rely on
-   ! the angular-momentum-major ordering: a decrement always lands on a smaller
-   ! index, so within a level everything read has already been written.
-   !
    pure subroutine vrr_level(lim, nca, ncc, v, dst, src, seed, &
                              pa, qc, wp, wq, oo2z, oo2e, oo2ze, rz, re)
+      !!
+      !! Build every [a0|c0] of total degree <= lim at one m level.
+      !!
+      !! `seed` is [00|00]^m, already carrying the prefactor.  Both loops rely on
+      !! the angular-momentum-major ordering: a decrement always lands on a smaller
+      !! index, so within a level everything read has already been written.
+      !!
       !$acc routine seq
       integer,  intent(in)    :: lim, nca, ncc, dst, src
       real(dp), intent(inout) :: v(nca*ncc, 0:1)
@@ -518,12 +518,12 @@ contains
       end do
    end subroutine vrr_level
 
-   !
-   ! Horizontal transfer in closed form, then store in libcint's buffer order
-   ! (first index fastest).
-   !
    pure subroutine hrr_store(iq, nq, nout, la, lb, lc, ld, nca, q_off, &
                              abx, aby, abz, cdx, cdy, cdz, g, out)
+      !!
+      !! Horizontal transfer in closed form, then store in libcint's buffer order
+      !! (first index fastest).
+      !!
       !$acc routine seq
       integer,  intent(in)    :: iq, nq, nout, la, lb, lc, ld, nca
       integer,  intent(in)    :: q_off(nq)
@@ -581,14 +581,14 @@ contains
       end do
    end subroutine hrr_store
 
-   !
-   ! (l, ic) -> (px,py,pz), the component AT AN AO OFFSET: `ic` becomes
-   ! `mu = ao_off(shell) + ic` at every call site in this module, so this is
-   ! OUTPUT layout and follows the build's Cartesian order.  Generated rather
-   ! than hand-rolled so trc_binkernel.F90's deliberate second copy cannot
-   ! drift from this one -- see scripts/gen_cartcomp.py.
-   !
    pure subroutine comp(l, ic, px, py, pz)
+      !!
+      !! (l, ic) -> (px,py,pz), the component AT AN AO OFFSET: `ic` becomes
+      !! `mu = ao_off(shell) + ic` at every call site in this module, so this is
+      !! OUTPUT layout and follows the build's Cartesian order.  Generated rather
+      !! than hand-rolled so trc_binkernel.F90's deliberate second copy cannot
+      !! drift from this one -- see scripts/gen_cartcomp.py.
+      !!
       !$acc routine seq
       integer, intent(in)  :: l, ic
       integer, intent(out) :: px, py, pz

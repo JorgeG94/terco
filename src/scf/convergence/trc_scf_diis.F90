@@ -461,23 +461,23 @@ contains
       p = modulo(head - n_used + l - 1, ndiis) + 1
    end function ring_phys
 
-   !
-   ! ADIIS coefficients over the `m` logical positions cached in `pcache`
-   ! (physical slots, see this module's own header). Logical position `m`
-   ! is the newest, so Hu & Yang's "entry n" is the last index. Minimises
-   ! over the simplex {c >= 0, sum c = 1}
-   !
-   !     f(c) = 2 sum_i c_i <D_i - D_m, F_m>
-   !            + sum_ij c_i c_j <D_i - D_m, F_j - F_m>
-   !
-   ! read off pcache(i,j) = <D_i,F_j> as pcache(i,j) - pcache(i,m) -
-   ! pcache(m,j) + pcache(m,m) -- the same values combined in the same
-   ! expression as the un-cached form -- by projected gradient with
-   ! backtracking (a few hundred host flops once the dot products are in
-   ! hand). Starting with all weight on the newest entry means no progress
-   ! degrades to the plain Roothaan step.
-   !
    subroutine adiis_coeffs(m, pcache, head, ndiis, c)
+      !!
+      !! ADIIS coefficients over the `m` logical positions cached in `pcache`
+      !! (physical slots, see this module's own header). Logical position `m`
+      !! is the newest, so Hu & Yang's "entry n" is the last index. Minimises
+      !! over the simplex {c >= 0, sum c = 1}
+      !!
+      !!     f(c) = 2 sum_i c_i <D_i - D_m, F_m>
+      !!            + sum_ij c_i c_j <D_i - D_m, F_j - F_m>
+      !!
+      !! read off pcache(i,j) = <D_i,F_j> as pcache(i,j) - pcache(i,m) -
+      !! pcache(m,j) + pcache(m,m) -- the same values combined in the same
+      !! expression as the un-cached form -- by projected gradient with
+      !! backtracking (a few hundred host flops once the dot products are in
+      !! hand). Starting with all weight on the newest entry means no progress
+      !! degrades to the plain Roothaan step.
+      !!
       integer, intent(in) :: m, head, ndiis
       real(dp), intent(in) :: pcache(ndiis, ndiis)
       real(dp), intent(out) :: c(m)
@@ -537,11 +537,11 @@ contains
       end do
    end function adiis_value
 
-   ! Projection onto the simplex {c : sum c = 1, c >= 0}: the standard
-   ! sort-and-threshold algorithm, which is what enforces ADIIS's
-   ! non-negativity constraint, the thing that keeps it from wandering
-   ! off far from convergence.
    pure subroutine project_simplex(m, c)
+      !! Projection onto the simplex {c : sum c = 1, c >= 0}: the standard
+      !! sort-and-threshold algorithm, which is what enforces ADIIS's
+      !! non-negativity constraint, the thing that keeps it from wandering
+      !! off far from convergence.
       integer, intent(in) :: m
       real(dp), intent(inout) :: c(m)
       real(dp) :: css, theta, t
@@ -567,14 +567,14 @@ contains
       c = max(c - theta, 0.0_dp)
    end subroutine project_simplex
 
-   !
-   ! The DIIS system B c = (0, ..., 0, -1), pivoted elimination on the host,
-   ! with the error block scaled to O(1) against the -1 border first. The
-   ! weights are invariant under that scaling; only the Lagrange multiplier
-   ! moves, and nothing reads it. `ok` is false on a pivot below 1e-14, in
-   ! which case the caller keeps the unextrapolated Fock matrix.
-   !
    subroutine solve_diis(m, b, c, ok)
+      !!
+      !! The DIIS system B c = (0, ..., 0, -1), pivoted elimination on the host,
+      !! with the error block scaled to O(1) against the -1 border first. The
+      !! weights are invariant under that scaling; only the Lagrange multiplier
+      !! moves, and nothing reads it. `ok` is false on a pivot below 1e-14, in
+      !! which case the caller keeps the unextrapolated Fock matrix.
+      !!
       integer, intent(in) :: m
       real(dp), intent(in) :: b(m, m)
       real(dp), intent(out) :: c(m)

@@ -41,13 +41,13 @@ contains
       call read_xyz('water.xyz', natm, zint, at_r)
    end subroutine water_geometry
 
-   !
-   ! test/pyscf_refs/cphf_water_6-31gs.ref: the SAME reference
-   ! test/scf_cphf.F90 checks its own Fortran CPHF driver against, here
-   ! read back through the context API's trc_run_polarizability/
-   ! trc_polarizability (RHF, CPHF).
-   !
    subroutine test_cphf(error)
+      !!
+      !! test/pyscf_refs/cphf_water_6-31gs.ref: the SAME reference
+      !! test/scf_cphf.F90 checks its own Fortran CPHF driver against, here
+      !! read back through the context API's trc_run_polarizability/
+      !! trc_polarizability (RHF, CPHF).
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: natm
       integer, allocatable :: zint(:)
@@ -120,12 +120,12 @@ contains
       if (allocated(error)) rc = trc_destroy(h)
    end subroutine test_cphf
 
-   !
-   ! test/pyscf_refs/cpks_water_6-31gs_svwn.ref: the SAME reference
-   ! test/scf_cpks.F90 checks its own Fortran CPKS driver against, here
-   ! read back through the context API (RKS/SVWN, CPKS).
-   !
    subroutine test_cpks(error)
+      !!
+      !! test/pyscf_refs/cpks_water_6-31gs_svwn.ref: the SAME reference
+      !! test/scf_cpks.F90 checks its own Fortran CPKS driver against, here
+      !! read back through the context API (RKS/SVWN, CPKS).
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: natm
       integer, allocatable :: zint(:)
@@ -198,12 +198,12 @@ contains
       if (allocated(error)) rc = trc_destroy(h)
    end subroutine test_cpks
 
-   !
-   ! trc_nmo/trc_mo_occupations: water/6-31G* has no linear dependency, so
-   ! nmo = nao, and the occupation vector must be exactly 2.0 for the
-   ! lowest `nocc` orbitals, 0 above.
-   !
    subroutine test_nmo_and_occupations(error)
+      !!
+      !! trc_nmo/trc_mo_occupations: water/6-31G* has no linear dependency, so
+      !! nmo = nao, and the occupation vector must be exactly 2.0 for the
+      !! lowest `nocc` orbitals, 0 above.
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: natm, nocc
       integer, allocatable :: zint(:)
