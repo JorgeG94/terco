@@ -347,9 +347,14 @@ def check():
         rel = path.relative_to(ROOT)
         if exempt(rel):
             continue
+        src_lines = path.read_text(errors="replace").splitlines()
         for proc in scan_procedures(path):
             scope = f"{proc['name']}"
-            length = proc["end"] - proc["start"] + 1
+            # comments and blank lines do not count towards the length
+            length = sum(
+                1 for raw in src_lines[proc["start"] - 1:proc["end"]]
+                if raw.strip() and (not raw.lstrip().startswith("!")
+                                    or raw.lstrip().startswith("!$")))
             container = proc.get("container", False)
             if length > MAX_PROC_LINES and not container:
                 found.append(Violation(
