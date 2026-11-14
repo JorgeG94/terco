@@ -212,7 +212,16 @@ option(TERCO_FORCE_REGENERATE
 # baseline; "inf"/"all" unrolls every class, including (dd|dd), which is a
 # compile-time measurement point, not a build anyone should ship.
 #
-# 81 is MEASURED, not a guess (w172, 6-31G*, one GPU)
+# 81 is MEASURED, not a guess (w172, 6-31G*, one GPU): the gradient drops
+# from 14.74 s to 10.76 s at 1e-10 (-27%) and 30.59 s to 22.67 s at 1e-13
+# (-26%) going from 0 to 81, every class below the threshold matching its
+# own e31f06a timing exactly where it is NOT yet unrolled (a built-in
+# regression check). Raising the ceiling to 243 unrolls three more classes
+# ((dp|pp), (dp|ds), (ds|dd)) but changes the measured total NOT AT ALL
+# (10.91 s / 22.89 s, within noise of 81's number) while costing 330-530 s
+# of EXTRA serial compile time PER CLASS for those three alone -- compile
+# cost that buys nothing. 81 is the point past which unrolling stops paying
+# for itself.
 #
 set(TERCO_RYS_UNROLL_MAX
     "81"
@@ -221,7 +230,15 @@ set(TERCO_RYS_UNROLL_MAX
 # The --df gradient's derivative kernels (gen_df_grad.py) unroll their
 # COMPONENTS for every class with na*nb*nc <= this, inside a run-time root
 # loop (--unroll-roots-max-comp 0: one copy of the 2D/HRR/fold text, not
-# nroots). This number was obtain from rigorous benchmarks.
+# nroots). MEASURED on a V100, gly10/cc-pVDZ, per class against the loop
+# form: (pp|f) 5.8 -> 2.0 ms, (dp|d) 6.1 -> 3.1 ms, (dp|g) 2.9 -> 2.0 ms;
+# the classes at or below 81 run the same as with their roots unrolled too
+# (within 3%), in a third of the text. 135 takes (pp|f), (pp|g), (ds|g),
+# (dp|d) and (dd|p) too; 270 would add (dp|f), (dp|g) and (dd|d) for 1-2%
+# of the gradient (gly10 0.732 -> 0.721 s, w40 1.603 -> 1.575 s) at 65% more
+# nvfortran compile (121 -> 199 s summed) and 31% more text; 81 would leave
+# the five classes above in the loop form, 2-3x slower each. The shipped set
+# is 25.2k lines (59.8k with the old 81-everything-unrolled rule).
 #
 set(TERCO_DFG_UNROLL_MAX
     "135"
