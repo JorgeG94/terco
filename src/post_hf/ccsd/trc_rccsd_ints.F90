@@ -72,6 +72,7 @@ module trc_rccsd_ints
                               RCCSD_ST_BLOCKS, RCCSD_STEP_NAME, rccsd_steps_gemm_flops, rccsd_steps_trsm_flops, &
                               rccsd_steps_potrf_flops
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
+   use trc_cart, only: ncart => cart_ncart_of
    use trc_integrals, only: trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
@@ -197,11 +198,6 @@ contains
       ints%flops(k) = ints%flops(k) + flops
       call profiler_stop("rccsd: "//trim(adjustl(RCCSD_STEP_NAME(k))))
    end subroutine piece_off
-
-   pure integer function ncart(l) result(res)
-      integer, intent(in) :: l
-      res = (l + 1)*(l + 2)/2
-   end function ncart
 
    subroutine rccsd_ints_check(b, aux, cmo, eps, opts, error)
       !! Every refusal, before anything is allocated or mapped

@@ -29,6 +29,7 @@ module trc_sap
    use pic_timer, only: timer_type
    use trc_constants, only: PI
    use trc_basis_types, only: trc_basis_t
+   use trc_cart, only: ncart => cart_ncart_of
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_sad, only: trc_sad_build, trc_sadq_build, trc_atom_ranges
    use trc_dft_radial, only: dft_radial_treutler_ahlrichs
@@ -99,11 +100,6 @@ module trc_sap
    !! TRC_SAP_LEVEL overrides it, and an explicit `level` argument overrides both.
 
 contains
-
-   pure integer function ncart(l) result(res)
-      integer, intent(in) :: l
-      res = (l + 1)*(l + 2)/2
-   end function ncart
 
    subroutine trc_sap_screen_table(b, ish0, ish1, centre, z, dblk, r, vscr, nel, error)
       !!

@@ -28,6 +28,7 @@ module trc_sad
    use pic_types, only: dp
    use pic_logger, only: global_logger
    use trc_basis_types, only: trc_basis_t
+   use trc_cart, only: ncart => cart_ncart_of
    use trc_ecp_types, only: trc_ecp_t, trc_ecp_subset_atom
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_linalg, only: trc_linalg_t
@@ -500,11 +501,6 @@ contains
       na = na + (left + 1)/2
       nb = nb + left/2
    end subroutine hund_split
-
-   pure integer function ncart(l) result(res)
-      integer, intent(in) :: l
-      res = (l + 1)*(l + 2)/2
-   end function ncart
 
    pure function itoa(i) result(t)
       integer, intent(in) :: i

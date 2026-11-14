@@ -77,6 +77,7 @@ module trc_scf_df
    use pic_timer, only: timer_type
    use pic_logger, only: global_logger
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
+   use trc_cart, only: ncart => cart_ncart_of
    use trc_integrals, only: trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
@@ -764,11 +765,6 @@ contains
 #endif
       ablk = max(1, min(ablk, naux))
    end function choose_setup_block
-
-   pure integer function ncart(l) result(res)
-      integer, intent(in) :: l
-      res = (l + 1)*(l + 2)/2
-   end function ncart
 
    pure integer function pack_index(mu, nu) result(p)
       !! idx(mu, nu) = mu(mu-1)/2 + nu, mu >= nu, 1-based: the packed row a

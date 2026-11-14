@@ -56,6 +56,7 @@ program demo_makefp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_multipoles, &
                       TRC_NMULT
    use trc_eri, only: trc_eri_t
+   use trc_cart, only: ncart => cart_ncart_of
    use trc_test_basis, only: read_xyz, unpack_basis
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
@@ -541,11 +542,6 @@ contains
       deallocate (work, dprim, owner, nowner, mono, us, ut, uv, umm)
       deallocate (tmat_u, uexp, ush_l, ush_np, ush_ao, ue, uc, ur)
    end subroutine distributed_multipoles
-
-   pure integer function ncart(l)
-      integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
-   end function ncart
 
    subroutine expansion_points()
       !! Every atom, then every bond midpoint.

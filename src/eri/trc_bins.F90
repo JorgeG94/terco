@@ -23,6 +23,7 @@ module trc_bins
    !!
    use pic_types, only: dp
    use trc_tables, only: LMAX
+   use trc_cart, only: cart_ncart_of
    use pic_types, only: int64, int_index
    use pic_sorting, only: sort_index
    use pic_strings, only: to_string
@@ -1230,8 +1231,8 @@ contains
          do p = b%bin_off(k) + 1, b%bin_off(k) + b%bin_cnt(k)
             i = b%sp_i(p)
             j = b%sp_j(p)
-            do a = 0, (sh_l(i) + 1)*(sh_l(i) + 2)/2 - 1
-               do c = 0, (sh_l(j) + 1)*(sh_l(j) + 2)/2 - 1
+            do a = 0, cart_ncart_of(sh_l(i)) - 1
+               do c = 0, cart_ncart_of(sh_l(j)) - 1
                   m = max(m, abs(dmat(ao_off(i) + a, ao_off(j) + c)))
                end do
             end do

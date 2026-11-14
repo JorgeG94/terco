@@ -64,6 +64,7 @@
 module trc_sph
    use pic_types, only: dp, int64
    use trc_basis_types, only: trc_basis_t
+   use trc_cart, only: cart_ncart_of
    use trc_sph_tables, only: SPH_T, SPH_LMAX, SPH_NCART_MAX, SPH_NSPH_MAX
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    implicit none
@@ -324,7 +325,7 @@ contains
             if (aux%sh_l(ish) /= l0) exit
             run = run + 1
          end do
-         nci = (l0 + 1)*(l0 + 2)/2
+         nci = cart_ncart_of(l0)
          nsi = 2*l0 + 1
          ac = aux%sh_ao(ish0) - 1
          bc = aux%sh_ao_sph(ish0) - 1
@@ -377,7 +378,7 @@ contains
       real(dp), intent(in)  :: msph(*)
       real(dp), intent(out) :: mcart(*)
       integer :: ncol
-      ncol = aux%sh_ao(s1) + (aux%sh_l(s1) + 1)*(aux%sh_l(s1) + 2)/2 - aux%sh_ao(s0)
+      ncol = aux%sh_ao(s1) + cart_ncart_of(aux%sh_l(s1)) - aux%sh_ao(s0)
       call expand_columns(aux, s0, s1, nrow, ncol, msph, mcart)
    end subroutine sph_cols_sph_to_cart_block
 
@@ -479,7 +480,7 @@ contains
             if (aux%sh_l(ish) /= l0) exit
             run = run + 1
          end do
-         nci = (l0 + 1)*(l0 + 2)/2
+         nci = cart_ncart_of(l0)
          nsi = 2*l0 + 1
          ac = aux%sh_ao(ish0) - 1
          bc = aux%sh_ao_sph(ish0) - 1

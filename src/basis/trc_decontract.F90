@@ -5,6 +5,7 @@ module trc_decontract
    use pic_types, only: dp
    use pic_logger, only: global_logger
    use trc_basis_types, only: trc_basis_t
+   use trc_cart, only: ncart => cart_ncart_of
    implicit none
    private
 
@@ -197,11 +198,6 @@ contains
             a%shell_cost == b%shell_cost .and. (a%screen_whole .eqv. b%screen_whole) .and. &
             (a%md_coulomb .eqv. b%md_coulomb)
    end function decontract_options_equal
-
-   pure integer function ncart(l) result(res)
-      integer, intent(in) :: l
-      res = (l + 1)*(l + 2)/2
-   end function ncart
 
    subroutine decontract_basis(b, pb, m, options)
       !! Build the primitive basis and the transform.

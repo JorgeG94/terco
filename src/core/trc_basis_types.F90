@@ -23,6 +23,7 @@ module trc_basis_types
    use pic_types, only: dp
    use trc_constants, only: PI
    use trc_boys, only: boys_init
+   use trc_cart, only: ncart => cart_ncart_of
    implicit none
    private
    public :: trc_basis_t, trc_pairlist_t
@@ -138,11 +139,6 @@ module trc_basis_types
    end type trc_pairlist_t
 
 contains
-
-   pure integer function ncart(l) result(res)
-      integer, intent(in) :: l
-      res = (l + 1)*(l + 2)/2
-   end function ncart
 
    pure real(dp) function common_fac_sp(l) result(res)
       !!

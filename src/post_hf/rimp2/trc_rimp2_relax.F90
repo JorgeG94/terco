@@ -77,6 +77,7 @@ module trc_rimp2_relax
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
+   use trc_cart, only: ncart => cart_ncart_of
    use trc_integrals, only: trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use trc_df_grad_kernels, only: df_grad_2c_driver, df_grad_3c_driver, df_grad_3c_plan, DFG_LMAX, &
@@ -719,11 +720,6 @@ contains
       p0 = aux%sh_ao(s0)
       np = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0
    end subroutine next_aux_block
-
-   pure integer function ncart(l) result(res)
-      integer, intent(in) :: l
-      res = (l + 1)*(l + 2)/2
-   end function ncart
 
    subroutine amplitude_group(no, nv, group_size, tile_slots, ng, nslot)
       !! Occupied orbitals per group, `ng`: `group_size` when positive, else

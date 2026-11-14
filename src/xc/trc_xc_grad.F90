@@ -218,6 +218,7 @@ module trc_xc_grad
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_basis_types, only: trc_basis_t
+   use trc_cart, only: cart_ncart_of
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, xc_eval_point, xc_eval_point_polar, &
                                  xc_eval_point_mgga, xc_eval_point_mgga_polar, &
@@ -766,7 +767,7 @@ contains
 
       allocate (work%ao_atom(b%nao))
       do ish = 1, b%nshell
-         do i = 0, (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2 - 1
+         do i = 0, cart_ncart_of(b%sh_l(ish)) - 1
             work%ao_atom(b%sh_ao(ish) + i) = b%sh_at(ish)
          end do
       end do

@@ -90,11 +90,6 @@ contains
       read (u, '(a)') t; read (u, *) (env(i), i=0, nenv - 1)
    end subroutine read_system
 
-   pure integer function ncart(l)
-      integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
-   end function ncart
-
    pure real(dp) function common_fac_sp(l)
       !! libcint's per-shell factor, applied outside `env`.
       integer, intent(in) :: l

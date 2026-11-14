@@ -32,6 +32,7 @@ module trc_ao_norm
    !!
    use pic_types, only: dp
    use trc_cart_perm, only: cart_perm_powers
+   use trc_cart, only: cart_ncart_of
    implicit none
    private
 
@@ -70,7 +71,7 @@ contains
       end if
       do ish = 1, nshell
          base = sh_ao(ish) - 1
-         ncart = (sh_l(ish) + 1)*(sh_l(ish) + 2)/2
+         ncart = cart_ncart_of(sh_l(ish))
          do ic = 0, ncart - 1
             call cart_perm_powers(sh_l(ish), ic, px, py, pz)
             ! `ao_norm_gamess` alone, no extra `common_fac_sp` divide -- see the

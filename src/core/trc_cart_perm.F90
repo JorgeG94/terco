@@ -15,6 +15,7 @@ module trc_cart_perm
    !! Not a normalisation fix: see trc_ao_norm.F90 for the GAMESS scale.
    !!
    use pic_types, only: dp
+   use trc_cart, only: cart_ncart_of
    implicit none
    private
 
@@ -93,7 +94,7 @@ contains
 
       do ish = 1, nshell
          base = sh_ao(ish) - 1
-         ncart = (sh_l(ish) + 1)*(sh_l(ish) + 2)/2
+         ncart = cart_ncart_of(sh_l(ish))
          do ic = 0, ncart - 1
             perm_l2b(base + ic + 1) = base + cart_perm_l2b(sh_l(ish), ic) + 1
             perm_b2l(base + ic + 1) = base + cart_perm_b2l(sh_l(ish), ic) + 1

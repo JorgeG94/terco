@@ -1,7 +1,7 @@
 module check_scf_gdm_run_suite
    !!
    !! Geometric direct minimisation as a step mode of the SCF loop
-   !! (src/scf/trc_scf_gdm_step.F90), end to end through `trc_scf_run`, as a
+   !! (src/scf/convergence/trc_scf_gdm_step.F90), end to end through `trc_scf_run`, as a
    !! test-drive suite. check_scf_gdm.F90 covers the numerical core (L-BFGS,
    !! preconditioner, step control) on its own; this is the loop around it.
    !!
@@ -78,7 +78,7 @@ module check_scf_gdm_run_suite
    !! The default `gdm_slack`: the most an accepted point may sit above the
    !! one before when both Fock builds were full.
    real(dp), parameter :: NOISE_BOUND = 1.0e-8_dp
-   !! The wider bound of src/scf/trc_scf_gdm_step.F90 (GDM_NOISE_BOUND), for a
+   !! The wider bound of src/scf/convergence/trc_scf_gdm_step.F90 (GDM_NOISE_BOUND), for a
    !! comparison in which an incremental build is involved.
    integer, parameter :: FLAT_MAX_ITERATION = 400
    !! `max_iteration` of the flat-mode regression. The mode is flat to 3e-8, so

@@ -29,6 +29,7 @@
 module trc_xc_batch
    use pic_types, only: dp
    use trc_basis_types, only: trc_basis_t
+   use trc_cart, only: ncart => cart_ncart_of
    use trc_collocation, only: collocation_shell, NCART_MAX
    use trc_dft_grid, only: dft_grid_t
    implicit none
@@ -83,11 +84,6 @@ module trc_xc_batch
    end type trc_xc_grid_t
 
 contains
-
-   pure integer function ncart(l) result(res)
-      integer, intent(in) :: l
-      res = (l + 1)*(l + 2)/2
-   end function ncart
 
    pure function shell_cutoff(l, np, e, c, tol) result(rcut)
       !!

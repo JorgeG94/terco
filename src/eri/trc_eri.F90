@@ -27,7 +27,7 @@ module trc_eri
    use trc_rys_select, only: rys_select_tables_init
    use trc_tables, only: tables_init, LMAX
    use pic_strings, only: to_string
-   use trc_cart, only: cart_init
+   use trc_cart, only: cart_init, cart_ncart_of
    use trc_hgp, only: hgp_build_pairs, trc_pair_prune_t
    use trc_screen, only: screen_schwarz_bounds_rys, screen_pair_index
    use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets, bins_pair_image_source, &
@@ -2143,9 +2143,9 @@ contains
       this%dsh = 0.0_dp
       do d = 1, ndens
          do j = 1, this%nbas
-            nj = (this%pairs%sh_l(j) + 1)*(this%pairs%sh_l(j) + 2)/2
+            nj = cart_ncart_of(this%pairs%sh_l(j))
             do i = 1, this%nbas
-               ni = (this%pairs%sh_l(i) + 1)*(this%pairs%sh_l(i) + 2)/2
+               ni = cart_ncart_of(this%pairs%sh_l(i))
                this%dsh(i, j) = max(this%dsh(i, j), maxval(abs( &
                   dmat(d, this%pairs%ao_off(i):this%pairs%ao_off(i) + ni - 1, &
                        this%pairs%ao_off(j):this%pairs%ao_off(j) + nj - 1))))

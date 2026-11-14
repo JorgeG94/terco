@@ -21,6 +21,7 @@ module trc_parity
    use pic_types, only: dp
    use trc_sym_group, only: trc_sym_group_t
    use trc_cart_perm, only: cart_perm_powers
+   use trc_cart, only: cart_ncart_of
    implicit none
    private
 
@@ -114,7 +115,7 @@ contains
       integer :: s, ic, jc, ncart, base, qx, qy, qz, k
       do s = 1, nshell
          base = sh_ao(s) - 1
-         ncart = (sh_l(s) + 1)*(sh_l(s) + 2)/2
+         ncart = cart_ncart_of(sh_l(s))
          do ic = 0, ncart - 1
             call cart_perm_powers(sh_l(s), ic, pk(1), pk(2), pk(3))
             do k = 1, 3

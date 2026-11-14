@@ -44,6 +44,7 @@ module trc_mdg
    use trc_mdg_kernels, only: mdg_class_count, mdg_class_key, mdg_sizes, mdg_fused
    use trc_mdg_h, only: mdg_h, mdg_hsph, mdg_dsph, mdg_kcart
    use trc_basis_types, only: trc_basis_t
+   use trc_cart, only: ncart => cart_ncart_of
    implicit none
    private
    public :: trc_mdg_t, trc_mdg_scales_t, mdg_routes
@@ -329,11 +330,6 @@ contains
       end do
       deallocate (need)
    end subroutine form_e_matrices
-
-   pure integer function ncart(l) result(n)
-      integer, intent(in) :: l
-      n = (l + 1)*(l + 2)/2
-   end function ncart
 
    pure integer function ncomp(this, l) result(n)
       !! Components of a shell in the representation the exchange runs in.

@@ -38,6 +38,7 @@ module trc_guess_json
    use pic_types, only: dp
    use trc_constants, only: PI
    use trc_basis_types, only: trc_basis_t
+   use trc_cart, only: cart_ncart_of
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_cart_perm, only: cart_perm_build_ao
    use json_module, only: json_file
@@ -73,7 +74,7 @@ contains
       nfun = 0
       do ish = 1, b%nshell
          ia = atom_of(b, ish)
-         n = (b%sh_l(ish) + 1)*(b%sh_l(ish) + 2)/2
+         n = cart_ncart_of(b%sh_l(ish))
          nfun(ia) = nfun(ia) + n
          fac(b%sh_ao(ish):b%sh_ao(ish) + n - 1) = sqrt(real(2*b%sh_l(ish) + 1, dp)/(4.0_dp*PI)) &
                                                  /common_fac_sp(b%sh_l(ish))

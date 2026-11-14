@@ -42,6 +42,8 @@ module trc_cart
 contains
 
    pure integer function cart_ncart_of(l) result(res)
+      !! Number of Cartesian components in a shell of angular momentum l.
+      !! Host code shares this helper; device kernels keep same-module arithmetic.
       !$acc routine seq
       integer, intent(in) :: l
       res = (l + 1)*(l + 2)/2
