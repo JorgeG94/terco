@@ -129,7 +129,7 @@ int trc_basis_maxl(trc_handle_t handle, int* maxl);
  * four let it read back the shells THIS handle actually holds, so a
  * conversion bug shows up as a wrong exponent or coefficient instead of
  * only a wrong energy several steps later. They work on ANY basis
- * handle -- one built directly through trc_basis_create*/
+ * handle -- one built directly through trc_basis_create* /
  * trc_basis_create_libcint, or borrowed from a context through
  * trc_context_basis -- since both are the same `basis_box`.
  *
