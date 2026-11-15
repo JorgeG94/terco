@@ -81,15 +81,24 @@ module trc_scf_driver
    !! linear-algebra handles, the orthogonaliser, and -- when asked for -- the
    !! PCM cavity and the DFT grid); `trc_scf_state` owns the per-iteration arrays
    !! (`scf_state_t`, "scf_state") and the one enter/exit pair that puts them, `scf_context`'s
-   !! own matrices and `scf_result` on the device together. `scf_fock_build_g`/`scf_fock_assemble`
-   !! and the DIIS push/combine helpers below stay in THIS file for now (they
-   !! are not yet split into `trc_scf_fock`/`trc_scf_diis`): every one of them
-   !! already takes its arrays as explicit-shape dummies rather than touching
-   !! `scf_context`/`scf_state` inside a `do concurrent` body, which is what lets this compile
-   !! correctly once those arrays are struct components instead of plain locals.
+   !! own matrices and `scf_result` on the device together. `trc_scf_fock` holds the Fock
+   !! build, assembly, energy and commutator, and `trc_scf_diis` the DIIS and ADIIS
+   !! histories and the level shift; every one of them takes its arrays as
+   !! explicit-shape dummies rather than touching `scf_context`/`scf_state` inside a
+   !! `do concurrent` body.
+   !!
+   !! THE DRIVER
+   !! ----------
+   !! `trc_scf_run` only sequences: setup and guess, the loop, then the finish and
+   !! the report. Each step of an iteration (`scf_iteration_*`: Cartesian
+   !! density, Fock build, XC, PCM, energy/Fock/commutator, accelerator mode, the
+   !! step, flag broadcast, new density, log row, convergence decision) is a
+   !! procedure of this module. What the steps hand each other is `loop`
+   !! (`scf_loop_t`: iteration number, old energy, commutator norm, which
+   !! accelerator is on, energies, timers and the DIIS/GDM objects).
    !!
    use pic_types, only: dp, int64, int_index
-   use trc_basis_types, only: trc_basis_t
+   use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_ecp_types, only: trc_ecp_t
    use trc_error, only: error_t
    use trc_eri, only: trc_eri_t
@@ -181,6 +190,56 @@ module trc_scf_driver
       type(trc_sym_geom_t) :: geom   !! the group and atom permutations the engine is built with
    end type scf_skeleton_t
 
+   type :: scf_loop_t
+      !! What the iteration carries from one step to the next, and from one
+      !! pass to the next: the scalars the steps of `trc_scf_run` hand each
+      !! other (this iteration's number, the old energy, the commutator norm,
+      !! which accelerator is on), the energies and timers, and the objects
+      !! whose memory spans iterations (the DIIS histories, the incremental
+      !! build's bookkeeping, the stall guard, GDM). Host values and host
+      !! objects, EXCEPT `gdm`: its work arrays are device-mapped when GDM
+      !! first steps and released by `gdm%release`, so a `loop` must not be
+      !! copied, assigned or reinitialised during a run. Every step takes the
+      !! one `loop` instead of its parts. The matrices stay in
+      !! `scf_state`/`scf_result`, where their enter/exit pair is. The values
+      !! the first iteration reads are set by `scf_driver_loop_start`, not here.
+      !! Nothing in it duplicates what `scf_context`, `scf_config` or
+      !! `scf_options` already say.
+      integer :: it = 0                 !! this iteration
+      logical :: leave = .false.        !! the step just taken ends the loop
+      logical :: incr_now = .false.     !! this iteration's Fock build is an increment
+      logical :: diis_on, adiis_active = .false.
+      logical :: shifted                !! F carried the level shift this iteration
+      logical :: mom_active             !! MOM follows the density yet (`scf_driver_mom_active`)
+      logical :: diag_failed = .false.  !! this iteration's Fock diagonalisation (every rank's own copy)
+      integer :: diag_info = 0          !! the FIRST failing spin's own eigensolver info, kept across the spin loop
+      integer :: gdm_mode = 0           !! what this iteration is for GDM (`GDM_OFF`, ...)
+      integer :: mom_swaps(2)           !! orbitals MOM occupied above aufbau, per spin
+      integer :: soscf_switch_iteration   !! DIIS iteration --soscf took over after, 0 if never
+      real(dp) :: eold, errmax
+      type(scf_energies_t) :: energies
+      !! Every energy and integrated electron count the loop produces; all zero
+      !! until the first iteration, so a run with max_iteration=0 still reports zeros.
+      type(scf_timers_t) :: timers
+      !! This iteration's share of the two totals (tf_it/t_fock, tx_it/t_xc,
+      !! tr_it/t_rest), so the table says where the time went while it is
+      !! going rather than only at the end. A Fock build is not the same
+      !! cost twice: the SAD guess is atomic, so density screening throws
+      !! nearly all of iteration 1 away, and the per-iteration cost then
+      !! climbs to a plateau. Comparing two runs by total/iterations is
+      !! therefore only valid at equal iteration counts.
+      type(scf_incremental_t) :: incremental   !! which builds are increments, trc_scf_incremental
+      type(cdiis_t) :: cdiis
+      type(adiis_t) :: adiis
+      !! ADIIS's history (fock, density) is kept apart from CDIIS's own (fock,
+      !! commutator): ADIIS runs exactly in the window CDIIS has not opened
+      !! yet, so the two never need the same entries, and keeping them
+      !! separate means `scf_options%adiis = .false.` leaves the CDIIS path
+      !! untouched, to the bit.
+      type(scf_shift_guard_t) :: shift_guard
+      type(trc_scf_gdm_step_t) :: gdm   !! the GDM step mode (trc_scf_gdm_step); `gdm_mode` says what this iteration is
+   end type scf_loop_t
+
 contains
 
    subroutine dump_density(nao, d)
@@ -229,6 +288,10 @@ contains
       !! basis must already be on the device. `dguess` is (nao, nao, nspin) in
       !! the result's convention; without it the guess is the core Hamiltonian.
       !!
+      !! The routine only sequences: what each step does lives in the
+      !! `scf_driver_*` procedures below, and what the iteration carries from
+      !! one step to the next lives in `loop` (`scf_loop_t`).
+      !!
       type(trc_basis_t), intent(in) :: scf_basis
       integer, intent(in) :: nalpha, nbeta
       type(trc_scf_options_t), intent(in) :: scf_options
@@ -275,55 +338,17 @@ contains
       !! rotations ignore the blocks, and fractional occupations.
       type(trc_ecp_t), intent(in), optional :: ecp   !! passed through to `scf_context%setup`
 
-      integer :: nao, nao_c, s, it, n2
-      logical :: ok, sph
+      integer :: it
+      logical :: ok, sym_on   !! `sym_on`: the SO-blocked path (a symmetric group was handed in)
+      real(dp) :: drms   !! how far the density moved this iteration
       type(scf_settings_t) :: scf_config
       type(scf_ctx_t) :: scf_context
       type(scf_context_extras_t) :: extras   !! the point group (when the skeleton build is on) and the ECP, for `setup`
       type(scf_state_t) :: scf_state
-      type(scf_timers_t) :: scf_timers
-      !! This iteration's share of the two totals (tf_it/t_fock, tx_it/t_xc,
-      !! tr_it/t_rest), so the table says where the time went while it is
-      !! going rather than only at the end. A Fock build is not the same
-      !! cost twice: the SAD guess is atomic, so density screening throws
-      !! nearly all of iteration 1 away, and the per-iteration cost then
-      !! climbs to a plateau. Comparing two runs by total/iterations is
-      !! therefore only valid at equal iteration counts.
+      type(scf_loop_t) :: loop
       character(len=256) :: msg
-      character(len=160) :: line
-      logical :: incr_now
-      type(scf_incremental_t) :: incremental   !! which builds are increments, trc_scf_incremental
-      type(cdiis_t) :: cdiis
-      type(adiis_t) :: adiis
-      !! ADIIS's history (fock, density) is kept apart from CDIIS's own (fock,
-      !! commutator): ADIIS runs exactly in the window CDIIS has not opened
-      !! yet, so the two never need the same entries, and keeping them
-      !! separate means `scf_options%adiis = .false.` leaves the CDIIS path
-      !! untouched, to the bit.
-      logical :: adiis_active
-      logical :: shifted, mom_active
-      !! F carried the level shift this iteration; MOM follows the density yet (`scf_driver_mom_active`).
-      type(scf_shift_guard_t) :: shift_guard
-      integer :: orb_mode
-      integer :: mom_swaps(2)   !! orbitals MOM occupied above aufbau, per spin
       type(error_t) :: err
-      type(scf_energies_t) :: scf_energies
-      !! Every energy and integrated electron count the loop produces; all zero
-      !! until the first iteration, so a run with max_iteration=0 still reports zeros.
-      logical :: diis_on
-      logical :: sym_on          !! the SO-blocked path (a symmetric group was handed in)
-      logical :: have_hamiltonian, have_orbitals   !! which of `guess`'s parts were given
       type(scf_skeleton_t) :: skeleton   !! the skeleton Fock build's verdict (`on` only under `sym_on`)
-      real(dp) :: ctl(2)
-      real(dp) :: eold, drms, errmax
-      integer :: soscf_switch_iteration   !! DIIS iteration --soscf took over after, 0 if never
-      logical :: diag_failed      !! this iteration's Fock diagonalisation (every rank's own copy)
-      integer :: diag_info        !! the FIRST failing spin's own eigensolver info, kept across the spin loop
-      integer :: info_s           !! this spin's own raw info from the call just made
-      real(dp) :: diag_flag(N_DIAG_FLAG)
-      !! [0.0/1.0 failed, info, mom_swaps(1:2), gdm rejected, gdm stopped], broadcast from root the same way `ctl` is
-      type(trc_scf_gdm_step_t) :: gdm   !! the GDM step mode (trc_scf_gdm_step); `gdm_mode` says what this iteration is
-      integer :: gdm_mode
 
       ! The handles and caches the run reads: the caller's when given, else
       ! the run's own, made here and released when the run (the recursive
@@ -359,44 +384,19 @@ contains
       ! Everything `scf_options` resolves to before the loop starts: the functional
       ! lookup and its rejections, the spin rule, the by-spin damping/DIIS
       ! defaults, and the env-hook overrides (trc_scf_settings). `scf_config` is
-      ! immutable from here on, and the rest of this routine reads it
+      ! immutable from here on, and every step of the run reads it
       ! directly.
-      call scf_timers%run%start()
+      call loop%timers%run%start()
       ok = scf_config%resolve(scf_options, nalpha, nbeta, msg=msg, comm=comm)
       if (.not. ok) then
          scf_result%message = msg
          return
       end if
       scf_result%nspin = scf_config%nspin
-      sym_on = .false.
-      if (present(sym)) sym_on = sym%is_active()
+      sym_on = scf_driver_sym_active(sym)
       if (sym_on) then
-         ! Second-order SCF rotates orbitals with its own Newton step and
-         ! rebuilds the density from the global orthogonaliser, so it would
-         ! neither keep the irrep labels nor the symmetrisation: refused
-         ! rather than run without them. The fractional occupations of the
-         ! free-atom runs have no meaning for the irreps of a molecule.
-         if (scf_config%soscf) then
-            scf_result%message = "trc_scf: --soscf is not supported with symmetry (its Newton rotations "// &
-                                 "ignore the irrep blocks); run with symmetry off"
-            return
-         end if
-         if (scf_options%frac_occ) then
-            scf_result%message = "trc_scf: fractional occupations are not supported with symmetry"
-            return
-         end if
-         ! MOM picks the occupied orbitals by overlap across irreps, which the
-         ! per-irrep occupations of the symmetric run fix instead.
-         if (scf_options%mom) then
-            scf_result%message = "trc_scf: mom is not supported with symmetry; run with symmetry off"
-            return
-         end if
-         ! GDM rotates all occupied into all virtual orbitals, across irreps,
-         ! as the second-order SCF does.
-         if (scf_options%gdm) then
-            scf_result%message = "trc_scf: gdm is not supported with symmetry; run with symmetry off"
-            return
-         end if
+         call scf_driver_sym_refuse(scf_config, scf_options, scf_result, ok)
+         if (.not. ok) return
       end if
       ! --- everything once per geometry: pairs, 1e, S/H fold, ERI, linalg,
       ! orthogonaliser, and (when asked for) the PCM cavity and DFT grid ---
@@ -423,10 +423,6 @@ contains
          scf_result%message = "trc_scf: "//err%get_message()
          return
       end if
-      nao = scf_context%nao
-      nao_c = scf_context%nao_c
-      sph = scf_context%sph
-      n2 = nao*nao
       scf_state%skeleton = skeleton%on
       scf_result%e_nuc = scf_context%e_nuc
       scf_result%n_lindep = scf_context%n_lindep
@@ -434,24 +430,7 @@ contains
          call scf_driver_sym_prepare(sym, scf_context, scf_config, scf_options, scf_result, ok)
          if (.not. ok) return
       end if
-      if (scf_config%pcm_on) scf_result%pcm_npoints = scf_context%pcm%surface%n_points
-      if (scf_config%dft) then
-         scf_result%grid_r = grid_cache%grid%coords
-         scf_result%grid_w = grid_cache%grid%weights
-         if (scf_config%nlc) then
-            scf_result%grid_r_nlc = grid_cache%grid_nlc%coords
-            scf_result%grid_w_nlc = grid_cache%grid_nlc%weights
-         end if
-         ! The DFT pipeline's own step table (grid build, semilocal XC,
-         ! VV10), reported alongside the existing fock(s)/xc(s) columns
-         ! below rather than instead of them: `report`'s per-step rate
-         ! columns are new here (grid build has no flop count to show
-         ! them against), but the three totals are not new numbers, only
-         ! a second, uniform place they land -- see trc_scf_state's own
-         ! header on `xcst`. "dft", not "scf": its total is grid + XC only.
-         call scf_timers%xcst%init("dft", [character(len=8) :: "grid", "xc", "vv10"])
-         call scf_timers%xcst%add_time(1, scf_context%t_grid)
-      end if
+      call scf_driver_stamp_setup(scf_context, scf_config, grid_cache, scf_result, loop%timers)
 
       ! ONLY WHAT THIS RUN USES IS FULL SIZE (trc_scf_state%alloc owns the
       ! array sizes, 1 x 1 for an array the run never touches). One that a
@@ -459,59 +438,16 @@ contains
       ! in aug-cc-pVTZ (4255 functions, 4950 Cartesian) an HF run carried
       ! ~2.4 GB of XC, unrestricted, range-separated, incremental and PCM
       ! matrices it had no use for.
-      call scf_state%alloc(scf_context, scf_config)
-      call cdiis%alloc(nao, scf_config%nspin, scf_options%ndiis)
-      allocate (scf_result%dmat(nao, nao, scf_config%nspin), scf_result%cmo(nao, nao, scf_config%nspin), &
-             scf_result%eps(nao, scf_config%nspin))
-      ! Only when asked for: a second ndiis-deep history the size of
-      ! cdiis's own. Both live on the host, packed (trc_scf_diis's own
-      ! header), but at gly100's 16,258 functions one is still 10 GB.
-      if (scf_options%adiis) call adiis%alloc(nao, scf_config%nspin, scf_options%ndiis)
+      call scf_driver_alloc_run(scf_context, scf_config, scf_options, scf_state, scf_result, loop)
 
       ! --- the guess, on the host, then everything goes up -------------------
-      diag_failed = .false.
-      diag_info = 0
-      have_hamiltonian = .false.
-      have_orbitals = .false.
-      if (present(guess)) then
-         have_hamiltonian = allocated(guess%hamiltonian)
-         have_orbitals = allocated(guess%orbitals)
-      end if
+      ok = .true.
       if (present(dguess)) then
          scf_result%dmat = dguess
-      else if (have_hamiltonian) then
-         do s = 1, scf_config%nspin
-            call scf_driver_guess_spin(la, scf_context, scf_config%occ, guess%hamiltonian, scf_config%nocc(s), &
-                                       scf_result%dmat(:, :, s), info_s)
-            call scf_driver_note_failure(info_s, diag_failed, diag_info)
-         end do
-      else if (have_orbitals) then
-         call scf_context_project_density(la, nao, scf_config%nspin, scf_config%nocc, guess%orbitals, &
-                                          scf_context%smat, scf_result%dmat)
-      else if (scf_options%guess == "core") then
-         do s = 1, scf_config%nspin
-            call scf_driver_guess_spin(la, scf_context, scf_config%occ, scf_context%hcore, scf_config%nocc(s), &
-                                       scf_result%dmat(:, :, s), info_s)
-            call scf_driver_note_failure(info_s, diag_failed, diag_info)
-         end do
       else
-         ! GWH: F_ij = 1.75/2 S_ij (H_ii + H_jj), diagonal H_ii.
-         call scf_driver_gwh_matrix(nao, scf_context%hcore, scf_context%smat, scf_state%w1)
-         do s = 1, scf_config%nspin
-            call scf_driver_guess_spin(la, scf_context, scf_config%occ, scf_state%w1, scf_config%nocc(s), &
-                                       scf_result%dmat(:, :, s), info_s)
-            call scf_driver_note_failure(info_s, diag_failed, diag_info)
-         end do
+         call scf_driver_initial_guess(la, scf_context, scf_config, scf_options, scf_state, scf_result, guess, ok)
       end if
-      ! A diagonalisation failure in the INITIAL guess (core/GWH/a supplied
-      ! Hamiltonian -- SAD/SADQ build their own density without this
-      ! routine, through `dguess`): report it the same way `scf_ctx_setup`
-      ! itself does on its own refusals (iterations is still 0 here, so
-      ! trc_capi.F90's trc_run_scf reports TRC_ERR_UNSUPPORTED, not
-      ! TRC_ERR_NOCONV -- this never started, rather than failed to finish).
-      if (diag_failed) then
-         scf_result%message = "trc_scf: the initial guess's own diagonalisation did not converge "// &
-                              "(eigensolver info="//to_string(diag_info)//")"
+      if (.not. ok) then
          if (sym_on) call sym%release()
          call scf_context%release()
          return
@@ -527,296 +463,639 @@ contains
          if (scf_config%talk) call scf_driver_log_symmetry(sym, skeleton)
       end if
 
-      eold = 0.0_dp
-      ! Read by the first iteration's `incr_now` before any commutator exists.
-      errmax = huge(1.0_dp)
-      call incremental%setup(scf_config)
-      diis_on = .false.
-      mom_swaps = 0
-      shifted = .false.
-      mom_active = .false.
-      soscf_switch_iteration = 0
+      call scf_driver_loop_start(scf_config, loop)
       ! What the SCF is actually running on. Two callers can hand over the
       ! same molecule and basis name and different shells -- one had a
       ! reader that kept dead primitives -- and that only shows here.
-      if (scf_config%talk) call scf_driver_log_header(scf_basis, scf_config, nao)
+      if (scf_config%talk) call scf_driver_log_header(scf_basis, scf_config, scf_context%nao)
       do it = 1, scf_options%max_iteration
-         call scf_timers%fock%start()
-         incr_now = .false.
-         ! --- D_cart := T D_sph T^T, the one transform every Cartesian
-         ! quantity below (the Fock build, the XC density) is built from.
-         ! Not taken at all when `sph` is false -- see this module's own
-         ! header on why that keeps the Cartesian path byte-for-byte
-         ! unchanged rather than merely numerically equivalent.
-         do s = 1, scf_config%nspin
-            call scf_fock_to_cart(scf_basis, sph, nao, nao_c, scf_result%dmat(:, :, s), scf_state%d_c(:, :, s))
-         end do
-         ! --- two-electron part, resident, entirely in Cartesian space -------
-         !
-         ! INCREMENTAL. G(D) = G(D_ref) + G(D - D_ref), exactly, because G is
-         ! linear in D. The point is the screening: the kernel screens on the
-         ! density it is handed, and the difference is small and getting
-         ! smaller while the density is neither. See `scf_fock_build_g`'s own header.
-         !
-         incr_now = incremental%next_build(it, errmax, it == scf_options%max_iteration)
-         call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, incremental%scale, pair_eri_cache%eri, la, &
-                               scf_dfjk)
-         ! --- G_sph := T^T G_cart T, back up to the space the rest of the
-         ! iteration runs in, into `fock` until the assembly below.
-         call scf_fock_fold_g(scf_basis, scf_context, scf_config, scf_state)
-         ! The skeleton build returns G summed over the orbit representatives
-         ! only. It is not symmetrized here: the energy below is Tr(D G) with
-         ! D invariant, which the average over the group leaves unchanged, and
-         ! the symmetrization of F after the assembly (below, whenever `sym`
-         ! is active) makes the matrix itself invariant before DIIS sees it.
-         scf_timers%tf_it = scf_timers%fock%get_elapsed_time()
-         scf_timers%t_fock = scf_timers%t_fock + scf_timers%tf_it
-         scf_timers%n_fock = scf_timers%n_fock + 1
-         if (scf_timers%n_fock == 1) scf_timers%tf_first = scf_timers%tf_it
-         call scf_timers%xc%start()
-         ! --- exchange-correlation: finds its (Cartesian) density present ----
-         if (scf_config%dft) then
-            call scf_fock_build_vxc(scf_basis, grid_cache, la, scf_config, scf_state, scf_energies, scf_timers, comm)
-         end if
-         scf_timers%tx_it = scf_timers%xc%get_elapsed_time()
-         scf_timers%t_xc = scf_timers%t_xc + scf_timers%tx_it
-         call scf_timers%rest%start()
-         ! --- the continuum, at the TOTAL density (pyscf's choice for UKS
-         ! too: one set of charges, one operator added to both spins) -----
-         if (scf_config%pcm_on) then
-            call scf_timers%pcm%start()
-            call scf_fock_build_pcm(scf_basis, scf_context, scf_config, scf_state, scf_energies, la, &
-                                    pair_eri_cache%pl, comm)
-            scf_timers%t_pcm = scf_timers%t_pcm + scf_timers%pcm%get_elapsed_time()
-            ! the PCM step is its own column, not part of the rest
-            call scf_timers%rest%start()
-         end if
-         ! The surface charge belongs to this density, like the PCM energy (GDM keeps both with its accepted point).
-         if (scf_config%pcm_on) scf_energies%pcm_qtotal = scf_context%pcm%q_total
-         ! --- energy at this density -----------------------------------------
-         call scf_fock_energy(scf_context, scf_config, scf_state, scf_result, scf_energies, la)
-         ! --- Fock and its commutator, per spin ------------------------------
-         call scf_fock_assemble(scf_context, scf_config, scf_state)
-         ! F is symmetric up to the round-off of the build and, for DFT, the
-         ! grid noise of the quadrature; averaging over the group removes both
-         ! before DIIS and the commutator see it.
-         if (sym_on) call scf_driver_symmetrize(sym, scf_state%fock, scf_state%w1)
-         call scf_fock_commutator_error(scf_context, scf_config, scf_state, scf_result, la)
-         ! `dold` must hold `scf_result%dmat` from BEFORE DIIS/diagonalisation touch
-         ! it -- see trc_scf_state's own header.
-         call scf_state%save_dold(nao, scf_config%nspin, scf_result%dmat)
-         ! --- DIIS, once the commutator is small enough to extrapolate from --
-         errmax = sqrt(la%dot_3d(scf_state%errv, scf_state%errv))
-         ! Over ranks the Fock matrices agree only to the XC atomics' 1e-13,
-         ! so the numbers every branch below and the convergence test read
-         ! are rank 0's, on every rank: one rank leaving the loop while
-         ! another iterates on would hang the next collective.
-         if (present(comm)) then
-            if (comm%size() > 1) then
-               ctl = [scf_energies%total, errmax]
-               call scf_context_bcast_flat(comm, ctl, 2)
-               scf_energies%total = ctl(1)
-               errmax = ctl(2)
-            end if
-         end if
-         if (.not. diis_on .and. it > scf_config%ndamp) diis_on = errmax < scf_config%diis_start
-         !
-         ! A/EDIIS while damping has ended but the commutator is still too large for
-         ! CDIIS. CDIIS has no constraint on its coefficients, hence the
-         ! `diis_start` gate: far from convergence it can overshoot. ADIIS (Hu &
-         ! Yang, JCP 132, 054109) minimises an energy functional over the convex
-         ! hull of the history, so it only moves towards a visited density: reliable
-         ! where CDIIS is not and slow where CDIIS is fast, hence the two switch
-         ! rather than blend (gmshpc: a blended step turned a stretched-water case
-         ! converging in 21 CDIIS iterations into one that never converged).
-         !
-         adiis_active = scf_options%adiis .and. .not. diis_on .and. it > scf_config%ndamp
-         mom_active = scf_driver_mom_active(mom_active, scf_options, diis_on, errmax)
-         ! GDM (trc_scf_gdm_step) replaces DIIS, damping and the level shift. MOM
-         ! stays for the handover diagonalisation, whose occupation GDM keeps (or
-         ! declines, below, when that occupation is an excited state). The level
-         ! shift is not consulted under GDM, so its stall guard sees none of it.
-         gdm_mode = gdm%mode(scf_config, it, errmax)
-         if (gdm_mode /= GDM_OFF) then
-            diis_on = .false.
-            adiis_active = .false.
-            shifted = .false.
-            if (gdm_mode == GDM_ITERATE) mom_active = .false.
-         else
-            call scf_driver_shift_now(scf_options, diis_on, adiis_active, errmax, shift_guard, cdiis, scf_config%root, shifted)
-         end if
-         ! The new density is rank 0's alone: extrapolation, eigensolve and density
-         ! run on one device and the density is broadcast, since dsyevd need not
-         ! return the same vectors on two devices. Orbitals and energies come over
-         ! once, after the loop.
-         diag_failed = .false.
-         diag_info = 0
-         if (scf_config%root) then
-            if (adiis_active) then
-               call adiis%push(nao, scf_config%nspin, scf_state%fock, scf_state%dold, scf_state%w1)
-               call adiis%extrapolate(nao, scf_config%nspin, scf_state%fock, scf_state%w1)
-            end if
-            if (diis_on) then
-               call cdiis%push(nao, scf_config%nspin, scf_state%fock, scf_state%errv, scf_state%w1)
-               call cdiis%extrapolate(nao, scf_config%nspin, scf_state%fock, scf_state%w1, ok)
-            end if
-            ! --- level shift, F += mu (S - S D S / occ), onto the extrapolated F
-            if (shifted) then
-               call scf_diis_level_shift(la, nao, scf_config%nspin, scf_options%level_shift, scf_config%occ, &
-                      scf_context%smat, scf_result%dmat, scf_state%w1, scf_state%w2, scf_state%fock)
-            end if
-            orb_mode = scf_driver_occupation_mode(scf_options, mom_active)
-            scf_state%mom_now = orb_mode == ORB_MOM
-            scf_state%mom_swaps = 0
-            ! --- diagonalise, per spin, and the new density ---------------------
-            mom_swaps = 0
-            if (gdm_mode == GDM_ITERATE) then
-               call gdm%iterate(scf_context, scf_config, scf_state, scf_result, scf_energies, la, incr_now)
-            else
-               do s = 1, scf_config%nspin
-                  if (sym_on) then
-                     ! MOM and GDM are refused with symmetry at the top of this routine.
-                     call scf_driver_sym_spin_step(la, scf_config, scf_state, scf_result, sym, s, info_s)
-                  else
-                     call scf_driver_spin_step(la, scf_context, scf_config, scf_state, scf_result, scf_options, s, info_s)
-                  end if
-                  mom_swaps(s) = scf_state%mom_swaps(s)
-                  ! The FIRST failing spin's own info -- scf_driver_note_failure's own header.
-                  call scf_driver_note_failure(info_s, diag_failed, diag_info)
-               end do
-               if (.not. diag_failed .and. .not. diis_on .and. .not. adiis_active .and. gdm_mode == GDM_OFF) then
-                  call scf_diis_damp(nao, scf_config%nspin, scf_options%damp, scf_state%dold, scf_result%dmat)
-               end if
-            end if
-            if (sym_on .and. .not. diag_failed) call scf_driver_symmetrize(sym, scf_result%dmat, scf_state%w1)
-         end if
-         ! Every rank must learn of a diagonalisation failure the same
-         ! cycle it happened (root's own `diag_failed` above is otherwise
-         ! invisible to the others), or a non-root rank iterates on into
-         ! the next collective while root has already exited below --
-         ! the same hang `ctl`'s own broadcast, right above, exists to
-         ! avoid for the energy/commutator-norm pair.
-         if (present(comm)) then
-            if (comm%size() > 1) then
-               diag_flag = [merge(1.0_dp, 0.0_dp, diag_failed), real(diag_info, dp), real(mom_swaps, dp), &
-                            merge(1.0_dp, 0.0_dp, gdm%rejected), merge(1.0_dp, 0.0_dp, gdm%stopped)]
-               call scf_context_bcast_flat(comm, diag_flag, N_DIAG_FLAG)
-               diag_failed = diag_flag(1) > 0.5_dp
-               diag_info = nint(diag_flag(2))
-               mom_swaps = nint(diag_flag(3:4))
-               gdm%rejected = diag_flag(5) > 0.5_dp
-               gdm%stopped = diag_flag(6) > 0.5_dp
-            end if
-         end if
-         if (gdm_mode == GDM_HANDOVER) call gdm%decline(mom_swaps)
-         if (diag_failed) then
-            ! A malformed Fock matrix (NOT the ordinary "has not converged
-            ! yet" case -- dsyev/cuSOLVER could not even diagonalise it):
-            ! stop iterating rather than build the next Fock from
-            ! eps_s/cmo_s/d_s that la%syev never actually
-            ! wrote. scf_result%converged stays .false.; trc_capi.F90's
-            ! trc_run_scf already turns that into TRC_ERR_NOCONV, and
-            ! scf_result%iterations > 0 keeps it off the "setup failed"
-            ! (TRC_ERR_UNSUPPORTED) path -- the SAME two fields, and the
-            ! SAME mapping, an ordinary non-converged run already uses.
-            scf_result%message = "trc_scf: the Fock-matrix diagonalisation did not converge "// &
-                                 "(eigensolver info="//to_string(diag_info)//")"
-            scf_result%iterations = it
-            exit
-         end if
-         ! Every rank must hold the same density to the bit. The Fock sum is
-         ! broadcast already; the XC potential is accumulated with atomics
-         ! whose order differs per rank, 1e-13 in the energy on water, and a
-         ! difference that small compounds through a diverging iteration.
-         if (present(comm)) then
-            if (comm%size() > 1) then
-               !$acc update self(scf_result%dmat)
-               call scf_context_bcast_flat(comm, scf_result%dmat, n2*scf_config%nspin)
-               !$acc update device(scf_result%dmat)
-            end if
-         end if
-         call scf_state%update_errv(nao, scf_config%nspin, scf_result%dmat)
-         drms = sqrt(la%dot_3d(scf_state%errv, scf_state%errv))/real(nao, dp)
-         ! The linear algebra between the XC build and the next Fock build:
-         ! energy, Fock assembly, commutator, DIIS, eigensolve, density and
-         ! its broadcast (PCM excluded, it has its own timer).
-         scf_timers%tr_it = scf_timers%rest%get_elapsed_time()
-         scf_timers%t_rest = scf_timers%t_rest + scf_timers%tr_it
-         if (scf_config%talk) then
-            if (scf_config%dft) then
-               write (line, "(i5,f22.12,es14.4,es14.4,es14.4,3f10.3,a)") &
-                  it, scf_energies%total, scf_energies%total - eold, drms, errmax, scf_timers%tf_it, scf_timers%tx_it, &
-                  scf_timers%tr_it, merge(" i", "  ", incr_now)
-            else
-               write (line, "(i5,f22.12,es14.4,es14.4,es14.4,2f10.3,a)") &
-                  it, scf_energies%total, scf_energies%total - eold, drms, errmax, scf_timers%tf_it, &
-                  scf_timers%tr_it, merge(" i", "  ", incr_now)
-            end if
-            call global_logger%info(trim(line))
-            if (any(mom_swaps > 0)) call global_logger%info("         mom: kept "//to_string(sum(mom_swaps))// &
-                                                            " orbital(s) occupied above the aufbau set")
-         end if
-         scf_result%iterations = it
-         call gdm%report(scf_config, scf_result, gdm_mode)
-         if (gdm%stopped) then
-            scf_result%message = GDM_STOP_MESSAGE
-            exit
-         end if
-         ! A real density for the benchmarks (dump_density's comment says why).
-         if (it == 2) then
-            !$acc update self(scf_result%dmat)
-            call dump_density(nao, scf_result%dmat(:, :, 1))
-         end if
-         ! Converged only on a full build (trc_scf_incremental's rule 1), and never on a rejected GDM trial.
-         if (incremental%accept(it > 1 .and. abs(scf_energies%total - eold) < scf_options%conv_energy &
-                                .and. errmax < scf_options%conv_diis .and. .not. gdm%rejected, errmax)) then
-            scf_result%converged = .true.
-            exit
-         end if
-         ! A rejected GDM trial is retried on a full build, free of the increments' accumulated error.
-         if (gdm%rejected) incremental%full_due = .true.
-         ! --soscf: hand over to trc_scf_soscf_run, its own header, once the commutator is small enough.
-         if (scf_config%soscf .and. errmax < scf_config%soscf_start) then
-            soscf_switch_iteration = it
-            exit
-         end if
-         if (.not. gdm%rejected) eold = scf_energies%total
+         loop%it = it
+         loop%leave = .false.
+         ! Timer brackets: `fock` is read at the end of the Fock build, `xc` at the end of the
+         ! XC step, `rest` (restarted after the continuum's own timer) at the end of the density step.
+         call loop%timers%fock%start()
+         call scf_iteration_cart_density(scf_basis, scf_context, scf_config, scf_state, scf_result, loop)
+         call scf_iteration_fock_build(scf_basis, scf_context, scf_config, scf_state, loop, pair_eri_cache%eri, la, &
+                                              scf_dfjk)
+         call loop%timers%xc%start()
+         call scf_iteration_xc(scf_basis, grid_cache, la, scf_config, scf_state, loop, comm)
+         call loop%timers%rest%start()
+         call scf_iteration_pcm(scf_basis, scf_context, scf_config, scf_state, loop, la, pair_eri_cache%pl, comm)
+         call scf_iteration_assemble(scf_context, scf_config, scf_state, scf_result, loop, la, comm, sym)
+         call scf_iteration_mode(scf_config, scf_options, loop)
+         call scf_iteration_step(scf_context, scf_config, scf_options, scf_state, scf_result, loop, la, sym)
+         call scf_iteration_sync_flags(scf_result, loop, comm)
+         if (loop%leave) exit
+         call scf_iteration_density(scf_config, scf_state, scf_result, loop, la, comm, drms)
+         call scf_iteration_log(scf_config, loop, drms)
+         call scf_iteration_decide(scf_config, scf_options, scf_result, loop)
+         if (loop%leave) exit
       end do
-      scf_result%n_increments = incremental%n_increments
-      scf_result%shift_dropped = shift_guard%dropped
-      if (soscf_switch_iteration > 0 .and. .not. scf_result%converged) then
-         call trc_scf_soscf_run(scf_basis, scf_context, scf_config, scf_state, scf_result, scf_energies, la, &
-                               pair_eri_cache%eri)
-         if (scf_state%eps_rewritten) shifted = .false.
+      scf_result%n_increments = loop%incremental%n_increments
+      scf_result%shift_dropped = loop%shift_guard%dropped
+      if (loop%soscf_switch_iteration > 0 .and. .not. scf_result%converged) then
+         ! The second-order phase after DIIS handed over (`--soscf`).
+         call trc_scf_soscf_run(scf_basis, scf_context, scf_config, scf_state, scf_result, loop%energies, la, &
+                                pair_eri_cache%eri)
+         if (scf_state%eps_rewritten) loop%shifted = .false.
       end if
-      ! GDM: the last ACCEPTED point's density, energies and semicanonical orbitals (every rank calls).
-      call gdm%finish(scf_context, scf_config, scf_state, scf_result, scf_energies, la, comm)
-      call gdm%release()
-      ! The density the energy was evaluated at, and the orbitals that made it.
-      !$acc update self(scf_state%dold, scf_result%cmo, scf_result%eps)
-      if (present(comm)) then
-         if (comm%size() > 1) then
-            call scf_context_bcast_flat(comm, scf_result%cmo, n2*scf_config%nspin)
-            call scf_context_bcast_flat(comm, scf_result%eps, nao*scf_config%nspin)
-         end if
-      end if
+      call scf_driver_loop_finish(scf_context, scf_config, scf_state, scf_result, loop, la, comm)
       call scf_state%release_device(scf_context, scf_result)
       if (sym_on) then
          scf_result%mo_irrep = sym%mo_irrep
          call sym%release()
       end if
-      scf_result%dmat = scf_state%dold
-      if (scf_result%gdm_steps == 0) scf_energies%pcm_qtotal = scf_context%pcm%q_total
-      call scf_result%update(scf_energies, scf_state%dold)
-      scf_result%gdm_declined = gdm%declined
-      ! The not-converged message (`diag_failed` set a sharper one) and the
-      ! HOMO-LUMO gap check, which `mom` and a shifted last iteration skip.
-      call scf_driver_eps_notes(scf_config, scf_options, shifted, nao - scf_result%n_lindep, scf_result)
-      call scf_driver_report(scf_context, scf_config, scf_timers, scf_energies, scf_result, pair_eri_cache%eri, &
+      call scf_driver_result_fill(scf_context, scf_config, scf_options, scf_state, scf_result, loop)
+      call scf_driver_report(scf_context, scf_config, loop%timers, loop%energies, scf_result, pair_eri_cache%eri, &
                              scf_dfjk, comm)
       call scf_context%release()
 
    end subroutine trc_scf_run
+
+   pure logical function scf_driver_sym_active(sym) result(on)
+      !! `sym` is present with a group of more than one operation: the SO-blocked path.
+      type(trc_sym_scf_t), intent(in), optional :: sym
+      on = .false.
+      if (present(sym)) on = sym%is_active()
+   end function scf_driver_sym_active
+
+   subroutine scf_driver_sym_refuse(scf_config, scf_options, scf_result, ok)
+      !! What a symmetric run cannot do: `ok` false means `scf_result%message`
+      !! says why and the run must stop, before anything has been built.
+      type(scf_settings_t), intent(in) :: scf_config
+      type(trc_scf_options_t), intent(in) :: scf_options
+      type(trc_scf_result_t), intent(inout) :: scf_result
+      logical, intent(out) :: ok
+      ok = .false.
+      ! Second-order SCF rotates orbitals with its own Newton step and
+      ! rebuilds the density from the global orthogonaliser, so it would
+      ! neither keep the irrep labels nor the symmetrisation: refused
+      ! rather than run without them. The fractional occupations of the
+      ! free-atom runs have no meaning for the irreps of a molecule.
+      if (scf_config%soscf) then
+         scf_result%message = "trc_scf: --soscf is not supported with symmetry (its Newton rotations "// &
+                              "ignore the irrep blocks); run with symmetry off"
+         return
+      end if
+      if (scf_options%frac_occ) then
+         scf_result%message = "trc_scf: fractional occupations are not supported with symmetry"
+         return
+      end if
+      ! MOM picks the occupied orbitals by overlap across irreps, which the
+      ! per-irrep occupations of the symmetric run fix instead.
+      if (scf_options%mom) then
+         scf_result%message = "trc_scf: mom is not supported with symmetry; run with symmetry off"
+         return
+      end if
+      ! GDM rotates all occupied into all virtual orbitals, across irreps,
+      ! as the second-order SCF does.
+      if (scf_options%gdm) then
+         scf_result%message = "trc_scf: gdm is not supported with symmetry; run with symmetry off"
+         return
+      end if
+      ok = .true.
+   end subroutine scf_driver_sym_refuse
+
+   subroutine scf_driver_stamp_setup(scf_context, scf_config, grid_cache, scf_result, timers)
+      !! What the once-per-geometry setup hands to the result and to the
+      !! timers: the continuum's point count, the DFT grids and the grid
+      !! build time.
+      type(scf_ctx_t), intent(in) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(trc_grid_cache_t), intent(in) :: grid_cache
+      type(trc_scf_result_t), intent(inout) :: scf_result
+      type(scf_timers_t), intent(inout) :: timers
+      if (scf_config%pcm_on) scf_result%pcm_npoints = scf_context%pcm%surface%n_points
+      if (scf_config%dft) then
+         scf_result%grid_r = grid_cache%grid%coords
+         scf_result%grid_w = grid_cache%grid%weights
+         if (scf_config%nlc) then
+            scf_result%grid_r_nlc = grid_cache%grid_nlc%coords
+            scf_result%grid_w_nlc = grid_cache%grid_nlc%weights
+         end if
+         ! The DFT pipeline's own step table (grid build, semilocal XC,
+         ! VV10), reported alongside the existing fock(s)/xc(s) columns
+         ! of `scf_driver_report` rather than instead of them: its per-step rate
+         ! columns are new here (grid build has no flop count to show
+         ! them against), but the three totals are not new numbers, only
+         ! a second, uniform place they land -- see trc_scf_state's own
+         ! header on `xcst`. "dft", not "scf": its total is grid + XC only.
+         call timers%xcst%init("dft", [character(len=8) :: "grid", "xc", "vv10"])
+         call timers%xcst%add_time(1, scf_context%t_grid)
+      end if
+   end subroutine scf_driver_stamp_setup
+
+   subroutine scf_driver_alloc_run(scf_context, scf_config, scf_options, scf_state, scf_result, loop)
+      !! The arrays the run owns: the state's, the DIIS histories and the
+      !! result's density, orbitals and energies.
+      type(scf_ctx_t), intent(in) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(trc_scf_options_t), intent(in) :: scf_options
+      type(scf_state_t), intent(inout) :: scf_state
+      type(trc_scf_result_t), intent(inout) :: scf_result
+      type(scf_loop_t), intent(inout) :: loop
+      integer :: nao
+      nao = scf_context%nao
+      call scf_state%alloc(scf_context, scf_config)
+      call loop%cdiis%alloc(nao, scf_config%nspin, scf_options%ndiis)
+      allocate (scf_result%dmat(nao, nao, scf_config%nspin), scf_result%cmo(nao, nao, scf_config%nspin), &
+                scf_result%eps(nao, scf_config%nspin))
+      ! Only when asked for: a second ndiis-deep history the size of
+      ! cdiis's own. Both live on the host, packed (trc_scf_diis's own
+      ! header), but at gly100's 16,258 functions one is still 10 GB.
+      if (scf_options%adiis) call loop%adiis%alloc(nao, scf_config%nspin, scf_options%ndiis)
+   end subroutine scf_driver_alloc_run
+
+   subroutine scf_driver_initial_guess(la, scf_context, scf_config, scf_options, scf_state, scf_result, guess, ok)
+      !! The starting density, in `scf_result%dmat`, on the host, when `dguess` is not given. `ok` false:
+      !! the guess's own diagonalisation failed and `scf_result%message` says so.
+      type(trc_linalg_t), intent(inout) :: la
+      type(scf_ctx_t), intent(inout) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(trc_scf_options_t), intent(in) :: scf_options
+      type(scf_state_t), intent(inout) :: scf_state
+      type(trc_scf_result_t), intent(inout) :: scf_result
+      type(trc_scf_guess_t), intent(in), optional :: guess
+      logical, intent(out) :: ok
+      logical :: have_hamiltonian, have_orbitals   !! which of `guess`'s parts were given
+      logical :: diag_failed      !! the guess's diagonalisation, every spin
+      integer :: diag_info        !! the FIRST failing spin's own eigensolver info, kept across the spin loop
+      integer :: info_s           !! this spin's own raw info from the call just made
+      integer :: s
+      diag_failed = .false.
+      diag_info = 0
+      have_hamiltonian = .false.
+      have_orbitals = .false.
+      if (present(guess)) then
+         have_hamiltonian = allocated(guess%hamiltonian)
+         have_orbitals = allocated(guess%orbitals)
+      end if
+      if (have_hamiltonian) then
+         do s = 1, scf_config%nspin
+            call scf_driver_guess_spin(la, scf_context, scf_config%occ, guess%hamiltonian, scf_config%nocc(s), &
+                                       scf_result%dmat(:, :, s), info_s)
+            call scf_driver_note_failure(info_s, diag_failed, diag_info)
+         end do
+      else if (have_orbitals) then
+         call scf_context_project_density(la, scf_context%nao, scf_config%nspin, scf_config%nocc, guess%orbitals, &
+                                          scf_context%smat, scf_result%dmat)
+      else if (scf_options%guess == "core") then
+         do s = 1, scf_config%nspin
+            call scf_driver_guess_spin(la, scf_context, scf_config%occ, scf_context%hcore, scf_config%nocc(s), &
+                                       scf_result%dmat(:, :, s), info_s)
+            call scf_driver_note_failure(info_s, diag_failed, diag_info)
+         end do
+      else
+         ! GWH: F_ij = 1.75/2 S_ij (H_ii + H_jj), diagonal H_ii.
+         call scf_driver_gwh_matrix(scf_context%nao, scf_context%hcore, scf_context%smat, scf_state%w1)
+         do s = 1, scf_config%nspin
+            call scf_driver_guess_spin(la, scf_context, scf_config%occ, scf_state%w1, scf_config%nocc(s), &
+                                       scf_result%dmat(:, :, s), info_s)
+            call scf_driver_note_failure(info_s, diag_failed, diag_info)
+         end do
+      end if
+      ! A diagonalisation failure in the INITIAL guess (core/GWH/a supplied
+      ! Hamiltonian -- SAD/SADQ build their own density without this
+      ! routine, through `dguess`): report it the same way `scf_ctx_setup`
+      ! itself does on its own refusals (iterations is still 0 here, so
+      ! trc_capi.F90's trc_run_scf reports TRC_ERR_UNSUPPORTED, not
+      ! TRC_ERR_NOCONV -- this never started, rather than failed to finish).
+      ok = .not. diag_failed
+      if (diag_failed) then
+         scf_result%message = "trc_scf: the initial guess's own diagonalisation did not converge "// &
+                              "(eigensolver info="//to_string(diag_info)//")"
+      end if
+   end subroutine scf_driver_initial_guess
+
+   subroutine scf_driver_loop_start(scf_config, loop)
+      !! The loop's state before iteration 1.
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_loop_t), intent(inout) :: loop
+      loop%eold = 0.0_dp
+      ! Read by the first iteration's `incr_now` before any commutator exists.
+      loop%errmax = huge(1.0_dp)
+      call loop%incremental%setup(scf_config)
+      loop%diis_on = .false.
+      loop%mom_swaps = 0
+      loop%shifted = .false.
+      loop%mom_active = .false.
+      loop%soscf_switch_iteration = 0
+   end subroutine scf_driver_loop_start
+
+   subroutine scf_iteration_cart_density(scf_basis, scf_context, scf_config, scf_state, scf_result, loop)
+      !! Opens the iteration: D_cart := T D_sph T^T.
+      type(trc_basis_t), intent(in) :: scf_basis
+      type(scf_ctx_t), intent(in) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
+      type(trc_scf_result_t), intent(in) :: scf_result
+      type(scf_loop_t), intent(inout) :: loop
+      integer :: s
+      loop%incr_now = .false.
+      ! --- D_cart := T D_sph T^T, the one transform every Cartesian
+      ! quantity of the iteration (the Fock build, the XC density) is built from.
+      ! Not taken at all when `sph` is false -- see this module's own
+      ! header on why that keeps the Cartesian path byte-for-byte
+      ! unchanged rather than merely numerically equivalent.
+      do s = 1, scf_config%nspin
+         call scf_fock_to_cart(scf_basis, scf_context%sph, scf_context%nao, scf_context%nao_c, scf_result%dmat(:, :, s), &
+                               scf_state%d_c(:, :, s))
+      end do
+   end subroutine scf_iteration_cart_density
+
+   subroutine scf_iteration_fock_build(scf_basis, scf_context, scf_config, scf_state, loop, eri, la, scf_dfjk)
+      !! The two-electron part of F, resident and in the run's own AO space,
+      !! up to and including the reading of the Fock timer the driver started.
+      type(trc_basis_t), intent(in) :: scf_basis
+      type(scf_ctx_t), intent(in) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
+      type(scf_loop_t), intent(inout) :: loop
+      type(trc_eri_t), intent(inout) :: eri
+      type(trc_linalg_t), intent(inout) :: la
+      type(df_jk_t), intent(inout), optional :: scf_dfjk
+      ! --- two-electron part, resident, entirely in Cartesian space -------
+      !
+      ! INCREMENTAL. G(D) = G(D_ref) + G(D - D_ref), exactly, because G is
+      ! linear in D. The point is the screening: the kernel screens on the
+      ! density it is handed, and the difference is small and getting
+      ! smaller while the density is neither. See `scf_fock_build_g`'s own header.
+      !
+      loop%incr_now = loop%incremental%next_build(loop%it, loop%errmax, loop%it == scf_config%max_iteration)
+      call scf_fock_build_g(scf_basis, scf_context, scf_config, scf_state, loop%incremental%scale, eri, la, scf_dfjk)
+      ! --- G_sph := T^T G_cart T, back up to the space the rest of the
+      ! iteration runs in, into `fock` until the assembly in `scf_iteration_assemble`.
+      call scf_fock_fold_g(scf_basis, scf_context, scf_config, scf_state)
+      ! The skeleton build returns G summed over the orbit representatives
+      ! only. It is not symmetrized here: the energy in `scf_iteration_assemble` is Tr(D G) with
+      ! D invariant, which the average over the group leaves unchanged, and
+      ! the symmetrization of F after the assembly (in that routine, whenever `sym`
+      ! is active) makes the matrix itself invariant before DIIS sees it.
+      loop%timers%tf_it = loop%timers%fock%get_elapsed_time()
+      loop%timers%t_fock = loop%timers%t_fock + loop%timers%tf_it
+      loop%timers%n_fock = loop%timers%n_fock + 1
+      if (loop%timers%n_fock == 1) loop%timers%tf_first = loop%timers%tf_it
+   end subroutine scf_iteration_fock_build
+
+   subroutine scf_iteration_xc(scf_basis, grid_cache, la, scf_config, scf_state, loop, comm)
+      !! The exchange-correlation part of F, up to the reading of the XC timer the driver started.
+      type(trc_basis_t), intent(in) :: scf_basis
+      type(trc_grid_cache_t), intent(in) :: grid_cache
+      type(trc_linalg_t), intent(inout) :: la
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
+      type(scf_loop_t), intent(inout) :: loop
+      type(comm_t), intent(in), optional :: comm
+      ! --- exchange-correlation: finds its (Cartesian) density present ----
+      if (scf_config%dft) then
+         call scf_fock_build_vxc(scf_basis, grid_cache, la, scf_config, scf_state, loop%energies, loop%timers, comm)
+      end if
+      loop%timers%tx_it = loop%timers%xc%get_elapsed_time()
+      loop%timers%t_xc = loop%timers%t_xc + loop%timers%tx_it
+   end subroutine scf_iteration_xc
+
+   subroutine scf_iteration_pcm(scf_basis, scf_context, scf_config, scf_state, loop, la, pl, comm)
+      !! The continuum's part of F. The `rest` timer, started by the driver, is
+      !! restarted here after the continuum's own timer, which interrupts it.
+      type(trc_basis_t), intent(in) :: scf_basis
+      type(scf_ctx_t), intent(inout) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
+      type(scf_loop_t), intent(inout) :: loop
+      type(trc_linalg_t), intent(inout) :: la
+      type(trc_pairlist_t), intent(in) :: pl   !! the run's pair list
+      type(comm_t), intent(in), optional :: comm
+      ! --- the continuum, at the TOTAL density (pyscf's choice for UKS
+      ! too: one set of charges, one operator added to both spins) -----
+      if (scf_config%pcm_on) then
+         call loop%timers%pcm%start()
+         call scf_fock_build_pcm(scf_basis, scf_context, scf_config, scf_state, loop%energies, la, pl, comm)
+         loop%timers%t_pcm = loop%timers%t_pcm + loop%timers%pcm%get_elapsed_time()
+         ! the PCM step is its own column, not part of the rest
+         call loop%timers%rest%start()
+      end if
+      ! The surface charge belongs to this density, like the PCM energy (GDM keeps both with its accepted point).
+      if (scf_config%pcm_on) loop%energies%pcm_qtotal = scf_context%pcm%q_total
+   end subroutine scf_iteration_pcm
+
+   subroutine scf_iteration_assemble(scf_context, scf_config, scf_state, scf_result, loop, la, comm, sym)
+      !! The energy at this density, the assembled Fock matrix and its
+      !! commutator, and the commutator's norm (rank 0's, on every rank).
+      type(scf_ctx_t), intent(in) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
+      type(trc_scf_result_t), intent(inout) :: scf_result
+      type(scf_loop_t), intent(inout) :: loop
+      type(trc_linalg_t), intent(inout) :: la
+      type(comm_t), intent(in), optional :: comm
+      type(trc_sym_scf_t), intent(inout), optional :: sym
+      real(dp) :: ctl(2)
+      ! --- energy at this density -----------------------------------------
+      call scf_fock_energy(scf_context, scf_config, scf_state, scf_result, loop%energies, la)
+      ! --- Fock and its commutator, per spin ------------------------------
+      call scf_fock_assemble(scf_context, scf_config, scf_state)
+      ! F is symmetric up to the round-off of the build and, for DFT, the
+      ! grid noise of the quadrature; averaging over the group removes both
+      ! before DIIS and the commutator see it.
+      if (scf_driver_sym_active(sym)) call scf_driver_symmetrize(sym, scf_state%fock, scf_state%w1)
+      call scf_fock_commutator_error(scf_context, scf_config, scf_state, scf_result, la)
+      ! `dold` must hold `scf_result%dmat` from BEFORE DIIS/diagonalisation touch
+      ! it -- see trc_scf_state's own header.
+      call scf_state%save_dold(scf_context%nao, scf_config%nspin, scf_result%dmat)
+      ! --- the commutator's norm, which `scf_iteration_mode` reads to decide whether DIIS may start --
+      loop%errmax = sqrt(la%dot_3d(scf_state%errv, scf_state%errv))
+      ! Over ranks the Fock matrices agree only to the XC atomics' 1e-13,
+      ! so the numbers `scf_iteration_mode` and `scf_iteration_decide` read
+      ! are rank 0's, on every rank: one rank leaving the loop while
+      ! another iterates on would hang the next collective.
+      if (present(comm)) then
+         if (comm%size() > 1) then
+            ctl = [loop%energies%total, loop%errmax]
+            call scf_context_bcast_flat(comm, ctl, 2)
+            loop%energies%total = ctl(1)
+            loop%errmax = ctl(2)
+         end if
+      end if
+   end subroutine scf_iteration_assemble
+
+   subroutine scf_iteration_mode(scf_config, scf_options, loop)
+      !! Which accelerator runs this iteration: CDIIS, ADIIS, GDM, damping,
+      !! the level shift and MOM, from the commutator just measured.
+      type(scf_settings_t), intent(in) :: scf_config
+      type(trc_scf_options_t), intent(in) :: scf_options
+      type(scf_loop_t), intent(inout) :: loop
+      if (.not. loop%diis_on .and. loop%it > scf_config%ndamp) loop%diis_on = loop%errmax < scf_config%diis_start
+      !
+      ! A/EDIIS while damping has ended but the commutator is still too large for
+      ! CDIIS. CDIIS has no constraint on its coefficients, hence the
+      ! `diis_start` gate: far from convergence it can overshoot. ADIIS (Hu &
+      ! Yang, JCP 132, 054109) minimises an energy functional over the convex
+      ! hull of the history, so it only moves towards a visited density: reliable
+      ! where CDIIS is not and slow where CDIIS is fast, hence the two switch
+      ! rather than blend (gmshpc: a blended step turned a stretched-water case
+      ! converging in 21 CDIIS iterations into one that never converged).
+      !
+      loop%adiis_active = scf_options%adiis .and. .not. loop%diis_on .and. loop%it > scf_config%ndamp
+      loop%mom_active = scf_driver_mom_active(loop%mom_active, scf_options, loop%diis_on, loop%errmax)
+      ! GDM (trc_scf_gdm_step) replaces DIIS, damping and the level shift. MOM
+      ! stays for the handover diagonalisation, whose occupation GDM keeps (or
+      ! declines, in `scf_iteration_sync_flags`, when that occupation is an excited state). The level
+      ! shift is not consulted under GDM, so its stall guard sees none of it.
+      loop%gdm_mode = loop%gdm%mode(scf_config, loop%it, loop%errmax)
+      if (loop%gdm_mode /= GDM_OFF) then
+         loop%diis_on = .false.
+         loop%adiis_active = .false.
+         loop%shifted = .false.
+         if (loop%gdm_mode == GDM_ITERATE) loop%mom_active = .false.
+      else
+         call scf_driver_shift_now(scf_options, loop%diis_on, loop%adiis_active, loop%errmax, loop%shift_guard, &
+                                   loop%cdiis, scf_config%root, loop%shifted)
+      end if
+   end subroutine scf_iteration_mode
+
+   subroutine scf_iteration_step(scf_context, scf_config, scf_options, scf_state, scf_result, loop, la, sym)
+      !! The step: extrapolate F (ADIIS or CDIIS), shift it, diagonalise per
+      !! spin (or take the GDM step) and form the new density, on rank 0.
+      type(scf_ctx_t), intent(in) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(trc_scf_options_t), intent(in) :: scf_options
+      type(scf_state_t), intent(inout) :: scf_state
+      type(trc_scf_result_t), intent(inout) :: scf_result
+      type(scf_loop_t), intent(inout) :: loop
+      type(trc_linalg_t), intent(inout) :: la
+      type(trc_sym_scf_t), intent(inout), optional :: sym
+      integer :: s, orb_mode
+      integer :: info_s           !! this spin's own raw info from the call just made
+      logical :: ok
+      ! The new density is rank 0's alone: extrapolation, eigensolve and density
+      ! run on one device and the density is broadcast, since dsyevd need not
+      ! return the same vectors on two devices. Orbitals and energies come over
+      ! once, after the loop.
+      loop%diag_failed = .false.
+      loop%diag_info = 0
+      if (scf_config%root) then
+         if (loop%adiis_active) then
+            call loop%adiis%push(scf_context%nao, scf_config%nspin, scf_state%fock, scf_state%dold, scf_state%w1)
+            call loop%adiis%extrapolate(scf_context%nao, scf_config%nspin, scf_state%fock, scf_state%w1)
+         end if
+         if (loop%diis_on) then
+            call loop%cdiis%push(scf_context%nao, scf_config%nspin, scf_state%fock, scf_state%errv, scf_state%w1)
+            call loop%cdiis%extrapolate(scf_context%nao, scf_config%nspin, scf_state%fock, scf_state%w1, ok)
+         end if
+         ! --- level shift, F += mu (S - S D S / occ), onto the extrapolated F
+         if (loop%shifted) then
+            call scf_diis_level_shift(la, scf_context%nao, scf_config%nspin, scf_options%level_shift, scf_config%occ, &
+                   scf_context%smat, scf_result%dmat, scf_state%w1, scf_state%w2, scf_state%fock)
+         end if
+         orb_mode = scf_driver_occupation_mode(scf_options, loop%mom_active)
+         scf_state%mom_now = orb_mode == ORB_MOM
+         scf_state%mom_swaps = 0
+         ! --- diagonalise, per spin, and the new density ---------------------
+         loop%mom_swaps = 0
+         if (loop%gdm_mode == GDM_ITERATE) then
+            call loop%gdm%iterate(scf_context, scf_config, scf_state, scf_result, loop%energies, la, loop%incr_now)
+         else
+            do s = 1, scf_config%nspin
+               if (scf_driver_sym_active(sym)) then
+                  ! MOM and GDM are refused with symmetry by `scf_driver_sym_refuse`.
+                  call scf_driver_sym_spin_step(la, scf_config, scf_state, scf_result, sym, s, info_s)
+               else
+                  call scf_driver_spin_step(la, scf_context, scf_config, scf_state, scf_result, scf_options, s, info_s)
+               end if
+               loop%mom_swaps(s) = scf_state%mom_swaps(s)
+               ! The FIRST failing spin's own info -- scf_driver_note_failure's own header.
+               call scf_driver_note_failure(info_s, loop%diag_failed, loop%diag_info)
+            end do
+            if (.not. loop%diag_failed .and. .not. loop%diis_on .and. .not. loop%adiis_active &
+                .and. loop%gdm_mode == GDM_OFF) then
+               call scf_diis_damp(scf_context%nao, scf_config%nspin, scf_options%damp, scf_state%dold, scf_result%dmat)
+            end if
+         end if
+         if (scf_driver_sym_active(sym) .and. .not. loop%diag_failed) call scf_driver_symmetrize(sym, scf_result%dmat, scf_state%w1)
+      end if
+   end subroutine scf_iteration_step
+
+   subroutine scf_iteration_sync_flags(scf_result, loop, comm)
+      !! What the step decided that every rank must know: a failed
+      !! diagonalisation, MOM's swaps and GDM's verdicts. A failure ends the
+      !! iteration (`loop%leave`).
+      type(trc_scf_result_t), intent(inout) :: scf_result
+      type(scf_loop_t), intent(inout) :: loop
+      type(comm_t), intent(in), optional :: comm
+      real(dp) :: diag_flag(N_DIAG_FLAG)
+      !! [0.0/1.0 failed, info, mom_swaps(1:2), gdm rejected, gdm stopped], broadcast from root the same way `ctl` is
+      ! Every rank must learn of a diagonalisation failure the same
+      ! cycle it happened (root's own `diag_failed`, set in
+      ! `scf_iteration_step`, is otherwise invisible to the others),
+      ! or a non-root rank iterates on into the next collective while root
+      ! has already left the loop -- the same hang `ctl`'s own broadcast, in
+      ! `scf_iteration_assemble`, exists to avoid for the
+      ! energy/commutator-norm pair.
+      if (present(comm)) then
+         if (comm%size() > 1) then
+            diag_flag = [merge(1.0_dp, 0.0_dp, loop%diag_failed), real(loop%diag_info, dp), real(loop%mom_swaps, dp), &
+                         merge(1.0_dp, 0.0_dp, loop%gdm%rejected), merge(1.0_dp, 0.0_dp, loop%gdm%stopped)]
+            call scf_context_bcast_flat(comm, diag_flag, N_DIAG_FLAG)
+            loop%diag_failed = diag_flag(1) > 0.5_dp
+            loop%diag_info = nint(diag_flag(2))
+            loop%mom_swaps = nint(diag_flag(3:4))
+            loop%gdm%rejected = diag_flag(5) > 0.5_dp
+            loop%gdm%stopped = diag_flag(6) > 0.5_dp
+         end if
+      end if
+      if (loop%gdm_mode == GDM_HANDOVER) call loop%gdm%decline(loop%mom_swaps)
+      if (loop%diag_failed) then
+         ! A malformed Fock matrix (NOT the ordinary "has not converged
+         ! yet" case -- dsyev/cuSOLVER could not even diagonalise it):
+         ! stop iterating rather than build the next Fock from
+         ! eps_s/cmo_s/d_s that la%syev never actually
+         ! wrote. scf_result%converged stays .false.; trc_capi.F90's
+         ! trc_run_scf already turns that into TRC_ERR_NOCONV, and
+         ! scf_result%iterations > 0 keeps it off the "setup failed"
+         ! (TRC_ERR_UNSUPPORTED) path -- the SAME two fields, and the
+         ! SAME mapping, an ordinary non-converged run already uses.
+         scf_result%message = "trc_scf: the Fock-matrix diagonalisation did not converge "// &
+                              "(eigensolver info="//to_string(loop%diag_info)//")"
+         scf_result%iterations = loop%it
+         loop%leave = .true.
+      end if
+   end subroutine scf_iteration_sync_flags
+
+   subroutine scf_iteration_density(scf_config, scf_state, scf_result, loop, la, comm, drms)
+      !! The new density on every rank, and how far it moved (`drms`);
+      !! closes the `rest` timer.
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
+      type(trc_scf_result_t), intent(inout) :: scf_result
+      type(scf_loop_t), intent(inout) :: loop
+      type(trc_linalg_t), intent(inout) :: la
+      type(comm_t), intent(in), optional :: comm
+      real(dp), intent(out) :: drms
+      integer :: n2, nao
+      nao = size(scf_result%dmat, 1)
+      n2 = nao*nao
+      ! Every rank must hold the same density to the bit. The Fock sum is
+      ! broadcast already; the XC potential is accumulated with atomics
+      ! whose order differs per rank, 1e-13 in the energy on water, and a
+      ! difference that small compounds through a diverging iteration.
+      if (present(comm)) then
+         if (comm%size() > 1) then
+            !$acc update self(scf_result%dmat)
+            call scf_context_bcast_flat(comm, scf_result%dmat, n2*scf_config%nspin)
+            !$acc update device(scf_result%dmat)
+         end if
+      end if
+      call scf_state%update_errv(nao, scf_config%nspin, scf_result%dmat)
+      drms = sqrt(la%dot_3d(scf_state%errv, scf_state%errv))/real(nao, dp)
+      ! The linear algebra between the XC build and the next Fock build:
+      ! energy, Fock assembly, commutator, DIIS, eigensolve, density and
+      ! its broadcast (PCM excluded, it has its own timer).
+      loop%timers%tr_it = loop%timers%rest%get_elapsed_time()
+      loop%timers%t_rest = loop%timers%t_rest + loop%timers%tr_it
+   end subroutine scf_iteration_density
+
+   subroutine scf_iteration_log(scf_config, loop, drms)
+      !! The iteration's row of the table.
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_loop_t), intent(in) :: loop
+      real(dp), intent(in) :: drms   !! how far the density moved, from `scf_iteration_density`
+      character(len=160) :: line
+      if (scf_config%talk) then
+         if (scf_config%dft) then
+            write (line, "(i5,f22.12,es14.4,es14.4,es14.4,3f10.3,a)") &
+               loop%it, loop%energies%total, loop%energies%total - loop%eold, drms, loop%errmax, loop%timers%tf_it, &
+               loop%timers%tx_it, loop%timers%tr_it, merge(" i", "  ", loop%incr_now)
+         else
+            write (line, "(i5,f22.12,es14.4,es14.4,es14.4,2f10.3,a)") &
+               loop%it, loop%energies%total, loop%energies%total - loop%eold, drms, loop%errmax, loop%timers%tf_it, &
+               loop%timers%tr_it, merge(" i", "  ", loop%incr_now)
+         end if
+         call global_logger%info(trim(line))
+         if (any(loop%mom_swaps > 0)) call global_logger%info("         mom: kept "//to_string(sum(loop%mom_swaps))// &
+                                                              " orbital(s) occupied above the aufbau set")
+      end if
+   end subroutine scf_iteration_log
+
+   subroutine scf_iteration_decide(scf_config, scf_options, scf_result, loop)
+      !! After the row: GDM's report and stop, the density dump, the
+      !! convergence test and the handover to --soscf. Any of them ends the
+      !! loop (`loop%leave`); otherwise `eold` moves on.
+      type(scf_settings_t), intent(in) :: scf_config
+      type(trc_scf_options_t), intent(in) :: scf_options
+      type(trc_scf_result_t), intent(inout) :: scf_result
+      type(scf_loop_t), intent(inout) :: loop
+      scf_result%iterations = loop%it
+      call loop%gdm%report(scf_config, scf_result, loop%gdm_mode)
+      if (loop%gdm%stopped) then
+         scf_result%message = GDM_STOP_MESSAGE
+         loop%leave = .true.
+         return
+      end if
+      ! A real density for the benchmarks (dump_density's comment says why).
+      if (loop%it == 2) then
+         !$acc update self(scf_result%dmat)
+         call dump_density(size(scf_result%dmat, 1), scf_result%dmat(:, :, 1))
+      end if
+      ! Converged only on a full build (trc_scf_incremental's rule 1), and never on a rejected GDM trial.
+      if (loop%incremental%accept(loop%it > 1 .and. abs(loop%energies%total - loop%eold) < scf_options%conv_energy &
+                                  .and. loop%errmax < scf_options%conv_diis .and. .not. loop%gdm%rejected, loop%errmax)) then
+         scf_result%converged = .true.
+         loop%leave = .true.
+         return
+      end if
+      ! A rejected GDM trial is retried on a full build, free of the increments' accumulated error.
+      if (loop%gdm%rejected) loop%incremental%full_due = .true.
+      ! --soscf: hand over to trc_scf_soscf_run, its own header, once the commutator is small enough.
+      if (scf_config%soscf .and. loop%errmax < scf_config%soscf_start) then
+         loop%soscf_switch_iteration = loop%it
+         loop%leave = .true.
+         return
+      end if
+      if (.not. loop%gdm%rejected) loop%eold = loop%energies%total
+   end subroutine scf_iteration_decide
+
+   subroutine scf_driver_loop_finish(scf_context, scf_config, scf_state, scf_result, loop, la, comm)
+      !! After the loop: GDM's last accepted point, then the density, orbitals
+      !! and energies the energy was evaluated at, back to the host (and to
+      !! every rank).
+      type(scf_ctx_t), intent(in) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(scf_state_t), intent(inout) :: scf_state
+      type(trc_scf_result_t), intent(inout) :: scf_result
+      type(scf_loop_t), intent(inout) :: loop
+      type(trc_linalg_t), intent(inout) :: la
+      type(comm_t), intent(in), optional :: comm
+      integer :: n2
+      n2 = scf_context%nao*scf_context%nao
+      ! GDM: the last ACCEPTED point's density, energies and semicanonical orbitals (every rank calls).
+      call loop%gdm%finish(scf_context, scf_config, scf_state, scf_result, loop%energies, la, comm)
+      call loop%gdm%release()
+      ! The density the energy was evaluated at, and the orbitals that made it.
+      !$acc update self(scf_state%dold, scf_result%cmo, scf_result%eps)
+      if (present(comm)) then
+         if (comm%size() > 1) then
+            call scf_context_bcast_flat(comm, scf_result%cmo, n2*scf_config%nspin)
+            call scf_context_bcast_flat(comm, scf_result%eps, scf_context%nao*scf_config%nspin)
+         end if
+      end if
+   end subroutine scf_driver_loop_finish
+
+   subroutine scf_driver_result_fill(scf_context, scf_config, scf_options, scf_state, scf_result, loop)
+      !! The converged density and energies into the result, and its notes.
+      type(scf_ctx_t), intent(in) :: scf_context
+      type(scf_settings_t), intent(in) :: scf_config
+      type(trc_scf_options_t), intent(in) :: scf_options
+      type(scf_state_t), intent(in) :: scf_state
+      type(trc_scf_result_t), intent(inout) :: scf_result
+      type(scf_loop_t), intent(inout) :: loop
+      scf_result%dmat = scf_state%dold
+      if (scf_result%gdm_steps == 0) loop%energies%pcm_qtotal = scf_context%pcm%q_total
+      call scf_result%update(loop%energies, scf_state%dold)
+      scf_result%gdm_declined = loop%gdm%declined
+      ! The not-converged message (`diag_failed` set a sharper one) and the
+      ! HOMO-LUMO gap check, which `mom` and a shifted last iteration skip.
+      call scf_driver_eps_notes(scf_config, scf_options, loop%shifted, scf_context%nao - scf_result%n_lindep, scf_result)
+   end subroutine scf_driver_result_fill
 
    subroutine scf_driver_skeleton_decide(scf_basis, sym, sym_on, scf_config, comm, skeleton, err)
       !! THE SKELETON FOCK BUILD under a symmetric
@@ -1102,7 +1381,7 @@ contains
       integer :: rank, nranks
       if (scf_config%dft) then
          ! The run's own totals, read once here: grid build was added after
-         ! setup, above. xc is all of scf_fock_build_vxc but VV10 (t_xc includes it),
+         ! setup (`scf_driver_stamp_setup`). xc is all of scf_fock_build_vxc but VV10 (t_xc includes it),
          ! not trc_xc's points/pairs timers, which miss the functional and,
          ! over ranks, the collectives on V (3.3 of 10.3 s on 16 ranks), so
          ! the rows add up to the total. Points/pairs are in the summary.
