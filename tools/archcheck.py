@@ -51,7 +51,7 @@ ROOT = modmap.ROOT
 BASELINE = Path(__file__).resolve().parent / "arch_baseline.json"
 
 LAYERS = ["core", "basis", "grid", "eri", "xc", "solvation", "scf",
-          "post_hf", "api", "opt", "app"]
+          "post_hf", "api", "opt", "cli", "app"]
 MAX_PROC_LINES = 300
 MAX_ARGS = 8
 KERNEL_HOST_STMTS = 10

@@ -56,7 +56,7 @@ Needs pyscf. Takes several minutes (the heaviest transition metals, solved
 spin-polarized in a fairly large basis, are the slow part -- about 10-30s
 each; the light elements are under 5s). Writes
 test/basis_sets/hirshfeld_proatoms.json, picked up automatically by the
-existing `install(DIRECTORY test/basis_sets/ ...)` glob in app/CMakeLists.txt
+existing `install(DIRECTORY test/basis_sets/ ...)` glob in src/cli/CMakeLists.txt
 (it matches "*.json") and by trc_hirshfeld_data's own loader
 (test/basis_sets/hirshfeld_proatoms.json relative default,
 TERCO_HIRSHFELD_DATA environment override), the same pattern trc_minao and

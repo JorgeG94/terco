@@ -321,7 +321,7 @@ def layer_edges(units):
 
 # dependency rank: lower may not use higher
 LAYER_ORDER = ["core", "basis", "grid", "eri", "xc", "solvation", "scf",
-               "post_hf", "api", "src", "app"]
+               "post_hf", "api", "src", "opt", "cli", "app"]
 
 
 def cmd_layers(units, a):

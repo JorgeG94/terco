@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["rimp2"] -> gen_rimp2
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: b1e17154f95e9598df041a7250be2f325560355e1479488b56a7712133810e66
+# hash: b01e136bf2f60953a9f3ed16da748b1444efb4ebe79680021b12a8fc271c2e0b
 # files: test/scf_rimp2.F90
 E_SCF -7.60271129283133575e+01
 E_OS -1.55308332905144231e-01

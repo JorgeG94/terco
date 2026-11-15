@@ -4,7 +4,7 @@ module scf_rimp2_suite
    !! through trc_rimp2 with a synthetic auxiliary basis, once as a single
    !! auxiliary block and once in blocks of 20 functions (bit-identical
    !! required). One process: RI-MP2 over ranks is checked through the
-   !! command line, by app/cli_mpi_check.py. Writes
+   !! command line, by test/cli_mpi_check.py. Writes
    !! `rimp2_probe.bin` for rimp2_ref.py, which runs pyscf's RHF and DF-MP2 on
    !! the same orbital and auxiliary sets and compares E_os, E_ss and E_corr.
    !!

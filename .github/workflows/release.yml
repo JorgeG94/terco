@@ -96,7 +96,7 @@ jobs:
 
       # Water RHF/6-31+G* (Cartesian) by name from the tarball's library:
       # pyscf 2.x with the same BSE 0.12 file gives -76.0174413767
-      # (app/CMakeLists.txt, cli_library_pople).
+      # (src/cli/CMakeLists.txt, cli_library_pople).
       - name: SCF against the pyscf anchor
         run: |
           export TERCO_BASIS_PATH=$(echo "$RUNNER_TEMP"/u/terco-*-lmax2/basis_sets)

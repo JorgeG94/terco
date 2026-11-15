@@ -141,6 +141,9 @@ generates the Rys kernels (energy and gradient) and the MD J/K kernels that
 CMake would generate at configure time. Rerun it after changing `scripts/`.
 Any other ceiling needs CMake.
 
+fpm also compiles the CLI support modules in `src/cli/` into its library;
+CMake compiles them only into the CLI executable.
+
 #### `--opt` (DL-FIND) under fpm
 
 The geometry optimiser is off by default, as in the CMake build: DL-FIND is

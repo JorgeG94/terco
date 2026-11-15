@@ -37,6 +37,21 @@ def test_bad_words_matches_whole_words_only():
     assert archcheck.bad_words("matrix") == []
 
 
+def test_cli_layer_dependencies(tmp_path, monkeypatch):
+    for layer in ("core", "cli"):
+        (tmp_path / "src" / layer).mkdir(parents=True)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "src/core/trc_core.F90").write_text(
+        "module trc_core\nuse trc_cli\nend module trc_core\n")
+    (tmp_path / "src/cli/trc_cli.F90").write_text(
+        "module trc_cli\nuse trc_core\nend module trc_cli\n")
+    monkeypatch.setattr(archcheck, "ROOT", tmp_path)
+    monkeypatch.setattr(archcheck.modmap, "ROOT", tmp_path)
+
+    violations = [v for v in archcheck.check() if v.rule == "layer-up"]
+    assert [(v.scope, v.detail) for v in violations] == [("trc_core", "trc_cli")]
+
+
 def test_scan_procedures(tmp_path):
     src = tmp_path / "m.F90"
     src.write_text(textwrap.dedent("""\

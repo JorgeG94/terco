@@ -35,6 +35,7 @@ macros = ["TRC_LMAX=2", "TRC_FOCK6"]
 
 [library]
 source-dir = "src"
+# fpm also compiles src/cli into the library; CMake keeps it in terco_cli.
 # `#include "inc/..."` and the generated .inc files, as CMake's include directories.
 include-dir = ["src", "src/generated"]
 # No `type = "static"`: fpm 0.13 then archives each package on its own and

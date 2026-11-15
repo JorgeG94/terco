@@ -6,7 +6,7 @@
 #
 # This directory is only added (root CMakeLists.txt) when
 # TERCO_ENABLE_DLFIND is ON. With it OFF, none of this runs: no libdlfind
-# fetch, no terco_opt target, nothing installed -- app/CMakeLists.txt's own
+# fetch, no terco_opt target, nothing installed -- src/cli/CMakeLists.txt's own
 # trc_dlfind_stub.F90 is the whole --opt story in that build.
 #
 # WHY A SEPARATE LIBRARY AND NOT PART OF ${main_lib}. Two reasons, same as
@@ -21,7 +21,7 @@
 #     (TERCO_ENABLE_DLFIND=ON, and then linking terco::terco_opt), never
 #     something pulled in by linking libterco for an energy or a gradient.
 #
-# WHO LINKS THIS. terco's own CLI (app/CMakeLists.txt, below this
+# WHO LINKS THIS. terco's own CLI (src/cli/CMakeLists.txt, below this
 # directory in the build) and cyclone or any other out-of-tree C/C++/
 # Fortran caller, through find_package(terco) and terco::terco_opt
 # (the install/export block at the bottom) plus include/terco_opt.h.
@@ -112,7 +112,7 @@ install(
 # installed TERCO_ENABLE_DLFIND=ON terco could not start at all without
 # this (Findlibdlfind.cmake's own EXCLUDE_FROM_ALL keeps libdlfind's OWN
 # install() rules, upstream, from firing on its own). terco_cli's RPATH
-# ($ORIGIN/../lib, app/CMakeLists.txt) already covers this lib/, same as
+# ($ORIGIN/../lib, src/cli/CMakeLists.txt) already covers this lib/, same as
 # libterco_opt.so's own.
 install(TARGETS dlfind LIBRARY DESTINATION ${TERCO_OPT_INSTALL_LIBDIR} RUNTIME DESTINATION
                        ${TERCO_OPT_INSTALL_LIBDIR})

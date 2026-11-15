@@ -1,6 +1,6 @@
 module check_cli_input_suite
    !!
-   !! The CLI's TOML input files (docs/INPUT.md, app/trc_run_input.F90), through
+   !! The CLI's TOML input files (docs/INPUT.md, src/cli/trc_run_input.F90), through
    !! the real `terco` binary.
    !!
    !! The reference for a file is the command line it stands for: the same run

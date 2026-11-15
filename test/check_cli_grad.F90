@@ -174,9 +174,9 @@ contains
 
    pure function c_string_local(s) result(cs)
       !! `s` NUL-terminated, for a `character(kind=c_char) :: x(*)` dummy --
-      !! the same convention app/trc_app.F90's own `c_string` uses, copied
+      !! the same convention src/cli/trc_app.F90's own `c_string` uses, copied
       !! here rather than pulled in: that module is compiled straight into
-      !! the `terco_cli` executable (app/CMakeLists.txt), not a library
+      !! the `terco_cli` executable (src/cli/CMakeLists.txt), not a library
       !! test/ links against.
       character(*), intent(in) :: s
       character(len=len(s) + 1) :: cs

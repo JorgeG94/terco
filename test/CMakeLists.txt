@@ -1018,7 +1018,7 @@ endforeach()
 
 # The CLI's --grad against a direct trc_run_gradient/trc_gradient call on
 # the same molecule/basis/guess -- see check_cli_grad.F90's own header.
-# Needs the terco_cli executable itself (app/CMakeLists.txt, added AFTER
+# Needs the terco_cli executable itself (src/cli/CMakeLists.txt, added AFTER
 # this directory by the root CMakeLists.txt, but still within the same
 # configure run -- $<TARGET_FILE:...> is a generator expression, resolved
 # at generate time, so the forward reference is fine); TERCO_BUILD_APP is
@@ -1030,8 +1030,8 @@ if(TERCO_BUILD_APP)
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_grad_probe})
   target_link_libraries(check_cli_grad PRIVATE test-drive::test-drive)
   # `add_dependencies(check_cli_grad terco_cli)` belongs in
-  # app/CMakeLists.txt, not here: that target does not exist yet in THIS
-  # directory's own configure pass (app/ is added after test/ by the root
+  # src/cli/CMakeLists.txt, not here: that target does not exist yet in THIS
+  # directory's own configure pass (src/cli/ is added after test/ by the root
   # CMakeLists.txt), only by generate time -- which is exactly why the
   # ARGS above is a generator expression and the explicit build-order
   # dependency is not.
@@ -1168,7 +1168,7 @@ if(TERCO_BUILD_APP)
   # "without DL-FIND built" to assert there).
   #
   # The geometry and the basis path are spelled out here: _xyz and _env
-  # belong to app/CMakeLists.txt, which is configured after this file.
+  # belong to src/cli/CMakeLists.txt, which is configured after this file.
   # No WILL_FAIL: PASS_REGULAR_EXPRESSION already decides the result, and
   # WILL_FAIL would invert it.
   set(_opt_xyz ${PROJECT_SOURCE_DIR}/test)
@@ -1371,9 +1371,9 @@ if(TERCO_BUILD_APP)
     # An installed DLFIND=ON terco can start at all: cmake --install to a
     # scratch prefix, then run the installed binary for real (not just
     # check libdlfind.so landed in lib/) -- see
-    # app/install_dlfind_check.cmake's own header for why this needs its
+    # test/install_dlfind_check.cmake's own header for why this needs its
     # own check (Findlibdlfind.cmake's EXCLUDE_FROM_ALL drops libdlfind's
-    # own install() rules, so without app/CMakeLists.txt's explicit
+    # own install() rules, so without src/cli/CMakeLists.txt's explicit
     # install(TARGETS dlfind ...) the installed binary fails at load,
     # silently as far as the REST of this test suite is concerned since
     # none of it runs installed). Fast: one install (copying what is
@@ -1383,7 +1383,7 @@ if(TERCO_BUILD_APP)
       COMMAND
         ${CMAKE_COMMAND} -DCMAKE_COMMAND=${CMAKE_COMMAND} -DBUILD_DIR=${CMAKE_BINARY_DIR}
         -DPREFIX=${CMAKE_CURRENT_BINARY_DIR}/install_dlfind_check_prefix -P
-        ${CMAKE_CURRENT_SOURCE_DIR}/../app/install_dlfind_check.cmake)
+        ${CMAKE_CURRENT_SOURCE_DIR}/install_dlfind_check.cmake)
 
     # A static libterco needs a static libterco_opt: see
     # check_static_terco_opt.cmake's own header (the multi-rank MPI_IN_PLACE

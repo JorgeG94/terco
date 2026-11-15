@@ -164,12 +164,12 @@ option(TERCO_ENABLE_MPI "Split the Fock build over MPI ranks, one device each" O
 # the builder's choice. With this ON, src/opt/CMakeLists.txt fetches
 # libdlfind (cmake/modules/Findlibdlfind.cmake) and builds a SEPARATE
 # shared library, libterco_opt (its own C ABI, include/terco_opt.h),
-# linked by terco_cli (app/CMakeLists.txt) and installed/exported
+# linked by terco_cli (src/cli/CMakeLists.txt) and installed/exported
 # alongside libterco for any other caller (terco::terco_opt) -- never
 # linked into libterco itself, so the LGPL relink obligation and
 # DL-FIND's `error stop` never reach the library. With this OFF, neither
 # libterco_opt nor its header is built at all, and terco_cli's --opt is
-# refused with a clear message (app/trc_dlfind_stub.F90).
+# refused with a clear message (src/cli/trc_dlfind_stub.F90).
 #
 option(TERCO_ENABLE_DLFIND "Build the --opt geometry optimiser against libdlfind (LGPL-3.0-or-later)" OFF)
 #
@@ -499,9 +499,9 @@ if(TERCO_ENABLE_TESTING)
   add_subdirectory(test)
 endif()
 
-# The `terco` command line program (app/), installed alongside the library.
+# The `terco` command line program, installed alongside the library.
 if(TERCO_BUILD_APP)
-  add_subdirectory(app)
+  add_subdirectory(src/cli app)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@
 ! against: it calls trc_dlfind_available() first and, finding it false,
 ! refuses --opt with a message instead of ever calling trc_dlfind_optimize.
 !
-! fpm compiles every file under app/ and cannot skip this one. A fpm build
+! fpm compiles every file under src/ and cannot skip this one. A fpm build
 ! that opts in to DL-FIND (README, "fpm") defines TERCO_ENABLE_DLFIND and gets
 ! the real bridge from src/opt/; the guard keeps the two modules from
 ! colliding. CMake compiles this file only with TERCO_ENABLE_DLFIND off.
