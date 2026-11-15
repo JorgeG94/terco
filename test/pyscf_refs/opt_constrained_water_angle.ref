@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["opt_constrained_water_angle"] -> gen_opt_constrained
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: a283104cba05499d249924bad27c7ccfef825f56a3e98ba5e460b39b14bca1aa
+# hash: b15873dcd652f38c0c85d36ca28c97f5e0b62abf34ca197352fd49129eedd6d3
 # files: test/basis_sets/sto-3g.json test/check_opt_constrain.F90
 # scipy L-BFGS-B over the 2 free bond lengths at a FIXED angle (104.4798388184 deg), 6 iterations, final max|g| 6.414e-09 Eh/Bohr
 NAT 3

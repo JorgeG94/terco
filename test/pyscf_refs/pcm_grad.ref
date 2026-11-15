@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["pcm_grad"] -> gen_pcm_grad
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 31a7cb735c753121d634ff33de0e611e92a459261e03323442b31c196bd14e03
+# hash: 0c1a6e96114e6da2e1dbfefcb89fc8500059992153f23aebfe4081d017089c92
 # files: test/check_pcm_grad_vs_pyscf.F90 test/basis_sets/6-31gs.json test/water.xyz
 NAO 19
 MODEL_cpcm cpcm

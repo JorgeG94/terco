@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["rccsd_ints"] -> gen_rccsd_ints
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: dc7bd6808072f0ca9ab4fce65078b3150da2fe90997e460c7a5d96f47607a702
+# hash: 0366b45d3c0539810760e8f532c66b3216bc3b7c93607444c7f2fc7b3d950cf6
 # files: test/basis_sets/cc-pvdz-rifit.json test/basis_sets/cc-pvdz.json test/check_rccsd_inter.F90 test/check_rccsd_ints.F90 test/check_rccsd_ladder.F90 test/check_rccsd_run.F90 test/check_rccsd_triples.F90 test/check_rccsd_w.F90 test/h2o2_c1.xyz test/hirshfeld_water.xyz test/rccsd_test_support.F90
 # h2o2_c1.xyz cc-pvdz/cc-pvdz-rifit frozen 2: pyscf DF-RCCSD(T), fixed-amplitude probes of every intermediate
 NO 7

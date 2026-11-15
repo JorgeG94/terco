@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["cphf"] -> gen_cphf
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 46e5618aaeeb8f11fe24683f8c0e838a852944edd7b1692b98162eb91bb5c763
+# hash: e729ff53c540716d7787a481d5b07c3ac20f1232ea5e9cf9ccbc305730cb8c1a
 # files: test/scf_cphf.F90 test/basis_sets/cc-pvdz.json test/water.xyz
 E_SCF -7.60271129283350859e+01
 ALPHA 3 3

@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["sym_c2"] -> gen_sym_c2
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: f4ad1ad3934f6900cde54ba9e22511ae7e26a519573c3cf4c6cc280427e46055
+# hash: 5752857a2ba9c9b707d1c16b43ffa7e13cfac832faa0d2f6bdea629f554802b2
 # files: test/check_sym_c2.F90 test/h2o2.xyz test/n2h4.xyz test/basis_sets/6-31gs.json test/basis_sets/cc-pvdz.json
 NAO_h2o2_631gs_cart 34
 SO_h2o2_631gs_cart 2

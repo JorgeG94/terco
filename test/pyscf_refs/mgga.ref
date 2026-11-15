@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["scf_mgga"] -> gen_scf_mgga
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 8b409fa81f9a60c0ac5c068d8ef6202f3b4ccca9ad59400f97f39f6995b8d84b
+# hash: c909f2d9398b8f7f2317fd7b4c35aa9f1c41e14c0e026209725771624eb5c343
 # files: test/scf_mgga.F90 test/basis_sets/6-31g.json test/water.xyz test/oh.xyz
 NCASE 12
 NAME_0 r2scan

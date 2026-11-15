@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["opt_hcn"] -> gen_opt
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 65901dc719ef3f5aaeb8bded5d23a8da4761363632c93fe3614afedc89d866cb
+# hash: f8e6385cfc42b227b855c4e569716c5ecb4437db38382564b76bc36440633cd0
 # files: test/basis_sets/sto-3g.json test/check_opt_vs_pyscf.F90
 # scipy L-BFGS-B, 6 iterations, final max|g| 4.994e-09 Eh/Bohr
 NAT 3
