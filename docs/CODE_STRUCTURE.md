@@ -163,7 +163,7 @@ style and does not parse all of Fortran.
 | `module-prefix` | a module without the `trc_` prefix |
 | `proc-prefix` | a public procedure not starting with its module's name |
 | `short-name` | a procedure, argument, local or module variable containing a word from the `SHORT_NAMES` table (`ctx`, `cfg`, `dens`, ...) |
-| `proc-length` | a procedure over 300 lines |
+| `proc-length` | a procedure over 300 code lines, excluding its initial declarations but counting declarations inside blocks |
 | `no-pointer` | a declaration with the `pointer` attribute, or a `pointer` statement, outside `src/api/`, `src/opt/trc_opt_capi.F90` and `type(json_value)` declarations (section 2) |
 | `arg-count` | a procedure with more than 8 dummy arguments (`routine seq` item routines excepted, and thin `do concurrent` kernel drivers: a procedure with a `do concurrent` and at most `KERNEL_HOST_STMTS` (10) executable statements outside its `do concurrent` bodies, not `trc_`-prefixed. Both must take explicit-shape arrays, since a `do concurrent` body may not read derived-type components) |
 

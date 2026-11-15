@@ -82,6 +82,31 @@ def test_scan_procedures(tmp_path):
     assert ("tmp_global", 3) in procs["trc_demo"]["names"]
 
 
+def test_procedure_length_excludes_only_initial_declarations(tmp_path):
+    src = tmp_path / "length.F90"
+    src.write_text(textwrap.dedent("""\
+        module trc_demo
+        contains
+           subroutine run(a)
+              use pic_types, only: dp
+              real(dp), intent(in) :: &
+                 ! comment inside a continued declaration
+                 a
+              integer :: i
+              !$acc routine seq
+              ! a comment
+              block
+                 integer :: j
+                 j = 1
+              end block
+              i = 1
+           end subroutine run
+        end module trc_demo
+    """))
+    proc = next(p for p in archcheck.scan_procedures(src) if p["name"] == "run")
+    assert archcheck.procedure_length(src.read_text().splitlines(), proc) == 9
+
+
 def test_kernel_driver(tmp_path):
     # A thin launch is a kernel driver; one with real host logic (more than
     # KERNEL_HOST_STMTS statements outside its do concurrent) is not, and a

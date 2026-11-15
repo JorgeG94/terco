@@ -16,7 +16,8 @@ Rules (thresholds and word lists are the constants below):
     short-name      a procedure or variable name contains an abbreviation
                     from SHORT_NAMES (ctx, cfg, dens, ...); a bind(c)
                     procedure's dummy arguments are C ABI names, exempt
-    proc-length     a procedure is longer than MAX_PROC_LINES
+    proc-length     a procedure has more than MAX_PROC_LINES code lines,
+                    excluding its initial declarations
     arg-count       a procedure has more than MAX_ARGS dummy arguments
                     (`routine seq` item routines and thin `do concurrent`
                     kernel drivers excepted; see KERNEL_HOST_STMTS)
@@ -175,6 +176,64 @@ RE_END_DO = re.compile(r"^\s*end\s*do\b", re.I)
 RE_SPEC = re.compile(r"^\s*(use|implicit|import|integer|real|logical|character|complex|"
                      r"double|type\s*\(|class\s*\(|dimension|parameter|save|external|"
                      r"intrinsic|procedure|contains)\b", re.I)
+RE_INITIAL_SPEC = re.compile(
+    r"^\s*(?:use|implicit|import|dimension|parameter|save|external|intrinsic|"
+    r"allocatable|asynchronous|codimension|common|contiguous|data|equivalence|"
+    r"intent|namelist|optional|pointer|protected|target|value|volatile)\b", re.I)
+
+
+def procedure_length(lines, proc):
+    """Count code lines, excluding declarations in the initial specification."""
+    section = lines[proc["start"] - 1:proc["end"]]
+    counted = {i for i, raw in enumerate(section)
+               if raw.strip() and (not raw.lstrip().startswith("!")
+                                   or raw.lstrip().startswith("!$"))}
+    parse_lines = []
+    continued = False
+    for raw in section:
+        if continued and (not raw.strip() or raw.lstrip().startswith("!")):
+            parse_lines.append("&")
+            continue
+        parse_lines.append(raw)
+        continued = modmap.strip(raw).rstrip().endswith("&")
+    logical = list(modmap.logical_lines("\n".join(parse_lines)))
+    in_spec = True
+    in_interface = False
+    in_type = False
+    for lineno, statement in logical[1:]:
+        st = statement.strip()
+        if not st or st.startswith(("!", "#")):
+            continue
+        if re.match(r"^(?:abstract\s+)?interface\b", st, re.I):
+            in_interface = True
+            continue
+        if in_interface:
+            if re.match(r"^end\s*interface\b", st, re.I):
+                in_interface = False
+            continue
+        if re.match(r"^type\s*(?:,[^:]*)?::\s*\w+\s*$", st, re.I) and in_spec:
+            in_type = True
+            continue
+        if in_type:
+            if re.match(r"^end\s*type\b", st, re.I):
+                in_type = False
+            continue
+        if not in_spec:
+            break
+        if RE_DECL.match(st) and "::" in st:
+            i = lineno - 1
+            while i < len(section):
+                raw = section[i]
+                if raw.lstrip().startswith("!"):
+                    i += 1
+                    continue
+                counted.discard(i)
+                if not modmap.strip(raw).rstrip().endswith("&"):
+                    break
+                i += 1
+        elif not RE_INITIAL_SPEC.match(st):
+            in_spec = False
+    return len(counted)
 
 
 def track_kernel_shape(proc, st, is_decl):
@@ -350,11 +409,7 @@ def check():
         src_lines = path.read_text(errors="replace").splitlines()
         for proc in scan_procedures(path):
             scope = f"{proc['name']}"
-            # comments and blank lines do not count towards the length
-            length = sum(
-                1 for raw in src_lines[proc["start"] - 1:proc["end"]]
-                if raw.strip() and (not raw.lstrip().startswith("!")
-                                    or raw.lstrip().startswith("!$")))
+            length = procedure_length(src_lines, proc)
             container = proc.get("container", False)
             if length > MAX_PROC_LINES and not container:
                 found.append(Violation(
