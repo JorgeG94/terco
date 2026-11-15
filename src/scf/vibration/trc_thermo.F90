@@ -1,42 +1,42 @@
-!
-! Ideal-gas rigid-rotor-harmonic-oscillator (RRHO) thermochemistry from
-! trc_vib's own vibrational frequencies.
-!
-! Follows pyscf's hessian/thermo.py `thermo()` formulas and conventions
-! (read, not guessed -- see the comments below for where each term maps),
-! because that is this project's external reference, with three
-! deliberate inputs pyscf's own convenience wrapper does not expose:
-!
-!   * the rotational symmetry number sigma is a REQUIRED argument. pyscf's
-!     own `thermo()` derives it from point-group detection
-!     (`rotational_symmetry_number`); this module leaves that to the
-!     caller (the CLI's own symmetry detection, or 1 if it has none),
-!     exactly so a caller is never silently handed sigma=1 for a water
-!     molecule (sigma=2) without choosing to be.
-!   * the spin multiplicity is a REQUIRED argument, for the same reason:
-!     a default of 1 would silently give an open-shell molecule S_elec=0.
-!   * ONE vibrational mode set. trc_vib never returns a translation or
-!     rotation mode in the first place (see that module's own header), so
-!     "which frequencies enter which term" is pyscf's single rule --
-!     every nu > 0 enters ZPE and the vibrational partition function,
-!     nu <= 0 (imaginary) is skipped everywhere -- with no second,
-!     inconsistent mode set to reconcile.
-!
-! UNITS, deliberately pyscf's split, not SI throughout: energies (ZPE, the
-! thermal corrections, the totals) in Hartree per molecule; entropies and
-! heat capacities in cal/(mol K), the units thermochemistry tables are
-! usually reported in. Converting between the two uses
-! KB_HARTREE (the Boltzmann constant in Hartree/K -- pyscf's own `R_Eh` is
-! numerically this SAME constant, kB/HARTREE2J, despite the name: pyscf
-! reports its own S/Cv in Eh/K, per molecule, not cal/(mol K)) and
-! R_CALMOLK (kB * Avogadro, in the thermochemical calorie) respectively;
-! both from trc_constants, never recomputed here.
-!
-! NO low-frequency cutoff. pyscf's `thermo()` applies none beyond nu > 0
-! (read its source: `idx = freq.real > 0`, nothing else), so a cutoff
-! such as "drop nu < 10 cm^-1" is not applied here either.
-!
 module trc_thermo
+   !!
+   !! Ideal-gas rigid-rotor-harmonic-oscillator (RRHO) thermochemistry from
+   !! trc_vib's own vibrational frequencies.
+   !!
+   !! Follows pyscf's hessian/thermo.py `thermo()` formulas and conventions
+   !! (read, not guessed -- see the comments below for where each term maps),
+   !! because that is this project's external reference, with three
+   !! deliberate inputs pyscf's own convenience wrapper does not expose:
+   !!
+   !!   * the rotational symmetry number sigma is a REQUIRED argument. pyscf's
+   !!     own `thermo()` derives it from point-group detection
+   !!     (`rotational_symmetry_number`); this module leaves that to the
+   !!     caller (the CLI's own symmetry detection, or 1 if it has none),
+   !!     exactly so a caller is never silently handed sigma=1 for a water
+   !!     molecule (sigma=2) without choosing to be.
+   !!   * the spin multiplicity is a REQUIRED argument, for the same reason:
+   !!     a default of 1 would silently give an open-shell molecule S_elec=0.
+   !!   * ONE vibrational mode set. trc_vib never returns a translation or
+   !!     rotation mode in the first place (see that module's own header), so
+   !!     "which frequencies enter which term" is pyscf's single rule --
+   !!     every nu > 0 enters ZPE and the vibrational partition function,
+   !!     nu <= 0 (imaginary) is skipped everywhere -- with no second,
+   !!     inconsistent mode set to reconcile.
+   !!
+   !! UNITS, deliberately pyscf's split, not SI throughout: energies (ZPE, the
+   !! thermal corrections, the totals) in Hartree per molecule; entropies and
+   !! heat capacities in cal/(mol K), the units thermochemistry tables are
+   !! usually reported in. Converting between the two uses
+   !! KB_HARTREE (the Boltzmann constant in Hartree/K -- pyscf's own `R_Eh` is
+   !! numerically this SAME constant, kB/HARTREE2J, despite the name: pyscf
+   !! reports its own S/Cv in Eh/K, per molecule, not cal/(mol K)) and
+   !! R_CALMOLK (kB * Avogadro, in the thermochemical calorie) respectively;
+   !! both from trc_constants, never recomputed here.
+   !!
+   !! NO low-frequency cutoff. pyscf's `thermo()` applies none beyond nu > 0
+   !! (read its source: `idx = freq.real > 0`, nothing else), so a cutoff
+   !! such as "drop nu < 10 cm^-1" is not applied here either.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use pic_logger, only: global_logger
@@ -96,15 +96,15 @@ module trc_thermo
 
 contains
 
-   !
-   ! freq_vib_cm1: trc_vibrational_analysis's own `freq_cm1`, the true
-   ! vibrational modes only (negative = imaginary). sigma and mult are
-   ! mandatory (see this module's header); temperature_k/pressure_pa
-   ! default to 298.15 K / 1 atm, the one pair this module DOES default,
-   ! because unlike sigma/mult there is no silently-wrong value to guess.
-   !
    subroutine trc_thermochemistry(mass, coords_bohr, freq_vib_cm1, e_elec_hartree, sigma, mult, &
                                    result, error, temperature_k, pressure_pa)
+      !!
+      !! freq_vib_cm1: trc_vibrational_analysis's own `freq_cm1`, the true
+      !! vibrational modes only (negative = imaginary). sigma and mult are
+      !! mandatory (see this module's header); temperature_k/pressure_pa
+      !! default to 298.15 K / 1 atm, the one pair this module DOES default,
+      !! because unlike sigma/mult there is no silently-wrong value to guess.
+      !!
       real(dp), intent(in) :: mass(:)
       real(dp), intent(in) :: coords_bohr(:, :)
       real(dp), intent(in) :: freq_vib_cm1(:)
@@ -254,11 +254,11 @@ contains
       result%g_tot_hartree = e_elec_hartree + result%delta_g_hartree
    end subroutine trc_thermochemistry
 
-   !
-   ! The thermochemistry summary through global_logger, for the CLI's
-   ! later --hessian report.
-   !
    subroutine trc_thermo_log_summary(r)
+      !!
+      !! The thermochemistry summary through global_logger, for the CLI's
+      !! later --hessian report.
+      !!
       type(trc_thermo_result_t), intent(in) :: r
       character(len=256) :: line
 

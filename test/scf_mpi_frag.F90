@@ -1,52 +1,52 @@
-!
-! GAMESS/DDI and fragment methods, imitated, on 4 ranks.
-!
-! trc_capi's `fcomm` handles used to accept only MPI_COMM_WORLD (see
-! trc_build_comm in trc_capi.F90). That is not what either caller this test
-! stands in for ever hands terco:
-!
-!   * GAMESS's DDI puts DATA SERVER ranks in MPI_COMM_WORLD that never call
-!     into any library at all -- they sit in DDI's own server loop. GAMESS
-!     hands libraries DDI's *compute* communicator, a strict sub-communicator
-!     of MPI_COMM_WORLD. The old code either rejected that handle outright,
-!     or -- had it been passed MPI_COMM_WORLD instead, to get past the
-!     check -- would have called MPI_Comm_dup(MPI_COMM_WORLD) from the
-!     compute ranks only, which never returns: a dup is collective over
-!     every rank of the communicator it names, and the data servers never
-!     call it.
-!   * A fragment method hands terco a different sub-communicator per
-!     fragment, several of which are alive on the same MPI_COMM_WORLD at
-!     once, none of them the world communicator either.
-!
-! Four scenarios, all against a build with TERCO_ENABLE_MPI=ON and run under
-! `mpiexec -np 4`:
-!
-!   a. DATA SERVERS. World splits into "compute" (ranks 0-1) and "servers"
-!      (ranks 2-3). The servers never call trc_scf_mpi; they only reach a
-!      barrier on MPI_COMM_WORLD, which the compute ranks reach in turn only
-!      after their own run (through trc_scf_mpi, on the COMPUTE
-!      communicator's own handle) is done. That barrier is what a hang would
-!      show up as -- the ctest TIMEOUT below is the backstop if it does not.
-!   b. FRAGMENTS. World splits into two 2-rank groups running DIFFERENT
-!      molecules AT THE SAME TIME, each on its own sub-communicator's
-!      handle: water on ranks 0-1, the OH radical (open-shell, so this also
-!      covers UHF over a communicator) on ranks 2-3.
-!   c. OWNERSHIP. Every sub-communicator this test hands to terco in (a) and
-!      (b) is still usable for an ordinary MPI collective afterwards, and
-!      THIS PROGRAM frees it, not terco -- proof that trc_build_comm
-!      duplicated it rather than adopting it.
-!   d. GPU BINDING. Each rank prints the device trc_scf_mpi bound it to;
-!      rank 0 checks that the two ranks of a communicator that shares a node
-!      (every rank here does -- one node, four V100s) land on distinct
-!      devices, now that binding goes by NODE-LOCAL rank rather than by
-!      comm%rank() in whatever communicator the caller happened to hand in.
-!
-! Every collective energy is checked against this same rank's OWN
-! single-rank run (fcomm = -1) on the same molecule, to ~1e-10 Eh: that is
-! the property trc_build_comm exists to preserve -- an arbitrary
-! communicator must reproduce trc_scf on one rank -- not a frozen literal.
-!
 program scf_mpi_frag
+   !!
+   !! GAMESS/DDI and fragment methods, imitated, on 4 ranks.
+   !!
+   !! trc_capi's `fcomm` handles used to accept only MPI_COMM_WORLD (see
+   !! trc_build_comm in trc_capi.F90). That is not what either caller this test
+   !! stands in for ever hands terco:
+   !!
+   !!   * GAMESS's DDI puts DATA SERVER ranks in MPI_COMM_WORLD that never call
+   !!     into any library at all -- they sit in DDI's own server loop. GAMESS
+   !!     hands libraries DDI's *compute* communicator, a strict sub-communicator
+   !!     of MPI_COMM_WORLD. The old code either rejected that handle outright,
+   !!     or -- had it been passed MPI_COMM_WORLD instead, to get past the
+   !!     check -- would have called MPI_Comm_dup(MPI_COMM_WORLD) from the
+   !!     compute ranks only, which never returns: a dup is collective over
+   !!     every rank of the communicator it names, and the data servers never
+   !!     call it.
+   !!   * A fragment method hands terco a different sub-communicator per
+   !!     fragment, several of which are alive on the same MPI_COMM_WORLD at
+   !!     once, none of them the world communicator either.
+   !!
+   !! Four scenarios, all against a build with TERCO_ENABLE_MPI=ON and run under
+   !! `mpiexec -np 4`:
+   !!
+   !!   a. DATA SERVERS. World splits into "compute" (ranks 0-1) and "servers"
+   !!      (ranks 2-3). The servers never call trc_scf_mpi; they only reach a
+   !!      barrier on MPI_COMM_WORLD, which the compute ranks reach in turn only
+   !!      after their own run (through trc_scf_mpi, on the COMPUTE
+   !!      communicator's own handle) is done. That barrier is what a hang would
+   !!      show up as -- the ctest TIMEOUT below is the backstop if it does not.
+   !!   b. FRAGMENTS. World splits into two 2-rank groups running DIFFERENT
+   !!      molecules AT THE SAME TIME, each on its own sub-communicator's
+   !!      handle: water on ranks 0-1, the OH radical (open-shell, so this also
+   !!      covers UHF over a communicator) on ranks 2-3.
+   !!   c. OWNERSHIP. Every sub-communicator this test hands to terco in (a) and
+   !!      (b) is still usable for an ordinary MPI collective afterwards, and
+   !!      THIS PROGRAM frees it, not terco -- proof that trc_build_comm
+   !!      duplicated it rather than adopting it.
+   !!   d. GPU BINDING. Each rank prints the device trc_scf_mpi bound it to;
+   !!      rank 0 checks that the two ranks of a communicator that shares a node
+   !!      (every rank here does -- one node, four V100s) land on distinct
+   !!      devices, now that binding goes by NODE-LOCAL rank rather than by
+   !!      comm%rank() in whatever communicator the caller happened to hand in.
+   !!
+   !! Every collective energy is checked against this same rank's OWN
+   !! single-rank run (fcomm = -1) on the same molecule, to ~1e-10 Eh: that is
+   !! the property trc_build_comm exists to preserve -- an arbitrary
+   !! communicator must reproduce trc_scf on one rank -- not a frozen literal.
+   !!
    use pic_types, only: dp
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize, allreduce, &
                           allgather, MPI_MAX, MPI_MIN

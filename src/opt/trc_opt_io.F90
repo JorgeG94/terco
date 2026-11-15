@@ -4,9 +4,9 @@
 ! `error stop` forces to run from INSIDE a callback (trc_dlfind_bridge's own
 ! fail_eval -- there is no "after api_dl_find returns" on that path).
 !
-! WHY THIS DUPLICATES PART OF app/trc_app.F90 RATHER THAN MOVING IT THERE.
+! WHY THIS DUPLICATES PART OF src/cli/trc_app.F90 RATHER THAN MOVING IT THERE.
 ! opt_io_f_string/opt_io_set_env/opt_io_write_opt_xyz_frame/opt_io_write_traj_xyz_frames/
-! opt_io_write_opt_failure_json used to live in trc_app (app/trc_app.F90),
+! opt_io_write_opt_failure_json used to live in trc_app (src/cli/trc_app.F90),
 ! which trc_dlfind_bridge.F90 could reach because both were compiled
 ! straight into the terco_cli executable together. Now that the bridge is
 ! built into libterco_opt (TERCO_ENABLE_DLFIND=ON only), it can no longer
@@ -25,7 +25,7 @@
 ! Compiled only with TERCO_ENABLE_DLFIND (src/opt/CMakeLists.txt defines it on
 ! terco_opt). fpm compiles everything under src/ and cannot skip this
 ! directory; without the macro (fpm's default, no DL-FIND) this file is
-! empty and app/trc_dlfind_stub.F90 provides the module instead.
+! empty and src/cli/trc_dlfind_stub.F90 provides the module instead.
 #ifdef TERCO_ENABLE_DLFIND
 module trc_opt_io
    use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
@@ -53,7 +53,7 @@ module trc_opt_io
 
    real(dp), parameter :: BOHR_PER_ANGSTROM = ANGSTROM_TO_BOHR
       !! CODATA 2018 (trc_constants' ANGSTROM_TO_BOHR) -- the same constant
-      !! app/trc_app.F90's own copy of this name uses.
+      !! src/cli/trc_app.F90's own copy of this name uses.
 
    integer, parameter :: NELEM = 118
    character(len=2), parameter :: SYMBOLS(NELEM) = [character(len=2) :: &

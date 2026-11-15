@@ -1,19 +1,19 @@
-!
-! Effective core potentials through the `terco` CLI.
-!
-!   - HI in def2-SVP attaches the basis's own ECP: the energy is the pyscf
-!     anchor E_hi (ecp_scf.ref), and the electron count the run reports (and
-!     takes the default --uhf from) is the valence one, 26, not 54.
-!   - --ecp names another ECP (basis_sets/ecp-i-modified.json, a test
-!     fixture: iodine's def2-SVP ECP with one coefficient changed), which
-!     replaces the basis's own; a TOML file's [basis] ecp gives the same
-!     numbers as the flag.
-!   - RbI with that iodine-only --ecp is refused: rubidium's def2-SVP
-!     shells are valence-only and nothing would replace its core.
-!
-! A test-drive suite.
-!
 module check_cli_ecp_suite
+   !!
+   !! Effective core potentials through the `terco` CLI.
+   !!
+   !!   - HI in def2-SVP attaches the basis's own ECP: the energy is the pyscf
+   !!     anchor E_hi (ecp_scf.ref), and the electron count the run reports (and
+   !!     takes the default --uhf from) is the valence one, 26, not 54.
+   !!   - --ecp names another ECP (basis_sets/ecp-i-modified.json, a test
+   !!     fixture: iodine's def2-SVP ECP with one coefficient changed), which
+   !!     replaces the basis's own; a TOML file's [basis] ecp gives the same
+   !!     numbers as the flag.
+   !!   - RbI with that iodine-only --ecp is refused: rubidium's def2-SVP
+   !!     shells are valence-only and nothing would replace its core.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file
@@ -120,9 +120,8 @@ contains
       call check(error, index(text, "TOTAL ENERGY") == 0, "an SCF ran for a refused input")
    end subroutine test_partial_ecp
 
-   ! ---- helpers ---------------------------------------------------------
-
    subroutine flag_run(e, error)
+      !! ---- helpers ---------------------------------------------------------
       !! HI/def2-SVP with --ecp ecp-i-modified.json.
       real(dp), intent(out) :: e
       type(error_type), allocatable, intent(out) :: error

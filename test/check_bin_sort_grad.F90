@@ -1,16 +1,16 @@
-!
-! The four-centre gradient after a TRC_BIN_SORT resort.
-!
-! TRC_BIN_SORT=1 reorders the pairs inside each bin the first time a Fock
-! build runs (fock_bins), and the bin-interleaved quartet tables are keyed
-! on that order, so they are rebuilt then. The gradient reads those tables
-! afterwards on the same engine -- including the exponents
-! (`quartets%a`) only the Rys gradient kernels use, which a resort once
-! left in the old order. So: one Fock build and then the gradient on an
-! engine with the resort, against the same on an engine without it. The
-! two differ only by summation order.
-!
 module check_bin_sort_grad_suite
+   !!
+   !! The four-centre gradient after a TRC_BIN_SORT resort.
+   !!
+   !! TRC_BIN_SORT=1 reorders the pairs inside each bin the first time a Fock
+   !! build runs (fock_bins), and the bin-interleaved quartet tables are keyed
+   !! on that order, so they are rebuilt then. The gradient reads those tables
+   !! afterwards on the same engine -- including the exponents
+   !! (`quartets%a`) only the Rys gradient kernels use, which a resort once
+   !! left in the old order. So: one Fock build and then the gradient on an
+   !! engine with the resort, against the same on an engine without it. The
+   !! two differ only by summation order.
+   !!
    use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check

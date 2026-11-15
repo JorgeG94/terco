@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["rys_grad_ccpvtz"] -> gen_rys_grad
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: c9b10c33801afc17c87918b91ed43e8019b422d4833690f8698af9c8951906ec
+# hash: 5371f1b620a625782a574b50a13fd26fdac8abe1b844b72694fd989c63411131
 # files: test/check_rys_grad_vs_pyscf.F90 test/basis_sets/cc-pvtz.json test/water.xyz
 NAT 3
 NAO 65

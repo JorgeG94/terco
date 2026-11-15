@@ -31,6 +31,7 @@ module trc_sym_frame
    use pic_types, only: dp
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_basis_types, only: trc_basis_t
+   use trc_cart, only: cart_ncart_of
    use trc_cart_perm, only: cart_perm_powers
    use trc_sph_tables, only: SPH_T, SPH_LMAX
    implicit none
@@ -75,7 +76,7 @@ contains
       integer :: nc, c, px, py, pz, i, k, qx, qy, qz
       integer :: q(3)
 
-      nc = (l + 1)*(l + 2)/2
+      nc = cart_ncart_of(l)
       allocate (slot(0:l, 0:l, 0:l), poly(0:l, 0:l, 0:l), nxt(0:l, 0:l, 0:l))
       slot = 0
       do c = 1, nc
@@ -129,7 +130,7 @@ contains
          call error%set(ERROR_VALIDATION, "sym_frame_rot_blocks: a spherical shell beyond the transform tables")
          return
       end if
-      nc = (l + 1)*(l + 2)/2
+      nc = cart_ncart_of(l)
       ns = 2*l + 1
       t(1:nc, 1:ns) = SPH_T(1:nc, 1:ns, l)
       g(1:ns, 1:ns) = matmul(transpose(t(1:nc, 1:ns)), t(1:nc, 1:ns))
@@ -187,11 +188,11 @@ contains
          call error%set(ERROR_VALIDATION, "sym_frame_rot_blocks: angular momentum beyond "//char(48 + LMAX_BLOCK))
          return
       end if
-      nb = merge(2*lmax + 1, (lmax + 1)*(lmax + 2)/2, spherical)
+      nb = merge(2*lmax + 1, cart_ncart_of(lmax), spherical)
       allocate (dl(nb, nb, 0:lmax))
       dl = 0.0_dp
       do l = 0, lmax
-         nc = (l + 1)*(l + 2)/2
+         nc = cart_ncart_of(l)
          call cart_block(l, rot, dc)
          if (spherical) then
             call sph_block(l, dc, dl(:, :, l), error)
@@ -211,7 +212,7 @@ contains
    pure integer function ncomp_of(bas, s) result(nc)
       type(trc_basis_t), intent(in) :: bas
       integer, intent(in) :: s
-      nc = merge(2*bas%sh_l(s) + 1, (bas%sh_l(s) + 1)*(bas%sh_l(s) + 2)/2, bas%spherical)
+      nc = merge(2*bas%sh_l(s) + 1, cart_ncart_of(bas%sh_l(s)), bas%spherical)
    end function ncomp_of
 
    subroutine sym_frame_rotate_rows(bas, dl, a)

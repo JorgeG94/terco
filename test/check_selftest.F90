@@ -1,44 +1,44 @@
-!
-! Correctness with no external program and no recorded data.
-!
-! WHY THIS EXISTS ALONGSIDE THE ORACLES
-! -------------------------------------
-! The other checks compare against libfint's numbers recorded in a file, or
-! against pyscf. Those are the strongest evidence available -- an independent
-! implementation is the only thing that catches a shared misunderstanding --
-! but they make the suite depend on a 6 MB blob and on somebody else's package
-! being installed, and they cannot be run by someone who has neither.
-!
-! These can. Every check here is either a closed-form value or an identity the
-! integrals must satisfy whatever they are, so a failure is a real defect and
-! not a tolerance argument.
-!
-!   1. ANALYTIC OVERLAP. Two s primitives have an overlap in closed form.
-!      This pins the normalisation convention as well as the arithmetic --
-!      which is the part most likely to be quietly wrong, and the part an
-!      identity cannot see.
-!
-!   2. TRANSLATIONAL INVARIANCE. Move every centre by the same vector and
-!      every integral must be unchanged. This is a strong check for its
-!      price: it exercises the whole path -- pair list, screening, bins,
-!      kernels, digestion -- and it is sensitive to any place a coordinate is
-!      used where a difference of coordinates was meant. Absolute positions
-!      appear in a Gaussian product centre, so getting this right is not
-!      automatic.
-!
-!   3. THE MULTIPOLE ORIGIN SHIFT. Moving the expansion origin by `a` must
-!      take the dipole to `mu - a*S` exactly. This checks the multipole
-!      kernel against the OVERLAP kernel -- two independently generated code
-!      paths that must agree by an identity -- with nothing external at all.
-!
-!   4. SYMMETRY OF THE FOCK MATRIX. J and K built from a symmetric density
-!      are symmetric. Cheap, and it catches a scatter that writes one of the
-!      six folded updates to a transposed address.
-!
-!   5. THE BATCH AGAINST THE LOOP. N densities in one integral pass must give
-!      what N separate passes give, set for set.
-!
 module check_selftest_suite
+   !!
+   !! Correctness with no external program and no recorded data.
+   !!
+   !! WHY THIS EXISTS ALONGSIDE THE ORACLES
+   !! -------------------------------------
+   !! The other checks compare against libfint's numbers recorded in a file, or
+   !! against pyscf. Those are the strongest evidence available -- an independent
+   !! implementation is the only thing that catches a shared misunderstanding --
+   !! but they make the suite depend on a 6 MB blob and on somebody else's package
+   !! being installed, and they cannot be run by someone who has neither.
+   !!
+   !! These can. Every check here is either a closed-form value or an identity the
+   !! integrals must satisfy whatever they are, so a failure is a real defect and
+   !! not a tolerance argument.
+   !!
+   !!   1. ANALYTIC OVERLAP. Two s primitives have an overlap in closed form.
+   !!      This pins the normalisation convention as well as the arithmetic --
+   !!      which is the part most likely to be quietly wrong, and the part an
+   !!      identity cannot see.
+   !!
+   !!   2. TRANSLATIONAL INVARIANCE. Move every centre by the same vector and
+   !!      every integral must be unchanged. This is a strong check for its
+   !!      price: it exercises the whole path -- pair list, screening, bins,
+   !!      kernels, digestion -- and it is sensitive to any place a coordinate is
+   !!      used where a difference of coordinates was meant. Absolute positions
+   !!      appear in a Gaussian product centre, so getting this right is not
+   !!      automatic.
+   !!
+   !!   3. THE MULTIPOLE ORIGIN SHIFT. Moving the expansion origin by `a` must
+   !!      take the dipole to `mu - a*S` exactly. This checks the multipole
+   !!      kernel against the OVERLAP kernel -- two independently generated code
+   !!      paths that must agree by an identity -- with nothing external at all.
+   !!
+   !!   4. SYMMETRY OF THE FOCK MATRIX. J and K built from a symmetric density
+   !!      are symmetric. Cheap, and it catches a scatter that writes one of the
+   !!      six folded updates to a transposed address.
+   !!
+   !!   5. THE BATCH AGAINST THE LOOP. N densities in one integral pass must give
+   !!      what N separate passes give, set for set.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -79,11 +79,11 @@ contains
       gto_norm = 1.0_dp/sqrt(gi)
    end function gto_norm
 
-   !
-   ! A small system, built from scratch so nothing is read from disk.
-   ! `shift` displaces every centre, which is what test 2 needs.
-   !
    subroutine build_system(b, p, shift, uncontracted_s_only)
+      !!
+      !! A small system, built from scratch so nothing is read from disk.
+      !! `shift` displaces every centre, which is what test 2 needs.
+      !!
       type(trc_basis_t), intent(out) :: b
       type(trc_pairlist_t), intent(out) :: p
       real(dp), intent(in) :: shift(3)
@@ -134,9 +134,9 @@ contains
       write (msg, '(a,a,es10.2,a,es8.1,a)') what, ": worst diff ", diff, " (tol ", tol, ")"
    end function report_msg
 
-   ! Prints every comparison, as the old program did, and appends the
-   ! failing ones to `fails` for a single check.
    subroutine accumulate(fails, ok, what, diff, tol)
+      !! Prints every comparison, as the old program did, and appends the
+      !! failing ones to `fails` for a single check.
       character(len=:), allocatable, intent(inout) :: fails
       logical, intent(in) :: ok
       character(len=*), intent(in) :: what
@@ -148,10 +148,10 @@ contains
       end if
    end subroutine accumulate
 
-   ! =======================================================================
-   ! 1. the closed form
-   ! =======================================================================
    subroutine test_analytic_overlap(error)
+      !! =======================================================================
+      !! 1. the closed form
+      !! =======================================================================
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b
       type(trc_pairlist_t) :: p
@@ -192,10 +192,10 @@ contains
       deallocate (s, t, v, ex, ce)
    end subroutine test_analytic_overlap
 
-   ! =======================================================================
-   ! 2. move everything, change nothing
-   ! =======================================================================
    subroutine test_translation(error)
+      !! =======================================================================
+      !! 2. move everything, change nothing
+      !! =======================================================================
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b1, b2
       type(trc_pairlist_t) :: p1, p2
@@ -250,10 +250,10 @@ contains
       deallocate (s1, t1, v1, s2, t2, v2, d, g1, g2)
    end subroutine test_translation
 
-   ! =======================================================================
-   ! 3. the multipole kernel against the overlap kernel
-   ! =======================================================================
    subroutine test_multipole_shift(error)
+      !! =======================================================================
+      !! 3. the multipole kernel against the overlap kernel
+      !! =======================================================================
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b
       type(trc_pairlist_t) :: p
@@ -290,10 +290,10 @@ contains
       deallocate (s, t, v, m0, m1)
    end subroutine test_multipole_shift
 
-   ! =======================================================================
-   ! 4 and 5
-   ! =======================================================================
    subroutine test_fock_symmetry(error)
+      !! =======================================================================
+      !! 4 and 5
+      !! =======================================================================
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b
       type(trc_pairlist_t) :: p

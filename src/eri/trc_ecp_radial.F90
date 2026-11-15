@@ -1,43 +1,43 @@
-!
-! Radial parts of the effective-core-potential integrals.
-!
-! Ported from libfint's src/cint_ecp_rad.f90 (Apache-2.0, from PySCF's
-! pyscf/lib/gto/nr_ecp.c), with two deliberate departures from a literal
-! port, both load-bearing for running this as a `do concurrent` item
-! (src/eri/trc_ecp.F90) rather than a per-call allocation:
-!
-!   * NO GENERAL CONTRACTIONS. `trc_basis_t` never holds one (every BSE
-!     coefficient column becomes its own shell at basis-build time --
-!     trc_basis_json.F90's own header), so the nc/ic loops PySCF's C and
-!     libfint's port carry are dead weight here and are simply not written.
-!     `ecp_radial_type2_facs_rad` below accumulates straight into its output
-!     instead of through an intermediate per-primitive buffer the way
-!     libfint's (which DOES support nc>1) has to.
-!
-!   * `ecp_radial_rad_part` ALWAYS evaluates the WHOLE finest grid (ECP_NRS
-!     points, `trc_ecp_quadrature`'s own ceiling), not a per-level strided
-!     subset with an early truncation scan. It is a deterministic,
-!     per-point sum of a handful of Gaussians -- no part of it is adaptive
-!     -- so evaluating it once per (ECP atom, channel) and letting every
-!     shell pair's own adaptive level loop (in trc_ecp.F90) slice a strided
-!     view of the SAME cached array is exactly libfint's result, just not
-!     recomputed per shell pair. The early-truncation scan libfint's C
-!     keeps for speed (skip multiplying by Bessel values once U(r) is
-!     already <1e-50) is dropped: omitting it changes nothing past the
-!     double-precision tolerance this module is validated to (the dropped
-!     tail is already <1e-50 relative), and it would not apply across this
-!     one-grid-fits-every-pair cache the way it did per shell pair anyway.
-!
-! The adaptive LEVEL loop itself -- the actual accuracy control, genuinely
-! shell-pair dependent -- is not here: it lives in the item routines
-! (trc_ecp.F90) that call `ecp_radial_type1_rad_part_levels`/
-! `ecp_radial_type2_lab_levels`, each computing every level's cumulative
-! value in one call (`trc_ecp.F90`'s own `pick_converged_level` then picks
-! the level the original's per-level loop would have stopped at), exactly
-! the SAME arithmetic PySCF's C runs once per level, just not laid out the
-! same way in memory -- see this module's own header for why.
-!
 module trc_ecp_radial
+   !!
+   !! Radial parts of the effective-core-potential integrals.
+   !!
+   !! Ported from libfint's src/cint_ecp_rad.f90 (Apache-2.0, from PySCF's
+   !! pyscf/lib/gto/nr_ecp.c), with two deliberate departures from a literal
+   !! port, both load-bearing for running this as a `do concurrent` item
+   !! (src/eri/trc_ecp.F90) rather than a per-call allocation:
+   !!
+   !!   * NO GENERAL CONTRACTIONS. `trc_basis_t` never holds one (every BSE
+   !!     coefficient column becomes its own shell at basis-build time --
+   !!     trc_basis_json.F90's own header), so the nc/ic loops PySCF's C and
+   !!     libfint's port carry are dead weight here and are simply not written.
+   !!     `ecp_radial_type2_facs_rad` below accumulates straight into its output
+   !!     instead of through an intermediate per-primitive buffer the way
+   !!     libfint's (which DOES support nc>1) has to.
+   !!
+   !!   * `ecp_radial_rad_part` ALWAYS evaluates the WHOLE finest grid (ECP_NRS
+   !!     points, `trc_ecp_quadrature`'s own ceiling), not a per-level strided
+   !!     subset with an early truncation scan. It is a deterministic,
+   !!     per-point sum of a handful of Gaussians -- no part of it is adaptive
+   !!     -- so evaluating it once per (ECP atom, channel) and letting every
+   !!     shell pair's own adaptive level loop (in trc_ecp.F90) slice a strided
+   !!     view of the SAME cached array is exactly libfint's result, just not
+   !!     recomputed per shell pair. The early-truncation scan libfint's C
+   !!     keeps for speed (skip multiplying by Bessel values once U(r) is
+   !!     already <1e-50) is dropped: omitting it changes nothing past the
+   !!     double-precision tolerance this module is validated to (the dropped
+   !!     tail is already <1e-50 relative), and it would not apply across this
+   !!     one-grid-fits-every-pair cache the way it did per shell pair anyway.
+   !!
+   !! The adaptive LEVEL loop itself -- the actual accuracy control, genuinely
+   !! shell-pair dependent -- is not here: it lives in the item routines
+   !! (trc_ecp.F90) that call `ecp_radial_type1_rad_part_levels`/
+   !! `ecp_radial_type2_lab_levels`, each computing every level's cumulative
+   !! value in one call (`trc_ecp.F90`'s own `pick_converged_level` then picks
+   !! the level the original's per-level loop would have stopped at), exactly
+   !! the SAME arithmetic PySCF's C runs once per level, just not laid out the
+   !! same way in memory -- see this module's own header for why.
+   !!
    use pic_types, only: dp
    use trc_ecp_quadrature, only: ECP_NRS, ECP_EXPCUTOFF, ECP_CUTOFF, ECP_LMAX, &
                                  ECP_LEVEL0, ECP_LEVEL_MAX, ecp_quadrature_sph_ine

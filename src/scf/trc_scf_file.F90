@@ -1,63 +1,63 @@
-!
-! A converged SCF, written to a file and read back, so a correlated step
-! can start from it without repeating the SCF.
-!
-! WHAT IS IN THE FILE
-! -------------------
-! Binary stream, native byte order, 32-bit integers and 64-bit reals:
-!
-!   "TERCOSCF", version                         the format, checked first
-!   natm, nshell, maxnp, nao, n, spherical,     the shape of everything below;
-!   cart_order, nspin, nalpha, nbeta, charge,   `n` is the SCF's own space
-!   multiplicity, converged, iterations,        (nao_sph when spherical)
-!   n_lindep, pcm_npoints
-!   functional (16 chars), pcm_model (8)        the method that made it
-!   pcm_eps, energy, e_nuc, e_one, e_two,       the scalars of the result
-!   e_xc, e_pcm, pcm_qtotal, nelec_grid
-!   at_z(natm), at_r(3, natm), at_elem(natm)    the molecule (version 2: at_elem
-!                                               added for ghost atoms, b%at_elem)
-!   at_ncore(natm)                              version 3: core electrons an ECP
-!                                               replaced on each atom (0 with none)
-!   ecp_nrow, ecp_maxnp; then, if ecp_nrow > 0, version 4: the ECP itself, as
-!   ecp_at, ecp_l, ecp_rpow, ecp_np (nrow),     trc_ecp_t holds it (0 rows
-!   ecp_e, ecp_c (maxnp, nrow)                  with none)
-!   sh_l, sh_np, sh_e, sh_c, sh_r               the basis, exactly as built
-!   eps(n, nspin), cmo(n, n, nspin),            the orbitals and the density
-!   dmat(n, n, nspin)
-!
-! OLDER VERSIONS
-! --------------
-! A version 1, 2 or 3 file is still read: version 2 added at_elem (no ghost
-! check on a version 1 file, which predates ghost atoms); version 3 added
-! at_ncore and version 4 the ECP's own rows. A file older than version 4
-! loads into a run with no ECP (a version 3 file only if its own core
-! counts are all zero), and is refused by a run with one: a version 1 or 2
-! file cannot say whether its orbitals were built with an ECP, and a
-! version 3 file says only how many core electrons it replaced, not with
-! which potential -- two ECPs with the same core (ECP28MWB and ECP28MDF for
-! iodine) give different orbitals.
-!
-! WHAT A READ REFUSES
-! -------------------
-! Orbitals are only meaningful against the molecule, the basis and the AO
-! convention they were made in, and nothing about a wrong file would show
-! up as an error later: RI-MP2 would contract it and return a number. So
-! everything that defines the AO space is stored and compared on the way
-! in -- the atoms and positions, every shell's l, primitive count,
-! exponents, coefficients and centre (that also catches --cart against a
-! spherical run, and a different basis file of the same size), the
-! effective core potential row by row (l, r-power, primitive count,
-! exponents and coefficients, to the same tolerance as the shells), the
-! Cartesian component order this build was made with, the charge and spin,
-! the functional and the solvent. Nothing is converted: a mismatch is a
-! refusal, with the first difference named.
-!
-! Run settings that change only how closely the result was converged (the
-! screening threshold, the grid, the convergence criteria) are not
-! compared; the file carries the converged flag and the iteration count,
-! and the reader decides what to accept.
-!
 module trc_scf_file
+   !!
+   !! A converged SCF, written to a file and read back, so a correlated step
+   !! can start from it without repeating the SCF.
+   !!
+   !! WHAT IS IN THE FILE
+   !! -------------------
+   !! Binary stream, native byte order, 32-bit integers and 64-bit reals:
+   !!
+   !!   "TERCOSCF", version                         the format, checked first
+   !!   natm, nshell, maxnp, nao, n, spherical,     the shape of everything below;
+   !!   cart_order, nspin, nalpha, nbeta, charge,   `n` is the SCF's own space
+   !!   multiplicity, converged, iterations,        (nao_sph when spherical)
+   !!   n_lindep, pcm_npoints
+   !!   functional (16 chars), pcm_model (8)        the method that made it
+   !!   pcm_eps, energy, e_nuc, e_one, e_two,       the scalars of the result
+   !!   e_xc, e_pcm, pcm_qtotal, nelec_grid
+   !!   at_z(natm), at_r(3, natm), at_elem(natm)    the molecule (version 2: at_elem
+   !!                                               added for ghost atoms, b%at_elem)
+   !!   at_ncore(natm)                              version 3: core electrons an ECP
+   !!                                               replaced on each atom (0 with none)
+   !!   ecp_nrow, ecp_maxnp; then, if ecp_nrow > 0, version 4: the ECP itself, as
+   !!   ecp_at, ecp_l, ecp_rpow, ecp_np (nrow),     trc_ecp_t holds it (0 rows
+   !!   ecp_e, ecp_c (maxnp, nrow)                  with none)
+   !!   sh_l, sh_np, sh_e, sh_c, sh_r               the basis, exactly as built
+   !!   eps(n, nspin), cmo(n, n, nspin),            the orbitals and the density
+   !!   dmat(n, n, nspin)
+   !!
+   !! OLDER VERSIONS
+   !! --------------
+   !! A version 1, 2 or 3 file is still read: version 2 added at_elem (no ghost
+   !! check on a version 1 file, which predates ghost atoms); version 3 added
+   !! at_ncore and version 4 the ECP's own rows. A file older than version 4
+   !! loads into a run with no ECP (a version 3 file only if its own core
+   !! counts are all zero), and is refused by a run with one: a version 1 or 2
+   !! file cannot say whether its orbitals were built with an ECP, and a
+   !! version 3 file says only how many core electrons it replaced, not with
+   !! which potential -- two ECPs with the same core (ECP28MWB and ECP28MDF for
+   !! iodine) give different orbitals.
+   !!
+   !! WHAT A READ REFUSES
+   !! -------------------
+   !! Orbitals are only meaningful against the molecule, the basis and the AO
+   !! convention they were made in, and nothing about a wrong file would show
+   !! up as an error later: RI-MP2 would contract it and return a number. So
+   !! everything that defines the AO space is stored and compared on the way
+   !! in -- the atoms and positions, every shell's l, primitive count,
+   !! exponents, coefficients and centre (that also catches --cart against a
+   !! spherical run, and a different basis file of the same size), the
+   !! effective core potential row by row (l, r-power, primitive count,
+   !! exponents and coefficients, to the same tolerance as the shells), the
+   !! Cartesian component order this build was made with, the charge and spin,
+   !! the functional and the solvent. Nothing is converted: a mismatch is a
+   !! refusal, with the first difference named.
+   !!
+   !! Run settings that change only how closely the result was converged (the
+   !! screening threshold, the grid, the convergence criteria) are not
+   !! compared; the file carries the converged flag and the iteration count,
+   !! and the reader decides what to accept.
+   !!
    use, intrinsic :: iso_fortran_env, only: int32, real64
    use pic_types, only: dp
    use trc_basis_types, only: trc_basis_t
@@ -88,13 +88,13 @@ module trc_scf_file
 
 contains
 
-   !
-   ! Write `res` (an SCF on `b`, the molecule `at_z`/`at_r` with `charge` and
-   ! `mult`, `functional` and the solvent `pcm_model`/`pcm_eps`) to `path`.
-   ! `msg` is empty on success.
-   !
    subroutine trc_scf_save(path, b, at_z, at_r, charge, mult, nalpha, nbeta, functional, &
                            pcm_model, pcm_eps, res, msg, ecp)
+      !!
+      !! Write `res` (an SCF on `b`, the molecule `at_z`/`at_r` with `charge` and
+      !! `mult`, `functional` and the solvent `pcm_model`/`pcm_eps`) to `path`.
+      !! `msg` is empty on success.
+      !!
       character(len=*), intent(in) :: path
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: at_z(:), at_r(:, :)
@@ -161,14 +161,14 @@ contains
       if (ios /= 0) msg = "trc_scf_save: writing "//trim(path)//" failed"
    end subroutine trc_scf_save
 
-   !
-   ! Read `path` into `res`, after checking it was made for exactly this
-   ! molecule (`at_z`, `at_r`, `charge`, `mult`), basis `b`, method and
-   ! solvent. `nspin` is the spin count this run would use. On a refusal
-   ! `msg` says why and `res` is untouched.
-   !
    subroutine trc_scf_load(path, b, at_z, at_r, charge, mult, nspin, functional, &
                            pcm_model, pcm_eps, res, msg, ecp)
+      !!
+      !! Read `path` into `res`, after checking it was made for exactly this
+      !! molecule (`at_z`, `at_r`, `charge`, `mult`), basis `b`, method and
+      !! solvent. `nspin` is the spin count this run would use. On a refusal
+      !! `msg` says why and `res` is untouched.
+      !!
       character(len=*), intent(in) :: path
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: at_z(:), at_r(:, :)
@@ -377,14 +377,14 @@ contains
       call move_alloc(dmat, res%dmat)
    end subroutine trc_scf_load
 
-   !
-   ! The version 4 ECP record, read from `u` (positioned at it) and compared
-   ! row by row against this run's own `ecp`: the same rows in the same
-   ! order (atom, l, r-power, primitive count) and the same exponents and
-   ! coefficients to TOL_REL, the tolerance the basis shells get. `msg` is
-   ! empty on a match; otherwise `u` is closed and `msg` says why.
-   !
    subroutine read_ecp_rows(u, path, ecp, with_ecp, msg)
+      !!
+      !! The version 4 ECP record, read from `u` (positioned at it) and compared
+      !! row by row against this run's own `ecp`: the same rows in the same
+      !! order (atom, l, r-power, primitive count) and the same exponents and
+      !! coefficients to TOL_REL, the tolerance the basis shells get. `msg` is
+      !! empty on a match; otherwise `u` is closed and `msg` says why.
+      !!
       integer, intent(in) :: u
       character(len=*), intent(in) :: path
       type(trc_ecp_t), intent(in), optional :: ecp
@@ -434,12 +434,12 @@ contains
       end if
    end subroutine read_ecp_rows
 
-   !
-   ! A module procedure rather than an internal one: see app/main.F90's
-   ! trc_run for what a sibling internal procedure did to NVHPC's
-   ! collective SCF.
-   !
    subroutine refuse(u, path, msg, why)
+      !!
+      !! A module procedure rather than an internal one: see app/main.F90's
+      !! trc_run for what a sibling internal procedure did to NVHPC's
+      !! collective SCF.
+      !!
       integer, intent(in) :: u
       character(len=*), intent(in) :: path, why
       character(len=*), intent(out) :: msg

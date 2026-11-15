@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["fukui_chelpg"] -> gen_fukui_chelpg
 # pyscf: 2.15.0
 # hash-scheme: case-ast-v1
-# hash: 7e3cb38e850f3f3a1dab65eeba378a04cbed4182c06742068ae2078a134086a9
+# hash: d6f21fa5ddda1e7abddf7e038fc6050170188b1c0359a3b135c14c888e2cc199
 # files: test/check_fukui.F90 test/basis_sets/cc-pvdz.json
 # water RHF/cc-pVDZ (N) and UHF doublets (N+1, N-1); CHELPG charges per state
 E_N -7.60267819043245083e+01

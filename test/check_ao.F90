@@ -1,46 +1,46 @@
-!
-! Basis functions on grid points: the two checks that fix the conventions.
-!
-! The collocation kernel is a few dozen lines, and the whole difficulty is
-! that its output must be the SAME functions terco's integrals are over --
-! same normalisation, same Cartesian order, same everything. A wrong
-! convention does not fail: the density is assembled in one basis and the
-! Fock matrix in another, the SCF converges, and the energy is wrong by an
-! amount that looks like a grid or a functional. So two checks, both exact:
-!
-!   1. ELEMENTWISE AGAINST PYSCF. The values and gradients at a cloud of
-!      points are written to `ao_probe.bin`; `ao_ref.py` evaluates the same
-!      system with pyscf's eval_ao (cart=True, deriv=1) and compares to
-!      1e-12. Direct comparison of the quantity itself, localised to one
-!      component of one shell. The system is the uncontracted one from
-!      check_mult, so pyscf has nothing to renormalise.
-!
-!   2. THE NUMERICAL OVERLAP AGAINST THE ANALYTIC ONE, entirely inside
-!      terco. sum_g w_g chi_u chi_v over a real molecular grid must match
-!      trc_1e's S to the grid's own accuracy, so it validates the values,
-!      the grid weights and the Becke partition together, which the pyscf
-!      comparison does not touch.
-!
-!      The grid is level 5 UNPRUNED, and the tolerance is measured, not
-!      chosen: on this system pyscf's own grids give max|dS| of 6.4e-4 at
-!      level 3 pruned (which is what the first version of this test used,
-!      and it failed), 1.2e-5 at level 3 unpruned, 9.2e-8 at level 5
-!      unpruned. NWChem pruning fixes the inner spheres at 50 and 86
-!      points, which cannot integrate a d-on-d product across centres 1.3
-!      Bohr apart. terco's grid at the same settings gives the same numbers
-!      to the digit, which is the finding: the grid is pyscf's, and so is
-!      its limitation on this probe.
-!
-! And one control: the overlap through the BATCHED, SCREENED grid must
-! agree with the unscreened sum to the screening tolerance. That is the
-! only test of the batching, and it is a sharp one, because a shell
-! wrongly dropped from a batch changes S by the size of that shell.
-!
-! NOTE ON test/pyscf_refs/ao.ref'S OWN HASH: this file is itself named on
-! that .ref's "# files:" line (the probe below is what generate.py's gen_ao
-! must stay in step with).
-!
 module check_ao_suite
+   !!
+   !! Basis functions on grid points: the two checks that fix the conventions.
+   !!
+   !! The collocation kernel is a few dozen lines, and the whole difficulty is
+   !! that its output must be the SAME functions terco's integrals are over --
+   !! same normalisation, same Cartesian order, same everything. A wrong
+   !! convention does not fail: the density is assembled in one basis and the
+   !! Fock matrix in another, the SCF converges, and the energy is wrong by an
+   !! amount that looks like a grid or a functional. So two checks, both exact:
+   !!
+   !!   1. ELEMENTWISE AGAINST PYSCF. The values and gradients at a cloud of
+   !!      points are written to `ao_probe.bin`; `ao_ref.py` evaluates the same
+   !!      system with pyscf's eval_ao (cart=True, deriv=1) and compares to
+   !!      1e-12. Direct comparison of the quantity itself, localised to one
+   !!      component of one shell. The system is the uncontracted one from
+   !!      check_mult, so pyscf has nothing to renormalise.
+   !!
+   !!   2. THE NUMERICAL OVERLAP AGAINST THE ANALYTIC ONE, entirely inside
+   !!      terco. sum_g w_g chi_u chi_v over a real molecular grid must match
+   !!      trc_1e's S to the grid's own accuracy, so it validates the values,
+   !!      the grid weights and the Becke partition together, which the pyscf
+   !!      comparison does not touch.
+   !!
+   !!      The grid is level 5 UNPRUNED, and the tolerance is measured, not
+   !!      chosen: on this system pyscf's own grids give max|dS| of 6.4e-4 at
+   !!      level 3 pruned (which is what the first version of this test used,
+   !!      and it failed), 1.2e-5 at level 3 unpruned, 9.2e-8 at level 5
+   !!      unpruned. NWChem pruning fixes the inner spheres at 50 and 86
+   !!      points, which cannot integrate a d-on-d product across centres 1.3
+   !!      Bohr apart. terco's grid at the same settings gives the same numbers
+   !!      to the digit, which is the finding: the grid is pyscf's, and so is
+   !!      its limitation on this probe.
+   !!
+   !! And one control: the overlap through the BATCHED, SCREENED grid must
+   !! agree with the unscreened sum to the screening tolerance. That is the
+   !! only test of the batching, and it is a sharp one, because a shell
+   !! wrongly dropped from a batch changes S by the size of that shell.
+   !!
+   !! NOTE ON test/pyscf_refs/ao.ref'S OWN HASH: this file is itself named on
+   !! that .ref's "# files:" line (the probe below is what generate.py's gen_ao
+   !! must stay in step with).
+   !!
    use pic_types, only: dp, int64
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e

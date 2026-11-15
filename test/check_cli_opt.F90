@@ -1,19 +1,19 @@
-!
-! `terco water.xyz -b basis_sets/sto-3g.json --opt --json <probe>`, end to end: the
-! JSON "optimization" block, and that <geometry>_opt.xyz/_traj.xyz were
-! actually written with the right shape, in the style of
-! check_cli_grad/check_cli_hessian.
-! Numerical agreement with an external reference is check_opt_vs_pyscf.F90
-! (tight) and check_opt_vs_mqc.F90 (loose sanity); this one is the CLI
-! plumbing: does --opt --json write what it says it writes, in a shape a
-! caller could actually parse, AND does it do so correctly on the three
-! outcomes DL-FIND itself can leave --opt in (converged, stopped before
-! converging, and a step that fails even after terco's own retry) --
-! see this suite's own test headers below for each one's invariant.
-!
-! A test-drive suite.
-!
 module check_cli_opt_suite
+   !!
+   !! `terco water.xyz -b basis_sets/sto-3g.json --opt --json <probe>`, end to end: the
+   !! JSON "optimization" block, and that <geometry>_opt.xyz/_traj.xyz were
+   !! actually written with the right shape, in the style of
+   !! check_cli_grad/check_cli_hessian.
+   !! Numerical agreement with an external reference is check_opt_vs_pyscf.F90
+   !! (tight) and check_opt_vs_mqc.F90 (loose sanity); this one is the CLI
+   !! plumbing: does --opt --json write what it says it writes, in a shape a
+   !! caller could actually parse, AND does it do so correctly on the three
+   !! outcomes DL-FIND itself can leave --opt in (converged, stopped before
+   !! converging, and a step that fails even after terco's own retry) --
+   !! see this suite's own test headers below for each one's invariant.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file
@@ -180,27 +180,27 @@ contains
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_cli_opt_json
 
-   !
-   ! --opt-gtol's own help/docs/trc_dlfind_bridge's CONVERGENCE AUTHORITY
-   ! comment both say final_gradient_max is the max CARTESIAN COMPONENT
-   ! (matching DL-FIND's own dlf_convergence.f90 test) -- not the largest
-   ! per-atom gradient NORM, a different, larger number whenever an atom's
-   ! gradient has more than one non-negligible component. Checked by
-   ! recomputing maxval(abs(.)) from the "gradient" array --opt forces on
-   ! (app/main.F90 sets r%grad = .true. for --opt) and comparing to the
-   ! JSON's own optimization.final_gradient_max, rather than trusting a
-   ! second implementation of the same formula.
-   !
-   ! --opt-maxiter 5 on water_stretched.xyz/6-31g with a widened trust
-   ! radius (--opt-max-step, same as test_rejected_trial) is deliberately
-   ! NOT run to convergence: measured 2026-10-23, its step-5 gradient has
-   ! an atom whose max |component| (0.1024) is LESS than another atom's
-   ! own norm (0.1107) -- a converged, symmetric water geometry never
-   ! shows this (every atom's largest component equals its own norm
-   ! there), which is exactly why the bug this test guards survived
-   ! check_opt_vs_mqc/check_opt_vs_pyscf (both compare converged results).
-   !
    subroutine test_convergence_quantity(error)
+      !!
+      !! --opt-gtol's own help/docs/trc_dlfind_bridge's CONVERGENCE AUTHORITY
+      !! comment both say final_gradient_max is the max CARTESIAN COMPONENT
+      !! (matching DL-FIND's own dlf_convergence.f90 test) -- not the largest
+      !! per-atom gradient NORM, a different, larger number whenever an atom's
+      !! gradient has more than one non-negligible component. Checked by
+      !! recomputing maxval(abs(.)) from the "gradient" array --opt forces on
+      !! (app/main.F90 sets r%grad = .true. for --opt) and comparing to the
+      !! JSON's own optimization.final_gradient_max, rather than trusting a
+      !! second implementation of the same formula.
+      !!
+      !! --opt-maxiter 5 on water_stretched.xyz/6-31g with a widened trust
+      !! radius (--opt-max-step, same as test_rejected_trial) is deliberately
+      !! NOT run to convergence: measured 2026-10-23, its step-5 gradient has
+      !! an atom whose max |component| (0.1024) is LESS than another atom's
+      !! own norm (0.1107) -- a converged, symmetric water geometry never
+      !! shows this (every atom's largest component equals its own norm
+      !! there), which is exactly why the bug this test guards survived
+      !! check_opt_vs_mqc/check_opt_vs_pyscf (both compare converged results).
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=:), allocatable :: cmd, probe_out
       integer :: rc, ia
@@ -243,19 +243,19 @@ contains
       end if
    end subroutine test_convergence_quantity
 
-   !
-   ! water_stretched.xyz is far enough from equilibrium, and --opt-max-step
-   ! widens the trust radius's own ceiling enough (trc_opt_options_t%
-   ! max_step's own header), that DL-FIND's test_acceptance rejects at
-   ! least one trial on the way down -- measured stable across several
-   ! --opt-max-step values (5, 10, 20, 50 Bohr all give the same step/
-   ! evaluation counts), so this is not a borderline, compiler-sensitive
-   ! single-iteration fluke. steps < energy_evaluations is the one
-   ! invariant a bridge that counts every evaluation as a step can never
-   ! produce: steps and energy_evaluations would be equal by construction,
-   ! and no comparison between them could ever catch that.
-   !
    subroutine test_rejected_trial(error)
+      !!
+      !! water_stretched.xyz is far enough from equilibrium, and --opt-max-step
+      !! widens the trust radius's own ceiling enough (trc_opt_options_t%
+      !! max_step's own header), that DL-FIND's test_acceptance rejects at
+      !! least one trial on the way down -- measured stable across several
+      !! --opt-max-step values (5, 10, 20, 50 Bohr all give the same step/
+      !! evaluation counts), so this is not a borderline, compiler-sensitive
+      !! single-iteration fluke. steps < energy_evaluations is the one
+      !! invariant a bridge that counts every evaluation as a step can never
+      !! produce: steps and energy_evaluations would be equal by construction,
+      !! and no comparison between them could ever catch that.
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: rc, steps, evals, k
       real(dp), allocatable :: traj_e(:)
@@ -288,29 +288,29 @@ contains
       end do
    end subroutine test_rejected_trial
 
-   !
-   ! A run stopped by --opt-maxiter immediately after a REJECTED trial
-   ! must still report the geometry/energy of the step before it, never
-   ! the rejected trial's own (higher) energy. Found by scanning
-   ! --opt-maxiter upward one evaluation at a time (cheap: each run is a
-   ! few SCF cycles on a 3-atom STO-3G/6-31G molecule) until `steps` stops
-   ! growing while `energy_evaluations` keeps growing -- that evaluation is
-   ! a rejected trial by test_rejected_trial's own definition -- then
-   ! checking that stopping exactly there reports the SAME final_energy as
-   ! stopping one evaluation earlier (the last point that WAS accepted).
-   ! Before the fix (every evaluation counted as a step) this would have
-   ! compared two DIFFERENT energies, the second one higher.
-   !
-   ! TOL_SAME_POINT is not round-off: these are two SEPARATE CLI process
-   ! invocations, and on the GPU build the Fock digestion's atomic updates
-   ! settle in a different order run to run, so even the identical point
-   ! does not come back bit-for-bit (measured ~2e-9 Eh on an nvfortran GPU
-   ! build at this size; 1e-8 held over repeated GPU runs). A leaked
-   ! rejected trial's energy is a genuinely
-   ! different point on the PES -- a rejection only happens because the
-   ! energy moved enough to overshoot, orders of magnitude above this.
-   !
    subroutine test_truncated_keeps_accepted(error)
+      !!
+      !! A run stopped by --opt-maxiter immediately after a REJECTED trial
+      !! must still report the geometry/energy of the step before it, never
+      !! the rejected trial's own (higher) energy. Found by scanning
+      !! --opt-maxiter upward one evaluation at a time (cheap: each run is a
+      !! few SCF cycles on a 3-atom STO-3G/6-31G molecule) until `steps` stops
+      !! growing while `energy_evaluations` keeps growing -- that evaluation is
+      !! a rejected trial by test_rejected_trial's own definition -- then
+      !! checking that stopping exactly there reports the SAME final_energy as
+      !! stopping one evaluation earlier (the last point that WAS accepted).
+      !! Before the fix (every evaluation counted as a step) this would have
+      !! compared two DIFFERENT energies, the second one higher.
+      !!
+      !! TOL_SAME_POINT is not round-off: these are two SEPARATE CLI process
+      !! invocations, and on the GPU build the Fock digestion's atomic updates
+      !! settle in a different order run to run, so even the identical point
+      !! does not come back bit-for-bit (measured ~2e-9 Eh on an nvfortran GPU
+      !! build at this size; 1e-8 held over repeated GPU runs). A leaked
+      !! rejected trial's energy is a genuinely
+      !! different point on the PES -- a rejection only happens because the
+      !! energy moved enough to overshoot, orders of magnitude above this.
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: rc, steps_full, evals_full
       integer :: m, rc_m, steps_m, evals_m, rc_prev, steps_prev, evals_prev
@@ -358,13 +358,13 @@ contains
       end if
    end subroutine test_truncated_keeps_accepted
 
-   !
-   ! --opt-maxiter 1 on a geometry far from equilibrium cannot possibly
-   ! reach --opt-gtol's default in one accepted step -- a CLI run that
-   ! does not converge must not exit 0 (the SCF's own non-convergence
-   ! already works this way; this is the same rule for --opt).
-   !
    subroutine test_nonconverged_exit_code(error)
+      !!
+      !! --opt-maxiter 1 on a geometry far from equilibrium cannot possibly
+      !! reach --opt-gtol's default in one accepted step -- a CLI run that
+      !! does not converge must not exit 0 (the SCF's own non-convergence
+      !! already works this way; this is the same rule for --opt).
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=:), allocatable :: cmd, probe_out
       integer :: rc
@@ -396,20 +396,20 @@ contains
       end if
    end subroutine test_nonconverged_exit_code
 
-   !
-   ! TRC_OPT_TEST_FAIL_AFTER_EVALS (trc_dlfind_bridge%cb_get_gradient, test-
-   ! only, read only there) forces the SECOND evaluation to fail -- cheap
-   ! and deterministic, unlike trying to provoke a real SCF non-convergence.
-   ! DL-FIND has no recovery from a failed evaluation (api.f90's `dlf_fail`
-   ! ends in `error stop`), so api_dl_find never returns on this path: the
-   ! only way _opt.xyz/_traj.xyz/the JSON block get written at all is
-   ! fail_eval writing them itself, before handing status=1 back. The
-   ! first evaluation (water's own
-   ! equilibrium-ish geometry) is left to succeed and be accepted, so the
-   ! files below carry a REAL accepted geometry, not the empty starting
-   ! point a failure on evaluation 1 would leave behind.
-   !
    subroutine test_failed_scf_outputs(error)
+      !!
+      !! TRC_OPT_TEST_FAIL_AFTER_EVALS (trc_dlfind_bridge%cb_get_gradient, test-
+      !! only, read only there) forces the SECOND evaluation to fail -- cheap
+      !! and deterministic, unlike trying to provoke a real SCF non-convergence.
+      !! DL-FIND has no recovery from a failed evaluation (api.f90's `dlf_fail`
+      !! ends in `error stop`), so api_dl_find never returns on this path: the
+      !! only way _opt.xyz/_traj.xyz/the JSON block get written at all is
+      !! fail_eval writing them itself, before handing status=1 back. The
+      !! first evaluation (water's own
+      !! equilibrium-ish geometry) is left to succeed and be accepted, so the
+      !! files below carry a REAL accepted geometry, not the empty starting
+      !! point a failure on evaluation 1 would leave behind.
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=:), allocatable :: cmd, probe_out, fail_work
       integer :: rc, u, ios, nfail
@@ -466,14 +466,14 @@ contains
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_failed_scf_outputs
 
-   !
-   ! Runs the CLI's --opt on `xyz` with `extra_flags` and --opt-maxiter
-   ! `maxiter`, and reads back steps/energy_evaluations/trajectory_energies.
-   ! `rc` is the process exit code -- 0 only if --opt converged (a
-   ! deliberately small maxiter is expected to exit non-zero; callers that
-   ! need convergence check `rc` themselves).
-   !
    subroutine run_opt_cli(xyz, extra_flags, maxiter, probe, rc, steps, evals, traj_e)
+      !!
+      !! Runs the CLI's --opt on `xyz` with `extra_flags` and --opt-maxiter
+      !! `maxiter`, and reads back steps/energy_evaluations/trajectory_energies.
+      !! `rc` is the process exit code -- 0 only if --opt converged (a
+      !! deliberately small maxiter is expected to exit non-zero; callers that
+      !! need convergence check `rc` themselves).
+      !!
       character(len=*), intent(in) :: xyz, extra_flags, probe
       integer, intent(in) :: maxiter
       integer, intent(out) :: rc, steps, evals
@@ -500,12 +500,12 @@ contains
       call json%destroy()
    end subroutine run_opt_cli
 
-   !
-   ! Same as run_opt_cli, but also returns final_energy -- the one extra
-   ! field test_truncated_keeps_accepted compares between two consecutive
-   ! --opt-maxiter values.
-   !
    subroutine run_opt_cli_e(xyz, extra_flags, maxiter, probe, rc, steps, evals, final_energy)
+      !!
+      !! Same as run_opt_cli, but also returns final_energy -- the one extra
+      !! field test_truncated_keeps_accepted compares between two consecutive
+      !! --opt-maxiter values.
+      !!
       character(len=*), intent(in) :: xyz, extra_flags, probe
       integer, intent(in) :: maxiter
       integer, intent(out) :: rc, steps, evals

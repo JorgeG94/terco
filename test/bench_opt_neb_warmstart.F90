@@ -1,15 +1,15 @@
-!
-! SCF iterations per NEB image evaluation: a per-image warm-start density
-! (trc_opt_options_t%neb -- the default) against ONE density shared across
-! every image in turn (neb_shared_density, bench-only -- app/
-! trc_dlfind_bridge.F90's own header) -- this PR's own warm-start
-! measurement for --opt-neb, the per-image analogue of
-! bench_opt_warmstart.F90's single-state one. Informational only: prints a
-! table, asserts nothing, not registered as a ctest. Run by hand:
-!
-!   build-cpu/test/bench_opt_neb_warmstart
-!
 program bench_opt_neb_warmstart
+   !!
+   !! SCF iterations per NEB image evaluation: a per-image warm-start density
+   !! (trc_opt_options_t%neb -- the default) against ONE density shared across
+   !! every image in turn (neb_shared_density, bench-only -- app/
+   !! trc_dlfind_bridge.F90's own header) -- this PR's own warm-start
+   !! measurement for --opt-neb, the per-image analogue of
+   !! bench_opt_warmstart.F90's single-state one. Informational only: prints a
+   !! table, asserts nothing, not registered as a ctest. Run by hand:
+   !!
+   !!   build-cpu/test/bench_opt_neb_warmstart
+   !!
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_char, c_null_ptr, c_null_char
    use pic_types, only: dp
    use pic_timer, only: timer_type

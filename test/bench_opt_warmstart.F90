@@ -1,22 +1,22 @@
-!
-! SCF iterations per --opt step (summed over every accepted step,
-! trc_opt_result_t%total_scf_iterations), for the mqc baseline
-! (TRC_OPT_GUESS_NONE: re-run SAD at every step, with no density,
-! orbitals or DIIS history carried over -- mqc's own approach) against
-! the two warm starts (density, projected),
-! water/STO-3G and a 6-water cluster/def2-SVP, HF and B3LYP. Informational
-! only, like bench_warmstart.F90
-! (which measures the SAME two warm starts for trc_run_hessian's
-! displacements, at a much smaller step): prints a table, asserts
-! nothing, and is not registered as a ctest. Run by hand:
-!
-!   build-cpu/test/bench_opt_warmstart <6-water cluster xyz>
-!
-! (the cluster is the first 18 atoms of .claude/notes/bench/fig/inp/
-! w20.xyz in the maintainer's own notes checkout, not shipped here --
-! pass any 6-water-sized xyz, or omit to measure water alone).
-!
 program bench_opt_warmstart
+   !!
+   !! SCF iterations per --opt step (summed over every accepted step,
+   !! trc_opt_result_t%total_scf_iterations), for the mqc baseline
+   !! (TRC_OPT_GUESS_NONE: re-run SAD at every step, with no density,
+   !! orbitals or DIIS history carried over -- mqc's own approach) against
+   !! the two warm starts (density, projected),
+   !! water/STO-3G and a 6-water cluster/def2-SVP, HF and B3LYP. Informational
+   !! only, like bench_warmstart.F90
+   !! (which measures the SAME two warm starts for trc_run_hessian's
+   !! displacements, at a much smaller step): prints a table, asserts
+   !! nothing, and is not registered as a ctest. Run by hand:
+   !!
+   !!   build-cpu/test/bench_opt_warmstart <6-water cluster xyz>
+   !!
+   !! (the cluster is the first 18 atoms of .claude/notes/bench/fig/inp/
+   !! w20.xyz in the maintainer's own notes checkout, not shipped here --
+   !! pass any 6-water-sized xyz, or omit to measure water alone).
+   !!
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_char, c_null_ptr, c_null_char
    use pic_types, only: dp
    use pic_timer, only: timer_type

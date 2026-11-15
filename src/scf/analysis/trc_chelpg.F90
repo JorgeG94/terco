@@ -359,16 +359,15 @@ contains
       k = rest/nx2
    end subroutine lattice_indices
 
-   !
-   ! KERNELS. Each is one `do concurrent` over a single flattened index,
-   ! calling a same-module `pure` `!$acc routine seq` item routine with
-   ! explicit-shape dummies and its scratch declared inside. Each item's sum
-   ! over grid points runs in the points' own order, so a result does not
-   ! depend on how the items are scheduled (host and device agree to the
-   ! FMA contraction).
-   !
-
    subroutine chelpg_lattice_kernel(n_lattice, nx1, nx2, low, h, margin, natm, at_r, radii, kept)
+      !!
+      !! KERNELS. Each is one `do concurrent` over a single flattened index,
+      !! calling a same-module `pure` `!$acc routine seq` item routine with
+      !! explicit-shape dummies and its scratch declared inside. Each item's sum
+      !! over grid points runs in the points' own order, so a result does not
+      !! depend on how the items are scheduled (host and device agree to the
+      !! FMA contraction).
+      !!
       !! Whether each lattice point survives the two exclusion tests
       integer, intent(in) :: n_lattice, nx1, nx2, natm
       real(dp), intent(in) :: low(3)

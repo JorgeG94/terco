@@ -122,11 +122,10 @@ contains
       bytes = 8_int64*merge(n*(n + 1)/2, n*n, symmetric)
    end function rccsd_xfer_ladder_bytes
 
-   ! ---------------------------------------------------------------------
-   ! the transfers
-   ! ---------------------------------------------------------------------
-
    subroutine rccsd_xfer_amps_down(comm, lead, xf, amps, symmetric, active)
+      !! ---------------------------------------------------------------------
+      !! the transfers
+      !! ---------------------------------------------------------------------
       !! Collective over the ranks with `active` true. The first rank's amplitudes (on its device) to the device of every
       !! other active rank, in turn; the active others receive. A rank whose share of the ladder is empty is not active:
       !! it has no use for the amplitudes, is not sent them and does not call this. `symmetric` and `active` (one entry
@@ -213,11 +212,10 @@ contains
       end if
    end subroutine rccsd_xfer_ladder_in
 
-   ! ---------------------------------------------------------------------
-   ! the messages. Module procedures, no internal ones: this module makes collective-style calls under NVHPC's MPI.
-   ! ---------------------------------------------------------------------
-
    subroutine send_host(comm, n, x, dest, tag)
+      !! ---------------------------------------------------------------------
+      !! the messages. Module procedures, no internal ones: this module makes collective-style calls under NVHPC's MPI.
+      !! ---------------------------------------------------------------------
       !! x(1:n), a host array, to `dest`
       type(comm_t), intent(in) :: comm
       integer, intent(in) :: n, dest, tag
@@ -349,11 +347,10 @@ contains
       end do
    end subroutine take_dev
 
-   ! ---------------------------------------------------------------------
-   ! the kernels: one flattened index each, items are pure `routine seq` with explicit-shape dummies
-   ! ---------------------------------------------------------------------
-
    subroutine kernel_pack(no, nv, nhalf, x, packed)
+      !! ---------------------------------------------------------------------
+      !! the kernels: one flattened index each, items are pure `routine seq` with explicit-shape dummies
+      !! ---------------------------------------------------------------------
       !! packed(p + q (q - 1) / 2) = x(i,j,a,b) for p = (i,a) <= q = (j,b)
       integer, intent(in) :: no, nv, nhalf
       real(dp), intent(in) :: x(no*no*nv*nv)
@@ -419,10 +416,9 @@ contains
       q = j + no*(b - 1)
    end subroutine pair_of
 
-   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
-   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
-
    pure function pair_first(t, no, nv) result(k)
+      !! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+      !! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
       !! The packed position of position t when p <= q, else 0
       !$acc routine seq
       integer, intent(in) :: t

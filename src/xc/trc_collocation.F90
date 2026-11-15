@@ -1,32 +1,32 @@
-!
-! Basis functions on grid points: the value and gradient of every Cartesian
-! component of one shell at one point.
-!
-! This is the piece libcint does not have -- it computes integrals, not
-! values -- and it is the piece every XC quantity is built from. Which makes
-! its conventions the whole difficulty: the values here must be EXACTLY the
-! functions terco's overlap integrals are over, or the density is assembled
-! in one basis and the Fock matrix in another and nothing fails loudly.
-!
-! Two conventions, both inherited from `trc_basis_t`:
-!
-!   * the coefficients in `sh_c` already carry libcint's primitive
-!     normalisation and its `common_fac_sp`, so NOTHING is normalised here.
-!     A component is x^i y^j z^k times sum_p c_p exp(-a_p r^2), full stop;
-!   * the components of a shell come out in the BUILD's Cartesian order
-!     (TRC_CART_ORDER; lexicographic by default -- x descending outermost,
-!     y descending inside it), which is the order every AO-indexed quantity
-!     the integrals fill uses too. The table below (scripts/gen_cartcomp.py)
-!     is generated for the same order and guards against a mismatch.
-!
-! The gradient is the same expression differentiated:
-!
-!     d/dx [ x^i y^j z^k R(r) ] = i x^(i-1) y^j z^k R  +  x^(i+1) y^j z^k R'
-!
-! with R' = sum_p (-2 a_p) c_p exp(-a_p r^2), so the radial part costs one
-! extra multiply per primitive and nothing else.
-!
 module trc_collocation
+   !!
+   !! Basis functions on grid points: the value and gradient of every Cartesian
+   !! component of one shell at one point.
+   !!
+   !! This is the piece libcint does not have -- it computes integrals, not
+   !! values -- and it is the piece every XC quantity is built from. Which makes
+   !! its conventions the whole difficulty: the values here must be EXACTLY the
+   !! functions terco's overlap integrals are over, or the density is assembled
+   !! in one basis and the Fock matrix in another and nothing fails loudly.
+   !!
+   !! Two conventions, both inherited from `trc_basis_t`:
+   !!
+   !!   * the coefficients in `sh_c` already carry libcint's primitive
+   !!     normalisation and its `common_fac_sp`, so NOTHING is normalised here.
+   !!     A component is x^i y^j z^k times sum_p c_p exp(-a_p r^2), full stop;
+   !!   * the components of a shell come out in the BUILD's Cartesian order
+   !!     (TRC_CART_ORDER; lexicographic by default -- x descending outermost,
+   !!     y descending inside it), which is the order every AO-indexed quantity
+   !!     the integrals fill uses too. The table below (scripts/gen_cartcomp.py)
+   !!     is generated for the same order and guards against a mismatch.
+   !!
+   !! The gradient is the same expression differentiated:
+   !!
+   !!     d/dx [ x^i y^j z^k R(r) ] = i x^(i-1) y^j z^k R  +  x^(i+1) y^j z^k R'
+   !!
+   !! with R' = sum_p (-2 a_p) c_p exp(-a_p r^2), so the radial part costs one
+   !! extra multiply per primitive and nothing else.
+   !!
    use pic_types, only: dp
    implicit none
    private
@@ -104,24 +104,24 @@ contains
       end do
    end subroutine collocation_shell
 
-   !
-   ! As `collocation_shell`, plus the Hessian: the GGA exchange-correlation
-   ! GRADIENT's second-derivative term (trc_xc_grad.F90's `hchi`) is the only
-   ! reader. `collocation_shell` itself is untouched -- every energy-path
-   ! caller keeps paying for the value and gradient only -- so this is a
-   ! second entry point rather than an optional argument on the first; an
-   ! optional dummy on a `!$acc routine seq` procedure is the kind of thing
-   ! that works on one compiler and not the next.
-   !
-   ! d^2/dx_a dx_b [ f(x,y,z) R(r) ] = f_ab R + drad (f_a x_b + f_b x_a)
-   !                                   + f delta_ab drad + f x_a x_b ddrad
-   !
-   ! with f the monomial x^i y^j z^k, R the radial part, drad = dR/dx / x
-   ! (collocation_shell's own convention) and ddrad = d(drad)/dx / x, i.e. the
-   ! second radial derivative in the same "divide by the coordinate" form
-   ! that keeps every piece a plain multiply, no division anywhere.
-   !
    pure subroutine collocation_shell_hessian(l, np, e, c, d, chi, gchi, hchi)
+      !!
+      !! As `collocation_shell`, plus the Hessian: the GGA exchange-correlation
+      !! GRADIENT's second-derivative term (trc_xc_grad.F90's `hchi`) is the only
+      !! reader. `collocation_shell` itself is untouched -- every energy-path
+      !! caller keeps paying for the value and gradient only -- so this is a
+      !! second entry point rather than an optional argument on the first; an
+      !! optional dummy on a `!$acc routine seq` procedure is the kind of thing
+      !! that works on one compiler and not the next.
+      !!
+      !! d^2/dx_a dx_b [ f(x,y,z) R(r) ] = f_ab R + drad (f_a x_b + f_b x_a)
+      !!                                   + f delta_ab drad + f x_a x_b ddrad
+      !!
+      !! with f the monomial x^i y^j z^k, R the radial part, drad = dR/dx / x
+      !! (collocation_shell's own convention) and ddrad = d(drad)/dx / x, i.e. the
+      !! second radial derivative in the same "divide by the coordinate" form
+      !! that keeps every piece a plain multiply, no division anywhere.
+      !!
       !$acc routine seq
       integer, intent(in) :: l, np
       real(dp), intent(in) :: e(np), c(np)

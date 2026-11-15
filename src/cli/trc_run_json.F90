@@ -365,15 +365,15 @@ contains
       call json%add(section, "charges cation (N-1)", r%fukui_q_nm1)
    end subroutine add_fukui
 
-   !
-   ! --hessian's JSON: three blocks, as asked for -- "hessian" (the
-   ! matrix itself and the step it was built at), "frequencies"
-   ! (trc_vibrational_analysis's own per-mode output) and
-   ! "thermochemistry" (trc_thermo_result_t, trc_thermo.F90's own
-   ! fields, nothing recomputed here). Row/column k = 3*(atom-1)+
-   ! {x,y,z}, the same order `trc_hessian` and `trc_set_molecule` use.
-   !
    subroutine add_hessian(json, root, r)
+      !!
+      !! --hessian's JSON: three blocks, as asked for -- "hessian" (the
+      !! matrix itself and the step it was built at), "frequencies"
+      !! (trc_vibrational_analysis's own per-mode output) and
+      !! "thermochemistry" (trc_thermo_result_t, trc_thermo.F90's own
+      !! fields, nothing recomputed here). Row/column k = 3*(atom-1)+
+      !! {x,y,z}, the same order `trc_hessian` and `trc_set_molecule` use.
+      !!
       type(json_core), intent(inout) :: json
       type(json_value), pointer, intent(in) :: root
       type(run_t), intent(in) :: r
@@ -441,14 +441,14 @@ contains
       call json%add(root, tobj)
    end subroutine add_hessian
 
-   !
-   ! --opt's JSON block: converged, step/evaluation counts, the final
-   ! energy and gradient, the coordinate system, the trajectory's
-   ! per-step energies and the final geometry. The final geometry is in
-   ! Angstrom, named accordingly so a reader never has to guess the unit
-   ! the way it would from a bare "final_geometry".
-   !
    subroutine add_optimization(json, root, r)
+      !!
+      !! --opt's JSON block: converged, step/evaluation counts, the final
+      !! energy and gradient, the coordinate system, the trajectory's
+      !! per-step energies and the final geometry. The final geometry is in
+      !! Angstrom, named accordingly so a reader never has to guess the unit
+      !! the way it would from a bare "final_geometry".
+      !!
       type(json_core), intent(inout) :: json
       type(json_value), pointer, intent(in) :: root
       type(run_t), intent(in) :: r
@@ -522,15 +522,15 @@ contains
       call json%add(root, oobj)
    end subroutine add_optimization
 
-   !
-   ! --opt-neb's own JSON block, nested under "optimization": image
-   ! energies, the max-energy ("climbing") image's index and geometry, and
-   ! whether this run converged by the SAME criterion the rest of --opt's
-   ! JSON uses (the max Cartesian gradient component of the optimised
-   ! images against --opt-gtol -- trc_dlfind_bridge's own result assembly
-   ! excludes frozen endpoints from that test, see its own comment).
-   !
    subroutine add_neb(json, oobj, r)
+      !!
+      !! --opt-neb's own JSON block, nested under "optimization": image
+      !! energies, the max-energy ("climbing") image's index and geometry, and
+      !! whether this run converged by the SAME criterion the rest of --opt's
+      !! JSON uses (the max Cartesian gradient component of the optimised
+      !! images against --opt-gtol -- trc_dlfind_bridge's own result assembly
+      !! excludes frozen endpoints from that test, see its own comment).
+      !!
       type(json_core), intent(inout) :: json
       type(json_value), pointer, intent(in) :: oobj
       type(run_t), intent(in) :: r

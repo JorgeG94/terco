@@ -1,32 +1,32 @@
-!
-! The CLI's `--rimp2 --grad`: the whole path a user runs (app/main.F90 ->
-! trc_run_scf, trc_run_rimp2, trc_run_gradient -> trc_rimp2_grad), its
-! --json gradient against metalquicha's pyscf-validated RI-MP2 gradient for
-! the same water geometry, cc-pVDZ / cc-pVDZ-RIFIT, no frozen core
-! (metalquicha validation/validation_tests_cpu.json, "RI-MP2 gradient H2O
-! cc-pvdz/cc-pvdz-rifit frozen 0"; provenance in check_rimp2_grad.F90's
-! header), and `--df --rimp2 --grad` against metalquicha's "RI-MP2 gradient
-! over a fitted reference NH3 def2-svp/def2-svp-rifit" (one set doing both
-! fits, `--jkfit` = `--aux`). The CLI keeps its default (pruned) reading of the basis:
-! pruning preserves the span, so the energy and gradient do not move
-! (measured: 1e-10 against the unpruned reference).
-!
-! The double hybrid: `-f b2plyp --df --grad` (water, Cartesian cc-pVDZ, one
-! cc-pVDZ-RIFIT doing both fits, the default frozen core) against pyscf's
-! own finite-difference gradient (check_dh_grad.F90's G_PYSCF_WATER, its
-! header has the provenance), and its refusals: an unrestricted (UKS)
-! reference and PCM.
-!
-! And for both RI-MP2 references, that `--grad` runs no separate RI-MP2
-! energy step -- the energy comes from the gradient's own amplitudes
-! (trc_run_rimp2 defers it) -- yet reports the same "mp2 opposite-spin
-! energy" and "mp2 same-spin energy" as the run without `--grad` to 1e-12;
-! "no step" is read off the --logger verbose output, where the energy
-! step's own table ("rimp2:" lines) appears only in the energy-only run.
-!
-! Arguments: the terco executable and a scratch path for its --json output.
-!
 module check_cli_grad_rimp2_suite
+   !!
+   !! The CLI's `--rimp2 --grad`: the whole path a user runs (app/main.F90 ->
+   !! trc_run_scf, trc_run_rimp2, trc_run_gradient -> trc_rimp2_grad), its
+   !! --json gradient against metalquicha's pyscf-validated RI-MP2 gradient for
+   !! the same water geometry, cc-pVDZ / cc-pVDZ-RIFIT, no frozen core
+   !! (metalquicha validation/validation_tests_cpu.json, "RI-MP2 gradient H2O
+   !! cc-pvdz/cc-pvdz-rifit frozen 0"; provenance in check_rimp2_grad.F90's
+   !! header), and `--df --rimp2 --grad` against metalquicha's "RI-MP2 gradient
+   !! over a fitted reference NH3 def2-svp/def2-svp-rifit" (one set doing both
+   !! fits, `--jkfit` = `--aux`). The CLI keeps its default (pruned) reading of the basis:
+   !! pruning preserves the span, so the energy and gradient do not move
+   !! (measured: 1e-10 against the unpruned reference).
+   !!
+   !! The double hybrid: `-f b2plyp --df --grad` (water, Cartesian cc-pVDZ, one
+   !! cc-pVDZ-RIFIT doing both fits, the default frozen core) against pyscf's
+   !! own finite-difference gradient (check_dh_grad.F90's G_PYSCF_WATER, its
+   !! header has the provenance), and its refusals: an unrestricted (UKS)
+   !! reference and PCM.
+   !!
+   !! And for both RI-MP2 references, that `--grad` runs no separate RI-MP2
+   !! energy step -- the energy comes from the gradient's own amplitudes
+   !! (trc_run_rimp2 defers it) -- yet reports the same "mp2 opposite-spin
+   !! energy" and "mp2 same-spin energy" as the run without `--grad` to 1e-12;
+   !! "no step" is read off the --logger verbose output, where the energy
+   !! step's own table ("rimp2:" lines) appears only in the energy-only run.
+   !!
+   !! Arguments: the terco executable and a scratch path for its --json output.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file

@@ -222,7 +222,7 @@ module trc_run
       ! `connect`, and the external-Hessian control -- every one of these
       ! is also one of
       ! trc_dlfind_bridge's own TRC_OPT_* enums (app/trc_dlfind_bridge.F90,
-      ! app/trc_dlfind_stub.F90), stored here as the plain integer both
+      ! src/cli/trc_dlfind_stub.F90), stored here as the plain integer both
       ! modules define identically, same reason opt_coords_kind/
       ! opt_guess_kind above need no import of that module.
       character(len=:), allocatable :: opt_algorithm_arg, opt_target_arg, opt_saddle_method_arg, &

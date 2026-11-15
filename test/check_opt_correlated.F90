@@ -1,29 +1,29 @@
-!
-! --opt with a correlated method, through the C ABI only (terco.h for the
-! context, terco_opt.h for the optimisation): RI-MP2 over RHF, and the
-! double hybrid B2PLYP (E_KS + c_os E_os + c_ss E_ss). trc_opt_set_rimp2
-! makes every step rerun trc_run_rimp2 after its SCF, so the energy DL-FIND
-! sees is trc_energy's correlated total and the gradient its derivative.
-! Before it, the CLI refused both outright, and a step's energy could only
-! ever have been the SCF's -- 0.065 Eh (c E_PT2) above the B2PLYP total here,
-! paired with a correlated gradient.
-!
-! For each method, water from water.xyz (|g| ~ 1e-2 there), def2-SVP with
-! def2-SVP-RIFIT, frozen 1:
-!   - the optimisation converges, max |g| below the tolerance;
-!   - the energy it reports for the FIRST step (the start geometry, far
-!     from stationary) equals a fresh context's single-point total there;
-!   - its final energy equals a fresh context's single-point total at the
-!     final geometry, and that context's analytic gradient is below the
-!     tolerance too.
-! The single points share nothing with the optimisation (a new handle, a
-! SAD guess), so agreement to 1e-9 says the optimiser's energies are the
-! correlated totals at those geometries. trc_energy's totals are anchored
-! to pyscf by test/scf_dh.F90 and the RI-MP2 energy checks.
-!
-! A test-drive suite.
-!
 module check_opt_correlated_suite
+   !!
+   !! --opt with a correlated method, through the C ABI only (terco.h for the
+   !! context, terco_opt.h for the optimisation): RI-MP2 over RHF, and the
+   !! double hybrid B2PLYP (E_KS + c_os E_os + c_ss E_ss). trc_opt_set_rimp2
+   !! makes every step rerun trc_run_rimp2 after its SCF, so the energy DL-FIND
+   !! sees is trc_energy's correlated total and the gradient its derivative.
+   !! Before it, the CLI refused both outright, and a step's energy could only
+   !! ever have been the SCF's -- 0.065 Eh (c E_PT2) above the B2PLYP total here,
+   !! paired with a correlated gradient.
+   !!
+   !! For each method, water from water.xyz (|g| ~ 1e-2 there), def2-SVP with
+   !! def2-SVP-RIFIT, frozen 1:
+   !!   - the optimisation converges, max |g| below the tolerance;
+   !!   - the energy it reports for the FIRST step (the start geometry, far
+   !!     from stationary) equals a fresh context's single-point total there;
+   !!   - its final energy equals a fresh context's single-point total at the
+   !!     final geometry, and that context's analytic gradient is below the
+   !!     tolerance too.
+   !! The single points share nothing with the optimisation (a new handle, a
+   !! SAD guess), so agreement to 1e-9 says the optimiser's energies are the
+   !! correlated totals at those geometries. trc_energy's totals are anchored
+   !! to pyscf by test/scf_dh.F90 and the RI-MP2 energy checks.
+   !!
+   !! A test-drive suite.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_char, c_null_char
    use, intrinsic :: iso_fortran_env, only: output_unit
    use pic_types, only: dp

@@ -1,29 +1,29 @@
-!
-! trc_set_gdm, the C ABI switch for geometric direct minimisation, as a
-! test-drive suite. Every case fails if the wiring it names is broken.
-!
-! 1. Bad arguments are refused (on other than 0/1, a negative or NaN start or
-!    max_rotation) and the documented good ones accepted.
-!
-! 2. `on` reaches the SCF. Water/6-31G* from the default guess, with and
-!    without GDM: the energies agree to 1e-8 (GDM is another route to the same
-!    minimum) and only the GDM run logs the handover line and the step lines,
-!    so a handle that silently ignored the option cannot pass. The plain run
-!    is the negative control for the log reading itself.
-!
-! 3. `start` reaches the SCF: with a start far below where DIIS converges the
-!    handover never happens, so no GDM line is logged; the default start does
-!    hand over on the same system.
-!
-! 4. `max_rotation` reaches the SCF: a rotation cap of 1e-4 rad limits every
-!    step, so the run needs many more iterations than with the default cap
-!    (measured on the host: 27 against 11) and reaches the same energy.
-!
-! 5. GDM is a handle option, so it reaches every SCF a Fukui run does on that
-!    handle (the N+1 and N-1 ions and the re-run neutral): the handover is
-!    logged once per SCF.
-!
 module check_capi_gdm_suite
+   !!
+   !! trc_set_gdm, the C ABI switch for geometric direct minimisation, as a
+   !! test-drive suite. Every case fails if the wiring it names is broken.
+   !!
+   !! 1. Bad arguments are refused (on other than 0/1, a negative or NaN start or
+   !!    max_rotation) and the documented good ones accepted.
+   !!
+   !! 2. `on` reaches the SCF. Water/6-31G* from the default guess, with and
+   !!    without GDM: the energies agree to 1e-8 (GDM is another route to the same
+   !!    minimum) and only the GDM run logs the handover line and the step lines,
+   !!    so a handle that silently ignored the option cannot pass. The plain run
+   !!    is the negative control for the log reading itself.
+   !!
+   !! 3. `start` reaches the SCF: with a start far below where DIIS converges the
+   !!    handover never happens, so no GDM line is logged; the default start does
+   !!    hand over on the same system.
+   !!
+   !! 4. `max_rotation` reaches the SCF: a rotation cap of 1e-4 rad limits every
+   !!    step, so the run needs many more iterations than with the default cap
+   !!    (measured on the host: 27 against 11) and reaches the same energy.
+   !!
+   !! 5. GDM is a handle option, so it reaches every SCF a Fukui run does on that
+   !!    handle (the N+1 and N-1 ions and the re-run neutral): the handover is
+   !!    logged once per SCF.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char, c_associated
    use pic_types, only: dp
    use pic_strings, only: to_string

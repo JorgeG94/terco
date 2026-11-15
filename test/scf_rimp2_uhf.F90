@@ -1,48 +1,48 @@
-!
-! UNRESTRICTED RI-MP2: UHF through trc_scf_run, then the correlation
-! energy through trc_urimp2_run (src/post_hf/rimp2/trc_rimp2_driver.F90),
-! on three open-shell radicals -- OH, triplet O2, NH2 -- in 6-31G* and
-! cc-pVDZ with cc-pVDZ-RIFIT, six cases against pyscf's own UHF + DF-UMP2
-! on the identical sets, plus one closed-shell-as-UHF self-check at the
-! end (water, forced unrestricted with trc_scf_options_t%unrestricted,
-! compared to the plain restricted trc_rimp2_run on the same molecule).
-!
-! OH and O2 are linear: the unpaired electron(s) sit in a rotationally
-! degenerate pair of pi orbitals, a genuine zero-curvature direction of
-! the energy -- the same thing test/scf_rks.F90's own OH cases hit first
-! (see that file's header). test/pyscf_refs/generate.py's gen_rimp2_uhf
-! computes a symmetry-broken initial guess (core Hamiltonian plus a field
-! along one fixed axis) straight from the geometry and basis, converges
-! pyscf's own UHF from it, and commits the CONVERGED density as DM0_i;
-! this suite reads DM0_i back (if the reference already exists) and
-! starts ITS OWN SCF from the SAME density, so both sides settle into the
-! same orientation rather than two that merely share an energy. A missing
-! reference (the first, bootstrap run, before generate.py has written
-! one) falls back to trc_scf_run's own default guess, same as
-! scf_rks.F90's identical fallback.
-!
-! This suite ALSO writes "rimp2_uhf_probe.bin": NAO and the overlap
-! matrix S (trc_1e), in THIS build's own AO order, for each case --
-! geometry- and basis-derived only, never from an SCF, so it is written
-! unconditionally, the same "fixed input" category as rys_fock's density
-! or pcm_ints's grid (test/pyscf_refs/README.md's own term for it). Its
-! ONLY use is test/pyscf_refs/generate.py's gen_rimp2_uhf, which needs
-! this build's own d-shell Cartesian normalisation (ao_norm_from_overlap)
-! to scale the UHF density it commits as DM0_i correctly -- d and higher
-! Cartesian cross components (dxy, dxz, dyz, ...) are NOT unit-normalised
-! in this build the way pyscf's cart=True ones are (see
-! test/pyscf_refs/README.md's own "File format" section), and skipping
-! this rescale measured landing terco's own SCF in a DIFFERENT UHF
-! stationary point on O2/6-31G* (|dE| up to 0.26 Ha) even though both
-! sides started from "the same" density in name only.
-!
-! Seven independent cases below (six radical/basis pairs plus the
-! closed-shell-as-UHF self-check), each its own test-drive unittest; the
-! probe write and the sequential pyscf-reference read run once -- see
-! check_xc_energy_suite's own `computed` comment for why, and why this
-! suite stays `parallel=.false.`.
-!
 module scf_rimp2_uhf_suite
+   !!
+   !! UNRESTRICTED RI-MP2: UHF through trc_scf_run, then the correlation
+   !! energy through trc_urimp2_run (src/post_hf/rimp2/trc_rimp2_driver.F90),
+   !! on three open-shell radicals -- OH, triplet O2, NH2 -- in 6-31G* and
+   !! cc-pVDZ with cc-pVDZ-RIFIT, six cases against pyscf's own UHF + DF-UMP2
+   !! on the identical sets, plus one closed-shell-as-UHF self-check at the
+   !! end (water, forced unrestricted with trc_scf_options_t%unrestricted,
+   !! compared to the plain restricted trc_rimp2_run on the same molecule).
+   !!
+   !! OH and O2 are linear: the unpaired electron(s) sit in a rotationally
+   !! degenerate pair of pi orbitals, a genuine zero-curvature direction of
+   !! the energy -- the same thing test/scf_rks.F90's own OH cases hit first
+   !! (see that file's header). test/pyscf_refs/generate.py's gen_rimp2_uhf
+   !! computes a symmetry-broken initial guess (core Hamiltonian plus a field
+   !! along one fixed axis) straight from the geometry and basis, converges
+   !! pyscf's own UHF from it, and commits the CONVERGED density as DM0_i;
+   !! this suite reads DM0_i back (if the reference already exists) and
+   !! starts ITS OWN SCF from the SAME density, so both sides settle into the
+   !! same orientation rather than two that merely share an energy. A missing
+   !! reference (the first, bootstrap run, before generate.py has written
+   !! one) falls back to trc_scf_run's own default guess, same as
+   !! scf_rks.F90's identical fallback.
+   !!
+   !! This suite ALSO writes "rimp2_uhf_probe.bin": NAO and the overlap
+   !! matrix S (trc_1e), in THIS build's own AO order, for each case --
+   !! geometry- and basis-derived only, never from an SCF, so it is written
+   !! unconditionally, the same "fixed input" category as rys_fock's density
+   !! or pcm_ints's grid (test/pyscf_refs/README.md's own term for it). Its
+   !! ONLY use is test/pyscf_refs/generate.py's gen_rimp2_uhf, which needs
+   !! this build's own d-shell Cartesian normalisation (ao_norm_from_overlap)
+   !! to scale the UHF density it commits as DM0_i correctly -- d and higher
+   !! Cartesian cross components (dxy, dxz, dyz, ...) are NOT unit-normalised
+   !! in this build the way pyscf's cart=True ones are (see
+   !! test/pyscf_refs/README.md's own "File format" section), and skipping
+   !! this rescale measured landing terco's own SCF in a DIFFERENT UHF
+   !! stationary point on O2/6-31G* (|dE| up to 0.26 Ha) even though both
+   !! sides started from "the same" density in name only.
+   !!
+   !! Seven independent cases below (six radical/basis pairs plus the
+   !! closed-shell-as-UHF self-check), each its own test-drive unittest; the
+   !! probe write and the sequential pyscf-reference read run once -- see
+   !! check_xc_energy_suite's own `computed` comment for why, and why this
+   !! suite stays `parallel=.false.`.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -101,10 +101,10 @@ contains
       end if
    end function case_name
 
-   ! One wrapper per case, each passing its own index: a unittest must not
-   ! depend on which unittests ran before it (a name-selected run, or a
-   ! reordered suite, would otherwise check the wrong case).
    subroutine case_01(error)
+      !! One wrapper per case, each passing its own index: a unittest must not
+      !! depend on which unittests ran before it (a name-selected run, or a
+      !! reordered suite, would otherwise check the wrong case).
       type(error_type), allocatable, intent(out) :: error
       call test_case(error, 1)
    end subroutine case_01

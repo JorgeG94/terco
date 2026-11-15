@@ -1,30 +1,30 @@
-!
-! Where VV10's time goes, on a real molecule in a real basis.
-!
-!   bench_vv10 <xyz> [level] [basis.json]
-!
-! Builds 6-31G on the molecule by default, a VV10 grid at the given level,
-! a fixed positive density, and times `trc_vv10_rks` once (its own header
-! explains why this is O(N_points^2) and not meant to be timed over many
-! reps the way bench_xc times the semilocal pipeline). A timing is not a
-! pass, so this is built and not registered as a test.
-!
-! Under `mpiexec -np N`, one rank per device (`trc_bind_device`, the same
-! call app/main.F90 makes), `trc_vv10_rks` is handed the world comm and
-! pass 2 splits by rank -- see vv10_drive's own header (MULTI-GPU). Every
-! rank prints its own E_nlc and wall time, so a scaling run (1 vs N
-! ranks) can diff them: E_nlc must agree to the SCF floor regardless of
-! rank count, since the allreduce after pass 2 reconstructs the same
-! arrays every point's contribution was always going to add up to.
-!
-! Timed with `pic_timer`'s `type(timer_type)` (start/get_elapsed_time),
-! the same mechanism src/scf/trc_scf_fock.F90's scf_fock_build_vxc already uses
-! around its own VV10 call on the MPI path: a derived-type variable with
-! type-bound procedures, no locally `contains`-ed helper for this program
-! to declare -- confirmed under `mpiexec -np 2` with NVHPC + HPC-X (the
-! toolchain this build uses), E_nlc still agrees between 1 and 2 ranks.
-!
 program bench_vv10
+   !!
+   !! Where VV10's time goes, on a real molecule in a real basis.
+   !!
+   !!   bench_vv10 <xyz> [level] [basis.json]
+   !!
+   !! Builds 6-31G on the molecule by default, a VV10 grid at the given level,
+   !! a fixed positive density, and times `trc_vv10_rks` once (its own header
+   !! explains why this is O(N_points^2) and not meant to be timed over many
+   !! reps the way bench_xc times the semilocal pipeline). A timing is not a
+   !! pass, so this is built and not registered as a test.
+   !!
+   !! Under `mpiexec -np N`, one rank per device (`trc_bind_device`, the same
+   !! call app/main.F90 makes), `trc_vv10_rks` is handed the world comm and
+   !! pass 2 splits by rank -- see vv10_drive's own header (MULTI-GPU). Every
+   !! rank prints its own E_nlc and wall time, so a scaling run (1 vs N
+   !! ranks) can diff them: E_nlc must agree to the SCF floor regardless of
+   !! rank count, since the allreduce after pass 2 reconstructs the same
+   !! arrays every point's contribution was always going to add up to.
+   !!
+   !! Timed with `pic_timer`'s `type(timer_type)` (start/get_elapsed_time),
+   !! the same mechanism src/scf/trc_scf_fock.F90's scf_fock_build_vxc already uses
+   !! around its own VV10 call on the MPI path: a derived-type variable with
+   !! type-bound procedures, no locally `contains`-ed helper for this program
+   !! to declare -- confirmed under `mpiexec -np 2` with NVHPC + HPC-X (the
+   !! toolchain this build uses), E_nlc still agrees between 1 and 2 ranks.
+   !!
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize

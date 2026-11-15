@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["rks"] -> gen_rks
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 89958c2bb52e3ce4d38543474e1db465c3dcd435a4165e6e521f5676ab5042c0
+# hash: 36f8f33f3559429d758100682d8767495327ce0ea3ffefe273c7cefdbe4e3f18
 # files: test/scf_rks.F90 test/basis_sets/6-31g.json test/water.xyz test/oh.xyz
 NCASE 14
 NAME_0 hf

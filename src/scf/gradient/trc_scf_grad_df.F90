@@ -64,6 +64,7 @@
 module trc_scf_grad_df
    use pic_types, only: dp, int64
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
+   use trc_cart, only: ncart => cart_ncart_of
    use trc_scf_df, only: df_jk_t
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_step_table, only: step_table_t
@@ -851,11 +852,6 @@ contains
       end if
       ablk = max(1, min(ablk, naux))
    end subroutine choose_grad_blocks
-
-   pure integer function ncart(l) result(res)
-      integer, intent(in) :: l
-      res = (l + 1)*(l + 2)/2
-   end function ncart
 
    subroutine unpack_aux_block(n, npack, naux, np, p0, bpk, tens)
       !! tens(:, :, q) = B's column p0 - 1 + q unpacked to a full (n, n)

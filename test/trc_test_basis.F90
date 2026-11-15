@@ -1,21 +1,21 @@
-!
-! Shared code for the test programs: reading an xyz, and the flat-array
-! plumbing a basis built through `trc_basis_t%build` needs.
-!
-! The library does NOT ship a basis set -- a caller supplies exponents and
-! coefficients, and the ONE way a terco test does that is
-! `trc_basis_from_json` (`src/basis/trc_basis_json.F90`) against a file under
-! `basis_sets/`. `build_631g` below is NOT a second way to do this: it is a
-! literal, hand-transcribed copy of 6-31G kept so one check
-! (test/check_basis_631g_ref.F90) can prove the JSON path right against a
-! source that was never near it, and its own comment says so. Everything
-! else in this module -- `read_xyz`, `unpack_basis`, `uncontract_basis`,
-! `build_aux` (a synthetic auxiliary ladder, unrelated to any orbital set)
-! -- is ordinary shared plumbing with nothing to do with that one path/not-
-! a-path distinction. This module lives in `test/` rather than `src/`
-! precisely because none of it is part of the library.
-!
 module trc_test_basis
+   !!
+   !! Shared code for the test programs: reading an xyz, and the flat-array
+   !! plumbing a basis built through `trc_basis_t%build` needs.
+   !!
+   !! The library does NOT ship a basis set -- a caller supplies exponents and
+   !! coefficients, and the ONE way a terco test does that is
+   !! `trc_basis_from_json` (`src/basis/trc_basis_json.F90`) against a file under
+   !! `basis_sets/`. `build_631g` below is NOT a second way to do this: it is a
+   !! literal, hand-transcribed copy of 6-31G kept so one check
+   !! (test/check_basis_631g_ref.F90) can prove the JSON path right against a
+   !! source that was never near it, and its own comment says so. Everything
+   !! else in this module -- `read_xyz`, `unpack_basis`, `uncontract_basis`,
+   !! `build_aux` (a synthetic auxiliary ladder, unrelated to any orbital set)
+   !! -- is ordinary shared plumbing with nothing to do with that one path/not-
+   !! a-path distinction. This module lives in `test/` rather than `src/`
+   !! precisely because none of it is part of the library.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double
    use pic_types, only: dp
    use trc_api, only: trc_basis_t
@@ -29,14 +29,14 @@ module trc_test_basis
 
 contains
 
-   !
-   ! A built basis's own flat arrays, with `basis_build`'s `common_fac_sp`
-   ! fold taken back out -- ready to hand to ANOTHER `%build` (a subset,
-   ! an uncontracted copy, a probe written out for pyscf) without folding
-   ! the factor in twice. Shared by every caller that round-trips a built
-   ! basis this way, rather than each keeping its own copy.
-   !
    subroutine unpack_basis(b, n, l, np, e, c, r, mnp)
+      !!
+      !! A built basis's own flat arrays, with `basis_build`'s `common_fac_sp`
+      !! fold taken back out -- ready to hand to ANOTHER `%build` (a subset,
+      !! an uncontracted copy, a probe written out for pyscf) without folding
+      !! the factor in twice. Shared by every caller that round-trips a built
+      !! basis this way, rather than each keeping its own copy.
+      !!
       type(trc_basis_t), intent(in) :: b
       integer, intent(out) :: n, mnp
       integer, allocatable, intent(out) :: l(:), np(:)
@@ -51,18 +51,18 @@ contains
       end do
    end subroutine unpack_basis
 
-   !
-   ! `b`, uncontracted: every primitive of every shell becomes its own
-   ! one-primitive shell, coefficient `gto_norm(l,e)` -- what pyscf's
-   ! `gto.uncontract` does -- so a comparison of TOTAL ENERGIES is not
-   ! spoilt by pyscf renormalising a contracted shell and terco not (see
-   ! `gto_norm`'s own comment). This is `build_631g`'s old `uncontracted`
-   ! argument, pulled out so it works on ANY built basis -- a JSON-loaded
-   ! one included -- rather than only the hardcoded one: the transform only
-   ! ever needed the shell list's angular momenta and exponents, never the
-   ! original contraction weights, which it throws away.
-   !
    subroutine uncontract_basis(b, n2, l2, np2, e2, c2, r2, mnp2)
+      !!
+      !! `b`, uncontracted: every primitive of every shell becomes its own
+      !! one-primitive shell, coefficient `gto_norm(l,e)` -- what pyscf's
+      !! `gto.uncontract` does -- so a comparison of TOTAL ENERGIES is not
+      !! spoilt by pyscf renormalising a contracted shell and terco not (see
+      !! `gto_norm`'s own comment). This is `build_631g`'s old `uncontracted`
+      !! argument, pulled out so it works on ANY built basis -- a JSON-loaded
+      !! one included -- rather than only the hardcoded one: the transform only
+      !! ever needed the shell list's angular momenta and exponents, never the
+      !! original contraction weights, which it throws away.
+      !!
       type(trc_basis_t), intent(in) :: b
       integer, intent(out) :: n2, mnp2
       integer, allocatable, intent(out) :: l2(:), np2(:)
@@ -215,12 +215,12 @@ contains
       end do
    end subroutine build_631g
 
-   !
-   ! Synthetic auxiliary basis: uncontracted shells per atom, l = 0..lmax,
-   ! exponents on a geometric ladder. Heavier atoms get one more shell per l,
-   ! which is roughly how real fitting sets scale.
-   !
    subroutine build_aux(nat, z, r, lmax, nsh, l, np, e, c, sr, mnp)
+      !!
+      !! Synthetic auxiliary basis: uncontracted shells per atom, l = 0..lmax,
+      !! exponents on a geometric ladder. Heavier atoms get one more shell per l,
+      !! which is roughly how real fitting sets scale.
+      !!
       integer,  intent(in)  :: nat, z(nat), lmax
       real(dp), intent(in)  :: r(3, nat)
       integer,  intent(out) :: nsh, mnp
@@ -299,13 +299,13 @@ contains
       end do
    end function fact
 
-   !
-   ! `b`'s shells into libcint's packed atm (6, natm)/bas (8, nshell)/env
-   ! layout, 1-based Fortran indices onto libcint's own 0-based slots --
-   ! the same packing link_gfortran.F90's build_libcint_arrays uses,
-   ! generalised to any basis rather than one hardcoded 6-31G.
-   !
    subroutine pack_libcint(b, atm, bas, env)
+      !!
+      !! `b`'s shells into libcint's packed atm (6, natm)/bas (8, nshell)/env
+      !! layout, 1-based Fortran indices onto libcint's own 0-based slots --
+      !! the same packing link_gfortran.F90's build_libcint_arrays uses,
+      !! generalised to any basis rather than one hardcoded 6-31G.
+      !!
       type(trc_basis_t), intent(in) :: b
       integer(c_int), allocatable, intent(out) :: atm(:, :), bas(:, :)
       real(c_double), allocatable, intent(out) :: env(:)

@@ -1,17 +1,17 @@
-!
-! The CLI's end-of-SCF frontier orbital energies, read back from its
-! --json: "homo energy"/"lumo energy" (restricted, or alpha) and, for an
-! unrestricted run, "beta homo energy"/"beta lumo energy".
-!
-! References: pyscf 2.x, the same water geometry (test/water.xyz) in
-! 6-31G with cart=True, conv_tol 1e-12. pyscf's built-in 6-31G and the
-! Basis Set Exchange JSON terco reads agree on water's RHF energy to 1e-8
-! (-75.98397447 both), so 1e-6 Eh on the orbital energies is a check of
-! the reporting, not of the basis.
-!
-! A test-drive suite.
-!
 module check_cli_homo_lumo_suite
+   !!
+   !! The CLI's end-of-SCF frontier orbital energies, read back from its
+   !! --json: "homo energy"/"lumo energy" (restricted, or alpha) and, for an
+   !! unrestricted run, "beta homo energy"/"beta lumo energy".
+   !!
+   !! References: pyscf 2.x, the same water geometry (test/water.xyz) in
+   !! 6-31G with cart=True, conv_tol 1e-12. pyscf's built-in 6-31G and the
+   !! Basis Set Exchange JSON terco reads agree on water's RHF energy to 1e-8
+   !! (-75.98397447 both), so 1e-6 Eh on the orbital energies is a check of
+   !! the reporting, not of the basis.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file

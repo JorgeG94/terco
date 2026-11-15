@@ -1,93 +1,93 @@
-!
-!
-! The SCF: a basis and an electron count in, a converged energy and
-! density out, with every matrix resident on the device. Hartree-Fock or
-! Kohn-Sham (any functional in trc_xc_functional), restricted or unrestricted.
-!
-! WHAT CROSSES THE BUS
-! --------------------
-! Per iteration: two energies, a norm, and, once DIIS runs, three packed
-! triangles (the new Fock matrix and commutator down, the extrapolated Fock
-! matrix up): the DIIS history lives on the host, where it costs no device
-! memory (trc_scf_diis's own header). The density, Fock matrices, orbitals
-! and orthogonaliser stay on the device; the Fock build is the resident
-! driver, the XC integrator finds its density already present, and the
-! products, commutator and eigenproblem are trc_linalg (cuBLAS/cuSOLVER
-! under OpenACC). This follows
-! metalquicha's device SCF, which measured host LAPACK plus copies at three
-! times the cost of the GPU Fock build. A host build runs the same source with
-! LAPACK, and the numbers agree to rounding, so the host suite tests this module.
-!
-! THE ITERATION
-! -------------
-! A few damped steps from the guess, then Pulay's DIIS on the commutator
-! FDS - SDF in the orthogonal basis, per spin with one set of coefficients.
-! Converged when the energy change and the RMS density change are both below
-! threshold. The DIIS system (at most 11 by 11) is solved by pivoted
-! elimination as in metalquicha's mqc_diis, with the error block scaled to
-! order one against the constraint border first: near convergence the overlaps
-! are 1e-16 and an unscaled elimination makes the weights noise, showing as a
-! density that drifts from the fixed point while the energy sits flat.
-!
-! UNRESTRICTED
-! ------------
-! F_s = H + J[D_a + D_b] - a_x K[D_s] + V_xc,s. The Fock driver returns
-! j J[D] - k K[D]/2 for a density it takes to be a total, so J is one call on
-! D_a + D_b with k = 0 and -a_x K[D_s] one call on 2 D_s with j = 0, k = a_x:
-! three builds per iteration against one restricted. A batched build over the
-! three densities is the obvious improvement and is not done.
-!
-! SPHERICAL BASES
-! ---------------
-! `b%spherical` (trc_api.F90, from a JSON basis's function_type) changes the
-! size of every matrix this module owns (S, H, D, F, C, eps, X, the DIIS
-! history) from `b%nao` to `b%nao_sph`; everything operating on them is
-! unchanged, just at a smaller `nao`. Everything touching a kernel stays
-! Cartesian: `trc_1e`, `trc_eri_t%fock_resident`, and the XC integrator.
-! Cartesian-sized scratch matrices (suffix `_c`: `s_c`, `h_c`, `d_c`,
-! `gmat_c`, `vxc_c`, ...) sit between the kernels and the SCF's own matrices,
-! built once per geometry (`s_c`/`h_c`, now `trc_scf_context`'s `smat`/`hcore`)
-! or once per iteration (`d_c` from the current density; `gmat_c`/`vxc_c` from
-! the Fock/XC calls, now `trc_scf_state`'s), and folded by `sph_cart_to_sph`.
-! `sph` guards every call into trc_sph.F90, so the Cartesian path is the same
-! code path as before spherical support existed.
-!
-! The XC integrator gets `d_c`, the Cartesian density rebuilt from `res%dmat`
-! each iteration, not spherical AO values on the grid: the transform is shared
-! with the Coulomb/exchange build, and `collocation_shell` evaluates Cartesian
-! components straight off a flat table, so a second AO space there would
-! duplicate trc_sph.F90's block structure.
-!
-! SAD and GWH reach this module already in the right space (SAD's atomic
-! sub-SCFs run on a `subset` basis carrying `spherical`; GWH is built here from
-! `hcore`). SAP stays Cartesian and is transformed once at the trc_capi.F90
-! call site, as it has no basis handle to carry `spherical`.
-!
-! POLARISABLE CONTINUUM
-! ---------------------
-! With `pcm_model` set, trc_pcm builds the cavity, K and the nuclear potential
-! once. Every iteration, at the density the energy is evaluated at, the surface
-! potential of the total Cartesian density gives the charges, q.v/2 into the
-! energy and the charges' full operator into each spin's Fock matrix (as
-! pyscf.solvent.pcm's SCFWithSolvent, which also adds it before DIIS). It is
-! rebuilt in full each iteration, independent of the incremental-ERI path.
-!
-! MODULES
-! -------
-! `trc_scf_settings` resolves `trc_scf_options_t` into what the loop reads
-! (`scf_settings_t`, "scf_config" below); `trc_scf_context` builds everything once
-! per geometry (`scf_ctx_t`, "scf_context": the pair list, S/H, the ERI engine, the
-! linear-algebra handles, the orthogonaliser, and -- when asked for -- the
-! PCM cavity and the DFT grid); `trc_scf_state` owns the per-iteration arrays
-! (`scf_state_t`, "scf_state") and the one enter/exit pair that puts them, `scf_context`'s
-! own matrices and `scf_result` on the device together. `scf_fock_build_g`/`scf_fock_assemble`
-! and the DIIS push/combine helpers below stay in THIS file for now (they
-! are not yet split into `trc_scf_fock`/`trc_scf_diis`): every one of them
-! already takes its arrays as explicit-shape dummies rather than touching
-! `scf_context`/`scf_state` inside a `do concurrent` body, which is what lets this compile
-! correctly once those arrays are struct components instead of plain locals.
-!
 module trc_scf_driver
+   !!
+   !!
+   !! The SCF: a basis and an electron count in, a converged energy and
+   !! density out, with every matrix resident on the device. Hartree-Fock or
+   !! Kohn-Sham (any functional in trc_xc_functional), restricted or unrestricted.
+   !!
+   !! WHAT CROSSES THE BUS
+   !! --------------------
+   !! Per iteration: two energies, a norm, and, once DIIS runs, three packed
+   !! triangles (the new Fock matrix and commutator down, the extrapolated Fock
+   !! matrix up): the DIIS history lives on the host, where it costs no device
+   !! memory (trc_scf_diis's own header). The density, Fock matrices, orbitals
+   !! and orthogonaliser stay on the device; the Fock build is the resident
+   !! driver, the XC integrator finds its density already present, and the
+   !! products, commutator and eigenproblem are trc_linalg (cuBLAS/cuSOLVER
+   !! under OpenACC). This follows
+   !! metalquicha's device SCF, which measured host LAPACK plus copies at three
+   !! times the cost of the GPU Fock build. A host build runs the same source with
+   !! LAPACK, and the numbers agree to rounding, so the host suite tests this module.
+   !!
+   !! THE ITERATION
+   !! -------------
+   !! A few damped steps from the guess, then Pulay's DIIS on the commutator
+   !! FDS - SDF in the orthogonal basis, per spin with one set of coefficients.
+   !! Converged when the energy change and the RMS density change are both below
+   !! threshold. The DIIS system (at most 11 by 11) is solved by pivoted
+   !! elimination as in metalquicha's mqc_diis, with the error block scaled to
+   !! order one against the constraint border first: near convergence the overlaps
+   !! are 1e-16 and an unscaled elimination makes the weights noise, showing as a
+   !! density that drifts from the fixed point while the energy sits flat.
+   !!
+   !! UNRESTRICTED
+   !! ------------
+   !! F_s = H + J[D_a + D_b] - a_x K[D_s] + V_xc,s. The Fock driver returns
+   !! j J[D] - k K[D]/2 for a density it takes to be a total, so J is one call on
+   !! D_a + D_b with k = 0 and -a_x K[D_s] one call on 2 D_s with j = 0, k = a_x:
+   !! three builds per iteration against one restricted. A batched build over the
+   !! three densities is the obvious improvement and is not done.
+   !!
+   !! SPHERICAL BASES
+   !! ---------------
+   !! `b%spherical` (trc_api.F90, from a JSON basis's function_type) changes the
+   !! size of every matrix this module owns (S, H, D, F, C, eps, X, the DIIS
+   !! history) from `b%nao` to `b%nao_sph`; everything operating on them is
+   !! unchanged, just at a smaller `nao`. Everything touching a kernel stays
+   !! Cartesian: `trc_1e`, `trc_eri_t%fock_resident`, and the XC integrator.
+   !! Cartesian-sized scratch matrices (suffix `_c`: `s_c`, `h_c`, `d_c`,
+   !! `gmat_c`, `vxc_c`, ...) sit between the kernels and the SCF's own matrices,
+   !! built once per geometry (`s_c`/`h_c`, now `trc_scf_context`'s `smat`/`hcore`)
+   !! or once per iteration (`d_c` from the current density; `gmat_c`/`vxc_c` from
+   !! the Fock/XC calls, now `trc_scf_state`'s), and folded by `sph_cart_to_sph`.
+   !! `sph` guards every call into trc_sph.F90, so the Cartesian path is the same
+   !! code path as before spherical support existed.
+   !!
+   !! The XC integrator gets `d_c`, the Cartesian density rebuilt from `res%dmat`
+   !! each iteration, not spherical AO values on the grid: the transform is shared
+   !! with the Coulomb/exchange build, and `collocation_shell` evaluates Cartesian
+   !! components straight off a flat table, so a second AO space there would
+   !! duplicate trc_sph.F90's block structure.
+   !!
+   !! SAD and GWH reach this module already in the right space (SAD's atomic
+   !! sub-SCFs run on a `subset` basis carrying `spherical`; GWH is built here from
+   !! `hcore`). SAP stays Cartesian and is transformed once at the trc_capi.F90
+   !! call site, as it has no basis handle to carry `spherical`.
+   !!
+   !! POLARISABLE CONTINUUM
+   !! ---------------------
+   !! With `pcm_model` set, trc_pcm builds the cavity, K and the nuclear potential
+   !! once. Every iteration, at the density the energy is evaluated at, the surface
+   !! potential of the total Cartesian density gives the charges, q.v/2 into the
+   !! energy and the charges' full operator into each spin's Fock matrix (as
+   !! pyscf.solvent.pcm's SCFWithSolvent, which also adds it before DIIS). It is
+   !! rebuilt in full each iteration, independent of the incremental-ERI path.
+   !!
+   !! MODULES
+   !! -------
+   !! `trc_scf_settings` resolves `trc_scf_options_t` into what the loop reads
+   !! (`scf_settings_t`, "scf_config" below); `trc_scf_context` builds everything once
+   !! per geometry (`scf_ctx_t`, "scf_context": the pair list, S/H, the ERI engine, the
+   !! linear-algebra handles, the orthogonaliser, and -- when asked for -- the
+   !! PCM cavity and the DFT grid); `trc_scf_state` owns the per-iteration arrays
+   !! (`scf_state_t`, "scf_state") and the one enter/exit pair that puts them, `scf_context`'s
+   !! own matrices and `scf_result` on the device together. `scf_fock_build_g`/`scf_fock_assemble`
+   !! and the DIIS push/combine helpers below stay in THIS file for now (they
+   !! are not yet split into `trc_scf_fock`/`trc_scf_diis`): every one of them
+   !! already takes its arrays as explicit-shape dummies rather than touching
+   !! `scf_context`/`scf_state` inside a `do concurrent` body, which is what lets this compile
+   !! correctly once those arrays are struct components instead of plain locals.
+   !!
    use pic_types, only: dp, int64, int_index
    use trc_basis_types, only: trc_basis_t
    use trc_ecp_types, only: trc_ecp_t
@@ -221,14 +221,14 @@ contains
       call global_logger%info("density dumped to "//trim(path)//", nao "//to_string(nao))
    end subroutine dump_density
 
-   !
-   ! Run the SCF. `nalpha` and `nbeta` are the electron counts; the case is
-   ! restricted when they are equal and `unrestricted` is not forced. The
-   ! basis must already be on the device. `dguess` is (nao, nao, nspin) in
-   ! the result's convention; without it the guess is the core Hamiltonian.
-   !
    recursive subroutine trc_scf_run(scf_basis, nalpha, nbeta, scf_options, scf_result, dguess, comm, guess, la, &
                                     scf_dfjk, grid_cache, pair_eri_cache, sym, ecp)
+      !!
+      !! Run the SCF. `nalpha` and `nbeta` are the electron counts; the case is
+      !! restricted when they are equal and `unrestricted` is not forced. The
+      !! basis must already be on the device. `dguess` is (nao, nao, nspin) in
+      !! the result's convention; without it the guess is the core Hamiltonian.
+      !!
       type(trc_basis_t), intent(in) :: scf_basis
       integer, intent(in) :: nalpha, nbeta
       type(trc_scf_options_t), intent(in) :: scf_options

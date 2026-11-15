@@ -1,23 +1,23 @@
-!
-! The batched one-electron, multipole, PCM and density-fitting integral
-! drivers over a `trc_basis_t` and its `trc_pairlist_t`: the host-side entry
-! points that check the build's angular-momentum ceilings and hand explicit
-! arrays to the generated kernel drivers, each a single `do concurrent` over
-! shell pairs. Every argument must already be device-resident.
-!
-! An eri-layer module, next to the generated kernels it launches, so that the
-! SCF, PCM, RI-MP2 and the guesses can call it without depending on the API.
-! `trc_api` re-exports every public name here.
-!
-! RYS ROOT TABLES. The density-fitting kernels read the Rys root tables
-! (trc_rys_table1..9). Their `declare create` storage does not carry the host
-! initialiser to the device, so trc_df_2c and trc_df_3c push them
-! (rys_select_tables_init) before every launch: a few hundred kB of `update
-! device`, nothing beside a 3c build, and correct whichever device is
-! current at the time. A host build compiles the push away. The other
-! drivers here read the Boys table only, which trc_basis_t's `build` pushes.
-!
 module trc_integrals
+   !!
+   !! The batched one-electron, multipole, PCM and density-fitting integral
+   !! drivers over a `trc_basis_t` and its `trc_pairlist_t`: the host-side entry
+   !! points that check the build's angular-momentum ceilings and hand explicit
+   !! arrays to the generated kernel drivers, each a single `do concurrent` over
+   !! shell pairs. Every argument must already be device-resident.
+   !!
+   !! An eri-layer module, next to the generated kernels it launches, so that the
+   !! SCF, PCM, RI-MP2 and the guesses can call it without depending on the API.
+   !! `trc_api` re-exports every public name here.
+   !!
+   !! RYS ROOT TABLES. The density-fitting kernels read the Rys root tables
+   !! (trc_rys_table1..9). Their `declare create` storage does not carry the host
+   !! initialiser to the device, so trc_df_2c and trc_df_3c push them
+   !! (rys_select_tables_init) before every launch: a few hundred kB of `update
+   !! device`, nothing beside a 3c build, and correct whichever device is
+   !! current at the time. A host build compiles the push away. The other
+   !! drivers here read the Boys table only, which trc_basis_t's `build` pushes.
+   !!
    use pic_types, only: dp
    use trc_tables, only: LMAX
    use trc_rys_select, only: rys_select_tables_init
@@ -86,20 +86,20 @@ module trc_integrals
 
 contains
 
-   !
-   ! Cartesian multipole moments about `orig`, through the octupole.
-   !
-   ! (nao, nao, 39): 3 dipole, 9 quadrupole, 27 octupole, full tensors in
-   ! libcint's order with the last index fastest -- what makeEFP's distributed
-   ! multipoles consume.
-   !
-   ! A separate call from `trc_1e` even though the two share 1-D overlap
-   ! tables. Fusing them was tried and put 39 components per class into one
-   ! device routine, which NVVM chewed on for over thirty minutes at LMAX=2
-   ! against two and a half apart. Both are computed once per geometry, so the
-   ! shared tables were never worth it.
-   !
    subroutine trc_multipoles(b, p, orig, mmat)
+      !!
+      !! Cartesian multipole moments about `orig`, through the octupole.
+      !!
+      !! (nao, nao, 39): 3 dipole, 9 quadrupole, 27 octupole, full tensors in
+      !! libcint's order with the last index fastest -- what makeEFP's distributed
+      !! multipoles consume.
+      !!
+      !! A separate call from `trc_1e` even though the two share 1-D overlap
+      !! tables. Fusing them was tried and put 39 components per class into one
+      !! device routine, which NVVM chewed on for over thirty minutes at LMAX=2
+      !! against two and a half apart. Both are computed once per geometry, so the
+      !! shared tables were never worth it.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_pairlist_t), intent(in) :: p
       real(dp), intent(in)  :: orig(3)
@@ -130,16 +130,16 @@ contains
                         p%npair, p%p_i, p%p_j, smat, tmat, vmat)
    end subroutine trc_1e
 
-   !
-   ! The one-electron GRADIENT: -W:dS/dR + D:dT/dR + D:dV/dR (basis
-   ! derivative on both centres, Hellmann-Feynman on every nucleus),
-   ! ADDED into `grad` -- a caller assembling the full analytic gradient
-   ! calls this after eri%gradient (which starts `grad` from zero; see its
-   ! own header) and before the trivial nuclear-repulsion term, same
-   ! convention as trc_scf_grad%trc_scf_gradient. `wmat`/`dmat`/`grad` must
-   ! already be device-resident, same as trc_1e's own smat/tmat/vmat.
-   !
    subroutine trc_1e_gradient(b, p, wmat, dmat, grad)
+      !!
+      !! The one-electron GRADIENT: -W:dS/dR + D:dT/dR + D:dV/dR (basis
+      !! derivative on both centres, Hellmann-Feynman on every nucleus),
+      !! ADDED into `grad` -- a caller assembling the full analytic gradient
+      !! calls this after eri%gradient (which starts `grad` from zero; see its
+      !! own header) and before the trivial nuclear-repulsion term, same
+      !! convention as trc_scf_grad%trc_scf_gradient. `wmat`/`dmat`/`grad` must
+      !! already be device-resident, same as trc_1e's own smat/tmat/vmat.
+      !!
       type(trc_basis_t), intent(in)  :: b
       type(trc_pairlist_t), intent(in) :: p
       real(dp), intent(in)    :: wmat(b%nao, b%nao)
@@ -157,18 +157,18 @@ contains
                              p%npair, p%p_i, p%p_j, wmat, dmat, grad)
    end subroutine trc_1e_gradient
 
-   !
-   ! The polarisable continuum's solute-surface integrals. A surface point
-   ! is a normalised s Gaussian of exponent zeta_k**2 centred at pts(:,k);
-   ! its potential is erf(zeta_k r)/r, so these are the nuclear-attraction
-   ! integrals with that operator in place of 1/r (gen_1e.py's --pcm
-   ! kernels). Both Cartesian, both device-resident like trc_1e: b, p, pts,
-   ! zeta and the matrix/vector arguments must already be present.
-   !
-   ! The pair list's primitive-pair data is what the kernels read, so `p`
-   ! must have been built from `b`.
-   !
    subroutine trc_pcm_potential(b, p, npts, pts, zeta, dmat, v)
+      !!
+      !! The polarisable continuum's solute-surface integrals. A surface point
+      !! is a normalised s Gaussian of exponent zeta_k**2 centred at pts(:,k);
+      !! its potential is erf(zeta_k r)/r, so these are the nuclear-attraction
+      !! integrals with that operator in place of 1/r (gen_1e.py's --pcm
+      !! kernels). Both Cartesian, both device-resident like trc_1e: b, p, pts,
+      !! zeta and the matrix/vector arguments must already be present.
+      !!
+      !! The pair list's primitive-pair data is what the kernels read, so `p`
+      !! must have been built from `b`.
+      !!
       !! `v(k) = sum_{mu nu} D_mu,nu <mu| erf(zeta_k|r - pts_k|)/|r - pts_k| |nu>`
       type(trc_basis_t), intent(in) :: b
       type(trc_pairlist_t), intent(in) :: p
@@ -197,17 +197,17 @@ contains
                            npts, pts, zeta, q, vmat)
    end subroutine trc_pcm_fock
 
-   !
-   ! The polarisable continuum's surface-integral GRADIENT: +D:dV/dR of
-   ! sum_k q_k erf(zeta_k|r - pts_k|)/|r - pts_k|, the basis-centre
-   ! derivative (both A and B) and the Hellmann-Feynman-like derivative wrt
-   ! each point's own position (bucketed to its parent atom, `ptatm`),
-   ! ADDED into `grad` -- same convention as trc_1e_gradient. Needs the
-   ! basis's raw primitive data (sh_e, sh_c), not the pair list's
-   ! precombined pp_*: the bra/ket shift identity needs each primitive's
-   ! own exponent (gen_1e.py's emit_pcm_grad_class).
-   !
    subroutine trc_pcm_gradient(b, p, pts, zeta, ptatm, q, dmat, grad)
+      !!
+      !! The polarisable continuum's surface-integral GRADIENT: +D:dV/dR of
+      !! sum_k q_k erf(zeta_k|r - pts_k|)/|r - pts_k|, the basis-centre
+      !! derivative (both A and B) and the Hellmann-Feynman-like derivative wrt
+      !! each point's own position (bucketed to its parent atom, `ptatm`),
+      !! ADDED into `grad` -- same convention as trc_1e_gradient. Needs the
+      !! basis's raw primitive data (sh_e, sh_c), not the pair list's
+      !! precombined pp_*: the bra/ket shift identity needs each primitive's
+      !! own exponent (gen_1e.py's emit_pcm_grad_class).
+      !!
       !! `npts` is not a dummy here (tools/archcheck.py's arg-count limit):
       !! `pts`/`zeta`/`ptatm`/`q` are assumed-shape, fine for a plain host
       !! dispatcher that is not itself `!$acc routine seq` -- `size(zeta)`
@@ -228,13 +228,12 @@ contains
                            p%npair, p%p_i, p%p_j, size(zeta), pts, zeta, ptatm, q, dmat, grad)
    end subroutine trc_pcm_gradient
 
-   !
-   ! Explicit-shape dummies with the extents passed in, and the extents
-   ! declared first. An assumed-shape dummy makes nvfortran walk a descriptor
-   ! per launch; reaching through b%component inside the loop does the same.
-   !
-
    subroutine trc_df_2c(aux, jmat)
+      !!
+      !! Explicit-shape dummies with the extents passed in, and the extents
+      !! declared first. An assumed-shape dummy makes nvfortran walk a descriptor
+      !! per launch; reaching through b%component inside the loop does the same.
+      !!
       !! (P|Q) over an auxiliary basis.
       type(trc_basis_t), intent(in) :: aux
       real(dp), intent(out) :: jmat(aux%nao, aux%nao)

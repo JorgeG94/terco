@@ -1,32 +1,32 @@
-!
-! A malformed SCF guess density -- one entry replaced by a NaN, simulating
-! a warm-start density read past the end of an undersized buffer (a
-! per-image buffer sized before the first image's own converged nao was
-! known, app/trc_dlfind_bridge.F90's own reset_image_state) fed to
-! trc_set_guess(TRC_GUESS_GIVEN) -- must come back through trc_run_scf's
-! own status/message, not `error stop` inside src/core/trc_linalg.F90's
-! eigensolver.
-!
-! Root cause, read directly off the source (not guessed from the symptom):
-! src/scf/trc_scf_driver.F90's per-iteration Fock diagonalisation
-! (orbitals_and_density, F' = X^T F X then linalg_provider%syev(fp,
-! eps_s)) is reached from a GIVEN density on the very first iteration --
-! `dguess` skips the guess-construction path (guess_from) entirely and
-! goes straight into the main loop -- so a malformed GIVEN density is the
-! most direct, deterministic way to reach exactly the call site a
-! real warm-start crash would hit.
-!
-! A signalling NaN is used to seed the one bad entry (ieee_signaling_nan,
-! below) only because it is the straightforward intrinsic for "write a
-! deliberately invalid real" -- dsyev reports a nonzero info for a NaN
-! input whether it started quiet or signalling, since ordinary arithmetic
-! on a signalling NaN quiets it before it ever reaches the eigensolver
-! (test/check_linalg_mat.F90%test_syev_failure's own header has the
-! measurement).
-!
-! A test-drive suite.
-!
 module check_scf_diag_failure_suite
+   !!
+   !! A malformed SCF guess density -- one entry replaced by a NaN, simulating
+   !! a warm-start density read past the end of an undersized buffer (a
+   !! per-image buffer sized before the first image's own converged nao was
+   !! known, app/trc_dlfind_bridge.F90's own reset_image_state) fed to
+   !! trc_set_guess(TRC_GUESS_GIVEN) -- must come back through trc_run_scf's
+   !! own status/message, not `error stop` inside src/core/trc_linalg.F90's
+   !! eigensolver.
+   !!
+   !! Root cause, read directly off the source (not guessed from the symptom):
+   !! src/scf/trc_scf_driver.F90's per-iteration Fock diagonalisation
+   !! (orbitals_and_density, F' = X^T F X then linalg_provider%syev(fp,
+   !! eps_s)) is reached from a GIVEN density on the very first iteration --
+   !! `dguess` skips the guess-construction path (guess_from) entirely and
+   !! goes straight into the main loop -- so a malformed GIVEN density is the
+   !! most direct, deterministic way to reach exactly the call site a
+   !! real warm-start crash would hit.
+   !!
+   !! A signalling NaN is used to seed the one bad entry (ieee_signaling_nan,
+   !! below) only because it is the straightforward intrinsic for "write a
+   !! deliberately invalid real" -- dsyev reports a nonzero info for a NaN
+   !! input whether it started quiet or signalling, since ordinary arithmetic
+   !! on a signalling NaN quiets it before it ever reaches the eigensolver
+   !! (test/check_linalg_mat.F90%test_syev_failure's own header has the
+   !! measurement).
+   !!
+   !! A test-drive suite.
+   !!
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_char, c_loc, c_null_ptr, c_null_char
    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_signaling_nan
    use pic_types, only: dp

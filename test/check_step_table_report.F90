@@ -1,14 +1,14 @@
-!
-! step_table_t%report's layout: a table where no step counted operations or
-! bytes prints the time column alone, so a run's XC- and RI-MP2-gradient
-! tables do not show a whole column of dashes that reads as a failed count;
-! a table where some steps count keeps the work and rate columns, with a
-! dash on the steps that do not. The report goes through pic_logger, so the
-! logger is pointed at a file and the file is read back.
-!
-! A test-drive suite.
-!
 module check_step_table_report_suite
+   !!
+   !! step_table_t%report's layout: a table where no step counted operations or
+   !! bytes prints the time column alone, so a run's XC- and RI-MP2-gradient
+   !! tables do not show a whole column of dashes that reads as a failed count;
+   !! a table where some steps count keeps the work and rate columns, with a
+   !! dash on the steps that do not. The report goes through pic_logger, so the
+   !! logger is pointed at a file and the file is read back.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger, performance_level
    use testdrive, only: new_unittest, unittest_type, error_type, check

@@ -18,7 +18,7 @@
 ! main.F90) and any other caller of trc_opt_capi.F90's C ABI (include/
 ! terco_opt.h) share this exact module -- ONE optimiser driver, not a copy
 ! each. With TERCO_ENABLE_DLFIND=OFF this file is not built at all;
-! app/trc_dlfind_stub.F90 (still in app/, compiled directly into terco_cli)
+! src/cli/trc_dlfind_stub.F90 (compiled directly into terco_cli)
 ! is the ONLY implementation of this module's public interface in that
 ! build, and it is what lets terco_cli refuse --opt with a message instead
 ! of failing to link.
@@ -200,7 +200,7 @@
 ! Compiled only with TERCO_ENABLE_DLFIND (src/opt/CMakeLists.txt defines it on
 ! terco_opt). fpm compiles everything under src/ and cannot skip this
 ! directory; without the macro (fpm's default, no DL-FIND) this file is
-! empty and app/trc_dlfind_stub.F90 provides the module instead.
+! empty and src/cli/trc_dlfind_stub.F90 provides the module instead.
 #ifdef TERCO_ENABLE_DLFIND
 module trc_dlfind_bridge
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_char, c_ptr, c_funptr, c_funloc, c_loc, &
@@ -214,7 +214,7 @@ module trc_dlfind_bridge
                        trc_set_guess, trc_density, trc_message, trc_run_hessian, trc_hessian, &
                        trc_run_rimp2, trc_check_rimp2_gradient, trc_check_gradient_upfront, trc_symmetry_requested, &
                        trc_symmetry_suppress_default, TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
-   ! trc_opt_io, not trc_app (app/trc_app.F90): this module is built into
+   ! trc_opt_io, not trc_app (src/cli/trc_app.F90): this module is built into
    ! libterco_opt, which must not depend on app/ -- CODE_STRUCTURE.md's
    ! "entry points are leaves" rule, and the only way a caller outside
    ! terco's own build (cyclone) could ever link this at all. trc_opt_io
@@ -692,7 +692,7 @@ contains
 
    pure function trc_dlfind_available() result(ok)
       !! Whether THIS build can optimise a geometry -- always true here;
-      !! app/trc_dlfind_stub.F90's own answer (the TERCO_ENABLE_DLFIND=OFF
+      !! src/cli/trc_dlfind_stub.F90's own answer (the TERCO_ENABLE_DLFIND=OFF
       !! build) is always false, which is all app/main.F90 ever asks.
       logical :: ok
       ok = .true.
@@ -1748,17 +1748,17 @@ contains
 
    end subroutine cb_get_params
 
-   !
-   ! Converge the SCF at `xyz`, warm-started from the previous accepted
-   ! point if there is one, same contract for every caller that needs a
-   ! converged SCF on `context` at a given geometry (cb_get_gradient AND
-   ! cb_get_hessian -- factored out so the warm-start logic exists once).
-   ! Does NOT touch module `save` step/trajectory bookkeeping (last_niter,
-   ! n_steps, ...): that stays the gradient callback's own job, since only
-   ! an ACCEPTED gradient evaluation's iteration count is what
-   ! cb_put_coords later adds into total_scf_iterations.
-   !
    subroutine scf_at_geometry(xyz, image, niter, ok, why)
+      !!
+      !! Converge the SCF at `xyz`, warm-started from the previous accepted
+      !! point if there is one, same contract for every caller that needs a
+      !! converged SCF on `context` at a given geometry (cb_get_gradient AND
+      !! cb_get_hessian -- factored out so the warm-start logic exists once).
+      !! Does NOT touch module `save` step/trajectory bookkeeping (last_niter,
+      !! n_steps, ...): that stays the gradient callback's own job, since only
+      !! an ACCEPTED gradient evaluation's iteration count is what
+      !! cb_put_coords later adds into total_scf_iterations.
+      !!
       !! `image` is the DL-FIND image this geometry belongs to (always 1
       !! outside --opt-neb). For --opt-neb (and not opts%neb_shared_density,
       !! the benchmark-only override), the warm-start density/orbital-count

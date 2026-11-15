@@ -1,35 +1,35 @@
-!
-! A tiny reader for the committed pyscf references under test/pyscf_refs/.
-!
-! Jorge's rule, from the scf_rks_vs_pyscf/UKS red build: pyscf never runs in
-! CI. test/pyscf_refs/generate.py runs it once, offline, on a developer
-! machine with pyscf installed, and writes one plain-text file per case --
-! the same "recorded oracle" shape as reference.dat/reference1e.dat/
-! reference_df.dat/reference_xc.dat, just with pyscf as the oracle instead of
-! libfint or libxc. Every Fortran check below reads its own file back and
-! compares; none of them import anything, because none of them are Python.
-!
-! FORMAT. Comment lines start with '#' and may appear anywhere; everything
-! else is TAG value(s), one tag per logical record:
-!   INT   <tag> <i>
-!   REAL  <tag> <r>                (%.17e from the generator; exact round trip)
-!   STR   <tag> <string, no spaces>
-!   VECTOR <tag> <n>
-!   <n reals, list-directed, any layout>
-!   MATRIX <tag> <nr> <nc>
-!   <nr*nc reals, column-major (Fortran order), list-directed>
-!   MATRIX3 <tag> <n1> <n2> <n3>
-!   <n1*n2*n3 reals, column-major, list-directed>
-! A reader asks for a tag by name; a mismatch is a hard stop (the file and
-! the check have drifted, which is exactly what should not pass silently).
-!
-! Every matrix/vector here is already in THIS BUILD's own AO order and
-! normalisation convention -- generate.py does the permutation and the
-! per-AO rescaling once, offline, the same transforms rys_grad_ref.py and
-! its siblings used to do at test time. A Fortran check compares its own
-! array to what it reads here directly, no permutation needed.
-!
 module pyscf_ref_io
+   !!
+   !! A tiny reader for the committed pyscf references under test/pyscf_refs/.
+   !!
+   !! Jorge's rule, from the scf_rks_vs_pyscf/UKS red build: pyscf never runs in
+   !! CI. test/pyscf_refs/generate.py runs it once, offline, on a developer
+   !! machine with pyscf installed, and writes one plain-text file per case --
+   !! the same "recorded oracle" shape as reference.dat/reference1e.dat/
+   !! reference_df.dat/reference_xc.dat, just with pyscf as the oracle instead of
+   !! libfint or libxc. Every Fortran check below reads its own file back and
+   !! compares; none of them import anything, because none of them are Python.
+   !!
+   !! FORMAT. Comment lines start with '#' and may appear anywhere; everything
+   !! else is TAG value(s), one tag per logical record:
+   !!   INT   <tag> <i>
+   !!   REAL  <tag> <r>                (%.17e from the generator; exact round trip)
+   !!   STR   <tag> <string, no spaces>
+   !!   VECTOR <tag> <n>
+   !!   <n reals, list-directed, any layout>
+   !!   MATRIX <tag> <nr> <nc>
+   !!   <nr*nc reals, column-major (Fortran order), list-directed>
+   !!   MATRIX3 <tag> <n1> <n2> <n3>
+   !!   <n1*n2*n3 reals, column-major, list-directed>
+   !! A reader asks for a tag by name; a mismatch is a hard stop (the file and
+   !! the check have drifted, which is exactly what should not pass silently).
+   !!
+   !! Every matrix/vector here is already in THIS BUILD's own AO order and
+   !! normalisation convention -- generate.py does the permutation and the
+   !! per-AO rescaling once, offline, the same transforms rys_grad_ref.py and
+   !! its siblings used to do at test time. A Fortran check compares its own
+   !! array to what it reads here directly, no permutation needed.
+   !!
    use pic_types, only: dp
    implicit none
    private
@@ -43,11 +43,11 @@ module pyscf_ref_io
 
 contains
 
-   !
-   ! Open a reference file; `ok` is false (not a crash) if it is missing, so
-   ! a caller still inside its own LMAX self-skip can decide what that means.
-   !
    subroutine ref_open(name, u, ok)
+      !!
+      !! Open a reference file; `ok` is false (not a crash) if it is missing, so
+      !! a caller still inside its own LMAX self-skip can decide what that means.
+      !!
       character(len=*), intent(in) :: name
       integer, intent(out) :: u
       logical, intent(out) :: ok
@@ -56,12 +56,12 @@ contains
       ok = (ios == 0)
    end subroutine ref_open
 
-   !
-   ! Open or FAIL LOUDLY. For a case already known to be in scope (past any
-   ! LMAX/DF_LMAX guard) -- a missing file here means "run generate.py", not
-   ! "nothing to test yet", so this stops rather than skips.
-   !
    subroutine ref_require(name, u)
+      !!
+      !! Open or FAIL LOUDLY. For a case already known to be in scope (past any
+      !! LMAX/DF_LMAX guard) -- a missing file here means "run generate.py", not
+      !! "nothing to test yet", so this stops rather than skips.
+      !!
       character(len=*), intent(in) :: name
       integer, intent(out) :: u
       logical :: ok
@@ -183,13 +183,13 @@ contains
       read (u, *) a
    end subroutine ref_read_matrix3
 
-   !
-   ! One line of PASS/FAIL bookkeeping, shared across every check that reads
-   ! a reference here -- the same shape check_ao.F90/check_xc_energy.F90's
-   ! own `report` already used, lifted out so the pyscf-comparison checks
-   ! share one copy of it too.
-   !
    subroutine ref_report(nfail, ok, what, value)
+      !!
+      !! One line of PASS/FAIL bookkeeping, shared across every check that reads
+      !! a reference here -- the same shape check_ao.F90/check_xc_energy.F90's
+      !! own `report` already used, lifted out so the pyscf-comparison checks
+      !! share one copy of it too.
+      !!
       integer, intent(inout) :: nfail
       logical, intent(in) :: ok
       character(len=*), intent(in) :: what

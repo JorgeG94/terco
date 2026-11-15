@@ -1,12 +1,12 @@
-!
-! Old vs new Schwarz-bound setup time, CPU-indicative only (see this
-! change's own report for the GPU numbers): screen_schwarz_bounds_hgp (one HGP
-! thread per shell pair, whole (ab|ab) block) against screen_schwarz_bounds_rys
-! (one Rys thread per (pair, component pair), diagonal only), on the same
-! hp_* primitive-pair data. Not registered as a ctest -- a timing is not a
-! pass, same as this directory's other bench_*.
-!
 program bench_schwarz
+   !!
+   !! Old vs new Schwarz-bound setup time, CPU-indicative only (see this
+   !! change's own report for the GPU numbers): screen_schwarz_bounds_hgp (one HGP
+   !! thread per shell pair, whole (ab|ab) block) against screen_schwarz_bounds_rys
+   !! (one Rys thread per (pair, component pair), diagonal only), on the same
+   !! hp_* primitive-pair data. Not registered as a ctest -- a timing is not a
+   !! pass, same as this directory's other bench_*.
+   !!
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_tables, only: tables_init, LMAX

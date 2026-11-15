@@ -1,10 +1,10 @@
-!
-! The decisions of trc_sym_run, with no SCF: which group a request means for a
-! detected geometry (subgroups, groups this build does not support yet), the
-! electrons-per-irrep text (restricted and alpha/beta), and the occupation
-! helpers the gradient guard and the orbital report use.
-!
 module check_sym_run_suite
+   !!
+   !! The decisions of trc_sym_run, with no SCF: which group a request means for a
+   !! detected geometry (subgroups, groups this build does not support yet), the
+   !! electrons-per-irrep text (restricted and alpha/beta), and the occupation
+   !! helpers the gradient guard and the orbital report use.
+   !!
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_error, only: error_t
    use trc_sym_group, only: trc_sym_group_t, sym_group_from_name

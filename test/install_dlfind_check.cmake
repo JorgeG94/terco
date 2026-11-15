@@ -1,5 +1,5 @@
 # An installed DLFIND=ON terco_cli needs libdlfind.so at its own RPATH
-# ($ORIGIN/../lib, app/CMakeLists.txt) -- Findlibdlfind.cmake's
+# ($ORIGIN/../lib, src/cli/CMakeLists.txt) -- Findlibdlfind.cmake's
 # EXCLUDE_FROM_ALL keeps libdlfind's OWN install() rules from firing, so
 # without an explicit install(TARGETS dlfind ...) of our own, the shared
 # library is built but never copied into the install prefix, and the
@@ -27,12 +27,12 @@ endif()
 
 # libdlfind's own CMakeLists.txt builds it as `libdlfind.so.<version>`
 # with a `libdlfind.so` symlink (the usual SONAME convention) -- glob
-# rather than assume which of the two names app/CMakeLists.txt's
+# rather than assume which of the two names src/cli/CMakeLists.txt's
 # install(TARGETS dlfind ...) actually copied.
 file(GLOB _dlfind_installed ${PREFIX}/lib/libdlfind.so*)
 if(NOT _dlfind_installed)
   message(FATAL_ERROR "no libdlfind.so* under ${PREFIX}/lib after install -- "
-                       "the dlfind install() rule (app/CMakeLists.txt) did not run")
+                       "the dlfind install() rule (src/cli/CMakeLists.txt) did not run")
 endif()
 
 # The real test: starting the installed binary away from the build tree,

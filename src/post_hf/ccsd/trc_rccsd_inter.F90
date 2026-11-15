@@ -162,11 +162,10 @@ module trc_rccsd_inter
 
 contains
 
-   ! ---------------------------------------------------------------------
-   ! the types
-   ! ---------------------------------------------------------------------
-
    subroutine amps_init(this, no, nv)
+      !! ---------------------------------------------------------------------
+      !! the types
+      !! ---------------------------------------------------------------------
       !! Zeroed amplitudes on host and device
       class(trc_rccsd_amps_t), intent(inout) :: this
       integer, intent(in) :: no, nv
@@ -421,11 +420,10 @@ contains
       ok = .true.
    end function ready
 
-   ! ---------------------------------------------------------------------
-   ! the intermediates
-   ! ---------------------------------------------------------------------
-
    subroutine rccsd_inter_build_tau(ints, amps, inter, scr)
+      !! ---------------------------------------------------------------------
+      !! the intermediates
+      !! ---------------------------------------------------------------------
       !! tau(i,j,a,b) = t2(i,j,a,b) + t1(i,a) t1(j,b)       einsum 'ia,jb->ijab' + t2
       type(trc_rccsd_ints_t), intent(in) :: ints
       type(trc_rccsd_amps_t), intent(in) :: amps
@@ -594,11 +592,10 @@ contains
       call rccsd_inter_lvv(ints, amps, inter, scr, la)
    end subroutine rccsd_inter_one_particle
 
-   ! ---------------------------------------------------------------------
-   ! the energy and the MP2 guess
-   ! ---------------------------------------------------------------------
-
    subroutine rccsd_inter_energy(amps, scr, e_singles, e_doubles)
+      !! ---------------------------------------------------------------------
+      !! the energy and the MP2 guess
+      !! ---------------------------------------------------------------------
       !! E = sum_ijab [2 (ia|jb) - (ib|ja)] (t2(i,j,a,b) + t1(i,a) t1(j,b))
       !!
       !! rccsd.energy: 2 einsum('ijab,iajb', tau, ovov) - einsum('ijab,ibja', tau, ovov), its
@@ -661,13 +658,12 @@ contains
       call rccsd_inter_energy(amps, scr, e_singles, e_mp2)
    end subroutine rccsd_inter_mp2_guess
 
-   ! ---------------------------------------------------------------------
-   ! the kernels. Each takes its arrays as explicit-shape dummies and runs one
-   ! `do concurrent` over ONE flattened index, whose body calls an item routine
-   ! of this module. No `x%name` appears in any of them.
-   ! ---------------------------------------------------------------------
-
    subroutine kernel_lov(no, nv, ovov, lov)
+      !! ---------------------------------------------------------------------
+      !! the kernels. Each takes its arrays as explicit-shape dummies and runs one
+      !! `do concurrent` over ONE flattened index, whose body calls an item routine
+      !! of this module. No `x%name` appears in any of them.
+      !! ---------------------------------------------------------------------
       !! lov(k,c,l,d) = 2 ovov(k,c,l,d) - ovov(k,d,l,c)
       integer, intent(in) :: no, nv
       real(dp), intent(in) :: ovov(no, nv, no, nv)
@@ -790,15 +786,14 @@ contains
       end do
    end subroutine kernel_mp2
 
-   ! ---------------------------------------------------------------------
-   ! the item routines: pure, `routine seq`, explicit-shape dummies, no
-   ! arrays of their own. A flat 1-based index t is the position in the
-   ! DESTINATION, first index fastest.
-   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
-   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
-   ! ---------------------------------------------------------------------
-
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
+      !! ---------------------------------------------------------------------
+      !! the item routines: pure, `routine seq`, explicit-shape dummies, no
+      !! arrays of their own. A flat 1-based index t is the position in the
+      !! DESTINATION, first index fastest.
+      !! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+      !! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
+      !! ---------------------------------------------------------------------
       !! t - 1 = (i1-1) + n1 ((i2-1) + n2 ((i3-1) + n3 (i4-1)))
       !$acc routine seq
       integer, intent(in) :: t, n1, n2, n3

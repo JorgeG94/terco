@@ -126,26 +126,26 @@ contains
 
 #include "inc/trc_boys_eval.inc"
 
-   !
-   ! LOCAL COPIES of trc_hgp's comp/binom/powi.
-   !
-   ! NVHPC does not inline an `!$acc routine seq` helper across a module
-   ! boundary, and these are called from the innermost loop of the HRR --
-   ! `binom` and `powi` six times per (b', d') term, which is up to sixteen
-   ! terms per component.  Cross-module they were real calls in the hottest
-   ! loop in the digestion.
-   !
-   ! Duplication, and only justified because the ablation put the digestion at
-   ! 31% of runtime.  trc_hgp keeps the originals for the standalone HGP path
-   ! and check_hgp still validates those.
-   !
-   !
-   ! (l, ic) -> (px,py,pz), the component AT AN AO OFFSET (`ic` becomes
-   ! `mu = ao_off(si) + ic` etc below) -- OUTPUT layout, follows the build's
-   ! Cartesian order.  Generated so this deliberate second copy of trc_hgp's
-   ! `comp` cannot drift from it; see scripts/gen_cartcomp.py.
-   !
    pure subroutine comp(l, ic, px, py, pz)
+      !!
+      !! LOCAL COPIES of trc_hgp's comp/binom/powi.
+      !!
+      !! NVHPC does not inline an `!$acc routine seq` helper across a module
+      !! boundary, and these are called from the innermost loop of the HRR --
+      !! `binom` and `powi` six times per (b', d') term, which is up to sixteen
+      !! terms per component.  Cross-module they were real calls in the hottest
+      !! loop in the digestion.
+      !!
+      !! Duplication, and only justified because the ablation put the digestion at
+      !! 31% of runtime.  trc_hgp keeps the originals for the standalone HGP path
+      !! and check_hgp still validates those.
+      !!
+      !!
+      !! (l, ic) -> (px,py,pz), the component AT AN AO OFFSET (`ic` becomes
+      !! `mu = ao_off(si) + ic` etc below) -- OUTPUT layout, follows the build's
+      !! Cartesian order.  Generated so this deliberate second copy of trc_hgp's
+      !! `comp` cannot drift from it; see scripts/gen_cartcomp.py.
+      !!
       !$acc routine seq
       integer, intent(in)  :: l, ic
       integer, intent(out) :: px, py, pz
@@ -175,12 +175,12 @@ contains
       end do
    end function powi
 
-   !
-   ! Whole Fock build: walk admitted bin pairs on the host, launch one kernel
-   ! each.  The host loop is over BINS -- tens of thousands of iterations at
-   ! most -- not over quartets.
-   !
    subroutine binkernel_fock_bins(b, pairs, quartets, launch, dsh, dmat, jmat, kmat)
+      !!
+      !! Whole Fock build: walk admitted bin pairs on the host, launch one kernel
+      !! each.  The host loop is over BINS -- tens of thousands of iterations at
+      !! most -- not over quartets.
+      !!
       type(pair_bins_t), intent(inout) :: b
       !! `intent(inout)`: the optional one-time resort below reorders it.
       type(trc_shell_pairs_t), intent(in) :: pairs
@@ -347,12 +347,12 @@ contains
       call plan%release()
    end subroutine binkernel_fock_bins
 
-   !
-   ! One launch per contiguous class run of a class-sorted plan (or per
-   ! TRC_LAUNCH_CAP quartets of one), each through the class's own HGP or
-   ! Rys kernel. The plan's arrays are already on the device.
-   !
    subroutine launch_in_frame(b, pairs, quartets, launch, plan, dsh, dmat, jmat)
+      !!
+      !! One launch per contiguous class run of a class-sorted plan (or per
+      !! TRC_LAUNCH_CAP quartets of one), each through the class's own HGP or
+      !! Rys kernel. The plan's arrays are already on the device.
+      !!
       !! launch_classes in the engine's frame (parity skipping): the kernels
       !! are handed the coordinate arrays in the order `quartets%axperm`
       !! says, so that the dead axis is their z, and read the density and add
@@ -623,15 +623,15 @@ contains
       end do
    end subroutine frame_add
 
-   !
-   ! Segment shape, for comparing this against a batching scheme that caps
-   ! its batches (gmshpc: 2560 shell pairs per bra batch). A segment here is
-   ! one admitted bin pair and is homogeneous by construction -- same four
-   ! angular momenta, same contraction degree, same magnitude bucket -- so
-   ! what matters is how big they are and how much of a warp straddles a
-   ! boundary.
-   !
    subroutine log_segment_shape(plan)
+      !!
+      !! Segment shape, for comparing this against a batching scheme that caps
+      !! its batches (gmshpc: 2560 shell pairs per bra batch). A segment here is
+      !! one admitted bin pair and is homogeneous by construction -- same four
+      !! angular momenta, same contraction degree, same magnitude bucket -- so
+      !! what matters is how big they are and how much of a warp straddles a
+      !! boundary.
+      !!
       type(trc_bin_plan_t), intent(in) :: plan
       integer :: q, nsmall
       integer(int64) :: mn, mx, sz
@@ -653,23 +653,23 @@ contains
    end subroutine log_segment_shape
 
 
-   !
-   ! Count the quartets that survive screening, using the same index
-   ! arithmetic and the same two tests as the kernel.  Diagnostic only: it
-   ! exists so the effect of density screening is a measured number rather
-   ! than an inference from wall-clock.
-   !
-   ! A REDUCTION WITHOUT A REDUCTION CLAUSE. `do concurrent` gained
-   ! `reduce()` in Fortran 2023, but gfortran does not take it, and this used
-   ! to be the one OpenACC compute construct in terco (a `parallel loop
-   ! reduction`). Instead each thread counts one chunk of KEPT_CHUNK work
-   ! items into its own slot and the host adds the slots up: the same count,
-   ! exactly, since it is an integer. 4096 items a thread keeps the partial
-   ! array to 3.9 MB (488k int64 slots) at 2e9 work items and the launch at half a million
-   ! threads, plenty to fill the GPU.
-   !
    subroutine count_kept(nseg, nwork, sNB, sOA, sOB, sD, sOff, &
                          npair, sp_i, sp_j, sp_q, thresh, jfac, kfac, dsh, nbas, nkept)
+      !!
+      !! Count the quartets that survive screening, using the same index
+      !! arithmetic and the same two tests as the kernel.  Diagnostic only: it
+      !! exists so the effect of density screening is a measured number rather
+      !! than an inference from wall-clock.
+      !!
+      !! A REDUCTION WITHOUT A REDUCTION CLAUSE. `do concurrent` gained
+      !! `reduce()` in Fortran 2023, but gfortran does not take it, and this used
+      !! to be the one OpenACC compute construct in terco (a `parallel loop
+      !! reduction`). Instead each thread counts one chunk of KEPT_CHUNK work
+      !! items into its own slot and the host adds the slots up: the same count,
+      !! exactly, since it is an integer. 4096 items a thread keeps the partial
+      !! array to 3.9 MB (488k int64 slots) at 2e9 work items and the launch at half a million
+      !! threads, plenty to fill the GPU.
+      !!
       integer,  intent(in) :: nseg, npair, nbas
       integer(int64), intent(in) :: nwork
       integer,  intent(in) :: sNB(nseg), sOA(nseg), sOB(nseg)
@@ -821,34 +821,34 @@ contains
       end do
    end subroutine fock_all_nosym
 
-   !
-   ! General-density item routine: no assumption that D is symmetric.
-   !
-   ! The folded six-atomic digestion collapses the eight permutations using
-   ! D_mn = D_nm and the caller then symmetrises the result. For the coupled-
-   ! perturbed Hessian's response density both steps are wrong: J survives,
-   ! being contracted against an index pair the integral is symmetric in, but
-   ! K loses its antisymmetric part.
-   !
-   ! This is the ENUMERATED digestion, which was always general -- it reads
-   ! D_mn and D_nm as distinct and writes J and K into separate matrices. It
-   ! lives in the source behind the TRC_FOCK6 `#else` and stopped being
-   ! compiled when folding became the default; this is that branch, forced,
-   ! as its own routine.
-   !
-   ! SINGLE DENSITY by construction: mqc's `build_fock_direct_nosym` takes
-   ! one, and the enumerated digestion nests deeply enough inside its
-   ! permutation guards that threading a batch loop through it is more risk
-   ! than batching would be worth. Ranks match the batched kernels so one
-   ! driver serves both; the density index is a literal 1.
-   !
-   ! Slower than the folded path by about what folding bought. The Hessian is
-   ! built once per makeEFP; the SCF Fock a hundred times.
-   !
    pure subroutine one_bin_item_nosym(t, diag, nA, nB, offA, offB, npair, sp_i, sp_j, &
                                 sp_q, thresh, jfac, kfac, omega, dsh, nbas, npp, nao, sh_l, ao_off, &
                                 pp_off, pp_n, pp_p, pp_r, pp_ra, pp_rb, pp_c, &
                                 ndens, dmat, jmat, kmat)
+      !!
+      !! General-density item routine: no assumption that D is symmetric.
+      !!
+      !! The folded six-atomic digestion collapses the eight permutations using
+      !! D_mn = D_nm and the caller then symmetrises the result. For the coupled-
+      !! perturbed Hessian's response density both steps are wrong: J survives,
+      !! being contracted against an index pair the integral is symmetric in, but
+      !! K loses its antisymmetric part.
+      !!
+      !! This is the ENUMERATED digestion, which was always general -- it reads
+      !! D_mn and D_nm as distinct and writes J and K into separate matrices. It
+      !! lives in the source behind the TRC_FOCK6 `#else` and stopped being
+      !! compiled when folding became the default; this is that branch, forced,
+      !! as its own routine.
+      !!
+      !! SINGLE DENSITY by construction: mqc's `build_fock_direct_nosym` takes
+      !! one, and the enumerated digestion nests deeply enough inside its
+      !! permutation guards that threading a batch loop through it is more risk
+      !! than batching would be worth. Ranks match the batched kernels so one
+      !! driver serves both; the density index is a literal 1.
+      !!
+      !! Slower than the folded path by about what folding bought. The Hessian is
+      !! built once per makeEFP; the SCF Fock a hundred times.
+      !!
       !$acc routine seq
       integer,  intent(in)    :: t, nA, nB, offA, offB, npair, nbas, npp, nao
       logical,  intent(in)    :: diag
@@ -1144,14 +1144,14 @@ contains
 #endif
    end subroutine one_bin_item_nosym
 
-   !
-   ! One Cartesian integral (mu nu|lam sig) into J and K, every permutation
-   ! the bra/ket pair symmetry allows, with no assumption that D is
-   ! symmetric: D_mn and D_nm are read separately. `dij`, `dkl` and `dpq`
-   ! say which shells and pairs differ, so a permutation that maps the
-   ! quartet onto itself is not counted twice.
-   !
    pure subroutine scatter_nosym(mu, nu, lam, sig, vv, dij, dkl, dpq, ndens, nao, dmat, jmat, kmat)
+      !!
+      !! One Cartesian integral (mu nu|lam sig) into J and K, every permutation
+      !! the bra/ket pair symmetry allows, with no assumption that D is
+      !! symmetric: D_mn and D_nm are read separately. `dij`, `dkl` and `dpq`
+      !! say which shells and pairs differ, so a permutation that maps the
+      !! quartet onto itself is not counted twice.
+      !!
       !$acc routine seq
       integer,  intent(in)    :: mu, nu, lam, sig, ndens, nao
       real(dp), intent(in)    :: vv

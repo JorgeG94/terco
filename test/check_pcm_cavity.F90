@@ -1,34 +1,34 @@
-!
-! The polarisable continuum's cavity, operators and charge solve, with no
-! integrals: trc_pcm's half that does not touch the basis.
-!
-! Two kinds of evidence. The physics, ported from metalquicha's own PCM
-! tests: an isolated sphere keeps every point and integrates to 4 pi R^2;
-! overlapping spheres bury the points between them; a unit charge at the
-! centre of a sphere is Born's problem, which C-PCM reproduces as
-! -f/(2R) with its own f = (eps-1)/eps and IEF-PCM must reproduce as the
-! TRUE Born energy -(eps-1)/(2 R eps) despite carrying (eps-1)/(eps+1)
-! inside (only the D A S terms get it there); and the refusals -- an
-! unknown model, a gas-phase dielectric, a Lebedev order with no fitted
-! exponent, an element with no radius.
-!
-! And pyscf's own arrays, from test/pyscf_refs/pcm_cavity_water.ref
-! (generate.py's gen_pcm_cavity, pyscf.solvent.pcm on water.xyz with the
-! same radii, scale and Lebedev orders): at 302 points per sphere the
-! point set, weights, exponents, switching values and areas, S x and D x
-! for a fixed x, and the symmetrised charges and q.v/2 of both models for a
-! fixed potential; at 110 points per sphere S and D element by element.
-! pyscf's points come in its own Lebedev order, so each is matched to
-! terco's by position (1e-10 bohr) before anything is compared; the fixed
-! x and v are closed-form functions of the position, so they need no
-! matching of their own.
-!
-! The reference is read once, sequentially (pyscf_ref_io.F90's own
-! convention), by load_reference below, into g_ref -- before run_testsuite
-! runs any case -- so each test-drive case here just builds its own
-! surface/operators and compares against the already-read arrays.
-!
 module check_pcm_cavity_suite
+   !!
+   !! The polarisable continuum's cavity, operators and charge solve, with no
+   !! integrals: trc_pcm's half that does not touch the basis.
+   !!
+   !! Two kinds of evidence. The physics, ported from metalquicha's own PCM
+   !! tests: an isolated sphere keeps every point and integrates to 4 pi R^2;
+   !! overlapping spheres bury the points between them; a unit charge at the
+   !! centre of a sphere is Born's problem, which C-PCM reproduces as
+   !! -f/(2R) with its own f = (eps-1)/eps and IEF-PCM must reproduce as the
+   !! TRUE Born energy -(eps-1)/(2 R eps) despite carrying (eps-1)/(eps+1)
+   !! inside (only the D A S terms get it there); and the refusals -- an
+   !! unknown model, a gas-phase dielectric, a Lebedev order with no fitted
+   !! exponent, an element with no radius.
+   !!
+   !! And pyscf's own arrays, from test/pyscf_refs/pcm_cavity_water.ref
+   !! (generate.py's gen_pcm_cavity, pyscf.solvent.pcm on water.xyz with the
+   !! same radii, scale and Lebedev orders): at 302 points per sphere the
+   !! point set, weights, exponents, switching values and areas, S x and D x
+   !! for a fixed x, and the symmetrised charges and q.v/2 of both models for a
+   !! fixed potential; at 110 points per sphere S and D element by element.
+   !! pyscf's points come in its own Lebedev order, so each is matched to
+   !! terco's by position (1e-10 bohr) before anything is compared; the fixed
+   !! x and v are closed-form functions of the position, so they need no
+   !! matching of their own.
+   !!
+   !! The reference is read once, sequentially (pyscf_ref_io.F90's own
+   !! convention), by load_reference below, into g_ref -- before run_testsuite
+   !! runs any case -- so each test-drive case here just builds its own
+   !! surface/operators and compares against the already-read arrays.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

@@ -37,6 +37,21 @@ def test_bad_words_matches_whole_words_only():
     assert archcheck.bad_words("matrix") == []
 
 
+def test_cli_layer_dependencies(tmp_path, monkeypatch):
+    for layer in ("core", "cli"):
+        (tmp_path / "src" / layer).mkdir(parents=True)
+    (tmp_path / "app").mkdir()
+    (tmp_path / "src/core/trc_core.F90").write_text(
+        "module trc_core\nuse trc_cli\nend module trc_core\n")
+    (tmp_path / "src/cli/trc_cli.F90").write_text(
+        "module trc_cli\nuse trc_core\nend module trc_cli\n")
+    monkeypatch.setattr(archcheck, "ROOT", tmp_path)
+    monkeypatch.setattr(archcheck.modmap, "ROOT", tmp_path)
+
+    violations = [v for v in archcheck.check() if v.rule == "layer-up"]
+    assert [(v.scope, v.detail) for v in violations] == [("trc_core", "trc_cli")]
+
+
 def test_scan_procedures(tmp_path):
     src = tmp_path / "m.F90"
     src.write_text(textwrap.dedent("""\
@@ -65,6 +80,31 @@ def test_scan_procedures(tmp_path):
     assert ("ctx", 8) in run["names"]
     assert procs["demo_twice"]["device"]
     assert ("tmp_global", 3) in procs["trc_demo"]["names"]
+
+
+def test_procedure_length_excludes_only_initial_declarations(tmp_path):
+    src = tmp_path / "length.F90"
+    src.write_text(textwrap.dedent("""\
+        module trc_demo
+        contains
+           subroutine run(a)
+              use pic_types, only: dp
+              real(dp), intent(in) :: &
+                 ! comment inside a continued declaration
+                 a
+              integer :: i
+              !$acc routine seq
+              ! a comment
+              block
+                 integer :: j
+                 j = 1
+              end block
+              i = 1
+           end subroutine run
+        end module trc_demo
+    """))
+    proc = next(p for p in archcheck.scan_procedures(src) if p["name"] == "run")
+    assert archcheck.procedure_length(src.read_text().splitlines(), proc) == 9
 
 
 def test_kernel_driver(tmp_path):

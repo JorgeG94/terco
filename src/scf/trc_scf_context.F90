@@ -1,16 +1,16 @@
-!
-! Everything an SCF run builds ONCE PER GEOMETRY, before the iteration loop
-! ever starts: the shell-pair list, the one-electron integrals folded into
-! the run's own AO space, the four-centre engine, the linear-algebra
-! handles and the canonical orthogonaliser, and -- when asked for -- the
-! PCM cavity and the DFT quadrature. `setup` is the whole of what used to
-! be `trc_scf_run`'s own preamble (its timing table's "setup" row and the
-! PCM/grid blocks that followed it); `release` is every early-return's
-! cleanup, consolidated into the one place that knows what it actually
-! built, so a half-built context (an error building the VV10 grid, say)
-! only releases what got that far.
-!
 module trc_scf_context
+   !!
+   !! Everything an SCF run builds ONCE PER GEOMETRY, before the iteration loop
+   !! ever starts: the shell-pair list, the one-electron integrals folded into
+   !! the run's own AO space, the four-centre engine, the linear-algebra
+   !! handles and the canonical orthogonaliser, and -- when asked for -- the
+   !! PCM cavity and the DFT quadrature. `setup` is the whole of what used to
+   !! be `trc_scf_run`'s own preamble (its timing table's "setup" row and the
+   !! PCM/grid blocks that followed it); `release` is every early-return's
+   !! cleanup, consolidated into the one place that knows what it actually
+   !! built, so a half-built context (an error building the VV10 grid, say)
+   !! only releases what got that far.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use pic_logger, only: global_logger
@@ -529,35 +529,35 @@ contains
       end do
    end function nuclear_repulsion
 
-   ! X = Sn^(-1/2) D, symmetric orthogonalisation of the UNIT-DIAGONAL overlap
-   ! Sn = D S D (D = diag(1/sqrt(S_ii))), row-scaled back by D -- or, once
-   ! `lindep_thresh` is positive and some Sn eigenvalue falls below it,
-   ! CANONICAL orthogonalisation: those columns of U are zeroed rather than
-   ! divided by sqrt(sqrt(w)), which is what makes symmetric orthogonalisation
-   ! diverge on a near-null mode. A zeroed column decouples that mode from
-   ! X^T F X. `s`'s own diagonal is not unit (every spherical d function has
-   ! S_ii = 5/(4*pi), libcint's normalisation convention), so deciding on `s`'s
-   ! own eigenvalues would drop a different subspace than pyscf's
-   ! `remove_linear_dep_`/ORCA, which both normalise first -- matching that is
-   ! the whole point of `d`. `d`'s row-scaling does not commute with the
-   ! eigendecomposition, so the resulting X is no longer symmetric; it still
-   ! satisfies X^T S X = U_k U_k^T (the kept-subspace projector in the SAME
-   ! sense the old symmetric X did -- U_k U_k^T = U_k w_k^-1/2 U_k^T S U_k
-   ! w_k^-1/2 U_k^T with S = D^-1 Sn D^-1, since D Sn U_k = D U_k w_k, i.e. the
-   ! row-scaling cancels against itself), which is all `X^T F X` / `C = X C'`
-   ! / the commutator's `X^T (FDS-SDF) X` / the null projector's `X^T S X`
-   ! ever need. Once per geometry, on the host side.
-   !
-   ! `err` instead of `error stop` on either failure (the overlap's own
-   ! diagonalisation not converging, or -- when the caller left
-   ! lindep_thresh at 0, so canonical orthogonalisation never engages --
-   ! a non-positive eigenvalue): a malformed overlap must come back as a
-   ! clean SCF failure, the same way `scf_context_setup`'s other refusals
-   ! (the LMAX ceiling, a missing --df fit) already do, not take the
-   ! whole process down. Structured so every path still reaches the
-   ! matching `!$acc end data` -- `return`ing out of an OpenACC `data`
-   ! region partway through is not something the directive allows.
    subroutine scf_context_orthogonalize(la, n, s, x, err, lindep_thresh, ndropped)
+      !! X = Sn^(-1/2) D, symmetric orthogonalisation of the UNIT-DIAGONAL overlap
+      !! Sn = D S D (D = diag(1/sqrt(S_ii))), row-scaled back by D -- or, once
+      !! `lindep_thresh` is positive and some Sn eigenvalue falls below it,
+      !! CANONICAL orthogonalisation: those columns of U are zeroed rather than
+      !! divided by sqrt(sqrt(w)), which is what makes symmetric orthogonalisation
+      !! diverge on a near-null mode. A zeroed column decouples that mode from
+      !! X^T F X. `s`'s own diagonal is not unit (every spherical d function has
+      !! S_ii = 5/(4*pi), libcint's normalisation convention), so deciding on `s`'s
+      !! own eigenvalues would drop a different subspace than pyscf's
+      !! `remove_linear_dep_`/ORCA, which both normalise first -- matching that is
+      !! the whole point of `d`. `d`'s row-scaling does not commute with the
+      !! eigendecomposition, so the resulting X is no longer symmetric; it still
+      !! satisfies X^T S X = U_k U_k^T (the kept-subspace projector in the SAME
+      !! sense the old symmetric X did -- U_k U_k^T = U_k w_k^-1/2 U_k^T S U_k
+      !! w_k^-1/2 U_k^T with S = D^-1 Sn D^-1, since D Sn U_k = D U_k w_k, i.e. the
+      !! row-scaling cancels against itself), which is all `X^T F X` / `C = X C'`
+      !! / the commutator's `X^T (FDS-SDF) X` / the null projector's `X^T S X`
+      !! ever need. Once per geometry, on the host side.
+      !!
+      !! `err` instead of `error stop` on either failure (the overlap's own
+      !! diagonalisation not converging, or -- when the caller left
+      !! lindep_thresh at 0, so canonical orthogonalisation never engages --
+      !! a non-positive eigenvalue): a malformed overlap must come back as a
+      !! clean SCF failure, the same way `scf_context_setup`'s other refusals
+      !! (the LMAX ceiling, a missing --df fit) already do, not take the
+      !! whole process down. Structured so every path still reaches the
+      !! matching `!$acc end data` -- `return`ing out of an OpenACC `data`
+      !! region partway through is not something the directive allows.
       type(trc_linalg_t), intent(inout) :: la
       integer, intent(in) :: n
       real(dp), intent(in) :: s(n, n)
@@ -668,8 +668,8 @@ contains
       !$acc end data
    end subroutine scf_context_null_projector
 
-   ! Sum a contiguous array over the ranks, then rank 0's copy everywhere.
    subroutine sum_flat(comm, g, n)
+      !! Sum a contiguous array over the ranks, then rank 0's copy everywhere.
       type(comm_t), intent(in) :: comm
       integer, intent(in) :: n
       real(dp), intent(inout) :: g(n)
@@ -752,10 +752,10 @@ contains
       end do
    end subroutine scf_context_project_density
 
-   ! Broadcast rank 0's copy of a contiguous array of any rank. Public: the
-   ! iteration loop (trc_scf_driver) broadcasts the density, orbitals and
-   ! orbital energies the same way `setup` broadcasts the grid weights.
    subroutine scf_context_bcast_flat(comm, g, n)
+      !! Broadcast rank 0's copy of a contiguous array of any rank. Public: the
+      !! iteration loop (trc_scf_driver) broadcasts the density, orbitals and
+      !! orbital energies the same way `setup` broadcasts the grid weights.
       type(comm_t), intent(in) :: comm
       integer, intent(in) :: n
       real(dp), intent(inout) :: g(n)

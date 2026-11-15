@@ -1,28 +1,29 @@
-!
-! The basis and the screened shell-pair list: the two containers every
-! integral path reads.
-!
-! `trc_basis_t` is a structure of arrays built once per geometry, from flat
-! per-shell arrays (`build`) or libcint's `atm`/`bas`/`env` layout
-! (`from_libcint`), with libcint's common_fac_sp folded into the stored
-! coefficients exactly once, here. `trc_pairlist_t` is the shared screened
-! shell-pair list built from a basis and a threshold, with its primitive-pair
-! data precomputed once per pair. Both move to the device with `to_device`
-! and leave it with `release`.
-!
-! A core module, below everything that consumes the two types: the basis
-! reader, the integral wrappers, the Fock builds, XC, PCM, RI-MP2 and the SCF.
-! `trc_api` re-exports both, so callers of the public API see no change.
-!
-! `build` pushes the Boys table to the device (boys_init) as it always has.
-! The Rys root tables are not pushed here, since they belong to the eri
-! layer: every launcher of a kernel that reads them pushes them itself
-! (trc_integrals' DF wrappers, trc_eri's build, trc_scf_grad_df).
-!
 module trc_basis_types
+   !!
+   !! The basis and the screened shell-pair list: the two containers every
+   !! integral path reads.
+   !!
+   !! `trc_basis_t` is a structure of arrays built once per geometry, from flat
+   !! per-shell arrays (`build`) or libcint's `atm`/`bas`/`env` layout
+   !! (`from_libcint`), with libcint's common_fac_sp folded into the stored
+   !! coefficients exactly once, here. `trc_pairlist_t` is the shared screened
+   !! shell-pair list built from a basis and a threshold, with its primitive-pair
+   !! data precomputed once per pair. Both move to the device with `to_device`
+   !! and leave it with `release`.
+   !!
+   !! A core module, below everything that consumes the two types: the basis
+   !! reader, the integral wrappers, the Fock builds, XC, PCM, RI-MP2 and the SCF.
+   !! `trc_api` re-exports both, so callers of the public API see no change.
+   !!
+   !! `build` pushes the Boys table to the device (boys_init) as it always has.
+   !! The Rys root tables are not pushed here, since they belong to the eri
+   !! layer: every launcher of a kernel that reads them pushes them itself
+   !! (trc_integrals' DF wrappers, trc_eri's build, trc_scf_grad_df).
+   !!
    use pic_types, only: dp
    use trc_constants, only: PI
    use trc_boys, only: boys_init
+   use trc_cart, only: ncart => cart_ncart_of
    implicit none
    private
    public :: trc_basis_t, trc_pairlist_t
@@ -33,11 +34,11 @@ module trc_basis_types
    integer, parameter :: ATOM_OF = 0, ANG_OF = 1, NPRIM_OF = 2
    integer, parameter :: PTR_EXP = 5, PTR_COEFF = 6
 
-   !
-   ! Structure of arrays, not array of structures: the kernels read one field
-   ! across many shells at once, so the fields are what should be contiguous.
-   !
    type :: trc_basis_t
+      !!
+      !! Structure of arrays, not array of structures: the kernels read one field
+      !! across many shells at once, so the fields are what should be contiguous.
+      !!
       integer :: nshell = 0, nao = 0, natm = 0, maxnp = 0
       integer,  allocatable :: sh_l(:)      !! angular momentum
       integer,  allocatable :: sh_np(:)     !! primitives
@@ -88,26 +89,26 @@ module trc_basis_types
       procedure :: release      => basis_release
    end type trc_basis_t
 
-   !
-   ! Screened shell-pair list.
-   !
-   ! The four-centre path has had one of these since early on (`pair_bins_t`,
-   ! binned by (la, lb, K, size class) with a Schwarz pre-screen); the
-   ! one-electron and density-fitting paths had nothing and walked the full
-   ! nshell^2 square. This is the shared object: built once per geometry from
-   ! a basis and a threshold, consumed by every operator.
-   !
-   ! It carries TWO bounds, because Schwarz is the right bound for
-   ! two-electron work and the wrong one for overlap. Both are rigorous upper
-   ! bounds on the contracted block, summed over primitive pairs:
-   !
-   !     sbound = sum_ij |c_i c_j| (pi/zeta_ij)^(3/2) exp(-xi_ij R_AB^2)
-   !     vbound = sum_ij |c_i c_j| (2 pi/zeta_ij)     exp(-xi_ij R_AB^2)
-   !
-   ! sbound bounds |S|; vbound bounds |V| once multiplied by the total nuclear
-   ! charge, since the Boys function never exceeds 1.
-   !
    type :: trc_pairlist_t
+      !!
+      !! Screened shell-pair list.
+      !!
+      !! The four-centre path has had one of these since early on (`pair_bins_t`,
+      !! binned by (la, lb, K, size class) with a Schwarz pre-screen); the
+      !! one-electron and density-fitting paths had nothing and walked the full
+      !! nshell^2 square. This is the shared object: built once per geometry from
+      !! a basis and a threshold, consumed by every operator.
+      !!
+      !! It carries TWO bounds, because Schwarz is the right bound for
+      !! two-electron work and the wrong one for overlap. Both are rigorous upper
+      !! bounds on the contracted block, summed over primitive pairs:
+      !!
+      !!     sbound = sum_ij |c_i c_j| (pi/zeta_ij)^(3/2) exp(-xi_ij R_AB^2)
+      !!     vbound = sum_ij |c_i c_j| (2 pi/zeta_ij)     exp(-xi_ij R_AB^2)
+      !!
+      !! sbound bounds |S|; vbound bounds |V| once multiplied by the total nuclear
+      !! charge, since the Boys function never exceeds 1.
+      !!
       integer :: npair = 0, nshell = 0
       real(dp) :: thresh = 0.0_dp
       integer,  allocatable :: p_i(:), p_j(:)   !! shell indices, 1-based
@@ -139,17 +140,12 @@ module trc_basis_types
 
 contains
 
-   pure integer function ncart(l) result(res)
-      integer, intent(in) :: l
-      res = (l + 1)*(l + 2)/2
-   end function ncart
-
-   !
-   ! libcint applies this per shell OUTSIDE `env`, so a container built from
-   ! `env` alone is wrong by it. Folding it into sh_c here means the kernels
-   ! never have to know.
-   !
    pure real(dp) function common_fac_sp(l) result(res)
+      !!
+      !! libcint applies this per shell OUTSIDE `env`, so a container built from
+      !! `env` alone is wrong by it. Folding it into sh_c here means the kernels
+      !! never have to know.
+      !!
       integer, intent(in) :: l
       select case (l)
       case (0)
@@ -161,17 +157,17 @@ contains
       end select
    end function common_fac_sp
 
-   !
-   ! Build from flat per-shell arrays.
-   !
-   ! `normalised` says whether the caller's coefficients already carry the
-   ! primitive normalisation. It is an explicit argument rather than an
-   ! assumption because getting it wrong makes every integral wrong by a
-   ! smooth factor that still looks plausible -- which has happened twice in
-   ! this repository already.
-   !
    subroutine basis_build(this, nshell, sh_l, sh_np, sh_e, sh_c, sh_r, &
                           natm, at_z, at_r, maxnp, at_elem)
+      !!
+      !! Build from flat per-shell arrays.
+      !!
+      !! `normalised` says whether the caller's coefficients already carry the
+      !! primitive normalisation. It is an explicit argument rather than an
+      !! assumption because getting it wrong makes every integral wrong by a
+      !! smooth factor that still looks plausible -- which has happened twice in
+      !! this repository already.
+      !!
       class(trc_basis_t), intent(inout) :: this
       integer,  intent(in) :: nshell, natm, maxnp
       integer,  intent(in) :: sh_l(nshell), sh_np(nshell)
@@ -258,21 +254,21 @@ contains
       end do
    end subroutine basis_build
 
-   !
-   ! Convenience adapter for callers that already hold libcint's layout.
-   ! NOT the primary interface -- it unpacks into raw arrays and delegates to
-   ! `build`, so there is one implementation of the import rules (notably the
-   ! common_fac_sp folding) rather than two that can drift.
-   !
-   !
-   ! Shells s0..s1 of this basis as a basis of their own, functions
-   ! renumbered from 1, atoms kept. Copied field by field: the stored
-   ! coefficients already carry common_fac_sp, and rebuilding from them
-   ! through `build` would fold it in a second time -- which is exactly
-   ! what happened to the first RI-MP2 auxiliary block, and the third time
-   ! this factor has bitten. Host side only; the caller moves it.
-   !
    subroutine basis_subset(this, s0, s1, out)
+      !!
+      !! Convenience adapter for callers that already hold libcint's layout.
+      !! NOT the primary interface -- it unpacks into raw arrays and delegates to
+      !! `build`, so there is one implementation of the import rules (notably the
+      !! common_fac_sp folding) rather than two that can drift.
+      !!
+      !!
+      !! Shells s0..s1 of this basis as a basis of their own, functions
+      !! renumbered from 1, atoms kept. Copied field by field: the stored
+      !! coefficients already carry common_fac_sp, and rebuilding from them
+      !! through `build` would fold it in a second time -- which is exactly
+      !! what happened to the first RI-MP2 auxiliary block, and the third time
+      !! this factor has bitten. Host side only; the caller moves it.
+      !!
       class(trc_basis_t), intent(in) :: this
       integer, intent(in) :: s0, s1
       type(trc_basis_t), intent(out) :: out
@@ -359,12 +355,12 @@ contains
       deallocate (l, nprim, e, c, r, z, rat)
    end subroutine basis_from_libcint
 
-   !
-   ! Parent first, then every allocatable component -- and the reverse on the
-   ! way out. A half-mapped derived type does not fail loudly; the mapped
-   ! fields work and the forgotten one reads garbage.
-   !
    subroutine basis_to_device(this)
+      !!
+      !! Parent first, then every allocatable component -- and the reverse on the
+      !! way out. A half-mapped derived type does not fail loudly; the mapped
+      !! fields work and the forgotten one reads garbage.
+      !!
       class(trc_basis_t), intent(inout) :: this
       if (this%on_device) return
       !$acc enter data copyin(this)

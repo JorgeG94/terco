@@ -1,18 +1,18 @@
-!
-! Geometric direct minimisation through the terco CLI and its TOML input, as a
-! test-drive suite. The output line asserted on is one only GDM produces (the
-! handover note), so a flag or key that never reached the SCF cannot pass.
-!
-! 1. `--gdm` hands over from DIIS (the note is printed, and a run without the
-!    flag does not print it: the control for the text reading itself).
-! 2. `--gdm-start 1e-12`, far below where DIIS converges, never hands over;
-!    `--gdm-max-rotation 1e-4` still converges but takes more iterations than
-!    the default cap.
-! 3. The same three through `[scf.convergence]` (`gdm`, `gdm_start`,
-!    `gdm_max_rotation`) give the same behaviour as the flags.
-! 4. Bad values and `--gdm --soscf` are refused, by name, before any SCF.
-!
 module check_cli_gdm_suite
+   !!
+   !! Geometric direct minimisation through the terco CLI and its TOML input, as a
+   !! test-drive suite. The output line asserted on is one only GDM produces (the
+   !! handover note), so a flag or key that never reached the SCF cannot pass.
+   !!
+   !! 1. `--gdm` hands over from DIIS (the note is printed, and a run without the
+   !!    flag does not print it: the control for the text reading itself).
+   !! 2. `--gdm-start 1e-12`, far below where DIIS converges, never hands over;
+   !!    `--gdm-max-rotation 1e-4` still converges but takes more iterations than
+   !!    the default cap.
+   !! 3. The same three through `[scf.convergence]` (`gdm`, `gdm_start`,
+   !!    `gdm_max_rotation`) give the same behaviour as the flags.
+   !! 4. Bad values and `--gdm --soscf` are refused, by name, before any SCF.
+   !!
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, test_failed, check
    implicit none

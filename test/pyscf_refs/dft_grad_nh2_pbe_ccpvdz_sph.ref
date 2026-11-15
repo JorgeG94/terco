@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["dft_grad_nh2_pbe_ccpvdz_sph"] -> gen_dft_grad
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 5b765b180f1929122145086827ec778166a922260f1ed74e9305fd75b85de5bb
+# hash: 71fa17507fcf8b7a8e91b954249338c99651be08be9661dddf08a4b64b2cc2c8
 # files: test/check_dft_grad_vs_pyscf.F90 test/basis_sets/cc-pvdz.json test/nh2.xyz
 NAT 3
 NAO 24

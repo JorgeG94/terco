@@ -299,17 +299,16 @@ contains
       end do
    end subroutine trc_hirshfeld_free_atom_density
 
-   !
-   ! KERNELS. Both are plain `do concurrent` over grid points, each thread
-   ! calling a same-module `pure` `!$acc routine seq` item routine with
-   ! explicit-shape dummies and its scratch declared inside -- the rule
-   ! AGENTS.md states and `trc_xc.F90`/`trc_collocation.F90` follow
-   ! throughout. Unscreened: every shell is evaluated at every point, which
-   ! is the right trade for a one-shot post-SCF analysis on the molecule
-   ! sizes Hirshfeld charges are asked for, not a per-iteration SCF kernel.
-   !
-
    subroutine density_on_grid(b, xg, density, rho)
+      !!
+      !! KERNELS. Both are plain `do concurrent` over grid points, each thread
+      !! calling a same-module `pure` `!$acc routine seq` item routine with
+      !! explicit-shape dummies and its scratch declared inside -- the rule
+      !! AGENTS.md states and `trc_xc.F90`/`trc_collocation.F90` follow
+      !! throughout. Unscreened: every shell is evaluated at every point, which
+      !! is the right trade for a one-shot post-SCF analysis on the molecule
+      !! sizes Hirshfeld charges are asked for, not a per-iteration SCF kernel.
+      !!
       !! rho at every point of `xg`, in its order; `b` and `xg` on the device.
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg

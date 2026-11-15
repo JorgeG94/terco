@@ -1,29 +1,29 @@
-!
-! One-electron reference generator: overlap, kinetic, nuclear attraction.
-!
-! Built with GFORTRAN against libfint, for the reason gen_reference.F90 already
-! documents: libfint cannot be compiled by nvfortran (real128 is -1 there, and
-! all 68 of its real(qp) declarations are hard errors), so the oracle cannot be
-! linked into an nvfortran test harness.  It runs once here and writes a
-! plain-text dump the nvfortran checks read back.
-!
-! Same three systems as the ERI reference, so a failure can be compared against
-! the two-electron result on identical geometry and basis:
-!
-!   1  H2, two uncontracted s shells
-!   2  two centres carrying s, p and d, plus a contracted s
-!   3  s and p only, contracted -- the 6-31G regime
-!
-! FORMAT
-! ------
-!   SYSTEM <n> / NATM / NBAS / NENV / ATM / BAS / ENV     (as gen_reference)
-!   BLOCK <OVLP|KIN|NUC> <i> <j> <di> <dj>
-!   <di*dj doubles, %25.17e, libcint ordering>
-!   END
-!
-! %25.17e round-trips IEEE double exactly.
-!
 program gen_reference1e
+   !!
+   !! One-electron reference generator: overlap, kinetic, nuclear attraction.
+   !!
+   !! Built with GFORTRAN against libfint, for the reason gen_reference.F90 already
+   !! documents: libfint cannot be compiled by nvfortran (real128 is -1 there, and
+   !! all 68 of its real(qp) declarations are hard errors), so the oracle cannot be
+   !! linked into an nvfortran test harness.  It runs once here and writes a
+   !! plain-text dump the nvfortran checks read back.
+   !!
+   !! Same three systems as the ERI reference, so a failure can be compared against
+   !! the two-electron result on identical geometry and basis:
+   !!
+   !!   1  H2, two uncontracted s shells
+   !!   2  two centres carrying s, p and d, plus a contracted s
+   !!   3  s and p only, contracted -- the 6-31G regime
+   !!
+   !! FORMAT
+   !! ------
+   !!   SYSTEM <n> / NATM / NBAS / NENV / ATM / BAS / ENV     (as gen_reference)
+   !!   BLOCK <OVLP|KIN|NUC> <i> <j> <di> <dj>
+   !!   <di*dj doubles, %25.17e, libcint ordering>
+   !!   END
+   !!
+   !! %25.17e round-trips IEEE double exactly.
+   !!
    use cint_const, only: dp
    use cint_bas, only: ATOM_OF, ANG_OF, NPRIM_OF, NCTR_OF, PTR_EXP, PTR_COEFF, &
                        BAS_SLOTS, CHARGE_OF, PTR_COORD, NUC_MOD_OF, ATM_SLOTS, &
@@ -56,11 +56,11 @@ program gen_reference1e
 
 contains
 
-   !
-   ! Identical to gen_reference.F90's systems.  Duplicated rather than shared
-   ! so the two oracles cannot drift apart silently through one edit.
-   !
    subroutine build_system(which, atm, bas, env, natm, nbas, nenv)
+      !!
+      !! Identical to gen_reference.F90's systems.  Duplicated rather than shared
+      !! so the two oracles cannot drift apart silently through one edit.
+      !!
       integer, intent(in) :: which
       integer, allocatable, intent(out) :: atm(:), bas(:)
       real(dp), allocatable, intent(out) :: env(:)

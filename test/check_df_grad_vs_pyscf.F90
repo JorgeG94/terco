@@ -1,27 +1,27 @@
-!
-! The FULL density-fitted (`--df`) RHF/RKS nuclear gradient
-! (trc_scf_grad%trc_scf_gradient with `dfjk`/`aux`: fitted J and K, 1e, XC,
-! nuclear repulsion) against pyscf's own density-fitted gradient
-! (pyscf.df.grad.rhf / pyscf.df.grad.rks, auxiliary basis
-! def2-universal-jkfit, mol.cart=True) AT TERCO'S OWN converged orbitals and,
-! for a functional, TERCO'S OWN grid -- gen_dft_grad's recipe
-! (test/pyscf_refs/generate.py's gen_df_grad), so the comparison is of the
-! gradient formula at one fixed state, not of two SCFs.
-!
-! pyscf's DF gradient includes the auxiliary-basis response (both the
-! (mu nu|P) aux-centre derivative and the metric's) by default; terco's
-! always does. Grid response is OFF on both sides for this comparison
-! (pyscf's default); check_df_grad_fd.F90 checks the grid-response-ON
-! gradient against a finite difference instead.
-!
-! Writes the dump gen_df_grad reads: geometry, grid, orbitals, terco's
-! gradient and the Cartesian overlap (for the per-AO normalisation).
-!
-! SKIPS CLEANLY (print SKIP, stop 0, before run_testsuite) when the
-! auxiliary basis needs more angular momentum than this build's
-! DF_LMAX_AUX, same convention as check_nosym.F90.
-!
 module check_df_grad_vs_pyscf_suite
+   !!
+   !! The FULL density-fitted (`--df`) RHF/RKS nuclear gradient
+   !! (trc_scf_grad%trc_scf_gradient with `dfjk`/`aux`: fitted J and K, 1e, XC,
+   !! nuclear repulsion) against pyscf's own density-fitted gradient
+   !! (pyscf.df.grad.rhf / pyscf.df.grad.rks, auxiliary basis
+   !! def2-universal-jkfit, mol.cart=True) AT TERCO'S OWN converged orbitals and,
+   !! for a functional, TERCO'S OWN grid -- gen_dft_grad's recipe
+   !! (test/pyscf_refs/generate.py's gen_df_grad), so the comparison is of the
+   !! gradient formula at one fixed state, not of two SCFs.
+   !!
+   !! pyscf's DF gradient includes the auxiliary-basis response (both the
+   !! (mu nu|P) aux-centre derivative and the metric's) by default; terco's
+   !! always does. Grid response is OFF on both sides for this comparison
+   !! (pyscf's default); check_df_grad_fd.F90 checks the grid-response-ON
+   !! gradient against a finite difference instead.
+   !!
+   !! Writes the dump gen_df_grad reads: geometry, grid, orbitals, terco's
+   !! gradient and the Cartesian overlap (for the per-AO normalisation).
+   !!
+   !! SKIPS CLEANLY (print SKIP, stop 0, before run_testsuite) when the
+   !! auxiliary basis needs more angular momentum than this build's
+   !! DF_LMAX_AUX, same convention as check_nosym.F90.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

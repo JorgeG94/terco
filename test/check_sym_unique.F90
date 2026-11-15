@@ -1,33 +1,33 @@
-!
-! The unique-pair build: with a point group
-! `eri%build` forms the primitive pairs and the Schwarz bounds of the orbit
-! representatives only and rebuilds the images from them (the product centre
-! and the shell centres sign-flipped by the operation's mask). Checked here,
-! per molecule, in cc-pVDZ (Cartesian caller space):
-!
-!   - the path ran: `eri%upair`, the number of shell pairs whose primitive
-!     pairs were formed is below nshell**2, `pairs` holds fewer primitive pairs
-!     than the pairs of the bins use, by at least the ratios measured when this
-!     was written (measured 1.21, 2.21, 2.31 and 2.62 for water, B2H6, benzene and
-!     naphthalene; the thresholds sit a little below) -- a silent fall back to the merged build
-!     would give one;
-!   - the tables are the full build's: the bin-interleaved primitive-pair
-!     tables rebuilt from `pairs` of every shell pair (hgp_build_pairs without
-!     the wanted mask) equal the unique build's, array by array, to 1e-13
-!     (they are bit-identical when this was written), and the primitive counts
-!     exactly;
-!   - the paths that read `pairs` itself still work: the non-symmetric Fock
-!     build on the unique engine (it completes the pairs first, and
-!     `eri%upair` is false after) equals the one on an engine built without
-!     symmetry, to the 1e-8 the merged check allows for the orbit-maximum Q.
-!
-! The G-equals-full-G oracle for the skeleton build on this path is
-! check_sym_fock (its default engine is the unique-pair one); it also runs
-! under TRC_UNIQUE_PAIRS=0 as check_sym_fock_nouniq.
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_unique_suite
+   !!
+   !! The unique-pair build: with a point group
+   !! `eri%build` forms the primitive pairs and the Schwarz bounds of the orbit
+   !! representatives only and rebuilds the images from them (the product centre
+   !! and the shell centres sign-flipped by the operation's mask). Checked here,
+   !! per molecule, in cc-pVDZ (Cartesian caller space):
+   !!
+   !!   - the path ran: `eri%upair`, the number of shell pairs whose primitive
+   !!     pairs were formed is below nshell**2, `pairs` holds fewer primitive pairs
+   !!     than the pairs of the bins use, by at least the ratios measured when this
+   !!     was written (measured 1.21, 2.21, 2.31 and 2.62 for water, B2H6, benzene and
+   !!     naphthalene; the thresholds sit a little below) -- a silent fall back to the merged build
+   !!     would give one;
+   !!   - the tables are the full build's: the bin-interleaved primitive-pair
+   !!     tables rebuilt from `pairs` of every shell pair (hgp_build_pairs without
+   !!     the wanted mask) equal the unique build's, array by array, to 1e-13
+   !!     (they are bit-identical when this was written), and the primitive counts
+   !!     exactly;
+   !!   - the paths that read `pairs` itself still work: the non-symmetric Fock
+   !!     build on the unique engine (it completes the pairs first, and
+   !!     `eri%upair` is false after) equals the one on an engine built without
+   !!     symmetry, to the 1e-8 the merged check allows for the orbit-maximum Q.
+   !!
+   !! The G-equals-full-G oracle for the skeleton build on this path is
+   !! check_sym_fock (its default engine is the unique-pair one); it also runs
+   !! under TRC_UNIQUE_PAIRS=0 as check_sym_fock_nouniq.
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

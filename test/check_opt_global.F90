@@ -1,61 +1,61 @@
-!
-! --opt-algorithm stochastic, a fast fixed-population/fixed-cycle search
-! on water/STO-3G: with --opt-seed set, reaches the same basin
-! opt_water.ref's own minimum sits in, and running the SAME command
-! twice reproduces the SAME search (DL-FIND's own trajectory through
-! the population is bit-for-bit identical: --opt-seed's whole point;
-! dlf_parallel_opt.f90 otherwise reseeds from the wall clock on every
-! call, so two runs never agree without it -- app/trc_dlfind_bridge.F90's
-! own header). Genetic is not covered here: it needs more cycles to
-! reach its own po_tolerance_g test before it reports anything at all
-! (dlf_parallel_opt.f90's dlf_genetic_endcycle only calls dlf_put_coords
-! once that passes), so it is not the "fast" case this check wants;
-! check_opt_refusals.F90 covers its CLI validation the same way
-! stochastic's is covered there.
-!
-! --opt-global-tolerance-g matches --opt-gtol here on purpose:
-! dlf_stoch_endcycle (dlf_parallel_opt.f90) stops the population search
-! on its OWN po_tolerance_g test -- maxval(abs(igradient_best)) against
-! it, read directly -- which is a SEPARATE DL-FIND parameter from
-! --opt-gtol (this bridge's own convergence verdict, accepted_gmax
-! against opts%gtol). Left at DL-FIND's own default (1e-3, dl-
-! find.f90's own inline default), the population search was declaring
-! itself converged and reporting its best candidate at a gradient
-! inside 1e-3 but outside this run's own --opt-gtol 1e-4, which this
-! bridge then (correctly) reported as "NOT converged" -- not a case of
-! loosening a validation tolerance, but of giving DL-FIND's own
-! internal stopping rule the SAME target this check asks the CLI for.
-!
-! TOLERANCES.
-!
-! REPRO_TOL = 1e-10 Eh/Angstrom, not exact equality: the two runs follow
-! the IDENTICAL seeded trajectory through the population, but each
-! geometry's own energy/gradient still comes from a fresh terco_cli
-! process's own SCF, and on the GPU build a Fock build's reduction
-! order is not guaranteed bit-identical run to run (thread-scheduling-
-! dependent partial sums, same source of non-reproducibility as any
-! other `do concurrent` reduction here) -- measured on a GPU build:
-! |diff| 2.8e-14 Eh, 1.2e-13 Angstrom over 20 cycles' worth of
-! accumulated round-off, four orders of headroom under this gate. The
-! gfortran host build reproduces bit-for-bit (|diff| exactly 0).
-!
-! ENERGY_TOL = 1e-3 Eh is loose on purpose: population 8, 20 cycles is
-! a SMALL search, and the exact trajectory through that population
-! depends on the Fortran compiler's own RANDOM_NUMBER stream for the
-! SAME seed array (the standard guarantees a seed reproduces a
-! sequence only within one implementation, not across compilers) --
-! a GPU build driving the same DL-FIND (itself CPU-only, serial)
-! through nvfortran instead of gfortran is not guaranteed the
-! IDENTICAL sequence this seed gives here, only its OWN reproducible
-! one. Measured: final energy -74.965899825171 Eh (gfortran 15, host)
-! and -74.965899686593 Eh (nvfortran 26.5, GPU) against opt_water.ref's
-! -74.965901192300 Eh, |diff| 1.4e-6 and 1.5e-6 Eh -- three orders of
-! headroom under the gate either way, left there for a different
-! compiler's own stream to land somewhere else in the same basin.
-!
-! A test-drive suite.
-!
 module check_opt_global_suite
+   !!
+   !! --opt-algorithm stochastic, a fast fixed-population/fixed-cycle search
+   !! on water/STO-3G: with --opt-seed set, reaches the same basin
+   !! opt_water.ref's own minimum sits in, and running the SAME command
+   !! twice reproduces the SAME search (DL-FIND's own trajectory through
+   !! the population is bit-for-bit identical: --opt-seed's whole point;
+   !! dlf_parallel_opt.f90 otherwise reseeds from the wall clock on every
+   !! call, so two runs never agree without it -- app/trc_dlfind_bridge.F90's
+   !! own header). Genetic is not covered here: it needs more cycles to
+   !! reach its own po_tolerance_g test before it reports anything at all
+   !! (dlf_parallel_opt.f90's dlf_genetic_endcycle only calls dlf_put_coords
+   !! once that passes), so it is not the "fast" case this check wants;
+   !! check_opt_refusals.F90 covers its CLI validation the same way
+   !! stochastic's is covered there.
+   !!
+   !! --opt-global-tolerance-g matches --opt-gtol here on purpose:
+   !! dlf_stoch_endcycle (dlf_parallel_opt.f90) stops the population search
+   !! on its OWN po_tolerance_g test -- maxval(abs(igradient_best)) against
+   !! it, read directly -- which is a SEPARATE DL-FIND parameter from
+   !! --opt-gtol (this bridge's own convergence verdict, accepted_gmax
+   !! against opts%gtol). Left at DL-FIND's own default (1e-3, dl-
+   !! find.f90's own inline default), the population search was declaring
+   !! itself converged and reporting its best candidate at a gradient
+   !! inside 1e-3 but outside this run's own --opt-gtol 1e-4, which this
+   !! bridge then (correctly) reported as "NOT converged" -- not a case of
+   !! loosening a validation tolerance, but of giving DL-FIND's own
+   !! internal stopping rule the SAME target this check asks the CLI for.
+   !!
+   !! TOLERANCES.
+   !!
+   !! REPRO_TOL = 1e-10 Eh/Angstrom, not exact equality: the two runs follow
+   !! the IDENTICAL seeded trajectory through the population, but each
+   !! geometry's own energy/gradient still comes from a fresh terco_cli
+   !! process's own SCF, and on the GPU build a Fock build's reduction
+   !! order is not guaranteed bit-identical run to run (thread-scheduling-
+   !! dependent partial sums, same source of non-reproducibility as any
+   !! other `do concurrent` reduction here) -- measured on a GPU build:
+   !! |diff| 2.8e-14 Eh, 1.2e-13 Angstrom over 20 cycles' worth of
+   !! accumulated round-off, four orders of headroom under this gate. The
+   !! gfortran host build reproduces bit-for-bit (|diff| exactly 0).
+   !!
+   !! ENERGY_TOL = 1e-3 Eh is loose on purpose: population 8, 20 cycles is
+   !! a SMALL search, and the exact trajectory through that population
+   !! depends on the Fortran compiler's own RANDOM_NUMBER stream for the
+   !! SAME seed array (the standard guarantees a seed reproduces a
+   !! sequence only within one implementation, not across compilers) --
+   !! a GPU build driving the same DL-FIND (itself CPU-only, serial)
+   !! through nvfortran instead of gfortran is not guaranteed the
+   !! IDENTICAL sequence this seed gives here, only its OWN reproducible
+   !! one. Measured: final energy -74.965899825171 Eh (gfortran 15, host)
+   !! and -74.965899686593 Eh (nvfortran 26.5, GPU) against opt_water.ref's
+   !! -74.965901192300 Eh, |diff| 1.4e-6 and 1.5e-6 Eh -- three orders of
+   !! headroom under the gate either way, left there for a different
+   !! compiler's own stream to land somewhere else in the same basin.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_int, ref_read_real, ref_read_vector, &
@@ -163,13 +163,13 @@ contains
       end if
    end subroutine test_global_reproducible
 
-   !
-   ! Depends on test_global_reproducible having already run (e1, above) --
-   ! test-drive runs a module's tests in the order collect_opt_global
-   ! lists them, not in parallel (run_testsuite's own parallel=.false. in
-   ! the program below).
-   !
    subroutine test_global_vs_anchor(error)
+      !!
+      !! Depends on test_global_reproducible having already run (e1, above) --
+      !! test-drive runs a module's tests in the order collect_opt_global
+      !! lists them, not in parallel (run_testsuite's own parallel=.false. in
+      !! the program below).
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: uu, nat_ref
       real(dp), allocatable :: z_ref(:), coords_ref(:, :)
@@ -187,13 +187,13 @@ contains
       end if
    end subroutine test_global_vs_anchor
 
-   !
-   ! best.xyz/best_active.xyz (dlf_parallel_opt.f90's own printf>=2 output,
-   ! needed for this bridge to ever see the result at all -- app/
-   ! trc_dlfind_bridge.F90's own header) must not have landed in test/
-   ! itself (this program's own WORKING_DIRECTORY, ctest's convention).
-   !
    subroutine test_no_stray(error)
+      !!
+      !! best.xyz/best_active.xyz (dlf_parallel_opt.f90's own printf>=2 output,
+      !! needed for this bridge to ever see the result at all -- app/
+      !! trc_dlfind_bridge.F90's own header) must not have landed in test/
+      !! itself (this program's own WORKING_DIRECTORY, ctest's convention).
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=*), parameter :: stray(4) = &
          [character(len=16) :: 'best.xyz', 'best_active.xyz', 'water_opt.xyz', 'water_traj.xyz']

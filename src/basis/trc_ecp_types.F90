@@ -1,24 +1,24 @@
-!
-! The effective-core-potential data model: one flat set of ECP "rows",
-! structure of arrays, kept entirely separate from `trc_basis_t`'s orbital
-! shells.
-!
-! Each row is one (atom, l, r-power) GROUP of primitives, the same packing
-! PySCF/libcint use internally (`ecpbas`): `ecp_l == -1` marks the LOCAL
-! channel (the one with the highest angular momentum in the potential, not
-! necessarily the first one listed); every other row is a PROJECTED channel
-! acting through its own l. A channel whose primitives carry more than one
-! r-power is split into one row per power -- see trc_ecp_json.F90's reader
-! for why that split is not optional: a single row's radial routine
-! (trc_ecp_radial.F90's `ecp_rad_part`) applies ONE power to every primitive
-! in the row.
-!
-! Rows belonging to the same (atom, l) are written consecutively by the
-! reader (one channel's rows, in sequence, before the next channel's), which
-! is what lets the integral driver (src/eri/trc_ecp.F90) find a channel's
-! whole primitive set as one contiguous row range.
-!
 module trc_ecp_types
+   !!
+   !! The effective-core-potential data model: one flat set of ECP "rows",
+   !! structure of arrays, kept entirely separate from `trc_basis_t`'s orbital
+   !! shells.
+   !!
+   !! Each row is one (atom, l, r-power) GROUP of primitives, the same packing
+   !! PySCF/libcint use internally (`ecpbas`): `ecp_l == -1` marks the LOCAL
+   !! channel (the one with the highest angular momentum in the potential, not
+   !! necessarily the first one listed); every other row is a PROJECTED channel
+   !! acting through its own l. A channel whose primitives carry more than one
+   !! r-power is split into one row per power -- see trc_ecp_json.F90's reader
+   !! for why that split is not optional: a single row's radial routine
+   !! (trc_ecp_radial.F90's `ecp_rad_part`) applies ONE power to every primitive
+   !! in the row.
+   !!
+   !! Rows belonging to the same (atom, l) are written consecutively by the
+   !! reader (one channel's rows, in sequence, before the next channel's), which
+   !! is what lets the integral driver (src/eri/trc_ecp.F90) find a channel's
+   !! whole primitive set as one contiguous row range.
+   !!
    use pic_types, only: dp
    implicit none
    private
@@ -61,18 +61,18 @@ contains
       this%has_ecp = .false.
    end subroutine ecp_release
 
-   !
-   ! The rows belonging to ONE atom of `this`, renumbered onto a one-atom
-   ! ECP (`out%ecp_at` all 1, `out%natm = 1`) -- the same "subset" idea
-   ! `trc_basis_t%subset` already uses for SAD's free-atom sub-SCF, so that
-   ! sub-SCF's own H_core can carry THIS atom's U_ECP instead of running
-   ! valence-only-V_ne with no core potential at all (trc_sad.F90's own
-   ! header: a free atom's electron count is already right from `b%at_z`,
-   ! but with no U its orbitals come out far too diffuse). `out` comes back
-   ! `has_ecp = .false.` (its default) when `ia` carries no ECP rows,
-   ! including every atom of an ECP-free run.
-   !
    pure subroutine trc_ecp_subset_atom(this, ia, out)
+      !!
+      !! The rows belonging to ONE atom of `this`, renumbered onto a one-atom
+      !! ECP (`out%ecp_at` all 1, `out%natm = 1`) -- the same "subset" idea
+      !! `trc_basis_t%subset` already uses for SAD's free-atom sub-SCF, so that
+      !! sub-SCF's own H_core can carry THIS atom's U_ECP instead of running
+      !! valence-only-V_ne with no core potential at all (trc_sad.F90's own
+      !! header: a free atom's electron count is already right from `b%at_z`,
+      !! but with no U its orbitals come out far too diffuse). `out` comes back
+      !! `has_ecp = .false.` (its default) when `ia` carries no ECP rows,
+      !! including every atom of an ECP-free run.
+      !!
       type(trc_ecp_t), intent(in) :: this
       integer, intent(in) :: ia
       type(trc_ecp_t), intent(out) :: out
@@ -103,16 +103,16 @@ contains
       out%has_ecp = .true.
    end subroutine trc_ecp_subset_atom
 
-   !
-   ! `this` without the rows of the atoms `drop` marks, those atoms' core
-   ! counts zeroed, every atom keeping its own index (unlike
-   ! trc_ecp_subset_atom, which renumbers onto one atom). attach_ecp uses it
-   ! for ghost atoms: a ghost carries its element's basis functions and no
-   ! nucleus, so no core is replaced and no core potential applies -- pyscf's
-   ! own treatment of a ghost. `out` comes back `has_ecp = .false.` when no
-   ! row survives.
-   !
    pure subroutine trc_ecp_without_atoms(this, drop, out)
+      !!
+      !! `this` without the rows of the atoms `drop` marks, those atoms' core
+      !! counts zeroed, every atom keeping its own index (unlike
+      !! trc_ecp_subset_atom, which renumbers onto one atom). attach_ecp uses it
+      !! for ghost atoms: a ghost carries its element's basis functions and no
+      !! nucleus, so no core is replaced and no core potential applies -- pyscf's
+      !! own treatment of a ghost. `out` comes back `has_ecp = .false.` when no
+      !! row survives.
+      !!
       type(trc_ecp_t), intent(in) :: this
       logical, intent(in) :: drop(:)
       !! (this%natm)

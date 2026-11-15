@@ -1,61 +1,62 @@
-!
-! makeEFP, driven end to end by terco.
-!
-! WHAT THIS IS
-! ------------
-! A standalone copy of mqc's `make_efp_potential` pipeline, with every integral
-! coming from terco instead of libcint. It is a DEMO, not the backend: the
-! backend (Phase 4 of PLAN_MAKEEFP.md) lives inside mqc and has to be built
-! against mqc's own molecule type, its logger and its error handling. This
-! program exists so the pathway can be run and shown before that wiring is
-! possible, on a machine that has a GPU but not a full mqc build.
-!
-! It follows the real routine's stage order, which is forced by what depends on
-! what:
-!
-!     1. basis, pair list, ERI object          terco
-!     2. RHF SCF                               terco, four-centre
-!     3. Boys localization                     host, on terco's dipole matrices
-!     4. distributed multipoles                terco, through octupole
-!     5. static polarizability by CPHF         terco, BATCHED over perturbations
-!     6. write the potential
-!
-! The SCF gives the density the multipoles are taken from and the orbitals
-! everything else needs; localization gives the centres the polarizabilities
-! are expressed on; the multipoles have to exist before any screening could be
-! fitted. That ordering is copied deliberately.
-!
-! WHAT IS FAITHFUL AND WHAT IS NOT
-! ---------------------------------
-! Faithful: the expansion points (atoms plus bond midpoints by covalent radii),
-! the nearest-point partition of the primitive density with ties split evenly,
-! the packed component orders a `.efp` carries, the Boys functional, and the
-! CPHF equations.
-!
-! Not attempted: the charge-penetration screening fit, the dynamic (Casimir-
-! Polder) blocks, the exchange-repulsion basis projection, and GAMESS's AO
-! ordering for the orbital sections. Those are linear algebra and file format,
-! not integrals -- they are exactly the parts that stay in mqc under terco's
-! contract, and copying them here would prove nothing about terco.
-!
-! WHY STAGE 5 IS THE POINT
-! ------------------------
-! Everything above stage 5 is one pass. Stage 5 is the one that repeats: the
-! real makeEFP solves about a hundred right-hand sides (nine perturbations at
-! twelve imaginary frequencies), and each iteration of each is a Fock build.
-! This demo runs the static block only -- three perturbations -- but runs them
-! THROUGH `fock_many`, so the batching measured in Phase 2 is what is being
-! exercised, and the printed per-iteration cost is the number that scales to
-! the full potential.
-!
-!   demo_makefp <xyz> [charge] [thresh] [ncore]
-!
 program demo_makefp
+   !!
+   !! makeEFP, driven end to end by terco.
+   !!
+   !! WHAT THIS IS
+   !! ------------
+   !! A standalone copy of mqc's `make_efp_potential` pipeline, with every integral
+   !! coming from terco instead of libcint. It is a DEMO, not the backend: the
+   !! backend (Phase 4 of PLAN_MAKEEFP.md) lives inside mqc and has to be built
+   !! against mqc's own molecule type, its logger and its error handling. This
+   !! program exists so the pathway can be run and shown before that wiring is
+   !! possible, on a machine that has a GPU but not a full mqc build.
+   !!
+   !! It follows the real routine's stage order, which is forced by what depends on
+   !! what:
+   !!
+   !!     1. basis, pair list, ERI object          terco
+   !!     2. RHF SCF                               terco, four-centre
+   !!     3. Boys localization                     host, on terco's dipole matrices
+   !!     4. distributed multipoles                terco, through octupole
+   !!     5. static polarizability by CPHF         terco, BATCHED over perturbations
+   !!     6. write the potential
+   !!
+   !! The SCF gives the density the multipoles are taken from and the orbitals
+   !! everything else needs; localization gives the centres the polarizabilities
+   !! are expressed on; the multipoles have to exist before any screening could be
+   !! fitted. That ordering is copied deliberately.
+   !!
+   !! WHAT IS FAITHFUL AND WHAT IS NOT
+   !! ---------------------------------
+   !! Faithful: the expansion points (atoms plus bond midpoints by covalent radii),
+   !! the nearest-point partition of the primitive density with ties split evenly,
+   !! the packed component orders a `.efp` carries, the Boys functional, and the
+   !! CPHF equations.
+   !!
+   !! Not attempted: the charge-penetration screening fit, the dynamic (Casimir-
+   !! Polder) blocks, the exchange-repulsion basis projection, and GAMESS's AO
+   !! ordering for the orbital sections. Those are linear algebra and file format,
+   !! not integrals -- they are exactly the parts that stay in mqc under terco's
+   !! contract, and copying them here would prove nothing about terco.
+   !!
+   !! WHY STAGE 5 IS THE POINT
+   !! ------------------------
+   !! Everything above stage 5 is one pass. Stage 5 is the one that repeats: the
+   !! real makeEFP solves about a hundred right-hand sides (nine perturbations at
+   !! twelve imaginary frequencies), and each iteration of each is a Fock build.
+   !! This demo runs the static block only -- three perturbations -- but runs them
+   !! THROUGH `fock_many`, so the batching measured in Phase 2 is what is being
+   !! exercised, and the printed per-iteration cost is the number that scales to
+   !! the full potential.
+   !!
+   !!   demo_makefp <xyz> [charge] [thresh] [ncore]
+   !!
    use pic_types, only: dp
    use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_multipoles, &
                       TRC_NMULT
    use trc_eri, only: trc_eri_t
+   use trc_cart, only: ncart => cart_ncart_of
    use trc_test_basis, only: read_xyz, unpack_basis
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
@@ -254,10 +255,10 @@ contains
       end do
    end function nuclear_repulsion
 
-   ! =======================================================================
-   ! stage 2
-   ! =======================================================================
    subroutine run_scf()
+      !! =======================================================================
+      !! stage 2
+      !! =======================================================================
       real(dp) :: eold, de, ddm
       real(dp), allocatable :: dold(:, :)
       integer :: it
@@ -328,10 +329,10 @@ contains
       d = 2.0_dp*matmul(c(:, 1:no), transpose(c(:, 1:no)))
    end subroutine make_density
 
-   ! =======================================================================
-   ! stage 3 -- Boys localization by Jacobi sweeps
-   ! =======================================================================
    subroutine boys_localize()
+      !! =======================================================================
+      !! stage 3 -- Boys localization by Jacobi sweeps
+      !! =======================================================================
       !! Maximize sum_i |<i|r|i>|^2 over the valence occupied block.
       !!
       !! Two-by-two rotations, the classical Edmiston-style sweep. For a pair
@@ -409,10 +410,10 @@ contains
       deallocate (rmo, tmp)
    end subroutine boys_localize
 
-   ! =======================================================================
-   ! stage 4 -- distributed multipoles
-   ! =======================================================================
    subroutine distributed_multipoles()
+      !! =======================================================================
+      !! stage 4 -- distributed multipoles
+      !! =======================================================================
       !! Charge through octupole at every expansion point.
       !!
       !! The partition is done at the PRIMITIVE level, which is why an
@@ -542,11 +543,6 @@ contains
       deallocate (tmat_u, uexp, ush_l, ush_np, ush_ao, ue, uc, ur)
    end subroutine distributed_multipoles
 
-   pure integer function ncart(l)
-      integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
-   end function ncart
-
    subroutine expansion_points()
       !! Every atom, then every bond midpoint.
       !!
@@ -655,10 +651,10 @@ contains
       end do
    end subroutine build_uncontracted
 
-   ! =======================================================================
-   ! stage 5 -- static polarizability by CPHF, batched over perturbations
-   ! =======================================================================
    subroutine cphf_static()
+      !! =======================================================================
+      !! stage 5 -- static polarizability by CPHF, batched over perturbations
+      !! =======================================================================
       !! alpha_ij = -Tr(D^(j) r_i), with D^(j) the density response to a field
       !! along j.
       !!
@@ -756,10 +752,10 @@ contains
       deallocate (d1, g1, u, f1, fmo, w, tmp, co, cv)
    end subroutine cphf_static
 
-   ! =======================================================================
-   ! stage 6
-   ! =======================================================================
    subroutine write_efp(fn)
+      !! =======================================================================
+      !! stage 6
+      !! =======================================================================
       character(len=*), intent(in) :: fn
       integer :: uu, p, c
       open (newunit=uu, file=fn, status='replace', action='write')

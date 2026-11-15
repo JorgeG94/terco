@@ -1,62 +1,62 @@
-!
-! The VV10 gradient's own formula, isolated from the SCF entirely: a
-! central finite difference of E_nlc[D] alone, with D the converged wB97X-V
-! AO density matrix held FIXED (not reconverged) while the basis and the
-! VV10 grid (points, weights, AND the Becke partition) are rebuilt at every
-! displaced geometry.
-!
-! WHY THIS IS SHARPER THAN check_xc_grad_fd.F90's wB97X-V CASE. That
-! program differences the FULLY RECONVERGED KS-DFT energy, so its finite
-! difference is dE_SCF/dR = Pulay + grid response + the Hellmann-Feynman
-! piece ALREADY folded in by self-consistency + whatever SCF/DIIS
-! convergence noise a harder (RSH+NLC) SCF carries from one displaced
-! geometry to the next. RESOLVED: that program's own case originally
-! measured worst abs ON 4.27e-7, flat across grid levels 3 and 5, and
-! Richardson only reached 2.90e-7, not the ~440x collapse a purely
-! truncation-limited case gives (w3.xyz's own SVWN case there) -- which
-! this program's own clean numbers below (built BEFORE that bug was
-! found, by ruling out the SCF entirely rather than guessing at it) show
-! was neither SCF noise nor a missing gradient term: `trc_scf_gradient`
-! was never handed `nlc_grid_level`, so that comparison differenced an
-! energy on the SCF's own (coarse) VV10 grid against an analytic
-! gradient on a DIFFERENT (finer) one. Fixed there; its own floor is now
-! 1.38e-7, matching the plain-GGA cases.
-!
-! Holding D fixed removes the SCF from the comparison ENTIRELY: with no
-! reconvergence at any displaced geometry, there is no DIIS error, no
-! orbital-rotation (energy-weighted-density/orthonormality) term, and no
-! iteration-count sensitivity -- the only things left in dE_nlc[D]/dR are
-! EXACTLY the two terms trc_vv10_grad%vv10_grad_add computes (Pulay +
-! grid response), because E_nlc[D] = sum_g w_g(R) rho_D(g; R) [...] is a
-! plain functional of the FIXED matrix D and the geometry R, evaluated
-! the same way at every displaced point. If this comparison is NOT tight
-! to truncation, the gradient formula itself is wrong, full stop -- see
-! this program's own suspects list below, not a step-size or SCF excuse.
-!
-! SUSPECTS, if this comes back loose (the formulas trc_vv10_grad.F90's
-! own header derives and cites):
-!   - the weight-response coefficient dE/dw_i = beta + F (NOT beta + F/2,
-!     which is what the ENERGY density eps_i carries -- a point's weight
-!     enters the pair sum twice over, see vv10_grad_kernel_body's own
-!     comment);
-!   - the point's own explicit force fexp, in particular its sign and the
-!     factor of 3 (not 1.5 -- the pair-sum symmetry that lets one pass
-!     over the outer index capture both the point's own-point AND
-!     every-other-point's-inner-point role at once);
-!   - dft_partition_becke_derivatives's own dP/dR for the INNER grid (used
-!     identically to the semilocal term's, but through a different
-!     point set -- VV10's own, coarser grid).
-!
-! Four independent cases (RKS/UKS x two VV10 grid levels), each its own
-! test-drive unittest so a failure in one does not hide the others.
-!
-! NO INTERNAL PROCEDURES, here or in the program, for check_xc_grad_fd.F90's
-! reason: the SCFs below make collective MPI calls, and on NVHPC 26.5 +
-! HPC-X a `contains`-ed procedure in such a unit corrupted a later
-! collective Fock build (AGENTS.md's MPI rule). Every helper is a module
-! procedure; keep it that way.
-!
 module check_vv10_grad_fixedd_fd_suite
+   !!
+   !! The VV10 gradient's own formula, isolated from the SCF entirely: a
+   !! central finite difference of E_nlc[D] alone, with D the converged wB97X-V
+   !! AO density matrix held FIXED (not reconverged) while the basis and the
+   !! VV10 grid (points, weights, AND the Becke partition) are rebuilt at every
+   !! displaced geometry.
+   !!
+   !! WHY THIS IS SHARPER THAN check_xc_grad_fd.F90's wB97X-V CASE. That
+   !! program differences the FULLY RECONVERGED KS-DFT energy, so its finite
+   !! difference is dE_SCF/dR = Pulay + grid response + the Hellmann-Feynman
+   !! piece ALREADY folded in by self-consistency + whatever SCF/DIIS
+   !! convergence noise a harder (RSH+NLC) SCF carries from one displaced
+   !! geometry to the next. RESOLVED: that program's own case originally
+   !! measured worst abs ON 4.27e-7, flat across grid levels 3 and 5, and
+   !! Richardson only reached 2.90e-7, not the ~440x collapse a purely
+   !! truncation-limited case gives (w3.xyz's own SVWN case there) -- which
+   !! this program's own clean numbers below (built BEFORE that bug was
+   !! found, by ruling out the SCF entirely rather than guessing at it) show
+   !! was neither SCF noise nor a missing gradient term: `trc_scf_gradient`
+   !! was never handed `nlc_grid_level`, so that comparison differenced an
+   !! energy on the SCF's own (coarse) VV10 grid against an analytic
+   !! gradient on a DIFFERENT (finer) one. Fixed there; its own floor is now
+   !! 1.38e-7, matching the plain-GGA cases.
+   !!
+   !! Holding D fixed removes the SCF from the comparison ENTIRELY: with no
+   !! reconvergence at any displaced geometry, there is no DIIS error, no
+   !! orbital-rotation (energy-weighted-density/orthonormality) term, and no
+   !! iteration-count sensitivity -- the only things left in dE_nlc[D]/dR are
+   !! EXACTLY the two terms trc_vv10_grad%vv10_grad_add computes (Pulay +
+   !! grid response), because E_nlc[D] = sum_g w_g(R) rho_D(g; R) [...] is a
+   !! plain functional of the FIXED matrix D and the geometry R, evaluated
+   !! the same way at every displaced point. If this comparison is NOT tight
+   !! to truncation, the gradient formula itself is wrong, full stop -- see
+   !! this program's own suspects list below, not a step-size or SCF excuse.
+   !!
+   !! SUSPECTS, if this comes back loose (the formulas trc_vv10_grad.F90's
+   !! own header derives and cites):
+   !!   - the weight-response coefficient dE/dw_i = beta + F (NOT beta + F/2,
+   !!     which is what the ENERGY density eps_i carries -- a point's weight
+   !!     enters the pair sum twice over, see vv10_grad_kernel_body's own
+   !!     comment);
+   !!   - the point's own explicit force fexp, in particular its sign and the
+   !!     factor of 3 (not 1.5 -- the pair-sum symmetry that lets one pass
+   !!     over the outer index capture both the point's own-point AND
+   !!     every-other-point's-inner-point role at once);
+   !!   - dft_partition_becke_derivatives's own dP/dR for the INNER grid (used
+   !!     identically to the semilocal term's, but through a different
+   !!     point set -- VV10's own, coarser grid).
+   !!
+   !! Four independent cases (RKS/UKS x two VV10 grid levels), each its own
+   !! test-drive unittest so a failure in one does not hide the others.
+   !!
+   !! NO INTERNAL PROCEDURES, here or in the program, for check_xc_grad_fd.F90's
+   !! reason: the SCFs below make collective MPI calls, and on NVHPC 26.5 +
+   !! HPC-X a `contains`-ed procedure in such a unit corrupted a later
+   !! collective Fock build (AGENTS.md's MPI rule). Every helper is a module
+   !! procedure; keep it that way.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

@@ -1,32 +1,32 @@
-!
-! The SCF over MPI ranks: the same energy on one rank, two and four.
-!
-! Every rank binds its own device, builds the same basis and grid, and runs
-! the same iteration; the Fock build takes every nranks-th quartet item of
-! the sorted work list from its rank and the result is summed across ranks
-! after each build. So the density is identical on every rank, and the
-! energies must be too -- bitwise, in principle, since the same numbers are
-! summed in the same order; the check allows rounding.
-!
-! Water, 6-31G, RHF and PBE; both must come out the same on any rank count,
-! which is what makes a run under `mpiexec -np 4` a test and not a
-! demonstration.
-!
-! The basis loads through `trc_basis_from_json`, the one construction path
-! -- E_RHF and E_PBE below are its own full-double-precision values (2026-
-! 10-08), not `build_631g`'s old 7-significant-figure literal ones, which
-! differed by 4.2e-9 Eh (RHF) and 8.6e-8 Eh (PBE, the DFT quadrature being
-! the more sensitive of the two to it). The tolerance stays 1e-8: it is a
-! correctness check, not a place to absorb a basis change by loosening it.
-!
-! A second case afterward: water/6-31G*, C-PCM (HF) and IEF-PCM (B3LYP),
-! eps 78.3553. trc_pcm's pcm_operator splits its own way -- every rank
-! keeps the whole cavity and K replicated (cheap next to the integrals)
-! and only the two solute-surface integral passes are split by point
-! range -- so this checks both the total energy and E_diel (res%e_pcm)
-! against this program's own np 1 water/6-31G* values (2026-10-15).
-!
 program scf_mpi
+   !!
+   !! The SCF over MPI ranks: the same energy on one rank, two and four.
+   !!
+   !! Every rank binds its own device, builds the same basis and grid, and runs
+   !! the same iteration; the Fock build takes every nranks-th quartet item of
+   !! the sorted work list from its rank and the result is summed across ranks
+   !! after each build. So the density is identical on every rank, and the
+   !! energies must be too -- bitwise, in principle, since the same numbers are
+   !! summed in the same order; the check allows rounding.
+   !!
+   !! Water, 6-31G, RHF and PBE; both must come out the same on any rank count,
+   !! which is what makes a run under `mpiexec -np 4` a test and not a
+   !! demonstration.
+   !!
+   !! The basis loads through `trc_basis_from_json`, the one construction path
+   !! -- E_RHF and E_PBE below are its own full-double-precision values (2026-
+   !! 10-08), not `build_631g`'s old 7-significant-figure literal ones, which
+   !! differed by 4.2e-9 Eh (RHF) and 8.6e-8 Eh (PBE, the DFT quadrature being
+   !! the more sensitive of the two to it). The tolerance stays 1e-8: it is a
+   !! correctness check, not a place to absorb a basis change by loosening it.
+   !!
+   !! A second case afterward: water/6-31G*, C-PCM (HF) and IEF-PCM (B3LYP),
+   !! eps 78.3553. trc_pcm's pcm_operator splits its own way -- every rank
+   !! keeps the whole cavity and K replicated (cheap next to the integrals)
+   !! and only the two solute-surface integral passes are split by point
+   !! range -- so this checks both the total energy and E_diel (res%e_pcm)
+   !! against this program's own np 1 water/6-31G* values (2026-10-15).
+   !!
    use pic_types, only: dp
    use pic_timer, only: timer_type
    use pic_mpi_lib, only: comm_t, comm_world, pic_mpi_init, pic_mpi_finalize, allreduce, MPI_MAX, MPI_MIN

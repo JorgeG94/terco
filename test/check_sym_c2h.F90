@@ -1,31 +1,31 @@
-!
-! The point group C2h (E, C2z, i, sigma_h = xy; irreps Ag, Bg, Au, Bu):
-! trc_sym_geom, trc_sym_ao and the SO-blocked SCF of trc_sym_scf on
-!   n2h2_trans        trans-diazene, planar (every atom on the mirror)
-!   glyoxal_trans     trans-glyoxal, planar
-!   clh2c_ch2cl_anti  anti ClH2C-CH2Cl, nonplanar (C2 and i move the H atoms out
-!                     of the mirror plane; only C and Cl lie on it)
-! all in a general orientation. pyscf 2.14.0 detects C2h for each (sources of
-! the geometries are in the .xyz comment lines).
-!
-! Detection: group C2h, irreps Ag Bg Au Bu, the permutations of the four
-! operations (fixed atoms of C2 and sigma), the frame (rows x, y, z and origin)
-! against pyscf _symm_axes and _symm_orig: z is the C2 axis. AO: U^T U = I,
-! the sign of every AO under the inversion is (-1)^l, U^T S U and U^T H U are
-! block-diagonal (<= 1e-12), the dimensions per irrep equal pyscf
-! mol.symm_orb (pyscf_refs/sym_c2h.ref), Cartesian and spherical, 6-31G* and
-! cc-pVDZ. Registered twice, like check_sym_ao: `check_sym_c2h` (mode "main")
-! and `check_sym_c2h_f` (mode "f", the uncontracted l = 0..3 set, which prints
-! SKIP when this build LMAX is below 3).
-! SCF: the central oracle (symmetry vs C1 on the symmetrised geometry: |dE|
-! <= 1e-10 Eh for HF, 1e-9 for B3LYP, orbital energies, density) for RHF, UHF
-! (radical cations of N2H2, anchored, and of anti ClH2C-CH2Cl, oracle only) and B3LYP (N2H2), each
-! against the pyscf anchors (electrons per irrep, orbital energies per
-! irrep); the gradient symmetrisation.
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_c2h_suite
+   !!
+   !! The point group C2h (E, C2z, i, sigma_h = xy; irreps Ag, Bg, Au, Bu):
+   !! trc_sym_geom, trc_sym_ao and the SO-blocked SCF of trc_sym_scf on
+   !!   n2h2_trans        trans-diazene, planar (every atom on the mirror)
+   !!   glyoxal_trans     trans-glyoxal, planar
+   !!   clh2c_ch2cl_anti  anti ClH2C-CH2Cl, nonplanar (C2 and i move the H atoms out
+   !!                     of the mirror plane; only C and Cl lie on it)
+   !! all in a general orientation. pyscf 2.14.0 detects C2h for each (sources of
+   !! the geometries are in the .xyz comment lines).
+   !!
+   !! Detection: group C2h, irreps Ag Bg Au Bu, the permutations of the four
+   !! operations (fixed atoms of C2 and sigma), the frame (rows x, y, z and origin)
+   !! against pyscf _symm_axes and _symm_orig: z is the C2 axis. AO: U^T U = I,
+   !! the sign of every AO under the inversion is (-1)^l, U^T S U and U^T H U are
+   !! block-diagonal (<= 1e-12), the dimensions per irrep equal pyscf
+   !! mol.symm_orb (pyscf_refs/sym_c2h.ref), Cartesian and spherical, 6-31G* and
+   !! cc-pVDZ. Registered twice, like check_sym_ao: `check_sym_c2h` (mode "main")
+   !! and `check_sym_c2h_f` (mode "f", the uncontracted l = 0..3 set, which prints
+   !! SKIP when this build LMAX is below 3).
+   !! SCF: the central oracle (symmetry vs C1 on the symmetrised geometry: |dE|
+   !! <= 1e-10 Eh for HF, 1e-9 for B3LYP, orbital energies, density) for RHF, UHF
+   !! (radical cations of N2H2, anchored, and of anti ClH2C-CH2Cl, oracle only) and B3LYP (N2H2), each
+   !! against the pyscf anchors (electrons per irrep, orbital energies per
+   !! irrep); the gradient symmetrisation.
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

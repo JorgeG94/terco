@@ -1,31 +1,31 @@
-!
-! Cavity radii for the polarisable continuum.
-!
-! A continuum model's answer depends on the cavity above almost anything
-! else in it: the solvation energy goes roughly as 1/R, so a radius wrong by
-! a few percent is a solvation energy wrong by a few percent, and no
-! identity downstream catches it the way the electron count catches a wrong
-! density. So the table is refused outside its range rather than
-! extrapolated.
-!
-! The values are pyscf's `pcm.modified_Bondi`, element for element: Bondi's
-! van der Waals radii [J. Phys. Chem. 68, 441 (1964)], with Mantina et al.
-! [J. Phys. Chem. A 113, 5806 (2009)] for the elements Bondi did not cover,
-! and hydrogen at 1.1 Angstrom rather than Bondi's 1.2 (the "modified"
-! part). They are van der Waals radii, not the Bragg-Slater ones that size
-! the DFT partition cells in src/grid: those are systematically smaller and
-! would shrink every cavity.
-!
-! Hydrogen through calcium only. pyscf's table continues, but past calcium
-! its entries are either a 2.0 Angstrom placeholder or, from copper on, one
-! element out of step with Bondi's own (its copper is Bondi's nickel), and
-! neither is something to reproduce on purpose.
-!
-! Converted to bohr with pyscf's own constant (0.52917721092 Angstrom), not
-! CODATA 2018's, so a cavity here and pyscf's agree to the last bit of the
-! radius rather than to the eighth digit.
-!
 module trc_pcm_radii
+   !!
+   !! Cavity radii for the polarisable continuum.
+   !!
+   !! A continuum model's answer depends on the cavity above almost anything
+   !! else in it: the solvation energy goes roughly as 1/R, so a radius wrong by
+   !! a few percent is a solvation energy wrong by a few percent, and no
+   !! identity downstream catches it the way the electron count catches a wrong
+   !! density. So the table is refused outside its range rather than
+   !! extrapolated.
+   !!
+   !! The values are pyscf's `pcm.modified_Bondi`, element for element: Bondi's
+   !! van der Waals radii [J. Phys. Chem. 68, 441 (1964)], with Mantina et al.
+   !! [J. Phys. Chem. A 113, 5806 (2009)] for the elements Bondi did not cover,
+   !! and hydrogen at 1.1 Angstrom rather than Bondi's 1.2 (the "modified"
+   !! part). They are van der Waals radii, not the Bragg-Slater ones that size
+   !! the DFT partition cells in src/grid: those are systematically smaller and
+   !! would shrink every cavity.
+   !!
+   !! Hydrogen through calcium only. pyscf's table continues, but past calcium
+   !! its entries are either a 2.0 Angstrom placeholder or, from copper on, one
+   !! element out of step with Bondi's own (its copper is Bondi's nickel), and
+   !! neither is something to reproduce on purpose.
+   !!
+   !! Converted to bohr with pyscf's own constant (0.52917721092 Angstrom), not
+   !! CODATA 2018's, so a cavity here and pyscf's agree to the last bit of the
+   !! radius rather than to the eighth digit.
+   !!
    use pic_types, only: dp
    use trc_constants, only: BOHR_TO_ANGSTROM_CODATA2010
    use trc_error, only: error_t, ERROR_VALIDATION

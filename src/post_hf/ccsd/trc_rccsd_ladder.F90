@@ -304,11 +304,10 @@ module trc_rccsd_ladder
 
 contains
 
-   ! ---------------------------------------------------------------------
-   ! the types
-   ! ---------------------------------------------------------------------
-
    subroutine ladder_init(this, no, nv)
+      !! ---------------------------------------------------------------------
+      !! the types
+      !! ---------------------------------------------------------------------
       !! A zeroed result on host and device. A block above 2^31-1 elements is refused in `status`.
       class(trc_rccsd_ladder_t), intent(inout) :: this
       integer, intent(in) :: no, nv
@@ -571,11 +570,10 @@ contains
       this%flops_dressing = 0_int64
    end subroutine lscratch_release
 
-   ! ---------------------------------------------------------------------
-   ! cost model and size checks
-   ! ---------------------------------------------------------------------
-
    pure function rccsd_ladder_macs(form, no, nv, naux) result(macs)
+      !! ---------------------------------------------------------------------
+      !! cost model and size checks
+      !! ---------------------------------------------------------------------
       !! Multiply-adds of one undressed ladder: assembled (naux + o^2) v^4, direct 2 naux o^2 v^3, half
       !! (naux + o^2) v^4 / 2 (symmetric tau; the rows a pass computes and drops and the second contraction of a
       !! general tau are not counted, module header); 0 for another form
@@ -817,11 +815,10 @@ contains
       ok = .true.
    end function ready_amps
 
-   ! ---------------------------------------------------------------------
-   ! the ladder
-   ! ---------------------------------------------------------------------
-
    subroutine rccsd_ladder_pp(ints, inter, lad, ls, la, tau_symmetric)
+      !! ---------------------------------------------------------------------
+      !! the ladder
+      !! ---------------------------------------------------------------------
       !! L(i,j,a,b) = sum_cd (ac|bd) tau(i,j,c,d), overwriting `lad%h` (pyscf _add_vvvv, einsum 'ijcd,acbd->ijab')
       !!
       !! The form is `ls%form`. Needs tau at the current amplitudes (`rccsd_inter_build_tau`). `tau_symmetric`
@@ -1259,13 +1256,12 @@ contains
       call rccsd_steps_close(stab, la, RCCSD_ST_DRESSING, tc, ls%flops_dressing)
    end subroutine dressed_correction
 
-   ! ---------------------------------------------------------------------
-   ! the kernels. Each takes its arrays as explicit-shape dummies and runs one
-   ! `do concurrent` over ONE flattened index, whose body calls an item routine
-   ! of this module. No `x%name` appears in any of them.
-   ! ---------------------------------------------------------------------
-
    subroutine kernel_zero(n, h)
+      !! ---------------------------------------------------------------------
+      !! the kernels. Each takes its arrays as explicit-shape dummies and runs one
+      !! `do concurrent` over ONE flattened index, whose body calls an item routine
+      !! of this module. No `x%name` appears in any of them.
+      !! ---------------------------------------------------------------------
       !! h = 0
       integer, intent(in) :: n
       real(dp), intent(out) :: h(n)
@@ -1436,15 +1432,14 @@ contains
       end do
    end subroutine kernel_sub_z2
 
-   ! ---------------------------------------------------------------------
-   ! the item routines: pure, `routine seq`, explicit-shape dummies, no
-   ! arrays of their own. A flat 1-based index t is the position in the
-   ! array that is written (or, for the scatters, read), first index fastest.
-   ! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
-   ! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
-   ! ---------------------------------------------------------------------
-
    pure subroutine split4(t, n1, n2, n3, i1, i2, i3, i4)
+      !! ---------------------------------------------------------------------
+      !! the item routines: pure, `routine seq`, explicit-shape dummies, no
+      !! arrays of their own. A flat 1-based index t is the position in the
+      !! array that is written (or, for the scatters, read), first index fastest.
+      !! A call in a `do concurrent` body passes the loop index through the TRC_DC_INDEX macro:
+      !! see inc/trc_dc_index.inc (an ifx miscompilation of the plain variable).
+      !! ---------------------------------------------------------------------
       !! t - 1 = (i1-1) + n1 ((i2-1) + n2 ((i3-1) + n3 (i4-1)))
       !$acc routine seq
       integer, intent(in) :: t, n1, n2, n3

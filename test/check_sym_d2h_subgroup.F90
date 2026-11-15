@@ -1,35 +1,35 @@
-!
-! Requested subgroups of D2h: C2v, C2h, Cs, C2 and Ci requested on D2h
-! molecules, against pyscf 2.14.0 (symmetry='C2v' / 'C2h' / 'Cs' / 'C2' / 'Ci')
-! and against the D2h and C1 runs of terco. pyscf has no D2 subgroup of D2h
-! (its SUBGROUP table; symmetry='D2' raises "Unable to identify input
-! symmetry"), and terco refuses it too (test_refusals).
-!
-! What pyscf does (measured, see the header of trc_sym_geom): if the D2h axes
-! are the input axes and the elements of the subgroup hold in them, it keeps the
-! input axes (every subgroup holds in any axis-aligned D2h input, whichever of
-! the three C2 axes, mirrors or planes the subgroup then uses). Otherwise it
-! uses the D2h frame as it is (`as_subgroup` changes the axes for the C2v group
-! name only, and the top group is D2h): the C2v/C2 axis, the C2h axis and the
-! Cs normal are all the D2h z axis.
-!
-! Molecules: planar ethylene (general orientation, and axis-aligned), planar
-! naphthalene (aligned) and NONPLANAR diborane (aligned, and in a general
-! orientation: there the subgroups' mirrors and axes move atoms).
-!
-! test_frame:   the reported group is the requested one, `detected` is D2h, the
-!               frame (rows x, y, z up to sign) and origin are pyscf
-!               `_symm_axes` and `_symm_orig`, and the operations are
-!               bijections that leave the symmetrised geometry invariant.
-! test_so_dims: SO dimensions per irrep equal mol.symm_orb (6-31G* Cartesian,
-!               cc-pVDZ spherical).
-! test_scf:     on the geometry symmetrised to D2h, the energy of the subgroup
-!               run equals the D2h run and the C1 run (<= 1e-10 Eh); on the raw
-!               input, the electrons per irrep, the orbital energies per irrep
-!               and the energy equal pyscf (sym_d2h_subgroup.ref).
-! test_refusals: D2 is refused, a Cs requested on a Cs molecule is the group.
-!
 module check_sym_d2h_subgroup_suite
+   !!
+   !! Requested subgroups of D2h: C2v, C2h, Cs, C2 and Ci requested on D2h
+   !! molecules, against pyscf 2.14.0 (symmetry='C2v' / 'C2h' / 'Cs' / 'C2' / 'Ci')
+   !! and against the D2h and C1 runs of terco. pyscf has no D2 subgroup of D2h
+   !! (its SUBGROUP table; symmetry='D2' raises "Unable to identify input
+   !! symmetry"), and terco refuses it too (test_refusals).
+   !!
+   !! What pyscf does (measured, see the header of trc_sym_geom): if the D2h axes
+   !! are the input axes and the elements of the subgroup hold in them, it keeps the
+   !! input axes (every subgroup holds in any axis-aligned D2h input, whichever of
+   !! the three C2 axes, mirrors or planes the subgroup then uses). Otherwise it
+   !! uses the D2h frame as it is (`as_subgroup` changes the axes for the C2v group
+   !! name only, and the top group is D2h): the C2v/C2 axis, the C2h axis and the
+   !! Cs normal are all the D2h z axis.
+   !!
+   !! Molecules: planar ethylene (general orientation, and axis-aligned), planar
+   !! naphthalene (aligned) and NONPLANAR diborane (aligned, and in a general
+   !! orientation: there the subgroups' mirrors and axes move atoms).
+   !!
+   !! test_frame:   the reported group is the requested one, `detected` is D2h, the
+   !!               frame (rows x, y, z up to sign) and origin are pyscf
+   !!               `_symm_axes` and `_symm_orig`, and the operations are
+   !!               bijections that leave the symmetrised geometry invariant.
+   !! test_so_dims: SO dimensions per irrep equal mol.symm_orb (6-31G* Cartesian,
+   !!               cc-pVDZ spherical).
+   !! test_scf:     on the geometry symmetrised to D2h, the energy of the subgroup
+   !!               run equals the D2h run and the C1 run (<= 1e-10 Eh); on the raw
+   !!               input, the electrons per irrep, the orbital energies per irrep
+   !!               and the energy equal pyscf (sym_d2h_subgroup.ref).
+   !! test_refusals: D2 is refused, a Cs requested on a Cs molecule is the group.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

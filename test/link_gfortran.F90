@@ -1,37 +1,37 @@
-!
-! terco driven from GFORTRAN, through the C ABI only.
-!
-! WHY THIS TEST EXISTS
-! --------------------
-! mqc is built with gfortran and terco with nvfortran. Fortran modules cannot
-! cross that boundary -- the `.mod` formats are unrelated -- so the only usable
-! interface is `trc_capi.F90`'s `bind(c)` skin, and the only proof that it
-! works is a gfortran program that links `libterco.so` and gets the right
-! number out.
-!
-! It runs a complete RHF SCF: basis, pair list, Schwarz bounds, one-electron
-! matrices and every Fock build come from terco across the C boundary, and
-! only the eigenproblem is local. Water at 6-31G must give
-!
-!     -75.983974465717   (trc_basis_from_json's own value, 2026-10-08)
-!
-! which is what `test/scf_rhf.F90` gets natively and what pyscf gets (both
-! to 1e-8, through the SAME basis-construction path, `trc_basis_from_json`,
-! this file now also uses -- see trc_test_basis.F90's header for why
-! `build_631g` is no longer that path; it used to be build_631g's own
-! 7-figure-literal value, -75.983974469890, 4.2e-9 Eh away from this one).
-! Anything
-! else means the ABI is misdescribing an array somewhere -- and a transposed
-! or mis-strided matrix usually still converges, to the wrong energy, so the
-! energy is the check and "it ran" is not.
-!
-! It also exercises EVERY entry point in the ABI, not just the ones an SCF
-! needs, so that a signature change anywhere is caught here.
-!
-! Build (see the `link-test` target):
-!   gfortran ... -L<build> -lterco
-!
 program link_gfortran
+   !!
+   !! terco driven from GFORTRAN, through the C ABI only.
+   !!
+   !! WHY THIS TEST EXISTS
+   !! --------------------
+   !! mqc is built with gfortran and terco with nvfortran. Fortran modules cannot
+   !! cross that boundary -- the `.mod` formats are unrelated -- so the only usable
+   !! interface is `trc_capi.F90`'s `bind(c)` skin, and the only proof that it
+   !! works is a gfortran program that links `libterco.so` and gets the right
+   !! number out.
+   !!
+   !! It runs a complete RHF SCF: basis, pair list, Schwarz bounds, one-electron
+   !! matrices and every Fock build come from terco across the C boundary, and
+   !! only the eigenproblem is local. Water at 6-31G must give
+   !!
+   !!     -75.983974465717   (trc_basis_from_json's own value, 2026-10-08)
+   !!
+   !! which is what `test/scf_rhf.F90` gets natively and what pyscf gets (both
+   !! to 1e-8, through the SAME basis-construction path, `trc_basis_from_json`,
+   !! this file now also uses -- see trc_test_basis.F90's header for why
+   !! `build_631g` is no longer that path; it used to be build_631g's own
+   !! 7-figure-literal value, -75.983974469890, 4.2e-9 Eh away from this one).
+   !! Anything
+   !! else means the ABI is misdescribing an array somewhere -- and a transposed
+   !! or mis-strided matrix usually still converges, to the wrong energy, so the
+   !! energy is the check and "it ran" is not.
+   !!
+   !! It also exercises EVERY entry point in the ABI, not just the ones an SCF
+   !! needs, so that a signature change anywhere is caught here.
+   !!
+   !! Build (see the `link-test` target):
+   !!   gfortran ... -L<build> -lterco
+   !!
    use, intrinsic :: iso_c_binding
    !
    ! The interfaces come from terco, not from a copy written here. A copy is
@@ -172,15 +172,15 @@ program link_gfortran
 
 contains
 
-   !
-   ! Every remaining entry point, each with an invariant that a wrong
-   ! signature would break.
-   !
-   ! Coverage is the point. An SCF alone touches eight of the eighteen calls,
-   ! so a changed argument list on any of the other ten would sail through
-   ! this test and surface in a host code instead.
-   !
    subroutine cover_rest()
+      !!
+      !! Every remaining entry point, each with an invariant that a wrong
+      !! signature would break.
+      !!
+      !! Coverage is the point. An SCF alone touches eight of the eighteen calls,
+      !! so a changed argument list on any of the other ten would sail through
+      !! this test and surface in a host code instead.
+      !!
       integer(c_int) :: maxl, npair
       real(dp), allocatable :: g1(:, :), gn(:, :), gm(:, :, :)
       real(dp), allocatable :: j2c(:, :), t3c(:, :, :)
@@ -346,15 +346,15 @@ contains
       ieee_ok = all(a == a) .and. all(abs(a) < huge(1.0_dp))
    end function ieee_ok
 
-   !
-   ! Pack the same basis into libcint's atm/bas/env.
-   !
-   ! The slot numbers are libcint's, 0-based, so a Fortran array indexed from
-   ! one carries them at index+1. `env` pointers are 0-based offsets into
-   ! `env` itself, which is the part that is easy to get wrong from Fortran
-   ! and the reason the overlap is compared afterwards rather than trusted.
-   !
    subroutine build_libcint_arrays()
+      !!
+      !! Pack the same basis into libcint's atm/bas/env.
+      !!
+      !! The slot numbers are libcint's, 0-based, so a Fortran array indexed from
+      !! one carries them at index+1. `env` pointers are 0-based offsets into
+      !! `env` itself, which is the part that is easy to get wrong from Fortran
+      !! and the reason the overlap is compared afterwards rather than trusted.
+      !!
       integer, parameter :: PTR_ENV_START = 20
       integer(c_int), allocatable :: atm(:, :), bas(:, :)
       real(c_double), allocatable :: env(:)

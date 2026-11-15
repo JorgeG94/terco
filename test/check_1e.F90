@@ -1,30 +1,30 @@
-!
-! One-electron kernels against libfint: overlap, kinetic, nuclear attraction.
-!
-! Reads reference1e.dat (written once by gen_reference1e under gfortran, since
-! libfint cannot be built with nvfortran) and compares every shell-pair block
-! for all three reference systems -- including system 2, which carries d
-! shells.
-!
-! NORMALISATION
-! -------------
-! libcint's `env` already holds contraction coefficients multiplied by the
-! primitive norm, which `put_shell` did on the reference side. What it does NOT
-! hold is `common_fac_sp`, the per-shell factor libcint applies separately:
-! 1/sqrt(4 pi) for s, sqrt(3/(4 pi)) for p, 1 beyond. The four-centre path was
-! wrong by exactly this factor once already; it is applied here per shell, so
-! twice per block.
-!
-! Tolerance is mixed, absolute plus relative, for the reason the ERI check
-! documents: dividing a 1e-16 difference by a 1e-12 reference manufactures
-! failures out of exact results.
-!
-! Checks are grouped one per (system, kind) -- kind is OVLP/KIN/NUC -- each
-! reporting that system's worst diff, rather than one check per matrix
-! element: the file carries every shell-pair block for three systems, which
-! would otherwise be thousands of individual check() calls.
-!
 module check_1e_suite
+   !!
+   !! One-electron kernels against libfint: overlap, kinetic, nuclear attraction.
+   !!
+   !! Reads reference1e.dat (written once by gen_reference1e under gfortran, since
+   !! libfint cannot be built with nvfortran) and compares every shell-pair block
+   !! for all three reference systems -- including system 2, which carries d
+   !! shells.
+   !!
+   !! NORMALISATION
+   !! -------------
+   !! libcint's `env` already holds contraction coefficients multiplied by the
+   !! primitive norm, which `put_shell` did on the reference side. What it does NOT
+   !! hold is `common_fac_sp`, the per-shell factor libcint applies separately:
+   !! 1/sqrt(4 pi) for s, sqrt(3/(4 pi)) for p, 1 beyond. The four-centre path was
+   !! wrong by exactly this factor once already; it is applied here per shell, so
+   !! twice per block.
+   !!
+   !! Tolerance is mixed, absolute plus relative, for the reason the ERI check
+   !! documents: dividing a 1e-16 difference by a 1e-12 reference manufactures
+   !! failures out of exact results.
+   !!
+   !! Checks are grouped one per (system, kind) -- kind is OVLP/KIN/NUC -- each
+   !! reporting that system's worst diff, rather than one check per matrix
+   !! element: the file carries every shell-pair block for three systems, which
+   !! would otherwise be thousands of individual check() calls.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -89,11 +89,6 @@ contains
       read (u, '(a)') t; read (u, *) (bas(i), i=0, BAS_SLOTS*nbas - 1)
       read (u, '(a)') t; read (u, *) (env(i), i=0, nenv - 1)
    end subroutine read_system
-
-   pure integer function ncart(l)
-      integer, intent(in) :: l
-      ncart = (l + 1)*(l + 2)/2
-   end function ncart
 
    pure real(dp) function common_fac_sp(l)
       !! libcint's per-shell factor, applied outside `env`.

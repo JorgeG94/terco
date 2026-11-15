@@ -1,22 +1,22 @@
-!
-! The data the four-centre launchers share.
-!
-! Three containers, no procedures: the shells and their primitive pairs
-! (hgp_build_pairs fills the pairs), the bin-interleaved copy of those pairs
-! (bins_build_pair_quartets), and one launch over the bins (what to build and
-! what came back). They exist so the launchers -- binkernel_fock_bins,
-! grad_bins, the Schwarz bounds -- take a handful of objects instead of forty
-! arrays.
-!
-! NONE OF THESE IS EVER MAPPED WHOLE. Their arrays go to the device one by
-! one (`enter data copyin(pairs%p, ...)` in trc_eri), and a launcher hands
-! them to its kernels as explicit-shape actual arguments, so a `do concurrent`
-! body never reads a derived-type component. Growing a type that IS mapped
-! whole has crashed nvfortran before (see trc_bins' bins_build_pair_quartets);
-! that is why these are separate types rather than more fields of
-! `pair_bins_t`.
-!
 module trc_eri_data
+   !!
+   !! The data the four-centre launchers share.
+   !!
+   !! Three containers, no procedures: the shells and their primitive pairs
+   !! (hgp_build_pairs fills the pairs), the bin-interleaved copy of those pairs
+   !! (bins_build_pair_quartets), and one launch over the bins (what to build and
+   !! what came back). They exist so the launchers -- binkernel_fock_bins,
+   !! grad_bins, the Schwarz bounds -- take a handful of objects instead of forty
+   !! arrays.
+   !!
+   !! NONE OF THESE IS EVER MAPPED WHOLE. Their arrays go to the device one by
+   !! one (`enter data copyin(pairs%p, ...)` in trc_eri), and a launcher hands
+   !! them to its kernels as explicit-shape actual arguments, so a `do concurrent`
+   !! body never reads a derived-type component. Growing a type that IS mapped
+   !! whole has crashed nvfortran before (see trc_bins' bins_build_pair_quartets);
+   !! that is why these are separate types rather than more fields of
+   !! `pair_bins_t`.
+   !!
    use pic_types, only: dp, int64
    implicit none
    private

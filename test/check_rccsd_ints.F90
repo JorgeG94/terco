@@ -1,24 +1,24 @@
-!
-! The fitted integral blocks of RI-CCSD(T) (src/post_hf/ccsd/trc_rccsd_ints.F90)
-! against the DF-RCCSD integrals of pyscf, on a water and on a C1 hydrogen peroxide
-! (no probe vanishes by symmetry), cc-pVDZ with cc-pVDZ-RIFIT, spherical,
-! frozen core 1 and 2.
-!
-! pyscf never runs here: test/pyscf_refs/generate.py (case gen_rccsd_ints) wrote
-! rccsd_ints_<molecule>.ref. A 4-index block cannot be compared element by
-! element across the orbital phases of two codes, so the reference holds sign-
-! invariant probes of each block A(p,q,r,s): its Frobenius norm and three
-! contractions with the MO dipole integrals (origin 0) over the active
-! orbitals,
-!     sum A X_pq Y_rs,   sum A X_pr Z_qs,   sum A Y_ps Z_qr,
-! each dipole block restricted to the orbital spaces (o or v) of the indices
-! it carries. A transposed or mis-packed block changes them.
-!
-! Each molecule is computed once (SCF to energy 1e-13 and commutator 1e-9,
-! since RI-MP2 is 3e-9 off at the default thresholds) and every case below
-! only reads what was recorded.
-!
 module check_rccsd_ints_suite
+   !!
+   !! The fitted integral blocks of RI-CCSD(T) (src/post_hf/ccsd/trc_rccsd_ints.F90)
+   !! against the DF-RCCSD integrals of pyscf, on a water and on a C1 hydrogen peroxide
+   !! (no probe vanishes by symmetry), cc-pVDZ with cc-pVDZ-RIFIT, spherical,
+   !! frozen core 1 and 2.
+   !!
+   !! pyscf never runs here: test/pyscf_refs/generate.py (case gen_rccsd_ints) wrote
+   !! rccsd_ints_<molecule>.ref. A 4-index block cannot be compared element by
+   !! element across the orbital phases of two codes, so the reference holds sign-
+   !! invariant probes of each block A(p,q,r,s): its Frobenius norm and three
+   !! contractions with the MO dipole integrals (origin 0) over the active
+   !! orbitals,
+   !!     sum A X_pq Y_rs,   sum A X_pr Z_qs,   sum A Y_ps Z_qr,
+   !! each dipole block restricted to the orbital spaces (o or v) of the indices
+   !! it carries. A transposed or mis-packed block changes them.
+   !!
+   !! Each molecule is computed once (SCF to energy 1e-13 and commutator 1e-9,
+   !! since RI-MP2 is 3e-9 off at the default thresholds) and every case below
+   !! only reads what was recorded.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -68,8 +68,8 @@ contains
                   ]
    end subroutine collect_check_rccsd_ints
 
-   ! One wrapper per case: a unittest must not depend on which ran before it.
    subroutine w_scf(error)
+      !! One wrapper per case: a unittest must not depend on which ran before it.
       type(error_type), allocatable, intent(out) :: error
       call run_case(error, 1, 1)
    end subroutine w_scf

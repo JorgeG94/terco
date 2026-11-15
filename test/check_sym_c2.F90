@@ -1,27 +1,27 @@
-!
-! Point group C2 (trc_sym_geom, trc_sym_ao, trc_sym_scf): gauche H2O2 and
-! gauche hydrazine, both of which have the C2 axis as their only symmetry
-! element (before the group was enabled they were reported as C1). The C2
-! rotation moves every atom (no atom lies on the axis), so the signed
-! permutations are exercised fully, unlike a planar molecule.
-!
-!   - detection: group C2, frame z = the C2 axis and origin = pyscf 2.14.0's
-!     (`_symm_axes`, `_symm_orig`), the image of every atom is (-x, -y, z);
-!   - SALC: U^T U = I, U^T S U and U^T H U block-diagonal (<= 1e-12), the
-!     dimensions per irrep (A, B) equal to pyscf's `mol.symm_orb`; 6-31G* and
-!     cc-pVDZ, Cartesian and spherical;
-!   - THE CENTRAL ORACLE: symmetry vs C1 on the symmetrised geometry, RHF
-!     (H2O2 cc-pVDZ spherical, N2H4 6-31G* Cartesian), UHF (the H2O2 cation)
-!     and B3LYP, |dE| <= 1e-10 (HF) / 1e-9 (DFT), orbital energies, density;
-!   - anchors (sym_c2.ref, pyscf 2.14.0, symmetry = True): electrons per
-!     irrep and orbital energies per irrep;
-!   - gradient: symmetrised gradient equivariant and equal to C1, and the
-!     projection itself on an arbitrary (non-symmetric) gradient;
-!   - `symmetry = auto` and `symmetry = C2` choose C2.
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_c2_suite
+   !!
+   !! Point group C2 (trc_sym_geom, trc_sym_ao, trc_sym_scf): gauche H2O2 and
+   !! gauche hydrazine, both of which have the C2 axis as their only symmetry
+   !! element (before the group was enabled they were reported as C1). The C2
+   !! rotation moves every atom (no atom lies on the axis), so the signed
+   !! permutations are exercised fully, unlike a planar molecule.
+   !!
+   !!   - detection: group C2, frame z = the C2 axis and origin = pyscf 2.14.0's
+   !!     (`_symm_axes`, `_symm_orig`), the image of every atom is (-x, -y, z);
+   !!   - SALC: U^T U = I, U^T S U and U^T H U block-diagonal (<= 1e-12), the
+   !!     dimensions per irrep (A, B) equal to pyscf's `mol.symm_orb`; 6-31G* and
+   !!     cc-pVDZ, Cartesian and spherical;
+   !!   - THE CENTRAL ORACLE: symmetry vs C1 on the symmetrised geometry, RHF
+   !!     (H2O2 cc-pVDZ spherical, N2H4 6-31G* Cartesian), UHF (the H2O2 cation)
+   !!     and B3LYP, |dE| <= 1e-10 (HF) / 1e-9 (DFT), orbital energies, density;
+   !!   - anchors (sym_c2.ref, pyscf 2.14.0, symmetry = True): electrons per
+   !!     irrep and orbital energies per irrep;
+   !!   - gradient: symmetrised gradient equivariant and equal to C1, and the
+   !!     projection itself on an arbitrary (non-symmetric) gradient;
+   !!   - `symmetry = auto` and `symmetry = C2` choose C2.
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

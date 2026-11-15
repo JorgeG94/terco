@@ -1,30 +1,30 @@
-!
-! The geometry optimiser driven ONLY through the C ABI: terco.h for the
-! context (molecule, basis, method -- exactly a C caller like cyclone would
-! use) and terco_opt.h for the optimisation itself (trc_opt_options_create/
-! trc_opt_set_gtol/trc_opt_run/trc_opt_result_*), never trc_dlfind_bridge's
-! Fortran type trc_opt_options_t/trc_opt_result_t directly. This is the one
-! check that would not even COMPILE before libterco_opt and
-! trc_opt_capi.F90 existed -- the generated bindings it links
-! (trc_opt_c_interfaces, include/trc_opt_c_interfaces.f90) did not exist
-! either.
-!
-! Same systems and the same stored references check_opt_vs_pyscf.F90 uses
-! for its own water/hcn cases (test/pyscf_refs/opt_water.ref, opt_hcn.ref:
-! pyscf's RHF/STO-3G analytic gradient driving scipy's L-BFGS-B, a
-! different language, SCF implementation and optimiser entirely), at the
-! SAME tolerances -- so this check is independent evidence that the C ABI
-! path reaches the exact same answer check_cli_opt/check_opt_vs_pyscf_hcn
-! already established for terco's own CLI, not a new numerical claim.
-!
-! Unlike check_opt_vs_pyscf.F90, there is no terco_cli subprocess and no
-! --json/--opt-*.xyz file to inspect: trc_opt_result_geometry/_energy/
-! _gradient_max hand the answer straight back in the caller's own buffers,
-! which is the whole point of a library entry point over a CLI.
-!
-! A test-drive suite.
-!
 module check_capi_opt_suite
+   !!
+   !! The geometry optimiser driven ONLY through the C ABI: terco.h for the
+   !! context (molecule, basis, method -- exactly a C caller like cyclone would
+   !! use) and terco_opt.h for the optimisation itself (trc_opt_options_create/
+   !! trc_opt_set_gtol/trc_opt_run/trc_opt_result_*), never trc_dlfind_bridge's
+   !! Fortran type trc_opt_options_t/trc_opt_result_t directly. This is the one
+   !! check that would not even COMPILE before libterco_opt and
+   !! trc_opt_capi.F90 existed -- the generated bindings it links
+   !! (trc_opt_c_interfaces, include/trc_opt_c_interfaces.f90) did not exist
+   !! either.
+   !!
+   !! Same systems and the same stored references check_opt_vs_pyscf.F90 uses
+   !! for its own water/hcn cases (test/pyscf_refs/opt_water.ref, opt_hcn.ref:
+   !! pyscf's RHF/STO-3G analytic gradient driving scipy's L-BFGS-B, a
+   !! different language, SCF implementation and optimiser entirely), at the
+   !! SAME tolerances -- so this check is independent evidence that the C ABI
+   !! path reaches the exact same answer check_cli_opt/check_opt_vs_pyscf_hcn
+   !! already established for terco's own CLI, not a new numerical claim.
+   !!
+   !! Unlike check_opt_vs_pyscf.F90, there is no terco_cli subprocess and no
+   !! --json/--opt-*.xyz file to inspect: trc_opt_result_geometry/_energy/
+   !! _gradient_max hand the answer straight back in the caller's own buffers,
+   !! which is the whole point of a library entry point over a CLI.
+   !!
+   !! A test-drive suite.
+   !!
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_char, c_null_char
    use pic_types, only: dp
    use pic_strings, only: to_string
@@ -72,13 +72,13 @@ contains
       call run_case("hcn.xyz", "opt_hcn", error)
    end subroutine test_hcn
 
-   !
-   ! DL-FIND's P-RFO is a transition-state search (it always climbs the
-   ! lowest Hessian mode), so as a minimiser it is refused before any
-   ! energy is evaluated, the same as the CLI's --opt-algorithm prfo:
-   ! TRC_ERR_BADARG, not a 400-step run that may or may not converge.
-   !
    subroutine test_prfo_minimum_refused(error)
+      !!
+      !! DL-FIND's P-RFO is a transition-state search (it always climbs the
+      !! lowest Hessian mode), so as a minimiser it is refused before any
+      !! energy is evaluated, the same as the CLI's --opt-algorithm prfo:
+      !! TRC_ERR_BADARG, not a 400-step run that may or may not converge.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: ctx, opts, res
       integer :: nat, rc, nfail
@@ -239,15 +239,15 @@ contains
       end do
    end function f_message
 
-   !
-   ! For a 3-atom molecule only (water, hcn) -- the two SHORTEST pairwise
-   ! distances (the two bonds), the remaining distance, and the angle at
-   ! their shared vertex. A direct copy of check_opt_vs_pyscf.F90's own
-   ! helper of the same name: small enough, and stable enough, that
-   ! duplicating it here was preferred over exporting it from that file's
-   ! own private module scope.
-   !
    subroutine two_shortest_and_angle(xyz, d1, d2, d3, angle_deg)
+      !!
+      !! For a 3-atom molecule only (water, hcn) -- the two SHORTEST pairwise
+      !! distances (the two bonds), the remaining distance, and the angle at
+      !! their shared vertex. A direct copy of check_opt_vs_pyscf.F90's own
+      !! helper of the same name: small enough, and stable enough, that
+      !! duplicating it here was preferred over exporting it from that file's
+      !! own private module scope.
+      !!
       real(dp), intent(in) :: xyz(3, 3)
       real(dp), intent(out) :: d1, d2, d3, angle_deg
       real(dp), parameter :: PI_LOCAL = 3.14159265358979323846_dp

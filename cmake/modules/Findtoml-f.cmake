@@ -1,6 +1,6 @@
 #
 # toml-f: the TOML parser behind the `terco` CLI's input files (docs/INPUT.md,
-# app/trc_run_input.F90). Only terco_cli links it; libterco never does.
+# src/cli/trc_run_input.F90). Only terco_cli links it; libterco never does.
 #
 # Pinned to JorgeG94/toml-f's chore/get_to_work_nvhpc (e0bc8c6), commits on
 # upstream f9ff547 that this build needs: -Mbackslash/-Mallocatable=03 under

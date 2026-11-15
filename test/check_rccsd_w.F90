@@ -1,33 +1,33 @@
-!
-! The two-particle intermediates Woooo, Wvoov and Wvovo of RI-CCSD(T)
-! (src/post_hf/ccsd/trc_rccsd_w.F90) against the DF-RCCSD of pyscf, on a water and
-! on a C1 hydrogen peroxide, cc-pVDZ with cc-pVDZ-RIFIT, spherical, frozen core 1
-! and 2 (the molecules, SCF and probes of check_rccsd_ints, shared through
-! rccsd_test_support).
-!
-! The amplitudes are the FIXED, unconverged ones test/pyscf_refs/generate.py
-! (gen_rccsd_ints) probes: t2 = MP2, t1_ia = (0.03 x + 0.02 y + 0.01 z)_ia / (e_i - e_a).
-! The reference holds, per tensor, the sign-invariant 4-index probes |A|,
-! sum A X_pq Y_rs, sum A X_pr Z_qs, sum A Y_ps Z_qr (probe4 of rccsd_test_support),
-! with the dipole blocks on the spaces of the indices the tensor carries.
-!
-! INDEX ORDER. The W arrays of mqc are those of PySCF, index for index: Woooo(k,l,i,j),
-! Wvoov(a,k,i,c), Wvovo(a,k,c,i) (spaces "oooo", "voov", "vovo"), so the probes
-! take the arrays of the module as they are.
-!
-! Cases, per molecule:
-!   1 Woooo, Wvoov and Wvovo probes against the reference
-!   2 each W against host loops written term by term as the einsums of pyscf (t2 and
-!     t1 t1 terms apart, no tau, no helper of the module), reading only the integral
-!     blocks and t1, t2
-!   3 t1 = 0: the t1 terms vanish, each W against the t2-only host form
-!   4 Woooo(k,l,i,j) = Woooo(l,k,j,i)
-!   5 refusals: an empty integral type, mismatched sizes (also a scratch initialised for other
-!     (no, nv)), a missing scratch or tau (status set, message non-empty, nothing changed)
-!   6 stale scratch: after `ints%build` is called again every routine refuses until the
-!     scratch is re-initialised, then reproduces the earlier numbers
-!
 module check_rccsd_w_suite
+   !!
+   !! The two-particle intermediates Woooo, Wvoov and Wvovo of RI-CCSD(T)
+   !! (src/post_hf/ccsd/trc_rccsd_w.F90) against the DF-RCCSD of pyscf, on a water and
+   !! on a C1 hydrogen peroxide, cc-pVDZ with cc-pVDZ-RIFIT, spherical, frozen core 1
+   !! and 2 (the molecules, SCF and probes of check_rccsd_ints, shared through
+   !! rccsd_test_support).
+   !!
+   !! The amplitudes are the FIXED, unconverged ones test/pyscf_refs/generate.py
+   !! (gen_rccsd_ints) probes: t2 = MP2, t1_ia = (0.03 x + 0.02 y + 0.01 z)_ia / (e_i - e_a).
+   !! The reference holds, per tensor, the sign-invariant 4-index probes |A|,
+   !! sum A X_pq Y_rs, sum A X_pr Z_qs, sum A Y_ps Z_qr (probe4 of rccsd_test_support),
+   !! with the dipole blocks on the spaces of the indices the tensor carries.
+   !!
+   !! INDEX ORDER. The W arrays of mqc are those of PySCF, index for index: Woooo(k,l,i,j),
+   !! Wvoov(a,k,i,c), Wvovo(a,k,c,i) (spaces "oooo", "voov", "vovo"), so the probes
+   !! take the arrays of the module as they are.
+   !!
+   !! Cases, per molecule:
+   !!   1 Woooo, Wvoov and Wvovo probes against the reference
+   !!   2 each W against host loops written term by term as the einsums of pyscf (t2 and
+   !!     t1 t1 terms apart, no tau, no helper of the module), reading only the integral
+   !!     blocks and t1, t2
+   !!   3 t1 = 0: the t1 terms vanish, each W against the t2-only host form
+   !!   4 Woooo(k,l,i,j) = Woooo(l,k,j,i)
+   !!   5 refusals: an empty integral type, mismatched sizes (also a scratch initialised for other
+   !!     (no, nv)), a missing scratch or tau (status set, message non-empty, nothing changed)
+   !!   6 stale scratch: after `ints%build` is called again every routine refuses until the
+   !!     scratch is re-initialised, then reproduces the earlier numbers
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -574,9 +574,8 @@ contains
       end if
    end subroutine expect_refusal
 
-   ! ---- independent host references -----------------------------------------------------------
-
    subroutine host_t2(ints, t2)
+      !! ---- independent host references -----------------------------------------------------------
       !! t2(i,j,a,b) = (ia|jb) / (e_i + e_j - e_a - e_b)
       type(trc_rccsd_ints_t), intent(in) :: ints
       real(dp), allocatable, intent(out) :: t2(:, :, :, :)

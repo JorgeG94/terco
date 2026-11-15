@@ -1,40 +1,40 @@
-!
-! --logger's effect on --opt and --opt-freq: this branch (feat/cli-help-
-! topics-logger-opt-freq) added --logger but, until feat/opt-info-logging,
-! it never touched the SCF driver's own per-iteration table
-! (src/scf/trc_scf_driver.F90's "RMS(D)"/"|FDS-SDF|" header and its basis/
-! timing lines, all gated by scf_config%talk -- app/main.F90's own
-! trc_set_verbose call forced that on unconditionally unless --silent).
-! These checks pin the fix:
-!
-!   - a PLAIN single point (no --opt/--hessian) at the default --logger
-!     (info) still prints the SCF driver's own per-iteration table, EXACTLY
-!     as before this branch -- --logger must never make an ordinary run
-!     quieter. (This is the one case that regressed between this file's
-!     first version and the fix: toggling trc_set_verbose globally at
-!     startup, rather than only around --opt/--opt-freq's own loops,
-!     silenced a plain run too.)
-!   - --opt at the default --logger reads like a single SCF instead: a
-!     header, then one row per step (step, E(total), dE, max/rms |g|, SCF
-!     iteration count, wall time -- app/trc_dlfind_bridge.F90's own
-!     consider_step/TRC_OPT_STEP_HEADER) and a closing rule, never the SCF
-!     driver's own per-iteration table for any evaluation DL-FIND makes.
-!   - at --logger verbose, today's full per-evaluation SCF output is back
-!     for those same evaluations, on top of the step table (nothing is
-!     REMOVED at verbose).
-!   - --opt-freq at info: the opt step table, then trc_run_hessian's own
-!     one-line-per-displacement progress (src/api/trc_capi.F90 -- a
-!     library call, never gated on "talk" at all, so this was already
-!     right), then the frequency table -- never a per-displacement SCF
-!     table, and never one for the Hessian's own reference SCF (the
-!     reconvergence at the optimised geometry, also run quiet).
-!
-! water/STO-3G, lbfgs (the CLI's default --opt-algorithm): small enough
-! that both --opt and --opt-freq finish in well under a second.
-!
-! A test-drive suite.
-!
 module check_cli_opt_logging_suite
+   !!
+   !! --logger's effect on --opt and --opt-freq: this branch (feat/cli-help-
+   !! topics-logger-opt-freq) added --logger but, until feat/opt-info-logging,
+   !! it never touched the SCF driver's own per-iteration table
+   !! (src/scf/trc_scf_driver.F90's "RMS(D)"/"|FDS-SDF|" header and its basis/
+   !! timing lines, all gated by scf_config%talk -- app/main.F90's own
+   !! trc_set_verbose call forced that on unconditionally unless --silent).
+   !! These checks pin the fix:
+   !!
+   !!   - a PLAIN single point (no --opt/--hessian) at the default --logger
+   !!     (info) still prints the SCF driver's own per-iteration table, EXACTLY
+   !!     as before this branch -- --logger must never make an ordinary run
+   !!     quieter. (This is the one case that regressed between this file's
+   !!     first version and the fix: toggling trc_set_verbose globally at
+   !!     startup, rather than only around --opt/--opt-freq's own loops,
+   !!     silenced a plain run too.)
+   !!   - --opt at the default --logger reads like a single SCF instead: a
+   !!     header, then one row per step (step, E(total), dE, max/rms |g|, SCF
+   !!     iteration count, wall time -- app/trc_dlfind_bridge.F90's own
+   !!     consider_step/TRC_OPT_STEP_HEADER) and a closing rule, never the SCF
+   !!     driver's own per-iteration table for any evaluation DL-FIND makes.
+   !!   - at --logger verbose, today's full per-evaluation SCF output is back
+   !!     for those same evaluations, on top of the step table (nothing is
+   !!     REMOVED at verbose).
+   !!   - --opt-freq at info: the opt step table, then trc_run_hessian's own
+   !!     one-line-per-displacement progress (src/api/trc_capi.F90 -- a
+   !!     library call, never gated on "talk" at all, so this was already
+   !!     right), then the frequency table -- never a per-displacement SCF
+   !!     table, and never one for the Hessian's own reference SCF (the
+   !!     reconvergence at the optimised geometry, also run quiet).
+   !!
+   !! water/STO-3G, lbfgs (the CLI's default --opt-algorithm): small enough
+   !! that both --opt and --opt-freq finish in well under a second.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, test_failed
    implicit none

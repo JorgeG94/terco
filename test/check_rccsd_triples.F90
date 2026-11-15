@@ -1,57 +1,57 @@
-!
-! The perturbative triples (T) of RI-CCSD (src/post_hf/ccsd/trc_rccsd_triples.F90, the host reference) against the
-! DF-RCCSD(T) of pyscf, on a water and on a C1 hydrogen peroxide, cc-pVDZ with cc-pVDZ-RIFIT, spherical, frozen core
-! 1 and 2 (the molecules, SCF and dipole blocks of check_rccsd_ints, shared through rccsd_test_support). Water is C2v;
-! the C1 peroxide is the molecule in which a transposed W pairing table cannot hide behind symmetry.
-!
-! References (test/pyscf_refs/rccsd_ints_*.ref, gen_rccsd_ints of generate.py):
-!   E_T, E_CCSD_T       pyscf ccsd_t() on the converged DF-CCSD (conv_tol 1e-12, normt 1e-10), and the total energy
-!   E_T_FIXED           ccsd_t.kernel at the FIXED amplitudes of the other checks (t2 = MP2, t1_ia from the dipoles):
-!                       the triples alone, independent of the CCSD solver, with a non-trivial t1
-!   E_T_FIXED_NO_T1     the same with t1 = 0
-!
-! Cases, per molecule:
-!   1 E(T) at the fixed amplitudes against E_T_FIXED
-!   2 a converged `trc_rccsd_solve` (conv_energy 1e-12, conv_amplitude 1e-10), then `rccsd_triples_finish`: E(T)
-!     against E_T, and E_SCF + E_CCSD + E(T) against E_CCSD_T
-!   3 the fixed amplitudes against an independent host evaluation written from pyscf ccsd_t_slow einsums over ALL
-!     (a,b,c), with no a >= b >= c restriction and no W pairing table: the oracle for a wrong table
-!   4 t1 = 0: against the same evaluation and against E_T_FIXED_NO_T1; E(T) <= 0
-!   5 the result is the same for c batches of 1, 7 and 32, and bitwise the same for 1 to 6 threads (OpenMP builds)
-!   6 refusals: an empty type, mismatched amplitudes, a NaN amplitude, a non-converged state, a batch of 0
-!   7 the DEVICE version (trc_rccsd_triples_dev) against the host reference to 1e-16, against pyscf with the
-!     tolerances of cases 1, 2 and 4, and against the independent evaluation, at the fixed amplitudes (with and
-!     without t1) and at the converged ones
-!   8 tile independence: forced tiles of 1, 7 and 37 triples (37 cuts the (b,c) slabs unevenly), the default
-!     budget, and a budget that holds exactly one triple, all within 1e-16
-!   9 the energy of every triple of the device against the host routine's per-(a,b)-pair energies summed over c
-!  10 `rccsd_triples_finish` with the device and with the reference: the same result fields
-!  11 device refusals: a stale scratch after a second `ints%build`, amplitudes of another size, empty integrals, a
-!     budget below one triple, a NaN amplitude, unallocated amplitudes
-!  12 the occupied-driven DEVICE version (trc_rccsd_triples_ijk) against the host reference, pyscf and the
-!     independent evaluation, at the fixed amplitudes (with and without t1) and at the converged ones; its i = j = k
-!     triples, skipped by default, contribute round-off zeros when computed
-!  13 its tiles of 1, 2 and 7 occupied triples, all of them, the default budget, a one-triple budget and a slice
-!     cache of 4 (evicting) agree; a budget
-!     below one triple is refused; `rccsd_triples_finish` with it agrees with the reference
-!  14 its slice caches of 4, 8 and 12 slots (blocks of 1, 2 and 3 occupied orbitals, triples visited block triple by
-!     block triple) give the E(T) and the per-triple energies of the all-cached run (to TOL_IJK_TILE and
-!     TOL_IJK_TRIPLE: bitwise on the device, last-bit differences with a host BLAS), with and without the
-!     i = j = k triples; that run against the reference and pyscf
-!  15 its work share: the pairs (i,j) dealt to 2, 3, no + 1 and more parts than pairs (with and without the i = j = k
-!     triples, default cache and 4, 8, 12 slots) give per-triple energies and E(T) that add to the one-part run's
-!     (to TOL_IJK_TRIPLE and TOL_IJK_TILE), every triple in exactly the part that owns its pair, a balanced table,
-!     no slice built for another part's block triples, empty parts that do nothing; parts = 1 bitwise the default
-!     run; parts = 0, part = parts and part = -1 are refused
-! and, once, without a molecule:
-!   - two electrons (one occupied orbital): E(T) = 0 for any integrals and amplitudes
-!   - random integrals with the symmetries of the real ones and more virtuals than one c batch (nv = 40): the
-!     routine against the independent evaluation, with batches of 32 and 5, and the device version with tiles of 1,
-!     7 and the default
-!   - the 36-term sum of the device item routine, unrolled, against the table-driven host sum on random W
-!   - no occupied or no virtual orbitals is a refusal
-!
 module rccsd_host_triples
+   !!
+   !! The perturbative triples (T) of RI-CCSD (src/post_hf/ccsd/trc_rccsd_triples.F90, the host reference) against the
+   !! DF-RCCSD(T) of pyscf, on a water and on a C1 hydrogen peroxide, cc-pVDZ with cc-pVDZ-RIFIT, spherical, frozen core
+   !! 1 and 2 (the molecules, SCF and dipole blocks of check_rccsd_ints, shared through rccsd_test_support). Water is C2v;
+   !! the C1 peroxide is the molecule in which a transposed W pairing table cannot hide behind symmetry.
+   !!
+   !! References (test/pyscf_refs/rccsd_ints_*.ref, gen_rccsd_ints of generate.py):
+   !!   E_T, E_CCSD_T       pyscf ccsd_t() on the converged DF-CCSD (conv_tol 1e-12, normt 1e-10), and the total energy
+   !!   E_T_FIXED           ccsd_t.kernel at the FIXED amplitudes of the other checks (t2 = MP2, t1_ia from the dipoles):
+   !!                       the triples alone, independent of the CCSD solver, with a non-trivial t1
+   !!   E_T_FIXED_NO_T1     the same with t1 = 0
+   !!
+   !! Cases, per molecule:
+   !!   1 E(T) at the fixed amplitudes against E_T_FIXED
+   !!   2 a converged `trc_rccsd_solve` (conv_energy 1e-12, conv_amplitude 1e-10), then `rccsd_triples_finish`: E(T)
+   !!     against E_T, and E_SCF + E_CCSD + E(T) against E_CCSD_T
+   !!   3 the fixed amplitudes against an independent host evaluation written from pyscf ccsd_t_slow einsums over ALL
+   !!     (a,b,c), with no a >= b >= c restriction and no W pairing table: the oracle for a wrong table
+   !!   4 t1 = 0: against the same evaluation and against E_T_FIXED_NO_T1; E(T) <= 0
+   !!   5 the result is the same for c batches of 1, 7 and 32, and bitwise the same for 1 to 6 threads (OpenMP builds)
+   !!   6 refusals: an empty type, mismatched amplitudes, a NaN amplitude, a non-converged state, a batch of 0
+   !!   7 the DEVICE version (trc_rccsd_triples_dev) against the host reference to 1e-16, against pyscf with the
+   !!     tolerances of cases 1, 2 and 4, and against the independent evaluation, at the fixed amplitudes (with and
+   !!     without t1) and at the converged ones
+   !!   8 tile independence: forced tiles of 1, 7 and 37 triples (37 cuts the (b,c) slabs unevenly), the default
+   !!     budget, and a budget that holds exactly one triple, all within 1e-16
+   !!   9 the energy of every triple of the device against the host routine's per-(a,b)-pair energies summed over c
+   !!  10 `rccsd_triples_finish` with the device and with the reference: the same result fields
+   !!  11 device refusals: a stale scratch after a second `ints%build`, amplitudes of another size, empty integrals, a
+   !!     budget below one triple, a NaN amplitude, unallocated amplitudes
+   !!  12 the occupied-driven DEVICE version (trc_rccsd_triples_ijk) against the host reference, pyscf and the
+   !!     independent evaluation, at the fixed amplitudes (with and without t1) and at the converged ones; its i = j = k
+   !!     triples, skipped by default, contribute round-off zeros when computed
+   !!  13 its tiles of 1, 2 and 7 occupied triples, all of them, the default budget, a one-triple budget and a slice
+   !!     cache of 4 (evicting) agree; a budget
+   !!     below one triple is refused; `rccsd_triples_finish` with it agrees with the reference
+   !!  14 its slice caches of 4, 8 and 12 slots (blocks of 1, 2 and 3 occupied orbitals, triples visited block triple by
+   !!     block triple) give the E(T) and the per-triple energies of the all-cached run (to TOL_IJK_TILE and
+   !!     TOL_IJK_TRIPLE: bitwise on the device, last-bit differences with a host BLAS), with and without the
+   !!     i = j = k triples; that run against the reference and pyscf
+   !!  15 its work share: the pairs (i,j) dealt to 2, 3, no + 1 and more parts than pairs (with and without the i = j = k
+   !!     triples, default cache and 4, 8, 12 slots) give per-triple energies and E(T) that add to the one-part run's
+   !!     (to TOL_IJK_TRIPLE and TOL_IJK_TILE), every triple in exactly the part that owns its pair, a balanced table,
+   !!     no slice built for another part's block triples, empty parts that do nothing; parts = 1 bitwise the default
+   !!     run; parts = 0, part = parts and part = -1 are refused
+   !! and, once, without a molecule:
+   !!   - two electrons (one occupied orbital): E(T) = 0 for any integrals and amplitudes
+   !!   - random integrals with the symmetries of the real ones and more virtuals than one c batch (nv = 40): the
+   !!     routine against the independent evaluation, with batches of 32 and 5, and the device version with tiles of 1,
+   !!     7 and the default
+   !!   - the 36-term sum of the device item routine, unrolled, against the table-driven host sum on random W
+   !!   - no occupied or no virtual orbitals is a refusal
+   !!
    !! E(T) as plain loops from the ccsd_t_slow of pyscf: the six W of a triple and its z = r3(W + V/2)/D, summed over
    !! ALL ordered (a,b,c) with weight 1. Of the 36 terms the sorted loop of pyscf writes per unordered triple (with
    !! the 1/2 or 1/6 of coincident indices in its denominator), only the Z_abc row is needed here: the other five
@@ -537,11 +537,10 @@ contains
       call bas%release()
    end subroutine compute_molecule
 
-   ! ---------------------------------------------------------------------
-   ! The device version (cases 7 to 11)
-   ! ---------------------------------------------------------------------
-
    subroutine device_cases(im, label, state, fixed, refs)
+      !! ---------------------------------------------------------------------
+      !! The device version (cases 7 to 11)
+      !! ---------------------------------------------------------------------
       !! Cases 7 and 9: the device E(T) against the reference, pyscf and the independent evaluation, at the fixed
       !! amplitudes with and without t1 and at the converged ones; and its per-triple energies against the pair energies
       integer, intent(in) :: im
@@ -694,11 +693,10 @@ contains
                   to_string(abs(e_total_dev - e_total_ref), "es9.2"))
    end subroutine device_finish_case
 
-   ! ---------------------------------------------------------------------
-   ! The occupied-driven device version (cases 12 and 13)
-   ! ---------------------------------------------------------------------
-
    subroutine ijk_cases(im, label, state, fixed, refs)
+      !! ---------------------------------------------------------------------
+      !! The occupied-driven device version (cases 12 and 13)
+      !! ---------------------------------------------------------------------
       !! Case 12: the occupied-driven E(T) against the reference, pyscf and the independent evaluation, at the fixed
       !! amplitudes with and without t1 and at the converged ones; the i = j = k triples give round-off zeros
       integer, intent(in) :: im
@@ -1454,11 +1452,10 @@ contains
                   "a NaN amplitude, a batch of 0, unallocated amplitudes, a state that did not converge): "//trim(text))
    end subroutine refusal_cases
 
-   ! ---------------------------------------------------------------------
-   ! Without a molecule
-   ! ---------------------------------------------------------------------
-
    function lcg(seed) result(x)
+      !! ---------------------------------------------------------------------
+      !! Without a molecule
+      !! ---------------------------------------------------------------------
       !! A deterministic number in (-1, 1)
       integer(int64), intent(inout) :: seed
       real(dp) :: x

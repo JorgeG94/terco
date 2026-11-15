@@ -1,98 +1,98 @@
-!
-! The analytic RI-MP2 nuclear gradient over a closed-shell RHF reference.
-!
-! Two references, E = E_RHF + E_RI-MP2 in both:
-!
-!   EXACT ERI (the default): what `terco --rimp2` computes -- the auxiliary
-!     basis fits the correlation, not the SCF, so the Z-vector's operator,
-!     the two reference potentials and the separable two-electron
-!     derivative below are the exact four-centre ones;
-!   DENSITY FITTED (`dfjk`/`jkaux` present, `terco --df --rimp2`): the SCF
-!     fitted its own J and K, so every one of those three moves to the fit
-!     the SCF converged with (`dfjk`, over the jkfit basis `jkaux`): the
-!     Z-vector is solved against the fitted orbital Hessian in the MO
-!     basis (trc_cphf_solve_rhf_fitted over df_rotation_t), the two
-!     potentials of the relaxed density are projections through the same
-!     MO blocks (trc_scf_df_response), and the
-!     two-electron derivative is
-!     trc_scf_grad_df's scf_grad_df_bilinear -- three- and two-centre, no
-!     four-centre integral anywhere. metalquicha's `fitted_reference`.
-!
-! Stocks, Palethorpe and
-! Barca, J. Chem. Theory Comput. 2024, 20, 2505, section 3, ported from
-! metalquicha (backends/cenzontle/correlation/mqc_czt_ri_mp2_gradient.f90
-! with `fit_response = .false.`, its exact-operator mode, and the numpy
-! prototype tools/cpu_validation/ri_mp2_gradient.py whose conventions it
-! follows: `imat` is the transpose of the paper's L', L''; the response
-! operator is the conventional 2 C_v^T (J - K/2)[D] C_o, half the paper's
-! A_pqrs).
-!
-! WHAT IS WHERE
-!   trc_rimp2_relax (post_hf)  amplitudes, the unrelaxed doo/dvv, the
-!                              Lagrangian L', L'' from (pq|P), and the
-!                              fitted 3c/2c derivative terms;
-!   this module                the occupied-frozen block, the Z-vector
-!                              (trc_cphf's solver, exact operator,
-!                              density_screen = .false. throughout), the
-!                              relaxed and energy-weighted densities, and
-!                              the assembly.
-!
-! THE ASSEMBLY (MO quantities over every orbital, AO in the Cartesian space
-! the kernels run in; C_cart = T C_sph for a spherical basis, exact):
-!
-!   P   = C dm1mo C^T, the relaxed correlation density (dm1mo: doo + doo^T,
-!         dvv + dvv^T, the occupied-frozen block imat/(e_p - e_i), and the
-!         Z-vector in the virtual-occupied blocks)
-!   dE  = dE_nuc + sum h^x (D_HF + P)                  (trc_1e_gradient)
-!         - sum S^x W                                  (same call, W below)
-!         + 1/2 d[Tr D G(D)] + d[Tr P G(D)]            (integrals only)
-!         + 4 Gamma . (mu nu|P)^x - 2 gamma . (P|Q)^x  (trc_rimp2_relax)
-!   W   = W_HF + C (zeta o dm1mo) C^T + 2 P_o G(P) P_o - sym(C imat C^T)
-!
-! with zeta_pq = (e_p + e_q)/2 except e_i on the occupied-virtual blocks,
-! P_o = C_o C_o^T and G = J - K/2. Exact reference: the four-centre term
-! comes from eri%gradient, whose single-density convention is
-! d[Tr X G(X)]/dR, so the bilinear 1/2 Q(D) + B(D, P) is
-! 1/2 [Q(D + P) - Q(P)], two passes. Fitted reference: it is
-! d[Tr (D/2 + P) G_fit(D)] directly, one bilinear pass.
-!
-! A KOHN-SHAM REFERENCE: THE DOUBLE HYBRID (`opts%func` named). E =
-! E_KS[D] + c E_RI-MP2, the RI-MP2 on the converged KS orbitals and c the
-! functional's PT2 fraction (`opts%pt2_scale`; one for a plain KS + RI-MP2).
-! The KS energy is variational and the PT2 term is not, so the assembly is
-! the one above with the reference's operator swapped and one term added
-! (metalquicha's czt_ri_mp2_gradient with `xc` present, whose four
-! consequences are these):
-!
-!   1. every response is the KS one: G(X) = J[X] - (a_x/2) K[X] + f_xc[X],
-!      a_x the functional's exact exchange -- the Z-vector's operator
-!      (trc_cpks_solve_rks exact, trc_cpks_fitted_t over a --df fit), its
-!      right-hand side and the 2 P_o G(P) P_o of W;
-!   2. the two-electron derivative is the hybrid's, K at a_x, and the
-!      reference's own XC gradient at D joins it (trc_xc_grad, grid
-!      response included: the SCF's grid moved with the atoms);
-!   3. d/dR Tr(P V_xc[D]) at fixed P and D appears (trc_xc_grad_potential):
-!      P meets the derivative of the reference operator, and a KS operator
-!      contains V_xc[D];
-!   4. c scales every correlation quantity once, where they are made
-!      (doo, dvv and the Lagrangian, and the fitted 3c/2c terms): the
-!      Z-vector is linear in its right-hand side, so P, the correlation's
-!      share of W and everything downstream carry c from there.
-!
-! W_HF becomes the KS orbitals' own 2 sum_i e_i c_i c_i^T, unchanged in
-! form. The grid is the SCF's (dft_grid_build at `opts%grid_level`, the
-! same points the converged energy used), built here; the XC parts run in
-! the Cartesian AO space, as all of terco's XC does.
-!
-! SCOPE. Restricted, one rank, every orbital the SCF kept (no functions
-! dropped by canonical orthogonalisation: `cmo` must be square and full
-! rank), Cartesian or spherical orbital and auxiliary bases, frozen core.
-! A KS reference: LDA or GGA, global hybrid or pure (trc_cpks's
-! cpks_refuse_reason refuses meta-GGA, range separation and VV10). The
-! caller refuses the rest (trc_capi.F90's gradient_capability_check: an
-! unrestricted reference, PCM, a spin-component-scaled double hybrid).
-!
 module trc_rimp2_grad
+   !!
+   !! The analytic RI-MP2 nuclear gradient over a closed-shell RHF reference.
+   !!
+   !! Two references, E = E_RHF + E_RI-MP2 in both:
+   !!
+   !!   EXACT ERI (the default): what `terco --rimp2` computes -- the auxiliary
+   !!     basis fits the correlation, not the SCF, so the Z-vector's operator,
+   !!     the two reference potentials and the separable two-electron
+   !!     derivative below are the exact four-centre ones;
+   !!   DENSITY FITTED (`dfjk`/`jkaux` present, `terco --df --rimp2`): the SCF
+   !!     fitted its own J and K, so every one of those three moves to the fit
+   !!     the SCF converged with (`dfjk`, over the jkfit basis `jkaux`): the
+   !!     Z-vector is solved against the fitted orbital Hessian in the MO
+   !!     basis (trc_cphf_solve_rhf_fitted over df_rotation_t), the two
+   !!     potentials of the relaxed density are projections through the same
+   !!     MO blocks (trc_scf_df_response), and the
+   !!     two-electron derivative is
+   !!     trc_scf_grad_df's scf_grad_df_bilinear -- three- and two-centre, no
+   !!     four-centre integral anywhere. metalquicha's `fitted_reference`.
+   !!
+   !! Stocks, Palethorpe and
+   !! Barca, J. Chem. Theory Comput. 2024, 20, 2505, section 3, ported from
+   !! metalquicha (backends/cenzontle/correlation/mqc_czt_ri_mp2_gradient.f90
+   !! with `fit_response = .false.`, its exact-operator mode, and the numpy
+   !! prototype tools/cpu_validation/ri_mp2_gradient.py whose conventions it
+   !! follows: `imat` is the transpose of the paper's L', L''; the response
+   !! operator is the conventional 2 C_v^T (J - K/2)[D] C_o, half the paper's
+   !! A_pqrs).
+   !!
+   !! WHAT IS WHERE
+   !!   trc_rimp2_relax (post_hf)  amplitudes, the unrelaxed doo/dvv, the
+   !!                              Lagrangian L', L'' from (pq|P), and the
+   !!                              fitted 3c/2c derivative terms;
+   !!   this module                the occupied-frozen block, the Z-vector
+   !!                              (trc_cphf's solver, exact operator,
+   !!                              density_screen = .false. throughout), the
+   !!                              relaxed and energy-weighted densities, and
+   !!                              the assembly.
+   !!
+   !! THE ASSEMBLY (MO quantities over every orbital, AO in the Cartesian space
+   !! the kernels run in; C_cart = T C_sph for a spherical basis, exact):
+   !!
+   !!   P   = C dm1mo C^T, the relaxed correlation density (dm1mo: doo + doo^T,
+   !!         dvv + dvv^T, the occupied-frozen block imat/(e_p - e_i), and the
+   !!         Z-vector in the virtual-occupied blocks)
+   !!   dE  = dE_nuc + sum h^x (D_HF + P)                  (trc_1e_gradient)
+   !!         - sum S^x W                                  (same call, W below)
+   !!         + 1/2 d[Tr D G(D)] + d[Tr P G(D)]            (integrals only)
+   !!         + 4 Gamma . (mu nu|P)^x - 2 gamma . (P|Q)^x  (trc_rimp2_relax)
+   !!   W   = W_HF + C (zeta o dm1mo) C^T + 2 P_o G(P) P_o - sym(C imat C^T)
+   !!
+   !! with zeta_pq = (e_p + e_q)/2 except e_i on the occupied-virtual blocks,
+   !! P_o = C_o C_o^T and G = J - K/2. Exact reference: the four-centre term
+   !! comes from eri%gradient, whose single-density convention is
+   !! d[Tr X G(X)]/dR, so the bilinear 1/2 Q(D) + B(D, P) is
+   !! 1/2 [Q(D + P) - Q(P)], two passes. Fitted reference: it is
+   !! d[Tr (D/2 + P) G_fit(D)] directly, one bilinear pass.
+   !!
+   !! A KOHN-SHAM REFERENCE: THE DOUBLE HYBRID (`opts%func` named). E =
+   !! E_KS[D] + c E_RI-MP2, the RI-MP2 on the converged KS orbitals and c the
+   !! functional's PT2 fraction (`opts%pt2_scale`; one for a plain KS + RI-MP2).
+   !! The KS energy is variational and the PT2 term is not, so the assembly is
+   !! the one above with the reference's operator swapped and one term added
+   !! (metalquicha's czt_ri_mp2_gradient with `xc` present, whose four
+   !! consequences are these):
+   !!
+   !!   1. every response is the KS one: G(X) = J[X] - (a_x/2) K[X] + f_xc[X],
+   !!      a_x the functional's exact exchange -- the Z-vector's operator
+   !!      (trc_cpks_solve_rks exact, trc_cpks_fitted_t over a --df fit), its
+   !!      right-hand side and the 2 P_o G(P) P_o of W;
+   !!   2. the two-electron derivative is the hybrid's, K at a_x, and the
+   !!      reference's own XC gradient at D joins it (trc_xc_grad, grid
+   !!      response included: the SCF's grid moved with the atoms);
+   !!   3. d/dR Tr(P V_xc[D]) at fixed P and D appears (trc_xc_grad_potential):
+   !!      P meets the derivative of the reference operator, and a KS operator
+   !!      contains V_xc[D];
+   !!   4. c scales every correlation quantity once, where they are made
+   !!      (doo, dvv and the Lagrangian, and the fitted 3c/2c terms): the
+   !!      Z-vector is linear in its right-hand side, so P, the correlation's
+   !!      share of W and everything downstream carry c from there.
+   !!
+   !! W_HF becomes the KS orbitals' own 2 sum_i e_i c_i c_i^T, unchanged in
+   !! form. The grid is the SCF's (dft_grid_build at `opts%grid_level`, the
+   !! same points the converged energy used), built here; the XC parts run in
+   !! the Cartesian AO space, as all of terco's XC does.
+   !!
+   !! SCOPE. Restricted, one rank, every orbital the SCF kept (no functions
+   !! dropped by canonical orthogonalisation: `cmo` must be square and full
+   !! rank), Cartesian or spherical orbital and auxiliary bases, frozen core.
+   !! A KS reference: LDA or GGA, global hybrid or pure (trc_cpks's
+   !! cpks_refuse_reason refuses meta-GGA, range separation and VV10). The
+   !! caller refuses the rest (trc_capi.F90's gradient_capability_check: an
+   !! unrestricted reference, PCM, a spin-component-scaled double hybrid).
+   !!
    use pic_types, only: dp
    use pic_timer, only: timer_type
    use pic_logger, only: global_logger

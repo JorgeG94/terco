@@ -1,46 +1,46 @@
-!
-! The scalar ECP one-electron matrix (trc_ecp_matrix) against pyscf's
-! intor('ECPscalar'), fed the SAME BSE JSON terco reads (def2-svp.json) --
-! not pyscf's own bundled ECP tables, which can differ (ECP_DESIGN.md's own
-! note, and mqc's validation approach for the same reason).
-!
-! Five molecules, one per invocation (test/CMakeLists.txt's foreach), the
-! case name selecting a hardcoded geometry below:
-!
-!   hi_svp   HI, bonded              -- the bug this feature exists to fix
-!            (test/basis_sets/def2-svp.json's own ecp_potentials; an
-!            all-electron read of I gave -1996.90 Eh against -297.23)
-!   ih_far   I...H at 25 bohr        -- large separation (ECP_DESIGN.md)
-!   xe       Xe, a single ECP atom with no orbital partner nearby
-!   csh      CsH, bonded
-!   snh4     SnH4, tetrahedral, one ECP atom with four light partners
-!   i2       I2 at 5.04 bohr         -- two ECP atoms: a shell on one against
-!            the other's channels. The cases above all pair the ECP atom
-!            with hydrogen, so they never reach the semi-local blocks that
-!            overflowed the type-2 scratch or that never show two equal
-!            quadrature levels (#194 review); this one does both.
-!   ch3i     CH3I                    -- the same through a carbon partner
-!
-! Each case also checks the SPHERICAL output: the same molecule read
-! without force_cart must give exactly T^T U_cart T, folded here on the
-! host from the Cartesian matrix above. That runs trc_ecp_matrix's own
-! spherical transform, which on the GPU build needs its own data mapping.
-!
-! The reference is lexicographic (pyscf's order); it is read through
-! cart_perm_b2l, as check_1e does, so a TERCO_CART_ORDER=gamess build
-! compares like with like.
-!
-! Cartesian throughout (force_cart=.true. here, cart=True in pyscf): this
-! build's raw Cartesian AO convention already matches pyscf's int1e_ovlp_cart
-! with no rescale for an UNCONTRACTED probe (check_mult.F90's own finding),
-! but def2-svp's shells are contracted, and gen_rys_fock's own history shows
-! a contracted shell's normalisation can still differ measurably -- so this
-! reads terco's own overlap (trc_1e's S) alongside U and lets
-! test/pyscf_refs/generate.py's gen_ecp_ints rescale pyscf's U by the SAME
-! ao_norm_from_overlap factor every other AO-level pyscf comparison here
-! uses, rather than assume Cartesian needs none.
-!
 module check_ecp_matrix_suite
+   !!
+   !! The scalar ECP one-electron matrix (trc_ecp_matrix) against pyscf's
+   !! intor('ECPscalar'), fed the SAME BSE JSON terco reads (def2-svp.json) --
+   !! not pyscf's own bundled ECP tables, which can differ (ECP_DESIGN.md's own
+   !! note, and mqc's validation approach for the same reason).
+   !!
+   !! Five molecules, one per invocation (test/CMakeLists.txt's foreach), the
+   !! case name selecting a hardcoded geometry below:
+   !!
+   !!   hi_svp   HI, bonded              -- the bug this feature exists to fix
+   !!            (test/basis_sets/def2-svp.json's own ecp_potentials; an
+   !!            all-electron read of I gave -1996.90 Eh against -297.23)
+   !!   ih_far   I...H at 25 bohr        -- large separation (ECP_DESIGN.md)
+   !!   xe       Xe, a single ECP atom with no orbital partner nearby
+   !!   csh      CsH, bonded
+   !!   snh4     SnH4, tetrahedral, one ECP atom with four light partners
+   !!   i2       I2 at 5.04 bohr         -- two ECP atoms: a shell on one against
+   !!            the other's channels. The cases above all pair the ECP atom
+   !!            with hydrogen, so they never reach the semi-local blocks that
+   !!            overflowed the type-2 scratch or that never show two equal
+   !!            quadrature levels (#194 review); this one does both.
+   !!   ch3i     CH3I                    -- the same through a carbon partner
+   !!
+   !! Each case also checks the SPHERICAL output: the same molecule read
+   !! without force_cart must give exactly T^T U_cart T, folded here on the
+   !! host from the Cartesian matrix above. That runs trc_ecp_matrix's own
+   !! spherical transform, which on the GPU build needs its own data mapping.
+   !!
+   !! The reference is lexicographic (pyscf's order); it is read through
+   !! cart_perm_b2l, as check_1e does, so a TERCO_CART_ORDER=gamess build
+   !! compares like with like.
+   !!
+   !! Cartesian throughout (force_cart=.true. here, cart=True in pyscf): this
+   !! build's raw Cartesian AO convention already matches pyscf's int1e_ovlp_cart
+   !! with no rescale for an UNCONTRACTED probe (check_mult.F90's own finding),
+   !! but def2-svp's shells are contracted, and gen_rys_fock's own history shows
+   !! a contracted shell's normalisation can still differ measurably -- so this
+   !! reads terco's own overlap (trc_1e's S) alongside U and lets
+   !! test/pyscf_refs/generate.py's gen_ecp_ints rescale pyscf's U by the SAME
+   !! ao_norm_from_overlap factor every other AO-level pyscf comparison here
+   !! uses, rather than assume Cartesian needs none.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -69,13 +69,13 @@ contains
       testsuite = [new_unittest("ECP matrix vs pyscf", test_case)]
    end subroutine collect_ecp_matrix_tests
 
-   !
-   ! The five hardcoded geometries, Bohr. `case_name` picks one; `generate.py`'s
-   ! gen_ecp_ints carries the SAME literal numbers (this module's own header
-   ! on why: no xyz file, so the two have to agree by inspection rather than
-   ! by a shared reader).
-   !
    subroutine case_geometry(case_name, nat, elements, r)
+      !!
+      !! The five hardcoded geometries, Bohr. `case_name` picks one; `generate.py`'s
+      !! gen_ecp_ints carries the SAME literal numbers (this module's own header
+      !! on why: no xyz file, so the two have to agree by inspection rather than
+      !! by a shared reader).
+      !!
       character(len=*), intent(in) :: case_name
       integer, intent(out) :: nat
       integer, allocatable, intent(out) :: elements(:)
@@ -263,12 +263,12 @@ contains
       deallocate (elements, r, smat, tmat, vmat, umat)
    end subroutine test_case
 
-   !
-   ! The spherical output of trc_ecp_matrix against T^T U_cart T, folded
-   ! here on the host, shell block by shell block, from the Cartesian
-   ! matrix the caller already checked against pyscf.
-   !
    subroutine check_spherical(error, case_name, nat, elements, r, ucart)
+      !!
+      !! The spherical output of trc_ecp_matrix against T^T U_cart T, folded
+      !! here on the host, shell block by shell block, from the Cartesian
+      !! matrix the caller already checked against pyscf.
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in) :: case_name
       integer, intent(in) :: nat

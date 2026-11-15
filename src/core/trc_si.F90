@@ -1,10 +1,10 @@
-!
-! A quantity in a base unit, printed with the SI prefix that keeps its
-! number between 1 and 1000: 2.45e15 FLOP prints as "2.45 PFLOP", 5.3e13
-! FLOP/s as "53.27 TFLOP/s". The step tables used to print every count in
-! fixed giga units, which on an RI-MP2 run read "2453056.2 GFLOP".
-!
 module trc_si
+   !!
+   !! A quantity in a base unit, printed with the SI prefix that keeps its
+   !! number between 1 and 1000: 2.45e15 FLOP prints as "2.45 PFLOP", 5.3e13
+   !! FLOP/s as "53.27 TFLOP/s". The step tables used to print every count in
+   !! fixed giga units, which on an RI-MP2 run read "2453056.2 GFLOP".
+   !!
    use pic_types, only: dp
    use pic_format, only: to_string_fixed
    implicit none

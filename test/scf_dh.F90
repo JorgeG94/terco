@@ -1,47 +1,47 @@
-!
-! Double hybrids (trc_xc_functional.F90's b2plyp/b2gp-plyp/mpw2plyp): the SCF
-! through trc_scf_run (four-centre AND --df, trc_scf_df.F90), then RI-MP2
-! on the converged KS orbitals through trc_rimp2_run -- chained off --df's
-! own fit when the aux basis given to RI-MP2 is the SAME one --df was
-! fitted on (cc-pVDZ-RIFIT doing double duty as both --df's jkfit and
-! RI-MP2's aux, the one case trc_rimp2_run's own `packed_b` argument exists
-! for) -- against pyscf's KS with the SAME hybrid composition
-! (`0.53*HF + 0.47*B88, 0.73*LYP` for b2plyp, etc. -- test/pyscf_refs/
-! generate.py's own gen_dh) plus DF-MP2/DF-UMP2 on the SAME aux basis and
-! frozen core: the committed reference (dh.ref) carries E_SCF, the RAW
-! (unscaled) E_os/E_ss, AND pyscf's own weighted total (mf.e_tot +
-! c_os*e_os + c_ss*e_ss) as E_DH -- this suite's own c_os*E_os +
-! c_ss*E_ss weighting (from LITERAL coefficients, PT2_COS/PT2_CSS below,
-! not read back from trc_xc_functional's own table) is checked against
-! that committed E_DH directly, never left as an unchecked header claim.
-!
-! 24 closed-shell cases: water and formamide, cc-pVDZ and 6-31G*,
-! b2plyp, b2gp-plyp and mpw2plyp, four-centre and --df -- plus one open-shell case,
-! OH/b2plyp UKS/6-31G*, from a FIXED initial density (rks.ref's and
-! rimp2_uhf.ref's own pattern: pyscf's own converged density, rescaled
-! into this build's AO normalisation via this suite's own dumped
-! overlap matrix, so both sides settle into the SAME orientation rather
-! than two that merely share an energy -- see scf_rimp2_uhf.F90's header
-! for the full story and the measured consequence of skipping it).
-!
-! Frozen core: core_orbitals(Z) summed per molecule's atoms (trc_capi.F90's
-! own RI-MP2 default rule) -- water 1 (O), formamide 3 (C, N, O), OH 1 (O).
-!
-! Writes "scf_dh_probe.bin": per closed-shell case, nao/natm/nalpha/nbeta
-! and the molecule/basis/functional/kind names (a sanity check only --
-! generate.py's gen_dh rebuilds the identical mol itself, straight off the
-! same xyz/JSON files, scf_df.F90's own pattern); for OH, "scf_dh_oh_probe.bin"
-! carries nao and the overlap matrix S, unconditionally (geometry- and
-! basis-derived only, never from an SCF -- scf_rimp2_uhf.F90's own "fixed
-! input" category).
-!
-! Twenty-five independent cases below (24 closed-shell + OH), each its
-! own test-drive unittest; the shared per-group setup, the probe writes
-! and the sequential pyscf-reference read run once -- see
-! check_xc_energy_suite's own `computed` comment for why, and why this
-! suite stays `parallel=.false.`.
-!
 module scf_dh_suite
+   !!
+   !! Double hybrids (trc_xc_functional.F90's b2plyp/b2gp-plyp/mpw2plyp): the SCF
+   !! through trc_scf_run (four-centre AND --df, trc_scf_df.F90), then RI-MP2
+   !! on the converged KS orbitals through trc_rimp2_run -- chained off --df's
+   !! own fit when the aux basis given to RI-MP2 is the SAME one --df was
+   !! fitted on (cc-pVDZ-RIFIT doing double duty as both --df's jkfit and
+   !! RI-MP2's aux, the one case trc_rimp2_run's own `packed_b` argument exists
+   !! for) -- against pyscf's KS with the SAME hybrid composition
+   !! (`0.53*HF + 0.47*B88, 0.73*LYP` for b2plyp, etc. -- test/pyscf_refs/
+   !! generate.py's own gen_dh) plus DF-MP2/DF-UMP2 on the SAME aux basis and
+   !! frozen core: the committed reference (dh.ref) carries E_SCF, the RAW
+   !! (unscaled) E_os/E_ss, AND pyscf's own weighted total (mf.e_tot +
+   !! c_os*e_os + c_ss*e_ss) as E_DH -- this suite's own c_os*E_os +
+   !! c_ss*E_ss weighting (from LITERAL coefficients, PT2_COS/PT2_CSS below,
+   !! not read back from trc_xc_functional's own table) is checked against
+   !! that committed E_DH directly, never left as an unchecked header claim.
+   !!
+   !! 24 closed-shell cases: water and formamide, cc-pVDZ and 6-31G*,
+   !! b2plyp, b2gp-plyp and mpw2plyp, four-centre and --df -- plus one open-shell case,
+   !! OH/b2plyp UKS/6-31G*, from a FIXED initial density (rks.ref's and
+   !! rimp2_uhf.ref's own pattern: pyscf's own converged density, rescaled
+   !! into this build's AO normalisation via this suite's own dumped
+   !! overlap matrix, so both sides settle into the SAME orientation rather
+   !! than two that merely share an energy -- see scf_rimp2_uhf.F90's header
+   !! for the full story and the measured consequence of skipping it).
+   !!
+   !! Frozen core: core_orbitals(Z) summed per molecule's atoms (trc_capi.F90's
+   !! own RI-MP2 default rule) -- water 1 (O), formamide 3 (C, N, O), OH 1 (O).
+   !!
+   !! Writes "scf_dh_probe.bin": per closed-shell case, nao/natm/nalpha/nbeta
+   !! and the molecule/basis/functional/kind names (a sanity check only --
+   !! generate.py's gen_dh rebuilds the identical mol itself, straight off the
+   !! same xyz/JSON files, scf_df.F90's own pattern); for OH, "scf_dh_oh_probe.bin"
+   !! carries nao and the overlap matrix S, unconditionally (geometry- and
+   !! basis-derived only, never from an SCF -- scf_rimp2_uhf.F90's own "fixed
+   !! input" category).
+   !!
+   !! Twenty-five independent cases below (24 closed-shell + OH), each its
+   !! own test-drive unittest; the shared per-group setup, the probe writes
+   !! and the sequential pyscf-reference read run once -- see
+   !! check_xc_energy_suite's own `computed` comment for why, and why this
+   !! suite stays `parallel=.false.`.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -130,10 +130,10 @@ contains
       end if
    end function case_name
 
-   ! One wrapper per case, each passing its own index: a unittest must not
-   ! depend on which unittests ran before it (a name-selected run, or a
-   ! reordered suite, would otherwise check the wrong case).
    subroutine case_01(error)
+      !! One wrapper per case, each passing its own index: a unittest must not
+      !! depend on which unittests ran before it (a name-selected run, or a
+      !! reordered suite, would otherwise check the wrong case).
       type(error_type), allocatable, intent(out) :: error
       call test_case(error, 1)
    end subroutine case_01

@@ -1,56 +1,56 @@
-!
-! d/dR Tr(P V_xc[D]) with both densities held fixed: the exchange-
-! correlation term a double hybrid's gradient needs and no gradient before
-! it did. Its perturbative part is not stationary in the orbitals, so the
-! Z-vector leaves the relaxed correlation density P contracted with the
-! derivative of the REFERENCE operator, and a Kohn-Sham reference's
-! operator contains V_xc[D]. Omitting it leaves a gradient of plausible
-! size, short by a piece the order of the Coulomb one beside it
-! (metalquicha's xc_potential_gradient, mqc_czt_gradient.f90, which this
-! ports: same four channels, same coefficients).
-!
-! THE TERM. P is relaxed and symmetric but indefinite and traceless, and
-! appears only linearly, so this is the derivative of a linear form, not of
-! an energy. Restricted, f(rho, sigma) the functional at D:
-!
-!     G(R) = sum_g w_g [ v_rho rho_P + 2 v_sigma grad rho . grad rho_P ]
-!
-! Every object in it moves with the nuclei the way trc_xc_grad's header
-! lays out for E_xc -- the basis functions (Pulay), the points with their
-! owning atom, the Becke weights -- and v_rho, v_sigma move with D's own
-! basis functions too, which is where f_xc enters. Collected by WHICH
-! density's basis derivative multiplies what (the channels):
-!
-!   d rho_D       : f_rr rho_P + 2 f_rs (grad rho . grad rho_P)
-!   d grad rho_D  : 2 f_rs rho_P grad rho + 4 f_ss (grad rho . grad rho_P) grad rho
-!                   + 2 v_sigma grad rho_P
-!   d rho_P       : v_rho
-!   d grad rho_P  : 2 v_sigma grad rho
-!
-! Each pair is exactly what trc_xc_grad's Pulay and point-motion kernels
-! contract for an energy, whose coefficients are v_rho on d rho and 2
-! v_sigma grad rho on d grad rho -- so each channel is ONE xc_grad_drive
-! call in its external-potential mode, with D or P as the density and
-! (v_rho, v_sigma, grad rho) set so that those two coefficients are the
-! channel's: the first pair with v_sigma = 1/2 and "grad rho" the vector
-! coefficient itself, the second with the potential at D. The point-motion
-! term separates the same way, being the same per-(point, function)
-! products summed over functions instead of points. The partition-weight
-! response needs only the integrand per point (`energy` below, times the
-! quadrature weight qw), as for E_xc.
-!
-! The per-point coefficients come from trc_xc's trc_xc_kernel_points_rks
-! (first derivatives from xc_eval_point, the energy's own; second from
-! xc_eval_point_fxc, the CPKS kernel's), on the batches the reference
-! potential was built over: the same density screen as trc_xc_grad, on D.
-!
-! LDA and GGA, restricted, Cartesian AO (both densities in the Cartesian
-! space the grid's collocation runs in). Validated by the identity that
-! defines it: E_xc[D + t P] = E_xc[D] + t Tr(P V_xc[D]) + O(t^2) at every
-! geometry, so this is the t-derivative of trc_xc_grad's own gradient at
-! D + t P (test/check_dh_grad.F90 differences it).
-!
 module trc_xc_grad_potential
+   !!
+   !! d/dR Tr(P V_xc[D]) with both densities held fixed: the exchange-
+   !! correlation term a double hybrid's gradient needs and no gradient before
+   !! it did. Its perturbative part is not stationary in the orbitals, so the
+   !! Z-vector leaves the relaxed correlation density P contracted with the
+   !! derivative of the REFERENCE operator, and a Kohn-Sham reference's
+   !! operator contains V_xc[D]. Omitting it leaves a gradient of plausible
+   !! size, short by a piece the order of the Coulomb one beside it
+   !! (metalquicha's xc_potential_gradient, mqc_czt_gradient.f90, which this
+   !! ports: same four channels, same coefficients).
+   !!
+   !! THE TERM. P is relaxed and symmetric but indefinite and traceless, and
+   !! appears only linearly, so this is the derivative of a linear form, not of
+   !! an energy. Restricted, f(rho, sigma) the functional at D:
+   !!
+   !!     G(R) = sum_g w_g [ v_rho rho_P + 2 v_sigma grad rho . grad rho_P ]
+   !!
+   !! Every object in it moves with the nuclei the way trc_xc_grad's header
+   !! lays out for E_xc -- the basis functions (Pulay), the points with their
+   !! owning atom, the Becke weights -- and v_rho, v_sigma move with D's own
+   !! basis functions too, which is where f_xc enters. Collected by WHICH
+   !! density's basis derivative multiplies what (the channels):
+   !!
+   !!   d rho_D       : f_rr rho_P + 2 f_rs (grad rho . grad rho_P)
+   !!   d grad rho_D  : 2 f_rs rho_P grad rho + 4 f_ss (grad rho . grad rho_P) grad rho
+   !!                   + 2 v_sigma grad rho_P
+   !!   d rho_P       : v_rho
+   !!   d grad rho_P  : 2 v_sigma grad rho
+   !!
+   !! Each pair is exactly what trc_xc_grad's Pulay and point-motion kernels
+   !! contract for an energy, whose coefficients are v_rho on d rho and 2
+   !! v_sigma grad rho on d grad rho -- so each channel is ONE xc_grad_drive
+   !! call in its external-potential mode, with D or P as the density and
+   !! (v_rho, v_sigma, grad rho) set so that those two coefficients are the
+   !! channel's: the first pair with v_sigma = 1/2 and "grad rho" the vector
+   !! coefficient itself, the second with the potential at D. The point-motion
+   !! term separates the same way, being the same per-(point, function)
+   !! products summed over functions instead of points. The partition-weight
+   !! response needs only the integrand per point (`energy` below, times the
+   !! quadrature weight qw), as for E_xc.
+   !!
+   !! The per-point coefficients come from trc_xc's trc_xc_kernel_points_rks
+   !! (first derivatives from xc_eval_point, the energy's own; second from
+   !! xc_eval_point_fxc, the CPKS kernel's), on the batches the reference
+   !! potential was built over: the same density screen as trc_xc_grad, on D.
+   !!
+   !! LDA and GGA, restricted, Cartesian AO (both densities in the Cartesian
+   !! space the grid's collocation runs in). Validated by the identity that
+   !! defines it: E_xc[D + t P] = E_xc[D] + t Tr(P V_xc[D]) + O(t^2) at every
+   !! geometry, so this is the t-derivative of trc_xc_grad's own gradient at
+   !! D + t P (test/check_dh_grad.F90 differences it).
+   !!
    use pic_types, only: dp
    use trc_basis_types, only: trc_basis_t
    use trc_xc_batch, only: trc_xc_grid_t
@@ -152,11 +152,10 @@ contains
       call pts%release()
    end subroutine xc_grad_potential_add
 
-   ! ----------------------------------------------------------------------
-   ! Elementwise device copies: the point arrays stay where they were made.
-   ! ----------------------------------------------------------------------
-
    subroutine copy_channel(npts, scalar, vector, scalar_out, vector_out)
+      !! ----------------------------------------------------------------------
+      !! Elementwise device copies: the point arrays stay where they were made.
+      !! ----------------------------------------------------------------------
       !! scalar_out := scalar, vector_out := vector, (npts) and (3, npts).
       integer, intent(in) :: npts
       real(dp), intent(in) :: scalar(npts), vector(3, npts)

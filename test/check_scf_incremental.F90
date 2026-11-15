@@ -1,18 +1,18 @@
-!
-! The incremental Fock build against full builds, run for run: the same
-! molecule, basis and thresholds with `incremental` off and on must reach
-! the same energy (to ETOL, below) in at most one more iteration, and the
-! incremental run must actually have built from the density difference
-! for all but a few iterations (MAX_FULL, below). Restricted and
-! unrestricted, Hartree-Fock, a range-separated hybrid (the erf exchange
-! increments too) and the continuum (rebuilt in full every iteration, on
-! the full density). And a run that converges on its last allowed
-! iteration is reported converged (test_last_iteration).
-!
-! Before trc_scf_incremental an open shell never incremented, and a closed
-! shell waited for |FDS - SDF| < 1e-2 before its first increment.
-!
 module check_scf_incremental_suite
+   !!
+   !! The incremental Fock build against full builds, run for run: the same
+   !! molecule, basis and thresholds with `incremental` off and on must reach
+   !! the same energy (to ETOL, below) in at most one more iteration, and the
+   !! incremental run must actually have built from the density difference
+   !! for all but a few iterations (MAX_FULL, below). Restricted and
+   !! unrestricted, Hartree-Fock, a range-separated hybrid (the erf exchange
+   !! increments too) and the continuum (rebuilt in full every iteration, on
+   !! the full density). And a run that converges on its last allowed
+   !! iteration is reported converged (test_last_iteration).
+   !!
+   !! Before trc_scf_incremental an open shell never incremented, and a closed
+   !! shell waited for |FDS - SDF| < 1e-2 before its first increment.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -80,16 +80,16 @@ contains
       call compare(error, "water.xyz", 5, 5, opts, "RHF water/6-31G* C-PCM")
    end subroutine test_rhf_pcm
 
-   !
-   ! A run that converges on its LAST allowed iteration must say so. With
-   ! the prediction off (`incr_predict = 0`), the convergence test is first
-   ! met on an increment, refused there, and retaken on the next build,
-   ! which is full: the unbounded run converges at N with N - 1 an
-   ! increment that met the test. Capped at N - 1 iterations, that last
-   ! iteration has to be a full build (trc_scf_incremental's
-   ! `next_build`), or the run ends unconverged although it met the test.
-   !
    subroutine test_last_iteration(error)
+      !!
+      !! A run that converges on its LAST allowed iteration must say so. With
+      !! the prediction off (`incr_predict = 0`), the convergence test is first
+      !! met on an increment, refused there, and retaken on the next build,
+      !! which is full: the unbounded run converges at N with N - 1 an
+      !! increment that met the test. Capped at N - 1 iterations, that last
+      !! iteration has to be a full build (trc_scf_incremental's
+      !! `next_build`), or the run ends unconverged although it met the test.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(trc_scf_options_t) :: opts
       type(trc_scf_result_t) :: free, capped

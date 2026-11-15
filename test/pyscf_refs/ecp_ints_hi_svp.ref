@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["ecp_ints_hi_svp"] -> gen_ecp_ints
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 014975aa36221e1f596be577f33b1ff170e4418b16f66822af53b3e8f5a6047a
+# hash: aae6749a4ec3eaddbd059065603b05472c48ee26ca3ecc26f53409cc72eeda13
 # files: test/check_ecp_matrix.F90 test/basis_sets/def2-svp.json
 NAT 2
 NAO 33

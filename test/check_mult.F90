@@ -1,30 +1,30 @@
-!
-! Cartesian multipole moments against pyscf.
-!
-! WHY ITS OWN SYSTEM, UNCONTRACTED
-! --------------------------------
-! The first attempt reused the libfint reference system 2 and compared against
-! a pyscf rebuild of it. Every component disagreed -- and so did the OVERLAP,
-! which terco reproduces from libfint to 2.2e-15. The fault was the rebuild:
-! that system has a contracted s shell, and pyscf renormalises contracted
-! shells so their self-overlap is one while `gen_reference` does not. Two
-! different basis sets, compared.
-!
-! So this builds its own system with UNCONTRACTED shells only. For a single
-! primitive there is nothing to renormalise: pyscf's coefficient and
-! `gto_norm` are the same number, and the two codes are then looking at the
-! same functions. The overlap is dumped alongside as the control -- if that
-! disagrees, the systems differ and nothing else in the file means anything.
-!
-! Three centres, off-axis, so no accidental symmetry can hide a component
-! swap: with everything on the z axis the x and y moments coincide and half
-! the possible ordering errors are invisible.
-!
-! NOTE ON test/pyscf_refs/mult.ref'S OWN HASH: this file is itself named on
-! that .ref's "# files:" line (the probe below is what generate.py's gen_mult
-! must stay in step with).
-!
 module check_mult_suite
+   !!
+   !! Cartesian multipole moments against pyscf.
+   !!
+   !! WHY ITS OWN SYSTEM, UNCONTRACTED
+   !! --------------------------------
+   !! The first attempt reused the libfint reference system 2 and compared against
+   !! a pyscf rebuild of it. Every component disagreed -- and so did the OVERLAP,
+   !! which terco reproduces from libfint to 2.2e-15. The fault was the rebuild:
+   !! that system has a contracted s shell, and pyscf renormalises contracted
+   !! shells so their self-overlap is one while `gen_reference` does not. Two
+   !! different basis sets, compared.
+   !!
+   !! So this builds its own system with UNCONTRACTED shells only. For a single
+   !! primitive there is nothing to renormalise: pyscf's coefficient and
+   !! `gto_norm` are the same number, and the two codes are then looking at the
+   !! same functions. The overlap is dumped alongside as the control -- if that
+   !! disagrees, the systems differ and nothing else in the file means anything.
+   !!
+   !! Three centres, off-axis, so no accidental symmetry can hide a component
+   !! swap: with everything on the z axis the x and y moments coincide and half
+   !! the possible ordering errors are invisible.
+   !!
+   !! NOTE ON test/pyscf_refs/mult.ref'S OWN HASH: this file is itself named on
+   !! that .ref's "# files:" line (the probe below is what generate.py's gen_mult
+   !! must stay in step with).
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

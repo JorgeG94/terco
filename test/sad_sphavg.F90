@@ -1,34 +1,34 @@
-!
-! Invariants of trc_sad.F90's spherical averaging (`sad_average_atom_density`),
-! checked directly rather than through the energy it leaves unchanged.
-!
-! PART 1 -- THE AVERAGING ALGEBRA, s/p/d/f, on a free O/cc-pVTZ atom (both
-! its spherical AO space and its forced-Cartesian one). Reads only basis
-! bookkeeping and trc_sph_tables' SPH_T (l = 0..4 regardless of
-! TERCO_LMAX/ONE_E_LMAX), so it needs no integral kernel for any angular
-! momentum and runs at every TERCO_LMAX. For every shell pair it builds TWO
-! densities that share each block's trace but differ in its off-diagonal
-! content -- standing in for the two different orthonormal bases a
-! degenerate eigensolver could have returned for the identical physical
-! atom -- and checks that `sad_average_atom_density` sends both to the exact
-! same result (determinism), that a same-l block becomes exactly
-! (trace/(2l+1)) times the identity and a different-l one exactly zero
-! (block proportionality), and that every block's trace survives (the
-! electron-count argument in trc_sad.F90's own header, checked here as
-! plain arithmetic rather than assumed).
-!
-! PART 2 -- THE FULL PIPELINE: `trc_sad_build` on the free O atom alone,
-! Tr(D S) against Z = 8 with the REAL overlap from `trc_1e`. Gated on this
-! build's one- and two-electron ceilings actually reaching f (TRC_MAXL,
-! trc_tables' LMAX) -- the shipped TERCO_LMAX=2 configuration does not, and
-! Part 1 above is what covers f there.
-!
-! Four independent test-drive cases below: the spherical and Cartesian
-! algebra fixtures of PART 1, and the spherical/Cartesian pipeline of
-! PART 2 (each of the latter self-skips, via test-drive's skip_test, when
-! this build's ceiling is below f).
-!
 module sad_sphavg_suite
+   !!
+   !! Invariants of trc_sad.F90's spherical averaging (`sad_average_atom_density`),
+   !! checked directly rather than through the energy it leaves unchanged.
+   !!
+   !! PART 1 -- THE AVERAGING ALGEBRA, s/p/d/f, on a free O/cc-pVTZ atom (both
+   !! its spherical AO space and its forced-Cartesian one). Reads only basis
+   !! bookkeeping and trc_sph_tables' SPH_T (l = 0..4 regardless of
+   !! TERCO_LMAX/ONE_E_LMAX), so it needs no integral kernel for any angular
+   !! momentum and runs at every TERCO_LMAX. For every shell pair it builds TWO
+   !! densities that share each block's trace but differ in its off-diagonal
+   !! content -- standing in for the two different orthonormal bases a
+   !! degenerate eigensolver could have returned for the identical physical
+   !! atom -- and checks that `sad_average_atom_density` sends both to the exact
+   !! same result (determinism), that a same-l block becomes exactly
+   !! (trace/(2l+1)) times the identity and a different-l one exactly zero
+   !! (block proportionality), and that every block's trace survives (the
+   !! electron-count argument in trc_sad.F90's own header, checked here as
+   !! plain arithmetic rather than assumed).
+   !!
+   !! PART 2 -- THE FULL PIPELINE: `trc_sad_build` on the free O atom alone,
+   !! Tr(D S) against Z = 8 with the REAL overlap from `trc_1e`. Gated on this
+   !! build's one- and two-electron ceilings actually reaching f (TRC_MAXL,
+   !! trc_tables' LMAX) -- the shipped TERCO_LMAX=2 configuration does not, and
+   !! Part 1 above is what covers f there.
+   !!
+   !! Four independent test-drive cases below: the spherical and Cartesian
+   !! algebra fixtures of PART 1, and the spherical/Cartesian pipeline of
+   !! PART 2 (each of the latter self-skips, via test-drive's skip_test, when
+   !! this build's ceiling is below f).
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
@@ -118,26 +118,26 @@ contains
       call check_pipeline(error, .true.)
    end subroutine test_pipeline_cart
 
-   !
-   ! See this module's own header, PART 1. `l_cap` caps which shell pairs
-   ! the synthetic fixture (and the expected-answer check) touches at all:
-   ! `sad_average_atom_density`'s simple same-trace replacement
-   ! (`cart_to_sph_atom`/average/`sph_to_cart_atom`) is exact in the
-   ! SPHERICAL representation for any l (no contaminant exists there), but
-   ! in the CARTESIAN one it is exact only where T is the identity --
-   ! l <= 1, where Cartesian AND spherical are the SAME representation (see
-   ! `sad_average_atom_density`'s header: T^T T is not the identity for l >= 2,
-   ! so the averaging step itself, not just the electron count, runs in a
-   ! metric-distorted space there). SAD's own open-shell atoms (O, C, N, F,
-   ! ...) all have their Hund frontier at p, so capping the Cartesian
-   ! check at l_cap = 1 tests exactly the regime that determinism bug
-   ! lived in, without overclaiming determinism for a Cartesian d or f
-   ! shell's own internal contaminant -- which `sad_average_atom_density`
-   ! still leaves untouched rather than discarding (see its header), so
-   ! electron count survives there regardless; PART 2's real pipeline
-   ! check below covers that block's Tr(D S) end to end instead.
-   !
    subroutine check_algebra(error, ab, sph, l_cap)
+      !!
+      !! See this module's own header, PART 1. `l_cap` caps which shell pairs
+      !! the synthetic fixture (and the expected-answer check) touches at all:
+      !! `sad_average_atom_density`'s simple same-trace replacement
+      !! (`cart_to_sph_atom`/average/`sph_to_cart_atom`) is exact in the
+      !! SPHERICAL representation for any l (no contaminant exists there), but
+      !! in the CARTESIAN one it is exact only where T is the identity --
+      !! l <= 1, where Cartesian AND spherical are the SAME representation (see
+      !! `sad_average_atom_density`'s header: T^T T is not the identity for l >= 2,
+      !! so the averaging step itself, not just the electron count, runs in a
+      !! metric-distorted space there). SAD's own open-shell atoms (O, C, N, F,
+      !! ...) all have their Hund frontier at p, so capping the Cartesian
+      !! check at l_cap = 1 tests exactly the regime that determinism bug
+      !! lived in, without overclaiming determinism for a Cartesian d or f
+      !! shell's own internal contaminant -- which `sad_average_atom_density`
+      !! still leaves untouched rather than discarding (see its header), so
+      !! electron count survives there regardless; PART 2's real pipeline
+      !! check below covers that block's Tr(D S) end to end instead.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t), intent(in) :: ab
       logical, intent(in) :: sph
@@ -223,12 +223,12 @@ contains
                  "block proportionality: max|D - expected| = "//to_string(maxdiff, "es10.2"))
    end subroutine check_algebra
 
-   !
-   ! The known answer: base_of(ish,jsh) times the identity for a same-l
-   ! block, zero for a different-l one -- what `average_sph_blocks` must
-   ! produce from the fixture `check_algebra` built.
-   !
    subroutine build_expected(ab, l_cap, d)
+      !!
+      !! The known answer: base_of(ish,jsh) times the identity for a same-l
+      !! block, zero for a different-l one -- what `average_sph_blocks` must
+      !! produce from the fixture `check_algebra` built.
+      !!
       type(trc_basis_t), intent(in) :: ab
       integer, intent(in) :: l_cap
       real(dp), intent(out) :: d(ab%nao_sph, ab%nao_sph)
@@ -247,12 +247,12 @@ contains
       end do
    end subroutine build_expected
 
-   !
-   ! The trace each diagonal/off-diagonal block is filled with before
-   ! averaging -- shared by the fixture above and the check below, so the
-   ! two cannot silently drift apart.
-   !
    pure real(dp) function base_of(ish, jsh)
+      !!
+      !! The trace each diagonal/off-diagonal block is filled with before
+      !! averaging -- shared by the fixture above and the check below, so the
+      !! two cannot silently drift apart.
+      !!
       !! Symmetric in (ish, jsh): the (jsh, ish) block is the TRANSPOSE of
       !! (ish, jsh) (same trace), so both must look up the same base.
       integer, intent(in) :: ish, jsh
@@ -281,16 +281,16 @@ contains
       end do
    end subroutine fill_block
 
-   !
-   ! Plain SPH_T contraction, written independently of trc_sad.F90's own
-   ! (private) copy, so this test is not checking the implementation
-   ! against itself -- see trc_sph.F90's header for the same formula's
-   ! canonical, device-resident form. Only the forward (sph -> cart)
-   ! direction is needed here: see `sad_average_atom_density`'s header for why
-   ! the reverse direction is not this transform's inverse for l >= 2, and
-   ! so is never used as a check.
-   !
    subroutine local_sph_to_cart(ab, ds, dc)
+      !!
+      !! Plain SPH_T contraction, written independently of trc_sad.F90's own
+      !! (private) copy, so this test is not checking the implementation
+      !! against itself -- see trc_sph.F90's header for the same formula's
+      !! canonical, device-resident form. Only the forward (sph -> cart)
+      !! direction is needed here: see `sad_average_atom_density`'s header for why
+      !! the reverse direction is not this transform's inverse for l >= 2, and
+      !! so is never used as a check.
+      !!
       type(trc_basis_t), intent(in) :: ab
       real(dp), intent(in)  :: ds(ab%nao_sph, ab%nao_sph)
       real(dp), intent(out) :: dc(ab%nao, ab%nao)
@@ -321,10 +321,10 @@ contains
       end do
    end subroutine local_sph_to_cart
 
-   !
-   ! See this module's own header, PART 2.
-   !
    subroutine check_pipeline(error, force_cart)
+      !!
+      !! See this module's own header, PART 2.
+      !!
       type(error_type), allocatable, intent(out) :: error
       logical, intent(in) :: force_cart
       integer :: natm2

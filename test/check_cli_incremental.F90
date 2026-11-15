@@ -1,17 +1,17 @@
-!
-! The CLI's switches for the incremental Fock build, which is on by
-! default: the default run builds increments (iteration lines marked `i`),
-! while `--no-incremental` and a TOML file's `incremental = false` each turn
-! them off -- no `i` line, and the energy of the full-build SCF. The two
-! off switches must agree to run-to-run noise (the same full builds), and
-! with the default to the convergence test's scale. `--incremental` together with
-! `--no-incremental`, from flags or from the file and a flag, is refused
-! before any SCF runs.
-!
-! A test-drive suite, in check_cli_input.F90's style: the CLI binary and
-! a scratch directory come from the command line, the run happens in test/.
-!
 module check_cli_incremental_suite
+   !!
+   !! The CLI's switches for the incremental Fock build, which is on by
+   !! default: the default run builds increments (iteration lines marked `i`),
+   !! while `--no-incremental` and a TOML file's `incremental = false` each turn
+   !! them off -- no `i` line, and the energy of the full-build SCF. The two
+   !! off switches must agree to run-to-run noise (the same full builds), and
+   !! with the default to the convergence test's scale. `--incremental` together with
+   !! `--no-incremental`, from flags or from the file and a flag, is refused
+   !! before any SCF runs.
+   !!
+   !! A test-drive suite, in check_cli_input.F90's style: the CLI binary and
+   !! a scratch directory come from the command line, the run happens in test/.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file

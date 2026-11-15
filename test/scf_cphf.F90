@@ -1,30 +1,30 @@
-!
-! RHF static dipole polarizability through trc_cphf, against pyscf's
-! pyscf.prop.polarizability.rhf (test/pyscf_refs/generate.py's gen_cphf).
-!
-! Converges the SCF independently and tightly (conv_energy 1e-12,
-! conv_diis 1e-10) rather than reading back a committed pyscf density
-! (scf_rks.F90's "at-density" pattern): water and formamide have no
-! near-degenerate frontier orbitals or symmetry-breaking ambiguity, so two
-! independent tight RHF solves land on the same stationary point to well
-! past CPHF's own 1e-6 a.u. gate -- the same assumption scf_rimp2.F90/
-! scf_df.F90 already make comparing SCF energies to pyscf.
-!
-! Builds its OWN pair list, ERI engine and linalg handles: trc_scf_run
-! releases everything it built internally once it returns, and trc_cphf
-! needs `eri%fock_resident` (device-resident, density_screen=.false. --
-! see trc_cphf.F90's own header) and the dipole integrals, neither of
-! which the converged trc_scf_result_t carries.
-!
-! Arguments: xyz [basis.json [molname [basname [probe]]]]. Defaults water/
-! 6-31G*. `molname`/`basname` are what generate.py rebuilds the SAME
-! pyscf molecule from (bse_json_basis on basis_sets/<basname>.json) --
-! plain tags, not filenames, so they travel through the probe as fixed-
-! width strings with no path to re-derive. ONE (molecule, basis) case per
-! process (four ctest targets, same source, different ARGS), so this
-! suite has a single test-drive case.
-!
 module scf_cphf_suite
+   !!
+   !! RHF static dipole polarizability through trc_cphf, against pyscf's
+   !! pyscf.prop.polarizability.rhf (test/pyscf_refs/generate.py's gen_cphf).
+   !!
+   !! Converges the SCF independently and tightly (conv_energy 1e-12,
+   !! conv_diis 1e-10) rather than reading back a committed pyscf density
+   !! (scf_rks.F90's "at-density" pattern): water and formamide have no
+   !! near-degenerate frontier orbitals or symmetry-breaking ambiguity, so two
+   !! independent tight RHF solves land on the same stationary point to well
+   !! past CPHF's own 1e-6 a.u. gate -- the same assumption scf_rimp2.F90/
+   !! scf_df.F90 already make comparing SCF energies to pyscf.
+   !!
+   !! Builds its OWN pair list, ERI engine and linalg handles: trc_scf_run
+   !! releases everything it built internally once it returns, and trc_cphf
+   !! needs `eri%fock_resident` (device-resident, density_screen=.false. --
+   !! see trc_cphf.F90's own header) and the dipole integrals, neither of
+   !! which the converged trc_scf_result_t carries.
+   !!
+   !! Arguments: xyz [basis.json [molname [basname [probe]]]]. Defaults water/
+   !! 6-31G*. `molname`/`basname` are what generate.py rebuilds the SAME
+   !! pyscf molecule from (bse_json_basis on basis_sets/<basname>.json) --
+   !! plain tags, not filenames, so they travel through the probe as fixed-
+   !! width strings with no path to re-derive. ONE (molecule, basis) case per
+   !! process (four ctest targets, same source, different ARGS), so this
+   !! suite has a single test-drive case.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use pic_timer, only: timer_type

@@ -1,17 +1,17 @@
-!
-! The batched API against libfint, end to end.
-!
-! check_1e and check_df pin the KERNELS: they call one class at a time with
-! hand-assembled arguments. This pins everything between a caller and those
-! kernels -- the libcint-layout import, the AO offsets, device residency, and
-! the `do concurrent` drivers -- by building the basis object the way a
-! consumer would and comparing whole matrices against the same references.
-!
-! It is a separate check for the reason check_binfock is separate from
-! check_batch: if the container mislabelled a shell, kernel-level tests would
-! still pass, because they never use the container.
-!
 module check_api_suite
+   !!
+   !! The batched API against libfint, end to end.
+   !!
+   !! check_1e and check_df pin the KERNELS: they call one class at a time with
+   !! hand-assembled arguments. This pins everything between a caller and those
+   !! kernels -- the libcint-layout import, the AO offsets, device residency, and
+   !! the `do concurrent` drivers -- by building the basis object the way a
+   !! consumer would and comparing whole matrices against the same references.
+   !!
+   !! It is a separate check for the reason check_binfock is separate from
+   !! check_batch: if the container mislabelled a shell, kernel-level tests would
+   !! still pass, because they never use the container.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -221,13 +221,13 @@ contains
       deallocate (off, smat, tmat, vmat)
    end subroutine check_1e_system
 
-   !
-   ! The three-index tensor, with the ORBITAL and AUXILIARY bases both taken
-   ! to be the whole reference basis. Physically odd -- an auxiliary basis is
-   ! not normally the orbital one -- but it exercises every (la,lb|lc) the
-   ! generator emits, which is what a correctness check is for.
-   !
    subroutine check_3c_system(u, isys, atm, bas, env, natm, nbas, w3, nbad)
+      !!
+      !! The three-index tensor, with the ORBITAL and AUXILIARY bases both taken
+      !! to be the whole reference basis. Physically odd -- an auxiliary basis is
+      !! not normally the orbital one -- but it exercises every (la,lb|lc) the
+      !! generator emits, which is what a correctness check is for.
+      !!
       integer, intent(in) :: u, isys, natm, nbas
       integer, intent(in) :: atm(0:), bas(0:)
       real(dp), intent(in) :: env(0:)

@@ -1,22 +1,22 @@
-!
-! Pruning a general contraction's redundant primitives (trc_basis_json's
-! prune_block, src/basis/trc_basis_json.F90) against pyscf's own
-! "optimized general contraction" cc-pVDZ counts, and against the energy
-! the unpruned (BSE-literal) basis gives.
-!
-! water/cc-pVDZ: oxygen's s block is 3 columns sharing 9 exponents (two
-! real contractions, one single-primitive diffuse column); its p block is
-! 2 columns sharing 4 exponents (one contraction, one single primitive).
-! Both diffuse columns' exponent also shows up, with a small nonzero
-! coefficient, inside the block's contracted column(s) -- the redundancy
-! this module removes. Hydrogen's s block is the same shape one l lower.
-! Counts below are `gto.basis.load('cc-pvdz', <symbol>)` (pyscf 2.14.0)
-! against the BSE file metalquicha ships (test/basis_sets/cc-pvdz.json,
-! identical to /home/jorge/dev/metalquicha/basis_sets/cc-pvdz.json).
-!
-! A test-drive suite.
-!
 module check_prune_primitives_suite
+   !!
+   !! Pruning a general contraction's redundant primitives (trc_basis_json's
+   !! prune_block, src/basis/trc_basis_json.F90) against pyscf's own
+   !! "optimized general contraction" cc-pVDZ counts, and against the energy
+   !! the unpruned (BSE-literal) basis gives.
+   !!
+   !! water/cc-pVDZ: oxygen's s block is 3 columns sharing 9 exponents (two
+   !! real contractions, one single-primitive diffuse column); its p block is
+   !! 2 columns sharing 4 exponents (one contraction, one single primitive).
+   !! Both diffuse columns' exponent also shows up, with a small nonzero
+   !! coefficient, inside the block's contracted column(s) -- the redundancy
+   !! this module removes. Hydrogen's s block is the same shape one l lower.
+   !! Counts below are `gto.basis.load('cc-pvdz', <symbol>)` (pyscf 2.14.0)
+   !! against the BSE file metalquicha ships (test/basis_sets/cc-pvdz.json,
+   !! identical to /home/jorge/dev/metalquicha/basis_sets/cc-pvdz.json).
+   !!
+   !! A test-drive suite.
+   !!
    use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
    use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
    use pic_types, only: dp
@@ -72,13 +72,13 @@ contains
       if (err%has_error()) error stop 'check_prune_primitives: basis build failed'
    end subroutine build_water_dz
 
-   !
-   ! TRC_PRUNE_PRIMITIVES is read once per `trc_basis_from_json` call
-   ! (trc_basis_json's prune_enabled), so toggling it between two builds in
-   ! the same process is exactly the intended use -- test/check_rys_vs_hgp.F90
-   ! does the same with TRC_RYS_CLASSES.
-   !
    subroutine test_counts_match_pyscf(error)
+      !!
+      !! TRC_PRUNE_PRIMITIVES is read once per `trc_basis_from_json` call
+      !! (trc_basis_json's prune_enabled), so toggling it between two builds in
+      !! the same process is exactly the intended use -- test/check_rys_vs_hgp.F90
+      !! does the same with TRC_RYS_CLASSES.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       ! O: s block (9 exponents, 3 columns: 2 contracted + 1 diffuse single
@@ -149,13 +149,13 @@ contains
       energy = res%energy
    end subroutine run_rhf
 
-   !
-   ! The elimination only ever subtracts a zero -- see prune_block's own
-   ! header -- so the pruned and unpruned bases span exactly the same
-   ! functions and RHF must land on the same stationary point to round-off,
-   ! not merely to engineering tolerance.
-   !
    subroutine test_energy_invariant(error)
+      !!
+      !! The elimination only ever subtracts a zero -- see prune_block's own
+      !! header -- so the pruned and unpruned bases span exactly the same
+      !! functions and RHF must land on the same stationary point to round-off,
+      !! not merely to engineering tolerance.
+      !!
       type(error_type), allocatable, intent(out) :: error
       real(dp) :: e_on, e_off
 
@@ -167,15 +167,15 @@ contains
                  //"an approximation")
    end subroutine test_energy_invariant
 
-   !
-   ! Same construction (force_cart=.true.) as test/scf_cphf.F90, whose own
-   ! cphf_water_cc-pvdz.ref carries this system's pyscf RHF energy
-   ! (test/pyscf_refs/generate.py's gen_cphf). Reusing it here, rather than
-   ! a second generated reference, needs no new "# files:" entry: this
-   ! check only reads the committed anchor, same as check_ao.F90 and
-   ! check_mult.F90 read more than one reference each.
-   !
    subroutine test_matches_anchor(error)
+      !!
+      !! Same construction (force_cart=.true.) as test/scf_cphf.F90, whose own
+      !! cphf_water_cc-pvdz.ref carries this system's pyscf RHF energy
+      !! (test/pyscf_refs/generate.py's gen_cphf). Reusing it here, rather than
+      !! a second generated reference, needs no new "# files:" entry: this
+      !! check only reads the committed anchor, same as check_ao.F90 and
+      !! check_mult.F90 read more than one reference each.
+      !!
       type(error_type), allocatable, intent(out) :: error
       real(dp) :: e_on, e_ref
       integer :: u
@@ -187,21 +187,21 @@ contains
       call check(error, abs(e_on - e_ref) < 1.0e-9_dp, "E_RHF(pruned) matches the pyscf anchor")
    end subroutine test_matches_anchor
 
-   !
-   ! prune_block's NaN guard: a column that shares EVERY one of its
-   ! primitives with the block's pivots comes out all zero after the
-   ! elimination loop, not merely smaller. A hand-written one-block s
-   ! shell (element 2 -- arbitrary, this basis is never used for anything
-   ! but this test) with exponents 1, 2, 3 and three columns: two
-   ! single-primitive pivots (at exponents 1 and 2) and a third column
-   ! that is a contraction over EXACTLY those same two primitives and
-   ! nothing else (coefficients 0.5, 0.5, 0 over exponents 1, 2, 3).
-   ! prune_block zeroes the third column at both pivot positions, which
-   ! is its every nonzero primitive -- without the guard, the column
-   ! would reach `normalise` all zero, which divides by sqrt(overlap) and
-   ! hands back NaN coefficients with no error status at all.
-   !
    subroutine build_allzero_column_bas(bas, error)
+      !!
+      !! prune_block's NaN guard: a column that shares EVERY one of its
+      !! primitives with the block's pivots comes out all zero after the
+      !! elimination loop, not merely smaller. A hand-written one-block s
+      !! shell (element 2 -- arbitrary, this basis is never used for anything
+      !! but this test) with exponents 1, 2, 3 and three columns: two
+      !! single-primitive pivots (at exponents 1 and 2) and a third column
+      !! that is a contraction over EXACTLY those same two primitives and
+      !! nothing else (coefficients 0.5, 0.5, 0 over exponents 1, 2, 3).
+      !! prune_block zeroes the third column at both pivot positions, which
+      !! is its every nonzero primitive -- without the guard, the column
+      !! would reach `normalise` all zero, which divides by sqrt(overlap) and
+      !! hands back NaN coefficients with no error status at all.
+      !!
       type(trc_basis_t), intent(out) :: bas
       type(error_type), allocatable, intent(out) :: error
       character(len=*), parameter :: SCRATCH = "check_prune_primitives_allzero_tmp.json"

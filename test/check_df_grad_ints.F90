@@ -1,41 +1,41 @@
-!
-! The density-fitting DERIVATIVE integrals (scripts/gen_df_grad.py's kernels)
-! against pyscf's int3c2e_ip1, int3c2e_ip2 and int2c2e_ip1, before any of the
-! fitted gradient's own contraction is involved -- "is d(mu nu|P)/dR right",
-! the same kernel-check role check_df_vs_pyscf.F90 plays for the integrals
-! themselves.
-!
-! TWO HALVES.
-!
-!   RAW. Every class kernel is called on the HOST (trc_df_grad_kernels'
-!   df_grad_3c_block / df_grad_2c_block) once per Cartesian component with
-!   a one-hot coefficient block, which returns that one derivative integral
-!   -- the exact code the device drivers run. The full tensors go into the
-!   dump; test/pyscf_refs/generate.py's gen_df_grad_ints compares them
-!   element by element against pyscf at generation time and prints the
-!   worst difference (the tensors are too big to commit). Checked here
-!   too: the B-centre derivative of (mu nu|P) equals the A-centre one of
-!   (nu mu|P), and translational invariance of every derivative block.
-!
-!   CONTRACTED. The device drivers (df_grad_3c_driver over the energy's
-!   own triangular pair list, df_grad_2c_driver over auxiliary shell
-!   pairs) contract a fixed synthetic symmetric Y(mu,nu,P) and Z(P,Q) into
-!   a per-atom gradient. That is compared against (a) the same contraction
-!   of the raw host tensors above -- the drivers' weights, pair list,
-!   lanes and atomics -- and (b) pyscf's own integrals contracted with the
-!   same Y/Z, committed as dfg_ints_<case>.ref.
-!
-! PER-AO NORMALISATION as check_df_vs_pyscf.F90: from the (i|j) metric of
-! the orbital basis and the (P|Q) metric of the auxiliary one, both
-! trc_df_2c, dumped for generate.py.
-!
-! SKIPS CLEANLY when a basis needs more angular momentum than the
-! derivative kernels were generated for (DFG_LMAX/DFG_LMAX_AUX): prints
-! "SKIP: ..." and `stop 0` before run_testsuite is even entered, same
-! convention as check_nosym.F90 -- ctest's SKIP_REGULAR_EXPRESSION
-! (test/CMakeLists.txt) turns that into "Skipped", not "Passed".
-!
 module check_df_grad_ints_m
+   !!
+   !! The density-fitting DERIVATIVE integrals (scripts/gen_df_grad.py's kernels)
+   !! against pyscf's int3c2e_ip1, int3c2e_ip2 and int2c2e_ip1, before any of the
+   !! fitted gradient's own contraction is involved -- "is d(mu nu|P)/dR right",
+   !! the same kernel-check role check_df_vs_pyscf.F90 plays for the integrals
+   !! themselves.
+   !!
+   !! TWO HALVES.
+   !!
+   !!   RAW. Every class kernel is called on the HOST (trc_df_grad_kernels'
+   !!   df_grad_3c_block / df_grad_2c_block) once per Cartesian component with
+   !!   a one-hot coefficient block, which returns that one derivative integral
+   !!   -- the exact code the device drivers run. The full tensors go into the
+   !!   dump; test/pyscf_refs/generate.py's gen_df_grad_ints compares them
+   !!   element by element against pyscf at generation time and prints the
+   !!   worst difference (the tensors are too big to commit). Checked here
+   !!   too: the B-centre derivative of (mu nu|P) equals the A-centre one of
+   !!   (nu mu|P), and translational invariance of every derivative block.
+   !!
+   !!   CONTRACTED. The device drivers (df_grad_3c_driver over the energy's
+   !!   own triangular pair list, df_grad_2c_driver over auxiliary shell
+   !!   pairs) contract a fixed synthetic symmetric Y(mu,nu,P) and Z(P,Q) into
+   !!   a per-atom gradient. That is compared against (a) the same contraction
+   !!   of the raw host tensors above -- the drivers' weights, pair list,
+   !!   lanes and atomics -- and (b) pyscf's own integrals contracted with the
+   !!   same Y/Z, committed as dfg_ints_<case>.ref.
+   !!
+   !! PER-AO NORMALISATION as check_df_vs_pyscf.F90: from the (i|j) metric of
+   !! the orbital basis and the (P|Q) metric of the auxiliary one, both
+   !! trc_df_2c, dumped for generate.py.
+   !!
+   !! SKIPS CLEANLY when a basis needs more angular momentum than the
+   !! derivative kernels were generated for (DFG_LMAX/DFG_LMAX_AUX): prints
+   !! "SKIP: ..." and `stop 0` before run_testsuite is even entered, same
+   !! convention as check_nosym.F90 -- ctest's SKIP_REGULAR_EXPRESSION
+   !! (test/CMakeLists.txt) turns that into "Skipped", not "Passed".
+   !!
    use pic_types, only: dp
    use trc_api, only: trc_basis_t
    use trc_df_grad_kernels, only: df_grad_3c_block, df_grad_2c_block

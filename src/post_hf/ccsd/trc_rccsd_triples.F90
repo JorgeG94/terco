@@ -1,67 +1,67 @@
-!
-! The perturbative triples correction (T) of closed-shell RI-CCSD(T): the HOST reference implementation.
-!
-! JCP 94, 442 (1991) (Rendell, Lee, Komornicki), as PySCF's cc/ccsd_t_slow.py writes it, ported verbatim from the
-! metalquicha `triples_correction` and its helpers. It is the oracle the device version is checked against, so it
-! keeps the source's loop structure on purpose: do not restructure it for the GPU here.
-!
-! WHAT IT COMPUTES. With the converged (or any fixed) amplitudes t1(i,a), t2(i,j,a,b), the integral blocks of
-! `trc_rccsd_ints` and canonical orbital energies, for each virtual triple a >= b >= c (weight 1/6 when all three
-! coincide, 1/2 when two do, 1 otherwise, folded into the denominator) and each of the six permutations p of (a,b,c):
-!
-!     W_p(i,j,k) = sum_f (i a_p|f b_p) t2(k,j,c_p,f)  -  sum_m (i a_p|j m) t2(m,k,b_p,c_p)    ((a_p,b_p,c_p) = perm_p(a,b,c))
-!     V_p(i,j,k) = (i a_p|j b_p) t1(k,c_p)                 (the disconnected term; the t2 f_ov term vanishes: canonical)
-!     Z_p = [4 X(i,j,k) + X(k,i,j) + X(j,k,i) - 2 X(k,j,i) - 2 X(i,k,j) - 2 X(j,i,k)] / D3,   X = W_p + V_p / 2,
-!     D3 = e_i + e_j + e_k - e_a - e_b - e_c                                                          (`triples_r3`)
-!     E(T) = 2 sum_{abc} sum_p sum_ijk Z_p(i,j,k) [ sum_q W_WMAP(p,q)(perm_q(i,j,k)) ]
-!
-! the two-electron integrals being the fitted ones of `ints`. PySCF's `ccsd_t_slow.kernel` is the same sum with
-! the loops written out. The paper's Eq. (1) restriction is wrong; the loops here restrict a >= b >= c over all
-! (i,j,k), which is the form that sums every distinct virtual triple once.
-!
-! DEVIATIONS FROM THE SOURCE. The two `!$omp parallel do` repacks (the t2 repack into tt and the ooov repack into
-! oop) run serially here, so the first-touch placement of those arrays across sockets, which the source relied on, is
-! lost; the values are identical.
-!
-! THREE INDEX IDENTITIES let the blocks be read straight out of the ones held, so no transposed copy of ovvv
-! (the largest block; built for the call from the factors by `ints%fill_ovvv`, since `ints` no longer holds it) is made:
-!
-!     vvov(a,b,i,f) = ovvv(i,a,f,b)     vooo(a,i,j,m) = ooov(j,m,i,a)     vvoo(a,b,i,j) = ovov(i,a,j,b)
-!
-! COST AND MEMORY. The particle half of W is O(no^3 nv^4) flops (about 2 no^3 nv^4 in all), the hole half O(no^4 nv^3).
-! No t3 is ever held. Shared arrays: ovvv (no nv^3), tt (nv, no^2 nv) the repacked t2 and oop (no^3, nv) the repacked ooov. Per
-! thread, with cb the c batch (capped at nv for the allocation): W 6 no^3 cb, Z 6 no^3, X and D3 2 no^3, the gemm
-! operands 2 no^3 cb + no nv + nv cb no, all doubles. For no = 25, nv = 130 and cb = 32 that is 85 MB + 16 MB shared
-! and about 34 MB per thread.
-!
-! HOST ONLY (this routine). `rccsd_triples_finish` runs a device version in a device build (`opts%use_device` defaults
-! to true there, false in a host build) and this reference otherwise: `opts%device_routine` picks the one driven by
-! occupied triples (trc_rccsd_triples_ijk, the default) or the one driven by virtual triples (trc_rccsd_triples_dev).
-! The reference reads `ints%b_ov`, `ints%b_vv`, `ints%ooov`, `ints%ovov`, `ints%eps_o`,
-! `ints%eps_v` and `amps%t1`, `amps%t2` as they are in host memory, and never touches device data: the host copies must
-! be current. They are after `trc_rccsd_solve` (`amps%pull`), and after `ints%build`; a caller that rewrote one of them
-! on the device must `update self` first. Nothing here is a `do concurrent`, so under the GPU build it runs on the host
-! unchanged. The device version needs the opposite: the device copies current.
-!
-! RANKS. `rccsd_triples_finish` with `opts%has_comm` and more than one rank in `opts%comm` (one rank per device) is
-! collective. Every rank holds the same integrals and amplitudes (trc_rccsd_driver shares the amplitudes), runs the
-! occupied-driven device routine with `device%parts` = the number of ranks and `device%part` = its rank (the caller sets
-! neither), and keeps the energy of every triple at its canonical position, zero for the triples of other ranks.
-! The vectors are summed over the ranks (MPI_SUM; each entry has one non-zero term, so the sum is exact whatever the
-! order) and E(T) is the sum of the reduced vector in canonical order, on every rank: the same bits everywhere, and
-! the one-rank value to the rounding of the per-triple sums. Failure is agreed, never inferred: every refusal of
-! `rccsd_triples_finish` (a refused, non-finite or unconverged state, a caller-set work share, a routine without a
-! work share: the virtual-triple routine and the host reference) is folded into the FIRST agreement, which every rank
-! reaches (rccsd_mpi_agree_text: MIN of the refusing rank index, then that rank's message to all). If any rank
-! refuses, all do, with the message of the lowest-numbered refusing rank. The run itself ends in a second agreement
-! (a rank whose routine failed) before the vector reduction, so no rank returns early while another waits in a
-! collective call. With `verbose`, rank 0 logs one line per rank: its triples and its seconds.
-!
-! THREADS. The loop over the pairs (a,b) is an OpenMP loop, each thread with its own W and scratch. The energy of
-! each pair is stored in `e_pair` and summed in pair order afterwards, so the result does not depend on the thread
-! count or the schedule. The BLAS is the host BLAS through pic_gemm (the host path of trc_linalg_t, which has no
-! entry for host operands in the GPU build), called from the threads.
 module trc_rccsd_triples
+   !!
+   !! The perturbative triples correction (T) of closed-shell RI-CCSD(T): the HOST reference implementation.
+   !!
+   !! JCP 94, 442 (1991) (Rendell, Lee, Komornicki), as PySCF's cc/ccsd_t_slow.py writes it, ported verbatim from the
+   !! metalquicha `triples_correction` and its helpers. It is the oracle the device version is checked against, so it
+   !! keeps the source's loop structure on purpose: do not restructure it for the GPU here.
+   !!
+   !! WHAT IT COMPUTES. With the converged (or any fixed) amplitudes t1(i,a), t2(i,j,a,b), the integral blocks of
+   !! `trc_rccsd_ints` and canonical orbital energies, for each virtual triple a >= b >= c (weight 1/6 when all three
+   !! coincide, 1/2 when two do, 1 otherwise, folded into the denominator) and each of the six permutations p of (a,b,c):
+   !!
+   !!     W_p(i,j,k) = sum_f (i a_p|f b_p) t2(k,j,c_p,f)  -  sum_m (i a_p|j m) t2(m,k,b_p,c_p)    ((a_p,b_p,c_p) = perm_p(a,b,c))
+   !!     V_p(i,j,k) = (i a_p|j b_p) t1(k,c_p)                 (the disconnected term; the t2 f_ov term vanishes: canonical)
+   !!     Z_p = [4 X(i,j,k) + X(k,i,j) + X(j,k,i) - 2 X(k,j,i) - 2 X(i,k,j) - 2 X(j,i,k)] / D3,   X = W_p + V_p / 2,
+   !!     D3 = e_i + e_j + e_k - e_a - e_b - e_c                                                          (`triples_r3`)
+   !!     E(T) = 2 sum_{abc} sum_p sum_ijk Z_p(i,j,k) [ sum_q W_WMAP(p,q)(perm_q(i,j,k)) ]
+   !!
+   !! the two-electron integrals being the fitted ones of `ints`. PySCF's `ccsd_t_slow.kernel` is the same sum with
+   !! the loops written out. The paper's Eq. (1) restriction is wrong; the loops here restrict a >= b >= c over all
+   !! (i,j,k), which is the form that sums every distinct virtual triple once.
+   !!
+   !! DEVIATIONS FROM THE SOURCE. The two `!$omp parallel do` repacks (the t2 repack into tt and the ooov repack into
+   !! oop) run serially here, so the first-touch placement of those arrays across sockets, which the source relied on, is
+   !! lost; the values are identical.
+   !!
+   !! THREE INDEX IDENTITIES let the blocks be read straight out of the ones held, so no transposed copy of ovvv
+   !! (the largest block; built for the call from the factors by `ints%fill_ovvv`, since `ints` no longer holds it) is made:
+   !!
+   !!     vvov(a,b,i,f) = ovvv(i,a,f,b)     vooo(a,i,j,m) = ooov(j,m,i,a)     vvoo(a,b,i,j) = ovov(i,a,j,b)
+   !!
+   !! COST AND MEMORY. The particle half of W is O(no^3 nv^4) flops (about 2 no^3 nv^4 in all), the hole half O(no^4 nv^3).
+   !! No t3 is ever held. Shared arrays: ovvv (no nv^3), tt (nv, no^2 nv) the repacked t2 and oop (no^3, nv) the repacked ooov. Per
+   !! thread, with cb the c batch (capped at nv for the allocation): W 6 no^3 cb, Z 6 no^3, X and D3 2 no^3, the gemm
+   !! operands 2 no^3 cb + no nv + nv cb no, all doubles. For no = 25, nv = 130 and cb = 32 that is 85 MB + 16 MB shared
+   !! and about 34 MB per thread.
+   !!
+   !! HOST ONLY (this routine). `rccsd_triples_finish` runs a device version in a device build (`opts%use_device` defaults
+   !! to true there, false in a host build) and this reference otherwise: `opts%device_routine` picks the one driven by
+   !! occupied triples (trc_rccsd_triples_ijk, the default) or the one driven by virtual triples (trc_rccsd_triples_dev).
+   !! The reference reads `ints%b_ov`, `ints%b_vv`, `ints%ooov`, `ints%ovov`, `ints%eps_o`,
+   !! `ints%eps_v` and `amps%t1`, `amps%t2` as they are in host memory, and never touches device data: the host copies must
+   !! be current. They are after `trc_rccsd_solve` (`amps%pull`), and after `ints%build`; a caller that rewrote one of them
+   !! on the device must `update self` first. Nothing here is a `do concurrent`, so under the GPU build it runs on the host
+   !! unchanged. The device version needs the opposite: the device copies current.
+   !!
+   !! RANKS. `rccsd_triples_finish` with `opts%has_comm` and more than one rank in `opts%comm` (one rank per device) is
+   !! collective. Every rank holds the same integrals and amplitudes (trc_rccsd_driver shares the amplitudes), runs the
+   !! occupied-driven device routine with `device%parts` = the number of ranks and `device%part` = its rank (the caller sets
+   !! neither), and keeps the energy of every triple at its canonical position, zero for the triples of other ranks.
+   !! The vectors are summed over the ranks (MPI_SUM; each entry has one non-zero term, so the sum is exact whatever the
+   !! order) and E(T) is the sum of the reduced vector in canonical order, on every rank: the same bits everywhere, and
+   !! the one-rank value to the rounding of the per-triple sums. Failure is agreed, never inferred: every refusal of
+   !! `rccsd_triples_finish` (a refused, non-finite or unconverged state, a caller-set work share, a routine without a
+   !! work share: the virtual-triple routine and the host reference) is folded into the FIRST agreement, which every rank
+   !! reaches (rccsd_mpi_agree_text: MIN of the refusing rank index, then that rank's message to all). If any rank
+   !! refuses, all do, with the message of the lowest-numbered refusing rank. The run itself ends in a second agreement
+   !! (a rank whose routine failed) before the vector reduction, so no rank returns early while another waits in a
+   !! collective call. With `verbose`, rank 0 logs one line per rank: its triples and its seconds.
+   !!
+   !! THREADS. The loop over the pairs (a,b) is an OpenMP loop, each thread with its own W and scratch. The energy of
+   !! each pair is stored in `e_pair` and summed in pair order afterwards, so the result does not depend on the thread
+   !! count or the schedule. The BLAS is the host BLAS through pic_gemm (the host path of trc_linalg_t, which has no
+   !! entry for host operands in the GPU build), called from the threads.
    use pic_types, only: dp, int32, int64
    use pic_timer, only: timer_type
    use pic_logger, only: global_logger

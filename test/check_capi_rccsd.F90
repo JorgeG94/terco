@@ -1,40 +1,40 @@
-!
-! Closed-shell RI-CCSD and RI-CCSD(T) through the C ABI (trc_set_rccsd, trc_set_rccsd_convergence,
-! trc_set_rccsd_algorithm, trc_run_rccsd, trc_rccsd_energy, and trc_energy after them): the numbers, the setters'
-! arguments, the refusals and the invalidation of a stored result.
-!
-! Reference. Water, cc-pVDZ with cc-pVDZ-RIFIT, frozen core 1, the geometry of test/hirshfeld_water.xyz: pyscf's
-! DF-CCSD(T) in test/pyscf_refs/rccsd_ints_w1.ref (E_MP2, E_CCSD_CORR, E_T, E_CCSD_T, T1_DIAG), converged there to
-! 1e-12 / 1e-10. The handle converges the SCF to 1e-13 Eh and a commutator of 1e-11 and the coupled-cluster
-! iteration to 1e-12 / 1e-10, as check_rccsd_run and check_rccsd_triples do, with their tolerances:
-!   E_CCSD correlation   1e-10        E(T)   3e-12        CCSD(T) total energy   3e-11
-! (trc_energy is the CCSD(T) total, so the third also covers the SCF energy and the sum).
-!
-! What else is checked, each against something that can fail:
-!   - nfrozen = -1 (the core counted by element) gives the energies of nfrozen = 1, and a count of 0 does not;
-!   - without the triples flag E(T) is not reported and trc_energy is the CCSD total;
-!   - every setter refuses its bad arguments with TRC_ERR_BADARG and a message, and a refusal leaves the earlier
-!     settings alone (the run after it still reproduces pyscf);
-!   - each request the method does not cover is refused with its status and message: no SCF, an SCF that did not
-!     converge, no auxiliary basis, an unrestricted reference, a Kohn-Sham one, an effective core potential,
-!     RI-MP2 already run, a non-aufbau (mom-held excited) reference, every occupied orbital frozen, an auxiliary basis above this build's ceiling. (Over several ranks
-!     trc_run_rccsd is collective and needs an MPI build and a communicator: test/rccsd_mpi.F90 runs it.)
-!   - a continuum solvent is NOT refused (as for RI-MP2), the energy is finite;
-!   - a second trc_run_scf, a new auxiliary basis and every RI-CCSD setter drop the stored result;
-!   - max_iterations = 2 returns TRC_ERR_NOCONV with a message, the last energies stay readable with converged = 0,
-!     (T) is not run, and trc_energy does not include the correlation;
-!   - after a converged run trc_run_gradient refuses and says why;
-!   - the (T) step refusing after a converged RI-CCSD: the tiled routine with a budget below one triple. The
-!     call returns TRC_ERR_UNSUPPORTED with a message naming the budget, trc_rccsd_energy still gives the converged
-!     RI-CCSD (has_triples = 0, e_t = 0) and trc_energy is its total; a run with enough budget, and one with the
-!     reference routine (which has no budget), give (T). The two routines agree on E(T) to 1e-12. The routine is
-!     always set explicitly, so the case means the same in a host build and in a device build.
-!
-! A build whose density-fitting ceilings are below the cc-pVDZ / cc-pVDZ-RIFIT shells can run none of it: the program
-! prints SKIP once and exits, which ctest reports as skipped (SKIP_REGULAR_EXPRESSION). A single case that cannot run in
-! a build that can run the others passes quietly with a NOTE instead, so it never hides the rest of the suite.
-!
 module check_capi_rccsd_suite
+   !!
+   !! Closed-shell RI-CCSD and RI-CCSD(T) through the C ABI (trc_set_rccsd, trc_set_rccsd_convergence,
+   !! trc_set_rccsd_algorithm, trc_run_rccsd, trc_rccsd_energy, and trc_energy after them): the numbers, the setters'
+   !! arguments, the refusals and the invalidation of a stored result.
+   !!
+   !! Reference. Water, cc-pVDZ with cc-pVDZ-RIFIT, frozen core 1, the geometry of test/hirshfeld_water.xyz: pyscf's
+   !! DF-CCSD(T) in test/pyscf_refs/rccsd_ints_w1.ref (E_MP2, E_CCSD_CORR, E_T, E_CCSD_T, T1_DIAG), converged there to
+   !! 1e-12 / 1e-10. The handle converges the SCF to 1e-13 Eh and a commutator of 1e-11 and the coupled-cluster
+   !! iteration to 1e-12 / 1e-10, as check_rccsd_run and check_rccsd_triples do, with their tolerances:
+   !!   E_CCSD correlation   1e-10        E(T)   3e-12        CCSD(T) total energy   3e-11
+   !! (trc_energy is the CCSD(T) total, so the third also covers the SCF energy and the sum).
+   !!
+   !! What else is checked, each against something that can fail:
+   !!   - nfrozen = -1 (the core counted by element) gives the energies of nfrozen = 1, and a count of 0 does not;
+   !!   - without the triples flag E(T) is not reported and trc_energy is the CCSD total;
+   !!   - every setter refuses its bad arguments with TRC_ERR_BADARG and a message, and a refusal leaves the earlier
+   !!     settings alone (the run after it still reproduces pyscf);
+   !!   - each request the method does not cover is refused with its status and message: no SCF, an SCF that did not
+   !!     converge, no auxiliary basis, an unrestricted reference, a Kohn-Sham one, an effective core potential,
+   !!     RI-MP2 already run, a non-aufbau (mom-held excited) reference, every occupied orbital frozen, an auxiliary basis above this build's ceiling. (Over several ranks
+   !!     trc_run_rccsd is collective and needs an MPI build and a communicator: test/rccsd_mpi.F90 runs it.)
+   !!   - a continuum solvent is NOT refused (as for RI-MP2), the energy is finite;
+   !!   - a second trc_run_scf, a new auxiliary basis and every RI-CCSD setter drop the stored result;
+   !!   - max_iterations = 2 returns TRC_ERR_NOCONV with a message, the last energies stay readable with converged = 0,
+   !!     (T) is not run, and trc_energy does not include the correlation;
+   !!   - after a converged run trc_run_gradient refuses and says why;
+   !!   - the (T) step refusing after a converged RI-CCSD: the tiled routine with a budget below one triple. The
+   !!     call returns TRC_ERR_UNSUPPORTED with a message naming the budget, trc_rccsd_energy still gives the converged
+   !!     RI-CCSD (has_triples = 0, e_t = 0) and trc_energy is its total; a run with enough budget, and one with the
+   !!     reference routine (which has no budget), give (T). The two routines agree on E(T) to 1e-12. The routine is
+   !!     always set explicitly, so the case means the same in a host build and in a device build.
+   !!
+   !! A build whose density-fitting ceilings are below the cc-pVDZ / cc-pVDZ-RIFIT shells can run none of it: the program
+   !! prints SKIP once and exits, which ctest reports as skipped (SKIP_REGULAR_EXPRESSION). A single case that cannot run in
+   !! a build that can run the others passes quietly with a NOTE instead, so it never hides the rest of the suite.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_char, c_null_char, c_null_ptr, c_loc
    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_positive_inf
    use pic_types, only: dp

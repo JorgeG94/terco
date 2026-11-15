@@ -1,19 +1,19 @@
-!
-! Where the XC time goes, on a real molecule in a real basis.
-!
-!   bench_xc <xyz> [level] [reps] [max_pts] [basis.json] [functional]
-!
-! Builds 6-31G on the molecule by default, or the MolSSI BSE basis named by
-! the optional 5th argument (e.g. basis_sets/cc-pvdz.json on sih4.xyz, to put
-! a d shell through `collocation_shell` -- 6-31G alone has none, s/p only) --
-! a grid at the given level with the default pruning, a fixed positive
-! density, and times `trc_xc_rks` for PBE (or the functional named by the
-! optional 6th argument, r2scan say, for a meta-GGA): the batching, then `reps`
-! evaluations split into the point kernel (collocation, density, functional)
-! and the pair kernel (V_xc). A timing is not a pass, so this is built and
-! not registered as a test.
-!
 program bench_xc
+   !!
+   !! Where the XC time goes, on a real molecule in a real basis.
+   !!
+   !!   bench_xc <xyz> [level] [reps] [max_pts] [basis.json] [functional]
+   !!
+   !! Builds 6-31G on the molecule by default, or the MolSSI BSE basis named by
+   !! the optional 5th argument (e.g. basis_sets/cc-pvdz.json on sih4.xyz, to put
+   !! a d shell through `collocation_shell` -- 6-31G alone has none, s/p only) --
+   !! a grid at the given level with the default pruning, a fixed positive
+   !! density, and times `trc_xc_rks` for PBE (or the functional named by the
+   !! optional 6th argument, r2scan say, for a meta-GGA): the batching, then `reps`
+   !! evaluations split into the point kernel (collocation, density, functional)
+   !! and the pair kernel (V_xc). A timing is not a pass, so this is built and
+   !! not registered as a test.
+   !!
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e

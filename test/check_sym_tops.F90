@@ -1,38 +1,38 @@
-!
-! Symmetric and spherical tops, linear molecules and atoms (trc_sym_geom +
-! trc_sym_tops). The group and frame are those pyscf 2.14.0 gives with
-! symmetry=True (its `detect_symm` full group, reduced by `get_subgroup` to the
-! Abelian `mol.groupname`). Molecules (sources in the .xyz comment lines; each
-! non-linear one and each linear one also rotated and shifted: *_rot):
-!   tops_benzene   D6h -> D2h      tops_nh3  C3v -> Cs      tops_ch4  Td -> D2
-!   tops_sf6       Oh  -> D2h      tops_n2   Dooh -> D2h    tops_co   Coov -> C2v
-!   tops_hcn       Coov -> C2v     o2 (UHF triplet) Dooh -> D2h
-!   tops_ne, o_atom   SO3 -> D2h (pyscf: D2h for a Cartesian basis, SO3 for a spherical one)
-!
-!   - detection: group, origin and frame against pyscf. The frame is compared up
-!     to the sign of each axis. Three kinds: (1) all three axes must equal
-!     pyscf's (everything deterministic in pyscf's search); (2) only z (linear
-!     molecules: pyscf takes x and y from LAPACK, arbitrary in the plane); (3) the
-!     two frames are related by an operation of the molecule (NH3 rotated:
-!     `search_mirrorx` picks one of three equivalent mirrors from the sign of
-!     LAPACK's unique axis), checked by comparing the atoms in the two frames.
-!     The labels and SO dimensions of two such frames are the same;
-!   - the symmetrised geometry is invariant under every operation to 1e-14;
-!   - SO dimensions per irrep (cart 6-31G*, sph cc-pVDZ) against pyscf; for the
-!     linear molecules and atoms pyscf's anchor is the Abelian group requested on
-!     the aligned file (the spherical basis would use Dooh/Coov/SO3 irreps);
-!     U^T U = I, U^T S U and U^T H U block-diagonal to 1e-12;
-!   - THE CENTRAL ORACLE (symmetry vs C1 on the symmetrised geometry) for RHF,
-!     UHF (NH3+, O2 triplet, O atom) and B3LYP (NH3, grid level 5), electrons per
-!     irrep and orbital energies per irrep against pyscf (the O atom: the sorted
-!     orbital energies only, since which degenerate p orbital the beta electron
-!     takes is arbitrary);
-!   - requested subgroups C2v and Cs of benzene, in pyscf's frame;
-!   - the symmetrised gradient; `auto` and explicit group choice.
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_tops_suite
+   !!
+   !! Symmetric and spherical tops, linear molecules and atoms (trc_sym_geom +
+   !! trc_sym_tops). The group and frame are those pyscf 2.14.0 gives with
+   !! symmetry=True (its `detect_symm` full group, reduced by `get_subgroup` to the
+   !! Abelian `mol.groupname`). Molecules (sources in the .xyz comment lines; each
+   !! non-linear one and each linear one also rotated and shifted: *_rot):
+   !!   tops_benzene   D6h -> D2h      tops_nh3  C3v -> Cs      tops_ch4  Td -> D2
+   !!   tops_sf6       Oh  -> D2h      tops_n2   Dooh -> D2h    tops_co   Coov -> C2v
+   !!   tops_hcn       Coov -> C2v     o2 (UHF triplet) Dooh -> D2h
+   !!   tops_ne, o_atom   SO3 -> D2h (pyscf: D2h for a Cartesian basis, SO3 for a spherical one)
+   !!
+   !!   - detection: group, origin and frame against pyscf. The frame is compared up
+   !!     to the sign of each axis. Three kinds: (1) all three axes must equal
+   !!     pyscf's (everything deterministic in pyscf's search); (2) only z (linear
+   !!     molecules: pyscf takes x and y from LAPACK, arbitrary in the plane); (3) the
+   !!     two frames are related by an operation of the molecule (NH3 rotated:
+   !!     `search_mirrorx` picks one of three equivalent mirrors from the sign of
+   !!     LAPACK's unique axis), checked by comparing the atoms in the two frames.
+   !!     The labels and SO dimensions of two such frames are the same;
+   !!   - the symmetrised geometry is invariant under every operation to 1e-14;
+   !!   - SO dimensions per irrep (cart 6-31G*, sph cc-pVDZ) against pyscf; for the
+   !!     linear molecules and atoms pyscf's anchor is the Abelian group requested on
+   !!     the aligned file (the spherical basis would use Dooh/Coov/SO3 irreps);
+   !!     U^T U = I, U^T S U and U^T H U block-diagonal to 1e-12;
+   !!   - THE CENTRAL ORACLE (symmetry vs C1 on the symmetrised geometry) for RHF,
+   !!     UHF (NH3+, O2 triplet, O atom) and B3LYP (NH3, grid level 5), electrons per
+   !!     irrep and orbital energies per irrep against pyscf (the O atom: the sorted
+   !!     orbital energies only, since which degenerate p orbital the beta electron
+   !!     takes is arbitrary);
+   !!   - requested subgroups C2v and Cs of benzene, in pyscf's frame;
+   !!   - the symmetrised gradient; `auto` and explicit group choice.
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use pic_ascii, only: to_lower

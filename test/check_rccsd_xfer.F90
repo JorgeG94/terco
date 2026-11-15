@@ -1,16 +1,16 @@
-!
-! The staging array of the RI-CCSD transfers (trc_rccsd_xfer), as a test-drive suite: `init` accepts a size whose
-! full amplitudes o^2 v^2 and packed half fit a default integer and sizes the half as N (N + 1)/2, N = o v; it
-! refuses a size whose packed half fits but whose full amplitudes do not (o = 50000, v = 1: N (N + 1)/2 = 1.25e9 <
-! 2^31 - 1 < N^2 = 2.5e9, which the kernels index with default integers), and one so large that N^2 itself overflows
-! 64 bits (o = v = 2^31 - 1), without allocating. WHAT THIS PINS: both refusals, and that a
-! refused init leaves nothing allocated. It does not prove the old guard wrong: on code that checked only the packed
-! half the o = 50000 case would try to allocate 10 GB and pass or fail depending on whether that succeeds, and for
-! o = v = 2^31 - 1 a guard that forms N^2 overflows 64 bits (a wrapped value that happens to compare small would
-! slip through, which is undefined, not measured). With the guard as written (N > huge/N) both are refused in
-! constant time whatever the allocator does.
-!
 module check_rccsd_xfer_suite
+   !!
+   !! The staging array of the RI-CCSD transfers (trc_rccsd_xfer), as a test-drive suite: `init` accepts a size whose
+   !! full amplitudes o^2 v^2 and packed half fit a default integer and sizes the half as N (N + 1)/2, N = o v; it
+   !! refuses a size whose packed half fits but whose full amplitudes do not (o = 50000, v = 1: N (N + 1)/2 = 1.25e9 <
+   !! 2^31 - 1 < N^2 = 2.5e9, which the kernels index with default integers), and one so large that N^2 itself overflows
+   !! 64 bits (o = v = 2^31 - 1), without allocating. WHAT THIS PINS: both refusals, and that a
+   !! refused init leaves nothing allocated. It does not prove the old guard wrong: on code that checked only the packed
+   !! half the o = 50000 case would try to allocate 10 GB and pass or fail depending on whether that succeeds, and for
+   !! o = v = 2^31 - 1 a guard that forms N^2 overflows 64 bits (a wrapped value that happens to compare small would
+   !! slip through, which is undefined, not measured). With the guard as written (N > huge/N) both are refused in
+   !! constant time whatever the allocator does.
+   !!
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_rccsd_xfer, only: trc_rccsd_xfer_t
    implicit none

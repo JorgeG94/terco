@@ -1,20 +1,20 @@
-!
-! The CLI's "timings" and "build" objects in --json (docs/sphinx/output.md):
-! which keys a run writes for which options, that every value is finite and
-! positive where it must be, that the stage times nest the way the stages
-! do (total wall >= SCF wall >= the Fock builds), and that the counts agree
-! with the summary's own "iterations". The values are wall times, so
-! nothing here pins a number: only relations that hold on any machine.
-!
-! The build timings are checked against an independent source: the per-
-! iteration "fock(s)" column that a non-silent run prints (the same timer read
-! through the logger's own formatting, 3 decimals). What stays untestable on
-! the host: that each timer stops only after the DEVICE has finished the
-! build (a host build is synchronous); that is for a GPU run to show.
-!
-! A test-drive suite.
-!
 module check_cli_timings_suite
+   !!
+   !! The CLI's "timings" and "build" objects in --json (docs/sphinx/output.md):
+   !! which keys a run writes for which options, that every value is finite and
+   !! positive where it must be, that the stage times nest the way the stages
+   !! do (total wall >= SCF wall >= the Fock builds), and that the counts agree
+   !! with the summary's own "iterations". The values are wall times, so
+   !! nothing here pins a number: only relations that hold on any machine.
+   !!
+   !! The build timings are checked against an independent source: the per-
+   !! iteration "fock(s)" column that a non-silent run prints (the same timer read
+   !! through the logger's own formatting, 3 decimals). What stays untestable on
+   !! the host: that each timer stops only after the DEVICE has finished the
+   !! build (a host build is synchronous); that is for a GPU run to show.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite

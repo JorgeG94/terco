@@ -1,67 +1,67 @@
-!
-! The skeleton Fock build's SIZE RULE (trc_sym_run's sym_run_skeleton_size_rule,
-! read through sym_run_skeleton_mode and applied by trc_scf_run): which symmetric
-! runs build the Fock matrix from the orbit representatives and which build it
-! in full and symmetrize it afterwards.
-!
-! WHAT IS PINNED. The rule is "at least two atoms per symmetry-inequivalent
-! atom", so the counts it reads are part of it: this test pins the atom and
-! orbit counts of the four systems its comment was measured on (tops_sf6,
-! benzene, naphthalene_d2h, pentacene_d2h) and of the two other D2h molecules
-! of the suite, together with the verdict for each. Detection alone, no basis
-! and no integrals, so it is cheap.
-!
-! AND WHAT THE RULE DECIDES FOR EVERY OTHER SYMMETRY ORACLE. The rule also
-! silently settles which Fock build each per-group SCF oracle exercises, so
-! `test_oracle_molecules` pins its verdict for every molecule those oracles
-! run, group by group. See that routine's comment.
-!
-! AND THAT DECLINING CHANGES NOTHING BUT THE WORK. Three molecules are run
-! with the rule in charge, with the skeleton build forced on and with it
-! forced off: HOCl (declined, 3 atoms in 3 orbits -- a planar Cs molecule has
-! no atom orbit bigger than one), B2H6 (accepted, 8 atoms in 3 orbits) and
-! SF6 (declined, 7 atoms in 4 orbits, the rule's own measured loss and the
-! only case here with degenerate levels). The energy, the orbital energies,
-! the density, the irrep decomposition, the dropped-function count and the
-! iteration count must agree across the three.
-!
-! WHAT "THE SAME IRREP LABELS" MEANS, AND WHY IT IS NOT PER-ORBITAL. The two
-! Fock builds accumulate G in a different order, so an orbital energy moves in
-! its last bits, and `trc_sym_scf`'s energy merge then breaks a near-tie
-! between degenerate partners the other way round. Measured here on SF6
-! (cc-pVDZ, D2h, 102 orbitals): 18 of 102 entries move, as 9 TRANSPOSITIONS,
-! each one between two orbitals whose energies agree to ~1e-13 Eh. (SF6 in D2h
-! has twofold and threefold degenerate levels, and a transposition inside a
-! threefold level leaves its third member alone, so the count of transpositions
-! is not a count of levels.) That is pre-existing between the two paths and is
-! not a defect -- src/api/trc_capi.F90's 1.25 note documents it -- so a
-! per-orbital label comparison is not an invariant of the Fock path and must
-! not be asserted as one.
-!
-! What IS invariant is the irrep DECOMPOSITION: the multiset of labels
-! inside each degenerate block, which `irrep_blocks_agree` compares. On a
-! non-degenerate level that block has one member and the check reduces to the
-! per-orbital label, so a genuine relabelling is still caught wherever the
-! label is determined; summed over blocks it is the per-irrep orbital count.
-!
-! THE ENVIRONMENT OVERRIDE is tested by the ctest entries, which run this
-! program three times: without TRC_SYM_SKELETON, with 1 and with 0. The
-! expectations below follow whatever the environment says, so the override is
-! checked end to end, through the SCF and not only through the mode function.
-!
-! WHAT EACH ctest VARIANT CAN FAIL. Only `_auto` compares the two Fock builds:
-! there the forced runs take opposite paths and the agreement above is a real
-! two-path comparison. Under `_on` and `_off` the environment forces all three
-! runs onto one path, so their agreement is near-vacuous and is NOT what those
-! entries are for. What they pin, and can fail, is the override plumbing:
-! TRC_SYM_SKELETON must reach every run whatever that run requested, must
-! override a request to the contrary, and must leave the size rule unconsulted
-! (`sym_atom_orbits` = 0). The energy agreement across the three runs is also
-! not asserted bit-for-bit anywhere: see `run_three`.
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_skeleton_rule_suite
+   !!
+   !! The skeleton Fock build's SIZE RULE (trc_sym_run's sym_run_skeleton_size_rule,
+   !! read through sym_run_skeleton_mode and applied by trc_scf_run): which symmetric
+   !! runs build the Fock matrix from the orbit representatives and which build it
+   !! in full and symmetrize it afterwards.
+   !!
+   !! WHAT IS PINNED. The rule is "at least two atoms per symmetry-inequivalent
+   !! atom", so the counts it reads are part of it: this test pins the atom and
+   !! orbit counts of the four systems its comment was measured on (tops_sf6,
+   !! benzene, naphthalene_d2h, pentacene_d2h) and of the two other D2h molecules
+   !! of the suite, together with the verdict for each. Detection alone, no basis
+   !! and no integrals, so it is cheap.
+   !!
+   !! AND WHAT THE RULE DECIDES FOR EVERY OTHER SYMMETRY ORACLE. The rule also
+   !! silently settles which Fock build each per-group SCF oracle exercises, so
+   !! `test_oracle_molecules` pins its verdict for every molecule those oracles
+   !! run, group by group. See that routine's comment.
+   !!
+   !! AND THAT DECLINING CHANGES NOTHING BUT THE WORK. Three molecules are run
+   !! with the rule in charge, with the skeleton build forced on and with it
+   !! forced off: HOCl (declined, 3 atoms in 3 orbits -- a planar Cs molecule has
+   !! no atom orbit bigger than one), B2H6 (accepted, 8 atoms in 3 orbits) and
+   !! SF6 (declined, 7 atoms in 4 orbits, the rule's own measured loss and the
+   !! only case here with degenerate levels). The energy, the orbital energies,
+   !! the density, the irrep decomposition, the dropped-function count and the
+   !! iteration count must agree across the three.
+   !!
+   !! WHAT "THE SAME IRREP LABELS" MEANS, AND WHY IT IS NOT PER-ORBITAL. The two
+   !! Fock builds accumulate G in a different order, so an orbital energy moves in
+   !! its last bits, and `trc_sym_scf`'s energy merge then breaks a near-tie
+   !! between degenerate partners the other way round. Measured here on SF6
+   !! (cc-pVDZ, D2h, 102 orbitals): 18 of 102 entries move, as 9 TRANSPOSITIONS,
+   !! each one between two orbitals whose energies agree to ~1e-13 Eh. (SF6 in D2h
+   !! has twofold and threefold degenerate levels, and a transposition inside a
+   !! threefold level leaves its third member alone, so the count of transpositions
+   !! is not a count of levels.) That is pre-existing between the two paths and is
+   !! not a defect -- src/api/trc_capi.F90's 1.25 note documents it -- so a
+   !! per-orbital label comparison is not an invariant of the Fock path and must
+   !! not be asserted as one.
+   !!
+   !! What IS invariant is the irrep DECOMPOSITION: the multiset of labels
+   !! inside each degenerate block, which `irrep_blocks_agree` compares. On a
+   !! non-degenerate level that block has one member and the check reduces to the
+   !! per-orbital label, so a genuine relabelling is still caught wherever the
+   !! label is determined; summed over blocks it is the per-irrep orbital count.
+   !!
+   !! THE ENVIRONMENT OVERRIDE is tested by the ctest entries, which run this
+   !! program three times: without TRC_SYM_SKELETON, with 1 and with 0. The
+   !! expectations below follow whatever the environment says, so the override is
+   !! checked end to end, through the SCF and not only through the mode function.
+   !!
+   !! WHAT EACH ctest VARIANT CAN FAIL. Only `_auto` compares the two Fock builds:
+   !! there the forced runs take opposite paths and the agreement above is a real
+   !! two-path comparison. Under `_on` and `_off` the environment forces all three
+   !! runs onto one path, so their agreement is near-vacuous and is NOT what those
+   !! entries are for. What they pin, and can fail, is the override plumbing:
+   !! TRC_SYM_SKELETON must reach every run whatever that run requested, must
+   !! override a request to the contrary, and must leave the size rule unconsulted
+   !! (`sym_atom_orbits` = 0). The energy agreement across the three runs is also
+   !! not asserted bit-for-bit anywhere: see `run_three`.
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use pic_sorting, only: sort

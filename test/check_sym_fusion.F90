@@ -1,79 +1,79 @@
-!
-! Weighted-segment fusion in the bin Fock launch (W2): ONE LAUNCH PER (class, mask).
-!
-! The skeleton plan's segments carry a weight -- the bra pairs' orbit size,
-! halved on a diagonal bin pair, so a multiple of one half. The weight used to
-! be folded into the launch scalars (`jf = launch%jfac*wt`), which forced
-! `binkernel_fock_bins` to break its class run wherever the weight changed:
-! one launch per (class, mask, WEIGHT). W2 made it a per-segment `real(dp)`
-! array (`plan%sW`) that the kernels read at digestion and dropped the
-! `plan%sW(c1 + 1) /= wt` exit, taking a steady-state Fock build from 85 to 33
-! launches on benzene, 88 -> 36 naphthalene, 90 -> 36 pentacene and 218 -> 72
-! on SF6.
-!
-! `check_sym_fock` is the oracle for the NUMBERS, and it pins `eri%nwork` --
-! which quartets run, something fusion does not change. Nothing pinned the
-! fusion. A change that reintroduced a per-weight split would keep every
-! energy and every quartet count right and silently hand back the whole
-! performance gain. This check is that pin, and it is structural rather than a
-! literal 33/36/36/72: it rebuilds the plan the launcher built, counts the
-! distinct (class, mask) groups in it, and asserts
-!
-!     eri%nlaunch == the number of distinct (class, mask) groups,
-!
-! i.e. that no group was split any further. The literals would be fragile
-! against the bin split, the pair sort and the basis; the invariant is not,
-! and it is what "fused" means.
-!
-! The counts come from the plan and not from an instrumented engine because
-! `binkernel_fock_bins` releases its plan before it returns. The plan is
-! reproducible from the engine's own state -- `build_skeleton`/`build` read
-! the bins, the orbits, the threshold and `quartets%bin_pbase` and nothing
-! else (the full plan's bin-level density screen is off on this path:
-! `launch%use_density` is never set), so this file builds the same plan with
-! the same two calls the launcher makes, in the same order, AFTER the Fock
-! build, by which time the engine's one-time pair resort (TRC_BIN_SORT) has
-! already settled the bins.
-!
-! Each case also asserts the invariant is not VACUOUS: the skeleton plan must
-! hold more distinct (class, mask, weight) triples than (class, mask) groups,
-! which is exactly the count the pre-W2 launcher would have reached. Without
-! it a test that no group is split passes trivially on a plan with one weight
-! per group.
-!
-! Covered per molecule: the skeleton plan with parity skipping as the
-! environment leaves it (masked groups split by `sM`), the skeleton plan with
-! parity skipping off (every mask 0, so a group is a bare class), and the
-! FULL plan, which has no weights at all and whose launcher fills `plan%sW`
-! with ones rather than branch in the kernels -- that path must be fused too.
-!
-! Molecules: water C2v, B2H6 D2h and benzene (D6h detected as D2h), cc-pVDZ,
-! on a zero density so that no integral is evaluated (the plan is built and
-! launched; every quartet then fails the kernels' density screen). Measured on
-! this host build, skeleton groups against the triples the pre-W2 launcher
-! would have launched: water 36 against 71, B2H6 63 against 168 (33 against
-! 101 with the masks off), benzene 32 against 82. The whole file runs in under
-! a second, because nothing is evaluated.
-!
-! `nlaunch` AND HIGHER LMAX: `launch_classes` does `nl = nl + 1` before the
-! `if (mdg_routes(key))` branch that issues no kernel at all, so the counter
-! counts a group whose class is routed to the MD exchange pass (trc_mdg). That
-! makes `nlaunch` an overcount of the real kernel launches for any basis with
-! g shells, and it would ALSO break the identity asserted here if the
-! increment were ever moved after the branch. Both are kept out of the way by
-! asserting that no class of these plans routes at all: cc-pVDZ for H, B, C
-! and O reaches d, so no class key carries an l of 4 whatever TERCO_LMAX is,
-! and the check on `nrouted` says so rather than leaving it to be assumed. A
-! g basis (water cc-pVQZ, as check_sym_fock_mdg uses) must not be added here
-! without deciding which of the two counts the assertion is about.
-!
-! TRC_LAUNCH_CAP re-splits a class run every `lcap` quartets. It is 0 by
-! default and no test, script or CI job sets it (W0 audited this), so the
-! cases below skip their assertions rather than model it if it is ever set.
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_fusion_suite
+   !!
+   !! Weighted-segment fusion in the bin Fock launch (W2): ONE LAUNCH PER (class, mask).
+   !!
+   !! The skeleton plan's segments carry a weight -- the bra pairs' orbit size,
+   !! halved on a diagonal bin pair, so a multiple of one half. The weight used to
+   !! be folded into the launch scalars (`jf = launch%jfac*wt`), which forced
+   !! `binkernel_fock_bins` to break its class run wherever the weight changed:
+   !! one launch per (class, mask, WEIGHT). W2 made it a per-segment `real(dp)`
+   !! array (`plan%sW`) that the kernels read at digestion and dropped the
+   !! `plan%sW(c1 + 1) /= wt` exit, taking a steady-state Fock build from 85 to 33
+   !! launches on benzene, 88 -> 36 naphthalene, 90 -> 36 pentacene and 218 -> 72
+   !! on SF6.
+   !!
+   !! `check_sym_fock` is the oracle for the NUMBERS, and it pins `eri%nwork` --
+   !! which quartets run, something fusion does not change. Nothing pinned the
+   !! fusion. A change that reintroduced a per-weight split would keep every
+   !! energy and every quartet count right and silently hand back the whole
+   !! performance gain. This check is that pin, and it is structural rather than a
+   !! literal 33/36/36/72: it rebuilds the plan the launcher built, counts the
+   !! distinct (class, mask) groups in it, and asserts
+   !!
+   !!     eri%nlaunch == the number of distinct (class, mask) groups,
+   !!
+   !! i.e. that no group was split any further. The literals would be fragile
+   !! against the bin split, the pair sort and the basis; the invariant is not,
+   !! and it is what "fused" means.
+   !!
+   !! The counts come from the plan and not from an instrumented engine because
+   !! `binkernel_fock_bins` releases its plan before it returns. The plan is
+   !! reproducible from the engine's own state -- `build_skeleton`/`build` read
+   !! the bins, the orbits, the threshold and `quartets%bin_pbase` and nothing
+   !! else (the full plan's bin-level density screen is off on this path:
+   !! `launch%use_density` is never set), so this file builds the same plan with
+   !! the same two calls the launcher makes, in the same order, AFTER the Fock
+   !! build, by which time the engine's one-time pair resort (TRC_BIN_SORT) has
+   !! already settled the bins.
+   !!
+   !! Each case also asserts the invariant is not VACUOUS: the skeleton plan must
+   !! hold more distinct (class, mask, weight) triples than (class, mask) groups,
+   !! which is exactly the count the pre-W2 launcher would have reached. Without
+   !! it a test that no group is split passes trivially on a plan with one weight
+   !! per group.
+   !!
+   !! Covered per molecule: the skeleton plan with parity skipping as the
+   !! environment leaves it (masked groups split by `sM`), the skeleton plan with
+   !! parity skipping off (every mask 0, so a group is a bare class), and the
+   !! FULL plan, which has no weights at all and whose launcher fills `plan%sW`
+   !! with ones rather than branch in the kernels -- that path must be fused too.
+   !!
+   !! Molecules: water C2v, B2H6 D2h and benzene (D6h detected as D2h), cc-pVDZ,
+   !! on a zero density so that no integral is evaluated (the plan is built and
+   !! launched; every quartet then fails the kernels' density screen). Measured on
+   !! this host build, skeleton groups against the triples the pre-W2 launcher
+   !! would have launched: water 36 against 71, B2H6 63 against 168 (33 against
+   !! 101 with the masks off), benzene 32 against 82. The whole file runs in under
+   !! a second, because nothing is evaluated.
+   !!
+   !! `nlaunch` AND HIGHER LMAX: `launch_classes` does `nl = nl + 1` before the
+   !! `if (mdg_routes(key))` branch that issues no kernel at all, so the counter
+   !! counts a group whose class is routed to the MD exchange pass (trc_mdg). That
+   !! makes `nlaunch` an overcount of the real kernel launches for any basis with
+   !! g shells, and it would ALSO break the identity asserted here if the
+   !! increment were ever moved after the branch. Both are kept out of the way by
+   !! asserting that no class of these plans routes at all: cc-pVDZ for H, B, C
+   !! and O reaches d, so no class key carries an l of 4 whatever TERCO_LMAX is,
+   !! and the check on `nrouted` says so rather than leaving it to be assumed. A
+   !! g basis (water cc-pVQZ, as check_sym_fock_mdg uses) must not be added here
+   !! without deciding which of the two counts the assertion is about.
+   !!
+   !! TRC_LAUNCH_CAP re-splits a class run every `lcap` quartets. It is 0 by
+   !! default and no test, script or CI job sets it (W0 audited this), so the
+   !! cases below skip their assertions rather than model it if it is ever set.
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

@@ -33,7 +33,7 @@ endif()
 
 add_executable(
   terco_cli
-  main.F90
+  ${PROJECT_SOURCE_DIR}/app/main.F90
   trc_app.F90
   trc_run.F90
   trc_run_report.F90
@@ -104,7 +104,7 @@ target_compile_definitions(
 # pic-mpi: the CLI initialises and finalises MPI, and asks for the world
 # communicator's Fortran handle, itself (app/main.F90) -- the library only
 # ever sees the handle trc_set_comm hands it.
-# toml-f reads the TOML input files (app/trc_run_input.F90); only the CLI
+# toml-f reads the TOML input files (src/cli/trc_run_input.F90); only the CLI
 # links it.
 find_package("toml-f" REQUIRED)
 target_link_libraries(terco_cli PRIVATE ${main_lib} pic::pic pic-mpi::pic-mpi toml-f::toml-f)
@@ -379,7 +379,7 @@ if(TERCO_ENABLE_TESTING)
     COMMAND
       ${CMAKE_COMMAND} -DTERCO=$<TARGET_FILE:terco_cli> -DXYZ=${_xyz}/water.xyz
       -DWORK=${CMAKE_CURRENT_BINARY_DIR}/cli_restart -P
-      ${CMAKE_CURRENT_SOURCE_DIR}/cli_restart_check.cmake)
+      ${PROJECT_SOURCE_DIR}/test/cli_restart_check.cmake)
   set_tests_properties(terco/cli_restart PROPERTIES ENVIRONMENT "${_env}"
                                                     PASS_REGULAR_EXPRESSION "restart: RI-MP2 identical")
 
@@ -409,11 +409,11 @@ if(TERCO_ENABLE_TESTING)
       add_test(
         NAME terco/cli_mpi
         COMMAND
-          ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/cli_mpi_check.py
+          ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/test/cli_mpi_check.py
           ${_cli_mpiexec} ${_cli_npflag} $<TARGET_FILE:terco_cli> ${_xyz}/water.xyz
           ${PROJECT_SOURCE_DIR}/test/basis_sets ${_xyz}/nh2.xyz)
       set_tests_properties(terco/cli_mpi PROPERTIES WORKING_DIRECTORY
-                                                     ${CMAKE_CURRENT_SOURCE_DIR}
+                                                     ${PROJECT_SOURCE_DIR}/app
                                                      TIMEOUT 900)
     endif()
     unset(_cli_mpiexec)

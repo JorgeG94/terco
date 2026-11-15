@@ -1,24 +1,24 @@
-!
-! The C ABI's RI-MP2 energy when a gradient follows: trc_run_rimp2 then
-! trc_run_gradient must not run the separate energy step (trc_run_rimp2
-! defers the pair energies on one rank, and the gradient fills them from
-! its own amplitudes), and what trc_rimp2_energy and trc_energy then report
-! must be what an energy-only handle reports -- trc_rimp2_run's E_os and
-! E_ss -- to 1e-12. Three references: the exact four-centre SCF, a --df SCF
-! over def2-universal-jkfit (the energy's own B fitted separately), and a
-! --df SCF whose fit is RI-MP2's own auxiliary set (the energy chained off
-! the SCF's B, trc_capi.F90's packed_b path), all water/cc-pVDZ/cc-pVDZ-
-! RIFIT with the elements' frozen core.
-!
-! "Did not run" is read off the verbose log: the energy step's own table
-! (trc_rimp2_run's "rimp2:" lines) is in an energy-only handle's log and
-! absent from the gradient handle's, which has the gradient's own
-! ("rimp2 grad:") instead.
-!
-! Argument: a scratch directory for the logs (default: the working one).
-! A test-drive suite.
-!
 module check_capi_rimp2_grad_suite
+   !!
+   !! The C ABI's RI-MP2 energy when a gradient follows: trc_run_rimp2 then
+   !! trc_run_gradient must not run the separate energy step (trc_run_rimp2
+   !! defers the pair energies on one rank, and the gradient fills them from
+   !! its own amplitudes), and what trc_rimp2_energy and trc_energy then report
+   !! must be what an energy-only handle reports -- trc_rimp2_run's E_os and
+   !! E_ss -- to 1e-12. Three references: the exact four-centre SCF, a --df SCF
+   !! over def2-universal-jkfit (the energy's own B fitted separately), and a
+   !! --df SCF whose fit is RI-MP2's own auxiliary set (the energy chained off
+   !! the SCF's B, trc_capi.F90's packed_b path), all water/cc-pVDZ/cc-pVDZ-
+   !! RIFIT with the elements' frozen core.
+   !!
+   !! "Did not run" is read off the verbose log: the energy step's own table
+   !! (trc_rimp2_run's "rimp2:" lines) is in an energy-only handle's log and
+   !! absent from the gradient handle's, which has the gradient's own
+   !! ("rimp2 grad:") instead.
+   !!
+   !! Argument: a scratch directory for the logs (default: the working one).
+   !! A test-drive suite.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char
    use pic_types, only: dp
    use pic_logger, only: global_logger, verbose_level

@@ -1,11 +1,11 @@
-!
-! The collective calls of multi-rank RI-CCSD(T), in one place (module trc_rccsd_driver and trc_rccsd_triples
-! describe the scheme they serve). Every routine is collective over `comm`: all of its ranks call it, in the same
-! order. None is called without a communicator of more than one rank, so a one-rank run makes no MPI call.
-!
-! The per-iteration transfers (the amplitudes down, the partial ladders up) are in trc_rccsd_xfer; this module has the
-! small collectives and the host broadcast that ends a run.
 module trc_rccsd_mpi
+   !!
+   !! The collective calls of multi-rank RI-CCSD(T), in one place (module trc_rccsd_driver and trc_rccsd_triples
+   !! describe the scheme they serve). Every routine is collective over `comm`: all of its ranks call it, in the same
+   !! order. None is called without a communicator of more than one rank, so a one-rank run makes no MPI call.
+   !!
+   !! The per-iteration transfers (the amplitudes down, the partial ladders up) are in trc_rccsd_xfer; this module has the
+   !! small collectives and the host broadcast that ends a run.
    use pic_types, only: dp, int32
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_MIN
    implicit none

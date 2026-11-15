@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["vib_thermo_nh3_planar"] -> gen_vib_thermo
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 4ac20cb5a907e0ba4b49ceddf4536426e08904b929dc54e5ddc72838d4280312
+# hash: bce6a452a7bc206d72e8693e5d3d9977213a3ea34b4c2d9b885a5c20ed9025a0
 # files: test/basis_sets/sto-3g.json test/check_vib_thermo_vs_pyscf.F90 test/check_fd_hessian_vs_pyscf.F90
 # GRAD_NORM 1.358e-11
 NAT 4

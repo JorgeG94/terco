@@ -1,47 +1,47 @@
-!
-! The density-fitted (`--df`) analytic gradient (trc_scf_grad%trc_scf_gradient
-! with `dfjk`/`aux` present: trc_scf_grad_df's fitted J and K + trc_1e_gradient
-! + the XC term + nuclear repulsion) against a Richardson-extrapolated
-! central finite difference of terco's own FULLY RECONVERGED --df energy:
-! every displaced geometry rebuilds the orbital and jkfit bases, refits
-! (metric, Cholesky, (mu nu|P), B) and reconverges the SCF from scratch.
-!
-!   g_FD = (4 D(h/2) - D(h))/3,  D(h) = (E(+h) - E(-h))/(2h)
-!
-! cancels the O(h^2) truncation term of the plain central difference, so
-! what is left is the SCF's own convergence noise -- the same scheme as
-! metalquicha's check_df_ref_gradient.f90.
-!
-! RHF (fitted J and K), RKS PBE (fitted J only: K is skipped outright for a
-! pure functional) and RKS B3LYP (fitted J and K scaled by 0.2), water,
-! 6-31G*, def2-universal-jkfit (g auxiliary shells). Also checks
-! translational invariance of the analytic gradient alone (the XC term's
-! grid response is on, trc_scf_gradient's default, so the DFT cases are as
-! invariant as the RHF one).
-!
-! GATES, from the measured agreement (gfortran 15, CPU): |analytic - FD|
-! 1.4e-10 (RHF), 8.3e-11 (PBE), 8.4e-11 (B3LYP), at step 2e-3 bohr with the
-! SCF converged to 1e-12 Eh; invariance 1.8e-13 to 1.9e-13. The FD gate is
-! 1e-8 (the SCF's own 1e-12 Eh convergence over a 1e-3 bohr step is ~1e-9
-! of noise), the invariance gate 1e-10.
-!
-! `check_df_grad_fd formamide` runs RHF on formamide/cc-pVDZ instead (its own
-! ctest entry), the case whose pyscf comparison is limited by the fit's
-! conditioning (check_df_grad_vs_pyscf.F90's `tol`): this is the
-! pyscf-independent check of the same gradient. Measured 7.1e-10 against the
-! same 1e-8 gate, invariance 1.7e-12.
-!
-! NO INTERNAL PROCEDURES (see check_full_grad_fd.F90's header): the cases
-! are module procedures.
-!
-! SELF-SKIP: def2-universal-jkfit carries g auxiliary shells. A build whose
-! DF_LMAX_AUX ceiling is below g cannot fit anything, so run_case prints
-! "SKIP: ..." and `stop 0` the moment the first case discovers this --
-! before run_testsuite is even entered, exactly like check_nosym.F90's own
-! self-skip. ctest's SKIP_REGULAR_EXPRESSION (test/CMakeLists.txt) turns
-! that exit-0-with-nothing-checked into "Skipped", not "Passed".
-!
 module check_df_grad_fd_suite
+   !!
+   !! The density-fitted (`--df`) analytic gradient (trc_scf_grad%trc_scf_gradient
+   !! with `dfjk`/`aux` present: trc_scf_grad_df's fitted J and K + trc_1e_gradient
+   !! + the XC term + nuclear repulsion) against a Richardson-extrapolated
+   !! central finite difference of terco's own FULLY RECONVERGED --df energy:
+   !! every displaced geometry rebuilds the orbital and jkfit bases, refits
+   !! (metric, Cholesky, (mu nu|P), B) and reconverges the SCF from scratch.
+   !!
+   !!   g_FD = (4 D(h/2) - D(h))/3,  D(h) = (E(+h) - E(-h))/(2h)
+   !!
+   !! cancels the O(h^2) truncation term of the plain central difference, so
+   !! what is left is the SCF's own convergence noise -- the same scheme as
+   !! metalquicha's check_df_ref_gradient.f90.
+   !!
+   !! RHF (fitted J and K), RKS PBE (fitted J only: K is skipped outright for a
+   !! pure functional) and RKS B3LYP (fitted J and K scaled by 0.2), water,
+   !! 6-31G*, def2-universal-jkfit (g auxiliary shells). Also checks
+   !! translational invariance of the analytic gradient alone (the XC term's
+   !! grid response is on, trc_scf_gradient's default, so the DFT cases are as
+   !! invariant as the RHF one).
+   !!
+   !! GATES, from the measured agreement (gfortran 15, CPU): |analytic - FD|
+   !! 1.4e-10 (RHF), 8.3e-11 (PBE), 8.4e-11 (B3LYP), at step 2e-3 bohr with the
+   !! SCF converged to 1e-12 Eh; invariance 1.8e-13 to 1.9e-13. The FD gate is
+   !! 1e-8 (the SCF's own 1e-12 Eh convergence over a 1e-3 bohr step is ~1e-9
+   !! of noise), the invariance gate 1e-10.
+   !!
+   !! `check_df_grad_fd formamide` runs RHF on formamide/cc-pVDZ instead (its own
+   !! ctest entry), the case whose pyscf comparison is limited by the fit's
+   !! conditioning (check_df_grad_vs_pyscf.F90's `tol`): this is the
+   !! pyscf-independent check of the same gradient. Measured 7.1e-10 against the
+   !! same 1e-8 gate, invariance 1.7e-12.
+   !!
+   !! NO INTERNAL PROCEDURES (see check_full_grad_fd.F90's header): the cases
+   !! are module procedures.
+   !!
+   !! SELF-SKIP: def2-universal-jkfit carries g auxiliary shells. A build whose
+   !! DF_LMAX_AUX ceiling is below g cannot fit anything, so run_case prints
+   !! "SKIP: ..." and `stop 0` the moment the first case discovers this --
+   !! before run_testsuite is even entered, exactly like check_nosym.F90's own
+   !! self-skip. ctest's SKIP_REGULAR_EXPRESSION (test/CMakeLists.txt) turns
+   !! that exit-0-with-nothing-checked into "Skipped", not "Passed".
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

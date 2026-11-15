@@ -1,70 +1,70 @@
-!
-! --opt-connect (DL-FIND task 1011): after a saddle search, displace along
-! the imaginary mode both ways and minimise each to a downhill minimum.
-! Runs with BOTH --opt-saddle-method dimer and prfo, from
-! test/hcn_ts_guess.xyz, and checks the same things either way. P-RFO
-! used to crash INSIDE libdlfind itself -- confirmed with a debug
-! (-fcheck=all) build: a bad array copy at dlf_formstep.f90:2362
-! (`array(:)=tsmode_r(:)` in dlf_formstep_get_ra, called from
-! dlf_task.f90's task=1011 case right after the P-RFO TS sub-search
-! converges), because glob%xcoords2 is allocated only when the caller
-! supplies a second geometry, which --opt-connect never does, so task
-! 1011's own `xcoords2(:,:,1)=tsmode_r` wrote through an unallocated
-! array (the dimer method was unaffected because dlf_dimer allocates
-! xcoords2 for its own direction first). cmake/modules/Findlibdlfind.cmake's
-! pin now carries the fix (3c27977, allocating xcoords2/setting tcoords2
-! before task 1011 needs them) -- see app/trc_dlfind_bridge.F90's own
-! header for the detail.
-!
-! The dimer run passes a fixed --opt-seed: dlf_dimer.f90's own initial
-! direction is an unseeded random_number(glob%xcoords2) (dlf_dimer.f90:161),
-! so without this the run is OS-seeded and the number of rotation/
-! translation steps it takes to converge varies between runs -- a test
-! that can fail under `ctest -j` by chance. app/trc_dlfind_bridge.F90's
-! own trc_dlfind_optimize puts --opt-seed's value into the Fortran
-! intrinsic generator right before api_dl_find runs, which dlf_dimer.f90
-! then draws from.
-!
-! Runs the CLI with WORKING_DIRECTORY set to a scratch dir (not test/
-! itself): DL-FIND writes path.xyz/path_active.xyz/path_tsmode.xyz/
-! path_force.xyz unconditionally into its CWD once printf>=3 (dl-find.f90
-! -- confirmed by reading it; the condition is `printf`, not `printl`),
-! and a `connect` run needs printf=4 for the TS/minima callbacks to fire
-! at all. This check also asserts those files do NOT land in test/
-! itself.
-!
-! Validation: the two minima are HCN and HNC. Whichever is energetically
-! lower (HCN; opt_hcn.ref, -91.67520899058249 Eh) is checked against that
-! EXISTING anchor directly, since a connect run from this start should
-! land on the SAME HCN minimum --opt alone already validates there. The
-! higher one (HNC) is checked with --hessian for ZERO imaginary modes --
-! a genuine minimum, not a second saddle a bad connect run slid into.
-!
-! The TS sub-search's OWN convergence/gradient (trc_dlfind_bridge's own
-! fix: cb_put_coords snapshots these at switch 3, before the two downhill
-! minimisations run, rather than letting the LAST accepted evaluation
-! overall -- the second minimisation's own -- leak into
-! optimization.converged/final_gradient_max). test_ts_gradient_is_real
-! below cannot easily construct a run whose TS stage hits its own
-! --opt-maxiter while both minimisations still converge (this suite's own
-! HCN<->HNC case converges the TS in a handful of dimer steps, long
-! before either downhill run could matter), so it checks the next best
-! thing instead: recomputing the gradient at the REPORTED TS geometry
-! with a single --grad run and comparing maxval(abs(.)) to
-! optimization.final_gradient_max. Before the fix, that quantity was the
-! LAST downhill minimisation's own gmax against the TS's own geometry --
-! two unrelated numbers that would not have agreed to anywhere near this
-! tolerance. Checked for the dimer method only: measured, P-RFO's own
-! reported TS gmax and the recomputed one disagree by ~1.7e-7 Eh/Bohr,
-! over GRAD_RECOMPUTE_TOL -- plausibly the Angstrom xyz round-trip
-! (f20.12) landing in a sharper part of the surface near a P-RFO TS than
-! the dimer method's own, but not chased down further here; loosening
-! the tolerance to paper over it would hide a real mismatch if there is
-! one.
-!
-! A test-drive suite.
-!
 module check_opt_connect_suite
+   !!
+   !! --opt-connect (DL-FIND task 1011): after a saddle search, displace along
+   !! the imaginary mode both ways and minimise each to a downhill minimum.
+   !! Runs with BOTH --opt-saddle-method dimer and prfo, from
+   !! test/hcn_ts_guess.xyz, and checks the same things either way. P-RFO
+   !! used to crash INSIDE libdlfind itself -- confirmed with a debug
+   !! (-fcheck=all) build: a bad array copy at dlf_formstep.f90:2362
+   !! (`array(:)=tsmode_r(:)` in dlf_formstep_get_ra, called from
+   !! dlf_task.f90's task=1011 case right after the P-RFO TS sub-search
+   !! converges), because glob%xcoords2 is allocated only when the caller
+   !! supplies a second geometry, which --opt-connect never does, so task
+   !! 1011's own `xcoords2(:,:,1)=tsmode_r` wrote through an unallocated
+   !! array (the dimer method was unaffected because dlf_dimer allocates
+   !! xcoords2 for its own direction first). cmake/modules/Findlibdlfind.cmake's
+   !! pin now carries the fix (3c27977, allocating xcoords2/setting tcoords2
+   !! before task 1011 needs them) -- see app/trc_dlfind_bridge.F90's own
+   !! header for the detail.
+   !!
+   !! The dimer run passes a fixed --opt-seed: dlf_dimer.f90's own initial
+   !! direction is an unseeded random_number(glob%xcoords2) (dlf_dimer.f90:161),
+   !! so without this the run is OS-seeded and the number of rotation/
+   !! translation steps it takes to converge varies between runs -- a test
+   !! that can fail under `ctest -j` by chance. app/trc_dlfind_bridge.F90's
+   !! own trc_dlfind_optimize puts --opt-seed's value into the Fortran
+   !! intrinsic generator right before api_dl_find runs, which dlf_dimer.f90
+   !! then draws from.
+   !!
+   !! Runs the CLI with WORKING_DIRECTORY set to a scratch dir (not test/
+   !! itself): DL-FIND writes path.xyz/path_active.xyz/path_tsmode.xyz/
+   !! path_force.xyz unconditionally into its CWD once printf>=3 (dl-find.f90
+   !! -- confirmed by reading it; the condition is `printf`, not `printl`),
+   !! and a `connect` run needs printf=4 for the TS/minima callbacks to fire
+   !! at all. This check also asserts those files do NOT land in test/
+   !! itself.
+   !!
+   !! Validation: the two minima are HCN and HNC. Whichever is energetically
+   !! lower (HCN; opt_hcn.ref, -91.67520899058249 Eh) is checked against that
+   !! EXISTING anchor directly, since a connect run from this start should
+   !! land on the SAME HCN minimum --opt alone already validates there. The
+   !! higher one (HNC) is checked with --hessian for ZERO imaginary modes --
+   !! a genuine minimum, not a second saddle a bad connect run slid into.
+   !!
+   !! The TS sub-search's OWN convergence/gradient (trc_dlfind_bridge's own
+   !! fix: cb_put_coords snapshots these at switch 3, before the two downhill
+   !! minimisations run, rather than letting the LAST accepted evaluation
+   !! overall -- the second minimisation's own -- leak into
+   !! optimization.converged/final_gradient_max). test_ts_gradient_is_real
+   !! below cannot easily construct a run whose TS stage hits its own
+   !! --opt-maxiter while both minimisations still converge (this suite's own
+   !! HCN<->HNC case converges the TS in a handful of dimer steps, long
+   !! before either downhill run could matter), so it checks the next best
+   !! thing instead: recomputing the gradient at the REPORTED TS geometry
+   !! with a single --grad run and comparing maxval(abs(.)) to
+   !! optimization.final_gradient_max. Before the fix, that quantity was the
+   !! LAST downhill minimisation's own gmax against the TS's own geometry --
+   !! two unrelated numbers that would not have agreed to anywhere near this
+   !! tolerance. Checked for the dimer method only: measured, P-RFO's own
+   !! reported TS gmax and the recomputed one disagree by ~1.7e-7 Eh/Bohr,
+   !! over GRAD_RECOMPUTE_TOL -- plausibly the Angstrom xyz round-trip
+   !! (f20.12) landing in a sharper part of the surface near a P-RFO TS than
+   !! the dimer method's own, but not chased down further here; loosening
+   !! the tolerance to paper over it would hide a real mismatch if there is
+   !! one.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file
@@ -122,16 +122,16 @@ contains
       call test_connect_run('prfo', error)
    end subroutine test_connect_prfo
 
-   !
-   ! One --opt-connect run, method = 'dimer' or 'prfo', and every check
-   ! this file's own header describes. Run twice from the SAME work_dir
-   ! (sequentially, never concurrently, test-drive's own parallel=.false.
-   ! in the program below): each run's own CLI output names are the
-   ! geometry's basename, so the second run's files simply overwrite the
-   ! first's -- harmless, since every check against them happens right
-   ! after that run, before the next one starts.
-   !
    subroutine test_connect_run(method, error)
+      !!
+      !! One --opt-connect run, method = 'dimer' or 'prfo', and every check
+      !! this file's own header describes. Run twice from the SAME work_dir
+      !! (sequentially, never concurrently, test-drive's own parallel=.false.
+      !! in the program below): each run's own CLI output names are the
+      !! geometry's basename, so the second run's files simply overwrite the
+      !! first's -- harmless, since every check against them happens right
+      !! after that run, before the next one starts.
+      !!
       character(len=*), intent(in) :: method
       type(error_type), allocatable, intent(out) :: error
       character(len=:), allocatable :: cmd, seed_arg
@@ -287,18 +287,18 @@ contains
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_connect_run
 
-   !
-   ! Recomputes the gradient at the TS geometry test_connect_run just
-   ! read back (a fresh single-point --grad, same basis, same molecule,
-   ! atom order H/C/N as hcn_ts_guess.xyz) and compares maxval(abs(.)) to
-   ! optimization.final_gradient_max from that same run. Depends on
-   ! test_connect_run having already populated ts_xyz_angstrom/
-   ! ts_gmax_reported for whichever method ran immediately before it --
-   ! test-drive runs a module's tests in the order collect_opt_connect
-   ! lists them, not in parallel (run_testsuite's own parallel=.false. in
-   ! the program below).
-   !
    subroutine test_ts_gradient_is_real(error)
+      !!
+      !! Recomputes the gradient at the TS geometry test_connect_run just
+      !! read back (a fresh single-point --grad, same basis, same molecule,
+      !! atom order H/C/N as hcn_ts_guess.xyz) and compares maxval(abs(.)) to
+      !! optimization.final_gradient_max from that same run. Depends on
+      !! test_connect_run having already populated ts_xyz_angstrom/
+      !! ts_gmax_reported for whichever method ran immediately before it --
+      !! test-drive runs a module's tests in the order collect_opt_connect
+      !! lists them, not in parallel (run_testsuite's own parallel=.false. in
+      !! the program below).
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=:), allocatable :: cmd
       integer :: rc, u, ia
@@ -352,12 +352,12 @@ contains
       end if
    end subroutine test_ts_gradient_is_real
 
-   !
-   ! The lower-energy minimum must be HCN: opt_hcn.ref's own anchor
-   ! (test/pyscf_refs/README.md's two-tier scheme -- the SAME anchor
-   ! check_opt_vs_pyscf.F90 reads for a plain --opt run).
-   !
    subroutine check_hcn_side(method, e_hcn, nf)
+      !!
+      !! The lower-energy minimum must be HCN: opt_hcn.ref's own anchor
+      !! (test/pyscf_refs/README.md's two-tier scheme -- the SAME anchor
+      !! check_opt_vs_pyscf.F90 reads for a plain --opt run).
+      !!
       character(len=*), intent(in) :: method
       real(dp), intent(in) :: e_hcn
       integer, intent(inout) :: nf
@@ -377,11 +377,11 @@ contains
                       'anchor, Eh', abs(e_hcn - e_ref))
    end subroutine check_hcn_side
 
-   !
-   ! The higher-energy minimum (HNC) must be a genuine minimum: --hessian
-   ! on its own geometry shows zero imaginary modes.
-   !
    subroutine check_hnc_side(method, exe, wdir, side, nf)
+      !!
+      !! The higher-energy minimum (HNC) must be a genuine minimum: --hessian
+      !! on its own geometry shows zero imaginary modes.
+      !!
       character(len=*), intent(in) :: method, exe, wdir, side
       integer, intent(inout) :: nf
       character(len=:), allocatable :: cmd2

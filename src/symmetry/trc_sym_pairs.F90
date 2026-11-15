@@ -70,6 +70,7 @@ module trc_sym_pairs
    use pic_strings, only: to_string
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_basis_types, only: trc_basis_t
+   use trc_cart, only: cart_ncart_of
    use trc_sym_ao, only: trc_sym_ao_t
    use trc_sym_geom, only: trc_sym_geom_t
    implicit none
@@ -141,7 +142,7 @@ contains
       shell_of = 0
       do s = 1, nsh
          first(s) = merge(bas%sh_ao_sph(s), bas%sh_ao(s), ao%spherical)
-         c = merge(2*bas%sh_l(s) + 1, (bas%sh_l(s) + 1)*(bas%sh_l(s) + 2)/2, ao%spherical)
+         c = merge(2*bas%sh_l(s) + 1, cart_ncart_of(bas%sh_l(s)), ao%spherical)
          if (first(s) < 1 .or. first(s) + c - 1 > nao) then
             call error%set(ERROR_VALIDATION, "sym_pairs: shell "//to_string(s)//" lies outside the AO space")
             return

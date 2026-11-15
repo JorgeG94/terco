@@ -1,43 +1,43 @@
-!
-! Point group D2h (trc_sym_geom, trc_sym_ao, trc_sym_scf), the last Abelian
-! group. Molecules, with the source of each geometry in its .xyz comment line:
-!   c2h4_d2h          planar ethylene, general orientation, shifted
-!   c2h4_d2h_aligned  planar ethylene, axis-aligned (xy plane, C=C along x)
-!   naphthalene_d2h   planar naphthalene, axis-aligned (xy plane)
-!   b2h6_d2h          diborane, NONPLANAR (the bridging H atoms leave the BH2
-!                     plane), axis-aligned
-!   b2h6_d2h_rot      diborane, general orientation, shifted
-! Before the group was enabled a D2h molecule was capped to Cs with a
-! provisional principal-axis order that had never been checked against pyscf.
-!
-!   - detection: group D2h, the frame and origin as pyscf 2.14.0 gives them
-!     (`_symm_axes`, `_symm_orig`, read from sym_d2h.ref). pyscf names the D2h
-!     axes from the principal axes in ascending order of the second moment (no
-!     `alias_axes`, unlike D2), so the frame does not depend on LAPACK's
-!     eigenvector signs and no x/y exchange of the D2 kind can happen: the rows
-!     must equal pyscf's up to sign, for every molecule. For a planar molecule
-!     pyscf's `_adjust_planar_d2h` makes x the plane normal; checked here;
-!   - nonplanar B2H6: no mirror leaves every atom fixed, so the operations
-!     move atoms off every plane; planar molecules have exactly one mirror
-!     that fixes all atoms;
-!   - SALC: U^T U = I, U^T S U and U^T H U block-diagonal (<= 1e-12), S
-!     invariant under the signed permutations, the dimensions per irrep (Ag,
-!     B1g, B2g, B3g, Au, B1u, B2u, B3u) equal to pyscf `mol.symm_orb`; 6-31G*
-!     Cartesian and cc-pVDZ spherical; and (mode "f", `check_sym_d2h_f`, which
-!     prints SKIP when this build LMAX is below 3) the uncontracted l = 0..3 set;
-!   - THE CENTRAL ORACLE: symmetry vs C1 on the symmetrised geometry, RHF, UHF
-!     (the ethylene cation) and B3LYP at grid level 5, |dE| <= 1e-10 (HF) /
-!     1e-9 (DFT), orbital energies, density;
-!   - anchors (sym_d2h.ref): electrons per irrep and orbital energies per irrep;
-!   - gradient: symmetrised gradient equivariant and equal to C1, and the
-!     projection itself on an arbitrary (non-symmetric) gradient;
-!   - `symmetry = auto` and `symmetry = D2h` choose D2h; D2 is refused
-!     (pyscf has no D2 subgroup of D2h either).
-! The requested subgroups are in check_sym_d2h_subgroup.
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_d2h_suite
+   !!
+   !! Point group D2h (trc_sym_geom, trc_sym_ao, trc_sym_scf), the last Abelian
+   !! group. Molecules, with the source of each geometry in its .xyz comment line:
+   !!   c2h4_d2h          planar ethylene, general orientation, shifted
+   !!   c2h4_d2h_aligned  planar ethylene, axis-aligned (xy plane, C=C along x)
+   !!   naphthalene_d2h   planar naphthalene, axis-aligned (xy plane)
+   !!   b2h6_d2h          diborane, NONPLANAR (the bridging H atoms leave the BH2
+   !!                     plane), axis-aligned
+   !!   b2h6_d2h_rot      diborane, general orientation, shifted
+   !! Before the group was enabled a D2h molecule was capped to Cs with a
+   !! provisional principal-axis order that had never been checked against pyscf.
+   !!
+   !!   - detection: group D2h, the frame and origin as pyscf 2.14.0 gives them
+   !!     (`_symm_axes`, `_symm_orig`, read from sym_d2h.ref). pyscf names the D2h
+   !!     axes from the principal axes in ascending order of the second moment (no
+   !!     `alias_axes`, unlike D2), so the frame does not depend on LAPACK's
+   !!     eigenvector signs and no x/y exchange of the D2 kind can happen: the rows
+   !!     must equal pyscf's up to sign, for every molecule. For a planar molecule
+   !!     pyscf's `_adjust_planar_d2h` makes x the plane normal; checked here;
+   !!   - nonplanar B2H6: no mirror leaves every atom fixed, so the operations
+   !!     move atoms off every plane; planar molecules have exactly one mirror
+   !!     that fixes all atoms;
+   !!   - SALC: U^T U = I, U^T S U and U^T H U block-diagonal (<= 1e-12), S
+   !!     invariant under the signed permutations, the dimensions per irrep (Ag,
+   !!     B1g, B2g, B3g, Au, B1u, B2u, B3u) equal to pyscf `mol.symm_orb`; 6-31G*
+   !!     Cartesian and cc-pVDZ spherical; and (mode "f", `check_sym_d2h_f`, which
+   !!     prints SKIP when this build LMAX is below 3) the uncontracted l = 0..3 set;
+   !!   - THE CENTRAL ORACLE: symmetry vs C1 on the symmetrised geometry, RHF, UHF
+   !!     (the ethylene cation) and B3LYP at grid level 5, |dE| <= 1e-10 (HF) /
+   !!     1e-9 (DFT), orbital energies, density;
+   !!   - anchors (sym_d2h.ref): electrons per irrep and orbital energies per irrep;
+   !!   - gradient: symmetrised gradient equivariant and equal to C1, and the
+   !!     projection itself on an arbitrary (non-symmetric) gradient;
+   !!   - `symmetry = auto` and `symmetry = D2h` choose D2h; D2 is refused
+   !!     (pyscf has no D2 subgroup of D2h either).
+   !! The requested subgroups are in check_sym_d2h_subgroup.
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

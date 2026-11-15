@@ -1,31 +1,31 @@
-!
-! terco's --hessian, through the installed CLI binary (the SAME path
-! app/main.F90 drives: trc_run_hessian/trc_hessian, then trc_vib/
-! trc_thermo) against pyscf's own analytic RHF/STO-3G Hessian and
-! harmonic_analysis/thermo already in test/pyscf_refs/vib_thermo_water.ref
-! -- the same reference check_fd_hessian_vs_pyscf.F90 and
-! check_vib_thermo_vs_pyscf.F90 use, at the SAME geometry
-! (test/vib_thermo_water.xyz, Angstrom, copied verbatim from
-! generate.py's gen_vib_thermo literal).
-!
-! --symmetry-number 2 is passed explicitly: water's rotational symmetry
-! number (the .ref's own SIGMA) is 2, and the CLI's own default is 1
-! (never auto-detected, per --hessian's own warning) -- without this the
-! comparison is not wrong, it is a DIFFERENT, equally legitimate
-! calculation (sigma=1), which is exactly the point of requiring the flag.
-!
-! TOLERANCES. Measured 2026-10-22 (gfortran 15 host build): the CLI's
-! frequencies differ from pyscf's analytic ones by -0.061, +0.019, +0.016
-! cm^-1 -- the h = 0.005 Bohr finite-difference error, the same numbers
-! check_fd_hessian_vs_pyscf measures through the library; the electronic
-! energy agrees to 4e-13 Eh, so reading the geometry in Angstrom adds
-! nothing. FREQ_TOL is 2x the worst mode. ZPE, dE, dH, dG and G_tot carry
-! that error through half the sum of the frequency errors (6.7e-8 Eh
-! measured), hence ENERGY_TOL 1.5e-7.
-!
-! A test-drive suite with one unit test; every comparison still prints its
-! value through ref_report.
 module check_cli_hessian_suite
+   !!
+   !! terco's --hessian, through the installed CLI binary (the SAME path
+   !! app/main.F90 drives: trc_run_hessian/trc_hessian, then trc_vib/
+   !! trc_thermo) against pyscf's own analytic RHF/STO-3G Hessian and
+   !! harmonic_analysis/thermo already in test/pyscf_refs/vib_thermo_water.ref
+   !! -- the same reference check_fd_hessian_vs_pyscf.F90 and
+   !! check_vib_thermo_vs_pyscf.F90 use, at the SAME geometry
+   !! (test/vib_thermo_water.xyz, Angstrom, copied verbatim from
+   !! generate.py's gen_vib_thermo literal).
+   !!
+   !! --symmetry-number 2 is passed explicitly: water's rotational symmetry
+   !! number (the .ref's own SIGMA) is 2, and the CLI's own default is 1
+   !! (never auto-detected, per --hessian's own warning) -- without this the
+   !! comparison is not wrong, it is a DIFFERENT, equally legitimate
+   !! calculation (sigma=1), which is exactly the point of requiring the flag.
+   !!
+   !! TOLERANCES. Measured 2026-10-22 (gfortran 15 host build): the CLI's
+   !! frequencies differ from pyscf's analytic ones by -0.061, +0.019, +0.016
+   !! cm^-1 -- the h = 0.005 Bohr finite-difference error, the same numbers
+   !! check_fd_hessian_vs_pyscf measures through the library; the electronic
+   !! energy agrees to 4e-13 Eh, so reading the geometry in Angstrom adds
+   !! nothing. FREQ_TOL is 2x the worst mode. ZPE, dE, dH, dG and G_tot carry
+   !! that error through half the sum of the frequency errors (6.7e-8 Eh
+   !! measured), hence ENERGY_TOL 1.5e-7.
+   !!
+   !! A test-drive suite with one unit test; every comparison still prints its
+   !! value through ref_report.
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file
@@ -125,17 +125,17 @@ contains
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_cli
 
-   !
-   ! A double hybrid's --hessian (b2plyp/def2-SVP, def2-SVP-RIFIT): every
-   ! displaced gradient reruns the RI-MP2 (trc_run_hessian), and the
-   ! thermochemistry's electronic energy is the double-hybrid total the
-   ! Hessian is the second derivative of -- not the SCF part, 0.065 Eh
-   ! away. The Hessian itself is checked against second differences of that
-   ! energy by check_hessian_dh.F90; this is the CLI's reporting of it.
-   ! Refused outright before (the CLI exited with trc_run_hessian's
-   ! "RI-MP2 finite-difference Hessian is not implemented yet").
-   !
    subroutine test_cli_dh(error)
+      !!
+      !! A double hybrid's --hessian (b2plyp/def2-SVP, def2-SVP-RIFIT): every
+      !! displaced gradient reruns the RI-MP2 (trc_run_hessian), and the
+      !! thermochemistry's electronic energy is the double-hybrid total the
+      !! Hessian is the second derivative of -- not the SCF part, 0.065 Eh
+      !! away. The Hessian itself is checked against second differences of that
+      !! energy by check_hessian_dh.F90; this is the CLI's reporting of it.
+      !! Refused outright before (the CLI exited with trc_run_hessian's
+      !! "RI-MP2 finite-difference Hessian is not implemented yet").
+      !!
       type(error_type), allocatable, intent(out) :: error
       character(len=:), allocatable :: cmd, probe, probe_out
       integer :: rc, nfail, n_modes, n_imaginary
@@ -186,14 +186,14 @@ contains
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_cli_dh
 
-   !
-   ! vib_thermo_water.ref's own tags, in generate.py's write order, up to
-   ! and including the ones this check compares. pyscf_ref_io is a
-   ! strictly sequential reader, so every tag ahead of them is read too --
-   ! see check_vib_thermo_vs_pyscf.F90 for the full list this is a subset
-   ! of.
-   !
    subroutine read_water_ref(n_modes_ref, freq_ref, zpe_ref, de_ref, dh_ref, dg_ref, gtot_ref)
+      !!
+      !! vib_thermo_water.ref's own tags, in generate.py's write order, up to
+      !! and including the ones this check compares. pyscf_ref_io is a
+      !! strictly sequential reader, so every tag ahead of them is read too --
+      !! see check_vib_thermo_vs_pyscf.F90 for the full list this is a subset
+      !! of.
+      !!
       integer, intent(out) :: n_modes_ref
       real(dp), allocatable, intent(out) :: freq_ref(:)
       real(dp), intent(out) :: zpe_ref, de_ref, dh_ref, dg_ref, gtot_ref

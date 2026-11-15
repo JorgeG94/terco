@@ -1,42 +1,42 @@
-!
-! The particle-particle ladder of RI-CCSD(T) and its t1 dressing
-! (src/post_hf/ccsd/trc_rccsd_ladder.F90) against the DF-RCCSD of pyscf, on a water and
-! on a C1 hydrogen peroxide, cc-pVDZ with cc-pVDZ-RIFIT, spherical, frozen core 1 and 2
-! (the molecules, SCF and probes of check_rccsd_ints, shared through rccsd_test_support).
-!
-! The amplitudes are the FIXED, unconverged ones test/pyscf_refs/generate.py
-! (gen_rccsd_ints) probes: t2 = MP2, t1_ia = (0.03 x + 0.02 y + 0.01 z)_ia / (e_i - e_a).
-! The reference holds three oovv tensors, each as the sign-invariant 4-index probes |A|,
-! sum A X_pq Y_rs, sum A X_pr Z_qs, sum A Y_ps Z_qr:
-!   P_ladder     pyscf's mycc._add_vvvv(t1, t2, eris) = sum_cd (ac|bd) tau(i,j,c,d), UNDRESSED
-!   P_ladder_w   the einsum('abcd,ijcd->ijab', cc_Wvvvv, tau) of update_amps = ladder + dressing
-!   P_dressing   the two ovvv terms of cc_Wvvvv contracted with tau
-!
-! Cases, per molecule (each form = the assembled one, the direct one and the half one, the
-! last on both of its paths: `tau_symmetric` true, one contraction, and false, two):
-!   1 ladder, ladder + dressing and dressing probes against the reference, every form
-!   2 assembled == direct == half (both paths), elementwise
-!   3 independence of the batch sizes: assembled cd_batch 1, 7, all; direct p_batch 1, 5, all;
-!     half d_batch 1, 2, 3, all on both paths; dressing virtual_batch 1, 3, all
-!   4 every form and the dressing against host loops written from the einsums (explicit
-!     (ac|bd) from b_vv, explicit Wvvvv dressing terms, no helper of the module)
-!   5 t1 = 0: the dressing is exactly zero and the ladder is the t2-only host form
-!   6 R(i,j,a,b) = R(j,i,b,a) (t2 = MP2 has the symmetry), and the i<->j swap alone does not
-!   7 refusals: empty integrals, mismatched sizes, a missing scratch, result or tau, a scratch of other
-!     (no, nv), bad options, then a stale scratch after a second `ints%build` (status set, message
-!     non-empty, nothing written; after re-init the earlier numbers come back)
-!   9 the SHARES of the ladder over ranks (trc_rccsd_share, no MPI): the rule's ranges are contiguous, disjoint, cover
-!     1..nv, are the same on every call, balance the counted flops and leave the first rank an empty range when its other
-!     work alone is more than an equal share; and the half form run range by range (ls%d_lo, d_hi), the partial
-!     arrays added, then the t1 t1 correction once, gives the one-range numbers to TOL_BATCH on both paths
-!     (symmetric and general), for the rule's ranges at 2, 3, 4 and nv + 3 ranks and for a hand-made cut with an
-!     empty range in the middle
-!   8 a deliberately NON-symmetric tau (t2 scaled by 1 + (i - j)/(4 no)): assembled, direct and the
-!     general half path give the host ladder of that tau at every d_batch; the symmetric half path
-!     gives the host ladder of the symmetrised tau and visibly differs from the true one (the
-!     reason `tau_symmetric` is an explicit argument)
-!
 module check_rccsd_ladder_suite
+   !!
+   !! The particle-particle ladder of RI-CCSD(T) and its t1 dressing
+   !! (src/post_hf/ccsd/trc_rccsd_ladder.F90) against the DF-RCCSD of pyscf, on a water and
+   !! on a C1 hydrogen peroxide, cc-pVDZ with cc-pVDZ-RIFIT, spherical, frozen core 1 and 2
+   !! (the molecules, SCF and probes of check_rccsd_ints, shared through rccsd_test_support).
+   !!
+   !! The amplitudes are the FIXED, unconverged ones test/pyscf_refs/generate.py
+   !! (gen_rccsd_ints) probes: t2 = MP2, t1_ia = (0.03 x + 0.02 y + 0.01 z)_ia / (e_i - e_a).
+   !! The reference holds three oovv tensors, each as the sign-invariant 4-index probes |A|,
+   !! sum A X_pq Y_rs, sum A X_pr Z_qs, sum A Y_ps Z_qr:
+   !!   P_ladder     pyscf's mycc._add_vvvv(t1, t2, eris) = sum_cd (ac|bd) tau(i,j,c,d), UNDRESSED
+   !!   P_ladder_w   the einsum('abcd,ijcd->ijab', cc_Wvvvv, tau) of update_amps = ladder + dressing
+   !!   P_dressing   the two ovvv terms of cc_Wvvvv contracted with tau
+   !!
+   !! Cases, per molecule (each form = the assembled one, the direct one and the half one, the
+   !! last on both of its paths: `tau_symmetric` true, one contraction, and false, two):
+   !!   1 ladder, ladder + dressing and dressing probes against the reference, every form
+   !!   2 assembled == direct == half (both paths), elementwise
+   !!   3 independence of the batch sizes: assembled cd_batch 1, 7, all; direct p_batch 1, 5, all;
+   !!     half d_batch 1, 2, 3, all on both paths; dressing virtual_batch 1, 3, all
+   !!   4 every form and the dressing against host loops written from the einsums (explicit
+   !!     (ac|bd) from b_vv, explicit Wvvvv dressing terms, no helper of the module)
+   !!   5 t1 = 0: the dressing is exactly zero and the ladder is the t2-only host form
+   !!   6 R(i,j,a,b) = R(j,i,b,a) (t2 = MP2 has the symmetry), and the i<->j swap alone does not
+   !!   7 refusals: empty integrals, mismatched sizes, a missing scratch, result or tau, a scratch of other
+   !!     (no, nv), bad options, then a stale scratch after a second `ints%build` (status set, message
+   !!     non-empty, nothing written; after re-init the earlier numbers come back)
+   !!   9 the SHARES of the ladder over ranks (trc_rccsd_share, no MPI): the rule's ranges are contiguous, disjoint, cover
+   !!     1..nv, are the same on every call, balance the counted flops and leave the first rank an empty range when its other
+   !!     work alone is more than an equal share; and the half form run range by range (ls%d_lo, d_hi), the partial
+   !!     arrays added, then the t1 t1 correction once, gives the one-range numbers to TOL_BATCH on both paths
+   !!     (symmetric and general), for the rule's ranges at 2, 3, 4 and nv + 3 ranks and for a hand-made cut with an
+   !!     empty range in the middle
+   !!   8 a deliberately NON-symmetric tau (t2 scaled by 1 + (i - j)/(4 no)): assembled, direct and the
+   !!     general half path give the host ladder of that tau at every d_batch; the symmetric half path
+   !!     gives the host ladder of the symmetrised tau and visibly differs from the true one (the
+   !!     reason `tau_symmetric` is an explicit argument)
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -1163,9 +1163,8 @@ contains
       call ints2%release()
    end subroutine other_scratch
 
-   ! ---- independent host references -----------------------------------------------------------
-
    subroutine host_t2(ints, t2)
+      !! ---- independent host references -----------------------------------------------------------
       !! t2(i,j,a,b) = (ia|jb) / (e_i + e_j - e_a - e_b)
       type(trc_rccsd_ints_t), intent(in) :: ints
       real(dp), allocatable, intent(out) :: t2(:, :, :, :)

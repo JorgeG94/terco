@@ -1,78 +1,78 @@
-!
-! Second-order SCF (`--soscf`, trc_scf_soscf.F90): a test-drive suite that
-! fails without the feature.
-!
-! 1. Water/6-31G*, RHF: DIIS alone and --soscf (DIIS, then a Newton
-!    handover) must land on the SAME energy, to 1e-9, which also matches
-!    pyscf independently -- `test/pyscf_refs/soscf.ref`'s own E_WATER
-!    (`test/pyscf_refs/generate.py CASES["soscf"]` -> `gen_soscf`,
-!    read here with `pyscf_ref_io`, never a literal): pyscf 2.14.0,
-!    RHF/6-31G* (cart=True), geometry test/water.xyz, basis
-!    test/basis_sets/6-31gs.json (bse_json_basis), conv_tol 1e-12,
-!    E = -76.0105049953126297 Eh.
-!
-! 2. O2- (an atomic dianion: a single O, 10 electrons restricted), aug2-
-!    cc-pVDZ (`d-aug-cc-pvdz.json`, `prune=.false.` -- the literal basis,
-!    matching check_scf_lindep_gap.F90's own reasoning), `lindep_thresh =
-!    0.1`: 10 Eh above its HOMO the dropped-function null shift keeps
-!    sound (check_scf_lindep_gap.F90's own test, at lindep 0.2, confirms
-!    that part independently), but at the LOOSER 0.1 threshold plain DIIS
-!    on this run lands on a HIGHER stationary point than the true minimum
-!    -- it does not fail to converge, it converges somewhere wrong. pyscf
-!    finds the true minimum from the same starting point by exactly the
-!    method this module ports -- `soscf.ref`'s own E_O2_ANION, from the
-!    SAME generator: `scf.addons.remove_linear_dep_(scf.RHF(mol),
-!    threshold=0.1, lindep=0.9)` (pyscf's own, always unit-diagonal-
-!    normalised dropping decision -- PR #172/fix/lindep-normalised-
-!    overlap brought `scf_context_orthogonalize`'s own decision in line
-!    with it, which is why this reference is now generated fresh against
-!    that fix rather than carried as a pre-fix literal), `.newton()`:
-!    E = -74.445149289824... Eh, converged (|g| 3.3e-7 at this subspace's
-!    own AH-solver floor, independently confirmed against
-!    check_scf_lindep_gap.F90's own threshold-0.2 case; the unit-diagonal
-!    and raw-S dropping decisions happen to coincide in COUNT at
-!    threshold 0.1 for this basis -- 1 mode either way -- which is why
-!    this number did not move across the fix, only got re-verified
-!    against it). Plain mf.kernel() (pyscf's own DIIS) on the SAME
-!    subspace does not reach it either -- the stalled, higher stationary
-!    point this module's own `--soscf` run has to escape from.
-!
-!    So: DIIS alone must NOT reach the pyscf minimum (it would not be
-!    testing anything otherwise); `--soscf` must.
-!
-! 3. An open shell (unrestricted) with `--soscf` is refused before a
-!    single iteration runs -- never run silently as plain DIIS. mqc's own
-!    backend (`mqc_czt_rhf.f90`) has no unrestricted second-order SCF, so
-!    this port does not invent one; `trc_scf_settings%resolve` refuses it.
-!
-! 4. The returned state after --soscf IS the converged state: Tr(D S) =
-!    nelec, D = 2 C_occ C_occ^T from the returned cmo, a fresh Fock build
-!    from the returned D reproduces res%energy and has a small commutator,
-!    eps is diag(C^T F C) for the returned C, and the analytic gradient
-!    after --soscf agrees with the one after plain DIIS on the same
-!    minimum (water) -- all of this failed before the fix in trc_scf_run's
-!    own tail (`scf_result%dmat = scf_state%dold` overwrote the SOSCF
-!    density with the pre-handover one; `scf_result%eps` was written on
-!    the host only, so a GPU build's own trailing `!$acc update
-!    self(...eps)` pulled the stale device copy straight back over it).
-!
-! 5. Backtracking rescales the step on every rejection (TRC_SOSCF_TRUST0
-!    forces an oversized starting trust radius, which used to retry the
-!    SAME unscaled step for every one of MAX_BACKTRACKS tries until trust
-!    happened to fall below the step's own size).
-!
-! 6. `scf_soscf_rotation_matrix`'s `exp(kappa)` stays orthogonal to
-!    machine precision at sizes the SCF path itself does not happen to
-!    exercise (a random antisymmetric kappa at 10 occupied x 200
-!    virtual, and a couple of other shapes).
-!
-! 7. A Krylov/level-shift breakdown (TRC_SOSCF_FORCE_BREAKDOWN, an
-!    injected failure -- a real one needs a pathological Hessian this
-!    suite has no natural case for) stops the phase immediately, not
-!    after `max_iteration` more iterations on a step that was never
-!    solved for.
-!
 module check_soscf_suite
+   !!
+   !! Second-order SCF (`--soscf`, trc_scf_soscf.F90): a test-drive suite that
+   !! fails without the feature.
+   !!
+   !! 1. Water/6-31G*, RHF: DIIS alone and --soscf (DIIS, then a Newton
+   !!    handover) must land on the SAME energy, to 1e-9, which also matches
+   !!    pyscf independently -- `test/pyscf_refs/soscf.ref`'s own E_WATER
+   !!    (`test/pyscf_refs/generate.py CASES["soscf"]` -> `gen_soscf`,
+   !!    read here with `pyscf_ref_io`, never a literal): pyscf 2.14.0,
+   !!    RHF/6-31G* (cart=True), geometry test/water.xyz, basis
+   !!    test/basis_sets/6-31gs.json (bse_json_basis), conv_tol 1e-12,
+   !!    E = -76.0105049953126297 Eh.
+   !!
+   !! 2. O2- (an atomic dianion: a single O, 10 electrons restricted), aug2-
+   !!    cc-pVDZ (`d-aug-cc-pvdz.json`, `prune=.false.` -- the literal basis,
+   !!    matching check_scf_lindep_gap.F90's own reasoning), `lindep_thresh =
+   !!    0.1`: 10 Eh above its HOMO the dropped-function null shift keeps
+   !!    sound (check_scf_lindep_gap.F90's own test, at lindep 0.2, confirms
+   !!    that part independently), but at the LOOSER 0.1 threshold plain DIIS
+   !!    on this run lands on a HIGHER stationary point than the true minimum
+   !!    -- it does not fail to converge, it converges somewhere wrong. pyscf
+   !!    finds the true minimum from the same starting point by exactly the
+   !!    method this module ports -- `soscf.ref`'s own E_O2_ANION, from the
+   !!    SAME generator: `scf.addons.remove_linear_dep_(scf.RHF(mol),
+   !!    threshold=0.1, lindep=0.9)` (pyscf's own, always unit-diagonal-
+   !!    normalised dropping decision -- PR #172/fix/lindep-normalised-
+   !!    overlap brought `scf_context_orthogonalize`'s own decision in line
+   !!    with it, which is why this reference is now generated fresh against
+   !!    that fix rather than carried as a pre-fix literal), `.newton()`:
+   !!    E = -74.445149289824... Eh, converged (|g| 3.3e-7 at this subspace's
+   !!    own AH-solver floor, independently confirmed against
+   !!    check_scf_lindep_gap.F90's own threshold-0.2 case; the unit-diagonal
+   !!    and raw-S dropping decisions happen to coincide in COUNT at
+   !!    threshold 0.1 for this basis -- 1 mode either way -- which is why
+   !!    this number did not move across the fix, only got re-verified
+   !!    against it). Plain mf.kernel() (pyscf's own DIIS) on the SAME
+   !!    subspace does not reach it either -- the stalled, higher stationary
+   !!    point this module's own `--soscf` run has to escape from.
+   !!
+   !!    So: DIIS alone must NOT reach the pyscf minimum (it would not be
+   !!    testing anything otherwise); `--soscf` must.
+   !!
+   !! 3. An open shell (unrestricted) with `--soscf` is refused before a
+   !!    single iteration runs -- never run silently as plain DIIS. mqc's own
+   !!    backend (`mqc_czt_rhf.f90`) has no unrestricted second-order SCF, so
+   !!    this port does not invent one; `trc_scf_settings%resolve` refuses it.
+   !!
+   !! 4. The returned state after --soscf IS the converged state: Tr(D S) =
+   !!    nelec, D = 2 C_occ C_occ^T from the returned cmo, a fresh Fock build
+   !!    from the returned D reproduces res%energy and has a small commutator,
+   !!    eps is diag(C^T F C) for the returned C, and the analytic gradient
+   !!    after --soscf agrees with the one after plain DIIS on the same
+   !!    minimum (water) -- all of this failed before the fix in trc_scf_run's
+   !!    own tail (`scf_result%dmat = scf_state%dold` overwrote the SOSCF
+   !!    density with the pre-handover one; `scf_result%eps` was written on
+   !!    the host only, so a GPU build's own trailing `!$acc update
+   !!    self(...eps)` pulled the stale device copy straight back over it).
+   !!
+   !! 5. Backtracking rescales the step on every rejection (TRC_SOSCF_TRUST0
+   !!    forces an oversized starting trust radius, which used to retry the
+   !!    SAME unscaled step for every one of MAX_BACKTRACKS tries until trust
+   !!    happened to fall below the step's own size).
+   !!
+   !! 6. `scf_soscf_rotation_matrix`'s `exp(kappa)` stays orthogonal to
+   !!    machine precision at sizes the SCF path itself does not happen to
+   !!    exercise (a random antisymmetric kappa at 10 occupied x 200
+   !!    virtual, and a couple of other shapes).
+   !!
+   !! 7. A Krylov/level-shift breakdown (TRC_SOSCF_FORCE_BREAKDOWN, an
+   !!    injected failure -- a real one needs a pathological Hessian this
+   !!    suite has no natural case for) stops the phase immediately, not
+   !!    after `max_iteration` more iterations on a step that was never
+   !!    solved for.
+   !!
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t

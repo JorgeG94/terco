@@ -1,43 +1,43 @@
-!
-! Spherical (pure) AO support, against pyscf's cart=False, conv_tol 1e-11.
-!
-! def2-SVP and cc-pVDZ are both spherical families in BSE (their d shells
-! are tagged "gto_spherical"), so trc_basis_from_json now runs them in the
-! spherical AO space by default (trc_api.F90's `b%spherical`, scripts/
-! gen_sph.py's transform blocks, src/core/trc_sph.F90's application in
-! trc_scf_driver.F90) -- where before this feature every basis ran Cartesian
-! regardless, which is pyscf's cart=True basis, not the one "def2-SVP" or
-! "cc-pVDZ" ordinarily means.
-!
-! FIVE SYSTEMS, RHF and PBE0 (UHF/UPBE0 for the radical), matching the
-! validation table in the milestone plan:
-!
-!   water/def2-SVP, water/cc-pVDZ (also spherical in BSE), a three-water
-!   cluster (w3.xyz) in def2-SVP, SiH4/cc-pVDZ, and the OH radical
-!   (open-shell) in cc-pVDZ. def2-SVP carries no f function on H, O or Si
-!   (checked directly below, (f)), so every case here stays within the
-!   d ceiling the four-centre kernels support today; f is milestone M3.
-!
-! The reference numbers were generated once, not at ctest time (this build
-! has no Python/pyscf dependency and none should be added for a test to
-! run): `pyscf.gto.M(atom=<xyz>, basis=<name>, unit='Angstrom', cart=False)`,
-! `scf.RHF`/`scf.UHF` and `dft.RKS`/`dft.UKS` with `xc='PBE0'`, both at
-! `conv_tol=1e-11`. The literals below are those numbers, to pyscf's own
-! precision; the per-case checks require agreement within 1e-8 Eh -- tight
-! enough that a permutation, a sign, or a half-folded normalisation inside
-! the transform would fail it, not a conveniently loosened tolerance.
-!
-! (f) FORCING CARTESIAN REPRODUCES THE OLD BEHAVIOUR. water/cc-pVDZ with
-! force_cartesian has a d shell's six Cartesian components instead of five
-! spherical ones, so its own nao is literally different (25 against 24) --
-! a structural check that the override takes effect, independent of the
-! energy comparisons above. Byte-for-byte agreement with every PRE-EXISTING
-! test is what the rest of ctest passing unchanged already demonstrates
-! (none of them asked for a spherical basis before this feature existed,
-! so none of them took a different code path); this program adds the
-! spherical path's own validation rather than re-proving the Cartesian one.
-!
 module check_spherical_suite
+   !!
+   !! Spherical (pure) AO support, against pyscf's cart=False, conv_tol 1e-11.
+   !!
+   !! def2-SVP and cc-pVDZ are both spherical families in BSE (their d shells
+   !! are tagged "gto_spherical"), so trc_basis_from_json now runs them in the
+   !! spherical AO space by default (trc_api.F90's `b%spherical`, scripts/
+   !! gen_sph.py's transform blocks, src/core/trc_sph.F90's application in
+   !! trc_scf_driver.F90) -- where before this feature every basis ran Cartesian
+   !! regardless, which is pyscf's cart=True basis, not the one "def2-SVP" or
+   !! "cc-pVDZ" ordinarily means.
+   !!
+   !! FIVE SYSTEMS, RHF and PBE0 (UHF/UPBE0 for the radical), matching the
+   !! validation table in the milestone plan:
+   !!
+   !!   water/def2-SVP, water/cc-pVDZ (also spherical in BSE), a three-water
+   !!   cluster (w3.xyz) in def2-SVP, SiH4/cc-pVDZ, and the OH radical
+   !!   (open-shell) in cc-pVDZ. def2-SVP carries no f function on H, O or Si
+   !!   (checked directly below, (f)), so every case here stays within the
+   !!   d ceiling the four-centre kernels support today; f is milestone M3.
+   !!
+   !! The reference numbers were generated once, not at ctest time (this build
+   !! has no Python/pyscf dependency and none should be added for a test to
+   !! run): `pyscf.gto.M(atom=<xyz>, basis=<name>, unit='Angstrom', cart=False)`,
+   !! `scf.RHF`/`scf.UHF` and `dft.RKS`/`dft.UKS` with `xc='PBE0'`, both at
+   !! `conv_tol=1e-11`. The literals below are those numbers, to pyscf's own
+   !! precision; the per-case checks require agreement within 1e-8 Eh -- tight
+   !! enough that a permutation, a sign, or a half-folded normalisation inside
+   !! the transform would fail it, not a conveniently loosened tolerance.
+   !!
+   !! (f) FORCING CARTESIAN REPRODUCES THE OLD BEHAVIOUR. water/cc-pVDZ with
+   !! force_cartesian has a d shell's six Cartesian components instead of five
+   !! spherical ones, so its own nao is literally different (25 against 24) --
+   !! a structural check that the override takes effect, independent of the
+   !! energy comparisons above. Byte-for-byte agreement with every PRE-EXISTING
+   !! test is what the rest of ctest passing unchanged already demonstrates
+   !! (none of them asked for a spherical basis before this feature existed,
+   !! so none of them took a different code path); this program adds the
+   !! spherical path's own validation rather than re-proving the Cartesian one.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -173,10 +173,10 @@ contains
       fails = fails//what
    end subroutine add_fail
 
-   ! (f) above: forcing Cartesian on water/cc-pVDZ must give back the
-   ! Cartesian function count (25: a d shell's six components, not five),
-   ! and must NOT come back `spherical`.
    subroutine test_force_cartesian(error)
+      !! (f) above: forcing Cartesian on water/cc-pVDZ must give back the
+      !! Cartesian function count (25: a d shell's six components, not five),
+      !! and must NOT come back `spherical`.
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: b_sph, b_cart
       type(error_t) :: err

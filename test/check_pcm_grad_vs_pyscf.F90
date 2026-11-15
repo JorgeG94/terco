@@ -1,25 +1,25 @@
-!
-! The analytic PCM (C-PCM and IEF-PCM) nuclear gradient (trc_pcm_grad's
-! pcm_grad_add: grad_qv + grad_nuc + grad_solver, added on top of
-! trc_scf_gradient's own vacuum RHF gradient via pcm_grad_scf_add) against
-! pyscf's own solvent-wrapped `Gradients` class -- water/6-31G* by
-! default, or the basis and reference named on the command line (water/
-! cc-pVTZ, the f case, which skips below TERCO_LMAX=3) -- eps = 78.3553, pyscf's own SWIG defaults (lebedev_order 29 -> 302 points
-! per sphere, vdw_scale 1.2), matching terco's.
-!
-! FIXED INITIAL DENSITY: NOT NEEDED (test/pyscf_refs/generate.py's
-! gen_pcm_grad: a closed-shell ground state has no nearby competing
-! stationary point, continuum or not), so terco and pyscf converge
-! independently and are compared at their own, separately converged
-! densities -- the same reasoning check_full_grad_vs_pyscf.F90's own
-! water/formamide cases use.
-!
-! check_pcm_grad_fd.F90 already validates this feature against a central
-! finite difference of terco's OWN energy (pyscf-independent); this
-! program is the external cross-check against a different code's
-! analytic PCM gradient.
-!
 module check_pcm_grad_vs_pyscf_suite
+   !!
+   !! The analytic PCM (C-PCM and IEF-PCM) nuclear gradient (trc_pcm_grad's
+   !! pcm_grad_add: grad_qv + grad_nuc + grad_solver, added on top of
+   !! trc_scf_gradient's own vacuum RHF gradient via pcm_grad_scf_add) against
+   !! pyscf's own solvent-wrapped `Gradients` class -- water/6-31G* by
+   !! default, or the basis and reference named on the command line (water/
+   !! cc-pVTZ, the f case, which skips below TERCO_LMAX=3) -- eps = 78.3553, pyscf's own SWIG defaults (lebedev_order 29 -> 302 points
+   !! per sphere, vdw_scale 1.2), matching terco's.
+   !!
+   !! FIXED INITIAL DENSITY: NOT NEEDED (test/pyscf_refs/generate.py's
+   !! gen_pcm_grad: a closed-shell ground state has no nearby competing
+   !! stationary point, continuum or not), so terco and pyscf converge
+   !! independently and are compared at their own, separately converged
+   !! densities -- the same reasoning check_full_grad_vs_pyscf.F90's own
+   !! water/formamide cases use.
+   !!
+   !! check_pcm_grad_fd.F90 already validates this feature against a central
+   !! finite difference of terco's OWN energy (pyscf-independent); this
+   !! program is the external cross-check against a different code's
+   !! analytic PCM gradient.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test

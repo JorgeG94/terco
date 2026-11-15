@@ -1,22 +1,22 @@
-!
-! Water cluster in 6-31G -- a real basis on a real geometry, which is where the
-! synthetic lattice stops being informative.
-!
-! 6-31G water is 9 shells and 13 basis functions per molecule (O: three s shells
-! and two p shells, 9 bf; H: two s shells, 2 bf).  So 75 waters is 675 shells
-! and 975 basis functions, and 150 waters is 1350/1950 -- the size Jorge
-! remembered, and the one the LibERI paper's (H2O)128/6-31G row sits next to.
-!
-! Note 6-31G has NO d functions, so this exercises the s,p regime exclusively:
-! the deepest end of the memory-bound region the Asadchev-Valeev intensity
-! argument describes, and the case HGP should be best at.
-!
-! Geometry: oxygens on a cubic lattice at the density of liquid water (~3.1 A
-! nearest-neighbour), each molecule given a different deterministic orientation
-! so the cluster is not pathologically symmetric -- symmetry would make the
-! screening unrepresentatively effective.
-!
 program bench_binwater
+   !!
+   !! Water cluster in 6-31G -- a real basis on a real geometry, which is where the
+   !! synthetic lattice stops being informative.
+   !!
+   !! 6-31G water is 9 shells and 13 basis functions per molecule (O: three s shells
+   !! and two p shells, 9 bf; H: two s shells, 2 bf).  So 75 waters is 675 shells
+   !! and 975 basis functions, and 150 waters is 1350/1950 -- the size Jorge
+   !! remembered, and the one the LibERI paper's (H2O)128/6-31G row sits next to.
+   !!
+   !! Note 6-31G has NO d functions, so this exercises the s,p regime exclusively:
+   !! the deepest end of the memory-bound region the Asadchev-Valeev intensity
+   !! argument describes, and the case HGP should be best at.
+   !!
+   !! Geometry: oxygens on a cubic lattice at the density of liquid water (~3.1 A
+   !! nearest-neighbour), each molecule given a different deterministic orientation
+   !! so the cluster is not pathologically symmetric -- symmetry would make the
+   !! screening unrepresentatively effective.
+   !!
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_boys, only: boys_init
@@ -278,12 +278,12 @@ contains
       end block
    end subroutine read_args
 
-   !
-   ! 6-31G, standard exponents and coefficients.  Contraction coefficients are
-   ! scaled by the libcint primitive normalisation here, matching what env
-   ! carries; batch_build_pairs then applies common_fac_sp.
-   !
    subroutine build_water_631g()
+      !!
+      !! 6-31G, standard exponents and coefficients.  Contraction coefficients are
+      !! scaled by the libcint primitive normalisation here, matching what env
+      !! carries; batch_build_pairs then applies common_fac_sp.
+      !!
       real(dp) :: oS6e(6), oS6c(6), oS3e(3), oS3c(3), oP3c(3), oS1e(1)
       real(dp) :: hS3e(3), hS3c(3), hS1e(1)
       integer  :: iw, nx, ny, nz, ish, ia
@@ -360,11 +360,11 @@ contains
       end do
    end subroutine build_water_631g
 
-   !
-   ! Read a converged density written by scripts/dump_density.py: one int64
-   ! holding nao, then nao*nao float64 in terco's own AO order.
-   !
    subroutine read_density()
+      !!
+      !! Read a converged density written by scripts/dump_density.py: one int64
+      !! holding nao, then nao*nao float64 in terco's own AO order.
+      !!
       integer :: u, ios, ii, jj
       integer(int64) :: nao_file
       real(dp) :: amax, amean
@@ -426,12 +426,12 @@ contains
       print '(a,a,a,i0,a)', '  geometry        : ', trim(XYZ), '  (', nat_file, ' atoms)'
    end subroutine read_xyz
 
-   !
-   ! 6-31G for H, C, N, O.  Standard Basis Set Exchange values; the SP shells
-   ! are split into separate s and p sharing exponents, which is what libcint's
-   ! layout wants and what gen_reference already assumes.
-   !
    subroutine put_atom(ish, z, r)
+      !!
+      !! 6-31G for H, C, N, O.  Standard Basis Set Exchange values; the SP shells
+      !! are split into separate s and p sharing exponents, which is what libcint's
+      !! layout wants and what gen_reference already assumes.
+      !!
       integer,  intent(inout) :: ish
       integer,  intent(in)    :: z
       real(dp), intent(in)    :: r(3)
@@ -523,11 +523,11 @@ contains
       nao = nao + batch_ncart(l)
    end subroutine put
 
-   !
-   ! libcint's CINTgto_norm: 1/sqrt(gaussian_int(2l+2, 2a)),
-   ! gaussian_int(n,a) = 0.5 a^(-(n+1)/2) Gamma((n+1)/2)
-   !
    pure real(dp) function gto_norm(l, a)
+      !!
+      !! libcint's CINTgto_norm: 1/sqrt(gaussian_int(2l+2, 2a)),
+      !! gaussian_int(n,a) = 0.5 a^(-(n+1)/2) Gamma((n+1)/2)
+      !!
       integer,  intent(in) :: l
       real(dp), intent(in) :: a
       real(dp) :: nn, gi

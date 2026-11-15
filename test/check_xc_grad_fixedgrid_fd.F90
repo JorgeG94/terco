@@ -1,51 +1,51 @@
-!
-! trc_xc_grad's PULAY TERM ALONE, isolated from everything else a full
-! SCF-based finite difference mixes in: the grid points and weights are
-! built ONCE (`xg0`, from `dft_grid_build`/`trc_xc_grid_t%build` at R0) and
-! reused unchanged at every displaced geometry, so only the basis
-! functions move -- exactly what trc_xc_grad.F90 differentiates and
-! nothing else (no grid response to omit because there is none to omit
-! here: the grid never moves in this comparison, on either side). The
-! density is a fixed, synthetic, non-SCF matrix (same deterministic
-! construction as check_rys_grad_vs_pyscf.F90's own `synth_density`), so
-! there is no SCF to reconverge and no SCF-path noise either.
-!
-! This is the test that caught the bug check_xc_grad_fd.F90's full,
-! SCF-based comparison could not pin down on its own: trc_xc_grad's point
-! kernels built the force tiles without the grid WEIGHT (every other
-! quantity -- collocation, the density gather, the functional itself --
-! was right), so a two-atom case gave a gradient three orders of
-! magnitude too large while check_xc_grad_fd's translational-invariance
-! check, computed the same way for every atom, stayed numerically
-! unaffected by the missing common factor and did not flag it. Fixed by
-! multiplying the "P"/"Q" tiles by the point's weight before the force
-! GEMM, where the energy path's own `zg`/`zv` do the same (trc_xc.F90's
-! xc_point_body); this test is what confirms it stays fixed.
-!
-! H2 (two well-separated, non-collinear-with-any-axis H atoms, so no
-! Cartesian direction is accidentally invariant by symmetry) with LDA
-! (SVWN) restricted, GGA (PBE) restricted, and GGA (PBE) unrestricted
-! (two independent, asymmetric alpha/beta densities, to exercise the
-! cross-spin Q1/Q2 terms trc_xc_grad.F90's header describes). Agreement
-! is to ~1e-9 absolute on a gradient of order 1: no fitting, no tolerance
-! chosen to let a residual through.
-!
-! META-GGA (r2SCAN, TPSS, M06-L restricted; r2SCAN and TPSS unrestricted):
-! the tau term of trc_xc_grad.F90's header, META-GGA, differenced the same
-! way, but on an N-representable density (`orbital_density`: two
-! synthetic orbitals, unequal occupations). The matrix above is not
-! positive semidefinite, so it breaks tau >= tau_W = |grad rho|^2/(8 rho)
-! at some points; there the kernels clamp tau (trc_xc_util's
-! enforce_fermi_hole_curvature) and return derivatives that are not those
-! of the energy they return. Measured with that matrix: r2SCAN 1e-3 and
-! TPSS 1e14 off the finite difference; with this one the same gradient
-! code agrees to ~1e-9 (RKS ~4e-10, UKS ~1.1e-9, as the GGA cases). With
-! one orbital tau = tau_W exactly, on the clamp, hence two.
-!
-! Each case below is its own test-drive unittest, building its own
-! basis/grid.
-!
 module check_xc_grad_fixedgrid_fd_suite
+   !!
+   !! trc_xc_grad's PULAY TERM ALONE, isolated from everything else a full
+   !! SCF-based finite difference mixes in: the grid points and weights are
+   !! built ONCE (`xg0`, from `dft_grid_build`/`trc_xc_grid_t%build` at R0) and
+   !! reused unchanged at every displaced geometry, so only the basis
+   !! functions move -- exactly what trc_xc_grad.F90 differentiates and
+   !! nothing else (no grid response to omit because there is none to omit
+   !! here: the grid never moves in this comparison, on either side). The
+   !! density is a fixed, synthetic, non-SCF matrix (same deterministic
+   !! construction as check_rys_grad_vs_pyscf.F90's own `synth_density`), so
+   !! there is no SCF to reconverge and no SCF-path noise either.
+   !!
+   !! This is the test that caught the bug check_xc_grad_fd.F90's full,
+   !! SCF-based comparison could not pin down on its own: trc_xc_grad's point
+   !! kernels built the force tiles without the grid WEIGHT (every other
+   !! quantity -- collocation, the density gather, the functional itself --
+   !! was right), so a two-atom case gave a gradient three orders of
+   !! magnitude too large while check_xc_grad_fd's translational-invariance
+   !! check, computed the same way for every atom, stayed numerically
+   !! unaffected by the missing common factor and did not flag it. Fixed by
+   !! multiplying the "P"/"Q" tiles by the point's weight before the force
+   !! GEMM, where the energy path's own `zg`/`zv` do the same (trc_xc.F90's
+   !! xc_point_body); this test is what confirms it stays fixed.
+   !!
+   !! H2 (two well-separated, non-collinear-with-any-axis H atoms, so no
+   !! Cartesian direction is accidentally invariant by symmetry) with LDA
+   !! (SVWN) restricted, GGA (PBE) restricted, and GGA (PBE) unrestricted
+   !! (two independent, asymmetric alpha/beta densities, to exercise the
+   !! cross-spin Q1/Q2 terms trc_xc_grad.F90's header describes). Agreement
+   !! is to ~1e-9 absolute on a gradient of order 1: no fitting, no tolerance
+   !! chosen to let a residual through.
+   !!
+   !! META-GGA (r2SCAN, TPSS, M06-L restricted; r2SCAN and TPSS unrestricted):
+   !! the tau term of trc_xc_grad.F90's header, META-GGA, differenced the same
+   !! way, but on an N-representable density (`orbital_density`: two
+   !! synthetic orbitals, unequal occupations). The matrix above is not
+   !! positive semidefinite, so it breaks tau >= tau_W = |grad rho|^2/(8 rho)
+   !! at some points; there the kernels clamp tau (trc_xc_util's
+   !! enforce_fermi_hole_curvature) and return derivatives that are not those
+   !! of the energy they return. Measured with that matrix: r2SCAN 1e-3 and
+   !! TPSS 1e14 off the finite difference; with this one the same gradient
+   !! code agrees to ~1e-9 (RKS ~4e-10, UKS ~1.1e-9, as the GGA cases). With
+   !! one orbital tau = tau_W exactly, on the clamp, hence two.
+   !!
+   !! Each case below is its own test-drive unittest, building its own
+   !! basis/grid.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -82,12 +82,12 @@ contains
                   ]
    end subroutine collect_xc_grad_fixedgrid_fd
 
-   !
-   ! Same deterministic, dense, symmetric construction as
-   ! check_rys_grad_vs_pyscf.F90/check_rys_grad_fd.F90.
-   !
-   ! Whether `name` is one of this suite's meta-GGA cases.
    pure logical function is_meta(name) result(meta)
+      !!
+      !! Same deterministic, dense, symmetric construction as
+      !! check_rys_grad_vs_pyscf.F90/check_rys_grad_fd.F90.
+      !!
+      !! Whether `name` is one of this suite's meta-GGA cases.
       character(*), intent(in) :: name
       meta = name == 'r2scan' .or. name == 'tpss' .or. name == 'm06l'
    end function is_meta
@@ -104,12 +104,12 @@ contains
       d = 0.5_dp*(d + transpose(d))
    end subroutine synth_density
 
-   !
-   ! An N-representable density for the meta-GGA cases: occupations 1 and
-   ! 0.6 of two deterministic, linearly independent synthetic orbitals, so
-   ! tau > tau_W wherever the two orbitals' gradients are not parallel.
-   !
    subroutine orbital_density(n, phase, d)
+      !!
+      !! An N-representable density for the meta-GGA cases: occupations 1 and
+      !! 0.6 of two deterministic, linearly independent synthetic orbitals, so
+      !! tau > tau_W wherever the two orbitals' gradients are not parallel.
+      !!
       integer, intent(in) :: n, phase
       real(dp), intent(out) :: d(n, n)
       real(dp) :: c1(n), c2(n)
@@ -267,12 +267,12 @@ contains
                  " exceeds "//to_string(ABSTOL, "es10.2"))
    end subroutine run_uks_case
 
-   !
-   ! RKS: the analytic fixed-grid XC gradient (into `grad`) and the worst
-   ! |analytic - central difference| over every atom/direction, the SAME
-   ! `xg` reused unperturbed at every displacement.
-   !
    function fixedgrid_worst_diff(bas0, basp0, xg, lp0, func0, nspin, d, r00, z, n, hh, grad0) result(w)
+      !!
+      !! RKS: the analytic fixed-grid XC gradient (into `grad`) and the worst
+      !! |analytic - central difference| over every atom/direction, the SAME
+      !! `xg` reused unperturbed at every displacement.
+      !!
       type(trc_basis_t), intent(in) :: bas0
       type(trc_basis_t), intent(inout) :: basp0
       type(trc_xc_grid_t), intent(in) :: xg
@@ -318,10 +318,10 @@ contains
       deallocate (vv)
    end function fixedgrid_worst_diff
 
-   !
-   ! UKS counterpart: `d` is (nao, nao, 2).
-   !
    function fixedgrid_worst_diff2(bas0, basp0, xg, lp0, func0, d, r00, z, n, hh, grad0) result(w)
+      !!
+      !! UKS counterpart: `d` is (nao, nao, 2).
+      !!
       type(trc_basis_t), intent(in) :: bas0
       type(trc_basis_t), intent(inout) :: basp0
       type(trc_xc_grid_t), intent(in) :: xg

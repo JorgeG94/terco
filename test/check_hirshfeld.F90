@@ -1,24 +1,24 @@
-!
-! Hirshfeld atomic charges (trc_hirshfeld.F90) against two references:
-!
-!  * metalquicha's OWN stored test numbers (its test/test_mqc_hirshfeld.f90:
-!    water/cc-pVDZ, the neutral and the cation with spins), hardcoded below;
-!  * metalquicha's recipe run in pyscf, for water RHF/6-31G and O2 triplet
-!    UHF/cc-pVDZ: test/pyscf_refs/hirshfeld.ref, written offline by
-!    `generate.py hirshfeld` (free atoms from mqc's
-!    tools/spherical_atom/spherical_atom_reference.py, its commit recorded in
-!    the .ref) and covered by the staleness hash like every other anchor.
-!
-! The pyscf integral runs on a (150, 974) atom grid and evaluates every free
-! atom from its own orbitals; terco's grid (HIRSHFELD_GRID_LEVEL=5) and its
-! cubic-Hermite proatom table are coarser, so agreement is bounded by the
-! quadrature, not by the partition formula (CHARGE_TOL below).
-!
-! Also: the free-atom table integrates to Z, an element past Kr is refused,
-! and the table loader recovers from a bad path and never silently keeps a
-! different file than the one asked for.
-!
 module check_hirshfeld_suite
+   !!
+   !! Hirshfeld atomic charges (trc_hirshfeld.F90) against two references:
+   !!
+   !!  * metalquicha's OWN stored test numbers (its test/test_mqc_hirshfeld.f90:
+   !!    water/cc-pVDZ, the neutral and the cation with spins), hardcoded below;
+   !!  * metalquicha's recipe run in pyscf, for water RHF/6-31G and O2 triplet
+   !!    UHF/cc-pVDZ: test/pyscf_refs/hirshfeld.ref, written offline by
+   !!    `generate.py hirshfeld` (free atoms from mqc's
+   !!    tools/spherical_atom/spherical_atom_reference.py, its commit recorded in
+   !!    the .ref) and covered by the staleness hash like every other anchor.
+   !!
+   !! The pyscf integral runs on a (150, 974) atom grid and evaluates every free
+   !! atom from its own orbitals; terco's grid (HIRSHFELD_GRID_LEVEL=5) and its
+   !! cubic-Hermite proatom table are coarser, so agreement is bounded by the
+   !! quadrature, not by the partition formula (CHARGE_TOL below).
+   !!
+   !! Also: the free-atom table integrates to Z, an element past Kr is refused,
+   !! and the table loader recovers from a bad path and never silently keeps a
+   !! different file than the one asked for.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

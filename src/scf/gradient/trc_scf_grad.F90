@@ -1,40 +1,40 @@
-!
-! The analytic gradients are validated (pyscf, finite differences, CPU =
-! GPU); single rank only. See README.
-!
-! The full analytic HF/UHF nuclear gradient: one-electron (trc_1e_gradient),
-! two-electron (eri%gradient) and nuclear repulsion, assembled at a
-! converged trc_scf_result_t. With `func` present (optional, see
-! trc_scf_gradient's own header) this is the KS-DFT gradient instead:
-! eri%gradient's exact-exchange piece scaled by `func%exx`, plus
-! trc_xc_grad%xc_grad_add's LDA/GGA/meta-GGA exchange-correlation term.
-!
-! ORDER MATTERS. eri%gradient starts `grad` from zero (its own header: "the
-! two-electron part ONLY"); trc_1e_gradient and scf_grad_nuclear_repulsion
-! both ADD into whatever `grad` already holds. So the assembly below calls
-! eri%gradient first and the other two after -- reversing that order would
-! have eri%gradient discard the one-electron and nuclear-repulsion terms.
-!
-! THE FACTOR OF 1/2. eri%gradient's own convention (test/check_rys_grad_fd.F90's
-! E2 = Tr(D, eri%fock(D)), no 1/2 -- that is what it is checked against, both
-! there and vs pyscf) is the derivative of Tr(D, J(D) - K(D)/2) WITHOUT the
-! 1/2 that turns it into the actual two-electron ENERGY. scf_fock_energy's own
-! e_two is 0.5*Tr(D, gmat) (trc_scf_fock.F90): half of that same trace. So
-! eri%gradient's raw output is exactly TWICE d(e_two)/dR, and has to be
-! halved here before it is added to the one-electron and nuclear-repulsion
-! terms, which are both already in the "actual energy" convention (verified
-! against finite differences of the true SCF energy, not a doubled one).
-! Found by a clean 2x, atom-by-atom mismatch against a fixed-density finite
-! difference of the real e1 + e2 + e_nuc, not by inspection.
-!
-! trc_scf_run does not keep its pair list or ERI engine alive past
-! convergence (trc_scf_context%release at the end of the run), so
-! trc_scf_gradient rebuilds both at the converged geometry -- the same
-! thing every eri%gradient caller in test/ already does, and the Schwarz
-! screen it needs is the expensive part regardless of whether the gradient
-! is wanted.
-!
 module trc_scf_grad
+   !!
+   !! The analytic gradients are validated (pyscf, finite differences, CPU =
+   !! GPU); single rank only. See README.
+   !!
+   !! The full analytic HF/UHF nuclear gradient: one-electron (trc_1e_gradient),
+   !! two-electron (eri%gradient) and nuclear repulsion, assembled at a
+   !! converged trc_scf_result_t. With `func` present (optional, see
+   !! trc_scf_gradient's own header) this is the KS-DFT gradient instead:
+   !! eri%gradient's exact-exchange piece scaled by `func%exx`, plus
+   !! trc_xc_grad%xc_grad_add's LDA/GGA/meta-GGA exchange-correlation term.
+   !!
+   !! ORDER MATTERS. eri%gradient starts `grad` from zero (its own header: "the
+   !! two-electron part ONLY"); trc_1e_gradient and scf_grad_nuclear_repulsion
+   !! both ADD into whatever `grad` already holds. So the assembly below calls
+   !! eri%gradient first and the other two after -- reversing that order would
+   !! have eri%gradient discard the one-electron and nuclear-repulsion terms.
+   !!
+   !! THE FACTOR OF 1/2. eri%gradient's own convention (test/check_rys_grad_fd.F90's
+   !! E2 = Tr(D, eri%fock(D)), no 1/2 -- that is what it is checked against, both
+   !! there and vs pyscf) is the derivative of Tr(D, J(D) - K(D)/2) WITHOUT the
+   !! 1/2 that turns it into the actual two-electron ENERGY. scf_fock_energy's own
+   !! e_two is 0.5*Tr(D, gmat) (trc_scf_fock.F90): half of that same trace. So
+   !! eri%gradient's raw output is exactly TWICE d(e_two)/dR, and has to be
+   !! halved here before it is added to the one-electron and nuclear-repulsion
+   !! terms, which are both already in the "actual energy" convention (verified
+   !! against finite differences of the true SCF energy, not a doubled one).
+   !! Found by a clean 2x, atom-by-atom mismatch against a fixed-density finite
+   !! difference of the real e1 + e2 + e_nuc, not by inspection.
+   !!
+   !! trc_scf_run does not keep its pair list or ERI engine alive past
+   !! convergence (trc_scf_context%release at the end of the run), so
+   !! trc_scf_gradient rebuilds both at the converged geometry -- the same
+   !! thing every eri%gradient caller in test/ already does, and the Schwarz
+   !! screen it needs is the expensive part regardless of whether the gradient
+   !! is wanted.
+   !!
    use pic_types, only: dp
    use pic_timer, only: timer_type
    use pic_logger, only: global_logger

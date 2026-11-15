@@ -1,24 +1,24 @@
-!
-! Where the VV10 GRADIENT's time goes, next to the rest of the wB97X-V
-! gradient, on a real molecule in a real basis -- bench_vv10.F90's own
-! idea, applied to trc_scf_gradient instead of the energy path's
-! trc_vv10_rks.
-!
-!   bench_vv10_grad <xyz> <basis.json> <nalpha> <nbeta>
-!
-! Converges wB97X-V once, then times trc_scf_gradient TWICE at the SAME
-! converged orbitals: once with the functional exactly as converged
-! (func%nlc_b/nlc_c nonzero -- the full gradient, semilocal GGA + erf
-! long-range exchange + VV10), and once with a LOCAL COPY of that same
-! functional with nlc_b/nlc_c zeroed (everything else identical: same
-! kid/coef semilocal kernel list, same omega/exx_lr) -- "the rest" of the
-! gradient at the exact same cost, minus VV10's own nonlocal term. The
-! difference between the two wall times is VV10's own share.
-!
-! A timing is not a pass, so this is built and not registered as a test
-! (test/CMakeLists.txt, same as bench_vv10).
-!
 program bench_vv10_grad
+   !!
+   !! Where the VV10 GRADIENT's time goes, next to the rest of the wB97X-V
+   !! gradient, on a real molecule in a real basis -- bench_vv10.F90's own
+   !! idea, applied to trc_scf_gradient instead of the energy path's
+   !! trc_vv10_rks.
+   !!
+   !!   bench_vv10_grad <xyz> <basis.json> <nalpha> <nbeta>
+   !!
+   !! Converges wB97X-V once, then times trc_scf_gradient TWICE at the SAME
+   !! converged orbitals: once with the functional exactly as converged
+   !! (func%nlc_b/nlc_c nonzero -- the full gradient, semilocal GGA + erf
+   !! long-range exchange + VV10), and once with a LOCAL COPY of that same
+   !! functional with nlc_b/nlc_c zeroed (everything else identical: same
+   !! kid/coef semilocal kernel list, same omega/exx_lr) -- "the rest" of the
+   !! gradient at the exact same cost, minus VV10's own nonlocal term. The
+   !! difference between the two wall times is VV10's own share.
+   !!
+   !! A timing is not a pass, so this is built and not registered as a test
+   !! (test/CMakeLists.txt, same as bench_vv10).
+   !!
    use pic_types, only: dp
    use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_bind_device

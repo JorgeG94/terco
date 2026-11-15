@@ -1,82 +1,83 @@
-!
-! The correlation side of the RI-MP2 nuclear gradient, on the device.
-!
-! Stocks, Palethorpe and Barca, J. Chem. Theory Comput. 2024, 20, 2505,
-! section 3, as metalquicha implements it (backends/cenzontle/correlation/
-! mqc_czt_ri_mp2_gradient.f90, whose numpy prototype tools/cpu_validation/
-! ri_mp2_gradient.py settled every index convention used here). The SCF
-! side -- the Z-vector, the relaxed and energy-weighted densities, and the
-! one-electron, overlap and four-centre derivative terms -- is
-! src/post_hf/rimp2/trc_rimp2_grad.F90's; this module only builds what needs the
-! fitted integrals:
-!
-!   T_ij^ab = (ia|jb) / (e_i + e_j - e_a - e_b),  (ia|jb) = sum_Q B_ia^Q B_jb^Q
-!   X_ij^ab = 2 T_ij^ab - T_ij^ba
-!   doo_ij  = - sum_kab T_ki^ab X_kj^ab          dvv_ba = sum_ijc T_ij^ca X_ij^cb
-!   Gamma^P_ia = sum_jbQ X_ij^ab B_jb^Q (L^-1)_QP        (eq 8, Cholesky form)
-!   gamma_PQ   = sum_ia Gamma^P_ia c_ia^Q,  c = B L^-1    (eq 10)
-!   L'_iq  = 2 sum_aP Gamma^P_ia (q a|P)                  (eq 13)
-!   L''_aq = 2 sum_iP Gamma^P_ia (i q|P)                  (eq 14)
-!
-! with B = (ia|P) L^-T and M = (P|Q) = L L^T, exactly the B trc_rimp2_run
-! fits. Only the ACTIVE occupied orbitals (nfrozen + 1 .. nocc) enter the
-! amplitudes, Gamma and doo; q runs over every molecular orbital, which is
-! where the occupied-frozen rows of the Lagrangian come from. And the
-! first two terms of eq 6, the only ones the fit changes:
-!
-!   dE/dR += 4 sum_(mu nu P) Gamma^P_mu nu d(mu nu|P)/dR - 2 sum_PQ gamma_PQ d(P|Q)/dR
-!
-! Gamma^P_mu nu = C_act Gamma^P C_vir^T, through trc_df_grad_kernels'
-! three- and two-centre derivative kernels (the --df gradient's own, which
-! take an arbitrary three-index Y and an arbitrary symmetric Z: no
-! generator change).
-!
-! THE ORDER OF WORK
-!   1. the metric and its Cholesky factor; B, one auxiliary block of
-!      (mu nu|P) at a time (trc_rimp2_run's own single-rank steps 1-4).
-!   2. the amplitudes, a group of occupied i at a time (a row of pairs):
-!      K = B_i B_j^T only for the groups j from the row's own on, one kernel
-!      for T and X (X also written back over K), and the earlier groups'
-!      columns from the pair symmetry, T_ij^ab = T_ji^ba, out of mirror
-!      tiles those groups' rows kept (amplitude_pass, pair_tile_plan): about
-!      half of K, the largest step. Then Gamma' = X B for the whole row
-!      (one GEMM the shape of K's), dvv (one GEMM over the row) and doo (one
-!      GEMM per i) -- doo pairs (k, i) with (k, j), which is why each row is
-!      completed rather than each tile used twice. E_corr = sum Gamma' . B,
-!      and E_os, E_ss from T and X, come for free and are returned: the
-!      energy step's numbers, so a caller with a gradient needs no separate
-!      energy run, and can check the gradient differentiates its energy.
-!   3. Gamma = Gamma' L^-1 (a triangular solve), gamma = L^-T (Gamma'^T B)
-!      L^-1, and the two-centre derivative with Z = -(gamma + gamma^T).
-!   4. (mu nu|P) again, block by block, for the Lagrangian and the three-
-!      centre derivative together: G^P = C_vir Gamma^P, M^P = 2 C_act G^P^T
-!      (the derivative kernels' one-sided Y, Y = M + M^T), R_o += (mu nu|P)
-!      G^P, and U += Gamma^P H^P^T with H^P = (mu nu|P) C_act. Then
-!      L' = 2 R_o^T C and L'' = 2 U C.
-!
-! A spherical auxiliary basis: B, Gamma and gamma live in its spherical
-! space, as the energy's do; Gamma is expanded onto the Cartesian
-! auxiliary functions once before step 4 (trc_sph's sph_cols_sph_to_cart)
-! and gamma's Z before the two-centre kernels, so the kernels and the raw
-! (mu nu|P) of step 4 stay Cartesian. The orbital basis is always the
-! Cartesian AO space here: a spherical caller passes C_cart = T C_sph.
-!
-! MEMORY. B and Gamma are nocc nvir naux doubles each, plus three
-! group-sized (nvir, nvir, nocc, ng) amplitude buffers; the group size is
-! chosen from the device's free memory (amplitude_group), and the mirror
-! tiles, (ng nvir)^2 doubles each, take what is left: about (nocc nvir)^2/4
-! doubles hold them all (gly10/cc-pVDZ: 9.6 GB; next to a --df SCF's own
-! fit on a 32 GB V100, 6.6 GB were free, a band of 9 of the 14 later
-! groups). With less, the band of groups kept narrows and the rest of K is
-! computed again, as without the symmetry -- the numbers do not change.
-! One rank.
-!
 module trc_rimp2_relax
+   !!
+   !! The correlation side of the RI-MP2 nuclear gradient, on the device.
+   !!
+   !! Stocks, Palethorpe and Barca, J. Chem. Theory Comput. 2024, 20, 2505,
+   !! section 3, as metalquicha implements it (backends/cenzontle/correlation/
+   !! mqc_czt_ri_mp2_gradient.f90, whose numpy prototype tools/cpu_validation/
+   !! ri_mp2_gradient.py settled every index convention used here). The SCF
+   !! side -- the Z-vector, the relaxed and energy-weighted densities, and the
+   !! one-electron, overlap and four-centre derivative terms -- is
+   !! src/post_hf/rimp2/trc_rimp2_grad.F90's; this module only builds what needs the
+   !! fitted integrals:
+   !!
+   !!   T_ij^ab = (ia|jb) / (e_i + e_j - e_a - e_b),  (ia|jb) = sum_Q B_ia^Q B_jb^Q
+   !!   X_ij^ab = 2 T_ij^ab - T_ij^ba
+   !!   doo_ij  = - sum_kab T_ki^ab X_kj^ab          dvv_ba = sum_ijc T_ij^ca X_ij^cb
+   !!   Gamma^P_ia = sum_jbQ X_ij^ab B_jb^Q (L^-1)_QP        (eq 8, Cholesky form)
+   !!   gamma_PQ   = sum_ia Gamma^P_ia c_ia^Q,  c = B L^-1    (eq 10)
+   !!   L'_iq  = 2 sum_aP Gamma^P_ia (q a|P)                  (eq 13)
+   !!   L''_aq = 2 sum_iP Gamma^P_ia (i q|P)                  (eq 14)
+   !!
+   !! with B = (ia|P) L^-T and M = (P|Q) = L L^T, exactly the B trc_rimp2_run
+   !! fits. Only the ACTIVE occupied orbitals (nfrozen + 1 .. nocc) enter the
+   !! amplitudes, Gamma and doo; q runs over every molecular orbital, which is
+   !! where the occupied-frozen rows of the Lagrangian come from. And the
+   !! first two terms of eq 6, the only ones the fit changes:
+   !!
+   !!   dE/dR += 4 sum_(mu nu P) Gamma^P_mu nu d(mu nu|P)/dR - 2 sum_PQ gamma_PQ d(P|Q)/dR
+   !!
+   !! Gamma^P_mu nu = C_act Gamma^P C_vir^T, through trc_df_grad_kernels'
+   !! three- and two-centre derivative kernels (the --df gradient's own, which
+   !! take an arbitrary three-index Y and an arbitrary symmetric Z: no
+   !! generator change).
+   !!
+   !! THE ORDER OF WORK
+   !!   1. the metric and its Cholesky factor; B, one auxiliary block of
+   !!      (mu nu|P) at a time (trc_rimp2_run's own single-rank steps 1-4).
+   !!   2. the amplitudes, a group of occupied i at a time (a row of pairs):
+   !!      K = B_i B_j^T only for the groups j from the row's own on, one kernel
+   !!      for T and X (X also written back over K), and the earlier groups'
+   !!      columns from the pair symmetry, T_ij^ab = T_ji^ba, out of mirror
+   !!      tiles those groups' rows kept (amplitude_pass, pair_tile_plan): about
+   !!      half of K, the largest step. Then Gamma' = X B for the whole row
+   !!      (one GEMM the shape of K's), dvv (one GEMM over the row) and doo (one
+   !!      GEMM per i) -- doo pairs (k, i) with (k, j), which is why each row is
+   !!      completed rather than each tile used twice. E_corr = sum Gamma' . B,
+   !!      and E_os, E_ss from T and X, come for free and are returned: the
+   !!      energy step's numbers, so a caller with a gradient needs no separate
+   !!      energy run, and can check the gradient differentiates its energy.
+   !!   3. Gamma = Gamma' L^-1 (a triangular solve), gamma = L^-T (Gamma'^T B)
+   !!      L^-1, and the two-centre derivative with Z = -(gamma + gamma^T).
+   !!   4. (mu nu|P) again, block by block, for the Lagrangian and the three-
+   !!      centre derivative together: G^P = C_vir Gamma^P, M^P = 2 C_act G^P^T
+   !!      (the derivative kernels' one-sided Y, Y = M + M^T), R_o += (mu nu|P)
+   !!      G^P, and U += Gamma^P H^P^T with H^P = (mu nu|P) C_act. Then
+   !!      L' = 2 R_o^T C and L'' = 2 U C.
+   !!
+   !! A spherical auxiliary basis: B, Gamma and gamma live in its spherical
+   !! space, as the energy's do; Gamma is expanded onto the Cartesian
+   !! auxiliary functions once before step 4 (trc_sph's sph_cols_sph_to_cart)
+   !! and gamma's Z before the two-centre kernels, so the kernels and the raw
+   !! (mu nu|P) of step 4 stay Cartesian. The orbital basis is always the
+   !! Cartesian AO space here: a spherical caller passes C_cart = T C_sph.
+   !!
+   !! MEMORY. B and Gamma are nocc nvir naux doubles each, plus three
+   !! group-sized (nvir, nvir, nocc, ng) amplitude buffers; the group size is
+   !! chosen from the device's free memory (amplitude_group), and the mirror
+   !! tiles, (ng nvir)^2 doubles each, take what is left: about (nocc nvir)^2/4
+   !! doubles hold them all (gly10/cc-pVDZ: 9.6 GB; next to a --df SCF's own
+   !! fit on a 32 GB V100, 6.6 GB were free, a band of 9 of the 14 later
+   !! groups). With less, the band of groups kept narrows and the rest of K is
+   !! computed again, as without the symmetry -- the numbers do not change.
+   !! One rank.
+   !!
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
+   use trc_cart, only: ncart => cart_ncart_of
    use trc_integrals, only: trc_df_2c, trc_df_3c
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use trc_df_grad_kernels, only: df_grad_2c_driver, df_grad_3c_driver, df_grad_3c_plan, DFG_LMAX, &
@@ -720,11 +721,6 @@ contains
       np = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0
    end subroutine next_aux_block
 
-   pure integer function ncart(l) result(res)
-      integer, intent(in) :: l
-      res = (l + 1)*(l + 2)/2
-   end function ncart
-
    subroutine amplitude_group(no, nv, group_size, tile_slots, ng, nslot)
       !! Occupied orbitals per group, `ng`: `group_size` when positive, else
       !! NG_BEST, or as many as three (nvir, nocc nvir) buffers each fit in
@@ -788,11 +784,10 @@ contains
       end do
    end function chunked_dot
 
-   ! ----------------------------------------------------------------------
-   ! do concurrent kernels: explicit-shape dummies, device-resident arrays.
-   ! ----------------------------------------------------------------------
-
    subroutine amplitude_kernel(i0, nb, j0, nj, no, nv, ldk, nov, eo, ev, ki, tt, xx)
+      !! ----------------------------------------------------------------------
+      !! do concurrent kernels: explicit-shape dummies, device-resident arrays.
+      !! ----------------------------------------------------------------------
       !! tt(a, b, j, il) = T_ij^ab and xx(a, b, j, il) = 2 T_ij^ab - T_ij^ba,
       !! i = i0 - 1 + il and j = j0 .. j0 + nj - 1, from K(a + (il-1) nv,
       !! b + (j-1) nv) = (ia|jb), and X written back over K in K's own layout

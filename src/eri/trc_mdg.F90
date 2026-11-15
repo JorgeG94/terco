@@ -1,40 +1,40 @@
-!
-! McMurchie-Davidson exchange (and Coulomb), per class, in do concurrent.
-!
-! For the g classes above TERCO_RYS_G_LTOT (the only ones scripts/gen_md_k.py
-! generates), binkernel_fock_bins skips the class and this pass adds it into the same
-! folded matrix. The per-window algebra is the generator's: E matrices, R per
-! primitive quartet, S = PQ Hk^T without storing PQ, the integral rows and
-! their digestion. What lives here is the ORDER OF THE WORK.
-!
-! GROUPS. The shell pairs of the MD J object are grouped by (l_a, l_b) type and
-! primitive count, so every window of a group pair has one shape, and each
-! group is sorted by its Schwarz bound, largest first.
-!
-! STAIRCASE. A bra block of up to MDG_BLOCK sorted pairs, with largest bound
-! Q_1, can only meet ket pairs with 4 Q_1 Q_cd max|D| > thresh: a PREFIX of
-! the sorted ket list, found by bisection. A block with an empty prefix ends
-! the bra loop, since every later block is smaller still: the early exit of
-! Ufimtsev and Martinez's exchange, here at the granularity of a window. Inside
-! a window the HGP kernels' per-quartet screen still zeroes what the coarse
-! cut lets through.
-!
-! The binkernel_fock_bins segments this replaces are split by Schwarz decade and by
-! primitive count, and the first prototype ran one window per segment: 1462
-! windows per Fock build on w20 cc-pVTZ, each far too small to fill the GPU
-! (nsys, V100).
-!
-! REFERENCES (inspiration; the formulation and code here are terco's own)
-!   L. E. McMurchie, E. R. Davidson, J. Comput. Phys. 26, 218 (1978).
-!   I. S. Ufimtsev, T. J. Martinez, J. Chem. Theory Comput. 4, 222 (2008);
-!     5, 1004 (2009).
-!   E. Palethorpe, G. M. J. Barca, J. Chem. Theory Comput. 21, 9388 (2025).
-!   E. Palethorpe, R. Stocks, G. M. J. Barca, ChemRxiv (2026),
-!     doi:10.26434/chemrxiv.15004739/v2.
-!   A. Asadchev, E. F. Valeev, J. Phys. Chem. A 127, 10889 (2023);
-!     J. Chem. Phys. 160, 244109 (2024).
-!
 module trc_mdg
+   !!
+   !! McMurchie-Davidson exchange (and Coulomb), per class, in do concurrent.
+   !!
+   !! For the g classes above TERCO_RYS_G_LTOT (the only ones scripts/gen_md_k.py
+   !! generates), binkernel_fock_bins skips the class and this pass adds it into the same
+   !! folded matrix. The per-window algebra is the generator's: E matrices, R per
+   !! primitive quartet, S = PQ Hk^T without storing PQ, the integral rows and
+   !! their digestion. What lives here is the ORDER OF THE WORK.
+   !!
+   !! GROUPS. The shell pairs of the MD J object are grouped by (l_a, l_b) type and
+   !! primitive count, so every window of a group pair has one shape, and each
+   !! group is sorted by its Schwarz bound, largest first.
+   !!
+   !! STAIRCASE. A bra block of up to MDG_BLOCK sorted pairs, with largest bound
+   !! Q_1, can only meet ket pairs with 4 Q_1 Q_cd max|D| > thresh: a PREFIX of
+   !! the sorted ket list, found by bisection. A block with an empty prefix ends
+   !! the bra loop, since every later block is smaller still: the early exit of
+   !! Ufimtsev and Martinez's exchange, here at the granularity of a window. Inside
+   !! a window the HGP kernels' per-quartet screen still zeroes what the coarse
+   !! cut lets through.
+   !!
+   !! The binkernel_fock_bins segments this replaces are split by Schwarz decade and by
+   !! primitive count, and the first prototype ran one window per segment: 1462
+   !! windows per Fock build on w20 cc-pVTZ, each far too small to fill the GPU
+   !! (nsys, V100).
+   !!
+   !! REFERENCES (inspiration; the formulation and code here are terco's own)
+   !!   L. E. McMurchie, E. R. Davidson, J. Comput. Phys. 26, 218 (1978).
+   !!   I. S. Ufimtsev, T. J. Martinez, J. Chem. Theory Comput. 4, 222 (2008);
+   !!     5, 1004 (2009).
+   !!   E. Palethorpe, G. M. J. Barca, J. Chem. Theory Comput. 21, 9388 (2025).
+   !!   E. Palethorpe, R. Stocks, G. M. J. Barca, ChemRxiv (2026),
+   !!     doi:10.26434/chemrxiv.15004739/v2.
+   !!   A. Asadchev, E. F. Valeev, J. Phys. Chem. A 127, 10889 (2023);
+   !!     J. Chem. Phys. 160, 244109 (2024).
+   !!
    use pic_types, only: dp, int64, int_index
    use pic_logger, only: global_logger
    use pic_timer, only: timer_type
@@ -44,6 +44,7 @@ module trc_mdg
    use trc_mdg_kernels, only: mdg_class_count, mdg_class_key, mdg_sizes, mdg_fused
    use trc_mdg_h, only: mdg_h, mdg_hsph, mdg_dsph, mdg_kcart
    use trc_basis_types, only: trc_basis_t
+   use trc_cart, only: ncart => cart_ncart_of
    implicit none
    private
    public :: trc_mdg_t, trc_mdg_scales_t, mdg_routes
@@ -329,11 +330,6 @@ contains
       end do
       deallocate (need)
    end subroutine form_e_matrices
-
-   pure integer function ncart(l) result(n)
-      integer, intent(in) :: l
-      n = (l + 1)*(l + 2)/2
-   end function ncart
 
    pure integer function ncomp(this, l) result(n)
       !! Components of a shell in the representation the exchange runs in.

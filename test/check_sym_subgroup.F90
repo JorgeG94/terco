@@ -1,30 +1,30 @@
-!
-! Requested subgroups: Cs and C2 requested on C2v molecules, against
-! pyscf 2.14.0 (symmetry='Cs' / 'C2', `as_subgroup`) and against the C2v and C1 runs of terco
-! C2v and C1 runs.
-!
-! Molecules: water (planar), nonplanar CH2Cl2 in a general orientation, the
-! NH2 radical (UHF), and nonplanar CH2Cl2 with axis-aligned input
-! (ch2cl2_aligned.xyz: C2 along x, Cl in the xy plane, H in the xz plane).
-! pyscf keeps the input axes for a requested group that holds in them, so for
-! the aligned molecule its Cs mirror is the xy plane (the one holding the Cl
-! atoms), and not the mirror that `as_subgroup` would turn to; the SO
-! dimensions of the two differ. This is the check on that rule.
-!
-! test_frame:   the reported group is the requested one, `detected` is C2v,
-!               the frame (rows x, y, z up to sign) and origin are pyscf
-!               `_symm_axes` and `_symm_orig`, and the operations are
-!               bijections that leave the symmetrised geometry invariant.
-! test_so_dims: SO dimensions per irrep equal mol.symm_orb (6-31G* Cartesian,
-!               cc-pVDZ spherical).
-! test_scf:     on the geometry symmetrised to C2v, the energy of the Cs (or
-!               C2) run equals the C2v run and the C1 run (<= 1e-10 Eh); on
-!               the raw input, the electrons per irrep, the orbital energies
-!               per irrep and the energy equal pyscf (sym_subgroup.ref).
-! test_refusals: a group that is not a subgroup is not reported, C1 and a
-!               request without a frame rule keep the old behaviour.
-!
 module check_sym_subgroup_suite
+   !!
+   !! Requested subgroups: Cs and C2 requested on C2v molecules, against
+   !! pyscf 2.14.0 (symmetry='Cs' / 'C2', `as_subgroup`) and against the C2v and C1 runs of terco
+   !! C2v and C1 runs.
+   !!
+   !! Molecules: water (planar), nonplanar CH2Cl2 in a general orientation, the
+   !! NH2 radical (UHF), and nonplanar CH2Cl2 with axis-aligned input
+   !! (ch2cl2_aligned.xyz: C2 along x, Cl in the xy plane, H in the xz plane).
+   !! pyscf keeps the input axes for a requested group that holds in them, so for
+   !! the aligned molecule its Cs mirror is the xy plane (the one holding the Cl
+   !! atoms), and not the mirror that `as_subgroup` would turn to; the SO
+   !! dimensions of the two differ. This is the check on that rule.
+   !!
+   !! test_frame:   the reported group is the requested one, `detected` is C2v,
+   !!               the frame (rows x, y, z up to sign) and origin are pyscf
+   !!               `_symm_axes` and `_symm_orig`, and the operations are
+   !!               bijections that leave the symmetrised geometry invariant.
+   !! test_so_dims: SO dimensions per irrep equal mol.symm_orb (6-31G* Cartesian,
+   !!               cc-pVDZ spherical).
+   !! test_scf:     on the geometry symmetrised to C2v, the energy of the Cs (or
+   !!               C2) run equals the C2v run and the C1 run (<= 1e-10 Eh); on
+   !!               the raw input, the electrons per irrep, the orbital energies
+   !!               per irrep and the energy equal pyscf (sym_subgroup.ref).
+   !! test_refusals: a group that is not a subgroup is not reported, C1 and a
+   !!               request without a frame rule keep the old behaviour.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

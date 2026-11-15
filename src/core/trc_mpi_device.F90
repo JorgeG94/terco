@@ -1,21 +1,21 @@
-!
-! Whether MPI is handed device buffers directly or through the host.
-!
-! A CUDA-aware MPI (NVHPC's HPC-X OpenMPI is one) takes a device address
-! and moves the data itself, over NVLink between GPUs that have it; any
-! other MPI has to be given host memory, so a device array goes through
-! `!$acc update self`, MPI and `!$acc update device`. On two V100s joined by
-! NVLink, RI-MP2's 2 GB block of B took 2.85 s through the host.
-!
-! The choice is made at run time so that one build runs on any MPI. The
-! default is the build's (CMake option TERCO_MPI_DEVICE, on for GPU builds
-! with MPI, which defines TRC_MPI_DEVICE), and the environment variable
-! TERCO_MPI_DEVICE=0 or 1 overrides it. A host build has no device buffers
-! and always answers no. An MPI that is not CUDA-aware, given a device
-! address, crashes (Cray MPICH needs MPICH_GPU_SUPPORT_ENABLED=1 first), so
-! the variable is the way out on such a machine.
-!
 module trc_mpi_device
+   !!
+   !! Whether MPI is handed device buffers directly or through the host.
+   !!
+   !! A CUDA-aware MPI (NVHPC's HPC-X OpenMPI is one) takes a device address
+   !! and moves the data itself, over NVLink between GPUs that have it; any
+   !! other MPI has to be given host memory, so a device array goes through
+   !! `!$acc update self`, MPI and `!$acc update device`. On two V100s joined by
+   !! NVLink, RI-MP2's 2 GB block of B took 2.85 s through the host.
+   !!
+   !! The choice is made at run time so that one build runs on any MPI. The
+   !! default is the build's (CMake option TERCO_MPI_DEVICE, on for GPU builds
+   !! with MPI, which defines TRC_MPI_DEVICE), and the environment variable
+   !! TERCO_MPI_DEVICE=0 or 1 overrides it. A host build has no device buffers
+   !! and always answers no. An MPI that is not CUDA-aware, given a device
+   !! address, crashes (Cray MPICH needs MPICH_GPU_SUPPORT_ENABLED=1 first), so
+   !! the variable is the way out on such a machine.
+   !!
    implicit none
    private
 

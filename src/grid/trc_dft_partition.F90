@@ -237,20 +237,20 @@ contains
       !$acc end data
    end subroutine dft_partition_becke_weights
 
-   !
-   ! One point's partition weight, into weights(k), using row g of the
-   ! scratch. The atoms this point can see are first those not cut off
-   ! against its owner, then any atom not cut off against one of THOSE,
-   ! because an atom with a negligible cell of its own can still carry a
-   ! factor of order one on a neighbour's cell (water: the far hydrogen is
-   ! cut off against the oxygen and multiplies the near hydrogen's cell by
-   ! 0.97). An atom cut off against every kept atom has a cell below
-   ! s(nu_max) and a factor within s(nu_max) of one on all of them. `mark`
-   ! is a membership mask, left all-zero on exit for the next point.
-   !
    pure subroutine partition_point(k, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
                                    shift, inv_distance, r_min, scheme, adjust, numax, &
                                    atom_r, ract, cell, active, mark, weights)
+      !!
+      !! One point's partition weight, into weights(k), using row g of the
+      !! scratch. The atoms this point can see are first those not cut off
+      !! against its owner, then any atom not cut off against one of THOSE,
+      !! because an atom with a negligible cell of its own can still carry a
+      !! factor of order one on a neighbour's cell (water: the far hydrogen is
+      !! cut off against the oxygen and multiplies the near hydrogen's cell by
+      !! 0.97). An atom cut off against every kept atom has a cell below
+      !! s(nu_max) and a factor within s(nu_max) of one on all of them. `mark`
+      !! is a membership mask, left all-zero on exit for the next point.
+      !!
       !$acc routine seq
       integer, intent(in) :: k, g, n_atoms, n_points, chunk, scheme, adjust
       real(dp), intent(in) :: points(3, n_points), atom_coords(3, n_atoms)
@@ -716,42 +716,42 @@ contains
       !$acc end data
    end subroutine dft_partition_becke_grad_contract
 
-   !
-   ! One point of `dft_partition_becke_grad_contract`, row g of the scratch.
-   !
-   ! The active set is `partition_point`'s. With cell_i = prod_{j active,
-   ! j /= i} S(i,j) and the point's weight P = cell_own / total, total the
-   ! sum of the active cells,
-   !
-   !     dP/dR_c = (dcell_own/dR_c total - cell_own dtotal/dR_c) / total^2
-   !     dtotal/dR_c = sum_{r /= c} S'(r,c) cell_r/S(r,c)               (A)
-   !                 - sum_{r /= c} S'(r,c) cell_c/S(c,r)               (B)
-   !
-   ! where S'(r,c) = dS(r,c)/dR_c, the only factor of cell_r that moves
-   ! with R_c (A), and (B) is cell_c's own derivative, using S(c,r) =
-   ! 1 - S(r,c). dcell_own/dR_c is the r = own term of (A) for c /= own
-   ! and (B) for c = own. Everything for nucleus c is a sum over r, so one
-   ! pass per c accumulates it in registers and adds it to the gradient
-   ! straight away: the per-point scratch is the active list, its
-   ! distances and the cells -- three columns, read the same way by every
-   ! thread of a warp -- and nothing of size active^2 or 3 x active is
-   ! read back and forth. That traffic was what bound the kernel.
-   !
-   ! "cell_r / S(r,c)" is the product of cell_r's other factors only while
-   ! cell_r is a normal number, and most active atoms' cells are far below
-   ! any that matters: a row whose cell is below CELL_FLOOR, or below
-   ! CELL_REL times the owner's cell, counts as zero (its product stops as
-   ! soon as it is there, and it leaves `total`). Its terms are that cell
-   ! times S'/S, at most 8/(1 - nu) |grad nu| for Becke's cutoff -- under
-   ! 1e-14 relative even at nu = 1 - 1e-6 -- and no factor that is exactly
-   ! zero is ever divided by. A nucleus whose cell is zero then needs only
-   ! (A), over the rows that are not (`sig`), so the pass over nuclei costs
-   ! active x significant rather than active^2. The pair algebra is
-   ! `pair_sij`'s, operation for operation, on scalars.
-   !
    pure subroutine partition_grad_point(k, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
                                         coef, shift, inv_distance, r_min, scheme, adjust, numax, &
                                         ract, cell, active, sig, mark, grad)
+      !!
+      !! One point of `dft_partition_becke_grad_contract`, row g of the scratch.
+      !!
+      !! The active set is `partition_point`'s. With cell_i = prod_{j active,
+      !! j /= i} S(i,j) and the point's weight P = cell_own / total, total the
+      !! sum of the active cells,
+      !!
+      !!     dP/dR_c = (dcell_own/dR_c total - cell_own dtotal/dR_c) / total^2
+      !!     dtotal/dR_c = sum_{r /= c} S'(r,c) cell_r/S(r,c)               (A)
+      !!                 - sum_{r /= c} S'(r,c) cell_c/S(c,r)               (B)
+      !!
+      !! where S'(r,c) = dS(r,c)/dR_c, the only factor of cell_r that moves
+      !! with R_c (A), and (B) is cell_c's own derivative, using S(c,r) =
+      !! 1 - S(r,c). dcell_own/dR_c is the r = own term of (A) for c /= own
+      !! and (B) for c = own. Everything for nucleus c is a sum over r, so one
+      !! pass per c accumulates it in registers and adds it to the gradient
+      !! straight away: the per-point scratch is the active list, its
+      !! distances and the cells -- three columns, read the same way by every
+      !! thread of a warp -- and nothing of size active^2 or 3 x active is
+      !! read back and forth. That traffic was what bound the kernel.
+      !!
+      !! "cell_r / S(r,c)" is the product of cell_r's other factors only while
+      !! cell_r is a normal number, and most active atoms' cells are far below
+      !! any that matters: a row whose cell is below CELL_FLOOR, or below
+      !! CELL_REL times the owner's cell, counts as zero (its product stops as
+      !! soon as it is there, and it leaves `total`). Its terms are that cell
+      !! times S'/S, at most 8/(1 - nu) |grad nu| for Becke's cutoff -- under
+      !! 1e-14 relative even at nu = 1 - 1e-6 -- and no factor that is exactly
+      !! zero is ever divided by. A nucleus whose cell is zero then needs only
+      !! (A), over the rows that are not (`sig`), so the pass over nuclei costs
+      !! active x significant rather than active^2. The pair algebra is
+      !! `pair_sij`'s, operation for operation, on scalars.
+      !!
       !$acc routine seq
       integer, intent(in) :: k, g, n_atoms, n_points, chunk, scheme, adjust
       real(dp), intent(in) :: points(3, n_points), atom_coords(3, n_atoms)

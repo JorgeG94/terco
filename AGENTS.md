@@ -31,7 +31,7 @@ Fortran API, a `bind(c)` ABI and a `terco` CLI. See `README.md`.
 | `src/generated/` | **generator output: never edit by hand** |
 | `scripts/` | the kernel generators (`gen_*.py`), see `docs/GENERATORS.md` |
 | `tools/` | OpenMP converters, `pic_api.py`, XC registry and translators, lint helpers |
-| `app/` | the `terco` CLI (`main.F90`, `trc_app.F90`) and its MPI checks |
+| `src/cli/`, `app/` | CLI support modules and build rules; `app/main.F90` is the entry point |
 | `test/` | every check program, `pyscf_refs/` (frozen anchors), `goldens/` (terco's own numbers) |
 
 ## Build and test
@@ -41,6 +41,7 @@ Host build (what CI runs, no GPU needed; gfortran 15 is the floor):
 ```sh
 cmake -G Ninja -DCMAKE_BUILD_TYPE=Release -DTERCO_ENABLE_GPU=OFF -S . -B build
 cmake --build build --parallel
+# if on GPUs, ctest -j N will just hammer GPU 0 with N processes, don't do this!
 ctest --test-dir build --output-on-failure
 ```
 

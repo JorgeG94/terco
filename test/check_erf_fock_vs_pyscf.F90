@@ -1,30 +1,30 @@
-!
-! eri%fock / eri%fock_nosym with the range-separated (erf) operator against
-! pyscf's own range-separated J/K, on a fixed, deterministic, non-SCF
-! density -- the omega > 0 analogue of check_rys_fock_vs_pyscf.F90.
-!
-! eri%fock has no entry point that returns J and K separately: it always
-! returns the combined g = j_scale*J - k_scale*K/2. Two calls at the same
-! omega isolate them instead of adding a second interface just for this
-! check: (j_scale=1, k_scale=0) leaves g = J, and (j_scale=0, k_scale=1)
-! leaves g = -K/2, so K = -2*g. This is exact, not an approximation -- the
-! kernels are linear in jfac/kfac by construction (see
-! scripts/gen_perclass.py's digestion), and the same trick works whichever
-! path g went through.
-!
-! The fourth argument picks eri%fock (0, the folded/symmetric path -- HGP by
-! default, Rys when the caller sets TRC_RYS_CLASSES, see test/CMakeLists.txt)
-! or eri%fock_nosym (1, the enumerated/general path trc_binkernel.F90's
-! one_bin_item_nosym runs). Same AO-order and AO-normalisation story as
-! check_rys_fock_vs_pyscf.F90 (and the same dump layout plus one more
-! matrix); erf_fock_ref.py does the pyscf side.
-!
-! SKIPS CLEANLY (stop 0, after printing SKIP) when the basis needs more
-! angular momentum than this build's LMAX reaches, same convention as
-! check_rys_fock_vs_pyscf.F90 -- in run_case, BEFORE run_testsuite is
-! called, so ctest's SKIP_REGULAR_EXPRESSION keeps matching the same text.
-!
 module check_erf_fock_vs_pyscf_suite
+   !!
+   !! eri%fock / eri%fock_nosym with the range-separated (erf) operator against
+   !! pyscf's own range-separated J/K, on a fixed, deterministic, non-SCF
+   !! density -- the omega > 0 analogue of check_rys_fock_vs_pyscf.F90.
+   !!
+   !! eri%fock has no entry point that returns J and K separately: it always
+   !! returns the combined g = j_scale*J - k_scale*K/2. Two calls at the same
+   !! omega isolate them instead of adding a second interface just for this
+   !! check: (j_scale=1, k_scale=0) leaves g = J, and (j_scale=0, k_scale=1)
+   !! leaves g = -K/2, so K = -2*g. This is exact, not an approximation -- the
+   !! kernels are linear in jfac/kfac by construction (see
+   !! scripts/gen_perclass.py's digestion), and the same trick works whichever
+   !! path g went through.
+   !!
+   !! The fourth argument picks eri%fock (0, the folded/symmetric path -- HGP by
+   !! default, Rys when the caller sets TRC_RYS_CLASSES, see test/CMakeLists.txt)
+   !! or eri%fock_nosym (1, the enumerated/general path trc_binkernel.F90's
+   !! one_bin_item_nosym runs). Same AO-order and AO-normalisation story as
+   !! check_rys_fock_vs_pyscf.F90 (and the same dump layout plus one more
+   !! matrix); erf_fock_ref.py does the pyscf side.
+   !!
+   !! SKIPS CLEANLY (stop 0, after printing SKIP) when the basis needs more
+   !! angular momentum than this build's LMAX reaches, same convention as
+   !! check_rys_fock_vs_pyscf.F90 -- in run_case, BEFORE run_testsuite is
+   !! called, so ctest's SKIP_REGULAR_EXPRESSION keeps matching the same text.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -57,15 +57,15 @@ contains
                   ]
    end subroutine collect_erf_fock_tests
 
-   !
-   ! Everything the old program did: argument parsing, the LMAX self-skip,
-   ! the two fixed-density fock/fock_nosym calls that isolate J and K (plus
-   ! their golden dump, left exactly where it was relative to the build),
-   ! the AO-normalisation overlap, writing the probe dump, and reading the
-   ! pyscf reference back into the three max|diff| values test_vs_pyscf
-   ! checks.
-   !
    subroutine run_case(skip, message)
+      !!
+      !! Everything the old program did: argument parsing, the LMAX self-skip,
+      !! the two fixed-density fock/fock_nosym calls that isolate J and K (plus
+      !! their golden dump, left exactly where it was relative to the build),
+      !! the AO-normalisation overlap, writing the probe dump, and reading the
+      !! pyscf reference back into the three max|diff| values test_vs_pyscf
+      !! checks.
+      !!
       logical, intent(out) :: skip
       character(len=*), intent(out) :: message
 
@@ -201,11 +201,11 @@ contains
       deallocate (at_z, r, d, gj, gk, smat, tmat, vmat, s_ref, j_ref, k_ref)
    end subroutine run_case
 
-   !
-   ! Same deterministic, dense, symmetric construction as
-   ! check_rys_fock_vs_pyscf.F90.
-   !
    subroutine synth_density(n, dd)
+      !!
+      !! Same deterministic, dense, symmetric construction as
+      !! check_rys_fock_vs_pyscf.F90.
+      !!
       integer, intent(in) :: n
       real(dp), intent(out) :: dd(n, n)
       integer :: ii, jj

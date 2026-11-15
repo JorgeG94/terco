@@ -1,25 +1,25 @@
-!
-! Parity skipping: the Fock matrix built with
-! the dead-axis masks and the engine frame equals the one built without them.
-!
-! `ctx%eri` is built with the point group and the dead axis of the molecule
-! made the kernels' z (PARITY_FORCE_FRAME: the axis permutation is applied
-! even before a masked kernel exists); `ctx%eri0` is the same engine with
-! parity skipping off. For each molecule, Cartesian and spherical, with J, K
-! and J+K, tiles on and off, an increment, and a random and a converged
-! density, the symmetrized skeleton of the first and its full G are compared
-! with the full G of the second against the S14.2 gate
-!   |.|_max <= 5e-11 max(1, |G|_max).
-! Counters (`eri%nwork_masked`, `nwork_variant`, `parity_axis`) show that the
-! masks and, once a kernel exists, the variants really ran: a silent
-! fall back to the unmasked plan fails on them, and `parity_cost_*` that the
-! variants cover the masked work that is actually expensive. Without a point
-! group nothing may be masked and the matrix must be bit-identical.
-!
-! Mode "f" is the uncontracted l = 0..3 set (skipped below LMAX = 3).
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_parity_suite
+   !!
+   !! Parity skipping: the Fock matrix built with
+   !! the dead-axis masks and the engine frame equals the one built without them.
+   !!
+   !! `ctx%eri` is built with the point group and the dead axis of the molecule
+   !! made the kernels' z (PARITY_FORCE_FRAME: the axis permutation is applied
+   !! even before a masked kernel exists); `ctx%eri0` is the same engine with
+   !! parity skipping off. For each molecule, Cartesian and spherical, with J, K
+   !! and J+K, tiles on and off, an increment, and a random and a converged
+   !! density, the symmetrized skeleton of the first and its full G are compared
+   !! with the full G of the second against the S14.2 gate
+   !!   |.|_max <= 5e-11 max(1, |G|_max).
+   !! Counters (`eri%nwork_masked`, `nwork_variant`, `parity_axis`) show that the
+   !! masks and, once a kernel exists, the variants really ran: a silent
+   !! fall back to the unmasked plan fails on them, and `parity_cost_*` that the
+   !! variants cover the masked work that is actually expensive. Without a point
+   !! group nothing may be masked and the matrix must be bit-identical.
+   !!
+   !! Mode "f" is the uncontracted l = 0..3 set (skipped below LMAX = 3).
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -254,9 +254,8 @@ contains
 
 
 
-   ! ------------------------------------------------------------ comparisons
-
    subroutine compare_build(ctx, dc, jscale, kscale, tag, tiles, error)
+      !! ------------------------------------------------------------ comparisons
       !! The symmetrized skeleton and the full build of the engine under test
       !! against the full build of the engine without parity skipping.
       type(ctx_t), intent(inout) :: ctx
@@ -456,9 +455,8 @@ contains
       end do
    end subroutine run_molecule
 
-   ! ------------------------------------------------------------------ tests
-
    subroutine test_benzene(error)
+      !! ------------------------------------------------------------------ tests
       !! Benzene is D6h, detected as D2h with the plane normal on x: the
       !! engine frame moves x to z. Every pair of atoms is in the plane.
       type(error_type), allocatable, intent(out) :: error

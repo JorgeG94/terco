@@ -1,79 +1,79 @@
-!
-! Coupled-perturbed Kohn-Sham: trc_cphf's orbital-Hessian solve extended
-! with the exchange-correlation kernel response, for LDA and GGA
-! functionals (restricted only here -- see this module's own limitations
-! below). Intended, with trc_cphf, as the foundation for double-hybrid
-! gradients; this module only adds the one missing term to trc_cphf's
-! equation, not a new solver.
-!
-! THE EQUATION (RKS)
-! -------------------
-! Same orbital-rotation amplitudes U_ai, same right-hand side convention,
-! as trc_cphf.F90's own header, with the orbital Hessian action now
-! carrying the XC kernel response alongside J and K:
-!
-!     D_U = C_vir U C_occ^T + (C_vir U C_occ^T)^T          (symmetric, AO)
-!     [A U]_ai = 2 [C_vir^T (J[D_U] - (a_x/2) K[D_U] + f_xc[D_U]) C_occ]_ai
-!
-! a_x is the functional's own fraction of exact exchange (`func%exx`,
-! zero for a pure functional); `eri%fock_resident(..., k_scale=a_x)`
-! already folds the 1/2 into its own K, matching trc_scf_fock.F90's
-! `scf_fock_build_g` (k_scale = exx there too) -- see trc_eri.F90's own
-! `eri_fock` header ("j*J - k*K/2"). f_xc[D_U], the kernel response, is
-! `trc_xc_fxc_rks` (src/xc/trc_xc.F90): the second-derivative contraction
-! against the trial density D_U, on the SAME grid batches trc_xc_rks
-! builds the ground-state potential from.
-!
-! WHAT THIS DOES NOT DO
-! ----------------------
-! Unrestricted (UKS): not implemented. The spin-resolved kernel response
-! needs v2rho2_aa/ab/bb, v2rhosigma_{a,b}_{aa,ab,bb} and
-! v2sigma2_{aa,ab,bb}_{aa,ab,bb} contracted against BOTH trial spin
-! densities, none of which `trc_xc_fxc_rks` computes -- a restricted-only
-! first version, per this branch's own instructions.
-!
-! Meta-GGA, range-separated hybrids, VV10: refused outright by
-! `cpks_refuse_reason`, called before the CG loop starts. A meta-GGA
-! kernel is not translated at all here (`func%missing` is set and this
-! never reaches the refusal logic needed for the other two); a
-! range-separated hybrid needs a second, short-range-screened K response
-! this module does not build; VV10's nonlocal correlation has no second
-! derivative here. All three stop with a message naming the gap rather
-! than silently running the wrong physics.
-!
-! RANKS: correct under a distributed `eri`. `eri%fock_resident` reduces
-! `gmat` with `sum_ranks` (an allreduce then a broadcast), so every rank
-! holds the full G[D_U]; `trc_xc_fxc_rks` takes no communicator and
-! computes the full `v_resp` on every rank. `matvec`'s g_u + v_resp is
-! therefore full + full and identical across ranks. The only cost is the
-! XC response, done redundantly on each rank. trc_cphf's matvec gets the
-! same full G from the same call.
-!
-! THE SOLVER
-! ----------
-! trc_cphf's own preconditioned CG, copied (not called -- its
-! elementwise `do concurrent` helpers are exported and reused directly,
-! but the CG loop itself is this module's own separate copy, see
-! trc_cpks_solve_rks below); the only change from trc_cphf's loop is one
-! extra call inside `matvec`, folding `f_xc[D_U]` into the resident
-! Fock-like build before the two back-transforms.
-!
-! A --df REFERENCE: trc_cpks_fitted_t
-! -----------------------------------
-! A --df KS SCF is stationary for its FITTED J and K, so its response
-! operator is the fitted one: trc_scf_df_response's df_rotation_t (the
-! MO-basis blocks of trc_cphf_solve_rhf_fitted) at k_scale = a_x, plus the
-! XC kernel, which is a grid quantity and never fitted: trc_cpks_kernel_t
-! forms D_U in the AO basis, calls trc_xc_fxc_rks_apply against its own
-! `cache` (collocated once, not every CG iteration -- trc_xc_fxc_cache_t's
-! own header) and projects the result on the orbitals. The same CG loop
-! again; the double-hybrid gradient's
-! Z-vector (trc_rimp2_grad.F90) is its caller. The kernel also serves the
-! right-hand side and the energy-weighted density there (`add_general`,
-! `add_rotation`'s `goo`), so every response of that gradient is the same
-! operator.
-!
 module trc_cpks
+   !!
+   !! Coupled-perturbed Kohn-Sham: trc_cphf's orbital-Hessian solve extended
+   !! with the exchange-correlation kernel response, for LDA and GGA
+   !! functionals (restricted only here -- see this module's own limitations
+   !! below). Intended, with trc_cphf, as the foundation for double-hybrid
+   !! gradients; this module only adds the one missing term to trc_cphf's
+   !! equation, not a new solver.
+   !!
+   !! THE EQUATION (RKS)
+   !! -------------------
+   !! Same orbital-rotation amplitudes U_ai, same right-hand side convention,
+   !! as trc_cphf.F90's own header, with the orbital Hessian action now
+   !! carrying the XC kernel response alongside J and K:
+   !!
+   !!     D_U = C_vir U C_occ^T + (C_vir U C_occ^T)^T          (symmetric, AO)
+   !!     [A U]_ai = 2 [C_vir^T (J[D_U] - (a_x/2) K[D_U] + f_xc[D_U]) C_occ]_ai
+   !!
+   !! a_x is the functional's own fraction of exact exchange (`func%exx`,
+   !! zero for a pure functional); `eri%fock_resident(..., k_scale=a_x)`
+   !! already folds the 1/2 into its own K, matching trc_scf_fock.F90's
+   !! `scf_fock_build_g` (k_scale = exx there too) -- see trc_eri.F90's own
+   !! `eri_fock` header ("j*J - k*K/2"). f_xc[D_U], the kernel response, is
+   !! `trc_xc_fxc_rks` (src/xc/trc_xc.F90): the second-derivative contraction
+   !! against the trial density D_U, on the SAME grid batches trc_xc_rks
+   !! builds the ground-state potential from.
+   !!
+   !! WHAT THIS DOES NOT DO
+   !! ----------------------
+   !! Unrestricted (UKS): not implemented. The spin-resolved kernel response
+   !! needs v2rho2_aa/ab/bb, v2rhosigma_{a,b}_{aa,ab,bb} and
+   !! v2sigma2_{aa,ab,bb}_{aa,ab,bb} contracted against BOTH trial spin
+   !! densities, none of which `trc_xc_fxc_rks` computes -- a restricted-only
+   !! first version, per this branch's own instructions.
+   !!
+   !! Meta-GGA, range-separated hybrids, VV10: refused outright by
+   !! `cpks_refuse_reason`, called before the CG loop starts. A meta-GGA
+   !! kernel is not translated at all here (`func%missing` is set and this
+   !! never reaches the refusal logic needed for the other two); a
+   !! range-separated hybrid needs a second, short-range-screened K response
+   !! this module does not build; VV10's nonlocal correlation has no second
+   !! derivative here. All three stop with a message naming the gap rather
+   !! than silently running the wrong physics.
+   !!
+   !! RANKS: correct under a distributed `eri`. `eri%fock_resident` reduces
+   !! `gmat` with `sum_ranks` (an allreduce then a broadcast), so every rank
+   !! holds the full G[D_U]; `trc_xc_fxc_rks` takes no communicator and
+   !! computes the full `v_resp` on every rank. `matvec`'s g_u + v_resp is
+   !! therefore full + full and identical across ranks. The only cost is the
+   !! XC response, done redundantly on each rank. trc_cphf's matvec gets the
+   !! same full G from the same call.
+   !!
+   !! THE SOLVER
+   !! ----------
+   !! trc_cphf's own preconditioned CG, copied (not called -- its
+   !! elementwise `do concurrent` helpers are exported and reused directly,
+   !! but the CG loop itself is this module's own separate copy, see
+   !! trc_cpks_solve_rks below); the only change from trc_cphf's loop is one
+   !! extra call inside `matvec`, folding `f_xc[D_U]` into the resident
+   !! Fock-like build before the two back-transforms.
+   !!
+   !! A --df REFERENCE: trc_cpks_fitted_t
+   !! -----------------------------------
+   !! A --df KS SCF is stationary for its FITTED J and K, so its response
+   !! operator is the fitted one: trc_scf_df_response's df_rotation_t (the
+   !! MO-basis blocks of trc_cphf_solve_rhf_fitted) at k_scale = a_x, plus the
+   !! XC kernel, which is a grid quantity and never fitted: trc_cpks_kernel_t
+   !! forms D_U in the AO basis, calls trc_xc_fxc_rks_apply against its own
+   !! `cache` (collocated once, not every CG iteration -- trc_xc_fxc_cache_t's
+   !! own header) and projects the result on the orbitals. The same CG loop
+   !! again; the double-hybrid gradient's
+   !! Z-vector (trc_rimp2_grad.F90) is its caller. The kernel also serves the
+   !! right-hand side and the energy-weighted density there (`add_general`,
+   !! `add_rotation`'s `goo`), so every response of that gradient is the same
+   !! operator.
+   !!
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
@@ -144,14 +144,14 @@ module trc_cpks
 
 contains
 
-   !
-   ! Why this functional cannot run through trc_cpks, or an empty string if
-   ! it can: meta-GGA (never reaches `ok=.true.` with an empty `missing`
-   ! today -- see trc_xc_functional.F90's own table, so this arm is mostly
-   ! future-proofing), a range-separated hybrid (`omega`/`exx_lr` nonzero)
-   ! or VV10 (`nlc_b`/`nlc_c` nonzero).
-   !
    pure function cpks_refuse_reason(func) result(msg)
+      !!
+      !! Why this functional cannot run through trc_cpks, or an empty string if
+      !! it can: meta-GGA (never reaches `ok=.true.` with an empty `missing`
+      !! today -- see trc_xc_functional.F90's own table, so this arm is mostly
+      !! future-proofing), a range-separated hybrid (`omega`/`exx_lr` nonzero)
+      !! or VV10 (`nlc_b`/`nlc_c` nonzero).
+      !!
       type(trc_xc_functional_t), intent(in) :: func
       character(len=256) :: msg
       msg = ""
@@ -169,20 +169,20 @@ contains
       end if
    end function cpks_refuse_reason
 
-   !
-   ! RKS CPKS: `ncomp` right-hand sides, trc_cphf_solve_rhf's own CG loop
-   ! with the XC kernel response folded into `matvec`. `cmo`, `bvec` and
-   ! `u` are device-resident (trc_cphf_solve_rhf's own contract); `eps` and
-   ! `dmat` (the ground-state SCF density this functional was converged
-   ! with) are HOST, `dmat` copied to the device once for the life of this
-   ! solve. `xg` is the grid `dmat`'s own XC build used -- matching it is
-   ! what makes the quadrature error the same linear operator from one CG
-   ! iteration to the next, and the same one pyscf is compared against
-   ! when `xg` is built from a converged `trc_scf_result_t`'s own
-   ! `grid_r`/`grid_w`.
-   !
    subroutine trc_cpks_solve_rks(b, eri, lp, xg, func, nao, nocc, nvirt, cmo, eps, dmat, ncomp, bvec, u, &
                                  opts, res, budget)
+      !!
+      !! RKS CPKS: `ncomp` right-hand sides, trc_cphf_solve_rhf's own CG loop
+      !! with the XC kernel response folded into `matvec`. `cmo`, `bvec` and
+      !! `u` are device-resident (trc_cphf_solve_rhf's own contract); `eps` and
+      !! `dmat` (the ground-state SCF density this functional was converged
+      !! with) are HOST, `dmat` copied to the device once for the life of this
+      !! solve. `xg` is the grid `dmat`'s own XC build used -- matching it is
+      !! what makes the quadrature error the same linear operator from one CG
+      !! iteration to the next, and the same one pyscf is compared against
+      !! when `xg` is built from a converged `trc_scf_result_t`'s own
+      !! `grid_r`/`grid_w`.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
       type(trc_linalg_t), intent(inout) :: lp
@@ -291,9 +291,9 @@ contains
 
    contains
 
-      ! [A p]_ai = 2 [C_vir^T (J[D_p] - (a_x/2) K[D_p] + f_xc[D_p]) C_occ]_ai
-      ! + (e_a-e_i) p_ai -- this module's own header.
       subroutine matvec(pin, apout)
+         !! [A p]_ai = 2 [C_vir^T (J[D_p] - (a_x/2) K[D_p] + f_xc[D_p]) C_occ]_ai
+         !! + (e_a-e_i) p_ai -- this module's own header.
          real(dp), intent(in) :: pin(nvirt, nocc)
          real(dp), intent(inout) :: apout(nvirt, nocc)
          call lp%gemm_mat(cmo(:, nocc + 1:nao), pin, temporary_no)
@@ -311,18 +311,18 @@ contains
 
    end subroutine trc_cpks_solve_rks
 
-   !
-   ! Static dipole polarizability through trc_cpks_solve_rks: same
-   ! construction as trc_cphf's `trc_scf_polarizability_rhf` (its own
-   ! comment on the symmetrised alpha_xy applies verbatim), with the
-   ! ground-state density and functional threaded through to the solver.
-   ! `cmo`/`eps`/`dmat` are `res_scf%cmo(:,:,1)`/`res_scf%eps(:,1)`/
-   ! `res_scf%dmat(:,:,1)`, HOST, exactly as trc_scf_run hands them back;
-   ! `xg` is built from `res_scf%grid_r`/`grid_w` by the caller, so the
-   ! quadrature here is the one the SCF converged against.
-   !
    recursive subroutine trc_scf_polarizability_rks(b, pl, eri, xg, func, nocc, cmo, eps, dmat, alpha, opts, res, &
                                                    la, budget)
+      !!
+      !! Static dipole polarizability through trc_cpks_solve_rks: same
+      !! construction as trc_cphf's `trc_scf_polarizability_rhf` (its own
+      !! comment on the symmetrised alpha_xy applies verbatim), with the
+      !! ground-state density and functional threaded through to the solver.
+      !! `cmo`/`eps`/`dmat` are `res_scf%cmo(:,:,1)`/`res_scf%eps(:,1)`/
+      !! `res_scf%dmat(:,:,1)`, HOST, exactly as trc_scf_run hands them back;
+      !! `xg` is built from `res_scf%grid_r`/`grid_w` by the caller, so the
+      !! quadrature here is the one the SCF converged against.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
       type(trc_eri_t), intent(inout) :: eri

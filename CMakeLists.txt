@@ -4,7 +4,7 @@ project(
   "TERCO"
   LANGUAGES Fortran
   VERSION 0.1.0
-  DESCRIPTION "GPU Gaussian integrals in standard Fortran")
+  DESCRIPTION "A GPU accelerated quantum chemistry package")
 set(project_name terco)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -164,12 +164,12 @@ option(TERCO_ENABLE_MPI "Split the Fock build over MPI ranks, one device each" O
 # the builder's choice. With this ON, src/opt/CMakeLists.txt fetches
 # libdlfind (cmake/modules/Findlibdlfind.cmake) and builds a SEPARATE
 # shared library, libterco_opt (its own C ABI, include/terco_opt.h),
-# linked by terco_cli (app/CMakeLists.txt) and installed/exported
+# linked by terco_cli (src/cli/CMakeLists.txt) and installed/exported
 # alongside libterco for any other caller (terco::terco_opt) -- never
 # linked into libterco itself, so the LGPL relink obligation and
 # DL-FIND's `error stop` never reach the library. With this OFF, neither
 # libterco_opt nor its header is built at all, and terco_cli's --opt is
-# refused with a clear message (app/trc_dlfind_stub.F90).
+# refused with a clear message (src/cli/trc_dlfind_stub.F90).
 #
 option(TERCO_ENABLE_DLFIND "Build the --opt geometry optimiser against libdlfind (LGPL-3.0-or-later)" OFF)
 #
@@ -267,6 +267,7 @@ option(TERCO_BUILD_SHARED
 # depends on the offload model is a bug in the offload model.
 #
 option(TERCO_ENABLE_GPU "Offload with -stdpar=gpu (needs NVHPC)" ON)
+# the multicore build is not intended to be competitive against established packages
 option(TERCO_ENABLE_MULTICORE
        "Host build with -stdpar=multicore -acc=multicore (needs NVHPC)" OFF)
 if(TERCO_ENABLE_GPU AND TERCO_ENABLE_MULTICORE)
@@ -303,20 +304,6 @@ add_subdirectory(cmake)
 #
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-#
-# PIC, for one thing: `sort_index` on 64-bit Morton codes, to order the shell
-# pairs inside each bin spatially. See `sort_bins_spatially` in
-# `src/eri/trc_bins.F90` for why that ordering is worth a sort.
-#
-# PIC carries these sorts precisely because the Fortran stdlib does not build
-# with the NVIDIA compilers, which is the situation terco is permanently in.
-#
-#
-# PIC's own tests are not terco's business. Fetched with them on, `ctest` here
-# runs them too -- and three of them fail under `-fopenmp` on the host for
-# reasons that have nothing to do with integrals, which would leave this
-# project's CI red over a dependency's logger.
-#
 set(PIC_ENABLE_TESTING
     OFF
     CACHE BOOL "" FORCE)
@@ -342,13 +329,8 @@ add_library(terco::${project_name} ALIAS ${main_lib})
 
 #
 # TRC_FOCK6 folds the eight-fold permutational symmetry into six atomic
-# updates per quartet. It is a measured win and not optional in practice, so
-# it is a definition rather than an option -- an option nobody should turn
-# off is a configuration that nobody tests. The symmetric Fock build always
-# launches one kernel per angular-momentum class, so ptxas budgets registers
-# for that class rather than the worst one; the shared kernel that once
-# covered every class is gone, and only the non-symmetric build
-# (one_bin_item_nosym) still uses a single kernel.
+# updates per quartet. Not optional
+# TODO(JORGE): should remove maybe and make it always a default 
 #
 target_compile_definitions(${main_lib} PRIVATE TRC_LMAX=${TERCO_LMAX}
                                                TRC_FOCK6)
@@ -426,7 +408,7 @@ if(TERCO_ENABLE_GPU)
   endif()
 endif()
 
-#
+# This is a genius, Claude hack:
 # Check the device link after every link of libterco.so. A kernel reads its
 # compiler constants -- double literals and `select case` jump tables -- from
 # constant bank 2, which holds 64 KiB. When the constants one kernel can reach
@@ -466,12 +448,7 @@ if(TERCO_ENABLE_GPU AND TERCO_BUILD_SHARED)
 endif()
 
 #
-# pic-blas, for the SCF driver (src/scf/trc_scf_driver.F90): the orthogonaliser and the
-# core guess go through its explicit-interface wrappers in every build, and
-# under a host build so do the eigenproblem, the products and the dot
-# products of the iteration. The GPU build does those on the device;
-# -cudalib is a link option on the target, above. The DIIS system is solved in terco itself, the way
-# metalquicha does it, and needs neither.
+# pic-blas, for explicit BLAS/LAPACK interfaces
 #
 # pic-blas's switch is the unprefixed ENABLE_TESTING; terco's own is
 # TERCO_ENABLE_TESTING, so forcing this off costs nothing here.
@@ -522,9 +499,9 @@ if(TERCO_ENABLE_TESTING)
   add_subdirectory(test)
 endif()
 
-# The `terco` command line program (app/), installed alongside the library.
+# The `terco` command line program, installed alongside the library.
 if(TERCO_BUILD_APP)
-  add_subdirectory(app)
+  add_subdirectory(src/cli app)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -1,24 +1,24 @@
-!
-! Post-SCF methods that divide by eps_a - eps_i (RI-MP2, the CPHF/CPKS
-! response) refuse a reference whose occupation is not aufbau, as a
-! test-drive suite.
-!
-! 1. scf_settings_is_aufbau on synthetic orbital energies: aufbau, a swapped
-!    HOMO/LUMO, an open shell with only one spin swapped, degenerate levels
-!    within the tolerance, levels beyond `nmo` (the lifted null states of a
-!    linearly dependent basis) ignored, and nothing to compare.
-!
-! 2. A MOM-held doubly excited water (the converged HOMO and LUMO swapped,
-!    given as the guess with mom on, as check_scf_stabilise.F90 does) is
-!    refused by trc_run_rimp2 and trc_run_polarizability with a message that
-!    says why. The same handle without the swap still runs both.
-!
-! 3. The aufbau references still give the anchored numbers: RI-MP2 on water
-!    cc-pVDZ (E_os, E_ss of rimp2_ccpvdz.ref, 1e-9 as scf_rimp2.F90 holds it)
-!    and the CPHF polarizability on water 6-31G* (cphf_water_6-31gs.ref, the
-!    tolerance check_capi_polarizability.F90 holds).
-!
 module check_post_scf_aufbau_suite
+   !!
+   !! Post-SCF methods that divide by eps_a - eps_i (RI-MP2, the CPHF/CPKS
+   !! response) refuse a reference whose occupation is not aufbau, as a
+   !! test-drive suite.
+   !!
+   !! 1. scf_settings_is_aufbau on synthetic orbital energies: aufbau, a swapped
+   !!    HOMO/LUMO, an open shell with only one spin swapped, degenerate levels
+   !!    within the tolerance, levels beyond `nmo` (the lifted null states of a
+   !!    linearly dependent basis) ignored, and nothing to compare.
+   !!
+   !! 2. A MOM-held doubly excited water (the converged HOMO and LUMO swapped,
+   !!    given as the guess with mom on, as check_scf_stabilise.F90 does) is
+   !!    refused by trc_run_rimp2 and trc_run_polarizability with a message that
+   !!    says why. The same handle without the swap still runs both.
+   !!
+   !! 3. The aufbau references still give the anchored numbers: RI-MP2 on water
+   !!    cc-pVDZ (E_os, E_ss of rimp2_ccpvdz.ref, 1e-9 as scf_rimp2.F90 holds it)
+   !!    and the CPHF polarizability on water 6-31G* (cphf_water_6-31gs.ref, the
+   !!    tolerance check_capi_polarizability.F90 holds).
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char, c_loc, c_char
    use pic_types, only: dp
    use pic_strings, only: to_string

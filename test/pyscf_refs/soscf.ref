@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["soscf"] -> gen_soscf
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: cc55136bc3fb94fceb1e83fe182a9bc55aca84dd327e601054e4184409f0d110
+# hash: f6b89c29623664c2e3d34b2fa1d6c0d8ef5d86f524f95d95fa1b48318c6e54da
 # files: test/check_soscf.F90 test/water.xyz test/basis_sets/6-31gs.json test/basis_sets/d-aug-cc-pvdz.json
 # water: RHF/6-31G* (cart), |g| 3.14e-09
 E_WATER -7.60105049953125445e+01

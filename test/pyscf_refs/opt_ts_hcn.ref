@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["opt_ts_hcn"] -> gen_opt_ts
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 8fc8d84c8f347c61c7cf1d1e51f712805427ffed5ba3fb0977e5a35a6380f160
+# hash: 7fc0e02592e50881009adaca9ae569bef3d69605831331d0d13cb9f27054aff8
 # files: test/basis_sets/sto-3g.json test/check_opt_ts.F90 test/hcn_ts_guess.xyz
 # P-RFO (this file's own gen_opt_ts), 5 iterations, final max|g| 2.126e-12 Eh/Bohr, n_imaginary=1
 NAT 3

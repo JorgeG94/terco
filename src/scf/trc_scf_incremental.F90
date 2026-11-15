@@ -1,70 +1,70 @@
-!
-! When the SCF builds its two-electron matrix from the density DIFFERENCE
-! and when it builds it in full: the schedule of the incremental Fock build
-! (`trc_scf_fock`'s build_g_arrays does the arithmetic, this module only
-! decides). One `scf_incremental_t` per run, asked once per iteration before
-! the build (`next_build`) and once after the convergence test
-! (`accept`). Everything it reads is the commutator norm and the
-! convergence test's own outcome, which every rank already holds as rank
-! 0's broadcast copy, so every rank takes the same decision without a
-! collective of its own.
-!
-! THE ERROR ARGUMENT. G is linear in D, so G(D_n) = G(D_ref) + G(D_n -
-! D_ref) exactly; what is not exact is the screening. A quartet the kernels
-! drop changes a G element by less than the threshold tau times its
-! degeneracy in a full build and in an increment alike (the density test
-! is the same, on D or on D_n - D_ref), but the increments' errors ADD UP:
-! each increment drops a different set, and the accumulated matrix carries
-! the sum of all of them since the last full build. That sum is an offset
-! eps in the Fock matrix the iteration sees, so the SCF heads for the fixed
-! point of F + eps, not of F, and |FDS - SDF| stops falling where eps is.
-! Four rules keep that from reaching the answer:
-!
-! 0. A looser screen only while eps cannot matter. Increments are screened
-!    at `early_scale` times tau while |FDS - SDF| >= `early_until`, at
-!    `late_scale` times tau after, and the first build past `early_until`
-!    is full, which discards the loose increments' eps. Measured at 100
-!    times tau 3.16e-11, the floor that eps sets is 2e-5 to 5e-5 (water20,
-!    gly10, gly20 cc-pVTZ), two decades below the 1e-2 that ends the phase.
-! 1. Convergence is declared only on a FULL build. When the test is met on
-!    an increment, the next build is full and the test is taken again
-!    there, against the true F: the commutator it sees is the commutator
-!    of the exact (fully screened) Fock matrix, and the energy is the
-!    full-build energy at that density. The energy is stationary, so the
-!    density's own error from eps moves it only at second order.
-! 2. The iteration that is expected to converge is built in full to begin
-!    with, so rule 1 costs no extra iteration when the expectation holds:
-!    DIIS shrinks the commutator geometrically, and when the last ratio
-!    carries it below `conv_diis` the next build is full. When it falls
-!    faster than that, the run takes one more iteration than full builds
-!    would (w20 cc-pVQZ 12 against 11; water20 aug-cc-pVDZ 13 against 12,
-!    where the jump onto the full build also exceeds conv_energy 1e-10).
-!    Predicting to 3 x conv_diis (TRC_INCR_PREDICT=3) or building in full
-!    below 10 x conv_diis (TRC_INCR_ENDGAME=10) removes those, but spends a
-!    full build an iteration early elsewhere: over gly10, gly30, water20,
-!    w20, w172 and the aug-cc-pVDZ case 441 s as is, 454 s with either.
-!    The other way, a predicted build only when the prediction clears
-!    conv_diis by a margin (TRC_INCR_PREDICT=0.3), makes a MISSED
-!    prediction rarer -- the predicted build full but its energy change
-!    just above conv_energy, so the next build is full again (gly20
-!    cc-pVTZ on a GH200: full builds at 1, 9, 14 and 15) -- but costs an
-!    iteration more often than it saves one: gly10, gly20, gly30, water20
-!    and water40 cc-pVTZ and w172/6-31G each took one iteration more, 85
-!    against 79 in all, 588 s against 561 s (V100). A miss costs one full
-!    build and no iteration, so the plain prediction (`incr_predict` 1)
-!    stays.
-!    The last allowed iteration is always full (`next_build`), so a run
-!    that converges there is never refused for having been an increment.
-! 3. A stall is a rebuild. Once the commutator stops falling over
-!    STALL_ITERATIONS increments, it has reached the floor eps sets, and
-!    only a full build lowers that floor; it also resets the sum.
-!
-! At `late_scale` 1 eps is about a hundred times below the early phase's,
-! under conv_diis's 1e-5, and the full builds of rules 0 to 2 are the only
-! ones a converging run takes: three or four per SCF, against one per
-! iteration (trc_scf_options_t%incremental has the timings).
-!
 module trc_scf_incremental
+   !!
+   !! When the SCF builds its two-electron matrix from the density DIFFERENCE
+   !! and when it builds it in full: the schedule of the incremental Fock build
+   !! (`trc_scf_fock`'s build_g_arrays does the arithmetic, this module only
+   !! decides). One `scf_incremental_t` per run, asked once per iteration before
+   !! the build (`next_build`) and once after the convergence test
+   !! (`accept`). Everything it reads is the commutator norm and the
+   !! convergence test's own outcome, which every rank already holds as rank
+   !! 0's broadcast copy, so every rank takes the same decision without a
+   !! collective of its own.
+   !!
+   !! THE ERROR ARGUMENT. G is linear in D, so G(D_n) = G(D_ref) + G(D_n -
+   !! D_ref) exactly; what is not exact is the screening. A quartet the kernels
+   !! drop changes a G element by less than the threshold tau times its
+   !! degeneracy in a full build and in an increment alike (the density test
+   !! is the same, on D or on D_n - D_ref), but the increments' errors ADD UP:
+   !! each increment drops a different set, and the accumulated matrix carries
+   !! the sum of all of them since the last full build. That sum is an offset
+   !! eps in the Fock matrix the iteration sees, so the SCF heads for the fixed
+   !! point of F + eps, not of F, and |FDS - SDF| stops falling where eps is.
+   !! Four rules keep that from reaching the answer:
+   !!
+   !! 0. A looser screen only while eps cannot matter. Increments are screened
+   !!    at `early_scale` times tau while |FDS - SDF| >= `early_until`, at
+   !!    `late_scale` times tau after, and the first build past `early_until`
+   !!    is full, which discards the loose increments' eps. Measured at 100
+   !!    times tau 3.16e-11, the floor that eps sets is 2e-5 to 5e-5 (water20,
+   !!    gly10, gly20 cc-pVTZ), two decades below the 1e-2 that ends the phase.
+   !! 1. Convergence is declared only on a FULL build. When the test is met on
+   !!    an increment, the next build is full and the test is taken again
+   !!    there, against the true F: the commutator it sees is the commutator
+   !!    of the exact (fully screened) Fock matrix, and the energy is the
+   !!    full-build energy at that density. The energy is stationary, so the
+   !!    density's own error from eps moves it only at second order.
+   !! 2. The iteration that is expected to converge is built in full to begin
+   !!    with, so rule 1 costs no extra iteration when the expectation holds:
+   !!    DIIS shrinks the commutator geometrically, and when the last ratio
+   !!    carries it below `conv_diis` the next build is full. When it falls
+   !!    faster than that, the run takes one more iteration than full builds
+   !!    would (w20 cc-pVQZ 12 against 11; water20 aug-cc-pVDZ 13 against 12,
+   !!    where the jump onto the full build also exceeds conv_energy 1e-10).
+   !!    Predicting to 3 x conv_diis (TRC_INCR_PREDICT=3) or building in full
+   !!    below 10 x conv_diis (TRC_INCR_ENDGAME=10) removes those, but spends a
+   !!    full build an iteration early elsewhere: over gly10, gly30, water20,
+   !!    w20, w172 and the aug-cc-pVDZ case 441 s as is, 454 s with either.
+   !!    The other way, a predicted build only when the prediction clears
+   !!    conv_diis by a margin (TRC_INCR_PREDICT=0.3), makes a MISSED
+   !!    prediction rarer -- the predicted build full but its energy change
+   !!    just above conv_energy, so the next build is full again (gly20
+   !!    cc-pVTZ on a GH200: full builds at 1, 9, 14 and 15) -- but costs an
+   !!    iteration more often than it saves one: gly10, gly20, gly30, water20
+   !!    and water40 cc-pVTZ and w172/6-31G each took one iteration more, 85
+   !!    against 79 in all, 588 s against 561 s (V100). A miss costs one full
+   !!    build and no iteration, so the plain prediction (`incr_predict` 1)
+   !!    stays.
+   !!    The last allowed iteration is always full (`next_build`), so a run
+   !!    that converges there is never refused for having been an increment.
+   !! 3. A stall is a rebuild. Once the commutator stops falling over
+   !!    STALL_ITERATIONS increments, it has reached the floor eps sets, and
+   !!    only a full build lowers that floor; it also resets the sum.
+   !!
+   !! At `late_scale` 1 eps is about a hundred times below the early phase's,
+   !! under conv_diis's 1e-5, and the full builds of rules 0 to 2 are the only
+   !! ones a converging run takes: three or four per SCF, against one per
+   !! iteration (trc_scf_options_t%incremental has the timings).
+   !!
    use pic_types, only: dp
    use trc_scf_settings, only: scf_settings_t
    implicit none

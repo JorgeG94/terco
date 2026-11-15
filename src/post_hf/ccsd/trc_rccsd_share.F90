@@ -1,46 +1,46 @@
-!
-! How the particle-particle ladder of an RI-CCSD iteration is cut over the ranks of a run (one rank per device).
-!
-! THE UNIT is the virtual index d of the half form (trc_rccsd_ladder): the passes of a rank run over a contiguous
-! range d_lo..d_hi, and the ladder is linear in that range, so the partial arrays of the ranks add up to the whole
-! one. A virtual d owns the columns (c,d) with c >= d, nv - d + 1 of them, and every column costs the same
-! (`rccsd_ladder_column_flops`: the build of C and the contraction with tau), so a range costs that times its columns.
-!
-! THE SCHEDULE this balances (trc_rccsd_update): the first rank runs its share of the ladder AND all of its other work
-! while the other ranks run theirs, and takes their partial ladders last, so the model is exact in what it counts:
-! the first rank's time is (its ladder + O) / rate, and a follower's its ladder / rate.
-!
-! THE WEIGHTS. The first rank does everything that is not the ladder as well (tau, the one-particle intermediates, W,
-! the T1 and T2 equations with the rings, the t1 t1 correction of the dressed ladder, DIIS), so it gets the smaller
-! share. With L the flops of the whole ladder and O the flops of the first rank's other work
-! (`rccsd_share_other_flops`: the counted flops of the stages, the same functions the step table reports), n ranks,
-! the aim is that every rank has the same flops in all:
-!
-!     the first rank's ladder  s0 = max(0, (L + O) / n - O)         every other rank (L - s0) / (n - 1)
-!
-! and when O alone is above an equal share (L + O) / n, s0 is 0 and the first rank gets an EMPTY range. The cut of
-! a boundary is then to the nearest whole d (the cumulative columns k nv - k (k - 1) / 2 after k virtuals).
-! bt, the t1-dressed factor, is built by every rank and cancels. The rule counts flops, not seconds: the first
-! rank's stages run at other rates than the ladder's GEMMs (the kernels in them have a time and no count), so the
-! result is a starting point, not a fit; the log shows each rank's ladder seconds to judge it.
-! It is a pure function of (no, nv, naux, ranks): the same on every rank, no run-time input, and independent of
-! d_batch and of the other ladder options (the half form is the only one that can be cut).
-!
-! NUMBERS (counted flops, TFLOP; "ladder" is the flops of the half-form passes of the range, "in all" adds the first
-! rank's other work O; ranges d = lo..hi, "-" is an empty range):
-!
-!     adenine cc-pVDZ, no 25, nv 130, naux 630: L 0.361, O 0.518, an equal share (L + O) / n = 0.440 at n = 2
-!        2 ranks   rank 0  -          0 % of the ladder, 0.518 in all   rank 1  d 1..130  100 %, 0.361
-!        4 ranks   rank 0  -          0 %, 0.518                        rank 1  d 1..24    33.4 %, 0.121
-!                  rank 2  d 25..55   33.1 %, 0.120                     rank 3  d 56..130  33.5 %, 0.121
-!     (H2O)9 cc-pVTZ, no 36, nv 477, naux 1269: L 133.07, O 66.91, an equal share 100.0 at n = 2
-!        2 ranks   rank 0  d 1..64    25.0 % of the ladder, 100.19 in all   rank 1  d 65..477  75.0 %, 99.79
-!        4 ranks   rank 0  -          0 %, 66.91                        rank 1  d 1..88    33.5 %, 44.53
-!                  rank 2  d 89..202  33.3 %, 44.24                     rank 3  d 203..477 33.3 %, 44.30
-!     At adenine the ladder is the smaller part of an iteration (0.36 of 0.88 TFLOP), so the first rank keeps no pass
-!     at any rank count; at (H2O)9 it is the larger (133 of 200), and two ranks cut it 1 : 3.
-!
 module trc_rccsd_share
+   !!
+   !! How the particle-particle ladder of an RI-CCSD iteration is cut over the ranks of a run (one rank per device).
+   !!
+   !! THE UNIT is the virtual index d of the half form (trc_rccsd_ladder): the passes of a rank run over a contiguous
+   !! range d_lo..d_hi, and the ladder is linear in that range, so the partial arrays of the ranks add up to the whole
+   !! one. A virtual d owns the columns (c,d) with c >= d, nv - d + 1 of them, and every column costs the same
+   !! (`rccsd_ladder_column_flops`: the build of C and the contraction with tau), so a range costs that times its columns.
+   !!
+   !! THE SCHEDULE this balances (trc_rccsd_update): the first rank runs its share of the ladder AND all of its other work
+   !! while the other ranks run theirs, and takes their partial ladders last, so the model is exact in what it counts:
+   !! the first rank's time is (its ladder + O) / rate, and a follower's its ladder / rate.
+   !!
+   !! THE WEIGHTS. The first rank does everything that is not the ladder as well (tau, the one-particle intermediates, W,
+   !! the T1 and T2 equations with the rings, the t1 t1 correction of the dressed ladder, DIIS), so it gets the smaller
+   !! share. With L the flops of the whole ladder and O the flops of the first rank's other work
+   !! (`rccsd_share_other_flops`: the counted flops of the stages, the same functions the step table reports), n ranks,
+   !! the aim is that every rank has the same flops in all:
+   !!
+   !!     the first rank's ladder  s0 = max(0, (L + O) / n - O)         every other rank (L - s0) / (n - 1)
+   !!
+   !! and when O alone is above an equal share (L + O) / n, s0 is 0 and the first rank gets an EMPTY range. The cut of
+   !! a boundary is then to the nearest whole d (the cumulative columns k nv - k (k - 1) / 2 after k virtuals).
+   !! bt, the t1-dressed factor, is built by every rank and cancels. The rule counts flops, not seconds: the first
+   !! rank's stages run at other rates than the ladder's GEMMs (the kernels in them have a time and no count), so the
+   !! result is a starting point, not a fit; the log shows each rank's ladder seconds to judge it.
+   !! It is a pure function of (no, nv, naux, ranks): the same on every rank, no run-time input, and independent of
+   !! d_batch and of the other ladder options (the half form is the only one that can be cut).
+   !!
+   !! NUMBERS (counted flops, TFLOP; "ladder" is the flops of the half-form passes of the range, "in all" adds the first
+   !! rank's other work O; ranges d = lo..hi, "-" is an empty range):
+   !!
+   !!     adenine cc-pVDZ, no 25, nv 130, naux 630: L 0.361, O 0.518, an equal share (L + O) / n = 0.440 at n = 2
+   !!        2 ranks   rank 0  -          0 % of the ladder, 0.518 in all   rank 1  d 1..130  100 %, 0.361
+   !!        4 ranks   rank 0  -          0 %, 0.518                        rank 1  d 1..24    33.4 %, 0.121
+   !!                  rank 2  d 25..55   33.1 %, 0.120                     rank 3  d 56..130  33.5 %, 0.121
+   !!     (H2O)9 cc-pVTZ, no 36, nv 477, naux 1269: L 133.07, O 66.91, an equal share 100.0 at n = 2
+   !!        2 ranks   rank 0  d 1..64    25.0 % of the ladder, 100.19 in all   rank 1  d 65..477  75.0 %, 99.79
+   !!        4 ranks   rank 0  -          0 %, 66.91                        rank 1  d 1..88    33.5 %, 44.53
+   !!                  rank 2  d 89..202  33.3 %, 44.24                     rank 3  d 203..477 33.3 %, 44.30
+   !!     At adenine the ladder is the smaller part of an iteration (0.36 of 0.88 TFLOP), so the first rank keeps no pass
+   !!     at any rank count; at (H2O)9 it is the larger (133 of 200), and two ranks cut it 1 : 3.
+   !!
    use pic_types, only: dp, int64
    use trc_rccsd_inter, only: rccsd_inter_flops
    use trc_rccsd_w, only: rccsd_w_flops

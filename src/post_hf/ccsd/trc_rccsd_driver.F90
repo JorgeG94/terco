@@ -1,111 +1,111 @@
-!
-! The closed-shell RI-CCSD driver: integrals, MP2 start, amplitude update with DIIS,
-! convergence, and the converged amplitudes kept for the (T) step.
-!
-! ALGORITHM, per iteration (mqc's `run_czt_rccsd`, with PySCF's convergence test):
-!
-!     (t1', t2') = update(t1, t2)              trc_rccsd_update, from the SAME input amplitudes
-!     e = t' - t                               the step; its size is measured on the device
-!     (t1, t2) <- DIIS(history of t', e)       or t' itself while the history is short (trc_rccsd_diis)
-!     E = E_corr(t1, t2)                       of the amplitudes the NEXT iteration starts from
-!
-! the start is t1 = 0, t2 = MP2 (E_MP2 is its energy), or the amplitudes the caller left in
-! `state%amps` when `state%use_start` is set. DIIS starts pushing at iteration `diis_start` (default 1, as mqc)
-! with the history length `diis_size` (default 8; 0 or 1 switches it off).
-!
-! CONVERGENCE. The run stops as CONVERGED when BOTH
-!
-!     |E_k - E_{k-1}| < conv_energy      (default 1e-8; E_0 is the energy of the starting amplitudes, as PySCF's e_prev)
-!     max |t' - t| < conv_amplitude      (default 1e-6; the largest element of the step over t1 and t2)
-!
-! hold. mqc tests the energy alone, and only from the second iteration; the amplitude criterion is a deliberate
-! addition. PySCF tests both, with conv_tol 1e-7 and conv_tol_normt 1e-5. Its normt is
-! ||vector(t1', t2') - vector(t1, t2)||_2 where the vector is t1 followed by the PACKED lower triangle of t2 as an
-! (o v x o v) matrix: each off-diagonal pair (i,a),(j,b) once, no sqrt(2), N' = o v + o v (o v + 1)/2 elements. The
-! `result%step_norm2` here is the norm over the FULL t2 (a pair-symmetric step counts every off-diagonal pair
-! twice), so normt <= step_norm2 <= sqrt(2) normt: it is NOT PySCF's number, and comparing it to 1e-5 is not PySCF's
-! test. Nor are the two tests nested: PySCF's normt < 1e-5 forces max|e| < 1e-5 only, while the default here
-! (max|e| < 1e-6) allows normt up to sqrt(N') 1e-6, which exceeds 1e-5 once N' > 100 (every case of interest). It is
-! the stricter test per element and can be the looser one in the 2-norm, by up to sqrt(N')/10; the energy test (1e-8
-! against PySCF's 1e-7) is the tighter of the two.
-! A step or an energy that is NaN or infinite stops the run as NOT converged with a message, whatever
-! the comparisons would say; the test is written so a NaN can never satisfy it.
-!
-! THE T1 DIAGNOSTIC is PySCF's `get_t1_diagnostic`: sqrt(||t1||_F^2 / (2 no)), no the number of correlated
-! occupied orbitals (2 no correlated electrons), of the converged (or last) t1.
-!
-! THE HANDLE. `trc_rccsd_solve` leaves in `state` what the (T) step needs without recomputing: `state%ints` (the
-! fitted blocks, on the host and the device, stamp unchanged) and `state%amps` (t1, t2 on both, the last iterate,
-! the converged one when `state%result%converged`). The caller owns them and calls `state%release()`. A refused
-! run leaves `state%ints` empty (its `status` says why) and, unless `use_start` supplied them, `state%amps` too; a run that
-! was not converged leaves both in place. The update
-! object, the DIIS history and the second set of amplitudes are private to the run and always released before it
-! returns, on every path. `trc_rccsd_run` is the same run for a caller that only wants the numbers: it releases
-! everything.
-!
-! TIMING. Each stage is a step of a `step_table_t` the run owns (trc_rccsd_steps names them), timed on the device
-! (`la%sync()` before the clock is read, since cuBLAS returns before its kernels end) with an NVTX range, and
-! carrying the flops of its GEMMs where it has any. The times are summed over the iterations into `result%seconds`
-! (the ladder and its dressing, and the T1 and T2 equations with the rings, each in one entry as before); `verbose`
-! prints one line per iteration, then the step table of RI-MP2's shape and the mean time of an iteration, through
-! global_logger.
-!
-! The arguments are those of `trc_rimp2_run` except that the doubly occupied count is `opts%nocc` (more than eight
-! dummies is a rule of this tree) and the options carry what trc_rccsd_ints refuses on: an ECP, an open shell
-! (`nbeta`). Frozen core: the caller passes the number (`opts%nfrozen`); the count-by-element helper lives in the API
-! layer, which this one may not use.
-!
-! RANKS. With `opts%has_comm` and more than one rank in `opts%comm` (one rank per device, none shared), the run is
-! collective: every rank calls it with the same arguments, and no MPI call is made otherwise.
-!   - ORBITALS. In the CLI and the C API the SCF is collective (rank 0 diagonalises and broadcasts `cmo` and `eps`), so
-!     every rank already holds the same orbitals. The run still broadcasts rank 0's `cmo` and `eps` first (one nmo^2
-!     message) as a GUARD for a caller that hands ranks different ones: SCFs run separately on each rank agree to the
-!     threshold but can differ in the sign of a column, and rank 0's amplitudes in another rank's integrals gave a (T)
-!     share wrong by 5e-5 Eh on water.
-!   - INTEGRALS are built on EVERY rank (replicated); the (T) step of trc_rccsd_triples distributes the (T) work.
-!   - THE ITERATIONS. Rank 0 runs the iteration (the intermediates, W, the T1 and T2 equations with the rings, DIIS, the
-!     energy and the convergence test); the particle-particle ladder, the largest term, is cut over ALL the ranks by
-!     the virtual index d (trc_rccsd_ladder, SHARES; the cut is trc_rccsd_share's, smaller for rank 0 because of the
-!     other work it has). Per iteration, each a collective call in a statement of its own on every rank:
-!       1. the control word (trc_rccsd_mpi, rccsd_mpi_control): 0 to stop, else 2 it + (1 when tau has the pair symmetry
-!          the half ladder's one-contraction path needs). Rank 0 sends 0 whenever it leaves the loop for a reason of its
-!          own (converged, the limit, a NaN, a refusal after the ladder's sum), so no follower is left waiting;
-!       2. the amplitudes, t1 and t2, device to device (trc_rccsd_xfer): point to point from rank 0 to each other rank,
-!          the unique half of t2 when tau has the pair symmetry (every production run), through MPI device buffers
-!          when trc_mpi_device_direct() says the MPI takes them and through the host otherwise (step RCCSD_ST_BCAST).
-!          Not sent with the stop word;
-!       3. every rank builds tau and its dressed factor bt and runs the passes of its range d_lo..d_hi on its device.
-!          Rank 0 does its own range and then EVERYTHING that does not read the ladder (the intermediates and W first,
-!          then the T1 equation, every T2 term but the ladder, the rings and the t1 t1 correction of its own share):
-!          the ladder is added to t2 last, after the rings and before the denominators, so rank 0's work overlaps the others'
-!          passes (trc_rccsd_update, `update_step`); an empty range is a rank that runs no pass;
-!       4. ONE agreement on failure (rccsd_mpi_agree_text; step RCCSD_ST_WAIT, which is also the barrier that makes the
-!          idle seconds of a rank that finishes early visible): a rank that refused anywhere above gives its reason to
-!          all, every rank leaves the iteration and the loop, and no control word is due;
-!       5. each follower with a nonempty range sends its partial ladder once to rank 0 (the unique half when pair
-!          symmetric), which receives it into a staging array and adds it on its device with a kernel; nothing comes
-!          back (step RCCSD_ST_REDUCE). The symmetrising kernel at the end of each rank's passes is applied BEFORE the
-!          transfer: it is linear, so the sum is the same, and a one-rank run (no transfer) is bitwise as it was;
-!       6. rank 0 adds the ladder to t2, applies the denominators and finishes the iteration. DIIS and its history
-!          live on rank 0.
-!     Transfers per iteration: the amplitudes down to each follower and each follower's ladder up, o^2 v^2 doubles (half
-!     of it when pair symmetric) each. Only the half form can be cut: AUTO becomes the half form over several ranks, and
-!     an explicit assembled or direct form is refused with a message (all ranks), not run on rank 0 alone. Energies
-!     agree with a one-rank run to round-off, not bitwise (the ladder is summed in another order, and the ladder is
-!     added to t2 after the rings in every run, one rank included); the iteration count is the same.
-!   - FAILURE is agreed, never inferred. A rank that could not build its blocks, or set up its part of the update (or
-!     got an explicit form that cannot be cut), sets a flag; one agreement (rccsd_mpi_agree_text) after the integrals and
-!     one after the setup make every rank refused with the message of the lowest-numbered refusing rank, blocks
-!     released, and nothing further is collective, before any rank enters a loop that waits for another. A failure
-!     inside an iteration is agreed at step 4 above.
-!   - OUTCOME. After the loop one broadcast carries rank 0's whole `state%result` (scalars, timings and message) as a
-!     packet of doubles, then t1 and t2 through the host (trc_rccsd_mpi) into every rank's host arrays, which each rank
-!     copies to its device as `amps%init` mapped them (the followers' copies were one iteration stale): afterwards
-!     every rank holds the same result and the same amplitudes, converged or not. Each rank's ladder seconds are
-!     gathered then (`state%ladder_seconds`). `verbose` output comes from rank 0 only: the step table (it labels itself
-!     "rank 0 of N", with the three rows of the distributed ladder) and one line per rank with its range and ladder
-!     seconds.
 module trc_rccsd_driver
+   !!
+   !! The closed-shell RI-CCSD driver: integrals, MP2 start, amplitude update with DIIS,
+   !! convergence, and the converged amplitudes kept for the (T) step.
+   !!
+   !! ALGORITHM, per iteration (mqc's `run_czt_rccsd`, with PySCF's convergence test):
+   !!
+   !!     (t1', t2') = update(t1, t2)              trc_rccsd_update, from the SAME input amplitudes
+   !!     e = t' - t                               the step; its size is measured on the device
+   !!     (t1, t2) <- DIIS(history of t', e)       or t' itself while the history is short (trc_rccsd_diis)
+   !!     E = E_corr(t1, t2)                       of the amplitudes the NEXT iteration starts from
+   !!
+   !! the start is t1 = 0, t2 = MP2 (E_MP2 is its energy), or the amplitudes the caller left in
+   !! `state%amps` when `state%use_start` is set. DIIS starts pushing at iteration `diis_start` (default 1, as mqc)
+   !! with the history length `diis_size` (default 8; 0 or 1 switches it off).
+   !!
+   !! CONVERGENCE. The run stops as CONVERGED when BOTH
+   !!
+   !!     |E_k - E_{k-1}| < conv_energy      (default 1e-8; E_0 is the energy of the starting amplitudes, as PySCF's e_prev)
+   !!     max |t' - t| < conv_amplitude      (default 1e-6; the largest element of the step over t1 and t2)
+   !!
+   !! hold. mqc tests the energy alone, and only from the second iteration; the amplitude criterion is a deliberate
+   !! addition. PySCF tests both, with conv_tol 1e-7 and conv_tol_normt 1e-5. Its normt is
+   !! ||vector(t1', t2') - vector(t1, t2)||_2 where the vector is t1 followed by the PACKED lower triangle of t2 as an
+   !! (o v x o v) matrix: each off-diagonal pair (i,a),(j,b) once, no sqrt(2), N' = o v + o v (o v + 1)/2 elements. The
+   !! `result%step_norm2` here is the norm over the FULL t2 (a pair-symmetric step counts every off-diagonal pair
+   !! twice), so normt <= step_norm2 <= sqrt(2) normt: it is NOT PySCF's number, and comparing it to 1e-5 is not PySCF's
+   !! test. Nor are the two tests nested: PySCF's normt < 1e-5 forces max|e| < 1e-5 only, while the default here
+   !! (max|e| < 1e-6) allows normt up to sqrt(N') 1e-6, which exceeds 1e-5 once N' > 100 (every case of interest). It is
+   !! the stricter test per element and can be the looser one in the 2-norm, by up to sqrt(N')/10; the energy test (1e-8
+   !! against PySCF's 1e-7) is the tighter of the two.
+   !! A step or an energy that is NaN or infinite stops the run as NOT converged with a message, whatever
+   !! the comparisons would say; the test is written so a NaN can never satisfy it.
+   !!
+   !! THE T1 DIAGNOSTIC is PySCF's `get_t1_diagnostic`: sqrt(||t1||_F^2 / (2 no)), no the number of correlated
+   !! occupied orbitals (2 no correlated electrons), of the converged (or last) t1.
+   !!
+   !! THE HANDLE. `trc_rccsd_solve` leaves in `state` what the (T) step needs without recomputing: `state%ints` (the
+   !! fitted blocks, on the host and the device, stamp unchanged) and `state%amps` (t1, t2 on both, the last iterate,
+   !! the converged one when `state%result%converged`). The caller owns them and calls `state%release()`. A refused
+   !! run leaves `state%ints` empty (its `status` says why) and, unless `use_start` supplied them, `state%amps` too; a run that
+   !! was not converged leaves both in place. The update
+   !! object, the DIIS history and the second set of amplitudes are private to the run and always released before it
+   !! returns, on every path. `trc_rccsd_run` is the same run for a caller that only wants the numbers: it releases
+   !! everything.
+   !!
+   !! TIMING. Each stage is a step of a `step_table_t` the run owns (trc_rccsd_steps names them), timed on the device
+   !! (`la%sync()` before the clock is read, since cuBLAS returns before its kernels end) with an NVTX range, and
+   !! carrying the flops of its GEMMs where it has any. The times are summed over the iterations into `result%seconds`
+   !! (the ladder and its dressing, and the T1 and T2 equations with the rings, each in one entry as before); `verbose`
+   !! prints one line per iteration, then the step table of RI-MP2's shape and the mean time of an iteration, through
+   !! global_logger.
+   !!
+   !! The arguments are those of `trc_rimp2_run` except that the doubly occupied count is `opts%nocc` (more than eight
+   !! dummies is a rule of this tree) and the options carry what trc_rccsd_ints refuses on: an ECP, an open shell
+   !! (`nbeta`). Frozen core: the caller passes the number (`opts%nfrozen`); the count-by-element helper lives in the API
+   !! layer, which this one may not use.
+   !!
+   !! RANKS. With `opts%has_comm` and more than one rank in `opts%comm` (one rank per device, none shared), the run is
+   !! collective: every rank calls it with the same arguments, and no MPI call is made otherwise.
+   !!   - ORBITALS. In the CLI and the C API the SCF is collective (rank 0 diagonalises and broadcasts `cmo` and `eps`), so
+   !!     every rank already holds the same orbitals. The run still broadcasts rank 0's `cmo` and `eps` first (one nmo^2
+   !!     message) as a GUARD for a caller that hands ranks different ones: SCFs run separately on each rank agree to the
+   !!     threshold but can differ in the sign of a column, and rank 0's amplitudes in another rank's integrals gave a (T)
+   !!     share wrong by 5e-5 Eh on water.
+   !!   - INTEGRALS are built on EVERY rank (replicated); the (T) step of trc_rccsd_triples distributes the (T) work.
+   !!   - THE ITERATIONS. Rank 0 runs the iteration (the intermediates, W, the T1 and T2 equations with the rings, DIIS, the
+   !!     energy and the convergence test); the particle-particle ladder, the largest term, is cut over ALL the ranks by
+   !!     the virtual index d (trc_rccsd_ladder, SHARES; the cut is trc_rccsd_share's, smaller for rank 0 because of the
+   !!     other work it has). Per iteration, each a collective call in a statement of its own on every rank:
+   !!       1. the control word (trc_rccsd_mpi, rccsd_mpi_control): 0 to stop, else 2 it + (1 when tau has the pair symmetry
+   !!          the half ladder's one-contraction path needs). Rank 0 sends 0 whenever it leaves the loop for a reason of its
+   !!          own (converged, the limit, a NaN, a refusal after the ladder's sum), so no follower is left waiting;
+   !!       2. the amplitudes, t1 and t2, device to device (trc_rccsd_xfer): point to point from rank 0 to each other rank,
+   !!          the unique half of t2 when tau has the pair symmetry (every production run), through MPI device buffers
+   !!          when trc_mpi_device_direct() says the MPI takes them and through the host otherwise (step RCCSD_ST_BCAST).
+   !!          Not sent with the stop word;
+   !!       3. every rank builds tau and its dressed factor bt and runs the passes of its range d_lo..d_hi on its device.
+   !!          Rank 0 does its own range and then EVERYTHING that does not read the ladder (the intermediates and W first,
+   !!          then the T1 equation, every T2 term but the ladder, the rings and the t1 t1 correction of its own share):
+   !!          the ladder is added to t2 last, after the rings and before the denominators, so rank 0's work overlaps the others'
+   !!          passes (trc_rccsd_update, `update_step`); an empty range is a rank that runs no pass;
+   !!       4. ONE agreement on failure (rccsd_mpi_agree_text; step RCCSD_ST_WAIT, which is also the barrier that makes the
+   !!          idle seconds of a rank that finishes early visible): a rank that refused anywhere above gives its reason to
+   !!          all, every rank leaves the iteration and the loop, and no control word is due;
+   !!       5. each follower with a nonempty range sends its partial ladder once to rank 0 (the unique half when pair
+   !!          symmetric), which receives it into a staging array and adds it on its device with a kernel; nothing comes
+   !!          back (step RCCSD_ST_REDUCE). The symmetrising kernel at the end of each rank's passes is applied BEFORE the
+   !!          transfer: it is linear, so the sum is the same, and a one-rank run (no transfer) is bitwise as it was;
+   !!       6. rank 0 adds the ladder to t2, applies the denominators and finishes the iteration. DIIS and its history
+   !!          live on rank 0.
+   !!     Transfers per iteration: the amplitudes down to each follower and each follower's ladder up, o^2 v^2 doubles (half
+   !!     of it when pair symmetric) each. Only the half form can be cut: AUTO becomes the half form over several ranks, and
+   !!     an explicit assembled or direct form is refused with a message (all ranks), not run on rank 0 alone. Energies
+   !!     agree with a one-rank run to round-off, not bitwise (the ladder is summed in another order, and the ladder is
+   !!     added to t2 after the rings in every run, one rank included); the iteration count is the same.
+   !!   - FAILURE is agreed, never inferred. A rank that could not build its blocks, or set up its part of the update (or
+   !!     got an explicit form that cannot be cut), sets a flag; one agreement (rccsd_mpi_agree_text) after the integrals and
+   !!     one after the setup make every rank refused with the message of the lowest-numbered refusing rank, blocks
+   !!     released, and nothing further is collective, before any rank enters a loop that waits for another. A failure
+   !!     inside an iteration is agreed at step 4 above.
+   !!   - OUTCOME. After the loop one broadcast carries rank 0's whole `state%result` (scalars, timings and message) as a
+   !!     packet of doubles, then t1 and t2 through the host (trc_rccsd_mpi) into every rank's host arrays, which each rank
+   !!     copies to its device as `amps%init` mapped them (the followers' copies were one iteration stale): afterwards
+   !!     every rank holds the same result and the same amplitudes, converged or not. Each rank's ladder seconds are
+   !!     gathered then (`state%ladder_seconds`). `verbose` output comes from rank 0 only: the step table (it labels itself
+   !!     "rank 0 of N", with the three rows of the distributed ladder) and one line per rank with its range and ladder
+   !!     seconds.
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_step_table, only: step_table_t

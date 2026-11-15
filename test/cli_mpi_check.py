@@ -162,7 +162,7 @@ def check_riccsd(mpiexec, npflag, terco_cli, xyz, basis_dir):
                 ok = False
 
     # Refusals over ranks: non-zero exit, a reason, no hang.
-    # each matched against a distinctive fragment of the refusal itself (app/trc_run_cc.F90 for the first two,
+    # each matched against a distinctive fragment of the refusal itself (src/cli/trc_run_cc.F90 for the first two,
     # trc_rccsd_driver's ladder_for_ranks for the third), not against a word normal output also contains
     refusals = [
         ("explicit reference (T) at np 2", 2, ["--riccsd-t", "--cc-triples", "reference"],

@@ -1,31 +1,31 @@
-!
-! The C API's ECP state, beyond check_ecp_scf's energies: which ECP attaches
-! and when, what is refused, and that a refusal leaves the context as it was.
-!
-!   - trc_set_ecp_json with the basis's own file gives the auto-attached HI
-!     energy (the pyscf anchor E_hi, ecp_scf.ref); a different iodine ECP
-!     with the same 28-electron core (basis_sets/ecp-i-modified.json, a test
-!     fixture) gives a different one, so the explicit file is what attaches.
-!   - RbI in def2-SVP with that iodine-only ECP file is refused: rubidium's
-!     def2-SVP shells are valence-only and nothing replaces its core.
-!   - trc_set_molecule after an ECP basis drops the basis (it was built for
-!     the reduced charges); reloading it gives E_hi again.
-!   - a basis load refused after the ECP was read (an orbital/auxiliary
-!     convention mismatch; a core larger than an atom's charge) leaves the
-!     old basis, charges and ECP: the SCF that follows matches a context
-!     that never tried.
-!   - an SCF whose basis was built for other charges than the molecule now
-!     holds is refused (TRC_ERR_STATE).
-!   - an orbital basis from arrays or libcint is refused while an ECP is set
-!     or attached; trc_context_basis is refused while one is attached.
-!   - RI-MP2's automatic frozen core is refused (TRC_ERR_UNSUPPORTED).
-!   - the restart file: a file from another ECP with the same core count, a
-!     different core count, and a version 2 or 3 file are refused by an ECP
-!     run; a version 3 file still loads into a run with no ECP.
-!
-! A test-drive suite.
-!
 module check_ecp_capi_suite
+   !!
+   !! The C API's ECP state, beyond check_ecp_scf's energies: which ECP attaches
+   !! and when, what is refused, and that a refusal leaves the context as it was.
+   !!
+   !!   - trc_set_ecp_json with the basis's own file gives the auto-attached HI
+   !!     energy (the pyscf anchor E_hi, ecp_scf.ref); a different iodine ECP
+   !!     with the same 28-electron core (basis_sets/ecp-i-modified.json, a test
+   !!     fixture) gives a different one, so the explicit file is what attaches.
+   !!   - RbI in def2-SVP with that iodine-only ECP file is refused: rubidium's
+   !!     def2-SVP shells are valence-only and nothing replaces its core.
+   !!   - trc_set_molecule after an ECP basis drops the basis (it was built for
+   !!     the reduced charges); reloading it gives E_hi again.
+   !!   - a basis load refused after the ECP was read (an orbital/auxiliary
+   !!     convention mismatch; a core larger than an atom's charge) leaves the
+   !!     old basis, charges and ECP: the SCF that follows matches a context
+   !!     that never tried.
+   !!   - an SCF whose basis was built for other charges than the molecule now
+   !!     holds is refused (TRC_ERR_STATE).
+   !!   - an orbital basis from arrays or libcint is refused while an ECP is set
+   !!     or attached; trc_context_basis is refused while one is attached.
+   !!   - RI-MP2's automatic frozen core is refused (TRC_ERR_UNSUPPORTED).
+   !!   - the restart file: a file from another ECP with the same core count, a
+   !!     different core count, and a version 2 or 3 file are refused by an ECP
+   !!     run; a version 3 file still loads into a run with no ECP.
+   !!
+   !! A test-drive suite.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_char, c_null_char, c_null_ptr
    use pic_types, only: dp, int32
    use testdrive, only: new_unittest, unittest_type, error_type, check, test_failed
@@ -80,9 +80,8 @@ contains
                   ]
    end subroutine collect_ecp_capi_tests
 
-   ! ---- molecules -------------------------------------------------------
-
    subroutine new_hi(h)
+      !! ---- molecules -------------------------------------------------------
       type(c_ptr), intent(out) :: h
       integer(c_int) :: rc
       rc = trc_create(h)
@@ -118,9 +117,8 @@ contains
       rc = trc_set_guess(h, TRC_GUESS_CORE, c_null_ptr, 1_c_int)
    end subroutine new_rb2
 
-   ! ---- trc_set_ecp_json ----------------------------------------------
-
    subroutine test_explicit_same(error)
+      !! ---- trc_set_ecp_json ----------------------------------------------
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
       integer(c_int) :: rc
@@ -180,9 +178,8 @@ contains
       rc = trc_destroy(h)
    end subroutine test_partial_ecp
 
-   ! ---- context state ---------------------------------------------------
-
    subroutine test_set_molecule_drops(error)
+      !! ---- context state ---------------------------------------------------
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
       integer(c_int) :: rc
@@ -381,9 +378,8 @@ contains
       rc = trc_destroy(h)
    end subroutine test_rimp2_frozen_refused
 
-   ! ---- restart files ---------------------------------------------------
-
    subroutine test_restart_other_ecp(error)
+      !! ---- restart files ---------------------------------------------------
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
       integer(c_int) :: rc
@@ -485,9 +481,8 @@ contains
       rc = trc_destroy(h)
    end subroutine test_restart_v3_no_ecp
 
-   ! ---- helpers ---------------------------------------------------------
-
    function anchor_e_hi() result(e)
+      !! ---- helpers ---------------------------------------------------------
       !! E_hi, RHF HI/def2-SVP from pyscf (ecp_scf.ref's first value).
       real(dp) :: e
       integer :: u
@@ -586,12 +581,12 @@ contains
       rc = trc_destroy(h)
    end subroutine expect_hi_load_refused
 
-   ! The restart file's layout (src/scf/trc_scf_file.F90's own header):
-   ! "TERCOSCF", the version, 16 int32 sizes and flags, the functional (16
-   ! characters) and the PCM model (8), 9 real64 scalars; then at_z, at_r and
-   ! at_elem; then (version 3 on) at_ncore; then (version 4) nrow, maxnp and
-   ! the ECP's rows.
    pure integer function header_bytes() result(n)
+      !! The restart file's layout (src/scf/trc_scf_file.F90's own header):
+      !! "TERCOSCF", the version, 16 int32 sizes and flags, the functional (16
+      !! characters) and the PCM model (8), 9 real64 scalars; then at_z, at_r and
+      !! at_elem; then (version 3 on) at_ncore; then (version 4) nrow, maxnp and
+      !! the ECP's rows.
       n = 8 + 4 + 16*4 + 16 + 8 + 9*8
    end function header_bytes
 

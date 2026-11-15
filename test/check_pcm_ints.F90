@@ -1,30 +1,30 @@
-!
-! The PCM solute-surface integrals (trc_pcm_potential, trc_pcm_fock; the
-! --pcm kernels of scripts/gen_1e.py) against pyscf, on fixed inputs.
-!
-! The points are water's own cavity at 302 per sphere plus eight more
-! placed where the cavity never goes -- on and between the nuclei, with
-! exponents from 0.3 to 300 -- so the comparison reaches the regimes a
-! cavity does not: theta near one (a sharp charge on top of the density)
-! and near zero, and T from zero up. The density is the fixed, dense,
-! symmetric recipe check_rys_fock_vs_pyscf uses; the charges a fixed
-! function of the point index. Nothing here comes from an SCF.
-!
-!   v(k)       = sum_{mu nu} D_mu,nu <mu| erf(zeta_k|r - C_k|)/|r - C_k| |nu>
-!   F(mu, nu)  = sum_k q_k <mu| erf(zeta_k|r - C_k|)/|r - C_k| |nu>
-!
-! test/pyscf_refs/pcm_ints_<case>.ref (generate.py's gen_pcm_ints) holds
-! pyscf's int3c2e against fakemol_for_charges -- the path pyscf's own PCM
-! takes -- contracted the same two ways, after the generator has checked it
-! against int1e_grids under set_range_coulomb(zeta), one zeta group at a
-! time. Matrices already in this build's AO order and normalisation.
-!
-! SKIPS CLEANLY (prints SKIP, exits 0) when the basis needs more angular
-! momentum than this build's PCM kernels reach, as check_rys_fock_vs_pyscf
-! does, in run_case before run_testsuite is ever called -- past that guard
-! a missing reference is a FAIL.
-!
 module check_pcm_ints_suite
+   !!
+   !! The PCM solute-surface integrals (trc_pcm_potential, trc_pcm_fock; the
+   !! --pcm kernels of scripts/gen_1e.py) against pyscf, on fixed inputs.
+   !!
+   !! The points are water's own cavity at 302 per sphere plus eight more
+   !! placed where the cavity never goes -- on and between the nuclei, with
+   !! exponents from 0.3 to 300 -- so the comparison reaches the regimes a
+   !! cavity does not: theta near one (a sharp charge on top of the density)
+   !! and near zero, and T from zero up. The density is the fixed, dense,
+   !! symmetric recipe check_rys_fock_vs_pyscf uses; the charges a fixed
+   !! function of the point index. Nothing here comes from an SCF.
+   !!
+   !!   v(k)       = sum_{mu nu} D_mu,nu <mu| erf(zeta_k|r - C_k|)/|r - C_k| |nu>
+   !!   F(mu, nu)  = sum_k q_k <mu| erf(zeta_k|r - C_k|)/|r - C_k| |nu>
+   !!
+   !! test/pyscf_refs/pcm_ints_<case>.ref (generate.py's gen_pcm_ints) holds
+   !! pyscf's int3c2e against fakemol_for_charges -- the path pyscf's own PCM
+   !! takes -- contracted the same two ways, after the generator has checked it
+   !! against int1e_grids under set_range_coulomb(zeta), one zeta group at a
+   !! time. Matrices already in this build's AO order and normalisation.
+   !!
+   !! SKIPS CLEANLY (prints SKIP, exits 0) when the basis needs more angular
+   !! momentum than this build's PCM kernels reach, as check_rys_fock_vs_pyscf
+   !! does, in run_case before run_testsuite is ever called -- past that guard
+   !! a missing reference is a FAIL.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -56,14 +56,14 @@ contains
                   ]
    end subroutine collect_pcm_ints_tests
 
-   !
-   ! Everything the old program did: argument parsing, the PCM_LMAX self-
-   ! skip, building the cavity plus the eight off-cavity points, the fixed
-   ! density/charges, the potential/Fock/overlap computation, writing the
-   ! probe dump, and reading the pyscf reference back into the four
-   ! max|diff| values test_vs_pyscf checks.
-   !
    subroutine run_case(skip, message)
+      !!
+      !! Everything the old program did: argument parsing, the PCM_LMAX self-
+      !! skip, building the cavity plus the eight off-cavity points, the fixed
+      !! density/charges, the potential/Fock/overlap computation, writing the
+      !! probe dump, and reading the pyscf reference back into the four
+      !! max|diff| values test_vs_pyscf checks.
+      !!
       logical, intent(out) :: skip
       character(len=*), intent(out) :: message
 

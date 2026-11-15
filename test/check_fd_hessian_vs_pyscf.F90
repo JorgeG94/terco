@@ -1,29 +1,29 @@
-!
-! trc_run_hessian/trc_hessian (the C API's finite-difference Cartesian
-! Hessian, src/api/trc_capi.F90) against pyscf's own ANALYTIC RHF/STO-3G
-! Hessian, the SAME test/pyscf_refs/vib_thermo_{water,hcn,nh3_planar}.ref
-! check_vib_thermo_vs_pyscf.F90 already reads (HESS there is pyscf's
-! `mf.Hessian().kernel()`, not a finite difference of anything) -- no new
-! generate.py case needed, see this program's own header below for why.
-!
-! BASIS. test/basis_sets/sto-3g.json, which generate.py's gen_vib_thermo
-! also loads for pyscf (it is on the .ref's files: line), so there is no
-! basis mismatch left to measure beyond the usual SCF/gradient roundoff:
-! the electronic energy at the reference geometry agrees with E_ELEC in
-! the .ref to << 1e-9 Eh.
-!
-! TOLERANCES. The hessian_tol of each case is roughly 1.5-2x what this
-! build measures (reported on stdout every run). The only claim this
-! test makes is "close to the h=0.005 truncation-error floor", a property
-! of the finite difference, not of terco. The frequency tolerance is set
-! the same way: mode frequencies are much less sensitive to Hessian noise
-! than the raw elements (projecting out translation/rotation and
-! diagonalising averages over the whole matrix), about 0.06 cm^-1 here.
-!
-! A test-drive suite: each case is one unit test, which fails when any of
-! its checks does; every check still prints its value.
-!
 module check_fd_hessian_suite
+   !!
+   !! trc_run_hessian/trc_hessian (the C API's finite-difference Cartesian
+   !! Hessian, src/api/trc_capi.F90) against pyscf's own ANALYTIC RHF/STO-3G
+   !! Hessian, the SAME test/pyscf_refs/vib_thermo_{water,hcn,nh3_planar}.ref
+   !! check_vib_thermo_vs_pyscf.F90 already reads (HESS there is pyscf's
+   !! `mf.Hessian().kernel()`, not a finite difference of anything) -- no new
+   !! generate.py case needed, see this program's own header below for why.
+   !!
+   !! BASIS. test/basis_sets/sto-3g.json, which generate.py's gen_vib_thermo
+   !! also loads for pyscf (it is on the .ref's files: line), so there is no
+   !! basis mismatch left to measure beyond the usual SCF/gradient roundoff:
+   !! the electronic energy at the reference geometry agrees with E_ELEC in
+   !! the .ref to << 1e-9 Eh.
+   !!
+   !! TOLERANCES. The hessian_tol of each case is roughly 1.5-2x what this
+   !! build measures (reported on stdout every run). The only claim this
+   !! test makes is "close to the h=0.005 truncation-error floor", a property
+   !! of the finite difference, not of terco. The frequency tolerance is set
+   !! the same way: mode frequencies are much less sensitive to Hessian noise
+   !! than the raw elements (projecting out translation/rotation and
+   !! diagonalising averages over the whole matrix), about 0.06 cm^-1 here.
+   !!
+   !! A test-drive suite: each case is one unit test, which fails when any of
+   !! its checks does; every check still prints its value.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_ptr, c_null_char
    use pic_types, only: dp
    use trc_error, only: error_t
@@ -64,12 +64,12 @@ contains
       call test_failed(error, what//": "//trim(buf)//" check(s) failed (see the FAIL lines above)")
    end subroutine verdict
 
-   ! Tolerances: ~1.5-2x what this build measures (printed on every run):
-   ! water 1.441e-5, hcn 7.402e-5, nh3_planar 2.331e-5 Eh/Bohr^2 for the
-   ! Hessian; 0.061, 0.058, 0.059 cm^-1 for the frequencies (gfortran 15
-   ! host build). All are the h=0.005 truncation error of a central
-   ! difference of an analytic gradient.
    subroutine test_water(error)
+      !! Tolerances: ~1.5-2x what this build measures (printed on every run):
+      !! water 1.441e-5, hcn 7.402e-5, nh3_planar 2.331e-5 Eh/Bohr^2 for the
+      !! Hessian; 0.061, 0.058, 0.059 cm^-1 for the frequencies (gfortran 15
+      !! host build). All are the h=0.005 truncation error of a central
+      !! difference of an analytic gradient.
       type(error_type), allocatable, intent(out) :: error
       integer :: nfail
       nfail = 0
@@ -101,15 +101,15 @@ contains
       call verdict(error, nfail, "refusal")
    end subroutine test_refusal
 
-   !
-   ! One case: build the context at pyscf's own geometry/charge/mult
-   ! (read straight out of the .ref, Bohr, no xyz round trip), run
-   ! trc_run_scf/trc_run_hessian/trc_hessian through the C ABI
-   ! (trc_c_interfaces, the generated Fortran declaration an external
-   ! caller compiles, not trc_capi directly), and compare against pyscf's
-   ! analytic HESS and FREQ_CM1 already in the .ref.
-   !
    subroutine check_case(nfail, case_name, hessian_tol, freq_tol)
+      !!
+      !! One case: build the context at pyscf's own geometry/charge/mult
+      !! (read straight out of the .ref, Bohr, no xyz round trip), run
+      !! trc_run_scf/trc_run_hessian/trc_hessian through the C ABI
+      !! (trc_c_interfaces, the generated Fortran declaration an external
+      !! caller compiles, not trc_capi directly), and compare against pyscf's
+      !! analytic HESS and FREQ_CM1 already in the .ref.
+      !!
       integer, intent(inout) :: nfail
       character(len=*), intent(in) :: case_name
       real(dp), intent(in) :: hessian_tol, freq_tol
@@ -222,18 +222,18 @@ contains
       end if
    end subroutine check_case
 
-   !
-   ! --hessian's up-front refusal: trc_run_hessian must refuse a PCM
-   ! reference (no cavity or surface-charge derivative exists) BEFORE
-   ! spending any SCF time on a displacement, the same way
-   ! trc_run_gradient already does (gradient_capability_check, shared
-   ! between the two). Checked by requiring TRC_ERR_UNSUPPORTED, the SCF
-   ! iteration count unchanged (any displaced or restoring SCF would
-   ! overwrite it, and a warm-started one takes far fewer iterations than
-   ! the SAD start), and NO Hessian left to read (trc_hessian then reports
-   ! TRC_ERR_STATE, not stale or partial data).
-   !
    subroutine check_refusal(nfail)
+      !!
+      !! --hessian's up-front refusal: trc_run_hessian must refuse a PCM
+      !! reference (no cavity or surface-charge derivative exists) BEFORE
+      !! spending any SCF time on a displacement, the same way
+      !! trc_run_gradient already does (gradient_capability_check, shared
+      !! between the two). Checked by requiring TRC_ERR_UNSUPPORTED, the SCF
+      !! iteration count unchanged (any displaced or restoring SCF would
+      !! overwrite it, and a warm-started one takes far fewer iterations than
+      !! the SAD start), and NO Hessian left to read (trc_hessian then reports
+      !! TRC_ERR_STATE, not stale or partial data).
+      !!
       integer, intent(inout) :: nfail
       type(c_ptr) :: h
       integer(c_int) :: rc, it_before, it_after

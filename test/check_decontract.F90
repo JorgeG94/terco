@@ -1,29 +1,29 @@
-!
-! The decontraction transform, against the one-electron integrals.
-!
-! `trc_decontract` splits a general contraction into single-primitive shells
-! and carries the contraction as C. The claim is that C is exact, so for ANY
-! one-electron operator over the split basis, C^T O_p C is the same matrix the
-! contracted basis gives directly. Overlap and kinetic energy are two
-! independent operators over the same functions, and `trc_1e` computes both
-! without going anywhere near the four-centre path.
-!
-! This replaces a test that compared terco's blocked kernel against its scalar
-! one. That comparison was between two paths that shared the same
-! representation, so it stayed green through two real bugs in this transform:
-! alpha derived before `basis_build` applied common_fac_sp, which left every s
-! and p shell short by that factor, and a two-dimensional `do concurrent`
-! whose `local` accumulator was not private. Both show up here immediately,
-! because there is an external answer to be wrong against.
-!
-! Registered twice (ctest terco/check_decontract on water.xyz/cc-pvdz.json,
-! terco/check_decontract_si on sih4.xyz/cc-pvdz.json -- twelve silicon s
-! primitives under four contraction columns, the case the whole exercise
-! exists for): one binary, argv picked by ctest, so argv is read in the
-! program unit before the testsuite runs and the single resulting case is
-! what test_decontract checks.
-!
 module check_decontract_suite
+   !!
+   !! The decontraction transform, against the one-electron integrals.
+   !!
+   !! `trc_decontract` splits a general contraction into single-primitive shells
+   !! and carries the contraction as C. The claim is that C is exact, so for ANY
+   !! one-electron operator over the split basis, C^T O_p C is the same matrix the
+   !! contracted basis gives directly. Overlap and kinetic energy are two
+   !! independent operators over the same functions, and `trc_1e` computes both
+   !! without going anywhere near the four-centre path.
+   !!
+   !! This replaces a test that compared terco's blocked kernel against its scalar
+   !! one. That comparison was between two paths that shared the same
+   !! representation, so it stayed green through two real bugs in this transform:
+   !! alpha derived before `basis_build` applied common_fac_sp, which left every s
+   !! and p shell short by that factor, and a two-dimensional `do concurrent`
+   !! whose `local` accumulator was not private. Both show up here immediately,
+   !! because there is an external answer to be wrong against.
+   !!
+   !! Registered twice (ctest terco/check_decontract on water.xyz/cc-pvdz.json,
+   !! terco/check_decontract_si on sih4.xyz/cc-pvdz.json -- twelve silicon s
+   !! primitives under four contraction columns, the case the whole exercise
+   !! exists for): one binary, argv picked by ctest, so argv is read in the
+   !! program unit before the testsuite runs and the single resulting case is
+   !! what test_decontract checks.
+   !!
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e

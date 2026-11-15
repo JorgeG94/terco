@@ -1,41 +1,41 @@
-!
-! The symmetry entries of the C ABI (ABI 1.23: trc_set_symmetry, trc_set_irrep_nelec,
-! the report-frame pair and the getters; 1.25: trc_set_symmetry_skeleton), called through the
-! Fortran interfaces of include/trc_c_interfaces.f90. The C side of the same round trip
-! (water, the header compiled by a C compiler) is in link_c.c.
-!
-! Symmetry is opt-in: a fresh context is symmetry off (C1, the standard path), and
-! "default" is a name for off. "on" (alias "auto") is the LENIENT request; a named group
-! (and any request with fixed irrep occupations) is STRICT.
-!
-! HOCl (planar, Cs) 6-31G*, STRICT requests (the group name Cs). The oracle is the project's
-! central one: the symmetric run and a plain run on the standard-frame geometry the context
-! reports (trc_geometry) give the same energy, to 1e-10 Eh. Then the frame (an
-! orthogonal map from the input to that geometry), the labels, fixed irrep
-! occupations (and the occupations trc_mo_occupations reports for them), and what
-! is refused, each with its message: every entry that would otherwise run the
-! C1 path silently, the cases the SCF cannot do with symmetry, and an explicit
-! group that is not a subgroup or not supported yet.
-!
-! Lenient requests: test_fresh_is_off (a fresh context and "default" run C1 and equal
-! "off"; "on" and "auto" are the same request). With "on", a rotated water reports in
-! the caller's INPUT frame and runs the paths the symmetric SCF cannot do in C1.
-! test_default_round_trip: a rotated water, an "on" context against one with
-! symmetry off: energy 1e-10, gradient 1e-9, orbital energies, density and the
-! density of the rotated-back orbitals 1e-7, the reported geometry (the input
-! symmetrised in it), atomic charges; the report-frame setter and getter.
-! test_default_borrowed: the borrowed basis, its overlap and the dipole computed
-! from it. test_default_fallbacks:
-! DF, PCM, SOSCF, a given guess, and every entry the symmetric SCF cannot serve
-! (Hessian, polarizability, RI-MP2, Fukui indices, restarts) give the symmetry-off
-! numbers. test_irrep_nelec: irrep_nelec needs a symmetry request (a fresh context
-! and an explicit off refuse); with "on" it makes the request strict.
-! Edge cases: atoms with the same element but other shells (trc_set_basis_arrays)
-! are not equivalent; a projected guess after a symmetric run starts from
-! input-frame orbitals; irrep_nelec is strict in either order with the request;
-! after an entry reruns the SCF in C1, a DFT gradient uses the input axes' grid.
-!
 module check_capi_sym_suite
+   !!
+   !! The symmetry entries of the C ABI (ABI 1.23: trc_set_symmetry, trc_set_irrep_nelec,
+   !! the report-frame pair and the getters; 1.25: trc_set_symmetry_skeleton), called through the
+   !! Fortran interfaces of include/trc_c_interfaces.f90. The C side of the same round trip
+   !! (water, the header compiled by a C compiler) is in link_c.c.
+   !!
+   !! Symmetry is opt-in: a fresh context is symmetry off (C1, the standard path), and
+   !! "default" is a name for off. "on" (alias "auto") is the LENIENT request; a named group
+   !! (and any request with fixed irrep occupations) is STRICT.
+   !!
+   !! HOCl (planar, Cs) 6-31G*, STRICT requests (the group name Cs). The oracle is the project's
+   !! central one: the symmetric run and a plain run on the standard-frame geometry the context
+   !! reports (trc_geometry) give the same energy, to 1e-10 Eh. Then the frame (an
+   !! orthogonal map from the input to that geometry), the labels, fixed irrep
+   !! occupations (and the occupations trc_mo_occupations reports for them), and what
+   !! is refused, each with its message: every entry that would otherwise run the
+   !! C1 path silently, the cases the SCF cannot do with symmetry, and an explicit
+   !! group that is not a subgroup or not supported yet.
+   !!
+   !! Lenient requests: test_fresh_is_off (a fresh context and "default" run C1 and equal
+   !! "off"; "on" and "auto" are the same request). With "on", a rotated water reports in
+   !! the caller's INPUT frame and runs the paths the symmetric SCF cannot do in C1.
+   !! test_default_round_trip: a rotated water, an "on" context against one with
+   !! symmetry off: energy 1e-10, gradient 1e-9, orbital energies, density and the
+   !! density of the rotated-back orbitals 1e-7, the reported geometry (the input
+   !! symmetrised in it), atomic charges; the report-frame setter and getter.
+   !! test_default_borrowed: the borrowed basis, its overlap and the dipole computed
+   !! from it. test_default_fallbacks:
+   !! DF, PCM, SOSCF, a given guess, and every entry the symmetric SCF cannot serve
+   !! (Hessian, polarizability, RI-MP2, Fukui indices, restarts) give the symmetry-off
+   !! numbers. test_irrep_nelec: irrep_nelec needs a symmetry request (a fresh context
+   !! and an explicit off refuse); with "on" it makes the request strict.
+   !! Edge cases: atoms with the same element but other shells (trc_set_basis_arrays)
+   !! are not equivalent; a projected guess after a symmetric run starts from
+   !! input-frame orbitals; irrep_nelec is strict in either order with the request;
+   !! after an entry reruns the SCF in C1, a DFT gradient uses the input axes' grid.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_char, c_null_char, c_null_ptr, c_loc
    use pic_types, only: dp
    use pic_strings, only: to_string
@@ -569,9 +569,8 @@ contains
    end subroutine test_entry_refusals
 
 
-   ! ---- lenient requests ("on"/"auto"): input frame, C1 fallback -------------
-
    subroutine make_pair(hd, ho, xyz_file, basis, cart)
+      !! ---- lenient requests ("on"/"auto"): input frame, C1 fallback -------------
       !! A lenient ("on") context and a symmetry-off one on the same molecule.
       type(c_ptr), intent(out) :: hd, ho
       character(len=*), intent(in) :: xyz_file, basis
@@ -971,10 +970,9 @@ contains
       rc = trc_destroy(hd); rc = trc_destroy(ho)
    end subroutine test_default_fallbacks
 
-   ! ---- review regressions: per-atom shells, frames of stored orbitals, ----
-   ! ---- irrep_nelec order, the grid after a C1 rerun                     ----
-
    subroutine water_arrays(geom, h2_scale, nsh, l, np, ex, co, cen)
+      !! ---- review regressions: per-atom shells, frames of stored orbitals, ----
+      !! ---- irrep_nelec order, the grid after a C1 rerun                     ----
       !! STO-3G water on `geom` (O, H, H; Bohr) as trc_set_basis_arrays takes
       !! it; the second H's exponents are scaled by `h2_scale`.
       real(dp), intent(in) :: geom(:, :), h2_scale

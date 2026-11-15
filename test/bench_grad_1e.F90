@@ -1,16 +1,16 @@
-!
-! Timing only: the one-electron gradient (trc_1e_gradient) next to
-! eri%gradient's own two-electron part, on the same system and basis, GPU 0.
-! Not a correctness check -- see check_1e_grad_vs_pyscf.F90 and
-! check_full_grad_fd.F90 for that -- just where the time goes. The density
-! is a fixed synthetic one (same closed form as the gradient correctness
-! checks): a timing run has no SCF to converge, only shell pairs and
-! primitives to walk, and that is independent of which density is plugged
-! in.
-!
-!   bench_grad_1e <xyz> <basis.json> [thresh]
-!
 program bench_grad_1e
+   !!
+   !! Timing only: the one-electron gradient (trc_1e_gradient) next to
+   !! eri%gradient's own two-electron part, on the same system and basis, GPU 0.
+   !! Not a correctness check -- see check_1e_grad_vs_pyscf.F90 and
+   !! check_full_grad_fd.F90 for that -- just where the time goes. The density
+   !! is a fixed synthetic one (same closed form as the gradient correctness
+   !! checks): a timing run has no SCF to converge, only shell pairs and
+   !! primitives to walk, and that is independent of which density is plugged
+   !! in.
+   !!
+   !!   bench_grad_1e <xyz> <basis.json> [thresh]
+   !!
    use pic_types, only: dp
    use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e_gradient, trc_bind_device

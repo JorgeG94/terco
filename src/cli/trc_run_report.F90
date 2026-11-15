@@ -505,13 +505,13 @@ contains
                               "it up; f0 is their average.")
    end subroutine run_fukui_summary
 
-   !
-   ! The frequency table and thermochemistry summary for --hessian,
-   ! through trc_vib's/trc_thermo's own logger helpers -- `r%freq_cm1`
-   ! etc. and `r%thermo` are already filled by trc_main itself, right
-   ! after trc_vibrational_analysis/trc_thermochemistry succeed.
-   !
    module subroutine run_hessian_summary(r)
+      !!
+      !! The frequency table and thermochemistry summary for --hessian,
+      !! through trc_vib's/trc_thermo's own logger helpers -- `r%freq_cm1`
+      !! etc. and `r%thermo` are already filled by trc_main itself, right
+      !! after trc_vibrational_analysis/trc_thermochemistry succeed.
+      !!
       type(run_t), intent(in) :: r
       call global_logger%info("")
       call global_logger%info("   vibrational analysis and thermochemistry (--hessian)")

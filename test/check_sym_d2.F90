@@ -1,34 +1,34 @@
-!
-! Point group D2 (trc_sym_geom, trc_sym_ao, trc_sym_scf): twisted ethylene
-! (general orientation, shifted: the standard frame is not the input frame) and
-! twisted tetrafluoroethylene (axes aligned with the input axes). Before the
-! group was enabled both were capped to C1 (D2 has no Cs below it).
-!
-!   - detection: group D2, the frame and origin as pyscf 2.14.0 gives them
-!     (`_symm_axes`, `_symm_orig`, read from sym_d2.ref). pyscf swaps x and y
-!     when the LAPACK signs of its principal axes are left-handed, a sign that
-!     is not defined: the test accepts terco's frame or the one with x and y
-!     exchanged, and then maps terco's B2 and B3 to pyscf's B3 and B2 in every
-!     anchor below. For the aligned molecule pyscf's axes are the input axes
-!     and no swap is possible: the test requires that;
-!   - SALC: U^T U = I, U^T S U and U^T H U block-diagonal (<= 1e-12), the
-!     dimensions per irrep (A, B1, B2, B3) equal to pyscf's `mol.symm_orb`;
-!     6-31G* and cc-pVDZ, Cartesian and spherical;
-!   - THE CENTRAL ORACLE: symmetry vs C1 on the symmetrised geometry, RHF,
-!     UHF (the ethylene cation) and B3LYP at grid level 5, |dE| <= 1e-10 (HF)
-!     / 1e-9 (DFT), orbital energies, density;
-!   - anchors (sym_d2.ref): electrons per irrep and orbital energies per irrep;
-!   - the requested subgroup D2 -> C2 (pyscf `symmetry='C2'`): reported group
-!     C2 with `detected` D2, the pyscf frame (the D2 z axis; the input axes
-!     when they hold), SO dimensions, electrons per irrep, orbital energies,
-!     and the energy equal to the D2 and C1 runs;
-!   - gradient: symmetrised gradient equivariant and equal to C1, and the
-!     projection itself on an arbitrary (non-symmetric) gradient;
-!   - `symmetry = auto` and `symmetry = D2` choose D2, `C2` is accepted.
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_d2_suite
+   !!
+   !! Point group D2 (trc_sym_geom, trc_sym_ao, trc_sym_scf): twisted ethylene
+   !! (general orientation, shifted: the standard frame is not the input frame) and
+   !! twisted tetrafluoroethylene (axes aligned with the input axes). Before the
+   !! group was enabled both were capped to C1 (D2 has no Cs below it).
+   !!
+   !!   - detection: group D2, the frame and origin as pyscf 2.14.0 gives them
+   !!     (`_symm_axes`, `_symm_orig`, read from sym_d2.ref). pyscf swaps x and y
+   !!     when the LAPACK signs of its principal axes are left-handed, a sign that
+   !!     is not defined: the test accepts terco's frame or the one with x and y
+   !!     exchanged, and then maps terco's B2 and B3 to pyscf's B3 and B2 in every
+   !!     anchor below. For the aligned molecule pyscf's axes are the input axes
+   !!     and no swap is possible: the test requires that;
+   !!   - SALC: U^T U = I, U^T S U and U^T H U block-diagonal (<= 1e-12), the
+   !!     dimensions per irrep (A, B1, B2, B3) equal to pyscf's `mol.symm_orb`;
+   !!     6-31G* and cc-pVDZ, Cartesian and spherical;
+   !!   - THE CENTRAL ORACLE: symmetry vs C1 on the symmetrised geometry, RHF,
+   !!     UHF (the ethylene cation) and B3LYP at grid level 5, |dE| <= 1e-10 (HF)
+   !!     / 1e-9 (DFT), orbital energies, density;
+   !!   - anchors (sym_d2.ref): electrons per irrep and orbital energies per irrep;
+   !!   - the requested subgroup D2 -> C2 (pyscf `symmetry='C2'`): reported group
+   !!     C2 with `detected` D2, the pyscf frame (the D2 z axis; the input axes
+   !!     when they hold), SO dimensions, electrons per irrep, orbital energies,
+   !!     and the energy equal to the D2 and C1 runs;
+   !!   - gradient: symmetrised gradient equivariant and equal to C1, and the
+   !!     projection itself on an arbitrary (non-symmetric) gradient;
+   !!   - `symmetry = auto` and `symmetry = D2` choose D2, `C2` is accepted.
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check

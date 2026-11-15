@@ -1,16 +1,16 @@
-!
-! A geometry optimisation with an effective core potential attached is
-! refused before its first step. The analytic gradient has no ECP term yet,
-! so trc_run_gradient refuses it, and a refused gradient inside DL-FIND is
-! `error stop` -- the end of a C caller's process. HI in def2-SVP (the
-! basis's own ECP) through terco_opt.h's trc_opt_run must RETURN, with
-! TRC_ERR_UNSUPPORTED and the gradient's message, without running an SCF.
-!
-! The CLI's own up-front refusal is in check_opt_refusals.
-!
-! A test-drive suite.
-!
 module check_opt_ecp_refused_suite
+   !!
+   !! A geometry optimisation with an effective core potential attached is
+   !! refused before its first step. The analytic gradient has no ECP term yet,
+   !! so trc_run_gradient refuses it, and a refused gradient inside DL-FIND is
+   !! `error stop` -- the end of a C caller's process. HI in def2-SVP (the
+   !! basis's own ECP) through terco_opt.h's trc_opt_run must RETURN, with
+   !! TRC_ERR_UNSUPPORTED and the gradient's message, without running an SCF.
+   !!
+   !! The CLI's own up-front refusal is in check_opt_refusals.
+   !!
+   !! A test-drive suite.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_char, c_null_char, c_null_ptr
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check

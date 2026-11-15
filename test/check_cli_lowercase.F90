@@ -1,30 +1,30 @@
-!
-! The CLI's own ASCII-lowercasing of its string options (--func, --guess,
-! ...), through the installed `terco` binary. app/main.F90's trc_run
-! module normalises these with a small, non-elemental, allocatable-result
-! helper (to_lower_alloc) INSTEAD of pic's own to_lower (pic_ascii.f90,
-! `pure elemental`, automatic-length result): nvfortran 26.5 and 26.9,
-! `trc_main`'s real `-fast -O3` flags, host and GPU builds alike,
-! miscompile pic's to_lower at these call sites -- the result comes back
-! the right LENGTH but BLANK (all-space) content, so `--func PBE` silently
-! ran a plain SCF with no exchange-correlation term, and `--guess SAD`
-! left `r%guess` blank (then refused as an unknown guess, since the CLI
-! validates the normalised string). See .claude/context/gpu-pitfalls.md's
-! "Codegen" entry.
-!
-! This never reproduces on gfortran (the only compiler that runs this
-! suite in CI), so it cannot assert a difference between the broken and
-! fixed code paths by itself; it is the test that WOULD have caught the
-! bug on an nvfortran build, and does catch a regression of the same
-! shape (reverting to_lower_alloc back to a bare to_lower call, or a
-! typo that skips the lowercasing) on any compiler. Deliberately passes
-! mixed-case CLI values (PBE, SAD) rather than already-lowercase ones, so
-! a build that merely forwards the raw string unchanged still fails this
-! check even where it happens to equal its own lowercasing.
-!
-! A test-drive suite.
-!
 module check_cli_lowercase_suite
+   !!
+   !! The CLI's own ASCII-lowercasing of its string options (--func, --guess,
+   !! ...), through the installed `terco` binary. app/main.F90's trc_run
+   !! module normalises these with a small, non-elemental, allocatable-result
+   !! helper (to_lower_alloc) INSTEAD of pic's own to_lower (pic_ascii.f90,
+   !! `pure elemental`, automatic-length result): nvfortran 26.5 and 26.9,
+   !! `trc_main`'s real `-fast -O3` flags, host and GPU builds alike,
+   !! miscompile pic's to_lower at these call sites -- the result comes back
+   !! the right LENGTH but BLANK (all-space) content, so `--func PBE` silently
+   !! ran a plain SCF with no exchange-correlation term, and `--guess SAD`
+   !! left `r%guess` blank (then refused as an unknown guess, since the CLI
+   !! validates the normalised string). See .claude/context/gpu-pitfalls.md's
+   !! "Codegen" entry.
+   !!
+   !! This never reproduces on gfortran (the only compiler that runs this
+   !! suite in CI), so it cannot assert a difference between the broken and
+   !! fixed code paths by itself; it is the test that WOULD have caught the
+   !! bug on an nvfortran build, and does catch a regression of the same
+   !! shape (reverting to_lower_alloc back to a bare to_lower call, or a
+   !! typo that skips the lowercasing) on any compiler. Deliberately passes
+   !! mixed-case CLI values (PBE, SAD) rather than already-lowercase ones, so
+   !! a build that merely forwards the raw string unchanged still fails this
+   !! check even where it happens to equal its own lowercasing.
+   !!
+   !! A test-drive suite.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use json_module, only: json_file

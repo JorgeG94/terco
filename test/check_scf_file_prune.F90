@@ -1,18 +1,18 @@
-!
-! trc_scf_file (save/load restart) against a basis whose primitive pruning
-! (trc_basis_json's prune_block, src/basis/trc_basis_json.F90) changed
-! between the save and the load -- the scenario of an SCF saved by a build
-! or a run before TRC_PRUNE_PRIMITIVES existed (or with it set to "0"),
-! read back by a build or a run that prunes a general contraction (the
-! default). The saved basis then has a different per-shell primitive count
-! (and usually a different maxnp) from the one the loader builds, so it
-! must refuse rather than hand back orbitals that do not belong to this AO
-! space -- exactly what trc_scf_file's own header promises for "a different
-! basis file of the same size".
-!
-! A test-drive suite.
-!
 module check_scf_file_prune_suite
+   !!
+   !! trc_scf_file (save/load restart) against a basis whose primitive pruning
+   !! (trc_basis_json's prune_block, src/basis/trc_basis_json.F90) changed
+   !! between the save and the load -- the scenario of an SCF saved by a build
+   !! or a run before TRC_PRUNE_PRIMITIVES existed (or with it set to "0"),
+   !! read back by a build or a run that prunes a general contraction (the
+   !! default). The saved basis then has a different per-shell primitive count
+   !! (and usually a different maxnp) from the one the loader builds, so it
+   !! must refuse rather than hand back orbitals that do not belong to this AO
+   !! space -- exactly what trc_scf_file's own header promises for "a different
+   !! basis file of the same size".
+   !!
+   !! A test-drive suite.
+   !!
    use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -56,11 +56,11 @@ contains
       if (r /= 0) error stop 'check_scf_file_prune: setenv(TRC_PRUNE_PRIMITIVES) failed'
    end subroutine set_prune
 
-   ! water/cc-pVDZ: oxygen's s and p blocks are general contractions
-   ! (check_prune_primitives.F90's own header has the exponent counts), so
-   ! TRC_PRUNE_PRIMITIVES actually changes this basis's shape, not just its
-   ! numbers.
    subroutine build_and_run(prune_flag, bas, at_z, at_r, res)
+      !! water/cc-pVDZ: oxygen's s and p blocks are general contractions
+      !! (check_prune_primitives.F90's own header has the exponent counts), so
+      !! TRC_PRUNE_PRIMITIVES actually changes this basis's shape, not just its
+      !! numbers.
       character(*), intent(in) :: prune_flag
       type(trc_basis_t), intent(out) :: bas
       real(dp), allocatable, intent(out) :: at_z(:), at_r(:, :)
@@ -84,15 +84,15 @@ contains
       if (.not. res%converged) error stop 'check_scf_file_prune: RHF did not converge'
    end subroutine build_and_run
 
-   !
-   ! Save a run made with pruning off (the shape a pre-pruning build, or
-   ! TRC_PRUNE_PRIMITIVES=0, would have written), then try to load it
-   ! against a freshly built basis with pruning at its default (on). The
-   ! two bases differ in oxygen's s and p shell primitive counts, so the
-   ! load must come back with a non-empty refusal message and must not
-   ! touch `res_loaded`.
-   !
    subroutine test_mismatch_refused(error)
+      !!
+      !! Save a run made with pruning off (the shape a pre-pruning build, or
+      !! TRC_PRUNE_PRIMITIVES=0, would have written), then try to load it
+      !! against a freshly built basis with pruning at its default (on). The
+      !! two bases differ in oxygen's s and p shell primitive counts, so the
+      !! load must come back with a non-empty refusal message and must not
+      !! touch `res_loaded`.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas_saved, bas_now
       real(dp), allocatable :: z_saved(:), r_saved(:, :), z_now(:), r_now(:, :)
@@ -125,12 +125,12 @@ contains
       call cleanup()
    end subroutine test_mismatch_refused
 
-   !
-   ! The same two builds, both pruned (today's default both times) --
-   ! confirms test_mismatch_refused's refusal is about the pruning
-   ! difference and not some unrelated save/load bug.
-   !
    subroutine test_match_accepted(error)
+      !!
+      !! The same two builds, both pruned (today's default both times) --
+      !! confirms test_mismatch_refused's refusal is about the pruning
+      !! difference and not some unrelated save/load bug.
+      !!
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas_saved, bas_now
       real(dp), allocatable :: z_saved(:), r_saved(:, :), z_now(:), r_now(:, :)

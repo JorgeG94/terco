@@ -1,32 +1,32 @@
-!
-! Rys against HGP, class by class, on the SAME density and screening.
-!
-! With TRC_RYS_CLASSES=all, every class the build generated a kernel for
-! routes through Rys instead of
-! HGP (trc_rys_select%rys_select_route); everything else -- including classes this
-! build never generated a Rys kernel for -- still goes through HGP. Building
-! the SAME Fock matrix twice, once per setting, and comparing is a stronger
-! check than trusting either kernel alone: an integral that is wrong the
-! same way in both schemes would pass a check against itself but not this
-! one, because HGP and Rys compute it by unrelated recurrences.
-!
-! Two systems, each its own ctest invocation (command-line argument, see
-! the module header below for why they cannot share a process):
-!   - water/6-31G*: light, segmented, exercises the d-shell classes without
-!     general contraction.
-!   - water/cc-pVDZ: the oxygen s and p shells are generally contracted, so
-!     this exercises trc_decontract's split alongside the same comparison.
-!
-! The default routing (TRC_RYS_CLASSES unset: HGP, except the d classes
-! gen_rys.py's FOCK_RYS_DEFAULT sends to the chunked Rys kernels) is a
-! third build, compared against HGP the same way.
-!
-! TRC_RYS_CLASSES is read ONCE PER FOCK BUILD (trc_rys_select), so toggling
-! it between the eri%fock calls below -- rather than, say, building two
-! separate eri_t objects -- is exactly the intended use: same bins, same
-! density, same screening, only the env var differs.
-!
 module check_rys_vs_hgp_suite
+   !!
+   !! Rys against HGP, class by class, on the SAME density and screening.
+   !!
+   !! With TRC_RYS_CLASSES=all, every class the build generated a kernel for
+   !! routes through Rys instead of
+   !! HGP (trc_rys_select%rys_select_route); everything else -- including classes this
+   !! build never generated a Rys kernel for -- still goes through HGP. Building
+   !! the SAME Fock matrix twice, once per setting, and comparing is a stronger
+   !! check than trusting either kernel alone: an integral that is wrong the
+   !! same way in both schemes would pass a check against itself but not this
+   !! one, because HGP and Rys compute it by unrelated recurrences.
+   !!
+   !! Two systems, each its own ctest invocation (command-line argument, see
+   !! the module header below for why they cannot share a process):
+   !!   - water/6-31G*: light, segmented, exercises the d-shell classes without
+   !!     general contraction.
+   !!   - water/cc-pVDZ: the oxygen s and p shells are generally contracted, so
+   !!     this exercises trc_decontract's split alongside the same comparison.
+   !!
+   !! The default routing (TRC_RYS_CLASSES unset: HGP, except the d classes
+   !! gen_rys.py's FOCK_RYS_DEFAULT sends to the chunked Rys kernels) is a
+   !! third build, compared against HGP the same way.
+   !!
+   !! TRC_RYS_CLASSES is read ONCE PER FOCK BUILD (trc_rys_select), so toggling
+   !! it between the eri%fock calls below -- rather than, say, building two
+   !! separate eri_t objects -- is exactly the intended use: same bins, same
+   !! density, same screening, only the env var differs.
+   !!
    use, intrinsic :: iso_c_binding, only: c_char, c_int, c_null_char
    use pic_types, only: dp
    use pic_strings, only: to_string

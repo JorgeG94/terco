@@ -1,40 +1,40 @@
-!
-! The one-particle intermediates and the energy functional of RI-CCSD(T)
-! (src/post_hf/ccsd/trc_rccsd_inter.F90) against pyscf's DF-RCCSD, on a water and
-! on a C1 hydrogen peroxide, cc-pVDZ with cc-pVDZ-RIFIT, spherical, frozen core 1
-! and 2 (the molecules, SCF and probes of check_rccsd_ints, shared through
-! rccsd_test_support).
-!
-! The amplitudes are the FIXED, unconverged ones test/pyscf_refs/generate.py
-! (gen_rccsd_ints) probes: t2 = MP2, t1_ia = (0.03 x + 0.02 y + 0.01 z)_ia / (e_i - e_a)
-! with x, y, z the MO dipole blocks (origin 0) over the active orbitals. The
-! reference holds, per tensor, sign-invariant probes: for a 2-index A,
-! |A|, sum A_pq X_pq and sum A_pq (XY)_pq, XY = X @ Y; for a 4-index one
-! |A|, sum A X_pq Y_rs, sum A X_pr Z_qs, sum A Y_ps Z_qr.
-!
-! INDEX ORDER. mqc's arrays are PySCF's, index for index: t1(i,a), t2(i,j,a,b),
-! Foo(k,i), Fvv(a,c), Fov(k,c), Loo(k,i), Lvv(a,c). One difference of content:
-! pyscf's cc_Foo, cc_Fvv (and so Loo, Lvv) add the bare Fock block, the diagonal
-! eps_o, eps_v for canonical orbitals, which the module leaves out (its header
-! says why). The probes below therefore add diag(eps) to the module's array
-! first, and the reference's `fov` terms (zero up to 1e-12) are not in the module.
-!
-! Cases, per molecule:
-!   1 t1, t2 (mp2_guess) probes against the reference; tau against an
-!     independent host t2 + t1 t1; t2 against a host quotient
-!   2 Foo and Fvv probes
-!   3 Fov, Loo and Lvv probes
-!   4 E_MP2 and the energy functional at the fixed amplitudes against the
-!     reference, singles/doubles split against a host sum, repeatability
-!   5 t1 = 0: Fov = 0, Loo = Foo, Lvv = Fvv, Foo and Fvv the t2-only forms
-!   6 all five at the fixed amplitudes against host loops written term by term
-!     as pyscf's einsums (t2 and t1 t1 terms separate, no tau, no L)
-!   7 refusals: an empty integral type, mismatched sizes of amplitudes or intermediates
-!     (status set, message non-empty, nothing changed)
-!   8 stale scratch: after `ints%build` is called again the routines that take `ints` refuse
-!     until the scratch is re-initialised, then reproduce the earlier numbers
-!
 module check_rccsd_inter_suite
+   !!
+   !! The one-particle intermediates and the energy functional of RI-CCSD(T)
+   !! (src/post_hf/ccsd/trc_rccsd_inter.F90) against pyscf's DF-RCCSD, on a water and
+   !! on a C1 hydrogen peroxide, cc-pVDZ with cc-pVDZ-RIFIT, spherical, frozen core 1
+   !! and 2 (the molecules, SCF and probes of check_rccsd_ints, shared through
+   !! rccsd_test_support).
+   !!
+   !! The amplitudes are the FIXED, unconverged ones test/pyscf_refs/generate.py
+   !! (gen_rccsd_ints) probes: t2 = MP2, t1_ia = (0.03 x + 0.02 y + 0.01 z)_ia / (e_i - e_a)
+   !! with x, y, z the MO dipole blocks (origin 0) over the active orbitals. The
+   !! reference holds, per tensor, sign-invariant probes: for a 2-index A,
+   !! |A|, sum A_pq X_pq and sum A_pq (XY)_pq, XY = X @ Y; for a 4-index one
+   !! |A|, sum A X_pq Y_rs, sum A X_pr Z_qs, sum A Y_ps Z_qr.
+   !!
+   !! INDEX ORDER. mqc's arrays are PySCF's, index for index: t1(i,a), t2(i,j,a,b),
+   !! Foo(k,i), Fvv(a,c), Fov(k,c), Loo(k,i), Lvv(a,c). One difference of content:
+   !! pyscf's cc_Foo, cc_Fvv (and so Loo, Lvv) add the bare Fock block, the diagonal
+   !! eps_o, eps_v for canonical orbitals, which the module leaves out (its header
+   !! says why). The probes below therefore add diag(eps) to the module's array
+   !! first, and the reference's `fov` terms (zero up to 1e-12) are not in the module.
+   !!
+   !! Cases, per molecule:
+   !!   1 t1, t2 (mp2_guess) probes against the reference; tau against an
+   !!     independent host t2 + t1 t1; t2 against a host quotient
+   !!   2 Foo and Fvv probes
+   !!   3 Fov, Loo and Lvv probes
+   !!   4 E_MP2 and the energy functional at the fixed amplitudes against the
+   !!     reference, singles/doubles split against a host sum, repeatability
+   !!   5 t1 = 0: Fov = 0, Loo = Foo, Lvv = Fvv, Foo and Fvv the t2-only forms
+   !!   6 all five at the fixed amplitudes against host loops written term by term
+   !!     as pyscf's einsums (t2 and t1 t1 terms separate, no tau, no L)
+   !!   7 refusals: an empty integral type, mismatched sizes of amplitudes or intermediates
+   !!     (status set, message non-empty, nothing changed)
+   !!   8 stale scratch: after `ints%build` is called again the routines that take `ints` refuse
+   !!     until the scratch is re-initialised, then reproduce the earlier numbers
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -546,9 +546,8 @@ contains
                   "with a status and change nothing"//trim(why))
    end subroutine refusal_case
 
-   ! ---- independent host references -----------------------------------------------------------
-
    subroutine host_t2(ints, t2)
+      !! ---- independent host references -----------------------------------------------------------
       !! t2(i,j,a,b) = (ia|jb) / (e_i + e_j - e_a - e_b)
       type(trc_rccsd_ints_t), intent(in) :: ints
       real(dp), allocatable, intent(out) :: t2(:, :, :, :)

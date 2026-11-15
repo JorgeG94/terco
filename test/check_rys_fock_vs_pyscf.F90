@@ -1,33 +1,33 @@
-!
-! eri%fock (the two-electron Fock build, J - K/2 for the total density, see
-! src/eri/trc_eri.F90's own header for that convention) against pyscf's raw
-! int2e, on a fixed, deterministic, non-SCF density -- the first class to
-! exercise an f shell (l=3) in a four-centre test.
-!
-! Modelled on check_rys_vs_hgp.F90 (the fixed-density Fock comparison this
-! reuses almost verbatim) and check_rys_grad_vs_pyscf.F90 (the dump/pyscf-
-! reference split, the overlap check for AO normalisation, and the AO-order
-! permutation -- pyscf's cart=True Mole.build() does not keep a JSON's
-! literal shell order, see rys_fock_ref.py's own header). Writes the dump
-! named by its third argument; rys_fock_ref.py reads it, rebuilds the same
-! geometry and basis in pyscf, and does the comparison.
-!
-! SKIPS CLEANLY when the basis needs l = 3 and this build's LMAX does not
-! reach it (TRC_LMAX < 3), exactly as check_nosym.F90 does for check_nosym_f
-! -- `stop 0` after printing SKIP, so ctest sees a pass rather than a red
-! build that never had the kernels to run. Registered at every ceiling for
-! the same reason check_nosym_f is: a build that CAN reach f always runs it,
-! and nothing here depends on how that ceiling gets raised. This self-skip
-! happens in run_case, BEFORE run_testsuite is ever called, so the stop-0/
-! "SKIP" text ctest's SKIP_REGULAR_EXPRESSION matches is unchanged.
-!
-! At LMAX=2 against cc-pVDZ or 6-31G* (no f on H/C/N/O), this proves the
-! OTHER half of the plumbing that does not need l=3 at all: the JSON basis
-! build, the AO permutation, and the per-AO normalisation this comparison
-! shares with every other scheme working around the same pyscf cart=True
-! quirk.
-!
 module check_rys_fock_vs_pyscf_suite
+   !!
+   !! eri%fock (the two-electron Fock build, J - K/2 for the total density, see
+   !! src/eri/trc_eri.F90's own header for that convention) against pyscf's raw
+   !! int2e, on a fixed, deterministic, non-SCF density -- the first class to
+   !! exercise an f shell (l=3) in a four-centre test.
+   !!
+   !! Modelled on check_rys_vs_hgp.F90 (the fixed-density Fock comparison this
+   !! reuses almost verbatim) and check_rys_grad_vs_pyscf.F90 (the dump/pyscf-
+   !! reference split, the overlap check for AO normalisation, and the AO-order
+   !! permutation -- pyscf's cart=True Mole.build() does not keep a JSON's
+   !! literal shell order, see rys_fock_ref.py's own header). Writes the dump
+   !! named by its third argument; rys_fock_ref.py reads it, rebuilds the same
+   !! geometry and basis in pyscf, and does the comparison.
+   !!
+   !! SKIPS CLEANLY when the basis needs l = 3 and this build's LMAX does not
+   !! reach it (TRC_LMAX < 3), exactly as check_nosym.F90 does for check_nosym_f
+   !! -- `stop 0` after printing SKIP, so ctest sees a pass rather than a red
+   !! build that never had the kernels to run. Registered at every ceiling for
+   !! the same reason check_nosym_f is: a build that CAN reach f always runs it,
+   !! and nothing here depends on how that ceiling gets raised. This self-skip
+   !! happens in run_case, BEFORE run_testsuite is ever called, so the stop-0/
+   !! "SKIP" text ctest's SKIP_REGULAR_EXPRESSION matches is unchanged.
+   !!
+   !! At LMAX=2 against cc-pVDZ or 6-31G* (no f on H/C/N/O), this proves the
+   !! OTHER half of the plumbing that does not need l=3 at all: the JSON basis
+   !! build, the AO permutation, and the per-AO normalisation this comparison
+   !! shares with every other scheme working around the same pyscf cart=True
+   !! quirk.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -58,14 +58,14 @@ contains
                   ]
    end subroutine collect_rys_fock_tests
 
-   !
-   ! Everything the old program did: argument parsing, the LMAX self-skip,
-   ! the fixed-density Fock build (plus its golden dump, left exactly where
-   ! it was relative to the build), the AO-normalisation overlap, writing
-   ! the probe dump, and reading the pyscf reference back into the two
-   ! max|diff| values test_vs_pyscf checks.
-   !
    subroutine run_case(skip, message)
+      !!
+      !! Everything the old program did: argument parsing, the LMAX self-skip,
+      !! the fixed-density Fock build (plus its golden dump, left exactly where
+      !! it was relative to the build), the AO-normalisation overlap, writing
+      !! the probe dump, and reading the pyscf reference back into the two
+      !! max|diff| values test_vs_pyscf checks.
+      !!
       logical, intent(out) :: skip
       character(len=*), intent(out) :: message
 
@@ -184,13 +184,13 @@ contains
       deallocate (at_z, r, d, g, smat, tmat, vmat, s_ref, g_ref)
    end subroutine run_case
 
-   !
-   ! Same deterministic, dense, symmetric construction as check_nosym.F90
-   ! and check_rys_vs_hgp.F90 -- not sparse, not SCF-converged, so the
-   ! comparison exercises the whole digestion rather than whatever a
-   ! converged density happens to leave non-negligible.
-   !
    subroutine synth_density(n, dd)
+      !!
+      !! Same deterministic, dense, symmetric construction as check_nosym.F90
+      !! and check_rys_vs_hgp.F90 -- not sparse, not SCF-converged, so the
+      !! comparison exercises the whole digestion rather than whatever a
+      !! converged density happens to leave non-negligible.
+      !!
       integer, intent(in) :: n
       real(dp), intent(out) :: dd(n, n)
       integer :: ii, jj

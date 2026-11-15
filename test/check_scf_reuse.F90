@@ -1,66 +1,66 @@
-!
-! Reuse across SCF/gradient calls, added for a sequence of nearby
-! geometries at the same molecule/basis (the finite-difference Hessian,
-! and later a geometry optimiser): `trc_pair_eri_cache_t`
-! (trc_scf_context.F90) lets the SCF's own pair list and (outside --df)
-! four-centre engine stay alive for a gradient right after it, instead of
-! a second pl%build/eri%build at the SAME geometry and threshold
-! (trc_scf_grad.F90's own `pair_eri_cache` argument, which also reports
-! whether it actually took that path through its `reused` out argument);
-! `scf_context_project_density` (same module) is the orbital-projection warm start,
-! trc_capi.F90's TRC_GUESS_PROJECTED.
-!
-! A test-drive suite. Reuse is checked as a pure PERFORMANCE path, never a
-! correctness one: every case below either compares a cached call against
-! an independently fresh one (never against a stored literal), or checks
-! that a cache that should NOT be trusted is provably not reused (`reused`
-! comes back false) rather than merely "happens to give the right answer
-! this time". Cases:
-!
-!   1. at one geometry, a gradient computed WITH the cache and WITHOUT it
-!      agrees to round-off, AND the cached call's own `reused` flag comes
-!      back true -- without that flag this would equally pass if the
-!      reuse path never ran at all (comparing fresh against fresh).
-!   2. the SAME cache, handed to a gradient at a DIFFERENT geometry with
-!      NO SCF rerun in between (the geometry simply moved, so the
-!      fingerprint `trc_pair_eri_cache_t` now stores -- nshell, natm, the
-!      atom centres -- no longer matches what it was built with): `reused`
-!      comes back false, and the result agrees with an independently
-!      fresh build at the NEW geometry, not the old one.
-!   3. a threshold mismatch (SAME geometry, cache built at a different
-!      `eri_thresh`) is the same story: `reused` false, result matching a
-!      fresh build at the NEW threshold.
-!   4. `batch_res` mismatch -- the SCF's own engine built at a non-default
-!      `opts%batch_res`, while this routine's own fresh build always uses
-!      the default -- also forces a rebuild rather than risking a result
-!      that differs from the no-cache path by more than round-off.
-!   5. `trc_pair_eri_cache_t%release()` is safe called twice.
-!   6. `scf_context_project_density` at an UNCHANGED geometry (S' = S) reproduces the
-!      SCF's own converged density to round-off -- the identity case
-!      every orbital-projection warm start must degenerate to.
-!   7. `scf_context_project_density` at a MOVED geometry gives an S'-orthonormal C':
-!      checked through D'S'D' = occ_s D' (idempotency under the NEW
-!      overlap), the matrix identity that holds iff C'^T S' C' = I for a
-!      full-rank C -- and an SCF started from it converges to the SAME
-!      energy as one started from SAD.
-!   8. the C API: `trc_run_scf` -> a geometry OR a setting change ->
-!      `trc_run_gradient` refuses with TRC_ERR_STATE rather than reusing a
-!      cache the change already invalidated (`invalidate_runs`).
-!   9. `TRC_GUESS_PROJECTED` through `trc_set_guess`: both its own
-!      refusals (no previous SCF orbitals; a size/spin mismatch against
-!      the previous ones), each with TRC_ERR_STATE.
-!   10. the full C-API path `trc_set_geometry` makes possible: trc_run_scf
-!       at one geometry, trc_set_geometry to a moved one, TRC_GUESS_PROJECTED,
-!       trc_run_scf again -- converges to the same energy as a fresh SAD
-!       run at the moved geometry.
-!   11. the split policy (`trc_scf_options_t%decontract`): an engine built
-!       with a non-default policy is reused, and matches a fresh engine the
-!       gradient builds with the SCF's policy (carried by the cache). An HF
-!       engine is not reused for a PBE gradient (PBE splits every general
-!       contraction, `md_coulomb`), and gives the fresh PBE engine's result;
-!       a PBE engine is reused for a PBE gradient.
-!
 module check_scf_reuse_suite
+   !!
+   !! Reuse across SCF/gradient calls, added for a sequence of nearby
+   !! geometries at the same molecule/basis (the finite-difference Hessian,
+   !! and later a geometry optimiser): `trc_pair_eri_cache_t`
+   !! (trc_scf_context.F90) lets the SCF's own pair list and (outside --df)
+   !! four-centre engine stay alive for a gradient right after it, instead of
+   !! a second pl%build/eri%build at the SAME geometry and threshold
+   !! (trc_scf_grad.F90's own `pair_eri_cache` argument, which also reports
+   !! whether it actually took that path through its `reused` out argument);
+   !! `scf_context_project_density` (same module) is the orbital-projection warm start,
+   !! trc_capi.F90's TRC_GUESS_PROJECTED.
+   !!
+   !! A test-drive suite. Reuse is checked as a pure PERFORMANCE path, never a
+   !! correctness one: every case below either compares a cached call against
+   !! an independently fresh one (never against a stored literal), or checks
+   !! that a cache that should NOT be trusted is provably not reused (`reused`
+   !! comes back false) rather than merely "happens to give the right answer
+   !! this time". Cases:
+   !!
+   !!   1. at one geometry, a gradient computed WITH the cache and WITHOUT it
+   !!      agrees to round-off, AND the cached call's own `reused` flag comes
+   !!      back true -- without that flag this would equally pass if the
+   !!      reuse path never ran at all (comparing fresh against fresh).
+   !!   2. the SAME cache, handed to a gradient at a DIFFERENT geometry with
+   !!      NO SCF rerun in between (the geometry simply moved, so the
+   !!      fingerprint `trc_pair_eri_cache_t` now stores -- nshell, natm, the
+   !!      atom centres -- no longer matches what it was built with): `reused`
+   !!      comes back false, and the result agrees with an independently
+   !!      fresh build at the NEW geometry, not the old one.
+   !!   3. a threshold mismatch (SAME geometry, cache built at a different
+   !!      `eri_thresh`) is the same story: `reused` false, result matching a
+   !!      fresh build at the NEW threshold.
+   !!   4. `batch_res` mismatch -- the SCF's own engine built at a non-default
+   !!      `opts%batch_res`, while this routine's own fresh build always uses
+   !!      the default -- also forces a rebuild rather than risking a result
+   !!      that differs from the no-cache path by more than round-off.
+   !!   5. `trc_pair_eri_cache_t%release()` is safe called twice.
+   !!   6. `scf_context_project_density` at an UNCHANGED geometry (S' = S) reproduces the
+   !!      SCF's own converged density to round-off -- the identity case
+   !!      every orbital-projection warm start must degenerate to.
+   !!   7. `scf_context_project_density` at a MOVED geometry gives an S'-orthonormal C':
+   !!      checked through D'S'D' = occ_s D' (idempotency under the NEW
+   !!      overlap), the matrix identity that holds iff C'^T S' C' = I for a
+   !!      full-rank C -- and an SCF started from it converges to the SAME
+   !!      energy as one started from SAD.
+   !!   8. the C API: `trc_run_scf` -> a geometry OR a setting change ->
+   !!      `trc_run_gradient` refuses with TRC_ERR_STATE rather than reusing a
+   !!      cache the change already invalidated (`invalidate_runs`).
+   !!   9. `TRC_GUESS_PROJECTED` through `trc_set_guess`: both its own
+   !!      refusals (no previous SCF orbitals; a size/spin mismatch against
+   !!      the previous ones), each with TRC_ERR_STATE.
+   !!   10. the full C-API path `trc_set_geometry` makes possible: trc_run_scf
+   !!       at one geometry, trc_set_geometry to a moved one, TRC_GUESS_PROJECTED,
+   !!       trc_run_scf again -- converges to the same energy as a fresh SAD
+   !!       run at the moved geometry.
+   !!   11. the split policy (`trc_scf_options_t%decontract`): an engine built
+   !!       with a non-default policy is reused, and matches a fresh engine the
+   !!       gradient builds with the SCF's policy (carried by the cache). An HF
+   !!       engine is not reused for a PBE gradient (PBE splits every general
+   !!       contraction, `md_coulomb`), and gives the fresh PBE engine's result;
+   !!       a PBE engine is reused for a PBE gradient.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char, c_null_ptr
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check, test_failed

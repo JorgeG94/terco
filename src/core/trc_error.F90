@@ -1,18 +1,18 @@
-!
-! The error type the grid modules report through.
-!
-! Those modules came from metalquicha, where `error_t` carries a code, a
-! message, and a call stack. This is the subset they use -- `set`,
-! `has_error`, `get_message`, `clear` -- with the same names, so the code
-! could move with nothing changed but its module prefix. The stack is not
-! here because nothing in terco pushes onto it.
-!
-! terco's own API has no error path: it is handed a basis and a density
-! and returns integrals, and a wrong argument is a programming error. The
-! grid is the exception because a grid request is user input -- a level, a
-! count, a scheme -- and refusing a bad one is part of the contract.
-!
 module trc_error
+   !!
+   !! The error type the grid modules report through.
+   !!
+   !! Those modules came from metalquicha, where `error_t` carries a code, a
+   !! message, and a call stack. This is the subset they use -- `set`,
+   !! `has_error`, `get_message`, `clear` -- with the same names, so the code
+   !! could move with nothing changed but its module prefix. The stack is not
+   !! here because nothing in terco pushes onto it.
+   !!
+   !! terco's own API has no error path: it is handed a basis and a density
+   !! and returns integrals, and a wrong argument is a programming error. The
+   !! grid is the exception because a grid request is user input -- a level, a
+   !! count, a scheme -- and refusing a bad one is part of the contract.
+   !!
    implicit none
    private
 

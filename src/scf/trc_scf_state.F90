@@ -1,17 +1,17 @@
-!
-! The per-iteration arrays an SCF run writes every pass through the loop:
-! the Fock/Coulomb-exchange/XC matrices in both the run's own AO space and
-! the Cartesian one the kernels build in, the incremental-build history,
-! the continuum's operator, and the DIIS commutator's own workspace.
-! `alloc` owns the "1 x 1 when this run never uses it" sizing rule (see
-! `trc_scf_driver`'s own header); `to_device`/`release_device` are the ONE
-! enter/exit pair for all of it, together with the context's `hcore`/
-! `smat`/`x` and the result's `dmat`/`cmo`/`eps` -- one region, because
-! that is what the original single `!$acc enter data` statement did, and
-! splitting it by module would only have meant more regions mapping the
-! same arrays, not fewer bugs.
-!
 module trc_scf_state
+   !!
+   !! The per-iteration arrays an SCF run writes every pass through the loop:
+   !! the Fock/Coulomb-exchange/XC matrices in both the run's own AO space and
+   !! the Cartesian one the kernels build in, the incremental-build history,
+   !! the continuum's operator, and the DIIS commutator's own workspace.
+   !! `alloc` owns the "1 x 1 when this run never uses it" sizing rule (see
+   !! `trc_scf_driver`'s own header); `to_device`/`release_device` are the ONE
+   !! enter/exit pair for all of it, together with the context's `hcore`/
+   !! `smat`/`x` and the result's `dmat`/`cmo`/`eps` -- one region, because
+   !! that is what the original single `!$acc enter data` statement did, and
+   !! splitting it by module would only have meant more regions mapping the
+   !! same arrays, not fewer bugs.
+   !!
    use pic_types, only: dp
    use pic_timer, only: timer_type
    use trc_step_table, only: step_table_t

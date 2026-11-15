@@ -1,24 +1,24 @@
-!
-! CHELPG atomic charges (trc_chelpg.F90) against two references:
-!
-!  * metalquicha's recipe run in pyscf (test/pyscf_refs/chelpg.ref, written
-!    offline by `generate.py chelpg`): the same Breneman-Wiberg grid rule
-!    and constrained fit, with pyscf's own SCF and its `int1e_grids`
-!    potential. Water RHF and B3LYP/6-31G, formamide and the acetate anion
-!    RHF and B3LYP/def2-SVP, and the NH2 radical UHF/cc-pVDZ. Each case also
-!    checks that terco's grid has exactly the reference's point count.
-!  * metalquicha's OWN Fortran charges (mqc_czt_charges' chelpg_charges at
-!    mqc commit 66efbeed96, the geometry of its validation/check_charges.f90,
-!    the same 6-31G and cc-pVDZ files byte for byte), hardcoded below.
-!
-! And the properties any CHELPG fit owes: the charges sum to the molecular
-! charge (it is the constraint), they do not move when the molecule is
-! translated and they permute with the atoms, the grid lies outside every
-! van der Waals sphere and inside the head space, the fit reproduces the
-! potential (RRMS), and a ghost atom or an element without a radius is
-! refused.
-!
 module check_chelpg_suite
+   !!
+   !! CHELPG atomic charges (trc_chelpg.F90) against two references:
+   !!
+   !!  * metalquicha's recipe run in pyscf (test/pyscf_refs/chelpg.ref, written
+   !!    offline by `generate.py chelpg`): the same Breneman-Wiberg grid rule
+   !!    and constrained fit, with pyscf's own SCF and its `int1e_grids`
+   !!    potential. Water RHF and B3LYP/6-31G, formamide and the acetate anion
+   !!    RHF and B3LYP/def2-SVP, and the NH2 radical UHF/cc-pVDZ. Each case also
+   !!    checks that terco's grid has exactly the reference's point count.
+   !!  * metalquicha's OWN Fortran charges (mqc_czt_charges' chelpg_charges at
+   !!    mqc commit 66efbeed96, the geometry of its validation/check_charges.f90,
+   !!    the same 6-31G and cc-pVDZ files byte for byte), hardcoded below.
+   !!
+   !! And the properties any CHELPG fit owes: the charges sum to the molecular
+   !! charge (it is the constraint), they do not move when the molecule is
+   !! translated and they permute with the atoms, the grid lies outside every
+   !! van der Waals sphere and inside the head space, the fit reproduces the
+   !! potential (RRMS), and a ghost atom or an element without a radius is
+   !! refused.
+   !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char
    use pic_types, only: dp
    use pic_strings, only: to_string
@@ -28,7 +28,7 @@ module check_chelpg_suite
    use trc_basis_json, only: trc_basis_from_json
    use trc_sph, only: sph_sph_to_cart
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
-   use trc_chelpg, only: trc_chelpg_charges, trc_chelpg_grid, trc_chelpg_vdw_radius, &
+   use trc_chelpg, only: fortran_chelpg_charges => trc_chelpg_charges, trc_chelpg_grid, trc_chelpg_vdw_radius, &
                          trc_chelpg_fit_t, CHELPG_HEAD_SPACE
    use trc_constants, only: ANGSTROM_TO_BOHR
    use trc_test_basis, only: read_xyz
@@ -170,7 +170,7 @@ contains
       call converged_density(z, r, case, grid_level, b, d_cart, e_terco, error)
       if (allocated(error)) return
 
-      call trc_chelpg_charges(b, d_cart, real(case%charge, dp), q, err, fit=fit)
+      call fortran_chelpg_charges(b, d_cart, real(case%charge, dp), q, err, fit=fit)
       call check(error,.not. err%has_error(), trim(name)//": "//err%get_message())
       if (allocated(error)) return
 
@@ -220,7 +220,7 @@ contains
 
       call converged_density(z, r, scf_case_t("", basis, "", 0, 0), 3, b, d_cart, e_terco, error)
       if (allocated(error)) return
-      call trc_chelpg_charges(b, d_cart, 0.0_dp, q, err, fit=fit)
+      call fortran_chelpg_charges(b, d_cart, 0.0_dp, q, err, fit=fit)
       call check(error,.not. err%has_error(), label//": "//err%get_message())
       if (allocated(error)) return
       call check(error, fit%n_points == npts_mqc, label//": "//to_string(fit%n_points)// &
@@ -247,7 +247,7 @@ contains
       call converged_density(z, r, scf_case_t("", "basis_sets/6-31g.json", "", 0, 0), 3, b, d_cart, &
                              e_terco, error)
       if (allocated(error)) return
-      call trc_chelpg_charges(b, d_cart, 0.0_dp, q, err)
+      call fortran_chelpg_charges(b, d_cart, 0.0_dp, q, err)
       call check(error,.not. err%has_error(), "formamide: "//err%get_message())
       if (allocated(error)) return
 
@@ -257,7 +257,7 @@ contains
       call trc_basis_from_json("basis_sets/6-31g.json", nat, z, r, b_moved, err)
       call check(error,.not. err%has_error(), "basis: "//err%get_message())
       if (allocated(error)) return
-      call trc_chelpg_charges(b_moved, d_cart, 0.0_dp, q_moved, err)
+      call fortran_chelpg_charges(b_moved, d_cart, 0.0_dp, q_moved, err)
       call check(error,.not. err%has_error(), "moved formamide: "//err%get_message())
       if (allocated(error)) return
       call check(error, maxval(abs(q - q_moved)) < INVARIANCE_TOL, "translation moved a charge by "// &
@@ -281,7 +281,7 @@ contains
       call converged_density(z, r, scf_case_t("", "basis_sets/6-31g.json", "", 0, 0), 3, b, d_cart, &
                              e_terco, error)
       if (allocated(error)) return
-      call trc_chelpg_charges(b, d_cart, 0.0_dp, q, err)
+      call fortran_chelpg_charges(b, d_cart, 0.0_dp, q, err)
       call check(error,.not. err%has_error(), "formamide: "//err%get_message())
       if (allocated(error)) return
 
@@ -295,7 +295,7 @@ contains
             d_perm(i, j) = d_cart(ao_map(i), ao_map(j))
          end do
       end do
-      call trc_chelpg_charges(b_perm, d_perm, 0.0_dp, q_perm, err)
+      call fortran_chelpg_charges(b_perm, d_perm, 0.0_dp, q_perm, err)
       call check(error,.not. err%has_error(), "reordered formamide: "//err%get_message())
       if (allocated(error)) return
       do ia = 1, nat
@@ -392,7 +392,7 @@ contains
       b%at_z(3) = 0.0_dp
       allocate (d(b%nao, b%nao))
       d = 0.0_dp
-      call trc_chelpg_charges(b, d, 0.0_dp, q, err)
+      call fortran_chelpg_charges(b, d, 0.0_dp, q, err)
       call check(error, err%has_error(), "a ghost atom was not refused")
       if (allocated(error)) return
       call err%clear()
@@ -404,7 +404,7 @@ contains
       deallocate (d)
       allocate (d(b%nao, b%nao))
       d = 0.0_dp
-      call trc_chelpg_charges(b, d, 0.0_dp, q, err)
+      call fortran_chelpg_charges(b, d, 0.0_dp, q, err)
       call check(error, err%has_error(), "Zr, which has no van der Waals radius, was not refused")
    end subroutine test_refused
 

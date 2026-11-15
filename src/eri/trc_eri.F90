@@ -1,33 +1,33 @@
-!
-! The four-centre Fock build, behind one object.
-!
-! `trc_eri_t` is built from a basis and a threshold, owns every four-centre
-! structure (pair bins, HGP primitive pairs, Schwarz bounds), stays
-! device-resident, and replaces three differently-conventioned build routines:
-!
-!     call eri%build(basis, thresh)
-!     do while (.not. converged)
-!        call eri%fock(basis, dmat, vhf)
-!        ! F = Hcore + vhf; diagonalise, DIIS, new density -- the caller's
-!     end do
-!     call eri%release()
-!
-! `fock` returns the two-electron part only, vhf = J - K/2 for the TOTAL
-! density D (trace = nelec). NOT 2J - K, which is twice this and is what the
-! internal kernel and benchmarks produce: an SCF written against 2J - K
-! converged smoothly to -98.50 for water instead of -75.99, since a factor of
-! two in the two-electron energy does not diverge. The kernel accumulates a
-! folded half-matrix at twice scale, so vhf = (raw + raw^T)/8; both factors
-! are applied here.
-!
 module trc_eri
+   !!
+   !! The four-centre Fock build, behind one object.
+   !!
+   !! `trc_eri_t` is built from a basis and a threshold, owns every four-centre
+   !! structure (pair bins, HGP primitive pairs, Schwarz bounds), stays
+   !! device-resident, and replaces three differently-conventioned build routines:
+   !!
+   !!     call eri%build(basis, thresh)
+   !!     do while (.not. converged)
+   !!        call eri%fock(basis, dmat, vhf)
+   !!        ! F = Hcore + vhf; diagonalise, DIIS, new density -- the caller's
+   !!     end do
+   !!     call eri%release()
+   !!
+   !! `fock` returns the two-electron part only, vhf = J - K/2 for the TOTAL
+   !! density D (trace = nelec). NOT 2J - K, which is twice this and is what the
+   !! internal kernel and benchmarks produce: an SCF written against 2J - K
+   !! converged smoothly to -98.50 for water instead of -75.99, since a factor of
+   !! two in the two-electron energy does not diverge. The kernel accumulates a
+   !! folded half-matrix at twice scale, so vhf = (raw + raw^T)/8; both factors
+   !! are applied here.
+   !!
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
    use trc_boys, only: boys_init
    use trc_rys_select, only: rys_select_tables_init
    use trc_tables, only: tables_init, LMAX
    use pic_strings, only: to_string
-   use trc_cart, only: cart_init
+   use trc_cart, only: cart_init, cart_ncart_of
    use trc_hgp, only: hgp_build_pairs, trc_pair_prune_t
    use trc_screen, only: screen_schwarz_bounds_rys, screen_pair_index
    use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets, bins_pair_image_source, &
@@ -294,18 +294,18 @@ contains
             //to_string(RYSG_LMAX)//" (no gradient kernels above it)"
    end function eri_grad_lmax_refusal
 
-   !
-   ! Everything that depends on the geometry and not on the density.
-   !
-   ! Two structures, both of which the four-centre path needs and neither of
-   ! which a caller should have to assemble: the HGP primitive pairs the
-   ! kernels read, and the Schwarz vector, now formed from THOSE pairs
-   ! directly (trc_screen.F90's screen_schwarz_bounds_hgp) rather than from a second,
-   ! MMD-only primitive-pair set built and discarded just to feed it -- see
-   ! that routine's header for why this is not only faster but also closes a
-   ! scale mismatch the MMD route had.
-   !
    subroutine eri_build(this, b, thresh, comm, batch_res, decontract, sym)
+      !!
+      !! Everything that depends on the geometry and not on the density.
+      !!
+      !! Two structures, both of which the four-centre path needs and neither of
+      !! which a caller should have to assemble: the HGP primitive pairs the
+      !! kernels read, and the Schwarz vector, now formed from THOSE pairs
+      !! directly (trc_screen.F90's screen_schwarz_bounds_hgp) rather than from a second,
+      !! MMD-only primitive-pair set built and discarded just to feed it -- see
+      !! that routine's header for why this is not only faster but also closes a
+      !! scale mismatch the MMD route had.
+      !!
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in) :: thresh
@@ -486,10 +486,10 @@ contains
       end if
    end subroutine build_over
 
-   !
-   ! Everything eri_build does once the basis to build over has been chosen.
-   !
    function decon_options(base) result(opts)
+      !!
+      !! Everything eri_build does once the basis to build over has been chosen.
+      !!
       !! The split policy the build uses: `base` (the caller's, or the
       !! defaults), with TRC_DECON_CUTOFF, TRC_DECON_DIFFUSE (0 or 1),
       !! TRC_DECON_SHELL_COST and TRC_DECON_SCREEN_WHOLE (0 or 1) overriding
@@ -877,15 +877,15 @@ contains
       !$acc update device(this%dsh)
    end subroutine skeleton_dsh
 
-   !
-   ! G = 2J - K for a given density.
-   !
-   ! `dmat` and `gmat` are host arrays; the density goes up and the result
-   ! comes back. A device-resident variant belongs here for a caller whose
-   ! density already lives on the GPU, but it is a separate entry point rather
-   ! than a flag -- confusing the two is a segfault, not a wrong number.
-   !
    subroutine eri_fock(this, b, dmat, gmat, opts, hcore)
+      !!
+      !! G = 2J - K for a given density.
+      !!
+      !! `dmat` and `gmat` are host arrays; the density goes up and the result
+      !! comes back. A device-resident variant belongs here for a caller whose
+      !! density already lives on the GPU, but it is a separate entry point rather
+      !! than a flag -- confusing the two is a segfault, not a wrong number.
+      !!
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)  :: dmat(this%nao, this%nao)
@@ -1347,16 +1347,16 @@ contains
       deallocate (dp_w, jp_w)
    end subroutine eri_coulomb
 
-   !
-   ! The two-electron part of the nuclear gradient, Rys only: there is no
-   ! HGP gradient. `dens` is (nao, nao, ndens): ndens=1 is RHF with the
-   ! total density; ndens=2 is UHF with Da and Db. `grad` is (3, natm), the
-   ! two-electron contribution ONLY -- the one-electron
-   ! derivative terms, the overlap (energy-weighted density) term, nuclear
-   ! repulsion, XC and PCM are the caller's, same scope line eri_fock draws
-   ! around Hcore.
-   !
    subroutine eri_gradient(this, b, density, grad, k_scale, j_scale, omega, skeleton)
+      !!
+      !! The two-electron part of the nuclear gradient, Rys only: there is no
+      !! HGP gradient. `dens` is (nao, nao, ndens): ndens=1 is RHF with the
+      !! total density; ndens=2 is UHF with Da and Db. `grad` is (3, natm), the
+      !! two-electron contribution ONLY -- the one-electron
+      !! derivative terms, the overlap (energy-weighted density) term, nuclear
+      !! repulsion, XC and PCM are the caller's, same scope line eri_fock draws
+      !! around Hcore.
+      !!
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)  :: density(:, :, :)
@@ -1492,26 +1492,26 @@ contains
       call bcast(this%comm, g, n, 0)
    end subroutine sum_ranks
 
-   !
-   ! Largest |D| in each shell-pair block, for the in-kernel density screen.
-   !
-   ! Over a BATCH the bound is the maximum across every density, so all of them
-   ! see exactly the same quartets. That is deliberate and matches mqc: a batch
-   ! then gives bit-comparable results to the same densities passed one at a
-   ! time, which is what makes the single-density wrapper safe. Screening each
-   ! set on its own bound would be tighter and would make the batch disagree
-   ! with the loop.
-   !
-   !
-   ! J - K/2 for a density that is NOT symmetric.
-   !
-   ! Routes through the enumerated kernel, which reads D_mn and D_nm as
-   ! distinct and writes J and K separately, so no fold is applied and the
-   ! antisymmetric part of K survives. This is what the coupled-perturbed
-   ! Hessian needs; mqc calls it `build_fock_direct_nosym`.
-   !
    subroutine eri_fock_nosym(this, b, dmat, gmat, k_scale, j_scale, &
                              density_screen, omega)
+      !!
+      !! Largest |D| in each shell-pair block, for the in-kernel density screen.
+      !!
+      !! Over a BATCH the bound is the maximum across every density, so all of them
+      !! see exactly the same quartets. That is deliberate and matches mqc: a batch
+      !! then gives bit-comparable results to the same densities passed one at a
+      !! time, which is what makes the single-density wrapper safe. Screening each
+      !! set on its own bound would be tighter and would make the batch disagree
+      !! with the loop.
+      !!
+      !!
+      !! J - K/2 for a density that is NOT symmetric.
+      !!
+      !! Routes through the enumerated kernel, which reads D_mn and D_nm as
+      !! distinct and writes J and K separately, so no fold is applied and the
+      !! antisymmetric part of K survives. This is what the coupled-perturbed
+      !! Hessian needs; mqc calls it `build_fock_direct_nosym`.
+      !!
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(in)  :: dmat(this%nao, this%nao)
@@ -1605,32 +1605,32 @@ contains
       deallocate (jmat, kmat, dwork, dp_w, gp_w)
    end subroutine eri_fock_nosym
 
-   !
-   ! Fock build with the density and result ALREADY ON THE DEVICE.
-   !
-   ! `fock` copies the density up and the result back every call. At 832
-   ! functions that is 11 MB each way, and the coupled-perturbed equations run
-   ! a hundred of them for matrices that never need to be on the host at all.
-   !
-   ! Here the caller owns the residency:
-   !
-   !     !$acc enter data copyin(dmat) create(gmat)
-   !     do ...
-   !        call eri%fock_resident(b, dmat, gmat)   ! nothing crosses
-   !     end do
-   !     !$acc update self(gmat)
-   !     !$acc exit data delete(dmat, gmat)
-   !
-   ! A SEPARATE ENTRY POINT rather than a flag on `fock`. Passing a host array
-   ! to this routine is a segfault, not a wrong number, and a flag makes that
-   ! one typo away; two names make it a compile-time choice.
-   !
-   ! The scratch it needs -- three working-basis matrices, see
-   ! `fock_resident_lent` -- is allocated per call here. A caller with device
-   ! memory to spare between builds lends it to `fock_resident_lent` instead;
-   ! the SCF lends its linear-algebra workspace.
-   !
    subroutine eri_fock_resident(this, b, dmat, gmat, opts)
+      !!
+      !! Fock build with the density and result ALREADY ON THE DEVICE.
+      !!
+      !! `fock` copies the density up and the result back every call. At 832
+      !! functions that is 11 MB each way, and the coupled-perturbed equations run
+      !! a hundred of them for matrices that never need to be on the host at all.
+      !!
+      !! Here the caller owns the residency:
+      !!
+      !!     !$acc enter data copyin(dmat) create(gmat)
+      !!     do ...
+      !!        call eri%fock_resident(b, dmat, gmat)   ! nothing crosses
+      !!     end do
+      !!     !$acc update self(gmat)
+      !!     !$acc exit data delete(dmat, gmat)
+      !!
+      !! A SEPARATE ENTRY POINT rather than a flag on `fock`. Passing a host array
+      !! to this routine is a segfault, not a wrong number, and a flag makes that
+      !! one typo away; two names make it a compile-time choice.
+      !!
+      !! The scratch it needs -- three working-basis matrices, see
+      !! `fock_resident_lent` -- is allocated per call here. A caller with device
+      !! memory to spare between builds lends it to `fock_resident_lent` instead;
+      !! the SCF lends its linear-algebra workspace.
+      !!
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       !! Both must already be present on the device.
@@ -1995,15 +1995,15 @@ contains
       end if
    end subroutine eri_fock_resident_many_lent
 
-   !
-   ! Shell-block density bound, computed on the device.
-   !
-   ! The host version reads a density that has to be there anyway. This one
-   ! exists so `fock_resident` never pulls the density down: one thread per
-   ! shell pair, each scanning its own block, writing `dsh` in place while it
-   ! is device-resident.
-   !
    pure logical function screen_on(flag) result(res)
+      !!
+      !! Shell-block density bound, computed on the device.
+      !!
+      !! The host version reads a density that has to be there anyway. This one
+      !! exists so `fock_resident` never pulls the density down: one thread per
+      !! shell pair, each scanning its own block, writing `dsh` in place while it
+      !! is device-resident.
+      !!
       !! `density_screen` with its default applied, in one place.
       !!
       !! Written as a function rather than repeated three times because the
@@ -2128,14 +2128,14 @@ contains
       end do
    end subroutine density_blocks_device_max
 
-   !
-   ! Shell-block density bound, over the basis the integrals are built in.
-   !
-   ! That is `this%pairs%sh_l`/`this%pairs%ao_off`, not the caller's basis: on a split
-   ! general contraction the two differ, and bounding the wrong one indexes
-   ! past the end of the density it was handed.
-   !
    subroutine density_blocks(this, dmat, ndens)
+      !!
+      !! Shell-block density bound, over the basis the integrals are built in.
+      !!
+      !! That is `this%pairs%sh_l`/`this%pairs%ao_off`, not the caller's basis: on a split
+      !! general contraction the two differ, and bounding the wrong one indexes
+      !! past the end of the density it was handed.
+      !!
       class(trc_eri_t), intent(inout) :: this
       integer, intent(in) :: ndens
       real(dp), intent(in) :: dmat(ndens, this%nao_w, this%nao_w)
@@ -2143,9 +2143,9 @@ contains
       this%dsh = 0.0_dp
       do d = 1, ndens
          do j = 1, this%nbas
-            nj = (this%pairs%sh_l(j) + 1)*(this%pairs%sh_l(j) + 2)/2
+            nj = cart_ncart_of(this%pairs%sh_l(j))
             do i = 1, this%nbas
-               ni = (this%pairs%sh_l(i) + 1)*(this%pairs%sh_l(i) + 2)/2
+               ni = cart_ncart_of(this%pairs%sh_l(i))
                this%dsh(i, j) = max(this%dsh(i, j), maxval(abs( &
                   dmat(d, this%pairs%ao_off(i):this%pairs%ao_off(i) + ni - 1, &
                        this%pairs%ao_off(j):this%pairs%ao_off(j) + nj - 1))))
@@ -2154,20 +2154,20 @@ contains
       end do
    end subroutine density_blocks
 
-   !
-   ! Many densities, one pass over the integrals.
-   !
-   ! The point of the whole exercise: in a direct scheme the integral
-   ! evaluation dominates and the contractions against it are nearly free, so
-   ! contracting one quartet against every density in hand is the difference
-   ! between one integral pass and N of them. The coupled-perturbed equations
-   ! for dynamic polarizabilities need about a hundred right-hand sides.
-   !
-   ! The ceiling is one over the digestion fraction -- measured at 24 to 37%
-   ! here, so between 2.7x and 4.2x, approached slowly.
-   !
    subroutine eri_fock_many(this, b, ndens, dmats, gmats, k_scale, j_scale, &
                             density_screen, omega)
+      !!
+      !! Many densities, one pass over the integrals.
+      !!
+      !! The point of the whole exercise: in a direct scheme the integral
+      !! evaluation dominates and the contractions against it are nearly free, so
+      !! contracting one quartet against every density in hand is the difference
+      !! between one integral pass and N of them. The coupled-perturbed equations
+      !! for dynamic polarizabilities need about a hundred right-hand sides.
+      !!
+      !! The ceiling is one over the digestion fraction -- measured at 24 to 37%
+      !! here, so between 2.7x and 4.2x, approached slowly.
+      !!
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: ndens

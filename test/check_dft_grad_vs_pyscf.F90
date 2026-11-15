@@ -1,51 +1,51 @@
-!
-! The FULL KS-DFT nuclear gradient (trc_scf_grad%trc_scf_gradient with
-! `func` present) against pyscf's own grad.RKS/grad.UKS, at TERCO'S OWN
-! converged orbitals and TERCO'S OWN quadrature -- the same "compare at
-! terco's own converged density and grid" recipe check_xc_grad_vs_pyscf.F90
-! uses, but WITHOUT that program's force_cart=.true.: the basis here loads
-! in whatever space its own JSON tags it ("gto_spherical" or not), so
-! cc-pVDZ comes back SPHERICAL and 6-31G* comes back CARTESIAN, and
-! trc_scf_gradient's own spherical fold (D and W, nao_sph -> Cartesian nao,
-! T D T^T -- see that module's header) runs for real on the spherical
-! cases. This is the combination neither sibling branch tested alone:
-! grad-xc's own check_xc_grad_vs_pyscf.F90 forced Cartesian throughout
-! (its header says so explicitly, "the sibling branch's spherical density
-! folding is what adds it"), and grad-cli's check_full_grad_vs_pyscf.F90
-! exercises the fold only for the plain (functional-free) gradient.
-!
-! Also passes grid_level/grid_max_pts/rho_tol through from the SAME `opts`
-! the SCF converged with -- trc_capi.F90's trc_run_gradient does the same,
-! and this program is the one that checks the gradient's quadrature
-! actually is the SCF's, not merely "a reasonable one".
-!
-! grid_response=.false. EXPLICITLY: this program and its committed
-! dft_grad_*.ref were both written (and pyscf's own g.grid_response left
-! at its False default -- test/pyscf_refs/generate.py's gen_dft_grad)
-! before trc_xc_grad.F90's grid-response term existed at all, so every
-! comparison here is Pulay-only, same as check_xc_grad_vs_pyscf.F90's own
-! default (non-gridresp) cases. trc_scf_gradient's OWN default for this
-! argument is now ON (the module it forwards to, trc_xc_grad.F90's own
-! header) -- omitting it here would silently add the grid-response term
-! into terco's side only and fail against this Pulay-only reference.
-!
-! CASES: water/formamide, RKS, SVWN/PBE/B3LYP (same closed-shell molecules
-! as check_xc_grad_vs_pyscf.F90, now on cc-pVDZ *spherical* or 6-31G*
-! *Cartesian* rather than cc-pVDZ forced Cartesian); and NH2, UKS PBE,
-! spherical cc-pVDZ, FROM A FIXED INITIAL DENSITY -- `opts%guess = "core"`
-! (trc_scf_settings.F90's TRC_GUESS_CORE equivalent on the Fortran side: a
-! bare one-electron-Hamiltonian diagonalisation, fully determined by the
-! molecule and basis alone, no atomic sub-SCF and no history-dependent
-! heuristic) rather than this build's default GWH, so the SCF this
-! program's own gradient is taken at is reproducible run to run without
-! needing a committed initial density matrix at all.
-!
-! One ctest entry per case (test/CMakeLists.txt's own `foreach(case ...)`):
-! each invocation of this executable gets a different xyz/basis/functional/
-! grid_level/dump/case_name on its command line and runs exactly that one
-! case -- never looped over internally.
-!
 module check_dft_grad_vs_pyscf_suite
+   !!
+   !! The FULL KS-DFT nuclear gradient (trc_scf_grad%trc_scf_gradient with
+   !! `func` present) against pyscf's own grad.RKS/grad.UKS, at TERCO'S OWN
+   !! converged orbitals and TERCO'S OWN quadrature -- the same "compare at
+   !! terco's own converged density and grid" recipe check_xc_grad_vs_pyscf.F90
+   !! uses, but WITHOUT that program's force_cart=.true.: the basis here loads
+   !! in whatever space its own JSON tags it ("gto_spherical" or not), so
+   !! cc-pVDZ comes back SPHERICAL and 6-31G* comes back CARTESIAN, and
+   !! trc_scf_gradient's own spherical fold (D and W, nao_sph -> Cartesian nao,
+   !! T D T^T -- see that module's header) runs for real on the spherical
+   !! cases. This is the combination neither sibling branch tested alone:
+   !! grad-xc's own check_xc_grad_vs_pyscf.F90 forced Cartesian throughout
+   !! (its header says so explicitly, "the sibling branch's spherical density
+   !! folding is what adds it"), and grad-cli's check_full_grad_vs_pyscf.F90
+   !! exercises the fold only for the plain (functional-free) gradient.
+   !!
+   !! Also passes grid_level/grid_max_pts/rho_tol through from the SAME `opts`
+   !! the SCF converged with -- trc_capi.F90's trc_run_gradient does the same,
+   !! and this program is the one that checks the gradient's quadrature
+   !! actually is the SCF's, not merely "a reasonable one".
+   !!
+   !! grid_response=.false. EXPLICITLY: this program and its committed
+   !! dft_grad_*.ref were both written (and pyscf's own g.grid_response left
+   !! at its False default -- test/pyscf_refs/generate.py's gen_dft_grad)
+   !! before trc_xc_grad.F90's grid-response term existed at all, so every
+   !! comparison here is Pulay-only, same as check_xc_grad_vs_pyscf.F90's own
+   !! default (non-gridresp) cases. trc_scf_gradient's OWN default for this
+   !! argument is now ON (the module it forwards to, trc_xc_grad.F90's own
+   !! header) -- omitting it here would silently add the grid-response term
+   !! into terco's side only and fail against this Pulay-only reference.
+   !!
+   !! CASES: water/formamide, RKS, SVWN/PBE/B3LYP (same closed-shell molecules
+   !! as check_xc_grad_vs_pyscf.F90, now on cc-pVDZ *spherical* or 6-31G*
+   !! *Cartesian* rather than cc-pVDZ forced Cartesian); and NH2, UKS PBE,
+   !! spherical cc-pVDZ, FROM A FIXED INITIAL DENSITY -- `opts%guess = "core"`
+   !! (trc_scf_settings.F90's TRC_GUESS_CORE equivalent on the Fortran side: a
+   !! bare one-electron-Hamiltonian diagonalisation, fully determined by the
+   !! molecule and basis alone, no atomic sub-SCF and no history-dependent
+   !! heuristic) rather than this build's default GWH, so the SCF this
+   !! program's own gradient is taken at is reproducible run to run without
+   !! needing a committed initial density matrix at all.
+   !!
+   !! One ctest entry per case (test/CMakeLists.txt's own `foreach(case ...)`):
+   !! each invocation of this executable gets a different xyz/basis/functional/
+   !! grid_level/dump/case_name on its command line and runs exactly that one
+   !! case -- never looped over internally.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test

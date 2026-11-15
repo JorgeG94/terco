@@ -1,28 +1,28 @@
-!
-! Meta-GGA SCF end to end, against pyscf on the same grid: scf_rks.F90's
-! harness, its 6-31G-uncontracted water and OH radical, its same-grid
-! comparison and its at-density control, for the functionals that need the
-! kinetic-energy density tau.
-!
-!   water, closed shell:  r2SCAN, TPSS, M06-L, SCAN, and the hybrids TPSSh,
-!                         r2SCAN0, M06, M06-2X, restricted
-!   OH radical, doublet:  r2SCAN, TPSS, M06-L, TPSSh unrestricted
-!
-! tau = 1/2 sum_i |grad psi_i|^2 of the total density in RKS and of each
-! spin in UKS, pyscf's and libxc's convention (src/xc/trc_xc.F90's header).
-! test/pyscf_refs/generate.py's gen_scf_mgga rebuilds the same basis in the
-! same order and runs pyscf's RKS/UKS on terco's own grid points and
-! weights, converging each case tightly and committing its energy and
-! density; this program then compares terco's converged energy and,
-! sharper, terco's energy AT pyscf's density (one iteration from it).
-!
-! Twelve independent (molecule, functional) cases below, each its own
-! test-drive unittest; the shared setup (per-molecule basis, the probe
-! write, the golden dump and the sequential pyscf-reference read) runs
-! once -- see check_xc_energy_suite's own `computed` comment for why, and
-! why this suite stays `parallel=.false.`.
-!
 module scf_mgga_suite
+   !!
+   !! Meta-GGA SCF end to end, against pyscf on the same grid: scf_rks.F90's
+   !! harness, its 6-31G-uncontracted water and OH radical, its same-grid
+   !! comparison and its at-density control, for the functionals that need the
+   !! kinetic-energy density tau.
+   !!
+   !!   water, closed shell:  r2SCAN, TPSS, M06-L, SCAN, and the hybrids TPSSh,
+   !!                         r2SCAN0, M06, M06-2X, restricted
+   !!   OH radical, doublet:  r2SCAN, TPSS, M06-L, TPSSh unrestricted
+   !!
+   !! tau = 1/2 sum_i |grad psi_i|^2 of the total density in RKS and of each
+   !! spin in UKS, pyscf's and libxc's convention (src/xc/trc_xc.F90's header).
+   !! test/pyscf_refs/generate.py's gen_scf_mgga rebuilds the same basis in the
+   !! same order and runs pyscf's RKS/UKS on terco's own grid points and
+   !! weights, converging each case tightly and committing its energy and
+   !! density; this program then compares terco's converged energy and,
+   !! sharper, terco's energy AT pyscf's density (one iteration from it).
+   !!
+   !! Twelve independent (molecule, functional) cases below, each its own
+   !! test-drive unittest; the shared setup (per-molecule basis, the probe
+   !! write, the golden dump and the sequential pyscf-reference read) runs
+   !! once -- see check_xc_energy_suite's own `computed` comment for why, and
+   !! why this suite stays `parallel=.false.`.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -78,10 +78,10 @@ contains
       name = trim(mol(ic))//"/"//trim(fn(ic))
    end function case_name
 
-   ! One wrapper per case, each passing its own index: a unittest must not
-   ! depend on which unittests ran before it (a name-selected run, or a
-   ! reordered suite, would otherwise check the wrong case).
    subroutine case_01(error)
+      !! One wrapper per case, each passing its own index: a unittest must not
+      !! depend on which unittests ran before it (a name-selected run, or a
+      !! reordered suite, would otherwise check the wrong case).
       type(error_type), allocatable, intent(out) :: error
       call test_case(error, 1)
    end subroutine case_01

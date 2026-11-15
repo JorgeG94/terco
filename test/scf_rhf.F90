@@ -1,33 +1,33 @@
-!
-! A complete restricted Hartree-Fock SCF, driven entirely through the library.
-!
-! WHAT THIS IS FOR
-! ----------------
-! Every check so far compares an integral against libfint or gpu4pyscf. None
-! of them answers the question a consumer actually asks: can I hand this thing
-! a molecule and get a converged energy? This does, and it does it using only
-! the public API -- `trc_basis_t`, `trc_pairlist_t`, `trc_1e` and
-! `trc_eri_t%fock`. Nothing below the API is referenced.
-!
-! It is also the reference for the mqc backend: whatever mqc does, it does
-! this, with its own diagonaliser and its own DIIS.
-!
-! WHAT THE LIBRARY DOES AND DOES NOT DO
-! -------------------------------------
-! The library returns S, T, V and vhf = J - K/2. Everything else here --
-! orthogonalisation, diagonalisation, the density update, damping,
-! convergence testing, the nuclear repulsion -- is the caller's, deliberately.
-! DIIS is not implemented; simple damping is enough to converge these cases
-! and DIIS is exactly the kind of thing a host code already has.
-!
-!   scf_rhf <xyz> [charge] [thresh] [maxiter] [density-file]
-!
-! With a density file it does ONE Fock build from that density and prints the
-! result instead of iterating. That mode exists because comparing two Fock
-! implementations is only meaningful on the same density, and it is how the
-! benchmark's four-fold accumulation bug was found.
-!
 program scf_rhf
+   !!
+   !! A complete restricted Hartree-Fock SCF, driven entirely through the library.
+   !!
+   !! WHAT THIS IS FOR
+   !! ----------------
+   !! Every check so far compares an integral against libfint or gpu4pyscf. None
+   !! of them answers the question a consumer actually asks: can I hand this thing
+   !! a molecule and get a converged energy? This does, and it does it using only
+   !! the public API -- `trc_basis_t`, `trc_pairlist_t`, `trc_1e` and
+   !! `trc_eri_t%fock`. Nothing below the API is referenced.
+   !!
+   !! It is also the reference for the mqc backend: whatever mqc does, it does
+   !! this, with its own diagonaliser and its own DIIS.
+   !!
+   !! WHAT THE LIBRARY DOES AND DOES NOT DO
+   !! -------------------------------------
+   !! The library returns S, T, V and vhf = J - K/2. Everything else here --
+   !! orthogonalisation, diagonalisation, the density update, damping,
+   !! convergence testing, the nuclear repulsion -- is the caller's, deliberately.
+   !! DIIS is not implemented; simple damping is enough to converge these cases
+   !! and DIIS is exactly the kind of thing a host code already has.
+   !!
+   !!   scf_rhf <xyz> [charge] [thresh] [maxiter] [density-file]
+   !!
+   !! With a density file it does ONE Fock build from that density and prints the
+   !! result instead of iterating. That mode exists because comparing two Fock
+   !! implementations is only meaningful on the same density, and it is how the
+   !! benchmark's four-fold accumulation bug was found.
+   !!
    use pic_types, only: dp, int64
    use pic_timer, only: timer_type
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e

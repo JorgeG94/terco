@@ -1,37 +1,38 @@
-!
-! AO-index normalisation at the C API boundary.
-!
-! terco (like libcint) normalises per ANGULAR MOMENTUM: every Cartesian
-! component of a d shell shares one constant, so <XY|XY> = 1/3. GAMESS
-! normalises each component to unity. For x^a y^b z^c with l = a+b+c:
-!
-!     chi_GAMESS = n * chi_terco,   n^2 = (2l-1)!! / ((2a-1)!!(2b-1)!!(2c-1)!!)
-!
-! with (-1)!! = 1, so n = 1 for s and p. `ao_norm_gamess` alone is the whole
-! scale for every l: the `common_fac_sp` folded into s/p coefficients by
-! `basis_build` is cancelled by the callers' own normalisation, leaving raw
-! <s|s> = <p|p> = 1 (checked against pyscf/libcint). An earlier version also
-! divided by `common_fac_sp`, cancelling a matching double fold in
-! trc_basis_json; both were fixed together. Reference: scripts/cartorder.py
-! `gamess_norm_sq`, checked in test/check_ao_norm.F90.
-!
-! ORDER AND NORMALISATION ARE SEPARATE: slot order comes from TRC_CART_ORDER
-! (trc_cart_perm.F90), scaling from here. With N = diag(n) over one basis:
-!   COVARIANT (both indices AO: S, T, H, F, J/K, V_xc, multipoles):
-!     M_GAMESS = N M N (`ao_norm_scale_cov`); also used for GAMESS guesses
-!     coming in.
-!   CONTRAVARIANT (D, C): D_GAMESS = N^-1 D N^-1 (`ao_norm_scale_contra`),
-!     C_GAMESS = N^-1 C (`ao_norm_scale_contra_row`; the column is an orbital
-!     label).
-!   INVARIANT: energies, orbital energies, occupations, Tr(DS), flags.
-!
-! `ao_norm_vector` takes one basis's shell list and the `kind` from trc_capi.F90
-! (TRC_AO_NORM_SHELL/UNIT) and is recomputed per call (O(nao); no stale cache).
-! See trc_capi.F90's header for how every AO-indexed C API entry is classified.
-!
 module trc_ao_norm
+   !!
+   !! AO-index normalisation at the C API boundary.
+   !!
+   !! terco (like libcint) normalises per ANGULAR MOMENTUM: every Cartesian
+   !! component of a d shell shares one constant, so <XY|XY> = 1/3. GAMESS
+   !! normalises each component to unity. For x^a y^b z^c with l = a+b+c:
+   !!
+   !!     chi_GAMESS = n * chi_terco,   n^2 = (2l-1)!! / ((2a-1)!!(2b-1)!!(2c-1)!!)
+   !!
+   !! with (-1)!! = 1, so n = 1 for s and p. `ao_norm_gamess` alone is the whole
+   !! scale for every l: the `common_fac_sp` folded into s/p coefficients by
+   !! `basis_build` is cancelled by the callers' own normalisation, leaving raw
+   !! <s|s> = <p|p> = 1 (checked against pyscf/libcint). An earlier version also
+   !! divided by `common_fac_sp`, cancelling a matching double fold in
+   !! trc_basis_json; both were fixed together. Reference: scripts/cartorder.py
+   !! `gamess_norm_sq`, checked in test/check_ao_norm.F90.
+   !!
+   !! ORDER AND NORMALISATION ARE SEPARATE: slot order comes from TRC_CART_ORDER
+   !! (trc_cart_perm.F90), scaling from here. With N = diag(n) over one basis:
+   !!   COVARIANT (both indices AO: S, T, H, F, J/K, V_xc, multipoles):
+   !!     M_GAMESS = N M N (`ao_norm_scale_cov`); also used for GAMESS guesses
+   !!     coming in.
+   !!   CONTRAVARIANT (D, C): D_GAMESS = N^-1 D N^-1 (`ao_norm_scale_contra`),
+   !!     C_GAMESS = N^-1 C (`ao_norm_scale_contra_row`; the column is an orbital
+   !!     label).
+   !!   INVARIANT: energies, orbital energies, occupations, Tr(DS), flags.
+   !!
+   !! `ao_norm_vector` takes one basis's shell list and the `kind` from trc_capi.F90
+   !! (TRC_AO_NORM_SHELL/UNIT) and is recomputed per call (O(nao); no stale cache).
+   !! See trc_capi.F90's header for how every AO-indexed C API entry is classified.
+   !!
    use pic_types, only: dp
    use trc_cart_perm, only: cart_perm_powers
+   use trc_cart, only: cart_ncart_of
    implicit none
    private
 
@@ -70,7 +71,7 @@ contains
       end if
       do ish = 1, nshell
          base = sh_ao(ish) - 1
-         ncart = (sh_l(ish) + 1)*(sh_l(ish) + 2)/2
+         ncart = cart_ncart_of(sh_l(ish))
          do ic = 0, ncart - 1
             call cart_perm_powers(sh_l(ish), ic, px, py, pz)
             ! `ao_norm_gamess` alone, no extra `common_fac_sp` divide -- see the

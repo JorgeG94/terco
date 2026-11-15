@@ -1,28 +1,28 @@
-!
-! trc_sym_frame: the exact AO rotation between the standard frame of a
-! symmetric run and the user's input frame, checked against brute force.
-!
-! The rotated basis is built, not derived: the same shells (every l from 0 to
-! this build's TERCO_LMAX, uncontracted, several exponents) on the atoms of a
-! nonplanar molecule, once at the standard-frame positions r and once at
-! s + rot^T r, the positions the input frame sees. For a random rotation
-! `rot` and shift `s`, Cartesian and spherical:
-!   - the overlap satisfies S_std = D^T S_in D to 1e-12 of its largest
-!     element, and the same for the core Hamiltonian T + V of the molecule's
-!     own nuclei (so the identity holds for operators that know the atoms,
-!     not only for the overlap);
-!   - a density transforms as D D_std D^T and keeps Tr(D S) and Tr(D H);
-!   - orbitals: C_in = D C_std keeps C^T S C (the MO overlap) unchanged;
-! and the cases where the answer is known:
-!   - the identity rotation gives the identity matrix;
-!   - a quarter turn about z gives a signed permutation of the components
-!     (every entry 0 or +-1), exactly;
-!   - D (rot) D (rot^T) is the identity (the blocks of the inverse rotation).
-!
-! A test-drive suite, serial (`parallel=.false.`). The l range follows the
-! build, so an LMAX=4 build also covers g shells.
-!
 module check_sym_frame_suite
+   !!
+   !! trc_sym_frame: the exact AO rotation between the standard frame of a
+   !! symmetric run and the user's input frame, checked against brute force.
+   !!
+   !! The rotated basis is built, not derived: the same shells (every l from 0 to
+   !! this build's TERCO_LMAX, uncontracted, several exponents) on the atoms of a
+   !! nonplanar molecule, once at the standard-frame positions r and once at
+   !! s + rot^T r, the positions the input frame sees. For a random rotation
+   !! `rot` and shift `s`, Cartesian and spherical:
+   !!   - the overlap satisfies S_std = D^T S_in D to 1e-12 of its largest
+   !!     element, and the same for the core Hamiltonian T + V of the molecule's
+   !!     own nuclei (so the identity holds for operators that know the atoms,
+   !!     not only for the overlap);
+   !!   - a density transforms as D D_std D^T and keeps Tr(D S) and Tr(D H);
+   !!   - orbitals: C_in = D C_std keeps C^T S C (the MO overlap) unchanged;
+   !! and the cases where the answer is known:
+   !!   - the identity rotation gives the identity matrix;
+   !!   - a quarter turn about z gives a signed permutation of the components
+   !!     (every entry 0 or +-1), exactly;
+   !!   - D (rot) D (rot^T) is the identity (the blocks of the inverse rotation).
+   !!
+   !! A test-drive suite, serial (`parallel=.false.`). The l range follows the
+   !! build, so an LMAX=4 build also covers g shells.
+   !!
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e

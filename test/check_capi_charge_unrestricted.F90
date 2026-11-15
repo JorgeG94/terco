@@ -44,14 +44,14 @@ contains
       call read_xyz('water.xyz', natm, zint, at_r)
    end subroutine water_geometry
 
-   !
-   ! trc_set_unrestricted(1) on a closed-shell singlet (nalpha == nbeta)
-   ! must converge UHF to the SAME stationary point as the default
-   ! restricted run: forcing two independent spin densities on a genuine
-   ! closed shell does not change the fixed point, only whether it is
-   ! reached by one eigenproblem per iteration or two identical ones.
-   !
    subroutine test_unrestricted_matches_rhf(error)
+      !!
+      !! trc_set_unrestricted(1) on a closed-shell singlet (nalpha == nbeta)
+      !! must converge UHF to the SAME stationary point as the default
+      !! restricted run: forcing two independent spin densities on a genuine
+      !! closed shell does not change the fixed point, only whether it is
+      !! reached by one eigenproblem per iteration or two identical ones.
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: natm
       integer, allocatable :: zint(:)
@@ -117,14 +117,14 @@ contains
       rc = trc_destroy(h_rhf); rc = trc_destroy(h_uhf)
    end subroutine test_unrestricted_matches_rhf
 
-   !
-   ! trc_set_level_shift only changes the early, pre-DIIS part of the
-   ! iteration (trc_scf_driver.F90's own "while DIIS and A/EDIIS are
-   ! off" gate), so two different positive shifts must converge to the
-   ! SAME energy -- the level shift moves the path, not the fixed point.
-   ! A negative shift is refused; 0 (off) must still converge.
-   !
    subroutine test_level_shift(error)
+      !!
+      !! trc_set_level_shift only changes the early, pre-DIIS part of the
+      !! iteration (trc_scf_driver.F90's own "while DIIS and A/EDIIS are
+      !! off" gate), so two different positive shifts must converge to the
+      !! SAME energy -- the level shift moves the path, not the fixed point.
+      !! A negative shift is refused; 0 (off) must still converge.
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: natm
       integer, allocatable :: zint(:)
@@ -200,18 +200,18 @@ contains
       rc = trc_destroy(h)
    end subroutine test_level_shift
 
-   !
-   ! The mechanism trc_set_charge relies on, proven directly rather than
-   ! inferred from wall time at C-API scale: df_jk_t%setup is idempotent
-   ! (trc_scf_df.F90's own header, "a second call on an object that
-   ! already built its bpk returns immediately") -- a SECOND call on the
-   ! SAME df_jk_t must take negligible time against the first, which
-   ! does the metric/Cholesky/3c/trsm for real. No margin to tune: the
-   ! second call's own code path is `if (this%ready) return`, nothing
-   ! else, so it costs the same handful of instructions at any problem
-   ! size.
-   !
    subroutine test_df_setup_is_idempotent(error)
+      !!
+      !! The mechanism trc_set_charge relies on, proven directly rather than
+      !! inferred from wall time at C-API scale: df_jk_t%setup is idempotent
+      !! (trc_scf_df.F90's own header, "a second call on an object that
+      !! already built its bpk returns immediately") -- a SECOND call on the
+      !! SAME df_jk_t must take negligible time against the first, which
+      !! does the metric/Cholesky/3c/trsm for real. No margin to tune: the
+      !! second call's own code path is `if (this%ready) return`, nothing
+      !! else, so it costs the same handful of instructions at any problem
+      !! size.
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: natm
       integer, allocatable :: zint(:)
@@ -263,22 +263,22 @@ contains
       call bas%release(); call aux%release()
    end subroutine test_df_setup_is_idempotent
 
-   !
-   ! trc_set_charge on one --df handle, through an N, N+2, N-2 sequence
-   ! (water: 10, 8, 12 electrons, all closed-shell singlets -- --df is
-   ! restricted only, trc_run_gradient's own header says so and
-   ! trc_run_scf refuses otherwise, so this stays closed-shell rather
-   ! than exercising the N+1/N-1 radical case test_unrestricted_matches_rhf
-   ! covers separately above), must match fresh handles built directly
-   ! at each charge -- and the fit must NOT be rebuilt in between:
-   ! df_jk_setup returns immediately once already `ready`
-   ! (trc_scf_df.F90's own header), so trc_run_scf on the second and
-   ! third charge states should be far faster than the first, which
-   ! pays the metric/Cholesky/3c/trsm. test_df_setup_is_idempotent (above)
-   ! is the deterministic proof of that mechanism; this checks the
-   ! energies it protects actually match a fresh handle.
-   !
    subroutine test_charge_reuses_df_fit(error)
+      !!
+      !! trc_set_charge on one --df handle, through an N, N+2, N-2 sequence
+      !! (water: 10, 8, 12 electrons, all closed-shell singlets -- --df is
+      !! restricted only, trc_run_gradient's own header says so and
+      !! trc_run_scf refuses otherwise, so this stays closed-shell rather
+      !! than exercising the N+1/N-1 radical case test_unrestricted_matches_rhf
+      !! covers separately above), must match fresh handles built directly
+      !! at each charge -- and the fit must NOT be rebuilt in between:
+      !! df_jk_setup returns immediately once already `ready`
+      !! (trc_scf_df.F90's own header), so trc_run_scf on the second and
+      !! third charge states should be far faster than the first, which
+      !! pays the metric/Cholesky/3c/trsm. test_df_setup_is_idempotent (above)
+      !! is the deterministic proof of that mechanism; this checks the
+      !! energies it protects actually match a fresh handle.
+      !!
       type(error_type), allocatable, intent(out) :: error
       integer :: natm
       integer, allocatable :: zint(:)

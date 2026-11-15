@@ -1,16 +1,16 @@
-!
-! Negative test: trc_1e_gradient refuses a basis above ONE_E_GRAD_LMAX.
-!
-! The gradient twin of check_one_e_ceiling.F90: one_e_grad_dispatch has no
-! case above ONE_E_GRAD_LMAX either, and trc_1e_gradient had no guard.
-!
-! A basis at l = ONE_E_GRAD_LMAX + 1, one above THIS build's ceiling, so the test
-! holds at any ceiling. Registered with PASS_REGULAR_EXPRESSION on the
-! error-stop message (test/CMakeLists.txt), not WILL_FAIL: a different crash
-! must not count as a pass. check_df_3c_ceiling.F90 is the same test for
-! trc_df_3c.
-!
 program check_one_e_grad_ceiling
+   !!
+   !! Negative test: trc_1e_gradient refuses a basis above ONE_E_GRAD_LMAX.
+   !!
+   !! The gradient twin of check_one_e_ceiling.F90: one_e_grad_dispatch has no
+   !! case above ONE_E_GRAD_LMAX either, and trc_1e_gradient had no guard.
+   !!
+   !! A basis at l = ONE_E_GRAD_LMAX + 1, one above THIS build's ceiling, so the test
+   !! holds at any ceiling. Registered with PASS_REGULAR_EXPRESSION on the
+   !! error-stop message (test/CMakeLists.txt), not WILL_FAIL: a different crash
+   !! must not count as a pass. check_df_3c_ceiling.F90 is the same test for
+   !! trc_df_3c.
+   !!
    use pic_types, only: dp
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e_gradient
    use trc_1e_grad_kernels, only: ONE_E_GRAD_LMAX

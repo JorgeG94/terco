@@ -1,44 +1,44 @@
-!
-! The SO-blocked SCF (trc_sym_scf, trc_scf_run's `sym` argument) for the group
-! Cs, the only one beyond C1 enabled at this stage.
-!
-! THE CENTRAL ORACLE. A molecule on the symmetrised, standard-frame geometry
-! of trc_sym_geom is run twice, with the irrep blocks and as plain C1, and the
-! two must agree: total energy (<= 1e-10 Eh for HF, <= 1e-9 for B3LYP),
-! orbital energies and the density. Cases:
-!   RHF   HOCl (planar: every atom is its own mirror image) cc-pVDZ, spherical
-!   RHF   CHFCl2 (nonplanar, the mirror swaps atoms) 6-31G*, Cartesian
-!   UHF   HCO radical cc-pVDZ, and the CHFCl2 radical cation 6-31G* (nonplanar)
-!   B3LYP HOCl cc-pVDZ
-! Anchors (pyscf 2.14.0, mol.symmetry = 'Cs', sym_scf_cs.ref): the electrons
-! per irrep (`mf.get_irrep_nelec()`) and the orbital energies of each irrep.
-! The gradient: the components that symmetry forces to zero are <= 1e-10 in
-! the raw gradient of the symmetric run, vanish after `sym_geom` symmetrises
-! it, and the symmetrised gradient equals the C1 gradient.
-! Also: fixed per-irrep occupations, --soscf refused with symmetry, and the
-! incremental Fock build with symmetry.
-!
-! WHICH FOCK BUILD EACH CASE RUNS, DELIBERATELY. Every molecule here is below
-! the skeleton build's size rule (`sym_run_skeleton_size_rule`): HOCl is 3 atoms
-! in 3 orbits and CHFCl2 is 5 in 4, because a planar Cs molecule is its own
-! mirror image and the nonplanar one still pairs up only its two chlorines.
-! A default symmetric run therefore takes the FULL build with F symmetrized
-! after it, and the skeleton build would not be exercised here at all unless
-! it is asked for. So `make_pair` takes `skeleton`, and every case states what
-! it wants and asserts (`trc_scf_result_t%sym_skeleton`) that it got it:
-!   skeleton = .true.   CHFCl2 RHF (nonplanar: the mirror moves atoms, so the
-!                       orbit fold is nontrivial) and the HCO radical (UHF).
-!                       This is the group's skeleton-build coverage against
-!                       both C1 and the pyscf anchor.
-!   absent              the rule in charge, which for these molecules means
-!                       the full build -- the path a user actually gets. The
-!                       assertion is that the rule declined, so if the rule
-!                       ever starts accepting them this test says so rather
-!                       than silently changing what it covers.
-!
-! NO INTERNAL PROCEDURES: the helpers are module procedures.
-!
 module check_sym_scf_cs_suite
+   !!
+   !! The SO-blocked SCF (trc_sym_scf, trc_scf_run's `sym` argument) for the group
+   !! Cs, the only one beyond C1 enabled at this stage.
+   !!
+   !! THE CENTRAL ORACLE. A molecule on the symmetrised, standard-frame geometry
+   !! of trc_sym_geom is run twice, with the irrep blocks and as plain C1, and the
+   !! two must agree: total energy (<= 1e-10 Eh for HF, <= 1e-9 for B3LYP),
+   !! orbital energies and the density. Cases:
+   !!   RHF   HOCl (planar: every atom is its own mirror image) cc-pVDZ, spherical
+   !!   RHF   CHFCl2 (nonplanar, the mirror swaps atoms) 6-31G*, Cartesian
+   !!   UHF   HCO radical cc-pVDZ, and the CHFCl2 radical cation 6-31G* (nonplanar)
+   !!   B3LYP HOCl cc-pVDZ
+   !! Anchors (pyscf 2.14.0, mol.symmetry = 'Cs', sym_scf_cs.ref): the electrons
+   !! per irrep (`mf.get_irrep_nelec()`) and the orbital energies of each irrep.
+   !! The gradient: the components that symmetry forces to zero are <= 1e-10 in
+   !! the raw gradient of the symmetric run, vanish after `sym_geom` symmetrises
+   !! it, and the symmetrised gradient equals the C1 gradient.
+   !! Also: fixed per-irrep occupations, --soscf refused with symmetry, and the
+   !! incremental Fock build with symmetry.
+   !!
+   !! WHICH FOCK BUILD EACH CASE RUNS, DELIBERATELY. Every molecule here is below
+   !! the skeleton build's size rule (`sym_run_skeleton_size_rule`): HOCl is 3 atoms
+   !! in 3 orbits and CHFCl2 is 5 in 4, because a planar Cs molecule is its own
+   !! mirror image and the nonplanar one still pairs up only its two chlorines.
+   !! A default symmetric run therefore takes the FULL build with F symmetrized
+   !! after it, and the skeleton build would not be exercised here at all unless
+   !! it is asked for. So `make_pair` takes `skeleton`, and every case states what
+   !! it wants and asserts (`trc_scf_result_t%sym_skeleton`) that it got it:
+   !!   skeleton = .true.   CHFCl2 RHF (nonplanar: the mirror moves atoms, so the
+   !!                       orbit fold is nontrivial) and the HCO radical (UHF).
+   !!                       This is the group's skeleton-build coverage against
+   !!                       both C1 and the pyscf anchor.
+   !!   absent              the rule in charge, which for these molecules means
+   !!                       the full build -- the path a user actually gets. The
+   !!                       assertion is that the rule declined, so if the rule
+   !!                       ever starts accepting them this test says so rather
+   !!                       than silently changing what it covers.
+   !!
+   !! NO INTERNAL PROCEDURES: the helpers are module procedures.
+   !!
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
