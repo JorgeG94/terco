@@ -145,11 +145,18 @@ def main():
 
         # Every source fpm will compile under src/ is one CMake compiles, or
         # behind TERCO_ENABLE_DLFIND (src/opt, as in the committed fpm build).
+        # fpm builds the command line's sources (src/cli) into the library
+        # while CMake keeps them in terco_cli, so those are checked against
+        # that target: a src/cli file CMake does not build is still refused.
+        cli = codemodel_target(build, "terco_cli")
+        cli_srcs = {os.path.realpath(s["path"] if os.path.isabs(s["path"]) else os.path.join(tree, s["path"]))
+                    for s in cli["sources"]}
         for p in glob.glob(os.path.join(tree, "src", "**", "*.[Ff]90"), recursive=True):
             rel = os.path.relpath(p, tree)
             if rel.startswith(os.path.join("src", "generated")):
                 continue
-            if os.path.realpath(p) not in srcs and not rel.startswith(os.path.join("src", "opt")):
+            if (os.path.realpath(p) not in srcs and os.path.realpath(p) not in cli_srcs
+                    and not rel.startswith(os.path.join("src", "opt"))):
                 sys.exit(f"make_fpm_tarball: fpm would compile {rel}, which CMake does not")
 
         # fpm.toml: CMake's definitions for this ceiling.
