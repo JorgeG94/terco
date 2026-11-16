@@ -3132,6 +3132,89 @@ def _gen_fxc_apply_many_one(probe_relname, ref_relname, xyzname, molname, basnam
     (TEST / probe_relname).unlink()
 
 
+def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
+    """One check_tddft.F90 case: pyscf's TDA (singlets) on an RHF/RKS
+    reference at terco's OWN grid (the probe's points and weights, `non0tab`
+    cleared, as _gen_cpks_one), the lowest `nroots` excitation energies and
+    length-gauge oscillator strengths. The SCF is converged tightly
+    (converge_tight) and the TDA solved to a residual of 1e-6 (omega error ~ residual^2 / gap, 1e-8 is below pyscf's own noise floor for SVWN) so the comparison is not
+    eaten by reference noise. Written: E_SCF, OMEGA, OSC."""
+    PYSCF = {"hf": None, "svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
+    r = BinReader(TEST / probe_relname)
+    n, natm, no, nroots = (r.i8() for _ in range(4))
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    func_tag = r.str_(16)
+    e_terco = r.f8(1)[0]
+    om_terco = r.f8(nroots)
+    osc_terco = r.f8(nroots)
+    npts = r.i8()
+    pts = r.mat(3, npts).T.copy()
+    wts = r.f8(npts)
+    r.close()
+    if mol_tag != molname or bas_tag != basname or func_tag != funcname:
+        raise RuntimeError(f"gen_tddft {probe_relname}: probe tag mismatch")
+    atoms = _xyz_atoms(xyzname[:-4] if xyzname.endswith(".xyz") else xyzname)
+    if len(atoms) != natm:
+        raise RuntimeError(f"gen_tddft {probe_relname}: natm mismatch terco {natm} xyz {len(atoms)}")
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    charge = sum(elements[sym] for sym, _ in atoms) - 2 * no
+    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=charge, spin=0, verbose=0)
+    if mol.nao_nr() != n:
+        raise RuntimeError(f"gen_tddft {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
+
+    label = f"tddft {molname}/{basname}/{funcname} (tda singlet)"
+
+    def make_mf():
+        if funcname == "hf":
+            return scf.RHF(mol)
+        m = dft.RKS(mol)
+        m.xc = PYSCF[funcname]
+        m.grids.coords = np.ascontiguousarray(pts)
+        m.grids.weights = wts
+        m.grids.non0tab = None
+        return m
+
+    mf, grad_norm = converge_tight(make_mf, None, label)
+    td = mf.TDA()
+    td.singlet = True
+    td.nstates = nroots
+    td.conv_tol = 1.0e-6
+    td.max_cycle = 200
+    td.verbose = 0
+    td.kernel()
+    if not all(np.atleast_1d(td.converged)):
+        raise ConvergenceError(f"{label}: pyscf's TDA did not converge")
+    omega = np.asarray(td.e, dtype=float)
+    osc = np.asarray(td.oscillator_strength(gauge='length'), dtype=float)
+
+    w = RefWriter(ref_relname)
+    w.header(label, [ROOT / "test" / "check_tddft.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
+    w.real("E_SCF", mf.e_tot)
+    w.vector("OMEGA", omega)
+    w.vector("OSC", osc)
+    w.real("CONV_TOL", mf.conv_tol)
+    w.real("GRAD_NORM", grad_norm)
+    w.end()
+    w.write()
+    print(f"  {label}: E(terco) {e_terco:20.12f}  E(pyscf) {mf.e_tot:20.12f}  |g| {grad_norm:.2e}  "
+          f"|d(omega)|max {np.abs(om_terco - omega).max():.2e}  |d(f)|max {np.abs(osc_terco - osc).max():.2e}")
+    (TEST / probe_relname).unlink()
+
+
+def gen_tddft():
+    """check_tddft.F90: the lowest singlet TDA roots (trc_tddft.F90) of water
+    (4 roots) and formamide (6 roots), 6-31G*, for HF, SVWN, PBE and B3LYP,
+    against pyscf's tdscf TDA at terco's own converged grid."""
+    for xyzname, molname, nroots in (("water.xyz", "water", 4), ("formamide.xyz", "formamide", 6)):
+        for funcname in ("hf", "svwn", "pbe", "b3lyp"):
+            probe = f"tddft_{molname}_{funcname}_probe.bin"
+            run_bin(f"check_tddft_{molname}_{funcname}",
+                    [xyzname, "basis_sets/6-31gs.json", molname, "6-31gs", funcname, str(nroots), str(TEST / probe)])
+            _gen_tddft_one(probe, f"tddft_{molname}_6-31gs_{funcname}.ref", xyzname, molname, "6-31gs", funcname)
+
+
 def gen_fxc_apply_many():
     """check_fxc_apply_many.F90: f_xc[D] of a symmetric and a non-symmetric
     probe density at a fixed reference density on water/6-31G*, SVWN/PBE/
@@ -6693,6 +6776,7 @@ CASES = {
     "mom_excited": gen_mom_excited,
     "cpks": gen_cpks,
     "fxc_apply_many": gen_fxc_apply_many,
+    "tddft": gen_tddft,
     "rimp2_uhf": gen_rimp2_uhf,
     "scf_df": gen_scf_df,
     "dh": gen_dh,

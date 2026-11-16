@@ -2507,6 +2507,26 @@ foreach(_t scf_cpks scf_cpks_pbe scf_cpks_b3lyp scf_cpks_formamide_pbe)
 endforeach()
 
 #
+# TDA/CIS singlet excitation energies and oscillator strengths
+# (src/scf/response/trc_tddft.F90) against pyscf's tdscf TDA (generate.py's
+# gen_tddft): water (4 roots) and formamide (6 roots), 6-31G*, HF, SVWN, PBE
+# and B3LYP. One executable, one ARGS set per case.
+#
+foreach(_m water:4 formamide:6)
+  string(REPLACE ":" ";" _ml ${_m})
+  list(GET _ml 0 _mol)
+  list(GET _ml 1 _nr)
+  foreach(_f hf svwn pbe b3lyp)
+    terco_add_check(check_tddft_${_mol}_${_f} check_tddft.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                    ARGS ${_mol}.xyz basis_sets/6-31gs.json ${_mol} 6-31gs ${_f} ${_nr}
+                         ${CMAKE_CURRENT_BINARY_DIR}/tddft_${_mol}_${_f}_probe.bin)
+    target_link_libraries(check_tddft_${_mol}_${_f} PRIVATE test-drive::test-drive)
+    set_target_properties(check_tddft_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                          ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_${_mol}_${_f})
+  endforeach()
+endforeach()
+
+#
 # trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of
 # several trial densities against one cached collocation, for SVWN (LDA),
 # PBE and B3LYP (GGA) on water/6-31G*: batch against the loop, non-symmetric
