@@ -116,8 +116,8 @@ first.
 
 Aim for procedures that fit on a screen or two. These are hand-written code
 numbers, measured with `procedure_length` of `tools/archcheck.py` (code
-lines, initial declarations excluded; exempt files skipped): 2011 procedures,
-49 over 100 lines, 3 over 200, 1 over 300 (`trc_rimp2_run`, 340), none over 500.
+lines, initial declarations excluded; exempt files skipped): 2036 procedures,
+48 over 100 lines, 1 over 200, none over 300.
 
 | Size | Meaning |
 |---|---|
