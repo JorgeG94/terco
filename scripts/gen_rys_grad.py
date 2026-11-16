@@ -1619,13 +1619,22 @@ def pairs_item_text(tag, item, dims):
     d0, d1, d2, d3 = dims
     nv = d0*d1*d2*d3
 
+    def need(cond, msg):
+        # Not an assert: `python -O` must not strip a check on spliced text.
+        if not cond:
+            raise SystemExit(f"gen_rys_grad.py pairs_item_text({tag}): {msg}")
+
     def sub1(text, old, new):
-        assert text.count(old) == 1, old
+        need(text.count(old) == 1, f"expected exactly one {old!r}, found {text.count(old)}")
         return text.replace(old, new, 1)
 
     i_item = item.index(f"   pure subroutine rysgi{tag}_compact(")
     t = item[i_item:]
+    need(t.count(f"rysgi{tag}_compact") == 2, "the compact routine's name should occur twice (header, end)")
     t = t.replace(f"rysgi{tag}_compact", f"rysgi{tag}_pairs")
+    t = sub1(t, "pcut, jfac, kfac, omega, nbas,", "pcut, omega, nbas,")
+    t = sub1(t, "real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac, omega\n",
+             "real(dp), intent(in)    :: sp_q(npair), pcut, omega\n")
     t = sub1(t, "ndens, dmat, npriv, gp, slot)",
              "npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp, slot)")
     t = sub1(t, """      integer,  intent(in)    :: ndens
@@ -1642,6 +1651,8 @@ def pairs_item_text(tag, item, dims):
 """)
     t = sub1(t, "      real(dp) :: vax, vay, vaz, vbx, vby, vbz\n"
                 "      real(dp) :: vcx, vcy, vcz, vdx, vdy, vdz\n",
+             f"      ! PAIRS_NCB columns at most (gen_rys_grad.py): acc and gam are per-thread\n"
+             f"      ! and scale with it; gam is nv*{PAIRS_NCB} doubles, the cost for large classes.\n"
              f"      real(dp) :: acc(12, {PAIRS_NCB}), gsum\n"
              "      integer  :: col, ip, jl, jr\n")
     for dl in (f"      real(dp) :: dab({d0*d1}), dcd({d2*d3})\n",
@@ -1651,9 +1662,24 @@ def pairs_item_text(tag, item, dims):
     t = sub1(t, f"      real(dp) :: gam({nv})\n", f"      real(dp) :: gam({nv}, {PAIRS_NCB})\n")
     # Gamma: from the kfac_eff line through the end of the gam fill.
     a = t.index("         kfac_eff = merge(")
-    b = t.index("         vax = 0.0_dp; vay = 0.0_dp; vaz = 0.0_dp\n")
     e = t.index("         vdx = 0.0_dp; vdy = 0.0_dp; vdz = 0.0_dp\n")
     e = t.index("\n", e) + 1
+    # The span being replaced may hold only the density-block / Gamma fill
+    # and the sum zeroing: a line a later generator edit puts here would
+    # otherwise be dropped silently.
+    dropped = {"kfac_eff", "dab", "dcd", "dac", "dad", "dbc", "dbd", "gam",
+               "vax", "vay", "vaz", "vbx", "vby", "vbz", "vcx", "vcy", "vcz", "vdx", "vdy", "vdz",
+               "idx"}
+    cont = False
+    for ln in t[a:e].splitlines():
+        code = ln.strip()
+        was_cont, cont = cont, code.endswith("&")
+        if was_cont or not code or code.startswith("!"):
+            continue
+        ok = (re.match(r"(do \w+ = .*|end do)$", code) is not None
+              or all(m.split("(")[0].strip() in dropped
+                     for m in re.findall(r"(?:^|;)\s*(\w+(?:\([^=]*\))?)\s*=[^=]", code)) and "=" in code)
+        need(ok, f"unexpected line in the Gamma span being replaced: {code!r}")
     def dm(l, mu, x, nu, y):
         return f"dmat({l}, {mu} + {x}, {nu} + {y})"
     gam = f"""         do col = 1, ncb
@@ -1713,14 +1739,18 @@ def pairs_item_text(tag, item, dims):
                      f"            gp({ax + 1}, sh_at(s{sh}), slot, col) = gp({ax + 1}, sh_at(s{sh}), slot, col) + acc({3*k + ax + 1}, col)\n")
     tail += "         end do\n"
     t = t[:a] + tail + t[e:]
-    assert "ndens" not in t.replace("npool", ""), "pair item still reads ndens"
+    need("ndens" not in t.replace("npool", ""), "pair item still reads ndens")
+    code_only = "\n".join(ln for ln in t.splitlines() if not ln.strip().startswith("!"))
+    bad = [ln for ln in code_only.splitlines()
+           if "jfac" in ln or "kfac" in ln.replace("kfac_eff", "")]
+    need(not bad, f"pair item still reads jfac/kfac: {bad[:2]}")
     t = t.replace("      real(dp) :: alpha_i, alpha_j, alpha_k, kfac_eff\n",
                   "      real(dp) :: alpha_i, alpha_j, alpha_k\n")
     slot_expr = ("int(mod(i - 1, int(npriv, int64))) + 1"
                  if sum(int(c) for c in tag) <= 3 else "1")
     drv = f"""
    subroutine rysg{tag}_pairs_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
-                             npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &
+                             npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &
                              nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                              sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                              npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp)
@@ -1735,7 +1765,7 @@ def pairs_item_text(tag, item, dims):
       logical,  intent(in)    :: sD(nseg)
       real(dp), intent(in)    :: sW(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
-      real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac, omega
+      real(dp), intent(in)    :: sp_q(npair), pcut, omega
       integer,  intent(in)    :: ao_off(nbas), sh_at(nbas), natm
       integer,  intent(in)    :: nqp
       real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp), qp_a(nqp)
@@ -1752,7 +1782,7 @@ def pairs_item_text(tag, item, dims):
       integer(int64) :: i
       do concurrent(i=1:nout)
          call rysgi{tag}_pairs(out_seg(i), out_iab(i), out_icd(i), nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
-                                npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &
+                                npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &
                                 nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                                 sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                                 npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp, {slot_expr})

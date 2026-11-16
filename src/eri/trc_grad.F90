@@ -146,6 +146,12 @@ contains
       !! grad_bins: nvfortran 26.5 has hung or ICE'd on both.
 
       natm = pairs%natm
+      ! The pair kernels hold RYSG_PAIRS_NCB columns of private scratch;
+      ! a larger block would index past it.
+      if (present(ptab)) then
+         if (ptab%ncb /= ncol .or. ncol < 1 .or. ncol > RYSG_PAIRS_NCB) error stop &
+            "terco: grad_bins: a pair table must carry between 1 and RYSG_PAIRS_NCB columns, ncol of them"
+      end if
       if (launch%skeleton) then
          if (.not. quartets%orb%built) error stop "terco: a skeleton gradient needs the bins' pair orbits"
          ! CANONICAL emission: the

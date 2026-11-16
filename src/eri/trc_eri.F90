@@ -1504,6 +1504,16 @@ contains
       !! pair too; an antisymmetric-antisymmetric pair keeps its exchange with
       !! the sign the transposes give it. A matrix that is neither is refused.
       !!
+      !! Pass EXACTLY symmetric or exactly antisymmetric densities: symmetrise
+      !! (D+D^T)/2 or (X-X^T)/2 before the call. The classification tolerates
+      !! a residue of 1e-9 times max|D| only so that a density built from
+      !! round-off-level operations (an X-Y from a converged solve) is not
+      !! refused; that residue is not corrected, the kernel treats the matrix
+      !! as the symmetric or antisymmetric one it is nearest to, so a
+      !! residue of that size moves the gradient by about the same relative
+      !! amount. A matrix farther from both is refused and the message
+      !! carries the two measured norms.
+      !!
       !! Two-electron part only, same scope line as `eri_gradient`: the
       !! caller adds the one-electron, overlap, nuclear-repulsion and XC
       !! terms. No skeleton option and no hybrid scaling (fold k_scale into
@@ -1526,9 +1536,13 @@ contains
       integer, allocatable :: sgn(:), cnt(:)
       type(trc_grad_pairtab_t) :: ptab
       type(trc_bin_launch_t) :: launch
-      real(dp) :: ow, scale, asym, sym, mult, sk
+      real(dp) :: ow, scale, asym, sym
       integer :: npool, np, ip, id, c0, nc, c, k, ncb
       character(len=64) :: tmp
+      character(len=96) :: nrm
+      real(dp), allocatable :: wj(:), wk(:)
+      logical, allocatable :: keep(:)
+      real(dp) :: mult0
 
       grad = 0.0_dp
       npool = size(pool, 3)
@@ -1589,8 +1603,9 @@ contains
             sgn(id) = -1
          else
             write (tmp, "(i0)") id
+            write (nrm, "(es10.3,a,es10.3,a,es10.3)") asym, " (max|D-D^T|), ", sym, " (max|D+D^T|), ", scale
             call error%set(ERROR_VALIDATION, "eri%gradient_pairs: pool density "//trim(tmp)// &
-                           " is neither symmetric nor antisymmetric")
+                           " is neither symmetric nor antisymmetric: "//trim(nrm)//" (max|D|)")
             return
          end if
       end do
@@ -1608,10 +1623,20 @@ contains
       end do
       call density_blocks(this, dwork, npool)
 
-      allocate (cnt(ncol))
+      ! The kernel weights of every pair, once: both orderings of a cross
+      ! pair; the Coulomb part dies with an antisymmetric member, the
+      ! exchange part takes (sl + sr)/2. A pair left with no weight (a mixed
+      ! symmetric/antisymmetric one) is dropped here, not sent to the kernel.
+      allocate (wj(max(1, np)), wk(max(1, np)), keep(max(1, np)), cnt(ncol))
       cnt = 0
       do ip = 1, np
-         cnt(pairs(ip)%column) = cnt(pairs(ip)%column) + 1
+         mult0 = 1.0_dp
+         if (pairs(ip)%left /= pairs(ip)%right) mult0 = 2.0_dp
+         wj(ip) = 0.0_dp
+         if (sgn(pairs(ip)%left) == 1 .and. sgn(pairs(ip)%right) == 1) wj(ip) = 0.5_dp*pairs(ip)%coulomb*mult0
+         wk(ip) = 0.25_dp*pairs(ip)%exchange*mult0*real(sgn(pairs(ip)%left) + sgn(pairs(ip)%right), dp)*0.5_dp
+         keep(ip) = wj(ip) /= 0.0_dp .or. wk(ip) /= 0.0_dp
+         if (keep(ip)) cnt(pairs(ip)%column) = cnt(pairs(ip)%column) + 1
       end do
 
       !$acc enter data copyin(dwork)
@@ -1633,17 +1658,12 @@ contains
          k = 0
          do c = c0, c0 + nc - 1
             do ip = 1, np
-               if (pairs(ip)%column /= c) cycle
-               ! Both orderings of a cross pair; the Coulomb part dies with
-               ! an antisymmetric member, the exchange part is (sl + sr)/2.
-               mult = 1.0_dp
-               if (pairs(ip)%left /= pairs(ip)%right) mult = 2.0_dp
-               sk = 0.5_dp*real(sgn(pairs(ip)%left) + sgn(pairs(ip)%right), dp)
+               if (pairs(ip)%column /= c .or. .not. keep(ip)) cycle
                k = k + 1
                ptab%pl(k) = pairs(ip)%left
                ptab%pr(k) = pairs(ip)%right
-               if (sgn(pairs(ip)%left) == 1 .and. sgn(pairs(ip)%right) == 1) ptab%pj(k) = 0.5_dp*pairs(ip)%coulomb*mult
-               ptab%pk(k) = 0.25_dp*pairs(ip)%exchange*mult*sk
+               ptab%pj(k) = wj(ip)
+               ptab%pk(k) = wk(ip)
             end do
             ptab%pstart(c - c0 + 2) = k + 1
          end do
@@ -1663,7 +1683,7 @@ contains
          deallocate (gblk)
       end do
       !$acc exit data delete(dwork)
-      deallocate (dwork, sgn, cnt)
+      deallocate (dwork, sgn, cnt, wj, wk, keep)
    end subroutine eri_gradient_pairs
 
    subroutine sum_ranks(this, g, n)

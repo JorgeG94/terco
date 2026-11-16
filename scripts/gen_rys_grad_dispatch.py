@@ -66,7 +66,7 @@ def main():
 
     pairs_cases = "\n".join(
         f"""      case ({key}); call rysg{tag}_pairs_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
-                          npair, sp_i, sp_j, sp_q, pcut, 1.0_dp, 1.0_dp, omega, nbas, nao, ao_off, sh_at, natm, &
+                          npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &
                           nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
                           npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp)"""

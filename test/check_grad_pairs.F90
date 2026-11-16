@@ -15,7 +15,12 @@ module check_grad_pairs_suite
    !!
    !! The densities are deterministic synthetic matrices, as in
    !! check_rys_grad_fd: this checks d(ab|cd)/dR and its contraction, not an
-   !! SCF. The basis comes from the command line.
+   !! SCF. The basis comes from the command line. Each reduction is run on
+   !! water and on h2o2: the pair kernels skip one-centre quartets, so a
+   !! molecule with one heavy atom never runs the classes whose four shells
+   !! all have l >= 1; two heavy atoms with d shells do.
+   !! (TRC_RYS_CLASSES=none, set in CMake, only chooses the Fock path of the
+   !! fock_nosym oracle; the gradient is always Rys.)
    !!
    use pic_types, only: dp
    use pic_strings, only: to_string
@@ -31,9 +36,9 @@ module check_grad_pairs_suite
    public :: collect_grad_pairs_tests
 
    real(dp), parameter :: THRESH = 1.0e-14_dp
-   real(dp), parameter :: AGREE = 1.0e-12_dp
+   real(dp), parameter :: AGREE = 1.0e-13_dp
    !! Two contractions of the same derivative integrals, summed in a different
-   !! order; gradient components are O(1).
+   !! order, relative to max(1, max|component|) (see reldev).
    real(dp), parameter :: H = 1.0e-4_dp
    real(dp), parameter :: RELTOL = 1.0e-7_dp
    !! The finite-difference tolerance check_rys_grad_fd uses.
@@ -54,8 +59,9 @@ contains
                   ]
    end subroutine collect_grad_pairs_tests
 
-   subroutine setup(bas, eri, nat, at_z, r, error)
-      !! Water in the command-line basis, eri built; skips a basis above LMAX.
+   subroutine setup(xyz, bas, eri, nat, at_z, r, error)
+      !! The molecule in `xyz` in the command-line basis, eri built; skips a basis above LMAX.
+      character(*), intent(in) :: xyz
       type(trc_basis_t), intent(out) :: bas
       type(trc_eri_t), intent(out) :: eri
       integer, intent(out) :: nat
@@ -69,7 +75,7 @@ contains
       if (command_argument_count() >= 1) call get_command_argument(1, basis_json)
       call check(error, len_trim(basis_json) > 0, "usage: check_grad_pairs <basis.json>")
       if (allocated(error)) return
-      call read_xyz('water.xyz', nat, at_z, r)
+      call read_xyz(xyz, nat, at_z, r)
       call trc_basis_from_json(trim(basis_json), nat, at_z, r, bas, err, &
                                overrides=trc_basis_json_overrides(prune=.false.))
       call check(error, .not. err%has_error(), "check_grad_pairs: "//err%get_message())
@@ -114,13 +120,22 @@ contains
       p = trc_grad_pair_t(left=l, right=r, column=col, coulomb=c, exchange=x)
    end function pair
 
+   real(dp) function reldev(g, g0)
+      !! max |g - g0| per unit of the larger of one and max |g0|: the
+      !! summation order differs, so the round-off follows the size of the
+      !! components (a few hundred on h2o2), not an absolute scale.
+      real(dp), intent(in) :: g(:, :), g0(:, :)
+      reldev = maxval(abs(g - g0))/max(1.0_dp, maxval(abs(g0)))
+   end function reldev
+
    subroutine report(tag, dev)
       character(*), intent(in) :: tag
       real(dp), intent(in) :: dev
-      print '(a,a,a,es10.2)', '  ', tag, ': max |difference| ', dev
+      print '(a,a,a,es10.2)', '  ', tag, ': max |difference|/scale ', dev
    end subroutine report
 
-   subroutine test_rhf(error)
+   subroutine run_rhf(xyz, error)
+      character(*), intent(in) :: xyz
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_eri_t) :: eri
@@ -129,7 +144,7 @@ contains
       integer, allocatable :: at_z(:)
       real(dp), allocatable :: r(:, :), d(:, :, :), g0(:, :), g1(:, :, :)
 
-      call setup(bas, eri, nat, at_z, r, error)
+      call setup(xyz, bas, eri, nat, at_z, r, error)
       if (allocated(error)) return
       allocate (d(bas%nao, bas%nao, 1), g0(3, nat), g1(3, nat, 1))
       call synth_sym(bas%nao, 1, d(:, :, 1))
@@ -137,15 +152,23 @@ contains
       call eri%gradient_pairs(bas, d, [pair(1, 1, 1, 1.0_dp, 0.5_dp)], 1, g1, err)
       call check(error, .not. err%has_error(), "gradient_pairs refused a valid call")
       if (.not. allocated(error)) then
-         call report("RHF", maxval(abs(g1(:, :, 1) - g0)))
-         call check(error, maxval(abs(g1(:, :, 1) - g0)) <= AGREE, "RHF pair differs from eri%gradient by " &
-                    //to_string(maxval(abs(g1(:, :, 1) - g0)), "es10.2"))
+         call report("RHF "//xyz, reldev(g1(:, :, 1), g0))
+         call check(error, reldev(g1(:, :, 1), g0) <= AGREE, "RHF pair differs from eri%gradient by " &
+                    //to_string(reldev(g1(:, :, 1), g0), "es10.2"))
       end if
       call eri%release()
       call bas%release()
+   end subroutine run_rhf
+
+   subroutine test_rhf(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_rhf('water.xyz', error)
+      if (allocated(error)) return
+      call run_rhf('h2o2.xyz', error)
    end subroutine test_rhf
 
-   subroutine test_split(error)
+   subroutine run_split(xyz, error)
+      character(*), intent(in) :: xyz
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_eri_t) :: eri
@@ -154,7 +177,7 @@ contains
       integer, allocatable :: at_z(:)
       real(dp), allocatable :: r(:, :), d(:, :, :), g0(:, :), g1(:, :, :), pool(:, :, :)
 
-      call setup(bas, eri, nat, at_z, r, error)
+      call setup(xyz, bas, eri, nat, at_z, r, error)
       if (allocated(error)) return
       allocate (d(bas%nao, bas%nao, 1), pool(bas%nao, bas%nao, 2), g0(3, nat), g1(3, nat, 1))
       call synth_sym(bas%nao, 1, d(:, :, 1))
@@ -166,15 +189,23 @@ contains
                                           pair(1, 2, 1, 1.0_dp, 0.5_dp)], 1, g1, err)
       call check(error, .not. err%has_error(), "gradient_pairs refused a valid call")
       if (.not. allocated(error)) then
-         call report("split", maxval(abs(g1(:, :, 1) - g0)))
-         call check(error, maxval(abs(g1(:, :, 1) - g0)) <= AGREE, "split density differs from the whole by " &
-                    //to_string(maxval(abs(g1(:, :, 1) - g0)), "es10.2"))
+         call report("split "//xyz, reldev(g1(:, :, 1), g0))
+         call check(error, reldev(g1(:, :, 1), g0) <= AGREE, "split density differs from the whole by " &
+                    //to_string(reldev(g1(:, :, 1), g0), "es10.2"))
       end if
       call eri%release()
       call bas%release()
+   end subroutine run_split
+
+   subroutine test_split(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_split('water.xyz', error)
+      if (allocated(error)) return
+      call run_split('h2o2.xyz', error)
    end subroutine test_split
 
-   subroutine test_uhf(error)
+   subroutine run_uhf(xyz, error)
+      character(*), intent(in) :: xyz
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_eri_t) :: eri
@@ -183,7 +214,7 @@ contains
       integer, allocatable :: at_z(:)
       real(dp), allocatable :: r(:, :), d2(:, :, :), g0(:, :), g1(:, :, :), pool(:, :, :)
 
-      call setup(bas, eri, nat, at_z, r, error)
+      call setup(xyz, bas, eri, nat, at_z, r, error)
       if (allocated(error)) return
       allocate (d2(bas%nao, bas%nao, 2), pool(bas%nao, bas%nao, 3), g0(3, nat), g1(3, nat, 1))
       call synth_sym(bas%nao, 1, d2(:, :, 1))
@@ -196,17 +227,25 @@ contains
                                           pair(3, 3, 1, 0.0_dp, 1.0_dp)], 1, g1, err)
       call check(error, .not. err%has_error(), "gradient_pairs refused a valid call")
       if (.not. allocated(error)) then
-         call report("UHF", maxval(abs(g1(:, :, 1) - g0)))
-         call check(error, maxval(abs(g1(:, :, 1) - g0)) <= AGREE, "UHF pairs differ from eri%gradient by " &
-                    //to_string(maxval(abs(g1(:, :, 1) - g0)), "es10.2"))
+         call report("UHF "//xyz, reldev(g1(:, :, 1), g0))
+         call check(error, reldev(g1(:, :, 1), g0) <= AGREE, "UHF pairs differ from eri%gradient by " &
+                    //to_string(reldev(g1(:, :, 1), g0), "es10.2"))
       end if
       call eri%release()
       call bas%release()
+   end subroutine run_uhf
+
+   subroutine test_uhf(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_uhf('water.xyz', error)
+      if (allocated(error)) return
+      call run_uhf('h2o2.xyz', error)
    end subroutine test_uhf
 
-   subroutine test_columns(error)
+   subroutine run_columns(xyz, error)
       !! Six columns (two sweeps of RYSG_PAIRS_NCB) with different pair sets,
       !! against the six one-column calls.
+      character(*), intent(in) :: xyz
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_eri_t) :: eri
@@ -218,7 +257,7 @@ contains
       type(trc_grad_pair_t), allocatable :: one(:)
       real(dp) :: dev
 
-      call setup(bas, eri, nat, at_z, r, error)
+      call setup(xyz, bas, eri, nat, at_z, r, error)
       if (allocated(error)) return
       allocate (pool(bas%nao, bas%nao, 3), gall(3, nat, 6), g1(3, nat, 1))
       do c = 1, 3
@@ -241,10 +280,17 @@ contains
          call eri%gradient_pairs(bas, pool, one, 1, g1, err)
          dev = max(dev, maxval(abs(g1(:, :, 1) - gall(:, :, c))))
       end do
-      call report("columns", dev)
+      call report("columns "//xyz, dev)
       call check(error, dev <= AGREE, "a column of the batch differs from its own call by "//to_string(dev, "es10.2"))
       call eri%release()
       call bas%release()
+   end subroutine run_columns
+
+   subroutine test_columns(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_columns('water.xyz', error)
+      if (allocated(error)) return
+      call run_columns('h2o2.xyz', error)
    end subroutine test_columns
 
    real(dp) function ek_at(basis_json, nat, at_z, r, nao, a1, a2, error)
@@ -275,10 +321,34 @@ contains
       call bas%release()
    end function ek_at
 
+   real(dp) function fd_deriv(basis_json, nat, at_z, r, nao, ia, d, hstep, a1, a2, error)
+      !! Central difference of ek_at along coordinate (d, ia) with step hstep.
+      character(*), intent(in) :: basis_json
+      integer, intent(in) :: nat, at_z(nat), nao, ia, d
+      real(dp), intent(in) :: r(3, nat), hstep, a1(nao, nao), a2(nao, nao)
+      type(error_type), allocatable, intent(inout) :: error
+      real(dp) :: rp(3, nat), rm(3, nat), ep, em
+
+      fd_deriv = 0.0_dp
+      rp = r; rm = r
+      rp(d, ia) = rp(d, ia) + hstep
+      rm(d, ia) = rm(d, ia) - hstep
+      ep = ek_at(basis_json, nat, at_z, rp, nao, a1, a2, error)
+      if (allocated(error)) return
+      em = ek_at(basis_json, nat, at_z, rm, nao, a1, a2, error)
+      if (allocated(error)) return
+      fd_deriv = (ep - em)/(2.0_dp*hstep)
+   end function fd_deriv
+
    subroutine test_antisym_fd(error)
       !! d/dR [Tr(A1 K[A2]) + Tr(A2 K[A1])] for antisymmetric A1, A2 (the pair
-      !! (1, 2, 0, -1) counts both orderings), and Tr(A1 K[A1]) alone for the
-      !! diagonal pair, against central differences.
+      !! (1, 2, 1, -1) counts both orderings), and Tr(A1 K[A1]) alone for the
+      !! diagonal pair, against Richardson-extrapolated central differences,
+      !! (4 D(h/2) - D(h))/3, which removes the h^2 truncation term. The pairs
+      !! carry coulomb = 1: the functional is exchange only, so a Coulomb
+      !! contribution leaking from an antisymmetric member would show. A
+      !! third column holds a mixed symmetric/antisymmetric pair, which must
+      !! add exactly zero.
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_eri_t) :: eri
@@ -286,50 +356,55 @@ contains
       character(len=256) :: basis_json
       integer :: nat, nao, ia, d
       integer, allocatable :: at_z(:)
-      real(dp), allocatable :: r(:, :), rp(:, :), rm(:, :), pool(:, :, :), g(:, :, :)
-      real(dp) :: ep, em, fd, ref, worst
+      real(dp), allocatable :: r(:, :), pool(:, :, :), g(:, :, :)
+      real(dp) :: fd, fd1, ref, worst, worst_plain
 
-      call setup(bas, eri, nat, at_z, r, error)
+      call setup('water.xyz', bas, eri, nat, at_z, r, error)
       if (allocated(error)) return
       call get_command_argument(1, basis_json)
       nao = bas%nao
-      allocate (pool(nao, nao, 2), g(3, nat, 2), rp(3, nat), rm(3, nat))
+      allocate (pool(nao, nao, 3), g(3, nat, 3))
       call synth_anti(nao, 1, pool(:, :, 1))
       call synth_anti(nao, 2, pool(:, :, 2))
+      call synth_sym(nao, 3, pool(:, :, 3))
       ! Column 1: the cross pair. Column 2: the diagonal pair of A1 (so the
-      ! functional is Tr(A1 K[A1]) = half of E(A1, A1)).
-      call eri%gradient_pairs(bas, pool, [pair(1, 2, 1, 0.0_dp, -1.0_dp), pair(1, 1, 2, 0.0_dp, -1.0_dp)], 2, g, err)
+      ! functional is Tr(A1 K[A1]) = half of E(A1, A1)). Column 3: a mixed
+      ! pair of the symmetric density with A1, whose J and K both vanish.
+      call eri%gradient_pairs(bas, pool, [pair(1, 2, 1, 1.0_dp, -1.0_dp), pair(1, 1, 2, 1.0_dp, -1.0_dp), &
+                                          pair(3, 1, 3, 1.0_dp, -1.0_dp)], 3, g, err)
       call check(error, .not. err%has_error(), "gradient_pairs refused an antisymmetric pool")
       call eri%release()
       call bas%release()
       if (allocated(error)) return
+      call check(error, all(g(:, :, 3) == 0.0_dp), "a mixed symmetric/antisymmetric pair did not add exactly zero")
+      if (allocated(error)) return
 
       worst = 0.0_dp
+      worst_plain = 0.0_dp
       do ia = 1, nat
          do d = 1, 3
-            rp = r; rm = r
-            rp(d, ia) = rp(d, ia) + H
-            rm(d, ia) = rm(d, ia) - H
-            ep = ek_at(trim(basis_json), nat, at_z, rp, nao, pool(:, :, 1), pool(:, :, 2), error)
+            ! A pair with exchange = -1 differentiates +Tr(Dl K[Dr]).
+            fd1 = fd_deriv(trim(basis_json), nat, at_z, r, nao, ia, d, H, pool(:, :, 1), pool(:, :, 2), error)
             if (allocated(error)) return
-            em = ek_at(trim(basis_json), nat, at_z, rm, nao, pool(:, :, 1), pool(:, :, 2), error)
+            fd = fd_deriv(trim(basis_json), nat, at_z, r, nao, ia, d, 0.5_dp*H, pool(:, :, 1), pool(:, :, 2), error)
             if (allocated(error)) return
-            ! The functional is Tr(A1 K[A2]) + Tr(A2 K[A1]); a pair with
-            ! exchange = -1 differentiates +Tr(Dl K[Dr]).
-            fd = (ep - em)/(2.0_dp*H)
             ref = g(d, ia, 1)
+            worst_plain = max(worst_plain, abs(fd1 - ref)/max(abs(ref), abs(fd1), 1.0e-10_dp))
+            fd = (4.0_dp*fd - fd1)/3.0_dp
             worst = max(worst, abs(fd - ref)/max(abs(ref), abs(fd), 1.0e-10_dp))
-            ep = ek_at(trim(basis_json), nat, at_z, rp, nao, pool(:, :, 1), pool(:, :, 1), error)
-            if (allocated(error)) return
-            em = ek_at(trim(basis_json), nat, at_z, rm, nao, pool(:, :, 1), pool(:, :, 1), error)
-            if (allocated(error)) return
             ! ek_at doubled the diagonal term: Tr(A1 K[A1]) twice.
-            fd = 0.5_dp*(ep - em)/(2.0_dp*H)
+            fd1 = 0.5_dp*fd_deriv(trim(basis_json), nat, at_z, r, nao, ia, d, H, pool(:, :, 1), pool(:, :, 1), error)
+            if (allocated(error)) return
+            fd = 0.5_dp*fd_deriv(trim(basis_json), nat, at_z, r, nao, ia, d, 0.5_dp*H, pool(:, :, 1), pool(:, :, 1), error)
+            if (allocated(error)) return
             ref = g(d, ia, 2)
+            worst_plain = max(worst_plain, abs(fd1 - ref)/max(abs(ref), abs(fd1), 1.0e-10_dp))
+            fd = (4.0_dp*fd - fd1)/3.0_dp
             worst = max(worst, abs(fd - ref)/max(abs(ref), abs(fd), 1.0e-10_dp))
          end do
       end do
-      print '(a,es10.2)', '  antisymmetric K: worst relative FD deviation ', worst
+      print '(a,es10.2,a,es10.2)', '  antisymmetric K: worst relative FD deviation, Richardson ', worst, &
+         '  plain central ', worst_plain
       call check(error, worst <= RELTOL, "antisymmetric exchange gradient off finite differences by " &
                  //to_string(worst, "es10.2"))
    end subroutine test_antisym_fd
@@ -343,7 +418,7 @@ contains
       integer, allocatable :: at_z(:)
       real(dp), allocatable :: r(:, :), pool(:, :, :), g(:, :, :)
 
-      call setup(bas, eri, nat, at_z, r, error)
+      call setup('water.xyz', bas, eri, nat, at_z, r, error)
       if (allocated(error)) return
       allocate (pool(bas%nao, bas%nao, 1), g(3, nat, 1))
       call synth_sym(bas%nao, 1, pool(:, :, 1))
@@ -379,20 +454,20 @@ contains
       real(dp), allocatable :: r(:, :), d2(:, :, :), g0(:, :), g1(:, :, :), pool(:, :, :)
       real(dp) :: dev_rhf, dev_uhf
 
-      call setup(bas, eri, nat, at_z, r, error)
+      call setup('water.xyz', bas, eri, nat, at_z, r, error)
       if (allocated(error)) return
       allocate (d2(bas%nao, bas%nao, 2), pool(bas%nao, bas%nao, 3), g0(3, nat), g1(3, nat, 1))
       call synth_sym(bas%nao, 1, d2(:, :, 1))
       call synth_sym(bas%nao, 2, d2(:, :, 2))
       call eri%gradient(bas, d2(:, :, 1:1), g0)
       call eri%gradient_pairs(bas, d2(:, :, 1:1), [pair(1, 1, 1, 1.0_dp, 0.55_dp)], 1, g1, err)
-      dev_rhf = maxval(abs(g1(:, :, 1) - g0))
+      dev_rhf = reldev(g1(:, :, 1), g0)
       pool(:, :, 1) = d2(:, :, 1) + d2(:, :, 2)
       pool(:, :, 2:3) = d2
       call eri%gradient(bas, d2, g0)
       call eri%gradient_pairs(bas, pool, [pair(1, 1, 1, 1.0_dp, 0.0_dp), pair(2, 2, 1, 0.0_dp, 1.1_dp), &
                                           pair(3, 3, 1, 0.0_dp, 1.1_dp)], 1, g1, err)
-      dev_uhf = maxval(abs(g1(:, :, 1) - g0))
+      dev_uhf = reldev(g1(:, :, 1), g0)
       print '(a,es10.2,a,es10.2)', '  10% exchange error: RHF deviation ', dev_rhf, '  UHF deviation ', dev_uhf
       call check(error, dev_rhf > 1.0e-3_dp, "a 10% exchange error went unseen in the RHF comparison")
       if (.not. allocated(error)) call check(error, dev_uhf > 1.0e-3_dp, &
@@ -401,7 +476,8 @@ contains
       call bas%release()
    end subroutine test_negative_control
 
-   subroutine test_omega(error)
+   subroutine run_omega(xyz, error)
+      character(*), intent(in) :: xyz
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_eri_t) :: eri
@@ -410,7 +486,7 @@ contains
       integer, allocatable :: at_z(:)
       real(dp), allocatable :: r(:, :), d(:, :, :), g0(:, :), g1(:, :, :)
 
-      call setup(bas, eri, nat, at_z, r, error)
+      call setup(xyz, bas, eri, nat, at_z, r, error)
       if (allocated(error)) return
       allocate (d(bas%nao, bas%nao, 1), g0(3, nat), g1(3, nat, 1))
       call synth_sym(bas%nao, 1, d(:, :, 1))
@@ -418,12 +494,19 @@ contains
       call eri%gradient_pairs(bas, d, [pair(1, 1, 1, 1.0_dp, 0.5_dp)], 1, g1, err, omega=0.4_dp)
       call check(error, .not. err%has_error(), "gradient_pairs refused omega > 0")
       if (.not. allocated(error)) then
-         call report("omega", maxval(abs(g1(:, :, 1) - g0)))
-         call check(error, maxval(abs(g1(:, :, 1) - g0)) <= AGREE, "omega pair differs from eri%gradient by " &
-                    //to_string(maxval(abs(g1(:, :, 1) - g0)), "es10.2"))
+         call report("omega "//xyz, reldev(g1(:, :, 1), g0))
+         call check(error, reldev(g1(:, :, 1), g0) <= AGREE, "omega pair differs from eri%gradient by " &
+                    //to_string(reldev(g1(:, :, 1), g0), "es10.2"))
       end if
       call eri%release()
       call bas%release()
+   end subroutine run_omega
+
+   subroutine test_omega(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_omega('water.xyz', error)
+      if (allocated(error)) return
+      call run_omega('h2o2.xyz', error)
    end subroutine test_omega
 
 end module check_grad_pairs_suite
