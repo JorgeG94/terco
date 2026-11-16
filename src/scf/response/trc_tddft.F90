@@ -32,7 +32,8 @@ module trc_tddft
    !! density-keyed screen on trial vectors would change the operator between
    !! matvecs (see `eri%fock_nosym_many`).
    !!
-   !! Guesses are the unit vectors of the lowest orbital-energy differences. Each
+   !! Guesses are the unit vectors of the lowest orbital-energy differences (a
+   !! tie at the cut is kept whole). Each
    !! iteration diagonalises the subspace matrix, forms the residuals of the
    !! lowest `nroots` Ritz pairs and, for every unconverged one, the
    !! diagonally preconditioned correction -R/(d - w). The corrections are
@@ -43,6 +44,25 @@ module trc_tddft
    !! degenerate multiplet is converged as one: nothing here assumes the roots
    !! are non-degenerate (the amplitudes within a degenerate multiplet are an
    !! arbitrary orthonormal rotation of each other).
+   !!
+   !! MISSED ROOTS. Davidson follows the lowest `nroots` RITZ values, and a
+   !! preconditioned correction of a Ritz vector stays in the symmetry of
+   !! that vector. A root of a symmetry the guesses represent poorly has a
+   !! Ritz value far above its eigenvalue, so with few guesses it can sit
+   !! above the tracked window and never be iterated: measured on formamide
+   !! HF (Cs, A'/A''), nroots = 2 with 2*nroots guesses returned the 1st and
+   !! 3rd roots and skipped the 2nd (0.3464 Eh, which has 92% of its weight on
+   !! the four lowest differences, so it was not orthogonal to the guesses).
+   !! The Ritz estimates of that other sector stayed at 0.389 Eh (the guesses
+   !! describe it badly), above the 3rd root's 0.348, so it sat outside the
+   !! tracked window and was never corrected, even with 10 guesses. Three
+   !! measures: (1) a BUFFER of max(2, nroots/2) extra Ritz vectors is iterated
+   !! along with the wanted ones, to a looser residual (BUFFER_TOL), so such a
+   !! sector's Ritz value descends into the window and takes its place;
+   !! (2) generous guesses, a tie at the cut kept whole; (3) one probe with the
+   !! next-lowest differences before convergence is accepted. None is a proof:
+   !! no Davidson variant guarantees the lowest roots without symmetry
+   !! information, and the tests sweep nroots against pyscf for that reason.
    !!
    !! A breakdown (no usable new direction while a root is unconverged), a NaN
    !! or Inf anywhere, a non-positive excitation energy or running out of
@@ -77,8 +97,14 @@ module trc_tddft
    public :: trc_tddft_options_t, trc_tddft_result_t, trc_tddft_op_t
    public :: trc_tddft_solve_rks, trc_tddft_refuse_reason
 
-   real(dp), parameter :: PI_FACTOR_OSC = 2.0_dp/3.0_dp
-   !! Oscillator strength f = (2/3) w |mu|^2, atomic units.
+   real(dp), parameter :: OSC_PREFACTOR = 2.0_dp/3.0_dp
+   !! The 2/3 of the oscillator strength f = (2/3) w |mu|^2, atomic units.
+   real(dp), parameter :: BUFFER_TOL = 1.0e-3_dp
+   !! Residual the buffer Ritz vectors (those past `nroots`) are iterated to; at
+   !! least 100 conv_tol. Their Ritz values are then good to ~1e-6.
+   real(dp), parameter :: TIE_TOL = 1.0e-4_dp
+   !! Orbital-energy differences closer than this (hartree) count as tied
+   !! when the guesses are cut.
    real(dp), parameter :: PRECOND_FLOOR = 1.0e-4_dp
    !! The preconditioner's denominator (d - w) is kept at least this far from
    !! zero, sign preserved.
@@ -99,11 +125,13 @@ module trc_tddft
       !! conv_tol^2/gap, the amplitude error of order conv_tol/gap.
       integer :: max_space = 0
       !! Largest subspace before the collapse; 0 takes 12*nroots. Raised to
-      !! 3*nroots if smaller, and capped at the dimension of the problem.
+      !! 3*(nroots + buffer) if smaller, and capped at the dimension of the problem.
       integer :: max_iter = 50
       !! Most Davidson iterations (matvec passes).
       integer :: nguess = 0
-      !! Unit-vector guesses; 0 takes 2*nroots (capped at the dimension).
+      !! Unit-vector guesses; 0 takes max(2*nroots, nroots + 4), capped at the
+      !! dimension and extended over a tie at the cut. A probe with the
+      !! next-lowest differences runs before convergence is accepted.
       logical :: verbose = .false.
    end type trc_tddft_options_t
 
@@ -262,14 +290,17 @@ contains
       this%ready = .true.
    end subroutine tddft_op_setup
 
-   subroutine tddft_add_diag(nocc, nvir, nvec, de, x, ax)
-      !! ax += (e_a - e_i) x for every vector.
-      integer, intent(in) :: nocc, nvir, nvec
-      real(dp), intent(in) :: de(nocc, nvir), x(nocc, nvir, nvec)
-      real(dp), intent(inout) :: ax(nocc, nvir, nvec)
-      integer :: i, a, k
-      do concurrent(i=1:nocc, a=1:nvir, k=1:nvec)
-         ax(i, a, k) = ax(i, a, k) + de(i, a)*x(i, a, k)
+   subroutine tddft_add_diag(nov, nvec, de, x, ax)
+      !! ax += (e_a - e_i) x for every vector, over the amplitudes flattened
+      !! to one index (the callers pass their (nocc, nvir, nvec) arrays by
+      !! sequence association): a loop over small run-time extents is one
+      !! index here, not a multi-index do concurrent.
+      integer, intent(in) :: nov, nvec
+      real(dp), intent(in) :: de(nov), x(nov, nvec)
+      real(dp), intent(inout) :: ax(nov, nvec)
+      integer :: idx, k
+      do concurrent(k=1:nvec, idx=1:nov)
+         ax(idx, k) = ax(idx, k) + de(idx)*x(idx, k)
       end do
    end subroutine tddft_add_diag
 
@@ -322,7 +353,7 @@ contains
             call la%gemm_mat(tmp, this%cvir, ax(:, :, k), alpha=2.0_dp, beta=1.0_dp)
          end if
       end do
-      call tddft_add_diag(nocc, nvir, nvec, this%de, x, ax)
+      call tddft_add_diag(nocc*nvir, nvec, this%de, x, ax)
       !$acc update self(ax)
       !$acc exit data delete(x, ax, tmat, gmat, vxc, half, tmp)
       deallocate (tmat, gmat, vxc, half, tmp)
@@ -344,6 +375,9 @@ contains
 
       if (.not. this%ready) error stop "trc_tddft: operator used before setup"
       n = this%nao
+      ! All TRC_NMULT components are evaluated for the 3 dipoles: terco has no
+      ! dipole-only multipole routine (trc_cphf/trc_cpks do the same), and this
+      ! runs once per solve.
       allocate (mmat(n, n, TRC_NMULT))
       call trc_multipoles(b, pl, [0.0_dp, 0.0_dp, 0.0_dp], mmat)
       allocate (dip(n, n, 3), dmo(this%nocc, this%nvir, 3), half(n, this%nvir))
@@ -451,14 +485,15 @@ contains
 
       type(trc_tddft_op_t) :: op
       real(dp), allocatable :: vs(:, :), avs(:, :), hsub(:, :), csub(:, :), wsub(:)
-      real(dp), allocatable :: xr(:, :), axr(:, :), tc(:, :), rnorm(:), dgn(:), dsort(:)
+      real(dp), allocatable :: xr(:, :), axr(:, :), tc(:, :), rnorm(:), dgn(:), dsort(:), tp(:, :)
       real(dp) :: den
       integer, allocatable :: ord(:)
-      integer :: nov, nvir, nr, mmax, nguess, m, nnew, nunc, i, a, j, k, ioff
+      integer :: nov, nvir, nr, nt, mmax, nguess, m, nnew, nunc, nmain, i, a, j, k, ioff, nprobe
       integer(default_int) :: linfo
       character(len=256) :: reason
       character(len=1024) :: logline
-      logical :: done
+      logical :: done, probed
+      real(dp) :: buf_tol
 
       res%converged = .false.
       res%nroots = opts%nroots
@@ -493,13 +528,17 @@ contains
       end if
       mmax = opts%max_space
       if (mmax <= 0) mmax = 12*nr
-      mmax = min(max(mmax, 3*nr), nov)
+      ! The block iterated is the nroots wanted plus a buffer of further Ritz
+      ! vectors (see the header, MISSED ROOTS).
+      nt = min(nr + max(2, nr/2), nov)
+      buf_tol = max(BUFFER_TOL, 100.0_dp*opts%conv_tol)
+      mmax = min(max(mmax, 3*nt), nov)
       nguess = opts%nguess
-      if (nguess <= 0) nguess = 2*nr
-      nguess = min(max(nguess, nr), nov, mmax)
+      if (nguess <= 0) nguess = max(2*nr, nr + 4)
+      nguess = min(max(nguess, nt), nov, mmax)
 
       allocate (vs(nov, mmax), avs(nov, mmax), hsub(mmax, mmax), csub(mmax, mmax), wsub(mmax))
-      allocate (xr(nov, nr), axr(nov, nr), tc(nov, nr), rnorm(nr), dgn(nov), dsort(nov))
+      allocate (xr(nov, nt), axr(nov, nt), tc(nov, nt), rnorm(nt), dgn(nov), dsort(nov))
       allocate (ord(nov))
 
       ! Diagonal (e_a - e_i) in the flat (i fastest) ordering of the amplitudes;
@@ -512,6 +551,16 @@ contains
       ! sort_index sorts its array in place; the preconditioner needs dgn as is.
       dsort = dgn
       call sort_index(dsort, ord)
+      ! Do not cut a cluster of (near-)degenerate differences in two: the
+      ! partner left out is a direction the solve may never generate.
+      do while (nguess < min(nov, mmax))
+         if (dsort(nguess + 1) - dsort(nguess) >= TIE_TOL) exit
+         nguess = nguess + 1
+      end do
+      ! The probe must fit beside the Ritz vectors it may collapse onto.
+      nprobe = max(min(nguess, nov - nguess, mmax - nt), 0)
+      allocate (tp(nov, max(nprobe, 1)))
+      probed = .false.
       vs(:, 1:nguess) = 0.0_dp
       do j = 1, nguess
          vs(ord(j), j) = 1.0_dp
@@ -549,18 +598,22 @@ contains
             exit
          end if
 
-         ! Ritz vectors, A times them, and the residuals of the lowest nr.
-         call pic_gemm(vs(:, 1:m), csub(1:m, 1:nr), xr, "N", "N", 1.0_dp, 0.0_dp)
-         call pic_gemm(avs(:, 1:m), csub(1:m, 1:nr), axr, "N", "N", 1.0_dp, 0.0_dp)
+         ! Ritz vectors, A times them, and the residuals of the lowest nt.
+         call pic_gemm(vs(:, 1:m), csub(1:m, 1:nt), xr, "N", "N", 1.0_dp, 0.0_dp)
+         call pic_gemm(avs(:, 1:m), csub(1:m, 1:nt), axr, "N", "N", 1.0_dp, 0.0_dp)
          nunc = 0
-         do k = 1, nr
+         nmain = 0
+         do k = 1, nt
             tc(:, k) = axr(:, k) - wsub(k)*xr(:, k)
             rnorm(k) = sqrt(sum(tc(:, k)**2))
-            if (.not. (rnorm(k) < opts%conv_tol)) nunc = nunc + 1
+            if (.not. (rnorm(k) < merge(opts%conv_tol, buf_tol, k <= nr))) then
+               nunc = nunc + 1
+               if (k <= nr) nmain = nmain + 1
+            end if
          end do
          if (opts%verbose) then
             write (logline, "(a,i0,a,i0,a,i0,a,es9.2,a,f14.8)") "   tddft it ", res%iterations, ": space ", m, &
-               ", unconverged ", nunc, ", max resid ", maxval(rnorm), ", w1 ", wsub(1)
+               ", unconverged ", nunc, ", max resid ", maxval(rnorm(1:nr)), ", w1 ", wsub(1)
             call global_logger%info(trim(logline))
          end if
          if (.not. all(ieee_is_finite(rnorm))) then
@@ -568,20 +621,42 @@ contains
             exit
          end if
          if (nunc == 0) then
+            ! One probe before accepting: unit vectors of the next-lowest
+            ! differences, none of which the guesses held. A root whose
+            ! character the guesses (and so the corrections, which stay in
+            ! their span) never reached shows up as a Ritz value below the
+            ! converged ones and the iteration resumes. One more matvec pass.
+            if (.not. probed .and. nprobe > 0) then
+               probed = .true.
+               tp = 0.0_dp
+               do j = 1, nprobe
+                  tp(ord(nguess + j), j) = 1.0_dp
+               end do
+               if (m + nprobe > mmax) then
+                  vs(:, 1:nt) = xr
+                  avs(:, 1:nt) = axr
+                  m = nt
+               end if
+               call tddft_orthonormalise(nov, m, vs, nprobe, tp, nnew)
+               if (nnew > 0) then
+                  m = m + nnew
+                  cycle
+               end if
+            end if
             done = .true.
             exit
          end if
          if (res%iterations >= opts%max_iter) then
             call tddft_fail(res, err, ERROR_GENERIC, "trc_tddft: not converged in "//to_string(opts%max_iter)// &
-                            " iterations, residual "//to_string(maxval(rnorm), "es9.2")//" (conv_tol "// &
+                            " iterations, residual "//to_string(maxval(rnorm(1:nr)), "es9.2")//" (conv_tol "// &
                             to_string(opts%conv_tol, "es9.2")//")")
             exit
          end if
 
          ! Preconditioned corrections of the unconverged roots, packed first.
          ioff = 0
-         do k = 1, nr
-            if (rnorm(k) < opts%conv_tol) cycle
+         do k = 1, nt
+            if (rnorm(k) < merge(opts%conv_tol, buf_tol, k <= nr)) cycle
             ioff = ioff + 1
             do j = 1, nov
                den = dgn(j) - wsub(k)
@@ -592,15 +667,21 @@ contains
 
          ! Collapse onto the current Ritz vectors when there is no room.
          if (m + nunc > mmax) then
-            vs(:, 1:nr) = xr
-            avs(:, 1:nr) = axr
-            m = nr
+            vs(:, 1:nt) = xr
+            avs(:, 1:nt) = axr
+            m = nt
          end if
          call tddft_orthonormalise(nov, m, vs, nunc, tc, nnew)
+         if (nnew == 0 .and. nmain == 0) then
+            ! Only buffer vectors were still unconverged and their corrections
+            ! lie inside the space: nothing more to learn from them.
+            done = .true.
+            exit
+         end if
          if (nnew == 0) then
             call tddft_fail(res, err, ERROR_GENERIC, "trc_tddft: breakdown, no usable new trial vector while "// &
                             to_string(nunc)//" root(s) are unconverged (residual "// &
-                            to_string(maxval(rnorm), "es9.2")//")")
+                            to_string(maxval(rnorm(1:nr)), "es9.2")//")")
             exit
          end if
          m = m + nnew
@@ -615,20 +696,20 @@ contains
             res%space = m
             allocate (res%omega(nr), res%xamp(nocc, nvir, nr), res%tdip(3, nr), res%osc(nr), res%resid(nr))
             res%omega = wsub(1:nr)
-            res%resid = rnorm
+            res%resid = rnorm(1:nr)
             do k = 1, nr
                xr(:, k) = xr(:, k)/sqrt(sum(xr(:, k)**2))
                res%xamp(:, :, k) = reshape(xr(:, k), [nocc, nvir])
             end do
             call op%transition_dipoles(b, pl, la, nr, res%xamp, res%tdip)
             do k = 1, nr
-               res%osc(k) = PI_FACTOR_OSC*res%omega(k)*sum(res%tdip(:, k)**2)
+               res%osc(k) = OSC_PREFACTOR*res%omega(k)*sum(res%tdip(:, k)**2)
             end do
             res%converged = .true.
          end if
       end if
       call op%release()
-      deallocate (vs, avs, hsub, csub, wsub, xr, axr, tc, rnorm, dgn, dsort, ord)
+      deallocate (vs, avs, hsub, csub, wsub, xr, axr, tc, rnorm, dgn, dsort, tp, ord)
    end subroutine trc_tddft_solve_rks
 
 end module trc_tddft

@@ -3135,10 +3135,12 @@ def _gen_fxc_apply_many_one(probe_relname, ref_relname, xyzname, molname, basnam
 def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
     """One check_tddft.F90 case: pyscf's TDA (singlets) on an RHF/RKS
     reference at terco's OWN grid (the probe's points and weights, `non0tab`
-    cleared, as _gen_cpks_one), the lowest `nroots` excitation energies and
+    cleared, as _gen_cpks_one): the lowest `nroots` excitation energies and
     length-gauge oscillator strengths. The SCF is converged tightly
-    (converge_tight) and the TDA solved to a residual of 1e-6 (omega error ~ residual^2 / gap, 1e-8 is below pyscf's own noise floor for SVWN) so the comparison is not
-    eaten by reference noise. Written: E_SCF, OMEGA, OSC."""
+    (converge_tight). The TDA runs at a residual tolerance of 1e-6, which puts
+    omega within ~1e-12 of converged (error ~ residual^2 / gap); at 1e-8 pyscf
+    itself reported a root unconverged (water/SVWN, root 3 of 4).
+    Written: E_SCF, OMEGA, OSC."""
     PYSCF = {"hf": None, "svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
     r = BinReader(TEST / probe_relname)
     n, natm, no, nroots = (r.i8() for _ in range(4))
@@ -3206,8 +3208,10 @@ def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcna
 def gen_tddft():
     """check_tddft.F90: the lowest singlet TDA roots (trc_tddft.F90) of water
     (4 roots) and formamide (6 roots), 6-31G*, for HF, SVWN, PBE and B3LYP,
-    against pyscf's tdscf TDA at terco's own converged grid."""
-    for xyzname, molname, nroots in (("water.xyz", "water", 4), ("formamide.xyz", "formamide", 6)):
+    against pyscf's tdscf TDA at terco's own converged grid. Methane (Td, 5
+    roots): the cut falls inside degenerate multiplets."""
+    for xyzname, molname, nroots in (("water.xyz", "water", 4), ("formamide.xyz", "formamide", 6),
+                                     ("tops_ch4.xyz", "ch4", 5)):
         for funcname in ("hf", "svwn", "pbe", "b3lyp"):
             probe = f"tddft_{molname}_{funcname}_probe.bin"
             run_bin(f"check_tddft_{molname}_{funcname}",

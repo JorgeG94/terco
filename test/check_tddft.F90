@@ -17,15 +17,26 @@ module check_tddft_suite
    !!     corrupted (110% of the functional's, or 0.1 for a pure functional)
    !!     moves omega past the pyscf tolerance, so the comparison in 1 can
    !!     fail. Skipped for Hartree-Fock, which has no weight to corrupt;
-   !!  5. refusals (triplet, RPA, UHF, meta-GGA, VV10, range-separated and
+   !!  5. every smaller nroots = 1..N-1 returns the first nroots reference roots
+   !!     (a Davidson that skips a root, as formamide HF with 2 roots once did,
+   !!     returns a clean-looking wrong set); for methane (Td) this cuts
+   !!     through degenerate triplets, whose individual oscillator strengths
+   !!     are arbitrary, so there omega is compared per root and f only as the
+   !!     sum over the first (complete) triplet;
+   !!  6. refusals (triplet, RPA, UHF, meta-GGA, VV10, range-separated and
    !!     double hybrids) and a solve that is not given enough iterations
    !!     reports an error rather than returning.
    !!
    !! The grid is terco's own (the SCF's), written with terco's numbers to the
    !! probe file for pyscf.
    !!
-   !! Tolerances: omega 1e-6 Eh and f 1e-5, the task's gates. The solver runs
-   !! at conv_tol 1e-7 and the reference SCF at conv_tol 1e-12 (|g| 1e-8).
+   !! Tolerances: omega 1e-6 Eh and f 1e-5. The two codes agree to 1e-9 (omega)
+   !! and 6e-8 (f) in every case measured, so the gates leave two to three
+   !! orders of margin for the platform and grid-sum differences, while a wrong
+   !! exchange or kernel weight moves omega by 1e-3 to 1e-1 (the negative
+   !! control). The solver runs at conv_tol 1e-7 (omega error ~ conv_tol^2/gap);
+   !! the reference SCFs at conv_tol 1e-12 with |g| < 1e-8 (measured 3e-10 to
+   !! 8e-9), so SCF noise is far below the gates.
    !!
    !! Arguments: xyz basis.json molname basname funcname nroots probe.bin.
    !!
@@ -90,6 +101,7 @@ contains
                   new_unittest("residual of a fresh matvec below conv_tol", test_residual), &
                   new_unittest("amplitudes orthonormal across roots", test_orthonormal), &
                   new_unittest("negative control: corrupted exchange weight fails the comparison", test_control), &
+                  new_unittest("every nroots = 1..N-1 gives the first roots of the reference", test_sweep), &
                   new_unittest("a tiny max_space (repeated collapse) gives the same roots", test_collapse), &
                   new_unittest("refusals and non-convergence are errors", test_refusals), &
                   new_unittest("release", test_release) &
@@ -213,10 +225,63 @@ contains
                               to_string(fx%t_solve, "f8.2")//" s; omega(1) "//to_string(fx%td%omega(1), "f12.8"))
       call check(error, dom < TOL_OMEGA, "omega vs pyscf, max|diff| = "//to_string(dom, "es10.2"))
       if (allocated(error)) return
+      if (degenerate_molecule()) then
+         ! A degenerate triplet's individual f depend on the arbitrary rotation
+         ! inside it; the triplet's sum does not.
+         dosc = abs(sum(fx%td%osc(1:3)) - sum(osc_ref(1:3)))
+      end if
       call check(error, dosc < TOL_OSC, "oscillator strength vs pyscf, max|diff| = "//to_string(dosc, "es10.2"))
       if (allocated(error)) return
       call check(error, maxval(fx%td%osc) > 1.0e-4_dp .or. nr < 1, "no root has a measurable oscillator strength")
    end subroutine test_vs_pyscf
+
+   logical function degenerate_molecule()
+      degenerate_molecule = trim(molname_arg) == 'ch4'
+   end function degenerate_molecule
+
+   subroutine test_sweep(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_tddft_options_t) :: o
+      type(trc_tddft_result_t) :: td
+      type(error_t) :: err
+      real(dp), allocatable :: om_ref(:), osc_ref(:)
+      real(dp) :: e_ref, worst, d
+      integer :: u, nr, k
+      character(len=256) :: refname
+
+      call fixture_build(error)
+      if (allocated(error)) return
+      nr = nroots_arg
+      ! Formamide's Kohn-Sham solves take tens of seconds each; its Hartree-Fock
+      ! sweep (the case that exposed the skipped root) is the one that runs.
+      if (fx%dft .and. fx%nocc > 6) then
+         call global_logger%info("tddft: nroots sweep skipped for "//trim(molname_arg)//"/"//trim(funcname_arg)// &
+                                 " (cost)")
+         return
+      end if
+      refname = 'tddft_'//trim(molname_arg)//'_'//trim(basname_arg)//'_'//trim(funcname_arg)//'.ref'
+      call ref_require(trim(refname), u)
+      allocate (om_ref(nr), osc_ref(nr))
+      call ref_read_real(u, 'E_SCF', e_ref)
+      call ref_read_vector(u, 'OMEGA', nr, om_ref)
+      call ref_read_vector(u, 'OSC', nr, osc_ref)
+      call ref_close(u)
+      worst = 0.0_dp
+      do k = 1, nr - 1
+         o = fx%opts
+         o%nroots = k
+         call solve(o, td, err)
+         call check(error, .not. err%has_error(), "nroots = "//to_string(k)//" failed: "//err%get_message())
+         if (allocated(error)) return
+         d = maxval(abs(td%omega - om_ref(1:k)))
+         worst = max(worst, d)
+         call check(error, d < TOL_OMEGA, "nroots = "//to_string(k)//" does not return the first "//to_string(k)// &
+                    " reference roots, max|d omega| = "//to_string(d, "es10.2"))
+         if (allocated(error)) return
+      end do
+      call global_logger%info("tddft "//trim(molname_arg)//"/"//trim(funcname_arg)//": nroots sweep 1.."// &
+                              to_string(nr - 1)//", worst max|d omega| "//to_string(worst, "es10.2"))
+   end subroutine test_sweep
 
    subroutine test_residual(error)
       type(error_type), allocatable, intent(out) :: error
@@ -393,6 +458,15 @@ contains
       call check(error, err%has_error() .and. .not. td%converged, "tda=.false. must be an error")
       if (allocated(error)) return
       call check(error, index(err%get_message(), "Tamm-Dancoff") > 0, "refusal message: "//err%get_message())
+      if (allocated(error)) return
+
+      ! More roots than occupied-virtual pairs.
+      o = fx%opts
+      o%nroots = fx%nocc*(size(fx%scf%eps, 1) - fx%nocc) + 1
+      call solve(o, td, err)
+      call check(error, err%has_error() .and. .not. td%converged, "nroots > nocc*nvir must be an error")
+      if (allocated(error)) return
+      call check(error, index(err%get_message(), "exceeds") > 0, "nroots message: "//err%get_message())
       if (allocated(error)) return
 
       ! One iteration cannot converge: the failure must be reported.
