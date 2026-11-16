@@ -1107,6 +1107,64 @@ def gen_erf_fock_g(case, xyz, json_rel):
     dump.unlink()
 
 
+def gen_fock_nosym_many(case, xyz, json_rel):
+    """J and K of three NON-SYMMETRIC densities against pyscf's
+    scf.hf.get_jk(mol, dm, hermi=0), for check_fock_nosym_many.F90 (the
+    TDDFT matvec's batched eri%fock_nosym_many). The densities are the
+    closed form in that program's nonsym_densities, so terco's own output
+    never enters the reference. pyscf's hermi=0 keeps the antisymmetric part
+    of K, which is the part this entry point exists for."""
+    dump = TEST / f"fock_nosym_many_probe_{case}.bin"
+    run_bin("check_fock_nosym_many", [xyz, json_rel, dump.name, case])
+    if not dump.exists():
+        raise RuntimeError(f"gen_fock_nosym_many {case}: the binary wrote no dump")
+    r = BinReader(dump)
+    nat, nao = r.i8(), r.i8()
+    at_z = r.i8(nat)
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    nd = 3
+    d_terco = r.mat3(nao, nao, nd)
+    s_terco = r.mat(nao)
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_fock_nosym_many {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+    s_pyscf = mol.intor('int1e_ovlp')
+    n, s_err = ao_norm_from_overlap(s_terco_p, s_pyscf)
+    if s_err >= 1e-9:
+        raise RuntimeError(f"gen_fock_nosym_many {case}: overlap check failed, {s_err:.3e}")
+
+    j_all = np.zeros((nao, nao, nd))
+    k_all = np.zeros((nao, nao, nd))
+    for i in range(nd):
+        d_pyscf = n[:, None] * d_terco[:, :, i][np.ix_(inv_perm, inv_perm)] * n[None, :]
+        vj, vk = scf.hf.get_jk(mol, d_pyscf, hermi=0)
+        j_all[:, :, i] = (vj * n[:, None] * n[None, :])[np.ix_(perm, perm)]
+        k_all[:, :, i] = (vk * n[:, None] * n[None, :])[np.ix_(perm, perm)]
+
+    w = RefWriter(f"fock_nosym_many_{case}.ref")
+    w.header("check_fock_nosym_many_" + case,
+             [ROOT / "test" / "check_fock_nosym_many.F90", TEST / json_rel, TEST / xyz])
+    w.int_("NAT", nat)
+    w.int_("NAO", nao)
+    w.matrix("S", s_terco)
+    w.matrix3("J", j_all)
+    w.matrix3("K", k_all)
+    w.end()
+    w.write()
+    asym = max(np.abs(k_all[:, :, i] - k_all[:, :, i].T).max() for i in range(nd))
+    print(f"  fock_nosym_many {case}: max|K - K^T| {asym:.3e} (K must carry an antisymmetric part)")
+    dump.unlink()
+
+
 def gen_rsh_g(case, xyz):
     """check_rsh_g_vs_pyscf.F90's cases: a range-separated hybrid SCF on
     cc-pVQZ (g on the heavy atom), spherical as pyscf runs it, converged by
@@ -6598,6 +6656,8 @@ CASES = {
     "erf_fock_water_631gs": lambda: gen_erf_fock("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "erf_fock_water_ccpvdz": lambda: gen_erf_fock("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json"),
     "erf_fock_formamide_ccpvdz": lambda: gen_erf_fock("formamide_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json"),
+    "fock_nosym_many_water_631gs": lambda: gen_fock_nosym_many(
+        "water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "erf_fock_water_ccpvqz": lambda: gen_erf_fock_g("water_ccpvqz", "water.xyz",
                                                     "basis_sets/cc-pvqz-pyscf17.json"),
     "rsh_g_water_wb97x": lambda: gen_rsh_g("water_wb97x", "water.xyz"),

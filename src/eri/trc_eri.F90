@@ -243,6 +243,7 @@ module trc_eri
       procedure :: fock      => eri_fock
       procedure :: fock_many  => eri_fock_many
       procedure :: fock_nosym => eri_fock_nosym
+      procedure :: fock_nosym_many => eri_fock_nosym_many
       procedure :: fock_resident => eri_fock_resident
       procedure :: fock_resident_many => eri_fock_resident_many
       procedure :: fock_resident_lent => eri_fock_resident_lent
@@ -1495,22 +1496,16 @@ contains
    subroutine eri_fock_nosym(this, b, dmat, gmat, k_scale, j_scale, &
                              density_screen, omega)
       !!
-      !! Largest |D| in each shell-pair block, for the in-kernel density screen.
-      !!
-      !! Over a BATCH the bound is the maximum across every density, so all of them
-      !! see exactly the same quartets. That is deliberate and matches mqc: a batch
-      !! then gives bit-comparable results to the same densities passed one at a
-      !! time, which is what makes the single-density wrapper safe. Screening each
-      !! set on its own bound would be tighter and would make the batch disagree
-      !! with the loop.
-      !!
-      !!
       !! J - K/2 for a density that is NOT symmetric.
       !!
       !! Routes through the enumerated kernel, which reads D_mn and D_nm as
       !! distinct and writes J and K separately, so no fold is applied and the
       !! antisymmetric part of K survives. This is what the coupled-perturbed
       !! Hessian needs; mqc calls it `build_fock_direct_nosym`.
+      !!
+      !! With density_screen the bound is symmetrised (see `fock_nosym_many`),
+      !! because the kernel reads both D(i,j) and D(j,i); an earlier one-orientation
+      !! bound could drop a quartet whose transposed block is the large one.
       !!
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
@@ -1532,42 +1527,89 @@ contains
       !! iteration cannot converge. False recovers the plain Schwarz screen,
       !! which depends on the basis alone and leaves the operator fixed.
 
+      call this%fock_nosym_many(b, 1, dmat, gmat, k_scale=k_scale, j_scale=j_scale, &
+                                density_screen=screen_on(density_screen), omega=omega)
+   end subroutine eri_fock_nosym
+
+   subroutine eri_fock_nosym_many(this, b, ndens, dmats, gmats, k_scale, j_scale, &
+                                  density_screen, omega)
+      !! eri_fock_nosym for `ndens` densities in ONE pass over the integrals:
+      !! gmats(:, :, d) = j_scale J[D_d] - k_scale K[D_d]/2, every quartet
+      !! evaluated once and digested into each density's own J and K by the
+      !! enumerated kernel (the bin kernels' `ndens`). No density need be
+      !! symmetric, and the antisymmetric part of each K survives. This is the
+      !! matvec of a TDDFT (TDA/RPA) Davidson solve, whose transition
+      !! densities are non-symmetric and come many per iteration.
+      !!
+      !! Host arrays in and out, (nao, nao, ndens) as `fock_resident_many_lent`
+      !! has them. Like `fock_nosym` it has no MD route: a basis with g
+      !! functions stops.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: ndens
+      real(dp), intent(in)  :: dmats(this%nao, this%nao, ndens)
+      real(dp), intent(out) :: gmats(this%nao, this%nao, ndens)
+      real(dp), intent(in), optional :: k_scale, j_scale
+      real(dp), intent(in), optional :: omega
+      !! Range-separation parameter, bohr^-1; see eri%fock's omega.
+      logical, intent(in), optional :: density_screen
+      !! Weight the Schwarz bound by the density before screening. Default
+      !! FALSE, unlike `fock_nosym`: the callers of this entry point are
+      !! response solves, whose trial densities shrink as the solve
+      !! converges, and a screen keyed on them makes the operator change
+      !! from one matvec to the next (see `fock_nosym`). True is for a
+      !! density that is not a solver's trial vector.
+      !!
+      !! Over a batch the bound is the maximum across the densities and
+      !! across both orientations of each shell block (a non-symmetric
+      !! density's block (i,j) and (j,i) differ and the enumerated digestion
+      !! reads both), so every density sees at least the quartets it would
+      !! alone.
+
       real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
-      integer :: n, nw, i, j
+      integer :: n, nw, i, j, d
       real(dp) :: jfac, kfac, ow
+      logical :: screen
       type(trc_bin_launch_t) :: launch
       if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       jfac = 1.0_dp
       kfac = 1.0_dp
       ow = 0.0_dp
+      screen = .false.
       if (present(j_scale)) jfac = j_scale
       if (present(k_scale)) kfac = k_scale
       if (present(omega)) ow = omega
+      if (present(density_screen)) screen = density_screen
       if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
 
       n = this%nao
       nw = this%nao_w
-      allocate (jmat(1, nw, nw), kmat(1, nw, nw), dwork(1, nw, nw))
+      allocate (jmat(ndens, nw, nw), kmat(ndens, nw, nw), dwork(ndens, nw, nw))
       allocate (dp_w(nw, nw), gp_w(nw, nw))
-      if (this%dec%active) then
-         call decontract_expand_host(this%dec, dmat, dp_w)
-      else
-         dp_w = dmat
-      end if
-      dwork(1, :, :) = dp_w
+      ! Each density into the integrals' basis, in the kernel's layout (density
+      ! index fastest).
+      do d = 1, ndens
+         if (this%dec%active) then
+            call decontract_expand_host(this%dec, dmats(:, :, d), dp_w)
+         else
+            dp_w = dmats(:, :, d)
+         end if
+         dwork(d, :, :) = dp_w
+      end do
       jmat = 0.0_dp
       kmat = 0.0_dp
-      if (screen_on(density_screen)) then
-         call density_blocks(this, dwork, 1)
+      if (screen) then
+         call density_blocks(this, dwork, ndens)
+         this%dsh = max(this%dsh, transpose(this%dsh))
       else
          this%dsh = 1.0_dp
       end if
 
       !$acc enter data copyin(dwork, jmat, kmat)
       !$acc update device(this%dsh)
-      launch = bin_launch(this, 1, jfac, kfac, ow)
+      launch = bin_launch(this, ndens, jfac, kfac, ow)
       launch%nosym = .true.
       ! The non-symmetric kernel reads the primitive pairs through the bins.
       call complete_pairs(this)
@@ -1586,24 +1628,26 @@ contains
       !$acc exit data delete(dwork, jmat, kmat)
 
       ! J and K come out in full and unfolded, so this is the definition.
-      do j = 1, nw
-         do i = 1, nw
-            gp_w(i, j) = jfac*jmat(1, i, j) - 0.5_dp*kfac*kmat(1, i, j)
-         end do
-      end do
-      if (this%dec%active) then
-         call decontract_fold_host(this%dec, gp_w, gmat)
-      else
-         do j = 1, n
-            do i = 1, n
-               gmat(i, j) = gp_w(i, j)
+      do d = 1, ndens
+         do j = 1, nw
+            do i = 1, nw
+               gp_w(i, j) = jfac*jmat(d, i, j) - 0.5_dp*kfac*kmat(d, i, j)
             end do
          end do
-      end if
-      if (this%distributed) call sum_ranks(this, gmat, n*n)
+         if (this%dec%active) then
+            call decontract_fold_host(this%dec, gp_w, gmats(:, :, d))
+         else
+            do j = 1, n
+               do i = 1, n
+                  gmats(i, j, d) = gp_w(i, j)
+               end do
+            end do
+         end if
+      end do
+      if (this%distributed) call sum_ranks(this, gmats, n*n*ndens)
 
       deallocate (jmat, kmat, dwork, dp_w, gp_w)
-   end subroutine eri_fock_nosym
+   end subroutine eri_fock_nosym_many
 
    subroutine eri_fock_resident(this, b, dmat, gmat, opts)
       !!
