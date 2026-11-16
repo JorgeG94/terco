@@ -115,8 +115,9 @@ first.
 ## 4. Size
 
 Aim for procedures that fit on a screen or two. These are hand-written code
-numbers, measured on `main`: 744 procedures, 66 over 100 lines, 18 over 200,
-7 over 300, 1 over 500 (`trc_scf_run`, 560 lines).
+numbers, measured with `procedure_length` of `tools/archcheck.py` (code
+lines, initial declarations excluded; exempt files skipped): 2036 procedures,
+48 over 100 lines, 1 over 200, none over 300.
 
 | Size | Meaning |
 |---|---|
