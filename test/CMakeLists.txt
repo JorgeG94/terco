@@ -829,6 +829,18 @@ set_tests_properties(
 set_tests_properties(terco/check_rys_grad_fd_ccpvtz PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
+# eri%gradient_pairs (one gradient per column from a pool of densities and a
+# pair table, one sweep over the integral derivatives) against eri%gradient,
+# split densities, single-column calls and, for an antisymmetric density,
+# finite differences of Tr(A K[A]) built from eri%fock_nosym. water/6-31G*.
+#
+terco_add_check(check_grad_pairs check_grad_pairs.F90 NEEDS_BASIS
+                ARGS basis_sets/6-31gs.json)
+target_link_libraries(check_grad_pairs PRIVATE test-drive::test-drive)
+set_tests_properties(terco/check_grad_pairs PROPERTIES
+  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=none")
+
+#
 # eri%gradient's long-range (erf(omega*r12)/r12) exchange term alone
 # against a central difference of E_K^lr(D) -- the omega > 0 analogue of
 # check_rys_grad_fd, RHF only (see check_lr_exchange_grad_fd.F90's own

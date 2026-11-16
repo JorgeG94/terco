@@ -1593,6 +1593,176 @@ def _thread_range_separation(text):
                         _RANGE_SEP_BLOCK + "                  pref = pref*sqrt(theta)\n")
 
 
+#: Columns one pair-table sweep carries. The pair kernel keeps gam(nv, NCB)
+#: and acc(12, NCB) per thread, so this bounds its private memory; the host
+#: driver runs another sweep per further block of NCB columns.
+PAIRS_NCB = 4
+
+
+def pairs_item_text(tag, item, dims):
+    """The PAIR-TABLE item routine rysgi{tag}_pairs and its driver
+    rysg{tag}_pairs_compact, rewritten from the per-quartet array-form
+    `rysgi{tag}_compact` text `item` (everything from its header on).
+
+    Same decode, screens, primitive loops and derivative build; what changes
+    is Gamma and where it goes. Column c owns the pairs pstart(c) ..
+    pstart(c+1)-1 of a table (pl, pr, pj, pk): pair p adds
+        8 wq [ pj (Dl_ab Dr_cd + Dr_ab Dl_cd)
+             - pk (Dl_ac Dr_bd + Dr_ac Dl_bd + Dl_ad Dr_bc + Dr_ad Dl_bc) ]
+    to gam(., c). The host folds everything else into pj and pk (the
+    Coulomb/exchange weights, the factor for counting both orderings of a
+    cross pair, and the sign an antisymmetric pair's exchange takes), so one
+    kernel serves symmetric and antisymmetric densities alike. The twelve
+    running sums become acc(12, ncb) and the tail adds column c into
+    gp(:, :, slot, c): every column rides the SAME integral derivatives.
+    """
+    d0, d1, d2, d3 = dims
+    nv = d0*d1*d2*d3
+
+    def sub1(text, old, new):
+        assert text.count(old) == 1, old
+        return text.replace(old, new, 1)
+
+    i_item = item.index(f"   pure subroutine rysgi{tag}_compact(")
+    t = item[i_item:]
+    t = t.replace(f"rysgi{tag}_compact", f"rysgi{tag}_pairs")
+    t = sub1(t, "ndens, dmat, npriv, gp, slot)",
+             "npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp, slot)")
+    t = sub1(t, """      integer,  intent(in)    :: ndens
+      real(dp), intent(in)    :: dmat(ndens, nao, nao)
+      integer,  intent(in)    :: npriv, slot
+      real(dp), intent(inout) :: gp(3, natm, npriv)
+""", f"""      integer,  intent(in)    :: npool, ncb
+      real(dp), intent(in)    :: dmat(npool, nao, nao)
+      integer,  intent(in)    :: pstart(ncb + 1), pl(*), pr(*)
+      real(dp), intent(in)    :: pj(*), pk(*)
+      !! The column pair table (see pairs_item_text in gen_rys_grad.py).
+      integer,  intent(in)    :: npriv, slot
+      real(dp), intent(inout) :: gp(3, natm, npriv, ncb)
+""")
+    t = sub1(t, "      real(dp) :: vax, vay, vaz, vbx, vby, vbz\n"
+                "      real(dp) :: vcx, vcy, vcz, vdx, vdy, vdz\n",
+             f"      real(dp) :: acc(12, {PAIRS_NCB}), gsum\n"
+             "      integer  :: col, ip, jl, jr\n")
+    for dl in (f"      real(dp) :: dab({d0*d1}), dcd({d2*d3})\n",
+               f"      real(dp) :: dac(2, {d0*d2}), dad(2, {d0*d3})\n",
+               f"      real(dp) :: dbc(2, {d1*d2}), dbd(2, {d1*d3})\n"):
+        t = sub1(t, dl, "")
+    t = sub1(t, f"      real(dp) :: gam({nv})\n", f"      real(dp) :: gam({nv}, {PAIRS_NCB})\n")
+    # Gamma: from the kfac_eff line through the end of the gam fill.
+    a = t.index("         kfac_eff = merge(")
+    b = t.index("         vax = 0.0_dp; vay = 0.0_dp; vaz = 0.0_dp\n")
+    e = t.index("         vdx = 0.0_dp; vdy = 0.0_dp; vdz = 0.0_dp\n")
+    e = t.index("\n", e) + 1
+    def dm(l, mu, x, nu, y):
+        return f"dmat({l}, {mu} + {x}, {nu} + {y})"
+    gam = f"""         do col = 1, ncb
+            idx = 0
+            do dd2 = 0, {d3 - 1}
+               do cc = 0, {d2 - 1}
+                  do bb = 0, {d1 - 1}
+                     do aa = 0, {d0 - 1}
+                        idx = idx + 1
+                        gsum = 0.0_dp
+                        do ip = pstart(col), pstart(col + 1) - 1
+                           jl = pl(ip); jr = pr(ip)
+                           gsum = gsum + pj(ip)*({dm('jl','mui','aa','nuj','bb')}*{dm('jr','lamk','cc','sigl','dd2')} &
+                                                 + {dm('jr','mui','aa','nuj','bb')}*{dm('jl','lamk','cc','sigl','dd2')}) &
+                                       - pk(ip)*({dm('jl','mui','aa','lamk','cc')}*{dm('jr','nuj','bb','sigl','dd2')} &
+                                                 + {dm('jr','mui','aa','lamk','cc')}*{dm('jl','nuj','bb','sigl','dd2')} &
+                                                 + {dm('jl','mui','aa','sigl','dd2')}*{dm('jr','nuj','bb','lamk','cc')} &
+                                                 + {dm('jr','mui','aa','sigl','dd2')}*{dm('jl','nuj','bb','lamk','cc')})
+                        end do
+                        gam(idx, col) = 8.0_dp*wq*gsum
+                     end do
+                  end do
+               end do
+            end do
+         end do
+
+         acc(:, 1:ncb) = 0.0_dp
+"""
+    t = t[:a] + gam + t[e:]
+    # Accumulation.
+    acc_old = ("                                 vax = vax + fix*pyz*gam(idx); vay = vay + fiy*pxz*gam(idx); vaz = vaz + fiz*pxy*gam(idx)\n"
+               "                                 vbx = vbx + fjx*pyz*gam(idx); vby = vby + fjy*pxz*gam(idx); vbz = vbz + fjz*pxy*gam(idx)\n"
+               "                                 vcx = vcx + fkx*pyz*gam(idx); vcy = vcy + fky*pxz*gam(idx); vcz = vcz + fkz*pxy*gam(idx)\n"
+               "                                 vdx = vdx + flx*pyz*gam(idx); vdy = vdy + fly*pxz*gam(idx); vdz = vdz + flz*pxy*gam(idx)\n")
+    acc_new = ("                                 do col = 1, ncb\n"
+               "                                    acc(1, col) = acc(1, col) + fix*pyz*gam(idx, col)\n"
+               "                                    acc(2, col) = acc(2, col) + fiy*pxz*gam(idx, col)\n"
+               "                                    acc(3, col) = acc(3, col) + fiz*pxy*gam(idx, col)\n"
+               "                                    acc(4, col) = acc(4, col) + fjx*pyz*gam(idx, col)\n"
+               "                                    acc(5, col) = acc(5, col) + fjy*pxz*gam(idx, col)\n"
+               "                                    acc(6, col) = acc(6, col) + fjz*pxy*gam(idx, col)\n"
+               "                                    acc(7, col) = acc(7, col) + fkx*pyz*gam(idx, col)\n"
+               "                                    acc(8, col) = acc(8, col) + fky*pxz*gam(idx, col)\n"
+               "                                    acc(9, col) = acc(9, col) + fkz*pxy*gam(idx, col)\n"
+               "                                    acc(10, col) = acc(10, col) + flx*pyz*gam(idx, col)\n"
+               "                                    acc(11, col) = acc(11, col) + fly*pxz*gam(idx, col)\n"
+               "                                    acc(12, col) = acc(12, col) + flz*pxy*gam(idx, col)\n"
+               "                                 end do\n")
+    t = sub1(t, acc_old, acc_new)
+    # Tail.
+    a = t.index("         !$acc atomic update\n         gp(1, sh_at(si), slot)")
+    e = t.index(f"      end subroutine rysgi{tag}_pairs")
+    tail = "         do col = 1, ncb\n"
+    for k, sh in enumerate("ijkl"):
+        for ax in range(3):
+            tail += ("            !$acc atomic update\n"
+                     f"            gp({ax + 1}, sh_at(s{sh}), slot, col) = gp({ax + 1}, sh_at(s{sh}), slot, col) + acc({3*k + ax + 1}, col)\n")
+    tail += "         end do\n"
+    t = t[:a] + tail + t[e:]
+    assert "ndens" not in t.replace("npool", ""), "pair item still reads ndens"
+    t = t.replace("      real(dp) :: alpha_i, alpha_j, alpha_k, kfac_eff\n",
+                  "      real(dp) :: alpha_i, alpha_j, alpha_k\n")
+    slot_expr = ("int(mod(i - 1, int(npriv, int64))) + 1"
+                 if sum(int(c) for c in tag) <= 3 else "1")
+    drv = f"""
+   subroutine rysg{tag}_pairs_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
+                             npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &
+                             nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
+                             sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                             npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp)
+      !! The pair-table compact pass of class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}): the survivors of the
+      !! screen pass, each contracted against every column of the table at once.
+      integer(int64), intent(in) :: nout
+      integer,  intent(in)    :: out_seg(*), out_iab(*), out_icd(*)
+      integer,  intent(in)    :: nseg, npair, nbas, nao
+      integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
+      integer,  intent(in)    :: sSA(nseg), sSB(nseg)
+      logical,  intent(in)    :: sD(nseg)
+      real(dp), intent(in)    :: sW(nseg)
+      integer,  intent(in)    :: sp_i(npair), sp_j(npair)
+      real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac, omega
+      integer,  intent(in)    :: ao_off(nbas), sh_at(nbas), natm
+      integer,  intent(in)    :: nqp
+      real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp), qp_a(nqp)
+      real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
+      real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
+      integer,  intent(in)    :: sq_n(npair)
+      integer,  intent(in)    :: npool, ncb
+      real(dp), intent(in)    :: dmat(npool, nao, nao)
+      integer,  intent(in)    :: pstart(ncb + 1), pl(*), pr(*)
+      real(dp), intent(in)    :: pj(*), pk(*)
+      integer,  intent(in)    :: npriv
+      real(dp), intent(inout) :: gp(3, natm, npriv, ncb)
+      integer(int64) :: i
+      do concurrent(i=1:nout)
+         call rysgi{tag}_pairs(out_seg(i), out_iab(i), out_icd(i), nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
+                                npair, sp_i, sp_j, sp_q, pcut, jfac, kfac, omega, nbas, nao, ao_off, sh_at, natm, &
+                                nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
+                                sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                                npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp, {slot_expr})
+      end do
+   end subroutine rysg{tag}_pairs_compact
+
+"""
+    return drv + t
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("class_tag", help="four digits, e.g. 1111 or 2222")
@@ -1622,6 +1792,13 @@ def main():
                     help="never a path under src/generated: regenerated at "
                          "configure time into the build directory")
     args = ap.parse_args()
+    run(args)
+
+
+def run(args, generic_only=False):
+    """Emit one class's kernel module. With `generic_only` return instead
+    (compact text, component tables) of the per-quartet ARRAY-form routine,
+    unrolled or chunked for nobody: the text `pairs_item_text` rewrites."""
     tag = args.class_tag
     la, lb, lc, ld = (int(c) for c in tag)
     ni, nk = la + lb, lc + ld
@@ -1633,7 +1810,7 @@ def main():
                           "committed root tables")
     dims = [len(co.components(l, args.order)) for l in (la, lb, lc, ld)]
     nv = dims[0]*dims[1]*dims[2]*dims[3]
-    unroll = nv <= _parse_unroll_max(args.unroll_max_comp)
+    unroll = nv <= _parse_unroll_max(args.unroll_max_comp) and not generic_only
 
     src_path = os.path.join(args.src_dir, f"trc_pc_k{tag}.F90")
     src = open(src_path).read()
@@ -2044,22 +2221,42 @@ contains
     else:
         chunked = tag in sel.split(",")
     rt_plan = GRAD_CHUNK_PLAN.get(tag) if args.rt_plan is None else _parse_rt_plan(args.rt_plan)
+    if generic_only:
+        chunked, rt_plan = False, None
     if rt_plan is not None:
         chunked = False
     inside = chunk_plan(comps, args.chunk_live_max) if chunked else None
     sc_text, rt_tabs = screen_and_compact_text(tag, head, middle, comps, inside, rt_plan)
+    if generic_only:
+        return sc_text, tabs
 
     # Emit the module prelude and the screen/compact pair only. The fused
     # rysg{tag}/rysgi{tag} in head + middle is just the text sc_text was
     # sliced from: nothing calls it, and compiling it would roughly double
     # each file's compile time for nothing.
+    # The pair-table kernel, from the array-form routine of its own run: the
+    # class's normal text may be unrolled or chunked, which the rewrite
+    # cannot start from.
+    gen_text, gen_tabs = run(args, generic_only=True)
+    pairs_text = pairs_item_text(tag, gen_text, dims)
     prelude = head[:head.index("\ncontains\n")]
+    prelude = prelude.replace(f"public :: rysg{tag}_screen, rysg{tag}_compact\n",
+                              f"public :: rysg{tag}_screen, rysg{tag}_compact, rysg{tag}_pairs_compact\n", 1)
+    assert "_pairs_compact" in prelude
+    rt_tabs += "".join(ln + "\n" for ln in gen_tabs.splitlines())
     # A class past --unroll-max-comp already declares every shell's cn
     # tables for its array form: add only the ones it lacks.
-    rt_tabs = "".join(ln + "\n" for ln in rt_tabs.splitlines()
-                      if ln.split("::")[1].split("(")[0].strip() + "(" not in prelude)
+    seen = set()
+    keep = []
+    for ln in rt_tabs.splitlines():
+        nm = ln.split("::")[1].split("(")[0].strip()
+        if nm + "(" in prelude or nm in seen:
+            continue
+        seen.add(nm)
+        keep.append(ln)
+    rt_tabs = "".join(ln + "\n" for ln in keep)
     prelude += "\n" + rt_tabs + "\ncontains\n"
-    out = prelude + sc_text + f"\nend module trc_pc_rysg{tag}\n"
+    out = prelude + sc_text + pairs_text + f"\nend module trc_pc_rysg{tag}\n"
     with open(args.output, "w") as fh:
         fh.write(out)
     print(f"  {args.output}: ({la}{lb}|{lc}{ld}), {nroots} roots, "

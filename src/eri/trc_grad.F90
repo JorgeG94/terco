@@ -27,14 +27,42 @@ module trc_grad
    !! against components up to 92), about 40x below a tight geometry
    !! optimisation's max-force criterion (1.5e-5).
    !!
-   use pic_types, only: dp, int64
+   use pic_types, only: dp, int32, int64
    use trc_bins, only: pair_bins_t, trc_bin_plan_t
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
    use trc_rys_grad_kernels, only: rysg_has_class, rysg_screen_dispatch, &
-                                   rysg_compact_dispatch
+                                   rysg_compact_dispatch, rysg_pairs_dispatch, RYSG_PAIRS_NCB
    implicit none
    private
-   public :: grad_bins
+   public :: grad_bins, trc_grad_pair_t, trc_grad_pairtab_t, RYSG_PAIRS_NCB
+
+   type :: trc_grad_pair_t
+      !! One separable contribution to a column's gradient: the derivative, at
+      !! fixed density, of  Tr(D_left (coulomb J - exchange K)[D_right]), with
+      !! J and K built from the integrals as they move. A cross pair
+      !! (left /= right) counts BOTH orderings, so it needs no mirror entry; a
+      !! pair with left == right counts once.
+      integer(int32) :: left = 0
+      !! Pool index of the left density.
+      integer(int32) :: right = 0
+      !! Pool index of the right density.
+      integer(int32) :: column = 0
+      !! Output column (1..ncol) the pair adds to.
+      real(dp) :: coulomb = 0.0_dp
+      !! Weight of the J term; the closed-shell energy 1/2 D.J[D] is 0.5.
+      real(dp) :: exchange = 0.0_dp
+      !! Weight of the K term; the closed-shell energy -1/4 D.K[D] is 0.25.
+   end type trc_grad_pair_t
+
+   type :: trc_grad_pairtab_t
+      !! The pair table one kernel sweep reads, in the kernels' own terms: the
+      !! columns of the sweep, each owning a run of pairs, with the weights
+      !! already folded (both orderings, antisymmetry). Built by
+      !! eri_gradient_pairs; `pstart` has ncb + 1 entries.
+      integer :: ncb = 0
+      integer, allocatable :: pstart(:), pl(:), pr(:)
+      real(dp), allocatable :: pj(:), pk(:)
+   end type trc_grad_pairtab_t
 
    integer, parameter :: GCLASS_RADIX = 11
    !! Same fixed radix as trc_rys_select's RYS_CLASS_RADIX -- duplicated as a
@@ -68,7 +96,7 @@ module trc_grad
 
 contains
 
-   subroutine grad_bins(b, pairs, quartets, launch, dsh, dmat, grad)
+   subroutine grad_bins(b, pairs, quartets, launch, dsh, dmat, grad, ncol, ptab)
       !!
       !! Walk admitted bin pairs on the host (same plan binkernel_fock_bins builds), sort
       !! by class, run `grad_classes` over the contiguous class runs. No
@@ -101,12 +129,18 @@ contains
       !! own.
       real(dp), intent(in)    :: dsh(pairs%nbas, pairs%nbas)
       real(dp), intent(in)    :: dmat(launch%ndens, launch%nao, launch%nao)
-      real(dp), intent(inout) :: grad(3, pairs%natm)
+      integer, intent(in) :: ncol
+      !! Gradient columns: 1 for eri%gradient, the table's `ncb` for a pair sweep.
+      real(dp), intent(inout) :: grad(3, pairs%natm, ncol)
+      type(trc_grad_pairtab_t), intent(in), optional :: ptab
+      !! Absent: the one-column RHF/UHF contraction of `dmat`. Present: each
+      !! of its columns contracted from the same integral derivatives, `dmat`
+      !! being the pool the table indexes.
 
       type(trc_bin_plan_t) :: plan
-      integer :: ga, gc, gs, natm
+      integer :: ga, gc, gs, gcol, natm
       real(dp) :: gsum
-      real(dp), allocatable :: gp(:, :, :)
+      real(dp), allocatable :: gp(:, :, :, :)
       !! The compact pass's lane-private gradient copies (GRAD_NPRIV).
       !! A local, not a component of trc_eri_t or an argument of
       !! grad_bins: nvfortran 26.5 has hung or ICE'd on both.
@@ -147,20 +181,26 @@ contains
 
       !$acc enter data copyin(plan%sA, plan%sNB, plan%sOA, plan%sOB, plan%sPA, plan%sPB, &
       !$acc                   plan%sSA, plan%sSB, plan%sD, plan%sW, plan%sOff)
-      allocate (gp(3, natm, GRAD_NPRIV))
+      allocate (gp(3, natm, GRAD_NPRIV, ncol))
       !$acc enter data create(gp)
-      do concurrent(gs=1:GRAD_NPRIV, ga=1:natm, gc=1:3)
-         gp(gc, ga, gs) = 0.0_dp
+      do concurrent(gcol=1:ncol, gs=1:GRAD_NPRIV, ga=1:natm, gc=1:3)
+         gp(gc, ga, gs, gcol) = 0.0_dp
       end do
-      call grad_classes(plan, b, pairs, quartets, launch, dsh, dmat, gp)
+      if (present(ptab)) then
+         !$acc enter data copyin(ptab%pstart, ptab%pl, ptab%pr, ptab%pj, ptab%pk)
+         call grad_classes(plan, b, pairs, quartets, launch, dsh, dmat, gp, ncol, ptab)
+         !$acc exit data delete(ptab%pstart, ptab%pl, ptab%pr, ptab%pj, ptab%pk)
+      else
+         call grad_classes(plan, b, pairs, quartets, launch, dsh, dmat, gp, ncol)
+      end if
       ! Sum the copies into grad, on the device (grad is already there:
       ! eri_gradient's enter data).
-      do concurrent(ga=1:natm, gc=1:3) local(gsum, gs)
+      do concurrent(gcol=1:ncol, ga=1:natm, gc=1:3) local(gsum, gs)
          gsum = 0.0_dp
          do gs = 1, GRAD_NPRIV
-            gsum = gsum + gp(gc, ga, gs)
+            gsum = gsum + gp(gc, ga, gs, gcol)
          end do
-         grad(gc, ga) = grad(gc, ga) + gsum
+         grad(gc, ga, gcol) = grad(gc, ga, gcol) + gsum
       end do
       !$acc exit data delete(gp)
       deallocate (gp)
@@ -169,7 +209,7 @@ contains
       call plan%release()
    end subroutine grad_bins
 
-   subroutine grad_classes(plan, b, pairs, quartets, launch, dsh, dmat, gp)
+   subroutine grad_classes(plan, b, pairs, quartets, launch, dsh, dmat, gp, ncol, ptab)
       !!
       !! ORDERED SURVIVOR COMPACTION glue, one class run [c0, c1] of the
       !! class-sorted plan at a time. Screens the run into a dense (seg, iab, icd) survivor list with
@@ -217,8 +257,12 @@ contains
       !! pass and stays behind TRC_KEPT_STATS.
       real(dp), intent(in)    :: dsh(pairs%nbas, pairs%nbas)
       real(dp), intent(in)    :: dmat(launch%ndens, launch%nao, launch%nao)
-      real(dp), intent(inout) :: gp(3, pairs%natm, GRAD_NPRIV)
-      !! The lane-private gradient copies grad_bins sums into grad.
+      integer, intent(in) :: ncol
+      real(dp), intent(inout) :: gp(3, pairs%natm, GRAD_NPRIV, ncol)
+      !! The lane-private gradient copies grad_bins sums into grad, one set per
+      !! column (a plain contraction has ncol = 1).
+      type(trc_grad_pairtab_t), intent(in), optional :: ptab
+      !! Present: run the pair-table kernels instead of the RHF/UHF ones.
 
       integer :: c0, c1, key, nseg, nseg_run, seg_lo, seg_hi, b0, b1
       integer, allocatable :: out_seg(:), out_iab(:), out_icd(:)
@@ -271,17 +315,32 @@ contains
                !$acc update host(ctr)
                nout = min(ctr(1), int(nmax, int64))
                launch%nkept = launch%nkept + nout  ! this rank's survivors (trc_eri_t%nkept)
-               call rysg_compact_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, plan%sA, plan%sNB, &
-                                          plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
-                                          plan%sD, plan%sW, &
-                                          b%npair, b%sp_i, b%sp_j, b%sp_q, launch%thresh*1.0e-3_dp*launch%pcut_scale, &
-                                          launch%jfac, launch%kfac, launch%omega, pairs%nbas, launch%nao, &
-                                          pairs%ao_off, pairs%sh_at, pairs%natm, &
-                                          quartets%nqp, quartets%z, quartets%c, quartets%a, &
-                                          quartets%px, quartets%py, quartets%pz, &
-                                          quartets%ax, quartets%ay, quartets%az, &
-                                          quartets%abx, quartets%aby, quartets%abz, quartets%n, &
-                                          launch%ndens, dmat, GRAD_NPRIV, gp)
+               if (present(ptab)) then
+                  call rysg_pairs_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, plan%sA, plan%sNB, &
+                                           plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
+                                           plan%sD, plan%sW, &
+                                           b%npair, b%sp_i, b%sp_j, b%sp_q, &
+                                           launch%thresh*1.0e-3_dp*launch%pcut_scale, launch%omega, &
+                                           pairs%nbas, launch%nao, pairs%ao_off, pairs%sh_at, pairs%natm, &
+                                           quartets%nqp, quartets%z, quartets%c, quartets%a, &
+                                           quartets%px, quartets%py, quartets%pz, &
+                                           quartets%ax, quartets%ay, quartets%az, &
+                                           quartets%abx, quartets%aby, quartets%abz, quartets%n, &
+                                           launch%ndens, dmat, ptab%ncb, ptab%pstart, ptab%pl, ptab%pr, &
+                                           ptab%pj, ptab%pk, GRAD_NPRIV, gp)
+               else
+                  call rysg_compact_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, plan%sA, plan%sNB, &
+                                             plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &
+                                             plan%sD, plan%sW, &
+                                             b%npair, b%sp_i, b%sp_j, b%sp_q, launch%thresh*1.0e-3_dp*launch%pcut_scale, &
+                                             launch%jfac, launch%kfac, launch%omega, pairs%nbas, launch%nao, &
+                                             pairs%ao_off, pairs%sh_at, pairs%natm, &
+                                             quartets%nqp, quartets%z, quartets%c, quartets%a, &
+                                             quartets%px, quartets%py, quartets%pz, &
+                                             quartets%ax, quartets%ay, quartets%az, &
+                                             quartets%abx, quartets%aby, quartets%abz, quartets%n, &
+                                             launch%ndens, dmat, GRAD_NPRIV, gp)
+               end if
                !$acc exit data delete(out_seg, out_iab, out_icd, ctr)
                deallocate (out_seg, out_iab, out_icd)
                w0 = w1 + 1

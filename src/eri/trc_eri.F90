@@ -33,7 +33,7 @@ module trc_eri
    use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets, bins_pair_image_source, &
                        bins_rep_weights, trc_bin_shells_t, trc_bin_symmetry_t
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
-   use trc_error, only: error_t
+   use trc_error, only: error_t, ERROR_VALIDATION
    use trc_sym_geom, only: trc_sym_geom_t
    use trc_sym_ao, only: trc_sym_ao_t, sym_ao_build
    use trc_sym_pairs, only: sym_pairs_shell_map, sym_pairs_symmetrize_q, sym_pairs_symmetrize_dsh, sym_pairs_wanted
@@ -44,7 +44,7 @@ module trc_eri
    use trc_parity, only: parity_choose_axis, parity_axperm, parity_ao_perm, parity_mode_env, &
                          PARITY_OFF, PARITY_FORCE_FRAME
    use trc_bin_tiles, only: bin_tiles_build
-   use trc_grad, only: grad_bins
+   use trc_grad, only: grad_bins, trc_grad_pair_t, trc_grad_pairtab_t, RYSG_PAIRS_NCB
    use trc_rys_grad_kernels, only: RYSG_LMAX
    use trc_mdj, only: trc_mdj_t
    use trc_mdg, only: trc_mdg_t, trc_mdg_scales_t
@@ -55,7 +55,7 @@ module trc_eri
                              decontract_expand_host, decontract_fold_host
    implicit none
    private
-   public :: trc_eri_t, eri_lmax_refusal, eri_grad_lmax_refusal, trc_fock_options_t
+   public :: trc_eri_t, eri_lmax_refusal, eri_grad_lmax_refusal, trc_fock_options_t, trc_grad_pair_t
    public :: eri_mdj_size_rule, TRC_J_ENGINE_AUTO, TRC_J_ENGINE_BINS, TRC_J_ENGINE_MDJ
 
    integer, parameter :: TRC_J_ENGINE_AUTO = 0
@@ -249,6 +249,7 @@ module trc_eri
       procedure :: fock_resident_many_lent => eri_fock_resident_many_lent
       procedure :: fock_work_size => eri_fock_work_size
       procedure :: gradient => eri_gradient
+      procedure :: gradient_pairs => eri_gradient_pairs
       procedure :: coulomb => eri_coulomb
       procedure :: release => eri_release
    end type trc_eri_t
@@ -1461,7 +1462,7 @@ contains
       !$acc enter data copyin(dwork) copyin(grad)
       !$acc update device(this%dsh)
       launch = bin_launch(this, ndens, jfac, kfac, ow, skel)
-      call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, grad)
+      call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, grad, 1)
       !$acc wait
       !$acc update self(grad)
       !$acc exit data delete(dwork, grad)
@@ -1476,6 +1477,194 @@ contains
 
       if (this%distributed) call sum_ranks(this, grad, 3*b%natm)
    end subroutine eri_gradient
+
+   subroutine eri_gradient_pairs(this, b, pool, pairs, ncol, grad, error, omega)
+      !!
+      !! One gradient PER COLUMN from one pass over the integral derivatives:
+      !! every density of `pool` goes through the same sweep, and column c of
+      !! `grad` is the sum over the pairs with `column == c` of
+      !!     d/dR |integrals  Tr( D_left (coulomb J - exchange K)[D_right] ),
+      !! the densities held fixed in the AO basis. This is what an
+      !! excited-state gradient needs: one column per root, the ground-state
+      !! and response densities in a shared pool. The kernels contract each
+      !! quartet's derivative integrals against every column in a block of
+      !! RYSG_PAIRS_NCB at once (more columns run further sweeps), so the
+      !! cost of the integrals is paid once per block, not once per column.
+      !!
+      !! A pair with left == right counts once; a cross pair counts BOTH
+      !! orderings, so give a cross pair once, never mirrored. The closed-shell
+      !! energy 1/2 D.J[D] - 1/4 D.K[D] is the pair (1, 1, 0.5, 0.25).
+      !! `eri%gradient` differentiates Tr(D (J - K/2)[D]), twice that energy,
+      !! so its column is the pair (1, 1, 1, 0.5); for UHF it is (Dtot, Dtot,
+      !! 1, 0), (Da, Da, 0, 1) and (Db, Db, 0, 1).
+      !!
+      !! Pool densities may be symmetric or antisymmetric (an X-Y response
+      !! density), told apart on the host. The Coulomb part of any pair with an
+      !! antisymmetric member vanishes identically and the exchange of a mixed
+      !! pair too; an antisymmetric-antisymmetric pair keeps its exchange with
+      !! the sign the transposes give it. A matrix that is neither is refused.
+      !!
+      !! Two-electron part only, same scope line as `eri_gradient`: the
+      !! caller adds the one-electron, overlap, nuclear-repulsion and XC
+      !! terms. No skeleton option and no hybrid scaling (fold k_scale into
+      !! `exchange`).
+      !!
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      real(dp), intent(in) :: pool(:, :, :)
+      !! (nao, nao, npool): the densities, in the caller's AO basis.
+      type(trc_grad_pair_t), intent(in) :: pairs(:)
+      integer, intent(in) :: ncol
+      !! Columns of `grad`.
+      real(dp), intent(out) :: grad(3, b%natm, ncol)
+      type(error_t), intent(out) :: error
+      !! Set (and `grad` left zero) on a bad index, weight, shape or density.
+      real(dp), intent(in), optional :: omega
+      !! Range-separation parameter, as in `eri_gradient`.
+
+      real(dp), allocatable :: dwork(:, :, :), gblk(:, :, :)
+      integer, allocatable :: sgn(:), cnt(:)
+      type(trc_grad_pairtab_t) :: ptab
+      type(trc_bin_launch_t) :: launch
+      real(dp) :: ow, scale, asym, sym, mult, sk
+      integer :: npool, np, ip, id, c0, nc, c, k, ncb
+      character(len=64) :: tmp
+
+      grad = 0.0_dp
+      npool = size(pool, 3)
+      np = size(pairs)
+      ow = 0.0_dp
+      if (present(omega)) ow = omega
+      if (.not. (ow >= 0.0_dp)) then
+         call error%set(ERROR_VALIDATION, "eri%gradient_pairs: omega < 0 or NaN is not implemented")
+         return
+      end if
+      if (ncol < 1) then
+         call error%set(ERROR_VALIDATION, "eri%gradient_pairs: ncol must be at least 1")
+         return
+      end if
+      if (size(pool, 1) /= this%nao .or. size(pool, 2) /= this%nao) then
+         call error%set(ERROR_VALIDATION, "eri%gradient_pairs: pool is not (nao, nao, npool)")
+         return
+      end if
+      if (this%needs_md) then
+         call error%set(ERROR_VALIDATION, "eri%gradient_pairs: g functions reach eri%fock only, for now")
+         return
+      end if
+      if (any(this%pairs%sh_at == 0)) then
+         call error%set(ERROR_VALIDATION, "eri%gradient_pairs: a shell centre matches no atom coordinate exactly")
+         return
+      end if
+      do ip = 1, np
+         if (pairs(ip)%left < 1 .or. pairs(ip)%left > npool .or. pairs(ip)%right < 1 .or. pairs(ip)%right > npool) then
+            write (tmp, "(i0)") ip
+            call error%set(ERROR_VALIDATION, "eri%gradient_pairs: pair "//trim(tmp)// &
+                           " names a density outside the pool")
+            return
+         end if
+         if (pairs(ip)%column < 1 .or. pairs(ip)%column > ncol) then
+            write (tmp, "(i0)") ip
+            call error%set(ERROR_VALIDATION, "eri%gradient_pairs: pair "//trim(tmp)//" names a column outside 1..ncol")
+            return
+         end if
+         if (.not. (abs(pairs(ip)%coulomb) <= huge(1.0_dp) .and. abs(pairs(ip)%exchange) <= huge(1.0_dp))) then
+            call error%set(ERROR_VALIDATION, "eri%gradient_pairs: a pair weight is not finite")
+            return
+         end if
+      end do
+
+      ! Symmetric (+1) or antisymmetric (-1), per pool density.
+      allocate (sgn(npool))
+      do id = 1, npool
+         scale = maxval(abs(pool(:, :, id)))
+         asym = maxval(abs(pool(:, :, id) - transpose(pool(:, :, id))))
+         sym = maxval(abs(pool(:, :, id) + transpose(pool(:, :, id))))
+         if (.not. (scale <= huge(1.0_dp))) then
+            call error%set(ERROR_VALIDATION, "eri%gradient_pairs: a pool density is not finite")
+            return
+         end if
+         if (asym <= 1.0e-9_dp*scale) then
+            sgn(id) = 1
+         else if (sym <= 1.0e-9_dp*scale) then
+            sgn(id) = -1
+         else
+            write (tmp, "(i0)") id
+            call error%set(ERROR_VALIDATION, "eri%gradient_pairs: pool density "//trim(tmp)// &
+                           " is neither symmetric nor antisymmetric")
+            return
+         end if
+      end do
+
+      call complete_pairs(this)
+
+      ! The working-basis pool, and the screening bound over all of it.
+      allocate (dwork(npool, this%nao_w, this%nao_w))
+      do id = 1, npool
+         if (this%dec%active) then
+            call decontract_expand_host(this%dec, pool(:, :, id), dwork(id, :, :))
+         else
+            dwork(id, :, :) = pool(:, :, id)
+         end if
+      end do
+      call density_blocks(this, dwork, npool)
+
+      allocate (cnt(ncol))
+      cnt = 0
+      do ip = 1, np
+         cnt(pairs(ip)%column) = cnt(pairs(ip)%column) + 1
+      end do
+
+      !$acc enter data copyin(dwork)
+      !$acc update device(this%dsh)
+      this%nwork = 0
+      this%nkept = 0
+      do c0 = 1, ncol, RYSG_PAIRS_NCB
+         nc = min(RYSG_PAIRS_NCB, ncol - c0 + 1)
+         ncb = sum(cnt(c0:c0 + nc - 1))
+         ptab%ncb = nc
+         if (allocated(ptab%pstart)) deallocate (ptab%pstart, ptab%pl, ptab%pr, ptab%pj, ptab%pk)
+         allocate (ptab%pstart(nc + 1), ptab%pl(max(1, ncb)), ptab%pr(max(1, ncb)), &
+                   ptab%pj(max(1, ncb)), ptab%pk(max(1, ncb)))
+         ptab%pl = 1
+         ptab%pr = 1
+         ptab%pj = 0.0_dp
+         ptab%pk = 0.0_dp
+         ptab%pstart(1) = 1
+         k = 0
+         do c = c0, c0 + nc - 1
+            do ip = 1, np
+               if (pairs(ip)%column /= c) cycle
+               ! Both orderings of a cross pair; the Coulomb part dies with
+               ! an antisymmetric member, the exchange part is (sl + sr)/2.
+               mult = 1.0_dp
+               if (pairs(ip)%left /= pairs(ip)%right) mult = 2.0_dp
+               sk = 0.5_dp*real(sgn(pairs(ip)%left) + sgn(pairs(ip)%right), dp)
+               k = k + 1
+               ptab%pl(k) = pairs(ip)%left
+               ptab%pr(k) = pairs(ip)%right
+               if (sgn(pairs(ip)%left) == 1 .and. sgn(pairs(ip)%right) == 1) ptab%pj(k) = 0.5_dp*pairs(ip)%coulomb*mult
+               ptab%pk(k) = 0.25_dp*pairs(ip)%exchange*mult*sk
+            end do
+            ptab%pstart(c - c0 + 2) = k + 1
+         end do
+
+         allocate (gblk(3, b%natm, nc))
+         gblk = 0.0_dp
+         !$acc enter data copyin(gblk)
+         launch = bin_launch(this, npool, 1.0_dp, 1.0_dp, ow, .false.)
+         call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, gblk, nc, ptab)
+         !$acc wait
+         !$acc update self(gblk)
+         !$acc exit data delete(gblk)
+         this%nwork = this%nwork + launch%nwork
+         this%nkept = this%nkept + launch%nkept
+         if (this%distributed) call sum_ranks(this, gblk, 3*b%natm*nc)
+         grad(:, :, c0:c0 + nc - 1) = gblk
+         deallocate (gblk)
+      end do
+      !$acc exit data delete(dwork)
+      deallocate (dwork, sgn, cnt)
+   end subroutine eri_gradient_pairs
 
    subroutine sum_ranks(this, g, n)
       !! Sum a matrix over the ranks, in place, every rank receiving the total.
