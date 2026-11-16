@@ -58,8 +58,8 @@
 ! MEMORY NOT IN THE BUDGET. `budget_bytes` counts the W tile only. The three repacks (tt2, t2r: 2 no^2 nv^2 doubles,
 ! oop: no^3 nv doubles) and the row sums are on top of it, and so is the dense (ia|bc), no nv^3 doubles, which `ints`
 ! no longer holds: `rccsd_triples_dev_run_scratch` builds a device copy from the factors (`ints%fill_ovvv`, one gemm)
-! on entry and frees it on exit (2.98 GB at no = 20, nv = 265). A device allocation failure in `enter data create` is not a
-! refusal but an abort, as everywhere else in the code base.
+! on entry and frees it on exit (2.98 GB at no = 20, nv = 265). `init` and that copy ask trc_device_memory whether
+! their bytes fit before they map them, and refuse (status) when they do not.
 !
 ! INDEX RANGES. The W tile is indexed with 64-bit integers throughout (6 no^3 T can pass 2^31 for a large budget);
 ! the gemm dimensions are 32-bit and checked in `init` (no^2 nv, no nv^2 and the sizes of the repacked arrays,
@@ -73,6 +73,7 @@ module trc_rccsd_triples_dev
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_device_memory, only: device_memory_fits
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_rccsd_ints, only: trc_rccsd_ints_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t
@@ -197,6 +198,17 @@ contains
          this%nv = 0
          return
       end if
+      if (.not. device_memory_fits(this%status, "trc_rccsd_triples_dev: the (T) scratch (o "//to_string(ints%no)//", v "// &
+                            to_string(ints%nv)//", "//to_string(this%ncap)//" triples a tile)", &
+                            8_int64*(2_int64*no2*nv*nv + no3*nv + 6_int64*no3*this%ncap + no2*this%ncap + this%ncap) + &
+                            12_int64*this%ncap, hint="lower --cc-triples-budget (the tile) or use --cc-triples reference "// &
+                            "(the host)")) then
+         this%no = 0
+         this%nv = 0
+         this%ntotal = 0
+         this%ncap = 0
+         return
+      end if
       allocate (this%tt2(nv*no2*nv), stat=ierr)
       if (ierr == 0) allocate (this%t2r(no2*nv*nv), stat=ierr)
       if (ierr == 0) allocate (this%oop(no3*nv), stat=ierr)
@@ -313,6 +325,9 @@ contains
       end if
       call pack_inputs(ints, amps, ts)
       ! the dense (ia|bc) for this call only, from the factors on the device (module header); freed below
+      if (.not. device_memory_fits(status, "trc_rccsd_triples_dev: the dense (ia|bc) block (o "//to_string(ts%no)//", v "// &
+                            to_string(ts%nv)//")", 8_int64*ts%no*ts%nv*ts%nv*ts%nv, &
+                            hint="use --cc-triples ijk, which forms no dense block, or --cc-triples reference (the host)")) return
       allocate (ovvv(ts%no, ts%nv, ts%nv, ts%nv))
       !$acc enter data create(ovvv)
       call ints%fill_ovvv(ovvv, la)

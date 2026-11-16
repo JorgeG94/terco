@@ -138,6 +138,7 @@ module trc_rccsd_update
    use trc_step_table, only: step_table_t
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_device_memory, only: device_memory_fits
    implicit none
    private
 
@@ -201,6 +202,7 @@ contains
       logical :: only_ladder
 
       integer :: no, nv
+      type(error_t) :: refusal
 
       call this%release()
       call this%status%clear()
@@ -231,10 +233,17 @@ contains
       if (this%ls%status%has_error()) call fail(this, this%ls%status)
       if (this%status%has_error()) return
       call this%inter%init(no, nv)
+      if (this%inter%status%has_error()) call fail(this, this%inter%status)
+      if (this%status%has_error()) return
       this%no = no
       this%nv = nv
       this%stamp = ints%stamp
       if (only_ladder) return
+      if (.not. device_memory_fits(refusal, "trc_rccsd_update: the o^3 v packs (o "//to_string(no)//", v "//to_string(nv)//")", &
+                            24_int64*no*no*no*nv)) then
+         call fail(this, refusal)
+         return
+      end if
       allocate (this%lamp(no*no*no*nv), this%sm1(no*no*no*nv), this%sm2(no*no*no*nv))
       !$acc enter data create(this%lamp, this%sm1, this%sm2)
       call kernel_pack_lamp(no, nv, this%scr%lam, this%lamp)
@@ -270,6 +279,10 @@ contains
          return
       end if
       call this%xf%init(this%no, this%nv, fits)
+      if (.not. fits .and. this%xf%status%has_error()) then
+         call this%status%set(ERROR_VALIDATION, this%xf%status%get_message())
+         return
+      end if
       if (.not. fits) then
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_update: the transfer staging array does not fit "// &
                               "(o v (o v + 1) / 2 above 2^31-1 elements) or could not be allocated")
