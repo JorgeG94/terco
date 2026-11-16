@@ -32,7 +32,7 @@ Fortran API, a `bind(c)` ABI and a `terco` CLI. See `README.md`.
 | `scripts/` | the kernel generators (`gen_*.py`), see `docs/GENERATORS.md` |
 | `tools/` | OpenMP converters, `pic_api.py`, XC registry and translators, lint helpers |
 | `src/cli/`, `app/` | CLI support modules and build rules; `app/main.F90` is the entry point |
-| `test/` | every check program, `pyscf_refs/` (frozen anchors), `goldens/` (terco's own numbers) |
+| `test/` | every check (test-drive suites), `pyscf_refs/` (frozen anchors), `goldens/` (terco's own numbers); `standalone/` holds the plain programs (benchmarks, generators, demos, MPI) |
 
 ## Build and test
 
@@ -143,8 +143,8 @@ before any non-trivial change. The rules that most often break builds:
   (`cmake/modules/Findtest-drive.cmake`): a module whose `collect_*` routine
   returns `new_unittest` entries, each a `check` with a message, run by
   `run_testsuite`; link it with `test-drive::test-drive`. `test/check_si.F90`
-  is the pattern. Most existing checks are still plain programs; port one
-  when you touch it.
+  is the pattern. Every `test/*.F90` program is a suite; what cannot be one
+  (benchmarks, generators, demos, MPI programs) lives in `test/standalone/`.
 - **Two tiers** (`test/pyscf_refs/README.md`):
   - *Anchors*: `test/pyscf_refs/*.ref`, written offline by
     `generate.py` (pyscf never runs in CI). Each `.ref` carries a

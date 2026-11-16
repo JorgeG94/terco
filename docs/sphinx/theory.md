@@ -436,7 +436,7 @@ routine does this; an explicit `reference` or `tiled` is refused over several ra
 it, and is added to `t2` after the rings in every run (one rank included), so the
 RI-CCSD energy over several ranks agrees with the one-rank value to rounding, not
 bitwise, and the iteration count is the same. The multi-rank SCF in front of it
-differs from a one-rank SCF at about 1e-14 Eh. `test/rccsd_mpi.F90` bounds the
+differs from a one-rank SCF at about 1e-14 Eh. `test/standalone/rccsd_mpi.F90` bounds the
 differences at 1e-14 for `E_CCSD`, every amplitude and `E(T)`; measured on water and
 hydrogen peroxide, host and GPU builds, 2 to 4 ranks: 1.7e-16 at most for `E_CCSD`,
 4.2e-17 for the amplitudes, 3.5e-18 for `E(T)`.
