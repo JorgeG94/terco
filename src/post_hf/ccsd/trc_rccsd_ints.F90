@@ -78,6 +78,8 @@ module trc_rccsd_ints
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_sph, only: sph_metric_cart_to_sph, sph_mo_to_cart, sph_aux3c_to_sph
    use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_device_memory, only: device_memory_fits
+   use pic_strings, only: to_string
    implicit none
    private
 
@@ -172,6 +174,60 @@ contains
       ints%seconds = 0.0_dp
       ints%flops = 0_int64
    end subroutine rccsd_ints_release
+
+   function build_peak_bytes(b, aux, nblk, no, nv) result(peak)
+      !! Device bytes the largest stage of `build` holds at once: the orbitals, then with the fitted factors (b_oo,
+      !! b_ov, b_vv) the metric (jm, and jmc and the fold's intermediate while the Cartesian one is
+      !! transformed), then jm with the batch of 3c integrals and their half transform (and the Cartesian batch when
+      !! the auxiliary basis is spherical) for the largest block of auxiliary shells
+      !! the loop of `build` takes, then the factors with the four rank-four blocks.
+      type(trc_basis_t), intent(in) :: b, aux
+      integer, intent(in) :: nblk, no, nv
+      integer(int64) :: peak
+
+      integer :: s0, s1, ish, np, npc, npmax, npcmax, nao, nact, naux, naux_c
+      integer(int64) :: fixed, blocks, cact, nao8, nact8, naux8, no8, nv8, stage_start, stage_metric, stage_3c, stage_blocks
+
+      nao = b%nao
+      nact = no + nv
+      naux_c = aux%nao
+      naux = merge(aux%nao_sph, aux%nao, aux%spherical)
+      nao8 = nao
+      nact8 = nact
+      naux8 = naux
+      no8 = no
+      nv8 = nv
+      ! the block sizes the loop of `build` will take
+      npmax = 0
+      npcmax = 0
+      s0 = 1
+      do while (s0 <= aux%nshell)
+         s1 = s0
+         do ish = s0 + 1, aux%nshell
+            if (aux%sh_ao(ish) + ncart(aux%sh_l(ish)) - aux%sh_ao(s0) > nblk) exit
+            s1 = ish
+         end do
+         npc = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - aux%sh_ao(s0)
+         np = npc
+         if (aux%spherical) np = sum(2*aux%sh_l(s0:s1) + 1)
+         npmax = max(npmax, np)
+         npcmax = max(npcmax, npc)
+         s0 = s1 + 1
+      end do
+      ! eps and the fitted blocks stay; cact (the active orbitals in the Cartesian space) lives until the solves
+      fixed = 8_int64*(no8 + nv8)
+      blocks = 8_int64*naux8*(no8*no8 + no8*nv8 + nv8*nv8)
+      cact = 8_int64*nao8*nact8
+      stage_start = fixed + cact
+      if (b%spherical) stage_start = stage_start + 8_int64*b%nao_sph*nact8  ! csph, while cact is made
+      stage_metric = fixed + cact + blocks + 8_int64*naux8*naux8
+      ! jmc, and the column-folded intermediate `sph_metric_cart_to_sph` maps while jm and jmc are both mapped
+      if (aux%spherical) stage_metric = stage_metric + 8_int64*naux_c*naux_c + 8_int64*naux_c*naux8
+      stage_3c = fixed + cact + blocks + 8_int64*naux8*naux8 + 8_int64*(nao8*nao8*npmax + nact8*nao8*npmax)
+      if (aux%spherical) stage_3c = stage_3c + 8_int64*nao8*nao8*npcmax
+      stage_blocks = fixed + blocks + 8_int64*(no8**4 + no8**3*nv8 + 2_int64*no8*no8*nv8*nv8)
+      peak = max(stage_start, stage_metric, stage_3c, stage_blocks)
+   end function build_peak_bytes
 
    subroutine piece_on(la, k, tc)
       !! Opens piece `k` of the build: once the device is idle the clock starts and the NVTX range opens, as a step
@@ -275,6 +331,15 @@ contains
       if (ints%status%has_error()) return
       nalpha = opts%nalpha
       nfrozen = opts%nfrozen
+      ! The build's own device-memory check, the largest set of arrays it holds at once, before anything is allocated
+      ! or mapped (a refusal here leaves the type empty, as the others do); the later stages check their own
+      no = nalpha - nfrozen
+      nv = merge(b%nao_sph, b%nao, b%spherical) - nalpha
+      nblk = aux%nao
+      if (opts%aux_block > 0) nblk = opts%aux_block
+      if (.not. device_memory_fits(ints%status, "trc_rccsd_ints: the fitted integral blocks (o "//to_string(no)//", v "// &
+                            to_string(nv)//", "//to_string(merge(aux%nao_sph, aux%nao, aux%spherical))//" auxiliary functions)", &
+                            build_peak_bytes(b, aux, nblk, no, nv))) return
 
       ! Nothing below can return early: every `enter data` has its `exit data`
       ! before the routine ends. The kernels and library calls stop the program

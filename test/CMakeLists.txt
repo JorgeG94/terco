@@ -202,6 +202,13 @@ terco_add_check(check_rccsd_run check_rccsd_run.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_rccsd_run PRIVATE test-drive::test-drive terco_rccsd_test_support)
 set_tests_properties(terco/check_rccsd_run PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# A RI-CCSD(T) whose arrays do not fit on the device is refused with the allocation named, not aborted
+# (src/core/trc_device_memory.F90). The free memory is capped by the options' test hook, so a host build reaches
+# every refusal: the integral blocks, the W scratch, the amplitudes, the DIIS history, the update and the (T) scratch.
+terco_add_check(check_rccsd_memory check_rccsd_memory.F90 NEEDS_BASIS)
+target_link_libraries(check_rccsd_memory PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_memory PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
 # The perturbative triples (src/post_hf/ccsd/trc_rccsd_triples.F90, the host reference) against pyscf's (T) at the
 # converged and at the fixed amplitudes of the same references, an independent all-(a,b,c) host evaluation, c batch
 # invariance and the refusals. Same SKIP guard.

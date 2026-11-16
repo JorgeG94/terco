@@ -122,12 +122,13 @@ module trc_rccsd_driver
    use trc_rccsd_dist, only: rccsd_dist_start, rccsd_dist_follow, rccsd_dist_word
    use trc_rccsd_share, only: rccsd_share_ranges, rccsd_share_ladder_flops
    use trc_linalg, only: trc_linalg_t
+   use trc_device_memory, only: device_memory_set_cap, device_memory_free_bytes
    use trc_rccsd_ints, only: trc_rccsd_ints_t, trc_rccsd_ints_options_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t, rccsd_inter_energy, rccsd_inter_mp2_guess
    use trc_rccsd_ladder, only: trc_rccsd_ladder_options_t
    use trc_rccsd_update, only: trc_rccsd_update_t
    use trc_rccsd_ladder, only: RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_HALF, RCCSD_LADDER_AUTO
-   use trc_rccsd_diis, only: trc_rccsd_diis_t, rccsd_diis_history_bytes, rccsd_diis_free_device_bytes
+   use trc_rccsd_diis, only: trc_rccsd_diis_t, rccsd_diis_history_bytes
    implicit none
    private
 
@@ -162,6 +163,9 @@ module trc_rccsd_driver
       integer :: diis_start = 1           !! first iteration whose step enters the history
       logical :: diis_host = .false.      !! force the DIIS history onto the host; else it goes there only when it does
       !! not fit in DIIS_FREE_FRACTION of the free device memory (trc_rccsd_diis, HOST HISTORY)
+      integer(int64) :: device_free_cap = 0_int64
+      !! TEST HOOK: above 0, the free device memory every size check of the run sees, in bytes (trc_device_memory); 0
+      !! asks the device. Lets a host build reach each refusal a device that is too small gives
       integer :: aux_block = 0            !! auxiliary functions per (mu nu|P) block; 0 means all at once
       type(trc_rccsd_ladder_options_t) :: ladder  !! form and batch sizes of the particle ladder, passed through
       logical :: verbose = .false.        !! one line per iteration and the timing table (rank 0 only)
@@ -299,6 +303,7 @@ contains
       local = opts
       if (rank /= 0) local%verbose = .false.
       use_start = state%use_start
+      call device_memory_set_cap(opts%device_free_cap)
       state%result = trc_rccsd_result_t()
       call state%ints%release()
       if (.not. use_start) call state%amps%release()
@@ -349,6 +354,7 @@ contains
       ! an agreed refusal already left every rank with the same result and nothing to share
       if (multi .and. .not. agreed) call share_outcome(opts%comm, rank, state, use_start)
       state%use_start = .false.
+      call device_memory_set_cap(0_int64)
       if (local%verbose) call log_summary(state%result, state%steps, nranks)
       if (local%verbose .and. multi .and. allocated(state%rank_seconds)) call log_ranks(state)
    end subroutine trc_rccsd_solve
@@ -389,7 +395,10 @@ contains
          keep = allocated(state%amps%t1) .and. allocated(state%amps%t2)
          if (keep) keep = state%amps%no == state%ints%no .and. state%amps%nv == state%ints%nv
       end if
-      if (.not. keep) call state%amps%init(state%ints%no, state%ints%nv)
+      if (.not. keep) then
+         call state%amps%init(state%ints%no, state%ints%nv)
+         if (state%amps%status%has_error()) call refuse(state%result, state%amps%status%get_message())
+      end if
    end subroutine follower_amps
 
    subroutine share_outcome(comm, rank, state, use_start)
@@ -671,12 +680,20 @@ contains
          call state%amps%push()
       else
          call state%amps%init(no, nv)
+         if (state%amps%status%has_error()) then
+            call refuse(state%result, state%amps%status%get_message())
+            return
+         end if
       end if
       call work%newamps%init(no, nv)
+      if (work%newamps%status%has_error()) then
+         call refuse(state%result, work%newamps%status%get_message())
+         return
+      end if
       ! the history keeps half of t2 exactly when the amplitudes have the pair symmetry the ladder was told about
       ! the history on the host when it does not fit in DIIS_FREE_FRACTION of the free device memory, or when asked
       need = rccsd_diis_history_bytes(no, nv, opts%diis_size, work%upd%tau_symmetric)
-      free = rccsd_diis_free_device_bytes()
+      free = device_memory_free_bytes()
       diis_host = opts%diis_host
       if (.not. diis_host .and. free > 0 .and. need > 0) then
          if (real(need, dp) > DIIS_FREE_FRACTION*real(free, dp)) then
