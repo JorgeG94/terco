@@ -458,7 +458,8 @@ contains
          ! unmasked kernel, which is right for every quartet.
          nw = plan%sOff(c1 + 1) - plan%sOff(c0)
          dkey = key
-         rys_route = rys_select_route(key)
+         rys_route = .false.
+         if (.not. mdg_routes(key)) rys_route = rys_select_route(key)
          if (mask /= 0) then
             launch%nwork_masked = launch%nwork_masked + nw
             ! pc_cost for both routes, because this pair of counters measures

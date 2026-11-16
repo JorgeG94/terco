@@ -8,6 +8,7 @@ directives are inert.
 |---|---|
 | `host gcc-15`, `host intel-2025.0`, `host nvidia-hpc-latest` | host build and the full ctest suite, then the "Golden spread" report |
 | `host gcc-15 (TERCO_LMAX=3)`, `(TERCO_DF_LMAX=3)` | the f-function and f/g-auxiliary builds; regenerates kernels at configure |
+| `host gcc-15 (TERCO_LMAX=4, -O0)` | g functions: builds only the command line at -O0 (about a minute) and runs water/def2-QZVP against pyscf (`terco/cli_library_def2qzvp_g`) |
 | `generated sources are up to date` | reruns the generators and requires no diff in `src/generated/` |
 | `Rys root tables are up to date` | regenerates the Rys root tables with mpmath 1.3.0 |
 | `OpenACC to OpenMP conversion` | converts the source to OpenMP, builds with `-fopenmp`, runs ctest at 4 threads |
