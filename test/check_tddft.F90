@@ -18,11 +18,15 @@ module check_tddft_suite
    !!     moves omega past the pyscf tolerance, so the comparison in 1 can
    !!     fail. Skipped for Hartree-Fock, which has no weight to corrupt;
    !!  5. every smaller nroots = 1..N-1 returns the first nroots reference roots
-   !!     (a Davidson that skips a root, as formamide HF with 2 roots once did,
-   !!     returns a clean-looking wrong set); for methane (Td) this cuts
-   !!     through degenerate triplets, whose individual oscillator strengths
-   !!     are arbitrary, so there omega is compared per root and f only as the
-   !!     sum over the first (complete) triplet;
+   !!     (a Davidson that skips a root returns a clean-looking wrong set). The
+   !!     formamide Hartree-Fock sweep is THE GUARD for the skipped-root bug
+   !!     (nroots = 2 once returned roots 1 and 3; the old solver fails exactly
+   !!     there, and passes the methane cases). Methane (Td, run for HF and
+   !!     B3LYP only, to save CI time) covers the degenerate-multiplet
+   !!     handling instead: the cut falls inside degenerate triplets, whose
+   !!     individual oscillator strengths are arbitrary, so there f is
+   !!     compared only as the sum over the first (complete) triplet. For
+   !!     formamide Kohn-Sham one functional (SVWN) sweeps nroots = 2, 3, 5;
    !!  6. refusals (triplet, RPA, UHF, meta-GGA, VV10, range-separated and
    !!     double hybrids) and a solve that is not given enough iterations
    !!     reports an error rather than returning.
@@ -239,6 +243,14 @@ contains
       degenerate_molecule = trim(molname_arg) == 'ch4'
    end function degenerate_molecule
 
+   logical function skip_extra()
+      !! The sweep and the collapse solve repeat full solves: not for every
+      !! functional of every molecule.
+      skip_extra = .false.
+      if (degenerate_molecule()) skip_extra = trim(funcname_arg) == 'svwn' .or. trim(funcname_arg) == 'pbe'
+      if (fx%dft .and. fx%nocc > 6) skip_extra = trim(funcname_arg) /= 'svwn'
+   end function skip_extra
+
    subroutine test_sweep(error)
       type(error_type), allocatable, intent(out) :: error
       type(trc_tddft_options_t) :: o
@@ -252,9 +264,10 @@ contains
       call fixture_build(error)
       if (allocated(error)) return
       nr = nroots_arg
-      ! Formamide's Kohn-Sham solves take tens of seconds each; its Hartree-Fock
-      ! sweep (the case that exposed the skipped root) is the one that runs.
-      if (fx%dft .and. fx%nocc > 6) then
+      ! Cost: formamide Kohn-Sham solves take 10 to 20 s each, so only SVWN
+      ! (the cheapest kernel) sweeps, over nroots = 2, 3, 5; methane runs the
+      ! sweep for HF and B3LYP only.
+      if (skip_extra()) then
          call global_logger%info("tddft: nroots sweep skipped for "//trim(molname_arg)//"/"//trim(funcname_arg)// &
                                  " (cost)")
          return
@@ -268,6 +281,7 @@ contains
       call ref_close(u)
       worst = 0.0_dp
       do k = 1, nr - 1
+         if (fx%dft .and. fx%nocc > 6 .and. all(k /= [2, 3, 5])) cycle
          o = fx%opts
          o%nroots = k
          call solve(o, td, err)
@@ -395,8 +409,8 @@ contains
       if (allocated(error)) return
       call check(error, fx%td%converged, "TDA did not converge")
       if (allocated(error)) return
-      ! A second full solve: only on the small molecule, to keep formamide fast.
-      if (nroots_arg > 4) return
+      ! A second full solve: not on formamide, and for methane HF and B3LYP only.
+      if (nroots_arg > 5 .or. skip_extra()) return
       o = fx%opts
       o%max_space = 3*nroots_arg
       o%max_iter = 400

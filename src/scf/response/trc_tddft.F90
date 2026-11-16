@@ -424,12 +424,14 @@ contains
       call err%set(code, msg)
    end subroutine tddft_fail
 
-   subroutine tddft_orthonormalise(nov, m, vs, nc, tc, nnew)
+   subroutine tddft_orthonormalise(nov, m, mmax, vs, nc, tc, nnew)
       !! Orthonormalise the columns of tc(:, 1:nc) against vs(:, 1:m) and one
       !! another (classical Gram-Schmidt, twice), keeping those that stay
       !! above DROP_REL of their starting norm. The survivors are compacted into
-      !! the first nnew columns of tc and appended to vs after column m.
-      integer, intent(in) :: nov, m, nc
+      !! the first nnew columns of tc and appended to vs after column m. At most
+      !! mmax - m are kept: vs has mmax columns, and when mmax is the problem
+      !! dimension roundoff must not let a dependent vector past it.
+      integer, intent(in) :: nov, m, mmax, nc
       real(dp), intent(inout) :: vs(nov, *), tc(nov, nc)
       integer, intent(out) :: nnew
       real(dp) :: n0, n1
@@ -439,6 +441,7 @@ contains
       mm = m
       do j = 1, nc
          n0 = sqrt(sum(tc(:, j)**2))
+         if (mm >= mmax) exit
          if (.not. (n0 > 0.0_dp)) cycle
          do p = 1, 2
             do q = 1, mm
@@ -458,6 +461,31 @@ contains
          tc(:, j) = vs(:, m + j)
       end do
    end subroutine tddft_orthonormalise
+
+   subroutine tddft_probe(nov, nt, nprobe, nguess, mmax, ord, xr, axr, tp, m, vs, avs, nnew)
+      !! Append the unit vectors of the nprobe orbital-energy differences after
+      !! the nguess guessed ones (those the guesses never held), collapsing
+      !! onto the nt Ritz vectors xr/axr first if there is no room. nnew is the
+      !! number kept (0: all lay inside the space), m is advanced by it.
+      integer, intent(in) :: nov, nt, nprobe, nguess, mmax
+      integer, intent(in) :: ord(nov)
+      real(dp), intent(in) :: xr(nov, nt), axr(nov, nt)
+      real(dp), intent(inout) :: tp(nov, nprobe), vs(nov, *), avs(nov, *)
+      integer, intent(inout) :: m
+      integer, intent(out) :: nnew
+      integer :: j
+      tp = 0.0_dp
+      do j = 1, nprobe
+         tp(ord(nguess + j), j) = 1.0_dp
+      end do
+      if (m + nprobe > mmax) then
+         vs(:, 1:nt) = xr
+         avs(:, 1:nt) = axr
+         m = nt
+      end if
+      call tddft_orthonormalise(nov, m, mmax, vs, nprobe, tp, nnew)
+      m = m + nnew
+   end subroutine tddft_probe
 
    subroutine trc_tddft_solve_rks(b, pl, eri, la, nocc, cmo, eps, dmat, opts, res, err, func, xg, budget)
       !!
@@ -628,20 +656,8 @@ contains
             ! converged ones and the iteration resumes. One more matvec pass.
             if (.not. probed .and. nprobe > 0) then
                probed = .true.
-               tp = 0.0_dp
-               do j = 1, nprobe
-                  tp(ord(nguess + j), j) = 1.0_dp
-               end do
-               if (m + nprobe > mmax) then
-                  vs(:, 1:nt) = xr
-                  avs(:, 1:nt) = axr
-                  m = nt
-               end if
-               call tddft_orthonormalise(nov, m, vs, nprobe, tp, nnew)
-               if (nnew > 0) then
-                  m = m + nnew
-                  cycle
-               end if
+               call tddft_probe(nov, nt, nprobe, nguess, mmax, ord, xr, axr, tp, m, vs, avs, nnew)
+               if (nnew > 0) cycle
             end if
             done = .true.
             exit
@@ -671,10 +687,16 @@ contains
             avs(:, 1:nt) = axr
             m = nt
          end if
-         call tddft_orthonormalise(nov, m, vs, nunc, tc, nnew)
+         call tddft_orthonormalise(nov, m, mmax, vs, nunc, tc, nnew)
          if (nnew == 0 .and. nmain == 0) then
             ! Only buffer vectors were still unconverged and their corrections
-            ! lie inside the space: nothing more to learn from them.
+            ! lie inside the space: nothing more to learn from them. The probe
+            ! still runs once, as on the ordinary converged path.
+            if (.not. probed .and. nprobe > 0) then
+               probed = .true.
+               call tddft_probe(nov, nt, nprobe, nguess, mmax, ord, xr, axr, tp, m, vs, avs, nnew)
+               if (nnew > 0) cycle
+            end if
             done = .true.
             exit
          end if
