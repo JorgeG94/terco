@@ -97,6 +97,7 @@ module trc_rccsd_diis
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use pic_strings, only: to_string
+   use trc_device_memory, only: device_memory_fits
    use pic_blas_interfaces, only: pic_gemv
    implicit none
    private
@@ -106,7 +107,7 @@ module trc_rccsd_diis
    real(dp), parameter :: SQRT2 = 1.4142135623730951_dp  !! off-diagonal weight of a packed error element
 
    public :: trc_rccsd_diis_t
-   public :: rccsd_diis_history_bytes, rccsd_diis_free_device_bytes
+   public :: rccsd_diis_history_bytes
 
 
    type :: trc_rccsd_diis_t
@@ -159,21 +160,6 @@ contains
       bytes = 16_int64*nstore*size
    end function rccsd_diis_history_bytes
 
-   function rccsd_diis_free_device_bytes() result(bytes)
-      !! The free device memory now; -1 on the host build or when the query gives nothing (no device to fit)
-#ifdef TRC_DEVICE
-      use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, acc_property_free_memory
-#endif
-      integer(int64) :: bytes
-
-      bytes = -1
-#ifdef TRC_DEVICE
-      bytes = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
-                                   acc_property_free_memory), int64)
-      if (bytes <= 0) bytes = -1
-#endif
-   end function rccsd_diis_free_device_bytes
-
    subroutine diis_init(this, no, nv, size, packed, host)
       !! An empty history for amplitudes of these dimensions. size < 2 keeps no vectors: only the step is measured.
       !! `packed` (default false) stores t2 as its unique half: only for amplitudes with t2(i,j,a,b) = t2(j,i,b,a).
@@ -183,8 +169,9 @@ contains
       logical, intent(in), optional :: packed
       logical, intent(in), optional :: host
 
-      integer(int64) :: nstore, nov
+      integer(int64) :: nstore, nov, need
       integer :: nslot
+      logical :: ok
 
       call this%release()
       call this%status%clear()
@@ -212,6 +199,25 @@ contains
       nslot = max(size, 1)
       this%host = .false.
       if (present(host)) this%host = host .and. size >= 2
+      ! what is mapped at once: the device history, or on the host ring the two columns a push holds (the error and
+      ! the vector of the slot, or the new error and an older one) and the partials and weights
+      if (this%host) then
+         need = 8_int64*(2_int64*this%n + this%npart + nslot + 1)
+      else
+         need = 8_int64*(int(this%n, int64)*nslot + merge(int(this%n, int64)*size, 0_int64, size >= 2) + this%npart + nslot)
+      end if
+      if (this%host) then
+         ok = device_memory_fits(this%status, "trc_rccsd_diis: the DIIS history (o "//to_string(no)//", v "//to_string(nv)// &
+                                 ", size "//to_string(size)//")", need)
+      else
+         ok = device_memory_fits(this%status, "trc_rccsd_diis: the DIIS history (o "//to_string(no)//", v "//to_string(nv)// &
+                                 ", size "//to_string(size)//")", need, &
+                                 hint="use a shorter history (--cc-diis) or keep the history on the host")
+      end if
+      if (.not. ok) then
+         call this%release()
+         return
+      end if
       if (this%host) then
          ! the ring on the host, zeroed now (first touch); only the partials and the weights stay on the device
          allocate (this%err(this%n, nslot), this%vec(this%n, size), this%overlap(size, size))

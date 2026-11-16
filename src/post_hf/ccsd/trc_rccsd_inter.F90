@@ -100,6 +100,8 @@ module trc_rccsd_inter
    use trc_rccsd_steps, only: rccsd_steps_gemm_flops
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_device_memory, only: device_memory_fits
+   use pic_strings, only: to_string
    implicit none
    private
 
@@ -112,6 +114,7 @@ module trc_rccsd_inter
 
    type :: trc_rccsd_amps_t
       !! The amplitudes t1(i,a), t2(i,j,a,b) on host and device
+      type(error_t) :: status  !! set by `init`: a refusal (they do not fit on the device) leaves the type empty
       integer :: no = 0  !! active occupied orbitals
       integer :: nv = 0  !! virtual orbitals
       real(dp), allocatable :: t1(:, :)        !! t1(i,a)
@@ -125,6 +128,7 @@ module trc_rccsd_inter
 
    type :: trc_rccsd_inter_t
       !! tau and the one-particle intermediates on host and device, valid after the matching routine
+      type(error_t) :: status  !! set by `init`: a refusal (tau does not fit on the device) leaves the type empty
       integer :: no = 0
       integer :: nv = 0
       real(dp), allocatable :: tau(:, :, :, :)  !! t2(i,j,a,b) + t1(i,a) t1(j,b)
@@ -166,11 +170,14 @@ contains
       !! ---------------------------------------------------------------------
       !! the types
       !! ---------------------------------------------------------------------
-      !! Zeroed amplitudes on host and device
+      !! Zeroed amplitudes on host and device; `status` says so when they do not fit on the device (nothing is allocated)
       class(trc_rccsd_amps_t), intent(inout) :: this
       integer, intent(in) :: no, nv
 
       call this%release()
+      call this%status%clear()
+      if (.not. device_memory_fits(this%status, "trc_rccsd_inter: the amplitudes (o "//to_string(no)//", v "//to_string(nv)//")", &
+                            8_int64*(int(no, int64)*nv + int(no, int64)*no*nv*nv))) return
       this%no = no
       this%nv = nv
       allocate (this%t1(no, nv), this%t2(no, no, nv, nv))
@@ -212,11 +219,15 @@ contains
    end subroutine amps_pull
 
    subroutine inter_init(this, no, nv)
-      !! Intermediates on host and device, zeroed
+      !! Intermediates on host and device, zeroed; `status` says so when they do not fit on the device (nothing is allocated)
       class(trc_rccsd_inter_t), intent(inout) :: this
       integer, intent(in) :: no, nv
 
       call this%release()
+      call this%status%clear()
+      if (.not. device_memory_fits(this%status, "trc_rccsd_inter: tau and the one-particle intermediates (o "//to_string(no)// &
+                            ", v "//to_string(nv)//")", &
+                            8_int64*(int(no, int64)*no*nv*nv + 2_int64*no*no + 2_int64*nv*nv + int(no, int64)*nv))) return
       this%no = no
       this%nv = nv
       allocate (this%tau(no, no, nv, nv), this%foo(no, no), this%fvv(nv, nv), this%fov(no, nv))
@@ -294,6 +305,12 @@ contains
                               "2^31-1 elements (default-integer kernel index)")
          return
       end if
+      ! the arrays `enter data create` maps below: lov, pack1, lq (o^2 v^2), lam (o^3 v), two o v partials, three
+      ! o v naux and u (naux)
+      if (.not. device_memory_fits(this%status, "trc_rccsd_inter: the intermediates' work arrays (o "//to_string(no)//", v "// &
+                            to_string(nv)//", naux "//to_string(naux)//")", &
+                            8_int64*(3_int64*no*no*nv*nv + int(no, int64)*no*no*nv + 2_int64*no*nv + 3_int64*no*nv*naux + &
+                                     naux))) return
       this%no = no
       this%nv = nv
       this%stamp = ints%stamp

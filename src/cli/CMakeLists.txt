@@ -384,7 +384,7 @@ if(TERCO_ENABLE_TESTING)
                                                     PASS_REGULAR_EXPRESSION "restart: RI-MP2 identical")
 
   #
-  # The CLI itself over ranks -- mirroring test/scf_mpi.F90's own launcher
+  # The CLI itself over ranks -- mirroring test/standalone/scf_mpi.F90's own launcher
   # logic (same reason for the compiler-wrapper's own mpiexec, not the
   # first one on PATH), since this is a different driver over the same
   # trc_set_comm/trc_run_scf and needs its own check: np 1, np 2 and np 3

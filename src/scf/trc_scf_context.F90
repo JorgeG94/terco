@@ -693,7 +693,7 @@ contains
       !! once again orthonormal under S' (C'^T S' C' = X^T M X = I by
       !! construction). D' = occ_s C' C'^T. At S' = S this is the identity
       !! transform (M = I already, X = I); trc_capi.F90's TRC_GUESS_PROJECTED
-      !! is the public way to this. test/bench_warmstart.F90 measured it
+      !! is the public way to this. test/standalone/bench_warmstart.F90 measured it
       !! against the plain density warm start at water/def2-SVP, steps
       !! 0.005-1.0 Bohr: both needed the same iteration count at every step
       !! (HF 10/13/15, B3LYP 8/10/12).
