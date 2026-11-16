@@ -9,7 +9,7 @@
 ! caller, a C caller and the library itself cannot drift from each other.
 ! Regenerate with that script; do not edit the output.
 !
-! `test/link_gfortran.F90` compiles this file with gfortran and asserts an
+! `test/link_gfortran.F90` compiles this file with the project compiler and asserts an
 ! SCF energy, so a drift anywhere in the chain is a wrong number in terco's
 ! own test suite before any host code sees it.
 !

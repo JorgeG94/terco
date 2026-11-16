@@ -430,7 +430,7 @@ contains
    subroutine test_projected_moved_geometry(error)
       !! A converged SCF at geometry A projected into geometry B's overlap
       !! (a 0.3 Bohr displacement -- comfortably inside the step sizes
-      !! test/bench_warmstart.F90 measured, and far from water's
+      !! test/standalone/bench_warmstart.F90 measured, and far from water's
       !! dissociation): C' is S'-orthonormal (checked as D'S'D' = occ_s D',
       !! which holds iff C'^T S' C' = I for a full-rank C -- see
       !! `scf_context_project_density`'s own header), and an SCF started from the

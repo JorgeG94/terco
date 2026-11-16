@@ -339,7 +339,7 @@ module trc_capi
    !! unprojected. Refused (TRC_ERR_STATE) if no previous SCF at this nao
    !! has run yet, if it was run with fractional occupation (`scf_context_project_density`
    !! only builds integer occupations), or at a size/spin mismatch. See
-   !! trc_run_scf's own dispatch; test/bench_warmstart.F90 measured it
+   !! trc_run_scf's own dispatch; test/standalone/bench_warmstart.F90 measured it
    !! against the plain density warm start at water/def2-SVP, steps
    !! 0.005-1.0 Bohr: the two warm starts needed the same iteration count
    !! at every step (HF 10/13/15, B3LYP 8/10/12).

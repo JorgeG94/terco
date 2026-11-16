@@ -4,7 +4,8 @@
  * WHY THIS TEST EXISTS
  * ---------------------
  * trc_c_interfaces.f90 proves the ABI to a Fortran caller that cannot read
- * terco's own `.mod` files (test/link_gfortran.F90); this is the same
+ * terco's own `.mod` files (test/link_gfortran.F90 drives it through the
+ * shipped Fortran interface); this is the same
  * proof for a C or C++ caller, against the OTHER file
  * tools/gen_capi_headers.py derives from trc_capi.F90: terco.h. It compiles
  * with the project's C compiler (not nvfortran, not gfortran) and links
@@ -15,8 +16,8 @@
  *
  * It runs a minimal context: water/6-31G RHF through trc_create ...
  * trc_run_scf ... trc_energy, and checks the energy against the SAME
- * value test/link_gfortran.F90 and test/scf_rhf.F90 get (trc_basis_from_
- * json's own reference, 2026-10-08). It also calls trc_abi_version (and
+ * value test/link_gfortran.F90 asserts (test/standalone/scf_rhf.F90 prints the
+ * same number natively; trc_basis_from_json's own reference, 2026-10-08). It also calls trc_abi_version (and
  * checks it against the header's own TRC_ABI_MAJOR/MINOR) and
  * trc_functional_info("b3lyp"), since those are the two handle-free
  * entries this task added alongside the context ones.
@@ -263,7 +264,7 @@ int main(void) {
 
    printf("link_c: RHF/6-31G water energy %.10f\n", energy);
    /* trc_basis_from_json's own 6-31G water RHF value -- the same one
-    * test/link_gfortran.F90 and test/scf_rhf.F90 assert. */
+    * test/link_gfortran.F90 asserts. */
    if (fabs(energy + 75.983974465717) > 1.0e-8) {
       fprintf(stderr, "link_c: energy %.12f does not match -75.983974465717\n", energy);
       return 1;
