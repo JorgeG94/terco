@@ -8,7 +8,10 @@ module check_fxc_apply_many_suite
    !!  1. the batch is the loop: nvec random symmetric densities through
    !!     trc_xc_fxc_rks_apply_many equal one trc_xc_fxc_rks_apply call per
    !!     density, at every vector chunking `budget` can force (including a
-   !!     remainder pass);
+   !!     remainder pass), with the whole grid resident, part of it resident
+   !!     and none of it resident (the cache's `res_budget` forces the
+   !!     overflow, recollocating path, which a system this small otherwise
+   !!     never takes); a default `budget` (absent or 0) is one vector pass;
    !!  2. a NON-symmetric input gives what its symmetrised copy gives: f_xc
    !!     only sees (D + D^T)/2, and the point kernel's grad rho is wrong
    !!     for an unsymmetrised D;
@@ -48,6 +51,7 @@ module check_fxc_apply_many_suite
    public :: collect_check_fxc_apply_many, xyz_arg, bas_json_arg, molname_arg, basname_arg, funcname_arg, probe_arg
 
    integer, parameter :: NVEC = 3
+   integer, parameter :: RES_FULL = 1, RES_PART = 2, RES_NONE = 3
    real(dp), parameter :: ERI_THRESH = 1.0e-12_dp
 
    character(len=256) :: xyz_arg = 'water.xyz'
@@ -164,6 +168,47 @@ contains
       call check(error, fx%cache%ready, "fxc cache did not set up")
    end subroutine fixture_build
 
+   subroutine set_residency(fx, mode, error)
+      !! Rebuild fx%cache at reference density d0 with RES_FULL (the device
+      !! budget: all batches), RES_PART (the first half of them) or RES_NONE
+      !! (none) resident, and check that is what it holds.
+      type(fixture_t), intent(inout) :: fx
+      integer, intent(in) :: mode
+      type(error_type), allocatable, intent(out) :: error
+      integer(int64) :: bytes
+      integer :: ib, nhalf
+
+      select case (mode)
+      case (RES_FULL)
+         call fx%cache%setup(fx%bas, fx%xg, fx%func, fx%d0, fx%la)
+      case (RES_PART)
+         nhalf = fx%cache%nbatch/2
+         bytes = 0
+         do ib = 1, nhalf
+            bytes = bytes + 48_int64*int(fx%cache%npp(ib), int64)*int(fx%cache%nlp(ib), int64)
+         end do
+         call fx%cache%setup(fx%bas, fx%xg, fx%func, fx%d0, fx%la, bytes)
+      case default
+         call fx%cache%setup(fx%bas, fx%xg, fx%func, fx%d0, fx%la, 0_int64)
+      end select
+      call check(error, fx%cache%ready, "fxc cache did not set up")
+      if (allocated(error)) return
+      select case (mode)
+      case (RES_FULL)
+         call check(error, fx%cache%nres == fx%cache%nbatch, &
+                    "default residency should hold every batch, nres "//to_string(fx%cache%nres)//" of "// &
+                    to_string(fx%cache%nbatch))
+      case (RES_PART)
+         call check(error, fx%cache%nres > 0 .and. fx%cache%nres < fx%cache%nbatch, &
+                    "partial residency should hold some but not all batches, nres "//to_string(fx%cache%nres)// &
+                    " of "//to_string(fx%cache%nbatch))
+      case default
+         call check(error, fx%cache%nres == 0 .and. fx%cache%nbatch > 0, &
+                    "zero residency should hold no batch, nres "//to_string(fx%cache%nres)//" of "// &
+                    to_string(fx%cache%nbatch))
+      end select
+   end subroutine set_residency
+
    subroutine fixture_release(fx)
       type(fixture_t), intent(inout) :: fx
       call fx%cache%release()
@@ -214,10 +259,10 @@ contains
    subroutine test_batch_vs_loop(error)
       type(error_type), allocatable, intent(out) :: error
       type(fixture_t) :: fx
-      real(dp), allocatable :: dmats(:, :, :), vb(:, :, :), v1(:, :), vb2(:, :, :)
+      real(dp), allocatable :: dmats(:, :, :), vb(:, :, :), v1(:, :), vb2(:, :, :), vref(:, :, :)
       real(dp) :: scale, dev
       integer(int64) :: budgets(6)
-      integer :: k, ib, nvc, seen(NVEC)
+      integer :: k, ib, nvc, seen(NVEC), mode
 
       call fixture_build(fx, error)
       if (allocated(error)) then
@@ -225,7 +270,7 @@ contains
          return
       end if
       allocate (dmats(fx%nao, fx%nao, NVEC), vb(fx%nao, fx%nao, NVEC), vb2(fx%nao, fx%nao, NVEC), &
-                v1(fx%nao, fx%nao))
+                v1(fx%nao, fx%nao), vref(fx%nao, fx%nao, NVEC))
       call random_symmetric_set(fx%nao, NVEC, dmats)
       call apply_many_host(fx, NVEC, dmats, vb)
       scale = maxval(abs(vb))
@@ -246,10 +291,31 @@ contains
          return
       end if
 
+      ! The default (absent, or 0 -- "not given", not a one-double cap) takes
+      ! every density in one vector pass.
+      nvc = trc_xc_fxc_vec_chunk(fx%bas, fx%xg, fx%cache, NVEC)
+      call check(error, nvc == NVEC, "default vector chunk "//to_string(nvc)//" /= "//to_string(NVEC))
+      if (.not. allocated(error)) then
+         nvc = trc_xc_fxc_vec_chunk(fx%bas, fx%xg, fx%cache, NVEC, 0_int64)
+         call check(error, nvc == NVEC, "vector chunk for budget 0 "//to_string(nvc)//" /= "//to_string(NVEC))
+      end if
+      if (.not. allocated(error)) then
+         call apply_many_host(fx, NVEC, dmats, vb2, 0_int64)
+         dev = maxval(abs(vb2 - vb))
+         call check(error, dev < 1.0e-13_dp*max(scale, 1.0_dp), &
+                    "budget 0 vs default, max|diff| = "//to_string(dev, "es10.2"))
+      end if
+      if (allocated(error)) then
+         call fixture_release(fx)
+         return
+      end if
+      vref = vb
+
       ! Every pass count the vector scratch cap can force: budgets from far
       ! below one density's scratch (one density per pass, three passes) up
-      ! to the default. The same budget also shrinks the basis-value chunks,
-      ! so the overflow batches' own chunking is hit too.
+      ! to the default. The same budget also shrinks the basis-value chunks
+      ! of the batches the cache does not hold (none here: the default
+      ! cache keeps all of them resident; the loop below covers the rest).
       budgets = [1_int64, 3000000_int64, 6000000_int64, 8388608_int64, 12500000_int64, 25000000_int64]
       seen = 0
       do ib = 1, size(budgets)
@@ -268,6 +334,42 @@ contains
       call check(error, seen(1) > 0 .and. seen(2) > 0 .and. seen(NVEC) > 0, &
                  "the budget sweep must hit one, two (a remainder pass) and all densities per pass, counts seen "// &
                  to_string(seen(1))//" "//to_string(seen(2))//" "//to_string(seen(3)))
+      if (allocated(error)) then
+         call fixture_release(fx)
+         return
+      end if
+
+      ! The overflow path (batches not resident are recollocated per apply,
+      ! with per-density X/Z tiles): part of the grid resident, then none,
+      ! each against the fully resident result and the single-density loop,
+      ! at every vector chunking.
+      do mode = RES_PART, RES_NONE
+         call set_residency(fx, mode, error)
+         if (allocated(error)) exit
+         call apply_many_host(fx, NVEC, dmats, vb2)
+         dev = maxval(abs(vb2 - vref))
+         call check(error, dev < 1.0e-13_dp*max(scale, 1.0_dp), &
+                    "residency "//to_string(fx%cache%nres)//"/"//to_string(fx%cache%nbatch)// &
+                    " vs fully resident, max|diff| = "//to_string(dev, "es10.2"))
+         if (allocated(error)) exit
+         do k = 1, NVEC
+            call apply_one_host(fx, dmats(:, :, k), v1)
+            dev = max(dev, maxval(abs(vb2(:, :, k) - v1)))
+         end do
+         call check(error, dev < 1.0e-13_dp*max(scale, 1.0_dp), &
+                    "residency "//to_string(fx%cache%nres)//"/"//to_string(fx%cache%nbatch)// &
+                    " batch vs loop, max|diff| = "//to_string(dev, "es10.2"))
+         if (allocated(error)) exit
+         do ib = 1, size(budgets)
+            call apply_many_host(fx, NVEC, dmats, vb2, budgets(ib))
+            dev = maxval(abs(vb2 - vref))
+            call check(error, dev < 1.0e-13_dp*max(scale, 1.0_dp), &
+                       "residency "//to_string(fx%cache%nres)//"/"//to_string(fx%cache%nbatch)//", budget "// &
+                       to_string(budgets(ib))//" vs fully resident, max|diff| = "//to_string(dev, "es10.2"))
+            if (allocated(error)) exit
+         end do
+         if (allocated(error)) exit
+      end do
       call fixture_release(fx)
    end subroutine test_batch_vs_loop
 
@@ -276,6 +378,7 @@ contains
       type(fixture_t) :: fx
       real(dp), allocatable :: dn(:, :, :), ds(:, :, :), vn(:, :, :), vs(:, :, :)
       real(dp) :: scale, dev, asym
+      integer :: mode
 
       call fixture_build(fx, error)
       if (allocated(error)) then
@@ -293,22 +396,28 @@ contains
          call fixture_release(fx)
          return
       end if
-      call apply_many_host(fx, 2, dn, vn)
-      call apply_many_host(fx, 2, ds, vs)
-      scale = maxval(abs(vs))
-      dev = maxval(abs(vn - vs))
-      call check(error, dev < 1.0e-13_dp*max(scale, 1.0_dp), &
-                 "non-symmetric vs symmetrised, max|diff| = "//to_string(dev, "es10.2")// &
-                 " for |v| "//to_string(scale, "es10.2"))
+      do mode = RES_FULL, RES_NONE
+         call set_residency(fx, mode, error)
+         if (allocated(error)) exit
+         call apply_many_host(fx, 2, dn, vn)
+         call apply_many_host(fx, 2, ds, vs)
+         scale = maxval(abs(vs))
+         dev = maxval(abs(vn - vs))
+         call check(error, dev < 1.0e-13_dp*max(scale, 1.0_dp), &
+                    "non-symmetric vs symmetrised (residency "//to_string(fx%cache%nres)//"/"// &
+                    to_string(fx%cache%nbatch)//"), max|diff| = "//to_string(dev, "es10.2")// &
+                    " for |v| "//to_string(scale, "es10.2"))
+         if (allocated(error)) exit
+      end do
       call fixture_release(fx)
    end subroutine test_nonsymmetric
 
    subroutine test_vs_pyscf(error)
       type(error_type), allocatable, intent(out) :: error
       type(fixture_t) :: fx
-      real(dp), allocatable :: dm(:, :, :), v(:, :, :), vref(:, :), v1(:, :)
+      real(dp), allocatable :: dm(:, :, :), v(:, :, :), vref(:, :), v1(:, :), vrefs(:, :, :)
       real(dp) :: tr(2), tr_ref(2), dv, dtr, scale, dv1
-      integer :: unit, u, k, ng
+      integer :: unit, u, k, ng, mode
       character(len=256) :: refname
 
       call fixture_build(fx, error)
@@ -316,7 +425,8 @@ contains
          call fixture_release(fx)
          return
       end if
-      allocate (dm(fx%nao, fx%nao, 2), v(fx%nao, fx%nao, 2), vref(fx%nao, fx%nao), v1(fx%nao, fx%nao))
+      allocate (dm(fx%nao, fx%nao, 2), v(fx%nao, fx%nao, 2), vref(fx%nao, fx%nao), v1(fx%nao, fx%nao), &
+                vrefs(fx%nao, fx%nao, 2))
       dm(:, :, 1) = fx%psym
       dm(:, :, 2) = fx%pnon
       call apply_many_host(fx, 2, dm, v)
@@ -351,6 +461,7 @@ contains
             dv1 = maxval(abs(v1 - vref))
          end if
          if (k == 2) call ref_read_matrix(u, 'V_Q', fx%nao, fx%nao, vref)
+         vrefs(:, :, k) = vref
          dv = max(dv, maxval(abs(v(:, :, k) - vref)))
          scale = max(scale, maxval(abs(vref)))
       end do
@@ -369,6 +480,20 @@ contains
          call check(error, dtr < 1.0e-10_dp*max(maxval(abs(tr_ref)), 1.0_dp), &
                     "Tr(P v_resp) vs pyscf, max|diff| = "//to_string(dtr, "es10.2"))
       end if
+      ! The same references through the overflow path: part of the grid
+      ! resident, then none (see set_residency).
+      do mode = RES_PART, RES_NONE
+         if (allocated(error)) exit
+         call set_residency(fx, mode, error)
+         if (allocated(error)) exit
+         call apply_many_host(fx, 2, dm, v)
+         call apply_one_host(fx, dm(:, :, 1), v1)
+         dv = max(maxval(abs(v(:, :, 1) - vrefs(:, :, 1))), maxval(abs(v(:, :, 2) - vrefs(:, :, 2))), &
+                  maxval(abs(v1 - vrefs(:, :, 1))))
+         call check(error, dv < 1.0e-10_dp, &
+                    "v_resp vs pyscf nr_rks_fxc at residency "//to_string(fx%cache%nres)//"/"// &
+                    to_string(fx%cache%nbatch)//", max|diff| = "//to_string(dv, "es10.2"))
+      end do
       call fixture_release(fx)
    end subroutine test_vs_pyscf
 
