@@ -19,6 +19,7 @@ target_sources(
           trc_xc.F90              # the integrator: E_xc and V_xc
           trc_xc_grad.F90         # the exchange-correlation nuclear gradient, LDA/GGA
           trc_xc_grad_potential.F90   # d/dR Tr(P V_xc[D]): the double-hybrid gradient's XC term
+          trc_xc_grad_response.F90    # batched TDDFT XC gradient: Tr(P V_xc) + 1/2 f_xc T T, many roots
           trc_vv10.F90            # VV10 nonlocal correlation: E_nlc and its potential
           trc_vv10_grad.F90      # VV10's nuclear gradient, with grid response
 )

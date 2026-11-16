@@ -236,6 +236,7 @@ module trc_xc_grad
    private
 
    public :: xc_grad_add, xc_grad_add_on_grid, XC_GRAD_RHO_TOL, xc_grad_drive, xc_grad_batch_active
+   public :: xc_grad_drive_channels, XC_GRAD_TILE_CAP
    public :: xc_grad_options_t, xc_grad_options, xc_grad_point_io_t
    public :: XC_GRAD_NSTEP, xc_grad_step_names
    public :: ST_GRID, ST_POINTS, ST_PDERIV, ST_RESP
@@ -2153,6 +2154,528 @@ contains
       q(2) = 2.0_dp*q(2)
       q(3) = 2.0_dp*q(3)
    end subroutine xc_grad_pointmotion_body
+
+   subroutine xc_grad_drive_channels(b, lp, xg, dens, ncol, cf, active, tcap, gresp, grad, timing)
+      !!
+      !! The force of ncol "columns" in ONE sweep of the grid: the sum, over each
+      !! column's three channels, of the nuclear derivative at fixed AO matrices
+      !! of  sum_g w_g [ a dRHO + b . dGRAD ]  (a, b given per point), where
+      !! dRHO and dGRAD are what a nuclear displacement does to rho_s and
+      !! grad rho_s of the channel's density slot s. This is xc_grad_drive's
+      !! external-potential mode (restricted GGA, where `vsigma` is 1/2 and
+      !! `grho` the vector coefficient b) with the channel as the unit, so the
+      !! chunk's collocation, Hessians and gathers are done once for every
+      !! column; only X = chi D_s (one GEMM per slot), R_c = b_c . grad chi and
+      !! RD_c = R_c D_s (one per channel) and the force sums are per column.
+      !!
+      !! Channel c = 3 (I - 1) + kind belongs to column I: kind 1 reads slot 1
+      !! (the reference density), kind 2 slot 1 + I, kind 3 slot 1 + ncol + I.
+      !! Forces, as xc_grad_drive: Pulay -2 sum e onto the function's atom,
+      !! and with `gresp` the point motion +2 sum e onto the point's owner,
+      !! with e_k = w [ (a dchi_k + (b . H)_k) X + dchi_k RD ] per (point,
+      !! function) pair. The partition's own response is the caller's.
+      !!
+      !! `tcap`: the most doubles one tile of a chunk (chi, say) may hold; a
+      !! chunk of batches is closed when the next batch would exceed it.
+      !! Scratch is (11 + 8 ncol) tiles, (1 + 2 ncol) pair tiles and
+      !! 3 ncol rows of the Pulay partials per function.
+      !!
+      type(trc_basis_t), intent(in) :: b
+      type(trc_linalg_t), intent(inout) :: lp
+      type(trc_xc_grid_t), intent(in) :: xg
+      integer, intent(in) :: ncol
+      real(dp), intent(in), contiguous :: dens(:, :, :)
+      !! (nao, nao, 1 + 2 ncol), symmetric slices, on host and device.
+      real(dp), intent(in) :: cf(4, xg%npts, 3*ncol)
+      !! (a, b) per point and channel, on the device. Read at the point's own
+      !! row; w_g is xg%w.
+      integer, intent(in) :: active(xg%nbatch)
+      !! 1 where the batch is kept (host).
+      integer(int64), intent(in) :: tcap
+      logical, intent(in) :: gresp
+      real(dp), intent(inout) :: grad(3, b%natm, ncol)
+      !! ADDED into, device-resident.
+      type(step_table_t), intent(inout) :: timing
+
+      type(xc_grad_work_t) :: work
+      integer, allocatable :: ch_lo(:), ch_hi(:)
+      real(dp), allocatable :: fpm(:, :)
+      integer(int64) :: need, nchi_max
+      integer :: ib, npb, nloc, nch, ic, b0, b1, npairs, npairs_max, nb_max, nmu_c, nmu_max, nslot, nchan
+      type(timer_type) :: tc
+
+      nslot = 1 + 2*ncol
+      nchan = 3*ncol
+      call timing%step_on(lp, ST_SCREEN, tc)
+      allocate (work%active(xg%nbatch), work%npp(xg%nbatch), work%nlp(xg%nbatch))
+      allocate (work%c_off(xg%nbatch + 1), work%pr_off(xg%nbatch + 1))
+      do ib = 1, xg%nbatch
+         npb = xg%b_off(ib + 1) - xg%b_off(ib)
+         nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
+         work%active(ib) = 0
+         if (npb > 0 .and. nloc > 0) work%active(ib) = active(ib)
+         work%npp(ib) = ((npb + XC_NP_PAD - 1)/XC_NP_PAD)*XC_NP_PAD
+         work%nlp(ib) = ((nloc*work%active(ib) + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
+      end do
+      work%c_off = 0
+      work%pr_off = 0
+      allocate (ch_lo(xg%nbatch), ch_hi(xg%nbatch))
+      nch = 0
+      nchi_max = 1
+      npairs_max = 1
+      nb_max = 1
+      nmu_max = 1
+      b0 = 1
+      do while (b0 <= xg%nbatch)
+         need = 0
+         npairs = 0
+         nmu_c = 0
+         b1 = b0 - 1
+         do ib = b0, xg%nbatch
+            if (need + int(work%npp(ib), int64)*int(work%nlp(ib), int64) > tcap .and. ib > b0) exit
+            need = need + int(work%npp(ib), int64)*int(work%nlp(ib), int64)
+            npairs = npairs + work%nlp(ib)*work%nlp(ib)
+            nmu_c = nmu_c + (xg%b_aooff(ib + 1) - xg%b_aooff(ib))*work%active(ib)
+            b1 = ib
+         end do
+         nmu_max = max(nmu_max, nmu_c)
+         nch = nch + 1
+         ch_lo(nch) = b0
+         ch_hi(nch) = b1
+         nchi_max = max(nchi_max, need)
+         npairs_max = max(npairs_max, npairs)
+         nb_max = max(nb_max, b1 - b0 + 1)
+         b0 = b1 + 1
+      end do
+      call timing%step_off(lp, ST_SCREEN, tc)
+
+      call timing%step_on(lp, ST_ALLOC, tc)
+      work%nspin = nslot
+      work%is_gga = .true.
+      call xc_grad_many_work_alloc(work, b, nchi_max, npairs_max, nb_max, nmu_max, nslot, nchan)
+      work%ldf = nmu_max*XC_GRAD_LANES*ncol
+      allocate (fpm(work%ldf, 3))
+      !$acc enter data create(fpm)
+      call timing%step_off(lp, ST_ALLOC, tc)
+
+      do ic = 1, nch
+         call xc_grad_work_layout(work, xg, ch_lo(ic), ch_hi(ic))
+         if (work%nmu == 0) cycle
+
+         call timing%step_on(lp, ST_COLLOC, tc)
+         call xc_grad_zero(work%nchi, work%ldt, work%ldr, nchan, .true., .false., work%chi, work%gchi, work%rt)
+         call xc_grad_colloc_tiles(work%nwork, work%nb, work%ord, work%wk_off, b%maxnp, b%nshell, b%sh_l, &
+                                   b%sh_np, b%sh_e, b%sh_c, b%sh_r, xg%npts, xg%r, xg%b_off, xg%b_shoff, &
+                                   size(xg%b_sh), xg%b_sh, xg%b_shao, work%c_off, work%npp, xg%nbatch, work%ldt, &
+                                   .true., work%ldh, work%nhs, work%chi, work%gchi, work%hchi)
+         call timing%step_off(lp, ST_COLLOC, tc)
+
+         call timing%step_on(lp, ST_GATHER, tc)
+         call xc_grad_gather_tiles(work%npairs, work%nb, work%ord, work%pb_off, nslot, b%nao, dens, &
+                                   xg%b_aooff, size(xg%b_ao), xg%b_ao, work%nlp, xg%nbatch, work%ldd, work%dloc)
+         call timing%step_off(lp, ST_GATHER, tc)
+
+         call timing%step_on(lp, ST_GEMM, tc)
+         call xc_grad_gemm_x(lp, work)
+         call timing%step_off(lp, ST_GEMM, tc)
+
+         call timing%step_on(lp, ST_POINTS, tc)
+         call xc_grad_many_rtiles(work%np, work%p0, xg%npts, xg%batch_of, xg%b_off, xg%b_aooff, work%c_off, &
+                                  work%npp, work%active, xg%nbatch, work%ldt, work%ldr, nchan, work%gchi, cf, work%rt)
+         call timing%step_off(lp, ST_POINTS, tc)
+
+         call timing%step_on(lp, ST_GEMM, tc)
+         call xc_grad_many_gemm_rd(lp, work, ncol)
+         call timing%step_off(lp, ST_GEMM, tc)
+
+         call timing%step_on(lp, ST_SCATTER, tc)
+         call xc_grad_many_lanes(work%nmu, work%nb, work%ord, work%mw_off, ncol, nslot, nchan, xg%npts, xg%w, &
+                                 xg%b_off, work%c_off, work%npp, xg%nbatch, work%ldt, work%ldh, work%nhs, work%ldr, &
+                                 work%gchi, work%hchi, work%xt, work%rd, cf, work%ldf, fpm)
+         call xc_grad_many_scatter(work%nmu, work%nb, work%ord, work%mw_off, ncol, xg%b_aooff, size(xg%b_ao), &
+                                   xg%b_ao, b%nao, work%ao_atom, xg%nbatch, work%ldf, fpm, b%natm, grad)
+         if (gresp) then
+            call xc_grad_many_pointmotion(work%np, work%p0, ncol, nslot, nchan, xg%npts, xg%w, xg%atom, xg%batch_of, &
+                                          xg%b_off, xg%b_aooff, work%c_off, work%npp, work%active, xg%nbatch, &
+                                          work%ldt, work%ldh, work%nhs, work%ldr, work%gchi, work%hchi, work%xt, &
+                                          work%rd, cf, b%natm, grad)
+         end if
+         call timing%step_off(lp, ST_SCATTER, tc)
+      end do
+
+      call timing%step_on(lp, ST_ALLOC, tc)
+      !$acc exit data delete(fpm)
+      deallocate (fpm)
+      call xc_grad_work_release(work)
+      deallocate (ch_lo, ch_hi)
+      call timing%step_off(lp, ST_ALLOC, tc)
+   end subroutine xc_grad_drive_channels
+
+   subroutine xc_grad_many_work_alloc(work, b, nchi_max, npairs_max, nb_max, nmu_max, nslot, nchan)
+      !!
+      !! xc_grad_work_alloc for xc_grad_drive_channels: X per density slot, R
+      !! and RD per channel, and nothing the other modes keep (the point
+      !! coefficients, the host's partials, tau's tiles) beyond the unit-sized
+      !! stand-ins xc_grad_work_release frees.
+      !!
+      type(xc_grad_work_t), intent(inout) :: work
+      type(trc_basis_t), intent(in) :: b
+      integer(int64), intent(in) :: nchi_max
+      integer, intent(in) :: npairs_max, nb_max, nmu_max, nslot, nchan
+      integer :: ish, i
+
+      allocate (work%ao_atom(b%nao))
+      do ish = 1, b%nshell
+         do i = 0, cart_ncart_of(b%sh_l(ish)) - 1
+            work%ao_atom(b%sh_ao(ish) + i) = b%sh_at(ish)
+         end do
+      end do
+      work%npc = 1
+      work%nhs = NHESS
+      allocate (work%chi(nchi_max), work%gchi(nchi_max, 3), work%hchi(nchi_max, NHESS))
+      allocate (work%xt(nchi_max, nslot), work%rt(nchi_max, nchan), work%rd(nchi_max, nchan))
+      allocate (work%rdx(1, 1), work%yt(1, 3, 1), work%pc(1, 1), work%fp(1, 3), work%qp(1, 3), work%eb(1, 3))
+      allocate (work%dloc(npairs_max, nslot))
+      allocate (work%ord(nb_max), work%pb_off(nb_max + 1), work%wk_off(nb_max + 1), work%mw_off(nb_max + 1))
+      work%ldt = nchi_max
+      work%ldh = nchi_max
+      work%ldr = nchi_max
+      work%ldx = 1
+      work%ldy = 1
+      work%ldd = npairs_max
+      work%ldp = 1
+      !$acc enter data copyin(work%ao_atom, work%active, work%npp, work%nlp, work%c_off, work%pr_off) &
+      !$acc      create(work%chi, work%gchi, work%hchi, work%xt, work%rt, work%rd, work%rdx, work%dloc, work%pc) &
+      !$acc      create(work%yt, work%fp, work%qp, work%eb, work%ord, work%pb_off, work%wk_off, work%mw_off)
+   end subroutine xc_grad_many_work_alloc
+
+   subroutine xc_grad_many_gemm_rd(lp, work, ncol)
+      !! RD_c = R_c D_s(c) for every channel of the current chunk.
+      type(trc_linalg_t), intent(inout) :: lp
+      type(xc_grad_work_t), intent(inout) :: work
+      integer, intent(in) :: ncol
+      type(trc_gemm_batch_t) :: gemm_shape
+      integer :: k0, k1, ib, cnt, mp, ml, c, co, po, slot, icol, kind
+
+      k0 = 1
+      do while (k0 <= work%nb)
+         call shape_run(k0, work%nb, work%ord, work%npp, work%nlp, k1, mp, ml)
+         ib = work%ord(k0)
+         cnt = k1 - k0 + 1
+         if (ml > 0) then
+            gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
+            co = work%c_off(ib) + 1
+            po = work%pr_off(ib) + 1
+            do icol = 1, ncol
+               do kind = 1, 3
+                  c = 3*(icol - 1) + kind
+                  slot = xc_grad_many_slot(kind, icol, ncol)
+                  call lp%gemm_batched(gemm_shape, work%rt(co, c), work%dloc(po, slot), work%rd(co, c))
+               end do
+            end do
+         end if
+         k0 = k1 + 1
+      end do
+   end subroutine xc_grad_many_gemm_rd
+
+   pure function xc_grad_many_slot(kind, icol, ncol) result(slot)
+      !! The density slot channel (kind, icol) reads: 1 for the reference, 1 + icol
+      !! for the column's P, 1 + ncol + icol for its T.
+      !$acc routine seq
+      integer, intent(in) :: kind, icol, ncol
+      integer :: slot
+      if (kind == 1) then
+         slot = 1
+      else if (kind == 2) then
+         slot = 1 + icol
+      else
+         slot = 1 + ncol + icol
+      end if
+   end function xc_grad_many_slot
+
+   subroutine xc_grad_many_rtiles(np, p0, npts, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, ldt, ldr, &
+                                  nchan, gchi, cf, rt)
+      !! One thread per point: R_c(i) = b_c . grad chi_u(i) for each channel c
+      !! and local function u (xc_grad_point_ext_body's rt, per channel).
+      integer, intent(in) :: np, p0, npts, nbatch, nchan
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch)
+      integer(int64), intent(in) :: ldt, ldr
+      real(dp), intent(in) :: gchi(ldt, 3), cf(4, npts, nchan)
+      real(dp), intent(inout) :: rt(ldr, nchan)
+      integer :: g
+      do concurrent(g=1:np)
+         call xc_grad_many_rtile_body(TRC_DC_INDEX(g), p0, npts, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, &
+                                      ldt, ldr, nchan, gchi, cf, rt)
+      end do
+   end subroutine xc_grad_many_rtiles
+
+   pure subroutine xc_grad_many_rtile_body(g, p0, npts, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, ldt, &
+                                           ldr, nchan, gchi, cf, rt)
+      !$acc routine seq
+      integer, intent(in) :: g, p0, npts, nbatch, nchan
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch)
+      integer(int64), intent(in) :: ldt, ldr
+      real(dp), intent(in) :: gchi(ldt, 3), cf(4, npts, nchan)
+      real(dp), intent(inout) :: rt(ldr, nchan)
+      integer :: gg, ib, nloc, ld, off, u, i, c
+
+      gg = p0 + g - 1
+      ib = batch_of(gg)
+      if (active(ib) == 0) return
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = npp(ib)
+      off = c_off(ib) + (gg - b_off(ib)) + 1
+      do c = 1, nchan
+         do u = 1, nloc
+            i = off + (u - 1)*ld
+            rt(i, c) = cf(2, gg, c)*gchi(i, 1) + cf(3, gg, c)*gchi(i, 2) + cf(4, gg, c)*gchi(i, 3)
+         end do
+      end do
+   end subroutine xc_grad_many_rtile_body
+
+   pure subroutine xc_grad_many_pair(i, gg, wg, icol, ncol, nslot, nchan, npts, ldt, ldh, nhs, ldr, gchi, hchi, xt, &
+                                     rd, cf, e)
+      !!
+      !! The force density of one (point gg, function) pair, tile element i,
+      !! summed over column icol's three channels: e_k = w sum_c [ (a_c dchi_k
+      !! + (b_c . H)_k) X_s(c) + dchi_k RD_c ], xc_grad_term's restricted GGA
+      !! line with vsigma = 1/2 and grad rho = b.
+      !!
+      !$acc routine seq
+      integer(int64), intent(in) :: i, ldt, ldh, ldr
+      integer, intent(in) :: gg, icol, ncol, nslot, nchan, npts, nhs
+      real(dp), intent(in) :: wg
+      real(dp), intent(in) :: gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nslot), rd(ldr, nchan), cf(4, npts, nchan)
+      real(dp), intent(out) :: e(3)
+      real(dp) :: a, x, rm
+      real(dp) :: gx(3), hx(NHESS), hb(3)
+      integer :: kind, c, s, j, k
+
+      gx(1) = gchi(i, 1)
+      gx(2) = gchi(i, 2)
+      gx(3) = gchi(i, 3)
+      do j = 1, NHESS
+         hx(j) = hchi(i, j)
+      end do
+      e = 0.0_dp
+      do kind = 1, 3
+         c = 3*(icol - 1) + kind
+         s = xc_grad_many_slot(kind, icol, ncol)
+         a = cf(1, gg, c)
+         hb(1) = cf(2, gg, c)*hx(1) + cf(3, gg, c)*hx(2) + cf(4, gg, c)*hx(3)
+         hb(2) = cf(2, gg, c)*hx(2) + cf(3, gg, c)*hx(4) + cf(4, gg, c)*hx(5)
+         hb(3) = cf(2, gg, c)*hx(3) + cf(3, gg, c)*hx(5) + cf(4, gg, c)*hx(6)
+         x = xt(i, s)
+         rm = rd(i, c)
+         do k = 1, 3
+            e(k) = e(k) + wg*((a*gx(k) + hb(k))*x + gx(k)*rm)
+         end do
+      end do
+   end subroutine xc_grad_many_pair
+
+   subroutine xc_grad_many_lanes(nmu, nb, ord, mw_off, ncol, nslot, nchan, npts, w, b_off, c_off, npp, nbatch, ldt, &
+                                 ldh, nhs, ldr, gchi, hchi, xt, rd, cf, ldf, fp)
+      !!
+      !! The Pulay sum's first kernel: one thread per (function, column,
+      !! lane), into fp's row t; lane l walks the function's tile column at a
+      !! stride of XC_GRAD_LANES points (xc_grad_forces' DEVICE paragraph).
+      !!
+      integer, intent(in) :: nmu, nb, ncol, nslot, nchan, npts, nbatch, nhs, ldf
+      integer, intent(in) :: ord(nb), mw_off(nb + 1), b_off(nbatch + 1), c_off(nbatch + 1), npp(nbatch)
+      integer(int64), intent(in) :: ldt, ldh, ldr
+      real(dp), intent(in) :: w(npts), gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nslot), rd(ldr, nchan), cf(4, npts, nchan)
+      real(dp), intent(inout) :: fp(ldf, 3)
+      real(dp) :: f(3)
+      integer(int64) :: t
+
+      do concurrent(t=1:int(nmu, int64)*XC_GRAD_LANES*ncol) local(f)
+         call xc_grad_many_lane(TRC_DC_INDEX(t), nmu, nb, ord, mw_off, ncol, nslot, nchan, npts, w, b_off, c_off, npp, &
+                                nbatch, ldt, ldh, nhs, ldr, gchi, hchi, xt, rd, cf, f)
+         fp(t, 1) = f(1)
+         fp(t, 2) = f(2)
+         fp(t, 3) = f(3)
+      end do
+   end subroutine xc_grad_many_lanes
+
+   pure subroutine xc_grad_many_lane(t, nmu, nb, ord, mw_off, ncol, nslot, nchan, npts, w, b_off, c_off, npp, nbatch, &
+                                     ldt, ldh, nhs, ldr, gchi, hchi, xt, rd, cf, f)
+      !$acc routine seq
+      integer(int64), intent(in) :: t, ldt, ldh, ldr
+      integer, intent(in) :: nmu, nb, ncol, nslot, nchan, npts, nbatch, nhs
+      integer, intent(in) :: ord(nb), mw_off(nb + 1), b_off(nbatch + 1), c_off(nbatch + 1), npp(nbatch)
+      real(dp), intent(in) :: w(npts), gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nslot), rd(ldr, nchan), cf(4, npts, nchan)
+      real(dp), intent(out) :: f(3)
+      integer(int64) :: r, per, i, col
+      integer :: icol, m, lane, k, ib, mu, npb, gl, gg
+      real(dp) :: e(3)
+
+      per = int(nmu, int64)*XC_GRAD_LANES
+      icol = int((t - 1_int64)/per) + 1
+      r = t - int(icol - 1, int64)*per
+      m = int((r - 1_int64)/XC_GRAD_LANES) + 1
+      lane = int(r - int(m - 1, int64)*XC_GRAD_LANES)
+      call grad_item_batch(m, nb, mw_off, k, mu)
+      ib = ord(k)
+      npb = b_off(ib + 1) - b_off(ib)
+      col = int(c_off(ib), int64) + int(mu, int64)*int(npp(ib), int64)
+      f = 0.0_dp
+      do gl = lane, npb, XC_GRAD_LANES
+         i = col + gl
+         gg = b_off(ib) + gl - 1
+         call xc_grad_many_pair(i, gg, w(gg), icol, ncol, nslot, nchan, npts, ldt, ldh, nhs, ldr, gchi, hchi, xt, rd, &
+                                cf, e)
+         f(1) = f(1) + e(1)
+         f(2) = f(2) + e(2)
+         f(3) = f(3) + e(3)
+      end do
+   end subroutine xc_grad_many_lane
+
+   subroutine xc_grad_many_scatter(nmu, nb, ord, mw_off, ncol, b_aooff, nbao, b_ao, nao, ao_atom, nbatch, ldf, fp, &
+                                   natm, grad)
+      !!
+      !! The Pulay sum's second kernel: each (function, column)'s lanes summed,
+      !! -2 x that onto the function's atom, atomic on the device -- functions
+      !! of different batches share atoms.
+      !!
+      integer, intent(in) :: nmu, nb, ncol, nbao, nao, nbatch, ldf, natm
+      integer, intent(in) :: ord(nb), mw_off(nb + 1), b_aooff(nbatch + 1), b_ao(nbao), ao_atom(nao)
+      real(dp), intent(in) :: fp(ldf, 3)
+      real(dp), intent(inout) :: grad(3, natm, ncol)
+      real(dp) :: f(3)
+      integer :: tm, m, icol, at
+#ifdef TRC_DEVICE
+      do concurrent(tm=1:nmu*ncol) local(f, at, m, icol)
+         icol = (tm - 1)/nmu + 1
+         m = tm - (icol - 1)*nmu
+         call xc_grad_many_sum(TRC_DC_INDEX(m), TRC_DC_INDEX(icol), nmu, nb, ord, mw_off, b_aooff, nbao, b_ao, nao, &
+                               ao_atom, nbatch, ldf, fp, f, at)
+         !$acc atomic update
+         grad(1, at, icol) = grad(1, at, icol) + f(1)
+         !$acc atomic update
+         grad(2, at, icol) = grad(2, at, icol) + f(2)
+         !$acc atomic update
+         grad(3, at, icol) = grad(3, at, icol) + f(3)
+      end do
+#else
+      do tm = 1, nmu*ncol
+         icol = (tm - 1)/nmu + 1
+         m = tm - (icol - 1)*nmu
+         call xc_grad_many_sum(m, icol, nmu, nb, ord, mw_off, b_aooff, nbao, b_ao, nao, ao_atom, nbatch, ldf, fp, f, at)
+         grad(1, at, icol) = grad(1, at, icol) + f(1)
+         grad(2, at, icol) = grad(2, at, icol) + f(2)
+         grad(3, at, icol) = grad(3, at, icol) + f(3)
+      end do
+#endif
+   end subroutine xc_grad_many_scatter
+
+   pure subroutine xc_grad_many_sum(m, icol, nmu, nb, ord, mw_off, b_aooff, nbao, b_ao, nao, ao_atom, nbatch, ldf, &
+                                    fp, f, at)
+      !! Function m of column icol: its lanes summed, times -2, and its atom.
+      !$acc routine seq
+      integer, intent(in) :: m, icol, nmu, nb, nbao, nao, nbatch, ldf
+      integer, intent(in) :: ord(nb), mw_off(nb + 1), b_aooff(nbatch + 1), b_ao(nbao), ao_atom(nao)
+      real(dp), intent(in) :: fp(ldf, 3)
+      real(dp), intent(out) :: f(3)
+      integer, intent(out) :: at
+      integer :: k, mu, l, t0
+
+      call grad_item_batch(m, nb, mw_off, k, mu)
+      at = ao_atom(b_ao(b_aooff(ord(k)) + mu))
+      t0 = ((icol - 1)*nmu + (m - 1))*XC_GRAD_LANES
+      f = 0.0_dp
+      do l = 1, XC_GRAD_LANES
+         f(1) = f(1) + fp(t0 + l, 1)
+         f(2) = f(2) + fp(t0 + l, 2)
+         f(3) = f(3) + fp(t0 + l, 3)
+      end do
+      f(1) = -2.0_dp*f(1)
+      f(2) = -2.0_dp*f(2)
+      f(3) = -2.0_dp*f(3)
+   end subroutine xc_grad_many_sum
+
+   subroutine xc_grad_many_pointmotion(np, p0, ncol, nslot, nchan, npts, w, g_atom, batch_of, b_off, b_aooff, c_off, &
+                                       npp, active, nbatch, ldt, ldh, nhs, ldr, gchi, hchi, xt, rd, cf, natm, grad)
+      !!
+      !! GRID RESPONSE, point-motion piece (this module's header, A) for every
+      !! column: +2 x the force density summed over the point's functions onto
+      !! the atom that owns the point. One thread per (point, column).
+      !!
+      integer, intent(in) :: np, p0, ncol, nslot, nchan, npts, nbatch, natm, nhs
+      integer, intent(in) :: g_atom(npts), batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1)
+      integer, intent(in) :: c_off(nbatch + 1), npp(nbatch), active(nbatch)
+      integer(int64), intent(in) :: ldt, ldh, ldr
+      real(dp), intent(in) :: w(npts), gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nslot), rd(ldr, nchan), cf(4, npts, nchan)
+      real(dp), intent(inout) :: grad(3, natm, ncol)
+      integer :: tg, g, icol, at
+      real(dp) :: q(3)
+#ifdef TRC_DEVICE
+      do concurrent(tg=1:np*ncol) local(q, at, g, icol)
+         icol = (tg - 1)/np + 1
+         g = tg - (icol - 1)*np
+         call xc_grad_many_pm_body(TRC_DC_INDEX(g), TRC_DC_INDEX(icol), p0, ncol, nslot, nchan, npts, w, g_atom, &
+                                   batch_of, b_off, b_aooff, c_off, npp, active, nbatch, ldt, ldh, nhs, ldr, gchi, &
+                                   hchi, xt, rd, cf, q, at)
+         if (at > 0) then
+            !$acc atomic update
+            grad(1, at, icol) = grad(1, at, icol) + q(1)
+            !$acc atomic update
+            grad(2, at, icol) = grad(2, at, icol) + q(2)
+            !$acc atomic update
+            grad(3, at, icol) = grad(3, at, icol) + q(3)
+         end if
+      end do
+#else
+      do tg = 1, np*ncol
+         icol = (tg - 1)/np + 1
+         g = tg - (icol - 1)*np
+         call xc_grad_many_pm_body(g, icol, p0, ncol, nslot, nchan, npts, w, g_atom, batch_of, b_off, b_aooff, c_off, &
+                                   npp, active, nbatch, ldt, ldh, nhs, ldr, gchi, hchi, xt, rd, cf, q, at)
+         if (at > 0) then
+            grad(1, at, icol) = grad(1, at, icol) + q(1)
+            grad(2, at, icol) = grad(2, at, icol) + q(2)
+            grad(3, at, icol) = grad(3, at, icol) + q(3)
+         end if
+      end do
+#endif
+   end subroutine xc_grad_many_pointmotion
+
+   pure subroutine xc_grad_many_pm_body(g, icol, p0, ncol, nslot, nchan, npts, w, g_atom, batch_of, b_off, b_aooff, &
+                                        c_off, npp, active, nbatch, ldt, ldh, nhs, ldr, gchi, hchi, xt, rd, cf, q, at)
+      !$acc routine seq
+      integer, intent(in) :: g, icol, p0, ncol, nslot, nchan, npts, nbatch, nhs
+      integer, intent(in) :: g_atom(npts), batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1)
+      integer, intent(in) :: c_off(nbatch + 1), npp(nbatch), active(nbatch)
+      integer(int64), intent(in) :: ldt, ldh, ldr
+      real(dp), intent(in) :: w(npts), gchi(ldt, 3), hchi(ldh, nhs), xt(ldt, nslot), rd(ldr, nchan), cf(4, npts, nchan)
+      real(dp), intent(out) :: q(3)
+      integer, intent(out) :: at
+      integer :: gg, ib, nloc, ld, u
+      integer(int64) :: off, i
+      real(dp) :: e(3)
+
+      q = 0.0_dp
+      at = 0
+      gg = p0 + g - 1
+      ib = batch_of(gg)
+      if (active(ib) == 0) return
+      at = g_atom(gg)
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = npp(ib)
+      off = int(c_off(ib), int64) + int(gg - b_off(ib), int64) + 1_int64
+      do u = 1, nloc
+         i = off + int(u - 1, int64)*int(ld, int64)
+         call xc_grad_many_pair(i, gg, w(gg), icol, ncol, nslot, nchan, npts, ldt, ldh, nhs, ldr, gchi, hchi, xt, rd, &
+                                cf, e)
+         q(1) = q(1) + e(1)
+         q(2) = q(2) + e(2)
+         q(3) = q(3) + e(3)
+      end do
+      q(1) = 2.0_dp*q(1)
+      q(2) = 2.0_dp*q(2)
+      q(3) = 2.0_dp*q(3)
+   end subroutine xc_grad_many_pm_body
 
 
 end module trc_xc_grad

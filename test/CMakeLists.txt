@@ -2528,6 +2528,20 @@ foreach(_f svwn pbe b3lyp)
 endforeach()
 
 #
+# The batched XC response gradient (trc_xc_grad_response_many,
+# src/xc/trc_xc_grad_response.F90): nuclear finite differences of Tr(P V_xc)
+# and 1/2 Tr(T f_xc T) with the grid rebuilt, the density-step identities,
+# batch == loop, T = 0 against xc_grad_potential_add and the refusals. One
+# executable, one ARGS set per functional.
+#
+foreach(_f svwn pbe b3lyp)
+  terco_add_check(check_xc_grad_response_${_f} check_xc_grad_response.F90 NEEDS_BASIS ARGS ${_f})
+  target_link_libraries(check_xc_grad_response_${_f} PRIVATE test-drive::test-drive)
+  set_target_properties(check_xc_grad_response_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_xc_grad_response_${_f})
+endforeach()
+
+#
 # The SCF over ranks. Built in every configuration -- pic-mpi's serial
 # backend makes it rank 0 of 1 -- and registered on one, two and four ranks
 # when MPI is on, each run asserting the single-rank energies. No

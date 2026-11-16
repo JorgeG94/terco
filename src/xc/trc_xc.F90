@@ -148,6 +148,7 @@ module trc_xc
    public :: trc_xc_kernel_points_rks, trc_xc_kernel_points_t
    public :: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply, trc_xc_fxc_rks_apply_many, trc_xc_fxc_vec_chunk
    public :: trc_xc_kxc_rks_apply, trc_xc_kxc_refuse_reason, trc_xc_response_refuse_reason, XC_KXC_STEP
+   public :: trc_xc_grad_coef_rks, trc_xc_grad_coef_t
 
    real(dp), parameter :: XC_RHO_TOL = 1.0e-12_dp
    !! A batch whose bound on rho is below this is skipped. The functionals'
@@ -219,6 +220,24 @@ module trc_xc
    contains
       procedure :: release => xc_kernel_points_release
    end type trc_xc_kernel_points_t
+
+   type :: trc_xc_grad_coef_t
+      !! Per grid point and channel, what trc_xc_grad_response_many's force
+      !! sweep needs (trc_xc_grad_coef_rks fills it, on the device, in xg's own
+      !! point order, zero on a batch its `active` drops). Column I of ncol has
+      !! channels 3 (I - 1) + 1 .. 3 I: the reference density D, the column's
+      !! P and its T. A channel's force is sum_g w_g [a drho_s + b . d grad rho_s]
+      !! (unweighted a, b), s the density it reads.
+      integer :: npts = 0
+      integer :: ncol = 0
+      real(dp), allocatable :: cf(:, :, :)
+      !! (4, npts, 3 ncol): a, then b(1:3).
+      real(dp), allocatable :: energy(:, :)
+      !! (npts, ncol): the column's integrand, unweighted -- Tr(P V) and
+      !! 1/2 E''[T, T] per point -- which the partition's response needs.
+   contains
+      procedure :: release => xc_grad_coef_release
+   end type trc_xc_grad_coef_t
 
    type :: trc_xc_fxc_cache_t
       !! Across one CPKS/Z-vector CG solve, f_xc[D_U] (trc_xc_fxc_rks's own
@@ -2503,6 +2522,315 @@ contains
       vsigma(gg) = vs
       energy(gg) = vr*rho_p + 2.0_dp*vs*gdotp
    end subroutine xc_kernel_point_body
+
+   subroutine xc_grad_coef_release(this)
+      class(trc_xc_grad_coef_t), intent(inout) :: this
+      if (allocated(this%cf)) then
+         !$acc exit data delete(this%cf, this%energy)
+         deallocate (this%cf, this%energy)
+      end if
+      this%npts = 0
+      this%ncol = 0
+   end subroutine xc_grad_coef_release
+
+   recursive subroutine trc_xc_grad_coef_rks(b, xg, func, dpack, ncol, active, tcap, pts, la, no_kxc)
+      !!
+      !! trc_xc_grad_coef_t at every point of `xg`, restricted LDA/GGA, for
+      !! the reference density and `ncol` columns, each a relaxed density P_I
+      !! and a transition density T_I. `dpack` (nao, nao, 1 + 2 ncol) holds the
+      !! SYMMETRIC slices D, P_1..P_ncol, T_1..T_ncol, already on the device
+      !! (the caller symmetrises: trc_xc_grad_response_many). One sweep of the
+      !! grid for all columns: collocate once, X = chi D_s per slot, then one
+      !! thread per point writes every column's channels.
+      !!
+      !! The channels of column I, with f the functional at D, rho_T and
+      !! sigma' = 2 grad rho . grad rho_T:
+      !!   P : a = v_rho,  b = 2 v_sigma grad rho
+      !!   T : (a, b) = trc_xc_kxc_rks_apply's xc_kxc_zterms at (rho_T, grad rho_T),
+      !!       the derivative of 1/2 E''[T, T] with respect to the density T
+      !!   D : f_rr rho_P + 2 f_rs grad rho . grad rho_P and
+      !!       2 f_rs rho_P grad rho + 4 f_ss (grad rho . grad rho_P) grad rho
+      !!       + 2 v_sigma grad rho_P  (xc_kernel_point_body, the P term)
+      !!       PLUS the derivative of Psi = 1/2 (rho_T zg + grad rho_T . zv) with
+      !!       respect to rho and to each component of grad rho: a central
+      !!       difference of Psi, whose evaluation is the analytic f_xc
+      !!       (XC_KXC_STEP's comment: the same step rule as
+      !!       trc_xc_kxc_rks_apply, relative to rho and to |grad rho| +
+      !!       rho^(4/3)). Psi is skipped at a point where rho_T and grad rho_T
+      !!       vanish and where rho <= XC_KXC_RHO_MIN.
+      !! The column's energy is v_rho rho_P + 2 v_sigma grad rho . grad rho_P + Psi.
+      !!
+      !! Scratch per chunk of batches: chi, grad chi (4 tiles), 1 + 2 ncol
+      !! X tiles and as many pair tiles, each tile at most `tcap` doubles.
+      !!
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_xc_functional_t), intent(in) :: func
+      integer, intent(in) :: ncol
+      real(dp), intent(in) :: dpack(b%nao, b%nao, 1 + 2*ncol)
+      integer, intent(in) :: active(xg%nbatch)
+      integer(int64), intent(in) :: tcap
+      type(trc_xc_grad_coef_t), intent(inout) :: pts
+      type(trc_linalg_t), intent(inout), optional :: la
+      !! GEMM handles; absent, made and released for this call.
+      logical, intent(in), optional :: no_kxc
+      !! Diagnostic: leave out the k_xc part of the D channel (what a gradient
+      !! built on f_xc alone gives). The negative control of the tests.
+
+      integer(int64) :: need, nchi
+      type(trc_gemm_batch_t) :: gemm_shape
+      integer :: b0, b1, ib, nloc, npb, np, p0, npairs, k, nb, k0, k1, cnt, mp, ml, nwork, s, ns
+      integer, allocatable :: c_off(:), pr_off(:), npp(:), nlp(:), ord(:), pb_off(:), wk_off(:), act(:)
+      real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), dloc(:, :)
+      logical :: kxc
+      integer :: kid(XC_MAX_KERNELS)
+      real(dp) :: coef(XC_MAX_KERNELS)
+
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call la_local%init(1)
+            call trc_xc_grad_coef_rks(b, xg, func, dpack, ncol, active, tcap, pts, la_local, no_kxc)
+            call la_local%release()
+         end block
+         return
+      end if
+      call pts%release()
+      pts%npts = xg%npts
+      pts%ncol = ncol
+      allocate (pts%cf(4, max(xg%npts, 1), 3*ncol), pts%energy(max(xg%npts, 1), ncol))
+      pts%cf = 0.0_dp
+      pts%energy = 0.0_dp
+      !$acc enter data copyin(pts%cf, pts%energy)
+      if (xg%npts == 0) return
+      kid = func%kid
+      coef = func%coef
+      ns = 1 + 2*ncol
+      kxc = .true.
+      if (present(no_kxc)) kxc = .not. no_kxc
+
+      allocate (c_off(xg%nbatch + 1), pr_off(xg%nbatch + 1))
+      allocate (npp(xg%nbatch), nlp(xg%nbatch), act(xg%nbatch))
+      do ib = 1, xg%nbatch
+         nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
+         npb = xg%b_off(ib + 1) - xg%b_off(ib)
+         act(ib) = 0
+         if (npb > 0 .and. nloc > 0) act(ib) = active(ib)
+         npp(ib) = ((npb + XC_NP_PAD - 1)/XC_NP_PAD)*XC_NP_PAD
+         nlp(ib) = ((nloc*act(ib) + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
+      end do
+      !$acc enter data copyin(npp, nlp, act, kid, coef)
+
+      b0 = 1
+      do while (b0 <= xg%nbatch)
+         need = 0
+         b1 = b0 - 1
+         do ib = b0, xg%nbatch
+            if (need + int(npp(ib), int64)*int(nlp(ib), int64) > tcap .and. ib > b0) exit
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            b1 = ib
+         end do
+         nchi = max(need, 1_int64)
+         p0 = xg%b_off(b0)
+         np = xg%b_off(b1 + 1) - p0
+         nb = b1 - b0 + 1
+         allocate (ord(nb), pb_off(nb + 1), wk_off(nb + 1))
+         do k = 1, nb
+            ord(k) = b0 + k - 1
+         end do
+         call xc_sort_by_shape(nb, npp, nlp, ord)
+         need = 0
+         npairs = 0
+         nwork = 0
+         pb_off(1) = 0
+         wk_off(1) = 0
+         do k = 1, nb
+            ib = ord(k)
+            c_off(ib) = int(need)
+            pr_off(ib) = npairs
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            npairs = npairs + nlp(ib)*nlp(ib)
+            pb_off(k + 1) = npairs
+            nwork = nwork + (xg%b_shoff(ib + 1) - xg%b_shoff(ib))*(xg%b_off(ib + 1) - xg%b_off(ib))*act(ib)
+            wk_off(k + 1) = nwork
+         end do
+
+         allocate (chi(nchi), gchi(nchi, 3), xt(nchi, ns), dloc(max(npairs, 1), ns))
+         !$acc enter data create(chi, gchi, xt, dloc) copyin(c_off, pr_off, ord, pb_off, wk_off)
+         ! Padding must be zero, as in xc_drive: it feeds the GEMM.
+         call xc_zero(nchi, 1, chi, xt)
+         call xc_collocate(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
+                           xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, xg%b_shao, &
+                           c_off, npp, xg%nbatch, nchi, chi, gchi)
+         call xc_gather(npairs, nb, ord, pb_off, ns, b%nao, dpack, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                        nlp, xg%nbatch, dloc)
+         k0 = 1
+         do while (k0 <= nb)
+            ib = ord(k0)
+            mp = npp(ib)
+            ml = nlp(ib)
+            k1 = k0
+            do while (k1 < nb)
+               if (npp(ord(k1 + 1)) /= mp .or. nlp(ord(k1 + 1)) /= ml) exit
+               k1 = k1 + 1
+            end do
+            cnt = k1 - k0 + 1
+            if (ml > 0) then
+               gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
+               do s = 1, ns
+                  call la%gemm_batched(gemm_shape, chi(c_off(ib) + 1), dloc(pr_off(ib) + 1, s), xt(c_off(ib) + 1, s))
+               end do
+            end if
+            k0 = k1 + 1
+         end do
+         call xc_grad_coef_points(np, p0, xg%npts, xg%batch_of, xg%b_off, xg%b_aooff, c_off, npp, act, xg%nbatch, &
+                                  func%nk, kid, coef, ncol, kxc, nchi, chi, gchi, xt, pts%cf, pts%energy)
+
+         !$acc exit data delete(chi, gchi, xt, dloc, c_off, pr_off, ord, pb_off, wk_off)
+         deallocate (chi, gchi, xt, dloc, ord, pb_off, wk_off)
+         b0 = b1 + 1
+      end do
+      !$acc exit data delete(npp, nlp, act, kid, coef)
+   end subroutine trc_xc_grad_coef_rks
+
+   subroutine xc_grad_coef_points(np, p0, npts, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, nk, kid, coef, &
+                                  ncol, kxc, nchi, chi, gchi, xt, cf, energy)
+      !! One thread per point of the chunk: xc_grad_coef_point_body.
+      integer, intent(in) :: np, p0, npts, nbatch, nk, ncol
+      logical, intent(in) :: kxc
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, 1 + 2*ncol)
+      real(dp), intent(inout) :: cf(4, npts, 3*ncol), energy(npts, ncol)
+      integer :: g
+
+      do concurrent(g=1:np)
+         call xc_grad_coef_point_body(p0 + g - 1, npts, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, nk, &
+                                      kid, coef, ncol, kxc, nchi, chi, gchi, xt, cf, energy)
+      end do
+   end subroutine xc_grad_coef_points
+
+   pure subroutine xc_psi(nk, kid, coef, rho, grho, rho_t, grho_t, psi)
+      !! Psi = 1/2 (rho_T zg + grad rho_T . zv): the integrand of 1/2 E''[T, T]
+      !! at (rho, grad rho), from xc_kxc_zterms (so Tr(T f_xc[T]) = 2 sum w Psi).
+      !$acc routine seq
+      integer, intent(in) :: nk
+      integer, intent(in) :: kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      real(dp), intent(in) :: rho, rho_t
+      real(dp), intent(in) :: grho(3), grho_t(3)
+      real(dp), intent(out) :: psi
+      real(dp) :: zg
+      real(dp) :: zv(3)
+
+      call xc_kxc_zterms(nk, kid, coef, rho, grho, rho_t, grho_t, zg, zv)
+      psi = 0.5_dp*(rho_t*zg + grho_t(1)*zv(1) + grho_t(2)*zv(2) + grho_t(3)*zv(3))
+   end subroutine xc_psi
+
+   pure subroutine xc_grad_coef_point_body(gg, npts, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, nk, kid, &
+                                           coef, ncol, kxc, nchi, chi, gchi, xt, cf, energy)
+      !! Point gg of trc_xc_grad_coef_rks (its header has the channels).
+      !$acc routine seq
+      integer, intent(in) :: gg, npts, nbatch, nk, ncol
+      logical, intent(in) :: kxc
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, 1 + 2*ncol)
+      real(dp), intent(inout) :: cf(4, npts, 3*ncol), energy(npts, ncol)
+
+      integer :: ib, nloc, ld, off, u, i, k, m, cd
+      real(dp) :: x, xp, xq, rho, rho_p, rho_t, sigma, gdotp, eps, vr, vs, vs2, frr, frs, fss
+      real(dp) :: zg, psi, psi_p, psi_m, gscale, h, hg, da, en, tnorm
+      real(dp) :: zv(3)
+      real(dp) :: gr(3), gp(3), gtv(3), gs(3), db(3)
+      logical :: live
+
+      ib = batch_of(gg)
+      if (active(ib) == 0) return
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = npp(ib)
+      off = c_off(ib) + (gg - b_off(ib)) + 1
+      rho = 0.0_dp
+      gr = 0.0_dp
+      do u = 1, nloc
+         i = off + (u - 1)*ld
+         x = xt(i, 1)
+         rho = rho + x*chi(i)
+         gr(1) = gr(1) + 2.0_dp*x*gchi(i, 1)
+         gr(2) = gr(2) + 2.0_dp*x*gchi(i, 2)
+         gr(3) = gr(3) + 2.0_dp*x*gchi(i, 3)
+      end do
+      sigma = gr(1)**2 + gr(2)**2 + gr(3)**2
+      call xc_eval_point(nk, kid, coef, rho, sigma, eps, vr, vs)
+      call xc_eval_point_fxc(nk, kid, coef, rho, sigma, vs2, frr, frs, fss)
+      live = rho > XC_KXC_RHO_MIN
+      gscale = sqrt(sigma)
+      if (live) gscale = gscale + rho**(4.0_dp/3.0_dp)
+
+      do k = 1, ncol
+         rho_p = 0.0_dp
+         rho_t = 0.0_dp
+         gp = 0.0_dp
+         gtv = 0.0_dp
+         do u = 1, nloc
+            i = off + (u - 1)*ld
+            xp = xt(i, 1 + k)
+            xq = xt(i, 1 + ncol + k)
+            rho_p = rho_p + xp*chi(i)
+            rho_t = rho_t + xq*chi(i)
+            do m = 1, 3
+               gp(m) = gp(m) + 2.0_dp*xp*gchi(i, m)
+               gtv(m) = gtv(m) + 2.0_dp*xq*gchi(i, m)
+            end do
+         end do
+         gdotp = gr(1)*gp(1) + gr(2)*gp(2) + gr(3)*gp(3)
+         cd = 3*(k - 1) + 1
+
+         ! The P term, xc_kernel_point_body's coefficients.
+         da = frr*rho_p + 2.0_dp*frs*gdotp
+         do m = 1, 3
+            db(m) = 2.0_dp*frs*rho_p*gr(m) + 4.0_dp*fss*gdotp*gr(m) + 2.0_dp*vs*gp(m)
+            cf(1 + m, gg, cd + 1) = 2.0_dp*vs*gr(m)
+         end do
+         cf(1, gg, cd + 1) = vr
+         en = vr*rho_p + 2.0_dp*vs*gdotp
+
+         ! The T term: its own channel is f_xc[T], and Psi's derivative with
+         ! respect to rho and grad rho (T fixed) goes onto D's.
+         call xc_kxc_zterms(nk, kid, coef, rho, gr, rho_t, gtv, zg, zv)
+         cf(1, gg, cd + 2) = zg
+         cf(2, gg, cd + 2) = zv(1)
+         cf(3, gg, cd + 2) = zv(2)
+         cf(4, gg, cd + 2) = zv(3)
+         psi = 0.5_dp*(rho_t*zg + gtv(1)*zv(1) + gtv(2)*zv(2) + gtv(3)*zv(3))
+         en = en + psi
+         tnorm = abs(rho_t) + abs(gtv(1)) + abs(gtv(2)) + abs(gtv(3))
+         if (kxc .and. live .and. tnorm > 0.0_dp) then
+            h = XC_KXC_STEP*rho
+            call xc_psi(nk, kid, coef, rho + h, gr, rho_t, gtv, psi_p)
+            call xc_psi(nk, kid, coef, rho - h, gr, rho_t, gtv, psi_m)
+            da = da + (psi_p - psi_m)/(2.0_dp*h)
+            hg = XC_KXC_STEP*gscale
+            do m = 1, 3
+               gs = gr
+               gs(m) = gr(m) + hg
+               call xc_psi(nk, kid, coef, rho, gs, rho_t, gtv, psi_p)
+               gs(m) = gr(m) - hg
+               call xc_psi(nk, kid, coef, rho, gs, rho_t, gtv, psi_m)
+               db(m) = db(m) + (psi_p - psi_m)/(2.0_dp*hg)
+            end do
+         end if
+         cf(1, gg, cd) = da
+         cf(2, gg, cd) = db(1)
+         cf(3, gg, cd) = db(2)
+         cf(4, gg, cd) = db(3)
+         energy(gg, k) = en
+      end do
+   end subroutine xc_grad_coef_point_body
 
    subroutine xc_pack2(nao, a, bb, dpack)
       !! dpack(:,:,1) = a, dpack(:,:,2) = bb -- packs the ground and trial
