@@ -278,7 +278,7 @@ contains
          one = pack(ps, ps%column == c)
          one%column = 1
          call eri%gradient_pairs(bas, pool, one, 1, g1, err)
-         dev = max(dev, maxval(abs(g1(:, :, 1) - gall(:, :, c))))
+         dev = max(dev, reldev(g1(:, :, 1), gall(:, :, c)))
       end do
       call report("columns "//xyz, dev)
       call check(error, dev <= AGREE, "a column of the batch differs from its own call by "//to_string(dev, "es10.2"))
