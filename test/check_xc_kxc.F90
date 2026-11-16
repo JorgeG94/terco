@@ -38,14 +38,14 @@ module check_xc_kxc_suite
    integer, parameter :: NVEC = 2
    real(dp), parameter :: TOL_PYSCF = 1.0e-8_dp
    !! Relative to the largest |Tr| of the case. Measured at the committed
-   !! step (XC_KXC_STEP): 2e-9 to 4e-9, the floor of the comparison.
+   !! step (XC_KXC_STEP): 2.1e-9 to 2.2e-9, the floor of the comparison.
    real(dp), parameter :: TOL_SYM = 1.0e-9_dp
    !! The permutation symmetry of the third derivative, relative to the
-   !! largest |Tr|. Measured: 1.5e-11 to 1.6e-10 (A,B swap), 1e-12 to 3e-12
+   !! largest |Tr|. Measured: 1.6e-11 to 1.9e-10 (A,B swap), 4e-13 to 3.3e-12
    !! (A,C swap).
    real(dp), parameter :: TOL_FD = 1.0e-8_dp
    !! Against the Richardson finite difference of trc_xc_fxc_rks (steps
-   !! 1e-3 and 5e-4 of B). Measured 3e-10 to 1.7e-9.
+   !! 1e-3 and 5e-4 of B). Measured 4e-11 to 6.8e-10.
    real(dp), parameter :: TOL_BATCH = 1.0e-13_dp
 
    character(len=256) :: xyz_arg = 'water.xyz'
@@ -71,6 +71,7 @@ contains
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
                   new_unittest("kxc traces vs pyscf, symmetry, fxc finite difference, batch == loop", test_kxc), &
+                  new_unittest("kxc: small budget, non-symmetric input, nvec = 3", test_options), &
                   new_unittest("kxc refuses meta-GGA, VV10, range separation, unavailable", test_refuse) &
                   ]
    end subroutine collect_check_xc_kxc
@@ -94,9 +95,11 @@ contains
       t = sum(x*y)
    end function trace_prod
 
-   subroutine setup_case(kc, error)
+   subroutine setup_case(kc, error, write_probe)
       type(kxc_case_t), intent(inout) :: kc
       type(error_type), allocatable, intent(out) :: error
+      logical, intent(in) :: write_probe
+      !! Dump the probe file generate.py reads (the main test only).
       integer :: natm, nocc, unit, dev, k
       integer, allocatable :: zint(:)
       real(dp), allocatable :: at_r(:, :)
@@ -116,8 +119,10 @@ contains
 
       nocc = nint(sum(real(zint, dp)))/2
       opts%conv_energy = 1.0e-12_dp
-      opts%conv_density = 1.0e-10_dp
-      opts%conv_diis = 1.0e-10_dp
+      ! Tight so the density, and with it the traces compared at 1e-8, is
+      ! the same across compilers and thread counts.
+      opts%conv_density = 1.0e-11_dp
+      opts%conv_diis = 1.0e-11_dp
       opts%max_iteration = 200
       opts%functional = trim(funcname_arg)
       opts%grid_level = 3
@@ -140,6 +145,7 @@ contains
       end do
       kc%c = probe_matrix(kc%bas%nao, 5)
 
+      if (.not. write_probe) return
       ! The overlap goes in the probe: generate.py needs terco's AO
       ! normalisation to carry the densities into pyscf's basis.
       allocate (smat(kc%bas%nao, kc%bas%nao), tmat(kc%bas%nao, kc%bas%nao), vmat(kc%bas%nao, kc%bas%nao))
@@ -188,7 +194,7 @@ contains
       real(dp) :: scale, dev, t_ab, t_ba, t_cb_a, h, fd1, fd2, fd_rich, t_alt
       integer :: u, n, k
 
-      call setup_case(kc, error)
+      call setup_case(kc, error, .true.)
       if (allocated(error)) then
          call release_case(kc)
          return
@@ -297,6 +303,105 @@ contains
       end do
       call release_case(kc)
    end subroutine test_kxc
+
+   subroutine test_options(error)
+      !! The default call is the reference: a budget small enough to force
+      !! many chunks, an input with strictly-lower-triangular junk (the
+      !! routine symmetrises) and three pairs at once must all give it.
+      type(error_type), allocatable, intent(out) :: error
+      type(kxc_case_t) :: kc
+      type(error_t) :: err
+      real(dp), allocatable :: v(:, :, :), v_small(:, :, :), a3(:, :, :), b3(:, :, :), v3(:, :, :), junk(:, :, :)
+      real(dp) :: dev
+      integer :: n, i, j, k
+
+      call setup_case(kc, error, .false.)
+      if (allocated(error)) then
+         call release_case(kc)
+         return
+      end if
+      n = kc%bas%nao
+      allocate (v(n, n, NVEC), v_small(n, n, NVEC), a3(n, n, 3), b3(n, n, 3), v3(n, n, 3), junk(n, n, NVEC))
+      call kxc_apply(kc, NVEC, kc%a, kc%bm, v, error)
+      if (allocated(error)) then
+         call release_case(kc)
+         return
+      end if
+
+      ! 2e4 doubles per chunk: one batch per chunk on this grid.
+      call trc_xc_kxc_rks_apply(kc%bas, kc%xg, kc%func, kc%dmat, kc%a, kc%bm, NVEC, v_small, err, &
+                                budget=20000_int64, la=kc%la)
+      call check(error, .not. err%has_error(), err%get_message())
+      if (allocated(error)) then
+         call release_case(kc)
+         return
+      end if
+      dev = maxval(abs(v - v_small))/maxval(abs(v))
+      call check(error, dev < TOL_BATCH, "small budget vs default: relative "//to_string(dev, "es10.2"))
+      if (allocated(error)) then
+         call release_case(kc)
+         return
+      end if
+
+      ! A + strictly lower triangle junk, for both A and B, and for the ground density.
+      junk = kc%a
+      do k = 1, NVEC
+         do j = 1, n
+            do i = j + 1, n
+               junk(i, j, k) = junk(i, j, k) + 0.1_dp*sin(real(i*7 + j*3 + k, dp))
+            end do
+         end do
+      end do
+      call trc_xc_kxc_rks_apply(kc%bas, kc%xg, kc%func, kc%dmat, junk, kc%bm, NVEC, v_small, err, la=kc%la)
+      call check(error, .not. err%has_error(), err%get_message())
+      if (allocated(error)) then
+         call release_case(kc)
+         return
+      end if
+      ! Symmetrising adds +/- 0.05 junk on both triangles, so the symmetric
+      ! parts differ: compare against the explicitly symmetrised input.
+      do k = 1, NVEC
+         junk(:, :, k) = 0.5_dp*(junk(:, :, k) + transpose(junk(:, :, k)))
+      end do
+      call kxc_apply(kc, NVEC, junk, kc%bm, v, error)
+      if (allocated(error)) then
+         call release_case(kc)
+         return
+      end if
+      dev = maxval(abs(v - v_small))/maxval(abs(v))
+      call check(error, dev < TOL_BATCH, "non-symmetric input vs its symmetrised copy: relative "// &
+                 to_string(dev, "es10.2"))
+      if (allocated(error)) then
+         call release_case(kc)
+         return
+      end if
+
+      ! nvec = 3 against three single pairs.
+      do k = 1, 3
+         a3(:, :, k) = probe_matrix(n, 6 + k)
+         b3(:, :, k) = probe_matrix(n, 9 + k)
+      end do
+      call kxc_apply(kc, 3, a3, b3, v3, error)
+      if (allocated(error)) then
+         call release_case(kc)
+         return
+      end if
+      do k = 1, 3
+         call kxc_apply(kc, 1, a3(:, :, k:k), b3(:, :, k:k), v_small(:, :, 1:1), error)
+         if (allocated(error)) then
+            call release_case(kc)
+            return
+         end if
+         dev = maxval(abs(v3(:, :, k) - v_small(:, :, 1)))/maxval(abs(v3(:, :, k)))
+         call check(error, dev < TOL_BATCH, "nvec = 3, pair "//to_string(k)//" vs single: relative "// &
+                    to_string(dev, "es10.2"))
+         if (allocated(error)) then
+            call release_case(kc)
+            return
+         end if
+      end do
+      call release_case(kc)
+   end subroutine test_options
 
    function fxc_trace_fd(kc, h) result(fd)
       !! (Tr(C f_xc[D + h B1](A1)) - Tr(C f_xc[D - h B1](A1)))/(2h).

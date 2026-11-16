@@ -147,7 +147,7 @@ module trc_xc
    public :: XC_NP_PAD, XC_NL_PAD, xc_sort_by_shape
    public :: trc_xc_kernel_points_rks, trc_xc_kernel_points_t
    public :: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply, trc_xc_fxc_rks_apply_many, trc_xc_fxc_vec_chunk
-   public :: trc_xc_kxc_rks_apply, trc_xc_kxc_refuse_reason, XC_KXC_STEP
+   public :: trc_xc_kxc_rks_apply, trc_xc_kxc_refuse_reason, trc_xc_response_refuse_reason, XC_KXC_STEP
 
    real(dp), parameter :: XC_RHO_TOL = 1.0e-12_dp
    !! A batch whose bound on rho is below this is skipped. The functionals'
@@ -160,21 +160,23 @@ module trc_xc
    !! 256 MB with the gradients.
    real(dp), parameter :: XC_KXC_STEP = 1.0e-5_dp
    !! trc_xc_kxc_rks_apply's central-difference step: the largest relative
-   !! change of rho or of |grad rho| along B. Measured on water/6-31G* at
-   !! the converged density, worst |Tr(C v) - pyscf|/max|Tr| over two probe
-   !! pairs (test/check_xc_kxc.F90), by step:
-   !!   step    SVWN     PBE      B3LYP
-   !!   1e-2    4.9e-5   6.2e-4   4.4e-4
-   !!   1e-3    4.9e-7   6.2e-6   4.4e-6
-   !!   1e-4    5.9e-9   6.4e-8   4.6e-8
-   !!   1e-5    2.2e-9   2.1e-9   3.7e-9
-   !!   1e-6    2.3e-9   1.5e-9   3.1e-9
-   !!   1e-7    1.8e-9   2.9e-9   7.5e-10
-   !! The truncation error falls as step**2 down to 1e-5, below which the
-   !! deviation is flat at the ~2e-9 floor of the comparison itself, with
-   !! round-off (eps/step times the second derivative) not yet visible at
-   !! 1e-7; 1e-5 sits two decades from the truncation side and four from
-   !! round-off.
+   !! change of rho or of |grad rho| along B. The deviation from pyscf's
+   !! analytic kxc (water/6-31G*, test/check_xc_kxc.F90) is, by source:
+   !!   FD truncation   about 0.6 step**2 (6e-11 at 1e-5, 6e-9 at 1e-4);
+   !!   round-off       about 1.5e-16/step (1.5e-11 at 1e-5, visible by 1e-7);
+   !!   input mismatch  a floor of about 1.4e-9: the AO overlap/mapping
+   !!                   into pyscf's basis ~3e-10, and the SCF density's own
+   !!                   noise (a 1e-9 relative change of D moves the trace
+   !!                   1.2e-9 to 2e-9).
+   !! 1e-5 sits where truncation and round-off are both well under that
+   !! floor. A per-point cut at XC_RHO_TOL (dropped: trc_xc_fxc_rks has
+   !! none) moved the B3LYP trace by 1.5e-9, most of its earlier floor.
+   real(dp), parameter :: XC_KXC_TMAX = 1.0e30_dp
+   !! Cap on the step t itself, so a denormal relative size of B (t of
+   !! 1e300 or Inf) cannot make rho + t rho_B overflow into 0*Inf.
+   real(dp), parameter :: XC_KXC_RHO_MIN = 1.0e-32_dp
+   !! Densities at or under this give zero, where the kernels' own
+   !! thresholds already do (and the relative step needs rho > 0).
    integer, parameter :: XC_FXC_NCOEF = 7
    !! trc_xc_fxc_cache_t's coefp columns: grad rho(1:3), vsigma, v2rho2,
    !! v2rhosigma, v2sigma2.
@@ -1428,7 +1430,7 @@ contains
          nv = min(nvc, nvec - v0 + 1)
          allocate (dsym(nao, nao, nv))
          !$acc enter data create(dsym)
-         call xc_symmetrize(nao, nvec, v0, nv, dmats_u, dsym)
+         call xc_symmetrize(nao, nvec, v0, nv, dmats_u, nv, 1, dsym)
          if (cache%nres_chi > 0) then
             ! X = chi D_k and the response tile Z_k, sized once over the
             ! WHOLE resident region (cache%c_off's offsets span it): every
@@ -1839,13 +1841,13 @@ contains
       end do
    end subroutine xc_fxc_apply_points
 
-   subroutine xc_symmetrize(nao, nvec, v0, nv, dmats, dsym)
-      !! dsym(:, :, k) := (D + D^T)/2 of dmats(:, :, v0 + k - 1), k = 1..nv.
+   subroutine xc_symmetrize(nao, nvec, v0, nv, dmats, nd, d0, dsym)
+      !! dsym(:, :, d0 + k - 1) := (D + D^T)/2 of dmats(:, :, v0 + k - 1), k = 1..nv.
       !! One thread per output element; for an exactly symmetric D the two
       !! halves are the same double, so the result is D bit for bit.
-      integer, intent(in) :: nao, nvec, v0, nv
+      integer, intent(in) :: nao, nvec, v0, nv, nd, d0
       real(dp), intent(in) :: dmats(nao, nao, nvec)
-      real(dp), intent(out) :: dsym(nao, nao, nv)
+      real(dp), intent(inout) :: dsym(nao, nao, nd)
       integer(int64) :: t, nn
       integer :: i, j, k
 
@@ -1854,7 +1856,7 @@ contains
          k = int((t - 1_int64)/nn) + 1
          j = int(mod(t - 1_int64, nn))/nao + 1
          i = mod(int(mod(t - 1_int64, nn)), nao) + 1
-         dsym(i, j, k) = 0.5_dp*(dmats(i, j, v0 + k - 1) + dmats(j, i, v0 + k - 1))
+         dsym(i, j, d0 + k - 1) = 0.5_dp*(dmats(i, j, v0 + k - 1) + dmats(j, i, v0 + k - 1))
       end do
    end subroutine xc_symmetrize
 
@@ -1921,23 +1923,35 @@ contains
       av = b_ao(b_aooff(ib) + v - 1)
    end subroutine xc_resp_scatter_many_body
 
-   pure function trc_xc_kxc_refuse_reason(func) result(msg)
-      !! Why trc_xc_kxc_rks_apply cannot run `func`, or an empty string if
-      !! it can: the same classification as trc_cpks's cpks_refuse_reason
-      !! (an unavailable functional, a range-separated hybrid, a meta-GGA or
-      !! VV10), restated here because trc_cpks depends on this module.
+   pure function trc_xc_response_refuse_reason(func, caller) result(msg)
+      !! Why a response built on the functional's second or third
+      !! derivatives (trc_cpks, trc_xc_kxc_rks_apply) cannot run `func`, or
+      !! an empty string if it can: an unavailable functional, a
+      !! range-separated hybrid, a meta-GGA or VV10. `caller` prefixes the
+      !! message.
       type(trc_xc_functional_t), intent(in) :: func
+      character(len=*), intent(in) :: caller
       character(len=256) :: msg
       msg = ""
       if (len_trim(func%missing) > 0) then
-         msg = "trc_xc_kxc: functional '"//trim(func%name)//"' is not available: "//trim(func%missing)
+         msg = caller//": functional '"//trim(func%name)//"' is not available: "//trim(func%missing)
       else if (func%omega /= 0.0_dp .or. func%exx_lr /= 0.0_dp) then
-         msg = "trc_xc_kxc: range-separated hybrids are refused ('"//trim(func%name)//"')"
+         msg = caller//": range-separated hybrids are refused -- the response needs a second, " &
+               //"short-range-screened exchange term ('"//trim(func%name)//"') that is not built"
       else if (func%family == XC_FAMILY_MGGA) then
-         msg = "trc_xc_kxc: meta-GGA ('"//trim(func%name)//"') has no third derivative here"
+         msg = caller//": meta-GGA ('"//trim(func%name)//"') has no response term here -- " &
+               //"its higher derivatives (tau included) are not translated"
       else if (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) then
-         msg = "trc_xc_kxc: VV10 nonlocal correlation ('"//trim(func%name)//"') has no third derivative here"
+         msg = caller//": VV10 nonlocal correlation ('"//trim(func%name)//"') has no response " &
+               //"term here -- its higher derivatives are not implemented"
       end if
+   end function trc_xc_response_refuse_reason
+
+   pure function trc_xc_kxc_refuse_reason(func) result(msg)
+      !! trc_xc_response_refuse_reason for trc_xc_kxc_rks_apply.
+      type(trc_xc_functional_t), intent(in) :: func
+      character(len=256) :: msg
+      msg = trc_xc_response_refuse_reason(func, "trc_xc_kxc")
    end function trc_xc_kxc_refuse_reason
 
    recursive subroutine trc_xc_kxc_rks_apply(b, xg, func, dmat, dmat_a, dmat_b, nvec, v_kxc, err, budget, la)
@@ -1952,13 +1966,18 @@ contains
       !!
       !! HOW: ExchCXX has no third derivatives, so the derivative along B
       !! is a central difference, point by point, of the ANALYTIC response
-      !! trc_xc_fxc_rks forms (xc_kxc_zterms is its per-point formula,
-      !! factored out): v = chi^T Z + transpose with Z built from
+      !! trc_xc_fxc_rks forms (xc_kxc_zterms repeats its per-point formula,
+      !! xc_resp_point_body's, rather than sharing it, so the fxc results
+      !! stay bit for bit what they were): v = chi^T Z + transpose with Z
+      !! built from
       !! f_xc[rho + t rho_B, grad rho + t grad rho_B] applied to
       !! (rho_A, grad rho_A). The step t is chosen per point so the
       !! largest relative change of rho or of |grad rho| is XC_KXC_STEP
-      !! (its comment has the measured error); a point with rho at or
-      !! under XC_RHO_TOL contributes zero, as the energy path's screen.
+      !! (its comment has the measured error). A point with rho at or
+      !! under XC_KXC_RHO_MIN contributes zero: no per-point screen at
+      !! XC_RHO_TOL, as in trc_xc_fxc_rks (xc_resp_point_body), whose
+      !! kernels clamp at the same ~1e-32; a 1e-12 cut moved the B3LYP
+      !! deviation from pyscf by 1.5e-9 relative.
       !! No density screen on the batch level, for the reason
       !! trc_xc_fxc_rks gives.
       !!
@@ -2033,9 +2052,9 @@ contains
       !$acc data copyin(dmat, dmat_a, dmat_b, kid, coef) copy(v_kxc) create(npp, nlp, dpack)
       !$acc update device(v_kxc)
       ! Slot 1 = sym(D), 2..nvec+1 = sym(A_k), nvec+2..2 nvec+1 = sym(B_k).
-      call xc_symmetrize(nao, 1, 1, 1, dmat, dpack(:, :, 1:1))
-      call xc_symmetrize(nao, nvec, 1, nvec, dmat_a, dpack(:, :, 2:nvec + 1))
-      call xc_symmetrize(nao, nvec, 1, nvec, dmat_b, dpack(:, :, nvec + 2:2*nvec + 1))
+      call xc_symmetrize(nao, 1, 1, 1, dmat, ns, 1, dpack)
+      call xc_symmetrize(nao, nvec, 1, nvec, dmat_a, ns, 2, dpack)
+      call xc_symmetrize(nao, nvec, 1, nvec, dmat_b, ns, nvec + 2, dpack)
       do ib = 1, xg%nbatch
          nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
          npb = xg%b_off(ib + 1) - xg%b_off(ib)
@@ -2220,7 +2239,7 @@ contains
          grho(3) = grho(3) + 2.0_dp*x*gchi(i, 3)
       end do
       sigma = grho(1)**2 + grho(2)**2 + grho(3)**2
-      live = rho > XC_RHO_TOL
+      live = rho > XC_KXC_RHO_MIN
       gscale = sqrt(sigma)
       if (live) gscale = gscale + rho**(4.0_dp/3.0_dp)
 
@@ -2250,7 +2269,7 @@ contains
             ! fraction), not to B's absolute size.
             rel = max(abs(rho_b)/rho, sqrt(grho_b(1)**2 + grho_b(2)**2 + grho_b(3)**2)/gscale)
             if (rel > 0.0_dp) then
-               t = XC_KXC_STEP/rel
+               t = min(XC_KXC_STEP/rel, XC_KXC_TMAX)
                gp = grho + t*grho_b
                gm = grho - t*grho_b
                call xc_kxc_zterms(nk, kid, coef, rho + t*rho_b, gp, rho_a, grho_a, zg_p, zv_p)
