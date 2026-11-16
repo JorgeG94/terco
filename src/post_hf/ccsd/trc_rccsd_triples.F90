@@ -68,6 +68,7 @@ module trc_rccsd_triples
    use pic_strings, only: to_string
    use pic_blas_interfaces, only: pic_gemm
    use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_device_memory, only: device_memory_set_cap
    use pic_mpi_lib, only: comm_t, allreduce
    use trc_rccsd_mpi, only: rccsd_mpi_agree_text
    use trc_rccsd_ints, only: trc_rccsd_ints_t
@@ -128,6 +129,9 @@ module trc_rccsd_triples
       type(trc_rccsd_triples_dev_options_t) :: device
       !! budget, forced tile size and verbosity of the device version; `parts` and `part` are `rccsd_triples_finish`'s
       !! to set from the communicator and are refused if the caller sets them
+      integer(int64) :: device_free_cap = 0_int64
+      !! TEST HOOK: above 0, the free device memory every size check of `rccsd_triples_finish` sees, in bytes
+      !! (trc_device_memory); 0 asks the device. Lets a host build reach the refusal of a device that is too small
       type(comm_t) :: comm
       !! The caller's communicator, a copy of its handle; read only by `rccsd_triples_finish` and only when `has_comm`
       logical :: has_comm = .false.               !! `rccsd_triples_finish` is collective over `comm` (module header, RANKS)
@@ -204,6 +208,17 @@ contains
       type(error_t), intent(out) :: status
       type(trc_rccsd_triples_options_t), intent(in), optional :: opts
 
+      if (present(opts)) call device_memory_set_cap(opts%device_free_cap)
+      call finish_run(state, status, opts)
+      if (present(opts)) call device_memory_set_cap(0_int64)
+   end subroutine rccsd_triples_finish
+
+   subroutine finish_run(state, status, opts)
+      !! The body of `rccsd_triples_finish`, which sets and clears the test hook's cap around it
+      type(trc_rccsd_state_t), intent(inout) :: state
+      type(error_t), intent(out) :: status
+      type(trc_rccsd_triples_options_t), intent(in), optional :: opts
+
       character(len=MSG_LEN) :: reason
       real(dp) :: e_t, seconds
       logical :: ranks, failed, anyone
@@ -239,7 +254,7 @@ contains
       state%result%e_ccsd_t = state%result%e_ccsd + e_t
       state%result%seconds_triples = seconds
       state%result%has_triples = .true.
-   end subroutine rccsd_triples_finish
+   end subroutine finish_run
 
    subroutine refusal_reason(state, opts, ranks, reason)
       !! Why this rank cannot run (T): blank when it can. Local, no MPI call.

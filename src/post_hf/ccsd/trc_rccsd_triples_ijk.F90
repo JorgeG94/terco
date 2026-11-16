@@ -158,6 +158,7 @@ module trc_rccsd_triples_ijk
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_device_memory, only: device_memory_free_bytes, device_memory_fits
    use trc_linalg, only: trc_linalg_t
    use trc_rccsd_ints, only: trc_rccsd_ints_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t
@@ -309,6 +310,13 @@ contains
       else
          this%nblock = max(1, this%nslot/4)
       end if
+      if (.not. device_memory_fits(this%status, "trc_rccsd_triples_ijk: the (T) scratch (o "//to_string(ints%no)//", v "// &
+                            to_string(ints%nv)//", "//to_string(this%nslot)//" slices, "//to_string(this%ncap)// &
+                            " triples a tile)", other + this%nslot*slice, &
+                            hint="lower --cc-triples-budget (the tile) or use --cc-triples reference (the host)")) then
+         call scratch_free(this)
+         return
+      end if
       allocate (this%tvb((nv + no)*nv*no*no), stat=ierr)
       if (ierr == 0) allocate (this%tvb2((nv + no)*nv*no*no), stat=ierr)
       if (ierr == 0) allocate (this%gs(this%nslot*nv*nv*(nv + no)), stat=ierr)
@@ -348,26 +356,19 @@ contains
       !! plan is mapped, so that whatever the CCSD left mapped is already counted; 16 GiB on the host or when the
       !! query gives nothing.
       !! The caller clamps the result to 4..2 no slices
-#ifdef TRC_DEVICE
-      use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, acc_property_free_memory
-#endif
       integer(int64), intent(in) :: requested, other
       integer(int64) :: bytes
-#ifdef TRC_DEVICE
+
       integer(int64) :: free
-#endif
 
       if (requested > 0) then
          bytes = requested
          return
       end if
       bytes = DEFAULT_SLICE_BYTES
-#ifdef TRC_DEVICE
-      free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
-                                  acc_property_free_memory), int64)
+      free = device_memory_free_bytes()
       ! the whole plan within SLICE_FREE_FRACTION of what is free, and never closer than SLICE_RESERVE to all of it
       if (free > 0) bytes = max(min(int(SLICE_FREE_FRACTION*real(free, dp), int64), free - SLICE_RESERVE) - other, 0_int64)
-#endif
    end function slice_cache_bytes
 
    subroutine scratch_free(this)
