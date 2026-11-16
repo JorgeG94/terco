@@ -2495,6 +2495,23 @@ foreach(_t scf_cpks scf_cpks_pbe scf_cpks_b3lyp scf_cpks_formamide_pbe)
 endforeach()
 
 #
+# trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of
+# several trial densities against one cached collocation, for SVWN (LDA),
+# PBE and B3LYP (GGA) on water/6-31G*: batch against the loop, non-symmetric
+# against symmetrised input, and pyscf's nr_rks_fxc (generate.py's
+# gen_fxc_apply_many). One executable, one ARGS set per functional.
+#
+foreach(_f svwn pbe b3lyp)
+  terco_add_check(check_fxc_apply_many_${_f} check_fxc_apply_many.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                  ARGS water.xyz basis_sets/6-31gs.json water 6-31gs ${_f}
+                       ${CMAKE_CURRENT_BINARY_DIR}/fxc_apply_many_probe_${_f}.bin)
+  target_link_libraries(check_fxc_apply_many_${_f} PRIVATE test-drive::test-drive)
+  # Same source, three targets: each needs its own module directory.
+  set_target_properties(check_fxc_apply_many_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_fxc_apply_many_${_f})
+endforeach()
+
+#
 # The SCF over ranks. Built in every configuration -- pic-mpi's serial
 # backend makes it rank 0 of 1 -- and registered on one, two and four ranks
 # when MPI is on, each run asserting the single-rank energies. No
