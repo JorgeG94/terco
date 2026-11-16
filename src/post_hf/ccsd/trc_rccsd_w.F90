@@ -150,6 +150,8 @@ module trc_rccsd_w
    use trc_rccsd_inter, only: trc_rccsd_amps_t, trc_rccsd_inter_t
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_device_memory, only: device_memory_fits
+   use pic_strings, only: to_string
    implicit none
    private
 
@@ -211,6 +213,9 @@ contains
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_w: a block has more than 2^31-1 elements")
          return
       end if
+      if (.not. device_memory_fits(this%status, "trc_rccsd_w: Woooo, Wvoov and Wvovo (o "//to_string(no)//", v "// &
+                                   to_string(nv)//")", &
+                                   8_int64*(elements(no, no, no, no) + 2_int64*elements(no, no, nv, nv)))) return
       this%no = no
       this%nv = nv
       allocate (this%woooo(no, no, no, no), this%wvoov(nv, no, no, nv), this%wvovo(nv, no, nv, no))
@@ -275,6 +280,10 @@ contains
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_w: a block has more than 2^31-1 elements")
          return
       end if
+      ! 5 o^2 v^2 and f1: the arrays `enter data create` maps below, which is where a device that is too small aborts
+      if (.not. device_memory_fits(this%status, "trc_rccsd_w: the W scratch (o "//to_string(no)//", v "//to_string(nv)// &
+                                   ", naux "//to_string(ints%naux)//")", &
+                                   8_int64*(5_int64*elements(no, no, nv, nv) + int(max(no, nv), int64)*no*ints%naux))) return
       this%no = no
       this%nv = nv
       this%stamp = ints%stamp

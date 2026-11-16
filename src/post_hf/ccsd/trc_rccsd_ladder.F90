@@ -216,6 +216,7 @@ module trc_rccsd_ladder
    use trc_step_table, only: step_table_t
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_device_memory, only: device_memory_fits
    implicit none
    private
 
@@ -322,6 +323,8 @@ contains
          call this%status%set(ERROR_VALIDATION, "trc_rccsd_ladder: a block has more than 2^31-1 elements")
          return
       end if
+      if (.not. device_memory_fits(this%status, "trc_rccsd_ladder: the ladder result (o "//to_string(no)//", v "// &
+                                   to_string(nv)//")", 8_int64*elements(no, no, nv, nv))) return
       this%no = no
       this%nv = nv
       allocate (this%h(no, no, nv, nv))
@@ -452,10 +455,38 @@ contains
       this%stamp = ints%stamp
       this%d_lo = 1
       this%d_hi = nv
+      if (.not. device_memory_fits(this%status, "trc_rccsd_ladder: the ladder's work arrays (o "//to_string(no)//", v "// &
+                            to_string(nv)//", naux "//to_string(naux)//")", work_bytes(this))) then
+         call this%release()
+         return
+      end if
       call allocate_work(this)
       ! The dressed build's correction reads ovov as ((k,l);(c,d)): it depends on the integrals only, so once here.
       if (this%form == RCCSD_LADDER_HALF) call kernel_pack_ovov(no, nv, ints%ovov, this%ovovp)
    end subroutine lscratch_init
+
+   pure function work_bytes(this) result(bytes)
+      !! Bytes of the work arrays of the plan in `this`, host and device each
+      type(trc_rccsd_lscratch_t), intent(in) :: this
+      integer(int64) :: bytes
+
+      integer(int64) :: no, nv, no2, nv2, ncol
+
+      no = this%no
+      nv = this%nv
+      no2 = no*no
+      nv2 = nv*nv
+      bytes = 8_int64*(no2*nv2 + (no*nv2 + no2*no + no2*nv)*this%virtual_batch)
+      if (this%form == RCCSD_LADDER_ASSEMBLED) then
+         bytes = bytes + 8_int64*nv2*this%cd_batch
+      else if (this%form == RCCSD_LADDER_HALF) then
+         ncol = half_ncol(this%d_batch, this%nv, 1)
+         bytes = bytes + 8_int64*(nv2*nv*this%d_batch + (nv2 + 2_int64*no2)*ncol + nv2*this%naux + &
+                                  no2*nv2 + no2*no2 + no2*no*nv)
+      else
+         bytes = bytes + 16_int64*no2*nv2*this%p_batch
+      end if
+   end function work_bytes
 
    subroutine allocate_work(this)
       !! The arrays of the plan in `this`, mapped to the device
@@ -467,26 +498,22 @@ contains
       nv = this%nv
       no2 = no*no
       nv2 = nv*nv
+      this%bytes = work_bytes(this)
       allocate (this%taut(no2*nv2))
       allocate (this%ovpack(no*nv2*this%virtual_batch), this%zmat(no2*no*this%virtual_batch), &
                 this%cmat(no2*nv*this%virtual_batch))
       !$acc enter data create(this%taut, this%ovpack, this%zmat, this%cmat)
-      this%bytes = 8_int64*(no2*nv2 + (no*nv2 + no2*no + no2*nv)*this%virtual_batch)
       if (this%form == RCCSD_LADDER_ASSEMBLED) then
          allocate (this%wbatch(nv2*this%cd_batch))
          !$acc enter data create(this%wbatch)
-         this%bytes = this%bytes + 8_int64*nv2*this%cd_batch
       else if (this%form == RCCSD_LADDER_HALF) then
          ncol = half_ncol(this%d_batch, this%nv, 1)
          allocate (this%cbuf(nv2*nv*this%d_batch), this%w2(nv2*ncol), this%taus(no2*ncol), this%taus2(no2*ncol))
          allocate (this%bt(nv2*this%naux), this%ovovp(no2*nv2), this%ymat(no2*no2), this%gmat(no2*no*nv))
          !$acc enter data create(this%cbuf, this%w2, this%taus, this%taus2, this%bt, this%ovovp, this%ymat, this%gmat)
-         this%bytes = this%bytes + 8_int64*(nv2*nv*this%d_batch + (nv2 + 2_int64*no2)*ncol + nv2*this%naux + &
-                                            no2*nv2 + no2*no2 + no2*no*nv)
       else
          allocate (this%gtau(no2*nv2*this%p_batch), this%gpack(no2*nv2*this%p_batch))
          !$acc enter data create(this%gtau, this%gpack)
-         this%bytes = this%bytes + 16_int64*no2*nv2*this%p_batch
       end if
    end subroutine allocate_work
 

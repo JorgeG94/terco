@@ -29,6 +29,9 @@ module trc_rccsd_xfer
    use pic_mpi_lib, only: comm_t, isend, recv, request_t, waitall, comm_isend_real_dp_array_n, comm_recv_real_dp_array_n
    use trc_mpi_device, only: trc_mpi_device_direct
    use trc_rccsd_inter, only: trc_rccsd_amps_t
+   use trc_error, only: error_t
+   use trc_device_memory, only: device_memory_fits
+   use pic_strings, only: to_string
    implicit none
    private
 
@@ -41,6 +44,7 @@ module trc_rccsd_xfer
 
    type :: trc_rccsd_xfer_t
       !! The staging array of the packed half, on the host and the device
+      type(error_t) :: status          !! set by `init` when the array does not fit on the device (`ok` is then false)
       integer :: no = 0
       integer :: nv = 0
       integer :: nhalf = 0               !! N (N + 1) / 2, N = o v
@@ -55,8 +59,9 @@ contains
 
    subroutine xfer_init(this, no, nv, ok)
       !! Allocates the staging array for (no, nv) and reads the path switch; `ok` false when
-      !! o^2 v^2 (the full amplitudes, and with it the packed half) does not fit a default integer index or the
-      !! allocation failed (nothing is left allocated)
+      !! o^2 v^2 (the full amplitudes, and with it the packed half) does not fit a default integer index, the
+      !! array does not fit in the free device memory (`status` says so) or the allocation failed (nothing is
+      !! left allocated)
       class(trc_rccsd_xfer_t), intent(inout) :: this
       integer, intent(in) :: no, nv
       logical, intent(out) :: ok
@@ -65,6 +70,7 @@ contains
       integer :: stat
 
       call this%release()
+      call this%status%clear()
       ok = .false.
       n = int(no, int64)*nv
       ! the kernels index the full o^2 v^2 amplitudes with default integers, the staging array with n (n + 1)/2 <= n^2
@@ -72,6 +78,8 @@ contains
       if (n > 0) then
          if (n > int(huge(0_int32), int64)/n) return
       end if
+      if (.not. device_memory_fits(this%status, "trc_rccsd_xfer: the transfer staging array (o "//to_string(no)//", v "// &
+                            to_string(nv)//")", 8_int64*(n*(n + 1)/2))) return
       this%no = no
       this%nv = nv
       this%nhalf = int(n*(n + 1)/2)
