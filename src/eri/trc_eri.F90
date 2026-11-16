@@ -1496,22 +1496,16 @@ contains
    subroutine eri_fock_nosym(this, b, dmat, gmat, k_scale, j_scale, &
                              density_screen, omega)
       !!
-      !! Largest |D| in each shell-pair block, for the in-kernel density screen.
-      !!
-      !! Over a BATCH the bound is the maximum across every density, so all of them
-      !! see exactly the same quartets. That is deliberate and matches mqc: a batch
-      !! then gives bit-comparable results to the same densities passed one at a
-      !! time, which is what makes the single-density wrapper safe. Screening each
-      !! set on its own bound would be tighter and would make the batch disagree
-      !! with the loop.
-      !!
-      !!
       !! J - K/2 for a density that is NOT symmetric.
       !!
       !! Routes through the enumerated kernel, which reads D_mn and D_nm as
       !! distinct and writes J and K separately, so no fold is applied and the
       !! antisymmetric part of K survives. This is what the coupled-perturbed
       !! Hessian needs; mqc calls it `build_fock_direct_nosym`.
+      !!
+      !! With density_screen the bound is symmetrised (see `fock_nosym_many`),
+      !! because the kernel reads both D(i,j) and D(j,i); an earlier one-orientation
+      !! bound could drop a quartet whose transposed block is the large one.
       !!
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b

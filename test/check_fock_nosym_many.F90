@@ -22,6 +22,7 @@ module check_fock_nosym_many_suite
    !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
+   use pic_logger, only: global_logger
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
    use trc_eri, only: trc_eri_t
@@ -35,10 +36,21 @@ module check_fock_nosym_many_suite
 
    real(dp), parameter :: THRESH = 1.0e-14_dp
    real(dp), parameter :: OMEGA_TEST = 0.3_dp
-   real(dp), parameter :: TOL_BATCH = 1.0e-13_dp
+   real(dp), parameter :: TOL_BATCH = 1.0e-12_dp
       !! Batch against single-density calls. The kernel is the same code and
       !! the same quartet order, so the two differ only by the order atomic
-      !! updates land in; measured 0 on the host build.
+      !! updates land in: 0 measured on the host build, and a device's
+      !! reordered atomics can approach 1e-13 on a matrix of this size, so the
+      !! gate leaves a decade over that.
+   real(dp), parameter :: THRESH_SCREEN = 1.0e-10_dp
+      !! Integral threshold of the screened test, loose enough that the density
+      !! screen drops many quartets.
+   real(dp), parameter :: TOL_SCREEN = 1.0e-8_dp
+      !! Screened against unscreened: each dropped quartet satisfies
+      !! |integral bound| * |density bound| <= THRESH_SCREEN and a few thousand
+      !! are dropped, so 100 THRESH_SCREEN covers the sum with margin, while a
+      !! quartet dropped wrongly costs O(1) (measured with the bound broken: see
+      !! test_screened).
    real(dp), parameter :: TOL_ZERO = 1.0e-13_dp
    real(dp), parameter :: TOL_PYSCF = 1.0e-9_dp
       !! The gate every other pyscf Fock comparison uses (erf_fock, rys_fock).
@@ -63,7 +75,9 @@ contains
                   new_unittest("batch equals one fock_nosym call per density", test_batch_vs_single), &
                   new_unittest("antisymmetric density: J vanishes, K is antisymmetric", test_antisymmetric), &
                   new_unittest("J, K and J - K/2 match pyscf get_jk(hermi=0)", test_vs_pyscf), &
-                  new_unittest("omega > 0 batch equals single-density fock_nosym", test_omega) &
+                  new_unittest("omega > 0 batch equals single-density fock_nosym", test_omega), &
+                  new_unittest("density screen on orientation-asymmetric densities matches the unscreened build", &
+                               test_screened) &
                   ]
    end subroutine collect_fock_nosym_many_tests
 
@@ -127,7 +141,7 @@ contains
             worst = max(worst, maxval(abs(gm(:, :, id) - g1)))
          end do
       end do
-      print "(a,es12.4)", "  batch vs single nosym, worst|diff| ", worst
+      call global_logger%info("  batch vs single nosym, worst|diff| "//to_string(worst, "es12.4"))
       call check(error, maxval(abs(gm)) > 1.0e-3_dp, "batch result is trivially zero")
       if (allocated(error)) return
       call check(error, worst < TOL_BATCH, "batch vs single nosym, worst|diff| = "// &
@@ -159,7 +173,8 @@ contains
       do id = 1, NBATCH
          kasym = max(kasym, maxval(abs(gk(:, :, id) + transpose(gk(:, :, id)))))
       end do
-      print "(a,es12.4,a,es12.4,a,es12.4)", "  antisymmetric density: max|J| ", jmax, "  max|K| ", kmax, "  max|K+K^T| ", kasym
+      call global_logger%info("  antisymmetric density: max|J| "//to_string(jmax, "es12.4")//"  max|K| "// &
+                              to_string(kmax, "es12.4")//"  max|K+K^T| "//to_string(kasym, "es12.4"))
       call check(error, kmax > 1.0e-2_dp, "K of an antisymmetric density is trivially zero")
       if (allocated(error)) return
       call check(error, jmax < TOL_ZERO, "J of an antisymmetric density, max|J| = "// &
@@ -191,7 +206,8 @@ contains
          worst = max(worst, maxval(abs(gm(:, :, id) - g1)))
          shift = max(shift, maxval(abs(g1 - gc)))
       end do
-      print "(a,es12.4,a,es12.4)", "  omega batch vs single nosym, worst|diff| ", worst, "  omega shift ", shift
+      call global_logger%info("  omega batch vs single nosym, worst|diff| "//to_string(worst, "es12.4")// &
+                              "  omega shift "//to_string(shift, "es12.4"))
       ! omega must actually have changed the answer, or this compares nothing.
       call check(error, shift > 1.0e-2_dp, "omega did not change the Fock matrix")
       if (allocated(error)) return
@@ -199,6 +215,75 @@ contains
                  to_string(worst, "es12.4")//" exceeds "//to_string(TOL_BATCH, "es12.4"))
       call eri%release(); call bas%release()
    end subroutine test_omega
+
+   subroutine upper_densities(n, scales, nd, dd)
+      !! Strongly orientation-asymmetric densities: density d is `scales(d)`
+      !! times the nonsym_densities closed form on the block of AO rows in the
+      !! first half and columns in the second half, and ZERO everywhere else,
+      !! so the bound of a shell block (i, j) is large and its transpose's is
+      !! exactly zero.
+      integer, intent(in) :: n, nd
+      real(dp), intent(in) :: scales(nd)
+      real(dp), intent(out) :: dd(n, n, nd)
+      integer :: i, j, k
+      call nonsym_densities(n, nd, dd)
+      do k = 1, nd
+         do j = 1, n
+            do i = 1, n
+               if (i > n/2 .or. j <= n/2) then
+                  dd(i, j, k) = 0.0_dp
+               else
+                  dd(i, j, k) = scales(k)*dd(i, j, k)
+               end if
+            end do
+         end do
+      end do
+   end subroutine upper_densities
+
+   subroutine test_screened(error)
+      !! density_screen = .true. must only drop what cannot matter. The
+      !! enumerated digestion reads D(i,j) AND D(j,i), so the per-shell-pair
+      !! bound has to cover both orientations (the transpose-max), and over a
+      !! batch every density (the max over densities). Such
+      !! densities leave the transposed blocks of the bound at zero: a bound
+      !! read in one orientation drops quartets the digestion needs, and a
+      !! bound taken from one density of (tiny, large) drops the large one's.
+      !! Measured with the transpose-max removed and with the max over densities
+      !! reduced to the first density: 3.3e-1 and 2.7e-1 (max|G| 0.27), against 0 with
+      !! both in place.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: bas
+      type(trc_eri_t) :: eri
+      real(dp), allocatable :: d(:, :, :), gs(:, :, :), gu(:, :, :)
+      real(dp) :: worst, gmax
+      integer :: nao, nat
+      integer, allocatable :: at_z(:)
+      real(dp), allocatable :: r(:, :)
+      type(error_t) :: err
+      call read_xyz(trim(g_xyzfile), nat, at_z, r)
+      call trc_basis_from_json(trim(g_basis_json), nat, at_z, r, bas, err, &
+                               overrides=trc_basis_json_overrides(prune=.false.))
+      call check(error, .not. err%has_error(), "basis: "//err%get_message())
+      if (allocated(error)) return
+      call bas%to_device()
+      call eri%build(bas, THRESH_SCREEN)
+      nao = bas%nao
+      allocate (d(nao, nao, 3), gs(nao, nao, 3), gu(nao, nao, 3))
+      ! tiny, large, tiny: the large one is neither first nor last, and the tiny
+      ! ones' own bound is below THRESH_SCREEN for every quartet.
+      call upper_densities(nao, [1.0e-12_dp, 1.0_dp, 1.0e-13_dp], 3, d)
+      call eri%fock_nosym_many(bas, 3, d, gu, density_screen=.false.)
+      call eri%fock_nosym_many(bas, 3, d, gs, density_screen=.true.)
+      worst = maxval(abs(gs - gu))
+      gmax = maxval(abs(gu))
+      call global_logger%info("  screened vs unscreened, worst|diff| "//to_string(worst, "es12.4")// &
+                              "  max|G| "//to_string(gmax, "es12.4"))
+      call check(error, gmax > 1.0e-2_dp, "unscreened result is trivially zero")
+      if (allocated(error)) return
+      call check(error, worst < TOL_SCREEN, "screened vs unscreened, worst|diff| = "// &
+                 to_string(worst, "es12.4")//" exceeds "//to_string(TOL_SCREEN, "es12.4"))
+      call eri%release(); call bas%release()
+   end subroutine test_screened
 
    subroutine test_vs_pyscf(error)
       type(error_type), allocatable, intent(out) :: error
@@ -259,7 +344,8 @@ contains
       wj = maxval(abs(gj - j_ref))
       wk = maxval(abs(gk - k_ref))
       wg = maxval(abs(gc - (j_ref - 0.5_dp*k_ref)))
-      print "(a,es12.4,a,es12.4,a,es12.4,a,es12.4)", "  vs pyscf: S ", ds, "  J ", wj, "  K ", wk, "  J-K/2 ", wg
+      call global_logger%info("  vs pyscf: S "//to_string(ds, "es12.4")//"  J "//to_string(wj, "es12.4")//"  K "// &
+                              to_string(wk, "es12.4")//"  J-K/2 "//to_string(wg, "es12.4"))
       call check(error, ds < TOL_PYSCF, "overlap vs pyscf, max|diff| = "//to_string(ds, "es12.4"))
       if (allocated(error)) return
       call check(error, wj < TOL_PYSCF, "J vs pyscf get_jk, worst|diff| = "// &

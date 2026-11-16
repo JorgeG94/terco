@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["fock_nosym_many_water_631gs"] -> gen_fock_nosym_many
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: e4d576c04f48e0d468688e8159249314ffcde1be143da3ea3609e00193500049
+# hash: e82b973311530684f725223e7a7d6dcc44c2a8206fdbe54f9fea9ecdcb54af81
 # files: test/check_fock_nosym_many.F90 test/basis_sets/6-31gs.json test/water.xyz
 NAT 3
 NAO 19
