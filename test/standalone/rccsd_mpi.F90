@@ -53,7 +53,7 @@ module rccsd_mpi_cases
    !! state marked not converged; one rank's caller-set work share; each followed by a correct (T) on the same state.
    !!
    !! A collective-MPI program: no internal procedures (NVHPC 26.5 + HPC-X). The cases are module procedures.
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_MAX, MPI_MIN
    use trc_api, only: trc_basis_t, trc_pairlist_t
    use trc_error, only: error_t
@@ -598,6 +598,37 @@ contains
          ok = ok .and. good
          call state%release()
       end do
+
+      ! 2e. one rank's device is too small for the integral blocks (a test-hook cap on that rank only): every rank
+      ! refuses with its reason, nothing left allocated
+      do k = 1, 2
+         failing = merge(nranks - 1, 0, k == 1)
+         call converged_options(comm, nocc, MOL_NFROZEN(im), opts)
+         if (rank == failing) opts%device_free_cap = 1000_int64
+         call trc_rccsd_solve(bas, aux, pl, res%cmo(:, :, 1), res%eps(:, 1), opts, la, state)
+         good = state%result%refused .and. .not. state%result%converged .and. state%ints%stamp == 0 .and. &
+                .not. allocated(state%amps%t1)
+         good = all_ranks(comm, good) .and. has_text(comm, state%result%message, "GB of device memory")
+         if (rank == 0) print "(a,i0,a,l1)", "rccsd_mpi: fail 2e, the device of rank ", failing, &
+            " too small, all ranks refused with its message: ", good
+         ok = ok .and. good
+         call state%release()
+      end do
+
+      ! 2f. one rank's device is too small for the (T) scratch: CCSD converged on every rank, every rank reports the
+      ! (T) failure with that reason, the CCSD energy is intact and no (T) energy is set
+      call converged_options(comm, nocc, MOL_NFROZEN(im), opts)
+      call trc_rccsd_solve(bas, aux, pl, res%cmo(:, :, 1), res%eps(:, 1), opts, la, state)
+      topts%device_free_cap = merge(1000_int64, 0_int64, rank == nranks - 1)
+      call rccsd_triples_finish(state, status, topts)
+      topts%device_free_cap = 0_int64
+      good = state%result%converged .and. .not. state%result%refused .and. status%has_error() .and. &
+             .not. state%result%has_triples .and. abs(state%result%e_ccsd - refs%e_ccsd_corr) < TOL_CORR
+      good = all_ranks(comm, good) .and. same_on_ranks(comm, state%result%e_ccsd) .and. &
+             has_text(comm, status%get_message(), "GB of device memory")
+      if (rank == 0) print "(a,l1)", "rccsd_mpi: fail 2f, the (T) scratch of the last rank does not fit, all report it: ", good
+      ok = ok .and. good
+      call state%release()
 
       ! 2c. an explicit assembled ladder cannot be cut over ranks: refused on every rank, or (on one rank only) on all
       if (nranks > 1) then
