@@ -933,15 +933,27 @@ contains
       !! cache_budget pattern). The host build keeps up to 2 GB, so the
       !! cached path is exercised there too, not only under -stdpar=gpu.
 #ifdef TRC_DEVICE
-      use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
-                         acc_property_free_memory
-      bytes = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
-                                   acc_property_free_memory), int64) - 1536_int64*1024*1024
+      bytes = fxc_free_bytes() - 1536_int64*1024*1024
 #else
-      bytes = 2_int64*1024*1024*1024
+      bytes = fxc_free_bytes()
 #endif
       bytes = max(bytes, 0_int64)
    end function fxc_cache_budget_bytes
+
+   integer(int64) function fxc_free_bytes() result(bytes)
+      !! Free device bytes right now (a fixed 2 GB on the host build), the one
+      !! place the response code asks the device: fxc_cache_budget_bytes
+      !! (cache residency, at setup) and trc_xc_fxc_vec_chunk (vector scratch,
+      !! at apply time, when the resident tiles are already counted out).
+#ifdef TRC_DEVICE
+      use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
+                         acc_property_free_memory
+      bytes = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
+                                   acc_property_free_memory), int64)
+#else
+      bytes = 2_int64*1024*1024*1024
+#endif
+   end function fxc_free_bytes
 
    subroutine fxc_resident_order(nres, npp, nlp, sord)
       !! sord(1:nres) := 1..nres, shape-sorted (xc_sort_by_shape): the
@@ -1219,7 +1231,9 @@ contains
    recursive subroutine trc_xc_fxc_rks_apply(b, xg, cache, dmat_u, v_resp, budget, la)
       !! v_resp := f_xc[dmat_u] at the reference density `cache` was built
       !! from (trc_xc_fxc_rks's own formula): the one-density case of
-      !! `trc_xc_fxc_rks_apply_many`, which documents the pipeline. `dmat_u`
+      !! `trc_xc_fxc_rks_apply_many`, which documents the pipeline. Identical
+      !! to the former single-density code for an exactly symmetric `dmat_u`,
+      !! roundoff-level different otherwise (the symmetrisation). `dmat_u`
       !! is device-resident; `la` absent, made and released here.
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
@@ -1305,24 +1319,11 @@ contains
       if (present(budget)) then
          limit = max(budget, 1_int64)
       else
-         limit = max(fxc_cache_budget_bytes_free()/16_int64 - 33554432_int64, 0_int64)
+         ! Half the free memory in doubles (bytes/16), less 256 MB (32M doubles).
+         limit = max(fxc_free_bytes()/16_int64 - 33554432_int64, 0_int64)
       end if
       nvc = int(max(1_int64, min(int(nvec, int64), limit/max(per_vec, 1_int64))))
    end function trc_xc_fxc_vec_chunk
-
-   integer(int64) function fxc_cache_budget_bytes_free() result(bytes)
-      !! Free device bytes right now (2 GB on the host build): what
-      !! trc_xc_fxc_vec_chunk may spend, measured at apply time, when the
-      !! cache's resident tiles are already counted out of it.
-#ifdef TRC_DEVICE
-      use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
-                         acc_property_free_memory
-      bytes = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
-                                   acc_property_free_memory), int64)
-#else
-      bytes = 2_int64*1024*1024*1024
-#endif
-   end function fxc_cache_budget_bytes_free
 
    recursive subroutine trc_xc_fxc_rks_apply_many(b, xg, cache, nvec, dmats_u, v_resp, budget, la)
       !! v_resp(:, :, k) := f_xc[dmats_u(:, :, k)] for k = 1..nvec, at the
@@ -1342,7 +1343,9 @@ contains
       !! chi_u grad chi_v is only correct for a symmetric D (it silently
       !! computes the gradient of D^T-mixed products otherwise). So each
       !! density is symmetrised explicitly (xc_symmetrize) before the gather;
-      !! for an already symmetric input that is the identity bit for bit.
+      !! for an exactly symmetric input that is the identity bit for bit,
+      !! and for one symmetric only to roundoff (trc_cpks's add_general) it
+      !! changes the density by roundoff.
       !! The output is symmetric (xc_resp_scatter_many adds V + V^T).
       !!
       !! `dmats_u` is device-resident like `trc_xc_fxc_rks_apply`'s; `v_resp`
@@ -1554,7 +1557,7 @@ contains
             allocate (chi(nchi), gchi(nchi, 3), xt(nchi, nv), zt(nchi, nv), dloc(max(npairs, 1), nv), &
                       vloc(max(npairs, 1), nv))
             !$acc enter data create(chi, gchi, xt, zt, dloc, vloc) copyin(c_off_local, ord, pb_off, wk_off)
-            call xc_zero(nchi, 1, chi, zt)
+            call xc_zero_grad_only(nchi, chi)
             call xc_zero_zt(nchi*int(nv, int64), zt)
             call xc_collocate(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, &
                               b%sh_r, xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, xg%b_shao, &
@@ -1845,14 +1848,15 @@ contains
       real(dp), intent(inout) :: vxc(nao, nao, nvec)
       integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), nlp(nbatch)
       real(dp), intent(in) :: vloc(max(npairs, 1), nv)
-      integer :: tk, t, k, au, av
+      integer(int64) :: tk
+      integer :: t, k, au, av
       real(dp) :: acc_a
 
       if (npairs < 1) return
 #ifdef TRC_DEVICE
-      do concurrent(tk=1:npairs*nv) local(t, k, au, av, acc_a)
-         t = mod(tk - 1, npairs) + 1
-         k = (tk - 1)/npairs + 1
+      do concurrent(tk=1:int(npairs, int64)*nv) local(t, k, au, av, acc_a)
+         t = int(mod(tk - 1_int64, int(npairs, int64))) + 1
+         k = int((tk - 1_int64)/npairs) + 1
          call xc_resp_scatter_many_body(TRC_DC_INDEX(t), TRC_DC_INDEX(k), nb, ord, pb_off, b_aooff, nbao, b_ao, &
                                         nlp, nbatch, npairs, nv, vloc, au, av, acc_a)
          if (au > 0) then
@@ -1861,9 +1865,9 @@ contains
          end if
       end do
 #else
-      do tk = 1, npairs*nv
-         t = mod(tk - 1, npairs) + 1
-         k = (tk - 1)/npairs + 1
+      do tk = 1, int(npairs, int64)*nv
+         t = int(mod(tk - 1_int64, int(npairs, int64))) + 1
+         k = int((tk - 1_int64)/npairs) + 1
          call xc_resp_scatter_many_body(t, k, nb, ord, pb_off, b_aooff, nbao, b_ao, nlp, nbatch, npairs, nv, &
                                         vloc, au, av, acc_a)
          if (au > 0) vxc(au, av, v0 + k - 1) = vxc(au, av, v0 + k - 1) + acc_a

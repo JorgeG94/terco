@@ -306,8 +306,8 @@ contains
    subroutine test_vs_pyscf(error)
       type(error_type), allocatable, intent(out) :: error
       type(fixture_t) :: fx
-      real(dp), allocatable :: dm(:, :, :), v(:, :, :), vref(:, :)
-      real(dp) :: tr(2), tr_ref(2), dv, dtr, scale
+      real(dp), allocatable :: dm(:, :, :), v(:, :, :), vref(:, :), v1(:, :)
+      real(dp) :: tr(2), tr_ref(2), dv, dtr, scale, dv1
       integer :: unit, u, k, ng
       character(len=256) :: refname
 
@@ -316,10 +316,11 @@ contains
          call fixture_release(fx)
          return
       end if
-      allocate (dm(fx%nao, fx%nao, 2), v(fx%nao, fx%nao, 2), vref(fx%nao, fx%nao))
+      allocate (dm(fx%nao, fx%nao, 2), v(fx%nao, fx%nao, 2), vref(fx%nao, fx%nao), v1(fx%nao, fx%nao))
       dm(:, :, 1) = fx%psym
       dm(:, :, 2) = fx%pnon
       call apply_many_host(fx, 2, dm, v)
+      call apply_one_host(fx, dm(:, :, 1), v1)
       do k = 1, 2
          tr(k) = sum(dm(:, :, k)*v(:, :, k))
       end do
@@ -345,13 +346,22 @@ contains
       scale = 0.0_dp
       dv = 0.0_dp
       do k = 1, 2
-         if (k == 1) call ref_read_matrix(u, 'V_P', fx%nao, fx%nao, vref)
+         if (k == 1) then
+            call ref_read_matrix(u, 'V_P', fx%nao, fx%nao, vref)
+            dv1 = maxval(abs(v1 - vref))
+         end if
          if (k == 2) call ref_read_matrix(u, 'V_Q', fx%nao, fx%nao, vref)
          dv = max(dv, maxval(abs(v(:, :, k) - vref)))
          scale = max(scale, maxval(abs(vref)))
       end do
       call ref_close(u)
       dtr = maxval(abs(tr - tr_ref))
+      call check(error, dv1 < 1.0e-10_dp, &
+                 "single-density trc_xc_fxc_rks_apply vs pyscf, max|diff| = "//to_string(dv1, "es10.2"))
+      if (allocated(error)) then
+         call fixture_release(fx)
+         return
+      end if
       call check(error, dv < 1.0e-10_dp, &
                  "v_resp vs pyscf nr_rks_fxc, max|diff| = "//to_string(dv, "es10.2")// &
                  " for |v| "//to_string(scale, "es10.2"))
