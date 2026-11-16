@@ -25,7 +25,7 @@ module check_fock_nosym_many_suite
    use pic_logger, only: global_logger
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -134,7 +134,8 @@ contains
       scl = reshape([1.0_dp, 1.0_dp, 1.0_dp, 0.0_dp, 0.0_dp, 1.0_dp], [2, 3])
       worst = 0.0_dp
       do imix = 1, 3
-         call eri%fock_nosym_many(bas, NBATCH, d, gm, j_scale=scl(1, imix), k_scale=scl(2, imix))
+         call eri%fock_nosym_many(bas, NBATCH, d, gm, trc_fock_options_t(j_scale=scl(1, imix), k_scale=scl(2, imix), &
+                                                                         density_screen=.false.))
          do id = 1, NBATCH
             call eri%fock_nosym(bas, d(:, :, id), g1, j_scale=scl(1, imix), k_scale=scl(2, imix), &
                                 density_screen=.false.)
@@ -165,8 +166,8 @@ contains
          a(:, :, id) = d(:, :, id) - transpose(d(:, :, id))
       end do
       ! g = J with (j, k) = (1, 0), g = -K/2 with (0, 1).
-      call eri%fock_nosym_many(bas, NBATCH, a, gj, j_scale=1.0_dp, k_scale=0.0_dp)
-      call eri%fock_nosym_many(bas, NBATCH, a, gk, j_scale=0.0_dp, k_scale=1.0_dp)
+      call eri%fock_nosym_many(bas, NBATCH, a, gj, trc_fock_options_t(j_scale=1.0_dp, k_scale=0.0_dp, density_screen=.false.))
+      call eri%fock_nosym_many(bas, NBATCH, a, gk, trc_fock_options_t(j_scale=0.0_dp, k_scale=1.0_dp, density_screen=.false.))
       jmax = maxval(abs(gj))
       kmax = maxval(abs(gk))
       kasym = 0.0_dp
@@ -197,7 +198,7 @@ contains
       nao = bas%nao
       allocate (d(nao, nao, NPROBE), gm(nao, nao, NPROBE), g1(nao, nao), gc(nao, nao))
       call nonsym_densities(nao, NPROBE, d)
-      call eri%fock_nosym_many(bas, NPROBE, d, gm, omega=OMEGA_TEST)
+      call eri%fock_nosym_many(bas, NPROBE, d, gm, trc_fock_options_t(omega=OMEGA_TEST, density_screen=.false.))
       worst = 0.0_dp
       shift = 0.0_dp
       do id = 1, NPROBE
@@ -272,8 +273,8 @@ contains
       ! tiny, large, tiny: the large one is neither first nor last, and the tiny
       ! ones' own bound is below THRESH_SCREEN for every quartet.
       call upper_densities(nao, [1.0e-12_dp, 1.0_dp, 1.0e-13_dp], 3, d)
-      call eri%fock_nosym_many(bas, 3, d, gu, density_screen=.false.)
-      call eri%fock_nosym_many(bas, 3, d, gs, density_screen=.true.)
+      call eri%fock_nosym_many(bas, 3, d, gu)
+      call eri%fock_nosym_many(bas, 3, d, gs, trc_fock_options_t(density_screen=.true.))
       worst = maxval(abs(gs - gu))
       gmax = maxval(abs(gu))
       call global_logger%info("  screened vs unscreened, worst|diff| "//to_string(worst, "es12.4")// &
@@ -303,10 +304,10 @@ contains
       call nonsym_densities(nao, NPROBE, d)
       ! J, then K = -2 g from (0, 1) -- exact, the kernels are linear in the
       ! scales (as check_erf_fock_vs_pyscf) -- then the combined build.
-      call eri%fock_nosym_many(bas, NPROBE, d, gj, j_scale=1.0_dp, k_scale=0.0_dp)
-      call eri%fock_nosym_many(bas, NPROBE, d, gk, j_scale=0.0_dp, k_scale=1.0_dp)
+      call eri%fock_nosym_many(bas, NPROBE, d, gj, trc_fock_options_t(j_scale=1.0_dp, k_scale=0.0_dp, density_screen=.false.))
+      call eri%fock_nosym_many(bas, NPROBE, d, gk, trc_fock_options_t(j_scale=0.0_dp, k_scale=1.0_dp, density_screen=.false.))
       gk = -2.0_dp*gk
-      call eri%fock_nosym_many(bas, NPROBE, d, gc, j_scale=1.0_dp, k_scale=1.0_dp)
+      call eri%fock_nosym_many(bas, NPROBE, d, gc, trc_fock_options_t(j_scale=1.0_dp, k_scale=1.0_dp, density_screen=.false.))
 
       ! The overlap, for generate.py's per-AO normalisation check.
       allocate (smat(nao, nao), tmat(nao, nao), vmat(nao, nao))
