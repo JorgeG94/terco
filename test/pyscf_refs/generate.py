@@ -3086,6 +3086,115 @@ def gen_fxc_apply_many():
                                 "6-31gs", funcname)
 
 
+def _kxc_third_derivative(xc, ni, mol, dm, pts, wts, xs):
+    """The third functional derivative E_xc[X, Y, Z] for the closed-shell
+    density `dm` on the grid (pts, wts): libxc's eval_xc(deriv=3) contracted
+    by hand. With rho_X, sigma_X = 2 grad rho . grad rho_X and
+    sigma_XY = 2 grad rho_X . grad rho_Y, the third derivative of
+    f(rho, sigma) along three directions is f_abc X_a Y_b Z_c plus, over the
+    three pairs, f_{sigma b} sigma_XY Z_b (sigma is quadratic in grad rho and
+    rho linear, so there is no f_a term). `xs` holds the three AO densities."""
+    from pyscf.dft import libxc
+    gga = libxc.xc_type(xc) == "GGA"
+    ao = ni.eval_ao(mol, pts, deriv=1 if gga else 0)
+    xct = "GGA" if gga else "LDA"
+    rho = ni.eval_rho(mol, ao, dm, xctype=xct)
+    _, _, fxc, kxc = libxc.eval_xc(xc, rho, spin=0, deriv=3)
+    xr = [ni.eval_rho(mol, ao, x, xctype=xct) for x in xs]
+    if not gga:
+        return float(np.sum(wts * kxc[0] * xr[0] * xr[1] * xr[2]))
+    r3, r2s, rs2, s3 = (kxc[i] for i in range(4))
+    rs, ss = fxc[1], fxc[2]
+    g = rho[1:4]
+    dr = [x[0] for x in xr]
+    ds = [2.0 * np.einsum("gn,gn->n", g, x[1:4]) for x in xr]
+    tot = (r3 * dr[0] * dr[1] * dr[2]
+           + r2s * (dr[0] * dr[1] * ds[2] + dr[0] * ds[1] * dr[2] + ds[0] * dr[1] * dr[2])
+           + rs2 * (dr[0] * ds[1] * ds[2] + ds[0] * dr[1] * ds[2] + ds[0] * ds[1] * dr[2])
+           + s3 * ds[0] * ds[1] * ds[2])
+    for (i, j, k) in ((0, 1, 2), (0, 2, 1), (1, 2, 0)):
+        sij = 2.0 * np.einsum("gn,gn->n", xr[i][1:4], xr[j][1:4])
+        tot = tot + sij * (rs * dr[k] + ss * ds[k])
+    return float(np.sum(wts * tot))
+
+
+def _kxc_probe_matrix(n, p):
+    """check_xc_kxc.F90's probe_matrix: 0.05 cos(0.37 p (i+j) + 0.013 i j), i, j 1-based."""
+    i = np.arange(1, n + 1)[:, None]
+    j = np.arange(1, n + 1)[None, :]
+    return 0.05 * np.cos(0.37 * p * (i + j) + 0.013 * i * j)
+
+
+def _gen_kxc_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
+    """One check_xc_kxc.F90 case: pyscf's libxc third derivatives
+    contracted with the probe densities at terco's OWN converged density
+    and grid, so what is left to disagree is trc_xc_kxc_rks_apply's
+    finite-difference third derivative."""
+    PYSCF = {"svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
+    r = BinReader(TEST / probe_relname)
+    n, natm, no = (r.i8() for _ in range(3))
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    func_tag = r.str_(16)
+    r.f8(1)
+    dm_terco = r.mat(n)
+    s_terco = r.mat(n)
+    npts = r.i8()
+    pts = r.mat(3, npts).T.copy()
+    wts = r.f8(npts)
+    r.close()
+    if mol_tag != molname or bas_tag != basname or func_tag != funcname:
+        raise RuntimeError(f"gen_kxc {probe_relname}: probe tag mismatch")
+    atoms = _xyz_atoms(xyzname[:-4] if xyzname.endswith(".xyz") else xyzname)
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    charge = sum(elements[sym] for sym, _ in atoms) - 2 * no
+    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=charge, spin=0, verbose=0)
+    if mol.nao_nr() != n:
+        raise RuntimeError(f"gen_kxc {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
+    # terco keeps shells in file order and normalises d differently; the
+    # probe matrices and the density are terco-side AO matrices, carried
+    # into pyscf's basis as D_pyscf = N P^T D_terco P N (ao_norm_from_overlap).
+    perm = terco_to_pyscf_perm(atoms, bas)
+    inv_perm = np.argsort(perm)
+    nrm, s_err = ao_norm_from_overlap(s_terco[np.ix_(inv_perm, inv_perm)], mol.intor('int1e_ovlp'))
+    if s_err >= 1.0e-9:
+        raise RuntimeError(f"gen_kxc {probe_relname}: overlap check failed, {s_err:.3e}")
+
+    def to_pyscf(x):
+        return nrm[:, None] * x[np.ix_(inv_perm, inv_perm)] * nrm[None, :]
+
+    dm = to_pyscf(dm_terco)
+    ni = dft.numint.NumInt()
+    a = [to_pyscf(_kxc_probe_matrix(n, 1)), to_pyscf(_kxc_probe_matrix(n, 3))]
+    bm = [to_pyscf(_kxc_probe_matrix(n, 2)), to_pyscf(_kxc_probe_matrix(n, 4))]
+    c = to_pyscf(_kxc_probe_matrix(n, 5))
+    n_el = float(np.sum(wts * ni.eval_rho(mol, ni.eval_ao(mol, pts, deriv=0), dm, xctype="LDA")))
+    if abs(n_el - 2 * no) > 1.0e-4:
+        raise RuntimeError(f"gen_kxc {probe_relname}: carried density integrates to {n_el}, not {2 * no}")
+    tr = [_kxc_third_derivative(PYSCF[funcname], ni, mol, dm, pts, wts, [c, a[k], bm[k]]) for k in range(2)]
+    label = f"kxc {molname}/{basname}/{funcname} (rks)"
+    w = RefWriter(ref_relname)
+    w.header(label, [ROOT / "test" / "check_xc_kxc.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
+    w.comment("TR_CAB(k) = third derivative of E_xc along C, A_k, B_k at terco's converged density and grid; "
+              "C, A_k, B_k are check_xc_kxc.F90's probe_matrix 5, (1,3), (2,4)")
+    w.vector("TR_CAB", tr)
+    w.end()
+    w.write()
+    print(f"  {label}: TR {tr[0]:.12e} {tr[1]:.12e}")
+    (TEST / probe_relname).unlink()
+
+
+def gen_kxc():
+    """check_xc_kxc.F90: trc_xc_kxc_rks_apply (third functional derivative
+    contracted with two densities, LDA/GGA) on water/6-31G*, SVWN, PBE and
+    B3LYP, against libxc's eval_xc(deriv=3) contracted by hand."""
+    for funcname in ("svwn", "pbe", "b3lyp"):
+        probe = f"kxc_{funcname}_probe.bin"
+        run_bin(f"check_xc_kxc_{funcname}", ["water.xyz", "basis_sets/6-31gs.json", "water", "6-31gs", funcname, probe])
+        _gen_kxc_one(probe, f"kxc_water_6-31gs_{funcname}.ref", "water.xyz", "water", "6-31gs", funcname)
+
+
 def gen_rimp2_uhf():
     """trc_urimp2_run (unrestricted RI-MP2, src/post_hf/rimp2/
     trc_rimp2_driver.F90) on three open-shell radicals -- OH, triplet O2,
@@ -6633,6 +6742,7 @@ CASES = {
     "mom_excited": gen_mom_excited,
     "cpks": gen_cpks,
     "fxc_apply_many": gen_fxc_apply_many,
+    "kxc": gen_kxc,
     "rimp2_uhf": gen_rimp2_uhf,
     "scf_df": gen_scf_df,
     "dh": gen_dh,
