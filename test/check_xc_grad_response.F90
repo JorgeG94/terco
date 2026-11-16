@@ -47,7 +47,7 @@ module check_xc_grad_response_suite
    use trc_xc, only: trc_xc_rks, trc_xc_fxc_rks, trc_xc_result_t
    use trc_xc_grad, only: xc_grad_add, xc_grad_options, xc_grad_options_t
    use trc_xc_grad_potential, only: xc_grad_potential_add
-   use trc_xc_grad_response, only: trc_xc_grad_response_many, trc_xc_grad_response_plan
+   use trc_xc_grad_response, only: trc_xc_grad_response_many, trc_xc_grad_response_plan, xc_grad_response_core
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_test_basis, only: read_xyz
@@ -55,13 +55,14 @@ module check_xc_grad_response_suite
    use trc_error, only: error_t
    implicit none
    private
-   public :: collect_check_xc_grad_response, funcname_arg
+   public :: collect_check_xc_grad_response, funcname_arg, release_cached
 
    character(len=*), parameter :: BASIS_JSON = "basis_sets/6-31gs.json"
    real(dp), parameter :: FD_H = 1.0e-3_dp
    !! Nuclear step of the Richardson pair (2h, h), Bohr.
    real(dp), parameter :: TOL_FD = 1.0e-9_dp
-   !! Each column against the nuclear finite difference, absolute (Hartree/Bohr).
+   !! Each column against the nuclear finite difference, absolute (Hartree/Bohr),
+   !! over the atoms listed in fd_case (translation covers the rest).
    !! Measured worst 1.4e-10 (PBE, H2O2); the finite difference's own floor.
    real(dp), parameter :: TOL_ADD = 1.0e-10_dp
    !! The combined column against the sum of the two single-term columns.
@@ -70,6 +71,14 @@ module check_xc_grad_response_suite
    real(dp), parameter :: TOL_IDENT = 3.0e-7_dp
    !! The density-step identities, absolute. Measured worst 6.8e-8 (PBE): the t^4
    !! truncation left after the Richardson step.
+   real(dp), parameter :: TOL_SAME = 1.0e-13_dp
+   !! Batch against loop at the same chunking, relative to the largest element.
+   !! The host measures the arithmetic per column as identical; a device build's
+   !! atomics reorder sums, whose error stays well under this.
+   real(dp), parameter :: TOL_SCREEN = 1.0e-9_dp
+   !! What a 1e-12 density screen may drop from a column, absolute.
+   real(dp), parameter :: SCREEN_COARSE = 1.0e-1_dp
+   !! A screen coarse enough to drop batches that carry gradient.
    real(dp), parameter :: TOL_BATCH = 5.0e-13_dp
    !! Batch against loop, relative to the largest element. Measured worst 2.0e-13:
    !! a different column count changes the tile cap and so the grouping of
@@ -94,6 +103,9 @@ module check_xc_grad_response_suite
       real(dp), allocatable :: dmat(:, :), cmo(:, :)
    end type case_t
 
+   type(case_t), target, save :: cache(2)
+   character(len=32), save :: cache_name(2) = ""
+
 contains
 
    subroutine collect_check_xc_grad_response(testsuite)
@@ -103,6 +115,7 @@ contains
                   new_unittest("XC response gradient vs nuclear finite differences, H2O2", test_fd_h2o2), &
                   new_unittest("XC response gradient vs the density-step identities", test_identity), &
                   new_unittest("XC response gradient: batch == loop, small budget", test_batch), &
+                  new_unittest("XC response gradient: no screen by default, screens change it", test_screen), &
                   new_unittest("XC response gradient: T = 0 is xc_grad_potential_add, symmetrised input", test_potential), &
                   new_unittest("XC response gradient refuses meta-GGA, VV10, range separation", test_refuse) &
                   ]
@@ -147,6 +160,41 @@ contains
       call cs%xg%to_device()
       call cs%la%init(cs%n)
    end subroutine setup_case
+
+   subroutine acquire_case(cs, xyz, error)
+      !! The converged state of `xyz`, built on first use and kept for the
+      !! rest of the run (the SCF and the grid dominate a cheap check).
+      type(case_t), pointer, intent(out) :: cs
+      character(len=*), intent(in) :: xyz
+      type(error_type), allocatable, intent(out) :: error
+      integer :: k
+
+      cs => null()
+      do k = 1, size(cache)
+         if (cache_name(k) == xyz) then
+            cs => cache(k)
+            return
+         end if
+      end do
+      do k = 1, size(cache)
+         if (len_trim(cache_name(k)) == 0) then
+            call setup_case(cache(k), xyz, error)
+            if (allocated(error)) return
+            cache_name(k) = xyz
+            cs => cache(k)
+            return
+         end if
+      end do
+      call check(error, .false., "case cache is full")
+   end subroutine acquire_case
+
+   subroutine release_cached()
+      integer :: k
+      do k = 1, size(cache)
+         if (len_trim(cache_name(k)) > 0) call release_case(cache(k))
+         cache_name(k) = ""
+      end do
+   end subroutine release_cached
 
    subroutine release_case(cs)
       type(case_t), intent(inout) :: cs
@@ -195,8 +243,8 @@ contains
       tm = tmp + transpose(tmp)
    end subroutine probe_densities
 
-   subroutine analytic(cs, ncol, pm, tm, g, budget, nsweep, no_kxc, grid_response, error)
-      !! trc_xc_grad_response_many into a zeroed (3, nat, ncol) array.
+   subroutine analytic(cs, ncol, pm, tm, g, budget, nsweep, no_kxc, grid_response, screen_tol, tile_cap, error)
+      !! xc_grad_response_core into a zeroed (3, nat, ncol) array.
       type(case_t), intent(inout) :: cs
       integer, intent(in) :: ncol
       real(dp), intent(in) :: pm(:, :, :), tm(:, :, :)
@@ -204,6 +252,8 @@ contains
       integer(int64), intent(in), optional :: budget
       integer, intent(out), optional :: nsweep
       logical, intent(in), optional :: no_kxc, grid_response
+      real(dp), intent(in), optional :: screen_tol
+      integer(int64), intent(in), optional :: tile_cap
       type(error_type), allocatable, intent(out) :: error
       type(xc_grad_options_t) :: xopts
       type(error_t) :: err
@@ -214,8 +264,8 @@ contains
       xopts = xc_grad_options(grid_level=3, grid_max_pts=512, grid_response=gr, partition=cs%grid%partition)
       g = 0.0_dp
       !$acc enter data copyin(g)
-      call trc_xc_grad_response_many(cs%bas, cs%la, cs%func, cs%xg, cs%dmat, pm, tm, ncol, g, xopts, err, &
-                                     budget=budget, nsweep=nsweep, no_kxc=no_kxc)
+      call xc_grad_response_core(cs%bas, cs%la, cs%func, cs%xg, cs%dmat, pm, tm, ncol, g, xopts, err, &
+                                 budget=budget, nsweep=nsweep, screen_tol=screen_tol, no_kxc=no_kxc, tile_cap=tile_cap)
       !$acc update self(g)
       !$acc exit data delete(g)
       call check(error, .not. err%has_error(), err%get_message())
@@ -258,17 +308,21 @@ contains
       call bas%release()
    end subroutine terms_at
 
-   subroutine fd_gradient(cs, pm, tm, gfd, error)
+   subroutine fd_gradient(cs, atoms, pm, tm, gfd, error)
       !! gfd(1:2, k, a): Richardson central differences of terms_at's two
-      !! values with respect to coordinate k of atom a.
+      !! values with respect to coordinate k of atom a, for the atoms listed
+      !! (the others stay zero: each atom costs 12 rebuilt grids).
       type(case_t), intent(in) :: cs
+      integer, intent(in) :: atoms(:)
       real(dp), intent(in) :: pm(cs%n, cs%n), tm(cs%n, cs%n)
       real(dp), intent(out) :: gfd(2, 3, cs%nat)
       type(error_type), allocatable, intent(out) :: error
       real(dp) :: rd(3, cs%nat), vp(2), vm(2), vp2(2), vm2(2), d1(2), d2(2)
-      integer :: a, k
+      integer :: a, k, ia
 
-      do a = 1, cs%nat
+      gfd = 0.0_dp
+      do ia = 1, size(atoms)
+         a = atoms(ia)
          do k = 1, 3
             rd = cs%r
             rd(k, a) = cs%r(k, a) + FD_H
@@ -290,22 +344,20 @@ contains
       end do
    end subroutine fd_gradient
 
-   subroutine fd_case(xyz, label, error)
+   subroutine fd_case(xyz, label, atoms, error)
       !! The nuclear finite-difference check of one molecule: columns
       !! (P, 0), (0, T) and (P, T), each against its own finite difference.
       character(len=*), intent(in) :: xyz, label
+      integer, intent(in) :: atoms(:)
       type(error_type), allocatable, intent(out) :: error
-      type(case_t) :: cs
+      type(case_t), pointer :: cs
       real(dp), allocatable :: pm(:, :, :), tm(:, :, :), g(:, :, :), g_nk(:, :, :), g_ng(:, :, :), z(:, :)
       real(dp) :: gfd(2, 3, 4), dev(3), ref(3), trans, add, ctl_kxc, ctl_grid
-      integer :: nc, c, a, k
+      integer :: nc, c, a, k, ia
       character(len=240) :: line
 
-      call setup_case(cs, xyz, error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
+      call acquire_case(cs, xyz, error)
+      if (allocated(error)) return
       allocate (pm(cs%n, cs%n, 3), tm(cs%n, cs%n, 3), z(cs%n, cs%n))
       ! Column 1 is P alone, 2 is T alone, 3 both, from one probe.
       call probe_densities(cs, 1, z, tm(:, :, 2))
@@ -317,31 +369,20 @@ contains
       nc = 3
       allocate (g(3, cs%nat, nc), g_nk(3, cs%nat, nc), g_ng(3, cs%nat, nc))
       call analytic(cs, nc, pm, tm, g, error=error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
+      if (allocated(error)) return
       call analytic(cs, nc, pm, tm, g_nk, no_kxc=.true., error=error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
+      if (allocated(error)) return
       call analytic(cs, nc, pm, tm, g_ng, grid_response=.false., error=error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
-      call fd_gradient(cs, pm(:, :, 3), tm(:, :, 3), gfd(:, :, 1:cs%nat), error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
+      if (allocated(error)) return
+      call fd_gradient(cs, atoms, pm(:, :, 3), tm(:, :, 3), gfd(:, :, 1:cs%nat), error)
+      if (allocated(error)) return
       ! Columns 1 and 2 use the same P and T as column 3, so the three
       ! finite differences are the two terms and their sum.
       dev = 0.0_dp
       ref = 0.0_dp
       do c = 1, nc
-         do a = 1, cs%nat
+         do ia = 1, size(atoms)
+            a = atoms(ia)
             do k = 1, 3
                select case (c)
                case (1)
@@ -359,8 +400,13 @@ contains
       end do
       add = maxval(abs(g(:, :, 3) - g(:, :, 1) - g(:, :, 2)))
       trans = maxval(abs(sum(g, dim=2)))
-      ctl_kxc = maxval(abs(g_nk(:, :, 2) - gfd(2, :, 1:cs%nat)))
-      ctl_grid = maxval(abs(g_ng(:, :, 3) - gfd(1, :, 1:cs%nat) - gfd(2, :, 1:cs%nat)))
+      ctl_kxc = 0.0_dp
+      ctl_grid = 0.0_dp
+      do ia = 1, size(atoms)
+         a = atoms(ia)
+         ctl_kxc = max(ctl_kxc, maxval(abs(g_nk(:, a, 2) - gfd(2, :, a))))
+         ctl_grid = max(ctl_grid, maxval(abs(g_ng(:, a, 3) - gfd(1, :, a) - gfd(2, :, a))))
+      end do
       write (line, "(a,a,a,3es10.2,a,3es10.2)") "  ", trim(label), ": max |analytic - FD| (P, T, P+T) ", dev, &
          "  max |term| ", ref
       print "(a)", trim(line)
@@ -377,17 +423,16 @@ contains
                                              trim(label)//": dropping k_xc does not break the T term")
       if (.not. allocated(error)) call check(error, ctl_grid > 100.0_dp*TOL_FD, &
                                              trim(label)//": dropping the grid response does not break the gradient")
-      call release_case(cs)
    end subroutine fd_case
 
    subroutine test_fd_water(error)
       type(error_type), allocatable, intent(out) :: error
-      call fd_case("water.xyz", "water", error)
+      call fd_case("water.xyz", "water", [2], error)
    end subroutine test_fd_water
 
    subroutine test_fd_h2o2(error)
       type(error_type), allocatable, intent(out) :: error
-      call fd_case("h2o2.xyz", "h2o2", error)
+      call fd_case("h2o2.xyz", "h2o2", [1], error)
    end subroutine test_fd_h2o2
 
    subroutine xc_gradient_at(cs, dens, grad)
@@ -413,17 +458,14 @@ contains
       !! difference: an independent route to the same derivative through the
       !! existing, separately validated ground-state gradient.
       type(error_type), allocatable, intent(out) :: error
-      type(case_t) :: cs
+      type(case_t), pointer :: cs
       real(dp), allocatable :: pm(:, :, :), tm(:, :, :), g(:, :, :)
       real(dp), allocatable :: g0(:, :), gp(:, :), gm(:, :), gp2(:, :), gm2(:, :), s1(:, :), s2(:, :)
       real(dp) :: t, dev_t, dev_p, mag_t
       integer :: nat
 
-      call setup_case(cs, "water.xyz", error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
+      call acquire_case(cs, "water.xyz", error)
+      if (allocated(error)) return
       nat = cs%nat
       allocate (pm(cs%n, cs%n, 2), tm(cs%n, cs%n, 2), g(3, nat, 2))
       allocate (g0(3, nat), gp(3, nat), gm(3, nat), gp2(3, nat), gm2(3, nat), s1(3, nat), s2(3, nat))
@@ -433,10 +475,7 @@ contains
       ! Column 1: P alone; column 2: T alone.
       tm(:, :, 1) = 0.0_dp
       call analytic(cs, 2, pm, tm, g, error=error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
+      if (allocated(error)) return
       ! tm(:,:,2) came from the same call that filled pm(:,:,2) with the P: only T is kept there.
       t = 0.05_dp
       call xc_gradient_at(cs, cs%dmat, g0)
@@ -464,90 +503,141 @@ contains
       call check(error, mag_t > MIN_CONTROL, "the T term is too small to test anything")
       if (.not. allocated(error)) call check(error, dev_t < TOL_IDENT, "T term differs from the second density difference")
       if (.not. allocated(error)) call check(error, dev_p < TOL_IDENT, "P term differs from the density difference")
-      call release_case(cs)
    end subroutine test_identity
 
    subroutine test_batch(error)
+      !! Batch against loop, three ways. Same chunking (one tile cap for both
+      !! sides): only the per-column arithmetic differs, so near bitwise on
+      !! the host. Different chunking (default plan, a one-column budget, a
+      !! two-column budget with several chunks): the partial sums regroup,
+      !! round-off at the scaled tolerance.
       type(error_type), allocatable, intent(out) :: error
-      type(case_t) :: cs
-      real(dp), allocatable :: pm(:, :, :), tm(:, :, :), gb(:, :, :), gl(:, :, :), g1(:, :, :), gs(:, :, :)
-      integer(int64) :: budget, tcap_small, tcap_big
-      integer :: nc_small, nc_big, nsw_small, nsw_big, c, nsw1
-      real(dp) :: scale, dev_loop, dev_budget
+      type(case_t), pointer :: cs
+      real(dp), allocatable :: pm(:, :, :), tm(:, :, :), gb(:, :, :), gl(:, :, :), g1(:, :, :), gs(:, :, :), gt(:, :, :)
+      real(dp), allocatable :: gq(:, :, :), gc(:, :, :)
+      integer(int64) :: tcap_small, tcap_big, tcap2, need, bud, bfound
+      integer :: nc_small, nc_big, nsw_small, nsw_big, c, nsw1, nc2, nch2, nch_big, nsw2, it, nsw_same
+      real(dp) :: scale, dev_loop, dev_budget, dev_same, dev_two
       integer, parameter :: NCOL = 4
 
-      call setup_case(cs, "water.xyz", error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
+      call acquire_case(cs, "water.xyz", error)
+      if (allocated(error)) return
       allocate (pm(cs%n, cs%n, NCOL), tm(cs%n, cs%n, NCOL))
-      allocate (gb(3, cs%nat, NCOL), gl(3, cs%nat, NCOL), g1(3, cs%nat, 1), gs(3, cs%nat, NCOL))
+      allocate (gb(3, cs%nat, NCOL), gl(3, cs%nat, NCOL), g1(3, cs%nat, 1), gs(3, cs%nat, NCOL), gt(3, cs%nat, NCOL))
+      allocate (gq(3, cs%nat, 3), gc(3, cs%nat, NCOL))
       do c = 1, NCOL
          call probe_densities(cs, c, pm(:, :, c), tm(:, :, c))
       end do
-      ! The default budget fits every column in one sweep.
-      call trc_xc_grad_response_plan(cs%bas, cs%xg, NCOL, nc=nc_big, tcap=tcap_big)
+      call trc_xc_grad_response_plan(cs%bas, cs%xg, NCOL, nc=nc_big, tcap=tcap_big, nchunk=nch_big)
       call analytic(cs, NCOL, pm, tm, gb, nsweep=nsw_big, error=error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
-      ! A budget of one column's worth: one sweep per column, and the tile
-      ! cap at its floor of one batch per chunk.
-      budget = 1_int64
-      call trc_xc_grad_response_plan(cs%bas, cs%xg, NCOL, budget, nc=nc_small, tcap=tcap_small)
-      call analytic(cs, NCOL, pm, tm, gs, budget=budget, nsweep=nsw_small, error=error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
+      if (allocated(error)) return
+      ! A budget of one doubles: one sweep per column, the tile cap at its floor
+      ! of one batch per chunk.
+      call trc_xc_grad_response_plan(cs%bas, cs%xg, NCOL, 1_int64, nc=nc_small, tcap=tcap_small)
+      call analytic(cs, NCOL, pm, tm, gs, budget=1_int64, nsweep=nsw_small, error=error)
+      if (allocated(error)) return
+      ! Same chunking: the small tile cap on both sides.
+      call analytic(cs, NCOL, pm, tm, gt, tile_cap=tcap_small, nsweep=nsw_same, error=error)
+      if (allocated(error)) return
+      do c = 1, NCOL
+         call analytic(cs, 1, pm(:, :, c:c), tm(:, :, c:c), g1, tile_cap=tcap_small, nsweep=nsw1, error=error)
+         if (allocated(error)) return
+         gc(:, :, c) = g1(:, :, 1)
+      end do
+      dev_same = maxval(abs(gt - gc))/maxval(abs(gc))
+      ! Default chunking on both sides (the tile cap follows the column count).
       do c = 1, NCOL
          call analytic(cs, 1, pm(:, :, c:c), tm(:, :, c:c), g1, nsweep=nsw1, error=error)
-         if (allocated(error)) then
-            call release_case(cs)
-            return
-         end if
+         if (allocated(error)) return
          gl(:, :, c) = g1(:, :, 1)
       end do
       scale = maxval(abs(gl))
       dev_loop = maxval(abs(gb - gl))/scale
       dev_budget = maxval(abs(gs - gl))/scale
-      print "(a,es10.2,a,es10.2,a,i0,a,i0,a,i0,a,i0)", "  batch: rel |one sweep - loop| ", dev_loop, &
-         "  rel |small budget - loop| ", dev_budget, "  sweeps ", nsw_big, " and ", nsw_small, "  columns/sweep ", nc_small, &
-         "  tile cap ", tcap_small
+      ! Two columns per sweep and several chunks per sweep: the budget is
+      ! searched downward from the three-column plan's need until the plan
+      ! says nc = 2 with more than one chunk.
+      call trc_xc_grad_response_plan(cs%bas, cs%xg, 3, nc=nc2, tcap=tcap2, nchunk=nch2, need=need)
+      bfound = 0
+      bud = need
+      do it = 1, 200
+         bud = (bud*19_int64)/20_int64
+         call trc_xc_grad_response_plan(cs%bas, cs%xg, 3, bud, nc=nc2, tcap=tcap2, nchunk=nch2)
+         if (nc2 == 2 .and. nch2 > 1) then
+            bfound = bud
+            exit
+         end if
+         if (nc2 < 2) exit
+      end do
+      dev_two = -1.0_dp
+      nsw2 = 0
+      if (bfound > 0) then
+         call analytic(cs, 3, pm(:, :, 1:3), tm(:, :, 1:3), gq, budget=bfound, nsweep=nsw2, error=error)
+         if (allocated(error)) return
+         dev_two = maxval(abs(gq - gl(:, :, 1:3)))/scale
+      end if
+      print "(a,es10.2,a,es10.2,a,es10.2,a,es10.2)", "  batch: rel |same chunking| ", dev_same, "  |one sweep - loop| ", &
+         dev_loop, "  |one-column budget - loop| ", dev_budget, "  |nc=2, several chunks - loop| ", dev_two
+      print "(a,i0,a,i0,a,i0,a,i0,a,i0,a,i0)", "    sweeps ", nsw_big, " and ", nsw_small, "; same-chunking sweeps ", nsw_same, &
+         "; chunks/sweep at default ", nch_big, "; nc=2 case: chunks ", nch2, " sweeps ", nsw2
       call check(error, scale > MIN_CONTROL, "the gradients are too small to test anything")
       if (.not. allocated(error)) call check(error, nsw_big == 1 .and. nc_big == NCOL, "the default budget must take all columns in one sweep")
       if (.not. allocated(error)) call check(error, nsw_small == NCOL .and. nc_small == 1, &
                                              "a one-column budget must take one sweep per column")
       if (.not. allocated(error)) call check(error, tcap_small < tcap_big, "the small budget must shrink the tile cap")
+      if (.not. allocated(error)) call check(error, nsw_same == 1, "the same-chunking batch must be one sweep")
+      if (.not. allocated(error)) call check(error, bfound > 0 .and. nsw2 == 2, &
+                                             "no budget gives two columns per sweep with several chunks")
+      if (.not. allocated(error)) call check(error, dev_same < TOL_SAME, "same chunking: batch differs from the loop")
       if (.not. allocated(error)) call check(error, dev_loop < TOL_BATCH, "one sweep differs from the loop of single columns")
       if (.not. allocated(error)) call check(error, dev_budget < TOL_BATCH, "a small budget changes the answer")
-      call release_case(cs)
+      if (.not. allocated(error)) call check(error, dev_two < TOL_BATCH, "two columns per sweep with several chunks change the answer")
    end subroutine test_batch
+
+   subroutine test_screen(error)
+      !! The default is no screen, the operator trc_xc_fxc_rks and
+      !! trc_xc_kxc_rks_apply define. A 1e-12 screen (xc_grad_potential_add's)
+      !! drops a negligible part; a coarse one visibly changes the gradient,
+      !! so the choice is exercised: the default agrees with the unscreened
+      !! finite differences of fd_case, the coarse screen would not.
+      type(error_type), allocatable, intent(out) :: error
+      type(case_t), pointer :: cs
+      real(dp), allocatable :: pm(:, :, :), tm(:, :, :), g0(:, :, :), g12(:, :, :), g4(:, :, :)
+      real(dp) :: d12, d4
+
+      call acquire_case(cs, "water.xyz", error)
+      if (allocated(error)) return
+      allocate (pm(cs%n, cs%n, 1), tm(cs%n, cs%n, 1), g0(3, cs%nat, 1), g12(3, cs%nat, 1), g4(3, cs%nat, 1))
+      call probe_densities(cs, 1, pm(:, :, 1), tm(:, :, 1))
+      call analytic(cs, 1, pm, tm, g0, error=error)
+      if (allocated(error)) return
+      call analytic(cs, 1, pm, tm, g12, screen_tol=1.0e-12_dp, error=error)
+      if (allocated(error)) return
+      call analytic(cs, 1, pm, tm, g4, screen_tol=SCREEN_COARSE, error=error)
+      if (allocated(error)) return
+      d12 = maxval(abs(g0 - g12))
+      d4 = maxval(abs(g0 - g4))
+      print "(a,es10.2,a,es10.2)", "  screen: max |unscreened - 1e-12 screen| ", d12, "  |unscreened - coarse screen| ", d4
+      call check(error, d12 < TOL_SCREEN, "the 1e-12 screen drops more than it should")
+      if (.not. allocated(error)) call check(error, d4 > 100.0_dp*TOL_FD, "a coarse screen does not change the gradient")
+   end subroutine test_screen
 
    subroutine test_potential(error)
       type(error_type), allocatable, intent(out) :: error
-      type(case_t) :: cs
+      type(case_t), pointer :: cs
       type(xc_grad_options_t) :: xopts
       real(dp), allocatable :: pm(:, :, :), tm(:, :, :), g(:, :, :), gref(:, :), pns(:, :, :), tns(:, :, :), gn(:, :, :)
       real(dp) :: dev, dev_sym
       integer :: n
 
-      call setup_case(cs, "water.xyz", error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
+      call acquire_case(cs, "water.xyz", error)
+      if (allocated(error)) return
       n = cs%n
       allocate (pm(n, n, 1), tm(n, n, 1), g(3, cs%nat, 1), gref(3, cs%nat), gn(3, cs%nat, 1))
       call probe_densities(cs, 3, pm(:, :, 1), tm(:, :, 1))
       tm = 0.0_dp
-      call analytic(cs, 1, pm, tm, g, error=error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
+      call analytic(cs, 1, pm, tm, g, screen_tol=1.0e-12_dp, error=error)
+      if (allocated(error)) return
       xopts = xc_grad_options(grid_level=3, grid_max_pts=512, grid_response=.true., partition=cs%grid%partition)
       gref = 0.0_dp
       !$acc enter data copyin(gref)
@@ -561,22 +651,15 @@ contains
       call skew(pm(:, :, 1), pns(:, :, 1))
       call skew(tm(:, :, 1), tns(:, :, 1))
       call analytic(cs, 1, pm, tm, g, error=error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
+      if (allocated(error)) return
       call analytic(cs, 1, pns, tns, gn, error=error)
-      if (allocated(error)) then
-         call release_case(cs)
-         return
-      end if
+      if (allocated(error)) return
       dev_sym = maxval(abs(g - gn))
       print "(a,es10.2,a,es10.2,a,es10.2)", "  T = 0 vs xc_grad_potential_add: max |diff| ", dev, &
          "  unsymmetrised input: max |diff| ", dev_sym, "  max |term| ", maxval(abs(gref))
       call check(error, maxval(abs(gref)) > MIN_CONTROL, "the term is too small to test anything")
       if (.not. allocated(error)) call check(error, dev < TOL_POT, "T = 0 differs from xc_grad_potential_add")
       if (.not. allocated(error)) call check(error, dev_sym < TOL_POT, "an unsymmetrised input changes the answer")
-      call release_case(cs)
    end subroutine test_potential
 
    subroutine skew(x, y)
@@ -623,13 +706,14 @@ end module check_xc_grad_response_suite
 program check_xc_grad_response
    use, intrinsic :: iso_fortran_env, only: error_unit
    use testdrive, only: run_testsuite
-   use check_xc_grad_response_suite, only: collect_check_xc_grad_response, funcname_arg
+   use check_xc_grad_response_suite, only: collect_check_xc_grad_response, funcname_arg, release_cached
    implicit none
    integer :: stat
 
    if (command_argument_count() >= 1) call get_command_argument(1, funcname_arg)
    stat = 0
    call run_testsuite(collect_check_xc_grad_response, error_unit, stat, parallel=.false.)
+   call release_cached()
    if (stat > 0) then
       write (error_unit, "(i0, a)") stat, " test(s) failed"
       error stop 1

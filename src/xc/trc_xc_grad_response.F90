@@ -54,14 +54,34 @@ module trc_xc_grad_response
    !! Hessians. The partition's response is one dft_partition_becke_grad_contract
    !! per column (the Becke derivatives are recomputed for each).
    !!
-   !! SCRATCH. With npts points, tile = the largest padded batch tile
-   !! (npp x nlp) and nc columns in a sweep, the device holds
-   !! 13 npts nc doubles of coefficients and energies plus
-   !! (11 + 8 nc) tiles of at most tcap doubles each, plus the pair tiles.
-   !! `budget` (doubles; default 32 XC_GRAD_TILE_CAP) bounds the sum: nc is the
-   !! most columns that fit with the largest single tile, and tcap shrinks
-   !! as nc grows (at least one batch per chunk). More columns than fit are
-   !! processed in further sweeps. trc_xc_grad_response_plan returns both.
+   !! SCREENING. None by default. trc_xc_fxc_rks and trc_xc_kxc_rks_apply, which
+   !! define the T term and drive the response solve, are unscreened, and the
+   !! gradient differentiates the same operator, so every batch carrying
+   !! points and functions is kept. `screen_tol` > 0 applies trc_xc_grad's
+   !! density screen on D at that threshold instead (as xc_grad_potential_add
+   !! does at 1e-12); `options%rho_tol` is NOT read. Measured on water/6-31G*
+   !! (test/check_xc_grad_response.F90, SVWN): a 1e-12
+   !! screen changes a column by 1e-14, a 1e-4 screen by about 1e-10, and a
+   !! 1e-1 screen by 2e-2, which the test asserts it can tell apart.
+   !!
+   !! SCRATCH. With npts points, nao orbitals and nc columns in a sweep, the
+   !! device holds, in doubles:
+   !!   13 npts nc            coefficients and energies (trc_xc_grad_coef_t)
+   !!   nao^2 (1 + 2 nc)      the symmetrised density slots
+   !!   (11 + 8 nc) T         chi, grad chi, Hessian, X per slot, R and RD per
+   !!                         channel, T the largest chunk's tile
+   !!   (1 + 2 nc) Pr         the gathered pair tiles, Pr the largest chunk's
+   !!                         sum of nlp^2
+   !!   3 nmu 32 nc           the Pulay partials (nmu the largest chunk's
+   !!                         functions; 32 lanes on the device, 1 on the host)
+   !! `budget` (doubles; default 32 XC_GRAD_TILE_CAP) bounds that sum:
+   !! trc_xc_grad_response_plan takes the most columns per sweep for which a
+   !! tile cap of at least one batch brings the sum under it, shrinking the
+   !! tile cap (more chunks of batches per sweep) before the column count.
+   !! More columns than fit are processed in further sweeps. A budget too
+   !! small for even one column at one batch per chunk is exceeded, with a
+   !! warning from the plan (pic_logger), never silently. The plan counts
+   !! every batch as kept, so it is an upper bound.
    !!
    !! LDA and GGA, restricted, Cartesian AO. The refusals are
    !! trc_xc_response_refuse_reason's. Validated by test/check_xc_grad_response.F90.
@@ -73,52 +93,132 @@ module trc_xc_grad_response
    use trc_linalg, only: trc_linalg_t
    use trc_xc, only: trc_xc_grad_coef_rks, trc_xc_grad_coef_t, trc_xc_response_refuse_reason, XC_NP_PAD, XC_NL_PAD
    use trc_xc_grad, only: xc_grad_drive_channels, xc_grad_options_t, xc_grad_step_names, xc_grad_batch_active, &
-                          XC_GRAD_TILE_CAP
+                          XC_GRAD_TILE_CAP, XC_GRAD_LANES
    use trc_dft_partition, only: dft_partition_becke_grad_contract
    use trc_step_table, only: step_table_t
    use trc_error, only: error_t, ERROR_VALIDATION
+   use pic_logger, only: global_logger
    implicit none
    private
 
    public :: trc_xc_grad_response_many, trc_xc_grad_response_plan
+   public :: xc_grad_response_core
+   ! xc_grad_response_core: trc_xc_grad_response_many plus test hooks; not API.
 
 contains
 
-   subroutine trc_xc_grad_response_plan(b, xg, ncol, budget, nc, tcap)
+   subroutine xc_grad_response_chunks(xg, npp, nlp, tcap, nchunk, tile, pairs, nmu)
+      !! The chunks xc_grad_drive_channels makes at tile cap `tcap` with every
+      !! batch kept: their number, and the largest chunk's tile, pair-tile and
+      !! function counts.
+      type(trc_xc_grid_t), intent(in) :: xg
+      integer(int64), intent(in) :: tcap
+      integer(int64), intent(in) :: npp(xg%nbatch), nlp(xg%nbatch)
+      integer, intent(out) :: nchunk
+      integer(int64), intent(out) :: tile, pairs, nmu
+      integer(int64) :: need, pr, mu
+      integer :: ib, b0
+
+      nchunk = 0
+      tile = 1
+      pairs = 1
+      nmu = 1
+      b0 = 1
+      do while (b0 <= xg%nbatch)
+         need = 0
+         pr = 0
+         mu = 0
+         ib = b0
+         do while (ib <= xg%nbatch)
+            if (need + npp(ib)*nlp(ib) > tcap .and. ib > b0) exit
+            need = need + npp(ib)*nlp(ib)
+            pr = pr + nlp(ib)*nlp(ib)
+            mu = mu + (xg%b_aooff(ib + 1) - xg%b_aooff(ib))
+            ib = ib + 1
+         end do
+         nchunk = nchunk + 1
+         tile = max(tile, need)
+         pairs = max(pairs, pr)
+         nmu = max(nmu, mu)
+         b0 = ib
+      end do
+   end subroutine xc_grad_response_chunks
+
+   subroutine trc_xc_grad_response_plan(b, xg, ncol, budget, nc, tcap, nchunk, need)
       !! The sweep shape trc_xc_grad_response_many uses for `ncol` columns at
-      !! `budget` doubles (absent: 32 XC_GRAD_TILE_CAP): `nc` columns per sweep
-      !! (>= 1) and `tcap`, the doubles one tile of a chunk may hold.
+      !! `budget` doubles (absent: 32 XC_GRAD_TILE_CAP; this module's header,
+      !! SCRATCH): `nc` columns per sweep (>= 1), `tcap`, the doubles one tile
+      !! of a chunk may hold, `nchunk` the chunks of batches a sweep makes at
+      !! that cap, and `need` the doubles a sweep then holds. Warns when `need`
+      !! exceeds the budget even for one column at one batch per chunk.
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       integer, intent(in) :: ncol
       integer(int64), intent(in), optional :: budget
       integer, intent(out) :: nc
       integer(int64), intent(out) :: tcap
+      integer, intent(out), optional :: nchunk
+      integer(int64), intent(out), optional :: need
 
-      integer(int64) :: cap, tmin, fixed, per_col, npb, nloc
-      integer :: ib
+      integer(int64), allocatable :: npp(:), nlp(:)
+      integer(int64) :: cap, tmin, tc, tile, pairs, nmu, tot, base, nao2
+      integer :: ib, nct, nch, ntry
+      logical :: fits
+      character(len=32) :: sb, sn
 
       cap = 32_int64*XC_GRAD_TILE_CAP
       if (present(budget)) cap = max(budget, 1_int64)
+      allocate (npp(max(xg%nbatch, 1)), nlp(max(xg%nbatch, 1)))
       tmin = 1
       do ib = 1, xg%nbatch
-         npb = ((int(xg%b_off(ib + 1) - xg%b_off(ib), int64) + XC_NP_PAD - 1)/XC_NP_PAD)*XC_NP_PAD
-         nloc = ((int(xg%b_aooff(ib + 1) - xg%b_aooff(ib), int64) + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
-         tmin = max(tmin, npb*nloc)
+         npp(ib) = ((int(xg%b_off(ib + 1) - xg%b_off(ib), int64) + XC_NP_PAD - 1)/XC_NP_PAD)*XC_NP_PAD
+         nlp(ib) = ((int(xg%b_aooff(ib + 1) - xg%b_aooff(ib), int64) + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
+         tmin = max(tmin, npp(ib)*nlp(ib))
       end do
-      fixed = 11_int64*tmin
-      per_col = 8_int64*tmin + 13_int64*int(max(xg%npts, 1), int64)
-      nc = int(max(1_int64, min(int(max(ncol, 1), int64), (cap - fixed)/per_col)))
-      tcap = (cap - 13_int64*int(max(xg%npts, 1), int64)*nc)/(11_int64 + 8_int64*nc)
-      tcap = max(tmin, min(tcap, XC_GRAD_TILE_CAP))
-      tcap = max(tcap, tmin)
+      nao2 = int(b%nao, int64)**2
+      fits = .false.
+      nc = 1
+      tcap = tmin
+      nch = 0
+      tot = 0
+      do ntry = max(ncol, 1), 1, -1
+         nct = ntry
+         base = 13_int64*int(max(xg%npts, 1), int64)*nct + nao2*(1_int64 + 2_int64*nct)
+         tc = (cap - base)/(11_int64 + 8_int64*nct + 1_int64 + 2_int64*nct)
+         tc = max(tmin, min(tc, XC_GRAD_TILE_CAP))
+         do
+            call xc_grad_response_chunks(xg, npp, nlp, tc, nch, tile, pairs, nmu)
+            tot = base + (11_int64 + 8_int64*nct)*tile + (1_int64 + 2_int64*nct)*pairs &
+                  + 3_int64*nmu*XC_GRAD_LANES*nct
+            if (tot <= cap) then
+               fits = .true.
+               exit
+            end if
+            if (tc <= tmin) exit
+            tc = max(tmin, (tc*3_int64)/4_int64)
+         end do
+         if (fits .or. ntry == 1) then
+            nc = nct
+            tcap = tc
+            exit
+         end if
+      end do
+      if (.not. fits) then
+         write (sb, "(i0)") cap
+         write (sn, "(i0)") tot
+         call global_logger%warning("trc_xc_grad_response_plan: budget of "//trim(sb)//" doubles is too small for one " &
+                                    //"column at one batch per chunk ("//trim(sn)//" needed); exceeding it")
+      end if
+      if (present(nchunk)) nchunk = nch
+      if (present(need)) need = tot
    end subroutine trc_xc_grad_response_plan
 
-   subroutine trc_xc_grad_response_many(b, lp, func, xg, dmat, pmats, tmats, ncol, grad, options, err, budget, nsweep, no_kxc)
+   subroutine trc_xc_grad_response_many(b, lp, func, xg, dmat, pmats, tmats, ncol, grad, options, err, budget, nsweep, &
+                                        screen_tol)
       !!
       !! grad(:, :, I) += d/dR [ Tr(P_I V_xc[D]) + 1/2 E_xc''[T_I, T_I] ],
       !! I = 1..ncol, D, P_I, T_I held fixed (this module's header has the
-      !! terms and what moves).
+      !! terms, what moves, the screening and the scratch).
       !!
       !! `dmat` (nao, nao) is the reference density, `pmats` and `tmats`
       !! (nao, nao, ncol) the columns' densities, all HOST arrays in the
@@ -126,11 +226,11 @@ contains
       !! reference's grid, device-resident and built with its atoms and
       !! quadrature weights (`build_from_grid`); `grad` (3, natm, ncol) is
       !! device-resident (as xc_grad_potential_add's) and ADDED into.
-      !! `options`: density screen, grid response and the grid's partition, as
-      !! xc_grad_add_on_grid's. A batch the screen drops on D carries no term,
-      !! for T as well. `err` carries trc_xc_response_refuse_reason and
-      !! `grad` is then untouched. `nsweep`, if given, is the number of grid
-      !! sweeps made (columns are split by `budget`, trc_xc_grad_response_plan).
+      !! `options`: grid response and the grid's partition, as
+      !! xc_grad_add_on_grid's (its density screen is not read: `screen_tol`).
+      !! `err` carries trc_xc_response_refuse_reason and `grad` is then
+      !! untouched. `nsweep`, if given, is the number of grid sweeps made
+      !! (columns are split by `budget`, trc_xc_grad_response_plan).
       !!
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
@@ -143,8 +243,33 @@ contains
       type(error_t), intent(out) :: err
       integer(int64), intent(in), optional :: budget
       integer, intent(out), optional :: nsweep
+      real(dp), intent(in), optional :: screen_tol
+      !! Density screen on D, as xc_grad_batch_active; absent or 0: none.
+
+      call xc_grad_response_core(b, lp, func, xg, dmat, pmats, tmats, ncol, grad, options, err, budget=budget, &
+                                 nsweep=nsweep, screen_tol=screen_tol)
+   end subroutine trc_xc_grad_response_many
+
+   subroutine xc_grad_response_core(b, lp, func, xg, dmat, pmats, tmats, ncol, grad, options, err, budget, nsweep, &
+                                    screen_tol, no_kxc, tile_cap)
+      !! trc_xc_grad_response_many plus the test hooks, which are not API:
+      !! `no_kxc` omits the k_xc part of the D channel (the negative
+      !! control), `tile_cap` replaces the plan's tile cap so two calls with
+      !! different column counts can share one chunking.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_linalg_t), intent(inout) :: lp
+      type(trc_xc_functional_t), intent(in) :: func
+      type(trc_xc_grid_t), intent(in) :: xg
+      integer, intent(in) :: ncol
+      real(dp), intent(in) :: dmat(b%nao, b%nao), pmats(b%nao, b%nao, ncol), tmats(b%nao, b%nao, ncol)
+      real(dp), intent(inout) :: grad(3, b%natm, ncol)
+      type(xc_grad_options_t), intent(in) :: options
+      type(error_t), intent(out) :: err
+      integer(int64), intent(in), optional :: budget
+      integer, intent(out), optional :: nsweep
+      real(dp), intent(in), optional :: screen_tol
       logical, intent(in), optional :: no_kxc
-      !! Diagnostic: omit the k_xc part (the negative control of the tests).
+      integer(int64), intent(in), optional :: tile_cap
 
       type(trc_xc_grad_coef_t) :: pts
       type(step_table_t) :: timing
@@ -153,6 +278,7 @@ contains
       integer, allocatable :: active(:), at_elem(:)
       integer(int64) :: tcap
       integer :: n, ib, nc, c0, nci, k, icol, nsw, npts, nslot
+      real(dp) :: tol
 
       if (present(nsweep)) nsweep = 0
       why = trc_xc_response_refuse_reason(func, "trc_xc_grad_response")
@@ -164,14 +290,19 @@ contains
       n = b%nao
       npts = xg%npts
       call trc_xc_grad_response_plan(b, xg, ncol, budget, nc, tcap)
+      if (present(tile_cap)) tcap = max(tile_cap, 1_int64)
+      tol = 0.0_dp
+      if (present(screen_tol)) tol = screen_tol
 
-      ! The reference's batch screen (xc_grad_potential_add's): host, on D.
       allocate (dsym1(n, n, 1), active(xg%nbatch))
       dsym1(:, :, 1) = 0.5_dp*(dmat + transpose(dmat))
       do ib = 1, xg%nbatch
          active(ib) = 0
          if (xg%b_off(ib + 1) > xg%b_off(ib) .and. xg%b_aooff(ib + 1) > xg%b_aooff(ib)) then
-            if (xc_grad_batch_active(ib, xg, n, 1, dsym1, options%rho_tol)) active(ib) = 1
+            active(ib) = 1
+            if (tol > 0.0_dp) then
+               if (.not. xc_grad_batch_active(ib, xg, n, 1, dsym1, tol)) active(ib) = 0
+            end if
          end if
       end do
       call timing%init("xc response grad", xc_grad_step_names())
@@ -224,7 +355,7 @@ contains
       grad = grad + ghost
       !$acc update device(grad)
       if (present(nsweep)) nsweep = nsw
-   end subroutine trc_xc_grad_response_many
+   end subroutine xc_grad_response_core
 
    subroutine xc_grad_response_scale(npts, ncol, icol, energy, pcoef)
       !! pcoef(g) := energy(g, icol) pcoef(g).
