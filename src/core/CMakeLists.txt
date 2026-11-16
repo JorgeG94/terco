@@ -10,6 +10,7 @@ target_sources(
           trc_si.F90         # a quantity printed with its SI prefix (2.45 PFLOP)
           trc_step_table.F90 # shared timed-step table (RI-MP2, DF-JK): time/FLOP/B/s, NVTX
           trc_mpi_device.F90 # whether MPI gets device buffers directly (CUDA-aware)
+          trc_device_memory.F90 # does an allocation fit on the device now: the free-memory query and the refusal text
           trc_constants.F90  # the single source of truth for math/CODATA constants and atomic masses
           trc_cart_perm.F90  # AO-index permutation, lexicographic <-> this build's order
           trc_ao_norm.F90    # AO-index normalisation, this build's <-> GAMESS's per-component convention

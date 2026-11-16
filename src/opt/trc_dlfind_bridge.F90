@@ -106,7 +106,7 @@
 !       reused across every image in turn, so by the time an image comes
 !       round again `context` holds a DIFFERENT image's converged state --
 !       reading "the context's last density" (the single-state warm start)
-!       would warm-start from the wrong image. test/bench_opt_neb_warmstart.F90
+!       would warm-start from the wrong image. test/standalone/bench_opt_neb_warmstart.F90
 !       measures this on the HCN<->HNC NEB check below: per-image warm
 !       start against a single shared density across every image
 !       (trc_opt_options_t%neb_shared_density, bench-only).
@@ -2101,7 +2101,7 @@ contains
    pure function opt_str_set(s) result(set)
       !! Whether an optional trc_opt_options_t path field was actually
       !! given a value -- unallocated (a caller that never set it, e.g.
-      !! test/bench_opt_warmstart.F90) and "" (set, but asking for no file)
+      !! test/standalone/bench_opt_warmstart.F90) and "" (set, but asking for no file)
       !! both mean "do not write", and `len()` on an unallocated deferred-
       !! length allocatable is undefined, so this checks `allocated` first.
       character(len=:), allocatable, intent(in) :: s
