@@ -230,6 +230,15 @@ module trc_xc
       !! (unweighted a, b), s the density it reads.
       integer :: npts = 0
       integer :: ncol = 0
+      !! Set by trc_xc_grad_coef_rks, from the density slots it is given.
+      integer, allocatable :: active(:)
+      !! (nbatch), set by the caller: 1 for a batch that is kept.
+      integer(int64) :: tcap = XC_BUDGET
+      !! Set by the caller: the most doubles one tile of a chunk may hold.
+      logical :: no_kxc = .false.
+      !! Set by the caller, a diagnostic: leave out the k_xc part of the D
+      !! channel (what a gradient built on f_xc alone gives). The negative
+      !! control of the tests.
       real(dp), allocatable :: cf(:, :, :)
       !! (4, npts, 3 ncol): a, then b(1:3).
       real(dp), allocatable :: energy(:, :)
@@ -2533,10 +2542,10 @@ contains
       this%ncol = 0
    end subroutine xc_grad_coef_release
 
-   recursive subroutine trc_xc_grad_coef_rks(b, xg, func, dpack, ncol, active, tcap, pts, la, no_kxc)
+   recursive subroutine trc_xc_grad_coef_rks(b, xg, func, dpack, pts, la)
       !!
       !! trc_xc_grad_coef_t at every point of `xg`, restricted LDA/GGA, for
-      !! the reference density and `ncol` columns, each a relaxed density P_I
+      !! the reference density and the columns, each a relaxed density P_I
       !! and a transition density T_I. `dpack` (nao, nao, 1 + 2 ncol) holds the
       !! SYMMETRIC slices D, P_1..P_ncol, T_1..T_ncol, already on the device
       !! (the caller symmetrises: trc_xc_grad_response_many). One sweep of the
@@ -2566,16 +2575,13 @@ contains
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
-      integer, intent(in) :: ncol
-      real(dp), intent(in) :: dpack(b%nao, b%nao, 1 + 2*ncol)
-      integer, intent(in) :: active(xg%nbatch)
-      integer(int64), intent(in) :: tcap
+      real(dp), intent(in) :: dpack(:, :, :)
+      !! ncol = (size(dpack, 3) - 1)/2 columns.
       type(trc_xc_grad_coef_t), intent(inout) :: pts
+      !! In: `active`, `tcap` and `no_kxc` (this type's comments). Out: `cf`
+      !! and `energy`, device-resident, released by `pts%release()`.
       type(trc_linalg_t), intent(inout), optional :: la
       !! GEMM handles; absent, made and released for this call.
-      logical, intent(in), optional :: no_kxc
-      !! Diagnostic: leave out the k_xc part of the D channel (what a gradient
-      !! built on f_xc alone gives). The negative control of the tests.
 
       integer(int64) :: need, nchi
       type(trc_gemm_batch_t) :: gemm_shape
@@ -2583,6 +2589,8 @@ contains
       integer, allocatable :: c_off(:), pr_off(:), npp(:), nlp(:), ord(:), pb_off(:), wk_off(:), act(:)
       real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), dloc(:, :)
       logical :: kxc
+      integer :: ncol
+      integer(int64) :: tcap
       integer :: kid(XC_MAX_KERNELS)
       real(dp) :: coef(XC_MAX_KERNELS)
 
@@ -2590,11 +2598,13 @@ contains
          block
             type(trc_linalg_t) :: la_local
             call la_local%init(1)
-            call trc_xc_grad_coef_rks(b, xg, func, dpack, ncol, active, tcap, pts, la_local, no_kxc)
+            call trc_xc_grad_coef_rks(b, xg, func, dpack, pts, la_local)
             call la_local%release()
          end block
          return
       end if
+      ncol = (size(dpack, 3) - 1)/2
+      tcap = pts%tcap
       call pts%release()
       pts%npts = xg%npts
       pts%ncol = ncol
@@ -2606,8 +2616,7 @@ contains
       kid = func%kid
       coef = func%coef
       ns = 1 + 2*ncol
-      kxc = .true.
-      if (present(no_kxc)) kxc = .not. no_kxc
+      kxc = .not. pts%no_kxc
 
       allocate (c_off(xg%nbatch + 1), pr_off(xg%nbatch + 1))
       allocate (npp(xg%nbatch), nlp(xg%nbatch), act(xg%nbatch))
@@ -2615,7 +2624,7 @@ contains
          nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
          npb = xg%b_off(ib + 1) - xg%b_off(ib)
          act(ib) = 0
-         if (npb > 0 .and. nloc > 0) act(ib) = active(ib)
+         if (npb > 0 .and. nloc > 0) act(ib) = pts%active(ib)
          npp(ib) = ((npb + XC_NP_PAD - 1)/XC_NP_PAD)*XC_NP_PAD
          nlp(ib) = ((nloc*act(ib) + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
       end do

@@ -225,7 +225,7 @@ module trc_xc_grad
                                  XC_FAMILY_LDA, XC_FAMILY_GGA, XC_FAMILY_MGGA, XC_MAX_KERNELS
    use trc_collocation, only: collocation_shell, collocation_shell_hessian, NCART_MAX, NHESS
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
-   use trc_xc, only: XC_NP_PAD, XC_NL_PAD, xc_sort_by_shape
+   use trc_xc, only: XC_NP_PAD, XC_NL_PAD, xc_sort_by_shape, trc_xc_grad_coef_t
    use trc_dft_grid, only: dft_grid_t, dft_grid_build, dft_grid_options_t, DEFAULT_GRID_LEVEL
    use trc_dft_partition, only: dft_partition_becke_grad_contract, dft_partition_options_t
    use trc_error, only: error_t
@@ -2155,7 +2155,7 @@ contains
       q(3) = 2.0_dp*q(3)
    end subroutine xc_grad_pointmotion_body
 
-   subroutine xc_grad_drive_channels(b, lp, xg, dens, ncol, cf, active, tcap, gresp, grad, timing)
+   subroutine xc_grad_drive_channels(b, lp, xg, density, coef, gresp, grad, timing)
       !!
       !! The force of ncol "columns" in ONE sweep of the grid: the sum, over each
       !! column's three channels, of the nuclear derivative at fixed AO matrices
@@ -2175,35 +2175,34 @@ contains
       !! with e_k = w [ (a dchi_k + (b . H)_k) X + dchi_k RD ] per (point,
       !! function) pair. The partition's own response is the caller's.
       !!
-      !! `tcap`: the most doubles one tile of a chunk (chi, say) may hold; a
+      !! `coef%tcap`: the most doubles one tile of a chunk (chi, say) may hold; a
       !! chunk of batches is closed when the next batch would exceed it.
+      !! `coef%active` is the batch screen.
       !! Scratch is (11 + 8 ncol) tiles, (1 + 2 ncol) pair tiles and
       !! 3 ncol rows of the Pulay partials per function.
       !!
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: lp
       type(trc_xc_grid_t), intent(in) :: xg
-      integer, intent(in) :: ncol
-      real(dp), intent(in), contiguous :: dens(:, :, :)
+      real(dp), intent(in), contiguous :: density(:, :, :)
       !! (nao, nao, 1 + 2 ncol), symmetric slices, on host and device.
-      real(dp), intent(in) :: cf(4, xg%npts, 3*ncol)
-      !! (a, b) per point and channel, on the device. Read at the point's own
-      !! row; w_g is xg%w.
-      integer, intent(in) :: active(xg%nbatch)
-      !! 1 where the batch is kept (host).
-      integer(int64), intent(in) :: tcap
+      type(trc_xc_grad_coef_t), intent(in) :: coef
+      !! The channels' (a, b) per point (`coef%cf`, on the device, read at the
+      !! point's own row; w_g is xg%w), `ncol`, the batch screen `active`
+      !! (1 where kept, host) and the tile cap `tcap`.
       logical, intent(in) :: gresp
-      real(dp), intent(inout) :: grad(3, b%natm, ncol)
+      real(dp), intent(inout) :: grad(3, b%natm, coef%ncol)
       !! ADDED into, device-resident.
       type(step_table_t), intent(inout) :: timing
 
       type(xc_grad_work_t) :: work
       integer, allocatable :: ch_lo(:), ch_hi(:)
-      real(dp), allocatable :: fpm(:, :)
-      integer(int64) :: need, nchi_max
-      integer :: ib, npb, nloc, nch, ic, b0, b1, npairs, npairs_max, nb_max, nmu_c, nmu_max, nslot, nchan
+      integer(int64) :: need, nchi_max, tcap
+      integer :: ib, npb, nloc, nch, ic, b0, b1, npairs, npairs_max, nb_max, nmu_c, nmu_max, nslot, nchan, ncol
       type(timer_type) :: tc
 
+      ncol = coef%ncol
+      tcap = coef%tcap
       nslot = 1 + 2*ncol
       nchan = 3*ncol
       call timing%step_on(lp, ST_SCREEN, tc)
@@ -2213,7 +2212,7 @@ contains
          npb = xg%b_off(ib + 1) - xg%b_off(ib)
          nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
          work%active(ib) = 0
-         if (npb > 0 .and. nloc > 0) work%active(ib) = active(ib)
+         if (npb > 0 .and. nloc > 0) work%active(ib) = coef%active(ib)
          work%npp(ib) = ((npb + XC_NP_PAD - 1)/XC_NP_PAD)*XC_NP_PAD
          work%nlp(ib) = ((nloc*work%active(ib) + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
       end do
@@ -2252,10 +2251,7 @@ contains
       call timing%step_on(lp, ST_ALLOC, tc)
       work%nspin = nslot
       work%is_gga = .true.
-      call xc_grad_many_work_alloc(work, b, nchi_max, npairs_max, nb_max, nmu_max, nslot, nchan)
-      work%ldf = nmu_max*XC_GRAD_LANES*ncol
-      allocate (fpm(work%ldf, 3))
-      !$acc enter data create(fpm)
+      call xc_grad_many_work_alloc(work, b, nchi_max, npairs_max, nb_max, nmu_max, ncol)
       call timing%step_off(lp, ST_ALLOC, tc)
 
       do ic = 1, nch
@@ -2271,7 +2267,7 @@ contains
          call timing%step_off(lp, ST_COLLOC, tc)
 
          call timing%step_on(lp, ST_GATHER, tc)
-         call xc_grad_gather_tiles(work%npairs, work%nb, work%ord, work%pb_off, nslot, b%nao, dens, &
+         call xc_grad_gather_tiles(work%npairs, work%nb, work%ord, work%pb_off, nslot, b%nao, density, &
                                    xg%b_aooff, size(xg%b_ao), xg%b_ao, work%nlp, xg%nbatch, work%ldd, work%dloc)
          call timing%step_off(lp, ST_GATHER, tc)
 
@@ -2281,7 +2277,7 @@ contains
 
          call timing%step_on(lp, ST_POINTS, tc)
          call xc_grad_many_rtiles(work%np, work%p0, xg%npts, xg%batch_of, xg%b_off, xg%b_aooff, work%c_off, &
-                                  work%npp, work%active, xg%nbatch, work%ldt, work%ldr, nchan, work%gchi, cf, work%rt)
+                                  work%npp, work%active, xg%nbatch, work%ldt, work%ldr, nchan, work%gchi, coef%cf, work%rt)
          call timing%step_off(lp, ST_POINTS, tc)
 
          call timing%step_on(lp, ST_GEMM, tc)
@@ -2289,29 +2285,46 @@ contains
          call timing%step_off(lp, ST_GEMM, tc)
 
          call timing%step_on(lp, ST_SCATTER, tc)
-         call xc_grad_many_lanes(work%nmu, work%nb, work%ord, work%mw_off, ncol, nslot, nchan, xg%npts, xg%w, &
-                                 xg%b_off, work%c_off, work%npp, xg%nbatch, work%ldt, work%ldh, work%nhs, work%ldr, &
-                                 work%gchi, work%hchi, work%xt, work%rd, cf, work%ldf, fpm)
-         call xc_grad_many_scatter(work%nmu, work%nb, work%ord, work%mw_off, ncol, xg%b_aooff, size(xg%b_ao), &
-                                   xg%b_ao, b%nao, work%ao_atom, xg%nbatch, work%ldf, fpm, b%natm, grad)
-         if (gresp) then
-            call xc_grad_many_pointmotion(work%np, work%p0, ncol, nslot, nchan, xg%npts, xg%w, xg%atom, xg%batch_of, &
-                                          xg%b_off, xg%b_aooff, work%c_off, work%npp, work%active, xg%nbatch, &
-                                          work%ldt, work%ldh, work%nhs, work%ldr, work%gchi, work%hchi, work%xt, &
-                                          work%rd, cf, b%natm, grad)
-         end if
+         call xc_grad_many_forces(work, b, xg, coef%cf, ncol, gresp, grad)
          call timing%step_off(lp, ST_SCATTER, tc)
       end do
 
       call timing%step_on(lp, ST_ALLOC, tc)
-      !$acc exit data delete(fpm)
-      deallocate (fpm)
       call xc_grad_work_release(work)
       deallocate (ch_lo, ch_hi)
       call timing%step_off(lp, ST_ALLOC, tc)
    end subroutine xc_grad_drive_channels
 
-   subroutine xc_grad_many_work_alloc(work, b, nchi_max, npairs_max, nb_max, nmu_max, nslot, nchan)
+   subroutine xc_grad_many_forces(work, b, xg, cf, ncol, gresp, grad)
+      !!
+      !! The forces of one chunk for every column: the Pulay partials per
+      !! (function, column, lane), their sum onto each function's atom, and with
+      !! `gresp` the point motion onto each point's owner. The chunk's tiles
+      !! come from `work` (X, RD, grad chi, the Hessian, their leading
+      !! dimensions); the kernels below take them as explicit-shape arrays.
+      !!
+      type(xc_grad_work_t), intent(inout) :: work
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      integer, intent(in) :: ncol
+      real(dp), intent(in) :: cf(4, xg%npts, 3*ncol)
+      logical, intent(in) :: gresp
+      real(dp), intent(inout) :: grad(3, b%natm, ncol)
+
+      call xc_grad_many_lanes(work%nmu, work%nb, work%ord, work%mw_off, ncol, 1 + 2*ncol, 3*ncol, xg%npts, xg%w, &
+                              xg%b_off, work%c_off, work%npp, xg%nbatch, work%ldt, work%ldh, work%nhs, work%ldr, &
+                              work%gchi, work%hchi, work%xt, work%rd, cf, work%ldf, work%fp)
+      call xc_grad_many_scatter(work%nmu, work%nb, work%ord, work%mw_off, ncol, xg%b_aooff, size(xg%b_ao), &
+                                xg%b_ao, b%nao, work%ao_atom, xg%nbatch, work%ldf, work%fp, b%natm, grad)
+      if (gresp) then
+         call xc_grad_many_pointmotion(work%np, work%p0, ncol, 1 + 2*ncol, 3*ncol, xg%npts, xg%w, xg%atom, &
+                                       xg%batch_of, xg%b_off, xg%b_aooff, work%c_off, work%npp, work%active, &
+                                       xg%nbatch, work%ldt, work%ldh, work%nhs, work%ldr, work%gchi, work%hchi, &
+                                       work%xt, work%rd, cf, b%natm, grad)
+      end if
+   end subroutine xc_grad_many_forces
+
+   subroutine xc_grad_many_work_alloc(work, b, nchi_max, npairs_max, nb_max, nmu_max, ncol)
       !!
       !! xc_grad_work_alloc for xc_grad_drive_channels: X per density slot, R
       !! and RD per channel, and nothing the other modes keep (the point
@@ -2321,8 +2334,11 @@ contains
       type(xc_grad_work_t), intent(inout) :: work
       type(trc_basis_t), intent(in) :: b
       integer(int64), intent(in) :: nchi_max
-      integer, intent(in) :: npairs_max, nb_max, nmu_max, nslot, nchan
-      integer :: ish, i
+      integer, intent(in) :: npairs_max, nb_max, nmu_max, ncol
+      integer :: ish, i, nslot, nchan
+
+      nslot = 1 + 2*ncol
+      nchan = 3*ncol
 
       allocate (work%ao_atom(b%nao))
       do ish = 1, b%nshell
@@ -2334,7 +2350,9 @@ contains
       work%nhs = NHESS
       allocate (work%chi(nchi_max), work%gchi(nchi_max, 3), work%hchi(nchi_max, NHESS))
       allocate (work%xt(nchi_max, nslot), work%rt(nchi_max, nchan), work%rd(nchi_max, nchan))
-      allocate (work%rdx(1, 1), work%yt(1, 3, 1), work%pc(1, 1), work%fp(1, 3), work%qp(1, 3), work%eb(1, 3))
+      allocate (work%rdx(1, 1), work%yt(1, 3, 1), work%pc(1, 1), work%qp(1, 3), work%eb(1, 3))
+      work%ldf = nmu_max*XC_GRAD_LANES*ncol
+      allocate (work%fp(work%ldf, 3))
       allocate (work%dloc(npairs_max, nslot))
       allocate (work%ord(nb_max), work%pb_off(nb_max + 1), work%wk_off(nb_max + 1), work%mw_off(nb_max + 1))
       work%ldt = nchi_max
@@ -2545,7 +2563,6 @@ contains
       real(dp), intent(inout) :: grad(3, natm, ncol)
       real(dp) :: f(3)
       integer :: tm, m, icol, at
-#ifdef TRC_DEVICE
       do concurrent(tm=1:nmu*ncol) local(f, at, m, icol)
          icol = (tm - 1)/nmu + 1
          m = tm - (icol - 1)*nmu
@@ -2558,16 +2575,6 @@ contains
          !$acc atomic update
          grad(3, at, icol) = grad(3, at, icol) + f(3)
       end do
-#else
-      do tm = 1, nmu*ncol
-         icol = (tm - 1)/nmu + 1
-         m = tm - (icol - 1)*nmu
-         call xc_grad_many_sum(m, icol, nmu, nb, ord, mw_off, b_aooff, nbao, b_ao, nao, ao_atom, nbatch, ldf, fp, f, at)
-         grad(1, at, icol) = grad(1, at, icol) + f(1)
-         grad(2, at, icol) = grad(2, at, icol) + f(2)
-         grad(3, at, icol) = grad(3, at, icol) + f(3)
-      end do
-#endif
    end subroutine xc_grad_many_scatter
 
    pure subroutine xc_grad_many_sum(m, icol, nmu, nb, ord, mw_off, b_aooff, nbao, b_ao, nao, ao_atom, nbatch, ldf, &
@@ -2610,7 +2617,6 @@ contains
       real(dp), intent(inout) :: grad(3, natm, ncol)
       integer :: tg, g, icol, at
       real(dp) :: q(3)
-#ifdef TRC_DEVICE
       do concurrent(tg=1:np*ncol) local(q, at, g, icol)
          icol = (tg - 1)/np + 1
          g = tg - (icol - 1)*np
@@ -2626,19 +2632,6 @@ contains
             grad(3, at, icol) = grad(3, at, icol) + q(3)
          end if
       end do
-#else
-      do tg = 1, np*ncol
-         icol = (tg - 1)/np + 1
-         g = tg - (icol - 1)*np
-         call xc_grad_many_pm_body(g, icol, p0, ncol, nslot, nchan, npts, w, g_atom, batch_of, b_off, b_aooff, c_off, &
-                                   npp, active, nbatch, ldt, ldh, nhs, ldr, gchi, hchi, xt, rd, cf, q, at)
-         if (at > 0) then
-            grad(1, at, icol) = grad(1, at, icol) + q(1)
-            grad(2, at, icol) = grad(2, at, icol) + q(2)
-            grad(3, at, icol) = grad(3, at, icol) + q(3)
-         end if
-      end do
-#endif
    end subroutine xc_grad_many_pointmotion
 
    pure subroutine xc_grad_many_pm_body(g, icol, p0, ncol, nslot, nchan, npts, w, g_atom, batch_of, b_off, b_aooff, &

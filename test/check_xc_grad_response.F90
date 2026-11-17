@@ -47,12 +47,14 @@ module check_xc_grad_response_suite
    use trc_xc, only: trc_xc_rks, trc_xc_fxc_rks, trc_xc_result_t
    use trc_xc_grad, only: xc_grad_add, xc_grad_options, xc_grad_options_t
    use trc_xc_grad_potential, only: xc_grad_potential_add
-   use trc_xc_grad_response, only: trc_xc_grad_response_many, trc_xc_grad_response_plan, xc_grad_response_core
+   use trc_xc_grad_response, only: trc_xc_grad_response_many, trc_xc_grad_response_plan, xc_grad_response_core, &
+                                   xc_grad_response_hooks_t, trc_xc_grad_response_options_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
+   use pic_logger, only: global_logger
    implicit none
    private
    public :: collect_check_xc_grad_response, funcname_arg, release_cached
@@ -68,9 +70,10 @@ module check_xc_grad_response_suite
    !! The combined column against the sum of the two single-term columns.
    real(dp), parameter :: TOL_TRANS = 1.0e-9_dp
    !! The sum over atoms of a column.
-   real(dp), parameter :: TOL_IDENT = 3.0e-7_dp
-   !! The density-step identities, absolute. Measured worst 6.8e-8 (PBE): the t^4
-   !! truncation left after the Richardson step.
+   real(dp), parameter :: TOL_IDENT = 1.0e-8_dp
+   !! The density-step identities, absolute, after three Richardson levels
+   !! (test_identity says why). Measured worst 6.5e-10 (T term, host) and 2.3e-11
+   !! (P term); the two-level combination reached 1.6e-7.
    real(dp), parameter :: TOL_SAME = 1.0e-13_dp
    !! Batch against loop at the same chunking, relative to the largest element.
    !! The host measures the arithmetic per column as identical; a device build's
@@ -89,6 +92,8 @@ module check_xc_grad_response_suite
    !! A negative control must miss by at least this, and a term be at least this large.
 
    character(len=16) :: funcname_arg = "svwn"
+   character(len=400) :: line_buf = ""
+   !! Scratch for the diagnostic lines `say` logs.
 
    type :: case_t
       !! One molecule's converged state, the reference grid and the probe densities.
@@ -107,6 +112,18 @@ module check_xc_grad_response_suite
    character(len=32), save :: cache_name(2) = ""
 
 contains
+
+   function num(x) result(text)
+      !! x as text, for a failure message.
+      real(dp), intent(in) :: x
+      character(len=12) :: text
+      write (text, "(es12.4)") x
+   end function num
+
+   subroutine say(text)
+      character(len=*), intent(in) :: text
+      call global_logger%info(trim(text))
+   end subroutine say
 
    subroutine collect_check_xc_grad_response(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
@@ -222,6 +239,16 @@ contains
       ph = real(p, dp)
       co = cs%cmo(:, 1:cs%nocc)
       cv = cs%cmo(:, cs%nocc + 1:cs%nocc + nv)
+      ! Each orbital's sign fixed (largest coefficient positive): P and T are
+      ! built from products of different orbitals, so a flipped sign in the
+      ! converged orbitals (the device's reductions do not fix one) would
+      ! change which densities the check probes from run to run.
+      do j = 1, cs%nocc
+         if (co(maxloc(abs(co(:, j)), dim=1), j) < 0.0_dp) co(:, j) = -co(:, j)
+      end do
+      do j = 1, nv
+         if (cv(maxloc(abs(cv(:, j)), dim=1), j) < 0.0_dp) cv(:, j) = -cv(:, j)
+      end do
       allocate (mo(cs%nocc, cs%nocc), mv(nv, nv), xov(cs%nocc, nv))
       do j = 1, cs%nocc
          do i = 1, cs%nocc
@@ -255,20 +282,25 @@ contains
       real(dp), intent(in), optional :: screen_tol
       integer(int64), intent(in), optional :: tile_cap
       type(error_type), allocatable, intent(out) :: error
-      type(xc_grad_options_t) :: xopts
-      type(error_t) :: err
-      logical :: gr
+      type(xc_grad_response_hooks_t) :: opts
+      real(dp), allocatable :: columns(:, :, :, :)
 
-      gr = .true.
-      if (present(grid_response)) gr = grid_response
-      xopts = xc_grad_options(grid_level=3, grid_max_pts=512, grid_response=gr, partition=cs%grid%partition)
+      opts%gradient = xc_grad_options(grid_level=3, grid_max_pts=512, grid_response=.true., partition=cs%grid%partition)
+      if (present(grid_response)) opts%gradient%grid_response = grid_response
+      if (present(budget)) opts%budget = budget
+      if (present(screen_tol)) opts%screen_tol = screen_tol
+      if (present(no_kxc)) opts%no_kxc = no_kxc
+      if (present(tile_cap)) opts%tile_cap = tile_cap
+      allocate (columns(cs%n, cs%n, 2, ncol))
+      columns(:, :, 1, :) = pm(:, :, 1:ncol)
+      columns(:, :, 2, :) = tm(:, :, 1:ncol)
       g = 0.0_dp
       !$acc enter data copyin(g)
-      call xc_grad_response_core(cs%bas, cs%la, cs%func, cs%xg, cs%dmat, pm, tm, ncol, g, xopts, err, &
-                                 budget=budget, nsweep=nsweep, screen_tol=screen_tol, no_kxc=no_kxc, tile_cap=tile_cap)
+      call xc_grad_response_core(cs%bas, cs%la, cs%func, cs%xg, cs%dmat, columns, g, opts)
       !$acc update self(g)
       !$acc exit data delete(g)
-      call check(error, .not. err%has_error(), err%get_message())
+      if (present(nsweep)) nsweep = opts%nsweep
+      call check(error, .not. opts%err%has_error(), opts%err%get_message())
    end subroutine analytic
 
    subroutine terms_at(cs, rd, pm, tm, vals, error)
@@ -409,10 +441,12 @@ contains
       end do
       write (line, "(a,a,a,3es10.2,a,3es10.2)") "  ", trim(label), ": max |analytic - FD| (P, T, P+T) ", dev, &
          "  max |term| ", ref
-      print "(a)", trim(line)
+      write (line_buf, "(a)") trim(line)
+      call say(line_buf)
       write (line, "(a,es10.2,a,es10.2,a,es10.2,a,es10.2)") "    additivity ", add, "  translation ", trans, &
          "  control without k_xc: ", ctl_kxc, "  control without grid response: ", ctl_grid
-      print "(a)", trim(line)
+      write (line_buf, "(a)") trim(line)
+      call say(line_buf)
       call check(error, all(ref > MIN_CONTROL), trim(label)//": a term is too small to test anything")
       if (.not. allocated(error)) call check(error, dev(1) < TOL_FD, trim(label)//": Tr(P V_xc) term differs from FD")
       if (.not. allocated(error)) call check(error, dev(2) < TOL_FD, trim(label)//": 1/2 f_xc T T term differs from FD")
@@ -451,58 +485,94 @@ contains
       !$acc exit data delete(d3, grad)
    end subroutine xc_gradient_at
 
+   subroutine identity_diff(cs, dens, dirs, t, second, d)
+      !! The density-step difference of trc_xc_grad's gradient along `dirs` at
+      !! step t: (g(t) + g(-t) - 2 g(0))/t^2 for `second`, else
+      !! (g(t) - g(-t))/(2t).
+      type(case_t), intent(inout) :: cs
+      real(dp), intent(in) :: dens(:, :), dirs(:, :), t
+      logical, intent(in) :: second
+      real(dp), intent(out) :: d(:, :)
+      real(dp), allocatable :: gp(:, :), gm(:, :), g0(:, :)
+
+      allocate (gp(3, cs%nat), gm(3, cs%nat), g0(3, cs%nat))
+      call xc_gradient_at(cs, dens + t*dirs, gp)
+      call xc_gradient_at(cs, dens - t*dirs, gm)
+      if (second) then
+         call xc_gradient_at(cs, dens, g0)
+         d = (gp + gm - 2.0_dp*g0)/(t*t)
+      else
+         d = (gp - gm)/(2.0_dp*t)
+      end if
+   end subroutine identity_diff
+
    subroutine test_identity(error)
       !! d/dR of the T term is 1/2 d^2/dt^2 of trc_xc_grad's gradient at
       !! D + t T (E_xc[D + tT] = E + t E' + t^2/2 E'' + ...), and of the P term
-      !! d/dt, each Richardson-extrapolated over t and t/2. No nuclear
-      !! difference: an independent route to the same derivative through the
-      !! existing, separately validated ground-state gradient.
+      !! d/dt. No nuclear difference: an independent route to the same
+      !! derivative through the existing, separately validated ground-state
+      !! gradient.
+      !!
+      !! The step is the design question. The difference's truncation error
+      !! grows with the fourth power of the step times T, and a device SCF's
+      !! converged orbitals differ from the host's in the near-degenerate
+      !! virtual space, which changes T by a few per cent from run to run:
+      !! with Richardson over t and t/2 alone (error O(t^4)) the T term
+      !! deviated by 6.8e-8 on the host and 8e-9 to 5e-7 on a device, the
+      !! analytic gradient itself agreeing with the host's to 2e-15. A third
+      !! level (t/4, error O(t^6)) removes the truncation, which both builds
+      !! show as a deviation falling by more than 100 times.
       type(error_type), allocatable, intent(out) :: error
       type(case_t), pointer :: cs
-      real(dp), allocatable :: pm(:, :, :), tm(:, :, :), g(:, :, :)
-      real(dp), allocatable :: g0(:, :), gp(:, :), gm(:, :), gp2(:, :), gm2(:, :), s1(:, :), s2(:, :)
-      real(dp) :: t, dev_t, dev_p, mag_t
-      integer :: nat
+      real(dp), allocatable :: pm(:, :, :), tm(:, :, :), g(:, :, :), z(:, :)
+      real(dp), allocatable :: sd(:, :, :), r1(:, :, :)
+      real(dp) :: t, dev_t, dev_t2, dev_p, dev_p2, mag_t
+      integer :: nat, lev
 
       call acquire_case(cs, "water.xyz", error)
       if (allocated(error)) return
       nat = cs%nat
-      allocate (pm(cs%n, cs%n, 2), tm(cs%n, cs%n, 2), g(3, nat, 2))
-      allocate (g0(3, nat), gp(3, nat), gm(3, nat), gp2(3, nat), gm2(3, nat), s1(3, nat), s2(3, nat))
-      pm = 0.0_dp
-      tm = 0.0_dp
-      call probe_densities(cs, 1, pm(:, :, 1), tm(:, :, 2))
+      allocate (pm(cs%n, cs%n, 2), tm(cs%n, cs%n, 2), g(3, nat, 2), z(cs%n, cs%n))
+      allocate (sd(3, nat, 3), r1(3, nat, 2))
       ! Column 1: P alone; column 2: T alone.
+      call probe_densities(cs, 1, pm(:, :, 1), z)
+      call probe_densities(cs, 1, z, tm(:, :, 2))
+      pm(:, :, 2) = 0.0_dp
       tm(:, :, 1) = 0.0_dp
       call analytic(cs, 2, pm, tm, g, error=error)
       if (allocated(error)) return
-      ! tm(:,:,2) came from the same call that filled pm(:,:,2) with the P: only T is kept there.
-      t = 0.05_dp
-      call xc_gradient_at(cs, cs%dmat, g0)
-      ! The T term, second difference.
-      call xc_gradient_at(cs, cs%dmat + t*tm(:, :, 2), gp)
-      call xc_gradient_at(cs, cs%dmat - t*tm(:, :, 2), gm)
-      call xc_gradient_at(cs, cs%dmat + 0.5_dp*t*tm(:, :, 2), gp2)
-      call xc_gradient_at(cs, cs%dmat - 0.5_dp*t*tm(:, :, 2), gm2)
-      s1 = (gp + gm - 2.0_dp*g0)/(t*t)
-      s2 = (gp2 + gm2 - 2.0_dp*g0)/(0.25_dp*t*t)
-      dev_t = maxval(abs(g(:, :, 2) - 0.5_dp*(4.0_dp*s2 - s1)/3.0_dp))
       mag_t = maxval(abs(g(:, :, 2)))
+
+      ! The T term, second difference at t, t/2, t/4.
+      t = 0.05_dp
+      do lev = 1, 3
+         call identity_diff(cs, cs%dmat, tm(:, :, 2), t/2.0_dp**(lev - 1), .true., sd(:, :, lev))
+      end do
+      r1(:, :, 1) = (4.0_dp*sd(:, :, 2) - sd(:, :, 1))/3.0_dp
+      r1(:, :, 2) = (4.0_dp*sd(:, :, 3) - sd(:, :, 2))/3.0_dp
+      dev_t2 = maxval(abs(g(:, :, 2) - 0.5_dp*r1(:, :, 1)))
+      dev_t = maxval(abs(g(:, :, 2) - 0.5_dp*(16.0_dp*r1(:, :, 2) - r1(:, :, 1))/15.0_dp))
+
       ! The P term, first difference, at a smaller step: P has a
       ! virtual-virtual block, so D + tP leaves the density's tails sooner.
       t = 0.01_dp
-      call xc_gradient_at(cs, cs%dmat + t*pm(:, :, 1), gp)
-      call xc_gradient_at(cs, cs%dmat - t*pm(:, :, 1), gm)
-      call xc_gradient_at(cs, cs%dmat + 0.5_dp*t*pm(:, :, 1), gp2)
-      call xc_gradient_at(cs, cs%dmat - 0.5_dp*t*pm(:, :, 1), gm2)
-      s1 = (gp - gm)/(2.0_dp*t)
-      s2 = (gp2 - gm2)/t
-      dev_p = maxval(abs(g(:, :, 1) - (4.0_dp*s2 - s1)/3.0_dp))
-      print "(a,es10.2,a,es10.2,a,es10.2)", "  identity: T term max |analytic - 1/2 d2/dt2| ", dev_t, &
-         "  P term ", dev_p, "  max |T term| ", mag_t
+      do lev = 1, 3
+         call identity_diff(cs, cs%dmat, pm(:, :, 1), t/2.0_dp**(lev - 1), .false., sd(:, :, lev))
+      end do
+      r1(:, :, 1) = (4.0_dp*sd(:, :, 2) - sd(:, :, 1))/3.0_dp
+      r1(:, :, 2) = (4.0_dp*sd(:, :, 3) - sd(:, :, 2))/3.0_dp
+      dev_p2 = maxval(abs(g(:, :, 1) - r1(:, :, 1)))
+      dev_p = maxval(abs(g(:, :, 1) - (16.0_dp*r1(:, :, 2) - r1(:, :, 1))/15.0_dp))
+      write (line_buf, "(a,es10.2,a,es10.2,a,es10.2,a,es10.2,a,es10.2)") "  identity: T term max |analytic - 1/2 d2/dt2| ", &
+         dev_t, " (two levels ", dev_t2, ")  P term ", dev_p, " (two levels ", dev_p2, ")"
+      call say(line_buf)
+      write (line_buf, "(a,es10.2)") "    max |T term| ", mag_t
+      call say(line_buf)
       call check(error, mag_t > MIN_CONTROL, "the T term is too small to test anything")
-      if (.not. allocated(error)) call check(error, dev_t < TOL_IDENT, "T term differs from the second density difference")
-      if (.not. allocated(error)) call check(error, dev_p < TOL_IDENT, "P term differs from the density difference")
+      if (.not. allocated(error)) call check(error, dev_t < TOL_IDENT, &
+                                             "T term differs from the second density difference by "//num(dev_t))
+      if (.not. allocated(error)) call check(error, dev_p < TOL_IDENT, &
+                                             "P term differs from the density difference by "//num(dev_p))
    end subroutine test_identity
 
    subroutine test_batch(error)
@@ -576,10 +646,12 @@ contains
          if (allocated(error)) return
          dev_two = maxval(abs(gq - gl(:, :, 1:3)))/scale
       end if
-      print "(a,es10.2,a,es10.2,a,es10.2,a,es10.2)", "  batch: rel |same chunking| ", dev_same, "  |one sweep - loop| ", &
+      write (line_buf, "(a,es10.2,a,es10.2,a,es10.2,a,es10.2)") "  batch: rel |same chunking| ", dev_same, "  |one sweep - loop| ", &
          dev_loop, "  |one-column budget - loop| ", dev_budget, "  |nc=2, several chunks - loop| ", dev_two
-      print "(a,i0,a,i0,a,i0,a,i0,a,i0,a,i0)", "    sweeps ", nsw_big, " and ", nsw_small, "; same-chunking sweeps ", nsw_same, &
+      call say(line_buf)
+      write (line_buf, "(a,i0,a,i0,a,i0,a,i0,a,i0,a,i0)") "    sweeps ", nsw_big, " and ", nsw_small, "; same-chunking sweeps ", nsw_same, &
          "; chunks/sweep at default ", nch_big, "; nc=2 case: chunks ", nch2, " sweeps ", nsw2
+      call say(line_buf)
       call check(error, scale > MIN_CONTROL, "the gradients are too small to test anything")
       if (.not. allocated(error)) call check(error, nsw_big == 1 .and. nc_big == NCOL, "the default budget must take all columns in one sweep")
       if (.not. allocated(error)) call check(error, nsw_small == NCOL .and. nc_small == 1, &
@@ -617,7 +689,8 @@ contains
       if (allocated(error)) return
       d12 = maxval(abs(g0 - g12))
       d4 = maxval(abs(g0 - g4))
-      print "(a,es10.2,a,es10.2)", "  screen: max |unscreened - 1e-12 screen| ", d12, "  |unscreened - coarse screen| ", d4
+      write (line_buf, "(a,es10.2,a,es10.2)") "  screen: max |unscreened - 1e-12 screen| ", d12, "  |unscreened - coarse screen| ", d4
+      call say(line_buf)
       call check(error, d12 < TOL_SCREEN, "the 1e-12 screen drops more than it should")
       if (.not. allocated(error)) call check(error, d4 > 100.0_dp*TOL_FD, "a coarse screen does not change the gradient")
    end subroutine test_screen
@@ -655,8 +728,9 @@ contains
       call analytic(cs, 1, pns, tns, gn, error=error)
       if (allocated(error)) return
       dev_sym = maxval(abs(g - gn))
-      print "(a,es10.2,a,es10.2,a,es10.2)", "  T = 0 vs xc_grad_potential_add: max |diff| ", dev, &
+      write (line_buf, "(a,es10.2,a,es10.2,a,es10.2)") "  T = 0 vs xc_grad_potential_add: max |diff| ", dev, &
          "  unsymmetrised input: max |diff| ", dev_sym, "  max |term| ", maxval(abs(gref))
+      call say(line_buf)
       call check(error, maxval(abs(gref)) > MIN_CONTROL, "the term is too small to test anything")
       if (.not. allocated(error)) call check(error, dev < TOL_POT, "T = 0 differs from xc_grad_potential_add")
       if (.not. allocated(error)) call check(error, dev_sym < TOL_POT, "an unsymmetrised input changes the answer")
@@ -684,21 +758,24 @@ contains
       type(trc_linalg_t) :: la
       type(xc_grad_options_t) :: xopts
       type(error_t) :: err
-      real(dp) :: d(0, 0), p(0, 0, 1), t(0, 0, 1), g(3, 0, 1)
+      type(trc_xc_grad_response_options_t) :: opts
+      real(dp) :: d(0, 0), c(0, 0, 2, 1), g(3, 0, 1)
 
       f_mgga%family = XC_FAMILY_MGGA
       f_rsh%omega = 0.3_dp
       f_rsh%exx_lr = 0.8_dp
       f_vv10%nlc_b = 6.0_dp
       f_vv10%nlc_c = 0.01_dp
-      call trc_xc_grad_response_many(bas, la, f_mgga, xg, d, p, t, 1, g, xopts, err)
-      call check(error, err%has_error() .and. index(err%get_message(), "meta-GGA") > 0, "meta-GGA must be refused")
+      call trc_xc_grad_response_many(bas, la, f_mgga, xg, d, c, g, opts)
+      call check(error, opts%err%has_error() .and. index(opts%err%get_message(), "meta-GGA") > 0, "meta-GGA must be refused")
       if (allocated(error)) return
-      call trc_xc_grad_response_many(bas, la, f_rsh, xg, d, p, t, 1, g, xopts, err)
-      call check(error, err%has_error() .and. index(err%get_message(), "range-separated") > 0, "RSH must be refused")
+      opts = trc_xc_grad_response_options_t()
+      call trc_xc_grad_response_many(bas, la, f_rsh, xg, d, c, g, opts)
+      call check(error, opts%err%has_error() .and. index(opts%err%get_message(), "range-separated") > 0, "RSH must be refused")
       if (allocated(error)) return
-      call trc_xc_grad_response_many(bas, la, f_vv10, xg, d, p, t, 1, g, xopts, err)
-      call check(error, err%has_error() .and. index(err%get_message(), "VV10") > 0, "VV10 must be refused")
+      opts = trc_xc_grad_response_options_t()
+      call trc_xc_grad_response_many(bas, la, f_vv10, xg, d, c, g, opts)
+      call check(error, opts%err%has_error() .and. index(opts%err%get_message(), "VV10") > 0, "VV10 must be refused")
    end subroutine test_refuse
 
 end module check_xc_grad_response_suite
