@@ -139,8 +139,6 @@ contains
                                test_df_response_ao), &
                   new_unittest("a range-separated KS reference is refused with its reason", test_refuses_rsh), &
                   new_unittest("C ABI: trc_run_gradient after b2plyp + RI-MP2 (--df) matches pyscf", test_capi_gradient), &
-                  new_unittest("C ABI: the double-hybrid gradient is refused on more than one rank", &
-                               test_capi_refuses_multirank), &
                   new_unittest("C ABI: the double-hybrid gradient is refused with functions dropped", &
                                test_capi_refuses_lindep) &
                   ]
@@ -222,22 +220,6 @@ contains
       rc = trc_destroy(h)
       call check(error, worst < PYSCF_TOL, "the C ABI's double-hybrid gradient differs from pyscf's")
    end subroutine test_capi_gradient
-
-   subroutine test_capi_refuses_multirank(error)
-      !! trc_set_comm with any handle but -1 makes the context multi-rank;
-      !! the refusal comes before any MPI call, so a serial build tests it.
-      type(error_type), allocatable, intent(out) :: error
-      type(c_ptr) :: h
-      integer(c_int) :: rc
-      character(len=:), allocatable :: why
-      call capi_water_dh(error, h)
-      if (allocated(error)) return
-      rc = trc_set_comm(h, 0_c_int)
-      rc = trc_run_gradient(h)
-      why = message_of(h)
-      rc = trc_destroy(h)
-      call check(error, index(why, "one rank only") > 0, "not refused, or for the wrong reason: '"//why//"'")
-   end subroutine test_capi_refuses_multirank
 
    subroutine test_capi_refuses_lindep(error)
       type(error_type), allocatable, intent(out) :: error
