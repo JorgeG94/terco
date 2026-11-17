@@ -3054,6 +3054,96 @@ def gen_cpks():
         _gen_cpks_one(probe, f"cpks_{molname}_{basname}_{funcname}.ref", xyzname, molname, basname, funcname)
 
 
+def _gen_fxc_apply_many_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
+    """One check_fxc_apply_many.F90 case: pyscf's dft.numint.nr_rks_fxc,
+    f_xc[dm1] at the reference density dm0, on terco's OWN grid (the
+    probe's points and weights, `non0tab` cleared so pyscf re-evaluates on
+    them) for the two probe densities the check builds from fixed
+    pseudo-random numbers: a symmetric P and a non-symmetric Q. pyscf's
+    nr_rks_fxc is given hermi=1, i.e. it too sees a symmetric matrix, so
+    Q enters as (Q + Q^T)/2: the symmetrisation the apply routine
+    documents. D0, P, Q, S and terco's own v_resp come from the probe in
+    terco's AO order; D0/P/Q go to pyscf's order and normalisation
+    (terco_to_pyscf_perm, ao_norm_from_overlap: D_pyscf = N D_terco N) and
+    the response matrices come back in terco's (covariant: V_terco = n V_pyscf
+    n, the inverse permutation applied). Written: V_P, V_Q and the invariants
+    Tr(P V_P), Tr(Q V_Q)."""
+    PYSCF = {"svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
+    r = BinReader(TEST / probe_relname)
+    nao, natm, npts = (r.i8() for _ in range(3))
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    func_tag = r.str_(16)
+    zint = r.i8(natm)
+    rcoord = r.f8(3 * natm).reshape(3, natm, order='F').T
+    pts = r.mat(3, npts).T.copy()
+    wts = r.f8(npts)
+    s_terco = r.mat(nao)
+    d0 = r.mat(nao)
+    dm = r.mat3(nao, nao, 2)
+    v_terco = r.mat3(nao, nao, 2)
+    r.close()
+    if mol_tag != molname or bas_tag != basname or func_tag != funcname:
+        raise RuntimeError(f"gen_fxc_apply_many {probe_relname}: probe tag mismatch")
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in zint}
+    basis_arg = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(zint)]
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, spin=int(zint.sum()) % 2, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_fxc_apply_many {probe_relname}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    n, s_err = ao_norm_from_overlap(s_terco[np.ix_(inv_perm, inv_perm)], mol.intor('int1e_ovlp'))
+    if s_err >= 1e-9:
+        raise RuntimeError(f"gen_fxc_apply_many {probe_relname}: overlap check failed, {s_err:.3e}")
+
+    def to_pyscf(d):
+        return n[:, None] * d[np.ix_(inv_perm, inv_perm)] * n[None, :]
+
+    def to_terco(v):
+        return v[np.ix_(perm, perm)] * n[perm][:, None] * n[perm][None, :]
+
+    grids = dft.gen_grid.Grids(mol)
+    grids.coords = np.ascontiguousarray(pts)
+    grids.weights = wts
+    grids.non0tab = None
+    ni = dft.numint.NumInt()
+    xc = PYSCF[funcname]
+    dm0 = to_pyscf(d0)
+    out = []
+    for k in range(2):
+        d = to_pyscf(0.5 * (dm[:, :, k] + dm[:, :, k].T))
+        vk = ni.nr_rks_fxc(mol, grids, xc, dm0, d, hermi=1)
+        out.append(vk)
+    w = RefWriter(ref_relname)
+    w.header(f"fxc_apply_many {molname}/{basname}/{funcname} (rks)",
+             [ROOT / "test" / "check_fxc_apply_many.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
+    vts = [to_terco(v) for v in out]
+    w.real("TR_P", float(np.sum(dm[:, :, 0] * vts[0])))
+    w.real("TR_Q", float(np.sum(dm[:, :, 1] * vts[1])))
+    w.matrix("V_P", vts[0])
+    w.matrix("V_Q", vts[1])
+    w.end()
+    w.write()
+    dmax = max(float(np.abs(v_terco[:, :, k] - vts[k]).max()) for k in range(2))
+    print(f"  fxc_apply_many {molname}/{basname}/{funcname}: |v|max {max(np.abs(v).max() for v in vts):.3e}  "
+          f"max|terco-pyscf| {dmax:.2e}")
+    (TEST / probe_relname).unlink()
+
+
+def gen_fxc_apply_many():
+    """check_fxc_apply_many.F90: f_xc[D] of a symmetric and a non-symmetric
+    probe density at a fixed reference density on water/6-31G*, SVWN/PBE/
+    B3LYP, against pyscf's dft.numint.nr_rks_fxc at terco's own grid."""
+    for funcname in ("svwn", "pbe", "b3lyp"):
+        probe = f"fxc_apply_many_probe_{funcname}.bin"
+        run_bin(f"check_fxc_apply_many_{funcname}",
+                ["water.xyz", "basis_sets/6-31gs.json", "water", "6-31gs", funcname, str(TEST / probe)])
+        _gen_fxc_apply_many_one(probe, f"fxc_apply_many_water_6-31gs_{funcname}.ref", "water.xyz", "water",
+                                "6-31gs", funcname)
+
+
 def gen_rimp2_uhf():
     """trc_urimp2_run (unrestricted RI-MP2, src/post_hf/rimp2/
     trc_rimp2_driver.F90) on three open-shell radicals -- OH, triplet O2,
@@ -6602,6 +6692,7 @@ CASES = {
     "soscf": gen_soscf,
     "mom_excited": gen_mom_excited,
     "cpks": gen_cpks,
+    "fxc_apply_many": gen_fxc_apply_many,
     "rimp2_uhf": gen_rimp2_uhf,
     "scf_df": gen_scf_df,
     "dh": gen_dh,
