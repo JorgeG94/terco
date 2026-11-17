@@ -2024,7 +2024,7 @@ contains
       msg = trc_xc_response_refuse_reason(func, "trc_xc_kxc")
    end function trc_xc_kxc_refuse_reason
 
-   recursive subroutine trc_xc_kxc_rks_apply(b, xg, func, dmat, dmat_a, dmat_b, nvec, v_kxc, err, budget, la)
+   recursive subroutine trc_xc_kxc_rks_apply(b, xg, func, dmats, v_kxc, err, budget, la)
       !!
       !! The third functional derivative of E_xc contracted with two
       !! densities, restricted LDA/GGA, for `nvec` pairs at once:
@@ -2051,11 +2051,15 @@ contains
       !! No density screen on the batch level, for the reason
       !! trc_xc_fxc_rks gives.
       !!
-      !! `dmat` is the ground-state density, `dmat_a`/`dmat_b` the pairs'
-      !! (nao, nao, nvec); each is symmetrised on entry (xc_symmetrize, as
+      !! `dmats(:, :, 1:2*nvec+1)` packs the densities: slice 1 is the
+      !! ground-state density D, slices 2..nvec+1 the A_k and slices
+      !! nvec+2..2*nvec+1 the B_k, with nvec = size(v_kxc, 3). Each is
+      !! symmetrised on entry (xc_symmetrize, as
       !! trc_xc_fxc_rks_apply_many does), so a caller may pass an
-      !! unsymmetrised matrix. Same device contract as
-      !! trc_xc_fxc_rks: all three already resident or copied in; `v_kxc`
+      !! unsymmetrised matrix. A `dmats` of any other depth is refused in
+      !! `err`. `budget` (doubles) caps the chunk; <= 0 or absent is the
+      !! default cap, as in trc_xc_fxc_rks_apply_many. Same device contract
+      !! as trc_xc_fxc_rks: `dmats` already resident or copied in; `v_kxc`
       !! is written in full. The ground-state gather and collocation are
       !! redone per call (the gradient calls this once per set of roots)
       !! and trc_xc_fxc_cache_t is not used: its coefp holds f_xc's
@@ -2070,15 +2074,14 @@ contains
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
-      integer, intent(in) :: nvec
-      real(dp), intent(in) :: dmat(b%nao, b%nao), dmat_a(b%nao, b%nao, nvec), dmat_b(b%nao, b%nao, nvec)
-      real(dp), intent(out) :: v_kxc(b%nao, b%nao, nvec)
+      real(dp), intent(in) :: dmats(:, :, :)
+      real(dp), intent(out) :: v_kxc(:, :, :)
       type(error_t), intent(out) :: err
       integer(int64), intent(in), optional :: budget
       type(trc_linalg_t), intent(inout), optional :: la
       !! GEMM handles; absent, made and released for this call.
 
-      integer :: nao, ns
+      integer :: nao, ns, nvec
       integer(int64) :: need, nchi, cap
       type(trc_gemm_batch_t) :: gemm_shape
       integer :: b0, b1, ib, nloc, npb, np, p0, npairs, nb, k0, k1, cnt, mp, ml, s, kv
@@ -2096,6 +2099,12 @@ contains
          return
       end if
       nao = b%nao
+      nvec = size(v_kxc, 3)
+      if (size(v_kxc, 1) /= nao .or. size(v_kxc, 2) /= nao .or. size(dmats, 1) /= nao .or. size(dmats, 2) /= nao &
+          .or. size(dmats, 3) /= 1 + 2*nvec) then
+         call err%set(ERROR_VALIDATION, "trc_xc_kxc_rks_apply: dmats must be (nao, nao, 1 + 2 nvec) and v_kxc (nao, nao, nvec)")
+         return
+      end if
       kid = func%kid
       coef = func%coef
       if (xg%npts == 0 .or. nvec < 1) return
@@ -2103,14 +2112,16 @@ contains
          block
             type(trc_linalg_t) :: la_local
             call la_local%init(1)
-            call trc_xc_kxc_rks_apply(b, xg, func, dmat, dmat_a, dmat_b, nvec, v_kxc, err, budget, la_local)
+            call trc_xc_kxc_rks_apply(b, xg, func, dmats, v_kxc, err, budget, la_local)
             call la_local%release()
          end block
          return
       end if
       ns = 1 + 2*nvec
       cap = XC_BUDGET
-      if (present(budget)) cap = max(budget, 1_int64)
+      if (present(budget)) then
+         if (budget > 0) cap = budget
+      end if
       ! trc_xc_fxc_rks sizes its chunk for 7 tiles (chi, three gradients,
       ! two X, one Z); this holds 4 + ns + nvec.
       cap = max((cap*7_int64)/int(4 + ns + nvec, int64), 1_int64)
@@ -2119,12 +2130,10 @@ contains
       allocate (npp(xg%nbatch), nlp(xg%nbatch))
       allocate (dpack(nao, nao, ns))
 
-      !$acc data copyin(dmat, dmat_a, dmat_b, kid, coef) copy(v_kxc) create(npp, nlp, dpack)
+      !$acc data copyin(dmats, kid, coef) copy(v_kxc) create(npp, nlp, dpack)
       !$acc update device(v_kxc)
       ! Slot 1 = sym(D), 2..nvec+1 = sym(A_k), nvec+2..2 nvec+1 = sym(B_k).
-      call xc_symmetrize(nao, 1, 1, 1, dmat, ns, 1, dpack)
-      call xc_symmetrize(nao, nvec, 1, nvec, dmat_a, ns, 2, dpack)
-      call xc_symmetrize(nao, nvec, 1, nvec, dmat_b, ns, nvec + 2, dpack)
+      call xc_symmetrize(nao, ns, 1, ns, dmats, ns, 1, dpack)
       do ib = 1, xg%nbatch
          nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
          npb = xg%b_off(ib + 1) - xg%b_off(ib)
