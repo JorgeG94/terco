@@ -1526,10 +1526,14 @@ contains
       !! (nao, nao, npool): the densities, in the caller's AO basis.
       type(trc_grad_pair_t), intent(in) :: pairs(:)
       integer, intent(in) :: ncol
-      !! Columns of `grad`.
-      real(dp), intent(out) :: grad(3, b%natm, ncol)
+      !! Columns of `grad`; ncol < 1 is refused.
+      real(dp), intent(out) :: grad(3, b%natm, max(ncol, 0))
+      !! The extent is clamped so that `grad` is zero-size, not negative, for
+      !! ncol < 1 (ifx does not clamp a negative extent in an array
+      !! assignment).
       type(error_t), intent(out) :: error
       !! Set (and `grad` left zero) on a bad index, weight, shape or density.
+      !! For ncol < 1 `grad` has no elements, so "left zero" holds vacuously.
       real(dp), intent(in), optional :: omega
       !! Range-separation parameter, as in `eri_gradient`.
 
