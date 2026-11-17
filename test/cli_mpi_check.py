@@ -109,6 +109,31 @@ def run_cc(mpiexec, npflag, np, terco_cli, xyz, basis_dir, *args, timeout=300):
     return run_group(cmd, env, timeout)
 
 
+GRAD_ROW_RE = re.compile(r"^\s+\d+\s+[A-Za-z]+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s*$", re.M)
+
+
+def check_rimp2_gradient(mpiexec, npflag, terco_cli, xyz, basis_dir):
+    """The RI-MP2 gradient is not split over ranks: rank 0 computes it and broadcasts it, so np 2 must run to the
+    end (it used to be refused) and print the np 1 gradient, with the warning saying so."""
+    args = ["--rimp2", "--grad", "--econv", "1e-11"]
+    g = {}
+    for np in (1, 2):
+        p = run_group([mpiexec, npflag, str(np), terco_cli, xyz, "-b", "6-31g", *args],
+                      {**os.environ, "TERCO_BASIS_PATH": basis_dir}, 300)
+        rows = [[float(x) for x in m] for m in GRAD_ROW_RE.findall(p.stdout)]
+        if p.returncode != 0 or len(rows) == 0:
+            print(f"cli_mpi_check: RI-MP2 gradient np{np} did not run cleanly (rc={p.returncode})")
+            print(p.stdout, p.stderr)
+            return False
+        g[np] = rows
+        if np == 2 and "RI-MP2 gradient is single GPU" not in p.stdout + p.stderr:
+            print("cli_mpi_check: RI-MP2 gradient np2 did not say that rank 0 computes it")
+            return False
+    worst = max(abs(a - b) for r1, r2 in zip(g[1], g[2]) for a, b in zip(r1, r2))
+    print(f"cli_mpi_check: RI-MP2 gradient  np1 vs np2  worst |dg| = {worst:.2e}")
+    return worst < 1.0e-8
+
+
 def energy(out):
     m = ENERGY_RE.search(out)
     return float(m.group(1)) if m else None
@@ -326,6 +351,8 @@ def main():
         print(f"cli_mpi_check: RI-MP2 ({label})  np1 = {c1:.12f}  np{np} = {c2:.12f}  diff = {diff:.2e}")
         if diff > MP2_TOL:
             ok = False
+
+    ok = check_rimp2_gradient(mpiexec, npflag, terco_cli, xyz, basis_dir) and ok
 
     ok = check_riccsd(mpiexec, npflag, terco_cli, xyz, basis_dir) and ok
 
