@@ -1406,6 +1406,7 @@ contains
       integer :: ndens, nw, id
       real(dp) :: jfac, kfac, ow
       logical :: skel
+      type(trc_grad_pairtab_t) :: ptab
       type(trc_bin_launch_t) :: launch
       if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
@@ -1462,7 +1463,7 @@ contains
       !$acc enter data copyin(dwork) copyin(grad)
       !$acc update device(this%dsh)
       launch = bin_launch(this, ndens, jfac, kfac, ow, skel)
-      call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, grad, 1)
+      call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, grad, ptab)
       !$acc wait
       !$acc update self(grad)
       !$acc exit data delete(dwork, grad)
@@ -1538,7 +1539,6 @@ contains
       type(trc_bin_launch_t) :: launch
       real(dp) :: ow, scale, asym, sym
       integer :: npool, np, ip, id, c0, nc, c, k, ncb
-      character(len=64) :: tmp
       character(len=96) :: nrm
       real(dp), allocatable :: wj(:), wk(:)
       logical, allocatable :: keep(:)
@@ -1571,14 +1571,12 @@ contains
       end if
       do ip = 1, np
          if (pairs(ip)%left < 1 .or. pairs(ip)%left > npool .or. pairs(ip)%right < 1 .or. pairs(ip)%right > npool) then
-            write (tmp, "(i0)") ip
-            call error%set(ERROR_VALIDATION, "eri%gradient_pairs: pair "//trim(tmp)// &
+            call error%set(ERROR_VALIDATION, "eri%gradient_pairs: pair "//to_string(ip)// &
                            " names a density outside the pool")
             return
          end if
          if (pairs(ip)%column < 1 .or. pairs(ip)%column > ncol) then
-            write (tmp, "(i0)") ip
-            call error%set(ERROR_VALIDATION, "eri%gradient_pairs: pair "//trim(tmp)//" names a column outside 1..ncol")
+            call error%set(ERROR_VALIDATION, "eri%gradient_pairs: pair "//to_string(ip)//" names a column outside 1..ncol")
             return
          end if
          if (.not. (abs(pairs(ip)%coulomb) <= huge(1.0_dp) .and. abs(pairs(ip)%exchange) <= huge(1.0_dp))) then
@@ -1590,21 +1588,21 @@ contains
       ! Symmetric (+1) or antisymmetric (-1), per pool density.
       allocate (sgn(npool))
       do id = 1, npool
-         scale = maxval(abs(pool(:, :, id)))
-         asym = maxval(abs(pool(:, :, id) - transpose(pool(:, :, id))))
-         sym = maxval(abs(pool(:, :, id) + transpose(pool(:, :, id))))
-         if (.not. (scale <= huge(1.0_dp))) then
+         ! maxval may skip a NaN, so test the elements themselves.
+         if (any(.not. (abs(pool(:, :, id)) <= huge(1.0_dp)))) then
             call error%set(ERROR_VALIDATION, "eri%gradient_pairs: a pool density is not finite")
             return
          end if
+         scale = maxval(abs(pool(:, :, id)))
+         asym = maxval(abs(pool(:, :, id) - transpose(pool(:, :, id))))
+         sym = maxval(abs(pool(:, :, id) + transpose(pool(:, :, id))))
          if (asym <= 1.0e-9_dp*scale) then
             sgn(id) = 1
          else if (sym <= 1.0e-9_dp*scale) then
             sgn(id) = -1
          else
-            write (tmp, "(i0)") id
             write (nrm, "(es10.3,a,es10.3,a,es10.3)") asym, " (max|D-D^T|), ", sym, " (max|D+D^T|), ", scale
-            call error%set(ERROR_VALIDATION, "eri%gradient_pairs: pool density "//trim(tmp)// &
+            call error%set(ERROR_VALIDATION, "eri%gradient_pairs: pool density "//to_string(id)// &
                            " is neither symmetric nor antisymmetric: "//trim(nrm)//" (max|D|)")
             return
          end if
@@ -1672,7 +1670,7 @@ contains
          gblk = 0.0_dp
          !$acc enter data copyin(gblk)
          launch = bin_launch(this, npool, 1.0_dp, 1.0_dp, ow, .false.)
-         call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, gblk, nc, ptab)
+         call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, gblk, ptab)
          !$acc wait
          !$acc update self(gblk)
          !$acc exit data delete(gblk)

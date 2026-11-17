@@ -22,6 +22,7 @@ module check_grad_pairs_suite
    !! (TRC_RYS_CLASSES=none, set in CMake, only chooses the Fock path of the
    !! fock_nosym oracle; the gradient is always Rys.)
    !!
+   use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_positive_inf
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
@@ -409,34 +410,82 @@ contains
                  //to_string(worst, "es10.2"))
    end subroutine test_antisym_fd
 
+   subroutine refused(error, bas, eri, pool, pairs, ncol, what, omega)
+      !! One refusal: gradient_pairs must set err and leave grad exactly zero,
+      !! whatever grad held before the call.
+      type(error_type), allocatable, intent(inout) :: error
+      type(trc_basis_t), intent(in) :: bas
+      type(trc_eri_t), intent(inout) :: eri
+      real(dp), intent(in) :: pool(:, :, :)
+      type(trc_grad_pair_t), intent(in) :: pairs(:)
+      integer, intent(in) :: ncol
+      character(*), intent(in) :: what
+      real(dp), intent(in), optional :: omega
+      type(error_t) :: err
+      real(dp), allocatable :: g(:, :, :)
+
+      if (allocated(error)) return
+      allocate (g(3, bas%natm, max(1, ncol)))
+      g = 1.0_dp
+      call eri%gradient_pairs(bas, pool, pairs, ncol, g, err, omega=omega)
+      call check(error, err%has_error(), what//" was accepted")
+      if (.not. allocated(error)) call check(error, all(g(:, :, 1:max(0, ncol)) == 0.0_dp), what//" left a nonzero gradient")
+   end subroutine refused
+
    subroutine test_refusals(error)
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_eri_t) :: eri
-      type(error_t) :: err
       integer :: nat
       integer, allocatable :: at_z(:)
-      real(dp), allocatable :: r(:, :), pool(:, :, :), g(:, :, :)
+      real(dp), allocatable :: r(:, :), pool(:, :, :), bad(:, :, :)
+      real(dp) :: nan, inf
 
       call setup('water.xyz', bas, eri, nat, at_z, r, error)
       if (allocated(error)) return
-      allocate (pool(bas%nao, bas%nao, 1), g(3, nat, 1))
+      nan = ieee_value(1.0_dp, ieee_quiet_nan)
+      inf = ieee_value(1.0_dp, ieee_positive_inf)
+      allocate (pool(bas%nao, bas%nao, 1))
       call synth_sym(bas%nao, 1, pool(:, :, 1))
-      call eri%gradient_pairs(bas, pool, [pair(2, 1, 1, 0.5_dp, 0.25_dp)], 1, g, err)
-      call check(error, err%has_error(), "a left index past the pool was accepted")
+      call refused(error, bas, eri, pool, [pair(2, 1, 1, 0.5_dp, 0.25_dp)], 1, "a left index past the pool")
+      call refused(error, bas, eri, pool, [pair(1, 0, 1, 0.5_dp, 0.25_dp)], 1, "a right index of zero")
+      call refused(error, bas, eri, pool, [pair(1, 1, 2, 0.5_dp, 0.25_dp)], 1, "a column past ncol")
+      call refused(error, bas, eri, pool, [pair(1, 1, 1, nan, 0.25_dp)], 1, "a NaN Coulomb weight")
+      call refused(error, bas, eri, pool, [pair(1, 1, 1, 0.5_dp, inf)], 1, "an infinite exchange weight")
+      call refused(error, bas, eri, pool, [pair(1, 1, 1, 0.5_dp, 0.25_dp)], 1, "a negative omega", omega=-0.1_dp)
+      call refused(error, bas, eri, pool, [pair(1, 1, 1, 0.5_dp, 0.25_dp)], 1, "a NaN omega", omega=nan)
+      call refused(error, bas, eri, pool, [pair(1, 1, 1, 0.5_dp, 0.25_dp)], 0, "ncol = 0")
+      call refused(error, bas, eri, pool, [pair(1, 1, 1, 0.5_dp, 0.25_dp)], -1, "ncol < 0")
       if (.not. allocated(error)) then
-         call eri%gradient_pairs(bas, pool, [pair(1, 0, 1, 0.5_dp, 0.25_dp)], 1, g, err)
-         call check(error, err%has_error(), "a right index of zero was accepted")
+         ! Wrong pool shapes: nao - 1 rows, and a non-square matrix.
+         allocate (bad(bas%nao - 1, bas%nao - 1, 1))
+         bad = 0.0_dp
+         call refused(error, bas, eri, bad, [pair(1, 1, 1, 0.5_dp, 0.25_dp)], 1, "a pool of the wrong shape")
+         deallocate (bad)
+         allocate (bad(bas%nao, bas%nao - 1, 1))
+         bad = 0.0_dp
+         call refused(error, bas, eri, bad, [pair(1, 1, 1, 0.5_dp, 0.25_dp)], 1, "a non-square pool")
+         deallocate (bad)
       end if
       if (.not. allocated(error)) then
-         call eri%gradient_pairs(bas, pool, [pair(1, 1, 2, 0.5_dp, 0.25_dp)], 1, g, err)
-         call check(error, err%has_error(), "a column past ncol was accepted")
+         ! A single NaN, off the diagonal and so not the maximum of anything
+         ! a maxval would be asked for first; then an infinity; then a NaN on
+         ! the diagonal.
+         bad = pool
+         bad(1, 2, 1) = nan
+         call refused(error, bas, eri, bad, [pair(1, 1, 1, 0.5_dp, 0.25_dp)], 1, "a pool with one off-diagonal NaN")
+         bad = pool
+         bad(2, 1, 1) = inf
+         call refused(error, bas, eri, bad, [pair(1, 1, 1, 0.5_dp, 0.25_dp)], 1, "a pool with an infinity")
+         bad = pool
+         bad(1, 1, 1) = nan
+         call refused(error, bas, eri, bad, [pair(1, 1, 1, 0.5_dp, 0.25_dp)], 1, "a pool with a diagonal NaN")
       end if
       if (.not. allocated(error)) then
          ! Neither symmetric nor antisymmetric.
          pool(1, 2, 1) = pool(1, 2, 1) + 0.5_dp
-         call eri%gradient_pairs(bas, pool, [pair(1, 1, 1, 1.0_dp, 0.5_dp)], 1, g, err)
-         call check(error, err%has_error(), "a general (non-symmetric, non-antisymmetric) density was accepted")
+         call refused(error, bas, eri, pool, [pair(1, 1, 1, 1.0_dp, 0.5_dp)], 1, &
+                      "a general (non-symmetric, non-antisymmetric) density")
       end if
       call eri%release()
       call bas%release()
