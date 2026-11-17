@@ -778,6 +778,18 @@ set_target_properties(check_nosym_f PROPERTIES Fortran_MODULE_DIRECTORY
 set_tests_properties(terco/check_nosym_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
+# eri%fock_nosym_many: J and K of several non-symmetric densities in one pass
+# (the TDDFT matvec). Batch against single-density fock_nosym, an
+# antisymmetric density, and pyscf's get_jk(hermi=0)
+# (test/pyscf_refs/fock_nosym_many_*.ref, generate.py's gen_fock_nosym_many).
+# water/6-31G* reaches d (Cartesian), so every digestion branch with dij, dkl
+# and dpq both set and unset runs.
+#
+terco_add_check(check_fock_nosym_many check_fock_nosym_many.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                ARGS water.xyz basis_sets/6-31gs.json ${CMAKE_CURRENT_BINARY_DIR}/fock_nosym_many_probe_water_631gs.bin water_631gs)
+target_link_libraries(check_fock_nosym_many PRIVATE test-drive::test-drive)
+
+#
 # Rys against HGP, same density and screening, on water/6-31G* and
 # water/cc-pVDZ. GPU 2, not the fleet default of
 # 0 `terco_add_check` otherwise sets, to stay off the GPUs other work on
@@ -2514,6 +2526,78 @@ foreach(_t scf_cpks scf_cpks_pbe scf_cpks_b3lyp scf_cpks_formamide_pbe)
   # (same fix as check_df_grad_ints_${case}'s own comment below).
   set_target_properties(${_t} PROPERTIES Fortran_MODULE_DIRECTORY
                         ${CMAKE_CURRENT_BINARY_DIR}/mod_${_t})
+endforeach()
+
+#
+# TDA/CIS singlet excitation energies and oscillator strengths
+# (src/scf/response/trc_tddft.F90) against pyscf's tdscf TDA (generate.py's
+# gen_tddft): water (4 roots) and formamide (6 roots), 6-31G*, HF, SVWN, PBE
+# and B3LYP, and methane (Td, 5 roots: the cut falls inside degenerate triplets).
+# One executable, one ARGS set per case.
+#
+foreach(_m water:4 formamide:6 ch4:5)
+  string(REPLACE ":" ";" _ml ${_m})
+  list(GET _ml 0 _mol)
+  list(GET _ml 1 _nr)
+  foreach(_f hf svwn pbe b3lyp)
+    set(_xyz ${_mol}.xyz)
+    if(_mol STREQUAL "ch4")
+      set(_xyz tops_ch4.xyz)
+    endif()
+    terco_add_check(check_tddft_${_mol}_${_f} check_tddft.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                    ARGS ${_xyz} basis_sets/6-31gs.json ${_mol} 6-31gs ${_f} ${_nr}
+                         ${CMAKE_CURRENT_BINARY_DIR}/tddft_${_mol}_${_f}_probe.bin)
+    target_link_libraries(check_tddft_${_mol}_${_f} PRIVATE test-drive::test-drive)
+    set_target_properties(check_tddft_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                          ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_${_mol}_${_f})
+  endforeach()
+endforeach()
+
+#
+# trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of
+# several trial densities against one cached collocation, for SVWN (LDA),
+# PBE and B3LYP (GGA) on water/6-31G*: batch against the loop, non-symmetric
+# against symmetrised input, and pyscf's nr_rks_fxc (generate.py's
+# gen_fxc_apply_many). One executable, one ARGS set per functional.
+#
+foreach(_f svwn pbe b3lyp)
+  terco_add_check(check_fxc_apply_many_${_f} check_fxc_apply_many.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                  ARGS water.xyz basis_sets/6-31gs.json water 6-31gs ${_f}
+                       ${CMAKE_CURRENT_BINARY_DIR}/fxc_apply_many_probe_${_f}.bin)
+  target_link_libraries(check_fxc_apply_many_${_f} PRIVATE test-drive::test-drive)
+  # Same source, three targets: each needs its own module directory.
+  set_target_properties(check_fxc_apply_many_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_fxc_apply_many_${_f})
+endforeach()
+
+#
+# The third functional derivative contracted with two densities
+# (trc_xc_kxc_rks_apply, src/xc/trc_xc.F90), LDA and GGA, against pyscf's
+# libxc eval_xc(deriv=3) (test/pyscf_refs/generate.py's gen_kxc, grid
+# matched to terco's own), plus symmetry, a finite difference of
+# trc_xc_fxc_rks, batch == loop and the refusals. One executable, one ARGS
+# set per functional.
+#
+foreach(_f svwn pbe b3lyp)
+  terco_add_check(check_xc_kxc_${_f} check_xc_kxc.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                   ARGS water.xyz basis_sets/6-31gs.json water 6-31gs ${_f} kxc_${_f}_probe.bin)
+  target_link_libraries(check_xc_kxc_${_f} PRIVATE test-drive::test-drive)
+  set_target_properties(check_xc_kxc_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_xc_kxc_${_f})
+endforeach()
+
+#
+# The batched XC response gradient (trc_xc_grad_response_many,
+# src/xc/trc_xc_grad_response.F90): nuclear finite differences of Tr(P V_xc)
+# and 1/2 Tr(T f_xc T) with the grid rebuilt, the density-step identities,
+# batch == loop, T = 0 against xc_grad_potential_add and the refusals. One
+# executable, one ARGS set per functional.
+#
+foreach(_f svwn pbe b3lyp)
+  terco_add_check(check_xc_grad_response_${_f} check_xc_grad_response.F90 NEEDS_BASIS ARGS ${_f})
+  target_link_libraries(check_xc_grad_response_${_f} PRIVATE test-drive::test-drive)
+  set_target_properties(check_xc_grad_response_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_xc_grad_response_${_f})
 endforeach()
 
 #

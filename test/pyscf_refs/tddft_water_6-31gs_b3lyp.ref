@@ -1,0 +1,15 @@
+# terco pyscf reference v1
+# case: tddft water/6-31gs/b3lyp (tda singlet)
+# generator: test/pyscf_refs/generate.py CASES["tddft"] -> gen_tddft
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 69a5f2413ad24e4d0c29c39edab8afb34fda596278bffab04e0d2f24210290b7
+# files: test/check_tddft.F90 test/basis_sets/6-31gs.json test/water.xyz
+E_SCF -7.64087307534520761e+01
+OMEGA 4
+2.96016632694089954e-01 3.70493592483115752e-01 3.90189146856778857e-01 4.71327159485951608e-01
+OSC 4
+1.38765647743099747e-02 5.03368666657926941e-28 1.01755476529892780e-01 8.29794237976523019e-02
+CONV_TOL 9.99999999999999980e-13
+GRAD_NORM 3.66539944482304176e-10
+END

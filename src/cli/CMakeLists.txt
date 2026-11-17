@@ -221,6 +221,20 @@ if(TERCO_ENABLE_TESTING)
     terco/cli_library_pople PROPERTIES ENVIRONMENT "${_lib_env}" PASS_REGULAR_EXPRESSION
                                        "TOTAL ENERGY +-76\\.01744137")
 
+  # g functions: def2-QZVP puts them on oxygen, so this is the shortest run
+  # that reaches the g classes, which only an LMAX=4 build has (the MD exchange
+  # pass owns the high ones). Before launch_classes stopped asking the Rys
+  # router about those classes, this stopped with "a class above d has no Rys
+  # kernel in this build". pyscf 2.15 RHF/def2-QZVP on test/water.xyz (117
+  # spherical functions): -76.066738102093; terco's is within 3e-12.
+  if(TERCO_LMAX GREATER 3)
+    add_test(NAME terco/cli_library_def2qzvp_g COMMAND terco_cli ${_xyz}/water.xyz -b def2-qzvp
+                                                       --econv 1e-11 --gconv 1e-8)
+    set_tests_properties(
+      terco/cli_library_def2qzvp_g PROPERTIES ENVIRONMENT "${_lib_env}" PASS_REGULAR_EXPRESSION
+                                              "TOTAL ENERGY +-76\\.06673810")
+  endif()
+
   # The same through every other guess, so each one stays reachable from the
   # command line and converges to the same state.
   foreach(g sap gwh core minao)

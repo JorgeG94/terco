@@ -458,7 +458,8 @@ contains
          ! unmasked kernel, which is right for every quartet.
          nw = plan%sOff(c1 + 1) - plan%sOff(c0)
          dkey = key
-         rys_route = rys_select_route(key)
+         rys_route = .false.
+         if (.not. mdg_routes(key)) rys_route = rys_select_route(key)
          if (mask /= 0) then
             launch%nwork_masked = launch%nwork_masked + nw
             ! pc_cost for both routes, because this pair of counters measures
@@ -840,11 +841,10 @@ contains
       !! compiled when folding became the default; this is that branch, forced,
       !! as its own routine.
       !!
-      !! SINGLE DENSITY by construction: mqc's `build_fock_direct_nosym` takes
-      !! one, and the enumerated digestion nests deeply enough inside its
-      !! permutation guards that threading a batch loop through it is more risk
-      !! than batching would be worth. Ranks match the batched kernels so one
-      !! driver serves both; the density index is a literal 1.
+      !! Any number of densities: scatter_nosym digests each quartet into every
+      !! one (eri%fock_nosym_many, the TDDFT matvec's transition densities).
+      !! Each density is an independent operand and accumulator, so the batch is
+      !! the same operator as ndens separate calls.
       !!
       !! Slower than the folded path by about what folding bought. The Hessian is
       !! built once per makeEFP; the SCF Fock a hundred times.
@@ -1159,52 +1159,60 @@ contains
       real(dp), intent(in)    :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao), kmat(ndens, nao, nao)
 
-      !$acc atomic update
-      jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, lam, sig)
-      !$acc atomic update
-      kmat(1, mu, lam) = kmat(1, mu, lam) + vv*dmat(1, nu, sig)
-      if (dij) then
+      integer :: idens
+
+      ! Every density takes the quartet's value: the integral is evaluated once and
+      ! digested ndens times (the density index is fastest, so one (mu, nu)'s
+      ! ndens updates are adjacent).
+      do idens = 1, ndens
+
          !$acc atomic update
-         jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, lam, sig)
+         jmat(idens, mu, nu) = jmat(idens, mu, nu) + vv*dmat(idens, lam, sig)
          !$acc atomic update
-         kmat(1, nu, lam) = kmat(1, nu, lam) + vv*dmat(1, mu, sig)
-      end if
-      if (dkl) then
-         !$acc atomic update
-         jmat(1, mu, nu) = jmat(1, mu, nu) + vv*dmat(1, sig, lam)
-         !$acc atomic update
-         kmat(1, mu, sig) = kmat(1, mu, sig) + vv*dmat(1, nu, lam)
-      end if
-      if (dij .and. dkl) then
-         !$acc atomic update
-         jmat(1, nu, mu) = jmat(1, nu, mu) + vv*dmat(1, sig, lam)
-         !$acc atomic update
-         kmat(1, nu, sig) = kmat(1, nu, sig) + vv*dmat(1, mu, lam)
-      end if
-      if (dpq) then
-         !$acc atomic update
-         jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, mu, nu)
-         !$acc atomic update
-         kmat(1, lam, mu) = kmat(1, lam, mu) + vv*dmat(1, sig, nu)
-         if (dkl) then
-            !$acc atomic update
-            jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, mu, nu)
-            !$acc atomic update
-            kmat(1, sig, mu) = kmat(1, sig, mu) + vv*dmat(1, lam, nu)
-         end if
+         kmat(idens, mu, lam) = kmat(idens, mu, lam) + vv*dmat(idens, nu, sig)
          if (dij) then
             !$acc atomic update
-            jmat(1, lam, sig) = jmat(1, lam, sig) + vv*dmat(1, nu, mu)
+            jmat(idens, nu, mu) = jmat(idens, nu, mu) + vv*dmat(idens, lam, sig)
             !$acc atomic update
-            kmat(1, lam, nu) = kmat(1, lam, nu) + vv*dmat(1, sig, mu)
+            kmat(idens, nu, lam) = kmat(idens, nu, lam) + vv*dmat(idens, mu, sig)
+         end if
+         if (dkl) then
+            !$acc atomic update
+            jmat(idens, mu, nu) = jmat(idens, mu, nu) + vv*dmat(idens, sig, lam)
+            !$acc atomic update
+            kmat(idens, mu, sig) = kmat(idens, mu, sig) + vv*dmat(idens, nu, lam)
          end if
          if (dij .and. dkl) then
             !$acc atomic update
-            jmat(1, sig, lam) = jmat(1, sig, lam) + vv*dmat(1, nu, mu)
+            jmat(idens, nu, mu) = jmat(idens, nu, mu) + vv*dmat(idens, sig, lam)
             !$acc atomic update
-            kmat(1, sig, nu) = kmat(1, sig, nu) + vv*dmat(1, lam, mu)
+            kmat(idens, nu, sig) = kmat(idens, nu, sig) + vv*dmat(idens, mu, lam)
          end if
-      end if
+         if (dpq) then
+            !$acc atomic update
+            jmat(idens, lam, sig) = jmat(idens, lam, sig) + vv*dmat(idens, mu, nu)
+            !$acc atomic update
+            kmat(idens, lam, mu) = kmat(idens, lam, mu) + vv*dmat(idens, sig, nu)
+            if (dkl) then
+               !$acc atomic update
+               jmat(idens, sig, lam) = jmat(idens, sig, lam) + vv*dmat(idens, mu, nu)
+               !$acc atomic update
+               kmat(idens, sig, mu) = kmat(idens, sig, mu) + vv*dmat(idens, lam, nu)
+            end if
+            if (dij) then
+               !$acc atomic update
+               jmat(idens, lam, sig) = jmat(idens, lam, sig) + vv*dmat(idens, nu, mu)
+               !$acc atomic update
+               kmat(idens, lam, nu) = kmat(idens, lam, nu) + vv*dmat(idens, sig, mu)
+            end if
+            if (dij .and. dkl) then
+               !$acc atomic update
+               jmat(idens, sig, lam) = jmat(idens, sig, lam) + vv*dmat(idens, nu, mu)
+               !$acc atomic update
+               kmat(idens, sig, nu) = kmat(idens, sig, nu) + vv*dmat(idens, lam, mu)
+            end if
+         end if
+      end do
    end subroutine scatter_nosym
 
 

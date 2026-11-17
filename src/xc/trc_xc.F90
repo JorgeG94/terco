@@ -137,6 +137,7 @@ module trc_xc
    use trc_collocation, only: collocation_shell, NCART_MAX
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use pic_timer, only: timer_type
+   use trc_error, only: error_t, ERROR_VALIDATION
    use pic_mpi_lib, only: comm_t, allreduce, bcast, MPI_SUM
    implicit none
    private
@@ -145,7 +146,9 @@ module trc_xc
    public :: trc_xc_options_t, trc_xc_options, trc_xc_result_t
    public :: XC_NP_PAD, XC_NL_PAD, xc_sort_by_shape
    public :: trc_xc_kernel_points_rks, trc_xc_kernel_points_t
-   public :: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply
+   public :: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply, trc_xc_fxc_rks_apply_many, trc_xc_fxc_vec_chunk
+   public :: trc_xc_kxc_rks_apply, trc_xc_kxc_refuse_reason, trc_xc_response_refuse_reason, XC_KXC_STEP
+   public :: trc_xc_grad_coef_rks, trc_xc_grad_coef_t
 
    real(dp), parameter :: XC_RHO_TOL = 1.0e-12_dp
    !! A batch whose bound on rho is below this is skipped. The functionals'
@@ -156,6 +159,25 @@ module trc_xc
    integer(int64), parameter :: XC_BUDGET = 8388608_int64
    !! Default cap on the stored basis values per chunk, in doubles: 8M,
    !! 256 MB with the gradients.
+   real(dp), parameter :: XC_KXC_STEP = 1.0e-5_dp
+   !! trc_xc_kxc_rks_apply's central-difference step: the largest relative
+   !! change of rho or of |grad rho| along B. The deviation from pyscf's
+   !! analytic kxc (water/6-31G*, test/check_xc_kxc.F90) is, by source:
+   !!   FD truncation   about 0.6 step**2 (6e-11 at 1e-5, 6e-9 at 1e-4);
+   !!   round-off       about 1.5e-16/step (1.5e-11 at 1e-5, visible by 1e-7);
+   !!   input mismatch  a floor of about 1.4e-9: the AO overlap/mapping
+   !!                   into pyscf's basis ~3e-10, and the SCF density's own
+   !!                   noise (a 1e-9 relative change of D moves the trace
+   !!                   1.2e-9 to 2e-9).
+   !! 1e-5 sits where truncation and round-off are both well under that
+   !! floor. A per-point cut at XC_RHO_TOL (dropped: trc_xc_fxc_rks has
+   !! none) moved the B3LYP trace by 1.5e-9, most of its earlier floor.
+   real(dp), parameter :: XC_KXC_TMAX = 1.0e30_dp
+   !! Cap on the step t itself, so a denormal relative size of B (t of
+   !! 1e300 or Inf) cannot make rho + t rho_B overflow into 0*Inf.
+   real(dp), parameter :: XC_KXC_RHO_MIN = 1.0e-32_dp
+   !! Densities at or under this give zero, where the kernels' own
+   !! thresholds already do (and the relative step needs rho > 0).
    integer, parameter :: XC_FXC_NCOEF = 7
    !! trc_xc_fxc_cache_t's coefp columns: grad rho(1:3), vsigma, v2rho2,
    !! v2rhosigma, v2sigma2.
@@ -198,6 +220,33 @@ module trc_xc
    contains
       procedure :: release => xc_kernel_points_release
    end type trc_xc_kernel_points_t
+
+   type :: trc_xc_grad_coef_t
+      !! Per grid point and channel, what trc_xc_grad_response_many's force
+      !! sweep needs (trc_xc_grad_coef_rks fills it, on the device, in xg's own
+      !! point order, zero on a batch its `active` drops). Column I of ncol has
+      !! channels 3 (I - 1) + 1 .. 3 I: the reference density D, the column's
+      !! P and its T. A channel's force is sum_g w_g [a drho_s + b . d grad rho_s]
+      !! (unweighted a, b), s the density it reads.
+      integer :: npts = 0
+      integer :: ncol = 0
+      !! Set by trc_xc_grad_coef_rks, from the density slots it is given.
+      integer, allocatable :: active(:)
+      !! (nbatch), set by the caller: 1 for a batch that is kept.
+      integer(int64) :: tcap = XC_BUDGET
+      !! Set by the caller: the most doubles one tile of a chunk may hold.
+      logical :: no_kxc = .false.
+      !! Set by the caller, a diagnostic: leave out the k_xc part of the D
+      !! channel (what a gradient built on f_xc alone gives). The negative
+      !! control of the tests.
+      real(dp), allocatable :: cf(:, :, :)
+      !! (4, npts, 3 ncol): a, then b(1:3).
+      real(dp), allocatable :: energy(:, :)
+      !! (npts, ncol): the column's integrand, unweighted -- Tr(P V) and
+      !! 1/2 E''[T, T] per point -- which the partition's response needs.
+   contains
+      procedure :: release => xc_grad_coef_release
+   end type trc_xc_grad_coef_t
 
    type :: trc_xc_fxc_cache_t
       !! Across one CPKS/Z-vector CG solve, f_xc[D_U] (trc_xc_fxc_rks's own
@@ -242,6 +291,16 @@ module trc_xc
       procedure :: setup => fxc_cache_setup
       procedure :: release => fxc_cache_release
    end type trc_xc_fxc_cache_t
+
+   type :: xc_fxc_apply_t
+      !! How `fxc_apply_core` runs, bundled so the routine stays within the
+      !! argument limit.
+      integer(int64) :: budget = 0
+      !! Chunk / vector-scratch cap in doubles; <= 0 is the default cap.
+      logical :: symmetrize = .true.
+      !! Symmetrise each density ((D + D^T)/2) before the gather; false only
+      !! for a caller that guarantees a symmetric density.
+   end type xc_fxc_apply_t
 
    type, extends(trc_xc_options_t) :: xc_run_t
       !! What `xc_drive` runs with: the caller's options and the spin count.
@@ -933,15 +992,27 @@ contains
       !! cache_budget pattern). The host build keeps up to 2 GB, so the
       !! cached path is exercised there too, not only under -stdpar=gpu.
 #ifdef TRC_DEVICE
-      use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
-                         acc_property_free_memory
-      bytes = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
-                                   acc_property_free_memory), int64) - 1536_int64*1024*1024
+      bytes = fxc_free_bytes() - 1536_int64*1024*1024
 #else
-      bytes = 2_int64*1024*1024*1024
+      bytes = fxc_free_bytes()
 #endif
       bytes = max(bytes, 0_int64)
    end function fxc_cache_budget_bytes
+
+   integer(int64) function fxc_free_bytes() result(bytes)
+      !! Free device bytes right now (a fixed 2 GB on the host build), the one
+      !! place the response code asks the device: fxc_cache_budget_bytes
+      !! (cache residency, at setup) and trc_xc_fxc_vec_chunk (vector scratch,
+      !! at apply time, when the resident tiles are already counted out).
+#ifdef TRC_DEVICE
+      use openacc, only: acc_get_property, acc_get_device_num, acc_get_device_type, &
+                         acc_property_free_memory
+      bytes = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
+                                   acc_property_free_memory), int64)
+#else
+      bytes = 2_int64*1024*1024*1024
+#endif
+   end function fxc_free_bytes
 
    subroutine fxc_resident_order(nres, npp, nlp, sord)
       !! sord(1:nres) := 1..nres, shape-sorted (xc_sort_by_shape): the
@@ -962,7 +1033,7 @@ contains
       call xc_sort_by_shape(nres, npp, nlp, sord)
    end subroutine fxc_resident_order
 
-   recursive subroutine fxc_cache_setup(this, b, xg, func, dmat, la)
+   recursive subroutine fxc_cache_setup(this, b, xg, func, dmat, la, res_budget)
       !! Collocate every batch once against `dmat` and fill `coefp`; keep
       !! chi/grad-chi resident for as many batches as fxc_cache_budget_bytes
       !! allows, this%nres of them. Their STORAGE order is the GLOBAL shape
@@ -977,12 +1048,20 @@ contains
       !! (unlike an overflow chunk, still natural-order, still merged).
       !! `dmat` need not stay resident after this call; `la` absent, made
       !! and released here.
+      !!
+      !! `res_budget` (bytes, optional) replaces fxc_cache_budget_bytes as the
+      !! residency limit: the first batches whose 48-byte-per-slot tiles fit
+      !! stay resident, and a value too small for any leaves none (nres = 0,
+      !! every batch recollocated per apply). It exists so a test can force
+      !! the overflow path on a system small enough to fit entirely; absent,
+      !! the device budget applies and batch 1 is always kept resident.
       class(trc_xc_fxc_cache_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
       real(dp), intent(in) :: dmat(b%nao, b%nao)
       type(trc_linalg_t), intent(inout), optional :: la
+      integer(int64), intent(in), optional :: res_budget
 
       integer :: nao
       integer :: b0, b1, ib, nloc, npb, np, p0, npairs, nb, k0, k1, cnt, mp, ml, nwork, k
@@ -997,7 +1076,7 @@ contains
          block
             type(trc_linalg_t) :: la_local
             call la_local%init(1)
-            call this%setup(b, xg, func, dmat, la_local)
+            call this%setup(b, xg, func, dmat, la_local, res_budget)
             call la_local%release()
          end block
          return
@@ -1025,10 +1104,15 @@ contains
          this%nlp(ib) = ((nloc + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
       end do
 
-      resbytes = fxc_cache_budget_bytes()
+      if (present(res_budget)) then
+         resbytes = max(res_budget, 0_int64)
+      else
+         resbytes = fxc_cache_budget_bytes()
+      end if
       need = 0
       do ib = 1, xg%nbatch
-         if (need + 48_int64*int(this%npp(ib), int64)*int(this%nlp(ib), int64) > resbytes .and. ib > 1) exit
+         if (need + 48_int64*int(this%npp(ib), int64)*int(this%nlp(ib), int64) > resbytes &
+             .and. (ib > 1 .or. present(res_budget))) exit
          need = need + 48_int64*int(this%npp(ib), int64)*int(this%nlp(ib), int64)
          this%nres = ib
       end do
@@ -1218,12 +1302,14 @@ contains
 
    recursive subroutine trc_xc_fxc_rks_apply(b, xg, cache, dmat_u, v_resp, budget, la)
       !! v_resp := f_xc[dmat_u] at the reference density `cache` was built
-      !! from (trc_xc_fxc_rks's own formula): the trial density's gather,
-      !! GEMM and point contraction only -- collocation and the ground
-      !! state's rho/grad-rho/kernel coefficients come from `cache`
-      !! (fxc_cache_setup), resident batches read with no recollocation,
-      !! the rest recollocated here exactly as trc_xc_fxc_rks. `dmat_u` is
-      !! device-resident; `la` absent, made and released here.
+      !! from (trc_xc_fxc_rks's own formula): the one-density case of
+      !! `trc_xc_fxc_rks_apply_many`, which documents the pipeline. Identical
+      !! to the former single-density code: `dmat_u` MUST be symmetric (to
+      !! roundoff is enough, as the CPKS callers' densities are) and is used
+      !! as is, with no symmetrising copy -- use `trc_xc_fxc_rks_apply_many`
+      !! for a possibly non-symmetric density. `budget` <= 0 or absent is the
+      !! default chunk cap. `dmat_u` is device-resident; `la` absent, made and
+      !! released here.
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_fxc_cache_t), intent(in) :: cache
@@ -1232,62 +1318,231 @@ contains
       integer(int64), intent(in), optional :: budget
       type(trc_linalg_t), intent(inout), optional :: la
 
+      type(xc_fxc_apply_t) :: opts
+
+      opts%symmetrize = .false.
+      if (present(budget)) opts%budget = budget
+      call fxc_apply_core(b, xg, cache, 1, dmat_u, v_resp, opts, la)
+   end subroutine trc_xc_fxc_rks_apply
+
+   function trc_xc_fxc_vec_chunk(b, xg, cache, nvec, budget) result(nvc)
+      !! How many of `nvec` trial densities `trc_xc_fxc_rks_apply_many` takes
+      !! per pass (>= 1; the last pass takes the remainder).
+      !!
+      !! One density in flight costs, in doubles: nao^2 (its symmetrised copy)
+      !! + 2 T (X = chi D and the response tile Z, T the largest tile held at
+      !! once: the whole resident region, or the biggest overflow chunk under
+      !! `budget`) + 2 P (the gathered density slices and the pair tiles, P the
+      !! largest chunk's sum of nlp^2). The cache's own residency reservation
+      !! (fxc_cache_budget_bytes) already counts ONE X and ONE Z tile, so a
+      !! second density is the first real extra cost. The cap on that scratch
+      !! is `budget` doubles when given (> 0; <= 0 or absent means not given;
+      !! the same knob that caps a chunk's basis tiles), else half the free device memory less 256 MB (a 2 GB
+      !! allowance on the host build). v_resp itself (nao^2 per density) is
+      !! the caller's. Water/6-31G* (19 AOs, 34k points, all batches resident)
+      !! takes about 0.9 MB per density, so every realistic nvec is one pass;
+      !! a 500-function molecule with a 1 GB resident region takes ~2 GB per
+      !! density, which is what this exists to bound.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_xc_fxc_cache_t), intent(in) :: cache
+      integer, intent(in) :: nvec
+      integer(int64), intent(in), optional :: budget
+      integer :: nvc
+
+      integer(int64) :: cap, need, pairs, tile, pmax, limit, per_vec
+      integer :: k, ib, b0
+      integer, allocatable :: sord(:)
+      logical :: given
+
+      nvc = max(nvec, 1)
+      if (.not. cache%ready .or. xg%npts == 0 .or. nvec <= 1) return
+      given = .false.
+      if (present(budget)) given = budget > 0
+      cap = XC_BUDGET
+      if (given) cap = budget
+
+      tile = cache%nres_chi
+      pmax = 0
+      allocate (sord(max(cache%nres, 1)))
+      if (cache%nres > 0) call fxc_resident_order(cache%nres, cache%npp, cache%nlp, sord)
+      b0 = 1
+      do while (b0 <= cache%nres)
+         need = 0
+         pairs = 0
+         k = b0
+         do while (k <= cache%nres)
+            ib = sord(k)
+            if (need + int(cache%npp(ib), int64)*int(cache%nlp(ib), int64) > cap .and. k > b0) exit
+            need = need + int(cache%npp(ib), int64)*int(cache%nlp(ib), int64)
+            pairs = pairs + int(cache%nlp(ib), int64)**2
+            k = k + 1
+         end do
+         pmax = max(pmax, pairs)
+         b0 = k
+      end do
+      deallocate (sord)
+      b0 = cache%nres + 1
+      do while (b0 <= xg%nbatch)
+         need = 0
+         pairs = 0
+         ib = b0
+         do while (ib <= xg%nbatch)
+            if (need + int(cache%npp(ib), int64)*int(cache%nlp(ib), int64) > cap .and. ib > b0) exit
+            need = need + int(cache%npp(ib), int64)*int(cache%nlp(ib), int64)
+            pairs = pairs + int(cache%nlp(ib), int64)**2
+            ib = ib + 1
+         end do
+         tile = max(tile, need)
+         pmax = max(pmax, pairs)
+         b0 = ib
+      end do
+      per_vec = int(b%nao, int64)**2 + 2_int64*tile + 2_int64*pmax
+      if (given) then
+         limit = budget
+      else
+         ! Half the free memory in doubles (bytes/16), less 256 MB (32M doubles).
+         limit = max(fxc_free_bytes()/16_int64 - 33554432_int64, 0_int64)
+      end if
+      nvc = int(max(1_int64, min(int(nvec, int64), limit/max(per_vec, 1_int64))))
+   end function trc_xc_fxc_vec_chunk
+
+   recursive subroutine trc_xc_fxc_rks_apply_many(b, xg, cache, nvec, dmats_u, v_resp, budget, la)
+      !! The many-trial-density f_xc response; see `fxc_apply_core` for the
+      !! pipeline. Every density is symmetrised first, so a non-symmetric
+      !! `dmats_u(:, :, k)` is fine. `budget` (doubles) caps both the
+      !! basis-value chunk and the vector scratch; <= 0 or absent is the
+      !! default cap (a present 0 is NOT a one-double cap). `la` absent, made
+      !! and released here.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_xc_fxc_cache_t), intent(in) :: cache
+      integer, intent(in) :: nvec
+      real(dp), intent(in) :: dmats_u(b%nao, b%nao, max(nvec, 1))
+      real(dp), intent(out) :: v_resp(b%nao, b%nao, max(nvec, 1))
+      integer(int64), intent(in), optional :: budget
+      type(trc_linalg_t), intent(inout), optional :: la
+
+      type(xc_fxc_apply_t) :: opts
+
+      if (present(budget)) opts%budget = budget
+      call fxc_apply_core(b, xg, cache, nvec, dmats_u, v_resp, opts, la)
+   end subroutine trc_xc_fxc_rks_apply_many
+
+   recursive subroutine fxc_apply_core(b, xg, cache, nvec, dmats_u, v_resp, opts, la)
+      !! v_resp(:, :, k) := f_xc[dmats_u(:, :, k)] for k = 1..nvec, at the
+      !! reference density `cache` was built from, restricted, LDA and GGA
+      !! (trc_xc_fxc_rks's own formula, `trc_xc_fxc_rks_apply`'s pipeline):
+      !! the many-trial-density form of the TDDFT matvec. Per grid batch the
+      !! cached chi/grad-chi are read (or, for a batch the cache does not hold
+      !! resident, collocated) ONCE, and each density's gather, X = chi D
+      !! GEMM, rho_k/grad rho_k contraction and V = chi^T Z GEMM run against
+      !! them; the ground state's rho/grad rho/kernel coefficients come from
+      !! `cache` for every k.
+      !!
+      !! With opts%symmetrize, `dmats_u` may be NON-symmetric (a TDDFT transition density
+      !! X + Y or X C_v C_o^T has no reason to be): the response of the
+      !! density rho_D = sum_uv D_uv chi_u chi_v depends on D only through
+      !! (D + D^T)/2, and the point kernel's grad rho_k = 2 sum_uv D_uv
+      !! chi_u grad chi_v is only correct for a symmetric D (it silently
+      !! computes the gradient of D^T-mixed products otherwise). So each
+      !! density is symmetrised explicitly (xc_symmetrize) before the gather;
+      !! for an exactly symmetric input that is the identity bit for bit,
+      !! and for one symmetric only to roundoff (trc_cpks's add_general) it
+      !! changes the density by roundoff.
+      !! The output is symmetric (xc_resp_scatter_many adds V + V^T).
+      !!
+      !! `dmats_u` is device-resident like `trc_xc_fxc_rks_apply`'s; `v_resp`
+      !! is written in full, not accumulated into. nvec <= 0 only zeroes it.
+      !!
+      !! Scratch beyond the cache: per density in flight nao^2 (symmetrised
+      !! copy) + 2 T (X, Z; T the resident region or the largest overflow
+      !! chunk) + 2 P (pair tiles), as `trc_xc_fxc_vec_chunk` derives; nvec
+      !! larger than it admits runs in passes of that many densities, each
+      !! pass re-collocating the batches the cache does not hold (resident
+      !! batches cost nothing extra). opts%budget bounds both the basis-value
+      !! chunk (as before) and that vector scratch; with opts%symmetrize
+      !! false the density is read as is (no copy), the caller guaranteeing
+      !! symmetry. `la` absent, made and released here.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_xc_fxc_cache_t), intent(in) :: cache
+      integer, intent(in) :: nvec
+      real(dp), intent(in) :: dmats_u(b%nao, b%nao, max(nvec, 1))
+      real(dp), intent(out) :: v_resp(b%nao, b%nao, max(nvec, 1))
+      type(xc_fxc_apply_t), intent(in) :: opts
+      type(trc_linalg_t), intent(inout), optional :: la
+
       integer :: nao
       integer(int64) :: cap, need, nchi
       type(trc_gemm_batch_t) :: gemm_shape
       integer :: b0, b1, ib, np, p0, npairs, nb, k0, k1, cnt, mp, ml, k
+      integer :: nvc, v0, nv, s
       integer, allocatable :: pr_off(:), ord(:), pb_off(:), sord(:), c_off_local(:)
-      real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), zt(:, :), dloc(:, :), vloc(:)
+      real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), zt(:, :), dloc(:, :), vloc(:, :), dsym(:, :, :)
       real(dp), allocatable :: xt_res(:, :), zt_res(:, :)
       integer :: nwork
       integer, allocatable :: wk_off(:)
 
       nao = b%nao
+      if (nvec < 1) then
+         v_resp = 0.0_dp
+         return
+      end if
       v_resp = 0.0_dp
       if (xg%npts == 0 .or. .not. cache%ready) return
       if (.not. present(la)) then
          block
             type(trc_linalg_t) :: la_local
             call la_local%init(1)
-            call trc_xc_fxc_rks_apply(b, xg, cache, dmat_u, v_resp, budget, la_local)
+            call fxc_apply_core(b, xg, cache, nvec, dmats_u, v_resp, opts, la_local)
             call la_local%release()
          end block
          return
       end if
       cap = XC_BUDGET
-      if (present(budget)) cap = max(budget, 1_int64)
+      if (opts%budget > 0) cap = opts%budget
+      nvc = trc_xc_fxc_vec_chunk(b, xg, cache, nvec, opts%budget)
 
       allocate (pr_off(xg%nbatch + 1))
-      !$acc data copyin(dmat_u) copy(v_resp)
+      !$acc data copyin(dmats_u) copy(v_resp)
       !$acc update device(v_resp)
-      if (cache%nres_chi > 0) then
-         ! X = chi dmat_u and the response tile Z, sized once over the
-         ! WHOLE resident region (cache%c_off's offsets span it): every
-         ! resident sub-chunk below writes and reads only its own slice,
-         ! so this is one allocation per call, not one per sub-chunk --
-         ! the same reasoning fxc_cache_setup's own xt_res comment gives.
-         allocate (xt_res(cache%nres_chi, 1), zt_res(cache%nres_chi, 1))
-         !$acc enter data create(xt_res, zt_res)
-      end if
-
-      ! Resident: cache%c_off's offsets were assigned over the GLOBAL
-      ! shape order of the resident batches (fxc_cache_setup's own
-      ! comment), so every chunk here walks THAT order (recomputed,
-      ! deterministically, by fxc_resident_order) rather than a fresh
-      ! per-chunk sort of a natural-order run -- the two need not agree,
-      ! and a strided batched GEMM over a mismatched run reads and writes
-      ! the wrong batches' slices. The point kernel runs once per batch,
-      ! not once over the chunk's merged point range, since the GLOBAL
-      ! order's own batches need not be contiguous in xg's point order.
       allocate (sord(max(cache%nres, 1)))
       if (cache%nres > 0) call fxc_resident_order(cache%nres, cache%npp, cache%nlp, sord)
-      ! Zeroed once for the whole resident region: the point kernel assigns
-      ! every row it owns and never writes a batch's padding, so clearing it
-      ! per chunk (a pass over all nres_chi entries each time) was
-      ! quadratic in the resident size.
-      if (cache%nres > 0) call xc_zero_zt(cache%nres_chi, zt_res)
-      b0 = 1
-      do while (b0 <= cache%nres)
+
+      do v0 = 1, nvec, nvc
+         nv = min(nvc, nvec - v0 + 1)
+         if (opts%symmetrize) then
+            allocate (dsym(nao, nao, nv))
+            !$acc enter data create(dsym)
+            call xc_symmetrize(nao, nvec, v0, nv, dmats_u, nv, 1, dsym)
+         end if
+         if (cache%nres_chi > 0) then
+            ! X = chi D_k and the response tile Z_k, sized once over the
+            ! WHOLE resident region (cache%c_off's offsets span it): every
+            ! resident sub-chunk below writes and reads only its own slice,
+            ! so this is one allocation per pass, not one per sub-chunk --
+            ! the same reasoning fxc_cache_setup's own xt_res comment gives.
+            allocate (xt_res(cache%nres_chi, nv), zt_res(cache%nres_chi, nv))
+            !$acc enter data create(xt_res, zt_res)
+         end if
+
+         ! Resident: cache%c_off's offsets were assigned over the GLOBAL
+         ! shape order of the resident batches (fxc_cache_setup's own
+         ! comment), so every chunk here walks THAT order (sord, from
+         ! fxc_resident_order) rather than a fresh per-chunk sort of a
+         ! natural-order run -- the two need not agree, and a strided
+         ! batched GEMM over a mismatched run reads and writes the wrong
+         ! batches' slices. The point kernel runs once per batch, not once
+         ! over the chunk's merged point range, since the GLOBAL order's own
+         ! batches need not be contiguous in xg's point order.
+         ! Zeroed once per pass for the whole resident region: the point
+         ! kernel assigns every row it owns and never writes a batch's
+         ! padding, so clearing it per chunk (a pass over all nres_chi
+         ! entries each time) was quadratic in the resident size.
+         if (cache%nres > 0) call xc_zero_zt(cache%nres_chi*int(nv, int64), zt_res)
+         b0 = 1
+         do while (b0 <= cache%nres)
             need = 0
             b1 = b0 - 1
             do k = b0, cache%nres
@@ -1309,10 +1564,15 @@ contains
                npairs = npairs + cache%nlp(ib)*cache%nlp(ib)
                pb_off(k + 1) = npairs
             end do
-            allocate (dloc(max(npairs, 1), 1), vloc(max(npairs, 1)))
+            allocate (dloc(max(npairs, 1), nv), vloc(max(npairs, 1), nv))
             !$acc enter data create(dloc, vloc) copyin(ord, pb_off)
-            call xc_gather(npairs, nb, ord, pb_off, 1, nao, dmat_u, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
-                           cache%nlp, xg%nbatch, dloc)
+            if (opts%symmetrize) then
+               call xc_gather(npairs, nb, ord, pb_off, nv, nao, dsym, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                              cache%nlp, xg%nbatch, dloc)
+            else
+               call xc_gather(npairs, nb, ord, pb_off, nv, nao, dmats_u(:, :, v0:v0 + nv - 1), xg%b_aooff, &
+                              size(xg%b_ao), xg%b_ao, cache%nlp, xg%nbatch, dloc)
+            end if
             k0 = 1
             do while (k0 <= nb)
                ib = ord(k0)
@@ -1326,8 +1586,10 @@ contains
                cnt = k1 - k0 + 1
                if (ml > 0) then
                   gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
-                  call la%gemm_batched(gemm_shape, cache%chi(cache%c_off(ib) + 1), dloc(pr_off(ib) + 1, 1), &
-                                       xt_res(cache%c_off(ib) + 1, 1))
+                  do s = 1, nv
+                     call la%gemm_batched(gemm_shape, cache%chi(cache%c_off(ib) + 1), dloc(pr_off(ib) + 1, s), &
+                                          xt_res(cache%c_off(ib) + 1, s))
+                  end do
                end if
                k0 = k1 + 1
             end do
@@ -1335,7 +1597,7 @@ contains
                ib = ord(k)
                p0 = xg%b_off(ib)
                np = xg%b_off(ib + 1) - p0
-               call xc_fxc_apply_points(np, p0, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, cache%c_off, &
+               call xc_fxc_apply_points(np, nv, p0, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, cache%c_off, &
                                         cache%npp, xg%nbatch, cache%nres_chi, cache%chi, cache%gchi, xt_res, &
                                         cache%coefp, zt_res)
             end do
@@ -1352,24 +1614,26 @@ contains
                cnt = k1 - k0 + 1
                if (ml > 0) then
                   gemm_shape = trc_gemm_batch(ml, ml, mp, cnt, transa="T")
-                  call la%gemm_batched(gemm_shape, cache%chi(cache%c_off(ib) + 1), zt_res(cache%c_off(ib) + 1, 1), &
-                                       vloc(pr_off(ib) + 1))
+                  do s = 1, nv
+                     call la%gemm_batched(gemm_shape, cache%chi(cache%c_off(ib) + 1), &
+                                          zt_res(cache%c_off(ib) + 1, s), vloc(pr_off(ib) + 1, s))
+                  end do
                end if
                k0 = k1 + 1
             end do
-            call xc_resp_scatter(npairs, nb, ord, pb_off, nao, v_resp, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
-                                 cache%nlp, xg%nbatch, vloc)
+            call xc_resp_scatter_many(npairs, nb, nv, v0, nvec, ord, pb_off, nao, v_resp, xg%b_aooff, &
+                                      size(xg%b_ao), xg%b_ao, cache%nlp, xg%nbatch, vloc)
             !$acc exit data delete(dloc, vloc, ord, pb_off)
             deallocate (dloc, vloc, ord, pb_off)
-         b0 = b1 + 1
-      end do
-      if (cache%nres_chi > 0) then
-         !$acc exit data delete(xt_res, zt_res)
-         deallocate (xt_res, zt_res)
-      end if
+            b0 = b1 + 1
+         end do
+         if (cache%nres_chi > 0) then
+            !$acc exit data delete(xt_res, zt_res)
+            deallocate (xt_res, zt_res)
+         end if
 
-      b0 = cache%nres + 1
-      do while (b0 <= xg%nbatch)
+         b0 = cache%nres + 1
+         do while (b0 <= xg%nbatch)
             need = 0
             b1 = b0 - 1
             do ib = b0, xg%nbatch
@@ -1402,15 +1666,21 @@ contains
                nwork = nwork + (xg%b_shoff(ib + 1) - xg%b_shoff(ib))*(xg%b_off(ib + 1) - xg%b_off(ib))
                wk_off(k + 1) = nwork
             end do
-            allocate (chi(nchi), gchi(nchi, 3), xt(nchi, 1), zt(nchi, 1), dloc(max(npairs, 1), 1), &
-                      vloc(max(npairs, 1)))
+            allocate (chi(nchi), gchi(nchi, 3), xt(nchi, nv), zt(nchi, nv), dloc(max(npairs, 1), nv), &
+                      vloc(max(npairs, 1), nv))
             !$acc enter data create(chi, gchi, xt, zt, dloc, vloc) copyin(c_off_local, ord, pb_off, wk_off)
-            call xc_zero(nchi, 1, chi, zt)
+            call xc_zero_grad_only(nchi, chi)
+            call xc_zero_zt(nchi*int(nv, int64), zt)
             call xc_collocate(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, &
                               b%sh_r, xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, xg%b_shao, &
                               c_off_local, cache%npp, xg%nbatch, nchi, chi, gchi)
-            call xc_gather(npairs, nb, ord, pb_off, 1, nao, dmat_u, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
-                           cache%nlp, xg%nbatch, dloc)
+            if (opts%symmetrize) then
+               call xc_gather(npairs, nb, ord, pb_off, nv, nao, dsym, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                              cache%nlp, xg%nbatch, dloc)
+            else
+               call xc_gather(npairs, nb, ord, pb_off, nv, nao, dmats_u(:, :, v0:v0 + nv - 1), xg%b_aooff, &
+                              size(xg%b_ao), xg%b_ao, cache%nlp, xg%nbatch, dloc)
+            end if
             k0 = 1
             do while (k0 <= nb)
                ib = ord(k0)
@@ -1424,12 +1694,14 @@ contains
                cnt = k1 - k0 + 1
                if (ml > 0) then
                   gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
-                  call la%gemm_batched(gemm_shape, chi(c_off_local(ib) + 1), dloc(pr_off(ib) + 1, 1), &
-                                       xt(c_off_local(ib) + 1, 1))
+                  do s = 1, nv
+                     call la%gemm_batched(gemm_shape, chi(c_off_local(ib) + 1), dloc(pr_off(ib) + 1, s), &
+                                          xt(c_off_local(ib) + 1, s))
+                  end do
                end if
                k0 = k1 + 1
             end do
-            call xc_fxc_apply_points(np, p0, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, c_off_local, &
+            call xc_fxc_apply_points(np, nv, p0, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, c_off_local, &
                                      cache%npp, xg%nbatch, nchi, chi, gchi, xt, cache%coefp, zt)
             k0 = 1
             do while (k0 <= nb)
@@ -1444,21 +1716,28 @@ contains
                cnt = k1 - k0 + 1
                if (ml > 0) then
                   gemm_shape = trc_gemm_batch(ml, ml, mp, cnt, transa="T")
-                  call la%gemm_batched(gemm_shape, chi(c_off_local(ib) + 1), zt(c_off_local(ib) + 1, 1), &
-                                       vloc(pr_off(ib) + 1))
+                  do s = 1, nv
+                     call la%gemm_batched(gemm_shape, chi(c_off_local(ib) + 1), zt(c_off_local(ib) + 1, s), &
+                                          vloc(pr_off(ib) + 1, s))
+                  end do
                end if
                k0 = k1 + 1
             end do
-            call xc_resp_scatter(npairs, nb, ord, pb_off, nao, v_resp, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
-                                 cache%nlp, xg%nbatch, vloc)
+            call xc_resp_scatter_many(npairs, nb, nv, v0, nvec, ord, pb_off, nao, v_resp, xg%b_aooff, &
+                                      size(xg%b_ao), xg%b_ao, cache%nlp, xg%nbatch, vloc)
             !$acc exit data delete(chi, gchi, xt, zt, dloc, vloc, c_off_local, ord, pb_off, wk_off)
             deallocate (chi, gchi, xt, zt, dloc, vloc, c_off_local, ord, pb_off, wk_off)
-         b0 = b1 + 1
+            b0 = b1 + 1
+         end do
+         if (opts%symmetrize) then
+            !$acc exit data delete(dsym)
+            deallocate (dsym)
+         end if
       end do
       !$acc update self(v_resp)
       !$acc end data
-      deallocate (pr_off)
-   end subroutine trc_xc_fxc_rks_apply
+      deallocate (pr_off, sord)
+   end subroutine fxc_apply_core
 
    subroutine fxc_cache_release(this)
       class(trc_xc_fxc_cache_t), intent(inout) :: this
@@ -1510,14 +1789,15 @@ contains
       end do
    end subroutine xc_zero_grad_only
 
-   subroutine xc_zero_zt(nchi, zt)
+   subroutine xc_zero_zt(n, zt)
       !! zt's padding only, every apply call: unlike chi (resident, zeroed
-      !! once at setup) zt is rebuilt from the trial density every time.
-      integer(int64), intent(in) :: nchi
-      real(dp), intent(out) :: zt(nchi, 1)
+      !! once at setup) zt is rebuilt from the trial densities every time.
+      !! `zt` is the whole (nchi, nv) tile seen as one run of n = nchi*nv.
+      integer(int64), intent(in) :: n
+      real(dp), intent(out) :: zt(n)
       integer(int64) :: i
-      do concurrent(i=1:nchi)
-         zt(i, 1) = 0.0_dp
+      do concurrent(i=1:n)
+         zt(i) = 0.0_dp
       end do
    end subroutine xc_zero_zt
 
@@ -1583,22 +1863,26 @@ contains
       end do
    end subroutine xc_fxc_setup_points
 
-   pure subroutine xc_fxc_apply_point_body(gg, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+   pure subroutine xc_fxc_apply_point_body(gg, nv, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
                                            nchi, chi, gchi, xt, coefp, zt)
-      !! zt(:, 1) at point gg from the trial density's xt = chi D_U and
+      !! zt(:, 1:nv) at point gg from the trial densities' xt = chi D_k and
       !! the ground state's coefp (fxc_cache_setup) -- the "trial" half of
-      !! trc_xc_fxc_rks's own xc_resp_point_body, unchanged formula.
+      !! trc_xc_fxc_rks's own xc_resp_point_body, unchanged formula, once per
+      !! trial density k. The point's kernel coefficients are read once and
+      !! the chi/grad-chi row is re-read per k (it is hot in cache after the
+      !! first); one thread per point, not per (point, k), so the 7
+      !! coefficients and the row offsets are not recomputed per density.
       !$acc routine seq
-      integer, intent(in) :: gg, npts, nbatch
+      integer, intent(in) :: gg, nv, npts, nbatch
       real(dp), intent(in) :: w(npts)
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
       integer, intent(in) :: npp(nbatch)
       integer(int64), intent(in) :: nchi
-      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, 1)
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, nv)
       real(dp), intent(in) :: coefp(npts, XC_FXC_NCOEF)
-      real(dp), intent(inout) :: zt(nchi, 1)
+      real(dp), intent(inout) :: zt(nchi, nv)
 
-      integer :: ib, nloc, ld, off, u, i
+      integer :: ib, nloc, ld, off, u, i, k
       real(dp) :: wg, xu, dsig_u, vsigma, v2rho2, v2rhosigma, v2sigma2, rho_u, zg_r
       real(dp) :: grho(3), grho_u(3), zv_r(3)
 
@@ -1607,16 +1891,6 @@ contains
       ld = npp(ib)
       off = c_off(ib) + (gg - b_off(ib)) + 1
       wg = w(gg)
-      rho_u = 0.0_dp
-      grho_u = 0.0_dp
-      do u = 1, nloc
-         i = off + (u - 1)*ld
-         xu = xt(i, 1)
-         rho_u = rho_u + xu*chi(i)
-         grho_u(1) = grho_u(1) + 2.0_dp*xu*gchi(i, 1)
-         grho_u(2) = grho_u(2) + 2.0_dp*xu*gchi(i, 2)
-         grho_u(3) = grho_u(3) + 2.0_dp*xu*gchi(i, 3)
-      end do
       grho(1) = coefp(gg, 1)
       grho(2) = coefp(gg, 2)
       grho(3) = coefp(gg, 3)
@@ -1624,34 +1898,499 @@ contains
       v2rho2 = coefp(gg, 5)
       v2rhosigma = coefp(gg, 6)
       v2sigma2 = coefp(gg, XC_FXC_NCOEF)
-      dsig_u = 2.0_dp*(grho(1)*grho_u(1) + grho(2)*grho_u(2) + grho(3)*grho_u(3))
-      zg_r = wg*(v2rho2*rho_u + v2rhosigma*dsig_u)
-      zv_r(1) = wg*2.0_dp*(v2rhosigma*rho_u + v2sigma2*dsig_u)*grho(1) + wg*2.0_dp*vsigma*grho_u(1)
-      zv_r(2) = wg*2.0_dp*(v2rhosigma*rho_u + v2sigma2*dsig_u)*grho(2) + wg*2.0_dp*vsigma*grho_u(2)
-      zv_r(3) = wg*2.0_dp*(v2rhosigma*rho_u + v2sigma2*dsig_u)*grho(3) + wg*2.0_dp*vsigma*grho_u(3)
-      do u = 1, nloc
-         i = off + (u - 1)*ld
-         zt(i, 1) = 0.5_dp*zg_r*chi(i) + zv_r(1)*gchi(i, 1) + zv_r(2)*gchi(i, 2) + zv_r(3)*gchi(i, 3)
+      do k = 1, nv
+         rho_u = 0.0_dp
+         grho_u = 0.0_dp
+         do u = 1, nloc
+            i = off + (u - 1)*ld
+            xu = xt(i, k)
+            rho_u = rho_u + xu*chi(i)
+            grho_u(1) = grho_u(1) + 2.0_dp*xu*gchi(i, 1)
+            grho_u(2) = grho_u(2) + 2.0_dp*xu*gchi(i, 2)
+            grho_u(3) = grho_u(3) + 2.0_dp*xu*gchi(i, 3)
+         end do
+         dsig_u = 2.0_dp*(grho(1)*grho_u(1) + grho(2)*grho_u(2) + grho(3)*grho_u(3))
+         zg_r = wg*(v2rho2*rho_u + v2rhosigma*dsig_u)
+         zv_r(1) = wg*2.0_dp*(v2rhosigma*rho_u + v2sigma2*dsig_u)*grho(1) + wg*2.0_dp*vsigma*grho_u(1)
+         zv_r(2) = wg*2.0_dp*(v2rhosigma*rho_u + v2sigma2*dsig_u)*grho(2) + wg*2.0_dp*vsigma*grho_u(2)
+         zv_r(3) = wg*2.0_dp*(v2rhosigma*rho_u + v2sigma2*dsig_u)*grho(3) + wg*2.0_dp*vsigma*grho_u(3)
+         do u = 1, nloc
+            i = off + (u - 1)*ld
+            zt(i, k) = 0.5_dp*zg_r*chi(i) + zv_r(1)*gchi(i, 1) + zv_r(2)*gchi(i, 2) + zv_r(3)*gchi(i, 3)
+         end do
       end do
    end subroutine xc_fxc_apply_point_body
 
-   subroutine xc_fxc_apply_points(np, p0, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+   subroutine xc_fxc_apply_points(np, nv, p0, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
                                   nchi, chi, gchi, xt, coefp, zt)
-      integer, intent(in) :: np, p0, npts, nbatch
+      integer, intent(in) :: np, nv, p0, npts, nbatch
       real(dp), intent(in) :: w(npts)
       integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
       integer, intent(in) :: npp(nbatch)
       integer(int64), intent(in) :: nchi
-      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, 1)
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, nv)
       real(dp), intent(in) :: coefp(npts, XC_FXC_NCOEF)
-      real(dp), intent(inout) :: zt(nchi, 1)
+      real(dp), intent(inout) :: zt(nchi, nv)
       integer :: g
 
       do concurrent(g=1:np)
-         call xc_fxc_apply_point_body(p0 + g - 1, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+         call xc_fxc_apply_point_body(p0 + g - 1, nv, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
                                       nchi, chi, gchi, xt, coefp, zt)
       end do
    end subroutine xc_fxc_apply_points
+
+   subroutine xc_symmetrize(nao, nvec, v0, nv, dmats, nd, d0, dsym)
+      !! dsym(:, :, d0 + k - 1) := (D + D^T)/2 of dmats(:, :, v0 + k - 1), k = 1..nv.
+      !! One thread per output element; for an exactly symmetric D the two
+      !! halves are the same double, so the result is D bit for bit.
+      integer, intent(in) :: nao, nvec, v0, nv, nd, d0
+      real(dp), intent(in) :: dmats(nao, nao, nvec)
+      real(dp), intent(inout) :: dsym(nao, nao, nd)
+      integer(int64) :: t, nn
+      integer :: i, j, k
+
+      nn = int(nao, int64)*int(nao, int64)
+      do concurrent(t=1:nn*int(nv, int64)) local(i, j, k)
+         k = int((t - 1_int64)/nn) + 1
+         j = int(mod(t - 1_int64, nn))/nao + 1
+         i = mod(int(mod(t - 1_int64, nn)), nao) + 1
+         dsym(i, j, d0 + k - 1) = 0.5_dp*(dmats(i, j, v0 + k - 1) + dmats(j, i, v0 + k - 1))
+      end do
+   end subroutine xc_symmetrize
+
+   subroutine xc_resp_scatter_many(npairs, nb, nv, v0, nvec, ord, pb_off, nao, vxc, b_aooff, nbao, b_ao, nlp, &
+                                   nbatch, vloc)
+      !! xc_resp_scatter's twin for nv densities at once: vxc(u, v, v0 + k - 1)
+      !! += vloc(u, v, k) + vloc(v, u, k) for each of the nv pair tiles.
+      integer, intent(in) :: npairs, nb, nv, v0, nvec, nao, nbao, nbatch
+      integer, intent(in) :: ord(nb), pb_off(nb + 1)
+      real(dp), intent(inout) :: vxc(nao, nao, nvec)
+      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), nlp(nbatch)
+      real(dp), intent(in) :: vloc(max(npairs, 1), nv)
+      integer(int64) :: tk
+      integer :: t, k, au, av
+      real(dp) :: acc_a
+
+      if (npairs < 1) return
+#ifdef TRC_DEVICE
+      do concurrent(tk=1:int(npairs, int64)*nv) local(t, k, au, av, acc_a)
+         t = int(mod(tk - 1_int64, int(npairs, int64))) + 1
+         k = int((tk - 1_int64)/npairs) + 1
+         call xc_resp_scatter_many_body(TRC_DC_INDEX(t), TRC_DC_INDEX(k), nb, ord, pb_off, b_aooff, nbao, b_ao, &
+                                        nlp, nbatch, npairs, nv, vloc, au, av, acc_a)
+         if (au > 0) then
+            !$acc atomic update
+            vxc(au, av, v0 + k - 1) = vxc(au, av, v0 + k - 1) + acc_a
+         end if
+      end do
+#else
+      do tk = 1, int(npairs, int64)*nv
+         t = int(mod(tk - 1_int64, int(npairs, int64))) + 1
+         k = int((tk - 1_int64)/npairs) + 1
+         call xc_resp_scatter_many_body(t, k, nb, ord, pb_off, b_aooff, nbao, b_ao, nlp, nbatch, npairs, nv, &
+                                        vloc, au, av, acc_a)
+         if (au > 0) vxc(au, av, v0 + k - 1) = vxc(au, av, v0 + k - 1) + acc_a
+      end do
+#endif
+   end subroutine xc_resp_scatter_many
+
+   pure subroutine xc_resp_scatter_many_body(t, k, nb, ord, pb_off, b_aooff, nbao, b_ao, nlp, nbatch, npairs, nv, &
+                                             vloc, au, av, acc_a)
+      !$acc routine seq
+      integer, intent(in) :: t, k, nb, nbao, nbatch, npairs, nv
+      integer, intent(in) :: ord(nb), pb_off(nb + 1)
+      integer, intent(in) :: b_aooff(nbatch + 1), b_ao(nbao), nlp(nbatch)
+      real(dp), intent(in) :: vloc(npairs, nv)
+      integer, intent(out) :: au, av
+      real(dp), intent(out) :: acc_a
+      integer :: kb, ib, tt, nloc, ld, u, v, tvu
+
+      call pair_batch(t, nb, pb_off, kb, tt)
+      ib = ord(kb)
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = nlp(ib)
+      u = mod(tt, ld) + 1
+      v = tt/ld + 1
+      acc_a = 0.0_dp
+      au = 0
+      av = 0
+      if (u > nloc .or. v > nloc) return
+      tvu = pb_off(kb) + (u - 1)*ld + v
+      acc_a = vloc(t, k) + vloc(tvu, k)
+      au = b_ao(b_aooff(ib) + u - 1)
+      av = b_ao(b_aooff(ib) + v - 1)
+   end subroutine xc_resp_scatter_many_body
+
+   pure function trc_xc_response_refuse_reason(func, caller) result(msg)
+      !! Why a response built on the functional's second or third
+      !! derivatives (trc_cpks, trc_xc_kxc_rks_apply) cannot run `func`, or
+      !! an empty string if it can: an unavailable functional, a
+      !! range-separated hybrid, a meta-GGA or VV10. `caller` prefixes the
+      !! message.
+      type(trc_xc_functional_t), intent(in) :: func
+      character(len=*), intent(in) :: caller
+      character(len=256) :: msg
+      msg = ""
+      if (len_trim(func%missing) > 0) then
+         msg = caller//": functional '"//trim(func%name)//"' is not available: "//trim(func%missing)
+      else if (func%omega /= 0.0_dp .or. func%exx_lr /= 0.0_dp) then
+         msg = caller//": range-separated hybrids are refused -- the response needs a second, " &
+               //"short-range-screened exchange term ('"//trim(func%name)//"') that is not built"
+      else if (func%family == XC_FAMILY_MGGA) then
+         msg = caller//": meta-GGA ('"//trim(func%name)//"') has no response term here -- " &
+               //"its higher derivatives (tau included) are not translated"
+      else if (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) then
+         msg = caller//": VV10 nonlocal correlation ('"//trim(func%name)//"') has no response " &
+               //"term here -- its higher derivatives are not implemented"
+      end if
+   end function trc_xc_response_refuse_reason
+
+   pure function trc_xc_kxc_refuse_reason(func) result(msg)
+      !! trc_xc_response_refuse_reason for trc_xc_kxc_rks_apply.
+      type(trc_xc_functional_t), intent(in) :: func
+      character(len=256) :: msg
+      msg = trc_xc_response_refuse_reason(func, "trc_xc_kxc")
+   end function trc_xc_kxc_refuse_reason
+
+   recursive subroutine trc_xc_kxc_rks_apply(b, xg, func, dmats, v_kxc, err, budget, la)
+      !!
+      !! The third functional derivative of E_xc contracted with two
+      !! densities, restricted LDA/GGA, for `nvec` pairs at once:
+      !! v_kxc(:,:,k)_uv = d/dt f_xc[D + t B_k](A_k)_uv at t = 0, so that
+      !! Tr(C v_kxc(:,:,k)) = E_xc'''[A_k, B_k, C] for every symmetric C.
+      !! This is the g_xc term of the TDDFT gradient's right-hand side
+      !! (Furche and Ahlrichs 2002), with A_k, B_k the (X+Y) AO densities
+      !! of root k.
+      !!
+      !! HOW: ExchCXX has no third derivatives, so the derivative along B
+      !! is a central difference, point by point, of the ANALYTIC response
+      !! trc_xc_fxc_rks forms (xc_kxc_zterms repeats its per-point formula,
+      !! xc_resp_point_body's, rather than sharing it, so the fxc results
+      !! stay bit for bit what they were): v = chi^T Z + transpose with Z
+      !! built from
+      !! f_xc[rho + t rho_B, grad rho + t grad rho_B] applied to
+      !! (rho_A, grad rho_A). The step t is chosen per point so the
+      !! largest relative change of rho or of |grad rho| is XC_KXC_STEP
+      !! (its comment has the measured error). A point with rho at or
+      !! under XC_KXC_RHO_MIN contributes zero: no per-point screen at
+      !! XC_RHO_TOL, as in trc_xc_fxc_rks (xc_resp_point_body), whose
+      !! kernels clamp at the same ~1e-32; a 1e-12 cut moved the B3LYP
+      !! deviation from pyscf by 1.5e-9 relative.
+      !! No density screen on the batch level, for the reason
+      !! trc_xc_fxc_rks gives.
+      !!
+      !! `dmats(:, :, 1:2*nvec+1)` packs the densities: slice 1 is the
+      !! ground-state density D, slices 2..nvec+1 the A_k and slices
+      !! nvec+2..2*nvec+1 the B_k, with nvec = size(v_kxc, 3). Each is
+      !! symmetrised on entry (xc_symmetrize, as
+      !! trc_xc_fxc_rks_apply_many does), so a caller may pass an
+      !! unsymmetrised matrix. A `dmats` of any other depth is refused in
+      !! `err`. `budget` (doubles) caps the chunk; <= 0 or absent is the
+      !! default cap, as in trc_xc_fxc_rks_apply_many. Same device contract
+      !! as trc_xc_fxc_rks: `dmats` already resident or copied in; `v_kxc`
+      !! is written in full. The ground-state gather and collocation are
+      !! redone per call (the gradient calls this once per set of roots)
+      !! and trc_xc_fxc_cache_t is not used: its coefp holds f_xc's
+      !! derivatives AT the ground density, but the difference needs them
+      !! at rho +- t rho_B, and it keeps no rho, so only the resident
+      !! chi/grad-chi would be shared, at the price of a second
+      !! resident/overflow pipeline. A CG solve is what the cache pays off
+      !! across; this is called once.
+      !! `err` carries trc_xc_kxc_refuse_reason when it is non-empty and
+      !! `v_kxc` is then left zero.
+      !!
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_xc_functional_t), intent(in) :: func
+      real(dp), intent(in) :: dmats(:, :, :)
+      real(dp), intent(out) :: v_kxc(:, :, :)
+      type(error_t), intent(out) :: err
+      integer(int64), intent(in), optional :: budget
+      type(trc_linalg_t), intent(inout), optional :: la
+      !! GEMM handles; absent, made and released for this call.
+
+      integer :: nao, ns, nvec
+      integer(int64) :: need, nchi, cap
+      type(trc_gemm_batch_t) :: gemm_shape
+      integer :: b0, b1, ib, nloc, npb, np, p0, npairs, nb, k0, k1, cnt, mp, ml, s, kv
+      integer, allocatable :: c_off(:), pr_off(:), npp(:), nlp(:), ord(:), pb_off(:), wk_off(:)
+      integer :: nwork
+      real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), zt(:, :), dloc(:, :), vloc(:, :), dpack(:, :, :)
+      integer :: kid(XC_MAX_KERNELS)
+      real(dp) :: coef(XC_MAX_KERNELS)
+      character(len=256) :: why
+
+      v_kxc = 0.0_dp
+      why = trc_xc_kxc_refuse_reason(func)
+      if (len_trim(why) > 0) then
+         call err%set(ERROR_VALIDATION, trim(why))
+         return
+      end if
+      nao = b%nao
+      nvec = size(v_kxc, 3)
+      if (size(v_kxc, 1) /= nao .or. size(v_kxc, 2) /= nao .or. size(dmats, 1) /= nao .or. size(dmats, 2) /= nao &
+          .or. size(dmats, 3) /= 1 + 2*nvec) then
+         call err%set(ERROR_VALIDATION, "trc_xc_kxc_rks_apply: dmats must be (nao, nao, 1 + 2 nvec) and v_kxc (nao, nao, nvec)")
+         return
+      end if
+      kid = func%kid
+      coef = func%coef
+      if (xg%npts == 0 .or. nvec < 1) return
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call la_local%init(1)
+            call trc_xc_kxc_rks_apply(b, xg, func, dmats, v_kxc, err, budget, la_local)
+            call la_local%release()
+         end block
+         return
+      end if
+      ns = 1 + 2*nvec
+      cap = XC_BUDGET
+      if (present(budget)) then
+         if (budget > 0) cap = budget
+      end if
+      ! trc_xc_fxc_rks sizes its chunk for 7 tiles (chi, three gradients,
+      ! two X, one Z); this holds 4 + ns + nvec.
+      cap = max((cap*7_int64)/int(4 + ns + nvec, int64), 1_int64)
+
+      allocate (c_off(xg%nbatch + 1), pr_off(xg%nbatch + 1))
+      allocate (npp(xg%nbatch), nlp(xg%nbatch))
+      allocate (dpack(nao, nao, ns))
+
+      !$acc data copyin(dmats, kid, coef) copy(v_kxc) create(npp, nlp, dpack)
+      !$acc update device(v_kxc)
+      ! Slot 1 = sym(D), 2..nvec+1 = sym(A_k), nvec+2..2 nvec+1 = sym(B_k).
+      call xc_symmetrize(nao, ns, 1, ns, dmats, ns, 1, dpack)
+      do ib = 1, xg%nbatch
+         nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
+         npb = xg%b_off(ib + 1) - xg%b_off(ib)
+         npp(ib) = ((npb + XC_NP_PAD - 1)/XC_NP_PAD)*XC_NP_PAD
+         nlp(ib) = ((nloc + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
+      end do
+      !$acc update device(npp, nlp)
+
+      b0 = 1
+      do while (b0 <= xg%nbatch)
+         need = 0
+         b1 = b0 - 1
+         do ib = b0, xg%nbatch
+            if (need + int(npp(ib), int64)*int(nlp(ib), int64) > cap .and. ib > b0) exit
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            b1 = ib
+         end do
+         nchi = max(need, 1_int64)
+         p0 = xg%b_off(b0)
+         np = xg%b_off(b1 + 1) - p0
+         nb = b1 - b0 + 1
+         allocate (ord(nb), pb_off(nb + 1), wk_off(nb + 1))
+         do k0 = 1, nb
+            ord(k0) = b0 + k0 - 1
+         end do
+         call xc_sort_by_shape(nb, npp, nlp, ord)
+         need = 0
+         npairs = 0
+         nwork = 0
+         pb_off(1) = 0
+         wk_off(1) = 0
+         do k0 = 1, nb
+            ib = ord(k0)
+            c_off(ib) = int(need)
+            pr_off(ib) = npairs
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            npairs = npairs + nlp(ib)*nlp(ib)
+            pb_off(k0 + 1) = npairs
+            nwork = nwork + (xg%b_shoff(ib + 1) - xg%b_shoff(ib))*(xg%b_off(ib + 1) - xg%b_off(ib))
+            wk_off(k0 + 1) = nwork
+         end do
+
+         allocate (chi(nchi), gchi(nchi, 3), xt(nchi, ns), zt(nchi, nvec))
+         allocate (dloc(max(npairs, 1), ns), vloc(max(npairs, 1), nvec))
+         !$acc enter data create(chi, gchi, xt, zt, dloc, vloc) copyin(c_off, pr_off, ord, pb_off, wk_off)
+
+         call xc_zero(nchi, nvec, chi, zt)
+         call xc_collocate(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
+                           xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, xg%b_shao, &
+                           c_off, npp, xg%nbatch, nchi, chi, gchi)
+         call xc_gather(npairs, nb, ord, pb_off, ns, nao, dpack, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                        nlp, xg%nbatch, dloc)
+         k0 = 1
+         do while (k0 <= nb)
+            ib = ord(k0)
+            mp = npp(ib)
+            ml = nlp(ib)
+            k1 = k0
+            do while (k1 < nb)
+               if (npp(ord(k1 + 1)) /= mp .or. nlp(ord(k1 + 1)) /= ml) exit
+               k1 = k1 + 1
+            end do
+            cnt = k1 - k0 + 1
+            if (ml > 0) then
+               gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
+               do s = 1, ns
+                  call la%gemm_batched(gemm_shape, chi(c_off(ib) + 1), dloc(pr_off(ib) + 1, s), xt(c_off(ib) + 1, s))
+               end do
+            end if
+            k0 = k1 + 1
+         end do
+         call xc_kxc_points(np, p0, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, c_off, npp, &
+                            xg%nbatch, func%nk, kid, coef, nvec, nchi, chi, gchi, xt, zt)
+
+         k0 = 1
+         do while (k0 <= nb)
+            ib = ord(k0)
+            mp = npp(ib)
+            ml = nlp(ib)
+            k1 = k0
+            do while (k1 < nb)
+               if (npp(ord(k1 + 1)) /= mp .or. nlp(ord(k1 + 1)) /= ml) exit
+               k1 = k1 + 1
+            end do
+            cnt = k1 - k0 + 1
+            if (ml > 0) then
+               gemm_shape = trc_gemm_batch(ml, ml, mp, cnt, transa="T")
+               do kv = 1, nvec
+                  call la%gemm_batched(gemm_shape, chi(c_off(ib) + 1), zt(c_off(ib) + 1, kv), vloc(pr_off(ib) + 1, kv))
+               end do
+            end if
+            k0 = k1 + 1
+         end do
+         call xc_resp_scatter_many(npairs, nb, nvec, 1, nvec, ord, pb_off, nao, v_kxc, xg%b_aooff, size(xg%b_ao), &
+                                   xg%b_ao, nlp, xg%nbatch, vloc)
+
+         !$acc exit data delete(chi, gchi, xt, zt, dloc, vloc, c_off, pr_off, ord, pb_off, wk_off)
+         deallocate (chi, gchi, xt, zt, dloc, vloc, ord, pb_off, wk_off)
+         b0 = b1 + 1
+      end do
+      !$acc end data
+   end subroutine trc_xc_kxc_rks_apply
+
+   subroutine xc_kxc_points(np, p0, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+                            nk, kid, coef, nvec, nchi, chi, gchi, xt, zt)
+      !! One thread per point: xc_kxc_point_body.
+      integer, intent(in) :: np, p0, npts, nbatch, nk, nvec
+      real(dp), intent(in) :: w(npts)
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, 1 + 2*nvec)
+      real(dp), intent(inout) :: zt(nchi, nvec)
+      integer :: g
+
+      do concurrent(g=1:np)
+         call xc_kxc_point_body(p0 + g - 1, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+                                nk, kid, coef, nvec, nchi, chi, gchi, xt, zt)
+      end do
+   end subroutine xc_kxc_points
+
+   pure subroutine xc_kxc_zterms(nk, kid, coef, rho, grho, rho_u, grho_u, zg, zv)
+      !! trc_xc_fxc_rks's per-point response, unweighted: the trial density
+      !! (rho_u, grho_u) through f_xc at (rho, grho). Tr(C V) = sum_g w
+      !! (zg rho_C + zv . grad rho_C), the formula in xc_resp_point_body.
+      !$acc routine seq
+      integer, intent(in) :: nk
+      integer, intent(in) :: kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      real(dp), intent(in) :: rho, rho_u
+      real(dp), intent(in) :: grho(3), grho_u(3)
+      real(dp), intent(out) :: zg
+      real(dp), intent(out) :: zv(3)
+      real(dp) :: sigma, dsig_u, vsigma, v2rho2, v2rhosigma, v2sigma2, fac
+
+      sigma = grho(1)**2 + grho(2)**2 + grho(3)**2
+      call xc_eval_point_fxc(nk, kid, coef, rho, sigma, vsigma, v2rho2, v2rhosigma, v2sigma2)
+      dsig_u = 2.0_dp*(grho(1)*grho_u(1) + grho(2)*grho_u(2) + grho(3)*grho_u(3))
+      zg = v2rho2*rho_u + v2rhosigma*dsig_u
+      fac = 2.0_dp*(v2rhosigma*rho_u + v2sigma2*dsig_u)
+      zv(1) = fac*grho(1) + 2.0_dp*vsigma*grho_u(1)
+      zv(2) = fac*grho(2) + 2.0_dp*vsigma*grho_u(2)
+      zv(3) = fac*grho(3) + 2.0_dp*vsigma*grho_u(3)
+   end subroutine xc_kxc_zterms
+
+   pure subroutine xc_kxc_point_body(gg, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+                                     nk, kid, coef, nvec, nchi, chi, gchi, xt, zt)
+      !! Point gg of trc_xc_kxc_rks_apply: the ground state's rho, grad rho
+      !! from slot 1 of X, then for each pair k the central difference of
+      !! xc_kxc_zterms along (rho_B, grad rho_B) with (rho_A, grad rho_A)
+      !! fixed, written as the response tile zt(:, k) (same layout and the
+      !! 0.5 on the rho part as xc_resp_point_body).
+      !$acc routine seq
+      integer, intent(in) :: gg, npts, nbatch, nk, nvec
+      real(dp), intent(in) :: w(npts)
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, 1 + 2*nvec)
+      real(dp), intent(inout) :: zt(nchi, nvec)
+
+      integer :: ib, nloc, ld, off, u, i, k
+      real(dp) :: wg, x, xa, xb, sigma, rho, rho_a, rho_b, rel, t, gscale, zg_p, zg_m, dzg
+      real(dp) :: grho(3), grho_a(3), grho_b(3), gp(3), gm(3), zv_p(3), zv_m(3), dzv(3)
+      logical :: live
+
+      ib = batch_of(gg)
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = npp(ib)
+      off = c_off(ib) + (gg - b_off(ib)) + 1
+      wg = w(gg)
+      rho = 0.0_dp
+      grho = 0.0_dp
+      do u = 1, nloc
+         i = off + (u - 1)*ld
+         x = xt(i, 1)
+         rho = rho + x*chi(i)
+         grho(1) = grho(1) + 2.0_dp*x*gchi(i, 1)
+         grho(2) = grho(2) + 2.0_dp*x*gchi(i, 2)
+         grho(3) = grho(3) + 2.0_dp*x*gchi(i, 3)
+      end do
+      sigma = grho(1)**2 + grho(2)**2 + grho(3)**2
+      live = rho > XC_KXC_RHO_MIN
+      gscale = sqrt(sigma)
+      if (live) gscale = gscale + rho**(4.0_dp/3.0_dp)
+
+      do k = 1, nvec
+         rho_a = 0.0_dp
+         rho_b = 0.0_dp
+         grho_a = 0.0_dp
+         grho_b = 0.0_dp
+         do u = 1, nloc
+            i = off + (u - 1)*ld
+            xa = xt(i, 1 + k)
+            xb = xt(i, 1 + nvec + k)
+            rho_a = rho_a + xa*chi(i)
+            rho_b = rho_b + xb*chi(i)
+            grho_a(1) = grho_a(1) + 2.0_dp*xa*gchi(i, 1)
+            grho_a(2) = grho_a(2) + 2.0_dp*xa*gchi(i, 2)
+            grho_a(3) = grho_a(3) + 2.0_dp*xa*gchi(i, 3)
+            grho_b(1) = grho_b(1) + 2.0_dp*xb*gchi(i, 1)
+            grho_b(2) = grho_b(2) + 2.0_dp*xb*gchi(i, 2)
+            grho_b(3) = grho_b(3) + 2.0_dp*xb*gchi(i, 3)
+         end do
+         dzg = 0.0_dp
+         dzv = 0.0_dp
+         if (live) then
+            ! The step is relative to the local density and gradient (so the
+            ! perturbed rho stays positive and sigma changes by a bounded
+            ! fraction), not to B's absolute size.
+            rel = max(abs(rho_b)/rho, sqrt(grho_b(1)**2 + grho_b(2)**2 + grho_b(3)**2)/gscale)
+            if (rel > 0.0_dp) then
+               t = min(XC_KXC_STEP/rel, XC_KXC_TMAX)
+               gp = grho + t*grho_b
+               gm = grho - t*grho_b
+               call xc_kxc_zterms(nk, kid, coef, rho + t*rho_b, gp, rho_a, grho_a, zg_p, zv_p)
+               call xc_kxc_zterms(nk, kid, coef, rho - t*rho_b, gm, rho_a, grho_a, zg_m, zv_m)
+               dzg = (zg_p - zg_m)/(2.0_dp*t)
+               dzv = (zv_p - zv_m)/(2.0_dp*t)
+            end if
+         end if
+         do u = 1, nloc
+            i = off + (u - 1)*ld
+            zt(i, k) = wg*(0.5_dp*dzg*chi(i) + dzv(1)*gchi(i, 1) + dzv(2)*gchi(i, 2) + dzv(3)*gchi(i, 3))
+         end do
+      end do
+   end subroutine xc_kxc_point_body
 
    recursive subroutine trc_xc_kernel_points_rks(b, xg, func, dmat, pmat, active, pts, la)
       !!
@@ -1871,6 +2610,315 @@ contains
       vsigma(gg) = vs
       energy(gg) = vr*rho_p + 2.0_dp*vs*gdotp
    end subroutine xc_kernel_point_body
+
+   subroutine xc_grad_coef_release(this)
+      class(trc_xc_grad_coef_t), intent(inout) :: this
+      if (allocated(this%cf)) then
+         !$acc exit data delete(this%cf, this%energy)
+         deallocate (this%cf, this%energy)
+      end if
+      this%npts = 0
+      this%ncol = 0
+   end subroutine xc_grad_coef_release
+
+   recursive subroutine trc_xc_grad_coef_rks(b, xg, func, dpack, pts, la)
+      !!
+      !! trc_xc_grad_coef_t at every point of `xg`, restricted LDA/GGA, for
+      !! the reference density and the columns, each a relaxed density P_I
+      !! and a transition density T_I. `dpack` (nao, nao, 1 + 2 ncol) holds the
+      !! SYMMETRIC slices D, P_1..P_ncol, T_1..T_ncol, already on the device
+      !! (the caller symmetrises: trc_xc_grad_response_many). One sweep of the
+      !! grid for all columns: collocate once, X = chi D_s per slot, then one
+      !! thread per point writes every column's channels.
+      !!
+      !! The channels of column I, with f the functional at D, rho_T and
+      !! sigma' = 2 grad rho . grad rho_T:
+      !!   P : a = v_rho,  b = 2 v_sigma grad rho
+      !!   T : (a, b) = trc_xc_kxc_rks_apply's xc_kxc_zterms at (rho_T, grad rho_T),
+      !!       the derivative of 1/2 E''[T, T] with respect to the density T
+      !!   D : f_rr rho_P + 2 f_rs grad rho . grad rho_P and
+      !!       2 f_rs rho_P grad rho + 4 f_ss (grad rho . grad rho_P) grad rho
+      !!       + 2 v_sigma grad rho_P  (xc_kernel_point_body, the P term)
+      !!       PLUS the derivative of Psi = 1/2 (rho_T zg + grad rho_T . zv) with
+      !!       respect to rho and to each component of grad rho: a central
+      !!       difference of Psi, whose evaluation is the analytic f_xc
+      !!       (XC_KXC_STEP's comment: the same step rule as
+      !!       trc_xc_kxc_rks_apply, relative to rho and to |grad rho| +
+      !!       rho^(4/3)). Psi is skipped at a point where rho_T and grad rho_T
+      !!       vanish and where rho <= XC_KXC_RHO_MIN.
+      !! The column's energy is v_rho rho_P + 2 v_sigma grad rho . grad rho_P + Psi.
+      !!
+      !! Scratch per chunk of batches: chi, grad chi (4 tiles), 1 + 2 ncol
+      !! X tiles and as many pair tiles, each tile at most `tcap` doubles.
+      !!
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_xc_functional_t), intent(in) :: func
+      real(dp), intent(in) :: dpack(:, :, :)
+      !! ncol = (size(dpack, 3) - 1)/2 columns.
+      type(trc_xc_grad_coef_t), intent(inout) :: pts
+      !! In: `active`, `tcap` and `no_kxc` (this type's comments). Out: `cf`
+      !! and `energy`, device-resident, released by `pts%release()`.
+      type(trc_linalg_t), intent(inout), optional :: la
+      !! GEMM handles; absent, made and released for this call.
+
+      integer(int64) :: need, nchi
+      type(trc_gemm_batch_t) :: gemm_shape
+      integer :: b0, b1, ib, nloc, npb, np, p0, npairs, k, nb, k0, k1, cnt, mp, ml, nwork, s, ns
+      integer, allocatable :: c_off(:), pr_off(:), npp(:), nlp(:), ord(:), pb_off(:), wk_off(:), act(:)
+      real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), dloc(:, :)
+      logical :: kxc
+      integer :: ncol
+      integer(int64) :: tcap
+      integer :: kid(XC_MAX_KERNELS)
+      real(dp) :: coef(XC_MAX_KERNELS)
+
+      if (.not. present(la)) then
+         block
+            type(trc_linalg_t) :: la_local
+            call la_local%init(1)
+            call trc_xc_grad_coef_rks(b, xg, func, dpack, pts, la_local)
+            call la_local%release()
+         end block
+         return
+      end if
+      ncol = (size(dpack, 3) - 1)/2
+      tcap = pts%tcap
+      call pts%release()
+      pts%npts = xg%npts
+      pts%ncol = ncol
+      allocate (pts%cf(4, max(xg%npts, 1), 3*ncol), pts%energy(max(xg%npts, 1), ncol))
+      pts%cf = 0.0_dp
+      pts%energy = 0.0_dp
+      !$acc enter data copyin(pts%cf, pts%energy)
+      if (xg%npts == 0) return
+      kid = func%kid
+      coef = func%coef
+      ns = 1 + 2*ncol
+      kxc = .not. pts%no_kxc
+
+      allocate (c_off(xg%nbatch + 1), pr_off(xg%nbatch + 1))
+      allocate (npp(xg%nbatch), nlp(xg%nbatch), act(xg%nbatch))
+      do ib = 1, xg%nbatch
+         nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
+         npb = xg%b_off(ib + 1) - xg%b_off(ib)
+         act(ib) = 0
+         if (npb > 0 .and. nloc > 0) act(ib) = pts%active(ib)
+         npp(ib) = ((npb + XC_NP_PAD - 1)/XC_NP_PAD)*XC_NP_PAD
+         nlp(ib) = ((nloc*act(ib) + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
+      end do
+      !$acc enter data copyin(npp, nlp, act, kid, coef)
+
+      b0 = 1
+      do while (b0 <= xg%nbatch)
+         need = 0
+         b1 = b0 - 1
+         do ib = b0, xg%nbatch
+            if (need + int(npp(ib), int64)*int(nlp(ib), int64) > tcap .and. ib > b0) exit
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            b1 = ib
+         end do
+         nchi = max(need, 1_int64)
+         p0 = xg%b_off(b0)
+         np = xg%b_off(b1 + 1) - p0
+         nb = b1 - b0 + 1
+         allocate (ord(nb), pb_off(nb + 1), wk_off(nb + 1))
+         do k = 1, nb
+            ord(k) = b0 + k - 1
+         end do
+         call xc_sort_by_shape(nb, npp, nlp, ord)
+         need = 0
+         npairs = 0
+         nwork = 0
+         pb_off(1) = 0
+         wk_off(1) = 0
+         do k = 1, nb
+            ib = ord(k)
+            c_off(ib) = int(need)
+            pr_off(ib) = npairs
+            need = need + int(npp(ib), int64)*int(nlp(ib), int64)
+            npairs = npairs + nlp(ib)*nlp(ib)
+            pb_off(k + 1) = npairs
+            nwork = nwork + (xg%b_shoff(ib + 1) - xg%b_shoff(ib))*(xg%b_off(ib + 1) - xg%b_off(ib))*act(ib)
+            wk_off(k + 1) = nwork
+         end do
+
+         allocate (chi(nchi), gchi(nchi, 3), xt(nchi, ns), dloc(max(npairs, 1), ns))
+         !$acc enter data create(chi, gchi, xt, dloc) copyin(c_off, pr_off, ord, pb_off, wk_off)
+         ! Padding must be zero, as in xc_drive: it feeds the GEMM.
+         call xc_zero(nchi, 1, chi, xt)
+         call xc_collocate(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, &
+                           xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, xg%b_shao, &
+                           c_off, npp, xg%nbatch, nchi, chi, gchi)
+         call xc_gather(npairs, nb, ord, pb_off, ns, b%nao, dpack, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                        nlp, xg%nbatch, dloc)
+         k0 = 1
+         do while (k0 <= nb)
+            ib = ord(k0)
+            mp = npp(ib)
+            ml = nlp(ib)
+            k1 = k0
+            do while (k1 < nb)
+               if (npp(ord(k1 + 1)) /= mp .or. nlp(ord(k1 + 1)) /= ml) exit
+               k1 = k1 + 1
+            end do
+            cnt = k1 - k0 + 1
+            if (ml > 0) then
+               gemm_shape = trc_gemm_batch(mp, ml, ml, cnt)
+               do s = 1, ns
+                  call la%gemm_batched(gemm_shape, chi(c_off(ib) + 1), dloc(pr_off(ib) + 1, s), xt(c_off(ib) + 1, s))
+               end do
+            end if
+            k0 = k1 + 1
+         end do
+         call xc_grad_coef_points(np, p0, xg%npts, xg%batch_of, xg%b_off, xg%b_aooff, c_off, npp, act, xg%nbatch, &
+                                  func%nk, kid, coef, ncol, kxc, nchi, chi, gchi, xt, pts%cf, pts%energy)
+
+         !$acc exit data delete(chi, gchi, xt, dloc, c_off, pr_off, ord, pb_off, wk_off)
+         deallocate (chi, gchi, xt, dloc, ord, pb_off, wk_off)
+         b0 = b1 + 1
+      end do
+      !$acc exit data delete(npp, nlp, act, kid, coef)
+   end subroutine trc_xc_grad_coef_rks
+
+   subroutine xc_grad_coef_points(np, p0, npts, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, nk, kid, coef, &
+                                  ncol, kxc, nchi, chi, gchi, xt, cf, energy)
+      !! One thread per point of the chunk: xc_grad_coef_point_body.
+      integer, intent(in) :: np, p0, npts, nbatch, nk, ncol
+      logical, intent(in) :: kxc
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, 1 + 2*ncol)
+      real(dp), intent(inout) :: cf(4, npts, 3*ncol), energy(npts, ncol)
+      integer :: g
+
+      do concurrent(g=1:np)
+         call xc_grad_coef_point_body(p0 + g - 1, npts, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, nk, &
+                                      kid, coef, ncol, kxc, nchi, chi, gchi, xt, cf, energy)
+      end do
+   end subroutine xc_grad_coef_points
+
+   pure subroutine xc_psi(nk, kid, coef, rho, grho, rho_t, grho_t, psi)
+      !! Psi = 1/2 (rho_T zg + grad rho_T . zv): the integrand of 1/2 E''[T, T]
+      !! at (rho, grad rho), from xc_kxc_zterms (so Tr(T f_xc[T]) = 2 sum w Psi).
+      !$acc routine seq
+      integer, intent(in) :: nk
+      integer, intent(in) :: kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      real(dp), intent(in) :: rho, rho_t
+      real(dp), intent(in) :: grho(3), grho_t(3)
+      real(dp), intent(out) :: psi
+      real(dp) :: zg
+      real(dp) :: zv(3)
+
+      call xc_kxc_zterms(nk, kid, coef, rho, grho, rho_t, grho_t, zg, zv)
+      psi = 0.5_dp*(rho_t*zg + grho_t(1)*zv(1) + grho_t(2)*zv(2) + grho_t(3)*zv(3))
+   end subroutine xc_psi
+
+   pure subroutine xc_grad_coef_point_body(gg, npts, batch_of, b_off, b_aooff, c_off, npp, active, nbatch, nk, kid, &
+                                           coef, ncol, kxc, nchi, chi, gchi, xt, cf, energy)
+      !! Point gg of trc_xc_grad_coef_rks (its header has the channels).
+      !$acc routine seq
+      integer, intent(in) :: gg, npts, nbatch, nk, ncol
+      logical, intent(in) :: kxc
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), active(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, 1 + 2*ncol)
+      real(dp), intent(inout) :: cf(4, npts, 3*ncol), energy(npts, ncol)
+
+      integer :: ib, nloc, ld, off, u, i, k, m, cd
+      real(dp) :: x, xp, xq, rho, rho_p, rho_t, sigma, gdotp, eps, vr, vs, vs2, frr, frs, fss
+      real(dp) :: zg, psi, psi_p, psi_m, gscale, h, hg, da, en, tnorm
+      real(dp) :: zv(3)
+      real(dp) :: gr(3), gp(3), gtv(3), gs(3), db(3)
+      logical :: live
+
+      ib = batch_of(gg)
+      if (active(ib) == 0) return
+      nloc = b_aooff(ib + 1) - b_aooff(ib)
+      ld = npp(ib)
+      off = c_off(ib) + (gg - b_off(ib)) + 1
+      rho = 0.0_dp
+      gr = 0.0_dp
+      do u = 1, nloc
+         i = off + (u - 1)*ld
+         x = xt(i, 1)
+         rho = rho + x*chi(i)
+         gr(1) = gr(1) + 2.0_dp*x*gchi(i, 1)
+         gr(2) = gr(2) + 2.0_dp*x*gchi(i, 2)
+         gr(3) = gr(3) + 2.0_dp*x*gchi(i, 3)
+      end do
+      sigma = gr(1)**2 + gr(2)**2 + gr(3)**2
+      call xc_eval_point(nk, kid, coef, rho, sigma, eps, vr, vs)
+      call xc_eval_point_fxc(nk, kid, coef, rho, sigma, vs2, frr, frs, fss)
+      live = rho > XC_KXC_RHO_MIN
+      gscale = sqrt(sigma)
+      if (live) gscale = gscale + rho**(4.0_dp/3.0_dp)
+
+      do k = 1, ncol
+         rho_p = 0.0_dp
+         rho_t = 0.0_dp
+         gp = 0.0_dp
+         gtv = 0.0_dp
+         do u = 1, nloc
+            i = off + (u - 1)*ld
+            xp = xt(i, 1 + k)
+            xq = xt(i, 1 + ncol + k)
+            rho_p = rho_p + xp*chi(i)
+            rho_t = rho_t + xq*chi(i)
+            do m = 1, 3
+               gp(m) = gp(m) + 2.0_dp*xp*gchi(i, m)
+               gtv(m) = gtv(m) + 2.0_dp*xq*gchi(i, m)
+            end do
+         end do
+         gdotp = gr(1)*gp(1) + gr(2)*gp(2) + gr(3)*gp(3)
+         cd = 3*(k - 1) + 1
+
+         ! The P term, xc_kernel_point_body's coefficients.
+         da = frr*rho_p + 2.0_dp*frs*gdotp
+         do m = 1, 3
+            db(m) = 2.0_dp*frs*rho_p*gr(m) + 4.0_dp*fss*gdotp*gr(m) + 2.0_dp*vs*gp(m)
+            cf(1 + m, gg, cd + 1) = 2.0_dp*vs*gr(m)
+         end do
+         cf(1, gg, cd + 1) = vr
+         en = vr*rho_p + 2.0_dp*vs*gdotp
+
+         ! The T term: its own channel is f_xc[T], and Psi's derivative with
+         ! respect to rho and grad rho (T fixed) goes onto D's.
+         call xc_kxc_zterms(nk, kid, coef, rho, gr, rho_t, gtv, zg, zv)
+         cf(1, gg, cd + 2) = zg
+         cf(2, gg, cd + 2) = zv(1)
+         cf(3, gg, cd + 2) = zv(2)
+         cf(4, gg, cd + 2) = zv(3)
+         psi = 0.5_dp*(rho_t*zg + gtv(1)*zv(1) + gtv(2)*zv(2) + gtv(3)*zv(3))
+         en = en + psi
+         tnorm = abs(rho_t) + abs(gtv(1)) + abs(gtv(2)) + abs(gtv(3))
+         if (kxc .and. live .and. tnorm > 0.0_dp) then
+            h = XC_KXC_STEP*rho
+            call xc_psi(nk, kid, coef, rho + h, gr, rho_t, gtv, psi_p)
+            call xc_psi(nk, kid, coef, rho - h, gr, rho_t, gtv, psi_m)
+            da = da + (psi_p - psi_m)/(2.0_dp*h)
+            hg = XC_KXC_STEP*gscale
+            do m = 1, 3
+               gs = gr
+               gs(m) = gr(m) + hg
+               call xc_psi(nk, kid, coef, rho, gs, rho_t, gtv, psi_p)
+               gs(m) = gr(m) - hg
+               call xc_psi(nk, kid, coef, rho, gs, rho_t, gtv, psi_m)
+               db(m) = db(m) + (psi_p - psi_m)/(2.0_dp*hg)
+            end do
+         end if
+         cf(1, gg, cd) = da
+         cf(2, gg, cd) = db(1)
+         cf(3, gg, cd) = db(2)
+         cf(4, gg, cd) = db(3)
+         energy(gg, k) = en
+      end do
+   end subroutine xc_grad_coef_point_body
 
    subroutine xc_pack2(nao, a, bb, dpack)
       !! dpack(:,:,1) = a, dpack(:,:,2) = bb -- packs the ground and trial

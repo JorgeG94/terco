@@ -1107,6 +1107,64 @@ def gen_erf_fock_g(case, xyz, json_rel):
     dump.unlink()
 
 
+def gen_fock_nosym_many(case, xyz, json_rel):
+    """J and K of three NON-SYMMETRIC densities against pyscf's
+    scf.hf.get_jk(mol, dm, hermi=0), for check_fock_nosym_many.F90 (the
+    TDDFT matvec's batched eri%fock_nosym_many). The densities are the
+    closed form in that program's nonsym_densities, so terco's own output
+    never enters the reference. pyscf's hermi=0 keeps the antisymmetric part
+    of K, which is the part this entry point exists for."""
+    dump = TEST / f"fock_nosym_many_probe_{case}.bin"
+    run_bin("check_fock_nosym_many", [xyz, json_rel, dump.name, case])
+    if not dump.exists():
+        raise RuntimeError(f"gen_fock_nosym_many {case}: the binary wrote no dump")
+    r = BinReader(dump)
+    nat, nao = r.i8(), r.i8()
+    at_z = r.i8(nat)
+    rcoord = r.f8(3 * nat).reshape(3, nat, order='F').T
+    nd = 3
+    d_terco = r.mat3(nao, nao, nd)
+    s_terco = r.mat(nao)
+    r.close()
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in at_z}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_fock_nosym_many {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    s_terco_p = s_terco[np.ix_(inv_perm, inv_perm)]
+    s_pyscf = mol.intor('int1e_ovlp')
+    n, s_err = ao_norm_from_overlap(s_terco_p, s_pyscf)
+    if s_err >= 1e-9:
+        raise RuntimeError(f"gen_fock_nosym_many {case}: overlap check failed, {s_err:.3e}")
+
+    j_all = np.zeros((nao, nao, nd))
+    k_all = np.zeros((nao, nao, nd))
+    for i in range(nd):
+        d_pyscf = n[:, None] * d_terco[:, :, i][np.ix_(inv_perm, inv_perm)] * n[None, :]
+        vj, vk = scf.hf.get_jk(mol, d_pyscf, hermi=0)
+        j_all[:, :, i] = (vj * n[:, None] * n[None, :])[np.ix_(perm, perm)]
+        k_all[:, :, i] = (vk * n[:, None] * n[None, :])[np.ix_(perm, perm)]
+
+    w = RefWriter(f"fock_nosym_many_{case}.ref")
+    w.header("check_fock_nosym_many_" + case,
+             [ROOT / "test" / "check_fock_nosym_many.F90", TEST / json_rel, TEST / xyz])
+    w.int_("NAT", nat)
+    w.int_("NAO", nao)
+    w.matrix("S", s_terco)
+    w.matrix3("J", j_all)
+    w.matrix3("K", k_all)
+    w.end()
+    w.write()
+    asym = max(np.abs(k_all[:, :, i] - k_all[:, :, i].T).max() for i in range(nd))
+    print(f"  fock_nosym_many {case}: max|K - K^T| {asym:.3e} (K must carry an antisymmetric part)")
+    dump.unlink()
+
+
 def gen_rsh_g(case, xyz):
     """check_rsh_g_vs_pyscf.F90's cases: a range-separated hybrid SCF on
     cc-pVQZ (g on the heavy atom), spherical as pyscf runs it, converged by
@@ -2994,6 +3052,292 @@ def gen_cpks():
     for xyzname, molname, basname, funcname, probe in cases:
         run_bin("scf_cpks", [xyzname, f"basis_sets/{basname}.json", molname, basname, funcname, probe])
         _gen_cpks_one(probe, f"cpks_{molname}_{basname}_{funcname}.ref", xyzname, molname, basname, funcname)
+
+
+def _gen_fxc_apply_many_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
+    """One check_fxc_apply_many.F90 case: pyscf's dft.numint.nr_rks_fxc,
+    f_xc[dm1] at the reference density dm0, on terco's OWN grid (the
+    probe's points and weights, `non0tab` cleared so pyscf re-evaluates on
+    them) for the two probe densities the check builds from fixed
+    pseudo-random numbers: a symmetric P and a non-symmetric Q. pyscf's
+    nr_rks_fxc is given hermi=1, i.e. it too sees a symmetric matrix, so
+    Q enters as (Q + Q^T)/2: the symmetrisation the apply routine
+    documents. D0, P, Q, S and terco's own v_resp come from the probe in
+    terco's AO order; D0/P/Q go to pyscf's order and normalisation
+    (terco_to_pyscf_perm, ao_norm_from_overlap: D_pyscf = N D_terco N) and
+    the response matrices come back in terco's (covariant: V_terco = n V_pyscf
+    n, the inverse permutation applied). Written: V_P, V_Q and the invariants
+    Tr(P V_P), Tr(Q V_Q)."""
+    PYSCF = {"svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
+    r = BinReader(TEST / probe_relname)
+    nao, natm, npts = (r.i8() for _ in range(3))
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    func_tag = r.str_(16)
+    zint = r.i8(natm)
+    rcoord = r.f8(3 * natm).reshape(3, natm, order='F').T
+    pts = r.mat(3, npts).T.copy()
+    wts = r.f8(npts)
+    s_terco = r.mat(nao)
+    d0 = r.mat(nao)
+    dm = r.mat3(nao, nao, 2)
+    v_terco = r.mat3(nao, nao, 2)
+    r.close()
+    if mol_tag != molname or bas_tag != basname or func_tag != funcname:
+        raise RuntimeError(f"gen_fxc_apply_many {probe_relname}: probe tag mismatch")
+
+    elements = {_SYMBOL[int(z)]: int(z) for z in zint}
+    basis_arg = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(zint)]
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, spin=int(zint.sum()) % 2, verbose=0)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_fxc_apply_many {probe_relname}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    inv_perm = np.argsort(perm)
+    n, s_err = ao_norm_from_overlap(s_terco[np.ix_(inv_perm, inv_perm)], mol.intor('int1e_ovlp'))
+    if s_err >= 1e-9:
+        raise RuntimeError(f"gen_fxc_apply_many {probe_relname}: overlap check failed, {s_err:.3e}")
+
+    def to_pyscf(d):
+        return n[:, None] * d[np.ix_(inv_perm, inv_perm)] * n[None, :]
+
+    def to_terco(v):
+        return v[np.ix_(perm, perm)] * n[perm][:, None] * n[perm][None, :]
+
+    grids = dft.gen_grid.Grids(mol)
+    grids.coords = np.ascontiguousarray(pts)
+    grids.weights = wts
+    grids.non0tab = None
+    ni = dft.numint.NumInt()
+    xc = PYSCF[funcname]
+    dm0 = to_pyscf(d0)
+    out = []
+    for k in range(2):
+        d = to_pyscf(0.5 * (dm[:, :, k] + dm[:, :, k].T))
+        vk = ni.nr_rks_fxc(mol, grids, xc, dm0, d, hermi=1)
+        out.append(vk)
+    w = RefWriter(ref_relname)
+    w.header(f"fxc_apply_many {molname}/{basname}/{funcname} (rks)",
+             [ROOT / "test" / "check_fxc_apply_many.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
+    vts = [to_terco(v) for v in out]
+    w.real("TR_P", float(np.sum(dm[:, :, 0] * vts[0])))
+    w.real("TR_Q", float(np.sum(dm[:, :, 1] * vts[1])))
+    w.matrix("V_P", vts[0])
+    w.matrix("V_Q", vts[1])
+    w.end()
+    w.write()
+    dmax = max(float(np.abs(v_terco[:, :, k] - vts[k]).max()) for k in range(2))
+    print(f"  fxc_apply_many {molname}/{basname}/{funcname}: |v|max {max(np.abs(v).max() for v in vts):.3e}  "
+          f"max|terco-pyscf| {dmax:.2e}")
+    (TEST / probe_relname).unlink()
+
+
+def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
+    """One check_tddft.F90 case: pyscf's TDA (singlets) on an RHF/RKS
+    reference at terco's OWN grid (the probe's points and weights, `non0tab`
+    cleared, as _gen_cpks_one): the lowest `nroots` excitation energies and
+    length-gauge oscillator strengths. The SCF is converged tightly
+    (converge_tight). The TDA runs at a residual tolerance of 1e-6, which puts
+    omega within ~1e-12 of converged (error ~ residual^2 / gap); at 1e-8 pyscf
+    itself reported a root unconverged (water/SVWN, root 3 of 4).
+    Written: E_SCF, OMEGA, OSC."""
+    PYSCF = {"hf": None, "svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
+    r = BinReader(TEST / probe_relname)
+    n, natm, no, nroots = (r.i8() for _ in range(4))
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    func_tag = r.str_(16)
+    e_terco = r.f8(1)[0]
+    om_terco = r.f8(nroots)
+    osc_terco = r.f8(nroots)
+    npts = r.i8()
+    pts = r.mat(3, npts).T.copy()
+    wts = r.f8(npts)
+    r.close()
+    if mol_tag != molname or bas_tag != basname or func_tag != funcname:
+        raise RuntimeError(f"gen_tddft {probe_relname}: probe tag mismatch")
+    atoms = _xyz_atoms(xyzname[:-4] if xyzname.endswith(".xyz") else xyzname)
+    if len(atoms) != natm:
+        raise RuntimeError(f"gen_tddft {probe_relname}: natm mismatch terco {natm} xyz {len(atoms)}")
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    charge = sum(elements[sym] for sym, _ in atoms) - 2 * no
+    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=charge, spin=0, verbose=0)
+    if mol.nao_nr() != n:
+        raise RuntimeError(f"gen_tddft {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
+
+    label = f"tddft {molname}/{basname}/{funcname} (tda singlet)"
+
+    def make_mf():
+        if funcname == "hf":
+            return scf.RHF(mol)
+        m = dft.RKS(mol)
+        m.xc = PYSCF[funcname]
+        m.grids.coords = np.ascontiguousarray(pts)
+        m.grids.weights = wts
+        m.grids.non0tab = None
+        return m
+
+    mf, grad_norm = converge_tight(make_mf, None, label)
+    td = mf.TDA()
+    td.singlet = True
+    td.nstates = nroots
+    td.conv_tol = 1.0e-6
+    td.max_cycle = 200
+    td.verbose = 0
+    td.kernel()
+    if not all(np.atleast_1d(td.converged)):
+        raise ConvergenceError(f"{label}: pyscf's TDA did not converge")
+    omega = np.asarray(td.e, dtype=float)
+    osc = np.asarray(td.oscillator_strength(gauge='length'), dtype=float)
+
+    w = RefWriter(ref_relname)
+    w.header(label, [ROOT / "test" / "check_tddft.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
+    w.real("E_SCF", mf.e_tot)
+    w.vector("OMEGA", omega)
+    w.vector("OSC", osc)
+    w.real("CONV_TOL", mf.conv_tol)
+    w.real("GRAD_NORM", grad_norm)
+    w.end()
+    w.write()
+    print(f"  {label}: E(terco) {e_terco:20.12f}  E(pyscf) {mf.e_tot:20.12f}  |g| {grad_norm:.2e}  "
+          f"|d(omega)|max {np.abs(om_terco - omega).max():.2e}  |d(f)|max {np.abs(osc_terco - osc).max():.2e}")
+    (TEST / probe_relname).unlink()
+
+
+def gen_tddft():
+    """check_tddft.F90: the lowest singlet TDA roots (trc_tddft.F90) of water
+    (4 roots) and formamide (6 roots), 6-31G*, for HF, SVWN, PBE and B3LYP,
+    against pyscf's tdscf TDA at terco's own converged grid. Methane (Td, 5
+    roots): the cut falls inside degenerate multiplets."""
+    for xyzname, molname, nroots in (("water.xyz", "water", 4), ("formamide.xyz", "formamide", 6),
+                                     ("tops_ch4.xyz", "ch4", 5)):
+        for funcname in ("hf", "svwn", "pbe", "b3lyp"):
+            probe = f"tddft_{molname}_{funcname}_probe.bin"
+            run_bin(f"check_tddft_{molname}_{funcname}",
+                    [xyzname, "basis_sets/6-31gs.json", molname, "6-31gs", funcname, str(nroots), str(TEST / probe)])
+            _gen_tddft_one(probe, f"tddft_{molname}_6-31gs_{funcname}.ref", xyzname, molname, "6-31gs", funcname)
+
+
+def gen_fxc_apply_many():
+    """check_fxc_apply_many.F90: f_xc[D] of a symmetric and a non-symmetric
+    probe density at a fixed reference density on water/6-31G*, SVWN/PBE/
+    B3LYP, against pyscf's dft.numint.nr_rks_fxc at terco's own grid."""
+    for funcname in ("svwn", "pbe", "b3lyp"):
+        probe = f"fxc_apply_many_probe_{funcname}.bin"
+        run_bin(f"check_fxc_apply_many_{funcname}",
+                ["water.xyz", "basis_sets/6-31gs.json", "water", "6-31gs", funcname, str(TEST / probe)])
+        _gen_fxc_apply_many_one(probe, f"fxc_apply_many_water_6-31gs_{funcname}.ref", "water.xyz", "water",
+                                "6-31gs", funcname)
+
+
+def _kxc_third_derivative(xc, ni, mol, dm, pts, wts, xs):
+    """The third functional derivative E_xc[X, Y, Z] for the closed-shell
+    density `dm` on the grid (pts, wts): libxc's eval_xc(deriv=3) contracted
+    by hand. With rho_X, sigma_X = 2 grad rho . grad rho_X and
+    sigma_XY = 2 grad rho_X . grad rho_Y, the third derivative of
+    f(rho, sigma) along three directions is f_abc X_a Y_b Z_c plus, over the
+    three pairs, f_{sigma b} sigma_XY Z_b (sigma is quadratic in grad rho and
+    rho linear, so there is no f_a term). `xs` holds the three AO densities."""
+    from pyscf.dft import libxc
+    gga = libxc.xc_type(xc) == "GGA"
+    ao = ni.eval_ao(mol, pts, deriv=1 if gga else 0)
+    xct = "GGA" if gga else "LDA"
+    rho = ni.eval_rho(mol, ao, dm, xctype=xct)
+    _, _, fxc, kxc = libxc.eval_xc(xc, rho, spin=0, deriv=3)
+    xr = [ni.eval_rho(mol, ao, x, xctype=xct) for x in xs]
+    if not gga:
+        return float(np.sum(wts * kxc[0] * xr[0] * xr[1] * xr[2]))
+    r3, r2s, rs2, s3 = (kxc[i] for i in range(4))
+    rs, ss = fxc[1], fxc[2]
+    g = rho[1:4]
+    dr = [x[0] for x in xr]
+    ds = [2.0 * np.einsum("gn,gn->n", g, x[1:4]) for x in xr]
+    tot = (r3 * dr[0] * dr[1] * dr[2]
+           + r2s * (dr[0] * dr[1] * ds[2] + dr[0] * ds[1] * dr[2] + ds[0] * dr[1] * dr[2])
+           + rs2 * (dr[0] * ds[1] * ds[2] + ds[0] * dr[1] * ds[2] + ds[0] * ds[1] * dr[2])
+           + s3 * ds[0] * ds[1] * ds[2])
+    for (i, j, k) in ((0, 1, 2), (0, 2, 1), (1, 2, 0)):
+        sij = 2.0 * np.einsum("gn,gn->n", xr[i][1:4], xr[j][1:4])
+        tot = tot + sij * (rs * dr[k] + ss * ds[k])
+    return float(np.sum(wts * tot))
+
+
+def _kxc_probe_matrix(n, p):
+    """check_xc_kxc.F90's probe_matrix: 0.05 cos(0.37 p (i+j) + 0.013 i j), i, j 1-based."""
+    i = np.arange(1, n + 1)[:, None]
+    j = np.arange(1, n + 1)[None, :]
+    return 0.05 * np.cos(0.37 * p * (i + j) + 0.013 * i * j)
+
+
+def _gen_kxc_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
+    """One check_xc_kxc.F90 case: pyscf's libxc third derivatives
+    contracted with the probe densities at terco's OWN converged density
+    and grid, so what is left to disagree is trc_xc_kxc_rks_apply's
+    finite-difference third derivative."""
+    PYSCF = {"svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
+    r = BinReader(TEST / probe_relname)
+    n, natm, no = (r.i8() for _ in range(3))
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    func_tag = r.str_(16)
+    r.f8(1)
+    dm_terco = r.mat(n)
+    s_terco = r.mat(n)
+    npts = r.i8()
+    pts = r.mat(3, npts).T.copy()
+    wts = r.f8(npts)
+    r.close()
+    if mol_tag != molname or bas_tag != basname or func_tag != funcname:
+        raise RuntimeError(f"gen_kxc {probe_relname}: probe tag mismatch")
+    atoms = _xyz_atoms(xyzname[:-4] if xyzname.endswith(".xyz") else xyzname)
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    charge = sum(elements[sym] for sym, _ in atoms) - 2 * no
+    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=charge, spin=0, verbose=0)
+    if mol.nao_nr() != n:
+        raise RuntimeError(f"gen_kxc {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
+    # terco keeps shells in file order and normalises d differently; the
+    # probe matrices and the density are terco-side AO matrices, carried
+    # into pyscf's basis as D_pyscf = N P^T D_terco P N (ao_norm_from_overlap).
+    perm = terco_to_pyscf_perm(atoms, bas)
+    inv_perm = np.argsort(perm)
+    nrm, s_err = ao_norm_from_overlap(s_terco[np.ix_(inv_perm, inv_perm)], mol.intor('int1e_ovlp'))
+    if s_err >= 1.0e-9:
+        raise RuntimeError(f"gen_kxc {probe_relname}: overlap check failed, {s_err:.3e}")
+
+    def to_pyscf(x):
+        return nrm[:, None] * x[np.ix_(inv_perm, inv_perm)] * nrm[None, :]
+
+    dm = to_pyscf(dm_terco)
+    ni = dft.numint.NumInt()
+    a = [to_pyscf(_kxc_probe_matrix(n, 1)), to_pyscf(_kxc_probe_matrix(n, 3))]
+    bm = [to_pyscf(_kxc_probe_matrix(n, 2)), to_pyscf(_kxc_probe_matrix(n, 4))]
+    c = to_pyscf(_kxc_probe_matrix(n, 5))
+    n_el = float(np.sum(wts * ni.eval_rho(mol, ni.eval_ao(mol, pts, deriv=0), dm, xctype="LDA")))
+    if abs(n_el - 2 * no) > 1.0e-4:
+        raise RuntimeError(f"gen_kxc {probe_relname}: carried density integrates to {n_el}, not {2 * no}")
+    tr = [_kxc_third_derivative(PYSCF[funcname], ni, mol, dm, pts, wts, [c, a[k], bm[k]]) for k in range(2)]
+    label = f"kxc {molname}/{basname}/{funcname} (rks)"
+    w = RefWriter(ref_relname)
+    w.header(label, [ROOT / "test" / "check_xc_kxc.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
+    w.comment("TR_CAB(k) = third derivative of E_xc along C, A_k, B_k at terco's converged density and grid; "
+              "C, A_k, B_k are check_xc_kxc.F90's probe_matrix 5, (1,3), (2,4)")
+    w.vector("TR_CAB", tr)
+    w.end()
+    w.write()
+    print(f"  {label}: TR {tr[0]:.12e} {tr[1]:.12e}")
+    (TEST / probe_relname).unlink()
+
+
+def gen_kxc():
+    """check_xc_kxc.F90: trc_xc_kxc_rks_apply (third functional derivative
+    contracted with two densities, LDA/GGA) on water/6-31G*, SVWN, PBE and
+    B3LYP, against libxc's eval_xc(deriv=3) contracted by hand."""
+    for funcname in ("svwn", "pbe", "b3lyp"):
+        probe = f"kxc_{funcname}_probe.bin"
+        run_bin(f"check_xc_kxc_{funcname}", ["water.xyz", "basis_sets/6-31gs.json", "water", "6-31gs", funcname, probe])
+        _gen_kxc_one(probe, f"kxc_water_6-31gs_{funcname}.ref", "water.xyz", "water", "6-31gs", funcname)
 
 
 def gen_rimp2_uhf():
@@ -6508,6 +6852,8 @@ CASES = {
     "erf_fock_water_631gs": lambda: gen_erf_fock("water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "erf_fock_water_ccpvdz": lambda: gen_erf_fock("water_ccpvdz", "water.xyz", "basis_sets/cc-pvdz.json"),
     "erf_fock_formamide_ccpvdz": lambda: gen_erf_fock("formamide_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json"),
+    "fock_nosym_many_water_631gs": lambda: gen_fock_nosym_many(
+        "water_631gs", "water.xyz", "basis_sets/6-31gs.json"),
     "erf_fock_water_ccpvqz": lambda: gen_erf_fock_g("water_ccpvqz", "water.xyz",
                                                     "basis_sets/cc-pvqz-pyscf17.json"),
     "rsh_g_water_wb97x": lambda: gen_rsh_g("water_wb97x", "water.xyz"),
@@ -6542,6 +6888,9 @@ CASES = {
     "soscf": gen_soscf,
     "mom_excited": gen_mom_excited,
     "cpks": gen_cpks,
+    "fxc_apply_many": gen_fxc_apply_many,
+    "tddft": gen_tddft,
+    "kxc": gen_kxc,
     "rimp2_uhf": gen_rimp2_uhf,
     "scf_df": gen_scf_df,
     "dh": gen_dh,
