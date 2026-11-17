@@ -2534,6 +2534,22 @@ foreach(_f svwn pbe b3lyp)
 endforeach()
 
 #
+# The third functional derivative contracted with two densities
+# (trc_xc_kxc_rks_apply, src/xc/trc_xc.F90), LDA and GGA, against pyscf's
+# libxc eval_xc(deriv=3) (test/pyscf_refs/generate.py's gen_kxc, grid
+# matched to terco's own), plus symmetry, a finite difference of
+# trc_xc_fxc_rks, batch == loop and the refusals. One executable, one ARGS
+# set per functional.
+#
+foreach(_f svwn pbe b3lyp)
+  terco_add_check(check_xc_kxc_${_f} check_xc_kxc.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                   ARGS water.xyz basis_sets/6-31gs.json water 6-31gs ${_f} kxc_${_f}_probe.bin)
+  target_link_libraries(check_xc_kxc_${_f} PRIVATE test-drive::test-drive)
+  set_target_properties(check_xc_kxc_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_xc_kxc_${_f})
+endforeach()
+
+#
 # step_table_t%reduce: a step table's time, work and bytes over the ranks
 # (RI-MP2's table is the job's, not rank 0's share). A test-drive suite,
 # registered on one, two and four ranks when MPI is on (no

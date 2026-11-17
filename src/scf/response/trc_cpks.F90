@@ -81,8 +81,8 @@ module trc_cpks
    use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t
-   use trc_xc_functional, only: trc_xc_functional_t, XC_FAMILY_MGGA
-   use trc_xc, only: trc_xc_fxc_rks, trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply
+   use trc_xc_functional, only: trc_xc_functional_t
+   use trc_xc, only: trc_xc_fxc_rks, trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply, trc_xc_response_refuse_reason
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, &
                        cphf_zero_matrix, cphf_copy_matrix, cphf_neg_matrix, cphf_add_matrix, &
                        cphf_axpy_matrix, cphf_precond_matrix, cphf_combine_p, cphf_add_diag
@@ -154,19 +154,7 @@ contains
       !!
       type(trc_xc_functional_t), intent(in) :: func
       character(len=256) :: msg
-      msg = ""
-      if (len_trim(func%missing) > 0) then
-         msg = "trc_cpks: functional '"//trim(func%name)//"' is not available: "//trim(func%missing)
-      else if (func%omega /= 0.0_dp .or. func%exx_lr /= 0.0_dp) then
-         msg = "trc_cpks: range-separated hybrids are refused -- the CPKS response needs a second, " &
-               //"short-range-screened exchange term ('"//trim(func%name)//"') this module does not build"
-      else if (func%family == XC_FAMILY_MGGA) then
-         msg = "trc_cpks: meta-GGA ('"//trim(func%name)//"') has no CPKS response term here -- " &
-               //"its second derivatives (tau included) are not translated"
-      else if (func%nlc_b /= 0.0_dp .or. func%nlc_c /= 0.0_dp) then
-         msg = "trc_cpks: VV10 nonlocal correlation ('"//trim(func%name)//"') has no CPKS response " &
-               //"term here -- its second derivative is not implemented"
-      end if
+      msg = trc_xc_response_refuse_reason(func, "trc_cpks")
    end function cpks_refuse_reason
 
    subroutine trc_cpks_solve_rks(b, eri, lp, xg, func, nao, nocc, nvirt, cmo, eps, dmat, ncomp, bvec, u, &
