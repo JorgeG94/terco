@@ -2517,9 +2517,9 @@ foreach(_t scf_cpks scf_cpks_pbe scf_cpks_b3lyp scf_cpks_formamide_pbe)
 endforeach()
 
 #
-# TDA/CIS and full RPA singlet excitation energies and oscillator strengths
+# TDA/CIS singlet excitation energies and oscillator strengths
 # (src/scf/response/trc_tddft.F90) against pyscf's tdscf TDA (generate.py's
-# gen_tddft) and TDHF/TDDFT (gen_rpa): water (4 roots) and formamide (6 roots), 6-31G*, HF, SVWN, PBE
+# gen_tddft): water (4 roots) and formamide (6 roots), 6-31G*, HF, SVWN, PBE
 # and B3LYP, and methane (Td, 5 roots: the cut falls inside degenerate triplets).
 # One executable, one ARGS set per case.
 #
@@ -2538,11 +2538,28 @@ foreach(_m water:4 formamide:6 ch4:5)
     target_link_libraries(check_tddft_${_mol}_${_f} PRIVATE test-drive::test-drive)
     set_target_properties(check_tddft_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
                           ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_${_mol}_${_f})
-    # The same source with the eighth argument `rpa`: the full RPA against
-    # pyscf's TDHF/TDDFT (generate.py's gen_rpa).
-    terco_add_check(check_tddft_rpa_${_mol}_${_f} check_tddft.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+  endforeach()
+endforeach()
+
+#
+# Full RPA (TDHF / Casida) singlet excitation energies, oscillator strengths and
+# ||Y||^2 (src/scf/response/trc_tddft.F90, tda = .false.) against pyscf's tdscf
+# TDHF / TDDFT (generate.py's gen_rpa), plus the RPA's own internal checks and
+# error paths: the same molecules, basis and functionals as the TDA above.
+# One executable, one ARGS set per case.
+#
+foreach(_m water:4 formamide:6 ch4:5)
+  string(REPLACE ":" ";" _ml ${_m})
+  list(GET _ml 0 _mol)
+  list(GET _ml 1 _nr)
+  foreach(_f hf svwn pbe b3lyp)
+    set(_xyz ${_mol}.xyz)
+    if(_mol STREQUAL "ch4")
+      set(_xyz tops_ch4.xyz)
+    endif()
+    terco_add_check(check_tddft_rpa_${_mol}_${_f} check_tddft_rpa.F90 NEEDS_BASIS NEEDS_PYSCF_REF
                     ARGS ${_xyz} basis_sets/6-31gs.json ${_mol} 6-31gs ${_f} ${_nr}
-                         ${CMAKE_CURRENT_BINARY_DIR}/tddft_rpa_${_mol}_${_f}_probe.bin rpa)
+                         ${CMAKE_CURRENT_BINARY_DIR}/tddft_rpa_${_mol}_${_f}_probe.bin)
     target_link_libraries(check_tddft_rpa_${_mol}_${_f} PRIVATE test-drive::test-drive)
     set_target_properties(check_tddft_rpa_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
                           ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_rpa_${_mol}_${_f})

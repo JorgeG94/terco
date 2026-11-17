@@ -3132,15 +3132,20 @@ def _gen_fxc_apply_many_one(probe_relname, ref_relname, xyzname, molname, basnam
     (TEST / probe_relname).unlink()
 
 
-def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
-    """One check_tddft.F90 case: pyscf's TDA (singlets) on an RHF/RKS
+def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcname, rpa=False):
+    """One check_tddft.F90 case (check_tddft_rpa.F90 with `rpa`): pyscf's TDA
+    (singlets) on an RHF/RKS
     reference at terco's OWN grid (the probe's points and weights, `non0tab`
     cleared, as _gen_cpks_one): the lowest `nroots` excitation energies and
     length-gauge oscillator strengths. The SCF is converged tightly
     (converge_tight). The TDA runs at a residual tolerance of 1e-6, which puts
     omega within ~1e-12 of converged (error ~ residual^2 / gap); at 1e-8 pyscf
     itself reported a root unconverged (water/SVWN, root 3 of 4).
-    Written: E_SCF, OMEGA, OSC."""
+    With `rpa` it is pyscf's TDHF (RHF) or TDDFT (RKS) instead, the full (X, Y)
+    problem, on the same reference and grid, and the probe also carries ||Y||^2
+    per root in terco's normalisation X.X - Y.Y = 1 (pyscf's (X, Y) are
+    normalised 2 (X.X - Y.Y) = 1, so ||Y||^2(terco) = 2 ||Y||^2(pyscf)).
+    Written: E_SCF, OMEGA, OSC (and YY with `rpa`)."""
     PYSCF = {"hf": None, "svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
     r = BinReader(TEST / probe_relname)
     n, natm, no, nroots = (r.i8() for _ in range(4))
@@ -3150,6 +3155,7 @@ def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcna
     e_terco = r.f8(1)[0]
     om_terco = r.f8(nroots)
     osc_terco = r.f8(nroots)
+    yy_terco = r.f8(nroots) if rpa else None
     npts = r.i8()
     pts = r.mat(3, npts).T.copy()
     wts = r.f8(npts)
@@ -3166,7 +3172,7 @@ def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcna
     if mol.nao_nr() != n:
         raise RuntimeError(f"gen_tddft {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
 
-    label = f"tddft {molname}/{basname}/{funcname} (tda singlet)"
+    label = f"rpa {molname}/{basname}/{funcname} (singlet)" if rpa else f"tddft {molname}/{basname}/{funcname} (tda singlet)"
 
     def make_mf():
         if funcname == "hf":
@@ -3179,7 +3185,7 @@ def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcna
         return m
 
     mf, grad_norm = converge_tight(make_mf, None, label)
-    td = mf.TDA()
+    td = (mf.TDHF() if funcname == "hf" else mf.TDDFT()) if rpa else mf.TDA()
     td.singlet = True
     td.nstates = nroots
     td.conv_tol = 1.0e-6
@@ -3187,21 +3193,26 @@ def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcna
     td.verbose = 0
     td.kernel()
     if not all(np.atleast_1d(td.converged)):
-        raise ConvergenceError(f"{label}: pyscf's TDA did not converge")
+        raise ConvergenceError(f"{label}: pyscf's {'RPA' if rpa else 'TDA'} did not converge")
     omega = np.asarray(td.e, dtype=float)
     osc = np.asarray(td.oscillator_strength(gauge='length'), dtype=float)
+    yy = np.array([2.0 * float(np.sum(y ** 2)) for _, y in td.xy]) if rpa else None
 
     w = RefWriter(ref_relname)
-    w.header(label, [ROOT / "test" / "check_tddft.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
+    src = "check_tddft_rpa.F90" if rpa else "check_tddft.F90"
+    w.header(label, [ROOT / "test" / src, TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
     w.real("E_SCF", mf.e_tot)
     w.vector("OMEGA", omega)
     w.vector("OSC", osc)
+    if rpa:
+        w.vector("YY", yy)
     w.real("CONV_TOL", mf.conv_tol)
     w.real("GRAD_NORM", grad_norm)
     w.end()
     w.write()
     print(f"  {label}: E(terco) {e_terco:20.12f}  E(pyscf) {mf.e_tot:20.12f}  |g| {grad_norm:.2e}  "
-          f"|d(omega)|max {np.abs(om_terco - omega).max():.2e}  |d(f)|max {np.abs(osc_terco - osc).max():.2e}")
+          f"|d(omega)|max {np.abs(om_terco - omega).max():.2e}  |d(f)|max {np.abs(osc_terco - osc).max():.2e}"
+          + (f"  |d(YY)|max {np.abs(yy_terco - yy).max():.2e}" if rpa else ""))
     (TEST / probe_relname).unlink()
 
 
@@ -3219,84 +3230,8 @@ def gen_tddft():
             _gen_tddft_one(probe, f"tddft_{molname}_6-31gs_{funcname}.ref", xyzname, molname, "6-31gs", funcname)
 
 
-def _gen_rpa_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
-    """One check_tddft.F90 case in RPA mode: pyscf's TDHF (RHF) or TDDFT (RKS)
-    singlets, the full (X, Y) problem, on the same reference and terco's own
-    grid as _gen_tddft_one: the lowest `nroots` excitation energies and
-    length-gauge oscillator strengths (from X + Y), and ||Y||^2 per root in
-    terco's normalisation X.X - Y.Y = 1. pyscf's (X, Y) are normalised
-    2 (X.X - Y.Y) = 1, so ||Y||^2(terco) = 2 ||Y||^2(pyscf).
-    Written: E_SCF, OMEGA, OSC, YY."""
-    PYSCF = {"hf": None, "svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
-    r = BinReader(TEST / probe_relname)
-    n, natm, no, nroots = (r.i8() for _ in range(4))
-    mol_tag = r.str_(16)
-    bas_tag = r.str_(16)
-    func_tag = r.str_(16)
-    e_terco = r.f8(1)[0]
-    om_terco = r.f8(nroots)
-    osc_terco = r.f8(nroots)
-    yy_terco = r.f8(nroots)
-    npts = r.i8()
-    pts = r.mat(3, npts).T.copy()
-    wts = r.f8(npts)
-    r.close()
-    if mol_tag != molname or bas_tag != basname or func_tag != funcname:
-        raise RuntimeError(f"gen_rpa {probe_relname}: probe tag mismatch")
-    atoms = _xyz_atoms(xyzname[:-4] if xyzname.endswith(".xyz") else xyzname)
-    if len(atoms) != natm:
-        raise RuntimeError(f"gen_rpa {probe_relname}: natm mismatch terco {natm} xyz {len(atoms)}")
-    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
-    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
-    charge = sum(elements[sym] for sym, _ in atoms) - 2 * no
-    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=charge, spin=0, verbose=0)
-    if mol.nao_nr() != n:
-        raise RuntimeError(f"gen_rpa {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
-
-    label = f"rpa {molname}/{basname}/{funcname} (singlet)"
-
-    def make_mf():
-        if funcname == "hf":
-            return scf.RHF(mol)
-        m = dft.RKS(mol)
-        m.xc = PYSCF[funcname]
-        m.grids.coords = np.ascontiguousarray(pts)
-        m.grids.weights = wts
-        m.grids.non0tab = None
-        return m
-
-    mf, grad_norm = converge_tight(make_mf, None, label)
-    td = mf.TDHF() if funcname == "hf" else mf.TDDFT()
-    td.singlet = True
-    td.nstates = nroots
-    td.conv_tol = 1.0e-6
-    td.max_cycle = 200
-    td.verbose = 0
-    td.kernel()
-    if not all(np.atleast_1d(td.converged)):
-        raise ConvergenceError(f"{label}: pyscf's RPA did not converge")
-    omega = np.asarray(td.e, dtype=float)
-    osc = np.asarray(td.oscillator_strength(gauge='length'), dtype=float)
-    yy = np.array([2.0 * float(np.sum(y ** 2)) for _, y in td.xy])
-
-    w = RefWriter(ref_relname)
-    w.header(label, [ROOT / "test" / "check_tddft.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
-    w.real("E_SCF", mf.e_tot)
-    w.vector("OMEGA", omega)
-    w.vector("OSC", osc)
-    w.vector("YY", yy)
-    w.real("CONV_TOL", mf.conv_tol)
-    w.real("GRAD_NORM", grad_norm)
-    w.end()
-    w.write()
-    print(f"  {label}: E(terco) {e_terco:20.12f}  E(pyscf) {mf.e_tot:20.12f}  |g| {grad_norm:.2e}  "
-          f"|d(omega)|max {np.abs(om_terco - omega).max():.2e}  |d(f)|max {np.abs(osc_terco - osc).max():.2e}  "
-          f"|d(YY)|max {np.abs(yy_terco - yy).max():.2e}")
-    (TEST / probe_relname).unlink()
-
-
 def gen_rpa():
-    """check_tddft.F90 in RPA mode: the lowest singlet RPA roots
+    """check_tddft_rpa.F90: the lowest singlet RPA roots
     (trc_tddft.F90, tda = .false.) of water (4 roots), formamide (6) and
     methane (Td, 5: the cut falls inside degenerate multiplets), 6-31G*, for
     HF, SVWN, PBE and B3LYP, against pyscf's TDHF/TDDFT at terco's own
@@ -3306,9 +3241,9 @@ def gen_rpa():
         for funcname in ("hf", "svwn", "pbe", "b3lyp"):
             probe = f"tddft_rpa_{molname}_{funcname}_probe.bin"
             run_bin(f"check_tddft_rpa_{molname}_{funcname}",
-                    [xyzname, "basis_sets/6-31gs.json", molname, "6-31gs", funcname, str(nroots), str(TEST / probe),
-                     "rpa"])
-            _gen_rpa_one(probe, f"rpa_{molname}_6-31gs_{funcname}.ref", xyzname, molname, "6-31gs", funcname)
+                    [xyzname, "basis_sets/6-31gs.json", molname, "6-31gs", funcname, str(nroots), str(TEST / probe)])
+            _gen_tddft_one(probe, f"rpa_{molname}_6-31gs_{funcname}.ref", xyzname, molname, "6-31gs", funcname,
+                           rpa=True)
 
 
 def gen_fxc_apply_many():

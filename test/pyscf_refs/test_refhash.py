@@ -62,7 +62,7 @@ class RestaleTests(unittest.TestCase):
         # gen_fukui_chelpg, gen_sym_scf_cs, gen_sym_c2, gen_sym_c2v, gen_sym_ci, gen_sym_subgroup, gen_sym_d2,
         # gen_sym_c2h, gen_sym_c2h_subgroup, gen_sym_d2h, gen_sym_d2h_subgroup, gen_sym_tops, gen_rccsd_ints, and through
         # _gen_rimp2_one / _gen_scf_df_one / _gen_cphf_one / _gen_cpks_one /
-        # _gen_tddft_one / _gen_rpa_one by gen_rimp2 / gen_scf_df / gen_cphf / gen_cphf_uhf / gen_cpks / gen_tddft / gen_rpa. Update
+        # _gen_tddft_one by gen_rimp2 / gen_scf_df / gen_cphf / gen_cphf_uhf / gen_cpks / gen_tddft / gen_rpa. Update
         # this set when a new generator starts calling it.
         src = edit_once(SOURCE, "conv_tol_grad=1.0e-8, max_cycle=200,",
                         "conv_tol_grad=1.0e-8, max_cycle=201,")

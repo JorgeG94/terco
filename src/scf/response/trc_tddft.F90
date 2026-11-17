@@ -62,8 +62,13 @@ module trc_tddft
    !! sends the new trial vectors through ONE `fock_nosym_many` call (their
    !! symmetric and antisymmetric parts together) and ONE `fxc_apply_many` call.
    !! A subspace Am or Ap that is not positive definite, or a non-positive
-   !! root w^2, means the reference is unstable (or the roots are complex) and
-   !! is an error.
+   !! root w^2, is an error: the reference may be unstable (or the roots
+   !! complex). LIMITATION: this is tested on the Davidson subspace only,
+   !! V^T (A-B) V and V^T (A+B) V, never on the full A-B and A+B. A matrix that
+   !! is indefinite only along directions the subspace has not reached goes
+   !! unnoticed, so a returned result is not a stability certificate of the
+   !! reference; the converged roots themselves are valid for the RPA problem
+   !! the subspace did resolve.
    !!
    !! CONVENTION. X and Y are normalised X.X - Y.Y = 1 (the TDA's Y = 0, X.X = 1
    !! included). pyscf's tdscf (X, Y) are normalised 2 (X.X - Y.Y) = 1, so
@@ -784,7 +789,9 @@ contains
       !! Am = V^T (A-B) V of the m columns in use, symmetrised, then the
       !! eigenvalues w2 (ascending) of Am^{1/2} Ap Am^{1/2} and its
       !! eigenvectors zc. On return `am` holds Am^{1/2}. `err` is set when Am
-      !! or the product is not positive definite or LAPACK fails.
+      !! or the product is not positive definite or LAPACK fails. Only the
+      !! subspace is tested: instability along a direction V has not reached is
+      !! not detected.
       type(tddft_space_t), intent(in) :: sp
       real(dp), intent(inout) :: ap(:, :), am(:, :), zc(:, :)
       real(dp), intent(out) :: w2(:)
@@ -812,8 +819,8 @@ contains
          return
       end if
       if (.not. (sam(1) > 0.0_dp)) then
-         err = "trc_tddft: A-B is not positive definite ("//to_string(sam(1), "es10.2") &
-               //"): the reference is unstable and the RPA roots may be complex"
+         err = "trc_tddft: A-B is not positive definite in the Davidson subspace ("//to_string(sam(1), "es10.2") &
+               //"): the reference may be unstable and the RPA roots complex"
          return
       end if
       do j = 1, m
@@ -832,7 +839,7 @@ contains
          err = "trc_tddft: the subspace eigenproblem broke down (NaN or LAPACK failure)"
       else if (.not. (w2(1) > 0.0_dp)) then
          err = "trc_tddft: a non-positive RPA root w^2 ("//to_string(w2(1), "es10.2")//" Eh^2): A+B is not " &
-               //"positive definite, the reference is unstable"
+               //"positive definite in the Davidson subspace, the reference may be unstable"
       end if
    end subroutine tddft_rpa_subspace
 
@@ -1242,7 +1249,7 @@ contains
       if (done) then
          if (wsub(1) <= 0.0_dp) then
             call tddft_fail(res, ERROR_GENERIC, "trc_tddft: a non-positive excitation energy ("// &
-                            to_string(wsub(1), "es10.2")//" Eh): the reference is unstable (or a triplet-like " &
+                            to_string(wsub(1), "es10.2")//" Eh): the reference may be unstable (or a triplet-like " &
                             //"instability)")
          else
             res%space = sp%m

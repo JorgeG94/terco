@@ -1,11 +1,8 @@
 module check_tddft_suite
    !!
-   !! TDA (CIS for Hartree-Fock) or, with the optional eighth argument `rpa`,
-   !! full RPA (TDHF for Hartree-Fock, Casida for Kohn-Sham) singlet excitation
-   !! energies and oscillator strengths of a closed-shell reference through
-   !! trc_tddft, against pyscf's tdscf TDA / TDHF / TDDFT (test/pyscf_refs/
-   !! generate.py's gen_tddft and gen_rpa). The cases below are the same in
-   !! both modes unless a case says otherwise.
+   !! TDA (CIS for Hartree-Fock) singlet excitation energies and oscillator
+   !! strengths of a closed-shell reference through trc_tddft, against pyscf's
+   !! tdscf TDA (test/pyscf_refs/generate.py's gen_tddft).
    !!
    !! One (molecule, basis, functional) per process, one SCF and one solve
    !! shared by the cases below (built by the first, released by the last):
@@ -34,21 +31,6 @@ module check_tddft_suite
    !!     double hybrids) and a solve that is not given enough iterations
    !!     reports an error rather than returning.
    !!
-   !! RPA mode, in addition:
-   !!  - X and Y are normalised X.X - Y.Y = 1 for every pair of roots
-   !!    (orthonormality in the RPA metric), and ||Y||^2 agrees with pyscf's
-   !!    (its (X, Y) are normalised 2 (X.X - Y.Y) = 1, so ||Y||^2(terco) =
-   !!    2 ||Y||^2(pyscf)); a degenerate multiplet is compared as a sum;
-   !!  - the residual is that of the (X, Y) equation [[A, B], [-B, -A]], from
-   !!    a fresh (A+B) and (A-B) matvec on X+Y and X-Y;
-   !!  - for a molecule of at most 200 pairs, A+B and A-B are built densely
-   !!    from unit-vector matvecs: both are symmetric, A-B has no Coulomb or
-   !!    kernel term (for a pure functional it is the diagonal e_a - e_i, with
-   !!    the antisymmetric exchange half of the batch forced on), and the
-   !!    lowest roots of (A-B)^{1/2} (A+B) (A-B)^{1/2} are the solver's w^2;
-   !!  - w(RPA) <= w(TDA) for each root, against the committed TDA reference
-   !!    and against pyscf's RPA.
-   !!
    !! The grid is terco's own (the SCF's), written with terco's numbers to the
    !! probe file for pyscf.
    !!
@@ -60,11 +42,10 @@ module check_tddft_suite
    !! the reference SCFs at conv_tol 1e-12 with |g| < 1e-8 (measured 3e-10 to
    !! 8e-9), so SCF noise is far below the gates.
    !!
-   !! Arguments: xyz basis.json molname basname funcname nroots probe.bin [rpa].
+   !! Arguments: xyz basis.json molname basname funcname nroots probe.bin.
    !!
-   use pic_types, only: dp, int64, default_int
+   use pic_types, only: dp, int64
    use pic_strings, only: to_string
-   use pic_lapack_interfaces, only: pic_syev
    use pic_timer, only: timer_type
    use pic_logger, only: global_logger
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -85,15 +66,11 @@ module check_tddft_suite
    implicit none
    private
    public :: collect_check_tddft, xyz_arg, bas_json_arg, molname_arg, basname_arg, funcname_arg, nroots_arg, probe_arg
-   public :: rpa_arg
 
    real(dp), parameter :: ERI_THRESH = 1.0e-12_dp
    real(dp), parameter :: TOL_OMEGA = 1.0e-6_dp
    real(dp), parameter :: TOL_OSC = 1.0e-5_dp
    real(dp), parameter :: CONV_TOL = 1.0e-7_dp
-   real(dp), parameter :: TOL_YY = 1.0e-6_dp
-   integer, parameter :: MAX_DENSE = 200
-   !! Largest number of occupied-virtual pairs of the dense RPA check.
 
    character(len=256) :: xyz_arg = 'water.xyz'
    character(len=256) :: bas_json_arg = 'basis_sets/6-31gs.json'
@@ -102,8 +79,6 @@ module check_tddft_suite
    character(len=16) :: funcname_arg = 'hf'
    integer :: nroots_arg = 4
    character(len=256) :: probe_arg = 'tddft_probe.bin'
-   logical :: rpa_arg = .false.
-   !! The full RPA instead of the TDA.
 
    type :: fixture_t
       logical :: ready = .false.
@@ -129,10 +104,9 @@ contains
    subroutine collect_check_tddft(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
-                  new_unittest("omega and f vs pyscf", test_vs_pyscf), &
+                  new_unittest("TDA omega and f vs pyscf", test_vs_pyscf), &
                   new_unittest("residual of a fresh matvec below conv_tol", test_residual), &
                   new_unittest("amplitudes orthonormal across roots", test_orthonormal), &
-                  new_unittest("RPA: dense (A+B), (A-B), and w <= w(TDA)", test_rpa_dense), &
                   new_unittest("negative control: corrupted exchange weight fails the comparison", test_control), &
                   new_unittest("every nroots = 1..N-1 gives the first roots of the reference", test_sweep), &
                   new_unittest("a tiny max_space (repeated collapse) gives the same roots", test_collapse), &
@@ -192,12 +166,11 @@ contains
          call fx%ref%set(fx%nocc, fx%scf%cmo(:, :, 1), fx%scf%eps(:, 1), fx%scf%dmat(:, :, 1))
       end if
       fx%opts%nroots = nroots_arg
-      fx%opts%tda = .not. rpa_arg
       fx%opts%conv_tol = CONV_TOL
       call tm%start()
       call solve(fx%opts, fx%td, err)
       fx%t_solve = tm%get_elapsed_time()
-      call check(error, .not. err%has_error(), "solve failed: "//err%get_message())
+      call check(error, .not. err%has_error(), "TDA solve failed: "//err%get_message())
    end subroutine fixture_build
 
    subroutine solve(opts, td, err, func)
@@ -216,14 +189,14 @@ contains
 
    subroutine test_vs_pyscf(error)
       type(error_type), allocatable, intent(out) :: error
-      real(dp), allocatable :: om_ref(:), osc_ref(:), yy_ref(:), yy(:)
-      real(dp) :: e_ref, dom, dosc, dyy
-      integer :: u, nr, unit, k
+      real(dp), allocatable :: om_ref(:), osc_ref(:)
+      real(dp) :: e_ref, dom, dosc
+      integer :: u, nr, unit
       character(len=256) :: refname
 
       call fixture_build(error)
       if (allocated(error)) return
-      call check(error, fx%td%converged, "the solve did not converge")
+      call check(error, fx%td%converged, "TDA did not converge")
       if (allocated(error)) return
       nr = nroots_arg
 
@@ -233,27 +206,16 @@ contains
       write (unit) fx%scf%energy
       write (unit) fx%td%omega
       write (unit) fx%td%osc
-      if (rpa_arg) then
-         allocate (yy(nr))
-         do k = 1, nr
-            yy(k) = sum(fx%td%yamp(:, :, k)**2)
-         end do
-         write (unit) yy
-      end if
       write (unit) int(size(fx%scf%grid_w), int64)
       write (unit) fx%scf%grid_r, fx%scf%grid_w
       close (unit)
 
-      refname = ref_name()
+      refname = 'tddft_'//trim(molname_arg)//'_'//trim(basname_arg)//'_'//trim(funcname_arg)//'.ref'
       call ref_require(trim(refname), u)
       allocate (om_ref(nr), osc_ref(nr))
       call ref_read_real(u, 'E_SCF', e_ref)
       call ref_read_vector(u, 'OMEGA', nr, om_ref)
       call ref_read_vector(u, 'OSC', nr, osc_ref)
-      if (rpa_arg) then
-         allocate (yy_ref(nr))
-         call ref_read_vector(u, 'YY', nr, yy_ref)
-      end if
       call ref_close(u)
 
       call check(error, abs(fx%scf%energy - e_ref) < 1.0e-9_dp, &
@@ -278,37 +240,7 @@ contains
       call check(error, dosc < TOL_OSC, "oscillator strength vs pyscf, max|diff| = "//to_string(dosc, "es10.2"))
       if (allocated(error)) return
       call check(error, maxval(fx%td%osc) > 1.0e-4_dp .or. nr < 1, "no root has a measurable oscillator strength")
-      if (allocated(error)) return
-      if (rpa_arg) then
-         ! ||Y||^2 is invariant to sign; inside a degenerate multiplet only its sum is.
-         if (degenerate_molecule()) then
-            dyy = abs(sum(yy(1:3)) - sum(yy_ref(1:3)))
-         else
-            dyy = maxval(abs(yy - yy_ref))
-         end if
-         call global_logger%info("tddft rpa "//trim(molname_arg)//"/"//trim(funcname_arg)//": max|d ||Y||^2| "// &
-                                 to_string(dyy, "es10.2")//" (tol "//to_string(TOL_YY, "es8.1")//", margin x"// &
-                                 to_string(TOL_YY/max(dyy, 1.0e-30_dp), "es8.1")//"), largest ||Y||^2 "// &
-                                 to_string(maxval(yy), "es10.2"))
-         call check(error, dyy < TOL_YY, "||Y||^2 vs pyscf, max|diff| = "//to_string(dyy, "es10.2"))
-         if (allocated(error)) return
-         call check(error, maxval(yy) > 1.0e-6_dp, "Y is zero: not an RPA solution")
-      end if
    end subroutine test_vs_pyscf
-
-   function ref_name(tda_ref) result(name)
-      !! The committed pyscf reference of this case: the TDA's, or in RPA
-      !! mode the RPA's (`tda_ref` true asks for the TDA's in either mode).
-      logical, intent(in), optional :: tda_ref
-      character(len=256) :: name
-      character(len=8) :: prefix
-      prefix = 'tddft_'
-      if (rpa_arg) prefix = 'rpa_'
-      if (present(tda_ref)) then
-         if (tda_ref) prefix = 'tddft_'
-      end if
-      name = trim(prefix)//trim(molname_arg)//'_'//trim(basname_arg)//'_'//trim(funcname_arg)//'.ref'
-   end function ref_name
 
    logical function degenerate_molecule()
       degenerate_molecule = trim(molname_arg) == 'ch4'
@@ -343,7 +275,7 @@ contains
                                  " (cost)")
          return
       end if
-      refname = ref_name()
+      refname = 'tddft_'//trim(molname_arg)//'_'//trim(basname_arg)//'_'//trim(funcname_arg)//'.ref'
       call ref_require(trim(refname), u)
       allocate (om_ref(nr), osc_ref(nr))
       call ref_read_real(u, 'E_SCF', e_ref)
@@ -372,30 +304,20 @@ contains
       type(error_type), allocatable, intent(out) :: error
       type(trc_tddft_op_t) :: op
       type(error_t) :: err
-      real(dp), allocatable :: ax(:, :, :), ax2(:, :, :, :), bx2(:, :, :, :), pp(:, :, :), mm(:, :, :)
+      real(dp), allocatable :: ax(:, :, :)
       real(dp) :: rk, worst
       integer :: k, nr, nchunk
 
       call fixture_build(error)
       if (allocated(error)) return
-      call check(error, fx%td%converged, "the solve did not converge")
+      call check(error, fx%td%converged, "TDA did not converge")
       if (allocated(error)) return
       nr = nroots_arg
       call op%setup(fx%bas, fx%la, fx%ref, err, fx%xg)
       call check(error, .not. err%has_error(), "operator setup: "//err%get_message())
       if (allocated(error)) return
       allocate (ax(fx%nocc, op%nvir, nr))
-      if (rpa_arg) then
-         ! (A+B)(X+Y) and (A-B)(X-Y), each from its own fresh batch of nr vectors.
-         allocate (ax2(fx%nocc, op%nvir, nr, 2), bx2(fx%nocc, op%nvir, nr, 2), pp(fx%nocc, op%nvir, nr), &
-                   mm(fx%nocc, op%nvir, nr))
-         pp = fx%td%xamp + fx%td%yamp
-         mm = fx%td%xamp - fx%td%yamp
-         call op%apply_rpa(fx%bas, fx%eri, fx%la, nr, pp, ax2, fx%xg)
-         call op%apply_rpa(fx%bas, fx%eri, fx%la, nr, mm, bx2, fx%xg)
-      else
-         call op%apply(fx%bas, fx%eri, fx%la, nr, fx%td%xamp, ax, fx%xg)
-      end if
+      call op%apply(fx%bas, fx%eri, fx%la, nr, fx%td%xamp, ax, fx%xg)
       if (fx%dft) then
          ! No budget is set, so the default must keep the batch in ONE fxc
          ! pass: a budget of one double once made it one vector per pass, with
@@ -413,14 +335,7 @@ contains
       end if
       worst = 0.0_dp
       do k = 1, nr
-         if (rpa_arg) then
-            ! [[A, B], [-B, -A]] (X, Y) - w (X, Y) from (A+B)p and (A-B)m:
-            ! A X + B Y = ((A+B)p + (A-B)m)/2, B X + A Y = ((A+B)p - (A-B)m)/2.
-            rk = sqrt(sum((0.5_dp*(ax2(:, :, k, 1) + bx2(:, :, k, 2)) - fx%td%omega(k)*fx%td%xamp(:, :, k))**2) &
-                      + sum((0.5_dp*(ax2(:, :, k, 1) - bx2(:, :, k, 2)) + fx%td%omega(k)*fx%td%yamp(:, :, k))**2))
-         else
-            rk = sqrt(sum((ax(:, :, k) - fx%td%omega(k)*fx%td%xamp(:, :, k))**2))
-         end if
+         rk = sqrt(sum((ax(:, :, k) - fx%td%omega(k)*fx%td%xamp(:, :, k))**2))
          worst = max(worst, rk)
       end do
       call op%release()
@@ -435,17 +350,15 @@ contains
       integer :: j, k
       call fixture_build(error)
       if (allocated(error)) return
-      call check(error, fx%td%converged, "the solve did not converge")
+      call check(error, fx%td%converged, "TDA did not converge")
       if (allocated(error)) return
       dev = 0.0_dp
       do k = 1, nroots_arg
          do j = 1, nroots_arg
-            ! The RPA's metric: X.X - Y.Y (the TDA's Y is zero).
-            dev = max(dev, abs(sum(fx%td%xamp(:, :, j)*fx%td%xamp(:, :, k)) - sum(fx%td%yamp(:, :, j)*fx%td%yamp(:, :, k)) &
-                               - merge(1.0_dp, 0.0_dp, j == k)))
+            dev = max(dev, abs(sum(fx%td%xamp(:, :, j)*fx%td%xamp(:, :, k)) - merge(1.0_dp, 0.0_dp, j == k)))
          end do
       end do
-      call global_logger%info("tddft "//trim(molname_arg)//"/"//trim(funcname_arg)//": max|X^T X - Y^T Y - 1| "// &
+      call global_logger%info("tddft "//trim(molname_arg)//"/"//trim(funcname_arg)//": max|X^T X - 1| "// &
                               to_string(dev, "es10.2"))
       call check(error, dev < 1.0e-10_dp, "X not orthonormal, max dev "//to_string(dev, "es10.2"))
       if (allocated(error)) return
@@ -454,121 +367,6 @@ contains
          if (allocated(error)) return
       end do
    end subroutine test_orthonormal
-
-   subroutine test_rpa_dense(error)
-      !! RPA mode, at most MAX_DENSE pairs: A+B and A-B dense from unit-vector
-      !! matvecs; their symmetry, A-B's structure for a pure functional, the
-      !! lowest roots of (A-B)^{1/2} (A+B) (A-B)^{1/2} against the solver and
-      !! the bound w(RPA) <= w(TDA) against the committed TDA reference.
-      type(error_type), allocatable, intent(out) :: error
-      type(trc_tddft_op_t) :: op
-      type(error_t) :: err
-      real(dp), allocatable :: unit_x(:, :, :), prod(:, :, :, :), apb(:, :), amb(:, :), amh(:, :), work(:, :)
-      real(dp), allocatable :: sam(:), w2(:), om_tda(:), osc_tda(:), om_ref(:), osc_ref(:), yy_ref(:)
-      real(dp) :: e_ref, dsym, doff, dw, dtda, dtda_ref
-      integer :: nov, nocc, nvir, nr, i, j, u
-      integer(default_int) :: linfo
-      logical :: is_pure
-      character(len=64) :: offmsg
-
-      call fixture_build(error)
-      if (allocated(error)) return
-      if (.not. rpa_arg) then
-         call global_logger%info("tddft: RPA dense check skipped in TDA mode")
-         return
-      end if
-      call check(error, fx%td%converged, "the solve did not converge")
-      if (allocated(error)) return
-      nr = nroots_arg
-      nocc = fx%nocc
-      nvir = size(fx%scf%eps, 1) - nocc
-      nov = nocc*nvir
-
-      ! w(RPA) <= w(TDA), root by root, for this code and for pyscf's.
-      allocate (om_tda(nr), osc_tda(nr), om_ref(nr), osc_ref(nr), yy_ref(nr))
-      call ref_require(trim(ref_name(tda_ref=.true.)), u)
-      call ref_read_real(u, 'E_SCF', e_ref)
-      call ref_read_vector(u, 'OMEGA', nr, om_tda)
-      call ref_read_vector(u, 'OSC', nr, osc_tda)
-      call ref_close(u)
-      call ref_require(trim(ref_name()), u)
-      call ref_read_real(u, 'E_SCF', e_ref)
-      call ref_read_vector(u, 'OMEGA', nr, om_ref)
-      call ref_read_vector(u, 'OSC', nr, osc_ref)
-      call ref_read_vector(u, 'YY', nr, yy_ref)
-      call ref_close(u)
-      dtda = maxval(fx%td%omega - om_tda)
-      dtda_ref = maxval(om_ref - om_tda)
-      call global_logger%info("tddft rpa "//trim(molname_arg)//"/"//trim(funcname_arg)// &
-                              ": max (w_RPA - w_TDA) terco "//to_string(dtda, "es10.2")//", pyscf "// &
-                              to_string(dtda_ref, "es10.2")//" (both must be <= 0); smallest TDA-RPA shift "// &
-                              to_string(minval(om_tda - fx%td%omega), "es10.2"))
-      call check(error, dtda <= 1.0e-9_dp, "an RPA root lies above its TDA root, by "//to_string(dtda, "es10.2"))
-      if (allocated(error)) return
-      call check(error, dtda_ref <= 1.0e-9_dp, "pyscf: an RPA root lies above its TDA root")
-      if (allocated(error)) return
-
-      if (nov > MAX_DENSE) then
-         call global_logger%info("tddft rpa: dense check skipped for "//trim(molname_arg)//" ("//to_string(nov)// &
-                                 " pairs, cost)")
-         return
-      end if
-      is_pure = fx%dft .and. fx%func%exx == 0.0_dp
-      call op%setup(fx%bas, fx%la, fx%ref, err, fx%xg)
-      call check(error, .not. err%has_error(), "operator setup: "//err%get_message())
-      if (allocated(error)) return
-      ! The antisymmetric exchange half is forced on for a pure functional, so
-      ! A-B's absence of any Coulomb or kernel term is measured, not assumed.
-      op%force_antisym = .true.
-      allocate (unit_x(nocc, nvir, nov), prod(nocc, nvir, nov, 2), apb(nov, nov), amb(nov, nov))
-      unit_x = 0.0_dp
-      do j = 1, nov
-         unit_x(mod(j - 1, nocc) + 1, (j - 1)/nocc + 1, j) = 1.0_dp
-      end do
-      call op%apply_rpa(fx%bas, fx%eri, fx%la, nov, unit_x, prod, fx%xg)
-      apb = reshape(prod(:, :, :, 1), [nov, nov])
-      amb = reshape(prod(:, :, :, 2), [nov, nov])
-      call op%release()
-
-      dsym = max(maxval(abs(apb - transpose(apb))), maxval(abs(amb - transpose(amb))))
-      call check(error, dsym < 1.0e-8_dp, "A+B or A-B not symmetric, max asymmetry "//to_string(dsym, "es10.2"))
-      if (allocated(error)) return
-      doff = 0.0_dp
-      if (is_pure) then
-         ! A-B = diag(e_a - e_i): no J, no kernel, no exchange.
-         do j = 1, nov
-            do i = 1, nov
-               if (i /= j) doff = max(doff, abs(amb(i, j)))
-            end do
-         end do
-         call check(error, doff < 1.0e-10_dp, "A-B of a pure functional is not diagonal, max off-diagonal "// &
-                    to_string(doff, "es10.2"))
-         if (allocated(error)) return
-      end if
-
-      ! w^2 = eig of (A-B)^{1/2} (A+B) (A-B)^{1/2}.
-      allocate (amh(nov, nov), work(nov, nov), sam(nov), w2(nov))
-      amh = 0.5_dp*(amb + transpose(amb))
-      call pic_syev(amh, sam, "V", "U", linfo)
-      call check(error, linfo == 0 .and. sam(1) > 0.0_dp, "A-B is not positive definite")
-      if (allocated(error)) return
-      do j = 1, nov
-         work(:, j) = amh(:, j)*sqrt(sam(j))
-      end do
-      amh = matmul(work, transpose(amh))
-      work = matmul(amh, matmul(0.5_dp*(apb + transpose(apb)), amh))
-      work = 0.5_dp*(work + transpose(work))
-      call pic_syev(work, w2, "V", "U", linfo)
-      call check(error, linfo == 0 .and. w2(1) > 0.0_dp, "(A-B)^{1/2} (A+B) (A-B)^{1/2} is not positive definite")
-      if (allocated(error)) return
-      dw = maxval(abs(sqrt(w2(1:nr)) - fx%td%omega))
-      offmsg = ""
-      if (is_pure) offmsg = ", A-B max off-diagonal "//to_string(doff, "es10.2")
-      call global_logger%info("tddft rpa "//trim(molname_arg)//"/"//trim(funcname_arg)//": dense "// &
-                              to_string(nov)//"x"//to_string(nov)//" problem, max|w(dense) - w(Davidson)| "// &
-                              to_string(dw, "es10.2")//", max asymmetry "//to_string(dsym, "es10.2")//trim(offmsg))
-      call check(error, dw < 1.0e-8_dp, "dense roots differ from the Davidson, max|dw| = "//to_string(dw, "es10.2"))
-   end subroutine test_rpa_dense
 
    subroutine test_control(error)
       type(error_type), allocatable, intent(out) :: error
@@ -599,7 +397,7 @@ contains
       call solve(o1, td, err, func=bad)
       call check(error, .not. err%has_error(), "corrupted solve failed: "//err%get_message())
       if (allocated(error)) return
-      refname = ref_name()
+      refname = 'tddft_'//trim(molname_arg)//'_'//trim(basname_arg)//'_'//trim(funcname_arg)//'.ref'
       call ref_require(trim(refname), u)
       allocate (om_ref(nr), osc_ref(nr))
       call ref_read_real(u, 'E_SCF', e_ref)
@@ -622,7 +420,7 @@ contains
       real(dp) :: dom
       call fixture_build(error)
       if (allocated(error)) return
-      call check(error, fx%td%converged, "the solve did not converge")
+      call check(error, fx%td%converged, "TDA did not converge")
       if (allocated(error)) return
       ! A second full solve: not on formamide, and for methane HF and B3LYP only.
       if (nroots_arg > 5 .or. skip_extra()) return
@@ -635,13 +433,8 @@ contains
       dom = maxval(abs(td%omega - fx%td%omega))
       call global_logger%info("tddft "//trim(molname_arg)//"/"//trim(funcname_arg)//": max_space "// &
                               to_string(3*nroots_arg)//" took "//to_string(td%iterations)//" iterations (vs "// &
-                              to_string(fx%td%iterations)//"), "//to_string(td%ncollapse)//" collapses, max|d omega| "// &
-                              to_string(dom, "es10.2"))
+                              to_string(fx%td%iterations)//"), max|d omega| "//to_string(dom, "es10.2"))
       call check(error, dom < 1.0e-8_dp, "collapsed solve differs, max|d omega| "//to_string(dom, "es10.2"))
-      if (allocated(error)) return
-      ! The RPA's subspace is rebuilt from p and m on a collapse, which the
-      ! agreement above is only evidence for if a collapse happened.
-      if (rpa_arg) call check(error, td%ncollapse > 0, "the tiny max_space solve never collapsed")
    end subroutine test_collapse
 
    subroutine test_refusals(error)
@@ -654,13 +447,6 @@ contains
       ! Pure refusal logic.
       o%singlet = .false.
       call check_refused(error, trc_tddft_refuse_reason(o), "triplet", "singlet")
-      if (allocated(error)) return
-      o = trc_tddft_options_t()
-      o%tda = .false.
-      call check(error, len_trim(trc_tddft_refuse_reason(o)) == 0, "the RPA must not be refused")
-      if (allocated(error)) return
-      o%singlet = .false.
-      call check_refused(error, trc_tddft_refuse_reason(o), "RPA triplet", "singlet")
       if (allocated(error)) return
       o = trc_tddft_options_t()
       call check_refused(error, trc_tddft_refuse_reason(o, nspin=2), "UHF/UKS", "closed-shell")
@@ -743,7 +529,7 @@ program check_tddft
    use, intrinsic :: iso_fortran_env, only: error_unit
    use testdrive, only: run_testsuite
    use check_tddft_suite, only: collect_check_tddft, xyz_arg, bas_json_arg, molname_arg, basname_arg, funcname_arg, &
-                                 nroots_arg, probe_arg, rpa_arg
+                                 nroots_arg, probe_arg
    implicit none
    integer :: stat
    character(len=16) :: buf
@@ -758,10 +544,6 @@ program check_tddft
       read (buf, *) nroots_arg
    end if
    if (command_argument_count() >= 7) call get_command_argument(7, probe_arg)
-   if (command_argument_count() >= 8) then
-      call get_command_argument(8, buf)
-      rpa_arg = trim(buf) == 'rpa'
-   end if
 
    stat = 0
    call run_testsuite(collect_check_tddft, error_unit, stat, parallel=.false.)
