@@ -6109,7 +6109,7 @@ contains
       integer(c_int), intent(out) :: status
       type(comm_t) :: comm
       logical :: collective, root
-      real(dp), allocatable :: buf(:)
+      real(dp), allocatable :: buffer(:)
       integer :: nbuf
       call trc_build_comm(cx%fcomm, comm, collective, status)
       if (status /= TRC_OK) return
@@ -6119,36 +6119,36 @@ contains
       end if
       root = comm%rank() == 0
       nbuf = 4 + 3*cx%natm
-      allocate (buf(nbuf))
-      buf = 0.0_dp
+      allocate (buffer(nbuf))
+      buffer = 0.0_dp
       if (root) then
          if (comm%size() > 1) then
             call global_logger%warning("trc_run_gradient: the RI-MP2 gradient is single GPU for now; rank 0 "// &
                                        "computes it and broadcasts it to the other ranks")
          end if
          call rimp2_gradient_run(cx, status)
-         buf(1) = real(status, dp)
-         buf(2) = cx%e_os
-         buf(3) = cx%e_ss
-         if (cx%rimp2_deferred) buf(4) = 1.0_dp
-         if (status == TRC_OK) buf(5:) = reshape(cx%grad, [3*cx%natm])
+         buffer(1) = real(status, dp)
+         buffer(2) = cx%e_os
+         buffer(3) = cx%e_ss
+         if (cx%rimp2_deferred) buffer(4) = 1.0_dp
+         if (status == TRC_OK) buffer(5:) = reshape(cx%grad, [3*cx%natm])
       end if
-      call bcast(comm, buf, nbuf, 0)
+      call bcast(comm, buffer, nbuf, 0)
       if (.not. root) then
-         status = int(buf(1), c_int)
+         status = int(buffer(1), c_int)
          if (status == TRC_OK) then
-            cx%e_os = buf(2)
-            cx%e_ss = buf(3)
-            cx%rimp2_deferred = buf(4) > 0.5_dp
+            cx%e_os = buffer(2)
+            cx%e_ss = buffer(3)
+            cx%rimp2_deferred = buffer(4) > 0.5_dp
             if (allocated(cx%grad)) deallocate (cx%grad)
             allocate (cx%grad(3, cx%natm))
-            cx%grad = reshape(buf(5:), [3, cx%natm])
+            cx%grad = reshape(buffer(5:), [3, cx%natm])
             cx%grad_ok = .true.
          else
             cx%message = "trc_run_gradient: the RI-MP2 gradient failed on rank 0"
          end if
       end if
-      deallocate (buf)
+      deallocate (buffer)
       call comm%finalize()
    end subroutine rimp2_gradient_run_ranks
 
