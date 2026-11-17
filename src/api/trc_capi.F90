@@ -4918,7 +4918,7 @@ contains
          ! The RI-MP2 gradient (trc_rimp2_grad.F90): an RHF reference, or a
          ! restricted KS one -- a double hybrid, E_KS + c E_RI-MP2, or a
          ! plain functional's E_KS + E_RI-MP2 -- four-centre or --df, plus
-         ! the fitted correlation, one rank. Anything else that reached
+         ! the fitted correlation, on any number of ranks (rank 0 computes it). Anything else that reached
          ! RI-MP2 has no correlation gradient yet. The reference's own scope
          ! (PCM, a spin-component-scaled double hybrid, a KS kernel trc_cpks
          ! lacks, an unrestricted reference) is rimp2_grad_reference_refusal's,
@@ -4929,8 +4929,6 @@ contains
          if (cx%opts%df .and. .not. cx%df_fit_ok) then
             refusal = "the RI-MP2 gradient over a --df reference needs the density fit the SCF ran with"
             refusal_status = TRC_ERR_STATE
-         else if (cx%fcomm /= -1) then
-            refusal = "the RI-MP2 gradient runs on one rank only (no trc_set_comm)"
          else if (cx%res%n_lindep > 0) then
             refusal = "the RI-MP2 gradient needs every basis function, and canonical orthogonalisation "// &
                       "dropped "//to_string(cx%res%n_lindep)//" (trc_set_lindep)"
@@ -5306,7 +5304,7 @@ contains
       if (cx%rimp2_ok) then
          ! The energy this context holds is E_RHF + E_RI-MP2: differentiate
          ! that (gradient_capability_check has refused every case it cannot).
-         call rimp2_gradient_run(cx, status)
+         call rimp2_gradient_run_ranks(cx, status)
          return
       end if
       have_pcm = len_trim(cx%opts%pcm_model) > 0
@@ -5491,7 +5489,6 @@ contains
       nbeta = nelec - nalpha
       call scf_settings_spin_rule(nalpha, nbeta, cx%opts%unrestricted, cx%opts%frac_occ, cx%opts%nelec_frac, nspin, nocc)
       refusal = rimp2_grad_reference_refusal(have_func, func, nspin, len_trim(cx%opts%pcm_model) > 0)
-      if (len(refusal) == 0 .and. cx%fcomm /= -1) refusal = "the RI-MP2 gradient runs on one rank only (no trc_set_comm)"
       if (len(refusal) == 0 .and. have_func) then
          if (func%family == XC_FAMILY_MGGA .and. xc_is_double_hybrid(func)) then
             refusal = "meta-GGA double hybrid ('"//trim(cx%opts%functional)//"') gradient not implemented"
@@ -6099,6 +6096,61 @@ contains
          end do
       end if
    end function frozen_core_count
+
+   subroutine rimp2_gradient_run_ranks(cx, status)
+      !! trc_run_gradient's RI-MP2 entry on any number of ranks. The RI-MP2
+      !! gradient is not split over ranks yet, so rank 0 computes it alone
+      !! and broadcasts the gradient, the deferred energy parts and its
+      !! status, exactly as the SCF gradient does: every rank holds the whole
+      !! converged SCF, so the other ranks need nothing from the solver, and
+      !! a failure on rank 0 reaches them as the same status instead of a
+      !! hang in the broadcast. It costs one GPU's time and memory.
+      type(context_box), intent(inout) :: cx
+      integer(c_int), intent(out) :: status
+      type(comm_t) :: comm
+      logical :: collective, root
+      real(dp), allocatable :: buffer(:)
+      integer :: nbuf
+      call trc_build_comm(cx%fcomm, comm, collective, status)
+      if (status /= TRC_OK) return
+      if (.not. collective) then
+         call rimp2_gradient_run(cx, status)
+         return
+      end if
+      root = comm%rank() == 0
+      nbuf = 4 + 3*cx%natm
+      allocate (buffer(nbuf))
+      buffer = 0.0_dp
+      if (root) then
+         if (comm%size() > 1) then
+            call global_logger%warning("trc_run_gradient: the RI-MP2 gradient is single GPU for now; rank 0 "// &
+                                       "computes it and broadcasts it to the other ranks")
+         end if
+         call rimp2_gradient_run(cx, status)
+         buffer(1) = real(status, dp)
+         buffer(2) = cx%e_os
+         buffer(3) = cx%e_ss
+         if (cx%rimp2_deferred) buffer(4) = 1.0_dp
+         if (status == TRC_OK) buffer(5:) = reshape(cx%grad, [3*cx%natm])
+      end if
+      call bcast(comm, buffer, nbuf, 0)
+      if (.not. root) then
+         status = int(buffer(1), c_int)
+         if (status == TRC_OK) then
+            cx%e_os = buffer(2)
+            cx%e_ss = buffer(3)
+            cx%rimp2_deferred = buffer(4) > 0.5_dp
+            if (allocated(cx%grad)) deallocate (cx%grad)
+            allocate (cx%grad(3, cx%natm))
+            cx%grad = reshape(buffer(5:), [3, cx%natm])
+            cx%grad_ok = .true.
+         else
+            cx%message = "trc_run_gradient: the RI-MP2 gradient failed on rank 0"
+         end if
+      end if
+      deallocate (buffer)
+      call comm%finalize()
+   end subroutine rimp2_gradient_run_ranks
 
    subroutine rimp2_gradient_run(cx, status)
       !! trc_run_gradient's RI-MP2 branch: d(E_ref + c E_RI-MP2)/dR at the

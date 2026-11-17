@@ -843,6 +843,18 @@ set_tests_properties(
 set_tests_properties(terco/check_rys_grad_fd_ccpvtz PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
+# eri%gradient_pairs (one gradient per column from a pool of densities and a
+# pair table, one sweep over the integral derivatives) against eri%gradient,
+# split densities, single-column calls and, for an antisymmetric density,
+# finite differences of Tr(A K[A]) built from eri%fock_nosym. water/6-31G*.
+#
+terco_add_check(check_grad_pairs check_grad_pairs.F90 NEEDS_BASIS
+                ARGS basis_sets/6-31gs.json)
+target_link_libraries(check_grad_pairs PRIVATE test-drive::test-drive)
+set_tests_properties(terco/check_grad_pairs PROPERTIES
+  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=none")
+
+#
 # eri%gradient's long-range (erf(omega*r12)/r12) exchange term alone
 # against a central difference of E_K^lr(D) -- the omega > 0 analogue of
 # check_rys_grad_fd, RHF only (see check_lr_exchange_grad_fd.F90's own
@@ -2581,6 +2593,36 @@ foreach(_f svwn pbe b3lyp)
   # Same source, three targets: each needs its own module directory.
   set_target_properties(check_fxc_apply_many_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
                         ${CMAKE_CURRENT_BINARY_DIR}/mod_check_fxc_apply_many_${_f})
+endforeach()
+
+#
+# The third functional derivative contracted with two densities
+# (trc_xc_kxc_rks_apply, src/xc/trc_xc.F90), LDA and GGA, against pyscf's
+# libxc eval_xc(deriv=3) (test/pyscf_refs/generate.py's gen_kxc, grid
+# matched to terco's own), plus symmetry, a finite difference of
+# trc_xc_fxc_rks, batch == loop and the refusals. One executable, one ARGS
+# set per functional.
+#
+foreach(_f svwn pbe b3lyp)
+  terco_add_check(check_xc_kxc_${_f} check_xc_kxc.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                   ARGS water.xyz basis_sets/6-31gs.json water 6-31gs ${_f} kxc_${_f}_probe.bin)
+  target_link_libraries(check_xc_kxc_${_f} PRIVATE test-drive::test-drive)
+  set_target_properties(check_xc_kxc_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_xc_kxc_${_f})
+endforeach()
+
+#
+# The batched XC response gradient (trc_xc_grad_response_many,
+# src/xc/trc_xc_grad_response.F90): nuclear finite differences of Tr(P V_xc)
+# and 1/2 Tr(T f_xc T) with the grid rebuilt, the density-step identities,
+# batch == loop, T = 0 against xc_grad_potential_add and the refusals. One
+# executable, one ARGS set per functional.
+#
+foreach(_f svwn pbe b3lyp)
+  terco_add_check(check_xc_grad_response_${_f} check_xc_grad_response.F90 NEEDS_BASIS ARGS ${_f})
+  target_link_libraries(check_xc_grad_response_${_f} PRIVATE test-drive::test-drive)
+  set_target_properties(check_xc_grad_response_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_xc_grad_response_${_f})
 endforeach()
 
 #

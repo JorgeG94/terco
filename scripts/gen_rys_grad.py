@@ -475,7 +475,7 @@ def _gamma_from_dmat(a, b, c, d, uhf=False):
             f"                    + {D(2, 'mui', a, 'sigl', d)}*{D(2, 'nuj', b, 'lamk', c)})")
 
 
-def _chunk_root_body(comps, lb, ld, chunk, pad, names):
+def _chunk_root_body(comps, lb, ld, chunk, pad, names, cols=None):
     """One root's work for one chunk: the 2D-table corner per axis, the HRR
     slice, and the derivative fold of every component in the chunk into
     the nine A/B/C accumulators."""
@@ -512,6 +512,9 @@ def _chunk_root_body(comps, lb, ld, chunk, pad, names):
             if ek > 0:
                 e += f" - {float(ek)}_dp*{H(ei, ej, ek - 1, el)}"
             fk.append(e)
+        if cols is not None:
+            out.append(_pair_fold(pad, v, fi, fj, fk, f"gm_{n}", cols))
+            continue
         out.append(f"{pad}gyz = {v[1]}*{v[2]}*gm_{n}; gxz = {v[0]}*{v[2]}*gm_{n}; "
                    f"gxy = {v[0]}*{v[1]}*gm_{n}\n")
         for axis, (ax, gg) in enumerate((("x", "gyz"), ("y", "gxz"), ("z", "gxy"))):
@@ -519,6 +522,41 @@ def _chunk_root_body(comps, lb, ld, chunk, pad, names):
             out.append(f"{pad}vb{ax} = vb{ax} + ({fj[axis]})*{gg}\n")
             out.append(f"{pad}vc{ax} = vc{ax} + ({fk[axis]})*{gg}\n")
     return "".join(out)
+
+
+#: Scalars every pair-table item routine of the chunked forms adds to its
+#: declarations on top of the per-column sums (see _pair_fold).
+_PAIR_FOLD_NAMES = ("z_yz", "z_xz", "z_xy", "z_g1", "z_g2", "z_g3",
+                    "z_tix", "z_tiy", "z_tiz", "z_tjx", "z_tjy", "z_tjz",
+                    "z_tkx", "z_tky", "z_tkz")
+
+
+def _pair_fold(pad, v, fi, fj, fk, gm, cols):
+    """One component's derivative fold for the pair-table passes: the factors
+    once, then each column's nine sums times its own Gamma `gm`_c."""
+    out = [f"{pad}z_yz = {v[1]}*{v[2]}; z_xz = {v[0]}*{v[2]}; z_xy = {v[0]}*{v[1]}\n"]
+    for axis, ax in enumerate("xyz"):
+        out.append(f"{pad}z_ti{ax} = {fi[axis]}; z_tj{ax} = {fj[axis]}; z_tk{ax} = {fk[axis]}\n")
+    for c in cols:
+        out.append(f"{pad}z_g1 = z_yz*{gm}_{c}; z_g2 = z_xz*{gm}_{c}; z_g3 = z_xy*{gm}_{c}\n")
+        for ax, gg in (("x", "z_g1"), ("y", "z_g2"), ("z", "z_g3")):
+            out.append(f"{pad}va{ax}_{c} = va{ax}_{c} + z_ti{ax}*{gg}; "
+                       f"vb{ax}_{c} = vb{ax}_{c} + z_tj{ax}*{gg}; "
+                       f"vc{ax}_{c} = vc{ax}_{c} + z_tk{ax}*{gg}\n")
+    return "".join(out)
+
+
+def _pair_gamma_lines(pad, gm, c, dl, dr):
+    """gm_c = the column's Gamma for one component, as a loop over its pairs.
+    `dl(p, q)`/`dr(p, q)` give the density element between the component's
+    shell p and shell q for the left/right pool density of the pair."""
+    return (f"{pad}{gm}_{c} = 0.0_dp\n"
+            f"{pad}do ip = plo_{c}, phi_{c}\n"
+            f"{pad}   jl = pl(ip); jr = pr(ip)\n"
+            f"{pad}   {gm}_{c} = {gm}_{c} + cw*(pj(ip)*({dl(0, 1)}*{dr(2, 3)} + {dr(0, 1)}*{dl(2, 3)}) &\n"
+            f"{pad}      - pk(ip)*({dl(0, 2)}*{dr(1, 3)} + {dr(0, 2)}*{dl(1, 3)} &\n"
+            f"{pad}      + {dl(0, 3)}*{dr(1, 2)} + {dr(0, 3)}*{dl(1, 2)}))\n"
+            f"{pad}end do\n")
 
 
 #: Declarations of the item routine that the chunked routine never reads:
@@ -1593,6 +1631,606 @@ def _thread_range_separation(text):
                         _RANGE_SEP_BLOCK + "                  pref = pref*sqrt(theta)\n")
 
 
+#: Columns one pair-table sweep carries. The widest pair kernel keeps
+#: gam(nv, NCB) and acc(12, NCB) per thread, so this bounds its private
+#: memory; the host driver runs another sweep per further block of NCB columns.
+PAIRS_NCB = 4
+
+#: Largest gm count (Gamma values live per chunk and column) a class may carry
+#: at each width: nvfortran 26.9 compile time grows steeply with it (the
+#: (dd|dd) rt kernel at 36 per column and 4 columns took 221 s, (21|11) at
+#: 18 and 4 took 80 s, a 4-column literal (pp|pp) did not finish in 6 min).
+#: A class too big for a width is generated without it; the driver then
+#: sweeps the table in blocks of the widest width it has.
+PAIRS_GM_BUDGET = {4: 72, 2: 80}
+
+#: Column widths a pair kernel is generated for. The twelve running sums of
+#: every column are unrolled into scalar accumulators so they stay in
+#: registers (a runtime column loop forces them into local memory: measured
+#: 5.9 GB of local loads against 0.14 GB for the RHF/UHF kernel on one
+#: class, 4x the time), which means the width is a compile-time constant.
+#: A block of ncb columns runs the narrowest variant that holds it; the
+#: columns past ncb of a wider variant are skipped.
+PAIRS_VARIANTS = (1, 2, PAIRS_NCB)
+
+
+def _dim(loopvar, dims):
+    """Extent of the density-block loop variable ia/ib/ic/id."""
+    return dims["abcd".index(loopvar[1])]
+
+
+def _pairs_header(t, tag, nc, need):
+    """Rewrite the header of the per-quartet compact routine text `t` into a
+    pair-table item routine's: no jfac/kfac, the pool and the column table
+    in place of ndens and the density, and gp with a column index."""
+    def sub1(text, old, new):
+        need(text.count(old) == 1, f"expected exactly one {old!r}, found {text.count(old)}")
+        return text.replace(old, new, 1)
+
+    t = sub1(t, "pcut, jfac, kfac, omega, nbas,", "pcut, omega, nbas,")
+    t = sub1(t, "real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac, omega\n",
+             "real(dp), intent(in)    :: sp_q(npair), pcut, omega\n")
+    t = sub1(t, "ndens, dmat, npriv, gp, slot)",
+             "npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp, slot)")
+    return sub1(t, """      integer,  intent(in)    :: ndens
+      real(dp), intent(in)    :: dmat(ndens, nao, nao)
+      integer,  intent(in)    :: npriv, slot
+      real(dp), intent(inout) :: gp(3, natm, npriv)
+""", """      integer,  intent(in)    :: npool, ncb
+      real(dp), intent(in)    :: dmat(npool, nao, nao)
+      integer,  intent(in)    :: pstart(ncb + 1), pl(*), pr(*)
+      real(dp), intent(in)    :: pj(*), pk(*)
+      !! The column pair table (see pairs_item_text in gen_rys_grad.py).
+      integer,  intent(in)    :: npriv, slot
+      real(dp), intent(inout) :: gp(3, natm, npriv, ncb)
+""")
+
+
+def _pair_names(ngm, cols):
+    """Scalar names the chunked pair passes declare: Gamma per component and
+    column, the per-column sums, the fold scratch and the 8 wq."""
+    names = {"cw", "ai2", "aj2", "ak2"}
+    names.update(_PAIR_FOLD_NAMES)
+    names.update(f"gm_{n}_{c}" for n in range(ngm) for c in cols)
+    names.update(f"v{a}{ax}_{c}" for a in "abcd" for ax in "xyz" for c in cols)
+    return names
+
+
+def _pair_column_setup(cols):
+    """Per-column pair ranges (empty past ncb) and zeroed sums."""
+    out = ""
+    for c in cols:
+        out += (f"         plo_{c} = 1; phi_{c} = 0\n"
+                f"         if (ncb >= {c}) then\n"
+                f"            plo_{c} = pstart({c}); phi_{c} = pstart({c + 1}) - 1\n"
+                f"         end if\n")
+        for a in "abc":
+            out += "         " + "; ".join(f"v{a}{ax}_{c} = 0.0_dp" for ax in "xyz") + "\n"
+    return out
+
+
+def _pair_column_tail(cols):
+    """D from translational invariance, then each column's atomics into its
+    own slice of the lane-private copies."""
+    out = "\n         ! D from translational invariance, once per column.\n"
+    for c in cols:
+        out += "         " + "; ".join(
+            f"vd{ax}_{c} = -(va{ax}_{c} + vb{ax}_{c} + vc{ax}_{c})" for ax in "xyz") + "\n"
+    for c in cols:
+        out += f"         if (ncb >= {c}) then\n"
+        for sh, a in zip("ijkl", "abcd"):
+            for k, ax in enumerate("xyz"):
+                out += ("            !$acc atomic update\n"
+                        f"            gp({k + 1}, sh_at(s{sh}), slot, {c}) = "
+                        f"gp({k + 1}, sh_at(s{sh}), slot, {c}) + v{a}{ax}_{c}\n")
+        out += "         end if\n"
+    return out
+
+
+def _pair_item_frame(tag, item, nc, rname, need):
+    """The pieces of a chunked pair routine taken from the per-quartet
+    compact routine `item`: (header, primitive-loop head, tail)."""
+    kfac_line = "         kfac_eff = merge(0.25_dp, 0.5_dp, ndens == 1)*kfac\n"
+    i_kfac = item.index(kfac_line)
+    i_k1 = item.index("            do k1 = 1, nab\n")
+    tval_line = "tval = rho_theta*(pqx*pqx + pqy*pqy + pqz*pqz)\n"
+    i_tv = item.index(tval_line, i_k1) + len(tval_line)
+    i_at = item.index("\n         !$acc atomic update\n")
+    pre = _strip_dead_decls(item[:i_kfac])
+    pre = _pairs_header(pre[pre.index(f"   pure subroutine rysgi{tag}_compact("):], tag, nc, need)
+    tail = item[i_at:]
+    tail = tail[tail.index(f"end subroutine rysgi{tag}_compact"):]
+    return pre, item[i_k1:i_tv], tail
+
+
+def _pair_item_finish(tag, pre, decls, rname, tail, thread=False):
+    i_si = pre.index("si = sp_i(sOA(seg) + iab)")
+    i_si = pre.rfind("\n", 0, i_si)
+    pre = pre[:i_si] + "\n" + decls + pre[i_si:]
+    pre = pre.replace(f"subroutine rysgi{tag}_compact(", f"subroutine {rname}(", 1)
+    if thread:
+        a = f"subroutine {rname}(seg, "
+        assert pre.count(a) == 1, a
+        pre = pre.replace(a, f"subroutine {rname}(jch, seg, ", 1)
+        a = "      !$acc routine seq\n"
+        assert pre.count(a) == 1
+        pre = pre.replace(a, a + "      integer, intent(in) :: jch\n", 1)
+    return pre, tail.replace(f"end subroutine rysgi{tag}_compact", f"end subroutine {rname}")
+
+
+def _rt_pair_dens(comp):
+    ao = ("mui", "nuj", "lamk", "sigl")
+    o = lambda s: f"{ao[s]} + jo{s}" if comp[s] == "o" else f"{ao[s]} + {comp[s]}"
+    return (lambda p, q: f"dmat(jl, {o(p)}, {o(q)})"), (lambda p, q: f"dmat(jr, {o(p)}, {o(q)})")
+
+
+def _literal_pair_dens(comp):
+    ao = ("mui", "nuj", "lamk", "sigl")
+    return ((lambda p, q: f"dmat(jl, {ao[p]} + {comp[p]}, {ao[q]} + {comp[q]})"),
+            (lambda p, q: f"dmat(jr, {ao[p]} + {comp[p]}, {ao[q]} + {comp[q]})"))
+
+
+def _pair_power_lines(lb, ld, names):
+    out = ""
+    for pw in range(2, max(lb, ld) + 1):
+        prev = {2: "{0}"}.get(pw, "{0}" + str(pw - 1))
+        out += "         " + "; ".join(f"{v}{pw} = {prev.format(v)}*{v}" for v in ("abx", "aby", "abz")) + "\n"
+        out += "         " + "; ".join(f"{v}{pw} = {prev.format(v)}*{v}" for v in ("cdx", "cdy", "cdz")) + "\n"
+        names.update(f"{v}{pw}" for v in ("abx", "aby", "abz", "cdx", "cdy", "cdz"))
+    return out
+
+
+_ROOT_LOOP_HEAD = """\
+                  do jrt = 1, {nroots}
+                     u2 = theta*ru(jrt)/(1.0_dp - theta*ru(jrt))*rho
+                     dinv = 1.0_dp/(zeta*eta + u2*(zeta + eta))
+                     b00r  = 0.5_dp*u2*dinv
+                     b10r  = 0.5_dp*(eta + u2)*dinv
+                     bp01r = 0.5_dp*(zeta + u2)*dinv
+                     f00 = pref*rw(jrt)
+                     c00x = pax - u2*eta*dinv*pqx
+                     c00y = pay - u2*eta*dinv*pqy
+                     c00z = paz - u2*eta*dinv*pqz
+                     cp0x = qcx + u2*zeta*dinv*pqx
+                     cp0y = qcy + u2*zeta*dinv*pqy
+                     cp0z = qcz + u2*zeta*dinv*pqz
+"""
+
+
+def chunked_pairs_item_text(tag, item, comps, inside, nc):
+    """rysgi{tag}_pairs{nc} in the LITERAL chunked form of chunked_rhf_item_text:
+    each chunk forms Gamma for its components and every column, then folds
+    the shared derivative factors into nc sets of nine scalar sums."""
+    def need(cond, msg):
+        if not cond:
+            raise SystemExit(f"gen_rys_grad.py chunked_pairs_item_text({tag}): {msg}")
+
+    rname = f"rysgi{tag}_pairs{nc}"
+    la, lb, lc, ld = (int(c) for c in tag)
+    nroots = (la + lb + lc + ld + 1)//2 + 1
+    cols = range(1, nc + 1)
+    pre, prim_hdr, tail = _pair_item_frame(tag, item, nc, rname, need)
+    chunks = _chunks(comps, inside)
+    nmax = max(len(ch) for ch in chunks)
+    names = _pair_names(nmax, cols)
+    body = ["         cw = 8.0_dp*wq\n", _pair_power_lines(lb, ld, names), _pair_column_setup(cols)]
+    body.append(f"         do jch = 1, {len(chunks)}\n")
+    body.append("            ! This chunk's Gamma per column, once, before its primitive loop.\n")
+    body.append("            select case (jch)\n")
+    for n, ch in enumerate(chunks):
+        body.append(f"            case ({n + 1})\n")
+        for m, (a, b, c, d) in enumerate(ch):
+            dl, dr = _literal_pair_dens((a, b, c, d))
+            for col in cols:
+                body.append(_pair_gamma_lines(" "*15, "gm_%d" % m, col, dl, dr))
+    body.append("            end select\n")
+    body.append(prim_hdr)
+    body.append("                  ai2 = 2.0_dp*alpha_i; aj2 = 2.0_dp*alpha_j; ak2 = 2.0_dp*alpha_k\n")
+    body.append(ri.roots_inline_body(nroots, "tval", 18))
+    body.append(_ROOT_LOOP_HEAD.format(nroots=nroots))
+    body.append("                     select case (jch)\n")
+    for n, ch in enumerate(chunks):
+        body.append(f"                     case ({n + 1})\n")
+        body.append(_chunk_root_body(comps, lb, ld, ch, " "*24, names, cols=cols))
+    body.append("                     end select\n"
+                "                  end do\n"
+                "               end do\n"
+                "            end do\n"
+                "         end do\n")
+    body.append(_pair_column_tail(cols))
+    ints = ["ip", "jl", "jr"] + [f"plo_{c}" for c in cols] + [f"phi_{c}" for c in cols]
+    decls = (ri.scalar_decl_lines(sorted(names), 6) + "      integer  :: jch, jrt\n"
+             + f"      integer  :: {', '.join(ints)}\n")
+    pre, tail = _pair_item_finish(tag, pre, decls, rname, tail)
+    return pre + "".join(body) + "      " + tail
+
+
+def rt_pairs_item_text(tag, item, comps, outer, thread, nc):
+    """rysgi{tag}_pairs{nc} in the RUNTIME-OUTER chunked form of
+    rt_chunked_rhf_item_text (same integral build; see chunked_pairs_item_text
+    for what differs). Column c > ncb has no pairs and is skipped in the tail."""
+    def need(cond, msg):
+        if not cond:
+            raise SystemExit(f"gen_rys_grad.py rt_pairs_item_text({tag}): {msg}")
+
+    rname = f"rysgi{tag}_pairs{nc}"
+    la, lb, lc, ld = (int(c) for c in tag)
+    nroots = (la + lb + lc + ld + 1)//2 + 1
+    dims = [len(c) for c in comps]
+    nch = 1
+    for x in outer:
+        nch *= dims[x]
+    cols = range(1, nc + 1)
+    pre, prim_hdr, tail = _pair_item_frame(tag, item, nc, rname, need)
+    inner, _ = gr._chunk_keys(comps, outer, 0)
+    names = _pair_names(len(inner), cols)
+    body = ["         cw = 8.0_dp*wq\n", _pair_power_lines(lb, ld, names), _pair_column_setup(cols)]
+    if thread:
+        body.append(f"         ! RUNTIME-OUTER CHUNKED PAIR PASS: chunk jch of {nch}.\n")
+    else:
+        body.append(f"         ! RUNTIME-OUTER CHUNKED PAIR PASS: {nch} chunks.\n"
+                    f"         do jch = 1, {nch}\n")
+    rem = "jch - 1"
+    for n, x in enumerate(outer):
+        if n == len(outer) - 1:
+            body.append(f"            jo{x} = {rem}\n")
+        else:
+            body.append(f"            jo{x} = mod({rem}, {dims[x]})\n")
+            rem = f"({rem})/{dims[x]}"
+        for ax in "xyz":
+            body.append(f"            ex{x}{ax} = cn{ax}{x}_{tag}(jo{x} + 1)\n")
+    wtxt, wn = _rt_weight_lines(tag, outer, " "*12)
+    body.append(wtxt)
+    names.update(wn)
+    for m, comp in enumerate(inner):
+        dl, dr = _rt_pair_dens(comp)
+        for c in cols:
+            body.append(_pair_gamma_lines(" "*12, "gm_%d" % m, c, dl, dr))
+    body.append(prim_hdr)
+    body.append("                  ai2 = 2.0_dp*alpha_i; aj2 = 2.0_dp*alpha_j; ak2 = 2.0_dp*alpha_k\n")
+    body.append(ri.roots_inline_body(nroots, "tval", 18))
+    body.append(_ROOT_LOOP_HEAD.format(nroots=nroots))
+    pad = " "*21
+    Hs, Es = [], []
+    for axis in range(3):
+        txt, nms, H, E = _rt_chunk_axis(tag, comps, outer, inner, axis, pad)
+        body.append(txt)
+        names.update(nms)
+        Hs.append(H)
+        Es.append(E)
+
+    def fac(e):
+        return f"{float(e)}_dp" if isinstance(e, int) else f"real({e}, dp)"
+
+    def nonzero(e):
+        return not isinstance(e, int) or e > 0
+
+    for m in range(len(inner)):
+        v, fi, fj, fk = [], [], [], []
+        for axis, ax in enumerate("xyz"):
+            H = lambda sa, jm, sc: Hs[axis](m, sa, jm, sc)
+            ea, eb, ec = Es[axis][m][0], Es[axis][m][1], Es[axis][m][2]
+            v.append(H(0, 0, 0))
+            e = f"ai2*{H(1, 0, 0)}"
+            if nonzero(ea):
+                e += f" - {fac(ea)}*{H(-1, 0, 0)}"
+            fi.append(e)
+            e = f"aj2*({H(1, 0, 0)} + ab{ax}*{H(0, 0, 0)})"
+            if nonzero(eb):
+                e += f" - {fac(eb)}*{H(0, 1, 0)}"
+            fj.append(e)
+            e = f"ak2*{H(0, 0, 1)}"
+            if nonzero(ec):
+                e += f" - {fac(ec)}*{H(0, 0, -1)}"
+            fk.append(e)
+        body.append(_pair_fold(pad, v, fi, fj, fk, f"gm_{m}", cols))
+    body.append("                  end do\n"
+                "               end do\n"
+                "            end do\n")
+    if not thread:
+        body.append("         end do\n")
+    body.append(_pair_column_tail(cols))
+    ints = ([f"jo{x}" for x in outer] + [f"ex{x}{ax}" for x in outer for ax in "xyz"]
+            + ["ip", "jl", "jr"] + [f"plo_{c}" for c in cols] + [f"phi_{c}" for c in cols])
+    decls = ri.scalar_decl_lines(sorted(names), 6) + "      integer  :: jrt\n"
+    if not thread:
+        decls += "      integer  :: jch\n"
+    decls += f"      integer  :: {', '.join(ints)}\n"
+    pre, tail = _pair_item_finish(tag, pre, decls, rname, tail, thread)
+    return pre + "".join(body) + "      " + tail
+
+
+def _pairs_variant(tag, item, dims, nc):
+    """One pair item routine, rysgi{tag}_pairs{nc}, for blocks of at most nc
+    columns: pairs_item_text's docstring says what it computes."""
+    d0, d1, d2, d3 = dims
+    nv = d0*d1*d2*d3
+
+    def need(cond, msg):
+        # Not an assert: `python -O` must not strip a check on spliced text.
+        if not cond:
+            raise SystemExit(f"gen_rys_grad.py pairs_item_text({tag}): {msg}")
+
+    def sub1(text, old, new):
+        need(text.count(old) == 1, f"expected exactly one {old!r}, found {text.count(old)}")
+        return text.replace(old, new, 1)
+
+    i_item = item.index(f"   pure subroutine rysgi{tag}_compact(")
+    t = item[i_item:]
+    need(t.count(f"rysgi{tag}_compact") == 2, "the compact routine's name should occur twice (header, end)")
+    t = t.replace(f"rysgi{tag}_compact", f"rysgi{tag}_pairs{nc}")
+    t = sub1(t, "pcut, jfac, kfac, omega, nbas,", "pcut, omega, nbas,")
+    t = sub1(t, "real(dp), intent(in)    :: sp_q(npair), pcut, jfac, kfac, omega\n",
+             "real(dp), intent(in)    :: sp_q(npair), pcut, omega\n")
+    t = sub1(t, "ndens, dmat, npriv, gp, slot)",
+             "npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp, slot)")
+    t = sub1(t, """      integer,  intent(in)    :: ndens
+      real(dp), intent(in)    :: dmat(ndens, nao, nao)
+      integer,  intent(in)    :: npriv, slot
+      real(dp), intent(inout) :: gp(3, natm, npriv)
+""", f"""      integer,  intent(in)    :: npool, ncb
+      real(dp), intent(in)    :: dmat(npool, nao, nao)
+      integer,  intent(in)    :: pstart(ncb + 1), pl(*), pr(*)
+      real(dp), intent(in)    :: pj(*), pk(*)
+      !! The column pair table (see pairs_item_text in gen_rys_grad.py).
+      integer,  intent(in)    :: npriv, slot
+      real(dp), intent(inout) :: gp(3, natm, npriv, ncb)
+""")
+    t = sub1(t, "      real(dp) :: vax, vay, vaz, vbx, vby, vbz\n"
+                "      real(dp) :: vcx, vcy, vcz, vdx, vdy, vdz\n",
+             f"      ! {nc} columns wide (PAIRS_VARIANTS in gen_rys_grad.py): acc stays in\n"
+             f"      ! registers, gam is nv*{nc} per-thread doubles.\n"
+             f"      real(dp) :: acc(12, {nc})\n"
+             "      integer  :: col, ip, jl, jr\n"
+             f"      real(dp) :: lab({d0*d1}), lcd({d2*d3}), lac({d0*d2}), lad({d0*d3}), lbc({d1*d2}), lbd({d1*d3})\n"
+             f"      real(dp) :: rab({d0*d1}), rcd({d2*d3}), rac({d0*d2}), rad({d0*d3}), rbc({d1*d2}), rbd({d1*d3})\n")
+    for dl in (f"      real(dp) :: dab({d0*d1}), dcd({d2*d3})\n",
+               f"      real(dp) :: dac(2, {d0*d2}), dad(2, {d0*d3})\n",
+               f"      real(dp) :: dbc(2, {d1*d2}), dbd(2, {d1*d3})\n"):
+        t = sub1(t, dl, "")
+    t = sub1(t, f"      real(dp) :: gam({nv})\n", f"      real(dp) :: gam({nv}, {nc})\n")
+    # Gamma: from the kfac_eff line through the end of the gam fill.
+    a = t.index("         kfac_eff = merge(")
+    e = t.index("         vdx = 0.0_dp; vdy = 0.0_dp; vdz = 0.0_dp\n")
+    e = t.index("\n", e) + 1
+    # The span being replaced may hold only the density-block / Gamma fill
+    # and the sum zeroing: a line a later generator edit puts here would
+    # otherwise be dropped silently.
+    dropped = {"kfac_eff", "dab", "dcd", "dac", "dad", "dbc", "dbd", "gam",
+               "vax", "vay", "vaz", "vbx", "vby", "vbz", "vcx", "vcy", "vcz", "vdx", "vdy", "vdz",
+               "idx"}
+    cont = False
+    for ln in t[a:e].splitlines():
+        code = ln.strip()
+        was_cont, cont = cont, code.endswith("&")
+        if was_cont or not code or code.startswith("!"):
+            continue
+        ok = (re.match(r"(do \w+ = .*|end do)$", code) is not None
+              or all(m.split("(")[0].strip() in dropped
+                     for m in re.findall(r"(?:^|;)\s*(\w+(?:\([^=]*\))?)\s*=[^=]", code)) and "=" in code)
+        need(ok, f"unexpected line in the Gamma span being replaced: {code!r}")
+    def load_blocks(pre, dens):
+        """Density blocks of pool density `dens` the quartet touches, into
+        the thread-private arrays {pre}ab ... {pre}bd (the same six blocks
+        the RHF/UHF kernel caches), so Gamma below reads small local arrays
+        and not nv * 8 strided pool entries per pair."""
+        out = ""
+        for nm, (x0, n0, x1, n1, o0, o1) in (
+                ("ab", ("mui", d0, "nuj", d1, "ia", "ib")),
+                ("cd", ("lamk", d2, "sigl", d3, "ic", "id")),
+                ("ac", ("mui", d0, "lamk", d2, "ia", "ic")),
+                ("ad", ("mui", d0, "sigl", d3, "ia", "id")),
+                ("bc", ("nuj", d1, "lamk", d2, "ib", "ic")),
+                ("bd", ("nuj", d1, "sigl", d3, "ib", "id"))):
+            out += (f"               do {o1} = 0, {_dim(o1, dims) - 1}\n"
+                    f"                  do {o0} = 0, {_dim(o0, dims) - 1}\n"
+                    f"                     {pre}{nm}(1 + {o0} + {n0}*{o1}) = dmat({dens}, {x0} + {o0}, {x1} + {o1})\n"
+                    f"                  end do\n"
+                    f"               end do\n")
+        return out
+
+    def gam_loop(body):
+        return (f"               idx = 0\n"
+                f"               do dd2 = 1, {d3}\n"
+                f"                  do cc = 1, {d2}\n"
+                f"                     do bb = 1, {d1}\n"
+                f"                        do aa = 1, {d0}\n"
+                f"                           idx = idx + 1\n"
+                f"                           gam(idx, col) = gam(idx, col) + 8.0_dp*wq*( &\n"
+                f"{body}"
+                f"                              )\n"
+                f"                        end do\n"
+                f"                     end do\n"
+                f"                  end do\n"
+                f"               end do\n")
+
+    def blk(pre, nm, aa, bb, n0):
+        return f"{pre}{nm}({aa} + {n0}*({bb} - 1))"
+
+    cross = gam_loop(
+        f"                              pj(ip)*({blk('l','ab','aa','bb',d0)}*{blk('r','cd','cc','dd2',d2)} &\n"
+        f"                                     + {blk('r','ab','aa','bb',d0)}*{blk('l','cd','cc','dd2',d2)}) &\n"
+        f"                              - pk(ip)*({blk('l','ac','aa','cc',d0)}*{blk('r','bd','bb','dd2',d1)} &\n"
+        f"                                      + {blk('r','ac','aa','cc',d0)}*{blk('l','bd','bb','dd2',d1)} &\n"
+        f"                                      + {blk('l','ad','aa','dd2',d0)}*{blk('r','bc','bb','cc',d1)} &\n"
+        f"                                      + {blk('r','ad','aa','dd2',d0)}*{blk('l','bc','bb','cc',d1)})")
+    # A column past ncb (a block narrower than this variant) gets no pairs:
+    # its gam is zero and its tail is skipped.
+    gam = f"""         do col = 1, {nc}
+            do idx = 1, {nv}
+               gam(idx, col) = 0.0_dp
+            end do
+            if (col > ncb) cycle
+            do ip = pstart(col), pstart(col + 1) - 1
+               jl = pl(ip); jr = pr(ip)
+{load_blocks('l', 'jl')}{load_blocks('r', 'jr')}{cross}            end do
+         end do
+
+         acc = 0.0_dp
+"""
+    t = t[:a] + gam + t[e:]
+    # Accumulation.
+    acc_old = ("                                 vax = vax + fix*pyz*gam(idx); vay = vay + fiy*pxz*gam(idx); vaz = vaz + fiz*pxy*gam(idx)\n"
+               "                                 vbx = vbx + fjx*pyz*gam(idx); vby = vby + fjy*pxz*gam(idx); vbz = vbz + fjz*pxy*gam(idx)\n"
+               "                                 vcx = vcx + fkx*pyz*gam(idx); vcy = vcy + fky*pxz*gam(idx); vcz = vcz + fkz*pxy*gam(idx)\n"
+               "                                 vdx = vdx + flx*pyz*gam(idx); vdy = vdy + fly*pxz*gam(idx); vdz = vdz + flz*pxy*gam(idx)\n")
+    # One statement per column and sum, constant column indices: the sums are
+    # scalarised into registers.
+    acc_new = ""
+    for c in range(1, nc + 1):
+        for k, (f_, p_) in enumerate((("fix", "pyz"), ("fiy", "pxz"), ("fiz", "pxy"),
+                                      ("fjx", "pyz"), ("fjy", "pxz"), ("fjz", "pxy"),
+                                      ("fkx", "pyz"), ("fky", "pxz"), ("fkz", "pxy"),
+                                      ("flx", "pyz"), ("fly", "pxz"), ("flz", "pxy")), 1):
+            acc_new += (f"                                 acc({k}, {c}) = acc({k}, {c}) "
+                        f"+ {f_}*{p_}*gam(idx, {c})\n")
+    t = sub1(t, acc_old, acc_new)
+    # Tail.
+    a = t.index("         !$acc atomic update\n         gp(1, sh_at(si), slot)")
+    e = t.index(f"      end subroutine rysgi{tag}_pairs")
+    tail = ""
+    for c in range(1, nc + 1):
+        tail += f"         if (ncb >= {c}) then\n"
+        for k, sh in enumerate("ijkl"):
+            for ax in range(3):
+                tail += ("            !$acc atomic update\n"
+                         f"            gp({ax + 1}, sh_at(s{sh}), slot, {c}) = gp({ax + 1}, sh_at(s{sh}), slot, {c}) "
+                         f"+ acc({3*k + ax + 1}, {c})\n")
+        tail += "         end if\n"
+    t = t[:a] + tail + t[e:]
+    need("ndens" not in t.replace("npool", ""), "pair item still reads ndens")
+    code_only = "\n".join(ln for ln in t.splitlines() if not ln.strip().startswith("!"))
+    bad = [ln for ln in code_only.splitlines()
+           if "jfac" in ln or "kfac" in ln.replace("kfac_eff", "")]
+    need(not bad, f"pair item still reads jfac/kfac: {bad[:2]}")
+    t = t.replace("      real(dp) :: alpha_i, alpha_j, alpha_k, kfac_eff\n",
+                  "      real(dp) :: alpha_i, alpha_j, alpha_k\n")
+    return t
+
+
+
+def pairs_variants(tag, comps, rt_plan, inside):
+    """The column widths class `tag`'s pair kernel is generated for: every
+    width of PAIRS_VARIANTS whose Gamma count per sweep fits PAIRS_GM_BUDGET
+    (nc * gm per chunk); width 1 always."""
+    if rt_plan is not None:
+        inner, _ = gr._chunk_keys(comps, rt_plan[0], 0)
+        gm = len(inner)
+    elif inside is not None:
+        gm = max(len(ch) for ch in _chunks(comps, inside))
+    else:
+        return (1,)
+    return tuple(nc for nc in PAIRS_VARIANTS if nc == 1 or nc*gm <= PAIRS_GM_BUDGET[nc])
+
+
+def pairs_item_text(tag, item, dims, comps=None, rt_plan=None, inside=None):
+    """The PAIR-TABLE item routines rysgi{tag}_pairs{nc} (one per width in
+    PAIRS_VARIANTS) and their driver rysg{tag}_pairs_compact, rewritten from
+    the per-quartet array-form `rysgi{tag}_compact` text `item` (everything
+    from its header on).
+
+    Same decode, screens, primitive loops and derivative build; what changes
+    is Gamma and where it goes. Column c owns the pairs pstart(c) ..
+    pstart(c+1)-1 of a table (pl, pr, pj, pk): pair p adds
+        8 wq [ pj (Dl_ab Dr_cd + Dr_ab Dl_cd)
+             - pk (Dl_ac Dr_bd + Dr_ac Dl_bd + Dl_ad Dr_bc + Dr_ad Dl_bc) ]
+    to gam(., c). The host folds everything else into pj and pk (the
+    Coulomb/exchange weights, the factor for counting both orderings of a
+    cross pair, and the sign an antisymmetric pair's exchange takes), so one
+    kernel serves symmetric and antisymmetric densities alike. The twelve
+    running sums become acc(12, nc) for a variant nc columns wide, one
+    scalarised set per column, and the tail adds column c into
+    gp(:, :, slot, c): every column rides the SAME integral derivatives.
+    The driver runs the narrowest variant holding ncb columns.
+    """
+    slot_expr = ("int(mod(i - 1, int(npriv, int64))) + 1"
+                 if sum(int(c) for c in tag) <= 3 else "1")
+    rt_thread = rt_plan is not None and rt_plan[1] == "thread"
+    rt_nch = 1
+    if rt_plan is not None:
+        for x in rt_plan[0]:
+            rt_nch *= len(comps[x])
+    seg_args = ("out_seg(mod(i - 1, nout) + 1), out_iab(mod(i - 1, nout) + 1), out_icd(mod(i - 1, nout) + 1)"
+                if rt_thread else "out_seg(i), out_iab(i), out_icd(i)")
+    lead = "int((i - 1)/nout) + 1, " if rt_thread else ""
+    # The block of nblk columns starting at column c0 is the table's own
+    # sub-table: pstart(c0) and gp(.., c0) start the dummies there.
+    args = (seg_args + ", nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &\n"
+            "                                npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &\n"
+            "                                nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &\n"
+            "                                sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &\n"
+            "                                npool, dmat, nblk, pstart(c0), pl, pr, pj, pk, npriv, "
+            "gp(1, 1, 1, c0), " + slot_expr + ")")
+    la, lb, lc, ld = (int(c) for c in tag)
+    if not (la >= lb and lc >= ld and (la, lb) >= (lc, ld)):
+        # The pair bins never present this orientation (trc_bins.F90's
+        # ANGULAR-MOMENTUM CANONICAL), so no kernel is built for it; the
+        # dispatcher still names the routine.
+        variants_nc = ()
+    else:
+        variants_nc = pairs_variants(tag, comps, rt_plan, inside)
+    vmax = variants_nc[-1] if variants_nc else 1
+    branches = f"      do c0 = 1, ncb, {vmax}\n         nblk = min({vmax}, ncb - c0 + 1)\n"
+    for n, nc in enumerate(variants_nc):
+        kw = ("if (nblk <= %d) then" % nc if n == 0 else
+              "else if (nblk <= %d) then" % nc if nc != vmax else "else")
+        branches += (f"         {kw}\n"
+                     f"            do concurrent(i=1:nout{'*%d' % rt_nch if rt_thread else ''})\n"
+                     f"               call rysgi{tag}_pairs{nc}({lead}{args}\n"
+                     f"            end do\n")
+    branches += "         end if\n      end do\n"
+    if not variants_nc:
+        branches = ('      error stop "terco: gradient_pairs: the class ('
+                    f'{tag[0]}{tag[1]}|{tag[2]}{tag[3]}) is never launched"\n')
+    drv = f"""
+   subroutine rysg{tag}_pairs_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
+                             npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &
+                             nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
+                             sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                             npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp)
+      !! The pair-table compact pass of class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}): the survivors of the
+      !! screen pass, each contracted against every column of the table at once.
+      integer(int64), intent(in) :: nout
+      integer,  intent(in)    :: out_seg(*), out_iab(*), out_icd(*)
+      integer,  intent(in)    :: nseg, npair, nbas, nao
+      integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
+      integer,  intent(in)    :: sSA(nseg), sSB(nseg)
+      logical,  intent(in)    :: sD(nseg)
+      real(dp), intent(in)    :: sW(nseg)
+      integer,  intent(in)    :: sp_i(npair), sp_j(npair)
+      real(dp), intent(in)    :: sp_q(npair), pcut, omega
+      integer,  intent(in)    :: ao_off(nbas), sh_at(nbas), natm
+      integer,  intent(in)    :: nqp
+      real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp), qp_a(nqp)
+      real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
+      real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
+      integer,  intent(in)    :: sq_n(npair)
+      integer,  intent(in)    :: npool, ncb
+      real(dp), intent(in)    :: dmat(npool, nao, nao)
+      integer,  intent(in)    :: pstart(ncb + 1), pl(*), pr(*)
+      real(dp), intent(in)    :: pj(*), pk(*)
+      integer,  intent(in)    :: npriv
+      real(dp), intent(inout) :: gp(3, natm, npriv, ncb)
+      integer(int64) :: i
+      integer :: c0, nblk
+{branches}
+   end subroutine rysg{tag}_pairs_compact
+
+"""
+    if rt_plan is not None:
+        variants = "".join(rt_pairs_item_text(tag, item, comps, rt_plan[0], rt_thread, nc)
+                           for nc in variants_nc)
+    elif inside is not None:
+        variants = "".join(chunked_pairs_item_text(tag, item, comps, inside, nc)
+                           for nc in variants_nc)
+    else:
+        variants = "".join(_pairs_variant(tag, item, dims, nc) for nc in variants_nc)
+    return drv + variants
+
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("class_tag", help="four digits, e.g. 1111 or 2222")
@@ -1622,6 +2260,13 @@ def main():
                     help="never a path under src/generated: regenerated at "
                          "configure time into the build directory")
     args = ap.parse_args()
+    run(args)
+
+
+def run(args, generic_only=False):
+    """Emit one class's kernel module. With `generic_only` return instead
+    (compact text, component tables) of the per-quartet ARRAY-form routine,
+    unrolled or chunked for nobody: the text `pairs_item_text` rewrites."""
     tag = args.class_tag
     la, lb, lc, ld = (int(c) for c in tag)
     ni, nk = la + lb, lc + ld
@@ -1633,7 +2278,7 @@ def main():
                           "committed root tables")
     dims = [len(co.components(l, args.order)) for l in (la, lb, lc, ld)]
     nv = dims[0]*dims[1]*dims[2]*dims[3]
-    unroll = nv <= _parse_unroll_max(args.unroll_max_comp)
+    unroll = nv <= _parse_unroll_max(args.unroll_max_comp) and not generic_only
 
     src_path = os.path.join(args.src_dir, f"trc_pc_k{tag}.F90")
     src = open(src_path).read()
@@ -2044,22 +2689,42 @@ contains
     else:
         chunked = tag in sel.split(",")
     rt_plan = GRAD_CHUNK_PLAN.get(tag) if args.rt_plan is None else _parse_rt_plan(args.rt_plan)
+    if generic_only:
+        chunked, rt_plan = False, None
     if rt_plan is not None:
         chunked = False
     inside = chunk_plan(comps, args.chunk_live_max) if chunked else None
     sc_text, rt_tabs = screen_and_compact_text(tag, head, middle, comps, inside, rt_plan)
+    if generic_only:
+        return sc_text, tabs
 
     # Emit the module prelude and the screen/compact pair only. The fused
     # rysg{tag}/rysgi{tag} in head + middle is just the text sc_text was
     # sliced from: nothing calls it, and compiling it would roughly double
     # each file's compile time for nothing.
+    # The pair-table kernel, from the array-form routine of its own run: the
+    # class's normal text may be unrolled or chunked, which the rewrite
+    # cannot start from.
+    gen_text, gen_tabs = run(args, generic_only=True)
+    pairs_text = pairs_item_text(tag, gen_text, dims, comps, rt_plan, inside)
     prelude = head[:head.index("\ncontains\n")]
+    prelude = prelude.replace(f"public :: rysg{tag}_screen, rysg{tag}_compact\n",
+                              f"public :: rysg{tag}_screen, rysg{tag}_compact, rysg{tag}_pairs_compact\n", 1)
+    assert "_pairs_compact" in prelude
+    rt_tabs += "".join(ln + "\n" for ln in gen_tabs.splitlines())
     # A class past --unroll-max-comp already declares every shell's cn
     # tables for its array form: add only the ones it lacks.
-    rt_tabs = "".join(ln + "\n" for ln in rt_tabs.splitlines()
-                      if ln.split("::")[1].split("(")[0].strip() + "(" not in prelude)
+    seen = set()
+    keep = []
+    for ln in rt_tabs.splitlines():
+        nm = ln.split("::")[1].split("(")[0].strip()
+        if nm + "(" in prelude or nm in seen:
+            continue
+        seen.add(nm)
+        keep.append(ln)
+    rt_tabs = "".join(ln + "\n" for ln in keep)
     prelude += "\n" + rt_tabs + "\ncontains\n"
-    out = prelude + sc_text + f"\nend module trc_pc_rysg{tag}\n"
+    out = prelude + sc_text + pairs_text + f"\nend module trc_pc_rysg{tag}\n"
     with open(args.output, "w") as fh:
         fh.write(out)
     print(f"  {args.output}: ({la}{lb}|{lc}{ld}), {nroots} roots, "
