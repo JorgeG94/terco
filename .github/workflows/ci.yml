@@ -268,6 +268,54 @@ jobs:
         if: always()
         run: python3 test/goldens/compare_goldens.py --report build/test/golden_out
 
+  host-lmax4:
+    name: host gcc-15 (TERCO_LMAX=4, -O0)
+    runs-on: ubuntu-latest
+    # g functions, which only an LMAX=4 build has: def2-QZVP puts them on
+    # oxygen. No other job reaches them (the LMAX=3 job stops at f), and a
+    # normal LMAX=4 build compiles for about 50 minutes at -O3. At -O0 the whole
+    # command-line build takes about a minute on 4 cores, so this one runs on
+    # every PR. It builds only terco_cli and runs the one test that needs g
+    # (terco/cli_library_def2qzvp_g, water/def2-QZVP against pyscf), so it
+    # checks that the g path is wired up, not the speed or the rest of the suite.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Setup Fortran compiler
+        uses: fortran-lang/setup-fortran@v1.11.0
+        id: setup-fortran
+        with:
+          compiler: gcc
+          version: 15
+
+      - name: Install LAPACK
+        run: sudo apt-get update && sudo apt-get install -y liblapack-dev libblas-dev
+
+      - name: Configure
+        run: >-
+          cmake -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_Fortran_FLAGS_RELEASE=-O0
+          -DTERCO_ENABLE_GPU=OFF
+          -DTERCO_LMAX=4
+          -S . -B build
+
+      - name: Build
+        run: cmake --build build --parallel 2 --target terco_cli
+
+      - name: Show the failure verbosely
+        if: failure()
+        run: cmake --build build --verbose --parallel 1 --target terco_cli
+
+      - name: Validate
+        run: >-
+          ctest --test-dir build --output-on-failure --no-tests=error
+          -R terco/cli_library_def2qzvp_g
+
   host-dlfind:
     name: host gcc-15 (TERCO_ENABLE_DLFIND=ON)
     runs-on: ubuntu-latest
