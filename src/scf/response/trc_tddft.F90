@@ -1,9 +1,10 @@
 module trc_tddft
    !!
-   !! Excitation energies of a closed-shell RHF/RKS reference in the
-   !! Tamm-Dancoff approximation (TDA; CIS for Hartree-Fock): the lowest
-   !! `nroots` singlet roots of the matrix A by a block Davidson iteration, with
-   !! the transition dipoles and oscillator strengths.
+   !! Excitation energies of a closed-shell RHF/RKS reference, in the
+   !! Tamm-Dancoff approximation (TDA; CIS for Hartree-Fock) or the full random
+   !! phase approximation (RPA: TDHF for Hartree-Fock, the Casida equations for
+   !! Kohn-Sham): the lowest `nroots` singlet roots by a block Davidson
+   !! iteration, with the transition dipoles and oscillator strengths.
    !!
    !! THE EQUATION (singlet, restricted)
    !! ----------------------------------
@@ -24,8 +25,55 @@ module trc_tddft
    !! density. A is real symmetric and, for a stable ground state, positive
    !! definite; the eigenvalues are the excitation energies in hartree.
    !!
-   !! THE SOLVER
-   !! ----------
+   !! THE RPA EQUATION
+   !! ----------------
+   !! With B_ia,jb = 2 (ia|jb) - c_x (ib|ja) + 2 f_xc the singlet RPA problem is
+   !!
+   !!     [  A   B ] [X]       [X]
+   !!     [ -B  -A ] [Y]  = w  [Y]
+   !!
+   !! and, in p = X + Y and m = X - Y,  (A-B) m = w p,  (A+B) p = w m, so
+   !! w^2 is an eigenvalue of (A-B)(A+B). The two products are
+   !!
+   !!     (A+B) p = (e_a - e_i) p + P[ 4 J[Ts] - 2 c_x K[Ts] + 4 f_xc[Ts] ]
+   !!     (A-B) m = (e_a - e_i) m + P[           - 2 c_x K[Ta]          ]
+   !!
+   !! with P[G] = C_occ^T G C_vir, T = C_occ x C_vir^T the transition density of
+   !! a trial vector x, Ts = (T + T^T)/2 its symmetric and Ta = (T - T^T)/2 its
+   !! ANTISYMMETRIC part. (K[T] + K[T^T] = 2 K[Ts] and K[T] - K[T^T] = 2 K[Ta];
+   !! J[T^T] = J[T], so J sees only Ts, and f_xc, a functional of the density,
+   !! only the symmetric part.) A-B therefore has no J and no f_xc term: for a
+   !! pure functional it is the diagonal (e_a - e_i), and the antisymmetric
+   !! half of the batch is not built. The exchange of Ta needs
+   !! `fock_nosym_many`, which keeps the antisymmetric part of K that the
+   !! folded `fock` would drop; f_xc[Ts] is `fxc_apply_many` as before.
+   !!
+   !! The Davidson iteration holds ONE orthonormal basis V for both p and m
+   !! (Stratmann, Scuseria, Frisch, J. Chem. Phys. 109, 8218 (1998)) and the
+   !! products (A+B)V and (A-B)V. Its subspace problem is Am v = w u,
+   !! Ap u = w v, i.e. Am Ap u = w^2 u with the small PD matrices Ap = V^T
+   !! (A+B) V and Am = V^T (A-B) V: the symmetric Am^{1/2} Ap Am^{1/2} z = w^2 z
+   !! gives w and, with u = Am^{1/2} z/sqrt(w), v = Ap u/w, the Ritz vectors
+   !! p = V u, m = V v with p.m = 1. The residuals are r1 = (A+B)p - w m and
+   !! r2 = (A-B)m - w p; the convergence measure is sqrt((|r1|^2 + |r2|^2)/2),
+   !! the norm of the residual of the (X, Y) equation above. The corrections
+   !! are the diagonally preconditioned residuals of X (divided by e_a - e_i - w)
+   !! and of Y (divided by e_a - e_i + w), both added to V. Each iteration
+   !! sends the new trial vectors through ONE `fock_nosym_many` call (their
+   !! symmetric and antisymmetric parts together) and ONE `fxc_apply_many` call.
+   !! A subspace Am or Ap that is not positive definite, or a non-positive
+   !! root w^2, means the reference is unstable (or the roots are complex) and
+   !! is an error.
+   !!
+   !! CONVENTION. X and Y are normalised X.X - Y.Y = 1 (the TDA's Y = 0, X.X = 1
+   !! included). pyscf's tdscf (X, Y) are normalised 2 (X.X - Y.Y) = 1, so
+   !! X(terco) = sqrt(2) X(pyscf) and Y(terco) = sqrt(2) Y(pyscf); the sign of
+   !! each root is arbitrary, a degenerate multiplet is an arbitrary
+   !! rotation. The transition dipole is sqrt(2) sum_ia (X + Y)_ia <i|r|a> (the
+   !! length gauge, pyscf's `transition_dipole`) and f = (2/3) w |mu|^2.
+   !!
+   !! THE SOLVER (TDA)
+   !! ----------------
    !! Every new trial vector of an iteration goes through ONE `fock_nosym_many`
    !! call and ONE `fxc_apply_many` call, i.e. one pass over the integrals per
    !! iteration whatever the number of roots. `density_screen` is false: a
@@ -72,8 +120,8 @@ module trc_tddft
    !!
    !! WHAT THIS DOES NOT DO
    !! ---------------------
-   !! The full RPA (Casida) problem, triplets, UHF/UKS references, meta-GGA,
-   !! VV10, range-separated and double hybrids: `trc_tddft_refuse_reason` names
+   !! Triplets, UHF/UKS references, meta-GGA, VV10, range-separated and
+   !! double hybrids: `trc_tddft_refuse_reason` names
    !! each refusal, and the solver reports it as an error before any work.
    !!
    use pic_types, only: dp, int64, default_int
@@ -116,16 +164,20 @@ module trc_tddft
       integer :: nroots = 3
       !! Lowest singlet roots wanted.
       logical :: tda = .true.
-      !! Only the Tamm-Dancoff approximation is implemented; false is refused.
+      !! True: the Tamm-Dancoff approximation (CIS for Hartree-Fock). False:
+      !! the full RPA (TDHF / Casida), see the module header.
       logical :: singlet = .true.
       !! Only singlets are implemented; false is refused.
       real(dp) :: conv_tol = 1.0e-6_dp
       !! Converged when ||A X - w X|| (Frobenius, X normalised) is below this
-      !! for every root. The excitation energy error is of order
-      !! conv_tol^2/gap, the amplitude error of order conv_tol/gap.
+      !! for every root; for the RPA the residual of the (X, Y) equation,
+      !! sqrt((|r1|^2 + |r2|^2)/2) with X.X - Y.Y = 1 (module header). The
+      !! excitation energy error is of order conv_tol^2/gap, the amplitude
+      !! error of order conv_tol/gap.
       integer :: max_space = 0
       !! Largest subspace before the collapse; 0 takes 12*nroots. Raised to
-      !! 3*(nroots + buffer) if smaller, and capped at the dimension of the problem.
+      !! 3*(nroots + buffer) if smaller (4*(nroots + buffer) for the RPA, whose
+      !! subspace holds p and m), and capped at the dimension of the problem.
       integer :: max_iteration = 50
       !! Most Davidson iterations (matvec passes).
       integer :: nguess = 0
@@ -147,19 +199,25 @@ module trc_tddft
       !! Trial vectors multiplied by A in total.
       integer :: space = 0
       !! Subspace dimension at the end.
+      integer :: ncollapse = 0
+      !! Times the subspace collapsed onto the Ritz vectors.
       real(dp), allocatable :: omega(:)
       !! (nroots) excitation energies, hartree, ascending.
       real(dp), allocatable :: xamp(:, :, :)
-      !! (nocc, nvir, nroots) orthonormal TDA amplitudes X_ia.
+      !! (nocc, nvir, nroots) amplitudes X_ia: orthonormal for the TDA, and
+      !! for the RPA normalised X.X - Y.Y = 1 (module header).
+      real(dp), allocatable :: yamp(:, :, :)
+      !! (nocc, nvir, nroots) de-excitation amplitudes Y_ia; zero for the TDA.
       real(dp), allocatable :: tdip(:, :)
       !! (3, nroots) transition dipoles <0|r|n>, atomic units
-      !! (sqrt(2) sum_ia X_ia <i|r|a>).
+      !! (sqrt(2) sum_ia (X + Y)_ia <i|r|a>).
       real(dp), allocatable :: osc(:)
       !! (nroots) oscillator strengths (2/3) w |mu|^2.
       real(dp), allocatable :: resid(:)
-      !! (nroots) the residual norms ||A X - w X|| at the end, from the
-      !! solver's own bookkeeping; a caller who wants an independent figure
-      !! multiplies X by `trc_tddft_op_t%apply`.
+      !! (nroots) the residual norms at the end (||A X - w X||; for the RPA
+      !! the (X, Y) residual of `conv_tol`), from the solver's own
+      !! bookkeeping; a caller who wants an independent figure multiplies by
+      !! `trc_tddft_op_t%apply` / `apply_rpa`.
    end type trc_tddft_result_t
 
    type :: trc_tddft_reference_t
@@ -187,7 +245,13 @@ module trc_tddft
       !! needs: the ordering `ord` of the orbital-energy differences, the
       !! nguess guessed, nprobe probe vectors tp.
       integer :: m = 0, mmax = 0, nguess = 0, nprobe = 0
+      integer :: nt = 0
+      !! Ritz vectors iterated: the wanted roots plus the buffer.
+      integer :: ncollapse = 0
+      !! Collapses onto the Ritz vectors so far.
       real(dp), allocatable :: vs(:, :), avs(:, :), tp(:, :)
+      real(dp), allocatable :: ams(:, :)
+      !! (nov, mmax) (A-B) times vs, the RPA's second product; avs then holds (A+B) vs.
       integer, allocatable :: ord(:)
    end type tddft_space_t
 
@@ -201,6 +265,11 @@ module trc_tddft
       logical :: dft = .false.
       real(dp) :: cx = 1.0_dp
       !! Exact-exchange fraction applied to K.
+      logical :: force_antisym = .false.
+      !! `apply_rpa` builds the antisymmetric exchange half of its batch even
+      !! when c_x = 0, where A-B is the diagonal and the half is zero. Off by
+      !! default (it doubles the integral work for nothing); a cross-check
+      !! hook for tests.
       logical :: has_budget = .false.
       integer(int64) :: budget = 0
       !! Passed to the XC response only when `has_budget`; absent it takes the
@@ -212,6 +281,7 @@ module trc_tddft
    contains
       procedure :: setup => tddft_op_setup
       procedure :: apply => tddft_op_apply
+      procedure :: apply_rpa => tddft_op_apply_rpa
       procedure :: transition_dipoles => tddft_op_dipoles
       procedure :: release => tddft_op_release
    end type trc_tddft_op_t
@@ -237,9 +307,6 @@ contains
       end if
       if (.not. opts%singlet) then
          msg = "trc_tddft: only singlet excitations are implemented (triplets are refused)"
-      else if (.not. opts%tda) then
-         msg = "trc_tddft: only the Tamm-Dancoff approximation is implemented (tda = .false., the full RPA, " &
-               //"is refused)"
       else if (opts%nroots < 1) then
          msg = "trc_tddft: nroots must be at least 1"
       else if (.not. present(func)) then
@@ -419,6 +486,128 @@ contains
       deallocate (tmat, gmat, vxc, half, half_occ)
    end subroutine tddft_op_apply
 
+   subroutine tddft_add_diag_rpa(nov, nvec, de, x, ax)
+      !! ax(:, :, 1) += (e_a - e_i) x and ax(:, :, 2) += (e_a - e_i) x, the
+      !! diagonal of both A+B and A-B, as `tddft_add_diag` over the flattened
+      !! amplitudes.
+      integer, intent(in) :: nov, nvec
+      real(dp), intent(in) :: de(nov), x(nov, nvec)
+      real(dp), intent(inout) :: ax(nov, nvec, 2)
+      integer :: pair, k
+      do concurrent(k=1:nvec, pair=1:nov)
+         ax(pair, k, 1) = ax(pair, k, 1) + de(pair)*x(pair, k)
+         ax(pair, k, 2) = ax(pair, k, 2) + de(pair)*x(pair, k)
+      end do
+   end subroutine tddft_add_diag_rpa
+
+   subroutine tddft_split_density(n, nvec, antisym, tmat)
+      !! tmat(:, :, k) (k = 1..nvec) holds the transition densities T; on
+      !! return tmat(:, :, k) is the symmetric part (T + T^T)/2 and, when
+      !! `antisym`, tmat(:, :, nvec + k) the antisymmetric part (T - T^T)/2.
+      !! Host arrays.
+      integer, intent(in) :: n, nvec
+      logical, intent(in) :: antisym
+      real(dp), intent(inout) :: tmat(n, n, *)
+      integer :: i, j, k
+      real(dp) :: tij, tji
+      do k = 1, nvec
+         if (antisym) then
+            do j = 1, n
+               do i = 1, n
+                  tmat(i, j, nvec + k) = 0.5_dp*(tmat(i, j, k) - tmat(j, i, k))
+               end do
+            end do
+         end if
+         do j = 1, n
+            do i = j, n
+               tij = tmat(i, j, k)
+               tji = tmat(j, i, k)
+               tmat(i, j, k) = 0.5_dp*(tij + tji)
+               tmat(j, i, k) = 0.5_dp*(tij + tji)
+            end do
+         end do
+      end do
+   end subroutine tddft_split_density
+
+   subroutine tddft_op_apply_rpa(this, b, eri, la, nvec, x, ax, xg)
+      !!
+      !! ax(:, :, k, 1) := (A+B) x(:, :, k) and ax(:, :, k, 2) := (A-B)
+      !! x(:, :, k) for k = 1..nvec, x and ax HOST arrays (nocc, nvir, nvec
+      !! [, 2]): ONE `fock_nosym_many` call (the symmetric parts of the
+      !! transition densities first, then the antisymmetric parts, the latter
+      !! only when c_x /= 0 or `force_antisym`) and ONE `fxc_apply_many` call
+      !! (the symmetric parts), whatever nvec is. The module header derives the
+      !! products. Scratch is (nao, nao, 2 nvec) twice, plus (nao, nao, nvec)
+      !! for a functional.
+      !!
+      class(trc_tddft_op_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      type(trc_eri_t), intent(inout) :: eri
+      type(trc_linalg_t), intent(inout) :: la
+      integer, intent(in) :: nvec
+      real(dp), intent(in) :: x(this%nocc, this%nvir, nvec)
+      real(dp), intent(out) :: ax(this%nocc, this%nvir, nvec, 2)
+      type(trc_xc_grid_t), intent(in), optional :: xg
+      !! Needed exactly when `setup` was given a functional.
+      real(dp), allocatable :: tmat(:, :, :), gmat(:, :, :), vxc(:, :, :), half(:, :), half_occ(:, :)
+      integer :: n, nocc, nvir, k, ndens
+      logical :: antisym
+
+      if (.not. this%ready) error stop "trc_tddft: operator used before setup"
+      if (this%dft .and. .not. present(xg)) error stop "trc_tddft: a functional's matvec needs the xc grid"
+      if (nvec < 1) return
+      n = this%nao
+      nocc = this%nocc
+      nvir = this%nvir
+      antisym = this%cx /= 0.0_dp .or. this%force_antisym
+      ndens = nvec
+      if (antisym) ndens = 2*nvec
+      allocate (tmat(n, n, ndens), gmat(n, n, ndens), half(n, nvir), half_occ(nocc, n))
+      if (this%dft) then
+         allocate (vxc(n, n, nvec))
+      else
+         allocate (vxc(1, 1, 1))
+      end if
+      !$acc enter data copyin(x) create(ax, tmat, gmat, vxc, half, half_occ)
+      do k = 1, nvec
+         call la%gemm_mat(this%cocc, x(:, :, k), half)
+         call la%gemm_mat(half, this%cvir, tmat(:, :, k), transb="T")
+      end do
+      !$acc update self(tmat)
+      call tddft_split_density(n, nvec, antisym, tmat)
+      !$acc update device(tmat)
+      call eri%fock_nosym_many(b, ndens, tmat, gmat, &
+                               trc_fock_options_t(j_scale=4.0_dp, k_scale=4.0_dp*this%cx, density_screen=.false.))
+      !$acc update device(gmat)
+      if (this%dft) then
+         if (this%has_budget) then
+            call trc_xc_fxc_rks_apply_many(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
+         else
+            call trc_xc_fxc_rks_apply_many(b, xg, this%cache, nvec, tmat, vxc, la=la)
+         end if
+      end if
+      do k = 1, nvec
+         call la%gemm_mat(this%cocc, gmat(:, :, k), half_occ, transa="T")
+         call la%gemm_mat(half_occ, this%cvir, ax(:, :, k, 1))
+         if (this%dft) then
+            call la%gemm_mat(this%cocc, vxc(:, :, k), half_occ, transa="T")
+            call la%gemm_mat(half_occ, this%cvir, ax(:, :, k, 1), alpha=4.0_dp, beta=1.0_dp)
+         end if
+         if (antisym) then
+            call la%gemm_mat(this%cocc, gmat(:, :, nvec + k), half_occ, transa="T")
+            call la%gemm_mat(half_occ, this%cvir, ax(:, :, k, 2))
+         else
+            ! A-B is the diagonal: a zero (alpha = 0 never reads the operands'
+            ! values) for the diagonal to be added to, on the device as well.
+            call la%gemm_mat(half_occ, this%cvir, ax(:, :, k, 2), alpha=0.0_dp)
+         end if
+      end do
+      call tddft_add_diag_rpa(nocc*nvir, nvec, this%de, x, ax)
+      !$acc update self(ax)
+      !$acc exit data delete(x, ax, tmat, gmat, vxc, half, half_occ)
+      deallocate (tmat, gmat, vxc, half, half_occ)
+   end subroutine tddft_op_apply_rpa
+
    subroutine tddft_op_dipoles(this, b, pl, la, nvec, x, tdip)
       !! tdip(:, k) = sqrt(2) sum_ia x(i, a, k) <i|r|a>, the singlet transition
       !! dipole of an excitation with unit-norm amplitudes, origin at zero
@@ -540,14 +729,287 @@ contains
          sp%vs(:, 1:nt) = xr
          sp%avs(:, 1:nt) = axr
          sp%m = nt
+         sp%ncollapse = sp%ncollapse + 1
       end if
       call tddft_orthonormalise(size(xr, 1), sp%m, sp%mmax, sp%vs, sp%nprobe, sp%tp, nnew)
       sp%m = sp%m + nnew
    end subroutine tddft_probe
 
+   subroutine tddft_rpa_collapse(sp, uc, vc)
+      !! Collapse the RPA subspace onto the span of the current Ritz vectors p
+      !! and m, whose coefficients in the subspace basis are the columns of
+      !! uc and vc (m, nt): the orthonormalised span becomes the new basis and
+      !! both products (A+B) V and (A-B) V are transformed with it, so no
+      !! matvec is spent. A pair numerically inside the span is dropped.
+      type(tddft_space_t), intent(inout) :: sp
+      real(dp), intent(in) :: uc(:, :), vc(:, :)
+      real(dp), allocatable :: cc(:, :), qm(:, :), work(:, :)
+      integer :: m, nt, nq, nov
+      m = sp%m
+      nt = size(uc, 2)
+      nov = size(sp%vs, 1)
+      allocate (cc(m, 2*nt), qm(m, 2*nt), work(nov, 2*nt))
+      cc(:, 1:nt) = uc(1:m, :)
+      cc(:, nt + 1:2*nt) = vc(1:m, :)
+      call tddft_orthonormalise(m, 0, 2*nt, qm, 2*nt, cc, nq)
+      call pic_gemm(sp%vs(:, 1:m), qm(:, 1:nq), work(:, 1:nq), "N", "N", 1.0_dp, 0.0_dp)
+      sp%vs(:, 1:nq) = work(:, 1:nq)
+      call pic_gemm(sp%avs(:, 1:m), qm(:, 1:nq), work(:, 1:nq), "N", "N", 1.0_dp, 0.0_dp)
+      sp%avs(:, 1:nq) = work(:, 1:nq)
+      call pic_gemm(sp%ams(:, 1:m), qm(:, 1:nq), work(:, 1:nq), "N", "N", 1.0_dp, 0.0_dp)
+      sp%ams(:, 1:nq) = work(:, 1:nq)
+      sp%m = nq
+      sp%ncollapse = sp%ncollapse + 1
+   end subroutine tddft_rpa_collapse
+
+   subroutine tddft_rpa_probe(sp, uc, vc, nnew)
+      !! As `tddft_probe` for the RPA subspace: the unit vectors of the
+      !! sp%nprobe next-lowest orbital-energy differences, after a collapse
+      !! onto the Ritz vectors (uc, vc: `tddft_rpa_collapse`) if there is no room.
+      type(tddft_space_t), intent(inout) :: sp
+      real(dp), intent(in) :: uc(:, :), vc(:, :)
+      integer, intent(out) :: nnew
+      integer :: j
+      sp%tp = 0.0_dp
+      do j = 1, sp%nprobe
+         sp%tp(sp%ord(sp%nguess + j), j) = 1.0_dp
+      end do
+      if (sp%m + sp%nprobe > sp%mmax) call tddft_rpa_collapse(sp, uc, vc)
+      call tddft_orthonormalise(size(sp%vs, 1), sp%m, sp%mmax, sp%vs, sp%nprobe, sp%tp, nnew)
+      sp%m = sp%m + nnew
+   end subroutine tddft_rpa_probe
+
+   subroutine tddft_rpa_subspace(sp, ap, am, w2, zc, err)
+      !! The RPA subspace problem (module header): Ap = V^T (A+B) V and
+      !! Am = V^T (A-B) V of the m columns in use, symmetrised, then the
+      !! eigenvalues w2 (ascending) of Am^{1/2} Ap Am^{1/2} and its
+      !! eigenvectors zc. On return `am` holds Am^{1/2}. `err` is set when Am
+      !! or the product is not positive definite or LAPACK fails.
+      type(tddft_space_t), intent(in) :: sp
+      real(dp), intent(inout) :: ap(:, :), am(:, :), zc(:, :)
+      real(dp), intent(out) :: w2(:)
+      character(len=*), intent(out) :: err
+      real(dp), allocatable :: sam(:), work(:, :)
+      integer :: m, j, k
+      integer(default_int) :: linfo
+      m = sp%m
+      err = ""
+      allocate (sam(m), work(m, m))
+      call pic_gemm(sp%vs(:, 1:m), sp%avs(:, 1:m), ap(1:m, 1:m), "T", "N", 1.0_dp, 0.0_dp)
+      call pic_gemm(sp%vs(:, 1:m), sp%ams(:, 1:m), am(1:m, 1:m), "T", "N", 1.0_dp, 0.0_dp)
+      do j = 1, m
+         do k = 1, j - 1
+            ap(k, j) = 0.5_dp*(ap(k, j) + ap(j, k))
+            ap(j, k) = ap(k, j)
+            am(k, j) = 0.5_dp*(am(k, j) + am(j, k))
+            am(j, k) = am(k, j)
+         end do
+      end do
+      zc(1:m, 1:m) = am(1:m, 1:m)
+      call pic_syev(zc(1:m, 1:m), sam, "V", "U", linfo)
+      if (linfo /= 0 .or. .not. all(ieee_is_finite(sam))) then
+         err = "trc_tddft: the subspace eigenproblem broke down (NaN or LAPACK failure)"
+         return
+      end if
+      if (.not. (sam(1) > 0.0_dp)) then
+         err = "trc_tddft: A-B is not positive definite ("//to_string(sam(1), "es10.2") &
+               //"): the reference is unstable and the RPA roots may be complex"
+         return
+      end if
+      do j = 1, m
+         work(:, j) = zc(1:m, j)*sqrt(sam(j))
+      end do
+      call pic_gemm(work, zc(1:m, 1:m), am(1:m, 1:m), "N", "T", 1.0_dp, 0.0_dp)
+      call pic_gemm(ap(1:m, 1:m), am(1:m, 1:m), work, "N", "N", 1.0_dp, 0.0_dp)
+      call pic_gemm(am(1:m, 1:m), work, zc(1:m, 1:m), "N", "N", 1.0_dp, 0.0_dp)
+      do j = 1, m
+         do k = 1, j - 1
+            zc(k, j) = 0.5_dp*(zc(k, j) + zc(j, k))
+         end do
+      end do
+      call pic_syev(zc(1:m, 1:m), w2(1:m), "V", "U", linfo)
+      if (linfo /= 0 .or. .not. all(ieee_is_finite(w2(1:m)))) then
+         err = "trc_tddft: the subspace eigenproblem broke down (NaN or LAPACK failure)"
+      else if (.not. (w2(1) > 0.0_dp)) then
+         err = "trc_tddft: a non-positive RPA root w^2 ("//to_string(w2(1), "es10.2")//" Eh^2): A+B is not " &
+               //"positive definite, the reference is unstable"
+      end if
+   end subroutine tddft_rpa_subspace
+
+   subroutine tddft_rpa_iterate(b, eri, la, op, xg, opts, sp, res)
+      !!
+      !! The RPA block Davidson iteration of the module header, from the
+      !! guesses in sp%vs(:, 1:sp%m) (set by `trc_tddft_solve_rks`, which also
+      !! sizes the subspace). Fills res%omega, xamp, yamp, resid and space and
+      !! sets res%converged, or sets res%err; the dipoles are the caller's.
+      !! The control flow (buffer vectors, one probe before acceptance,
+      !! breakdown, NaN, non-convergence) is that of the TDA loop.
+      !!
+      type(trc_basis_t), intent(in) :: b
+      type(trc_eri_t), intent(inout) :: eri
+      type(trc_linalg_t), intent(inout) :: la
+      type(trc_tddft_op_t), intent(inout) :: op
+      type(trc_xc_grid_t), intent(in), optional :: xg
+      type(trc_tddft_options_t), intent(in) :: opts
+      type(tddft_space_t), intent(inout) :: sp
+      type(trc_tddft_result_t), intent(inout) :: res
+
+      real(dp), allocatable :: ap(:, :), am(:, :), zc(:, :), w2(:), om(:), uc(:, :), vc(:, :)
+      real(dp), allocatable :: pr(:, :), mr(:, :), r1(:, :), r2(:, :), tc(:, :), rnorm(:), dgn(:), prod(:, :, :, :)
+      real(dp) :: buffer_threshold, dx, dy, nrm
+      integer :: nov, nocc, nvir, nr, nt, nnew, nunc, nmain, m, j, k, ioff, c0
+      character(len=256) :: reason
+      character(len=1024) :: logline
+      logical :: done, probed
+
+      nocc = op%nocc
+      nvir = op%nvir
+      nov = nocc*nvir
+      nr = opts%nroots
+      nt = sp%nt
+      buffer_threshold = max(BUFFER_TOL, 100.0_dp*opts%conv_tol)
+      allocate (ap(sp%mmax, sp%mmax), am(sp%mmax, sp%mmax), zc(sp%mmax, sp%mmax), w2(sp%mmax))
+      allocate (om(nt), uc(sp%mmax, nt), vc(sp%mmax, nt), pr(nov, nt), mr(nov, nt), r1(nov, nt), r2(nov, nt))
+      allocate (tc(nov, 2*nt), rnorm(nt), dgn(nov))
+      dgn = reshape(op%de, [nov])
+      probed = .false.
+      done = .false.
+      nnew = sp%m
+      res%iterations = 0
+      res%nmatvec = 0
+
+      do
+         ! (A+B) and (A-B) on the vectors added since the last pass: one integral pass.
+         if (nnew > 0) then
+            c0 = sp%m - nnew + 1
+            allocate (prod(nocc, nvir, nnew, 2))
+            call op%apply_rpa(b, eri, la, nnew, sp%vs(:, c0:sp%m), prod, xg)
+            sp%avs(:, c0:sp%m) = reshape(prod(:, :, :, 1), [nov, nnew])
+            sp%ams(:, c0:sp%m) = reshape(prod(:, :, :, 2), [nov, nnew])
+            deallocate (prod)
+            res%nmatvec = res%nmatvec + nnew
+            if (.not. all(ieee_is_finite(sp%avs(:, c0:sp%m))) .or. .not. all(ieee_is_finite(sp%ams(:, c0:sp%m)))) then
+               call tddft_fail(res, ERROR_GENERIC, "trc_tddft: the matvec returned NaN or Inf")
+               exit
+            end if
+         end if
+         res%iterations = res%iterations + 1
+         m = sp%m
+
+         call tddft_rpa_subspace(sp, ap, am, w2, zc, reason)
+         if (len_trim(reason) > 0) then
+            call tddft_fail(res, ERROR_GENERIC, trim(reason))
+            exit
+         end if
+
+         ! Ritz vectors p = V u, m = V v (p.m = 1), the products on them and the
+         ! residuals r1 = (A+B)p - w m, r2 = (A-B)m - w p of the lowest nt.
+         om = sqrt(w2(1:nt))
+         call pic_gemm(am(1:m, 1:m), zc(1:m, 1:nt), uc(1:m, 1:nt), "N", "N", 1.0_dp, 0.0_dp)
+         do k = 1, nt
+            uc(1:m, k) = uc(1:m, k)/sqrt(om(k))
+         end do
+         call pic_gemm(ap(1:m, 1:m), uc(1:m, 1:nt), vc(1:m, 1:nt), "N", "N", 1.0_dp, 0.0_dp)
+         do k = 1, nt
+            vc(1:m, k) = vc(1:m, k)/om(k)
+         end do
+         call pic_gemm(sp%vs(:, 1:m), uc(1:m, 1:nt), pr, "N", "N", 1.0_dp, 0.0_dp)
+         call pic_gemm(sp%vs(:, 1:m), vc(1:m, 1:nt), mr, "N", "N", 1.0_dp, 0.0_dp)
+         call pic_gemm(sp%avs(:, 1:m), uc(1:m, 1:nt), r1, "N", "N", 1.0_dp, 0.0_dp)
+         call pic_gemm(sp%ams(:, 1:m), vc(1:m, 1:nt), r2, "N", "N", 1.0_dp, 0.0_dp)
+         nunc = 0
+         nmain = 0
+         do k = 1, nt
+            r1(:, k) = r1(:, k) - om(k)*mr(:, k)
+            r2(:, k) = r2(:, k) - om(k)*pr(:, k)
+            rnorm(k) = sqrt(0.5_dp*(sum(r1(:, k)**2) + sum(r2(:, k)**2)))
+            if (.not. (rnorm(k) < merge(opts%conv_tol, buffer_threshold, k <= nr))) then
+               nunc = nunc + 1
+               if (k <= nr) nmain = nmain + 1
+            end if
+         end do
+         if (opts%verbose) then
+            write (logline, "(a,i0,a,i0,a,i0,a,es9.2,a,f14.8)") "   tddft rpa it ", res%iterations, ": space ", m, &
+               ", unconverged ", nunc, ", max resid ", maxval(rnorm(1:nr)), ", w1 ", om(1)
+            call global_logger%info(trim(logline))
+         end if
+         if (.not. all(ieee_is_finite(rnorm))) then
+            call tddft_fail(res, ERROR_GENERIC, "trc_tddft: a residual is NaN or Inf")
+            exit
+         end if
+         if (nunc == 0) then
+            if (.not. probed .and. sp%nprobe > 0) then
+               probed = .true.
+               call tddft_rpa_probe(sp, uc, vc, nnew)
+               if (nnew > 0) cycle
+            end if
+            done = .true.
+            exit
+         end if
+         if (res%iterations >= opts%max_iteration) then
+            call tddft_fail(res, ERROR_GENERIC, "trc_tddft: not converged in "//to_string(opts%max_iteration)// &
+                            " iterations, residual "//to_string(maxval(rnorm(1:nr)), "es9.2")//" (conv_tol "// &
+                            to_string(opts%conv_tol, "es9.2")//")")
+            exit
+         end if
+
+         ! Preconditioned corrections of X and of Y for each unconverged root, packed first.
+         ioff = 0
+         do k = 1, nt
+            if (rnorm(k) < merge(opts%conv_tol, buffer_threshold, k <= nr)) cycle
+            ioff = ioff + 1
+            do j = 1, nov
+               dx = dgn(j) - om(k)
+               if (abs(dx) < PRECOND_FLOOR) dx = sign(PRECOND_FLOOR, dx)
+               dy = dgn(j) + om(k)
+               tc(j, 2*ioff - 1) = -0.5_dp*(r1(j, k) + r2(j, k))/dx
+               tc(j, 2*ioff) = 0.5_dp*(r2(j, k) - r1(j, k))/dy
+            end do
+         end do
+
+         if (sp%m + 2*nunc > sp%mmax) call tddft_rpa_collapse(sp, uc, vc)
+         call tddft_orthonormalise(nov, sp%m, sp%mmax, sp%vs, 2*nunc, tc, nnew)
+         if (nnew == 0 .and. nmain == 0) then
+            if (.not. probed .and. sp%nprobe > 0) then
+               probed = .true.
+               call tddft_rpa_probe(sp, uc, vc, nnew)
+               if (nnew > 0) cycle
+            end if
+            done = .true.
+            exit
+         end if
+         if (nnew == 0) then
+            call tddft_fail(res, ERROR_GENERIC, "trc_tddft: breakdown, no usable new trial vector while "// &
+                            to_string(nunc)//" root(s) are unconverged (residual "// &
+                            to_string(maxval(rnorm(1:nr)), "es9.2")//")")
+            exit
+         end if
+         sp%m = sp%m + nnew
+      end do
+
+      if (done) then
+         res%space = sp%m
+         res%ncollapse = sp%ncollapse
+         allocate (res%omega(nr), res%xamp(nocc, nvir, nr), res%yamp(nocc, nvir, nr), res%resid(nr))
+         res%omega = om(1:nr)
+         res%resid = rnorm(1:nr)
+         do k = 1, nr
+            nrm = sum(pr(:, k)*mr(:, k))
+            if (.not. (nrm > 0.0_dp)) then
+               call tddft_fail(res, ERROR_GENERIC, "trc_tddft: a Ritz vector has non-positive X.X - Y.Y")
+               exit
+            end if
+            res%xamp(:, :, k) = reshape(0.5_dp*(pr(:, k) + mr(:, k))/sqrt(nrm), [nocc, nvir])
+            res%yamp(:, :, k) = reshape(0.5_dp*(pr(:, k) - mr(:, k))/sqrt(nrm), [nocc, nvir])
+         end do
+         if (.not. res%err%has_error()) res%converged = .true.
+      end if
+   end subroutine tddft_rpa_iterate
+
    subroutine trc_tddft_solve_rks(b, pl, eri, la, ref, opts, res, xg)
       !!
-      !! The lowest `opts%nroots` singlet TDA roots of the closed-shell
+      !! The lowest `opts%nroots` singlet roots (TDA, or the RPA when
+      !! `opts%tda` is false) of the closed-shell
       !! reference `ref` (module header; `trc_tddft_reference_t%set` builds it
       !! from a `trc_scf_run` result, with the functional and its grid for
       !! Kohn-Sham and without for Hartree-Fock) and, for Kohn-Sham, `xg`, the
@@ -611,7 +1073,8 @@ contains
       ! vectors (see the header, MISSED ROOTS).
       nt = min(nr + max(2, nr/2), nov)
       buffer_threshold = max(BUFFER_TOL, 100.0_dp*opts%conv_tol)
-      sp%mmax = min(max(sp%mmax, 3*nt), nov)
+      sp%nt = nt
+      sp%mmax = min(max(sp%mmax, merge(3, 4, opts%tda)*nt), nov)
       sp%nguess = opts%nguess
       if (sp%nguess <= 0) sp%nguess = max(2*nr, nr + 4)
       sp%nguess = min(max(sp%nguess, nt), nov, sp%mmax)
@@ -619,6 +1082,7 @@ contains
       allocate (sp%vs(nov, sp%mmax), sp%avs(nov, sp%mmax), hsub(sp%mmax, sp%mmax), csub(sp%mmax, sp%mmax), wsub(sp%mmax))
       allocate (xr(nov, nt), axr(nov, nt), tc(nov, nt), rnorm(nt), dgn(nov), dsort(nov))
       allocate (sp%ord(nov))
+      if (.not. opts%tda) allocate (sp%ams(nov, sp%mmax))
 
       ! Diagonal (e_a - e_i) in the flat (i fastest) ordering of the amplitudes;
       ! the guesses are its lowest entries.
@@ -637,7 +1101,7 @@ contains
          sp%nguess = sp%nguess + 1
       end do
       ! The probe must fit beside the Ritz vectors it may collapse onto.
-      sp%nprobe = max(min(sp%nguess, nov - sp%nguess, sp%mmax - nt), 0)
+      sp%nprobe = max(min(sp%nguess, nov - sp%nguess, sp%mmax - merge(1, 2, opts%tda)*nt), 0)
       allocate (sp%tp(nov, max(sp%nprobe, 1)))
       probed = .false.
       sp%vs(:, 1:sp%nguess) = 0.0_dp
@@ -649,6 +1113,20 @@ contains
       res%iterations = 0
       res%nmatvec = 0
       done = .false.
+
+      if (.not. opts%tda) then
+         call tddft_rpa_iterate(b, eri, la, op, xg, opts, sp, res)
+         if (res%converged) then
+            allocate (res%tdip(3, nr), res%osc(nr))
+            call op%transition_dipoles(b, pl, la, nr, res%xamp + res%yamp, res%tdip)
+            do k = 1, nr
+               res%osc(k) = OSC_PREFACTOR*res%omega(k)*sum(res%tdip(:, k)**2)
+            end do
+         end if
+         call op%release()
+         deallocate (sp%vs, sp%avs, sp%ams, hsub, csub, wsub, xr, axr, tc, rnorm, dgn, dsort, sp%tp, sp%ord)
+         return
+      end if
 
       do
          ! A on the vectors added since the last pass: one integral pass.
@@ -737,6 +1215,7 @@ contains
             sp%vs(:, 1:nt) = xr
             sp%avs(:, 1:nt) = axr
             sp%m = nt
+            sp%ncollapse = sp%ncollapse + 1
          end if
          call tddft_orthonormalise(nov, sp%m, sp%mmax, sp%vs, nunc, tc, nnew)
          if (nnew == 0 .and. nmain == 0) then
@@ -767,7 +1246,10 @@ contains
                             //"instability)")
          else
             res%space = sp%m
-            allocate (res%omega(nr), res%xamp(nocc, nvir, nr), res%tdip(3, nr), res%osc(nr), res%resid(nr))
+            res%ncollapse = sp%ncollapse
+            allocate (res%omega(nr), res%xamp(nocc, nvir, nr), res%yamp(nocc, nvir, nr), res%tdip(3, nr), &
+                      res%osc(nr), res%resid(nr))
+            res%yamp = 0.0_dp
             res%omega = wsub(1:nr)
             res%resid = rnorm(1:nr)
             do k = 1, nr
