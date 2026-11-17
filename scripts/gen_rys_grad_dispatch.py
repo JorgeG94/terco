@@ -25,6 +25,8 @@ def _load(name, path):
 
 
 gp = _load("gp", os.path.join(HERE, "gen_perclass.py"))
+gg = _load("gg", os.path.join(HERE, "gen_rys_grad.py"))
+PAIRS_NCB = gg.PAIRS_NCB
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
@@ -41,7 +43,7 @@ def main():
         la, lb, lc, ld = (int(c) for c in tag)
         key = ((la*gp.CLASS_RADIX + lb)*gp.CLASS_RADIX + lc)*gp.CLASS_RADIX + ld
         keys.append((key, tag))
-        use_lines.append(f"   use trc_pc_rysg{tag}, only: rysg{tag}_screen, rysg{tag}_compact")
+        use_lines.append(f"   use trc_pc_rysg{tag}, only: rysg{tag}_screen, rysg{tag}_compact, &\n                  rysg{tag}_pairs_compact")
     keys.sort()
 
     # Wrapped, not one line: at TERCO_LMAX=3 the list runs to 242 keys
@@ -62,6 +64,14 @@ def main():
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, npriv, gp)"""
         for key, tag in keys)
 
+    pairs_cases = "\n".join(
+        f"""      case ({key}); call rysg{tag}_pairs_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
+                          npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &
+                          nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
+                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                          npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp)"""
+        for key, tag in keys)
+
     out = f"""!
 ! Dispatcher over the Rys per-class GRADIENT kernels gen_rys_grad.py wrote.
 !
@@ -78,7 +88,10 @@ module trc_rys_grad_kernels
    implicit none
    private
    public :: rysg_has_class
-   public :: rysg_screen_dispatch, rysg_compact_dispatch
+   public :: rysg_screen_dispatch, rysg_compact_dispatch, rysg_pairs_dispatch
+
+   integer, parameter, public :: RYSG_PAIRS_NCB = {PAIRS_NCB}
+      !! Columns one rysg_pairs_dispatch call carries (gen_rys_grad.py's PAIRS_NCB).
 
    integer, parameter, public :: RYSG_LMAX = {lmax}
       !! Highest l with gradient kernels: above it the analytic gradient is refused.
@@ -171,6 +184,45 @@ contains
 {compact_cases}
       end select
    end subroutine rysg_compact_dispatch
+
+   subroutine rysg_pairs_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
+                          npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &
+                          nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
+                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
+                          npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp)
+      !! The compact pass over a COLUMN PAIR TABLE: every survivor's derivative
+      !! integrals are contracted against all `ncb` columns (at most
+      !! RYSG_PAIRS_NCB) at once, into gp(:, :, :, column). Column c owns pairs
+      !! pstart(c) .. pstart(c+1)-1 of (pl, pr, pj, pk); see
+      !! gen_rys_grad.py's pairs_item_text for what a pair contributes.
+      integer, intent(in) :: key
+      integer(int64), intent(in) :: nout
+      integer,  intent(in)    :: out_seg(*), out_iab(*), out_icd(*)
+      integer,  intent(in)    :: nseg, npair, nbas, nao
+      integer,  intent(in)    :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg)
+      integer,  intent(in)    :: sPA(nseg), sPB(nseg)
+      integer,  intent(in)    :: sSA(nseg), sSB(nseg)
+      logical,  intent(in)    :: sD(nseg)
+      real(dp), intent(in)    :: sW(nseg)
+      integer,  intent(in)    :: sp_i(npair), sp_j(npair)
+      real(dp), intent(in)    :: sp_q(npair), pcut, omega
+      integer,  intent(in)    :: ao_off(nbas), sh_at(nbas), natm
+      integer,  intent(in)    :: nqp
+      real(dp), intent(in)    :: qp_z(nqp), qp_c(nqp), qp_a(nqp)
+      real(dp), intent(in)    :: qp_px(nqp), qp_py(nqp), qp_pz(nqp)
+      real(dp), intent(in)    :: sq_ax(npair), sq_ay(npair), sq_az(npair)
+      real(dp), intent(in)    :: sq_abx(npair), sq_aby(npair), sq_abz(npair)
+      integer,  intent(in)    :: sq_n(npair)
+      integer,  intent(in)    :: npool, ncb
+      real(dp), intent(in)    :: dmat(npool, nao, nao)
+      integer,  intent(in)    :: pstart(ncb + 1), pl(*), pr(*)
+      real(dp), intent(in)    :: pj(*), pk(*)
+      integer,  intent(in)    :: npriv
+      real(dp), intent(inout) :: gp(3, natm, npriv, ncb)
+      select case (key)
+{pairs_cases}
+      end select
+   end subroutine rysg_pairs_dispatch
 
 end module trc_rys_grad_kernels
 """
