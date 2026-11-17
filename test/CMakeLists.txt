@@ -778,6 +778,18 @@ set_target_properties(check_nosym_f PROPERTIES Fortran_MODULE_DIRECTORY
 set_tests_properties(terco/check_nosym_f PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
+# eri%fock_nosym_many: J and K of several non-symmetric densities in one pass
+# (the TDDFT matvec). Batch against single-density fock_nosym, an
+# antisymmetric density, and pyscf's get_jk(hermi=0)
+# (test/pyscf_refs/fock_nosym_many_*.ref, generate.py's gen_fock_nosym_many).
+# water/6-31G* reaches d (Cartesian), so every digestion branch with dij, dkl
+# and dpq both set and unset runs.
+#
+terco_add_check(check_fock_nosym_many check_fock_nosym_many.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                ARGS water.xyz basis_sets/6-31gs.json ${CMAKE_CURRENT_BINARY_DIR}/fock_nosym_many_probe_water_631gs.bin water_631gs)
+target_link_libraries(check_fock_nosym_many PRIVATE test-drive::test-drive)
+
+#
 # Rys against HGP, same density and screening, on water/6-31G* and
 # water/cc-pVDZ. GPU 2, not the fleet default of
 # 0 `terco_add_check` otherwise sets, to stay off the GPUs other work on
