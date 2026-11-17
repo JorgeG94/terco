@@ -53,7 +53,7 @@ module check_xc_grad_response_suite
    use trc_dft_grid, only: dft_grid_t, dft_grid_build
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
-   use trc_error, only: error_t
+   use trc_error, only: error_t, ERROR_VALIDATION
    use pic_logger, only: global_logger
    implicit none
    private
@@ -295,6 +295,10 @@ contains
       columns(:, :, 1, :) = pm(:, :, 1:ncol)
       columns(:, :, 2, :) = tm(:, :, 1:ncol)
       g = 0.0_dp
+      ! A stale error from an earlier refusal must not survive into this call:
+      ! the entry clears it, and the success check below fails if it does not.
+      call opts%err%set(ERROR_VALIDATION, "stale error from a reused options object")
+      opts%nsweep = -1
       !$acc enter data copyin(g)
       call xc_grad_response_core(cs%bas, cs%la, cs%func, cs%xg, cs%dmat, columns, g, opts)
       !$acc update self(g)

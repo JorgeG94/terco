@@ -117,9 +117,10 @@ module trc_xc_grad_response
       real(dp) :: screen_tol = 0.0_dp
       !! Density screen on D, as xc_grad_batch_active; zero: none.
       integer :: nsweep = 0
-      !! Out: the grid sweeps made.
+      !! Out: the grid sweeps made. Reset to 0 on entry.
       type(error_t) :: err
       !! Out: trc_xc_response_refuse_reason's message, or the partition's error.
+      !! Cleared on entry, so one options object can be reused after a refusal.
    end type trc_xc_grad_response_options_t
 
    type, extends(trc_xc_grad_response_options_t) :: xc_grad_response_hooks_t
@@ -292,6 +293,7 @@ contains
 
       ncol = size(columns, 4)
       options%nsweep = 0
+      call options%err%clear()
       why = trc_xc_response_refuse_reason(func, "trc_xc_grad_response")
       if (len_trim(why) > 0) then
          call options%err%set(ERROR_VALIDATION, trim(why))
