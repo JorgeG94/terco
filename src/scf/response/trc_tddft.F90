@@ -66,7 +66,7 @@ module trc_tddft
    !!
    !! A breakdown (no usable new direction while a root is unconverged), a NaN
    !! or Inf anywhere, a non-positive excitation energy or running out of
-   !! iterations is an error (`err`, `res%converged = .false.`), never a
+   !! iterations is an error (`res%err`, `res%converged = .false.`), never a
    !! silently returned approximate answer. A NaN residual reads as not
    !! converged (`.not. (r < tol)`), as in trc_cpks.
    !!
@@ -85,7 +85,7 @@ module trc_tddft
    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_multipoles, TRC_NMULT
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_error, only: error_t, ERROR_GENERIC, ERROR_VALIDATION
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t
@@ -94,7 +94,7 @@ module trc_tddft
    implicit none
    private
 
-   public :: trc_tddft_options_t, trc_tddft_result_t, trc_tddft_op_t
+   public :: trc_tddft_options_t, trc_tddft_result_t, trc_tddft_op_t, trc_tddft_reference_t
    public :: trc_tddft_solve_rks, trc_tddft_refuse_reason
 
    real(dp), parameter :: OSC_PREFACTOR = 2.0_dp/3.0_dp
@@ -126,7 +126,7 @@ module trc_tddft
       integer :: max_space = 0
       !! Largest subspace before the collapse; 0 takes 12*nroots. Raised to
       !! 3*(nroots + buffer) if smaller, and capped at the dimension of the problem.
-      integer :: max_iter = 50
+      integer :: max_iteration = 50
       !! Most Davidson iterations (matvec passes).
       integer :: nguess = 0
       !! Unit-vector guesses; 0 takes max(2*nroots, nroots + 4), capped at the
@@ -137,6 +137,9 @@ module trc_tddft
 
    type :: trc_tddft_result_t
       logical :: converged = .false.
+      type(error_t) :: err
+      !! The refusal, breakdown, NaN or non-convergence that stopped the solve;
+      !! no error when `converged`.
       integer :: nroots = 0
       integer :: iterations = 0
       !! Davidson iterations taken.
@@ -159,6 +162,35 @@ module trc_tddft
       !! multiplies X by `trc_tddft_op_t%apply`.
    end type trc_tddft_result_t
 
+   type :: trc_tddft_reference_t
+      !! The closed-shell SCF reference a solve starts from: the orbitals,
+      !! their energies and the total density (copied, host), the number of
+      !! occupied orbitals, and for Kohn-Sham the functional and an optional XC
+      !! scratch budget. Filled by `set`. The grid the SCF converged on is not
+      !! held here (it is device-mapped): the solve and the operator take it as
+      !! an argument.
+      integer :: nocc = 0
+      real(dp), allocatable :: cmo(:, :), eps(:), dmat(:, :)
+      !! (nao, nmo) orbitals, occupied first; (nmo); (nao, nao) total density.
+      logical :: dft = .false.
+      type(trc_xc_functional_t) :: func
+      logical :: has_budget = .false.
+      integer(int64) :: budget = 0
+      !! trc_xc_fxc_rks_apply_many's cap in doubles; unused unless has_budget.
+   contains
+      procedure :: set => tddft_reference_set
+   end type trc_tddft_reference_t
+
+   type :: tddft_space_t
+      !! The Davidson subspace: its orthonormal basis vs and A times it, avs
+      !! (nov, mmax) with m columns in use, and the guess bookkeeping the probe
+      !! needs: the ordering `ord` of the orbital-energy differences, the
+      !! nguess guessed, nprobe probe vectors tp.
+      integer :: m = 0, mmax = 0, nguess = 0, nprobe = 0
+      real(dp), allocatable :: vs(:, :), avs(:, :), tp(:, :)
+      integer, allocatable :: ord(:)
+   end type tddft_space_t
+
    type :: trc_tddft_op_t
       !! The matvec X -> A X of the module header, for any number of vectors
       !! in one integral pass. Holds the orbitals and the XC cache; the
@@ -169,7 +201,10 @@ module trc_tddft
       logical :: dft = .false.
       real(dp) :: cx = 1.0_dp
       !! Exact-exchange fraction applied to K.
+      logical :: has_budget = .false.
       integer(int64) :: budget = 0
+      !! Passed to the XC response only when `has_budget`; absent it takes the
+      !! routine's own default, which keeps all vectors in one pass.
       real(dp), allocatable :: cocc(:, :), cvir(:, :), de(:, :)
       !! (nao, nocc), (nao, nvir), (nocc, nvir) orbital-energy differences.
       type(trc_xc_functional_t) :: func
@@ -224,45 +259,61 @@ contains
       end if
    end function trc_tddft_refuse_reason
 
-   subroutine tddft_op_setup(this, b, la, nocc, cmo, eps, dmat, err, func, xg, budget)
+   subroutine tddft_reference_set(this, nocc, cmo, eps, dmat, func, budget)
+      !! Copy a restricted SCF result in: `cmo` (nao, nmo, occupied columns
+      !! first), `eps` (nmo), `dmat` (nao, nao total density), all host, as
+      !! `trc_scf_run` returns them. `func` is given for Kohn-Sham and absent
+      !! for Hartree-Fock; `budget` caps the XC scratch (doubles) and, left
+      !! out, leaves the routine's default.
+      class(trc_tddft_reference_t), intent(inout) :: this
+      integer, intent(in) :: nocc
+      real(dp), intent(in) :: cmo(:, :), eps(:), dmat(:, :)
+      type(trc_xc_functional_t), intent(in), optional :: func
+      integer(int64), intent(in), optional :: budget
+      this%nocc = nocc
+      this%cmo = cmo
+      this%eps = eps
+      this%dmat = dmat
+      this%dft = present(func)
+      if (present(func)) this%func = func
+      this%has_budget = present(budget)
+      if (present(budget)) this%budget = budget
+   end subroutine tddft_reference_set
+
+   subroutine tddft_op_setup(this, b, la, ref, err, xg)
       !!
-      !! Keep the orbitals (`cmo` (nao, nmo), occupied columns first, host) on
-      !! the device and, for a functional, build the f_xc cache from the
-      !! ground-state density `dmat` (nao, nao, host) on `xg`, which must
-      !! be the grid the SCF converged on and already on the device. `func`
-      !! absent: Hartree-Fock. `err` is set, and nothing is mapped, if the
-      !! functional is refused or `xg` is missing.
+      !! Keep the orbitals of `ref` on the device and, for a functional, build
+      !! the f_xc cache from its ground-state density. `err` is set, and
+      !! nothing is mapped, if the functional is refused or its grid is
+      !! missing.
       !!
       class(trc_tddft_op_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       type(trc_linalg_t), intent(inout) :: la
-      integer, intent(in) :: nocc
-      real(dp), intent(in) :: cmo(:, :), eps(:), dmat(:, :)
+      type(trc_tddft_reference_t), intent(in) :: ref
       type(error_t), intent(out) :: err
-      type(trc_xc_functional_t), intent(in), optional :: func
       type(trc_xc_grid_t), intent(in), optional :: xg
-      integer(int64), intent(in), optional :: budget
+      !! The grid the SCF converged on, built and on the device; needed for a
+      !! functional.
       type(trc_tddft_options_t) :: probe
       character(len=256) :: reason
-      integer :: n, nvir, i, a
+      integer :: n, nocc, nvir, i, a
 
       call this%release()
-      if (present(func)) then
-         reason = trc_tddft_refuse_reason(probe, func)
-      else
-         reason = ""
-      end if
+      reason = ""
+      if (ref%dft) reason = trc_tddft_refuse_reason(probe, ref%func)
       if (len_trim(reason) > 0) then
          call err%set(ERROR_VALIDATION, trim(reason))
          return
       end if
-      if (present(func) .and. .not. present(xg)) then
+      if (ref%dft .and. .not. present(xg)) then
          call err%set(ERROR_VALIDATION, "trc_tddft: a functional needs the SCF's xc grid")
          return
       end if
-      n = size(cmo, 1)
-      nvir = size(cmo, 2) - nocc
-      if (nocc < 1 .or. nvir < 1 .or. n /= b%nao .or. size(eps) < size(cmo, 2)) then
+      nocc = ref%nocc
+      n = size(ref%cmo, 1)
+      nvir = size(ref%cmo, 2) - nocc
+      if (nocc < 1 .or. nvir < 1 .or. n /= b%nao .or. size(ref%eps) < size(ref%cmo, 2)) then
          call err%set(ERROR_VALIDATION, "trc_tddft: needs at least one occupied and one virtual orbital, " &
                       //"and orbitals of the basis's size")
          return
@@ -270,23 +321,24 @@ contains
       this%nao = n
       this%nocc = nocc
       this%nvir = nvir
-      if (present(budget)) this%budget = budget
+      this%has_budget = ref%has_budget
+      this%budget = ref%budget
       allocate (this%cocc(n, nocc), this%cvir(n, nvir), this%de(nocc, nvir))
-      this%cocc = cmo(:, 1:nocc)
-      this%cvir = cmo(:, nocc + 1:nocc + nvir)
+      this%cocc = ref%cmo(:, 1:nocc)
+      this%cvir = ref%cmo(:, nocc + 1:nocc + nvir)
       do a = 1, nvir
          do i = 1, nocc
-            this%de(i, a) = eps(nocc + a) - eps(i)
+            this%de(i, a) = ref%eps(nocc + a) - ref%eps(i)
          end do
       end do
       this%cx = 1.0_dp
-      this%dft = present(func)
+      this%dft = ref%dft
       if (this%dft) then
-         this%func = func
-         this%cx = func%exx
+         this%func = ref%func
+         this%cx = ref%func%exx
       end if
       !$acc enter data copyin(this%cocc, this%cvir, this%de)
-      if (this%dft) call this%cache%setup(b, xg, func, dmat, la)
+      if (this%dft) call this%cache%setup(b, xg, ref%func, ref%dmat, la)
       this%ready = .true.
    end subroutine tddft_op_setup
 
@@ -298,9 +350,9 @@ contains
       integer, intent(in) :: nov, nvec
       real(dp), intent(in) :: de(nov), x(nov, nvec)
       real(dp), intent(inout) :: ax(nov, nvec)
-      integer :: idx, k
-      do concurrent(k=1:nvec, idx=1:nov)
-         ax(idx, k) = ax(idx, k) + de(idx)*x(idx, k)
+      integer :: pair, k
+      do concurrent(k=1:nvec, pair=1:nov)
+         ax(pair, k) = ax(pair, k) + de(pair)*x(pair, k)
       end do
    end subroutine tddft_add_diag
 
@@ -320,7 +372,8 @@ contains
       real(dp), intent(in) :: x(this%nocc, this%nvir, nvec)
       real(dp), intent(out) :: ax(this%nocc, this%nvir, nvec)
       type(trc_xc_grid_t), intent(in), optional :: xg
-      real(dp), allocatable :: tmat(:, :, :), gmat(:, :, :), vxc(:, :, :), half(:, :), tmp(:, :)
+      !! Needed exactly when `setup` was given a functional.
+      real(dp), allocatable :: tmat(:, :, :), gmat(:, :, :), vxc(:, :, :), half(:, :), half_occ(:, :)
       integer :: n, nocc, nvir, k
 
       if (.not. this%ready) error stop "trc_tddft: operator used before setup"
@@ -329,34 +382,41 @@ contains
       n = this%nao
       nocc = this%nocc
       nvir = this%nvir
-      allocate (tmat(n, n, nvec), gmat(n, n, nvec), half(n, nvir), tmp(nocc, n))
+      allocate (tmat(n, n, nvec), gmat(n, n, nvec), half(n, nvir), half_occ(nocc, n))
       if (this%dft) then
          allocate (vxc(n, n, nvec))
       else
          allocate (vxc(1, 1, 1))
       end if
-      !$acc enter data copyin(x) create(ax, tmat, gmat, vxc, half, tmp)
+      !$acc enter data copyin(x) create(ax, tmat, gmat, vxc, half, half_occ)
       do k = 1, nvec
          call la%gemm_mat(this%cocc, x(:, :, k), half)
          call la%gemm_mat(half, this%cvir, tmat(:, :, k), transb="T")
       end do
       !$acc update self(tmat)
-      call eri%fock_nosym_many(b, nvec, tmat, gmat, k_scale=2.0_dp*this%cx, j_scale=2.0_dp, &
-                               density_screen=.false.)
+      call eri%fock_nosym_many(b, nvec, tmat, gmat, &
+                               trc_fock_options_t(j_scale=2.0_dp, k_scale=2.0_dp*this%cx, density_screen=.false.))
       !$acc update device(gmat)
-      if (this%dft) call trc_xc_fxc_rks_apply_many(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
+      if (this%dft) then
+         ! Without a budget the routine's default keeps every vector in one pass.
+         if (this%has_budget) then
+            call trc_xc_fxc_rks_apply_many(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
+         else
+            call trc_xc_fxc_rks_apply_many(b, xg, this%cache, nvec, tmat, vxc, la=la)
+         end if
+      end if
       do k = 1, nvec
-         call la%gemm_mat(this%cocc, gmat(:, :, k), tmp, transa="T")
-         call la%gemm_mat(tmp, this%cvir, ax(:, :, k))
+         call la%gemm_mat(this%cocc, gmat(:, :, k), half_occ, transa="T")
+         call la%gemm_mat(half_occ, this%cvir, ax(:, :, k))
          if (this%dft) then
-            call la%gemm_mat(this%cocc, vxc(:, :, k), tmp, transa="T")
-            call la%gemm_mat(tmp, this%cvir, ax(:, :, k), alpha=2.0_dp, beta=1.0_dp)
+            call la%gemm_mat(this%cocc, vxc(:, :, k), half_occ, transa="T")
+            call la%gemm_mat(half_occ, this%cvir, ax(:, :, k), alpha=2.0_dp, beta=1.0_dp)
          end if
       end do
       call tddft_add_diag(nocc*nvir, nvec, this%de, x, ax)
       !$acc update self(ax)
-      !$acc exit data delete(x, ax, tmat, gmat, vxc, half, tmp)
-      deallocate (tmat, gmat, vxc, half, tmp)
+      !$acc exit data delete(x, ax, tmat, gmat, vxc, half, half_occ)
+      deallocate (tmat, gmat, vxc, half, half_occ)
    end subroutine tddft_op_apply
 
    subroutine tddft_op_dipoles(this, b, pl, la, nvec, x, tdip)
@@ -415,13 +475,12 @@ contains
       this%budget = 0
    end subroutine tddft_op_release
 
-   subroutine tddft_fail(res, err, code, msg)
+   subroutine tddft_fail(res, code, msg)
       type(trc_tddft_result_t), intent(inout) :: res
-      type(error_t), intent(inout) :: err
       integer, intent(in) :: code
       character(len=*), intent(in) :: msg
       res%converged = .false.
-      call err%set(code, msg)
+      call res%err%set(code, msg)
    end subroutine tddft_fail
 
    subroutine tddft_orthonormalise(nov, m, mmax, vs, nc, tc, nnew)
@@ -462,112 +521,104 @@ contains
       end do
    end subroutine tddft_orthonormalise
 
-   subroutine tddft_probe(nov, nt, nprobe, nguess, mmax, ord, xr, axr, tp, m, vs, avs, nnew)
-      !! Append the unit vectors of the nprobe orbital-energy differences after
-      !! the nguess guessed ones (those the guesses never held), collapsing
-      !! onto the nt Ritz vectors xr/axr first if there is no room. nnew is the
-      !! number kept (0: all lay inside the space), m is advanced by it.
-      integer, intent(in) :: nov, nt, nprobe, nguess, mmax
-      integer, intent(in) :: ord(nov)
-      real(dp), intent(in) :: xr(nov, nt), axr(nov, nt)
-      real(dp), intent(inout) :: tp(nov, nprobe), vs(nov, *), avs(nov, *)
-      integer, intent(inout) :: m
+   subroutine tddft_probe(sp, xr, axr, nnew)
+      !! Append the unit vectors of the sp%nprobe orbital-energy differences
+      !! after the sp%nguess guessed ones (those the guesses never held),
+      !! collapsing onto the Ritz vectors xr/axr first if there is no room.
+      !! nnew is the number kept (0: all lay inside the space); sp%m advances
+      !! by it.
+      type(tddft_space_t), intent(inout) :: sp
+      real(dp), intent(in) :: xr(:, :), axr(:, :)
       integer, intent(out) :: nnew
-      integer :: j
-      tp = 0.0_dp
-      do j = 1, nprobe
-         tp(ord(nguess + j), j) = 1.0_dp
+      integer :: j, nt
+      nt = size(xr, 2)
+      sp%tp = 0.0_dp
+      do j = 1, sp%nprobe
+         sp%tp(sp%ord(sp%nguess + j), j) = 1.0_dp
       end do
-      if (m + nprobe > mmax) then
-         vs(:, 1:nt) = xr
-         avs(:, 1:nt) = axr
-         m = nt
+      if (sp%m + sp%nprobe > sp%mmax) then
+         sp%vs(:, 1:nt) = xr
+         sp%avs(:, 1:nt) = axr
+         sp%m = nt
       end if
-      call tddft_orthonormalise(nov, m, mmax, vs, nprobe, tp, nnew)
-      m = m + nnew
+      call tddft_orthonormalise(size(xr, 1), sp%m, sp%mmax, sp%vs, sp%nprobe, sp%tp, nnew)
+      sp%m = sp%m + nnew
    end subroutine tddft_probe
 
-   subroutine trc_tddft_solve_rks(b, pl, eri, la, nocc, cmo, eps, dmat, opts, res, err, func, xg, budget)
+   subroutine trc_tddft_solve_rks(b, pl, eri, la, ref, opts, res, xg)
       !!
-      !! The lowest `opts%nroots` singlet TDA roots of a closed-shell reference
-      !! (module header). `cmo` (nao, nmo) and `eps` (nmo) are the SCF's
-      !! orbitals and energies, `dmat` (nao, nao) its total density, all host as
-      !! `trc_scf_run` returns them; `func` and `xg` (the grid the SCF
-      !! converged on, built and on the device) are given together for a
-      !! Kohn-Sham reference and absent for Hartree-Fock. `err` carries a
-      !! refusal, a breakdown, a NaN or a failure to converge; `res%converged` is
-      !! then false and the other fields are not to be used.
+      !! The lowest `opts%nroots` singlet TDA roots of the closed-shell
+      !! reference `ref` (module header; `trc_tddft_reference_t%set` builds it
+      !! from a `trc_scf_run` result, with the functional and its grid for
+      !! Kohn-Sham and without for Hartree-Fock) and, for Kohn-Sham, `xg`, the
+      !! grid the SCF converged on (built, on the device). `res%err` carries a
+      !! refusal, a breakdown, a NaN or a failure to converge; `res%converged`
+      !! is then false and the other fields are not to be used.
       !!
       type(trc_basis_t), intent(in) :: b
       type(trc_pairlist_t), intent(in) :: pl
       type(trc_eri_t), intent(inout) :: eri
       type(trc_linalg_t), intent(inout) :: la
-      integer, intent(in) :: nocc
-      real(dp), intent(in) :: cmo(:, :), eps(:), dmat(:, :)
+      type(trc_tddft_reference_t), intent(in) :: ref
       type(trc_tddft_options_t), intent(in) :: opts
       type(trc_tddft_result_t), intent(out) :: res
-      type(error_t), intent(out) :: err
-      type(trc_xc_functional_t), intent(in), optional :: func
       type(trc_xc_grid_t), intent(in), optional :: xg
-      integer(int64), intent(in), optional :: budget
 
       type(trc_tddft_op_t) :: op
-      real(dp), allocatable :: vs(:, :), avs(:, :), hsub(:, :), csub(:, :), wsub(:)
-      real(dp), allocatable :: xr(:, :), axr(:, :), tc(:, :), rnorm(:), dgn(:), dsort(:), tp(:, :)
+      real(dp), allocatable :: hsub(:, :), csub(:, :), wsub(:)
+      real(dp), allocatable :: xr(:, :), axr(:, :), tc(:, :), rnorm(:), dgn(:), dsort(:)
+      type(tddft_space_t) :: sp
       real(dp) :: den
-      integer, allocatable :: ord(:)
-      integer :: nov, nvir, nr, nt, mmax, nguess, m, nnew, nunc, nmain, i, a, j, k, ioff, nprobe
+      integer :: nov, nvir, nr, nt, nnew, nunc, nmain, nocc, i, a, j, k, ioff
       integer(default_int) :: linfo
       character(len=256) :: reason
       character(len=1024) :: logline
       logical :: done, probed
-      real(dp) :: buf_tol
+      real(dp) :: buffer_threshold
 
       res%converged = .false.
       res%nroots = opts%nroots
-      reason = trc_tddft_refuse_reason(opts, func)
-      if (len_trim(reason) > 0) then
-         call tddft_fail(res, err, ERROR_VALIDATION, trim(reason))
-         return
-      end if
-      if (present(func) .neqv. present(xg)) then
-         call tddft_fail(res, err, ERROR_VALIDATION, "trc_tddft: a functional and its xc grid are given together")
-         return
-      end if
-      if (present(func)) then
-         call op%setup(b, la, nocc, cmo, eps, dmat, err, func=func, xg=xg, budget=budget)
+      reason = ""
+      if (ref%dft) then
+         reason = trc_tddft_refuse_reason(opts, ref%func)
       else
-         call op%setup(b, la, nocc, cmo, eps, dmat, err, budget=budget)
+         reason = trc_tddft_refuse_reason(opts)
       end if
-      if (err%has_error()) then
+      if (len_trim(reason) > 0) then
+         call tddft_fail(res, ERROR_VALIDATION, trim(reason))
+         return
+      end if
+      call op%setup(b, la, ref, res%err, xg)
+      if (res%err%has_error()) then
          res%converged = .false.
          call op%release()
          return
       end if
 
+      nocc = ref%nocc
       nvir = op%nvir
       nov = nocc*nvir
       nr = opts%nroots
       if (nr > nov) then
-         call tddft_fail(res, err, ERROR_VALIDATION, "trc_tddft: nroots = "//to_string(nr)// &
+         call tddft_fail(res, ERROR_VALIDATION, "trc_tddft: nroots = "//to_string(nr)// &
                          " exceeds the "//to_string(nov)//" occupied-virtual pairs")
          call op%release()
          return
       end if
-      mmax = opts%max_space
-      if (mmax <= 0) mmax = 12*nr
+      sp%mmax = opts%max_space
+      if (sp%mmax <= 0) sp%mmax = 12*nr
       ! The block iterated is the nroots wanted plus a buffer of further Ritz
       ! vectors (see the header, MISSED ROOTS).
       nt = min(nr + max(2, nr/2), nov)
-      buf_tol = max(BUFFER_TOL, 100.0_dp*opts%conv_tol)
-      mmax = min(max(mmax, 3*nt), nov)
-      nguess = opts%nguess
-      if (nguess <= 0) nguess = max(2*nr, nr + 4)
-      nguess = min(max(nguess, nt), nov, mmax)
+      buffer_threshold = max(BUFFER_TOL, 100.0_dp*opts%conv_tol)
+      sp%mmax = min(max(sp%mmax, 3*nt), nov)
+      sp%nguess = opts%nguess
+      if (sp%nguess <= 0) sp%nguess = max(2*nr, nr + 4)
+      sp%nguess = min(max(sp%nguess, nt), nov, sp%mmax)
 
-      allocate (vs(nov, mmax), avs(nov, mmax), hsub(mmax, mmax), csub(mmax, mmax), wsub(mmax))
+      allocate (sp%vs(nov, sp%mmax), sp%avs(nov, sp%mmax), hsub(sp%mmax, sp%mmax), csub(sp%mmax, sp%mmax), wsub(sp%mmax))
       allocate (xr(nov, nt), axr(nov, nt), tc(nov, nt), rnorm(nt), dgn(nov), dsort(nov))
-      allocate (ord(nov))
+      allocate (sp%ord(nov))
 
       ! Diagonal (e_a - e_i) in the flat (i fastest) ordering of the amplitudes;
       ! the guesses are its lowest entries.
@@ -578,23 +629,23 @@ contains
       end do
       ! sort_index sorts its array in place; the preconditioner needs dgn as is.
       dsort = dgn
-      call sort_index(dsort, ord)
+      call sort_index(dsort, sp%ord)
       ! Do not cut a cluster of (near-)degenerate differences in two: the
       ! partner left out is a direction the solve may never generate.
-      do while (nguess < min(nov, mmax))
-         if (dsort(nguess + 1) - dsort(nguess) >= TIE_TOL) exit
-         nguess = nguess + 1
+      do while (sp%nguess < min(nov, sp%mmax))
+         if (dsort(sp%nguess + 1) - dsort(sp%nguess) >= TIE_TOL) exit
+         sp%nguess = sp%nguess + 1
       end do
       ! The probe must fit beside the Ritz vectors it may collapse onto.
-      nprobe = max(min(nguess, nov - nguess, mmax - nt), 0)
-      allocate (tp(nov, max(nprobe, 1)))
+      sp%nprobe = max(min(sp%nguess, nov - sp%nguess, sp%mmax - nt), 0)
+      allocate (sp%tp(nov, max(sp%nprobe, 1)))
       probed = .false.
-      vs(:, 1:nguess) = 0.0_dp
-      do j = 1, nguess
-         vs(ord(j), j) = 1.0_dp
+      sp%vs(:, 1:sp%nguess) = 0.0_dp
+      do j = 1, sp%nguess
+         sp%vs(sp%ord(j), j) = 1.0_dp
       end do
-      m = nguess
-      nnew = nguess
+      sp%m = sp%nguess
+      nnew = sp%nguess
       res%iterations = 0
       res%nmatvec = 0
       done = .false.
@@ -602,50 +653,50 @@ contains
       do
          ! A on the vectors added since the last pass: one integral pass.
          if (nnew > 0) then
-            call op%apply(b, eri, la, nnew, vs(:, m - nnew + 1:m), avs(:, m - nnew + 1:m), xg)
+            call op%apply(b, eri, la, nnew, sp%vs(:, sp%m - nnew + 1:sp%m), sp%avs(:, sp%m - nnew + 1:sp%m), xg)
             res%nmatvec = res%nmatvec + nnew
-            if (.not. all(ieee_is_finite(avs(:, m - nnew + 1:m)))) then
-               call tddft_fail(res, err, ERROR_GENERIC, "trc_tddft: the matvec returned NaN or Inf")
+            if (.not. all(ieee_is_finite(sp%avs(:, sp%m - nnew + 1:sp%m)))) then
+               call tddft_fail(res, ERROR_GENERIC, "trc_tddft: the matvec returned NaN or Inf")
                exit
             end if
          end if
          res%iterations = res%iterations + 1
 
          ! Subspace problem.
-         call pic_gemm(vs(:, 1:m), avs(:, 1:m), hsub(1:m, 1:m), "T", "N", 1.0_dp, 0.0_dp)
-         do j = 1, m
+         call pic_gemm(sp%vs(:, 1:sp%m), sp%avs(:, 1:sp%m), hsub(1:sp%m, 1:sp%m), "T", "N", 1.0_dp, 0.0_dp)
+         do j = 1, sp%m
             do k = 1, j - 1
                hsub(k, j) = 0.5_dp*(hsub(k, j) + hsub(j, k))
             end do
          end do
-         csub(1:m, 1:m) = hsub(1:m, 1:m)
-         call pic_syev(csub(1:m, 1:m), wsub(1:m), "V", "U", linfo)
-         if (linfo /= 0 .or. .not. all(ieee_is_finite(wsub(1:m)))) then
-            call tddft_fail(res, err, ERROR_GENERIC, "trc_tddft: the subspace eigenproblem broke down (NaN or " &
+         csub(1:sp%m, 1:sp%m) = hsub(1:sp%m, 1:sp%m)
+         call pic_syev(csub(1:sp%m, 1:sp%m), wsub(1:sp%m), "V", "U", linfo)
+         if (linfo /= 0 .or. .not. all(ieee_is_finite(wsub(1:sp%m)))) then
+            call tddft_fail(res, ERROR_GENERIC, "trc_tddft: the subspace eigenproblem broke down (NaN or " &
                             //"LAPACK failure)")
             exit
          end if
 
          ! Ritz vectors, A times them, and the residuals of the lowest nt.
-         call pic_gemm(vs(:, 1:m), csub(1:m, 1:nt), xr, "N", "N", 1.0_dp, 0.0_dp)
-         call pic_gemm(avs(:, 1:m), csub(1:m, 1:nt), axr, "N", "N", 1.0_dp, 0.0_dp)
+         call pic_gemm(sp%vs(:, 1:sp%m), csub(1:sp%m, 1:nt), xr, "N", "N", 1.0_dp, 0.0_dp)
+         call pic_gemm(sp%avs(:, 1:sp%m), csub(1:sp%m, 1:nt), axr, "N", "N", 1.0_dp, 0.0_dp)
          nunc = 0
          nmain = 0
          do k = 1, nt
             tc(:, k) = axr(:, k) - wsub(k)*xr(:, k)
             rnorm(k) = sqrt(sum(tc(:, k)**2))
-            if (.not. (rnorm(k) < merge(opts%conv_tol, buf_tol, k <= nr))) then
+            if (.not. (rnorm(k) < merge(opts%conv_tol, buffer_threshold, k <= nr))) then
                nunc = nunc + 1
                if (k <= nr) nmain = nmain + 1
             end if
          end do
          if (opts%verbose) then
-            write (logline, "(a,i0,a,i0,a,i0,a,es9.2,a,f14.8)") "   tddft it ", res%iterations, ": space ", m, &
+            write (logline, "(a,i0,a,i0,a,i0,a,es9.2,a,f14.8)") "   tddft it ", res%iterations, ": space ", sp%m, &
                ", unconverged ", nunc, ", max resid ", maxval(rnorm(1:nr)), ", w1 ", wsub(1)
             call global_logger%info(trim(logline))
          end if
          if (.not. all(ieee_is_finite(rnorm))) then
-            call tddft_fail(res, err, ERROR_GENERIC, "trc_tddft: a residual is NaN or Inf")
+            call tddft_fail(res, ERROR_GENERIC, "trc_tddft: a residual is NaN or Inf")
             exit
          end if
          if (nunc == 0) then
@@ -654,16 +705,16 @@ contains
             ! character the guesses (and so the corrections, which stay in
             ! their span) never reached shows up as a Ritz value below the
             ! converged ones and the iteration resumes. One more matvec pass.
-            if (.not. probed .and. nprobe > 0) then
+            if (.not. probed .and. sp%nprobe > 0) then
                probed = .true.
-               call tddft_probe(nov, nt, nprobe, nguess, mmax, ord, xr, axr, tp, m, vs, avs, nnew)
+               call tddft_probe(sp, xr, axr, nnew)
                if (nnew > 0) cycle
             end if
             done = .true.
             exit
          end if
-         if (res%iterations >= opts%max_iter) then
-            call tddft_fail(res, err, ERROR_GENERIC, "trc_tddft: not converged in "//to_string(opts%max_iter)// &
+         if (res%iterations >= opts%max_iteration) then
+            call tddft_fail(res, ERROR_GENERIC, "trc_tddft: not converged in "//to_string(opts%max_iteration)// &
                             " iterations, residual "//to_string(maxval(rnorm(1:nr)), "es9.2")//" (conv_tol "// &
                             to_string(opts%conv_tol, "es9.2")//")")
             exit
@@ -672,7 +723,7 @@ contains
          ! Preconditioned corrections of the unconverged roots, packed first.
          ioff = 0
          do k = 1, nt
-            if (rnorm(k) < merge(opts%conv_tol, buf_tol, k <= nr)) cycle
+            if (rnorm(k) < merge(opts%conv_tol, buffer_threshold, k <= nr)) cycle
             ioff = ioff + 1
             do j = 1, nov
                den = dgn(j) - wsub(k)
@@ -682,40 +733,40 @@ contains
          end do
 
          ! Collapse onto the current Ritz vectors when there is no room.
-         if (m + nunc > mmax) then
-            vs(:, 1:nt) = xr
-            avs(:, 1:nt) = axr
-            m = nt
+         if (sp%m + nunc > sp%mmax) then
+            sp%vs(:, 1:nt) = xr
+            sp%avs(:, 1:nt) = axr
+            sp%m = nt
          end if
-         call tddft_orthonormalise(nov, m, mmax, vs, nunc, tc, nnew)
+         call tddft_orthonormalise(nov, sp%m, sp%mmax, sp%vs, nunc, tc, nnew)
          if (nnew == 0 .and. nmain == 0) then
             ! Only buffer vectors were still unconverged and their corrections
             ! lie inside the space: nothing more to learn from them. The probe
             ! still runs once, as on the ordinary converged path.
-            if (.not. probed .and. nprobe > 0) then
+            if (.not. probed .and. sp%nprobe > 0) then
                probed = .true.
-               call tddft_probe(nov, nt, nprobe, nguess, mmax, ord, xr, axr, tp, m, vs, avs, nnew)
+               call tddft_probe(sp, xr, axr, nnew)
                if (nnew > 0) cycle
             end if
             done = .true.
             exit
          end if
          if (nnew == 0) then
-            call tddft_fail(res, err, ERROR_GENERIC, "trc_tddft: breakdown, no usable new trial vector while "// &
+            call tddft_fail(res, ERROR_GENERIC, "trc_tddft: breakdown, no usable new trial vector while "// &
                             to_string(nunc)//" root(s) are unconverged (residual "// &
                             to_string(maxval(rnorm(1:nr)), "es9.2")//")")
             exit
          end if
-         m = m + nnew
+         sp%m = sp%m + nnew
       end do
 
       if (done) then
          if (wsub(1) <= 0.0_dp) then
-            call tddft_fail(res, err, ERROR_GENERIC, "trc_tddft: a non-positive excitation energy ("// &
+            call tddft_fail(res, ERROR_GENERIC, "trc_tddft: a non-positive excitation energy ("// &
                             to_string(wsub(1), "es10.2")//" Eh): the reference is unstable (or a triplet-like " &
                             //"instability)")
          else
-            res%space = m
+            res%space = sp%m
             allocate (res%omega(nr), res%xamp(nocc, nvir, nr), res%tdip(3, nr), res%osc(nr), res%resid(nr))
             res%omega = wsub(1:nr)
             res%resid = rnorm(1:nr)
@@ -731,7 +782,7 @@ contains
          end if
       end if
       call op%release()
-      deallocate (vs, avs, hsub, csub, wsub, xr, axr, tc, rnorm, dgn, dsort, tp, ord)
+      deallocate (sp%vs, sp%avs, hsub, csub, wsub, xr, axr, tc, rnorm, dgn, dsort, sp%tp, sp%ord)
    end subroutine trc_tddft_solve_rks
 
 end module trc_tddft

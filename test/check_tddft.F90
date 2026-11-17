@@ -53,9 +53,11 @@ module check_tddft_suite
    use trc_eri, only: trc_eri_t
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t
+   use trc_xc, only: trc_xc_fxc_vec_chunk
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name, XC_FAMILY_MGGA
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_tddft, only: trc_tddft_options_t, trc_tddft_result_t, trc_tddft_op_t, trc_tddft_solve_rks, &
+                        trc_tddft_reference_t, &
                         trc_tddft_refuse_reason
    use trc_test_basis, only: read_xyz
    use trc_basis_json, only: trc_basis_from_json
@@ -91,6 +93,7 @@ module check_tddft_suite
       type(trc_scf_result_t) :: scf
       type(trc_tddft_options_t) :: opts
       type(trc_tddft_result_t) :: td
+      type(trc_tddft_reference_t) :: ref
       real(dp) :: t_solve = 0.0_dp
    end type fixture_t
 
@@ -157,6 +160,11 @@ contains
          call fx%xg%to_device()
       end if
 
+      if (fx%dft) then
+         call fx%ref%set(fx%nocc, fx%scf%cmo(:, :, 1), fx%scf%eps(:, 1), fx%scf%dmat(:, :, 1), fx%func)
+      else
+         call fx%ref%set(fx%nocc, fx%scf%cmo(:, :, 1), fx%scf%eps(:, 1), fx%scf%dmat(:, :, 1))
+      end if
       fx%opts%nroots = nroots_arg
       fx%opts%conv_tol = CONV_TOL
       call tm%start()
@@ -172,16 +180,11 @@ contains
       type(trc_tddft_result_t), intent(out) :: td
       type(error_t), intent(out) :: err
       type(trc_xc_functional_t), intent(in), optional :: func
-      type(trc_xc_functional_t) :: f
-      f = fx%func
-      if (present(func)) f = func
-      if (fx%dft) then
-         call trc_tddft_solve_rks(fx%bas, fx%pl, fx%eri, fx%la, fx%nocc, fx%scf%cmo(:, :, 1), fx%scf%eps(:, 1), &
-                                  fx%scf%dmat(:, :, 1), opts, td, err, func=f, xg=fx%xg)
-      else
-         call trc_tddft_solve_rks(fx%bas, fx%pl, fx%eri, fx%la, fx%nocc, fx%scf%cmo(:, :, 1), fx%scf%eps(:, 1), &
-                                  fx%scf%dmat(:, :, 1), opts, td, err)
-      end if
+      type(trc_tddft_reference_t) :: r
+      r = fx%ref
+      if (present(func)) r%func = func
+      call trc_tddft_solve_rks(fx%bas, fx%pl, fx%eri, fx%la, r, opts, td, fx%xg)
+      err = td%err
    end subroutine solve
 
    subroutine test_vs_pyscf(error)
@@ -303,23 +306,33 @@ contains
       type(error_t) :: err
       real(dp), allocatable :: ax(:, :, :)
       real(dp) :: rk, worst
-      integer :: k, nr
+      integer :: k, nr, nchunk
 
       call fixture_build(error)
       if (allocated(error)) return
       call check(error, fx%td%converged, "TDA did not converge")
       if (allocated(error)) return
       nr = nroots_arg
-      if (fx%dft) then
-         call op%setup(fx%bas, fx%la, fx%nocc, fx%scf%cmo(:, :, 1), fx%scf%eps(:, 1), fx%scf%dmat(:, :, 1), err, &
-                       func=fx%func, xg=fx%xg)
-      else
-         call op%setup(fx%bas, fx%la, fx%nocc, fx%scf%cmo(:, :, 1), fx%scf%eps(:, 1), fx%scf%dmat(:, :, 1), err)
-      end if
+      call op%setup(fx%bas, fx%la, fx%ref, err, fx%xg)
       call check(error, .not. err%has_error(), "operator setup: "//err%get_message())
       if (allocated(error)) return
       allocate (ax(fx%nocc, op%nvir, nr))
       call op%apply(fx%bas, fx%eri, fx%la, nr, fx%td%xamp, ax, fx%xg)
+      if (fx%dft) then
+         ! No budget is set, so the default must keep the batch in ONE fxc
+         ! pass: a budget of one double once made it one vector per pass, with
+         ! no visible change in the answers. The default is capped by memory
+         ! (formamide holds 8 vectors, not 12, on the host), so the check is on
+         ! a batch of the wanted roots, which is what every later iteration
+         ! sends at most.
+         nchunk = trc_xc_fxc_vec_chunk(fx%bas, fx%xg, op%cache, nr)
+         call check(error, nchunk == nr, "the default fxc vec chunk is "//to_string(nchunk)//", not one pass for "// &
+                    to_string(nr)//" vectors")
+         if (allocated(error)) then
+            call op%release()
+            return
+         end if
+      end if
       worst = 0.0_dp
       do k = 1, nr
          rk = sqrt(sum((ax(:, :, k) - fx%td%omega(k)*fx%td%xamp(:, :, k))**2))
@@ -413,7 +426,7 @@ contains
       if (nroots_arg > 5 .or. skip_extra()) return
       o = fx%opts
       o%max_space = 3*nroots_arg
-      o%max_iter = 400
+      o%max_iteration = 400
       call solve(o, td, err)
       call check(error, .not. err%has_error(), "collapsing solve failed: "//err%get_message())
       if (allocated(error)) return
@@ -486,7 +499,7 @@ contains
       ! One iteration cannot converge: the failure must be reported.
       o = fx%opts
       o%nroots = 1
-      o%max_iter = 1
+      o%max_iteration = 1
       call solve(o, td, err)
       call check(error, err%has_error() .and. .not. td%converged, "running out of iterations must be an error")
       if (allocated(error)) return
