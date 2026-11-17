@@ -292,6 +292,16 @@ module trc_xc
       procedure :: release => fxc_cache_release
    end type trc_xc_fxc_cache_t
 
+   type :: xc_fxc_apply_t
+      !! How `fxc_apply_core` runs, bundled so the routine stays within the
+      !! argument limit.
+      integer(int64) :: budget = 0
+      !! Chunk / vector-scratch cap in doubles; <= 0 is the default cap.
+      logical :: symmetrize = .true.
+      !! Symmetrise each density ((D + D^T)/2) before the gather; false only
+      !! for a caller that guarantees a symmetric density.
+   end type xc_fxc_apply_t
+
    type, extends(trc_xc_options_t) :: xc_run_t
       !! What `xc_drive` runs with: the caller's options and the spin count.
       integer :: nspin = 1
@@ -1023,7 +1033,7 @@ contains
       call xc_sort_by_shape(nres, npp, nlp, sord)
    end subroutine fxc_resident_order
 
-   recursive subroutine fxc_cache_setup(this, b, xg, func, dmat, la)
+   recursive subroutine fxc_cache_setup(this, b, xg, func, dmat, la, res_budget)
       !! Collocate every batch once against `dmat` and fill `coefp`; keep
       !! chi/grad-chi resident for as many batches as fxc_cache_budget_bytes
       !! allows, this%nres of them. Their STORAGE order is the GLOBAL shape
@@ -1038,12 +1048,20 @@ contains
       !! (unlike an overflow chunk, still natural-order, still merged).
       !! `dmat` need not stay resident after this call; `la` absent, made
       !! and released here.
+      !!
+      !! `res_budget` (bytes, optional) replaces fxc_cache_budget_bytes as the
+      !! residency limit: the first batches whose 48-byte-per-slot tiles fit
+      !! stay resident, and a value too small for any leaves none (nres = 0,
+      !! every batch recollocated per apply). It exists so a test can force
+      !! the overflow path on a system small enough to fit entirely; absent,
+      !! the device budget applies and batch 1 is always kept resident.
       class(trc_xc_fxc_cache_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
       real(dp), intent(in) :: dmat(b%nao, b%nao)
       type(trc_linalg_t), intent(inout), optional :: la
+      integer(int64), intent(in), optional :: res_budget
 
       integer :: nao
       integer :: b0, b1, ib, nloc, npb, np, p0, npairs, nb, k0, k1, cnt, mp, ml, nwork, k
@@ -1058,7 +1076,7 @@ contains
          block
             type(trc_linalg_t) :: la_local
             call la_local%init(1)
-            call this%setup(b, xg, func, dmat, la_local)
+            call this%setup(b, xg, func, dmat, la_local, res_budget)
             call la_local%release()
          end block
          return
@@ -1086,10 +1104,15 @@ contains
          this%nlp(ib) = ((nloc + XC_NL_PAD - 1)/XC_NL_PAD)*XC_NL_PAD
       end do
 
-      resbytes = fxc_cache_budget_bytes()
+      if (present(res_budget)) then
+         resbytes = max(res_budget, 0_int64)
+      else
+         resbytes = fxc_cache_budget_bytes()
+      end if
       need = 0
       do ib = 1, xg%nbatch
-         if (need + 48_int64*int(this%npp(ib), int64)*int(this%nlp(ib), int64) > resbytes .and. ib > 1) exit
+         if (need + 48_int64*int(this%npp(ib), int64)*int(this%nlp(ib), int64) > resbytes &
+             .and. (ib > 1 .or. present(res_budget))) exit
          need = need + 48_int64*int(this%npp(ib), int64)*int(this%nlp(ib), int64)
          this%nres = ib
       end do
@@ -1281,9 +1304,12 @@ contains
       !! v_resp := f_xc[dmat_u] at the reference density `cache` was built
       !! from (trc_xc_fxc_rks's own formula): the one-density case of
       !! `trc_xc_fxc_rks_apply_many`, which documents the pipeline. Identical
-      !! to the former single-density code for an exactly symmetric `dmat_u`,
-      !! roundoff-level different otherwise (the symmetrisation). `dmat_u`
-      !! is device-resident; `la` absent, made and released here.
+      !! to the former single-density code: `dmat_u` MUST be symmetric (to
+      !! roundoff is enough, as the CPKS callers' densities are) and is used
+      !! as is, with no symmetrising copy -- use `trc_xc_fxc_rks_apply_many`
+      !! for a possibly non-symmetric density. `budget` <= 0 or absent is the
+      !! default chunk cap. `dmat_u` is device-resident; `la` absent, made and
+      !! released here.
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_fxc_cache_t), intent(in) :: cache
@@ -1292,7 +1318,11 @@ contains
       integer(int64), intent(in), optional :: budget
       type(trc_linalg_t), intent(inout), optional :: la
 
-      call trc_xc_fxc_rks_apply_many(b, xg, cache, 1, dmat_u, v_resp, budget, la)
+      type(xc_fxc_apply_t) :: opts
+
+      opts%symmetrize = .false.
+      if (present(budget)) opts%budget = budget
+      call fxc_apply_core(b, xg, cache, 1, dmat_u, v_resp, opts, la)
    end subroutine trc_xc_fxc_rks_apply
 
    function trc_xc_fxc_vec_chunk(b, xg, cache, nvec, budget) result(nvc)
@@ -1306,8 +1336,8 @@ contains
       !! largest chunk's sum of nlp^2). The cache's own residency reservation
       !! (fxc_cache_budget_bytes) already counts ONE X and ONE Z tile, so a
       !! second density is the first real extra cost. The cap on that scratch
-      !! is `budget` doubles when given (the same knob that caps a chunk's
-      !! basis tiles), else half the free device memory less 256 MB (a 2 GB
+      !! is `budget` doubles when given (> 0; <= 0 or absent means not given;
+      !! the same knob that caps a chunk's basis tiles), else half the free device memory less 256 MB (a 2 GB
       !! allowance on the host build). v_resp itself (nao^2 per density) is
       !! the caller's. Water/6-31G* (19 AOs, 34k points, all batches resident)
       !! takes about 0.9 MB per density, so every realistic nvec is one pass;
@@ -1323,11 +1353,14 @@ contains
       integer(int64) :: cap, need, pairs, tile, pmax, limit, per_vec
       integer :: k, ib, b0
       integer, allocatable :: sord(:)
+      logical :: given
 
       nvc = max(nvec, 1)
       if (.not. cache%ready .or. xg%npts == 0 .or. nvec <= 1) return
+      given = .false.
+      if (present(budget)) given = budget > 0
       cap = XC_BUDGET
-      if (present(budget)) cap = max(budget, 1_int64)
+      if (given) cap = budget
 
       tile = cache%nres_chi
       pmax = 0
@@ -1365,8 +1398,8 @@ contains
          b0 = ib
       end do
       per_vec = int(b%nao, int64)**2 + 2_int64*tile + 2_int64*pmax
-      if (present(budget)) then
-         limit = max(budget, 1_int64)
+      if (given) then
+         limit = budget
       else
          ! Half the free memory in doubles (bytes/16), less 256 MB (32M doubles).
          limit = max(fxc_free_bytes()/16_int64 - 33554432_int64, 0_int64)
@@ -1375,6 +1408,28 @@ contains
    end function trc_xc_fxc_vec_chunk
 
    recursive subroutine trc_xc_fxc_rks_apply_many(b, xg, cache, nvec, dmats_u, v_resp, budget, la)
+      !! The many-trial-density f_xc response; see `fxc_apply_core` for the
+      !! pipeline. Every density is symmetrised first, so a non-symmetric
+      !! `dmats_u(:, :, k)` is fine. `budget` (doubles) caps both the
+      !! basis-value chunk and the vector scratch; <= 0 or absent is the
+      !! default cap (a present 0 is NOT a one-double cap). `la` absent, made
+      !! and released here.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_xc_fxc_cache_t), intent(in) :: cache
+      integer, intent(in) :: nvec
+      real(dp), intent(in) :: dmats_u(b%nao, b%nao, max(nvec, 1))
+      real(dp), intent(out) :: v_resp(b%nao, b%nao, max(nvec, 1))
+      integer(int64), intent(in), optional :: budget
+      type(trc_linalg_t), intent(inout), optional :: la
+
+      type(xc_fxc_apply_t) :: opts
+
+      if (present(budget)) opts%budget = budget
+      call fxc_apply_core(b, xg, cache, nvec, dmats_u, v_resp, opts, la)
+   end subroutine trc_xc_fxc_rks_apply_many
+
+   recursive subroutine fxc_apply_core(b, xg, cache, nvec, dmats_u, v_resp, opts, la)
       !! v_resp(:, :, k) := f_xc[dmats_u(:, :, k)] for k = 1..nvec, at the
       !! reference density `cache` was built from, restricted, LDA and GGA
       !! (trc_xc_fxc_rks's own formula, `trc_xc_fxc_rks_apply`'s pipeline):
@@ -1385,7 +1440,7 @@ contains
       !! them; the ground state's rho/grad rho/kernel coefficients come from
       !! `cache` for every k.
       !!
-      !! `dmats_u` may be NON-symmetric (a TDDFT transition density
+      !! With opts%symmetrize, `dmats_u` may be NON-symmetric (a TDDFT transition density
       !! X + Y or X C_v C_o^T has no reason to be): the response of the
       !! density rho_D = sum_uv D_uv chi_u chi_v depends on D only through
       !! (D + D^T)/2, and the point kernel's grad rho_k = 2 sum_uv D_uv
@@ -1405,16 +1460,17 @@ contains
       !! chunk) + 2 P (pair tiles), as `trc_xc_fxc_vec_chunk` derives; nvec
       !! larger than it admits runs in passes of that many densities, each
       !! pass re-collocating the batches the cache does not hold (resident
-      !! batches cost nothing extra). `budget` bounds both the basis-value
-      !! chunk (as before) and that vector scratch; `la` absent, made and
-      !! released here.
+      !! batches cost nothing extra). opts%budget bounds both the basis-value
+      !! chunk (as before) and that vector scratch; with opts%symmetrize
+      !! false the density is read as is (no copy), the caller guaranteeing
+      !! symmetry. `la` absent, made and released here.
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_fxc_cache_t), intent(in) :: cache
       integer, intent(in) :: nvec
       real(dp), intent(in) :: dmats_u(b%nao, b%nao, max(nvec, 1))
       real(dp), intent(out) :: v_resp(b%nao, b%nao, max(nvec, 1))
-      integer(int64), intent(in), optional :: budget
+      type(xc_fxc_apply_t), intent(in) :: opts
       type(trc_linalg_t), intent(inout), optional :: la
 
       integer :: nao
@@ -1439,14 +1495,14 @@ contains
          block
             type(trc_linalg_t) :: la_local
             call la_local%init(1)
-            call trc_xc_fxc_rks_apply_many(b, xg, cache, nvec, dmats_u, v_resp, budget, la_local)
+            call fxc_apply_core(b, xg, cache, nvec, dmats_u, v_resp, opts, la_local)
             call la_local%release()
          end block
          return
       end if
       cap = XC_BUDGET
-      if (present(budget)) cap = max(budget, 1_int64)
-      nvc = trc_xc_fxc_vec_chunk(b, xg, cache, nvec, budget)
+      if (opts%budget > 0) cap = opts%budget
+      nvc = trc_xc_fxc_vec_chunk(b, xg, cache, nvec, opts%budget)
 
       allocate (pr_off(xg%nbatch + 1))
       !$acc data copyin(dmats_u) copy(v_resp)
@@ -1456,9 +1512,11 @@ contains
 
       do v0 = 1, nvec, nvc
          nv = min(nvc, nvec - v0 + 1)
-         allocate (dsym(nao, nao, nv))
-         !$acc enter data create(dsym)
-         call xc_symmetrize(nao, nvec, v0, nv, dmats_u, nv, 1, dsym)
+         if (opts%symmetrize) then
+            allocate (dsym(nao, nao, nv))
+            !$acc enter data create(dsym)
+            call xc_symmetrize(nao, nvec, v0, nv, dmats_u, nv, 1, dsym)
+         end if
          if (cache%nres_chi > 0) then
             ! X = chi D_k and the response tile Z_k, sized once over the
             ! WHOLE resident region (cache%c_off's offsets span it): every
@@ -1508,8 +1566,13 @@ contains
             end do
             allocate (dloc(max(npairs, 1), nv), vloc(max(npairs, 1), nv))
             !$acc enter data create(dloc, vloc) copyin(ord, pb_off)
-            call xc_gather(npairs, nb, ord, pb_off, nv, nao, dsym, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
-                           cache%nlp, xg%nbatch, dloc)
+            if (opts%symmetrize) then
+               call xc_gather(npairs, nb, ord, pb_off, nv, nao, dsym, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                              cache%nlp, xg%nbatch, dloc)
+            else
+               call xc_gather(npairs, nb, ord, pb_off, nv, nao, dmats_u(:, :, v0:v0 + nv - 1), xg%b_aooff, &
+                              size(xg%b_ao), xg%b_ao, cache%nlp, xg%nbatch, dloc)
+            end if
             k0 = 1
             do while (k0 <= nb)
                ib = ord(k0)
@@ -1611,8 +1674,13 @@ contains
             call xc_collocate(nwork, nb, ord, wk_off, b%maxnp, b%nshell, b%sh_l, b%sh_np, b%sh_e, b%sh_c, &
                               b%sh_r, xg%npts, xg%r, xg%b_off, xg%b_shoff, size(xg%b_sh), xg%b_sh, xg%b_shao, &
                               c_off_local, cache%npp, xg%nbatch, nchi, chi, gchi)
-            call xc_gather(npairs, nb, ord, pb_off, nv, nao, dsym, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
-                           cache%nlp, xg%nbatch, dloc)
+            if (opts%symmetrize) then
+               call xc_gather(npairs, nb, ord, pb_off, nv, nao, dsym, xg%b_aooff, size(xg%b_ao), xg%b_ao, &
+                              cache%nlp, xg%nbatch, dloc)
+            else
+               call xc_gather(npairs, nb, ord, pb_off, nv, nao, dmats_u(:, :, v0:v0 + nv - 1), xg%b_aooff, &
+                              size(xg%b_ao), xg%b_ao, cache%nlp, xg%nbatch, dloc)
+            end if
             k0 = 1
             do while (k0 <= nb)
                ib = ord(k0)
@@ -1661,13 +1729,15 @@ contains
             deallocate (chi, gchi, xt, zt, dloc, vloc, c_off_local, ord, pb_off, wk_off)
             b0 = b1 + 1
          end do
-         !$acc exit data delete(dsym)
-         deallocate (dsym)
+         if (opts%symmetrize) then
+            !$acc exit data delete(dsym)
+            deallocate (dsym)
+         end if
       end do
       !$acc update self(v_resp)
       !$acc end data
       deallocate (pr_off, sord)
-   end subroutine trc_xc_fxc_rks_apply_many
+   end subroutine fxc_apply_core
 
    subroutine fxc_cache_release(this)
       class(trc_xc_fxc_cache_t), intent(inout) :: this
@@ -1982,7 +2052,7 @@ contains
       msg = trc_xc_response_refuse_reason(func, "trc_xc_kxc")
    end function trc_xc_kxc_refuse_reason
 
-   recursive subroutine trc_xc_kxc_rks_apply(b, xg, func, dmat, dmat_a, dmat_b, nvec, v_kxc, err, budget, la)
+   recursive subroutine trc_xc_kxc_rks_apply(b, xg, func, dmats, v_kxc, err, budget, la)
       !!
       !! The third functional derivative of E_xc contracted with two
       !! densities, restricted LDA/GGA, for `nvec` pairs at once:
@@ -2009,11 +2079,15 @@ contains
       !! No density screen on the batch level, for the reason
       !! trc_xc_fxc_rks gives.
       !!
-      !! `dmat` is the ground-state density, `dmat_a`/`dmat_b` the pairs'
-      !! (nao, nao, nvec); each is symmetrised on entry (xc_symmetrize, as
+      !! `dmats(:, :, 1:2*nvec+1)` packs the densities: slice 1 is the
+      !! ground-state density D, slices 2..nvec+1 the A_k and slices
+      !! nvec+2..2*nvec+1 the B_k, with nvec = size(v_kxc, 3). Each is
+      !! symmetrised on entry (xc_symmetrize, as
       !! trc_xc_fxc_rks_apply_many does), so a caller may pass an
-      !! unsymmetrised matrix. Same device contract as
-      !! trc_xc_fxc_rks: all three already resident or copied in; `v_kxc`
+      !! unsymmetrised matrix. A `dmats` of any other depth is refused in
+      !! `err`. `budget` (doubles) caps the chunk; <= 0 or absent is the
+      !! default cap, as in trc_xc_fxc_rks_apply_many. Same device contract
+      !! as trc_xc_fxc_rks: `dmats` already resident or copied in; `v_kxc`
       !! is written in full. The ground-state gather and collocation are
       !! redone per call (the gradient calls this once per set of roots)
       !! and trc_xc_fxc_cache_t is not used: its coefp holds f_xc's
@@ -2028,15 +2102,14 @@ contains
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
       type(trc_xc_functional_t), intent(in) :: func
-      integer, intent(in) :: nvec
-      real(dp), intent(in) :: dmat(b%nao, b%nao), dmat_a(b%nao, b%nao, nvec), dmat_b(b%nao, b%nao, nvec)
-      real(dp), intent(out) :: v_kxc(b%nao, b%nao, nvec)
+      real(dp), intent(in) :: dmats(:, :, :)
+      real(dp), intent(out) :: v_kxc(:, :, :)
       type(error_t), intent(out) :: err
       integer(int64), intent(in), optional :: budget
       type(trc_linalg_t), intent(inout), optional :: la
       !! GEMM handles; absent, made and released for this call.
 
-      integer :: nao, ns
+      integer :: nao, ns, nvec
       integer(int64) :: need, nchi, cap
       type(trc_gemm_batch_t) :: gemm_shape
       integer :: b0, b1, ib, nloc, npb, np, p0, npairs, nb, k0, k1, cnt, mp, ml, s, kv
@@ -2054,6 +2127,12 @@ contains
          return
       end if
       nao = b%nao
+      nvec = size(v_kxc, 3)
+      if (size(v_kxc, 1) /= nao .or. size(v_kxc, 2) /= nao .or. size(dmats, 1) /= nao .or. size(dmats, 2) /= nao &
+          .or. size(dmats, 3) /= 1 + 2*nvec) then
+         call err%set(ERROR_VALIDATION, "trc_xc_kxc_rks_apply: dmats must be (nao, nao, 1 + 2 nvec) and v_kxc (nao, nao, nvec)")
+         return
+      end if
       kid = func%kid
       coef = func%coef
       if (xg%npts == 0 .or. nvec < 1) return
@@ -2061,14 +2140,16 @@ contains
          block
             type(trc_linalg_t) :: la_local
             call la_local%init(1)
-            call trc_xc_kxc_rks_apply(b, xg, func, dmat, dmat_a, dmat_b, nvec, v_kxc, err, budget, la_local)
+            call trc_xc_kxc_rks_apply(b, xg, func, dmats, v_kxc, err, budget, la_local)
             call la_local%release()
          end block
          return
       end if
       ns = 1 + 2*nvec
       cap = XC_BUDGET
-      if (present(budget)) cap = max(budget, 1_int64)
+      if (present(budget)) then
+         if (budget > 0) cap = budget
+      end if
       ! trc_xc_fxc_rks sizes its chunk for 7 tiles (chi, three gradients,
       ! two X, one Z); this holds 4 + ns + nvec.
       cap = max((cap*7_int64)/int(4 + ns + nvec, int64), 1_int64)
@@ -2077,12 +2158,10 @@ contains
       allocate (npp(xg%nbatch), nlp(xg%nbatch))
       allocate (dpack(nao, nao, ns))
 
-      !$acc data copyin(dmat, dmat_a, dmat_b, kid, coef) copy(v_kxc) create(npp, nlp, dpack)
+      !$acc data copyin(dmats, kid, coef) copy(v_kxc) create(npp, nlp, dpack)
       !$acc update device(v_kxc)
       ! Slot 1 = sym(D), 2..nvec+1 = sym(A_k), nvec+2..2 nvec+1 = sym(B_k).
-      call xc_symmetrize(nao, 1, 1, 1, dmat, ns, 1, dpack)
-      call xc_symmetrize(nao, nvec, 1, nvec, dmat_a, ns, 2, dpack)
-      call xc_symmetrize(nao, nvec, 1, nvec, dmat_b, ns, nvec + 2, dpack)
+      call xc_symmetrize(nao, ns, 1, ns, dmats, ns, 1, dpack)
       do ib = 1, xg%nbatch
          nloc = xg%b_aooff(ib + 1) - xg%b_aooff(ib)
          npb = xg%b_off(ib + 1) - xg%b_off(ib)

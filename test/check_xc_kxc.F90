@@ -183,9 +183,23 @@ contains
       real(dp), intent(out) :: v(:, :, :)
       type(error_type), allocatable, intent(out) :: error
       type(error_t) :: err
-      call trc_xc_kxc_rks_apply(kc%bas, kc%xg, kc%func, kc%dmat, da, db, nv, v, err, la=kc%la)
+      real(dp), allocatable :: dmats(:, :, :)
+      dmats = pack_densities(kc%dmat, da(:, :, 1:nv), db(:, :, 1:nv))
+      call trc_xc_kxc_rks_apply(kc%bas, kc%xg, kc%func, dmats, v(:, :, 1:nv), err, la=kc%la)
       call check(error, .not. err%has_error(), err%get_message())
    end subroutine kxc_apply
+
+   function pack_densities(dmat, da, db) result(dmats)
+      !! The (nao, nao, 1 + 2 nvec) layout trc_xc_kxc_rks_apply takes: D, then the A_k, then the B_k.
+      real(dp), intent(in) :: dmat(:, :), da(:, :, :), db(:, :, :)
+      real(dp), allocatable :: dmats(:, :, :)
+      integer :: nvec
+      nvec = size(da, 3)
+      allocate (dmats(size(dmat, 1), size(dmat, 2), 1 + 2*nvec))
+      dmats(:, :, 1) = dmat
+      dmats(:, :, 2:nvec + 1) = da
+      dmats(:, :, nvec + 2:2*nvec + 1) = db
+   end function pack_densities
 
    subroutine test_kxc(error)
       type(error_type), allocatable, intent(out) :: error
@@ -329,7 +343,7 @@ contains
       end if
 
       ! 2e4 doubles per chunk: one batch per chunk on this grid.
-      call trc_xc_kxc_rks_apply(kc%bas, kc%xg, kc%func, kc%dmat, kc%a, kc%bm, NVEC, v_small, err, &
+      call trc_xc_kxc_rks_apply(kc%bas, kc%xg, kc%func, pack_densities(kc%dmat, kc%a, kc%bm), v_small, err, &
                                 budget=20000_int64, la=kc%la)
       call check(error, .not. err%has_error(), err%get_message())
       if (allocated(error)) then
@@ -338,6 +352,20 @@ contains
       end if
       dev = maxval(abs(v - v_small))/maxval(abs(v))
       call check(error, dev < TOL_BATCH, "small budget vs default: relative "//to_string(dev, "es10.2"))
+      if (allocated(error)) then
+         call release_case(kc)
+         return
+      end if
+
+      ! A budget <= 0 is the default cap, not a one-double chunk.
+      call trc_xc_kxc_rks_apply(kc%bas, kc%xg, kc%func, pack_densities(kc%dmat, kc%a, kc%bm), v_small, err, &
+                                budget=0_int64, la=kc%la)
+      call check(error, .not. err%has_error(), err%get_message())
+      if (allocated(error)) then
+         call release_case(kc)
+         return
+      end if
+      call check(error, maxval(abs(v - v_small)) == 0.0_dp, "budget 0 must be bit for bit the default")
       if (allocated(error)) then
          call release_case(kc)
          return
@@ -352,7 +380,7 @@ contains
             end do
          end do
       end do
-      call trc_xc_kxc_rks_apply(kc%bas, kc%xg, kc%func, kc%dmat, junk, kc%bm, NVEC, v_small, err, la=kc%la)
+      call trc_xc_kxc_rks_apply(kc%bas, kc%xg, kc%func, pack_densities(kc%dmat, junk, kc%bm), v_small, err, la=kc%la)
       call check(error, .not. err%has_error(), err%get_message())
       if (allocated(error)) then
          call release_case(kc)
@@ -427,7 +455,7 @@ contains
       type(trc_basis_t) :: bas
       type(trc_xc_grid_t) :: xg
       type(error_t) :: err
-      real(dp) :: d(0, 0), da(0, 0, 1), db(0, 0, 1), v(0, 0, 1)
+      real(dp) :: dmats(0, 0, 3), v(0, 0, 1)
 
       f_missing%missing = "needs the density Laplacian"
       f_mgga%family = XC_FAMILY_MGGA
@@ -446,7 +474,7 @@ contains
       call check(error, len_trim(trc_xc_kxc_refuse_reason(f_clean)) == 0, "a plain functional is not refused")
       if (allocated(error)) return
       v = 1.0_dp
-      call trc_xc_kxc_rks_apply(bas, xg, f_mgga, d, da, db, 1, v, err)
+      call trc_xc_kxc_rks_apply(bas, xg, f_mgga, dmats, v, err)
       call check(error, err%has_error(), "trc_xc_kxc_rks_apply must report the refusal")
    end subroutine test_refuse
 

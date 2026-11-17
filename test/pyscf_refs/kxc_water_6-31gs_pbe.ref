@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["kxc"] -> gen_kxc
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: fcbb6b60443d325d37f3b629a4d1a76a4b3f928bd24a44cbff0fdb64215b0dad
+# hash: 33da1308089fccf4eb7e62638465623290eca7b3b6077f100eccd9817b483c38
 # files: test/check_xc_kxc.F90 test/basis_sets/6-31gs.json test/water.xyz
 # TR_CAB(k) = third derivative of E_xc along C, A_k, B_k at terco's converged density and grid; C, A_k, B_k are check_xc_kxc.F90's probe_matrix 5, (1,3), (2,4)
 TR_CAB 2
