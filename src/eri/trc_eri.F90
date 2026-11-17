@@ -1527,12 +1527,16 @@ contains
       !! iteration cannot converge. False recovers the plain Schwarz screen,
       !! which depends on the basis alone and leaves the operator fixed.
 
-      call this%fock_nosym_many(b, 1, dmat, gmat, k_scale=k_scale, j_scale=j_scale, &
-                                density_screen=screen_on(density_screen), omega=omega)
+      type(trc_fock_options_t) :: o
+
+      if (present(k_scale)) o%k_scale = k_scale
+      if (present(j_scale)) o%j_scale = j_scale
+      if (present(omega)) o%omega = omega
+      o%density_screen = screen_on(density_screen)
+      call this%fock_nosym_many(b, 1, dmat, gmat, opts=o)
    end subroutine eri_fock_nosym
 
-   subroutine eri_fock_nosym_many(this, b, ndens, dmats, gmats, k_scale, j_scale, &
-                                  density_screen, omega)
+   subroutine eri_fock_nosym_many(this, b, ndens, dmats, gmats, opts)
       !! eri_fock_nosym for `ndens` densities in ONE pass over the integrals:
       !! gmats(:, :, d) = j_scale J[D_d] - k_scale K[D_d]/2, every quartet
       !! evaluated once and digested into each density's own J and K by the
@@ -1549,16 +1553,21 @@ contains
       integer, intent(in) :: ndens
       real(dp), intent(in)  :: dmats(this%nao, this%nao, ndens)
       real(dp), intent(out) :: gmats(this%nao, this%nao, ndens)
-      real(dp), intent(in), optional :: k_scale, j_scale
-      real(dp), intent(in), optional :: omega
-      !! Range-separation parameter, bohr^-1; see eri%fock's omega.
-      logical, intent(in), optional :: density_screen
-      !! Weight the Schwarz bound by the density before screening. Default
-      !! FALSE, unlike `fock_nosym`: the callers of this entry point are
-      !! response solves, whose trial densities shrink as the solve
-      !! converges, and a screen keyed on them makes the operator change
-      !! from one matvec to the next (see `fock_nosym`). True is for a
-      !! density that is not a solver's trial vector.
+      type(trc_fock_options_t), intent(in), optional :: opts
+      !! What to build: j_scale, k_scale and omega as in `fock`; only
+      !! density_screen's default differs. Absent, the build is J - K/2 of
+      !! the Coulomb operator with density_screen FALSE, and a present value
+      !! is taken as given, so a caller that constructs one must set
+      !! density_screen itself (the type's default is true). count_survivors,
+      !! j_engine and skeleton are not read: this routine has no MD route
+      !! and takes no skeleton.
+      !!
+      !! density_screen weights the Schwarz bound by the density before
+      !! screening. The callers of this entry point are response solves,
+      !! whose trial densities shrink as the solve converges, and a screen
+      !! keyed on them makes the operator change from one matvec to the next
+      !! (see `fock_nosym`). True is for a density that is not a solver's
+      !! trial vector.
       !!
       !! Over a batch the bound is the maximum across the densities and
       !! across both orientations of each shell block (a non-symmetric
@@ -1572,16 +1581,15 @@ contains
       real(dp) :: jfac, kfac, ow
       logical :: screen
       type(trc_bin_launch_t) :: launch
+      type(trc_fock_options_t) :: o
       if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
-      jfac = 1.0_dp
-      kfac = 1.0_dp
-      ow = 0.0_dp
-      screen = .false.
-      if (present(j_scale)) jfac = j_scale
-      if (present(k_scale)) kfac = k_scale
-      if (present(omega)) ow = omega
-      if (present(density_screen)) screen = density_screen
+      o%density_screen = .false.
+      if (present(opts)) o = opts
+      jfac = o%j_scale
+      kfac = o%k_scale
+      ow = o%omega
+      screen = o%density_screen
       if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
 
       n = this%nao
