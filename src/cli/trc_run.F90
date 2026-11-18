@@ -133,7 +133,7 @@ module trc_run
       real(c_double) :: cc_t1_diagnostic = 0.0_c_double
       integer(c_int) :: cc_niter = 0
       integer(c_int) :: cc_nfrozen = 0, cc_nactive = 0, cc_nvirtual = 0, cc_naux = 0   !! the spaces the CCSD used
-      ! --tddft (trc_run_tddft.F90): excitation energies, and with --grad/--opt the gradient of root `tddft_root`.
+      ! --tddft (trc_run_excited.F90): excitation energies, and with --grad/--opt the gradient of root `tddft_root`.
       ! A 0 convergence setting is the library's default.
       logical :: tddft = .false.
       logical :: tddft_tda = .true.              !! --tddft-approx tda (the default); false is the full RPA
@@ -518,25 +518,25 @@ module trc_run
       end subroutine run_cc_execute
 
       module subroutine run_tddft_parse(r)
-         !! --tddft and the --tddft-* options into r%tddft*, refusing what the method does not cover (trc_run_tddft.F90)
+         !! --tddft and the --tddft-* options into r%tddft*, refusing what the method does not cover (trc_run_excited.F90)
          implicit none
          type(run_t), intent(inout) :: r
       end subroutine run_tddft_parse
 
       module subroutine run_tddft_configure(r)
-         !! trc_set_tddft and the solver settings (trc_run_tddft.F90)
+         !! trc_set_tddft and the solver settings (trc_run_excited.F90)
          implicit none
          type(run_t), intent(in) :: r
       end subroutine run_tddft_configure
 
       module subroutine run_tddft_execute(r)
-         !! trc_run_tddft and the roots it leaves, into r%tddft_* (trc_run_tddft.F90)
+         !! trc_run_tddft and the roots it leaves, into r%tddft_* (trc_run_excited.F90)
          implicit none
          type(run_t), intent(inout) :: r
       end subroutine run_tddft_execute
 
       module subroutine run_tddft_summary(r)
-         !! The table of excitation energies, oscillator strengths and ||Y||^2 (trc_run_tddft.F90)
+         !! The table of excitation energies, oscillator strengths and ||Y||^2 (trc_run_excited.F90)
          implicit none
          type(run_t), intent(in) :: r
       end subroutine run_tddft_summary

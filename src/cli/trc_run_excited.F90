@@ -1,4 +1,4 @@
-submodule (trc_run) trc_run_tddft
+submodule (trc_run) trc_run_excited
    !! The CLI side of TDDFT/TDHF (`--tddft`, `--tddft-*`): the options, what the method refuses before any
    !! work, and the calls into the library (bodies of `trc_run`). The gradient and the optimisation reach the
    !! library through `--grad` and `--opt`, which follow the root `--tddft-root` while `--tddft` is on. The
@@ -239,4 +239,4 @@ contains
       call global_logger%info(trim(logline))
    end subroutine run_tddft_summary
 
-end submodule trc_run_tddft
+end submodule trc_run_excited
