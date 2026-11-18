@@ -61,11 +61,9 @@ module check_tddft_rpa_grad_suite
    !! Chunked against unchunked: the same sums in another order.
    real(dp), parameter :: FD_STEP = 2.5e-3_dp
    real(dp), parameter :: FD_ABSTOL = 1.0e-8_dp
-   !! Hartree-Fock finite-difference gate (Richardson at h = 2.5e-3; at h = 0.01
-   !! the h^4 term alone is 2e-7 on non-planar H2O2).
-   real(dp), parameter :: FD_ABSTOL_DFT = 1.0e-8_dp
-   !! Kohn-Sham (B3LYP, 2 roots), with the grid response on and the grid rebuilt at every
-   !! displacement: measured 8.2e-10; the Pulay-only gradient misses the same differences by 1.4e-5.
+   !! Finite-difference gate, Hartree-Fock and Kohn-Sham alike (B3LYP with the grid response
+   !! measures 8.2e-10; its Pulay-only gradient misses by 1.4e-5). Richardson at h = 2.5e-3: at
+   !! h = 0.01 the h^4 term alone is 2e-7 on non-planar H2O2.
 
    character(len=256) :: xyz_arg = 'water.xyz'
    character(len=256) :: bas_json_arg = 'basis_sets/6-31g.json'
@@ -227,6 +225,10 @@ contains
       call fixture_build(error)
       if (allocated(error)) return
       nr = nroots_arg
+      ! Y must matter, or this would be the TDA gradient with extra steps.
+      call check(error, maxval(abs(fx%td%yamp)) > 1.0e-3_dp, "the RPA amplitudes have no Y: max|Y| = "// &
+                 to_string(maxval(abs(fx%td%yamp)), "es10.2"))
+      if (allocated(error)) return
 
       ! The probe pyscf's generator reads: terco's grid, energies and gradients.
       open (newunit=unit, file=trim(probe_arg), access='stream', form='unformatted', status='replace')
@@ -335,14 +337,16 @@ contains
    end subroutine test_single_root
 
    subroutine test_tda_limit(error)
-      !! A TDA result through the RPA routine, and the RPA amplitudes with Y
-      !! set to zero, give trc_tddft_gradient_rks's gradient: the RPA gradient
-      !! is the TDA one with the (X, Y) pair in its place and nothing else.
+      !! A TDA result through the RPA routine gives trc_tddft_gradient_rks's
+      !! gradient, and so do the RPA amplitudes with Y set to zero (same X, run
+      !! through both routines): the RPA gradient is the TDA one with the (X, Y)
+      !! pair in its place and nothing else. With Y, the gradient differs from
+      !! the TDA one by more than 1e-4 (root 1).
       type(error_type), allocatable, intent(out) :: error
       type(trc_tddft_result_t) :: tda, zeroed
       type(trc_tddft_options_t) :: topts
       type(trc_tddft_grad_options_t) :: o_tda, o_rpa
-      real(dp) :: d, d_zero
+      real(dp) :: d, d_zero, d_y
       call fixture_build(error)
       if (allocated(error)) return
       topts%nroots = nroots_arg
@@ -360,14 +364,18 @@ contains
       call check(error, .not. o_rpa%err%has_error(), "RPA routine on a TDA result: "//o_rpa%err%get_message())
       if (allocated(error)) return
       d = maxval(abs(o_rpa%grad - o_tda%grad))
-      ! The RPA amplitudes with Y dropped are not normalised: only their form
-      ! matters here, the formulas are the same ones.
-      zeroed = tda
+      ! The solver's RPA amplitudes with Y dropped (not normalised: only the
+      ! form matters, the formulas are the same ones), through both routines.
+      zeroed = fx%td
       zeroed%yamp = 0.0_dp
+      call trc_tddft_gradient_rks(fx%bas, fx%pl, fx%eri, fx%la, fx%ref, zeroed, o_tda, fx%xg)
+      call check(error, .not. o_tda%err%has_error(), "TDA routine, Y = 0: "//o_tda%err%get_message())
+      if (allocated(error)) return
       call trc_tddft_rpa_gradient_rks(fx%bas, fx%pl, fx%eri, fx%la, fx%ref, zeroed, o_rpa, fx%xg)
       call check(error, .not. o_rpa%err%has_error(), "RPA routine, Y = 0: "//o_rpa%err%get_message())
       if (allocated(error)) return
       d_zero = maxval(abs(o_rpa%grad - o_tda%grad))
+      d_y = maxval(abs(fx%gopts%grad(:, :, 1) - o_tda%grad(:, :, 1)))
       call global_logger%info("tddft_rpa_grad "//trim(molname_arg)//"/"//trim(funcname_arg)// &
                               ": TDA result through the RPA routine against trc_tddft_gradient_rks, "// &
                               to_string(d, "es10.2")//" (explicit Y = 0: "//to_string(d_zero, "es10.2")//"), gate "// &
@@ -375,6 +383,10 @@ contains
       call check(error, d < GATE_CHUNK, "RPA routine on a TDA result differs from the TDA routine by "//to_string(d, "es10.2"))
       if (allocated(error)) return
       call check(error, d_zero < GATE_CHUNK, "Y = 0 differs from the TDA routine by "//to_string(d_zero, "es10.2"))
+      if (allocated(error)) return
+      call global_logger%info("tddft_rpa_grad "//trim(molname_arg)//"/"//trim(funcname_arg)// &
+                              ": root 1 with Y against without, "//to_string(d_y, "es10.2"))
+      call check(error, d_y > 1.0e-4_dp, "Y should change root 1's gradient, it moved by "//to_string(d_y, "es10.2"))
    end subroutine test_tda_limit
 
    subroutine test_refusals(error)
@@ -412,6 +424,21 @@ contains
       call check(error, o%err%has_error() .and. .not. allocated(o%grad), "a mis-shaped yamp must be refused")
       if (allocated(error)) return
       call check(error, index(o%err%get_message(), "shape") > 0, "message: "//o%err%get_message())
+      if (allocated(error)) return
+
+      ! The TDA routine refuses an RPA result, which it would silently take for X alone.
+      call trc_tddft_gradient_rks(fx%bas, fx%pl, fx%eri, fx%la, fx%ref, fx%td, o, fx%xg)
+      call check(error, o%err%has_error() .and. .not. allocated(o%grad), "the TDA gradient must refuse an RPA result")
+      if (allocated(error)) return
+      call check(error, index(o%err%get_message(), "trc_tddft_rpa_gradient_rks") > 0, "message: "//o%err%get_message())
+      if (allocated(error)) return
+
+      ! Degenerate adjacent roots only warn: a gradient is still produced.
+      bad = fx%td
+      bad%omega(2) = bad%omega(1)
+      call trc_tddft_rpa_gradient_rks(fx%bas, fx%pl, fx%eri, fx%la, fx%ref, bad, o, fx%xg)
+      call check(error, .not. o%err%has_error() .and. allocated(o%grad), "degenerate roots must still give a gradient: "// &
+                 o%err%get_message())
       if (allocated(error)) return
 
       ok = xc_functional_by_name('pbe', f_mgga)
@@ -584,7 +611,7 @@ contains
       nr = nroots_arg
       ! The fixture's gradient is the exact derivative of the energy: for a
       ! functional it ran with the grid response on a grid carrying its partition.
-      gate = merge(FD_ABSTOL_DFT, FD_ABSTOL, fx%dft)
+      gate = FD_ABSTOL
       if (fx%dft) then
          pulay%cpks_tol = CPKS_TOL
          pulay%grid_response = .false.

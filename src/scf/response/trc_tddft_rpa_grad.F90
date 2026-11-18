@@ -55,6 +55,7 @@ module trc_tddft_rpa_grad
    public :: trc_tddft_rpa_gradient_rks
 
    real(dp), parameter :: DEGENERACY_TOL = 1.0e-6_dp
+   !! Two adjacent requested roots closer than this (hartree) are warned about as degenerate.
 
    type, extends(tddft_grad_state_t) :: rpa_grad_state_t
       !! trc_tddft_grad's state, with what the RPA adds. `xamp` is X, `tmat` is T+.
@@ -432,12 +433,16 @@ contains
 
       ! The gradient of a root inside a degenerate multiplet is an arbitrary
       ! rotation of its partners' (any rotation of (X, Y) is as good a solution).
-      do k = 1, size(td%omega) - 1
-         if (abs(td%omega(k + 1) - td%omega(k)) < DEGENERACY_TOL) then
-            call global_logger%warning("trc_tddft_rpa_grad: roots "//to_string(k)//" and "//to_string(k + 1)// &
-                                       " are degenerate (|d omega| < 1e-6): their gradients are not unique")
-         end if
-      end do
+      ! Only adjacent roots of the requested set are compared; a partner of
+      ! the multiplet beyond the last requested root is not seen.
+      if (allocated(td%omega)) then
+         do k = 1, size(td%omega) - 1
+            if (abs(td%omega(k + 1) - td%omega(k)) < DEGENERACY_TOL) then
+               call global_logger%warning("trc_tddft_rpa_grad: roots "//to_string(k)//" and "//to_string(k + 1)// &
+                                          " are degenerate (|d omega| < 1e-6): their gradients are not unique")
+            end if
+         end do
+      end if
 
       call rpa_grad_init(st, ref, td)
       call rpa_grad_rhs(st, b, eri, la, ref, xg, opts%err)

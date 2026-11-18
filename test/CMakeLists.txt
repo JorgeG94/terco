@@ -2629,6 +2629,15 @@ foreach(_f hf:3 b3lyp:2)
   set_target_properties(check_tddft_rpa_grad_fd_${_func} PROPERTIES Fortran_MODULE_DIRECTORY
                         ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_rpa_grad_fd_${_func})
 endforeach()
+# LONG: formamide SVWN/PBE/B3LYP (440-550 s each on a loaded host) and the
+# B3LYP finite difference (about 600 s) are most of these checks' time. Pull
+# requests still run water with all four functionals, formamide HF, both
+# H2O2 pyscf cases (B3LYP is the only non-planar Kohn-Sham case) and the
+# Hartree-Fock finite difference; the nightly scheduled run on main
+# (TERCO_LONG_TESTS=ON) runs the rest.
+set_tests_properties(terco/check_tddft_rpa_grad_formamide_svwn terco/check_tddft_rpa_grad_formamide_pbe
+                     terco/check_tddft_rpa_grad_formamide_b3lyp terco/check_tddft_rpa_grad_fd_b3lyp
+                     PROPERTIES LABELS LONG)
 
 # Full RPA (TDHF / Casida) singlet excitation energies, oscillator strengths and
 # ||Y||^2 (src/scf/response/trc_tddft.F90, tda = .false.) against pyscf's tdscf

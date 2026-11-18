@@ -693,6 +693,11 @@ contains
       if (allocated(opts%cpks_iterations)) deallocate (opts%cpks_iterations)
       reason = trc_tddft_grad_refuse_reason(ref, td, b%nao)
       if (len_trim(reason) == 0 .and. b%spherical) reason = "trc_tddft_grad: a spherical basis is not implemented"
+      ! The TDA gradient reads X only: an RPA result (Y /= 0) would silently give a wrong gradient.
+      if (len_trim(reason) == 0 .and. allocated(td%yamp)) then
+         if (maxval(abs(td%yamp)) > 0.0_dp) reason = "trc_tddft_grad: the result has Y amplitudes (an RPA solve); " &
+                                                       //"use trc_tddft_rpa_gradient_rks"
+      end if
       if (len_trim(reason) == 0 .and. ref%dft .and. .not. present(xg)) then
          reason = "trc_tddft_grad: a functional needs the SCF's xc grid"
       end if
