@@ -120,12 +120,15 @@ contains
    subroutine scf_options(sopts)
       type(trc_scf_options_t), intent(out) :: sopts
       ! The gradient is first order in the orbital error, so converge well past
-      ! the gate, but not to the arithmetic's floor: conv_energy 1e-13 was 3 ulps
-      ! of |E| = 150 (H2O2), which builds with reference BLAS or ifx do not reach
-      ! within the iteration limit. 1e-12 and 1e-11 keep two orders over the floor.
-      sopts%conv_energy = 1.0e-12_dp
+      ! the gate (1e-8), but not to the arithmetic's floor. Incremental Fock builds
+      ! are off: their accumulated screening error holds |FDS-SDF| at 1e-11..4e-11
+      ! and dE at 1e-11 for H2O2 (|E| = 150), so thresholds of 1e-11 were met only
+      ! by luck on one toolchain and never on the CI builds, which ran out of
+      ! iterations. Full builds fall smoothly (dE ~ 2e-13).
+      sopts%incremental = .false.
+      sopts%conv_energy = 1.0e-11_dp
       sopts%conv_density = 1.0e-10_dp
-      sopts%conv_diis = 1.0e-11_dp
+      sopts%conv_diis = 1.0e-10_dp
       sopts%max_iteration = 200
       sopts%grid_level = 3
       if (trim(funcname_arg) /= 'hf') sopts%functional = trim(funcname_arg)
@@ -588,7 +591,8 @@ contains
          call trc_tddft_solve_rks(bas, pl, eri, la, ref, topts, td, xg)
          if (td%converged) energy = scf%energy + td%omega
       end if
-      call check(error, scf%converged, "displaced SCF did not converge")
+      call check(error, scf%converged, "displaced SCF did not converge: "//to_string(scf%iterations)// &
+                 " iterations, "//trim(scf%message))
       if (.not. allocated(error)) call check(error, td%converged, "displaced RPA solve: "//td%err%get_message())
       if (fx%dft .and. scf%converged) call xg%release()
       call eri%release()
