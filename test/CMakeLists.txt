@@ -2586,6 +2586,14 @@ foreach(_f hf:3 pbe:2)
   set_target_properties(check_tddft_grad_fd_${_func} PROPERTIES Fortran_MODULE_DIRECTORY
                         ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_grad_fd_${_func})
 endforeach()
+# LONG: formamide SVWN/PBE/B3LYP (180-270 s each on a loaded host) and the
+# PBE finite difference (about 210 s) are most of these checks' time. Pull
+# requests still run water with all four functionals, formamide HF, both
+# H2O2 cases and the Hartree-Fock finite difference; the nightly scheduled
+# run on main (TERCO_LONG_TESTS=ON) runs the rest.
+set_tests_properties(terco/check_tddft_grad_formamide_svwn terco/check_tddft_grad_formamide_pbe
+                     terco/check_tddft_grad_formamide_b3lyp terco/check_tddft_grad_fd_pbe
+                     PROPERTIES LABELS LONG)
 
 #
 # trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of
