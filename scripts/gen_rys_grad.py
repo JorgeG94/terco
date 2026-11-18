@@ -1693,6 +1693,29 @@ PAIRS_GM_BUDGET = {4: 72, 2: 80}
 #: (20|11) 20/57/206, (21|10) 27/68/193, (21|20) 97/222/-, (22|10) 125/261/-.
 PAIRS_NARROW_ONLY = ("2121", "2220", "3021", "3120", "3130", "3310")
 
+#: The widest pair kernel a class is generated with, from the run time of the
+#: kernels at TERCO_LMAX=2 (a class not listed keeps every width the Gamma
+#: budget allows, and PAIRS_NARROW_ONLY still applies). Measured on gly10,
+#: cc-pVDZ, 1e-14, V100 (nsys, kernel time of the class in seconds for four
+#: columns as 4 x width 1 / 2 x width 2 / 1 x width 4):
+#:   (ss|ss) .252/.180/.151   (ps|ss) .534/.368/.299   (pp|ss) .158/.113/.107
+#:   (ds|ss) .167/.120/.107   (ps|ps) .303/.219/.209   (pp|ps) .344/.376/.378
+#:   (pp|pp) .213/.199/.198   (ds|ps) .251/.217/.308   (ds|pp) .239/.205/.269
+#:   (ds|ds) .122/.106/.107   (dp|ss) .128/.114/.148   (dp|ps) .463/.391/.511
+#:   (dp|pp) .570/.422/.582   (dp|ds) .270/.348/.346   (dp|dp) .264/.314/.312
+#:   (dd|ss) .063/.050/.051   (dd|ps) .141/.175/.175   (dd|pp) .157/.195/.195
+#:   (dd|ds) .074/.103/.104   (dd|dp) .217/.225/.223
+#: A wider kernel wins where the class is light. For the heavy ones it spills
+#: (255 registers, stack 250-2200 B) and every extra column costs about a
+#: sweep, so the narrow kernel is as fast or faster and compiles in a
+#: fraction of the time. Within 3% the narrower width is kept. A narrower
+#: class also leaves the dispatcher's block walk shorter to compile.
+PAIRS_RULE = {
+    "0000": 4, "1000": 4, "1010": 4, "1100": 4, "2000": 4,
+    "1111": 2, "2010": 2, "2011": 2, "2020": 2, "2100": 2, "2110": 2, "2111": 2, "2200": 2,
+    "1110": 1, "2120": 1, "2210": 1, "2211": 1, "2221": 1,
+}
+
 #: Column widths a pair kernel is generated for. The twelve running sums of
 #: every column are unrolled into scalar accumulators so they stay in
 #: registers (a runtime column loop forces them into local memory: measured
@@ -2169,11 +2192,12 @@ def _wide_widths(comps, rt_plan, inside):
 def pairs_variants(tag, comps, rt_plan, inside):
     """The column widths class `tag`'s pair kernel is generated for: every
     width of PAIRS_VARIANTS whose Gamma count per sweep fits PAIRS_GM_BUDGET
-    (nc * gm per chunk), unless the class is in PAIRS_NARROW_ONLY; width 1
-    always."""
+    (nc * gm per chunk) and is no wider than the class's PAIRS_RULE, unless
+    the class is in PAIRS_NARROW_ONLY; width 1 always."""
     if tag in PAIRS_NARROW_ONLY:
         return (1,)
-    return _wide_widths(comps, rt_plan, inside)
+    widths = _wide_widths(comps, rt_plan, inside)
+    return tuple(w for w in widths if w <= PAIRS_RULE.get(tag, PAIRS_NCB))
 
 
 def pair_widths(tag, comps, rt_plan, inside):
@@ -2888,7 +2912,25 @@ def _check_narrow_only():
             raise SystemExit(f"gen_rys_grad.py: PAIRS_NARROW_ONLY entry {t} has no width above 1 to drop")
 
 
+def _check_pairs_rule():
+    """PAIRS_RULE names real, launched classes, outside PAIRS_NARROW_ONLY,
+    with a width the Gamma budget allows: a stale entry would silently do
+    nothing."""
+    for t, w in PAIRS_RULE.items():
+        if not re.fullmatch(r"[0-3]{4}", t):
+            raise SystemExit(f"gen_rys_grad.py: PAIRS_RULE entry {t!r} is not a class tag")
+        la, lb, lc, ld = (int(c) for c in t)
+        if not (la >= lb and lc >= ld and (la, lb) >= (lc, ld)):
+            raise SystemExit(f"gen_rys_grad.py: PAIRS_RULE entry {t}: the pair bins never launch it")
+        if t in PAIRS_NARROW_ONLY:
+            raise SystemExit(f"gen_rys_grad.py: PAIRS_RULE entry {t} is also in PAIRS_NARROW_ONLY")
+        comps, rt_plan, inside = class_plan(t, default_plan_args())
+        if w not in _wide_widths(comps, rt_plan, inside):
+            raise SystemExit(f"gen_rys_grad.py: PAIRS_RULE entry {t}: width {w} is not one the class has")
+
+
 _check_narrow_only()
+_check_pairs_rule()
 
 
 if __name__ == "__main__":
