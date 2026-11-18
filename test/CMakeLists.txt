@@ -790,6 +790,32 @@ terco_add_check(check_fock_nosym_many check_fock_nosym_many.F90 NEEDS_BASIS NEED
 target_link_libraries(check_fock_nosym_many PRIVATE test-drive::test-drive)
 
 #
+# eri%fock_split_many: the same J - K/2 of non-symmetric densities from the
+# folded kernels (symmetric part with J and K, antisymmetric part K-only with
+# the antisymmetric fold) against fock_nosym_many, with negative controls.
+# h2o2/6-31G* reaches d; the cc-pVTZ variant needs f and SKIPs below
+# TERCO_LMAX=3 (as check_rys_grad_fd_ccpvtz).
+#
+terco_add_check(check_fock_split check_fock_split.F90 NEEDS_BASIS
+                ARGS h2o2.xyz basis_sets/6-31gs.json)
+target_link_libraries(check_fock_split PRIVATE test-drive::test-drive)
+set_target_properties(check_fock_split PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_fock_split)
+terco_add_check(check_fock_split_ccpvtz check_fock_split.F90 NEEDS_BASIS
+                ARGS h2o2.xyz basis_sets/cc-pvtz.json)
+target_link_libraries(check_fock_split_ccpvtz PRIVATE test-drive::test-drive)
+set_target_properties(check_fock_split_ccpvtz PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_fock_split_ccpvtz)
+# cc-pVTZ runs the enumerated nosym kernel with f functions: minutes on the host.
+set_tests_properties(terco/check_fock_split_ccpvtz PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" LABELS LONG)
+# cc-pVDZ: general contraction (decontracted working basis), ~6 s on the host.
+terco_add_check(check_fock_split_ccpvdz check_fock_split.F90 NEEDS_BASIS
+                ARGS h2o2.xyz basis_sets/cc-pvdz.json)
+target_link_libraries(check_fock_split_ccpvdz PRIVATE test-drive::test-drive)
+set_target_properties(check_fock_split_ccpvdz PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_fock_split_ccpvdz)
+
+#
 # Rys against HGP, same density and screening, on water/6-31G* and
 # water/cc-pVDZ. GPU 2, not the fleet default of
 # 0 `terco_add_check` otherwise sets, to stay off the GPUs other work on
