@@ -59,9 +59,12 @@ module check_tddft_rpa_grad_suite
    !! header).
    real(dp), parameter :: GATE_CHUNK = 1.0e-11_dp
    !! Chunked against unchunked: the same sums in another order.
-   real(dp), parameter :: FD_STEP = 1.0e-2_dp
+   real(dp), parameter :: FD_STEP = 2.5e-3_dp
    real(dp), parameter :: FD_ABSTOL = 1.0e-8_dp
-   !! The finite-difference gate; the measured worst differences are in the PR.
+   !! Hartree-Fock finite-difference gate (Richardson at h = 2.5e-3; at h = 0.01
+   !! the h^4 term alone is 2e-7 on non-planar H2O2).
+   real(dp), parameter :: FD_ABSTOL_DFT = 2.0e-7_dp
+   !! Kohn-Sham, with the grid response on and the grid rebuilt at every displacement.
 
    character(len=256) :: xyz_arg = 'water.xyz'
    character(len=256) :: bas_json_arg = 'basis_sets/6-31g.json'
@@ -409,6 +412,9 @@ contains
       call check(error, ok, "pbe is registered")
       if (allocated(error)) return
 
+      call refuse_shapes(error)
+      if (allocated(error)) return
+
       call refuse_with(f_mgga, "meta-GGA", error)
       if (allocated(error)) return
       call refuse_with(f_rsh, "range-separated", error)
@@ -424,6 +430,63 @@ contains
                     "a functional without a grid must be refused")
       end if
    end subroutine test_refusals
+
+   subroutine refuse_shapes(error)
+      !! Amplitudes that do not match the orbital counts, and a spherical basis
+      !! (cc-pVDZ loads spherical, with orbitals of the Cartesian size faked so
+      !! the basis is the only thing wrong), are refused, and a refusal leaves
+      !! no output fields of an earlier call.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_tddft_result_t) :: bad, td
+      type(trc_basis_t) :: sph
+      type(trc_pairlist_t) :: spl
+      type(trc_eri_t) :: seri
+      type(trc_tddft_reference_t) :: r
+      type(trc_tddft_grad_options_t) :: o
+      type(error_t) :: err
+      real(dp), allocatable :: cmo(:, :), eps(:), dmat(:, :), at_r(:, :)
+      integer, allocatable :: zint(:)
+      integer :: n, natm, i
+
+      bad = fx%td
+      deallocate (bad%xamp, bad%yamp)
+      allocate (bad%xamp(1, 1, 1), bad%yamp(1, 1, 1))
+      bad%xamp = 0.0_dp
+      bad%yamp = 0.0_dp
+      o%cpks_iterations = [7]
+      call trc_tddft_rpa_gradient_rks(fx%bas, fx%pl, fx%eri, fx%la, fx%ref, bad, o, fx%xg)
+      call check(error, o%err%has_error() .and. index(o%err%get_message(), "do not match") > 0, &
+                 "an amplitude shape mismatch must be refused: "//o%err%get_message())
+      if (allocated(error)) return
+      call check(error, .not. allocated(o%grad) .and. .not. allocated(o%cpks_iterations), &
+                 "a refusal must not leave out fields from an earlier call")
+      if (allocated(error)) return
+
+      call read_xyz('water.xyz', natm, zint, at_r)
+      call trc_basis_from_json('basis_sets/cc-pvdz.json', natm, zint, at_r, sph, err)
+      call check(error, .not. err%has_error(), err%get_message())
+      if (allocated(error)) return
+      call check(error, sph%spherical, "cc-pvdz must load spherical")
+      if (allocated(error)) return
+      n = sph%nao
+      allocate (cmo(n, n), eps(n), dmat(n, n))
+      cmo = 0.0_dp
+      do i = 1, n
+         cmo(i, i) = 1.0_dp
+         eps(i) = real(i, dp)
+      end do
+      dmat = 0.0_dp
+      call r%set(5, cmo, eps, dmat)
+      td%converged = .true.
+      allocate (td%xamp(5, n - 5, 1), td%yamp(5, n - 5, 1), td%omega(1))
+      td%xamp = 0.0_dp
+      td%yamp = 0.0_dp
+      td%omega = 1.0_dp
+      call trc_tddft_rpa_gradient_rks(sph, spl, seri, fx%la, r, td, o)
+      call check(error, o%err%has_error() .and. index(o%err%get_message(), "spherical") > 0 .and. &
+                 .not. allocated(o%grad), "a spherical basis must be refused: "//o%err%get_message())
+      call sph%release()
+   end subroutine refuse_shapes
 
    subroutine refuse_with(func, what, error)
       !! The gradient with `func` in place of the reference's functional is refused.
@@ -499,17 +562,41 @@ contains
    subroutine test_fd(error)
       type(error_type), allocatable, intent(out) :: error
       real(dp), allocatable :: rp(:, :), ep(:), em(:), fd(:, :, :), coarse(:)
-      real(dp) :: worst_abs, a
-      integer :: nr, atom, dir, k
+      type(trc_tddft_grad_options_t) :: pulay
+      type(error_t) :: err
+      real(dp) :: worst_abs, worst_pulay, gate
+      integer, allocatable :: fd_atoms(:)
+      integer :: nr, atom, dir, natom_fd, k
 
       call fixture_build(error)
       if (allocated(error)) return
       nr = nroots_arg
+      ! The fixture's gradient is the exact derivative of the energy: for a
+      ! functional it ran with the grid response on a grid carrying its partition.
+      gate = merge(FD_ABSTOL_DFT, FD_ABSTOL, fx%dft)
+      if (fx%dft) then
+         pulay%cpks_tol = CPKS_TOL
+         pulay%grid_response = .false.
+         call trc_tddft_rpa_gradient_rks(fx%bas, fx%pl, fx%eri, fx%la, fx%ref, fx%td, pulay, fx%xg)
+         err = pulay%err
+         call check(error, .not. err%has_error(), "Pulay-only gradient: "//err%get_message())
+         if (allocated(error)) return
+      end if
       allocate (ep(nr), em(nr), coarse(nr), fd(3, fx%natm, nr))
       rp = fx%bas%at_r
+      ! Kohn-Sham differences are expensive (a grid and an SCF per point): the
+      ! first and the last atom only, an O and an H, which still gives every
+      ! Cartesian component a non-zero gradient.
+      natom_fd = fx%natm
+      if (fx%dft) natom_fd = 2
+      allocate (fd_atoms(natom_fd))
+      fd_atoms = [(k, k=1, natom_fd)]
+      if (fx%dft) fd_atoms = [1, fx%natm]
       ! Richardson: (4 D(h/2) - D(h))/3 removes the h^2 truncation term of the
       ! central difference D(h), leaving h^4.
-      do atom = 1, fx%natm
+      fd = fx%gopts%grad
+      do k = 1, natom_fd
+         atom = fd_atoms(k)
          do dir = 1, 3
             rp(dir, atom) = fx%bas%at_r(dir, atom) + FD_STEP
             call excited_energies(rp, nr, ep, error)
@@ -529,12 +616,26 @@ contains
          end do
       end do
       worst_abs = maxval(abs(fx%gopts%grad - fd))
-      call global_logger%info("tddft_rpa_grad "//trim(molname_arg)//"/"//trim(funcname_arg)//" finite difference (Richardson, h = "// &
-                              to_string(FD_STEP, "es8.1")//"): worst abs "//to_string(worst_abs, "es10.2")// &
-                              " (gate "//to_string(FD_ABSTOL, "es8.1")//"), max|grad| "// &
-                              to_string(maxval(abs(fd)), "es9.2"))
-      call check(error, worst_abs < FD_ABSTOL, "analytic gradient vs finite difference, worst abs "// &
+      call global_logger%info("tddft_rpa_grad "//trim(molname_arg)//"/"//trim(funcname_arg)// &
+                              " finite difference (Richardson, h = "//to_string(FD_STEP, "es8.1")//"): worst abs "// &
+                              to_string(worst_abs, "es10.2")//" (gate "//to_string(gate, "es8.1")//"), max|grad| "// &
+                              to_string(maxval(abs(fd)), "es9.2")//", smallest component "// &
+                              to_string(minval(maxval(maxval(abs(fd(:, fd_atoms, :)), dim=3), dim=2)), "es9.2"))
+      call check(error, worst_abs < gate, "analytic gradient vs finite difference, worst abs "// &
                  to_string(worst_abs, "es10.2"))
+      if (allocated(error)) return
+      ! Every Cartesian component carries a gradient: no zero one by symmetry.
+      call check(error, minval(maxval(maxval(abs(fd(:, fd_atoms, :)), dim=3), dim=2)) > 1.0e-3_dp, &
+                 "a Cartesian component of the gradient vanishes: the test molecule is planar")
+      if (allocated(error)) return
+      if (fx%dft) then
+         worst_pulay = maxval(abs(pulay%grad - fd))
+         call global_logger%info("tddft_rpa_grad "//trim(molname_arg)//"/"//trim(funcname_arg)// &
+                                 ": Pulay-only (grid_response off) misses the differences by "// &
+                                 to_string(worst_pulay, "es10.2"))
+         call check(error, worst_pulay > 10.0_dp*gate, "the Pulay-only gradient should miss the FD by more than "// &
+                    "ten gates, so the grid response is being tested, got "//to_string(worst_pulay, "es10.2"))
+      end if
    end subroutine test_fd
 
    subroutine test_release(error)

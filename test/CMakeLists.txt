@@ -2610,13 +2610,16 @@ foreach(_case ${_rpa_grad_cases})
   set_target_properties(check_tddft_rpa_grad_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
                         ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_rpa_grad_${_mol}_${_f})
 endforeach()
-foreach(_f hf b3lyp)
-  terco_add_check(check_tddft_rpa_grad_fd_${_f} check_tddft_rpa_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
-                  ARGS h2o2_c1.xyz basis_sets/6-31g.json h2o2_c1 6-31g ${_f} 3
-                       ${CMAKE_CURRENT_BINARY_DIR}/tddft_rpa_grad_fd_${_f}_probe.bin fd)
-  target_link_libraries(check_tddft_rpa_grad_fd_${_f} PRIVATE test-drive::test-drive)
-  set_target_properties(check_tddft_rpa_grad_fd_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
-                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_rpa_grad_fd_${_f})
+foreach(_f hf:3 b3lyp:2)
+  string(REPLACE ":" ";" _fl ${_f})
+  list(GET _fl 0 _func)
+  list(GET _fl 1 _nr)
+  terco_add_check(check_tddft_rpa_grad_fd_${_func} check_tddft_rpa_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                  ARGS h2o2_c1.xyz basis_sets/6-31g.json h2o2_c1 6-31g ${_func} ${_nr}
+                       ${CMAKE_CURRENT_BINARY_DIR}/tddft_rpa_grad_fd_${_func}_probe.bin fd)
+  target_link_libraries(check_tddft_rpa_grad_fd_${_func} PRIVATE test-drive::test-drive)
+  set_target_properties(check_tddft_rpa_grad_fd_${_func} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_rpa_grad_fd_${_func})
 endforeach()
 
 # Full RPA (TDHF / Casida) singlet excitation energies, oscillator strengths and
