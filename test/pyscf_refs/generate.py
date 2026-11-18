@@ -3239,7 +3239,7 @@ def _gen_tddft_grad_one(probe_relname, ref_relname, xyzname, molname, basname, f
     tolerance (the gradient is first order in the amplitude error, ~ residual /
     gap). `grid_response` is off: pyscf's tdrks has none (its own TODO), the
     terco side runs with it off too.
-    The Z-vector is converged to 1e-12 (pyscf's default is 1e-8).
+    The Z-vector is an exact dense solve (pyscf's Krylov CPHF stops at ~1e-6).
     Written: E_SCF, GRAD (3, natm, nroots), hartree/bohr, total energy gradient
     of each root (nuclear repulsion included)."""
     PYSCF = {"hf": None, "svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
@@ -3306,11 +3306,32 @@ def _gen_tddft_grad_one(probe_relname, ref_relname, xyzname, molname, basname, f
     td.xy = [(v[:, k].reshape(nocc, nvir) * np.sqrt(0.5), 0) for k in range(nroots)]
     td.converged = [True] * nroots
     g = td.nuc_grad_method()
-    # pyscf's Z-vector defaults (1e-8, 20 cycles) are the loosest part of the
-    # reference; converge it far below the comparison.
-    g.cphf_conv_tol = 1.0e-12
-    g.cphf_max_cycle = 200
-    grads = np.stack([g.kernel(xy=td.xy[k], state=k + 1).T for k in range(nroots)], axis=2)
+    # pyscf's Z-vector (cphf.solve, lib.krylov) exits on its linear-dependence
+    # criterion at a residual near 1e-6 whatever tol and max_cycle say, which is
+    # 1e-7 off the exact solution and moves the gradient by that much. Replace
+    # it for this call by a dense solve of (e_a - e_i) z + A z = -wvo, built
+    # column by column from the same response function, and assert its residual.
+    from pyscf.scf import cphf as pyscf_cphf
+    krylov_solve = pyscf_cphf.solve
+
+    def dense_solve(fvind, mo_energy, mo_occ, h1, **_kw):
+        nocc_ = int((mo_occ > 0).sum())
+        nvir_ = len(mo_energy) - nocc_
+        nov_ = nocc_ * nvir_
+        eye = np.eye(nov_)
+        mat = np.stack([fvind(eye[i]) for i in range(nov_)], axis=1)
+        mat += np.diag((mo_energy[nocc_:, None] - mo_energy[None, :nocc_]).ravel())
+        z = np.linalg.solve(mat, -h1.ravel())
+        resid = np.abs(mat @ z + h1.ravel()).max()
+        if not resid < 1.0e-11:
+            raise RuntimeError(f"{label}: dense Z-vector residual {resid:.2e}")
+        return z.reshape(h1.shape), None
+
+    pyscf_cphf.solve = dense_solve
+    try:
+        grads = np.stack([g.kernel(xy=td.xy[k], state=k + 1).T for k in range(nroots)], axis=2)
+    finally:
+        pyscf_cphf.solve = krylov_solve
 
     w_ = RefWriter(ref_relname)
     w_.header(label, [ROOT / "test" / "check_tddft_grad.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
@@ -3329,9 +3350,12 @@ def _gen_tddft_grad_one(probe_relname, ref_relname, xyzname, molname, basname, f
 def gen_tddft_grad():
     """check_tddft_grad.F90: the gradients of the lowest 3 singlet TDA roots of
     water and formamide, 6-31G, HF, SVWN, PBE and B3LYP, against pyscf's
-    grad.tdrhf/tdrks at terco's own converged orbitals' grid."""
-    for xyzname, molname in (("water.xyz", "water"), ("formamide.xyz", "formamide")):
+    grad.tdrhf/tdrks at terco's own converged orbitals' grid. Non-planar H2O2
+    (HF, PBE) has all three Cartesian components of the gradient non-zero."""
+    for xyzname, molname in (("water.xyz", "water"), ("formamide.xyz", "formamide"), ("h2o2.xyz", "h2o2")):
         for funcname in ("hf", "svwn", "pbe", "b3lyp"):
+            if molname == "h2o2" and funcname not in ("hf", "pbe"):
+                continue
             probe = f"tddft_grad_{molname}_{funcname}_probe.bin"
             run_bin(f"check_tddft_grad_{molname}_{funcname}",
                     [xyzname, "basis_sets/6-31g.json", molname, "6-31g", funcname, "3", str(TEST / probe)])
