@@ -90,6 +90,15 @@ if(NOT TERCO_CART_ORDER STREQUAL "lexicographic")
   set(_order_flag "--order" "${TERCO_CART_ORDER}")
 endif()
 
+# TERCO_GRAD_PAIRS_CAP reaches the three gradient generator runs that decide
+# a class's pair widths (the --pair-widths query, each class, the dispatcher),
+# and only when ON, so the default invocation lines, and with them the
+# generation stamps and the GENERATED headers, are unchanged.
+set(_pairs_cap_flag "")
+if(TERCO_GRAD_PAIRS_CAP)
+  set(_pairs_cap_flag "--pairs-cap")
+endif()
+
 if(_regen)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   set(_gen_out "${CMAKE_BINARY_DIR}/stage/generated")
@@ -508,7 +517,7 @@ list(JOIN _rys_grad_classes "," _rys_grad_classes_csv)
 # generator's decision (PAIRS_GM_BUDGET, PAIRS_RT_PLAN), so ask it here,
 # with the same options the generation below passes.
 execute_process(COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/gen_rys_grad.py
-                        --pair-widths ${_rys_grad_classes_csv} ${_order_flag}
+                        --pair-widths ${_rys_grad_classes_csv} ${_order_flag} ${_pairs_cap_flag}
                 OUTPUT_VARIABLE _rys_pair_widths RESULT_VARIABLE _rc ERROR_VARIABLE _err)
 if(NOT _rc EQUAL 0)
   message(FATAL_ERROR "gen_rys_grad.py --pair-widths failed (${_rc}): ${_err}")
@@ -562,13 +571,13 @@ macro(_terco_gen_rys)
             -o ${_rys_stage}/trc_rys_kernels.F90)
   foreach(_tag ${_rys_grad_classes})
     terco_gen("gen_rys_grad.py ${_tag}" ${Python3_EXECUTABLE}
-              ${PROJECT_SOURCE_DIR}/scripts/gen_rys_grad.py ${_tag} ${_order_flag}
+              ${PROJECT_SOURCE_DIR}/scripts/gen_rys_grad.py ${_tag} ${_order_flag} ${_pairs_cap_flag}
               --src-dir ${_hgp_template} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
               -o ${_rys_stage}/trc_pc_rysg${_tag}.F90)
   endforeach()
   terco_gen("gen_rys_grad_dispatch.py" ${Python3_EXECUTABLE}
             ${PROJECT_SOURCE_DIR}/scripts/gen_rys_grad_dispatch.py
-            --classes ${_rys_grad_classes_csv} ${_order_flag}
+            --classes ${_rys_grad_classes_csv} ${_order_flag} ${_pairs_cap_flag}
             -o ${_rys_stage}/trc_rys_grad_kernels.F90)
 endmacro()
 set(_s "${PROJECT_SOURCE_DIR}/scripts")
