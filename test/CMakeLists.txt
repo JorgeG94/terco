@@ -2709,12 +2709,14 @@ endforeach()
 #
 terco_add_check(check_tddft_api check_tddft_api.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_tddft_api PRIVATE test-drive::test-drive)
-# The gradients and the finite difference (four SCFs) are runs of the same program of their own, each under a half minute.
+# The gradients and the finite difference (four SCFs) are runs of the same program of their own.
 foreach(_mode grad fd)
   add_test(NAME terco/check_tddft_api_${_mode} COMMAND check_tddft_api ${_mode})
   set_tests_properties(terco/check_tddft_api_${_mode} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                        ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 endforeach()
+# LONG: the finite difference took 22-33 s on a loaded host build; nightly only.
+set_tests_properties(terco/check_tddft_api_fd PROPERTIES LABELS LONG)
 
 #
 # trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of
