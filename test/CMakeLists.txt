@@ -846,7 +846,8 @@ set_tests_properties(terco/check_rys_grad_fd_ccpvtz PROPERTIES SKIP_REGULAR_EXPR
 # eri%gradient_pairs (one gradient per column from a pool of densities and a
 # pair table, one sweep over the integral derivatives) against eri%gradient,
 # split densities, single-column calls and, for an antisymmetric density,
-# finite differences of Tr(A K[A]) built from eri%fock_nosym. water/6-31G*.
+# finite differences of Tr(A K[A]) built from eri%fock_nosym. water and
+# hydrogen peroxide, 6-31G*.
 #
 terco_add_check(check_grad_pairs check_grad_pairs.F90 NEEDS_BASIS
                 ARGS basis_sets/6-31gs.json)

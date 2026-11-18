@@ -32,9 +32,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--classes", required=True,
                     help="comma-separated four-digit class tags")
+    # The options that decide a class's pair widths, from the generator's own
+    # parser: pass this the same ones the generator and its --pair-widths
+    # query got, or the widths this names are not the ones that were written.
+    gg.add_plan_options(ap)
     ap.add_argument("-o", "--output", required=True)
     args = ap.parse_args()
     tags = args.classes.split(",")
+    widths = {tag: gg.class_pair_widths(tag, args) for tag in tags}
 
     keys = []
     use_lines = []
@@ -43,7 +48,9 @@ def main():
         la, lb, lc, ld = (int(c) for c in tag)
         key = ((la*gp.CLASS_RADIX + lb)*gp.CLASS_RADIX + lc)*gp.CLASS_RADIX + ld
         keys.append((key, tag))
-        use_lines.append(f"   use trc_pc_rysg{tag}, only: rysg{tag}_screen, rysg{tag}_compact, &\n                  rysg{tag}_pairs_compact")
+        use_lines.append(f"   use trc_pc_rysg{tag}, only: rysg{tag}_screen, rysg{tag}_compact")
+        use_lines.extend(f"   use {gg.pair_module_name(tag, nc)}, only: {gg.pair_driver_name(tag, nc)}"
+                         for nc in widths[tag])
     keys.sort()
 
     # Wrapped, not one line: at TERCO_LMAX=3 the list runs to 242 keys
@@ -64,13 +71,33 @@ def main():
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, ndens, dmat, npriv, gp)"""
         for key, tag in keys)
 
-    pairs_cases = "\n".join(
-        f"""      case ({key}); call rysg{tag}_pairs_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
-                          npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &
-                          nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
-                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                          npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp)"""
-        for key, tag in keys)
+    def pairs_case(key, tag):
+        """One class's case: walk the columns in blocks of the widest width
+        the class has, and run each block through the narrowest width that
+        holds it (the columns past a block of a wider width would only be
+        skipped). The block is the table's own sub-table: pstart(c0) and
+        gp(.., c0) start the dummies there."""
+        ws = widths[tag]
+        if not ws:
+            return (f"      case ({key})\n"
+                    f'         error stop "terco: gradient_pairs: the class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}) '
+                    'is never launched"')
+        vmax = ws[-1]
+        txt = (f"      case ({key})\n"
+               f"         do c0 = 1, ncb, {vmax}\n"
+               f"            nblk = min({vmax}, ncb - c0 + 1)\n")
+        for n, nc in enumerate(ws):
+            kw = ("if (nblk <= %d) then" % nc if n == 0 else
+                  "else if (nblk <= %d) then" % nc if nc != vmax else "else")
+            txt += (f"            {kw}\n"
+                    f"               call {gg.pair_driver_name(tag, nc)}(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &\n"
+                    "                          npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &\n"
+                    "                          nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &\n"
+                    "                          sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &\n"
+                    "                          npool, dmat, nblk, pstart(c0), pl, pr, pj, pk, npriv, gp(1, 1, 1, c0))\n")
+        return txt + "            end if\n         end do"
+
+    pairs_cases = "\n".join(pairs_case(key, tag) for key, tag in keys)
 
     out = f"""!
 ! Dispatcher over the Rys per-class GRADIENT kernels gen_rys_grad.py wrote.
@@ -194,7 +221,7 @@ contains
       !! integrals are contracted against all `ncb` columns (at most
       !! RYSG_PAIRS_NCB) at once, into gp(:, :, :, column). Column c owns pairs
       !! pstart(c) .. pstart(c+1)-1 of (pl, pr, pj, pk); see
-      !! gen_rys_grad.py's pairs_item_text for what a pair contributes.
+      !! gen_rys_grad.py's pairs_modules for what a pair contributes.
       integer, intent(in) :: key
       integer(int64), intent(in) :: nout
       integer,  intent(in)    :: out_seg(*), out_iab(*), out_icd(*)
@@ -219,6 +246,7 @@ contains
       real(dp), intent(in)    :: pj(*), pk(*)
       integer,  intent(in)    :: npriv
       real(dp), intent(inout) :: gp(3, natm, npriv, ncb)
+      integer :: c0, nblk
       select case (key)
 {pairs_cases}
       end select
