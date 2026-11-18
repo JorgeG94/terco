@@ -62,16 +62,21 @@ module trc_tddft_grad
    !! column of the sweep; `roots_per_sweep` (default 2, at most 4) caps how many roots share one pass.
    !!
    !! GRID. The XC terms are Pulay only unless `grid_response` is set (pyscf's
-   !! tdrks has no grid response either: compare with it off). With it on the
-   !! grid must come from `build_from_grid` with `partition` set to its own,
-   !! exactly as trc_xc_grad_response_many requires.
+   !! tdrks has no grid response either: compare with it off). The default is
+   !! therefore NOT the exact derivative of terco's energy with a grid that
+   !! moves with the nuclei (the SCF's grids do): it misses the grid's
+   !! point-motion and partition-weight terms, which check_tddft_grad's
+   !! finite-difference case measures. Set `grid_response` for the exact
+   !! gradient; the grid must then come from `build_from_grid` with `partition`
+   !! set to its own, exactly as trc_xc_grad_response_many requires.
    !!
    !! SCOPE. Restricted, singlet, TDA, LDA/GGA and hybrid functionals with an
    !! exchange fraction c_x, Cartesian basis, no density fitting; the refusals are
    !! trc_tddft_refuse_reason's, and a spherical basis. A degenerate root has no
-   !! unique gradient (any rotation inside the multiplet is an equally good X),
-   !! so compare nothing there. The dense algebra (AO/MO transforms, the
-   !! Z-vector's right-hand side) runs on the host.
+   !! unique gradient (any rotation inside the multiplet is an equally good X);
+   !! a warning is logged when two computed roots lie within 1e-6 hartree. The
+   !! dense algebra (AO/MO transforms, the Z-vector's right-hand side) runs on the
+   !! host.
    !!
    use pic_types, only: dp, int32, int64
    use pic_blas_interfaces, only: pic_gemm
@@ -83,7 +88,6 @@ module trc_tddft_grad
    use trc_error, only: error_t, ERROR_GENERIC, ERROR_VALIDATION
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t
-   use trc_xc_functional, only: trc_xc_functional_t
    use trc_xc, only: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply_many, trc_xc_kxc_rks_apply
    use trc_xc_grad, only: xc_grad_add_on_grid, xc_grad_options, xc_grad_step_names, xc_grad_options_t
    use trc_xc_grad_response, only: trc_xc_grad_response_many, trc_xc_grad_response_options_t
@@ -100,6 +104,7 @@ module trc_tddft_grad
 
    integer, parameter :: MAX_ROOTS_PER_SWEEP = 4
    integer, parameter :: DEFAULT_ROOTS_PER_SWEEP = 2
+   real(dp), parameter :: DEGENERACY_TOL = 1.0e-6_dp
    real(dp), parameter :: SQRT_HALF = 0.70710678118654752440_dp
 
    type :: trc_tddft_grad_options_t
@@ -680,6 +685,7 @@ contains
       opts%err = error_t()
       opts%nsweep = 0
       if (allocated(opts%grad)) deallocate (opts%grad)
+      if (allocated(opts%cpks_iterations)) deallocate (opts%cpks_iterations)
       reason = trc_tddft_grad_refuse_reason(ref, td, b%nao)
       if (len_trim(reason) == 0 .and. b%spherical) reason = "trc_tddft_grad: a spherical basis is not implemented"
       if (len_trim(reason) == 0 .and. ref%dft .and. .not. present(xg)) then
@@ -688,6 +694,17 @@ contains
       if (len_trim(reason) > 0) then
          call opts%err%set(ERROR_VALIDATION, trim(reason))
          return
+      end if
+
+      ! The gradient of a root inside a degenerate multiplet is an arbitrary
+      ! rotation of its partners' (any rotation of X is as good a solution).
+      if (allocated(td%omega)) then
+         do k = 1, size(td%omega) - 1
+            if (abs(td%omega(k + 1) - td%omega(k)) < DEGENERACY_TOL) then
+               call global_logger%warning("trc_tddft_grad: roots "//to_string(k)//" and "//to_string(k + 1)// &
+                                          " are degenerate (|d omega| < 1e-6): their gradients are not unique")
+            end if
+         end do
       end if
 
       call tddft_grad_init(st, ref, td)
