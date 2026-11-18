@@ -2556,12 +2556,17 @@ endforeach()
 #
 # TDA/CIS excited-state nuclear gradients (src/scf/response/trc_tddft_grad.F90)
 # against pyscf's grad.tdrks/tdrhf (generate.py's gen_tddft_grad): water and
-# formamide, 6-31G, 3 roots, HF, SVWN, PBE and B3LYP; each case also checks
-# roots-per-sweep chunking (default 2), a root alone against the batch and the refusals.
-# The last case is the Hartree-Fock finite-difference check (water, STO-3G).
+# formamide (6-31G, 3 roots; HF, SVWN, PBE and B3LYP) and non-planar H2O2
+# (HF and PBE); each case also checks roots-per-sweep chunking (default 2), a
+# root alone against the batch and the refusals. The _fd cases difference
+# E_SCF + omega on non-planar H2O2: Hartree-Fock, and PBE with the grid
+# response (the grid rebuilt at every displacement).
 #
-foreach(_mol water formamide)
+foreach(_mol water formamide h2o2)
   foreach(_f hf svwn pbe b3lyp)
+    if(_mol STREQUAL "h2o2" AND NOT (_f STREQUAL "hf" OR _f STREQUAL "pbe"))
+      continue()
+    endif()
     terco_add_check(check_tddft_grad_${_mol}_${_f} check_tddft_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
                     ARGS ${_mol}.xyz basis_sets/6-31g.json ${_mol} 6-31g ${_f} 3
                          ${CMAKE_CURRENT_BINARY_DIR}/tddft_grad_${_mol}_${_f}_probe.bin)
@@ -2570,12 +2575,17 @@ foreach(_mol water formamide)
                           ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_grad_${_mol}_${_f})
   endforeach()
 endforeach()
-terco_add_check(check_tddft_grad_fd check_tddft_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
-                ARGS water.xyz basis_sets/6-31g.json water 6-31g hf 3
-                     ${CMAKE_CURRENT_BINARY_DIR}/tddft_grad_fd_probe.bin fd)
-target_link_libraries(check_tddft_grad_fd PRIVATE test-drive::test-drive)
-set_target_properties(check_tddft_grad_fd PROPERTIES Fortran_MODULE_DIRECTORY
-                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_grad_fd)
+foreach(_f hf:3 pbe:2)
+  string(REPLACE ":" ";" _fl ${_f})
+  list(GET _fl 0 _func)
+  list(GET _fl 1 _nr)
+  terco_add_check(check_tddft_grad_fd_${_func} check_tddft_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                  ARGS h2o2.xyz basis_sets/6-31g.json h2o2 6-31g ${_func} ${_nr}
+                       ${CMAKE_CURRENT_BINARY_DIR}/tddft_grad_fd_${_func}_probe.bin fd)
+  target_link_libraries(check_tddft_grad_fd_${_func} PRIVATE test-drive::test-drive)
+  set_target_properties(check_tddft_grad_fd_${_func} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_grad_fd_${_func})
+endforeach()
 
 #
 # trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of
