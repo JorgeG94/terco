@@ -55,13 +55,24 @@ module trc_cphf
    !! Preconditioned conjugate gradient, the diagonal (e_a - e_i) as the
    !! preconditioner (SPD for a stable ground state, so CG is the right
    !! choice over a general Krylov method), one right-hand side at a time
-   !! inside a single call that reports an iteration count per column. A
-   !! batched build across right-hand sides -- one `fock_resident`-like pass
-   !! contracting a quartet against every trial density at once, as
-   !! `eri%fock_many` does for already-host-resident problems -- is the
-   !! obvious next speed-up and is NOT done: there is no device-resident
-   !! multi-density fock_resident, so this runs ncomp independent CG loops,
-   !! each paying its own integral pass per iteration.
+   !! inside a single call that reports an iteration count per column. The
+   !! right-hand sides are solved TOGETHER: one CG loop over every column that
+   !! has not converged, each with its own alpha, beta and residual (so each
+   !! column's iterates, and its iteration count, are those of a solve of that
+   !! column alone), whose matvecs are built in ONE pass over the integrals
+   !! per iteration (`eri%fock_resident_many_lent`, density_screen off) rather
+   !! than one pass per column. A column drops out of the batch as it
+   !! converges, so the last iterations are cheap. The Fock pass costs the same
+   !! for one density as for several (the quartet is evaluated once, the
+   !! digestion is per density), which is what the sharing buys; the Z-vector
+   !! of every root of an excited-state gradient is the intended customer.
+   !! `trc_cphf_options_t%max_batch` caps the columns in flight (memory: about
+   !! 4 nao^2 doubles each for HF, 5 with the XC response) and 1 reverts to
+   !! one column per pass. `trc_cphf_cg_t` is the shared CG state machine:
+   !! a solver builds the matvec for `cg%act(1:cg%na)` and calls `advance`.
+   !! The density-fitted solves (`trc_cphf_solve_rhf_fitted`) and the UHF
+   !! solve are still one column at a time: the MO-basis fitted response has
+   !! no multi-vector form, and UHF's two-density matvec is not batched here.
    !!
    !! RESIDENCY. `cmo`, the right-hand sides and the solution are assumed
    !! already on the device (the same contract eri%fock_resident itself
@@ -83,7 +94,7 @@ module trc_cphf
    implicit none
    private
 
-   public :: trc_cphf_options_t, trc_cphf_result_t
+   public :: trc_cphf_options_t, trc_cphf_result_t, trc_cphf_cg_t
    public :: trc_cphf_solve_rhf, trc_cphf_solve_uhf, trc_cphf_solve_rhf_fitted
    public :: trc_scf_polarizability_rhf, trc_scf_polarizability_uhf, trc_scf_polarizability
    ! Shared with trc_cpks (the CPKS extension of this solver): the same CG
@@ -99,7 +110,48 @@ module trc_cphf
       !! [A U] + B drops below this, for every right-hand side.
       integer :: max_iteration = 100
       logical :: verbose = .false.
+      integer :: max_batch = 8
+      !! Right-hand sides whose matvecs share one pass over the integrals
+      !! (RHF and RKS exact solves). The scratch is that many Fock-sized
+      !! matrices (about 4 nao^2 doubles each for HF, 5 with the XC response),
+      !! so the cap keeps it modest for a large basis, where the extra
+      !! columns buy little: the integral evaluation is shared, but each
+      !! density's digestion is not. Eight is about 250 MB at
+      !! nao = 1000. Right-hand sides beyond it are solved in further groups
+      !! of at most this many. 1 solves one column at a time, the previous
+      !! behaviour.
    end type trc_cphf_options_t
+
+   type :: trc_cphf_cg_t
+      !! Preconditioned CG over a group of right-hand sides at once, one
+      !! independent recurrence per column: the same arithmetic, column by
+      !! column, as a loop that solves them one after another, with the
+      !! matvec left to the caller so that every column still iterating can
+      !! be fed to one batched Fock build. Usage: `init`, then per group
+      !! `begin`; while `na > 0`, fill `ap(:, :, act(k))` with A p for
+      !! k = 1..na (`p` holds each column's search direction) and `advance`;
+      !! then `report`; finally `release`. Device arrays (r, z, p, ap,
+      !! diagv) are mapped on their own, never the type.
+      integer :: nvirt = 0, nocc = 0, nb = 0, nc = 0
+      !! The columns the state holds, and those of the current group.
+      integer :: na = 0
+      !! Columns still iterating; their group-local indices are act(1:na).
+      integer :: c0 = 0
+      !! First column (of the caller's right-hand sides) of the current group.
+      integer :: maxit = 0
+      real(dp) :: tol = 0.0_dp
+      integer, allocatable :: act(:), it(:)
+      logical, allocatable :: broke(:)
+      real(dp), allocatable :: rz(:), resid(:)
+      real(dp), allocatable :: r(:, :, :), z(:, :, :), p(:, :, :), ap(:, :, :), diagv(:, :)
+      !! r, z, p, ap are (nvirt, nocc, nb); diagv (nvirt, nocc).
+   contains
+      procedure :: init => cg_init
+      procedure :: begin => cg_begin
+      procedure :: advance => cg_advance
+      procedure :: report => cg_report
+      procedure :: release => cg_release
+   end type trc_cphf_cg_t
 
    type :: trc_cphf_result_t
       logical :: converged = .true.
@@ -111,11 +163,13 @@ contains
 
    subroutine trc_cphf_solve_rhf(b, eri, lp, nao, nocc, nvirt, cmo, eps, ncomp, bvec, u, opts, res)
       !!
-      !! RHF CPHF: `ncomp` right-hand sides at once (one CG solve per column,
-      !! see this module's own header on why that is not one shared integral
-      !! pass). `cmo` (nao, nao), `bvec` (nvirt, nocc, ncomp) and `u` (same
-      !! shape, overwritten with the solution) must already be device-resident;
-      !! `eps` (nao) is host, read once to build the diagonal preconditioner.
+      !! RHF CPHF: `ncomp` right-hand sides, solved together (this module's
+      !! own header: one CG recurrence per column, the matvecs of the columns
+      !! still iterating built in one batched Fock pass, in groups of at most
+      !! `opts%max_batch`). `cmo` (nao, nao), `bvec` (nvirt, nocc, ncomp) and `u`
+      !! (same shape, overwritten with the solution) must already be
+      !! device-resident; `eps` (nao) is host, read once to build the diagonal
+      !! preconditioner. `res%iterations(c)` is column c's own count.
       !!
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
@@ -130,111 +184,227 @@ contains
       type(trc_cphf_options_t), intent(in) :: opts
       type(trc_cphf_result_t), intent(out) :: res
 
-      real(dp), allocatable :: d_u(:, :), d_ut(:, :), g_u(:, :)
-      real(dp), allocatable :: temporary_no(:, :), temporary_no2(:, :)
-      real(dp), allocatable :: r(:, :), z(:, :), p(:, :), ap(:, :), diagv(:, :)
-      real(dp) :: rz, rz_old, pap, alpha_cg, beta_cg, resid
-      integer :: it, comp, i, a
-      logical :: broke
+      real(dp), allocatable :: d_u(:, :, :), d_ut(:, :), g_u(:, :, :)
+      real(dp), allocatable :: temporary_no(:, :), temporary_no2(:, :), work(:)
+      type(trc_cphf_cg_t) :: cg
+      type(trc_fock_options_t) :: fopts
+      integer :: nbmax, c0, nc
 
-      allocate (d_u(nao, nao), d_ut(nao, nao), g_u(nao, nao))
+      nbmax = max(1, min(opts%max_batch, ncomp))
+      allocate (d_u(nao, nao, nbmax), d_ut(nao, nao), g_u(nao, nao, nbmax))
       allocate (temporary_no(nao, nocc), temporary_no2(nao, nocc))
-      allocate (r(nvirt, nocc), z(nvirt, nocc), p(nvirt, nocc), ap(nvirt, nocc), diagv(nvirt, nocc))
-      do i = 1, nocc
-         do a = 1, nvirt
-            diagv(a, i) = eps(nocc + a) - eps(i)
-         end do
-      end do
-
-      !$acc enter data create(d_u, d_ut, g_u, temporary_no, temporary_no2, r, z, p, ap)
-      !$acc enter data copyin(diagv)
+      !$acc enter data create(d_u, d_ut, g_u, temporary_no, temporary_no2)
+      if (nbmax > 1) then
+         allocate (work(eri%fock_work_size(nbmax)))
+         !$acc enter data create(work)
+      end if
+      ! density_screen off: a trial vector must not drive the screen
+      ! (this module's header).
+      fopts = trc_fock_options_t(k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.)
+      call cg%init(nvirt, nocc, nbmax, eps, opts)
 
       allocate (res%iterations(ncomp))
+      res%iterations = 0
       res%converged = .true.
       res%message = ""
 
-      do comp = 1, ncomp
-         call cphf_neg_matrix(nvirt, nocc, bvec(:, :, comp), r)
-         call cphf_zero_matrix(nvirt, nocc, u(:, :, comp))
-         call cphf_precond_matrix(nvirt, nocc, diagv, r, z)
-         call cphf_copy_matrix(nvirt, nocc, z, p)
-         rz = lp%dot_2d(r, z)
-         resid = sqrt(lp%dot_2d(r, r))
-         it = 0
-         broke = .false.
-         ! `.not. (resid < conv_residual)`, not `resid >= conv_residual`:
-         ! a NaN right-hand side makes resid NaN from the start, and NaN
-         ! fails BOTH comparisons. With `>=` that reads as "already
-         ! converged" (the loop body, and the pap guard inside it, never
-         ! run at all) and the post-loop check below falls through the
-         ! same way, leaving res%converged at its initial .true. with
-         ! zero iterations -- silently wrong. `.not. (resid < conv)` reads
-         ! a NaN resid as "not yet converged" instead, so the loop runs,
-         ! matvec produces a NaN ap, and the pap guard above catches it.
-         do while (it < opts%max_iteration .and. .not. (resid < opts%conv_residual))
-            call matvec(p, ap)
-            pap = lp%dot_2d(p, ap)
-            ! A breakdown (p^T A p <= 0, including NaN -- NaN > 0 is
-            ! false) must stop here: falling through to alpha_cg = rz/pap
-            ! gives an Inf/NaN update that the residual check below
-            ! cannot catch either (NaN >= conv_residual is also false),
-            ! which would otherwise exit the loop and report converged.
-            if (.not. (pap > 0.0_dp)) then
-               broke = .true.
-               exit
-            end if
-            alpha_cg = rz/pap
-            call cphf_axpy_matrix(nvirt, nocc, alpha_cg, p, u(:, :, comp))
-            call cphf_axpy_matrix(nvirt, nocc, -alpha_cg, ap, r)
-            resid = sqrt(lp%dot_2d(r, r))
-            it = it + 1
-            if (resid < opts%conv_residual) exit
-            call cphf_precond_matrix(nvirt, nocc, diagv, r, z)
-            rz_old = rz
-            rz = lp%dot_2d(r, z)
-            beta_cg = rz/rz_old
-            call cphf_combine_p(nvirt, nocc, z, beta_cg, p)
+      c0 = 1
+      do while (c0 <= ncomp)
+         nc = min(nbmax, ncomp - c0 + 1)
+         call cg%begin(lp, ncomp, bvec, u, c0, nc)
+         do while (cg%na > 0)
+            call matvec()
+            call cg%advance(lp, ncomp, u)
          end do
-         res%iterations(comp) = it
-         if (broke) then
-            res%converged = .false.
-            res%message = "trc_cphf: CG breakdown (p^T A p <= 0, or NaN) on a right-hand side"
-         else if (.not. (resid < opts%conv_residual)) then
-            res%converged = .false.
-            res%message = "trc_cphf: a right-hand side did not converge"
-         end if
-         if (opts%verbose) then
-            block
-               character(len=1024) :: logline
-               write (logline, "(a,i0,a,i0,a,es9.2)") &
-                  "   cphf rhs ", comp, ": ", it, " iterations, residual ", resid
-               call global_logger%info(trim(logline))
-            end block
-         end if
+         call cg%report(res, "cphf", opts%verbose)
+         c0 = c0 + nc
       end do
 
-      !$acc exit data delete(diagv)
-      !$acc exit data delete(d_u, d_ut, g_u, temporary_no, temporary_no2, r, z, p, ap)
+      call cg%release()
+      if (nbmax > 1) then
+         !$acc exit data delete(work)
+         deallocate (work)
+      end if
+      !$acc exit data delete(d_u, d_ut, g_u, temporary_no, temporary_no2)
 
    contains
 
-      subroutine matvec(pin, apout)
-         !! [A p]_ai = 2 [C_vir^T G[D_p] C_occ]_ai + (e_a-e_i) p_ai, D_p the
-         !! symmetrised AO density this p rotates into (this module's header).
-         real(dp), intent(in) :: pin(nvirt, nocc)
-         real(dp), intent(inout) :: apout(nvirt, nocc)
-         call lp%gemm_mat(cmo(:, nocc + 1:nao), pin, temporary_no)
-         call lp%gemm_mat(temporary_no, cmo(:, 1:nocc), d_u, transb="T")
-         call lp%transpose(nao, nao, d_u, nao, d_ut, nao)
-         call cphf_add_matrix(nao, nao, d_u, d_ut, d_u)
-         call eri%fock_resident(b, d_u, g_u, &
-                                opts=trc_fock_options_t(k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.))
-         call lp%gemm_mat(g_u, cmo(:, 1:nocc), temporary_no2)
-         call lp%gemm_mat(cmo(:, nocc + 1:nao), temporary_no2, apout, transa="T", alpha=2.0_dp)
-         call cphf_add_diag(nvirt, nocc, diagv, pin, apout)
+      subroutine matvec()
+         !! [A p]_ai = 2 [C_vir^T G[D_p] C_occ]_ai + (e_a-e_i) p_ai for every
+         !! active column, D_p the symmetrised AO density this p rotates into
+         !! (this module's header): all the D_p, one Fock pass, all the A p.
+         integer :: k, kk
+         do k = 1, cg%na
+            kk = cg%act(k)
+            call lp%gemm_mat(cmo(:, nocc + 1:nao), cg%p(:, :, kk), temporary_no)
+            call lp%gemm_mat(temporary_no, cmo(:, 1:nocc), d_u(:, :, k), transb="T")
+            call lp%transpose(nao, nao, d_u(:, :, k), nao, d_ut, nao)
+            call cphf_add_matrix(nao, nao, d_u(:, :, k), d_ut, d_u(:, :, k))
+         end do
+         if (nbmax == 1) then
+            call eri%fock_resident(b, d_u(:, :, 1), g_u(:, :, 1), opts=fopts)
+         else
+            call eri%fock_resident_many_lent(b, cg%na, d_u, g_u, fopts, work)
+         end if
+         do k = 1, cg%na
+            kk = cg%act(k)
+            call lp%gemm_mat(g_u(:, :, k), cmo(:, 1:nocc), temporary_no2)
+            call lp%gemm_mat(cmo(:, nocc + 1:nao), temporary_no2, cg%ap(:, :, kk), transa="T", alpha=2.0_dp)
+            call cphf_add_diag(nvirt, nocc, cg%diagv, cg%p(:, :, kk), cg%ap(:, :, kk))
+         end do
       end subroutine matvec
 
    end subroutine trc_cphf_solve_rhf
+
+   subroutine cg_init(this, nvirt, nocc, nb, eps, opts)
+      !! Size the state for groups of up to `nb` columns, and map it. `eps`
+      !! (host, indexed over all orbitals, occupied first) gives the diagonal
+      !! preconditioner (e_a - e_i); `opts` the tolerance and iteration cap.
+      class(trc_cphf_cg_t), intent(inout) :: this
+      integer, intent(in) :: nvirt, nocc, nb
+      real(dp), intent(in) :: eps(:)
+      type(trc_cphf_options_t), intent(in) :: opts
+      integer :: i, a
+      call this%release()
+      this%nvirt = nvirt
+      this%nocc = nocc
+      this%nb = nb
+      this%maxit = opts%max_iteration
+      this%tol = opts%conv_residual
+      allocate (this%act(nb), this%it(nb), this%broke(nb), this%rz(nb), this%resid(nb))
+      allocate (this%r(nvirt, nocc, nb), this%z(nvirt, nocc, nb), this%p(nvirt, nocc, nb), &
+                this%ap(nvirt, nocc, nb), this%diagv(nvirt, nocc))
+      do i = 1, nocc
+         do a = 1, nvirt
+            this%diagv(a, i) = eps(nocc + a) - eps(i)
+         end do
+      end do
+      this%it = 0
+      this%broke = .false.
+      this%na = 0
+      !$acc enter data create(this%r, this%z, this%p, this%ap)
+      !$acc enter data copyin(this%diagv)
+   end subroutine cg_init
+
+   subroutine cg_begin(this, lp, ncomp, bvec, u, c0, nc)
+      !! Start columns c0 .. c0+nc-1 of `bvec` (nvirt, nocc, ncomp), device
+      !! resident, as the group's columns 1..nc: u = 0, r = -b, z = r/diag,
+      !! p = z, and the loop-entry test of each column (`.not. (resid < tol)`,
+      !! so a NaN right-hand side starts iterating and is caught by the
+      !! breakdown guard of `advance` instead of passing as converged).
+      class(trc_cphf_cg_t), intent(inout) :: this
+      type(trc_linalg_t), intent(inout) :: lp
+      integer, intent(in) :: ncomp, c0, nc
+      real(dp), intent(in) :: bvec(this%nvirt, this%nocc, ncomp)
+      real(dp), intent(inout) :: u(this%nvirt, this%nocc, ncomp)
+      integer :: k, nv, no
+      nv = this%nvirt
+      no = this%nocc
+      if (nc > this%nb) error stop "trc_cphf: a CG group larger than the state was sized for"
+      this%c0 = c0
+      this%na = 0
+      do k = 1, nc
+         call cphf_neg_matrix(nv, no, bvec(:, :, c0 + k - 1), this%r(:, :, k))
+         call cphf_zero_matrix(nv, no, u(:, :, c0 + k - 1))
+         call cphf_precond_matrix(nv, no, this%diagv, this%r(:, :, k), this%z(:, :, k))
+         call cphf_copy_matrix(nv, no, this%z(:, :, k), this%p(:, :, k))
+         this%rz(k) = lp%dot_2d(this%r(:, :, k), this%z(:, :, k))
+         this%resid(k) = sqrt(lp%dot_2d(this%r(:, :, k), this%r(:, :, k)))
+         this%it(k) = 0
+         this%broke(k) = .false.
+         if (this%it(k) < this%maxit .and. .not. (this%resid(k) < this%tol)) then
+            this%na = this%na + 1
+            this%act(this%na) = k
+         end if
+      end do
+      this%nc = nc
+   end subroutine cg_begin
+
+   subroutine cg_advance(this, lp, ncomp, u)
+      !! One CG step for every active column, given `ap` = A p for each
+      !! (filled by the caller): that column's own alpha = rz/(p.Ap), its
+      !! own beta, residual and iteration count. A column leaves the active
+      !! set when its residual drops below tol (converged), at the iteration
+      !! cap, or on a breakdown (p.Ap <= 0, or NaN -- NaN > 0 is false): then
+      !! it stops BEFORE the update, never falling through to an Inf/NaN alpha
+      !! that the residual test could not catch either (trc_cphf_solve_rhf's
+      !! old comment, which still holds).
+      class(trc_cphf_cg_t), intent(inout) :: this
+      type(trc_linalg_t), intent(inout) :: lp
+      integer, intent(in) :: ncomp
+      real(dp), intent(inout) :: u(this%nvirt, this%nocc, ncomp)
+      integer :: j, k, nn, nv, no, col
+      real(dp) :: pap, alpha_cg, beta_cg, rz_old
+      nv = this%nvirt
+      no = this%nocc
+      nn = 0
+      do j = 1, this%na
+         k = this%act(j)
+         col = this%c0 + k - 1
+         pap = lp%dot_2d(this%p(:, :, k), this%ap(:, :, k))
+         if (.not. (pap > 0.0_dp)) then
+            this%broke(k) = .true.
+            cycle
+         end if
+         alpha_cg = this%rz(k)/pap
+         call cphf_axpy_matrix(nv, no, alpha_cg, this%p(:, :, k), u(:, :, col))
+         call cphf_axpy_matrix(nv, no, -alpha_cg, this%ap(:, :, k), this%r(:, :, k))
+         this%resid(k) = sqrt(lp%dot_2d(this%r(:, :, k), this%r(:, :, k)))
+         this%it(k) = this%it(k) + 1
+         if (this%resid(k) < this%tol) cycle
+         call cphf_precond_matrix(nv, no, this%diagv, this%r(:, :, k), this%z(:, :, k))
+         rz_old = this%rz(k)
+         this%rz(k) = lp%dot_2d(this%r(:, :, k), this%z(:, :, k))
+         beta_cg = this%rz(k)/rz_old
+         call cphf_combine_p(nv, no, this%z(:, :, k), beta_cg, this%p(:, :, k))
+         if (this%it(k) < this%maxit) then
+            nn = nn + 1
+            this%act(nn) = k
+         end if
+      end do
+      this%na = nn
+   end subroutine cg_advance
+
+   subroutine cg_report(this, res, label, verbose)
+      !! Copy the finished group's iteration counts into `res%iterations`
+      !! and fold its outcome into res%converged and res%message, column by
+      !! column in order (so the message is that of the last column that
+      !! failed, as when the columns were solved one after another).
+      !! `label` ("cphf", "cpks") names the solver in the message and log.
+      class(trc_cphf_cg_t), intent(in) :: this
+      type(trc_cphf_result_t), intent(inout) :: res
+      character(len=*), intent(in) :: label
+      logical, intent(in) :: verbose
+      integer :: k
+      character(len=1024) :: logline
+      do k = 1, this%nc
+         res%iterations(this%c0 + k - 1) = this%it(k)
+         if (this%broke(k)) then
+            res%converged = .false.
+            res%message = "trc_"//label//": CG breakdown (p^T A p <= 0, or NaN) on a right-hand side"
+         else if (.not. (this%resid(k) < this%tol)) then
+            res%converged = .false.
+            res%message = "trc_"//label//": a right-hand side did not converge"
+         end if
+         if (verbose) then
+            write (logline, "(a,a,i0,a,i0,a,es9.2)") "   ", label//" rhs ", this%c0 + k - 1, ": ", this%it(k), &
+               " iterations, residual ", this%resid(k)
+            call global_logger%info(trim(logline))
+         end if
+      end do
+   end subroutine cg_report
+
+   subroutine cg_release(this)
+      class(trc_cphf_cg_t), intent(inout) :: this
+      if (allocated(this%r)) then
+         !$acc exit data delete(this%diagv)
+         !$acc exit data delete(this%r, this%z, this%p, this%ap)
+      end if
+      if (allocated(this%act)) deallocate (this%act, this%it, this%broke, this%rz, this%resid)
+      if (allocated(this%r)) deallocate (this%r, this%z, this%p, this%ap, this%diagv)
+      this%na = 0
+      this%nc = 0
+   end subroutine cg_release
 
    subroutine trc_cphf_solve_rhf_fitted(resp, dfjk, lp, bvec, u, opts, res)
       !!

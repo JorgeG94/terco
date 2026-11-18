@@ -2542,6 +2542,14 @@ foreach(_t scf_cpks scf_cpks_pbe scf_cpks_b3lyp scf_cpks_formamide_pbe)
 endforeach()
 
 #
+# Batched coupled-perturbed solves (trc_cphf_cg_t, opts%max_batch): every
+# right-hand side of a group iterates its own CG, the matvecs share one Fock
+# (and f_xc) pass. Against the same columns solved one at a time.
+#
+terco_add_check(check_cpks_batched check_cpks_batched.F90 NEEDS_BASIS)
+target_link_libraries(check_cpks_batched PRIVATE test-drive::test-drive)
+
+#
 # TDA/CIS singlet excitation energies and oscillator strengths
 # (src/scf/response/trc_tddft.F90) against pyscf's tdscf TDA (generate.py's
 # gen_tddft): water (4 roots) and formamide (6 roots), 6-31G*, HF, SVWN, PBE

@@ -52,12 +52,21 @@ module trc_cpks
    !!
    !! THE SOLVER
    !! ----------
-   !! trc_cphf's own preconditioned CG, copied (not called -- its
-   !! elementwise `do concurrent` helpers are exported and reused directly,
-   !! but the CG loop itself is this module's own separate copy, see
-   !! trc_cpks_solve_rks below); the only change from trc_cphf's loop is one
-   !! extra call inside `matvec`, folding `f_xc[D_U]` into the resident
-   !! Fock-like build before the two back-transforms.
+   !! trc_cphf's own preconditioned CG (`trc_cphf_cg_t`, shared, one
+   !! independent recurrence per right-hand side), the only change being one
+   !! extra term in `matvec`: `f_xc[D_U]` folded into the Fock-like build
+   !! before the two back-transforms. All the right-hand sides still
+   !! iterating share each matvec's integral pass (ONE
+   !! `fock_resident_many_lent` over the group, in groups of at most
+   !! `opts%max_batch`); with one in flight it is the unbatched
+   !! `fock_resident`, as before. The f_xc response stays one
+   !! `trc_xc_fxc_rks` per density. The many-density form against a cache of
+   !! the grid collocation (`trc_xc_fxc_rks_apply_many`, which TDDFT uses) was
+   !! tried and is slower here (V100, min of five calls, B3LYP, cc-pVDZ;
+   !! formamide 60 functions, benzene 120, triglycine 250): for 8 densities
+   !! 49, 160 and 373 ms against 25, 101 and 254 ms for eight
+   !! `trc_xc_fxc_rks` calls, which recollocate every time; for one density
+   !! 14, 36 and 77 ms against 3, 13 and 32 ms.
    !!
    !! A --df REFERENCE: trc_cpks_fitted_t
    !! -----------------------------------
@@ -82,8 +91,9 @@ module trc_cpks
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t
-   use trc_xc, only: trc_xc_fxc_rks, trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply, trc_xc_response_refuse_reason
-   use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, &
+   use trc_xc, only: trc_xc_fxc_rks, trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply, &
+                  trc_xc_response_refuse_reason
+   use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_cphf_cg_t, &
                        cphf_zero_matrix, cphf_copy_matrix, cphf_neg_matrix, cphf_add_matrix, &
                        cphf_axpy_matrix, cphf_precond_matrix, cphf_combine_p, cphf_add_diag
    use trc_scf_df, only: df_jk_t
@@ -160,8 +170,9 @@ contains
    subroutine trc_cpks_solve_rks(b, eri, lp, xg, func, nao, nocc, nvirt, cmo, eps, dmat, ncomp, bvec, u, &
                                  opts, res, budget)
       !!
-      !! RKS CPKS: `ncomp` right-hand sides, trc_cphf_solve_rhf's own CG loop
-      !! with the XC kernel response folded into `matvec`. `cmo`, `bvec` and
+      !! RKS CPKS: `ncomp` right-hand sides, trc_cphf_solve_rhf's own batched
+      !! CG (the Fock pass shared) with the XC kernel response folded into `matvec`;
+      !! `res%iterations(c)` is column c's own count, as if solved alone. `cmo`, `bvec` and
       !! `u` are device-resident (trc_cphf_solve_rhf's own contract); `eps` and
       !! `dmat` (the ground-state SCF density this functional was converged
       !! with) are HOST, `dmat` copied to the device once for the life of this
@@ -186,12 +197,12 @@ contains
       type(trc_cphf_result_t), intent(out) :: res
       integer(int64), intent(in), optional :: budget
 
-      real(dp), allocatable :: d_u(:, :), d_ut(:, :), g_u(:, :), v_resp(:, :)
-      real(dp), allocatable :: temporary_no(:, :), temporary_no2(:, :)
-      real(dp), allocatable :: r(:, :), z(:, :), p(:, :), ap(:, :), diagv(:, :)
-      real(dp) :: rz, rz_old, pap, alpha_cg, beta_cg, resid, ax
-      integer :: it, comp, i, a
-      logical :: broke
+      real(dp), allocatable :: d_u(:, :, :), d_ut(:, :), g_u(:, :, :), v_resp(:, :, :)
+      real(dp), allocatable :: temporary_no(:, :), temporary_no2(:, :), work(:)
+      type(trc_cphf_cg_t) :: cg
+      type(trc_fock_options_t) :: fopts
+      real(dp) :: ax
+      integer :: nbmax, c0, nc
       character(len=256) :: reason
 
       reason = cpks_refuse_reason(func)
@@ -204,97 +215,78 @@ contains
       end if
       ax = func%exx
 
-      allocate (d_u(nao, nao), d_ut(nao, nao), g_u(nao, nao), v_resp(nao, nao))
+      nbmax = max(1, min(opts%max_batch, ncomp))
+      allocate (d_u(nao, nao, nbmax), d_ut(nao, nao), g_u(nao, nao, nbmax), v_resp(nao, nao, nbmax))
       allocate (temporary_no(nao, nocc), temporary_no2(nao, nocc))
-      allocate (r(nvirt, nocc), z(nvirt, nocc), p(nvirt, nocc), ap(nvirt, nocc), diagv(nvirt, nocc))
-      do i = 1, nocc
-         do a = 1, nvirt
-            diagv(a, i) = eps(nocc + a) - eps(i)
-         end do
-      end do
-
-      !$acc enter data create(d_u, d_ut, g_u, v_resp, temporary_no, temporary_no2, r, z, p, ap)
-      !$acc enter data copyin(diagv, dmat)
+      !$acc enter data create(d_u, d_ut, g_u, v_resp, temporary_no, temporary_no2)
+      !$acc enter data copyin(dmat)
+      if (nbmax > 1) then
+         allocate (work(eri%fock_work_size(nbmax)))
+         !$acc enter data create(work)
+      end if
+      ! density_screen off: a trial vector must not drive the screen
+      ! (trc_cphf.F90's header).
+      fopts = trc_fock_options_t(k_scale=ax, j_scale=1.0_dp, density_screen=.false.)
+      call cg%init(nvirt, nocc, nbmax, eps, opts)
 
       allocate (res%iterations(ncomp))
+      res%iterations = 0
       res%converged = .true.
       res%message = ""
 
-      do comp = 1, ncomp
-         call cphf_neg_matrix(nvirt, nocc, bvec(:, :, comp), r)
-         call cphf_zero_matrix(nvirt, nocc, u(:, :, comp))
-         call cphf_precond_matrix(nvirt, nocc, diagv, r, z)
-         call cphf_copy_matrix(nvirt, nocc, z, p)
-         rz = lp%dot_2d(r, z)
-         resid = sqrt(lp%dot_2d(r, r))
-         it = 0
-         broke = .false.
-         ! `.not. (resid < conv_residual)`, not `resid >= conv_residual`:
-         ! see trc_cphf.F90's trc_cphf_solve_rhf for why a NaN resid must
-         ! read as "not yet converged" here, not fall through both
-         ! comparisons as false and report a silent converged.
-         do while (it < opts%max_iteration .and. .not. (resid < opts%conv_residual))
-            call matvec(p, ap)
-            pap = lp%dot_2d(p, ap)
-            ! See trc_cphf.F90's trc_cphf_solve_rhf for why this guard is
-            ! needed: a breakdown (pap <= 0, or NaN -- NaN > 0 is false)
-            ! must stop here, never fall through to an Inf/NaN alpha_cg
-            ! that the residual check below cannot catch either.
-            if (.not. (pap > 0.0_dp)) then
-               broke = .true.
-               exit
-            end if
-            alpha_cg = rz/pap
-            call cphf_axpy_matrix(nvirt, nocc, alpha_cg, p, u(:, :, comp))
-            call cphf_axpy_matrix(nvirt, nocc, -alpha_cg, ap, r)
-            resid = sqrt(lp%dot_2d(r, r))
-            it = it + 1
-            if (resid < opts%conv_residual) exit
-            call cphf_precond_matrix(nvirt, nocc, diagv, r, z)
-            rz_old = rz
-            rz = lp%dot_2d(r, z)
-            beta_cg = rz/rz_old
-            call cphf_combine_p(nvirt, nocc, z, beta_cg, p)
+      c0 = 1
+      do while (c0 <= ncomp)
+         nc = min(nbmax, ncomp - c0 + 1)
+         call cg%begin(lp, ncomp, bvec, u, c0, nc)
+         do while (cg%na > 0)
+            call matvec()
+            call cg%advance(lp, ncomp, u)
          end do
-         res%iterations(comp) = it
-         if (broke) then
-            res%converged = .false.
-            res%message = "trc_cpks: CG breakdown (p^T A p <= 0, or NaN) on a right-hand side"
-         else if (.not. (resid < opts%conv_residual)) then
-            res%converged = .false.
-            res%message = "trc_cpks: a right-hand side did not converge"
-         end if
-         if (opts%verbose) then
-            block
-               character(len=1024) :: logline
-               write (logline, "(a,i0,a,i0,a,es9.2)") &
-                  "   cpks rhs ", comp, ": ", it, " iterations, residual ", resid
-               call global_logger%info(trim(logline))
-            end block
-         end if
+         call cg%report(res, "cpks", opts%verbose)
+         c0 = c0 + nc
       end do
 
-      !$acc exit data delete(diagv, dmat)
-      !$acc exit data delete(d_u, d_ut, g_u, v_resp, temporary_no, temporary_no2, r, z, p, ap)
+      call cg%release()
+      if (nbmax > 1) then
+         !$acc exit data delete(work)
+         deallocate (work)
+      end if
+      !$acc exit data delete(dmat)
+      !$acc exit data delete(d_u, d_ut, g_u, v_resp, temporary_no, temporary_no2)
 
    contains
 
-      subroutine matvec(pin, apout)
+      subroutine matvec()
          !! [A p]_ai = 2 [C_vir^T (J[D_p] - (a_x/2) K[D_p] + f_xc[D_p]) C_occ]_ai
-         !! + (e_a-e_i) p_ai -- this module's own header.
-         real(dp), intent(in) :: pin(nvirt, nocc)
-         real(dp), intent(inout) :: apout(nvirt, nocc)
-         call lp%gemm_mat(cmo(:, nocc + 1:nao), pin, temporary_no)
-         call lp%gemm_mat(temporary_no, cmo(:, 1:nocc), d_u, transb="T")
-         call lp%transpose(nao, nao, d_u, nao, d_ut, nao)
-         call cphf_add_matrix(nao, nao, d_u, d_ut, d_u)
-         call eri%fock_resident(b, d_u, g_u, &
-                                opts=trc_fock_options_t(k_scale=ax, j_scale=1.0_dp, density_screen=.false.))
-         call trc_xc_fxc_rks(b, xg, func, dmat, d_u, v_resp, budget, lp)
-         call cphf_add_matrix(nao, nao, g_u, v_resp, g_u)
-         call lp%gemm_mat(g_u, cmo(:, 1:nocc), temporary_no2)
-         call lp%gemm_mat(cmo(:, nocc + 1:nao), temporary_no2, apout, transa="T", alpha=2.0_dp)
-         call cphf_add_diag(nvirt, nocc, diagv, pin, apout)
+         !! + (e_a-e_i) p_ai -- this module's own header -- for every active
+         !! column: all the D_p, ONE Fock pass over them, the f_xc responses,
+         !! all the A p. Only the Fock pass is shared; f_xc is one
+         !! `trc_xc_fxc_rks` per density, as before.
+         integer :: k, kk
+         do k = 1, cg%na
+            kk = cg%act(k)
+            call lp%gemm_mat(cmo(:, nocc + 1:nao), cg%p(:, :, kk), temporary_no)
+            call lp%gemm_mat(temporary_no, cmo(:, 1:nocc), d_u(:, :, k), transb="T")
+            call lp%transpose(nao, nao, d_u(:, :, k), nao, d_ut, nao)
+            call cphf_add_matrix(nao, nao, d_u(:, :, k), d_ut, d_u(:, :, k))
+         end do
+         if (nbmax == 1) then
+            call eri%fock_resident(b, d_u(:, :, 1), g_u(:, :, 1), opts=fopts)
+         else
+            call eri%fock_resident_many_lent(b, cg%na, d_u, g_u, fopts, work)
+         end if
+         ! The kernel response is per density: its grid pass is not shared
+         ! (see this module's header).
+         do k = 1, cg%na
+            call trc_xc_fxc_rks(b, xg, func, dmat, d_u(:, :, k), v_resp(:, :, k), budget, lp)
+         end do
+         do k = 1, cg%na
+            kk = cg%act(k)
+            call cphf_add_matrix(nao, nao, g_u(:, :, k), v_resp(:, :, k), g_u(:, :, k))
+            call lp%gemm_mat(g_u(:, :, k), cmo(:, 1:nocc), temporary_no2)
+            call lp%gemm_mat(cmo(:, nocc + 1:nao), temporary_no2, cg%ap(:, :, kk), transa="T", alpha=2.0_dp)
+            call cphf_add_diag(nvirt, nocc, cg%diagv, cg%p(:, :, kk), cg%ap(:, :, kk))
+         end do
       end subroutine matvec
 
    end subroutine trc_cpks_solve_rks
