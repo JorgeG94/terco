@@ -154,7 +154,12 @@ target_link_libraries(bench_warmstart PRIVATE ${main_lib} terco_test_basis)
 add_executable(bench_schwarz bench_schwarz.F90)
 target_compile_definitions(bench_schwarz PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_schwarz PRIVATE ${main_lib} terco_test_basis)
-foreach(b bench_binwater bench_many bench_xc bench_gc bench_sph bench_grad_1e bench_warmstart bench_schwarz)
+# End-to-end TDA excitation + gradient timing (time_tddft_grad.F90's own
+# header). Not a pass/fail.
+add_executable(time_tddft_grad time_tddft_grad.F90)
+target_compile_definitions(time_tddft_grad PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(time_tddft_grad PRIVATE ${main_lib} terco_test_basis)
+foreach(b time_tddft_grad bench_binwater bench_many bench_xc bench_gc bench_sph bench_grad_1e bench_warmstart bench_schwarz)
   target_include_directories(${b} PRIVATE ${CMAKE_BINARY_DIR}/modules)
 endforeach()
 
