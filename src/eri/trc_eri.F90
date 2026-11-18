@@ -44,7 +44,7 @@ module trc_eri
    use trc_parity, only: parity_choose_axis, parity_axperm, parity_ao_perm, parity_mode_env, &
                          PARITY_OFF, PARITY_FORCE_FRAME
    use trc_bin_tiles, only: bin_tiles_build
-   use trc_grad, only: grad_bins, trc_grad_pair_t, trc_grad_pairtab_t, GRAD_PAIRS_BLOCK
+   use trc_grad, only: grad_bins, trc_grad_pair_t, trc_grad_pairtab_t, RYSG_PAIRS_NCB
    use trc_rys_grad_kernels, only: RYSG_LMAX
    use trc_mdj, only: trc_mdj_t
    use trc_mdg, only: trc_mdg_t, trc_mdg_scales_t
@@ -1489,9 +1489,9 @@ contains
       !! the densities held fixed in the AO basis. This is what an
       !! excited-state gradient needs: one column per root, the ground-state
       !! and response densities in a shared pool. The kernels contract each
-      !! quartet's derivative integrals against every column of a sweep
-      !! (GRAD_PAIRS_BLOCK at most; more columns run further sweeps), so the
-      !! cost of the integrals is paid once per sweep, not once per column.
+      !! quartet's derivative integrals against every column in a block of
+      !! RYSG_PAIRS_NCB at once (more columns run further sweeps), so the
+      !! cost of the integrals is paid once per block, not once per column.
       !!
       !! A pair with left == right counts once; a cross pair counts BOTH
       !! orderings, so give a cross pair once, never mirrored. The closed-shell
@@ -1646,8 +1646,8 @@ contains
       !$acc update device(this%dsh)
       this%nwork = 0
       this%nkept = 0
-      do c0 = 1, ncol, GRAD_PAIRS_BLOCK
-         nc = min(GRAD_PAIRS_BLOCK, ncol - c0 + 1)
+      do c0 = 1, ncol, RYSG_PAIRS_NCB
+         nc = min(RYSG_PAIRS_NCB, ncol - c0 + 1)
          ncb = sum(cnt(c0:c0 + nc - 1))
          ptab%ncb = nc
          if (allocated(ptab%pstart)) deallocate (ptab%pstart, ptab%pl, ptab%pr, ptab%pj, ptab%pk)

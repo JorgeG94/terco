@@ -29,7 +29,6 @@ module check_grad_pairs_suite
    use trc_api, only: trc_basis_t
    use trc_tables, only: LMAX
    use trc_eri, only: trc_eri_t, trc_grad_pair_t
-   use trc_grad, only: grad_pairs_set_variant
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
@@ -54,7 +53,7 @@ contains
                   new_unittest("a density split over the pool counts cross pairs", test_split), &
                   new_unittest("UHF pairs equal eri%gradient with two densities", test_uhf), &
                   new_unittest("columns equal separate calls, across sweeps", test_columns), &
-                  new_unittest("every pair-kernel variant gives the same columns", test_variants), &
+                  new_unittest("3 and 5 columns equal separate calls, partial blocks", test_columns_partial), &
                   new_unittest("antisymmetric exchange matches finite differences", test_antisym_fd), &
                   new_unittest("bad input is refused", test_refusals), &
                   new_unittest("a 10% exchange error is caught", test_negative_control), &
@@ -245,10 +244,13 @@ contains
       call run_uhf('h2o2.xyz', error)
    end subroutine test_uhf
 
-   subroutine run_columns(xyz, error)
-      !! Six columns (more than one block of the widest pair kernel) with
-      !! different pair sets, against the six one-column calls.
+   subroutine run_columns(xyz, ncol, error)
+      !! The first `ncol` columns of a six-column table with different pair
+      !! sets, against the ncol one-column calls. Six is two sweeps of
+      !! RYSG_PAIRS_NCB (a block of four and one of two); three and five leave
+      !! a block that a wider kernel holds only in part.
       character(*), intent(in) :: xyz
+      integer, intent(in) :: ncol
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_eri_t) :: eri
@@ -262,14 +264,14 @@ contains
 
       call setup(xyz, bas, eri, nat, at_z, r, error)
       if (allocated(error)) return
-      allocate (pool(bas%nao, bas%nao, 3), gall(3, nat, 6), g1(3, nat, 1))
+      allocate (pool(bas%nao, bas%nao, 3), gall(3, nat, ncol), g1(3, nat, 1))
       do c = 1, 3
          call synth_sym(bas%nao, c, pool(:, :, c))
       end do
       ps = [pair(1, 1, 1, 1.0_dp, 0.5_dp), pair(2, 2, 2, 1.0_dp, 0.0_dp), pair(3, 3, 2, 0.0_dp, 1.0_dp), &
             pair(1, 2, 3, 1.0_dp, 0.3_dp), pair(2, 3, 4, 0.2_dp, 0.7_dp), pair(1, 3, 5, 0.4_dp, 0.1_dp), &
             pair(3, 3, 5, 0.1_dp, 0.2_dp), pair(1, 1, 6, 0.0_dp, 0.0_dp), pair(2, 1, 6, 1.0_dp, 1.0_dp)]
-      call eri%gradient_pairs(bas, pool, ps, 6, gall, err)
+      call eri%gradient_pairs(bas, pool, pack(ps, ps%column <= ncol), ncol, gall, err)
       call check(error, .not. err%has_error(), "gradient_pairs refused a valid call")
       if (allocated(error)) then
          call eri%release()
@@ -277,13 +279,13 @@ contains
          return
       end if
       dev = 0.0_dp
-      do c = 1, 6
+      do c = 1, ncol
          one = pack(ps, ps%column == c)
          one%column = 1
          call eri%gradient_pairs(bas, pool, one, 1, g1, err)
          dev = max(dev, reldev(g1(:, :, 1), gall(:, :, c)))
       end do
-      call report("columns "//xyz, dev)
+      call report("columns "//to_string(ncol)//" "//xyz, dev)
       call check(error, dev <= AGREE, "a column of the batch differs from its own call by "//to_string(dev, "es10.2"))
       call eri%release()
       call bas%release()
@@ -291,76 +293,17 @@ contains
 
    subroutine test_columns(error)
       type(error_type), allocatable, intent(out) :: error
-      call run_columns('water.xyz', error)
+      call run_columns('water.xyz', 6, error)
       if (allocated(error)) return
-      call run_columns('h2o2.xyz', error)
+      call run_columns('h2o2.xyz', 6, error)
    end subroutine test_columns
 
-   subroutine run_variants(xyz, error)
-      !! Every pair-kernel width (1, 2, 4 where a class has it, and
-      !! each class's default) on the same six-column table and on its first three columns (a
-      !! partial block for the wide kernels), against the width-1 family, whose first column
-      !! the other tests tie to eri%gradient.
-      character(*), intent(in) :: xyz
+   subroutine test_columns_partial(error)
       type(error_type), allocatable, intent(out) :: error
-      integer, parameter :: CODES(3) = [2, 4, 0]
-      type(trc_basis_t) :: bas
-      type(trc_eri_t) :: eri
-      type(error_t) :: err
-      integer :: nat, c, k
-      integer, allocatable :: at_z(:)
-      real(dp), allocatable :: r(:, :), pool(:, :, :), gref(:, :, :), gvar(:, :, :)
-      type(trc_grad_pair_t) :: ps(9)
-      type(trc_grad_pair_t), allocatable :: head(:)
-      real(dp) :: dev
-
-      call setup(xyz, bas, eri, nat, at_z, r, error)
+      call run_columns('h2o2.xyz', 3, error)
       if (allocated(error)) return
-      allocate (pool(bas%nao, bas%nao, 3), gref(3, nat, 6), gvar(3, nat, 6))
-      do c = 1, 3
-         call synth_sym(bas%nao, c, pool(:, :, c))
-      end do
-      ps = [pair(1, 1, 1, 1.0_dp, 0.5_dp), pair(2, 2, 2, 1.0_dp, 0.0_dp), pair(3, 3, 2, 0.0_dp, 1.0_dp), &
-            pair(1, 2, 3, 1.0_dp, 0.3_dp), pair(2, 3, 4, 0.2_dp, 0.7_dp), pair(1, 3, 5, 0.4_dp, 0.1_dp), &
-            pair(3, 3, 5, 0.1_dp, 0.2_dp), pair(1, 1, 6, 0.0_dp, 0.0_dp), pair(2, 1, 6, 1.0_dp, 1.0_dp)]
-      head = pack(ps, ps%column <= 3)
-      call grad_pairs_set_variant(1)
-      call eri%gradient_pairs(bas, pool, ps, 6, gref, err)
-      call grad_pairs_set_variant(0)
-      call check(error, .not. err%has_error(), "gradient_pairs refused a valid call")
-      dev = 0.0_dp
-      do k = 1, size(CODES)
-         if (allocated(error)) exit
-         call grad_pairs_set_variant(CODES(k))
-         call eri%gradient_pairs(bas, pool, ps, 6, gvar, err)
-         call check(error, .not. err%has_error(), "gradient_pairs refused a valid call")
-         if (allocated(error)) exit
-         do c = 1, 6
-            dev = max(dev, reldev(gvar(:, :, c), gref(:, :, c)))
-         end do
-         call eri%gradient_pairs(bas, pool, head, 3, gvar(:, :, 1:3), err)
-         call check(error, .not. err%has_error(), "gradient_pairs refused a valid call")
-         if (allocated(error)) exit
-         do c = 1, 3
-            dev = max(dev, reldev(gvar(:, :, c), gref(:, :, c)))
-         end do
-      end do
-      call grad_pairs_set_variant(0)
-      if (.not. allocated(error)) then
-         call report("variants "//xyz, dev)
-         call check(error, dev <= AGREE, "a pair-kernel variant differs from the width-1 kernel by " &
-                    //to_string(dev, "es10.2"))
-      end if
-      call eri%release()
-      call bas%release()
-   end subroutine run_variants
-
-   subroutine test_variants(error)
-      type(error_type), allocatable, intent(out) :: error
-      call run_variants('water.xyz', error)
-      if (allocated(error)) return
-      call run_variants('h2o2.xyz', error)
-   end subroutine test_variants
+      call run_columns('h2o2.xyz', 5, error)
+   end subroutine test_columns_partial
 
    real(dp) function ek_at(basis_json, nat, at_z, r, nao, a1, a2, error)
       !! E(R) = Tr(A1 K[A2]) + Tr(A2 K[A1]) at the geometry in r, with the

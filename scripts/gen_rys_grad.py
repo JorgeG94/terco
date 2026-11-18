@@ -546,29 +546,27 @@ def _pair_fold(pad, v, fi, fj, fk, gm, cols):
     return "".join(out)
 
 
-def _pair_gamma_fused(pad, chunk, c):
-    """_pair_gamma_fused_dens for a chunk of literal components."""
-    return _pair_gamma_fused_dens(pad, [_literal_pair_dens(comp) for comp in chunk], c)
+def _pair_gamma_block(pad, comps, cols):
+    """The Gamma of every component in `comps` for every column, as ONE loop
+    over the column's pairs per column. `comps` is a list of (gm, dl, dr):
+    the scalar's name stem and the density-element functions `dl(p, q)` /
+    `dr(p, q)` of that component (shell p against shell q, left/right pool
+    density of the pair).
 
-
-def _pair_gamma_fused_dens(pad, dens, c):
-    """gm_m_c for EVERY component m of a chunk, column c, in ONE pass over the
-    column's pairs: the pair table entries are read once per pair, and the
-    density elements the components share (a Cartesian component moves only
-    the within-shell offsets) are loaded once per pair, not once per component
-    (a loop per component read 12 elements per pair and
-    component: 3.6x the global-load sectors of eri%gradient's block loads on
-    a class like (21|10)). `dens` holds the (left, right) density-element
-    functions of each component."""
-    out = [f"{pad}gm_{m}_{c} = 0.0_dp\n" for m in range(len(dens))]
-    out.append(f"{pad}do ip = plo_{c}, phi_{c}\n"
-               f"{pad}   jl = pl(ip); jr = pr(ip); zj = cw*pj(ip); zk = cw*pk(ip)\n")
-    for m, (dl, dr) in enumerate(dens):
-        out.append(f"{pad}   gm_{m}_{c} = gm_{m}_{c} + zj*({dl(0, 1)}*{dr(2, 3)} + {dr(0, 1)}*{dl(2, 3)}) &\n"
-                   f"{pad}      - zk*({dl(0, 2)}*{dr(1, 3)} + {dr(0, 2)}*{dl(1, 3)} &\n"
-                   f"{pad}      + {dl(0, 3)}*{dr(1, 2)} + {dr(0, 3)}*{dl(1, 2)})\n")
-    out.append(f"{pad}end do\n")
-    return "".join(out)
+    Each sum gm_c still accumulates in pair order with the same statement as
+    before; only the loop around it is shared. One loop per component and
+    column (115 of them in one (21|20) kernel) took nvfortran 2.2-3x longer
+    to compile than the fused form, for the same arithmetic."""
+    out = "".join(f"{pad}{gm}_{c} = 0.0_dp\n" for gm, _, _ in comps for c in cols)
+    for c in cols:
+        out += (f"{pad}do ip = plo_{c}, phi_{c}\n"
+                f"{pad}   jl = pl(ip); jr = pr(ip)\n")
+        for gm, dl, dr in comps:
+            out += (f"{pad}   {gm}_{c} = {gm}_{c} + cw*(pj(ip)*({dl(0, 1)}*{dr(2, 3)} + {dr(0, 1)}*{dl(2, 3)}) &\n"
+                    f"{pad}      - pk(ip)*({dl(0, 2)}*{dr(1, 3)} + {dr(0, 2)}*{dl(1, 3)} &\n"
+                    f"{pad}      + {dl(0, 3)}*{dr(1, 2)} + {dr(0, 3)}*{dl(1, 2)}))\n")
+        out += f"{pad}end do\n"
+    return out
 
 
 #: Declarations of the item routine that the chunked routine never reads:
@@ -1645,16 +1643,55 @@ def _thread_range_separation(text):
 
 #: Columns one pair-table sweep carries. The widest pair kernel keeps
 #: gam(nv, NCB) and acc(12, NCB) per thread, so this bounds its private
-#: memory; the host driver runs another sweep per further block of NCB columns.
+#: memory; the dispatcher (gen_rys_grad_dispatch.py) runs another sweep per
+#: further block of NCB columns.
 PAIRS_NCB = 4
 
 #: Largest gm count (Gamma values live per chunk and column) a class may carry
-#: at each width: nvfortran 26.9 compile time grows steeply with it (the
-#: (dd|dd) rt kernel at 36 per column and 4 columns took 221 s, (21|11) at
-#: 18 and 4 took 80 s, a 4-column literal (pp|pp) did not finish in 6 min).
-#: A class too big for a width is generated without it; the driver then
-#: sweeps the table in blocks of the widest width it has.
+#: at each width. A first guard against the steepest compile times; it does
+#: not separate the slow kernels from the fast ones by itself, which is what
+#: PAIRS_NARROW_ONLY below is for. Measured 2026-11-17 (nvfortran 26.5,
+#: -stdpar=gpu -acc -gpu=cc70,mem:separate -fast -O3, TERCO_LMAX=3, each
+#: kernel compiled alone, 16 at a time on a box with load average 10-25):
+#: every runtime-outer ("rt") kernel took 20-90 s whatever its width, and
+#: every literal one (a class with no rt plan) grew with the class far more
+#: than with nc*gm, e.g. (21|10) 27/68/193 s at widths 1/2/4 but (30|21)
+#: 190/526 s at 1/2 for a smaller nc*gm.
 PAIRS_GM_BUDGET = {4: 72, 2: 80}
+
+#: Classes whose wider-than-1 pair kernels took more than 300 s to compile
+#: (seconds measured as above): they are generated at width 1 alone, and the
+#: dispatcher walks their column blocks one column at a time. The pair
+#: kernels compile serially per file, so a file much past five minutes holds
+#: the whole build, and no caller in src/ uses more than one column yet, so
+#: compile time wins over the sweep sharing.
+#:
+#: RUN-TIME COST, not yet measured: for these classes an ncol-column
+#: gradient_pairs call recomputes every integral derivative ncol times, not
+#: ceil(ncol/2) times (w2 was the widest they had) or, for (31|30), not
+#: ceil(ncol/4). Only the classes in the table pay it. The one routine that
+#: takes ncol > 1 is eri%gradient_pairs (eri_gradient_pairs in
+#: src/eri/trc_eri.F90), meant for excited-state gradients with one column
+#: per root; nothing in src/ or app/ calls it yet, only
+#: test/check_grad_pairs.F90 does.
+#:
+#: Not fixed by this table: (21|21), (31|30) and (33|10) at width 1 still
+#: take 500-600 s each to compile (width 1 must exist for the dispatcher).
+#: Bringing them under five minutes needs a different kernel shape.
+#:
+#: Seconds, nvfortran 26.5, LMAX=3, kernels alone ("-": no such width):
+#:
+#:   class   w1      w2      w4
+#:   2121    >600    >600    -
+#:   2220    264     >600    -
+#:   3021    190     526     -
+#:   3120    258     517     -
+#:   3130    568     >600    >600
+#:   3310    509     >600    -
+#:
+#: Widths under 300 s that stay, for reference (w1/w2/w4): (11|11) 72/147/-,
+#: (20|11) 20/57/206, (21|10) 27/68/193, (21|20) 97/222/-, (22|10) 125/261/-.
+PAIRS_NARROW_ONLY = ("2121", "2220", "3021", "3120", "3130", "3310")
 
 #: Column widths a pair kernel is generated for. The twelve running sums of
 #: every column are unrolled into scalar accumulators so they stay in
@@ -1692,7 +1729,7 @@ def _pairs_header(t, tag, nc, need):
       real(dp), intent(in)    :: dmat(npool, nao, nao)
       integer,  intent(in)    :: pstart(ncb + 1), pl(*), pr(*)
       real(dp), intent(in)    :: pj(*), pk(*)
-      !! The column pair table (see pairs_item_text in gen_rys_grad.py).
+      !! The column pair table (see pairs_modules in gen_rys_grad.py).
       integer,  intent(in)    :: npriv, slot
       real(dp), intent(inout) :: gp(3, natm, npriv, ncb)
 """)
@@ -1811,9 +1848,8 @@ _ROOT_LOOP_HEAD = """\
 
 def chunked_pairs_item_text(tag, item, comps, inside, nc):
     """rysgi{tag}_pairs{nc} in the LITERAL chunked form of chunked_rhf_item_text:
-    each chunk forms Gamma for its components and every column, in one pass
-    over the column's pairs (_pair_gamma_fused_dens), then folds the shared
-    derivative factors into nc sets of nine scalar sums."""
+    each chunk forms Gamma for its components and every column, then folds
+    the shared derivative factors into nc sets of nine scalar sums."""
     def need(cond, msg):
         if not cond:
             raise SystemExit(f"gen_rys_grad.py chunked_pairs_item_text({tag}): {msg}")
@@ -1826,15 +1862,14 @@ def chunked_pairs_item_text(tag, item, comps, inside, nc):
     chunks = _chunks(comps, inside)
     nmax = max(len(ch) for ch in chunks)
     names = _pair_names(nmax, cols)
-    names.update(("zj", "zk"))
     body = ["         cw = 8.0_dp*wq\n", _pair_power_lines(lb, ld, names), _pair_column_setup(cols)]
     body.append(f"         do jch = 1, {len(chunks)}\n")
     body.append("            ! This chunk's Gamma per column, once, before its primitive loop.\n")
     body.append("            select case (jch)\n")
     for n, ch in enumerate(chunks):
         body.append(f"            case ({n + 1})\n")
-        for col in cols:
-            body.append(_pair_gamma_fused(" "*15, ch, col))
+        body.append(_pair_gamma_block(
+            " "*15, [("gm_%d" % m, *_literal_pair_dens(comp)) for m, comp in enumerate(ch)], cols))
     body.append("            end select\n")
     body.append(prim_hdr)
     body.append("                  ai2 = 2.0_dp*alpha_i; aj2 = 2.0_dp*alpha_j; ak2 = 2.0_dp*alpha_k\n")
@@ -1876,7 +1911,6 @@ def rt_pairs_item_text(tag, item, comps, outer, thread, nc):
     pre, prim_hdr, tail = _pair_item_frame(tag, item, nc, rname, need)
     inner, _ = gr._chunk_keys(comps, outer, 0)
     names = _pair_names(len(inner), cols)
-    names.update(("zj", "zk"))
     body = ["         cw = 8.0_dp*wq\n", _pair_power_lines(lb, ld, names), _pair_column_setup(cols)]
     if thread:
         body.append(f"         ! RUNTIME-OUTER CHUNKED PAIR PASS: chunk jch of {nch}.\n")
@@ -1895,8 +1929,8 @@ def rt_pairs_item_text(tag, item, comps, outer, thread, nc):
     wtxt, wn = _rt_weight_lines(tag, outer, " "*12)
     body.append(wtxt)
     names.update(wn)
-    for c in cols:
-        body.append(_pair_gamma_fused_dens(" "*12, [_rt_pair_dens(comp) for comp in inner], c))
+    body.append(_pair_gamma_block(
+        " "*12, [("gm_%d" % m, *_rt_pair_dens(comp)) for m, comp in enumerate(inner)], cols))
     body.append(prim_hdr)
     body.append("                  ai2 = 2.0_dp*alpha_i; aj2 = 2.0_dp*alpha_j; ak2 = 2.0_dp*alpha_k\n")
     body.append(ri.roots_inline_body(nroots, "tval", 18))
@@ -1953,14 +1987,14 @@ def rt_pairs_item_text(tag, item, comps, outer, thread, nc):
 
 def _pairs_variant(tag, item, dims, nc):
     """One pair item routine, rysgi{tag}_pairs{nc}, for blocks of at most nc
-    columns: pairs_item_text's docstring says what it computes."""
+    columns: pairs_modules' docstring says what it computes."""
     d0, d1, d2, d3 = dims
     nv = d0*d1*d2*d3
 
     def need(cond, msg):
         # Not an assert: `python -O` must not strip a check on spliced text.
         if not cond:
-            raise SystemExit(f"gen_rys_grad.py pairs_item_text({tag}): {msg}")
+            raise SystemExit(f"gen_rys_grad.py pairs_modules({tag}): {msg}")
 
     def sub1(text, old, new):
         need(text.count(old) == 1, f"expected exactly one {old!r}, found {text.count(old)}")
@@ -1983,7 +2017,7 @@ def _pairs_variant(tag, item, dims, nc):
       real(dp), intent(in)    :: dmat(npool, nao, nao)
       integer,  intent(in)    :: pstart(ncb + 1), pl(*), pr(*)
       real(dp), intent(in)    :: pj(*), pk(*)
-      !! The column pair table (see pairs_item_text in gen_rys_grad.py).
+      !! The column pair table (see pairs_modules in gen_rys_grad.py).
       integer,  intent(in)    :: npriv, slot
       real(dp), intent(inout) :: gp(3, natm, npriv, ncb)
 """)
@@ -2120,10 +2154,8 @@ def _pairs_variant(tag, item, dims, nc):
 
 
 
-def pairs_variants(tag, comps, rt_plan, inside):
-    """The column widths class `tag`'s plain pair kernel is generated for: every
-    width of PAIRS_VARIANTS whose Gamma count per sweep fits PAIRS_GM_BUDGET
-    (nc * gm per chunk); width 1 always."""
+def _wide_widths(comps, rt_plan, inside):
+    """pairs_variants() before PAIRS_NARROW_ONLY: the widths the Gamma budget allows."""
     if rt_plan is not None:
         inner, _ = gr._chunk_keys(comps, rt_plan[0], 0)
         gm = len(inner)
@@ -2134,50 +2166,52 @@ def pairs_variants(tag, comps, rt_plan, inside):
     return tuple(nc for nc in PAIRS_VARIANTS if nc == 1 or nc*gm <= PAIRS_GM_BUDGET[nc])
 
 
-#: The widest pair kernel each class is generated with, and so the width its
-#: sweep takes columns in: 1 for a class not listed. Measured on gly10,
-#: cc-pVDZ, 1e-14, V100 (nsys, pair kernel time of the class, seconds, for
-#: four columns as 4 x width 1 / 2 x width 2 / 1 x width 4):
-#:   (ss|ss) .252/.180/.151   (ps|ss) .534/.368/.299   (pp|ss) .158/.113/.107
-#:   (ds|ss) .167/.120/.107   (ps|ps) .303/.219/.209   (pp|ps) .344/.376/.378
-#:   (pp|pp) .213/.199/.198   (ds|ps) .251/.217/.308   (ds|pp) .239/.205/.269
-#:   (ds|ds) .122/.106/.107   (dp|ss) .128/.114/.148   (dp|ps) .463/.391/.511
-#:   (dp|pp) .570/.422/.582   (dp|ds) .270/.348/.346   (dp|dp) .264/.314/.312
-#:   (dd|ss) .063/.050/.051   (dd|ps) .141/.175/.175   (dd|pp) .157/.195/.195
-#:   (dd|ds) .074/.103/.104   (dd|dp) .217/.225/.223
-#: A wider kernel wins where the class is light; for the heavy ones the
-#: 255-register file spills and every extra column costs about a sweep.
-#: Within 3% the narrower width is kept. Collapsed kernels (the nine
-#: derivative sums of a component accumulated over primitives and roots and
-#: met with Gamma once per chunk) were measured too and won only (pp|pp),
-#: by 0.05 s of 4.0, so they are not generated.
-PAIRS_RULE = {
-    "0000": 4, "1000": 4, "1010": 4, "1100": 4, "2000": 4,
-    "1111": 2, "2010": 2, "2011": 2, "2020": 2, "2100": 2, "2110": 2, "2111": 2, "2200": 2,
-}
+def pairs_variants(tag, comps, rt_plan, inside):
+    """The column widths class `tag`'s pair kernel is generated for: every
+    width of PAIRS_VARIANTS whose Gamma count per sweep fits PAIRS_GM_BUDGET
+    (nc * gm per chunk), unless the class is in PAIRS_NARROW_ONLY; width 1
+    always."""
+    if tag in PAIRS_NARROW_ONLY:
+        return (1,)
+    return _wide_widths(comps, rt_plan, inside)
 
 
-def _family_branch(kernels, wmax, lead, args, rt_nch, rt_thread):
-    """The blocks-of-wmax loop of one width: `kernels` is the ascending list
-    of (width, routine name); a block of nblk columns runs the narrowest
-    kernel holding it."""
-    out = f"         do c0 = 1, ncb, {wmax}\n            nblk = min({wmax}, ncb - c0 + 1)\n"
-    for n, (nc, name) in enumerate(kernels):
-        kw = ("if (nblk <= %d) then" % nc if n == 0 else
-              "else if (nblk <= %d) then" % nc if nc != kernels[-1][0] else "else")
-        out += (f"            {kw}\n"
-                f"               do concurrent(i=1:nout{'*%d' % rt_nch if rt_thread else ''})\n"
-                f"                  call {name}({lead}{args}\n"
-                f"               end do\n")
-    return out + "            end if\n         end do\n"
+def pair_widths(tag, comps, rt_plan, inside):
+    """The widths class `tag`'s pair kernel is generated for: none for an
+    orientation the pair bins never launch, else pairs_variants()."""
+    la, lb, lc, ld = (int(c) for c in tag)
+    if not (la >= lb and lc >= ld and (la, lb) >= (lc, ld)):
+        # The pair bins never present this orientation (trc_bins.F90's
+        # ANGULAR-MOMENTUM CANONICAL), so no kernel is built for it; the
+        # dispatcher still names the class.
+        return ()
+    return pairs_variants(tag, comps, rt_plan, inside)
 
 
-def pairs_item_text(tag, item, dims, comps=None, rt_plan=None, inside=None):
-    """The PAIR-TABLE item routines rysgi{tag}_pairs{nc} (one per width in
-    PAIRS_VARIANTS up to the class's PAIRS_RULE width) and their driver
-    rysg{tag}_pairs_compact,
-    rewritten from the per-quartet array-form `rysgi{tag}_compact` text
-    `item` (everything from its header on).
+def pair_module_name(tag, nc):
+    """Module holding the width-`nc` pair kernel of class `tag`."""
+    return f"trc_pc_rysgp{tag}w{nc}"
+
+
+def pair_driver_name(tag, nc):
+    return f"rysgp{tag}w{nc}_pairs_compact"
+
+
+def pairs_modules(tag, item, dims, comps, rt_plan, inside, prelude, tabs):
+    """One module per width in pair_widths(), as {nc: text}. Each holds the
+    pair item routine rysgi{tag}_pairs{nc} and its driver
+    rysgp{tag}w{nc}_pairs_compact, which owns the `do concurrent` (that body
+    may call only same-module routines). The block walk and the choice of
+    the narrowest width that holds a block live in the dispatcher
+    (gen_rys_grad_dispatch.py); a width is its own file so the widths
+    compile in parallel, and apart from the class's other kernels.
+
+    `prelude` is the class module's text up to `contains` (the root-table
+    uses and the constants the item routines read), `tabs` the per-shell
+    component tables of the array form.
+
+    The item routines are rewritten from the per-quartet array-form
+    `rysgi{tag}_compact` text `item` (everything from its header on).
 
     Same decode, screens, primitive loops and derivative build; what changes
     is Gamma and where it goes. Column c owns the pairs pstart(c) ..
@@ -2191,10 +2225,7 @@ def pairs_item_text(tag, item, dims, comps=None, rt_plan=None, inside=None):
     running sums become acc(12, nc) for a variant nc columns wide, one
     scalarised set per column, and the tail adds column c into
     gp(:, :, slot, c): every column rides the SAME integral derivatives.
-
-    The driver runs the table in blocks of columns of the width `vsel` names
-    (0: the class's PAIRS_RULE, which is also the widest kernel it has); a
-    block of nblk columns runs the narrowest kernel that holds it.
+    The dispatcher runs the narrowest variant holding a block of columns.
     """
     slot_expr = ("int(mod(i - 1, int(npriv, int64))) + 1"
                  if sum(int(c) for c in tag) <= 3 else "1")
@@ -2206,43 +2237,30 @@ def pairs_item_text(tag, item, dims, comps=None, rt_plan=None, inside=None):
     seg_args = ("out_seg(mod(i - 1, nout) + 1), out_iab(mod(i - 1, nout) + 1), out_icd(mod(i - 1, nout) + 1)"
                 if rt_thread else "out_seg(i), out_iab(i), out_icd(i)")
     lead = "int((i - 1)/nout) + 1, " if rt_thread else ""
-    # The block of nblk columns starting at column c0 is the table's own
-    # sub-table: pstart(c0) and gp(.., c0) start the dummies there.
     args = (seg_args + ", nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &\n"
             "                                npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &\n"
             "                                nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &\n"
             "                                sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &\n"
-            "                                npool, dmat, nblk, pstart(c0), pl, pr, pj, pk, npriv, "
-            "gp(1, 1, 1, c0), " + slot_expr + ")")
-    la, lb, lc, ld = (int(c) for c in tag)
-    plain = ()
-    if la >= lb and lc >= ld and (la, lb) >= (lc, ld):
-        rule = PAIRS_RULE.get(tag, 1)
-        plain = tuple(w for w in pairs_variants(tag, comps, rt_plan, inside) if w <= rule)
-    # else: the pair bins never present this orientation (trc_bins.F90's
-    # ANGULAR-MOMENTUM CANONICAL), so no kernel is built for it; the
-    # dispatcher still names the routine.
-    if not plain:
-        branches = ('      error stop "terco: gradient_pairs: the class ('
-                    f'{tag[0]}{tag[1]}|{tag[2]}{tag[3]}) is never launched"\n')
-        rule = 1
-    else:
-        rule = plain[-1]
-        bodies = {w: _family_branch([(nc, f"rysgi{tag}_pairs{nc}") for nc in plain if nc <= w],
-                                    w, lead, args, rt_nch, rt_thread) for w in plain}
-        branches = "      kind = vsel\n      if (kind == 0) kind = %d\n      select case (kind)\n" % rule
-        for w, body in bodies.items():
-            branches += f"      case ({w})\n{body}"
-        branches += f"      case default\n{bodies[rule]}      end select\n"
-    drv = f"""
-   subroutine rysg{tag}_pairs_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
+            "                                npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, "
+            "gp, " + slot_expr + ")")
+    out = {}
+    for nc in pair_widths(tag, comps, rt_plan, inside):
+        if rt_plan is not None:
+            item_nc = rt_pairs_item_text(tag, item, comps, rt_plan[0], rt_thread, nc)
+        elif inside is not None:
+            item_nc = chunked_pairs_item_text(tag, item, comps, inside, nc)
+        else:
+            item_nc = _pairs_variant(tag, item, dims, nc)
+        drv = f"""
+   subroutine {pair_driver_name(tag, nc)}(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                              npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &
                              nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                              sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                             npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp, vsel)
-      !! The pair-table compact pass of class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}): the survivors of the
-      !! screen pass, each contracted against every column of the table at once, in blocks of
-      !! `vsel` columns (0: this class's widest kernel, {rule}).
+                             npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp)
+      !! The pair-table compact pass of class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}) for a block of at most
+      !! {nc} columns: the survivors of the screen pass, each contracted against
+      !! every column of the block at once. The caller passes the block as its
+      !! own sub-table (pstart and gp start at the block's first column).
       integer(int64), intent(in) :: nout
       integer,  intent(in)    :: out_seg(*), out_iab(*), out_icd(*)
       integer,  intent(in)    :: nseg, npair, nbas, nao
@@ -2264,32 +2282,76 @@ def pairs_item_text(tag, item, dims, comps=None, rt_plan=None, inside=None):
       real(dp), intent(in)    :: dmat(npool, nao, nao)
       integer,  intent(in)    :: pstart(ncb + 1), pl(*), pr(*)
       real(dp), intent(in)    :: pj(*), pk(*)
-      integer,  intent(in)    :: npriv, vsel
+      integer,  intent(in)    :: npriv
       real(dp), intent(inout) :: gp(3, natm, npriv, ncb)
       integer(int64) :: i
-      integer :: c0, nblk, kind
-{branches}
-   end subroutine rysg{tag}_pairs_compact
+      do concurrent(i=1:nout{'*%d' % rt_nch if rt_thread else ''})
+         call rysgi{tag}_pairs{nc}({lead}{args}
+      end do
+   end subroutine {pair_driver_name(tag, nc)}
 
 """
-    if rt_plan is not None:
-        variants = "".join(rt_pairs_item_text(tag, item, comps, rt_plan[0], rt_thread, nc)
-                           for nc in plain)
-    elif inside is not None:
-        variants = "".join(chunked_pairs_item_text(tag, item, comps, inside, nc) for nc in plain)
-    else:
-        variants = "".join(_pairs_variant(tag, item, dims, nc) for nc in plain)
-    return drv + variants
+        mod = pair_module_name(tag, nc)
+        pre = prelude
+        for old, new_ in (
+                (f"module trc_pc_rysg{tag}\n", f"module {mod}\n"),
+                (f"public :: rysg{tag}_screen, rysg{tag}_compact\n",
+                 f"public :: {pair_driver_name(tag, nc)}\n"),
+                (f"! Class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}) GRADIENT kernel, Rys quadrature.",
+                 f"! Class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}) GRADIENT kernel, Rys quadrature: the pair-table\n"
+                 f"! pass, {nc} columns wide (gen_rys_grad.py pairs_modules).")):
+            # Not an assert: `python -O` must not strip a check on spliced text.
+            if pre.count(old) != 1:
+                raise SystemExit(f"gen_rys_grad.py pairs_modules({tag}): expected exactly one "
+                                 f"{old!r} in the module prelude, found {pre.count(old)}")
+            pre = pre.replace(old, new_, 1)
+        # Only the component tables this module reads and the prelude lacks.
+        seen, keep = set(), []
+        for ln in tabs.splitlines():
+            nm = ln.split("::")[1].split("(")[0].strip()
+            if nm + "(" in pre or nm in seen:
+                continue
+            seen.add(nm)
+            keep.append(ln + "\n")
+        out[nc] = (pre + "\n" + "".join(keep) + "\ncontains\n" + drv + item_nc
+                   + f"\nend module {mod}\n")
+    return out
 
 
-
-def main():
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("class_tag", help="four digits, e.g. 1111 or 2222")
+def add_plan_options(ap):
+    """The options that decide a class's plan, and with it which pair widths
+    it has. The generator, the CMake --pair-widths query and the dispatcher
+    all take them from here, so the three cannot disagree on a default; a
+    full build must pass the same values to all three. (--rt-plan, which
+    overrides one class, is the generator's alone.)"""
     ap.add_argument("--order", choices=("lexicographic", "gamess"),
                     default="lexicographic",
                     help="must match the --order the scalar HGP file in "
                          "--src-dir was generated with")
+    ap.add_argument("--chunk-classes", default="auto",
+                    help="classes whose RHF compact pass uses the CHUNKED "
+                         "RHF COMPACT PASS: 'auto' (chunk_auto's rule), "
+                         "'none', 'all', or a comma-separated list of tags")
+    ap.add_argument("--chunk-live-max", type=int, default=CHUNK_LIVE_MAX,
+                    help="live-set ceiling chunk_plan picks the chunk shape under")
+
+
+def default_plan_args(order="lexicographic"):
+    """A namespace holding every shared plan option at its default, but `order`."""
+    ap = argparse.ArgumentParser()
+    add_plan_options(ap)
+    return ap.parse_args(["--order", order])
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("class_tag", nargs="?", help="four digits, e.g. 1111 or 2222")
+    add_plan_options(ap)
+    # Not in add_plan_options: it is per class, so the dispatcher and the
+    # --pair-widths query (one run for many classes) cannot take it.
+    ap.add_argument("--rt-plan", default=None,
+                    help="override GRAD_CHUNK_PLAN for this class: 'none', or the outer "
+                         "shells and form, e.g. '23:thread' or ':loop' (one chunk)")
     ap.add_argument("--src-dir", default="src/generated",
                     help="where trc_pc_k{tag}.F90 (the scalar HGP kernel) "
                          "already lives")
@@ -2299,26 +2361,71 @@ def main():
                          "na*nb*nc*nd is at most this; 'inf'/'all' unrolls "
                          "every class. Default 0: no class is unrolled, "
                          "i.e. today's array/loop form, unchanged")
-    ap.add_argument("--chunk-classes", default="auto",
-                    help="classes whose RHF compact pass uses the CHUNKED "
-                         "RHF COMPACT PASS: 'auto' (chunk_auto's rule), "
-                         "'none', 'all', or a comma-separated list of tags")
-    ap.add_argument("--rt-plan", default=None,
-                    help="override GRAD_CHUNK_PLAN for this class: 'none', or the outer "
-                         "shells and form, e.g. '23:thread' or ':loop' (one chunk)")
-    ap.add_argument("--chunk-live-max", type=int, default=CHUNK_LIVE_MAX,
-                    help="live-set ceiling chunk_plan picks the chunk shape under")
-    ap.add_argument("-o", "--output", required=True,
+    ap.add_argument("-o", "--output",
                     help="never a path under src/generated: regenerated at "
-                         "configure time into the build directory")
+                         "configure time into the build directory. The pair "
+                         "kernels (trc_pc_rysgp{tag}w{nc}.F90, one per width) "
+                         "are written beside it")
+    ap.add_argument("--pair-widths", metavar="CLASSES",
+                    help="instead of generating (no class_tag, no -o), print one 'tag w1,w2,..' line per "
+                         "class of this comma-separated list: the pair kernel widths "
+                         "a run for that class writes (CMake reads it at configure "
+                         "time to name the files). Empty after the tag: none")
     args = ap.parse_args()
+    if args.pair_widths is not None:
+        if args.class_tag or args.output:
+            ap.error("--pair-widths takes no class_tag and no -o/--output")
+        if args.rt_plan is not None:
+            ap.error("--pair-widths cannot take --rt-plan (it overrides one class; "
+                     "the dispatcher could not follow it)")
+        if not args.pair_widths:
+            ap.error("--pair-widths needs a comma-separated list of class tags")
+        tags = args.pair_widths.split(",")
+        for t in tags:
+            if not re.fullmatch(r"[0-3]{4}", t):
+                ap.error(f"--pair-widths: {t!r} is not a class tag (four digits, l <= 3)")
+        for t in tags:
+            print(t, ",".join(str(w) for w in class_pair_widths(t, args)))
+        return
+    if not args.class_tag or not args.output:
+        ap.error("class_tag and -o/--output are required")
     run(args)
+
+
+def class_plan(tag, args, generic_only=False):
+    """(component tables, runtime-outer plan, inside chunk plan) of class
+    `tag` under the chunk options of `args`: the choice run() and
+    class_pair_widths() must agree on."""
+    la, lb, lc, ld = (int(c) for c in tag)
+    comps = [co.components(l, args.order) for l in (la, lb, lc, ld)]
+    sel = args.chunk_classes
+    if sel == "auto":
+        chunked = chunk_auto(tag)
+    elif sel in ("none", "all"):
+        chunked = sel == "all"
+    else:
+        chunked = tag in sel.split(",")
+    rt_arg = getattr(args, "rt_plan", None)
+    rt_plan = GRAD_CHUNK_PLAN.get(tag) if rt_arg is None else _parse_rt_plan(rt_arg)
+    if generic_only:
+        chunked, rt_plan = False, None
+    if rt_plan is not None:
+        chunked = False
+    inside = chunk_plan(comps, args.chunk_live_max) if chunked else None
+    return comps, rt_plan, inside
+
+
+def class_pair_widths(tag, args):
+    """The widths whose pair modules run() writes for class `tag`; what
+    CMake (--pair-widths) and the dispatcher list."""
+    comps, rt_plan, inside = class_plan(tag, args)
+    return pair_widths(tag, comps, rt_plan, inside)
 
 
 def run(args, generic_only=False):
     """Emit one class's kernel module. With `generic_only` return instead
     (compact text, component tables) of the per-quartet ARRAY-form routine,
-    unrolled or chunked for nobody: the text `pairs_item_text` rewrites."""
+    unrolled or chunked for nobody: the text `pairs_modules` rewrites."""
     tag = args.class_tag
     la, lb, lc, ld = (int(c) for c in tag)
     ni, nk = la + lb, lc + ld
@@ -2732,20 +2839,7 @@ contains
     assert head.count("\ncontains\n") == 1
     head = head.replace("\ncontains\n", helpers, 1)
 
-    comps = [co.components(l, args.order) for l in (la, lb, lc, ld)]
-    sel = args.chunk_classes
-    if sel == "auto":
-        chunked = chunk_auto(tag)
-    elif sel in ("none", "all"):
-        chunked = sel == "all"
-    else:
-        chunked = tag in sel.split(",")
-    rt_plan = GRAD_CHUNK_PLAN.get(tag) if args.rt_plan is None else _parse_rt_plan(args.rt_plan)
-    if generic_only:
-        chunked, rt_plan = False, None
-    if rt_plan is not None:
-        chunked = False
-    inside = chunk_plan(comps, args.chunk_live_max) if chunked else None
+    comps, rt_plan, inside = class_plan(tag, args, generic_only)
     sc_text, rt_tabs = screen_and_compact_text(tag, head, middle, comps, inside, rt_plan)
     if generic_only:
         return sc_text, tabs
@@ -2758,31 +2852,43 @@ contains
     # class's normal text may be unrolled or chunked, which the rewrite
     # cannot start from.
     gen_text, gen_tabs = run(args, generic_only=True)
-    pairs_text = pairs_item_text(tag, gen_text, dims, comps, rt_plan, inside)
     prelude = head[:head.index("\ncontains\n")]
-    prelude = prelude.replace(f"public :: rysg{tag}_screen, rysg{tag}_compact\n",
-                              f"public :: rysg{tag}_screen, rysg{tag}_compact, rysg{tag}_pairs_compact\n", 1)
-    assert "_pairs_compact" in prelude
-    rt_tabs += "".join(ln + "\n" for ln in gen_tabs.splitlines())
-    # A class past --unroll-max-comp already declares every shell's cn
-    # tables for its array form: add only the ones it lacks.
-    seen = set()
-    keep = []
-    for ln in rt_tabs.splitlines():
-        nm = ln.split("::")[1].split("(")[0].strip()
-        if nm + "(" in prelude or nm in seen:
-            continue
-        seen.add(nm)
-        keep.append(ln)
-    rt_tabs = "".join(ln + "\n" for ln in keep)
+    pair_mods = pairs_modules(tag, gen_text, dims, comps, rt_plan, inside, prelude, gen_tabs)
+    rt_tabs = "".join(ln + "\n" for ln in rt_tabs.splitlines()
+                      if ln.split("::")[1].split("(")[0].strip() + "(" not in prelude)
     prelude += "\n" + rt_tabs + "\ncontains\n"
-    out = prelude + sc_text + pairs_text + f"\nend module trc_pc_rysg{tag}\n"
+    out = prelude + sc_text + f"\nend module trc_pc_rysg{tag}\n"
+    # The pair kernels are one file per width, beside the class's own file:
+    # nvfortran compiles them in parallel, and one width's compile time no
+    # longer holds up the ordinary gradient kernels of its class.
+    outdir = os.path.dirname(os.path.abspath(args.output))
+    for nc, text in pair_mods.items():
+        with open(os.path.join(outdir, pair_module_name(tag, nc) + ".F90"), "w") as fh:
+            fh.write(text)
     with open(args.output, "w") as fh:
         fh.write(out)
     print(f"  {args.output}: ({la}{lb}|{lc}{ld}), {nroots} roots, "
-          f"{len(out.splitlines())} lines"
+          f"{len(out.splitlines())} lines, pair files "
+          + (", ".join(pair_module_name(tag, nc) + ".F90" for nc in pair_mods) or "none")
           + (f", chunked inside={inside}" if inside is not None else "")
           + (f", runtime-outer {rt_plan}" if rt_plan is not None else ""))
+
+
+def _check_narrow_only():
+    """PAIRS_NARROW_ONLY names real, launched classes that would otherwise get
+    a wider width: a stale entry would silently do nothing."""
+    for t in PAIRS_NARROW_ONLY:
+        if not re.fullmatch(r"[0-3]{4}", t):
+            raise SystemExit(f"gen_rys_grad.py: PAIRS_NARROW_ONLY entry {t!r} is not a class tag")
+        la, lb, lc, ld = (int(c) for c in t)
+        if not (la >= lb and lc >= ld and (la, lb) >= (lc, ld)):
+            raise SystemExit(f"gen_rys_grad.py: PAIRS_NARROW_ONLY entry {t}: the pair bins never launch it")
+        comps, rt_plan, inside = class_plan(t, default_plan_args())
+        if max(_wide_widths(comps, rt_plan, inside)) < 2:
+            raise SystemExit(f"gen_rys_grad.py: PAIRS_NARROW_ONLY entry {t} has no width above 1 to drop")
+
+
+_check_narrow_only()
 
 
 if __name__ == "__main__":

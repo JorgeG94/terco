@@ -3,7 +3,8 @@
 # Generate the kernels fpm cannot generate itself, then let fpm build.
 #
 # The CMake build generates the Rys kernels (energy and gradient, one module
-# per class, plus their dispatchers) and the MD J/K engine's kernels
+# per class, plus a pair-table module per class and width the gradient run
+# writes beside its own file, and the dispatchers) and the MD J/K engine's kernels
 # (scripts/gen_md_j.py, gen_md_k.py) into the build tree at configure time.
 # fpm cannot run a generator, so this script does the same generation into
 # src/generated/fpm/, which fpm then compiles along with everything else
