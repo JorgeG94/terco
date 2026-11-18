@@ -154,7 +154,12 @@ target_link_libraries(bench_warmstart PRIVATE ${main_lib} terco_test_basis)
 add_executable(bench_schwarz bench_schwarz.F90)
 target_compile_definitions(bench_schwarz PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(bench_schwarz PRIVATE ${main_lib} terco_test_basis)
-foreach(b bench_binwater bench_many bench_xc bench_gc bench_sph bench_grad_1e bench_warmstart bench_schwarz)
+# Wall time of eri%gradient_pairs against eri%gradient (time_grad_pairs.F90's
+# own header). Not a pass/fail.
+add_executable(time_grad_pairs time_grad_pairs.F90)
+target_compile_definitions(time_grad_pairs PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(time_grad_pairs PRIVATE ${main_lib} terco_test_basis)
+foreach(b time_grad_pairs bench_binwater bench_many bench_xc bench_gc bench_sph bench_grad_1e bench_warmstart bench_schwarz)
   target_include_directories(${b} PRIVATE ${CMAKE_BINARY_DIR}/modules)
 endforeach()
 

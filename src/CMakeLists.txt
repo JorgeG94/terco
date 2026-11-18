@@ -501,10 +501,11 @@ list(JOIN _rys_grad_classes "," _rys_grad_classes_csv)
 # The pair-table kernels (eri%gradient_pairs) are one module and one file per
 # class and column width, trc_pc_rysgp<tag>w<nc>.F90, so nvfortran compiles
 # them in parallel and apart from the class's ordinary kernels: a width's
-# compile time runs from seconds to over ten minutes at d and f (measured with
-# nvfortran 26.5, see PAIRS_NARROW_ONLY in gen_rys_grad.py), and in the class's
-# own file it held up everything else in it. Which widths a class has is the
-# generator's decision (PAIRS_GM_BUDGET, PAIRS_NARROW_ONLY), so ask it here,
+# compile time is 5-250 s per file now (nvfortran 26.5, LMAX=3, see
+# PAIRS_RT_PLAN in gen_rys_grad.py: the literal form of six classes took up to
+# 600 s and more per width, in the class's own file it held up everything
+# else in it). Which widths a class has is the
+# generator's decision (PAIRS_GM_BUDGET, PAIRS_RT_PLAN), so ask it here,
 # with the same options the generation below passes.
 execute_process(COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/gen_rys_grad.py
                         --pair-widths ${_rys_grad_classes_csv} ${_order_flag}
