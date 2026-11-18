@@ -31,10 +31,10 @@ module trc_grad
    use trc_bins, only: pair_bins_t, trc_bin_plan_t
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
    use trc_rys_grad_kernels, only: rysg_has_class, rysg_screen_dispatch, &
-                                   rysg_compact_dispatch, rysg_pairs_dispatch, RYSG_PAIRS_NCB
+                                   rysg_compact_dispatch, rysg_pairs_dispatch
    implicit none
    private
-   public :: grad_bins, trc_grad_pair_t, trc_grad_pairtab_t, RYSG_PAIRS_NCB
+   public :: grad_bins, trc_grad_pair_t, trc_grad_pairtab_t, GRAD_PAIRS_BLOCK, grad_pairs_set_variant
 
    type :: trc_grad_pair_t
       !! One separable contribution to a column's gradient: the derivative, at
@@ -62,7 +62,7 @@ module trc_grad
       !! is the one column of eri%gradient: no pairs (`pl` unallocated), the
       !! RHF/UHF contraction of the density.
       integer :: ncb = 1
-      !! Gradient columns the sweep fills, 1..RYSG_PAIRS_NCB.
+      !! Gradient columns the sweep fills, 1..GRAD_PAIRS_BLOCK.
       integer, allocatable :: pstart(:), pl(:), pr(:)
       real(dp), allocatable :: pj(:), pk(:)
       real(dp), allocatable :: gp(:, :, :, :)
@@ -90,6 +90,17 @@ module trc_grad
    !! to need more than one batch -- this exists so a larger system does
    !! not exhaust device memory.
 
+   integer, parameter :: GRAD_PAIRS_BLOCK = 32
+   !! Most columns one grad_bins sweep carries. The pair kernels take them in
+   !! blocks of their own width (gen_rys_grad.py's PAIRS_VARIANTS), so one
+   !! sweep pays the screen pass and the plan once however many columns it
+   !! has; eri%gradient_pairs hands over up to this many at a time. The
+   !! lane-private copies are 3*natm*GRAD_NPRIV doubles per column.
+
+   integer, save :: pairs_vsel = 0
+   !! The pair kernels' block width (grad_pairs_set_variant); 0 is every
+   !! class's own.
+
    integer, parameter :: GRAD_NPRIV = 32
    !! LANE-PRIVATE GRADIENT COPIES: how many copies gp(3, natm, GRAD_NPRIV)
    !! of the gradient the compact pass adds into (survivor i into copy
@@ -103,6 +114,16 @@ module trc_grad
    !! L > 3 left on copy 1 (gen_rys_grad.py).
 
 contains
+
+   subroutine grad_pairs_set_variant(code)
+      !! Run the pair kernels of every class in blocks of `code` columns (1, 2
+      !! or 4) instead of the class's own width (gen_rys_grad.py's PAIRS_RULE).
+      !! A width a class does not have falls back to that class's own. 0
+      !! restores the defaults. For tests and measurements; every family gives the same
+      !! gradient. Not read from the environment.
+      integer, intent(in) :: code
+      pairs_vsel = code
+   end subroutine grad_pairs_set_variant
 
    subroutine grad_bins(b, pairs, quartets, launch, dsh, dmat, grad, ptab)
       !!
@@ -150,10 +171,8 @@ contains
 
       natm = pairs%natm
       ncol = ptab%ncb
-      ! The pair kernels hold RYSG_PAIRS_NCB columns of private scratch;
-      ! a larger block would index past it.
-      if (ncol < 1 .or. ncol > RYSG_PAIRS_NCB) error stop &
-         "terco: grad_bins: a pair table must carry between 1 and RYSG_PAIRS_NCB columns"
+      if (ncol < 1 .or. ncol > GRAD_PAIRS_BLOCK) error stop &
+         "terco: grad_bins: a pair table must carry between 1 and GRAD_PAIRS_BLOCK columns"
       if (ncol > 1 .and. .not. allocated(ptab%pl)) error stop "terco: grad_bins: a multi-column sweep needs pairs"
       if (launch%skeleton) then
          if (.not. quartets%orb%built) error stop "terco: a skeleton gradient needs the bins' pair orbits"
@@ -334,7 +353,7 @@ contains
                                            quartets%ax, quartets%ay, quartets%az, &
                                            quartets%abx, quartets%aby, quartets%abz, quartets%n, &
                                            launch%ndens, dmat, ptab%ncb, ptab%pstart, ptab%pl, ptab%pr, &
-                                           ptab%pj, ptab%pk, GRAD_NPRIV, ptab%gp)
+                                           ptab%pj, ptab%pk, GRAD_NPRIV, ptab%gp, pairs_vsel)
                else
                   call rysg_compact_dispatch(key, nout, out_seg, out_iab, out_icd, nseg, plan%sA, plan%sNB, &
                                              plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sSA, plan%sSB, &

@@ -26,7 +26,6 @@ def _load(name, path):
 
 gp = _load("gp", os.path.join(HERE, "gen_perclass.py"))
 gg = _load("gg", os.path.join(HERE, "gen_rys_grad.py"))
-PAIRS_NCB = gg.PAIRS_NCB
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
@@ -69,7 +68,7 @@ def main():
                           npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &
                           nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                          npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp)"""
+                          npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp, vsel)"""
         for key, tag in keys)
 
     out = f"""!
@@ -89,9 +88,6 @@ module trc_rys_grad_kernels
    private
    public :: rysg_has_class
    public :: rysg_screen_dispatch, rysg_compact_dispatch, rysg_pairs_dispatch
-
-   integer, parameter, public :: RYSG_PAIRS_NCB = {PAIRS_NCB}
-      !! Columns one rysg_pairs_dispatch call carries (gen_rys_grad.py's PAIRS_NCB).
 
    integer, parameter, public :: RYSG_LMAX = {lmax}
       !! Highest l with gradient kernels: above it the analytic gradient is refused.
@@ -189,12 +185,14 @@ contains
                           npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &
                           nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                           sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                          npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp)
+                          npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp, vsel)
       !! The compact pass over a COLUMN PAIR TABLE: every survivor's derivative
-      !! integrals are contracted against all `ncb` columns (at most
-      !! RYSG_PAIRS_NCB) at once, into gp(:, :, :, column). Column c owns pairs
+      !! integrals are contracted against all `ncb` columns, in blocks of the
+      !! width the class's variant family has (gen_rys_grad.py's PAIRS_VARIANTS),
+      !! into gp(:, :, :, column). Column c owns pairs
       !! pstart(c) .. pstart(c+1)-1 of (pl, pr, pj, pk); see
-      !! gen_rys_grad.py's pairs_item_text for what a pair contributes.
+      !! gen_rys_grad.py's pairs_item_text for what a pair contributes and for
+      !! `vsel`, the variant family (0: the class's default, from measurement).
       integer, intent(in) :: key
       integer(int64), intent(in) :: nout
       integer,  intent(in)    :: out_seg(*), out_iab(*), out_icd(*)
@@ -217,7 +215,7 @@ contains
       real(dp), intent(in)    :: dmat(npool, nao, nao)
       integer,  intent(in)    :: pstart(ncb + 1), pl(*), pr(*)
       real(dp), intent(in)    :: pj(*), pk(*)
-      integer,  intent(in)    :: npriv
+      integer,  intent(in)    :: npriv, vsel
       real(dp), intent(inout) :: gp(3, natm, npriv, ncb)
       select case (key)
 {pairs_cases}

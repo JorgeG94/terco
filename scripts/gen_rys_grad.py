@@ -546,17 +546,29 @@ def _pair_fold(pad, v, fi, fj, fk, gm, cols):
     return "".join(out)
 
 
-def _pair_gamma_lines(pad, gm, c, dl, dr):
-    """gm_c = the column's Gamma for one component, as a loop over its pairs.
-    `dl(p, q)`/`dr(p, q)` give the density element between the component's
-    shell p and shell q for the left/right pool density of the pair."""
-    return (f"{pad}{gm}_{c} = 0.0_dp\n"
-            f"{pad}do ip = plo_{c}, phi_{c}\n"
-            f"{pad}   jl = pl(ip); jr = pr(ip)\n"
-            f"{pad}   {gm}_{c} = {gm}_{c} + cw*(pj(ip)*({dl(0, 1)}*{dr(2, 3)} + {dr(0, 1)}*{dl(2, 3)}) &\n"
-            f"{pad}      - pk(ip)*({dl(0, 2)}*{dr(1, 3)} + {dr(0, 2)}*{dl(1, 3)} &\n"
-            f"{pad}      + {dl(0, 3)}*{dr(1, 2)} + {dr(0, 3)}*{dl(1, 2)}))\n"
-            f"{pad}end do\n")
+def _pair_gamma_fused(pad, chunk, c):
+    """_pair_gamma_fused_dens for a chunk of literal components."""
+    return _pair_gamma_fused_dens(pad, [_literal_pair_dens(comp) for comp in chunk], c)
+
+
+def _pair_gamma_fused_dens(pad, dens, c):
+    """gm_m_c for EVERY component m of a chunk, column c, in ONE pass over the
+    column's pairs: the pair table entries are read once per pair, and the
+    density elements the components share (a Cartesian component moves only
+    the within-shell offsets) are loaded once per pair, not once per component
+    (a loop per component read 12 elements per pair and
+    component: 3.6x the global-load sectors of eri%gradient's block loads on
+    a class like (21|10)). `dens` holds the (left, right) density-element
+    functions of each component."""
+    out = [f"{pad}gm_{m}_{c} = 0.0_dp\n" for m in range(len(dens))]
+    out.append(f"{pad}do ip = plo_{c}, phi_{c}\n"
+               f"{pad}   jl = pl(ip); jr = pr(ip); zj = cw*pj(ip); zk = cw*pk(ip)\n")
+    for m, (dl, dr) in enumerate(dens):
+        out.append(f"{pad}   gm_{m}_{c} = gm_{m}_{c} + zj*({dl(0, 1)}*{dr(2, 3)} + {dr(0, 1)}*{dl(2, 3)}) &\n"
+                   f"{pad}      - zk*({dl(0, 2)}*{dr(1, 3)} + {dr(0, 2)}*{dl(1, 3)} &\n"
+                   f"{pad}      + {dl(0, 3)}*{dr(1, 2)} + {dr(0, 3)}*{dl(1, 2)})\n")
+    out.append(f"{pad}end do\n")
+    return "".join(out)
 
 
 #: Declarations of the item routine that the chunked routine never reads:
@@ -1799,8 +1811,9 @@ _ROOT_LOOP_HEAD = """\
 
 def chunked_pairs_item_text(tag, item, comps, inside, nc):
     """rysgi{tag}_pairs{nc} in the LITERAL chunked form of chunked_rhf_item_text:
-    each chunk forms Gamma for its components and every column, then folds
-    the shared derivative factors into nc sets of nine scalar sums."""
+    each chunk forms Gamma for its components and every column, in one pass
+    over the column's pairs (_pair_gamma_fused_dens), then folds the shared
+    derivative factors into nc sets of nine scalar sums."""
     def need(cond, msg):
         if not cond:
             raise SystemExit(f"gen_rys_grad.py chunked_pairs_item_text({tag}): {msg}")
@@ -1813,16 +1826,15 @@ def chunked_pairs_item_text(tag, item, comps, inside, nc):
     chunks = _chunks(comps, inside)
     nmax = max(len(ch) for ch in chunks)
     names = _pair_names(nmax, cols)
+    names.update(("zj", "zk"))
     body = ["         cw = 8.0_dp*wq\n", _pair_power_lines(lb, ld, names), _pair_column_setup(cols)]
     body.append(f"         do jch = 1, {len(chunks)}\n")
     body.append("            ! This chunk's Gamma per column, once, before its primitive loop.\n")
     body.append("            select case (jch)\n")
     for n, ch in enumerate(chunks):
         body.append(f"            case ({n + 1})\n")
-        for m, (a, b, c, d) in enumerate(ch):
-            dl, dr = _literal_pair_dens((a, b, c, d))
-            for col in cols:
-                body.append(_pair_gamma_lines(" "*15, "gm_%d" % m, col, dl, dr))
+        for col in cols:
+            body.append(_pair_gamma_fused(" "*15, ch, col))
     body.append("            end select\n")
     body.append(prim_hdr)
     body.append("                  ai2 = 2.0_dp*alpha_i; aj2 = 2.0_dp*alpha_j; ak2 = 2.0_dp*alpha_k\n")
@@ -1864,6 +1876,7 @@ def rt_pairs_item_text(tag, item, comps, outer, thread, nc):
     pre, prim_hdr, tail = _pair_item_frame(tag, item, nc, rname, need)
     inner, _ = gr._chunk_keys(comps, outer, 0)
     names = _pair_names(len(inner), cols)
+    names.update(("zj", "zk"))
     body = ["         cw = 8.0_dp*wq\n", _pair_power_lines(lb, ld, names), _pair_column_setup(cols)]
     if thread:
         body.append(f"         ! RUNTIME-OUTER CHUNKED PAIR PASS: chunk jch of {nch}.\n")
@@ -1882,10 +1895,8 @@ def rt_pairs_item_text(tag, item, comps, outer, thread, nc):
     wtxt, wn = _rt_weight_lines(tag, outer, " "*12)
     body.append(wtxt)
     names.update(wn)
-    for m, comp in enumerate(inner):
-        dl, dr = _rt_pair_dens(comp)
-        for c in cols:
-            body.append(_pair_gamma_lines(" "*12, "gm_%d" % m, c, dl, dr))
+    for c in cols:
+        body.append(_pair_gamma_fused_dens(" "*12, [_rt_pair_dens(comp) for comp in inner], c))
     body.append(prim_hdr)
     body.append("                  ai2 = 2.0_dp*alpha_i; aj2 = 2.0_dp*alpha_j; ak2 = 2.0_dp*alpha_k\n")
     body.append(ri.roots_inline_body(nroots, "tval", 18))
@@ -2110,7 +2121,7 @@ def _pairs_variant(tag, item, dims, nc):
 
 
 def pairs_variants(tag, comps, rt_plan, inside):
-    """The column widths class `tag`'s pair kernel is generated for: every
+    """The column widths class `tag`'s plain pair kernel is generated for: every
     width of PAIRS_VARIANTS whose Gamma count per sweep fits PAIRS_GM_BUDGET
     (nc * gm per chunk); width 1 always."""
     if rt_plan is not None:
@@ -2123,11 +2134,50 @@ def pairs_variants(tag, comps, rt_plan, inside):
     return tuple(nc for nc in PAIRS_VARIANTS if nc == 1 or nc*gm <= PAIRS_GM_BUDGET[nc])
 
 
+#: The widest pair kernel each class is generated with, and so the width its
+#: sweep takes columns in: 1 for a class not listed. Measured on gly10,
+#: cc-pVDZ, 1e-14, V100 (nsys, pair kernel time of the class, seconds, for
+#: four columns as 4 x width 1 / 2 x width 2 / 1 x width 4):
+#:   (ss|ss) .252/.180/.151   (ps|ss) .534/.368/.299   (pp|ss) .158/.113/.107
+#:   (ds|ss) .167/.120/.107   (ps|ps) .303/.219/.209   (pp|ps) .344/.376/.378
+#:   (pp|pp) .213/.199/.198   (ds|ps) .251/.217/.308   (ds|pp) .239/.205/.269
+#:   (ds|ds) .122/.106/.107   (dp|ss) .128/.114/.148   (dp|ps) .463/.391/.511
+#:   (dp|pp) .570/.422/.582   (dp|ds) .270/.348/.346   (dp|dp) .264/.314/.312
+#:   (dd|ss) .063/.050/.051   (dd|ps) .141/.175/.175   (dd|pp) .157/.195/.195
+#:   (dd|ds) .074/.103/.104   (dd|dp) .217/.225/.223
+#: A wider kernel wins where the class is light; for the heavy ones the
+#: 255-register file spills and every extra column costs about a sweep.
+#: Within 3% the narrower width is kept. Collapsed kernels (the nine
+#: derivative sums of a component accumulated over primitives and roots and
+#: met with Gamma once per chunk) were measured too and won only (pp|pp),
+#: by 0.05 s of 4.0, so they are not generated.
+PAIRS_RULE = {
+    "0000": 4, "1000": 4, "1010": 4, "1100": 4, "2000": 4,
+    "1111": 2, "2010": 2, "2011": 2, "2020": 2, "2100": 2, "2110": 2, "2111": 2, "2200": 2,
+}
+
+
+def _family_branch(kernels, wmax, lead, args, rt_nch, rt_thread):
+    """The blocks-of-wmax loop of one width: `kernels` is the ascending list
+    of (width, routine name); a block of nblk columns runs the narrowest
+    kernel holding it."""
+    out = f"         do c0 = 1, ncb, {wmax}\n            nblk = min({wmax}, ncb - c0 + 1)\n"
+    for n, (nc, name) in enumerate(kernels):
+        kw = ("if (nblk <= %d) then" % nc if n == 0 else
+              "else if (nblk <= %d) then" % nc if nc != kernels[-1][0] else "else")
+        out += (f"            {kw}\n"
+                f"               do concurrent(i=1:nout{'*%d' % rt_nch if rt_thread else ''})\n"
+                f"                  call {name}({lead}{args}\n"
+                f"               end do\n")
+    return out + "            end if\n         end do\n"
+
+
 def pairs_item_text(tag, item, dims, comps=None, rt_plan=None, inside=None):
     """The PAIR-TABLE item routines rysgi{tag}_pairs{nc} (one per width in
-    PAIRS_VARIANTS) and their driver rysg{tag}_pairs_compact, rewritten from
-    the per-quartet array-form `rysgi{tag}_compact` text `item` (everything
-    from its header on).
+    PAIRS_VARIANTS up to the class's PAIRS_RULE width) and their driver
+    rysg{tag}_pairs_compact,
+    rewritten from the per-quartet array-form `rysgi{tag}_compact` text
+    `item` (everything from its header on).
 
     Same decode, screens, primitive loops and derivative build; what changes
     is Gamma and where it goes. Column c owns the pairs pstart(c) ..
@@ -2141,7 +2191,10 @@ def pairs_item_text(tag, item, dims, comps=None, rt_plan=None, inside=None):
     running sums become acc(12, nc) for a variant nc columns wide, one
     scalarised set per column, and the tail adds column c into
     gp(:, :, slot, c): every column rides the SAME integral derivatives.
-    The driver runs the narrowest variant holding ncb columns.
+
+    The driver runs the table in blocks of columns of the width `vsel` names
+    (0: the class's PAIRS_RULE, which is also the widest kernel it has); a
+    block of nblk columns runs the narrowest kernel that holds it.
     """
     slot_expr = ("int(mod(i - 1, int(npriv, int64))) + 1"
                  if sum(int(c) for c in tag) <= 3 else "1")
@@ -2162,34 +2215,34 @@ def pairs_item_text(tag, item, dims, comps=None, rt_plan=None, inside=None):
             "                                npool, dmat, nblk, pstart(c0), pl, pr, pj, pk, npriv, "
             "gp(1, 1, 1, c0), " + slot_expr + ")")
     la, lb, lc, ld = (int(c) for c in tag)
-    if not (la >= lb and lc >= ld and (la, lb) >= (lc, ld)):
-        # The pair bins never present this orientation (trc_bins.F90's
-        # ANGULAR-MOMENTUM CANONICAL), so no kernel is built for it; the
-        # dispatcher still names the routine.
-        variants_nc = ()
-    else:
-        variants_nc = pairs_variants(tag, comps, rt_plan, inside)
-    vmax = variants_nc[-1] if variants_nc else 1
-    branches = f"      do c0 = 1, ncb, {vmax}\n         nblk = min({vmax}, ncb - c0 + 1)\n"
-    for n, nc in enumerate(variants_nc):
-        kw = ("if (nblk <= %d) then" % nc if n == 0 else
-              "else if (nblk <= %d) then" % nc if nc != vmax else "else")
-        branches += (f"         {kw}\n"
-                     f"            do concurrent(i=1:nout{'*%d' % rt_nch if rt_thread else ''})\n"
-                     f"               call rysgi{tag}_pairs{nc}({lead}{args}\n"
-                     f"            end do\n")
-    branches += "         end if\n      end do\n"
-    if not variants_nc:
+    plain = ()
+    if la >= lb and lc >= ld and (la, lb) >= (lc, ld):
+        rule = PAIRS_RULE.get(tag, 1)
+        plain = tuple(w for w in pairs_variants(tag, comps, rt_plan, inside) if w <= rule)
+    # else: the pair bins never present this orientation (trc_bins.F90's
+    # ANGULAR-MOMENTUM CANONICAL), so no kernel is built for it; the
+    # dispatcher still names the routine.
+    if not plain:
         branches = ('      error stop "terco: gradient_pairs: the class ('
                     f'{tag[0]}{tag[1]}|{tag[2]}{tag[3]}) is never launched"\n')
+        rule = 1
+    else:
+        rule = plain[-1]
+        bodies = {w: _family_branch([(nc, f"rysgi{tag}_pairs{nc}") for nc in plain if nc <= w],
+                                    w, lead, args, rt_nch, rt_thread) for w in plain}
+        branches = "      kind = vsel\n      if (kind == 0) kind = %d\n      select case (kind)\n" % rule
+        for w, body in bodies.items():
+            branches += f"      case ({w})\n{body}"
+        branches += f"      case default\n{bodies[rule]}      end select\n"
     drv = f"""
    subroutine rysg{tag}_pairs_compact(nout, out_seg, out_iab, out_icd, nseg, sA, sNB, sOA, sOB, sPA, sPB, sSA, sSB, sD, sW, &
                              npair, sp_i, sp_j, sp_q, pcut, omega, nbas, nao, ao_off, sh_at, natm, &
                              nqp, qp_z, qp_c, qp_a, qp_px, qp_py, qp_pz, &
                              sq_ax, sq_ay, sq_az, sq_abx, sq_aby, sq_abz, sq_n, &
-                             npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp)
+                             npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, gp, vsel)
       !! The pair-table compact pass of class ({tag[0]}{tag[1]}|{tag[2]}{tag[3]}): the survivors of the
-      !! screen pass, each contracted against every column of the table at once.
+      !! screen pass, each contracted against every column of the table at once, in blocks of
+      !! `vsel` columns (0: this class's widest kernel, {rule}).
       integer(int64), intent(in) :: nout
       integer,  intent(in)    :: out_seg(*), out_iab(*), out_icd(*)
       integer,  intent(in)    :: nseg, npair, nbas, nao
@@ -2211,22 +2264,21 @@ def pairs_item_text(tag, item, dims, comps=None, rt_plan=None, inside=None):
       real(dp), intent(in)    :: dmat(npool, nao, nao)
       integer,  intent(in)    :: pstart(ncb + 1), pl(*), pr(*)
       real(dp), intent(in)    :: pj(*), pk(*)
-      integer,  intent(in)    :: npriv
+      integer,  intent(in)    :: npriv, vsel
       real(dp), intent(inout) :: gp(3, natm, npriv, ncb)
       integer(int64) :: i
-      integer :: c0, nblk
+      integer :: c0, nblk, kind
 {branches}
    end subroutine rysg{tag}_pairs_compact
 
 """
     if rt_plan is not None:
         variants = "".join(rt_pairs_item_text(tag, item, comps, rt_plan[0], rt_thread, nc)
-                           for nc in variants_nc)
+                           for nc in plain)
     elif inside is not None:
-        variants = "".join(chunked_pairs_item_text(tag, item, comps, inside, nc)
-                           for nc in variants_nc)
+        variants = "".join(chunked_pairs_item_text(tag, item, comps, inside, nc) for nc in plain)
     else:
-        variants = "".join(_pairs_variant(tag, item, dims, nc) for nc in variants_nc)
+        variants = "".join(_pairs_variant(tag, item, dims, nc) for nc in plain)
     return drv + variants
 
 
