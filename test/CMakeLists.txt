@@ -2554,6 +2554,30 @@ foreach(_m water:4 formamide:6 ch4:5)
 endforeach()
 
 #
+# TDA/CIS excited-state nuclear gradients (src/scf/response/trc_tddft_grad.F90)
+# against pyscf's grad.tdrks/tdrhf (generate.py's gen_tddft_grad): water and
+# formamide, 6-31G, 3 roots, HF, SVWN, PBE and B3LYP; each case also checks
+# roots-per-sweep chunking (default 2), a root alone against the batch and the refusals.
+# The last case is the Hartree-Fock finite-difference check (water, STO-3G).
+#
+foreach(_mol water formamide)
+  foreach(_f hf svwn pbe b3lyp)
+    terco_add_check(check_tddft_grad_${_mol}_${_f} check_tddft_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                    ARGS ${_mol}.xyz basis_sets/6-31g.json ${_mol} 6-31g ${_f} 3
+                         ${CMAKE_CURRENT_BINARY_DIR}/tddft_grad_${_mol}_${_f}_probe.bin)
+    target_link_libraries(check_tddft_grad_${_mol}_${_f} PRIVATE test-drive::test-drive)
+    set_target_properties(check_tddft_grad_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                          ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_grad_${_mol}_${_f})
+  endforeach()
+endforeach()
+terco_add_check(check_tddft_grad_fd check_tddft_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                ARGS water.xyz basis_sets/6-31g.json water 6-31g hf 3
+                     ${CMAKE_CURRENT_BINARY_DIR}/tddft_grad_fd_probe.bin fd)
+target_link_libraries(check_tddft_grad_fd PRIVATE test-drive::test-drive)
+set_target_properties(check_tddft_grad_fd PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_grad_fd)
+
+#
 # trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of
 # several trial densities against one cached collocation, for SVWN (LDA),
 # PBE and B3LYP (GGA) on water/6-31G*: batch against the loop, non-symmetric

@@ -3219,6 +3219,114 @@ def gen_tddft():
             _gen_tddft_one(probe, f"tddft_{molname}_6-31gs_{funcname}.ref", xyzname, molname, "6-31gs", funcname)
 
 
+def _gen_tddft_grad_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
+    """One check_tddft_grad.F90 case: pyscf's TDA excited-state gradients
+    (grad.tdrhf / grad.tdrks) of the lowest `nroots` singlets of an RHF/RKS
+    reference at terco's OWN grid. The amplitudes are the EXACT eigenvectors of
+    pyscf's own TDA matrix (td.get_ab, dense diagonalisation), not a Davidson
+    result, so the comparison tests the gradient code and not a solver
+    tolerance (the gradient is first order in the amplitude error, ~ residual /
+    gap). `grid_response` is off: pyscf's tdrks has none (its own TODO), the
+    terco side runs with it off too.
+    The Z-vector is converged to 1e-12 (pyscf's default is 1e-8).
+    Written: E_SCF, GRAD (3, natm, nroots), hartree/bohr, total energy gradient
+    of each root (nuclear repulsion included)."""
+    PYSCF = {"hf": None, "svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
+    r = BinReader(TEST / probe_relname)
+    n, natm, no, nroots = (r.i8() for _ in range(4))
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    func_tag = r.str_(16)
+    e_terco = r.f8(1)[0]
+    om_terco = r.f8(nroots)
+    g_terco = r.f8(3 * natm * nroots).reshape((3, natm, nroots), order="F")
+    npts = r.i8()
+    pts = r.mat(3, npts).T.copy()
+    wts = r.f8(npts)
+    r.close()
+    if mol_tag != molname or bas_tag != basname or func_tag != funcname:
+        raise RuntimeError(f"gen_tddft_grad {probe_relname}: probe tag mismatch")
+    atoms = _xyz_atoms(xyzname[:-4] if xyzname.endswith(".xyz") else xyzname)
+    if len(atoms) != natm:
+        raise RuntimeError(f"gen_tddft_grad {probe_relname}: natm mismatch terco {natm} xyz {len(atoms)}")
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    charge = sum(elements[sym] for sym, _ in atoms) - 2 * no
+    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=charge, spin=0, verbose=0)
+    if mol.nao_nr() != n:
+        raise RuntimeError(f"gen_tddft_grad {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
+
+    label = f"tddft_grad {molname}/{basname}/{funcname} (tda singlet gradients)"
+
+    def make_mf():
+        if funcname == "hf":
+            return scf.RHF(mol)
+        m = dft.RKS(mol)
+        m.xc = PYSCF[funcname]
+        m.grids.coords = np.ascontiguousarray(pts)
+        m.grids.weights = wts
+        m.grids.non0tab = None
+        return m
+
+    # The gradient is first order in the orbital error, so converge the SCF
+    # (and terco's, in the test) well past the comparison, not to 1e-8.
+    # converge_tight refuses a result whose |g| is above its conv_tol_grad
+    # although pyscf's own (differently normed) test passed; step the target
+    # up until both agree.
+    for conv_tol_grad in (1.0e-10, 3.0e-10, 1.0e-9, 3.0e-9, 1.0e-8, 3.0e-8):
+        try:
+            mf, grad_norm = converge_tight(make_mf, None, label, conv_tol=1.0e-14, conv_tol_grad=conv_tol_grad)
+            break
+        except ConvergenceError:
+            if conv_tol_grad == 3.0e-8:
+                raise
+    td = mf.TDA()
+    td.singlet = True
+    td.nstates = nroots
+    td.verbose = 0
+    a, _b = td.get_ab()
+    nocc, nvir = a.shape[0], a.shape[1]
+    w, v = np.linalg.eigh(a.reshape(nocc * nvir, nocc * nvir))
+    if np.abs(w[:nroots] - om_terco).max() > 1.0e-6:
+        raise RuntimeError(f"{label}: terco's and pyscf's excitation energies differ by "
+                           f"{np.abs(w[:nroots] - om_terco).max():.2e}")
+    # pyscf's TDA stores x with sum x^2 = 1/2 (kernel(): xi * .5**.5).
+    td.e = w[:nroots]
+    td.xy = [(v[:, k].reshape(nocc, nvir) * np.sqrt(0.5), 0) for k in range(nroots)]
+    td.converged = [True] * nroots
+    g = td.nuc_grad_method()
+    # pyscf's Z-vector defaults (1e-8, 20 cycles) are the loosest part of the
+    # reference; converge it far below the comparison.
+    g.cphf_conv_tol = 1.0e-12
+    g.cphf_max_cycle = 200
+    grads = np.stack([g.kernel(xy=td.xy[k], state=k + 1).T for k in range(nroots)], axis=2)
+
+    w_ = RefWriter(ref_relname)
+    w_.header(label, [ROOT / "test" / "check_tddft_grad.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
+    w_.real("E_SCF", mf.e_tot)
+    w_.matrix3("GRAD", grads)
+    w_.real("CONV_TOL", mf.conv_tol)
+    w_.real("GRAD_NORM", grad_norm)
+    w_.end()
+    w_.write()
+    print(f"  {label}: E(terco) {e_terco:20.12f}  E(pyscf) {mf.e_tot:20.12f}  |g| {grad_norm:.2e}  "
+          f"max|d grad| {np.abs(g_terco - grads).max():.2e}  per root "
+          f"{[float(f'{np.abs(g_terco[:, :, k] - grads[:, :, k]).max():.1e}') for k in range(nroots)]}")
+    (TEST / probe_relname).unlink()
+
+
+def gen_tddft_grad():
+    """check_tddft_grad.F90: the gradients of the lowest 3 singlet TDA roots of
+    water and formamide, 6-31G, HF, SVWN, PBE and B3LYP, against pyscf's
+    grad.tdrhf/tdrks at terco's own converged orbitals' grid."""
+    for xyzname, molname in (("water.xyz", "water"), ("formamide.xyz", "formamide")):
+        for funcname in ("hf", "svwn", "pbe", "b3lyp"):
+            probe = f"tddft_grad_{molname}_{funcname}_probe.bin"
+            run_bin(f"check_tddft_grad_{molname}_{funcname}",
+                    [xyzname, "basis_sets/6-31g.json", molname, "6-31g", funcname, "3", str(TEST / probe)])
+            _gen_tddft_grad_one(probe, f"tddft_grad_{molname}_6-31g_{funcname}.ref", xyzname, molname, "6-31g", funcname)
+
+
 def gen_fxc_apply_many():
     """check_fxc_apply_many.F90: f_xc[D] of a symmetric and a non-symmetric
     probe density at a fixed reference density on water/6-31G*, SVWN/PBE/
@@ -6890,6 +6998,7 @@ CASES = {
     "cpks": gen_cpks,
     "fxc_apply_many": gen_fxc_apply_many,
     "tddft": gen_tddft,
+    "tddft_grad": gen_tddft_grad,
     "kxc": gen_kxc,
     "rimp2_uhf": gen_rimp2_uhf,
     "scf_df": gen_scf_df,
