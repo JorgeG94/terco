@@ -4439,7 +4439,7 @@ def gen_rccsd_ints():
     E_T_FIXED and E_T_FIXED_NO_T1 (pyscf's (T) at the fixed amplitudes, and at the same t2 with t1 = 0)."""
     from pyscf.cc import rintermediates as imd, dfccsd
     bohr = 0.529177210903  # CODATA 2018, as terco
-    cases = [("w1", "hirshfeld_water.xyz", 1), ("h2o2", "h2o2.xyz", 2)]
+    cases = [("w1", "hirshfeld_water.xyz", 1), ("h2o2_c1", "h2o2_c1.xyz", 2)]
     basis, aux_basis = "cc-pvdz", "cc-pvdz-rifit"
     # Every file that reads these references or the probes they hold: the integral check, the
     # intermediates check and the helpers they share (editing one re-hashes the .ref).

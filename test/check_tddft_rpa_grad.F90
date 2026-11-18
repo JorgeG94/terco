@@ -63,8 +63,9 @@ module check_tddft_rpa_grad_suite
    real(dp), parameter :: FD_ABSTOL = 1.0e-8_dp
    !! Hartree-Fock finite-difference gate (Richardson at h = 2.5e-3; at h = 0.01
    !! the h^4 term alone is 2e-7 on non-planar H2O2).
-   real(dp), parameter :: FD_ABSTOL_DFT = 2.0e-7_dp
-   !! Kohn-Sham, with the grid response on and the grid rebuilt at every displacement.
+   real(dp), parameter :: FD_ABSTOL_DFT = 1.0e-8_dp
+   !! Kohn-Sham (B3LYP, 2 roots), with the grid response on and the grid rebuilt at every
+   !! displacement: measured 8.2e-10; the Pulay-only gradient misses the same differences by 1.4e-5.
 
    character(len=256) :: xyz_arg = 'water.xyz'
    character(len=256) :: bas_json_arg = 'basis_sets/6-31g.json'
