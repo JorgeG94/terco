@@ -81,6 +81,9 @@ module check_tddft_grad_suite
 
    type :: fixture_t
       logical :: ready = .false.
+      logical :: ok = .false.
+      !! ready: the objects are built (and must be released); ok: the SCF, the
+      !! solve and the gradient all succeeded, so a later test may use them.
       logical :: dft = .false.
       integer :: nocc = 0, natm = 0
       integer, allocatable :: zint(:)
@@ -119,10 +122,15 @@ contains
 
    subroutine scf_options(sopts)
       type(trc_scf_options_t), intent(out) :: sopts
-      ! The gradient is first order in the orbital error: converge far past the gate.
-      sopts%conv_energy = 1.0e-13_dp
-      sopts%conv_density = 1.0e-12_dp
-      sopts%conv_diis = 1.0e-12_dp
+      ! The gradient is first order in the orbital error, so converge well past
+      ! the gate, but not to the arithmetic's floor. conv_energy 1e-13 was 3 ulps
+      ! of |E| = 150 (H2O2): met by nvfortran and by gfortran with OpenBLAS but not
+      ! by the CI builds with reference BLAS or ifx, where the SCF ran out of
+      ! iterations (and conv_energy 1e-14 with conv_diis 1e-13 fails here too).
+      ! 1e-12 and 1e-11 keep two orders over the floor; check_tddft uses 1e-12, 1e-10.
+      sopts%conv_energy = 1.0e-12_dp
+      sopts%conv_density = 1.0e-10_dp
+      sopts%conv_diis = 1.0e-11_dp
       sopts%max_iteration = 200
       sopts%grid_level = 3
       if (trim(funcname_arg) /= 'hf') sopts%functional = trim(funcname_arg)
@@ -137,7 +145,10 @@ contains
       real(dp), allocatable :: at_r(:, :)
       logical :: ok
 
-      if (fx%ready) return
+      if (fx%ready) then
+         call check(error, fx%ok, "the fixture (SCF, TDA solve or gradient) failed in an earlier test")
+         return
+      end if
       dev = trc_bind_device(0)
       fx%dft = trim(funcname_arg) /= 'hf'
       if (fx%dft) then
@@ -176,6 +187,8 @@ contains
       if (allocated(error)) return
       call gradient(fx%gopts, 0, err)
       call check(error, .not. err%has_error(), "gradient failed: "//err%get_message())
+      if (allocated(error)) return
+      fx%ok = .true.
    end subroutine fixture_build
 
    subroutine gradient(gopts, roots_per_sweep, err)
@@ -454,8 +467,6 @@ contains
       call eri%build(bas, ERI_THRESH)
       call la%init(bas%nao)
       call scf_options(sopts)
-      sopts%conv_density = 1.0e-11_dp
-      sopts%conv_diis = 1.0e-11_dp
       call trc_scf_run(bas, fx%nocc, fx%nocc, sopts, scf)
       if (scf%converged) then
          if (fx%dft) then
@@ -584,6 +595,7 @@ contains
          call fx%pl%release()
          call fx%bas%release()
          fx%ready = .false.
+         fx%ok = .false.
       end if
       if (.false.) allocate (error)
    end subroutine test_release
