@@ -1650,48 +1650,79 @@ PAIRS_NCB = 4
 #: Largest gm count (Gamma values live per chunk and column) a class may carry
 #: at each width. A first guard against the steepest compile times; it does
 #: not separate the slow kernels from the fast ones by itself, which is what
-#: PAIRS_NARROW_ONLY below is for. Measured 2026-11-17 (nvfortran 26.5,
+#: PAIRS_RT_PLAN below is for. Measured 2026-11-17 (nvfortran 26.5,
 #: -stdpar=gpu -acc -gpu=cc70,mem:separate -fast -O3, TERCO_LMAX=3, each
 #: kernel compiled alone, 16 at a time on a box with load average 10-25):
-#: every runtime-outer ("rt") kernel took 20-90 s whatever its width, and
-#: every literal one (a class with no rt plan) grew with the class far more
+#: every runtime-outer ("rt") kernel of the classes that ran that way then
+#: took 20-90 s whatever its width (the PAIRS_RT_PLAN table below, timed
+#: later at load about 40 on different classes, has 5-29 s), and every
+#: literal one (a class with no rt plan) grew with the class far more
 #: than with nc*gm, e.g. (21|10) 27/68/193 s at widths 1/2/4 but (30|21)
 #: 190/526 s at 1/2 for a smaller nc*gm.
 PAIRS_GM_BUDGET = {4: 72, 2: 80}
 
-#: Classes whose wider-than-1 pair kernels took more than 300 s to compile
-#: (seconds measured as above): they are generated at width 1 alone, and the
-#: dispatcher walks their column blocks one column at a time. The pair
-#: kernels compile serially per file, so a file much past five minutes holds
-#: the whole build, and no caller in src/ uses more than one column yet, so
-#: compile time wins over the sweep sharing.
+#: Classes whose PAIR kernels take the run-time chunked form, whatever form
+#: the class's own RHF/UHF kernels take (a class file is unchanged by an
+#: entry here; only its trc_pc_rysgp*.F90 files differ). Same shape as
+#: GRAD_UHF_RT_PLAN: (outer shells, "loop"); "thread" is not allowed here
+#: (unmeasured, and it needs its own launch).
 #:
-#: RUN-TIME COST, not yet measured: for these classes an ncol-column
-#: gradient_pairs call recomputes every integral derivative ncol times, not
-#: ceil(ncol/2) times (w2 was the widest they had) or, for (31|30), not
-#: ceil(ncol/4). Only the classes in the table pay it. The one routine that
-#: takes ncol > 1 is eri%gradient_pairs (eri_gradient_pairs in
-#: src/eri/trc_eri.F90), meant for excited-state gradients with one column
-#: per root; nothing in src/ or app/ calls it yet, only
-#: test/check_grad_pairs.F90 does.
+#: Why: the LITERAL chunked form unrolls every chunk's component loops into
+#: the source and nvfortran 26.5 compiles it superlinearly, while the
+#: run-time form's source is 3-9x smaller (width 1, bytes: (21|21)
+#: 536 -> 80 KB, (31|30) 564 -> 56 KB, (33|10) 507 -> 88 KB, (22|20) 361 -> 120 KB). Measured 2026-11-17/18 (nvfortran
+#: 26.5, -stdpar=gpu -acc -gpu=cc70,mem:separate -fast -O3, TERCO_LMAX=3,
+#: kernel compiled alone), seconds literal -> run-time, at w1/w2/w4 ("-": no
+#: such width; ">600" hit the timeout):
 #:
-#: Not fixed by this table: (21|21), (31|30) and (33|10) at width 1 still
-#: take 500-600 s each to compile (width 1 must exist for the dispatcher).
-#: Bringing them under five minutes needs a different kernel shape.
+#:   class   plan      literal               run-time
+#:   2121    23:loop   >600 / >600 / -       7 / 12 / 28
+#:   3130    01:loop   568 / >600 / >600     6 / 8 / 16
+#:   3310    1:loop    509 / >600 / -        13 / 29 / -
+#:   2220    23:loop   264 / >600 / -        12 / 28 / -
+#:   3021    23:loop   190 / 526 / -         5 / 8 / 14
+#:   3120    23:loop   258 / 517 / -         10 / 22 / -
 #:
-#: Seconds, nvfortran 26.5, LMAX=3, kernels alone ("-": no such width):
+#: (The run-time column was timed on a box at load average about 40, the
+#: literal one at 10-25; read both as upper bounds. An earlier idle-box run
+#: of the first three gave 4/7/18, 3/5/10 and 8/18 s.) Not adopted, though
+#: the run-time form compiles them 10-30x faster: classes whose literal
+#: kernels are under 270 s and so do not lengthen a parallel build, and which
+#: are the common d classes of every gradient, where the run-time form's cost
+#: is largest. Literal -> 23:loop run-time seconds at w1/w2/w4:
+#: (22|10) 125/249/- -> 10/27/-; (21|20) 97/222/- -> 7/12/26;
+#: (21|10) 27/68/193 -> 7/11/27; (20|11) 20/57/206 -> 5/6/9. Adding one is
+#: one line in the table below.
 #:
-#:   class   w1      w2      w4
-#:   2121    >600    >600    -
-#:   2220    264     >600    -
-#:   3021    190     526     -
-#:   3120    258     517     -
-#:   3130    568     >600    >600
-#:   3310    509     >600    -
+#: These three plans are GRAD_UHF_RT_PLAN's, the best run-time shape of the
+#: class's race. The others are chosen by their neighbours' plans in
+#: GRAD_CHUNK_PLAN, not raced: (22|20) 23:loop as (22|11), (22|21);
+#: (30|21) and (31|20) 23:loop as (31|21) (1:loop, the (32|20) and (31|10)
+#: shape, would leave (31|20) only width 1: 60 Gamma values per column).
 #:
-#: Widths under 300 s that stay, for reference (w1/w2/w4): (11|11) 72/147/-,
-#: (20|11) 20/57/206, (21|10) 27/68/193, (21|20) 97/222/-, (22|10) 125/261/-.
-PAIRS_NARROW_ONLY = ("2121", "2220", "3021", "3120", "3130", "3310")
+#: Run time, measured 2026-11-18 on one V100 (nvfortran 26.5, TERCO_LMAX=3,
+#: test/standalone/time_grad_pairs, mean of 3 calls, seconds literal ->
+#: run-time; the literal build had these six classes at width 1 only):
+#:
+#:   system                        ncol 1           ncol 2           ncol 4
+#:   (H2O)5 cc-pVTZ                0.221 -> 0.232   0.354 -> 0.358   0.683 -> 0.680
+#:   gly10 6-31G* (Cartesian d)    0.586 -> 0.598   0.998 -> 1.002   2.084 -> 2.123
+#:
+#: So at most 5% on the whole sweep, the price of a full LMAX=3 build that
+#: takes 1440 s where the literal table took 2226 s (--parallel 20). The way
+#: back for a class is deleting its entry.
+#:
+#: A literal pair kernel under ~270 s is left alone: the longest class file
+#: compiles in about 270 s, so such a file does not lengthen a parallel
+#: build (the table above).
+PAIRS_RT_PLAN = {
+    "2121": ((2, 3), "loop"),
+    "3130": ((0, 1), "loop"),
+    "3310": ((1,), "loop"),
+    "2220": ((2, 3), "loop"),
+    "3021": ((2, 3), "loop"),
+    "3120": ((2, 3), "loop"),
+}
 
 #: Column widths a pair kernel is generated for. The twelve running sums of
 #: every column are unrolled into scalar accumulators so they stay in
@@ -2154,8 +2185,21 @@ def _pairs_variant(tag, item, dims, nc):
 
 
 
-def _wide_widths(comps, rt_plan, inside):
-    """pairs_variants() before PAIRS_NARROW_ONLY: the widths the Gamma budget allows."""
+def pairs_form(tag, rt_plan, inside, table=True):
+    """(rt_plan, inside) the PAIR kernels of class `tag` are built in, given
+    the class's own: a class with no run-time plan of its own takes
+    PAIRS_RT_PLAN's, if it has an entry. `table` False (an explicit
+    --rt-plan none, the racing tool's way to the literal form) skips it."""
+    if table and rt_plan is None and tag in PAIRS_RT_PLAN:
+        return PAIRS_RT_PLAN[tag], None
+    return rt_plan, inside
+
+
+def pairs_variants(tag, comps, rt_plan, inside):
+    """The column widths class `tag`'s pair kernel is generated for: every
+    width of PAIRS_VARIANTS whose Gamma count per sweep fits PAIRS_GM_BUDGET
+    (nc * gm per chunk); width 1 always. `rt_plan` and `inside` are the pair
+    form's (pairs_form)."""
     if rt_plan is not None:
         inner, _ = gr._chunk_keys(comps, rt_plan[0], 0)
         gm = len(inner)
@@ -2166,17 +2210,7 @@ def _wide_widths(comps, rt_plan, inside):
     return tuple(nc for nc in PAIRS_VARIANTS if nc == 1 or nc*gm <= PAIRS_GM_BUDGET[nc])
 
 
-def pairs_variants(tag, comps, rt_plan, inside):
-    """The column widths class `tag`'s pair kernel is generated for: every
-    width of PAIRS_VARIANTS whose Gamma count per sweep fits PAIRS_GM_BUDGET
-    (nc * gm per chunk), unless the class is in PAIRS_NARROW_ONLY; width 1
-    always."""
-    if tag in PAIRS_NARROW_ONLY:
-        return (1,)
-    return _wide_widths(comps, rt_plan, inside)
-
-
-def pair_widths(tag, comps, rt_plan, inside):
+def pair_widths(tag, comps, rt_plan, inside, table=True):
     """The widths class `tag`'s pair kernel is generated for: none for an
     orientation the pair bins never launch, else pairs_variants()."""
     la, lb, lc, ld = (int(c) for c in tag)
@@ -2185,6 +2219,7 @@ def pair_widths(tag, comps, rt_plan, inside):
         # ANGULAR-MOMENTUM CANONICAL), so no kernel is built for it; the
         # dispatcher still names the class.
         return ()
+    rt_plan, inside = pairs_form(tag, rt_plan, inside, table)
     return pairs_variants(tag, comps, rt_plan, inside)
 
 
@@ -2197,7 +2232,7 @@ def pair_driver_name(tag, nc):
     return f"rysgp{tag}w{nc}_pairs_compact"
 
 
-def pairs_modules(tag, item, dims, comps, rt_plan, inside, prelude, tabs):
+def pairs_modules(tag, item, dims, comps, rt_plan, inside, prelude, tabs, table=True):
     """One module per width in pair_widths(), as {nc: text}. Each holds the
     pair item routine rysgi{tag}_pairs{nc} and its driver
     rysgp{tag}w{nc}_pairs_compact, which owns the `do concurrent` (that body
@@ -2229,6 +2264,7 @@ def pairs_modules(tag, item, dims, comps, rt_plan, inside, prelude, tabs):
     """
     slot_expr = ("int(mod(i - 1, int(npriv, int64))) + 1"
                  if sum(int(c) for c in tag) <= 3 else "1")
+    rt_plan, inside = pairs_form(tag, rt_plan, inside, table)
     rt_thread = rt_plan is not None and rt_plan[1] == "thread"
     rt_nch = 1
     if rt_plan is not None:
@@ -2244,7 +2280,7 @@ def pairs_modules(tag, item, dims, comps, rt_plan, inside, prelude, tabs):
             "                                npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, "
             "gp, " + slot_expr + ")")
     out = {}
-    for nc in pair_widths(tag, comps, rt_plan, inside):
+    for nc in pair_widths(tag, comps, rt_plan, inside, table):
         if rt_plan is not None:
             item_nc = rt_pairs_item_text(tag, item, comps, rt_plan[0], rt_thread, nc)
         elif inside is not None:
@@ -2419,7 +2455,7 @@ def class_pair_widths(tag, args):
     """The widths whose pair modules run() writes for class `tag`; what
     CMake (--pair-widths) and the dispatcher list."""
     comps, rt_plan, inside = class_plan(tag, args)
-    return pair_widths(tag, comps, rt_plan, inside)
+    return pair_widths(tag, comps, rt_plan, inside, getattr(args, "rt_plan", None) != "none")
 
 
 def run(args, generic_only=False):
@@ -2853,7 +2889,8 @@ contains
     # cannot start from.
     gen_text, gen_tabs = run(args, generic_only=True)
     prelude = head[:head.index("\ncontains\n")]
-    pair_mods = pairs_modules(tag, gen_text, dims, comps, rt_plan, inside, prelude, gen_tabs)
+    pair_mods = pairs_modules(tag, gen_text, dims, comps, rt_plan, inside, prelude, gen_tabs,
+                              getattr(args, "rt_plan", None) != "none")
     rt_tabs = "".join(ln + "\n" for ln in rt_tabs.splitlines()
                       if ln.split("::")[1].split("(")[0].strip() + "(" not in prelude)
     prelude += "\n" + rt_tabs + "\ncontains\n"
@@ -2874,21 +2911,26 @@ contains
           + (f", runtime-outer {rt_plan}" if rt_plan is not None else ""))
 
 
-def _check_narrow_only():
-    """PAIRS_NARROW_ONLY names real, launched classes that would otherwise get
-    a wider width: a stale entry would silently do nothing."""
-    for t in PAIRS_NARROW_ONLY:
+def _check_pairs_rt_plan():
+    """PAIRS_RT_PLAN names real, launched classes with a well-formed loop
+    plan, and one the class does not already run in the run-time form: a
+    stale entry would silently do nothing."""
+    for t, plan in PAIRS_RT_PLAN.items():
+        def bad(msg):
+            raise SystemExit(f"gen_rys_grad.py: PAIRS_RT_PLAN entry {t!r}: {msg}")
         if not re.fullmatch(r"[0-3]{4}", t):
-            raise SystemExit(f"gen_rys_grad.py: PAIRS_NARROW_ONLY entry {t!r} is not a class tag")
+            bad("not a class tag")
         la, lb, lc, ld = (int(c) for c in t)
         if not (la >= lb and lc >= ld and (la, lb) >= (lc, ld)):
-            raise SystemExit(f"gen_rys_grad.py: PAIRS_NARROW_ONLY entry {t}: the pair bins never launch it")
-        comps, rt_plan, inside = class_plan(t, default_plan_args())
-        if max(_wide_widths(comps, rt_plan, inside)) < 2:
-            raise SystemExit(f"gen_rys_grad.py: PAIRS_NARROW_ONLY entry {t} has no width above 1 to drop")
+            bad("the pair bins never launch it")
+        outer, form = plan
+        if form != "loop" or len(set(outer)) != len(outer) or not all(x in (0, 1, 2, 3) for x in outer):
+            bad(f"{plan!r} is not (distinct outer shells in 0..3, 'loop')")
+        if t in GRAD_CHUNK_PLAN:
+            bad("the class already runs in the run-time form; the entry does nothing")
 
 
-_check_narrow_only()
+_check_pairs_rt_plan()
 
 
 if __name__ == "__main__":

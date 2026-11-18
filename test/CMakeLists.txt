@@ -855,6 +855,18 @@ target_link_libraries(check_grad_pairs PRIVATE test-drive::test-drive)
 set_tests_properties(terco/check_grad_pairs PROPERTIES
   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=none")
 
+# The same with f functions (cc-pVTZ: the (31|30), (33|10) ... pair kernels).
+# Skips on a build below LMAX=3 (check_grad_pairs.F90's setup). LONG: 370 s on
+# a loaded host at LMAX=3.
+terco_add_check(check_grad_pairs_ccpvtz check_grad_pairs.F90 NEEDS_BASIS
+                ARGS basis_sets/cc-pvtz.json)
+target_link_libraries(check_grad_pairs_ccpvtz PRIVATE test-drive::test-drive)
+set_target_properties(check_grad_pairs_ccpvtz PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_grad_pairs_ccpvtz)
+set_tests_properties(terco/check_grad_pairs_ccpvtz PROPERTIES
+  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=none"
+  SKIP_REGULAR_EXPRESSION "SKIP" LABELS LONG)
+
 #
 # eri%gradient's long-range (erf(omega*r12)/r12) exchange term alone
 # against a central difference of E_K^lr(D) -- the omega > 0 analogue of
