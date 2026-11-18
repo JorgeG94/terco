@@ -20,8 +20,9 @@ module trc_tddft_grad
    !! excitation-energy matvec uses.
    !!
    !! THE STEPS (one pass over all roots each)
-   !!  1. G[P_d], G[S] and G[A] for every root through ONE
-   !!     `eri%fock_nosym_many` call; f_xc[P_d] and f_xc[S] through one
+   !!  1. G[P_d], G[S] and G[A] for every root through two folded batches
+   !!     (`eri%fock_folded_many`: P_d and S symmetric, A antisymmetric and
+   !!     exchange only); f_xc[P_d] and f_xc[S] through one
    !!     `trc_xc_fxc_rks_apply_many`; the k_xc term k1ao = E_xc'''[S, S, .]
    !!     through one `trc_xc_kxc_rks_apply`. Together with the MO blocks of
    !!     G[S] and G[A] these are the right-hand sides w_ai of the Z-vector
@@ -269,17 +270,52 @@ contains
    end subroutine tddft_grad_init
 
    subroutine tddft_grad_fock(b, eri, ndens, dmats, gmats, jscale, kscale)
-      !! gmats = jscale J - kscale K/2 of every (possibly non-symmetric)
-      !! density, one pass.
+      !! gmats = jscale J - kscale K/2 of every SYMMETRIC density, one folded
+      !! pass.
       type(trc_basis_t), intent(in) :: b
       type(trc_eri_t), intent(inout) :: eri
       integer, intent(in) :: ndens
       real(dp), intent(in) :: dmats(:, :, :)
       real(dp), intent(out) :: gmats(:, :, :)
       real(dp), intent(in) :: jscale, kscale
-      call eri%fock_nosym_many(b, ndens, dmats, gmats, &
-                               trc_fock_options_t(j_scale=jscale, k_scale=kscale, density_screen=.false.))
+      call eri%fock_folded_many(b, ndens, dmats, gmats, &
+                                trc_fock_options_t(j_scale=jscale, k_scale=kscale, density_screen=.false.))
    end subroutine tddft_grad_fock
+
+   subroutine tddft_grad_fock_triples(b, eri, nr, dm3, g3, jscale, kscale)
+      !! gmats = jscale J - kscale K/2 of the densities (P_d, S, A) of every
+      !! root, packed 3 per root as `tddft_grad_rhs` builds them: P_d and S
+      !! exactly symmetric, A exactly antisymmetric (its transpose's negative,
+      !! element for element). The two symmetric ones go through one folded
+      !! batch, the A ones through a second, exchange only (J[A] = 0 and the
+      !! Coulomb half of the folded digestion is not valid for an
+      !! antisymmetric density). Why the folded kernels and not the enumerated
+      !! `fock_nosym_many`: see `eri%fock_folded_many`.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_eri_t), intent(inout) :: eri
+      integer, intent(in) :: nr
+      real(dp), intent(in) :: dm3(:, :, :)
+      real(dp), intent(out) :: g3(:, :, :)
+      real(dp), intent(in) :: jscale, kscale
+      real(dp), allocatable :: dsym(:, :, :), gsym(:, :, :), dasym(:, :, :), gasym(:, :, :)
+      integer :: n, k
+      n = size(dm3, 1)
+      allocate (dsym(n, n, 2*nr), gsym(n, n, 2*nr), dasym(n, n, nr), gasym(n, n, nr))
+      do k = 1, nr
+         dsym(:, :, 2*k - 1) = dm3(:, :, 3*k - 2)
+         dsym(:, :, 2*k) = dm3(:, :, 3*k - 1)
+         dasym(:, :, k) = dm3(:, :, 3*k)
+      end do
+      call tddft_grad_fock(b, eri, 2*nr, dsym, gsym, jscale, kscale)
+      call eri%fock_folded_many(b, nr, dasym, gasym, &
+                                trc_fock_options_t(j_scale=0.0_dp, k_scale=kscale, density_screen=.false.), &
+                                antisymmetric=.true.)
+      do k = 1, nr
+         g3(:, :, 3*k - 2) = gsym(:, :, 2*k - 1)
+         g3(:, :, 3*k - 1) = gsym(:, :, 2*k)
+         g3(:, :, 3*k) = gasym(:, :, k)
+      end do
+   end subroutine tddft_grad_fock_triples
 
    subroutine tddft_grad_fxc(st, b, xg, cache, la, dmats, vresp)
       !! f_xc[D_k] of every density, one call; `dmats` and `vresp` are (nao, nao, nvec).
@@ -332,7 +368,7 @@ contains
       end do
       ! 2 J[D] - c_x K[D] of P_d, S and A (pyscf vj*2 - vk*hyb): A's J is zero,
       ! its K is the antisymmetric veff0mom.
-      call tddft_grad_fock(b, eri, 3*nr, dm3, g3, 2.0_dp, 2.0_dp*st%cx)
+      call tddft_grad_fock_triples(b, eri, nr, dm3, g3, 2.0_dp, 2.0_dp*st%cx)
 
       allocate (fx(n, n, 2*nr), dmx(n, n, 2*nr), dmk(n, n, 1 + 2*nr), vk(n, n, nr))
       fx = 0.0_dp
