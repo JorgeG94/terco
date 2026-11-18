@@ -1255,7 +1255,7 @@ int trc_polarizability(trc_handle_t handle, double* alpha);
 int trc_set_tddft(trc_handle_t handle, int nroots, int tda, int singlet, int target_root, int grid_response);
 
 /**
- * The solver's settings; a zero keeps the default. `conv_tol` (1e-8) is
+ * The solver's settings; a zero resets that setting to its default (a call replaces all five). `conv_tol` (1e-8) is
  * the Davidson residual norm of the excitation energies, `max_iteration`
  * (50) its iteration limit, `cpks_tol` (1e-9) and `cpks_max_iteration`
  * (100) the Z-vector's residual and iteration limit for the gradient,
@@ -1313,9 +1313,10 @@ int trc_tddft_nroots(trc_handle_t handle, int* nroots);
  * sum of Y squared of the normalised (X, Y) (X.X - Y.Y = 1; zero for the
  * TDA) and `dipole` (3, nroots), column-major, the transition dipoles
  * <0|r|n> in atomic units. Each array holds trc_tddft_nroots values (the
- * last 3 times that).
+ * last 3 times that); `n` is the number of roots the caller's arrays hold,
+ * and fewer than trc_tddft_nroots is TRC_ERR_BADARG (nothing is written).
  */
-int trc_tddft_energies(trc_handle_t handle, double* omega, double* oscillator, double* ynorm, double* dipole);
+int trc_tddft_energies(trc_handle_t handle, int n, double* omega, double* oscillator, double* ynorm, double* dipole);
 
 /**
  * The dominant orbital pair of each root of the last trc_run_tddft:
@@ -1324,9 +1325,17 @@ int trc_tddft_energies(trc_handle_t handle, double* omega, double* oscillator, d
  * pair's `weight`, its share of X^2 - Y^2. Orbital phases and the order
  * within a degenerate pair do not enter, so the pair is comparable
  * between geometries: an optimiser follows a state by it. Each array
- * holds trc_tddft_nroots values.
+ * holds trc_tddft_nroots values; `n` is the number the caller's arrays
+ * hold, and fewer is TRC_ERR_BADARG (nothing is written).
  */
-int trc_tddft_character(trc_handle_t handle, int* hole, int* particle, double* weight);
+int trc_tddft_character(trc_handle_t handle, int n, int* hole, int* particle, double* weight);
+
+/**
+ * The root trc_set_tddft named as the target (1-based) and the number of roots it asked for: what the
+ * gradient and trc_tddft_energy follow. It answers before any run, from the settings, so an optimiser reads the
+ * root from the context instead of holding a second copy.
+ */
+int trc_tddft_target_root(trc_handle_t handle, int* target_root, int* nroots);
 
 /**
  * The total energy of the target root (trc_set_tddft): the SCF energy

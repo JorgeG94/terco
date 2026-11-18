@@ -347,26 +347,28 @@ contains
       status = TRC_OK
    end function trc_opt_set_rimp2
 
-   function trc_opt_set_tddft(handle, enable, target_root, gap_warn) result(status) bind(c, name="trc_opt_set_tddft")
-      !! Non-zero: optimise the geometry of the excited state `target_root` (1-based): run trc_run_tddft
-      !! after every SCF of the optimisation, so each step's energy is trc_tddft_energy's (E_SCF + omega of
-      !! that root) and its gradient trc_run_gradient's derivative of it. The context needs trc_set_tddft
-      !! with the same target root and enough roots (give one more than the target to watch the root above
-      !! it); trc_opt_run checks the setup with trc_check_tddft before the first SCF and returns its refusal
-      !! instead of starting. The followed state is watched: a warning when another solved root lies within
-      !! `gap_warn` hartree (0.005 when this is not positive) of it, or when its dominant orbital pair
-      !! changes between evaluations. Zero (the default): the SCF energy and gradient.
+   function trc_opt_set_tddft(handle, enable, gap_warn) result(status) bind(c, name="trc_opt_set_tddft")
+      !! Non-zero: optimise the geometry of the excited state the context follows (the target root of
+      !! trc_set_tddft, read from the context at every step): run trc_run_tddft after every SCF of the
+      !! optimisation, so each step's energy is trc_tddft_energy's (E_SCF + omega of that root) and its gradient
+      !! trc_run_gradient's derivative of it. The context needs trc_set_tddft with enough roots (give one more
+      !! than the target to watch the root above it); trc_opt_run checks the setup with trc_check_tddft before the
+      !! first SCF and returns its refusal instead of starting. The followed state is watched: a warning when
+      !! another solved root lies within `gap_warn` hartree of it (positive, otherwise TRC_ERR_BADARG), or when its
+      !! dominant orbital pair differs from that of the previous accepted step. Zero `enable` (the default): the SCF
+      !! energy and gradient.
       type(c_ptr), value :: handle
-      integer(c_int), value :: enable, target_root
+      integer(c_int), value :: enable
       real(c_double), value :: gap_warn
       integer(c_int) :: status
       type(trc_opt_options_box), pointer :: ob
       status = TRC_ERR_NULL
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, ob)
+      status = TRC_ERR_BADARG
+      if (.not. (gap_warn > 0.0_c_double)) return
       ob%opts%tddft = enable /= 0_c_int
-      ob%opts%tddft_root = max(1, int(target_root))
-      if (gap_warn > 0.0_c_double) ob%opts%tddft_gap_warn = real(gap_warn, dp)
+      ob%opts%tddft_gap_warn = real(gap_warn, dp)
       status = TRC_OK
    end function trc_opt_set_tddft
 

@@ -138,7 +138,7 @@ contains
       call ref_report(nfail, rc == TRC_OK, "check_capi_opt (S1): the context", real(rc, dp))
       rc = trc_opt_options_create(opts)
       if (rc == TRC_OK) rc = trc_opt_set_gtol(opts, real(RUN_GTOL, c_double))
-      if (rc == TRC_OK) rc = trc_opt_set_tddft(opts, 1_c_int, 1_c_int, 0.0_c_double)
+      if (rc == TRC_OK) rc = trc_opt_set_tddft(opts, 1_c_int, 0.005_c_double)
       if (rc == TRC_OK) rc = trc_opt_result_create(res)
       call ref_report(nfail, rc == TRC_OK, "check_capi_opt (S1): the options", real(rc, dp))
       rc = trc_opt_run(ctx, int(nat, c_int), z_c, reshape(real(r, c_double), [3*nat]), opts, res)

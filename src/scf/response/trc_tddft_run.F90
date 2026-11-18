@@ -58,6 +58,7 @@ module trc_tddft_run
 
    public :: trc_tddft_run_options_t, trc_tddft_run_result_t
    public :: trc_tddft_run_solve, trc_tddft_run_gradient, trc_tddft_run_refusal, trc_tddft_run_gap_note
+   public :: trc_tddft_run_pair_label
 
    real(dp), parameter :: SCREEN_NEAR_DEGENERATE = 1.0e-6_dp
    !! Roots closer than this (hartree) have no unique gradient.
@@ -96,6 +97,8 @@ module trc_tddft_run
       !! The refusal or failure of the last call; no error when it succeeded.
       integer :: nroots = 0
       integer :: iterations = 0
+      logical :: tda = .true.
+      !! The approximation of the solve this result holds; the gradient needs the same one.
       integer :: target_root = 0
       !! The root `grad` belongs to (0: no gradient yet).
       real(dp) :: e_scf = 0.0_dp
@@ -178,6 +181,16 @@ contains
          if (b%spherical) msg = "trc_tddft: a spherical basis is not implemented (use Cartesian functions: --cart)"
       end if
    end function trc_tddft_run_refusal
+
+   pure function trc_tddft_run_pair_label(hole, particle) result(text)
+      !! "HOMO-1 -> LUMO+2": an orbital pair counted from the frontier orbitals (1 = HOMO, 1 = LUMO).
+      integer, intent(in) :: hole, particle
+      character(len=:), allocatable :: text
+      text = "HOMO"
+      if (hole > 1) text = text//"-"//to_string(hole - 1)
+      text = text//" -> LUMO"
+      if (particle > 1) text = text//"+"//to_string(particle - 1)
+   end function trc_tddft_run_pair_label
 
    pure function trc_tddft_run_gap_note(omega, root, window) result(near)
       !! The nearest root of the set to `root` closer than `window` hartree
@@ -337,6 +350,19 @@ contains
       end do
    end subroutine characterise
 
+   subroutine result_reset(res)
+      !! No roots, no gradient, no error: what a failed or refused solve leaves, so a stale result cannot be read.
+      type(trc_tddft_run_result_t), intent(inout) :: res
+      res%converged = .false.
+      res%err = error_t()
+      res%nroots = 0
+      res%iterations = 0
+      res%target_root = 0
+      if (allocated(res%grad)) deallocate (res%grad)
+      if (allocated(res%omega)) deallocate (res%omega, res%osc, res%tdip)
+      if (allocated(res%ynorm)) deallocate (res%ynorm, res%hole, res%particle, res%weight)
+   end subroutine result_reset
+
    subroutine trc_tddft_run_solve(b, la, scf, nocc, sopts, opts, res, cache)
       !!
       !! The lowest `opts%nroots` singlet roots of the converged restricted SCF
@@ -358,10 +384,8 @@ contains
       type(trc_tddft_options_t) :: topts
       character(len=256) :: reason
 
-      res%converged = .false.
-      res%err = error_t()
-      res%target_root = 0
-      if (allocated(res%grad)) deallocate (res%grad)
+      call result_reset(res)
+      res%tda = opts%tda
       reason = trc_tddft_run_refusal(sopts, opts, b)
       if (len_trim(reason) == 0 .and. (scf%nspin /= 1 .or. size(scf%cmo, 1) /= b%nao .or. size(scf%cmo, 2) /= b%nao)) then
          reason = "trc_tddft: needs a restricted reference whose orbitals are (nao, nao) in this basis"
@@ -428,6 +452,7 @@ contains
       type(trc_tddft_run_result_t), intent(inout) :: res
       type(trc_grid_cache_t), intent(inout), optional :: cache
       type(run_state_t) :: state
+      type(trc_tddft_run_options_t) :: solved
       type(trc_tddft_result_t) :: one
       type(trc_tddft_grad_options_t) :: gopts
       character(len=256) :: reason
@@ -435,10 +460,17 @@ contains
       res%err = error_t()
       if (allocated(res%grad)) deallocate (res%grad)
       res%target_root = 0
-      reason = trc_tddft_run_refusal(sopts, opts, b)
-      if (len_trim(reason) == 0 .and. .not. res%converged) reason = "trc_tddft: solve the excitation energies first"
-      if (len_trim(reason) == 0 .and. opts%target_root > res%nroots) then
-         reason = "trc_tddft: the target root "//to_string(opts%target_root)//" was not solved"
+      if (.not. res%converged) then
+         reason = "trc_tddft: solve the excitation energies first"
+      else
+         ! The root is checked against the roots the solve produced, not against the options' count.
+         solved = opts
+         solved%nroots = res%nroots
+         reason = trc_tddft_run_refusal(sopts, solved, b)
+         if (len_trim(reason) == 0 .and. opts%tda .neqv. res%tda) then
+            reason = "trc_tddft: the gradient's approximation ("//merge("TDA", "RPA", opts%tda)// &
+                     ") is not that of the solve ("//merge("TDA", "RPA", res%tda)//")"
+         end if
       end if
       if (len_trim(reason) > 0) then
          call res%err%set(ERROR_VALIDATION, trim(reason))

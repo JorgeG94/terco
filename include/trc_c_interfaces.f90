@@ -1660,7 +1660,7 @@ module trc_c_interfaces
 
       integer(c_int) function trc_set_tddft_convergence(handle, conv_tol, max_iteration, cpks_tol, cpks_max_iteration, &
                                                         roots_per_sweep) bind(c) result(res)
-         !! The solver's settings; a zero keeps the default. `conv_tol` (1e-8) is
+         !! The solver's settings; a zero resets that setting to its default (a call replaces all five). `conv_tol` (1e-8) is
          !! the Davidson residual norm of the excitation energies, `max_iteration`
          !! (50) its iteration limit, `cpks_tol` (1e-9) and `cpks_max_iteration`
          !! (100) the Z-vector's residual and iteration limit for the gradient,
@@ -1727,37 +1727,52 @@ module trc_c_interfaces
          integer(c_int), intent(out) :: nroots
       end function trc_tddft_nroots
 
-      integer(c_int) function trc_tddft_energies(handle, omega, oscillator, ynorm, dipole) bind(c) result(res)
+      integer(c_int) function trc_tddft_energies(handle, n, omega, oscillator, ynorm, dipole) bind(c) result(res)
          !! The roots of the last trc_run_tddft, ascending: `omega` excitation
          !! energies (hartree), `oscillator` strengths (length gauge), `ynorm` the
          !! sum of Y squared of the normalised (X, Y) (X.X - Y.Y = 1; zero for the
          !! TDA) and `dipole` (3, nroots), column-major, the transition dipoles
          !! <0|r|n> in atomic units. Each array holds trc_tddft_nroots values (the
-         !! last 3 times that).
+         !! last 3 times that); `n` is the number of roots the caller's arrays hold,
+         !! and fewer than trc_tddft_nroots is TRC_ERR_BADARG (nothing is written).
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
+         integer(c_int), value :: n
          real(c_double), intent(out) :: omega(*)
          real(c_double), intent(out) :: oscillator(*)
          real(c_double), intent(out) :: ynorm(*)
          real(c_double), intent(out) :: dipole(*)
       end function trc_tddft_energies
 
-      integer(c_int) function trc_tddft_character(handle, hole, particle, weight) bind(c) result(res)
+      integer(c_int) function trc_tddft_character(handle, n, hole, particle, weight) bind(c) result(res)
          !! The dominant orbital pair of each root of the last trc_run_tddft:
          !! `hole`, the occupied orbital counted down from the HOMO (1 = HOMO),
          !! `particle`, the virtual counted up from the LUMO (1 = LUMO), and the
          !! pair's `weight`, its share of X^2 - Y^2. Orbital phases and the order
          !! within a degenerate pair do not enter, so the pair is comparable
          !! between geometries: an optimiser follows a state by it. Each array
-         !! holds trc_tddft_nroots values.
+         !! holds trc_tddft_nroots values; `n` is the number the caller's arrays
+         !! hold, and fewer is TRC_ERR_BADARG (nothing is written).
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
+         integer(c_int), value :: n
          integer(c_int), intent(out) :: hole(*)
          integer(c_int), intent(out) :: particle(*)
          real(c_double), intent(out) :: weight(*)
       end function trc_tddft_character
+
+      integer(c_int) function trc_tddft_target_root(handle, target_root, nroots) bind(c) result(res)
+         !! The root trc_set_tddft named as the target (1-based) and the number of roots it asked for: what the
+         !! gradient and trc_tddft_energy follow. It answers before any run, from the settings, so an optimiser reads the
+         !! root from the context instead of holding a second copy.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: target_root
+         integer(c_int), intent(out) :: nroots
+      end function trc_tddft_target_root
 
       integer(c_int) function trc_tddft_energy(handle, energy) bind(c) result(res)
          !! The total energy of the target root (trc_set_tddft): the SCF energy

@@ -12,7 +12,8 @@ module check_cli_tddft_suite
    !!  5. what is refused before the SCF, with the reason: a triplet, a meta-GGA, a range-separated hybrid, a
    !!     double hybrid, an open shell, --hessian, a root out of range, a --tddft-* option without --tddft,
    !!     contradicting grid response flags and a spherical basis.
-   !! Arguments: the terco executable and a scratch path for its --json output. Run from test/.
+   !! Arguments: the terco executable, a scratch path for its --json output and optionally the mode (see `mode_arg`).
+   !! Run from test/.
    !!
    use pic_types, only: dp
    use pic_strings, only: to_string
@@ -21,7 +22,11 @@ module check_cli_tddft_suite
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_read_vector, ref_read_matrix3
    implicit none
    private
-   public :: collect_cli_tddft_tests, set_cli_tddft_args
+   public :: collect_cli_tddft_tests, set_cli_tddft_args, mode_arg
+
+   character(len=16) :: mode_arg = ""
+   !! "grad": the gradient runs; "refusals": the refusals; empty: the energies and the TOML input. Three runs of one
+   !! program keep each well under half a minute.
 
    real(dp), parameter :: TOL_OMEGA = 1.0e-6_dp
    real(dp), parameter :: TOL_OSC = 1.0e-5_dp
@@ -43,14 +48,18 @@ contains
 
    subroutine collect_cli_tddft_tests(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
-      testsuite = [ &
-                  new_unittest("CLI --tddft TDA energies match pyscf, in Eh and eV", test_tda), &
-                  new_unittest("CLI --tddft --tddft-approx rpa: energies and ||Y||^2 match pyscf", test_rpa), &
-                  new_unittest("CLI [tddft] table of a TOML file: CIS matches pyscf", test_toml), &
-                  new_unittest("CLI --tddft --grad: Pulay-only gradient matches pyscf, grid response is the default", &
-                               test_gradient), &
-                  new_unittest("CLI --tddft refusals, before the SCF", test_refusals) &
-                  ]
+      if (trim(mode_arg) == "grad") then
+         testsuite = [new_unittest("CLI --tddft --grad: Pulay-only gradient matches pyscf, grid response is the default", &
+                                   test_gradient)]
+      else if (trim(mode_arg) == "refusals") then
+         testsuite = [new_unittest("CLI --tddft refusals, before the SCF", test_refusals)]
+      else
+         testsuite = [ &
+                     new_unittest("CLI --tddft TDA energies match pyscf, in Eh and eV", test_tda), &
+                     new_unittest("CLI --tddft --tddft-approx rpa: energies and ||Y||^2 match pyscf", test_rpa), &
+                     new_unittest("CLI [tddft] table of a TOML file: CIS matches pyscf", test_toml) &
+                     ]
+      end if
    end subroutine collect_cli_tddft_tests
 
    subroutine run_cli(error, args, probe, json)
@@ -292,13 +301,14 @@ end module check_cli_tddft_suite
 program check_cli_tddft
    use, intrinsic :: iso_fortran_env, only: error_unit
    use testdrive, only: run_testsuite
-   use check_cli_tddft_suite, only: collect_cli_tddft_tests, set_cli_tddft_args
+   use check_cli_tddft_suite, only: collect_cli_tddft_tests, set_cli_tddft_args, mode_arg
    implicit none
    character(len=1024) :: cli_exe, probe
    integer :: stat
 
    call get_command_argument(1, cli_exe)
    call get_command_argument(2, probe)
+   call get_command_argument(3, mode_arg)
    call set_cli_tddft_args(trim(cli_exe), trim(probe))
    stat = 0
    call run_testsuite(collect_cli_tddft_tests, error_unit, stat, parallel=.false.)

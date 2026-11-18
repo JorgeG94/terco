@@ -13,6 +13,10 @@ module check_capi_tddft_suite
    !!     again, trc_run_hessian refuses after a TDDFT run;
    !!  4. what is refused, with TRC_ERR_UNSUPPORTED and a message: a triplet (trc_set_tddft), a meta-GGA, a
    !!     range-separated hybrid, a double hybrid, an open shell (trc_check_tddft), and a bad root (TRC_ERR_BADARG).
+   !!  5. state rules: SCF, TDDFT, SCF, TDDFT gives identical roots and no roots in between; RI-MP2 after TDDFT drops the
+   !!     roots and the gradient is RI-MP2's; an effective core potential (HI/def2-SVP) refuses the excited-state
+   !!     gradient as the ground-state one does; TDDFT after trc_load_scf (no grid in the loaded result) gives the roots
+   !!     of the SCF that was saved.
    !! Run from test/. A test-drive suite.
    !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char, c_char
@@ -25,7 +29,8 @@ module check_capi_tddft_suite
                                trc_set_convergence, trc_set_force_cartesian, trc_run_scf, trc_run_gradient, trc_gradient, &
                                trc_energy, trc_run_hessian, trc_message, trc_set_tddft, trc_set_tddft_convergence, &
                                trc_check_tddft, trc_run_tddft, trc_tddft_nroots, trc_tddft_energies, &
-                               trc_tddft_character, trc_tddft_energy, trc_abi_version, &
+                               trc_tddft_character, trc_tddft_energy, trc_tddft_target_root, trc_abi_version, &
+                               trc_set_aux_json, trc_set_rimp2, trc_run_rimp2, trc_save_scf, trc_load_scf, &
                                TRC_OK, TRC_ERR_UNSUPPORTED, TRC_ERR_BADARG, TRC_ERR_STATE, TRC_ABI_MINOR
    implicit none
    private
@@ -42,7 +47,11 @@ contains
                   new_unittest("Hartree-Fock: TDA and RPA gradients of a root vs pyscf, energies", test_hf), &
                   new_unittest("water PBE: Pulay-only gradient vs pyscf, grid response is the default", test_pbe), &
                   new_unittest("state: before the run, after a new SCF, the Hessian", test_state), &
-                  new_unittest("refusals", test_refusals) &
+                  new_unittest("refusals", test_refusals), &
+                  new_unittest("a second SCF and TDDFT give the same roots, none in between", test_rerun), &
+                  new_unittest("RI-MP2 after TDDFT takes over the energy and the gradient", test_rimp2_after), &
+                  new_unittest("an effective core potential: the excited-state gradient is refused", test_ecp), &
+                  new_unittest("TDDFT on a loaded SCF (the grid is rebuilt)", test_loaded_scf) &
                   ]
    end subroutine collect_capi_tddft
 
@@ -138,8 +147,8 @@ contains
          call check(error, rc == TRC_OK .and. nroots == 3, "three roots were solved")
       end if
       if (.not. allocated(error)) then
-         rc = trc_tddft_energies(handle, omega, osc, ynorm, dipole)
-         if (rc == TRC_OK) rc = trc_tddft_character(handle, hole, particle, weight)
+         rc = trc_tddft_energies(handle, 3_c_int, omega, osc, ynorm, dipole)
+         if (rc == TRC_OK) rc = trc_tddft_character(handle, 3_c_int, hole, particle, weight)
          if (rc == TRC_OK) rc = trc_tddft_energy(handle, e_total)
          if (rc == TRC_OK) rc = trc_energy(handle, e_scf)
          call check(error, rc == TRC_OK, "reading the roots failed")
@@ -236,7 +245,7 @@ contains
       ! A new SCF drops the roots and the gradient is the ground state's again.
       if (.not. allocated(error)) then
          rc = trc_run_scf(handle)
-         rc = trc_tddft_energies(handle, omega, osc, ynorm, dipole)
+         rc = trc_tddft_energies(handle, 2_c_int, omega, osc, ynorm, dipole)
          call check(error, rc == TRC_ERR_STATE, "a new SCF drops the roots")
       end if
       if (.not. allocated(error)) call gradient_of(error, handle, g_ground)
@@ -296,6 +305,154 @@ contains
       end if
       rc = trc_destroy(handle)
    end subroutine test_refusals
+
+   subroutine roots_of(handle, nroots, omega, ok)
+      type(c_ptr), intent(in) :: handle
+      integer, intent(in) :: nroots
+      real(c_double), intent(out) :: omega(nroots)
+      logical, intent(out) :: ok
+      real(c_double) :: osc(nroots), ynorm(nroots), dipole(3*nroots)
+      ok = trc_tddft_energies(handle, int(nroots, c_int), omega, osc, ynorm, dipole) == TRC_OK
+   end subroutine roots_of
+
+   subroutine test_rerun(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: handle
+      real(c_double) :: first(2), second(2), osc(2), ynorm(2), dipole(6), small(1)
+      integer(c_int) :: rc, root, nroots
+      logical :: ok
+
+      call open_handle(error, handle, "pbe", "basis_sets/sto-3g.json", ok)
+      if (allocated(error)) return
+      rc = trc_set_tddft(handle, 2_c_int, 1_c_int, 1_c_int, 2_c_int, 1_c_int)
+      rc = trc_tddft_target_root(handle, root, nroots)
+      call check(error, rc == TRC_OK .and. root == 2 .and. nroots == 2, "the target root is read from the context")
+      if (.not. allocated(error)) rc = trc_run_scf(handle)
+      if (.not. allocated(error)) rc = trc_run_tddft(handle)
+      call check(error, rc == TRC_OK, "first run: "//message_of(handle))
+      if (.not. allocated(error)) call roots_of(handle, 2, first, ok)
+      if (.not. allocated(error)) then
+         rc = trc_tddft_energies(handle, 1_c_int, small, osc, ynorm, dipole)
+         call check(error, rc == TRC_ERR_BADARG, "an array that holds fewer roots than were solved is refused")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_run_scf(handle)
+         rc = trc_tddft_nroots(handle, nroots)
+         call check(error, rc == TRC_ERR_STATE, "between the two runs the getters report none")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_tddft_energies(handle, 2_c_int, second, osc, ynorm, dipole)
+         call check(error, rc == TRC_ERR_STATE, "between the two runs the energies report none")
+      end if
+      if (.not. allocated(error)) rc = trc_run_tddft(handle)
+      if (.not. allocated(error)) call roots_of(handle, 2, second, ok)
+      if (.not. allocated(error)) then
+         call check(error, ok .and. maxval(abs(first - second)) < 1.0e-9_dp, "the second run's roots equal the first's, "// &
+                    to_string(maxval(abs(first - second)), "es10.2"))
+      end if
+      rc = trc_destroy(handle)
+   end subroutine test_rerun
+
+   subroutine test_rimp2_after(error)
+      !! SCF -> TDDFT -> RI-MP2: the excited state is gone, whatever answers trc_run_gradient is RI-MP2's.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: handle
+      real(c_double) :: g_excited(9), g_mp2(9), e_total
+      integer(c_int) :: rc, nroots
+      logical :: ok
+
+      call open_handle(error, handle, "", "basis_sets/sto-3g.json", ok)
+      if (allocated(error)) return
+      rc = trc_set_aux_json(handle, "basis_sets/cc-pvdz-rifit.json"//c_null_char)
+      if (rc == TRC_OK) rc = trc_set_rimp2(handle, -1_c_int, 0_c_int)
+      if (rc == TRC_OK) rc = trc_set_tddft(handle, 2_c_int, 1_c_int, 1_c_int, 1_c_int, 1_c_int)
+      if (rc == TRC_OK) rc = trc_run_scf(handle)
+      if (rc == TRC_OK) rc = trc_run_tddft(handle)
+      call check(error, rc == TRC_OK, "setup: "//message_of(handle))
+      if (.not. allocated(error)) call gradient_of(error, handle, g_excited)
+      if (.not. allocated(error)) then
+         rc = trc_run_rimp2(handle)
+         call check(error, rc == TRC_OK, "trc_run_rimp2: "//message_of(handle))
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_tddft_nroots(handle, nroots)
+         call check(error, rc == TRC_ERR_STATE, "RI-MP2 drops the TDDFT roots")
+         rc = trc_tddft_energy(handle, e_total)
+         if (.not. allocated(error)) call check(error, rc == TRC_ERR_STATE, "and the excited-state energy")
+      end if
+      if (.not. allocated(error)) call gradient_of(error, handle, g_mp2)
+      if (.not. allocated(error)) then
+         call check(error, maxval(abs(g_mp2 - g_excited)) > 1.0e-4_dp, "the gradient is RI-MP2's, not the excited state's")
+      end if
+      rc = trc_destroy(handle)
+   end subroutine test_rimp2_after
+
+   subroutine test_ecp(error)
+      !! HI with the def2-SVP effective core potential: the SCF and the roots run, the gradient is refused (no U_ECP
+      !! derivative), exactly as the ground-state gradient is.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: handle
+      real(c_double), parameter :: Z(2) = [1.0_c_double, 53.0_c_double]
+      real(c_double), parameter :: R(6) = [0.0_c_double, 0.0_c_double, 0.0_c_double, 0.0_c_double, 0.0_c_double, &
+                                           3.0407_c_double]
+      integer(c_int) :: rc
+
+      rc = trc_create(handle)
+      if (rc == TRC_OK) rc = trc_set_molecule(handle, 2_c_int, Z, R, 0_c_int, 1_c_int)
+      if (rc == TRC_OK) rc = trc_set_force_cartesian(handle, 1_c_int)
+      if (rc == TRC_OK) rc = trc_set_basis_json(handle, "basis_sets/def2-svp.json"//c_null_char)
+      if (rc == TRC_OK) rc = trc_set_tddft(handle, 2_c_int, 1_c_int, 1_c_int, 1_c_int, 1_c_int)
+      if (rc == TRC_OK) rc = trc_run_scf(handle)
+      if (rc == TRC_OK) rc = trc_run_tddft(handle)
+      call check(error, rc == TRC_OK, "HI SCF and roots: "//message_of(handle))
+      if (.not. allocated(error)) then
+         rc = trc_run_gradient(handle)
+         call check(error, rc == TRC_ERR_UNSUPPORTED, "the gradient over an ECP must be refused, status "//to_string(int(rc)))
+      end if
+      if (.not. allocated(error)) then
+         call check(error, index(message_of(handle), "core-potential") > 0, "the refusal names the ECP: "//message_of(handle))
+      end if
+      rc = trc_destroy(handle)
+   end subroutine test_ecp
+
+   subroutine test_loaded_scf(error)
+      !! A result read back from a file has no grid: trc_run_tddft rebuilds it, and the roots are those of the SCF saved.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: saved, loaded
+      character(len=*), parameter :: PATH = "tddft_capi_restart.bin"
+      real(c_double) :: before(2), after(2)
+      integer(c_int) :: rc
+      integer :: u
+      logical :: ok
+
+      call open_handle(error, saved, "pbe", "basis_sets/sto-3g.json", ok)
+      if (allocated(error)) return
+      rc = trc_set_tddft(saved, 2_c_int, 1_c_int, 1_c_int, 1_c_int, 1_c_int)
+      if (rc == TRC_OK) rc = trc_run_scf(saved)
+      if (rc == TRC_OK) rc = trc_run_tddft(saved)
+      if (rc == TRC_OK) rc = trc_save_scf(saved, PATH//c_null_char)
+      call check(error, rc == TRC_OK, "the SCF to save: "//message_of(saved))
+      if (.not. allocated(error)) call roots_of(saved, 2, before, ok)
+      rc = trc_destroy(saved)
+      if (allocated(error)) return
+      call open_handle(error, loaded, "pbe", "basis_sets/sto-3g.json", ok)
+      if (allocated(error)) return
+      rc = trc_set_tddft(loaded, 2_c_int, 1_c_int, 1_c_int, 1_c_int, 1_c_int)
+      if (rc == TRC_OK) rc = trc_load_scf(loaded, PATH//c_null_char)
+      call check(error, rc == TRC_OK, "trc_load_scf: "//message_of(loaded))
+      if (.not. allocated(error)) then
+         rc = trc_run_tddft(loaded)
+         call check(error, rc == TRC_OK, "trc_run_tddft on the loaded SCF: "//message_of(loaded))
+      end if
+      if (.not. allocated(error)) then
+         call roots_of(loaded, 2, after, ok)
+         call check(error, ok .and. maxval(abs(after - before)) < 1.0e-7_dp, "roots of the loaded SCF vs the saved one, "// &
+                    to_string(maxval(abs(after - before)), "es10.2"))
+      end if
+      rc = trc_destroy(loaded)
+      open (newunit=u, file=PATH, status="old", iostat=rc)
+      if (rc == 0) close (u, status="delete")
+   end subroutine test_loaded_scf
 
 end module check_capi_tddft_suite
 

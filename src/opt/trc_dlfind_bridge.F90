@@ -214,7 +214,7 @@ module trc_dlfind_bridge
                        trc_set_guess, trc_density, trc_message, trc_run_hessian, trc_hessian, &
                        trc_run_rimp2, trc_check_rimp2_gradient, trc_check_gradient_upfront, trc_symmetry_requested, &
                        trc_run_tddft, trc_check_tddft, trc_tddft_energy, trc_tddft_nroots, trc_tddft_energies, &
-                       trc_tddft_character, &
+                       trc_tddft_character, trc_tddft_target_root, &
                        trc_symmetry_suppress_default, TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
    ! trc_opt_io, not trc_app (src/cli/trc_app.F90): this module is built into
    ! libterco_opt, which must not depend on app/ -- CODE_STRUCTURE.md's
@@ -224,6 +224,7 @@ module trc_dlfind_bridge
    ! why duplicating three file-writers was preferred over moving them and
    ! leaving app/main.F90's non-opt CLI code without opt_io_f_string/opt_io_set_env in a
    ! TERCO_ENABLE_DLFIND=OFF build).
+   use trc_tddft_run, only: trc_tddft_run_pair_label
    use trc_opt_io, only: opt_io_f_string, opt_io_set_env, opt_io_write_opt_xyz_frame, &
                          opt_io_write_traj_xyz_frames, opt_io_write_opt_failure_json, trc_opt_failure_t
    implicit none
@@ -386,11 +387,10 @@ module trc_dlfind_bridge
          !! trc_set_tddft named as its target, and the gradient trc_run_gradient's derivative
          !! of that same energy. The followed state is watched: a warning when the target root
          !! lies within `tddft_gap_warn` of another solved root, or when its dominant orbital
-         !! pair (trc_tddft_character) differs from the previous evaluation's.
+         !! pair (trc_tddft_character) differs from the last accepted step's (not checked in a NEB run, whose
+         !! images are different geometries by design).
       real(dp) :: tddft_gap_warn = 0.005_dp
          !! Hartree; see `tddft`.
-      integer :: tddft_root = 1
-         !! The root the context follows (the one trc_set_tddft named), 1-based, for the state check.
 
       ! --- algorithm, saddle-search target and Hessian handling ---------
       integer :: algorithm = TRC_OPT_ALG_LBFGS
@@ -557,7 +557,10 @@ module trc_dlfind_bridge
    real(dp), allocatable, save :: start_coords(:, :)
    type(trc_opt_options_t), save :: cur_opts
    integer, save :: followed_hole = 0, followed_particle = 0
-   !! The dominant orbital pair of the followed TDDFT root at the previous evaluation (0: none yet).
+   !! The dominant orbital pair of the followed TDDFT root at the last ACCEPTED step (0: none yet).
+   integer, save :: pending_hole = 0, pending_particle = 0
+   !! The same at the latest evaluation, which becomes the accepted one in `consider_step` (a line-search trial
+   !! that is rejected must not move the reference).
    logical, save :: have_prev_scf = .false.
    integer(c_int), save :: cached_nspin = 1_c_int
    logical, save :: eval_failed = .false.
@@ -1074,6 +1077,8 @@ contains
       n_evals = 0
       followed_hole = 0
       followed_particle = 0
+      pending_hole = 0
+      pending_particle = 0
       n_steps = 0
       n_hess_evals = 0
       total_scf_iters = 0
@@ -1933,7 +1938,8 @@ contains
             end block
             return
          end if
-         call watch_followed_state()
+         why = watch_followed_state()
+         if (len_trim(why) > 0) return
       end if
       ! From here on there IS a converged SCF on `context` to warm-start a
       ! LATER evaluation's guess from (density or projected orbitals, per
@@ -1984,38 +1990,42 @@ contains
       if (allocated(density_buffer)) deallocate (density_buffer)
    end subroutine scf_at_geometry
 
-   pure function pair_text(hole, particle) result(text)
-      !! "HOMO-1 -> LUMO+2": an orbital pair counted from the frontier orbitals (1 = HOMO, 1 = LUMO).
-      integer, intent(in) :: hole, particle
-      character(len=:), allocatable :: text
-      text = "HOMO"
-      if (hole > 1) text = text//"-"//to_string(hole - 1)
-      text = text//" -> LUMO"
-      if (particle > 1) text = text//"+"//to_string(particle - 1)
-   end function pair_text
-
-   subroutine watch_followed_state()
+   function watch_followed_state() result(why)
       !! The excited-state optimisation follows one ROOT NUMBER, and two roots that cross swap the numbers: the
       !! optimiser would then walk down another state's surface with this one's label. A crossing cannot be
       !! seen from the number, so two signs are watched: another solved root within `tddft_gap_warn` of the
       !! followed one (a crossing or an avoided crossing is near), and a change of the followed root's dominant
       !! orbital pair (counted from the HOMO and the LUMO, which orbital phases and the order within a degenerate
       !! pair do not touch) since the previous evaluation. Each is a warning, not a stop: the energies are real.
-      integer(c_int) :: st, nroots, k
+      character(len=256) :: why
+      integer(c_int) :: st, nroots, k, target_root
       real(c_double), allocatable :: omega(:), oscillator(:), ynorm(:), dipole(:), weight(:)
       integer(c_int), allocatable :: hole(:), particle(:)
       integer :: followed
       real(dp) :: gap
 
-      followed = cur_opts%tddft_root
+      why = ""
+      ! The root is the context's own (trc_set_tddft), never a second copy.
+      st = trc_tddft_target_root(context, target_root, nroots)
+      followed = int(target_root)
       st = trc_tddft_nroots(context, nroots)
-      if (st /= TRC_OK .or. followed < 1 .or. followed > nroots) return
+      if (st /= TRC_OK .or. followed < 1 .or. followed > nroots) then
+         why = "the followed TDDFT root "//to_string(followed)//" is not among the "//to_string(int(nroots))// &
+               " solved roots"
+         return
+      end if
       allocate (omega(nroots), oscillator(nroots), ynorm(nroots), dipole(3*nroots), weight(nroots))
       allocate (hole(nroots), particle(nroots))
-      st = trc_tddft_energies(context, omega, oscillator, ynorm, dipole)
-      if (st /= TRC_OK) return
-      st = trc_tddft_character(context, hole, particle, weight)
-      if (st /= TRC_OK) return
+      st = trc_tddft_energies(context, nroots, omega, oscillator, ynorm, dipole)
+      if (st /= TRC_OK) then
+         why = "trc_tddft_energies failed"
+         return
+      end if
+      st = trc_tddft_character(context, nroots, hole, particle, weight)
+      if (st /= TRC_OK) then
+         why = "trc_tddft_character failed"
+         return
+      end if
       do k = 1, nroots
          if (k == followed) cycle
          gap = abs(real(omega(k) - omega(followed), dp))
@@ -2025,18 +2035,18 @@ contains
                                        "; the states may cross and the optimisation may switch surface")
          end if
       end do
-      if (followed_hole > 0) then
+      if (followed_hole > 0 .and. .not. opt_is_neb) then
          if (hole(followed) /= followed_hole .or. particle(followed) /= followed_particle) then
             call global_logger%warning("--opt --tddft: the dominant orbital pair of root "//to_string(followed)// &
-                                       " changed from "//pair_text(followed_hole, followed_particle)//" to "// &
-                                       pair_text(int(hole(followed)), int(particle(followed)))//" (weight "// &
+                                       " changed from "//trc_tddft_run_pair_label(followed_hole, followed_particle)//" to "// &
+                                       trc_tddft_run_pair_label(int(hole(followed)), int(particle(followed)))//" (weight "// &
                                        to_string(real(weight(followed), dp), "f5.2")// &
                                        "): the followed state may have changed character")
          end if
       end if
-      followed_hole = int(hole(followed))
-      followed_particle = int(particle(followed))
-   end subroutine watch_followed_state
+      pending_hole = int(hole(followed))
+      pending_particle = int(particle(followed))
+   end function watch_followed_state
 
    subroutine cb_get_gradient(nvar, coords, energy, gradient, iimage, kiter, status) bind(c)
       !! DL-FIND asking for the energy and gradient at a geometry -- an
@@ -2377,6 +2387,10 @@ contains
       end if
       have_result = .true.
       n_steps = n_steps + 1
+      if (cur_opts%tddft) then
+         followed_hole = pending_hole
+         followed_particle = pending_particle
+      end if
 
       call step_clock%stop()
       wall = step_clock%get_elapsed_time()

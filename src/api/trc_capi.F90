@@ -290,7 +290,7 @@ module trc_capi
    public :: trc_set_hessian_step, trc_hessian_step, trc_run_hessian, trc_hessian, trc_check_rimp2_gradient
    public :: trc_check_gradient_upfront
    public :: trc_set_tddft, trc_set_tddft_convergence, trc_run_tddft, trc_check_tddft
-   public :: trc_tddft_nroots, trc_tddft_energies, trc_tddft_character, trc_tddft_energy
+   public :: trc_tddft_nroots, trc_tddft_energies, trc_tddft_character, trc_tddft_energy, trc_tddft_target_root
    !! Fortran only (no bind(c), not in terco.h): the geometry optimiser's
    !! own up-front gradient check.
    public :: trc_save_scf, trc_load_scf
@@ -375,7 +375,7 @@ module trc_capi
    !! 1.29: closed-shell TDDFT/TDHF excitation energies and the excited-state
    !! gradient of one root: trc_set_tddft, trc_set_tddft_convergence,
    !! trc_run_tddft, trc_check_tddft, trc_tddft_nroots, trc_tddft_energies,
-   !! trc_tddft_character and trc_tddft_energy, new entry points; after a
+   !! trc_tddft_character, trc_tddft_target_root and trc_tddft_energy, new entry points; after a
    !! successful trc_run_tddft, trc_run_gradient differentiates the target
    !! root's energy, and trc_run_hessian refuses. Additive.
    !! 1.28: closed-shell RI-CCSD and RI-CCSD(T): trc_set_rccsd,
@@ -6139,7 +6139,7 @@ contains
 
    function trc_set_tddft_convergence(handle, conv_tol, max_iteration, cpks_tol, cpks_max_iteration, roots_per_sweep) &
       result(status) bind(c, name="trc_set_tddft_convergence")
-      !! The solver's settings; a zero keeps the default. `conv_tol` (1e-8) is
+      !! The solver's settings; a zero resets that setting to its default (a call replaces all five). `conv_tol` (1e-8) is
       !! the Davidson residual norm of the excitation energies, `max_iteration`
       !! (50) its iteration limit, `cpks_tol` (1e-9) and `cpks_max_iteration`
       !! (100) the Z-vector's residual and iteration limit for the gradient,
@@ -6339,6 +6339,16 @@ contains
       type(context_box), intent(inout) :: cx
       integer(c_int), intent(out) :: status
       type(trc_tddft_run_options_t) :: opts
+      type(trc_xc_functional_t) :: func
+      logical :: have_func
+      character(len=:), allocatable :: refusal
+      ! The ground-state gradient's own limits apply to the excited state's too: an effective core potential has no
+      ! U_ECP derivative, and l above the gradient kernels' ceiling is refused here rather than at an error stop.
+      call gradient_capability_check(cx, have_func, func, refusal, status)
+      if (len(refusal) > 0) then
+         cx%message = "trc_run_gradient: "//refusal
+         return
+      end if
       opts = cx%td_opts
       opts%verbose = cx%opts%verbose
       call cx%peri%release()
@@ -6376,15 +6386,17 @@ contains
       status = TRC_OK
    end function trc_tddft_nroots
 
-   function trc_tddft_energies(handle, omega, oscillator, ynorm, dipole) result(status) &
+   function trc_tddft_energies(handle, n, omega, oscillator, ynorm, dipole) result(status) &
       bind(c, name="trc_tddft_energies")
       !! The roots of the last trc_run_tddft, ascending: `omega` excitation
       !! energies (hartree), `oscillator` strengths (length gauge), `ynorm` the
       !! sum of Y squared of the normalised (X, Y) (X.X - Y.Y = 1; zero for the
       !! TDA) and `dipole` (3, nroots), column-major, the transition dipoles
       !! <0|r|n> in atomic units. Each array holds trc_tddft_nroots values (the
-      !! last 3 times that).
+      !! last 3 times that); `n` is the number of roots the caller's arrays hold,
+      !! and fewer than trc_tddft_nroots is TRC_ERR_BADARG (nothing is written).
       type(c_ptr), value :: handle
+      integer(c_int), value :: n
       real(c_double), intent(out) :: omega(*), oscillator(*), ynorm(*), dipole(*)
       integer(c_int) :: status
       type(context_box), pointer :: cx
@@ -6395,6 +6407,11 @@ contains
       status = TRC_ERR_STATE
       if (.not. cx%tddft_ok) return
       nr = cx%td%nroots
+      if (n < nr) then
+         status = TRC_ERR_BADARG
+         cx%message = "trc_tddft_energies: the arrays hold "//to_string(int(n))//" roots, "//to_string(nr)//" were solved"
+         return
+      end if
       omega(1:nr) = real(cx%td%omega, c_double)
       oscillator(1:nr) = real(cx%td%osc, c_double)
       ynorm(1:nr) = real(cx%td%ynorm, c_double)
@@ -6402,15 +6419,17 @@ contains
       status = TRC_OK
    end function trc_tddft_energies
 
-   function trc_tddft_character(handle, hole, particle, weight) result(status) bind(c, name="trc_tddft_character")
+   function trc_tddft_character(handle, n, hole, particle, weight) result(status) bind(c, name="trc_tddft_character")
       !! The dominant orbital pair of each root of the last trc_run_tddft:
       !! `hole`, the occupied orbital counted down from the HOMO (1 = HOMO),
       !! `particle`, the virtual counted up from the LUMO (1 = LUMO), and the
       !! pair's `weight`, its share of X^2 - Y^2. Orbital phases and the order
       !! within a degenerate pair do not enter, so the pair is comparable
       !! between geometries: an optimiser follows a state by it. Each array
-      !! holds trc_tddft_nroots values.
+      !! holds trc_tddft_nroots values; `n` is the number the caller's arrays
+      !! hold, and fewer is TRC_ERR_BADARG (nothing is written).
       type(c_ptr), value :: handle
+      integer(c_int), value :: n
       integer(c_int), intent(out) :: hole(*), particle(*)
       real(c_double), intent(out) :: weight(*)
       integer(c_int) :: status
@@ -6422,11 +6441,34 @@ contains
       status = TRC_ERR_STATE
       if (.not. cx%tddft_ok) return
       nr = cx%td%nroots
+      if (n < nr) then
+         status = TRC_ERR_BADARG
+         cx%message = "trc_tddft_character: the arrays hold "//to_string(int(n))//" roots, "//to_string(nr)//" were solved"
+         return
+      end if
       hole(1:nr) = int(cx%td%hole, c_int)
       particle(1:nr) = int(cx%td%particle, c_int)
       weight(1:nr) = real(cx%td%weight, c_double)
       status = TRC_OK
    end function trc_tddft_character
+
+   function trc_tddft_target_root(handle, target_root, nroots) result(status) bind(c, name="trc_tddft_target_root")
+      !! The root trc_set_tddft named as the target (1-based) and the number of roots it asked for: what the
+      !! gradient and trc_tddft_energy follow. It answers before any run, from the settings, so an optimiser reads the
+      !! root from the context instead of holding a second copy.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: target_root, nroots
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      target_root = 0
+      nroots = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      target_root = int(cx%td_opts%target_root, c_int)
+      nroots = int(cx%td_opts%nroots, c_int)
+      status = TRC_OK
+   end function trc_tddft_target_root
 
    function trc_tddft_energy(handle, energy) result(status) bind(c, name="trc_tddft_energy")
       !! The total energy of the target root (trc_set_tddft): the SCF energy
@@ -6630,6 +6672,9 @@ contains
          end if
       end if
       cx%rimp2_ok = .false.
+      ! One method owns the energy and the gradient at a time: the later run wins, as RI-MP2 and RI-CCSD do.
+      cx%tddft_ok = .false.
+      cx%grad_ok = .false.
       cx%rimp2_timed = .false.
       status = TRC_ERR_STATE
       if (.not. cx%scf_ok) then
@@ -7029,6 +7074,8 @@ contains
          end if
       end if
       cx%ccsd_ok = .false.
+      cx%tddft_ok = .false.
+      cx%grad_ok = .false.
       call rccsd_refusal(cx, status)
       if (status /= TRC_OK) return
       call rccsd_execute(cx, status)

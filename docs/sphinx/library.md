@@ -90,10 +90,10 @@ functionals). The Fortran entry is `trc_tddft_run_solve` and
 | Call | What it does |
 |---|---|
 | `trc_set_tddft(h, nroots, tda, singlet, target_root, grid_response)` | the roots wanted, TDA (non-zero) or RPA, `singlet` (non-zero; a triplet is `TRC_ERR_UNSUPPORTED`), the root, from 1, that the gradient and `trc_tddft_energy` follow, and the grid response of a Kohn-Sham gradient (non-zero: the exact derivative; zero: Pulay only, as pyscf) |
-| `trc_set_tddft_convergence(h, conv_tol, max_iteration, cpks_tol, cpks_max_iteration, roots_per_sweep)` | the solver and Z-vector settings; each 0 keeps the default (1e-8, 50, 1e-9, 100, 2) |
+| `trc_set_tddft_convergence(h, conv_tol, max_iteration, cpks_tol, cpks_max_iteration, roots_per_sweep)` | the solver and Z-vector settings; each 0 resets that setting to its default (1e-8, 50, 1e-9, 100, 2) |
 | `trc_check_tddft(h, gradient)` | whether the run would be refused for the settings alone (a triplet, an open shell, meta-GGA, range-separated, VV10 or double-hybrid functional, a spherical basis, `--df`, PCM), before any SCF |
 | `trc_run_tddft(h)` | the roots, after `trc_run_scf` |
-| `trc_tddft_nroots(h, &n)`, `trc_tddft_energies(h, omega, f, ynorm, dipole)`, `trc_tddft_character(h, hole, particle, weight)` | the roots: energies in Eh, oscillator strengths, \|\|Y\|\|^2, transition dipoles, and each root's dominant orbital pair (from the HOMO and the LUMO) |
+| `trc_tddft_nroots(h, &n)`, `trc_tddft_energies(h, n, omega, f, ynorm, dipole)`, `trc_tddft_character(h, n, hole, particle, weight)` (`n` the roots the arrays hold; fewer than solved is `TRC_ERR_BADARG`), `trc_tddft_target_root(h, &root, &nroots)` | the roots: energies in Eh, oscillator strengths, \|\|Y\|\|^2, transition dipoles, and each root's dominant orbital pair (from the HOMO and the LUMO) |
 | `trc_tddft_energy(h, &e)` | E_SCF + omega of the target root |
 
 ```c
@@ -105,7 +105,7 @@ trc_run_scf(h);
 trc_set_tddft(h, 4, /*tda=*/1, /*singlet=*/1, /*target_root=*/2, /*grid_response=*/1);
 trc_run_tddft(h);
 trc_tddft_nroots(h, &n);
-trc_tddft_energies(h, omega, f, ynorm, dipole);
+trc_tddft_energies(h, n, omega, f, ynorm, dipole);
 trc_tddft_energy(h, &e_excited);
 trc_run_gradient(h);         /* now the gradient of e_excited */
 trc_gradient(h, grad);
@@ -114,7 +114,7 @@ trc_gradient(h, grad);
 After `trc_run_tddft`, `trc_run_gradient` differentiates the target root's energy
 and `trc_run_hessian` refuses; `trc_energy` stays the ground state's. A later
 `trc_run_scf` drops the roots and the gradient is the SCF's again.
-`libterco_opt` follows a root through `trc_opt_set_tddft`.
+A later `trc_run_rimp2` or `trc_run_rccsd` also drops the roots. `libterco_opt` follows the context's target root through `trc_opt_set_tddft(opts, enable, gap_warn)`.
 
 ## RI-CCSD and RI-CCSD(T) through the C ABI
 

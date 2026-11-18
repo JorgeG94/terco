@@ -1420,7 +1420,6 @@ program trc_main
       ! --tddft: every step's energy and gradient are those of the root --tddft-root.
       opt_opts%tddft = r%tddft
       opt_opts%tddft_gap_warn = r%tddft_gap_warn
-      opt_opts%tddft_root = r%tddft_root
       opt_opts%algorithm = r%opt_algorithm_kind
       opt_opts%target_kind = r%opt_target_kind
       opt_opts%saddle_method = r%opt_saddle_method_kind

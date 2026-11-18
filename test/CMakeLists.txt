@@ -1097,6 +1097,12 @@ if(TERCO_BUILD_APP)
   terco_add_check(check_cli_tddft check_cli_tddft.F90 NEEDS_PYSCF_REF
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_tddft_probe})
   target_link_libraries(check_cli_tddft PRIVATE test-drive::test-drive)
+  foreach(_mode grad refusals)
+    add_test(NAME terco/check_cli_tddft_${_mode}
+             COMMAND check_cli_tddft $<TARGET_FILE:terco_cli> ${_cli_tddft_probe}_${_mode}.json ${_mode})
+    set_tests_properties(terco/check_cli_tddft_${_mode} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                         ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+  endforeach()
   unset(_cli_tddft_probe)
 
   # trc_main's own CLI-string lowercasing (--func, --guess, ...) --

@@ -8,7 +8,7 @@ submodule (trc_run) trc_run_tddft
    use trc_capi, only: trc_set_tddft, trc_set_tddft_convergence, trc_run_tddft, trc_tddft_nroots, &
                        trc_tddft_energies, trc_tddft_character, trc_tddft_energy
    use trc_scf_settings, only: trc_scf_options_t
-   use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_refusal
+   use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_refusal, trc_tddft_run_pair_label
    implicit none
 
    ! An option as the user met it: the flag, and the TOML key that gives the same setting.
@@ -198,8 +198,8 @@ contains
       call run_api(r, trc_tddft_nroots(r%h, nroots))
       allocate (omega(nroots), oscillator(nroots), ynorm(nroots), dipole(3*nroots), weight(nroots))
       allocate (hole(nroots), particle(nroots))
-      call run_api(r, trc_tddft_energies(r%h, omega, oscillator, ynorm, dipole))
-      call run_api(r, trc_tddft_character(r%h, hole, particle, weight))
+      call run_api(r, trc_tddft_energies(r%h, nroots, omega, oscillator, ynorm, dipole))
+      call run_api(r, trc_tddft_character(r%h, nroots, hole, particle, weight))
       call run_api(r, trc_tddft_energy(r%h, r%tddft_etot))
       r%tddft_n = int(nroots)
       r%tddft_omega = real(omega, dp)
@@ -214,16 +214,6 @@ contains
       ! The energy --grad and --opt differentiate is the target root's.
       r%etot_total = r%tddft_etot
    end subroutine run_tddft_execute
-
-   function pair_label(hole, particle) result(text)
-      !! "HOMO-1 -> LUMO+2": the dominant orbital pair, counted from the frontier orbitals.
-      integer, intent(in) :: hole, particle
-      character(len=:), allocatable :: text
-      text = "HOMO"
-      if (hole > 1) text = text//"-"//to_string(hole - 1)
-      text = text//" -> LUMO"
-      if (particle > 1) text = text//"+"//to_string(particle - 1)
-   end function pair_label
 
    module subroutine run_tddft_summary(r)
       !! The excited states, in the output's own table: the energy in hartree and eV, the oscillator strength, ||Y||^2
@@ -241,7 +231,7 @@ contains
       do k = 1, r%tddft_n
          write (logline, "(a,a1,i4,f15.8,f14.6,f12.6,f12.6,3x,a,a,f4.2,a)") "   ", merge("*", " ", k == r%tddft_root), k, &
             r%tddft_omega(k), r%tddft_omega(k)*HARTREE_TO_EV, r%tddft_osc(k), r%tddft_ynorm(k), &
-            pair_label(r%tddft_hole(k), r%tddft_particle(k)), "  (", r%tddft_weight(k), ")"
+            trc_tddft_run_pair_label(r%tddft_hole(k), r%tddft_particle(k)), "  (", r%tddft_weight(k), ")"
          call global_logger%info(trim(logline))
       end do
       call global_logger%info("   ----------------------------------------------------------------------------------")
