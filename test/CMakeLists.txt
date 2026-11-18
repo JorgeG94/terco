@@ -2284,6 +2284,19 @@ set_tests_properties(terco/check_capi_rimp2_grad PROPERTIES WORKING_DIRECTORY ${
                                                        ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
+# The C ABI's TDDFT entry points through the generated interface module: the
+# gradient of a chosen root (Hartree-Fock TDA and RPA, PBE with and without
+# the grid response) against pyscf, the state they keep, and the refusals. See
+# check_capi_tddft.F90's own header.
+add_executable(check_capi_tddft check_capi_tddft.F90)
+target_compile_definitions(check_capi_tddft PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_tddft PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io terco_c_interfaces
+                                                test-drive::test-drive)
+add_test(NAME terco/check_capi_tddft COMMAND check_capi_tddft)
+set_tests_properties(terco/check_capi_tddft PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                                                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
 # trc_timing / trc_timing_count through the C ABI: the status before any SCF,
 # an enumeration that ends by its count, a short name buffer refused rather
 # than cut, and the RI-MP2 timings not outliving their run. See
@@ -2661,6 +2674,21 @@ foreach(_m water:4 formamide:6 ch4:5)
     set_target_properties(check_tddft_rpa_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
                           ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_rpa_${_mol}_${_f})
   endforeach()
+endforeach()
+
+#
+# The Fortran entry of TDDFT/TDHF (src/scf/response/trc_tddft_run.F90): TDA and
+# RPA energies, the TDA and RPA gradients against the references of the solver
+# and gradient checks above, the grid response on by default and equal to a
+# finite difference, and the refusals. See check_tddft_api.F90's own header.
+#
+terco_add_check(check_tddft_api check_tddft_api.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_tddft_api PRIVATE test-drive::test-drive)
+# The gradients and the finite difference (four SCFs) are runs of the same program of their own, each under a half minute.
+foreach(_mode grad fd)
+  add_test(NAME terco/check_tddft_api_${_mode} COMMAND check_tddft_api ${_mode})
+  set_tests_properties(terco/check_tddft_api_${_mode} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 endforeach()
 
 #

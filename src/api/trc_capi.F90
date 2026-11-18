@@ -232,6 +232,8 @@ module trc_capi
    use trc_pcm_radii, only: PCM_DEFAULT_RADII_SCALE
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_scf_polarizability
    use trc_cpks, only: trc_scf_polarizability_rks
+   use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_result_t, trc_tddft_run_solve, &
+                            trc_tddft_run_gradient, trc_tddft_run_refusal
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_constants, only: BOHR_TO_ANGSTROM, HARTREE_TO_EV, HARTREE_TO_KCALMOL, AMU_TO_ME, KB_SI, NA_SI
    use trc_sym_geom, only: trc_sym_geom_t, sym_geom_detect
@@ -287,6 +289,8 @@ module trc_capi
              trc_geometry
    public :: trc_set_hessian_step, trc_hessian_step, trc_run_hessian, trc_hessian, trc_check_rimp2_gradient
    public :: trc_check_gradient_upfront
+   public :: trc_set_tddft, trc_set_tddft_convergence, trc_run_tddft, trc_check_tddft
+   public :: trc_tddft_nroots, trc_tddft_energies, trc_tddft_character, trc_tddft_energy
    !! Fortran only (no bind(c), not in terco.h): the geometry optimiser's
    !! own up-front gradient check.
    public :: trc_save_scf, trc_load_scf
@@ -367,7 +371,13 @@ module trc_capi
    !! trc_timing's list capacity. A run that would list more is an error
    !! (TRC_ERR_UNSUPPORTED), never a silently shortened list.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 28
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 29
+   !! 1.29: closed-shell TDDFT/TDHF excitation energies and the excited-state
+   !! gradient of one root: trc_set_tddft, trc_set_tddft_convergence,
+   !! trc_run_tddft, trc_check_tddft, trc_tddft_nroots, trc_tddft_energies,
+   !! trc_tddft_character and trc_tddft_energy, new entry points; after a
+   !! successful trc_run_tddft, trc_run_gradient differentiates the target
+   !! root's energy, and trc_run_hessian refuses. Additive.
    !! 1.28: closed-shell RI-CCSD and RI-CCSD(T): trc_set_rccsd,
    !! trc_set_rccsd_convergence, trc_set_rccsd_algorithm, trc_run_rccsd,
    !! trc_rccsd_energy and trc_rccsd_dimensions, new entry points; trc_energy adds a converged
@@ -570,6 +580,14 @@ module trc_capi
       real(dp) :: cc_triples_mib = 0.0_dp
       logical :: ccsd_ok = .false.
       type(trc_rccsd_result_t) :: ccsd
+      ! TDDFT/TDHF (trc_set_tddft, trc_run_tddft). `td_opts` is the request;
+      ! `td` the roots of the last successful run. `tddft_ok` holds from that
+      ! run until anything it depended on changes (invalidate_runs, a new SCF,
+      ! trc_set_tddft): while it does, trc_run_gradient is the gradient of the
+      ! target root's energy, as it is of E_RI-MP2 after trc_run_rimp2.
+      type(trc_tddft_run_options_t) :: td_opts
+      type(trc_tddft_run_result_t) :: td
+      logical :: tddft_ok = .false.
       ! trc_run_gradient's own result: (3, natm), Eh/Bohr, in terco's atom
       ! order. `grad_ok` is cleared by anything that invalidates `scf_ok`
       ! too (invalidate_runs) -- a gradient at a geometry/density this
@@ -2061,6 +2079,7 @@ contains
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
       cx%ccsd_ok = .false.
+      cx%tddft_ok = .false.
       cx%grad_ok = .false.
       cx%polar_ok = .false.
       cx%hess_ok = .false.
@@ -4059,6 +4078,7 @@ contains
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
       cx%ccsd_ok = .false.
+      cx%tddft_ok = .false.
       cx%rimp2_timed = .false.   ! trc_timing must not report the previous run's rimp2.*
       cx%grad_ok = .false.
       cx%sym_active = .false.
@@ -5278,6 +5298,11 @@ contains
             end if
          end if
       end if
+      if (cx%tddft_ok) then
+         ! The energy this context holds is E_SCF + omega of the target root.
+         call tddft_gradient_run(cx, status)
+         return
+      end if
       call gradient_capability_check(cx, have_func, func, refusal, status)
       if (len(refusal) > 0) then
          cx%message = "trc_run_gradient: "//refusal
@@ -5681,6 +5706,11 @@ contains
          return
       end if
 
+      if (cx%tddft_ok) then
+         cx%message = "trc_run_hessian: an excited-state Hessian is not implemented (run the SCF again to drop the "// &
+                      "TDDFT result)"
+         return
+      end if
       call gradient_capability_check(cx, have_func, func, refusal, status)
       if (len(refusal) > 0) then
          cx%message = "trc_run_hessian: "//refusal
@@ -6061,6 +6091,361 @@ contains
       alpha(1:9) = real(reshape(cx%alpha, [9]), c_double)
       status = TRC_OK
    end function trc_polarizability
+
+   function trc_set_tddft(handle, nroots, tda, singlet, target_root, grid_response) result(status) &
+      bind(c, name="trc_set_tddft")
+      !! What trc_run_tddft computes: the lowest `nroots` roots (at least 1),
+      !! in the Tamm-Dancoff approximation when `tda` is non-zero (CIS for
+      !! Hartree-Fock) and the full RPA (TDHF, Casida) when it is zero;
+      !! `singlet` must be non-zero (triplets are not implemented and are
+      !! TRC_ERR_UNSUPPORTED); `target_root` is the root, 1-based and at most
+      !! `nroots`, whose gradient trc_run_gradient returns and whose total
+      !! energy trc_tddft_energy reports; `grid_response` (non-zero, the
+      !! default of a context that never calls this) differentiates the
+      !! Kohn-Sham grid's points and partition weights too, the exact
+      !! derivative of this library's energy, and zero gives the Pulay-only
+      !! gradient (pyscf's). Drops a stored TDDFT result.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: nroots, tda, singlet, target_root, grid_response
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (nroots < 1) then
+         cx%message = "trc_set_tddft: nroots must be at least 1"
+         return
+      end if
+      if (target_root < 1 .or. target_root > nroots) then
+         cx%message = "trc_set_tddft: target_root "//to_string(int(target_root))//" is outside 1.."// &
+                      to_string(int(nroots))
+         return
+      end if
+      if (singlet == 0_c_int) then
+         status = TRC_ERR_UNSUPPORTED
+         cx%message = "trc_set_tddft: only singlet excitations are implemented (triplets are refused)"
+         return
+      end if
+      cx%td_opts%nroots = int(nroots)
+      cx%td_opts%tda = tda /= 0_c_int
+      cx%td_opts%singlet = .true.
+      cx%td_opts%target_root = int(target_root)
+      cx%td_opts%grid_response = grid_response /= 0_c_int
+      cx%tddft_ok = .false.
+      cx%grad_ok = .false.
+      status = TRC_OK
+   end function trc_set_tddft
+
+   function trc_set_tddft_convergence(handle, conv_tol, max_iteration, cpks_tol, cpks_max_iteration, roots_per_sweep) &
+      result(status) bind(c, name="trc_set_tddft_convergence")
+      !! The solver's settings; a zero keeps the default. `conv_tol` (1e-8) is
+      !! the Davidson residual norm of the excitation energies, `max_iteration`
+      !! (50) its iteration limit, `cpks_tol` (1e-9) and `cpks_max_iteration`
+      !! (100) the Z-vector's residual and iteration limit for the gradient,
+      !! `roots_per_sweep` the trc_tddft_grad batching (a tuning knob that does
+      !! not change the numbers). Drops a stored TDDFT result.
+      type(c_ptr), value :: handle
+      real(c_double), value :: conv_tol, cpks_tol
+      integer(c_int), value :: max_iteration, cpks_max_iteration, roots_per_sweep
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      type(trc_tddft_run_options_t) :: defaults
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_BADARG
+      if (.not. (conv_tol >= 0.0_c_double .and. cpks_tol >= 0.0_c_double) .or. max_iteration < 0 .or. &
+          cpks_max_iteration < 0 .or. roots_per_sweep < 0) then
+         cx%message = "trc_set_tddft_convergence: a tolerance or a count is negative"
+         return
+      end if
+      cx%td_opts%conv_tol = merge(real(conv_tol, dp), defaults%conv_tol, conv_tol > 0.0_c_double)
+      cx%td_opts%max_iteration = merge(int(max_iteration), defaults%max_iteration, max_iteration > 0)
+      cx%td_opts%cpks_tol = merge(real(cpks_tol, dp), defaults%cpks_tol, cpks_tol > 0.0_c_double)
+      cx%td_opts%cpks_max_iteration = merge(int(cpks_max_iteration), defaults%cpks_max_iteration, cpks_max_iteration > 0)
+      cx%td_opts%roots_per_sweep = int(roots_per_sweep)
+      cx%tddft_ok = .false.
+      cx%grad_ok = .false.
+      status = TRC_OK
+   end function trc_set_tddft_convergence
+
+   logical function tddft_grid_reusable(cx) result(reusable)
+      !! The SCF's own grid and partition, kept in `cx%kgrid`, still match the
+      !! settings the response must use (the list trc_run_gradient checks).
+      type(context_box), intent(in) :: cx
+      reusable = len_trim(cx%opts%functional) > 0 .and. cx%kgrid%grid_built .and. &
+                 cx%kgrid_level == cx%opts%grid_level .and. cx%kgrid_max_pts == cx%opts%grid_max_pts .and. &
+                 cx%kgrid_rho_tol == cx%opts%rho_tol .and. all(cx%kgrid_rotation == cx%opts%grid_rotation)
+   end function tddft_grid_reusable
+
+   function tddft_context_refusal(cx, who) result(refusal)
+      !! What a TDDFT call refuses about the context itself, once an SCF is held.
+      type(context_box), intent(in) :: cx
+      character(len=*), intent(in) :: who
+      character(len=:), allocatable :: refusal
+      refusal = ""
+      if (cx%bb%b%spherical) then
+         refusal = who//": a spherical basis is not implemented (set force_cartesian before loading the basis)"
+      else if (.not. reference_is_aufbau(cx)) then
+         refusal = who//": the response needs an aufbau reference (this SCF holds a non-aufbau occupation)"
+      else if (cx%rimp2_ok) then
+         refusal = who//": RI-MP2/double-hybrid excited states are not implemented"
+      else if (ccsd_energy_held(cx)) then
+         refusal = who//": "//ccsd_method_name(cx)//" excited states are not implemented"
+      else if (cx%fcomm /= -1) then
+         refusal = who//": the response path is not rank-split; run it on a single rank"
+      else if (cx%res%n_lindep > 0) then
+         refusal = who//": canonical orthogonalisation dropped "//to_string(cx%res%n_lindep)// &
+                   " functions (trc_set_lindep); the response needs (nao, nao) orbitals"
+      end if
+   end function tddft_context_refusal
+
+   function tddft_failure_status(err) result(status)
+      !! A refusal (validation) is UNSUPPORTED; a solve that failed is NOCONV.
+      type(error_t), intent(in) :: err
+      integer(c_int) :: status
+      status = merge(TRC_ERR_UNSUPPORTED, TRC_ERR_NOCONV, err%get_code() == ERROR_VALIDATION)
+   end function tddft_failure_status
+
+   function trc_check_tddft(handle, gradient) result(status) bind(c, name="trc_check_tddft")
+      !! Whether trc_run_tddft (and, when `gradient` is non-zero,
+      !! trc_run_gradient after it) will be refused for this context's CURRENT
+      !! settings, answered from the settings alone, before any SCF runs:
+      !! TRC_OK, or TRC_ERR_UNSUPPORTED with the message (trc_message) the run
+      !! would give -- a triplet, an unrestricted reference, a meta-GGA,
+      !! range-separated, VV10 or double-hybrid functional, a spherical basis,
+      !! --df, a continuum solvent, more than one rank, an RI-MP2 or RI-CCSD
+      !! result held. A geometry optimiser asks this before its first step.
+      !! What only a finished SCF knows (functions dropped by canonical
+      !! orthogonalisation) is not, and cannot be, checked here.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: gradient
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      character(len=:), allocatable :: refusal
+      character(len=256) :: reason
+      integer :: nelec, nalpha, nbeta, nspin
+      integer :: nocc(2)
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. (cx%have_mol .and. cx%have_basis)) then
+         cx%message = "trc_check_tddft: set the molecule and the basis first"
+         return
+      end if
+      status = TRC_ERR_UNSUPPORTED
+      reason = trc_tddft_run_refusal(cx%opts, cx%td_opts, cx%bb%b)
+      if (len_trim(reason) > 0) then
+         cx%message = trim(reason)
+         return
+      end if
+      nelec = nint(sum(cx%at_z)) - cx%charge
+      nalpha = (nelec + cx%multiplicity - 1)/2
+      nbeta = nelec - nalpha
+      call scf_settings_spin_rule(nalpha, nbeta, cx%opts%unrestricted, cx%opts%frac_occ, cx%opts%nelec_frac, nspin, nocc)
+      if (nspin /= 1) then
+         cx%message = "trc_tddft: only a closed-shell restricted reference is implemented (UHF/UKS is refused)"
+         return
+      end if
+      if (cx%fcomm /= -1) then
+         cx%message = "trc_tddft: the response path is not rank-split; run it on a single rank"
+         return
+      end if
+      if (gradient /= 0_c_int) then
+         refusal = gradient_upfront_refusal(cx)
+         if (len(refusal) > 0) then
+            cx%message = "trc_run_gradient: "//refusal
+            return
+         end if
+      end if
+      status = TRC_OK
+   end function trc_check_tddft
+
+   function trc_run_tddft(handle) result(status) bind(c, name="trc_run_tddft")
+      !! The excitation energies, oscillator strengths and (RPA) de-excitation
+      !! weights of the lowest trc_set_tddft roots at the converged
+      !! closed-shell SCF this context holds, TDA or full RPA, Hartree-Fock or
+      !! a LDA/GGA/global-hybrid functional (trc_tddft_run.F90's header has the
+      !! method). Builds its own pair list and ERI engine at the context's
+      !! screening threshold and, for Kohn-Sham, reuses the SCF's grid when the
+      !! context kept it. Results: trc_tddft_nroots, trc_tddft_energies,
+      !! trc_tddft_character, trc_tddft_energy.
+      !!
+      !! After it, trc_run_gradient is the gradient of the TARGET root's total
+      !! energy (trc_set_tddft), grid response included unless it was turned
+      !! off; a later trc_run_scf drops the result and the gradient is the
+      !! SCF's again. trc_run_hessian refuses.
+      !!
+      !! Refused with TRC_ERR_STATE (no converged SCF) or TRC_ERR_UNSUPPORTED
+      !! (trc_check_tddft's list, and a non-aufbau reference, RI-MP2/RI-CCSD
+      !! results held, more than one rank, symmetry that is not lenient);
+      !! TRC_ERR_NOCONV when the Davidson iteration does not converge.
+      type(c_ptr), value :: handle
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      character(len=:), allocatable :: refusal
+      character(len=256) :: reason
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      if (symmetry_wanted(cx)) then
+         if (sym_lenient(cx)) then
+            call sym_to_c1(handle, cx, "TDDFT", .true.)
+         else
+            cx%message = "trc_run_tddft: symmetry is not supported with TDDFT yet; use symmetry = off"
+            status = TRC_ERR_UNSUPPORTED
+            return
+         end if
+      end if
+      cx%tddft_ok = .false.
+      cx%grad_ok = .false.
+      status = TRC_ERR_STATE
+      if (.not. cx%scf_ok .or. .not. cx%res%converged) then
+         cx%message = "trc_run_tddft: run a converged SCF first"
+         return
+      end if
+      status = TRC_ERR_UNSUPPORTED
+      refusal = tddft_context_refusal(cx, "trc_run_tddft")
+      if (len(refusal) > 0) then
+         cx%message = refusal
+         return
+      end if
+      reason = trc_tddft_run_refusal(cx%opts, cx%td_opts, cx%bb%b)
+      if (len_trim(reason) > 0) then
+         cx%message = "trc_run_tddft: "//trim(reason)
+         return
+      end if
+      cx%td_opts%verbose = cx%opts%verbose
+      ! The response builds its own engine (as trc_run_polarizability does), so the SCF's would only sit beside it.
+      call cx%peri%release()
+      if (tddft_grid_reusable(cx)) then
+         call trc_tddft_run_solve(cx%bb%b, cx%la, cx%res, cx%nalpha, cx%opts, cx%td_opts, cx%td, cx%kgrid)
+      else
+         call trc_tddft_run_solve(cx%bb%b, cx%la, cx%res, cx%nalpha, cx%opts, cx%td_opts, cx%td)
+      end if
+      if (.not. cx%td%converged) then
+         cx%message = "trc_run_tddft: "//cx%td%err%get_message()
+         status = tddft_failure_status(cx%td%err)
+         return
+      end if
+      cx%tddft_ok = .true.
+      status = TRC_OK
+   end function trc_run_tddft
+
+   subroutine tddft_gradient_run(cx, status)
+      !! trc_run_gradient after trc_run_tddft: the gradient of the target root.
+      type(context_box), intent(inout) :: cx
+      integer(c_int), intent(out) :: status
+      type(trc_tddft_run_options_t) :: opts
+      opts = cx%td_opts
+      opts%verbose = cx%opts%verbose
+      call cx%peri%release()
+      if (tddft_grid_reusable(cx)) then
+         call trc_tddft_run_gradient(cx%bb%b, cx%la, cx%res, cx%nalpha, cx%opts, opts, cx%td, cx%kgrid)
+      else
+         call trc_tddft_run_gradient(cx%bb%b, cx%la, cx%res, cx%nalpha, cx%opts, opts, cx%td)
+      end if
+      if (cx%td%err%has_error()) then
+         cx%message = "trc_run_gradient: "//cx%td%err%get_message()
+         status = tddft_failure_status(cx%td%err)
+         return
+      end if
+      if (allocated(cx%grad)) deallocate (cx%grad)
+      allocate (cx%grad(3, cx%natm), source=cx%td%grad)
+      cx%grad_ok = .true.
+      status = TRC_OK
+   end subroutine tddft_gradient_run
+
+   function trc_tddft_nroots(handle, nroots) result(status) bind(c, name="trc_tddft_nroots")
+      !! The number of roots trc_run_tddft solved: the length of the arrays
+      !! trc_tddft_energies and trc_tddft_character fill (3 times it for the
+      !! transition dipoles).
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: nroots
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      nroots = 0
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%tddft_ok) return
+      nroots = int(cx%td%nroots, c_int)
+      status = TRC_OK
+   end function trc_tddft_nroots
+
+   function trc_tddft_energies(handle, omega, oscillator, ynorm, dipole) result(status) &
+      bind(c, name="trc_tddft_energies")
+      !! The roots of the last trc_run_tddft, ascending: `omega` excitation
+      !! energies (hartree), `oscillator` strengths (length gauge), `ynorm` the
+      !! sum of Y squared of the normalised (X, Y) (X.X - Y.Y = 1; zero for the
+      !! TDA) and `dipole` (3, nroots), column-major, the transition dipoles
+      !! <0|r|n> in atomic units. Each array holds trc_tddft_nroots values (the
+      !! last 3 times that).
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: omega(*), oscillator(*), ynorm(*), dipole(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: nr
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%tddft_ok) return
+      nr = cx%td%nroots
+      omega(1:nr) = real(cx%td%omega, c_double)
+      oscillator(1:nr) = real(cx%td%osc, c_double)
+      ynorm(1:nr) = real(cx%td%ynorm, c_double)
+      dipole(1:3*nr) = real(reshape(cx%td%tdip, [3*nr]), c_double)
+      status = TRC_OK
+   end function trc_tddft_energies
+
+   function trc_tddft_character(handle, hole, particle, weight) result(status) bind(c, name="trc_tddft_character")
+      !! The dominant orbital pair of each root of the last trc_run_tddft:
+      !! `hole`, the occupied orbital counted down from the HOMO (1 = HOMO),
+      !! `particle`, the virtual counted up from the LUMO (1 = LUMO), and the
+      !! pair's `weight`, its share of X^2 - Y^2. Orbital phases and the order
+      !! within a degenerate pair do not enter, so the pair is comparable
+      !! between geometries: an optimiser follows a state by it. Each array
+      !! holds trc_tddft_nroots values.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: hole(*), particle(*)
+      real(c_double), intent(out) :: weight(*)
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      integer :: nr
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%tddft_ok) return
+      nr = cx%td%nroots
+      hole(1:nr) = int(cx%td%hole, c_int)
+      particle(1:nr) = int(cx%td%particle, c_int)
+      weight(1:nr) = real(cx%td%weight, c_double)
+      status = TRC_OK
+   end function trc_tddft_character
+
+   function trc_tddft_energy(handle, energy) result(status) bind(c, name="trc_tddft_energy")
+      !! The total energy of the target root (trc_set_tddft): the SCF energy
+      !! plus its excitation energy, hartree. This is the energy
+      !! trc_run_gradient differentiates after trc_run_tddft; trc_energy stays
+      !! the ground state's.
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: energy
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      energy = 0.0_c_double
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%tddft_ok) return
+      energy = real(cx%res%energy + cx%td%omega(cx%td_opts%target_root), c_double)
+      status = TRC_OK
+   end function trc_tddft_energy
 
    pure integer function core_orbitals(z) result(res)
       !! Frozen-core orbitals for one element, by period.
@@ -6901,6 +7286,7 @@ contains
       cx%scf_ok = .false.
       cx%rimp2_ok = .false.
       cx%ccsd_ok = .false.
+      cx%tddft_ok = .false.
       cx%rimp2_timed = .false.
       cx%grad_ok = .false.
       cx%polar_ok = .false.

@@ -29,9 +29,9 @@ module check_capi_opt_suite
    use pic_types, only: dp
    use pic_strings, only: to_string
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_method, &
-                               TRC_OK, TRC_ERR_BADARG
+                               trc_set_tddft, trc_tddft_energy, trc_set_convergence, TRC_OK, TRC_ERR_BADARG
    use trc_opt_c_interfaces, only: trc_opt_options_create, trc_opt_options_destroy, trc_opt_set_gtol, &
-                                   trc_opt_set_algorithm, TRC_OPT_ALG_PRFO, &
+                                   trc_opt_set_algorithm, trc_opt_set_tddft, TRC_OPT_ALG_PRFO, &
                                    trc_opt_result_create, trc_opt_result_destroy, trc_opt_run, &
                                    trc_opt_result_converged, trc_opt_result_energy, trc_opt_result_gradient_max, &
                                    trc_opt_result_geometry, trc_opt_result_message
@@ -58,7 +58,9 @@ contains
       testsuite = [ &
          new_unittest("terco_opt.h vs pyscf+scipy (opt_water.ref), through the C ABI only", test_water), &
          new_unittest("terco_opt.h vs pyscf+scipy (opt_hcn.ref), through the C ABI only", test_hcn), &
-         new_unittest("trc_opt_run refuses TRC_OPT_ALG_PRFO with a minimum target", test_prfo_minimum_refused) &
+         new_unittest("trc_opt_run refuses TRC_OPT_ALG_PRFO with a minimum target", test_prfo_minimum_refused), &
+         new_unittest("trc_opt_set_tddft: the first excited state of formaldehyde (CIS/STO-3G), vs pyscf", &
+                      test_excited_state) &
          ]
    end subroutine collect_capi_opt
 
@@ -103,6 +105,60 @@ contains
       rc = trc_destroy(ctx)
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_prfo_minimum_refused
+
+   subroutine test_excited_state(error)
+      !!
+      !! The geometry optimisation of the first singlet excited state through the C ABI only: trc_set_tddft on the
+      !! context, trc_opt_set_tddft on the options. The energy it ends on is E_SCF + omega_1 at the converged geometry,
+      !! the number pyscf's TDA gives at that geometry (E_S1_PYSCF); pyscf's own excited-state gradient there is
+      !! 1.1e-8 Eh/Bohr, so it is the S1 minimum. A setup the excited-state gradient refuses (here, a triplet is not
+      !! reachable: trc_set_tddft refuses it) is trc_opt_run's refusal before the first SCF.
+      !!
+      type(error_type), allocatable, intent(out) :: error
+      real(dp), parameter :: E_S1_PYSCF = -112.214126569198_dp
+      real(dp), parameter :: E_TOL = 5.0e-8_dp
+      type(c_ptr) :: ctx, opts, res
+      integer :: nat, rc, nfail
+      integer, allocatable :: z(:)
+      real(dp), allocatable :: r(:, :)
+      integer(c_int), allocatable :: z_c(:)
+      integer(c_int) :: converged
+      real(c_double) :: energy, gmax, e_target
+
+      nfail = 0
+      call read_xyz('formaldehyde.xyz', nat, z, r)
+      allocate (z_c(nat), source=int(z, c_int))
+      rc = trc_create(ctx)
+      if (rc == TRC_OK) rc = trc_set_molecule(ctx, int(nat, c_int), real(z_c, c_double), &
+                                              reshape(real(r, c_double), [3*nat]), 0_c_int, 1_c_int)
+      if (rc == TRC_OK) rc = trc_set_basis_json(ctx, "basis_sets/sto-3g.json"//c_null_char)
+      if (rc == TRC_OK) rc = trc_set_method(ctx, ""//c_null_char, 3_c_int)
+      if (rc == TRC_OK) rc = trc_set_convergence(ctx, 1.0e-12_c_double, 1.0e-9_c_double, 200_c_int, 10_c_int)
+      if (rc == TRC_OK) rc = trc_set_tddft(ctx, 2_c_int, 1_c_int, 1_c_int, 1_c_int, 1_c_int)
+      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (S1): the context", real(rc, dp))
+      rc = trc_opt_options_create(opts)
+      if (rc == TRC_OK) rc = trc_opt_set_gtol(opts, real(RUN_GTOL, c_double))
+      if (rc == TRC_OK) rc = trc_opt_set_tddft(opts, 1_c_int, 1_c_int, 0.0_c_double)
+      if (rc == TRC_OK) rc = trc_opt_result_create(res)
+      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (S1): the options", real(rc, dp))
+      rc = trc_opt_run(ctx, int(nat, c_int), z_c, reshape(real(r, c_double), [3*nat]), opts, res)
+      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (S1): trc_opt_run", real(rc, dp))
+      rc = trc_opt_result_converged(res, converged)
+      call ref_report(nfail, converged /= 0, "check_capi_opt (S1): converged", real(converged, dp))
+      rc = trc_opt_result_energy(res, energy)
+      rc = trc_opt_result_gradient_max(res, gmax)
+      call ref_report(nfail, abs(real(energy, dp) - E_S1_PYSCF) < E_TOL, &
+                      "check_capi_opt (S1): final energy vs pyscf's E(S1), Eh", abs(real(energy, dp) - E_S1_PYSCF))
+      call ref_report(nfail, gmax < 2.0_c_double*RUN_GTOL, "check_capi_opt (S1): final gradient, Eh/Bohr", real(gmax, dp))
+      ! The context still holds the last evaluation: its target-root energy is the one the optimiser reported.
+      rc = trc_tddft_energy(ctx, e_target)
+      call ref_report(nfail, rc == TRC_OK .and. abs(real(e_target, dp) - real(energy, dp)) < 1.0e-6_dp, &
+                      "check_capi_opt (S1): trc_tddft_energy of the context", abs(real(e_target, dp) - real(energy, dp)))
+      rc = trc_opt_result_destroy(res)
+      rc = trc_opt_options_destroy(opts)
+      rc = trc_destroy(ctx)
+      if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
+   end subroutine test_excited_state
 
    subroutine run_case(xyzfile, ref_base, error)
       character(len=*), intent(in) :: xyzfile, ref_base

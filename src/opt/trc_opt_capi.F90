@@ -85,7 +85,7 @@ module trc_opt_capi
    public :: trc_opt_options_create, trc_opt_options_destroy
    public :: trc_opt_set_target, trc_opt_set_algorithm, trc_opt_set_coords, trc_opt_set_saddle_method
    public :: trc_opt_set_max_steps, trc_opt_set_gtol, trc_opt_set_max_step
-   public :: trc_opt_set_hessian_source, trc_opt_set_guess, trc_opt_set_frozen_atoms, trc_opt_set_rimp2
+   public :: trc_opt_set_hessian_source, trc_opt_set_guess, trc_opt_set_frozen_atoms, trc_opt_set_rimp2, trc_opt_set_tddft
    public :: trc_opt_result_create, trc_opt_result_destroy
    public :: trc_opt_result_converged, trc_opt_result_failed, trc_opt_result_steps
    public :: trc_opt_result_energy_evaluations, trc_opt_result_energy
@@ -346,6 +346,29 @@ contains
       ob%opts%rimp2 = enable /= 0_c_int
       status = TRC_OK
    end function trc_opt_set_rimp2
+
+   function trc_opt_set_tddft(handle, enable, target_root, gap_warn) result(status) bind(c, name="trc_opt_set_tddft")
+      !! Non-zero: optimise the geometry of the excited state `target_root` (1-based): run trc_run_tddft
+      !! after every SCF of the optimisation, so each step's energy is trc_tddft_energy's (E_SCF + omega of
+      !! that root) and its gradient trc_run_gradient's derivative of it. The context needs trc_set_tddft
+      !! with the same target root and enough roots (give one more than the target to watch the root above
+      !! it); trc_opt_run checks the setup with trc_check_tddft before the first SCF and returns its refusal
+      !! instead of starting. The followed state is watched: a warning when another solved root lies within
+      !! `gap_warn` hartree (0.005 when this is not positive) of it, or when its dominant orbital pair
+      !! changes between evaluations. Zero (the default): the SCF energy and gradient.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: enable, target_root
+      real(c_double), value :: gap_warn
+      integer(c_int) :: status
+      type(trc_opt_options_box), pointer :: ob
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, ob)
+      ob%opts%tddft = enable /= 0_c_int
+      ob%opts%tddft_root = max(1, int(target_root))
+      if (gap_warn > 0.0_c_double) ob%opts%tddft_gap_warn = real(gap_warn, dp)
+      status = TRC_OK
+   end function trc_opt_set_tddft
 
    function trc_opt_set_frozen_atoms(handle, n, atoms) result(status) bind(c, name="trc_opt_set_frozen_atoms")
       !! --opt-frozen: `atoms` holds `n` 1-based indices into trc_opt_run's

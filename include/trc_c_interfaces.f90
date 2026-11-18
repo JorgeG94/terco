@@ -36,7 +36,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_TIMING_NAME_MAX = 64
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 28
+   integer(c_int), parameter :: TRC_ABI_MINOR = 29
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -1635,6 +1635,140 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
          real(c_double), intent(out) :: alpha(*)
       end function trc_polarizability
+
+      integer(c_int) function trc_set_tddft(handle, nroots, tda, singlet, target_root, grid_response) bind(c) result(res)
+         !! What trc_run_tddft computes: the lowest `nroots` roots (at least 1),
+         !! in the Tamm-Dancoff approximation when `tda` is non-zero (CIS for
+         !! Hartree-Fock) and the full RPA (TDHF, Casida) when it is zero;
+         !! `singlet` must be non-zero (triplets are not implemented and are
+         !! TRC_ERR_UNSUPPORTED); `target_root` is the root, 1-based and at most
+         !! `nroots`, whose gradient trc_run_gradient returns and whose total
+         !! energy trc_tddft_energy reports; `grid_response` (non-zero, the
+         !! default of a context that never calls this) differentiates the
+         !! Kohn-Sham grid's points and partition weights too, the exact
+         !! derivative of this library's energy, and zero gives the Pulay-only
+         !! gradient (pyscf's). Drops a stored TDDFT result.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: nroots
+         integer(c_int), value :: tda
+         integer(c_int), value :: singlet
+         integer(c_int), value :: target_root
+         integer(c_int), value :: grid_response
+      end function trc_set_tddft
+
+      integer(c_int) function trc_set_tddft_convergence(handle, conv_tol, max_iteration, cpks_tol, cpks_max_iteration, &
+                                                        roots_per_sweep) bind(c) result(res)
+         !! The solver's settings; a zero keeps the default. `conv_tol` (1e-8) is
+         !! the Davidson residual norm of the excitation energies, `max_iteration`
+         !! (50) its iteration limit, `cpks_tol` (1e-9) and `cpks_max_iteration`
+         !! (100) the Z-vector's residual and iteration limit for the gradient,
+         !! `roots_per_sweep` the trc_tddft_grad batching (a tuning knob that does
+         !! not change the numbers). Drops a stored TDDFT result.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), value :: conv_tol
+         integer(c_int), value :: max_iteration
+         real(c_double), value :: cpks_tol
+         integer(c_int), value :: cpks_max_iteration
+         integer(c_int), value :: roots_per_sweep
+      end function trc_set_tddft_convergence
+
+      integer(c_int) function trc_check_tddft(handle, gradient) bind(c) result(res)
+         !! Whether trc_run_tddft (and, when `gradient` is non-zero,
+         !! trc_run_gradient after it) will be refused for this context's CURRENT
+         !! settings, answered from the settings alone, before any SCF runs:
+         !! TRC_OK, or TRC_ERR_UNSUPPORTED with the message (trc_message) the run
+         !! would give -- a triplet, an unrestricted reference, a meta-GGA,
+         !! range-separated, VV10 or double-hybrid functional, a spherical basis,
+         !! --df, a continuum solvent, more than one rank, an RI-MP2 or RI-CCSD
+         !! result held. A geometry optimiser asks this before its first step.
+         !! What only a finished SCF knows (functions dropped by canonical
+         !! orthogonalisation) is not, and cannot be, checked here.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: gradient
+      end function trc_check_tddft
+
+      integer(c_int) function trc_run_tddft(handle) bind(c) result(res)
+         !! The excitation energies, oscillator strengths and (RPA) de-excitation
+         !! weights of the lowest trc_set_tddft roots at the converged
+         !! closed-shell SCF this context holds, TDA or full RPA, Hartree-Fock or
+         !! a LDA/GGA/global-hybrid functional (trc_tddft_run.F90's header has the
+         !! method). Builds its own pair list and ERI engine at the context's
+         !! screening threshold and, for Kohn-Sham, reuses the SCF's grid when the
+         !! context kept it. Results: trc_tddft_nroots, trc_tddft_energies,
+         !! trc_tddft_character, trc_tddft_energy.
+         !!
+         !! After it, trc_run_gradient is the gradient of the TARGET root's total
+         !! energy (trc_set_tddft), grid response included unless it was turned
+         !! off; a later trc_run_scf drops the result and the gradient is the
+         !! SCF's again. trc_run_hessian refuses.
+         !!
+         !! Refused with TRC_ERR_STATE (no converged SCF) or TRC_ERR_UNSUPPORTED
+         !! (trc_check_tddft's list, and a non-aufbau reference, RI-MP2/RI-CCSD
+         !! results held, more than one rank, symmetry that is not lenient);
+         !! TRC_ERR_NOCONV when the Davidson iteration does not converge.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+      end function trc_run_tddft
+
+      integer(c_int) function trc_tddft_nroots(handle, nroots) bind(c) result(res)
+         !! The number of roots trc_run_tddft solved: the length of the arrays
+         !! trc_tddft_energies and trc_tddft_character fill (3 times it for the
+         !! transition dipoles).
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: nroots
+      end function trc_tddft_nroots
+
+      integer(c_int) function trc_tddft_energies(handle, omega, oscillator, ynorm, dipole) bind(c) result(res)
+         !! The roots of the last trc_run_tddft, ascending: `omega` excitation
+         !! energies (hartree), `oscillator` strengths (length gauge), `ynorm` the
+         !! sum of Y squared of the normalised (X, Y) (X.X - Y.Y = 1; zero for the
+         !! TDA) and `dipole` (3, nroots), column-major, the transition dipoles
+         !! <0|r|n> in atomic units. Each array holds trc_tddft_nroots values (the
+         !! last 3 times that).
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: omega(*)
+         real(c_double), intent(out) :: oscillator(*)
+         real(c_double), intent(out) :: ynorm(*)
+         real(c_double), intent(out) :: dipole(*)
+      end function trc_tddft_energies
+
+      integer(c_int) function trc_tddft_character(handle, hole, particle, weight) bind(c) result(res)
+         !! The dominant orbital pair of each root of the last trc_run_tddft:
+         !! `hole`, the occupied orbital counted down from the HOMO (1 = HOMO),
+         !! `particle`, the virtual counted up from the LUMO (1 = LUMO), and the
+         !! pair's `weight`, its share of X^2 - Y^2. Orbital phases and the order
+         !! within a degenerate pair do not enter, so the pair is comparable
+         !! between geometries: an optimiser follows a state by it. Each array
+         !! holds trc_tddft_nroots values.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: hole(*)
+         integer(c_int), intent(out) :: particle(*)
+         real(c_double), intent(out) :: weight(*)
+      end function trc_tddft_character
+
+      integer(c_int) function trc_tddft_energy(handle, energy) bind(c) result(res)
+         !! The total energy of the target root (trc_set_tddft): the SCF energy
+         !! plus its excitation energy, hartree. This is the energy
+         !! trc_run_gradient differentiates after trc_run_tddft; trc_energy stays
+         !! the ground state's.
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: energy
+      end function trc_tddft_energy
 
       integer(c_int) function trc_run_rimp2(handle) bind(c) result(res)
          !! Needs a converged SCF in the context (restricted, or unrestricted --
