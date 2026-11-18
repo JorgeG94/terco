@@ -123,14 +123,17 @@ contains
    subroutine scf_options(sopts)
       type(trc_scf_options_t), intent(out) :: sopts
       ! The gradient is first order in the orbital error, so converge well past
-      ! the gate, but not to the arithmetic's floor. conv_energy 1e-13 was 3 ulps
-      ! of |E| = 150 (H2O2): met by nvfortran and by gfortran with OpenBLAS but not
-      ! by the CI builds with reference BLAS or ifx, where the SCF ran out of
-      ! iterations (and conv_energy 1e-14 with conv_diis 1e-13 fails here too).
-      ! 1e-12 and 1e-11 keep two orders over the floor; check_tddft uses 1e-12, 1e-10.
-      sopts%conv_energy = 1.0e-12_dp
+      ! the gate (1e-8), but not to the arithmetic's floor. Incremental Fock builds
+      ! are off: their accumulated screening error holds |FDS-SDF| at 1e-11..4e-11
+      ! and dE at 1e-11 for H2O2 (|E| = 150), so a threshold of 1e-11 was met
+      ! only by luck on one toolchain and never on the CI builds, which ran out of
+      ! iterations. Full builds fall smoothly (dE ~ 2e-13). With them, 1e-11 and
+      ! 1e-10 leave the finite difference at 8e-10 against 1e-8 (1e-12/1e-11 gave
+      ! 9e-10: the residual is the h^4 and screening error, not the SCF).
+      sopts%incremental = .false.
+      sopts%conv_energy = 1.0e-11_dp
       sopts%conv_density = 1.0e-10_dp
-      sopts%conv_diis = 1.0e-11_dp
+      sopts%conv_diis = 1.0e-10_dp
       sopts%max_iteration = 200
       sopts%grid_level = 3
       if (trim(funcname_arg) /= 'hf') sopts%functional = trim(funcname_arg)
@@ -482,7 +485,8 @@ contains
          if (td%converged) energy = scf%energy + td%omega
          if (fx%dft) call xgrid%release()
       end if
-      call check(error, scf%converged, "displaced SCF did not converge")
+      call check(error, scf%converged, "displaced SCF did not converge: "//to_string(scf%iterations)// &
+                 " iterations, "//trim(scf%message))
       if (.not. allocated(error)) call check(error, td%converged, "displaced TDA solve: "//td%err%get_message())
       call eri%release()
       call la%release()
