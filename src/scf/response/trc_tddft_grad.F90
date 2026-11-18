@@ -97,6 +97,11 @@ module trc_tddft_grad
    private
 
    public :: trc_tddft_grad_options_t, trc_tddft_gradient_rks, trc_tddft_grad_refuse_reason
+   ! The building blocks the RPA gradient (trc_tddft_rpa_grad) shares with this module.
+   public :: tddft_grad_state_t, tddft_grad_gemm, tddft_grad_basis_change, tddft_grad_mo_block, tddft_grad_symmetrize, &
+             tddft_grad_fock, tddft_grad_fxc, tddft_grad_zvector, tddft_grad_chunk, tddft_grad_xc, &
+             tddft_grad_one_electron
+   public :: SQRT_HALF
 
    integer, parameter :: MAX_ROOTS_PER_SWEEP = 4
    integer, parameter :: DEFAULT_ROOTS_PER_SWEEP = 2

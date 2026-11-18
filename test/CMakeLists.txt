@@ -2577,6 +2577,38 @@ target_link_libraries(check_tddft_grad_fd PRIVATE test-drive::test-drive)
 set_target_properties(check_tddft_grad_fd PROPERTIES Fortran_MODULE_DIRECTORY
                       ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_grad_fd)
 
+#
+# Full-RPA (TDHF / Casida TDDFT) excited-state nuclear gradients
+# (src/scf/response/trc_tddft_rpa_grad.F90) against pyscf's grad.tdrhf/tdrks with
+# Y /= 0 (generate.py's gen_tddft_rpa_grad; exact dense amplitudes and Z-vector):
+# water and formamide, 6-31G, 3 roots, HF, SVWN, PBE and B3LYP, and the non-planar
+# C1 hydrogen peroxide, HF and B3LYP. Each case also checks roots-per-sweep chunking,
+# a root alone against the batch, the TDA limit and the refusals. The last two are the
+# finite-difference checks of E_SCF + omega on h2o2_c1 (HF, and B3LYP with the
+# grid response).
+#
+set(_rpa_grad_cases water:hf water:svwn water:pbe water:b3lyp formamide:hf formamide:svwn formamide:pbe
+                    formamide:b3lyp h2o2_c1:hf h2o2_c1:b3lyp)
+foreach(_case ${_rpa_grad_cases})
+  string(REPLACE ":" ";" _parts ${_case})
+  list(GET _parts 0 _mol)
+  list(GET _parts 1 _f)
+  terco_add_check(check_tddft_rpa_grad_${_mol}_${_f} check_tddft_rpa_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                  ARGS ${_mol}.xyz basis_sets/6-31g.json ${_mol} 6-31g ${_f} 3
+                       ${CMAKE_CURRENT_BINARY_DIR}/tddft_rpa_grad_${_mol}_${_f}_probe.bin)
+  target_link_libraries(check_tddft_rpa_grad_${_mol}_${_f} PRIVATE test-drive::test-drive)
+  set_target_properties(check_tddft_rpa_grad_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_rpa_grad_${_mol}_${_f})
+endforeach()
+foreach(_f hf b3lyp)
+  terco_add_check(check_tddft_rpa_grad_fd_${_f} check_tddft_rpa_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                  ARGS h2o2_c1.xyz basis_sets/6-31g.json h2o2_c1 6-31g ${_f} 3
+                       ${CMAKE_CURRENT_BINARY_DIR}/tddft_rpa_grad_fd_${_f}_probe.bin fd)
+  target_link_libraries(check_tddft_rpa_grad_fd_${_f} PRIVATE test-drive::test-drive)
+  set_target_properties(check_tddft_rpa_grad_fd_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_rpa_grad_fd_${_f})
+endforeach()
+
 # Full RPA (TDHF / Casida) singlet excitation energies, oscillator strengths and
 # ||Y||^2 (src/scf/response/trc_tddft.F90, tda = .false.) against pyscf's tdscf
 # TDHF / TDDFT (generate.py's gen_rpa), plus the RPA's own internal checks and
