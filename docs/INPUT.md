@@ -210,6 +210,64 @@ main = "cc-pvdz"
 method = "ri-ccsd(t)"      # frozen core counted by element, cc-pvdz-rifit
 ```
 
+### `[tddft]`
+
+Singlet excitation energies of a closed-shell RHF or RKS reference, and with
+`[driver] gradient` or `optimize` the gradient or the geometry optimisation of
+one excited state.
+
+| Key | Type | Flag | Meaning |
+|---|---|---|---|
+| `enabled` | bool | `--tddft` | run the excitation energies after the SCF; any other key of the table needs it |
+| `roots` | integer | `--tddft-roots` | lowest singlet roots wanted (3) |
+| `target_root` | integer | `--tddft-root` | the root `--grad` and `--opt` follow, counted from 1 (1); at most `roots` |
+| `approximation` | string | `--tddft-approx` | `tda` (Tamm-Dancoff; CIS for Hartree-Fock; the default) or `rpa` (TDHF / Casida, which also reports \|\|Y\|\|^2) |
+| `spin` | string | `--tddft-spin` | `singlet`; `triplet` is refused |
+| `energy_tol` | float | `--tddft-tol` | the Davidson residual norm of the excitation energies (1e-8) |
+| `max_iterations` | integer | `--tddft-iterations` | most Davidson iterations (50) |
+| `cpks_tol` | float | `--tddft-cpks-tol` | residual norm of the Z-vector of the gradient (1e-9) |
+| `roots_per_sweep` | integer | `--tddft-sweep` | roots sharing one pass over the integral derivatives; a tuning knob that changes no number |
+| `grid_response` | bool | `--tddft-grid-response` / `--no-tddft-grid-response` | Kohn-Sham gradient with the grid response (true, the default): the exact derivative of terco's own energy, whose grid moves with the nuclei. `false` gives the Pulay terms only, as pyscf's `tdrks`, about 1e-5 Eh/Bohr away on water PBE. No effect for Hartree-Fock |
+| `gap_warning` | float | `--tddft-gap-warn` | `--opt` warns when the followed root lies within this many hartree of another solved root, or its dominant orbital pair changes between steps (0.005) |
+
+The report gives every root's excitation energy in Eh and eV, its oscillator
+strength, \|\|Y\|\|^2 (zero for the TDA) and its dominant orbital pair, from the
+HOMO and the LUMO, with its share of X^2 - Y^2. The JSON summary has a `"tddft"`
+object with the same quantities as arrays, in ascending energy
+(`"excitation energies"`, `"excitation energies ev"`, `"oscillator strengths"`,
+`"y norms"`, `"transition dipoles"`, `"dominant hole"`, `"dominant particle"`,
+`"dominant weight"`) and `"target root total energy"`, E_SCF plus the target root's
+excitation energy. `--grad` is then the gradient of that energy
+(`"gradient of"` says so) and `--opt` optimises it.
+
+A closed-shell reference only: refused, before the SCF and with the reason,
+are triplets, `[molecule] unpaired`, meta-GGA, range-separated and double-hybrid
+functionals and VV10, a spherical basis (`[basis] cartesian = true` makes
+it Cartesian), `[scf] density_fitted`, `[solvation]`, `[correlation]`, `[driver]
+hessian` and more than one rank. An `--opt` also needs a Hessian-free
+algorithm, or `--opt-init-hessian dlfind`: terco's own finite-difference
+Hessian has no excited-state gradient to difference.
+
+```toml
+[molecule]
+geometry = "formaldehyde.xyz"
+
+[basis]
+main = "6-31g"
+
+[scf]
+functional = "pbe"
+
+[tddft]
+enabled = true
+roots = 4
+target_root = 1
+approximation = "tda"
+
+[driver]
+optimize = true        # the first singlet excited state
+```
+
 ### `[driver]`
 
 | Key | Type | Flag | Meaning |

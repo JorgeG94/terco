@@ -48,6 +48,12 @@ contains
          end block
       end if
       call global_logger%info("   method           : "//method(r))
+      if (r%tddft) then
+         call global_logger%info("   excited states   : singlet "//merge("TDA", "RPA", r%tddft_tda)//", "// &
+                                 to_string(r%tddft_nroots)//" roots, root "//to_string(r%tddft_root)// &
+                                 " for the gradient"//merge("; grid response off", "                   ", &
+                                 len(r%func) > 0 .and. .not. r%tddft_grid_response))
+      end if
       if (r%sym_lenient .and. len(r%sym_fallback) > 0) then
          ! One line, with the reason: this run takes the C1 path it always took.
          call global_logger%info("   symmetry         : on (auto), but "//r%sym_fallback// &
@@ -191,6 +197,7 @@ contains
          end if
       end if
       if (r%cc .and. r%cc_ran) call cc_lines(r)
+      if (r%tddft_ran) call cc_line("ROOT "//to_string(r%tddft_root)//" TOTAL ENERGY", real(r%tddft_etot, c_double))
       call global_logger%info(bar)
       call global_logger%info("")
       call global_logger%info("   ::::::::::::::::::::::::::::::::::::::::::::::::::::::")
@@ -209,6 +216,10 @@ contains
          if (r%dh) call row("double hybrid total", r%etot_dh)
       end if
       if (r%cc .and. r%cc_ran) call cc_rows(r)
+      if (r%tddft_ran) then
+         call cc_row("tddft root "//to_string(r%tddft_root), real(r%tddft_etot, c_double))
+         call cc_row("tddft excitation", real(r%tddft_omega(r%tddft_root), c_double))
+      end if
       call global_logger%info("   ::::::::::::::::::::::::::::::::::::::::::::::::::::::")
    end subroutine run_summary
 

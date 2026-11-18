@@ -27,7 +27,7 @@ program trc_main
                        trc_set_pcm, trc_pcm_energy, trc_save_scf, trc_load_scf, &
                        trc_run_gradient, trc_gradient, trc_set_geometry, trc_set_hessian_step, trc_run_hessian, &
                        trc_hessian, trc_hirshfeld_charges, trc_chelpg_charges, trc_fukui_scheme, &
-                       trc_set_symmetry, trc_set_irrep_nelec, trc_set_symmetry_skeleton, &
+                       trc_set_symmetry, trc_set_irrep_nelec, trc_set_symmetry_skeleton, trc_check_tddft, &
                        TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_CORE, TRC_GUESS_GWH, TRC_GUESS_SAD, &
                        TRC_GUESS_SADQ, TRC_GUESS_SAP, TRC_GUESS_MINAO
    use trc_api, only: trc_bind_device, trc_bind_device_env
@@ -58,6 +58,7 @@ program trc_main
                        run_check_neb_endpoint, run_write_neb_path_xyz, &
                        run_read_xyz_frames, run_to_lower_alloc, run_frontier, run_parse_charges, &
                        run_cc_parse, run_cc_configure, run_cc_execute, &
+                       run_tddft_parse, run_tddft_configure, run_tddft_execute, run_tddft_summary, &
                        run_symmetry_collect, run_symmetry_refusal, run_symmetry_unsupported, run_symmetry_summary
    use trc_dlfind_bridge, only: trc_dlfind_available, trc_opt_options_t, trc_opt_result_t, trc_dlfind_optimize, &
                                 TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_HDLC_TC, &
@@ -242,6 +243,29 @@ program trc_main
                          "(48 o^3 bytes, o active occupied orbitals) makes the (T) step fail after the RI-CCSD has "// &
                          "converged, with exit status 1; the ijk routine needs 24 v^3 bytes a triple (v virtual "// &
                          "orbitals), defaults to 2 GiB and raises that to one triple; no effect on the reference routine")
+   call r%cli%add_flag("tddft", "singlet excitation energies, oscillator strengths and (RPA) ||Y||^2 of the lowest "// &
+                       "--tddft-roots states after the SCF (closed-shell RHF/RKS, Cartesian basis; LDA, GGA and "// &
+                       "global-hybrid functionals). With --grad the gradient of E_SCF + omega of the root "// &
+                       "--tddft-root, with --opt its geometry optimisation. Refused with triplets, UHF/UKS, "// &
+                       "meta-GGAs, range-separated hybrids, VV10, double hybrids, --df, --pcm, --rimp2, --riccsd "// &
+                       "and --hessian")
+   call r%cli%add_option("tddft-roots", "number of singlet roots wanted (3)")
+   call r%cli%add_option("tddft-root", "the root --grad and --opt differentiate, counted from 1 (1); at most "// &
+                         "--tddft-roots (give one more to watch the next root's gap while optimising)")
+   call r%cli%add_option("tddft-approx", "tda (Tamm-Dancoff; CIS for Hartree-Fock; the default) or rpa (TDHF / "// &
+                         "Casida, which also reports ||Y||^2)")
+   call r%cli%add_option("tddft-spin", "singlet (the only one implemented; triplet is refused)")
+   call r%cli%add_option("tddft-tol", "Davidson residual norm of the excitation energies (1e-8)")
+   call r%cli%add_option("tddft-iterations", "most Davidson iterations (50)")
+   call r%cli%add_option("tddft-cpks-tol", "residual norm of the Z-vector of the excited-state gradient (1e-9)")
+   call r%cli%add_option("tddft-sweep", "roots sharing one pass over the integral derivatives in the gradient "// &
+                         "(a tuning knob; the numbers do not change)")
+   call r%cli%add_flag("tddft-grid-response", "Kohn-Sham gradient with the grid response (the default): the exact "// &
+                       "derivative of terco's own energy, whose grid moves with the nuclei")
+   call r%cli%add_flag("no-tddft-grid-response", "Kohn-Sham gradient without the grid response (Pulay terms only, as "// &
+                       "pyscf's tdrks; about 1e-5 Eh/Bohr away on water PBE)")
+   call r%cli%add_option("tddft-gap-warn", "--opt with --tddft warns when the followed root lies within this many "// &
+                         "hartree of another solved root, or its dominant orbital pair changes between steps (0.005)")
    call r%cli%add_option("aux", "auxiliary basis for --rimp2, --riccsd and --riccsd-t (cc-pvdz-rifit whatever the "// &
                          "orbital basis: give the RI fitting set that matches it)", default="cc-pvdz-rifit")
    call r%cli%add_option("frozen", "frozen core orbitals for --rimp2, --riccsd and --riccsd-t; -1, the default, "// &
@@ -703,6 +727,7 @@ program trc_main
    end if
    ! Before the symmetry block: its refusal and its fall-back to C1 have to know that RI-CCSD was asked for.
    call run_cc_parse(r, nfrozen)
+   call run_tddft_parse(r)
    ! ---- --symmetry ------------------------------------------------------
    ! Parsed here, before the --opt block, so a symmetry request with --opt (or
    ! anything else the symmetric SCF does not support yet) is refused by name
@@ -1018,6 +1043,12 @@ program trc_main
       end select
       ! trc_run_hessian refuses PCM, and cb_get_hessian would turn that into a
       ! silent fall-back to DL-FIND's own FD Hessian: refuse up front instead.
+      if (r%tddft .and. r%opt_hessian_source_kind == TRC_OPT_HESS_TERCO .and. &
+          ((r%opt_target_kind == TRC_OPT_TARGET_SADDLE .and. r%opt_saddle_method_kind == TRC_OPT_SADDLE_PRFO) .or. &
+           r%opt_algorithm_kind == TRC_OPT_ALG_NR)) then
+         call run_die(r, "--opt with --tddft: terco's own FD Hessian (--opt-init-hessian terco) has no excited-state "// &
+                  "gradient to difference; pass --opt-init-hessian dlfind for a P-RFO or NR search")
+      end if
       if (len(r%pcm) > 0 .and. r%opt_hessian_source_kind == TRC_OPT_HESS_TERCO .and. &
           ((r%opt_target_kind == TRC_OPT_TARGET_SADDLE .and. r%opt_saddle_method_kind == TRC_OPT_SADDLE_PRFO) .or. &
            r%opt_algorithm_kind == TRC_OPT_ALG_NR)) then
@@ -1345,6 +1376,11 @@ program trc_main
       if (r%rimp2) call run_api(r, trc_set_rimp2(r%h, int(nfrozen, c_int), int(aux_block, c_int)))
       if (r%cc) call run_cc_configure(r, nfrozen, aux_block)
    end if
+   if (r%tddft) then
+      call run_tddft_configure(r)
+      ! Before any SCF: a spherical basis, an unrestricted spin state and the gradient's own limits are known now.
+      call run_api(r, trc_check_tddft(r%h, merge(1_c_int, 0_c_int, r%grad .or. r%opt)))
+   end if
 
    if (r%opt) then
       allocate (opt_residues(r%natm))
@@ -1381,6 +1417,10 @@ program trc_main
       ! --rimp2 or a double hybrid (r%rimp2 covers both): every step's
       ! energy and gradient are the correlated total's, not the SCF's.
       opt_opts%rimp2 = r%rimp2
+      ! --tddft: every step's energy and gradient are those of the root --tddft-root.
+      opt_opts%tddft = r%tddft
+      opt_opts%tddft_gap_warn = r%tddft_gap_warn
+      opt_opts%tddft_root = r%tddft_root
       opt_opts%algorithm = r%opt_algorithm_kind
       opt_opts%target_kind = r%opt_target_kind
       opt_opts%saddle_method = r%opt_saddle_method_kind
@@ -1572,6 +1612,7 @@ program trc_main
    ! run the energy step for nothing (trc_run_rimp2's own header).
    if (r%rimp2 .and. r%conv /= 0) call run_api(r, trc_run_rimp2(r%h))
    if (r%cc .and. r%conv /= 0) call run_cc_execute(r)
+   if (r%tddft .and. r%conv /= 0) call run_tddft_execute(r)
    if (r%grad .and. r%conv /= 0) then
       ! trc_run_gradient's own refusals (an unrestricted RI-MP2 or
       ! double-hybrid reference, PCM) come
@@ -1676,6 +1717,7 @@ program trc_main
 
    if (r%rank0 .and. r%sym_ran) call run_symmetry_summary(r)
    if (r%rank0) call run_summary(r)
+   if (r%rank0 .and. r%tddft_ran) call run_tddft_summary(r)
    if (r%rank0 .and. r%grad .and. r%conv /= 0) call run_gradient_summary(r)
    if (r%rank0 .and. (r%want_hirshfeld .or. r%want_chelpg) .and. r%conv /= 0) call run_charges_summary(r)
    if (r%rank0 .and. len(r%fukui) > 0 .and. r%conv /= 0) call run_fukui_summary(r)

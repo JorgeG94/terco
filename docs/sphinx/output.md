@@ -226,7 +226,7 @@ SCF energy); a (T) that failed after a converged RI-CCSD adds `"ri-ccsd triples 
 with the library's message, in place of the two (T) keys; an RI-CCSD that did not converge has `"ri-ccsd converged": false`
 and no totals; the SUMMARY rows show the same quantities under shorter labels that fit the
 block (`ri-ccsd (t) correction`, `ri-ccsd(t) total`, `ri-ccsd frozen core`, ...);
-`--opt`/`--hessian` add `"optimization"`/`"vibrational"` blocks. Keys
+`--tddft` adds a `"tddft"` object (`"excitation energies"` in Eh and `"excitation energies ev"`, `"oscillator strengths"`, `"y norms"`, `"transition dipoles"`, `"dominant hole"`/`"dominant particle"`/`"dominant weight"` per root, `"target root total energy"`), and with `--grad` the gradient is of that state (`"gradient of"`); `--opt`/`--hessian` add `"optimization"`/`"vibrational"` blocks. Keys
 whose default is decided from the system (the charge, the guess, ...)
 appear in `"input"` only when the run was given one explicitly.
 

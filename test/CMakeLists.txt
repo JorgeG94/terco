@@ -1090,6 +1090,15 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_grad_df PRIVATE test-drive::test-drive)
   unset(_cli_grad_df_probe)
 
+  # --tddft through the CLI: energies, the [tddft] TOML table, the gradient with
+  # and without the grid response, and the refusals -- see check_cli_tddft.F90's
+  # own header.
+  set(_cli_tddft_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_tddft_probe.json)
+  terco_add_check(check_cli_tddft check_cli_tddft.F90 NEEDS_PYSCF_REF
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_tddft_probe})
+  target_link_libraries(check_cli_tddft PRIVATE test-drive::test-drive)
+  unset(_cli_tddft_probe)
+
   # trc_main's own CLI-string lowercasing (--func, --guess, ...) --
   # see check_cli_lowercase.F90's own header for the nvfortran miscompile
   # this guards against.
@@ -1223,6 +1232,16 @@ if(TERCO_BUILD_APP)
     target_link_libraries(check_cli_opt PRIVATE test-drive::test-drive)
     unset(_cli_opt_probe)
     unset(_cli_opt_workdir)
+
+    # --opt --tddft: the geometry optimisation of an excited state (CIS formaldehyde S1)
+    # -- see check_cli_tddft_opt.F90's own header.
+    set(_cli_tddft_opt_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_tddft_opt_probe.json)
+    set(_cli_tddft_opt_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_tddft_opt_work)
+    terco_add_check(check_cli_tddft_opt check_cli_tddft_opt.F90
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_tddft_opt_probe} ${_cli_tddft_opt_workdir})
+    target_link_libraries(check_cli_tddft_opt PRIVATE test-drive::test-drive)
+    unset(_cli_tddft_opt_probe)
+    unset(_cli_tddft_opt_workdir)
 
     # --logger's effect on --opt/--opt-freq's own output -- the step
     # table at info, the SCF driver's full per-iteration table only at

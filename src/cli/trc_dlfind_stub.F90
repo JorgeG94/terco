@@ -74,6 +74,9 @@ module trc_dlfind_bridge
       integer :: maxiter = 100
       real(dp) :: gtol = 4.5e-4_dp
       logical :: rimp2 = .false.
+      logical :: tddft = .false.
+      real(dp) :: tddft_gap_warn = 0.005_dp
+      integer :: tddft_root = 1
       integer :: algorithm = TRC_OPT_ALG_LBFGS
       integer :: target_kind = TRC_OPT_TARGET_MINIMUM
       integer :: saddle_method = TRC_OPT_SADDLE_PRFO
