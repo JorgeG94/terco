@@ -2592,13 +2592,13 @@ endforeach()
 # (src/scf/response/trc_tddft_rpa_grad.F90) against pyscf's grad.tdrhf/tdrks with
 # Y /= 0 (generate.py's gen_tddft_rpa_grad; exact dense amplitudes and Z-vector):
 # water and formamide, 6-31G, 3 roots, HF, SVWN, PBE and B3LYP, and the non-planar
-# C1 hydrogen peroxide, HF and B3LYP. Each case also checks roots-per-sweep chunking,
+# gauche hydrogen peroxide, HF and B3LYP. Each case also checks roots-per-sweep chunking,
 # a root alone against the batch, the TDA limit and the refusals. The last two are the
-# finite-difference checks of E_SCF + omega on h2o2_c1 (HF, and B3LYP with the
+# finite-difference checks of E_SCF + omega on h2o2 (HF, and B3LYP with the
 # grid response).
 #
 set(_rpa_grad_cases water:hf water:svwn water:pbe water:b3lyp formamide:hf formamide:svwn formamide:pbe
-                    formamide:b3lyp h2o2_c1:hf h2o2_c1:b3lyp)
+                    formamide:b3lyp h2o2:hf h2o2:b3lyp)
 foreach(_case ${_rpa_grad_cases})
   string(REPLACE ":" ";" _parts ${_case})
   list(GET _parts 0 _mol)
@@ -2615,7 +2615,7 @@ foreach(_f hf:3 b3lyp:2)
   list(GET _fl 0 _func)
   list(GET _fl 1 _nr)
   terco_add_check(check_tddft_rpa_grad_fd_${_func} check_tddft_rpa_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
-                  ARGS h2o2_c1.xyz basis_sets/6-31g.json h2o2_c1 6-31g ${_func} ${_nr}
+                  ARGS h2o2.xyz basis_sets/6-31g.json h2o2 6-31g ${_func} ${_nr}
                        ${CMAKE_CURRENT_BINARY_DIR}/tddft_rpa_grad_fd_${_func}_probe.bin fd)
   target_link_libraries(check_tddft_rpa_grad_fd_${_func} PRIVATE test-drive::test-drive)
   set_target_properties(check_tddft_rpa_grad_fd_${_func} PROPERTIES Fortran_MODULE_DIRECTORY

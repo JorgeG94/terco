@@ -3495,12 +3495,12 @@ def _gen_tddft_rpa_grad_one(probe_relname, ref_relname, xyzname, molname, basnam
 def gen_tddft_rpa_grad():
     """check_tddft_rpa_grad.F90: the gradients of the lowest 3 singlet RPA
     roots of water and formamide, 6-31G, HF, SVWN, PBE and B3LYP, and of the
-    non-planar C1 hydrogen peroxide (h2o2_c1.xyz), HF and B3LYP, against
+    non-planar gauche hydrogen peroxide (h2o2.xyz), HF and B3LYP, against
     pyscf's grad.tdrhf/tdrks with Y /= 0 at terco's own converged orbitals'
     grid."""
     cases = [(x, m, f) for x, m in (("water.xyz", "water"), ("formamide.xyz", "formamide"))
              for f in ("hf", "svwn", "pbe", "b3lyp")]
-    cases += [("h2o2_c1.xyz", "h2o2_c1", f) for f in ("hf", "b3lyp")]
+    cases += [("h2o2.xyz", "h2o2", f) for f in ("hf", "b3lyp")]
     for xyzname, molname, funcname in cases:
         probe = f"tddft_rpa_grad_{molname}_{funcname}_probe.bin"
         run_bin(f"check_tddft_rpa_grad_{molname}_{funcname}",
@@ -4439,7 +4439,7 @@ def gen_rccsd_ints():
     E_T_FIXED and E_T_FIXED_NO_T1 (pyscf's (T) at the fixed amplitudes, and at the same t2 with t1 = 0)."""
     from pyscf.cc import rintermediates as imd, dfccsd
     bohr = 0.529177210903  # CODATA 2018, as terco
-    cases = [("w1", "hirshfeld_water.xyz", 1), ("h2o2_c1", "h2o2_c1.xyz", 2)]
+    cases = [("w1", "hirshfeld_water.xyz", 1), ("h2o2", "h2o2.xyz", 2)]
     basis, aux_basis = "cc-pvdz", "cc-pvdz-rifit"
     # Every file that reads these references or the probes they hold: the integral check, the
     # intermediates check and the helpers they share (editing one re-hashes the .ref).

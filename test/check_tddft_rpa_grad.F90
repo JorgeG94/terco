@@ -158,7 +158,8 @@ contains
 
       call scf_options(sopts)
       call trc_scf_run(fx%bas, fx%nocc, fx%nocc, sopts, fx%scf)
-      call check(error, fx%scf%converged, "SCF did not converge")
+      call check(error, fx%scf%converged, "SCF did not converge, "//to_string(fx%scf%iterations)//" iterations, E = "// &
+                 to_string(fx%scf%energy, "f16.8"))
       if (allocated(error)) return
       if (fx%dft) then
          if (trim(mode_arg) == 'fd') then
