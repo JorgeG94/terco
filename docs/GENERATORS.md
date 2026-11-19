@@ -41,7 +41,7 @@ blocks instead of calling anything. It looks like a mistake and is the opposite.
 | `gen_hrr.py` | horizontal transfer plus the digestion, as `case` blocks | the non-symmetric kernel (`one_bin_item_nosym`) |
 | `gen_perclass.py` | one four-centre HGP Fock kernel per class, `--split` one module each | the four-centre path, s/p/d |
 | `gen_rys.py` | one Rys-quadrature Fock kernel per class, spliced from `gen_perclass`'s prologue, CHUNKED per a measured plan (below) | f classes, seven heavy d classes, g classes up to total L `TERCO_RYS_G_LTOT` |
-| `gen_rys_grad.py` | one Rys two-electron gradient module per class (`trc_pc_rysg{tag}.F90`: screen and compact passes), and per class and column width one pair-table module (`trc_pc_rysgp{tag}w{nc}.F90`, written beside it: the item routine and the `do concurrent` driver of `eri%gradient_pairs`). `--pair-widths CLASSES` prints which widths each class has, which CMake reads to name the files. `gen_rys_grad_dispatch.py` writes `trc_rys_grad_kernels` with the block walk and the narrowest-width choice | the analytic gradient (`grad_bins`), `eri%gradient_pairs` |
+| `gen_rys_grad.py` | one Rys two-electron gradient module per class (`trc_pc_rysg{tag}.F90`: screen and compact passes), and per class and column width one pair-table module (`trc_pc_rysgp{tag}w{nc}.F90`, written beside it: the item routine and the `do concurrent` driver of `eri%gradient_pairs`; `PAIRS_RT_PLAN` gives a class its pair kernels in the run-time chunked form while its class file keeps its own, because the literal form of six classes took over 500 s to compile at some width). `--pair-widths CLASSES` prints which widths each class has, which CMake reads to name the files; `--pairs-cap` (CMake `TERCO_GRAD_PAIRS_CAP`) caps them per class, see below. `gen_rys_grad_dispatch.py` writes `trc_rys_grad_kernels` with the block walk and the narrowest-width choice | the analytic gradient (`grad_bins`), `eri%gradient_pairs` |
 | `gen_md_j.py` | the McMurchie–Davidson J engine: ket, Hermite (per (la+lb, lc+ld), R batched and sieved, `md/rtree.py`) and bra stages | `trc_mdj`, J for every class when MD J is on (always for a g basis) |
 | `gen_md_k.py` | McMurchie–Davidson exchange per class: R per primitive quartet, then S = PQ Hk^T and the integral rows fused, PQ never stored; E matrices per shell-pair type | `trc_mdg`, the g classes above `TERCO_RYS_G_LTOT` |
 | `gen_1e.py` | overlap, kinetic, nuclear attraction; `--multipole` for the Cartesian tensors; `--pcm` for the PCM smeared-charge surface integrals; `--deriv`/`--deriv-dir` for the one-electron gradient; `--pcm-grad`/`--pcm-grad-dir` for the PCM surface-integral gradient | `trc_1e`, `trc_multipoles`, `trc_pcm_potential`/`trc_pcm_fock`, `trc_1e_gradient`, `trc_pcm_gradient` |
@@ -122,6 +122,26 @@ from the plan, so add an entry before racing a shape through the build tree.
 The chunked kernels still sit at 255 registers with 56–1256 B of spill per
 thread; read that from the LINKED library (`cuobjdump -res-usage
 libterco.so`): with `-rdc` the objects and CUPTI report 0.
+
+### Capping the pair-kernel width (`TERCO_GRAD_PAIRS_CAP`)
+
+`eri%gradient_pairs` runs the narrowest pair kernel that holds a block of
+columns, and `gen_rys_grad.py` generates every width (1, 2, 4) whose Gamma
+count fits `PAIRS_GM_BUDGET`. A wide kernel of a heavy class spills and costs
+about a sweep per column, so it is no faster than repeated narrow ones, and
+for several classes it is slower. `-DTERCO_GRAD_PAIRS_CAP=ON` (default OFF)
+passes `--pairs-cap` to the three gradient generator runs that decide a class's
+widths (the `--pair-widths` query, each class, the dispatcher), and each class
+in `PAIRS_RULE` is then generated no wider than its entry, after the form
+choice of `pairs_form()`. The table, with the measurement it comes from, is in
+the generator; a class without an entry (among them every class with an f shell) is
+unchanged. OFF leaves the generator's command lines, and so its output and the
+generation stamps, unchanged. The option only removes kernels, so it never adds
+compile time: today's table drops the width-4 kernel of six d classes, 6 of the
+118 pair files at `TERCO_LMAX=3` (17-176 s each, 447 s together, nvfortran
+26.9). The generator refuses an entry that names a class the pair bins
+never launch, a width the class does not have, or its widest width (the entry
+would do nothing), so a stale entry is an error rather than a silent no-op.
 
 ---
 

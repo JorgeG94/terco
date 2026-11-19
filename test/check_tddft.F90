@@ -27,7 +27,7 @@ module check_tddft_suite
    !!     individual oscillator strengths are arbitrary, so there f is
    !!     compared only as the sum over the first (complete) triplet. For
    !!     formamide Kohn-Sham one functional (SVWN) sweeps nroots = 2, 3, 5;
-   !!  6. refusals (triplet, RPA, UHF, meta-GGA, VV10, range-separated and
+   !!  6. refusals (triplet, UHF, meta-GGA, VV10, range-separated and
    !!     double hybrids) and a solve that is not given enough iterations
    !!     reports an error rather than returning.
    !!
@@ -449,10 +449,6 @@ contains
       call check_refused(error, trc_tddft_refuse_reason(o), "triplet", "singlet")
       if (allocated(error)) return
       o = trc_tddft_options_t()
-      o%tda = .false.
-      call check_refused(error, trc_tddft_refuse_reason(o), "RPA", "Tamm-Dancoff")
-      if (allocated(error)) return
-      o = trc_tddft_options_t()
       call check_refused(error, trc_tddft_refuse_reason(o, nspin=2), "UHF/UKS", "closed-shell")
       if (allocated(error)) return
       f%family = XC_FAMILY_MGGA
@@ -480,11 +476,11 @@ contains
       call fixture_build(error)
       if (allocated(error)) return
       o = fx%opts
-      o%tda = .false.
+      o%singlet = .false.
       call solve(o, td, err)
-      call check(error, err%has_error() .and. .not. td%converged, "tda=.false. must be an error")
+      call check(error, err%has_error() .and. .not. td%converged, "singlet=.false. must be an error")
       if (allocated(error)) return
-      call check(error, index(err%get_message(), "Tamm-Dancoff") > 0, "refusal message: "//err%get_message())
+      call check(error, index(err%get_message(), "singlet") > 0, "refusal message: "//err%get_message())
       if (allocated(error)) return
 
       ! More roots than occupied-virtual pairs.

@@ -159,7 +159,17 @@ target_link_libraries(bench_schwarz PRIVATE ${main_lib} terco_test_basis)
 add_executable(time_tddft_grad time_tddft_grad.F90)
 target_compile_definitions(time_tddft_grad PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(time_tddft_grad PRIVATE ${main_lib} terco_test_basis)
-foreach(b time_tddft_grad bench_binwater bench_many bench_xc bench_gc bench_sph bench_grad_1e bench_warmstart bench_schwarz)
+# Wall time of eri%gradient_pairs against eri%gradient (time_grad_pairs.F90's
+# own header). Not a pass/fail.
+add_executable(time_grad_pairs time_grad_pairs.F90)
+target_compile_definitions(time_grad_pairs PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(time_grad_pairs PRIVATE ${main_lib} terco_test_basis)
+# Wall time of the batched coupled-perturbed solve against one column at a
+# time (time_cpks_batched.F90's own header). Not a pass/fail.
+add_executable(time_cpks_batched time_cpks_batched.F90)
+target_compile_definitions(time_cpks_batched PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(time_cpks_batched PRIVATE ${main_lib} terco_test_basis)
+foreach(b time_tddft_grad time_cpks_batched time_grad_pairs bench_binwater bench_many bench_xc bench_gc bench_sph bench_grad_1e bench_warmstart bench_schwarz)
   target_include_directories(${b} PRIVATE ${CMAKE_BINARY_DIR}/modules)
 endforeach()
 

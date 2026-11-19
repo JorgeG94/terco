@@ -572,9 +572,11 @@ module trc_scf_settings
       !! `opts%incr_predict`, or TRC_INCR_PREDICT: the next build is full once the
       !! commutator it is predicted to reach is below this times `conv_diis`.
       real(dp) :: incr_endgame_run = 0.0_dp
-      !! TRC_INCR_ENDGAME, an experiment hook only: every build is full once
-      !! |FDS - SDF| < this times `conv_diis` (0, the default: the schedule's
-      !! own prediction alone, trc_scf_incremental's rule 2).
+      !! Every build is full once |FDS - SDF| < this times `conv_diis`
+      !! (trc_scf_incremental's rule 4). 0: the schedule's own prediction alone
+      !! (rule 2). The default is `incr_endgame_default`: ENDGAME_FACTOR when
+      !! `conv_diis` is within INCR_TIGHT_RATIO of the screening threshold,
+      !! else 0. TRC_INCR_ENDGAME overrides it.
       integer :: incr_reset_run = 0
       real(dp) :: rho_tol = 0.0_dp   !! the XC batch screen, `opts%rho_tol`
    contains
@@ -748,7 +750,8 @@ contains
       this%incr_scale_run = incr_real_env("TRC_INCR_THRESH_SCALE", opts%incr_thresh_scale)
       this%incr_early_scale_run = incr_real_env("TRC_INCR_EARLY_SCALE", opts%incr_early_scale)
       this%incr_early_until_run = incr_real_env("TRC_INCR_EARLY_UNTIL", opts%incr_early_until)
-      this%incr_endgame_run = incr_real_env("TRC_INCR_ENDGAME", 0.0_dp)
+      this%incr_endgame_run = incr_real_env("TRC_INCR_ENDGAME", &
+                                            incr_endgame_default(opts%conv_diis, this%eri_thresh_run))
       this%incr_predict_run = incr_real_env("TRC_INCR_PREDICT", opts%incr_predict)
    end function scf_settings_resolve
 
@@ -810,6 +813,26 @@ contains
          if (ios == 0 .and. k >= 0) res = k
       end if
    end function incr_reset_env
+
+   pure real(dp) function incr_endgame_default(conv_diis, eri_thresh) result(factor)
+      !! The default of `incr_endgame_run`. The screening error the increments
+      !! add up keeps |FDS - SDF| from falling below a few tens of the
+      !! screening threshold (measured: 1e-11 to 4e-11 for H2O2, |E| = 150, at
+      !! 1e-12), whatever the iteration does. A run asking for a commutator
+      !! within INCR_TIGHT_RATIO of the threshold sits on that floor: the stall
+      !! rule rebuilds in full, the next increments put the error back, and the
+      !! run needs many iterations or none (H2O2/6-31G at 1e-11: 38 against 23
+      !! with full builds, and "did not converge" under a lower iteration cap
+      !! or another toolchain's rounding). Building in full from
+      !! ENDGAME_FACTOR times `conv_diis` on takes the increments out of that
+      !! last stretch only. The default `conv_diis` (1e-5) is far from the
+      !! floor and keeps its schedule unchanged.
+      real(dp), intent(in) :: conv_diis, eri_thresh
+      real(dp), parameter :: INCR_TIGHT_RATIO = 1.0e3_dp
+      real(dp), parameter :: ENDGAME_FACTOR = 10.0_dp
+      factor = 0.0_dp
+      if (conv_diis < INCR_TIGHT_RATIO*eri_thresh) factor = ENDGAME_FACTOR
+   end function incr_endgame_default
 
    real(dp) function incr_real_env(name, dflt) result(res)
       !! Experiment hook, like `incr_reset_env`: TRC_INCR_THRESH_SCALE,
