@@ -1,0 +1,10 @@
+# terco pyscf reference v1
+# case: check_h_vs_pyscf b3lyp_hco_min
+# generator: test/pyscf_refs/generate.py CASES["h_b3lyp_hco_min"] -> gen_h_scf
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 254d8a89c57535d31645838d3c2fa02ce4ebd98adb44fb44e678005d4784d884
+# files: test/check_h_vs_pyscf.F90 test/basis_sets/h-min-pyscf17.json test/hco.xyz
+# b3lyp UKS, sph, 97 AOs, 38008 grid points, GRAD_NORM 8.753e-09
+E -8.41846669436828563e+01
+END

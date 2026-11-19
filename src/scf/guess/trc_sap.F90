@@ -39,7 +39,9 @@ module trc_sap
    use trc_collocation, only: collocation_shell, NCART_MAX
    use pic_blas_interfaces, only: pic_gemm
    use trc_basis_types, only: trc_pairlist_t
+   use pic_strings, only: to_string
    use trc_integrals, only: trc_df_3c
+   use trc_df_kernels, only: DF_LMAX
    use trc_basis_json, only: trc_fitted_shell_from_json
    implicit none
    private
@@ -281,6 +283,15 @@ contains
       talk = .false.
       if (present(verbose)) talk = verbose
       nao = b%nao
+      ! The three-centre pass is the density-fitting kernels', whose orbital
+      ! ceiling (TERCO_DF_LMAX) is below an h basis's; say so rather than stop
+      ! inside trc_df_3c.
+      if (maxval(b%sh_l) > DF_LMAX) then
+         call error%set(ERROR_VALIDATION, "trc_sap_build: the SAP guess forms (mu nu|rho_A) with the density-fitting "// &
+                        "kernels, generated for orbital shells up to l = "//to_string(DF_LMAX)//" (TERCO_DF_LMAX) and "// &
+                        "this basis has l = "//to_string(int(maxval(b%sh_l)))//"; use another guess (sad, sadq, minao, gwh, core)")
+         return
+      end if
       bpath = SAP_BASIS_DEFAULT
       block
          character(len=512) :: pe

@@ -1,0 +1,10 @@
+# terco pyscf reference v1
+# case: check_h_vs_pyscf uhf_hco_min
+# generator: test/pyscf_refs/generate.py CASES["h_uhf_hco_min"] -> gen_h_scf
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: bc35ee8693dfd68240f7145ae068a6fa91a885b1aa3c5638f83c3c04a400a674
+# files: test/check_h_vs_pyscf.F90 test/basis_sets/h-min-pyscf17.json test/hco.xyz
+# hf UHF, sph, 97 AOs, 0 grid points, GRAD_NORM 8.077e-09
+E -8.29731301298229766e+01
+END

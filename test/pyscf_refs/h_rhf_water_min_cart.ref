@@ -1,0 +1,10 @@
+# terco pyscf reference v1
+# case: check_h_vs_pyscf rhf_water_min_cart
+# generator: test/pyscf_refs/generate.py CASES["h_rhf_water_min_cart"] -> gen_h_scf
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: c41a4e5d36d4b9de7a923172871f4c21992a5ca8a9fe6860784936bda4e7831e
+# files: test/check_h_vs_pyscf.F90 test/basis_sets/h-min-pyscf17.json test/water.xyz
+# hf RHF, cart, 126 AOs, 0 grid points, GRAD_NORM 3.252e-09
+E -6.67639315320910214e+01
+END

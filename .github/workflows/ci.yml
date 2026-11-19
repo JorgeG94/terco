@@ -564,6 +564,9 @@ jobs:
           # The Rys diagonal Schwarz kernel: no TERCO_LMAX dependence, but
           # still generated and diffed like everything else here.
           python3 scripts/gen_schwarz.py -o src/generated/schwarz/trc_schwarz_rys.F90
+          # The Cartesian component tables and the spherical transform (l up to 4, the shipped set).
+          python3 scripts/gen_cartcomp.py
+          python3 scripts/gen_sph.py
 
       - name: Require no diff
         run: |
@@ -638,13 +641,18 @@ jobs:
           python3 scripts/gen_rys_roots.py -n 7 -o src/generated/rys/trc_rys_table7.F90
           python3 scripts/gen_rys_roots.py -n 8 -o src/generated/rys/trc_rys_table8.F90
           python3 scripts/gen_rys_roots.py -n 9 -o src/generated/rys/trc_rys_table9.F90
+          python3 scripts/gen_rys_roots.py -n 10 -o src/generated/rys/trc_rys_table10.F90
+          python3 scripts/gen_rys_roots.py -n 11 -o src/generated/rys/trc_rys_table11.F90
+          # The Boys table (orders 0..20, for (hh|hh)); the evaluator below its
+          # data is kept, only the data and the sizes are rewritten.
+          python3 scripts/gen_boys_table.py --mmax 20 -o src/core/trc_boys.F90
 
       - name: Require no diff
         run: |
-          if ! git diff --quiet -- src/generated/rys; then
-            echo "::error::src/generated/rys is out of date with scripts/gen_rys_roots.py."
+          if ! git diff --quiet -- src/generated/rys src/core/trc_boys.F90; then
+            echo "::error::src/generated/rys or src/core/trc_boys.F90 is out of date with its generator."
             echo "Run the commands in the 'Regenerate' step and commit the result."
-            git diff --stat -- src/generated/rys
+            git diff --stat -- src/generated/rys src/core/trc_boys.F90
             exit 1
           fi
 

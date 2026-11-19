@@ -44,7 +44,7 @@ rely exclusively on do concurrent to do the parallelization of the quartets.
 
 | | |
 |---|---|
-| **Four-centre ERIs and Fock builds** | Head-Gordon–Pople through **d**, chunked Rys through **f** (`TERCO_LMAX=3`) and the low-L **g** classes, McMurchie–Davidson exchange for the rest of **g** and a McMurchie–Davidson J engine (`TERCO_LMAX=4`) |
+| **Four-centre ERIs and Fock builds** | Head-Gordon–Pople through **d**, chunked Rys through **f** (`TERCO_LMAX=3`) and the low-L **g** classes, McMurchie–Davidson exchange for the rest of **g** and a McMurchie–Davidson J engine (`TERCO_LMAX=4`); **h** (`TERCO_LMAX=5`, energies, checked against pyscf on the host and on a V100; CI does not build it) is McMurchie–Davidson throughout |
 | | single density, **batched over N densities in one integral pass**, non-symmetric density, and a device-resident entry point |
 | | `j_scale` / `k_scale`, so a hybrid functional or a response solve needs no second routine |
 | **Screening** | Schwarz bounds and optional density weighting, over a binned shell-pair container |
@@ -73,6 +73,34 @@ Terco will read the qcshema basis set format so if you have those, you can use t
 - **g functions** need `TERCO_LMAX=4` and are for energies (range-separated
   hybrids included): the non-symmetric Fock build and gradients refuse a g
   basis, and the multipole integrals stop at d. An LMAX=4 build compiles for about 50 minutes.
+- **h functions** need `TERCO_LMAX=5` and `TERCO_CART_ORDER=lexicographic`,
+  and are for energies: RHF, UHF and DFT through meta-GGA, hybrids and
+  range-separated hybrids, with or without point-group symmetry. The 16
+  `check_h_vs_pyscf` cases pass on the host and on a V100 with nvfortran 26.9
+  at the default optimisation, |dE| against pyscf 6e-14 to 1.6e-11, integral
+  row sums within 6e-15. With nvfortran 26.5 the 14 original cases pass with
+  a Hermite-item `-O2` workaround, which the build switches on by itself for
+  nvfortran older than 26.9 (the run-time cost of the workaround is not
+  measured). Full cc-pV5Z energies on the V100 agree with the host to 1e-12 Eh
+  (N2, H2O2). CI does not build `TERCO_LMAX=5` (the GPU smoke test is in
+  `.claude/context/gpu-pitfalls.md`).
+  Every class with an h shell runs on the McMurchie–Davidson engine. In a
+  water hexamer in cc-pV5Z (1206 functions, 23.9 s per Fock build on a V100)
+  the 22 h classes with total angular momentum <= 9 take about 10% of the
+  build, so routing them to chunked Rys would change it by a few percent at
+  most. A single small molecule (H2O2, 292 functions: 0.8-1.0 s per Fock
+  build) is bound by launch overhead, about 2 ms per class launch. The larger
+  Boys table costs nothing measurable at `TERCO_LMAX` <= 4. An h basis
+  is refused with a message by density fitting, PCM, CHELPG, gradients, RI-MP2,
+  RI-CCSD and the response solvers: CPHF, CPKS and TDDFT refuse a basis above
+  the dipole-integral ceiling (d) with a message rather than stopping in
+  `error stop`. The direct multipole entry points still `error stop` above d.
+  A full `TERCO_LMAX=5` build is slow: nvfortran 26.5 took 76-78 minutes wall
+  at `-j20` on a 40-core host shared with other jobs (about 970 CPU-minutes);
+  nvfortran 26.9 took 111 minutes at `-j14` on the same host with other builds
+  running. The slowest files (26.9) are `trc_1e_grad_k44` at 39 minutes and
+  `trc_pcm_grad_k44` at 23 (both also built at LMAX=4), and `trc_1e_k55` at
+  27; gfortran 15.1 builds the host library in 5 minutes 40 seconds at `-j20`.
 
 Spherical harmonics and range separation are supported:
 
@@ -117,7 +145,7 @@ ctest --test-dir build --output-on-failure
 
 | Option | Default | |
 |---|---|---|
-| `TERCO_LMAX` | `2` | four-centre ceiling. Anything but 2 regenerates the kernels (needs Python 3) |
+| `TERCO_LMAX` | `2` | four-centre ceiling, 0 to 5 (`TERCO_DF_LMAX` at most 4). Anything but 2 regenerates the kernels (needs Python 3) |
 | `TERCO_GPU_ARCH` | `cc70` | as nvfortran spells it |
 | `TERCO_BUILD_SHARED` | `ON` | `libterco.so`, which a host built with another compiler can link; `OFF` for a static library |
 | `TERCO_REGENERATE` | `OFF` | refresh the committed kernels in-tree |

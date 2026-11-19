@@ -347,6 +347,174 @@ def emit_multipole(la, lb, order="lexicographic"):
     return chr(10).join(o), slot
 
 
+def split_class(la, lb):
+    """Whether a class is emitted as separate routines (emit_class_split).
+
+    nvfortran's compile time is per routine and grows much faster than the
+    routine's size: trc_1e_k55 of a LMAX=5 build, one 16k-line routine, took
+    2264 s on a loaded box (k54 858 s). Only the classes with an h shell are
+    split, so every LMAX <= 4 class keeps the text it was measured with.
+    """
+    return max(la, lb) >= SPLIT_L
+
+
+SPLIT_L = 5
+
+
+def emit_class_split(la, lb, sxyz, txyz, comps, vrr, hrr, cp0, order):
+    """The class of emit_class as four same-module `pure` `!$acc routine seq`
+    routines: S and T, then the nuclear attraction with one routine per
+    transfer direction, and the class routine that calls them. The arithmetic
+    is the one routine's, statement for statement, and so is every
+    accumulation order (S and T over primitive pairs; V over primitive pair, then
+    nucleus): S, T and V are bit-identical to emit_class's."""
+    lab = la + lb
+    na, nb = len(cart(la)), len(cart(lb))
+    idx = cart_cum(lab)
+    nvn = ncum(lab)
+    tag = f"{la}{lb}"
+    both = lb > 0
+    prim = """      do ip = 1, nprim_a
+         al = ea(ip)
+      do jp = 1, nprim_b
+         bet = eb(jp)
+         zeta = al + bet
+         oo2z = 0.5_dp/zeta
+         xi = al*bet/zeta
+         cc = ca(ip)*cb(jp)
+         tbb = 2.0_dp*bet*bet
+
+         px = (al*ra(1) + bet*rb(1))/zeta
+         py = (al*ra(2) + bet*rb(2))/zeta
+         pz = (al*ra(3) + bet*rb(3))/zeta
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
+"""
+    nuc_args = ("zeta, oo2z, cc, vpref, px, py, pz, pax, pay, paz, pbx, pby, pbz, abx, aby, abz, "
+                "natm, zatm, ratm, vout")
+    decl_ab = f"""      integer,  intent(in)    :: natm
+      real(dp), intent(in)    :: zeta, oo2z, cc, vpref, px, py, pz, pax, pay, paz, pbx, pby, pbz
+      real(dp), intent(in)    :: abx, aby, abz
+      real(dp), intent(in)    :: zatm(natm), ratm(3, natm)
+      real(dp), intent(inout) :: vout({na*nb})
+"""
+
+    def nuc_routine(name, vrr_txt, hrr_txt, bvars):
+        # Three routines per direction: the loop over nuclei, the Boys-weighted
+        # recurrence (vn out) and the transfer (vtmp out). nvvm's time grows much
+        # faster than a routine's size and keeps them apart as separate device
+        # functions; vn is one explicit-shape array handed between them.
+        return f"""
+   pure subroutine one_e_{name}r_{tag}(vpref, oo2z, pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz, f, vn)
+      !! The nuclear-attraction recurrence table of one primitive pair and nucleus.
+      !$acc routine seq
+      real(dp), intent(in)  :: vpref, oo2z, pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz
+      real(dp), intent(in)  :: f(0:BOYS_MMAX)
+      real(dp), intent(out) :: vn({nvn},0:{lab})
+
+{vrr_txt}
+   end subroutine one_e_{name}r_{tag}
+
+   pure subroutine one_e_{name}h_{tag}(abx, aby, abz, vn, vtmp)
+      !! The transfer of that table onto the shell pair's components.
+      !$acc routine seq
+      real(dp), intent(in)  :: abx, aby, abz
+      real(dp), intent(in)  :: vn({nvn},0:{lab})
+      real(dp), intent(out) :: vtmp({na*nb})
+      integer  :: k
+      real(dp) :: vn0({nvn})
+{bvars}
+{hrr_txt}
+   end subroutine one_e_{name}h_{tag}
+
+   pure subroutine one_e_{name}_{tag}({nuc_args})
+      !! The nuclear attraction of one primitive pair on every nucleus,
+      !! accumulated into vout.
+      !$acc routine seq
+{decl_ab}      integer  :: ic, k
+      real(dp) :: pcx, pcy, pcz, tval
+      real(dp) :: vn({nvn},0:{lab}), vtmp({na*nb})
+      real(dp) :: f(0:BOYS_MMAX)
+
+      do ic = 1, natm
+         pcx = px - ratm(1, ic)
+         pcy = py - ratm(2, ic)
+         pcz = pz - ratm(3, ic)
+         tval = zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
+         call boys_eval({lab}, tval, f)
+         call one_e_{name}r_{tag}(vpref, oo2z, pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz, f, vn)
+         call one_e_{name}h_{tag}(abx, aby, abz, vn, vtmp)
+         do k = 1, {na*nb}
+            vout(k) = vout(k) - cc*zatm(ic)*vtmp(k)
+         end do
+      end do
+   end subroutine one_e_{name}_{tag}
+"""
+
+    out = []
+    if both:
+        out.append(nuc_routine("va", vrr, f"{cp0}\n{hrr}", ""))
+        out.append(nuc_routine("vb", emit_nuc_vrr(lab, idx, 'b'),
+                               f"{cp0}\n{emit_hrr_b(la, lb, idx, 'vn0', 'vtmp', order)}",
+                               "      real(dp) :: bax, bay, baz\n      bax = -abx; bay = -aby; baz = -abz\n"))
+        call = f"""         if (bet > al) then
+            call one_e_vb_{tag}({nuc_args})
+         else
+            call one_e_va_{tag}({nuc_args})
+         end if"""
+    else:
+        out.append(nuc_routine("va", vrr, f"{cp0}\n{hrr}", ""))
+        call = f"         call one_e_va_{tag}({nuc_args})"
+    top = f"""
+   pure subroutine one_e_{tag}(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
+                               natm, zatm, ratm, sout, tout, vout)
+      !! ({la}|{lb}) one-electron block: overlap, kinetic, nuclear attraction.
+      !! The overlap and kinetic energy are computed here; the nuclear attraction of
+      !! each primitive pair is one call of {"one_e_va_" + tag + " or one_e_vb_" + tag if both else "one_e_va_" + tag}, so that
+      !! no routine is large (see split_class in gen_1e.py).
+      !$acc routine seq
+      integer,  intent(in)  :: nprim_a, nprim_b, natm
+      real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
+      real(dp), intent(in)  :: eb(nprim_b), cb(nprim_b)
+      real(dp), intent(in)  :: ra(3), rb(3)
+      real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
+      real(dp), intent(out) :: sout({na*nb}), tout({na*nb}), vout({na*nb})
+
+      integer  :: ip, jp, k
+      real(dp) :: al, bet, zeta, oo2z, xi, cc, tbb
+      real(dp) :: px, py, pz, pax, pay, paz, pbx, pby, pbz
+      real(dp) :: vpref, rab2
+      real(dp) :: abx, aby, abz, e0x, e0y, e0z
+      real(dp) :: sx(0:{la},0:{lb + 2}), sy(0:{la},0:{lb + 2}), sz(0:{la},0:{lb + 2})
+      real(dp) :: tx(0:{la},0:{lb}), ty(0:{la},0:{lb}), tz(0:{la},0:{lb})
+
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
+      rab2 = abx*abx + aby*aby + abz*abz
+
+      do k = 1, {na*nb}
+         sout(k) = 0.0_dp; tout(k) = 0.0_dp; vout(k) = 0.0_dp
+      end do
+
+{prim}
+         e0x = sqrt(PI/zeta)*exp(-xi*abx*abx)
+         e0y = sqrt(PI/zeta)*exp(-xi*aby*aby)
+         e0z = sqrt(PI/zeta)*exp(-xi*abz*abz)
+
+{sxyz}
+
+{txyz}
+
+{comps}
+
+         vpref = 2.0_dp*PI/zeta*exp(-xi*rab2)
+{call}
+      end do
+      end do
+   end subroutine one_e_{tag}
+"""
+    return top + "".join(out)
+
+
 def emit_class(la, lb, LMAX, order="lexicographic"):
     lab = la + lb
     na, nb = len(cart(la)), len(cart(lb))
@@ -399,6 +567,9 @@ def emit_class(la, lb, LMAX, order="lexicographic"):
         nuc_body = f"{vrr}\n\n{cp0}\n{hrr}"
         bavars = ""
         bainit = ""
+
+    if split_class(la, lb):
+        return emit_class_split(la, lb, sxyz, txyz, comps, vrr, hrr, cp0, order)
 
     return f"""
    pure subroutine one_e_{tag}(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &

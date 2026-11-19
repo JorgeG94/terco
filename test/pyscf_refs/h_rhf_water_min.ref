@@ -1,0 +1,10 @@
+# terco pyscf reference v1
+# case: check_h_vs_pyscf rhf_water_min
+# generator: test/pyscf_refs/generate.py CASES["h_rhf_water_min"] -> gen_h_scf
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 8cbdd8048ac96755cd5428d8a12202754c08057256acb922478ac2cdebbdf207
+# files: test/check_h_vs_pyscf.F90 test/basis_sets/h-min-pyscf17.json test/water.xyz
+# hf RHF, sph, 86 AOs, 0 grid points, GRAD_NORM 2.930e-09
+E -5.82039426718411974e+01
+END

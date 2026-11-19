@@ -87,7 +87,7 @@ module trc_cphf
    use pic_types, only: dp
    use pic_logger, only: global_logger
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
-   use trc_integrals, only: trc_multipoles, TRC_NMULT
+   use trc_integrals, only: trc_multipoles, TRC_NMULT, integrals_multipole_lmax_refusal
    use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_linalg, only: trc_linalg_t
    use trc_scf_settings, only: trc_scf_result_t
@@ -99,6 +99,7 @@ module trc_cphf
    public :: trc_cphf_options_t, trc_cphf_result_t, trc_cphf_cg_t
    public :: trc_cphf_solve_rhf, trc_cphf_solve_uhf, trc_cphf_solve_rhf_fitted
    public :: trc_scf_polarizability_rhf, trc_scf_polarizability_uhf, trc_scf_polarizability
+   public :: cphf_refuse_polarizability
    ! Shared with trc_cpks (the CPKS extension of this solver): the same CG
    ! loop, the same elementwise `do concurrent` helpers -- see this
    ! module's header on why they are split out as explicit-shape-dummy
@@ -692,7 +693,13 @@ contains
 
       real(dp), allocatable :: mmat(:, :, :), temporary(:, :), bvec(:, :, :), u(:, :, :)
       integer :: nao, nvirt, x, y
+      character(len=:), allocatable :: reason
 
+      reason = integrals_multipole_lmax_refusal(b)
+      if (len(reason) > 0) then
+         call cphf_refuse_polarizability(reason, alpha, res)
+         return
+      end if
       nao = b%nao
       nvirt = nao - nocc
       if (.not. present(la)) then
@@ -754,7 +761,13 @@ contains
       real(dp), allocatable :: mmat(:, :, :), temporary_a(:, :), temporary_b(:, :)
       real(dp), allocatable :: bvec_a(:, :, :), bvec_b(:, :, :), u_a(:, :, :), u_b(:, :, :)
       integer :: nao, nva, nvb, x, y
+      character(len=:), allocatable :: reason
 
+      reason = integrals_multipole_lmax_refusal(b)
+      if (len(reason) > 0) then
+         call cphf_refuse_polarizability(reason, alpha, res)
+         return
+      end if
       nao = b%nao
       nva = nao - noa
       nvb = nao - nob
@@ -798,6 +811,19 @@ contains
       !$acc exit data delete(cmo_a, cmo_b, mmat, temporary_a, temporary_b, bvec_a, bvec_b, u_a, u_b)
       deallocate (mmat, temporary_a, temporary_b, bvec_a, bvec_b, u_a, u_b)
    end subroutine trc_scf_polarizability_uhf
+
+   subroutine cphf_refuse_polarizability(reason, alpha, res)
+      !! A polarizability that cannot run: unconverged, the reason in
+      !! `res%message`, alpha zero, one zero iteration count per field axis.
+      character(len=*), intent(in) :: reason
+      real(dp), intent(out) :: alpha(3, 3)
+      type(trc_cphf_result_t), intent(inout) :: res
+      res%converged = .false.
+      res%message = reason
+      allocate (res%iterations(3))
+      res%iterations = 0
+      alpha = 0.0_dp
+   end subroutine cphf_refuse_polarizability
 
    subroutine trc_scf_polarizability(b, pl, eri, nalpha, nbeta, res_scf, alpha, opts, res, la)
       !!

@@ -101,6 +101,96 @@ def nbatch_for(L, table):
     return DEFAULT_BATCHES.get(L, 1)
 
 
+# THE HERMITE STAGE OF AN h BUILD IS SPLIT, ONE FILE PER R BATCH.
+#
+# A Hermite module [lp|lq] with lp >= SPLIT_LP (9: only an h pair, la + lb = 10,
+# makes one, or an h-g pair, 9) puts each R batch in its own module with its
+# own launcher and its own same-module `pure`, `!$acc routine seq` item
+# routine (docs/GENERATORS.md), so the batches compile in parallel and the
+# module trc_mdj_s<lp><lq> only calls the launchers in order.
+#
+# Why. nvfortran 26.5 (-stdpar=gpu -acc -gpu=cc70,mem:separate -fast -O3), one
+# file each: trc_mdj_s88 (9 item routines, the largest 10.7k lines) 302 s;
+# trc_mdj_s1010 at the default 9 batches (item routines up to 26.9k lines) had
+# not finished after 55 min; the same module with 27 batches at L = 20 (27
+# item routines of 3.0k..12.7k lines) 1515 s. The cost is per routine and
+# grows much faster than the routine's size, and a file compiles serially.
+# So the batch count below is the smallest that keeps every item routine near
+# 12k lines, measured as generated lines of the item routines over all
+# (lp, lq) of the L (gfortran takes minutes on a 25k-line one too).
+#
+# THE RUN-TIME EFFECT OF THE HIGHER BATCH COUNT IS NOT MEASURED ON A GPU. More
+# batches mean more launches and more repeated Boys/prefactor work per primitive
+# quartet (each batch recomputes its own leaves); Palethorpe and Barca's best
+# count at L >= 9 was nine. The compile measurements are the reason, not speed.
+SPLIT_LP = 9
+SPLIT_BATCHES = {17: 12, 18: 18, 19: 21, 20: 24}
+SPLIT_WEIGHT_EXP = -0.5
+#: Batches balanced by targets * (max + 1)**-0.5 rather than by target count:
+#: at L = 20 the largest item routine is 12.3k lines at 24 batches (smallest
+#: 3.2k) where the plain count needs 27 batches for 12.5k (smallest 2.9k).
+
+
+# ITEM ROUTINES COMPILED AT -O2 WHATEVER THE BUILD'S OPTIMISATION LEVEL.
+#
+# nvfortran 26.5 at -O3 miscompiles the [10|8] batch 3 item routine (of 18) on
+# a Volta device: its first ket load of Dt() goes through a garbage address
+# (CUDA_ERROR_ILLEGAL_ADDRESS; compute-sanitizer: invalid global read in the
+# item routine, 10 GB from any allocation) as soon as a primitive quartet
+# survives screening. Reproduced on synthetic data with every launch argument
+# in bounds, and the same source runs clean under gfortran -fcheck=all, so it
+# is not an index error. -O1 and -O2 (also with -fast) are clean; -O3 alone
+# fails, and so does -O3 -Mnovect, -Mnounroll, -Mnopre or -Mnolre. A later -O2
+# on the command line does not undo an earlier -O3 (the CMake per-source
+# option comes last and changes nothing), so the level is set with the PGI
+# routine directive `!pgi$r opt=2`, a comment to every other compiler, emitted
+# inside `#ifdef TRC_NVHPC_O3_ITEM_BUG`, which src/CMakeLists.txt defines for
+# nvfortran older than 26.9. Fixed in 26.9 (measured: -fast -O3 is clean and
+# gives the same result as -O2 to 2e-16); observed in 26.5; earlier versions
+# are untested and treated as affected. All
+# 300 other split launchers (every batch of the other 20 classes) run clean at
+# -O3.
+#
+# The directive also stops the item being inlined into its launcher. Compiled
+# with the build's flags, the launcher's PTX is 196 lines with one call to a
+# separate device function (launcher 58 registers, item 255) with the
+# directive, and 18,760 lines with the item inlined without it. So the cure
+# may be the de-inlining as much as the lower level. The run-time cost of this
+# batch is not measured.
+#
+# The key is the batch's content, not its number: (lp, lq, direction group,
+# lowest and highest largest-component of its R targets). [10|8] batch 3 of 18
+# is the X group (direction 0), largest component exactly 7: 53 targets.
+# gen_r_module asserts that every key matches exactly one emitted batch, so a
+# change of SPLIT_BATCHES, SPLIT_WEIGHT_EXP or the batching fails the
+# generator instead of moving the directive. Then re-run the GPU sweep: launch
+# every mdj_sb_<lp><lq>_<b> once on random data, and the h smoke tests of
+# .claude/context/gpu-pitfalls.md.
+O2_ITEMS = {(10, 8, 0, 7, 7)}
+
+
+def batch_key(lp, lq, g):
+    """Content key of one R batch: (lp, lq, direction group, min and max of the
+    largest component of its targets). The direction is -1 for a batch that
+    spans all three (the unsplit module's single batch)."""
+    dirs = {rtree._group_dir(r) for (r, _) in g.targets}
+    mx = [max(r) for (r, _) in g.targets]
+    return (lp, lq, dirs.pop() if len(dirs) == 1 else -1, min(mx), max(mx))
+
+
+def split_hermite(lp, lq):
+    """Whether the [lp|lq] Hermite module is emitted one file per batch."""
+    return max(lp, lq) >= SPLIT_LP
+
+
+def nbatch_split(L, table):
+    """Batch count of a split Hermite module: --batches wins, then SPLIT_BATCHES
+    (L = 17..20), then the default nine."""
+    if L in table:
+        return table[L]
+    return SPLIT_BATCHES.get(L, DEFAULT_BATCHES_HIGH)
+
+
 def lit(c):
     """A Fortran real literal for a float that is exactly representable."""
     if c == int(c):
@@ -719,31 +809,49 @@ def decl(typ, names, per=8):
 
 # ----------------------------------------------------------- Hermite stage --
 
-def gen_r_module(lp, lq, nbatch, header, sieve=True):
-    """[lp|lq] Hermite stage, lp >= lq, each unordered (P, Q) once for both Jt."""
+def gen_r_module(lp, lq, nbatch, header, sieve=True, split=False):
+    """[lp|lq] Hermite stage, lp >= lq, each unordered (P, Q) once for both Jt.
+
+    With `split`, returns (text, {filename: text}): the module calls one launcher
+    per batch, and each batch is its own module (SPLIT_LP's comment)."""
     assert lp >= lq
     diag = lp == lq
     L = lp + lq
     tag = f"{lp}{lq}"
     hp, hq = herm(lp), herm(lq)
     iq = herm_index(lq)
-    dags = rtree.batch_dags(L, nbatch, sieve=sieve)
+    dags = rtree.batch_dags(L, nbatch, sieve=sieve, weight_exp=SPLIT_WEIGHT_EXP if split else 0.0)
+    if split:
+        keys = [batch_key(lp, lq, g) for g in dags]
+        for k in O2_ITEMS:
+            if k[:2] == (lp, lq) and keys.count(k) != 1:
+                raise SystemExit(
+                    f"gen_md_j: O2_ITEMS key {k} matches {keys.count(k)} of the {len(dags)} batches of "
+                    f"[{lp}|{lq}] (need exactly one): the batching changed, so find the batch that "
+                    "nvfortran miscompiles again (GPU launcher sweep) and update O2_ITEMS")
     out = [header.format(what=f"Class [{lp}|{lq}] symmetric Hermite stage of the MD J engine, "
                          f"{len(dags)} R batch(es)")]
     out.append("#include \"inc/trc_dc_index.inc\"")
     out.append(f"module trc_mdj_s{tag}")
     out.append("   use pic_types, only: dp")
     out.append("   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV")
+    if split:
+        # the batches' modules, before `implicit none`
+        out.pop()  # the trc_boys use: only the batch modules need the table
+        for b in range(len(dags)):
+            out.append(f"   use trc_mdj_s{tag}b{b + 1}, only: mdj_sb_{tag}_{b + 1}")
     out.append("   implicit none")
     out.append("   private")
     out.append(f"   public :: mdj_s_{tag}")
     out.append("")
-    out.append(f"   real(dp), parameter :: TWO_PI_2_5 = {TWO_PI_2_5}")
-    out.append("")
+    if not split:
+        out.append(f"   real(dp), parameter :: TWO_PI_2_5 = {TWO_PI_2_5}")
+        out.append("")
     out.append("contains")
     out.append("")
-    out.append('#include "inc/trc_boys_eval.inc"')
-    out.append("")
+    if not split:
+        out.append('#include "inc/trc_boys_eval.inc"')
+        out.append("")
     args = ("np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, mp_z, mp_px, mp_py, mp_pz, mp_ip, mp_nq, "
             "ndt, dt, jt, cut")
     out.append(f"   subroutine mdj_s_{tag}(np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, mp_z, mp_px, &")
@@ -775,6 +883,41 @@ def gen_r_module(lp, lq, nbatch, header, sieve=True):
     else:
         out.append("      nchunk = (nq + qlen - 1)/qlen")
     out.append("      nmine = max(0, (nchunk - c0 + cstep - 1)/cstep)")
+    if split:
+        for b in range(len(dags)):
+            out.extend(wrap_args(f"call mdj_sb_{tag}_{b + 1}", "nmine, " + args, " " * 6))
+        out.append(f"   end subroutine mdj_s_{tag}")
+        out.append("")
+        out.append(f"end module trc_mdj_s{tag}")
+        files = {}
+        decl = [
+            "      integer,  intent(in) :: nmine, np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, ndt",
+            "      real(dp), intent(in) :: mp_z(nhp), mp_px(nhp), mp_py(nhp), mp_pz(nhp)",
+            "      real(dp), intent(in) :: mp_ip(nhp), mp_nq(nhp), dt(ndt), cut",
+            "      real(dp), intent(inout) :: jt(ndt)"]
+        for b, g in enumerate(dags):
+            hdr = header.format(what=f"Class [{lp}|{lq}] symmetric Hermite stage of the MD J engine, R batch "
+                                f"{b + 1} of {len(dags)}: launcher and item routine in one module")
+            m = [hdr.rstrip("\n"), '#include "inc/trc_dc_index.inc"', f"module trc_mdj_s{tag}b{b + 1}",
+                 "   use pic_types, only: dp",
+                 "   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV",
+                 "   implicit none", "   private", f"   public :: mdj_sb_{tag}_{b + 1}", "",
+                 f"   real(dp), parameter :: TWO_PI_2_5 = {TWO_PI_2_5}", "", "contains", "",
+                 '#include "inc/trc_boys_eval.inc"', ""]
+            m.extend(wrap_args(f"subroutine mdj_sb_{tag}_{b + 1}", "nmine, " + args, " " * 3))
+            m.append(f"      !! The launch of batch {b + 1}: one thread per (P, chunk of kets).")
+            m.extend(decl)
+            m.append("      integer :: i")
+            m.append("      do concurrent(i = 1:np*nmine)")
+            m.extend(wrap_args(f"call mdj_s_item_{tag}_b{b + 1}", "TRC_DC_INDEX(i), " + args, " " * 9))
+            m.append("      end do")
+            m.append(f"   end subroutine mdj_sb_{tag}_{b + 1}")
+            m.append("")
+            m.extend(s_item(lp, lq, b + 1, g, hp, hq, iq, args, diag))
+            m.append("")
+            m.append(f"end module trc_mdj_s{tag}b{b + 1}")
+            files[f"trc_mdj_s{tag}b{b + 1}.F90"] = "\n".join(m) + "\n"
+        return "\n".join(out) + "\n", files
     for b in range(len(dags)):
         out.append("      do concurrent(i = 1:np*nmine)")
         out.extend(wrap_args(f"call mdj_s_item_{tag}_b{b + 1}", "TRC_DC_INDEX(i), " + args, " " * 9))
@@ -817,6 +960,8 @@ def s_item(lp, lq, b, g, hp, hq, iq, args, diag):
     rnames = [s.lhs for s in stmts]
     ind = " " * 12
     o = []
+    if batch_key(lp, lq, g) in O2_ITEMS:
+        o.extend(["#ifdef TRC_NVHPC_O3_ITEM_BUG", "!pgi$r opt=2", "#endif"])
     o.extend(wrap_args(f"pure subroutine mdj_s_item_{tag}_b{b}", "i, " + args, " " * 3))
     o.append(f"      !! Batch {b}: {len(g.targets)} targets, {inter} intermediates, "
              f"{flops} R flops per primitive quartet.")
@@ -1257,6 +1402,13 @@ def main():
         for lb in range(la + 1):
             write(f"trc_mdj_e{la}{lb}.F90", gen_e_module_loops(la, lb, a.order, e_header))
     for lp, lq in sym_kernels(a.lmax, a.sym_lmax):
+        if split_hermite(lp, lq):
+            txt, files = gen_r_module(lp, lq, nbatch_split(lp + lq, table), header, sieve=not a.no_sieve,
+                                      split=True)
+            write(f"trc_mdj_s{lp}{lq}.F90", txt)
+            for name, ftxt in files.items():
+                write(name, ftxt)
+            continue
         write(f"trc_mdj_s{lp}{lq}.F90",
               gen_r_module(lp, lq, nbatch_for(lp + lq, table), header, sieve=not a.no_sieve))
     for lp, lq in gather_kernels(a.lmax, a.sym_lmax, a.gather_all):

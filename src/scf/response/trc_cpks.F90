@@ -88,7 +88,7 @@ module trc_cpks
    use pic_types, only: dp, int64
    use pic_logger, only: global_logger
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
-   use trc_integrals, only: trc_multipoles, TRC_NMULT
+   use trc_integrals, only: trc_multipoles, TRC_NMULT, integrals_multipole_lmax_refusal
    use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t
@@ -97,7 +97,8 @@ module trc_cpks
                   trc_xc_response_refuse_reason
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_cphf_cg_t, &
                        cphf_zero_matrix, cphf_copy_matrix, cphf_neg_matrix, cphf_add_matrix, &
-                       cphf_axpy_matrix, cphf_precond_matrix, cphf_combine_p, cphf_add_diag
+                       cphf_axpy_matrix, cphf_precond_matrix, cphf_combine_p, cphf_add_diag, &
+                       cphf_refuse_polarizability
    use trc_scf_df, only: df_jk_t
    use trc_scf_df_response, only: df_rotation_t
    implicit none
@@ -324,12 +325,9 @@ contains
       character(len=256) :: reason
 
       reason = cpks_refuse_reason(func)
+      if (len_trim(reason) == 0) reason = integrals_multipole_lmax_refusal(b)
       if (len_trim(reason) > 0) then
-         res%converged = .false.
-         res%message = reason
-         allocate (res%iterations(3))
-         res%iterations = 0
-         alpha = 0.0_dp
+         call cphf_refuse_polarizability(trim(reason), alpha, res)
          return
       end if
 

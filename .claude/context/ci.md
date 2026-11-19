@@ -10,7 +10,7 @@ directives are inert.
 | `host gcc-15 (TERCO_LMAX=3)`, `(TERCO_DF_LMAX=3)` | the f-function and f/g-auxiliary builds; regenerates kernels at configure |
 | `host gcc-15 (TERCO_LMAX=4, -O0)` | g functions: builds only the command line at -O0 (about a minute) and runs water/def2-QZVP against pyscf (`terco/cli_library_def2qzvp_g`) |
 | `generated sources are up to date` | reruns the generators and requires no diff in `src/generated/` |
-| `Rys root tables are up to date` | regenerates the Rys root tables with mpmath 1.3.0 |
+| `Rys root tables are up to date` | regenerates the Rys root tables (1..11 roots) and the Boys table with mpmath 1.3.0 |
 | `OpenACC to OpenMP conversion` | converts the source to OpenMP, builds with `-fopenmp`, runs ctest at 4 threads |
 | `fortitude lint` | `fortitude check`, fortitude-lint 0.9.2 |
 | `no AI-session links in commits or the PR body` (own workflow, `session-links.yml`, so a body edit reruns only it) | pull requests only: `tools/check_session_links.py` fails on a `Claude-Session:` trailer or a claude.ai/code/session URL in the PR's commit messages or body. Reproduce: `python3 tools/check_session_links.py origin/main HEAD` |
@@ -59,7 +59,10 @@ python3 scripts/gen_1e.py --lmax 2 --pcm src/generated/trc_pcm_kernels.F90
 python3 scripts/gen_1e.py --lmax 2 --deriv-dir src/generated
 python3 scripts/gen_1e.py --lmax 2 --pcm-grad-dir src/generated
 python3 scripts/gen_df.py --lmax 2 --lmax-aux 4 --unroll-max-comp 81 --split src/generated
+python3 scripts/gen_cartcomp.py && python3 scripts/gen_sph.py
 git diff --exit-code src/generated
+# the Rys root tables (1..11 roots) and the Boys table (orders 0..20) need mpmath 1.3.0:
+python3 scripts/gen_boys_table.py --mmax 20 -o src/core/trc_boys.F90
 ```
 
 The CI workflow is the source of truth if these drift.

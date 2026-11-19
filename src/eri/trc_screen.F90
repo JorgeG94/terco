@@ -232,10 +232,21 @@ contains
             key = (i - 1)*nbas + j
             if (pairs%n(key) == 0) cycle
             nlive = nlive + 1
-            d_i(nlive) = i
-            d_j(nlive) = j
-            d_k(nlive) = i
-            d_l(nlive) = j
+            ! The HIGHER-l shell first: (ab|ab) = (ba|ba), and the recurrence
+            ! built on the lower-l centre shifts the high-l shell across the
+            ! bond (4e-10 relative error for an H g pair, 1e-16 the other way).
+            ! Chosen by l, as measured on cc-pV5Z water; the loss also depends on
+            ! the exponents (see trc_schwarz_rys). The swapped pair exists when
+            ! the list holds every pair.
+            if (sh_l(j) > sh_l(i) .and. pairs%n((j - 1)*nbas + i) > 0) then
+               d_i(nlive) = j
+               d_j(nlive) = i
+            else
+               d_i(nlive) = i
+               d_j(nlive) = j
+            end if
+            d_k(nlive) = d_i(nlive)
+            d_l(nlive) = d_j(nlive)
             d_q(nlive) = screen_pair_index(i, j)
          end do
       end do

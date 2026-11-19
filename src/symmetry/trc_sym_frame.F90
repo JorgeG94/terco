@@ -26,7 +26,7 @@ module trc_sym_frame
    !!
    !! Only the 3x3 rotation matters, never a particular group; any `l` up to
    !! the build's `TERCO_LMAX` works for Cartesian shells, and up to
-   !! `SPH_LMAX` (4) for spherical ones. The shell blocks are small dense
+   !! `SPH_LMAX` (4, or 5 in an h build) for spherical ones. The shell blocks are small dense
    !! matrices applied shell by shell, so the cost is O(nao^2) per call.
    use pic_types, only: dp
    use trc_error, only: error_t, ERROR_VALIDATION
