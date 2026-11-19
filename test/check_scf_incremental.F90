@@ -63,12 +63,15 @@ contains
    subroutine test_tight(error)
       !! conv_diis 1e-11 is within 1e3 screening thresholds of the floor the increments' accumulated error
       !! sets (trc_scf_incremental's rule 4): without the endgame, H2O2 stalls on that floor. 6-31G took 38
-      !! iterations against 23 with full builds, and this 6-31G* case does not converge in 100. With it, 26
-      !! against 24; 7 of those builds are full (the endgame's), so the loose cases' full-build bound is skipped.
+      !! iterations against 23 with full builds, and this 6-31G* case does not converge in 100. With it,
+      !! 26 against 24 (gfortran 15), 29 against 25 (gfortran 15 MPI) and 33 against 26 (nvfortran host): the
+      !! floor's noise differs by toolchain, so the bound is half again the full-build count, which the
+      !! unconverged run (100+) fails by far. 7 to 14 of those builds are full (the endgame's), so the loose
+      !! cases' full-build bound is skipped.
       type(error_type), allocatable, intent(out) :: error
       type(trc_scf_options_t) :: opts
       call compare(error, "h2o2.xyz", 9, 9, opts, "RHF H2O2/6-31G* tight", conv_energy=1.0e-13_dp, &
-                   conv_diis=1.0e-11_dp, extra_iterations=3)
+                   conv_diis=1.0e-11_dp, slack_fraction=0.5_dp)
    end subroutine test_tight
 
    subroutine test_uhf(error)
@@ -140,15 +143,15 @@ contains
                  to_string(capped%energy, "f20.12")//" against "//to_string(free%energy, "f20.12"))
    end subroutine test_last_iteration
 
-   subroutine compare(error, xyzfile, nalpha, nbeta, opts_in, label, conv_energy, conv_diis, extra_iterations)
+   subroutine compare(error, xyzfile, nalpha, nbeta, opts_in, label, conv_energy, conv_diis, slack_fraction)
       type(error_type), allocatable, intent(out) :: error
       character(*), intent(in) :: xyzfile, label
       integer, intent(in) :: nalpha, nbeta
       type(trc_scf_options_t), intent(in) :: opts_in
       real(dp), intent(in), optional :: conv_energy, conv_diis
-      integer, intent(in), optional :: extra_iterations
-      !! Iterations the incremental run may take over the full-build one (1 by default); given, the
-      !! full-build count bound is skipped too: a tight run builds the endgame in full.
+      real(dp), intent(in), optional :: slack_fraction
+      !! The incremental run may take this fraction more iterations than the full-build one (default: 1
+      !! more); given, the full-build count bound is skipped too: a tight run builds its endgame in full.
       type(trc_scf_options_t) :: opts
       type(trc_scf_result_t) :: full, incr
       integer :: nat, dev, allowed
@@ -191,11 +194,11 @@ contains
                  ", diff "//to_string(incr%energy - full%energy, "es10.2"))
       if (allocated(error)) return
       allowed = 1
-      if (present(extra_iterations)) allowed = extra_iterations
+      if (present(slack_fraction)) allowed = ceiling(slack_fraction*real(full%iterations, dp))
       call check(error, incr%iterations <= full%iterations + allowed, label//": incremental took "// &
                  to_string(incr%iterations)//" iterations against "//to_string(full%iterations))
       if (allocated(error)) return
-      if (present(extra_iterations)) return
+      if (present(slack_fraction)) return
       allowed = max(MAX_FULL, incr%iterations/4)
       call check(error, incr%iterations - incr%n_increments <= allowed, label//": "// &
                  to_string(incr%iterations - incr%n_increments)//" of "//to_string(incr%iterations)// &
