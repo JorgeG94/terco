@@ -94,6 +94,7 @@ basis of `trc_set_aux_json` (the one RI-MP2 reads). Six entry points, documented
 | `trc_set_rccsd_algorithm(h, ladder, triples_routine, triples_budget_mib)` | the ladder form, the (T) routine and the memory of its working tile; none changes the energy |
 | `trc_run_rccsd(h)` | the CCSD and, if asked, the (T) |
 | `trc_rccsd_energy(h, ...)` | `e_mp2`, `e_ccsd`, `e_t`, the T1 diagnostic, the iteration count, `converged` and `has_triples`, all energies being correlation energies |
+| `trc_rccsd_energy_parts(h, e_singles, e_doubles)` | `e_ccsd` as its two parts: what `t2` alone gives, and the `t1 t1` part (ABI 1.29) |
 | `trc_rccsd_dimensions(h, ...)` | the frozen, active occupied, virtual and auxiliary counts of the last run |
 
 ```c

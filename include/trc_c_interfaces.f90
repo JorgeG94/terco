@@ -36,7 +36,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_TIMING_NAME_MAX = 64
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 28
+   integer(c_int), parameter :: TRC_ABI_MINOR = 29
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -1733,6 +1733,23 @@ module trc_c_interfaces
          integer(c_int), intent(out) :: converged
          integer(c_int), intent(out) :: has_triples
       end function trc_rccsd_energy
+
+      integer(c_int) function trc_rccsd_energy_parts(handle, e_singles, e_doubles) bind(c) result(res)
+         !! The RI-CCSD correlation energy of the last trc_run_rccsd, converged or
+         !! not, as the two parts of the energy functional, in Hartree. With
+         !! L(i,a,j,b) = 2 (ia|jb) - (ib|ja) over the correlated occupied and the
+         !! virtual orbitals, `e_doubles` is sum L t2(i,j,a,b), what t2 alone
+         !! gives, and `e_singles` is sum L t1(i,a) t1(j,b), the t1 t1 part. Their
+         !! sum is trc_rccsd_energy's `e_ccsd`. There is no f_ov t1 term: the
+         !! reference is canonical Hartree-Fock. (T) is not in either;
+         !! trc_rccsd_energy reports it. TRC_ERR_STATE when no run has left a
+         !! result. (ABI 1.29.)
+         import :: c_double, c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         real(c_double), intent(out) :: e_singles
+         real(c_double), intent(out) :: e_doubles
+      end function trc_rccsd_energy_parts
 
       integer(c_int) function trc_rccsd_dimensions(handle, nfrozen, nactive_occ, nvirtual, naux) bind(c) result(res)
          !! The orbital spaces of the last trc_run_rccsd, converged or not:
