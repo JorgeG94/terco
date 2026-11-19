@@ -2673,6 +2673,35 @@ foreach(_c ${_tb_cases})
   endforeach()
 endforeach()
 
+# Dense-only cases: no pyscf reference (HNC's lowest roots are all dark, so f
+# cannot be compared), only the solver against the dense eigenvalues of A and the
+# RPA problem for nroots = 3 and for 1 to 6 (control argument "none"). HNC
+# (test/hnc_minimum.xyz) / 6-31+G / HF: with nroots = 1 the old solver's RPA did
+# not converge in 50 iterations (residual 3.3e-4: max_space = 12 left no room for
+# the Ritz pairs the missed-root check iterates).
+foreach(_c hnc_minimum:6-31pg:6-31+g:hf)
+  string(REPLACE ":" ";" _cl ${_c})
+  list(GET _cl 0 _mol)
+  list(GET _cl 1 _tag)
+  list(GET _cl 2 _file)
+  list(GET _cl 3 _f)
+  set(_t terco/check_tddft_basis_dense_${_mol}_${_tag}_${_f})
+  add_test(NAME ${_t}
+           COMMAND check_tddft_basis ${_mol}.xyz ../basis_sets/${_file}.json ${_mol} ${_tag} ${_f} 3
+                   ${CMAKE_CURRENT_BINARY_DIR}/tddft_basis_dense_${_mol}_${_tag}_${_f}_probe.bin none)
+  set_tests_properties(${_t} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+                       SKIP_REGULAR_EXPRESSION "SKIP: [^ ]+ needs l")
+endforeach()
+
+# The checks that need no SCF and no reference run once, as the case `unit`: the
+# f-basis refusal up front (any TERCO_LMAX) and the window rule on a synthetic
+# Ritz set.
+add_test(NAME terco/check_tddft_basis_unit
+         COMMAND check_tddft_basis water.xyz ../basis_sets/cc-pvtz.json water unit hf)
+set_tests_properties(terco/check_tddft_basis_unit PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+
 # Expected refusals: a basis with f shells (above MULT_LMAX) has no TDDFT
 # reference, trc_tddft must refuse it with an error that names the limit. The
 # program then runs the SCF and checks both solves return that error rather than

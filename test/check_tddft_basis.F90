@@ -38,6 +38,8 @@ module check_tddft_basis_suite
    !!     the limit, up front (any build), and after an SCF in an LMAX=3 build;
    !!  9. release.
    !!
+   !! A case whose control argument is `none` has no reference and runs only 7.
+   !!
    !! TDDFT is Cartesian only, so the basis is loaded with force_cart and the
    !! reference is pyscf's mol.cart = True. The grid is terco's own (the SCF's),
    !! written with terco's numbers to the probe file for pyscf.
@@ -72,7 +74,7 @@ module check_tddft_basis_suite
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_tddft, only: trc_tddft_options_t, trc_tddft_result_t, trc_tddft_op_t, trc_tddft_solve_rks, &
-                        trc_tddft_reference_t, trc_tddft_refuse_reason
+                        trc_tddft_reference_t, trc_tddft_refuse_reason, tddft_window, tddft_space_t
    use trc_tables, only: LMAX
    use trc_mult_kernels, only: MULT_LMAX
    use trc_test_basis, only: read_xyz
@@ -81,7 +83,8 @@ module check_tddft_basis_suite
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_read_vector
    implicit none
    private
-   public :: collect_check_tddft_basis, collect_check_tddft_refusal, basis_beyond_lmax, refusal_mode
+   public :: collect_check_tddft_basis, collect_check_tddft_refusal, collect_check_tddft_unit
+   public :: collect_check_tddft_dense, basis_beyond_lmax, refusal_mode
    public :: xyz_arg, bas_json_arg, molname_arg, basname_arg, funcname_arg, nroots_arg, probe_arg, control_arg
 
    real(dp), parameter :: ERI_THRESH = 1.0e-12_dp
@@ -137,7 +140,6 @@ contains
       testsuite = [ &
                   new_unittest("lowest roots equal the dense eigenvalues of A and (A-B)^1/2 (A+B) (A-B)^1/2", test_dense_roots), &
                   new_unittest("the same for nroots = 1 to 6 (Hartree-Fock)", test_dense_nroots), &
-                  new_unittest("a basis with f shells is refused up front, naming MULT_LMAX", test_f_refused_up_front), &
                   new_unittest("TDA omega and f vs pyscf", test_tda_vs_pyscf), &
                   new_unittest("RPA omega, f and ||Y||^2 vs pyscf", test_rpa_vs_pyscf), &
                   new_unittest("residuals of fresh matvecs below conv_tol", test_residual), &
@@ -149,11 +151,31 @@ contains
                   ]
    end subroutine collect_check_tddft_basis
 
+   subroutine collect_check_tddft_unit(testsuite)
+      !! The checks that need no SCF and no reference, run once (the `unit` case),
+      !! not in every case's process.
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("a basis with f shells is refused up front, naming MULT_LMAX", test_f_refused_up_front), &
+                  new_unittest("the window rule on a synthetic Ritz set: cap, count, open candidates", test_window_rule) &
+                  ]
+   end subroutine collect_check_tddft_unit
+
+   subroutine collect_check_tddft_dense(testsuite)
+      !! A case with no pyscf reference (control argument "none"): the solver
+      !! against the dense eigenvalues only.
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("lowest roots equal the dense eigenvalues of A and (A-B)^1/2 (A+B) (A-B)^1/2", test_dense_roots), &
+                  new_unittest("the same for nroots = 1 to 6 (Hartree-Fock)", test_dense_nroots), &
+                  new_unittest("release", test_release) &
+                  ]
+   end subroutine collect_check_tddft_dense
+
    subroutine collect_check_tddft_refusal(testsuite)
       !! The suite of a basis above MULT_LMAX (within LMAX): the refusal after a real SCF.
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
-                  new_unittest("a basis with f shells is refused up front, naming MULT_LMAX", test_f_refused_up_front), &
                   new_unittest("TDA and RPA of an f basis return a clean error after the SCF", test_f_refused_after_scf), &
                   new_unittest("release", test_release) &
                   ]
@@ -372,6 +394,64 @@ contains
       call bas%release()
    end subroutine test_f_refused_up_front
 
+   subroutine test_window_rule(error)
+      !! tddft_window on a synthetic Ritz set (nt = 3 always iterated, cap nkcap = 5,
+      !! nr = 1, theta(1) = 0.30 Eh, theta(k) = 0.30 + 0.004 (k - 1)): a candidate
+      !! is counted ONCE whatever its index (one at k = 25 takes one slot, so the
+      !! collapse keeps nt + 1 vectors, not 25), the cap bounds the iterated ones,
+      !! every candidate is counted in nopen, a pair with |r| >= theta/2 says too little
+      !! and is not counted (|r| >= theta/2), a converged pair or one whose interval
+      !! stays above theta(nr) is not a candidate.
+      type(error_type), allocatable, intent(out) :: error
+      type(tddft_space_t) :: sp
+      real(dp) :: theta(30), rn(30)
+      logical :: act(30)
+      integer :: idx(30), nact, nopen, k
+
+      sp%nt = 3
+      sp%nkcap = 5
+      do k = 1, 30
+         theta(k) = 0.30_dp + 0.004_dp*real(k - 1, dp)
+      end do
+      rn = 1.0e-9_dp
+      ! one candidate at a high index: |r| 0.15 < theta/2 and theta - r < 0.30
+      rn(25) = 0.15_dp
+      call tddft_window(sp, 1, theta, rn, 30, .true., 1.0e-3_dp, act, idx, nact, nopen)
+      call check(error, nact == 4 .and. nopen == 1 .and. act(25) .and. idx(4) == 25 .and. all(idx(1:3) == [1, 2, 3]), &
+                 "a single candidate at k = 25 must take one slot: nact "//to_string(nact)//", nopen "//to_string(nopen))
+      if (allocated(error)) return
+      ! eight candidates: the cap keeps the lowest two, all eight are counted
+      rn(6) = 0.15_dp
+      rn(8) = 0.15_dp
+      rn(10) = 0.15_dp
+      rn(12) = 0.15_dp
+      rn(14) = 0.15_dp
+      rn(16) = 0.15_dp
+      rn(18) = 0.15_dp
+      rn(20) = 0.15_dp
+      call tddft_window(sp, 1, theta, rn, 30, .true., 1.0e-3_dp, act, idx, nact, nopen)
+      call check(error, nact == 5 .and. nopen == 9 .and. all(idx(1:5) == [1, 2, 3, 6, 8]), &
+                 "the cap must keep nkcap pairs, the lowest candidates first: nact "//to_string(nact)//", nopen "// &
+                 to_string(nopen))
+      if (allocated(error)) return
+      ! no tracking (budget used up): nothing beyond nt is iterated, all are open
+      call tddft_window(sp, 1, theta, rn, 30, .false., 1.0e-3_dp, act, idx, nact, nopen)
+      call check(error, nact == 3 .and. nopen == 9, "without tracking only nt are kept and the candidates stay open: nact "// &
+                 to_string(nact)//", nopen "//to_string(nopen))
+      if (allocated(error)) return
+      ! a pair with |r| >= theta/2 is not a candidate (iterated or counted); a converged pair
+      ! and one whose interval stays above theta(nr) are not candidates either
+      rn = 1.0e-9_dp
+      rn(7) = 0.5_dp
+      rn(9) = 0.2_dp
+      rn(11) = 5.0e-4_dp
+      rn(13) = 0.01_dp
+      call tddft_window(sp, 1, theta, rn, 30, .true., 1.0e-3_dp, act, idx, nact, nopen)
+      call check(error, nact == 3 .and. nopen == 0, &
+                 "|r| >= theta/2, converged and clearly-above pairs must not be candidates: nact "//to_string(nact)// &
+                 ", nopen "//to_string(nopen))
+   end subroutine test_window_rule
+
    subroutine test_f_refused_after_scf(error)
       !! The SCF of an f basis (LMAX = 3 builds) converges, then both solves are
       !! refused: no error stop, a message that names the limit.
@@ -573,7 +653,7 @@ contains
       nvir = size(fx%scf%eps, 1) - nocc
       nov = nocc*nvir
       if (nov > MAX_DENSE) return
-      nl = min(nroots_arg + 2, nov)
+      nl = min(max(nroots_arg + 2, 6), nov)
       call op%setup(fx%bas, fx%la, fx%ref, err, fx%xg)
       call check(error, .not. err%has_error(), "operator setup: "//err%get_message())
       if (allocated(error)) return
@@ -634,6 +714,9 @@ contains
                                  to_string(MAX_DENSE)//" pairs)")
          return
       end if
+      call check(error, .not. (fx%tda%window_open .or. fx%rpa%window_open), "the missed-root check left candidates open ("// &
+                 to_string(fx%tda%nwindow_open)//" TDA, "//to_string(fx%rpa%nwindow_open)//" RPA) on a case with no missing root")
+      if (allocated(error)) return
       dtda = maxval(abs(fx%w_tda(1:nroots_arg) - fx%tda%omega))
       drpa = maxval(abs(fx%w_rpa(1:nroots_arg) - fx%rpa%omega))
       write (roots, "(*(f10.6))") fx%w_tda
@@ -650,8 +733,9 @@ contains
    end subroutine test_dense_roots
 
    subroutine test_dense_nroots(error)
-      !! The same comparison for other numbers of roots (1 to 6, Hartree-Fock only:
-      !! a Kohn-Sham matvec costs far more): the lowest roots of formaldehyde/
+      !! The same comparison for the other numbers of roots of 1 to 6 (the case's own
+      !! nroots_arg is the test above), Hartree-Fock only: a Kohn-Sham matvec costs
+      !! far more. The lowest roots of formaldehyde/
       !! 6-31+G/HF were missed for nroots = 3, 4 and 5 alike, and what a solver
       !! returns must not depend on how many roots were asked for. A solve that
       !! returns k roots must equal the lowest k dense eigenvalues, for TDA and RPA.
@@ -773,8 +857,9 @@ program check_tddft_basis
    use testdrive, only: run_testsuite
    use trc_tables, only: LMAX
    use trc_mult_kernels, only: MULT_LMAX
-   use check_tddft_basis_suite, only: collect_check_tddft_basis, collect_check_tddft_refusal, basis_beyond_lmax, &
-                                      refusal_mode, xyz_arg, bas_json_arg, molname_arg, basname_arg, funcname_arg, &
+   use check_tddft_basis_suite, only: collect_check_tddft_basis, collect_check_tddft_refusal, collect_check_tddft_unit, &
+                                      collect_check_tddft_dense, basis_beyond_lmax, refusal_mode, xyz_arg, bas_json_arg, &
+                                      molname_arg, basname_arg, funcname_arg, &
                                       nroots_arg, probe_arg, control_arg
    implicit none
    integer :: stat, highest
@@ -792,6 +877,17 @@ program check_tddft_basis
    if (command_argument_count() >= 7) call get_command_argument(7, probe_arg)
    if (command_argument_count() >= 8) call get_command_argument(8, control_arg)
 
+   ! The `unit` case (no SCF, no reference): the checks that run once.
+   stat = 0
+   if (trim(basname_arg) == 'unit') then
+      call run_testsuite(collect_check_tddft_unit, error_unit, stat, parallel=.false.)
+      if (stat > 0) then
+         write (error_unit, "(i0, a)") stat, " test(s) failed"
+         error stop 1
+      end if
+      stop 0
+   end if
+
    ! A basis above this build's LMAX has no SCF to start from, nothing to test
    ! yet, not an error. This is the only line the program prints with "SKIP";
    ! test/CMakeLists.txt's SKIP_REGULAR_EXPRESSION matches exactly it.
@@ -806,6 +902,8 @@ program check_tddft_basis
    refusal_mode = highest > MULT_LMAX
    if (refusal_mode) then
       call run_testsuite(collect_check_tddft_refusal, error_unit, stat, parallel=.false.)
+   else if (trim(control_arg) == 'none') then
+      call run_testsuite(collect_check_tddft_dense, error_unit, stat, parallel=.false.)
    else
       call run_testsuite(collect_check_tddft_basis, error_unit, stat, parallel=.false.)
    end if
