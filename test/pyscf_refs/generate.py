@@ -1226,6 +1226,171 @@ def gen_rsh_g(case, xyz):
     dump.unlink()
 
 
+def _one_e_exact_v(l, ea, eb, ra, rb, rc, ia, ib, cmpt):
+    """-<a|1/|r - C||b> (unit charge at C) for ONE pair of Cartesian components
+    of two unnormalised primitives, in 50-digit mpmath: McMurchie-Davidson
+    Hermite expansion, Boys function from the incomplete gamma. No terco code
+    and no libcint -- the referee of gen_one_e_cancellation."""
+    from mpmath import mp, mpf, exp, pi, gammainc
+    mp.dps = 50
+    a, b = mpf(ea), mpf(eb)
+    A = [mpf(x) for x in ra]
+    B = [mpf(x) for x in rb]
+    C = [mpf(x) for x in rc]
+    p = a + b
+    mu = a * b / p
+    P = [(a * A[d] + b * B[d]) / p for d in range(3)]
+    ci = cmpt[0][ia]
+    cj = cmpt[1][ib]
+
+    def E(i, j, t, Q):
+        if t < 0 or t > i + j:
+            return mpf(0)
+        if i == j == t == 0:
+            return exp(-mu * Q * Q)
+        if j == 0:
+            return (E(i - 1, j, t - 1, Q) / (2 * p) - mu * Q / a * E(i - 1, j, t, Q)
+                    + (t + 1) * E(i - 1, j, t + 1, Q))
+        return (E(i, j - 1, t - 1, Q) / (2 * p) + mu * Q / b * E(i, j - 1, t, Q)
+                + (t + 1) * E(i, j - 1, t + 1, Q))
+
+    def boys(m, T):
+        if T < mpf("1e-40"):
+            return mpf(1) / (2 * m + 1)
+        return gammainc(m + mpf(1) / 2, 0, T) / (2 * T ** (m + mpf(1) / 2))
+
+    def R(t, u, v, n, PC, Fn):
+        if t == u == v == 0:
+            return (-2 * p) ** n * Fn[n]
+        if t > 0:
+            r = PC[0] * R(t - 1, u, v, n + 1, PC, Fn)
+            return r + (t - 1) * R(t - 2, u, v, n + 1, PC, Fn) if t > 1 else r
+        if u > 0:
+            r = PC[1] * R(t, u - 1, v, n + 1, PC, Fn)
+            return r + (u - 1) * R(t, u - 2, v, n + 1, PC, Fn) if u > 1 else r
+        r = PC[2] * R(t, u, v - 1, n + 1, PC, Fn)
+        return r + (v - 1) * R(t, u, v - 2, n + 1, PC, Fn) if v > 1 else r
+
+    PC = [P[d] - C[d] for d in range(3)]
+    Fn = [boys(m, p * sum(x * x for x in PC)) for m in range(2 * l + 1)]
+    tot = mpf(0)
+    for t in range(ci[0] + cj[0] + 1):
+        for u in range(ci[1] + cj[1] + 1):
+            for w in range(ci[2] + cj[2] + 1):
+                tot += (E(ci[0], cj[0], t, A[0] - B[0]) * E(ci[1], cj[1], u, A[1] - B[1])
+                        * E(ci[2], cj[2], w, A[2] - B[2]) * R(t, u, w, 0, PC, Fn))
+    return float(-2 * pi / p * tot)
+
+
+def gen_one_e_cancellation():
+    """check_one_e_cancellation.F90: S, T and the nuclear attraction of a unit
+    charge on a third centre for single primitives of l = 1..4 with a large
+    exponent ratio (1.6 on A against 40 on B, |AB| = 2.5), from pyscf
+    (int1e_ovlp, int1e_kin, -int1e_rinv at C), carried into terco's AO
+    normalisation (a unit-normalised x^l, the other components by the double
+    factorial ratio). Only the diffuse-first order is taken from pyscf: libcint
+    is accurate there (2.6e-15 of the block maximum against mpmath at
+    l = 1..4, the figure written in the .ref) and loses up to 1.8e-13 the other
+    way round, so the test compares the tight-first kernel with the transpose
+    of this block, which is the same integral. libcint is referred to mpmath on
+    a spread of elements of every block and the case refused if it is off by
+    more than 1e-14 of the block's largest element.
+
+    Then one contracted block at l = 1, 2, 3: two primitives on each centre,
+    exponents (1.0, 60) on A and (100, 40) on B, |AB| = 3.0 along the same
+    unit vector. Of the four primitive pairs three build the nuclear-attraction
+    table about B (a tight primitive on B against a diffuse or tight one on A:
+    these are the cancelling pairs, and they dominate the error of a kernel
+    that always builds about A); the one pair built about A (60 on A, 40 on B)
+    is tight against tight at 3 bohr and contributes nothing measurable, so the
+    A-built branch is covered by the single-primitive configuration 2 (tight
+    on A, diffuse on B). S and T are the weighted sum of the single-primitive
+    pyscf blocks; V is the weighted sum of the mpmath primitive integrals
+    (every element), because libcint's V is less accurate for a tight
+    primitive on the first centre (5.7e-15, 2.4e-14, 4.6e-14 of the block
+    maximum at l = 2, 3, 4 against mpmath) than on the second (7e-16, 4e-16,
+    2e-16)."""
+    EA, EB = 1.6, 40.0
+    RB = [2.5 * x for x in (0.48, 0.36, 0.8)]
+    RC = [1.1, -0.7, 0.4]
+
+    def dfact(n):
+        return float(np.prod(np.arange(n, 0, -2))) if n > 0 else 1.0
+
+    def comps(l):
+        return [(ix, iy, l - ix - iy) for ix in range(l, -1, -1) for iy in range(l - ix, -1, -1)]
+
+    def gnorm(l, a):
+        # unit-normalised x^l exp(-a r^2): the coefficient the test passes
+        return float(1.0 / np.sqrt(dfact(2 * l - 1) / (4.0 * a) ** l * (np.pi / (2.0 * a)) ** 1.5))
+
+    def pyscf_blocks(l, ea, eb, ra, rb):
+        """S, T, V blocks of two single primitives in terco's normalisation."""
+        basis = {"H1": [[l, [ea, 1.0]]], "H2": [[l, [eb, 1.0]]]}
+        mol = gto.M(atom=[("H1", tuple(ra)), ("H2", tuple(rb))], basis=basis, unit="Bohr", cart=True,
+                    spin=0, verbose=0)
+        mol.set_rinv_origin(RC)
+        s = mol.intor("int1e_ovlp")
+        t = mol.intor("int1e_kin")
+        v = -mol.intor("int1e_rinv")
+        nc = len(comps(l))
+        # the two shells' own S diagonals -> terco's normalisation, per component
+        want = np.array([dfact(2 * a - 1) * dfact(2 * b - 1) * dfact(2 * c - 1) / dfact(2 * l - 1)
+                         for a, b, c in comps(l)])
+        n_a = np.sqrt(want / np.diag(s)[:nc])
+        n_b = np.sqrt(want / np.diag(s)[nc:])
+        return {name: m[:nc, nc:] * n_a[:, None] * n_b[None, :] for name, m in (("S", s), ("T", t), ("V", v))}
+
+    w = RefWriter("one_e_cancellation.ref")
+    w.header("check_one_e_cancellation", [ROOT / "test" / "check_one_e_cancellation.F90"])
+    worst_lc = 0.0
+    ra, rb = [0.0, 0.0, 0.0], RB
+    for l in range(1, 5):
+        blk = pyscf_blocks(l, EA, EB, ra, rb)
+        nc = len(comps(l))
+        for name in ("S", "T", "V"):
+            w.vector(f"{name}_l{l}_c1", blk[name].flatten(order="F"))
+        # libcint against mpmath: a spread of V elements of the block
+        mx = np.abs(blk["V"]).max()
+        rng = np.random.default_rng(7 + 10 * l + 1)
+        cmpt = (comps(l), comps(l))
+        for _ in range(6):
+            ia, ib = int(rng.integers(nc)), int(rng.integers(nc))
+            ex = _one_e_exact_v(l, EA, EB, ra, rb, RC, ia, ib, cmpt)
+            # the exact primitive times the coefficients the test passes
+            err = abs(blk["V"][ia, ib] - ex * gnorm(l, EA) * gnorm(l, EB)) / mx
+            worst_lc = max(worst_lc, err)
+            if err > 1e-14:
+                raise ValueError(f"one_e_cancellation l={l}: libcint V[{ia},{ib}] differs "
+                                 f"from mpmath by {err:.2e} of the block maximum")
+    w.comment(f"libcint against mpmath on 6 random V elements of each of the 4 blocks: worst {worst_lc:.2e} "
+              f"of the block maximum")
+
+    # contracted block: cancelling pairs inside one contraction
+    exps_a, wts_a = [1.0, 60.0], [0.6, 0.5]
+    exps_b, wts_b = [100.0, 40.0], [0.45, 0.55]
+    rb = [3.0 * x for x in (0.48, 0.36, 0.8)]
+    for l in (1, 2, 3):
+        nc = len(comps(l))
+        tot = {name: np.zeros((nc, nc)) for name in ("S", "T", "V")}
+        for ea, wa in zip(exps_a, wts_a):
+            for eb, wb in zip(exps_b, wts_b):
+                blk = pyscf_blocks(l, ea, eb, ra, rb)
+                tot["S"] += wa * wb * blk["S"]
+                tot["T"] += wa * wb * blk["T"]
+                cmpt = (comps(l), comps(l))
+                ex = np.array([[_one_e_exact_v(l, ea, eb, ra, rb, RC, ia, ib, cmpt) for ib in range(nc)]
+                               for ia in range(nc)])
+                tot["V"] += wa * wb * ex * gnorm(l, ea) * gnorm(l, eb)
+        for name in ("S", "T", "V"):
+            w.vector(f"{name}_ctr_l{l}", tot[name].flatten(order="F"))
+    w.comment(f"contracted block, |AB| = 3.0, exponents {exps_a} on A and {exps_b} on B, weights {wts_a} and {wts_b} "
+              f"(the coefficients the test passes are weight x unit-normalised x^l)")
+    w.end()
+    w.write()
+    print(f"  one_e_cancellation: libcint vs mpmath worst {worst_lc:.2e} (relative to the block maximum)")
+
+
 def gen_df_vs_pyscf():
     """trc_df_2c/trc_df_3c (water/cc-pVTZ orbital, cc-pVTZ-RI auxiliary --
     the first comparison with a g shell) against pyscf's
@@ -7416,6 +7581,7 @@ CASES = {
     "rsh_g_water_wb97x": lambda: gen_rsh_g("water_wb97x", "water.xyz"),
     "rsh_g_nh2_wb97x": lambda: gen_rsh_g("nh2_wb97x", "nh2.xyz"),
     "rsh_g_water_wb97xv": lambda: gen_rsh_g("water_wb97xv", "water.xyz"),
+    "one_e_cancellation": gen_one_e_cancellation,
     "df_vs_pyscf": gen_df_vs_pyscf,
     "dfg_ints_water_631gs": lambda: gen_df_grad_ints(
         "water_631gs", "water.xyz", "basis_sets/6-31gs.json", "basis_sets/def2-universal-jkfit.json"),

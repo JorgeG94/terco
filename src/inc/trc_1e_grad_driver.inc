@@ -1,10 +1,10 @@
 !
 ! The one-electron GRADIENT driver and its per-item routine, as an INCLUDE
-! for the module that holds the kernels they dispatch to -- same reason as
-! trc_1e_driver.inc: stdpar only inlines within a translation unit, so this
-! has to live beside one_e_grad_dispatch rather than call across the module
-! boundary from trc_1e_grad_kernels' including module. ONE_E_GRAD_NPRIV and
-! NBLK_MAX come from the including module.
+! for the module that holds the kernels they dispatch to: stdpar only inlines
+! within a translation unit, so this has to live beside one_e_grad_dispatch
+! rather than call across the module boundary from trc_1e_grad_kernels'
+! including module. ONE_E_GRAD_NPRIV and NBLK_MAX come from the including
+! module.
 !
 #ifndef TRC_1E_GRAD_DRIVER_INC
 #define TRC_1E_GRAD_DRIVER_INC

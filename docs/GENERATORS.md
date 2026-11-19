@@ -44,7 +44,7 @@ blocks instead of calling anything. It looks like a mistake and is the opposite.
 | `gen_rys_grad.py` | one Rys two-electron gradient module per class (`trc_pc_rysg{tag}.F90`: screen and compact passes), and per class and column width one pair-table module (`trc_pc_rysgp{tag}w{nc}.F90`, written beside it: the item routine and the `do concurrent` driver of `eri%gradient_pairs`; `PAIRS_RT_PLAN` gives a class its pair kernels in the run-time chunked form while its class file keeps its own, because the literal form of six classes took over 500 s to compile at some width). `--pair-widths CLASSES` prints which widths each class has, which CMake reads to name the files; `--pairs-cap` (CMake `TERCO_GRAD_PAIRS_CAP`) caps them per class, see below. `gen_rys_grad_dispatch.py` writes `trc_rys_grad_kernels` with the block walk and the narrowest-width choice | the analytic gradient (`grad_bins`), `eri%gradient_pairs` |
 | `gen_md_j.py` | the McMurchie–Davidson J engine: ket, Hermite (per (la+lb, lc+ld), R batched and sieved, `md/rtree.py`) and bra stages | `trc_mdj`, J for every class when MD J is on (always for a g basis) |
 | `gen_md_k.py` | McMurchie–Davidson exchange per class: R per primitive quartet, then S = PQ Hk^T and the integral rows fused, PQ never stored; E matrices per shell-pair type | `trc_mdg`, the g classes above `TERCO_RYS_G_LTOT` |
-| `gen_1e.py` | overlap, kinetic, nuclear attraction; `--multipole` for the Cartesian tensors; `--pcm` for the PCM smeared-charge surface integrals; `--deriv`/`--deriv-dir` for the one-electron gradient; `--pcm-grad`/`--pcm-grad-dir` for the PCM surface-integral gradient | `trc_1e`, `trc_multipoles`, `trc_pcm_potential`/`trc_pcm_fock`, `trc_1e_gradient`, `trc_pcm_gradient` |
+| `gen_1e.py` | overlap, kinetic, nuclear attraction (`--base-dir`, one module per class plus the `trc_1e_kernels` driver); `--multipole` for the Cartesian tensors; `--pcm` for the PCM smeared-charge surface integrals; `--deriv`/`--deriv-dir` for the one-electron gradient; `--pcm-grad`/`--pcm-grad-dir` for the PCM surface-integral gradient | `trc_1e`, `trc_multipoles`, `trc_pcm_potential`/`trc_pcm_fock`, `trc_1e_gradient`, `trc_pcm_gradient` |
 | `gen_df.py` | two- and three-centre Coulomb, one module per class (`--split`, the only mode) | `trc_df_2c`, `trc_df_3c` |
 | `gen_df_grad.py` | the two- and three-centre Coulomb nuclear derivatives, contracted with a coefficient block, Rys for every class, one module per class | the `--df` gradient (`trc_scf_grad_df`) |
 | `gen_schwarz.py` | the Rys-quadrature diagonal Schwarz kernel, one module, no `TERCO_LMAX` dependence (`select case` over the 9 inlined Rys root counts, runtime loops otherwise) | `trc_screen`'s `schwarz_bounds_rys` |
@@ -268,6 +268,37 @@ executing a line of it.
 constant, emit the same guard.** It converts an entire class of silent wrongness
 into a compile error, and it is four lines.
 
+### A transfer about the wrong centre cancels
+
+The nuclear-attraction class kernel (`emit_class` in `gen_1e.py`) builds the
+Obara-Saika table PER PRIMITIVE PAIR about the centre that keeps the transfer
+benign. Building about A and moving all of b across the bond with
+`C(b,p) AB^(b-p) [a+p|0]` cancels when A's primitive is diffuse and B's tight:
+the product centre sits almost on B, the sum is a large alternating one, and the
+loss grows like (exponent ratio x |AB|)^lb. Measured V relative error against
+a quad-precision copy of the same kernel, ratio 25, |AB| = 2.5: 1.6e-12 at
+l = 3 (f) and 1.8e-11 at l = 4 (g); with the choice below at most 2.2e-14.
+Which shell is first changes nothing for la = lb; the exponents decide. When
+beta > alpha the table is built about B and (a|b) is read from the mirrored
+transfer `C(a,p) BA^(a-p) [0|b+p]`, otherwise about A. Both branches are in the
+same `pure` item, with the same scratch. The per-primitive branch costs no
+measurable time: at w172 cc-pVTZ on a V100 the one-electron step takes 1.79 s
+with it and 1.78 s with the table always built about A (min of three, same
+build otherwise). Overlap and kinetic (a different
+recurrence) showed no such loss in the same scan (S 2e-14, T 1.2e-13 at ratio
+60). The one-electron GRADIENT kernels (`--deriv-dir`) transfer about A: their
+error, same scan, T+V total relative: d 7e-15 at ratio 25 and 1.2e-13 at 60, f
+4e-13 and 5e-12, against 1e-14 when the tight primitive is on A. The PCM and
+multipole kernels were not scanned. `check_one_e_cancellation` guards the base
+kernels.
+
+The base driver (`trc_1e_kernels`) launches one kernel per class and wraps the
+whole call in one `enter data` / `exit data` pair for the three nao x nao
+matrices and the shell arrays. Without it each launch maps the matrices
+itself: at w172 cc-pVTZ every launch cost 0.47 s whatever the class held (a
+376-pair class cost the same as a 275000-pair one), and the one-electron step
+took 6.5 s against 1.8 s with the region.
+
 ### nvfortran treats a rank mismatch as a warning
 
 ```fortran
@@ -420,7 +451,7 @@ Or call them directly, which is what CMake does:
 
 ```sh
 python3 scripts/gen_perclass.py --lmax 2 --split src/generated
-python3 scripts/gen_1e.py --lmax 2 -o src/generated/trc_1e_kernels.F90
+python3 scripts/gen_1e.py --lmax 2 --base-dir src/generated
 python3 scripts/gen_1e.py --lmax 2 --multipole src/generated/trc_mult_kernels.F90
 python3 scripts/gen_1e.py --lmax 2 --pcm src/generated/trc_pcm_kernels.F90
 python3 scripts/gen_1e.py --lmax 2 --pcm-grad-dir src/generated   # one module per class, what CMake calls
