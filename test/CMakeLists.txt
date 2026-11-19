@@ -1097,7 +1097,7 @@ if(TERCO_BUILD_APP)
   terco_add_check(check_cli_tddft check_cli_tddft.F90 NEEDS_PYSCF_REF
                   ARGS $<TARGET_FILE:terco_cli> ${_cli_tddft_probe})
   target_link_libraries(check_cli_tddft PRIVATE test-drive::test-drive)
-  foreach(_mode grad refusals)
+  foreach(_mode grad grid refusals)
     add_test(NAME terco/check_cli_tddft_${_mode}
              COMMAND check_cli_tddft $<TARGET_FILE:terco_cli> ${_cli_tddft_probe}_${_mode}.json ${_mode})
     set_tests_properties(terco/check_cli_tddft_${_mode} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -1243,7 +1243,7 @@ if(TERCO_BUILD_APP)
     # -- see check_cli_tddft_opt.F90's own header.
     set(_cli_tddft_opt_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_tddft_opt_probe.json)
     set(_cli_tddft_opt_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_tddft_opt_work)
-    terco_add_check(check_cli_tddft_opt check_cli_tddft_opt.F90
+    terco_add_check(check_cli_tddft_opt check_cli_tddft_opt.F90 NEEDS_PYSCF_REF
                     ARGS $<TARGET_FILE:terco_cli> ${_cli_tddft_opt_probe} ${_cli_tddft_opt_workdir})
     target_link_libraries(check_cli_tddft_opt PRIVATE test-drive::test-drive)
     unset(_cli_tddft_opt_probe)
@@ -1322,6 +1322,11 @@ if(TERCO_BUILD_APP)
     terco_add_check(check_capi_opt check_capi_opt.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
     target_link_libraries(check_capi_opt PRIVATE test-drive::test-drive terco_c_interfaces
                                                  terco_opt_c_interfaces terco::terco_opt)
+
+    # The excited-state optimisation's state watch (gap window, pair change, strict mode) on synthetic roots --
+    # see check_opt_followed_state.F90's own header.
+    terco_add_check(check_opt_followed_state check_opt_followed_state.F90)
+    target_link_libraries(check_opt_followed_state PRIVATE test-drive::test-drive terco::terco_opt)
 
     # --opt with RI-MP2 and a double hybrid through terco_opt.h
     # (trc_opt_set_rimp2): each step's energy is the correlated total whose
@@ -2318,8 +2323,9 @@ target_compile_definitions(check_capi_tddft PRIVATE ${TERCO_TEST_DEFS})
 target_link_libraries(check_capi_tddft PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io terco_c_interfaces
                                                 test-drive::test-drive)
 add_test(NAME terco/check_capi_tddft COMMAND check_capi_tddft)
-set_tests_properties(terco/check_capi_tddft PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                                                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+add_test(NAME terco/check_capi_tddft_pbe COMMAND check_capi_tddft pbe)
+set_tests_properties(terco/check_capi_tddft terco/check_capi_tddft_pbe
+                     PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
 # trc_timing / trc_timing_count through the C ABI: the status before any SCF,
@@ -2717,8 +2723,8 @@ endforeach()
 #
 terco_add_check(check_tddft_api check_tddft_api.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_tddft_api PRIVATE test-drive::test-drive)
-# The gradients and the finite difference (four SCFs) are runs of the same program of their own.
-foreach(_mode grad fd)
+# The two gradients and the finite difference (four SCFs) are runs of the same program of their own.
+foreach(_mode grad_tda grad_rpa fd)
   add_test(NAME terco/check_tddft_api_${_mode} COMMAND check_tddft_api ${_mode})
   set_tests_properties(terco/check_tddft_api_${_mode} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                        ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")

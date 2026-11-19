@@ -1260,7 +1260,8 @@ int trc_set_tddft(trc_handle_t handle, int nroots, int tda, int singlet, int tar
  * (50) its iteration limit, `cpks_tol` (1e-9) and `cpks_max_iteration`
  * (100) the Z-vector's residual and iteration limit for the gradient,
  * `roots_per_sweep` the trc_tddft_grad batching (a tuning knob that does
- * not change the numbers). Drops a stored TDDFT result.
+ * not change the numbers). A tolerance must be finite and not negative, otherwise TRC_ERR_BADARG.
+ * Drops a stored TDDFT result.
  */
 int trc_set_tddft_convergence(trc_handle_t handle, double conv_tol, int max_iteration, double cpks_tol, int cpks_max_iteration, int roots_per_sweep);
 

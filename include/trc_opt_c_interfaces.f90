@@ -176,16 +176,33 @@ module trc_opt_c_interfaces
          !! optimisation, so each step's energy is trc_tddft_energy's (E_SCF + omega of that root) and its gradient
          !! trc_run_gradient's derivative of it. The context needs trc_set_tddft with enough roots (give one more
          !! than the target to watch the root above it); trc_opt_run checks the setup with trc_check_tddft before the
-         !! first SCF and returns its refusal instead of starting. The followed state is watched: a warning when
-         !! another solved root lies within `gap_warn` hartree of it (positive, otherwise TRC_ERR_BADARG), or when its
-         !! dominant orbital pair differs from that of the previous accepted step. Zero `enable` (the default): the SCF
-         !! energy and gradient.
+         !! first SCF and returns its refusal instead of starting. A P-RFO saddle search or a Newton-Raphson step with
+         !! terco's own Hessian (trc_opt_set_hessian_source, the default) is refused too, with TRC_ERR_UNSUPPORTED:
+         !! the excited-state gradient has no Hessian to difference; choose the DL-FIND Hessian source. The followed
+         !! state is watched: a warning when another solved root lies within `gap_warn` hartree of it, or when its
+         !! dominant orbital pair differs from that of the previous accepted step (the first step is the reference);
+         !! trc_opt_set_tddft_strict turns the second into a failure, trc_opt_result_gap_warnings and
+         !! trc_opt_result_state_changes count them. `gap_warn` is not negative and finite, otherwise TRC_ERR_BADARG;
+         !! zero switches the gap warning off. Zero `enable` (the default): the SCF energy and gradient.
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle
          integer(c_int), value :: enable
          real(c_double), value :: gap_warn
       end function trc_opt_set_tddft
+
+      integer(c_int) function trc_opt_set_tddft_strict(handle, strict) bind(c) result(res)
+         !! Non-zero: with trc_opt_set_tddft, a change of the followed root's dominant orbital pair since the last
+         !! accepted step (a sign that the states swapped, which the root number does not show) fails the
+         !! evaluation with a message instead of logging a warning. A failed evaluation is DL-FIND's: the run writes
+         !! what it can and DL-FIND's `error stop` may end the calling process (see this module's header), so a caller
+         !! that cannot tolerate that should leave the default, zero, and read trc_opt_result_state_changes after the
+         !! run. Not checked in a NEB run. Has no effect without trc_opt_set_tddft.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: strict
+      end function trc_opt_set_tddft_strict
 
       integer(c_int) function trc_opt_set_frozen_atoms(handle, n, atoms) bind(c) result(res)
          !! --opt-frozen: `atoms` holds `n` 1-based indices into trc_opt_run's
@@ -243,6 +260,26 @@ module trc_opt_c_interfaces
          type(c_ptr), value :: handle
          integer(c_int), intent(out) :: n
       end function trc_opt_result_energy_evaluations
+
+      integer(c_int) function trc_opt_result_state_changes(handle, n) bind(c) result(res)
+         !! After a trc_opt_set_tddft run: the evaluations (rejected line-search trials included) at which the
+         !! followed root's dominant orbital pair differed from the last accepted step's, each of which logged a
+         !! warning (or, with trc_opt_set_tddft_strict, failed the run). Non-zero: the optimisation may have switched
+         !! to another state. Zero without trc_opt_set_tddft.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: n
+      end function trc_opt_result_state_changes
+
+      integer(c_int) function trc_opt_result_gap_warnings(handle, n) bind(c) result(res)
+         !! After a trc_opt_set_tddft run: the gap warnings logged, one per other root within `gap_warn` of the
+         !! followed one at an evaluation. Zero without trc_opt_set_tddft.
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: n
+      end function trc_opt_result_gap_warnings
 
       integer(c_int) function trc_opt_result_energy(handle, energy) bind(c) result(res)
          import :: c_double, c_int, c_ptr

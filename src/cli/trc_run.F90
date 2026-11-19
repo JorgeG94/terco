@@ -141,7 +141,8 @@ module trc_run
       logical :: tddft_grid_response = .true.   !! Kohn-Sham: differentiate the grid too (off with --no-tddft-grid-response)
       real(dp) :: tddft_tol = 0.0_dp, tddft_cpks_tol = 0.0_dp
       integer :: tddft_iterations = 0, tddft_sweep = 0
-      real(dp) :: tddft_gap_warn = 0.005_dp   !! --opt warns when the followed root is this close (Eh) to another
+      real(dp) :: tddft_gap_warn = 0.005_dp   !! --opt warns when the followed root is this close (Eh) to another; 0 never
+      logical :: tddft_strict = .false.        !! --tddft-strict-root: --opt fails when the followed root's dominant pair changes
       logical :: tddft_ran = .false.
       integer :: tddft_n = 0                    !! roots solved
       real(dp), allocatable :: tddft_omega(:), tddft_osc(:), tddft_ynorm(:), tddft_weight(:)   !! (tddft_n)
@@ -230,6 +231,7 @@ module trc_run
       real(dp) :: opt_max_step = -1.0_dp   !! negative = DL-FIND's own default (trc_opt_options_t%max_step)
       logical :: opt_converged = .false.
       integer :: opt_steps = 0, opt_evals = 0, opt_hess_evals = 0
+      integer :: opt_state_changes = 0, opt_gap_warnings = 0   !! --opt --tddft: the warnings logged for the followed state
       real(dp) :: opt_gmax = 0.0_dp, opt_grms = 0.0_dp
       integer :: opt_n_traj = 0
       real(dp), allocatable :: opt_traj_energy(:)

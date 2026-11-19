@@ -1665,7 +1665,8 @@ module trc_c_interfaces
          !! (50) its iteration limit, `cpks_tol` (1e-9) and `cpks_max_iteration`
          !! (100) the Z-vector's residual and iteration limit for the gradient,
          !! `roots_per_sweep` the trc_tddft_grad batching (a tuning knob that does
-         !! not change the numbers). Drops a stored TDDFT result.
+         !! not change the numbers). A tolerance must be finite and not negative, otherwise TRC_ERR_BADARG.
+         !! Drops a stored TDDFT result.
          import :: c_double, c_int, c_ptr
          implicit none
          type(c_ptr), value :: handle

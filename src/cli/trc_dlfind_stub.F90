@@ -76,6 +76,7 @@ module trc_dlfind_bridge
       logical :: rimp2 = .false.
       logical :: tddft = .false.
       real(dp) :: tddft_gap_warn = 0.005_dp
+      logical :: tddft_strict = .false.
       integer :: algorithm = TRC_OPT_ALG_LBFGS
       integer :: target_kind = TRC_OPT_TARGET_MINIMUM
       integer :: saddle_method = TRC_OPT_SADDLE_PRFO
@@ -122,6 +123,7 @@ module trc_dlfind_bridge
       integer :: steps = 0
       integer :: energy_evaluations = 0
       integer :: hessian_evaluations = 0
+      integer :: state_changes = 0, gap_warnings = 0
       real(dp) :: final_energy = 0.0_dp
       real(dp) :: final_gmax = 0.0_dp
       real(dp) :: final_grms = 0.0_dp

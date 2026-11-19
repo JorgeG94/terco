@@ -6144,7 +6144,8 @@ contains
       !! (50) its iteration limit, `cpks_tol` (1e-9) and `cpks_max_iteration`
       !! (100) the Z-vector's residual and iteration limit for the gradient,
       !! `roots_per_sweep` the trc_tddft_grad batching (a tuning knob that does
-      !! not change the numbers). Drops a stored TDDFT result.
+      !! not change the numbers). A tolerance must be finite and not negative, otherwise TRC_ERR_BADARG.
+      !! Drops a stored TDDFT result.
       type(c_ptr), value :: handle
       real(c_double), value :: conv_tol, cpks_tol
       integer(c_int), value :: max_iteration, cpks_max_iteration, roots_per_sweep
@@ -6155,9 +6156,10 @@ contains
       if (.not. c_associated(handle)) return
       call c_f_pointer(handle, cx)
       status = TRC_ERR_BADARG
-      if (.not. (conv_tol >= 0.0_c_double .and. cpks_tol >= 0.0_c_double) .or. max_iteration < 0 .or. &
-          cpks_max_iteration < 0 .or. roots_per_sweep < 0) then
-         cx%message = "trc_set_tddft_convergence: a tolerance or a count is negative"
+      if (.not. (conv_tol >= 0.0_c_double .and. conv_tol <= huge(1.0_c_double) .and. cpks_tol >= 0.0_c_double .and. &
+                 cpks_tol <= huge(1.0_c_double)) .or. max_iteration < 0 .or. cpks_max_iteration < 0 .or. &
+          roots_per_sweep < 0) then
+         cx%message = "trc_set_tddft_convergence: a tolerance is negative, NaN or infinite, or a count is negative"
          return
       end if
       cx%td_opts%conv_tol = merge(real(conv_tol, dp), defaults%conv_tol, conv_tol > 0.0_c_double)

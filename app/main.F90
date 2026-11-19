@@ -265,7 +265,11 @@ program trc_main
    call r%cli%add_flag("no-tddft-grid-response", "Kohn-Sham gradient without the grid response (Pulay terms only, as "// &
                        "pyscf's tdrks; about 1e-5 Eh/Bohr away on water PBE)")
    call r%cli%add_option("tddft-gap-warn", "--opt with --tddft warns when the followed root lies within this many "// &
-                         "hartree of another solved root, or its dominant orbital pair changes between steps (0.005)")
+                         "hartree of another solved root (0.005; 0 switches this warning off), and, always, when "// &
+                         "its dominant orbital pair changes between steps")
+   call r%cli%add_flag("tddft-strict-root", "--opt with --tddft: a change of the followed root's dominant orbital "// &
+                       "pair between steps (the states swapped) stops the optimisation with an error instead of "// &
+                       "a warning (the last accepted geometry is still written)")
    call r%cli%add_option("aux", "auxiliary basis for --rimp2, --riccsd and --riccsd-t (cc-pvdz-rifit whatever the "// &
                          "orbital basis: give the RI fitting set that matches it)", default="cc-pvdz-rifit")
    call r%cli%add_option("frozen", "frozen core orbitals for --rimp2, --riccsd and --riccsd-t; -1, the default, "// &
@@ -1420,6 +1424,7 @@ program trc_main
       ! --tddft: every step's energy and gradient are those of the root --tddft-root.
       opt_opts%tddft = r%tddft
       opt_opts%tddft_gap_warn = r%tddft_gap_warn
+      opt_opts%tddft_strict = r%tddft_strict
       opt_opts%algorithm = r%opt_algorithm_kind
       opt_opts%target_kind = r%opt_target_kind
       opt_opts%saddle_method = r%opt_saddle_method_kind
@@ -1530,6 +1535,8 @@ program trc_main
       r%opt_steps = opt_res%steps
       r%opt_evals = opt_res%energy_evaluations
       r%opt_hess_evals = opt_res%hessian_evaluations
+      r%opt_state_changes = opt_res%state_changes
+      r%opt_gap_warnings = opt_res%gap_warnings
       r%opt_gmax = opt_res%final_gmax
       r%opt_grms = opt_res%final_grms
       r%opt_n_traj = opt_res%n_traj

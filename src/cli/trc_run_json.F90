@@ -508,6 +508,10 @@ contains
       end if
       call json%add(oobj, "connect", r%opt_connect)
       call json%add(oobj, "hessian_evaluations", r%opt_hess_evals)
+      if (r%tddft) then
+         call json%add(oobj, "tddft_state_changes", r%opt_state_changes)
+         call json%add(oobj, "tddft_gap_warnings", r%opt_gap_warnings)
+      end if
       if (allocated(r%opt_traj_energy)) then
          call json%add(oobj, "trajectory_energies", r%opt_traj_energy)
       end if

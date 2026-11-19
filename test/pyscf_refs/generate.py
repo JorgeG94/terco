@@ -3230,6 +3230,70 @@ def gen_tddft():
             _gen_tddft_one(probe, f"tddft_{molname}_6-31gs_{funcname}.ref", xyzname, molname, "6-31gs", funcname)
 
 
+def gen_tddft_s1_min():
+    """The first singlet excited state (TDA / CIS, RHF/STO-3G) of formaldehyde at the geometry
+    test/formaldehyde_s1.xyz, which terco's S1 geometry optimisation converges to
+    (check_capi_opt.F90, check_cli_tddft_opt.F90). A property of pyscf at a fixed geometry, so no terco probe:
+    E(S1) = E_SCF + omega_1, and the largest component of pyscf's own analytic S1 gradient (grad.tdrhf) there, which
+    must vanish for the geometry to be the minimum the optimisations claim to reach. The TDA matrix is diagonalised
+    densely (exact amplitudes) and the Z-vector solved densely, as _gen_tddft_grad_one, whose Krylov-free route
+    this repeats for the one root.
+    Written: E_SCF, OMEGA (the two lowest singlets), E_S1, GRAD_MAX, CONV_TOL, GRAD_NORM (the SCF's)."""
+    xyzname, basname, nroots = "formaldehyde_s1", "sto-3g", 2
+    atoms = _xyz_atoms(xyzname)
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=0, spin=0, verbose=0)
+    label = f"tddft_s1_min {xyzname}/{basname}/hf (tda singlet)"
+    mf, grad_norm = converge_tight(lambda: scf.RHF(mol), None, label)
+    td = mf.TDA()
+    td.singlet = True
+    td.nstates = nroots
+    td.verbose = 0
+    a, _b = td.get_ab()
+    nocc, nvir = a.shape[0], a.shape[1]
+    w, v = np.linalg.eigh(a.reshape(nocc * nvir, nocc * nvir))
+    omega = w[:nroots]
+    td.e = omega
+    td.xy = [(v[:, k].reshape(nocc, nvir) * np.sqrt(0.5), 0) for k in range(nroots)]
+    td.converged = [True] * nroots
+    g = td.nuc_grad_method()
+    from pyscf.scf import cphf as pyscf_cphf
+    krylov_solve = pyscf_cphf.solve
+
+    def dense_solve(fvind, mo_energy, mo_occ, h1, **_kw):
+        nocc_ = int((mo_occ > 0).sum())
+        nvir_ = len(mo_energy) - nocc_
+        nov_ = nocc_ * nvir_
+        eye = np.eye(nov_)
+        mat = np.stack([fvind(eye[i]) for i in range(nov_)], axis=1)
+        mat += np.diag((mo_energy[nocc_:, None] - mo_energy[None, :nocc_]).ravel())
+        z = np.linalg.solve(mat, -h1.ravel())
+        resid = np.abs(mat @ z + h1.ravel()).max()
+        if not resid < 1.0e-11:
+            raise RuntimeError(f"{label}: dense Z-vector residual {resid:.2e}")
+        return z.reshape(h1.shape), None
+
+    pyscf_cphf.solve = dense_solve
+    try:
+        grad_s1 = g.kernel(xy=td.xy[0], state=1)
+    finally:
+        pyscf_cphf.solve = krylov_solve
+    e_s1 = mf.e_tot + omega[0]
+
+    w_ = RefWriter("tddft_s1_formaldehyde_sto-3g_hf.ref")
+    w_.header(label, [TEST / (xyzname + ".xyz"), TEST / "basis_sets" / (basname + ".json")])
+    w_.real("E_SCF", mf.e_tot)
+    w_.vector("OMEGA", omega)
+    w_.real("E_S1", e_s1)
+    w_.real("GRAD_MAX", np.abs(grad_s1).max())
+    w_.real("CONV_TOL", mf.conv_tol)
+    w_.real("GRAD_NORM", grad_norm)
+    w_.end()
+    w_.write()
+    print(f"  {label}: E(S1) {e_s1:20.12f}  max|grad S1| {np.abs(grad_s1).max():.2e}  |g_scf| {grad_norm:.2e}")
+
+
 def _gen_tddft_grad_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
     """One check_tddft_grad.F90 case: pyscf's TDA excited-state gradients
     (grad.tdrhf / grad.tdrks) of the lowest `nroots` singlets of an RHF/RKS
@@ -7196,6 +7260,7 @@ CASES = {
     "fxc_apply_many": gen_fxc_apply_many,
     "tddft": gen_tddft,
     "tddft_grad": gen_tddft_grad,
+    "tddft_s1_min": gen_tddft_s1_min,
     "tddft_rpa_grad": gen_tddft_rpa_grad,
     "rpa": gen_rpa,
     "kxc": gen_kxc,

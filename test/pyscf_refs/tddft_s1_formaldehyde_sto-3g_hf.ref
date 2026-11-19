@@ -1,0 +1,15 @@
+# terco pyscf reference v1
+# case: tddft_s1_min formaldehyde_s1/sto-3g/hf (tda singlet)
+# generator: test/pyscf_refs/generate.py CASES["tddft_s1_min"] -> gen_tddft_s1_min
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 89f85ec373dc56d029affcadcfc9b8ee814e30dd76125f114288d2b715a7f3ff
+# files: test/formaldehyde_s1.xyz test/basis_sets/sto-3g.json
+E_SCF -1.12339703413730533e+02
+OMEGA 2
+1.25576856288546590e-01 2.91833127185237184e-01
+E_S1 -1.12214126557441986e+02
+GRAD_MAX 1.24441346116554996e-10
+CONV_TOL 9.99999999999999980e-13
+GRAD_NORM 8.33905373077175489e-10
+END

@@ -130,7 +130,8 @@ terco water.xyz -b def2-svp -f wb97x-v --grad
 | `--tddft-cpks-tol` | residual norm of the gradient's Z-vector (1e-9) |
 | `--tddft-sweep` | roots sharing a pass over the integral derivatives (a tuning knob) |
 | `--tddft-grid-response`, `--no-tddft-grid-response` | Kohn-Sham gradient with (the default) or without the grid response |
-| `--tddft-gap-warn` | `--opt` warning distance to another root, Eh (0.005) |
+| `--tddft-gap-warn` | `--opt` warning distance to another root, Eh (0.005; 0 switches it off) |
+| `--tddft-strict-root` | `--opt` stops with an error when the followed root's dominant orbital pair changes, instead of warning |
 
 `--grad` with `--tddft` is the gradient of E_SCF + omega of the target root, and
 `--opt` optimises that state's geometry. The grid response is on by default: the
@@ -139,7 +140,13 @@ exact derivative of terco's energy, whose grid moves with the nuclei. Without it
 optimiser follows a root number: it warns when another root comes within
 `--tddft-gap-warn` of it, or when its dominant orbital pair changes, since a
 crossing would switch the surface (solve one root more than the one followed to
-watch the one above it).
+watch the one above it). With `--tddft-strict-root` a change of that pair stops the
+run (the last accepted geometry is written) instead of warning; a swap of two
+states with the same dominant pair is not seen either way. The JSON `optimization`
+block counts both warnings (`tddft_state_changes`, `tddft_gap_warnings`).
+
+`--opt-init-hessian terco` with `--opt-algorithm nr` or a P-RFO saddle search is
+refused with `--tddft`: the excited-state gradient has no Hessian to difference.
 
 Refused before the SCF, with the reason: triplets, an open shell, meta-GGAs,
 range-separated hybrids, VV10, double hybrids, a spherical basis (add `--cart`),

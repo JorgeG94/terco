@@ -7,8 +7,11 @@ module check_tddft_api_suite
    !!  1. TDA and RPA excitation energies, oscillator strengths and ||Y||^2 of
    !!     water PBE/6-31G* against tddft_water_6-31gs_pbe.ref and
    !!     rpa_water_6-31gs_pbe.ref;
-   !!  2. (argument `grad`) the TDA and RPA gradient of every root of water PBE/6-31G against
-   !!     tddft_grad_water_6-31g_pbe.ref and tddft_rpa_grad_water_6-31g_pbe.ref.
+   !!  2. (arguments `grad_tda` and `grad_rpa`, one run each) the TDA and RPA gradient of the first and the last of
+   !!     three roots of water PBE/6-31G against tddft_grad_water_6-31g_pbe.ref and tddft_rpa_grad_water_6-31g_pbe.ref
+   !!     (the root number reaches the gradient through `opts%target_root`: the two ends would show an off-by-one,
+   !!     the middle root adds a gradient call for nothing; the gradients of every root against pyscf are
+   !!     check_tddft_grad_* and check_tddft_rpa_grad_*).
    !!     Those are Pulay-only (pyscf has no grid response), so this runs with
    !!     `grid_response = .false.`;
    !!  3. (argument `fd`) `grid_response` is ON by default for Kohn-Sham, differs from the
@@ -39,8 +42,9 @@ module check_tddft_api_suite
    public :: collect_check_tddft_api, mode_arg
 
    character(len=16) :: mode_arg = ""
-   !! "grad" runs the two gradient checks, "fd" only the grid response finite difference (it rebuilds four SCFs);
-   !! empty, the energies and the refusals. Three runs of one program keep each under a half minute.
+   !! "grad_tda" and "grad_rpa" run one gradient check each, "fd" only the grid response finite difference (it
+   !! rebuilds four SCFs); empty, the energies and the refusals. Separate runs of one program keep each around ten
+   !! seconds (or, for "fd", LONG).
 
    real(dp), parameter :: TOL_OMEGA = 1.0e-6_dp
    real(dp), parameter :: TOL_OSC = 1.0e-5_dp
@@ -69,11 +73,10 @@ contains
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       if (trim(mode_arg) == "fd") then
          testsuite = [new_unittest("grid response is the default and is the exact derivative", test_grid_response)]
-      else if (trim(mode_arg) == "grad") then
-         testsuite = [ &
-                     new_unittest("TDA gradient of every root vs pyscf (Pulay only)", test_gradient_tda), &
-                     new_unittest("RPA gradient of every root vs pyscf (Pulay only)", test_gradient_rpa) &
-                     ]
+      else if (trim(mode_arg) == "grad_tda") then
+         testsuite = [new_unittest("TDA gradient of the first and last root vs pyscf (Pulay only)", test_gradient_tda)]
+      else if (trim(mode_arg) == "grad_rpa") then
+         testsuite = [new_unittest("RPA gradient of the first and last root vs pyscf (Pulay only)", test_gradient_rpa)]
       else
          testsuite = [ &
                      new_unittest("TDA energies vs pyscf (water PBE/6-31G*)", test_energies_tda), &
@@ -182,7 +185,7 @@ contains
    end subroutine test_energies_rpa
 
    subroutine gradient_vs_ref(error, ref_name, tda)
-      !! Every root's Pulay-only gradient against the pyscf reference (3 roots).
+      !! The first and the last root's Pulay-only gradient against the pyscf reference (3 roots).
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in) :: ref_name
       logical, intent(in) :: tda
@@ -216,7 +219,7 @@ contains
       call ref_read_matrix3(u, "GRAD", 3, fx%natm, nr, gref)
       call ref_close(u)
       worst = 0.0_dp
-      do k = 1, nr
+      do k = 1, nr, nr - 1
          opts%target_root = k
          call trc_tddft_run_gradient(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, opts, res)
          call check(error, .not. res%err%has_error(), "gradient of root "//to_string(k)//": "//res%err%get_message())

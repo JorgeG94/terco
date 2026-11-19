@@ -114,7 +114,7 @@ trc_gradient(h, grad);
 After `trc_run_tddft`, `trc_run_gradient` differentiates the target root's energy
 and `trc_run_hessian` refuses; `trc_energy` stays the ground state's. A later
 `trc_run_scf` drops the roots and the gradient is the SCF's again.
-A later `trc_run_rimp2` or `trc_run_rccsd` also drops the roots. `libterco_opt` follows the context's target root through `trc_opt_set_tddft(opts, enable, gap_warn)`.
+A later `trc_run_rimp2` or `trc_run_rccsd` also drops the roots. `libterco_opt` follows the context's target root through `trc_opt_set_tddft(opts, enable, gap_warn)` (`gap_warn` finite, zero or more; zero switches the gap warning off). `trc_opt_set_tddft_strict(opts, strict)` turns a change of the followed root's dominant orbital pair into a failed evaluation, which is DL-FIND's `error stop` path (the run writes what it can first); without it `trc_opt_result_state_changes` and `trc_opt_result_gap_warnings` count the warnings after the run. A P-RFO or Newton-Raphson search with terco's own Hessian source is refused with `TRC_ERR_UNSUPPORTED`.
 
 ## RI-CCSD and RI-CCSD(T) through the C ABI
 

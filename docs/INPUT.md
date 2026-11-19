@@ -228,7 +228,8 @@ one excited state.
 | `cpks_tol` | float | `--tddft-cpks-tol` | residual norm of the Z-vector of the gradient (1e-9) |
 | `roots_per_sweep` | integer | `--tddft-sweep` | roots sharing one pass over the integral derivatives; a tuning knob that changes no number |
 | `grid_response` | bool | `--tddft-grid-response` / `--no-tddft-grid-response` | Kohn-Sham gradient with the grid response (true, the default): the exact derivative of terco's own energy, whose grid moves with the nuclei. `false` gives the Pulay terms only, as pyscf's `tdrks`, about 1e-5 Eh/Bohr away on water PBE. No effect for Hartree-Fock |
-| `gap_warning` | float | `--tddft-gap-warn` | `--opt` warns when the followed root lies within this many hartree of another solved root, or its dominant orbital pair changes between steps (0.005) |
+| `gap_warning` | float | `--tddft-gap-warn` | `--opt` warns when the followed root lies within this many hartree of another solved root (0.005; 0 switches this warning off; negative is refused) |
+| `strict_root` | bool | `--tddft-strict-root` | `--opt` stops with an error, instead of warning, when the followed root's dominant orbital pair changes between steps (the states swapped). The last accepted geometry is still written (default false) |
 
 The report gives every root's excitation energy in Eh and eV, its oscillator
 strength, \|\|Y\|\|^2 (zero for the TDA) and its dominant orbital pair, from the

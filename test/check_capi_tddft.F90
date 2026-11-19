@@ -17,9 +17,11 @@ module check_capi_tddft_suite
    !!     roots and the gradient is RI-MP2's; an effective core potential (HI/def2-SVP) refuses the excited-state
    !!     gradient as the ground-state one does; TDDFT after trc_load_scf (no grid in the loaded result) gives the roots
    !!     of the SCF that was saved.
-   !! Run from test/. A test-drive suite.
+   !! Run from test/. A test-drive suite. The argument `pbe` runs only the water PBE gradient (2.), the rest only without
+   !! it: two runs of one program, each around ten seconds.
    !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char, c_char
+   use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_positive_inf
    use pic_types, only: dp
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -34,7 +36,9 @@ module check_capi_tddft_suite
                                TRC_OK, TRC_ERR_UNSUPPORTED, TRC_ERR_BADARG, TRC_ERR_STATE, TRC_ABI_MINOR
    implicit none
    private
-   public :: collect_capi_tddft
+   public :: collect_capi_tddft, mode_arg
+
+   character(len=16) :: mode_arg = ""
 
    real(dp), parameter :: GATE = 2.0e-8_dp
    !! Against pyscf at the C ABI's own SCF convergence (1e-12 energy, 1e-9 commutator).
@@ -43,9 +47,12 @@ contains
 
    subroutine collect_capi_tddft(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      if (trim(mode_arg) == "pbe") then
+         testsuite = [new_unittest("water PBE: Pulay-only gradient vs pyscf, grid response is the default", test_pbe)]
+         return
+      end if
       testsuite = [ &
                   new_unittest("Hartree-Fock: TDA and RPA gradients of a root vs pyscf, energies", test_hf), &
-                  new_unittest("water PBE: Pulay-only gradient vs pyscf, grid response is the default", test_pbe), &
                   new_unittest("state: before the run, after a new SCF, the Hessian", test_state), &
                   new_unittest("refusals", test_refusals), &
                   new_unittest("a second SCF and TDDFT give the same roots, none in between", test_rerun), &
@@ -303,6 +310,30 @@ contains
          rc = trc_set_tddft(handle, 0_c_int, 1_c_int, 1_c_int, 1_c_int, 1_c_int)
          call check(error, rc == TRC_ERR_BADARG, "zero roots is a bad argument")
       end if
+      ! A tolerance must be finite and not negative: a negative, NaN or infinite one is refused, and a refusal keeps the
+      ! earlier settings.
+      if (.not. allocated(error)) then
+         rc = trc_set_tddft_convergence(handle, -1.0e-8_c_double, 0_c_int, 0.0_c_double, 0_c_int, 0_c_int)
+         call check(error, rc == TRC_ERR_BADARG, "a negative conv_tol is a bad argument")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_set_tddft_convergence(handle, ieee_value(1.0_c_double, ieee_quiet_nan), 0_c_int, 0.0_c_double, 0_c_int, 0_c_int)
+         call check(error, rc == TRC_ERR_BADARG, "a NaN conv_tol is a bad argument")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_set_tddft_convergence(handle, ieee_value(1.0_c_double, ieee_positive_inf), 0_c_int, 0.0_c_double, 0_c_int, &
+                                        0_c_int)
+         call check(error, rc == TRC_ERR_BADARG, "an infinite conv_tol is a bad argument")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_set_tddft_convergence(handle, 0.0_c_double, 0_c_int, ieee_value(1.0_c_double, ieee_positive_inf), 0_c_int, &
+                                        0_c_int)
+         call check(error, rc == TRC_ERR_BADARG, "an infinite cpks_tol is a bad argument")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_set_tddft_convergence(handle, 1.0e-9_c_double, 0_c_int, 1.0e-9_c_double, 0_c_int, 0_c_int)
+         call check(error, rc == TRC_OK, "an ordinary pair of tolerances is accepted")
+      end if
       rc = trc_destroy(handle)
    end subroutine test_refusals
 
@@ -322,7 +353,7 @@ contains
       integer(c_int) :: rc, root, nroots
       logical :: ok
 
-      call open_handle(error, handle, "pbe", "basis_sets/sto-3g.json", ok)
+      call open_handle(error, handle, "", "basis_sets/sto-3g.json", ok)
       if (allocated(error)) return
       rc = trc_set_tddft(handle, 2_c_int, 1_c_int, 1_c_int, 2_c_int, 1_c_int)
       rc = trc_tddft_target_root(handle, root, nroots)
@@ -459,11 +490,12 @@ end module check_capi_tddft_suite
 program check_capi_tddft
    use, intrinsic :: iso_fortran_env, only: error_unit
    use testdrive, only: run_testsuite
-   use check_capi_tddft_suite, only: collect_capi_tddft
+   use check_capi_tddft_suite, only: collect_capi_tddft, mode_arg
    implicit none
    integer :: stat
 
    stat = 0
+   if (command_argument_count() >= 1) call get_command_argument(1, mode_arg)
    call run_testsuite(collect_capi_tddft, error_unit, stat, parallel=.false.)
    if (stat > 0) then
       write (error_unit, "(i0, a)") stat, " test(s) failed"

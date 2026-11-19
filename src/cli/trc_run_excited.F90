@@ -75,7 +75,9 @@ contains
       if (r%cli%is_set("tddft-gap-warn")) then
          call r%cli%get("tddft-gap-warn", window, r%err)
          call run_check(r, N_GAP)
-         if (.not. (window >= 0.0_dp .and. window <= huge(1.0_dp))) call run_die(r, N_GAP//" must not be negative")
+         if (.not. (window >= 0.0_dp .and. window <= huge(1.0_dp))) then
+            call run_die(r, N_GAP//" must be a finite number, zero or more (zero: no gap warning)")
+         end if
          r%tddft_gap_warn = window
       end if
    end subroutine parse_values
@@ -153,7 +155,8 @@ contains
       any_option = r%cli%is_set("tddft-roots") .or. r%cli%is_set("tddft-root") .or. r%cli%is_set("tddft-approx") .or. &
                    r%cli%is_set("tddft-spin") .or. r%cli%is_set("tddft-tol") .or. r%cli%is_set("tddft-iterations") .or. &
                    r%cli%is_set("tddft-cpks-tol") .or. r%cli%is_set("tddft-sweep") .or. &
-                   r%cli%is_set("tddft-gap-warn") .or. r%cli%is_set("no-tddft-grid-response") .or. &
+                   r%cli%is_set("tddft-gap-warn") .or. r%cli%is_set("tddft-strict-root") .or. &
+                   r%cli%is_set("no-tddft-grid-response") .or. &
                    r%cli%is_set("tddft-grid-response")
       if (.not. r%tddft) then
          if (any_option) call die_options_alone(r)
@@ -163,6 +166,7 @@ contains
          call run_die(r, "--tddft-grid-response and --no-tddft-grid-response contradict each other")
       end if
       r%tddft_grid_response = .not. r%cli%is_set("no-tddft-grid-response")
+      r%tddft_strict = r%cli%is_set("tddft-strict-root")
       call parse_words(r)
       call parse_values(r)
       call refuse_combinations(r)

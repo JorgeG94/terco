@@ -25,8 +25,8 @@ module check_cli_tddft_suite
    public :: collect_cli_tddft_tests, set_cli_tddft_args, mode_arg
 
    character(len=16) :: mode_arg = ""
-   !! "grad": the gradient runs; "refusals": the refusals; empty: the energies and the TOML input. Three runs of one
-   !! program keep each well under half a minute.
+   !! "grad": the Pulay-only gradient against pyscf; "grid": the default (grid response) gradient; "refusals": the
+   !! refusals; empty: the energies and the TOML input. Four runs of one program keep each around ten seconds.
 
    real(dp), parameter :: TOL_OMEGA = 1.0e-6_dp
    real(dp), parameter :: TOL_OSC = 1.0e-5_dp
@@ -49,8 +49,10 @@ contains
    subroutine collect_cli_tddft_tests(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       if (trim(mode_arg) == "grad") then
-         testsuite = [new_unittest("CLI --tddft --grad: Pulay-only gradient matches pyscf, grid response is the default", &
-                                   test_gradient)]
+         testsuite = [new_unittest("CLI --tddft --grad --no-tddft-grid-response: the gradient matches pyscf", test_gradient)]
+      else if (trim(mode_arg) == "grid") then
+         testsuite = [new_unittest("CLI --tddft --grad: the grid response is the default and moves the gradient", &
+                                   test_grid_response)]
       else if (trim(mode_arg) == "refusals") then
          testsuite = [new_unittest("CLI --tddft refusals, before the SCF", test_refusals)]
       else
@@ -204,7 +206,7 @@ contains
    subroutine test_gradient(error)
       type(error_type), allocatable, intent(out) :: error
       type(json_file) :: json
-      real(dp) :: pulay(3, 3), exact(3, 3), gref(3, 3, 3), e_ref, diff
+      real(dp) :: pulay(3, 3), gref(3, 3, 3), e_ref
       character(len=:), allocatable :: what
       logical :: found, response
       integer :: u
@@ -228,7 +230,19 @@ contains
       call ref_close(u)
       call check(error, maxval(abs(pulay - gref(:, :, 2))) < TOL_GRAD, "Pulay-only gradient of root 2 vs pyscf, "// &
                  to_string(maxval(abs(pulay - gref(:, :, 2))), "es10.2"))
-      if (allocated(error)) return
+   end subroutine test_gradient
+
+   subroutine test_grid_response(error)
+      !! The default gradient has the grid response and differs from pyscf's Pulay-only one by the grid's derivative
+      !! (about 1e-5): the reference is that Pulay-only gradient, which test_gradient shows the CLI reproduces with
+      !! --no-tddft-grid-response to 2e-8.
+      type(error_type), allocatable, intent(out) :: error
+      type(json_file) :: json
+      real(dp) :: exact(3, 3), gref(3, 3, 3), e_ref, diff
+      character(len=:), allocatable :: what
+      logical :: found, response
+      integer :: u
+
       call run_cli(error, 'water.xyz -b basis_sets/6-31g.json -f pbe --tddft --tddft-roots 3 --tddft-root 2 '// &
                    '--tddft-tol 1e-10 --tddft-cpks-tol 1e-11 --grad', g_probe//'.exact.json', json)
       if (allocated(error)) return
@@ -237,10 +251,14 @@ contains
       call json%destroy()
       call check(error, found .and. response, "the grid response is on by default")
       if (allocated(error)) return
-      diff = maxval(abs(exact - pulay))
+      call ref_require("tddft_grad_water_6-31g_pbe.ref", u)
+      call ref_read_real(u, "E_SCF", e_ref)
+      call ref_read_matrix3(u, "GRAD", 3, 3, 3, gref)
+      call ref_close(u)
+      diff = maxval(abs(exact - gref(:, :, 2)))
       call check(error, diff > 1.0e-6_dp .and. diff < 1.0e-4_dp, "the default gradient should differ from the "// &
                  "Pulay-only one by the grid's derivative, about 1e-5; got "//to_string(diff, "es10.2"))
-   end subroutine test_gradient
+   end subroutine test_grid_response
 
    subroutine expect_refusal(error, args, suffix, reason)
       !! The CLI with `args` must exit non-zero and print `reason`.
@@ -294,6 +312,11 @@ contains
       call expect_refusal(error, BASE//' -f pbe --tddft-grid-response --no-tddft-grid-response', '.flags.out', "contradict")
       if (allocated(error)) return
       call expect_refusal(error, 'water.xyz -b basis_sets/cc-pvdz.json --tddft', '.spherical.out', "spherical basis")
+      if (allocated(error)) return
+      ! The gap window may be zero (the warning off) but not negative; the C ABI (trc_opt_set_tddft) agrees.
+      call expect_refusal(error, BASE//' --tddft-gap-warn -0.001', '.gap.out', "zero or more")
+      if (allocated(error)) return
+      call expect_refusal(error, 'water.xyz -b basis_sets/sto-3g.json --tddft-strict-root', '.strict.out', "need --tddft")
    end subroutine test_refusals
 
 end module check_cli_tddft_suite

@@ -215,7 +215,8 @@ module trc_dlfind_bridge
                        trc_run_rimp2, trc_check_rimp2_gradient, trc_check_gradient_upfront, trc_symmetry_requested, &
                        trc_run_tddft, trc_check_tddft, trc_tddft_energy, trc_tddft_nroots, trc_tddft_energies, &
                        trc_tddft_character, trc_tddft_target_root, &
-                       trc_symmetry_suppress_default, TRC_OK, TRC_ERR_NOCONV, TRC_GUESS_GIVEN, TRC_GUESS_PROJECTED
+                       trc_symmetry_suppress_default, TRC_OK, TRC_ERR_NOCONV, TRC_ERR_UNSUPPORTED, TRC_GUESS_GIVEN, &
+                       TRC_GUESS_PROJECTED
    ! trc_opt_io, not trc_app (src/cli/trc_app.F90): this module is built into
    ! libterco_opt, which must not depend on app/ -- CODE_STRUCTURE.md's
    ! "entry points are leaves" rule, and the only way a caller outside
@@ -231,6 +232,7 @@ module trc_dlfind_bridge
    private
 
    public :: trc_dlfind_available
+   public :: trc_opt_watch_t, trc_opt_judge_followed_state
    public :: TRC_OPT_COORDS_CARTESIAN, TRC_OPT_COORDS_HDLC, TRC_OPT_COORDS_HDLC_TC, &
              TRC_OPT_COORDS_DLC, TRC_OPT_COORDS_DLC_TC
    public :: TRC_OPT_GUESS_DENSITY, TRC_OPT_GUESS_PROJECTED, TRC_OPT_GUESS_NONE
@@ -390,7 +392,12 @@ module trc_dlfind_bridge
          !! pair (trc_tddft_character) differs from the last accepted step's (not checked in a NEB run, whose
          !! images are different geometries by design).
       real(dp) :: tddft_gap_warn = 0.005_dp
-         !! Hartree; see `tddft`.
+         !! Hartree; see `tddft`. Zero switches the gap warning off.
+      logical :: tddft_strict = .false.
+         !! A change of the followed root's dominant orbital pair since the last accepted step (a sign that the
+         !! states swapped) fails the evaluation instead of warning; see `trc_opt_judge_followed_state`. The failure
+         !! is DL-FIND's failed evaluation: the last accepted geometry, the trajectory and the JSON are written, and
+         !! the run ends (as for an SCF that does not converge). Not checked in a NEB run.
 
       ! --- algorithm, saddle-search target and Hessian handling ---------
       integer :: algorithm = TRC_OPT_ALG_LBFGS
@@ -480,6 +487,12 @@ module trc_dlfind_bridge
                                           !! rule for the algorithm in use -- see cb_put_coords)
       integer :: energy_evaluations = 0  !! every cb_get_gradient call, rejected trials included
       integer :: hessian_evaluations = 0  !! every cb_get_hessian call that actually ran trc_run_hessian
+      integer :: state_changes = 0
+         !! --tddft: evaluations (rejected line-search trials included) at which the followed root's dominant
+         !! orbital pair differed from the last accepted step's, i.e. the state-change warnings logged.
+      integer :: gap_warnings = 0
+         !! --tddft: the gap warnings logged (another root within `tddft_gap_warn` of the followed one), one per
+         !! root and evaluation.
       real(dp) :: final_energy = 0.0_dp
       real(dp) :: final_gmax = 0.0_dp
       real(dp) :: final_grms = 0.0_dp
@@ -528,6 +541,23 @@ module trc_dlfind_bridge
       integer, allocatable :: neb_scf_iterations_per_image(:)   !! (neb_n_images): the warm-start measurement
    end type trc_opt_result_t
 
+   type :: trc_opt_watch_t
+      !! What `trc_opt_judge_followed_state` reads and keeps for one excited-state evaluation. `ref_hole` and
+      !! `ref_particle` are the dominant orbital pair of the followed root at the last accepted step (0: none yet,
+      !! the first evaluation is the reference and is not compared); `gap_warn` and `strict` are the options of the
+      !! same names. The counters accumulate over the run. The roots of the evaluation: `omega` (Eh), and for each
+      !! root its dominant orbital pair `hole` / `particle` (counted from the HOMO and the LUMO) and the weight of
+      !! that pair.
+      integer :: followed = 1
+      real(dp), allocatable :: omega(:), weight(:)
+      integer, allocatable :: hole(:), particle(:)
+      integer :: ref_hole = 0, ref_particle = 0
+      real(dp) :: gap_warn = 0.005_dp
+      logical :: strict = .false.
+      integer :: n_gap_warnings = 0
+      integer :: n_state_changes = 0
+   end type trc_opt_watch_t
+
    interface
       subroutine api_dl_find(nvarin, nvarin2, nspec, master, &
                              c_dlf_error, c_dlf_get_gradient, c_dlf_get_hessian, &
@@ -561,6 +591,8 @@ module trc_dlfind_bridge
    integer, save :: pending_hole = 0, pending_particle = 0
    !! The same at the latest evaluation, which becomes the accepted one in `consider_step` (a line-search trial
    !! that is rejected must not move the reference).
+   integer, save :: n_gap_warnings = 0, n_state_changes = 0
+   !! The warnings logged by `watch_followed_state` over the run (`trc_opt_result_t%gap_warnings`, `%state_changes`).
    logical, save :: have_prev_scf = .false.
    integer(c_int), save :: cached_nspin = 1_c_int
    logical, save :: eval_failed = .false.
@@ -877,6 +909,18 @@ contains
          end block
       end if
 
+      if (.not. res%failed .and. opts%tddft .and. opts%hessian_source == TRC_OPT_HESS_TERCO .and. &
+          ((opts%target_kind == TRC_OPT_TARGET_SADDLE .and. opts%saddle_method == TRC_OPT_SADDLE_PRFO) .or. &
+           opts%algorithm == TRC_OPT_ALG_NR)) then
+         ! terco's own finite-difference Hessian needs the gradient of the energy it differences, and the
+         ! excited-state gradient has no Hessian (trc_run_hessian refuses after trc_run_tddft): cb_get_hessian would
+         ! decline at every point and DL-FIND would quietly use its own finite differences instead.
+         res%failed = .true.
+         res%refusal_status = int(TRC_ERR_UNSUPPORTED)
+         res%message = "geometry optimisation refused before its first step: an excited-state (tddft) optimisation "// &
+                       "cannot take terco's own Hessian (hessian source terco) for a P-RFO saddle search or a Newton-"// &
+                       "Raphson step; use the DL-FIND Hessian source (--opt-init-hessian dlfind)"
+      end if
       if (.not. res%failed .and. opts%tddft) then
          ! Every step runs the excited-state gradient; whatever refuses it refuses
          ! the first evaluation, and DL-FIND's answer to that is `error stop`.
@@ -940,6 +984,8 @@ contains
          res%steps = n_steps
          res%energy_evaluations = n_evals
          res%hessian_evaluations = n_hess_evals
+         res%state_changes = n_state_changes
+         res%gap_warnings = n_gap_warnings
          res%total_scf_iterations = total_scf_iters
          if (eval_failed) then
             res%failed = .true.
@@ -1079,6 +1125,8 @@ contains
       followed_particle = 0
       pending_hole = 0
       pending_particle = 0
+      n_gap_warnings = 0
+      n_state_changes = 0
       n_steps = 0
       n_hess_evals = 0
       total_scf_iters = 0
@@ -1990,27 +2038,76 @@ contains
       if (allocated(density_buffer)) deallocate (density_buffer)
    end subroutine scf_at_geometry
 
-   function watch_followed_state() result(why)
+   function trc_opt_judge_followed_state(w) result(why)
       !! The excited-state optimisation follows one ROOT NUMBER, and two roots that cross swap the numbers: the
-      !! optimiser would then walk down another state's surface with this one's label. A crossing cannot be
-      !! seen from the number, so two signs are watched: another solved root within `tddft_gap_warn` of the
-      !! followed one (a crossing or an avoided crossing is near), and a change of the followed root's dominant
-      !! orbital pair (counted from the HOMO and the LUMO, which orbital phases and the order within a degenerate
-      !! pair do not touch) since the previous evaluation. Each is a warning, not a stop: the energies are real.
+      !! optimiser would then walk down another state's surface with this one's label. A crossing cannot be seen from
+      !! the number, so two signs are watched, from the roots of one evaluation `w`: another solved root within
+      !! `w%gap_warn` of the followed one (a crossing or an avoided crossing is near; zero switches this off), and a
+      !! change of the followed root's dominant orbital pair (counted from the HOMO and the LUMO, which orbital
+      !! phases and the order within a degenerate pair do not touch) since the last accepted step, `w%ref_hole` and
+      !! `w%ref_particle`. A swap of two states with the same dominant pair is not seen.
+      !! Each is a warning, counted in `w%n_gap_warnings` and `w%n_state_changes`, unless `w%strict` is set: then
+      !! the pair change is not a warning but the returned message, which fails the evaluation. A gap is never an
+      !! error. Returns "" when the evaluation may go on.
+      type(trc_opt_watch_t), intent(inout) :: w
       character(len=256) :: why
-      integer(c_int) :: st, nroots, k, target_root
+      integer :: k
+      real(dp) :: gap
+
+      why = ""
+      if (.not. allocated(w%omega) .or. .not. allocated(w%hole) .or. .not. allocated(w%particle) .or. &
+          .not. allocated(w%weight)) then
+         why = "the followed-state check was given no roots"
+         return
+      end if
+      if (w%followed < 1 .or. w%followed > size(w%omega)) then
+         why = "the followed TDDFT root "//to_string(w%followed)//" is not among the "//to_string(size(w%omega))// &
+               " solved roots"
+         return
+      end if
+      do k = 1, size(w%omega)
+         if (k == w%followed) cycle
+         gap = abs(w%omega(k) - w%omega(w%followed))
+         if (gap < w%gap_warn) then
+            w%n_gap_warnings = w%n_gap_warnings + 1
+            call global_logger%warning("--opt --tddft: root "//to_string(k)//" lies only "//to_string(gap, "es9.2")// &
+                                       " Eh from the followed root "//to_string(w%followed)// &
+                                       "; the states may cross and the optimisation may switch surface")
+         end if
+      end do
+      if (w%ref_hole > 0) then
+         if (w%hole(w%followed) /= w%ref_hole .or. w%particle(w%followed) /= w%ref_particle) then
+            w%n_state_changes = w%n_state_changes + 1
+            why = "the dominant orbital pair of root "//to_string(w%followed)//" changed from "// &
+                  trc_tddft_run_pair_label(w%ref_hole, w%ref_particle)//" to "// &
+                  trc_tddft_run_pair_label(w%hole(w%followed), w%particle(w%followed))//" (weight "// &
+                  to_string(w%weight(w%followed), "f5.2")//"): the followed state may have changed character"
+            if (w%strict) then
+               why = "--tddft-strict-root: "//trim(why)
+            else
+               call global_logger%warning("--opt --tddft: "//trim(why))
+               why = ""
+            end if
+         end if
+      end if
+   end function trc_opt_judge_followed_state
+
+   function watch_followed_state() result(why)
+      !! The roots of the evaluation just run on `context`, judged by `trc_opt_judge_followed_state` against the last
+      !! accepted step's pair (not in a NEB run, whose images are different geometries by design).
+      character(len=256) :: why
+      type(trc_opt_watch_t) :: w
+      integer(c_int) :: st, nroots, target_root
       real(c_double), allocatable :: omega(:), oscillator(:), ynorm(:), dipole(:), weight(:)
       integer(c_int), allocatable :: hole(:), particle(:)
-      integer :: followed
-      real(dp) :: gap
 
       why = ""
       ! The root is the context's own (trc_set_tddft), never a second copy.
       st = trc_tddft_target_root(context, target_root, nroots)
-      followed = int(target_root)
+      w%followed = int(target_root)
       st = trc_tddft_nroots(context, nroots)
-      if (st /= TRC_OK .or. followed < 1 .or. followed > nroots) then
-         why = "the followed TDDFT root "//to_string(followed)//" is not among the "//to_string(int(nroots))// &
+      if (st /= TRC_OK .or. w%followed < 1 .or. w%followed > nroots) then
+         why = "the followed TDDFT root "//to_string(w%followed)//" is not among the "//to_string(int(nroots))// &
                " solved roots"
          return
       end if
@@ -2026,26 +2123,23 @@ contains
          why = "trc_tddft_character failed"
          return
       end if
-      do k = 1, nroots
-         if (k == followed) cycle
-         gap = abs(real(omega(k) - omega(followed), dp))
-         if (gap < cur_opts%tddft_gap_warn) then
-            call global_logger%warning("--opt --tddft: root "//to_string(int(k))//" lies only "// &
-                                       to_string(gap, "es9.2")//" Eh from the followed root "//to_string(followed)// &
-                                       "; the states may cross and the optimisation may switch surface")
-         end if
-      end do
-      if (followed_hole > 0 .and. .not. opt_is_neb) then
-         if (hole(followed) /= followed_hole .or. particle(followed) /= followed_particle) then
-            call global_logger%warning("--opt --tddft: the dominant orbital pair of root "//to_string(followed)// &
-                                       " changed from "//trc_tddft_run_pair_label(followed_hole, followed_particle)//" to "// &
-                                       trc_tddft_run_pair_label(int(hole(followed)), int(particle(followed)))//" (weight "// &
-                                       to_string(real(weight(followed), dp), "f5.2")// &
-                                       "): the followed state may have changed character")
-         end if
+      w%omega = real(omega, dp)
+      w%weight = real(weight, dp)
+      w%hole = int(hole)
+      w%particle = int(particle)
+      w%gap_warn = cur_opts%tddft_gap_warn
+      w%strict = cur_opts%tddft_strict
+      if (.not. opt_is_neb) then
+         w%ref_hole = followed_hole
+         w%ref_particle = followed_particle
       end if
-      pending_hole = int(hole(followed))
-      pending_particle = int(particle(followed))
+      w%n_gap_warnings = n_gap_warnings
+      w%n_state_changes = n_state_changes
+      why = trc_opt_judge_followed_state(w)
+      n_gap_warnings = w%n_gap_warnings
+      n_state_changes = w%n_state_changes
+      pending_hole = w%hole(w%followed)
+      pending_particle = w%particle(w%followed)
    end function watch_followed_state
 
    subroutine cb_get_gradient(nvar, coords, energy, gradient, iimage, kiter, status) bind(c)
@@ -2122,6 +2216,17 @@ contains
          st = trc_tddft_energy(context, e)
       else
          st = trc_energy(context, e)
+      end if
+      if (st /= TRC_OK) then
+         ! The energy DL-FIND compares trial points by: a status lost here would hand it an unset number.
+         if (cur_opts%tddft) then
+            why = "trc_tddft_energy failed after a successful trc_run_gradient"
+         else
+            why = "trc_energy failed after a successful trc_run_gradient"
+         end if
+         call fail_eval(nvar, energy, gradient, status, trim(why))
+         deallocate (gbuf)
+         return
       end if
       st = trc_nspin(context, nspin_c)
       cached_nspin = nspin_c

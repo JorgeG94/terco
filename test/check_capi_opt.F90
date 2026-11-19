@@ -25,13 +25,17 @@ module check_capi_opt_suite
    !!
    !! A test-drive suite.
    !!
-   use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_char, c_null_char
+   use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_char, c_null_char, c_null_ptr
+   use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_positive_inf
    use pic_types, only: dp
    use pic_strings, only: to_string
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_method, &
-                               trc_set_tddft, trc_tddft_energy, trc_set_convergence, TRC_OK, TRC_ERR_BADARG
+                               trc_set_tddft, trc_tddft_energy, trc_set_convergence, TRC_OK, TRC_ERR_BADARG, &
+                               TRC_ERR_UNSUPPORTED, TRC_ERR_NULL
    use trc_opt_c_interfaces, only: trc_opt_options_create, trc_opt_options_destroy, trc_opt_set_gtol, &
-                                   trc_opt_set_algorithm, trc_opt_set_tddft, TRC_OPT_ALG_PRFO, &
+                                   trc_opt_set_algorithm, trc_opt_set_tddft, trc_opt_set_tddft_strict, TRC_OPT_ALG_PRFO, &
+                                   TRC_OPT_ALG_NR, TRC_OPT_TARGET_SADDLE, trc_opt_set_target, &
+                                   trc_opt_result_state_changes, trc_opt_result_gap_warnings, &
                                    trc_opt_result_create, trc_opt_result_destroy, trc_opt_run, &
                                    trc_opt_result_converged, trc_opt_result_energy, trc_opt_result_gradient_max, &
                                    trc_opt_result_geometry, trc_opt_result_message
@@ -60,7 +64,11 @@ contains
          new_unittest("terco_opt.h vs pyscf+scipy (opt_hcn.ref), through the C ABI only", test_hcn), &
          new_unittest("trc_opt_run refuses TRC_OPT_ALG_PRFO with a minimum target", test_prfo_minimum_refused), &
          new_unittest("trc_opt_set_tddft: the first excited state of formaldehyde (CIS/STO-3G), vs pyscf", &
-                      test_excited_state) &
+                      test_excited_state), &
+         new_unittest("trc_opt_set_tddft / _strict: the gap window and the strict flag are validated", &
+                      test_tddft_setters), &
+         new_unittest("trc_opt_run refuses an excited-state P-RFO or NR search with terco's own Hessian", &
+                      test_tddft_hessian_refused) &
          ]
    end subroutine collect_capi_opt
 
@@ -110,15 +118,20 @@ contains
       !!
       !! The geometry optimisation of the first singlet excited state through the C ABI only: trc_set_tddft on the
       !! context, trc_opt_set_tddft on the options. The energy it ends on is E_SCF + omega_1 at the converged geometry,
-      !! the number pyscf's TDA gives at that geometry (E_S1_PYSCF); pyscf's own excited-state gradient there is
-      !! 1.1e-8 Eh/Bohr, so it is the S1 minimum. A setup the excited-state gradient refuses (here, a triplet is not
-      !! reachable: trc_set_tddft refuses it) is trc_opt_run's refusal before the first SCF.
+      !! the number pyscf's TDA gives at that geometry (E(S1) of tddft_s1_formaldehyde_sto-3g_hf.ref, written by
+      !! generate.py's tddft_s1_min from test/formaldehyde_s1.xyz); pyscf's own excited-state gradient there (the
+      !! reference's GRAD_MAX) is below 1e-7 Eh/Bohr, so it is the S1 minimum. The followed state never changes on
+      !! the way: no state-change warning is counted, with or without the strict flag, and the strict run ends on the
+      !! same energy. A setup the excited-state gradient refuses (here, a triplet is not reachable: trc_set_tddft
+      !! refuses it) is trc_opt_run's refusal before the first SCF.
       !!
       type(error_type), allocatable, intent(out) :: error
-      real(dp), parameter :: E_S1_PYSCF = -112.214126569198_dp
       real(dp), parameter :: E_TOL = 5.0e-8_dp
+      real(dp), parameter :: GRAD_MIN = 1.0e-7_dp
+      real(dp) :: e_s1_pyscf, s1_grad_max, e_first, e_scf_pyscf, omega_pyscf(2)
       type(c_ptr) :: ctx, opts, res
-      integer :: nat, rc, nfail
+      integer :: nat, rc, nfail, u, run
+      integer(c_int) :: nchanges, ngaps
       integer, allocatable :: z(:)
       real(dp), allocatable :: r(:, :)
       integer(c_int), allocatable :: z_c(:)
@@ -126,6 +139,14 @@ contains
       real(c_double) :: energy, gmax, e_target
 
       nfail = 0
+      call ref_require('tddft_s1_formaldehyde_sto-3g_hf.ref', u)
+      call ref_read_real(u, 'E_SCF', e_scf_pyscf)
+      call ref_read_vector(u, 'OMEGA', 2, omega_pyscf)
+      call ref_read_real(u, 'E_S1', e_s1_pyscf)
+      call ref_read_real(u, 'GRAD_MAX', s1_grad_max)
+      call ref_close(u)
+      call ref_report(nfail, s1_grad_max < GRAD_MIN, "check_capi_opt (S1): pyscf's S1 gradient at the reference geometry, "// &
+                      "Eh/Bohr", s1_grad_max)
       call read_xyz('formaldehyde.xyz', nat, z, r)
       allocate (z_c(nat), source=int(z, c_int))
       rc = trc_create(ctx)
@@ -136,29 +157,127 @@ contains
       if (rc == TRC_OK) rc = trc_set_convergence(ctx, 1.0e-12_c_double, 1.0e-9_c_double, 200_c_int, 10_c_int)
       if (rc == TRC_OK) rc = trc_set_tddft(ctx, 2_c_int, 1_c_int, 1_c_int, 1_c_int, 1_c_int)
       call ref_report(nfail, rc == TRC_OK, "check_capi_opt (S1): the context", real(rc, dp))
-      rc = trc_opt_options_create(opts)
-      if (rc == TRC_OK) rc = trc_opt_set_gtol(opts, real(RUN_GTOL, c_double))
-      if (rc == TRC_OK) rc = trc_opt_set_tddft(opts, 1_c_int, 0.005_c_double)
-      if (rc == TRC_OK) rc = trc_opt_result_create(res)
-      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (S1): the options", real(rc, dp))
-      rc = trc_opt_run(ctx, int(nat, c_int), z_c, reshape(real(r, c_double), [3*nat]), opts, res)
-      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (S1): trc_opt_run", real(rc, dp))
-      rc = trc_opt_result_converged(res, converged)
-      call ref_report(nfail, converged /= 0, "check_capi_opt (S1): converged", real(converged, dp))
-      rc = trc_opt_result_energy(res, energy)
-      rc = trc_opt_result_gradient_max(res, gmax)
-      call ref_report(nfail, abs(real(energy, dp) - E_S1_PYSCF) < E_TOL, &
-                      "check_capi_opt (S1): final energy vs pyscf's E(S1), Eh", abs(real(energy, dp) - E_S1_PYSCF))
-      call ref_report(nfail, gmax < 2.0_c_double*RUN_GTOL, "check_capi_opt (S1): final gradient, Eh/Bohr", real(gmax, dp))
-      ! The context still holds the last evaluation: its target-root energy is the one the optimiser reported.
-      rc = trc_tddft_energy(ctx, e_target)
-      call ref_report(nfail, rc == TRC_OK .and. abs(real(e_target, dp) - real(energy, dp)) < 1.0e-6_dp, &
-                      "check_capi_opt (S1): trc_tddft_energy of the context", abs(real(e_target, dp) - real(energy, dp)))
-      rc = trc_opt_result_destroy(res)
-      rc = trc_opt_options_destroy(opts)
+      do run = 1, 2
+         ! run 1: the default (warn); run 2: strict, which changes nothing while the state is the same one.
+         rc = trc_opt_options_create(opts)
+         if (rc == TRC_OK) rc = trc_opt_set_gtol(opts, real(RUN_GTOL, c_double))
+         if (rc == TRC_OK) rc = trc_opt_set_tddft(opts, 1_c_int, 0.005_c_double)
+         if (rc == TRC_OK .and. run == 2) rc = trc_opt_set_tddft_strict(opts, 1_c_int)
+         if (rc == TRC_OK) rc = trc_opt_result_create(res)
+         call ref_report(nfail, rc == TRC_OK, "check_capi_opt (S1): the options", real(rc, dp))
+         rc = trc_opt_run(ctx, int(nat, c_int), z_c, reshape(real(r, c_double), [3*nat]), opts, res)
+         call ref_report(nfail, rc == TRC_OK, "check_capi_opt (S1): trc_opt_run", real(rc, dp))
+         rc = trc_opt_result_converged(res, converged)
+         call ref_report(nfail, converged /= 0, "check_capi_opt (S1): converged", real(converged, dp))
+         rc = trc_opt_result_energy(res, energy)
+         rc = trc_opt_result_gradient_max(res, gmax)
+         call ref_report(nfail, abs(real(energy, dp) - e_s1_pyscf) < E_TOL, &
+                         "check_capi_opt (S1): final energy vs pyscf's E(S1), Eh", abs(real(energy, dp) - e_s1_pyscf))
+         call ref_report(nfail, gmax < 2.0_c_double*RUN_GTOL, "check_capi_opt (S1): final gradient, Eh/Bohr", real(gmax, dp))
+         rc = trc_opt_result_state_changes(res, nchanges)
+         call ref_report(nfail, rc == TRC_OK .and. nchanges == 0, "check_capi_opt (S1): no state change was counted", &
+                         real(nchanges, dp))
+         rc = trc_opt_result_gap_warnings(res, ngaps)
+         call ref_report(nfail, rc == TRC_OK .and. ngaps == 0, "check_capi_opt (S1): no gap warning was counted", &
+                         real(ngaps, dp))
+         if (run == 1) then
+            e_first = real(energy, dp)
+            ! The context still holds the last evaluation: its target-root energy is the one the optimiser reported.
+            rc = trc_tddft_energy(ctx, e_target)
+            call ref_report(nfail, rc == TRC_OK .and. abs(real(e_target, dp) - real(energy, dp)) < 1.0e-6_dp, &
+                            "check_capi_opt (S1): trc_tddft_energy of the context", &
+                            abs(real(e_target, dp) - real(energy, dp)))
+         else
+            call ref_report(nfail, abs(real(energy, dp) - e_first) < 1.0e-10_dp, &
+                            "check_capi_opt (S1): the strict run ends on the same energy", abs(real(energy, dp) - e_first))
+         end if
+         rc = trc_opt_result_destroy(res)
+         rc = trc_opt_options_destroy(opts)
+      end do
       rc = trc_destroy(ctx)
       if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
    end subroutine test_excited_state
+
+   subroutine test_tddft_setters(error)
+      !! trc_opt_set_tddft: a gap window of zero (the warning off) and a positive one are accepted; a negative,
+      !! NaN or infinite one is refused, as the CLI refuses them. trc_opt_set_tddft_strict takes any flag and a null handle.
+      type(error_type), allocatable, intent(out) :: error
+      real(c_double), parameter :: ZERO = 0.0_c_double
+      type(c_ptr) :: opts
+      integer :: rc, nfail
+      real(c_double) :: nan, inf
+
+      nfail = 0
+      nan = ieee_value(ZERO, ieee_quiet_nan)
+      inf = ieee_value(ZERO, ieee_positive_inf)
+      rc = trc_opt_options_create(opts)
+      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (setters): options create", real(rc, dp))
+      rc = trc_opt_set_tddft(opts, 1_c_int, ZERO)
+      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (setters): gap_warn 0 (warning off) is accepted", real(rc, dp))
+      rc = trc_opt_set_tddft(opts, 1_c_int, 0.02_c_double)
+      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (setters): gap_warn 0.02 is accepted", real(rc, dp))
+      rc = trc_opt_set_tddft(opts, 1_c_int, -1.0e-3_c_double)
+      call ref_report(nfail, rc == TRC_ERR_BADARG, "check_capi_opt (setters): a negative gap_warn is refused", real(rc, dp))
+      rc = trc_opt_set_tddft(opts, 1_c_int, nan)
+      call ref_report(nfail, rc == TRC_ERR_BADARG, "check_capi_opt (setters): a NaN gap_warn is refused", real(rc, dp))
+      rc = trc_opt_set_tddft(opts, 1_c_int, inf)
+      call ref_report(nfail, rc == TRC_ERR_BADARG, "check_capi_opt (setters): an infinite gap_warn is refused", real(rc, dp))
+      rc = trc_opt_set_tddft_strict(opts, 1_c_int)
+      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (setters): strict on", real(rc, dp))
+      rc = trc_opt_set_tddft_strict(opts, 0_c_int)
+      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (setters): strict off", real(rc, dp))
+      rc = trc_opt_options_destroy(opts)
+      rc = trc_opt_set_tddft_strict(c_null_ptr, 1_c_int)
+      call ref_report(nfail, rc == TRC_ERR_NULL, "check_capi_opt (setters): a null handle", real(rc, dp))
+      if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
+   end subroutine test_tddft_setters
+
+   subroutine test_tddft_hessian_refused(error)
+      !! An excited-state optimisation has no Hessian: with terco's own Hessian source (the default) a P-RFO saddle
+      !! search or a Newton-Raphson step is refused by trc_opt_run, before the first SCF, with TRC_ERR_UNSUPPORTED and a
+      !! message that names the cause, instead of DL-FIND quietly using its own finite differences. With the DL-FIND source it
+      !! is not refused at this stage (not run here: the search itself is not what is tested).
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: ctx, opts, res
+      integer :: nat, rc, nfail, k
+      integer, allocatable :: z(:)
+      real(dp), allocatable :: r(:, :)
+      integer(c_int), allocatable :: z_c(:)
+      character(kind=c_char) :: msg(256)
+
+      nfail = 0
+      call read_xyz('formaldehyde.xyz', nat, z, r)
+      allocate (z_c(nat), source=int(z, c_int))
+      rc = trc_create(ctx)
+      if (rc == TRC_OK) rc = trc_set_molecule(ctx, int(nat, c_int), real(z_c, c_double), &
+                                              reshape(real(r, c_double), [3*nat]), 0_c_int, 1_c_int)
+      if (rc == TRC_OK) rc = trc_set_basis_json(ctx, "basis_sets/sto-3g.json"//c_null_char)
+      if (rc == TRC_OK) rc = trc_set_method(ctx, ""//c_null_char, 3_c_int)
+      if (rc == TRC_OK) rc = trc_set_tddft(ctx, 2_c_int, 1_c_int, 1_c_int, 1_c_int, 1_c_int)
+      call ref_report(nfail, rc == TRC_OK, "check_capi_opt (hessian): the context", real(rc, dp))
+      do k = 1, 2
+         rc = trc_opt_options_create(opts)
+         if (rc == TRC_OK) rc = trc_opt_set_tddft(opts, 1_c_int, 0.005_c_double)
+         if (k == 1) then
+            if (rc == TRC_OK) rc = trc_opt_set_target(opts, TRC_OPT_TARGET_SADDLE)
+         else
+            if (rc == TRC_OK) rc = trc_opt_set_algorithm(opts, TRC_OPT_ALG_NR)
+         end if
+         if (rc == TRC_OK) rc = trc_opt_result_create(res)
+         call ref_report(nfail, rc == TRC_OK, "check_capi_opt (hessian): the options", real(rc, dp))
+         rc = trc_opt_run(ctx, int(nat, c_int), z_c, reshape(real(r, c_double), [3*nat]), opts, res)
+         call ref_report(nfail, rc == TRC_ERR_UNSUPPORTED, &
+                         "check_capi_opt (hessian): "//merge("P-RFO saddle", "NR minimum  ", k == 1)//" is refused", real(rc, dp))
+         msg = c_null_char
+         rc = trc_opt_result_message(res, msg, int(size(msg), c_int))
+         call ref_report(nfail, index(f_message(msg), "terco's own Hessian") > 0, &
+                         "check_capi_opt (hessian): the message names the cause", 0.0_dp)
+         rc = trc_opt_result_destroy(res)
+         rc = trc_opt_options_destroy(opts)
+      end do
+      rc = trc_destroy(ctx)
+      if (nfail > 0) call test_failed(error, to_string(nfail)//" check(s) failed (see the FAIL lines above)")
+   end subroutine test_tddft_hessian_refused
 
    subroutine run_case(xyzfile, ref_base, error)
       character(len=*), intent(in) :: xyzfile, ref_base
