@@ -26,7 +26,7 @@ program time_cpks_batched
    use trc_integrals, only: trc_multipoles, TRC_NMULT
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_cphf_solve_rhf
    use trc_cpks, only: trc_cpks_solve_rks
-   use trc_xc, only: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply_many
+   use trc_xc, only: trc_xc_fxc_cache_t, trc_xc_fxc_rks, trc_xc_fxc_rks_apply_many
    use trc_basis_json, only: trc_basis_from_json
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
