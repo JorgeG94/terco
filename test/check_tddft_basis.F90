@@ -6,7 +6,7 @@ module check_tddft_basis_suite
    !! gen_tddft_basis). check_tddft.F90 and check_tddft_rpa.F90 pin the solver
    !! on 6-31G* only; this suite is what says that the other basis families
    !! (minimal, split valence, diffuse, polarised, correlation consistent,
-   !! def2) reach the solver intact: contraction
+   !! def2, up to d functions) reach the solver intact: contraction
    !! and decontraction, general contractions, the Cartesian AO space, diffuse
    !! functions in the occupied-virtual space.
    !!
@@ -29,20 +29,28 @@ module check_tddft_basis_suite
    !!     runs), and, for a Kohn-Sham functional, the same RPA solve with the
    !!     exact-exchange weight corrupted (110% of the functional's, or 0.1 for
    !!     a pure functional);
-   !!  7. release.
+   !!  7. the lowest roots against the dense eigenvalues of A (TDA) and of
+   !!     (A-B)^1/2 (A+B) (A-B)^1/2 (RPA), built from unit-vector matvecs when
+   !!     there are at most MAX_DENSE pairs: no reference can say that a root is
+   !!     MISSING from a converged, residual-clean answer, this can;
+   !!     and again for nroots = 1 to 6 (Hartree-Fock);
+   !!  8. a basis with a shell above MULT_LMAX is refused with an error that names
+   !!     the limit, up front (any build), and after an SCF in an LMAX=3 build;
+   !!  9. release.
    !!
    !! TDDFT is Cartesian only, so the basis is loaded with force_cart and the
    !! reference is pyscf's mol.cart = True. The grid is terco's own (the SCF's),
    !! written with terco's numbers to the probe file for pyscf.
    !!
-   !! A basis whose highest angular momentum is above this build's LMAX, or above
-   !! MULT_LMAX (the dipole integrals of the oscillator strengths stop at d
-   !! whatever TERCO_LMAX is, so no f basis can run TDDFT at all) is not run:
-   !! main prints "SKIP: <basis> needs l ..." and stops (ctest's anchored
-   !! SKIP_REGULAR_EXPRESSION turns that line, and only that line, into
-   !! "Skipped", never "Passed"; nothing else here prints "SKIP"). No f basis
-   !! is registered for that reason.
-   !! A missing reference is a hard failure, never a skip.
+   !! A basis whose highest angular momentum is above this build's LMAX cannot
+   !! run an SCF: main prints "SKIP: <basis> needs l ..." and stops (ctest's
+   !! anchored SKIP_REGULAR_EXPRESSION turns that line, and only that line, into
+   !! "Skipped", never "Passed"; nothing else here prints "SKIP"). One above MULT_LMAX but within
+   !! LMAX (an f basis in an LMAX=3 build: the dipole integrals of the
+   !! oscillator strengths stop at d whatever TERCO_LMAX is) is an
+   !! expected-refusal case: the SCF runs and both solves must return a clean
+   !! error naming the limit, with no pyscf reference. A missing reference is a
+   !! hard failure, never a skip.
    !!
    !! Tolerances are those of check_tddft.F90 and check_tddft_rpa.F90, not
    !! loosened for any basis: omega 1e-6 Eh and f 1e-5. The solver runs at
@@ -51,7 +59,8 @@ module check_tddft_basis_suite
    !! Arguments: xyz basis.json molname basname funcname nroots probe.bin
    !! control_basname (the basis whose reference is the negative control).
    !!
-   use pic_types, only: dp, int64
+   use pic_types, only: dp, int64, default_int
+   use pic_lapack_interfaces, only: pic_syev
    use pic_strings, only: to_string
    use pic_timer, only: timer_type
    use pic_logger, only: global_logger
@@ -63,7 +72,7 @@ module check_tddft_basis_suite
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_tddft, only: trc_tddft_options_t, trc_tddft_result_t, trc_tddft_op_t, trc_tddft_solve_rks, &
-                        trc_tddft_reference_t
+                        trc_tddft_reference_t, trc_tddft_refuse_reason
    use trc_tables, only: LMAX
    use trc_mult_kernels, only: MULT_LMAX
    use trc_test_basis, only: read_xyz
@@ -72,7 +81,7 @@ module check_tddft_basis_suite
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_read_vector
    implicit none
    private
-   public :: collect_check_tddft_basis, basis_beyond_lmax
+   public :: collect_check_tddft_basis, collect_check_tddft_refusal, basis_beyond_lmax, refusal_mode
    public :: xyz_arg, bas_json_arg, molname_arg, basname_arg, funcname_arg, nroots_arg, probe_arg, control_arg
 
    real(dp), parameter :: ERI_THRESH = 1.0e-12_dp
@@ -80,6 +89,8 @@ module check_tddft_basis_suite
    real(dp), parameter :: TOL_OSC = 1.0e-5_dp
    real(dp), parameter :: TOL_YY = 1.0e-6_dp
    real(dp), parameter :: CONV_TOL = 1.0e-7_dp
+   integer, parameter :: MAX_DENSE = 400
+   !! Largest number of occupied-virtual pairs for which the dense check runs.
 
    character(len=256) :: xyz_arg = 'water.xyz'
    character(len=256) :: bas_json_arg = '../basis_sets/6-31g.json'
@@ -89,6 +100,8 @@ module check_tddft_basis_suite
    integer :: nroots_arg = 3
    character(len=256) :: probe_arg = 'tddft_basis_probe.bin'
    character(len=16) :: control_arg = 'sto-3g'
+   logical :: refusal_mode = .false.
+   !! Set by the program for a basis above MULT_LMAX: only the refusal is run.
 
    type :: ref_t
       real(dp) :: e_scf = 0.0_dp
@@ -110,6 +123,9 @@ module check_tddft_basis_suite
       type(trc_tddft_result_t) :: tda, rpa
       type(trc_tddft_reference_t) :: ref
       real(dp) :: t_scf = 0.0_dp, t_tda = 0.0_dp, t_rpa = 0.0_dp
+      logical :: dense_ready = .false.
+      real(dp), allocatable :: w_tda(:), w_rpa(:)
+      !! The lowest dense eigenvalues of A and of the RPA problem (`dense_roots`).
    end type fixture_t
 
    type(fixture_t), save :: fx
@@ -119,6 +135,9 @@ contains
    subroutine collect_check_tddft_basis(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
+                  new_unittest("lowest roots equal the dense eigenvalues of A and (A-B)^1/2 (A+B) (A-B)^1/2", test_dense_roots), &
+                  new_unittest("the same for nroots = 1 to 6 (Hartree-Fock)", test_dense_nroots), &
+                  new_unittest("a basis with f shells is refused up front, naming MULT_LMAX", test_f_refused_up_front), &
                   new_unittest("TDA omega and f vs pyscf", test_tda_vs_pyscf), &
                   new_unittest("RPA omega, f and ||Y||^2 vs pyscf", test_rpa_vs_pyscf), &
                   new_unittest("residuals of fresh matvecs below conv_tol", test_residual), &
@@ -130,8 +149,18 @@ contains
                   ]
    end subroutine collect_check_tddft_basis
 
+   subroutine collect_check_tddft_refusal(testsuite)
+      !! The suite of a basis above MULT_LMAX (within LMAX): the refusal after a real SCF.
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("a basis with f shells is refused up front, naming MULT_LMAX", test_f_refused_up_front), &
+                  new_unittest("TDA and RPA of an f basis return a clean error after the SCF", test_f_refused_after_scf), &
+                  new_unittest("release", test_release) &
+                  ]
+   end subroutine collect_check_tddft_refusal
+
    function basis_beyond_lmax(highest) result(beyond)
-      !! True when the basis has a shell above this build's LMAX or MULT_LMAX; `highest`
+      !! True when the basis has a shell above this build's LMAX; `highest`
       !! is its highest angular momentum. Read through the same loader the
       !! fixture uses, so the answer is the one the solver would meet.
       integer, intent(out) :: highest
@@ -146,7 +175,7 @@ contains
       call trc_basis_from_json(trim(bas_json_arg), natm, zint, at_r, bas, err, force_cart=.true.)
       highest = -1
       if (.not. err%has_error()) highest = maxval(bas%sh_l)
-      beyond = highest > min(LMAX, MULT_LMAX)
+      beyond = highest > LMAX
       call bas%release()
    end function basis_beyond_lmax
 
@@ -204,6 +233,7 @@ contains
       end if
       fx%opts%nroots = nroots_arg
       fx%opts%conv_tol = CONV_TOL
+      if (refusal_mode) return
 
       fx%opts%tda = .true.
       call tm%start()
@@ -211,6 +241,8 @@ contains
       fx%t_tda = tm%get_elapsed_time()
       call check(error, .not. err%has_error(), "TDA solve failed: "//err%get_message())
       if (allocated(error)) return
+      call global_logger%info("tddft basis "//trim(tag())//": TDA "//to_string(fx%tda%iterations)//" iterations, "// &
+                              to_string(fx%tda%nmatvec)//" matvecs, space "//to_string(fx%tda%space))
 
       fx%opts%tda = .false.
       call tm%start()
@@ -218,6 +250,8 @@ contains
       fx%t_rpa = tm%get_elapsed_time()
       call check(error, .not. err%has_error(), "RPA solve failed: "//err%get_message())
       if (allocated(error)) return
+      call global_logger%info("tddft basis "//trim(tag())//": RPA "//to_string(fx%rpa%iterations)//" iterations, "// &
+                              to_string(fx%rpa%nmatvec)//" matvecs, space "//to_string(fx%rpa%space))
       call write_probe()
    end subroutine fixture_build
 
@@ -285,6 +319,79 @@ contains
       character(len=96) :: t
       t = trim(molname_arg)//"/"//trim(basname_arg)//"/"//trim(funcname_arg)
    end function tag
+
+   subroutine check_refused_f(error, td, err, what)
+      !! A refusal that names the limit and leaves no result behind.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_tddft_result_t), intent(in) :: td
+      type(error_t), intent(in) :: err
+      character(len=*), intent(in) :: what
+      call check(error, err%has_error() .and. .not. td%converged, what//": an f basis must be an error, not a result")
+      if (allocated(error)) return
+      call check(error, index(err%get_message(), "MULT_LMAX") > 0 .and. index(err%get_message(), "l = 3") > 0, &
+                 what//": the message must name the limit, got '"//err%get_message()//"'")
+      if (allocated(error)) return
+      call check(error, .not. allocated(td%omega) .and. .not. allocated(td%osc), what//": a refusal returned roots")
+   end subroutine check_refused_f
+
+   subroutine test_f_refused_up_front(error)
+      !! Water in cc-pVTZ (f shells), no SCF: the refusal comes before any work, at any
+      !! TERCO_LMAX, because the transition dipole's multipole integrals stop at
+      !! MULT_LMAX = 2. Without the check the solve reached trc_multipoles and
+      !! error-stopped the process, after the whole iteration. The operator, pair
+      !! list and integral engine are never touched, so they stay unbuilt.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: bas
+      type(trc_pairlist_t) :: pl
+      type(trc_eri_t) :: eri
+      type(trc_linalg_t) :: la
+      type(trc_tddft_reference_t) :: ref
+      type(trc_tddft_options_t) :: o
+      type(trc_tddft_result_t) :: td
+      type(error_t) :: err
+      integer :: natm
+      integer, allocatable :: zint(:)
+      real(dp), allocatable :: at_r(:, :)
+
+      call read_xyz('water.xyz', natm, zint, at_r)
+      call trc_basis_from_json('../basis_sets/cc-pvtz.json', natm, zint, at_r, bas, err, force_cart=.true.)
+      call check(error, .not. err%has_error(), err%get_message())
+      if (allocated(error)) return
+      call check(error, maxval(bas%sh_l) == 3, "cc-pVTZ must have f shells")
+      if (allocated(error)) return
+      call check(error, len_trim(trc_tddft_refuse_reason(o, lmax=maxval(bas%sh_l))) > 0, "refuse_reason must refuse l = 3")
+      if (allocated(error)) return
+      call check(error, len_trim(trc_tddft_refuse_reason(o, lmax=MULT_LMAX)) == 0, "refuse_reason must accept l = MULT_LMAX")
+      if (allocated(error)) return
+      call trc_tddft_solve_rks(bas, pl, eri, la, ref, o, td)
+      call check_refused_f(error, td, td%err, "TDA")
+      if (allocated(error)) return
+      o%tda = .false.
+      call trc_tddft_solve_rks(bas, pl, eri, la, ref, o, td)
+      call check_refused_f(error, td, td%err, "RPA")
+      call bas%release()
+   end subroutine test_f_refused_up_front
+
+   subroutine test_f_refused_after_scf(error)
+      !! The SCF of an f basis (LMAX = 3 builds) converges, then both solves are
+      !! refused: no error stop, a message that names the limit.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_tddft_result_t) :: td
+      type(error_t) :: err
+      call fixture_build(error)
+      if (allocated(error)) return
+      call check(error, fx%scf%converged .and. fx%scf%energy < 0.0_dp, "the f-basis SCF did not converge")
+      if (allocated(error)) return
+      fx%opts%tda = .true.
+      call solve(fx%opts, td, err)
+      call check_refused_f(error, td, err, "TDA")
+      if (allocated(error)) return
+      fx%opts%tda = .false.
+      call solve(fx%opts, td, err)
+      call check_refused_f(error, td, err, "RPA")
+      if (allocated(error)) return
+      call global_logger%info("tddft basis "//trim(tag())//": TDA and RPA refused after the SCF: "//trim(err%get_message()))
+   end subroutine test_f_refused_after_scf
 
    subroutine test_tda_vs_pyscf(error)
       type(error_type), allocatable, intent(out) :: error
@@ -448,6 +555,144 @@ contains
                  "no RPA root is below its TDA root: Y is not coupled in")
    end subroutine test_below_tda
 
+   subroutine dense_roots(error)
+      !! Fill fx%w_tda and fx%w_rpa (nroots_arg lowest, plus two) with the dense
+      !! eigenvalues of A and of (A-B)^(1/2) (A+B) (A-B)^(1/2), built from nov
+      !! unit-vector matvecs. Only for at most MAX_DENSE pairs; fx%dense_ready
+      !! says whether it ran.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_tddft_op_t) :: op
+      type(error_t) :: err
+      real(dp), allocatable :: unit_x(:, :, :), ax(:, :, :), prod(:, :, :, :), amat(:, :), apb(:, :), amb(:, :)
+      real(dp), allocatable :: w(:), sam(:), amh(:, :), work(:, :), w2(:)
+      integer :: nov, nocc, nvir, nl, j
+      integer(default_int) :: linfo
+
+      if (fx%dense_ready) return
+      nocc = fx%nocc
+      nvir = size(fx%scf%eps, 1) - nocc
+      nov = nocc*nvir
+      if (nov > MAX_DENSE) return
+      nl = min(nroots_arg + 2, nov)
+      call op%setup(fx%bas, fx%la, fx%ref, err, fx%xg)
+      call check(error, .not. err%has_error(), "operator setup: "//err%get_message())
+      if (allocated(error)) return
+      allocate (unit_x(nocc, nvir, nov), ax(nocc, nvir, nov), prod(nocc, nvir, nov, 2))
+      unit_x = 0.0_dp
+      do j = 1, nov
+         unit_x(mod(j - 1, nocc) + 1, (j - 1)/nocc + 1, j) = 1.0_dp
+      end do
+      call op%apply(fx%bas, fx%eri, fx%la, nov, unit_x, ax, fx%xg)
+      op%force_antisym = .true.
+      call op%apply_rpa(fx%bas, fx%eri, fx%la, nov, unit_x, prod, fx%xg)
+      call op%release()
+
+      allocate (amat(nov, nov), w(nov))
+      amat = reshape(ax, [nov, nov])
+      amat = 0.5_dp*(amat + transpose(amat))
+      call pic_syev(amat, w, "N", "U", linfo)
+      call check(error, linfo == 0, "dense TDA eigenproblem failed")
+      if (allocated(error)) return
+      allocate (apb(nov, nov), amb(nov, nov), amh(nov, nov), work(nov, nov), sam(nov), w2(nov))
+      apb = reshape(prod(:, :, :, 1), [nov, nov])
+      amb = reshape(prod(:, :, :, 2), [nov, nov])
+      amh = 0.5_dp*(amb + transpose(amb))
+      call pic_syev(amh, sam, "V", "U", linfo)
+      call check(error, linfo == 0 .and. sam(1) > 0.0_dp, "A-B is not positive definite")
+      if (allocated(error)) return
+      do j = 1, nov
+         work(:, j) = amh(:, j)*sqrt(sam(j))
+      end do
+      amh = matmul(work, transpose(amh))
+      work = matmul(amh, matmul(0.5_dp*(apb + transpose(apb)), amh))
+      work = 0.5_dp*(work + transpose(work))
+      call pic_syev(work, w2, "N", "U", linfo)
+      call check(error, linfo == 0 .and. w2(1) > 0.0_dp, "(A-B)^1/2 (A+B) (A-B)^1/2 is not positive definite")
+      if (allocated(error)) return
+      fx%w_tda = w(1:nl)
+      fx%w_rpa = sqrt(w2(1:nl))
+      fx%dense_ready = .true.
+   end subroutine dense_roots
+
+   subroutine test_dense_roots(error)
+      !! The solver's lowest roots against the dense problem: eigenvalues of A (TDA)
+      !! and of (A-B)^(1/2) (A+B) (A-B)^(1/2) (RPA). This is the check no pyscf
+      !! reference can give for a missed root: it fails when a root below the
+      !! highest returned one is absent (the formaldehyde/6-31+G/HF case, where
+      !! the 0.348172 Eh root was never returned). Cost: nov matvecs, for at most
+      !! MAX_DENSE pairs.
+      type(error_type), allocatable, intent(out) :: error
+      real(dp) :: dtda, drpa
+      character(len=512) :: roots
+
+      call fixture_build(error)
+      if (allocated(error)) return
+      call dense_roots(error)
+      if (allocated(error)) return
+      if (.not. fx%dense_ready) then
+         call global_logger%info("tddft basis "//trim(tag())//": dense root check skipped (more than "// &
+                                 to_string(MAX_DENSE)//" pairs)")
+         return
+      end if
+      dtda = maxval(abs(fx%w_tda(1:nroots_arg) - fx%tda%omega))
+      drpa = maxval(abs(fx%w_rpa(1:nroots_arg) - fx%rpa%omega))
+      write (roots, "(*(f10.6))") fx%w_tda
+      call global_logger%info("tddft basis "//trim(tag())//": dense A lowest roots "//trim(roots))
+      write (roots, "(*(f10.6))") fx%tda%omega
+      call global_logger%info("tddft basis "//trim(tag())//": TDA solver roots     "//trim(roots))
+      call global_logger%info("tddft basis "//trim(tag())//": dense vs solver, max|dw| TDA "//to_string(dtda, "es10.2")// &
+                              ", RPA "//to_string(drpa, "es10.2"))
+      call check(error, dtda < 100.0_dp*CONV_TOL, "TDA: a root is missing or wrong, max|w(dense) - w(Davidson)| = "// &
+                 to_string(dtda, "es10.2"))
+      if (allocated(error)) return
+      call check(error, drpa < 100.0_dp*CONV_TOL, "RPA: a root is missing or wrong, max|w(dense) - w(Davidson)| = "// &
+                 to_string(drpa, "es10.2"))
+   end subroutine test_dense_roots
+
+   subroutine test_dense_nroots(error)
+      !! The same comparison for other numbers of roots (1 to 6, Hartree-Fock only:
+      !! a Kohn-Sham matvec costs far more): the lowest roots of formaldehyde/
+      !! 6-31+G/HF were missed for nroots = 3, 4 and 5 alike, and what a solver
+      !! returns must not depend on how many roots were asked for. A solve that
+      !! returns k roots must equal the lowest k dense eigenvalues, for TDA and RPA.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_tddft_options_t) :: o
+      type(trc_tddft_result_t) :: td
+      type(error_t) :: err
+      real(dp) :: dw
+      integer :: nr, pass, nl
+
+      call fixture_build(error)
+      if (allocated(error)) return
+      if (fx%dft) return
+      call dense_roots(error)
+      if (allocated(error)) return
+      if (.not. fx%dense_ready) return
+      nl = size(fx%w_tda)
+      do nr = 1, 6
+         if (nr == nroots_arg .or. nr > nl) cycle
+         do pass = 1, 2
+            o = fx%opts
+            o%nroots = nr
+            o%tda = pass == 1
+            call solve(o, td, err)
+            call check(error, .not. err%has_error(), "solve failed: "//err%get_message())
+            if (allocated(error)) return
+            if (pass == 1) then
+               dw = maxval(abs(fx%w_tda(1:nr) - td%omega))
+            else
+               dw = maxval(abs(fx%w_rpa(1:nr) - td%omega))
+            end if
+            call global_logger%info("tddft basis "//trim(tag())//": nroots "//to_string(nr)//" "// &
+                                    merge("TDA", "RPA", pass == 1)//" "//to_string(td%nmatvec)//" matvecs, max|dw| "// &
+                                    to_string(dw, "es10.2"))
+            call check(error, dw < 100.0_dp*CONV_TOL, merge("TDA", "RPA", pass == 1)//" with nroots = "//to_string(nr)// &
+                       ": a root is missing, max|w(dense) - w(Davidson)| = "//to_string(dw, "es10.2"))
+            if (allocated(error)) return
+         end do
+      end do
+   end subroutine test_dense_nroots
+
    subroutine test_control_basis(error)
       !! The solved roots against another basis's reference must differ by far
       !! more than the tolerance, or the comparison could not tell the bases
@@ -528,8 +773,9 @@ program check_tddft_basis
    use testdrive, only: run_testsuite
    use trc_tables, only: LMAX
    use trc_mult_kernels, only: MULT_LMAX
-   use check_tddft_basis_suite, only: collect_check_tddft_basis, basis_beyond_lmax, xyz_arg, bas_json_arg, molname_arg, &
-                                      basname_arg, funcname_arg, nroots_arg, probe_arg, control_arg
+   use check_tddft_basis_suite, only: collect_check_tddft_basis, collect_check_tddft_refusal, basis_beyond_lmax, &
+                                      refusal_mode, xyz_arg, bas_json_arg, molname_arg, basname_arg, funcname_arg, &
+                                      nroots_arg, probe_arg, control_arg
    implicit none
    integer :: stat, highest
    character(len=16) :: buf
@@ -546,18 +792,23 @@ program check_tddft_basis
    if (command_argument_count() >= 7) call get_command_argument(7, probe_arg)
    if (command_argument_count() >= 8) call get_command_argument(8, control_arg)
 
-   ! A basis above this build's ceiling is nothing to test yet, not an error:
-   ! This is the only line the program prints with "SKIP";
+   ! A basis above this build's LMAX has no SCF to start from, nothing to test
+   ! yet, not an error. This is the only line the program prints with "SKIP";
    ! test/CMakeLists.txt's SKIP_REGULAR_EXPRESSION matches exactly it.
    if (basis_beyond_lmax(highest)) then
       call global_logger%info("SKIP: "//trim(basname_arg)//" needs l = "//to_string(highest)// &
-                              " and this build has LMAX = "//to_string(LMAX)//", dipole integrals to l = "// &
-                              to_string(MULT_LMAX)//".")
+                              " and this build has LMAX = "//to_string(LMAX)//".")
       stop 0
    end if
 
    stat = 0
-   call run_testsuite(collect_check_tddft_basis, error_unit, stat, parallel=.false.)
+   ! Above MULT_LMAX the transition dipole cannot be built: the solver must refuse.
+   refusal_mode = highest > MULT_LMAX
+   if (refusal_mode) then
+      call run_testsuite(collect_check_tddft_refusal, error_unit, stat, parallel=.false.)
+   else
+      call run_testsuite(collect_check_tddft_basis, error_unit, stat, parallel=.false.)
+   end if
    if (stat > 0) then
       write (error_unit, "(i0, a)") stat, " test(s) failed"
       error stop 1

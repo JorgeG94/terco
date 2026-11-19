@@ -2589,14 +2589,17 @@ endforeach()
 # basis_sets/<file>.json and the case tables here and in generate.py must
 # agree: a case without a reference fails in ref_require.
 #
-# Bases with f functions (cc-pVTZ, aug-cc-pVTZ, def2-TZVP) are not covered: the
-# oscillator strengths need dipole integrals, which stop at d at every
-# TERCO_LMAX (MULT_LMAX in src/CMakeLists.txt; the f multipole classes cost 20
-# minutes of nvfortran each), and trc_multipoles error-stops on such a basis.
-# The program's own gate prints "SKIP: <basis> needs l" for a basis above
-# min(LMAX, MULT_LMAX) so a hand run does not abort; the anchored
-# SKIP_REGULAR_EXPRESSION below matches only that line, so a failure that
-# happens to print "SKIP" is still a failure.
+# Bases with f functions (cc-pVTZ, def2-TZVP) have no reference: the oscillator
+# strengths need dipole integrals, which stop at d at every TERCO_LMAX
+# (MULT_LMAX in src/CMakeLists.txt: the f multipole classes cost 20 minutes of
+# nvfortran each), so trc_tddft refuses them with an error that names the
+# limit. They are registered as EXPECTED-REFUSAL cases (_tb_refusal below): at
+# TERCO_LMAX=3 the SCF runs and both solves must return that error; at
+# TERCO_LMAX=2 the program prints "SKIP: <basis> needs l" (ctest: Skipped,
+# never Passed; the anchored SKIP_REGULAR_EXPRESSION matches only that line)
+# because the basis is above LMAX. Only the cases in
+# _tb_short run on a pull request; the rest are LONG (nightly,
+# TERCO_LONG_TESTS=ON).
 #
 # There is no bare terco/check_tddft_basis test: with its defaults it would
 # repeat a case and write a probe file into the source tree.
@@ -2622,12 +2625,12 @@ set(_tb_cases
     formaldehyde:sto-3g:sto-3g:hf,pbe,b3lyp
     formaldehyde:3-21g:3-21g:hf,pbe,b3lyp
     formaldehyde:6-31g:6-31g:hf,pbe,b3lyp
-    # formaldehyde/6-31+G/HF is left out: terco's Davidson never returns the
-    # third TDA root (0.34817 Eh, in a different symmetry sector than the
-    # guesses; nroots = 3, 4 and 5 all skip it) while pyscf's dense A has it.
-    # A solver defect, not a tolerance issue. Add `hf` back here and in
-    # generate.py once it is fixed.
-    formaldehyde:6-31pg:6-31+g:b3lyp
+    # formaldehyde/6-31+G/HF is the case that exposed a missed root: the third
+    # TDA root (0.348172 Eh, a symmetry sector the guesses do not reach) was
+    # never returned (see "MISSED ROOTS" in src/scf/response/trc_tddft.F90).
+    # check_tddft_basis compares the lowest roots with the dense eigenvalues of
+    # A for exactly that reason.
+    formaldehyde:6-31pg:6-31+g:hf,b3lyp
     formaldehyde:6-31gss:6-31g_st__st_:hf,pbe,b3lyp
     formaldehyde:6-311gss:6-311g_st__st_:hf,b3lyp
     formaldehyde:cc-pvdz:cc-pvdz:hf,pbe,b3lyp
@@ -2643,7 +2646,7 @@ set(_tb_short
     water:cc-pvdz:hf water:def2-svp:hf
     formaldehyde:sto-3g:hf formaldehyde:3-21g:hf formaldehyde:6-31g:hf
     water:sto-3g:b3lyp water:6-31pg:b3lyp water:6-31gss:b3lyp water:cc-pvdz:b3lyp water:def2-svp:b3lyp
-    formaldehyde:6-31g:b3lyp
+    formaldehyde:6-31g:b3lyp formaldehyde:6-31pg:hf
     water:6-31g:pbe)
 foreach(_c ${_tb_cases})
   string(REPLACE ":" ";" _cl ${_c})
@@ -2668,6 +2671,31 @@ foreach(_c ${_tb_cases})
       set_tests_properties(${_t} PROPERTIES LABELS LONG)
     endif()
   endforeach()
+endforeach()
+
+# Expected refusals: a basis with f shells (above MULT_LMAX) has no TDDFT
+# reference, trc_tddft must refuse it with an error that names the limit. The
+# program then runs the SCF and checks both solves return that error rather than
+# error-stopping the process in trc_multipoles. Needs TERCO_LMAX=3 for the SCF:
+# at 2 the program prints "SKIP: <basis> needs l" (Skipped). One executable,
+# one test per case.
+set(_tb_refusal water:cc-pvtz:cc-pvtz:hf water:def2-tzvp:def2-tzvp:hf water:aug-cc-pvtz:aug-cc-pvtz:hf)
+foreach(_c ${_tb_refusal})
+  string(REPLACE ":" ";" _cl ${_c})
+  list(GET _cl 0 _mol)
+  list(GET _cl 1 _tag)
+  list(GET _cl 2 _file)
+  list(GET _cl 3 _f)
+  set(_t terco/check_tddft_basis_refused_${_mol}_${_tag}_${_f})
+  add_test(NAME ${_t}
+           COMMAND check_tddft_basis ${_mol}.xyz ../basis_sets/${_file}.json ${_mol} ${_tag} ${_f} 3
+                   ${CMAKE_CURRENT_BINARY_DIR}/tddft_basis_refused_${_mol}_${_tag}_${_f}_probe.bin 6-31g)
+  set_tests_properties(${_t} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+                       SKIP_REGULAR_EXPRESSION "SKIP: [^ ]+ needs l")
+  if(NOT "${_mol}:${_tag}:${_f}" STREQUAL "water:cc-pvtz:hf")
+    set_tests_properties(${_t} PROPERTIES LABELS LONG)
+  endif()
 endforeach()
 
 #

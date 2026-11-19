@@ -3262,7 +3262,7 @@ TDDFT_BASIS_CASES = (
     ("water", "cc-pvdz", _TB_ALL), ("water", "aug-cc-pvdz", _TB_HB), ("water", "def2-svp", _TB_ALL),
     ("water", "def2-svpd", _TB_HB),
     ("formaldehyde", "sto-3g", _TB_ALL), ("formaldehyde", "3-21g", _TB_ALL), ("formaldehyde", "6-31g", _TB_ALL),
-    ("formaldehyde", "6-31pg", ("b3lyp",)), ("formaldehyde", "6-31gss", _TB_ALL), ("formaldehyde", "6-311gss", _TB_HB),
+    ("formaldehyde", "6-31pg", _TB_HB), ("formaldehyde", "6-31gss", _TB_ALL), ("formaldehyde", "6-311gss", _TB_HB),
     ("formaldehyde", "cc-pvdz", _TB_ALL), ("formaldehyde", "aug-cc-pvdz", _TB_HB),
     ("formaldehyde", "def2-svp", _TB_ALL), ("formaldehyde", "def2-svpd", _TB_HB),
 )

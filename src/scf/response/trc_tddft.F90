@@ -102,20 +102,39 @@ module trc_tddft
    !! preconditioned correction of a Ritz vector stays in the symmetry of
    !! that vector. A root of a symmetry the guesses represent poorly has a
    !! Ritz value far above its eigenvalue, so with few guesses it can sit
-   !! above the tracked window and never be iterated: measured on formamide
-   !! HF (Cs, A'/A''), nroots = 2 with 2*nroots guesses returned the 1st and
-   !! 3rd roots and skipped the 2nd (0.3464 Eh, which has 92% of its weight on
-   !! the four lowest differences, so it was not orthogonal to the guesses).
-   !! The Ritz estimates of that other sector stayed at 0.389 Eh (the guesses
-   !! describe it badly), above the 3rd root's 0.348, so it sat outside the
-   !! tracked window and was never corrected, even with 10 guesses. Three
-   !! measures: (1) a BUFFER of max(2, nroots/2) extra Ritz vectors is iterated
-   !! along with the wanted ones, to a looser residual (BUFFER_TOL), so such a
-   !! sector's Ritz value descends into the window and takes its place;
-   !! (2) generous guesses, a tie at the cut kept whole; (3) one probe with the
-   !! next-lowest differences before convergence is accepted. None is a proof:
-   !! no Davidson variant guarantees the lowest roots without symmetry
-   !! information, and the tests sweep nroots against pyscf for that reason.
+   !! above the tracked window and never be iterated. Measured twice:
+   !! formamide HF (Cs, A'/A''), nroots = 2 with 2*nroots guesses returned the
+   !! 1st and 3rd roots and skipped the 2nd (0.3464 Eh); formaldehyde 6-31+G
+   !! HF (C2v), nroots = 3, 4 and 5 all skipped the root at 0.348172 Eh. That
+   !! root is made of the HOMO-2 -> LUMO and HOMO-2 -> LUMO+4 pairs (94% of its
+   !! weight), ranks 9 and 13 of the orbital-energy differences, in a symmetry
+   !! sector in which neither the 7 guesses nor the first probe's unit vectors
+   !! (the 7 next differences, ranks 8 to 14, which do hold those two pairs)
+   !! could help: the probe put the sector's Ritz value at 0.46 Eh, above the
+   !! 5 Ritz vectors tracked (the roots at 0.157, 0.328, 0.353 and the buffer's
+   !! 0.362, 0.371), so no correction was ever made in it, and the returned
+   !! roots passed every residual test. Four measures: (1) a BUFFER of
+   !! max(2, nroots/2) extra Ritz vectors is iterated along with the wanted ones,
+   !! to a looser residual (BUFFER_TOL); (2) generous guesses, a tie at the cut
+   !! kept whole; (3) one PROBE before convergence is accepted: the unit vectors
+   !! of the next-lowest differences and two random vectors, which have weight in
+   !! every sector (a root whose lowest pairs rank beyond the probe is reached
+   !! only through them); (4) after the probe, `tddft_window` also iterates the
+   !! Ritz pairs beyond the buffer whose interval [theta - |r|, theta + |r|]
+   !! reaches below the nroots-th Ritz value (some eigenvalue lies within |r|
+   !! of theta, so it may be a root that belongs in the window) and whose
+   !! residual is less than half their value, up to nroots + 2 extra pairs at a
+   !! time and for XBUDGET iterations; without (4) the probe only RECORDED the
+   !! sector. In the formaldehyde case the sector's pair then descends from
+   !! 0.464 to 0.3515 in one correction and converges to 0.348172. The cost is
+   !! the probe (nprobe + 2 matvecs, as before plus 2) and the iterations the
+   !! extra pairs need: a few matvecs when nothing is missed (see the pull
+   !! request), the new root's own convergence when something is. If the
+   !! budget or the cap cuts the check short with a candidate still open the
+   !! solve warns (`global_logger%warning`) instead of passing silently. None
+   !! of this is a proof: no Davidson variant guarantees the lowest roots
+   !! without symmetry information, and the tests compare the lowest roots
+   !! with the dense eigenvalues of A (A-B, A+B), not only with pyscf's.
    !!
    !! A breakdown (no usable new direction while a root is unconverged), a NaN
    !! or Inf anywhere, a non-positive excitation energy or running out of
@@ -128,6 +147,14 @@ module trc_tddft
    !! Triplets, UHF/UKS references, meta-GGA, VV10, range-separated and
    !! double hybrids: `trc_tddft_refuse_reason` names
    !! each refusal, and the solver reports it as an error before any work.
+   !! A basis with a shell above MULT_LMAX (f functions: the multipole integrals
+   !! of the transition dipole stop at d at every TERCO_LMAX) is refused the same
+   !! way, up front and before the SCF-sized work, with a message that names the
+   !! limit. The energies alone could be computed, but a TDDFT result without its
+   !! oscillator strengths (NaN or a flag the caller must remember to test) is a
+   !! surprise in a spectroscopy code, and a refusal is the one outcome nobody
+   !! can miss; a caller that wants energies of an f basis has to ask for that
+   !! explicitly once the dipoles reach f.
    !!
    use pic_types, only: dp, int64, default_int
    use pic_blas_interfaces, only: pic_gemm
@@ -138,6 +165,7 @@ module trc_tddft
    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_multipoles, TRC_NMULT
+   use trc_mult_kernels, only: MULT_LMAX
    use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_error, only: error_t, ERROR_GENERIC, ERROR_VALIDATION
    use trc_linalg, only: trc_linalg_t
@@ -161,6 +189,13 @@ module trc_tddft
    real(dp), parameter :: PRECOND_FLOOR = 1.0e-4_dp
    !! The preconditioner's denominator (d - w) is kept at least this far from
    !! zero, sign preserved.
+   integer, parameter :: NRAND_PROBE = 2
+   !! Random vectors in the probe, beside the unit vectors of the next-lowest
+   !! orbital-energy differences.
+   integer, parameter :: XBUDGET = 12
+   !! Iterations after the probe in which Ritz pairs beyond the buffer are still
+   !! iterated (`tddft_window`); the sector the probe reaches descends into the
+   !! window in the first few, so this is a safety bound, not a typical count.
    real(dp), parameter :: DROP_REL = 1.0e-6_dp
    !! A correction whose norm falls below this fraction of its norm before
    !! orthogonalisation lies inside the subspace and is dropped.
@@ -180,7 +215,11 @@ module trc_tddft
       !! excitation energy error is of order conv_tol^2/gap, the amplitude
       !! error of order conv_tol/gap.
       integer :: max_space = 0
-      !! Largest subspace before the collapse; 0 takes 12*nroots. Raised to
+      !! Largest subspace before the collapse; 0 takes 12*max(nroots, 3): below
+      !! three roots there would be no room for the Ritz pairs `tddft_window`
+      !! iterates beside the wanted ones (nroots = 1 on HNC/6-31+G/HF, whose
+      !! RPA then restarted every second iteration and did not converge in 50).
+      !! Raised to
       !! 3*(nroots + buffer) if smaller (4*(nroots + buffer) for the RPA, whose
       !! subspace holds p and m), and capped at the dimension of the problem.
       integer :: max_iteration = 50
@@ -248,13 +287,20 @@ module trc_tddft
       !! The Davidson subspace: its orthonormal basis vs and A times it, avs
       !! (nov, mmax) with m columns in use, and the guess bookkeeping the probe
       !! needs: the ordering `ord` of the orbital-energy differences, the
-      !! nguess guessed, nprobe probe vectors tp.
+      !! nguess guessed, nprobe unit plus nrand random probe vectors tp; dgn is
+      !! the diagonal e_a - e_i in the amplitudes' flat order.
       integer :: m = 0, mmax = 0, nguess = 0, nprobe = 0
+      integer :: nrand = 0
+      !! Random vectors that follow the nprobe unit vectors of the probe.
       integer :: nt = 0
       !! Ritz vectors iterated: the wanted roots plus the buffer.
+      integer :: nkcap = 0
+      !! Most Ritz vectors iterated once the probe has run (the lowest nt always,
+      !! plus those whose Ritz interval reaches the wanted window, see
+      !! `tddft_window`).
       integer :: ncollapse = 0
       !! Collapses onto the Ritz vectors so far.
-      real(dp), allocatable :: vs(:, :), avs(:, :), tp(:, :)
+      real(dp), allocatable :: vs(:, :), avs(:, :), tp(:, :), dgn(:)
       real(dp), allocatable :: ams(:, :)
       !! (nov, mmax) (A-B) times vs, the RPA's second product; avs then holds (A+B) vs.
       integer, allocatable :: ord(:)
@@ -293,17 +339,26 @@ module trc_tddft
 
 contains
 
-   pure function trc_tddft_refuse_reason(opts, func, nspin) result(msg)
+   pure function trc_tddft_refuse_reason(opts, func, nspin, lmax) result(msg)
       !!
       !! Why this calculation cannot run through trc_tddft, or an empty string if
       !! it can. `func` absent is Hartree-Fock (CIS); `nspin` is the reference's
-      !! spin count (1 restricted; default 1).
+      !! spin count (1 restricted; default 1); `lmax` is the highest angular
+      !! momentum of a shell of the basis (`maxval(b%sh_l)`), refused above the
+      !! dipole integrals' ceiling MULT_LMAX.
       !!
       type(trc_tddft_options_t), intent(in) :: opts
       type(trc_xc_functional_t), intent(in), optional :: func
-      integer, intent(in), optional :: nspin
+      integer, intent(in), optional :: nspin, lmax
       character(len=256) :: msg
       msg = ""
+      if (present(lmax)) then
+         if (lmax > MULT_LMAX) then
+            msg = "trc_tddft: the basis has l = "//to_string(lmax)//" shells and the transition dipole needs "// &
+                  "multipole integrals, which stop at l = "//to_string(MULT_LMAX)//" at every TERCO_LMAX (MULT_LMAX)"
+            return
+         end if
+      end if
       if (present(nspin)) then
          if (nspin /= 1) then
             msg = "trc_tddft: only a closed-shell restricted reference is implemented (UHF/UKS is refused)"
@@ -715,28 +770,88 @@ contains
       end do
    end subroutine tddft_orthonormalise
 
-   subroutine tddft_probe(sp, xr, axr, nnew)
-      !! Append the unit vectors of the sp%nprobe orbital-energy differences
-      !! after the sp%nguess guessed ones (those the guesses never held),
-      !! collapsing onto the Ritz vectors xr/axr first if there is no room.
-      !! nnew is the number kept (0: all lay inside the space); sp%m advances
-      !! by it.
+   subroutine tddft_probe_vectors(sp)
+      !! Fill sp%tp with the probe: the unit vectors of the sp%nprobe
+      !! next-lowest orbital-energy differences (none of which the guesses
+      !! held) and sp%nrand random vectors. A random vector has weight in every
+      !! symmetry sector, which no unit vector of the lowest differences can
+      !! promise: a root whose sector has no pair among them is reached only
+      !! through it. Each is weighted by 1/(e_a - e_i), which favours the
+      !! low-lying pairs the low roots are made of, and comes from a fixed
+      !! linear congruential sequence so a run is reproducible.
       type(tddft_space_t), intent(inout) :: sp
-      real(dp), intent(in) :: xr(:, :), axr(:, :)
-      integer, intent(out) :: nnew
-      integer :: j, nt
-      nt = size(xr, 2)
+      integer(int64) :: state
+      integer :: j, k, nov
+      nov = size(sp%tp, 1)
       sp%tp = 0.0_dp
       do j = 1, sp%nprobe
          sp%tp(sp%ord(sp%nguess + j), j) = 1.0_dp
       end do
-      if (sp%m + sp%nprobe > sp%mmax) then
+      state = 20241118_int64
+      do k = 1, sp%nrand
+         do j = 1, nov
+            state = mod(1103515245_int64*state + 12345_int64, 2147483648_int64)
+            sp%tp(j, sp%nprobe + k) = (2.0_dp*real(state, dp)/2147483648.0_dp - 1.0_dp)/max(sp%dgn(j), PRECOND_FLOOR)
+         end do
+      end do
+   end subroutine tddft_probe_vectors
+
+   subroutine tddft_window(sp, nr, theta, rnorm, nkc, track, buffer_tol, act, nk, pending)
+      !! Which of the nkc Ritz pairs (theta ascending, residual norms rnorm) are
+      !! iterated. The lowest sp%nt always are. With `track` (after the probe, for
+      !! at most XBUDGET iterations) up to sp%nkcap - sp%nt further pairs are
+      !! iterated too when they might hold a root that belongs in the wanted
+      !! window: the pair's Ritz interval [theta - |r|, theta + |r|] reaches
+      !! below the nr-th Ritz value (some eigenvalue lies within |r| of theta),
+      !! and |r| < theta/2, because a pair whose residual is as large as its
+      !! value says nothing (a random vector's Ritz pair in the high part of the
+      !! spectrum, measured with |r| = 2 theta, would otherwise be iterated
+      !! forever). This is what gives the probe's sector, whose Ritz value starts
+      !! above the window, the iterations it needs to descend into it. nk is the
+      !! highest index kept; `pending` is true when a pair meeting the test is
+      !! left unconverged because `track` is off or the cap is full.
+      type(tddft_space_t), intent(in) :: sp
+      integer, intent(in) :: nr, nkc
+      real(dp), intent(in) :: theta(:), rnorm(:)
+      real(dp), intent(in) :: buffer_tol
+      logical, intent(in) :: track
+      logical, intent(out) :: act(:)
+      logical, intent(out) :: pending
+      integer, intent(out) :: nk
+      integer :: k
+      nk = sp%nt
+      act = .false.
+      act(1:sp%nt) = .true.
+      pending = .false.
+      do k = sp%nt + 1, nkc
+         if (.not. (theta(k) - rnorm(k) < theta(nr) .and. rnorm(k) < 0.5_dp*theta(k))) cycle
+         if (track .and. nk < sp%nkcap) then
+            act(k) = .true.
+            nk = k
+         else if (rnorm(k) >= buffer_tol) then
+            pending = .true.
+         end if
+      end do
+   end subroutine tddft_window
+
+   subroutine tddft_probe(sp, xr, axr, nnew)
+      !! Append the probe (`tddft_probe_vectors`) to the subspace, collapsing
+      !! onto the Ritz vectors xr/axr first if there is no room. nnew is the
+      !! number kept (0: all lay inside the space); sp%m advances by it.
+      type(tddft_space_t), intent(inout) :: sp
+      real(dp), intent(in) :: xr(:, :), axr(:, :)
+      integer, intent(out) :: nnew
+      integer :: nt, np
+      nt = size(xr, 2)
+      np = sp%nprobe + sp%nrand
+      call tddft_probe_vectors(sp)
+      if (sp%m + np > sp%mmax) then
          sp%vs(:, 1:nt) = xr
          sp%avs(:, 1:nt) = axr
          sp%m = nt
          sp%ncollapse = sp%ncollapse + 1
       end if
-      call tddft_orthonormalise(size(xr, 1), sp%m, sp%mmax, sp%vs, sp%nprobe, sp%tp, nnew)
+      call tddft_orthonormalise(size(xr, 1), sp%m, sp%mmax, sp%vs, np, sp%tp, nnew)
       sp%m = sp%m + nnew
    end subroutine tddft_probe
 
@@ -768,19 +883,16 @@ contains
    end subroutine tddft_rpa_collapse
 
    subroutine tddft_rpa_probe(sp, uc, vc, nnew)
-      !! As `tddft_probe` for the RPA subspace: the unit vectors of the
-      !! sp%nprobe next-lowest orbital-energy differences, after a collapse
+      !! As `tddft_probe` for the RPA subspace, after a collapse
       !! onto the Ritz vectors (uc, vc: `tddft_rpa_collapse`) if there is no room.
       type(tddft_space_t), intent(inout) :: sp
       real(dp), intent(in) :: uc(:, :), vc(:, :)
       integer, intent(out) :: nnew
-      integer :: j
-      sp%tp = 0.0_dp
-      do j = 1, sp%nprobe
-         sp%tp(sp%ord(sp%nguess + j), j) = 1.0_dp
-      end do
-      if (sp%m + sp%nprobe > sp%mmax) call tddft_rpa_collapse(sp, uc, vc)
-      call tddft_orthonormalise(size(sp%vs, 1), sp%m, sp%mmax, sp%vs, sp%nprobe, sp%tp, nnew)
+      integer :: np
+      np = sp%nprobe + sp%nrand
+      call tddft_probe_vectors(sp)
+      if (sp%m + np > sp%mmax) call tddft_rpa_collapse(sp, uc, vc)
+      call tddft_orthonormalise(size(sp%vs, 1), sp%m, sp%mmax, sp%vs, np, sp%tp, nnew)
       sp%m = sp%m + nnew
    end subroutine tddft_rpa_probe
 
@@ -864,7 +976,9 @@ contains
       real(dp), allocatable :: ap(:, :), am(:, :), zc(:, :), w2(:), om(:), uc(:, :), vc(:, :)
       real(dp), allocatable :: pr(:, :), mr(:, :), r1(:, :), r2(:, :), tc(:, :), rnorm(:), dgn(:), prod(:, :, :, :)
       real(dp) :: buffer_threshold, dx, dy, nrm
-      integer :: nov, nocc, nvir, nr, nt, nnew, nunc, nmain, m, j, k, ioff, c0
+      integer :: nov, nocc, nvir, nr, nt, nnew, nunc, nmain, m, j, k, ioff, c0, nkc, nk, xiter
+      logical, allocatable :: act(:)
+      logical :: pending
       character(len=256) :: reason
       character(len=1024) :: logline
       logical :: done, probed
@@ -876,11 +990,14 @@ contains
       nt = sp%nt
       buffer_threshold = max(BUFFER_TOL, 100.0_dp*opts%conv_tol)
       allocate (ap(sp%mmax, sp%mmax), am(sp%mmax, sp%mmax), zc(sp%mmax, sp%mmax), w2(sp%mmax))
-      allocate (om(nt), uc(sp%mmax, nt), vc(sp%mmax, nt), pr(nov, nt), mr(nov, nt), r1(nov, nt), r2(nov, nt))
-      allocate (tc(nov, 2*nt), rnorm(nt), dgn(nov))
+      ! Room for every Ritz pair of the subspace once the probe has run.
+      allocate (om(sp%mmax), uc(sp%mmax, sp%mmax), vc(sp%mmax, sp%mmax), pr(nov, sp%mmax), mr(nov, sp%mmax))
+      allocate (r1(nov, sp%mmax), r2(nov, sp%mmax), tc(nov, 2*sp%mmax), rnorm(sp%mmax), act(sp%mmax), dgn(nov))
       dgn = reshape(op%de, [nov])
       probed = .false.
       done = .false.
+      xiter = 0
+      pending = .false.
       nnew = sp%m
       res%iterations = 0
       res%nmatvec = 0
@@ -911,25 +1028,38 @@ contains
 
          ! Ritz vectors p = V u, m = V v (p.m = 1), the products on them and the
          ! residuals r1 = (A+B)p - w m, r2 = (A-B)m - w p of the lowest nt.
-         om = sqrt(w2(1:nt))
-         call pic_gemm(am(1:m, 1:m), zc(1:m, 1:nt), uc(1:m, 1:nt), "N", "N", 1.0_dp, 0.0_dp)
-         do k = 1, nt
+         ! The lowest nt, or all of them once the probe has run (`tddft_window`).
+         nkc = merge(m, nt, probed)
+         om(1:nkc) = sqrt(w2(1:nkc))
+         call pic_gemm(am(1:m, 1:m), zc(1:m, 1:nkc), uc(1:m, 1:nkc), "N", "N", 1.0_dp, 0.0_dp)
+         do k = 1, nkc
             uc(1:m, k) = uc(1:m, k)/sqrt(om(k))
          end do
-         call pic_gemm(ap(1:m, 1:m), uc(1:m, 1:nt), vc(1:m, 1:nt), "N", "N", 1.0_dp, 0.0_dp)
-         do k = 1, nt
+         call pic_gemm(ap(1:m, 1:m), uc(1:m, 1:nkc), vc(1:m, 1:nkc), "N", "N", 1.0_dp, 0.0_dp)
+         do k = 1, nkc
             vc(1:m, k) = vc(1:m, k)/om(k)
          end do
-         call pic_gemm(sp%vs(:, 1:m), uc(1:m, 1:nt), pr, "N", "N", 1.0_dp, 0.0_dp)
-         call pic_gemm(sp%vs(:, 1:m), vc(1:m, 1:nt), mr, "N", "N", 1.0_dp, 0.0_dp)
-         call pic_gemm(sp%avs(:, 1:m), uc(1:m, 1:nt), r1, "N", "N", 1.0_dp, 0.0_dp)
-         call pic_gemm(sp%ams(:, 1:m), vc(1:m, 1:nt), r2, "N", "N", 1.0_dp, 0.0_dp)
-         nunc = 0
-         nmain = 0
-         do k = 1, nt
+         call pic_gemm(sp%vs(:, 1:m), uc(1:m, 1:nkc), pr(:, 1:nkc), "N", "N", 1.0_dp, 0.0_dp)
+         call pic_gemm(sp%vs(:, 1:m), vc(1:m, 1:nkc), mr(:, 1:nkc), "N", "N", 1.0_dp, 0.0_dp)
+         call pic_gemm(sp%avs(:, 1:m), uc(1:m, 1:nkc), r1(:, 1:nkc), "N", "N", 1.0_dp, 0.0_dp)
+         call pic_gemm(sp%ams(:, 1:m), vc(1:m, 1:nkc), r2(:, 1:nkc), "N", "N", 1.0_dp, 0.0_dp)
+         do k = 1, nkc
             r1(:, k) = r1(:, k) - om(k)*mr(:, k)
             r2(:, k) = r2(:, k) - om(k)*pr(:, k)
             rnorm(k) = sqrt(0.5_dp*(sum(r1(:, k)**2) + sum(r2(:, k)**2)))
+         end do
+         if (all(ieee_is_finite(rnorm(1:nkc)))) then
+            if (probed) xiter = xiter + 1
+            call tddft_window(sp, nr, om, rnorm, nkc, probed .and. xiter <= XBUDGET, buffer_threshold, act, nk, pending)
+         else
+            act(1:nkc) = .true.
+            nk = nt
+            pending = .false.
+         end if
+         nunc = 0
+         nmain = 0
+         do k = 1, nkc
+            if (.not. act(k)) cycle
             if (.not. (rnorm(k) < merge(opts%conv_tol, buffer_threshold, k <= nr))) then
                nunc = nunc + 1
                if (k <= nr) nmain = nmain + 1
@@ -940,14 +1070,14 @@ contains
                ", unconverged ", nunc, ", max resid ", maxval(rnorm(1:nr)), ", w1 ", om(1)
             call global_logger%info(trim(logline))
          end if
-         if (.not. all(ieee_is_finite(rnorm))) then
+         if (.not. all(ieee_is_finite(rnorm(1:nkc)))) then
             call tddft_fail(res, ERROR_GENERIC, "trc_tddft: a residual is NaN or Inf")
             exit
          end if
          if (nunc == 0) then
-            if (.not. probed .and. sp%nprobe > 0) then
+            if (.not. probed .and. sp%nprobe + sp%nrand > 0) then
                probed = .true.
-               call tddft_rpa_probe(sp, uc, vc, nnew)
+               call tddft_rpa_probe(sp, uc(:, 1:nt), vc(:, 1:nt), nnew)
                if (nnew > 0) cycle
             end if
             done = .true.
@@ -962,7 +1092,8 @@ contains
 
          ! Preconditioned corrections of X and of Y for each unconverged root, packed first.
          ioff = 0
-         do k = 1, nt
+         do k = 1, nkc
+            if (.not. act(k)) cycle
             if (rnorm(k) < merge(opts%conv_tol, buffer_threshold, k <= nr)) cycle
             ioff = ioff + 1
             do j = 1, nov
@@ -974,12 +1105,12 @@ contains
             end do
          end do
 
-         if (sp%m + 2*nunc > sp%mmax) call tddft_rpa_collapse(sp, uc, vc)
+         if (sp%m + 2*nunc > sp%mmax) call tddft_rpa_collapse(sp, uc(:, 1:nk), vc(:, 1:nk))
          call tddft_orthonormalise(nov, sp%m, sp%mmax, sp%vs, 2*nunc, tc, nnew)
          if (nnew == 0 .and. nmain == 0) then
-            if (.not. probed .and. sp%nprobe > 0) then
+            if (.not. probed .and. sp%nprobe + sp%nrand > 0) then
                probed = .true.
-               call tddft_rpa_probe(sp, uc, vc, nnew)
+               call tddft_rpa_probe(sp, uc(:, 1:nt), vc(:, 1:nt), nnew)
                if (nnew > 0) cycle
             end if
             done = .true.
@@ -994,6 +1125,10 @@ contains
          sp%m = sp%m + nnew
       end do
 
+      if (done .and. pending) call global_logger%warning("trc_tddft: the check for a missed root below the highest "// &
+                                                           "requested one was cut short ("//to_string(XBUDGET)//" iterations "// &
+                                                           "after the probe or too many candidates); a root of a symmetry the "// &
+                                                           "guesses do not reach may be missing")
       if (done) then
          res%space = sp%m
          res%ncollapse = sp%ncollapse
@@ -1038,7 +1173,10 @@ contains
       real(dp), allocatable :: xr(:, :), axr(:, :), tc(:, :), rnorm(:), dgn(:), dsort(:)
       type(tddft_space_t) :: sp
       real(dp) :: den
-      integer :: nov, nvir, nr, nt, nnew, nunc, nmain, nocc, i, a, j, k, ioff
+      integer :: nov, nvir, nr, nt, nnew, nunc, nmain, nocc, i, a, j, k, ioff, nkc, nk
+      logical, allocatable :: act(:)
+      integer :: xiter
+      logical :: pending
       integer(default_int) :: linfo
       character(len=256) :: reason
       character(len=1024) :: logline
@@ -1049,9 +1187,9 @@ contains
       res%nroots = opts%nroots
       reason = ""
       if (ref%dft) then
-         reason = trc_tddft_refuse_reason(opts, ref%func)
+         reason = trc_tddft_refuse_reason(opts, ref%func, lmax=maxval(b%sh_l))
       else
-         reason = trc_tddft_refuse_reason(opts)
+         reason = trc_tddft_refuse_reason(opts, lmax=maxval(b%sh_l))
       end if
       if (len_trim(reason) > 0) then
          call tddft_fail(res, ERROR_VALIDATION, trim(reason))
@@ -1075,7 +1213,7 @@ contains
          return
       end if
       sp%mmax = opts%max_space
-      if (sp%mmax <= 0) sp%mmax = 12*nr
+      if (sp%mmax <= 0) sp%mmax = 12*max(nr, 3)
       ! The block iterated is the nroots wanted plus a buffer of further Ritz
       ! vectors (see the header, MISSED ROOTS).
       nt = min(nr + max(2, nr/2), nov)
@@ -1087,8 +1225,14 @@ contains
       sp%nguess = min(max(sp%nguess, nt), nov, sp%mmax)
 
       allocate (sp%vs(nov, sp%mmax), sp%avs(nov, sp%mmax), hsub(sp%mmax, sp%mmax), csub(sp%mmax, sp%mmax), wsub(sp%mmax))
-      allocate (xr(nov, nt), axr(nov, nt), tc(nov, nt), rnorm(nt), dgn(nov), dsort(nov))
+      ! Room for every Ritz vector of the subspace once the probe has run (see
+      ! `tddft_window`); until then only the lowest nt are formed.
+      allocate (xr(nov, sp%mmax), axr(nov, sp%mmax), tc(nov, sp%mmax), rnorm(sp%mmax), act(sp%mmax), dgn(nov), dsort(nov))
       allocate (sp%ord(nov))
+      ! The Ritz vectors kept across a collapse (nk of them, plus at most as many
+      ! corrections) must fit: 2 nk <= mmax; the RPA keeps two vectors per pair
+      ! and adds two per correction: 4 nk <= mmax.
+      sp%nkcap = max(nt, min(nt + max(2, nr), sp%mmax/merge(2, 4, opts%tda)))
       if (.not. opts%tda) allocate (sp%ams(nov, sp%mmax))
 
       ! Diagonal (e_a - e_i) in the flat (i fastest) ordering of the amplitudes;
@@ -1109,7 +1253,11 @@ contains
       end do
       ! The probe must fit beside the Ritz vectors it may collapse onto.
       sp%nprobe = max(min(sp%nguess, nov - sp%nguess, sp%mmax - merge(1, 2, opts%tda)*nt), 0)
-      allocate (sp%tp(nov, max(sp%nprobe, 1)))
+      ! Two random vectors where there is room beside the unit probe and the
+      ! Ritz vectors a collapse keeps, and anything is left outside the space.
+      sp%nrand = max(min(NRAND_PROBE, nov - sp%nguess - sp%nprobe, sp%mmax - merge(1, 2, opts%tda)*sp%nkcap - sp%nprobe), 0)
+      sp%dgn = dgn
+      allocate (sp%tp(nov, max(sp%nprobe + sp%nrand, 1)))
       probed = .false.
       sp%vs(:, 1:sp%nguess) = 0.0_dp
       do j = 1, sp%nguess
@@ -1120,6 +1268,8 @@ contains
       res%iterations = 0
       res%nmatvec = 0
       done = .false.
+      xiter = 0
+      pending = .false.
 
       if (.not. opts%tda) then
          call tddft_rpa_iterate(b, eri, la, op, xg, opts, sp, res)
@@ -1131,7 +1281,7 @@ contains
             end do
          end if
          call op%release()
-         deallocate (sp%vs, sp%avs, sp%ams, hsub, csub, wsub, xr, axr, tc, rnorm, dgn, dsort, sp%tp, sp%ord)
+         deallocate (sp%vs, sp%avs, sp%ams, hsub, csub, wsub, xr, axr, tc, rnorm, act, dgn, dsort, sp%tp, sp%ord, sp%dgn)
          return
       end if
 
@@ -1162,14 +1312,27 @@ contains
             exit
          end if
 
-         ! Ritz vectors, A times them, and the residuals of the lowest nt.
-         call pic_gemm(sp%vs(:, 1:sp%m), csub(1:sp%m, 1:nt), xr, "N", "N", 1.0_dp, 0.0_dp)
-         call pic_gemm(sp%avs(:, 1:sp%m), csub(1:sp%m, 1:nt), axr, "N", "N", 1.0_dp, 0.0_dp)
-         nunc = 0
-         nmain = 0
-         do k = 1, nt
+         ! Ritz vectors, A times them, and the residuals of the lowest nt, or of
+         ! all of them once the probe has run (`tddft_window` picks which count).
+         nkc = merge(sp%m, nt, probed)
+         call pic_gemm(sp%vs(:, 1:sp%m), csub(1:sp%m, 1:nkc), xr(:, 1:nkc), "N", "N", 1.0_dp, 0.0_dp)
+         call pic_gemm(sp%avs(:, 1:sp%m), csub(1:sp%m, 1:nkc), axr(:, 1:nkc), "N", "N", 1.0_dp, 0.0_dp)
+         do k = 1, nkc
             tc(:, k) = axr(:, k) - wsub(k)*xr(:, k)
             rnorm(k) = sqrt(sum(tc(:, k)**2))
+         end do
+         if (all(ieee_is_finite(rnorm(1:nkc)))) then
+            if (probed) xiter = xiter + 1
+            call tddft_window(sp, nr, wsub, rnorm, nkc, probed .and. xiter <= XBUDGET, buffer_threshold, act, nk, pending)
+         else
+            act(1:nkc) = .true.
+            nk = nt
+            pending = .false.
+         end if
+         nunc = 0
+         nmain = 0
+         do k = 1, nkc
+            if (.not. act(k)) cycle
             if (.not. (rnorm(k) < merge(opts%conv_tol, buffer_threshold, k <= nr))) then
                nunc = nunc + 1
                if (k <= nr) nmain = nmain + 1
@@ -1180,19 +1343,21 @@ contains
                ", unconverged ", nunc, ", max resid ", maxval(rnorm(1:nr)), ", w1 ", wsub(1)
             call global_logger%info(trim(logline))
          end if
-         if (.not. all(ieee_is_finite(rnorm))) then
+         if (.not. all(ieee_is_finite(rnorm(1:nkc)))) then
             call tddft_fail(res, ERROR_GENERIC, "trc_tddft: a residual is NaN or Inf")
             exit
          end if
          if (nunc == 0) then
             ! One probe before accepting: unit vectors of the next-lowest
-            ! differences, none of which the guesses held. A root whose
-            ! character the guesses (and so the corrections, which stay in
-            ! their span) never reached shows up as a Ritz value below the
-            ! converged ones and the iteration resumes. One more matvec pass.
-            if (.not. probed .and. sp%nprobe > 0) then
+            ! differences, none of which the guesses held, and random vectors.
+            ! A root whose character the guesses (and so the corrections, which
+            ! stay in their span) never reached enters the subspace through
+            ! it; its Ritz pair then starts above the window, so from here on
+            ! `tddft_window` iterates it until it is inside or provably above.
+            ! One more matvec pass at least.
+            if (.not. probed .and. sp%nprobe + sp%nrand > 0) then
                probed = .true.
-               call tddft_probe(sp, xr, axr, nnew)
+               call tddft_probe(sp, xr(:, 1:nt), axr(:, 1:nt), nnew)
                if (nnew > 0) cycle
             end if
             done = .true.
@@ -1207,7 +1372,8 @@ contains
 
          ! Preconditioned corrections of the unconverged roots, packed first.
          ioff = 0
-         do k = 1, nt
+         do k = 1, nkc
+            if (.not. act(k)) cycle
             if (rnorm(k) < merge(opts%conv_tol, buffer_threshold, k <= nr)) cycle
             ioff = ioff + 1
             do j = 1, nov
@@ -1219,9 +1385,9 @@ contains
 
          ! Collapse onto the current Ritz vectors when there is no room.
          if (sp%m + nunc > sp%mmax) then
-            sp%vs(:, 1:nt) = xr
-            sp%avs(:, 1:nt) = axr
-            sp%m = nt
+            sp%vs(:, 1:nk) = xr(:, 1:nk)
+            sp%avs(:, 1:nk) = axr(:, 1:nk)
+            sp%m = nk
             sp%ncollapse = sp%ncollapse + 1
          end if
          call tddft_orthonormalise(nov, sp%m, sp%mmax, sp%vs, nunc, tc, nnew)
@@ -1229,9 +1395,9 @@ contains
             ! Only buffer vectors were still unconverged and their corrections
             ! lie inside the space: nothing more to learn from them. The probe
             ! still runs once, as on the ordinary converged path.
-            if (.not. probed .and. sp%nprobe > 0) then
+            if (.not. probed .and. sp%nprobe + sp%nrand > 0) then
                probed = .true.
-               call tddft_probe(sp, xr, axr, nnew)
+               call tddft_probe(sp, xr(:, 1:nt), axr(:, 1:nt), nnew)
                if (nnew > 0) cycle
             end if
             done = .true.
@@ -1246,6 +1412,10 @@ contains
          sp%m = sp%m + nnew
       end do
 
+      if (done .and. pending) call global_logger%warning("trc_tddft: the check for a missed root below the highest "// &
+                                                           "requested one was cut short ("//to_string(XBUDGET)//" iterations "// &
+                                                           "after the probe or too many candidates); a root of a symmetry the "// &
+                                                           "guesses do not reach may be missing")
       if (done) then
          if (wsub(1) <= 0.0_dp) then
             call tddft_fail(res, ERROR_GENERIC, "trc_tddft: a non-positive excitation energy ("// &
@@ -1271,7 +1441,7 @@ contains
          end if
       end if
       call op%release()
-      deallocate (sp%vs, sp%avs, hsub, csub, wsub, xr, axr, tc, rnorm, dgn, dsort, sp%tp, sp%ord)
+      deallocate (sp%vs, sp%avs, hsub, csub, wsub, xr, axr, tc, rnorm, act, dgn, dsort, sp%tp, sp%ord, sp%dgn)
    end subroutine trc_tddft_solve_rks
 
 end module trc_tddft
