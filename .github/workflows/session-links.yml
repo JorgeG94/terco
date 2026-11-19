@@ -1,0 +1,33 @@
+name: session-links
+
+# AGENTS.md: no AI-session links in commits or PR bodies. A separate workflow,
+# not a job of ci.yml, because it must run again when a PR body is edited
+# (the usual fix: an agent tool appends a link when it creates the PR, and
+# the body is edited to remove it) and ci.yml's full build must not.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+jobs:
+  no-session-links:
+    name: no AI-session links in commits or the PR body
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: tests
+        run: |
+          pip install pytest
+          python3 -m pytest -q tools/test_check_session_links.py
+      # The body goes in through the environment, not the command line or an
+      # inline expression: it is untrusted text.
+      - name: check_session_links
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 tools/check_session_links.py "$BASE_SHA" "$HEAD_SHA"
