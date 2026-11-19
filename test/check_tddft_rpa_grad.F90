@@ -5,7 +5,12 @@ module check_tddft_rpa_grad_suite
    !!
    !! One (molecule, basis, functional) per process; one SCF, one solve and one
    !! gradient shared by the cases (built by the first, released by the last).
-   !! Arguments: xyz basis.json molname basname funcname nroots probe.bin [fd].
+   !! Arguments: xyz basis.json molname basname funcname nroots probe.bin [pyscf|fd].
+   !! Without a mode every test below runs (the water Hartree-Fock case; the
+   !! chunking, single-root, TDA-limit and refusal checks hold for any molecule
+   !! and need running once, not in each of the pyscf cases). Mode `pyscf` runs
+   !! only the comparison with pyscf (1), the case for each other molecule and
+   !! functional; mode `fd` is the finite-difference check (below).
    !!  1. every root's FULL gradient (nuclear repulsion and ground state
    !!     included) against pyscf's grad.tdrks/tdrhf with Y /= 0 at terco's own
    !!     converged orbitals, grid and energies (test/pyscf_refs/generate.py,
@@ -29,7 +34,7 @@ module check_tddft_rpa_grad_suite
    !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
-   use pic_logger, only: global_logger
+   use pic_logger, only: global_logger, info_level
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device
    use trc_eri, only: trc_eri_t
@@ -104,6 +109,9 @@ contains
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       if (trim(mode_arg) == 'fd') then
          testsuite = [new_unittest("analytic gradient of every root against finite differences", test_fd), &
+                      new_unittest("release", test_release)]
+      else if (trim(mode_arg) == 'pyscf') then
+         testsuite = [new_unittest("every root's gradient vs pyscf", test_vs_pyscf), &
                       new_unittest("release", test_release)]
       else
          testsuite = [ &
@@ -397,7 +405,8 @@ contains
       type(trc_tddft_result_t) :: bad
       type(trc_tddft_reference_t) :: r
       type(trc_tddft_grad_options_t) :: o
-      type(trc_xc_functional_t) :: f_mgga, f_rsh, f_vv10
+      type(trc_xc_functional_t) :: f_mgga, f_rsh, f_vv10, f_pbe
+      character(len=:), allocatable :: logname
       logical :: ok
 
       call fixture_build(error)
@@ -436,12 +445,18 @@ contains
       call check(error, index(o%err%get_message(), "trc_tddft_rpa_gradient_rks") > 0, "message: "//o%err%get_message())
       if (allocated(error)) return
 
-      ! Degenerate adjacent roots only warn: a gradient is still produced.
+      ! Degenerate adjacent roots only warn: a gradient is still produced, and
+      ! the warning is logged (the log goes to a file next to the probe).
       bad = fx%td
       bad%omega(2) = bad%omega(1)
+      logname = trim(probe_arg)//'.log'
+      call global_logger%configure_file_output(logname, level=info_level)
       call trc_tddft_rpa_gradient_rks(fx%bas, fx%pl, fx%eri, fx%la, fx%ref, bad, o, fx%xg)
+      call global_logger%close_log_file()
       call check(error, .not. o%err%has_error() .and. allocated(o%grad), "degenerate roots must still give a gradient: "// &
                  o%err%get_message())
+      if (allocated(error)) return
+      call check(error, log_has(logname, "roots 1 and 2 are degenerate"), "degenerate roots must log a warning")
       if (allocated(error)) return
 
       ok = xc_functional_by_name('pbe', f_mgga)
@@ -465,14 +480,35 @@ contains
       call refuse_with(f_vv10, "VV10", error)
       if (allocated(error)) return
 
-      ! Kohn-Sham without a grid.
-      if (fx%dft) then
-         r = fx%ref
-         call trc_tddft_rpa_gradient_rks(fx%bas, fx%pl, fx%eri, fx%la, r, fx%td, o)
-         call check(error, o%err%has_error() .and. index(o%err%get_message(), "grid") > 0, &
-                    "a functional without a grid must be refused")
-      end if
+      ! A functional without a grid (a Kohn-Sham reference built on the Hartree-Fock fixture's
+      ! orbitals: the refusal comes before any use of them).
+      ok = xc_functional_by_name('pbe', f_pbe)
+      call check(error, ok, "pbe is registered")
+      if (allocated(error)) return
+      r = fx%ref
+      r%dft = .true.
+      r%func = f_pbe
+      call trc_tddft_rpa_gradient_rks(fx%bas, fx%pl, fx%eri, fx%la, r, fx%td, o)
+      call check(error, o%err%has_error() .and. index(o%err%get_message(), "grid") > 0, &
+                 "a functional without a grid must be refused: "//o%err%get_message())
    end subroutine test_refusals
+
+   function log_has(file, text) result(found)
+      !! Whether a line of the log file contains `text`.
+      character(len=*), intent(in) :: file, text
+      logical :: found
+      character(len=512) :: line
+      integer :: u, ios
+      found = .false.
+      open (newunit=u, file=file, status="old", action="read", iostat=ios)
+      if (ios /= 0) return
+      do
+         read (u, "(a)", iostat=ios) line
+         if (ios /= 0) exit
+         if (index(line, text) > 0) found = .true.
+      end do
+      close (u)
+   end function log_has
 
    subroutine refuse_shapes(error)
       !! Amplitudes that do not match the orbital counts, and a spherical basis

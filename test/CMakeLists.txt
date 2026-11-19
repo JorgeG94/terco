@@ -2638,10 +2638,12 @@ set_tests_properties(terco/check_tddft_grad_formamide_svwn terco/check_tddft_gra
 # (src/scf/response/trc_tddft_rpa_grad.F90) against pyscf's grad.tdrhf/tdrks with
 # Y /= 0 (generate.py's gen_tddft_rpa_grad; exact dense amplitudes and Z-vector):
 # water and formamide, 6-31G, 3 roots, HF, SVWN, PBE and B3LYP, and the non-planar
-# gauche hydrogen peroxide, HF and B3LYP. Each case also checks roots-per-sweep chunking,
-# a root alone against the batch, the TDA limit and the refusals. The last two are the
-# finite-difference checks of E_SCF + omega on h2o2 (HF, and B3LYP with the
-# grid response).
+# gauche hydrogen peroxide, HF and B3LYP. The invariants that hold for any molecule
+# (roots-per-sweep chunking, a root alone against the batch, the TDA limit, the
+# refusals, the degeneracy warning) run once, in the water Hartree-Fock case, which
+# takes no mode argument; every other case passes `pyscf` and runs the comparison with
+# pyscf only. The last two are the finite-difference checks of E_SCF + omega on h2o2 (HF,
+# and B3LYP with the grid response).
 #
 set(_rpa_grad_cases water:hf water:svwn water:pbe water:b3lyp formamide:hf formamide:svwn formamide:pbe
                     formamide:b3lyp h2o2:hf h2o2:b3lyp)
@@ -2649,9 +2651,14 @@ foreach(_case ${_rpa_grad_cases})
   string(REPLACE ":" ";" _parts ${_case})
   list(GET _parts 0 _mol)
   list(GET _parts 1 _f)
+  if(_case STREQUAL "water:hf")
+    set(_mode "")
+  else()
+    set(_mode pyscf)
+  endif()
   terco_add_check(check_tddft_rpa_grad_${_mol}_${_f} check_tddft_rpa_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
                   ARGS ${_mol}.xyz basis_sets/6-31g.json ${_mol} 6-31g ${_f} 3
-                       ${CMAKE_CURRENT_BINARY_DIR}/tddft_rpa_grad_${_mol}_${_f}_probe.bin)
+                       ${CMAKE_CURRENT_BINARY_DIR}/tddft_rpa_grad_${_mol}_${_f}_probe.bin ${_mode})
   target_link_libraries(check_tddft_rpa_grad_${_mol}_${_f} PRIVATE test-drive::test-drive)
   set_target_properties(check_tddft_rpa_grad_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
                         ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_rpa_grad_${_mol}_${_f})
@@ -2667,14 +2674,15 @@ foreach(_f hf:3 b3lyp:2)
   set_target_properties(check_tddft_rpa_grad_fd_${_func} PROPERTIES Fortran_MODULE_DIRECTORY
                         ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_rpa_grad_fd_${_func})
 endforeach()
-# LONG: formamide SVWN/PBE/B3LYP (440-550 s each on a loaded host) and the
-# B3LYP finite difference (about 600 s) are most of these checks' time. Pull
-# requests still run water with all four functionals, formamide HF, both
-# H2O2 pyscf cases (B3LYP is the only non-planar Kohn-Sham case) and the
-# Hartree-Fock finite difference; the nightly scheduled run on main
-# (TERCO_LONG_TESTS=ON) runs the rest.
+# LONG: the Kohn-Sham cases on formamide and H2O2 and the B3LYP finite
+# difference are minutes each on a loaded host (see the PR body for the
+# measurements). Pull requests still run the water Hartree-Fock case with
+# every invariant, one pyscf comparison per functional class (HF on formamide
+# and water, LDA, GGA and hybrid on water) and the Hartree-Fock finite
+# difference; the nightly scheduled run on main (TERCO_LONG_TESTS=ON) runs the rest.
 set_tests_properties(terco/check_tddft_rpa_grad_formamide_svwn terco/check_tddft_rpa_grad_formamide_pbe
-                     terco/check_tddft_rpa_grad_formamide_b3lyp terco/check_tddft_rpa_grad_fd_b3lyp
+                     terco/check_tddft_rpa_grad_formamide_b3lyp terco/check_tddft_rpa_grad_h2o2_b3lyp
+                     terco/check_tddft_rpa_grad_fd_b3lyp
                      PROPERTIES LABELS LONG)
 
 # Full RPA (TDHF / Casida) singlet excitation energies, oscillator strengths and

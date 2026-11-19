@@ -7197,8 +7197,6 @@ CASES = {
     "tddft": gen_tddft,
     "tddft_grad": gen_tddft_grad,
     "tddft_rpa_grad": gen_tddft_rpa_grad,
-
-
     "rpa": gen_rpa,
     "kxc": gen_kxc,
     "rimp2_uhf": gen_rimp2_uhf,
