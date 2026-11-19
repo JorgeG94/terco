@@ -49,7 +49,8 @@ contains
                   new_unittest("UHF OH/6-31G*", test_uhf), &
                   new_unittest("UKS wB97X OH/6-31G* (range-separated)", test_uks_rsh), &
                   new_unittest("RHF water/6-31G* C-PCM", test_rhf_pcm), &
-                  new_unittest("converging on the last allowed iteration", test_last_iteration) &
+                  new_unittest("converging on the last allowed iteration", test_last_iteration), &
+                 new_unittest("tight convergence: no more iterations than full builds", test_tight) &
                   ]
    end subroutine collect_scf_incremental_tests
 
@@ -58,6 +59,17 @@ contains
       type(trc_scf_options_t) :: opts
       call compare(error, "w3.xyz", 15, 15, opts, "RHF w3/6-31G*")
    end subroutine test_rhf
+
+   subroutine test_tight(error)
+      !! conv_diis 1e-11 is within 1e3 screening thresholds of the floor the increments' accumulated error
+      !! sets (trc_scf_incremental's rule 4): without the endgame, H2O2 stalls on that floor. 6-31G took 38
+      !! iterations against 23 with full builds, and this 6-31G* case does not converge in 100. With it, 26
+      !! against 24; 7 of those builds are full (the endgame's), so the loose cases' full-build bound is skipped.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_scf_options_t) :: opts
+      call compare(error, "h2o2.xyz", 9, 9, opts, "RHF H2O2/6-31G* tight", conv_energy=1.0e-13_dp, &
+                   conv_diis=1.0e-11_dp, extra_iterations=3)
+   end subroutine test_tight
 
    subroutine test_uhf(error)
       type(error_type), allocatable, intent(out) :: error
@@ -128,11 +140,15 @@ contains
                  to_string(capped%energy, "f20.12")//" against "//to_string(free%energy, "f20.12"))
    end subroutine test_last_iteration
 
-   subroutine compare(error, xyzfile, nalpha, nbeta, opts_in, label)
+   subroutine compare(error, xyzfile, nalpha, nbeta, opts_in, label, conv_energy, conv_diis, extra_iterations)
       type(error_type), allocatable, intent(out) :: error
       character(*), intent(in) :: xyzfile, label
       integer, intent(in) :: nalpha, nbeta
       type(trc_scf_options_t), intent(in) :: opts_in
+      real(dp), intent(in), optional :: conv_energy, conv_diis
+      integer, intent(in), optional :: extra_iterations
+      !! Iterations the incremental run may take over the full-build one (1 by default); given, the
+      !! full-build count bound is skipped too: a tight run builds the endgame in full.
       type(trc_scf_options_t) :: opts
       type(trc_scf_result_t) :: full, incr
       integer :: nat, dev, allowed
@@ -151,6 +167,8 @@ contains
       opts = opts_in
       opts%conv_energy = 1.0e-10_dp
       opts%conv_diis = 1.0e-6_dp
+      if (present(conv_energy)) opts%conv_energy = conv_energy
+      if (present(conv_diis)) opts%conv_diis = conv_diis
       opts%max_iteration = 100
       opts%incremental = .false.
       call trc_scf_run(bas, nalpha, nbeta, opts, full)
@@ -172,9 +190,12 @@ contains
                  to_string(incr%energy, "f20.12")//" against full "//to_string(full%energy, "f20.12")// &
                  ", diff "//to_string(incr%energy - full%energy, "es10.2"))
       if (allocated(error)) return
-      call check(error, incr%iterations <= full%iterations + 1, label//": incremental took "// &
+      allowed = 1
+      if (present(extra_iterations)) allowed = extra_iterations
+      call check(error, incr%iterations <= full%iterations + allowed, label//": incremental took "// &
                  to_string(incr%iterations)//" iterations against "//to_string(full%iterations))
       if (allocated(error)) return
+      if (present(extra_iterations)) return
       allowed = max(MAX_FULL, incr%iterations/4)
       call check(error, incr%iterations - incr%n_increments <= allowed, label//": "// &
                  to_string(incr%iterations - incr%n_increments)//" of "//to_string(incr%iterations)// &
