@@ -127,6 +127,7 @@ contains
       opts%conv_energy = 1.0e-13_dp
       opts%conv_density = 1.0e-11_dp
       opts%conv_diis = 1.0e-11_dp
+      opts%incremental = .false.   ! full Fock builds: see rccsd_test_support's run_scf
       call trc_scf_run(bas, nocc, nocc, opts, res, comm=comm)
    end subroutine scf_over_comm
 

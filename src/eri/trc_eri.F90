@@ -2142,10 +2142,17 @@ contains
       !! where the rule keeps the bins, water40 1.449 / 1.266, gly5 0.164 /
       !! 0.142), so the rule leaves some UHF time on the table, never loses it.
       !!
-      !! Always density-screened, the bound being the maximum over the
-      !! densities per shell pair (each sees at least the quartets it would
-      !! alone). A coupled-perturbed solve, which must not screen on its
-      !! trial densities, uses eri_fock_resident.
+      !! Density-screened unless opts%density_screen is false, the bound being
+      !! the maximum over the densities per shell pair (each sees at least the
+      !! quartets it would alone). A coupled-perturbed solve, whose trial
+      !! densities shrink as it converges and must not drive the screen, sets
+      !! density_screen false: the bound is then the plain Schwarz one, as
+      !! `fock_resident` has it, so the operator is the same from one matvec
+      !! to the next, and MD J is chosen by the rule
+      !! `fock_resident_lent` has for that flag (`mdj_requested`), so a
+      !! batched coupled-perturbed build and a single one pick the same engine.
+      !! The default is true, which is what every SCF caller of this routine
+      !! wants.
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: ndens
@@ -2153,9 +2160,9 @@ contains
       !! Both must already be present on the device.
       real(dp), intent(out) :: gmats(this%nao, this%nao, ndens)
       type(trc_fock_options_t), intent(in) :: opts
-      !! `density_screen` and `count_survivors` are not read: this build is
-      !! always density-screened. `skeleton` is as for `fock_resident_lent`
-      !! (every density must be invariant under the group).
+      !! `density_screen` is read (see above); `count_survivors` is not.
+      !! `skeleton` is as for `fock_resident_lent` (every density must be
+      !! invariant under the group).
       real(dp), intent(inout) :: work(this%nao_w, this%nao_w, 2*ndens + 1)
       !! At least `fock_work_size(ndens)` doubles, device-resident, as for
       !! `fock_resident_lent`: the kernel's (ndens, nw, nw) operand and
@@ -2180,7 +2187,8 @@ contains
       ! (unmeasured with two densities), and it is passed on as forced so
       ! each density's build makes the same choice.
       use_md = jfac /= 0.0_dp .and. ow == 0.0_dp .and. &
-               mdj_requested(this%mdj_force, kfac == 0.0_dp, this%mdj_extended .or. this%has_f, &
+               mdj_requested(this%mdj_force, kfac == 0.0_dp, &
+                             merge(this%mdj_extended .or. this%has_f, this%has_f, opts%density_screen), &
                              opts%j_engine)
       if (ndens == 1 .or. this%needs_md .or. use_md) then
          eng = opts%j_engine
@@ -2190,7 +2198,8 @@ contains
          do d = 1, ndens
             call this%fock_resident_lent(b, dmats(:, :, d), gmats(:, :, d), &
                                          trc_fock_options_t(j_scale=jfac, k_scale=kfac, omega=ow, &
-                                                            j_engine=eng, skeleton=opts%skeleton), work)
+                                                            j_engine=eng, skeleton=opts%skeleton, &
+                                                            density_screen=opts%density_screen), work)
          end do
          return
       end if
@@ -2210,6 +2219,7 @@ contains
          end if
          call pack_density_device(nw, ndens, d, work(:, :, 2*ndens + 1), work(:, :, 1:ndens), &
                                   work(:, :, ndens + 1:2*ndens))
+         if (.not. opts%density_screen) cycle
          if (d == 1) then
             call density_blocks_device(this%nbas, nw, this%pairs%sh_l, this%pairs%ao_off, &
                                        work(:, :, 2*ndens + 1), this%dsh)
@@ -2218,6 +2228,8 @@ contains
                                            work(:, :, 2*ndens + 1), this%dsh)
          end if
       end do
+      ! The plain Schwarz bound, as `fock_resident_lent` does for the same flag.
+      if (.not. opts%density_screen) call fill_ones_device(this%nbas, this%dsh)
 
       ! The skeleton plan needs the bound invariant under the group: the
       ! maximum over the densities is symmetrized like a single density's.

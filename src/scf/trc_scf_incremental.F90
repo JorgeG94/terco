@@ -19,7 +19,7 @@ module trc_scf_incremental
    !! the sum of all of them since the last full build. That sum is an offset
    !! eps in the Fock matrix the iteration sees, so the SCF heads for the fixed
    !! point of F + eps, not of F, and |FDS - SDF| stops falling where eps is.
-   !! Four rules keep that from reaching the answer:
+   !! Five rules keep that from reaching the answer:
    !!
    !! 0. A looser screen only while eps cannot matter. Increments are screened
    !!    at `early_scale` times tau while |FDS - SDF| >= `early_until`, at
@@ -59,6 +59,13 @@ module trc_scf_incremental
    !! 3. A stall is a rebuild. Once the commutator stops falling over
    !!    STALL_ITERATIONS increments, it has reached the floor eps sets, and
    !!    only a full build lowers that floor; it also resets the sum.
+   !! 4. A commutator target near the floor is reached on full builds. The
+   !!    floor eps sets is a few tens of the screening threshold tau; a run
+   !!    that asks for |FDS - SDF| within 1e3 tau of it (`conv_diis` < 1e3 tau,
+   !!    scf_settings's `incr_endgame_default`) builds in full from 10 times
+   !!    `conv_diis` on (`endgame`). Without it rules 1 and 3 cycle on the
+   !!    floor: H2O2/6-31G at conv_diis 1e-11 took 38 iterations against 23
+   !!    with full builds, and failed under a lower iteration cap.
    !!
    !! At `late_scale` 1 eps is about a hundred times below the early phase's,
    !! under conv_diis's 1e-5, and the full builds of rules 0 to 2 are the only
@@ -98,7 +105,7 @@ module trc_scf_incremental
       real(dp) :: predict = 1.0_dp
       real(dp) :: endgame = 0.0_dp
       !! Full builds once the commutator is within this factor of `conv_diis`
-      !! (an experiment hook, scf_settings_t%incr_endgame_run; 0 is off).
+      !! (rule 4, scf_settings_t%incr_endgame_run; 0 is off).
       logical :: full_due = .false.
       !! The next build must be full: a convergence to verify, a predicted
       !! convergence, or a stall (this module's own header).

@@ -61,7 +61,7 @@ module check_cli_rccsd_suite
    !! two runs of the same numbers reached by different settings (a ladder form, a tile size, a TOML file)
    character(len=*), parameter :: REF = "rccsd_ints_w1.ref"
    character(len=*), parameter :: COMMON = ' water.xyz -b basis_sets/cc-pvdz.json --aux basis_sets/cc-pvdz-rifit.json'// &
-                                          ' --econv 1e-13 --gconv 1e-11'
+                                          ' --econv 1e-13 --gconv 1e-11 --no-incremental'
    character(len=*), parameter :: TIGHT = ' --cc-econv 1e-12 --cc-tconv 1e-10'
 
 contains
