@@ -842,7 +842,7 @@ contains
       !! as its own routine.
       !!
       !! Any number of densities: scatter_nosym digests each quartet into every
-      !! one (eri%fock_nosym_many, the TDDFT matvec's transition densities).
+      !! one (eri%fock_nosym_many, the reference for non-symmetric densities).
       !! Each density is an independent operand and accumulator, so the batch is
       !! the same operator as ndens separate calls.
       !!

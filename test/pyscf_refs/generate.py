@@ -3230,6 +3230,210 @@ def gen_tddft():
             _gen_tddft_one(probe, f"tddft_{molname}_6-31gs_{funcname}.ref", xyzname, molname, "6-31gs", funcname)
 
 
+def gen_rpa():
+    """check_tddft_rpa.F90: the lowest singlet RPA roots
+    (trc_tddft.F90, tda = .false.) of water (4 roots), formamide (6) and
+    methane (Td, 5: the cut falls inside degenerate multiplets), 6-31G*, for
+    HF, SVWN, PBE and B3LYP, against pyscf's TDHF/TDDFT at terco's own
+    converged grid."""
+    for xyzname, molname, nroots in (("water.xyz", "water", 4), ("formamide.xyz", "formamide", 6),
+                                     ("tops_ch4.xyz", "ch4", 5)):
+        for funcname in ("hf", "svwn", "pbe", "b3lyp"):
+            probe = f"tddft_rpa_{molname}_{funcname}_probe.bin"
+            run_bin(f"check_tddft_rpa_{molname}_{funcname}",
+                    [xyzname, "basis_sets/6-31gs.json", molname, "6-31gs", funcname, str(nroots), str(TEST / probe)])
+            _gen_tddft_one(probe, f"rpa_{molname}_6-31gs_{funcname}.ref", xyzname, molname, "6-31gs", funcname,
+                           rpa=True)
+
+
+#: check_tddft_basis.F90's basis sets: ref tag -> the shipped basis_sets/ file.
+TDDFT_BASIS_FILES = {
+    "sto-3g": "sto-3g", "3-21g": "3-21g", "6-31g": "6-31g", "6-31pg": "6-31+g",
+    "6-31gss": "6-31g_st__st_", "6-311gss": "6-311g_st__st_",
+    "cc-pvdz": "cc-pvdz", "aug-cc-pvdz": "aug-cc-pvdz", "def2-svp": "def2-svp", "def2-svpd": "def2-svpd",
+}
+_TB_ALL = ("hf", "pbe", "b3lyp")
+_TB_HB = ("hf", "b3lyp")
+#: (molecule, basis tag, functionals): the same table as _tb_cases in test/CMakeLists.txt.
+#: formaldehyde/6-31+G/HF is absent on purpose: terco's TDA Davidson skips its third root.
+TDDFT_BASIS_CASES = (
+    ("water", "sto-3g", _TB_ALL), ("water", "3-21g", _TB_ALL), ("water", "6-31g", _TB_ALL),
+    ("water", "6-31pg", _TB_HB), ("water", "6-31gss", _TB_ALL), ("water", "6-311gss", _TB_HB),
+    ("water", "cc-pvdz", _TB_ALL), ("water", "aug-cc-pvdz", _TB_HB), ("water", "def2-svp", _TB_ALL),
+    ("water", "def2-svpd", _TB_HB),
+    ("formaldehyde", "sto-3g", _TB_ALL), ("formaldehyde", "3-21g", _TB_ALL), ("formaldehyde", "6-31g", _TB_ALL),
+    ("formaldehyde", "6-31pg", _TB_HB), ("formaldehyde", "6-31gss", _TB_ALL), ("formaldehyde", "6-311gss", _TB_HB),
+    ("formaldehyde", "cc-pvdz", _TB_ALL), ("formaldehyde", "aug-cc-pvdz", _TB_HB),
+    ("formaldehyde", "def2-svp", _TB_ALL), ("formaldehyde", "def2-svpd", _TB_HB),
+)
+TDDFT_BASIS_NROOTS = 3
+
+
+def _converge_tddft_basis(make_mf, label, grad_gate=1.0e-8, self_check_tol=1.0e-11):
+    """converge_tight with the gradient gate measured on get_grad's own norm.
+    converge_tight hands the SAME number to pyscf's convergence test and to
+    its after-the-fact check, but pyscf's internal norm is smaller than
+    get_grad's here (formaldehyde/STO-3G/PBE: internal 1e-8 gave |g| 2.3e-8,
+    internal 1e-9 gave 2.5e-9), so no setting of it can pass its own check.
+    This asks pyscf for 1e-9 and gates the result on |g| < `grad_gate` (the
+    1e-8 converge_tight uses), plus its fresh-mf energy cross-check."""
+    mf = make_mf()
+    mf.conv_tol = 1.0e-13
+    mf.conv_tol_grad = 1.0e-9
+    mf.max_cycle = 200
+    mf.verbose = 0
+    mf.kernel()
+    if not mf.converged:
+        mf2 = mf.newton()
+        mf2.conv_tol = 1.0e-13
+        mf2.conv_tol_grad = 1.0e-9
+        mf2.max_cycle = 200
+        mf2.kernel()
+        mf = mf2
+    if not mf.converged:
+        raise ConvergenceError(f"{label}: pyscf SCF did not converge (DIIS and .newton() both tried)")
+    grad_norm = float(np.linalg.norm(mf.get_grad(mf.mo_coeff, mf.mo_occ)))
+    if grad_norm > grad_gate:
+        raise ConvergenceError(f"{label}: |g|={grad_norm:.3e} > {grad_gate:.1e} -- refusing an under-converged SCF")
+    e_fresh = make_mf().energy_tot(mf.make_rdm1())
+    if abs(e_fresh - mf.e_tot) > self_check_tol:
+        raise ConvergenceError(f"{label}: a fresh mf's energy_tot(dm) differs from e_tot by {abs(e_fresh - mf.e_tot):.3e}")
+    return mf, grad_norm
+
+
+def _gen_tddft_basis_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
+    """One check_tddft_basis.F90 case: pyscf's TDA and full RPA (TDHF for RHF,
+    TDDFT for RKS) singlets on an RHF/RKS reference with a Cartesian AO space
+    (TDDFT in terco is Cartesian only) at terco's OWN grid, as _gen_tddft_one,
+    with the shipped basis_sets/ file of `basname`. Same convergence rules
+    (converge_tight, TDA/RPA residual tolerance 1e-6). Written: E_SCF, and
+    OMEGA, OSC for each of TDA and RPA, YY_RPA (terco's normalisation,
+    2 ||Y||^2 of pyscf's)."""
+    PYSCF = {"hf": None, "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
+    r = BinReader(TEST / probe_relname)
+    n, natm, no, nroots = (r.i8() for _ in range(4))
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    func_tag = r.str_(16)
+    e_terco = r.f8(1)[0]
+    om_tda_t = r.f8(nroots)
+    osc_tda_t = r.f8(nroots)
+    om_rpa_t = r.f8(nroots)
+    osc_rpa_t = r.f8(nroots)
+    yy_t = r.f8(nroots)
+    npts = r.i8()
+    pts = r.mat(3, npts).T.copy()
+    wts = r.f8(npts)
+    r.close()
+    if mol_tag != molname or bas_tag != basname or func_tag != funcname:
+        raise RuntimeError(f"gen_tddft_basis {probe_relname}: probe tag mismatch")
+    atoms = _xyz_atoms(xyzname[:-4])
+    if len(atoms) != natm:
+        raise RuntimeError(f"gen_tddft_basis {probe_relname}: natm mismatch terco {natm} xyz {len(atoms)}")
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    basfile = ROOT / "basis_sets" / (TDDFT_BASIS_FILES[basname] + ".json")
+    bas = bse_json_basis(basfile, elements)
+    charge = sum(elements[sym] for sym, _ in atoms) - 2 * no
+    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=charge, spin=0, verbose=0)
+    if mol.nao_nr() != n:
+        raise RuntimeError(f"gen_tddft_basis {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
+    label = f"tddft_basis {molname}/{basname}/{funcname} (tda and rpa singlets)"
+
+    def make_mf():
+        if funcname == "hf":
+            return scf.RHF(mol)
+        m = dft.RKS(mol)
+        m.xc = PYSCF[funcname]
+        m.grids.coords = np.ascontiguousarray(pts)
+        m.grids.weights = wts
+        m.grids.non0tab = None
+        return m
+
+    mf, grad_norm = _converge_tddft_basis(make_mf, label)
+
+    def dense_roots(td, rpa_):
+        """The lowest roots of the full A (TDA) or (A-B)^(1/2) (A+B) (A-B)^(1/2)
+        (RPA) from pyscf's own get_ab, as the check on its Davidson."""
+        a, b = td.get_ab()
+        nov = a.shape[0] * a.shape[1]
+        a = a.reshape(nov, nov)
+        if not rpa_:
+            return np.linalg.eigvalsh(a)
+        b = b.reshape(nov, nov)
+        wm, vm = np.linalg.eigh(a - b)
+        half = (vm * np.sqrt(wm)) @ vm.T
+        return np.sqrt(np.linalg.eigvalsh(half @ (a + b) @ half))
+
+    def run_td(make_td, rpa_):
+        """pyscf's Davidson started for nroots states can skip a root (measured:
+        formaldehyde/6-31G/HF TDA returned 0.159, 0.380, 0.433 and missed a
+        root at 0.349 that the dense A has, and that terco finds), so ask for
+        more states, keep the lowest nroots, and require them to equal the
+        dense eigenvalues."""
+        dense = dense_roots(make_td(), rpa_)[:nroots]
+        for extra in (4, 8, 16):
+            td = make_td()
+            td.singlet = True
+            td.nstates = nroots + extra
+            td.conv_tol = 1.0e-6
+            td.max_cycle = 200
+            td.verbose = 0
+            td.kernel()
+            # The extra, highest states are only there to keep the Davidson from
+            # skipping a wanted root and may stay unconverged; the wanted ones
+            # must converge and equal the dense eigenvalues.
+            if all(np.atleast_1d(td.converged)[:nroots]) and np.abs(np.asarray(td.e[:nroots]) - dense).max() < 1.0e-7:
+                return td
+        raise ConvergenceError(f"{label}: pyscf's Davidson never converged to the dense lowest {nroots} roots")
+
+    tda = run_td(mf.TDA, False)
+    rpa = run_td(mf.TDHF if funcname == "hf" else mf.TDDFT, True)
+    om_tda = np.asarray(tda.e, dtype=float)[:nroots]
+    osc_tda = np.asarray(tda.oscillator_strength(gauge='length'), dtype=float)[:nroots]
+    om_rpa = np.asarray(rpa.e, dtype=float)[:nroots]
+    osc_rpa = np.asarray(rpa.oscillator_strength(gauge='length'), dtype=float)[:nroots]
+    yy = np.array([2.0 * float(np.sum(y ** 2)) for _, y in rpa.xy])[:nroots]
+
+    w = RefWriter(ref_relname)
+    w.header(label, [TEST / "check_tddft_basis.F90", basfile, TEST / xyzname])
+    w.real("E_SCF", mf.e_tot)
+    w.vector("OMEGA_TDA", om_tda)
+    w.vector("OSC_TDA", osc_tda)
+    w.vector("OMEGA_RPA", om_rpa)
+    w.vector("OSC_RPA", osc_rpa)
+    w.vector("YY_RPA", yy)
+    w.real("CONV_TOL", mf.conv_tol)
+    w.real("GRAD_NORM", grad_norm)
+    w.end()
+    w.write()
+    print(f"  {label}: nao {n}  |dE| {abs(e_terco - mf.e_tot):.2e}  |g| {grad_norm:.2e}  "
+          f"TDA |d(omega)| {np.abs(om_tda_t - om_tda).max():.2e} |d(f)| {np.abs(osc_tda_t - osc_tda).max():.2e}  "
+          f"RPA |d(omega)| {np.abs(om_rpa_t - om_rpa).max():.2e} |d(f)| {np.abs(osc_rpa_t - osc_rpa).max():.2e} "
+          f"|d(YY)| {np.abs(yy_t - yy).max():.2e}")
+    (TEST / probe_relname).unlink()
+
+
+def gen_tddft_basis():
+    """check_tddft_basis.F90: the lowest three singlet TDA and RPA roots of
+    water and formaldehyde, for HF, PBE and B3LYP, over the shipped basis
+    sets of TDDFT_BASIS_FILES (a Cartesian AO space), against pyscf at
+    terco's own converged grid. There is no f basis: terco's dipole integrals
+    stop at d at every TERCO_LMAX. The (molecule, basis, functional) triples
+    are TDDFT_BASIS_CASES, the ctest list's own table."""
+    for molname, basname, funcs in TDDFT_BASIS_CASES:
+        xyzname = molname + ".xyz"
+        for funcname in funcs:
+            probe = f"tddft_basis_{molname}_{basname}_{funcname}_probe.bin"
+            (TEST / probe).unlink(missing_ok=True)
+            run_bin("check_tddft_basis",
+                    [xyzname, "../basis_sets/" + TDDFT_BASIS_FILES[basname] + ".json", molname, basname, funcname,
+                     str(TDDFT_BASIS_NROOTS), str(TEST / probe)])
+            if not (TEST / probe).exists():
+                raise RuntimeError(f"{molname}/{basname}/{funcname}: the binary wrote no probe")
+            _gen_tddft_basis_one(probe, f"tddft_basis_{molname}_{basname}_{funcname}.ref", xyzname, molname,
+                                 basname, funcname)
+
+
 def _gen_tddft_grad_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
     """One check_tddft_grad.F90 case: pyscf's TDA excited-state gradients
     (grad.tdrhf / grad.tdrks) of the lowest `nroots` singlets of an RHF/RKS
@@ -3506,22 +3710,6 @@ def gen_tddft_rpa_grad():
         run_bin(f"check_tddft_rpa_grad_{molname}_{funcname}",
                 [xyzname, "basis_sets/6-31g.json", molname, "6-31g", funcname, "3", str(TEST / probe)])
         _gen_tddft_rpa_grad_one(probe, f"tddft_rpa_grad_{molname}_6-31g_{funcname}.ref", xyzname, molname, "6-31g", funcname)
-
-
-def gen_rpa():
-    """check_tddft_rpa.F90: the lowest singlet RPA roots
-    (trc_tddft.F90, tda = .false.) of water (4 roots), formamide (6) and
-    methane (Td, 5: the cut falls inside degenerate multiplets), 6-31G*, for
-    HF, SVWN, PBE and B3LYP, against pyscf's TDHF/TDDFT at terco's own
-    converged grid."""
-    for xyzname, molname, nroots in (("water.xyz", "water", 4), ("formamide.xyz", "formamide", 6),
-                                     ("tops_ch4.xyz", "ch4", 5)):
-        for funcname in ("hf", "svwn", "pbe", "b3lyp"):
-            probe = f"tddft_rpa_{molname}_{funcname}_probe.bin"
-            run_bin(f"check_tddft_rpa_{molname}_{funcname}",
-                    [xyzname, "basis_sets/6-31gs.json", molname, "6-31gs", funcname, str(nroots), str(TEST / probe)])
-            _gen_tddft_one(probe, f"rpa_{molname}_6-31gs_{funcname}.ref", xyzname, molname, "6-31gs", funcname,
-                           rpa=True)
 
 
 def gen_fxc_apply_many():
@@ -7195,9 +7383,10 @@ CASES = {
     "cpks": gen_cpks,
     "fxc_apply_many": gen_fxc_apply_many,
     "tddft": gen_tddft,
+    "rpa": gen_rpa,
+    "tddft_basis": gen_tddft_basis,
     "tddft_grad": gen_tddft_grad,
     "tddft_rpa_grad": gen_tddft_rpa_grad,
-    "rpa": gen_rpa,
     "kxc": gen_kxc,
     "rimp2_uhf": gen_rimp2_uhf,
     "scf_df": gen_scf_df,

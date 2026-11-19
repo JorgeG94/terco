@@ -36,5 +36,6 @@ exercises most: hundreds of `bind(c)` functions, most with a doc comment.
 
 The RI-CCSD(T) entry points (`trc_set_rccsd`, `trc_set_rccsd_convergence`,
 `trc_set_rccsd_algorithm`, `trc_run_rccsd`, `trc_rccsd_energy`,
-`trc_rccsd_dimensions`; ABI 1.28) are among them; {doc}`library` has an example
+`trc_rccsd_dimensions`; ABI 1.28, and `trc_rccsd_energy_parts`; ABI 1.29) are
+among them; {doc}`library` has an example
 and the list of what each call returns.
