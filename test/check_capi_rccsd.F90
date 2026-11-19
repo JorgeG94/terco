@@ -44,7 +44,7 @@ module check_capi_rccsd_suite
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use rccsd_ref_energies, only: rccsd_refs_t, read_rccsd_refs
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_aux_json, &
-                               trc_set_convergence, trc_set_rimp2, trc_set_rccsd, trc_set_lindep, &
+                               trc_set_convergence, trc_set_incremental, trc_set_rimp2, trc_set_rccsd, trc_set_lindep, &
                                trc_rccsd_dimensions, trc_rccsd_energy_parts, trc_set_rccsd_convergence, &
                                trc_set_rccsd_algorithm, trc_set_method, trc_set_pcm, trc_set_unrestricted, &
                                trc_set_symmetry, trc_set_force_cartesian, trc_set_scf_stabilise, trc_set_guess, trc_nao, trc_mo_coefficients, &
@@ -165,6 +165,8 @@ contains
          end if
       end if
       if (rc == TRC_OK) rc = trc_set_convergence(h, 1.0e-13_c_double, 1.0e-11_c_double, 100_c_int, 10_c_int)
+      ! Full Fock builds: an incremental build's screening error sits near these thresholds.
+      if (rc == TRC_OK) rc = trc_set_incremental(h, 0_c_int)
    end subroutine make_handle
 
    subroutine water_scf(error, h, triples, nfrozen, ok)
