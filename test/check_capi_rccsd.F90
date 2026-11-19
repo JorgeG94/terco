@@ -44,8 +44,8 @@ module check_capi_rccsd_suite
    use trc_df_kernels, only: DF_LMAX, DF_LMAX_AUX
    use rccsd_ref_energies, only: rccsd_refs_t, read_rccsd_refs
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_aux_json, &
-                               trc_set_convergence, trc_set_rimp2, trc_set_rccsd, trc_set_lindep, &
-                               trc_rccsd_dimensions, trc_set_rccsd_convergence, &
+                               trc_set_convergence, trc_set_incremental, trc_set_rimp2, trc_set_rccsd, trc_set_lindep, &
+                               trc_rccsd_dimensions, trc_rccsd_energy_parts, trc_set_rccsd_convergence, &
                                trc_set_rccsd_algorithm, trc_set_method, trc_set_pcm, trc_set_unrestricted, &
                                trc_set_symmetry, trc_set_force_cartesian, trc_set_scf_stabilise, trc_set_guess, trc_nao, trc_mo_coefficients, &
                                trc_run_scf, trc_run_rimp2, trc_run_rccsd, trc_rccsd_energy, trc_run_gradient, &
@@ -165,6 +165,8 @@ contains
          end if
       end if
       if (rc == TRC_OK) rc = trc_set_convergence(h, 1.0e-13_c_double, 1.0e-11_c_double, 100_c_int, 10_c_int)
+      ! Full Fock builds: an incremental build's screening error sits near these thresholds.
+      if (rc == TRC_OK) rc = trc_set_incremental(h, 0_c_int)
    end subroutine make_handle
 
    subroutine water_scf(error, h, triples, nfrozen, ok)
@@ -211,6 +213,22 @@ contains
       call check(error, abs(e_ccsd - refs%e_ccsd_corr) < TOL_CORR, "E_CCSD "//to_string(e_ccsd, "f20.12")//" vs pyscf "// &
                  to_string(refs%e_ccsd_corr, "f20.12")//", |difference| "//to_string(abs(e_ccsd - refs%e_ccsd_corr), "es9.2"))
       if (allocated(error)) return
+      ! the two parts of the energy functional: they add up to e_ccsd exactly (it is their sum), the t2 part
+      ! carries nearly all of it, and the t1 t1 part of a canonical closed shell is small but not zero
+      block
+         real(c_double) :: e_singles, e_doubles
+         rc = trc_rccsd_energy_parts(h, e_singles, e_doubles)
+         call check(error, rc == TRC_OK, "trc_rccsd_energy_parts returned "//to_string(int(rc)))
+         if (allocated(error)) return
+         call check(error, abs(e_singles + e_doubles - e_ccsd) <= 4.0_c_double*epsilon(1.0_c_double)*abs(e_ccsd), &
+                    "the parts do not add up to E_CCSD: "//to_string(e_singles, "es22.14")//" + "// &
+                    to_string(e_doubles, "es22.14")//" vs "//to_string(e_ccsd, "es22.14"))
+         if (allocated(error)) return
+         call check(error, e_singles /= 0.0_c_double .and. abs(e_singles) < 1.0e-2_c_double*abs(e_doubles), &
+                    "the t1 t1 part is zero or not small: "//to_string(e_singles, "es12.4")//" beside "// &
+                    to_string(e_doubles, "es12.4"))
+         if (allocated(error)) return
+      end block
       call check(error, abs(e_t - refs%e_t) < TOL_T, "E(T) "//to_string(e_t, "f20.14")//" vs pyscf "// &
                  to_string(refs%e_t, "f20.14")//", |difference| "//to_string(abs(e_t - refs%e_t), "es9.2"))
       if (allocated(error)) return
@@ -385,6 +403,9 @@ contains
       call check(error, rc == TRC_ERR_NULL, "trc_run_rccsd on a null handle is not TRC_ERR_NULL")
       rc = trc_rccsd_dimensions(c_null_handle(), nf, na, nvv, nx)
       call check(error, rc == TRC_ERR_NULL, "trc_rccsd_dimensions on a null handle is not TRC_ERR_NULL")
+      if (allocated(error)) return
+      rc = trc_rccsd_energy_parts(c_null_handle(), e_mp2, e_ccsd)
+      call check(error, rc == TRC_ERR_NULL, "trc_rccsd_energy_parts on a null handle is not TRC_ERR_NULL")
       if (allocated(error)) return
       ! none of the refusals above changed the settings water_scf made: the run still reproduces pyscf
       rc = trc_run_rccsd(h)

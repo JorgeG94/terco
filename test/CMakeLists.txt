@@ -846,13 +846,26 @@ set_tests_properties(terco/check_rys_grad_fd_ccpvtz PROPERTIES SKIP_REGULAR_EXPR
 # eri%gradient_pairs (one gradient per column from a pool of densities and a
 # pair table, one sweep over the integral derivatives) against eri%gradient,
 # split densities, single-column calls and, for an antisymmetric density,
-# finite differences of Tr(A K[A]) built from eri%fock_nosym. water/6-31G*.
+# finite differences of Tr(A K[A]) built from eri%fock_nosym. water and
+# hydrogen peroxide, 6-31G*.
 #
 terco_add_check(check_grad_pairs check_grad_pairs.F90 NEEDS_BASIS
                 ARGS basis_sets/6-31gs.json)
 target_link_libraries(check_grad_pairs PRIVATE test-drive::test-drive)
 set_tests_properties(terco/check_grad_pairs PROPERTIES
   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=none")
+
+# The same with f functions (cc-pVTZ: the (31|30), (33|10) ... pair kernels).
+# Skips on a build below LMAX=3 (check_grad_pairs.F90's setup). LONG: 370 s on
+# a loaded host at LMAX=3.
+terco_add_check(check_grad_pairs_ccpvtz check_grad_pairs.F90 NEEDS_BASIS
+                ARGS basis_sets/cc-pvtz.json)
+target_link_libraries(check_grad_pairs_ccpvtz PRIVATE test-drive::test-drive)
+set_target_properties(check_grad_pairs_ccpvtz PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_grad_pairs_ccpvtz)
+set_tests_properties(terco/check_grad_pairs_ccpvtz PROPERTIES
+  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=none"
+  SKIP_REGULAR_EXPRESSION "SKIP" LABELS LONG)
 
 #
 # eri%gradient's long-range (erf(omega*r12)/r12) exchange term alone
@@ -2529,6 +2542,21 @@ foreach(_t scf_cpks scf_cpks_pbe scf_cpks_b3lyp scf_cpks_formamide_pbe)
 endforeach()
 
 #
+# Batched coupled-perturbed solves (trc_cphf_cg_t, opts%max_batch): every
+# right-hand side of a group iterates its own CG, the matvecs share one Fock
+# (and f_xc) pass. Against an independent textbook CG on its own matvec (built
+# from fock_resident and trc_xc_fxc_rks), with a recomputed residual per column;
+# check_fock_many_screen tests the density_screen=.false. Fock pass alone.
+#
+terco_add_check(check_cpks_batched check_cpks_batched.F90 NEEDS_BASIS)
+target_link_libraries(check_cpks_batched PRIVATE test-drive::test-drive)
+# The eri-level half: fock_resident_many_lent with the density screen off
+# against fock_resident per density, at a threshold loose enough that the
+# screen shows (check_fock_many_screen.F90's own header).
+terco_add_check(check_fock_many_screen check_fock_many_screen.F90 NEEDS_BASIS)
+target_link_libraries(check_fock_many_screen PRIVATE test-drive::test-drive)
+
+#
 # TDA/CIS singlet excitation energies and oscillator strengths
 # (src/scf/response/trc_tddft.F90) against pyscf's tdscf TDA (generate.py's
 # gen_tddft): water (4 roots) and formamide (6 roots), 6-31G*, HF, SVWN, PBE
@@ -2594,6 +2622,178 @@ endforeach()
 set_tests_properties(terco/check_tddft_grad_formamide_svwn terco/check_tddft_grad_formamide_pbe
                      terco/check_tddft_grad_formamide_b3lyp terco/check_tddft_grad_fd_pbe
                      PROPERTIES LABELS LONG)
+# Full RPA (TDHF / Casida) singlet excitation energies, oscillator strengths and
+# ||Y||^2 (src/scf/response/trc_tddft.F90, tda = .false.) against pyscf's tdscf
+# TDHF / TDDFT (generate.py's gen_rpa), plus the RPA's own internal checks and
+# error paths: the same molecules, basis and functionals as the TDA above.
+# One executable, one ARGS set per case.
+#
+foreach(_m water:4 formamide:6 ch4:5)
+  string(REPLACE ":" ";" _ml ${_m})
+  list(GET _ml 0 _mol)
+  list(GET _ml 1 _nr)
+  foreach(_f hf svwn pbe b3lyp)
+    set(_xyz ${_mol}.xyz)
+    if(_mol STREQUAL "ch4")
+      set(_xyz tops_ch4.xyz)
+    endif()
+    terco_add_check(check_tddft_rpa_${_mol}_${_f} check_tddft_rpa.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                    ARGS ${_xyz} basis_sets/6-31gs.json ${_mol} 6-31gs ${_f} ${_nr}
+                         ${CMAKE_CURRENT_BINARY_DIR}/tddft_rpa_${_mol}_${_f}_probe.bin)
+    target_link_libraries(check_tddft_rpa_${_mol}_${_f} PRIVATE test-drive::test-drive)
+    set_target_properties(check_tddft_rpa_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                          ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_rpa_${_mol}_${_f})
+  endforeach()
+endforeach()
+
+#
+# TDA and RPA singlet excitation energies and oscillator strengths of water and
+# formaldehyde over the shipped basis sets (Cartesian AO space: TDDFT refuses a
+# spherical one) for HF, PBE and B3LYP, against pyscf at terco's own grid
+# (test/pyscf_refs/tddft_basis_*.ref, generate.py's gen_tddft_basis), plus the
+# solver's own invariants. One executable, one test per (molecule, basis,
+# functional): check_tddft_basis_<mol>_<basis>_<functional>. A basis tag is
+# the reference's name for it; TDDFT_BASIS_FILES in generate.py maps it to
+# basis_sets/<file>.json and the case tables here and in generate.py must
+# agree: a case without a reference fails in ref_require.
+#
+# Bases with f functions (cc-pVTZ, def2-TZVP) have no reference: the oscillator
+# strengths need dipole integrals, which stop at d at every TERCO_LMAX
+# (MULT_LMAX in src/CMakeLists.txt: the f multipole classes cost 20 minutes of
+# nvfortran each), so trc_tddft refuses them with an error that names the
+# limit. They are registered as EXPECTED-REFUSAL cases (_tb_refusal below): at
+# TERCO_LMAX=3 the SCF runs and both solves must return that error; at
+# TERCO_LMAX=2 the program prints "SKIP: <basis> needs l" (ctest: Skipped,
+# never Passed; the anchored SKIP_REGULAR_EXPRESSION matches only that line)
+# because the basis is above LMAX. Only the cases in
+# _tb_short run on a pull request; the rest are LONG (nightly,
+# TERCO_LONG_TESTS=ON).
+#
+# There is no bare terco/check_tddft_basis test: with its defaults it would
+# repeat a case and write a probe file into the source tree.
+add_executable(check_tddft_basis check_tddft_basis.F90)
+target_compile_definitions(check_tddft_basis PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_tddft_basis PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io
+                      test-drive::test-drive)
+target_include_directories(check_tddft_basis PRIVATE ${CMAKE_BINARY_DIR}/modules)
+# One entry per (molecule, basis): mol:tag:file:functionals. The same table is
+# TDDFT_BASIS_CASES in generate.py. Pure PBE only for the cheap bases (a
+# second Kohn-Sham functional on top of B3LYP buys little on a diffuse set).
+set(_tb_cases
+    water:sto-3g:sto-3g:hf,pbe,b3lyp
+    water:3-21g:3-21g:hf,pbe,b3lyp
+    water:6-31g:6-31g:hf,pbe,b3lyp
+    water:6-31pg:6-31+g:hf,b3lyp
+    water:6-31gss:6-31g_st__st_:hf,pbe,b3lyp
+    water:6-311gss:6-311g_st__st_:hf,b3lyp
+    water:cc-pvdz:cc-pvdz:hf,pbe,b3lyp
+    water:aug-cc-pvdz:aug-cc-pvdz:hf,b3lyp
+    water:def2-svp:def2-svp:hf,pbe,b3lyp
+    water:def2-svpd:def2-svpd:hf,b3lyp
+    formaldehyde:sto-3g:sto-3g:hf,pbe,b3lyp
+    formaldehyde:3-21g:3-21g:hf,pbe,b3lyp
+    formaldehyde:6-31g:6-31g:hf,pbe,b3lyp
+    # formaldehyde/6-31+G/HF is the case that exposed a missed root: the third
+    # TDA root (0.348172 Eh, a symmetry sector the guesses do not reach) was
+    # never returned (see "MISSED ROOTS" in src/scf/response/trc_tddft.F90).
+    # check_tddft_basis compares the lowest roots with the dense eigenvalues of
+    # A for exactly that reason.
+    formaldehyde:6-31pg:6-31+g:hf,b3lyp
+    formaldehyde:6-31gss:6-31g_st__st_:hf,pbe,b3lyp
+    formaldehyde:6-311gss:6-311g_st__st_:hf,b3lyp
+    formaldehyde:cc-pvdz:cc-pvdz:hf,pbe,b3lyp
+    formaldehyde:aug-cc-pvdz:aug-cc-pvdz:hf,b3lyp
+    formaldehyde:def2-svp:def2-svp:hf,pbe,b3lyp
+    formaldehyde:def2-svpd:def2-svpd:hf,b3lyp)
+# The pull-request tier: every Hartree-Fock case that has no more than a few
+# seconds of cost, B3LYP on one case per basis family and PBE on water/6-31G.
+# Everything else is LONG (nightly, TERCO_LONG_TESTS=ON): a Kohn-Sham case
+# costs 5 to 150 s at one thread.
+set(_tb_short
+    water:sto-3g:hf water:3-21g:hf water:6-31g:hf water:6-31pg:hf water:6-31gss:hf
+    water:cc-pvdz:hf water:def2-svp:hf
+    formaldehyde:sto-3g:hf formaldehyde:3-21g:hf formaldehyde:6-31g:hf
+    water:sto-3g:b3lyp water:6-31pg:b3lyp water:6-31gss:b3lyp water:cc-pvdz:b3lyp water:def2-svp:b3lyp
+    formaldehyde:6-31g:b3lyp formaldehyde:6-31pg:hf
+    water:6-31g:pbe)
+foreach(_c ${_tb_cases})
+  string(REPLACE ":" ";" _cl ${_c})
+  list(GET _cl 0 _mol)
+  list(GET _cl 1 _tag)
+  list(GET _cl 2 _file)
+  list(GET _cl 3 _fl)
+  string(REPLACE "," ";" _funcs ${_fl})
+  set(_ctrl 6-31g)
+  if(_tag STREQUAL "6-31g")
+    set(_ctrl sto-3g)
+  endif()
+  foreach(_f ${_funcs})
+    set(_t terco/check_tddft_basis_${_mol}_${_tag}_${_f})
+    add_test(NAME ${_t}
+             COMMAND check_tddft_basis ${_mol}.xyz ../basis_sets/${_file}.json ${_mol} ${_tag} ${_f} 3
+                     ${CMAKE_CURRENT_BINARY_DIR}/tddft_basis_${_mol}_${_tag}_${_f}_probe.bin ${_ctrl})
+    set_tests_properties(${_t} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                         ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+                         SKIP_REGULAR_EXPRESSION "SKIP: [^ ]+ needs l")
+    if(NOT "${_mol}:${_tag}:${_f}" IN_LIST _tb_short)
+      set_tests_properties(${_t} PROPERTIES LABELS LONG)
+    endif()
+  endforeach()
+endforeach()
+
+# Dense-only cases: no pyscf reference (HNC's lowest roots are all dark, so f
+# cannot be compared), only the solver against the dense eigenvalues of A and the
+# RPA problem for nroots = 3 and for 1 to 6 (control argument "none"). HNC
+# (test/hnc_minimum.xyz) / 6-31+G / HF: with nroots = 1 the old solver's RPA did
+# not converge in 50 iterations (residual 3.3e-4: max_space = 12 left no room for
+# the Ritz pairs the missed-root check iterates).
+foreach(_c hnc_minimum:6-31pg:6-31+g:hf)
+  string(REPLACE ":" ";" _cl ${_c})
+  list(GET _cl 0 _mol)
+  list(GET _cl 1 _tag)
+  list(GET _cl 2 _file)
+  list(GET _cl 3 _f)
+  set(_t terco/check_tddft_basis_dense_${_mol}_${_tag}_${_f})
+  add_test(NAME ${_t}
+           COMMAND check_tddft_basis ${_mol}.xyz ../basis_sets/${_file}.json ${_mol} ${_tag} ${_f} 3
+                   ${CMAKE_CURRENT_BINARY_DIR}/tddft_basis_dense_${_mol}_${_tag}_${_f}_probe.bin none)
+  set_tests_properties(${_t} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+                       SKIP_REGULAR_EXPRESSION "SKIP: [^ ]+ needs l")
+endforeach()
+
+# The checks that need no SCF and no reference run once, as the case `unit`: the
+# f-basis refusal up front (any TERCO_LMAX) and the window rule on a synthetic
+# Ritz set.
+add_test(NAME terco/check_tddft_basis_unit
+         COMMAND check_tddft_basis water.xyz ../basis_sets/cc-pvtz.json water unit hf)
+set_tests_properties(terco/check_tddft_basis_unit PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+
+# Expected refusals: a basis with f shells (above MULT_LMAX) has no TDDFT
+# reference, trc_tddft must refuse it with an error that names the limit. The
+# program then runs the SCF and checks both solves return that error rather than
+# error-stopping the process in trc_multipoles. Needs TERCO_LMAX=3 for the SCF:
+# at 2 the program prints "SKIP: <basis> needs l" (Skipped). One executable,
+# one test per case.
+set(_tb_refusal water:cc-pvtz:cc-pvtz:hf water:def2-tzvp:def2-tzvp:hf water:aug-cc-pvtz:aug-cc-pvtz:hf)
+foreach(_c ${_tb_refusal})
+  string(REPLACE ":" ";" _cl ${_c})
+  list(GET _cl 0 _mol)
+  list(GET _cl 1 _tag)
+  list(GET _cl 2 _file)
+  list(GET _cl 3 _f)
+  set(_t terco/check_tddft_basis_refused_${_mol}_${_tag}_${_f})
+  add_test(NAME ${_t}
+           COMMAND check_tddft_basis ${_mol}.xyz ../basis_sets/${_file}.json ${_mol} ${_tag} ${_f} 3
+                   ${CMAKE_CURRENT_BINARY_DIR}/tddft_basis_refused_${_mol}_${_tag}_${_f}_probe.bin 6-31g)
+  set_tests_properties(${_t} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+                       SKIP_REGULAR_EXPRESSION "SKIP: [^ ]+ needs l")
+  if(NOT "${_mol}:${_tag}:${_f}" STREQUAL "water:cc-pvtz:hf")
+    set_tests_properties(${_t} PROPERTIES LABELS LONG)
+  endif()
+endforeach()
 
 #
 # trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of

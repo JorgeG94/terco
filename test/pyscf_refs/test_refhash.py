@@ -63,13 +63,13 @@ class RestaleTests(unittest.TestCase):
         # gen_sym_c2h, gen_sym_c2h_subgroup, gen_sym_d2h, gen_sym_d2h_subgroup, gen_sym_tops, gen_rccsd_ints, and through
         # _gen_rimp2_one / _gen_scf_df_one / _gen_cphf_one / _gen_cpks_one /
         # _gen_tddft_one / _gen_tddft_grad_one by gen_rimp2 / gen_scf_df / gen_cphf / gen_cphf_uhf / gen_cpks / gen_tddft /
-        # gen_tddft_grad. Update
+        # gen_tddft_grad / gen_rpa. Update
         # this set when a new generator starts calling it.
         src = edit_once(SOURCE, "conv_tol_grad=1.0e-8, max_cycle=200,",
                         "conv_tol_grad=1.0e-8, max_cycle=201,")
         self.assertEqual(restaled(src),
                          {"rks", "scf_mgga", "scf_robust", "rimp2", "scf_df", "full_grad",
-                          "rimp2_uhf", "dh", "sph_corr", "cphf", "cphf_uhf", "cpks", "tddft", "tddft_grad",
+                          "rimp2_uhf", "dh", "sph_corr", "cphf", "cphf_uhf", "cpks", "tddft", "tddft_grad", "rpa",
                           "vib_thermo_water", "vib_thermo_hcn", "vib_thermo_nh3_planar",
                           "opt_ts_hcn", "rsh_g_water_wb97x", "rsh_g_nh2_wb97x", "rsh_g_water_wb97xv",
                           "soscf", "mom_excited", "chelpg", "ecp_scf", "fukui_chelpg", "sym_scf_cs", "sym_c2",

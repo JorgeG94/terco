@@ -109,8 +109,8 @@ before any non-trivial change. The rules that most often break builds:
   commit both. CI regenerates and diffs.
 - Source the OpenMP converters don't scan (`walk()` in `tools/dc_to_omp.py`
   and `tools/acc_to_omp.py`) breaks the OpenMP job. Check any new file type.
-- State the compile-time cost of a generator change that grows the heavy
-  classes; the per-class kernels already take 15–20 minutes to build.
+- State the nvfortran compile-time cost of a generator change, per file at
+  `TERCO_LMAX=3`: the host build does not show it (#248 added hours).
 - A Rys class above d needs a measured chunk plan (`FOCK_CHUNK_PLAN` in
   `scripts/gen_rys.py`); the generator refuses one without. Race the shapes,
   don't guess. Read register spills from the linked `libterco.so`
@@ -139,6 +139,9 @@ before any non-trivial change. The rules that most often break builds:
 - New behaviour needs a check under `test/` that fails without the change,
   against an external reference where one exists. A test that only checks
   that a run completes is not a test.
+- **Unit tests are units: small and fast, on the host and on a GPU.** One
+  thing per check, on the smallest system that reaches it, in seconds; build
+  the fixture once and reuse it. Minutes-long cases are `LONG` (`TERCO_LONG_TESTS`).
 - **New checks use [test-drive](https://github.com/fortran-lang/test-drive)**
   (`cmake/modules/Findtest-drive.cmake`): a module whose `collect_*` routine
   returns `new_unittest` entries, each a `check` with a message, run by
@@ -146,18 +149,15 @@ before any non-trivial change. The rules that most often break builds:
   is the pattern. Every `test/*.F90` program is a suite; what cannot be one
   (benchmarks, generators, demos, MPI programs) lives in `test/standalone/`.
 - **Two tiers** (`test/pyscf_refs/README.md`):
-  - *Anchors*: `test/pyscf_refs/*.ref`, written offline by
-    `generate.py` (pyscf never runs in CI). Each `.ref` carries a
-    per-case hash (`hash-scheme: case-ast-v1`) over its `CASES` entry, the
-    `generate.py` code it reaches and every file on its `# files:` line.
-    Editing any of those makes `terco/check_pyscf_refs_fresh` fail.
-    Re-stamp the hash only if you can show that the probe the test writes
-    is unchanged. Otherwise regenerate with `generate.py <case>`, never by
-    hand.
-  - *Goldens*: `test/goldens/*.gold`, terco's own numbers at tight,
-    measured tolerances (`compare_goldens.py`). Regenerate with
-    `regen_goldens.py` for an intended numerical change that still passes
-    the anchors.
+  - *Anchors*: `test/pyscf_refs/*.ref`, written offline by `generate.py`
+    (pyscf never runs in CI). Each carries a per-case hash over its `CASES`
+    entry, the `generate.py` code it reaches and every file on its `# files:`
+    line; editing any of those fails `terco/check_pyscf_refs_fresh`. Re-stamp
+    only if you can show the probe the test writes is unchanged; otherwise
+    regenerate with `generate.py <case>`, never by hand.
+  - *Goldens*: `test/goldens/*.gold`, terco's own numbers at tight, measured
+    tolerances (`compare_goldens.py`). Regenerate with `regen_goldens.py`
+    for an intended numerical change that still passes the anchors.
 - Performance claims state the system, basis, thresholds, GPU and baseline,
   and show unchanged energies. Per-class claims come from nsys/ncu, not wall
   time alone.

@@ -90,6 +90,15 @@ if(NOT TERCO_CART_ORDER STREQUAL "lexicographic")
   set(_order_flag "--order" "${TERCO_CART_ORDER}")
 endif()
 
+# TERCO_GRAD_PAIRS_CAP reaches the three gradient generator runs that decide
+# a class's pair widths (the --pair-widths query, each class, the dispatcher),
+# and only when ON, so the default invocation lines, and with them the
+# generation stamps and the GENERATED headers, are unchanged.
+set(_pairs_cap_flag "")
+if(TERCO_GRAD_PAIRS_CAP)
+  set(_pairs_cap_flag "--pairs-cap")
+endif()
+
 if(_regen)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   set(_gen_out "${CMAKE_BINARY_DIR}/stage/generated")
@@ -496,20 +505,50 @@ foreach(la RANGE 0 ${_grad_lmax})
   endforeach()
 endforeach()
 
+list(JOIN _rys_grad_classes "," _rys_grad_classes_csv)
+
+# The pair-table kernels (eri%gradient_pairs) are one module and one file per
+# class and column width, trc_pc_rysgp<tag>w<nc>.F90, so nvfortran compiles
+# them in parallel and apart from the class's ordinary kernels: a width's
+# compile time is 5-250 s per file now (nvfortran 26.5, LMAX=3, see
+# PAIRS_RT_PLAN in gen_rys_grad.py: the literal form of six classes took up to
+# 600 s and more per width, in the class's own file it held up everything
+# else in it). Which widths a class has is the
+# generator's decision (PAIRS_GM_BUDGET, PAIRS_RT_PLAN), so ask it here,
+# with the same options the generation below passes.
+execute_process(COMMAND ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/gen_rys_grad.py
+                        --pair-widths ${_rys_grad_classes_csv} ${_order_flag} ${_pairs_cap_flag}
+                OUTPUT_VARIABLE _rys_pair_widths RESULT_VARIABLE _rc ERROR_VARIABLE _err)
+if(NOT _rc EQUAL 0)
+  message(FATAL_ERROR "gen_rys_grad.py --pair-widths failed (${_rc}): ${_err}")
+endif()
+string(REPLACE "\n" ";" _rys_pair_widths "${_rys_pair_widths}")
+
 set(_rys_grad_sources "")
 foreach(_tag ${_rys_grad_classes})
   list(APPEND _rys_grad_sources "${_rys_dir}/trc_pc_rysg${_tag}.F90")
 endforeach()
-list(JOIN _rys_grad_classes "," _rys_grad_classes_csv)
+set(_npairmods 0)
+foreach(_line ${_rys_pair_widths})
+  if(_line MATCHES "^([0-9][0-9][0-9][0-9]) ?(.*)$")
+    set(_tag "${CMAKE_MATCH_1}")
+    string(REPLACE "," ";" _widths "${CMAKE_MATCH_2}")
+    foreach(_nc ${_widths})
+      list(APPEND _rys_grad_sources "${_rys_dir}/trc_pc_rysgp${_tag}w${_nc}.F90")
+      math(EXPR _npairmods "${_npairmods} + 1")
+    endforeach()
+  endif()
+endforeach()
 
-list(LENGTH _rys_grad_sources _nrysg)
-message(STATUS "terco: ${_nrysg} Rys gradient class kernels in ${_rys_dir}")
+list(LENGTH _rys_grad_classes _nrysg)
+message(STATUS "terco: ${_nrysg} Rys gradient class kernels and ${_npairmods} pair-table kernels in ${_rys_dir}")
 target_sources(${main_lib} PRIVATE ${_rys_grad_sources}
                                    ${_rys_dir}/trc_rys_grad_kernels.F90)
 
 # The Rys generators, planned and run (or skipped) by terco_generate: the
 # template first, since every splicer reads it, then one energy and one
-# gradient kernel per class and the two dispatchers. The template is not
+# gradient kernel per class (the gradient run also writes the class's pair
+# kernels, listed above) and the two dispatchers. The template is not
 # part of the stamp's manifest -- it is an intermediate, rewritten
 # whenever the Rys kernels are -- and is not needed when they are skipped.
 macro(_terco_gen_rys)
@@ -532,13 +571,14 @@ macro(_terco_gen_rys)
             -o ${_rys_stage}/trc_rys_kernels.F90)
   foreach(_tag ${_rys_grad_classes})
     terco_gen("gen_rys_grad.py ${_tag}" ${Python3_EXECUTABLE}
-              ${PROJECT_SOURCE_DIR}/scripts/gen_rys_grad.py ${_tag} ${_order_flag}
+              ${PROJECT_SOURCE_DIR}/scripts/gen_rys_grad.py ${_tag} ${_order_flag} ${_pairs_cap_flag}
               --src-dir ${_hgp_template} --unroll-max-comp ${TERCO_RYS_UNROLL_MAX}
               -o ${_rys_stage}/trc_pc_rysg${_tag}.F90)
   endforeach()
   terco_gen("gen_rys_grad_dispatch.py" ${Python3_EXECUTABLE}
             ${PROJECT_SOURCE_DIR}/scripts/gen_rys_grad_dispatch.py
-            --classes ${_rys_grad_classes_csv} -o ${_rys_stage}/trc_rys_grad_kernels.F90)
+            --classes ${_rys_grad_classes_csv} ${_order_flag} ${_pairs_cap_flag}
+            -o ${_rys_stage}/trc_rys_grad_kernels.F90)
 endmacro()
 set(_s "${PROJECT_SOURCE_DIR}/scripts")
 terco_generate(
