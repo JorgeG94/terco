@@ -112,7 +112,8 @@ module check_tddft_basis_suite
    end type ref_t
 
    type :: fixture_t
-      logical :: ready = .false.
+      logical :: ready = .false.   ! set only once the SCF and both solves succeeded
+      logical :: built = .false.   ! resources are allocated and test_release must free them
       logical :: dft = .false.
       integer :: nocc = 0, natm = 0
       type(trc_basis_t) :: bas
@@ -212,6 +213,8 @@ contains
       type(timer_type) :: tm
 
       if (fx%ready) return
+      call check(error, .not. fx%built, "fixture setup failed in an earlier test; nothing to compare")
+      if (allocated(error)) return
       dev = trc_bind_device(0)
       fx%dft = trim(funcname_arg) /= 'hf'
       if (fx%dft) then
@@ -229,7 +232,7 @@ contains
       call fx%pl%to_device()
       call fx%eri%build(fx%bas, ERI_THRESH)
       call fx%la%init(fx%bas%nao)
-      fx%ready = .true.
+      fx%built = .true.
 
       fx%nocc = nint(sum(real(zint, dp)))/2
       sopts%conv_energy = 1.0e-12_dp
@@ -274,6 +277,7 @@ contains
       if (allocated(error)) return
       call global_logger%info("tddft basis "//trim(tag())//": RPA "//to_string(fx%rpa%iterations)//" iterations, "// &
                               to_string(fx%rpa%nmatvec)//" matvecs, space "//to_string(fx%rpa%space))
+      fx%ready = .true.
       call write_probe()
    end subroutine fixture_build
 
@@ -838,12 +842,13 @@ contains
 
    subroutine test_release(error)
       type(error_type), allocatable, intent(out) :: error
-      if (fx%ready) then
+      if (fx%built) then
          call fx%eri%release()
          call fx%la%release()
          if (fx%dft .and. fx%scf%converged) call fx%xg%release()
          call fx%pl%release()
          call fx%bas%release()
+         fx%built = .false.
          fx%ready = .false.
       end if
    end subroutine test_release
@@ -888,8 +893,8 @@ program check_tddft_basis
       stop 0
    end if
 
-   ! A basis above this build's LMAX has no SCF to start from, nothing to test
-   ! yet, not an error. This is the only line the program prints with "SKIP";
+   ! A basis above this build's LMAX has no SCF to start from: nothing to test
+   ! yet, not an error. This is the only line the program prints with "SKIP", and
    ! test/CMakeLists.txt's SKIP_REGULAR_EXPRESSION matches exactly it.
    if (basis_beyond_lmax(highest)) then
       call global_logger%info("SKIP: "//trim(basname_arg)//" needs l = "//to_string(highest)// &
