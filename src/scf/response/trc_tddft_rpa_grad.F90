@@ -47,6 +47,7 @@ module trc_tddft_rpa_grad
    use trc_tddft, only: trc_tddft_result_t, trc_tddft_reference_t
    use trc_tddft_grad, only: trc_tddft_grad_options_t, trc_tddft_grad_refuse_reason, tddft_grad_state_t, tddft_grad_gemm, &
                              tddft_grad_basis_change, tddft_grad_mo_block, tddft_grad_symmetrize, tddft_grad_fock, &
+                             tddft_grad_fock_triples, &
                              tddft_grad_fxc, tddft_grad_zvector, tddft_grad_chunk, tddft_grad_xc, &
                              tddft_grad_one_electron, SQRT_HALF
    implicit none
@@ -195,8 +196,10 @@ contains
       allocate (st%veff0(n, n, nr), st%voo(nocc, nocc, nr), st%vvo(nvir, nocc, nr), st%vvv(nvir, nvir, nr))
       allocate (st%aoo(nocc, nocc, nr), st%avo(nvir, nocc, nr), st%avv(nvir, nvir, nr), st%wvo(nvir, nocc, nr))
       call rpa_grad_densities(st, dm3)
-      ! 2 J[D] - c_x K[D] of P_d, S and A (pyscf vj*2 - vk*hyb).
-      call tddft_grad_fock(b, eri, 3*nr, dm3, g3, 2.0_dp, 2.0_dp*st%cx)
+      ! 2 J[D] - c_x K[D] of P_d, S and A (pyscf vj*2 - vk*hyb). A is antisymmetric, so the triples
+      ! helper builds it through its own exchange-only batch: the symmetric folded build
+      ! (tddft_grad_fock) is not valid for it.
+      call tddft_grad_fock_triples(b, eri, nr, dm3, g3, 2.0_dp, 2.0_dp*st%cx)
       allocate (xcmat(n, n, 3*nr))
       xcmat = 0.0_dp
       if (st%dft) then
