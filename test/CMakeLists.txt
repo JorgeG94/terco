@@ -2579,6 +2579,98 @@ foreach(_m water:4 formamide:6 ch4:5)
 endforeach()
 
 #
+# TDA and RPA singlet excitation energies and oscillator strengths of water and
+# formaldehyde over the shipped basis sets (Cartesian AO space: TDDFT refuses a
+# spherical one) for HF, PBE and B3LYP, against pyscf at terco's own grid
+# (test/pyscf_refs/tddft_basis_*.ref, generate.py's gen_tddft_basis), plus the
+# solver's own invariants. One executable, one test per (molecule, basis,
+# functional): check_tddft_basis_<mol>_<basis>_<functional>. A basis tag is
+# the reference's name for it; TDDFT_BASIS_FILES in generate.py maps it to
+# basis_sets/<file>.json and the two lists must agree (the staleness check
+# fails when a reference is missing its case, and a test fails without its
+# reference).
+#
+# Bases with f functions (cc-pVTZ, aug-cc-pVTZ, def2-TZVP) are NOT registered:
+# the oscillator strengths need dipole integrals, which stop at d at every
+# TERCO_LMAX (MULT_LMAX in src/CMakeLists.txt: the f multipole classes cost 20
+# minutes of nvfortran each), and trc_multipoles then error-stops. A
+# TERCO_LMAX=3 build was run with them to find that out. The program still
+# prints "SKIP" (ctest: Skipped, never Passed, SKIP_REGULAR_EXPRESSION) for a
+# basis above min(LMAX, MULT_LMAX), so a hand run does not abort. Only the cases
+# in _tb_short run on a pull request; the rest are LONG (nightly,
+# TERCO_LONG_TESTS=ON).
+#
+terco_add_check(check_tddft_basis check_tddft_basis.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_tddft_basis PRIVATE test-drive::test-drive)
+# One entry per (molecule, basis): mol:tag:file:functionals. The same table is
+# TDDFT_BASIS_CASES in generate.py. Pure PBE only for the cheap bases (a
+# second Kohn-Sham functional on top of B3LYP buys little on a diffuse set).
+set(_tb_cases
+    water:sto-3g:sto-3g:hf,pbe,b3lyp
+    water:3-21g:3-21g:hf,pbe,b3lyp
+    water:6-31g:6-31g:hf,pbe,b3lyp
+    water:6-31pg:6-31+g:hf,b3lyp
+    water:6-31gss:6-31g_st__st_:hf,pbe,b3lyp
+    water:6-311gss:6-311g_st__st_:hf,b3lyp
+    water:cc-pvdz:cc-pvdz:hf,pbe,b3lyp
+    water:aug-cc-pvdz:aug-cc-pvdz:hf,b3lyp
+    water:def2-svp:def2-svp:hf,pbe,b3lyp
+    water:def2-svpd:def2-svpd:hf,b3lyp
+    formaldehyde:sto-3g:sto-3g:hf,pbe,b3lyp
+    formaldehyde:3-21g:3-21g:hf,pbe,b3lyp
+    formaldehyde:6-31g:6-31g:hf,pbe,b3lyp
+    # formaldehyde/6-31+G/HF is left out: terco's Davidson never returns the
+    # third TDA root (0.34817 Eh, in a different symmetry sector than the
+    # guesses; nroots = 3, 4 and 5 all skip it) while pyscf's dense A has it.
+    # A solver defect found by this suite, not a tolerance issue; see the
+    # pull request. Add `hf` back here and in generate.py once it is fixed.
+    formaldehyde:6-31pg:6-31+g:b3lyp
+    formaldehyde:6-31gss:6-31g_st__st_:hf,pbe,b3lyp
+    formaldehyde:6-311gss:6-311g_st__st_:hf,b3lyp
+    formaldehyde:cc-pvdz:cc-pvdz:hf,pbe,b3lyp
+    formaldehyde:aug-cc-pvdz:aug-cc-pvdz:hf,b3lyp
+    formaldehyde:def2-svp:def2-svp:hf,pbe,b3lyp
+    formaldehyde:def2-svpd:def2-svpd:hf,b3lyp)
+# The pull-request tier: everything else is LONG (host time at one thread:
+# see the pull request for the measurement).
+set(_tb_short
+    water:sto-3g:hf water:sto-3g:b3lyp water:sto-3g:pbe
+    water:3-21g:hf water:3-21g:b3lyp
+    water:6-31g:hf water:6-31g:b3lyp water:6-31g:pbe
+    water:6-31pg:hf water:6-31pg:b3lyp
+    water:6-31gss:hf water:6-31gss:b3lyp water:6-31gss:pbe
+    water:cc-pvdz:hf water:cc-pvdz:b3lyp
+    water:def2-svp:hf water:def2-svp:b3lyp
+    formaldehyde:sto-3g:hf formaldehyde:sto-3g:b3lyp
+    formaldehyde:3-21g:hf formaldehyde:3-21g:b3lyp
+    formaldehyde:6-31g:hf formaldehyde:6-31g:b3lyp formaldehyde:6-31g:pbe
+    formaldehyde:6-31pg:b3lyp)
+foreach(_c ${_tb_cases})
+  string(REPLACE ":" ";" _cl ${_c})
+  list(GET _cl 0 _mol)
+  list(GET _cl 1 _tag)
+  list(GET _cl 2 _file)
+  list(GET _cl 3 _fl)
+  string(REPLACE "," ";" _funcs ${_fl})
+  set(_ctrl 6-31g)
+  if(_tag STREQUAL "6-31g")
+    set(_ctrl sto-3g)
+  endif()
+  foreach(_f ${_funcs})
+    set(_t terco/check_tddft_basis_${_mol}_${_tag}_${_f})
+    add_test(NAME ${_t}
+             COMMAND check_tddft_basis ${_mol}.xyz ../basis_sets/${_file}.json ${_mol} ${_tag} ${_f} 3
+                     ${CMAKE_CURRENT_BINARY_DIR}/tddft_basis_${_mol}_${_tag}_${_f}_probe.bin ${_ctrl})
+    set_tests_properties(${_t} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                         ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+                         SKIP_REGULAR_EXPRESSION "SKIP")
+    if(NOT "${_mol}:${_tag}:${_f}" IN_LIST _tb_short)
+      set_tests_properties(${_t} PROPERTIES LABELS LONG)
+    endif()
+  endforeach()
+endforeach()
+
+#
 # trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of
 # several trial densities against one cached collocation, for SVWN (LDA),
 # PBE and B3LYP (GGA) on water/6-31G*: batch against the loop, non-symmetric

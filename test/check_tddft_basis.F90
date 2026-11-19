@@ -1,0 +1,561 @@
+module check_tddft_basis_suite
+   !!
+   !! TDA and full RPA singlet excitation energies and oscillator strengths of a
+   !! closed-shell reference through trc_tddft, across the shipped basis sets,
+   !! against pyscf's tdscf TDA and TDHF / TDDFT (test/pyscf_refs/generate.py's
+   !! gen_tddft_basis). check_tddft.F90 and check_tddft_rpa.F90 pin the solver
+   !! on 6-31G* only; this suite is what says that the other basis families
+   !! (minimal, split valence, diffuse, polarised, correlation consistent,
+   !! def2, with and without f functions) reach the solver intact: contraction
+   !! and decontraction, general contractions, the Cartesian AO space, diffuse
+   !! functions in the occupied-virtual space.
+   !!
+   !! One (molecule, basis, functional) per process, one SCF, one TDA and one
+   !! RPA solve shared by the cases below (built by the first, released by the
+   !! last):
+   !!  1. TDA omega and f against the committed pyscf reference, every root;
+   !!  2. RPA omega, f and ||Y||^2 against the reference (pyscf's (X, Y) are
+   !!     normalised 2 (X.X - Y.Y) = 1, so ||Y||^2(terco) = 2 ||Y||^2(pyscf));
+   !!  3. the residual of the solved equation of every root, TDA (A X - w X) and
+   !!     RPA ([[A, B], [-B, -A]] (X, Y) - w (X, -Y)), from a FRESH operator
+   !!     and fresh matvecs (not the solver's own subspace bookkeeping), below
+   !!     the solver's conv_tol;
+   !!  4. the normalisation: X.X = 1 (TDA), X.X - Y.Y = 1 (RPA), orthonormal in
+   !!     that metric across roots, omega ascending;
+   !!  5. w(RPA) <= w(TDA) root by root, the TDA roots from the solver itself;
+   !!  6. negative controls, each of which must move omega past the tolerance:
+   !!     the reference of a DIFFERENT basis of the same molecule and
+   !!     functional (so the comparison in 1 is sensitive to the basis it
+   !!     runs), and, for a Kohn-Sham functional, the same RPA solve with the
+   !!     exact-exchange weight corrupted (110% of the functional's, or 0.1 for
+   !!     a pure functional);
+   !!  7. release.
+   !!
+   !! TDDFT is Cartesian only, so the basis is loaded with force_cart and the
+   !! reference is pyscf's mol.cart = True. The grid is terco's own (the SCF's),
+   !! written with terco's numbers to the probe file for pyscf.
+   !!
+   !! A basis whose highest angular momentum is above this build's LMAX, or above
+   !! MULT_LMAX (the dipole integrals of the oscillator strengths stop at d
+   !! whatever TERCO_LMAX is, so no f basis can run TDDFT at all) is not run:
+   !! main prints "SKIP" and stops (ctest's SKIP_REGULAR_EXPRESSION turns that
+   !! into "Skipped", never "Passed"). No f basis is registered for that reason.
+   !! A missing reference is a hard failure, never a skip.
+   !!
+   !! Tolerances are those of check_tddft.F90 and check_tddft_rpa.F90, not
+   !! loosened for any basis: omega 1e-6 Eh and f 1e-5. The solver runs at
+   !! conv_tol 1e-7; the reference SCFs at conv_tol 1e-12.
+   !!
+   !! Arguments: xyz basis.json molname basname funcname nroots probe.bin
+   !! control_basname (the basis whose reference is the negative control).
+   !!
+   use pic_types, only: dp, int64
+   use pic_strings, only: to_string
+   use pic_timer, only: timer_type
+   use pic_logger, only: global_logger
+   use testdrive, only: new_unittest, unittest_type, error_type, check
+   use trc_api, only: trc_basis_t, trc_pairlist_t, trc_bind_device
+   use trc_eri, only: trc_eri_t
+   use trc_linalg, only: trc_linalg_t
+   use trc_xc_batch, only: trc_xc_grid_t
+   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
+   use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
+   use trc_tddft, only: trc_tddft_options_t, trc_tddft_result_t, trc_tddft_op_t, trc_tddft_solve_rks, &
+                        trc_tddft_reference_t
+   use trc_tables, only: LMAX
+   use trc_mult_kernels, only: MULT_LMAX
+   use trc_test_basis, only: read_xyz
+   use trc_basis_json, only: trc_basis_from_json
+   use trc_error, only: error_t
+   use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_read_vector
+   implicit none
+   private
+   public :: collect_check_tddft_basis, basis_beyond_lmax
+   public :: xyz_arg, bas_json_arg, molname_arg, basname_arg, funcname_arg, nroots_arg, probe_arg, control_arg
+
+   real(dp), parameter :: ERI_THRESH = 1.0e-12_dp
+   real(dp), parameter :: TOL_OMEGA = 1.0e-6_dp
+   real(dp), parameter :: TOL_OSC = 1.0e-5_dp
+   real(dp), parameter :: TOL_YY = 1.0e-6_dp
+   real(dp), parameter :: CONV_TOL = 1.0e-7_dp
+
+   character(len=256) :: xyz_arg = 'water.xyz'
+   character(len=256) :: bas_json_arg = '../basis_sets/6-31g.json'
+   character(len=16) :: molname_arg = 'water'
+   character(len=16) :: basname_arg = '6-31g'
+   character(len=16) :: funcname_arg = 'hf'
+   integer :: nroots_arg = 3
+   character(len=256) :: probe_arg = 'tddft_basis_probe.bin'
+   character(len=16) :: control_arg = 'sto-3g'
+
+   type :: ref_t
+      real(dp) :: e_scf = 0.0_dp
+      real(dp), allocatable :: om_tda(:), osc_tda(:), om_rpa(:), osc_rpa(:), yy(:)
+   end type ref_t
+
+   type :: fixture_t
+      logical :: ready = .false.
+      logical :: dft = .false.
+      integer :: nocc = 0, natm = 0
+      type(trc_basis_t) :: bas
+      type(trc_pairlist_t) :: pl
+      type(trc_eri_t) :: eri
+      type(trc_linalg_t) :: la
+      type(trc_xc_grid_t) :: xg
+      type(trc_xc_functional_t) :: func
+      type(trc_scf_result_t) :: scf
+      type(trc_tddft_options_t) :: opts
+      type(trc_tddft_result_t) :: tda, rpa
+      type(trc_tddft_reference_t) :: ref
+      real(dp) :: t_scf = 0.0_dp, t_tda = 0.0_dp, t_rpa = 0.0_dp
+   end type fixture_t
+
+   type(fixture_t), save :: fx
+
+contains
+
+   subroutine collect_check_tddft_basis(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [ &
+                  new_unittest("TDA omega and f vs pyscf", test_tda_vs_pyscf), &
+                  new_unittest("RPA omega, f and ||Y||^2 vs pyscf", test_rpa_vs_pyscf), &
+                  new_unittest("residuals of fresh matvecs below conv_tol", test_residual), &
+                  new_unittest("normalisation X.X = 1 (TDA), X.X - Y.Y = 1 (RPA)", test_normalisation), &
+                  new_unittest("w(RPA) <= w(TDA), the TDA computed by the solver", test_below_tda), &
+                  new_unittest("negative control: another basis's reference fails the comparison", test_control_basis), &
+                  new_unittest("negative control: corrupted exchange weight fails the comparison", test_control_exx), &
+                  new_unittest("release", test_release) &
+                  ]
+   end subroutine collect_check_tddft_basis
+
+   function basis_beyond_lmax(highest) result(beyond)
+      !! True when the basis has a shell above this build's LMAX or MULT_LMAX; `highest`
+      !! is its highest angular momentum. Read through the same loader the
+      !! fixture uses, so the answer is the one the solver would meet.
+      integer, intent(out) :: highest
+      logical :: beyond
+      type(trc_basis_t) :: bas
+      type(error_t) :: err
+      integer :: natm
+      integer, allocatable :: zint(:)
+      real(dp), allocatable :: at_r(:, :)
+
+      call read_xyz(trim(xyz_arg), natm, zint, at_r)
+      call trc_basis_from_json(trim(bas_json_arg), natm, zint, at_r, bas, err, force_cart=.true.)
+      highest = -1
+      if (.not. err%has_error()) highest = maxval(bas%sh_l)
+      beyond = highest > min(LMAX, MULT_LMAX)
+      call bas%release()
+   end function basis_beyond_lmax
+
+   subroutine fixture_build(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(error_t) :: err
+      type(trc_scf_options_t) :: sopts
+      integer :: dev, natm
+      integer, allocatable :: zint(:)
+      real(dp), allocatable :: at_r(:, :)
+      logical :: ok
+      type(timer_type) :: tm
+
+      if (fx%ready) return
+      dev = trc_bind_device(0)
+      fx%dft = trim(funcname_arg) /= 'hf'
+      if (fx%dft) then
+         ok = xc_functional_by_name(trim(funcname_arg), fx%func)
+         call check(error, ok, "unrecognised functional '"//trim(funcname_arg)//"'")
+         if (allocated(error)) return
+      end if
+      call read_xyz(trim(xyz_arg), natm, zint, at_r)
+      fx%natm = natm
+      call trc_basis_from_json(trim(bas_json_arg), natm, zint, at_r, fx%bas, err, force_cart=.true.)
+      call check(error, .not. err%has_error(), err%get_message())
+      if (allocated(error)) return
+      call fx%bas%to_device()
+      call fx%pl%build(fx%bas, ERI_THRESH)
+      call fx%pl%to_device()
+      call fx%eri%build(fx%bas, ERI_THRESH)
+      call fx%la%init(fx%bas%nao)
+      fx%ready = .true.
+
+      fx%nocc = nint(sum(real(zint, dp)))/2
+      sopts%conv_energy = 1.0e-12_dp
+      sopts%conv_density = 1.0e-10_dp
+      sopts%conv_diis = 1.0e-10_dp
+      sopts%max_iteration = 200
+      if (fx%dft) sopts%functional = trim(funcname_arg)
+      sopts%grid_level = 3
+      call tm%start()
+      call trc_scf_run(fx%bas, fx%nocc, fx%nocc, sopts, fx%scf)
+      fx%t_scf = tm%get_elapsed_time()
+      call check(error, fx%scf%converged, "SCF did not converge")
+      if (allocated(error)) return
+      if (fx%dft) then
+         call fx%xg%build(size(fx%scf%grid_w), fx%scf%grid_r, fx%scf%grid_w, fx%bas, max_pts=sopts%grid_max_pts)
+         call fx%xg%to_device()
+      end if
+
+      if (fx%dft) then
+         call fx%ref%set(fx%nocc, fx%scf%cmo(:, :, 1), fx%scf%eps(:, 1), fx%scf%dmat(:, :, 1), fx%func)
+      else
+         call fx%ref%set(fx%nocc, fx%scf%cmo(:, :, 1), fx%scf%eps(:, 1), fx%scf%dmat(:, :, 1))
+      end if
+      fx%opts%nroots = nroots_arg
+      fx%opts%conv_tol = CONV_TOL
+
+      fx%opts%tda = .true.
+      call tm%start()
+      call solve(fx%opts, fx%tda, err)
+      fx%t_tda = tm%get_elapsed_time()
+      call check(error, .not. err%has_error(), "TDA solve failed: "//err%get_message())
+      if (allocated(error)) return
+
+      fx%opts%tda = .false.
+      call tm%start()
+      call solve(fx%opts, fx%rpa, err)
+      fx%t_rpa = tm%get_elapsed_time()
+      call check(error, .not. err%has_error(), "RPA solve failed: "//err%get_message())
+      if (allocated(error)) return
+      call write_probe()
+   end subroutine fixture_build
+
+   subroutine write_probe()
+      !! Terco's numbers and its grid, for generate.py's gen_tddft_basis.
+      real(dp), allocatable :: yy(:)
+      integer :: unit, k
+      allocate (yy(nroots_arg))
+      do k = 1, nroots_arg
+         yy(k) = sum(fx%rpa%yamp(:, :, k)**2)
+      end do
+      open (newunit=unit, file=trim(probe_arg), access='stream', form='unformatted', status='replace')
+      write (unit) int(fx%bas%nao, int64), int(fx%natm, int64), int(fx%nocc, int64), int(nroots_arg, int64)
+      write (unit) molname_arg, basname_arg, funcname_arg
+      write (unit) fx%scf%energy
+      write (unit) fx%tda%omega
+      write (unit) fx%tda%osc
+      write (unit) fx%rpa%omega
+      write (unit) fx%rpa%osc
+      write (unit) yy
+      write (unit) int(size(fx%scf%grid_w), int64)
+      write (unit) fx%scf%grid_r, fx%scf%grid_w
+      close (unit)
+   end subroutine write_probe
+
+   subroutine solve(opts, td, err, func)
+      !! The solver at the fixture's SCF; `func` overrides the fixture's
+      !! functional (the negative control).
+      type(trc_tddft_options_t), intent(in) :: opts
+      type(trc_tddft_result_t), intent(out) :: td
+      type(error_t), intent(out) :: err
+      type(trc_xc_functional_t), intent(in), optional :: func
+      type(trc_tddft_reference_t) :: r
+      r = fx%ref
+      if (present(func)) r%func = func
+      call trc_tddft_solve_rks(fx%bas, fx%pl, fx%eri, fx%la, r, opts, td, fx%xg)
+      err = td%err
+   end subroutine solve
+
+   function ref_name(basname) result(name)
+      !! The committed pyscf reference of this molecule, functional and the
+      !! given basis (the basis under test or the control's).
+      character(len=*), intent(in) :: basname
+      character(len=256) :: name
+      name = 'tddft_basis_'//trim(molname_arg)//'_'//trim(basname)//'_'//trim(funcname_arg)//'.ref'
+   end function ref_name
+
+   subroutine read_ref(basname, r)
+      character(len=*), intent(in) :: basname
+      type(ref_t), intent(out) :: r
+      integer :: u, nr
+      nr = nroots_arg
+      call ref_require(trim(ref_name(basname)), u)
+      allocate (r%om_tda(nr), r%osc_tda(nr), r%om_rpa(nr), r%osc_rpa(nr), r%yy(nr))
+      call ref_read_real(u, 'E_SCF', r%e_scf)
+      call ref_read_vector(u, 'OMEGA_TDA', nr, r%om_tda)
+      call ref_read_vector(u, 'OSC_TDA', nr, r%osc_tda)
+      call ref_read_vector(u, 'OMEGA_RPA', nr, r%om_rpa)
+      call ref_read_vector(u, 'OSC_RPA', nr, r%osc_rpa)
+      call ref_read_vector(u, 'YY_RPA', nr, r%yy)
+      call ref_close(u)
+   end subroutine read_ref
+
+   function tag() result(t)
+      character(len=96) :: t
+      t = trim(molname_arg)//"/"//trim(basname_arg)//"/"//trim(funcname_arg)
+   end function tag
+
+   subroutine test_tda_vs_pyscf(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(ref_t) :: r
+      real(dp) :: dom, dosc
+
+      call fixture_build(error)
+      if (allocated(error)) return
+      call check(error, fx%tda%converged, "TDA did not converge")
+      if (allocated(error)) return
+      call read_ref(basname_arg, r)
+      call check(error, abs(fx%scf%energy - r%e_scf) < 1.0e-9_dp, &
+                 "E vs pyscf, |dE| = "//to_string(abs(fx%scf%energy - r%e_scf), "es10.2"))
+      if (allocated(error)) return
+      dom = maxval(abs(fx%tda%omega - r%om_tda))
+      dosc = maxval(abs(fx%tda%osc - r%osc_tda))
+      call global_logger%info("tddft basis "//trim(tag())//": nao "//to_string(fx%bas%nao)//", SCF "// &
+                              to_string(fx%t_scf, "f8.2")//" s (|dE| "// &
+                              to_string(abs(fx%scf%energy - r%e_scf), "es8.1")//"); TDA max|d omega| "// &
+                              to_string(dom, "es10.2")//" (tol "//to_string(TOL_OMEGA, "es8.1")//"), max|d f| "// &
+                              to_string(dosc, "es10.2")//" (tol "//to_string(TOL_OSC, "es8.1")//"); "// &
+                              to_string(fx%tda%iterations)//" iterations, solve "//to_string(fx%t_tda, "f8.2")// &
+                              " s; omega(1) "//to_string(fx%tda%omega(1), "f12.8"))
+      call check(error, dom < TOL_OMEGA, "TDA omega vs pyscf, max|diff| = "//to_string(dom, "es10.2"))
+      if (allocated(error)) return
+      call check(error, dosc < TOL_OSC, "TDA oscillator strength vs pyscf, max|diff| = "//to_string(dosc, "es10.2"))
+      if (allocated(error)) return
+      call check(error, maxval(r%osc_tda) > 1.0e-4_dp, "no reference root has a measurable oscillator strength")
+   end subroutine test_tda_vs_pyscf
+
+   subroutine test_rpa_vs_pyscf(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(ref_t) :: r
+      real(dp), allocatable :: yy(:)
+      real(dp) :: dom, dosc, dyy
+      integer :: k
+
+      call fixture_build(error)
+      if (allocated(error)) return
+      call check(error, fx%rpa%converged, "RPA did not converge")
+      if (allocated(error)) return
+      call read_ref(basname_arg, r)
+      allocate (yy(nroots_arg))
+      do k = 1, nroots_arg
+         yy(k) = sum(fx%rpa%yamp(:, :, k)**2)
+      end do
+      dom = maxval(abs(fx%rpa%omega - r%om_rpa))
+      dosc = maxval(abs(fx%rpa%osc - r%osc_rpa))
+      dyy = maxval(abs(yy - r%yy))
+      call global_logger%info("tddft basis "//trim(tag())//": RPA max|d omega| "//to_string(dom, "es10.2")// &
+                              " (tol "//to_string(TOL_OMEGA, "es8.1")//"), max|d f| "//to_string(dosc, "es10.2")// &
+                              " (tol "//to_string(TOL_OSC, "es8.1")//"), max|d ||Y||^2| "//to_string(dyy, "es10.2")// &
+                              " (tol "//to_string(TOL_YY, "es8.1")//"); "//to_string(fx%rpa%iterations)// &
+                              " iterations, solve "//to_string(fx%t_rpa, "f8.2")//" s; omega(1) "// &
+                              to_string(fx%rpa%omega(1), "f12.8"))
+      call check(error, dom < TOL_OMEGA, "RPA omega vs pyscf, max|diff| = "//to_string(dom, "es10.2"))
+      if (allocated(error)) return
+      call check(error, dosc < TOL_OSC, "RPA oscillator strength vs pyscf, max|diff| = "//to_string(dosc, "es10.2"))
+      if (allocated(error)) return
+      call check(error, dyy < TOL_YY, "||Y||^2 vs pyscf, max|diff| = "//to_string(dyy, "es10.2"))
+      if (allocated(error)) return
+      call check(error, maxval(yy) > 1.0e-6_dp, "Y is zero: not an RPA solution")
+   end subroutine test_rpa_vs_pyscf
+
+   subroutine test_residual(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_tddft_op_t) :: op
+      type(error_t) :: err
+      real(dp), allocatable :: ax(:, :, :), ax2(:, :, :, :), bx2(:, :, :, :), pp(:, :, :), mm(:, :, :)
+      real(dp) :: rk, worst_tda, worst_rpa
+      integer :: k, nr
+
+      call fixture_build(error)
+      if (allocated(error)) return
+      call check(error, fx%tda%converged .and. fx%rpa%converged, "a solve did not converge")
+      if (allocated(error)) return
+      nr = nroots_arg
+      call op%setup(fx%bas, fx%la, fx%ref, err, fx%xg)
+      call check(error, .not. err%has_error(), "operator setup: "//err%get_message())
+      if (allocated(error)) return
+      allocate (ax(fx%nocc, op%nvir, nr), ax2(fx%nocc, op%nvir, nr, 2), bx2(fx%nocc, op%nvir, nr, 2), &
+                pp(fx%nocc, op%nvir, nr), mm(fx%nocc, op%nvir, nr))
+      call op%apply(fx%bas, fx%eri, fx%la, nr, fx%tda%xamp, ax, fx%xg)
+      worst_tda = 0.0_dp
+      do k = 1, nr
+         rk = sqrt(sum((ax(:, :, k) - fx%tda%omega(k)*fx%tda%xamp(:, :, k))**2))
+         worst_tda = max(worst_tda, rk)
+      end do
+      ! (A+B)(X+Y) and (A-B)(X-Y), each from its own fresh batch:
+      ! A X + B Y = ((A+B)p + (A-B)m)/2, B X + A Y = ((A+B)p - (A-B)m)/2.
+      pp = fx%rpa%xamp + fx%rpa%yamp
+      mm = fx%rpa%xamp - fx%rpa%yamp
+      call op%apply_rpa(fx%bas, fx%eri, fx%la, nr, pp, ax2, fx%xg)
+      call op%apply_rpa(fx%bas, fx%eri, fx%la, nr, mm, bx2, fx%xg)
+      call op%release()
+      worst_rpa = 0.0_dp
+      do k = 1, nr
+         rk = sqrt(sum((0.5_dp*(ax2(:, :, k, 1) + bx2(:, :, k, 2)) - fx%rpa%omega(k)*fx%rpa%xamp(:, :, k))**2) &
+                   + sum((0.5_dp*(ax2(:, :, k, 1) - bx2(:, :, k, 2)) + fx%rpa%omega(k)*fx%rpa%yamp(:, :, k))**2))
+         worst_rpa = max(worst_rpa, rk)
+      end do
+      call global_logger%info("tddft basis "//trim(tag())//": fresh-matvec max residual TDA "// &
+                              to_string(worst_tda, "es10.2")//", RPA "//to_string(worst_rpa, "es10.2")// &
+                              " (conv_tol "//to_string(CONV_TOL, "es8.1")//")")
+      call check(error, worst_tda < CONV_TOL, "TDA fresh residual "//to_string(worst_tda, "es10.2")//" >= conv_tol")
+      if (allocated(error)) return
+      call check(error, worst_rpa < CONV_TOL, "RPA fresh residual "//to_string(worst_rpa, "es10.2")//" >= conv_tol")
+   end subroutine test_residual
+
+   subroutine test_normalisation(error)
+      type(error_type), allocatable, intent(out) :: error
+      real(dp) :: dev_tda, dev_rpa
+      integer :: j, k
+
+      call fixture_build(error)
+      if (allocated(error)) return
+      call check(error, fx%tda%converged .and. fx%rpa%converged, "a solve did not converge")
+      if (allocated(error)) return
+      dev_tda = 0.0_dp
+      dev_rpa = 0.0_dp
+      do k = 1, nroots_arg
+         do j = 1, nroots_arg
+            dev_tda = max(dev_tda, abs(sum(fx%tda%xamp(:, :, j)*fx%tda%xamp(:, :, k)) - merge(1.0_dp, 0.0_dp, j == k)))
+            ! The RPA's metric: X.X - Y.Y.
+            dev_rpa = max(dev_rpa, abs(sum(fx%rpa%xamp(:, :, j)*fx%rpa%xamp(:, :, k)) &
+                                       - sum(fx%rpa%yamp(:, :, j)*fx%rpa%yamp(:, :, k)) &
+                                       - merge(1.0_dp, 0.0_dp, j == k)))
+         end do
+      end do
+      call global_logger%info("tddft basis "//trim(tag())//": max|X^T X - 1| (TDA) "//to_string(dev_tda, "es10.2")// &
+                              ", max|X^T X - Y^T Y - 1| (RPA) "//to_string(dev_rpa, "es10.2"))
+      call check(error, dev_tda < 1.0e-10_dp, "TDA X not orthonormal, max dev "//to_string(dev_tda, "es10.2"))
+      if (allocated(error)) return
+      call check(error, dev_rpa < 1.0e-10_dp, "RPA (X, Y) not orthonormal in X.X - Y.Y, max dev "// &
+                 to_string(dev_rpa, "es10.2"))
+      if (allocated(error)) return
+      do k = 2, nroots_arg
+         call check(error, fx%tda%omega(k) >= fx%tda%omega(k - 1) .and. fx%rpa%omega(k) >= fx%rpa%omega(k - 1), &
+                    "omega not ascending")
+         if (allocated(error)) return
+      end do
+   end subroutine test_normalisation
+
+   subroutine test_below_tda(error)
+      !! The RPA's Y couples the TDA's excitations to de-excitations and can
+      !! only lower the roots.
+      type(error_type), allocatable, intent(out) :: error
+      real(dp) :: dmax, dmin
+
+      call fixture_build(error)
+      if (allocated(error)) return
+      call check(error, fx%tda%converged .and. fx%rpa%converged, "a solve did not converge")
+      if (allocated(error)) return
+      dmax = maxval(fx%rpa%omega - fx%tda%omega)
+      dmin = minval(fx%tda%omega - fx%rpa%omega)
+      call global_logger%info("tddft basis "//trim(tag())//": max (w_RPA - w_TDA) "//to_string(dmax, "es10.2")// &
+                              " (must be <= 0), smallest TDA-RPA shift "//to_string(dmin, "es10.2"))
+      call check(error, dmax <= 1.0e-9_dp, "an RPA root lies above its TDA root, by "//to_string(dmax, "es10.2"))
+      if (allocated(error)) return
+      call check(error, maxval(fx%tda%omega - fx%rpa%omega) > 1.0e-7_dp, &
+                 "no RPA root is below its TDA root: Y is not coupled in")
+   end subroutine test_below_tda
+
+   subroutine test_control_basis(error)
+      !! The solved roots against another basis's reference must differ by far
+      !! more than the tolerance, or the comparison could not tell the bases
+      !! apart.
+      type(error_type), allocatable, intent(out) :: error
+      type(ref_t) :: r
+      real(dp) :: dtda, drpa
+
+      call fixture_build(error)
+      if (allocated(error)) return
+      call read_ref(control_arg, r)
+      dtda = maxval(abs(fx%tda%omega - r%om_tda))
+      drpa = maxval(abs(fx%rpa%omega - r%om_rpa))
+      call global_logger%info("tddft basis "//trim(tag())//": negative control, the "//trim(control_arg)// &
+                              " reference differs by TDA "//to_string(dtda, "es10.2")//", RPA "// &
+                              to_string(drpa, "es10.2")//" (tolerance "//to_string(TOL_OMEGA, "es8.1")//")")
+      call check(error, dtda > 100.0_dp*TOL_OMEGA, "another basis's TDA reference must fail the comparison, "// &
+                 "differs only by "//to_string(dtda, "es10.2"))
+      if (allocated(error)) return
+      call check(error, drpa > 100.0_dp*TOL_OMEGA, "another basis's RPA reference must fail the comparison, "// &
+                 "differs only by "//to_string(drpa, "es10.2"))
+   end subroutine test_control_basis
+
+   subroutine test_control_exx(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_xc_functional_t) :: bad
+      type(trc_tddft_options_t) :: o1
+      type(trc_tddft_result_t) :: td
+      type(error_t) :: err
+      type(ref_t) :: r
+      real(dp) :: dom
+
+      call fixture_build(error)
+      if (allocated(error)) return
+      if (.not. fx%dft) then
+         call global_logger%info("tddft basis: exchange-weight control skipped for Hartree-Fock (no weight)")
+         return
+      end if
+      bad = fx%func
+      if (fx%func%exx > 0.0_dp) then
+         bad%exx = 1.1_dp*fx%func%exx
+      else
+         bad%exx = 0.1_dp
+      end if
+      o1 = fx%opts
+      o1%nroots = 1
+      o1%tda = .false.
+      call solve(o1, td, err, func=bad)
+      call check(error, .not. err%has_error(), "corrupted solve failed: "//err%get_message())
+      if (allocated(error)) return
+      call read_ref(basname_arg, r)
+      dom = abs(td%omega(1) - r%om_rpa(1))
+      call global_logger%info("tddft basis "//trim(tag())//": negative control (c_x "//to_string(fx%func%exx, "f6.3")// &
+                              " -> "//to_string(bad%exx, "f6.3")//") moves the RPA omega by "// &
+                              to_string(dom, "es10.2")//" (tolerance "//to_string(TOL_OMEGA, "es8.1")//")")
+      call check(error, dom > 100.0_dp*TOL_OMEGA, "a corrupted exchange weight must fail the omega comparison, "// &
+                 "moved only "//to_string(dom, "es10.2"))
+   end subroutine test_control_exx
+
+   subroutine test_release(error)
+      type(error_type), allocatable, intent(out) :: error
+      if (fx%ready) then
+         call fx%eri%release()
+         call fx%la%release()
+         call fx%bas%release()
+         fx%ready = .false.
+      end if
+      if (.false.) allocate (error)
+   end subroutine test_release
+
+end module check_tddft_basis_suite
+
+program check_tddft_basis
+   use, intrinsic :: iso_fortran_env, only: error_unit
+   use pic_logger, only: global_logger
+   use pic_strings, only: to_string
+   use testdrive, only: run_testsuite
+   use trc_tables, only: LMAX
+   use trc_mult_kernels, only: MULT_LMAX
+   use check_tddft_basis_suite, only: collect_check_tddft_basis, basis_beyond_lmax, xyz_arg, bas_json_arg, molname_arg, &
+                                      basname_arg, funcname_arg, nroots_arg, probe_arg, control_arg
+   implicit none
+   integer :: stat, highest
+   character(len=16) :: buf
+
+   if (command_argument_count() >= 1) call get_command_argument(1, xyz_arg)
+   if (command_argument_count() >= 2) call get_command_argument(2, bas_json_arg)
+   if (command_argument_count() >= 3) call get_command_argument(3, molname_arg)
+   if (command_argument_count() >= 4) call get_command_argument(4, basname_arg)
+   if (command_argument_count() >= 5) call get_command_argument(5, funcname_arg)
+   if (command_argument_count() >= 6) then
+      call get_command_argument(6, buf)
+      read (buf, *) nroots_arg
+   end if
+   if (command_argument_count() >= 7) call get_command_argument(7, probe_arg)
+   if (command_argument_count() >= 8) call get_command_argument(8, control_arg)
+
+   ! A basis above this build's ceiling is nothing to test yet, not an error:
+   ! ctest's SKIP_REGULAR_EXPRESSION reports the "SKIP" line as Skipped.
+   if (basis_beyond_lmax(highest)) then
+      call global_logger%info("SKIP: "//trim(basname_arg)//" needs l = "//to_string(highest)// &
+                              " and this build has LMAX = "//to_string(LMAX)//", dipole integrals to l = "// &
+                              to_string(MULT_LMAX)//".")
+      stop 0
+   end if
+
+   stat = 0
+   call run_testsuite(collect_check_tddft_basis, error_unit, stat, parallel=.false.)
+   if (stat > 0) then
+      write (error_unit, "(i0, a)") stat, " test(s) failed"
+      error stop 1
+   end if
+end program check_tddft_basis
