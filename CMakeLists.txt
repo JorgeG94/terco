@@ -244,6 +244,16 @@ set(TERCO_DFG_UNROLL_MAX
     "135"
     CACHE STRING "Unroll the DF-gradient kernels' components for classes with na*nb*nc <= this")
 #
+# Cap the widest pair-table kernel of each class (eri%gradient_pairs) at the
+# width PAIRS_RULE in scripts/gen_rys_grad.py names. OFF: every width the
+# Gamma budget allows, as the generator's default. ON removes kernels only,
+# so it never adds compile time; it changes which widths the dispatcher
+# runs, so the output is a different build tree (the committed
+# src/generated is not involved). See docs/GENERATORS.md.
+#
+option(TERCO_GRAD_PAIRS_CAP
+       "Generate each gradient pair-table kernel no wider than gen_rys_grad.py's PAIRS_RULE" OFF)
+#
 # Shared by default. The one consumer that matters, metalquicha, is built
 # with gfortran and reaches terco through the C ABI, and a static libterco
 # from nvfortran cannot be linked by another compiler: its device code, the

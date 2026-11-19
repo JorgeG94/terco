@@ -1733,6 +1733,27 @@ PAIRS_RT_PLAN = {
 #: columns past ncb of a wider variant are skipped.
 PAIRS_VARIANTS = (1, 2, PAIRS_NCB)
 
+#: With --pairs-cap (CMake: TERCO_GRAD_PAIRS_CAP, default OFF), the widest
+#: pair kernel a class is generated with. A class not listed keeps every
+#: width pair_widths() gives it, so the classes with an f shell, which no
+#: TERCO_LMAX=2 build can time, are not capped. Measured 2026-11-18 on a V100
+#: (nvfortran 26.9, TERCO_LMAX=2, cc-pVDZ, 1e-14, GPU shared with other jobs):
+#: nsys seconds of the class's kernels for gly10 at four columns, as 4 x
+#: width 1 / 2 x width 2 / 1 x width 4:
+#:   (ds|ps) .254/.214/.305   (ds|pp) .243/.204/.269   (dp|ss) .129/.113/.149
+#:   (dp|ps) .468/.398/.506   (dp|pp) .540/.417/.596   (dp|dp) .311/.236/.320
+#: so the width-4 kernel of these six spills and is slower than two of width
+#: 2, which the entries below remove. The classes that run at width 4 and are
+#: not listed ((ss|ss), (ps|ss), (pp|ss), (ds|ss), (ps|ps)) are fastest there.
+#: Not capped, though a width 1 kernel is as fast as or faster than a width 2
+#: one on gly10 for (pp|ps), (pp|pp), (dp|ds) and the (dd|..) classes: the
+#: extra sweeps (the dispatcher launches one per block of width) cost small
+#: systems more than they save (benzene, four columns: +15% for all of them
+#: capped at width 1, against +3% for the entries below).
+PAIRS_RULE = {
+    "2010": 2, "2011": 2, "2100": 2, "2110": 2, "2111": 2, "2121": 2,
+}
+
 
 def _dim(loopvar, dims):
     """Extent of the density-block loop variable ia/ib/ic/id."""
@@ -2210,9 +2231,10 @@ def pairs_variants(tag, comps, rt_plan, inside):
     return tuple(nc for nc in PAIRS_VARIANTS if nc == 1 or nc*gm <= PAIRS_GM_BUDGET[nc])
 
 
-def pair_widths(tag, comps, rt_plan, inside, table=True):
+def pair_widths(tag, comps, rt_plan, inside, table=True, cap=False):
     """The widths class `tag`'s pair kernel is generated for: none for an
-    orientation the pair bins never launch, else pairs_variants()."""
+    orientation the pair bins never launch, else pairs_variants(), and with
+    `cap` (--pairs-cap) no wider than the class's PAIRS_RULE entry."""
     la, lb, lc, ld = (int(c) for c in tag)
     if not (la >= lb and lc >= ld and (la, lb) >= (lc, ld)):
         # The pair bins never present this orientation (trc_bins.F90's
@@ -2220,7 +2242,10 @@ def pair_widths(tag, comps, rt_plan, inside, table=True):
         # dispatcher still names the class.
         return ()
     rt_plan, inside = pairs_form(tag, rt_plan, inside, table)
-    return pairs_variants(tag, comps, rt_plan, inside)
+    widths = pairs_variants(tag, comps, rt_plan, inside)
+    if cap:
+        widths = tuple(w for w in widths if w <= PAIRS_RULE.get(tag, PAIRS_NCB))
+    return widths
 
 
 def pair_module_name(tag, nc):
@@ -2232,7 +2257,7 @@ def pair_driver_name(tag, nc):
     return f"rysgp{tag}w{nc}_pairs_compact"
 
 
-def pairs_modules(tag, item, dims, comps, rt_plan, inside, prelude, tabs, table=True):
+def pairs_modules(tag, item, dims, comps, rt_plan, inside, prelude, tabs, table=True, cap=False):
     """One module per width in pair_widths(), as {nc: text}. Each holds the
     pair item routine rysgi{tag}_pairs{nc} and its driver
     rysgp{tag}w{nc}_pairs_compact, which owns the `do concurrent` (that body
@@ -2280,7 +2305,7 @@ def pairs_modules(tag, item, dims, comps, rt_plan, inside, prelude, tabs, table=
             "                                npool, dmat, ncb, pstart, pl, pr, pj, pk, npriv, "
             "gp, " + slot_expr + ")")
     out = {}
-    for nc in pair_widths(tag, comps, rt_plan, inside, table):
+    for nc in pair_widths(tag, comps, rt_plan, inside, table, cap):
         if rt_plan is not None:
             item_nc = rt_pairs_item_text(tag, item, comps, rt_plan[0], rt_thread, nc)
         elif inside is not None:
@@ -2370,6 +2395,10 @@ def add_plan_options(ap):
                          "'none', 'all', or a comma-separated list of tags")
     ap.add_argument("--chunk-live-max", type=int, default=CHUNK_LIVE_MAX,
                     help="live-set ceiling chunk_plan picks the chunk shape under")
+    ap.add_argument("--pairs-cap", action="store_true",
+                    help="generate each pair-table kernel no wider than the class's "
+                         "PAIRS_RULE entry (CMake: TERCO_GRAD_PAIRS_CAP); off, every "
+                         "width the Gamma budget allows")
 
 
 def default_plan_args(order="lexicographic"):
@@ -2455,7 +2484,8 @@ def class_pair_widths(tag, args):
     """The widths whose pair modules run() writes for class `tag`; what
     CMake (--pair-widths) and the dispatcher list."""
     comps, rt_plan, inside = class_plan(tag, args)
-    return pair_widths(tag, comps, rt_plan, inside, getattr(args, "rt_plan", None) != "none")
+    return pair_widths(tag, comps, rt_plan, inside, getattr(args, "rt_plan", None) != "none",
+                       args.pairs_cap)
 
 
 def run(args, generic_only=False):
@@ -2890,7 +2920,7 @@ contains
     gen_text, gen_tabs = run(args, generic_only=True)
     prelude = head[:head.index("\ncontains\n")]
     pair_mods = pairs_modules(tag, gen_text, dims, comps, rt_plan, inside, prelude, gen_tabs,
-                              getattr(args, "rt_plan", None) != "none")
+                              getattr(args, "rt_plan", None) != "none", args.pairs_cap)
     rt_tabs = "".join(ln + "\n" for ln in rt_tabs.splitlines()
                       if ln.split("::")[1].split("(")[0].strip() + "(" not in prelude)
     prelude += "\n" + rt_tabs + "\ncontains\n"
@@ -2931,6 +2961,26 @@ def _check_pairs_rt_plan():
 
 
 _check_pairs_rt_plan()
+
+
+def _check_pairs_rule():
+    """PAIRS_RULE names real, launched classes with a width the class has
+    and a narrower one than its widest: a stale entry, one that would
+    silently do nothing, is refused."""
+    for t, w in PAIRS_RULE.items():
+        if not re.fullmatch(r"[0-3]{4}", t):
+            raise SystemExit(f"gen_rys_grad.py: PAIRS_RULE entry {t!r} is not a class tag")
+        la, lb, lc, ld = (int(c) for c in t)
+        if not (la >= lb and lc >= ld and (la, lb) >= (lc, ld)):
+            raise SystemExit(f"gen_rys_grad.py: PAIRS_RULE entry {t}: the pair bins never launch it")
+        comps, rt_plan, inside = class_plan(t, default_plan_args())
+        have = pair_widths(t, comps, rt_plan, inside)
+        if w not in have or w == max(have):
+            raise SystemExit(f"gen_rys_grad.py: PAIRS_RULE entry {t}: width {w} is not below "
+                             f"the widths the class has, {list(have)}: the entry does nothing")
+
+
+_check_pairs_rule()
 
 
 if __name__ == "__main__":
