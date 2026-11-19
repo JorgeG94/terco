@@ -13,6 +13,7 @@ directives are inert.
 | `Rys root tables are up to date` | regenerates the Rys root tables with mpmath 1.3.0 |
 | `OpenACC to OpenMP conversion` | converts the source to OpenMP, builds with `-fopenmp`, runs ctest at 4 threads |
 | `fortitude lint` | `fortitude check`, fortitude-lint 0.9.2 |
+| `no AI-session links in commits or the PR body` (own workflow, `session-links.yml`, so a body edit reruns only it) | pull requests only: `tools/check_session_links.py` fails on a `Claude-Session:` trailer or a claude.ai/code/session URL in the PR's commit messages or body. Reproduce: `python3 tools/check_session_links.py origin/main HEAD` |
 | `fpm (gcc 15)` | the fpm build (often skipped) |
 
 ## Host build
