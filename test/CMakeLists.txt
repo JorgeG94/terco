@@ -2586,22 +2586,25 @@ endforeach()
 # solver's own invariants. One executable, one test per (molecule, basis,
 # functional): check_tddft_basis_<mol>_<basis>_<functional>. A basis tag is
 # the reference's name for it; TDDFT_BASIS_FILES in generate.py maps it to
-# basis_sets/<file>.json and the two lists must agree (the staleness check
-# fails when a reference is missing its case, and a test fails without its
-# reference).
+# basis_sets/<file>.json and the case tables here and in generate.py must
+# agree: a case without a reference fails in ref_require.
 #
-# Bases with f functions (cc-pVTZ, aug-cc-pVTZ, def2-TZVP) are NOT registered:
-# the oscillator strengths need dipole integrals, which stop at d at every
-# TERCO_LMAX (MULT_LMAX in src/CMakeLists.txt: the f multipole classes cost 20
-# minutes of nvfortran each), and trc_multipoles then error-stops. A
-# TERCO_LMAX=3 build was run with them to find that out. The program still
-# prints "SKIP" (ctest: Skipped, never Passed, SKIP_REGULAR_EXPRESSION) for a
-# basis above min(LMAX, MULT_LMAX), so a hand run does not abort. Only the cases
-# in _tb_short run on a pull request; the rest are LONG (nightly,
-# TERCO_LONG_TESTS=ON).
+# Bases with f functions (cc-pVTZ, aug-cc-pVTZ, def2-TZVP) are not covered: the
+# oscillator strengths need dipole integrals, which stop at d at every
+# TERCO_LMAX (MULT_LMAX in src/CMakeLists.txt; the f multipole classes cost 20
+# minutes of nvfortran each), and trc_multipoles error-stops on such a basis.
+# The program's own gate prints "SKIP: <basis> needs l" for a basis above
+# min(LMAX, MULT_LMAX) so a hand run does not abort; the anchored
+# SKIP_REGULAR_EXPRESSION below matches only that line, so a failure that
+# happens to print "SKIP" is still a failure.
 #
-terco_add_check(check_tddft_basis check_tddft_basis.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
-target_link_libraries(check_tddft_basis PRIVATE test-drive::test-drive)
+# There is no bare terco/check_tddft_basis test: with its defaults it would
+# repeat a case and write a probe file into the source tree.
+add_executable(check_tddft_basis check_tddft_basis.F90)
+target_compile_definitions(check_tddft_basis PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_tddft_basis PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io
+                      test-drive::test-drive)
+target_include_directories(check_tddft_basis PRIVATE ${CMAKE_BINARY_DIR}/modules)
 # One entry per (molecule, basis): mol:tag:file:functionals. The same table is
 # TDDFT_BASIS_CASES in generate.py. Pure PBE only for the cheap bases (a
 # second Kohn-Sham functional on top of B3LYP buys little on a diffuse set).
@@ -2622,8 +2625,8 @@ set(_tb_cases
     # formaldehyde/6-31+G/HF is left out: terco's Davidson never returns the
     # third TDA root (0.34817 Eh, in a different symmetry sector than the
     # guesses; nroots = 3, 4 and 5 all skip it) while pyscf's dense A has it.
-    # A solver defect found by this suite, not a tolerance issue; see the
-    # pull request. Add `hf` back here and in generate.py once it is fixed.
+    # A solver defect, not a tolerance issue. Add `hf` back here and in
+    # generate.py once it is fixed.
     formaldehyde:6-31pg:6-31+g:b3lyp
     formaldehyde:6-31gss:6-31g_st__st_:hf,pbe,b3lyp
     formaldehyde:6-311gss:6-311g_st__st_:hf,b3lyp
@@ -2631,20 +2634,17 @@ set(_tb_cases
     formaldehyde:aug-cc-pvdz:aug-cc-pvdz:hf,b3lyp
     formaldehyde:def2-svp:def2-svp:hf,pbe,b3lyp
     formaldehyde:def2-svpd:def2-svpd:hf,b3lyp)
-# The pull-request tier: everything else is LONG (host time at one thread:
-# see the pull request for the measurement).
+# The pull-request tier: every Hartree-Fock case that has no more than a few
+# seconds of cost, B3LYP on one case per basis family and PBE on water/6-31G.
+# Everything else is LONG (nightly, TERCO_LONG_TESTS=ON): a Kohn-Sham case
+# costs 5 to 150 s at one thread.
 set(_tb_short
-    water:sto-3g:hf water:sto-3g:b3lyp water:sto-3g:pbe
-    water:3-21g:hf water:3-21g:b3lyp
-    water:6-31g:hf water:6-31g:b3lyp water:6-31g:pbe
-    water:6-31pg:hf water:6-31pg:b3lyp
-    water:6-31gss:hf water:6-31gss:b3lyp water:6-31gss:pbe
-    water:cc-pvdz:hf water:cc-pvdz:b3lyp
-    water:def2-svp:hf water:def2-svp:b3lyp
-    formaldehyde:sto-3g:hf formaldehyde:sto-3g:b3lyp
-    formaldehyde:3-21g:hf formaldehyde:3-21g:b3lyp
-    formaldehyde:6-31g:hf formaldehyde:6-31g:b3lyp formaldehyde:6-31g:pbe
-    formaldehyde:6-31pg:b3lyp)
+    water:sto-3g:hf water:3-21g:hf water:6-31g:hf water:6-31pg:hf water:6-31gss:hf
+    water:cc-pvdz:hf water:def2-svp:hf
+    formaldehyde:sto-3g:hf formaldehyde:3-21g:hf formaldehyde:6-31g:hf
+    water:sto-3g:b3lyp water:6-31pg:b3lyp water:6-31gss:b3lyp water:cc-pvdz:b3lyp water:def2-svp:b3lyp
+    formaldehyde:6-31g:b3lyp
+    water:6-31g:pbe)
 foreach(_c ${_tb_cases})
   string(REPLACE ":" ";" _cl ${_c})
   list(GET _cl 0 _mol)
@@ -2663,7 +2663,7 @@ foreach(_c ${_tb_cases})
                      ${CMAKE_CURRENT_BINARY_DIR}/tddft_basis_${_mol}_${_tag}_${_f}_probe.bin ${_ctrl})
     set_tests_properties(${_t} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                          ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
-                         SKIP_REGULAR_EXPRESSION "SKIP")
+                         SKIP_REGULAR_EXPRESSION "SKIP: [^ ]+ needs l")
     if(NOT "${_mol}:${_tag}:${_f}" IN_LIST _tb_short)
       set_tests_properties(${_t} PROPERTIES LABELS LONG)
     endif()

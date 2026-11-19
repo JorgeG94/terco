@@ -3430,7 +3430,6 @@ def gen_tddft_basis():
                      str(TDDFT_BASIS_NROOTS), str(TEST / probe)])
             if not (TEST / probe).exists():
                 raise RuntimeError(f"{molname}/{basname}/{funcname}: the binary wrote no probe")
-                continue
             _gen_tddft_basis_one(probe, f"tddft_basis_{molname}_{basname}_{funcname}.ref", xyzname, molname,
                                  basname, funcname)
 

@@ -6,7 +6,7 @@ module check_tddft_basis_suite
    !! gen_tddft_basis). check_tddft.F90 and check_tddft_rpa.F90 pin the solver
    !! on 6-31G* only; this suite is what says that the other basis families
    !! (minimal, split valence, diffuse, polarised, correlation consistent,
-   !! def2, with and without f functions) reach the solver intact: contraction
+   !! def2) reach the solver intact: contraction
    !! and decontraction, general contractions, the Cartesian AO space, diffuse
    !! functions in the occupied-virtual space.
    !!
@@ -38,8 +38,10 @@ module check_tddft_basis_suite
    !! A basis whose highest angular momentum is above this build's LMAX, or above
    !! MULT_LMAX (the dipole integrals of the oscillator strengths stop at d
    !! whatever TERCO_LMAX is, so no f basis can run TDDFT at all) is not run:
-   !! main prints "SKIP" and stops (ctest's SKIP_REGULAR_EXPRESSION turns that
-   !! into "Skipped", never "Passed"). No f basis is registered for that reason.
+   !! main prints "SKIP: <basis> needs l ..." and stops (ctest's anchored
+   !! SKIP_REGULAR_EXPRESSION turns that line, and only that line, into
+   !! "Skipped", never "Passed"; nothing else here prints "SKIP"). No f basis
+   !! is registered for that reason.
    !! A missing reference is a hard failure, never a skip.
    !!
    !! Tolerances are those of check_tddft.F90 and check_tddft_rpa.F90, not
@@ -494,7 +496,7 @@ contains
       o1%nroots = 1
       o1%tda = .false.
       call solve(o1, td, err, func=bad)
-      call check(error, .not. err%has_error(), "corrupted solve failed: "//err%get_message())
+      call check(error, .not. err%has_error() .and. td%converged, "corrupted solve failed: "//err%get_message())
       if (allocated(error)) return
       call read_ref(basname_arg, r)
       dom = abs(td%omega(1) - r%om_rpa(1))
@@ -510,10 +512,11 @@ contains
       if (fx%ready) then
          call fx%eri%release()
          call fx%la%release()
+         if (fx%dft .and. fx%scf%converged) call fx%xg%release()
+         call fx%pl%release()
          call fx%bas%release()
          fx%ready = .false.
       end if
-      if (.false.) allocate (error)
    end subroutine test_release
 
 end module check_tddft_basis_suite
@@ -544,7 +547,8 @@ program check_tddft_basis
    if (command_argument_count() >= 8) call get_command_argument(8, control_arg)
 
    ! A basis above this build's ceiling is nothing to test yet, not an error:
-   ! ctest's SKIP_REGULAR_EXPRESSION reports the "SKIP" line as Skipped.
+   ! This is the only line the program prints with "SKIP";
+   ! test/CMakeLists.txt's SKIP_REGULAR_EXPRESSION matches exactly it.
    if (basis_beyond_lmax(highest)) then
       call global_logger%info("SKIP: "//trim(basname_arg)//" needs l = "//to_string(highest)// &
                               " and this build has LMAX = "//to_string(LMAX)//", dipole integrals to l = "// &
