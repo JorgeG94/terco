@@ -2548,6 +2548,11 @@ endforeach()
 #
 terco_add_check(check_cpks_batched check_cpks_batched.F90 NEEDS_BASIS)
 target_link_libraries(check_cpks_batched PRIVATE test-drive::test-drive)
+# The eri-level half: fock_resident_many_lent with the density screen off
+# against fock_resident per density, at a threshold loose enough that the
+# screen shows (check_fock_many_screen.F90's own header).
+terco_add_check(check_fock_many_screen check_fock_many_screen.F90 NEEDS_BASIS)
+target_link_libraries(check_fock_many_screen PRIVATE test-drive::test-drive)
 
 #
 # TDA/CIS singlet excitation energies and oscillator strengths

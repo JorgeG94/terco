@@ -54,22 +54,24 @@ module trc_cphf
    !! ----------
    !! Preconditioned conjugate gradient, the diagonal (e_a - e_i) as the
    !! preconditioner (SPD for a stable ground state, so CG is the right
-   !! choice over a general Krylov method), one right-hand side at a time
-   !! inside a single call that reports an iteration count per column. The
-   !! right-hand sides are solved TOGETHER: one CG loop over every column that
-   !! has not converged, each with its own alpha, beta and residual (so each
-   !! column's iterates, and its iteration count, are those of a solve of that
-   !! column alone), whose matvecs are built in ONE pass over the integrals
-   !! per iteration (`eri%fock_resident_many_lent`, density_screen off) rather
-   !! than one pass per column. A column drops out of the batch as it
-   !! converges, so the last iterations are cheap. The Fock pass costs the same
-   !! for one density as for several (the quartet is evaluated once, the
-   !! digestion is per density), which is what the sharing buys; the Z-vector
-   !! of every root of an excited-state gradient is the intended customer.
+   !! choice over a general Krylov method), with an iteration count reported
+   !! per column. The right-hand sides are solved TOGETHER: one CG loop over
+   !! every column that has not converged, each with its own alpha, beta and
+   !! residual (so each column's iterates, and its iteration count, are those
+   !! of a solve of that column alone), whose matvecs are built in ONE pass
+   !! over the integrals per iteration (`eri%fock_resident_many_lent`,
+   !! density_screen off) rather than one pass per column. A column drops out
+   !! of the batch as it converges, so the last iterations are cheap. The
+   !! Fock pass costs less for several densities than for the same number of
+   !! passes (the quartet is evaluated once, the digestion is per density),
+   !! which is what the sharing buys; the Z-vector of every root of an
+   !! excited-state gradient is the intended customer.
    !! `trc_cphf_options_t%max_batch` caps the columns in flight (memory: about
-   !! 4 nao^2 doubles each for HF, 5 with the XC response) and 1 reverts to
-   !! one column per pass. `trc_cphf_cg_t` is the shared CG state machine:
-   !! a solver builds the matvec for `cg%act(1:cg%na)` and calls `advance`.
+   !! 4 nao^2 doubles each for HF, 5 with the XC response, the integrals'
+   !! working basis counted for nao: more for a decontracted basis) and 1
+   !! reverts to one column per pass. `trc_cphf_cg_t` is the shared CG state
+   !! machine: a solver builds the matvec for `cg%act(1:cg%na)` and calls
+   !! `advance`.
    !! The density-fitted solves (`trc_cphf_solve_rhf_fitted`) and the UHF
    !! solve are still one column at a time: the MO-basis fitted response has
    !! no multi-vector form, and UHF's two-density matvec is not batched here.
@@ -116,10 +118,11 @@ module trc_cphf
       !! matrices (about 4 nao^2 doubles each for HF, 5 with the XC response),
       !! so the cap keeps it modest for a large basis, where the extra
       !! columns buy little: the integral evaluation is shared, but each
-      !! density's digestion is not. Eight is about 250 MB at
-      !! nao = 1000. Right-hand sides beyond it are solved in further groups
-      !! of at most this many. 1 solves one column at a time, the previous
-      !! behaviour.
+      !! density's digestion is not. Eight is about 250 MB for HF and 320 MB
+      !! for KS at nao = 1000, more for a decontracted basis (the Fock pass's
+      !! scratch is sized by the working basis). Right-hand sides beyond it
+      !! are solved in further groups of at most this many. 1 solves one
+      !! column at a time, the previous behaviour; a value below 1 is read as 1.
    end type trc_cphf_options_t
 
    type :: trc_cphf_cg_t
@@ -134,6 +137,8 @@ module trc_cphf
       !! diagv) are mapped on their own, never the type.
       integer :: nvirt = 0, nocc = 0, nb = 0, nc = 0
       !! The columns the state holds, and those of the current group.
+      logical :: started = .false.
+      !! Set by `begin`; `advance` before it is an error.
       integer :: na = 0
       !! Columns still iterating; their group-local indices are act(1:na).
       integer :: c0 = 0
@@ -303,6 +308,7 @@ contains
       if (nc > this%nb) error stop "trc_cphf: a CG group larger than the state was sized for"
       this%c0 = c0
       this%na = 0
+      this%started = .true.
       do k = 1, nc
          call cphf_neg_matrix(nv, no, bvec(:, :, c0 + k - 1), this%r(:, :, k))
          call cphf_zero_matrix(nv, no, u(:, :, c0 + k - 1))
@@ -335,6 +341,7 @@ contains
       real(dp), intent(inout) :: u(this%nvirt, this%nocc, ncomp)
       integer :: j, k, nn, nv, no, col
       real(dp) :: pap, alpha_cg, beta_cg, rz_old
+      if (.not. this%started) error stop "trc_cphf: CG advance before begin"
       nv = this%nvirt
       no = this%nocc
       nn = 0
@@ -404,6 +411,7 @@ contains
       if (allocated(this%r)) deallocate (this%r, this%z, this%p, this%ap, this%diagv)
       this%na = 0
       this%nc = 0
+      this%started = .false.
    end subroutine cg_release
 
    subroutine trc_cphf_solve_rhf_fitted(resp, dfjk, lp, bvec, u, opts, res)
