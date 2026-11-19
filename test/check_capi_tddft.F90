@@ -229,7 +229,7 @@ contains
       logical :: ok
 
       rc = trc_abi_version(major, minor)
-      call check(error, rc == TRC_OK .and. major == 1 .and. minor >= 29, "the ABI is at least 1.29")
+      call check(error, rc == TRC_OK .and. major == 1 .and. minor >= 30, "the ABI is at least 1.30")
       if (allocated(error)) return
       call open_handle(error, handle, "", "basis_sets/sto-3g.json", ok)
       if (allocated(error)) return

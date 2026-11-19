@@ -217,6 +217,12 @@ jobs:
       # check_df_vs_pyscf and the f/g cases together: one job that actually
       # exercises every class the should-fix review asked CI to cover,
       # rather than two jobs each missing half of it.
+      #
+      # -DTERCO_GRAD_PAIRS_CAP=ON (the opt-in per-class width cap of the
+      # gradient pair kernels, scripts/gen_rys_grad.py PAIRS_RULE) is on here so
+      # that the capped dispatcher and its file list are compiled and run on
+      # every pull request; the default (OFF) build is what every other job
+      # covers. The option only removes kernels, so it does not lengthen this job.
       - name: Configure
         run: >-
           cmake -G Ninja
@@ -225,6 +231,7 @@ jobs:
           -DTERCO_LONG_TESTS=ON
           -DTERCO_LMAX=3
           -DTERCO_DF_LMAX=3
+          -DTERCO_GRAD_PAIRS_CAP=ON
           -S . -B build
 
       # The generation stamps (src/CMakeLists.txt, GENERATION STAMPS): a

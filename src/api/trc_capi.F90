@@ -276,7 +276,8 @@ module trc_capi
              trc_set_jkfit_libcint, &
              trc_set_batching, trc_set_guess, trc_set_comm, trc_set_verbose, &
              trc_set_rimp2, trc_set_rccsd, trc_set_rccsd_convergence, trc_set_rccsd_algorithm, &
-             trc_run_rccsd, trc_rccsd_energy, trc_rccsd_dimensions, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, &
+             trc_run_rccsd, trc_rccsd_energy, trc_rccsd_energy_parts, &
+             trc_rccsd_dimensions, trc_run_scf, trc_run_rimp2, trc_nao, trc_nspin, trc_energy, &
              trc_energy_parts, &
              trc_converged, trc_iterations, trc_density, trc_mo_coefficients, trc_mo_energies, &
              trc_rimp2_energy, trc_message, trc_context_basis, trc_context_eri, trc_timing, trc_timing_count
@@ -371,13 +372,15 @@ module trc_capi
    !! trc_timing's list capacity. A run that would list more is an error
    !! (TRC_ERR_UNSUPPORTED), never a silently shortened list.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 29
-   !! 1.29: closed-shell TDDFT/TDHF excitation energies and the excited-state
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 30
+   !! 1.30: closed-shell TDDFT/TDHF excitation energies and the excited-state
    !! gradient of one root: trc_set_tddft, trc_set_tddft_convergence,
    !! trc_run_tddft, trc_check_tddft, trc_tddft_nroots, trc_tddft_energies,
    !! trc_tddft_character, trc_tddft_target_root and trc_tddft_energy, new entry points; after a
    !! successful trc_run_tddft, trc_run_gradient differentiates the target
    !! root's energy, and trc_run_hessian refuses. Additive.
+   !! 1.29: trc_rccsd_energy_parts, a new entry point (the RI-CCSD correlation
+   !! energy as its t1 t1 and t2 parts). Additive.
    !! 1.28: closed-shell RI-CCSD and RI-CCSD(T): trc_set_rccsd,
    !! trc_set_rccsd_convergence, trc_set_rccsd_algorithm, trc_run_rccsd,
    !! trc_rccsd_energy and trc_rccsd_dimensions, new entry points; trc_energy adds a converged
@@ -7121,6 +7124,33 @@ contains
       end if
       status = TRC_OK
    end function trc_rccsd_energy
+
+   function trc_rccsd_energy_parts(handle, e_singles, e_doubles) result(status) &
+      bind(c, name="trc_rccsd_energy_parts")
+      !! The RI-CCSD correlation energy of the last trc_run_rccsd, converged or
+      !! not, as the two parts of the energy functional, in Hartree. With
+      !! L(i,a,j,b) = 2 (ia|jb) - (ib|ja) over the correlated occupied and the
+      !! virtual orbitals, `e_doubles` is sum L t2(i,j,a,b), what t2 alone
+      !! gives, and `e_singles` is sum L t1(i,a) t1(j,b), the t1 t1 part. Their
+      !! sum is trc_rccsd_energy's `e_ccsd`. There is no f_ov t1 term: the
+      !! reference is canonical Hartree-Fock. (T) is not in either;
+      !! trc_rccsd_energy reports it. TRC_ERR_STATE when no run has left a
+      !! result. (ABI 1.29.)
+      type(c_ptr), value :: handle
+      real(c_double), intent(out) :: e_singles, e_doubles
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      e_singles = 0.0_c_double
+      e_doubles = 0.0_c_double
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      status = TRC_ERR_STATE
+      if (.not. cx%ccsd_ok) return
+      e_singles = real(cx%ccsd%e_singles, c_double)
+      e_doubles = real(cx%ccsd%e_doubles, c_double)
+      status = TRC_OK
+   end function trc_rccsd_energy_parts
 
    function trc_rccsd_dimensions(handle, nfrozen, nactive_occ, nvirtual, naux) result(status) &
       bind(c, name="trc_rccsd_dimensions")

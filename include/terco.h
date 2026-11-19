@@ -39,7 +39,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_UNIT 1
 #define TRC_TIMING_NAME_MAX 64
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 29
+#define TRC_ABI_MINOR 30
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -1429,6 +1429,19 @@ int trc_run_rccsd(trc_handle_t handle);
  * iterations run. TRC_ERR_STATE when no run has left a result.
  */
 int trc_rccsd_energy(trc_handle_t handle, double* e_mp2, double* e_ccsd, double* e_t, double* t1_diagnostic, int* iterations, int* converged, int* has_triples);
+
+/**
+ * The RI-CCSD correlation energy of the last trc_run_rccsd, converged or
+ * not, as the two parts of the energy functional, in Hartree. With
+ * L(i,a,j,b) = 2 (ia|jb) - (ib|ja) over the correlated occupied and the
+ * virtual orbitals, `e_doubles` is sum L t2(i,j,a,b), what t2 alone
+ * gives, and `e_singles` is sum L t1(i,a) t1(j,b), the t1 t1 part. Their
+ * sum is trc_rccsd_energy's `e_ccsd`. There is no f_ov t1 term: the
+ * reference is canonical Hartree-Fock. (T) is not in either;
+ * trc_rccsd_energy reports it. TRC_ERR_STATE when no run has left a
+ * result. (ABI 1.29.)
+ */
+int trc_rccsd_energy_parts(trc_handle_t handle, double* e_singles, double* e_doubles);
 
 /**
  * The orbital spaces of the last trc_run_rccsd, converged or not:
