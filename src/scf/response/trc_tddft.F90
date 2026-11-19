@@ -198,7 +198,7 @@ module trc_tddft
 
    public :: trc_tddft_options_t, trc_tddft_result_t, trc_tddft_op_t, trc_tddft_reference_t
    public :: trc_tddft_solve_rks, trc_tddft_refuse_reason
-   public :: tddft_window, tddft_space_t
+   public :: tddft_window, tddft_window_t, tddft_space_t
    !! Public for the unit test of the window rule (a synthetic Ritz set).
 
    real(dp), parameter :: OSC_PREFACTOR = 2.0_dp/3.0_dp
@@ -317,6 +317,17 @@ module trc_tddft
    contains
       procedure :: set => tddft_reference_set
    end type trc_tddft_reference_t
+
+   type :: tddft_window_t
+      !! What `tddft_window` decides: act marks the iterated Ritz pairs,
+      !! kept_index(1:nact) lists them in order, nopen counts the candidates the
+      !! check leaves open. The caller allocates act and kept_index (one slot per
+      !! Ritz pair).
+      logical, allocatable :: act(:)
+      integer, allocatable :: kept_index(:)
+      integer :: nact = 0
+      integer :: nopen = 0
+   end type tddft_window_t
 
    type :: tddft_space_t
       !! The Davidson subspace: its orthonormal basis vs and A times it, avs
@@ -844,7 +855,7 @@ contains
       end do
    end subroutine tddft_probe_vectors
 
-   subroutine tddft_window(sp, nr, theta, rnorm, nkc, track, buffer_tol, act, idx, nact, nopen)
+   subroutine tddft_window(sp, nr, theta, rnorm, nkc, track, buffer_tol, win)
       !! Which of the nkc Ritz pairs (theta ascending, residual norms rnorm) are
       !! iterated, and how many candidates the check leaves open.
       !!
@@ -864,8 +875,9 @@ contains
       !! With `track` (after the probe, for at most XBUDGET iterations) the
       !! candidates are iterated, the lowest first, until sp%nkcap - sp%nt of
       !! them are taken. ONE COUNT per candidate, so a candidate at index 25
-      !! costs one slot, not 25 (act marks the kept indices, idx(1:nact) lists
-      !! them in order, and a collapse keeps exactly those). nopen counts every
+      !! costs one slot, not 25 (win%act marks the kept indices,
+      !! win%kept_index(1:win%nact) lists them in order, and a collapse keeps
+      !! exactly those). win%nopen counts every
       !! candidate, iterated or not; evaluated at the end of a solve, where every
       !! iterated one has converged to `buffer_tol` except after an early exit,
       !! it is the number of candidates left open (not iterated, cut short by the
@@ -876,27 +888,25 @@ contains
       real(dp), intent(in) :: theta(:), rnorm(:)
       real(dp), intent(in) :: buffer_tol
       logical, intent(in) :: track
-      logical, intent(out) :: act(:)
-      integer, intent(out) :: idx(:)
-      integer, intent(out) :: nact, nopen
+      type(tddft_window_t), intent(inout) :: win
       integer :: k, n
-      nact = sp%nt
-      act = .false.
-      act(1:sp%nt) = .true.
-      nopen = 0
+      win%nact = sp%nt
+      win%act = .false.
+      win%act(1:sp%nt) = .true.
+      win%nopen = 0
       do k = sp%nt + 1, nkc
          if (.not. (theta(k) - rnorm(k) < theta(nr) .and. rnorm(k) < 0.5_dp*theta(k) .and. rnorm(k) >= buffer_tol)) cycle
-         nopen = nopen + 1
-         if (track .and. nact < sp%nkcap) then
-            act(k) = .true.
-            nact = nact + 1
+         win%nopen = win%nopen + 1
+         if (track .and. win%nact < sp%nkcap) then
+            win%act(k) = .true.
+            win%nact = win%nact + 1
          end if
       end do
       n = 0
       do k = 1, nkc
-         if (act(k)) then
+         if (win%act(k)) then
             n = n + 1
-            idx(n) = k
+            win%kept_index(n) = k
          end if
       end do
    end subroutine tddft_window
@@ -1049,9 +1059,8 @@ contains
       real(dp), allocatable :: ap(:, :), am(:, :), zc(:, :), w2(:), om(:), uc(:, :), vc(:, :)
       real(dp), allocatable :: pr(:, :), mr(:, :), r1(:, :), r2(:, :), tc(:, :), rnorm(:), dgn(:), prod(:, :, :, :)
       real(dp) :: buffer_threshold, dx, dy, nrm
-      integer :: nov, nocc, nvir, nr, nt, nnew, nunc, nmain, m, j, k, ioff, c0, nkc, nact, xiter, nopen
-      logical, allocatable :: act(:)
-      integer, allocatable :: idx(:)
+      integer :: nov, nocc, nvir, nr, nt, nnew, nunc, nmain, m, j, k, ioff, c0, nkc, xiter
+      type(tddft_window_t) :: win
       logical :: collapsed
       character(len=256) :: reason
       character(len=1024) :: logline
@@ -1066,12 +1075,13 @@ contains
       allocate (ap(sp%mmax, sp%mmax), am(sp%mmax, sp%mmax), zc(sp%mmax, sp%mmax), w2(sp%mmax))
       ! Room for every Ritz pair of the subspace once the probe has run.
       allocate (om(sp%mmax), uc(sp%mmax, sp%mmax), vc(sp%mmax, sp%mmax), pr(nov, sp%mmax), mr(nov, sp%mmax))
-      allocate (r1(nov, sp%mmax), r2(nov, sp%mmax), tc(nov, 2*sp%mmax), rnorm(sp%mmax), act(sp%mmax), idx(sp%mmax), dgn(nov))
+      allocate (r1(nov, sp%mmax), r2(nov, sp%mmax), tc(nov, 2*sp%mmax), rnorm(sp%mmax), dgn(nov))
+      allocate (win%act(sp%mmax), win%kept_index(sp%mmax))
       dgn = reshape(op%de, [nov])
       probed = .false.
       done = .false.
       xiter = 0
-      nopen = 0
+      win%nopen = 0
       nnew = sp%m
       res%iterations = 0
       res%nmatvec = 0
@@ -1125,17 +1135,17 @@ contains
          end do
          if (all(ieee_is_finite(rnorm(1:nkc)))) then
             if (probed) xiter = xiter + 1
-            call tddft_window(sp, nr, om, rnorm, nkc, probed .and. xiter <= XBUDGET, buffer_threshold, act, idx, nact, nopen)
+            call tddft_window(sp, nr, om, rnorm, nkc, probed .and. xiter <= XBUDGET, buffer_threshold, win)
          else
-            act(1:nkc) = .true.
-            nact = nt
-            idx(1:nt) = [(k, k=1, nt)]
-            nopen = 0
+            win%act(1:nkc) = .true.
+            win%nact = nt
+            win%kept_index(1:nt) = [(k, k=1, nt)]
+            win%nopen = 0
          end if
          nunc = 0
          nmain = 0
          do k = 1, nkc
-            if (.not. act(k)) cycle
+            if (.not. win%act(k)) cycle
             if (.not. (rnorm(k) < merge(opts%conv_tol, buffer_threshold, k <= nr))) then
                nunc = nunc + 1
                if (k <= nr) nmain = nmain + 1
@@ -1169,7 +1179,7 @@ contains
          ! Preconditioned corrections of X and of Y for each unconverged root, packed first.
          ioff = 0
          do k = 1, nkc
-            if (.not. act(k)) cycle
+            if (.not. win%act(k)) cycle
             if (rnorm(k) < merge(opts%conv_tol, buffer_threshold, k <= nr)) cycle
             ioff = ioff + 1
             do j = 1, nov
@@ -1182,7 +1192,9 @@ contains
          end do
 
          collapsed = sp%m + 2*nunc > sp%mmax
-         if (collapsed) call tddft_rpa_collapse(sp, uc(:, idx(1:nact)), vc(:, idx(1:nact)))
+         if (collapsed) then
+            call tddft_rpa_collapse(sp, uc(:, win%kept_index(1:win%nact)), vc(:, win%kept_index(1:win%nact)))
+         end if
          call tddft_orthonormalise(nov, sp%m, sp%mmax, sp%vs, 2*nunc, tc, nnew)
          if (nnew == 0 .and. nmain == 0) then
             if (.not. probed .and. sp%nprobe + sp%nrand > 0) then
@@ -1203,7 +1215,7 @@ contains
       end do
 
       if (done) then
-         call tddft_report_window(res, nopen)
+         call tddft_report_window(res, win%nopen)
          res%space = sp%m
          res%ncollapse = sp%ncollapse
          allocate (res%omega(nr), res%xamp(nocc, nvir, nr), res%yamp(nocc, nvir, nr), res%resid(nr))
@@ -1247,10 +1259,9 @@ contains
       real(dp), allocatable :: xr(:, :), axr(:, :), tc(:, :), rnorm(:), dgn(:), dsort(:)
       type(tddft_space_t) :: sp
       real(dp) :: den
-      integer :: nov, nvir, nr, nt, nnew, nunc, nmain, nocc, i, a, j, k, ioff, nkc, nact
-      logical, allocatable :: act(:)
-      integer, allocatable :: idx(:)
-      integer :: xiter, nopen
+      integer :: nov, nvir, nr, nt, nnew, nunc, nmain, nocc, i, a, j, k, ioff, nkc
+      type(tddft_window_t) :: win
+      integer :: xiter
       integer(default_int) :: linfo
       character(len=256) :: reason
       character(len=1024) :: logline
@@ -1301,7 +1312,8 @@ contains
       allocate (sp%vs(nov, sp%mmax), sp%avs(nov, sp%mmax), hsub(sp%mmax, sp%mmax), csub(sp%mmax, sp%mmax), wsub(sp%mmax))
       ! Room for every Ritz vector of the subspace once the probe has run (see
       ! `tddft_window`); until then only the lowest nt are formed.
-      allocate (xr(nov, sp%mmax), axr(nov, sp%mmax), tc(nov, sp%mmax), rnorm(sp%mmax), act(sp%mmax), idx(sp%mmax))
+      allocate (xr(nov, sp%mmax), axr(nov, sp%mmax), tc(nov, sp%mmax), rnorm(sp%mmax))
+      allocate (win%act(sp%mmax), win%kept_index(sp%mmax))
       allocate (dgn(nov), dsort(nov))
       allocate (sp%ord(nov))
       ! The Ritz vectors kept across a collapse (nkcap of them, plus at most as many
@@ -1344,7 +1356,7 @@ contains
       res%nmatvec = 0
       done = .false.
       xiter = 0
-      nopen = 0
+      win%nopen = 0
 
       if (.not. opts%tda) then
          call tddft_rpa_iterate(b, eri, la, op, xg, opts, sp, res)
@@ -1356,7 +1368,8 @@ contains
             end do
          end if
          call op%release()
-         deallocate (sp%vs, sp%avs, sp%ams, hsub, csub, wsub, xr, axr, tc, rnorm, act, idx, dgn, dsort, sp%tp, sp%ord, sp%dgn)
+         deallocate (sp%vs, sp%avs, sp%ams, hsub, csub, wsub, xr, axr, tc, rnorm, win%act, win%kept_index, dgn, dsort, &
+                    sp%tp, sp%ord, sp%dgn)
          return
       end if
 
@@ -1398,17 +1411,17 @@ contains
          end do
          if (all(ieee_is_finite(rnorm(1:nkc)))) then
             if (probed) xiter = xiter + 1
-            call tddft_window(sp, nr, wsub, rnorm, nkc, probed .and. xiter <= XBUDGET, buffer_threshold, act, idx, nact, nopen)
+            call tddft_window(sp, nr, wsub, rnorm, nkc, probed .and. xiter <= XBUDGET, buffer_threshold, win)
          else
-            act(1:nkc) = .true.
-            nact = nt
-            idx(1:nt) = [(k, k=1, nt)]
-            nopen = 0
+            win%act(1:nkc) = .true.
+            win%nact = nt
+            win%kept_index(1:nt) = [(k, k=1, nt)]
+            win%nopen = 0
          end if
          nunc = 0
          nmain = 0
          do k = 1, nkc
-            if (.not. act(k)) cycle
+            if (.not. win%act(k)) cycle
             if (.not. (rnorm(k) < merge(opts%conv_tol, buffer_threshold, k <= nr))) then
                nunc = nunc + 1
                if (k <= nr) nmain = nmain + 1
@@ -1449,7 +1462,7 @@ contains
          ! Preconditioned corrections of the unconverged roots, packed first.
          ioff = 0
          do k = 1, nkc
-            if (.not. act(k)) cycle
+            if (.not. win%act(k)) cycle
             if (rnorm(k) < merge(opts%conv_tol, buffer_threshold, k <= nr)) cycle
             ioff = ioff + 1
             do j = 1, nov
@@ -1461,9 +1474,9 @@ contains
 
          ! Collapse onto the current Ritz vectors when there is no room.
          if (sp%m + nunc > sp%mmax) then
-            sp%vs(:, 1:nact) = xr(:, idx(1:nact))
-            sp%avs(:, 1:nact) = axr(:, idx(1:nact))
-            sp%m = nact
+            sp%vs(:, 1:win%nact) = xr(:, win%kept_index(1:win%nact))
+            sp%avs(:, 1:win%nact) = axr(:, win%kept_index(1:win%nact))
+            sp%m = win%nact
             sp%ncollapse = sp%ncollapse + 1
          end if
          call tddft_orthonormalise(nov, sp%m, sp%mmax, sp%vs, nunc, tc, nnew)
@@ -1489,7 +1502,7 @@ contains
       end do
 
       if (done) then
-         call tddft_report_window(res, nopen)
+         call tddft_report_window(res, win%nopen)
          if (wsub(1) <= 0.0_dp) then
             call tddft_fail(res, ERROR_GENERIC, "trc_tddft: a non-positive excitation energy ("// &
                             to_string(wsub(1), "es10.2")//" Eh): the reference may be unstable (or a triplet-like " &
@@ -1514,7 +1527,8 @@ contains
          end if
       end if
       call op%release()
-      deallocate (sp%vs, sp%avs, hsub, csub, wsub, xr, axr, tc, rnorm, act, idx, dgn, dsort, sp%tp, sp%ord, sp%dgn)
+      deallocate (sp%vs, sp%avs, hsub, csub, wsub, xr, axr, tc, rnorm, win%act, win%kept_index, dgn, dsort, &
+                 sp%tp, sp%ord, sp%dgn)
    end subroutine trc_tddft_solve_rks
 
 end module trc_tddft

@@ -74,7 +74,7 @@ module check_tddft_basis_suite
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_tddft, only: trc_tddft_options_t, trc_tddft_result_t, trc_tddft_op_t, trc_tddft_solve_rks, &
-                        trc_tddft_reference_t, trc_tddft_refuse_reason, tddft_window, tddft_space_t
+                        trc_tddft_reference_t, trc_tddft_refuse_reason, tddft_window, tddft_window_t, tddft_space_t
    use trc_tables, only: LMAX
    use trc_mult_kernels, only: MULT_LMAX
    use trc_test_basis, only: read_xyz
@@ -409,9 +409,10 @@ contains
       type(error_type), allocatable, intent(out) :: error
       type(tddft_space_t) :: sp
       real(dp) :: theta(30), rn(30)
-      logical :: act(30)
-      integer :: idx(30), nact, nopen, k
+      type(tddft_window_t) :: win
+      integer :: k
 
+      allocate (win%act(30), win%kept_index(30))
       sp%nt = 3
       sp%nkcap = 5
       do k = 1, 30
@@ -420,9 +421,10 @@ contains
       rn = 1.0e-9_dp
       ! one candidate at a high index: |r| 0.15 < theta/2 and theta - r < 0.30
       rn(25) = 0.15_dp
-      call tddft_window(sp, 1, theta, rn, 30, .true., 1.0e-3_dp, act, idx, nact, nopen)
-      call check(error, nact == 4 .and. nopen == 1 .and. act(25) .and. idx(4) == 25 .and. all(idx(1:3) == [1, 2, 3]), &
-                 "a single candidate at k = 25 must take one slot: nact "//to_string(nact)//", nopen "//to_string(nopen))
+      call tddft_window(sp, 1, theta, rn, 30, .true., 1.0e-3_dp, win)
+      call check(error, win%nact == 4 .and. win%nopen == 1 .and. win%act(25) .and. &
+                 win%kept_index(4) == 25 .and. all(win%kept_index(1:3) == [1, 2, 3]), &
+                 "a single candidate at k = 25 must take one slot: nact "//to_string(win%nact)//", nopen "//to_string(win%nopen))
       if (allocated(error)) return
       ! eight candidates: the cap keeps the lowest two, all eight are counted
       rn(6) = 0.15_dp
@@ -433,15 +435,15 @@ contains
       rn(16) = 0.15_dp
       rn(18) = 0.15_dp
       rn(20) = 0.15_dp
-      call tddft_window(sp, 1, theta, rn, 30, .true., 1.0e-3_dp, act, idx, nact, nopen)
-      call check(error, nact == 5 .and. nopen == 9 .and. all(idx(1:5) == [1, 2, 3, 6, 8]), &
-                 "the cap must keep nkcap pairs, the lowest candidates first: nact "//to_string(nact)//", nopen "// &
-                 to_string(nopen))
+      call tddft_window(sp, 1, theta, rn, 30, .true., 1.0e-3_dp, win)
+      call check(error, win%nact == 5 .and. win%nopen == 9 .and. all(win%kept_index(1:5) == [1, 2, 3, 6, 8]), &
+                 "the cap must keep nkcap pairs, the lowest candidates first: nact "//to_string(win%nact)//", nopen "// &
+                 to_string(win%nopen))
       if (allocated(error)) return
       ! no tracking (budget used up): nothing beyond nt is iterated, all are open
-      call tddft_window(sp, 1, theta, rn, 30, .false., 1.0e-3_dp, act, idx, nact, nopen)
-      call check(error, nact == 3 .and. nopen == 9, "without tracking only nt are kept and the candidates stay open: nact "// &
-                 to_string(nact)//", nopen "//to_string(nopen))
+      call tddft_window(sp, 1, theta, rn, 30, .false., 1.0e-3_dp, win)
+      call check(error, win%nact == 3 .and. win%nopen == 9, "without tracking only nt are kept and the candidates stay open: nact "// &
+                 to_string(win%nact)//", nopen "//to_string(win%nopen))
       if (allocated(error)) return
       ! a pair with |r| >= theta/2 is not a candidate (iterated or counted); a converged pair
       ! and one whose interval stays above theta(nr) are not candidates either
@@ -450,10 +452,10 @@ contains
       rn(9) = 0.2_dp
       rn(11) = 5.0e-4_dp
       rn(13) = 0.01_dp
-      call tddft_window(sp, 1, theta, rn, 30, .true., 1.0e-3_dp, act, idx, nact, nopen)
-      call check(error, nact == 3 .and. nopen == 0, &
-                 "|r| >= theta/2, converged and clearly-above pairs must not be candidates: nact "//to_string(nact)// &
-                 ", nopen "//to_string(nopen))
+      call tddft_window(sp, 1, theta, rn, 30, .true., 1.0e-3_dp, win)
+      call check(error, win%nact == 3 .and. win%nopen == 0, &
+                 "|r| >= theta/2, converged and clearly-above pairs must not be candidates: nact "//to_string(win%nact)// &
+                 ", nopen "//to_string(win%nopen))
    end subroutine test_window_rule
 
    subroutine test_f_refused_after_scf(error)
