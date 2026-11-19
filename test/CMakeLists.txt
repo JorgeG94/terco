@@ -2544,7 +2544,9 @@ endforeach()
 #
 # Batched coupled-perturbed solves (trc_cphf_cg_t, opts%max_batch): every
 # right-hand side of a group iterates its own CG, the matvecs share one Fock
-# (and f_xc) pass. Against the same columns solved one at a time.
+# (and f_xc) pass. Against an independent textbook CG on its own matvec (built
+# from fock_resident and trc_xc_fxc_rks), with a recomputed residual per column;
+# check_fock_many_screen tests the density_screen=.false. Fock pass alone.
 #
 terco_add_check(check_cpks_batched check_cpks_batched.F90 NEEDS_BASIS)
 target_link_libraries(check_cpks_batched PRIVATE test-drive::test-drive)

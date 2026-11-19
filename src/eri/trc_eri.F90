@@ -2147,8 +2147,8 @@ contains
       !! quartets it would alone). A coupled-perturbed solve, whose trial
       !! densities shrink as it converges and must not drive the screen, sets
       !! density_screen false: the bound is then the plain Schwarz one, as
-      !! `fock_resident` has it, and the operator is the same from one matvec
-      !! to the next (`fock_nosym`), and MD J is chosen by the rule
+      !! `fock_resident` has it, so the operator is the same from one matvec
+      !! to the next, and MD J is chosen by the rule
       !! `fock_resident_lent` has for that flag (`mdj_requested`), so a
       !! batched coupled-perturbed build and a single one pick the same engine.
       !! The default is true, which is what every SCF caller of this routine

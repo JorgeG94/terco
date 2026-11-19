@@ -58,8 +58,10 @@ module trc_cpks
    !! before the two back-transforms. All the right-hand sides still
    !! iterating share each matvec's integral pass (ONE
    !! `fock_resident_many_lent` over the group, in groups of at most
-   !! `opts%max_batch`); with one in flight it is the unbatched
-   !! `fock_resident`, as before. The f_xc response stays one
+   !! `opts%max_batch`). Only with `max_batch == 1` (or one right-hand side
+   !! in all) is the matvec the unbatched `fock_resident`; with `max_batch > 1`
+   !! a shrunken active set of one still goes through `fock_resident_many_lent`,
+   !! which hands a single density to `fock_resident_lent` (same operator). The f_xc response stays one
    !! `trc_xc_fxc_rks` per density. The many-density form against a cache of
    !! the grid collocation (`trc_xc_fxc_rks_apply_many`, which TDDFT uses) was
    !! tried and is slower here (V100, min of five calls, B3LYP, cc-pVDZ;
