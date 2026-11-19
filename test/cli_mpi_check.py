@@ -67,7 +67,7 @@ CC_TOL = 1.0e-12
 # prints what it finds (the "diff E_CCSD" and "diff E(T)" columns). The settings below converge the amplitudes to
 # 1e-10, the energy to 1e-12 and the SCF to 1e-13 / 1e-11; what is left is the multi-rank SCF (about 1e-14 Eh,
 # docs/sphinx/cli.md) and the order of the ladder's sum. 1e-12 leaves two orders for another MPI or BLAS.
-CC_ARGS = ["--frozen", "1", "--econv", "1e-13", "--gconv", "1e-11", "--cc-econv", "1e-12", "--cc-tconv", "1e-10"]
+CC_ARGS = ["--frozen", "1", "--econv", "1e-13", "--gconv", "1e-11", "--no-incremental", "--cc-econv", "1e-12", "--cc-tconv", "1e-10"]
 
 
 def run(mpiexec, npflag, np, terco_cli, xyz, basis_dir, *args, extra_env=None):
