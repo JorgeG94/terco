@@ -512,6 +512,11 @@ foreach(case hi_svp ih_far xe csh snh4 i2 ch3i)
                         ${CMAKE_CURRENT_BINARY_DIR}/mod_check_ecp_matrix_${case})
 endforeach()
 
+# The ECP matrix's 3-centre screen against the unscreened build -- see
+# check_ecp_screen.F90's own header.
+terco_add_check(check_ecp_screen check_ecp_screen.F90 NEEDS_BASIS)
+target_link_libraries(check_ecp_screen PRIVATE test-drive::test-drive)
+
 # ECP phase 3: RHF/UHF/RKS on HI, the I atom, I2 and H2 with a ghost iodine
 # in def2-SVP against pyscf (ecp_scf.ref, generate.py's gen_ecp_scf; mqc's
 # own numbers are a secondary print only), plus the guess/Hirshfeld/gradient
