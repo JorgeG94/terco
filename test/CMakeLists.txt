@@ -2925,7 +2925,7 @@ endforeach()
 terco_add_check(check_tddft_api check_tddft_api.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_tddft_api PRIVATE test-drive::test-drive)
 # The two gradients and the finite difference (four SCFs) are runs of the same program of their own.
-foreach(_mode grad_tda grad_rpa fd)
+foreach(_mode grad_tda grad_rpa fd missed_root)
   add_test(NAME terco/check_tddft_api_${_mode} COMMAND check_tddft_api ${_mode})
   set_tests_properties(terco/check_tddft_api_${_mode} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                        ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")

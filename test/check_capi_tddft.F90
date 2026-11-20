@@ -20,7 +20,7 @@ module check_capi_tddft_suite
    !! Run from test/. A test-drive suite. The argument `pbe` runs only the water PBE gradient (2.), the rest only without
    !! it: two runs of one program, each around ten seconds.
    !!
-   use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char, c_char
+   use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char, c_char, c_null_ptr
    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_positive_inf
    use pic_types, only: dp
    use pic_strings, only: to_string
@@ -30,10 +30,11 @@ module check_capi_tddft_suite
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_method, &
                                trc_set_convergence, trc_set_force_cartesian, trc_run_scf, trc_run_gradient, trc_gradient, &
                                trc_energy, trc_run_hessian, trc_message, trc_set_tddft, trc_set_tddft_convergence, &
-                               trc_check_tddft, trc_run_tddft, trc_tddft_nroots, trc_tddft_energies, &
+                               trc_set_tddft_missed_root_iterations, trc_check_tddft, trc_run_tddft, trc_tddft_nroots, &
+                               trc_tddft_energies, &
                                trc_tddft_character, trc_tddft_energy, trc_tddft_target_root, trc_abi_version, &
                                trc_set_aux_json, trc_set_rimp2, trc_run_rimp2, trc_save_scf, trc_load_scf, &
-                               TRC_OK, TRC_ERR_UNSUPPORTED, TRC_ERR_BADARG, TRC_ERR_STATE, TRC_ABI_MINOR
+                               TRC_OK, TRC_ERR_UNSUPPORTED, TRC_ERR_BADARG, TRC_ERR_STATE, TRC_ERR_NULL, TRC_ABI_MINOR
    implicit none
    private
    public :: collect_capi_tddft, mode_arg
@@ -55,6 +56,8 @@ contains
                   new_unittest("Hartree-Fock: TDA and RPA gradients of a root vs pyscf, energies", test_hf), &
                   new_unittest("state: before the run, after a new SCF, the Hessian", test_state), &
                   new_unittest("refusals", test_refusals), &
+                  new_unittest("missed-root iterations: 24 is the default, 0 reaches the solver", &
+                               test_missed_root), &
                   new_unittest("a second SCF and TDDFT give the same roots, none in between", test_rerun), &
                   new_unittest("RI-MP2 after TDDFT takes over the energy and the gradient", test_rimp2_after), &
                   new_unittest("an effective core potential: the excited-state gradient is refused", test_ecp), &
@@ -76,18 +79,23 @@ contains
       end do
    end function message_of
 
-   subroutine open_handle(error, handle, functional, basis, ok)
-      !! A water handle with the basis, the method and the SCF settings of the pyscf references.
+   subroutine open_handle(error, handle, functional, basis, ok, xyz)
+      !! A water (or `xyz`) handle with the basis, the method and the SCF settings of the pyscf references.
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr), intent(out) :: handle
       character(len=*), intent(in) :: functional, basis
       logical, intent(out) :: ok
+      character(len=*), intent(in), optional :: xyz
       integer :: natm
       integer, allocatable :: zint(:)
       real(dp), allocatable :: at_r(:, :)
       integer(c_int) :: rc
 
-      call read_xyz("water.xyz", natm, zint, at_r)
+      if (present(xyz)) then
+         call read_xyz(xyz, natm, zint, at_r)
+      else
+         call read_xyz("water.xyz", natm, zint, at_r)
+      end if
       rc = trc_create(handle)
       if (rc == TRC_OK) rc = trc_set_molecule(handle, int(natm, c_int), real(zint, c_double), reshape(at_r, [3*natm]), &
                                               0_c_int, 1_c_int)
@@ -229,7 +237,7 @@ contains
       logical :: ok
 
       rc = trc_abi_version(major, minor)
-      call check(error, rc == TRC_OK .and. major == 1 .and. minor >= 30, "the ABI is at least 1.30")
+      call check(error, rc == TRC_OK .and. major == 1 .and. minor >= 31, "the ABI is at least 1.31")
       if (allocated(error)) return
       call open_handle(error, handle, "", "basis_sets/sto-3g.json", ok)
       if (allocated(error)) return
@@ -334,8 +342,100 @@ contains
          rc = trc_set_tddft_convergence(handle, 1.0e-9_c_double, 0_c_int, 1.0e-9_c_double, 0_c_int, 0_c_int)
          call check(error, rc == TRC_OK, "an ordinary pair of tolerances is accepted")
       end if
+      ! The missed-root budget: a negative count is refused with a message, a null handle is TRC_ERR_NULL.
+      if (.not. allocated(error)) then
+         rc = trc_set_tddft_missed_root_iterations(handle, -1_c_int)
+         call check(error, rc == TRC_ERR_BADARG .and. index(message_of(handle), "negative") > 0, &
+                    "a negative missed-root iteration count is a bad argument with a message")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_set_tddft_missed_root_iterations(handle, 0_c_int)
+         call check(error, rc == TRC_OK, "a missed-root iteration count of zero is accepted")
+      end if
+      if (.not. allocated(error)) then
+         rc = trc_set_tddft_missed_root_iterations(c_null_ptr, 0_c_int)
+         call check(error, rc == TRC_ERR_NULL, "a null handle is TRC_ERR_NULL")
+      end if
       rc = trc_destroy(handle)
    end subroutine test_refusals
+
+   subroutine third_root(error, handle, tda, omega3)
+      !! Runs the TDDFT of the handle's SCF (three roots, 1e-7) and returns the third root's energy.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr), intent(in) :: handle
+      logical, intent(in) :: tda
+      real(c_double), intent(out) :: omega3
+      real(c_double) :: omega(3)
+      integer(c_int) :: rc
+      logical :: ok
+
+      omega3 = 0.0_c_double
+      rc = trc_set_tddft(handle, 3_c_int, merge(1_c_int, 0_c_int, tda), 1_c_int, 1_c_int, 1_c_int)
+      if (rc == TRC_OK) rc = trc_set_tddft_convergence(handle, 1.0e-7_c_double, 0_c_int, 0.0_c_double, 0_c_int, 0_c_int)
+      if (rc == TRC_OK) rc = trc_run_tddft(handle)
+      call check(error, rc == TRC_OK, "trc_run_tddft: "//message_of(handle))
+      if (allocated(error)) return
+      call roots_of(handle, 3, omega, ok)
+      call check(error, ok, "the roots could not be read")
+      omega3 = omega(3)
+   end subroutine third_root
+
+   subroutine test_missed_root(error)
+      !! Formaldehyde 6-31+G Hartree-Fock, TDA and RPA: the third root is reached only by iterating the candidate
+      !! pairs after the probe. Through the C ABI a count of 24 is the default (same root), and 0 loses that root.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: handle
+      real(c_double) :: w_24, w_0
+      integer(c_int) :: rc
+      integer :: pass
+      logical :: ok, tda
+
+      call open_handle(error, handle, "", "../basis_sets/6-31+g.json", ok, xyz="formaldehyde.xyz")
+      if (allocated(error)) return
+      rc = trc_run_scf(handle)
+      call check(error, rc == TRC_OK, "trc_run_scf: "//message_of(handle))
+      do pass = 1, 2
+         if (allocated(error)) exit
+         tda = pass == 1
+         rc = trc_set_tddft_missed_root_iterations(handle, 24_c_int)
+         call check(error, rc == TRC_OK, "trc_set_tddft_missed_root_iterations(24)")
+         if (allocated(error)) exit
+         ! Set before the default run, so this is the explicit 24; a fresh handle's default is the same number.
+         call third_root(error, handle, tda, w_24)
+         if (allocated(error)) exit
+         rc = trc_set_tddft_missed_root_iterations(handle, 0_c_int)
+         call check(error, rc == TRC_OK, "trc_set_tddft_missed_root_iterations(0)")
+         if (allocated(error)) exit
+         call third_root(error, handle, tda, w_0)
+         if (allocated(error)) exit
+         call check(error, abs(w_0 - w_24) > 1.0e-3_dp, merge("TDA", "RPA", tda)// &
+                    ": a count of 0 left the third root alone, so the setting reached no solver")
+         if (allocated(error)) exit
+         ! A second handle never given the setting must equal the explicit 24.
+         call check_default_handle(error, tda, w_24)
+      end do
+      rc = trc_destroy(handle)
+   end subroutine test_missed_root
+
+   subroutine check_default_handle(error, tda, w_24)
+      !! A handle that never sets the count has the explicit 24's third root.
+      type(error_type), allocatable, intent(out) :: error
+      logical, intent(in) :: tda
+      real(c_double), intent(in) :: w_24
+      type(c_ptr) :: handle
+      real(c_double) :: w
+      integer(c_int) :: rc
+      logical :: ok
+
+      call open_handle(error, handle, "", "../basis_sets/6-31+g.json", ok, xyz="formaldehyde.xyz")
+      if (allocated(error)) return
+      rc = trc_run_scf(handle)
+      call check(error, rc == TRC_OK, "trc_run_scf: "//message_of(handle))
+      if (.not. allocated(error)) call third_root(error, handle, tda, w)
+      if (.not. allocated(error)) call check(error, abs(w - w_24) < 1.0e-9_dp, &
+                                             merge("TDA", "RPA", tda)//": the default is not a count of 24")
+      rc = trc_destroy(handle)
+   end subroutine check_default_handle
 
    subroutine roots_of(handle, nroots, omega, ok)
       type(c_ptr), intent(in) :: handle

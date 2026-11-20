@@ -5,7 +5,8 @@ submodule (trc_run) trc_run_excited
    !! report and the JSON come from rank 0 as for the rest of the CLI.
    use pic_strings, only: to_string
    use trc_constants, only: HARTREE_TO_EV
-   use trc_capi, only: trc_set_tddft, trc_set_tddft_convergence, trc_run_tddft, trc_tddft_nroots, &
+   use trc_capi, only: trc_set_tddft, trc_set_tddft_convergence, trc_set_tddft_missed_root_iterations, &
+                       trc_run_tddft, trc_tddft_nroots, &
                        trc_tddft_energies, trc_tddft_character, trc_tddft_energy
    use trc_scf_settings, only: trc_scf_options_t
    use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_refusal, trc_tddft_run_pair_label
@@ -18,6 +19,7 @@ submodule (trc_run) trc_run_excited
    character(len=*), parameter :: N_SPIN = "--tddft-spin ([tddft] spin)"
    character(len=*), parameter :: N_TOL = "--tddft-tol ([tddft] energy_tol)"
    character(len=*), parameter :: N_ITER = "--tddft-iterations ([tddft] max_iterations)"
+   character(len=*), parameter :: N_MISSED = "--tddft-missed-root-iterations ([tddft] missed_root_iterations)"
    character(len=*), parameter :: N_CPKS = "--tddft-cpks-tol ([tddft] cpks_tol)"
    character(len=*), parameter :: N_SWEEP = "--tddft-sweep ([tddft] roots_per_sweep)"
    character(len=*), parameter :: N_GAP = "--tddft-gap-warn ([tddft] gap_warning)"
@@ -59,6 +61,11 @@ contains
          call r%cli%get("tddft-iterations", r%tddft_iterations, r%err)
          call run_check(r, N_ITER)
          if (r%tddft_iterations < 1) call run_die(r, N_ITER//" must be at least 1")
+      end if
+      if (r%cli%is_set("tddft-missed-root-iterations")) then
+         call r%cli%get("tddft-missed-root-iterations", r%tddft_missed_root, r%err)
+         call run_check(r, N_MISSED)
+         if (r%tddft_missed_root < 0) call run_die(r, N_MISSED//" must be zero or more")
       end if
       if (r%cli%is_set("tddft-cpks-tol")) then
          call r%cli%get("tddft-cpks-tol", r%tddft_cpks_tol, r%err)
@@ -154,6 +161,7 @@ contains
       r%tddft = r%cli%is_set("tddft")
       any_option = r%cli%is_set("tddft-roots") .or. r%cli%is_set("tddft-root") .or. r%cli%is_set("tddft-approx") .or. &
                    r%cli%is_set("tddft-spin") .or. r%cli%is_set("tddft-tol") .or. r%cli%is_set("tddft-iterations") .or. &
+                   r%cli%is_set("tddft-missed-root-iterations") .or. &
                    r%cli%is_set("tddft-cpks-tol") .or. r%cli%is_set("tddft-sweep") .or. &
                    r%cli%is_set("tddft-gap-warn") .or. r%cli%is_set("tddft-strict-root") .or. &
                    r%cli%is_set("no-tddft-grid-response") .or. &
@@ -187,6 +195,9 @@ contains
          call run_api(r, trc_set_tddft_convergence(r%h, real(r%tddft_tol, c_double), int(r%tddft_iterations, c_int), &
                                                    real(r%tddft_cpks_tol, c_double), 0_c_int, &
                                                    int(r%tddft_sweep, c_int)))
+      end if
+      if (r%tddft_missed_root >= 0) then
+         call run_api(r, trc_set_tddft_missed_root_iterations(r%h, int(r%tddft_missed_root, c_int)))
       end if
    end subroutine run_tddft_configure
 

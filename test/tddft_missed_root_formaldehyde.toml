@@ -1,0 +1,12 @@
+# check_cli_tddft's TOML input for [tddft] missed_root_iterations: formaldehyde 6-31+G Hartree-Fock, where the third
+# root is reached only by iterating the candidate Ritz pairs after the probe; a budget of 0 gives that iteration up.
+[molecule]
+geometry = "formaldehyde.xyz"
+
+[basis]
+main = "../basis_sets/6-31+g.json"
+
+[tddft]
+enabled = true
+roots = 3
+missed_root_iterations = 0

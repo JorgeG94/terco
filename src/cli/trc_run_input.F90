@@ -63,14 +63,14 @@ module trc_run_input
       !! One key of the format.
       character(len=16) :: section
          !! The table it lives in, dotted for a sub-table (`opt.neb`).
-      character(len=20) :: key
-      character(len=26) :: flag
+      character(len=24) :: key
+      character(len=30) :: flag
          !! Its command-line option, without the dashes; blank for the
          !! geometry, which is the positional argument.
       integer :: kind
    end type run_input_key_t
 
-   integer, parameter :: NKEYS = 116
+   integer, parameter :: NKEYS = 117
    type(run_input_key_t), parameter :: RUN_INPUT_KEYS(NKEYS) = [ &
       run_input_key_t("molecule", "geometry", "", KIND_PATH), &
       run_input_key_t("molecule", "charge", "chrg", KIND_INT), &
@@ -128,6 +128,7 @@ module trc_run_input
       run_input_key_t("tddft", "spin", "tddft-spin", KIND_STRING), &
       run_input_key_t("tddft", "energy_tol", "tddft-tol", KIND_FLOAT), &
       run_input_key_t("tddft", "max_iterations", "tddft-iterations", KIND_INT), &
+      run_input_key_t("tddft", "missed_root_iterations", "tddft-missed-root-iterations", KIND_INT), &
       run_input_key_t("tddft", "cpks_tol", "tddft-cpks-tol", KIND_FLOAT), &
       run_input_key_t("tddft", "roots_per_sweep", "tddft-sweep", KIND_INT), &
       run_input_key_t("tddft", "grid_response", "tddft-grid-response", KIND_BOOL_ON), &
