@@ -46,9 +46,18 @@ module trc_tddft
    !! J[T^T] = J[T], so J sees only Ts, and f_xc, a functional of the density,
    !! only the symmetric part.) A-B therefore has no J and no f_xc term: for a
    !! pure functional it is the diagonal (e_a - e_i), and the antisymmetric
-   !! half of the batch is not built. The exchange of Ta needs
-   !! `fock_nosym_many`, which keeps the antisymmetric part of K that the
-   !! folded `fock` would drop; f_xc[Ts] is `fxc_apply_many` as before.
+   !! half of the batch is not built. Ts is exactly symmetric and Ta exactly
+   !! antisymmetric (`tddft_split_density`), the two cases the folded kernels
+   !! are exact for, so the symmetric batch is one `fock_folded_many_lent`
+   !! (j_scale = 4, k_scale = 4 c_x) and the antisymmetric one a second, K
+   !! only (j_scale = 0, k_scale = 4 c_x, `antisymmetric`), which keeps the
+   !! antisymmetric part of K that a symmetric fold would drop. The enumerated
+   !! `fock_nosym_many_lent` they replace costs several times as much per
+   !! density. Measured on one V100 (NVHPC 26.9; 40 waters, def2-SVP
+   !! Cartesian, PBE0, RPA, 5 roots, conv_tol 1e-5, missed_root_iterations 0;
+   !! total wall with the SCF): 2306 s through the enumerated kernel, 159 s
+   !! through the two folded batches, the five roots equal to the eight
+   !! printed decimals (Eh). f_xc[Ts] is `fxc_apply_many` as before.
    !!
    !! The Davidson iteration holds ONE orthonormal basis V for both p and m
    !! (Stratmann, Scuseria, Frisch, J. Chem. Phys. 109, 8218 (1998)) and the
@@ -61,8 +70,9 @@ module trc_tddft
    !! the norm of the residual of the (X, Y) equation above. The corrections
    !! are the diagonally preconditioned residuals of X (divided by e_a - e_i - w)
    !! and of Y (divided by e_a - e_i + w), both added to V. Each iteration
-   !! sends the new trial vectors through ONE `fock_nosym_many` call (their
-   !! symmetric and antisymmetric parts together) and ONE `fxc_apply_many` call.
+   !! sends the new trial vectors through one folded symmetric batch (their
+   !! Ts) and, when c_x /= 0, one folded antisymmetric batch (their Ta), and
+   !! ONE `fxc_apply_many` call.
    !! A subspace Am or Ap that is not positive definite, or a non-positive
    !! root w^2, is an error: the reference may be unstable (or the roots
    !! complex). LIMITATION: this is tested on the Davidson subspace only,
@@ -84,7 +94,7 @@ module trc_tddft
    !! Every new trial vector of an iteration goes through ONE `fock_split_many_lent`
    !! call (two folded integral passes: symmetric and antisymmetric parts) and
    !! ONE `fxc_apply_many` call, whatever the number of roots. The RPA matvec
-   !! below uses `fock_nosym_many_lent`. Both route the batch through the
+   !! below uses `fock_folded_many_lent` (one batch per symmetry). Both route the batch through the
    !! kernels in chunks of a few densities (`eri_lent_chunk_size`), and both
    !! are density-screened by default (`trc_tddft_options_t%density_screen`).
    !! A density-keyed screen on a trial vector that shrinks would change the
@@ -426,16 +436,19 @@ module trc_tddft
       !! after `setup`). A user of the operator that builds it itself, the
       !! checks, gets the default, true.
       logical :: count_survivors = .false.
-      !! Test hook: `apply` passes `count_survivors` to the split build, so `eri%nkept` reads back the
-      !! quartets that survived both screens in the last call (the TDA route only: the enumerated
-      !! kernel of `apply_rpa` has no counter and leaves it 0).
+      !! Test hook: `apply` and `apply_rpa` pass `count_survivors` to the folded builds, so `eri%nkept`
+      !! reads back the quartets that survived both screens in the last call (for `apply_rpa`, summed over
+      !! its symmetric and antisymmetric batches).
       integer :: napply_screened = 0
       !! Calls of `apply`/`apply_rpa` since `setup` that ran with `density_screen` true.
       logical :: force_antisym = .false.
-      !! `apply_rpa` builds the antisymmetric exchange half of its batch even
-      !! when c_x = 0, where A-B is the diagonal and the half is zero. Off by
-      !! default (it doubles the integral work for nothing); a cross-check
-      !! hook for tests.
+      !! `apply_rpa` carries the antisymmetric half of its batch even when
+      !! c_x = 0, where A-B is the diagonal: Ta is formed, its Fock results are
+      !! zeroed on the device without a launch (K is not wanted, and the folded
+      !! kernels' Coulomb half is not valid for an antisymmetric density) and
+      !! the A-B transforms run on them. A test hook for that code path; it no
+      !! longer measures that J[Ta] vanishes (`check_tddft_api`'s `rpa_route`
+      !! does, against the enumerated kernel).
       logical :: has_budget = .false.
       integer(int64) :: budget = 0
       !! Passed to the XC response only when `has_budget`; absent it takes the
@@ -725,16 +738,28 @@ contains
       end do
    end subroutine tddft_sym_in_place
 
+   subroutine tddft_zero_matrix(n, g)
+      !! g := 0, on the device.
+      integer, intent(in) :: n
+      real(dp), intent(out) :: g(n, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         g(i, j) = 0.0_dp
+      end do
+   end subroutine tddft_zero_matrix
+
    subroutine tddft_op_apply_rpa(this, b, eri, la, nvec, x, ax, xg)
       !!
       !! ax(:, :, k, 1) := (A+B) x(:, :, k) and ax(:, :, k, 2) := (A-B)
       !! x(:, :, k) for k = 1..nvec, x and ax HOST arrays (nocc, nvir, nvec
-      !! [, 2]): ONE `fock_nosym_many_lent` call (the symmetric parts of the
-      !! transition densities first, then the antisymmetric parts, the latter
-      !! only when c_x /= 0 or `force_antisym`) and ONE `fxc_apply_many` call
-      !! (the symmetric parts), whatever nvec is. The module header derives the
-      !! products. Scratch is (nao, nao, 2 nvec) twice, plus (nao, nao, nvec)
-      !! for a functional.
+      !! [, 2]): ONE `fock_folded_many_lent` call on the symmetric parts of the
+      !! transition densities (j_scale = 4, k_scale = 4 c_x), a second on the
+      !! antisymmetric parts, K only (j_scale = 0, `antisymmetric`), only when
+      !! c_x /= 0 or `force_antisym`, and ONE `fxc_apply_many` call (the
+      !! symmetric parts), whatever nvec is. With `force_antisym` and c_x = 0
+      !! the antisymmetric half of the Fock result is zero and is set without
+      !! a launch. The module header derives the products. Scratch is
+      !! (nao, nao, 2 nvec) twice, plus (nao, nao, nvec) for a functional.
       !!
       class(trc_tddft_op_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
@@ -748,6 +773,7 @@ contains
       real(dp), allocatable :: tmat(:, :, :), gmat(:, :, :), vxc(:, :, :), half(:, :), half_occ(:, :)
       integer :: n, nocc, nvir, k, ndens
       logical :: antisym
+      integer(int64) :: nkept_sym
 
       if (.not. this%ready) error stop "trc_tddft: operator used before setup"
       if (this%dft .and. .not. present(xg)) error stop "trc_tddft: a functional's matvec needs the xc grid"
@@ -770,9 +796,25 @@ contains
          call la%gemm_mat(half, this%cvir, tmat(:, :, k), transb="T")
       end do
       call tddft_split_density(n, nvec, antisym, tmat)
-      call eri%fock_nosym_many_lent(b, ndens, tmat, gmat, &
-                                    trc_fock_options_t(j_scale=4.0_dp, k_scale=4.0_dp*this%cx, &
-                                                      density_screen=this%density_screen))
+      call eri%fock_folded_many_lent(b, nvec, tmat(:, :, 1:nvec), gmat(:, :, 1:nvec), &
+                                     trc_fock_options_t(j_scale=4.0_dp, k_scale=4.0_dp*this%cx, &
+                                                       density_screen=this%density_screen, &
+                                                       count_survivors=this%count_survivors))
+      nkept_sym = eri%nkept
+      if (antisym) then
+         if (this%cx /= 0.0_dp) then
+            call eri%fock_folded_many_lent(b, nvec, tmat(:, :, nvec + 1:ndens), gmat(:, :, nvec + 1:ndens), &
+                                           trc_fock_options_t(j_scale=0.0_dp, k_scale=4.0_dp*this%cx, &
+                                                             density_screen=this%density_screen, &
+                                                             count_survivors=this%count_survivors), &
+                                           antisymmetric=.true.)
+            eri%nkept = eri%nkept + nkept_sym
+         else
+            do k = 1, nvec
+               call tddft_zero_matrix(n, gmat(:, :, nvec + k))
+            end do
+         end if
+      end if
       if (this%density_screen) this%napply_screened = this%napply_screened + 1
       if (this%dft) then
          if (this%has_budget) then

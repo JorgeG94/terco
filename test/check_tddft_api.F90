@@ -19,7 +19,11 @@ module check_tddft_api_suite
    !!     is the exact derivative: it matches a Richardson finite difference of
    !!     E_SCF + omega over one atom's coordinates, the grid and SCF rebuilt at
    !!     every displacement, while the Pulay-only one misses it;
-   !!  4. what is refused before any work: triplets, meta-GGA, range-separated,
+   !!  4. (argument `rpa_route`) the RPA matvec's two Fock batches, folded and symmetric for Ts and folded and
+   !!     antisymmetric for Ta, against the same products formed through the enumerated `fock_nosym_many` on the
+   !!     split densities: Hartree-Fock (both products), B3LYP (A-B, which has no xc term, so the whole product), PBE
+   !!     (A-B is the diagonal, with and without `force_antisym`, which must also leave A+B alone);
+   !!  5. what is refused before any work: triplets, meta-GGA, range-separated,
    !!     VV10 and double-hybrid functionals, a spherical basis, an unknown
    !!     functional, a root outside 1..nroots, --df and a continuum solvent.
    !! Run from test/. A test-drive suite.
@@ -31,7 +35,9 @@ module check_tddft_api_suite
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, trc_fock_options_t
+   use trc_xc_batch, only: trc_xc_grid_t
+   use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_tddft, only: trc_tddft_op_t, trc_tddft_reference_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_result_t, trc_tddft_run_solve, &
@@ -56,6 +62,9 @@ module check_tddft_api_suite
    !! The Davidson residual tolerance of the density-screen checks.
    real(dp), parameter :: SCREEN_ERI_THRESH = 1.0e-8_dp
    !! The integral threshold of the matvec work check: loose enough that a small transition-density block drops quartets.
+   real(dp), parameter :: RPA_ROUTE_TOL = 1.0e-11_dp
+   !! The RPA matvec's folded route against the enumerated kernel, relative to the largest element: both add the
+   !! same quartets in a different order (1e-14 in check_fock_split).
    real(dp), parameter :: GATE_GRAD = 5.0e-9_dp
    !! The gradient checks' gate against pyscf (check_tddft_grad).
    real(dp), parameter :: FD_STEP = 2.5e-3_dp
@@ -91,6 +100,11 @@ contains
                      new_unittest("density screen: the TDA matvec drops work with the screen on", test_screen_work_tda), &
                      new_unittest("density screen: the RPA matvec changes at threshold level with the screen on", &
                                   test_screen_work_rpa) &
+                     ]
+      else if (trim(mode_arg) == "rpa_route") then
+         testsuite = [ &
+                     new_unittest("RPA matvec vs the enumerated kernel: Hartree-Fock", test_rpa_route_hf), &
+                     new_unittest("RPA matvec vs the enumerated kernel: B3LYP (A-B) and PBE", test_rpa_route_dft) &
                      ]
       else if (trim(mode_arg) == "grad_tda") then
          testsuite = [new_unittest("TDA gradient of the first and last root vs pyscf (Pulay only)", test_gradient_tda)]
@@ -428,9 +442,10 @@ contains
       !!    which must fall with the screen on, and the result moves by a nonzero amount no larger than the dropped
       !!    quartets allow, 2 x 8 x ncart^2 (|j| + |k|) t each (j = 2, k = 2 c_x for HF; the derivation is in
       !!    check_fock_split's run_screen_threshold);
-      !!  - RPA: the enumerated kernel has no survivor counter, so the observable is the result, which must differ
-      !!    from the unscreened one (the screen engaged). No bound is asserted: without a survivor count there is no
-      !!    number of dropped quartets to derive one from;
+      !!  - RPA: the survivor count (summed over the symmetric and antisymmetric folded batches) must fall as well,
+      !!    and the result must differ from the unscreened one (the screen engaged). No bound is asserted: the
+      !!    scales differ between the two batches (j = 4 and 0, k = 4 c_x), so the TDA's derivation does not apply as
+      !!    written;
       !!  - both: `napply_screened` counts the screened passes.
       type(error_type), allocatable, intent(out) :: error
       logical, intent(in) :: tda
@@ -492,9 +507,9 @@ contains
       call global_logger%info("tddft api "//what//" matvec work: survivors "//to_string(nk_on)//" screened, "// &
                               to_string(nk_off)//" unscreened; max|screened - unscreened| "//to_string(diff, "es10.3"))
       if (.not. allocated(error)) call check(error, diff > 0.0_dp, what//": the screen changed nothing")
+      if (.not. allocated(error)) call check(error, nk_on < nk_off, "the screened "//what//" matvec dropped no quartet ("// &
+                                             to_string(nk_on)//" of "//to_string(nk_off)//")")
       if (tda .and. .not. allocated(error)) then
-         call check(error, nk_on < nk_off, "the screened TDA matvec dropped no quartet ("//to_string(nk_on)//" of "// &
-                    to_string(nk_off)//")")
          ! j = 2, k = 2 c_x = 2 (Hartree-Fock): the folded kernels' bound, per dropped quartet.
          bound = 2.0_dp*8.0_dp*real(ncart*ncart, dp)*(2.0_dp + 2.0_dp)*SCREEN_ERI_THRESH*real(nk_off - nk_on, dp)
          if (.not. allocated(error)) call check(error, diff <= bound, "screened vs unscreened "//to_string(diff, "es10.3")// &
@@ -514,6 +529,154 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call screen_work(error, .false.)
    end subroutine test_screen_work_rpa
+
+   subroutine rpa_fock_reference(fx, eri, cx, nv, x, ax1, ax2)
+      !! The Fock parts of the RPA products through the enumerated kernel, as the matvec formed them before the folded
+      !! route: P[G] = C_occ^T G C_vir of G = nosym(4 J - 4 c_x K / 2) of Ts and of Ta, plus the diagonal on each.
+      !! ax1 = (e_a - e_i) x + P[G[Ts]] (no xc term), ax2 = (e_a - e_i) x + P[G[Ta]].
+      type(fixture_t), intent(in) :: fx
+      type(trc_eri_t), intent(inout) :: eri
+      real(dp), intent(in) :: cx
+      integer, intent(in) :: nv
+      real(dp), intent(in) :: x(:, :, :)
+      real(dp), intent(out) :: ax1(:, :, :), ax2(:, :, :)
+      real(dp), allocatable :: t(:, :, :), ts(:, :, :), ta(:, :, :), gs(:, :, :), ga(:, :, :)
+      integer :: n, nocc, nvir, k, i, a
+      n = fx%bas%nao
+      nocc = fx%nocc
+      nvir = size(fx%scf%cmo, 2) - nocc
+      allocate (t(n, n, nv), ts(n, n, nv), ta(n, n, nv), gs(n, n, nv), ga(n, n, nv))
+      do k = 1, nv
+         t(:, :, k) = matmul(matmul(fx%scf%cmo(:, 1:nocc, 1), x(:, :, k)), transpose(fx%scf%cmo(:, nocc + 1:nocc + nvir, 1)))
+         ts(:, :, k) = 0.5_dp*(t(:, :, k) + transpose(t(:, :, k)))
+         ta(:, :, k) = 0.5_dp*(t(:, :, k) - transpose(t(:, :, k)))
+      end do
+      call eri%fock_nosym_many(fx%bas, nv, ts, gs, trc_fock_options_t(j_scale=4.0_dp, k_scale=4.0_dp*cx, density_screen=.false.))
+      call eri%fock_nosym_many(fx%bas, nv, ta, ga, trc_fock_options_t(j_scale=4.0_dp, k_scale=4.0_dp*cx, density_screen=.false.))
+      do k = 1, nv
+         ax1(:, :, k) = matmul(matmul(transpose(fx%scf%cmo(:, 1:nocc, 1)), gs(:, :, k)), fx%scf%cmo(:, nocc + 1:nocc + nvir, 1))
+         ax2(:, :, k) = matmul(matmul(transpose(fx%scf%cmo(:, 1:nocc, 1)), ga(:, :, k)), fx%scf%cmo(:, nocc + 1:nocc + nvir, 1))
+         do a = 1, nvir
+            do i = 1, nocc
+               ax1(i, a, k) = ax1(i, a, k) + (fx%scf%eps(nocc + a, 1) - fx%scf%eps(i, 1))*x(i, a, k)
+               ax2(i, a, k) = ax2(i, a, k) + (fx%scf%eps(nocc + a, 1) - fx%scf%eps(i, 1))*x(i, a, k)
+            end do
+         end do
+      end do
+   end subroutine rpa_fock_reference
+
+   subroutine rpa_route(error, functional, force_antisym)
+      !! One functional: `apply_rpa` against `rpa_fock_reference`. Hartree-Fock compares both products; a
+      !! functional compares A-B, which has no xc term (for a pure functional it is the diagonal), and, for the pure
+      !! one, A+B with `force_antisym` against without.
+      type(error_type), allocatable, intent(out) :: error
+      character(len=*), intent(in) :: functional
+      logical, intent(in) :: force_antisym
+      integer, parameter :: NV = 3
+      type(fixture_t) :: fx
+      type(trc_eri_t) :: eri
+      type(trc_tddft_reference_t) :: ref
+      type(trc_tddft_op_t) :: op
+      type(trc_xc_grid_t) :: xg
+      type(trc_xc_functional_t) :: func
+      type(error_t) :: err
+      real(dp), allocatable :: x(:, :, :), ax(:, :, :, :), ax_b(:, :, :, :), r1(:, :, :), r2(:, :, :)
+      real(dp) :: d1, d2, scale
+      integer :: nvir, k, i, a
+      logical :: ok, dft, own_xg
+
+      dft = len_trim(functional) > 0
+      own_xg = .false.
+      call fixture_build(fx, "../basis_sets/3-21g.json", functional, error)
+      if (allocated(error)) then
+         call fixture_release(fx)
+         return
+      end if
+      call eri%build(fx%bas, 1.0e-14_dp)
+      if (dft) then
+         ok = xc_functional_by_name(functional, func)
+         call check(error, ok, "unrecognised functional "//functional)
+         if (allocated(error)) then
+            call eri%release()
+            call fixture_release(fx)
+            return
+         end if
+         call xg%build(size(fx%scf%grid_w), fx%scf%grid_r, fx%scf%grid_w, fx%bas, max_pts=fx%sopts%grid_max_pts)
+         call xg%to_device()
+         own_xg = .true.
+         call ref%set(fx%nocc, fx%scf%cmo(:, :, 1), fx%scf%eps(:, 1), fx%scf%dmat(:, :, 1), func)
+         call op%setup(fx%bas, fx%la, ref, err, xg)
+      else
+         call ref%set(fx%nocc, fx%scf%cmo(:, :, 1), fx%scf%eps(:, 1), fx%scf%dmat(:, :, 1))
+         call op%setup(fx%bas, fx%la, ref, err)
+      end if
+      call check(error, .not. err%has_error(), "operator setup: "//err%get_message())
+      if (.not. allocated(error)) then
+         nvir = op%nvir
+         op%density_screen = .false.
+         op%force_antisym = force_antisym
+         allocate (x(fx%nocc, nvir, NV), ax(fx%nocc, nvir, NV, 2), ax_b(fx%nocc, nvir, NV, 2))
+         allocate (r1(fx%nocc, nvir, NV), r2(fx%nocc, nvir, NV))
+         ! Dense, deterministic trial vectors: nothing is symmetric, so T has both parts.
+         do k = 1, NV
+            do a = 1, nvir
+               do i = 1, fx%nocc
+                  x(i, a, k) = cos(real(3*i + 5*a + 7*k, dp)) + 0.3_dp*sin(real(2*i - 3*a + k, dp))
+               end do
+            end do
+         end do
+         call rpa_fock_reference(fx, eri, op%cx, NV, x, r1, r2)
+         if (dft) then
+            call op%apply_rpa(fx%bas, eri, fx%la, NV, x, ax, xg)
+         else
+            call op%apply_rpa(fx%bas, eri, fx%la, NV, x, ax)
+         end if
+         scale = maxval(abs(r2))
+         d2 = maxval(abs(ax(:, :, :, 2) - r2))/scale
+         call global_logger%info("tddft api rpa route "//functional//": max|(A-B)x - reference|/max "//to_string(d2, "es10.3"))
+         call check(error, d2 < RPA_ROUTE_TOL, "(A-B)x differs from the enumerated reference, relative "//to_string(d2, "es10.3"))
+         if (.not. dft .and. .not. allocated(error)) then
+            d1 = maxval(abs(ax(:, :, :, 1) - r1))/maxval(abs(r1))
+            call global_logger%info("tddft api rpa route HF: max|(A+B)x - reference|/max "//to_string(d1, "es10.3"))
+            call check(error, d1 < RPA_ROUTE_TOL, "(A+B)x differs from the enumerated reference, relative "//to_string(d1, "es10.3"))
+            ! The two halves must differ, or the test cannot see a swapped pair of batches.
+            if (.not. allocated(error)) call check(error, maxval(abs(r1 - r2)) > 1.0e-3_dp*scale, "A+B and A-B coincide")
+         end if
+         if (dft .and. op%cx == 0.0_dp .and. .not. allocated(error)) then
+            ! A pure functional's A-B is the diagonal, whether or not the (zero) antisymmetric batch is formed.
+            ! The product is stored before the comparison: written inline as ax - de*x, nvfortran contracts
+            ! the expression to a fused multiply-add and reports the rounding of de*x (1.5e-15 here) as a difference.
+            r2 = spread(op%de, 3, NV)*x
+            d2 = maxval(abs(ax(:, :, :, 2) - r2))
+            call check(error, all(ax(:, :, :, 2) == r2), "pure functional: A-B is not the diagonal, max "// &
+                       to_string(d2, "es10.3"))
+            if (.not. allocated(error)) then
+               op%force_antisym = .not. force_antisym
+               call op%apply_rpa(fx%bas, eri, fx%la, NV, x, ax_b, xg)
+               call check(error, all(ax_b(:, :, :, 2) == ax(:, :, :, 2)), "force_antisym changed A-B of a pure functional")
+               if (.not. allocated(error)) &
+                  call check(error, maxval(abs(ax_b(:, :, :, 1) - ax(:, :, :, 1))) < 1.0e-12_dp, &
+                             "force_antisym changed A+B of a pure functional")
+            end if
+         end if
+      end if
+      call op%release()
+      if (own_xg) call xg%release()
+      call eri%release()
+      call fixture_release(fx)
+   end subroutine rpa_route
+
+   subroutine test_rpa_route_hf(error)
+      type(error_type), allocatable, intent(out) :: error
+      call rpa_route(error, "", .false.)
+   end subroutine test_rpa_route_hf
+
+   subroutine test_rpa_route_dft(error)
+      type(error_type), allocatable, intent(out) :: error
+      call rpa_route(error, "b3lyp", .false.)
+      if (allocated(error)) return
+      call rpa_route(error, "pbe", .true.)
+   end subroutine test_rpa_route_dft
 
    subroutine gradient_vs_ref(error, ref_name, tda)
       !! The first and the last root's Pulay-only gradient against the pyscf reference (3 roots).

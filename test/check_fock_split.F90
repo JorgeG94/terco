@@ -4,7 +4,7 @@ module check_fock_split_suite
    !! FOLDED kernels, D = S + A, G[D] = G[S] + K-only antisymmetric G[A], against
    !! eri%fock_nosym_many (the enumerated kernel, kept as the reference).
    !!
-   !! Fourteen checks (argv: xyz, basis json; test/CMakeLists.txt):
+   !! Fifteen checks (argv: xyz, basis json; test/CMakeLists.txt):
    !!
    !!  1. random non-symmetric densities, (j, k) in {(1,1), (1,0), (0,1),
    !!     (1,0.25)}, omega 0 and 0.3: split equals nosym;
@@ -44,7 +44,14 @@ module check_fock_split_suite
    !!     build differs from the unscreened one by no more than the bound the
    !!     dropped quartets allow, and the bound is per launch (a tiny density
    !!     in a launch with a large one is not screened away);
-   !! 14. density_screen off is the plain Schwarz bound whatever the chunking.
+   !! 14. density_screen off is the plain Schwarz bound whatever the chunking;
+   !! 15. `fock_folded_many_lent` (the RPA matvec's route: one folded batch on
+   !!     densities that are exactly symmetric, or exactly antisymmetric with
+   !!     j_scale = 0) equals the enumerated `fock_nosym_many` within TOL_SPLIT
+   !!     and the host `fock_folded_many` (bit for bit on the host build),
+   !!     whole and in chunks, screen off and on, with k_scale = 0; a
+   !!     non-symmetric density through it is wrong (negative control), and the
+   !!     antisymmetric batch with j_scale /= 0 is refused.
    !! With a general-contraction basis (the cc-pVDZ variant) the working basis
    !! is decontracted, so 7 to 14 also cover the device expand and fold.
    !!
@@ -100,7 +107,8 @@ contains
                   new_unittest("device screening, zero blocks: screened equals unscreened exactly", test_screen_zero_blocks), &
                   new_unittest("device screening, real threshold: host agreement, derived bound, per launch", &
                                test_screen_threshold), &
-                  new_unittest("density_screen off ignores the chunking", test_screen_off_chunks) &
+                  new_unittest("density_screen off ignores the chunking", test_screen_off_chunks), &
+                  new_unittest("the device-resident folded build equals nosym and the host folded build", test_lent_folded) &
                   ]
    end subroutine collect_fock_split_tests
 
@@ -961,6 +969,145 @@ contains
          d(:, :, k) = 0.5_dp*(d(:, :, k) + transpose(d(:, :, k)))
       end do
    end subroutine symmetrise_batch
+
+   subroutine test_lent_folded(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: bas
+      type(trc_eri_t) :: eri
+      logical :: built
+      call setup(bas, eri, built, error)
+      if (.not. built) return
+      call run_lent_folded(bas, eri, error)
+      call eri%release(); call bas%release()
+   end subroutine test_lent_folded
+
+   subroutine lent_folded(eri, bas, nd, d, o, anti, chunk, g)
+      !! One `fock_folded_many_lent` build, the result on the host.
+      type(trc_eri_t), intent(inout) :: eri
+      type(trc_basis_t), intent(in) :: bas
+      integer, intent(in) :: nd, chunk
+      real(dp), intent(in) :: d(bas%nao, bas%nao, nd)
+      type(trc_fock_options_t), intent(in) :: o
+      logical, intent(in) :: anti
+      real(dp), intent(out) :: g(bas%nao, bas%nao, nd)
+      g = -99.0_dp
+      eri%many_chunk = chunk
+      !$acc enter data copyin(d) create(g)
+      call eri%fock_folded_many_lent(bas, nd, d, g, o, antisymmetric=anti)
+      !$acc update self(g)
+      !$acc exit data delete(d, g)
+      eri%many_chunk = 0
+   end subroutine lent_folded
+
+   subroutine run_lent_folded(bas, eri, error)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t), intent(in) :: bas
+      type(trc_eri_t), intent(inout) :: eri
+      real(dp), allocatable :: d(:, :, :), ds(:, :, :), da(:, :, :), gref(:, :, :), gh(:, :, :), gl(:, :, :)
+      type(trc_fock_options_t) :: o
+      type(error_t) :: err
+      real(dp) :: sc(2, 5), rel
+      integer :: nao, imix, ia, ichunk, nl
+      logical :: anti
+      character(len=:), allocatable :: label
+      nao = bas%nao
+      allocate (d(nao, nao, ND), ds(nao, nao, ND), da(nao, nao, ND), gref(nao, nao, ND), gh(nao, nao, ND), gl(nao, nao, ND))
+      call nonsym_densities(nao, ND, d)
+      call split_parts(nao, ND, d, ds, da)
+      ! The exactness the route trusts, checked on the inputs themselves.
+      call check(error, all(ds == transpose_batch(nao, ND, ds)), "symmetric input is not exactly symmetric")
+      if (allocated(error)) return
+      call check(error, all(da == -transpose_batch(nao, ND, da)), "antisymmetric input is not exactly antisymmetric")
+      if (allocated(error)) return
+      ! (j, k): the symmetric batch takes all four, the antisymmetric one only j = 0.
+      sc = reshape([1.0_dp, 1.0_dp, 4.0_dp, 1.5_dp, 1.0_dp, 0.0_dp, 0.0_dp, 1.0_dp, 0.0_dp, 0.0_dp], [2, 5])
+      do ia = 1, 2
+         anti = ia == 2
+         do imix = 1, 5
+            if (anti .and. sc(1, imix) /= 0.0_dp) cycle
+            o = trc_fock_options_t(j_scale=sc(1, imix), k_scale=sc(2, imix), density_screen=.false.)
+            label = merge("antisymmetric", "symmetric    ", anti)//" (j,k) "//to_string(sc(1, imix), "f5.2")// &
+                    to_string(sc(2, imix), "f5.2")
+            if (anti) then
+               call eri%fock_nosym_many(bas, ND, da, gref, o)
+               call eri%fock_folded_many(bas, ND, da, gh, o, antisymmetric=.true.)
+               call lent_folded(eri, bas, ND, da, o, .true., 0, gl)
+            else
+               call eri%fock_nosym_many(bas, ND, ds, gref, o)
+               call eri%fock_folded_many(bas, ND, ds, gh, o)
+               call lent_folded(eri, bas, ND, ds, o, .false., 0, gl)
+            end if
+            nl = eri%nlent_launch
+            if (sc(2, imix) /= 0.0_dp .or. sc(1, imix) /= 0.0_dp) then
+               call check(error, maxval(abs(gref)) > 1.0e-3_dp, "reference is trivially zero")
+               if (allocated(error)) return
+            end if
+            rel = maxval(abs(gref - gl))/max(maxval(abs(gref)), tiny(1.0_dp))
+            call global_logger%info("  lent folded "//label//": max|lent - nosym|/max|G| "//to_string(rel, "es10.3"))
+            call check(error, rel < TOL_SPLIT, "lent folded vs nosym, "//label//", relative "//to_string(rel, "es10.3"))
+            if (allocated(error)) return
+            call check_same(error, gh, gl, "lent folded vs host folded, "//label)
+            if (allocated(error)) return
+            call check(error, eri%nsplit_passes == 1 .and. nl >= 1, "one folded pass, "//label)
+            if (allocated(error)) return
+            ! Chunks of two (2 + 1): each density's arithmetic is the same.
+            do ichunk = 2, 2
+               if (anti) then
+                  call lent_folded(eri, bas, ND, da, o, .true., ichunk, gl)
+               else
+                  call lent_folded(eri, bas, ND, ds, o, .false., ichunk, gl)
+               end if
+               call check(error, eri%nlent_launch == 2, "chunks of 2 over 3 densities are two launches, "//label)
+               if (allocated(error)) return
+               call check_same(error, gh, gl, "lent folded in chunks vs host folded, "//label)
+               if (allocated(error)) return
+            end do
+         end do
+      end do
+      ! Screening on: one chunk is the host's bound over the batch, exactly.
+      o = trc_fock_options_t(j_scale=2.0_dp, k_scale=1.0_dp, density_screen=.true.)
+      call eri%fock_folded_many(bas, ND, ds, gh, o)
+      call lent_folded(eri, bas, ND, ds, o, .false., 0, gl)
+      call check_same(error, gh, gl, "lent folded, screened, vs host folded")
+      if (allocated(error)) return
+      o = trc_fock_options_t(j_scale=0.0_dp, k_scale=1.0_dp, density_screen=.true.)
+      call eri%fock_folded_many(bas, ND, da, gh, o, antisymmetric=.true.)
+      call lent_folded(eri, bas, ND, da, o, .true., 0, gl)
+      call check_same(error, gh, gl, "lent folded, antisymmetric, screened, vs host folded")
+      if (allocated(error)) return
+      ! Negative control: a density with no symmetry is NOT what this route
+      ! computes, so the test can fail.
+      o = trc_fock_options_t(j_scale=1.0_dp, k_scale=1.0_dp, density_screen=.false.)
+      call eri%fock_nosym_many(bas, ND, d, gref, o)
+      call lent_folded(eri, bas, ND, d, o, .false., 0, gl)
+      rel = maxval(abs(gref - gl))/maxval(abs(gref))
+      call check(error, rel > TOL_CONTROL, "a non-symmetric density through the folded route must be wrong, relative "// &
+                 to_string(rel, "es10.3"))
+      if (allocated(error)) return
+      ! The refusal: the Coulomb half of an antisymmetric batch.
+      gl = 7.0_dp
+      !$acc enter data copyin(da, gl)
+      call eri%fock_folded_many_lent(bas, ND, da, gl, trc_fock_options_t(j_scale=1.0_dp, k_scale=1.0_dp, &
+                                                                         density_screen=.false.), antisymmetric=.true., err=err)
+      !$acc update self(gl)
+      !$acc exit data delete(da, gl)
+      call check(error, err%has_error(), "antisymmetric with j_scale = 1 must be refused")
+      if (allocated(error)) return
+      call check(error, err%code == ERROR_VALIDATION, "the refusal is a validation error")
+      if (allocated(error)) return
+      call check(error, all(gl == 7.0_dp), "a refused call must leave gmats untouched")
+   end subroutine run_lent_folded
+
+   function transpose_batch(n, nd, a) result(t)
+      !! Each (n, n) slice of `a` transposed.
+      integer, intent(in) :: n, nd
+      real(dp), intent(in) :: a(n, n, nd)
+      real(dp) :: t(n, n, nd)
+      integer :: k
+      do k = 1, nd
+         t(:, :, k) = transpose(a(:, :, k))
+      end do
+   end function transpose_batch
 
    subroutine test_lent_nosym(error)
       type(error_type), allocatable, intent(out) :: error
