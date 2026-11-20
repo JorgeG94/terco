@@ -57,20 +57,50 @@
 ! carry it), so this port drops that factor here, keeping only the
 ! 4*pi / 16*pi^2 PySCF's own formula also carries -- ECP_DESIGN.md's note.
 !
-! NO 3-CENTRE OVERLAP SCREEN (yet). libfint's `ecp_check_3c_overlap` skips
-! a (shell pair, ECP atom) that cannot contribute; this port always
-! evaluates every one. That costs time on a molecule with several ECP
-! centres far from most shell pairs and changes no number -- the actual
-! quadrature, run honestly on a far-separated pair, already comes out
-! negligibly small (the `ecp_ints_ih_far` case: I-H at 25 bohr) -- so it is
-! deferred rather than risking a screening bound built on an unverified
-! "smallest exponent last" ordering of a BSE-JSON-read ECP channel or
-! orbital shell (see git history/PR description for the measurement that
-! would justify adding it back).
+! 3-CENTRE SCREEN. K2 runs only the (shell pair, ECP atom) tasks whose
+! bound can reach ECP_SCREEN_THRESH. A task is one K2 launch item, and the
+! unscreened task count grows as nshell**2 * natm_ecp / 2: 24 CH3I in
+! def2-SVP (600 shells, 24 ECP atoms) is 4,327,200 tasks, whose single K2
+! launch took 30.3 s of a 43 s V100 run while 98.8 % of the blocks had a
+! largest element below 1e-20 (2,513,255 exactly zero). The bound is built
+! from every primitive of the shell and every row of the channel, so it
+! assumes no exponent ordering in either. Per (orbital shell i, channel
+! group g), `ecp_screen_item` returns
+!     q(i,g) = sqrt( 4*pi * sum over radial levels L of  step_L *
+!                    sum over the level's points k of  w_k |U_g(r_k)| F_i(r_k)**2 ),
+!     F_i(r) = sum_p |c_p| (r + d)**l exp(-a_p (r - d)**2),
+! with d = |R_C - R_i| and step_L the weight scale of level L (the stride of
+! its points in the finest grid), the weight the `*_levels` routines of
+! trc_ecp_radial.F90 give a level's points. The screen's level-L set holds
+! every point of the finest grid whose index is a multiple of step_L, which
+! is a superset of the points those routines add at level L (they add
+! 2**L - 1 new points to the previous level's set); the extra terms are
+! non-negative, so they only enlarge the bound. On the sphere of radius r about the ECP
+! centre C a point is at least |r - d| and at most r + d from R_i, so F_i
+! bounds the shell's largest value there; the angular integral of a product
+! (type 1) and the projection onto a channel's Y_lm (type 2, norm-
+! decreasing) are then at most 4*pi*F_i*F_j per radial point. Each level's
+! rule has positive weights, so Cauchy-Schwarz over its points and then
+! over the levels gives, for the sum Q of level rules of the product,
+!     Q(F_i F_j) <= sqrt( Q(F_i**2) Q(F_j**2) ),
+! and a block element, which is a combination of level rules each taken at
+! whichever level converged for it (per primitive pair or per lambda), is
+! bounded by  sum over the atom's groups of q(i,g) q(j,g), local and
+! semi-local alike. The sum over levels, not the largest level, is what
+! keeps the bound valid whatever level each component picked. q is formed
+! with a running scale so q(i,g)*q(j,g) is not lost to underflow of the
+! squares. U_g is the potential the quadrature actually uses (K1's cache),
+! so nothing here assumes it is short-ranged: a long-ranged one gives a
+! large q and nothing is dropped. A task whose bound is below
+! ECP_SCREEN_THRESH is dropped: its slot is never computed and its
+! convergence flag is not counted. The kept tasks are compacted into a
+! list K2 runs over, and `block_buffer`/`conv_fail` hold only that list.
+! check_ecp_screen.F90 asserts bound >= largest element on every task of
+! several systems, through `trc_ecp_screen_stats_t`.
 #include "inc/trc_dc_index.inc"
 
 module trc_ecp
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use trc_basis_types, only: trc_basis_t
    use trc_ecp_types, only: trc_ecp_t
    use trc_ecp_quadrature, only: ECP_LMAX, ECP_LEVEL0, ECP_LEVEL_MAX, ECP_NRS, &
@@ -82,12 +112,21 @@ module trc_ecp
                              ecp_radial_type2_lab_levels, ECP_NLEVEL
    use trc_sph, only: sph_cart_to_sph
    use trc_cart_perm, only: cart_perm_l2b
-   use trc_error, only: error_t, ERROR_VALIDATION
+   use trc_error, only: error_t, ERROR_VALIDATION, ERROR_GENERIC
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
    implicit none
    private
-   public :: trc_ecp_matrix, trc_ecp_matrix_cart
+   public :: trc_ecp_matrix, trc_ecp_matrix_cart, trc_ecp_screen_stats_t
+
+   type :: trc_ecp_screen_stats_t
+      !! What the 3-centre screen did, for a test. `worst_ratio` and
+      !! `nzero_bound` cover the tasks that ran (every task for `screen=.false.`).
+      integer(int64) :: ntask = 0              !! (shell pair, ECP atom) tasks in all
+      integer(int64) :: nkept = 0              !! tasks that ran
+      real(dp) :: worst_ratio = 0.0_dp         !! max over tasks of (largest |element|)/bound, bound > 0
+      integer(int64) :: nzero_bound = 0        !! tasks with bound == 0 and a nonzero element
+   end type trc_ecp_screen_stats_t
 
    integer, parameter :: NFMAX = (ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 2)/2     !! 10
    integer, parameter :: NPMAX = 16       !! primitives per orbital shell or ECP row
@@ -108,6 +147,12 @@ module trc_ecp
    integer, parameter :: FAC1SIZE = NFMAX*(ECP_ORB_LMAX + 1)**3                  !! 640
    integer, parameter :: ANG2SIZE = (ECP_ORB_LMAX + 1)*NFMAX*(2*ECP_LMAX + 1)*LC1MAX  !! 3960
 
+   real(dp), parameter :: ECP_SCREEN_THRESH = 1.0e-20_dp
+   !! A (shell pair, ECP atom) task whose bound (see this file's header) is
+   !! below this is not run: ECP_NEGLIGIBLE's scale, five orders below the
+   !! 1e-15 absolute agreement check_ecp_screen.F90 requires. Each matrix
+   !! element sums at most one dropped block per ECP atom, so the worst-case
+   !! error is natm_ecp times this.
    real(dp), parameter :: ECP_NEGLIGIBLE = 1.0e-20_dp
    !! A contribution below this, to a matrix whose real entries run from
    !! ~1e-3 to a few hundred (measured: Xe/def2-SVP's U diagonal reaches
@@ -172,7 +217,7 @@ contains
       deallocate (mcart)
    end subroutine trc_ecp_matrix
 
-   subroutine trc_ecp_matrix_cart(b, ecp, mcart, error)
+   subroutine trc_ecp_matrix_cart(b, ecp, mcart, error, screen, stats)
       !!
       !! The same matrix, always Cartesian (never folded), `mcart(b%nao, b%nao)`
       !! coming back freshly allocated and zeroed. `trc_ecp_matrix` is this plus
@@ -183,10 +228,22 @@ contains
       !! own gives the same number to round-off, but doing it together is one
       !! fewer sph_cart_to_sph call per SCF geometry).
       !!
+      !! The 3-centre screen drops the (shell pair, ECP atom) tasks whose bound
+      !! is negligible (this file's header). `screen=.false.` runs every task
+      !! instead, so a test can compare the two; `stats` returns the task
+      !! counts and the bound's worst ratio to the largest element it bounds.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_ecp_t), intent(in) :: ecp
       real(dp), allocatable, intent(out) :: mcart(:, :)
       type(error_t), intent(inout) :: error
+      logical, intent(in), optional :: screen
+      type(trc_ecp_screen_stats_t), intent(out), optional :: stats
+      logical :: do_screen
+      type(trc_ecp_screen_stats_t) :: st
+
+      do_screen = .true.
+      if (present(screen)) do_screen = screen
 
       if (b%nshell > 0) then
          if (maxval(b%sh_l) > ECP_ORB_LMAX) then
@@ -234,12 +291,13 @@ contains
                return
             end if
          end if
-         call ecp_matrix_cart(b, ecp, mcart, error)
+         call ecp_matrix_cart(b, ecp, mcart, error, do_screen, present(stats), st)
          if (error%has_error()) return
       end if
+      if (present(stats)) stats = st
    end subroutine trc_ecp_matrix_cart
 
-   subroutine ecp_matrix_cart(b, ecp, mcart, error)
+   subroutine ecp_matrix_cart(b, ecp, mcart, error, do_screen, want_stats, st)
       !!
       !! The Cartesian build: groups the ECP rows into (atom, l) channels, then
       !! K1/K2/K3 as this module's own header describes.
@@ -248,17 +306,24 @@ contains
       type(trc_ecp_t), intent(in) :: ecp
       real(dp), intent(inout) :: mcart(b%nao, b%nao)
       type(error_t), intent(inout) :: error
+      logical, intent(in) :: do_screen, want_stats
+      type(trc_ecp_screen_stats_t), intent(out) :: st
 
       real(dp) :: rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1)
+      real(dp), allocatable :: sval(:, :)
+      integer, allocatable :: kt_p(:), kt_a(:)
+      real(dp) :: bound, amax
+      integer(int64) :: nk64, ntot64
+      integer :: nkept, kk
       real(dp), allocatable :: ur_cache(:, :)
       real(dp), allocatable :: fac1_cache(:, :, :), fac2_cache(:, :, :), ang2_cache(:, :, :)
       integer, allocatable :: grp_atom(:), grp_l(:), grp_row0(:), grp_row1(:)
       integer, allocatable :: atm_ecp(:), atm_grp0(:), atm_grp1(:)
       integer, allocatable :: pr_i(:), pr_j(:)
-      real(dp), allocatable :: block_buffer(:, :, :)
-      integer, allocatable :: conv_fail(:, :)
+      real(dp), allocatable :: block_buffer(:, :)
+      integer, allocatable :: conv_fail(:)
       integer :: ngroup, natm_ecp, npair, nshell
-      integer :: i, j, p, g, a, nfail, t, ntask, ntask1b
+      integer :: i, j, p, g, a, nfail, t, ntask1b
 
       call build_groups(ecp, grp_atom, grp_l, grp_row0, grp_row1, ngroup)
       if (ngroup == 0) return
@@ -287,10 +352,6 @@ contains
          end do
       end do
 
-      allocate (block_buffer(SLOT_SIZE, npair, max(natm_ecp, 1)), conv_fail(npair, max(natm_ecp, 1)))
-      block_buffer = 0.0_dp
-      conv_fail = 0
-
       ! K1b: once per (orbital shell, ECP channel group) -- not once per
       ! shell pair -- the semi-local radial/angular factors (fac2_cache,
       ! ang2_cache) and the local term's static centre-shift factors
@@ -299,9 +360,10 @@ contains
       allocate (fac1_cache(0:FAC1SIZE - 1, nshell, ngroup))
       allocate (fac2_cache(0:ECP_NRS*LC1MAX - 1, nshell, ngroup))
       allocate (ang2_cache(0:ANG2SIZE - 1, nshell, ngroup))
+      allocate (sval(nshell, ngroup))
 
       !$acc enter data copyin(ws, b, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, b%at_r, grp_atom, grp_l) &
-      !$acc            create(fac1_cache, fac2_cache, ang2_cache)
+      !$acc            create(fac1_cache, fac2_cache, ang2_cache, sval)
       ntask1b = nshell*ngroup
       do concurrent(t=1:ntask1b) local(i, g)
          g = (t - 1)/nshell + 1
@@ -311,33 +373,119 @@ contains
                            fac1_cache(:, i, g), fac2_cache(:, i, g), ang2_cache(:, i, g))
       end do
 
-      !$acc enter data copyin(pr_i, pr_j, b%sh_ao) copyin(atm_ecp, atm_grp0, atm_grp1) &
-      !$acc            create(block_buffer, conv_fail)
-      if (natm_ecp > 0) then
-         ! Flattened, not do concurrent(p=1:npair, a=1:natm_ecp): a
-         ! two-index do concurrent whose outer extent is small and set at
-         ! run time has, in testing here, failed the kernel launch outright
-         ! on the GPU build (nvfortran, cc70) rather than merely dropping a
-         ! slice -- gpu-pitfalls.md's own warning about this shape, and
-         ! natm_ecp (the number of distinct ECP atoms) is exactly the kind
-         ! of small run-time extent it means: 1 or 2 for every case
-         ! validated so far.
-         ntask = npair*natm_ecp
-         do concurrent(t=1:ntask) local(p, a)
-            a = (t - 1)/npair + 1
-            p = t - (a - 1)*npair
+      ! Screen: one scalar per (orbital shell, channel group), then the
+      ! per-task bound on the host from those (a multiply per group), kept
+      ! tasks compacted a-major and p-minor, the order the atoms are
+      ! summed in. The kernel runs only if the screen or the statistics
+      ! read the bound.
+      if (do_screen .or. want_stats) then
+         do concurrent(t=1:ntask1b) local(i, g)
+            g = (t - 1)/nshell + 1
+            i = t - (g - 1)*nshell
+            call ecp_screen_item(TRC_DC_INDEX(i), TRC_DC_INDEX(g), nshell, b%sh_l, b%sh_np, b%maxnp, b%sh_e, b%sh_c, &
+                                 b%sh_r, b%natm, b%at_r, ngroup, grp_atom, rs, ws, ur_cache(:, g), sval(i, g))
+         end do
+         !$acc update self(sval)
+      end if
+      !$acc exit data delete(sval)
+
+      ntot64 = int(npair, int64)*int(natm_ecp, int64)
+      nk64 = 0
+      if (do_screen) then
+         do a = 1, natm_ecp
+            do p = 1, npair
+               bound = pair_bound(sval, nshell, ngroup, pr_i(p), pr_j(p), atm_grp0(a), atm_grp1(a))
+               ! `.not. (<)`, so a NaN bound keeps its task.
+               if (.not. (bound < ECP_SCREEN_THRESH)) nk64 = nk64 + 1
+            end do
+         end do
+      else
+         nk64 = ntot64
+      end if
+      call global_logger%performance("   ECP 3-centre screen: kept "//to_string(nk64)//" of "// &
+                                     to_string(ntot64)//" (shell pair, ECP atom) tasks")
+      if (nk64 > int(huge(nkept), int64)) then
+         call error%set(ERROR_VALIDATION, "trc_ecp_matrix: "//to_string(nk64)//" (shell pair, ECP atom) "// &
+                        "tasks survive the screen, more than a default integer can index")
+         !$acc exit data delete(ws, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, b%at_r, b, &
+         !$acc                  grp_l, grp_atom, rs, ur_cache) &
+         !$acc            delete(fac1_cache, fac2_cache, ang2_cache)
+         return
+      end if
+      nkept = int(nk64)
+      st%ntask = ntot64
+      st%nkept = nk64
+
+      allocate (kt_p(nkept), kt_a(nkept))
+      kk = 0
+      do a = 1, natm_ecp
+         do p = 1, npair
+            if (do_screen) then
+               bound = pair_bound(sval, nshell, ngroup, pr_i(p), pr_j(p), atm_grp0(a), atm_grp1(a))
+               if (bound < ECP_SCREEN_THRESH) cycle
+            end if
+            kk = kk + 1
+            if (kk <= nkept) then
+               kt_p(kk) = p
+               kt_a(kk) = a
+            end if
+         end do
+      end do
+      if (kk /= nkept) then
+         call error%set(ERROR_GENERIC, "trc_ecp_matrix: the screen's count and fill passes disagree ("// &
+                        to_string(nkept)//" counted, "//to_string(kk)//" found); internal error")
+         !$acc exit data delete(ws, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, b%at_r, b, &
+         !$acc                  grp_l, grp_atom, rs, ur_cache) &
+         !$acc            delete(fac1_cache, fac2_cache, ang2_cache)
+         return
+      end if
+
+      allocate (block_buffer(SLOT_SIZE, nkept), conv_fail(nkept))
+      block_buffer = 0.0_dp
+      conv_fail = 0
+
+      ! With nothing kept no kernel writes the buffers, so nothing is
+      ! mapped, launched or copied back for K2.
+      if (nkept > 0) then
+         !$acc enter data copyin(pr_i, pr_j, kt_p, kt_a) copyin(atm_ecp, atm_grp0, atm_grp1) &
+         !$acc            create(block_buffer, conv_fail)
+         ! One index over the kept list, (kt_p(t), kt_a(t)) giving the pair
+         ! and the ECP atom of task t, not do concurrent(p=1:npair,
+         ! a=1:natm_ecp): a two-index do concurrent whose outer extent is
+         ! small and set at run time (natm_ecp is 1 or 2 for most cases) has
+         ! failed the kernel launch outright on the GPU build (nvfortran,
+         ! cc70) rather than merely dropping a slice -- gpu-pitfalls.md's
+         ! own warning about this shape.
+         do concurrent(t=1:nkept) local(p, a)
+            p = kt_p(t)
+            a = kt_a(t)
             call ecp_pair_atom_item(pr_i(p), pr_j(p), atm_ecp(a), atm_grp0(a), atm_grp1(a), &
                                     ngroup, grp_l, &
                                     nshell, b%sh_l, b%sh_np, b%maxnp, b%sh_e, b%sh_c, b%sh_r, &
                                     b%natm, b%at_r, &
                                     rs, ws, ur_cache, fac1_cache, fac2_cache, ang2_cache, &
-                                    block_buffer(:, p, a), conv_fail(p, a))
+                                    block_buffer(:, t), conv_fail(t))
+         end do
+         !$acc update self(block_buffer, conv_fail)
+         !$acc exit data delete(pr_i, pr_j, kt_p, kt_a, atm_ecp, atm_grp0, atm_grp1, block_buffer, conv_fail)
+      end if
+      !$acc exit data delete(ws, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, b%at_r, b, &
+      !$acc                  grp_l, grp_atom, rs, ur_cache) &
+      !$acc            delete(fac1_cache, fac2_cache, ang2_cache)
+
+      if (want_stats) then
+         do t = 1, nkept
+            amax = maxval(abs(block_buffer(:, t)))
+            p = kt_p(t)
+            a = kt_a(t)
+            bound = pair_bound(sval, nshell, ngroup, pr_i(p), pr_j(p), atm_grp0(a), atm_grp1(a))
+            if (bound > 0.0_dp) then
+               st%worst_ratio = max(st%worst_ratio, amax/bound)
+            else if (amax > 0.0_dp) then
+               st%nzero_bound = st%nzero_bound + 1
+            end if
          end do
       end if
-      !$acc update self(block_buffer, conv_fail)
-      !$acc exit data delete(ws, pr_i, pr_j, b%sh_l, b%sh_np, b%sh_e, b%sh_c, b%sh_r, b%sh_ao, b%at_r, b, &
-      !$acc                  grp_l, grp_atom, atm_ecp, atm_grp0, atm_grp1, rs, ur_cache, block_buffer, conv_fail) &
-      !$acc            delete(fac1_cache, fac2_cache, ang2_cache)
 
       ! A block whose levels never agree twice in a row keeps the finest
       ! level, as pyscf's nr_ecp.c does. It is not an error: on I2, Xe2,
@@ -350,24 +498,39 @@ contains
                                  " (shell pair, ECP atom) blocks kept the finest level")
       end if
 
-      ! K3: reduce the per-atom slots and write the Cartesian block (and
+      ! K3: write each kept slot into the Cartesian block (and
       ! its symmetric mirror -- U is symmetric, scalar ECPs are real, and
       ! only i>=j pairs were built).
-      do p = 1, npair
-         call deposit_block(b, mcart, pr_i(p), pr_j(p), block_buffer(:, p, :), natm_ecp)
+      do t = 1, nkept
+         call deposit_slot(b, mcart, pr_i(kt_p(t)), pr_j(kt_p(t)), block_buffer(:, t))
       end do
 
       deallocate (ur_cache, fac1_cache, fac2_cache, ang2_cache, grp_atom, grp_l, grp_row0, grp_row1)
       deallocate (atm_ecp, atm_grp0, atm_grp1, pr_i, pr_j, block_buffer, conv_fail)
+      deallocate (kt_p, kt_a, sval)
    end subroutine ecp_matrix_cart
 
-   subroutine deposit_block(b, mcart, i, j, slots, natm_ecp)
+   pure real(dp) function pair_bound(q, nshell, ngroup, i, j, g0, g1) result(bound)
+      !! The screen's bound on shell pair (i, j) against the ECP atom whose
+      !! channel groups are g0..g1: the sum of q(i,g)*q(j,g), `q` being
+      !! `ecp_screen_item`'s output.
+      integer, intent(in) :: nshell, ngroup, i, j, g0, g1
+      real(dp), intent(in) :: q(nshell, ngroup)
+      integer :: g
+
+      bound = 0.0_dp
+      do g = g0, g1
+         bound = bound + q(i, g)*q(j, g)
+      end do
+   end function pair_bound
+
+   subroutine deposit_slot(b, mcart, i, j, slot)
+      !! Adds one kept (shell pair, ECP atom) slot into the Cartesian matrix.
       type(trc_basis_t), intent(in) :: b
       real(dp), intent(inout) :: mcart(b%nao, b%nao)
-      integer, intent(in) :: i, j, natm_ecp
-      real(dp), intent(in) :: slots(SLOT_SIZE, max(natm_ecp, 1))
-      integer :: li, lj, nfi, nfj, ai, aj, mi, mj, a, pi, pj
-      real(dp) :: acc
+      integer, intent(in) :: i, j
+      real(dp), intent(in) :: slot(SLOT_SIZE)
+      integer :: li, lj, nfi, nfj, ai, aj, mi, mj, pi, pj
 
       li = b%sh_l(i)
       lj = b%sh_l(j)
@@ -377,19 +540,15 @@ contains
       aj = b%sh_ao(j)
       do mj = 1, nfj
          do mi = 1, nfi
-            acc = 0.0_dp
-            do a = 1, natm_ecp
-               acc = acc + slots((mj - 1)*NFMAX + mi, a)
-            end do
             ! The slots are lexicographic (this module's angular tables);
             ! the matrix is in this build's order, like S, T and V.
             pi = ai + cart_perm_l2b(li, mi - 1)
             pj = aj + cart_perm_l2b(lj, mj - 1)
-            mcart(pi, pj) = mcart(pi, pj) + acc
-            if (i /= j) mcart(pj, pi) = mcart(pj, pi) + acc
+            mcart(pi, pj) = mcart(pi, pj) + slot((mj - 1)*NFMAX + mi)
+            if (i /= j) mcart(pj, pi) = mcart(pj, pi) + slot((mj - 1)*NFMAX + mi)
          end do
       end do
-   end subroutine deposit_block
+   end subroutine deposit_slot
 
    subroutine build_groups(ecp, grp_atom, grp_l, grp_row0, grp_row1, ngroup)
       !!
@@ -481,6 +640,75 @@ contains
          call ecp_type2_facs_ang(ang2_slot, li, lc, rca)
       end if
    end subroutine ecp_k1b_item
+
+   pure subroutine ecp_screen_item(ish, g, nshell, sh_l, sh_np, maxnp, sh_e, sh_c, sh_r, &
+                                   natm, at_r, ngroup, grp_atom, rs, ws, ur, qval)
+      !!
+      !! The screen's per-(orbital shell, channel group) scalar q(i,g) of this
+      !! file's header: sqrt(4*pi * sum over levels of step_L * the level's
+      !! quadrature sum of w_k |U_g(r_k)| F_i(r_k)**2). Level `lvl`'s points
+      !! are every `step`-th point of the finest grid starting at `step-1`,
+      !! each weighted `step*ws`, the weight the level loops of
+      !! `ecp_radial_type1_rad_part_levels` and `ecp_radial_type2_lab_levels`
+      !! give a level's points. That set is a superset of the points those
+      !! loops add at the level (2**level - 1 new points per level); the extra
+      !! terms are non-negative, so they only enlarge the bound. The terms are accumulated in units of the largest
+      !! sqrt(w|U|)*F seen so far, so a shell whose F is far below 1e-154
+      !! still gives a nonzero q instead of squares that underflow.
+      !!
+      !$acc routine seq
+      integer, intent(in) :: ish, g, nshell, maxnp, natm, ngroup
+      integer, intent(in) :: sh_l(nshell), sh_np(nshell)
+      real(dp), intent(in) :: sh_e(maxnp, nshell), sh_c(maxnp, nshell), sh_r(3, nshell)
+      real(dp), intent(in) :: at_r(3, natm)
+      integer, intent(in) :: grp_atom(ngroup)
+      real(dp), intent(in) :: rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1), ur(0:ECP_NRS - 1)
+      real(dp), intent(out) :: qval
+
+      real(dp), parameter :: PI = acos(-1.0_dp)
+      real(dp) :: d, r, f, dr, gk, scale, total, acc
+      real(dp) :: part(0:ECP_NLEVEL - 1)
+      integer :: lvl, k, kk, m, ip, l
+
+      l = sh_l(ish)
+      d = sqrt(sum((at_r(:, grp_atom(g)) - sh_r(:, ish))**2))
+      ! One pass over the finest grid. Point k first belongs to the level
+      ! whose stride is the largest power of two dividing k+1 (the coarsest
+      ! level takes every point whose stride is at least its own), and a
+      ! level also holds every point of the levels below it.
+      part = 0.0_dp
+      scale = 0.0_dp
+      do k = 0, ECP_NRS - 1
+         if (ur(k) == 0.0_dp) cycle
+         kk = k + 1
+         m = 0
+         do while (mod(kk, 2) == 0)
+            kk = kk/2
+            m = m + 1
+         end do
+         lvl = max(0, ECP_LEVEL_MAX - ECP_LEVEL0 - m)
+         r = rs(k)
+         dr = r - d
+         f = 0.0_dp
+         do ip = 1, sh_np(ish)
+            f = f + abs(sh_c(ip, ish))*exp(-sh_e(ip, ish)*dr*dr)
+         end do
+         gk = sqrt(ws(k)*abs(ur(k)))*f*(r + d)**l
+         if (gk > scale .or. gk /= gk) then
+            if (scale > 0.0_dp) part = part*(scale/gk)**2
+            scale = gk
+         end if
+         if (scale > 0.0_dp) part(lvl) = part(lvl) + (gk/scale)**2
+      end do
+      total = 0.0_dp
+      acc = 0.0_dp
+      do lvl = 0, ECP_NLEVEL - 1
+         ! The cumulative level sum, times the level's own weight scale.
+         acc = acc + part(lvl)
+         total = total + acc*real(2**(ECP_LEVEL_MAX - ECP_LEVEL0 - lvl), dp)
+      end do
+      qval = scale*sqrt(4.0_dp*PI*total)
+   end subroutine ecp_screen_item
 
    pure subroutine ecp_pair_atom_item(ish, jsh, atm_id, g0, g1, &
                                       ngroup, grp_l, &
