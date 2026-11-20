@@ -39,14 +39,24 @@ include(terco_print_status)
 # every class with an f shell as a Rys kernel only (trc_rys_select.F90's
 # HGP_LMAX).
 #
+# LMAX=5 adds h (energies only; the 16 check_h_vs_pyscf cases pass on the host
+# and on a V100 with nvfortran 26.9; nvfortran older than 26.9 needs the
+# Hermite-item -O2 workaround, which is switched on below. CI does not build
+# it): every class
+# with an h shell goes to the McMurchie-Davidson engine (src/CMakeLists.txt, TERCO_RYS_H_CLASSES
+# lists the exceptions) and BOYS_MMAX = 20 covers (hh|hh). The density-fitting,
+# PCM, multipole and gradient kernels keep their own ceilings (below and
+# src/CMakeLists.txt) and refuse an h basis. TERCO_CART_ORDER=gamess stops at 4
+# (cartorder.py transcribes that order through g only).
+#
 # 2 is the shipped configuration and the one whose generated sources are in the
 # repository. Anything else is regenerated into the build tree, which needs
 # Python 3.
 #
 set(TERCO_LMAX
     "2"
-    CACHE STRING "Four-centre angular momentum ceiling (0=s, 1=p, 2=d, 3=f, 4=g: g classes on the MD engine)")
-set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2 3 4)
+    CACHE STRING "Four-centre angular momentum ceiling (0=s, 1=p, 2=d, 3=f, 4=g, 5=h: g above TERCO_RYS_G_LTOT and every h class on the MD engine)")
+set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2 3 4 5)
 
 #
 # The density-fitting kernels' orbital ceiling (gen_df.py --lmax). Empty
@@ -62,7 +72,7 @@ set_property(CACHE TERCO_LMAX PROPERTY STRINGS 0 1 2 3 4)
 #
 set(TERCO_DF_LMAX
     ""
-    CACHE STRING "Density-fitting orbital angular momentum ceiling (empty: TERCO_LMAX)")
+    CACHE STRING "Density-fitting orbital angular momentum ceiling (empty: TERCO_LMAX, at most 4)")
 
 #
 # The density-fitting kernels' AUXILIARY ceiling (gen_df.py --lmax-aux),
@@ -79,6 +89,18 @@ set(TERCO_DF_LMAX
 set(TERCO_DF_LMAX_AUX
     "4"
     CACHE STRING "Density-fitting auxiliary angular momentum ceiling (gen_df.py --lmax-aux)")
+
+# The ceilings the generators and the kernels have been built and checked to:
+# h for the four-centre path, g for the density-fitting orbital shells. A larger
+# value would generate kernels nothing has compiled or compared with a
+# reference, so it stops here rather than at the first wrong number.
+if(TERCO_LMAX GREATER 5)
+  message(FATAL_ERROR "TERCO_LMAX=${TERCO_LMAX}: the four-centre path is built and checked through 5 (h)")
+endif()
+if(NOT "${TERCO_DF_LMAX}" STREQUAL "" AND TERCO_DF_LMAX GREATER 4)
+  message(FATAL_ERROR "TERCO_DF_LMAX=${TERCO_DF_LMAX}: density fitting is built and checked through 4 (g) "
+                      "on the orbital side; an h orbital basis is energies through the four-centre path only")
+endif()
 
 #
 # TESTING ONLY -- never set by a shipped build. gen_df.py routes a class

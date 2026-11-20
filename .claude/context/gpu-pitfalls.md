@@ -89,6 +89,30 @@ the same history. This file adds the debugging side.
   the `value` dummies, 0 without). There is no small reproducer yet. Do not
   use `value` dummies in item routines; `TRC_DC_INDEX` is the cure for the
   ifx defect above, not a `value` dummy.
+- **nvfortran 26.5 (not 26.9), `-O3`, Volta: one generated Hermite item of an h build
+  (`TERCO_LMAX=5`, `[10|8]` batch 3 of 18, `mdj_s_item_108_b3`).** Symptom:
+  `CUDA_ERROR_ILLEGAL_ADDRESS` in that item as soon as a primitive quartet
+  survives screening (compute-sanitizer: invalid global read of `Dt()`, 10 GB
+  from any allocation). It is clean at `-O1` and `-O2`, clean under gfortran
+  `-fcheck=all`, and reproduces on synthetic data with every launch argument
+  in bounds, so it is not an index error. `-O3 -Mnovect`, `-Mnounroll`,
+  `-Mnopre` and `-Mnolre` still fail. A later `-O2` on the command line does
+  not override an earlier `-O3`; the level is set with the routine directive
+  `!pgi$r opt=2`, which `scripts/gen_md_j.py` emits for the batch named in
+  `O2_ITEMS`, inside `#ifdef TRC_NVHPC_O3_ITEM_BUG` (CMake defines it for
+  nvfortran older than 26.9; 26.9 is clean at `-O3` and matches `-O2` to 2e-16;
+  earlier versions are untested and treated as affected; the run-time cost of
+  the `-O2` item is not measured) (keyed by the batch's content, and the generator fails if the
+  key stops matching one batch). The directive also stops the item being
+  inlined into its launcher, so the cure may be the de-inlining. A crash is
+  the loud form of this defect; a silent one would be a wrong number, and a
+  crash-only sweep cannot see it.
+  **Mandatory GPU smoke test for every h build and every nvfortran upgrade**,
+  run directly on a device (CI has no GPU and no `TERCO_LMAX=5` job):
+  `check_h_vs_pyscf ints_hco` and `check_h_vs_pyscf rhf_water_min`, then the
+  HCO SCF cases (`uhf_hco_min`, `b3lyp_hco_min`). Re-run the sweep that
+  launches every `mdj_sb_<lp><lq>_<b>` once on random data after any change of
+  `SPLIT_BATCHES` or `SPLIT_WEIGHT_EXP`.
 
 ## MPI
 

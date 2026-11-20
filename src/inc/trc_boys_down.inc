@@ -24,16 +24,18 @@
       integer  :: i, k, j, jj
       real(dp) :: x, x2, b0, b1, b2, et, tt
       ! The T from which the asymptotic F_0..F_m is exact to 1e-15 relative, by
-      ! the highest order m (mpmath against gammainc, every order up to 16).
-      real(dp), parameter :: BOYS_TASYM(0:16) = [ &
+      ! the highest order m (mpmath against gammainc, every order up to 20).
+      real(dp), parameter :: BOYS_TASYM(0:20) = [ &
          32.5_dp, 36.5_dp, 40.0_dp, 43.0_dp, 46.0_dp, 48.5_dp, &
          51.0_dp, 53.0_dp, 55.5_dp, 57.5_dp, 60.0_dp, 62.0_dp, &
-         64.0_dp, 66.0_dp, 68.0_dp, 70.0_dp, 72.0_dp]
+         64.0_dp, 66.0_dp, 68.0_dp, 70.0_dp, 72.0_dp, 74.0_dp, &
+         76.0_dp, 77.5_dp, 79.5_dp]
       ! 1/(2k - 1): a division per step would cost more than the series.
-      real(dp), parameter :: RODD(16) = [1.0_dp, 1.0_dp/3.0_dp, 1.0_dp/5.0_dp, 1.0_dp/7.0_dp, &
+      real(dp), parameter :: RODD(20) = [1.0_dp, 1.0_dp/3.0_dp, 1.0_dp/5.0_dp, 1.0_dp/7.0_dp, &
          1.0_dp/9.0_dp, 1.0_dp/11.0_dp, 1.0_dp/13.0_dp, 1.0_dp/15.0_dp, 1.0_dp/17.0_dp, &
          1.0_dp/19.0_dp, 1.0_dp/21.0_dp, 1.0_dp/23.0_dp, 1.0_dp/25.0_dp, 1.0_dp/27.0_dp, &
-         1.0_dp/29.0_dp, 1.0_dp/31.0_dp]
+         1.0_dp/29.0_dp, 1.0_dp/31.0_dp, 1.0_dp/33.0_dp, 1.0_dp/35.0_dp, 1.0_dp/37.0_dp, &
+         1.0_dp/39.0_dp]
 
       if (t >= BOYS_TMAX) then
          if (t >= BOYS_TASYM(m)) then

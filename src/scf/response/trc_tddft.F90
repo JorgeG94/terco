@@ -187,7 +187,7 @@ module trc_tddft
    use pic_rng, only: splitmix64_t, next_real_dp
    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
-   use trc_integrals, only: trc_multipoles, TRC_NMULT
+   use trc_integrals, only: trc_multipoles, TRC_NMULT, integrals_multipole_lmax_refusal
    use trc_mult_kernels, only: MULT_LMAX
    use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_error, only: error_t, ERROR_GENERIC, ERROR_VALIDATION
@@ -1281,8 +1281,9 @@ contains
       else
          reason = trc_tddft_refuse_reason(opts, lmax=maxval(b%sh_l))
       end if
+      if (len_trim(reason) == 0) reason = integrals_multipole_lmax_refusal(b)
       if (len_trim(reason) > 0) then
-         call tddft_fail(res, ERROR_VALIDATION, trim(reason))
+         call tddft_fail(res, ERROR_VALIDATION, "trc_tddft: "//trim(reason))
          return
       end if
       call op%setup(b, la, ref, res%err, xg)

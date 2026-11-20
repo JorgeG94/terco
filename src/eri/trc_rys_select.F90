@@ -33,6 +33,8 @@ module trc_rys_select
    use trc_rys_table7, only: rys_table_init7
    use trc_rys_table8, only: rys_table_init8
    use trc_rys_table9, only: rys_table_init9
+   use trc_rys_table10, only: rys_table_init10
+   use trc_rys_table11, only: rys_table_init11
    implicit none
    private
    public :: rys_select_init, rys_select_route, rys_select_tables_init
@@ -66,7 +68,7 @@ module trc_rys_select
 contains
 
    subroutine rys_select_tables_init()
-      !! Push the Rys root tables (1..9 roots) to the device, as boys_init does
+      !! Push the Rys root tables (1..11 roots) to the device, as boys_init does
       !! the Boys table. Their `declare create` allocates device storage; the
       !! tables' own comment says it does not carry the host initialiser.
       !! nvfortran evidently initialises the device copy anyway (GPU Rys
@@ -88,6 +90,8 @@ contains
       call rys_table_init7()
       call rys_table_init8()
       call rys_table_init9()
+      call rys_table_init10()
+      call rys_table_init11()
    end subroutine rys_select_tables_init
 
    subroutine rys_select_init()

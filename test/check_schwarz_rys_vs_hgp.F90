@@ -13,18 +13,20 @@ module check_schwarz_rys_vs_hgp_suite
    !! four-centre Fock path routes it to Rys instead of HGP.
    !!
    use pic_types, only: dp
-   use testdrive, only: new_unittest, unittest_type, error_type, check
+   use pic_strings, only: to_string
+   use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
    use trc_tables, only: tables_init
    use trc_cart, only: cart_init
    use trc_boys, only: boys_init
    use trc_rys_select, only: rys_select_tables_init
    use trc_api, only: trc_basis_t
-   use trc_basis_json, only: trc_basis_from_json
+   use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_hgp, only: hgp_build_pairs, trc_pair_prune_t
    use trc_eri_data, only: trc_shell_pairs_t
    use trc_screen, only: screen_schwarz_bounds_hgp, screen_schwarz_bounds_rys
    use trc_error, only: error_t
    use trc_test_basis, only: read_xyz
+   use pyscf_ref_io, only: ref_open, ref_close, ref_read_vector
    implicit none
    private
    public :: collect_schwarz_rys_vs_hgp
@@ -45,9 +47,10 @@ contains
    subroutine collect_schwarz_rys_vs_hgp(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
-                  new_unittest("water cc-pVDZ", test_water_dz), &
-                  new_unittest("formamide cc-pVDZ", test_formamide_dz), &
-                  new_unittest("water cc-pVQZ (g on O)", test_water_qz) &
+                  new_unittest("water_dz", test_water_dz), &
+                  new_unittest("formamide_dz", test_formamide_dz), &
+                  new_unittest("water_qz", test_water_qz), &
+                  new_unittest("water_5z", test_water_5z) &
                   ]
    end subroutine collect_schwarz_rys_vs_hgp
 
@@ -70,13 +73,27 @@ contains
       use trc_tables, only: LMAX
       type(error_type), allocatable, intent(out) :: error
       if (LMAX < 4) then
-         print '(a)', '  water cc-pVQZ: SKIPPED (build LMAX < 4, no g shells)'
+         call skip_test(error, "SKIP: needs TERCO_LMAX >= 4 (g shells)")
          return
       end if
       call compare_q(error, 'water.xyz', 'basis_sets/cc-pvqz-pyscf17.json')
    end subroutine test_water_qz
 
-   subroutine compare_q(error, xyzfile, basfile)
+   subroutine test_water_5z(error)
+      !! h on O: the (hh| pair has nroots = la + lb + 1 = 11 Rys roots, which
+      !! only the root tables of 10 and 11 roots (and the 11-way select case of
+      !! the diagonal kernel) cover, and HGP's general recurrence reaches it
+      !! through Boys order 20. Left out of a build below LMAX=5.
+      use trc_tables, only: LMAX
+      type(error_type), allocatable, intent(out) :: error
+      if (LMAX < 5) then
+         call skip_test(error, "SKIP: needs TERCO_LMAX >= 5 (h shells)")
+         return
+      end if
+      call compare_q(error, 'water.xyz', 'basis_sets/cc-pv5z-pyscf17.json', ref="schwarz_water_cc5z.ref")
+   end subroutine test_water_5z
+
+   subroutine compare_q(error, xyzfile, basfile, ref)
       !!
       !! Build hp_* exactly as trc_eri.F90's build_structures does (cfac = 1,
       !! since the basis already folded common_fac_sp; camp = sh_c, the
@@ -85,6 +102,9 @@ contains
       !!
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in) :: xyzfile, basfile
+      character(len=*), intent(in), optional :: ref
+      !! A pyscf reference of the exact diagonal bounds (generate.py's
+      !! gen_h_schwarz), which both routines are then also held to.
 
       type(trc_basis_t) :: b
       type(error_t) :: err
@@ -102,7 +122,13 @@ contains
       call tables_init(); call cart_init(); call boys_init(); call rys_select_tables_init()
 
       call read_xyz(xyzfile, natm, zint, at_r)
-      call trc_basis_from_json(basfile, natm, zint, at_r, b, err)
+      ! prune=.false. for the pyscf case: its reference is built from the file's
+      ! literal contraction columns, and pruning replaces them by combinations.
+      if (present(ref)) then
+         call trc_basis_from_json(basfile, natm, zint, at_r, b, err, overrides=trc_basis_json_overrides(prune=.false.))
+      else
+         call trc_basis_from_json(basfile, natm, zint, at_r, b, err)
+      end if
       if (err%has_error()) then
          call check(error, .false., "basis load failed: "//xyzfile//" / "//basfile)
          return
@@ -139,6 +165,34 @@ contains
          '  worst |dQ| ', worst_abs, '   worst |dQ|/|Q| ', worst_rel, '   (', npair, ' pairs)'
       print '(a)', trim(msg)
 
+      if (.not. present(ref)) then
+         call check(error, within, &
+                    message="screen_schwarz_bounds_rys disagrees with screen_schwarz_bounds_hgp past round-off "// &
+                    "for "//xyzfile//" / "//basfile)
+         return
+      end if
+      block
+         real(dp), allocatable :: q_ref(:)
+         real(dp) :: worst_rys, worst_hgp
+         integer :: u
+         logical :: ok
+         call ref_open(ref, u, ok)
+         call check(error, ok, "missing pyscf_refs/"//ref//" -- run test/pyscf_refs/generate.py schwarz_h")
+         if (allocated(error)) return
+         allocate (q_ref(npair))
+         call ref_read_vector(u, "Q", npair, q_ref)
+         call ref_close(u)
+         worst_rys = maxval(abs(q_rys - q_ref)/(abs(q_ref) + 1.0e-12_dp*maxval(q_ref)))
+         worst_hgp = maxval(abs(q_hgp - q_ref)/(abs(q_ref) + 1.0e-12_dp*maxval(q_ref)))
+         write (msg, '(a,es10.2,a,es10.2)') '  against pyscf: worst relative |dQ|, Rys ', worst_rys, ', HGP ', worst_hgp
+         print '(a)', trim(msg)
+         call check(error, worst_rys <= TOL_REL, "the Rys Schwarz bound differs from pyscf's exact diagonal by "// &
+                    to_string(worst_rys, "es10.3"))
+         if (allocated(error)) return
+         call check(error, worst_hgp <= TOL_REL, "the HGP Schwarz bound differs from pyscf's exact diagonal by "// &
+                    to_string(worst_hgp, "es10.3"))
+         if (allocated(error)) return
+      end block
       call check(error, within, &
                  message="screen_schwarz_bounds_rys disagrees with screen_schwarz_bounds_hgp past round-off "// &
                  "for "//xyzfile//" / "//basfile)
@@ -148,12 +202,20 @@ end module check_schwarz_rys_vs_hgp_suite
 
 program check_schwarz_rys_vs_hgp
    use, intrinsic :: iso_fortran_env, only: error_unit
-   use testdrive, only: run_testsuite
+   use testdrive, only: run_testsuite, run_selected
    use check_schwarz_rys_vs_hgp_suite, only: collect_schwarz_rys_vs_hgp
    implicit none
    integer :: stat
+   character(len=64) :: name
    stat = 0
-   call run_testsuite(collect_schwarz_rys_vs_hgp, error_unit, stat, parallel=.false.)
+   ! One case per ctest entry (the name is the first argument): a build that
+   ! cannot reach g or h skips those entries without hiding the others.
+   if (command_argument_count() >= 1) then
+      call get_command_argument(1, name)
+      call run_selected(collect_schwarz_rys_vs_hgp, trim(name), error_unit, stat)
+   else
+      call run_testsuite(collect_schwarz_rys_vs_hgp, error_unit, stat, parallel=.false.)
+   end if
    if (stat > 0) then
       write (error_unit, "(i0, a)") stat, " test(s) failed"
       error stop 1

@@ -11,7 +11,7 @@ module check_one_e_cancellation_suite
    !! round (the tight-first block is compared with the transpose of the
    !! diffuse-first one: the same integral, and libcint is accurate only in
    !! the diffuse-first order), at l = 1 .. ONE_E_LMAX (d at LMAX=2, f at 3,
-   !! g at 4), against pyscf's Cartesian int1e_ovlp, int1e_kin and
+   !! g at 4, h at 5), against pyscf's Cartesian int1e_ovlp, int1e_kin and
    !! -int1e_rinv (test/pyscf_refs/generate.py, gen_one_e_cancellation: libcint
    !! checked against mpmath there, 2.6e-15).
    !!
@@ -33,8 +33,11 @@ module check_one_e_cancellation_suite
    real(dp), parameter :: TOL_V = 1.0e-14_dp, TOL_ST = 1.0e-13_dp
    !! relative to the largest element of the block
 
-   integer, parameter :: LTOP = 4
+   integer, parameter :: LTOP = 5
    !! the highest l the reference holds
+   integer, parameter :: L_BEFORE = 4, L_CTR = 3
+   !! the reference holds the single-primitive blocks of l = 1 .. L_BEFORE, then the
+   !! contracted blocks of l = 1 .. L_CTR, then the single-primitive block of l = LTOP
    real(dp), parameter :: E_DIFFUSE = 1.6_dp, E_TIGHT = 40.0_dp
    real(dp), parameter :: R_B(3) = 2.5_dp*[0.48_dp, 0.36_dp, 0.8_dp]
    real(dp), parameter :: R_B3(3) = 3.0_dp*[0.48_dp, 0.36_dp, 0.8_dp]
@@ -72,6 +75,7 @@ contains
       z = 1.0_dp
       rat(:, 1) = R_C
       do l = 1, LTOP
+         if (l > L_BEFORE) call skip_contracted(u)
          n = ((l + 1)*(l + 2)/2)**2
          nc = (l + 1)*(l + 2)/2
          allocate (ref(n), refs(n, 3), s(n), t(n), v(n))
@@ -122,6 +126,23 @@ contains
       call ref_close(u)
    end subroutine test_cancellation
 
+   subroutine skip_contracted(u)
+      !! Step the sequential reader over the contracted blocks.
+      integer, intent(in) :: u
+      real(dp), allocatable :: ref(:)
+      character(len=24) :: tag
+      integer :: l, n, k
+      do l = 1, L_CTR
+         n = ((l + 1)*(l + 2)/2)**2
+         allocate (ref(n))
+         do k = 1, 3
+            tag = "STV"(k:k)//"_ctr_l"//to_string(l)
+            call ref_read_vector(u, trim(tag), n, ref)
+         end do
+         deallocate (ref)
+      end do
+   end subroutine skip_contracted
+
    subroutine test_contracted(error)
       !! One contraction on each centre, exponents (1.0, 60) on A and (100, 40)
       !! on B, |AB| = 3.0. Three of the four primitive pairs have the tight
@@ -142,8 +163,9 @@ contains
       call ref_require("one_e_cancellation.ref", u)
       z = 1.0_dp
       rat(:, 1) = R_C
-      ! The reference is read in file order: step over the single-primitive blocks.
-      do l = 1, LTOP
+      ! The reference is read in file order: step over the single-primitive blocks
+      ! that precede the contracted ones.
+      do l = 1, L_BEFORE
          n = ((l + 1)*(l + 2)/2)**2
          allocate (ref(n))
          do k = 1, 3
@@ -152,7 +174,7 @@ contains
          end do
          deallocate (ref)
       end do
-      do l = 1, min(3, ONE_E_LMAX)
+      do l = 1, min(L_CTR, ONE_E_LMAX)
          n = ((l + 1)*(l + 2)/2)**2
          allocate (ref(n), s(n), t(n), v(n))
          do i = 1, 2

@@ -170,6 +170,13 @@ Each class has its own generated kernel:
   (`scripts/gen_rys_roots.py`). `rys_route` (`src/eri/trc_rys_select.F90`)
   picks the kernel per class; `TRC_RYS_CLASSES` overrides the default, and
   `TRC_RYS_CLASSES=none` uses HGP for every class up to d.
+- **McMurchie–Davidson** exchange (`trc_mdg`) and J (`trc_mdj`), for the g
+  classes above total L 9 and, at `TERCO_LMAX=5`, for every class with an h
+  shell (energies; `check_h_vs_pyscf` passes on the host and on a V100 and CI
+  does not build `TERCO_LMAX=5`; the 22 low-L h classes are about 10% of an
+  h Fock build, so routing them to Rys can change it by a few percent at most
+  and has not been raced). Which h classes are MD is decided
+  in one place, `TERCO_RYS_H_CLASSES` in `src/CMakeLists.txt`.
 
 **Chunked Rys kernels.** A Rys kernel that holds a whole quartet block in one
 thread does not fit in registers once f shells appear: for (fp|dp) one

@@ -28,6 +28,7 @@ module trc_collocation
    !! extra multiply per primitive and nothing else.
    !!
    use pic_types, only: dp
+   use trc_tables, only: LMAX
    implicit none
    private
 
@@ -36,7 +37,9 @@ module trc_collocation
    ! The ceiling is generous on purpose: the loop is generic in l and a d
    ! shell costs no more than it would with a generated kernel, since the
    ! exponentials dominate.
-   integer, parameter :: XC_LMAX = 4
+   integer, parameter :: XC_LMAX = max(4, LMAX)
+   !! 4 (g), or the build's own ceiling above that (h): the per-thread chi/gchi
+   !! arrays of the grid kernels are sized by it.
    integer, parameter :: NCART_MAX = (XC_LMAX + 1)*(XC_LMAX + 2)/2
    integer, parameter :: NHESS = 6   !! independent Cartesian second derivatives: xx, xy, xz, yy, yz, zz
    real(dp), parameter :: COLLOCATE_EXP_MAX = 34.5_dp   !! exp(-34.5) = 1e-15: a primitive past this is skipped

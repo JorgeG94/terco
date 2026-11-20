@@ -85,6 +85,11 @@ endif()
 # to what every generator emitted before this option existed, which is what
 # "regenerates byte for byte" in docs/GENERATORS.md means for the shipped
 # set.
+if(TERCO_LMAX GREATER 4 AND NOT TERCO_CART_ORDER STREQUAL "lexicographic")
+  message(FATAL_ERROR "TERCO_LMAX=${TERCO_LMAX} (h) needs TERCO_CART_ORDER=lexicographic: "
+                      "scripts/cartorder.py transcribes the gamess order through l = 4 only")
+endif()
+
 set(_order_flag "")
 if(NOT TERCO_CART_ORDER STREQUAL "lexicographic")
   set(_order_flag "--order" "${TERCO_CART_ORDER}")
@@ -108,9 +113,38 @@ if(_regen)
   if(_hgp_lmax GREATER 2)
     set(_hgp_lmax 2)
   endif()
+  # An h build (TERCO_LMAX=5) needs the Cartesian component tables and the
+  # spherical transform to l = 5 (an h shell is the highest any path reads: the
+  # collocation, the AO permutation and the transform take l of a basis shell,
+  # never l + 1; density fitting refuses an h orbital basis and the fitting
+  # shells stay at g), and the Rys Schwarz kernel for 11 roots. The shipped
+  # ceilings stay at 4 (generated tables are PARAMETER arrays that device
+  # kernels may copy per thread, so a larger one is not free).
+  set(_h_build OFF)
+  set(_h_ceil_flag "")
+  set(_h_sph_flag "")
+  if(TERCO_LMAX GREATER 4)
+    set(_h_build ON)
+    set(_h_ceil_flag "--ceil" "5")
+    set(_h_sph_flag "--lmax" "5")
+  endif()
+
+  # Density fitting stops at g orbitals whatever TERCO_LMAX is: an h orbital
+  # basis (TERCO_LMAX=5) is energies through the four-centre path only, and
+  # every DF entry point refuses it (trc_integrals' DF_LMAX check).
   set(_df_lmax ${TERCO_LMAX})
+  if(_df_lmax GREATER 4)
+    set(_df_lmax 4)
+  endif()
   if(NOT "${TERCO_DF_LMAX}" STREQUAL "")
     set(_df_lmax ${TERCO_DF_LMAX})
+  endif()
+  # The PCM and the one-electron gradient kernels likewise stop at g: gradients
+  # and PCM are not available for an h basis (compile cost at g alone is
+  # 41 minutes of nvfortran for the gradient kernels).
+  set(_g_lmax ${TERCO_LMAX})
+  if(_g_lmax GREATER 4)
+    set(_g_lmax 4)
   endif()
   set(_df_lmax_aux ${TERCO_DF_LMAX_AUX})
   set(_df_force_rys_flag "")
@@ -161,12 +195,12 @@ if(_regen)
     # same reason the 1e kernels do: a continuum that stops below the
     # four-centre ceiling would have no operator for the basis it is given.
     terco_gen("gen_1e.py --pcm" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
-              --lmax ${TERCO_LMAX} --pcm ${_gen_out}/trc_pcm_kernels.F90 ${_order_flag})
+              --lmax ${_g_lmax} --pcm ${_gen_out}/trc_pcm_kernels.F90 ${_order_flag})
     # The one-electron GRADIENT kernels follow TERCO_LMAX for the same
     # reason trc_1e's own do: a ceiling below the orbital basis is not a
     # limitation, it is a wrong force.
     terco_gen("gen_1e.py --deriv-dir" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
-              --lmax ${TERCO_LMAX} --deriv-dir ${_gen_out} ${_order_flag})
+              --lmax ${_g_lmax} --deriv-dir ${_gen_out} ${_order_flag})
     # The PCM surface-integral GRADIENT kernels, same ceiling as --pcm
     # above for the same reason: a continuum force that stops below the
     # orbital basis is a wrong force. One module PER CLASS, same reason
@@ -176,7 +210,7 @@ if(_regen)
     # this; measured 1.08 s/call against the no-derivative PCM Fock term's
     # 0.08 s on the same integral family, local-memory spills).
     terco_gen("gen_1e.py --pcm-grad-dir" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py
-              --lmax ${TERCO_LMAX} --pcm-grad-dir ${_gen_out} ${_order_flag})
+              --lmax ${_g_lmax} --pcm-grad-dir ${_gen_out} ${_order_flag})
 
     # One module per (la,lb|lc)/(la|lc) class, same reason as gen_perclass.py's
     # --split above: at --lmax 3 --lmax-aux 4 (f orbitals, g auxiliary) a single
@@ -210,6 +244,7 @@ if(_regen)
     # unrolled VRR/HRR includes below, because these call sites are not
     # conditional on TRC_UNROLL_VRR/HRR.
     terco_gen("gen_cartcomp.py" ${Python3_EXECUTABLE} ${_scripts}/gen_cartcomp.py ${_order_flag}
+              ${_h_ceil_flag}
               --comp-out ${_gen_out}/trc_cart_comp.inc
               --colloc-out ${_gen_out}/trc_collocation_table.inc
               --perm-l2b-out ${_gen_out}/trc_cart_perm_l2b.inc
@@ -221,8 +256,15 @@ if(_regen)
     # and not TERCO_LMAX: f support (milestone M3) needs this table ready
     # before any four-centre kernel reaches f, and generating a small table
     # four levels higher than today's d ceiling costs nothing.
-    terco_gen("gen_sph.py" ${Python3_EXECUTABLE} ${_scripts}/gen_sph.py ${_order_flag}
+    terco_gen("gen_sph.py" ${Python3_EXECUTABLE} ${_scripts}/gen_sph.py ${_order_flag} ${_h_sph_flag}
               -o ${_gen_out}/trc_sph_tables.F90)
+    # The Rys diagonal Schwarz kernel for an h basis (an (hh| pair has 11
+    # roots): the committed one stops at g, and a build that needs more
+    # replaces it with this one, in the build tree beside the other kernels.
+    if(_h_build)
+      terco_gen("gen_schwarz.py" ${Python3_EXECUTABLE} ${_scripts}/gen_schwarz.py --lceil 5
+                -o ${_gen_out}/trc_schwarz_rys.F90)
+    endif()
 
     # The ECP angular path's own Cartesian-to-pure-spherical-harmonic
     # coefficients, l = 0..8 (src/eri/trc_ecp_angular.F90's only consumer).
@@ -267,7 +309,8 @@ if(_regen)
     "${_gen_out}" "${_gen_dir}" ${_prune} ${_stampable}
     ${_scripts}/gen_perclass.py ${_scripts}/gen_vrr.py ${_scripts}/gen_hrr.py
     ${_scripts}/gen_1e.py ${_scripts}/gen_df.py ${_scripts}/gen_df_grad.py ${_scripts}/rys_inline.py
-    ${_scripts}/gen_cartcomp.py ${_scripts}/gen_sph.py ${_scripts}/gen_ecp_tables.py ${_scripts}/cartorder.py)
+    ${_scripts}/gen_cartcomp.py ${_scripts}/gen_sph.py ${_scripts}/gen_ecp_tables.py ${_scripts}/cartorder.py
+    ${_scripts}/gen_schwarz.py)
 endif()
 
 # Always on the include path, not just when regenerating for LMAX<=1: the
@@ -298,10 +341,18 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 # need mpmath to regenerate and this project's generators otherwise run
 # on a bare Python. In their own subdirectory so the GLOB above -- which
 # is not recursive -- never picks them up, ON or OFF.
+# The Rys diagonal Schwarz kernel (scripts/gen_schwarz.py): the committed one
+# (to g), in its own subdir like the root tables below so the GLOB never picks
+# it up twice, except in an h build, which generates its own 11-root one into
+# the build tree (the GLOB above has it).
+set(_schwarz_source generated/schwarz/trc_schwarz_rys.F90)
+if(TERCO_LMAX GREATER 4)
+  set(_schwarz_source "")
+endif()
 target_sources(
   ${main_lib}
   PRIVATE eri/trc_rys_select.F90 # TRC_RYS_CLASSES, read once per Fock build
-          generated/schwarz/trc_schwarz_rys.F90 # Rys diagonal Schwarz kernel (scripts/gen_schwarz.py); no LMAX dependence, own subdir like the root tables below so the GLOB never picks it up twice
+          ${_schwarz_source}
           generated/rys/trc_rys_table1.F90
           generated/rys/trc_rys_table2.F90
           generated/rys/trc_rys_table3.F90
@@ -310,7 +361,9 @@ target_sources(
           generated/rys/trc_rys_table6.F90
           generated/rys/trc_rys_table7.F90
           generated/rys/trc_rys_table8.F90
-          generated/rys/trc_rys_table9.F90)
+          generated/rys/trc_rys_table9.F90
+          generated/rys/trc_rys_table10.F90
+          generated/rys/trc_rys_table11.F90)
 
 # Every class with at least one d shell, plus (pp|pp) and (pp|ps) as the
 # light end of the HGP/Rys comparison. Seven heavy d classes take their
@@ -351,6 +404,15 @@ set(_rys_stage "${CMAKE_BINARY_DIR}/stage/generated_rys")
 # L = 9 ran 2.8-3.8x behind GPU4PySCF's Rys in MD, those from L = 13 ahead).
 set(TERCO_RYS_G_LTOT 9 CACHE STRING
     "g classes with la+lb+lc+ld up to this take a Rys exchange kernel (TERCO_LMAX=4)")
+# TERCO_LMAX=5 (h): every class with an h shell is the MD engine's, because no
+# h Rys class has a measured chunk plan (gen_rys.py refuses one without), so
+# the energy build never asks for an unraced Rys kernel. A class listed in
+# TERCO_RYS_H_CLASSES (canonical four-digit tags, e.g. "5000;5100") is built as
+# a chunked Rys kernel instead and leaves the MD set; adding a tag here needs
+# its FOCK_CHUNK_PLAN entry first. This list and _mdg_classes below are the
+# whole h routing; trc_mdg's mdg_routes and trc_rys_select follow them.
+set(TERCO_RYS_H_CLASSES "" CACHE STRING
+    "h classes (canonical tags, ;-separated) built as Rys exchange kernels instead of MD (TERCO_LMAX=5)")
 set(_rys_lmax ${TERCO_LMAX})
 if(_rys_lmax GREATER 3)
   set(_rys_lmax 3)
@@ -365,8 +427,17 @@ foreach(la RANGE 0 ${TERCO_LMAX})
            OR ld GREATER _rys_lmax)
           # g: only the angular-momentum-canonical orderings the bins form
           # (trc_bins: la >= lb, lc >= ld, bra >= ket), as for trc_mdg below.
-          if(_ltot GREATER TERCO_RYS_G_LTOT OR lb GREATER la OR ld GREATER lc
+          if(lb GREATER la OR ld GREATER lc
              OR lc GREATER la OR (lc EQUAL la AND ld GREATER lb))
+            continue()
+          endif()
+          if(la GREATER 4 OR lb GREATER 4 OR lc GREATER 4 OR ld GREATER 4)
+            # h: MD exchange unless the class is named in TERCO_RYS_H_CLASSES
+            # (the one place the h routing is decided; see its comment).
+            if(NOT "${la}${lb}${lc}${ld}" IN_LIST TERCO_RYS_H_CLASSES)
+              continue()
+            endif()
+          elseif(_ltot GREATER TERCO_RYS_G_LTOT)
             continue()
           endif()
         endif()
@@ -634,7 +705,12 @@ if(TERCO_LMAX GREATER 3)
             continue()
           endif()
           math(EXPR _ltot "${la} + ${lb} + ${lc} + ${ld}")
-          if((la GREATER 3 OR lc GREATER 3) AND _ltot GREATER TERCO_RYS_G_LTOT)
+          if(la GREATER 4 OR lc GREATER 4)
+            # every h class not named in TERCO_RYS_H_CLASSES
+            if(NOT "${la}${lb}${lc}${ld}" IN_LIST TERCO_RYS_H_CLASSES)
+              list(APPEND _mdg_classes "${la}${lb}${lc}${ld}")
+            endif()
+          elseif((la GREATER 3 OR lc GREATER 3) AND _ltot GREATER TERCO_RYS_G_LTOT)
             list(APPEND _mdg_classes "${la}${lb}${lc}${ld}")
           endif()
         endforeach()
@@ -656,6 +732,15 @@ file(GLOB _mdj_sources "${_mdj_dir}/*.F90")
 list(LENGTH _mdj_sources _nmdj)
 message(STATUS "terco: ${_nmdj} MD J engine modules in ${_mdj_dir}")
 target_sources(${main_lib} PRIVATE ${_mdj_sources})
+# nvfortran 26.5 at -O3 miscompiles one generated Hermite item (gen_md_j.py's
+# O2_ITEMS has the measurements); 26.9 does not. The generated file carries
+# `!pgi$r opt=2` inside this guard. Versions before 26.5 are untested and
+# treated as affected.
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "NVHPC" AND CMAKE_Fortran_COMPILER_VERSION VERSION_LESS 26.9)
+  target_compile_definitions(${main_lib} PRIVATE TRC_NVHPC_O3_ITEM_BUG)
+  message(STATUS "terco: nvfortran ${CMAKE_Fortran_COMPILER_VERSION} < 26.9: the MD J Hermite item "
+                 "[10|8] batch 3 is compiled at -O2 (TRC_NVHPC_O3_ITEM_BUG)")
+endif()
 
 # TERCO_FORCE_REGENERATE is one-shot: having ignored the stamps for this
 # configure, it turns itself off so the next one trusts them again.

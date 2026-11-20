@@ -62,7 +62,8 @@ WIDTH = mpf(5) / 2
 # X = 75 is 4.6e-14, falling to 8.6e-16 by X = 80; n = 9 at X = 80 is 5.7e-14,
 # falling to 1.2e-15 by X = 85 -- each landing on the same floor n = 5's
 # override reached.
-X_MAX_OVERRIDE = {5: mpf(65), 6: mpf(70), 7: mpf(75), 8: mpf(80), 9: mpf(85)}
+X_MAX_OVERRIDE = {5: mpf(65), 6: mpf(70), 7: mpf(75), 8: mpf(80), 9: mpf(85),
+                  10: mpf(90), 11: mpf(95)}
 
 
 def rys(n, X):

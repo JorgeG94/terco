@@ -243,8 +243,13 @@ def _group_dir(r):
     raise AssertionError
 
 
-def batches(L, nbatch):
+def batches(L, nbatch, weight_exp=0.0):
     """Split {r : |r| <= L} into `nbatch` target sets (1 or a multiple of 3).
+
+    `weight_exp` != 0 balances the batches by targets * (max + 1)**weight_exp
+    instead of by target count: -0.5 evens out the generated item routines'
+    size at the high L of an h build (gen_md_j.py's SPLIT_WEIGHT_EXP); 0 is
+    the plain count every other class has always used.
 
     A batch is a direction D and a range [a, b] of the largest component,
     D_{a,b}; the ranges of one direction are chosen so the largest batch is
@@ -268,6 +273,8 @@ def batches(L, nbatch):
         hist = [0] * (L + 1)
         for r in g:
             hist[max(r)] += 1
+        if weight_exp:
+            hist = [int(1000*h*(m + 1)**weight_exp) for m, h in enumerate(hist)]
         cuts = _balanced_cuts(hist, nsub)
         lo = 0
         for hi in cuts + [L]:
@@ -304,9 +311,9 @@ def _balanced_cuts(hist, nsub):
     return best_cuts
 
 
-def batch_dags(L, nbatch, sieve=True):
+def batch_dags(L, nbatch, sieve=True, weight_exp=0.0):
     out = []
-    for tg in batches(L, nbatch):
+    for tg in batches(L, nbatch, weight_exp):
         g = RDag(tg)
         if sieve:
             g.sieve()
