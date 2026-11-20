@@ -221,55 +221,57 @@ the case (a case may also set `fail`, `warn` or `min_seconds` for all of its
 stages).
 
 Measured run-to-run spread of the judged stages on a V100 (Tesla
-V100-DGXS-32GB, NVHPC 26.5, 5 repeats after one discarded warm-up run,
-2026-11-10; the numbers of `goldens/v100.csv`):
+V100-DGXS-32GB, NVHPC 26.9, 5 repeats after one discarded warm-up run,
+2026-11-19; the numbers of `goldens/v100.csv`):
 
 | case | judged stage | median (s) | spread, (max - min)/median |
 |---|---|---|---|
-| `fock_631g` | `scf.fock_mean_after_first` | 6.088 | 0.05 % |
-| `fock_631gs` | `scf.fock_mean_after_first` | 7.203 | 0.73 % |
-| `fock_dz` | `scf.fock_mean_after_first` | 3.937 | 0.19 % |
-| `fock_dz_incr` | `scf.fock_per_iteration` | 2.674 | 0.13 % |
-| `fock_tz` | `scf.fock_mean_after_first` | 11.56 | 0.04 % |
-| `fock_tzvp` | `scf.fock_mean_after_first` | 11.73 | 0.08 % |
-| `dft` | `dft.grid` | 2.543 | 0.34 % |
-| `dft` | `dft.vv10` | 45.36 | 0.25 % |
-| `dft` | `dft.xc` | 3.421 | 5.06 % |
-| `dft` | `scf.fock_mean_after_first` | 0.9632 | 0.35 % |
-| `df_w6_dz` | `dfjk.step.k_accum_gemm` | 0.01501 | 0.48 % |
-| `df_w6_dz` | `dfjk.step.k_half_transform` | 0.007002 | 1.94 % |
-| `df_w6_dz` | `dfjk.step.mu_nu_p` | 0.05071 | 1.40 % |
-| `df_w6_dz` | `scf.fock_mean_after_first` | 0.004946 | 2.28 % |
-| `df_w6_tz` | `dfjk.step.k_accum_gemm` | 0.03063 | 0.19 % |
-| `df_w6_tz` | `dfjk.step.k_half_transform` | 0.03157 | 0.36 % |
-| `df_w6_tz` | `dfjk.step.mu_nu_p` | 0.1427 | 0.51 % |
-| `df_w6_tz` | `scf.fock_mean_after_first` | 0.01336 | 0.18 % |
-| `df_w6_atz` | `dfjk.step.k_accum_gemm` | 0.07759 | 0.16 % |
-| `df_w6_atz` | `dfjk.step.k_half_transform` | 0.08392 | 0.37 % |
-| `df_w6_atz` | `dfjk.step.mu_nu_p` | 0.2016 | 0.63 % |
-| `df_w6_atz` | `scf.fock_mean_after_first` | 0.02991 | 0.13 % |
-| `pcm` | `pcm.per_iteration` | 0.2746 | 0.10 % |
-| `pcm` | `pcm.setup` | 2.855 | 0.79 % |
-| `pcm` | `scf.fock_mean_after_first` | 0.5915 | 0.09 % |
-| `grad` | `gradient.total` | 13.9 | 0.35 % |
-| `rimp2` | `rimp2.step.cholesky` | 0.01836 | 4.32 % |
-| `rimp2` | `rimp2.step.k_i_gemms` | 58.56 | 0.11 % |
-| `rimp2` | `rimp2.step.mu_nu_p` | 1.584 | 0.38 % |
-| `rimp2` | `rimp2.step.transform_ia_p` | 1.63 | 0.18 % |
-| `dh` | `dft.xc` | 3.534 | 0.30 % |
-| `dh` | `rimp2.step.k_i_gemms` | 58.55 | 0.11 % |
-| `dh` | `rimp2.step.mu_nu_p` | 1.586 | 0.30 % |
+| `fock_631g` | `scf.fock_mean_after_first` | 6.203 | 0.07 % |
+| `fock_631gs` | `scf.fock_mean_after_first` | 7.172 | 0.38 % |
+| `fock_dz` | `scf.fock_mean_after_first` | 3.943 | 0.30 % |
+| `fock_dz_incr` | `scf.fock_per_iteration` | 2.695 | 0.12 % |
+| `fock_tz` | `scf.fock_mean_after_first` | 11.65 | 0.08 % |
+| `fock_tzvp` | `scf.fock_mean_after_first` | 11.82 | 0.03 % |
+| `dft` | `dft.grid` | 2.639 | 0.72 % |
+| `dft` | `dft.vv10` | 44.75 | 0.13 % |
+| `dft` | `dft.xc` | 3.594 | 0.94 % |
+| `dft` | `scf.fock_mean_after_first` | 0.9819 | 0.21 % |
+| `df_w6_dz` | `dfjk.step.k_accum_gemm` | 0.01505 | 0.86 % |
+| `df_w6_dz` | `dfjk.step.k_half_transform` | 0.007037 | 1.25 % |
+| `df_w6_dz` | `dfjk.step.mu_nu_p` | 0.04802 | 2.60 % |
+| `df_w6_dz` | `scf.fock_mean_after_first` | 0.004985 | 0.98 % |
+| `df_w6_tz` | `dfjk.step.k_accum_gemm` | 0.03062 | 0.96 % |
+| `df_w6_tz` | `dfjk.step.k_half_transform` | 0.03171 | 1.33 % |
+| `df_w6_tz` | `dfjk.step.mu_nu_p` | 0.1227 | 1.69 % |
+| `df_w6_tz` | `scf.fock_mean_after_first` | 0.01348 | 1.56 % |
+| `df_w6_atz` | `dfjk.step.k_accum_gemm` | 0.07761 | 0.13 % |
+| `df_w6_atz` | `dfjk.step.k_half_transform` | 0.08368 | 0.43 % |
+| `df_w6_atz` | `dfjk.step.mu_nu_p` | 0.1748 | 1.01 % |
+| `df_w6_atz` | `scf.fock_mean_after_first` | 0.02999 | 0.40 % |
+| `pcm` | `pcm.per_iteration` | 0.2757 | 0.05 % |
+| `pcm` | `pcm.setup` | 2.806 | 0.38 % |
+| `pcm` | `scf.fock_mean_after_first` | 0.5975 | 0.20 % |
+| `grad` | `gradient.total` | 13.53 | 0.24 % |
+| `rimp2` | `rimp2.step.cholesky` | 0.01725 | 1.62 % |
+| `rimp2` | `rimp2.step.k_i_gemms` | 58.45 | 0.23 % |
+| `rimp2` | `rimp2.step.mu_nu_p` | 1.529 | 0.89 % |
+| `rimp2` | `rimp2.step.transform_ia_p` | 1.627 | 0.28 % |
+| `dh` | `dft.xc` | 3.531 | 0.91 % |
+| `dh` | `rimp2.step.k_i_gemms` | 58.56 | 0.04 % |
+| `dh` | `rimp2.step.mu_nu_p` | 1.533 | 0.45 % |
 | `dh` | `rimp2.step.transform_ia_p` | 1.63 | 0.34 % |
-| `dh` | `scf.fock_mean_after_first` | 0.8301 | 0.12 % |
-| `ecp` | `scf.fock_mean_after_first` | 0.5033 | 0.11 % |
-| `ecp` | `scf.setup` | 36.22 | 0.18 % |
+| `dh` | `scf.fock_mean_after_first` | 0.8408 | 0.25 % |
+| `ecp` | `scf.fock_mean_after_first` | 0.5059 | 0.24 % |
+| `ecp` | `scf.setup` | 33.87 | 1.66 % |
 
-The Fock-build means repeat within 0.8 %, the RI-MP2 and DF steps within 2 %,
-and the two noisy stages are the semilocal XC time of the wB97X-V case (5 %)
-and the 18 ms RI-MP2 Cholesky step (4 %). So the configured 1.10 applies to
-almost every stage, and the spread rule widens it only for those two (to about
-1.20). Rerunning four cases alone on one GPU reproduced the golden, which was
-recorded with three GPUs busy at once, within 0.3 %. A job contending for the
+The Fock-build means repeat within 0.4 % (1.6 % for the millisecond DF builds
+of the hexamer), and the RI-MP2, DF, XC and PCM steps within 2 %. The one
+stage above that is the 48 ms three-index step of the smallest DF case
+(2.6 %). So the configured 1.10 applies to every stage but that one, which the
+spread rule widens to 1.104. This golden was recorded with one case at a time
+on one GPU and the other GPUs idle. An earlier recording (NVHPC 26.5) made
+with three GPUs busy at once was reproduced within 0.3 % by rerunning four
+cases alone, so the cases can be spread over GPUs. A job contending for the
 same GPU is reported as a regression (PCM case: 1.8x to 2.6x on its judged
 stages, energy unchanged). Fill in the same table when a golden is recorded on
 another architecture.
