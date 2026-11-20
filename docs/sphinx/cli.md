@@ -127,7 +127,7 @@ terco water.xyz -b def2-svp -f wb97x-v --grad
 | `--tddft-approx` | `tda` (the default; CIS for Hartree-Fock) or `rpa` (TDHF / Casida) |
 | `--tddft-spin` | `singlet`; `triplet` is refused |
 | `--tddft-tol`, `--tddft-iterations` | Davidson residual norm (1e-8) and iteration limit (50) |
-| `--tddft-missed-root-iterations` | iterations after the probe that still iterate candidate Ritz pairs, the missed-root guard (24; 0 iterates none and reports them open) |
+| `--tddft-missed-root-iterations` | iterations after the probe that still iterate candidate Ritz pairs, the missed-root guard (0, the default: none is iterated and they are reported open, naming this option; 24 recovers a root the guesses miss, at about twice the wall time on 40 waters) |
 | `--tddft-cpks-tol` | residual norm of the gradient's Z-vector (1e-9) |
 | `--tddft-sweep` | roots sharing a pass over the integral derivatives (a tuning knob) |
 | `--tddft-density-screen`, `--no-tddft-density-screen` | screen the excited-state matvec's integrals by the trial densities (the default), or not: the same roots to the integral threshold and a slower run, logged as a warning. The gradient's Z-vector never screens this way |

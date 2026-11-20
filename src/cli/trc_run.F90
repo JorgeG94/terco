@@ -146,6 +146,7 @@ module trc_run
       logical :: tddft_strict = .false.        !! --tddft-strict-root: --opt fails when the followed root's dominant pair changes
       logical :: tddft_ran = .false.
       integer :: tddft_n = 0                    !! roots solved
+      integer :: tddft_open = 0                 !! candidate Ritz pairs the missed-root check left open (0: window closed)
       real(dp), allocatable :: tddft_omega(:), tddft_osc(:), tddft_ynorm(:), tddft_weight(:)   !! (tddft_n)
       real(dp), allocatable :: tddft_dipole(:, :)   !! (3, tddft_n)
       integer, allocatable :: tddft_hole(:), tddft_particle(:)   !! dominant orbital pair, from the HOMO / the LUMO

@@ -222,61 +222,89 @@ contains
       call compare_energies(error, "rpa_water_6-31gs_pbe.ref", .false., .true.)
    end subroutine test_energies_rpa
 
-   subroutine budget_solve(fx, tda, budget, res)
+   subroutine budget_solve(fx, tda, budget, res, text)
       !! One solve of the fixture's reference, three roots, with `missed_root_iterations = budget` (a negative
-      !! budget leaves the option at its default).
+      !! budget leaves the option at its default); `text` is what the solve logged.
       type(fixture_t), intent(inout) :: fx
       logical, intent(in) :: tda
       integer, intent(in) :: budget
       type(trc_tddft_run_result_t), intent(out) :: res
+      character(len=:), allocatable, intent(out) :: text
       type(trc_tddft_run_options_t) :: opts
+      character(len=*), parameter :: LOG_FILE = "check_tddft_api_missed_root.log"
+      integer :: u
       opts%nroots = 3
       opts%tda = tda
       opts%conv_tol = 1.0e-7_dp
       if (budget >= 0) opts%missed_root_iterations = budget
+      open (newunit=u, file=LOG_FILE, status="replace")
+      close (u)
+      call global_logger%configure_file_output(LOG_FILE, level=info_level)
       call trc_tddft_run_solve(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, opts, res)
+      call global_logger%close_log_file()
+      text = logged_text(LOG_FILE)
+      ! The log is only a probe of the warning: leave nothing in the source directory the test runs in.
+      open (newunit=u, file=LOG_FILE, status="old")
+      close (u, status="delete")
    end subroutine budget_solve
 
    subroutine missed_root_budget(error, tda)
       !! The budget of the candidate Ritz pairs after the probe, on formaldehyde/6-31+G Hartree-Fock, where the
-      !! third root (0.348172 Eh) sits in a symmetry sector only that chase reaches (trc_tddft's MISSED ROOTS):
-      !! the default of 24 is the explicit 24 (same iterations and matvecs, same roots); a budget of 0 uses fewer
-      !! matvecs, here loses that root, and says so: `window_open` is set (and the default's is not).
+      !! third root (0.348172 Eh TDA, 0.338715 Eh RPA) sits in a symmetry sector only that chase reaches
+      !! (trc_tddft's MISSED ROOTS). The default is the explicit 0: the solve ends with a candidate open, says so
+      !! once in the log and names the option that iterates it, and returns a different third root (0.353367 Eh TDA,
+      !! 0.346886 Eh RPA). A budget of 24 (the previous default) uses more matvecs, closes the window and recovers it.
       type(error_type), allocatable, intent(out) :: error
       logical, intent(in) :: tda
       type(fixture_t) :: fx
       type(trc_tddft_run_result_t) :: dflt, b24, b0
+      character(len=:), allocatable :: log_dflt, log_b24, log_b0
       character(len=3) :: what
+      real(dp) :: w_missed, w_found
 
       what = merge("TDA", "RPA", tda)
+      w_missed = merge(0.353367_dp, 0.346886_dp, tda)
+      w_found = merge(0.348172_dp, 0.338715_dp, tda)
       call fixture_build(fx, "../basis_sets/6-31+g.json", "", error, xyz="formaldehyde.xyz")
       if (allocated(error)) then
          call fixture_release(fx)
          return
       end if
-      call budget_solve(fx, tda, -1, dflt)
-      call budget_solve(fx, tda, 24, b24)
-      call budget_solve(fx, tda, 0, b0)
+      call budget_solve(fx, tda, -1, dflt, log_dflt)
+      call budget_solve(fx, tda, 24, b24, log_b24)
+      call budget_solve(fx, tda, 0, b0, log_b0)
       call check(error, dflt%converged .and. b24%converged .and. b0%converged, what//": a solve did not converge")
       if (allocated(error)) then
          call fixture_release(fx)
          return
       end if
       call global_logger%info("tddft api "//what//" missed roots: default "//to_string(dflt%td%iterations)//" iterations "// &
-                              to_string(dflt%td%nmatvec)//" matvecs open "//to_string(dflt%td%nwindow_open)//"; budget 0 "// &
-                              to_string(b0%td%iterations)//" iterations "//to_string(b0%td%nmatvec)//" matvecs open "// &
-                              to_string(b0%td%nwindow_open)//"; roots "//to_string(dflt%omega(3), "f10.6")//" / "// &
-                              to_string(b0%omega(3), "f10.6"))
+                              to_string(dflt%td%nmatvec)//" matvecs open "//to_string(dflt%td%nwindow_open)//"; budget 24 "// &
+                              to_string(b24%td%iterations)//" iterations "//to_string(b24%td%nmatvec)//" matvecs open "// &
+                              to_string(b24%td%nwindow_open)//"; roots "//to_string(dflt%omega(3), "f10.6")//" / "// &
+                              to_string(b24%omega(3), "f10.6"))
       ! Same solver path twice: the counts agree, the roots to the device's run-to-run noise (atomics, ~1e-12).
-      call check(error, dflt%td%iterations == b24%td%iterations .and. dflt%td%nmatvec == b24%td%nmatvec .and. &
-                 maxval(abs(dflt%omega - b24%omega)) < 1.0e-9_dp, what//": the default is not a budget of 24")
-      if (.not. allocated(error)) call check(error, b0%td%nmatvec < dflt%td%nmatvec, what//": budget 0 used "// &
-                                             to_string(b0%td%nmatvec)//" matvecs, the default "//to_string(dflt%td%nmatvec))
-      if (.not. allocated(error)) call check(error, .not. dflt%td%window_open, what//": the default left candidates open")
-      if (.not. allocated(error)) call check(error, maxval(abs(b0%omega - dflt%omega)) > 1.0e-3_dp, what// &
-                                             ": the chase changed no root here, so this case does not exercise the budget")
-      if (.not. allocated(error)) call check(error, b0%td%window_open .and. b0%td%nwindow_open > 0, what// &
-                                             ": budget 0 lost a root and did not report an open window")
+      call check(error, dflt%td%iterations == b0%td%iterations .and. dflt%td%nmatvec == b0%td%nmatvec .and. &
+                 maxval(abs(dflt%omega - b0%omega)) < 1.0e-9_dp, what//": the default is not a budget of 0")
+      if (.not. allocated(error)) call check(error, b24%td%nmatvec > dflt%td%nmatvec, what//": budget 24 used "// &
+                                             to_string(b24%td%nmatvec)//" matvecs, the default "//to_string(dflt%td%nmatvec))
+      ! The two third roots against the numbers a budget of 0 and 24 gave when this case was found (6 decimals).
+      if (.not. allocated(error)) call check(error, abs(dflt%omega(3) - w_missed) < 2.0e-6_dp, what// &
+                                             ": the default's third root is not the budget-0 one")
+      if (.not. allocated(error)) call check(error, abs(b24%omega(3) - w_found) < 2.0e-6_dp, what// &
+                                             ": a budget of 24 did not recover the third root")
+      if (.not. allocated(error)) call check(error, dflt%td%window_open .and. dflt%td%nwindow_open > 0, what// &
+                                             ": the default lost a root and did not report an open window")
+      if (.not. allocated(error)) call check(error, .not. b24%td%window_open, what//": budget 24 left candidates open")
+      ! One line per solve, and it names the option that iterates the candidates.
+      if (.not. allocated(error)) call check(error, count_text(log_dflt, "candidate Ritz pair(s) not converged") == 1, what// &
+                                             ": the default did not warn exactly once about the open candidates")
+      if (.not. allocated(error)) call check(error, count_text(log_dflt, "missed_root_iterations") == 1, what// &
+                                             ": the warning does not name missed_root_iterations")
+      if (.not. allocated(error)) call check(error, count_text(log_b0, "candidate Ritz pair(s) not converged") == 1, what// &
+                                             ": budget 0 did not warn exactly once")
+      if (.not. allocated(error)) call check(error, count_text(log_b24, "candidate Ritz pair(s) not converged") == 0, what// &
+                                             ": budget 24 warned about open candidates")
       call fixture_release(fx)
    end subroutine missed_root_budget
 

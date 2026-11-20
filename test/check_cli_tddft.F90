@@ -187,41 +187,62 @@ contains
 
    subroutine test_missed_root(error)
       !! Formaldehyde 6-31+G Hartree-Fock, three roots: the third is reached only by iterating the candidate pairs
-      !! after the probe. A budget of 0, given as a flag or as the TOML key, loses it (a different third root); 24,
-      !! the default, is the run with no option.
+      !! after the probe. The default is a budget of 0, which loses it (a different third root, 0.353367 Eh); 24, given
+      !! as a flag or as the TOML key, recovers it (0.348172 Eh).
       type(error_type), allocatable, intent(out) :: error
       character(len=*), parameter :: BASE = 'formaldehyde.xyz -b ../basis_sets/6-31+g.json --tddft --tddft-roots 3'
       type(json_file) :: json
       real(dp), allocatable :: omega(:), osc(:), ynorm(:)
-      real(dp) :: w_default, w_24, w_flag, w_toml
+      real(dp) :: w_default, w_0, w_flag, w_toml
+      integer :: n_default, n_0, n_flag, n_toml
 
       call run_cli(error, BASE, g_probe//'.default.json', json)
       if (allocated(error)) return
       call read_roots(error, json, 3, omega, osc, ynorm)
       w_default = omega(3)
-      call json%destroy()
-      call run_cli(error, BASE//' --tddft-missed-root-iterations 24', g_probe//'.m24.json', json)
-      if (allocated(error)) return
-      call read_roots(error, json, 3, omega, osc, ynorm)
-      w_24 = omega(3)
+      n_default = open_count(json)
       call json%destroy()
       call run_cli(error, BASE//' --tddft-missed-root-iterations 0', g_probe//'.m0.json', json)
       if (allocated(error)) return
       call read_roots(error, json, 3, omega, osc, ynorm)
-      w_flag = omega(3)
+      w_0 = omega(3)
+      n_0 = open_count(json)
       call json%destroy()
-      call run_cli(error, 'tddft_missed_root_formaldehyde.toml', g_probe//'.m0toml.json', json)
+      call run_cli(error, BASE//' --tddft-missed-root-iterations 24', g_probe//'.m24.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 3, omega, osc, ynorm)
+      w_flag = omega(3)
+      n_flag = open_count(json)
+      call json%destroy()
+      call run_cli(error, 'tddft_missed_root_formaldehyde.toml', g_probe//'.m24toml.json', json)
       if (allocated(error)) return
       call read_roots(error, json, 3, omega, osc, ynorm)
       w_toml = omega(3)
+      n_toml = open_count(json)
       call json%destroy()
       ! Separate runs: device atomics give run-to-run noise near 1e-12, far below the 5e-3 a lost root moves.
-      call check(error, abs(w_24 - w_default) < 1.0e-9_dp, "--tddft-missed-root-iterations 24 is not the default")
+      call check(error, abs(w_0 - w_default) < 1.0e-9_dp, "--tddft-missed-root-iterations 0 is not the default")
       if (allocated(error)) return
-      call check(error, abs(w_flag - w_default) > 1.0e-3_dp, "--tddft-missed-root-iterations 0 left the third root alone")
+      call check(error, abs(w_flag - w_default) > 1.0e-3_dp, "--tddft-missed-root-iterations 24 left the third root alone")
+      if (allocated(error)) return
+      call check(error, abs(w_flag - 0.348172_dp) < 2.0e-6_dp, "--tddft-missed-root-iterations 24 did not recover the root")
       if (allocated(error)) return
       call check(error, abs(w_toml - w_flag) < 1.0e-9_dp, "the [tddft] missed_root_iterations key and the flag disagree")
+      if (allocated(error)) return
+      ! The JSON's "candidates open": the missed-root check's open Ritz pairs, with the roots that lost one.
+      call check(error, n_default > 0 .and. n_0 == n_default, "the default (budget 0) left no candidate open in the JSON")
+      if (allocated(error)) return
+      call check(error, n_flag == 0 .and. n_toml == 0, "a budget of 24 left candidates open: flag "// &
+                 to_string(n_flag)//", TOML "//to_string(n_toml))
    end subroutine test_missed_root
+
+   integer function open_count(json) result(n)
+      !! The `candidates open` count of the run's `tddft` block (-1 when the key is absent).
+      type(json_file), intent(inout) :: json
+      logical :: found
+      call json%get("tddft.candidates open", n, found)
+      if (.not. found) n = -1
+   end function open_count
 
    function warned(file, words) result(n)
       !! How many lines of `file` contain `words`.

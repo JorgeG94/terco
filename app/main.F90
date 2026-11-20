@@ -258,8 +258,9 @@ program trc_main
    call r%cli%add_option("tddft-tol", "Davidson residual norm of the excitation energies (1e-8)")
    call r%cli%add_option("tddft-iterations", "most Davidson iterations (50)")
    call r%cli%add_option("tddft-missed-root-iterations", "iterations after the probe in which candidate Ritz pairs "// &
-                         "beyond the buffer are still iterated, the guard against a missed root (24; 0 iterates none, "// &
-                         "fewer matvecs, and the candidates are reported open instead)")
+                         "beyond the buffer are still iterated, the guard against a missed root (0, the default: no "// &
+                         "candidate is iterated, fewer matvecs, and the candidates are reported open instead; 24 recovers "// &
+                         "a root the guesses miss)")
    call r%cli%add_option("tddft-cpks-tol", "residual norm of the Z-vector of the excited-state gradient (1e-9)")
    call r%cli%add_option("tddft-sweep", "roots sharing one pass over the integral derivatives in the gradient "// &
                          "(a tuning knob; the numbers do not change)")

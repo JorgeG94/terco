@@ -92,7 +92,7 @@ module trc_eri
    !! gly20 (1525 functions, 18.6 MB per density) 162 s whole and 122, 125, 137 s
    !! for chunks of 2, 3, 6; PBE (J only) on 40 waters 39 s whole, 36.6 s at 2,
    !! 33.3 s at 3. The water hexamer (150 functions, 0.18 MB per density,
-   !! default budget) went the other way: 3.14 s whole, 3.37 s in chunks of 3.
+   !! missed_root_iterations 24) went the other way: 3.14 s whole, 3.37 s in chunks of 3.
    !! Between 0.18 MB and 8 MB per density nothing was measured, so the
    !! byte rule below (`MATVEC_CHUNK_BYTES`) puts the switch where the two
    !! ends of the data leave it, not where a measurement found it.

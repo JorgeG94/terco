@@ -91,11 +91,12 @@ functionals). The Fortran entry is `trc_tddft_run_solve` and
 |---|---|
 | `trc_set_tddft(h, nroots, tda, singlet, target_root, grid_response)` | the roots wanted, TDA (non-zero) or RPA, `singlet` (non-zero; a triplet is `TRC_ERR_UNSUPPORTED`), the root, from 1, that the gradient and `trc_tddft_energy` follow, and the grid response of a Kohn-Sham gradient (non-zero: the exact derivative; zero: Pulay only, as pyscf) |
 | `trc_set_tddft_convergence(h, conv_tol, max_iteration, cpks_tol, cpks_max_iteration, roots_per_sweep)` | the solver and Z-vector settings; each 0 resets that setting to its default (1e-8, 50, 1e-9, 100, 2) |
-| `trc_set_tddft_missed_root_iterations(h, n)` | the iterations after the probe in which candidate Ritz pairs beyond the buffer are still iterated (24; 0 iterates none, so fewer matvecs, and the candidates are reported open; negative is `TRC_ERR_BADARG`; ABI 1.31) |
+| `trc_set_tddft_missed_root_iterations(h, n)` | the iterations after the probe in which candidate Ritz pairs beyond the buffer are still iterated (0, the default since ABI 1.33, 24 before: none is iterated, so fewer matvecs, and the candidates are reported open (`trc_tddft_window_open`); 24 recovers a root the guesses miss; negative is `TRC_ERR_BADARG`; ABI 1.31) |
 | `trc_set_tddft_density_screen(h, on)` | whether the excited-state matvec screens its integrals by the trial densities (non-zero, the default) or not (zero: the same roots to the integral threshold, a slower run, logged as a warning; the gradient's Z-vector never screens this way; ABI 1.32) |
 | `trc_check_tddft(h, gradient)` | whether the run would be refused for the settings alone (a triplet, an open shell, meta-GGA, range-separated, VV10 or double-hybrid functional, a spherical basis, `--df`, PCM), before any SCF |
 | `trc_run_tddft(h)` | the roots, after `trc_run_scf` |
 | `trc_tddft_nroots(h, &n)`, `trc_tddft_energies(h, n, omega, f, ynorm, dipole)`, `trc_tddft_character(h, n, hole, particle, weight)` (`n` the roots the arrays hold; fewer than solved is `TRC_ERR_BADARG`), `trc_tddft_target_root(h, &root, &nroots)` | the roots: energies in Eh, oscillator strengths, \|\|Y\|\|^2, transition dipoles, and each root's dominant orbital pair (from the HOMO and the LUMO) |
+| `trc_tddft_window_open(h, &n)` | the candidate Ritz pairs the missed-root check of the last run left open (0: none; they do not by themselves mean a root is missing; `TRC_ERR_STATE` without a stored result; ABI 1.33) |
 | `trc_tddft_energy(h, &e)` | E_SCF + omega of the target root |
 
 ```c
