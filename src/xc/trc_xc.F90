@@ -147,6 +147,7 @@ module trc_xc
    public :: XC_NP_PAD, XC_NL_PAD, xc_sort_by_shape
    public :: trc_xc_kernel_points_rks, trc_xc_kernel_points_t
    public :: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply, trc_xc_fxc_rks_apply_many, trc_xc_fxc_vec_chunk
+   public :: trc_xc_fxc_rks_apply_many_lent
    public :: trc_xc_kxc_rks_apply, trc_xc_kxc_refuse_reason, trc_xc_response_refuse_reason, XC_KXC_STEP
    public :: trc_xc_grad_coef_rks, trc_xc_grad_coef_t
 
@@ -313,6 +314,10 @@ module trc_xc
       logical :: symmetrize = .true.
       !! Symmetrise each density ((D + D^T)/2) before the gather; false only
       !! for a caller that guarantees a symmetric density.
+      logical :: lent = .false.
+      !! `v_resp` is already present on the device and stays there: it is
+      !! zeroed by a kernel, never uploaded, and not copied back (a host
+      !! caller's `v_resp` is zeroed on the host, uploaded and pulled back).
    end type xc_fxc_apply_t
 
    type, extends(trc_xc_options_t) :: xc_run_t
@@ -1465,6 +1470,32 @@ contains
       call fxc_apply_core(b, xg, cache, nvec, dmats_u, v_resp, opts, la)
    end subroutine trc_xc_fxc_rks_apply_many
 
+   recursive subroutine trc_xc_fxc_rks_apply_many_lent(b, xg, cache, nvec, dmats_u, v_resp, budget, la)
+      !! `trc_xc_fxc_rks_apply_many` for a `v_resp` that is already present on
+      !! the device and stays there, as `dmats_u` is: the routine zeroes it
+      !! with a kernel, so no nao^2 nvec of zeros goes up, and does not pull it
+      !! down (the host copy is left stale). The host-array routine uploads the
+      !! host zeros and copies the result back. The TDDFT matvecs take this
+      !! one: on a V100 (40 waters, def2-SVP Cartesian, TDA, NVHPC 26.9) the
+      !! upload and download were 40 to 56 MB each per Davidson iteration.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_xc_fxc_cache_t), intent(in) :: cache
+      integer, intent(in) :: nvec
+      real(dp), intent(in) :: dmats_u(b%nao, b%nao, max(nvec, 1))
+      !! Present on the device.
+      real(dp), intent(out) :: v_resp(b%nao, b%nao, max(nvec, 1))
+      !! Present on the device, written in full there; the host copy is stale.
+      integer(int64), intent(in), optional :: budget
+      type(trc_linalg_t), intent(inout), optional :: la
+
+      type(xc_fxc_apply_t) :: opts
+
+      opts%lent = .true.
+      if (present(budget)) opts%budget = budget
+      call fxc_apply_core(b, xg, cache, nvec, dmats_u, v_resp, opts, la)
+   end subroutine trc_xc_fxc_rks_apply_many_lent
+
    recursive subroutine fxc_apply_core(b, xg, cache, nvec, dmats_u, v_resp, opts, la)
       !! v_resp(:, :, k) := f_xc[dmats_u(:, :, k)] for k = 1..nvec, at the
       !! reference density `cache` was built from, restricted, LDA and GGA
@@ -1522,10 +1553,10 @@ contains
 
       nao = b%nao
       if (nvec < 1) then
-         v_resp = 0.0_dp
+         call fxc_zero_resp(opts%lent, nao, max(nvec, 1), v_resp)
          return
       end if
-      v_resp = 0.0_dp
+      call fxc_zero_resp(opts%lent, nao, nvec, v_resp)
       if (xg%npts == 0 .or. .not. cache%ready) return
       if (.not. present(la)) then
          block
@@ -1542,7 +1573,9 @@ contains
 
       allocate (pr_off(xg%nbatch + 1))
       !$acc data copyin(dmats_u) copy(v_resp)
-      !$acc update device(v_resp)
+      if (.not. opts%lent) then
+         !$acc update device(v_resp)
+      end if
       allocate (sord(max(cache%nres, 1)))
       if (cache%nres > 0) call fxc_resident_order(cache%nres, cache%npp, cache%nlp, sord)
 
@@ -1769,10 +1802,37 @@ contains
             deallocate (dsym)
          end if
       end do
-      !$acc update self(v_resp)
+      if (.not. opts%lent) then
+         !$acc update self(v_resp)
+      end if
       !$acc end data
       deallocate (pr_off, sord)
    end subroutine fxc_apply_core
+
+   subroutine fxc_zero_resp(lent, nao, nvec, v_resp)
+      !! v_resp := 0: on the host, or for a `lent` (device-resident) result on
+      !! the device, one density at a time.
+      logical, intent(in) :: lent
+      integer, intent(in) :: nao, nvec
+      real(dp), intent(out) :: v_resp(nao, nao, nvec)
+      integer :: k
+      if (.not. lent) then
+         v_resp = 0.0_dp
+         return
+      end if
+      do k = 1, nvec
+         call fxc_zero_square(nao, v_resp(:, :, k))
+      end do
+   end subroutine fxc_zero_resp
+
+   subroutine fxc_zero_square(n, a)
+      integer, intent(in) :: n
+      real(dp), intent(out) :: a(n, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         a(i, j) = 0.0_dp
+      end do
+   end subroutine fxc_zero_square
 
    subroutine fxc_cache_release(this)
       class(trc_xc_fxc_cache_t), intent(inout) :: this

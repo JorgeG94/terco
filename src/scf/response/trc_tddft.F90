@@ -18,10 +18,11 @@ module trc_tddft
    !! convention; c_x is the functional's exact-exchange fraction (`func%exx`,
    !! 1 for Hartree-Fock, where f_xc is absent). The exchange of a
    !! non-symmetric density is not the exchange of its symmetric part, which is
-   !! why this uses `eri%fock_split_many` (the folded kernels on the symmetric
-   !! and antisymmetric parts of T; `fock_nosym_many` is its reference): it
+   !! why this uses `eri%fock_split_many_lent` (the folded kernels on the
+   !! symmetric and antisymmetric parts of T, the device-resident form of
+   !! `fock_split_many`; `fock_nosym_many` is its reference): it
    !! returns j J - k K/2, so the call passes j_scale = 2 and k_scale = 2 c_x. f_xc[T] is
-   !! `trc_xc_fxc_rks_apply_many` (it symmetrises T itself, the only part the
+   !! `trc_xc_fxc_rks_apply_many_lent` (it symmetrises T itself, the only part the
    !! density response sees), against a cache built once from the ground-state
    !! density. A is real symmetric and, for a stable ground state, positive
    !! definite; the eigenvalues are the excitation energies in hartree.
@@ -80,12 +81,12 @@ module trc_tddft
    !!
    !! THE SOLVER (TDA)
    !! ----------------
-   !! Every new trial vector of an iteration goes through ONE `fock_split_many`
+   !! Every new trial vector of an iteration goes through ONE `fock_split_many_lent`
    !! call (two folded integral passes: symmetric and antisymmetric parts) and
    !! ONE `fxc_apply_many` call, whatever the number of roots. `density_screen`
    !! is false: a density-keyed screen on trial vectors would change the
    !! operator between matvecs (see `eri%fock_nosym_many`). The RPA matvec below
-   !! still uses `fock_nosym_many`.
+   !! uses `fock_nosym_many_lent`.
    !!
    !! Guesses are the unit vectors of the lowest orbital-energy differences (a
    !! tie at the cut is kept whole). Each
@@ -194,7 +195,7 @@ module trc_tddft
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, XC_FAMILY_LDA, XC_FAMILY_GGA
-   use trc_xc, only: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply_many
+   use trc_xc, only: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply_many_lent
    implicit none
    private
 
@@ -315,7 +316,7 @@ module trc_tddft
       type(trc_xc_functional_t) :: func
       logical :: has_budget = .false.
       integer(int64) :: budget = 0
-      !! trc_xc_fxc_rks_apply_many's cap in doubles; unused unless has_budget.
+      !! trc_xc_fxc_rks_apply_many_lent's cap in doubles; unused unless has_budget.
    contains
       procedure :: set => tddft_reference_set
    end type trc_tddft_reference_t
@@ -534,13 +535,15 @@ contains
    subroutine tddft_op_apply(this, b, eri, la, nvec, x, ax, xg)
       !!
       !! ax(:, :, k) := A x(:, :, k) for k = 1..nvec, x and ax HOST arrays
-      !! (nocc, nvir, nvec): ONE `fock_split_many` and ONE
-      !! `fxc_apply_many` call whatever nvec is. Host peak: tmat, gmat
-      !! and (functional) vxc, three (nao, nao, nvec) arrays, plus the split's
-      !! own copies inside `fock_split_many` (S, A and the A result, three
-      !! more, and the folded build's (nvec, nao_w, nao_w) operand and
-      !! accumulator). `xg` is needed
-      !! exactly when `setup` was given a functional.
+      !! (nocc, nvir, nvec): ONE `fock_split_many_lent` and ONE
+      !! `fxc_apply_many` call whatever nvec is. tmat and gmat stay on the
+      !! device between the two cuBLAS transforms, so what crosses per call is
+      !! x up and ax down (nocc nvir nvec doubles each), not nao^2 nvec; the
+      !! host still holds tmat, gmat and (functional) vxc, three
+      !! (nao, nao, nvec) arrays, as the mapped arrays' host side, and the
+      !! lent build adds device scratch of two (nvec, nao_w, nao_w) arrays and
+      !! two (nao_w, nao_w). `xg` is needed exactly when `setup` was given a
+      !! functional.
       !!
       class(trc_tddft_op_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
@@ -571,16 +574,14 @@ contains
          call la%gemm_mat(this%cocc, x(:, :, k), half)
          call la%gemm_mat(half, this%cvir, tmat(:, :, k), transb="T")
       end do
-      !$acc update self(tmat)
-      call eri%fock_split_many(b, nvec, tmat, gmat, &
-                               trc_fock_options_t(j_scale=2.0_dp, k_scale=2.0_dp*this%cx, density_screen=.false.))
-      !$acc update device(gmat)
+      call eri%fock_split_many_lent(b, nvec, tmat, gmat, &
+                                    trc_fock_options_t(j_scale=2.0_dp, k_scale=2.0_dp*this%cx, density_screen=.false.))
       if (this%dft) then
          ! Without a budget the routine's default keeps every vector in one pass.
          if (this%has_budget) then
-            call trc_xc_fxc_rks_apply_many(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
+            call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
          else
-            call trc_xc_fxc_rks_apply_many(b, xg, this%cache, nvec, tmat, vxc, la=la)
+            call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, tmat, vxc, la=la)
          end if
       end if
       do k = 1, nvec
@@ -615,36 +616,48 @@ contains
       !! tmat(:, :, k) (k = 1..nvec) holds the transition densities T; on
       !! return tmat(:, :, k) is the symmetric part (T + T^T)/2 and, when
       !! `antisym`, tmat(:, :, nvec + k) the antisymmetric part (T - T^T)/2.
-      !! Host arrays.
+      !! Device-resident (one density at a time), so `tmat` never visits the
+      !! host.
       integer, intent(in) :: n, nvec
       logical, intent(in) :: antisym
       real(dp), intent(inout) :: tmat(n, n, *)
-      integer :: i, j, k
-      real(dp) :: tij, tji
+      integer :: k
       do k = 1, nvec
-         if (antisym) then
-            do j = 1, n
-               do i = 1, n
-                  tmat(i, j, nvec + k) = 0.5_dp*(tmat(i, j, k) - tmat(j, i, k))
-               end do
-            end do
-         end if
-         do j = 1, n
-            do i = j, n
-               tij = tmat(i, j, k)
-               tji = tmat(j, i, k)
-               tmat(i, j, k) = 0.5_dp*(tij + tji)
-               tmat(j, i, k) = 0.5_dp*(tij + tji)
-            end do
-         end do
+         if (antisym) call tddft_antisym_part(n, tmat(:, :, k), tmat(:, :, nvec + k))
+         call tddft_sym_in_place(n, tmat(:, :, k))
       end do
    end subroutine tddft_split_density
+
+   subroutine tddft_antisym_part(n, t, a)
+      !! a := (t - t^T)/2.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: t(n, n)
+      real(dp), intent(out) :: a(n, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         a(i, j) = 0.5_dp*(t(i, j) - t(j, i))
+      end do
+   end subroutine tddft_antisym_part
+
+   subroutine tddft_sym_in_place(n, t)
+      !! t := (t + t^T)/2 in place: the iteration at (i, j), i > j, owns both
+      !! (i, j) and (j, i), and the diagonal (t + t)/2 is t exactly.
+      integer, intent(in) :: n
+      real(dp), intent(inout) :: t(n, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         if (i > j) then
+            t(i, j) = 0.5_dp*(t(i, j) + t(j, i))
+            t(j, i) = t(i, j)
+         end if
+      end do
+   end subroutine tddft_sym_in_place
 
    subroutine tddft_op_apply_rpa(this, b, eri, la, nvec, x, ax, xg)
       !!
       !! ax(:, :, k, 1) := (A+B) x(:, :, k) and ax(:, :, k, 2) := (A-B)
       !! x(:, :, k) for k = 1..nvec, x and ax HOST arrays (nocc, nvir, nvec
-      !! [, 2]): ONE `fock_nosym_many` call (the symmetric parts of the
+      !! [, 2]): ONE `fock_nosym_many_lent` call (the symmetric parts of the
       !! transition densities first, then the antisymmetric parts, the latter
       !! only when c_x /= 0 or `force_antisym`) and ONE `fxc_apply_many` call
       !! (the symmetric parts), whatever nvec is. The module header derives the
@@ -684,17 +697,14 @@ contains
          call la%gemm_mat(this%cocc, x(:, :, k), half)
          call la%gemm_mat(half, this%cvir, tmat(:, :, k), transb="T")
       end do
-      !$acc update self(tmat)
       call tddft_split_density(n, nvec, antisym, tmat)
-      !$acc update device(tmat)
-      call eri%fock_nosym_many(b, ndens, tmat, gmat, &
-                               trc_fock_options_t(j_scale=4.0_dp, k_scale=4.0_dp*this%cx, density_screen=.false.))
-      !$acc update device(gmat)
+      call eri%fock_nosym_many_lent(b, ndens, tmat, gmat, &
+                                    trc_fock_options_t(j_scale=4.0_dp, k_scale=4.0_dp*this%cx, density_screen=.false.))
       if (this%dft) then
          if (this%has_budget) then
-            call trc_xc_fxc_rks_apply_many(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
+            call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
          else
-            call trc_xc_fxc_rks_apply_many(b, xg, this%cache, nvec, tmat, vxc, la=la)
+            call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, tmat, vxc, la=la)
          end if
       end if
       do k = 1, nvec
