@@ -17,7 +17,7 @@ module trc_mdg
    !! the sorted ket list, found by bisection. A block with an empty prefix ends
    !! the bra loop, since every later block is smaller still: the early exit of
    !! Ufimtsev and Martinez's exchange, here at the granularity of a window. Inside
-   !! a window the HGP kernels' per-quartet screen still zeroes what the coarse
+   !! a window the HGP kernels' per-quartet screen still skips what the coarse
    !! cut lets through.
    !!
    !! The binkernel_fock_bins segments this replaces are split by Schwarz decade and by
@@ -123,7 +123,9 @@ module trc_mdg
       real(dp), allocatable :: wrb(:), wsm(:)
       !! Window buffers, kept on the device across windows and builds and grown
       !! only when a group pair needs more: made per group pair, the device
-      !! allocations were ~5 of 20.5 s per Fock build on w20 cc-pVQZ.
+      !! allocations were ~5 of 20.5 s per Fock build on w20 cc-pVQZ. Never
+      !! zeroed: a window's kernels read only the slots its R and B wrote
+      !! (gen_md_k.py's r_item).
       logical :: stats = .false.
       !! TRC_MDG_STATS=1: count windows and launched and surviving quartets per
       !! build, and log them with per-class times. The survivor count is a host loop.
