@@ -252,6 +252,8 @@ module trc_eri
       procedure :: fock_nosym_many => eri_fock_nosym_many
       procedure :: fock_folded_many => eri_fock_folded_many
       procedure :: fock_split_many => eri_fock_split_many
+      procedure :: fock_split_many_lent => eri_fock_split_many_lent
+      procedure :: fock_nosym_many_lent => eri_fock_nosym_many_lent
       procedure :: fock_resident => eri_fock_resident
       procedure :: fock_resident_many => eri_fock_resident_many
       procedure :: fock_resident_lent => eri_fock_resident_lent
@@ -2339,14 +2341,19 @@ contains
       end do
    end subroutine symmetrise_in_place_device
 
-   subroutine unpack_symmetrise_device(nw, ndens, d, jmat, gp_w)
-      !! Slot d of the kernel's result, symmetrised.
+   subroutine unpack_symmetrise_device(nw, ndens, d, jmat, gp_w, sgn)
+      !! Slot d of the kernel's result, symmetrised: 0.5 (J(i,j) + sgn J(j,i)),
+      !! sgn = 1 (absent) the symmetric fold, -1 the antisymmetric one.
       integer, intent(in) :: nw, ndens, d
       real(dp), intent(in) :: jmat(ndens, nw, nw)
       real(dp), intent(out) :: gp_w(nw, nw)
+      real(dp), intent(in), optional :: sgn
+      real(dp) :: sg
       integer :: i, j
+      sg = 1.0_dp
+      if (present(sgn)) sg = sgn
       do concurrent(j=1:nw, i=1:nw)
-         gp_w(i, j) = 0.5_dp*(jmat(d, i, j) + jmat(d, j, i))
+         gp_w(i, j) = 0.5_dp*(jmat(d, i, j) + sg*jmat(d, j, i))
       end do
    end subroutine unpack_symmetrise_device
 
@@ -2653,14 +2660,12 @@ contains
       !! exchange the nosym kernel would add, below the 1e-12 a response
       !! solve is gated on; `nsplit_passes` reports whether it ran.
       !!
-      !! Host route on purpose: the two batches go through
-      !! `fock_folded_many`, which moves the densities up and the results
-      !! down each call (the (nao, nao, ndens) arrays, ~nao^2 ndens doubles
-      !! per direction against an integral pass of seconds). The resident
-      !! `fock_resident_many_lent` always density-screens, falls back to one
-      !! density at a time for ndens == 1 and for MD J, and has no
-      !! antisymmetric unpack; making it serve this would touch the SCF's
-      !! hot path for a transfer that does not show in the profile.
+      !! This is the host-array entry point and the reference: the two
+      !! batches go through `fock_folded_many`, which moves the densities up
+      !! and the results down each call. A caller that already holds the
+      !! densities on the device (the TDDFT matvecs) takes
+      !! `fock_split_many_lent`, which does the same split without those
+      !! transfers or any host loop over the (nao, nao, ndens) arrays.
       !!
       !! The exchange-only A batch is screened at the Schwarz threshold,
       !! where the J+K build keeps quartets down to thresh/4, so split and
@@ -2715,6 +2720,322 @@ contains
       end if
       deallocate (dsym, dasym)
    end subroutine eri_fock_split_many
+
+   logical function eri_split_on_device(this, opts) result(ok)
+      !! Whether `fock_split_many_lent` and `fock_nosym_many_lent` run their
+      !! device route for these options; the one place that decides. Each
+      !! falls back to its host-array routine, with unchanged results, when
+      !! any of these holds:
+      !!   - `this%distributed`: the rank sum (`sum_ranks`) is a host MPI
+      !!     reduction, and the split sums each of its two passes, which a
+      !!     single sum of the total would not reproduce bit for bit;
+      !!   - `opts%density_screen`: the bound of the symmetric and
+      !!     antisymmetric batches is computed on the host (a response solve
+      !!     passes false);
+      !!   - `this%needs_md`: the host routines refuse g functions, and the
+      !!     fallback keeps that refusal in one place.
+      !! An active decontraction is covered: the device expand and fold are
+      !! the host ones' arithmetic, element for element.
+      class(trc_eri_t), intent(in) :: this
+      type(trc_fock_options_t), intent(in) :: opts
+      ok = .not. (this%distributed .or. opts%density_screen .or. this%needs_md)
+   end function eri_split_on_device
+
+   subroutine eri_fock_split_many_lent(this, b, ndens, dmats, gmats, opts)
+      !!
+      !! `fock_split_many` for device-resident densities and results: the
+      !! same split D = S + A, the same two folded batches, the same
+      !! skip rule for the antisymmetric one, with nothing of size
+      !! nao^2 ndens crossing to the host and no host loop over it.
+      !! The symmetric and antisymmetric parts, the max|A| test, the
+      !! relayout to the kernels' (ndens, nw, nw) operand, the zeroed
+      !! accumulator (created on the device, never copied up), the launch and
+      !! the fold back into `gmats` all run on the device. What reaches the
+      !! host is 2 ndens doubles for the test (a row maximum reduced on the
+      !! device) when k_scale /= 0.
+      !!
+      !! Why it exists: with the host route, per matvec the transition
+      !! densities were pulled to the host, split and re-laid out by host
+      !! loops, pushed up, and the results made the same trip back. On a V100
+      !! (NVHPC 26.9; 40 waters, def2-SVP Cartesian, TDA, 5 roots, tol 1e-5)
+      !! the excited-state phase took 34.8 s (PBE) and 402.5 s (PBE0) with the
+      !! GPU idle 6.1 s and 42.9 s of it; with this route and the device-side
+      !! XC result, 30.9 s and 376.3 s, idle 2.6 s and 19.1 s, and identical
+      !! iteration traces and excitation energies.
+      !!
+      !! Numbers match `fock_split_many` element for element on the host
+      !! build: S = 0.5 (D + D^T), A = 0.5 (D - D^T), the fold
+      !! 0.5 (J(i,j) + sgn J(j,i)) and gmats = G[S] + G[A], each in the same
+      !! operation order. The device scratch is two (ndens, nw, nw) arrays and
+      !! two (nw, nw), created here and deleted on every path out.
+      !!
+      !! The host route is taken instead (`dmats` pulled down, `gmats` pushed
+      !! up) when `eri_split_on_device` says so; see it for the conditions.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: ndens
+      real(dp), intent(in)  :: dmats(this%nao, this%nao, ndens)
+      !! The densities, present on the device and left unchanged. Their host
+      !! copy is read only on the host-route fallback, where it must be current.
+      real(dp), intent(out) :: gmats(this%nao, this%nao, ndens)
+      !! The results, present on the device (never copied in), written in full
+      !! there. The host copy is stale on return, except after the host-route
+      !! fallback, which pushes it up.
+      type(trc_fock_options_t), intent(in), optional :: opts
+      !! As for `fock_split_many`.
+
+      real(dp), allocatable :: dwork(:, :, :), jmat(:, :, :), sq(:, :), tw(:, :), rm(:, :, :), red(:, :)
+      type(trc_fock_options_t) :: o
+      type(trc_bin_launch_t) :: launch
+      integer :: n, nw, d, pass
+      logical :: need_a
+      real(dp) :: sgn
+
+      o%density_screen = .false.
+      if (present(opts)) o = opts
+      if (.not. (o%omega >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
+      if (.not. eri_split_on_device(this, o)) then
+         !$acc update self(dmats)
+         call this%fock_split_many(b, ndens, dmats, gmats, o)
+         !$acc update device(gmats)
+         return
+      end if
+      n = this%nao
+      nw = this%nao_w
+      allocate (dwork(ndens, nw, nw), jmat(ndens, nw, nw), sq(n, n), tw(nw, nw), rm(n, 2, ndens), red(2, ndens))
+      !$acc enter data create(dwork, jmat, sq, tw, rm, red)
+
+      need_a = .false.
+      if (o%k_scale /= 0.0_dp) then
+         do d = 1, ndens
+            call rowmax_split_device(n, dmats(:, :, d), rm(:, :, d))
+         end do
+         call reduce_rowmax_device(n, ndens, rm, red)
+         !$acc update self(red)
+         do d = 1, ndens
+            if (red(1, d) > SPLIT_ASYM_TOL*red(2, d)) need_a = .true.
+         end do
+      end if
+
+      this%nsplit_passes = 1
+      if (need_a) this%nsplit_passes = 2
+      do pass = 1, this%nsplit_passes
+         sgn = 1.0_dp
+         if (pass == 2) then
+            sgn = -1.0_dp
+            o%j_scale = 0.0_dp
+         end if
+         do d = 1, ndens
+            call sym_part_device(n, sgn, dmats(:, :, d), sq)
+            if (this%dec%active) then
+               call decontract_expand(this%dec, sq, tw)
+               call pack_density_device(nw, ndens, d, tw, dwork, jmat)
+            else
+               call pack_density_device(nw, ndens, d, sq, dwork, jmat)
+            end if
+         end do
+         call fill_ones_device(this%nbas, this%dsh)
+         launch = bin_launch(this, ndens, o%j_scale, o%k_scale, o%omega)
+         call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, jmat)
+         call record_launch(this, launch)
+         !$acc wait
+         do d = 1, ndens
+            call unpack_symmetrise_device(nw, ndens, d, jmat, tw, sgn)
+            if (this%dec%active) then
+               call decontract_fold(this%dec, tw, sq)
+               call store_add_device(n, pass == 2, sq, gmats(:, :, d))
+            else
+               call store_add_device(n, pass == 2, tw, gmats(:, :, d))
+            end if
+         end do
+      end do
+      !$acc exit data delete(dwork, jmat, sq, tw, rm, red)
+      deallocate (dwork, jmat, sq, tw, rm, red)
+   end subroutine eri_fock_split_many_lent
+
+   subroutine eri_fock_nosym_many_lent(this, b, ndens, dmats, gmats, opts)
+      !!
+      !! `fock_nosym_many` for device-resident densities and results: the
+      !! enumerated kernel on `ndens` densities with no symmetry, the
+      !! relayout, the zeroed accumulators, the launch and
+      !! gmats = j_scale J - k_scale K/2 all on the device, so nothing of
+      !! size nao^2 ndens crosses to the host (the RPA matvec's route; the
+      !! measurement is in `fock_split_many_lent`). Element for element the host
+      !! routine's arithmetic. Device scratch: three (ndens, nw, nw) arrays
+      !! and one (nw, nw), created here and deleted on every path out.
+      !!
+      !! The host route is taken instead (`dmats` pulled down, `gmats` pushed
+      !! up) when `eri_split_on_device` says so; see it for the conditions.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: ndens
+      real(dp), intent(in)  :: dmats(this%nao, this%nao, ndens)
+      !! The densities, present on the device and left unchanged. Their host
+      !! copy is read only on the host-route fallback, where it must be current.
+      real(dp), intent(out) :: gmats(this%nao, this%nao, ndens)
+      !! The results, present on the device (never copied in), written in full
+      !! there. The host copy is stale on return, except after the host-route
+      !! fallback, which pushes it up.
+      type(trc_fock_options_t), intent(in), optional :: opts
+      !! As for `fock_nosym_many`.
+
+      real(dp), allocatable :: dwork(:, :, :), jmat(:, :, :), kmat(:, :, :), sq(:, :), tw(:, :)
+      type(trc_fock_options_t) :: o
+      type(trc_bin_launch_t) :: launch
+      integer :: n, nw, d
+
+      o%density_screen = .false.
+      if (present(opts)) o = opts
+      if (.not. eri_split_on_device(this, o)) then
+         !$acc update self(dmats)
+         call this%fock_nosym_many(b, ndens, dmats, gmats, o)
+         !$acc update device(gmats)
+         return
+      end if
+      if (.not. (o%omega >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
+      n = this%nao
+      nw = this%nao_w
+      allocate (dwork(ndens, nw, nw), jmat(ndens, nw, nw), kmat(ndens, nw, nw), sq(n, n), tw(nw, nw))
+      !$acc enter data create(dwork, jmat, kmat, sq, tw)
+      do d = 1, ndens
+         if (this%dec%active) then
+            call decontract_expand(this%dec, dmats(:, :, d), tw)
+            call pack_density_device(nw, ndens, d, tw, dwork, jmat)
+         else
+            call pack_density_device(nw, ndens, d, dmats(:, :, d), dwork, jmat)
+         end if
+         call zero_slot_device(nw, ndens, d, kmat)
+      end do
+      call fill_ones_device(this%nbas, this%dsh)
+      launch = bin_launch(this, ndens, o%j_scale, o%k_scale, o%omega)
+      launch%nosym = .true.
+      call complete_pairs(this)
+      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+      call record_launch(this, launch)
+      !$acc wait
+      do d = 1, ndens
+         call combine_jk_device(nw, ndens, d, o%j_scale, o%k_scale, jmat, kmat, tw)
+         if (this%dec%active) then
+            call decontract_fold(this%dec, tw, sq)
+            call store_add_device(n, .false., sq, gmats(:, :, d))
+         else
+            call store_add_device(n, .false., tw, gmats(:, :, d))
+         end if
+      end do
+      !$acc exit data delete(dwork, jmat, kmat, sq, tw)
+      deallocate (dwork, jmat, kmat, sq, tw)
+   end subroutine eri_fock_nosym_many_lent
+
+   subroutine record_launch(this, launch)
+      !! What the last launch ran, kept on the object for the callers that
+      !! report it.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_bin_launch_t), intent(in) :: launch
+      this%nlaunch = launch%nlaunch
+      this%nwork = launch%nwork
+      this%nwork_masked = launch%nwork_masked
+      this%nwork_variant = launch%nwork_variant
+      this%nlaunch_variant = launch%nlaunch_variant
+      this%parity_ops_base = launch%ops_base
+      this%parity_ops_masked = launch%ops_masked
+      this%parity_cost_masked = launch%cost_masked
+      this%parity_cost_variant = launch%cost_variant
+   end subroutine record_launch
+
+   subroutine sym_part_device(n, sgn, a, s)
+      !! s := 0.5 (a + sgn a^T): the symmetric part for sgn = 1, the
+      !! antisymmetric for sgn = -1 (a + (-1) b is a - b exactly). Resident.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: sgn
+      real(dp), intent(in) :: a(n, n)
+      real(dp), intent(out) :: s(n, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         s(i, j) = 0.5_dp*(a(i, j) + sgn*a(j, i))
+      end do
+   end subroutine sym_part_device
+
+   subroutine rowmax_split_device(n, a, rm)
+      !! rm(i, 1) = max_j |0.5 (a(i,j) - a(j,i))| and rm(i, 2) = max_j |a(i,j)|:
+      !! the row maxima `reduce_rowmax_device` takes the split's
+      !! antisymmetry test from. Resident.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: a(n, n)
+      real(dp), intent(out) :: rm(n, 2)
+      integer :: i, j
+      real(dp) :: ma, md
+      do concurrent(i=1:n) local(j, ma, md)
+         ma = 0.0_dp
+         md = 0.0_dp
+         do j = 1, n
+            ma = max(ma, abs(0.5_dp*(a(i, j) - a(j, i))))
+            md = max(md, abs(a(i, j)))
+         end do
+         rm(i, 1) = ma
+         rm(i, 2) = md
+      end do
+   end subroutine rowmax_split_device
+
+   subroutine reduce_rowmax_device(n, ndens, rm, red)
+      !! red(:, d) = the maxima of rm(:, :, d) over its n rows: max|A_d| and
+      !! max|D_d|, ndens independent scans. Resident.
+      integer, intent(in) :: n, ndens
+      real(dp), intent(in) :: rm(n, 2, ndens)
+      real(dp), intent(out) :: red(2, ndens)
+      integer :: d, i
+      real(dp) :: ma, md
+      do concurrent(d=1:ndens) local(i, ma, md)
+         ma = 0.0_dp
+         md = 0.0_dp
+         do i = 1, n
+            ma = max(ma, rm(i, 1, d))
+            md = max(md, rm(i, 2, d))
+         end do
+         red(1, d) = ma
+         red(2, d) = md
+      end do
+   end subroutine reduce_rowmax_device
+
+   subroutine combine_jk_device(nw, ndens, d, jfac, kfac, jmat, kmat, gp_w)
+      !! gp_w := jfac J - kfac K/2 of slot d, the enumerated kernel's
+      !! unfolded result as `fock_nosym_many` forms it. Resident.
+      integer, intent(in) :: nw, ndens, d
+      real(dp), intent(in) :: jfac, kfac
+      real(dp), intent(in) :: jmat(ndens, nw, nw), kmat(ndens, nw, nw)
+      real(dp), intent(out) :: gp_w(nw, nw)
+      integer :: i, j
+      do concurrent(j=1:nw, i=1:nw)
+         gp_w(i, j) = jfac*jmat(d, i, j) - 0.5_dp*kfac*kmat(d, i, j)
+      end do
+   end subroutine combine_jk_device
+
+   subroutine zero_slot_device(nw, ndens, d, kmat)
+      !! Slot d of an accumulator zeroed, on the device.
+      integer, intent(in) :: nw, ndens, d
+      real(dp), intent(inout) :: kmat(ndens, nw, nw)
+      integer :: i, j
+      do concurrent(j=1:nw, i=1:nw)
+         kmat(d, i, j) = 0.0_dp
+      end do
+   end subroutine zero_slot_device
+
+   subroutine store_add_device(n, accumulate, s, g)
+      !! g := s, or g := g + s when `accumulate`. Resident.
+      integer, intent(in) :: n
+      logical, intent(in) :: accumulate
+      real(dp), intent(in) :: s(n, n)
+      real(dp), intent(inout) :: g(n, n)
+      integer :: i, j
+      if (accumulate) then
+         do concurrent(j=1:n, i=1:n)
+            g(i, j) = g(i, j) + s(i, j)
+         end do
+      else
+         do concurrent(j=1:n, i=1:n)
+            g(i, j) = s(i, j)
+         end do
+      end if
+   end subroutine store_add_device
 
    subroutine eri_release(this)
       class(trc_eri_t), intent(inout) :: this

@@ -147,6 +147,7 @@ module trc_xc
    public :: XC_NP_PAD, XC_NL_PAD, xc_sort_by_shape
    public :: trc_xc_kernel_points_rks, trc_xc_kernel_points_t
    public :: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply, trc_xc_fxc_rks_apply_many, trc_xc_fxc_vec_chunk
+   public :: trc_xc_fxc_rks_apply_many_lent
    public :: trc_xc_kxc_rks_apply, trc_xc_kxc_refuse_reason, trc_xc_response_refuse_reason, XC_KXC_STEP
    public :: trc_xc_grad_coef_rks, trc_xc_grad_coef_t
 
@@ -262,8 +263,8 @@ module trc_xc
       !! RESIDENCY: keeping chi/grad-chi for every batch would often not
       !! fit at once (the same reason trc_xc_fxc_rks itself chunks them,
       !! XC_BUDGET's own comment); this cache keeps batches 1..nres
-      !! (natural order, so each batch's own points stay contiguous)
-      !! resident -- as many as free device memory allows
+      !! (the first nres in natural order; their tiles are stored in the
+      !! global shape order, see `rpt`) resident -- as many as free device memory allows
       !! (fxc_cache_budget_bytes, trc_scf_df_response's cache_budget
       !! pattern) -- and recollocates the rest from scratch on every call,
       !! same cost as before for those, but still with no second rho/sigma
@@ -271,7 +272,7 @@ module trc_xc
       !! batch, resident or not.
       logical :: ready = .false.
       logical :: mapped = .false.
-      !! npp/nlp/c_off/coefp (and chi/gchi when nres_chi > 0) are on the
+      !! npp/nlp/c_off/coefp/rpt (and chi/gchi when nres_chi > 0) are on the
       !! device: false only for an empty grid, which fxc_cache_setup
       !! returns on before mapping anything.
       integer :: nbatch = 0, nres = 0
@@ -287,6 +288,19 @@ module trc_xc
       real(dp), allocatable :: coefp(:, :)
       !! (npts, 7): grad rho(1:3), vsigma, v2rho2, v2rhosigma, v2sigma2 at
       !! `dmat`, every point, resident or not.
+      integer, allocatable :: rpt(:), rpt_off(:)
+      !! The resident batches' points as ONE list, in the global shape order
+      !! (`fxc_resident_order`), so that a run of resident batches is a
+      !! contiguous slice of it: rpt(rpt_off(k) + 1 : rpt_off(k + 1)) are the
+      !! global point indices of the k-th batch of that order. `rpt` (rpt_off(nres + 1)
+      !! ints, 4 bytes a point against coefp's 56) is on the device for the
+      !! cache's life, `rpt_off` (nres + 1) stays on the host: it only places
+      !! a chunk's slice. Lets the point kernel launch once per chunk instead
+      !! of once per batch. 40 waters, PBE, def2-SVP Cartesian, 5 roots TDA,
+      !! V100, NVHPC 26.9: per batch the point kernel was 154,070 launches of
+      !! 96 us (14.8 s of a 53.9 s excited-state phase, with 161,650
+      !! host-to-device copies); per chunk it is 1,155 launches and 1.6 s (the
+      !! phase 35.3 s, 4,400 copies), the same excitation energies.
    contains
       procedure :: setup => fxc_cache_setup
       procedure :: release => fxc_cache_release
@@ -300,6 +314,10 @@ module trc_xc
       logical :: symmetrize = .true.
       !! Symmetrise each density ((D + D^T)/2) before the gather; false only
       !! for a caller that guarantees a symmetric density.
+      logical :: lent = .false.
+      !! `v_resp` is already present on the device and stays there: it is
+      !! zeroed by a kernel, never uploaded, and not copied back (a host
+      !! caller's `v_resp` is zeroed on the host, uploaded and pulled back).
    end type xc_fxc_apply_t
 
    type, extends(trc_xc_options_t) :: xc_run_t
@@ -1033,7 +1051,7 @@ contains
       call xc_sort_by_shape(nres, npp, nlp, sord)
    end subroutine fxc_resident_order
 
-   recursive subroutine fxc_cache_setup(this, b, xg, func, dmat, la, res_budget)
+   recursive subroutine fxc_cache_setup(this, b, xg, func, dmat, la, res_budget, chunk_cap)
       !! Collocate every batch once against `dmat` and fill `coefp`; keep
       !! chi/grad-chi resident for as many batches as fxc_cache_budget_bytes
       !! allows, this%nres of them. Their STORAGE order is the GLOBAL shape
@@ -1041,11 +1059,11 @@ contains
       !! chunk): a strided batched GEMM over several batches of the same
       !! padded shape needs them laid out back to back, and only a global
       !! sort guarantees that for any such run, wherever the per-call cap
-      !! below happens to split it into sub-chunks. The point kernel is
-      !! therefore called once per batch, not once per chunk's merged point
-      !! range: a chunk here is a run of the GLOBAL shape order, so its
-      !! batches' points need not be contiguous in xg's own point order
-      !! (unlike an overflow chunk, still natural-order, still merged).
+      !! below happens to split it into sub-chunks. A chunk here is a run of
+      !! the GLOBAL shape order, so its batches' points need not be contiguous
+      !! in xg's own point order: the point kernel walks the chunk's slice of
+      !! `rpt` (one launch per chunk), where an overflow chunk, still
+      !! natural-order, is one contiguous range.
       !! `dmat` need not stay resident after this call; `la` absent, made
       !! and released here.
       !!
@@ -1055,6 +1073,11 @@ contains
       !! every batch recollocated per apply). It exists so a test can force
       !! the overflow path on a system small enough to fit entirely; absent,
       !! the device budget applies and batch 1 is always kept resident.
+      !!
+      !! `chunk_cap` (doubles, optional) replaces XC_BUDGET as the cap on one
+      !! chunk's basis-value tile while the cache is built, so a test can split
+      !! the resident region into several chunks on a system small enough to
+      !! fit in one. The built cache does not depend on it.
       class(trc_xc_fxc_cache_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       type(trc_xc_grid_t), intent(in) :: xg
@@ -1062,9 +1085,10 @@ contains
       real(dp), intent(in) :: dmat(b%nao, b%nao)
       type(trc_linalg_t), intent(inout), optional :: la
       integer(int64), intent(in), optional :: res_budget
+      integer(int64), intent(in), optional :: chunk_cap
 
       integer :: nao
-      integer :: b0, b1, ib, nloc, npb, np, p0, npairs, nb, k0, k1, cnt, mp, ml, nwork, k
+      integer :: b0, b1, ib, nloc, npb, np, p0, npairs, nb, k0, k1, cnt, mp, ml, nwork, k, q0, g
       integer, allocatable :: pr_off(:), ord(:), pb_off(:), wk_off(:), sord(:)
       integer(int64) :: cap, need, nchi, resbytes
       real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), xt_res(:, :), dloc(:, :)
@@ -1076,7 +1100,7 @@ contains
          block
             type(trc_linalg_t) :: la_local
             call la_local%init(1)
-            call this%setup(b, xg, func, dmat, la_local, res_budget)
+            call this%setup(b, xg, func, dmat, la_local, res_budget, chunk_cap)
             call la_local%release()
          end block
          return
@@ -1091,6 +1115,9 @@ contains
       this%coefp = 0.0_dp
       allocate (this%npp(max(xg%nbatch, 1)), this%nlp(max(xg%nbatch, 1)), this%c_off(xg%nbatch + 1))
       this%c_off = -1
+      allocate (this%rpt(1), this%rpt_off(1))
+      this%rpt = 0
+      this%rpt_off = 0
       this%nres = 0
       this%nres_chi = 0
       this%ready = .true.
@@ -1128,11 +1155,28 @@ contains
          !$acc enter data create(this%chi, this%gchi)
          call xc_zero_resident(this%nres_chi, this%chi, this%gchi)
       end if
+      if (this%nres > 0) then
+         deallocate (this%rpt, this%rpt_off)
+         allocate (this%rpt_off(this%nres + 1))
+         this%rpt_off(1) = 0
+         do k = 1, this%nres
+            ib = sord(k)
+            this%rpt_off(k + 1) = this%rpt_off(k) + (xg%b_off(ib + 1) - xg%b_off(ib))
+         end do
+         allocate (this%rpt(max(this%rpt_off(this%nres + 1), 1)))
+         do k = 1, this%nres
+            ib = sord(k)
+            do g = 1, xg%b_off(ib + 1) - xg%b_off(ib)
+               this%rpt(this%rpt_off(k) + g) = xg%b_off(ib) + g - 1
+            end do
+         end do
+      end if
 
       !$acc data copyin(dmat, kid, coef)
-      !$acc enter data copyin(this%npp, this%nlp, this%c_off) create(this%coefp)
+      !$acc enter data copyin(this%npp, this%nlp, this%c_off, this%rpt) create(this%coefp)
       this%mapped = .true.
       cap = XC_BUDGET
+      if (present(chunk_cap)) cap = max(chunk_cap, 1_int64)
       if (this%nres_chi > 0) then
          ! One X = chi dmat tile, sized once over the WHOLE resident
          ! region (this%c_off's offsets span it, not a sub-chunk): every
@@ -1199,14 +1243,11 @@ contains
             end if
             k0 = k1 + 1
          end do
-         do k = 1, nb
-            ib = ord(k)
-            p0 = xg%b_off(ib)
-            npb = xg%b_off(ib + 1) - p0
-            call xc_fxc_setup_points(npb, p0, xg%npts, xg%batch_of, xg%b_off, xg%b_aooff, this%c_off, this%npp, &
-                                     xg%nbatch, func%nk, kid, coef, this%nres_chi, this%chi, this%gchi, xt_res, &
-                                     this%coefp)
-         end do
+         ! One launch for the chunk: its points are a contiguous slice of rpt.
+         q0 = this%rpt_off(b0)
+         call xc_fxc_setup_listed(this%rpt_off(b1 + 1) - q0, q0, xg%npts, size(this%rpt), this%rpt, xg%batch_of, &
+                                  xg%b_off, xg%b_aooff, this%c_off, this%npp, xg%nbatch, func%nk, kid, coef, &
+                                  this%nres_chi, this%chi, this%gchi, xt_res, this%coefp)
          !$acc exit data delete(dloc, ord, pb_off, wk_off)
          deallocate (dloc, ord, pb_off, wk_off)
          b0 = b1 + 1
@@ -1295,7 +1336,7 @@ contains
       ! reads the sentinel.
       !$acc update device(this%c_off)
       !$acc end data
-      ! this%npp, this%nlp, this%c_off, this%coefp (and this%chi/this%gchi,
+      ! this%npp, this%nlp, this%c_off, this%coefp, this%rpt (and this%chi/this%gchi,
       ! entered above when nres_chi > 0) stay mapped for
       ! trc_xc_fxc_rks_apply's whole life; fxc_cache_release unmaps them.
    end subroutine fxc_cache_setup
@@ -1429,6 +1470,32 @@ contains
       call fxc_apply_core(b, xg, cache, nvec, dmats_u, v_resp, opts, la)
    end subroutine trc_xc_fxc_rks_apply_many
 
+   recursive subroutine trc_xc_fxc_rks_apply_many_lent(b, xg, cache, nvec, dmats_u, v_resp, budget, la)
+      !! `trc_xc_fxc_rks_apply_many` for a `v_resp` that is already present on
+      !! the device and stays there, as `dmats_u` is: the routine zeroes it
+      !! with a kernel, so no nao^2 nvec of zeros goes up, and does not pull it
+      !! down (the host copy is left stale). The host-array routine uploads the
+      !! host zeros and copies the result back. The TDDFT matvecs take this
+      !! one: on a V100 (40 waters, def2-SVP Cartesian, TDA, NVHPC 26.9) the
+      !! upload and download were 40 to 56 MB each per Davidson iteration.
+      type(trc_basis_t), intent(in) :: b
+      type(trc_xc_grid_t), intent(in) :: xg
+      type(trc_xc_fxc_cache_t), intent(in) :: cache
+      integer, intent(in) :: nvec
+      real(dp), intent(in) :: dmats_u(b%nao, b%nao, max(nvec, 1))
+      !! Present on the device.
+      real(dp), intent(out) :: v_resp(b%nao, b%nao, max(nvec, 1))
+      !! Present on the device, written in full there; the host copy is stale.
+      integer(int64), intent(in), optional :: budget
+      type(trc_linalg_t), intent(inout), optional :: la
+
+      type(xc_fxc_apply_t) :: opts
+
+      opts%lent = .true.
+      if (present(budget)) opts%budget = budget
+      call fxc_apply_core(b, xg, cache, nvec, dmats_u, v_resp, opts, la)
+   end subroutine trc_xc_fxc_rks_apply_many_lent
+
    recursive subroutine fxc_apply_core(b, xg, cache, nvec, dmats_u, v_resp, opts, la)
       !! v_resp(:, :, k) := f_xc[dmats_u(:, :, k)] for k = 1..nvec, at the
       !! reference density `cache` was built from, restricted, LDA and GGA
@@ -1476,7 +1543,7 @@ contains
       integer :: nao
       integer(int64) :: cap, need, nchi
       type(trc_gemm_batch_t) :: gemm_shape
-      integer :: b0, b1, ib, np, p0, npairs, nb, k0, k1, cnt, mp, ml, k
+      integer :: b0, b1, ib, np, p0, npairs, nb, k0, k1, cnt, mp, ml, k, q0
       integer :: nvc, v0, nv, s
       integer, allocatable :: pr_off(:), ord(:), pb_off(:), sord(:), c_off_local(:)
       real(dp), allocatable :: chi(:), gchi(:, :), xt(:, :), zt(:, :), dloc(:, :), vloc(:, :), dsym(:, :, :)
@@ -1486,10 +1553,10 @@ contains
 
       nao = b%nao
       if (nvec < 1) then
-         v_resp = 0.0_dp
+         call fxc_zero_resp(opts%lent, nao, max(nvec, 1), v_resp)
          return
       end if
-      v_resp = 0.0_dp
+      call fxc_zero_resp(opts%lent, nao, nvec, v_resp)
       if (xg%npts == 0 .or. .not. cache%ready) return
       if (.not. present(la)) then
          block
@@ -1506,7 +1573,9 @@ contains
 
       allocate (pr_off(xg%nbatch + 1))
       !$acc data copyin(dmats_u) copy(v_resp)
-      !$acc update device(v_resp)
+      if (.not. opts%lent) then
+         !$acc update device(v_resp)
+      end if
       allocate (sord(max(cache%nres, 1)))
       if (cache%nres > 0) call fxc_resident_order(cache%nres, cache%npp, cache%nlp, sord)
 
@@ -1533,9 +1602,9 @@ contains
          ! fxc_resident_order) rather than a fresh per-chunk sort of a
          ! natural-order run -- the two need not agree, and a strided
          ! batched GEMM over a mismatched run reads and writes the wrong
-         ! batches' slices. The point kernel runs once per batch, not once
-         ! over the chunk's merged point range, since the GLOBAL order's own
-         ! batches need not be contiguous in xg's point order.
+         ! batches' slices. The GLOBAL order's batches need not be contiguous
+         ! in xg's point order, so the point kernel walks the chunk's slice of
+         ! cache%rpt, one launch per chunk.
          ! Zeroed once per pass for the whole resident region: the point
          ! kernel assigns every row it owns and never writes a batch's
          ! padding, so clearing it per chunk (a pass over all nres_chi
@@ -1593,14 +1662,13 @@ contains
                end if
                k0 = k1 + 1
             end do
-            do k = 1, nb
-               ib = ord(k)
-               p0 = xg%b_off(ib)
-               np = xg%b_off(ib + 1) - p0
-               call xc_fxc_apply_points(np, nv, p0, xg%npts, xg%w, xg%batch_of, xg%b_off, xg%b_aooff, cache%c_off, &
-                                        cache%npp, xg%nbatch, cache%nres_chi, cache%chi, cache%gchi, xt_res, &
-                                        cache%coefp, zt_res)
-            end do
+            ! One launch for the whole chunk: its points are the contiguous
+            ! slice cache%rpt(q0 + 1 : q0 + np), already on the device.
+            q0 = cache%rpt_off(b0)
+            np = cache%rpt_off(b1 + 1) - q0
+            call xc_fxc_apply_listed(np, nv, q0, xg%npts, size(cache%rpt), cache%rpt, xg%w, xg%batch_of, xg%b_off, &
+                                     xg%b_aooff, cache%c_off, cache%npp, xg%nbatch, cache%nres_chi, cache%chi, &
+                                     cache%gchi, xt_res, cache%coefp, zt_res)
             k0 = 1
             do while (k0 <= nb)
                ib = ord(k0)
@@ -1734,10 +1802,37 @@ contains
             deallocate (dsym)
          end if
       end do
-      !$acc update self(v_resp)
+      if (.not. opts%lent) then
+         !$acc update self(v_resp)
+      end if
       !$acc end data
       deallocate (pr_off, sord)
    end subroutine fxc_apply_core
+
+   subroutine fxc_zero_resp(lent, nao, nvec, v_resp)
+      !! v_resp := 0: on the host, or for a `lent` (device-resident) result on
+      !! the device, one density at a time.
+      logical, intent(in) :: lent
+      integer, intent(in) :: nao, nvec
+      real(dp), intent(out) :: v_resp(nao, nao, nvec)
+      integer :: k
+      if (.not. lent) then
+         v_resp = 0.0_dp
+         return
+      end if
+      do k = 1, nvec
+         call fxc_zero_square(nao, v_resp(:, :, k))
+      end do
+   end subroutine fxc_zero_resp
+
+   subroutine fxc_zero_square(n, a)
+      integer, intent(in) :: n
+      real(dp), intent(out) :: a(n, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         a(i, j) = 0.0_dp
+      end do
+   end subroutine fxc_zero_square
 
    subroutine fxc_cache_release(this)
       class(trc_xc_fxc_cache_t), intent(inout) :: this
@@ -1745,7 +1840,7 @@ contains
          if (this%nres_chi > 0) then
             !$acc exit data delete(this%chi, this%gchi)
          end if
-         !$acc exit data delete(this%npp, this%nlp, this%c_off, this%coefp)
+         !$acc exit data delete(this%npp, this%nlp, this%c_off, this%coefp, this%rpt)
       end if
       if (allocated(this%npp)) deallocate (this%npp)
       if (allocated(this%nlp)) deallocate (this%nlp)
@@ -1753,6 +1848,8 @@ contains
       if (allocated(this%chi)) deallocate (this%chi)
       if (allocated(this%gchi)) deallocate (this%gchi)
       if (allocated(this%coefp)) deallocate (this%coefp)
+      if (allocated(this%rpt)) deallocate (this%rpt)
+      if (allocated(this%rpt_off)) deallocate (this%rpt_off)
       this%ready = .false.
       this%mapped = .false.
       this%nbatch = 0
@@ -1863,6 +1960,27 @@ contains
       end do
    end subroutine xc_fxc_setup_points
 
+   subroutine xc_fxc_setup_listed(nq, q0, npts, nlist, plist, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+                                  nk, kid, coef, nchi, chi, gchi, xt, coefp)
+      !! xc_fxc_setup_points over the points plist(q0 + 1 : q0 + nq) instead of
+      !! a contiguous range: one launch for any set of batches, however their
+      !! points are scattered in the grid's order.
+      integer, intent(in) :: nq, q0, npts, nlist, nbatch, nk
+      integer, intent(in) :: plist(nlist)
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch), kid(XC_MAX_KERNELS)
+      real(dp), intent(in) :: coef(XC_MAX_KERNELS)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, 1)
+      real(dp), intent(inout) :: coefp(npts, XC_FXC_NCOEF)
+      integer :: q
+
+      do concurrent(q=1:nq)
+         call xc_fxc_setup_point_body(plist(q0 + q), npts, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+                                      nk, kid, coef, nchi, chi, gchi, xt, coefp)
+      end do
+   end subroutine xc_fxc_setup_listed
+
    pure subroutine xc_fxc_apply_point_body(gg, nv, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
                                            nchi, chi, gchi, xt, coefp, zt)
       !! zt(:, 1:nv) at point gg from the trial densities' xt = chi D_k and
@@ -1938,6 +2056,29 @@ contains
                                       nchi, chi, gchi, xt, coefp, zt)
       end do
    end subroutine xc_fxc_apply_points
+
+   subroutine xc_fxc_apply_listed(nq, nv, q0, npts, nlist, plist, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+                                  nchi, chi, gchi, xt, coefp, zt)
+      !! xc_fxc_apply_points over the points plist(q0 + 1 : q0 + nq): one
+      !! launch for a whole chunk of batches. Each point runs
+      !! xc_fxc_apply_point_body and writes only its own rows of zt, so the
+      !! result does not depend on which launch a point is in.
+      integer, intent(in) :: nq, nv, q0, npts, nlist, nbatch
+      integer, intent(in) :: plist(nlist)
+      real(dp), intent(in) :: w(npts)
+      integer, intent(in) :: batch_of(npts), b_off(nbatch + 1), b_aooff(nbatch + 1), c_off(nbatch + 1)
+      integer, intent(in) :: npp(nbatch)
+      integer(int64), intent(in) :: nchi
+      real(dp), intent(in) :: chi(nchi), gchi(nchi, 3), xt(nchi, nv)
+      real(dp), intent(in) :: coefp(npts, XC_FXC_NCOEF)
+      real(dp), intent(inout) :: zt(nchi, nv)
+      integer :: q
+
+      do concurrent(q=1:nq)
+         call xc_fxc_apply_point_body(plist(q0 + q), nv, npts, w, batch_of, b_off, b_aooff, c_off, npp, nbatch, &
+                                      nchi, chi, gchi, xt, coefp, zt)
+      end do
+   end subroutine xc_fxc_apply_listed
 
    subroutine xc_symmetrize(nao, nvec, v0, nv, dmats, nd, d0, dsym)
       !! dsym(:, :, d0 + k - 1) := (D + D^T)/2 of dmats(:, :, v0 + k - 1), k = 1..nv.
