@@ -70,7 +70,7 @@ module trc_run_input
       integer :: kind
    end type run_input_key_t
 
-   integer, parameter :: NKEYS = 104
+   integer, parameter :: NKEYS = 116
    type(run_input_key_t), parameter :: RUN_INPUT_KEYS(NKEYS) = [ &
       run_input_key_t("molecule", "geometry", "", KIND_PATH), &
       run_input_key_t("molecule", "charge", "chrg", KIND_INT), &
@@ -121,6 +121,18 @@ module trc_run_input
       run_input_key_t("riccsd", "ladder", "cc-ladder", KIND_STRING), &
       run_input_key_t("riccsd", "triples", "cc-triples", KIND_STRING), &
       run_input_key_t("riccsd", "triples_budget", "cc-triples-budget", KIND_FLOAT), &
+      run_input_key_t("tddft", "enabled", "tddft", KIND_BOOL), &
+      run_input_key_t("tddft", "roots", "tddft-roots", KIND_INT), &
+      run_input_key_t("tddft", "target_root", "tddft-root", KIND_INT), &
+      run_input_key_t("tddft", "approximation", "tddft-approx", KIND_STRING), &
+      run_input_key_t("tddft", "spin", "tddft-spin", KIND_STRING), &
+      run_input_key_t("tddft", "energy_tol", "tddft-tol", KIND_FLOAT), &
+      run_input_key_t("tddft", "max_iterations", "tddft-iterations", KIND_INT), &
+      run_input_key_t("tddft", "cpks_tol", "tddft-cpks-tol", KIND_FLOAT), &
+      run_input_key_t("tddft", "roots_per_sweep", "tddft-sweep", KIND_INT), &
+      run_input_key_t("tddft", "grid_response", "tddft-grid-response", KIND_BOOL_ON), &
+      run_input_key_t("tddft", "gap_warning", "tddft-gap-warn", KIND_FLOAT), &
+      run_input_key_t("tddft", "strict_root", "tddft-strict-root", KIND_BOOL), &
       run_input_key_t("driver", "gradient", "grad", KIND_BOOL), &
       run_input_key_t("driver", "hessian", "hessian", KIND_BOOL), &
       run_input_key_t("driver", "optimize", "opt", KIND_BOOL), &
@@ -186,9 +198,10 @@ module trc_run_input
       character(len=:), allocatable :: message
    end type input_state_t
 
-   integer, parameter :: NSECTIONS = 16
+   integer, parameter :: NSECTIONS = 17
    character(len=16), parameter :: SECTIONS(NSECTIONS) = [character(len=16) :: &
-      "molecule", "basis", "scf", "scf.convergence", "dft", "solvation", "correlation", "riccsd", "driver", &
+      "molecule", "basis", "scf", "scf.convergence", "dft", "solvation", "correlation", "riccsd", &
+      "tddft", "driver", &
       "analysis", "hessian", "thermo", "opt", "opt.neb", "opt.global", "output"]
 
    character(len=*), parameter :: REAL_FORMAT = "es24.16e3"

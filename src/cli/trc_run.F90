@@ -49,6 +49,7 @@ module trc_run
              run_check_neb_endpoint, run_write_neb_path_xyz
    public :: run_read_xyz_frames
    public :: run_cc_parse, run_cc_configure, run_cc_execute
+   public :: run_tddft_parse, run_tddft_configure, run_tddft_execute, run_tddft_summary
    public :: run_frontier, run_symmetry_collect, run_symmetry_refusal, run_symmetry_unsupported
    public :: run_symmetry_summary
 
@@ -132,6 +133,22 @@ module trc_run
       real(c_double) :: cc_t1_diagnostic = 0.0_c_double
       integer(c_int) :: cc_niter = 0
       integer(c_int) :: cc_nfrozen = 0, cc_nactive = 0, cc_nvirtual = 0, cc_naux = 0   !! the spaces the CCSD used
+      ! --tddft (trc_run_excited.F90): excitation energies, and with --grad/--opt the gradient of root `tddft_root`.
+      ! A 0 convergence setting is the library's default.
+      logical :: tddft = .false.
+      logical :: tddft_tda = .true.              !! --tddft-approx tda (the default); false is the full RPA
+      integer :: tddft_nroots = 3, tddft_root = 1   !! --tddft-roots; --tddft-root, 1-based, the state --grad/--opt follow
+      logical :: tddft_grid_response = .true.   !! Kohn-Sham: differentiate the grid too (off with --no-tddft-grid-response)
+      real(dp) :: tddft_tol = 0.0_dp, tddft_cpks_tol = 0.0_dp
+      integer :: tddft_iterations = 0, tddft_sweep = 0
+      real(dp) :: tddft_gap_warn = 0.005_dp   !! --opt warns when the followed root is this close (Eh) to another; 0 never
+      logical :: tddft_strict = .false.        !! --tddft-strict-root: --opt fails when the followed root's dominant pair changes
+      logical :: tddft_ran = .false.
+      integer :: tddft_n = 0                    !! roots solved
+      real(dp), allocatable :: tddft_omega(:), tddft_osc(:), tddft_ynorm(:), tddft_weight(:)   !! (tddft_n)
+      real(dp), allocatable :: tddft_dipole(:, :)   !! (3, tddft_n)
+      integer, allocatable :: tddft_hole(:), tddft_particle(:)   !! dominant orbital pair, from the HOMO / the LUMO
+      real(c_double) :: tddft_etot = 0.0_c_double   !! E_SCF + omega of the target root
       logical :: dh = .false.   !! --func names a double hybrid: rimp2 runs even without --rimp2
       logical :: vv10 = .false.  !! --func has VV10 nonlocal correlation, on its own --nlc-grid
       real(c_double) :: pt2_cos = 0.0_c_double, pt2_css = 0.0_c_double, etot_dh = 0.0_c_double
@@ -214,6 +231,7 @@ module trc_run
       real(dp) :: opt_max_step = -1.0_dp   !! negative = DL-FIND's own default (trc_opt_options_t%max_step)
       logical :: opt_converged = .false.
       integer :: opt_steps = 0, opt_evals = 0, opt_hess_evals = 0
+      integer :: opt_state_changes = 0, opt_gap_warnings = 0   !! --opt --tddft: the warnings logged for the followed state
       real(dp) :: opt_gmax = 0.0_dp, opt_grms = 0.0_dp
       integer :: opt_n_traj = 0
       real(dp), allocatable :: opt_traj_energy(:)
@@ -501,6 +519,30 @@ module trc_run
          type(run_t), intent(inout) :: r
       end subroutine run_cc_execute
 
+      module subroutine run_tddft_parse(r)
+         !! --tddft and the --tddft-* options into r%tddft*, refusing what the method does not cover (trc_run_excited.F90)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_tddft_parse
+
+      module subroutine run_tddft_configure(r)
+         !! trc_set_tddft and the solver settings (trc_run_excited.F90)
+         implicit none
+         type(run_t), intent(in) :: r
+      end subroutine run_tddft_configure
+
+      module subroutine run_tddft_execute(r)
+         !! trc_run_tddft and the roots it leaves, into r%tddft_* (trc_run_excited.F90)
+         implicit none
+         type(run_t), intent(inout) :: r
+      end subroutine run_tddft_execute
+
+      module subroutine run_tddft_summary(r)
+         !! The table of excitation energies, oscillator strengths and ||Y||^2 (trc_run_excited.F90)
+         implicit none
+         type(run_t), intent(in) :: r
+      end subroutine run_tddft_summary
+
       module function method(r) result(m)
          implicit none
          type(run_t), intent(in) :: r
@@ -621,6 +663,8 @@ contains
          why = "--rimp2 (or a double-hybrid --func)"
       else if (r%cc) then
          why = "--riccsd / --riccsd-t"
+      else if (r%tddft) then
+         why = "--tddft"
       else if (r%df) then
          why = "--df"
       else if (len(r%pcm) > 0) then

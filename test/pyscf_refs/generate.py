@@ -3132,15 +3132,20 @@ def _gen_fxc_apply_many_one(probe_relname, ref_relname, xyzname, molname, basnam
     (TEST / probe_relname).unlink()
 
 
-def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
-    """One check_tddft.F90 case: pyscf's TDA (singlets) on an RHF/RKS
+def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcname, rpa=False):
+    """One check_tddft.F90 case (check_tddft_rpa.F90 with `rpa`): pyscf's TDA
+    (singlets) on an RHF/RKS
     reference at terco's OWN grid (the probe's points and weights, `non0tab`
     cleared, as _gen_cpks_one): the lowest `nroots` excitation energies and
     length-gauge oscillator strengths. The SCF is converged tightly
     (converge_tight). The TDA runs at a residual tolerance of 1e-6, which puts
     omega within ~1e-12 of converged (error ~ residual^2 / gap); at 1e-8 pyscf
     itself reported a root unconverged (water/SVWN, root 3 of 4).
-    Written: E_SCF, OMEGA, OSC."""
+    With `rpa` it is pyscf's TDHF (RHF) or TDDFT (RKS) instead, the full (X, Y)
+    problem, on the same reference and grid, and the probe also carries ||Y||^2
+    per root in terco's normalisation X.X - Y.Y = 1 (pyscf's (X, Y) are
+    normalised 2 (X.X - Y.Y) = 1, so ||Y||^2(terco) = 2 ||Y||^2(pyscf)).
+    Written: E_SCF, OMEGA, OSC (and YY with `rpa`)."""
     PYSCF = {"hf": None, "svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
     r = BinReader(TEST / probe_relname)
     n, natm, no, nroots = (r.i8() for _ in range(4))
@@ -3150,6 +3155,7 @@ def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcna
     e_terco = r.f8(1)[0]
     om_terco = r.f8(nroots)
     osc_terco = r.f8(nroots)
+    yy_terco = r.f8(nroots) if rpa else None
     npts = r.i8()
     pts = r.mat(3, npts).T.copy()
     wts = r.f8(npts)
@@ -3166,7 +3172,7 @@ def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcna
     if mol.nao_nr() != n:
         raise RuntimeError(f"gen_tddft {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
 
-    label = f"tddft {molname}/{basname}/{funcname} (tda singlet)"
+    label = f"rpa {molname}/{basname}/{funcname} (singlet)" if rpa else f"tddft {molname}/{basname}/{funcname} (tda singlet)"
 
     def make_mf():
         if funcname == "hf":
@@ -3179,7 +3185,7 @@ def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcna
         return m
 
     mf, grad_norm = converge_tight(make_mf, None, label)
-    td = mf.TDA()
+    td = (mf.TDHF() if funcname == "hf" else mf.TDDFT()) if rpa else mf.TDA()
     td.singlet = True
     td.nstates = nroots
     td.conv_tol = 1.0e-6
@@ -3187,21 +3193,26 @@ def _gen_tddft_one(probe_relname, ref_relname, xyzname, molname, basname, funcna
     td.verbose = 0
     td.kernel()
     if not all(np.atleast_1d(td.converged)):
-        raise ConvergenceError(f"{label}: pyscf's TDA did not converge")
+        raise ConvergenceError(f"{label}: pyscf's {'RPA' if rpa else 'TDA'} did not converge")
     omega = np.asarray(td.e, dtype=float)
     osc = np.asarray(td.oscillator_strength(gauge='length'), dtype=float)
+    yy = np.array([2.0 * float(np.sum(y ** 2)) for _, y in td.xy]) if rpa else None
 
     w = RefWriter(ref_relname)
-    w.header(label, [ROOT / "test" / "check_tddft.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
+    src = "check_tddft_rpa.F90" if rpa else "check_tddft.F90"
+    w.header(label, [ROOT / "test" / src, TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
     w.real("E_SCF", mf.e_tot)
     w.vector("OMEGA", omega)
     w.vector("OSC", osc)
+    if rpa:
+        w.vector("YY", yy)
     w.real("CONV_TOL", mf.conv_tol)
     w.real("GRAD_NORM", grad_norm)
     w.end()
     w.write()
     print(f"  {label}: E(terco) {e_terco:20.12f}  E(pyscf) {mf.e_tot:20.12f}  |g| {grad_norm:.2e}  "
-          f"|d(omega)|max {np.abs(om_terco - omega).max():.2e}  |d(f)|max {np.abs(osc_terco - osc).max():.2e}")
+          f"|d(omega)|max {np.abs(om_terco - omega).max():.2e}  |d(f)|max {np.abs(osc_terco - osc).max():.2e}"
+          + (f"  |d(YY)|max {np.abs(yy_terco - yy).max():.2e}" if rpa else ""))
     (TEST / probe_relname).unlink()
 
 
@@ -3217,6 +3228,552 @@ def gen_tddft():
             run_bin(f"check_tddft_{molname}_{funcname}",
                     [xyzname, "basis_sets/6-31gs.json", molname, "6-31gs", funcname, str(nroots), str(TEST / probe)])
             _gen_tddft_one(probe, f"tddft_{molname}_6-31gs_{funcname}.ref", xyzname, molname, "6-31gs", funcname)
+
+
+def gen_rpa():
+    """check_tddft_rpa.F90: the lowest singlet RPA roots
+    (trc_tddft.F90, tda = .false.) of water (4 roots), formamide (6) and
+    methane (Td, 5: the cut falls inside degenerate multiplets), 6-31G*, for
+    HF, SVWN, PBE and B3LYP, against pyscf's TDHF/TDDFT at terco's own
+    converged grid."""
+    for xyzname, molname, nroots in (("water.xyz", "water", 4), ("formamide.xyz", "formamide", 6),
+                                     ("tops_ch4.xyz", "ch4", 5)):
+        for funcname in ("hf", "svwn", "pbe", "b3lyp"):
+            probe = f"tddft_rpa_{molname}_{funcname}_probe.bin"
+            run_bin(f"check_tddft_rpa_{molname}_{funcname}",
+                    [xyzname, "basis_sets/6-31gs.json", molname, "6-31gs", funcname, str(nroots), str(TEST / probe)])
+            _gen_tddft_one(probe, f"rpa_{molname}_6-31gs_{funcname}.ref", xyzname, molname, "6-31gs", funcname,
+                           rpa=True)
+
+
+#: check_tddft_basis.F90's basis sets: ref tag -> the shipped basis_sets/ file.
+TDDFT_BASIS_FILES = {
+    "sto-3g": "sto-3g", "3-21g": "3-21g", "6-31g": "6-31g", "6-31pg": "6-31+g",
+    "6-31gss": "6-31g_st__st_", "6-311gss": "6-311g_st__st_",
+    "cc-pvdz": "cc-pvdz", "aug-cc-pvdz": "aug-cc-pvdz", "def2-svp": "def2-svp", "def2-svpd": "def2-svpd",
+}
+_TB_ALL = ("hf", "pbe", "b3lyp")
+_TB_HB = ("hf", "b3lyp")
+#: (molecule, basis tag, functionals): the same table as _tb_cases in test/CMakeLists.txt.
+#: formaldehyde/6-31+G/HF is absent on purpose: terco's TDA Davidson skips its third root.
+TDDFT_BASIS_CASES = (
+    ("water", "sto-3g", _TB_ALL), ("water", "3-21g", _TB_ALL), ("water", "6-31g", _TB_ALL),
+    ("water", "6-31pg", _TB_HB), ("water", "6-31gss", _TB_ALL), ("water", "6-311gss", _TB_HB),
+    ("water", "cc-pvdz", _TB_ALL), ("water", "aug-cc-pvdz", _TB_HB), ("water", "def2-svp", _TB_ALL),
+    ("water", "def2-svpd", _TB_HB),
+    ("formaldehyde", "sto-3g", _TB_ALL), ("formaldehyde", "3-21g", _TB_ALL), ("formaldehyde", "6-31g", _TB_ALL),
+    ("formaldehyde", "6-31pg", _TB_HB), ("formaldehyde", "6-31gss", _TB_ALL), ("formaldehyde", "6-311gss", _TB_HB),
+    ("formaldehyde", "cc-pvdz", _TB_ALL), ("formaldehyde", "aug-cc-pvdz", _TB_HB),
+    ("formaldehyde", "def2-svp", _TB_ALL), ("formaldehyde", "def2-svpd", _TB_HB),
+)
+TDDFT_BASIS_NROOTS = 3
+
+
+def _converge_tddft_basis(make_mf, label, grad_gate=1.0e-8, self_check_tol=1.0e-11):
+    """converge_tight with the gradient gate measured on get_grad's own norm.
+    converge_tight hands the SAME number to pyscf's convergence test and to
+    its after-the-fact check, but pyscf's internal norm is smaller than
+    get_grad's here (formaldehyde/STO-3G/PBE: internal 1e-8 gave |g| 2.3e-8,
+    internal 1e-9 gave 2.5e-9), so no setting of it can pass its own check.
+    This asks pyscf for 1e-9 and gates the result on |g| < `grad_gate` (the
+    1e-8 converge_tight uses), plus its fresh-mf energy cross-check."""
+    mf = make_mf()
+    mf.conv_tol = 1.0e-13
+    mf.conv_tol_grad = 1.0e-9
+    mf.max_cycle = 200
+    mf.verbose = 0
+    mf.kernel()
+    if not mf.converged:
+        mf2 = mf.newton()
+        mf2.conv_tol = 1.0e-13
+        mf2.conv_tol_grad = 1.0e-9
+        mf2.max_cycle = 200
+        mf2.kernel()
+        mf = mf2
+    if not mf.converged:
+        raise ConvergenceError(f"{label}: pyscf SCF did not converge (DIIS and .newton() both tried)")
+    grad_norm = float(np.linalg.norm(mf.get_grad(mf.mo_coeff, mf.mo_occ)))
+    if grad_norm > grad_gate:
+        raise ConvergenceError(f"{label}: |g|={grad_norm:.3e} > {grad_gate:.1e} -- refusing an under-converged SCF")
+    e_fresh = make_mf().energy_tot(mf.make_rdm1())
+    if abs(e_fresh - mf.e_tot) > self_check_tol:
+        raise ConvergenceError(f"{label}: a fresh mf's energy_tot(dm) differs from e_tot by {abs(e_fresh - mf.e_tot):.3e}")
+    return mf, grad_norm
+
+
+def _gen_tddft_basis_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
+    """One check_tddft_basis.F90 case: pyscf's TDA and full RPA (TDHF for RHF,
+    TDDFT for RKS) singlets on an RHF/RKS reference with a Cartesian AO space
+    (TDDFT in terco is Cartesian only) at terco's OWN grid, as _gen_tddft_one,
+    with the shipped basis_sets/ file of `basname`. Same convergence rules
+    (converge_tight, TDA/RPA residual tolerance 1e-6). Written: E_SCF, and
+    OMEGA, OSC for each of TDA and RPA, YY_RPA (terco's normalisation,
+    2 ||Y||^2 of pyscf's)."""
+    PYSCF = {"hf": None, "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
+    r = BinReader(TEST / probe_relname)
+    n, natm, no, nroots = (r.i8() for _ in range(4))
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    func_tag = r.str_(16)
+    e_terco = r.f8(1)[0]
+    om_tda_t = r.f8(nroots)
+    osc_tda_t = r.f8(nroots)
+    om_rpa_t = r.f8(nroots)
+    osc_rpa_t = r.f8(nroots)
+    yy_t = r.f8(nroots)
+    npts = r.i8()
+    pts = r.mat(3, npts).T.copy()
+    wts = r.f8(npts)
+    r.close()
+    if mol_tag != molname or bas_tag != basname or func_tag != funcname:
+        raise RuntimeError(f"gen_tddft_basis {probe_relname}: probe tag mismatch")
+    atoms = _xyz_atoms(xyzname[:-4])
+    if len(atoms) != natm:
+        raise RuntimeError(f"gen_tddft_basis {probe_relname}: natm mismatch terco {natm} xyz {len(atoms)}")
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    basfile = ROOT / "basis_sets" / (TDDFT_BASIS_FILES[basname] + ".json")
+    bas = bse_json_basis(basfile, elements)
+    charge = sum(elements[sym] for sym, _ in atoms) - 2 * no
+    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=charge, spin=0, verbose=0)
+    if mol.nao_nr() != n:
+        raise RuntimeError(f"gen_tddft_basis {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
+    label = f"tddft_basis {molname}/{basname}/{funcname} (tda and rpa singlets)"
+
+    def make_mf():
+        if funcname == "hf":
+            return scf.RHF(mol)
+        m = dft.RKS(mol)
+        m.xc = PYSCF[funcname]
+        m.grids.coords = np.ascontiguousarray(pts)
+        m.grids.weights = wts
+        m.grids.non0tab = None
+        return m
+
+    mf, grad_norm = _converge_tddft_basis(make_mf, label)
+
+    def dense_roots(td, rpa_):
+        """The lowest roots of the full A (TDA) or (A-B)^(1/2) (A+B) (A-B)^(1/2)
+        (RPA) from pyscf's own get_ab, as the check on its Davidson."""
+        a, b = td.get_ab()
+        nov = a.shape[0] * a.shape[1]
+        a = a.reshape(nov, nov)
+        if not rpa_:
+            return np.linalg.eigvalsh(a)
+        b = b.reshape(nov, nov)
+        wm, vm = np.linalg.eigh(a - b)
+        half = (vm * np.sqrt(wm)) @ vm.T
+        return np.sqrt(np.linalg.eigvalsh(half @ (a + b) @ half))
+
+    def run_td(make_td, rpa_):
+        """pyscf's Davidson started for nroots states can skip a root (measured:
+        formaldehyde/6-31G/HF TDA returned 0.159, 0.380, 0.433 and missed a
+        root at 0.349 that the dense A has, and that terco finds), so ask for
+        more states, keep the lowest nroots, and require them to equal the
+        dense eigenvalues."""
+        dense = dense_roots(make_td(), rpa_)[:nroots]
+        for extra in (4, 8, 16):
+            td = make_td()
+            td.singlet = True
+            td.nstates = nroots + extra
+            td.conv_tol = 1.0e-6
+            td.max_cycle = 200
+            td.verbose = 0
+            td.kernel()
+            # The extra, highest states are only there to keep the Davidson from
+            # skipping a wanted root and may stay unconverged; the wanted ones
+            # must converge and equal the dense eigenvalues.
+            if all(np.atleast_1d(td.converged)[:nroots]) and np.abs(np.asarray(td.e[:nroots]) - dense).max() < 1.0e-7:
+                return td
+        raise ConvergenceError(f"{label}: pyscf's Davidson never converged to the dense lowest {nroots} roots")
+
+    tda = run_td(mf.TDA, False)
+    rpa = run_td(mf.TDHF if funcname == "hf" else mf.TDDFT, True)
+    om_tda = np.asarray(tda.e, dtype=float)[:nroots]
+    osc_tda = np.asarray(tda.oscillator_strength(gauge='length'), dtype=float)[:nroots]
+    om_rpa = np.asarray(rpa.e, dtype=float)[:nroots]
+    osc_rpa = np.asarray(rpa.oscillator_strength(gauge='length'), dtype=float)[:nroots]
+    yy = np.array([2.0 * float(np.sum(y ** 2)) for _, y in rpa.xy])[:nroots]
+
+    w = RefWriter(ref_relname)
+    w.header(label, [TEST / "check_tddft_basis.F90", basfile, TEST / xyzname])
+    w.real("E_SCF", mf.e_tot)
+    w.vector("OMEGA_TDA", om_tda)
+    w.vector("OSC_TDA", osc_tda)
+    w.vector("OMEGA_RPA", om_rpa)
+    w.vector("OSC_RPA", osc_rpa)
+    w.vector("YY_RPA", yy)
+    w.real("CONV_TOL", mf.conv_tol)
+    w.real("GRAD_NORM", grad_norm)
+    w.end()
+    w.write()
+    print(f"  {label}: nao {n}  |dE| {abs(e_terco - mf.e_tot):.2e}  |g| {grad_norm:.2e}  "
+          f"TDA |d(omega)| {np.abs(om_tda_t - om_tda).max():.2e} |d(f)| {np.abs(osc_tda_t - osc_tda).max():.2e}  "
+          f"RPA |d(omega)| {np.abs(om_rpa_t - om_rpa).max():.2e} |d(f)| {np.abs(osc_rpa_t - osc_rpa).max():.2e} "
+          f"|d(YY)| {np.abs(yy_t - yy).max():.2e}")
+    (TEST / probe_relname).unlink()
+
+
+def gen_tddft_basis():
+    """check_tddft_basis.F90: the lowest three singlet TDA and RPA roots of
+    water and formaldehyde, for HF, PBE and B3LYP, over the shipped basis
+    sets of TDDFT_BASIS_FILES (a Cartesian AO space), against pyscf at
+    terco's own converged grid. There is no f basis: terco's dipole integrals
+    stop at d at every TERCO_LMAX. The (molecule, basis, functional) triples
+    are TDDFT_BASIS_CASES, the ctest list's own table."""
+    for molname, basname, funcs in TDDFT_BASIS_CASES:
+        xyzname = molname + ".xyz"
+        for funcname in funcs:
+            probe = f"tddft_basis_{molname}_{basname}_{funcname}_probe.bin"
+            (TEST / probe).unlink(missing_ok=True)
+            run_bin("check_tddft_basis",
+                    [xyzname, "../basis_sets/" + TDDFT_BASIS_FILES[basname] + ".json", molname, basname, funcname,
+                     str(TDDFT_BASIS_NROOTS), str(TEST / probe)])
+            if not (TEST / probe).exists():
+                raise RuntimeError(f"{molname}/{basname}/{funcname}: the binary wrote no probe")
+            _gen_tddft_basis_one(probe, f"tddft_basis_{molname}_{basname}_{funcname}.ref", xyzname, molname,
+                                 basname, funcname)
+
+
+def _gen_tddft_grad_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
+    """One check_tddft_grad.F90 case: pyscf's TDA excited-state gradients
+    (grad.tdrhf / grad.tdrks) of the lowest `nroots` singlets of an RHF/RKS
+    reference at terco's OWN grid. The amplitudes are the EXACT eigenvectors of
+    pyscf's own TDA matrix (td.get_ab, dense diagonalisation), not a Davidson
+    result, so the comparison tests the gradient code and not a solver
+    tolerance (the gradient is first order in the amplitude error, ~ residual /
+    gap). `grid_response` is off: pyscf's tdrks has none (its own TODO), the
+    terco side runs with it off too.
+    The Z-vector is an exact dense solve (pyscf's Krylov CPHF stops at ~1e-6).
+    Written: E_SCF, GRAD (3, natm, nroots), hartree/bohr, total energy gradient
+    of each root (nuclear repulsion included)."""
+    PYSCF = {"hf": None, "svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
+    r = BinReader(TEST / probe_relname)
+    n, natm, no, nroots = (r.i8() for _ in range(4))
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    func_tag = r.str_(16)
+    e_terco = r.f8(1)[0]
+    om_terco = r.f8(nroots)
+    g_terco = r.f8(3 * natm * nroots).reshape((3, natm, nroots), order="F")
+    npts = r.i8()
+    pts = r.mat(3, npts).T.copy()
+    wts = r.f8(npts)
+    r.close()
+    if mol_tag != molname or bas_tag != basname or func_tag != funcname:
+        raise RuntimeError(f"gen_tddft_grad {probe_relname}: probe tag mismatch")
+    atoms = _xyz_atoms(xyzname[:-4] if xyzname.endswith(".xyz") else xyzname)
+    if len(atoms) != natm:
+        raise RuntimeError(f"gen_tddft_grad {probe_relname}: natm mismatch terco {natm} xyz {len(atoms)}")
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    charge = sum(elements[sym] for sym, _ in atoms) - 2 * no
+    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=charge, spin=0, verbose=0)
+    if mol.nao_nr() != n:
+        raise RuntimeError(f"gen_tddft_grad {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
+
+    label = f"tddft_grad {molname}/{basname}/{funcname} (tda singlet gradients)"
+
+    def make_mf():
+        if funcname == "hf":
+            return scf.RHF(mol)
+        m = dft.RKS(mol)
+        m.xc = PYSCF[funcname]
+        m.grids.coords = np.ascontiguousarray(pts)
+        m.grids.weights = wts
+        m.grids.non0tab = None
+        return m
+
+    # The gradient is first order in the orbital error, so converge the SCF
+    # (and terco's, in the test) well past the comparison, not to 1e-8.
+    # converge_tight refuses a result whose |g| is above its conv_tol_grad
+    # although pyscf's own (differently normed) test passed; step the target
+    # up until both agree.
+    for conv_tol_grad in (1.0e-10, 3.0e-10, 1.0e-9, 3.0e-9, 1.0e-8, 3.0e-8):
+        try:
+            mf, grad_norm = converge_tight(make_mf, None, label, conv_tol=1.0e-14, conv_tol_grad=conv_tol_grad)
+            break
+        except ConvergenceError:
+            if conv_tol_grad == 3.0e-8:
+                raise
+    td = mf.TDA()
+    td.singlet = True
+    td.nstates = nroots
+    td.verbose = 0
+    a, _b = td.get_ab()
+    nocc, nvir = a.shape[0], a.shape[1]
+    w, v = np.linalg.eigh(a.reshape(nocc * nvir, nocc * nvir))
+    if np.abs(w[:nroots] - om_terco).max() > 1.0e-6:
+        raise RuntimeError(f"{label}: terco's and pyscf's excitation energies differ by "
+                           f"{np.abs(w[:nroots] - om_terco).max():.2e}")
+    # pyscf's TDA stores x with sum x^2 = 1/2 (kernel(): xi * .5**.5).
+    td.e = w[:nroots]
+    td.xy = [(v[:, k].reshape(nocc, nvir) * np.sqrt(0.5), 0) for k in range(nroots)]
+    td.converged = [True] * nroots
+    g = td.nuc_grad_method()
+    # pyscf's Z-vector (cphf.solve, lib.krylov) exits on its linear-dependence
+    # criterion at a residual near 1e-6 whatever tol and max_cycle say, which is
+    # 1e-7 off the exact solution and moves the gradient by that much. Replace
+    # it for this call by a dense solve of (e_a - e_i) z + A z = -wvo, built
+    # column by column from the same response function, and assert its residual.
+    from pyscf.scf import cphf as pyscf_cphf
+    krylov_solve = pyscf_cphf.solve
+
+    def dense_solve(fvind, mo_energy, mo_occ, h1, **_kw):
+        nocc_ = int((mo_occ > 0).sum())
+        nvir_ = len(mo_energy) - nocc_
+        nov_ = nocc_ * nvir_
+        eye = np.eye(nov_)
+        mat = np.stack([fvind(eye[i]) for i in range(nov_)], axis=1)
+        mat += np.diag((mo_energy[nocc_:, None] - mo_energy[None, :nocc_]).ravel())
+        z = np.linalg.solve(mat, -h1.ravel())
+        resid = np.abs(mat @ z + h1.ravel()).max()
+        if not resid < 1.0e-11:
+            raise RuntimeError(f"{label}: dense Z-vector residual {resid:.2e}")
+        return z.reshape(h1.shape), None
+
+    pyscf_cphf.solve = dense_solve
+    try:
+        grads = np.stack([g.kernel(xy=td.xy[k], state=k + 1).T for k in range(nroots)], axis=2)
+    finally:
+        pyscf_cphf.solve = krylov_solve
+
+    w_ = RefWriter(ref_relname)
+    w_.header(label, [ROOT / "test" / "check_tddft_grad.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
+    w_.real("E_SCF", mf.e_tot)
+    w_.matrix3("GRAD", grads)
+    w_.real("CONV_TOL", mf.conv_tol)
+    w_.real("GRAD_NORM", grad_norm)
+    w_.end()
+    w_.write()
+    print(f"  {label}: E(terco) {e_terco:20.12f}  E(pyscf) {mf.e_tot:20.12f}  |g| {grad_norm:.2e}  "
+          f"max|d grad| {np.abs(g_terco - grads).max():.2e}  per root "
+          f"{[float(f'{np.abs(g_terco[:, :, k] - grads[:, :, k]).max():.1e}') for k in range(nroots)]}")
+    (TEST / probe_relname).unlink()
+
+
+def gen_tddft_grad():
+    """check_tddft_grad.F90: the gradients of the lowest 3 singlet TDA roots of
+    water and formamide, 6-31G, HF, SVWN, PBE and B3LYP, against pyscf's
+    grad.tdrhf/tdrks at terco's own converged orbitals' grid. Non-planar H2O2
+    (HF, PBE) has all three Cartesian components of the gradient non-zero."""
+    for xyzname, molname in (("water.xyz", "water"), ("formamide.xyz", "formamide"), ("h2o2.xyz", "h2o2")):
+        for funcname in ("hf", "svwn", "pbe", "b3lyp"):
+            if molname == "h2o2" and funcname not in ("hf", "pbe"):
+                continue
+            probe = f"tddft_grad_{molname}_{funcname}_probe.bin"
+            run_bin(f"check_tddft_grad_{molname}_{funcname}",
+                    [xyzname, "basis_sets/6-31g.json", molname, "6-31g", funcname, "3", str(TEST / probe)])
+            _gen_tddft_grad_one(probe, f"tddft_grad_{molname}_6-31g_{funcname}.ref", xyzname, molname, "6-31g", funcname)
+
+
+def _gen_tddft_rpa_grad_one(probe_relname, ref_relname, xyzname, molname, basname, funcname):
+    """One check_tddft_rpa_grad.F90 case: pyscf's full-RPA (TDHF / TDDFT)
+    excited-state gradients (grad.tdrhf / grad.tdrks with Y /= 0) of the lowest
+    `nroots` singlets of an RHF/RKS reference at terco's OWN grid. Two things
+    are taken out of pyscf's iterative machinery so that only the gradient
+    formulas are compared:
+      - the amplitudes are the EXACT eigenvectors of pyscf's own RPA problem
+        (td.get_ab, dense: M = (A-B)^(1/2) (A+B) (A-B)^(1/2), M Z = w^2 Z,
+        X+Y = w^(-1/2) (A-B)^(1/2) Z, X-Y = w^(1/2) (A-B)^(-1/2) Z, which has
+        (X+Y).(X-Y) = 1), scaled by 1/sqrt(2) as pyscf stores them;
+      - the Z-vector is the EXACT dense solution of
+        ((e_a - e_i) + K) z = -h (K built column by column from pyscf's own
+        response), not cphf.solve (pyscf's lib.krylov leaves at its linear
+        dependence criterion with a residual of ~1e-6 whatever tol is asked).
+        Its residual is asserted below 1e-11.
+    `grid_response` is off, as pyscf's tdrks has none.
+    Written: E_SCF, GRAD (3, natm, nroots), hartree/bohr, total energy gradient
+    of each root (nuclear repulsion included)."""
+    from pyscf.scf import cphf
+    PYSCF = {"hf": None, "svwn": "LDA_X,LDA_C_VWN", "pbe": "PBE", "b3lyp": "HYB_GGA_XC_B3LYP"}
+    r = BinReader(TEST / probe_relname)
+    n, natm, no, nroots = (r.i8() for _ in range(4))
+    mol_tag = r.str_(16)
+    bas_tag = r.str_(16)
+    func_tag = r.str_(16)
+    e_terco = r.f8(1)[0]
+    om_terco = r.f8(nroots)
+    g_terco = r.f8(3 * natm * nroots).reshape((3, natm, nroots), order="F")
+    npts = r.i8()
+    pts = r.mat(3, npts).T.copy()
+    wts = r.f8(npts)
+    r.close()
+    if mol_tag != molname or bas_tag != basname or func_tag != funcname:
+        raise RuntimeError(f"gen_tddft_rpa_grad {probe_relname}: probe tag mismatch")
+    atoms = _xyz_atoms(xyzname[:-4] if xyzname.endswith(".xyz") else xyzname)
+    if len(atoms) != natm:
+        raise RuntimeError(f"gen_tddft_rpa_grad {probe_relname}: natm mismatch terco {natm} xyz {len(atoms)}")
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    charge = sum(elements[sym] for sym, _ in atoms) - 2 * no
+    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=charge, spin=0, verbose=0)
+    if mol.nao_nr() != n:
+        raise RuntimeError(f"gen_tddft_rpa_grad {probe_relname}: nao mismatch terco {n} pyscf {mol.nao_nr()}")
+
+    label = f"tddft_rpa_grad {molname}/{basname}/{funcname} (rpa singlet gradients)"
+
+    def make_mf():
+        if funcname == "hf":
+            return scf.RHF(mol)
+        m = dft.RKS(mol)
+        m.xc = PYSCF[funcname]
+        m.grids.coords = np.ascontiguousarray(pts)
+        m.grids.weights = wts
+        m.grids.non0tab = None
+        return m
+
+    for conv_tol_grad in (1.0e-10, 3.0e-10, 1.0e-9, 3.0e-9, 1.0e-8, 3.0e-8):
+        try:
+            mf, grad_norm = converge_tight(make_mf, None, label, conv_tol=1.0e-14, conv_tol_grad=conv_tol_grad)
+            break
+        except ConvergenceError:
+            if conv_tol_grad == 3.0e-8:
+                raise
+    td = mf.TDHF() if funcname == "hf" else mf.TDDFT()
+    td.singlet = True
+    td.nstates = nroots
+    td.verbose = 0
+    a, b = td.get_ab()
+    nocc, nvir = a.shape[0], a.shape[1]
+    nov = nocc * nvir
+    amb = (a - b).reshape(nov, nov)
+    apb = (a + b).reshape(nov, nov)
+    lam, q = np.linalg.eigh(amb)
+    if lam.min() <= 0.0:
+        raise RuntimeError(f"{label}: A - B is not positive definite")
+    amb_h = (q * np.sqrt(lam)) @ q.T
+    amb_mh = (q / np.sqrt(lam)) @ q.T
+    w2, zv = np.linalg.eigh(amb_h @ apb @ amb_h)
+    w = np.sqrt(w2)
+    if np.abs(w[:nroots] - om_terco).max() > 1.0e-6:
+        raise RuntimeError(f"{label}: terco's and pyscf's excitation energies differ by "
+                           f"{np.abs(w[:nroots] - om_terco).max():.2e}")
+    xy = []
+    for k in range(nroots):
+        up = amb_h @ zv[:, k] / np.sqrt(w[k])      # X + Y, (X + Y).(X - Y) = 1
+        um = amb_mh @ zv[:, k] * np.sqrt(w[k])     # X - Y
+        if abs(up @ um - 1.0) > 1.0e-12:
+            raise RuntimeError(f"{label}: root {k} is not normalised, {up @ um}")
+        # pyscf stores x, y with x.x - y.y = 1/2 (kernel(): * .5**.5)
+        xy.append((0.5 * (up + um).reshape(nocc, nvir) * np.sqrt(0.5),
+                   0.5 * (up - um).reshape(nocc, nvir) * np.sqrt(0.5)))
+    g = td.nuc_grad_method()
+    residuals = []
+
+    def dense_solve(fvind, mo_energy, mo_occ, h1, **kw):
+        no_ = int((mo_occ > 0).sum())
+        nv_ = len(mo_energy) - no_
+        m = np.zeros((no_ * nv_, no_ * nv_))
+        eye = np.eye(no_ * nv_)
+        for i in range(no_ * nv_):
+            m[:, i] = fvind(eye[i])
+        m += np.diag((mo_energy[no_:, None] - mo_energy[None, :no_]).ravel())
+        z = np.linalg.solve(m, -h1.ravel())
+        residuals.append(float(np.abs(m @ z + h1.ravel()).max()))
+        return z.reshape(h1.shape), None
+
+    saved = cphf.solve
+    cphf.solve = dense_solve
+    try:
+        grads = np.stack([g.kernel(xy=xy[k], state=k + 1).T for k in range(nroots)], axis=2)
+    finally:
+        cphf.solve = saved
+    if len(residuals) != nroots or max(residuals) > 1.0e-11:
+        raise RuntimeError(f"{label}: dense Z-vector solves {len(residuals)}, residuals {residuals}")
+
+    w_ = RefWriter(ref_relname)
+    w_.header(label, [ROOT / "test" / "check_tddft_rpa_grad.F90", TEST / "basis_sets" / (basname + ".json"), TEST / xyzname])
+    w_.real("E_SCF", mf.e_tot)
+    w_.matrix3("GRAD", grads)
+    w_.real("CONV_TOL", mf.conv_tol)
+    w_.real("GRAD_NORM", grad_norm)
+    w_.end()
+    w_.write()
+    print(f"  {label}: E(terco) {e_terco:20.12f}  E(pyscf) {mf.e_tot:20.12f}  |g| {grad_norm:.2e}  "
+          f"max|d grad| {np.abs(g_terco - grads).max():.2e}  per root "
+          f"{[float(f'{np.abs(g_terco[:, :, k] - grads[:, :, k]).max():.1e}') for k in range(nroots)]}  "
+          f"Z residual {max(residuals):.1e}")
+    (TEST / probe_relname).unlink()
+
+
+def gen_tddft_rpa_grad():
+    """check_tddft_rpa_grad.F90: the gradients of the lowest 3 singlet RPA
+    roots of water and formamide, 6-31G, HF, SVWN, PBE and B3LYP, and of the
+    non-planar gauche hydrogen peroxide (h2o2.xyz), HF and B3LYP, against
+    pyscf's grad.tdrhf/tdrks with Y /= 0 at terco's own converged orbitals'
+    grid."""
+    cases = [(x, m, f) for x, m in (("water.xyz", "water"), ("formamide.xyz", "formamide"))
+             for f in ("hf", "svwn", "pbe", "b3lyp")]
+    cases += [("h2o2.xyz", "h2o2", f) for f in ("hf", "b3lyp")]
+    for xyzname, molname, funcname in cases:
+        probe = f"tddft_rpa_grad_{molname}_{funcname}_probe.bin"
+        run_bin(f"check_tddft_rpa_grad_{molname}_{funcname}",
+                [xyzname, "basis_sets/6-31g.json", molname, "6-31g", funcname, "3", str(TEST / probe)])
+        _gen_tddft_rpa_grad_one(probe, f"tddft_rpa_grad_{molname}_6-31g_{funcname}.ref", xyzname, molname, "6-31g", funcname)
+
+
+def gen_tddft_s1_min():
+    """The first singlet excited state (TDA / CIS, RHF/STO-3G) of formaldehyde at the geometry
+    test/formaldehyde_s1.xyz, which terco's S1 geometry optimisation converges to
+    (check_capi_opt.F90, check_cli_tddft_opt.F90). A property of pyscf at a fixed geometry, so no terco probe:
+    E(S1) = E_SCF + omega_1, and the largest component of pyscf's own analytic S1 gradient (grad.tdrhf) there, which
+    must vanish for the geometry to be the minimum the optimisations claim to reach. The TDA matrix is diagonalised
+    densely (exact amplitudes) and the Z-vector solved densely, as _gen_tddft_grad_one, whose Krylov-free route
+    this repeats for the one root.
+    Written: E_SCF, OMEGA (the two lowest singlets), E_S1, GRAD_MAX, CONV_TOL, GRAD_NORM (the SCF's)."""
+    xyzname, basname, nroots = "formaldehyde_s1", "sto-3g", 2
+    atoms = _xyz_atoms(xyzname)
+    elements = {sym: {'H': 1, 'C': 6, 'N': 7, 'O': 8}[sym] for sym, _ in atoms}
+    bas = bse_json_basis(TEST / "basis_sets" / (basname + ".json"), elements)
+    mol = gto.M(atom=atoms, basis=bas, cart=True, unit='Angstrom', charge=0, spin=0, verbose=0)
+    label = f"tddft_s1_min {xyzname}/{basname}/hf (tda singlet)"
+    mf, grad_norm = converge_tight(lambda: scf.RHF(mol), None, label)
+    td = mf.TDA()
+    td.singlet = True
+    td.nstates = nroots
+    td.verbose = 0
+    a, _b = td.get_ab()
+    nocc, nvir = a.shape[0], a.shape[1]
+    w, v = np.linalg.eigh(a.reshape(nocc * nvir, nocc * nvir))
+    omega = w[:nroots]
+    td.e = omega
+    td.xy = [(v[:, k].reshape(nocc, nvir) * np.sqrt(0.5), 0) for k in range(nroots)]
+    td.converged = [True] * nroots
+    g = td.nuc_grad_method()
+    from pyscf.scf import cphf as pyscf_cphf
+    krylov_solve = pyscf_cphf.solve
+
+    def dense_solve(fvind, mo_energy, mo_occ, h1, **_kw):
+        nocc_ = int((mo_occ > 0).sum())
+        nvir_ = len(mo_energy) - nocc_
+        nov_ = nocc_ * nvir_
+        eye = np.eye(nov_)
+        mat = np.stack([fvind(eye[i]) for i in range(nov_)], axis=1)
+        mat += np.diag((mo_energy[nocc_:, None] - mo_energy[None, :nocc_]).ravel())
+        z = np.linalg.solve(mat, -h1.ravel())
+        resid = np.abs(mat @ z + h1.ravel()).max()
+        if not resid < 1.0e-11:
+            raise RuntimeError(f"{label}: dense Z-vector residual {resid:.2e}")
+        return z.reshape(h1.shape), None
+
+    pyscf_cphf.solve = dense_solve
+    try:
+        grad_s1 = g.kernel(xy=td.xy[0], state=1)
+    finally:
+        pyscf_cphf.solve = krylov_solve
+    e_s1 = mf.e_tot + omega[0]
+
+    w_ = RefWriter("tddft_s1_formaldehyde_sto-3g_hf.ref")
+    w_.header(label, [TEST / (xyzname + ".xyz"), TEST / "basis_sets" / (basname + ".json")])
+    w_.real("E_SCF", mf.e_tot)
+    w_.vector("OMEGA", omega)
+    w_.real("E_S1", e_s1)
+    w_.real("GRAD_MAX", np.abs(grad_s1).max())
+    w_.real("CONV_TOL", mf.conv_tol)
+    w_.real("GRAD_NORM", grad_norm)
+    w_.end()
+    w_.write()
+    print(f"  {label}: E(S1) {e_s1:20.12f}  max|grad S1| {np.abs(grad_s1).max():.2e}  |g_scf| {grad_norm:.2e}")
 
 
 def gen_fxc_apply_many():
@@ -6890,6 +7447,11 @@ CASES = {
     "cpks": gen_cpks,
     "fxc_apply_many": gen_fxc_apply_many,
     "tddft": gen_tddft,
+    "rpa": gen_rpa,
+    "tddft_basis": gen_tddft_basis,
+    "tddft_grad": gen_tddft_grad,
+    "tddft_s1_min": gen_tddft_s1_min,
+    "tddft_rpa_grad": gen_tddft_rpa_grad,
     "kxc": gen_kxc,
     "rimp2_uhf": gen_rimp2_uhf,
     "scf_df": gen_scf_df,

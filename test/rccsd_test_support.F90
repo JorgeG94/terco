@@ -62,7 +62,9 @@ contains
    subroutine run_scf(bas, nocc, res)
       !! RHF to energy 1e-13 and commutator 1e-11. The probes are first order in the orbital error (the
       !! energies second), so both sides converge the commutator to 1e-11: at 1e-9 the probes carried
-      !! 1e-10 of SCF noise, at 1e-11 terco and pyscf agree to 3e-12.
+      !! 1e-10 of SCF noise, at 1e-11 terco and pyscf agree to 3e-12. Full Fock builds only: the
+      !! screening error an incremental build accumulates sits near these thresholds, and on some
+      !! toolchains the SCF then stops short of them (h2o2 "SCF NOT CONVERGED" in the OpenMP job).
       type(trc_basis_t), intent(in) :: bas
       integer, intent(in) :: nocc
       type(trc_scf_result_t), intent(out) :: res
@@ -73,6 +75,7 @@ contains
       opts%conv_energy = 1.0e-13_dp
       opts%conv_density = 1.0e-11_dp
       opts%conv_diis = 1.0e-11_dp
+      opts%incremental = .false.
       call trc_scf_run(bas, nocc, nocc, opts, res)
    end subroutine run_scf
 

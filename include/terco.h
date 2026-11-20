@@ -39,7 +39,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_UNIT 1
 #define TRC_TIMING_NAME_MAX 64
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 28
+#define TRC_ABI_MINOR 30
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -1240,6 +1240,113 @@ int trc_run_polarizability(trc_handle_t handle);
 int trc_polarizability(trc_handle_t handle, double* alpha);
 
 /**
+ * What trc_run_tddft computes: the lowest `nroots` roots (at least 1),
+ * in the Tamm-Dancoff approximation when `tda` is non-zero (CIS for
+ * Hartree-Fock) and the full RPA (TDHF, Casida) when it is zero;
+ * `singlet` must be non-zero (triplets are not implemented and are
+ * TRC_ERR_UNSUPPORTED); `target_root` is the root, 1-based and at most
+ * `nroots`, whose gradient trc_run_gradient returns and whose total
+ * energy trc_tddft_energy reports; `grid_response` (non-zero, the
+ * default of a context that never calls this) differentiates the
+ * Kohn-Sham grid's points and partition weights too, the exact
+ * derivative of this library's energy, and zero gives the Pulay-only
+ * gradient (pyscf's). Drops a stored TDDFT result.
+ */
+int trc_set_tddft(trc_handle_t handle, int nroots, int tda, int singlet, int target_root, int grid_response);
+
+/**
+ * The solver's settings; a zero resets that setting to its default (a call replaces all five). `conv_tol` (1e-8) is
+ * the Davidson residual norm of the excitation energies, `max_iteration`
+ * (50) its iteration limit, `cpks_tol` (1e-9) and `cpks_max_iteration`
+ * (100) the Z-vector's residual and iteration limit for the gradient,
+ * `roots_per_sweep` the trc_tddft_grad batching (a tuning knob that does
+ * not change the numbers). A tolerance must be finite and not negative, otherwise TRC_ERR_BADARG.
+ * Drops a stored TDDFT result.
+ */
+int trc_set_tddft_convergence(trc_handle_t handle, double conv_tol, int max_iteration, double cpks_tol, int cpks_max_iteration, int roots_per_sweep);
+
+/**
+ * Whether trc_run_tddft (and, when `gradient` is non-zero,
+ * trc_run_gradient after it) will be refused for this context's CURRENT
+ * settings, answered from the settings alone, before any SCF runs:
+ * TRC_OK, or TRC_ERR_UNSUPPORTED with the message (trc_message) the run
+ * would give -- a triplet, an unrestricted reference, a meta-GGA,
+ * range-separated, VV10 or double-hybrid functional, a spherical basis,
+ * --df, a continuum solvent, more than one rank, an RI-MP2 or RI-CCSD
+ * result held. A geometry optimiser asks this before its first step.
+ * What only a finished SCF knows (functions dropped by canonical
+ * orthogonalisation) is not, and cannot be, checked here.
+ */
+int trc_check_tddft(trc_handle_t handle, int gradient);
+
+/**
+ * The excitation energies, oscillator strengths and (RPA) de-excitation
+ * weights of the lowest trc_set_tddft roots at the converged
+ * closed-shell SCF this context holds, TDA or full RPA, Hartree-Fock or
+ * a LDA/GGA/global-hybrid functional (trc_tddft_run.F90's header has the
+ * method). Builds its own pair list and ERI engine at the context's
+ * screening threshold and, for Kohn-Sham, reuses the SCF's grid when the
+ * context kept it. Results: trc_tddft_nroots, trc_tddft_energies,
+ * trc_tddft_character, trc_tddft_energy.
+ *
+ * After it, trc_run_gradient is the gradient of the TARGET root's total
+ * energy (trc_set_tddft), grid response included unless it was turned
+ * off; a later trc_run_scf drops the result and the gradient is the
+ * SCF's again. trc_run_hessian refuses.
+ *
+ * Refused with TRC_ERR_STATE (no converged SCF) or TRC_ERR_UNSUPPORTED
+ * (trc_check_tddft's list, and a non-aufbau reference, RI-MP2/RI-CCSD
+ * results held, more than one rank, symmetry that is not lenient);
+ * TRC_ERR_NOCONV when the Davidson iteration does not converge.
+ */
+int trc_run_tddft(trc_handle_t handle);
+
+/**
+ * The number of roots trc_run_tddft solved: the length of the arrays
+ * trc_tddft_energies and trc_tddft_character fill (3 times it for the
+ * transition dipoles).
+ */
+int trc_tddft_nroots(trc_handle_t handle, int* nroots);
+
+/**
+ * The roots of the last trc_run_tddft, ascending: `omega` excitation
+ * energies (hartree), `oscillator` strengths (length gauge), `ynorm` the
+ * sum of Y squared of the normalised (X, Y) (X.X - Y.Y = 1; zero for the
+ * TDA) and `dipole` (3, nroots), column-major, the transition dipoles
+ * <0|r|n> in atomic units. Each array holds trc_tddft_nroots values (the
+ * last 3 times that); `n` is the number of roots the caller's arrays hold,
+ * and fewer than trc_tddft_nroots is TRC_ERR_BADARG (nothing is written).
+ */
+int trc_tddft_energies(trc_handle_t handle, int n, double* omega, double* oscillator, double* ynorm, double* dipole);
+
+/**
+ * The dominant orbital pair of each root of the last trc_run_tddft:
+ * `hole`, the occupied orbital counted down from the HOMO (1 = HOMO),
+ * `particle`, the virtual counted up from the LUMO (1 = LUMO), and the
+ * pair's `weight`, its share of X^2 - Y^2. Orbital phases and the order
+ * within a degenerate pair do not enter, so the pair is comparable
+ * between geometries: an optimiser follows a state by it. Each array
+ * holds trc_tddft_nroots values; `n` is the number the caller's arrays
+ * hold, and fewer is TRC_ERR_BADARG (nothing is written).
+ */
+int trc_tddft_character(trc_handle_t handle, int n, int* hole, int* particle, double* weight);
+
+/**
+ * The root trc_set_tddft named as the target (1-based) and the number of roots it asked for: what the
+ * gradient and trc_tddft_energy follow. It answers before any run, from the settings, so an optimiser reads the
+ * root from the context instead of holding a second copy.
+ */
+int trc_tddft_target_root(trc_handle_t handle, int* target_root, int* nroots);
+
+/**
+ * The total energy of the target root (trc_set_tddft): the SCF energy
+ * plus its excitation energy, hartree. This is the energy
+ * trc_run_gradient differentiates after trc_run_tddft; trc_energy stays
+ * the ground state's.
+ */
+int trc_tddft_energy(trc_handle_t handle, double* energy);
+
+/**
  * Needs a converged SCF in the context (restricted, or unrestricted --
  * UHF or UKS, cx%res%nspin == 2) and an auxiliary basis. An
  * unrestricted reference refuses more than one rank below (see
@@ -1322,6 +1429,19 @@ int trc_run_rccsd(trc_handle_t handle);
  * iterations run. TRC_ERR_STATE when no run has left a result.
  */
 int trc_rccsd_energy(trc_handle_t handle, double* e_mp2, double* e_ccsd, double* e_t, double* t1_diagnostic, int* iterations, int* converged, int* has_triples);
+
+/**
+ * The RI-CCSD correlation energy of the last trc_run_rccsd, converged or
+ * not, as the two parts of the energy functional, in Hartree. With
+ * L(i,a,j,b) = 2 (ia|jb) - (ib|ja) over the correlated occupied and the
+ * virtual orbitals, `e_doubles` is sum L t2(i,j,a,b), what t2 alone
+ * gives, and `e_singles` is sum L t1(i,a) t1(j,b), the t1 t1 part. Their
+ * sum is trc_rccsd_energy's `e_ccsd`. There is no f_ov t1 term: the
+ * reference is canonical Hartree-Fock. (T) is not in either;
+ * trc_rccsd_energy reports it. TRC_ERR_STATE when no run has left a
+ * result. (ABI 1.29.)
+ */
+int trc_rccsd_energy_parts(trc_handle_t handle, double* e_singles, double* e_doubles);
 
 /**
  * The orbital spaces of the last trc_run_rccsd, converged or not:

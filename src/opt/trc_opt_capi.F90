@@ -85,10 +85,12 @@ module trc_opt_capi
    public :: trc_opt_options_create, trc_opt_options_destroy
    public :: trc_opt_set_target, trc_opt_set_algorithm, trc_opt_set_coords, trc_opt_set_saddle_method
    public :: trc_opt_set_max_steps, trc_opt_set_gtol, trc_opt_set_max_step
-   public :: trc_opt_set_hessian_source, trc_opt_set_guess, trc_opt_set_frozen_atoms, trc_opt_set_rimp2
+   public :: trc_opt_set_hessian_source, trc_opt_set_guess, trc_opt_set_frozen_atoms, trc_opt_set_rimp2, trc_opt_set_tddft, &
+             trc_opt_set_tddft_strict
    public :: trc_opt_result_create, trc_opt_result_destroy
    public :: trc_opt_result_converged, trc_opt_result_failed, trc_opt_result_steps
-   public :: trc_opt_result_energy_evaluations, trc_opt_result_energy
+   public :: trc_opt_result_energy_evaluations, trc_opt_result_energy, trc_opt_result_state_changes, &
+             trc_opt_result_gap_warnings
    public :: trc_opt_result_gradient_max, trc_opt_result_gradient_rms
    public :: trc_opt_result_geometry, trc_opt_result_trajectory_count, trc_opt_result_trajectory
    public :: trc_opt_result_message
@@ -347,6 +349,53 @@ contains
       status = TRC_OK
    end function trc_opt_set_rimp2
 
+   function trc_opt_set_tddft(handle, enable, gap_warn) result(status) bind(c, name="trc_opt_set_tddft")
+      !! Non-zero: optimise the geometry of the excited state the context follows (the target root of
+      !! trc_set_tddft, read from the context at every step): run trc_run_tddft after every SCF of the
+      !! optimisation, so each step's energy is trc_tddft_energy's (E_SCF + omega of that root) and its gradient
+      !! trc_run_gradient's derivative of it. The context needs trc_set_tddft with enough roots (give one more
+      !! than the target to watch the root above it); trc_opt_run checks the setup with trc_check_tddft before the
+      !! first SCF and returns its refusal instead of starting. A P-RFO saddle search or a Newton-Raphson step with
+      !! terco's own Hessian (trc_opt_set_hessian_source, the default) is refused too, with TRC_ERR_UNSUPPORTED:
+      !! the excited-state gradient has no Hessian to difference; choose the DL-FIND Hessian source. The followed
+      !! state is watched: a warning when another solved root lies within `gap_warn` hartree of it, or when its
+      !! dominant orbital pair differs from that of the previous accepted step (the first step is the reference);
+      !! trc_opt_set_tddft_strict turns the second into a failure, trc_opt_result_gap_warnings and
+      !! trc_opt_result_state_changes count them. `gap_warn` is not negative and finite, otherwise TRC_ERR_BADARG;
+      !! zero switches the gap warning off. Zero `enable` (the default): the SCF energy and gradient.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: enable
+      real(c_double), value :: gap_warn
+      integer(c_int) :: status
+      type(trc_opt_options_box), pointer :: ob
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, ob)
+      status = TRC_ERR_BADARG
+      if (.not. (gap_warn >= 0.0_c_double .and. gap_warn <= huge(1.0_c_double))) return
+      ob%opts%tddft = enable /= 0_c_int
+      ob%opts%tddft_gap_warn = real(gap_warn, dp)
+      status = TRC_OK
+   end function trc_opt_set_tddft
+
+   function trc_opt_set_tddft_strict(handle, strict) result(status) bind(c, name="trc_opt_set_tddft_strict")
+      !! Non-zero: with trc_opt_set_tddft, a change of the followed root's dominant orbital pair since the last
+      !! accepted step (a sign that the states swapped, which the root number does not show) fails the
+      !! evaluation with a message instead of logging a warning. A failed evaluation is DL-FIND's: the run writes
+      !! what it can and DL-FIND's `error stop` may end the calling process (see this module's header), so a caller
+      !! that cannot tolerate that should leave the default, zero, and read trc_opt_result_state_changes after the
+      !! run. Not checked in a NEB run. Has no effect without trc_opt_set_tddft.
+      type(c_ptr), value :: handle
+      integer(c_int), value :: strict
+      integer(c_int) :: status
+      type(trc_opt_options_box), pointer :: ob
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, ob)
+      ob%opts%tddft_strict = strict /= 0_c_int
+      status = TRC_OK
+   end function trc_opt_set_tddft_strict
+
    function trc_opt_set_frozen_atoms(handle, n, atoms) result(status) bind(c, name="trc_opt_set_frozen_atoms")
       !! --opt-frozen: `atoms` holds `n` 1-based indices into trc_opt_run's
       !! own atom order. Replaces whatever a previous call set (not
@@ -440,6 +489,36 @@ contains
       n = int(rb%res%energy_evaluations, c_int)
       status = TRC_OK
    end function trc_opt_result_energy_evaluations
+
+   function trc_opt_result_state_changes(handle, n) result(status) bind(c, name="trc_opt_result_state_changes")
+      !! After a trc_opt_set_tddft run: the evaluations (rejected line-search trials included) at which the
+      !! followed root's dominant orbital pair differed from the last accepted step's, each of which logged a
+      !! warning (or, with trc_opt_set_tddft_strict, failed the run). Non-zero: the optimisation may have switched
+      !! to another state. Zero without trc_opt_set_tddft.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: n
+      integer(c_int) :: status
+      type(trc_opt_result_box), pointer :: rb
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, rb)
+      n = int(rb%res%state_changes, c_int)
+      status = TRC_OK
+   end function trc_opt_result_state_changes
+
+   function trc_opt_result_gap_warnings(handle, n) result(status) bind(c, name="trc_opt_result_gap_warnings")
+      !! After a trc_opt_set_tddft run: the gap warnings logged, one per other root within `gap_warn` of the
+      !! followed one at an evaluation. Zero without trc_opt_set_tddft.
+      type(c_ptr), value :: handle
+      integer(c_int), intent(out) :: n
+      integer(c_int) :: status
+      type(trc_opt_result_box), pointer :: rb
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, rb)
+      n = int(rb%res%gap_warnings, c_int)
+      status = TRC_OK
+   end function trc_opt_result_gap_warnings
 
    function trc_opt_result_energy(handle, energy) result(status) bind(c, name="trc_opt_result_energy")
       type(c_ptr), value :: handle

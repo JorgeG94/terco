@@ -74,6 +74,9 @@ module trc_eri
    !! gives J to MD J over the policy's bins only when the rule predicts
    !! it faster than the all-split bins by more than this.
 
+   real(dp), parameter :: SPLIT_ASYM_TOL = 1.0e-14_dp
+   !! `fock_split_many` skips the antisymmetric batch when every
+   !! max|A_d| <= SPLIT_ASYM_TOL max|D_d|: round-off of forming D - D^T.
    integer, parameter :: NBUILD_STAGES = 5  !! timed stages of eri%build, see t_build
 
    type :: trc_fock_options_t
@@ -186,6 +189,9 @@ module trc_eri
       !! first `coulomb` call: an HGP/Rys-only run never pays for it.
       logical :: on_device = .false.
       integer :: nlaunch = 0
+      integer :: nsplit_passes = 0
+      !! Folded batches the last `fock_split_many` ran: 1 for a symmetric
+      !! input (or no exchange), 2 when an antisymmetric part needed its own.
       integer(int64) :: nkept = 0
       !! Quartets that survive both screens in the last build. On the FOCK
       !! path, counted only when fock_resident is asked for it, because there
@@ -244,6 +250,8 @@ module trc_eri
       procedure :: fock_many  => eri_fock_many
       procedure :: fock_nosym => eri_fock_nosym
       procedure :: fock_nosym_many => eri_fock_nosym_many
+      procedure :: fock_folded_many => eri_fock_folded_many
+      procedure :: fock_split_many => eri_fock_split_many
       procedure :: fock_resident => eri_fock_resident
       procedure :: fock_resident_many => eri_fock_resident_many
       procedure :: fock_resident_lent => eri_fock_resident_lent
@@ -2142,10 +2150,17 @@ contains
       !! where the rule keeps the bins, water40 1.449 / 1.266, gly5 0.164 /
       !! 0.142), so the rule leaves some UHF time on the table, never loses it.
       !!
-      !! Always density-screened, the bound being the maximum over the
-      !! densities per shell pair (each sees at least the quartets it would
-      !! alone). A coupled-perturbed solve, which must not screen on its
-      !! trial densities, uses eri_fock_resident.
+      !! Density-screened unless opts%density_screen is false, the bound being
+      !! the maximum over the densities per shell pair (each sees at least the
+      !! quartets it would alone). A coupled-perturbed solve, whose trial
+      !! densities shrink as it converges and must not drive the screen, sets
+      !! density_screen false: the bound is then the plain Schwarz one, as
+      !! `fock_resident` has it, so the operator is the same from one matvec
+      !! to the next, and MD J is chosen by the rule
+      !! `fock_resident_lent` has for that flag (`mdj_requested`), so a
+      !! batched coupled-perturbed build and a single one pick the same engine.
+      !! The default is true, which is what every SCF caller of this routine
+      !! wants.
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: ndens
@@ -2153,9 +2168,9 @@ contains
       !! Both must already be present on the device.
       real(dp), intent(out) :: gmats(this%nao, this%nao, ndens)
       type(trc_fock_options_t), intent(in) :: opts
-      !! `density_screen` and `count_survivors` are not read: this build is
-      !! always density-screened. `skeleton` is as for `fock_resident_lent`
-      !! (every density must be invariant under the group).
+      !! `density_screen` is read (see above); `count_survivors` is not.
+      !! `skeleton` is as for `fock_resident_lent` (every density must be
+      !! invariant under the group).
       real(dp), intent(inout) :: work(this%nao_w, this%nao_w, 2*ndens + 1)
       !! At least `fock_work_size(ndens)` doubles, device-resident, as for
       !! `fock_resident_lent`: the kernel's (ndens, nw, nw) operand and
@@ -2180,7 +2195,8 @@ contains
       ! (unmeasured with two densities), and it is passed on as forced so
       ! each density's build makes the same choice.
       use_md = jfac /= 0.0_dp .and. ow == 0.0_dp .and. &
-               mdj_requested(this%mdj_force, kfac == 0.0_dp, this%mdj_extended .or. this%has_f, &
+               mdj_requested(this%mdj_force, kfac == 0.0_dp, &
+                             merge(this%mdj_extended .or. this%has_f, this%has_f, opts%density_screen), &
                              opts%j_engine)
       if (ndens == 1 .or. this%needs_md .or. use_md) then
          eng = opts%j_engine
@@ -2190,7 +2206,8 @@ contains
          do d = 1, ndens
             call this%fock_resident_lent(b, dmats(:, :, d), gmats(:, :, d), &
                                          trc_fock_options_t(j_scale=jfac, k_scale=kfac, omega=ow, &
-                                                            j_engine=eng, skeleton=opts%skeleton), work)
+                                                            j_engine=eng, skeleton=opts%skeleton, &
+                                                            density_screen=opts%density_screen), work)
          end do
          return
       end if
@@ -2210,6 +2227,7 @@ contains
          end if
          call pack_density_device(nw, ndens, d, work(:, :, 2*ndens + 1), work(:, :, 1:ndens), &
                                   work(:, :, ndens + 1:2*ndens))
+         if (.not. opts%density_screen) cycle
          if (d == 1) then
             call density_blocks_device(this%nbas, nw, this%pairs%sh_l, this%pairs%ao_off, &
                                        work(:, :, 2*ndens + 1), this%dsh)
@@ -2218,6 +2236,8 @@ contains
                                            work(:, :, 2*ndens + 1), this%dsh)
          end if
       end do
+      ! The plain Schwarz bound, as `fock_resident_lent` does for the same flag.
+      if (.not. opts%density_screen) call fill_ones_device(this%nbas, this%dsh)
 
       ! The skeleton plan needs the bound invariant under the group: the
       ! maximum over the densities is symmetrized like a single density's.
@@ -2431,6 +2451,9 @@ contains
       !! The ceiling is one over the digestion fraction -- measured at 24 to 37%
       !! here, so between 2.7x and 4.2x, approached slowly.
       !!
+      !! This is `fock_folded_many` with the density index fastest on both
+      !! sides (the C API's layout); see it for the semantics.
+      !!
       class(trc_eri_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
       integer, intent(in) :: ndens
@@ -2456,49 +2479,125 @@ contains
       !! the point group. The SCF's several-density build is
       !! `fock_resident_many_lent`, which has it.
 
-      real(dp), allocatable :: jmat(:, :, :), kmat(:, :, :), dwork(:, :, :)
+      real(dp), allocatable :: din(:, :, :), gout(:, :, :)
+      type(trc_fock_options_t) :: o
+      integer :: n, d
+
+      n = this%nao
+      if (present(j_scale)) o%j_scale = j_scale
+      if (present(k_scale)) o%k_scale = k_scale
+      if (present(omega)) o%omega = omega
+      o%density_screen = screen_on(density_screen)
+      allocate (din(n, n, ndens), gout(n, n, ndens))
+      do d = 1, ndens
+         din(:, :, d) = dmats(d, :, :)
+      end do
+      call this%fock_folded_many(b, ndens, din, gout, o)
+      do d = 1, ndens
+         gmats(d, :, :) = gout(:, :, d)
+      end do
+      deallocate (din, gout)
+   end subroutine eri_fock_many
+
+   subroutine eri_fock_folded_many(this, b, ndens, dmats, gmats, opts, antisymmetric, err)
+      !!
+      !! gmats(:, :, d) = j_scale J[D_d] - k_scale K[D_d]/2 of `ndens`
+      !! densities in ONE pass of the FOLDED kernels, host arrays in and out,
+      !! (nao, nao, ndens) as `fock_nosym_many` has them.
+      !!
+      !! The folded digestion adds four of the eight exchange images of a
+      !! quartet into one accumulator and the final fold supplies the rest, so
+      !! it is exact only for a density with a definite symmetry:
+      !!   - SYMMETRIC (the default): the whole J - K/2, symmetric result;
+      !!   - `antisymmetric`: the fold is (raw - raw^T)/2, which gives K[A]
+      !!     (antisymmetric) but NOT J[A] -- the Coulomb half of the folded
+      !!     digestion is wrong for an antisymmetric density, and J[A] is zero
+      !!     anyway. Pass j_scale = 0 there: this routine does not force it.
+      !! A density with no symmetry belongs to `fock_split_many` (or the
+      !! reference, `fock_nosym_many`). jfac and kfac are per launch, so a
+      !! caller that needs both kinds makes two calls.
+      !!
+      !! Why not `fock_nosym_many` for everything: on a V100 (gly10 6-31G*,
+      !! 679 functions) the enumerated kernel costs 2.4-3 s per density against
+      !! 0.35 s per trial vector for the split, and in an LMAX=3 build its
+      !! launch reserves 26.5 GB of per-thread stack (169,600 B per thread).
+      !! The other routines refer here for these numbers.
+      !!
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: ndens
+      real(dp), intent(in)  :: dmats(this%nao, this%nao, ndens)
+      real(dp), intent(out) :: gmats(this%nao, this%nao, ndens)
+      type(trc_fock_options_t), intent(in), optional :: opts
+      !! j_scale, k_scale, omega, density_screen as in `fock_nosym_many`:
+      !! absent, J - K/2 of the Coulomb operator with density_screen FALSE;
+      !! a present value is taken as given (the type's own default for
+      !! density_screen is true). count_survivors, j_engine and skeleton are
+      !! not read: no skeleton plan, and the g (MD) classes stop.
+      logical, intent(in), optional :: antisymmetric
+      !! The densities are exactly antisymmetric (default false). Needs
+      !! j_scale = 0: the Coulomb half of the folded digestion is wrong for an
+      !! antisymmetric density, so a nonzero j_scale is refused.
+      type(error_t), intent(out), optional :: err
+      !! Set (ERROR_VALIDATION) on a refused argument combination, and the
+      !! routine returns with gmats untouched; absent, a refusal is an
+      !! `error stop`, as in the other Fock builds here.
+
+      real(dp), allocatable :: jmat(:, :, :), dwork(:, :, :)
       real(dp), allocatable :: dp_w(:, :), gp_w(:, :)
       integer :: n, nw, i, j, d
-      real(dp) :: jfac, kfac, ow
+      real(dp) :: jfac, kfac, ow, sgn
+      logical :: screen
       type(trc_bin_launch_t) :: launch
+      type(trc_fock_options_t) :: o
       if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
-      jfac = 1.0_dp
-      kfac = 1.0_dp
-      ow = 0.0_dp
-      if (present(j_scale)) jfac = j_scale
-      if (present(k_scale)) kfac = k_scale
-      if (present(omega)) ow = omega
+      o%density_screen = .false.
+      if (present(opts)) o = opts
+      sgn = 1.0_dp
+      if (present(antisymmetric)) then
+         if (antisymmetric) sgn = -1.0_dp
+      end if
+      if (sgn < 0.0_dp .and. o%j_scale /= 0.0_dp) then
+         if (present(err)) then
+            call err%set(ERROR_VALIDATION, "eri%fock_folded_many: an antisymmetric batch needs j_scale = 0")
+            return
+         end if
+         error stop "terco: eri%fock_folded_many: an antisymmetric batch needs j_scale = 0"
+      end if
+      jfac = o%j_scale
+      kfac = o%k_scale
+      ow = o%omega
+      screen = o%density_screen
       if (.not. (ow >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
 
       n = this%nao
       nw = this%nao_w
-      allocate (jmat(ndens, nw, nw), kmat(ndens, nw, nw), dwork(ndens, nw, nw))
+      allocate (jmat(ndens, nw, nw), dwork(ndens, nw, nw))
       allocate (dp_w(nw, nw), gp_w(nw, nw))
       ! Every density transformed on the way in, every result folded on the
       ! way out. Both are per-density, and both are negligible against the
       ! one pass over the integrals they share.
       do d = 1, ndens
          if (this%dec%active) then
-            call decontract_expand_host(this%dec, dmats(d, :, :), dp_w)
+            call decontract_expand_host(this%dec, dmats(:, :, d), dp_w)
          else
-            dp_w = dmats(d, :, :)
+            dp_w = dmats(:, :, d)
          end if
          dwork(d, :, :) = dp_w
       end do
       jmat = 0.0_dp
-      kmat = 0.0_dp
 
-      if (screen_on(density_screen)) then
+      if (screen) then
          call density_blocks(this, dwork, ndens)
       else
          this%dsh = 1.0_dp
       end if
 
-      !$acc enter data copyin(dwork, jmat, kmat)
+      !$acc enter data copyin(dwork, jmat)
       !$acc update device(this%dsh)
       launch = bin_launch(this, ndens, jfac, kfac, ow)
-      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, jmat)
       this%nlaunch = launch%nlaunch
       this%nwork = launch%nwork
       this%nwork_masked = launch%nwork_masked
@@ -2510,28 +2609,112 @@ contains
       this%parity_cost_variant = launch%cost_variant
       !$acc wait
       !$acc update self(jmat)
-      !$acc exit data delete(dwork, jmat, kmat)
+      !$acc exit data delete(dwork, jmat)
 
       do d = 1, ndens
          do j = 1, nw
             do i = 1, nw
-               gp_w(i, j) = 0.5_dp*(jmat(d, i, j) + jmat(d, j, i))
+               gp_w(i, j) = 0.5_dp*(jmat(d, i, j) + sgn*jmat(d, j, i))
             end do
          end do
          if (this%dec%active) then
-            call decontract_fold_host(this%dec, gp_w, gmats(d, :, :))
+            call decontract_fold_host(this%dec, gp_w, gmats(:, :, d))
          else
             do j = 1, n
                do i = 1, n
-                  gmats(d, i, j) = gp_w(i, j)
+                  gmats(i, j, d) = gp_w(i, j)
                end do
             end do
          end if
       end do
 
-      if (this%distributed) call sum_ranks(this, gmats, ndens*n*n)
-      deallocate (jmat, kmat, dwork, dp_w, gp_w)
-   end subroutine eri_fock_many
+      if (this%distributed) call sum_ranks(this, gmats, n*n*ndens)
+      deallocate (jmat, dwork, dp_w, gp_w)
+   end subroutine eri_fock_folded_many
+
+   subroutine eri_fock_split_many(this, b, ndens, dmats, gmats, opts)
+      !!
+      !! `fock_nosym_many`'s result -- gmats(:, :, d) = j_scale J[D_d] -
+      !! k_scale K[D_d]/2 for densities with NO symmetry -- from the folded
+      !! kernels, by splitting each D = S + A into its symmetric and
+      !! antisymmetric parts:
+      !!   G[D] = G[S]  (one folded batch, with j_scale and k_scale)
+      !!        + G[A]  (one folded batch, exchange only, antisymmetric fold)
+      !! because J[A] = 0 (the integral is symmetric in the pair it is
+      !! contracted with) and the folded fold of an antisymmetric K is
+      !! (raw - raw^T)/2. Same interface, defaults and layout as
+      !! `fock_nosym_many`, which stays as the reference implementation;
+      !! agreement is ~1e-14 for omega = 0 and omega > 0 (check_fock_split).
+      !!
+      !! The antisymmetric batch is skipped, so an exactly symmetric input
+      !! costs ONE launch, when k_scale is zero (J[A] = 0, nothing is left)
+      !! or when every A_d is at round-off: max|A_d| <= 1e-14 max|D_d|
+      !! (SPLIT_ASYM_TOL). That drops at most ~1e-14 relative to the
+      !! exchange the nosym kernel would add, below the 1e-12 a response
+      !! solve is gated on; `nsplit_passes` reports whether it ran.
+      !!
+      !! Host route on purpose: the two batches go through
+      !! `fock_folded_many`, which moves the densities up and the results
+      !! down each call (the (nao, nao, ndens) arrays, ~nao^2 ndens doubles
+      !! per direction against an integral pass of seconds). The resident
+      !! `fock_resident_many_lent` always density-screens, falls back to one
+      !! density at a time for ndens == 1 and for MD J, and has no
+      !! antisymmetric unpack; making it serve this would touch the SCF's
+      !! hot path for a transfer that does not show in the profile.
+      !!
+      !! The exchange-only A batch is screened at the Schwarz threshold,
+      !! where the J+K build keeps quartets down to thresh/4, so split and
+      !! nosym differ at threshold level (2e-10 at thresh 1e-10 on gly3
+      !! 6-31G*), as the existing K-only passes do.
+      !!
+      !! MPI: `need_a` is decided on each rank from its own copy of the
+      !! densities, and the two batches end in a collective sum, so it is safe
+      !! only while the densities are bit-identical on every rank (the
+      !! response solvers' are).
+      !!
+      !! With opts%density_screen true the S and A batches are screened by
+      !! their own bounds rather than the bound of D, so a screened split is
+      !! not the screened nosym build; the default (false) is what response
+      !! solves need.
+      class(trc_eri_t), intent(inout) :: this
+      type(trc_basis_t), intent(in) :: b
+      integer, intent(in) :: ndens
+      real(dp), intent(in)  :: dmats(this%nao, this%nao, ndens)
+      real(dp), intent(out) :: gmats(this%nao, this%nao, ndens)
+      type(trc_fock_options_t), intent(in), optional :: opts
+      !! As for `fock_nosym_many`.
+
+      real(dp), allocatable :: dsym(:, :, :), dasym(:, :, :), ga(:, :, :)
+      type(trc_fock_options_t) :: o
+      integer :: n, d
+      logical :: need_a
+      real(dp) :: amax
+
+      o%density_screen = .false.
+      if (present(opts)) o = opts
+      n = this%nao
+      allocate (dsym(n, n, ndens), dasym(n, n, ndens))
+      need_a = .false.
+      do d = 1, ndens
+         dsym(:, :, d) = 0.5_dp*(dmats(:, :, d) + transpose(dmats(:, :, d)))
+         dasym(:, :, d) = 0.5_dp*(dmats(:, :, d) - transpose(dmats(:, :, d)))
+         amax = maxval(abs(dasym(:, :, d)))
+         if (amax > SPLIT_ASYM_TOL*maxval(abs(dmats(:, :, d)))) need_a = .true.
+      end do
+      if (o%k_scale == 0.0_dp) need_a = .false.
+
+      call this%fock_folded_many(b, ndens, dsym, gmats, o)
+      this%nsplit_passes = 1
+      if (need_a) then
+         allocate (ga(n, n, ndens))
+         o%j_scale = 0.0_dp
+         call this%fock_folded_many(b, ndens, dasym, ga, o, antisymmetric=.true.)
+         gmats = gmats + ga
+         this%nsplit_passes = 2
+         deallocate (ga)
+      end if
+      deallocate (dsym, dasym)
+   end subroutine eri_fock_split_many
 
    subroutine eri_release(this)
       class(trc_eri_t), intent(inout) :: this

@@ -1,0 +1,12 @@
+# CIS (TDA with Hartree-Fock) singlet excitation energies of water: check_cli_tddft's TOML input.
+[molecule]
+geometry = "water.xyz"
+
+[basis]
+main = "basis_sets/6-31gs.json"
+
+[tddft]
+enabled = true
+roots = 4
+approximation = "tda"
+spin = "singlet"
