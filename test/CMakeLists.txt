@@ -2107,6 +2107,10 @@ terco_add_check(check_one_e_ceiling check_one_e_ceiling.F90 NEEDS_BASIS)
 target_link_libraries(check_one_e_ceiling PRIVATE test-drive::test-drive)
 set_tests_properties(terco/check_one_e_ceiling PROPERTIES
   PASS_REGULAR_EXPRESSION "trc_1e: basis above ONE_E_LMAX")
+# Diffuse and tight primitives on two centres, l up to the build's ceiling, against
+# pyscf: the nuclear attraction's transfer about a fixed centre cancels there (gen_1e.py).
+terco_add_check(check_one_e_cancellation check_one_e_cancellation.F90 NEEDS_PYSCF_REF)
+target_link_libraries(check_one_e_cancellation PRIVATE test-drive::test-drive)
 terco_add_check(check_one_e_grad_ceiling check_one_e_grad_ceiling.F90 NEEDS_BASIS)
 target_link_libraries(check_one_e_grad_ceiling PRIVATE test-drive::test-drive)
 set_tests_properties(terco/check_one_e_grad_ceiling PROPERTIES

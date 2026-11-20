@@ -141,8 +141,9 @@ if(_regen)
     # DF is the exception that proved too expensive at f: it follows
     # TERCO_DF_LMAX when that is set (see its comment in the top-level
     # CMakeLists.txt), and its entry points stop on a basis above it.
+    # One module per class plus the trc_1e_kernels driver, like the others below.
     terco_gen("gen_1e.py" ${Python3_EXECUTABLE} ${_scripts}/gen_1e.py --lmax ${TERCO_LMAX}
-              ${_order_flag} -o ${_gen_out}/trc_1e_kernels.F90)
+              ${_order_flag} --base-dir ${_gen_out})
     # One module per class (gen_1e.py's split emitters): as one file the
     # multipoles took 1165 s to compile at LMAX=3 and the gradient kernels
     # over 90 minutes at LMAX=4, single-threaded.

@@ -1,8 +1,8 @@
 !
 ! The PCM surface-integral drivers and their per-item routines, as an
 ! INCLUDE for the generated module that holds the kernels (trc_pcm_kernels,
-! from scripts/gen_1e.py --pcm). Included there for the reason
-! trc_1e_driver.inc is: stdpar inlines only within a translation unit.
+! from scripts/gen_1e.py --pcm). Included there so that the driver inlines the
+! kernels it calls: stdpar inlines only within a translation unit.
 ! NC_MAX and NBLK_MAX come from the including module.
 !
 ! Both contract the (npair x npts) integral tensor as it is made and never
