@@ -21,7 +21,7 @@ module check_fock_split_suite
    !!     takes ONE pass, a mixed batch (one symmetric density, first or
    !!     last, among non-symmetric ones) runs the antisymmetric pass, omega > 0
    !!     and the density_screen fallback agree too; equal bit for bit on the
-   !!     host build, within TOL_LENT on the device (_OPENACC);
+   !!     host build, within TOL_LENT on the device (_OPENACC) and in the OpenMP port (thread-ordered atomics);
    !!  8. `fock_nosym_many_lent` equals `fock_nosym_many`.
    !! With a general-contraction basis (the cc-pVDZ variant) the working basis
    !! is decontracted, so 7 and 8 also cover the device expand and fold.
@@ -458,7 +458,7 @@ contains
       call global_logger%info("  lent split "//label//" (j,k,omega,screen) "//to_string(o%j_scale, "f5.2")// &
                               to_string(o%k_scale, "f5.2")//to_string(o%omega, "f5.2")//" "// &
                               merge("T", "F", o%density_screen)//": max|lent - host|/max|G| "//to_string(rel, "es10.3"))
-#ifdef _OPENACC
+#if defined(_OPENACC) || defined(_OPENMP)
       call check(error, rel < TOL_LENT, "lent split vs host split, "//label//", relative "//to_string(rel, "es10.3"))
 #else
       call check(error, all(gref == glent), "lent split vs host split, "//label//": not bit-identical, relative "// &
@@ -512,7 +512,7 @@ contains
       call global_logger%info("  lent nosym: max|lent - host|/max|G| "//to_string(rel, "es10.3"))
       call check(error, maxval(abs(gref)) > 1.0e-3_dp, "reference is trivially zero")
       if (allocated(error)) return
-#ifdef _OPENACC
+#if defined(_OPENACC) || defined(_OPENMP)
       call check(error, rel < TOL_LENT, "lent nosym vs host nosym, relative "//to_string(rel, "es10.3"))
 #else
       call check(error, all(gref == glent), "lent nosym vs host nosym: not bit-identical, relative "// &
