@@ -8,7 +8,8 @@ ket list that can still pass the screen. For each window it calls the
 routines generated here, all `do concurrent`:
 
   R kernel     one thread per primitive quartet; stores the n_r values
-               R^(0)_r only (zero when screened)
+               R^(0)_r only (nothing for a screened quartet, rb(1) = -1
+               for a rejected primitive of a live one)
   kernel B     one thread per (pbar, quartet), pbar = (p, k_ab):
                S[pbar, cd] = sum_qbar (-1)^|q| R[p+q] Hk[cd, qbar], from a
                literal (p, q) -> r table; PQ is never stored
@@ -249,11 +250,27 @@ def r_item(tag, L):
     o.append("      spa = gl(ib0 + i); spc = gl(jb0 + j)")
     o.append("      si = sp_sh1(spa); sj = sp_sh2(spa); sk = sp_sh1(spc); sl = sp_sh2(spc)")
     o.append("      qcut = sp_q(spa)*sp_q(spc)")
-    o.append("      ! The HGP kernels' quartet and primitive screens; what fails is a zero block.")
+    o.append("      ! The HGP quartet and primitive screens. Nothing is written for a quartet")
+    o.append("      ! the shell-level test rejects: zero-filling its R block (364 doubles at")
+    o.append("      ! (4232), uncoalesced) cost 2.7 s of a 24 s Fock build on w6 cc-pV5Z (V100)")
+    o.append("      ! with 1.3% of the quartets alive, an all-screened launch being 0.3%")
+    o.append("      ! SM-busy. The B item (fused_items) repeats exactly this")
+    o.append("      ! test and returns before it reads rb or writes sm, and C repeats it")
+    o.append("      ! before reading sm. A primitive that fails inside a surviving shell quartet")
+    o.append("      ! gets one store, rb(1, t) = -1: R_000^(0) = pref*F_0 is never negative, so the")
+    o.append("      ! sign is a free flag (no extra slot, no change to the buffer sizes) and B")
+    o.append("      ! skips the primitive. A surviving primitive overwrites rb(1, t) with the")
+    o.append("      ! real value, so the reused, unzeroed window buffer is never read stale: B")
+    o.append("      ! reads rb(1, t) only for quartets that passed the shell test, and R writes")
+    o.append("      ! rb(1, t) on every such t, as marker or value.")
+    # A zero factor's blocks must not keep a quartet alive (gen_perclass.py's
+    # emit_screens): with jfac = 0 the J blocks would keep O(N^2) of them.
+    o.append("      dscr = 0.0_dp")
+    o.append("      if (jfac /= 0.0_dp) dscr = 4.0_dp*max(dsh(si, sj), dsh(sk, sl))")
+    o.append("      if (kfac /= 0.0_dp) dscr = max(dscr, dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl))")
+    o.append("      if (qcut <= thresh .or. qcut*dscr <= thresh) return")
     o.append("      if (k1 > sp_nk(spa) .or. k2 > sp_nk(spc)) then")
-    o.append(f"         do r = 1, {len(herm(L))}")
-    o.append("            rb(r, t) = 0.0_dp")
-    o.append("         end do")
+    o.append("         rb(1, t) = -1.0_dp")
     o.append("         return")
     o.append("      end if")
     o.append("      kp = sp_k0(spa) + k1")
@@ -261,16 +278,8 @@ def r_item(tag, L):
     o.append("      zeta = mp_z(kp); eta = mp_z(kq); zpe = zeta + eta")
     o.append("      pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))")
     o.append("      bnd = TWO_PI_2_5*abs(mp_c(kp))/(zeta*sqrt(zeta))")
-    # A zero factor's blocks must not keep a quartet alive (gen_perclass.py's
-    # emit_screens): with jfac = 0 the J blocks would keep O(N^2) of them.
-    o.append("      dscr = 0.0_dp")
-    o.append("      if (jfac /= 0.0_dp) dscr = 4.0_dp*max(dsh(si, sj), dsh(sk, sl))")
-    o.append("      if (kfac /= 0.0_dp) dscr = max(dscr, dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl))")
-    o.append("      if (qcut <= thresh .or. qcut*dscr <= thresh .or. &")
-    o.append("          bnd*abs(mp_c(kq))/eta <= pcut .or. abs(pref*mp_c(kp)*mp_c(kq)) <= pcut) then")
-    o.append(f"         do r = 1, {len(herm(L))}")
-    o.append("            rb(r, t) = 0.0_dp")
-    o.append("         end do")
+    o.append("      if (bnd*abs(mp_c(kq))/eta <= pcut .or. abs(pref*mp_c(kp)*mp_c(kq)) <= pcut) then")
+    o.append("         rb(1, t) = -1.0_dp")
     o.append("         return")
     o.append("      end if")
     o.append("      alpha = zeta*eta/zpe")
@@ -397,8 +406,9 @@ def fused_items(tag, suf, np_, nq_, nr, na, nb, nc, nd, o1, o2, tabs=()):
        PQ is never stored; (p, q) -> p + q is the literal RM table.
     C: one thread per (ab, quartet): the integral row from Hb[ab, :] S[:, :, w],
        digested at once, so the integral block is never stored either.
-    A quartet that fails the HGP screen returns at once in both (its R is zero),
-    instead of being multiplied as a zero block: 45% of the quartets the GEMM
+    A quartet that fails the HGP screen returns at once in both (R writes nothing
+    for it, and a rejected primitive of a live quartet is flagged rb(1) < 0 and
+    skipped), instead of being multiplied as a zero block: 45% of the quartets the GEMM
     path multiplied on w20 cc-pVQZ (TRC_MDG_STATS).
     """
     nab, ncd = na * nb, nc * nd
@@ -435,6 +445,8 @@ def fused_items(tag, suf, np_, nq_, nr, na, nb, nc, nd, o1, o2, tabs=()):
     o.append("         acc(c) = 0.0_dp")
     o.append("      end do")
     o.append("      do k2 = 1, kb")
+    # R left rb(1, .) = -1 on a rejected primitive and wrote nothing else of its block.
+    o.append("         if (rb(1, i, k1, j, k2) < 0.0_dp) cycle")
     # The (p, q) -> p + q table has np*nq entries, one constructor per part of
     # at most RM_PART_MAX: gfortran refuses a constructor of more than 65535
     # elements, and only (hh|hh) (286*286) is that large. A class that fits

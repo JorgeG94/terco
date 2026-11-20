@@ -60,6 +60,7 @@ module check_sym_fock_suite
    !!
    !! NO INTERNAL PROCEDURES: the helpers are module procedures.
    !!
+   use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -144,6 +145,7 @@ contains
       else if (g_mode == "mdg") then
          testsuite = [ &
                      new_unittest("MD J and MD exchange: water C2v cc-pVQZ", test_mdg), &
+                     new_unittest("MD exchange: poisoned window buffers, formaldehyde C2v cc-pVQZ", test_mdg_poison), &
                      new_unittest("MD J and MD exchange: uncontracted l = 0..4, B2H6 D2h", test_mdg_aux) &
                      ]
       else if (g_mode == "f") then
@@ -874,6 +876,46 @@ contains
          call release_ctx(ctx)
       end do
    end subroutine test_mdg
+
+   subroutine test_mdg_poison(error)
+      !! The MD exchange kernels leave a screened quartet's block of the window
+      !! buffer unwritten (R) and unread (B, C), and flag a rejected primitive of
+      !! a live quartet with one store. The buffers are reused, unzeroed, across
+      !! windows and builds, so a kernel that read a slot R skipped would see the
+      !! previous window's numbers. Fill both buffers with a large positive value
+      !! (never the flag, and far from any real R or S) between two identical
+      !! builds: the second must equal the first. Formaldehyde, not water: with g
+      !! on one atom only, water's MD exchange classes never reject a primitive,
+      !! and a kernel that ignored the flag passed (checked with mutants).
+      type(error_type), allocatable, intent(out) :: error
+      type(ctx_t) :: ctx
+      real(dp), allocatable :: ds(:, :), dc(:, :), g1(:, :), g2(:, :)
+      real(dp) :: e, gmax
+      integer :: dev
+      dev = trc_bind_device(0)
+      call setup_ctx(ctx, "formaldehyde", "C2v", "basis_sets/cc-pvqz-pyscf17.json", -1, .false., .false., error)
+      if (allocated(error)) return
+      allocate (ds(ctx%ns, ctx%ns), dc(ctx%nc, ctx%nc), g1(ctx%nc, ctx%nc), g2(ctx%nc, ctx%nc))
+      call random_density(ctx, 3, 0.1_dp, ds)
+      call to_cart(ctx, ds, dc)
+      call ctx%eri%fock(ctx%bas, dc, g1, opts=trc_fock_options_t(k_scale=1.0_dp, j_scale=1.0_dp))
+      call check(error, allocated(ctx%eri%mg%wrb), "MD exchange did not run: no window buffer")
+      if (allocated(error)) return
+      ctx%eri%mg%wrb = 1.0e30_dp
+      ctx%eri%mg%wsm = 1.0e30_dp
+      !$acc update device(ctx%eri%mg%wrb, ctx%eri%mg%wsm)
+      call ctx%eri%fock(ctx%bas, dc, g2, opts=trc_fock_options_t(k_scale=1.0_dp, j_scale=1.0_dp))
+      ! maxval skips a NaN, so a stale read that gave one would pass the difference test
+      call check(error, all(ieee_is_finite(g2)), "the poisoned rebuild is not finite")
+      if (allocated(error)) return
+      gmax = maxval(abs(g1))
+      e = maxval(abs(g2 - g1))
+      call check(error, e <= TOL_REL*max(1.0_dp, gmax), "a window-buffer slot was read without being written: "// &
+                 "poisoned rebuild differs by "//to_string(e, "es10.3"))
+      if (allocated(error)) return
+      deallocate (ds, dc, g1, g2)
+      call release_ctx(ctx)
+   end subroutine test_mdg_poison
 
    subroutine test_mdg_aux(error)
       !! The uncontracted l = 0..4 set (Cartesian: 8 minutes with the spherical
