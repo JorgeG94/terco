@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["fxc_apply_many"] -> gen_fxc_apply_many
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: fb5f610631adacd7dcb853dd501ce286232e2a9fc8779a2c959b5e25cdc9425c
+# hash: 6987248473c167e96e60e5fb322b27b641766bc91be958a7daa35e13d576e016
 # files: test/check_fxc_apply_many.F90 test/basis_sets/6-31gs.json test/water.xyz
 TR_P -2.49681509233907542e-02
 TR_Q -2.81623839339863596e-02
