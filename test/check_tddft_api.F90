@@ -24,13 +24,15 @@ module check_tddft_api_suite
    !!     functional, a root outside 1..nroots, --df and a continuum solvent.
    !! Run from test/. A test-drive suite.
    !!
-   use pic_types, only: dp
+   use pic_types, only: dp, int64
    use pic_strings, only: to_string
-   use pic_logger, only: global_logger
+   use pic_logger, only: global_logger, info_level
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_linalg, only: trc_linalg_t
    use trc_error, only: error_t
+   use trc_eri, only: trc_eri_t
+   use trc_tddft, only: trc_tddft_op_t, trc_tddft_reference_t
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_result_t, trc_tddft_run_solve, &
                             trc_tddft_run_gradient, trc_tddft_run_refusal, trc_tddft_run_gap_note
@@ -50,6 +52,10 @@ module check_tddft_api_suite
    real(dp), parameter :: TOL_OSC = 1.0e-5_dp
    real(dp), parameter :: TOL_YY = 1.0e-6_dp
    !! The solver checks' gates against pyscf (check_tddft, check_tddft_rpa).
+   real(dp), parameter :: SCREEN_CONV_TOL = 1.0e-7_dp
+   !! The Davidson residual tolerance of the density-screen checks.
+   real(dp), parameter :: SCREEN_ERI_THRESH = 1.0e-8_dp
+   !! The integral threshold of the matvec work check: loose enough that a small transition-density block drops quartets.
    real(dp), parameter :: GATE_GRAD = 5.0e-9_dp
    !! The gradient checks' gate against pyscf (check_tddft_grad).
    real(dp), parameter :: FD_STEP = 2.5e-3_dp
@@ -77,6 +83,14 @@ contains
          testsuite = [ &
                      new_unittest("missed-root budget: TDA of formaldehyde/6-31+G HF", test_missed_root_tda), &
                      new_unittest("missed-root budget: RPA of formaldehyde/6-31+G HF", test_missed_root_rpa) &
+                     ]
+      else if (trim(mode_arg) == "density_screen") then
+         testsuite = [ &
+                     new_unittest("density screen: TDA of trans-glyoxal/3-21G HF, on and off", test_density_screen_tda), &
+                     new_unittest("density screen: RPA of trans-glyoxal/3-21G HF, on and off", test_density_screen_rpa), &
+                     new_unittest("density screen: the TDA matvec drops work with the screen on", test_screen_work_tda), &
+                     new_unittest("density screen: the RPA matvec changes at threshold level with the screen on", &
+                                  test_screen_work_rpa) &
                      ]
       else if (trim(mode_arg) == "grad_tda") then
          testsuite = [new_unittest("TDA gradient of the first and last root vs pyscf (Pulay only)", test_gradient_tda)]
@@ -261,6 +275,245 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call missed_root_budget(error, .false.)
    end subroutine test_missed_root_rpa
+
+
+   function logged_text(file) result(text)
+      !! A log file read back whole.
+      character(len=*), intent(in) :: file
+      character(len=:), allocatable :: text
+      character(len=512) :: line
+      integer :: u, ios
+      text = ""
+      open (newunit=u, file=file, status="old", action="read", iostat=ios)
+      if (ios /= 0) return
+      do
+         read (u, "(a)", iostat=ios) line
+         if (ios /= 0) exit
+         text = text//trim(line)//new_line("a")
+      end do
+      close (u)
+   end function logged_text
+
+   integer function count_text(text, word) result(n)
+      !! Occurrences of `word` in `text`.
+      character(len=*), intent(in) :: text, word
+      integer :: pos, hit
+      n = 0
+      pos = 1
+      do
+         hit = index(text(pos:), word)
+         if (hit == 0) exit
+         n = n + 1
+         pos = pos + hit + len(word) - 1
+      end do
+   end function count_text
+
+   subroutine screen_solve(fx, tda, screen, res, text)
+      !! Three roots of the fixture's reference, with the matvec's density screen `screen`; what the solve logged.
+      type(fixture_t), intent(inout) :: fx
+      logical, intent(in) :: tda, screen
+      type(trc_tddft_run_result_t), intent(out) :: res
+      character(len=:), allocatable, intent(out) :: text
+      type(trc_tddft_run_options_t) :: opts
+      character(len=*), parameter :: LOG_FILE = "check_tddft_api_density_screen.log"
+      integer :: u
+      opts%nroots = 3
+      opts%tda = tda
+      opts%conv_tol = SCREEN_CONV_TOL
+      opts%density_screen = screen
+      open (newunit=u, file=LOG_FILE, status="replace")
+      close (u)
+      call global_logger%configure_file_output(LOG_FILE, level=info_level)
+      call trc_tddft_run_solve(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, opts, res)
+      call global_logger%close_log_file()
+      text = logged_text(LOG_FILE)
+   end subroutine screen_solve
+
+   subroutine density_screen_roots(error, tda)
+      !! The matvec's density screen on (the default) and off, on trans-glyoxal in 3-21G (Hartree-Fock: the exchange
+      !! is the whole two-electron part, and the molecule is extended enough for the screen to drop quartets).
+      !! The roots agree to twice the residual tolerance: a Ritz value with residual norm r lies within r of an eigenvalue
+      !! of its own operator (r = conv_tol at convergence), and the two operators differ by quartets below the integral
+      !! threshold, which are orders of magnitude under conv_tol (the observed difference is logged). The unscreened run
+      !! logs ONE warning that says so and the default none, which also shows the option reaches the solver.
+      type(error_type), allocatable, intent(out) :: error
+      logical, intent(in) :: tda
+      type(fixture_t) :: fx
+      type(trc_tddft_run_result_t) :: on, off, dflt
+      character(len=:), allocatable :: log_on, log_off, log_dflt
+      character(len=*), parameter :: WORDS = "density screen of the excited-state matvec is OFF"
+      type(trc_tddft_run_options_t) :: defaults
+      real(dp) :: dom
+      character(len=3) :: what
+
+      what = merge("TDA", "RPA", tda)
+      call check(error, defaults%density_screen, "the default of density_screen is not true")
+      if (allocated(error)) return
+      call fixture_build(fx, "../basis_sets/3-21g.json", "", error, xyz="glyoxal_trans.xyz")
+      if (allocated(error)) then
+         call fixture_release(fx)
+         return
+      end if
+      call screen_solve(fx, tda, .true., on, log_on)
+      call screen_solve(fx, tda, .false., off, log_off)
+      call check(error, on%converged .and. off%converged, what//": a solve did not converge")
+      if (allocated(error)) then
+         call fixture_release(fx)
+         return
+      end if
+      dom = maxval(abs(on%omega - off%omega))
+      call global_logger%info("tddft api "//what//" density screen: max|d omega| on - off "//to_string(dom, "es10.3")// &
+                              ", "//to_string(on%td%nmatvec)//" and "//to_string(off%td%nmatvec)//" matvecs")
+      call check(error, dom <= 2.0_dp*SCREEN_CONV_TOL, what//": screened and unscreened roots differ by "// &
+                 to_string(dom, "es10.3"))
+      ! What the operator DID, not what the options said: the matvec passes that ran screened.
+      if (.not. allocated(error)) call check(error, on%td%nscreened_apply > 0 .and. on%td%nscreened_apply <= on%td%iterations, &
+                                             what//": the screened run's matvec passes did not run screened: "// &
+                                             to_string(on%td%nscreened_apply))
+      if (.not. allocated(error)) call check(error, off%td%nscreened_apply == 0, what// &
+                                             ": the unscreened run's matvec ran screened "//to_string(off%td%nscreened_apply)// &
+                                             " times")
+      if (.not. allocated(error)) call check(error, count_text(log_on, WORDS) == 0, what//": the screened run warned")
+      if (.not. allocated(error)) call check(error, count_text(log_off, WORDS) == 1, what//": the unscreened run logged "// &
+                                             to_string(count_text(log_off, WORDS))//" warnings, not one")
+      if (.not. allocated(error)) then
+         ! The default is the screened run.
+         call screen_default(fx, tda, dflt, log_dflt)
+         call check(error, count_text(log_dflt, WORDS) == 0 .and. maxval(abs(dflt%omega - on%omega)) < SCREEN_CONV_TOL, &
+                    what//": the default run is not the screened one")
+         if (.not. allocated(error)) call check(error, dflt%td%nscreened_apply == on%td%nscreened_apply, &
+                                                what//": the default run's matvec is not the screened one")
+      end if
+      call fixture_release(fx)
+   end subroutine density_screen_roots
+
+   subroutine screen_default(fx, tda, res, text)
+      !! The same solve with the options at their defaults (density_screen not touched).
+      type(fixture_t), intent(inout) :: fx
+      logical, intent(in) :: tda
+      type(trc_tddft_run_result_t), intent(out) :: res
+      character(len=:), allocatable, intent(out) :: text
+      type(trc_tddft_run_options_t) :: opts
+      character(len=*), parameter :: LOG_FILE = "check_tddft_api_density_screen.log"
+      integer :: u
+      opts%nroots = 3
+      opts%tda = tda
+      opts%conv_tol = SCREEN_CONV_TOL
+      open (newunit=u, file=LOG_FILE, status="replace")
+      close (u)
+      call global_logger%configure_file_output(LOG_FILE, level=info_level)
+      call trc_tddft_run_solve(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, opts, res)
+      call global_logger%close_log_file()
+      text = logged_text(LOG_FILE)
+   end subroutine screen_default
+
+   subroutine test_density_screen_tda(error)
+      type(error_type), allocatable, intent(out) :: error
+      call density_screen_roots(error, .true.)
+   end subroutine test_density_screen_tda
+
+   subroutine test_density_screen_rpa(error)
+      type(error_type), allocatable, intent(out) :: error
+      call density_screen_roots(error, .false.)
+   end subroutine test_density_screen_rpa
+
+
+   subroutine screen_work(error, tda)
+      !! The matvec itself, through `trc_tddft_op_t`, with `density_screen` on and off, on trial vectors the screen can
+      !! drop work for: X = the lowest occupied orbital (a core orbital, concentrated on the oxygens) into the lowest
+      !! two virtuals, so the transition densities are small on most shell pairs of trans-glyoxal. Where a deleted
+      !! solver copy (`op%density_screen = opts%density_screen`) or a hard-coded flag in either apply leaves the roots
+      !! alone, this reads the work done:
+      !!  - TDA: `count_survivors` (the operator's test hook) reads back the quartets that survived both screens,
+      !!    which must fall with the screen on, and the result moves by a nonzero amount no larger than the dropped
+      !!    quartets allow, 2 x 8 x ncart^2 (|j| + |k|) t each (j = 2, k = 2 c_x for HF; the derivation is in
+      !!    check_fock_split's run_screen_threshold);
+      !!  - RPA: the enumerated kernel has no survivor counter, so the observable is the result, which must differ
+      !!    from the unscreened one (the screen engaged). No bound is asserted: without a survivor count there is no
+      !!    number of dropped quartets to derive one from;
+      !!  - both: `napply_screened` counts the screened passes.
+      type(error_type), allocatable, intent(out) :: error
+      logical, intent(in) :: tda
+      type(fixture_t) :: fx
+      type(trc_eri_t) :: eri
+      type(trc_tddft_reference_t) :: ref
+      type(trc_tddft_op_t) :: op
+      type(error_t) :: err
+      real(dp), allocatable :: x(:, :, :), ax_on(:, :, :, :), ax_off(:, :, :, :)
+      real(dp) :: diff, bound
+      integer(int64) :: nk_on, nk_off
+      integer :: nvir, k, ncart, lmax
+      character(len=3) :: what
+
+      what = merge("TDA", "RPA", tda)
+      call fixture_build(fx, "../basis_sets/3-21g.json", "", error, xyz="glyoxal_trans.xyz")
+      if (allocated(error)) then
+         call fixture_release(fx)
+         return
+      end if
+      call eri%build(fx%bas, SCREEN_ERI_THRESH)
+      call ref%set(fx%nocc, fx%scf%cmo(:, :, 1), fx%scf%eps(:, 1), fx%scf%dmat(:, :, 1))
+      call op%setup(fx%bas, fx%la, ref, err)
+      call check(error, .not. err%has_error(), "operator setup: "//err%get_message())
+      if (allocated(error)) then
+         call eri%release()
+         call fixture_release(fx)
+         return
+      end if
+      nvir = op%nvir
+      allocate (x(fx%nocc, nvir, 2), ax_on(fx%nocc, nvir, 2, 2), ax_off(fx%nocc, nvir, 2, 2))
+      x = 0.0_dp
+      do k = 1, 2
+         x(1, k, k) = 1.0_dp
+      end do
+      lmax = maxval(fx%bas%sh_l)
+      ncart = (lmax + 1)*(lmax + 2)/2
+      op%count_survivors = .true.
+      ax_on = 0.0_dp
+      ax_off = 0.0_dp
+      op%density_screen = .true.
+      if (tda) then
+         call op%apply(fx%bas, eri, fx%la, 2, x, ax_on(:, :, :, 1))
+      else
+         call op%apply_rpa(fx%bas, eri, fx%la, 2, x, ax_on)
+      end if
+      nk_on = eri%nkept
+      call check(error, op%napply_screened == 1, what//": the screened apply was not counted as screened")
+      op%density_screen = .false.
+      if (tda) then
+         call op%apply(fx%bas, eri, fx%la, 2, x, ax_off(:, :, :, 1))
+      else
+         call op%apply_rpa(fx%bas, eri, fx%la, 2, x, ax_off)
+      end if
+      nk_off = eri%nkept
+      if (.not. allocated(error)) call check(error, op%napply_screened == 1, what// &
+                                             ": the unscreened apply was counted as screened")
+      diff = maxval(abs(ax_on - ax_off))
+      call global_logger%info("tddft api "//what//" matvec work: survivors "//to_string(nk_on)//" screened, "// &
+                              to_string(nk_off)//" unscreened; max|screened - unscreened| "//to_string(diff, "es10.3"))
+      if (.not. allocated(error)) call check(error, diff > 0.0_dp, what//": the screen changed nothing")
+      if (tda .and. .not. allocated(error)) then
+         call check(error, nk_on < nk_off, "the screened TDA matvec dropped no quartet ("//to_string(nk_on)//" of "// &
+                    to_string(nk_off)//")")
+         ! j = 2, k = 2 c_x = 2 (Hartree-Fock): the folded kernels' bound, per dropped quartet.
+         bound = 2.0_dp*8.0_dp*real(ncart*ncart, dp)*(2.0_dp + 2.0_dp)*SCREEN_ERI_THRESH*real(nk_off - nk_on, dp)
+         if (.not. allocated(error)) call check(error, diff <= bound, "screened vs unscreened "//to_string(diff, "es10.3")// &
+                                                " exceeds the bound "//to_string(bound, "es10.3"))
+      end if
+      call op%release()
+      call eri%release()
+      call fixture_release(fx)
+   end subroutine screen_work
+
+   subroutine test_screen_work_tda(error)
+      type(error_type), allocatable, intent(out) :: error
+      call screen_work(error, .true.)
+   end subroutine test_screen_work_tda
+
+   subroutine test_screen_work_rpa(error)
+      type(error_type), allocatable, intent(out) :: error
+      call screen_work(error, .false.)
+   end subroutine test_screen_work_rpa
 
    subroutine gradient_vs_ref(error, ref_name, tda)
       !! The first and the last root's Pulay-only gradient against the pyscf reference (3 roots).

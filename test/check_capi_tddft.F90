@@ -24,13 +24,15 @@ module check_capi_tddft_suite
    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_quiet_nan, ieee_positive_inf
    use pic_types, only: dp
    use pic_strings, only: to_string
+   use pic_logger, only: global_logger, info_level
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_test_basis, only: read_xyz
    use pyscf_ref_io, only: ref_require, ref_close, ref_read_real, ref_read_matrix3
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_method, &
                                trc_set_convergence, trc_set_force_cartesian, trc_run_scf, trc_run_gradient, trc_gradient, &
                                trc_energy, trc_run_hessian, trc_message, trc_set_tddft, trc_set_tddft_convergence, &
-                               trc_set_tddft_missed_root_iterations, trc_check_tddft, trc_run_tddft, trc_tddft_nroots, &
+                               trc_set_tddft_missed_root_iterations, trc_set_tddft_density_screen, trc_check_tddft, trc_run_tddft, &
+                               trc_tddft_nroots, &
                                trc_tddft_energies, &
                                trc_tddft_character, trc_tddft_energy, trc_tddft_target_root, trc_abi_version, &
                                trc_set_aux_json, trc_set_rimp2, trc_run_rimp2, trc_save_scf, trc_load_scf, &
@@ -58,6 +60,8 @@ contains
                   new_unittest("refusals", test_refusals), &
                   new_unittest("missed-root iterations: 24 is the default, 0 reaches the solver", &
                                test_missed_root), &
+                  new_unittest("density screen: on by default, trc_set_tddft_density_screen(0) reaches the solver", &
+                               test_density_screen), &
                   new_unittest("a second SCF and TDDFT give the same roots, none in between", test_rerun), &
                   new_unittest("RI-MP2 after TDDFT takes over the energy and the gradient", test_rimp2_after), &
                   new_unittest("an effective core potential: the excited-state gradient is refused", test_ecp), &
@@ -237,7 +241,7 @@ contains
       logical :: ok
 
       rc = trc_abi_version(major, minor)
-      call check(error, rc == TRC_OK .and. major == 1 .and. minor >= 31, "the ABI is at least 1.31")
+      call check(error, rc == TRC_OK .and. major == 1 .and. minor >= 32, "the ABI is at least 1.32")
       if (allocated(error)) return
       call open_handle(error, handle, "", "basis_sets/sto-3g.json", ok)
       if (allocated(error)) return
@@ -358,6 +362,88 @@ contains
       end if
       rc = trc_destroy(handle)
    end subroutine test_refusals
+
+   subroutine screen_run(error, handle, text)
+      !! trc_run_tddft on the handle's SCF with the logger writing to a file, which is read back whole.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr), intent(in) :: handle
+      character(len=:), allocatable, intent(out) :: text
+      character(len=*), parameter :: LOG_FILE = "check_capi_tddft_density_screen.log"
+      character(len=1024) :: line
+      integer(c_int) :: rc
+      integer :: u, ios
+
+      open (newunit=u, file=LOG_FILE, status="replace")
+      close (u)
+      call global_logger%configure_file_output(LOG_FILE, level=info_level)
+      rc = trc_run_tddft(handle)
+      call global_logger%close_log_file()
+      call check(error, rc == TRC_OK, "trc_run_tddft: "//message_of(handle))
+      text = ""
+      open (newunit=u, file=LOG_FILE, status="old", action="read", iostat=ios)
+      do while (ios == 0)
+         read (u, "(a)", iostat=ios) line
+         if (ios == 0) text = text//trim(line)//new_line("a")
+      end do
+      close (u)
+   end subroutine screen_run
+
+   subroutine test_density_screen(error)
+      !! Water STO-3G Hartree-Fock, TDA and RPA, two roots, through the C ABI: the default screens the matvec and logs nothing
+      !! about it; trc_set_tddft_density_screen(handle, 0) switches it off, which the run logs once (so the setting reached the
+      !! solver) with the roots unchanged to twice the residual tolerance (1e-7), and a non-zero value switches it on again.
+      !! A null handle is TRC_ERR_NULL.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: handle
+      character(len=*), parameter :: WORDS = "density screen of the excited-state matvec is OFF"
+      character(len=:), allocatable :: log_on, log_off, log_back
+      real(c_double) :: w_on(2), w_off(2), w_back(2)
+      integer(c_int) :: rc
+      integer :: pass, hit
+      logical :: ok, tda
+
+      rc = trc_set_tddft_density_screen(c_null_ptr, 0_c_int)
+      call check(error, rc == TRC_ERR_NULL, "a null handle is TRC_ERR_NULL")
+      if (allocated(error)) return
+      call open_handle(error, handle, "", "basis_sets/sto-3g.json", ok)
+      if (allocated(error)) return
+      rc = trc_run_scf(handle)
+      call check(error, rc == TRC_OK, "trc_run_scf: "//message_of(handle))
+      do pass = 1, 2
+         if (allocated(error)) exit
+         tda = pass == 1
+         rc = trc_set_tddft(handle, 2_c_int, merge(1_c_int, 0_c_int, tda), 1_c_int, 1_c_int, 1_c_int)
+         if (rc == TRC_OK) rc = trc_set_tddft_convergence(handle, 1.0e-7_c_double, 0_c_int, 0.0_c_double, 0_c_int, 0_c_int)
+         call check(error, rc == TRC_OK, "trc_set_tddft: "//message_of(handle))
+         if (allocated(error)) exit
+         call screen_run(error, handle, log_on)
+         if (allocated(error)) exit
+         call roots_of(handle, 2, w_on, ok)
+         rc = trc_set_tddft_density_screen(handle, 0_c_int)
+         call check(error, rc == TRC_OK, "trc_set_tddft_density_screen(0)")
+         if (allocated(error)) exit
+         call screen_run(error, handle, log_off)
+         if (allocated(error)) exit
+         call roots_of(handle, 2, w_off, ok)
+         rc = trc_set_tddft_density_screen(handle, 1_c_int)
+         call check(error, rc == TRC_OK, "trc_set_tddft_density_screen(1)")
+         if (allocated(error)) exit
+         call screen_run(error, handle, log_back)
+         if (allocated(error)) exit
+         call roots_of(handle, 2, w_back, ok)
+         call check(error, index(log_on, WORDS) == 0, merge("TDA", "RPA", tda)//": the default run warned")
+         if (allocated(error)) exit
+         hit = index(log_off, WORDS)
+         call check(error, hit > 0 .and. index(log_off(hit + 1:), WORDS) == 0, merge("TDA", "RPA", tda)// &
+                    ": the unscreened run did not log its warning exactly once")
+         if (allocated(error)) exit
+         call check(error, index(log_back, WORDS) == 0, merge("TDA", "RPA", tda)//": switching the screen back on still warned")
+         if (allocated(error)) exit
+         call check(error, maxval(abs(w_off - w_on)) < 2.0e-7_dp .and. maxval(abs(w_back - w_on)) < 2.0e-7_dp, &
+                    merge("TDA", "RPA", tda)//": the roots moved by more than the residual tolerance")
+      end do
+      rc = trc_destroy(handle)
+   end subroutine test_density_screen
 
    subroutine third_root(error, handle, tda, omega3)
       !! Runs the TDDFT of the handle's SCF (three roots, 1e-7) and returns the third root's energy.

@@ -290,7 +290,8 @@ module trc_capi
              trc_geometry
    public :: trc_set_hessian_step, trc_hessian_step, trc_run_hessian, trc_hessian, trc_check_rimp2_gradient
    public :: trc_check_gradient_upfront
-   public :: trc_set_tddft, trc_set_tddft_convergence, trc_set_tddft_missed_root_iterations, trc_run_tddft, trc_check_tddft
+   public :: trc_set_tddft, trc_set_tddft_convergence, trc_set_tddft_missed_root_iterations, &
+             trc_set_tddft_density_screen, trc_run_tddft, trc_check_tddft
    public :: trc_tddft_nroots, trc_tddft_energies, trc_tddft_character, trc_tddft_energy, trc_tddft_target_root
    !! Fortran only (no bind(c), not in terco.h): the geometry optimiser's
    !! own up-front gradient check.
@@ -372,7 +373,9 @@ module trc_capi
    !! trc_timing's list capacity. A run that would list more is an error
    !! (TRC_ERR_UNSUPPORTED), never a silently shortened list.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 31
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 32
+   !! 1.32: trc_set_tddft_density_screen, a new entry point (the TDDFT matvec's
+   !! density screen, on by default). Additive.
    !! 1.31: trc_set_tddft_missed_root_iterations, a new entry point (the budget of
    !! the TDDFT solver's candidate Ritz pairs after its probe). Additive.
    !! 1.30: closed-shell TDDFT/TDHF excitation energies and the excited-state
@@ -6203,6 +6206,29 @@ contains
       cx%grad_ok = .false.
       status = TRC_OK
    end function trc_set_tddft_missed_root_iterations
+
+   function trc_set_tddft_density_screen(handle, on) result(status) &
+      bind(c, name="trc_set_tddft_density_screen")
+      !! Whether the excited-state matvec of trc_run_tddft screens its two-electron
+      !! integrals by the trial densities (non-zero, the default) or not (zero).
+      !! Screened, a quartet is dropped when its Schwarz bound times the largest
+      !! density block of its launch is below the integral threshold, the SCF Fock
+      !! build's criterion; the trial vectors are orthonormal, so the bound does not
+      !! tighten as the solve converges. Unscreened is slower, and the run logs a
+      !! warning that says so. The coupled-perturbed (Z-vector) solve of the
+      !! gradient never screens this way. Drops a stored TDDFT result. (ABI 1.32.)
+      type(c_ptr), value :: handle
+      integer(c_int), value :: on
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      cx%td_opts%density_screen = on /= 0_c_int
+      cx%tddft_ok = .false.
+      cx%grad_ok = .false.
+      status = TRC_OK
+   end function trc_set_tddft_density_screen
 
    logical function tddft_grid_reusable(cx) result(reusable)
       !! The SCF's own grid and partition, kept in `cx%kgrid`, still match the

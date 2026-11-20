@@ -1,0 +1,11 @@
+# check_cli_tddft's TOML input for [tddft] density_screen: water Hartree-Fock, the excited-state matvec's density screen off.
+[molecule]
+geometry = "water.xyz"
+
+[basis]
+main = "basis_sets/sto-3g.json"
+
+[tddft]
+enabled = true
+roots = 2
+density_screen = false

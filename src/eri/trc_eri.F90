@@ -56,6 +56,7 @@ module trc_eri
    implicit none
    private
    public :: trc_eri_t, eri_lmax_refusal, eri_grad_lmax_refusal, trc_fock_options_t, trc_grad_pair_t
+   public :: eri_lent_chunk_size
    public :: eri_mdj_size_rule, TRC_J_ENGINE_AUTO, TRC_J_ENGINE_BINS, TRC_J_ENGINE_MDJ
 
    integer, parameter :: TRC_J_ENGINE_AUTO = 0
@@ -77,6 +78,33 @@ module trc_eri
    real(dp), parameter :: SPLIT_ASYM_TOL = 1.0e-14_dp
    !! `fock_split_many` skips the antisymmetric batch when every
    !! max|A_d| <= SPLIT_ASYM_TOL max|D_d|: round-off of forming D - D^T.
+   integer, parameter :: MATVEC_CHUNK_MIN = 3
+   !! The fewest densities `fock_split_many_lent` and `fock_nosym_many_lent`
+   !! send through one launch of the kernels when the batch has that many.
+   !! The per-class kernels take `dmat(ndens, nw, nw)` and `jmat(ndens, nw, nw)`,
+   !! and their cost PER DENSITY grows with ndens on a large system, where the
+   !! arrays outgrow the GPU cache; a launch of too few densities, on a small
+   !! one, is too small to fill the GPU. Measured (V100, NVHPC 26.9, PBE0,
+   !! def2-SVP Cartesian, TDDFT-TDA, 5 roots, tol 1e-5, missed-root budget 0,
+   !! total wall of the run, the roots identical to every printed digit):
+   !! 40 waters (1000 functions, 8 MB per density) 193 s for the whole batch
+   !! and 171, 146, 145, 147, 167 s for chunks of 1, 2, 3, 4, 6 densities;
+   !! gly20 (1525 functions, 18.6 MB per density) 162 s whole and 122, 125, 137 s
+   !! for chunks of 2, 3, 6; PBE (J only) on 40 waters 39 s whole, 36.6 s at 2,
+   !! 33.3 s at 3. The water hexamer (150 functions, 0.18 MB per density,
+   !! default budget) went the other way: 3.14 s whole, 3.37 s in chunks of 3.
+   !! Between 0.18 MB and 8 MB per density nothing was measured, so the
+   !! byte rule below (`MATVEC_CHUNK_BYTES`) puts the switch where the two
+   !! ends of the data leave it, not where a measurement found it.
+   integer(int64), parameter :: MATVEC_CHUNK_BYTES = 24000000_int64
+   !! A batch whose densities (one (nw, nw) double matrix each) total more than
+   !! this is split into chunks of `max(MATVEC_CHUNK_MIN, MATVEC_CHUNK_BYTES /
+   !! (8 nw^2))` densities (`eri_lent_chunk_size`): 3 on both large systems
+   !! above (8 MB and 18.6 MB per density) and the whole batch on the hexamer.
+   !! 24 MB is three densities of the 40-water system, the smaller of the two
+   !! measured large cases. The device scratch is sized for one chunk, not for
+   !! the batch, so a batch of ndens densities needs chunk/ndens of the
+   !! scratch it needed before.
    integer, parameter :: NBUILD_STAGES = 5  !! timed stages of eri%build, see t_build
 
    type :: trc_fock_options_t
@@ -192,9 +220,21 @@ module trc_eri
       integer :: nsplit_passes = 0
       !! Folded batches the last `fock_split_many` ran: 1 for a symmetric
       !! input (or no exchange), 2 when an antisymmetric part needed its own.
+      !! The count is over the whole batch: chunks do not change it.
+      integer :: nlent_launch = 0
+      !! Kernel launches the last `fock_split_many_lent` or `fock_nosym_many_lent`
+      !! made: chunks times passes (a check reads it to see that a batch was
+      !! split). 0 after a call that took the host route.
+      integer :: many_chunk = 0
+      !! Densities per launch of `fock_split_many_lent` and
+      !! `fock_nosym_many_lent`: 0 takes `eri_lent_chunk_size`'s rule, a
+      !! positive value that many (capped at the batch). A knob for the
+      !! checks, which exercise several chunks on a small molecule; no run
+      !! sets it.
       integer(int64) :: nkept = 0
       !! Quartets that survive both screens in the last build. On the FOCK
-      !! path, counted only when fock_resident is asked for it, because there
+      !! path, counted only when fock_resident (or `fock_split_many_lent`, summed
+      !! over its launches) is asked for it, because there
       !! it costs a full extra enumeration pass. On the GRADIENT path it is
       !! always set: the ordered-survivor compaction already copies its screen
       !! pass's atomic counter back to the host once per batch, so summing it
@@ -2721,25 +2761,76 @@ contains
       deallocate (dsym, dasym)
    end subroutine eri_fock_split_many
 
-   logical function eri_split_on_device(this, opts) result(ok)
+   logical function eri_split_on_device(this) result(ok)
       !! Whether `fock_split_many_lent` and `fock_nosym_many_lent` run their
-      !! device route for these options; the one place that decides. Each
-      !! falls back to its host-array routine, with unchanged results, when
-      !! any of these holds:
+      !! device route; the one place that decides. Each falls back to its
+      !! host-array routine, with unchanged results, when either holds:
       !!   - `this%distributed`: the rank sum (`sum_ranks`) is a host MPI
       !!     reduction, and the split sums each of its two passes, which a
       !!     single sum of the total would not reproduce bit for bit;
-      !!   - `opts%density_screen`: the bound of the symmetric and
-      !!     antisymmetric batches is computed on the host (a response solve
-      !!     passes false);
       !!   - `this%needs_md`: the host routines refuse g functions, and the
       !!     fallback keeps that refusal in one place.
+      !! `opts%density_screen` is NOT a condition: the screening bound is built
+      !! on the device (`bound_add_device`), per chunk and pass, from the
+      !! working-basis densities the launch actually carries. The fallback
+      !! routes are not chunked and bound the whole batch at once.
       !! An active decontraction is covered: the device expand and fold are
       !! the host ones' arithmetic, element for element.
       class(trc_eri_t), intent(in) :: this
-      type(trc_fock_options_t), intent(in) :: opts
-      ok = .not. (this%distributed .or. opts%density_screen .or. this%needs_md)
+      ok = .not. (this%distributed .or. this%needs_md)
    end function eri_split_on_device
+
+   pure function eri_lent_chunk_size(nw, ndens) result(nchunk)
+      !! Densities per launch of the lent routines for a working basis of `nw`
+      !! functions and a batch of `ndens`: `max(MATVEC_CHUNK_MIN,
+      !! MATVEC_CHUNK_BYTES / (8 nw^2))`, capped at the batch and at least 1.
+      !! The measurements behind the two parameters are with them.
+      integer, intent(in) :: nw, ndens
+      integer :: nchunk
+      integer(int64) :: per, fit
+      per = max(8_int64*int(nw, int64)**2, 1_int64)
+      fit = max(int(MATVEC_CHUNK_MIN, int64), MATVEC_CHUNK_BYTES/per)
+      nchunk = int(min(fit, int(max(ndens, 1), int64)))
+   end function eri_lent_chunk_size
+
+   subroutine bound_add_device(this, first, w)
+      !! The screening bound `this%dsh` from one more working-basis density
+      !! `w`: its own shell-block maximum when `first`, the larger of that and
+      !! what `dsh` holds otherwise (`density_blocks_device`,
+      !! `density_blocks_device_max`). The shells are the WORKING basis's
+      !! (`pairs%sh_l`, `pairs%ao_off`), as `density_blocks` has them, so a split
+      !! general contraction indexes `w` correctly. Device-resident throughout.
+      class(trc_eri_t), intent(inout) :: this
+      logical, intent(in) :: first
+      real(dp), intent(in) :: w(this%nao_w, this%nao_w)
+      if (first) then
+         call density_blocks_device(this%nbas, this%nao_w, this%pairs%sh_l, this%pairs%ao_off, w, this%dsh)
+      else
+         call density_blocks_device_max(this%nbas, this%nao_w, this%pairs%sh_l, this%pairs%ao_off, w, this%dsh)
+      end if
+   end subroutine bound_add_device
+
+   subroutine symmetrise_bound_device(nshell, dsh)
+      !! dsh(i, j) = dsh(j, i) := the larger of the two, in place (the
+      !! iteration at (i, j), i > j, owns both elements). The enumerated
+      !! (nosym) kernel reads a density's block (i, j) and its transpose (j, i)
+      !! for the same quartet, while its screen reads `dsh` in one orientation
+      !! only (dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl) for K,
+      !! dsh(si, sj), dsh(sk, sl) for J), so a bound that is larger in the
+      !! other orientation would drop a quartet whose large block is the
+      !! transposed one. The host `fock_nosym_many` does the same.
+      integer, intent(in) :: nshell
+      real(dp), intent(inout) :: dsh(nshell, nshell)
+      integer :: i, j
+      real(dp) :: m
+      do concurrent(j=1:nshell, i=1:nshell) local(m)
+         if (i > j) then
+            m = max(dsh(i, j), dsh(j, i))
+            dsh(i, j) = m
+            dsh(j, i) = m
+         end if
+      end do
+   end subroutine symmetrise_bound_device
 
    subroutine eri_fock_split_many_lent(this, b, ndens, dmats, gmats, opts)
       !!
@@ -2763,11 +2854,37 @@ contains
       !! XC result, 30.9 s and 376.3 s, idle 2.6 s and 19.1 s, and identical
       !! iteration traces and excitation energies.
       !!
-      !! Numbers match `fock_split_many` element for element on the host
-      !! build: S = 0.5 (D + D^T), A = 0.5 (D - D^T), the fold
-      !! 0.5 (J(i,j) + sgn J(j,i)) and gmats = G[S] + G[A], each in the same
-      !! operation order. The device scratch is two (ndens, nw, nw) arrays and
-      !! two (nw, nw), created here and deleted on every path out.
+      !! CHUNKS. The batch goes through the kernels `eri_lent_chunk_size`
+      !! densities at a time (or `this%many_chunk`), each chunk through the
+      !! symmetric pass and then, when the batch needs it, the antisymmetric
+      !! one; the measurements are with `MATVEC_CHUNK_MIN`. Each density's own
+      !! arithmetic and the order of its two passes are those of the whole
+      !! batch, so with the screen off a result does not depend on the chunking
+      !! (bit for bit on the host build; the device atomics reorder sums
+      !! either way). The antisymmetric pass is decided ONCE over the whole
+      !! batch (a chunk of exactly symmetric densities in a batch that needs
+      !! the pass still runs it, as the whole-batch route did, so its
+      !! round-off-level A parts are added as before) and `nsplit_passes` is that
+      !! decision. The device scratch is two (nchunk, nw, nw) arrays and two
+      !! (nw, nw) (plus the (nao, 2, ndens) row maxima), where it was two
+      !! (ndens, nw, nw): created here and deleted on every path out. The
+      !! launch counters (`nlaunch`, `nwork`, ...) are the LAST launch's: they
+      !! describe the plan, which does not depend on the densities or on the
+      !! chunk, so every launch reports the same values.
+      !!
+      !! SCREENING. With opts%density_screen true each launch is screened by
+      !! the largest density block of the densities IT carries (`dsh`, the
+      !! maximum over the chunk, symmetric part for the first pass and
+      !! antisymmetric part for the second; both are exactly symmetric in
+      !! their blocks, so one orientation of `dsh` serves the folded kernels).
+      !! That is `fock_split_many`'s bound over a chunk instead of over the
+      !! batch: with one chunk the two agree exactly, with several this one is
+      !! never larger, and a density sharing a chunk with a much larger one
+      !! is screened by the larger (never dropped for it). Screening drops a
+      !! quartet only when its bound is below the integral threshold. With
+      !! `count_survivors` this%nkept is the number of quartets that passed
+      !! both screens, summed over the launches (an extra counting pass each);
+      !! without it nkept is 0 after the call.
       !!
       !! The host route is taken instead (`dmats` pulled down, `gmats` pushed
       !! up) when `eri_split_on_device` says so; see it for the conditions.
@@ -2786,24 +2903,32 @@ contains
 
       real(dp), allocatable :: dwork(:, :, :), jmat(:, :, :), sq(:, :), tw(:, :), rm(:, :, :), red(:, :)
       type(trc_fock_options_t) :: o
-      type(trc_bin_launch_t) :: launch
-      integer :: n, nw, d, pass
+      type(trc_bin_launch_t) :: launch, counted
+      integer :: n, nw, d, pass, nchunk, nc, c0, ncur, slot
       logical :: need_a
-      real(dp) :: sgn
+      real(dp) :: sgn, jfac
 
       o%density_screen = .false.
       if (present(opts)) o = opts
       if (.not. (o%omega >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
-      if (.not. eri_split_on_device(this, o)) then
+      if (.not. eri_split_on_device(this)) then
+         this%nlent_launch = 0
          !$acc update self(dmats)
          call this%fock_split_many(b, ndens, dmats, gmats, o)
          !$acc update device(gmats)
          return
       end if
+      ! What the call reports, reset before anything can return: no stale values from the last call.
+      this%nsplit_passes = 0
+      this%nlent_launch = 0
+      this%nkept = 0
+      if (ndens < 1) return
       n = this%nao
       nw = this%nao_w
-      allocate (dwork(ndens, nw, nw), jmat(ndens, nw, nw), sq(n, n), tw(nw, nw), rm(n, 2, ndens), red(2, ndens))
-      !$acc enter data create(dwork, jmat, sq, tw, rm, red)
+      nchunk = eri_lent_chunk_size(nw, ndens)
+      if (this%many_chunk > 0) nchunk = min(this%many_chunk, max(ndens, 1))
+      allocate (sq(n, n), tw(nw, nw), rm(n, 2, ndens), red(2, ndens))
+      !$acc enter data create(sq, tw, rm, red)
 
       need_a = .false.
       if (o%k_scale /= 0.0_dp) then
@@ -2819,34 +2944,61 @@ contains
 
       this%nsplit_passes = 1
       if (need_a) this%nsplit_passes = 2
-      do pass = 1, this%nsplit_passes
-         sgn = 1.0_dp
-         if (pass == 2) then
-            sgn = -1.0_dp
-            o%j_scale = 0.0_dp
+      ncur = 0
+      do c0 = 1, ndens, nchunk
+         nc = min(nchunk, ndens - c0 + 1)
+         ! The kernels' density index is the fastest one, so a last chunk
+         ! shorter than the others needs operands of its own shape.
+         if (nc /= ncur) then
+            if (ncur > 0) then
+               !$acc exit data delete(dwork, jmat)
+               deallocate (dwork, jmat)
+            end if
+            allocate (dwork(nc, nw, nw), jmat(nc, nw, nw))
+            !$acc enter data create(dwork, jmat)
+            ncur = nc
          end if
-         do d = 1, ndens
-            call sym_part_device(n, sgn, dmats(:, :, d), sq)
-            if (this%dec%active) then
-               call decontract_expand(this%dec, sq, tw)
-               call pack_density_device(nw, ndens, d, tw, dwork, jmat)
-            else
-               call pack_density_device(nw, ndens, d, sq, dwork, jmat)
+         do pass = 1, this%nsplit_passes
+            sgn = 1.0_dp
+            jfac = o%j_scale
+            if (pass == 2) then
+               sgn = -1.0_dp
+               jfac = 0.0_dp
             end if
-         end do
-         call fill_ones_device(this%nbas, this%dsh)
-         launch = bin_launch(this, ndens, o%j_scale, o%k_scale, o%omega)
-         call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, jmat)
-         call record_launch(this, launch)
-         !$acc wait
-         do d = 1, ndens
-            call unpack_symmetrise_device(nw, ndens, d, jmat, tw, sgn)
-            if (this%dec%active) then
-               call decontract_fold(this%dec, tw, sq)
-               call store_add_device(n, pass == 2, sq, gmats(:, :, d))
-            else
-               call store_add_device(n, pass == 2, tw, gmats(:, :, d))
+            do d = c0, c0 + nc - 1
+               slot = d - c0 + 1
+               call sym_part_device(n, sgn, dmats(:, :, d), sq)
+               if (this%dec%active) then
+                  call decontract_expand(this%dec, sq, tw)
+                  call pack_density_device(nw, nc, slot, tw, dwork, jmat)
+                  if (o%density_screen) call bound_add_device(this, d == c0, tw)
+               else
+                  call pack_density_device(nw, nc, slot, sq, dwork, jmat)
+                  if (o%density_screen) call bound_add_device(this, d == c0, sq)
+               end if
+            end do
+            if (.not. o%density_screen) call fill_ones_device(this%nbas, this%dsh)
+            if (o%count_survivors) then
+               counted = bin_launch(this, nc, jfac, o%k_scale, o%omega)
+               counted%count_kept = .true.
+               call binkernel_fock_bins(this%bins, this%pairs, this%quartets, counted, this%dsh, dwork, jmat, jmat)
+               this%nkept = this%nkept + counted%nkept
             end if
+            launch = bin_launch(this, nc, jfac, o%k_scale, o%omega)
+            call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, jmat)
+            call record_launch(this, launch)
+            this%nlent_launch = this%nlent_launch + 1
+            !$acc wait
+            do d = c0, c0 + nc - 1
+               slot = d - c0 + 1
+               call unpack_symmetrise_device(nw, nc, slot, jmat, tw, sgn)
+               if (this%dec%active) then
+                  call decontract_fold(this%dec, tw, sq)
+                  call store_add_device(n, pass == 2, sq, gmats(:, :, d))
+               else
+                  call store_add_device(n, pass == 2, tw, gmats(:, :, d))
+               end if
+            end do
          end do
       end do
       !$acc exit data delete(dwork, jmat, sq, tw, rm, red)
@@ -2861,8 +3013,23 @@ contains
       !! gmats = j_scale J - k_scale K/2 all on the device, so nothing of
       !! size nao^2 ndens crosses to the host (the RPA matvec's route; the
       !! measurement is in `fock_split_many_lent`). Element for element the host
-      !! routine's arithmetic. Device scratch: three (ndens, nw, nw) arrays
-      !! and one (nw, nw), created here and deleted on every path out.
+      !! routine's arithmetic.
+      !!
+      !! CHUNKS, as `fock_split_many_lent`: `eri_lent_chunk_size` densities
+      !! (or `this%many_chunk`) per launch, each density's result independent
+      !! of the chunking when the screen is off. Device scratch: three
+      !! (nchunk, nw, nw) arrays and two (nw, nw), created here and deleted on
+      !! every path out. The launch counters are the last launch's.
+      !!
+      !! SCREENING. With opts%density_screen true each launch is screened by
+      !! the maximum, over the chunk's densities, of every shell block of
+      !! |D| AND of its transpose block (`symmetrise_bound_device`): the
+      !! enumerated kernel digests D(i,j) and D(j,i) of the same quartet, so
+      !! the bound must hold for both orientations. That is `fock_nosym_many`'s
+      !! bound over a chunk instead of the batch: equal with one chunk, never
+      !! larger with several. `count_survivors` is not read here (the counting
+      !! pass exists for the folded kernels only): `nkept`, `nsplit_passes` and
+      !! `nlent_launch` are reset on entry, so nkept is 0 after this route.
       !!
       !! The host route is taken instead (`dmats` pulled down, `gmats` pushed
       !! up) when `eri_split_on_device` says so; see it for the conditions.
@@ -2882,45 +3049,77 @@ contains
       real(dp), allocatable :: dwork(:, :, :), jmat(:, :, :), kmat(:, :, :), sq(:, :), tw(:, :)
       type(trc_fock_options_t) :: o
       type(trc_bin_launch_t) :: launch
-      integer :: n, nw, d
+      integer :: n, nw, d, nchunk, nc, c0, ncur, slot
 
       o%density_screen = .false.
       if (present(opts)) o = opts
-      if (.not. eri_split_on_device(this, o)) then
+      if (.not. eri_split_on_device(this)) then
+         this%nlent_launch = 0
          !$acc update self(dmats)
          call this%fock_nosym_many(b, ndens, dmats, gmats, o)
          !$acc update device(gmats)
          return
       end if
       if (.not. (o%omega >= 0.0_dp)) error stop "terco: omega < 0 or NaN (erfc/short-range) is not implemented"
+      ! Reset before anything can return. The enumerated kernel has no survivor count, so nkept is 0 after
+      ! this route whatever `count_survivors` says (the split route counts only when asked, else also 0).
+      this%nsplit_passes = 0
+      this%nlent_launch = 0
+      this%nkept = 0
+      if (ndens < 1) return
       n = this%nao
       nw = this%nao_w
-      allocate (dwork(ndens, nw, nw), jmat(ndens, nw, nw), kmat(ndens, nw, nw), sq(n, n), tw(nw, nw))
-      !$acc enter data create(dwork, jmat, kmat, sq, tw)
-      do d = 1, ndens
-         if (this%dec%active) then
-            call decontract_expand(this%dec, dmats(:, :, d), tw)
-            call pack_density_device(nw, ndens, d, tw, dwork, jmat)
-         else
-            call pack_density_device(nw, ndens, d, dmats(:, :, d), dwork, jmat)
-         end if
-         call zero_slot_device(nw, ndens, d, kmat)
-      end do
-      call fill_ones_device(this%nbas, this%dsh)
-      launch = bin_launch(this, ndens, o%j_scale, o%k_scale, o%omega)
-      launch%nosym = .true.
+      nchunk = eri_lent_chunk_size(nw, ndens)
+      if (this%many_chunk > 0) nchunk = min(this%many_chunk, max(ndens, 1))
+      allocate (sq(n, n), tw(nw, nw))
+      !$acc enter data create(sq, tw)
+      ! The non-symmetric kernel reads the primitive pairs through the bins.
       call complete_pairs(this)
-      call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
-      call record_launch(this, launch)
-      !$acc wait
-      do d = 1, ndens
-         call combine_jk_device(nw, ndens, d, o%j_scale, o%k_scale, jmat, kmat, tw)
-         if (this%dec%active) then
-            call decontract_fold(this%dec, tw, sq)
-            call store_add_device(n, .false., sq, gmats(:, :, d))
-         else
-            call store_add_device(n, .false., tw, gmats(:, :, d))
+      ncur = 0
+      do c0 = 1, ndens, nchunk
+         nc = min(nchunk, ndens - c0 + 1)
+         if (nc /= ncur) then
+            if (ncur > 0) then
+               !$acc exit data delete(dwork, jmat, kmat)
+               deallocate (dwork, jmat, kmat)
+            end if
+            allocate (dwork(nc, nw, nw), jmat(nc, nw, nw), kmat(nc, nw, nw))
+            !$acc enter data create(dwork, jmat, kmat)
+            ncur = nc
          end if
+         do d = c0, c0 + nc - 1
+            slot = d - c0 + 1
+            if (this%dec%active) then
+               call decontract_expand(this%dec, dmats(:, :, d), tw)
+               call pack_density_device(nw, nc, slot, tw, dwork, jmat)
+               if (o%density_screen) call bound_add_device(this, d == c0, tw)
+            else
+               call pack_density_device(nw, nc, slot, dmats(:, :, d), dwork, jmat)
+               if (o%density_screen) call bound_add_device(this, d == c0, dmats(:, :, d))
+            end if
+            call zero_slot_device(nw, nc, slot, kmat)
+         end do
+         if (o%density_screen) then
+            call symmetrise_bound_device(this%nbas, this%dsh)
+         else
+            call fill_ones_device(this%nbas, this%dsh)
+         end if
+         launch = bin_launch(this, nc, o%j_scale, o%k_scale, o%omega)
+         launch%nosym = .true.
+         call binkernel_fock_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, jmat, kmat)
+         call record_launch(this, launch)
+         this%nlent_launch = this%nlent_launch + 1
+         !$acc wait
+         do d = c0, c0 + nc - 1
+            slot = d - c0 + 1
+            call combine_jk_device(nw, nc, slot, o%j_scale, o%k_scale, jmat, kmat, tw)
+            if (this%dec%active) then
+               call decontract_fold(this%dec, tw, sq)
+               call store_add_device(n, .false., sq, gmats(:, :, d))
+            else
+               call store_add_device(n, .false., tw, gmats(:, :, d))
+            end if
+         end do
       end do
       !$acc exit data delete(dwork, jmat, kmat, sq, tw)
       deallocate (dwork, jmat, kmat, sq, tw)

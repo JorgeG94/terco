@@ -36,7 +36,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_TIMING_NAME_MAX = 64
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 31
+   integer(c_int), parameter :: TRC_ABI_MINOR = 32
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -1690,6 +1690,21 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
          integer(c_int), value :: n
       end function trc_set_tddft_missed_root_iterations
+
+      integer(c_int) function trc_set_tddft_density_screen(handle, on) bind(c) result(res)
+         !! Whether the excited-state matvec of trc_run_tddft screens its two-electron
+         !! integrals by the trial densities (non-zero, the default) or not (zero).
+         !! Screened, a quartet is dropped when its Schwarz bound times the largest
+         !! density block of its launch is below the integral threshold, the SCF Fock
+         !! build's criterion; the trial vectors are orthonormal, so the bound does not
+         !! tighten as the solve converges. Unscreened is slower, and the run logs a
+         !! warning that says so. The coupled-perturbed (Z-vector) solve of the
+         !! gradient never screens this way. Drops a stored TDDFT result. (ABI 1.32.)
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: on
+      end function trc_set_tddft_density_screen
 
       integer(c_int) function trc_check_tddft(handle, gradient) bind(c) result(res)
          !! Whether trc_run_tddft (and, when `gradient` is non-zero,

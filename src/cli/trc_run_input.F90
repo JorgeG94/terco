@@ -70,7 +70,7 @@ module trc_run_input
       integer :: kind
    end type run_input_key_t
 
-   integer, parameter :: NKEYS = 117
+   integer, parameter :: NKEYS = 118
    type(run_input_key_t), parameter :: RUN_INPUT_KEYS(NKEYS) = [ &
       run_input_key_t("molecule", "geometry", "", KIND_PATH), &
       run_input_key_t("molecule", "charge", "chrg", KIND_INT), &
@@ -131,6 +131,7 @@ module trc_run_input
       run_input_key_t("tddft", "missed_root_iterations", "tddft-missed-root-iterations", KIND_INT), &
       run_input_key_t("tddft", "cpks_tol", "tddft-cpks-tol", KIND_FLOAT), &
       run_input_key_t("tddft", "roots_per_sweep", "tddft-sweep", KIND_INT), &
+      run_input_key_t("tddft", "density_screen", "tddft-density-screen", KIND_BOOL_ON), &
       run_input_key_t("tddft", "grid_response", "tddft-grid-response", KIND_BOOL_ON), &
       run_input_key_t("tddft", "gap_warning", "tddft-gap-warn", KIND_FLOAT), &
       run_input_key_t("tddft", "strict_root", "tddft-strict-root", KIND_BOOL), &
