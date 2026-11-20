@@ -117,6 +117,47 @@ here.
 terco water.xyz -b def2-svp -f wb97x-v --grad
 ```
 
+## TDDFT / TDHF excited states
+
+| Flag | Meaning |
+|---|---|
+| `--tddft` | singlet excitation energies, oscillator strengths and (RPA) \|\|Y\|\|^2 after the SCF (closed-shell RHF/RKS, Cartesian basis; LDA, GGA and global-hybrid functionals) |
+| `--tddft-roots` | roots wanted (3) |
+| `--tddft-root` | the root `--grad` and `--opt` follow, from 1 (1) |
+| `--tddft-approx` | `tda` (the default; CIS for Hartree-Fock) or `rpa` (TDHF / Casida) |
+| `--tddft-spin` | `singlet`; `triplet` is refused |
+| `--tddft-tol`, `--tddft-iterations` | Davidson residual norm (1e-8) and iteration limit (50) |
+| `--tddft-cpks-tol` | residual norm of the gradient's Z-vector (1e-9) |
+| `--tddft-sweep` | roots sharing a pass over the integral derivatives (a tuning knob) |
+| `--tddft-grid-response`, `--no-tddft-grid-response` | Kohn-Sham gradient with (the default) or without the grid response |
+| `--tddft-gap-warn` | `--opt` warning distance to another root, Eh (0.005; 0 switches it off) |
+| `--tddft-strict-root` | `--opt` stops with an error when the followed root's dominant orbital pair changes, instead of warning |
+
+`--grad` with `--tddft` is the gradient of E_SCF + omega of the target root, and
+`--opt` optimises that state's geometry. The grid response is on by default: the
+exact derivative of terco's energy, whose grid moves with the nuclei. Without it
+(`--no-tddft-grid-response`) the gradient is pyscf's, Pulay terms only. The
+optimiser follows a root number: it warns when another root comes within
+`--tddft-gap-warn` of it, or when its dominant orbital pair changes, since a
+crossing would switch the surface (solve one root more than the one followed to
+watch the one above it). With `--tddft-strict-root` a change of that pair stops the
+run (the last accepted geometry is written) instead of warning; a swap of two
+states with the same dominant pair is not seen either way. The JSON `optimization`
+block counts both warnings (`tddft_state_changes`, `tddft_gap_warnings`).
+
+`--opt-init-hessian terco` with `--opt-algorithm nr` or a P-RFO saddle search is
+refused with `--tddft`: the excited-state gradient has no Hessian to difference.
+
+Refused before the SCF, with the reason: triplets, an open shell, meta-GGAs,
+range-separated hybrids, VV10, double hybrids, a spherical basis (add `--cart`),
+`--df`, `--pcm`, `--rimp2`, `--riccsd`, `--hessian` and more than one rank.
+
+```sh
+terco water.xyz -b 6-31gs -f pbe --tddft --tddft-roots 4                 # energies
+terco water.xyz -b 6-31g -f pbe --tddft --tddft-root 2 --grad            # gradient of root 2
+terco h2co.xyz -b 6-31g --tddft --tddft-root 1 --opt                     # S1 geometry (CIS)
+```
+
 ## Fukui / charge analysis
 
 | Flag | Meaning |

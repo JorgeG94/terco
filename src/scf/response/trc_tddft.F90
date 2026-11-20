@@ -18,8 +18,9 @@ module trc_tddft
    !! convention; c_x is the functional's exact-exchange fraction (`func%exx`,
    !! 1 for Hartree-Fock, where f_xc is absent). The exchange of a
    !! non-symmetric density is not the exchange of its symmetric part, which is
-   !! why this uses `eri%fock_nosym_many`: it returns j J - k K/2, so the call
-   !! passes j_scale = 2 and k_scale = 2 c_x. f_xc[T] is
+   !! why this uses `eri%fock_split_many` (the folded kernels on the symmetric
+   !! and antisymmetric parts of T; `fock_nosym_many` is its reference): it
+   !! returns j J - k K/2, so the call passes j_scale = 2 and k_scale = 2 c_x. f_xc[T] is
    !! `trc_xc_fxc_rks_apply_many` (it symmetrises T itself, the only part the
    !! density response sees), against a cache built once from the ground-state
    !! density. A is real symmetric and, for a stable ground state, positive
@@ -79,11 +80,12 @@ module trc_tddft
    !!
    !! THE SOLVER (TDA)
    !! ----------------
-   !! Every new trial vector of an iteration goes through ONE `fock_nosym_many`
-   !! call and ONE `fxc_apply_many` call, i.e. one pass over the integrals per
-   !! iteration whatever the number of roots. `density_screen` is false: a
-   !! density-keyed screen on trial vectors would change the operator between
-   !! matvecs (see `eri%fock_nosym_many`).
+   !! Every new trial vector of an iteration goes through ONE `fock_split_many`
+   !! call (two folded integral passes: symmetric and antisymmetric parts) and
+   !! ONE `fxc_apply_many` call, whatever the number of roots. `density_screen`
+   !! is false: a density-keyed screen on trial vectors would change the
+   !! operator between matvecs (see `eri%fock_nosym_many`). The RPA matvec below
+   !! still uses `fock_nosym_many`.
    !!
    !! Guesses are the unit vectors of the lowest orbital-energy differences (a
    !! tie at the cut is kept whole). Each
@@ -532,9 +534,12 @@ contains
    subroutine tddft_op_apply(this, b, eri, la, nvec, x, ax, xg)
       !!
       !! ax(:, :, k) := A x(:, :, k) for k = 1..nvec, x and ax HOST arrays
-      !! (nocc, nvir, nvec): ONE `fock_nosym_many` and ONE
-      !! `fxc_apply_many` call whatever nvec is. Scratch is three
-      !! (nao, nao, nvec) arrays (two for Hartree-Fock). `xg` is needed
+      !! (nocc, nvir, nvec): ONE `fock_split_many` and ONE
+      !! `fxc_apply_many` call whatever nvec is. Host peak: tmat, gmat
+      !! and (functional) vxc, three (nao, nao, nvec) arrays, plus the split's
+      !! own copies inside `fock_split_many` (S, A and the A result, three
+      !! more, and the folded build's (nvec, nao_w, nao_w) operand and
+      !! accumulator). `xg` is needed
       !! exactly when `setup` was given a functional.
       !!
       class(trc_tddft_op_t), intent(inout) :: this
@@ -567,7 +572,7 @@ contains
          call la%gemm_mat(half, this%cvir, tmat(:, :, k), transb="T")
       end do
       !$acc update self(tmat)
-      call eri%fock_nosym_many(b, nvec, tmat, gmat, &
+      call eri%fock_split_many(b, nvec, tmat, gmat, &
                                trc_fock_options_t(j_scale=2.0_dp, k_scale=2.0_dp*this%cx, density_screen=.false.))
       !$acc update device(gmat)
       if (this%dft) then

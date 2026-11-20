@@ -142,6 +142,33 @@ int trc_opt_set_guess(trc_handle_t handle, int guess_kind);
 int trc_opt_set_rimp2(trc_handle_t handle, int enable);
 
 /**
+ * Non-zero: optimise the geometry of the excited state the context follows (the target root of
+ * trc_set_tddft, read from the context at every step): run trc_run_tddft after every SCF of the
+ * optimisation, so each step's energy is trc_tddft_energy's (E_SCF + omega of that root) and its gradient
+ * trc_run_gradient's derivative of it. The context needs trc_set_tddft with enough roots (give one more
+ * than the target to watch the root above it); trc_opt_run checks the setup with trc_check_tddft before the
+ * first SCF and returns its refusal instead of starting. A P-RFO saddle search or a Newton-Raphson step with
+ * terco's own Hessian (trc_opt_set_hessian_source, the default) is refused too, with TRC_ERR_UNSUPPORTED:
+ * the excited-state gradient has no Hessian to difference; choose the DL-FIND Hessian source. The followed
+ * state is watched: a warning when another solved root lies within `gap_warn` hartree of it, or when its
+ * dominant orbital pair differs from that of the previous accepted step (the first step is the reference);
+ * trc_opt_set_tddft_strict turns the second into a failure, trc_opt_result_gap_warnings and
+ * trc_opt_result_state_changes count them. `gap_warn` is not negative and finite, otherwise TRC_ERR_BADARG;
+ * zero switches the gap warning off. Zero `enable` (the default): the SCF energy and gradient.
+ */
+int trc_opt_set_tddft(trc_handle_t handle, int enable, double gap_warn);
+
+/**
+ * Non-zero: with trc_opt_set_tddft, a change of the followed root's dominant orbital pair since the last
+ * accepted step (a sign that the states swapped, which the root number does not show) fails the
+ * evaluation with a message instead of logging a warning. A failed evaluation is DL-FIND's: the run writes
+ * what it can and DL-FIND's `error stop` may end the calling process (see this module's header), so a caller
+ * that cannot tolerate that should leave the default, zero, and read trc_opt_result_state_changes after the
+ * run. Not checked in a NEB run. Has no effect without trc_opt_set_tddft.
+ */
+int trc_opt_set_tddft_strict(trc_handle_t handle, int strict);
+
+/**
  * --opt-frozen: `atoms` holds `n` 1-based indices into trc_opt_run's
  * own atom order. Replaces whatever a previous call set (not
  * additive): a caller that wants to grow the list reads it back
@@ -167,6 +194,20 @@ int trc_opt_result_failed(trc_handle_t handle, int* failed);
 int trc_opt_result_steps(trc_handle_t handle, int* steps);
 
 int trc_opt_result_energy_evaluations(trc_handle_t handle, int* n);
+
+/**
+ * After a trc_opt_set_tddft run: the evaluations (rejected line-search trials included) at which the
+ * followed root's dominant orbital pair differed from the last accepted step's, each of which logged a
+ * warning (or, with trc_opt_set_tddft_strict, failed the run). Non-zero: the optimisation may have switched
+ * to another state. Zero without trc_opt_set_tddft.
+ */
+int trc_opt_result_state_changes(trc_handle_t handle, int* n);
+
+/**
+ * After a trc_opt_set_tddft run: the gap warnings logged, one per other root within `gap_warn` of the
+ * followed one at an evaluation. Zero without trc_opt_set_tddft.
+ */
+int trc_opt_result_gap_warnings(trc_handle_t handle, int* n);
 
 int trc_opt_result_energy(trc_handle_t handle, double* energy);
 

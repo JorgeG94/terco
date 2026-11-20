@@ -3,6 +3,7 @@ submodule (trc_run) trc_run_json
    use json_module, only: json_core, json_value
    use pic_strings, only: to_string
    use trc_app, only: BOHR_PER_ANGSTROM
+   use trc_constants, only: HARTREE_TO_EV
    use, intrinsic :: iso_c_binding, only: c_null_char
    use trc_capi, only: trc_timing, trc_timing_count, TRC_OK, TRC_TIMING_NAME_MAX
    use trc_run_input, only: run_input_echo
@@ -62,6 +63,7 @@ contains
          call json%add(root, "total energy", real(r%etot, dp))
       end if
       if (r%cc .and. r%cc_ran) call add_ccsd(json, root, r)
+      if (r%tddft_ran) call add_tddft(json, root, r)
       ! The final SCF's frontier orbitals, Eh: the restricted (or alpha) set,
       ! and for an unrestricted run the beta set under its own keys.
       if (r%has_homo(1)) call json%add(root, "homo energy", r%homo(1))
@@ -109,6 +111,37 @@ contains
       call json%add(root, "ri-ccsd total energy", real(r%etot + r%cc_e_ccsd, dp))
       if (r%cc_has_triples) call json%add(root, "ri-ccsd triples total energy", real(r%etot + r%cc_e_ccsd + r%cc_e_t, dp))
    end subroutine add_ccsd
+   subroutine add_tddft(json, root, r)
+      !! TDDFT/TDHF: the roots' excitation energies (Eh and eV), oscillator strengths, ||Y||^2 (zero for the TDA),
+      !! transition dipoles and dominant orbital pairs, and the target root's total energy, the one --grad and --opt
+      !! differentiate. Arrays are per root, in ascending energy; the root numbers count from 1.
+      type(json_core), intent(inout) :: json
+      type(json_value), pointer, intent(in) :: root
+      type(run_t), intent(in) :: r
+      type(json_value), pointer :: rows, obj
+      integer :: k
+      call json%create_object(obj, "tddft")
+      call json%add(obj, "approximation", merge("tda", "rpa", r%tddft_tda))
+      call json%add(obj, "spin", "singlet")
+      call json%add(obj, "roots", r%tddft_n)
+      call json%add(obj, "target root", r%tddft_root)
+      call json%add(obj, "target root total energy", real(r%tddft_etot, dp))
+      if (len(r%func) > 0) call json%add(obj, "grid response", r%tddft_grid_response)
+      call json%add(obj, "excitation energies", r%tddft_omega)
+      call json%add(obj, "excitation energies ev", r%tddft_omega*HARTREE_TO_EV)
+      call json%add(obj, "oscillator strengths", r%tddft_osc)
+      call json%add(obj, "y norms", r%tddft_ynorm)
+      call json%add(obj, "dominant hole", r%tddft_hole)
+      call json%add(obj, "dominant particle", r%tddft_particle)
+      call json%add(obj, "dominant weight", r%tddft_weight)
+      call json%create_array(rows, "transition dipoles")
+      do k = 1, r%tddft_n
+         call json%add(rows, "", r%tddft_dipole(:, k))
+      end do
+      call json%add(obj, rows)
+      call json%add(root, obj)
+   end subroutine add_tddft
+
    subroutine add_build(json, root)
       !! What this binary was built as, so a benchmark can tell a device
       !! build from a host one and an LMAX=2 build from an LMAX=3 one.
@@ -312,6 +345,8 @@ contains
          call json%add(root, "gradient of", "double hybrid total: scf energy + pt2 fraction x mp2 correlation")
       else if (r%rimp2) then
          call json%add(root, "gradient of", "scf energy + mp2 correlation")
+      else if (r%tddft) then
+         call json%add(root, "gradient of", "scf energy + excitation energy of tddft root "//to_string(r%tddft_root))
       else
          call json%add(root, "gradient of", "scf energy")
       end if
@@ -473,6 +508,10 @@ contains
       end if
       call json%add(oobj, "connect", r%opt_connect)
       call json%add(oobj, "hessian_evaluations", r%opt_hess_evals)
+      if (r%tddft) then
+         call json%add(oobj, "tddft_state_changes", r%opt_state_changes)
+         call json%add(oobj, "tddft_gap_warnings", r%opt_gap_warnings)
+      end if
       if (allocated(r%opt_traj_energy)) then
          call json%add(oobj, "trajectory_energies", r%opt_traj_energy)
       end if

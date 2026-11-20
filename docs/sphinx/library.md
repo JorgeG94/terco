@@ -79,6 +79,43 @@ rc = trc_eri_create(hbas, 1.0e-10_dp, heri)
 rc = trc_fock(heri, hbas, d, g, 1.0d0, 1.0d0, 1, 0.0d0)   ! last: omega, 0 = Coulomb
 ```
 
+## TDDFT excitation energies and excited-state gradients through the C ABI
+
+Closed-shell singlet TDA/CIS and RPA (TDHF, Casida) excitation energies, and the
+gradient of one root, are in the C ABI since version 1.30, on the converged
+restricted reference of the handle (Cartesian basis; LDA, GGA and global-hybrid
+functionals). The Fortran entry is `trc_tddft_run_solve` and
+`trc_tddft_run_gradient` (module `trc_tddft_run`).
+
+| Call | What it does |
+|---|---|
+| `trc_set_tddft(h, nroots, tda, singlet, target_root, grid_response)` | the roots wanted, TDA (non-zero) or RPA, `singlet` (non-zero; a triplet is `TRC_ERR_UNSUPPORTED`), the root, from 1, that the gradient and `trc_tddft_energy` follow, and the grid response of a Kohn-Sham gradient (non-zero: the exact derivative; zero: Pulay only, as pyscf) |
+| `trc_set_tddft_convergence(h, conv_tol, max_iteration, cpks_tol, cpks_max_iteration, roots_per_sweep)` | the solver and Z-vector settings; each 0 resets that setting to its default (1e-8, 50, 1e-9, 100, 2) |
+| `trc_check_tddft(h, gradient)` | whether the run would be refused for the settings alone (a triplet, an open shell, meta-GGA, range-separated, VV10 or double-hybrid functional, a spherical basis, `--df`, PCM), before any SCF |
+| `trc_run_tddft(h)` | the roots, after `trc_run_scf` |
+| `trc_tddft_nroots(h, &n)`, `trc_tddft_energies(h, n, omega, f, ynorm, dipole)`, `trc_tddft_character(h, n, hole, particle, weight)` (`n` the roots the arrays hold; fewer than solved is `TRC_ERR_BADARG`), `trc_tddft_target_root(h, &root, &nroots)` | the roots: energies in Eh, oscillator strengths, \|\|Y\|\|^2, transition dipoles, and each root's dominant orbital pair (from the HOMO and the LUMO) |
+| `trc_tddft_energy(h, &e)` | E_SCF + omega of the target root |
+
+```c
+double omega[4], f[4], ynorm[4], dipole[12], e_excited, grad[9];
+int n;
+
+trc_set_method(h, "pbe", 3);
+trc_run_scf(h);
+trc_set_tddft(h, 4, /*tda=*/1, /*singlet=*/1, /*target_root=*/2, /*grid_response=*/1);
+trc_run_tddft(h);
+trc_tddft_nroots(h, &n);
+trc_tddft_energies(h, n, omega, f, ynorm, dipole);
+trc_tddft_energy(h, &e_excited);
+trc_run_gradient(h);         /* now the gradient of e_excited */
+trc_gradient(h, grad);
+```
+
+After `trc_run_tddft`, `trc_run_gradient` differentiates the target root's energy
+and `trc_run_hessian` refuses; `trc_energy` stays the ground state's. A later
+`trc_run_scf` drops the roots and the gradient is the SCF's again.
+A later `trc_run_rimp2` or `trc_run_rccsd` also drops the roots. `libterco_opt` follows the context's target root through `trc_opt_set_tddft(opts, enable, gap_warn)` (`gap_warn` finite, zero or more; zero switches the gap warning off). `trc_opt_set_tddft_strict(opts, strict)` turns a change of the followed root's dominant orbital pair into a failed evaluation, which is DL-FIND's `error stop` path (the run writes what it can first); without it `trc_opt_result_state_changes` and `trc_opt_result_gap_warnings` count the warnings after the run. A P-RFO or Newton-Raphson search with terco's own Hessian source is refused with `TRC_ERR_UNSUPPORTED`.
+
 ## RI-CCSD and RI-CCSD(T) through the C ABI
 
 Closed-shell RI-CCSD, and (T) on request, are in the C ABI since version 1.28

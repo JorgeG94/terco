@@ -790,6 +790,32 @@ terco_add_check(check_fock_nosym_many check_fock_nosym_many.F90 NEEDS_BASIS NEED
 target_link_libraries(check_fock_nosym_many PRIVATE test-drive::test-drive)
 
 #
+# eri%fock_split_many: the same J - K/2 of non-symmetric densities from the
+# folded kernels (symmetric part with J and K, antisymmetric part K-only with
+# the antisymmetric fold) against fock_nosym_many, with negative controls.
+# h2o2/6-31G* reaches d; the cc-pVTZ variant needs f and SKIPs below
+# TERCO_LMAX=3 (as check_rys_grad_fd_ccpvtz).
+#
+terco_add_check(check_fock_split check_fock_split.F90 NEEDS_BASIS
+                ARGS h2o2.xyz basis_sets/6-31gs.json)
+target_link_libraries(check_fock_split PRIVATE test-drive::test-drive)
+set_target_properties(check_fock_split PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_fock_split)
+terco_add_check(check_fock_split_ccpvtz check_fock_split.F90 NEEDS_BASIS
+                ARGS h2o2.xyz basis_sets/cc-pvtz.json)
+target_link_libraries(check_fock_split_ccpvtz PRIVATE test-drive::test-drive)
+set_target_properties(check_fock_split_ccpvtz PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_fock_split_ccpvtz)
+# cc-pVTZ runs the enumerated nosym kernel with f functions: minutes on the host.
+set_tests_properties(terco/check_fock_split_ccpvtz PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" LABELS LONG)
+# cc-pVDZ: general contraction (decontracted working basis), ~6 s on the host.
+terco_add_check(check_fock_split_ccpvdz check_fock_split.F90 NEEDS_BASIS
+                ARGS h2o2.xyz basis_sets/cc-pvdz.json)
+target_link_libraries(check_fock_split_ccpvdz PRIVATE test-drive::test-drive)
+set_target_properties(check_fock_split_ccpvdz PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_fock_split_ccpvdz)
+
+#
 # Rys against HGP, same density and screening, on water/6-31G* and
 # water/cc-pVDZ. GPU 2, not the fleet default of
 # 0 `terco_add_check` otherwise sets, to stay off the GPUs other work on
@@ -1103,6 +1129,21 @@ if(TERCO_BUILD_APP)
   target_link_libraries(check_cli_grad_df PRIVATE test-drive::test-drive)
   unset(_cli_grad_df_probe)
 
+  # --tddft through the CLI: energies, the [tddft] TOML table, the gradient with
+  # and without the grid response, and the refusals -- see check_cli_tddft.F90's
+  # own header.
+  set(_cli_tddft_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_tddft_probe.json)
+  terco_add_check(check_cli_tddft check_cli_tddft.F90 NEEDS_PYSCF_REF
+                  ARGS $<TARGET_FILE:terco_cli> ${_cli_tddft_probe})
+  target_link_libraries(check_cli_tddft PRIVATE test-drive::test-drive)
+  foreach(_mode grad grid refusals)
+    add_test(NAME terco/check_cli_tddft_${_mode}
+             COMMAND check_cli_tddft $<TARGET_FILE:terco_cli> ${_cli_tddft_probe}_${_mode}.json ${_mode})
+    set_tests_properties(terco/check_cli_tddft_${_mode} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                         ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+  endforeach()
+  unset(_cli_tddft_probe)
+
   # trc_main's own CLI-string lowercasing (--func, --guess, ...) --
   # see check_cli_lowercase.F90's own header for the nvfortran miscompile
   # this guards against.
@@ -1237,6 +1278,16 @@ if(TERCO_BUILD_APP)
     unset(_cli_opt_probe)
     unset(_cli_opt_workdir)
 
+    # --opt --tddft: the geometry optimisation of an excited state (CIS formaldehyde S1)
+    # -- see check_cli_tddft_opt.F90's own header.
+    set(_cli_tddft_opt_probe ${CMAKE_CURRENT_BINARY_DIR}/cli_tddft_opt_probe.json)
+    set(_cli_tddft_opt_workdir ${CMAKE_CURRENT_BINARY_DIR}/cli_tddft_opt_work)
+    terco_add_check(check_cli_tddft_opt check_cli_tddft_opt.F90 NEEDS_PYSCF_REF
+                    ARGS $<TARGET_FILE:terco_cli> ${_cli_tddft_opt_probe} ${_cli_tddft_opt_workdir})
+    target_link_libraries(check_cli_tddft_opt PRIVATE test-drive::test-drive)
+    unset(_cli_tddft_opt_probe)
+    unset(_cli_tddft_opt_workdir)
+
     # --logger's effect on --opt/--opt-freq's own output -- the step
     # table at info, the SCF driver's full per-iteration table only at
     # verbose/debug, never a per-displacement SCF table under --opt-freq's
@@ -1310,6 +1361,11 @@ if(TERCO_BUILD_APP)
     terco_add_check(check_capi_opt check_capi_opt.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
     target_link_libraries(check_capi_opt PRIVATE test-drive::test-drive terco_c_interfaces
                                                  terco_opt_c_interfaces terco::terco_opt)
+
+    # The excited-state optimisation's state watch (gap window, pair change, strict mode) on synthetic roots --
+    # see check_opt_followed_state.F90's own header.
+    terco_add_check(check_opt_followed_state check_opt_followed_state.F90)
+    target_link_libraries(check_opt_followed_state PRIVATE test-drive::test-drive terco::terco_opt)
 
     # --opt with RI-MP2 and a double hybrid through terco_opt.h
     # (trc_opt_set_rimp2): each step's energy is the correlated total whose
@@ -2297,6 +2353,20 @@ set_tests_properties(terco/check_capi_rimp2_grad PROPERTIES WORKING_DIRECTORY ${
                                                        ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
 
 #
+# The C ABI's TDDFT entry points through the generated interface module: the
+# gradient of a chosen root (Hartree-Fock TDA and RPA, PBE with and without
+# the grid response) against pyscf, the state they keep, and the refusals. See
+# check_capi_tddft.F90's own header.
+add_executable(check_capi_tddft check_capi_tddft.F90)
+target_compile_definitions(check_capi_tddft PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_capi_tddft PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io terco_c_interfaces
+                                                test-drive::test-drive)
+add_test(NAME terco/check_capi_tddft COMMAND check_capi_tddft)
+add_test(NAME terco/check_capi_tddft_pbe COMMAND check_capi_tddft pbe)
+set_tests_properties(terco/check_capi_tddft terco/check_capi_tddft_pbe
+                     PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} ENVIRONMENT "CUDA_VISIBLE_DEVICES=0")
+
+#
 # trc_timing / trc_timing_count through the C ABI: the status before any SCF,
 # an enumeration that ends by its count, a short name buffer refused rather
 # than cut, and the RI-MP2 timings not outliving their run. See
@@ -2582,6 +2652,99 @@ foreach(_m water:4 formamide:6 ch4:5)
 endforeach()
 
 #
+# TDA/CIS excited-state nuclear gradients (src/scf/response/trc_tddft_grad.F90)
+# against pyscf's grad.tdrks/tdrhf (generate.py's gen_tddft_grad): water and
+# formamide (6-31G, 3 roots; HF, SVWN, PBE and B3LYP) and non-planar H2O2
+# (HF and PBE); each case also checks roots-per-sweep chunking (default 2), a
+# root alone against the batch and the refusals. The _fd cases difference
+# E_SCF + omega on non-planar H2O2: Hartree-Fock, and PBE with the grid
+# response (the grid rebuilt at every displacement).
+#
+foreach(_mol water formamide h2o2)
+  foreach(_f hf svwn pbe b3lyp)
+    if(_mol STREQUAL "h2o2" AND NOT (_f STREQUAL "hf" OR _f STREQUAL "pbe"))
+      continue()
+    endif()
+    terco_add_check(check_tddft_grad_${_mol}_${_f} check_tddft_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                    ARGS ${_mol}.xyz basis_sets/6-31g.json ${_mol} 6-31g ${_f} 3
+                         ${CMAKE_CURRENT_BINARY_DIR}/tddft_grad_${_mol}_${_f}_probe.bin)
+    target_link_libraries(check_tddft_grad_${_mol}_${_f} PRIVATE test-drive::test-drive)
+    set_target_properties(check_tddft_grad_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                          ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_grad_${_mol}_${_f})
+  endforeach()
+endforeach()
+foreach(_f hf:3 pbe:2)
+  string(REPLACE ":" ";" _fl ${_f})
+  list(GET _fl 0 _func)
+  list(GET _fl 1 _nr)
+  terco_add_check(check_tddft_grad_fd_${_func} check_tddft_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                  ARGS h2o2.xyz basis_sets/6-31g.json h2o2 6-31g ${_func} ${_nr}
+                       ${CMAKE_CURRENT_BINARY_DIR}/tddft_grad_fd_${_func}_probe.bin fd)
+  target_link_libraries(check_tddft_grad_fd_${_func} PRIVATE test-drive::test-drive)
+  set_target_properties(check_tddft_grad_fd_${_func} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_grad_fd_${_func})
+endforeach()
+# LONG: formamide SVWN/PBE/B3LYP (180-270 s each on a loaded host) and the
+# PBE finite difference (about 210 s) are most of these checks' time. Pull
+# requests still run water with all four functionals, formamide HF, both
+# H2O2 cases and the Hartree-Fock finite difference; the nightly scheduled
+# run on main (TERCO_LONG_TESTS=ON) runs the rest.
+set_tests_properties(terco/check_tddft_grad_formamide_svwn terco/check_tddft_grad_formamide_pbe
+                     terco/check_tddft_grad_formamide_b3lyp terco/check_tddft_grad_fd_pbe
+                     PROPERTIES LABELS LONG)
+
+#
+# Full-RPA (TDHF / Casida TDDFT) excited-state nuclear gradients
+# (src/scf/response/trc_tddft_rpa_grad.F90) against pyscf's grad.tdrhf/tdrks with
+# Y /= 0 (generate.py's gen_tddft_rpa_grad; exact dense amplitudes and Z-vector):
+# water and formamide, 6-31G, 3 roots, HF, SVWN, PBE and B3LYP, and the non-planar
+# gauche hydrogen peroxide, HF and B3LYP. The invariants that hold for any molecule
+# (roots-per-sweep chunking, a root alone against the batch, the TDA limit, the
+# refusals, the degeneracy warning) run once, in the water Hartree-Fock case, which
+# takes no mode argument; every other case passes `pyscf` and runs the comparison with
+# pyscf only. The last two are the finite-difference checks of E_SCF + omega on h2o2 (HF,
+# and B3LYP with the grid response).
+#
+set(_rpa_grad_cases water:hf water:svwn water:pbe water:b3lyp formamide:hf formamide:svwn formamide:pbe
+                    formamide:b3lyp h2o2:hf h2o2:b3lyp)
+foreach(_case ${_rpa_grad_cases})
+  string(REPLACE ":" ";" _parts ${_case})
+  list(GET _parts 0 _mol)
+  list(GET _parts 1 _f)
+  if(_case STREQUAL "water:hf")
+    set(_mode "")
+  else()
+    set(_mode pyscf)
+  endif()
+  terco_add_check(check_tddft_rpa_grad_${_mol}_${_f} check_tddft_rpa_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                  ARGS ${_mol}.xyz basis_sets/6-31g.json ${_mol} 6-31g ${_f} 3
+                       ${CMAKE_CURRENT_BINARY_DIR}/tddft_rpa_grad_${_mol}_${_f}_probe.bin ${_mode})
+  target_link_libraries(check_tddft_rpa_grad_${_mol}_${_f} PRIVATE test-drive::test-drive)
+  set_target_properties(check_tddft_rpa_grad_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_rpa_grad_${_mol}_${_f})
+endforeach()
+foreach(_f hf:3 b3lyp:2)
+  string(REPLACE ":" ";" _fl ${_f})
+  list(GET _fl 0 _func)
+  list(GET _fl 1 _nr)
+  terco_add_check(check_tddft_rpa_grad_fd_${_func} check_tddft_rpa_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF
+                  ARGS h2o2.xyz basis_sets/6-31g.json h2o2 6-31g ${_func} ${_nr}
+                       ${CMAKE_CURRENT_BINARY_DIR}/tddft_rpa_grad_fd_${_func}_probe.bin fd)
+  target_link_libraries(check_tddft_rpa_grad_fd_${_func} PRIVATE test-drive::test-drive)
+  set_target_properties(check_tddft_rpa_grad_fd_${_func} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_rpa_grad_fd_${_func})
+endforeach()
+# LONG: the Kohn-Sham cases on formamide and H2O2 and the B3LYP finite
+# difference are minutes each on a loaded host (see the PR body for the
+# measurements). Pull requests still run the water Hartree-Fock case with
+# every invariant, one pyscf comparison per functional class (HF on formamide
+# and water, LDA, GGA and hybrid on water) and the Hartree-Fock finite
+# difference; the nightly scheduled run on main (TERCO_LONG_TESTS=ON) runs the rest.
+set_tests_properties(terco/check_tddft_rpa_grad_formamide_svwn terco/check_tddft_rpa_grad_formamide_pbe
+                     terco/check_tddft_rpa_grad_formamide_b3lyp terco/check_tddft_rpa_grad_h2o2_b3lyp
+                     terco/check_tddft_rpa_grad_fd_b3lyp
+                     PROPERTIES LABELS LONG)
+
 # Full RPA (TDHF / Casida) singlet excitation energies, oscillator strengths and
 # ||Y||^2 (src/scf/response/trc_tddft.F90, tda = .false.) against pyscf's tdscf
 # TDHF / TDDFT (generate.py's gen_rpa), plus the RPA's own internal checks and
@@ -2754,6 +2917,21 @@ foreach(_c ${_tb_refusal})
     set_tests_properties(${_t} PROPERTIES LABELS LONG)
   endif()
 endforeach()
+# The Fortran entry of TDDFT/TDHF (src/scf/response/trc_tddft_run.F90): TDA and
+# RPA energies, the TDA and RPA gradients against the references of the solver
+# and gradient checks above, the grid response on by default and equal to a
+# finite difference, and the refusals. See check_tddft_api.F90's own header.
+#
+terco_add_check(check_tddft_api check_tddft_api.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_tddft_api PRIVATE test-drive::test-drive)
+# The two gradients and the finite difference (four SCFs) are runs of the same program of their own.
+foreach(_mode grad_tda grad_rpa fd)
+  add_test(NAME terco/check_tddft_api_${_mode} COMMAND check_tddft_api ${_mode})
+  set_tests_properties(terco/check_tddft_api_${_mode} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
+endforeach()
+# LONG: the finite difference took 22-33 s on a loaded host build; nightly only.
+set_tests_properties(terco/check_tddft_api_fd PROPERTIES LABELS LONG)
 
 #
 # trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of

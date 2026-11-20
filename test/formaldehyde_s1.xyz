@@ -1,0 +1,6 @@
+4
+formaldehyde, the minimum of the first singlet excited state (CIS / STO-3G) that terco's optimiser converges to from formaldehyde.xyz, Angstrom; the reference tddft_s1_formaldehyde_sto-3g_hf.ref holds pyscf's S1 energy and gradient there
+C     -0.052782391404     0.000000000000     0.000000000000
+O      1.251937413566     0.000000000000     0.000000000000
+H     -0.576386611091     0.943050271621     0.000000000000
+H     -0.576386611091    -0.943050271621     0.000000000000
