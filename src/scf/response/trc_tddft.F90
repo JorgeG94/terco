@@ -83,10 +83,19 @@ module trc_tddft
    !! ----------------
    !! Every new trial vector of an iteration goes through ONE `fock_split_many_lent`
    !! call (two folded integral passes: symmetric and antisymmetric parts) and
-   !! ONE `fxc_apply_many` call, whatever the number of roots. `density_screen`
-   !! is false: a density-keyed screen on trial vectors would change the
-   !! operator between matvecs (see `eri%fock_nosym_many`). The RPA matvec below
-   !! uses `fock_nosym_many_lent`.
+   !! ONE `fxc_apply_many` call, whatever the number of roots. The RPA matvec
+   !! below uses `fock_nosym_many_lent`. Both route the batch through the
+   !! kernels in chunks of a few densities (`eri_lent_chunk_size`), and both
+   !! are density-screened by default (`trc_tddft_options_t%density_screen`).
+   !! A density-keyed screen on a trial vector that shrinks would change the
+   !! operator between matvecs (see `eri%fock_nosym_many`), which is why the
+   !! coupled-perturbed solves keep it off; here it is safe because the Davidson
+   !! trial vectors do not shrink: every one is a correction orthogonalised
+   !! against the subspace and NORMALISED to unit length
+   !! (`tddft_orthonormalise`; the guesses are unit vectors, the Ritz restarts
+   !! orthonormal), so the transition densities are O(1) throughout and the
+   !! screen's bound does not tighten as the solve converges. The residual
+   !! tolerance, not the density, drives convergence.
    !!
    !! Guesses are the unit vectors of the lowest orbital-energy differences (a
    !! tie at the cut is kept whole). Each
@@ -218,6 +227,11 @@ module trc_tddft
    integer, parameter :: NRAND_PROBE = 2
    !! Random vectors in the probe, beside the unit vectors of the next-lowest
    !! orbital-energy differences.
+   character(len=*), parameter :: SCREEN_OFF_MSG = &
+      "trc_tddft: the density screen of the excited-state matvec is OFF (density_screen = false): every matvec "// &
+      "evaluates all the integrals above the Schwarz threshold, so the run is slower than the default"
+   !! Logged once per solve at warning level when `density_screen` is false: a parameter, so the message is
+   !! one exact-length constant (NVHPC 26.9 mis-sized a concatenation built at run time).
    integer(int64), parameter :: PROBE_SEED = 20241118_int64
    !! Seed of the probe's random vectors (a date, nothing tuned: any value works).
    real(dp), parameter :: DROP_REL = 1.0e-6_dp
@@ -261,6 +275,35 @@ module trc_tddft
       !! TDA, 5 roots, conv_tol 1e-5 (V100): 40 iterations and 384 s at 24 against
       !! 16 and 193 s at 0, the same five roots to 1e-8 Eh, candidates left open at
       !! both. A negative value is refused.
+      logical :: density_screen = .true.
+      !! Screen the matvec's two-electron integrals by the trial densities
+      !! themselves, as the SCF Fock build does. Per launch of the kernels
+      !! (a chunk of a few trial densities, `eri_lent_chunk_size`) the bound
+      !! is the largest density block over the densities in the launch, per
+      !! shell pair (for the exchange-only antisymmetric pass of the TDA, the
+      !! antisymmetric part's); a quartet is dropped when its Schwarz bound
+      !! times that block (weighted by the kernel's J and K factors) is below
+      !! the integral threshold, the criterion of the SCF Fock build, so each
+      !! dropped quartet contributes below it.
+      !! The trial vectors are orthonormal (see the module header), their
+      !! densities O(1), so the bound does not tighten as the solve converges:
+      !! the operator is the same from one matvec to the next up to the
+      !! threshold. The coupled-perturbed solves (CPHF, CPKS, the Z-vector of
+      !! the excited-state gradient) do NOT use this: their vectors shrink to
+      !! zero and they always run with the screen off.
+      !! Measured on one V100 (NVHPC 26.9; def2-SVP Cartesian, TDA, 5 roots,
+      !! conv_tol 1e-5, total wall including the SCF; the roots are identical to
+      !! all eight printed decimals in Eh with the screen on and off), shipped
+      !! device route. 40 waters (1000 functions), PBE0, missed_root_iterations
+      !! 0: 193 s before the chunked matvec, 146 s chunked and unscreened, 108 s
+      !! chunked and screened (the default). 40 waters, PBE0, default budget:
+      !! 384 s before, 233 s now; PBE, default budget: 43 s before, 32 s now.
+      !! gly20 (1525 functions), PBE0, budget 0: 162 s before, 88 s now. Water
+      !! hexamer (150 functions), PBE0, default budget: 3.14 s before, 3.16 s
+      !! screened and 3.49 s unscreened now (the whole batch is one launch at
+      !! this size, and the unscreened path is not faster on small systems
+      !! either). False runs the unscreened matvec, which is slower, and the run
+      !! says so in the log.
       integer :: nguess = 0
       !! Unit-vector guesses; 0 takes max(2*nroots, nroots + 4), capped at the
       !! dimension and extended over a tie at the cut. A probe with the
@@ -278,6 +321,11 @@ module trc_tddft
       !! Davidson iterations taken.
       integer :: nmatvec = 0
       !! Trial vectors multiplied by A in total.
+      integer :: nscreened_apply = 0
+      !! Matvec passes (calls of `apply`/`apply_rpa`, one per Davidson iteration that had new
+      !! vectors) that ran with the density screen on: the operator's own count, read back when
+      !! the solve ends, so it shows what the matvec did and not what the options asked for.
+      !! `iterations` or fewer with the default, 0 with `density_screen = .false.`.
       integer :: space = 0
       !! Subspace dimension at the end.
       integer :: ncollapse = 0
@@ -372,6 +420,17 @@ module trc_tddft
       logical :: dft = .false.
       real(dp) :: cx = 1.0_dp
       !! Exact-exchange fraction applied to K.
+      logical :: density_screen = .true.
+      !! Screen the matvec's integrals by the trial densities
+      !! (`trc_tddft_options_t%density_screen`, which the solve copies here
+      !! after `setup`). A user of the operator that builds it itself, the
+      !! checks, gets the default, true.
+      logical :: count_survivors = .false.
+      !! Test hook: `apply` passes `count_survivors` to the split build, so `eri%nkept` reads back the
+      !! quartets that survived both screens in the last call (the TDA route only: the enumerated
+      !! kernel of `apply_rpa` has no counter and leaves it 0).
+      integer :: napply_screened = 0
+      !! Calls of `apply`/`apply_rpa` since `setup` that ran with `density_screen` true.
       logical :: force_antisym = .false.
       !! `apply_rpa` builds the antisymmetric exchange half of its batch even
       !! when c_x = 0, where A-B is the diagonal and the half is zero. Off by
@@ -524,6 +583,7 @@ contains
       end if
       !$acc enter data copyin(this%cocc, this%cvir, this%de)
       if (this%dft) call this%cache%setup(b, xg, ref%func, ref%dmat, la)
+      this%napply_screened = 0
       this%ready = .true.
    end subroutine tddft_op_setup
 
@@ -584,7 +644,10 @@ contains
          call la%gemm_mat(half, this%cvir, tmat(:, :, k), transb="T")
       end do
       call eri%fock_split_many_lent(b, nvec, tmat, gmat, &
-                                    trc_fock_options_t(j_scale=2.0_dp, k_scale=2.0_dp*this%cx, density_screen=.false.))
+                                    trc_fock_options_t(j_scale=2.0_dp, k_scale=2.0_dp*this%cx, &
+                                                      density_screen=this%density_screen, &
+                                                      count_survivors=this%count_survivors))
+      if (this%density_screen) this%napply_screened = this%napply_screened + 1
       if (this%dft) then
          ! Without a budget the routine's default keeps every vector in one pass.
          if (this%has_budget) then
@@ -708,7 +771,9 @@ contains
       end do
       call tddft_split_density(n, nvec, antisym, tmat)
       call eri%fock_nosym_many_lent(b, ndens, tmat, gmat, &
-                                    trc_fock_options_t(j_scale=4.0_dp, k_scale=4.0_dp*this%cx, density_screen=.false.))
+                                    trc_fock_options_t(j_scale=4.0_dp, k_scale=4.0_dp*this%cx, &
+                                                      density_screen=this%density_screen))
+      if (this%density_screen) this%napply_screened = this%napply_screened + 1
       if (this%dft) then
          if (this%has_budget) then
             call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
@@ -1310,6 +1375,8 @@ contains
          call op%release()
          return
       end if
+      op%density_screen = opts%density_screen
+      if (.not. opts%density_screen) call global_logger%warning(SCREEN_OFF_MSG)
 
       nocc = ref%nocc
       nvir = op%nvir
@@ -1391,6 +1458,7 @@ contains
                res%osc(k) = OSC_PREFACTOR*res%omega(k)*sum(res%tdip(:, k)**2)
             end do
          end if
+         res%nscreened_apply = op%napply_screened
          call op%release()
          deallocate (sp%vs, sp%avs, sp%ams, hsub, csub, wsub, xr, axr, tc, rnorm, win%act, win%kept_index, dgn, dsort, &
                     sp%tp, sp%ord, sp%dgn)
@@ -1550,6 +1618,7 @@ contains
             res%converged = .true.
          end if
       end if
+      res%nscreened_apply = op%napply_screened
       call op%release()
       deallocate (sp%vs, sp%avs, hsub, csub, wsub, xr, axr, tc, rnorm, win%act, win%kept_index, dgn, dsort, &
                  sp%tp, sp%ord, sp%dgn)

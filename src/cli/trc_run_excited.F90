@@ -6,7 +6,7 @@ submodule (trc_run) trc_run_excited
    use pic_strings, only: to_string
    use trc_constants, only: HARTREE_TO_EV
    use trc_capi, only: trc_set_tddft, trc_set_tddft_convergence, trc_set_tddft_missed_root_iterations, &
-                       trc_run_tddft, trc_tddft_nroots, &
+                       trc_set_tddft_density_screen, trc_run_tddft, trc_tddft_nroots, &
                        trc_tddft_energies, trc_tddft_character, trc_tddft_energy
    use trc_scf_settings, only: trc_scf_options_t
    use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_refusal, trc_tddft_run_pair_label
@@ -165,6 +165,7 @@ contains
                    r%cli%is_set("tddft-cpks-tol") .or. r%cli%is_set("tddft-sweep") .or. &
                    r%cli%is_set("tddft-gap-warn") .or. r%cli%is_set("tddft-strict-root") .or. &
                    r%cli%is_set("no-tddft-grid-response") .or. &
+                   r%cli%is_set("tddft-density-screen") .or. r%cli%is_set("no-tddft-density-screen") .or. &
                    r%cli%is_set("tddft-grid-response")
       if (.not. r%tddft) then
          if (any_option) call die_options_alone(r)
@@ -174,6 +175,10 @@ contains
          call run_die(r, "--tddft-grid-response and --no-tddft-grid-response contradict each other")
       end if
       r%tddft_grid_response = .not. r%cli%is_set("no-tddft-grid-response")
+      if (r%cli%is_set("tddft-density-screen") .and. r%cli%is_set("no-tddft-density-screen")) then
+         call run_die(r, "--tddft-density-screen and --no-tddft-density-screen contradict each other")
+      end if
+      r%tddft_density_screen = .not. r%cli%is_set("no-tddft-density-screen")
       r%tddft_strict = r%cli%is_set("tddft-strict-root")
       call parse_words(r)
       call parse_values(r)
@@ -199,6 +204,7 @@ contains
       if (r%tddft_missed_root >= 0) then
          call run_api(r, trc_set_tddft_missed_root_iterations(r%h, int(r%tddft_missed_root, c_int)))
       end if
+      if (.not. r%tddft_density_screen) call run_api(r, trc_set_tddft_density_screen(r%h, 0_c_int))
    end subroutine run_tddft_configure
 
    module subroutine run_tddft_execute(r)

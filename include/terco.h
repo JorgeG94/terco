@@ -39,7 +39,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_UNIT 1
 #define TRC_TIMING_NAME_MAX 64
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 31
+#define TRC_ABI_MINOR 32
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -1275,6 +1275,18 @@ int trc_set_tddft_convergence(trc_handle_t handle, double conv_tol, int max_iter
  * Drops a stored TDDFT result. (ABI 1.31.)
  */
 int trc_set_tddft_missed_root_iterations(trc_handle_t handle, int n);
+
+/**
+ * Whether the excited-state matvec of trc_run_tddft screens its two-electron
+ * integrals by the trial densities (non-zero, the default) or not (zero).
+ * Screened, a quartet is dropped when its Schwarz bound times the largest
+ * density block of its launch is below the integral threshold, the SCF Fock
+ * build's criterion; the trial vectors are orthonormal, so the bound does not
+ * tighten as the solve converges. Unscreened is slower, and the run logs a
+ * warning that says so. The coupled-perturbed (Z-vector) solve of the
+ * gradient never screens this way. Drops a stored TDDFT result. (ABI 1.32.)
+ */
+int trc_set_tddft_density_screen(trc_handle_t handle, int on);
 
 /**
  * Whether trc_run_tddft (and, when `gradient` is non-zero,

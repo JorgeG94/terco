@@ -82,6 +82,10 @@ module trc_tddft_run
       !! trc_tddft_options_t%missed_root_iterations: iterations after the probe in
       !! which candidate Ritz pairs beyond the buffer are still iterated. 0 iterates
       !! none (they are reported open); a negative value is refused.
+      logical :: density_screen = .true.
+      !! trc_tddft_options_t%density_screen: screen the excited-state matvec's
+      !! integrals by the trial densities (default), or not (slower; logged).
+      !! The Z-vector of the gradient never screens this way.
       logical :: grid_response = .true.
       !! Kohn-Sham only: differentiate the grid's points and partition weights
       !! too, the exact derivative of terco's own energy. False: Pulay only.
@@ -410,6 +414,7 @@ contains
       topts%conv_tol = opts%conv_tol
       topts%max_iteration = opts%max_iteration
       topts%missed_root_iterations = opts%missed_root_iterations
+      topts%density_screen = opts%density_screen
       topts%verbose = opts%verbose
       call solve_on_state(b, la, state, topts, res%td, cache)
       call run_state_release(state)

@@ -267,6 +267,11 @@ program trc_main
                        "derivative of terco's own energy, whose grid moves with the nuclei")
    call r%cli%add_flag("no-tddft-grid-response", "Kohn-Sham gradient without the grid response (Pulay terms only, as "// &
                        "pyscf's tdrks; about 1e-5 Eh/Bohr away on water PBE)")
+   call r%cli%add_flag("tddft-density-screen", "screen the excited-state matvec's integrals by the trial densities "// &
+                       "(the default)")
+   call r%cli%add_flag("no-tddft-density-screen", "do not screen the excited-state matvec by the trial densities: "// &
+                       "the same roots to the integral threshold, a slower run (logged); the Z-vector of the "// &
+                       "gradient never screens")
    call r%cli%add_option("tddft-gap-warn", "--opt with --tddft warns when the followed root lies within this many "// &
                          "hartree of another solved root (0.005; 0 switches this warning off), and, always, when "// &
                          "its dominant orbital pair changes between steps")

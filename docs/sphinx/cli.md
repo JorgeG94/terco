@@ -130,6 +130,7 @@ terco water.xyz -b def2-svp -f wb97x-v --grad
 | `--tddft-missed-root-iterations` | iterations after the probe that still iterate candidate Ritz pairs, the missed-root guard (24; 0 iterates none and reports them open) |
 | `--tddft-cpks-tol` | residual norm of the gradient's Z-vector (1e-9) |
 | `--tddft-sweep` | roots sharing a pass over the integral derivatives (a tuning knob) |
+| `--tddft-density-screen`, `--no-tddft-density-screen` | screen the excited-state matvec's integrals by the trial densities (the default), or not: the same roots to the integral threshold and a slower run, logged as a warning. The gradient's Z-vector never screens this way |
 | `--tddft-grid-response`, `--no-tddft-grid-response` | Kohn-Sham gradient with (the default) or without the grid response |
 | `--tddft-gap-warn` | `--opt` warning distance to another root, Eh (0.005; 0 switches it off) |
 | `--tddft-strict-root` | `--opt` stops with an error when the followed root's dominant orbital pair changes, instead of warning |
