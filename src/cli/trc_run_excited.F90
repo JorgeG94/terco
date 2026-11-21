@@ -7,7 +7,7 @@ submodule (trc_run) trc_run_excited
    use trc_constants, only: HARTREE_TO_EV
    use trc_capi, only: trc_set_tddft, trc_set_tddft_convergence, trc_set_tddft_missed_root_iterations, &
                        trc_set_tddft_density_screen, trc_run_tddft, trc_tddft_nroots, &
-                       trc_tddft_energies, trc_tddft_character, trc_tddft_energy
+                       trc_tddft_window_open, trc_tddft_energies, trc_tddft_character, trc_tddft_energy
    use trc_scf_settings, only: trc_scf_options_t
    use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_refusal, trc_tddft_run_pair_label
    implicit none
@@ -211,7 +211,7 @@ contains
       !! Runs the excitation energies on the SCF the handle holds and reads the roots back. A refusal or a solve
       !! that did not converge stops the run with the library's message (`run_api`).
       type(run_t), intent(inout) :: r
-      integer(c_int) :: nroots
+      integer(c_int) :: nroots, nopen
       real(c_double), allocatable :: omega(:), oscillator(:), ynorm(:), dipole(:), weight(:)
       integer(c_int), allocatable :: hole(:), particle(:)
 
@@ -222,7 +222,9 @@ contains
       call run_api(r, trc_tddft_energies(r%h, nroots, omega, oscillator, ynorm, dipole))
       call run_api(r, trc_tddft_character(r%h, nroots, hole, particle, weight))
       call run_api(r, trc_tddft_energy(r%h, r%tddft_etot))
+      call run_api(r, trc_tddft_window_open(r%h, nopen))
       r%tddft_n = int(nroots)
+      r%tddft_open = int(nopen)
       r%tddft_omega = real(omega, dp)
       r%tddft_osc = real(oscillator, dp)
       r%tddft_ynorm = real(ynorm, dp)

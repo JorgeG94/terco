@@ -225,7 +225,7 @@ one excited state.
 | `spin` | string | `--tddft-spin` | `singlet`; `triplet` is refused |
 | `energy_tol` | float | `--tddft-tol` | the Davidson residual norm of the excitation energies (1e-8) |
 | `max_iterations` | integer | `--tddft-iterations` | most Davidson iterations (50) |
-| `missed_root_iterations` | integer | `--tddft-missed-root-iterations` | iterations after the probe in which candidate Ritz pairs beyond the buffer are still iterated, the guard against a missed root (24). 0 iterates none: fewer matvecs, and the candidates are reported open (the window warning) instead; negative is refused |
+| `missed_root_iterations` | integer | `--tddft-missed-root-iterations` | iterations after the probe in which candidate Ritz pairs beyond the buffer are still iterated, the guard against a missed root (0, the default: none is iterated, fewer matvecs, and the candidates are reported open by the window warning, which names this option; 24 was the previous default and recovers a root the guesses miss, e.g. the third root of formaldehyde 6-31+G Hartree-Fock, 0.353367 Eh at 0 against 0.348172 at 24 for the TDA, at about twice the wall time on 40 waters PBE0: 233 s against 108 s); negative is refused |
 | `cpks_tol` | float | `--tddft-cpks-tol` | residual norm of the Z-vector of the gradient (1e-9) |
 | `roots_per_sweep` | integer | `--tddft-sweep` | roots sharing one pass over the integral derivatives; a tuning knob that changes no number |
 | `density_screen` | bool | `--tddft-density-screen` / `--no-tddft-density-screen` | Screen the excited-state matvec's integrals by the trial densities (true, the default): per launch of a few trial densities, a quartet is dropped when its Schwarz bound times the largest density block is below the integral threshold, the SCF Fock build's criterion. The trial vectors are orthonormal, so the bound does not tighten as the solve converges. `false` evaluates every quartet above the Schwarz threshold: the same roots to the threshold and a slower run, which the log says (a warning). The Z-vector of the excited-state gradient never screens this way. Measured on one V100 (def2-SVP Cartesian, TDA, 5 roots, conv_tol 1e-5, total wall, the roots identical to eight decimals in Eh): 40 waters PBE0 with `missed_root_iterations = 0` 146 s unscreened and 108 s screened; gly20 PBE0, 162 s before the chunked matvec and 88 s now; a water hexamer 3.49 s unscreened and 3.16 s screened |
@@ -240,8 +240,37 @@ object with the same quantities as arrays, in ascending energy
 (`"excitation energies"`, `"excitation energies ev"`, `"oscillator strengths"`,
 `"y norms"`, `"transition dipoles"`, `"dominant hole"`, `"dominant particle"`,
 `"dominant weight"`) and `"target root total energy"`, E_SCF plus the target root's
-excitation energy. `--grad` is then the gradient of that energy
+excitation energy. `"candidates open"` is the number of candidate Ritz pairs the
+missed-root check left open (0 when none; open candidates do not by themselves
+mean a root is missing, see `missed_root_iterations`). `--grad` is then the gradient of that energy
 (`"gradient of"` says so) and `--opt` optimises it.
+
+**When a root may be missing.** A Davidson solve follows the lowest roots it
+can reach from its starting guesses, the lowest orbital-energy differences. A
+state of a symmetry none of those guesses has can sit below the highest root
+returned and never be found, with every returned root converged. It shows up
+in small, symmetric molecules with diffuse functions.
+
+terco checks for this once the roots have converged and, when the check leaves
+candidates unresolved, says so: a warning in the log, `"candidates open"` in the
+JSON summary and `trc_tddft_window_open` in the C interface. An open candidate
+is not a missing root: of the 52 cases of the basis-set tests, about ten leave
+candidates open at the default and one of them has a wrong root.
+
+If the warning appears and the result matters (a spectrum to compare with
+experiment, a state to optimise), rerun with `missed_root_iterations = 24`
+(`--tddft-missed-root-iterations 24`): the solver then iterates the candidates
+until they are resolved or the count runs out. It costs extra matvecs, about
+twice the wall time where it was measured (40 waters, PBE0, def2-SVP, one V100:
+233 s against 108 s, the same five roots). Asking for one or two more roots
+than needed is a cheaper first check, but it is not a guarantee.
+
+The case in the tests is formaldehyde, 6-31+G, Hartree-Fock, three roots. A
+dense diagonalisation gives 0.157313, 0.328352 and 0.348172 Eh for the TDA. At
+the default terco returns 0.353367 for the third with the warning; with 24 it
+returns 0.348172. For comparison, the Davidson solver of PySCF 2.14.0 returns
+0.353367 there and reports it converged, and GPU4PySCF 1.8.1 returns 0.348172
+for the TDA but misses the third RPA root (0.338715).
 
 A closed-shell reference only: refused, before the SCF and with the reason,
 are triplets, `[molecule] unpaired`, meta-GGA, range-separated and double-hybrid

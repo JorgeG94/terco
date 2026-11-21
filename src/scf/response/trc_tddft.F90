@@ -151,8 +151,16 @@ module trc_tddft
    !! kept are nt + that many, nt = nroots + max(2, nroots/2), further limited
    !! by max_space/2, or max_space/4 for the RPA: nroots = 1: 3 + 2 = 5, nroots
    !! = 3: 5 + 3 = 8, nroots = 6: 9 + 6 = 15, for the default max_space), and
-   !! for `missed_root_iterations` (default 24) iterations after the probe. Without (4) the probe only
-   !! RECORDED the sector. In the formaldehyde case the sector's pair then
+   !! for `missed_root_iterations` iterations after the probe. Measure (4) is OPT-IN: the
+   !! default is 0, so the probe runs and the candidates are reported open
+   !! (`window_open`, the warning) but not iterated. The trade-off, measured: 40
+   !! waters, def2-SVP Cartesian, PBE0, TDA, 5 roots, conv_tol 1e-5 (V100, total
+   !! wall) take 233 s at 24 and 108 s at 0 with the same five roots to eight
+   !! decimals (candidates left open at both), while formaldehyde 6-31+G
+   !! Hartree-Fock at 0 returns the third root at 0.353367 Eh (TDA) and
+   !! 0.346886 Eh (RPA) instead of 0.348172 and 0.338715, and reports one
+   !! candidate open; setting the option to 24 recovers the root. Without (4)
+   !! the probe only RECORDED the sector. In the formaldehyde case the sector's pair then
    !! descends from 0.464 to 0.3515 in one correction and converges to
    !! 0.348172. A pair with |r| >= theta/2 is neither iterated nor counted
    !! (see `tddft_window`). Cost, measured on the 51 Hartree-Fock, B3LYP and PBE
@@ -274,17 +282,20 @@ module trc_tddft
       !! subspace holds p and m), and capped at the dimension of the problem.
       integer :: max_iteration = 50
       !! Most Davidson iterations (matvec passes).
-      integer :: missed_root_iterations = 24
+      integer :: missed_root_iterations = 0
       !! Iterations after the probe in which Ritz pairs beyond the buffer are still
-      !! iterated (`tddft_window`, module header MISSED ROOTS); the sector the probe
-      !! reaches descends into the window in the first few, so this is a safety
-      !! bound, not a typical count. 0 iterates no candidate after the probe: the
-      !! candidates are then reported open (`window_open`, `nwindow_open` and the
-      !! warning), so the run stays honest. A larger value trades matvecs against
-      !! the missed-root guarantee. Measured on 40 waters, def2-SVP Cartesian, PBE0,
-      !! TDA, 5 roots, conv_tol 1e-5 (V100): 40 iterations and 384 s at 24 against
-      !! 16 and 193 s at 0, the same five roots to 1e-8 Eh, candidates left open at
-      !! both. A negative value is refused.
+      !! iterated (`tddft_window`, module header MISSED ROOTS). The default 0 iterates
+      !! no candidate after the probe: they are reported open (`window_open`,
+      !! `nwindow_open` and the warning, which names this option), so the run stays
+      !! honest. A positive value (24 was the previous default) iterates them and
+      !! trades matvecs against the missed-root guarantee: the sector the probe reaches
+      !! descends into the window in the first few iterations, so it is a safety bound,
+      !! not a typical count. Measured on 40 waters, def2-SVP Cartesian, PBE0, TDA,
+      !! 5 roots, conv_tol 1e-5 (V100, total wall): 233 s at 24 against 108 s at 0,
+      !! the same five roots to eight decimals, candidates left open at both.
+      !! Formaldehyde 6-31+G Hartree-Fock needs it: at 0 the third root is 0.353367 Eh
+      !! (TDA) and 0.346886 Eh (RPA) instead of 0.348172 and 0.338715, with one
+      !! candidate reported open. A negative value is refused.
       logical :: density_screen = .true.
       !! Screen the matvec's two-electron integrals by the trial densities
       !! themselves, as the SCF Fock build does. Per launch of the kernels
@@ -306,10 +317,10 @@ module trc_tddft
       !! all eight printed decimals in Eh with the screen on and off), shipped
       !! device route. 40 waters (1000 functions), PBE0, missed_root_iterations
       !! 0: 193 s before the chunked matvec, 146 s chunked and unscreened, 108 s
-      !! chunked and screened (the default). 40 waters, PBE0, default budget:
-      !! 384 s before, 233 s now; PBE, default budget: 43 s before, 32 s now.
+      !! chunked and screened (the default). 40 waters, PBE0, missed_root_iterations 24:
+      !! 384 s before, 233 s now; PBE, missed_root_iterations 24: 43 s before, 32 s now.
       !! gly20 (1525 functions), PBE0, budget 0: 162 s before, 88 s now. Water
-      !! hexamer (150 functions), PBE0, default budget: 3.14 s before, 3.16 s
+      !! hexamer (150 functions), PBE0, missed_root_iterations 24: 3.14 s before, 3.16 s
       !! screened and 3.49 s unscreened now (the whole batch is one launch at
       !! this size, and the unscreened path is not faster on small systems
       !! either). False runs the unscreened matvec, which is slower, and the run
@@ -911,15 +922,25 @@ contains
 
    subroutine tddft_report_window(res, nopen)
       !! Record the candidates the missed-root check left open (`tddft_window`):
-      !! `res%window_open` / `res%nwindow_open`, and one warning in the log.
+      !! `res%window_open` / `res%nwindow_open`, and one warning in the log, which names
+      !! the option that iterates them.
       type(trc_tddft_result_t), intent(inout) :: res
       integer, intent(in) :: nopen
+      character(len=*), parameter :: HEAD = "trc_tddft: the missed-root check left "
+      character(len=*), parameter :: TAIL = " candidate Ritz pair(s) not converged; the returned roots are converged, "// &
+                                            "but a root below the highest of them, in a symmetry the guesses do "// &
+                                            "not reach, is not excluded; raise missed_root_iterations "// &
+                                            "(--tddft-missed-root-iterations) to iterate the candidates"
+      character(len=:), allocatable :: num, msg
       res%nwindow_open = nopen
       res%window_open = nopen > 0
-      if (nopen > 0) call global_logger%warning("trc_tddft: the check for a root below the highest requested one "// &
-                                                 "left "//to_string(nopen)//" candidate Ritz pair(s) open (not "// &
-                                                 "iterated, cut short by the cap or the budget, or abandoned); a "// &
-                                                 "root of a symmetry the guesses do not reach may be missing")
+      if (nopen > 0) then
+         ! Joined into an exact-length local: one nvfortran release mispasses the length of a message built in the call.
+         num = to_string(nopen)
+         allocate (character(len=len(HEAD) + len(num) + len(TAIL)) :: msg)
+         msg = HEAD//num//TAIL
+         call global_logger%warning(msg)
+      end if
    end subroutine tddft_report_window
 
    subroutine tddft_orthonormalise(nov, m, mmax, vs, nc, tc, nnew)

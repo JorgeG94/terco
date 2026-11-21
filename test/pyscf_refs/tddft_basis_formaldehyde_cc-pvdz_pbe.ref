@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["tddft_basis"] -> gen_tddft_basis
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 78b705bd6fe0ddbc355f31844ab1ba5c1ab1ef3de87c096094f32aee7b19a001
+# hash: 1ac54fbf2f41e103f0473428b5e671913bf7391d97cab4896c0e2861cb569d88
 # files: test/check_tddft_basis.F90 basis_sets/cc-pvdz.json test/formaldehyde.xyz
 E_SCF -1.14375494835063265e+02
 OMEGA_TDA 3

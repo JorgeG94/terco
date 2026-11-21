@@ -78,10 +78,10 @@ module trc_tddft_run
       !! the gradient is first order in the amplitude error.
       integer :: max_iteration = 50
       !! Davidson iterations.
-      integer :: missed_root_iterations = 24
+      integer :: missed_root_iterations = 0
       !! trc_tddft_options_t%missed_root_iterations: iterations after the probe in
       !! which candidate Ritz pairs beyond the buffer are still iterated. 0 iterates
-      !! none (they are reported open); a negative value is refused.
+      !! none (they are reported open; the default); a negative value is refused.
       logical :: density_screen = .true.
       !! trc_tddft_options_t%density_screen: screen the excited-state matvec's
       !! integrals by the trial densities (default), or not (slower; logged).

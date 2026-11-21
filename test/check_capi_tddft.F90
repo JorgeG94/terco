@@ -32,7 +32,7 @@ module check_capi_tddft_suite
                                trc_set_convergence, trc_set_force_cartesian, trc_run_scf, trc_run_gradient, trc_gradient, &
                                trc_energy, trc_run_hessian, trc_message, trc_set_tddft, trc_set_tddft_convergence, &
                                trc_set_tddft_missed_root_iterations, trc_set_tddft_density_screen, trc_check_tddft, trc_run_tddft, &
-                               trc_tddft_nroots, &
+                               trc_tddft_nroots, trc_tddft_window_open, &
                                trc_tddft_energies, &
                                trc_tddft_character, trc_tddft_energy, trc_tddft_target_root, trc_abi_version, &
                                trc_set_aux_json, trc_set_rimp2, trc_run_rimp2, trc_save_scf, trc_load_scf, &
@@ -58,7 +58,7 @@ contains
                   new_unittest("Hartree-Fock: TDA and RPA gradients of a root vs pyscf, energies", test_hf), &
                   new_unittest("state: before the run, after a new SCF, the Hessian", test_state), &
                   new_unittest("refusals", test_refusals), &
-                  new_unittest("missed-root iterations: 24 is the default, 0 reaches the solver", &
+                  new_unittest("missed-root iterations: 0 is the default, 24 reaches the solver", &
                                test_missed_root), &
                   new_unittest("density screen: on by default, trc_set_tddft_density_screen(0) reaches the solver", &
                                test_density_screen), &
@@ -237,17 +237,24 @@ contains
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: handle
       real(c_double) :: omega(2), osc(2), ynorm(2), dipole(6), g_excited(9), g_ground(9), e_total
-      integer(c_int) :: rc, nroots, major, minor
+      integer(c_int) :: rc, nroots, major, minor, nopen
       logical :: ok
 
       rc = trc_abi_version(major, minor)
-      call check(error, rc == TRC_OK .and. major == 1 .and. minor >= 32, "the ABI is at least 1.32")
+      call check(error, rc == TRC_OK .and. major == 1 .and. minor >= 33, "the ABI is at least 1.33")
       if (allocated(error)) return
       call open_handle(error, handle, "", "basis_sets/sto-3g.json", ok)
       if (allocated(error)) return
       rc = trc_set_tddft(handle, 2_c_int, 1_c_int, 1_c_int, 1_c_int, 1_c_int)
       rc = trc_tddft_nroots(handle, nroots)
       call check(error, rc == TRC_ERR_STATE, "no roots before a run: status "//to_string(int(rc)))
+      if (allocated(error)) return
+      nopen = -1
+      rc = trc_tddft_window_open(handle, nopen)
+      call check(error, rc == TRC_ERR_STATE .and. nopen == 0, "no window count before a run: status "//to_string(int(rc)))
+      if (allocated(error)) return
+      rc = trc_tddft_window_open(c_null_ptr, nopen)
+      call check(error, rc == TRC_ERR_NULL, "trc_tddft_window_open of a NULL handle is TRC_ERR_NULL")
       if (allocated(error)) return
       rc = trc_run_tddft(handle)
       call check(error, rc == TRC_ERR_STATE, "trc_run_tddft before the SCF is a state error")
@@ -468,11 +475,11 @@ contains
 
    subroutine test_missed_root(error)
       !! Formaldehyde 6-31+G Hartree-Fock, TDA and RPA: the third root is reached only by iterating the candidate
-      !! pairs after the probe. Through the C ABI a count of 24 is the default (same root), and 0 loses that root.
+      !! pairs after the probe. Through the C ABI a count of 0 is the default (the root is lost), and 24 recovers it.
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: handle
       real(c_double) :: w_24, w_0
-      integer(c_int) :: rc
+      integer(c_int) :: rc, n_24, n_0
       integer :: pass
       logical :: ok, tda
 
@@ -486,28 +493,38 @@ contains
          rc = trc_set_tddft_missed_root_iterations(handle, 24_c_int)
          call check(error, rc == TRC_OK, "trc_set_tddft_missed_root_iterations(24)")
          if (allocated(error)) exit
-         ! Set before the default run, so this is the explicit 24; a fresh handle's default is the same number.
          call third_root(error, handle, tda, w_24)
+         if (allocated(error)) exit
+         rc = trc_tddft_window_open(handle, n_24)
+         call check(error, rc == TRC_OK .and. n_24 == 0, merge("TDA", "RPA", tda)// &
+                    ": a count of 24 left candidates open: "//to_string(int(n_24)))
          if (allocated(error)) exit
          rc = trc_set_tddft_missed_root_iterations(handle, 0_c_int)
          call check(error, rc == TRC_OK, "trc_set_tddft_missed_root_iterations(0)")
          if (allocated(error)) exit
          call third_root(error, handle, tda, w_0)
          if (allocated(error)) exit
-         call check(error, abs(w_0 - w_24) > 1.0e-3_dp, merge("TDA", "RPA", tda)// &
-                    ": a count of 0 left the third root alone, so the setting reached no solver")
+         rc = trc_tddft_window_open(handle, n_0)
+         call check(error, rc == TRC_OK .and. n_0 > 0, merge("TDA", "RPA", tda)// &
+                    ": the default left no candidate open, the window count is "//to_string(int(n_0)))
          if (allocated(error)) exit
-         ! A second handle never given the setting must equal the explicit 24.
-         call check_default_handle(error, tda, w_24)
+         call check(error, abs(w_0 - w_24) > 1.0e-3_dp, merge("TDA", "RPA", tda)// &
+                    ": a count of 24 left the third root alone, so the setting reached no solver")
+         if (allocated(error)) exit
+         call check(error, abs(w_24 - merge(0.348172_c_double, 0.338715_c_double, tda)) < 2.0e-6_c_double, &
+                    merge("TDA", "RPA", tda)//": a count of 24 did not recover the third root")
+         if (allocated(error)) exit
+         ! A second handle never given the setting must equal the explicit 0.
+         call check_default_handle(error, tda, w_0)
       end do
       rc = trc_destroy(handle)
    end subroutine test_missed_root
 
-   subroutine check_default_handle(error, tda, w_24)
-      !! A handle that never sets the count has the explicit 24's third root.
+   subroutine check_default_handle(error, tda, w_0)
+      !! A handle that never sets the count has the explicit 0's third root.
       type(error_type), allocatable, intent(out) :: error
       logical, intent(in) :: tda
-      real(c_double), intent(in) :: w_24
+      real(c_double), intent(in) :: w_0
       type(c_ptr) :: handle
       real(c_double) :: w
       integer(c_int) :: rc
@@ -518,8 +535,8 @@ contains
       rc = trc_run_scf(handle)
       call check(error, rc == TRC_OK, "trc_run_scf: "//message_of(handle))
       if (.not. allocated(error)) call third_root(error, handle, tda, w)
-      if (.not. allocated(error)) call check(error, abs(w - w_24) < 1.0e-9_dp, &
-                                             merge("TDA", "RPA", tda)//": the default is not a count of 24")
+      if (.not. allocated(error)) call check(error, abs(w - w_0) < 1.0e-9_dp, &
+                                             merge("TDA", "RPA", tda)//": the default is not a count of 0")
       rc = trc_destroy(handle)
    end subroutine check_default_handle
 

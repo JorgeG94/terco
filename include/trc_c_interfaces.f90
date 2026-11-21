@@ -36,7 +36,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_TIMING_NAME_MAX = 64
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 32
+   integer(c_int), parameter :: TRC_ABI_MINOR = 33
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -1679,11 +1679,11 @@ module trc_c_interfaces
 
       integer(c_int) function trc_set_tddft_missed_root_iterations(handle, n) bind(c) result(res)
          !! The most Davidson iterations after the probe in which Ritz pairs beyond the
-         !! buffer are still iterated, the guard against a missed root (default 24, which
-         !! is what trc_set_tddft_convergence leaves alone). 0 iterates none: the pairs
-         !! that might hide a root are then reported open (the window check and its
-         !! warning) and the run needs fewer matvecs; a larger value trades matvecs
-         !! against the missed-root guarantee. A negative `n` is TRC_ERR_BADARG.
+         !! buffer are still iterated, the guard against a missed root (default 0, which
+         !! is what trc_set_tddft_convergence leaves alone; it was 24 before). 0 iterates
+         !! none: the pairs that might hide a root are reported open (the window check and
+         !! its warning) and the run needs fewer matvecs; a larger value, 24 for instance,
+         !! trades matvecs against the missed-root guarantee. A negative `n` is TRC_ERR_BADARG.
          !! Drops a stored TDDFT result. (ABI 1.31.)
          import :: c_int, c_ptr
          implicit none
@@ -1756,6 +1756,19 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
          integer(c_int), intent(out) :: nroots
       end function trc_tddft_nroots
+
+      integer(c_int) function trc_tddft_window_open(handle, nopen) bind(c) result(res)
+         !! The number of candidate Ritz pairs the missed-root check of the last trc_run_tddft
+         !! left open (not iterated, cut short, or abandoned; 0 when the window is closed).
+         !! Open candidates do not by themselves mean a root is missing: it is a root of a
+         !! symmetry the guesses do not reach that they might hide. Iterate them with
+         !! trc_set_tddft_missed_root_iterations. TRC_ERR_STATE when no TDDFT result is
+         !! stored. (ABI 1.33.)
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: nopen
+      end function trc_tddft_window_open
 
       integer(c_int) function trc_tddft_energies(handle, n, omega, oscillator, ynorm, dipole) bind(c) result(res)
          !! The roots of the last trc_run_tddft, ascending: `omega` excitation
