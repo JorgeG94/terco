@@ -36,7 +36,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_TIMING_NAME_MAX = 64
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 30
+   integer(c_int), parameter :: TRC_ABI_MINOR = 31
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -1676,6 +1676,20 @@ module trc_c_interfaces
          integer(c_int), value :: cpks_max_iteration
          integer(c_int), value :: roots_per_sweep
       end function trc_set_tddft_convergence
+
+      integer(c_int) function trc_set_tddft_missed_root_iterations(handle, n) bind(c) result(res)
+         !! The most Davidson iterations after the probe in which Ritz pairs beyond the
+         !! buffer are still iterated, the guard against a missed root (default 24, which
+         !! is what trc_set_tddft_convergence leaves alone). 0 iterates none: the pairs
+         !! that might hide a root are then reported open (the window check and its
+         !! warning) and the run needs fewer matvecs; a larger value trades matvecs
+         !! against the missed-root guarantee. A negative `n` is TRC_ERR_BADARG.
+         !! Drops a stored TDDFT result. (ABI 1.31.)
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: n
+      end function trc_set_tddft_missed_root_iterations
 
       integer(c_int) function trc_check_tddft(handle, gradient) bind(c) result(res)
          !! Whether trc_run_tddft (and, when `gradient` is non-zero,

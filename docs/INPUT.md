@@ -225,6 +225,7 @@ one excited state.
 | `spin` | string | `--tddft-spin` | `singlet`; `triplet` is refused |
 | `energy_tol` | float | `--tddft-tol` | the Davidson residual norm of the excitation energies (1e-8) |
 | `max_iterations` | integer | `--tddft-iterations` | most Davidson iterations (50) |
+| `missed_root_iterations` | integer | `--tddft-missed-root-iterations` | iterations after the probe in which candidate Ritz pairs beyond the buffer are still iterated, the guard against a missed root (24). 0 iterates none: fewer matvecs, and the candidates are reported open (the window warning) instead; negative is refused |
 | `cpks_tol` | float | `--tddft-cpks-tol` | residual norm of the Z-vector of the gradient (1e-9) |
 | `roots_per_sweep` | integer | `--tddft-sweep` | roots sharing one pass over the integral derivatives; a tuning knob that changes no number |
 | `grid_response` | bool | `--tddft-grid-response` / `--no-tddft-grid-response` | Kohn-Sham gradient with the grid response (true, the default): the exact derivative of terco's own energy, whose grid moves with the nuclei. `false` gives the Pulay terms only, as pyscf's `tdrks`, about 1e-5 Eh/Bohr away on water PBE. No effect for Hartree-Fock |

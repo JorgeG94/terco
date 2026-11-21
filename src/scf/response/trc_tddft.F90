@@ -132,7 +132,7 @@ module trc_tddft
    !! kept are nt + that many, nt = nroots + max(2, nroots/2), further limited
    !! by max_space/2, or max_space/4 for the RPA: nroots = 1: 3 + 2 = 5, nroots
    !! = 3: 5 + 3 = 8, nroots = 6: 9 + 6 = 15, for the default max_space), and
-   !! for XBUDGET = 24 iterations after the probe. Without (4) the probe only
+   !! for `missed_root_iterations` (default 24) iterations after the probe. Without (4) the probe only
    !! RECORDED the sector. In the formaldehyde case the sector's pair then
    !! descends from 0.464 to 0.3515 in one correction and converges to
    !! 0.348172. A pair with |r| >= theta/2 is neither iterated nor counted
@@ -220,10 +220,6 @@ module trc_tddft
    !! orbital-energy differences.
    integer(int64), parameter :: PROBE_SEED = 20241118_int64
    !! Seed of the probe's random vectors (a date, nothing tuned: any value works).
-   integer, parameter :: XBUDGET = 24
-   !! Iterations after the probe in which Ritz pairs beyond the buffer are still
-   !! iterated (`tddft_window`); the sector the probe reaches descends into the
-   !! window in the first few, so this is a safety bound, not a typical count.
    real(dp), parameter :: DROP_REL = 1.0e-6_dp
    !! A correction whose norm falls below this fraction of its norm before
    !! orthogonalisation lies inside the subspace and is dropped.
@@ -254,6 +250,17 @@ module trc_tddft
       !! subspace holds p and m), and capped at the dimension of the problem.
       integer :: max_iteration = 50
       !! Most Davidson iterations (matvec passes).
+      integer :: missed_root_iterations = 24
+      !! Iterations after the probe in which Ritz pairs beyond the buffer are still
+      !! iterated (`tddft_window`, module header MISSED ROOTS); the sector the probe
+      !! reaches descends into the window in the first few, so this is a safety
+      !! bound, not a typical count. 0 iterates no candidate after the probe: the
+      !! candidates are then reported open (`window_open`, `nwindow_open` and the
+      !! warning), so the run stays honest. A larger value trades matvecs against
+      !! the missed-root guarantee. Measured on 40 waters, def2-SVP Cartesian, PBE0,
+      !! TDA, 5 roots, conv_tol 1e-5 (V100): 40 iterations and 384 s at 24 against
+      !! 16 and 193 s at 0, the same five roots to 1e-8 Eh, candidates left open at
+      !! both. A negative value is refused.
       integer :: nguess = 0
       !! Unit-vector guesses; 0 takes max(2*nroots, nroots + 4), capped at the
       !! dimension and extended over a tie at the cut. A probe with the
@@ -418,6 +425,8 @@ contains
          msg = "trc_tddft: only singlet excitations are implemented (triplets are refused)"
       else if (opts%nroots < 1) then
          msg = "trc_tddft: nroots must be at least 1"
+      else if (opts%missed_root_iterations < 0) then
+         msg = "trc_tddft: missed_root_iterations must be zero or more"
       else if (.not. present(func)) then
          msg = ""
       else if (len_trim(func%missing) > 0) then
@@ -887,7 +896,7 @@ contains
       !! them open anyway. So this check does not speak for such pairs: a root that only
       !! one of them could reach is outside what `window_open` reports (header,
       !! WHAT THE CHECK DOES NOT COVER).
-      !! With `track` (after the probe, for at most XBUDGET iterations) the
+      !! With `track` (after the probe, for at most `missed_root_iterations` iterations) the
       !! candidates are iterated, the lowest first, until sp%nkcap - sp%nt of
       !! them are taken. ONE COUNT per candidate, so a candidate at index 25
       !! costs one slot, not 25 (win%act marks the kept indices,
@@ -1150,7 +1159,7 @@ contains
          end do
          if (all(ieee_is_finite(rnorm(1:nkc)))) then
             if (probed) xiter = xiter + 1
-            call tddft_window(sp, nr, om, rnorm, nkc, probed .and. xiter <= XBUDGET, buffer_threshold, win)
+            call tddft_window(sp, nr, om, rnorm, nkc, probed .and. xiter <= opts%missed_root_iterations, buffer_threshold, win)
          else
             win%act(1:nkc) = .true.
             win%nact = nt
@@ -1426,7 +1435,7 @@ contains
          end do
          if (all(ieee_is_finite(rnorm(1:nkc)))) then
             if (probed) xiter = xiter + 1
-            call tddft_window(sp, nr, wsub, rnorm, nkc, probed .and. xiter <= XBUDGET, buffer_threshold, win)
+            call tddft_window(sp, nr, wsub, rnorm, nkc, probed .and. xiter <= opts%missed_root_iterations, buffer_threshold, win)
          else
             win%act(1:nkc) = .true.
             win%nact = nt

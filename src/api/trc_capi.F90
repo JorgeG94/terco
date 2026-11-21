@@ -290,7 +290,7 @@ module trc_capi
              trc_geometry
    public :: trc_set_hessian_step, trc_hessian_step, trc_run_hessian, trc_hessian, trc_check_rimp2_gradient
    public :: trc_check_gradient_upfront
-   public :: trc_set_tddft, trc_set_tddft_convergence, trc_run_tddft, trc_check_tddft
+   public :: trc_set_tddft, trc_set_tddft_convergence, trc_set_tddft_missed_root_iterations, trc_run_tddft, trc_check_tddft
    public :: trc_tddft_nroots, trc_tddft_energies, trc_tddft_character, trc_tddft_energy, trc_tddft_target_root
    !! Fortran only (no bind(c), not in terco.h): the geometry optimiser's
    !! own up-front gradient check.
@@ -372,7 +372,9 @@ module trc_capi
    !! trc_timing's list capacity. A run that would list more is an error
    !! (TRC_ERR_UNSUPPORTED), never a silently shortened list.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 30
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 31
+   !! 1.31: trc_set_tddft_missed_root_iterations, a new entry point (the budget of
+   !! the TDDFT solver's candidate Ritz pairs after its probe). Additive.
    !! 1.30: closed-shell TDDFT/TDHF excitation energies and the excited-state
    !! gradient of one root: trc_set_tddft, trc_set_tddft_convergence,
    !! trc_run_tddft, trc_check_tddft, trc_tddft_nroots, trc_tddft_energies,
@@ -6174,6 +6176,33 @@ contains
       cx%grad_ok = .false.
       status = TRC_OK
    end function trc_set_tddft_convergence
+
+   function trc_set_tddft_missed_root_iterations(handle, n) result(status) &
+      bind(c, name="trc_set_tddft_missed_root_iterations")
+      !! The most Davidson iterations after the probe in which Ritz pairs beyond the
+      !! buffer are still iterated, the guard against a missed root (default 24, which
+      !! is what trc_set_tddft_convergence leaves alone). 0 iterates none: the pairs
+      !! that might hide a root are then reported open (the window check and its
+      !! warning) and the run needs fewer matvecs; a larger value trades matvecs
+      !! against the missed-root guarantee. A negative `n` is TRC_ERR_BADARG.
+      !! Drops a stored TDDFT result. (ABI 1.31.)
+      type(c_ptr), value :: handle
+      integer(c_int), value :: n
+      integer(c_int) :: status
+      type(context_box), pointer :: cx
+      status = TRC_ERR_NULL
+      if (.not. c_associated(handle)) return
+      call c_f_pointer(handle, cx)
+      if (n < 0) then
+         cx%message = "trc_set_tddft_missed_root_iterations: the iteration count is negative"
+         status = TRC_ERR_BADARG
+         return
+      end if
+      cx%td_opts%missed_root_iterations = int(n)
+      cx%tddft_ok = .false.
+      cx%grad_ok = .false.
+      status = TRC_OK
+   end function trc_set_tddft_missed_root_iterations
 
    logical function tddft_grid_reusable(cx) result(reusable)
       !! The SCF's own grid and partition, kept in `cx%kgrid`, still match the

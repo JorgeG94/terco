@@ -73,6 +73,11 @@ contains
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       if (trim(mode_arg) == "fd") then
          testsuite = [new_unittest("grid response is the default and is the exact derivative", test_grid_response)]
+      else if (trim(mode_arg) == "missed_root") then
+         testsuite = [ &
+                     new_unittest("missed-root budget: TDA of formaldehyde/6-31+G HF", test_missed_root_tda), &
+                     new_unittest("missed-root budget: RPA of formaldehyde/6-31+G HF", test_missed_root_rpa) &
+                     ]
       else if (trim(mode_arg) == "grad_tda") then
          testsuite = [new_unittest("TDA gradient of the first and last root vs pyscf (Pulay only)", test_gradient_tda)]
       else if (trim(mode_arg) == "grad_rpa") then
@@ -86,17 +91,22 @@ contains
       end if
    end subroutine collect_check_tddft_api
 
-   subroutine fixture_build(fx, bas_json, functional, error)
-      !! water, the basis and one converged SCF at the settings of the pyscf references.
+   subroutine fixture_build(fx, bas_json, functional, error, xyz)
+      !! water (or the molecule of `xyz`), the basis and one converged SCF at the settings of the pyscf references.
       type(fixture_t), intent(out) :: fx
       character(len=*), intent(in) :: bas_json, functional
       type(error_type), allocatable, intent(out) :: error
+      character(len=*), intent(in), optional :: xyz
       type(error_t) :: err
       real(dp), allocatable :: at_r(:, :)
       integer :: dev
 
       dev = trc_bind_device(0)
-      call read_xyz("water.xyz", fx%natm, fx%zint, at_r)
+      if (present(xyz)) then
+         call read_xyz(xyz, fx%natm, fx%zint, at_r)
+      else
+         call read_xyz("water.xyz", fx%natm, fx%zint, at_r)
+      end if
       call trc_basis_from_json(bas_json, fx%natm, fx%zint, at_r, fx%bas, err, force_cart=.true.)
       call check(error, .not. err%has_error(), err%get_message())
       if (allocated(error)) return
@@ -183,6 +193,74 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call compare_energies(error, "rpa_water_6-31gs_pbe.ref", .false., .true.)
    end subroutine test_energies_rpa
+
+   subroutine budget_solve(fx, tda, budget, res)
+      !! One solve of the fixture's reference, three roots, with `missed_root_iterations = budget` (a negative
+      !! budget leaves the option at its default).
+      type(fixture_t), intent(inout) :: fx
+      logical, intent(in) :: tda
+      integer, intent(in) :: budget
+      type(trc_tddft_run_result_t), intent(out) :: res
+      type(trc_tddft_run_options_t) :: opts
+      opts%nroots = 3
+      opts%tda = tda
+      opts%conv_tol = 1.0e-7_dp
+      if (budget >= 0) opts%missed_root_iterations = budget
+      call trc_tddft_run_solve(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, opts, res)
+   end subroutine budget_solve
+
+   subroutine missed_root_budget(error, tda)
+      !! The budget of the candidate Ritz pairs after the probe, on formaldehyde/6-31+G Hartree-Fock, where the
+      !! third root (0.348172 Eh) sits in a symmetry sector only that chase reaches (trc_tddft's MISSED ROOTS):
+      !! the default of 24 is the explicit 24 (same iterations and matvecs, same roots); a budget of 0 uses fewer
+      !! matvecs, here loses that root, and says so: `window_open` is set (and the default's is not).
+      type(error_type), allocatable, intent(out) :: error
+      logical, intent(in) :: tda
+      type(fixture_t) :: fx
+      type(trc_tddft_run_result_t) :: dflt, b24, b0
+      character(len=3) :: what
+
+      what = merge("TDA", "RPA", tda)
+      call fixture_build(fx, "../basis_sets/6-31+g.json", "", error, xyz="formaldehyde.xyz")
+      if (allocated(error)) then
+         call fixture_release(fx)
+         return
+      end if
+      call budget_solve(fx, tda, -1, dflt)
+      call budget_solve(fx, tda, 24, b24)
+      call budget_solve(fx, tda, 0, b0)
+      call check(error, dflt%converged .and. b24%converged .and. b0%converged, what//": a solve did not converge")
+      if (allocated(error)) then
+         call fixture_release(fx)
+         return
+      end if
+      call global_logger%info("tddft api "//what//" missed roots: default "//to_string(dflt%td%iterations)//" iterations "// &
+                              to_string(dflt%td%nmatvec)//" matvecs open "//to_string(dflt%td%nwindow_open)//"; budget 0 "// &
+                              to_string(b0%td%iterations)//" iterations "//to_string(b0%td%nmatvec)//" matvecs open "// &
+                              to_string(b0%td%nwindow_open)//"; roots "//to_string(dflt%omega(3), "f10.6")//" / "// &
+                              to_string(b0%omega(3), "f10.6"))
+      ! Same solver path twice: the counts agree, the roots to the device's run-to-run noise (atomics, ~1e-12).
+      call check(error, dflt%td%iterations == b24%td%iterations .and. dflt%td%nmatvec == b24%td%nmatvec .and. &
+                 maxval(abs(dflt%omega - b24%omega)) < 1.0e-9_dp, what//": the default is not a budget of 24")
+      if (.not. allocated(error)) call check(error, b0%td%nmatvec < dflt%td%nmatvec, what//": budget 0 used "// &
+                                             to_string(b0%td%nmatvec)//" matvecs, the default "//to_string(dflt%td%nmatvec))
+      if (.not. allocated(error)) call check(error, .not. dflt%td%window_open, what//": the default left candidates open")
+      if (.not. allocated(error)) call check(error, maxval(abs(b0%omega - dflt%omega)) > 1.0e-3_dp, what// &
+                                             ": the chase changed no root here, so this case does not exercise the budget")
+      if (.not. allocated(error)) call check(error, b0%td%window_open .and. b0%td%nwindow_open > 0, what// &
+                                             ": budget 0 lost a root and did not report an open window")
+      call fixture_release(fx)
+   end subroutine missed_root_budget
+
+   subroutine test_missed_root_tda(error)
+      type(error_type), allocatable, intent(out) :: error
+      call missed_root_budget(error, .true.)
+   end subroutine test_missed_root_tda
+
+   subroutine test_missed_root_rpa(error)
+      type(error_type), allocatable, intent(out) :: error
+      call missed_root_budget(error, .false.)
+   end subroutine test_missed_root_rpa
 
    subroutine gradient_vs_ref(error, ref_name, tda)
       !! The first and the last root's Pulay-only gradient against the pyscf reference (3 roots).
@@ -396,6 +474,13 @@ contains
       sopts%functional = "pbe"
       call check(error, len_trim(trc_tddft_run_refusal(sopts, opts)) == 0, "a plain GGA is accepted")
       if (allocated(error)) return
+      opts%missed_root_iterations = 0
+      call check(error, len_trim(trc_tddft_run_refusal(sopts, opts)) == 0, "a missed-root budget of zero is accepted")
+      if (allocated(error)) return
+      opts%missed_root_iterations = -1
+      call expect_refusal(error, opts, sopts, "missed_root_iterations")
+      if (allocated(error)) return
+      opts%missed_root_iterations = 24
       opts%singlet = .false.
       call expect_refusal(error, opts, sopts, "triplet")
       if (allocated(error)) return

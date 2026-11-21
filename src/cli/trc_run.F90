@@ -140,7 +140,7 @@ module trc_run
       integer :: tddft_nroots = 3, tddft_root = 1   !! --tddft-roots; --tddft-root, 1-based, the state --grad/--opt follow
       logical :: tddft_grid_response = .true.   !! Kohn-Sham: differentiate the grid too (off with --no-tddft-grid-response)
       real(dp) :: tddft_tol = 0.0_dp, tddft_cpks_tol = 0.0_dp
-      integer :: tddft_iterations = 0, tddft_sweep = 0
+      integer :: tddft_iterations = 0, tddft_sweep = 0, tddft_missed_root = -1
       real(dp) :: tddft_gap_warn = 0.005_dp   !! --opt warns when the followed root is this close (Eh) to another; 0 never
       logical :: tddft_strict = .false.        !! --tddft-strict-root: --opt fails when the followed root's dominant pair changes
       logical :: tddft_ran = .false.

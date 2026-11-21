@@ -127,6 +127,7 @@ terco water.xyz -b def2-svp -f wb97x-v --grad
 | `--tddft-approx` | `tda` (the default; CIS for Hartree-Fock) or `rpa` (TDHF / Casida) |
 | `--tddft-spin` | `singlet`; `triplet` is refused |
 | `--tddft-tol`, `--tddft-iterations` | Davidson residual norm (1e-8) and iteration limit (50) |
+| `--tddft-missed-root-iterations` | iterations after the probe that still iterate candidate Ritz pairs, the missed-root guard (24; 0 iterates none and reports them open) |
 | `--tddft-cpks-tol` | residual norm of the gradient's Z-vector (1e-9) |
 | `--tddft-sweep` | roots sharing a pass over the integral derivatives (a tuning knob) |
 | `--tddft-grid-response`, `--no-tddft-grid-response` | Kohn-Sham gradient with (the default) or without the grid response |
