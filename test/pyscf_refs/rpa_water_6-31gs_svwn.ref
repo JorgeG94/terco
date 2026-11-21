@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["rpa"] -> gen_rpa
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 53f62072f81fbfa746d6bd44f19d42ae37c27b892edf1eae2634d630a0c5d7de
+# hash: 6973ec97587f2bb907aab65b7ee24f8ab9fe88cd66bd7d2e50c971c4563010fc
 # files: test/check_tddft_rpa.F90 test/basis_sets/6-31gs.json test/water.xyz
 E_SCF -7.58443847495179568e+01
 OMEGA 4
