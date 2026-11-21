@@ -135,6 +135,11 @@ terco water.xyz -b def2-svp -f wb97x-v --grad
 | `--tddft-gap-warn` | `--opt` warning distance to another root, Eh (0.005; 0 switches it off) |
 | `--tddft-strict-root` | `--opt` stops with an error when the followed root's dominant orbital pair changes, instead of warning |
 
+If the log warns that the missed-root check left candidates not converged and
+the result matters, rerun with `--tddft-missed-root-iterations 24`: it costs
+about twice the wall time and recovers a root the starting guesses do not reach.
+The input reference explains when this happens and what the warning means.
+
 `--grad` with `--tddft` is the gradient of E_SCF + omega of the target root, and
 `--opt` optimises that state's geometry. The grid response is on by default: the
 exact derivative of terco's energy, whose grid moves with the nuclei. Without it

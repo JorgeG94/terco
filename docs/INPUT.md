@@ -245,6 +245,33 @@ missed-root check left open (0 when none; open candidates do not by themselves
 mean a root is missing, see `missed_root_iterations`). `--grad` is then the gradient of that energy
 (`"gradient of"` says so) and `--opt` optimises it.
 
+**When a root may be missing.** A Davidson solve follows the lowest roots it
+can reach from its starting guesses, the lowest orbital-energy differences. A
+state of a symmetry none of those guesses has can sit below the highest root
+returned and never be found, with every returned root converged. It shows up
+in small, symmetric molecules with diffuse functions.
+
+terco checks for this once the roots have converged and, when the check leaves
+candidates unresolved, says so: a warning in the log, `"candidates open"` in the
+JSON summary and `trc_tddft_window_open` in the C interface. An open candidate
+is not a missing root: of the 52 cases of the basis-set tests, about ten leave
+candidates open at the default and one of them has a wrong root.
+
+If the warning appears and the result matters (a spectrum to compare with
+experiment, a state to optimise), rerun with `missed_root_iterations = 24`
+(`--tddft-missed-root-iterations 24`): the solver then iterates the candidates
+until they are resolved or the count runs out. It costs extra matvecs, about
+twice the wall time where it was measured (40 waters, PBE0, def2-SVP, one V100:
+233 s against 108 s, the same five roots). Asking for one or two more roots
+than needed is a cheaper first check, but it is not a guarantee.
+
+The case in the tests is formaldehyde, 6-31+G, Hartree-Fock, three roots. A
+dense diagonalisation gives 0.157313, 0.328352 and 0.348172 Eh for the TDA. At
+the default terco returns 0.353367 for the third with the warning; with 24 it
+returns 0.348172. For comparison, the Davidson solver of PySCF 2.14.0 returns
+0.353367 there and reports it converged, and GPU4PySCF 1.8.1 returns 0.348172
+for the TDA but misses the third RPA root (0.338715).
+
 A closed-shell reference only: refused, before the SCF and with the reason,
 are triplets, `[molecule] unpaired`, meta-GGA, range-separated and double-hybrid
 functionals and VV10, a spherical basis (`[basis] cartesian = true` makes
