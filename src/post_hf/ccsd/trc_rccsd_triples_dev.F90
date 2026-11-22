@@ -72,6 +72,7 @@ module trc_rccsd_triples_dev
    use pic_timer, only: timer_type
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
+   use trc_si, only: si_string
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_device_memory, only: device_memory_fits
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
@@ -627,10 +628,12 @@ contains
       write (line, "(a,f9.3,a,f9.3,a,f9.3,a)") "    seconds: particle gemms ", ts%seconds_particle, "  hole gemms ", &
          ts%seconds_hole, "  energy kernels ", ts%seconds_energy, ""
       call global_logger%info(trim(line))
-      write (line, "(a,es10.3,a,f9.1,a,es10.3,a,f9.1,a,f9.1,a)") "    flops: particle ", ts%flops_particle, " (", &
-         1.0e-9_dp*ts%flops_particle/max(ts%seconds_particle, tiny(1.0_dp)), " GFLOP/s)  hole ", ts%flops_hole, " (", &
-         1.0e-9_dp*ts%flops_hole/max(ts%seconds_hole, tiny(1.0_dp)), " GFLOP/s)  both ", &
-         1.0e-9_dp*(ts%flops_particle + ts%flops_hole)/max(gemm_seconds, tiny(1.0_dp)), " GFLOP/s"
+      ! SI-prefixed (trc_si): a (T) run is tens of TFLOP/s, which the fixed GFLOP/s of this line read as 35000.0.
+      line = "    flops: particle "//si_string(ts%flops_particle, "FLOP")//" (" &
+             //si_string(ts%flops_particle/max(ts%seconds_particle, tiny(1.0_dp)), "FLOP/s")//")  hole " &
+             //si_string(ts%flops_hole, "FLOP")//" (" &
+             //si_string(ts%flops_hole/max(ts%seconds_hole, tiny(1.0_dp)), "FLOP/s")//")  both " &
+             //si_string((ts%flops_particle + ts%flops_hole)/max(gemm_seconds, tiny(1.0_dp)), "FLOP/s")
       call global_logger%info(trim(line))
    end subroutine log_summary
 

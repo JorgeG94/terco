@@ -157,6 +157,7 @@ module trc_rccsd_triples_ijk
    use pic_timer, only: timer_type
    use pic_logger, only: global_logger
    use pic_strings, only: to_string
+   use trc_si, only: si_string
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_device_memory, only: device_memory_free_bytes, device_memory_fits
    use trc_linalg, only: trc_linalg_t
@@ -1016,10 +1017,12 @@ contains
          ts%seconds_gather, " (", ts%ngathers, " slices built: ", ts%ngemm_builds, " by GEMM, ", ts%ncopy_builds, &
          " copies)"
       call global_logger%info(trim(line))
-      write (line, "(a,es10.3,a,f9.1,a,es10.3,a,f9.1,a,f9.1,a)") "    flops: wide ", ts%flops_wide, " (", &
-         1.0e-9_dp*ts%flops_wide/max(ts%seconds_wide, tiny(1.0_dp)), " GFLOP/s)  per-array ", ts%flops_per, " (", &
-         1.0e-9_dp*ts%flops_per/max(ts%seconds_per, tiny(1.0_dp)), " GFLOP/s)  both ", &
-         1.0e-9_dp*(ts%flops_wide + ts%flops_per)/max(ts%seconds_wide + ts%seconds_per, tiny(1.0_dp)), " GFLOP/s"
+      ! SI-prefixed (trc_si): the wide gemms run at tens of TFLOP/s, which fixed GFLOP/s read as 35000.0.
+      line = "    flops: wide "//si_string(ts%flops_wide, "FLOP")//" (" &
+             //si_string(ts%flops_wide/max(ts%seconds_wide, tiny(1.0_dp)), "FLOP/s")//")  per-array " &
+             //si_string(ts%flops_per, "FLOP")//" (" &
+             //si_string(ts%flops_per/max(ts%seconds_per, tiny(1.0_dp)), "FLOP/s")//")  both " &
+             //si_string((ts%flops_wide + ts%flops_per)/max(ts%seconds_wide + ts%seconds_per, tiny(1.0_dp)), "FLOP/s")
       call global_logger%info(trim(line))
    end subroutine log_summary
 
