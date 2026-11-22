@@ -10,7 +10,10 @@ module check_lmax_refusal_suite
    use pic_types, only: dp
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_tables, only: LMAX
-   use trc_api, only: trc_basis_t
+   use trc_api, only: trc_basis_t, trc_pairlist_t
+   use trc_df_kernels, only: DF_LMAX
+   use trc_error, only: error_t
+   use trc_sap, only: trc_sap_build
    use trc_eri, only: eri_lmax_refusal
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_arrays, &
                                trc_run_scf, trc_message, TRC_OK, TRC_ERR_UNSUPPORTED
@@ -25,7 +28,8 @@ contains
       testsuite = [ &
                   new_unittest("a basis within the ceiling passes", test_within), &
                   new_unittest("one shell above it is named", test_above), &
-                  new_unittest("trc_run_scf refuses it with a status", test_capi) &
+                  new_unittest("trc_run_scf refuses it with a status", test_capi), &
+                  new_unittest("the SAP guess names the density-fitting ceiling", test_sap) &
                   ]
    end subroutine collect_lmax_refusal
 
@@ -63,6 +67,27 @@ contains
       write (want, "(a,i0,a)") "(l = ", LMAX + 1, ")"
       call check(error, index(msg, trim(want)) > 0, "the refusal names the shell's l: '"//msg//"'")
    end subroutine test_above
+
+   subroutine test_sap(error)
+      !! The SAP guess forms (mu nu|rho_A) with the density-fitting kernels, so
+      !! a basis one shell above DF_LMAX is refused with a message before any
+      !! trc_df_3c call (which would `error stop`); true at any ceiling.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: b
+      type(trc_pairlist_t) :: pl
+      type(error_t) :: err
+      real(dp), allocatable :: tmat(:, :), vmat(:, :), hsap(:, :)
+      call two_shell_basis(b, DF_LMAX + 1)
+      allocate (tmat(b%nao, b%nao), vmat(b%nao, b%nao), hsap(b%nao, b%nao))
+      tmat = 0.0_dp
+      vmat = 0.0_dp
+      call trc_sap_build(b, pl, tmat, vmat, hsap, err)
+      call b%release()
+      call check(error, err%has_error(), "the SAP guess must refuse a basis above DF_LMAX")
+      if (allocated(error)) return
+      call check(error, index(err%get_message(), "density-fitting") > 0, &
+                 "the refusal names the density-fitting kernels: '"//err%get_message()//"'")
+   end subroutine test_sap
 
    subroutine test_capi(error)
       !! The C API path a host (and the terco CLI) takes: a status and a

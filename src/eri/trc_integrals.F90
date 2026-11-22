@@ -19,6 +19,7 @@ module trc_integrals
    !! drivers here read the Boys table only, which trc_basis_t's `build` pushes.
    !!
    use pic_types, only: dp
+   use pic_strings, only: to_string
    use trc_tables, only: LMAX
    use trc_rys_select, only: rys_select_tables_init
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
@@ -33,7 +34,7 @@ module trc_integrals
    public :: trc_1e, trc_1e_gradient, trc_multipoles, trc_df_2c, trc_df_3c
    public :: trc_pcm_potential, trc_pcm_fock, PCM_LMAX
    public :: trc_pcm_gradient, PCM_GRAD_LMAX
-   public :: TRC_NMULT
+   public :: TRC_NMULT, MULT_LMAX, integrals_multipole_lmax_refusal
 
    !
    ! Angular-momentum limits, taken FROM THE GENERATORS rather than restated.
@@ -110,6 +111,24 @@ contains
                        b%sh_e, b%sh_c, b%sh_r, p%npair, p%p_i, p%p_j, orig, mmat)
    end subroutine trc_multipoles
 
+
+   function integrals_multipole_lmax_refusal(b) result(msg)
+      !! "" when this build's multipole kernels cover every shell of `b`;
+      !! otherwise why not. The static polarizability (CPHF, CPKS) and TDDFT
+      !! read the dipole integrals, so they ask this before they start rather
+      !! than reaching `trc_multipoles`' `error stop`.
+      type(trc_basis_t), intent(in) :: b
+      character(len=:), allocatable :: msg
+      character(len=*), parameter :: LNAME = "spdfghik"
+      integer :: lb
+      msg = ""
+      if (b%nshell == 0) return
+      lb = maxval(b%sh_l)
+      if (lb <= MULT_LMAX) return
+      msg = "the basis has "//LNAME(lb + 1:lb + 1)//" functions (l = "//to_string(lb)//"), but the multipole "// &
+            "(dipole) integrals the response needs stop at "//LNAME(MULT_LMAX + 1:MULT_LMAX + 1)// &
+            " (l = "//to_string(MULT_LMAX)//")"
+   end function integrals_multipole_lmax_refusal
 
    subroutine trc_1e(b, p, smat, tmat, vmat)
       !! Overlap, kinetic and nuclear attraction, all three at once.

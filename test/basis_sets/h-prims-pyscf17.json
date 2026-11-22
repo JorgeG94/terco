@@ -1,0 +1,695 @@
+{
+    "molssi_bse_schema": {
+        "schema_type": "complete",
+        "schema_version": "0.1"
+    },
+    "revision_description": "cut-down uncontracted set with one h shell, exponents from pyscf 2.14.0 cc-pv5z, for H,C,N,O (H has no h shell in cc-pV5Z)",
+    "revision_date": "2026-11-18",
+    "elements": {
+        "1": {
+            "electron_shells": [
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "4.02000000000000000E+02"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "1.28299999999999992E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "7.27899999999999936E-02"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        1
+                    ],
+                    "exponents": [
+                        "4.51600000000000001E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        1
+                    ],
+                    "exponents": [
+                        "2.45999999999999996E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        2
+                    ],
+                    "exponents": [
+                        "2.95000000000000018E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        2
+                    ],
+                    "exponents": [
+                        "4.92999999999999994E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        3
+                    ],
+                    "exponents": [
+                        "2.50599999999999978E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        3
+                    ],
+                    "exponents": [
+                        "8.75000000000000000E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        4
+                    ],
+                    "exponents": [
+                        "2.35800000000000010E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                }
+            ],
+            "references": [
+                {
+                    "reference_description": "cut-down uncontracted set with one h shell, exponents from pyscf 2.14.0 cc-pv5z, for H,C,N,O (H has no h shell in cc-pV5Z)",
+                    "reference_keys": []
+                }
+            ]
+        },
+        "6": {
+            "electron_shells": [
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "9.67700000000000000E+04"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "4.38999999999999986E+01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "1.01900000000000004E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        1
+                    ],
+                    "exponents": [
+                        "1.01799999999999997E+02"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        1
+                    ],
+                    "exponents": [
+                        "7.60600000000000026E-02"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        2
+                    ],
+                    "exponents": [
+                        "3.13399999999999990E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        2
+                    ],
+                    "exponents": [
+                        "1.91000000000000003E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        3
+                    ],
+                    "exponents": [
+                        "2.00599999999999978E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        3
+                    ],
+                    "exponents": [
+                        "3.49999999999999978E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        4
+                    ],
+                    "exponents": [
+                        "6.78000000000000047E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        5
+                    ],
+                    "exponents": [
+                        "1.25899999999999990E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                }
+            ],
+            "references": [
+                {
+                    "reference_description": "cut-down uncontracted set with one h shell, exponents from pyscf 2.14.0 cc-pv5z, for H,C,N,O (H has no h shell in cc-pV5Z)",
+                    "reference_keys": []
+                }
+            ]
+        },
+        "7": {
+            "electron_shells": [
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "1.29200000000000000E+05"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "5.85000000000000000E+01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "1.39699999999999991E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        1
+                    ],
+                    "exponents": [
+                        "1.47000000000000000E+02"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        1
+                    ],
+                    "exponents": [
+                        "1.06700000000000003E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        2
+                    ],
+                    "exponents": [
+                        "4.64700000000000024E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        2
+                    ],
+                    "exponents": [
+                        "2.76000000000000023E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        3
+                    ],
+                    "exponents": [
+                        "2.94200000000000017E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        3
+                    ],
+                    "exponents": [
+                        "4.92999999999999994E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        4
+                    ],
+                    "exponents": [
+                        "9.41999999999999948E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        5
+                    ],
+                    "exponents": [
+                        "1.76800000000000002E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                }
+            ],
+            "references": [
+                {
+                    "reference_description": "cut-down uncontracted set with one h shell, exponents from pyscf 2.14.0 cc-pv5z, for H,C,N,O (H has no h shell in cc-pV5Z)",
+                    "reference_keys": []
+                }
+            ]
+        },
+        "8": {
+            "electron_shells": [
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "1.64200000000000000E+05"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "7.39300000000000068E+01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "1.82900000000000007E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        1
+                    ],
+                    "exponents": [
+                        "1.95500000000000000E+02"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        1
+                    ],
+                    "exponents": [
+                        "1.28500000000000003E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        2
+                    ],
+                    "exponents": [
+                        "5.87899999999999956E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        2
+                    ],
+                    "exponents": [
+                        "3.54999999999999982E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        3
+                    ],
+                    "exponents": [
+                        "4.01600000000000001E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        3
+                    ],
+                    "exponents": [
+                        "6.00999999999999979E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        4
+                    ],
+                    "exponents": [
+                        "1.18900000000000006E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        5
+                    ],
+                    "exponents": [
+                        "2.31899999999999995E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                }
+            ],
+            "references": [
+                {
+                    "reference_description": "cut-down uncontracted set with one h shell, exponents from pyscf 2.14.0 cc-pv5z, for H,C,N,O (H has no h shell in cc-pV5Z)",
+                    "reference_keys": []
+                }
+            ]
+        }
+    }
+}

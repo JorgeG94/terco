@@ -44,10 +44,10 @@ blocks instead of calling anything. It looks like a mistake and is the opposite.
 | `gen_rys_grad.py` | one Rys two-electron gradient module per class (`trc_pc_rysg{tag}.F90`: screen and compact passes), and per class and column width one pair-table module (`trc_pc_rysgp{tag}w{nc}.F90`, written beside it: the item routine and the `do concurrent` driver of `eri%gradient_pairs`; `PAIRS_RT_PLAN` gives a class its pair kernels in the run-time chunked form while its class file keeps its own, because the literal form of six classes took over 500 s to compile at some width). `--pair-widths CLASSES` prints which widths each class has, which CMake reads to name the files; `--pairs-cap` (CMake `TERCO_GRAD_PAIRS_CAP`) caps them per class, see below. `gen_rys_grad_dispatch.py` writes `trc_rys_grad_kernels` with the block walk and the narrowest-width choice | the analytic gradient (`grad_bins`), `eri%gradient_pairs` |
 | `gen_md_j.py` | the McMurchie–Davidson J engine: ket, Hermite (per (la+lb, lc+ld), R batched and sieved, `md/rtree.py`) and bra stages | `trc_mdj`, J for every class when MD J is on (always for a g basis) |
 | `gen_md_k.py` | McMurchie–Davidson exchange per class: R per primitive quartet, then S = PQ Hk^T and the integral rows fused, PQ never stored; E matrices per shell-pair type | `trc_mdg`, the g classes above `TERCO_RYS_G_LTOT` |
-| `gen_1e.py` | overlap, kinetic, nuclear attraction; `--multipole` for the Cartesian tensors; `--pcm` for the PCM smeared-charge surface integrals; `--deriv`/`--deriv-dir` for the one-electron gradient; `--pcm-grad`/`--pcm-grad-dir` for the PCM surface-integral gradient | `trc_1e`, `trc_multipoles`, `trc_pcm_potential`/`trc_pcm_fock`, `trc_1e_gradient`, `trc_pcm_gradient` |
+| `gen_1e.py` | overlap, kinetic, nuclear attraction (`--base-dir`, one module per class plus the `trc_1e_kernels` driver); `--multipole` for the Cartesian tensors; `--pcm` for the PCM smeared-charge surface integrals; `--deriv`/`--deriv-dir` for the one-electron gradient; `--pcm-grad`/`--pcm-grad-dir` for the PCM surface-integral gradient | `trc_1e`, `trc_multipoles`, `trc_pcm_potential`/`trc_pcm_fock`, `trc_1e_gradient`, `trc_pcm_gradient` |
 | `gen_df.py` | two- and three-centre Coulomb, one module per class (`--split`, the only mode) | `trc_df_2c`, `trc_df_3c` |
 | `gen_df_grad.py` | the two- and three-centre Coulomb nuclear derivatives, contracted with a coefficient block, Rys for every class, one module per class | the `--df` gradient (`trc_scf_grad_df`) |
-| `gen_schwarz.py` | the Rys-quadrature diagonal Schwarz kernel, one module, no `TERCO_LMAX` dependence (`select case` over the 9 inlined Rys root counts, runtime loops otherwise) | `trc_screen`'s `schwarz_bounds_rys` |
+| `gen_schwarz.py` | the Rys-quadrature diagonal Schwarz kernel, one module, no `TERCO_LMAX` dependence (`select case` over the 11 inlined Rys root counts, runtime loops otherwise; it reaches h pairs) | `trc_screen`'s `schwarz_bounds_rys` |
 
 `gen_df.py` reuses `gen_vrr.py`'s four-centre recurrence with `eta = gamma`,
 `Q = C` and `K_cd = 1` — a three-centre integral is a four-centre one with a
@@ -98,6 +98,7 @@ Measured, not modelled (V100, w20 water cluster in cc-pVQZ unless noted):
 | seven heavy d (`FOCK_RYS_DEFAULT`), every f | chunked Rys | beat HGP on all six test systems |
 | g, la+lb+lc+ld <= 9 | chunked Rys | MD lost 2.8–3.8x to GPU4PySCF's Rys there; best chunk shape per class 2.62 s against 6.90 s in MD |
 | g, total L >= 10 | MD exchange (`trc_mdg`) | MD won 19 of the 25 classes at L 10–12 against every Rys shape |
+| every class with an h shell (`TERCO_LMAX=5`) | MD exchange (`trc_mdg`) | not raced: no h Rys class has a chunk plan. Checked against pyscf on the host and on a V100 (`check_h_vs_pyscf`). The 22 low-L h classes (total L <= 9) are about 10% of an h Fock build (water hexamer, cc-pV5Z), so a Rys route for them can change the build by a few percent at most; it has not been raced |
 | J, all classes, when MD J is on (a pure functional, a g basis, or `eri_mdj_size_rule` in `trc_eri`: extended or diffuse systems) | MD J (`trc_mdj`) | 2.5x over HGP/Rys J at cc-pVTZ; gly50 cc-pVDZ RHF 14.6 -> 5.5 s/build (V100) |
 
 The crossover at total L 9 matches Palethorpe, Stocks and Barca's (H200,
@@ -214,9 +215,48 @@ Work outward from something that already exists rather than from the algebra.
 
 For the **four-centre** kernels, `TERCO_LMAX` is the switch, and the cost is
 `L⁴`. `TERCO_LMAX=4` builds g: HGP stops at d, Rys at f and the g classes up
-to total L 9, MD exchange takes the rest and MD J forms J. `BOYS_MMAX` in `trc_boys.F90` caps `la+lb+lc+ld` at 16, which already
-covers g (`(gg|gg)` needs 16), so the table is not what stops `TERCO_LMAX`
-past 2. The generated volume is the real obstacle, not the mathematics.
+to total L 9, MD exchange takes the rest and MD J forms J. `TERCO_LMAX=5`
+builds h (energies only): every class with an h shell is MD exchange plus MD
+J, because no h Rys class has a measured chunk plan and `gen_rys.py` refuses a
+class without one. The one place that decides it is CMake's
+`TERCO_RYS_H_CLASSES` (default empty): a canonical class tag listed there is
+built as a Rys kernel instead and leaves the MD set, so a measurement that
+finds Rys faster for some h class changes that list and the class's
+`FOCK_CHUNK_PLAN` entry, nothing else. Every h class goes through the MD
+engines. In a water hexamer in cc-pV5Z (1206 functions, nvfortran 26.9, V100)
+a full Fock build takes 23.9 s: MD exchange 14.2 s over 145 classes, of which
+the 111 classes with an h shell take 7.4 s (the 22 with total L <= 9: 2.3 s,
+about 10% of the build) and the g classes without h 6.9 s; no class exceeds
+0.41 s. On one small molecule (H2O2, cc-pV5Z, 292 functions, 0.8-1.0 s per
+build) the time is launch overhead, about 2 ms per class launch whatever its
+quartet count. The larger Boys table (order 20, per-thread scratch
+`f(0:20)`) costs nothing measurable at `TERCO_LMAX` <= 4 (nvfortran 26.9,
+`TERCO_LMAX=3`: water-40 cc-pVDZ, glycine-20 cc-pVTZ and water-40 def2-TZVP
+per-iteration Fock times equal to the run-to-run spread, energies equal to
+1e-11 Eh).
+
+What h needed beyond the generators accepting `--lmax 5`:
+
+| Table | Reach | Why |
+|---|---|---|
+| Boys (`gen_boys_table.py --mmax 20`) | orders 0..20 | `(hh|hh)` has L = 20. Regenerating reproduces every existing coefficient of orders 0..16 bit for bit; only the interval stride (`BOYS_MMAX + 1`) changes. `BOYS_TASYM` (the T from which the asymptotic form is exact to 1e-15) and the downward-recurrence reciprocals in `trc_boys_down.inc` were extended to 20 with the same mpmath criterion that produced the first 17 entries. |
+| Rys roots (`gen_rys_roots.py -n 10, 11`) | 1..11 roots | The diagonal Schwarz kernel of an `(hh|` pair needs nroots = la + lb + 1 = 11, and an h Rys class of total L 20 would. Their asymptotic switchovers are X = 90 and 95, found the way 5..9 were (the weight error at a fixed X grows about two orders of magnitude per root). Only the Schwarz kernel of an h build reads them. |
+| Diagonal Schwarz kernel (`gen_schwarz.py --lceil 5`) | l = 5 pairs | The committed kernel stops at g (`--lceil 4`, its own scratch sizes); an h build generates its own into the build tree. |
+| Cartesian components (`gen_cartcomp.py --ceil`) and the spherical transform (`gen_sph.py --lmax`) | l = 4 shipped; 5 in an h build | h for the orbital basis: no path reads a table at l + 1 (the collocation, the AO permutation, the transform and the symmetry blocks take the l of a basis shell), and density fitting refuses an h orbital basis, so there is no i shell. They are PARAMETER arrays read in device kernels, so the shipped tables stay at l = 4. The gamess order stops at l = 4 (`cartorder.py` transcribes it no further), so `TERCO_LMAX=5` requires `TERCO_CART_ORDER=lexicographic`. |
+
+The MD J Hermite stage of an h build is split: a module `trc_mdj_s<lp><lq>`
+with lp >= 9 only calls one launcher per R batch, and each batch is its own
+file `trc_mdj_s<lp><lq>b<n>` holding its `do concurrent` launcher and its
+same-module `pure`, `routine seq` item routine, so the batches compile in
+parallel (`SPLIT_LP`, `SPLIT_BATCHES` and `SPLIT_WEIGHT_EXP` in `gen_md_j.py`
+carry the nvfortran measurements and the batch counts). Everything below
+lp = 9, hence every LMAX<=4 module, is unchanged. The run-time effect of the
+higher batch count (more launches, more repeated Boys work) is not measured on
+a GPU.
+
+The multipole, PCM, one-electron-gradient and density-fitting kernels keep
+their own ceilings at `TERCO_LMAX=5` (g, f, g and g/g), so the generated
+volume that grows with L is the MD set and the one-electron kernels only.
 
 For **one-electron, multipole and density-fitting** kernels, momentum sits on
 two or three centres, so they grow as `L²` or `L³` and f or g is affordable.
@@ -267,6 +307,38 @@ executing a line of it.
 **If you write a new generator whose output depends on a compile-time
 constant, emit the same guard.** It converts an entire class of silent wrongness
 into a compile error, and it is four lines.
+
+### A transfer about the wrong centre cancels
+
+The nuclear-attraction class kernel (`emit_class` in `gen_1e.py`) builds the
+Obara-Saika table PER PRIMITIVE PAIR about the centre that keeps the transfer
+benign. Building about A and moving all of b across the bond with
+`C(b,p) AB^(b-p) [a+p|0]` cancels when A's primitive is diffuse and B's tight:
+the product centre sits almost on B, the sum is a large alternating one, and the
+loss grows like (exponent ratio x |AB|)^lb. Measured V relative error against
+a quad-precision copy of the same kernel, ratio 25, |AB| = 2.5: 1.6e-12 at
+l = 3 (f) and 1.8e-11 at l = 4 (g); with the choice below at most 2.2e-14.
+Which shell is first changes nothing for la = lb; the exponents decide. When
+beta > alpha the table is built about B and (a|b) is read from the mirrored
+transfer `C(a,p) BA^(a-p) [0|b+p]`, otherwise about A. Both branches are in the
+same `pure` item, with the same scratch. The per-primitive branch costs no
+measurable time: at w172 cc-pVTZ on a V100 the one-electron step takes 1.79 s
+with it and 1.78 s with the table always built about A (min of three, same
+build otherwise). Overlap and kinetic (a different
+recurrence) showed no such loss in the same scan (S 2e-14, T 1.2e-13 at ratio
+60). The one-electron GRADIENT kernels (`--deriv-dir`) transfer about A: their
+error, same scan, T+V total relative: d 7e-15 at ratio 25 and 1.2e-13 at 60, f
+4e-13 and 5e-12, against 1e-14 when the tight primitive is on A. The PCM and
+multipole kernels were not scanned. `check_one_e_cancellation` guards the base
+kernels. The two-electron diagonal Schwarz kernel has the same kind of loss,
+there fixed by building on the higher-l shell (`gen_schwarz.py`).
+
+The base driver (`trc_1e_kernels`) launches one kernel per class and wraps the
+whole call in one `enter data` / `exit data` pair for the three nao x nao
+matrices and the shell arrays. Without it each launch maps the matrices
+itself: at w172 cc-pVTZ every launch cost 0.47 s whatever the class held (a
+376-pair class cost the same as a 275000-pair one), and the one-electron step
+took 6.5 s against 1.8 s with the region.
 
 ### nvfortran treats a rank mismatch as a warning
 
@@ -420,7 +492,7 @@ Or call them directly, which is what CMake does:
 
 ```sh
 python3 scripts/gen_perclass.py --lmax 2 --split src/generated
-python3 scripts/gen_1e.py --lmax 2 -o src/generated/trc_1e_kernels.F90
+python3 scripts/gen_1e.py --lmax 2 --base-dir src/generated
 python3 scripts/gen_1e.py --lmax 2 --multipole src/generated/trc_mult_kernels.F90
 python3 scripts/gen_1e.py --lmax 2 --pcm src/generated/trc_pcm_kernels.F90
 python3 scripts/gen_1e.py --lmax 2 --pcm-grad-dir src/generated   # one module per class, what CMake calls
@@ -434,3 +506,43 @@ python3 scripts/gen_df_grad.py --lmax 2 --lmax-aux 4 --unroll-max-comp 135 --unr
 **After regenerating, run `ctest`.** The generators have no tests of their own;
 the emitted code is what is tested, and it is tested against libfint and pyscf
 rather than against a stored copy of its own output.
+
+### Two nvfortran compile limits and one miscompile at LMAX=5
+
+The two limits and the miscompile below are measured with nvfortran 26.5 (the miscompile also with 26.9) and the flags of a Release GPU build:
+`-stdpar=gpu -acc -gpu=cc70,mem:separate -Mpreprocess -traceback -DTRC_DEVICE
+-fast -O3 -fPIC` (`-gpu=cc70` is `TERCO_GPU_ARCH`).
+
+The MD exchange dispatch (`trc_mdg_kernels`) `use`s every class module, and a
+module-level `parameter` table is written into the `.mod` in full. With all
+145 classes the imported `.mod` volume was 131 MB and fort1 stopped with
+"too many ILIs to hash" (40 classes / 86 MB compile, 50 / 95 MB do not). A
+class with an h shell (`local_tables` in `gen_md_k.py`) declares its
+(p, q) -> r table and sign table inside the two item routines that read them,
+so the `.mod` stays small (k5333: 1.26 MB to 98 KB) and ptxas resource usage
+(registers, stack, spills, cmem) is unchanged. Classes up to g keep the text
+they had. The tables are now per-thread locals of the item; whether the device
+materialises them per call or places them in constant memory is unmeasured, so
+time one (hh|hh) Fock build against the module-parameter form.
+
+One-electron classes with an h shell (`split_class` in `gen_1e.py`) are emitted
+as the class routine plus, per transfer direction, a recurrence routine and a
+transfer routine and a driver routine over nuclei, all same-module `pure`
+`!$acc routine seq`. Arithmetic and accumulation order are unchanged (S, T, V
+are byte-identical on the host). It cuts the front end but not libnvvm, whose
+time follows the straight-line volume of the transfer: k55 1753 s to 1244 s,
+k53 205 s to 160 s. Flags (`-O1`, `-Mnoinline`, `-Mnovect`) change nothing.
+
+The third thing is a miscompile, not a compile limit: at `-O3` nvfortran 26.5
+(26.9 compiles the same routine correctly at `-fast -O3`) turns one generated MD J Hermite item (`[10|8]` batch 3 of 18) into a kernel
+that reads `Dt()` through a garbage address on a V100. `O2_ITEMS` in
+`gen_md_j.py` names the batch by its content and the generator emits
+`!pgi$r opt=2` before that one item routine, inside `#ifdef
+TRC_NVHPC_O3_ITEM_BUG`, which CMake defines for nvfortran older than 26.9
+(26.9 is clean at `-O3`; 26.5 is affected; earlier versions untested and
+treated as affected); the constant's comment has the
+measurements and what is unknown (the run-time cost of the `-O2` item, which
+also stays out of line, is not measured, and neither is whether the cure is
+the lower level or the de-inlining). The generator fails if the key stops
+matching exactly one batch. `.claude/context/gpu-pitfalls.md` has the smoke
+test that any h build and any nvfortran upgrade must run on a device.

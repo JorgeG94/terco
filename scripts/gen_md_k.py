@@ -8,7 +8,8 @@ ket list that can still pass the screen. For each window it calls the
 routines generated here, all `do concurrent`:
 
   R kernel     one thread per primitive quartet; stores the n_r values
-               R^(0)_r only (zero when screened)
+               R^(0)_r only (nothing for a screened quartet, rb(1) = -1
+               for a rejected primitive of a live one)
   kernel B     one thread per (pbar, quartet), pbar = (p, k_ab):
                S[pbar, cd] = sum_qbar (-1)^|q| R[p+q] Hk[cd, qbar], from a
                literal (p, q) -> r table; PQ is never stored
@@ -77,6 +78,33 @@ WIN_DECL = """      integer,  intent(in) :: ib0, ni, ka, jb0, nj, kb, nbas, nao,
       real(dp), intent(in) :: thresh, pcut, omega, jfac, kfac, wdiag, dsh(nbas, nbas)
       real(dp), intent(in) :: dmat(ndens, nao, nao)
       real(dp), intent(inout) :: jmat(ndens, nao, nao)"""
+
+
+#: WHERE A CLASS KEEPS ITS (p, q) -> r TABLE. A module-level parameter array
+#: is written into the module's .mod file in full, and so is read by every
+#: compile that `use`s the module: the dispatch of an h build imports all 145
+#: classes' tables at once (131 MB of .mod, k5555 alone 6.8 MB) and nvfortran
+#: 26.5 stops with "Internal compiler error. too many ILIs to hash" at about
+#: 90 MB of imported .mod (measured: 40 classes / 86 MB compile, 50 / 95 MB do
+#: not). The same table declared inside the item routine that reads it is not
+#: in the .mod (k5333: 1.26 MB to 98 KB; resource usage of the generated
+#: kernels, ptxas: registers, stack frame, spills and cmem, identical). Only
+#: classes with an h shell take it, so every LMAX <= 4 class keeps the text it
+#: was measured with.
+def local_tables(la, lb, lc, ld):
+    return max(la, lb, lc, ld) >= 5
+
+
+#: Most elements of one parameter-array constructor the generated Fortran
+#: uses; gfortran's own limit is 65535 (-fmax-array-constructor).
+RM_PART_MAX = 60000
+
+
+def rm_parts(np_, nq_):
+    """The (y0, y1) ranges of the ket Hermite index y (0-based, half open)
+    that the p + q table is cut into, each np*(y1 - y0) <= RM_PART_MAX."""
+    step = max(1, RM_PART_MAX // np_)
+    return [(y0, min(y0 + step, nq_)) for y0 in range(0, nq_, step)]
 
 
 def int_table(name, vals):
@@ -222,11 +250,27 @@ def r_item(tag, L):
     o.append("      spa = gl(ib0 + i); spc = gl(jb0 + j)")
     o.append("      si = sp_sh1(spa); sj = sp_sh2(spa); sk = sp_sh1(spc); sl = sp_sh2(spc)")
     o.append("      qcut = sp_q(spa)*sp_q(spc)")
-    o.append("      ! The HGP kernels' quartet and primitive screens; what fails is a zero block.")
+    o.append("      ! The HGP quartet and primitive screens. Nothing is written for a quartet")
+    o.append("      ! the shell-level test rejects: zero-filling its R block (364 doubles at")
+    o.append("      ! (4232), uncoalesced) cost 2.7 s of a 24 s Fock build on w6 cc-pV5Z (V100)")
+    o.append("      ! with 1.3% of the quartets alive, an all-screened launch being 0.3%")
+    o.append("      ! SM-busy. The B item (fused_items) repeats exactly this")
+    o.append("      ! test and returns before it reads rb or writes sm, and C repeats it")
+    o.append("      ! before reading sm. A primitive that fails inside a surviving shell quartet")
+    o.append("      ! gets one store, rb(1, t) = -1: R_000^(0) = pref*F_0 is never negative, so the")
+    o.append("      ! sign is a free flag (no extra slot, no change to the buffer sizes) and B")
+    o.append("      ! skips the primitive. A surviving primitive overwrites rb(1, t) with the")
+    o.append("      ! real value, so the reused, unzeroed window buffer is never read stale: B")
+    o.append("      ! reads rb(1, t) only for quartets that passed the shell test, and R writes")
+    o.append("      ! rb(1, t) on every such t, as marker or value.")
+    # A zero factor's blocks must not keep a quartet alive (gen_perclass.py's
+    # emit_screens): with jfac = 0 the J blocks would keep O(N^2) of them.
+    o.append("      dscr = 0.0_dp")
+    o.append("      if (jfac /= 0.0_dp) dscr = 4.0_dp*max(dsh(si, sj), dsh(sk, sl))")
+    o.append("      if (kfac /= 0.0_dp) dscr = max(dscr, dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl))")
+    o.append("      if (qcut <= thresh .or. qcut*dscr <= thresh) return")
     o.append("      if (k1 > sp_nk(spa) .or. k2 > sp_nk(spc)) then")
-    o.append(f"         do r = 1, {len(herm(L))}")
-    o.append("            rb(r, t) = 0.0_dp")
-    o.append("         end do")
+    o.append("         rb(1, t) = -1.0_dp")
     o.append("         return")
     o.append("      end if")
     o.append("      kp = sp_k0(spa) + k1")
@@ -234,16 +278,8 @@ def r_item(tag, L):
     o.append("      zeta = mp_z(kp); eta = mp_z(kq); zpe = zeta + eta")
     o.append("      pref = TWO_PI_2_5/(zeta*eta*sqrt(zpe))")
     o.append("      bnd = TWO_PI_2_5*abs(mp_c(kp))/(zeta*sqrt(zeta))")
-    # A zero factor's blocks must not keep a quartet alive (gen_perclass.py's
-    # emit_screens): with jfac = 0 the J blocks would keep O(N^2) of them.
-    o.append("      dscr = 0.0_dp")
-    o.append("      if (jfac /= 0.0_dp) dscr = 4.0_dp*max(dsh(si, sj), dsh(sk, sl))")
-    o.append("      if (kfac /= 0.0_dp) dscr = max(dscr, dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl))")
-    o.append("      if (qcut <= thresh .or. qcut*dscr <= thresh .or. &")
-    o.append("          bnd*abs(mp_c(kq))/eta <= pcut .or. abs(pref*mp_c(kp)*mp_c(kq)) <= pcut) then")
-    o.append(f"         do r = 1, {len(herm(L))}")
-    o.append("            rb(r, t) = 0.0_dp")
-    o.append("         end do")
+    o.append("      if (bnd*abs(mp_c(kq))/eta <= pcut .or. abs(pref*mp_c(kp)*mp_c(kq)) <= pcut) then")
+    o.append("         rb(1, t) = -1.0_dp")
     o.append("         return")
     o.append("      end if")
     o.append("      alpha = zeta*eta/zpe")
@@ -361,7 +397,7 @@ def d_item(tag, na, nb, nc, nd, suf="", o1="sp_ao1", o2="sp_ao2"):
     return o
 
 
-def fused_items(tag, suf, np_, nq_, nr, na, nb, nc, nd, o1, o2):
+def fused_items(tag, suf, np_, nq_, nr, na, nb, nc, nd, o1, o2, tabs=()):
     """The cuBLAS-free contraction: S = PQ Hk^T and the integral rows, fused.
 
     B: one thread per (pbar, quartet), pbar fastest, so a warp works on one
@@ -370,8 +406,9 @@ def fused_items(tag, suf, np_, nq_, nr, na, nb, nc, nd, o1, o2):
        PQ is never stored; (p, q) -> p + q is the literal RM table.
     C: one thread per (ab, quartet): the integral row from Hb[ab, :] S[:, :, w],
        digested at once, so the integral block is never stored either.
-    A quartet that fails the HGP screen returns at once in both (its R is zero),
-    instead of being multiplied as a zero block: 45% of the quartets the GEMM
+    A quartet that fails the HGP screen returns at once in both (R writes nothing
+    for it, and a rejected primitive of a live quartet is flagged rb(1) < 0 and
+    skipped), instead of being multiplied as a zero block: 45% of the quartets the GEMM
     path multiplied on w20 cc-pVQZ (TRC_MDG_STATS).
     """
     nab, ncd = na * nb, nc * nd
@@ -386,6 +423,9 @@ def fused_items(tag, suf, np_, nq_, nr, na, nb, nc, nd, o1, o2):
     o.append(f"      real(dp), intent(inout) :: sm({np_}*ka, {ncd}, ni*nj)")
     o.append("      integer :: u, pb, w, i, j, k1, k2, x, y, c, spa, spc, si, sj, sk, sl")
     o.append("      real(dp) :: v, qcut, dscr")
+    # the (p, q) -> r table and the sign table, local to this item when the class
+    # asks for it (LOCAL_TABLES below)
+    o.extend(tabs)
     o.append(f"      real(dp) :: acc({ncd})")
     o.append(f"      pb = mod(t - 1, {np_}*ka) + 1")
     o.append(f"      w = (t - 1)/({np_}*ka) + 1")
@@ -405,12 +445,20 @@ def fused_items(tag, suf, np_, nq_, nr, na, nb, nc, nd, o1, o2):
     o.append("         acc(c) = 0.0_dp")
     o.append("      end do")
     o.append("      do k2 = 1, kb")
-    o.append(f"         do y = 1, {nq_}")
-    o.append(f"            v = SQ{tag}(y)*rb(RM{tag}(x + {np_}*(y - 1)), i, k1, j, k2)")
-    o.append(f"            do c = 1, {ncd}")
-    o.append(f"               acc(c) = acc(c) + v*hk(c, y + {nq_}*(k2 - 1), j)")
-    o.append("            end do")
-    o.append("         end do")
+    # R left rb(1, .) = -1 on a rejected primitive and wrote nothing else of its block.
+    o.append("         if (rb(1, i, k1, j, k2) < 0.0_dp) cycle")
+    # The (p, q) -> p + q table has np*nq entries, one constructor per part of
+    # at most RM_PART_MAX: gfortran refuses a constructor of more than 65535
+    # elements, and only (hh|hh) (286*286) is that large. A class that fits
+    # keeps its single table and loop, byte for byte.
+    for part, (y0, y1) in enumerate(rm_parts(np_, nq_)):
+        rm = f"RM{tag}" + (f"_{part + 1}" if len(rm_parts(np_, nq_)) > 1 else "")
+        o.append(f"         do y = {y0 + 1}, {y1}")
+        o.append(f"            v = SQ{tag}(y)*rb({rm}(x + {np_}*(y - {y0 + 1})), i, k1, j, k2)")
+        o.append(f"            do c = 1, {ncd}")
+        o.append(f"               acc(c) = acc(c) + v*hk(c, y + {nq_}*(k2 - 1), j)")
+        o.append("            end do")
+        o.append("         end do")
     o.append("      end do")
     o.append(f"      do c = 1, {ncd}")
     o.append("         sm(pb, c, w) = acc(c)")
@@ -493,8 +541,18 @@ def gen_class(la, lb, lc, ld, order, header):
     o.append("   !! spherical component pairs: the host sizes buffers from these.")
     o.append("   ! Literal tables the loops index: Hermite decode, component exponents, and")
     o.append("   ! the (p, q) -> p + q map and (-1)^|q| sign of the expansion.")
-    o.extend(int_table(f"RM{tag}", [il[tuple(p[d] + q[d] for d in range(3))] + 1 for q in hq for p in hp]))
-    o.extend(real_table(f"SQ{tag}", [(-1) ** sum(q) for q in hq]))
+    rm_all = [il[tuple(p[d] + q[d] for d in range(3))] + 1 for q in hq for p in hp]
+    parts = rm_parts(np_, nq_)
+    tab = []
+    if len(parts) == 1:
+        tab.extend(int_table(f"RM{tag}", rm_all))
+    else:
+        for part, (y0, y1) in enumerate(parts):
+            tab.extend(int_table(f"RM{tag}_{part + 1}", rm_all[y0 * np_:y1 * np_]))
+    tab.extend(real_table(f"SQ{tag}", [(-1) ** sum(q) for q in hq]))
+    local_tabs = local_tables(la, lb, lc, ld)
+    if not local_tabs:
+        o.extend(tab)
     o.append("")
     o.append("contains")
     o.append("")
@@ -505,9 +563,10 @@ def gen_class(la, lb, lc, ld, order, header):
         o.append("")
     o.extend(r_item(tag, L))
     o.append("")
-    o.extend(fused_items(tag, "", np_, nq_, nr, na, nb, nc, nd, "sp_ao1", "sp_ao2"))
+    o.extend(fused_items(tag, "", np_, nq_, nr, na, nb, nc, nd, "sp_ao1", "sp_ao2", tab if local_tabs else ()))
     o.append("")
-    o.extend(fused_items(tag, "_s", np_, nq_, nr, 2 * la + 1, 2 * lb + 1, 2 * lc + 1, 2 * ld + 1, "sp_as1", "sp_as2"))
+    o.extend(fused_items(tag, "_s", np_, nq_, nr, 2 * la + 1, 2 * lb + 1, 2 * lc + 1, 2 * ld + 1, "sp_as1", "sp_as2",
+                         tab if local_tabs else ()))
     o.append("")
     o.append(f"end module trc_mdg_k{tag}")
     return "\n".join(o) + "\n"
@@ -656,22 +715,34 @@ def gen_h_module(lmax, order, header):
     # S = T (T^T T)^-1 per l: the right inverse with T^T S = I, so a density
     # D_cart = T D_sph T^T gives D_sph = S^T D_cart S back, and adding S K S^T
     # to the Cartesian result folds out (T^T . T) to exactly K.
+    # S has its own extents, the module-local MDG_S_NC x MDG_S_NS x 0:lsph, for
+    # an h build: trc_sph_tables' table is l <= 4 by default (so SPH_NCART_MAX
+    # is S's own extent up to g, below) but l <= 5 in an h build, where a table
+    # sized by SPH_NCART_MAX would be mostly padding.
+    lsph = max(lmax, 4)
+    nc_max, ns_max = (lsph + 1) * (lsph + 2) // 2, 2 * lsph + 1
     svals = []
-    for l in range(5):
+    for l in range(lsph + 1):
         cs = cartorder.components(l, order)
         T = gen_sph.sph_block(l, cs)
         nc, ns = len(cs), 2 * l + 1
         M = [[sum(T[k][i] * T[k][j] for k in range(nc)) for j in range(ns)] for i in range(ns)]
         Mi = _inverse(M)
         S = [[sum(T[a][k] * Mi[k][j] for k in range(ns)) for j in range(ns)] for a in range(nc)]
-        for j in range(9):
-            for a in range(15):
+        for j in range(ns_max):
+            for a in range(nc_max):
                 svals.append(S[a][j] if (a < nc and j < ns) else 0.0)
-    o.append("   real(dp), parameter :: SPH_S(SPH_NCART_MAX, SPH_NSPH_MAX, 0:4) = reshape([ &")
+    if lsph == 4:
+        # The shipped spherical table is l <= 4 too, so its own extents are S's.
+        nc_name, ns_name = "SPH_NCART_MAX", "SPH_NSPH_MAX"
+    else:
+        nc_name, ns_name = "MDG_S_NC", "MDG_S_NS"
+        o.append(f"   integer, parameter :: MDG_S_NC = {nc_max}, MDG_S_NS = {ns_max}")
+    o.append(f"   real(dp), parameter :: SPH_S({nc_name}, {ns_name}, 0:{lsph}) = reshape([ &")
     toks = [repr(v) + "_dp" for v in svals]
     for k in range(0, len(toks), 4):
         o.append("      " + ", ".join(toks[k:k + 4]) + (", &" if k + 4 < len(toks) else "], &"))
-    o.append("      [SPH_NCART_MAX, SPH_NSPH_MAX, 5])")
+    o.append(f"      [{nc_name}, {ns_name}, {lsph + 1}])")
     o.append("   !! S(:, :, l) = T (T^T T)^-1, the right inverse of SPH_T's block.")
     types = [(la, lb) for la in range(lmax + 1) for lb in range(la + 1)]
     for la, lb in types:

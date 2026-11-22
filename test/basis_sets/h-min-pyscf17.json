@@ -1,0 +1,395 @@
+{
+    "molssi_bse_schema": {
+        "schema_type": "complete",
+        "schema_version": "0.1"
+    },
+    "revision_description": "one uncontracted primitive of each of s..h, exponents from pyscf 2.14.0 cc-pv5z, for H,C,N,O (H has no h shell in cc-pV5Z)",
+    "revision_date": "2026-11-18",
+    "elements": {
+        "1": {
+            "electron_shells": [
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "1.28299999999999992E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        1
+                    ],
+                    "exponents": [
+                        "6.49000000000000021E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        2
+                    ],
+                    "exponents": [
+                        "1.20599999999999996E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        3
+                    ],
+                    "exponents": [
+                        "8.75000000000000000E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        4
+                    ],
+                    "exponents": [
+                        "2.35800000000000010E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                }
+            ],
+            "references": [
+                {
+                    "reference_description": "one uncontracted primitive of each of s..h, exponents from pyscf 2.14.0 cc-pv5z, for H,C,N,O (H has no h shell in cc-pV5Z)",
+                    "reference_keys": []
+                }
+            ]
+        },
+        "6": {
+            "electron_shells": [
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "1.83999999999999986E+01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        1
+                    ],
+                    "exponents": [
+                        "1.08499999999999996E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        2
+                    ],
+                    "exponents": [
+                        "4.84999999999999987E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        3
+                    ],
+                    "exponents": [
+                        "8.37999999999999967E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        4
+                    ],
+                    "exponents": [
+                        "6.78000000000000047E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        5
+                    ],
+                    "exponents": [
+                        "1.25899999999999990E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                }
+            ],
+            "references": [
+                {
+                    "reference_description": "one uncontracted primitive of each of s..h, exponents from pyscf 2.14.0 cc-pv5z, for H,C,N,O (H has no h shell in cc-pV5Z)",
+                    "reference_keys": []
+                }
+            ]
+        },
+        "7": {
+            "electron_shells": [
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "2.45899999999999999E+01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        1
+                    ],
+                    "exponents": [
+                        "1.58699999999999997E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        2
+                    ],
+                    "exponents": [
+                        "7.06999999999999962E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        3
+                    ],
+                    "exponents": [
+                        "1.20399999999999996E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        4
+                    ],
+                    "exponents": [
+                        "9.41999999999999948E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        5
+                    ],
+                    "exponents": [
+                        "1.76800000000000002E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                }
+            ],
+            "references": [
+                {
+                    "reference_description": "one uncontracted primitive of each of s..h, exponents from pyscf 2.14.0 cc-pv5z, for H,C,N,O (H has no h shell in cc-pV5Z)",
+                    "reference_keys": []
+                }
+            ]
+        },
+        "8": {
+            "electron_shells": [
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        0
+                    ],
+                    "exponents": [
+                        "3.12199999999999989E+01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto",
+                    "region": "",
+                    "angular_momentum": [
+                        1
+                    ],
+                    "exponents": [
+                        "2.09399999999999986E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        2
+                    ],
+                    "exponents": [
+                        "9.05000000000000027E-01"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        3
+                    ],
+                    "exponents": [
+                        "1.55400000000000005E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        4
+                    ],
+                    "exponents": [
+                        "1.18900000000000006E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                },
+                {
+                    "function_type": "gto_spherical",
+                    "region": "",
+                    "angular_momentum": [
+                        5
+                    ],
+                    "exponents": [
+                        "2.31899999999999995E+00"
+                    ],
+                    "coefficients": [
+                        [
+                            "1.00000000000000000E+00"
+                        ]
+                    ]
+                }
+            ],
+            "references": [
+                {
+                    "reference_description": "one uncontracted primitive of each of s..h, exponents from pyscf 2.14.0 cc-pv5z, for H,C,N,O (H has no h shell in cc-pV5Z)",
+                    "reference_keys": []
+                }
+            ]
+        }
+    }
+}

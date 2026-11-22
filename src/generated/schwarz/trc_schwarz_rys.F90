@@ -127,6 +127,8 @@ contains
       real(dp) :: gy(0:SCHWARZ_LTOT_MAX, 0:SCHWARZ_LTOT_MAX)
       real(dp) :: gz(0:SCHWARZ_LTOT_MAX, 0:SCHWARZ_LTOT_MAX)
       real(dp) :: hxv, hyv, hzv, val
+      logical :: swap
+      integer :: itmp
       real(dp) :: rlt, t2, d0, d1, tmp, fr, fw, xc
       integer  :: iv, s, j, base
       i = t_i(k)
@@ -161,6 +163,22 @@ contains
       ltot = la + lb
       nroots = ltot + 1
 
+      ! ORIENTATION. (ab|ab) = (ba|ba), so the recurrence is built on the shell
+      ! of HIGHER l: if the pair list's first shell is the lower one, the
+      ! centres and the component triples swap. Built on the lower-l centre the
+      ! horizontal transfer shifts the high-l shell across the whole bond
+      ! (|AB| = 2.9 bohr for an H g pair), and the diagonal then carries 4e-10
+      ! relative rounding where the other orientation carries 1e-16. Chosen by l,
+      ! which is what measured on cc-pV5Z water (an H g or h pair); the same loss
+      ! also depends on the exponents (gen_1e.py's emit_class chooses by exponent
+      ! for the nuclear attraction), which this does not look at.
+      swap = la < lb
+      if (swap) then
+         itmp = ax; ax = bx; bx = itmp
+         itmp = ay; ay = by; by = itmp
+         itmp = az; az = bz; bz = itmp
+      end if
+
       ! AB is the same vector on the bra and the ket (the ket's centres are
       ! the bra's own A, B): computed once from the first primitive pair,
       ! same as trc_hgp.F90's splice does for abx/cdx (pp_ra/pp_rb are
@@ -169,13 +187,23 @@ contains
       abx = hp_ra(offab + 1, 1) - hp_rb(offab + 1, 1)
       aby = hp_ra(offab + 1, 2) - hp_rb(offab + 1, 2)
       abz = hp_ra(offab + 1, 3) - hp_rb(offab + 1, 3)
+      if (swap) then
+         abx = -abx; aby = -aby; abz = -abz
+      end if
 
       val = 0.0_dp
       do kp = offab + 1, offab + nab
          zeta = hp_p(kp)
-         pax = hp_r(kp, 1) - hp_ra(kp, 1)
-         pay = hp_r(kp, 2) - hp_ra(kp, 2)
-         paz = hp_r(kp, 3) - hp_ra(kp, 3)
+         ! P - A on the shell the recurrence is built on (B when swapped).
+         if (swap) then
+            pax = hp_r(kp, 1) - hp_rb(kp, 1)
+            pay = hp_r(kp, 2) - hp_rb(kp, 2)
+            paz = hp_r(kp, 3) - hp_rb(kp, 3)
+         else
+            pax = hp_r(kp, 1) - hp_ra(kp, 1)
+            pay = hp_r(kp, 2) - hp_ra(kp, 2)
+            paz = hp_r(kp, 3) - hp_ra(kp, 3)
+         end if
          do kq = offab + 1, offab + nab
             eta = hp_p(kq)
             zpe = zeta + eta
@@ -186,9 +214,15 @@ contains
             ! Q - C: the ket's first centre C is the bra's own A (the ket
             ! pair equals the bra pair), so this is Q - A, read from THIS
             ! primitive pair's own product centre (kq), not kp's.
-            qcx = hp_r(kq, 1) - hp_ra(kq, 1)
-            qcy = hp_r(kq, 2) - hp_ra(kq, 2)
-            qcz = hp_r(kq, 3) - hp_ra(kq, 3)
+            if (swap) then
+               qcx = hp_r(kq, 1) - hp_rb(kq, 1)
+               qcy = hp_r(kq, 2) - hp_rb(kq, 2)
+               qcz = hp_r(kq, 3) - hp_rb(kq, 3)
+            else
+               qcx = hp_r(kq, 1) - hp_ra(kq, 1)
+               qcy = hp_r(kq, 2) - hp_ra(kq, 2)
+               qcz = hp_r(kq, 3) - hp_ra(kq, 3)
+            end if
             tval = rho*(pqx*pqx + pqy*pqy + pqz*pqz)
             ! theta = 1, omega = 0: Q never needs the range-separated
             ! bound (trc_screen.F90's module header), so no RANGE

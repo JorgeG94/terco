@@ -56,13 +56,17 @@ import argparse
 
 import cartorder
 
-#: Ceiling both include files are generated to. Fixed rather than following
-#: TERCO_LMAX: `collocation_shell` accepts l up to XC_LMAX (trc_collocation.F90,
-#: currently 4, "generous on purpose" -- a d shell costs no more there than an
-#: s one) independently of the four-centre ceiling, and cartorder's gamess
-#: table itself is only transcribed through l=4. 4 is not a guess: it is the
-#: actual joint ceiling of every caller this file has.
-CEIL = 4
+#: Ceiling both include files are generated to. Not TERCO_LMAX itself:
+#: `collocation_shell` accepts l up to XC_LMAX (trc_collocation.F90)
+#: independently of the four-centre ceiling, and the tables are PARAMETER
+#: arrays read in device kernels, so they stay at 4 unless a build needs more
+#: (`--ceil`: 5 for an h orbital basis). The gamess
+#: order stops at 4 whatever is asked, because cartorder's gamess table is
+#: only transcribed through l = 4 (it raises above), so a gamess build refuses
+#: h at configure time rather than generating a table with no h row.
+CEIL_BY_ORDER = {"lexicographic": 6, "gamess": 4}
+DEFAULT_CEIL = 4
+CEIL = DEFAULT_CEIL
 
 
 def _guard(order_val):
@@ -204,7 +208,13 @@ def main():
                     default="src/generated/trc_cart_perm_l2b.inc")
     ap.add_argument("--perm-b2l-out",
                     default="src/generated/trc_cart_perm_b2l.inc")
+    ap.add_argument("--ceil", type=int, default=DEFAULT_CEIL,
+                    help="highest l in the tables (default 4)")
     args = ap.parse_args()
+    global CEIL
+    if args.ceil > CEIL_BY_ORDER[args.order]:
+        raise SystemExit(f"gen_cartcomp.py: --order {args.order} reaches l = {CEIL_BY_ORDER[args.order]} only")
+    CEIL = args.ceil
     order_val = 0 if args.order == "lexicographic" else 1
     # Suppressed when default, like every other generator here: the shipped
     # set's header text must not change just because the option now exists,
@@ -212,6 +222,8 @@ def main():
     cmd = "scripts/gen_cartcomp.py"
     if args.order != "lexicographic":
         cmd += f" --order {args.order}"
+    if args.ceil != DEFAULT_CEIL:
+        cmd += f" --ceil {args.ceil}"
     with open(args.comp_out, "w") as fh:
         fh.write(emit_comp_table(args.order, order_val, cmd))
     with open(args.colloc_out, "w") as fh:

@@ -1,0 +1,10 @@
+# terco pyscf reference v1
+# case: check_h_vs_pyscf rhf_n2_prims
+# generator: test/pyscf_refs/generate.py CASES["h_rhf_n2_prims"] -> gen_h_scf
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 3cafcfda64fa006396a14f2a242f69cb884ea3965685b00afd2c3a5ebe4d87e6
+# files: test/check_h_vs_pyscf.F90 test/basis_sets/h-prims-pyscf17.json test/tops_n2.xyz
+# hf RHF, sph, 106 AOs, 0 grid points, GRAD_NORM 6.493e-10
+E -4.73938694410709047e+01
+END

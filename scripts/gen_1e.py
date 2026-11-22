@@ -37,7 +37,7 @@ two-centre-with-auxiliary, four-centre-with-auxiliary -- sharing the emission
 machinery and the HRR.
 
 USAGE
-    gen_1e.py --lmax 2 -o src/trc_1e_kernels.F90
+    gen_1e.py --lmax 2 --base-dir src/generated
 """
 
 import argparse
@@ -149,10 +149,12 @@ def emit_kin_1d(la, lb, ax):
 # nuclear attraction: two-centre VRR with an auxiliary index, then the HRR
 # --------------------------------------------------------------------------
 
-def emit_nuc_vrr(lab, idx):
+def emit_nuc_vrr(lab, idx, centre="a"):
     """V[a]^(m) at b = 0, for every a with |a| <= lab and every needed m.
 
     Triangular in the usual way: level m only needs degree up to lab - m.
+    `centre` "b" builds the same table about B (PB in place of PA): V[0|b]^(m),
+    the input of emit_hrr_b's mirrored transfer.
     """
     o, w = [], None
     w = o.append
@@ -179,7 +181,7 @@ def emit_nuc_vrr(lab, idx):
             continue
         info[p] = (d, dn1, dn2, n)
 
-    PA = ["pax", "pay", "paz"]
+    PA = ["pax", "pay", "paz"] if centre == "a" else ["pbx", "pby", "pbz"]
     PC = ["pcx", "pcy", "pcz"]
     for m in range(lab, -1, -1):
         w(f"            ! --- m = {m} ---")
@@ -220,6 +222,40 @@ def emit_hrr(la, lb, idx, src, dst, order="lexicographic"):
                         fac = [f for f in (powexpr("abx", bx - px),
                                            powexpr("aby", by - py),
                                            powexpr("abz", bz - pz)) if f]
+                        head = "" if c == 1 else f"{float(c)}_dp*"
+                        body = "*".join(fac)
+                        if body:
+                            body += "*"
+                        terms.append(f"{head}{body}{src}({j})")
+            expr = terms[0]
+            for t in terms[1:]:
+                expr += f" &\n               + {t}"
+            w(f"            {dst}({1 + ia + na*ib}) = {expr}")
+    return "\n".join(o)
+
+
+def emit_hrr_b(la, lb, idx, src, dst, order="lexicographic"):
+    """(a|b) from [0|a+b] built about B: the transfer of emit_hrr mirrored,
+
+        (a|b) = sum_p C(a,p) (B - A)^(a-p) [0|b+p].
+
+    `src` is the VRR table of emit_nuc_vrr(..., "b") (indexed by the power on
+    B); (B - A) is bax, bay, baz.
+    """
+    o, w = [], None
+    w = o.append
+    na = len(cart(la))
+    for ib, (bx, by, bz) in enumerate(cart(lb, order)):
+        for ia, (axp, ayp, azp) in enumerate(cart(la, order)):
+            terms = []
+            for px in range(axp + 1):
+                for py in range(ayp + 1):
+                    for pz in range(azp + 1):
+                        c = binom(axp, px)*binom(ayp, py)*binom(azp, pz)
+                        j = idx[(bx + px, by + py, bz + pz)]
+                        fac = [f for f in (powexpr("bax", axp - px),
+                                           powexpr("bay", ayp - py),
+                                           powexpr("baz", azp - pz)) if f]
                         head = "" if c == 1 else f"{float(c)}_dp*"
                         body = "*".join(fac)
                         if body:
@@ -311,6 +347,174 @@ def emit_multipole(la, lb, order="lexicographic"):
     return chr(10).join(o), slot
 
 
+def split_class(la, lb):
+    """Whether a class is emitted as separate routines (emit_class_split).
+
+    nvfortran's compile time is per routine and grows much faster than the
+    routine's size: trc_1e_k55 of a LMAX=5 build, one 16k-line routine, took
+    2264 s on a loaded box (k54 858 s). Only the classes with an h shell are
+    split, so every LMAX <= 4 class keeps the text it was measured with.
+    """
+    return max(la, lb) >= SPLIT_L
+
+
+SPLIT_L = 5
+
+
+def emit_class_split(la, lb, sxyz, txyz, comps, vrr, hrr, cp0, order):
+    """The class of emit_class as four same-module `pure` `!$acc routine seq`
+    routines: S and T, then the nuclear attraction with one routine per
+    transfer direction, and the class routine that calls them. The arithmetic
+    is the one routine's, statement for statement, and so is every
+    accumulation order (S and T over primitive pairs; V over primitive pair, then
+    nucleus): S, T and V are bit-identical to emit_class's."""
+    lab = la + lb
+    na, nb = len(cart(la)), len(cart(lb))
+    idx = cart_cum(lab)
+    nvn = ncum(lab)
+    tag = f"{la}{lb}"
+    both = lb > 0
+    prim = """      do ip = 1, nprim_a
+         al = ea(ip)
+      do jp = 1, nprim_b
+         bet = eb(jp)
+         zeta = al + bet
+         oo2z = 0.5_dp/zeta
+         xi = al*bet/zeta
+         cc = ca(ip)*cb(jp)
+         tbb = 2.0_dp*bet*bet
+
+         px = (al*ra(1) + bet*rb(1))/zeta
+         py = (al*ra(2) + bet*rb(2))/zeta
+         pz = (al*ra(3) + bet*rb(3))/zeta
+         pax = px - ra(1); pay = py - ra(2); paz = pz - ra(3)
+         pbx = px - rb(1); pby = py - rb(2); pbz = pz - rb(3)
+"""
+    nuc_args = ("zeta, oo2z, cc, vpref, px, py, pz, pax, pay, paz, pbx, pby, pbz, abx, aby, abz, "
+                "natm, zatm, ratm, vout")
+    decl_ab = f"""      integer,  intent(in)    :: natm
+      real(dp), intent(in)    :: zeta, oo2z, cc, vpref, px, py, pz, pax, pay, paz, pbx, pby, pbz
+      real(dp), intent(in)    :: abx, aby, abz
+      real(dp), intent(in)    :: zatm(natm), ratm(3, natm)
+      real(dp), intent(inout) :: vout({na*nb})
+"""
+
+    def nuc_routine(name, vrr_txt, hrr_txt, bvars):
+        # Three routines per direction: the loop over nuclei, the Boys-weighted
+        # recurrence (vn out) and the transfer (vtmp out). nvvm's time grows much
+        # faster than a routine's size and keeps them apart as separate device
+        # functions; vn is one explicit-shape array handed between them.
+        return f"""
+   pure subroutine one_e_{name}r_{tag}(vpref, oo2z, pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz, f, vn)
+      !! The nuclear-attraction recurrence table of one primitive pair and nucleus.
+      !$acc routine seq
+      real(dp), intent(in)  :: vpref, oo2z, pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz
+      real(dp), intent(in)  :: f(0:BOYS_MMAX)
+      real(dp), intent(out) :: vn({nvn},0:{lab})
+
+{vrr_txt}
+   end subroutine one_e_{name}r_{tag}
+
+   pure subroutine one_e_{name}h_{tag}(abx, aby, abz, vn, vtmp)
+      !! The transfer of that table onto the shell pair's components.
+      !$acc routine seq
+      real(dp), intent(in)  :: abx, aby, abz
+      real(dp), intent(in)  :: vn({nvn},0:{lab})
+      real(dp), intent(out) :: vtmp({na*nb})
+      integer  :: k
+      real(dp) :: vn0({nvn})
+{bvars}
+{hrr_txt}
+   end subroutine one_e_{name}h_{tag}
+
+   pure subroutine one_e_{name}_{tag}({nuc_args})
+      !! The nuclear attraction of one primitive pair on every nucleus,
+      !! accumulated into vout.
+      !$acc routine seq
+{decl_ab}      integer  :: ic, k
+      real(dp) :: pcx, pcy, pcz, tval
+      real(dp) :: vn({nvn},0:{lab}), vtmp({na*nb})
+      real(dp) :: f(0:BOYS_MMAX)
+
+      do ic = 1, natm
+         pcx = px - ratm(1, ic)
+         pcy = py - ratm(2, ic)
+         pcz = pz - ratm(3, ic)
+         tval = zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
+         call boys_eval({lab}, tval, f)
+         call one_e_{name}r_{tag}(vpref, oo2z, pax, pay, paz, pbx, pby, pbz, pcx, pcy, pcz, f, vn)
+         call one_e_{name}h_{tag}(abx, aby, abz, vn, vtmp)
+         do k = 1, {na*nb}
+            vout(k) = vout(k) - cc*zatm(ic)*vtmp(k)
+         end do
+      end do
+   end subroutine one_e_{name}_{tag}
+"""
+
+    out = []
+    if both:
+        out.append(nuc_routine("va", vrr, f"{cp0}\n{hrr}", ""))
+        out.append(nuc_routine("vb", emit_nuc_vrr(lab, idx, 'b'),
+                               f"{cp0}\n{emit_hrr_b(la, lb, idx, 'vn0', 'vtmp', order)}",
+                               "      real(dp) :: bax, bay, baz\n      bax = -abx; bay = -aby; baz = -abz\n"))
+        call = f"""         if (bet > al) then
+            call one_e_vb_{tag}({nuc_args})
+         else
+            call one_e_va_{tag}({nuc_args})
+         end if"""
+    else:
+        out.append(nuc_routine("va", vrr, f"{cp0}\n{hrr}", ""))
+        call = f"         call one_e_va_{tag}({nuc_args})"
+    top = f"""
+   pure subroutine one_e_{tag}(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
+                               natm, zatm, ratm, sout, tout, vout)
+      !! ({la}|{lb}) one-electron block: overlap, kinetic, nuclear attraction.
+      !! The overlap and kinetic energy are computed here; the nuclear attraction of
+      !! each primitive pair is one call of {"one_e_va_" + tag + " or one_e_vb_" + tag if both else "one_e_va_" + tag}, so that
+      !! no routine is large (see split_class in gen_1e.py).
+      !$acc routine seq
+      integer,  intent(in)  :: nprim_a, nprim_b, natm
+      real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
+      real(dp), intent(in)  :: eb(nprim_b), cb(nprim_b)
+      real(dp), intent(in)  :: ra(3), rb(3)
+      real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
+      real(dp), intent(out) :: sout({na*nb}), tout({na*nb}), vout({na*nb})
+
+      integer  :: ip, jp, k
+      real(dp) :: al, bet, zeta, oo2z, xi, cc, tbb
+      real(dp) :: px, py, pz, pax, pay, paz, pbx, pby, pbz
+      real(dp) :: vpref, rab2
+      real(dp) :: abx, aby, abz, e0x, e0y, e0z
+      real(dp) :: sx(0:{la},0:{lb + 2}), sy(0:{la},0:{lb + 2}), sz(0:{la},0:{lb + 2})
+      real(dp) :: tx(0:{la},0:{lb}), ty(0:{la},0:{lb}), tz(0:{la},0:{lb})
+
+      abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
+      rab2 = abx*abx + aby*aby + abz*abz
+
+      do k = 1, {na*nb}
+         sout(k) = 0.0_dp; tout(k) = 0.0_dp; vout(k) = 0.0_dp
+      end do
+
+{prim}
+         e0x = sqrt(PI/zeta)*exp(-xi*abx*abx)
+         e0y = sqrt(PI/zeta)*exp(-xi*aby*aby)
+         e0z = sqrt(PI/zeta)*exp(-xi*abz*abz)
+
+{sxyz}
+
+{txyz}
+
+{comps}
+
+         vpref = 2.0_dp*PI/zeta*exp(-xi*rab2)
+{call}
+      end do
+      end do
+   end subroutine one_e_{tag}
+"""
+    return top + "".join(out)
+
+
 def emit_class(la, lb, LMAX, order="lexicographic"):
     lab = la + lb
     na, nb = len(cart(la)), len(cart(lb))
@@ -339,6 +543,33 @@ def emit_class(la, lb, LMAX, order="lexicographic"):
 
     vrr = emit_nuc_vrr(lab, idx)
     hrr = emit_hrr(la, lb, idx, "vn0", "vtmp", order)
+    cp0 = f"""            do k = 1, {nvn}
+               vn0(k) = vn(k,0)
+            end do
+"""
+    if lb > 0:
+        # The table is built PER PRIMITIVE PAIR about the centre that keeps the
+        # transfer benign. The transfer sum_p C(b,p) AB^(b-p) [a+p|0] cancels
+        # when A's primitive is diffuse and B's tight (P then sits almost on B
+        # and the expansion about A is a large alternating sum): the loss grows
+        # like (exponent ratio * |AB|)^lb; V relative error at ratio 25,
+        # |AB| = 2.5 is 1.6e-12 at l = 3 and 1.8e-11 at l = 4, <= 2.2e-14 with
+        # the choice below. For bet > al the table is built about B and (a|b)
+        # is read off the mirrored transfer sum_p C(a,p) BA^(a-p) [0|b+p];
+        # otherwise about A with the transfer of emit_hrr. The branch costs no
+        # measurable time (V100, w172 cc-pVTZ: 1.79 s against 1.78 s always about A).
+        nuc_body = (f"            if (bet > al) then\n{emit_nuc_vrr(lab, idx, 'b')}\n\n{cp0}\n"
+                    f"{emit_hrr_b(la, lb, idx, 'vn0', 'vtmp', order)}\n            else\n"
+                    f"{vrr}\n\n{cp0}\n{hrr}\n            end if")
+        bavars = "      real(dp) :: bax, bay, baz\n"
+        bainit = "      bax = -abx; bay = -aby; baz = -abz\n"
+    else:
+        nuc_body = f"{vrr}\n\n{cp0}\n{hrr}"
+        bavars = ""
+        bainit = ""
+
+    if split_class(la, lb):
+        return emit_class_split(la, lb, sxyz, txyz, comps, vrr, hrr, cp0, order)
 
     return f"""
    pure subroutine one_e_{tag}(nprim_a, nprim_b, ea, ca, eb, cb, ra, rb, &
@@ -366,9 +597,9 @@ def emit_class(la, lb, LMAX, order="lexicographic"):
       real(dp) :: tx(0:{la},0:{lb}), ty(0:{la},0:{lb}), tz(0:{la},0:{lb})
       real(dp) :: vn({nvn},0:{lab}), vn0({nvn}), vtmp({na*nb})
       real(dp) :: f(0:BOYS_MMAX)
-
+{bavars}
       abx = ra(1) - rb(1); aby = ra(2) - rb(2); abz = ra(3) - rb(3)
-      rab2 = abx*abx + aby*aby + abz*abz
+{bainit}      rab2 = abx*abx + aby*aby + abz*abz
 
       do k = 1, {na*nb}
          sout(k) = 0.0_dp; tout(k) = 0.0_dp; vout(k) = 0.0_dp
@@ -411,13 +642,7 @@ def emit_class(la, lb, LMAX, order="lexicographic"):
             tval = zeta*(pcx*pcx + pcy*pcy + pcz*pcz)
             call boys_eval({lab}, tval, f)
 
-{vrr}
-
-            do k = 1, {nvn}
-               vn0(k) = vn(k,0)
-            end do
-
-{hrr}
+{nuc_body}
 
             do k = 1, {na*nb}
                vout(k) = vout(k) - cc*zatm(ic)*vtmp(k)
@@ -1992,6 +2217,266 @@ MULT_DECL = """      integer,  intent(in)  :: nshell, nao, maxnp, npair
       real(dp), intent(inout) :: mmat(nao, nao, 39)"""
 
 
+ONE_E_ARGS = ("nshell, nao, natm, maxnp, sh_l, sh_np, sh_ao, sh_e, sh_c, sh_r, at_z, at_r, "
+              "npair, p_i, p_j, smat, tmat, vmat")
+ONE_E_DECL = """      integer,  intent(in)    :: nshell, nao, natm, maxnp, npair
+      integer,  intent(in)    :: p_i(npair), p_j(npair)
+      integer,  intent(in)    :: sh_l(nshell), sh_np(nshell), sh_ao(nshell)
+      real(dp), intent(in)    :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
+      real(dp), intent(in)    :: sh_r(3, nshell)
+      real(dp), intent(in)    :: at_z(natm), at_r(3, natm)
+      real(dp), intent(inout) :: smat(nao, nao), tmat(nao, nao), vmat(nao, nao)"""
+
+
+def emit_one_e_split(L, outdir, order="lexicographic"):
+    """The base S/T/V kernels, one module per (la|lb) class plus the driver
+    module trc_1e_kernels, as the multipole and gradient emitters do: kernel,
+    item and launch share a translation unit, so the item inlines the kernel,
+    and the host walks the pair list once, grouped by class, so that no
+    device-side select case over every class sits in one kernel."""
+    order_arg = "" if order == "lexicographic" else f" --order {order}"
+    head = f"! GENERATED by scripts/gen_1e.py --lmax {L} --base-dir{order_arg} -- do not edit.\n"
+    names = []
+    for la in range(L + 1):
+        for lb in range(la + 1):
+            tag = f"{la}{lb}"
+            na, nb = _ncart(la), _ncart(lb)
+            txt = f"""!
+! One-electron overlap, kinetic and nuclear attraction, class ({la}|{lb}): kernel,
+! item and its own launch. One module per class so that the classes compile in
+! parallel and a change to one class does not recompile the rest (gfortran -O2
+! at LMAX=4: the single file took 50.6 s, the largest class module, k44, 22.5 s).
+!
+{head}!
+{_guard(order)}module trc_1e_k{tag}
+   use pic_types, only: dp
+   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
+   implicit none
+   private
+   public :: one_e_launch_{tag}, one_e_{tag}
+   real(dp), parameter :: PI = 3.14159265358979323846_dp
+
+contains
+
+#include "inc/trc_boys_eval.inc"
+
+   subroutine one_e_launch_{tag}(n, idx, {ONE_E_ARGS})
+      !! The pairs idx(1:n) of the pair list, all of class ({la}|{lb}) with the
+      !! higher-l shell first (the driver orients them, so a class is only (la|lb), la >= lb).
+      integer,  intent(in)  :: n, idx(n)
+{ONE_E_DECL}
+      integer :: k
+      do concurrent(k = 1:n)
+         call one_e_item_{tag}(idx(k), {ONE_E_ARGS})
+      end do
+   end subroutine one_e_launch_{tag}
+
+   pure subroutine one_e_item_{tag}(ij, {ONE_E_ARGS})
+      !$acc routine seq
+      integer,  intent(in)    :: ij
+{ONE_E_DECL}
+      integer  :: ii, jj, a, c, mu, nu
+      real(dp) :: sblk({na*nb}), tblk({na*nb}), vblk({na*nb})
+      ii = p_i(ij); jj = p_j(ij)
+      call one_e_{tag}(sh_np(ii), sh_np(jj), sh_e(:, ii), sh_c(:, ii), sh_e(:, jj), sh_c(:, jj), &
+                       sh_r(:, ii), sh_r(:, jj), natm, at_z, at_r, sblk, tblk, vblk)
+      ! Affine index, not a running counter (nvfortran 26.5 "Missing increment
+      ! value", as in the gradient and multipole items). The matrices are
+      ! symmetric, so the block and its transpose are written; on the diagonal
+      ! block (ii == jj) that rewrites the same element with the same value.
+      do c = 0, {nb - 1}
+         nu = sh_ao(jj) + c
+         do a = 0, {na - 1}
+            mu = sh_ao(ii) + a
+            smat(mu, nu) = sblk(1 + a + {na}*c)
+            tmat(mu, nu) = tblk(1 + a + {na}*c)
+            vmat(mu, nu) = vblk(1 + a + {na}*c)
+            smat(nu, mu) = sblk(1 + a + {na}*c)
+            tmat(nu, mu) = tblk(1 + a + {na}*c)
+            vmat(nu, mu) = vblk(1 + a + {na}*c)
+         end do
+      end do
+   end subroutine one_e_item_{tag}
+{emit_class(la, lb, L, order)}
+end module trc_1e_k{tag}
+"""
+            with open(os.path.join(outdir, f"trc_1e_k{tag}.F90"), "w") as fh:
+                fh.write(txt)
+            names.append(tag)
+    ONE_E_ARGS_Q = ONE_E_ARGS.replace("p_i, p_j", "qi, qj")
+    uses = "\n".join(f"   use trc_1e_k{t}, only: one_e_launch_{t}, one_e_{t}" for t in names)
+    cases = "\n".join(f"""            case ({int(t[0]) * (L + 1) + int(t[1])})
+               call one_e_launch_{t}(cnt(c), idx(off(c) + 1), {ONE_E_ARGS_Q})""" for t in names)
+    dcases = "\n".join(f"""      case ({int(t[0]) * ONE_E_RADIX + int(t[1])}); call one_e_{t}(nprim_a, nprim_b, ea, ca, eb, cb, &
+                          ra, rb, natm, zatm, ratm, sout, tout, vout)""" for t in names)
+    drv = f"""!
+! One-electron driver over the per-class modules trc_1e_k<la><lb>: overlap,
+! kinetic and nuclear attraction for every pair of the list.
+!
+{head}!
+module trc_1e_kernels
+   use pic_types, only: dp
+{uses}
+   implicit none
+   private
+   public :: one_e_driver, one_e_dispatch, ONE_E_LMAX
+
+   integer, parameter :: ONE_E_LMAX = {L}
+   integer, parameter :: ONE_E_RADIX = {ONE_E_RADIX}
+   !! Dispatch radix of one_e_dispatch, FIXED and independent of ONE_E_LMAX.
+   integer, parameter :: NBLK_MAX = (((ONE_E_LMAX + 1)*(ONE_E_LMAX + 2))/2)**2
+   !! Largest Cartesian block of a class here.
+
+contains
+
+   subroutine one_e_driver(nshell, nao, natm, maxnp, sh_l, sh_np, sh_ao, &
+                           sh_e, sh_c, sh_r, at_z, at_r, &
+                           npair, p_i, p_j, smat, tmat, vmat)
+      !! S, T and V over the pair list, grouped by class on the host. A class
+      !! above ONE_E_LMAX has no kernel and is refused by the caller (trc_1e).
+      integer,  intent(in)  :: nshell, nao, natm, maxnp, npair
+      integer,  intent(in)  :: p_i(npair), p_j(npair)
+      integer,  intent(in)  :: sh_l(nshell), sh_np(nshell), sh_ao(nshell)
+      real(dp), intent(in)  :: sh_e(maxnp, nshell), sh_c(maxnp, nshell)
+      real(dp), intent(in)  :: sh_r(3, nshell)
+      real(dp), intent(in)  :: at_z(natm), at_r(3, natm)
+      real(dp), intent(out) :: smat(nao, nao), tmat(nao, nao), vmat(nao, nao)
+      integer, parameter :: NCLS = {(L + 1) ** 2}
+      integer :: ij, c, i, j, cnt(NCLS), off(NCLS), pos(NCLS)
+      integer, allocatable :: idx(:), qi(:), qj(:)
+
+      ! One data region for the whole driver. Without it every launch below
+      ! maps the three nao x nao matrices itself (copy in, copy out): at w172
+      ! cc-pVTZ that is ~0.47 s per launch whatever the class holds (a
+      ! 376-pair class cost the same as a 275000-pair one), 3x the driver's
+      ! time with one launch per class. The shell and atom arrays are not
+      ! mapped here: the caller owns their mapping, and an OpenMP
+      ! map(delete:) translation of an exit-data delete here would unmap the
+      ! caller's data; the measured cost was the three matrices. If the caller
+      ! already holds the matrices on the device the pair only moves the
+      ! reference count, so the host copy is then not updated and the caller
+      ! updates it.
+      !$acc enter data create(smat, tmat, vmat)
+      do concurrent(j=1:nao, i=1:nao)
+         smat(i, j) = 0.0_dp
+         tmat(i, j) = 0.0_dp
+         vmat(i, j) = 0.0_dp
+      end do
+      ! ORIENTATION. Every pair is passed with its HIGHER-l shell first. The
+      ! block is the same (the matrices are symmetric and the item writes the
+      ! transpose); the point is that the class modules need only (la|lb) with
+      ! la >= lb, which halves them. It is NOT what keeps the nuclear attraction
+      ! accurate: that depends on the exponents, and each class kernel chooses
+      ! the centre its recurrence is built about per primitive pair (see
+      ! emit_class). The list is lower-triangular, so a pair appears once.
+      allocate (qi(max(npair, 1)), qj(max(npair, 1)))
+      do ij = 1, npair
+         if (sh_l(p_j(ij)) > sh_l(p_i(ij))) then
+            qi(ij) = p_j(ij)
+            qj(ij) = p_i(ij)
+         else
+            qi(ij) = p_i(ij)
+            qj(ij) = p_j(ij)
+         end if
+      end do
+      cnt = 0
+      do ij = 1, npair
+         c = sh_l(qi(ij))*{L + 1} + sh_l(qj(ij)) + 1
+         cnt(c) = cnt(c) + 1
+      end do
+      off(1) = 0
+      do c = 2, NCLS
+         off(c) = off(c - 1) + cnt(c - 1)
+      end do
+      allocate (idx(max(npair, 1)))
+      pos = off
+      do ij = 1, npair
+         c = sh_l(qi(ij))*{L + 1} + sh_l(qj(ij)) + 1
+         pos(c) = pos(c) + 1
+         idx(pos(c)) = ij
+      end do
+      !$acc enter data copyin(idx, qi, qj)
+      do c = 1, NCLS
+         if (cnt(c) == 0) cycle
+         select case (c - 1)
+{cases}
+         end select
+      end do
+      !$acc exit data delete(idx, qi, qj)
+      !$acc exit data copyout(smat, tmat, vmat)
+      deallocate (idx, qi, qj)
+   end subroutine one_e_driver
+
+   pure subroutine one_e_dispatch(la, lb, nprim_a, nprim_b, ea, ca, eb, cb, &
+                                  ra, rb, natm, zatm, ratm, sout, tout, vout)
+      !! One class's S, T and V block by (la, lb), for a caller that holds a
+      !! single shell pair (the libfint oracle check, the ceiling checks); the
+      !! driver above does not use it. Host-side call. Only classes with
+      !! la >= lb have a kernel (the driver orients every pair so, and the
+      !! nuclear attraction chooses its centre per primitive pair): a pair with
+      !! la < lb is evaluated as (lb|la) and its block transposed.
+      !$acc routine seq
+      integer,  intent(in)  :: la, lb, nprim_a, nprim_b, natm
+      real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
+      real(dp), intent(in)  :: eb(nprim_b), cb(nprim_b)
+      real(dp), intent(in)  :: ra(3), rb(3)
+      real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
+      real(dp), intent(out) :: sout(*), tout(*), vout(*)
+      real(dp) :: ss(NBLK_MAX), tt(NBLK_MAX), vv(NBLK_MAX)
+      integer  :: na, nb, ia, ib
+      if (max(la, lb) > ONE_E_LMAX) then
+         ! No kernel for this class (ONE_E_LMAX is below the basis): a sentinel
+         ! rather than silence, so the caller's stale buffer is not taken for a
+         ! result. huge() and not a NaN, as device code under -fast launders
+         ! a NaN into a bound.
+         sout(1) = huge(1.0_dp)
+         tout(1) = huge(1.0_dp)
+         vout(1) = huge(1.0_dp)
+         return
+      end if
+      if (la >= lb) then
+         call one_e_dispatch_ge(la, lb, nprim_a, nprim_b, ea, ca, eb, cb, &
+                                ra, rb, natm, zatm, ratm, sout, tout, vout)
+      else
+         na = (la + 1)*(la + 2)/2
+         nb = (lb + 1)*(lb + 2)/2
+         call one_e_dispatch_ge(lb, la, nprim_b, nprim_a, eb, cb, ea, ca, &
+                                rb, ra, natm, zatm, ratm, ss, tt, vv)
+         do ib = 0, nb - 1
+            do ia = 0, na - 1
+               sout(1 + ia + na*ib) = ss(1 + ib + nb*ia)
+               tout(1 + ia + na*ib) = tt(1 + ib + nb*ia)
+               vout(1 + ia + na*ib) = vv(1 + ib + nb*ia)
+            end do
+         end do
+      end if
+   end subroutine one_e_dispatch
+
+   pure subroutine one_e_dispatch_ge(la, lb, nprim_a, nprim_b, ea, ca, eb, cb, &
+                                     ra, rb, natm, zatm, ratm, sout, tout, vout)
+      !$acc routine seq
+      integer,  intent(in)  :: la, lb, nprim_a, nprim_b, natm
+      real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
+      real(dp), intent(in)  :: eb(nprim_b), cb(nprim_b)
+      real(dp), intent(in)  :: ra(3), rb(3)
+      real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
+      real(dp), intent(out) :: sout(*), tout(*), vout(*)
+      select case (la*ONE_E_RADIX + lb)
+{dcases}
+      case default
+         sout(1) = huge(1.0_dp)
+         tout(1) = huge(1.0_dp)
+         vout(1) = huge(1.0_dp)
+      end select
+   end subroutine one_e_dispatch_ge
+
+end module trc_1e_kernels
+"""
+    with open(os.path.join(outdir, "trc_1e_kernels.F90"), "w") as fh:
+        fh.write(drv)
+    print(f"wrote {outdir}: {len(names)} one-electron class modules + driver")
+
+
 def emit_multipole_split(L, outdir, order="lexicographic"):
     order_arg = "" if order == "lexicographic" else f" --order {order}"
     head = f"! GENERATED by scripts/gen_1e.py --lmax {L} --multipole-dir{order_arg} -- do not edit.\n"
@@ -2124,7 +2609,6 @@ end module trc_mult_kernels
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--lmax", type=int, default=2)
-    ap.add_argument("-o", "--output", default="src/trc_1e_kernels.F90")
     ap.add_argument("--order", choices=("lexicographic", "gamess"),
                     default="lexicographic",
                     help="Cartesian order of the AO slots sout/tout/vout (and "
@@ -2160,15 +2644,20 @@ def main():
     ap.add_argument("--pcm-grad-dir", metavar="DIR", default=None,
                     help="as --pcm-grad, one module per class plus the driver "
                          "module (trc_pcm_grad_kernels.F90) in DIR")
+    ap.add_argument("--base-dir", metavar="DIR", default=None,
+                    help="the S/T/V kernels, one module per class plus the driver "
+                         "module (trc_1e_kernels.F90) in DIR")
     ap.add_argument("--multipole-dir", metavar="DIR", default=None,
                     help="as --multipole, one module per class plus the driver "
                          "module (trc_mult_kernels.F90) in DIR")
     args = ap.parse_args()
     L = args.lmax
     order = args.order
-    order_val = 0 if order == "lexicographic" else 1
-    order_arg = "" if order == "lexicographic" else f" --order {order}"
 
+    if args.base_dir:
+        os.makedirs(args.base_dir, exist_ok=True)
+        emit_one_e_split(L, args.base_dir, order)
+        return
     if args.deriv_dir:
         os.makedirs(args.deriv_dir, exist_ok=True)
         emit_grad_split(L, args.deriv_dir, order)
@@ -2194,103 +2683,7 @@ def main():
         emit_pcm_grad_module(L, args.pcm_grad, order)
         return
 
-    parts = [f"""!
-! One-electron kernels: overlap, kinetic, nuclear attraction.
-!
-! GENERATED by scripts/gen_1e.py --lmax {L}{order_arg} -- do not edit.
-!
-! One straight-line routine per (la, lb) class, in the same style the
-! four-centre kernels established: literal indices, no runtime loop bounds over
-! angular momentum, and the routine in the same module as its caller so
-! nvfortran will inline it.
-!
-! Overlap and kinetic are separable and need no auxiliary index; nuclear
-! attraction is not separable and carries the Boys function and an m index.
-! Both use the SAME horizontal transfer as the ERI, because the HRR is a
-! statement about the two Gaussian centres rather than the operator between
-! them. See the module docstring of scripts/gen_1e.py.
-!
-! TRC_CART_ORDER GUARD. sout/tout/vout below are AO-indexed and follow the
-! order --order was given at generation time (0 = lexicographic, the
-! default; 1 = gamess); TRC_CART_ORDER selects it at compile time, and an
-! undefined TRC_CART_ORDER reads as 0 in a preprocessor #if, so the default
-! build needs no new -D flag. Same idea as docs/GENERATORS.md's TRC_LMAX
-! guard, for a different compile-time constant.
-!
-#if TRC_CART_ORDER != {order_val}
-#error "This file was generated for a different TRC_CART_ORDER. Regenerate it."
-#endif
-module trc_1e_kernels
-   use pic_types, only: dp
-   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV
-   implicit none
-   private
-   public :: one_e_dispatch, one_e_driver, ONE_E_LMAX, TRC_NMULT
-
-   integer, parameter :: TRC_NMULT = 3 + 9 + 27
-   !! Dipole + quadrupole + octupole, full Cartesian tensors.
-
-   integer, parameter :: ONE_E_LMAX = {L}
-   integer, parameter :: ONE_E_RADIX = __RADIX__
-   !! Dispatch radix, FIXED and independent of ONE_E_LMAX -- see gen_1e.py.
-   real(dp), parameter :: PI = 3.14159265358979323846_dp
-   integer, parameter :: NC_MAX = (ONE_E_LMAX + 1)*(ONE_E_LMAX + 2)/2
-   !! Largest Cartesian block a shell pair produces here; the driver's
-   !! per-item buffers are this size because `do concurrent` locals are fixed.
-   integer, parameter :: NBLK_MAX = NC_MAX*NC_MAX
-
-contains
-
-#include "inc/trc_boys_eval.inc"
-#include "inc/trc_1e_driver.inc"
-"""]
-
-    names = []
-    for la in range(L + 1):
-        for lb in range(L + 1):
-            parts.append(emit_class(la, lb, L, order))
-            names.append((la, lb))
-
-    parts.append(f"""
-   pure subroutine one_e_dispatch(la, lb, nprim_a, nprim_b, ea, ca, eb, cb, &
-                                  ra, rb, natm, zatm, ratm, sout, tout, vout)
-      !! Dispatch on the class. Host-side call, so the module boundary the
-      !! kernels care about is not crossed here.
-      !$acc routine seq
-      integer,  intent(in)  :: la, lb, nprim_a, nprim_b, natm
-      real(dp), intent(in)  :: ea(nprim_a), ca(nprim_a)
-      real(dp), intent(in)  :: eb(nprim_b), cb(nprim_b)
-      real(dp), intent(in)  :: ra(3), rb(3)
-      real(dp), intent(in)  :: zatm(natm), ratm(3, natm)
-      real(dp), intent(out) :: sout(*), tout(*), vout(*)
-      select case (la*ONE_E_RADIX + lb)""")
-    for la, lb in names:
-        parts.append(
-            f"""      case ({la*ONE_E_RADIX + lb}); call one_e_{la}{lb}(nprim_a, nprim_b, ea, ca, eb, cb, &
-                          ra, rb, natm, zatm, ratm, sout, tout, vout)""")
-    parts.append("""      case default
-         !! No kernel for this class -- ONE_E_LMAX is below the basis. A
-         !! sentinel rather than silence: these are intent(out) on assumed-size
-         !! dummies, so doing nothing hands back the caller's stale buffer as
-         !! an overlap matrix, and an SCF converges happily on it. huge() and
-         !! not a NaN because this is device code under -fast, where the first
-         !! min/max launders a NaN into a bound.
-         !!
-         !! trc_basis refuses such a basis on the host before any of this runs;
-         !! this arm is the backstop for a path that skipped that check.
-         sout(1) = huge(1.0_dp)
-         tout(1) = huge(1.0_dp)
-         vout(1) = huge(1.0_dp)
-      end select
-   end subroutine one_e_dispatch
-
-end module trc_1e_kernels
-""")
-
-    txt = "\n".join(parts).replace("__RADIX__", str(ONE_E_RADIX))
-    with open(args.output, "w") as fh:
-        fh.write(txt)
-    print(f"wrote {args.output}: {len(names)} classes, {txt.count(chr(10))} lines")
+    ap.error("one of --base-dir, --multipole-dir, --deriv-dir, --pcm-grad-dir, --multipole, --pcm, --deriv or --pcm-grad is required")
 
 
 if __name__ == "__main__":

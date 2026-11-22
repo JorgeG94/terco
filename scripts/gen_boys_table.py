@@ -10,12 +10,19 @@ and that script was not in the repository. The table was therefore
 unreproducible: raising BOYS_MMAX to reach f functions (which need m up to
 4*lmax = 12) meant either finding the original generator or writing one.
 
-Validated against the committed MMAX=8 table, though NOT byte for byte: the
+Validated against the original MMAX=8 table, though NOT byte for byte: the
 leading coefficient of each series agrees to 16 digits, and the trailing ones
 diverge in their own low digits because they are O(1e-14) and the original was
 produced by some other quadrature. The absolute disagreement is ~1e-17, below
 double precision, so the EVALUATED function agrees even where the file does
 not. Check function values, not the diff.
+
+The committed table is this script's own output, and raising --mmax does not
+move a coefficient of the orders already there: --mmax 20 reproduces every
+coefficient of orders 0..16 of the --mmax 16 table bit for bit (the series are
+independent per order and per interval), so the file changes only in its
+stride. The evaluated function against mpmath, orders 0..20 on T in [0, 2000):
+at most 2.4e-15 relative (boys_eval and the downward form alike).
 
 LAYOUT (load-bearing, matches the Clenshaw loop in trc_boys.F90)
 ---------------------------------------------------------------
@@ -100,7 +107,7 @@ def emit_data(flat, name):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--mmax", type=int, default=8,
-                    help="highest Boys order; a kernel needs 4*lmax")
+                    help="highest Boys order; a kernel needs 4*lmax (20 for h)")
     ap.add_argument("--ncheb", type=int, default=5)
     ap.add_argument("--ngrid", type=int, default=960)
     ap.add_argument("--tmax", type=float, default=30.0)

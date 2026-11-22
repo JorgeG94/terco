@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-Emit the Cartesian-to-pure-spherical-harmonic transform blocks, l = 0..4,
+Emit the Cartesian-to-pure-spherical-harmonic transform blocks, l = 0..4 by
+default (--lmax up to 6; 4 for --order gamess, whose Cartesian order is only
+transcribed that far),
 one (ncart(l), 2l+1) matrix per l, padded into a single rank-3 PARAMETER
 table keyed by this build's own Cartesian order (--order, same flag every
 other generator here takes).
@@ -29,7 +31,7 @@ arithmetic rather than imported, because nothing on the Fortran side of this
 boundary can call out to a Python or libcint dependency at BUILD time (the
 same reason trc_ao_norm.F90 reimplements cartorder.gamess_norm_sq instead of
 importing it). It is checked, not assumed: this module's self-test (run it
-with no arguments) compares every l = 0..4, every Cartesian order, against
+with no arguments) compares every emitted l, every Cartesian order, against
 `pyscf.gto.mole.cart2sph(l, normalized='sp')` -- which calls libcint's own
 compiled CINTc2s_ket_sph -- and requires agreement to 1e-13. That is possible
 to run only where pyscf is installed (it is not a build dependency; see
@@ -87,7 +89,15 @@ from functools import lru_cache
 
 import cartorder
 
-LMAX = 4
+#: Highest l the table can reach, by Cartesian order: the closed form below
+#: is exact for any l, so the only bound is cartorder's (the gamess order is
+#: transcribed through l = 4 only, cartorder._gamess raises above). What is
+#: emitted is `--lmax`, default 4: a larger table is a larger PARAMETER array,
+#: which a device kernel may copy per thread (trc_sph.F90's expand_columns),
+#: so only a build that needs h (TERCO_LMAX=5) asks for 5 (src/CMakeLists.txt).
+LMAX_BY_ORDER = {"lexicographic": 6, "gamess": 4}
+DEFAULT_LMAX = 4
+LMAX = DEFAULT_LMAX
 
 
 @lru_cache(maxsize=None)
@@ -203,9 +213,11 @@ def _guard(order_val):
 """
 
 
-def emit(order, order_val, cmd):
-    ncart_max = (LMAX + 1) * (LMAX + 2) // 2   # 15, at l=4
-    nsph_max = 2 * LMAX + 1                     # 9, at l=4
+def emit(order, order_val, cmd, LMAX=DEFAULT_LMAX):
+    if LMAX > LMAX_BY_ORDER[order]:
+        raise SystemExit(f"gen_sph.py: --order {order} reaches l = {LMAX_BY_ORDER[order]} only (cartorder.py)")
+    ncart_max = (LMAX + 1) * (LMAX + 2) // 2   # 28, at l=6
+    nsph_max = 2 * LMAX + 1                     # 13, at l=6
     flat = []
     for l in range(LMAX + 1):
         comps = cartorder.components(l, order)
@@ -260,6 +272,8 @@ def main():
     ap.add_argument("--order", choices=("lexicographic", "gamess", "libcint"),
                     default="lexicographic")
     ap.add_argument("-o", "--out", default="src/generated/trc_sph_tables.F90")
+    ap.add_argument("--lmax", type=int, default=DEFAULT_LMAX,
+                    help="highest l emitted (default 4; 5 for an h orbital basis)")
     ap.add_argument("--self-test", action="store_true",
                     help="compare against pyscf/libcint instead of writing a file")
     args = ap.parse_args()
@@ -270,7 +284,7 @@ def main():
         from pyscf.gto import mole
         worst = 0.0
         for ordname in ("lexicographic", "gamess"):
-            for l in range(LMAX + 1):
+            for l in range(LMAX_BY_ORDER[ordname] + 1):
                 comps = cartorder.components(l, ordname)
                 mat = numpy.array(sph_block(l, comps), dtype=float)
                 if ordname == "lexicographic":
@@ -294,8 +308,10 @@ def main():
     cmd = "scripts/gen_sph.py"
     if args.order != "lexicographic":
         cmd += f" --order {args.order}"
+    if args.lmax != DEFAULT_LMAX:
+        cmd += f" --lmax {args.lmax}"
     with open(args.out, "w") as fh:
-        fh.write(emit(order, order_val, cmd))
+        fh.write(emit(order, order_val, cmd, args.lmax))
     print(f"wrote {args.out}")
 
 

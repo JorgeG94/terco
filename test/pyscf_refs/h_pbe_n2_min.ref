@@ -1,0 +1,10 @@
+# terco pyscf reference v1
+# case: check_h_vs_pyscf pbe_n2_min
+# generator: test/pyscf_refs/generate.py CASES["h_pbe_n2_min"] -> gen_h_scf
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: 14eba15ee80cafbccbfcd575001449b8c10bd28de42409e19482a0e870756206
+# files: test/check_h_vs_pyscf.F90 test/basis_sets/h-min-pyscf17.json test/tops_n2.xyz
+# pbe RKS, sph, 72 AOs, 27804 grid points, GRAD_NORM 9.051e-11
+E -7.92744246346522630e+01
+END

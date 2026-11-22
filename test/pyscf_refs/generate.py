@@ -1226,6 +1226,378 @@ def gen_rsh_g(case, xyz):
     dump.unlink()
 
 
+def _h_row_weights(n):
+    """check_h_vs_pyscf.F90's `weight(i, j)` for 1-based i, j: integer
+    arithmetic and one division, so Fortran and numpy agree exactly."""
+    i = np.arange(1, n + 1, dtype=np.int64)[:, None]
+    j = np.arange(1, n + 1, dtype=np.int64)[None, :]
+    return ((i * 7919 + j * 104729 + i * j * 31) % 1009) / 1009.0 - 0.5
+
+
+def _h_mol(zint, rr, json_rel, charge, spin, cart):
+    """pyscf's Mole for check_h_vs_pyscf's systems: the JSON's own exponents
+    and contractions (bse_json_basis), terco's coordinates in Bohr. The
+    shells of every element are in ascending l in these JSON files, so
+    pyscf's per-atom sort by l leaves terco's AO order alone; the caller
+    checks the AO count and the overlap, which a reordering would break."""
+    elements = {_SYMBOL[int(z)]: int(z) for z in zint}
+    basis_arg = bse_json_basis(TEST / json_rel, elements)
+    for sym, shells in basis_arg.items():
+        ls = [row[0] for row in shells]
+        if ls != sorted(ls):
+            raise RuntimeError(f"h basis {json_rel}: shells of {sym} are not in ascending l")
+    atoms = [(_SYMBOL[int(z)], tuple(rr[i])) for i, z in enumerate(zint)]
+    return gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=cart, charge=charge, spin=spin, verbose=0)
+
+
+def _one_e_exact_v(l, ea, eb, ra, rb, rc, ia, ib, cmpt):
+    """-<a|1/|r - C||b> (unit charge at C) for ONE pair of Cartesian components
+    of two unnormalised primitives, in 50-digit mpmath: McMurchie-Davidson
+    Hermite expansion, Boys function from the incomplete gamma. No terco code
+    and no libcint -- the referee of gen_one_e_cancellation."""
+    from mpmath import mp, mpf, exp, pi, gammainc
+    mp.dps = 50
+    a, b = mpf(ea), mpf(eb)
+    A = [mpf(x) for x in ra]
+    B = [mpf(x) for x in rb]
+    C = [mpf(x) for x in rc]
+    p = a + b
+    mu = a * b / p
+    P = [(a * A[d] + b * B[d]) / p for d in range(3)]
+    ci = cmpt[0][ia]
+    cj = cmpt[1][ib]
+
+    def E(i, j, t, Q):
+        if t < 0 or t > i + j:
+            return mpf(0)
+        if i == j == t == 0:
+            return exp(-mu * Q * Q)
+        if j == 0:
+            return (E(i - 1, j, t - 1, Q) / (2 * p) - mu * Q / a * E(i - 1, j, t, Q)
+                    + (t + 1) * E(i - 1, j, t + 1, Q))
+        return (E(i, j - 1, t - 1, Q) / (2 * p) + mu * Q / b * E(i, j - 1, t, Q)
+                + (t + 1) * E(i, j - 1, t + 1, Q))
+
+    def boys(m, T):
+        if T < mpf("1e-40"):
+            return mpf(1) / (2 * m + 1)
+        return gammainc(m + mpf(1) / 2, 0, T) / (2 * T ** (m + mpf(1) / 2))
+
+    def R(t, u, v, n, PC, Fn):
+        if t == u == v == 0:
+            return (-2 * p) ** n * Fn[n]
+        if t > 0:
+            r = PC[0] * R(t - 1, u, v, n + 1, PC, Fn)
+            return r + (t - 1) * R(t - 2, u, v, n + 1, PC, Fn) if t > 1 else r
+        if u > 0:
+            r = PC[1] * R(t, u - 1, v, n + 1, PC, Fn)
+            return r + (u - 1) * R(t, u - 2, v, n + 1, PC, Fn) if u > 1 else r
+        r = PC[2] * R(t, u, v - 1, n + 1, PC, Fn)
+        return r + (v - 1) * R(t, u, v - 2, n + 1, PC, Fn) if v > 1 else r
+
+    PC = [P[d] - C[d] for d in range(3)]
+    Fn = [boys(m, p * sum(x * x for x in PC)) for m in range(2 * l + 1)]
+    tot = mpf(0)
+    for t in range(ci[0] + cj[0] + 1):
+        for u in range(ci[1] + cj[1] + 1):
+            for w in range(ci[2] + cj[2] + 1):
+                tot += (E(ci[0], cj[0], t, A[0] - B[0]) * E(ci[1], cj[1], u, A[1] - B[1])
+                        * E(ci[2], cj[2], w, A[2] - B[2]) * R(t, u, w, 0, PC, Fn))
+    return float(-2 * pi / p * tot)
+
+
+def gen_one_e_cancellation():
+    """check_one_e_cancellation.F90: S, T and the nuclear attraction of a unit
+    charge on a third centre for single primitives of l = 1..5 with a large
+    exponent ratio (1.6 on A against 40 on B, |AB| = 2.5), from pyscf
+    (int1e_ovlp, int1e_kin, -int1e_rinv at C), carried into terco's AO
+    normalisation (a unit-normalised x^l, the other components by the double
+    factorial ratio). Only the diffuse-first order is taken from pyscf: libcint
+    is accurate there (the worst error against mpmath at l = 1..5 is the
+    figure written in the .ref) and loses up to 1.8e-13 the other way round, so the test compares the tight-first kernel with the transpose
+    of this block, which is the same integral. libcint is referred to mpmath on
+    a spread of elements of every block and the case refused if it is off by
+    more than 1e-14 of the block's largest element. The file holds l = 1..4,
+    then the contracted blocks, then l = 5: the test reads it in order.
+
+    One contracted block at l = 1, 2, 3: two primitives on each centre,
+    exponents (1.0, 60) on A and (100, 40) on B, |AB| = 3.0 along the same
+    unit vector. Of the four primitive pairs three build the nuclear-attraction
+    table about B (a tight primitive on B against a diffuse or tight one on A:
+    these are the cancelling pairs, and they dominate the error of a kernel
+    that always builds about A); the one pair built about A (60 on A, 40 on B)
+    is tight against tight at 3 bohr and contributes nothing measurable, so the
+    A-built branch is covered by the single-primitive configuration 2 (tight
+    on A, diffuse on B). S and T are the weighted sum of the single-primitive
+    pyscf blocks; V is the weighted sum of the mpmath primitive integrals
+    (every element), because libcint's V is less accurate for a tight
+    primitive on the first centre (5.7e-15, 2.4e-14, 4.6e-14 of the block
+    maximum at l = 2, 3, 4 against mpmath) than on the second (7e-16, 4e-16,
+    2e-16)."""
+    EA, EB = 1.6, 40.0
+    RB = [2.5 * x for x in (0.48, 0.36, 0.8)]
+    RC = [1.1, -0.7, 0.4]
+
+    def dfact(n):
+        return float(np.prod(np.arange(n, 0, -2))) if n > 0 else 1.0
+
+    def comps(l):
+        return [(ix, iy, l - ix - iy) for ix in range(l, -1, -1) for iy in range(l - ix, -1, -1)]
+
+    def gnorm(l, a):
+        # unit-normalised x^l exp(-a r^2): the coefficient the test passes
+        return float(1.0 / np.sqrt(dfact(2 * l - 1) / (4.0 * a) ** l * (np.pi / (2.0 * a)) ** 1.5))
+
+    def pyscf_blocks(l, ea, eb, ra, rb):
+        """S, T, V blocks of two single primitives in terco's normalisation."""
+        basis = {"H1": [[l, [ea, 1.0]]], "H2": [[l, [eb, 1.0]]]}
+        mol = gto.M(atom=[("H1", tuple(ra)), ("H2", tuple(rb))], basis=basis, unit="Bohr", cart=True,
+                    spin=0, verbose=0)
+        mol.set_rinv_origin(RC)
+        s = mol.intor("int1e_ovlp")
+        t = mol.intor("int1e_kin")
+        v = -mol.intor("int1e_rinv")
+        nc = len(comps(l))
+        # the two shells' own S diagonals -> terco's normalisation, per component
+        want = np.array([dfact(2 * a - 1) * dfact(2 * b - 1) * dfact(2 * c - 1) / dfact(2 * l - 1)
+                         for a, b, c in comps(l)])
+        n_a = np.sqrt(want / np.diag(s)[:nc])
+        n_b = np.sqrt(want / np.diag(s)[nc:])
+        return {name: m[:nc, nc:] * n_a[:, None] * n_b[None, :] for name, m in (("S", s), ("T", t), ("V", v))}
+
+    w = RefWriter("one_e_cancellation.ref")
+    w.header("check_one_e_cancellation", [ROOT / "test" / "check_one_e_cancellation.F90"])
+    worst_lc = 0.0
+    RA0 = [0.0, 0.0, 0.0]
+    ra, rb = RA0, RB
+
+    def single_primitive(l):
+        """The diffuse-first single-primitive block of angular momentum l and
+        the check of libcint's V against mpmath."""
+        nonlocal worst_lc
+        blk = pyscf_blocks(l, EA, EB, RA0, RB)
+        nc = len(comps(l))
+        for name in ("S", "T", "V"):
+            w.vector(f"{name}_l{l}_c1", blk[name].flatten(order="F"))
+        # libcint against mpmath: a spread of V elements of the block
+        mx = np.abs(blk["V"]).max()
+        rng = np.random.default_rng(7 + 10 * l + 1)
+        cmpt = (comps(l), comps(l))
+        for _ in range(6):
+            ia, ib = int(rng.integers(nc)), int(rng.integers(nc))
+            ex = _one_e_exact_v(l, EA, EB, RA0, RB, RC, ia, ib, cmpt)
+            # the exact primitive times the coefficients the test passes
+            err = abs(blk["V"][ia, ib] - ex * gnorm(l, EA) * gnorm(l, EB)) / mx
+            worst_lc = max(worst_lc, err)
+            if err > 1e-14:
+                raise ValueError(f"one_e_cancellation l={l}: libcint V[{ia},{ib}] differs "
+                                 f"from mpmath by {err:.2e} of the block maximum")
+
+    for l in range(1, 5):
+        single_primitive(l)
+
+    # contracted block: cancelling pairs inside one contraction
+    exps_a, wts_a = [1.0, 60.0], [0.6, 0.5]
+    exps_b, wts_b = [100.0, 40.0], [0.45, 0.55]
+    rb = [3.0 * x for x in (0.48, 0.36, 0.8)]
+    for l in (1, 2, 3):
+        nc = len(comps(l))
+        tot = {name: np.zeros((nc, nc)) for name in ("S", "T", "V")}
+        for ea, wa in zip(exps_a, wts_a):
+            for eb, wb in zip(exps_b, wts_b):
+                blk = pyscf_blocks(l, ea, eb, ra, rb)
+                tot["S"] += wa * wb * blk["S"]
+                tot["T"] += wa * wb * blk["T"]
+                cmpt = (comps(l), comps(l))
+                ex = np.array([[_one_e_exact_v(l, ea, eb, ra, rb, RC, ia, ib, cmpt) for ib in range(nc)]
+                               for ia in range(nc)])
+                tot["V"] += wa * wb * ex * gnorm(l, ea) * gnorm(l, eb)
+        for name in ("S", "T", "V"):
+            w.vector(f"{name}_ctr_l{l}", tot[name].flatten(order="F"))
+    w.comment(f"contracted block, |AB| = 3.0, exponents {exps_a} on A and {exps_b} on B, weights {wts_a} and {wts_b} "
+              f"(the coefficients the test passes are weight x unit-normalised x^l)")
+
+    # l = 5 (h) goes after the contracted blocks, so the vectors above keep their
+    # place in the file: the test reads it in order.
+    single_primitive(5)
+    w.comment(f"libcint against mpmath on 6 random V elements of each of the 5 single-primitive blocks: worst "
+              f"{worst_lc:.2e} of the block maximum")
+    w.end()
+    w.write()
+    print(f"  one_e_cancellation: libcint vs mpmath worst {worst_lc:.2e} (relative to the block maximum)")
+
+
+def gen_h_sph_overlap(case, xyz, json_rel):
+    """check_h_vs_pyscf.F90's sph_overlap_hco: pyscf's spherical (cart=False)
+    overlap of the cut-down h basis on HCO, unit-normalised, reduced to the
+    same fixed-weight row sums. terco's own spherical overlap is normalised
+    the same way before it is compared, because its diagonal above p is a
+    per-shell constant that is not 1 (src/core/trc_sph.F90); what is left is
+    the structure of the transform at every l up to h."""
+    ANG2BOHR = 1.8897261254578281   # trc_test_basis.F90's ANG, what read_xyz applies
+    lines = [ln.split() for ln in open(TEST / xyz).read().splitlines()[2:] if ln.strip()]
+    sym2z = {v: k for k, v in _SYMBOL.items()}
+    zint = [sym2z[ln[0]] for ln in lines]
+    rr = np.array([[float(x) * ANG2BOHR for x in ln[1:4]] for ln in lines])
+    mol = _h_mol(zint, rr, json_rel, 0, int(sum(zint)) % 2, False)
+    s = mol.intor('int1e_ovlp')
+    d = np.sqrt(np.diag(s))
+    s = s / d[:, None] / d[None, :]
+    n = s.shape[0]
+    w = RefWriter(f"h_{case}.ref")
+    w.header(f"check_h_vs_pyscf {case}",
+             [ROOT / "test" / "check_h_vs_pyscf.F90", TEST / json_rel, TEST / xyz])
+    w.int_("NAO", n)
+    w.vector("S_ROWS", (_h_row_weights(n) * s).sum(axis=1))
+    w.end()
+    w.write()
+
+
+def gen_h_ints(case, xyz, json_rel):
+    """check_h_vs_pyscf.F90's ints_* cases: S, T, V, and the Coulomb and
+    exchange matrices of the fixed density, Cartesian (pyscf cart=True),
+    reduced to row sums against the fixed integer weights both sides
+    compute. Everything pyscf gives is carried into terco's per-AO
+    normalisation first, as gen_erf_fock does."""
+    run_bin("check_h_vs_pyscf", [case])
+    dump = TEST / f"h_probe_{case}.bin"
+    if not dump.exists():
+        print(f"  h {case}: binary self-skipped (LMAX too low for this build); not regenerating")
+        return
+    r = BinReader(dump)
+    natm, nao = r.i8(), r.i8()
+    zint = np.atleast_1d(r.i8(natm))
+    rr = r.f8(3 * natm).reshape(3, natm, order='F').T
+    d_terco = r.mat(nao)
+    s_terco = r.mat(nao)
+    t_terco = r.mat(nao)
+    v_terco = r.mat(nao)
+    j_terco_run = r.mat(nao)
+    k_terco_run = r.mat(nao)
+    r.close()
+    mol = _h_mol(zint, rr, json_rel, 0, int(sum(zint)) % 2, True)
+    if mol.nao_nr() != nao:
+        raise RuntimeError(f"gen_h_ints {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
+    s_pyscf = mol.intor('int1e_ovlp')
+    n, s_err = ao_norm_from_overlap(s_terco, s_pyscf)
+    if s_err >= 1e-9:
+        raise RuntimeError(f"gen_h_ints {case}: overlap check failed, {s_err:.3e}")
+    d_pyscf = n[:, None] * d_terco * n[None, :]
+    vj, vk = scf.hf.get_jk(mol, d_pyscf)
+    nn = n[:, None] * n[None, :]
+    mats = {"S": s_pyscf * nn, "T": mol.intor('int1e_kin') * nn, "V": mol.intor('int1e_nuc') * nn,
+            "J": vj * nn, "K": vk * nn}
+    ran = {"S": s_terco, "T": t_terco, "V": v_terco, "J": j_terco_run, "K": k_terco_run}
+    w = _h_row_weights(nao)
+    out = RefWriter(f"h_{case}.ref")
+    out.header(f"check_h_vs_pyscf {case}",
+               [ROOT / "test" / "check_h_vs_pyscf.F90", TEST / json_rel, TEST / xyz])
+    out.int_("NAO", nao)
+    for tag, m in mats.items():
+        out.vector(f"{tag}_ROWS", (w * m).sum(axis=1))
+        print(f"  h {case} {tag}: max|terco - pyscf| {np.abs(ran[tag] - m).max():.2e}  max|pyscf| {np.abs(m).max():.2e}")
+    out.end()
+    out.write()
+    dump.unlink()
+
+
+def gen_h_scf(case, xyz, json_rel, cart):
+    """check_h_vs_pyscf.F90's scf_* cases: the converged SCF energy of the
+    molecule, spin, AO space and (for DFT) the grid terco ran, converged
+    tightly in pyscf from its own guess."""
+    PYSCF_XC = {'svwn': 'LDA_X,LDA_C_VWN', 'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP', 'r2scan': 'R2SCAN',
+                'wb97x': 'wb97x'}
+    run_bin("check_h_vs_pyscf", [case])
+    dump = TEST / f"h_probe_{case}.bin"
+    if not dump.exists():
+        print(f"  h {case}: binary self-skipped (LMAX too low for this build); not regenerating")
+        return
+    r = BinReader(dump)
+    natm, nspin, na, nb = r.i8(), r.i8(), r.i8(), r.i8()
+    zint = np.atleast_1d(r.i8(natm))
+    rr = r.f8(3 * natm).reshape(3, natm, order='F').T
+    fn = r.str_(8)
+    npts = r.i8()
+    if npts:
+        pts = r.f8(3 * npts).reshape(3, npts, order='F').T
+        wts = r.f8(npts)
+    e_t = r.f8(1)[0]
+    r.close()
+    charge = int(sum(zint)) - (na + nb)
+    mol = _h_mol(zint, rr, json_rel, charge, na - nb, cart)
+
+    def make_mf():
+        if fn == "":
+            return scf.RHF(mol) if nspin == 1 else scf.UHF(mol)
+        m = dft.RKS(mol) if nspin == 1 else dft.UKS(mol)
+        m.xc = PYSCF_XC[fn]
+        m.grids.coords = np.ascontiguousarray(pts)
+        m.grids.weights = wts
+        m.grids.non0tab = None
+        return m
+
+    mf, grad_norm = converge_tight(make_mf, None, f"h {case}")
+    w = RefWriter(f"h_{case}.ref")
+    w.header(f"check_h_vs_pyscf {case}",
+             [ROOT / "test" / "check_h_vs_pyscf.F90", TEST / json_rel, TEST / xyz])
+    w.comment(f"{fn or 'hf'} {'U' if nspin == 2 else 'R'}{'KS' if fn else 'HF'}, "
+              f"{'cart' if cart else 'sph'}, {mol.nao_nr()} AOs, {npts} grid points, "
+              f"GRAD_NORM {grad_norm:.3e}")
+    w.real("E", mf.e_tot)
+    w.end()
+    w.write()
+    print(f"  h {case}: E(pyscf) {mf.e_tot:20.12f}  E(terco) {e_t:20.12f}  |dE| {abs(e_t - mf.e_tot):.2e}  "
+          f"|g| {grad_norm:.2e}")
+    dump.unlink()
+
+
+def gen_h_schwarz(case, xyz, json_rel):
+    """check_schwarz_rys_vs_hgp.F90's cc-pV5Z case: the exact diagonal Schwarz
+    bound Q(i,j) = sqrt(max_ab |(ij|ij)_ab,ab|) of every shell pair i >= j,
+    from pyscf's own Cartesian int2e, in terco's compound pair order
+    (i*(i-1)/2 + j, 1-based). The geometry is the xyz file in the constant the
+    test programs' read_xyz applies."""
+    ANG2BOHR = 1.8897261254578281   # trc_test_basis.F90's ANG, what read_xyz applies
+    lines = [ln.split() for ln in open(TEST / xyz).read().splitlines()[2:] if ln.strip()]
+    sym2z = {v: k for k, v in _SYMBOL.items()}
+    zint = [sym2z[ln[0]] for ln in lines]
+    rr = np.array([[float(x) * ANG2BOHR for x in ln[1:4]] for ln in lines])
+    mol = _h_mol(zint, rr, json_rel, 0, 0, True)
+    nsh = mol.nbas
+
+    def dfact(n):
+        return float(np.prod(np.arange(n, 0, -2))) if n > 0 else 1.0
+
+    def comps(l):
+        return [(ix, iy, l - ix - iy) for ix in range(l, -1, -1) for iy in range(l - ix, -1, -1)]
+
+    # terco's Cartesian AOs are libcint's 'sp' ones: the x^l component of a
+    # shell has unit self-overlap and a component (a, b, c) has
+    # (2a-1)!!(2b-1)!!(2c-1)!!/(2l-1)!! of it; pyscf's cart=True AOs differ by a
+    # constant per shell. n[i][comp] rescales pyscf's AO to terco's, as
+    # ao_norm_from_overlap does for the matrices.
+    nfac = []
+    for i in range(nsh):
+        l = mol.bas_angular(i)
+        sd = np.diag(mol.intor_by_shell('int1e_ovlp', (i, i)))
+        want = [dfact(2 * a - 1) * dfact(2 * b - 1) * dfact(2 * c - 1) / dfact(2 * l - 1) for a, b, c in comps(l)]
+        nfac.append(np.sqrt(np.array(want) / sd))
+    q = []
+    for i in range(nsh):
+        for j in range(i + 1):
+            blk = mol.intor_by_shell('int2e', (i, j, i, j))
+            ni, nj = blk.shape[0], blk.shape[1]
+            diag = [blk[a, b, a, b] * (nfac[i][a] * nfac[j][b]) ** 2 for a in range(ni) for b in range(nj)]
+            q.append(np.sqrt(max(abs(d) for d in diag)))
+    w = RefWriter(f"schwarz_{case}.ref")
+    w.header(f"check_schwarz_rys_vs_hgp {case}",
+             [ROOT / "test" / "check_schwarz_rys_vs_hgp.F90", TEST / json_rel, TEST / xyz])
+    w.comment(f"{nsh} shells, {len(q)} pairs, exact diagonal (ij|ij) of pyscf int2e")
+    w.vector("Q", np.array(q))
+    w.end()
+    w.write()
+
+
 def gen_df_vs_pyscf():
     """trc_df_2c/trc_df_3c (water/cc-pVTZ orbital, cc-pVTZ-RI auxiliary --
     the first comparison with a g shell) against pyscf's
@@ -7416,6 +7788,22 @@ CASES = {
     "rsh_g_water_wb97x": lambda: gen_rsh_g("water_wb97x", "water.xyz"),
     "rsh_g_nh2_wb97x": lambda: gen_rsh_g("nh2_wb97x", "nh2.xyz"),
     "rsh_g_water_wb97xv": lambda: gen_rsh_g("water_wb97xv", "water.xyz"),
+    "one_e_cancellation": gen_one_e_cancellation,
+    "schwarz_h": lambda: gen_h_schwarz("water_cc5z", "water.xyz", "basis_sets/cc-pv5z-pyscf17.json"),
+    "h_sph_overlap_hco": lambda: gen_h_sph_overlap("sph_overlap_hco", "hco.xyz", "basis_sets/h-min-pyscf17.json"),
+    "h_ints_hco": lambda: gen_h_ints("ints_hco", "hco.xyz", "basis_sets/h-min-pyscf17.json"),
+    "h_rhf_water_min": lambda: gen_h_scf("rhf_water_min", "water.xyz", "basis_sets/h-min-pyscf17.json", False),
+    "h_rhf_water_min_cart": lambda: gen_h_scf("rhf_water_min_cart", "water.xyz", "basis_sets/h-min-pyscf17.json", True),
+    "h_uhf_hco_min": lambda: gen_h_scf("uhf_hco_min", "hco.xyz", "basis_sets/h-min-pyscf17.json", False),
+    "h_lda_water_min": lambda: gen_h_scf("lda_water_min", "water.xyz", "basis_sets/h-min-pyscf17.json", False),
+    "h_pbe_n2_min": lambda: gen_h_scf("pbe_n2_min", "tops_n2.xyz", "basis_sets/h-min-pyscf17.json", False),
+    "h_b3lyp_hco_min": lambda: gen_h_scf("b3lyp_hco_min", "hco.xyz", "basis_sets/h-min-pyscf17.json", False),
+    "h_r2scan_water_min": lambda: gen_h_scf("r2scan_water_min", "water.xyz", "basis_sets/h-min-pyscf17.json", False),
+    "h_rhf_water_prims": lambda: gen_h_scf("rhf_water_prims", "water.xyz", "basis_sets/h-prims-pyscf17.json", False),
+    "h_rhf_n2_prims": lambda: gen_h_scf("rhf_n2_prims", "tops_n2.xyz", "basis_sets/h-prims-pyscf17.json", False),
+    "h_pbe_water_prims": lambda: gen_h_scf("pbe_water_prims", "water.xyz", "basis_sets/h-prims-pyscf17.json", False),
+    "h_wb97x_water_min": lambda: gen_h_scf("wb97x_water_min", "water.xyz", "basis_sets/h-min-pyscf17.json", False),
+    "h_rhf_water_cc5z": lambda: gen_h_scf("rhf_water_cc5z", "water.xyz", "basis_sets/cc-pv5z-pyscf17.json", False),
     "df_vs_pyscf": gen_df_vs_pyscf,
     "dfg_ints_water_631gs": lambda: gen_df_grad_ints(
         "water_631gs", "water.xyz", "basis_sets/6-31gs.json", "basis_sets/def2-universal-jkfit.json"),

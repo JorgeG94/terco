@@ -58,7 +58,7 @@ class RestaleTests(unittest.TestCase):
         # converge_tight is called by gen_rks, gen_scf_mgga, gen_scf_robust, gen_full_grad,
         # gen_rimp2_uhf, gen_dh, gen_sph_corr, gen_vib_thermo (so all three
         # vib_thermo_* cases, which share that one generator), gen_opt_ts
-        # (opt_ts_hcn), gen_rsh_g (the three rsh_g_* cases), gen_soscf, gen_mom_excited, gen_chelpg, gen_ecp_scf,
+        # (opt_ts_hcn), gen_rsh_g (the three rsh_g_* cases), gen_h_scf (the twelve h_* SCF cases), gen_soscf, gen_mom_excited, gen_chelpg, gen_ecp_scf,
         # gen_fukui_chelpg, gen_sym_scf_cs, gen_sym_c2, gen_sym_c2v, gen_sym_ci, gen_sym_subgroup, gen_sym_d2,
         # gen_sym_c2h, gen_sym_c2h_subgroup, gen_sym_d2h, gen_sym_d2h_subgroup, gen_sym_tops, gen_rccsd_ints, and through
         # _gen_rimp2_one / _gen_scf_df_one / _gen_cphf_one / _gen_cpks_one /
@@ -74,7 +74,10 @@ class RestaleTests(unittest.TestCase):
                           "opt_ts_hcn", "rsh_g_water_wb97x", "rsh_g_nh2_wb97x", "rsh_g_water_wb97xv",
                           "soscf", "mom_excited", "chelpg", "ecp_scf", "fukui_chelpg", "sym_scf_cs", "sym_c2",
                           "sym_c2v", "sym_ci", "sym_subgroup", "sym_d2", "sym_c2h", "sym_c2h_subgroup", "sym_d2h",
-                          "sym_d2h_subgroup", "sym_tops", "rccsd_ints"})
+                          "sym_d2h_subgroup", "sym_tops", "rccsd_ints",
+                          "h_rhf_water_min", "h_rhf_water_min_cart", "h_uhf_hco_min", "h_lda_water_min",
+                          "h_pbe_n2_min", "h_b3lyp_hco_min", "h_r2scan_water_min", "h_rhf_water_prims",
+                          "h_rhf_n2_prims", "h_pbe_water_prims", "h_rhf_water_cc5z", "h_wb97x_water_min"})
 
     def test_case_arguments_restale_only_that_case(self):
         src = edit_once(SOURCE, '"basis_sets/cc-pvdz.json", 1e-9),',

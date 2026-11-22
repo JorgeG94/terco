@@ -1,0 +1,10 @@
+# terco pyscf reference v1
+# case: check_h_vs_pyscf wb97x_water_min
+# generator: test/pyscf_refs/generate.py CASES["h_wb97x_water_min"] -> gen_h_scf
+# pyscf: 2.14.0
+# hash-scheme: case-ast-v1
+# hash: bd808e6462c69ab0c8a1817c6bb80ee4ad46f9c6a6a684b620ce72bf853139e2
+# files: test/check_h_vs_pyscf.F90 test/basis_sets/h-min-pyscf17.json test/water.xyz
+# wb97x RKS, sph, 86 AOs, 33698 grid points, GRAD_NORM 8.856e-10
+E -5.89813834759139368e+01
+END

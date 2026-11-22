@@ -65,15 +65,42 @@ from pyscf import gto
 from pyscf.data.elements import charge
 
 
+#: Digits after the decimal point of every number written. 6 matches the
+#: BSE downloads' own style (cc-pvdz.json's "1.301000E+01"); --digits 17
+#: writes pyscf's doubles exactly, which is what a comparison against pyscf
+#: needs when it must see the identical exponents and coefficients
+#: (cc-pvqz-pyscf17.json is such a file).
+DIGITS = 6
+
+
 def _fmt(x: float) -> str:
-    """Match the existing files' own number style: scientific, six digits
-    after the decimal point, upper-case E (verified against cc-pvdz.json's
-    "1.301000E+01", "-1.600000E-04" and friends by inspection)."""
-    return "%.6E" % x
+    """Scientific, upper-case E, DIGITS digits after the decimal point."""
+    return "%.*E" % (DIGITS, x)
 
 
-def shells_for_element(basis_name: str, symbol: str) -> list:
+def pick_primitives(entries, nprim):
+    """`nprim` uncontracted single-primitive shells of every angular
+    momentum named in `nprim` ({l: n}): the n exponents of that l spread
+    evenly (by rank, tightest first) over all the exponents pyscf lists for
+    it, each with coefficient 1. A cut-down basis that still has every
+    shell type, so a test can reach h functions without paying for a full
+    cc-pV5Z. pyscf renormalises a lone primitive, as terco does."""
+    out = []
+    for l in sorted(nprim):
+        exps = sorted({p[0] for e in entries if e[0] == l for p in e[1:]}, reverse=True)
+        if not exps:
+            continue
+        n = min(nprim[l], len(exps))
+        idx = sorted({round(i * (len(exps) - 1) / max(n - 1, 1)) for i in range(n)}) if n > 1 else [len(exps) // 2]
+        for i in idx:
+            out.append([l, [exps[i], 1.0]])
+    return out
+
+
+def shells_for_element(basis_name: str, symbol: str, nprim=None) -> list:
     entries = gto.basis.load(basis_name, symbol)
+    if nprim:
+        entries = pick_primitives(entries, nprim)
     shells = []
     for entry in entries:
         l = entry[0]
@@ -91,12 +118,12 @@ def shells_for_element(basis_name: str, symbol: str) -> list:
     return shells
 
 
-def build_json(basis_name: str, symbols: list, description: str) -> dict:
+def build_json(basis_name: str, symbols: list, description: str, nprim=None) -> dict:
     elements = {}
     for sym in symbols:
         z = charge(sym)
         elements[str(z)] = {
-            "electron_shells": shells_for_element(basis_name, sym),
+            "electron_shells": shells_for_element(basis_name, sym, nprim),
             "references": [{
                 "reference_description": description,
                 "reference_keys": [],
@@ -119,14 +146,25 @@ def main():
                      help="comma-separated element symbols, e.g. H,C,N,O")
     ap.add_argument("--description", default=None,
                      help="revision_description text (default: generated)")
+    ap.add_argument("--digits", type=int, default=6,
+                     help="digits after the decimal point (default 6; 17 is exact)")
+    ap.add_argument("--primitives", default=None,
+                     help="cut-down uncontracted basis: l:count pairs, e.g. s:3,p:2,d:2,f:2,g:1,h:1 "
+                          "(exponents picked from the named pyscf basis)")
     args = ap.parse_args()
+    global DIGITS
+    DIGITS = args.digits
+    nprim = None
+    if args.primitives:
+        nprim = {"spdfghik".index(item.split(":")[0]): int(item.split(":")[1])
+                 for item in args.primitives.split(",")}
 
     symbols = [s.strip() for s in args.elements.split(",") if s.strip()]
     desc = args.description or (
         f"{args.basis}, converted from pyscf {pyscf.__version__}'s "
         f"bundled basis data (pyscf.gto.basis.load), for elements {','.join(symbols)}"
     )
-    data = build_json(args.basis, symbols, desc)
+    data = build_json(args.basis, symbols, desc, nprim)
     with open(args.out, "w") as f:
         json.dump(data, f, indent=4)
         f.write("\n")

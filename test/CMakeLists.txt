@@ -625,8 +625,20 @@ set_tests_properties(terco/check_binfock_split PROPERTIES
 # (schwarz_bounds_hgp): same hp_* primitive-pair data, same Q, agreement
 # checked to round-off. Water/formamide in cc-pVDZ on every build; water in
 # cc-pVQZ (g on O) only when the build's own LMAX reaches 4.
-terco_add_check(check_schwarz_rys_vs_hgp check_schwarz_rys_vs_hgp.F90 NEEDS_BASIS)
-target_link_libraries(check_schwarz_rys_vs_hgp PRIVATE test-drive::test-drive)
+# One ctest entry per case (the case name is the argument); the g and h ones
+# self-skip below their ceiling.
+add_executable(check_schwarz_rys_vs_hgp check_schwarz_rys_vs_hgp.F90)
+target_compile_definitions(check_schwarz_rys_vs_hgp PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_schwarz_rys_vs_hgp PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io
+                                                       test-drive::test-drive)
+target_include_directories(check_schwarz_rys_vs_hgp PRIVATE ${CMAKE_BINARY_DIR}/modules)
+foreach(case water_dz formamide_dz water_qz water_5z)
+  add_test(NAME terco/check_schwarz_rys_vs_hgp_${case} COMMAND check_schwarz_rys_vs_hgp ${case})
+  set_tests_properties(terco/check_schwarz_rys_vs_hgp_${case} PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+    SKIP_REGULAR_EXPRESSION "SKIP")
+endforeach()
 
 # The decontraction transform against an external answer: C^T S_p C = S and
 # C^T T_p C = T, from trc_1e, which shares nothing with the four-centre path.
@@ -1925,6 +1937,32 @@ foreach(case water_wb97x nh2_wb97x water_wb97xv)
 endforeach()
 
 #
+# Shells of angular momentum h (l = 5) against pyscf: S, T, V, J and K of a
+# fixed density as row sums, and RHF, UHF, GGA, meta-GGA and hybrid SCF
+# energies, spherical and Cartesian, plus the real cc-pV5Z for water. One
+# ctest entry per case (the case name is the argument), each self-skipping
+# below TERCO_LMAX=5. The cc-pV5Z case is the long one.
+#
+add_executable(check_h_vs_pyscf check_h_vs_pyscf.F90)
+target_compile_definitions(check_h_vs_pyscf PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_h_vs_pyscf PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io
+                                               test-drive::test-drive)
+target_include_directories(check_h_vs_pyscf PRIVATE ${CMAKE_BINARY_DIR}/modules)
+foreach(case refusals ints_hco sph_overlap_hco rhf_water_min rhf_water_min_cart uhf_hco_min lda_water_min pbe_n2_min
+             b3lyp_hco_min r2scan_water_min wb97x_water_min rhf_water_min_sym rhf_water_prims rhf_n2_prims pbe_water_prims rhf_water_cc5z)
+  add_test(NAME terco/check_h_vs_pyscf_${case} COMMAND check_h_vs_pyscf ${case})
+  set_tests_properties(terco/check_h_vs_pyscf_${case} PROPERTIES
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+    SKIP_REGULAR_EXPRESSION "SKIP")
+endforeach()
+# The cases that take over a minute on the host (the Cartesian one, the
+# open-shell ones, the multi-primitive RHF and the real cc-pV5Z one): nightly only.
+foreach(case rhf_water_min_cart uhf_hco_min b3lyp_hco_min rhf_water_prims rhf_water_cc5z)
+  set_tests_properties(terco/check_h_vs_pyscf_${case} PROPERTIES LABELS LONG)
+endforeach()
+
+#
 # trc_df_2c ((P|Q)) and trc_df_3c ((mu nu|P)) against a committed pyscf
 # int2c2e/aux_e2(int3c2e) reference (test/pyscf_refs/df_vs_pyscf.ref) -- the
 # density-fitting analogue of the eri%fock comparison above, and the first
@@ -2107,6 +2145,10 @@ terco_add_check(check_one_e_ceiling check_one_e_ceiling.F90 NEEDS_BASIS)
 target_link_libraries(check_one_e_ceiling PRIVATE test-drive::test-drive)
 set_tests_properties(terco/check_one_e_ceiling PROPERTIES
   PASS_REGULAR_EXPRESSION "trc_1e: basis above ONE_E_LMAX")
+# Diffuse and tight primitives on two centres, l up to the build's ceiling, against
+# pyscf: the nuclear attraction's transfer about a fixed centre cancels there (gen_1e.py).
+terco_add_check(check_one_e_cancellation check_one_e_cancellation.F90 NEEDS_PYSCF_REF)
+target_link_libraries(check_one_e_cancellation PRIVATE test-drive::test-drive)
 terco_add_check(check_one_e_grad_ceiling check_one_e_grad_ceiling.F90 NEEDS_BASIS)
 target_link_libraries(check_one_e_grad_ceiling PRIVATE test-drive::test-drive)
 set_tests_properties(terco/check_one_e_grad_ceiling PROPERTIES
