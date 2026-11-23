@@ -131,7 +131,9 @@ module trc_eri
       !! screening: a quartet whose density elements are all negligible
       !! contributes nothing however large its integral.
       !!
-      !! A COUPLED-PERTURBED SOLVE MUST SET FALSE. Its density is a trial
+      !! A COUPLED-PERTURBED SOLVE (CPHF, CPKS, the Z-vector) MUST SET FALSE; the one
+      !! exception is the TDDFT Davidson matvec, whose trial vectors stay at unit
+      !! norm (trc_tddft). Its density is a trial
       !! vector the solver drives towards zero, so a screen keyed on the
       !! density's magnitude tightens as the solve proceeds -- the operator
       !! stops being the same linear map from one matvec to the next and the
@@ -1781,7 +1783,9 @@ contains
       !! density elements are all negligible contributes nothing however large
       !! its integral.
       !!
-      !! A COUPLED-PERTURBED SOLVE MUST PASS FALSE. Its density is a trial
+      !! A COUPLED-PERTURBED SOLVE (CPHF, CPKS, the Z-vector) MUST PASS FALSE; the one
+      !! exception is the TDDFT Davidson matvec, whose trial vectors stay at unit
+      !! norm (trc_tddft). Its density is a trial
       !! vector the solver drives towards zero, so a screen keyed on the
       !! density's magnitude tightens as the solve proceeds -- the operator
       !! stops being the same linear map from one matvec to the next and the
@@ -1952,7 +1956,7 @@ contains
       type(trc_fock_options_t), intent(in), optional :: opts
       !! What to build; see trc_fock_options_t and `eri_fock`. Absent:
       !! Hartree-Fock, Coulomb operator, density screen on. A COUPLED-PERTURBED
-      !! SOLVE MUST SET density_screen FALSE. `count_survivors` also counts the
+      !! SOLVE (not the unit-norm TDDFT matvec) MUST SET density_screen FALSE. `count_survivors` also counts the
       !! quartets that survive screening, into this%nkept (a full extra pass
       !! over the work list, so it is opt-in); `j_engine` is read as in
       !! `fock_resident_lent`.

@@ -77,7 +77,7 @@ before any non-trivial change. The rules that most often break builds:
   a test pass.
 - libcint's `common_fac_sp` normalisation is applied exactly once, in basis
   construction. Å→Bohr is CODATA 2018 (0.529177210903).
-- A coupled-perturbed solve uses `density_screen=.false.`.
+- A coupled-perturbed solve (CPHF, CPKS, Z-vector) uses `density_screen=.false.`; only the unit-norm TDDFT matvec screens.
 - Iterative solvers report non-convergence on a breakdown or NaN; never let
   a NaN fall through a `resid >= tol` loop test as "converged".
 
