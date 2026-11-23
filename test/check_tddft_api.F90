@@ -966,6 +966,24 @@ contains
       call bas%release()
       call check(error, index(msg, "spherical") > 0, "a spherical basis must be refused, got: "//trim(msg))
       if (allocated(error)) return
+      ! An f basis in Cartesian functions is refused up front too (the solver's own l = 3 refusal comes after
+      ! the SCF): the basis alone decides, before any work.
+      call trc_basis_from_json("basis_sets/cc-pvtz.json", natm, zint, at_r, bas, err)
+      call check(error, .not. err%has_error(), err%get_message())
+      if (allocated(error)) return
+      bas%spherical = .false.
+      msg = trc_tddft_run_refusal(sopts, opts, bas)
+      call check(error, index(msg, "l = 3") > 0, "an f basis must be refused up front, got: "//trim(msg))
+      if (allocated(error)) then
+         call bas%release()
+         return
+      end if
+      ! The same basis cut to its d shells is accepted: only the highest l counts.
+      bas%sh_l = min(bas%sh_l, 2)
+      msg = trc_tddft_run_refusal(sopts, opts, bas)
+      call bas%release()
+      call check(error, len_trim(msg) == 0, "a basis up to d must be accepted, got: "//trim(msg))
+      if (allocated(error)) return
       ! The gap helper the optimiser's state-following check uses.
       call check(error, trc_tddft_run_gap_note([0.30_dp, 0.31_dp, 0.50_dp], 1, 0.02_dp) == 2, "root 2 is within 0.02 of root 1")
       if (allocated(error)) return

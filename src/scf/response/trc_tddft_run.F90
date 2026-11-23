@@ -187,7 +187,13 @@ contains
       end if
       if (len_trim(msg) > 0) return
       if (present(b)) then
-         if (b%spherical) msg = "trc_tddft: a spherical basis is not implemented (use Cartesian functions: --cart)"
+         if (b%spherical) then
+            msg = "trc_tddft: a spherical basis is not implemented (use Cartesian functions: --cart)"
+         else if (allocated(b%sh_l)) then
+            ! The solver refuses an f basis too, but only after the SCF: the transition dipole needs
+            ! multipole integrals, which stop at d. Asked here, a caller is refused before paying for it.
+            msg = trc_tddft_refuse_reason(probe, lmax=maxval(b%sh_l))
+         end if
       end if
    end function trc_tddft_run_refusal
 
