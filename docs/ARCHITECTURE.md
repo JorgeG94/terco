@@ -556,6 +556,15 @@ are split across ranks by surface point.
   four-centre or density-fitted two-electron derivatives, the XC gradient
   including the grid-weight response (from the derivatives of the Becke
   partition), the VV10 gradient and the nuclear repulsion.
+  The grid-weight response (`dft_partition_becke_grad_contract`) multiplies
+  each cell product nearest atom first (the 24 nearest are selected to the
+  front of a point's active list), so a dead row meets its small factors
+  early and exits after a few; the exit decisions are unchanged, and the
+  gradient agrees with the unordered one to 6e-13 Eh/Bohr (largest
+  component, the 50-mer). On one V100 (NVHPC 26.9,
+  PBE/def2-SVP, XC gradient stage) this took the glycine 20-mer from 2.07 s
+  to 1.19 s, 40 waters from 1.56 s to 0.97 s and the 50-mer from 20.4 s to
+  8.35 s; a full sort was no faster (1.21 and 1.02 s on the first two).
 - **RI-MP2 and double-hybrid gradients** (`src/post_hf/rimp2/trc_rimp2_grad.F90`)
   add the correlation's relaxed and energy-weighted densities, from a
   Z-vector solved against the reference's own orbital Hessian: CPHF for an

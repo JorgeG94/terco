@@ -80,6 +80,20 @@ module trc_dft_partition
 
    integer, parameter :: N_DIM = 3
 
+   integer, parameter :: N_NEAR_FIRST = 24
+   !! Atoms moved to the front of a point's active list (after the owner) by
+   !! nearest distance, in `partition_grad_point`. A cell's product only falls
+   !! and stops at the floor, so meeting the nearest atoms' small factors
+   !! first ends a dead row after a few factors instead of after wading
+   !! through far atoms whose factors are ~1; which rows die is unchanged,
+   !! only when the exit fires. Selection costs N_NEAR_FIRST x n_active
+   !! compares per point; a full sort measured no better (1.21 / 1.02 s on the
+   !! first two systems below). V100, NVHPC 26.9,
+   !! PBE/def2-SVP XC gradient stage, glycine 20-mer / 40 waters / 50-mer:
+   !! 2.07 / 1.56 / 20.4 s unordered, 1.19 / 0.97 / 8.35 s at 24 (4: 1.74 /
+   !! 1.32 / 16.0; 8: 1.35 / 1.15 / 11.9; 16: 1.19 / 1.00 / 8.85; 48: 1.23 /
+   !! 0.99 / 8.70; 64: 1.25 / 1.00 / 8.90). The gradient moves by at most 6e-13 Eh/Bohr (50-mer).
+
    type, public :: dft_partition_options_t
       !! How a partition is built and screened. The defaults are the
       !! production partition: Becke's cutoff, Treutler's size adjustment, the
@@ -641,11 +655,13 @@ contains
       !! factors, suffix products, derivative sums) is indexed by POSITION
       !! in the point's active list, not by atom, so a warp reads and
       !! writes whole columns instead of scattered entries; the running
-      !! prefix product of each row is a register. The active set,
-      !! screening and arithmetic order per point are those of
-      !! `dft_partition_becke_derivatives`, so each point's dP/dR is the same
-      !! number; only the order the points' contributions are summed in
-      !! differs (atomics on the device).
+      !! prefix product of each row is a register. The active set and the
+      !! screening decisions per point are those of
+      !! `dft_partition_becke_derivatives`; the factors of a cell product are
+      !! multiplied nearest atoms first (N_NEAR_FIRST), so each point's dP/dR
+      !! agrees with it to round-off, not bit for bit, and the order the
+      !! points' contributions are summed in differs too (atomics on the
+      !! device).
       !!
       !! `points`, `owner` and `coef` may already be on the device (the
       !! XC gradient's are); `grad` is a host array, ADDED into.
@@ -769,6 +785,8 @@ contains
       real(dp) :: s_rc, s_cr, rx, ry, rz, dx, dy, dz, ex, ey
       real(dp) :: tax, tay, taz, tbx, tby, tbz, ox, oy, oz
       real(dp) :: vx, vy, vz, vox, voy, voz
+      real(dp) :: rtmp, rbest
+      integer :: gi, gj, gm, itmp
 
       c = coef(k)
       if (c == 0.0_dp) return
@@ -825,8 +843,30 @@ contains
          end do
       end do
 
-      ! The cells, each in a register, in dft_partition_becke_derivatives'
-      ! factor order (j by position, skipping i). The owner's comes first
+      ! The N_NEAR_FIRST nearest atoms to positions 2.. (the owner stays first):
+      ! selection passes, swapping `active` and `ract` together. Everything
+      ! below indexes by position, so only the order of each product changes.
+      do gm = 2, min(N_NEAR_FIRST + 1, n_active - 1)
+         gj = gm
+         rbest = ract(g, gm)
+         do gi = gm + 1, n_active
+            if (ract(g, gi) < rbest) then
+               rbest = ract(g, gi)
+               gj = gi
+            end if
+         end do
+         if (gj /= gm) then
+            rtmp = ract(g, gm)
+            itmp = active(g, gm)
+            ract(g, gm) = ract(g, gj)
+            active(g, gm) = active(g, gj)
+            ract(g, gj) = rtmp
+            active(g, gj) = itmp
+         end if
+      end do
+
+      ! The cells, each in a register, nearest atoms first, then the rest in
+      ! discovery order (j by position, skipping i). The owner's comes first
       ! (it is position 1); every other row stops as soon as its product,
       ! which only falls, is below `floor`, and counts as zero from then on.
       ! The rows that do not are the `sig` list.
