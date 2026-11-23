@@ -135,12 +135,13 @@ def check_rimp2_gradient(mpiexec, npflag, terco_cli, xyz, basis_dir):
 
 
 def check_scf_gradient(mpiexec, npflag, terco_cli, xyz, basis_dir):
-    """The HF gradient over two ranks on the default route (MD Coulomb + exchange-only Rys) against one rank on the
-    fused Rys kernels (TRC_MDJ_GRAD=0): the two ranks split the MD pair list and the Rys bins, and the engines differ
-    only by screening error. NOT YET RUN: written without an MPI host build."""
+    """The HF gradient over two ranks on the MD route (MD Coulomb + exchange-only Rys; TRC_MDJ_GRAD=1, since the default
+    keeps a molecule this small on the fused kernels) against one rank on the fused Rys kernels (TRC_MDJ_GRAD=0): the
+    SCF runs over both ranks, rank 0 computes the gradient and broadcasts it, and the engines differ only by screening
+    error."""
     args = ["--grad", "--econv", "1e-11"]
     g = {}
-    for label, np, extra_env in (("np2 default", 2, {}), ("np1 fused", 1, {"TRC_MDJ_GRAD": "0"})):
+    for label, np, extra_env in (("np2 MD", 2, {"TRC_MDJ_GRAD": "1"}), ("np1 fused", 1, {"TRC_MDJ_GRAD": "0"})):
         p = run(mpiexec, npflag, np, terco_cli, xyz, basis_dir, *args, extra_env=extra_env)
         rows = [[float(x) for x in m] for m in GRAD_ROW_RE.findall(p.stdout)]
         if p.returncode != 0 or len(rows) == 0:
@@ -148,7 +149,7 @@ def check_scf_gradient(mpiexec, npflag, terco_cli, xyz, basis_dir):
             print(p.stdout, p.stderr)
             return False
         g[label] = rows
-    worst = max(abs(a - b) for r1, r2 in zip(g["np2 default"], g["np1 fused"]) for a, b in zip(r1, r2))
+    worst = max(abs(a - b) for r1, r2 in zip(g["np2 MD"], g["np1 fused"]) for a, b in zip(r1, r2))
     print(f"cli_mpi_check: SCF gradient  np2 MD vs np1 fused  worst |dg| = {worst:.2e}")
     return worst < 1.0e-7
 
