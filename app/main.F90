@@ -260,7 +260,8 @@ program trc_main
    call r%cli%add_option("tddft-missed-root-iterations", "iterations after the probe in which candidate Ritz pairs "// &
                          "beyond the buffer are still iterated, the guard against a missed root (0, the default: no "// &
                          "candidate is iterated, fewer matvecs, and the candidates are reported open instead; 24 recovers "// &
-                         "a root the guesses miss)")
+                         "a root the guesses miss; --grad and --opt, which follow a root by index, use 24 unless "// &
+                         "this is given)")
    call r%cli%add_option("tddft-cpks-tol", "residual norm of the Z-vector of the excited-state gradient (1e-9)")
    call r%cli%add_option("tddft-sweep", "roots sharing one pass over the integral derivatives in the gradient "// &
                          "(a tuning knob; the numbers do not change)")

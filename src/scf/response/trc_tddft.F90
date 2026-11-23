@@ -931,7 +931,8 @@ contains
       character(len=*), parameter :: HEAD = "trc_tddft: the missed-root check left "
       character(len=*), parameter :: TAIL = " candidate Ritz pair(s) not converged; the returned roots are converged, "// &
                                             "but a root below the highest of them, in a symmetry the guesses do "// &
-                                            "not reach, is not excluded; raise missed_root_iterations "// &
+                                            "not reach, is not excluded, and then a returned root may be a "// &
+                                            "different state than the one wanted; raise missed_root_iterations "// &
                                             "(--tddft-missed-root-iterations) to iterate the candidates"
       character(len=:), allocatable :: num, msg
       res%nwindow_open = nopen

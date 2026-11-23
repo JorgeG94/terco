@@ -193,8 +193,8 @@ contains
       character(len=*), parameter :: BASE = 'formaldehyde.xyz -b ../basis_sets/6-31+g.json --tddft --tddft-roots 3'
       type(json_file) :: json
       real(dp), allocatable :: omega(:), osc(:), ynorm(:)
-      real(dp) :: w_default, w_0, w_flag, w_toml
-      integer :: n_default, n_0, n_flag, n_toml
+      real(dp) :: w_default, w_0, w_flag, w_toml, w_grad, w_grad0
+      integer :: n_default, n_0, n_flag, n_toml, n_grad
 
       call run_cli(error, BASE, g_probe//'.default.json', json)
       if (allocated(error)) return
@@ -234,6 +234,25 @@ contains
       if (allocated(error)) return
       call check(error, n_flag == 0 .and. n_toml == 0, "a budget of 24 left candidates open: flag "// &
                  to_string(n_flag)//", TOML "//to_string(n_toml))
+      if (allocated(error)) return
+      ! --grad follows a root by index, so it keeps the guard (24) unless a budget is given: the third root's gradient
+      ! must not be that of the wrong state. An explicit 0 is honoured.
+      call run_cli(error, BASE//' --tddft-root 3 --grad', g_probe//'.grad.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 3, omega, osc, ynorm)
+      w_grad = omega(3)
+      n_grad = open_count(json)
+      call json%destroy()
+      call run_cli(error, BASE//' --tddft-root 3 --grad --tddft-missed-root-iterations 0', g_probe//'.grad0.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 3, omega, osc, ynorm)
+      w_grad0 = omega(3)
+      call json%destroy()
+      call check(error, abs(w_grad - w_flag) < 1.0e-9_dp .and. n_grad == 0, &
+                 "--grad did not keep the missed-root guard: third root "//to_string(w_grad, "f10.6")// &
+                 ", candidates open "//to_string(n_grad))
+      if (allocated(error)) return
+      call check(error, abs(w_grad0 - w_default) < 1.0e-9_dp, "--grad with an explicit budget of 0 did not honour it")
    end subroutine test_missed_root
 
    integer function open_count(json) result(n)

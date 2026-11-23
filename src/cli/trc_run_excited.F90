@@ -12,6 +12,9 @@ submodule (trc_run) trc_run_excited
    use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_refusal, trc_tddft_run_pair_label
    implicit none
 
+   integer(c_int), parameter :: FOLLOWED_ROOT_BUDGET = 24_c_int
+   !! The missed-root budget --grad and --opt use unless the user gives one: they follow a root by index.
+
    ! An option as the user met it: the flag, and the TOML key that gives the same setting.
    character(len=*), parameter :: N_ROOTS = "--tddft-roots ([tddft] roots)"
    character(len=*), parameter :: N_ROOT = "--tddft-root ([tddft] target_root)"
@@ -203,6 +206,14 @@ contains
       end if
       if (r%tddft_missed_root >= 0) then
          call run_api(r, trc_set_tddft_missed_root_iterations(r%h, int(r%tddft_missed_root, c_int)))
+      else if (r%grad .or. r%opt) then
+         ! --grad and --opt follow a root BY INDEX: a root the solver missed shifts the index to another state, and the
+         ! run differentiates or optimises the wrong surface with only a warning. So they keep the missed-root guard
+         ! unless the user chose a budget; single points keep the library default (0).
+         call run_api(r, trc_set_tddft_missed_root_iterations(r%h, FOLLOWED_ROOT_BUDGET))
+         if (r%rank0) call global_logger%info("--tddft with --grad/--opt follows a root by index: the missed-root "// &
+                                              "budget is "//to_string(int(FOLLOWED_ROOT_BUDGET))// &
+                                              " (--tddft-missed-root-iterations N overrides it)")
       end if
       if (.not. r%tddft_density_screen) call run_api(r, trc_set_tddft_density_screen(r%h, 0_c_int))
    end subroutine run_tddft_configure
