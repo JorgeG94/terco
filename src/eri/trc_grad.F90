@@ -86,6 +86,22 @@ module trc_grad
    !! the ENERGY Schwarz product while the derivative integrals exceed it; see
    !! GRAD_K_PRODUCT_MARGIN for the measurements and what they do not cover.
    !!
+   !! PLANNING. That pass is also planned on the exchange tiles (trc_bin_tiles,
+   !! `bin_tiles_reach` with the margin): a tile pair is not launched when
+   !! Q_A Q_B C^2 <= thresh*m, with C the largest density block between the
+   !! two tiles' shells (all four factors of the products are such blocks),
+   !! which bounds every quartet's product above, so the tiles drop only
+   !! quartets the screen pass drops anyway; the survivor list and the gradient
+   !! are unchanged and only the screen pass's visits (`nwork`) shrink. The
+   !! fused, the single-block, the pair-table and the skeleton launches keep
+   !! the whole-bin plan. TRC_EXCHANGE_TILES=0 turns it off. Measured, RHF
+   !! def2-SVP, thresh 1e-12, one V100, the two-electron gradient with the MD
+   !! route on, whole-bin against tiled: glycine 20-mer 1.27 -> 1.23 s, 50-mer
+   !! 5.28 -> 4.67 s, 100-mer 18.6 -> 14.3 s, 40 waters 1.28 -> 1.29 s
+   !! (gradients equal to 1e-12): without the tiles the screen pass kept 9% of
+   !! what it visited on the 50-mer, 33% on the water cluster, whose tiles'
+   !! hulls cover most of the molecule.
+   !!
    !! WHICH DEFAULT LAUNCHES CHANGE with the product test: none. It applies
    !! only behind the MD Coulomb gradient, which is not the default. For the
    !! long-range pass of a range-separated hybrid, the attenuated integral is
@@ -101,6 +117,7 @@ module trc_grad
    !!
    use pic_types, only: dp, int32, int64
    use trc_bins, only: pair_bins_t, trc_bin_plan_t
+   use trc_bin_tiles, only: bin_tiles_requested, bin_tiles_reach, bin_tiles_plan
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
    use trc_rys_grad_kernels, only: rysg_has_class, rysg_screen_dispatch, &
                                    rysg_compact_dispatch, rysg_pairs_dispatch, RYSG_PAIRS_NCB
@@ -243,7 +260,9 @@ contains
       !! by class, run `grad_classes` over the contiguous class runs. No
       !! density-weighted bin screen: Gamma is not guaranteed to admit the same
       !! bin-level bound a symmetric Fock density does (same reasoning as
-      !! `eri_fock_nosym`), so this always walks the plain Schwarz-screened plan.
+      !! `eri_fock_nosym`), so every launch walks the plain Schwarz-screened plan,
+      !! except the MD route's exchange-only product pass, which is planned on
+      !! the exchange tiles (see PLANNING in the module header).
       !!
       !! SKELETON (launch%skeleton): the same
       !! restriction and the same per-segment weight the skeleton FOCK build uses
@@ -259,8 +278,10 @@ contains
       type(pair_bins_t), intent(in) :: b
       type(trc_shell_pairs_t), intent(in) :: pairs
       !! The shells (ao_off, sh_at, natm) and their pairs, device-resident.
-      type(trc_pair_quartets_t), intent(in) :: quartets
-      !! The bin-interleaved pairs, `a` included, device-resident.
+      type(trc_pair_quartets_t), intent(inout) :: quartets
+      !! The bin-interleaved pairs, `a` included, device-resident. Its exchange
+      !! tiles (`tiles`, host only) take this build's reach when the plan is
+      !! tiled.
       type(trc_bin_launch_t), intent(inout) :: launch
       !! thresh, jfac, kfac, omega, ranks, the density's shape and
       !! `skeleton`; nwork and nkept come back. omega is
@@ -280,7 +301,8 @@ contains
       type(trc_bin_plan_t) :: plan
       integer :: ga, gc, gs, gcol, natm, ncol
       real(dp) :: gsum
-      logical :: cnt_j, cnt_k
+      logical :: cnt_j, cnt_k, tiled
+      real(dp) :: kmarg
 
       natm = pairs%natm
       ncol = ptab%ncb
@@ -308,7 +330,25 @@ contains
          ! and no new class run -- and so no extra launch -- comes with it.
          call plan%build_skeleton(b, quartets%orb, launch%thresh, quartets%bin_pbase, canonical=.true.)
       else
-         call plan%build(b, launch%thresh, quartets%bin_pbase, .false., canonical=.true.)
+         ! The exchange-only product pass is planned on the exchange tiles
+         ! (trc_bin_tiles, GRADIENT PRODUCT TEST): tile pairs whose every
+         ! quartet the screen kernel's own test would reject are never
+         ! launched, so the survivors and the gradient are unchanged. Only
+         ! with that test (kmarg > 0, which excludes a pair table, a Coulomb
+         ! term and the single-block passes) and not for a skeleton plan.
+         ! `dsh` is device-resident here, as bin_tiles_reach needs.
+         kmarg = grad_screen_kmargin(launch, ptab, cnt_j, cnt_k)
+         tiled = kmarg > 0.0_dp .and. quartets%tiles%built .and. bin_tiles_requested()
+         if (tiled) tiled = quartets%tiles%nbas == pairs%nbas
+         if (tiled) then
+            call bin_tiles_reach(quartets%tiles, dsh, kmarg)
+            call bin_tiles_plan(quartets%tiles, plan, b, launch%thresh, quartets%bin_pbase)
+            ! The gradient has kernels for canonical classes only, and the
+            ! tile planner writes the walk order.
+            call plan%canonicalise()
+         else
+            call plan%build(b, launch%thresh, quartets%bin_pbase, .false., canonical=.true.)
+         end if
       end if
       launch%nwork = plan%nwork
       launch%nkept = 0
@@ -431,7 +471,10 @@ contains
       !! runs exactly once across all ranks and the summed gradient is
       !! unchanged; load is balanced by segment count rather than by work
       !! item, and a rank's own slice stays segment-contiguous so the screen
-      !! pass's RUNLEN=32 chunks keep sharing a ket within it. Its balance has
+      !! pass's RUNLEN=32 chunks keep sharing a ket within it. A tiled plan
+      !! (PLANNING, module header) depends on the density, so the ranks must
+      !! hold identical `dsh` for their slices to partition the work, as the
+      !! Fock tile path already assumes. Its balance has
       !! not been measured -- MPI is outside today's validation
       !! (TERCO_ENABLE_MPI=OFF); nranks=1 reduces this to the whole [c0, c1]
       !! range.

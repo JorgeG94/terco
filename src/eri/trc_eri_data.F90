@@ -72,7 +72,10 @@ module trc_eri_data
       real(dp), allocatable :: qbin(:)
       !! (nbin) largest Schwarz bound of each bin
       real(dp), allocatable :: db(:, :)
-      !! (nblk, nblk) block maxima of the density bound, this build
+      !! (nblk, nblk) block maxima of the density bound, this build: the plain
+      !! maxima after a Fock `bin_tiles_reach`, db^2(1+1e-9)/kmarg after a
+      !! gradient one (with `kmarg`). Every reader calls `bin_tiles_reach`
+      !! first.
       integer, allocatable :: rlo(:, :), rhi(:, :)
       !! (0:levels, ntile) each tile's reach at each level, this build;
       !! rlo > rhi is empty

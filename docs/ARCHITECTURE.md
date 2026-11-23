@@ -283,6 +283,13 @@ against the threshold times a margin (`GRAD_K_PRODUCT_MARGIN`,
 launch, including the long-range pass of a range-separated hybrid and pair
 tables, keeps the largest single block.
 
+That product pass is also planned on the exchange tiles of section 4.3: a
+tile pair is dropped before launch when its Schwarz bound times the square of
+the largest density block between the two tiles is under the threshold times
+the margin. That bounds every quartet of the pair, so only quartets the
+screening pass rejects anyway are never visited and the survivors are
+unchanged. `TRC_EXCHANGE_TILES=0` turns it off.
+
 ## 5. Other integrals
 
 One-electron integrals (overlap, kinetic, nuclear attraction and their

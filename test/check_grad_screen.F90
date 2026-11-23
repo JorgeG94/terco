@@ -76,6 +76,8 @@ module check_grad_screen_suite
    use trc_tables, only: LMAX
    use trc_cart, only: cart_ncart_of
    use trc_bins, only: trc_bin_plan_t
+   use pic_sorting, only: sort
+   use trc_bin_tiles, only: bin_tiles_set_enabled, bin_tiles_requested, bin_tiles_reach, bin_tiles_plan
    use trc_eri, only: trc_eri_t, trc_grad_pair_t, TRC_J_ENGINE_MDJ, TRC_J_ENGINE_BINS
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
@@ -84,9 +86,14 @@ module check_grad_screen_suite
    private
    public :: collect_grad_screen_tests, release_contexts
 
-   character(len=*), parameter :: XYZ_SCREEN = "gly3.xyz", XYZ_TIGHT = "benzene.xyz"
+   character(len=*), parameter :: XYZ_SCREEN = "gly3.xyz", XYZ_TIGHT = "benzene.xyz", XYZ_CHAIN = "gly40.xyz"
    real(dp), parameter :: THRESH_SCREEN = 1.0e-4_dp
    !! Where the screen bites on the tripeptide.
+   integer, parameter :: NAT_CHAIN = 100
+   !! Atoms of the chain: the head of gly40, 14 glycine residues of 7 atoms,
+   !! about 210 shells, 1.7 tile spans (TILE_SPAN 32 x TILE_BLOCK 4 = 128 shells).
+   real(dp), parameter :: THRESH_CHAIN = 1.0e-4_dp
+   !! Where the exchange tiles bite on the glycine chain.
    real(dp), parameter :: THRESH_TIGHT = 1.0e-14_dp
    !! check_mdj_grad's threshold, for the MD-against-fused comparison.
    real(dp), parameter :: ROUNDOFF = 1.0e-11_dp
@@ -106,7 +113,7 @@ module check_grad_screen_suite
       logical :: built = .false.
    end type ctx_t
 
-   type(ctx_t), save, target :: cache_screen, cache_tight
+   type(ctx_t), save, target :: cache_screen, cache_tight, cache_chain
 
    type :: count_t
       !! What one host loop over the bin pairs finds for one set of terms.
@@ -129,6 +136,8 @@ contains
                   new_unittest("exchange bound: |Gamma_K| <= c*max(D_ac D_bd, D_ad D_bc)", test_k_bound), &
                   new_unittest("MD route: exchange-only pass takes the product screen", test_k_product), &
                   new_unittest("UHF margin: Da = Db = D/2 keeps the RHF survivors", test_k_uhf_margin), &
+                  new_unittest("exchange tiles: the product pass visits less and keeps the same", test_k_tiles), &
+                  new_unittest("exchange tiles: dropped items fail the kernel's product test", test_k_tile_plan), &
                   new_unittest("pair table: J-free, K-free and mixed sweeps", test_pairs), &
                   new_unittest("MD Coulomb switch: full gradients equal the fused ones", test_mdj_switch) &
                   ]
@@ -144,17 +153,26 @@ contains
          call cache_tight%eri%release()
          call cache_tight%bas%release()
       end if
+      if (cache_chain%built) then
+         call cache_chain%eri%release()
+         call cache_chain%bas%release()
+      end if
    end subroutine release_contexts
 
-   subroutine get_ctx(ctx, xyz, thresh, error)
+   subroutine get_ctx(ctx, xyz, thresh, error, natom_max)
       !! The tripeptide in the command-line basis, built once per threshold
       !! and reused by every test.
       type(ctx_t), intent(inout) :: ctx
       character(*), intent(in) :: xyz
       real(dp), intent(in) :: thresh
       type(error_type), allocatable, intent(out) :: error
+      integer, intent(in), optional :: natom_max
+      !! Keep the first natom_max atoms of the file: the head of a chain file
+      !! is a shorter chain (a screen test needs no SCF, so no closed shell).
       character(len=256) :: basis_json
       integer, allocatable :: at_z(:)
+      real(dp), allocatable :: rtmp(:, :)
+      integer :: i
       type(error_t) :: err
       if (ctx%built) return
       basis_json = ''
@@ -162,6 +180,14 @@ contains
       call check(error, len_trim(basis_json) > 0, "usage: check_grad_screen <basis.json>")
       if (allocated(error)) return
       call read_xyz(xyz, ctx%nat, at_z, ctx%r)
+      if (present(natom_max)) then
+         if (natom_max < ctx%nat) then
+            ctx%nat = natom_max
+            at_z = [(at_z(i), i=1, natom_max)]
+            rtmp = ctx%r(:, 1:natom_max)
+            call move_alloc(rtmp, ctx%r)
+         end if
+      end if
       call trc_basis_from_json(trim(basis_json), ctx%nat, at_z, ctx%r, ctx%bas, err, &
                                overrides=trc_basis_json_overrides(prune=.false.))
       call check(error, .not. err%has_error(), "check_grad_screen: "//err%get_message())
@@ -351,7 +377,7 @@ contains
 #endif
    end function same_gradient
 
-   subroutine densities(ctx, ndens, dens, rate)
+   subroutine densities(ctx, ndens, dens, rate, width)
       !! RHF: one density. UHF: alpha concentrated left, beta right, each
       !! dominant where the other is small.
       type(ctx_t), intent(in) :: ctx
@@ -359,12 +385,23 @@ contains
       real(dp), allocatable, intent(out) :: dens(:, :, :)
       real(dp), intent(in) :: rate
       !! Decay rate of the density with the distance between atoms.
+      real(dp), intent(in), optional :: width
+      !! Relative width of the concentration (default: the broad one of the
+      !! tripeptide cases, 0.6 RHF and 0.5 per spin); a narrower one makes a
+      !! long chain's density local.
+      real(dp) :: w1, w2
+      w1 = 0.6_dp
+      w2 = 0.5_dp
+      if (present(width)) then
+         w1 = width
+         w2 = width
+      end if
       allocate (dens(ctx%eri%nao_w, ctx%eri%nao_w, ndens))
       if (ndens == 1) then
-         call synth(ctx, 0.5_dp, 0.6_dp, rate, 1, dens(:, :, 1))
+         call synth(ctx, 0.5_dp, w1, rate, 1, dens(:, :, 1))
       else
-         call synth(ctx, 0.25_dp, 0.5_dp, rate, 1, dens(:, :, 1))
-         call synth(ctx, 0.75_dp, 0.5_dp, rate, 2, dens(:, :, 2))
+         call synth(ctx, 0.25_dp, w2, rate, 1, dens(:, :, 1))
+         call synth(ctx, 0.75_dp, w2, rate, 2, dens(:, :, 2))
       end if
    end subroutine densities
 
@@ -665,6 +702,201 @@ contains
       call check(error, maxval(abs(gr - gu)) <= ROUNDOFF*max(1.0_dp, maxval(abs(gr))), &
                  "UHF with D/2 per spin differs from RHF with D by "//to_string(maxval(abs(gr - gu)), "es10.2"))
    end subroutine test_k_uhf_margin
+
+   subroutine test_k_tiles(error)
+      !! The exchange-only product pass planned on the exchange tiles
+      !! (trc_bin_tiles, GRADIENT PRODUCT TEST) against the whole-bin plan, on
+      !! an extended chain where tiles are dropped: the survivors must be
+      !! EXACTLY the same (the tiles may only drop what the screen pass drops
+      !! anyway), the gradient the same to round-off, and
+      !! the plan strictly smaller, RHF and UHF. Run by hand with the tile
+      !! threshold made 100x too loose, the survivor equality fails (3x and 10x
+      !! pass: the tile test is decade-accurate).
+      type(error_type), allocatable, intent(out) :: error
+      real(dp), parameter :: KF = 0.8_dp
+      real(dp), allocatable :: d(:, :, :), gt(:, :), gw(:, :)
+      integer(int64) :: nkt, nkw, nvt, nvw
+      integer :: ndens
+      real(dp) :: gtol
+      call get_ctx(cache_chain, XYZ_CHAIN, THRESH_CHAIN, error, NAT_CHAIN)
+      if (allocated(error)) return
+      allocate (gt(3, cache_chain%nat), gw(3, cache_chain%nat))
+      do ndens = 1, 2
+         call densities(cache_chain, ndens, d, 2.5_dp, 0.12_dp)
+         call bin_tiles_set_enabled(.true.)
+         if (.not. bin_tiles_requested()) then
+            call skip_test(error, "SKIP: TRC_EXCHANGE_TILES=0 in the environment")
+            return
+         end if
+         call run_gradient(cache_chain, d, 1.0_dp, KF, 0.0_dp, 0, gt, nkt, md=.true.)
+         nvt = cache_chain%eri%nwork
+         call bin_tiles_set_enabled(.false.)
+         call run_gradient(cache_chain, d, 1.0_dp, KF, 0.0_dp, 0, gw, nkw, md=.true.)
+         nvw = cache_chain%eri%nwork
+         call bin_tiles_set_enabled(.true.)
+         print '(a,i0,a,i0,a,i0,a,i0,a,i0)', '  K tiles ndens ', ndens, ': visited tiled ', nvt, ', whole bins ', nvw, &
+            ', kept tiled ', nkt, ', whole bins ', nkw
+         call check(error, nkt == nkw, "ndens "//to_string(ndens)//": the tiled plan kept "//to_string(nkt)// &
+                    " quartets, the whole-bin plan "//to_string(nkw))
+         if (allocated(error)) return
+         ! Not bit for bit even on the serial host: the tiled plan has more
+         ! segments, so the same survivors are summed in another order.
+#if defined(_OPENACC) || defined(_OPENMP)
+         gtol = ROUNDOFF
+#else
+         gtol = 1.0e-13_dp
+#endif
+         call check(error, maxval(abs(gt - gw)) <= gtol*max(1.0_dp, maxval(abs(gw))), &
+                    "ndens "//to_string(ndens)//": the tiled gradient differs from the whole-bin "// &
+                    "one by "//to_string(maxval(abs(gt - gw)), "es10.2"))
+         if (allocated(error)) return
+         call check(error, nvt < nvw, "ndens "//to_string(ndens)//": the tiled plan visits "//to_string(nvt)// &
+                    " quartets, the whole-bin plan "//to_string(nvw)//": nothing was dropped")
+         if (allocated(error)) return
+         call check(error, nkt > 0_int64 .and. nkt < nvw, "ndens "//to_string(ndens)//": the screen keeps "//to_string(nkt)// &
+                    " of "//to_string(nvw)//": the case does not exercise it")
+         if (allocated(error)) return
+         deallocate (d)
+      end do
+   end subroutine test_k_tiles
+
+   subroutine plan_keys(ctx, p, keys)
+      !! The sorted keys min(pa, pc)*(npair + 1) + max(pa, pc) of every work
+      !! item of a plan (a triangle segment's items are its lower half).
+      type(ctx_t), intent(in) :: ctx
+      type(trc_bin_plan_t), intent(in) :: p
+      integer(int64), allocatable, intent(out) :: keys(:)
+      integer :: seg, iab, icd, ilo, pa, pc
+      integer(int64) :: n, np
+      np = ctx%eri%bins%npair
+      allocate (keys(p%nwork))
+      n = 0
+      do seg = 1, p%nseg
+         do icd = 1, p%sNB(seg)
+            ilo = 1
+            if (p%sD(seg)) ilo = icd
+            do iab = ilo, p%sA(seg)
+               pa = p%sOA(seg) + iab
+               pc = p%sOB(seg) + icd
+               n = n + 1
+               keys(n) = min(pa, pc)*(np + 1) + max(pa, pc)
+            end do
+         end do
+      end do
+      keys = keys(1:n)
+      call sort(keys)
+   end subroutine plan_keys
+
+   logical function has_key(keys, key)
+      integer(int64), intent(in) :: keys(:), key
+      integer :: lo, hi, mid
+      lo = 1
+      hi = size(keys)
+      has_key = .false.
+      do while (lo <= hi)
+         mid = (lo + hi)/2
+         if (keys(mid) == key) then
+            has_key = .true.
+            return
+         else if (keys(mid) < key) then
+            lo = mid + 1
+         else
+            hi = mid - 1
+         end if
+      end do
+   end function has_key
+
+   subroutine test_k_tile_plan(error)
+      !! The tiled plan against the whole-bin plan, with no integral kernel:
+      !! over the whole plan's work items (a) every item the tiled plan lacks
+      !! fails the screen kernel's own test, qcut*max(D_ac D_bd, D_ad D_bc) <=
+      !! thresh*kmarg (an item with qcut <= thresh fails the Schwarz test
+      !! first), (b) no quartet is visited twice, (c) every rectangle segment
+      !! is canonical. Sensitivity: swept over two decades of kmarg, the
+      !! largest (lhs)/(thresh*kmarg) among the dropped items must exceed
+      !! RATIO_FLOOR, else a tile test that is much too loose would pass (a).
+      !! The tile test is only decade-accurate (levels) and bounds a block of
+      !! shells by its maximum, so on this chain the ratio reaches 0.03-0.07
+      !! (measured over eleven windows of kmarg, 0.1 to 10 the best; the floor
+      !! is half the 0.068 of this one), not 1: a test 10x too loose still
+      !! passes (a) (measured: 3x gives 0.18, 10x gives 0.47), 100x fails.
+      type(error_type), allocatable, intent(out) :: error
+      real(dp), parameter :: KMARG_LO = 0.1_dp, RATIO_FLOOR = 0.03_dp
+      integer, parameter :: NSTEP = 20
+      real(dp), allocatable :: d(:, :, :), g(:, :)
+      real(dp), pointer :: dsh(:, :)
+      integer(int64), allocatable :: kw(:), kt(:)
+      integer(int64) :: nk, np
+      type(trc_bin_plan_t) :: pw, pt
+      integer :: istep, seg, iab, icd, ilo, pa, pc, si, sj, sk, sl, i
+      real(dp) :: km, qcut, lhs, ratio, rmax, rstep
+      call get_ctx(cache_chain, XYZ_CHAIN, THRESH_CHAIN, error, NAT_CHAIN)
+      if (allocated(error)) return
+      call densities(cache_chain, 1, d, 2.5_dp, 0.12_dp)
+      allocate (g(3, cache_chain%nat))
+      ! Populates eri%dsh, the density bound the plans are built from.
+      call run_gradient(cache_chain, d, 1.0_dp, 0.8_dp, 0.0_dp, 0, g, nk, md=.true.)
+      associate (e => cache_chain%eri)
+         dsh => e%dsh
+         np = e%bins%npair
+         call pw%build(e%bins, THRESH_CHAIN, e%quartets%bin_pbase, .false., canonical=.true.)
+         call plan_keys(cache_chain, pw, kw)
+         rmax = 0.0_dp
+         do istep = 1, NSTEP
+            km = KMARG_LO*10.0_dp**(2.0_dp*real(istep - 1, dp)/real(NSTEP - 1, dp))
+            call bin_tiles_reach(e%quartets%tiles, dsh, km)
+            call bin_tiles_plan(e%quartets%tiles, pt, e%bins, THRESH_CHAIN, e%quartets%bin_pbase)
+            call pt%canonicalise()
+            call plan_keys(cache_chain, pt, kt)
+            do i = 2, size(kt)
+               if (kt(i) == kt(i - 1)) then
+                  call check(error, .false., "kmarg "//to_string(km, "es9.2")//": the tiled plan visits a quartet twice")
+                  return
+               end if
+            end do
+            do seg = 1, pt%nseg
+               if (pt%sD(seg)) cycle
+               if (pt%sLA(seg)*(LMAX + 1) + pt%sLB(seg) < pt%sLC(seg)*(LMAX + 1) + pt%sLD(seg)) then
+                  call check(error, .false., "kmarg "//to_string(km, "es9.2")//": segment "//to_string(seg)// &
+                             " is not canonical")
+                  return
+               end if
+            end do
+            rstep = 0.0_dp
+            do seg = 1, pw%nseg
+               do icd = 1, pw%sNB(seg)
+                  ilo = 1
+                  if (pw%sD(seg)) ilo = icd
+                  do iab = ilo, pw%sA(seg)
+                     pa = pw%sOA(seg) + iab
+                     pc = pw%sOB(seg) + icd
+                     if (has_key(kt, min(pa, pc)*(np + 1) + max(pa, pc))) cycle
+                     qcut = e%bins%sp_q(pa)*e%bins%sp_q(pc)
+                     if (qcut <= THRESH_CHAIN) cycle
+                     si = e%bins%sp_i(pa)
+                     sj = e%bins%sp_j(pa)
+                     sk = e%bins%sp_i(pc)
+                     sl = e%bins%sp_j(pc)
+                     lhs = qcut*max(dsh(si, sk)*dsh(sj, sl), dsh(si, sl)*dsh(sj, sk))
+                     ratio = lhs/(THRESH_CHAIN*km)
+                     rstep = max(rstep, ratio)
+                     if (ratio > 1.0_dp) then
+                        call check(error, .false., "kmarg "//to_string(km, "es9.2")//": the tiled plan dropped an "// &
+                                   "item the kernel keeps, lhs/(thresh*kmarg) = "//to_string(ratio, "es10.3"))
+                        return
+                     end if
+                  end do
+               end do
+            end do
+            rmax = max(rmax, rstep)
+         end do
+         call pw%release()
+         call pt%release()
+      end associate
+      print '(a,es10.3)', '  K tile plan: largest dropped lhs/(thresh*kmarg) over the sweep ', rmax
+      call check(error, rmax > RATIO_FLOOR, "the sweep never drops an item near the bound (largest ratio "// &
+                 to_string(rmax, "es10.3")//"): the tile test is not exercised")
+   end subroutine test_k_tile_plan
 
    subroutine pair_sweep(ctx, pool, ps, mode, g, nkept, dsh)
       !! eri%gradient_pairs under a screen mode (as run_gradient's).

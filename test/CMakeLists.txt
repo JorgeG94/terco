@@ -917,7 +917,9 @@ set_tests_properties(terco/check_mdj_grad_ccpvtz PROPERTIES SKIP_REGULAR_EXPRESS
 # six-block screen; exchange-only and Coulomb-only launches keep fewer quartets
 # and stay within the dropped quartets' bound of the unscreened gradient; pair
 # tables with no Coulomb or no exchange weight; the MD Coulomb switch's full
-# gradients against the fused ones. Glycine tripeptide, STO-3G.
+# gradients against the fused ones; the exchange tiles of the MD route's
+# exchange-only pass (same survivors, smaller plan, RHF and UHF, on the head of
+# gly40). Glycine tripeptide, STO-3G.
 #
 terco_add_check(check_grad_screen check_grad_screen.F90 NEEDS_BASIS
                 ARGS basis_sets/sto-3g.json)
