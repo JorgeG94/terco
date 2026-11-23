@@ -12,13 +12,14 @@ module trc_grad
    !! integral too (eri_fock's own comment). omega == 0 is bit-identical to
    !! the unattenuated path -- see scripts/gen_rys_grad.py's `_RANGE_SEP_BLOCK`.
    !!
-   !! SCREENING: the same bound as the energy/Fock build (`thresh`), not a
+   !! SCREENING: the same threshold as the energy/Fock build (`thresh`), not a
    !! separate gradient-specific tolerance. Gamma already carries the density
    !! weighting per quartet exactly as the Fock digestion's jab/jcd/kac/kad/kbc/
-   !! kbd blocks do (see scripts/gen_rys_grad.py), so a quartet the Schwarz
-   !! bound already lets through at `thresh` is precisely the set whose energy
-   !! contribution the SCF trusted; there is no argument for trusting its
-   !! derivative less. A modest tightening factor was considered and rejected
+   !! kbd blocks do (see scripts/gen_rys_grad.py). The screen assumes, as the
+   !! energy build does, that the derivative integral is of the size of the
+   !! energy Schwarz product; it is not a rigorous bound on it (derivative
+   !! integrals are larger), so what `thresh` buys is measured, not proved.
+   !! A modest tightening factor was considered and rejected
    !! for lack of any measurement showing the plain bound insufficient for the
    !! ~1e-7 relative finite-difference tolerance -- see
    !! test/check_rys_grad_fd.F90. Measured on the 450-atom water cluster,
@@ -56,8 +57,47 @@ module trc_grad
    !! (Coulomb only), the long-range pass of a range-separated hybrid
    !! (exchange only), a full-range pass whose exchange factor is zero (wB97,
    !! say), a pure-functional TDDFT/RPA pair table. Their gradients move at
-   !! screening level, by quartets the criterion for the terms present
-   !! already allowed to be dropped; the criterion itself is unchanged.
+   !! screening level, by quartets the density factor of the terms present
+   !! already allowed to be dropped: the block maximum over those terms is
+   !! the same single-block maximum, so the same Q*D <= thresh test, just
+   !! without the blocks of a term the launch does not have.
+   !!
+   !! THE EXCHANGE-ONLY RYS PASS BEHIND THE MD COULOMB GRADIENT screens on a
+   !! PRODUCT of blocks (`eri%grad_j_engine`, not the default; the launch flag
+   !! `grad_k_product`, set by eri_gradient when it took the MD route). The
+   !! exchange gradient's density factor is Gamma_K = -(kfac/4)(D_ac D_bd +
+   !! D_ad D_bc) for RHF (the total density), so |Gamma_K| <= (|kfac|/2) P with
+   !! P = max(D_ac D_bd, D_ad D_bc); for UHF it is
+   !! -(kfac/2) sum_s (D^s_ac D^s_bd + D^s_ad D^s_bc), and with `dsh` the
+   !! maximum over the spins |Gamma_K| <= 2 |kfac| P, four times the RHF
+   !! constant (the same physical system has a UHF `dsh` about half the RHF
+   !! one, so its P is about a quarter). That launch therefore drops a quartet when
+   !!     Q * max(dsh(a,c) dsh(b,d), dsh(a,d) dsh(b,c)) <= thresh * m,
+   !! m = `grad_k_margin_of(ndens)` = GRAD_K_PRODUCT_MARGIN for RHF and a
+   !! quarter of it for UHF, so that RHF and UHF drop the same Gamma bound
+   !! (halving a density is exact, so UHF with D/2 per spin keeps exactly the
+   !! RHF survivors). The test does not see kfac, as the single-block one never
+   !! did. Everything else is untouched and keeps the single-block test bit
+   !! for bit: a launch with a Coulomb term (fused or Coulomb only), a pair
+   !! table (see `grad_screen_kmargin`), and every exchange-only launch that
+   !! is not behind the MD route -- notably the long-range pass of a
+   !! range-separated hybrid and a K-only call from any other caller. The
+   !! margin is needed because the screen multiplies the bound on |Gamma| by
+   !! the ENERGY Schwarz product while the derivative integrals exceed it; see
+   !! GRAD_K_PRODUCT_MARGIN for the measurements and what they do not cover.
+   !!
+   !! WHICH DEFAULT LAUNCHES CHANGE with the product test: none. It applies
+   !! only behind the MD Coulomb gradient, which is not the default. For the
+   !! long-range pass of a range-separated hybrid, the attenuated integral is
+   !! bounded by the Coulomb Schwarz quantities (Cauchy-Schwarz with the
+   !! positive-definite erf kernel), which is what makes the same Schwarz
+   !! screen valid there; the margin has not been measured on it (see the
+   !! parameter). Skeleton gradients stay sound: the
+   !! symmetrised `dsh` is invariant under the group, so each factor of the
+   !! product, and hence the product, is the same for every image of a
+   !! quartet (the MD route is not taken for a skeleton gradient anyway). A
+   !! decontracted basis screens on the density expanded to the working
+   !! basis, as the single-block test does (not measured).
    !!
    use pic_types, only: dp, int32, int64
    use trc_bins, only: pair_bins_t, trc_bin_plan_t
@@ -67,6 +107,7 @@ module trc_grad
    implicit none
    private
    public :: grad_bins, trc_grad_pair_t, trc_grad_pairtab_t, RYSG_PAIRS_NCB
+   public :: GRAD_K_PRODUCT_MARGIN, grad_k_margin_of
 
    type :: trc_grad_pair_t
       !! One separable contribution to a column's gradient: the derivative, at
@@ -103,6 +144,66 @@ module trc_grad
       !! component of trc_eri_t or a further argument: nvfortran 26.5 has
       !! hung or ICE'd on both.
    end type trc_grad_pairtab_t
+
+   real(dp), parameter :: GRAD_K_PRODUCT_MARGIN = 1.0e-2_dp
+   !! The margin m of the exchange-only product screen behind the MD Coulomb
+   !! gradient (the module's paragraph on it): a quartet is dropped when
+   !! Q*max(D_ac D_bd, D_ad D_bc) <= thresh*m, RHF. One source of truth: the
+   !! host passes it to the screen pass as a launch scalar (`kmarg`) and
+   !! check_grad_screen pins its value with a literal.
+   !!
+   !! Why not m = 1. The product bounds |Gamma| but the screen multiplies it
+   !! by the ENERGY Schwarz product, and the derivative integrals are larger
+   !! than that, so a bare product bound drops far too many quartets (an
+   !! earlier attempt at the bare bound for the fused kernel raised the error
+   !! about 100x). MEASURED, one V100, NVHPC 26.9, def2-SVP, thresh 1e-12, RHF,
+   !! MD Coulomb gradient on so the Rys pass is exchange only; the two-electron
+   !! gradient stage, and the max gradient error against a fused reference at
+   !! thresh 1e-14:
+   !!
+   !!   | system | fused (the default) | single-block exchange screen | m = 1 | m = 1e-1 | m = 1e-2 | m = 1e-3 |
+   !!   |---|---|---|---|---|---|---|
+   !!   | gly20 time (s) | 2.23 | 1.86 | 1.02 | 1.12 | 1.23 | 1.34 |
+   !!   | gly20 error | 2.9e-11 | 2.8e-11 | 3.8e-10 | 4.8e-11 | 2.7e-11 | 2.7e-11 |
+   !!   | 40 waters time (s) | 1.34 | 1.75 | 0.97 | 1.11 | 1.27 | 1.45 |
+   !!   | 40 waters error | 1.2e-10 | (not measured) | 5.7e-10 | 1.0e-10 | 9.9e-11 | 1.0e-10 |
+   !!   | gly50 time (s) | 13.14 | 7.14 | 4.71 | 5.00 | 5.32 | 5.65 |
+   !!
+   !! (gly50's errors are all 1.96e-7, set by the SCF-convergence difference
+   !! between the reference and the runs, not by the screen.) m = 1 costs a
+   !! factor 13 in error on gly20; m = 1e-2 matched the single-block screen's
+   !! error on these and was clearly cheaper than it (gly20 1.86 -> 1.23 s, 40
+   !! waters 1.75 -> 1.27 s, gly50 7.14 -> 5.32 s).
+   !!
+   !! A fourth, small system is less favourable. Host measurement, gly3
+   !! 6-31G*, converged RHF density, the exchange-only pass against Schwarz
+   !! only: at thresh 1e-12 the product screen at m = 1e-2 gave an error of
+   !! 8.5e-12 against 4.1e-12 for the single-block screen (2.1x worse; 1.5x
+   !! worse with omega = 0.3) while keeping only 8% fewer quartets; at 1e-10
+   !! 3.5e-10 against 5.4e-10; at 1e-8 5.2e-8 against 9.6e-8. Both errors at
+   !! 1e-12 are below 1e-11, but "as accurate as the single-block screen" is
+   !! therefore not established in general: the margin is calibrated on three
+   !! systems at def2-SVP, RHF, and is within about 2x of the single-block
+   !! screen's error on a fourth. It has NOT been measured with
+   !! range-separated densities, triple-zeta or diffuse basis sets, open-shell
+   !! systems (UHF takes a quarter of it by the constants in the module's
+   !! paragraph), or in finite-difference Hessians. That is why the product
+   !! test is confined to the MD route (not default).
+   !!
+   !! NOT SHIPPED, for a later decision: with the product test also on the
+   !! long-range pass of a range-separated hybrid (the default route), an
+   !! experimental build measured, one V100, def2-SVP, wB97X, two-electron
+   !! gradient stage against main: gly20 4.54 -> 2.99 s, error against each
+   !! build's own thresh-1e-14 run 1.8e-11 -> 1.6e-11; 40 waters 2.74 ->
+   !! 2.11 s, 6.3e-11 -> 5.6e-11 (part of that gain is the exchange-only block
+   !! selection of an earlier commit, already default).
+   !!
+   !! Where the margin is NOT applied: pair tables (`gradient_pairs`) keep the
+   !! single-block test. Their weights pk are folded host-side and can exceed 1
+   !! (both orderings of a cross pair), the bound for a column is
+   !! |Gamma_K| <= 4 (sum |pk|) P with P from the pool maximum, so a fixed
+   !! margin would have to scale with the largest column sum, and nothing here
+   !! measures it.
 
    integer, parameter :: GCLASS_RADIX = 11
    !! Same fixed radix as trc_rys_select's RYS_CLASS_RADIX -- duplicated as a
@@ -282,6 +383,37 @@ contains
       end if
    end subroutine grad_terms
 
+   pure function grad_k_margin_of(ndens) result(m)
+      !! The margin of the exchange-only product screen for a density count:
+      !! GRAD_K_PRODUCT_MARGIN for RHF, a quarter of it for UHF (the module's
+      !! paragraph on the MD-route exchange pass: UHF's Gamma_K constant in P is four times
+      !! RHF's, so the same Gamma bound needs a quarter of the margin).
+      integer, intent(in) :: ndens
+      real(dp) :: m
+      m = GRAD_K_PRODUCT_MARGIN
+      if (ndens == 2) m = 0.25_dp*GRAD_K_PRODUCT_MARGIN
+   end function grad_k_margin_of
+
+   function grad_screen_kmargin(launch, ptab, cnt_j, cnt_k) result(kmarg)
+      !! The `kmarg` the screen pass is given: the product test's margin for
+      !! the exchange-only launch behind the MD Coulomb gradient
+      !! (`launch%grad_k_product`, set by eri_gradient; not inferred from
+      !! jfac = 0, which the long-range pass of a range-separated hybrid and a
+      !! K-only caller have too), zero (the single-block test) otherwise.
+      !! Zero too for a pair table (the
+      !! parameter's comment says why) and under the test hook
+      !! `launch%grad_k_single`, which keeps the single-block exchange screen
+      !! as the comparison the product test is judged against.
+      type(trc_bin_launch_t), intent(in) :: launch
+      type(trc_grad_pairtab_t), intent(in) :: ptab
+      logical, intent(in) :: cnt_j, cnt_k
+      real(dp) :: kmarg
+      kmarg = 0.0_dp
+      if (.not. launch%grad_k_product) return
+      if (allocated(ptab%pl) .or. launch%grad_k_single .or. launch%grad_all_blocks) return
+      if (cnt_k .and. .not. cnt_j) kmarg = grad_k_margin_of(launch%ndens)
+   end function grad_screen_kmargin
+
    subroutine grad_classes(plan, b, pairs, quartets, launch, dsh, dmat, ptab)
       !!
       !! ORDERED SURVIVOR COMPACTION glue, one class run [c0, c1] of the
@@ -339,6 +471,7 @@ contains
       integer, allocatable :: out_seg(:), out_iab(:), out_icd(:)
       integer :: nmax
       logical :: cnt_j, cnt_k
+      real(dp) :: kmarg
       integer(int64) :: w0, w1, gend, nout
       integer(int64) :: ctr(1)
       !! A 1-element array, not a bare scalar: nvfortran's mem:separate
@@ -348,6 +481,7 @@ contains
 
       call grad_terms(launch, ptab, cnt_j, cnt_k)
       if (.not. (cnt_j .or. cnt_k)) return
+      kmarg = grad_screen_kmargin(launch, ptab, cnt_j, cnt_k)
 
       nseg = plan%nseg
       c0 = 1
@@ -385,7 +519,7 @@ contains
                !$acc enter data create(out_seg, out_iab, out_icd) copyin(ctr)
                call rysg_screen_dispatch(key, b0, b1, w0, w1, nseg, plan%sOff, plan%sA, plan%sNB, &
                                          plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, &
-                                         b%npair, b%sp_i, b%sp_j, b%sp_q, launch%thresh, cnt_j, cnt_k, dsh, pairs%nbas, &
+                                         b%npair, b%sp_i, b%sp_j, b%sp_q, launch%thresh, cnt_j, cnt_k, kmarg, dsh, pairs%nbas, &
                                          pairs%sh_at, out_seg, out_iab, out_icd, nmax, ctr)
                !$acc update host(ctr)
                nout = min(ctr(1), int(nmax, int64))

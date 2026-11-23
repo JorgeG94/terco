@@ -60,7 +60,7 @@ def main():
         for i in range(0, len(keys), 16))
     screen_cases = "\n".join(
         f"""      case ({key}); call rysg{tag}_screen(lo, hi, w0, w1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                          npair, sp_i, sp_j, sp_q, thresh, cnt_j, cnt_k, dsh, nbas, sh_at, &
+                          npair, sp_i, sp_j, sp_q, thresh, cnt_j, cnt_k, kmarg, dsh, nbas, sh_at, &
                           out_seg, out_iab, out_icd, nmax, ctr)"""
         for key, tag in keys)
 
@@ -140,7 +140,7 @@ contains
    end function rysg_has_class
 
    subroutine rysg_screen_dispatch(key, lo, hi, w0, w1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                          npair, sp_i, sp_j, sp_q, thresh, cnt_j, cnt_k, dsh, nbas, sh_at, &
+                          npair, sp_i, sp_j, sp_q, thresh, cnt_j, cnt_k, kmarg, dsh, nbas, sh_at, &
                           out_seg, out_iab, out_icd, nmax, ctr)
       !! ORDERED SURVIVOR COMPACTION, screen pass: decode + the three
       !! quartet-level screens only, over work items [w0, w1] of segments
@@ -159,6 +159,9 @@ contains
       !! Whether the launch has a Coulomb term, an exchange term: the density
       !! screen counts the density blocks of the terms present only. Uniform
       !! over the launch (see scripts/gen_rys_grad.py's density block).
+      real(dp), intent(in)    :: kmarg
+      !! > 0: the exchange-only product test with this margin; 0: the
+      !! single-block test (see trc_grad's SCREENING paragraph).
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_at(nbas)
       integer,  intent(inout) :: out_seg(nmax), out_iab(nmax), out_icd(nmax)

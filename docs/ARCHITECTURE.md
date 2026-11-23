@@ -272,6 +272,17 @@ list, then the derivative pass over that list. Contributions are accumulated
 into 32 private copies of the gradient, chosen by thread, and reduced at the
 end, which limits atomic contention on the few atoms a quartet touches.
 
+The screening pass drops a quartet when its Schwarz product times the density
+factor of the terms the launch has is under the threshold: the Coulomb blocks
+D_ab, D_cd only if there is a Coulomb term, the exchange blocks D_ac, D_ad,
+D_bc, D_bd only if there is an exchange term. The exchange-only Rys pass
+behind the MD Coulomb gradient (`eri%grad_j_engine`, not the default) uses
+instead the product of two exchange blocks, `max(D_ac D_bd, D_ad D_bc)`,
+against the threshold times a margin (`GRAD_K_PRODUCT_MARGIN`,
+`src/eri/trc_grad.F90`, which records what it was calibrated on). Every other
+launch, including the long-range pass of a range-separated hybrid and pair
+tables, keeps the largest single block.
+
 ## 5. Other integrals
 
 One-electron integrals (overlap, kinetic, nuclear attraction and their

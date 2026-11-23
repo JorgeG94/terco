@@ -28,7 +28,26 @@ module check_grad_screen_suite
    !!     count is also compared, EXACTLY, with a host loop over the work
    !!     items of the very plan the launch walks, applying the same
    !!     inequality: a screen that drops a few percent too many quartets
-   !!     passes the (loose) accuracy bound but not the count.
+   !!     passes the (loose) accuracy bound but not the count. An
+   !!     exchange-only Rys pass behind the MD Coulomb gradient takes the PRODUCT test
+   !!     Q*max(D_ac D_bd, D_ad D_bc) <= thresh*m (trc_grad's EXCHANGE-ONLY
+   !!     paragraph): the host loop applies it with a literal margin, the
+   !!     dropped-quartet bound uses the exact constant c of
+   !!     |Gamma_K| <= c*P, and two further tests pin it. `test_k_bound`
+   !!     checks that constant against the exact Gamma_K of the densities
+   !!     (RHF kfac/2, UHF 2 kfac with dsh the maximum over the spins) and
+   !!     that it is attained to within 10%, so a constant twice too large
+   !!     fails; `test_k_product` runs the MD route (jfac /= 0 with the MD
+   !!     switch on, the exchange-only Rys pass behind it), counts its
+   !!     survivors against a host loop with a LITERAL margin 1e-2 (so the
+   !!     library constant cannot drift), requires fewer survivors than the
+   !!     single-block exchange screen (`eri%grad_screen_k_single`) and at most
+   !!     twice its error against the unscreened gradient;
+   !!     `test_k_uhf_margin` pins UHF's m/4 by running Da = Db = D/2 against
+   !!     the RHF run with D. The default route (a jfac = 0 call with the MD
+   !!     switch off, as the long-range pass of a range-separated hybrid
+   !!     makes) and pair tables keep the single-block test: the exchange-only
+   !!     cases below pin exactly that count, and the MD-route count differs.
    !!   - The PAIR TABLE: a sweep whose pairs all have pj = 0 (or all pk = 0)
    !!     as the above; a mixed sweep, one nonzero weight among zeros
    !!     included, is the six-block screen (counts exact, gradient as above).
@@ -107,6 +126,9 @@ contains
                   new_unittest("fused launches (J and K) keep the six-block screen", test_fused), &
                   new_unittest("exchange-only launch screens on the exchange blocks", test_exchange_only), &
                   new_unittest("Coulomb-only launch screens on the Coulomb blocks", test_coulomb_only), &
+                  new_unittest("exchange bound: |Gamma_K| <= c*max(D_ac D_bd, D_ad D_bc)", test_k_bound), &
+                  new_unittest("MD route: exchange-only pass takes the product screen", test_k_product), &
+                  new_unittest("UHF margin: Da = Db = D/2 keeps the RHF survivors", test_k_uhf_margin), &
                   new_unittest("pair table: J-free, K-free and mixed sweeps", test_pairs), &
                   new_unittest("MD Coulomb switch: full gradients equal the fused ones", test_mdj_switch) &
                   ]
@@ -192,7 +214,7 @@ contains
       d = 0.5_dp*(d + transpose(d))
    end subroutine synth
 
-   subroutine host_count(ctx, dsh, cj, ck, cnt)
+   subroutine host_count(ctx, dsh, cj, ck, kmarg, kconst, cnt)
       !! The survivors of the Schwarz, same-atom and density screens, by a host
       !! loop over EXACTLY the work items the gradient's plan admits (the plan
       !! is built here as grad_bins builds it, so its bin-level rounding is
@@ -201,9 +223,15 @@ contains
       type(ctx_t), intent(inout) :: ctx
       real(dp), intent(in) :: dsh(:, :)
       logical, intent(in) :: cj, ck
+      real(dp), intent(in) :: kmarg, kconst
+      !! kmarg > 0: the exchange-only product test (a quartet is dropped when
+      !! Q*max(dsh_ac dsh_bd, dsh_ad dsh_bc) <= thresh*kmarg, in the kernel's
+      !! own arithmetic) and `kconst` the constant c of |Gamma_K| <= c*(that
+      !! maximum), used only for the dropped-quartet bound (kfac/2 RHF, 2 kfac
+      !! UHF). kmarg = 0: the single-block test.
       type(count_t), intent(out) :: cnt
       integer :: seg, iab, icd, ilo, si, sj, sk, sl, nab, ncd
-      real(dp) :: qcut, dmax, wq, th
+      real(dp) :: qcut, dmax, wq, th, thr
       th = ctx%eri%thresh
       if (.not. ctx%plan_built) then
          call ctx%plan%build(ctx%eri%bins, th, ctx%eri%quartets%bin_pbase, .false., canonical=.true.)
@@ -223,10 +251,17 @@ contains
                sj = ctx%eri%bins%sp_j(ctx%plan%sOA(seg) + iab)
                sk = ctx%eri%bins%sp_i(ctx%plan%sOB(seg) + icd)
                sl = ctx%eri%bins%sp_j(ctx%plan%sOB(seg) + icd)
-               dmax = 0.0_dp
-               if (cj) dmax = max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl))
-               if (ck) dmax = max(dmax, dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl))
-               if (qcut*dmax <= th) then
+               thr = th
+               if (kmarg > 0.0_dp) then
+                  ! The kernel's own arithmetic: thr_eff = thresh*kmarg, P unscaled.
+                  dmax = max(dsh(si, sk)*dsh(sj, sl), dsh(si, sl)*dsh(sj, sk))
+                  thr = th*kmarg
+               else
+                  dmax = 0.0_dp
+                  if (cj) dmax = max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl))
+                  if (ck) dmax = max(dmax, dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl))
+               end if
+               if (qcut*dmax <= thr) then
                   ! Dropped by the density screen (a same-atom quartet is
                   ! dropped after it, so it adds to neither count).
                   if (.not. same_atom(ctx, si, sj, sk, sl)) then
@@ -235,7 +270,11 @@ contains
                      if (si == sj) wq = 0.5_dp*wq
                      if (sk == sl) wq = 0.5_dp*wq
                      if (ctx%plan%sD(seg) .and. iab == icd) wq = 0.5_dp*wq
-                     cnt%dropped = cnt%dropped + 8.0_dp*wq*qcut*dmax
+                     if (kmarg > 0.0_dp) then
+                        cnt%dropped = cnt%dropped + 8.0_dp*wq*qcut*kconst*dmax
+                     else
+                        cnt%dropped = cnt%dropped + 8.0_dp*wq*qcut*dmax
+                     end if
                   end if
                   cycle
                end if
@@ -255,10 +294,23 @@ contains
                   ctx%eri%pairs%sh_at(si) == ctx%eri%pairs%sh_at(sl)
    end function same_atom
 
-   subroutine run_gradient(ctx, dens, jfac, kfac, omega, mode, g, nkept)
-      !! eri%gradient under one of three screens: 0 the new one, 1 the
-      !! six-block one (the old behaviour), 2 no density screen (Schwarz
-      !! only). Returns the gradient, the survivor count and, as `dsh`
+   pure function k_constant(ndens, kfac) result(c)
+      !! The constant c of |Gamma_K| <= c*P, P = max(D_ac D_bd, D_ad D_bc) over
+      !! the shell-block maxima (trc_grad's EXCHANGE-ONLY paragraph): RHF
+      !! Gamma_K = -(kfac/4)(D_ac D_bd + D_ad D_bc) gives kfac/2; UHF
+      !! -(kfac/2) sum_s(...) over two spins, dsh the maximum over them, gives
+      !! 2 kfac. The test checks both against the exact Gamma (test_k_bound).
+      integer, intent(in) :: ndens
+      real(dp), intent(in) :: kfac
+      real(dp) :: c
+      c = merge(0.5_dp, 2.0_dp, ndens == 1)*abs(kfac)
+   end function k_constant
+
+   subroutine run_gradient(ctx, dens, jfac, kfac, omega, mode, g, nkept, md)
+      !! eri%gradient under one of four screens: 0 the library's (the product
+      !! test for an exchange-only launch), 1 the six-block one (the old
+      !! behaviour), 2 no density screen (Schwarz only), 3 the single-block
+      !! exchange screen an exchange-only launch had before the product test. Returns the gradient, the survivor count and, as `dsh`
       !! after the call, the block maxima of mode 0 and 1 (kept apart in
       !! ctx%eri%dsh by the caller before another mode overwrites it).
       type(ctx_t), intent(inout) :: ctx
@@ -266,13 +318,21 @@ contains
       integer, intent(in) :: mode
       real(dp), intent(out) :: g(:, :)
       integer(int64), intent(out) :: nkept
-      ! The fused Rys gradient named explicitly, so a run with TRC_MDJ_GRAD=1
-      ! in the environment still tests the screen of the launches it names.
+      logical, intent(in), optional :: md
+      !! The MD Coulomb route (the exchange-only Rys pass behind it, the one
+      !! launch with the product test); absent, the fused/default route.
+      ! The engine named explicitly, so a run with TRC_MDJ_GRAD=1 in the
+      ! environment still tests the screen of the launches it names.
       ctx%eri%grad_j_engine = TRC_J_ENGINE_BINS
+      if (present(md)) then
+         if (md) ctx%eri%grad_j_engine = TRC_J_ENGINE_MDJ
+      end if
       ctx%eri%grad_screen_all_blocks = mode == 1
+      ctx%eri%grad_screen_k_single = mode == 3
       ctx%eri%grad_density_screen = mode /= 2
       call ctx%eri%gradient(ctx%bas, dens, g, k_scale=kfac, j_scale=jfac, omega=omega)
       ctx%eri%grad_screen_all_blocks = .false.
+      ctx%eri%grad_screen_k_single = .false.
       ctx%eri%grad_density_screen = .true.
       nkept = ctx%eri%nkept
    end subroutine run_gradient
@@ -308,7 +368,7 @@ contains
       end if
    end subroutine densities
 
-   subroutine exact_counts(label, ctx, dsh, cj, ck, nn, no, np, cnt, error)
+   subroutine exact_counts(label, ctx, dsh, cj, ck, kmarg, kconst, nn, no, np, cnt, error)
       !! The kernel's three survivor counts against the host loop over the
       !! plan's own work items, EXACTLY: the new screen (terms cj, ck), the
       !! six-block one and Schwarz only. cnt is the host result for (cj, ck).
@@ -316,12 +376,13 @@ contains
       type(ctx_t), intent(inout) :: ctx
       real(dp), intent(in) :: dsh(:, :)
       logical, intent(in) :: cj, ck
+      real(dp), intent(in) :: kmarg, kconst
       integer(int64), intent(in) :: nn, no, np
       type(count_t), intent(out) :: cnt
       type(error_type), allocatable, intent(out) :: error
       type(count_t) :: cnt6
-      call host_count(ctx, dsh, cj, ck, cnt)
-      call host_count(ctx, dsh, .true., .true., cnt6)
+      call host_count(ctx, dsh, cj, ck, kmarg, kconst, cnt)
+      call host_count(ctx, dsh, .true., .true., 0.0_dp, 0.0_dp, cnt6)
       call check(error, cnt%n_items == ctx%eri%nwork, label//": the host plan has "//to_string(cnt%n_items)// &
                  " work items, the launch "//to_string(ctx%eri%nwork))
       if (allocated(error)) return
@@ -358,7 +419,7 @@ contains
             call run_gradient(cache_screen, d, JF(ic), KF(ic), 0.0_dp, 1, go, no)
             call run_gradient(cache_screen, d, JF(ic), KF(ic), 0.0_dp, 2, gp, np)
             call exact_counts("fused ndens "//to_string(ndens)//" case "//to_string(ic), cache_screen, dsh, &
-                              .true., .true., nn, no, np, cnt, error)
+                              .true., .true., 0.0_dp, 0.0_dp, nn, no, np, cnt, error)
             if (allocated(error)) return
             print '(a,i0,a,i0,a,i0,a,i0,a,i0,a,l1)', '  fused ndens ', ndens, ' case ', ic, ': survivors new ', nn, &
                ', six-block ', no, ', Schwarz only ', np, '  same gradient ', same_gradient(gn, go)
@@ -397,7 +458,9 @@ contains
       dsh = cache_screen%eri%dsh
       call run_gradient(cache_screen, d, jfac, kfac, 0.0_dp, 1, go, no)
       call run_gradient(cache_screen, d, jfac, kfac, 0.0_dp, 2, gp, np)
-      call exact_counts(label, cache_screen, dsh, cj, ck, nn, no, np, cnt, error)
+      ! Default route: single-block test whatever the terms (jfac = 0 here is
+      ! the caller's, as the long-range pass of a range-separated hybrid has it).
+      call exact_counts(label, cache_screen, dsh, cj, ck, 0.0_dp, 0.0_dp, nn, no, np, cnt, error)
       if (allocated(error)) return
       diff = maxval(abs(gn - gp))
       scale = max(1.0_dp, maxval(abs(gp)))
@@ -414,6 +477,8 @@ contains
    end subroutine one_term_launch
 
    subroutine test_exchange_only(error)
+      !! Default route (MD switch off): an exchange-only launch keeps the
+      !! single-block exchange test, count exact, RHF and UHF.
       type(error_type), allocatable, intent(out) :: error
       real(dp), allocatable :: d(:, :, :), g(:, :)
       integer(int64) :: nk
@@ -438,6 +503,168 @@ contains
       if (allocated(error)) return
       call one_term_launch("Coulomb only UHF", 2, 1.0_dp, 0.0_dp, .true., .false., error)
    end subroutine test_coulomb_only
+
+   subroutine test_k_bound(error)
+      !! The bound the product screen rests on, independent of the screen: for
+      !! every shell quartet the exact |Gamma_K| over the quartet's components
+      !! is at most c*P, P = max(dsh_ac dsh_bd, dsh_ad dsh_bc) from the
+      !! library's own `dsh`, c = k_constant (RHF kfac/2, UHF 2 kfac). The
+      !! largest ratio is also bounded below: a constant that is twice too
+      !! large would pass the first check and make the screen twice too loose.
+      type(error_type), allocatable, intent(out) :: error
+      real(dp), parameter :: KF = 0.8_dp
+      real(dp), allocatable :: d(:, :, :), g(:, :), dsh(:, :)
+      integer(int64) :: nk
+      integer :: ndens, si, sj, sk, sl, ia, ib, ic, id, a, b, c, dd, s, nviol
+      integer(int64) :: nq
+      real(dp) :: gam, pp, cst, ratio, rmax, t
+      call get_ctx(cache_screen, XYZ_SCREEN, THRESH_SCREEN, error)
+      if (allocated(error)) return
+      allocate (g(3, cache_screen%nat))
+      do ndens = 1, 2
+         call densities(cache_screen, ndens, d, 1.2_dp)
+         call run_gradient(cache_screen, d, 0.0_dp, KF, 0.0_dp, 0, g, nk)
+         dsh = cache_screen%eri%dsh
+         cst = k_constant(ndens, KF)
+         rmax = 0.0_dp
+         nviol = 0
+         nq = 0
+         associate (pr => cache_screen%eri%pairs, nb => cache_screen%eri%nbas)
+            do sl = 1, nb, 3
+               do sk = 1, nb
+                  do sj = 1, nb
+                     do si = 1, nb
+                        pp = max(dsh(si, sk)*dsh(sj, sl), dsh(si, sl)*dsh(sj, sk))
+                        if (pp <= 0.0_dp) cycle
+                        gam = 0.0_dp
+                        do id = 0, cart_ncart_of(pr%sh_l(sl)) - 1
+                           dd = pr%ao_off(sl) + id
+                           do ic = 0, cart_ncart_of(pr%sh_l(sk)) - 1
+                              c = pr%ao_off(sk) + ic
+                              do ib = 0, cart_ncart_of(pr%sh_l(sj)) - 1
+                                 b = pr%ao_off(sj) + ib
+                                 do ia = 0, cart_ncart_of(pr%sh_l(si)) - 1
+                                    a = pr%ao_off(si) + ia
+                                    t = 0.0_dp
+                                    do s = 1, ndens
+                                       t = t + d(a, c, s)*d(b, dd, s) + d(a, dd, s)*d(b, c, s)
+                                    end do
+                                    ! RHF: kfac/4 of the total density's products; UHF: kfac/2 per spin.
+                                    gam = max(gam, abs(t)*merge(0.25_dp, 0.5_dp, ndens == 1)*KF)
+                                 end do
+                              end do
+                           end do
+                        end do
+                        nq = nq + 1
+                        ratio = gam/(cst*pp)
+                        rmax = max(rmax, ratio)
+                        if (ratio > 1.0_dp + 1.0e-12_dp) nviol = nviol + 1
+                     end do
+                  end do
+               end do
+            end do
+         end associate
+         print '(a,i0,a,i0,a,i0,a,f6.3)', '  K bound ndens ', ndens, ': ', nq, ' quartets (every third l), ', nviol, &
+            ' above c*P, largest |Gamma_K|/(c*P) ', rmax
+         call check(error, nviol == 0, "ndens "//to_string(ndens)//": "//to_string(nviol)//" of "//to_string(nq)// &
+                    " quartets have |Gamma_K| above c*max(D_ac D_bd, D_ad D_bc), c = "//to_string(cst, "f6.3"))
+         if (allocated(error)) return
+         call check(error, rmax >= 0.9_dp, "ndens "//to_string(ndens)//": the bound is never within 10% of |Gamma_K| ("// &
+                    to_string(rmax, "f6.3")//"): the constant is too loose")
+         if (allocated(error)) return
+         deallocate (d)
+      end do
+   end subroutine test_k_bound
+
+   subroutine test_k_product(error)
+      !! The MD route's exchange-only Rys pass (jfac = 1 with the MD switch on)
+      !! against the default route's exchange-only launch (jfac = 0 passed by
+      !! the caller, switch off), the single-block exchange screen on the MD
+      !! route (hook) and no density screen. Counts exact against host loops
+      !! with the literal margins 1e-2 (RHF) and 1e-2/4 (UHF). Accuracy: the
+      !! V100 measurement (trc_grad's GRAD_K_PRODUCT_MARGIN) has the product
+      !! screen matching the single-block one's error at m = 1e-2 (gly20 2.7e-11
+      !! against 2.8e-11) and 13x worse at m = 1, but a small system at 1e-12
+      !! was 2.1x worse, so the assertion is error(product) <= 2 error(single).
+      type(error_type), allocatable, intent(out) :: error
+      real(dp), parameter :: KF = 0.8_dp, M_RHF = 1.0e-2_dp
+      real(dp), allocatable :: d(:, :, :), gp(:, :), gs(:, :), g0(:, :), gd(:, :), dsh(:, :)
+      integer(int64) :: np_, ns_, n0, nd, ndflt
+      integer :: ndens
+      real(dp) :: ep, es, m
+      type(count_t) :: cnt, cnt1
+      call get_ctx(cache_screen, XYZ_SCREEN, THRESH_SCREEN, error)
+      if (allocated(error)) return
+      allocate (gp(3, cache_screen%nat), gs(3, cache_screen%nat), g0(3, cache_screen%nat), gd(3, cache_screen%nat))
+      do ndens = 1, 2
+         call densities(cache_screen, ndens, d, 1.2_dp)
+         m = merge(M_RHF, 0.25_dp*M_RHF, ndens == 1)
+         ! Default route, jfac = 0: the single-block count.
+         call run_gradient(cache_screen, d, 0.0_dp, KF, 0.0_dp, 0, gd, ndflt)
+         dsh = cache_screen%eri%dsh
+         call host_count(cache_screen, dsh, .false., .true., 0.0_dp, 0.0_dp, cnt1)
+         call check(error, ndflt == cnt1%n_kept, "ndens "//to_string(ndens)//": the default-route exchange-only launch kept "// &
+                    to_string(ndflt)//", the single-block host loop "//to_string(cnt1%n_kept))
+         if (allocated(error)) return
+         ! MD route.
+         call run_gradient(cache_screen, d, 1.0_dp, KF, 0.0_dp, 0, gp, np_, md=.true.)
+         dsh = cache_screen%eri%dsh
+         call host_count(cache_screen, dsh, .false., .true., m, k_constant(ndens, KF), cnt)
+         call run_gradient(cache_screen, d, 1.0_dp, KF, 0.0_dp, 3, gs, ns_, md=.true.)
+         call run_gradient(cache_screen, d, 1.0_dp, KF, 0.0_dp, 2, g0, n0, md=.true.)
+         ep = maxval(abs(gp - g0))
+         es = maxval(abs(gs - g0))
+         print '(a,i0,a,i0,a,i0,a,i0,a,i0,a,es10.2,a,es10.2)', '  K product ndens ', ndens, ': survivors default route ', &
+            ndflt, ', MD route product ', np_, ' (host loop ', cnt%n_kept, '), MD route single block ', ns_, &
+            '  error product ', ep, ', single block ', es
+         call check(error, np_ == cnt%n_kept, "ndens "//to_string(ndens)//": the MD-route exchange-only pass kept "// &
+                    to_string(np_)//", the host loop with the literal margin "//to_string(cnt%n_kept))
+         if (allocated(error)) return
+         call check(error, ns_ == ndflt, "ndens "//to_string(ndens)//": the single-block hook on the MD route kept "// &
+                    to_string(ns_)//", the default route "//to_string(ndflt))
+         if (allocated(error)) return
+         call check(error, es > 100.0_dp*ROUNDOFF, "ndens "//to_string(ndens)//": the single-block screen's error "// &
+                    to_string(es, "es10.2")//" is not above round-off: the case does not exercise the screen")
+         if (allocated(error)) return
+         call check(error, np_ < ns_, "ndens "//to_string(ndens)//": the product screen keeps "//to_string(np_)// &
+                    " quartets, the single-block screen "//to_string(ns_))
+         if (allocated(error)) return
+         call check(error, ep <= 2.0_dp*es, "ndens "//to_string(ndens)//": the product screen's error "//to_string(ep, "es10.2")// &
+                    " exceeds twice the single-block screen's "//to_string(es, "es10.2"))
+         if (allocated(error)) return
+         call check(error, ep <= cnt%dropped + ROUNDOFF*max(1.0_dp, maxval(abs(g0))), "ndens "//to_string(ndens)// &
+                    ": the product screen's error "//to_string(ep, "es10.2")//" is above the dropped quartets' bound "// &
+                    to_string(cnt%dropped, "es10.2"))
+         if (allocated(error)) return
+         deallocate (d)
+      end do
+   end subroutine test_k_product
+
+   subroutine test_k_uhf_margin(error)
+      !! UHF with Da = Db = D/2 is the RHF problem with D, and halving is
+      !! exact, so P_UHF = P_RHF/4 bit for bit: only m_UHF = m_RHF/4 gives the
+      !! same survivors (a UHF margin of m_RHF keeps 4x fewer of the borderline
+      !! quartets and fails the equality). The gradients then agree to the
+      !! round-off of the two kernels' different contraction order.
+      type(error_type), allocatable, intent(out) :: error
+      real(dp), allocatable :: d(:, :, :), du(:, :, :), gr(:, :), gu(:, :)
+      integer(int64) :: nr, nu
+      call get_ctx(cache_screen, XYZ_SCREEN, THRESH_SCREEN, error)
+      if (allocated(error)) return
+      allocate (gr(3, cache_screen%nat), gu(3, cache_screen%nat))
+      call densities(cache_screen, 1, d, 1.2_dp)
+      allocate (du(size(d, 1), size(d, 2), 2))
+      du(:, :, 1) = 0.5_dp*d(:, :, 1)
+      du(:, :, 2) = 0.5_dp*d(:, :, 1)
+      call run_gradient(cache_screen, d, 1.0_dp, 0.8_dp, 0.0_dp, 0, gr, nr, md=.true.)
+      call run_gradient(cache_screen, du, 1.0_dp, 0.8_dp, 0.0_dp, 0, gu, nu, md=.true.)
+      print '(a,i0,a,i0,a,es10.2)', '  UHF margin: RHF survivors ', nr, ', UHF (D/2 per spin) ', nu, &
+         '  max |g_RHF - g_UHF| ', maxval(abs(gr - gu))
+      call check(error, nr == nu, "UHF with D/2 per spin kept "//to_string(nu)//" quartets, RHF with D "//to_string(nr))
+      if (allocated(error)) return
+      call check(error, maxval(abs(gr - gu)) <= ROUNDOFF*max(1.0_dp, maxval(abs(gr))), &
+                 "UHF with D/2 per spin differs from RHF with D by "//to_string(maxval(abs(gr - gu)), "es10.2"))
+   end subroutine test_k_uhf_margin
 
    subroutine pair_sweep(ctx, pool, ps, mode, g, nkept, dsh)
       !! eri%gradient_pairs under a screen mode (as run_gradient's).
@@ -478,7 +705,7 @@ contains
       call pair_sweep(cache_screen, pool, ps, 0, gn, nn, dsh)
       call pair_sweep(cache_screen, pool, ps, 1, go, no)
       call pair_sweep(cache_screen, pool, ps, 2, gp, np)
-      call exact_counts("pairs "//label, cache_screen, dsh, cj, ck, nn, no, np, cnt, error)
+      call exact_counts("pairs "//label, cache_screen, dsh, cj, ck, 0.0_dp, 0.0_dp, nn, no, np, cnt, error)
       if (allocated(error)) return
       diff = maxval(abs(gn - gp))
       scale = max(1.0_dp, maxval(abs(gp)))

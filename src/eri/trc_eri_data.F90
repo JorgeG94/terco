@@ -189,6 +189,17 @@ module trc_eri_data
       !! removed: the gradient's screen counts all six density blocks
       !! whatever terms the launch has (the screen before it learned to drop
       !! the blocks of an absent term). Never set outside a check.
+      logical :: grad_k_product = .false.
+      !! The launch is the exchange-only Rys pass behind the MD Coulomb
+      !! gradient (set by eri_gradient when it took the MD route): the only
+      !! launch that screens on the product of two exchange blocks (trc_grad's
+      !! EXCHANGE-ONLY paragraph). Every other launch keeps the single-block
+      !! test, whatever its jfac.
+      logical :: grad_k_single = .false.
+      !! TEST HOOK (eri%grad_screen_k_single), not part of the API, may be
+      !! removed: an exchange-only gradient launch keeps the single-block
+      !! exchange test instead of the product test (trc_grad's EXCHANGE-ONLY
+      !! paragraph). Never set outside a check.
       logical :: count_kept = .false.
       !! Count the quartets that survive both screens, into `nkept`, and
       !! build nothing: binkernel_fock_bins returns after the count.
