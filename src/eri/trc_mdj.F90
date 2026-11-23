@@ -27,6 +27,13 @@ module trc_mdj
    !! at a time, each Hermite row of a block contiguous over the block's pairs.
    !! Everything lives on the device from `build` to `release`.
    !!
+   !! GRADIENT. `gradient` gives d/dX Tr(D J[D]) from the bra side alone: the
+   !! same ket stage, the Hermite stage with the bra order raised by one into
+   !! Jt' (gather kernels, scripts/gen_md_j_grad.py), then a per-shell-pair
+   !! kernel that contracts D_ab with the derivative pair distributions and adds
+   !! three components to each atom of the pair. It is validated against the Rys
+   !! gradient (test/check_mdj_grad.F90) and not tuned or used by default.
+   !!
    !! P <-> Q SYMMETRY (the default; CMake TERCO_MDJ_SYM_LMAX). The Hermite stage evaluates each
    !! [P|Q] twice: once in the [lp|lq] launch for Jt[P], once in [lq|lp] for
    !! Jt[Q]. gen_md_j.py can instead emit symmetric kernels (trc_mdj_s<lp><lq>,
@@ -89,6 +96,7 @@ module trc_mdj
    use trc_bins, only: pair_bins_t
    use trc_mdj_kernels, only: mdj_ket, mdj_bra, mdj_bound, mdj_hermite, mdj_hermite_sym, &
                               MDJ_LPMAX, MDJ_SYM_LMAX, MDJ_GATHER_ALL
+   use trc_mdjg_kernels, only: mdjg_bra, mdjg_bound, mdjg_hermite, MDJG_LPMAX
    use pic_profiler, only: profiler_start, profiler_stop
    implicit none
    private
@@ -128,6 +136,11 @@ module trc_mdj
       !! c_a c_b exp(-ab/p |AB|^2)
       real(dp), allocatable :: mp_ip(:), mp_nq(:)
       !! bra bound I_P (geometry) and ket norm ||rho_Q|| (each build)
+      real(dp), allocatable :: mp_ea(:)
+      !! exponent of the first shell's primitive in each pair (the gradient's
+      !! d/dA of a Gaussian is 2 alpha times the raised one); b = p - a
+      integer,  allocatable :: sp_at1(:), sp_at2(:)
+      !! atom of each shell pair's two shells (b%sh_at), the gradient's targets
       integer,  allocatable :: mp_sp(:)
       !! shell pair of each primitive pair
       integer,  allocatable :: sp_ao1(:), sp_ao2(:), sp_k0(:), sp_nk(:)
@@ -144,6 +157,18 @@ module trc_mdj
       integer :: cl_k0(0:MDJ_LPMAX) = 0, cl_nk(0:MDJ_LPMAX) = 0, cl_hb(0:MDJ_LPMAX) = 0
       !! per lp block: first primitive pair less one, count, first Hermite slot less one
       real(dp), allocatable :: dt(:), jt(:)
+      !
+      ! The Coulomb gradient (`gradient`): the bra Hermite order raised by one.
+      ! Allocated by the first `gradient` call of a build, freed by `release`.
+      !
+      logical :: grad_ready = .false.
+      !! mp_gip and gjt exist (device too)
+      integer :: ngt = 0
+      !! length of gjt: per lp block, its primitive pairs times nherm(lp + 1)
+      integer :: gcl_hb(0:MDJ_LPMAX) = 0
+      !! per lp block: first slot of gjt, less one
+      real(dp), allocatable :: mp_gip(:), gjt(:)
+      !! the derivative pair distribution's bound I'_P (geometry) and Jt' (each call)
       !
       ! The skeleton Fock build's bra. Built only
       ! when `build` is given the pair orbit weights. The orbit
@@ -173,6 +198,8 @@ module trc_mdj
    contains
       procedure :: build => mdj_build
       procedure :: coulomb => mdj_coulomb
+      procedure :: gradient => mdj_gradient
+      procedure :: gradient_available => mdj_gradient_available
       procedure :: release => mdj_release
    end type trc_mdj_t
 
@@ -215,7 +242,8 @@ contains
       this%cut = thresh*margin()
       this%sym_lmax = sym_lmax_choice()
 
-      !$acc enter data copyin(this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
+      !$acc enter data copyin(this%mp_z, this%mp_px, this%mp_py, this%mp_pz, this%mp_ea, &
+      !$acc                   this%sp_at1, this%sp_at2, &
       !$acc                   this%mp_ax, this%mp_ay, this%mp_az, &
       !$acc                   this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_sp, &
       !$acc                   this%sp_ao1, this%sp_ao2, this%sp_k0, this%sp_nk, &
@@ -287,20 +315,9 @@ contains
       end if
       ! NVTX ranges (TERCO_NVTX builds; no-ops otherwise), each closed after a
       ! device sync so its length is the stage's GPU time.
-      call profiler_start("mdj: ket", nvtx_only=.true.)
       call zero_device(this%ndt, this%jt)
       call zero_device(nao*nao, jmat)
-      do t = 1, this%ntype
-         if (this%ty_nk(t) == 0) cycle
-         lpt = this%ty_la(t) + this%ty_lb(t)
-         call mdj_ket(this%ty_la(t), this%ty_lb(t), this%ty_nk(t), this%ty_k0(t), &
-                      this%ty_k0(t) - this%cl_k0(lpt), this%cl_nk(lpt), this%cl_hb(lpt), this%nhp_all, &
-                      this%mp_z, this%mp_ax, this%mp_ay, this%mp_az, &
-                      this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_sp, &
-                      this%nsp, this%sp_ao1, this%sp_ao2, nao, dmat, this%ndt, this%dt, this%mp_nq)
-      end do
-      !$acc wait
-      call profiler_stop("mdj: ket")
+      call ket_stage(this, nao, dmat)
       call profiler_start("mdj: hermite", nvtx_only=.true.)
       do lp = 0, MDJ_LPMAX
          if (this%cl_nk(lp) == 0) cycle
@@ -377,6 +394,146 @@ contains
       !$acc wait
       call profiler_stop("mdj: bra")
    end subroutine mdj_coulomb
+
+   subroutine ket_stage(this, nao, dmat)
+      !! The ket Hermite density Dt of every primitive pair and its Coulomb
+      !! norm ||rho_Q||, from a density already on the device. Shared by
+      !! `coulomb` and `gradient`: the gradient's ket stage is the energy's.
+      type(trc_mdj_t), intent(inout) :: this
+      integer,  intent(in) :: nao
+      real(dp), intent(in) :: dmat(nao, nao)
+      integer :: t, lpt
+      call profiler_start("mdj: ket", nvtx_only=.true.)
+      do t = 1, this%ntype
+         if (this%ty_nk(t) == 0) cycle
+         lpt = this%ty_la(t) + this%ty_lb(t)
+         call mdj_ket(this%ty_la(t), this%ty_lb(t), this%ty_nk(t), this%ty_k0(t), &
+                      this%ty_k0(t) - this%cl_k0(lpt), this%cl_nk(lpt), this%cl_hb(lpt), this%nhp_all, &
+                      this%mp_z, this%mp_ax, this%mp_ay, this%mp_az, &
+                      this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_sp, &
+                      this%nsp, this%sp_ao1, this%sp_ao2, nao, dmat, this%ndt, this%dt, this%mp_nq)
+      end do
+      !$acc wait
+      call profiler_stop("mdj: ket")
+   end subroutine ket_stage
+
+   logical function mdj_gradient_available(this) result(res)
+      !! Whether `gradient` can run on this pair list: every populated lp
+      !! block is one the generated gradient kernels cover (shells through f,
+      !! scripts/gen_md_j_grad.py's --lmax). (A shell on no atom never gets here:
+      !! eri%gradient stops on it first.)
+      class(trc_mdj_t), intent(in) :: this
+      integer :: lp
+      res = this%built
+      if (.not. res) return
+      do lp = MDJG_LPMAX + 1, MDJ_LPMAX
+         if (this%cl_nk(lp) > 0) res = .false.
+      end do
+   end function mdj_gradient_available
+
+   subroutine prepare_gradient(this)
+      !! The gradient's own arrays and the derivative pair distribution's
+      !! bound I'_P, once per build (geometry only).
+      type(trc_mdj_t), intent(inout) :: this
+      integer :: t, lp
+      if (this%grad_ready) return
+      this%ngt = 0
+      do lp = 0, MDJ_LPMAX
+         this%gcl_hb(lp) = this%ngt
+         this%ngt = this%ngt + this%cl_nk(lp)*nherm(lp + 1)
+      end do
+      allocate (this%gjt(max(this%ngt, 1)), this%mp_gip(max(this%nhp_all, 1)))
+      !$acc enter data create(this%mp_gip, this%gjt)
+      this%grad_ready = .true.
+      do t = 1, this%ntype
+         if (this%ty_nk(t) == 0) cycle
+         call mdjg_bound(this%ty_la(t), this%ty_lb(t), this%ty_nk(t), this%ty_k0(t), this%nhp_all, &
+                         this%mp_z, this%mp_ea, this%mp_ax, this%mp_ay, this%mp_az, &
+                         this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_gip)
+      end do
+      !$acc wait
+   end subroutine prepare_gradient
+
+   subroutine mdj_gradient(this, nao, dmat, natm, grad, rank, nranks)
+      !! grad += d/dX Tr(D J[D]) for the density `dmat` (the TOTAL density, both
+      !! spins summed on an open shell), the Coulomb part of the two-electron
+      !! gradient in the convention of eri%gradient's jfac = 1: twice the
+      !! derivative of the Coulomb energy 1/2 D.J[D]. dmat (nao, nao) and grad
+      !! (3, natm) are already on the device; grad is accumulated into by atomics.
+      !!
+      !! Three stages, the energy engine's ket stage unchanged, then the
+      !! Hermite stage with the BRA order raised by one (gather kernels,
+      !! `trc_mdjg_h`) into Jt', then the per-shell-pair gradient bra. The
+      !! derivation and its numpy check are scripts/md/reference_grad.py's;
+      !! the kernels are scripts/gen_md_j_grad.py's.
+      !!
+      !! SCREENING. (P, Q) is skipped when I'_P ||rho_Q|| <= cut, with I'_P the
+      !! Coulomb norm of the DERIVATIVE pair distribution: |c_P| times the max,
+      !! over component pairs, directions and the three distributions an atom
+      !! can collect (d/dA, d/dB, and d/dA + d/dB for an atom carrying both
+      !! shells of the pair), of that norm. By Cauchy-Schwarz in the Coulomb
+      !! metric one (P, Q)'s share of one component of one atom's gradient is at
+      !! most 2 |D'_ab| I'_P ||rho_Q|| per component pair (the 2 of the weight
+      !! 2 D'); the screen is density-free and the cut carries the energy
+      !! engine's 1e-3 margin, as for J. The energy's I_P would not do: a
+      !! derivative of a tight Gaussian pair is larger than the pair by about
+      !! its exponent's square root.
+      !!
+      !! With rank and nranks, this rank's ket chunks only; the caller sums the
+      !! ranks' grad (the bra stage is linear in Jt'). Needs the plain pair list
+      !! (not the skeleton's copies): no skeleton path yet.
+      class(trc_mdj_t), intent(inout) :: this
+      integer,  intent(in)    :: nao, natm
+      real(dp), intent(in)    :: dmat(nao, nao)
+      real(dp), intent(inout) :: grad(3, natm)
+      integer,  intent(in), optional :: rank, nranks
+
+      integer :: t, lp, lq, lpt, qfix, c0, cstep
+
+      if (.not. this%gradient_available()) then
+         error stop "terco: the MD J gradient has no kernels for this pair list (check gradient_available first)"
+      end if
+      call prepare_gradient(this)
+      this%npq = 0
+      qfix = qlen_override()
+      c0 = 0
+      cstep = 1
+      if (present(rank) .and. present(nranks)) then
+         c0 = rank
+         cstep = max(1, nranks)
+      end if
+      call zero_device(this%ngt, this%gjt)
+      call ket_stage(this, nao, dmat)
+      call profiler_start("mdj: gradient hermite", nvtx_only=.true.)
+      do lp = 0, MDJ_LPMAX
+         if (this%cl_nk(lp) == 0) cycle
+         do lq = 0, MDJ_LPMAX
+            if (this%cl_nk(lq) == 0) cycle
+            call mdjg_hermite(lp + 1, lq, this%cl_nk(lp), this%cl_k0(lp), this%gcl_hb(lp), &
+                              this%cl_nk(lq), this%cl_k0(lq), this%cl_hb(lq), &
+                              chunk_length(this%cl_nk(lp), this%cl_nk(lq), .false., qfix, cstep), &
+                              c0, cstep, this%nhp_all, &
+                              this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
+                              this%mp_gip, this%mp_nq, this%ndt, this%dt, this%ngt, this%gjt, this%cut)
+            this%npq = this%npq + int(this%cl_nk(lp), int64)*this%cl_nk(lq)
+         end do
+      end do
+      !$acc wait
+      call profiler_stop("mdj: gradient hermite")
+      call profiler_start("mdj: gradient bra", nvtx_only=.true.)
+      do t = 1, this%ntype
+         if (this%ty_ns(t) == 0) cycle
+         lpt = this%ty_la(t) + this%ty_lb(t)
+         call mdjg_bra(this%ty_la(t), this%ty_lb(t), this%ty_ns(t), this%ty_s0(t), &
+                       this%cl_k0(lpt), this%cl_nk(lpt), this%gcl_hb(lpt), this%nhp_all, &
+                       this%mp_z, this%mp_ea, this%mp_ax, this%mp_ay, this%mp_az, &
+                       this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, &
+                       this%nsp, this%sp_ao1, this%sp_ao2, this%sp_k0, this%sp_nk, &
+                       this%sp_at1, this%sp_at2, this%ngt, this%gjt, nao, dmat, natm, grad)
+      end do
+      !$acc wait
+      call profiler_stop("mdj: gradient bra")
+   end subroutine mdj_gradient
 
    subroutine order_pairs(this, b, bins)
       !! Group the bins' shell pairs into (la, lb) types, ordered by
@@ -481,14 +638,16 @@ contains
       allocate (this%sp_ao1(max(this%nsp, 1)), this%sp_ao2(max(this%nsp, 1)), &
                 this%sp_k0(max(this%nsp, 1)), this%sp_nk(max(this%nsp, 1)), &
                 this%sp_sh1(max(this%nsp, 1)), this%sp_sh2(max(this%nsp, 1)), this%sp_q(max(this%nsp, 1)), &
-                this%sp_as1(max(this%nsp, 1)), this%sp_as2(max(this%nsp, 1)))
+                this%sp_as1(max(this%nsp, 1)), this%sp_as2(max(this%nsp, 1)), &
+                this%sp_at1(max(this%nsp, 1)), this%sp_at2(max(this%nsp, 1)))
       this%nao_sph = b%nao_sph
       allocate (this%mp_z(max(this%nhp_all, 1)), this%mp_px(max(this%nhp_all, 1)), &
                 this%mp_py(max(this%nhp_all, 1)), this%mp_pz(max(this%nhp_all, 1)), &
                 this%mp_ax(max(this%nhp_all, 1)), this%mp_ay(max(this%nhp_all, 1)), &
                 this%mp_az(max(this%nhp_all, 1)), this%mp_bx(max(this%nhp_all, 1)), &
                 this%mp_by(max(this%nhp_all, 1)), this%mp_bz(max(this%nhp_all, 1)), &
-                this%mp_c(max(this%nhp_all, 1)), this%mp_sp(max(this%nhp_all, 1)))
+                this%mp_c(max(this%nhp_all, 1)), this%mp_sp(max(this%nhp_all, 1)), &
+                this%mp_ea(max(this%nhp_all, 1)))
       allocate (this%sp_w(max(this%nsp, 1)))
       this%sp_w = 0
       ia = 0
@@ -511,6 +670,8 @@ contains
             this%sp_as1(ia) = b%sh_ao_sph(i)
             this%sp_as2(ia) = b%sh_ao_sph(j)
             this%sp_q(ia) = bins%sp_q(s)
+            this%sp_at1(ia) = b%sh_at(i)
+            this%sp_at2(ia) = b%sh_at(j)
             if (present(pair_w)) this%sp_w(ia) = pair_w(s)
             ab2 = sum((b%sh_r(:, i) - b%sh_r(:, j))**2)
             do ki = 1, b%sh_np(i)
@@ -523,6 +684,7 @@ contains
                   mu = ea*eb/p
                   pc = (ea*b%sh_r(:, i) + eb*b%sh_r(:, j))/p
                   this%mp_z(k) = p
+                  this%mp_ea(k) = ea
                   this%mp_px(k) = pc(1)
                   this%mp_py(k) = pc(2)
                   this%mp_pz(k) = pc(3)
@@ -598,6 +760,7 @@ contains
                k = this%sp_k0(ia) + kk
                kn = kn + 1
                this%mp_z(kn) = this%mp_z(k)
+               this%mp_ea(kn) = this%mp_ea(k)
                this%mp_px(kn) = this%mp_px(k)
                this%mp_py(kn) = this%mp_py(k)
                this%mp_pz(kn) = this%mp_pz(k)
@@ -728,8 +891,13 @@ contains
 
    subroutine mdj_release(this)
       class(trc_mdj_t), intent(inout) :: this
+      if (this%grad_ready) then
+         !$acc exit data delete(this%mp_gip, this%gjt)
+         this%grad_ready = .false.
+      end if
       if (this%on_device) then
-         !$acc exit data delete(this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
+         !$acc exit data delete(this%mp_z, this%mp_px, this%mp_py, this%mp_pz, this%mp_ea, &
+         !$acc                  this%sp_at1, this%sp_at2, &
          !$acc                  this%mp_ax, this%mp_ay, this%mp_az, &
          !$acc                  this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_sp, &
          !$acc                  this%sp_ao1, this%sp_ao2, this%sp_k0, this%sp_nk, &
@@ -741,6 +909,10 @@ contains
       if (allocated(this%mp_z)) deallocate (this%mp_z, this%mp_px, this%mp_py, this%mp_pz, &
                                             this%mp_ax, this%mp_ay, this%mp_az, &
                                             this%mp_bx, this%mp_by, this%mp_bz, this%mp_c, this%mp_sp)
+      if (allocated(this%mp_ea)) deallocate (this%mp_ea)
+      if (allocated(this%mp_gip)) deallocate (this%mp_gip)
+      if (allocated(this%gjt)) deallocate (this%gjt)
+      if (allocated(this%sp_at1)) deallocate (this%sp_at1, this%sp_at2)
       if (allocated(this%sp_ao1)) deallocate (this%sp_ao1, this%sp_ao2, this%sp_k0, this%sp_nk, &
                                               this%sp_sh1, this%sp_sh2, this%sp_q, this%sp_as1, this%sp_as2)
       if (allocated(this%sp_w)) deallocate (this%sp_w)

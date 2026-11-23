@@ -1079,21 +1079,42 @@ def s_item(lp, lq, b, g, hp, hq, iq, args, diag):
     return o
 
 
-def gen_r_module_gather(lp, lq, nbatch, header, sieve=True):
+def gather_signature(grad):
+    """(argument list, integer dummies, real dummies) of a gather Hermite kernel.
+
+    The energy engine's Dt and Jt share one length, ndt. The gradient's
+    Jt' (bra Hermite order raised by one) is longer, so it has its own, ngt.
+    """
+    if grad:
+        return ("np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, mp_z, mp_px, mp_py, mp_pz, mp_ip, mp_nq, "
+                "ndt, dt, ngt, jt, cut",
+                "np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, ndt, ngt",
+                "dt(ndt), jt(ngt)")
+    return ("np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, mp_z, mp_px, mp_py, mp_pz, mp_ip, mp_nq, "
+            "ndt, dt, jt, cut",
+            "np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, ndt",
+            "dt(ndt), jt(ndt)")
+
+
+def gen_r_module_gather(lp, lq, nbatch, header, sieve=True, grad=False):
+    """The gather Hermite stage [lp|lq]. With `grad`, the gradient's raised-bra
+    kernel (gen_md_j_grad.py): module trc_mdjg_h<lp><lq>, a separate Jt' length."""
     L = lp + lq
     tag = f"{lp}{lq}"
     hp, hq = herm(lp), herm(lq)
     iq = herm_index(lq)
     dags = rtree.batch_dags(L, nbatch, sieve=sieve)
-    out = [header.format(what=f"Class [{lp}|{lq}] Hermite stage of the MD J engine, "
-                         f"{len(dags)} R batch(es)")]
+    mod, sub, item = ("trc_mdjg_h", "mdjg_h_", "mdjg_h_item_") if grad else ("trc_mdj_r", "mdj_r_", "mdj_r_item_")
+    what = (f"Class [{lp}|{lq}] Hermite stage of the MD J gradient (bra order raised to {lp}), "
+            if grad else f"Class [{lp}|{lq}] Hermite stage of the MD J engine, ")
+    out = [header.format(what=what + f"{len(dags)} R batch(es)")]
     out.append("#include \"inc/trc_dc_index.inc\"")
-    out.append(f"module trc_mdj_r{tag}")
+    out.append(f"module {mod}{tag}")
     out.append("   use pic_types, only: dp")
     out.append("   use trc_boys, only: BOYS_MMAX, boys_table, BOYS_NCHEB, BOYS_NGRID, BOYS_TMAX, BOYS_DT, BOYS_DTINV")
     out.append("   implicit none")
     out.append("   private")
-    out.append(f"   public :: mdj_r_{tag}")
+    out.append(f"   public :: {sub}{tag}")
     out.append("")
     out.append(f"   real(dp), parameter :: TWO_PI_2_5 = {TWO_PI_2_5}")
     out.append("")
@@ -1101,10 +1122,12 @@ def gen_r_module_gather(lp, lq, nbatch, header, sieve=True):
     out.append("")
     out.append('#include "inc/trc_boys_eval.inc"')
     out.append("")
-    args = ("np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, mp_z, mp_px, mp_py, mp_pz, mp_ip, mp_nq, "
-            "ndt, dt, jt, cut")
-    out.append(f"   subroutine mdj_r_{tag}(np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, mp_z, mp_px, &")
-    out.append("                        mp_py, mp_pz, mp_ip, mp_nq, ndt, dt, jt, cut)")
+    args, idecl, rdecl = gather_signature(grad)
+    if grad:
+        out.extend(wrap_args(f"subroutine {sub}{tag}", args, "   "))
+    else:
+        out.append(f"   subroutine {sub}{tag}(np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, mp_z, mp_px, &")
+        out.append("                        mp_py, mp_pz, mp_ip, mp_nq, ndt, dt, jt, cut)")
     out.append(f"      !! Jt[P] += [P|Q] Dt[Q] for the lp = {lp} pairs kp0+1..kp0+np against the")
     out.append(f"      !! lq = {lq} pairs kq0+1..kq0+nq, one launch per R batch. hbp and hbq are")
     out.append("      !! the two blocks' first Hermite slot, less one; each row has the block's")
@@ -1113,28 +1136,30 @@ def gen_r_module_gather(lp, lq, nbatch, header, sieve=True):
     out.append("      !! walking the whole ket list (measured: 128 threads, 27 ms, on w20).")
     out.append("      !! Only chunks c0, c0 + cstep, ... (0-based): an MPI rank's share, its")
     out.append("      !! partial Jt summed over ranks by the caller; (0, 1) is every chunk.")
-    out.append("      integer,  intent(in) :: np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, ndt")
+    out.append(f"      integer,  intent(in) :: {idecl}")
     out.append("      real(dp), intent(in) :: mp_z(nhp), mp_px(nhp), mp_py(nhp), mp_pz(nhp)")
-    out.append("      real(dp), intent(in) :: mp_ip(nhp), mp_nq(nhp), dt(ndt), cut")
-    out.append("      real(dp), intent(inout) :: jt(ndt)")
+    out.append(f"      real(dp), intent(in) :: mp_ip(nhp), mp_nq(nhp), {rdecl.split(', ')[0]}, cut")
+    out.append(f"      real(dp), intent(inout) :: {rdecl.split(', ')[1]}")
     out.append("      integer :: i, nchunk, nmine")
     out.append("      nchunk = (nq + qlen - 1)/qlen")
     out.append("      nmine = max(0, (nchunk - c0 + cstep - 1)/cstep)")
     for b in range(len(dags)):
         out.append("      do concurrent(i = 1:np*nmine)")
-        out.extend(wrap_args(f"call mdj_r_item_{tag}_b{b + 1}", "TRC_DC_INDEX(i), " + args, " " * 9))
+        out.extend(wrap_args(f"call {item}{tag}_b{b + 1}", "TRC_DC_INDEX(i), " + args, " " * 9))
         out.append("      end do")
-    out.append(f"   end subroutine mdj_r_{tag}")
+    out.append(f"   end subroutine {sub}{tag}")
     for b, g in enumerate(dags):
         out.append("")
-        out.extend(r_item_gather(lp, lq, b + 1, g, hp, hq, iq, args))
+        out.extend(r_item_gather(lp, lq, b + 1, g, hp, hq, iq, args, grad))
     out.append("")
-    out.append(f"end module trc_mdj_r{tag}")
+    out.append(f"end module {mod}{tag}")
     return "\n".join(out) + "\n"
 
 
-def r_item_gather(lp, lq, b, g, hp, hq, iq, args):
+def r_item_gather(lp, lq, b, g, hp, hq, iq, args, grad=False):
     tag = f"{lp}{lq}"
+    _, idecl, rdecl = gather_signature(grad)
+    item = "mdjg_h_item_" if grad else "mdj_r_item_"
     stmts = g.statements()
     leaves = g.leaves()
     mb = max(leaves)
@@ -1154,14 +1179,14 @@ def r_item_gather(lp, lq, b, g, hp, hq, iq, args):
     rnames = [s.lhs for s in stmts]
     ind = " " * 9
     o = []
-    o.extend(wrap_args(f"pure subroutine mdj_r_item_{tag}_b{b}", "i, " + args, " " * 3))
+    o.extend(wrap_args(f"pure subroutine {item}{tag}_b{b}", "i, " + args, " " * 3))
     o.append(f"      !! Batch {b}: {len(g.targets)} targets, {inter} intermediates, "
              f"{flops} R flops per primitive quartet.")
     o.append("      !$acc routine seq")
-    o.append("      integer,  intent(in) :: i, np, kp0, hbp, nq, kq0, hbq, qlen, c0, cstep, nhp, ndt")
+    o.append(f"      integer,  intent(in) :: i, {idecl}")
     o.append("      real(dp), intent(in) :: mp_z(nhp), mp_px(nhp), mp_py(nhp), mp_pz(nhp)")
-    o.append("      real(dp), intent(in) :: mp_ip(nhp), mp_nq(nhp), dt(ndt), cut")
-    o.append("      real(dp), intent(inout) :: jt(ndt)")
+    o.append(f"      real(dp), intent(in) :: mp_ip(nhp), mp_nq(nhp), {rdecl.split(', ')[0]}, cut")
+    o.append(f"      real(dp), intent(inout) :: {rdecl.split(', ')[1]}")
     o.append("      integer  :: kp, kq, k, ip1, k1, k2")
     o.append("      real(dp) :: p, px, py, pz, ip, q, zpe, alpha, pref, tval, m2a, w")
     o.append("      real(dp) :: pqx, pqy, pqz")
@@ -1223,7 +1248,7 @@ def r_item_gather(lp, lq, b, g, hp, hq, iq, args):
     for i in jused:
         o.append("      !$acc atomic update")
         o.append(f"      jt(hbp + {i}*np + ip1) = jt(hbp + {i}*np + ip1) + j{i + 1}")
-    o.append(f"   end subroutine mdj_r_item_{tag}_b{b}")
+    o.append(f"   end subroutine {item}{tag}_b{b}")
     return o
 
 
