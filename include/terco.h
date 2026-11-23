@@ -1272,7 +1272,10 @@ int trc_set_tddft_convergence(trc_handle_t handle, double conv_tol, int max_iter
  * none: the pairs that might hide a root are reported open (the window check and
  * its warning) and the run needs fewer matvecs; a larger value, 24 for instance,
  * trades matvecs against the missed-root guarantee. A negative `n` is TRC_ERR_BADARG.
- * Drops a stored TDDFT result. (ABI 1.31.)
+ * A caller that goes on to differentiate a root it followed by index (trc_run_gradient,
+ * trc_opt_set_tddft) should set 24: at 0 a missed candidate can make the returned root
+ * another state, and the gradient is then that state's. The terco CLI does so for
+ * --grad and --opt. Drops a stored TDDFT result. (ABI 1.31.)
  */
 int trc_set_tddft_missed_root_iterations(trc_handle_t handle, int n);
 

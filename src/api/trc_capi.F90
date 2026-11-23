@@ -380,7 +380,9 @@ module trc_capi
    !! iteration count is now 0 (it was 24 in 1.31 and 1.32), like the 1.20 change of
    !! the incremental Fock build: a fresh handle's TDDFT roots can differ on a case that
    !! needed the iteration, and trc_set_tddft_missed_root_iterations(handle, 24)
-   !! restores the previous behaviour. No signature or enum changes meaning.
+   !! restores the previous behaviour; set it before trc_run_gradient or trc_opt_set_tddft
+   !! follow a root by index (the CLI does for --grad and --opt). No signature or enum
+   !! changes meaning.
    !! 1.32: trc_set_tddft_density_screen, a new entry point (the TDDFT matvec's
    !! density screen, on by default). Additive.
    !! 1.31: trc_set_tddft_missed_root_iterations, a new entry point (the budget of
@@ -6195,7 +6197,10 @@ contains
       !! none: the pairs that might hide a root are reported open (the window check and
       !! its warning) and the run needs fewer matvecs; a larger value, 24 for instance,
       !! trades matvecs against the missed-root guarantee. A negative `n` is TRC_ERR_BADARG.
-      !! Drops a stored TDDFT result. (ABI 1.31.)
+      !! A caller that goes on to differentiate a root it followed by index (trc_run_gradient,
+      !! trc_opt_set_tddft) should set 24: at 0 a missed candidate can make the returned root
+      !! another state, and the gradient is then that state's. The terco CLI does so for
+      !! --grad and --opt. Drops a stored TDDFT result. (ABI 1.31.)
       type(c_ptr), value :: handle
       integer(c_int), value :: n
       integer(c_int) :: status

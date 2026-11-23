@@ -199,24 +199,28 @@ contains
       call run_cli(error, BASE, g_probe//'.default.json', json)
       if (allocated(error)) return
       call read_roots(error, json, 3, omega, osc, ynorm)
+      if (allocated(error)) return
       w_default = omega(3)
       n_default = open_count(json)
       call json%destroy()
       call run_cli(error, BASE//' --tddft-missed-root-iterations 0', g_probe//'.m0.json', json)
       if (allocated(error)) return
       call read_roots(error, json, 3, omega, osc, ynorm)
+      if (allocated(error)) return
       w_0 = omega(3)
       n_0 = open_count(json)
       call json%destroy()
       call run_cli(error, BASE//' --tddft-missed-root-iterations 24', g_probe//'.m24.json', json)
       if (allocated(error)) return
       call read_roots(error, json, 3, omega, osc, ynorm)
+      if (allocated(error)) return
       w_flag = omega(3)
       n_flag = open_count(json)
       call json%destroy()
       call run_cli(error, 'tddft_missed_root_formaldehyde.toml', g_probe//'.m24toml.json', json)
       if (allocated(error)) return
       call read_roots(error, json, 3, omega, osc, ynorm)
+      if (allocated(error)) return
       w_toml = omega(3)
       n_toml = open_count(json)
       call json%destroy()
@@ -240,12 +244,14 @@ contains
       call run_cli(error, BASE//' --tddft-root 3 --grad', g_probe//'.grad.json', json)
       if (allocated(error)) return
       call read_roots(error, json, 3, omega, osc, ynorm)
+      if (allocated(error)) return
       w_grad = omega(3)
       n_grad = open_count(json)
       call json%destroy()
       call run_cli(error, BASE//' --tddft-root 3 --grad --tddft-missed-root-iterations 0', g_probe//'.grad0.json', json)
       if (allocated(error)) return
       call read_roots(error, json, 3, omega, osc, ynorm)
+      if (allocated(error)) return
       w_grad0 = omega(3)
       call json%destroy()
       call check(error, abs(w_grad - w_flag) < 1.0e-9_dp .and. n_grad == 0, &
