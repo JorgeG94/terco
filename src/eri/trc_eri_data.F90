@@ -184,6 +184,11 @@ module trc_eri_data
       !! bra side are launched, weighted by their orbit size, so the result
       !! is G_skel and must be symmetrized. Needs the
       !! bins' orbits; the density must be invariant under the group.
+      logical :: grad_all_blocks = .false.
+      !! TEST HOOK (eri%grad_screen_all_blocks), not part of the API, may be
+      !! removed: the gradient's screen counts all six density blocks
+      !! whatever terms the launch has (the screen before it learned to drop
+      !! the blocks of an absent term). Never set outside a check.
       logical :: count_kept = .false.
       !! Count the quartets that survive both screens, into `nkept`, and
       !! build nothing: binkernel_fock_bins returns after the count.

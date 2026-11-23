@@ -27,6 +27,38 @@ module trc_grad
    !! against components up to 92), about 40x below a tight geometry
    !! optimisation's max-force criterion (1.5e-5).
    !!
+   !! The density factor of that bound is the largest density block the
+   !! quartet's Gamma multiplies: 4 D_ab, 4 D_cd for the Coulomb term, D_ac,
+   !! D_ad, D_bc, D_bd for the exchange term (D_xy the shell-block maximum
+   !! `dsh`, which for UHF and a pair table is the maximum over the spins or
+   !! the pool). Only the blocks of the terms a LAUNCH HAS are counted: the
+   !! Coulomb ones when jfac /= 0 (a pair table: when some pair of the sweep
+   !! has a nonzero Coulomb weight), the exchange ones when kfac /= 0 (some
+   !! nonzero exchange weight), decided once per launch in `grad_classes` and
+   !! passed to the screen pass as two logicals, so no warp diverges on them.
+   !! A launch with both terms counts all six blocks, as before, bit for bit;
+   !! one with neither has no gradient to form and does not launch. This is
+   !! sound, and changes no accuracy statement, because with jfac = 0 the
+   !! kernel's Gamma has no D_ab D_cd term at all (likewise D_ac D_bd, D_ad
+   !! D_bc for kfac = 0): |Gamma| is bounded by the blocks of the terms
+   !! present, so a Coulomb block that is large cannot make an exchange-only
+   !! quartet matter, and the bound for the terms present is the one that
+   !! already held. The meaning of `thresh` for those terms is unchanged. It
+   !! matters for the MD Coulomb gradient (`eri%grad_j_engine`): the Rys pass
+   !! behind it is exchange-only, and the J blocks of a converged density are
+   !! large where its K blocks are small.
+   !!
+   !! WHICH DEFAULT LAUNCHES CHANGE (no switch is involved): a launch with both
+   !! terms counts all six blocks exactly as before, so the gradients of HF,
+   !! global hybrids, RI-MP2 and double hybrids with exact exchange and hybrid
+   !! TDDFT pair tables are arithmetically unchanged. A launch with one term
+   !! screens on that term's blocks only: a pure functional's gradient
+   !! (Coulomb only), the long-range pass of a range-separated hybrid
+   !! (exchange only), a full-range pass whose exchange factor is zero (wB97,
+   !! say), a pure-functional TDDFT/RPA pair table. Their gradients move at
+   !! screening level, by quartets the criterion for the terms present
+   !! already allowed to be dropped; the criterion itself is unchanged.
+   !!
    use pic_types, only: dp, int32, int64
    use trc_bins, only: pair_bins_t, trc_bin_plan_t
    use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
@@ -147,6 +179,7 @@ contains
       type(trc_bin_plan_t) :: plan
       integer :: ga, gc, gs, gcol, natm, ncol
       real(dp) :: gsum
+      logical :: cnt_j, cnt_k
 
       natm = pairs%natm
       ncol = ptab%ncb
@@ -155,6 +188,14 @@ contains
       if (ncol < 1 .or. ncol > RYSG_PAIRS_NCB) error stop &
          "terco: grad_bins: a pair table must carry between 1 and RYSG_PAIRS_NCB columns"
       if (ncol > 1 .and. .not. allocated(ptab%pl)) error stop "terco: grad_bins: a multi-column sweep needs pairs"
+      ! Neither term: Gamma is zero, there is nothing to contract, and no plan
+      ! is built or launched, so the work counters read what ran (zero).
+      call grad_terms(launch, ptab, cnt_j, cnt_k)
+      if (.not. (cnt_j .or. cnt_k)) then
+         launch%nwork = 0
+         launch%nkept = 0
+         return
+      end if
       if (launch%skeleton) then
          if (.not. quartets%orb%built) error stop "terco: a skeleton gradient needs the bins' pair orbits"
          ! CANONICAL emission: the
@@ -218,6 +259,29 @@ contains
       call plan%release()
    end subroutine grad_bins
 
+   subroutine grad_terms(launch, ptab, cnt_j, cnt_k)
+      !! Which terms a launch has, so the screen counts the density blocks of
+      !! those only (the module's SCREENING paragraph). A pair table has a
+      !! term when any pair of the sweep gives it a weight: one survivor list
+      !! serves every column and pair, so a term absent from all of them is
+      !! the only one that may be dropped. `launch%grad_all_blocks` (a test
+      !! hook) forces both.
+      type(trc_bin_launch_t), intent(in) :: launch
+      type(trc_grad_pairtab_t), intent(in) :: ptab
+      logical, intent(out) :: cnt_j, cnt_k
+      if (allocated(ptab%pl)) then
+         cnt_j = any(ptab%pj /= 0.0_dp)
+         cnt_k = any(ptab%pk /= 0.0_dp)
+      else
+         cnt_j = launch%jfac /= 0.0_dp
+         cnt_k = launch%kfac /= 0.0_dp
+      end if
+      if (launch%grad_all_blocks) then
+         cnt_j = .true.
+         cnt_k = .true.
+      end if
+   end subroutine grad_terms
+
    subroutine grad_classes(plan, b, pairs, quartets, launch, dsh, dmat, ptab)
       !!
       !! ORDERED SURVIVOR COMPACTION glue, one class run [c0, c1] of the
@@ -274,12 +338,16 @@ contains
       integer :: c0, c1, key, nseg, nseg_run, seg_lo, seg_hi, b0, b1
       integer, allocatable :: out_seg(:), out_iab(:), out_icd(:)
       integer :: nmax
+      logical :: cnt_j, cnt_k
       integer(int64) :: w0, w1, gend, nout
       integer(int64) :: ctr(1)
       !! A 1-element array, not a bare scalar: nvfortran's mem:separate
       !! present-table lookup for an atomic-capture target threaded through
       !! two subroutine layers hangs on a bare scalar here (same finding as
       !! the (ps|ss) prototype's own ctr).
+
+      call grad_terms(launch, ptab, cnt_j, cnt_k)
+      if (.not. (cnt_j .or. cnt_k)) return
 
       nseg = plan%nseg
       c0 = 1
@@ -317,7 +385,7 @@ contains
                !$acc enter data create(out_seg, out_iab, out_icd) copyin(ctr)
                call rysg_screen_dispatch(key, b0, b1, w0, w1, nseg, plan%sOff, plan%sA, plan%sNB, &
                                          plan%sOA, plan%sOB, plan%sPA, plan%sPB, plan%sD, &
-                                         b%npair, b%sp_i, b%sp_j, b%sp_q, launch%thresh, dsh, pairs%nbas, &
+                                         b%npair, b%sp_i, b%sp_j, b%sp_q, launch%thresh, cnt_j, cnt_k, dsh, pairs%nbas, &
                                          pairs%sh_at, out_seg, out_iab, out_icd, nmax, ctr)
                !$acc update host(ctr)
                nout = min(ctr(1), int(nmax, int64))

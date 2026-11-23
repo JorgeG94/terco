@@ -139,6 +139,16 @@ module trc_eri
       !! comment for why.
       real(dp), allocatable :: dsh(:, :)
       !! Shell-block density bound, refreshed per iteration from D.
+      logical :: grad_density_screen = .true.
+      !! TEST HOOK, not part of the API, may be removed: false leaves the
+      !! density bound out of `gradient`'s and `gradient_pairs`' screen
+      !! (Schwarz only), the reference a screened gradient is judged against
+      !! (test/check_grad_screen.F90).
+      logical :: grad_screen_all_blocks = .false.
+      !! TEST HOOK, not part of the API, may be removed: true makes the
+      !! gradient's screen count all six density blocks whatever terms the
+      !! launch has, the behaviour before an absent term's blocks were dropped
+      !! (test/check_grad_screen.F90).
       type(trc_basis_t) :: pb
       !! The basis the integrals are actually evaluated over, and the
       !! transform back to the one the caller speaks. On a generally
@@ -188,10 +198,18 @@ module trc_eri
       !! MEASURED (one V100, def2-SVP, thresh 1e-12, the two-electron gradient
       !! stage, MD against fused): PBE gly20 2.25 -> 0.49 s, 40 waters 1.37 ->
       !! 0.54 s, gly50 13.26 -> 2.75 s (4.6x, 2.5x, 4.8x); gradients agree to
-      !! <= 5e-11 (HF, PBE, PBE0). HF and PBE0 are SLOWER with the switch on
-      !! (gly20 2.24 -> 2.70 s, gly50 13.2 -> 15.8 s): the Rys pass with
-      !! jfac = 0 still screens on the Coulomb density blocks, so it does the
-      !! work of the fused pass; an exchange-only Rys screen is the next step.
+      !! <= 5e-11 (HF, PBE, PBE0).
+      !! The same stage, fused -> MD Coulomb + exchange-only Rys pass (the pass
+      !! screens on the exchange density blocks only: the Coulomb blocks multiply
+      !! nothing in its Gamma, see trc_grad's SCREENING paragraph; before that it
+      !! kept every quartet with a large Coulomb block and HF was slower with the
+      !! switch on). One V100, NVHPC 26.9, def2-SVP, thresh 1e-12: HF gly20
+      !! 2.27 -> 1.86 s, gly50 13.49 -> 7.14 s, 40 waters 1.39 -> 1.75 s (slower:
+      !! on a compact cluster the exchange blocks keep most of the quartets the
+      !! Coulomb blocks did); PBE0 the same within 2%; PBE gly20 2.36 -> 0.49 s,
+      !! 40 waters 1.46 -> 0.54 s, gly50 13.35 -> 2.76 s. Gradients equal the
+      !! fused ones to 6e-11 Eh/Bohr; against a fused reference at thresh 1e-14,
+      !! gly20 HF at 1e-12: fused 2.9e-11, split 2.8e-11.
       !!
       !! ACCURACY. At equal threshold the MD gradient is the more accurate of the
       !! two. Coulomb-only gradient, CHFCl2 6-31G*, error against each engine's
@@ -1568,6 +1586,10 @@ contains
 
       if (run_rys) then
          call density_blocks(this, dwork, ndens)
+         ! Test switch: a block maximum of 1e8 puts the density factor of the
+         ! screen far above any thresh/Q the Schwarz screen lets through, so
+         ! it drops nothing.
+         if (.not. this%grad_density_screen) this%dsh = 1.0e8_dp
          ! The skeleton's screens must drop a representative and all its images
          ! together, so the bound they test has to be invariant: the surviving
          ! quartet set is then closed under the group, which is what makes the
@@ -1581,6 +1603,7 @@ contains
          !$acc enter data copyin(dwork) copyin(grad)
          !$acc update device(this%dsh)
          launch = bin_launch(this, ndens, jrys, kfac, ow, skel)
+         launch%grad_all_blocks = this%grad_screen_all_blocks
          call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, grad, ptab)
          !$acc wait
          !$acc update self(grad)
@@ -1746,6 +1769,7 @@ contains
          end if
       end do
       call density_blocks(this, dwork, npool)
+      if (.not. this%grad_density_screen) this%dsh = 1.0e8_dp
 
       ! The kernel weights of every pair, once: both orderings of a cross
       ! pair; the Coulomb part dies with an antisymmetric member, the
@@ -1796,6 +1820,7 @@ contains
          gblk = 0.0_dp
          !$acc enter data copyin(gblk)
          launch = bin_launch(this, npool, 1.0_dp, 1.0_dp, ow, .false.)
+         launch%grad_all_blocks = this%grad_screen_all_blocks
          call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, gblk, ptab)
          !$acc wait
          !$acc update self(gblk)

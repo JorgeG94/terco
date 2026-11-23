@@ -911,6 +911,21 @@ set_target_properties(check_mdj_grad_ccpvtz PROPERTIES Fortran_MODULE_DIRECTORY
 set_tests_properties(terco/check_mdj_grad_ccpvtz PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
+# The density screen of the two-electron gradient: only the density blocks of
+# the terms a launch has (Coulomb when jfac /= 0, exchange when kfac /= 0, a pair
+# table's weights likewise) are counted. Fused launches bit for bit the old
+# six-block screen; exchange-only and Coulomb-only launches keep fewer quartets
+# and stay within the dropped quartets' bound of the unscreened gradient; pair
+# tables with no Coulomb or no exchange weight; the MD Coulomb switch's full
+# gradients against the fused ones. Glycine tripeptide, STO-3G.
+#
+terco_add_check(check_grad_screen check_grad_screen.F90 NEEDS_BASIS
+                ARGS basis_sets/sto-3g.json)
+target_link_libraries(check_grad_screen PRIVATE test-drive::test-drive)
+set_tests_properties(terco/check_grad_screen PROPERTIES
+  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=none")
+
+#
 # eri%gradient_pairs (one gradient per column from a pool of densities and a
 # pair table, one sweep over the integral derivatives) against eri%gradient,
 # split densities, single-column calls and, for an antisymmetric density,
