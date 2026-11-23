@@ -347,7 +347,7 @@ contains
       logical, intent(in), optional :: md
       !! The MD Coulomb route (the exchange-only Rys pass behind it, the one
       !! launch with the product test); absent, the fused/default route.
-      ! The engine named explicitly, so a run with TRC_MDJ_GRAD=1 in the
+      ! The engine named explicitly, so a run with TRC_MDJ_GRAD=0 in the
       ! environment still tests the screen of the launches it names.
       ctx%eri%grad_j_engine = TRC_J_ENGINE_BINS
       if (present(md)) then

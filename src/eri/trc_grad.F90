@@ -63,8 +63,9 @@ module trc_grad
    !! without the blocks of a term the launch does not have.
    !!
    !! THE EXCHANGE-ONLY RYS PASS BEHIND THE MD COULOMB GRADIENT screens on a
-   !! PRODUCT of blocks (`eri%grad_j_engine`, not the default; the launch flag
-   !! `grad_k_product`, set by eri_gradient when it took the MD route). The
+   !! PRODUCT of blocks (`eri%grad_j_engine`, the default route where it
+   !! exists; the launch flag `grad_k_product`, set by eri_gradient when it
+   !! took the MD route). The
    !! exchange gradient's density factor is Gamma_K = -(kfac/4)(D_ac D_bd +
    !! D_ad D_bc) for RHF (the total density), so |Gamma_K| <= (|kfac|/2) P with
    !! P = max(D_ac D_bd, D_ad D_bc); for UHF it is

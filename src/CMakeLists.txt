@@ -721,8 +721,8 @@ endif()
 list(JOIN _mdg_classes "," _mdg_classes)
 # The Coulomb gradient's kernels (scripts/gen_md_j_grad.py, trc_mdjg_*): the
 # raised-bra gather Hermite stage and the gradient bra, through f at most (the
-# Rys gradient's own validated ceiling); a basis above it makes trc_mdj report
-# the gradient unavailable and eri%gradient keep the fused Rys kernels.
+# Rys gradient's own validated ceiling); a basis above it has no analytic
+# gradient at all (eri%gradient stops on it).
 if(TERCO_LMAX GREATER 3)
   set(_mdjg_lmax 3)
 else()

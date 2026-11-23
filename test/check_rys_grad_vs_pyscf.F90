@@ -16,7 +16,7 @@ module check_rys_grad_vs_pyscf_suite
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, TRC_J_ENGINE_BINS, TRC_J_ENGINE_MDJ
    use trc_tables, only: LMAX
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
@@ -72,7 +72,7 @@ contains
       integer, allocatable :: at_z(:)
       real(dp), allocatable :: r(:, :)
       real(dp), allocatable :: drhf(:, :, :), duhf(:, :, :)
-      real(dp), allocatable :: grad_rhf(:, :), grad_uhf(:, :)
+      real(dp), allocatable :: grad_rhf(:, :), grad_uhf(:, :), gbins_rhf(:, :), gbins_uhf(:, :)
       type(trc_pairlist_t) :: pl
       real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :)
 
@@ -93,13 +93,22 @@ contains
       nao = bas%nao
 
       allocate (drhf(nao, nao, 1), duhf(nao, nao, 2))
-      allocate (grad_rhf(3, nat), grad_uhf(3, nat))
+      allocate (grad_rhf(3, nat), grad_uhf(3, nat), gbins_rhf(3, nat), gbins_uhf(3, nat))
       call synth_density(nao, 1, drhf(:, :, 1))
       call synth_density(nao, 1, duhf(:, :, 1))
       call synth_density(nao, 2, duhf(:, :, 2))
 
       call bas%to_device()
       call eri%build(bas, THRESH)
+      ! Both Coulomb engines are named, each against the same pyscf numbers:
+      ! the fused Rys J+K kernels (BINS), which skeleton gradients still use,
+      ! and the MD J route plus exchange-only Rys (the default, AUTO). The
+      ! probe below is the MD one, what AUTO gave before this check named
+      ! its engines.
+      eri%grad_j_engine = TRC_J_ENGINE_BINS
+      call eri%gradient(bas, drhf, gbins_rhf)
+      call eri%gradient(bas, duhf, gbins_uhf)
+      eri%grad_j_engine = TRC_J_ENGINE_MDJ
       call eri%gradient(bas, drhf, grad_rhf)
       call eri%gradient(bas, duhf, grad_uhf)
       call eri%release()
@@ -139,7 +148,7 @@ contains
       block
          integer :: u, nat_ref, nao_ref
          real(dp), allocatable :: s_ref(:, :), grad_rhf_ref(:, :), grad_uhf_ref(:, :)
-         real(dp) :: ds, worst_rhf, worst_uhf
+         real(dp) :: ds, worst_rhf, worst_uhf, wb_rhf, wb_uhf
          call ref_require('rys_grad_'//trim(case_name_arg)//'.ref', u)
          call ref_read_int(u, 'NAT', nat_ref)
          call ref_read_int(u, 'NAO', nao_ref)
@@ -147,7 +156,7 @@ contains
                     "pyscf reference shape does not match this build")
          if (allocated(error)) then
             call ref_close(u)
-            deallocate (at_z, r, drhf, duhf, grad_rhf, grad_uhf, smat, tmat, vmat)
+            deallocate (at_z, r, drhf, duhf, grad_rhf, grad_uhf, gbins_rhf, gbins_uhf, smat, tmat, vmat)
             return
          end if
          allocate (s_ref(nao, nao), grad_rhf_ref(3, nat), grad_uhf_ref(3, nat))
@@ -159,21 +168,31 @@ contains
          ds = maxval(abs(smat - s_ref))
          worst_rhf = maxval(abs(grad_rhf - grad_rhf_ref))
          worst_uhf = maxval(abs(grad_uhf - grad_uhf_ref))
+         wb_rhf = maxval(abs(gbins_rhf - grad_rhf_ref))
+         wb_uhf = maxval(abs(gbins_uhf - grad_uhf_ref))
 
          call check(error, ds < 1.0e-9_dp, &
                     "overlap check vs pyscf, max|diff| = "//to_string(ds, "es10.2"))
          if (.not. allocated(error)) then
             call check(error, worst_rhf < 1.0e-9_dp, &
-                       "RHF gradient vs pyscf, worst|diff| = "//to_string(worst_rhf, "es10.2"))
+                       "RHF MD-route gradient vs pyscf, worst|diff| = "//to_string(worst_rhf, "es10.2"))
          end if
          if (.not. allocated(error)) then
             call check(error, worst_uhf < 1.0e-9_dp, &
-                       "UHF gradient vs pyscf, worst|diff| = "//to_string(worst_uhf, "es10.2"))
+                       "UHF MD-route gradient vs pyscf, worst|diff| = "//to_string(worst_uhf, "es10.2"))
+         end if
+         if (.not. allocated(error)) then
+            call check(error, wb_rhf < 1.0e-9_dp, &
+                       "RHF fused Rys gradient vs pyscf, worst|diff| = "//to_string(wb_rhf, "es10.2"))
+         end if
+         if (.not. allocated(error)) then
+            call check(error, wb_uhf < 1.0e-9_dp, &
+                       "UHF fused Rys gradient vs pyscf, worst|diff| = "//to_string(wb_uhf, "es10.2"))
          end if
          deallocate (s_ref, grad_rhf_ref, grad_uhf_ref)
       end block
 
-      deallocate (at_z, r, drhf, duhf, grad_rhf, grad_uhf, smat, tmat, vmat)
+      deallocate (at_z, r, drhf, duhf, grad_rhf, grad_uhf, gbins_rhf, gbins_uhf, smat, tmat, vmat)
    end subroutine test_vs_pyscf
 
 end module check_rys_grad_vs_pyscf_suite

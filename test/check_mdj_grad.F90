@@ -9,8 +9,8 @@ module check_mdj_grad_suite
    !! with pyscf's int2e_ip1 to 1e-14.
    !!
    !! Every call names its engine (eri%grad_j_engine), so the checks stay what they say when the
-   !! whole suite is run with TRC_MDJ_GRAD=1 (which only changes callers that
-   !! leave the engine to the default).
+   !! whole suite is run with TRC_MDJ_GRAD=0 (which only changes callers that
+   !! leave the engine to the default, now the MD route).
    !!
    !! The basis comes from the command line: argument 1 is a basis JSON, argument 2
    !! (optional) is "split", which forces the general contraction to be split
@@ -21,7 +21,8 @@ module check_mdj_grad_suite
    use testdrive, only: new_unittest, unittest_type, error_type, check, skip_test
    use trc_api, only: trc_basis_t
    use trc_tables, only: LMAX
-   use trc_eri, only: trc_eri_t, trc_fock_options_t, TRC_J_ENGINE_MDJ, TRC_J_ENGINE_BINS
+   use trc_eri, only: trc_eri_t, trc_fock_options_t, TRC_J_ENGINE_MDJ, TRC_J_ENGINE_BINS, eri_mdj_grad_force_of, &
+                      eri_mdj_grad_pays, MDJ_GRAD_MIN_NAO
    use trc_decontract, only: trc_decontract_options_t
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_error, only: error_t
@@ -68,9 +69,37 @@ contains
                   new_unittest("switch on: full gradient equals the fused one", test_full), &
                   new_unittest("unsupported calls fall back to the fused kernels", test_fallback), &
                   new_unittest("MD J gradient is translation invariant and rotates", test_symmetry), &
-                  new_unittest("MD J gradient matches a finite difference of the J energy", test_fd) &
+                  new_unittest("MD J gradient matches a finite difference of the J energy", test_fd), &
+                  new_unittest("TRC_MDJ_GRAD parser accepts only 0 and 1", test_env_parse), &
+                  new_unittest("default route: MD without exchange, by size with it", test_size_rule) &
                   ]
    end subroutine collect_mdj_grad_tests
+
+   subroutine test_size_rule(error)
+      !! The default's size rule (eri_mdj_grad_pays): a pure functional takes the
+      !! MD route at any size, exchange only from MDJ_GRAD_MIN_NAO functions.
+      type(error_type), allocatable, intent(out) :: error
+      call check(error, eri_mdj_grad_pays(10, 0.0_dp), "no exchange: MD at any size")
+      if (allocated(error)) return
+      call check(error, .not. eri_mdj_grad_pays(MDJ_GRAD_MIN_NAO - 1, 1.0_dp), "exchange below the size: fused")
+      if (allocated(error)) return
+      call check(error, eri_mdj_grad_pays(MDJ_GRAD_MIN_NAO, 0.25_dp), "exchange at the size: MD")
+   end subroutine test_size_rule
+
+   subroutine test_env_parse(error)
+      type(error_type), allocatable, intent(out) :: error
+      call check(error, eri_mdj_grad_force_of("0") == 0, 'TRC_MDJ_GRAD="0" must force the fused route')
+      if (allocated(error)) return
+      call check(error, eri_mdj_grad_force_of("1") == 1, 'TRC_MDJ_GRAD="1" must force the MD route')
+      if (allocated(error)) return
+      call check(error, eri_mdj_grad_force_of(" 0") == 0, 'TRC_MDJ_GRAD=" 0" is "0" after adjustl')
+      if (allocated(error)) return
+      call check(error, eri_mdj_grad_force_of("off") == -1, 'TRC_MDJ_GRAD="off" must be ignored')
+      if (allocated(error)) return
+      call check(error, eri_mdj_grad_force_of("01") == -1, 'TRC_MDJ_GRAD="01" must be ignored')
+      if (allocated(error)) return
+      call check(error, eri_mdj_grad_force_of("") == -1, "unset TRC_MDJ_GRAD is the default route")
+   end subroutine test_env_parse
 
    integer function nmol_for(basis_json) result(n)
       character(len=*), intent(in) :: basis_json
