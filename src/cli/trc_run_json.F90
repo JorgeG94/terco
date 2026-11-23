@@ -114,7 +114,8 @@ contains
    subroutine add_tddft(json, root, r)
       !! TDDFT/TDHF: the roots' excitation energies (Eh and eV), oscillator strengths, ||Y||^2 (zero for the TDA),
       !! transition dipoles and dominant orbital pairs, and the target root's total energy, the one --grad and --opt
-      !! differentiate. Arrays are per root, in ascending energy; the root numbers count from 1.
+      !! differentiate, and `candidates open`, the Ritz pairs the missed-root check left
+      !! open (0 when none). Arrays are per root, in ascending energy; the root numbers count from 1.
       type(json_core), intent(inout) :: json
       type(json_value), pointer, intent(in) :: root
       type(run_t), intent(in) :: r
@@ -124,6 +125,7 @@ contains
       call json%add(obj, "approximation", merge("tda", "rpa", r%tddft_tda))
       call json%add(obj, "spin", "singlet")
       call json%add(obj, "roots", r%tddft_n)
+      call json%add(obj, "candidates open", r%tddft_open)
       call json%add(obj, "target root", r%tddft_root)
       call json%add(obj, "target root total energy", real(r%tddft_etot, dp))
       if (len(r%func) > 0) call json%add(obj, "grid response", r%tddft_grid_response)

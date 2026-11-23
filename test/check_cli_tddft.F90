@@ -59,7 +59,9 @@ contains
          testsuite = [ &
                      new_unittest("CLI --tddft TDA energies match pyscf, in Eh and eV", test_tda), &
                      new_unittest("CLI --tddft --tddft-approx rpa: energies and ||Y||^2 match pyscf", test_rpa), &
-                     new_unittest("CLI [tddft] table of a TOML file: CIS matches pyscf", test_toml) &
+                     new_unittest("CLI [tddft] table of a TOML file: CIS matches pyscf", test_toml), &
+                     new_unittest("CLI --tddft-missed-root-iterations and its TOML key reach the solver", test_missed_root), &
+                     new_unittest("CLI --no-tddft-density-screen and its TOML key reach the solver", test_density_screen) &
                      ]
       end if
    end subroutine collect_cli_tddft_tests
@@ -182,6 +184,152 @@ contains
       if (.not. allocated(error)) call compare_with_ref(error, "tddft_water_6-31gs_hf.ref", omega, osc, ynorm, .false.)
       call json%destroy()
    end subroutine test_toml
+
+   subroutine test_missed_root(error)
+      !! Formaldehyde 6-31+G Hartree-Fock, three roots: the third is reached only by iterating the candidate pairs
+      !! after the probe. The default is a budget of 0, which loses it (a different third root, 0.353367 Eh); 24, given
+      !! as a flag or as the TOML key, recovers it (0.348172 Eh).
+      type(error_type), allocatable, intent(out) :: error
+      character(len=*), parameter :: BASE = 'formaldehyde.xyz -b ../basis_sets/6-31+g.json --tddft --tddft-roots 3'
+      type(json_file) :: json
+      real(dp), allocatable :: omega(:), osc(:), ynorm(:)
+      real(dp) :: w_default, w_0, w_flag, w_toml, w_grad, w_grad0
+      integer :: n_default, n_0, n_flag, n_toml, n_grad
+
+      call run_cli(error, BASE, g_probe//'.default.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 3, omega, osc, ynorm)
+      if (allocated(error)) return
+      w_default = omega(3)
+      n_default = open_count(json)
+      call json%destroy()
+      call run_cli(error, BASE//' --tddft-missed-root-iterations 0', g_probe//'.m0.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 3, omega, osc, ynorm)
+      if (allocated(error)) return
+      w_0 = omega(3)
+      n_0 = open_count(json)
+      call json%destroy()
+      call run_cli(error, BASE//' --tddft-missed-root-iterations 24', g_probe//'.m24.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 3, omega, osc, ynorm)
+      if (allocated(error)) return
+      w_flag = omega(3)
+      n_flag = open_count(json)
+      call json%destroy()
+      call run_cli(error, 'tddft_missed_root_formaldehyde.toml', g_probe//'.m24toml.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 3, omega, osc, ynorm)
+      if (allocated(error)) return
+      w_toml = omega(3)
+      n_toml = open_count(json)
+      call json%destroy()
+      ! Separate runs: device atomics give run-to-run noise near 1e-12, far below the 5e-3 a lost root moves.
+      call check(error, abs(w_0 - w_default) < 1.0e-9_dp, "--tddft-missed-root-iterations 0 is not the default")
+      if (allocated(error)) return
+      call check(error, abs(w_flag - w_default) > 1.0e-3_dp, "--tddft-missed-root-iterations 24 left the third root alone")
+      if (allocated(error)) return
+      call check(error, abs(w_flag - 0.348172_dp) < 2.0e-6_dp, "--tddft-missed-root-iterations 24 did not recover the root")
+      if (allocated(error)) return
+      call check(error, abs(w_toml - w_flag) < 1.0e-9_dp, "the [tddft] missed_root_iterations key and the flag disagree")
+      if (allocated(error)) return
+      ! The JSON's "candidates open": the missed-root check's open Ritz pairs, with the roots that lost one.
+      call check(error, n_default > 0 .and. n_0 == n_default, "the default (budget 0) left no candidate open in the JSON")
+      if (allocated(error)) return
+      call check(error, n_flag == 0 .and. n_toml == 0, "a budget of 24 left candidates open: flag "// &
+                 to_string(n_flag)//", TOML "//to_string(n_toml))
+      if (allocated(error)) return
+      ! --grad follows a root by index, so it keeps the guard (24) unless a budget is given: the third root's gradient
+      ! must not be that of the wrong state. An explicit 0 is honoured.
+      call run_cli(error, BASE//' --tddft-root 3 --grad', g_probe//'.grad.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 3, omega, osc, ynorm)
+      if (allocated(error)) return
+      w_grad = omega(3)
+      n_grad = open_count(json)
+      call json%destroy()
+      call run_cli(error, BASE//' --tddft-root 3 --grad --tddft-missed-root-iterations 0', g_probe//'.grad0.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 3, omega, osc, ynorm)
+      if (allocated(error)) return
+      w_grad0 = omega(3)
+      call json%destroy()
+      call check(error, abs(w_grad - w_flag) < 1.0e-9_dp .and. n_grad == 0, &
+                 "--grad did not keep the missed-root guard: third root "//to_string(w_grad, "f10.6")// &
+                 ", candidates open "//to_string(n_grad))
+      if (allocated(error)) return
+      call check(error, abs(w_grad0 - w_default) < 1.0e-9_dp, "--grad with an explicit budget of 0 did not honour it")
+   end subroutine test_missed_root
+
+   integer function open_count(json) result(n)
+      !! The `candidates open` count of the run's `tddft` block (-1 when the key is absent).
+      type(json_file), intent(inout) :: json
+      logical :: found
+      call json%get("tddft.candidates open", n, found)
+      if (.not. found) n = -1
+   end function open_count
+
+   function warned(file, words) result(n)
+      !! How many lines of `file` contain `words`.
+      character(*), intent(in) :: file, words
+      integer :: n
+      character(len=1024) :: line
+      integer :: u, ios
+      n = 0
+      open (newunit=u, file=file, status="old", action="read", iostat=ios)
+      do while (ios == 0)
+         read (u, "(a)", iostat=ios) line
+         if (ios == 0 .and. index(line, words) > 0) n = n + 1
+      end do
+      close (u)
+   end function warned
+
+   subroutine test_density_screen(error)
+      !! Water STO-3G Hartree-Fock, two roots: the default run screens the matvec and says nothing; --no-tddft-density-screen
+      !! and the [tddft] density_screen = false key each switch it off, which the run logs ONCE (that is what shows the
+      !! setting reached the solver: the roots do not change measurably). The roots agree to twice the Davidson tolerance
+      !! (--tddft-tol 1e-8 by default): the two operators differ by quartets below the integral threshold. Given twice in
+      !! opposite senses, or without --tddft, the flag is refused.
+      type(error_type), allocatable, intent(out) :: error
+      character(len=*), parameter :: BASE = 'water.xyz -b basis_sets/sto-3g.json --tddft --tddft-roots 2'
+      character(len=*), parameter :: WORDS = 'density screen of the excited-state matvec is OFF'
+      type(json_file) :: json
+      real(dp), allocatable :: omega(:), osc(:), ynorm(:)
+      real(dp) :: w_default(2), w_flag(2), w_toml(2)
+
+      call run_cli(error, BASE, g_probe//'.screen_default.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 2, omega, osc, ynorm)
+      w_default = omega
+      call json%destroy()
+      call run_cli(error, BASE//' --no-tddft-density-screen', g_probe//'.screen_flag.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 2, omega, osc, ynorm)
+      w_flag = omega
+      call json%destroy()
+      call run_cli(error, 'tddft_density_screen_off.toml', g_probe//'.screen_toml.json', json)
+      if (allocated(error)) return
+      call read_roots(error, json, 2, omega, osc, ynorm)
+      w_toml = omega
+      call json%destroy()
+      call check(error, warned(g_probe//'.screen_default.json.out', WORDS) == 0, "the default run warned about the screen")
+      if (allocated(error)) return
+      call check(error, warned(g_probe//'.screen_flag.json.out', WORDS) == 1, &
+                 "--no-tddft-density-screen did not log its warning once")
+      if (allocated(error)) return
+      call check(error, warned(g_probe//'.screen_toml.json.out', WORDS) == 1, &
+                 "[tddft] density_screen = false did not log its warning once")
+      if (allocated(error)) return
+      call check(error, maxval(abs(w_flag - w_default)) < 2.0e-8_dp, "the unscreened roots differ from the default's by "// &
+                 to_string(maxval(abs(w_flag - w_default)), "es10.3"))
+      if (allocated(error)) return
+      call check(error, maxval(abs(w_toml - w_flag)) < 2.0e-8_dp, "the TOML key and the flag disagree")
+      if (allocated(error)) return
+      call expect_refusal(error, BASE//' --tddft-density-screen --no-tddft-density-screen', '.screen_both.out', "contradict")
+      if (allocated(error)) return
+      call expect_refusal(error, 'water.xyz -b basis_sets/sto-3g.json --no-tddft-density-screen', '.screen_alone.out', &
+                          "need --tddft")
+   end subroutine test_density_screen
 
    subroutine read_gradient(error, json, grad, what)
       type(error_type), allocatable, intent(out) :: error
@@ -317,6 +465,12 @@ contains
       call expect_refusal(error, BASE//' --tddft-gap-warn -0.001', '.gap.out', "zero or more")
       if (allocated(error)) return
       call expect_refusal(error, 'water.xyz -b basis_sets/sto-3g.json --tddft-strict-root', '.strict.out', "need --tddft")
+      if (allocated(error)) return
+      ! The missed-root budget may be zero but not negative; given without --tddft it is refused like its siblings.
+      call expect_refusal(error, BASE//' --tddft-missed-root-iterations -1', '.missed.out', "zero or more")
+      if (allocated(error)) return
+      call expect_refusal(error, 'water.xyz -b basis_sets/sto-3g.json --tddft-missed-root-iterations 0', '.missedalone.out', &
+                          "need --tddft")
    end subroutine test_refusals
 
 end module check_cli_tddft_suite

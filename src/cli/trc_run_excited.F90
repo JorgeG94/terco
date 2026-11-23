@@ -5,11 +5,15 @@ submodule (trc_run) trc_run_excited
    !! report and the JSON come from rank 0 as for the rest of the CLI.
    use pic_strings, only: to_string
    use trc_constants, only: HARTREE_TO_EV
-   use trc_capi, only: trc_set_tddft, trc_set_tddft_convergence, trc_run_tddft, trc_tddft_nroots, &
-                       trc_tddft_energies, trc_tddft_character, trc_tddft_energy
+   use trc_capi, only: trc_set_tddft, trc_set_tddft_convergence, trc_set_tddft_missed_root_iterations, &
+                       trc_set_tddft_density_screen, trc_run_tddft, trc_tddft_nroots, &
+                       trc_tddft_window_open, trc_tddft_energies, trc_tddft_character, trc_tddft_energy
    use trc_scf_settings, only: trc_scf_options_t
    use trc_tddft_run, only: trc_tddft_run_options_t, trc_tddft_run_refusal, trc_tddft_run_pair_label
    implicit none
+
+   integer(c_int), parameter :: FOLLOWED_ROOT_BUDGET = 24_c_int
+   !! The missed-root budget --grad and --opt use unless the user gives one: they follow a root by index.
 
    ! An option as the user met it: the flag, and the TOML key that gives the same setting.
    character(len=*), parameter :: N_ROOTS = "--tddft-roots ([tddft] roots)"
@@ -18,6 +22,7 @@ submodule (trc_run) trc_run_excited
    character(len=*), parameter :: N_SPIN = "--tddft-spin ([tddft] spin)"
    character(len=*), parameter :: N_TOL = "--tddft-tol ([tddft] energy_tol)"
    character(len=*), parameter :: N_ITER = "--tddft-iterations ([tddft] max_iterations)"
+   character(len=*), parameter :: N_MISSED = "--tddft-missed-root-iterations ([tddft] missed_root_iterations)"
    character(len=*), parameter :: N_CPKS = "--tddft-cpks-tol ([tddft] cpks_tol)"
    character(len=*), parameter :: N_SWEEP = "--tddft-sweep ([tddft] roots_per_sweep)"
    character(len=*), parameter :: N_GAP = "--tddft-gap-warn ([tddft] gap_warning)"
@@ -59,6 +64,11 @@ contains
          call r%cli%get("tddft-iterations", r%tddft_iterations, r%err)
          call run_check(r, N_ITER)
          if (r%tddft_iterations < 1) call run_die(r, N_ITER//" must be at least 1")
+      end if
+      if (r%cli%is_set("tddft-missed-root-iterations")) then
+         call r%cli%get("tddft-missed-root-iterations", r%tddft_missed_root, r%err)
+         call run_check(r, N_MISSED)
+         if (r%tddft_missed_root < 0) call run_die(r, N_MISSED//" must be zero or more")
       end if
       if (r%cli%is_set("tddft-cpks-tol")) then
          call r%cli%get("tddft-cpks-tol", r%tddft_cpks_tol, r%err)
@@ -154,9 +164,11 @@ contains
       r%tddft = r%cli%is_set("tddft")
       any_option = r%cli%is_set("tddft-roots") .or. r%cli%is_set("tddft-root") .or. r%cli%is_set("tddft-approx") .or. &
                    r%cli%is_set("tddft-spin") .or. r%cli%is_set("tddft-tol") .or. r%cli%is_set("tddft-iterations") .or. &
+                   r%cli%is_set("tddft-missed-root-iterations") .or. &
                    r%cli%is_set("tddft-cpks-tol") .or. r%cli%is_set("tddft-sweep") .or. &
                    r%cli%is_set("tddft-gap-warn") .or. r%cli%is_set("tddft-strict-root") .or. &
                    r%cli%is_set("no-tddft-grid-response") .or. &
+                   r%cli%is_set("tddft-density-screen") .or. r%cli%is_set("no-tddft-density-screen") .or. &
                    r%cli%is_set("tddft-grid-response")
       if (.not. r%tddft) then
          if (any_option) call die_options_alone(r)
@@ -166,6 +178,10 @@ contains
          call run_die(r, "--tddft-grid-response and --no-tddft-grid-response contradict each other")
       end if
       r%tddft_grid_response = .not. r%cli%is_set("no-tddft-grid-response")
+      if (r%cli%is_set("tddft-density-screen") .and. r%cli%is_set("no-tddft-density-screen")) then
+         call run_die(r, "--tddft-density-screen and --no-tddft-density-screen contradict each other")
+      end if
+      r%tddft_density_screen = .not. r%cli%is_set("no-tddft-density-screen")
       r%tddft_strict = r%cli%is_set("tddft-strict-root")
       call parse_words(r)
       call parse_values(r)
@@ -188,13 +204,25 @@ contains
                                                    real(r%tddft_cpks_tol, c_double), 0_c_int, &
                                                    int(r%tddft_sweep, c_int)))
       end if
+      if (r%tddft_missed_root >= 0) then
+         call run_api(r, trc_set_tddft_missed_root_iterations(r%h, int(r%tddft_missed_root, c_int)))
+      else if (r%grad .or. r%opt) then
+         ! --grad and --opt follow a root BY INDEX: a root the solver missed shifts the index to another state, and the
+         ! run differentiates or optimises the wrong surface with only a warning. So they keep the missed-root guard
+         ! unless the user chose a budget; single points keep the library default (0).
+         call run_api(r, trc_set_tddft_missed_root_iterations(r%h, FOLLOWED_ROOT_BUDGET))
+         if (r%rank0) call global_logger%info("--tddft with --grad/--opt follows a root by index: the missed-root "// &
+                                              "budget is "//to_string(int(FOLLOWED_ROOT_BUDGET))// &
+                                              " (--tddft-missed-root-iterations N overrides it)")
+      end if
+      if (.not. r%tddft_density_screen) call run_api(r, trc_set_tddft_density_screen(r%h, 0_c_int))
    end subroutine run_tddft_configure
 
    module subroutine run_tddft_execute(r)
       !! Runs the excitation energies on the SCF the handle holds and reads the roots back. A refusal or a solve
       !! that did not converge stops the run with the library's message (`run_api`).
       type(run_t), intent(inout) :: r
-      integer(c_int) :: nroots
+      integer(c_int) :: nroots, nopen
       real(c_double), allocatable :: omega(:), oscillator(:), ynorm(:), dipole(:), weight(:)
       integer(c_int), allocatable :: hole(:), particle(:)
 
@@ -205,7 +233,9 @@ contains
       call run_api(r, trc_tddft_energies(r%h, nroots, omega, oscillator, ynorm, dipole))
       call run_api(r, trc_tddft_character(r%h, nroots, hole, particle, weight))
       call run_api(r, trc_tddft_energy(r%h, r%tddft_etot))
+      call run_api(r, trc_tddft_window_open(r%h, nopen))
       r%tddft_n = int(nroots)
+      r%tddft_open = int(nopen)
       r%tddft_omega = real(omega, dp)
       r%tddft_osc = real(oscillator, dp)
       r%tddft_ynorm = real(ynorm, dp)

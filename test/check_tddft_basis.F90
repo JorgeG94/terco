@@ -258,6 +258,10 @@ contains
       end if
       fx%opts%nroots = nroots_arg
       fx%opts%conv_tol = CONV_TOL
+      ! The sweep checks the missed-root guard: the dense comparison needs no candidate left open, and
+      ! formaldehyde/6-31+G/HF loses its third root without the iteration after the probe (trc_tddft's MISSED
+      ! ROOTS). 24 is the solver's former default, which the sweep was written against.
+      fx%opts%missed_root_iterations = 24
       if (refusal_mode) return
 
       fx%opts%tda = .true.

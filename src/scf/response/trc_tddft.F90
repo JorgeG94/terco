@@ -18,10 +18,11 @@ module trc_tddft
    !! convention; c_x is the functional's exact-exchange fraction (`func%exx`,
    !! 1 for Hartree-Fock, where f_xc is absent). The exchange of a
    !! non-symmetric density is not the exchange of its symmetric part, which is
-   !! why this uses `eri%fock_split_many` (the folded kernels on the symmetric
-   !! and antisymmetric parts of T; `fock_nosym_many` is its reference): it
+   !! why this uses `eri%fock_split_many_lent` (the folded kernels on the
+   !! symmetric and antisymmetric parts of T, the device-resident form of
+   !! `fock_split_many`; `fock_nosym_many` is its reference): it
    !! returns j J - k K/2, so the call passes j_scale = 2 and k_scale = 2 c_x. f_xc[T] is
-   !! `trc_xc_fxc_rks_apply_many` (it symmetrises T itself, the only part the
+   !! `trc_xc_fxc_rks_apply_many_lent` (it symmetrises T itself, the only part the
    !! density response sees), against a cache built once from the ground-state
    !! density. A is real symmetric and, for a stable ground state, positive
    !! definite; the eigenvalues are the excitation energies in hartree.
@@ -45,9 +46,18 @@ module trc_tddft
    !! J[T^T] = J[T], so J sees only Ts, and f_xc, a functional of the density,
    !! only the symmetric part.) A-B therefore has no J and no f_xc term: for a
    !! pure functional it is the diagonal (e_a - e_i), and the antisymmetric
-   !! half of the batch is not built. The exchange of Ta needs
-   !! `fock_nosym_many`, which keeps the antisymmetric part of K that the
-   !! folded `fock` would drop; f_xc[Ts] is `fxc_apply_many` as before.
+   !! half of the batch is not built. Ts is exactly symmetric and Ta exactly
+   !! antisymmetric (`tddft_split_density`), the two cases the folded kernels
+   !! are exact for, so the symmetric batch is one `fock_folded_many_lent`
+   !! (j_scale = 4, k_scale = 4 c_x) and the antisymmetric one a second, K
+   !! only (j_scale = 0, k_scale = 4 c_x, `antisymmetric`), which keeps the
+   !! antisymmetric part of K that a symmetric fold would drop. The enumerated
+   !! `fock_nosym_many_lent` they replace costs several times as much per
+   !! density. Measured on one V100 (NVHPC 26.9; 40 waters, def2-SVP
+   !! Cartesian, PBE0, RPA, 5 roots, conv_tol 1e-5, missed_root_iterations 0;
+   !! total wall with the SCF): 2306 s through the enumerated kernel, 159 s
+   !! through the two folded batches, the five roots equal to the eight
+   !! printed decimals (Eh). f_xc[Ts] is `fxc_apply_many` as before.
    !!
    !! The Davidson iteration holds ONE orthonormal basis V for both p and m
    !! (Stratmann, Scuseria, Frisch, J. Chem. Phys. 109, 8218 (1998)) and the
@@ -60,8 +70,9 @@ module trc_tddft
    !! the norm of the residual of the (X, Y) equation above. The corrections
    !! are the diagonally preconditioned residuals of X (divided by e_a - e_i - w)
    !! and of Y (divided by e_a - e_i + w), both added to V. Each iteration
-   !! sends the new trial vectors through ONE `fock_nosym_many` call (their
-   !! symmetric and antisymmetric parts together) and ONE `fxc_apply_many` call.
+   !! sends the new trial vectors through one folded symmetric batch (their
+   !! Ts) and, when c_x /= 0, one folded antisymmetric batch (their Ta), and
+   !! ONE `fxc_apply_many` call.
    !! A subspace Am or Ap that is not positive definite, or a non-positive
    !! root w^2, is an error: the reference may be unstable (or the roots
    !! complex). LIMITATION: this is tested on the Davidson subspace only,
@@ -80,12 +91,21 @@ module trc_tddft
    !!
    !! THE SOLVER (TDA)
    !! ----------------
-   !! Every new trial vector of an iteration goes through ONE `fock_split_many`
+   !! Every new trial vector of an iteration goes through ONE `fock_split_many_lent`
    !! call (two folded integral passes: symmetric and antisymmetric parts) and
-   !! ONE `fxc_apply_many` call, whatever the number of roots. `density_screen`
-   !! is false: a density-keyed screen on trial vectors would change the
-   !! operator between matvecs (see `eri%fock_nosym_many`). The RPA matvec below
-   !! still uses `fock_nosym_many`.
+   !! ONE `fxc_apply_many` call, whatever the number of roots. The RPA matvec
+   !! below uses `fock_folded_many_lent` (one batch per symmetry). Both route the batch through the
+   !! kernels in chunks of a few densities (`eri_lent_chunk_size`), and both
+   !! are density-screened by default (`trc_tddft_options_t%density_screen`).
+   !! A density-keyed screen on a trial vector that shrinks would change the
+   !! operator between matvecs (see `eri%fock_nosym_many`), which is why the
+   !! coupled-perturbed solves keep it off; here it is safe because the Davidson
+   !! trial vectors do not shrink: every one is a correction orthogonalised
+   !! against the subspace and NORMALISED to unit length
+   !! (`tddft_orthonormalise`; the guesses are unit vectors, the Ritz restarts
+   !! orthonormal), so the transition densities are O(1) throughout and the
+   !! screen's bound does not tighten as the solve converges. The residual
+   !! tolerance, not the density, drives convergence.
    !!
    !! Guesses are the unit vectors of the lowest orbital-energy differences (a
    !! tie at the cut is kept whole). Each
@@ -131,8 +151,16 @@ module trc_tddft
    !! kept are nt + that many, nt = nroots + max(2, nroots/2), further limited
    !! by max_space/2, or max_space/4 for the RPA: nroots = 1: 3 + 2 = 5, nroots
    !! = 3: 5 + 3 = 8, nroots = 6: 9 + 6 = 15, for the default max_space), and
-   !! for XBUDGET = 24 iterations after the probe. Without (4) the probe only
-   !! RECORDED the sector. In the formaldehyde case the sector's pair then
+   !! for `missed_root_iterations` iterations after the probe. Measure (4) is OPT-IN: the
+   !! default is 0, so the probe runs and the candidates are reported open
+   !! (`window_open`, the warning) but not iterated. The trade-off, measured: 40
+   !! waters, def2-SVP Cartesian, PBE0, TDA, 5 roots, conv_tol 1e-5 (V100, total
+   !! wall) take 233 s at 24 and 108 s at 0 with the same five roots to eight
+   !! decimals (candidates left open at both), while formaldehyde 6-31+G
+   !! Hartree-Fock at 0 returns the third root at 0.353367 Eh (TDA) and
+   !! 0.346886 Eh (RPA) instead of 0.348172 and 0.338715, and reports one
+   !! candidate open; setting the option to 24 recovers the root. Without (4)
+   !! the probe only RECORDED the sector. In the formaldehyde case the sector's pair then
    !! descends from 0.464 to 0.3515 in one correction and converges to
    !! 0.348172. A pair with |r| >= theta/2 is neither iterated nor counted
    !! (see `tddft_window`). Cost, measured on the 51 Hartree-Fock, B3LYP and PBE
@@ -194,7 +222,7 @@ module trc_tddft
    use trc_linalg, only: trc_linalg_t
    use trc_xc_batch, only: trc_xc_grid_t
    use trc_xc_functional, only: trc_xc_functional_t, XC_FAMILY_LDA, XC_FAMILY_GGA
-   use trc_xc, only: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply_many
+   use trc_xc, only: trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply_many_lent
    implicit none
    private
 
@@ -217,12 +245,13 @@ module trc_tddft
    integer, parameter :: NRAND_PROBE = 2
    !! Random vectors in the probe, beside the unit vectors of the next-lowest
    !! orbital-energy differences.
+   character(len=*), parameter :: SCREEN_OFF_MSG = &
+      "trc_tddft: the density screen of the excited-state matvec is OFF (density_screen = false): every matvec "// &
+      "evaluates all the integrals above the Schwarz threshold, so the run is slower than the default"
+   !! Logged once per solve at warning level when `density_screen` is false: a parameter, so the message is
+   !! one exact-length constant (NVHPC 26.9 mis-sized a concatenation built at run time).
    integer(int64), parameter :: PROBE_SEED = 20241118_int64
    !! Seed of the probe's random vectors (a date, nothing tuned: any value works).
-   integer, parameter :: XBUDGET = 24
-   !! Iterations after the probe in which Ritz pairs beyond the buffer are still
-   !! iterated (`tddft_window`); the sector the probe reaches descends into the
-   !! window in the first few, so this is a safety bound, not a typical count.
    real(dp), parameter :: DROP_REL = 1.0e-6_dp
    !! A correction whose norm falls below this fraction of its norm before
    !! orthogonalisation lies inside the subspace and is dropped.
@@ -253,6 +282,49 @@ module trc_tddft
       !! subspace holds p and m), and capped at the dimension of the problem.
       integer :: max_iteration = 50
       !! Most Davidson iterations (matvec passes).
+      integer :: missed_root_iterations = 0
+      !! Iterations after the probe in which Ritz pairs beyond the buffer are still
+      !! iterated (`tddft_window`, module header MISSED ROOTS). The default 0 iterates
+      !! no candidate after the probe: they are reported open (`window_open`,
+      !! `nwindow_open` and the warning, which names this option), so the run stays
+      !! honest. A positive value (24 was the previous default) iterates them and
+      !! trades matvecs against the missed-root guarantee: the sector the probe reaches
+      !! descends into the window in the first few iterations, so it is a safety bound,
+      !! not a typical count. Measured on 40 waters, def2-SVP Cartesian, PBE0, TDA,
+      !! 5 roots, conv_tol 1e-5 (V100, total wall): 233 s at 24 against 108 s at 0,
+      !! the same five roots to eight decimals, candidates left open at both.
+      !! Formaldehyde 6-31+G Hartree-Fock needs it: at 0 the third root is 0.353367 Eh
+      !! (TDA) and 0.346886 Eh (RPA) instead of 0.348172 and 0.338715, with one
+      !! candidate reported open. A negative value is refused.
+      logical :: density_screen = .true.
+      !! Screen the matvec's two-electron integrals by the trial densities
+      !! themselves, as the SCF Fock build does. Per launch of the kernels
+      !! (a chunk of a few trial densities, `eri_lent_chunk_size`) the bound
+      !! is the largest density block over the densities in the launch, per
+      !! shell pair (for the exchange-only antisymmetric pass of the TDA, the
+      !! antisymmetric part's); a quartet is dropped when its Schwarz bound
+      !! times that block (weighted by the kernel's J and K factors) is below
+      !! the integral threshold, the criterion of the SCF Fock build, so each
+      !! dropped quartet contributes below it.
+      !! The trial vectors are orthonormal (see the module header), their
+      !! densities O(1), so the bound does not tighten as the solve converges:
+      !! the operator is the same from one matvec to the next up to the
+      !! threshold. The coupled-perturbed solves (CPHF, CPKS, the Z-vector of
+      !! the excited-state gradient) do NOT use this: their vectors shrink to
+      !! zero and they always run with the screen off.
+      !! Measured on one V100 (NVHPC 26.9; def2-SVP Cartesian, TDA, 5 roots,
+      !! conv_tol 1e-5, total wall including the SCF; the roots are identical to
+      !! all eight printed decimals in Eh with the screen on and off), shipped
+      !! device route. 40 waters (1000 functions), PBE0, missed_root_iterations
+      !! 0: 193 s before the chunked matvec, 146 s chunked and unscreened, 108 s
+      !! chunked and screened (the default). 40 waters, PBE0, missed_root_iterations 24:
+      !! 384 s before, 233 s now; PBE, missed_root_iterations 24: 43 s before, 32 s now.
+      !! gly20 (1525 functions), PBE0, budget 0: 162 s before, 88 s now. Water
+      !! hexamer (150 functions), PBE0, missed_root_iterations 24: 3.14 s before, 3.16 s
+      !! screened and 3.49 s unscreened now (the whole batch is one launch at
+      !! this size, and the unscreened path is not faster on small systems
+      !! either). False runs the unscreened matvec, which is slower, and the run
+      !! says so in the log.
       integer :: nguess = 0
       !! Unit-vector guesses; 0 takes max(2*nroots, nroots + 4), capped at the
       !! dimension and extended over a tie at the cut. A probe with the
@@ -270,6 +342,11 @@ module trc_tddft
       !! Davidson iterations taken.
       integer :: nmatvec = 0
       !! Trial vectors multiplied by A in total.
+      integer :: nscreened_apply = 0
+      !! Matvec passes (calls of `apply`/`apply_rpa`, one per Davidson iteration that had new
+      !! vectors) that ran with the density screen on: the operator's own count, read back when
+      !! the solve ends, so it shows what the matvec did and not what the options asked for.
+      !! `iterations` or fewer with the default, 0 with `density_screen = .false.`.
       integer :: space = 0
       !! Subspace dimension at the end.
       integer :: ncollapse = 0
@@ -315,7 +392,7 @@ module trc_tddft
       type(trc_xc_functional_t) :: func
       logical :: has_budget = .false.
       integer(int64) :: budget = 0
-      !! trc_xc_fxc_rks_apply_many's cap in doubles; unused unless has_budget.
+      !! trc_xc_fxc_rks_apply_many_lent's cap in doubles; unused unless has_budget.
    contains
       procedure :: set => tddft_reference_set
    end type trc_tddft_reference_t
@@ -364,11 +441,27 @@ module trc_tddft
       logical :: dft = .false.
       real(dp) :: cx = 1.0_dp
       !! Exact-exchange fraction applied to K.
+      logical :: density_screen = .false.
+      !! Screen the matvec's integrals by the trial densities
+      !! (`trc_tddft_options_t%density_screen`, which the solve copies here
+      !! after `setup`). OFF by default, unlike the option: the screen is sound
+      !! only for trial vectors kept at unit norm, which the solve guarantees
+      !! and a caller that builds and applies the operator itself does not, so
+      !! that caller opts in.
+      logical :: count_survivors = .false.
+      !! Test hook: `apply` and `apply_rpa` pass `count_survivors` to the folded builds, so `eri%nkept`
+      !! reads back the quartets that survived both screens in the last call (for `apply_rpa`, summed over
+      !! its symmetric and antisymmetric batches).
+      integer :: napply_screened = 0
+      !! Calls of `apply`/`apply_rpa` since `setup` that ran with `density_screen` true.
       logical :: force_antisym = .false.
-      !! `apply_rpa` builds the antisymmetric exchange half of its batch even
-      !! when c_x = 0, where A-B is the diagonal and the half is zero. Off by
-      !! default (it doubles the integral work for nothing); a cross-check
-      !! hook for tests.
+      !! `apply_rpa` carries the antisymmetric half of its batch even when
+      !! c_x = 0, where A-B is the diagonal: Ta is formed, its Fock results are
+      !! zeroed on the device without a launch (K is not wanted, and the folded
+      !! kernels' Coulomb half is not valid for an antisymmetric density) and
+      !! the A-B transforms run on them. A test hook for that code path; it no
+      !! longer measures that J[Ta] vanishes (`check_tddft_api`'s `rpa_route`
+      !! does, against the enumerated kernel).
       logical :: has_budget = .false.
       integer(int64) :: budget = 0
       !! Passed to the XC response only when `has_budget`; absent it takes the
@@ -417,6 +510,8 @@ contains
          msg = "trc_tddft: only singlet excitations are implemented (triplets are refused)"
       else if (opts%nroots < 1) then
          msg = "trc_tddft: nroots must be at least 1"
+      else if (opts%missed_root_iterations < 0) then
+         msg = "trc_tddft: missed_root_iterations must be zero or more"
       else if (.not. present(func)) then
          msg = ""
       else if (len_trim(func%missing) > 0) then
@@ -514,6 +609,7 @@ contains
       end if
       !$acc enter data copyin(this%cocc, this%cvir, this%de)
       if (this%dft) call this%cache%setup(b, xg, ref%func, ref%dmat, la)
+      this%napply_screened = 0
       this%ready = .true.
    end subroutine tddft_op_setup
 
@@ -534,13 +630,15 @@ contains
    subroutine tddft_op_apply(this, b, eri, la, nvec, x, ax, xg)
       !!
       !! ax(:, :, k) := A x(:, :, k) for k = 1..nvec, x and ax HOST arrays
-      !! (nocc, nvir, nvec): ONE `fock_split_many` and ONE
-      !! `fxc_apply_many` call whatever nvec is. Host peak: tmat, gmat
-      !! and (functional) vxc, three (nao, nao, nvec) arrays, plus the split's
-      !! own copies inside `fock_split_many` (S, A and the A result, three
-      !! more, and the folded build's (nvec, nao_w, nao_w) operand and
-      !! accumulator). `xg` is needed
-      !! exactly when `setup` was given a functional.
+      !! (nocc, nvir, nvec): ONE `fock_split_many_lent` and ONE
+      !! `fxc_apply_many` call whatever nvec is. tmat and gmat stay on the
+      !! device between the two cuBLAS transforms, so what crosses per call is
+      !! x up and ax down (nocc nvir nvec doubles each), not nao^2 nvec; the
+      !! host still holds tmat, gmat and (functional) vxc, three
+      !! (nao, nao, nvec) arrays, as the mapped arrays' host side, and the
+      !! lent build adds device scratch of two (nvec, nao_w, nao_w) arrays and
+      !! two (nao_w, nao_w). `xg` is needed exactly when `setup` was given a
+      !! functional.
       !!
       class(trc_tddft_op_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
@@ -571,16 +669,17 @@ contains
          call la%gemm_mat(this%cocc, x(:, :, k), half)
          call la%gemm_mat(half, this%cvir, tmat(:, :, k), transb="T")
       end do
-      !$acc update self(tmat)
-      call eri%fock_split_many(b, nvec, tmat, gmat, &
-                               trc_fock_options_t(j_scale=2.0_dp, k_scale=2.0_dp*this%cx, density_screen=.false.))
-      !$acc update device(gmat)
+      call eri%fock_split_many_lent(b, nvec, tmat, gmat, &
+                                    trc_fock_options_t(j_scale=2.0_dp, k_scale=2.0_dp*this%cx, &
+                                                      density_screen=this%density_screen, &
+                                                      count_survivors=this%count_survivors))
+      if (this%density_screen) this%napply_screened = this%napply_screened + 1
       if (this%dft) then
          ! Without a budget the routine's default keeps every vector in one pass.
          if (this%has_budget) then
-            call trc_xc_fxc_rks_apply_many(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
+            call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
          else
-            call trc_xc_fxc_rks_apply_many(b, xg, this%cache, nvec, tmat, vxc, la=la)
+            call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, tmat, vxc, la=la)
          end if
       end if
       do k = 1, nvec
@@ -615,41 +714,65 @@ contains
       !! tmat(:, :, k) (k = 1..nvec) holds the transition densities T; on
       !! return tmat(:, :, k) is the symmetric part (T + T^T)/2 and, when
       !! `antisym`, tmat(:, :, nvec + k) the antisymmetric part (T - T^T)/2.
-      !! Host arrays.
+      !! Device-resident (one density at a time), so `tmat` never visits the
+      !! host.
       integer, intent(in) :: n, nvec
       logical, intent(in) :: antisym
       real(dp), intent(inout) :: tmat(n, n, *)
-      integer :: i, j, k
-      real(dp) :: tij, tji
+      integer :: k
       do k = 1, nvec
-         if (antisym) then
-            do j = 1, n
-               do i = 1, n
-                  tmat(i, j, nvec + k) = 0.5_dp*(tmat(i, j, k) - tmat(j, i, k))
-               end do
-            end do
-         end if
-         do j = 1, n
-            do i = j, n
-               tij = tmat(i, j, k)
-               tji = tmat(j, i, k)
-               tmat(i, j, k) = 0.5_dp*(tij + tji)
-               tmat(j, i, k) = 0.5_dp*(tij + tji)
-            end do
-         end do
+         if (antisym) call tddft_antisym_part(n, tmat(:, :, k), tmat(:, :, nvec + k))
+         call tddft_sym_in_place(n, tmat(:, :, k))
       end do
    end subroutine tddft_split_density
+
+   subroutine tddft_antisym_part(n, t, a)
+      !! a := (t - t^T)/2.
+      integer, intent(in) :: n
+      real(dp), intent(in) :: t(n, n)
+      real(dp), intent(out) :: a(n, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         a(i, j) = 0.5_dp*(t(i, j) - t(j, i))
+      end do
+   end subroutine tddft_antisym_part
+
+   subroutine tddft_sym_in_place(n, t)
+      !! t := (t + t^T)/2 in place: the iteration at (i, j), i > j, owns both
+      !! (i, j) and (j, i), and the diagonal (t + t)/2 is t exactly.
+      integer, intent(in) :: n
+      real(dp), intent(inout) :: t(n, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         if (i > j) then
+            t(i, j) = 0.5_dp*(t(i, j) + t(j, i))
+            t(j, i) = t(i, j)
+         end if
+      end do
+   end subroutine tddft_sym_in_place
+
+   subroutine tddft_zero_matrix(n, g)
+      !! g := 0, on the device.
+      integer, intent(in) :: n
+      real(dp), intent(out) :: g(n, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:n)
+         g(i, j) = 0.0_dp
+      end do
+   end subroutine tddft_zero_matrix
 
    subroutine tddft_op_apply_rpa(this, b, eri, la, nvec, x, ax, xg)
       !!
       !! ax(:, :, k, 1) := (A+B) x(:, :, k) and ax(:, :, k, 2) := (A-B)
       !! x(:, :, k) for k = 1..nvec, x and ax HOST arrays (nocc, nvir, nvec
-      !! [, 2]): ONE `fock_nosym_many` call (the symmetric parts of the
-      !! transition densities first, then the antisymmetric parts, the latter
-      !! only when c_x /= 0 or `force_antisym`) and ONE `fxc_apply_many` call
-      !! (the symmetric parts), whatever nvec is. The module header derives the
-      !! products. Scratch is (nao, nao, 2 nvec) twice, plus (nao, nao, nvec)
-      !! for a functional.
+      !! [, 2]): ONE `fock_folded_many_lent` call on the symmetric parts of the
+      !! transition densities (j_scale = 4, k_scale = 4 c_x), a second on the
+      !! antisymmetric parts, K only (j_scale = 0, `antisymmetric`), only when
+      !! c_x /= 0 or `force_antisym`, and ONE `fxc_apply_many` call (the
+      !! symmetric parts), whatever nvec is. With `force_antisym` and c_x = 0
+      !! the antisymmetric half of the Fock result is zero and is set without
+      !! a launch. The module header derives the products. Scratch is
+      !! (nao, nao, 2 nvec) twice, plus (nao, nao, nvec) for a functional.
       !!
       class(trc_tddft_op_t), intent(inout) :: this
       type(trc_basis_t), intent(in) :: b
@@ -663,6 +786,7 @@ contains
       real(dp), allocatable :: tmat(:, :, :), gmat(:, :, :), vxc(:, :, :), half(:, :), half_occ(:, :)
       integer :: n, nocc, nvir, k, ndens
       logical :: antisym
+      integer(int64) :: nkept_sym
 
       if (.not. this%ready) error stop "trc_tddft: operator used before setup"
       if (this%dft .and. .not. present(xg)) error stop "trc_tddft: a functional's matvec needs the xc grid"
@@ -684,17 +808,32 @@ contains
          call la%gemm_mat(this%cocc, x(:, :, k), half)
          call la%gemm_mat(half, this%cvir, tmat(:, :, k), transb="T")
       end do
-      !$acc update self(tmat)
       call tddft_split_density(n, nvec, antisym, tmat)
-      !$acc update device(tmat)
-      call eri%fock_nosym_many(b, ndens, tmat, gmat, &
-                               trc_fock_options_t(j_scale=4.0_dp, k_scale=4.0_dp*this%cx, density_screen=.false.))
-      !$acc update device(gmat)
+      call eri%fock_folded_many_lent(b, nvec, tmat(:, :, 1:nvec), gmat(:, :, 1:nvec), &
+                                     trc_fock_options_t(j_scale=4.0_dp, k_scale=4.0_dp*this%cx, &
+                                                       density_screen=this%density_screen, &
+                                                       count_survivors=this%count_survivors))
+      nkept_sym = eri%nkept
+      if (antisym) then
+         if (this%cx /= 0.0_dp) then
+            call eri%fock_folded_many_lent(b, nvec, tmat(:, :, nvec + 1:ndens), gmat(:, :, nvec + 1:ndens), &
+                                           trc_fock_options_t(j_scale=0.0_dp, k_scale=4.0_dp*this%cx, &
+                                                             density_screen=this%density_screen, &
+                                                             count_survivors=this%count_survivors), &
+                                           antisymmetric=.true.)
+            eri%nkept = eri%nkept + nkept_sym
+         else
+            do k = 1, nvec
+               call tddft_zero_matrix(n, gmat(:, :, nvec + k))
+            end do
+         end if
+      end if
+      if (this%density_screen) this%napply_screened = this%napply_screened + 1
       if (this%dft) then
          if (this%has_budget) then
-            call trc_xc_fxc_rks_apply_many(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
+            call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, tmat, vxc, this%budget, la)
          else
-            call trc_xc_fxc_rks_apply_many(b, xg, this%cache, nvec, tmat, vxc, la=la)
+            call trc_xc_fxc_rks_apply_many_lent(b, xg, this%cache, nvec, tmat, vxc, la=la)
          end if
       end if
       do k = 1, nvec
@@ -785,15 +924,26 @@ contains
 
    subroutine tddft_report_window(res, nopen)
       !! Record the candidates the missed-root check left open (`tddft_window`):
-      !! `res%window_open` / `res%nwindow_open`, and one warning in the log.
+      !! `res%window_open` / `res%nwindow_open`, and one warning in the log, which names
+      !! the option that iterates them.
       type(trc_tddft_result_t), intent(inout) :: res
       integer, intent(in) :: nopen
+      character(len=*), parameter :: HEAD = "trc_tddft: the missed-root check left "
+      character(len=*), parameter :: TAIL = " candidate Ritz pair(s) not converged; the returned roots are converged, "// &
+                                            "but a root below the highest of them, in a symmetry the guesses do "// &
+                                            "not reach, is not excluded, and then a returned root may be a "// &
+                                            "different state than the one wanted; raise missed_root_iterations "// &
+                                            "(--tddft-missed-root-iterations) to iterate the candidates"
+      character(len=:), allocatable :: num, msg
       res%nwindow_open = nopen
       res%window_open = nopen > 0
-      if (nopen > 0) call global_logger%warning("trc_tddft: the check for a root below the highest requested one "// &
-                                                 "left "//to_string(nopen)//" candidate Ritz pair(s) open (not "// &
-                                                 "iterated, cut short by the cap or the budget, or abandoned); a "// &
-                                                 "root of a symmetry the guesses do not reach may be missing")
+      if (nopen > 0) then
+         ! Joined into an exact-length local: one nvfortran release mispasses the length of a message built in the call.
+         num = to_string(nopen)
+         allocate (character(len=len(HEAD) + len(num) + len(TAIL)) :: msg)
+         msg = HEAD//num//TAIL
+         call global_logger%warning(msg)
+      end if
    end subroutine tddft_report_window
 
    subroutine tddft_orthonormalise(nov, m, mmax, vs, nc, tc, nnew)
@@ -877,7 +1027,7 @@ contains
       !! them open anyway. So this check does not speak for such pairs: a root that only
       !! one of them could reach is outside what `window_open` reports (header,
       !! WHAT THE CHECK DOES NOT COVER).
-      !! With `track` (after the probe, for at most XBUDGET iterations) the
+      !! With `track` (after the probe, for at most `missed_root_iterations` iterations) the
       !! candidates are iterated, the lowest first, until sp%nkcap - sp%nt of
       !! them are taken. ONE COUNT per candidate, so a candidate at index 25
       !! costs one slot, not 25 (win%act marks the kept indices,
@@ -1140,7 +1290,7 @@ contains
          end do
          if (all(ieee_is_finite(rnorm(1:nkc)))) then
             if (probed) xiter = xiter + 1
-            call tddft_window(sp, nr, om, rnorm, nkc, probed .and. xiter <= XBUDGET, buffer_threshold, win)
+            call tddft_window(sp, nr, om, rnorm, nkc, probed .and. xiter <= opts%missed_root_iterations, buffer_threshold, win)
          else
             win%act(1:nkc) = .true.
             win%nact = nt
@@ -1292,6 +1442,8 @@ contains
          call op%release()
          return
       end if
+      op%density_screen = opts%density_screen
+      if (.not. opts%density_screen) call global_logger%warning(SCREEN_OFF_MSG)
 
       nocc = ref%nocc
       nvir = op%nvir
@@ -1373,6 +1525,7 @@ contains
                res%osc(k) = OSC_PREFACTOR*res%omega(k)*sum(res%tdip(:, k)**2)
             end do
          end if
+         res%nscreened_apply = op%napply_screened
          call op%release()
          deallocate (sp%vs, sp%avs, sp%ams, hsub, csub, wsub, xr, axr, tc, rnorm, win%act, win%kept_index, dgn, dsort, &
                     sp%tp, sp%ord, sp%dgn)
@@ -1417,7 +1570,7 @@ contains
          end do
          if (all(ieee_is_finite(rnorm(1:nkc)))) then
             if (probed) xiter = xiter + 1
-            call tddft_window(sp, nr, wsub, rnorm, nkc, probed .and. xiter <= XBUDGET, buffer_threshold, win)
+            call tddft_window(sp, nr, wsub, rnorm, nkc, probed .and. xiter <= opts%missed_root_iterations, buffer_threshold, win)
          else
             win%act(1:nkc) = .true.
             win%nact = nt
@@ -1532,6 +1685,7 @@ contains
             res%converged = .true.
          end if
       end if
+      res%nscreened_apply = op%napply_screened
       call op%release()
       deallocate (sp%vs, sp%avs, hsub, csub, wsub, xr, axr, tc, rnorm, win%act, win%kept_index, dgn, dsort, &
                  sp%tp, sp%ord, sp%dgn)

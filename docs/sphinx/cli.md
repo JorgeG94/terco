@@ -127,11 +127,18 @@ terco water.xyz -b def2-svp -f wb97x-v --grad
 | `--tddft-approx` | `tda` (the default; CIS for Hartree-Fock) or `rpa` (TDHF / Casida) |
 | `--tddft-spin` | `singlet`; `triplet` is refused |
 | `--tddft-tol`, `--tddft-iterations` | Davidson residual norm (1e-8) and iteration limit (50) |
+| `--tddft-missed-root-iterations` | iterations after the probe that still iterate candidate Ritz pairs, the missed-root guard (0, the default: none is iterated and they are reported open, naming this option; 24 recovers a root the guesses miss, at about twice the wall time on 40 waters; `--grad` and `--opt`, which follow a root by index, use 24 unless this is given) |
 | `--tddft-cpks-tol` | residual norm of the gradient's Z-vector (1e-9) |
 | `--tddft-sweep` | roots sharing a pass over the integral derivatives (a tuning knob) |
+| `--tddft-density-screen`, `--no-tddft-density-screen` | screen the excited-state matvec's integrals by the trial densities (the default), or not: the same roots to the integral threshold and a slower run, logged as a warning. The gradient's Z-vector never screens this way |
 | `--tddft-grid-response`, `--no-tddft-grid-response` | Kohn-Sham gradient with (the default) or without the grid response |
 | `--tddft-gap-warn` | `--opt` warning distance to another root, Eh (0.005; 0 switches it off) |
 | `--tddft-strict-root` | `--opt` stops with an error when the followed root's dominant orbital pair changes, instead of warning |
+
+If the log warns that the missed-root check left candidates not converged and
+the result matters, rerun with `--tddft-missed-root-iterations 24`: it costs
+about twice the wall time and recovers a root the starting guesses do not reach.
+The input reference explains when this happens and what the warning means.
 
 `--grad` with `--tddft` is the gradient of E_SCF + omega of the target root, and
 `--opt` optimises that state's geometry. The grid response is on by default: the

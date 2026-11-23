@@ -78,6 +78,14 @@ module trc_tddft_run
       !! the gradient is first order in the amplitude error.
       integer :: max_iteration = 50
       !! Davidson iterations.
+      integer :: missed_root_iterations = 0
+      !! trc_tddft_options_t%missed_root_iterations: iterations after the probe in
+      !! which candidate Ritz pairs beyond the buffer are still iterated. 0 iterates
+      !! none (they are reported open; the default); a negative value is refused.
+      logical :: density_screen = .true.
+      !! trc_tddft_options_t%density_screen: screen the excited-state matvec's
+      !! integrals by the trial densities (default), or not (slower; logged).
+      !! The Z-vector of the gradient never screens this way.
       logical :: grid_response = .true.
       !! Kohn-Sham only: differentiate the grid's points and partition weights
       !! too, the exact derivative of terco's own energy. False: Pulay only.
@@ -157,6 +165,7 @@ contains
 
       probe%nroots = opts%nroots
       probe%singlet = opts%singlet
+      probe%missed_root_iterations = opts%missed_root_iterations
       msg = ""
       if (len_trim(sopts%functional) > 0) then
          found = xc_functional_by_name(trim(sopts%functional), func)
@@ -404,6 +413,8 @@ contains
       topts%singlet = opts%singlet
       topts%conv_tol = opts%conv_tol
       topts%max_iteration = opts%max_iteration
+      topts%missed_root_iterations = opts%missed_root_iterations
+      topts%density_screen = opts%density_screen
       topts%verbose = opts%verbose
       call solve_on_state(b, la, state, topts, res%td, cache)
       call run_state_release(state)

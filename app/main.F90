@@ -257,6 +257,11 @@ program trc_main
    call r%cli%add_option("tddft-spin", "singlet (the only one implemented; triplet is refused)")
    call r%cli%add_option("tddft-tol", "Davidson residual norm of the excitation energies (1e-8)")
    call r%cli%add_option("tddft-iterations", "most Davidson iterations (50)")
+   call r%cli%add_option("tddft-missed-root-iterations", "iterations after the probe in which candidate Ritz pairs "// &
+                         "beyond the buffer are still iterated, the guard against a missed root (0, the default: no "// &
+                         "candidate is iterated, fewer matvecs, and the candidates are reported open instead; 24 recovers "// &
+                         "a root the guesses miss; --grad and --opt, which follow a root by index, use 24 unless "// &
+                         "this is given)")
    call r%cli%add_option("tddft-cpks-tol", "residual norm of the Z-vector of the excited-state gradient (1e-9)")
    call r%cli%add_option("tddft-sweep", "roots sharing one pass over the integral derivatives in the gradient "// &
                          "(a tuning knob; the numbers do not change)")
@@ -264,6 +269,11 @@ program trc_main
                        "derivative of terco's own energy, whose grid moves with the nuclei")
    call r%cli%add_flag("no-tddft-grid-response", "Kohn-Sham gradient without the grid response (Pulay terms only, as "// &
                        "pyscf's tdrks; about 1e-5 Eh/Bohr away on water PBE)")
+   call r%cli%add_flag("tddft-density-screen", "screen the excited-state matvec's integrals by the trial densities "// &
+                       "(the default)")
+   call r%cli%add_flag("no-tddft-density-screen", "do not screen the excited-state matvec by the trial densities: "// &
+                       "the same roots to the integral threshold, a slower run (logged); the Z-vector of the "// &
+                       "gradient never screens")
    call r%cli%add_option("tddft-gap-warn", "--opt with --tddft warns when the followed root lies within this many "// &
                          "hartree of another solved root (0.005; 0 switches this warning off), and, always, when "// &
                          "its dominant orbital pair changes between steps")

@@ -80,6 +80,8 @@ contains
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
                   new_unittest("batch equals the loop over trc_xc_fxc_rks_apply", test_batch_vs_loop), &
+                  new_unittest("cache built in several resident chunks equals the non-resident cache", &
+                               test_setup_chunks), &
                   new_unittest("non-symmetric input equals its symmetrised copy", test_nonsymmetric), &
                   new_unittest("f_xc[D] vs pyscf nr_rks_fxc", test_vs_pyscf) &
                   ]
@@ -372,6 +374,51 @@ contains
       end do
       call fixture_release(fx)
    end subroutine test_batch_vs_loop
+
+   subroutine test_setup_chunks(error)
+      !! The cache setup's own resident chunking: with the default cap the
+      !! whole resident region is one chunk, so a wrong per-chunk slice of the
+      !! resident point list would not show. A cap of one batch's tile, and
+      !! one of a third of the region, force many chunks (one and several
+      !! batches each); the coefficients they build must give the response the
+      !! non-resident cache (the contiguous point kernel) gives.
+      type(error_type), allocatable, intent(out) :: error
+      type(fixture_t) :: fx
+      real(dp), allocatable :: dmats(:, :, :), vref(:, :, :), v(:, :, :)
+      integer(int64) :: caps(2)
+      real(dp) :: scale, dev
+      integer :: ic
+
+      call fixture_build(fx, error)
+      if (allocated(error)) then
+         call fixture_release(fx)
+         return
+      end if
+      allocate (dmats(fx%nao, fx%nao, 2), vref(fx%nao, fx%nao, 2), v(fx%nao, fx%nao, 2))
+      call random_symmetric_set(fx%nao, 2, dmats)
+      caps = [1_int64, max(fx%cache%nres_chi/3, 2_int64)]
+      call set_residency(fx, RES_NONE, error)
+      if (.not. allocated(error)) then
+         call apply_many_host(fx, 2, dmats, vref)
+         scale = maxval(abs(vref))
+         call check(error, scale > 1.0e-6_dp, "f_xc response is trivially small, |v| = "//to_string(scale, "es10.2"))
+      end if
+      if (allocated(error)) then
+         call fixture_release(fx)
+         return
+      end if
+      do ic = 1, size(caps)
+         call fx%cache%setup(fx%bas, fx%xg, fx%func, fx%d0, fx%la, chunk_cap=caps(ic))
+         call check(error, fx%cache%nres == fx%cache%nbatch, "chunked setup should keep every batch resident")
+         if (allocated(error)) exit
+         call apply_many_host(fx, 2, dmats, v)
+         dev = maxval(abs(v - vref))
+         call check(error, dev < 1.0e-13_dp*max(scale, 1.0_dp), &
+                    "setup chunk cap "//to_string(caps(ic))//" vs non-resident, max|diff| = "//to_string(dev, "es10.2"))
+         if (allocated(error)) exit
+      end do
+      call fixture_release(fx)
+   end subroutine test_setup_chunks
 
    subroutine test_nonsymmetric(error)
       type(error_type), allocatable, intent(out) :: error

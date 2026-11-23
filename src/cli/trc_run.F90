@@ -138,13 +138,15 @@ module trc_run
       logical :: tddft = .false.
       logical :: tddft_tda = .true.              !! --tddft-approx tda (the default); false is the full RPA
       integer :: tddft_nroots = 3, tddft_root = 1   !! --tddft-roots; --tddft-root, 1-based, the state --grad/--opt follow
+      logical :: tddft_density_screen = .true.   !! the matvec's density screen (off with --no-tddft-density-screen)
       logical :: tddft_grid_response = .true.   !! Kohn-Sham: differentiate the grid too (off with --no-tddft-grid-response)
       real(dp) :: tddft_tol = 0.0_dp, tddft_cpks_tol = 0.0_dp
-      integer :: tddft_iterations = 0, tddft_sweep = 0
+      integer :: tddft_iterations = 0, tddft_sweep = 0, tddft_missed_root = -1
       real(dp) :: tddft_gap_warn = 0.005_dp   !! --opt warns when the followed root is this close (Eh) to another; 0 never
       logical :: tddft_strict = .false.        !! --tddft-strict-root: --opt fails when the followed root's dominant pair changes
       logical :: tddft_ran = .false.
       integer :: tddft_n = 0                    !! roots solved
+      integer :: tddft_open = 0                 !! candidate Ritz pairs the missed-root check left open (0: window closed)
       real(dp), allocatable :: tddft_omega(:), tddft_osc(:), tddft_ynorm(:), tddft_weight(:)   !! (tddft_n)
       real(dp), allocatable :: tddft_dipole(:, :)   !! (3, tddft_n)
       integer, allocatable :: tddft_hole(:), tddft_particle(:)   !! dominant orbital pair, from the HOMO / the LUMO
