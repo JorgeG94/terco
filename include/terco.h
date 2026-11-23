@@ -39,7 +39,7 @@ typedef void* trc_handle_t;
 #define TRC_AO_NORM_UNIT 1
 #define TRC_TIMING_NAME_MAX 64
 #define TRC_ABI_MAJOR 1
-#define TRC_ABI_MINOR 30
+#define TRC_ABI_MINOR 33
 #define TRC_CONST_BOHR_TO_ANGSTROM 0
 #define TRC_CONST_HARTREE_TO_EV 1
 #define TRC_CONST_HARTREE_TO_KCALMOL 2
@@ -1266,6 +1266,32 @@ int trc_set_tddft(trc_handle_t handle, int nroots, int tda, int singlet, int tar
 int trc_set_tddft_convergence(trc_handle_t handle, double conv_tol, int max_iteration, double cpks_tol, int cpks_max_iteration, int roots_per_sweep);
 
 /**
+ * The most Davidson iterations after the probe in which Ritz pairs beyond the
+ * buffer are still iterated, the guard against a missed root (default 0, which
+ * is what trc_set_tddft_convergence leaves alone; it was 24 before). 0 iterates
+ * none: the pairs that might hide a root are reported open (the window check and
+ * its warning) and the run needs fewer matvecs; a larger value, 24 for instance,
+ * trades matvecs against the missed-root guarantee. A negative `n` is TRC_ERR_BADARG.
+ * A caller that goes on to differentiate a root it followed by index (trc_run_gradient,
+ * trc_opt_set_tddft) should set 24: at 0 a missed candidate can make the returned root
+ * another state, and the gradient is then that state's. The terco CLI does so for
+ * --grad and --opt. Drops a stored TDDFT result. (ABI 1.31.)
+ */
+int trc_set_tddft_missed_root_iterations(trc_handle_t handle, int n);
+
+/**
+ * Whether the excited-state matvec of trc_run_tddft screens its two-electron
+ * integrals by the trial densities (non-zero, the default) or not (zero).
+ * Screened, a quartet is dropped when its Schwarz bound times the largest
+ * density block of its launch is below the integral threshold, the SCF Fock
+ * build's criterion; the trial vectors are orthonormal, so the bound does not
+ * tighten as the solve converges. Unscreened is slower, and the run logs a
+ * warning that says so. The coupled-perturbed (Z-vector) solve of the
+ * gradient never screens this way. Drops a stored TDDFT result. (ABI 1.32.)
+ */
+int trc_set_tddft_density_screen(trc_handle_t handle, int on);
+
+/**
  * Whether trc_run_tddft (and, when `gradient` is non-zero,
  * trc_run_gradient after it) will be refused for this context's CURRENT
  * settings, answered from the settings alone, before any SCF runs:
@@ -1307,6 +1333,16 @@ int trc_run_tddft(trc_handle_t handle);
  * transition dipoles).
  */
 int trc_tddft_nroots(trc_handle_t handle, int* nroots);
+
+/**
+ * The number of candidate Ritz pairs the missed-root check of the last trc_run_tddft
+ * left open (not iterated, cut short, or abandoned; 0 when the window is closed).
+ * Open candidates do not by themselves mean a root is missing: it is a root of a
+ * symmetry the guesses do not reach that they might hide. Iterate them with
+ * trc_set_tddft_missed_root_iterations. TRC_ERR_STATE when no TDDFT result is
+ * stored. (ABI 1.33.)
+ */
+int trc_tddft_window_open(trc_handle_t handle, int* nopen);
 
 /**
  * The roots of the last trc_run_tddft, ascending: `omega` excitation

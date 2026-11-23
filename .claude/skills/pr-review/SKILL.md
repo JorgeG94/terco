@@ -55,9 +55,12 @@ standard Fortran.
   can't matter at the threshold. Check:
   - degeneracy factors (½ for i=j, k=l, ij=kl);
   - the factor 4 on J in the density test;
-  - that a coupled-perturbed solve passes `density_screen=.false.`, because a
-    density-keyed screen on a trial vector changes the operator between
-    matvecs.
+  - that a coupled-perturbed solve (CPHF, CPKS, the Z-vector) passes
+    `density_screen=.false.`, because a density-keyed screen on a trial vector
+    that shrinks as the solve converges changes the operator between matvecs.
+    The one exception is the TDDFT Davidson matvec, whose trial vectors are
+    kept at unit norm (`trc_tddft`'s `density_screen`, on by default): check
+    that nothing else screens a response solve.
 - **SCF.** Convergence tests, DIIS/ADIIS history handling, the linear-
   dependence threshold in canonical orthogonalisation, and incremental Fock
   builds. An incremental build at loose screening drifts, so it needs periodic

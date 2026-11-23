@@ -497,8 +497,8 @@ contains
       call op%setup(fx%bas, fx%la, fx%ref, err, fx%xg)
       call check(error, .not. err%has_error(), "operator setup: "//err%get_message())
       if (allocated(error)) return
-      ! The antisymmetric exchange half is forced on for a pure functional, so
-      ! A-B's absence of any Coulomb or kernel term is measured, not assumed.
+      ! The antisymmetric half is forced on for a pure functional, so that code
+      ! path of the matvec runs here too (its Fock results are zeros by construction).
       op%force_antisym = .true.
       allocate (unit_x(nocc, nvir, nov), prod(nocc, nvir, nov, 2), apb(nov, nov), amb(nov, nov))
       unit_x = 0.0_dp

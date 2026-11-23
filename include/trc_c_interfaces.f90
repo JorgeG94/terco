@@ -36,7 +36,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_TIMING_NAME_MAX = 64
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 30
+   integer(c_int), parameter :: TRC_ABI_MINOR = 33
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -1677,6 +1677,38 @@ module trc_c_interfaces
          integer(c_int), value :: roots_per_sweep
       end function trc_set_tddft_convergence
 
+      integer(c_int) function trc_set_tddft_missed_root_iterations(handle, n) bind(c) result(res)
+         !! The most Davidson iterations after the probe in which Ritz pairs beyond the
+         !! buffer are still iterated, the guard against a missed root (default 0, which
+         !! is what trc_set_tddft_convergence leaves alone; it was 24 before). 0 iterates
+         !! none: the pairs that might hide a root are reported open (the window check and
+         !! its warning) and the run needs fewer matvecs; a larger value, 24 for instance,
+         !! trades matvecs against the missed-root guarantee. A negative `n` is TRC_ERR_BADARG.
+         !! A caller that goes on to differentiate a root it followed by index (trc_run_gradient,
+         !! trc_opt_set_tddft) should set 24: at 0 a missed candidate can make the returned root
+         !! another state, and the gradient is then that state's. The terco CLI does so for
+         !! --grad and --opt. Drops a stored TDDFT result. (ABI 1.31.)
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: n
+      end function trc_set_tddft_missed_root_iterations
+
+      integer(c_int) function trc_set_tddft_density_screen(handle, on) bind(c) result(res)
+         !! Whether the excited-state matvec of trc_run_tddft screens its two-electron
+         !! integrals by the trial densities (non-zero, the default) or not (zero).
+         !! Screened, a quartet is dropped when its Schwarz bound times the largest
+         !! density block of its launch is below the integral threshold, the SCF Fock
+         !! build's criterion; the trial vectors are orthonormal, so the bound does not
+         !! tighten as the solve converges. Unscreened is slower, and the run logs a
+         !! warning that says so. The coupled-perturbed (Z-vector) solve of the
+         !! gradient never screens this way. Drops a stored TDDFT result. (ABI 1.32.)
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), value :: on
+      end function trc_set_tddft_density_screen
+
       integer(c_int) function trc_check_tddft(handle, gradient) bind(c) result(res)
          !! Whether trc_run_tddft (and, when `gradient` is non-zero,
          !! trc_run_gradient after it) will be refused for this context's CURRENT
@@ -1727,6 +1759,19 @@ module trc_c_interfaces
          type(c_ptr), value :: handle
          integer(c_int), intent(out) :: nroots
       end function trc_tddft_nroots
+
+      integer(c_int) function trc_tddft_window_open(handle, nopen) bind(c) result(res)
+         !! The number of candidate Ritz pairs the missed-root check of the last trc_run_tddft
+         !! left open (not iterated, cut short, or abandoned; 0 when the window is closed).
+         !! Open candidates do not by themselves mean a root is missing: it is a root of a
+         !! symmetry the guesses do not reach that they might hide. Iterate them with
+         !! trc_set_tddft_missed_root_iterations. TRC_ERR_STATE when no TDDFT result is
+         !! stored. (ABI 1.33.)
+         import :: c_int, c_ptr
+         implicit none
+         type(c_ptr), value :: handle
+         integer(c_int), intent(out) :: nopen
+      end function trc_tddft_window_open
 
       integer(c_int) function trc_tddft_energies(handle, n, omega, oscillator, ynorm, dipole) bind(c) result(res)
          !! The roots of the last trc_run_tddft, ascending: `omega` excitation
