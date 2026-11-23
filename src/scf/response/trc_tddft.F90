@@ -430,11 +430,13 @@ module trc_tddft
       logical :: dft = .false.
       real(dp) :: cx = 1.0_dp
       !! Exact-exchange fraction applied to K.
-      logical :: density_screen = .true.
+      logical :: density_screen = .false.
       !! Screen the matvec's integrals by the trial densities
       !! (`trc_tddft_options_t%density_screen`, which the solve copies here
-      !! after `setup`). A user of the operator that builds it itself, the
-      !! checks, gets the default, true.
+      !! after `setup`). OFF by default, unlike the option: the screen is sound
+      !! only for trial vectors kept at unit norm, which the solve guarantees
+      !! and a caller that builds and applies the operator itself does not, so
+      !! that caller opts in.
       logical :: count_survivors = .false.
       !! Test hook: `apply` and `apply_rpa` pass `count_survivors` to the folded builds, so `eri%nkept`
       !! reads back the quartets that survived both screens in the last call (for `apply_rpa`, summed over
