@@ -80,6 +80,11 @@ module trc_dft_partition
 
    integer, parameter :: N_DIM = 3
 
+   integer, parameter :: N_EXTREME = 6
+   !! The first-level atoms `partition_grad_point` remembers for its closure
+   !! test: the one with the smallest and the one with the largest d3(m),
+   !! m = x, y, z.
+
    integer, parameter :: N_NEAR_FIRST = 24
    !! Atoms moved to the front of a point's active list (after the owner) by
    !! nearest distance, in `partition_grad_point`. A cell's product only falls
@@ -658,7 +663,8 @@ contains
       !! prefix product of each row is a register. The active set and the
       !! screening decisions per point are those of
       !! `dft_partition_becke_derivatives`; the factors of a cell product are
-      !! multiplied nearest atoms first (N_NEAR_FIRST), so each point's dP/dR
+      !! multiplied nearest atoms first (N_NEAR_FIRST) and the rows whose cell
+      !! counts are moved to the front of the list, so each point's dP/dR
       !! agrees with it to round-off, not bit for bit, and the order the
       !! points' contributions are summed in differs too (atomics on the
       !! device).
@@ -682,7 +688,7 @@ contains
 
       real(dp), allocatable :: shift(:, :), inv_distance(:, :), r_min(:)
       real(dp), allocatable :: ract(:, :), cell(:, :)
-      integer, allocatable :: active(:, :), sig(:, :), mark(:, :)
+      integer, allocatable :: active(:, :), mark(:, :)
       integer :: n_atoms, n_points, k0, n, chunk, g, scheme, adjust
       real(dp) :: numax
 
@@ -707,17 +713,17 @@ contains
       call partition_tables(atom_coords, atomic_numbers, adjust, shift, inv_distance, r_min)
 
       allocate (ract(chunk, n_atoms), cell(chunk, n_atoms))
-      allocate (active(chunk, n_atoms), sig(chunk, n_atoms), mark(chunk, n_atoms))
+      allocate (active(chunk, n_atoms), mark(chunk, n_atoms))
       mark = 0
       !$acc data copyin(atom_coords, shift, inv_distance, r_min, mark) copy(grad) &
-      !$acc      create(ract, cell, active, sig)
+      !$acc      create(ract, cell, active)
       do k0 = 1, n_points, chunk
          n = min(chunk, n_points - k0 + 1)
 #ifdef TRC_DEVICE
          do concurrent(g=1:n)
             call partition_grad_point(k0 + g - 1, TRC_DC_INDEX(g), n_atoms, n_points, chunk, points, atom_coords, owner, &
                                       coef, shift, inv_distance, r_min, scheme, adjust, numax, &
-                                      ract, cell, active, sig, mark, grad)
+                                      ract, cell, active, mark, grad)
          end do
 #else
          ! Serial on the host: the body's atomics are inert there, and two
@@ -725,7 +731,7 @@ contains
          do g = 1, n
             call partition_grad_point(k0 + g - 1, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
                                       coef, shift, inv_distance, r_min, scheme, adjust, numax, &
-                                      ract, cell, active, sig, mark, grad)
+                                      ract, cell, active, mark, grad)
          end do
 #endif
       end do
@@ -734,7 +740,7 @@ contains
 
    pure subroutine partition_grad_point(k, g, n_atoms, n_points, chunk, points, atom_coords, owner, &
                                         coef, shift, inv_distance, r_min, scheme, adjust, numax, &
-                                        ract, cell, active, sig, mark, grad)
+                                        ract, cell, active, mark, grad)
       !!
       !! One point of `dft_partition_becke_grad_contract`, row g of the scratch.
       !!
@@ -764,7 +770,7 @@ contains
       !! times S'/S, at most 8/(1 - nu) |grad nu| for Becke's cutoff -- under
       !! 1e-14 relative even at nu = 1 - 1e-6 -- and no factor that is exactly
       !! zero is ever divided by. A nucleus whose cell is zero then needs only
-      !! (A), over the rows that are not (`sig`), so the pass over nuclei costs
+      !! (A), over the rows whose cell is not, so the pass over nuclei costs
       !! active x significant rather than active^2. The pair algebra is
       !! `pair_sij`'s, operation for operation, on scalars.
       !!
@@ -776,9 +782,9 @@ contains
       real(dp), intent(in) :: shift(n_atoms, n_atoms), inv_distance(n_atoms, n_atoms), r_min(n_atoms)
       real(dp), intent(in) :: numax
       real(dp), intent(inout) :: ract(chunk, n_atoms), cell(chunk, n_atoms)
-      integer, intent(inout) :: active(chunk, n_atoms), sig(chunk, n_atoms), mark(chunk, n_atoms)
+      integer, intent(inout) :: active(chunk, n_atoms), mark(chunk, n_atoms)
       real(dp), intent(inout) :: grad(3, n_atoms)
-      integer :: own, i, j, ia, ja, n_active, n1, pp, qq, ic, ir, it, nsig, nrow
+      integer :: own, i, j, ia, ja, n_active, n1, pp, qq, ic, ir, nsig, nrow
       real(dp) :: c, mu, nu, ri, rown, s, total, cell_own, cell_c, cell_r, r_inner, inv_total, w_own, floor
       real(dp) :: d3(3)
       real(dp) :: ucx, ucy, ucz, rc, invd, r_p, r_q, sh, ds_dnu, c1, t3, f0, f1, f2, f3
@@ -786,7 +792,9 @@ contains
       real(dp) :: tax, tay, taz, tbx, tby, tbz, ox, oy, oz
       real(dp) :: vx, vy, vz, vox, voy, voz
       real(dp) :: rtmp, rbest
-      integer :: gi, gj, gm, itmp
+      integer :: gi, gj, gm, itmp, m
+      integer :: ext_j(N_EXTREME)
+      real(dp) :: ext_r(N_EXTREME), ext_v(N_EXTREME)
 
       c = coef(k)
       if (c == 0.0_dp) return
@@ -807,6 +815,9 @@ contains
       active(g, 1) = own
       ract(g, 1) = rown
       mark(g, own) = 1
+      ext_j = 0
+      ext_r = 0.0_dp
+      ext_v = 0.0_dp
       do i = 1, n_atoms
          if (i == own) cycle
          d3(1) = points(1, k) - atom_coords(1, i)
@@ -820,15 +831,52 @@ contains
             active(g, n_active) = i
             ract(g, n_active) = ri
             mark(g, i) = 1
+            ! The first-level atom farthest out along each of +-x, +-y, +-z:
+            ! slots 1..3 the most negative d3(m), 4..6 the most positive.
+            do m = 1, 3
+               if (ext_j(m) == 0 .or. d3(m) < ext_v(m)) then
+                  ext_j(m) = i
+                  ext_r(m) = ri
+                  ext_v(m) = d3(m)
+               end if
+               if (ext_j(m + 3) == 0 .or. d3(m) > ext_v(m + 3)) then
+                  ext_j(m + 3) = i
+                  ext_r(m + 3) = ri
+                  ext_v(m + 3) = d3(m)
+               end if
+            end do
          end if
       end do
       n1 = n_active
+      ! The closure: an atom joins when ANY first-level atom j has nu(i, j)
+      ! below the limit, and which j says so does not matter. nu(i, j) is
+      ! smallest for a j far from the point on the side away from i, so that
+      ! one is asked first: in a chain molecule the scan in discovery order
+      ! took 14 tests per atom (20 glycines), the atoms in between being in
+      ! line with i. 50 / 100 glycines, V100, PBE/def2-SVP: 6.95 -> 5.54 s and
+      ! 47.5 -> 34.6 s for the kernel. The set and its order are unchanged.
       do i = 1, n_atoms
          if (mark(g, i) == 1) cycle
          d3(1) = points(1, k) - atom_coords(1, i)
          d3(2) = points(2, k) - atom_coords(2, i)
          d3(3) = points(3, k) - atom_coords(3, i)
          ri = norm2(d3)
+         if (n1 > 1) then
+            m = 1
+            if (abs(d3(2)) > abs(d3(m))) m = 2
+            if (abs(d3(3)) > abs(d3(m))) m = 3
+            if (d3(m) < 0.0_dp) m = m + 3
+            j = ext_j(m)
+            mu = (ri - ext_r(m))*inv_distance(i, j)
+            nu = mu + shift(i, j)*(1.0_dp - mu*mu)
+            if (nu < numax) then
+               n_active = n_active + 1
+               active(g, n_active) = i
+               ract(g, n_active) = ri
+               mark(g, i) = 1
+               cycle
+            end if
+         end if
          do ja = 2, n1
             j = active(g, ja)
             mu = (ri - ract(g, ja))*inv_distance(i, j)
@@ -865,11 +913,12 @@ contains
          end if
       end do
 
-      ! The cells, each in a register, nearest atoms first, then the rest in
-      ! discovery order (j by position, skipping i). The owner's comes first
+      ! The cells, each in a register, the factors taken by position (nearest
+      ! atoms first, then discovery order, less the swaps below, which bring
+      ! rows that count forward). The owner's comes first
       ! (it is position 1); every other row stops as soon as its product,
       ! which only falls, is below `floor`, and counts as zero from then on.
-      ! The rows that do not are the `sig` list.
+      ! The rows that do not are moved to the front: positions 1..nsig.
       total = 0.0_dp
       cell_own = 0.0_dp
       floor = CELL_FLOOR
@@ -909,15 +958,34 @@ contains
             if (cell_c < floor) exit
          end do
          if (ia == 1) then
+            ! An owner whose own cell counts as zero has weight zero and no
+            ! derivative: every term below carries cell_own, and what is
+            ! dropped is below CELL_FLOOR/total of the point's term.
+            if (cell_c < floor) exit
             cell_own = cell_c
             floor = max(CELL_FLOOR, CELL_REL*cell_own)
          end if
          if (cell_c < floor) cell_c = 0.0_dp
-         cell(g, ia) = cell_c
          if (cell_c > 0.0_dp) then
+            ! Move the row up behind the significant ones before it: position
+            ! nsig holds a row whose cell is zero. The derivative pass then
+            ! reads the significant rows as columns 1..nsig, the same column
+            ! in every thread of a warp, instead of through a per-point list
+            ! (7.38 -> 6.95 s on 50 glycines, V100, PBE/def2-SVP).
             nsig = nsig + 1
-            sig(g, nsig) = ia
             total = total + cell_c
+            if (nsig /= ia) then
+               itmp = active(g, nsig)
+               rtmp = ract(g, nsig)
+               active(g, nsig) = i
+               ract(g, nsig) = ri
+               active(g, ia) = itmp
+               ract(g, ia) = rtmp
+               cell(g, ia) = 0.0_dp
+            end if
+            cell(g, nsig) = cell_c
+         else
+            cell(g, ia) = 0.0_dp
          end if
       end do
 
@@ -946,7 +1014,7 @@ contains
             end if
             ! (A), (B), and dcell_own/dR_c, summed over the rows r: every
             ! row when c's own cell counts ((B) needs them all), only the
-            ! `sig` rows when it does not ((A) is all that is left).
+            ! first nsig rows when it does not ((A) is all that is left).
             tax = 0.0_dp
             tay = 0.0_dp
             taz = 0.0_dp
@@ -961,12 +1029,7 @@ contains
             else
                nrow = nsig
             end if
-            do it = 1, nrow
-               if (cell_c > 0.0_dp) then
-                  ir = it
-               else
-                  ir = sig(g, it)
-               end if
+            do ir = 1, nrow
                if (ir == ic) cycle
                cell_r = cell(g, ir)
                i = active(g, ir)

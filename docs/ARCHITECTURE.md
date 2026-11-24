@@ -565,6 +565,15 @@ are split across ranks by surface point.
   PBE/def2-SVP, XC gradient stage) this took the glycine 20-mer from 2.07 s
   to 1.19 s, 40 waters from 1.56 s to 0.97 s and the 50-mer from 20.4 s to
   8.35 s; a full sort was no faster (1.21 and 1.02 s on the first two).
+  Two further steps leave the active set and the gradient as they were
+  (5e-13 Eh/Bohr on the 50-mer): the closure that completes a point's
+  active list first asks the first-level atom on the far side of the point
+  from the candidate, the one most likely to admit it, before scanning the
+  rest (a chain's atoms in between are in line with it and cannot), and the
+  rows whose cell counts are moved to the front so the derivative pass
+  reads them as shared columns. Same machine and stage: 1.10 s, 0.99 s and
+  6.60 s on those three, and the glycine 100-mer 36.7 s, of which the
+  partition kernel is 34.6 s (49.3 s before).
 - **RI-MP2 and double-hybrid gradients** (`src/post_hf/rimp2/trc_rimp2_grad.F90`)
   add the correlation's relaxed and energy-weighted densities, from a
   Z-vector solved against the reference's own orbital Hessian: CPHF for an
