@@ -400,7 +400,7 @@ contains
       type(trc_basis_t), intent(in) :: b
       character(len=:), allocatable :: msg
       character(len=*), parameter :: LNAME = "spdfghik"
-      integer, parameter :: LMAX_BUILDABLE = 5
+      integer, parameter :: LMAX_BUILDABLE = 4
       !! The highest TERCO_LMAX the generators support.
       integer :: lb
       msg = ""
@@ -412,7 +412,7 @@ contains
       if (lb <= LMAX_BUILDABLE) then
          msg = msg//"rebuild with -DTERCO_LMAX="//to_string(lb)
       else
-         msg = msg//"terco's integrals go up to h (TERCO_LMAX="//to_string(LMAX_BUILDABLE)//")"
+         msg = msg//"terco's integrals go up to g (TERCO_LMAX="//to_string(LMAX_BUILDABLE)//")"
       end if
    end function eri_lmax_refusal
 
@@ -1632,7 +1632,7 @@ contains
       logical :: skel, use_mdg, run_rys
       type(trc_grad_pairtab_t) :: ptab
       type(trc_bin_launch_t) :: launch
-      if (this%needs_md) error stop "terco: g and h functions reach eri%fock and eri%fock_resident only, for now"
+      if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       ow = 0.0_dp
       if (present(omega)) ow = omega
@@ -1849,7 +1849,7 @@ contains
          return
       end if
       if (this%needs_md) then
-         call error%set(ERROR_VALIDATION, "eri%gradient_pairs: g and h functions reach eri%fock only, for now")
+         call error%set(ERROR_VALIDATION, "eri%gradient_pairs: g functions reach eri%fock only, for now")
          return
       end if
       if (any(this%pairs%sh_at == 0)) then
@@ -2080,7 +2080,7 @@ contains
       logical :: screen
       type(trc_bin_launch_t) :: launch
       type(trc_fock_options_t) :: o
-      if (this%needs_md) error stop "terco: g and h functions reach eri%fock and eri%fock_resident only, for now"
+      if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       o%density_screen = .false.
       if (present(opts)) o = opts
@@ -2834,7 +2834,7 @@ contains
       logical :: screen
       type(trc_bin_launch_t) :: launch
       type(trc_fock_options_t) :: o
-      if (this%needs_md) error stop "terco: g and h functions reach eri%fock and eri%fock_resident only, for now"
+      if (this%needs_md) error stop "terco: g functions reach eri%fock and eri%fock_resident only, for now"
 
       o%density_screen = .false.
       if (present(opts)) o = opts
