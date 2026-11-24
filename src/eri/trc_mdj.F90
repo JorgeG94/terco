@@ -32,7 +32,8 @@ module trc_mdj
    !! Jt' (gather kernels, scripts/gen_md_j_grad.py), then a per-shell-pair
    !! kernel that contracts D_ab with the derivative pair distributions and adds
    !! three components to each atom of the pair. It is validated against the Rys
-   !! gradient (test/check_mdj_grad.F90) and not tuned or used by default.
+   !! gradient (test/check_mdj_grad.F90) and is the Coulomb part of the default
+   !! gradient wherever trc_eri's `eri_mdj_grad_pays` says it pays.
    !!
    !! P <-> Q SYMMETRY (the default; CMake TERCO_MDJ_SYM_LMAX). The Hermite stage evaluates each
    !! [P|Q] twice: once in the [lp|lq] launch for Jt[P], once in [lq|lp] for

@@ -71,7 +71,8 @@ contains
                   new_unittest("MD J gradient is translation invariant and rotates", test_symmetry), &
                   new_unittest("MD J gradient matches a finite difference of the J energy", test_fd), &
                   new_unittest("TRC_MDJ_GRAD parser accepts only 0 and 1", test_env_parse), &
-                  new_unittest("default route: MD without exchange, by size with it", test_size_rule) &
+                  new_unittest("default route: MD without exchange, by size with it", test_size_rule), &
+                 new_unittest("rank shares of the MD route sum to the whole gradient", test_rank_shares) &
                   ]
    end subroutine collect_mdj_grad_tests
 
@@ -349,6 +350,58 @@ contains
          if (allocated(error)) return
       end do
    end subroutine test_full
+
+   subroutine test_rank_shares(error)
+      !! What a run over several ranks adds up: each rank's `gradient` is its
+      !! share (every nranks-th ket chunk of the MD Coulomb part, its segments
+      !! of the exchange plan) and the shares are summed. Here one process
+      !! plays every rank in turn, with no communicator, and the sum of the
+      !! shares must be the gradient of rank 0 of 1; a chunk or segment taken
+      !! twice or by no rank shows at the size of the gradient. HF (both
+      !! parts) and a pure functional (the MD part alone), two and three ranks.
+      type(error_type), allocatable, intent(out) :: error
+      character(len=256) :: basis_json
+      logical :: split
+      type(trc_basis_t) :: bas
+      type(trc_eri_t) :: eri
+      integer :: nat, nr, ir, ic
+      integer, allocatable :: at_z(:)
+      real(dp), allocatable :: r(:, :), dmat(:, :, :), gall(:, :), gsum(:, :), gshare(:, :)
+      real(dp) :: kfac, dmax
+
+      call basis_args(basis_json, split)
+      call check(error, len_trim(basis_json) > 0, "usage: check_mdj_grad <basis.json> [split]")
+      if (allocated(error)) return
+      call setup(trim(MOLS(NMOL)), basis_json, split, bas, eri, nat, at_z, r, error, THRESH)
+      if (allocated(error)) return
+      allocate (dmat(bas%nao, bas%nao, 1), gall(3, nat), gsum(3, nat), gshare(3, nat))
+      call synth_density(bas%nao, 1, .false., dmat(:, :, 1))
+      eri%grad_j_engine = TRC_J_ENGINE_MDJ
+      do ic = 1, 2
+         kfac = merge(1.0_dp, 0.0_dp, ic == 1)
+         call eri%gradient(bas, dmat, gall, k_scale=kfac)
+         do nr = 2, 3
+            gsum = 0.0_dp
+            eri%nranks = nr
+            do ir = 0, nr - 1
+               eri%rank = ir
+               call eri%gradient(bas, dmat, gshare, k_scale=kfac)
+               gsum = gsum + gshare
+            end do
+            eri%rank = 0
+            eri%nranks = 1
+            dmax = maxval(abs(gsum - gall))
+            call check(error, dmax <= AGREE*max(1.0_dp, maxval(abs(gall))) .and. maxval(abs(gshare)) > 0.0_dp, &
+                       "k_scale "//to_string(kfac, "f3.1")//", "//to_string(nr)//" ranks: max |sum of shares - whole| "// &
+                       to_string(dmax, "es10.2"))
+            if (allocated(error)) exit
+         end do
+         if (allocated(error)) exit
+      end do
+      deallocate (at_z, r, dmat, gall, gsum, gshare)
+      call eri%release()
+      call bas%release()
+   end subroutine test_rank_shares
 
    subroutine test_fallback(error)
       !! The calls the MD route does not take (a range-separated J, a skeleton

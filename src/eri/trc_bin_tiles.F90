@@ -88,6 +88,7 @@ module trc_bin_tiles
    private
 
    public :: bin_tiles_requested, bin_tiles_set_enabled, bin_tiles_build, bin_tiles_reach, bin_tiles_plan
+   public :: bin_tiles_env_off, bin_tiles_share_env
 
    integer, parameter :: TILE_PAIRS = 64
    !! Pairs per tile: two warps of bra pairs against one ket pair, so the
@@ -105,17 +106,41 @@ module trc_bin_tiles
 
    logical :: tiles_enabled = .true.
    !! bin_tiles_set_enabled's switch; TRC_EXCHANGE_TILES=0 overrides it off.
+   logical :: env_shared = .false.
+   !! Whether bin_tiles_share_env has replaced this process's environment.
+   logical :: env_off = .false.
+   !! Rank 0's TRC_EXCHANGE_TILES=0, when env_shared.
 
 contains
 
    logical function bin_tiles_requested() result(res)
       !! On unless bin_tiles_set_enabled(.false.) or TRC_EXCHANGE_TILES=0
-      !! turned it off.
+      !! turned it off. Over several ranks the environment is rank 0's
+      !! (bin_tiles_share_env): the tiled plans are split across ranks by
+      !! segment, so ranks that disagreed would count quartets twice or not
+      !! at all.
+      if (env_shared) then
+         res = tiles_enabled .and. .not. env_off
+      else
+         res = tiles_enabled .and. .not. bin_tiles_env_off()
+      end if
+   end function bin_tiles_requested
+
+   logical function bin_tiles_env_off() result(off)
+      !! Whether this process's TRC_EXCHANGE_TILES is 0.
       character(len=8) :: e
       e = " "
       call get_environment_variable("TRC_EXCHANGE_TILES", e)
-      res = tiles_enabled .and. trim(e) /= "0"
-   end function bin_tiles_requested
+      off = trim(e) == "0"
+   end function bin_tiles_env_off
+
+   subroutine bin_tiles_share_env(off)
+      !! Take `off` (rank 0's bin_tiles_env_off) in place of this process's
+      !! own environment from here on.
+      logical, intent(in) :: off
+      env_shared = .true.
+      env_off = off
+   end subroutine bin_tiles_share_env
 
    subroutine bin_tiles_set_enabled(on)
       !! Turn the tiling on or off for the builds that follow, so a check can

@@ -102,9 +102,9 @@ contains
       call eri%build(bas, THRESH)
       ! Both Coulomb engines are named, each against the same pyscf numbers:
       ! the fused Rys J+K kernels (BINS), which skeleton gradients still use,
-      ! and the MD J route plus exchange-only Rys (the default, AUTO). The
-      ! probe below is the MD one, what AUTO gave before this check named
-      ! its engines.
+      ! and the MD J route plus exchange-only Rys (what AUTO takes from
+      ! MDJ_GRAD_MIN_NAO functions; these molecules are below it). The probe
+      ! below is the MD one.
       eri%grad_j_engine = TRC_J_ENGINE_BINS
       call eri%gradient(bas, drhf, gbins_rhf)
       call eri%gradient(bas, duhf, gbins_uhf)

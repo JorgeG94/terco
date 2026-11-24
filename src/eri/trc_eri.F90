@@ -43,7 +43,7 @@ module trc_eri
    use trc_binkernel, only: binkernel_fock_bins, binkernel_have_variants
    use trc_parity, only: parity_choose_axis, parity_axperm, parity_ao_perm, parity_mode_env, &
                          PARITY_OFF, PARITY_FORCE_FRAME
-   use trc_bin_tiles, only: bin_tiles_build
+   use trc_bin_tiles, only: bin_tiles_build, bin_tiles_env_off, bin_tiles_share_env
    use trc_grad, only: grad_bins, trc_grad_pair_t, trc_grad_pairtab_t, RYSG_PAIRS_NCB
    use trc_rys_grad_kernels, only: RYSG_LMAX
    use trc_mdj, only: trc_mdj_t
@@ -531,6 +531,7 @@ contains
       ! would add up to a wrong matrix with nothing to show for it. The
       ! environment is per process, so rank 0's reading of it is the one.
       if (this%distributed) call share_policy(this%comm, no_decontract, decon, this%mdj_force, this%mdj_grad_force)
+      if (this%distributed) call share_tiles_env(this%comm)
       if (no_decontract) then
          call build_over(this, b, thresh, bres, sym)
          return
@@ -691,6 +692,15 @@ contains
       mdj_force = nint(buffer(7))
       mdj_grad_force = nint(buffer(8))
    end subroutine share_policy
+
+   subroutine share_tiles_env(comm)
+      !! Rank 0's TRC_EXCHANGE_TILES on every rank (bin_tiles_share_env).
+      type(comm_t), intent(in) :: comm
+      real(dp) :: buffer(1)
+      buffer(1) = merge(1.0_dp, 0.0_dp, bin_tiles_env_off())
+      call bcast(comm, buffer, 1, 0)
+      call bin_tiles_share_env(buffer(1) /= 0.0_dp)
+   end subroutine share_tiles_env
 
    subroutine build_structures(this, b, thresh, bres, sym)
       class(trc_eri_t), intent(inout) :: this
