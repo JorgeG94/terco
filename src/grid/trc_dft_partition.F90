@@ -94,7 +94,7 @@ module trc_dft_partition
    !! only when the exit fires. Selection costs N_NEAR_FIRST x n_active
    !! compares per point; a full sort measured no better (1.21 / 1.02 s on the
    !! first two systems below). V100, NVHPC 26.9,
-   !! PBE/def2-SVP XC gradient stage, glycine 20-mer / 40 waters / 50-mer:
+   !! PBE/def2-SVP, grid level 3, XC gradient stage, glycine 20-mer / 40 waters / 50-mer:
    !! 2.07 / 1.56 / 20.4 s unordered, 1.19 / 0.97 / 8.35 s at 24 (4: 1.74 /
    !! 1.32 / 16.0; 8: 1.35 / 1.15 / 11.9; 16: 1.19 / 1.00 / 8.85; 48: 1.23 /
    !! 0.99 / 8.70; 64: 1.25 / 1.00 / 8.90). The gradient moves by at most 6e-13 Eh/Bohr (50-mer).
@@ -660,14 +660,19 @@ contains
       !! factors, suffix products, derivative sums) is indexed by POSITION
       !! in the point's active list, not by atom, so a warp reads and
       !! writes whole columns instead of scattered entries; the running
-      !! prefix product of each row is a register. The active set and the
-      !! screening decisions per point are those of
-      !! `dft_partition_becke_derivatives`; the factors of a cell product are
-      !! multiplied nearest atoms first (N_NEAR_FIRST) and the rows whose cell
-      !! counts are moved to the front of the list, so each point's dP/dR
-      !! agrees with it to round-off, not bit for bit, and the order the
-      !! points' contributions are summed in differs too (atomics on the
-      !! device).
+      !! prefix product of each row is a register. The active set per point
+      !! (the nu_max screen) is that of `dft_partition_becke_derivatives`, up
+      !! to round-off in the distances at the nu_max boundary. On top of it
+      !! this routine has a screen of its own, which that one does not: a row
+      !! whose cell falls below the floor (CELL_FLOOR, CELL_REL) counts as
+      !! zero, and a point whose owner cell does is skipped. The factors of
+      !! a cell product are multiplied nearest atoms first (N_NEAR_FIRST) and
+      !! the rows whose cell counts are moved to the front of the list, so a
+      !! product within round-off of the floor can fall on either side of
+      !! it. What the floor drops is bounded in `partition_grad_point`; each
+      !! point's dP/dR agrees with the dense routine to round-off, not bit
+      !! for bit, and the order the points' contributions are summed in
+      !! differs too (atomics on the device).
       !!
       !! `points`, `owner` and `coef` may already be on the device (the
       !! XC gradient's are); `grad` is a host array, ADDED into.

@@ -315,7 +315,6 @@ contains
             worst = max(worst, maxval(abs(g1(:, i) - g2(:, nat + 1 - i))))
          end do
          scale = max(1.0_dp, maxval(abs(g1)))
-         print '(a,es10.2,a,es10.2)', '  gly10 reversed order: worst|g - g_perm| ', worst, '  of max ', maxval(abs(g1))
          call check(error, worst <= 1.0e-13_dp*scale .and. maxval(abs(g1)) /= 0.0_dp, &
                     "reversed atom order: worst|g - g_perm| = "//to_string(worst, "es10.2"))
       end if
