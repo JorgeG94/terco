@@ -1064,7 +1064,9 @@ program check_grad_screen
    stat = 0
    testsuites = [new_testsuite("grad_screen", collect_grad_screen_tests)]
    do is = 1, size(testsuites)
-      call run_testsuite(testsuites(is)%collect, error_unit, stat)
+      ! The tests share the cached contexts (cache_screen, cache_chain), so test-drive must not run them on
+      ! OpenMP threads, which it does by default: that raced get_ctx in the OpenMP CI job.
+      call run_testsuite(testsuites(is)%collect, error_unit, stat, parallel=.false.)
    end do
    call release_contexts()
    if (stat > 0) error stop 1

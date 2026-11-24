@@ -148,7 +148,8 @@ int trc_opt_set_rimp2(trc_handle_t handle, int enable);
  * trc_run_gradient's derivative of it. The context needs trc_set_tddft with enough roots (give one more
  * than the target to watch the root above it); trc_opt_run checks the setup with trc_check_tddft before the
  * first SCF and returns its refusal instead of starting. Set trc_set_tddft_missed_root_iterations to
- * 24 first, as the CLI does: at its default 0 a missed candidate can make a step follow another state. A P-RFO saddle search or a Newton-Raphson step with
+ * 24 first, as the CLI does: at its default 0 a missed candidate can make a step follow another
+ * state. A P-RFO saddle search or a Newton-Raphson step with
  * terco's own Hessian (trc_opt_set_hessian_source, the default) is refused too, with TRC_ERR_UNSUPPORTED:
  * the excited-state gradient has no Hessian to difference; choose the DL-FIND Hessian source. The followed
  * state is watched: a warning when another solved root lies within `gap_warn` hartree of it, or when its
