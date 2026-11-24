@@ -1935,6 +1935,18 @@ foreach(case water_wb97x nh2_wb97x water_wb97xv)
     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
     SKIP_REGULAR_EXPRESSION "SKIP")
 endforeach()
+# The same water energy with every bin split into chunks of at most 8 pairs
+# (TRC_BIN_CAP), as check_binfock_split does up to d. A split bin's chunks sit
+# past every original bin index, so a low-l chunk meets a g bin as the BRA,
+# and only the class with (la, lb) >= (lc, ld) has a kernel above f: without
+# the reordering in bins_plan_emit and trc_bin_tiles' put_seg this stops with
+# "a class above d has no Rys kernel in this build". A real system gets there
+# past 32768 pairs in a bin (353 atoms in cc-pVQZ).
+add_test(NAME terco/check_rsh_g_vs_pyscf_water_wb97x_split COMMAND check_rsh_g_vs_pyscf water_wb97x)
+set_tests_properties(terco/check_rsh_g_vs_pyscf_water_wb97x_split PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_BIN_CAP=8"
+  SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
 # Shells of angular momentum h (l = 5) against pyscf: S, T, V, J and K of a
