@@ -372,7 +372,7 @@ contains
       call basis_args(basis_json, split)
       call check(error, len_trim(basis_json) > 0, "usage: check_mdj_grad <basis.json> [split]")
       if (allocated(error)) return
-      call setup(trim(MOLS(NMOL)), basis_json, split, bas, eri, nat, at_z, r, error, THRESH)
+      call setup(trim(MOLS(nmol_for(basis_json))), basis_json, split, bas, eri, nat, at_z, r, error, THRESH)
       if (allocated(error)) return
       allocate (dmat(bas%nao, bas%nao, 1), gall(3, nat), gsum(3, nat), gshare(3, nat))
       call synth_density(bas%nao, 1, .false., dmat(:, :, 1))
