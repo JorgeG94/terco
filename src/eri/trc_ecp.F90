@@ -102,7 +102,7 @@
 module trc_ecp
    use pic_types, only: dp, int64
    use trc_basis_types, only: trc_basis_t
-   use trc_ecp_types, only: trc_ecp_t
+   use trc_ecp_types, only: trc_ecp_t, trc_ecp_without_atoms
    use trc_ecp_quadrature, only: ECP_LMAX, ECP_LEVEL0, ECP_LEVEL_MAX, ECP_NRS, &
                                  ecp_quadrature_gauss_chebyshev
    use trc_ecp_angular, only: ECP_ORB_LMAX, CART_POW_Y, CART_POW_Z, &
@@ -118,6 +118,7 @@ module trc_ecp
    implicit none
    private
    public :: trc_ecp_matrix, trc_ecp_matrix_cart, trc_ecp_screen_stats_t
+   public :: trc_ecp_deriv_cart, trc_ecp_gradient
 
    type :: trc_ecp_screen_stats_t
       !! What the 3-centre screen did, for a test. `worst_ratio` and
@@ -217,7 +218,7 @@ contains
       deallocate (mcart)
    end subroutine trc_ecp_matrix
 
-   subroutine trc_ecp_matrix_cart(b, ecp, mcart, error, screen, stats)
+   subroutine trc_ecp_matrix_cart(b, ecp, mcart, error, screen, stats, split)
       !!
       !! The same matrix, always Cartesian (never folded), `mcart(b%nao, b%nao)`
       !! coming back freshly allocated and zeroed. `trc_ecp_matrix` is this plus
@@ -233,13 +234,19 @@ contains
       !! instead, so a test can compare the two; `stats` returns the task
       !! counts and the bound's worst ratio to the largest element it bounds.
       !!
+      !! `split` present: only the shell pairs (i, j) with i > split >= j are
+      !! built, the rectangle the derivative integrals need (their bra shells
+      !! after the ket's, `trc_ecp_deriv_cart`); everything else stays zero.
+      !!
       type(trc_basis_t), intent(in) :: b
       type(trc_ecp_t), intent(in) :: ecp
       real(dp), allocatable, intent(out) :: mcart(:, :)
       type(error_t), intent(inout) :: error
       logical, intent(in), optional :: screen
       type(trc_ecp_screen_stats_t), intent(out), optional :: stats
+      integer, intent(in), optional :: split
       logical :: do_screen
+      integer :: nsplit
       type(trc_ecp_screen_stats_t) :: st
 
       do_screen = .true.
@@ -291,13 +298,230 @@ contains
                return
             end if
          end if
-         call ecp_matrix_cart(b, ecp, mcart, error, do_screen, present(stats), st)
+         nsplit = 0
+         if (present(split)) nsplit = split
+         call ecp_matrix_cart(b, ecp, mcart, error, do_screen, present(stats), st, nsplit)
          if (error%has_error()) return
       end if
       if (present(stats)) stats = st
    end subroutine trc_ecp_matrix_cart
 
-   subroutine ecp_matrix_cart(b, ecp, mcart, error, do_screen, want_stats, st)
+   subroutine trc_ecp_deriv_cart(b, ecp, ia, d, error)
+      !!
+      !! `d(mu, nu, c) = < d mu / d R_mu,c | U_ia | nu >`, the Cartesian ECP matrix
+      !! of ECP atom `ia` ALONE differentiated with respect to the centre of the
+      !! bra function, c = x, y, z; `d` comes back `(b%nao, b%nao, 3)`, zeroed
+      !! where nothing contributes. Both bra and ket are `b`'s Cartesian
+      !! functions, whatever `b%spherical` says.
+      !!
+      !! Only the bra is differentiated: for a symmetric density the ket's
+      !! derivative is the same sum, and the derivative with respect to the ECP
+      !! centre follows from the integral's invariance under translating all
+      !! three centres together (`trc_ecp_gradient`). That is why one atom's
+      !! potential at a time: the centre term has to land on that atom.
+      !!
+      !! A Cartesian primitive obeys
+      !!     d/dR_c  x^l exp(-a r^2) = 2a x^(l+1) exp(-a r^2) - l_c x^(l-1) exp(-a r^2),
+      !! so the derivative of a shell is a shell of l + 1 and one of l - 1 per
+      !! primitive, and no radial or angular kernel is new: the energy matrix
+      !! over a basis of those uncontracted fake shells (their coefficients
+      !! carry 2a c and c), against the real shells as ket, is folded back
+      !! (libfint's cint_ecp_deriv, from PySCF's nr_ecp_deriv.c, does the same).
+      !! The fake shells follow the real ones in the basis, so `split` builds only
+      !! the fake-bra, real-ket rectangle. The raised shell must fit the angular
+      !! tables: l + 1 <= ECP_ORB_LMAX, so no f function (ECP_ORB_LMAX is 3).
+      !!
+      type(trc_basis_t), intent(in) :: b
+      type(trc_ecp_t), intent(in) :: ecp
+      integer, intent(in) :: ia
+      real(dp), allocatable, intent(out) :: d(:, :, :)
+      type(error_t), intent(inout) :: error
+
+      type(trc_basis_t) :: bf
+      type(trc_ecp_t) :: one
+      real(dp), allocatable :: mf(:, :)
+      logical, allocatable :: drop(:)
+      integer, allocatable :: up(:, :), dn(:, :)
+      integer :: nsh, nfk, ish, ip, np, l, nper, k, nao, ifunc, ly, lz, lx, c, row, rowd
+
+      nao = b%nao
+      nsh = b%nshell
+      allocate (d(nao, nao, 3))
+      d = 0.0_dp
+      if (.not. ecp%has_ecp) return
+      if (nsh > 0) then
+         if (maxval(b%sh_l) + 1 > ECP_ORB_LMAX) then
+            call error%set(ERROR_VALIDATION, "trc_ecp_deriv_cart: the ECP gradient raises each orbital "// &
+                           "shell by one angular momentum, past the ECP kernels' f ceiling; not available "// &
+                           "for an f function")
+            return
+         end if
+      end if
+      allocate (drop(ecp%natm))
+      drop = .true.
+      drop(ia) = .false.
+      call trc_ecp_without_atoms(ecp, drop, one)
+      if (.not. one%has_ecp) return
+
+      ! The fake shells, after the real ones: per primitive the raised shell,
+      ! then (l > 0) the lowered one.
+      allocate (up(b%maxnp, nsh), dn(b%maxnp, nsh))
+      up = 0
+      dn = 0
+      nfk = 0
+      do ish = 1, nsh
+         nper = merge(2, 1, b%sh_l(ish) > 0)
+         do ip = 1, b%sh_np(ish)
+            up(ip, ish) = nsh + nfk + 1
+            if (nper == 2) dn(ip, ish) = nsh + nfk + 2
+            nfk = nfk + nper
+         end do
+      end do
+      bf%nshell = nsh + nfk
+      bf%natm = b%natm
+      bf%maxnp = b%maxnp
+      allocate (bf%sh_l(bf%nshell), bf%sh_np(bf%nshell), bf%sh_ao(bf%nshell))
+      allocate (bf%sh_e(bf%maxnp, bf%nshell), bf%sh_c(bf%maxnp, bf%nshell), bf%sh_r(3, bf%nshell))
+      bf%sh_l(1:nsh) = b%sh_l
+      bf%sh_np(1:nsh) = b%sh_np
+      bf%sh_ao(1:nsh) = b%sh_ao
+      bf%sh_e = 0.0_dp
+      bf%sh_c = 0.0_dp
+      bf%sh_e(:, 1:nsh) = b%sh_e
+      bf%sh_c(:, 1:nsh) = b%sh_c
+      bf%sh_r(:, 1:nsh) = b%sh_r
+      k = nao
+      do ish = 1, nsh
+         l = b%sh_l(ish)
+         do ip = 1, b%sh_np(ish)
+            bf%sh_l(up(ip, ish)) = l + 1
+            bf%sh_np(up(ip, ish)) = 1
+            bf%sh_ao(up(ip, ish)) = k + 1
+            bf%sh_e(1, up(ip, ish)) = b%sh_e(ip, ish)
+            bf%sh_c(1, up(ip, ish)) = 2.0_dp*b%sh_e(ip, ish)*b%sh_c(ip, ish)
+            bf%sh_r(:, up(ip, ish)) = b%sh_r(:, ish)
+            k = k + ncart_l(l + 1)
+            if (l == 0) cycle
+            bf%sh_l(dn(ip, ish)) = l - 1
+            bf%sh_np(dn(ip, ish)) = 1
+            bf%sh_ao(dn(ip, ish)) = k + 1
+            bf%sh_e(1, dn(ip, ish)) = b%sh_e(ip, ish)
+            bf%sh_c(1, dn(ip, ish)) = b%sh_c(ip, ish)
+            bf%sh_r(:, dn(ip, ish)) = b%sh_r(:, ish)
+            k = k + ncart_l(l - 1)
+         end do
+      end do
+      bf%nao = k
+      allocate (bf%at_r(3, b%natm))
+      bf%at_r = b%at_r
+
+      call trc_ecp_matrix_cart(bf, one, mf, error, split=nsh)
+      if (error%has_error()) then
+         call bf%release()
+         call one%release()
+         return
+      end if
+
+      ! Fold: function (lx, ly, lz) of a real shell is slot ifunc of its shell in
+      ! this module's lexicographic order, ly and lz from CART_POW_*, and the
+      ! slot of a shell one l up or down is (ly + lz)(ly + lz + 1)/2 + lz.
+      do ish = 1, nsh
+         l = b%sh_l(ish)
+         do ifunc = 0, ncart_l(l) - 1
+            ly = CART_POW_Y(ifunc)
+            lz = CART_POW_Z(ifunc)
+            lx = l - ly - lz
+            row = b%sh_ao(ish) + cart_perm_l2b(l, ifunc)
+            do ip = 1, b%sh_np(ish)
+               do c = 1, 3
+                  select case (c)
+                  case (1)
+                     k = lexi(ly, lz)
+                  case (2)
+                     k = lexi(ly + 1, lz)
+                  case default
+                     k = lexi(ly, lz + 1)
+                  end select
+                  d(row, :, c) = d(row, :, c) + mf(bf%sh_ao(up(ip, ish)) + cart_perm_l2b(l + 1, k), 1:nao)
+                  if (l == 0) cycle
+                  select case (c)
+                  case (1)
+                     if (lx == 0) cycle
+                     k = lexi(ly, lz)
+                     rowd = lx
+                  case (2)
+                     if (ly == 0) cycle
+                     k = lexi(ly - 1, lz)
+                     rowd = ly
+                  case default
+                     if (lz == 0) cycle
+                     k = lexi(ly, lz - 1)
+                     rowd = lz
+                  end select
+                  d(row, :, c) = d(row, :, c) - real(rowd, dp)* &
+                                 mf(bf%sh_ao(dn(ip, ish)) + cart_perm_l2b(l - 1, k), 1:nao)
+               end do
+            end do
+         end do
+      end do
+      call bf%release()
+      call one%release()
+      deallocate (mf)
+   end subroutine trc_ecp_deriv_cart
+
+   pure integer function lexi(ly, lz) result(n)
+      !! The slot of the function with powers (ly, lz) in a shell's lexicographic
+      !! order, whatever the shell's l (CART_POW_Y/Z's order).
+      integer, intent(in) :: ly, lz
+      n = (ly + lz)*(ly + lz + 1)/2 + lz
+   end function lexi
+
+   subroutine trc_ecp_gradient(b, ecp, density, grad, error)
+      !!
+      !! ADDS d/dR_X sum_{mu nu} density(mu, nu) < mu | U | nu > into `grad(3, natm)`,
+      !! the ECP's own term of the analytic gradient, `density` the symmetric
+      !! Cartesian density the one-electron operators contract (D, or D + P for
+      !! RI-MP2). With w_C(X) = sum_{mu on X, nu} density(mu, nu) d(mu, nu, :) for
+      !! each ECP atom C (`trc_ecp_deriv_cart`), the basis-centre part is
+      !! 2 w_C(X) on X (bra and ket give the same) and, by translational
+      !! invariance, the potential's own centre gets minus the sum of those.
+      !!
+      type(trc_basis_t), intent(in) :: b
+      type(trc_ecp_t), intent(in) :: ecp
+      real(dp), intent(in) :: density(b%nao, b%nao)
+      real(dp), intent(inout) :: grad(3, b%natm)
+      type(error_t), intent(inout) :: error
+
+      real(dp), allocatable :: d(:, :, :)
+      integer, allocatable :: ao_at(:)
+      logical, allocatable :: has(:)
+      integer :: ia, ish, a0, ao, c
+      real(dp) :: w(3)
+
+      if (.not. ecp%has_ecp .or. ecp%nrow == 0) return
+      allocate (ao_at(b%nao), has(b%natm))
+      do ish = 1, b%nshell
+         a0 = b%sh_ao(ish)
+         ao_at(a0:a0 + ncart_l(b%sh_l(ish)) - 1) = b%sh_at(ish)
+      end do
+      has = .false.
+      has(ecp%ecp_at(1:ecp%nrow)) = .true.
+      do ia = 1, b%natm
+         if (.not. has(ia)) cycle
+         call trc_ecp_deriv_cart(b, ecp, ia, d, error)
+         if (error%has_error()) return
+         do ao = 1, b%nao
+            do c = 1, 3
+               w(c) = 2.0_dp*dot_product(density(ao, :), d(ao, :, c))
+            end do
+            grad(:, ao_at(ao)) = grad(:, ao_at(ao)) + w
+            grad(:, ia) = grad(:, ia) - w
+         end do
+         deallocate (d)
+      end do
+   end subroutine trc_ecp_gradient
+
+   subroutine ecp_matrix_cart(b, ecp, mcart, error, do_screen, want_stats, st, split)
       !!
       !! The Cartesian build: groups the ECP rows into (atom, l) channels, then
       !! K1/K2/K3 as this module's own header describes.
@@ -308,6 +532,8 @@ contains
       type(error_t), intent(inout) :: error
       logical, intent(in) :: do_screen, want_stats
       type(trc_ecp_screen_stats_t), intent(out) :: st
+      integer, intent(in) :: split
+      !! 0: every pair i >= j; otherwise only i > split >= j
 
       real(dp) :: rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1)
       real(dp), allocatable :: sval(:, :)
@@ -342,10 +568,12 @@ contains
       !$acc exit data delete(ecp%ecp_rpow, ecp%ecp_np, ecp%ecp_e, ecp%ecp_c, grp_row0, grp_row1, ecp)
 
       npair = nshell*(nshell + 1)/2
+      if (split > 0) npair = (nshell - split)*split
       allocate (pr_i(npair), pr_j(npair))
       p = 0
       do i = 1, nshell
          do j = 1, i
+            if (split > 0 .and. (i <= split .or. j > split)) cycle
             p = p + 1
             pr_i(p) = i
             pr_j(p) = j

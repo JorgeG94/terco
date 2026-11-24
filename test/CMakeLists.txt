@@ -517,6 +517,20 @@ endforeach()
 terco_add_check(check_ecp_screen check_ecp_screen.F90 NEEDS_BASIS)
 target_link_libraries(check_ecp_screen PRIVATE test-drive::test-drive)
 
+# The ECP term of the analytic gradient: the derivative integrals against
+# differences of the ECP matrix, the RHF gradient of HI and bent TeH2 against
+# pyscf, and (the _fd test, LONG) the HF, PBE and RI-MP2 gradients against
+# differences of the energy -- see check_ecp_grad.F90's own
+# header.
+terco_add_check(check_ecp_grad check_ecp_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
+target_link_libraries(check_ecp_grad PRIVATE terco_c_interfaces test-drive::test-drive)
+# The energy-difference half reconverges about fifty SCFs (~3.5 min on one CPU thread): nightly.
+add_test(NAME terco/check_ecp_grad_fd COMMAND check_ecp_grad fd)
+set_tests_properties(terco/check_ecp_grad_fd PROPERTIES
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+  LABELS LONG)
+
 # ECP phase 3: RHF/UHF/RKS on HI, the I atom, I2 and H2 with a ghost iodine
 # in def2-SVP against pyscf (ecp_scf.ref, generate.py's gen_ecp_scf; mqc's
 # own numbers are a secondary print only), plus the guess/Hirshfeld/gradient
@@ -1390,13 +1404,6 @@ if(TERCO_BUILD_APP)
     terco_add_check(check_opt_correlated check_opt_correlated.F90 NEEDS_BASIS)
     target_link_libraries(check_opt_correlated PRIVATE test-drive::test-drive terco_c_interfaces
                                                        terco_opt_c_interfaces terco::terco_opt)
-
-    # trc_opt_run refuses a molecule with an ECP attached before its first
-    # step (no ECP gradient) instead of reaching DL-FIND's error stop -- see
-    # check_opt_ecp_refused.F90's own header.
-    terco_add_check(check_opt_ecp_refused check_opt_ecp_refused.F90)
-    target_link_libraries(check_opt_ecp_refused PRIVATE test-drive::test-drive terco_c_interfaces
-                                                        terco_opt_c_interfaces terco::terco_opt)
 
     # Every --opt-algorithm/--opt-coords combination terco exposes
     # converges water/STO-3G to the existing opt_water anchor -- see

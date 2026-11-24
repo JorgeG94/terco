@@ -73,9 +73,10 @@ module check_ecp_scf_suite
    use trc_ecp_json, only: trc_ecp_from_json
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_error, only: error_t
-   use pyscf_ref_io, only: ref_open, ref_close, ref_read_real
+   use pic_strings, only: to_string
+   use pyscf_ref_io, only: ref_open, ref_close, ref_read_real, ref_require, ref_read_matrix
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, &
-                               trc_set_convergence, trc_set_guess, trc_run_scf, trc_run_gradient, &
+                               trc_set_convergence, trc_set_guess, trc_run_scf, trc_run_gradient, trc_gradient, &
                                trc_hirshfeld_charges, trc_save_scf, trc_load_scf, trc_set_elements, &
                                trc_energy, trc_iterations, &
                                TRC_OK, TRC_ERR_UNSUPPORTED, TRC_GUESS_MINAO, TRC_GUESS_SAP
@@ -126,7 +127,7 @@ contains
                   new_unittest("MINAO guess is refused with an ECP attached", test_minao_refused), &
                   new_unittest("SAP guess is refused with an ECP attached", test_sap_refused), &
                   new_unittest("Hirshfeld charges are refused with an ECP attached", test_hirshfeld_refused), &
-                  new_unittest("the analytic gradient is refused with an ECP attached", test_gradient_refused), &
+                  new_unittest("the analytic gradient runs with an ECP attached and is translation invariant", test_gradient_runs), &
                   new_unittest("a restart file round-trips an ECP SCF (format version 4)", test_restart_roundtrip) &
                   ]
    end subroutine collect_ecp_scf_tests
@@ -461,22 +462,45 @@ contains
       rc = trc_destroy(h)
    end subroutine test_hirshfeld_refused
 
-   subroutine test_gradient_refused(error)
+   subroutine test_gradient_runs(error)
+      !! The RHF gradient of this HI (spherical) against pyscf's, the last case
+      !! of pyscf_refs/ecp_grad.ref (generate.py's gen_ecp_grad); check_ecp_grad
+      !! holds the rest of that file's cases and the finite-difference checks.
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
       integer(c_int) :: rc
+      real(c_double) :: grad(6)
+      real(dp) :: skip2(3, 2), skip3(3, 3), e, ref(3, 2)
+      integer :: u
 
       call make_hi(h)
-      rc = trc_set_convergence(h, 1.0e-10_c_double, 1.0e-7_c_double, 150_c_int, 10_c_int)
+      rc = trc_set_convergence(h, 1.0e-12_c_double, 1.0e-9_c_double, 150_c_int, 10_c_int)
       rc = trc_run_scf(h)
       call check(error, rc, TRC_OK, "ecp_scf gradient: trc_run_scf must converge first")
       if (allocated(error)) then
          rc = trc_destroy(h); return
       end if
       rc = trc_run_gradient(h)
-      call check(error, rc, TRC_ERR_UNSUPPORTED, "trc_run_gradient refuses an ECP-attached molecule (phase 4)")
+      call check(error, rc, TRC_OK, "trc_run_gradient over an ECP-attached molecule")
+      if (.not. allocated(error)) then
+         rc = trc_gradient(h, grad)
+         call ref_require('ecp_grad.ref', u)
+         call ref_read_real(u, 'E_hi_sph', e)
+         call ref_read_matrix(u, 'G_hi_sph', 3, 2, skip2)
+         call ref_read_real(u, 'E_hi_cart', e)
+         call ref_read_matrix(u, 'G_hi_cart', 3, 2, skip2)
+         call ref_read_real(u, 'E_teh2_sph', e)
+         call ref_read_matrix(u, 'G_teh2_sph', 3, 3, skip3)
+         call ref_read_real(u, 'E_teh2_cart', e)
+         call ref_read_matrix(u, 'G_teh2_cart', 3, 3, skip3)
+         call ref_read_real(u, 'E_hi_bond_sph', e)
+         call ref_read_matrix(u, 'G_hi_bond_sph', 3, 2, ref)
+         call ref_close(u)
+         call check(error, maxval(abs(real(grad, dp) - reshape(ref, [6]))) < 1.0e-7_dp, &
+                    "HI gradient vs pyscf, max|diff| = "//to_string(maxval(abs(real(grad, dp) - reshape(ref, [6]))), "es10.3"))
+      end if
       rc = trc_destroy(h)
-   end subroutine test_gradient_refused
+   end subroutine test_gradient_runs
 
    subroutine test_restart_roundtrip(error)
       !!

@@ -690,6 +690,49 @@ def gen_ecp_scf():
     dump.unlink()
 
 
+#: gen_ecp_grad's own element table, Te added to _SYMBOL_ECP's (kept apart for
+#: the reason _SYMBOL_ECP is).
+_SYMBOL_ECP_GRAD = {**_SYMBOL_ECP, 52: 'Te'}
+
+#: gen_ecp_grad's geometries, Bohr: the SAME literals check_ecp_grad.F90's
+#: `geometry` and check_ecp_scf.F90's make_hi carry (no xyz file, so the
+#: numbers have to agree by inspection).
+_ECP_GRAD_GEOMETRY = {
+    "hi": ([1, 53], [[0.1, -0.2, 0.0], [0.3, 0.2, 3.04]]),
+    "teh2": ([52, 1, 1], [[0.05, 0.0, 0.3], [2.2, 0.1, -1.8], [-2.1, -0.1, -1.7]]),
+    "hi_bond": ([1, 53], [[0.0, 0.0, 0.0], [0.0, 0.0, 1.609 / 0.529177210903]]),
+}
+
+
+def gen_ecp_grad():
+    """check_ecp_grad.F90's and check_ecp_scf.F90's RHF gradients over an ECP
+    (def2-SVP, the ECP read from the same BSE JSON as the matrix and SCF
+    references, `bse_json_ecp`), spherical and Cartesian, at the geometries
+    above. No terco binary is needed: the geometries are literals. Each G_*
+    is the (3, natm) analytic gradient, Eh/Bohr."""
+    w = RefWriter("ecp_grad.ref")
+    w.header("check_ecp_grad",
+             [ROOT / "test" / "check_ecp_grad.F90", ROOT / "test" / "check_ecp_scf.F90",
+              HERE.parent / "basis_sets" / "def2-svp.json"])
+    jf = HERE.parent / "basis_sets" / "def2-svp.json"
+    for name, cart in [("hi", False), ("hi", True), ("teh2", False), ("teh2", True), ("hi_bond", False)]:
+        z, r = _ECP_GRAD_GEOMETRY[name]
+        labels = [f"{_SYMBOL_ECP_GRAD[x]}{i + 1}" for i, x in enumerate(z)]
+        elements = dict(zip(labels, z))
+        basis_arg = bse_json_basis(jf, elements)
+        ecp_arg = bse_json_ecp(jf, elements)
+        atoms = [(lab, tuple(c)) for lab, c in zip(labels, r)]
+        mol = gto.M(atom=atoms, basis=basis_arg, ecp=ecp_arg, unit='Bohr', cart=cart, verbose=0)
+        tag = f"{name}_{'cart' if cart else 'sph'}"
+        mf, grad_norm = converge_tight(lambda: scf.RHF(mol), None, f"ecp_grad {tag}")
+        g = mf.nuc_grad_method().kernel()
+        w.real(f"E_{tag}", mf.e_tot)
+        w.matrix(f"G_{tag}", g.T)
+        print(f"  ecp_grad {tag:14s}: E = {mf.e_tot:18.12f}  |g| {grad_norm:.2e}")
+    w.end()
+    w.write()
+
+
 def gen_ao():
     """check_ao.F90's AO values/gradients at a probe cloud against pyscf's
     eval_ao. Needs the actual probe points (an LCG sequence) and terco's
@@ -7674,6 +7717,7 @@ CASES = {
     "ecp_ints_i2": lambda: gen_ecp_ints("i2"),
     "ecp_ints_ch3i": lambda: gen_ecp_ints("ch3i"),
     "ecp_scf": gen_ecp_scf,
+    "ecp_grad": gen_ecp_grad,
     "ao": gen_ao,
     "pcm_radii_override": gen_pcm_radii_override,
     "pcm_grad": gen_pcm_grad,
