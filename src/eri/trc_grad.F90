@@ -103,8 +103,11 @@ module trc_grad
    !! what it visited on the 50-mer, 33% on the water cluster, whose tiles'
    !! hulls cover most of the molecule.
    !!
-   !! WHICH DEFAULT LAUNCHES CHANGE with the product test: none. It applies
-   !! only behind the MD Coulomb gradient, which is not the default. For the
+   !! WHICH DEFAULT LAUNCHES CHANGE with the product test: the exchange pass
+   !! behind the MD Coulomb gradient, which is the default route for HF and
+   !! hybrids from trc_eri's MDJ_GRAD_MIN_NAO functions (GRAD_K_PRODUCT_MARGIN
+   !! carries what was measured there); the fused route below that size, and
+   !! every pure functional (no exchange pass), are untouched. For the
    !! long-range pass of a range-separated hybrid, the attenuated integral is
    !! bounded by the Coulomb Schwarz quantities (Cauchy-Schwarz with the
    !! positive-definite erf kernel), which is what makes the same Schwarz
@@ -202,11 +205,38 @@ module trc_grad
    !! 1e-12 are below 1e-11, but "as accurate as the single-block screen" is
    !! therefore not established in general: the margin is calibrated on three
    !! systems at def2-SVP, RHF, and is within about 2x of the single-block
-   !! screen's error on a fourth. It has NOT been measured with
-   !! range-separated densities, triple-zeta or diffuse basis sets, open-shell
-   !! systems (UHF takes a quarter of it by the constants in the module's
-   !! paragraph), or in finite-difference Hessians. That is why the product
-   !! test is confined to the MD route (not default).
+   !! screen's error on a fourth.
+   !!
+   !! The MD route is what AUTO takes for HF and hybrids from
+   !! trc_eri's MDJ_GRAD_MIN_NAO functions, so the product test is on a default
+   !! route, and it was measured beyond that calibration. One V100, NVHPC 26.9,
+   !! thresh 1e-12, whole SCF gradients (UHF takes a quarter of the margin, by
+   !! the constants in the module's paragraph): the largest component of MD
+   !! route minus fused route, and each route's error against a fused run at
+   !! thresh 1e-14 where the three SCFs took the same number of iterations
+   !! (elsewhere the reference differs by its SCF, not by a screen):
+   !!
+   !!   | case | MD - fused | MD error | fused error |
+   !!   |---|---|---|---|
+   !!   | gly20 triplet, UHF, def2-SVP | 2.2e-11 | 2.9e-11 | 3.6e-11 |
+   !!   | 40 waters cation, UHF, def2-SVP | 8.1e-11 | | |
+   !!   | 40 waters cation, UPBE0, def2-SVP | 8.5e-11 | | |
+   !!   | 30 waters triplet, UPBE0, def2-SVP | 2.7e-11 | 4.9e-10 | 5.0e-10 |
+   !!   | 20 waters, HF, def2-TZVP | 1.4e-11 | | |
+   !!   | 20 waters, PBE0, def2-TZVP | 1.1e-11 | 1.3e-11 | 1.6e-11 |
+   !!   | 20 waters triplet, UHF, def2-TZVP | 3.9e-11 | 6.2e-11 | 7.3e-11 |
+   !!   | gly20, HF, def2-TZVP | 2.2e-11 | 5.5e-11 | 4.2e-11 |
+   !!   | 20 waters, HF, aug-cc-pVDZ | 8.6e-12 | 2.6e-11 | 2.8e-11 |
+   !!   | 20 waters, PBE0, aug-cc-pVDZ | 3.5e-12 | 7.0e-12 | 7.1e-12 |
+   !!   | gly20, HF, aug-cc-pVDZ | 3.1e-11 | 2.4e-10 | 2.5e-10 |
+   !!   | gly20, wB97X, def2-SVP | 9.2e-12 | 1.5e-11 | 1.8e-11 |
+   !!   | 30 waters, RI-MP2 gradient, cc-pVDZ | 9.8e-12 | | |
+   !!
+   !! The routes differ by under 1e-10 everywhere and the MD route's error is
+   !! at most 1.3x the fused one (gly20 def2-TZVP). The RI-MP2 row is the
+   !! gradient that forms Q(D + P) - Q(P) from two calls on different
+   !! densities. NOT measured: finite-difference Hessians, thresholds other
+   !! than 1e-12 on these cases, and elements beyond the second row.
    !!
    !! NOT SHIPPED, for a later decision: with the product test also on the
    !! long-range pass of a range-separated hybrid (the default route), an
