@@ -766,6 +766,7 @@ contains
       type(ctx_t), intent(in) :: ctx
       type(trc_bin_plan_t), intent(in) :: p
       integer(int64), allocatable, intent(out) :: keys(:)
+      integer(int64), allocatable :: packed(:)
       integer :: seg, iab, icd, ilo, pa, pc
       integer(int64) :: n, np
       np = ctx%eri%bins%npair
@@ -783,7 +784,11 @@ contains
             end do
          end do
       end do
-      keys = keys(1:n)
+      ! Shrink through a heap copy: ifx builds the section of
+      ! "keys = keys(1:n)" on the stack and overflows the default 8 MB.
+      allocate (packed(n))
+      packed = keys(1:n)
+      call move_alloc(packed, keys)
       call sort(keys)
    end subroutine plan_keys
 
