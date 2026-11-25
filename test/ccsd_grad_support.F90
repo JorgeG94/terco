@@ -6,7 +6,8 @@ module ccsd_grad_support
    !!
    !! The molecule is test/ccgrad_water.xyz (water distorted to C1), read in Angstrom and converted to Bohr with CODATA
    !! 2018, as terco and the pyscf reference do. The orbital basis is STO-3G or cc-pVDZ, the auxiliary basis
-   !! cc-pVDZ-RIFIT, spherical, as for check_capi_rccsd.
+   !! cc-pVDZ-RIFIT in the orbital basis's convention
+   !! (Cartesian with STO-3G, spherical with cc-pVDZ).
    !!
    use, intrinsic :: iso_c_binding, only: c_int, c_double, c_ptr, c_null_char
    use pic_types, only: dp

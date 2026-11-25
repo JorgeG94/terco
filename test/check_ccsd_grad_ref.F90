@@ -2,7 +2,8 @@ module check_ccsd_grad_ref_suite
    !!
    !! The RI-CCSD and RI-CCSD(T) gradient references (test/pyscf_refs/ccsd_grad_water_*.ref, generate.py's
    !! gen_ccsd_grad) against terco's own RI-CCSD(T) energy, before any terco gradient exists: water distorted to C1
-   !! (test/ccgrad_water.xyz), STO-3G and cc-pVDZ, frozen core 0 and 1, cc-pVDZ-RIFIT, spherical.
+   !! (test/ccgrad_water.xyz), STO-3G and cc-pVDZ, frozen core 0 and 1, cc-pVDZ-RIFIT in the orbital basis's
+   !! convention (Cartesian with STO-3G, spherical with cc-pVDZ).
    !!
    !! Per case:
    !!   - terco's SCF, RI-CCSD correlation energy, (T) and the CCSD(T) total against pyscf's DF-RCCSD(T) of the
@@ -26,10 +27,12 @@ module check_ccsd_grad_ref_suite
    private
    public :: collect_ccsd_grad_ref
 
-   real(dp), parameter :: TOL_SCF = 1.0e-10_dp
-   real(dp), parameter :: TOL_CORR = 1.0e-10_dp
-   real(dp), parameter :: TOL_T = 3.0e-12_dp
-   real(dp), parameter :: TOL_TOTAL = 3.0e-11_dp
+   !> About ten times the worst difference measured over the four cases on a host build: SCF 2.3e-13,
+   !> E_CCSD 6.8e-13, E(T) 6.4e-14, total 9.8e-13.
+   real(dp), parameter :: TOL_SCF = 3.0e-12_dp
+   real(dp), parameter :: TOL_CORR = 7.0e-12_dp
+   real(dp), parameter :: TOL_T = 7.0e-13_dp
+   real(dp), parameter :: TOL_TOTAL = 1.0e-11_dp
    real(dp), parameter :: TOL_DENSITY = 1.0e-9_dp
 
 contains

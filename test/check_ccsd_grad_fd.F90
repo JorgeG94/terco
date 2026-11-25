@@ -9,8 +9,9 @@ module check_ccsd_grad_fd_suite
    !! cc-pVDZ-RIFIT), CCSD and CCSD(T) from the same run. The derivative is the five-point stencil
    !! (f(-2h) - 8 f(-h) + 8 f(h) - f(2h)) / 12h with h = 0.01 Bohr: truncation error h^4 f^(5) / 30 and energy
    !! noise (1e-11) / h. Every coordinate of the four cases (STO-3G and cc-pVDZ, frozen core 0 and 1): 36 coordinates,
-   !! four energies each, each an SCF and a RI-CCSD(T) of a three-atom molecule, about a minute on the host. The largest
-   !! difference per case is printed.
+   !! four energies each, each an SCF and a RI-CCSD(T) of a three-atom molecule, about a minute on the host, so that run
+   !! is LONG. With the argument `short` only STO-3G with one frozen core orbital and three coordinates run, which every
+   !! pull request does. The largest difference per case is printed.
    !!
    use pic_types, only: dp
    use pic_strings, only: to_string
@@ -19,7 +20,7 @@ module check_ccsd_grad_fd_suite
                                 CASE_NFROZEN
    implicit none
    private
-   public :: collect_ccsd_grad_fd
+   public :: collect_ccsd_grad_fd, collect_ccsd_grad_fd_short
 
    real(dp), parameter :: STEP = 1.0e-2_dp
    real(dp), parameter :: TOL_FD = 1.0e-8_dp
@@ -36,6 +37,17 @@ contains
                   new_unittest("cc-pVDZ frozen core 1: every coordinate", test_ccpvdz_fc1) &
                   ]
    end subroutine collect_ccsd_grad_fd
+
+   subroutine collect_ccsd_grad_fd_short(testsuite)
+      type(unittest_type), allocatable, intent(out) :: testsuite(:)
+      testsuite = [new_unittest("STO-3G frozen core 1: three coordinates", test_short)]
+   end subroutine collect_ccsd_grad_fd_short
+
+   subroutine test_short(error)
+      !! O z, H1 y and H2 x: one coordinate per atom and one per axis
+      type(error_type), allocatable, intent(out) :: error
+      call fd_case(error, 2, [3, 5, 7])
+   end subroutine test_short
 
    subroutine test_sto3g_fc0(error)
       type(error_type), allocatable, intent(out) :: error
@@ -108,16 +120,22 @@ end module check_ccsd_grad_fd_suite
 program check_ccsd_grad_fd
    use, intrinsic :: iso_fortran_env, only: error_unit
    use testdrive, only: run_testsuite
-   use check_ccsd_grad_fd_suite, only: collect_ccsd_grad_fd
+   use check_ccsd_grad_fd_suite, only: collect_ccsd_grad_fd, collect_ccsd_grad_fd_short
    use ccsd_grad_support, only: supported
    implicit none
    integer :: stat
+   character(len=16) :: mode
    stat = 0
+   call get_command_argument(1, mode)
    if (.not. supported()) then
       print "(a)", "SKIP: this build's density-fitting ceilings are below cc-pVDZ-RIFIT, no case can run"
       stop 0
    end if
-   call run_testsuite(collect_ccsd_grad_fd, error_unit, stat, parallel=.false.)
+   if (mode == "short") then
+      call run_testsuite(collect_ccsd_grad_fd_short, error_unit, stat, parallel=.false.)
+   else
+      call run_testsuite(collect_ccsd_grad_fd, error_unit, stat, parallel=.false.)
+   end if
    if (stat > 0) then
       write (error_unit, "(i0, a)") stat, " test(s) failed"
       error stop 1

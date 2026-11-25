@@ -5345,8 +5345,8 @@ def _ri_ccsd_response_gradient(mol, mf, mycc, auxbasis, frozen, triples):
 
 def gen_ccsd_grad():
     """The RI-CCSD and RI-CCSD(T) analytic-gradient anchors: water distorted to C1 (test/ccgrad_water.xyz, so no
-    gradient component vanishes by symmetry), STO-3G and cc-pVDZ, frozen core 0 and 1, spherical, terco's own
-    cc-pVDZ-RIFIT auxiliary set, the geometry in Bohr converted with CODATA 2018 as terco. The SCF is exact-ERI
+    gradient component vanishes by symmetry), STO-3G and cc-pVDZ, frozen core 0 and 1, terco's own cc-pVDZ-RIFIT
+    auxiliary set in the orbital basis's convention (Cartesian with STO-3G, spherical with cc-pVDZ), the geometry in Bohr converted with CODATA 2018 as terco. The SCF is exact-ERI
     RHF converged to energy 1e-13 and gradient 1e-11 (the Lambda probes and the gradient are first order in the
     orbital error); amplitudes to 1e-13 / 1e-11, Lambda to 1e-12. Pyscf runs on one thread (lib.num_threads(1));
     with OMP_NUM_THREADS=1 as well, for the BLAS, a rerun reproduces the file bit for bit (with 4 BLAS threads it

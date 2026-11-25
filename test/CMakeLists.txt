@@ -239,7 +239,14 @@ set_tests_properties(terco/check_ccsd_grad_ref PROPERTIES SKIP_REGULAR_EXPRESSIO
 
 terco_add_check(check_ccsd_grad_fd check_ccsd_grad_fd.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_ccsd_grad_fd PRIVATE test-drive::test-drive terco_ccsd_grad_support)
-set_tests_properties(terco/check_ccsd_grad_fd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+# LONG: 144 SCF and RI-CCSD(T) runs, about a minute on the host; the nightly run keeps it,
+# check_ccsd_grad_fd_short runs on every PR.
+set_tests_properties(terco/check_ccsd_grad_fd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" LABELS LONG)
+add_test(NAME terco/check_ccsd_grad_fd_short COMMAND check_ccsd_grad_fd short)
+set_tests_properties(
+  terco/check_ccsd_grad_fd_short
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_REGULAR_EXPRESSION "SKIP"
+             ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 # The Abelian point-group tables (trc_sym_group): closure, character
 # orthogonality, irrep names and order against pyscf 2.14.0's param.py.
 terco_add_check(check_sym_group check_sym_group.F90)
