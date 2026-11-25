@@ -300,10 +300,11 @@ contains
       !! term is the FITTED one, trc_scf_grad_df's scf_grad_df_two_electron
       !! over the SAME fit (`dfjk`'s retained B and metric Cholesky factor)
       !! the SCF converged with, instead of eri%gradient's four-centre one --
-      !! no ERI engine is built at all. Restricted and Cartesian only, the
-      !! DF-SCF's own scope, and no range separation (the DF-SCF fits no
-      !! erf exchange): each is an error stop here, refused up front by
-      !! trc_capi.F90's trc_run_gradient.
+      !! no ERI engine is built at all. Restricted only, the DF-SCF's own
+      !! scope, and no range separation (the DF-SCF fits no erf exchange):
+      !! each is an error stop here, refused up front by trc_capi.F90's
+      !! trc_run_gradient. A spherical orbital or auxiliary basis is
+      !! expanded onto the Cartesian functions inside scf_grad_df_two_electron.
       type(trc_basis_t), intent(inout), optional :: aux
       !! The auxiliary (jkfit) basis `dfjk` was fitted with.
       logical, intent(in), optional :: verbose
@@ -384,8 +385,8 @@ contains
 
       if (present(dfjk)) then
          if (.not. present(aux)) error stop "trc_scf_gradient: dfjk given without its auxiliary basis"
-         if (nspin /= 1 .or. b%spherical .or. xch%exx_lr /= 0.0_dp) then
-            error stop "trc_scf_gradient: the --df gradient is restricted, Cartesian and not range-separated"
+         if (nspin /= 1 .or. xch%exx_lr /= 0.0_dp) then
+            error stop "trc_scf_gradient: the --df gradient is restricted and not range-separated"
          end if
          ! --- density-fitted two-electron term, in the actual-energy
          ! convention (no halving: scf_grad_df_two_electron differentiates

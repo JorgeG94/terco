@@ -3,16 +3,15 @@ module check_grad_df_refusals_suite
    !! The --grad --df refusals, at the C API: every out-of-scope request must
    !! come back as an error STATUS with a message naming the reason, never reach
    !! the library's own `error stop` (which would take the host process down).
-   !! The fitted gradient is restricted, Cartesian and not range-separated
-   !! (trc_run_gradient's own guards, trc_capi.F90).
+   !! The fitted gradient is restricted and not range-separated
+   !! (trc_run_gradient's own guards, trc_capi.F90); it runs a Cartesian or a
+   !! spherical basis.
    !!
    !! Two routes into each refusal:
    !!
-   !!   RUN. trc_run_scf with --df on an unrestricted (OH), spherical (water,
-   !!        cc-pVDZ as tagged) or range-separated (wB97X) setup. Where the SCF
-   !!        refuses (unrestricted, range-separated), trc_run_gradient after it
-   !!        refuses too (no SCF). The DF-SCF runs spherical bases, so there the
-   !!        gradient's own guard must refuse, TRC_ERR_UNSUPPORTED, naming it.
+   !!   RUN. trc_run_scf with --df on an unrestricted (OH) or range-separated
+   !!        (wB97X) setup. Where the SCF refuses, trc_run_gradient after it
+   !!        refuses too (no SCF).
    !!   LOAD. The same setup's SCF, run WITHOUT --df and saved (trc_save_scf),
    !!        then loaded into a --df context (trc_set_df, trc_load_scf):
    !!        trc_run_gradient is now past the SCF's refusals and its own guard
@@ -20,7 +19,8 @@ module check_grad_df_refusals_suite
    !!        restricted Cartesian result loaded the same way has no fit, and
    !!        must be refused with TRC_ERR_STATE.
    !!
-   !! Plus the positive control: RHF water/6-31G* with --df runs the gradient.
+   !! Plus the positive controls: RHF water/6-31G* (Cartesian) and water/cc-pVDZ
+   !! (spherical) with --df run the gradient.
    !!
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_null_ptr, c_char, c_null_char
    use pic_types, only: dp
@@ -57,7 +57,7 @@ contains
       testsuite = [ &
                   new_unittest("RHF water/6-31G* --df runs the gradient (control)", test_control), &
                   new_unittest("UHF OH/6-31G* --df is refused (unrestricted)", test_uhf), &
-                  new_unittest("spherical water/cc-pVDZ --df is refused (not Cartesian)", test_spherical), &
+                  new_unittest("spherical RHF water/cc-pVDZ --df runs the gradient", test_spherical), &
                   new_unittest("wB97X water/6-31G* --df is refused (range-separated)", test_rsh), &
                   new_unittest("RHF water/6-31G*, no fit, loaded into --df is refused", test_nofit) &
                   ]
@@ -78,7 +78,7 @@ contains
    subroutine test_spherical(error)
       type(error_type), allocatable, intent(out) :: error
       call run_case(error, 'spherical water/cc-pVDZ', 'water.xyz', 1, 'basis_sets/cc-pvdz.json', .false., '', &
-                    TRC_ERR_UNSUPPORTED, 'Cartesian', trim(g_scratch), .true.)
+                    TRC_OK, '', trim(g_scratch), .true.)
    end subroutine test_spherical
 
    subroutine test_rsh(error)

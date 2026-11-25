@@ -62,6 +62,7 @@ module check_rimp2_grad_suite
    use trc_scf_df, only: df_jk_t
    use trc_scf_grad_df, only: scf_grad_df_two_electron, scf_grad_df_bilinear, scf_grad_df_bilinear_t
    use trc_linalg, only: trc_linalg_t
+   use trc_sph, only: sph_mo_to_cart
    use trc_test_basis, only: read_xyz
    use trc_error, only: error_t
    implicit none
@@ -96,6 +97,9 @@ module check_rimp2_grad_suite
       !! The --df reference's fitting set; empty for the exact reference.
       integer :: nfrozen = 0
       logical :: cart = .false.
+      character(len=4) :: jk_space = ""
+      !! "cart" or "sph" forces the --df fitting set's AO space on its own,
+      !! independent of `cart`; empty follows `cart`.
    end type case_t
 
    type :: system_t
@@ -127,6 +131,11 @@ contains
                                test_fd_df_formamide_sph), &
                   new_unittest("--df: water cc-pVDZ (Cartesian) vs finite differences", test_fd_df_water_cart), &
                   new_unittest("--df: the bilinear derivative at X = D/2 is the SCF's own", test_bilinear_identity), &
+                  new_unittest("--df: the same, water spherical orbitals and fitting set", test_bilinear_identity_sph), &
+                  new_unittest("--df: the same, water spherical orbitals, Cartesian fitting set", &
+                               test_bilinear_identity_sph_cartjk), &
+                  new_unittest("--df: the same, water Cartesian orbitals, spherical fitting set", &
+                               test_bilinear_identity_cart_sphjk), &
                   new_unittest("--df: a frozen core with nothing left to correlate is refused with its own reason", &
                                test_df_refuses_frozen_core), &
                   new_unittest("--df: the AO fallback of the fitted orbital Hessian agrees with the MO one", &
@@ -260,28 +269,69 @@ contains
    subroutine test_bilinear_identity(error)
       !! d[Tr (D/2) G_fit(D)] through scf_grad_df_bilinear against the
       !! --df SCF gradient's own two-electron term, at a converged --df
-      !! SCF (Cartesian, where scf_grad_df_two_electron runs).
+      !! SCF, Cartesian formamide.
       type(error_type), allocatable, intent(out) :: error
+      call bilinear_identity(error, "formamide cart --df identity", "formamide.xyz", .true., "")
+   end subroutine test_bilinear_identity
+
+   subroutine test_bilinear_identity_sph(error)
+      type(error_type), allocatable, intent(out) :: error
+      call bilinear_identity(error, "water sph/sph --df identity", "water.xyz", .false., "")
+   end subroutine test_bilinear_identity_sph
+
+   subroutine test_bilinear_identity_sph_cartjk(error)
+      type(error_type), allocatable, intent(out) :: error
+      call bilinear_identity(error, "water sph/cart-jkfit --df identity", "water.xyz", .false., "cart")
+   end subroutine test_bilinear_identity_sph_cartjk
+
+   subroutine test_bilinear_identity_cart_sphjk(error)
+      type(error_type), allocatable, intent(out) :: error
+      call bilinear_identity(error, "water cart/sph-jkfit --df identity", "water.xyz", .true., "sph")
+   end subroutine test_bilinear_identity_cart_sphjk
+
+   subroutine bilinear_identity(error, name, xyz, cart, jk_space)
+      !! The identity of test_bilinear_identity for any pairing of the
+      !! orbital and fitting sets' AO spaces. The two sides expand the
+      !! spherical orbital and auxiliary coefficients onto the Cartesian
+      !! kernels' functions in separate code (scf_grad_df_two_electron per
+      !! chunk and block, scf_grad_df_bilinear per derivative block), and
+      !! scf_grad_df_bilinear is itself checked against pyscf and finite
+      !! differences, so this is the exact per-PR check of the mixed pairs
+      !! pyscf cannot reference.
+      type(error_type), allocatable, intent(out) :: error
+      character(*), intent(in) :: name, xyz, jk_space
+      logical, intent(in) :: cart
       type(case_t) :: c
       type(system_t) :: sys
-      real(dp), allocatable :: r(:, :), cmo(:, :), dens(:, :), g_ref(:, :), g_bil(:, :)
+      real(dp), allocatable :: r(:, :), cmo(:, :), ccart(:, :), dens(:, :), g_ref(:, :), g_bil(:, :)
       type(scf_grad_df_bilinear_t) :: bil
       integer, allocatable :: z(:)
       integer :: nat, n
       real(dp) :: e_tot
-      c%name = "formamide cart --df identity"
-      c%xyz = "formamide.xyz"
+      c%name = name
+      c%xyz = xyz
       c%basis = "basis_sets/cc-pvdz.json"
       c%aux = "basis_sets/cc-pvdz-rifit.json"
       c%jkfit = "basis_sets/cc-pvdz-rifit.json"
-      c%cart = .true.
+      c%cart = cart
+      c%jk_space = jk_space
       call read_xyz(trim(c%xyz), nat, z, r)
       call setup_system(error, c, nat, z, r, sys, e_tot)
       if (allocated(error)) return
       n = sys%bas%nao
       cmo = sys%res%cmo(:, :, 1)
+      ! C_cart = T C_sph for the bilinear side, which works in Cartesian AOs.
+      allocate (ccart(n, sys%nocc))
+      if (sys%bas%spherical) then
+         !$acc enter data copyin(cmo) create(ccart)
+         call sph_mo_to_cart(sys%bas, sys%nocc, cmo, ccart)
+         !$acc update self(ccart)
+         !$acc exit data delete(cmo, ccart)
+      else
+         ccart = cmo(:, 1:sys%nocc)
+      end if
       allocate (dens(n, n), g_ref(3, nat), g_bil(3, nat))
-      dens = 2.0_dp*matmul(cmo(:, 1:sys%nocc), transpose(cmo(:, 1:sys%nocc)))
+      dens = 2.0_dp*matmul(ccart, transpose(ccart))
       g_ref = 0.0_dp
       g_bil = 0.0_dp
       !$acc enter data copyin(cmo, dens, g_ref)
@@ -290,13 +340,13 @@ contains
                                     1.0_dp, 1.0_dp, g_ref)
       !$acc update self(g_ref)
       !$acc exit data delete(cmo, dens, g_ref)
-      call scf_grad_df_bilinear(sys%bas, sys%jk, sys%pl, sys%dfjk, sys%lp, cmo(:, 1:sys%nocc), 0.5_dp*dens, bil)
+      call scf_grad_df_bilinear(sys%bas, sys%jk, sys%pl, sys%dfjk, sys%lp, ccart, 0.5_dp*dens, bil)
       g_bil = bil%grad
       print "(a,a,es10.2)", "  ", trim(c%name)//": max |bilinear(D/2) - two-electron| ", maxval(abs(g_bil - g_ref))
       call check(error, maxval(abs(g_bil - g_ref)) < BILINEAR_TOL, trim(c%name)// &
                  ": scf_grad_df_bilinear(X = D/2) is not the --df SCF's two-electron gradient")
       call release_system(sys)
-   end subroutine test_bilinear_identity
+   end subroutine bilinear_identity
 
    subroutine test_df_response_ao(error)
       !! The Z-vector's memory fallback (df_rotation_t's AO path) against
@@ -508,7 +558,8 @@ contains
       if (.not. err%has_error()) call trc_basis_from_json(trim(c%aux), nat, z, r, sys%aux, err, force_cart=c%cart, &
                                                            overrides=trc_basis_json_overrides(prune=.false.))
       if (sys%df .and. .not. err%has_error()) then
-         call trc_basis_from_json(trim(c%jkfit), nat, z, r, sys%jk, err, force_cart=c%cart, &
+         call trc_basis_from_json(trim(c%jkfit), nat, z, r, sys%jk, err, &
+                                  force_cart=merge(c%jk_space == "cart", c%cart, len_trim(c%jk_space) > 0), &
                                   overrides=trc_basis_json_overrides(prune=.false.))
       end if
       call check(error, .not. err%has_error(), trim(c%name)//": basis: "//err%get_message())

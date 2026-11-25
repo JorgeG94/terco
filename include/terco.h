@@ -1018,7 +1018,7 @@ int trc_set_geometry(trc_handle_t handle, const double* xyz);
  * grid). A later trc_run_scf clears the RI-MP2 result, and the
  * gradient is the SCF's again. (ABI 1.15: a double hybrid's
  * gradient was refused before.)
- *   - --df outside the DF-SCF's own scope (unrestricted, spherical,
+ *   - --df outside the DF-SCF's own scope (unrestricted,
  *     range-separated -- the SCF refuses those first), or with the fit
  *     gone. A --df gradient otherwise runs the FITTED J/K gradient
  *     (trc_scf_grad_df.F90) over `cx%dfjk`, the fit the SCF used.

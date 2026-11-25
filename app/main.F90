@@ -214,7 +214,7 @@ program trc_main
                        "refused with --df)")
    call r%cli%add_flag("no-incremental", "a full Fock build every iteration")
    call r%cli%add_flag("df", "density-fitted J and K instead of the four-centre engine (restricted, "// &
-                       "Cartesian only; fits both, never DF-J with 4-centre K)")
+                       "fits both, never DF-J with 4-centre K)")
    call r%cli%add_option("jkfit", "fitting basis for --df (def2-universal-jkfit)", default="def2-universal-jkfit")
    call r%cli%add_option("pcm", "polarisable continuum solvation: cpcm or iefpcm (pyscf's SWIG "// &
                          "cavity, 302 points per sphere, radii 1.2 x Bondi); needs --eps")

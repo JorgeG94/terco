@@ -4988,17 +4988,13 @@ contains
          ! The fitted gradient differentiates the SAME fit the SCF converged
          ! with (`cx%dfjk`'s B and metric Cholesky factor), so it needs that
          ! fit still in place, and inherits the DF-SCF's own scope:
-         ! restricted, Cartesian, no range separation. trc_scf_settings
+         ! restricted, no range separation. trc_scf_settings
          ! and trc_scf_df already refuse the SCF outside it; checked again
          ! here so the message names the gradient -- and BEFORE the fit
          ! check, because a result taken from a file (trc_load_scf) reaches
          ! this point without ever having met the DF-SCF's own refusals.
          if (cx%res%nspin /= 1) then
             refusal = "--df gradient is restricted (closed-shell) only, as --df is"
-            return
-         end if
-         if (cx%bb%b%spherical) then
-            refusal = "--df gradient needs a Cartesian basis -- the DF derivative kernels are Cartesian only"
             return
          end if
          if (have_func) then
@@ -5199,7 +5195,7 @@ contains
       !! grid). A later trc_run_scf clears the RI-MP2 result, and the
       !! gradient is the SCF's again. (ABI 1.15: a double hybrid's
       !! gradient was refused before.)
-      !!   - --df outside the DF-SCF's own scope (unrestricted, spherical,
+      !!   - --df outside the DF-SCF's own scope (unrestricted,
       !!     range-separated -- the SCF refuses those first), or with the fit
       !!     gone. A --df gradient otherwise runs the FITTED J/K gradient
       !!     (trc_scf_grad_df.F90) over `cx%dfjk`, the fit the SCF used.
