@@ -2073,7 +2073,8 @@ endforeach()
 # spherical orbitals and fitting set and over each mixed pair; see check_df_grad_fd.F90.
 terco_add_check(check_df_grad_fd check_df_grad_fd.F90 NEEDS_BASIS)
 target_link_libraries(check_df_grad_fd PRIVATE test-drive::test-drive)
-# LONG: ~80 s on a gcc-15 CI runner; the nightly run keeps it (see
+# LONG: 277 s for the six cases on a loaded workstation (gfortran 15), the
+# three cc-pVDZ ones most of it; the nightly run keeps it (see
 # check_xc_grad_fd above), check_df_grad_fd_formamide runs on every PR.
 set_tests_properties(terco/check_df_grad_fd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" LABELS LONG)
 # The same, RHF on formamide/cc-pVDZ (cond(M) = 8.6e13), independent of

@@ -374,7 +374,7 @@ module trc_capi
    !! trc_timing's list capacity. A run that would list more is an error
    !! (TRC_ERR_UNSUPPORTED), never a silently shortened list.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 33
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 34
    !! 1.33: trc_tddft_window_open, a new entry point (the number of candidate Ritz
    !! pairs the TDDFT missed-root check left open); and the default of the missed-root
    !! iteration count is now 0 (it was 24 in 1.31 and 1.32), like the 1.20 change of
@@ -5199,6 +5199,7 @@ contains
       !!     range-separated -- the SCF refuses those first), or with the fit
       !!     gone. A --df gradient otherwise runs the FITTED J/K gradient
       !!     (trc_scf_grad_df.F90) over `cx%dfjk`, the fit the SCF used.
+      !!     (ABI 1.34: a spherical orbital basis was refused before.)
       !!
       !! NOT refused any more: PCM (C-PCM/IEF-PCM). `trc_scf_run` releases
       !! its own continuum at the end of a run, the same as its pair list
