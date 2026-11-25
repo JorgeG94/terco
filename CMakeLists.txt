@@ -90,14 +90,14 @@ set(TERCO_DF_LMAX_AUX
     "4"
     CACHE STRING "Density-fitting auxiliary angular momentum ceiling (gen_df.py --lmax-aux)")
 
-# The ceilings the generators and the kernels have been built and checked to:
-# h for the four-centre path, g for the density-fitting orbital shells. A larger
-# value generates kernels nothing has compiled or compared with a reference, so
-# it warns instead of stopping: it can be expected to work, but no number from
-# it has been verified.
+# The ceilings the generators and the kernels have been built and checked to.
+# TERCO_LMAX stops at h: a four-centre class of total angular momentum 4*LMAX
+# needs a Boys function of that order, and the tabulated one (BOYS_MMAX in
+# src/core/trc_boys.F90) ends at 20, so a higher ceiling cannot give right
+# numbers. The density-fitting orbital ceiling only warns above g: the kernels
+# are expected to work, but nothing past g has been compared with a reference.
 if(TERCO_LMAX GREATER 5)
-  message(WARNING "TERCO_LMAX=${TERCO_LMAX}: the four-centre path is built and checked through 5 (h); "
-                  "a higher ceiling is unverified")
+  message(FATAL_ERROR "TERCO_LMAX=${TERCO_LMAX}: LMAX>5 is not currently supported, please open an issue")
 endif()
 if(NOT "${TERCO_DF_LMAX}" STREQUAL "" AND TERCO_DF_LMAX GREATER 4)
   message(WARNING "TERCO_DF_LMAX=${TERCO_DF_LMAX}: density fitting is built and checked through 4 (g) "
