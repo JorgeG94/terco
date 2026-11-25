@@ -187,7 +187,10 @@ contains
                   new_unittest("water, Stratmann/none", test_water_stratmann), &
                   new_unittest("formamide, Becke/Treutler", test_formamide_becke), &
                   new_unittest("formamide, Stratmann/none", test_formamide_stratmann), &
-                  new_unittest("w5, Becke/Treutler, level 1 (cell screening)", test_w5_large) &
+                  new_unittest("w5, Becke/Treutler, level 1 (cell screening)", test_w5_large), &
+                  new_unittest("gly10, Becke/Treutler, subsampled (rows go dead)", test_gly10_dense), &
+                  new_unittest("gly10, reversed atom order gives the same gradient", test_gly10_permuted), &
+                 new_unittest("formamide, points on another atom's nucleus (owner cell zero)", test_owner_dead) &
                   ]
    end subroutine collect_dft_partition_deriv_tests
 
@@ -218,6 +221,135 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call large_case('w5.xyz', 'w5, Becke/Treutler, level 1', error)
    end subroutine test_w5_large
+
+   subroutine subsampled_grid(xyzfile, stride, nat, at_z, r, grid, error)
+      !! Level-0 Becke/Treutler grid of a molecule with every `stride`-th point
+      !! kept: enough points to meet every kind of row, few enough for the
+      !! dense reference's (3, n_atoms, n_points) array.
+      character(*), intent(in) :: xyzfile
+      integer, intent(in) :: stride
+      integer, intent(out) :: nat
+      integer, allocatable, intent(out) :: at_z(:)
+      real(dp), allocatable, intent(out) :: r(:, :)
+      type(dft_grid_t), intent(out) :: grid
+      type(error_type), allocatable, intent(out) :: error
+      type(error_t) :: err
+      type(dft_grid_options_t) :: gopts
+      real(dp), allocatable :: c(:, :), qw(:)
+      integer, allocatable :: at(:)
+      integer :: k, m
+
+      call read_xyz(xyzfile, nat, at_z, r)
+      call dft_grid_build(r, at_z, grid, err, level=0, options=gopts)
+      call check(error, .not. err%has_error(), xyzfile//": "//err%get_message())
+      if (allocated(error)) return
+      m = (grid%n_points + stride - 1)/stride
+      allocate (c(3, m), qw(m), at(m))
+      do k = 1, m
+         c(:, k) = grid%coords(:, (k - 1)*stride + 1)
+         qw(k) = grid%quad_weights((k - 1)*stride + 1)
+         at(k) = grid%atom((k - 1)*stride + 1)
+      end do
+      call move_alloc(c, grid%coords)
+      call move_alloc(qw, grid%quad_weights)
+      call move_alloc(at, grid%atom)
+      grid%n_points = m
+   end subroutine subsampled_grid
+
+   subroutine test_gly10_dense(error)
+      !! 73 atoms: a point sees ~60 active atoms and most of their cells are
+      !! dead, so the nearest-first ordering of partition_grad_point decides
+      !! where each row stops. The contraction agrees with the dense
+      !! derivatives to contract_case's tolerance (round-off of a reordered
+      !! product; measured worst difference is printed).
+      type(error_type), allocatable, intent(out) :: error
+      integer :: nat
+      integer, allocatable :: at_z(:)
+      real(dp), allocatable :: r(:, :)
+      type(dft_grid_t) :: grid
+
+      call subsampled_grid('gly10.xyz', 40, nat, at_z, r, grid, error)
+      if (allocated(error)) return
+      call contract_case(grid, nat, r, at_z, PARTITION_BECKE, ADJUST_TREUTLER, 'gly10 subsampled', -1.0_dp, error)
+      call grid%destroy()
+   end subroutine test_gly10_dense
+
+   subroutine test_gly10_permuted(error)
+      !! The same molecule with its atoms in reverse order, the points'
+      !! owners renamed: a different discovery order of every active list, so a
+      !! bookkeeping slip in the ordering (a position swapped in only one of
+      !! `active`/`ract`) changes the gradient. An owner displaced from
+      !! position 1 gives the same wrong answer in both orders: the dense
+      !! comparisons catch that one.
+      type(error_type), allocatable, intent(out) :: error
+      integer :: nat, i, k
+      integer, allocatable :: at_z(:), z2(:), own2(:)
+      real(dp), allocatable :: r(:, :), r2(:, :), coef(:), g1(:, :), g2(:, :)
+      type(dft_grid_t) :: grid
+      type(error_t) :: err
+      type(dft_partition_options_t) :: popts
+      real(dp) :: worst, scale
+
+      call subsampled_grid('gly10.xyz', 40, nat, at_z, r, grid, error)
+      if (allocated(error)) return
+      allocate (z2(nat), r2(3, nat), own2(grid%n_points), coef(grid%n_points), g1(3, nat), g2(3, nat))
+      do i = 1, nat
+         z2(nat + 1 - i) = at_z(i)
+         r2(:, nat + 1 - i) = r(:, i)
+      end do
+      do k = 1, grid%n_points
+         own2(k) = nat + 1 - grid%atom(k)
+         coef(k) = grid%quad_weights(k)*(1.0_dp + 0.3_dp*sin(real(k, dp)))
+      end do
+      g1 = 0.0_dp
+      g2 = 0.0_dp
+      call dft_partition_becke_grad_contract(grid%coords, r, at_z, grid%atom, coef, popts, g1, err)
+      call check(error, .not. err%has_error(), "gly10 contract: "//err%get_message())
+      if (.not. allocated(error)) then
+         call dft_partition_becke_grad_contract(grid%coords, r2, z2, own2, coef, popts, g2, err)
+         call check(error, .not. err%has_error(), "gly10 reversed contract: "//err%get_message())
+      end if
+      if (.not. allocated(error)) then
+         worst = 0.0_dp
+         do i = 1, nat
+            worst = max(worst, maxval(abs(g1(:, i) - g2(:, nat + 1 - i))))
+         end do
+         scale = max(1.0_dp, maxval(abs(g1)))
+         call check(error, worst <= 1.0e-13_dp*scale .and. maxval(abs(g1)) /= 0.0_dp, &
+                    "reversed atom order: worst|g - g_perm| = "//to_string(worst, "es10.2"))
+      end if
+      call grid%destroy()
+   end subroutine test_gly10_permuted
+
+   subroutine test_owner_dead(error)
+      !! Every fifth point moved onto the nucleus of an atom that does not own
+      !! it: unscreened, the owner's cell there is exactly zero, the path on
+      !! which partition_grad_point stops after the first row. Those points
+      !! add nothing, and the rows of scratch they used must be left clean for
+      !! the points of later chunks (the budget in contract_case forces many).
+      type(error_type), allocatable, intent(out) :: error
+      integer :: nat, k
+      integer, allocatable :: at_z(:)
+      real(dp), allocatable :: r(:, :)
+      type(dft_grid_t) :: grid
+      type(error_t) :: err
+      type(dft_grid_options_t) :: gopts
+
+      call read_xyz('formamide.xyz', nat, at_z, r)
+      gopts%partition%scheme = PARTITION_BECKE
+      gopts%partition%adjust = ADJUST_TREUTLER
+      call dft_grid_build(r, at_z, grid, err, level=1, options=gopts)
+      call check(error, .not. err%has_error(), "owner dead: "//err%get_message())
+      if (allocated(error)) return
+      do k = 5, grid%n_points, 5
+         grid%coords(:, k) = r(:, mod(grid%atom(k), nat) + 1)
+      end do
+      call contract_case(grid, nat, r, at_z, PARTITION_BECKE, ADJUST_TREUTLER, 'owner dead, unscreened', 2.0_dp, error)
+      if (.not. allocated(error)) then
+         call contract_case(grid, nat, r, at_z, PARTITION_BECKE, ADJUST_TREUTLER, 'owner dead, screened', -1.0_dp, error)
+      end if
+      call grid%destroy()
+   end subroutine test_owner_dead
 
    subroutine one_case(xyzfile, scheme, adjust, label, error)
       character(*), intent(in) :: xyzfile, label

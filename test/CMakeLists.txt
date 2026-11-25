@@ -886,6 +886,48 @@ set_tests_properties(
 set_tests_properties(terco/check_rys_grad_fd_ccpvtz PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 #
+# The MD Coulomb gradient (eri%gradient with j_engine = TRC_J_ENGINE_MDJ, trc_mdj
+# `gradient`) against terco's own Rys gradient for the same quantity, RHF and
+# UHF, dense and banded densities, the full gradient for HF, a pure functional,
+# a global and a range-separated hybrid, translational invariance, rotation and
+# a finite difference of the J energy. 6-31G* (segmented, d on Cl), cc-pVDZ
+# (general contraction) and cc-pVDZ split into primitives, three molecules.
+#
+foreach(_case 631gs:basis_sets/6-31gs.json ccpvdz:basis_sets/cc-pvdz.json
+              ccpvdz_split:basis_sets/cc-pvdz.json,split)
+  string(REGEX REPLACE ":.*" "" _tag "${_case}")
+  string(REGEX REPLACE "^[^:]*:" "" _args "${_case}")
+  string(REPLACE "," ";" _args "${_args}")
+  terco_add_check(check_mdj_grad_${_tag} check_mdj_grad.F90 NEEDS_BASIS ARGS ${_args})
+  target_link_libraries(check_mdj_grad_${_tag} PRIVATE test-drive::test-drive)
+  set_target_properties(check_mdj_grad_${_tag} PROPERTIES Fortran_MODULE_DIRECTORY
+                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_mdj_grad_${_tag})
+endforeach()
+# cc-pVTZ reaches f: SKIPs below TERCO_LMAX=3 (as check_rys_grad_fd_ccpvtz).
+terco_add_check(check_mdj_grad_ccpvtz check_mdj_grad.F90 NEEDS_BASIS ARGS basis_sets/cc-pvtz.json)
+target_link_libraries(check_mdj_grad_ccpvtz PRIVATE test-drive::test-drive)
+set_target_properties(check_mdj_grad_ccpvtz PROPERTIES Fortran_MODULE_DIRECTORY
+                      ${CMAKE_CURRENT_BINARY_DIR}/mod_check_mdj_grad_ccpvtz)
+set_tests_properties(terco/check_mdj_grad_ccpvtz PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
+#
+# The density screen of the two-electron gradient: only the density blocks of
+# the terms a launch has (Coulomb when jfac /= 0, exchange when kfac /= 0, a pair
+# table's weights likewise) are counted. Fused launches bit for bit the old
+# six-block screen; exchange-only and Coulomb-only launches keep fewer quartets
+# and stay within the dropped quartets' bound of the unscreened gradient; pair
+# tables with no Coulomb or no exchange weight; the MD Coulomb switch's full
+# gradients against the fused ones; the exchange tiles of the MD route's
+# exchange-only pass (same survivors, smaller plan, RHF and UHF, on the head of
+# gly40). Glycine tripeptide, STO-3G.
+#
+terco_add_check(check_grad_screen check_grad_screen.F90 NEEDS_BASIS
+                ARGS basis_sets/sto-3g.json)
+target_link_libraries(check_grad_screen PRIVATE test-drive::test-drive)
+set_tests_properties(terco/check_grad_screen PROPERTIES
+  ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TRC_RYS_CLASSES=none")
+
+#
 # eri%gradient_pairs (one gradient per column from a pool of densities and a
 # pair table, one sweep over the integral derivatives) against eri%gradient,
 # split densities, single-column calls and, for an antisymmetric density,

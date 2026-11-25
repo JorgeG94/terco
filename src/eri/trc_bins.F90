@@ -176,6 +176,7 @@ module trc_bins
       procedure :: build         => bins_plan_build
       procedure :: build_skeleton => bins_plan_build_skeleton
       procedure :: sort_by_class => bins_plan_sort_by_class
+      procedure :: canonicalise  => bins_plan_canonicalise
       procedure :: class_key     => bins_plan_class_key
       procedure :: release       => bins_plan_release
    end type trc_bin_plan_t
@@ -1440,6 +1441,36 @@ contains
          end if
       end do
    end subroutine bins_plan_sort_by_class
+
+   subroutine bins_plan_canonicalise(this)
+      !! Write every rectangle segment angular-momentum canonically, after the
+      !! fact: swap its bra and ket descriptors when (lc, ld) > (la, lb), as
+      !! bins_plan_emit's `canon` does while it writes a segment. For a plan
+      !! built by a planner that does not take `canon` (trc_bin_tiles). The
+      !! quartet set and the work count are unchanged, a triangle is left
+      !! alone, and the weight and mask are symmetric in the two sides.
+      class(trc_bin_plan_t), intent(inout) :: this
+      integer :: k
+
+      do k = 1, this%nseg
+         if (this%sD(k)) cycle
+         if (this%sLC(k)*(LMAX + 1) + this%sLD(k) <= this%sLA(k)*(LMAX + 1) + this%sLB(k)) cycle
+         call swap_int(this%sA(k), this%sNB(k))
+         call swap_int(this%sOA(k), this%sOB(k))
+         call swap_int(this%sPA(k), this%sPB(k))
+         call swap_int(this%sSA(k), this%sSB(k))
+         call swap_int(this%sLA(k), this%sLC(k))
+         call swap_int(this%sLB(k), this%sLD(k))
+      end do
+   end subroutine bins_plan_canonicalise
+
+   pure subroutine swap_int(x, y)
+      integer, intent(inout) :: x, y
+      integer :: t
+      t = x
+      x = y
+      y = t
+   end subroutine swap_int
 
    pure integer function bins_plan_class_key(this, seg, radix) result(res)
       !! Segment `seg`'s class key at this radix (see sort_by_class).

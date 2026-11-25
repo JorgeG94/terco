@@ -72,7 +72,10 @@ module trc_eri_data
       real(dp), allocatable :: qbin(:)
       !! (nbin) largest Schwarz bound of each bin
       real(dp), allocatable :: db(:, :)
-      !! (nblk, nblk) block maxima of the density bound, this build
+      !! (nblk, nblk) block maxima of the density bound, this build: the plain
+      !! maxima after a Fock `bin_tiles_reach`, db^2(1+1e-9)/kmarg after a
+      !! gradient one (with `kmarg`). Every reader calls `bin_tiles_reach`
+      !! first.
       integer, allocatable :: rlo(:, :), rhi(:, :)
       !! (0:levels, ntile) each tile's reach at each level, this build;
       !! rlo > rhi is empty
@@ -184,6 +187,22 @@ module trc_eri_data
       !! bra side are launched, weighted by their orbit size, so the result
       !! is G_skel and must be symmetrized. Needs the
       !! bins' orbits; the density must be invariant under the group.
+      logical :: grad_all_blocks = .false.
+      !! TEST HOOK (eri%grad_screen_all_blocks), not part of the API, may be
+      !! removed: the gradient's screen counts all six density blocks
+      !! whatever terms the launch has (the screen before it learned to drop
+      !! the blocks of an absent term). Never set outside a check.
+      logical :: grad_k_product = .false.
+      !! The launch is the exchange-only Rys pass behind the MD Coulomb
+      !! gradient (set by eri_gradient when it took the MD route): the only
+      !! launch that screens on the product of two exchange blocks (trc_grad's
+      !! EXCHANGE-ONLY paragraph). Every other launch keeps the single-block
+      !! test, whatever its jfac.
+      logical :: grad_k_single = .false.
+      !! TEST HOOK (eri%grad_screen_k_single), not part of the API, may be
+      !! removed: an exchange-only gradient launch keeps the single-block
+      !! exchange test instead of the product test (trc_grad's EXCHANGE-ONLY
+      !! paragraph). Never set outside a check.
       logical :: count_kept = .false.
       !! Count the quartets that survive both screens, into `nkept`, and
       !! build nothing: binkernel_fock_bins returns after the count.

@@ -139,6 +139,7 @@ V100, one repeat. The sizes below were measured on a Tesla V100-DGXS-32GB
 | `df_w6_atz` | water hexamer, aug-cc-pVTZ `--df`, needs lmax3 | DF-JK with diffuse functions | 3 s |
 | `pcm` | glycine chain x20, def2-SVP IEF-PCM (quick) | PCM setup and per iteration | 19 s |
 | `grad` | glycine chain x50, def2-SVP `--grad` (quick) | gradient kernels | 62 s |
+| `grad_dft` | glycine chain x50, PBE / def2-SVP `--grad` | XC gradient with the Becke weight derivatives, MD Coulomb gradient | 86 s |
 | `rimp2` | glycine chain x20, cc-pVDZ / cc-pVDZ-RIFIT | RI-MP2 steps | 82 s |
 | `dh` | glycine chain x20, B2PLYP / cc-pVDZ | double hybrid: four-centre SCF with XC, RI-MP2 for the PT2 part | 87 s |
 | `ecp` | 24 CH3I, def2-SVP, iodine ECP | ECP matrix and SCF with an ECP | 46 s |
@@ -251,7 +252,8 @@ V100-DGXS-32GB, NVHPC 26.5, 5 repeats after one discarded warm-up run,
 | `pcm` | `pcm.per_iteration` | 0.2746 | 0.10 % |
 | `pcm` | `pcm.setup` | 2.855 | 0.79 % |
 | `pcm` | `scf.fock_mean_after_first` | 0.5915 | 0.09 % |
-| `grad` | `gradient.total` | 13.9 | 0.35 % |
+| `grad` | `gradient.total` | 4.887 | 0.28 % |
+| `grad_dft` | `gradient.total` | 9.686 | 0.24 % |
 | `rimp2` | `rimp2.step.cholesky` | 0.01836 | 4.32 % |
 | `rimp2` | `rimp2.step.k_i_gemms` | 58.56 | 0.11 % |
 | `rimp2` | `rimp2.step.mu_nu_p` | 1.584 | 0.38 % |
