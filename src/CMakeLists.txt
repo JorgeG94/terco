@@ -125,6 +125,13 @@ if(_regen)
   set(_h_sph_flag "")
   if(TERCO_LMAX GREATER 4)
     set(_h_build ON)
+  endif()
+  # The tables also reach l = 5 when the AUXILIARY ceiling does (an RIFIT set
+  # with h shells, e.g. aug-cc-pVQZ-RIFIT on Be-Ne and Mg): the fitting reads
+  # an auxiliary shell's components and spherical transform at its own l. That
+  # alone does not need the h four-centre build, so TERCO_LMAX=4 with
+  # TERCO_DF_LMAX_AUX=5 extends the tables without the 11-root Schwarz kernel.
+  if(TERCO_LMAX GREATER 4 OR TERCO_DF_LMAX_AUX GREATER 4)
     set(_h_ceil_flag "--ceil" "5")
     set(_h_sph_flag "--lmax" "5")
   endif()
