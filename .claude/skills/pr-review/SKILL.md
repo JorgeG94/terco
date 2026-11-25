@@ -1,6 +1,6 @@
 ---
 name: pr-review
-description: Review a terco pull request — correctness of integrals and SCF first, then the do concurrent / OpenACC rules, generated code, tests (including stale pyscf reference hashes), performance claims, kinds from pic_types, pic reuse over local copies, overlapping PRs and merges across refactors, fortitude lint, and FORD-only doc comments (no Doxygen). Use when asked to review a PR or a diff in this repository.
+description: Review a terco pull request — correctness of integrals and SCF first, then the GPU strategy (is it a GPU port, not a host port) and the do concurrent / OpenACC rules, generated code, tests (including stale pyscf reference hashes), performance claims, kinds from pic_types, pic reuse over local copies, overlapping PRs and merges across refactors, fortitude lint, and FORD-only doc comments (no Doxygen). Use when asked to review a PR or a diff in this repository.
 ---
 
 # Reviewing a terco pull request
@@ -23,7 +23,8 @@ standard Fortran.
    praise. If there are none, say so in one line. Always also run the
    documentation check in section 7, the kinds check in section 8 and the
    pic-reuse check in section 10: all three are must-fix whatever else the
-   PR contains.
+   PR contains. For a PR that adds compute code, also answer the GPU
+   strategy questions at the end of section 2 before the details.
 3. Post line-specific findings as inline comments and one summary comment.
    Every finding states the concrete failure: which input, what goes wrong.
    Don't post a finding you can't tie to a line and a consequence.
@@ -116,6 +117,46 @@ standard Fortran.
 - **The host build must stay correct.** CI has no GPU. It builds for the host,
   where `do concurrent` is a serial loop and OpenACC directives are inert, and
   runs the whole suite. Code that is correct only on the device is a bug.
+
+### The GPU strategy: a host port is not a GPU port
+
+The rules above say how a kernel is written. Judge first whether the PR has a
+GPU strategy at all: a correct routine that runs as serial host code, or as a
+host loop that launches tiny device work, defeats what terco is for. Read the
+design before the details and ask:
+
+- **What runs where?** The PR description should say which parts run on the
+  device (the expensive loops) and which on the host (setup, small
+  reductions), and why. A compute-heavy routine (integrals or their
+  derivatives, contractions, per-shell-quartet, per-grid-point or
+  O(N^3)-and-up loops) with no `do concurrent` is a finding unless the PR shows
+  by measurement that it is negligible. "Host only for now" on a hot path is
+  should-fix at least, and must-fix if the feature is advertised as
+  GPU-accelerated or the change makes a path that ran on the device serial.
+  The PR should say plainly that it is not a GPU port, and name the follow-up.
+- **Is the work decomposed for a device?** One `do concurrent` over all the
+  independent work (shell pairs or quartets, grid points, batches) with a
+  flattened index, fixed trip counts and no data-dependent recursion, not a
+  launch per item or a serial outer loop around a small kernel. A line-for-line
+  port of a CPU algorithm (libcint, libfint or PySCF C: recursive, per-primitive
+  scalar loops, task lists built serially, one big dense scratch per centre) is
+  usually the wrong device algorithm. Ask what the work item is.
+- **Does data stay on the device?** No `enter data`/`update` round trip of an
+  O(N^2) array per iteration, per atom or per call, and no host scratch that
+  scales with the system and is copied over each time. Ask for the footprint
+  at a large case, as a peak and per centre, not at the test size.
+- **Does it reuse a device path that exists?** Before a new kernel, check
+  whether the Rys/HGP bins, the MD J/K engine, the DF kernels or a GEMM through
+  `trc_linalg` can express the work, and whether a contraction is a GEMM.
+  Don't copy an existing kernel.
+- **Is there evidence?** A GPU timing on a large case against the route it
+  replaces or the host (nsys or ncu for a per-stage claim), with the energies
+  or gradient unchanged. Ask for it when the PR only shows the host build
+  passing.
+
+Say what to move to the device first, from a profile if there is one (the
+largest stage), and list a missing device path as a finding with that stage,
+not as a style note.
 
 ## 3. Generated code
 

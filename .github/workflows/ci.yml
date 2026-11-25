@@ -753,13 +753,18 @@ jobs:
           python3 -m pytest -q tools/test_archcheck.py
           python3 tools/archcheck.py
 
-  no-system-clock:
-    name: no system_clock (time with pic_timer)
+  style:
+    name: style (system_clock, MPI, Doxygen, kinds, console output)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - name: check_system_clock
-        run: python3 tools/check_system_clock.py src app test
+      # The AGENTS.md rules a grep can enforce: time with pic_timer, MPI through
+      # pic-mpi, FORD docs only, pic_types kinds, output through pic_logger.
+      - name: check_style
+        run: |
+          pip install pytest
+          python3 -m pytest -q tools/test_check_style.py
+          python3 tools/check_style.py src app test
