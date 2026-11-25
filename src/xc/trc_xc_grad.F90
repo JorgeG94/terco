@@ -294,7 +294,7 @@ module trc_xc_grad
       !! See this module's header, GRID RESPONSE. OFF recovers the
       !! Pulay-only gradient (what check_xc_grad_fixedgrid_fd isolates, and
       !! what pyscf's own `grid_response=False` default compares against).
-      type(dft_partition_options_t) :: partition
+      type(dft_partition_options_t) :: partition = dft_partition_options_t()
       !! The partition the grid was built with (`dft_grid_t%partition`),
       !! which the grid response differentiates. `xc_grad_add` sets it from
       !! the grid it builds; a caller of `xc_grad_add_on_grid` from its own.

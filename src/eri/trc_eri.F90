@@ -32,7 +32,7 @@ module trc_eri
    use trc_screen, only: screen_schwarz_bounds_rys, screen_pair_index
    use trc_bins, only: pair_bins_t, bins_build_binned_pairs, bins_build_pair_quartets, bins_pair_image_source, &
                        bins_rep_weights, trc_bin_shells_t, trc_bin_symmetry_t
-   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t
+   use trc_eri_data, only: trc_shell_pairs_t, trc_pair_quartets_t, trc_bin_launch_t, trc_bin_tiles_t, trc_bin_orbits_t
    use trc_error, only: error_t, ERROR_VALIDATION
    use trc_sym_geom, only: trc_sym_geom_t
    use trc_sym_ao, only: trc_sym_ao_t, sym_ao_build
@@ -3630,9 +3630,11 @@ contains
          !$acc                  this%pairs%ra, this%pairs%rb, this%pairs%c)
          this%on_device = .false.
       end if
-      ! Default initialisation frees every allocatable component.
+      ! Assigning a fresh object frees every allocatable component. The two
+      ! derived-type components are named because a component with no
+      ! initialiser of its own may not be omitted (Fortran 2023 C7104).
       this%pairs = trc_shell_pairs_t()
-      this%quartets = trc_pair_quartets_t()
+      this%quartets = trc_pair_quartets_t(tiles=trc_bin_tiles_t(), orb=trc_bin_orbits_t())
       if (allocated(this%dsh))    deallocate (this%dsh)
       call decontract_release(this%dec)
       call this%pb%release()
