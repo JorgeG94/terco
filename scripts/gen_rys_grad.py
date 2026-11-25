@@ -1228,19 +1228,57 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
 
     density_return = "if (qcut*dscr <= thresh) return\n"
     density_end = head.index(density_return, density_start) + len(density_return)
-    # The Fock kernel's screen drops the blocks of a zero factor (jfac,
-    # kfac); a gradient has no such factors and contracts all six blocks,
-    # so it keeps the six-block test instead of the spliced one.
-    density_block = """         ! Density-weighted screen.  What actually enters the Fock matrix is
-         ! Q_ab Q_cd times a density block, so a quartet whose integrals are
-         ! above threshold still contributes nothing if every density block it
-         ! multiplies is negligible.  The J terms carry a factor 4 from the
-         ! Coulomb degeneracy, the K terms 1.  For a converged density on an
-         ! extended molecule this is where most of the screening comes from --
-         ! with a flat model density it correctly fires on nothing.
-         if (qcut*max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl), &
-                      dsh(si, sk), dsh(si, sl), &
-                      dsh(sj, sk), dsh(sj, sl)) <= thresh) return
+    # Like the Fock kernels' screen (trc_pc_k0000's "Density-weighted
+    # screen"), count the density blocks of a term only when the launch has
+    # that term: cnt_j is jfac /= 0 (or, for a pair table, some pair has a
+    # nonzero Coulomb weight), cnt_k is the same for the exchange.  Both are
+    # uniform over a launch, so the branches never diverge within a warp.
+    # With both set this is the old six-block test, bit for bit (every dsh is
+    # >= 0, so the max against the 0 it starts from changes nothing), so the
+    # default launches with both terms (HF, global hybrids, double hybrids,
+    # hybrid TDDFT pair tables) are arithmetically unchanged.  The launches
+    # with ONE term change with no switch involved: a pure functional's
+    # gradient (Coulomb only), the long-range pass of a range-separated hybrid
+    # (exchange only), a full-range pass whose exchange factor is zero, a
+    # pure-functional TDDFT pair table.  They screen on that term's blocks
+    # alone, so their gradients move at screening level; the criterion for the
+    # terms present is the same single-block maximum, so those launches
+    # drop the quartets that test already allowed.
+    #
+    # The exchange-only Rys pass behind the MD Coulomb gradient (and only
+    # it) takes a tighter test, `kmarg` > 0 (the host sets it from the launch
+    # flag grad_k_product; see trc_grad's paragraph on that pass for the
+    # bound, and GRAD_K_PRODUCT_MARGIN for the margin and its measurement):
+    # the exchange gradient's density factor is a PRODUCT of two blocks,
+    # D_ac D_bd + D_ad D_bc, so the test is on max(D_ac D_bd, D_ad D_bc)
+    # against thresh*kmarg instead of on the largest single block.  A launch
+    # with kmarg = 0 (fused, Coulomb only, pair tables, every other exchange-only launch) runs the old test with
+    # thr_eff = thresh, bit for bit.
+    density_block = """         ! Density-weighted screen.  What actually enters the gradient is
+         ! Q_ab Q_cd times Gamma, and Gamma is made of the Coulomb product
+         ! D_ab D_cd (only when the launch has a Coulomb term, cnt_j) and the
+         ! exchange products D_ac D_bd, D_ad D_bc (only when it has an
+         ! exchange term, cnt_k).  A launch with jfac = 0 has no D_ab D_cd in
+         ! its Gamma at all, so only the blocks of the terms present can make
+         ! a quartet matter; counting the Coulomb blocks there would keep
+         ! every quartet whose J blocks are large for an integral that is
+         ! multiplied by none of them (the MD Coulomb gradient's exchange-only
+         ! Rys pass).  The J terms carry a factor 4 from the Coulomb
+         ! degeneracy, the K terms 1; for the terms present the density factor
+         ! is the same single-block maximum as ever.
+         ! The MD route's exchange-only pass (kmarg > 0, set by the host) bounds Gamma
+         ! by the product of two blocks instead, and drops against the
+         ! threshold times the calibrated margin kmarg.
+         if (kmarg > 0.0_dp) then
+            dmax = max(dsh(si, sk)*dsh(sj, sl), dsh(si, sl)*dsh(sj, sk))
+            thr_eff = thresh*kmarg
+         else
+            dmax = 0.0_dp
+            if (cnt_j) dmax = max(4.0_dp*dsh(si, sj), 4.0_dp*dsh(sk, sl))
+            if (cnt_k) dmax = max(dmax, dsh(si, sk), dsh(si, sl), dsh(sj, sk), dsh(sj, sl))
+            thr_eff = thresh
+         end if
+         if (qcut*dmax <= thr_eff) return
 """
 
     # same_ab/same_cd/same_pair, slotab/slotcd/nab/ncd, abx..cdz, the
@@ -1301,7 +1339,7 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
    ! the technique and the measurement it is based on.
    !
    subroutine rysg{tag}_screen(lo, hi, w0, w1, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                             npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, sh_at, &
+                             npair, sp_i, sp_j, sp_q, thresh, cnt_j, cnt_k, kmarg, dsh, nbas, sh_at, &
                              out_seg, out_iab, out_icd, nmax, ctr)
       !! Screens work items [w0, w1], which must lie inside segments
       !! [lo, hi] (the decode's segment search runs over [lo, hi]); the
@@ -1314,6 +1352,12 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
+      logical,  intent(in)    :: cnt_j, cnt_k
+      !! Which terms' density blocks the density screen counts (launch-uniform).
+      real(dp), intent(in)    :: kmarg
+      !! > 0 only for an exchange-only launch: the product test's margin
+      !! (trc_grad's GRAD_K_PRODUCT_MARGIN, scaled per density count); 0 keeps
+      !! the single-block test.
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_at(nbas)
       integer,  intent(inout) :: out_seg(nmax), out_iab(nmax), out_icd(nmax)
@@ -1331,13 +1375,13 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
          call rysgi{tag}_screen_chunk(w0 + (c - 1)*RUNLEN, &
                                min(int(RUNLEN, int64), nr - (c - 1)*RUNLEN), &
                                lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                               npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, sh_at, &
+                               npair, sp_i, sp_j, sp_q, thresh, cnt_j, cnt_k, kmarg, dsh, nbas, sh_at, &
                                out_seg, out_iab, out_icd, nmax, ctr)
       end do
    end subroutine rysg{tag}_screen
 
    pure subroutine rysgi{tag}_screen_chunk(gt0, clen, lo, hi, nseg, sOff, sA, sNB, sOA, sOB, sPA, sPB, sD, &
-                             npair, sp_i, sp_j, sp_q, thresh, dsh, nbas, sh_at, &
+                             npair, sp_i, sp_j, sp_q, thresh, cnt_j, cnt_k, kmarg, dsh, nbas, sh_at, &
                              out_seg, out_iab, out_icd, nmax, ctr)
       !$acc routine seq
       integer(int64), intent(in) :: gt0, clen
@@ -1348,6 +1392,12 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
       logical,  intent(in)    :: sD(nseg)
       integer,  intent(in)    :: sp_i(npair), sp_j(npair)
       real(dp), intent(in)    :: sp_q(npair), thresh
+      logical,  intent(in)    :: cnt_j, cnt_k
+      !! Which terms' density blocks the density screen counts (launch-uniform).
+      real(dp), intent(in)    :: kmarg
+      !! > 0 only for an exchange-only launch: the product test's margin
+      !! (trc_grad's GRAD_K_PRODUCT_MARGIN, scaled per density count); 0 keeps
+      !! the single-block test.
       real(dp), intent(in)    :: dsh(nbas, nbas)
       integer,  intent(in)    :: sh_at(nbas)
       integer,  intent(inout) :: out_seg(nmax), out_iab(nmax), out_icd(nmax)
@@ -1355,7 +1405,7 @@ def screen_and_compact_text(tag, head, middle, comps=None, chunk_inside=None, rt
       integer, parameter :: RUNLEN = 32
       integer :: p, q, mid, seg, t, iab, icd, si, sj, sk, sl
       integer(int64) :: nsa, u, kx, gt, slot0
-      real(dp) :: qcut
+      real(dp) :: qcut, dmax, thr_eff
       integer :: loc_seg(RUNLEN), loc_iab(RUNLEN), loc_icd(RUNLEN)
       integer :: nlocal, j
 

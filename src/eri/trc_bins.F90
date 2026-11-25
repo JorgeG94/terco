@@ -36,6 +36,7 @@ module trc_bins
    public :: SMAX, bins_build_binned_pairs, pair_bins_t, bins_sort_by_weight
    public :: bins_build_pair_quartets, bins_rep_weights, bins_pair_image_source
    public :: bins_skel_cut_first, bins_plan_emit, bins_plan_allocate, bins_any_masked
+   public :: SKEL_SWAP_LMAX
    ! bin_key/bin_dmax stay private: nothing outside this module uses them.
 
    !
@@ -51,7 +52,8 @@ module trc_bins
    !! The skeleton plan may launch a bin pair with its bra and ket swapped
    !! (the bra carrying the representatives is the side with fewer quartets)
    !! only up to this angular momentum: the kernels of every ordering exist
-   !! up to f, and for g only the canonical one the bins form (src/CMakeLists.txt).
+   !! up to f, and for g only the canonical one (src/CMakeLists.txt), which
+   !! bins_plan_emit therefore writes whatever order the walk had.
    integer, parameter :: BIN_G_MASKED = 2
    !! Bit of `bin_g` (and of bin_key's `g`): every pair of the bin has both
    !! shells in the dead plane of parity skipping,
@@ -176,6 +178,7 @@ module trc_bins
       procedure :: build         => bins_plan_build
       procedure :: build_skeleton => bins_plan_build_skeleton
       procedure :: sort_by_class => bins_plan_sort_by_class
+      procedure :: canonicalise  => bins_plan_canonicalise
       procedure :: class_key     => bins_plan_class_key
       procedure :: release       => bins_plan_release
    end type trc_bin_plan_t
@@ -1345,7 +1348,8 @@ contains
             ! bin's extra chunks PAST every original index while keeping their
             ! parent's (la, lb), so a chunk of a low-l bin can be the bra
             ! against a high-l ket. The energy path has kernels for both
-            ! orderings (the bra<ket Rys ones) and keeps the walk order; the
+            ! orderings up to f (the bra<ket Rys ones) and keeps the walk order
+            ! there (bins_plan_emit reorders a pair with a g shell itself); the
             ! gradient's filter builds no class with (lc, ld) > (la, lb) above
             ! d, and grad_classes would `error stop` on one (src/CMakeLists.txt's
             ! _rys_grad_classes), so it asks for the canonical order.
@@ -1440,6 +1444,36 @@ contains
          end if
       end do
    end subroutine bins_plan_sort_by_class
+
+   subroutine bins_plan_canonicalise(this)
+      !! Write every rectangle segment angular-momentum canonically, after the
+      !! fact: swap its bra and ket descriptors when (lc, ld) > (la, lb), as
+      !! bins_plan_emit's `canon` does while it writes a segment. For a plan
+      !! built by a planner that does not take `canon` (trc_bin_tiles). The
+      !! quartet set and the work count are unchanged, a triangle is left
+      !! alone, and the weight and mask are symmetric in the two sides.
+      class(trc_bin_plan_t), intent(inout) :: this
+      integer :: k
+
+      do k = 1, this%nseg
+         if (this%sD(k)) cycle
+         if (this%sLC(k)*(LMAX + 1) + this%sLD(k) <= this%sLA(k)*(LMAX + 1) + this%sLB(k)) cycle
+         call swap_int(this%sA(k), this%sNB(k))
+         call swap_int(this%sOA(k), this%sOB(k))
+         call swap_int(this%sPA(k), this%sPB(k))
+         call swap_int(this%sSA(k), this%sSB(k))
+         call swap_int(this%sLA(k), this%sLC(k))
+         call swap_int(this%sLB(k), this%sLD(k))
+      end do
+   end subroutine bins_plan_canonicalise
+
+   pure subroutine swap_int(x, y)
+      integer, intent(inout) :: x, y
+      integer :: t
+      t = x
+      x = y
+      y = t
+   end subroutine swap_int
 
    pure integer function bins_plan_class_key(this, seg, radix) result(res)
       !! Segment `seg`'s class key at this radix (see sort_by_class).
@@ -1643,7 +1677,12 @@ contains
       jb_o = seg%ob
       jb_n = seg%nb
       ! A triangle is one bin against itself, so there is nothing to order.
-      if (canon .and. .not. diag) then
+      ! Above SKEL_SWAP_LMAX the order is not the caller's to choose: only
+      ! the canonical class has a kernel (Rys or MD), and a chunk that
+      ! split_large_bins appended past the original indices can put a low-l
+      ! bin on the bra against a g ket (353 atoms in cc-pVQZ did; a class
+      ! with no kernel is an `error stop` in rys_select_route).
+      if ((canon .or. max(b%bin_la(seg%ka), b%bin_la(seg%kb)) > SKEL_SWAP_LMAX) .and. .not. diag) then
          if (ab_key(b, seg%kb) > ab_key(b, seg%ka)) then
             ja = seg%kb
             jb = seg%ka

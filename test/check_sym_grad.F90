@@ -76,7 +76,7 @@ module check_sym_grad_suite
    use trc_api, only: trc_basis_t, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
    use trc_bins, only: trc_bin_plan_t
-   use trc_eri, only: trc_eri_t
+   use trc_eri, only: trc_eri_t, TRC_J_ENGINE_BINS, TRC_J_ENGINE_MDJ
    use trc_pc_kernels, only: CLASS_RADIX
    use trc_rys_grad_kernels, only: rysg_has_class
    use trc_error, only: error_t
@@ -96,6 +96,16 @@ module check_sym_grad_suite
       !! "main", "quick" or "f", set from argv before run_testsuite.
 
    real(dp), parameter :: THRESH = 1.0e-10_dp
+   real(dp), parameter :: THRESH_MD = 1.0e-12_dp
+      !! The screening threshold of `test_md_full`, which compares a skeleton
+      !! gradient (fused Rys: the MD route has no skeleton form) with a full
+      !! one from the McMurchie-Davidson Coulomb gradient. Two engines agree
+      !! to their screening errors, not to rounding: at THRESH = 1e-10 the
+      !! difference is 8e-8 to 9e-7 on a random density (max|g| 170 to 830,
+      !! so 1e-9 relative against TOL_REL 1e-10, the fused Rys gradient's
+      !! error, 1.7e-7 on CHFCl2 Coulomb alone); at 1e-12 it is
+      !! 1e-13 to 3.3e-9 (benzene), inside TOL_REL, and at 1e-14 1e-13 to
+      !! 2.3e-11. The symmetry cases pin the engine instead (`setup_ctx`).
    real(dp), parameter :: TOL_REL = 1.0e-10_dp
       !! Allowed |sym(grad_skel) - grad_full| relative to
       !! max(1, |grad_full|_max). The design prototype measured 3.1e-15 (water
@@ -173,6 +183,7 @@ contains
                      new_unittest("D2h SF6", test_sf6), &
                      new_unittest("D6h benzene as D2h", test_benzene), &
                      new_unittest("the raw skeleton gradient is NOT a gradient", test_raw), &
+                     new_unittest("full MD Coulomb gradient vs skeleton fused gradient", test_md_full), &
                      new_unittest("production path: skeleton + projection vs C1", test_production), &
                      new_unittest("a DECLINED skeleton reuses the SCF's engine and still projects", test_declined), &
                      new_unittest("finite difference of the reconverged SCF energy", test_fd) &
@@ -180,7 +191,7 @@ contains
       end if
    end subroutine collect_sym_grad
 
-   subroutine setup_ctx(ctx, xyz, group, basis_json, auxl, sph, error)
+   subroutine setup_ctx(ctx, xyz, group, basis_json, auxl, sph, error, thr)
       !! ------------------------------------------------------------------ setup
       !! Detect the group, build the basis on its standard frame (from a JSON
       !! file, or the uncontracted l = 0..auxl set when auxl >= 0), the
@@ -191,10 +202,14 @@ contains
       integer, intent(in) :: auxl
       logical, intent(in) :: sph
       type(error_type), allocatable, intent(out) :: error
+      real(dp), intent(in), optional :: thr
+      !! The engine's screening threshold, THRESH when absent (not named
+      !! `thresh`: Fortran is case blind and that would hide the parameter).
       type(error_t) :: err
       real(dp), allocatable :: r(:, :), ident(:, :), zat(:), sh_e(:, :), sh_c(:, :), sh_r(:, :)
       integer, allocatable :: sh_l(:), sh_np(:)
       integer :: nat, i, nsh, maxnp
+      real(dp) :: th
 
       call read_xyz(trim(xyz)//".xyz", nat, ctx%elem, r)
       ctx%geom = sym_geom_detect(r, ctx%elem, err, basis_id=ctx%elem)
@@ -234,7 +249,14 @@ contains
       call check(error, .not. err%has_error(), "sym_scf prepare: "//err%get_message())
       if (allocated(error)) return
 
-      call ctx%eri%build(ctx%bas, THRESH, sym=ctx%geom)
+      th = THRESH
+      if (present(thr)) th = thr
+      call ctx%eri%build(ctx%bas, th, sym=ctx%geom)
+      ! This suite is about the symmetry reduction, not about engines: the
+      ! skeleton gradient is fused Rys (the MD route has none), so the full
+      ! one it is compared with is pinned to the same engine whatever the
+      ! default or TRC_MDJ_GRAD says. `test_md_full` mixes them on purpose.
+      ctx%eri%grad_j_engine = TRC_J_ENGINE_BINS
    end subroutine setup_ctx
 
    subroutine release_ctx(ctx)
@@ -726,6 +748,64 @@ contains
          end do
       end do
    end subroutine test_lmax3
+
+   subroutine md_full_case(xyz, group, basis_json, error)
+      !! The full gradient from the MD Coulomb engine (named, so the default
+      !! and TRC_MDJ_GRAD do not matter) against the projected skeleton
+      !! gradient, which is fused Rys: J+K, then J alone. THRESH_MD
+      !! explains why this runs at a tighter threshold than the rest.
+      character(len=*), intent(in) :: xyz, group, basis_json
+      type(error_type), allocatable, intent(out) :: error
+      type(ctx_t) :: ctx
+      real(dp), allocatable :: ds(:, :), dc(:, :), dw(:, :, :), gf(:, :), gs(:, :)
+      real(dp) :: e, gmax
+      integer(int64) :: nw_md
+      integer :: dev, ic, natm
+      character(len=4) :: tag
+      dev = trc_bind_device(0)
+      call setup_ctx(ctx, xyz, group, basis_json, -1, .false., error, THRESH_MD)
+      if (allocated(error)) return
+      natm = ctx%bas%natm
+      allocate (ds(ctx%ns, ctx%ns), dc(ctx%nc, ctx%nc), dw(ctx%nc, ctx%nc, 1), gf(3, natm), gs(3, natm))
+      call random_density(ctx, 7, 0.5_dp, ds)
+      call to_cart(ctx, ds, dc)
+      dw(:, :, 1) = dc
+      do ic = 1, 2
+         tag = merge("J+K ", "J   ", ic == 1)
+         ctx%eri%grad_j_engine = TRC_J_ENGINE_MDJ
+         call ctx%eri%gradient(ctx%bas, dw, gf, k_scale=merge(1.0_dp, 0.0_dp, ic == 1))
+         nw_md = ctx%eri%nwork
+         call ctx%eri%gradient(ctx%bas, dw, gs, k_scale=merge(1.0_dp, 0.0_dp, ic == 1), skeleton=.true.)
+         call check(error, ctx%eri%nwork > 0_int64, trim(xyz)//" "//trim(tag)// &
+                    ": the skeleton gradient did not run the fused Rys kernels")
+         if (.not. allocated(error)) then
+            ! With no exchange the MD route runs no Rys pass at all, so zero
+            ! work items prove the full gradient took it.
+            if (ic == 2) call check(error, nw_md == 0_int64, trim(xyz)// &
+                                    ": the full J-only gradient did not take the MD route")
+         end if
+         if (allocated(error)) exit
+         call sym_scf_grad_symmetrize(ctx%geom%group, ctx%geom%perm, gs)
+         gmax = maxval(abs(gf))
+         e = maxval(abs(gs - gf))
+         print "(a,a,a,a,a,es10.3,a,es10.3)", "  ", trim(xyz), " MD full vs skeleton fused ", trim(tag), &
+            ": max|g| ", gmax, "  sym err ", e
+         call check(error, e <= TOL_REL*max(1.0_dp, gmax), trim(xyz)//" "//trim(tag)// &
+                    ": projected skeleton (fused) gradient differs from the full MD one by "// &
+                    to_string(e, "es10.3")//" (max|g| "//to_string(gmax, "es10.3")//")")
+         if (allocated(error)) exit
+      end do
+      call release_ctx(ctx)
+   end subroutine md_full_case
+
+   subroutine test_md_full(error)
+      type(error_type), allocatable, intent(out) :: error
+      call md_full_case("water", "C2v", "basis_sets/cc-pvdz.json", error)
+      if (allocated(error)) return
+      call md_full_case("chfcl2", "Cs", "basis_sets/6-31gs.json", error)
+      if (allocated(error)) return
+      call md_full_case("b2h6_d2h", "D2h", "basis_sets/6-31gs.json", error)
+   end subroutine test_md_full
 
    subroutine test_raw(error)
       !! The raw skeleton gradient must be WRONG. Without this a test that

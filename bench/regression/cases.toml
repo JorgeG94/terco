@@ -162,6 +162,17 @@ quick = true
 # Measured on a V100 (one run): 62 s, the gradient 13.9 s of it.
 
 [[case]]
+name = "grad_dft"
+description = "glycine chain x50, PBE / def2-SVP, analytic gradient (grid-weight response)"
+geometry = "systems/gly50.xyz"
+args = ["-b", "def2-svp", "-f", "pbe", "--grad"]
+stages = ["gradient.total", "dft.grid", "dft.xc", "scf.wall", "total_wall"]
+# The XC gradient with the Becke weight derivatives is two thirds of this
+# gradient; the MD Coulomb gradient is most of the rest.
+judge = ["gradient.total"]
+# Measured on a V100 (one run): 86 s, the gradient 9.7 s of it.
+
+[[case]]
 name = "rimp2"
 description = "glycine chain x20, RI-MP2 / cc-pVDZ with cc-pVDZ-RIFIT"
 geometry = "systems/gly20.xyz"
