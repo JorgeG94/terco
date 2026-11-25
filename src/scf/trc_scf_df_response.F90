@@ -196,7 +196,7 @@ contains
             character(len=160) :: logline
             write (logline, "(a,f8.2,a,f8.2,a,l1)") "  df rotation: MO blocks need ", real(need, dp)/2.0_dp**30, &
                " GiB, free ", real(cache_budget(), dp)/2.0_dp**30, " GiB: MO path ", this%mo
-            call global_logger%performance(trim(logline))
+            call global_logger%info(trim(logline))
          end block
       end if
       if (.not. this%mo) then

@@ -43,7 +43,7 @@ module trc_eri
    use trc_binkernel, only: binkernel_fock_bins, binkernel_have_variants
    use trc_parity, only: parity_choose_axis, parity_axperm, parity_ao_perm, parity_mode_env, &
                          PARITY_OFF, PARITY_FORCE_FRAME
-   use trc_bin_tiles, only: bin_tiles_build
+   use trc_bin_tiles, only: bin_tiles_build, bin_tiles_env_off, bin_tiles_share_env
    use trc_grad, only: grad_bins, trc_grad_pair_t, trc_grad_pairtab_t, RYSG_PAIRS_NCB
    use trc_rys_grad_kernels, only: RYSG_LMAX
    use trc_mdj, only: trc_mdj_t
@@ -57,11 +57,15 @@ module trc_eri
    private
    public :: trc_eri_t, eri_lmax_refusal, eri_grad_lmax_refusal, trc_fock_options_t, trc_grad_pair_t
    public :: eri_lent_chunk_size
-   public :: eri_mdj_size_rule, TRC_J_ENGINE_AUTO, TRC_J_ENGINE_BINS, TRC_J_ENGINE_MDJ
+   public :: eri_mdj_size_rule, eri_mdj_grad_force_of, eri_mdj_grad_pays, MDJ_GRAD_MIN_NAO, &
+             TRC_J_ENGINE_AUTO, TRC_J_ENGINE_BINS, TRC_J_ENGINE_MDJ
 
    integer, parameter :: TRC_J_ENGINE_AUTO = 0
    integer, parameter :: TRC_J_ENGINE_BINS = 1
    integer, parameter :: TRC_J_ENGINE_MDJ = 2
+   integer, parameter :: MDJ_GRAD_MIN_NAO = 600
+   !! Functions from which the default gradient route with exchange is the
+   !! MD Coulomb gradient (`eri_mdj_grad_pays`, with the measurement).
 
    ! eri_mdj_size_rule's coefficients: its log time ratio, MD J over the bins'
    ! shared J+K pass, fitted to the measurements in its own comment.
@@ -181,6 +185,21 @@ module trc_eri
       !! comment for why.
       real(dp), allocatable :: dsh(:, :)
       !! Shell-block density bound, refreshed per iteration from D.
+      logical :: grad_density_screen = .true.
+      !! TEST HOOK, not part of the API, may be removed: false leaves the
+      !! density bound out of `gradient`'s and `gradient_pairs`' screen
+      !! (Schwarz only), the reference a screened gradient is judged against
+      !! (test/check_grad_screen.F90).
+      logical :: grad_screen_all_blocks = .false.
+      !! TEST HOOK, not part of the API, may be removed: true makes the
+      !! gradient's screen count all six density blocks whatever terms the
+      !! launch has, the behaviour before an absent term's blocks were dropped
+      !! (test/check_grad_screen.F90).
+      logical :: grad_screen_k_single = .false.
+      !! TEST HOOK, not part of the API, may be removed: true makes an
+      !! exchange-only gradient launch screen on the single largest exchange
+      !! block instead of the product of two (the comparison the product test
+      !! is judged against, test/check_grad_screen.F90).
       type(trc_basis_t) :: pb
       !! The basis the integrals are actually evaluated over, and the
       !! transform back to the one the caller speaks. On a generally
@@ -214,6 +233,59 @@ module trc_eri
       !! comes from trc_mdj and K from trc_mdg whatever the environment says.
       integer :: mdj_force = -1
       !! TRC_MDJ at build time (`mdj_force_env`), rank 0's on every rank.
+      integer :: grad_j_engine = TRC_J_ENGINE_AUTO
+      !! Which engine forms the Coulomb part of `gradient`, set by the caller
+      !! before the call (a component, not an argument: the gradient's argument
+      !! list is at archcheck's limit). TRC_J_ENGINE_MDJ: the McMurchie-Davidson
+      !! J engine's gradient (trc_mdj `gradient`) forms d/dX Tr(D J[D]) and the
+      !! Rys kernels run with jfac = 0, exchange only (not at all for a pure
+      !! functional); the sum is the fused result. TRC_J_ENGINE_BINS: the fused
+      !! Rys J+K gradient. TRC_J_ENGINE_AUTO, the default, is the MD route
+      !! where it exists and pays: always without exchange, and with exchange
+      !! from MDJ_GRAD_MIN_NAO functions up (`eri_mdj_grad_pays`: below that
+      !! the MD route's fixed cost loses to the fused pass). TRC_MDJ_GRAD=0 in
+      !! the environment turns AUTO into the fused route and TRC_MDJ_GRAD=1
+      !! into the MD route at any size (for A/B runs; a named engine is never
+      !! overridden).
+      !! The fused gradient runs, whatever is asked, for a skeleton (point-group)
+      !! gradient, a range-separated (omega > 0) call and jfac = 0: those have no
+      !! MD route yet. A basis above f has no analytic gradient at all
+      !! (`eri_grad_lmax_refusal`; eri%gradient stops on it), and the MD gradient
+      !! kernels cover every shell through f in every build. (A shell on no atom
+      !! is refused outright.)
+      !! A skeleton gradient is thus fused whatever the engine, so a comparison
+      !! of it with a full gradient compares two engines under AUTO: the two
+      !! agree to each one's screening error (check_sym_grad pins BINS for the
+      !! symmetry comparison and has a separate full-MD against skeleton-fused
+      !! case at a tighter threshold). When a symmetric run's skeleton decision
+      !! changes between geometry steps the Coulomb gradient engine changes with
+      !! it: a difference at the screening-error level (<= 1e-11 measured at
+      !! thresh 1e-12 on the check_sym cases).
+      !!
+      !! The default route is the MD Coulomb gradient + exchange-only Rys pass. That pass
+      !! screens on the exchange density blocks only (the Coulomb blocks multiply
+      !! nothing in its Gamma) and, being the pass behind this route, on the
+      !! PRODUCT of two exchange blocks with a margin (trc_grad's EXCHANGE-ONLY
+      !! paragraph and GRAD_K_PRODUCT_MARGIN, which carry the measurements and
+      !! the limits of the calibration). With the single-block exchange screen
+      !! HF was slower than fused on a compact cluster (40 waters 1.39 -> 1.75 s).
+      !! MEASURED: one V100, NVHPC 26.9, def2-SVP, thresh 1e-12, two-electron
+      !! gradient stage, fused -> default (MD Coulomb + exchange-only Rys with the
+      !! product screen): HF glycine 20-mer 2.23 -> 1.23 s, 50-mer 13.1 -> 4.67 s,
+      !! 40 waters 1.34 -> 1.29 s; PBE 2.36 -> 0.49, 13.35 -> 2.76, 1.46 -> 0.54 s.
+      !! The two gradients agree to <= 5e-11 Eh/Bohr in these runs (HF, PBE, PBE0).
+      !! Timed only for closed-shell, double-zeta, up to d; open-shell,
+      !! triple-zeta and f were validated for correctness but not timed.
+      !!
+      !! ACCURACY. At equal threshold the MD gradient is the more accurate of the
+      !! two. Coulomb-only gradient, CHFCl2 6-31G*, error against each engine's
+      !! own result at thresh 1e-15: MD 4.3e-11 and Rys 4.0e-10 at 1e-12; MD
+      !! 1.2e-10 and Rys 1.7e-7 at 1e-10.
+      integer :: mdj_grad_force = -1
+      !! TRC_MDJ_GRAD at build time (`mdj_grad_force_env`), rank 0's on every
+      !! rank: 0 makes eri%gradient's default (j_engine AUTO) keep the fused
+      !! Rys kernels, anything else lets it form the Coulomb part with the MD
+      !! J engine. A named `grad_j_engine` wins over it.
       real(dp) :: pcut_scale = 1.0_dp
       !! Multiplies every kernel's primitive-quartet cut: below 1 when a
       !! general contraction kept whole needs it (trc_decontract's
@@ -399,6 +471,7 @@ contains
       logical :: no_decontract
       character(len=8) :: bt_env
       character(len=:), allocatable :: refusal
+      logical :: grad_env_bad
 
       ! A shell above the generated kernels has no kernel at all: the
       ! integrals came out as NaN and the run died much later, in the
@@ -449,11 +522,16 @@ contains
          decon = decon_options(trc_decontract_options_t())
       end if
       this%mdj_force = mdj_force_env()
+      this%mdj_grad_force = mdj_grad_force_env(grad_env_bad)
+      if (grad_env_bad .and. this%rank == 0) then
+         call global_logger%warning("TRC_MDJ_GRAD must be 0 or 1; ignoring it and using the default Coulomb gradient route")
+      end if
       ! Every rank must build the SAME working basis: G is summed over
       ! ranks element by element, and two working bases of the same size
       ! would add up to a wrong matrix with nothing to show for it. The
       ! environment is per process, so rank 0's reading of it is the one.
-      if (this%distributed) call share_policy(this%comm, no_decontract, decon, this%mdj_force)
+      if (this%distributed) call share_policy(this%comm, no_decontract, decon, this%mdj_force, this%mdj_grad_force)
+      if (this%distributed) call share_tiles_env(this%comm)
       if (no_decontract) then
          call build_over(this, b, thresh, bres, sym)
          return
@@ -593,17 +671,17 @@ contains
       end if
    end function decon_options
 
-   subroutine share_policy(comm, no_decontract, decon, mdj_force)
-      !! Rank 0's split policy, TRC_NO_DECONTRACT and TRC_MDJ, on every rank.
+   subroutine share_policy(comm, no_decontract, decon, mdj_force, mdj_grad_force)
+      !! Rank 0's split policy, TRC_NO_DECONTRACT, TRC_MDJ and TRC_MDJ_GRAD, on every rank.
       type(comm_t), intent(in) :: comm
       logical, intent(inout) :: no_decontract
       type(trc_decontract_options_t), intent(inout) :: decon
-      integer, intent(inout) :: mdj_force
-      integer, parameter :: NPOLICY = 7
+      integer, intent(inout) :: mdj_force, mdj_grad_force
+      integer, parameter :: NPOLICY = 8
       real(dp) :: buffer(NPOLICY)
       buffer = [merge(1.0_dp, 0.0_dp, no_decontract), decon%cutoff, merge(1.0_dp, 0.0_dp, decon%diffuse), &
              decon%shell_cost, merge(1.0_dp, 0.0_dp, decon%screen_whole), merge(1.0_dp, 0.0_dp, decon%md_coulomb), &
-             real(mdj_force, dp)]
+             real(mdj_force, dp), real(mdj_grad_force, dp)]
       call bcast(comm, buffer, NPOLICY, 0)
       no_decontract = buffer(1) /= 0.0_dp
       decon%cutoff = buffer(2)
@@ -612,7 +690,17 @@ contains
       decon%screen_whole = buffer(5) /= 0.0_dp
       decon%md_coulomb = buffer(6) /= 0.0_dp
       mdj_force = nint(buffer(7))
+      mdj_grad_force = nint(buffer(8))
    end subroutine share_policy
+
+   subroutine share_tiles_env(comm)
+      !! Rank 0's TRC_EXCHANGE_TILES on every rank (bin_tiles_share_env).
+      type(comm_t), intent(in) :: comm
+      real(dp) :: buffer(1)
+      buffer(1) = merge(1.0_dp, 0.0_dp, bin_tiles_env_off())
+      call bcast(comm, buffer, 1, 0)
+      call bin_tiles_share_env(buffer(1) /= 0.0_dp)
+   end subroutine share_tiles_env
 
    subroutine build_structures(this, b, thresh, bres, sym)
       class(trc_eri_t), intent(inout) :: this
@@ -1147,6 +1235,76 @@ contains
       end select
    end function mdj_force_env
 
+   pure integer function eri_mdj_grad_force_of(string) result(force)
+      !! TRC_MDJ_GRAD's value as `mdj_grad_requested` takes it: "1" gives 1 and
+      !! "0" gives 0 (after adjustl and trim); anything else, empty (unset)
+      !! included, gives -1, the default route.
+      character(len=*), intent(in) :: string
+      select case (trim(adjustl(string)))
+      case ("1")
+         force = 1
+      case ("0")
+         force = 0
+      case default
+         force = -1
+      end select
+   end function eri_mdj_grad_force_of
+
+   integer function mdj_grad_force_env(bad) result(force)
+      !! TRC_MDJ_GRAD through `eri_mdj_grad_force_of`. `bad` is true when it is set
+      !! to something other than "0" or "1" (the caller warns, on rank 0).
+      logical, intent(out) :: bad
+      character(len=32) :: e
+      e = " "
+      call get_environment_variable("TRC_MDJ_GRAD", e)
+      force = eri_mdj_grad_force_of(e)
+      bad = force < 0 .and. len_trim(adjustl(e)) > 0
+   end function mdj_grad_force_env
+
+   pure logical function mdj_grad_requested(force, j_engine) result(res)
+      !! Whether the Coulomb part of eri%gradient comes from the MD J gradient
+      !! (trc_mdj's `gradient`) instead of the fused Rys kernels. ON by
+      !! default (the MD route was faster on every closed-shell double-zeta
+      !! system timed and is more accurate at equal threshold; see
+      !! `grad_j_engine`). A caller that names
+      !! an engine gets it (`j_engine` = TRC_J_ENGINE_MDJ or _BINS); the
+      !! default, TRC_J_ENGINE_AUTO, is MD unless TRC_MDJ_GRAD=0 is in the
+      !! environment or the system is small (the caller asks
+      !! `eri_mdj_grad_pays` when `force` is unset), so a whole run can be
+      !! switched back to the
+      !! fused kernels without touching its callers while a check that names
+      !! its engine stays what it says. Unlike eri%fock's TRC_MDJ the
+      !! environment does not beat an explicit argument. The caller still
+      !! runs the fused kernels where the MD route does not exist (skeleton,
+      !! omega > 0, jfac = 0).
+      integer, intent(in) :: force, j_engine
+      select case (j_engine)
+      case (TRC_J_ENGINE_MDJ)
+         res = .true.
+      case (TRC_J_ENGINE_BINS)
+         res = .false.
+      case default
+         res = force /= 0
+      end select
+   end function mdj_grad_requested
+
+   pure logical function eri_mdj_grad_pays(nao, kfac) result(res)
+      !! Whether the default takes the MD Coulomb gradient for a density of
+      !! `nao` functions: always without exchange (the Rys pass then does not
+      !! run at all), otherwise from MDJ_GRAD_MIN_NAO functions up. The MD
+      !! route has a fixed cost the fused pass does not, about 40 ms on a V100:
+      !! its per-geometry bounds and some eighty Hermite launches, each a
+      !! fraction of a millisecond of latency whatever its size. Measured, RHF
+      !! def2-SVP, thresh 1e-12, one V100, two-electron gradient, fused against
+      !! MD route: 10 waters (250 functions) 0.050 against 0.090 s, 20 waters
+      !! 0.138 / 0.178, 25 waters (625) 0.244 / 0.242, 30 waters 0.418 / 0.392,
+      !! 40 waters 1.39 / 1.29; the first 60 atoms of a glycine chain 0.454 /
+      !! 0.422, the first 30 0.139 / 0.194. PBE on 6 waters: 0.045 / 0.037.
+      integer, intent(in) :: nao
+      real(dp), intent(in) :: kfac
+      res = kfac == 0.0_dp .or. nao >= MDJ_GRAD_MIN_NAO
+   end function eri_mdj_grad_pays
+
    pure logical function eri_mdj_size_rule(nshell, npair, nprim_pairs, nao) result(res)
       !! Whether MD J plus exchange-only bins beats the bins' shared J+K
       !! pass for a hybrid or HF build, from four counts `build` has anyway:
@@ -1417,7 +1575,8 @@ contains
    subroutine eri_gradient(this, b, density, grad, k_scale, j_scale, omega, skeleton)
       !!
       !! The two-electron part of the nuclear gradient, Rys only: there is no
-      !! HGP gradient. `dens` is (nao, nao, ndens): ndens=1 is RHF with the
+      !! HGP gradient, except that the Coulomb part comes from the MD J
+      !! engine by default (`grad_j_engine`, TRC_MDJ_GRAD). `dens` is (nao, nao, ndens): ndens=1 is RHF with the
       !! total density; ndens=2 is UHF with Da and Db. `grad` is (3, natm), the
       !! two-electron contribution ONLY -- the one-electron
       !! derivative terms, the overlap (energy-weighted density) term, nuclear
@@ -1467,11 +1626,10 @@ contains
       !! slightly: measured on HOCl/6-31G*, 9355 work items against the full
       !! plan's 9142 (+2.3%), with the raw skeleton gradient already equal to
       !! the full one. check_sym_grad's test_cs_planar pins that.
-
-      real(dp), allocatable :: dwork(:, :, :)
+      real(dp), allocatable :: dwork(:, :, :), dtot(:, :), gmd(:, :)
       integer :: ndens, nw, id
-      real(dp) :: jfac, kfac, ow
-      logical :: skel
+      real(dp) :: jfac, kfac, ow, jrys
+      logical :: skel, use_mdg, run_rys
       type(trc_grad_pairtab_t) :: ptab
       type(trc_bin_launch_t) :: launch
       if (this%needs_md) error stop "terco: g and h functions reach eri%fock and eri%fock_resident only, for now"
@@ -1516,31 +1674,90 @@ contains
       end do
 
       grad = 0.0_dp
-      call density_blocks(this, dwork, ndens)
-      ! The skeleton's screens must drop a representative and all its images
-      ! together, so the bound they test has to be invariant: the surviving
-      ! quartet set is then closed under the group, which is what makes the
-      ! orbit weights exact. The host call, as eri_fock's skeleton makes it:
-      ! density_blocks has just written dsh on the HOST and the copy up is
-      ! below, so skeleton_dsh (which starts by copying dsh back DOWN) would
-      ! overwrite it with the previous build's bound.
-      if (skel) call sym_pairs_symmetrize_dsh(this%quartets%orb%shmap, this%dsh)
+      use_mdg = mdj_grad_requested(this%mdj_grad_force, this%grad_j_engine) .and. jfac /= 0.0_dp .and. ow == 0.0_dp .and. .not. skel
+      ! Left to the default, a small system with exchange stays on the fused
+      ! kernels (eri_mdj_grad_pays); a named engine or TRC_MDJ_GRAD=1 is taken
+      ! at its word.
+      if (use_mdg .and. this%grad_j_engine == TRC_J_ENGINE_AUTO .and. this%mdj_grad_force < 0) then
+         use_mdg = eri_mdj_grad_pays(size(density, 1), kfac)
+      end if
+      if (use_mdg) then
+         call ensure_md(this, b)
+         ! The MD gradient kernels cover every shell through f in every build
+         ! and a basis above f stopped at needs_md, so this is a bug, not a
+         ! fallback.
+         if (.not. this%md%gradient_available()) then
+            error stop "terco: eri%gradient: no MD J gradient kernels for this basis (internal error)"
+         end if
+      end if
+      if (this%rank == 0) then
+         if (use_mdg) then
+            if (kfac /= 0.0_dp) then
+               call global_logger%info("  [gradient] Coulomb part: MD J engine; exchange: Rys kernels")
+            else
+               call global_logger%info("  [gradient] Coulomb part: MD J engine; no exchange")
+            end if
+         else
+            call global_logger%info("  [gradient] Coulomb part: fused Rys kernels")
+         end if
+      end if
+      jrys = jfac
+      run_rys = .true.
+      if (use_mdg) then
+         ! The Coulomb part: d/dX Tr(D J[D]) of the TOTAL density, times jfac;
+         ! the Rys kernels then see jfac = 0.
+         allocate (dtot(nw, nw), gmd(3, b%natm))
+         dtot = dwork(1, :, :)
+         if (ndens == 2) dtot = dtot + dwork(2, :, :)
+         gmd = 0.0_dp
+         !$acc enter data copyin(dtot, gmd)
+         call this%md%gradient(nw, dtot, b%natm, gmd, this%rank, this%nranks)
+         !$acc update self(gmd)
+         !$acc exit data delete(dtot, gmd)
+         grad = jfac*gmd
+         deallocate (dtot, gmd)
+         jrys = 0.0_dp
+         run_rys = kfac /= 0.0_dp
+      end if
 
-      !$acc enter data copyin(dwork) copyin(grad)
-      !$acc update device(this%dsh)
-      launch = bin_launch(this, ndens, jfac, kfac, ow, skel)
-      call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, grad, ptab)
-      !$acc wait
-      !$acc update self(grad)
-      !$acc exit data delete(dwork, grad)
+      if (run_rys) then
+         call density_blocks(this, dwork, ndens)
+         ! Test switch: a block maximum of 1e8 puts the density factor of the
+         ! screen far above any thresh/Q the Schwarz screen lets through, so
+         ! it drops nothing.
+         if (.not. this%grad_density_screen) this%dsh = 1.0e8_dp
+         ! The skeleton's screens must drop a representative and all its images
+         ! together, so the bound they test has to be invariant: the surviving
+         ! quartet set is then closed under the group, which is what makes the
+         ! orbit weights exact. The host call, as eri_fock's skeleton makes it:
+         ! density_blocks has just written dsh on the HOST and the copy up is
+         ! below, so skeleton_dsh (which starts by copying dsh back DOWN) would
+         ! overwrite it with the previous build's bound.
+         if (skel) call sym_pairs_symmetrize_dsh(this%quartets%orb%shmap, this%dsh)
+
+         ! grad holds the MD Coulomb part, if any; the kernels add the rest.
+         !$acc enter data copyin(dwork) copyin(grad)
+         !$acc update device(this%dsh)
+         launch = bin_launch(this, ndens, jrys, kfac, ow, skel)
+         launch%grad_all_blocks = this%grad_screen_all_blocks
+         launch%grad_k_single = this%grad_screen_k_single
+         launch%grad_k_product = use_mdg
+         call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, grad, ptab)
+         !$acc wait
+         !$acc update self(grad)
+         !$acc exit data delete(dwork, grad)
+         ! The gradient's own work and survivor counts. The Fock entries have
+         ! reported these since S15; without them a skeleton gradient that
+         ! silently fell back to the full plan would look identical from
+         ! outside, which is the failure mode check_sym_grad's "the skeleton is
+         ! smaller" assertion exists to catch.
+         this%nwork = launch%nwork
+         this%nkept = launch%nkept
+      else
+         this%nwork = 0
+         this%nkept = 0
+      end if
       deallocate (dwork)
-      ! The gradient's own work and survivor counts. The Fock entries have
-      ! reported these since S15; without them a skeleton gradient that
-      ! silently fell back to the full plan would look identical from
-      ! outside, which is the failure mode check_sym_grad's "the skeleton is
-      ! smaller" assertion exists to catch.
-      this%nwork = launch%nwork
-      this%nkept = launch%nkept
 
       if (this%distributed) call sum_ranks(this, grad, 3*b%natm)
    end subroutine eri_gradient
@@ -1690,6 +1907,7 @@ contains
          end if
       end do
       call density_blocks(this, dwork, npool)
+      if (.not. this%grad_density_screen) this%dsh = 1.0e8_dp
 
       ! The kernel weights of every pair, once: both orderings of a cross
       ! pair; the Coulomb part dies with an antisymmetric member, the
@@ -1740,6 +1958,8 @@ contains
          gblk = 0.0_dp
          !$acc enter data copyin(gblk)
          launch = bin_launch(this, npool, 1.0_dp, 1.0_dp, ow, .false.)
+         launch%grad_all_blocks = this%grad_screen_all_blocks
+         launch%grad_k_single = this%grad_screen_k_single
          call grad_bins(this%bins, this%pairs, this%quartets, launch, this%dsh, dwork, gblk, ptab)
          !$acc wait
          !$acc update self(gblk)
