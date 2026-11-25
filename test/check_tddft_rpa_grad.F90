@@ -248,8 +248,13 @@ contains
       write (unit) fx%scf%energy
       write (unit) fx%td%omega
       write (unit) fx%gopts%grad
-      write (unit) int(size(fx%scf%grid_w), int64)
-      write (unit) fx%scf%grid_r, fx%scf%grid_w
+      ! Hartree-Fock leaves the grid unallocated: write a zero count and no arrays.
+      if (allocated(fx%scf%grid_w)) then
+         write (unit) int(size(fx%scf%grid_w), int64)
+         write (unit) fx%scf%grid_r, fx%scf%grid_w
+      else
+         write (unit) 0_int64
+      end if
       close (unit)
 
       refname = 'tddft_rpa_grad_'//trim(molname_arg)//'_'//trim(basname_arg)//'_'//trim(funcname_arg)//'.ref'

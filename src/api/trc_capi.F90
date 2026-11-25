@@ -379,7 +379,9 @@ module trc_capi
    !! What trc_run_gradient says for an excited-state gradient over an ECP: the
    !! root's density has no U_ECP contraction yet.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter, public :: TRC_ABI_MINOR = 33
+   integer(c_int), parameter, public :: TRC_ABI_MINOR = 34
+   !! 1.34: trc_run_gradient accepts --df with a spherical orbital and auxiliary
+   !! basis (refused before). No signature change.
    !! 1.33: trc_tddft_window_open, a new entry point (the number of candidate Ritz
    !! pairs the TDDFT missed-root check left open); and the default of the missed-root
    !! iteration count is now 0 (it was 24 in 1.31 and 1.32), like the 1.20 change of
@@ -4991,17 +4993,13 @@ contains
          ! The fitted gradient differentiates the SAME fit the SCF converged
          ! with (`cx%dfjk`'s B and metric Cholesky factor), so it needs that
          ! fit still in place, and inherits the DF-SCF's own scope:
-         ! restricted, Cartesian, no range separation. trc_scf_settings
+         ! restricted, no range separation. trc_scf_settings
          ! and trc_scf_df already refuse the SCF outside it; checked again
          ! here so the message names the gradient -- and BEFORE the fit
          ! check, because a result taken from a file (trc_load_scf) reaches
          ! this point without ever having met the DF-SCF's own refusals.
          if (cx%res%nspin /= 1) then
             refusal = "--df gradient is restricted (closed-shell) only, as --df is"
-            return
-         end if
-         if (cx%bb%b%spherical) then
-            refusal = "--df gradient needs a Cartesian basis -- the DF derivative kernels are Cartesian only"
             return
          end if
          if (have_func) then
@@ -5202,10 +5200,11 @@ contains
       !! grid). A later trc_run_scf clears the RI-MP2 result, and the
       !! gradient is the SCF's again. (ABI 1.15: a double hybrid's
       !! gradient was refused before.)
-      !!   - --df outside the DF-SCF's own scope (unrestricted, spherical,
+      !!   - --df outside the DF-SCF's own scope (unrestricted,
       !!     range-separated -- the SCF refuses those first), or with the fit
       !!     gone. A --df gradient otherwise runs the FITTED J/K gradient
       !!     (trc_scf_grad_df.F90) over `cx%dfjk`, the fit the SCF used.
+      !!     (ABI 1.34: a spherical orbital basis was refused before.)
       !!
       !! NOT refused any more: PCM (C-PCM/IEF-PCM). `trc_scf_run` releases
       !! its own continuum at the end of a run, the same as its pair list

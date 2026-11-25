@@ -8,8 +8,10 @@ module check_cli_grad_df_suite
    !! fitted gradient (trc_scf_grad_df.F90; check_df_grad_fd.F90 and
    !! check_df_grad_vs_pyscf.F90 are its physics checks). B3LYP, so the fitted
    !! J, the fitted K (scaled by 0.2) and the XC term all run, on water/6-31G*
-   !! with def2-universal-jkfit, Cartesian as --df requires. Same tolerance and
-   !! reasoning as check_cli_grad.F90's TOL.
+   !! (Cartesian) and water/cc-pVDZ (spherical, as the CLI tags it by default,
+   !! so the spherical expansion of the fitted gradient runs end to end), each
+   !! with def2-universal-jkfit. Same tolerance and reasoning as
+   !! check_cli_grad.F90's TOL.
    !!
    use, intrinsic :: iso_c_binding, only: c_ptr, c_int, c_double, c_null_ptr
    use pic_types, only: dp
@@ -50,12 +52,26 @@ contains
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       testsuite = [ &
                   new_unittest("CLI --df --grad b3lyp JSON gradient matches a direct trc_gradient call", &
-                               test_cli_grad_df) &
+                               test_cli_grad_df), &
+                  new_unittest("CLI --df --grad b3lyp JSON gradient matches a direct trc_gradient call (spherical)", &
+                               test_cli_grad_df_sph) &
                   ]
    end subroutine collect_cli_grad_df_tests
 
    subroutine test_cli_grad_df(error)
       type(error_type), allocatable, intent(out) :: error
+      call run_cli_grad_df(error, 'basis_sets/6-31gs.json', .true.)
+   end subroutine test_cli_grad_df
+
+   subroutine test_cli_grad_df_sph(error)
+      type(error_type), allocatable, intent(out) :: error
+      call run_cli_grad_df(error, 'basis_sets/cc-pvdz.json', .false.)
+   end subroutine test_cli_grad_df_sph
+
+   subroutine run_cli_grad_df(error, basis, force_cart)
+      type(error_type), allocatable, intent(out) :: error
+      character(*), intent(in) :: basis
+      logical, intent(in) :: force_cart
       character(len=:), allocatable :: probe_out, cmd
       integer :: nat, i, rc
       integer, allocatable :: at_z(:)
@@ -81,10 +97,10 @@ contains
       st = trc_set_molecule(h, int(nat, c_int), real(at_z, c_double), r, 0_c_int, 1_c_int)
       call check(error, st == TRC_OK, "trc_set_molecule failed, status "//to_string(int(st)))
       if (allocated(error)) return
-      st = trc_set_force_cartesian(h, 1_c_int)
+      st = trc_set_force_cartesian(h, merge(1_c_int, 0_c_int, force_cart))
       call check(error, st == TRC_OK, "trc_set_force_cartesian failed, status "//to_string(int(st)))
       if (allocated(error)) return
-      st = trc_set_basis_json(h, c_string_local('basis_sets/6-31gs.json'))
+      st = trc_set_basis_json(h, c_string_local(basis))
       call check(error, st == TRC_OK, "trc_set_basis_json failed, status "//to_string(int(st)))
       if (allocated(error)) return
       st = trc_set_jkfit_json(h, c_string_local('basis_sets/def2-universal-jkfit.json'))
@@ -127,7 +143,7 @@ contains
       st = trc_destroy(h)
 
       ! --- the CLI's own printed/JSON gradient, same molecule/basis/func ---
-      cmd = g_cli_exe//' water.xyz -b basis_sets/6-31gs.json --df --jkfit basis_sets/def2-universal-jkfit.json '// &
+      cmd = g_cli_exe//' water.xyz -b '//basis//' --df --jkfit basis_sets/def2-universal-jkfit.json '// &
             '--func b3lyp --guess gwh --grad --json '// &
             g_probe_json//' > '//probe_out//' 2>&1'
       call execute_command_line(cmd, exitstat=rc, wait=.true.)
@@ -157,7 +173,7 @@ contains
       call check(error, worst, 0.0_dp, thr=TOL, &
                  message="worst |CLI JSON - direct trc_gradient| = "//to_string(worst, "es10.2")// &
                  " exceeds TOL = "//to_string(TOL, "es10.2"))
-   end subroutine test_cli_grad_df
+   end subroutine run_cli_grad_df
 
    pure function c_string_local(s) result(cs)
       !! `s` NUL-terminated, for a `character(kind=c_char) :: x(*)` dummy --

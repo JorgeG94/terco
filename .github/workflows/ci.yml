@@ -63,6 +63,10 @@ jobs:
           # 24.04, where it last passed, until a newer ifx is validated.
           - {compiler: intel, version: '2025.0', os: ubuntu-24.04}
           - {compiler: nvidia-hpc, version: 'latest'}
+          # LLVM flang, from apt.llvm.org: stricter than gfortran about
+          # structure constructors (C7104) and unallocated I/O items, so it
+          # catches non-conforming code the other host compilers accept.
+          - {compiler: flang, version: 23, os: ubuntu-24.04}
     steps:
       - uses: actions/checkout@v4
 
@@ -568,6 +572,11 @@ jobs:
           python3 scripts/gen_cartcomp.py
           python3 scripts/gen_sph.py
 
+      - name: Generator helper tests
+        run: |
+          pip install pytest
+          python3 -m pytest tools/test_rys_inline.py -q
+
       - name: Require no diff
         run: |
           if ! git diff --quiet -- src/generated; then
@@ -748,13 +757,18 @@ jobs:
           python3 -m pytest -q tools/test_archcheck.py
           python3 tools/archcheck.py
 
-  no-system-clock:
-    name: no system_clock (time with pic_timer)
+  style:
+    name: style (system_clock, MPI, Doxygen, kinds, console output)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - name: check_system_clock
-        run: python3 tools/check_system_clock.py src app test
+      # The AGENTS.md rules a grep can enforce: time with pic_timer, MPI through
+      # pic-mpi, FORD docs only, pic_types kinds, output through pic_logger.
+      - name: check_style
+        run: |
+          pip install pytest
+          python3 -m pytest -q tools/test_check_style.py
+          python3 tools/check_style.py src app test
