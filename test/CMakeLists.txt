@@ -121,6 +121,10 @@ target_link_libraries(check_selftest PRIVATE test-drive::test-drive)
 terco_add_check(check_linalg_mat check_linalg_mat.F90)
 target_link_libraries(check_linalg_mat PRIVATE test-drive::test-drive)
 
+# trc_contract's reorderings and pairwise contractions against plain loops (see check_contract.F90's header).
+terco_add_check(check_contract check_contract.F90)
+target_link_libraries(check_contract PRIVATE test-drive::test-drive)
+
 # A signalling-NaN SCF guess density -- what a density read past the end
 # of an undersized buffer (src/opt/trc_dlfind_bridge.F90's own --opt-neb
 # per-image density) can hand back -- comes back through trc_run_scf's

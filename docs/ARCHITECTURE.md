@@ -40,7 +40,7 @@ Numbers in brackets refer to the references at the end.
 
 | Layer | Directory | Main objects |
 |---|---|---|
-| Core | `src/core/` | Boys function, Cartesian and spherical tables, `trc_linalg_t`, `error_t`, MPI device policy |
+| Core | `src/core/` | Boys function, Cartesian and spherical tables, `trc_linalg_t`, `trc_contract_plan_t` (pairwise contractions of up to four-index tensors), `error_t`, MPI device policy |
 | Basis | `src/basis/`, `src/core/trc_basis_types.F90` | `trc_basis_t`, `trc_pairlist_t`, JSON reader, decontraction |
 | Integrals | `src/eri/`, `src/generated/` | `trc_eri_t`, `pair_bins_t`, the 1e/PCM/DF drivers (`trc_integrals`), per-class kernels |
 | Grids | `src/grid/` | `dft_grid_t` |

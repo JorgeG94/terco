@@ -15,7 +15,7 @@ A module may use modules in its own layer or any layer above it in this table
 
 | Layer | Directory | Role |
 |---|---|---|
-| `core` | `src/core/` | Numerics and plumbing with no chemistry: Boys, tables, linalg, errors, MPI device binding |
+| `core` | `src/core/` | Numerics and plumbing with no chemistry: Boys, tables, linalg, tensor contractions, errors, MPI device binding |
 | `basis` | `src/basis/` | Basis sets: JSON reader, decontraction |
 | `grid` | `src/grid/` | DFT grids and partitions |
 | `eri` | `src/eri/` | Screening, shell-pair bins, integral drivers, Fock and gradient launchers |
