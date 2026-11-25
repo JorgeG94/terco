@@ -94,7 +94,7 @@ module trc_scf_soscf
    use trc_basis_types, only: trc_basis_t
    use trc_eri, only: trc_eri_t, trc_fock_options_t
    use trc_linalg, only: trc_linalg_t
-   use trc_cphf, only: cphf_zero_matrix, cphf_copy_matrix, cphf_add_matrix, cphf_axpy_matrix, cphf_add_diag
+   use trc_cphf, only: cphf_zero_matrix, cphf_copy_matrix, cphf_axpy_matrix, cphf_add_diag
    use trc_scf_context, only: scf_ctx_t
    use trc_scf_settings, only: scf_settings_t, trc_scf_result_t, scf_energies_t
    use trc_scf_state, only: scf_state_t
@@ -660,7 +660,7 @@ contains
       if (nsub > 0) then
          do i = 1, nsub
             call scf_soscf_hessian_apply_rhf(b, eri, lp, dims, cmo, basis(:, :, i), image(:, :, i), scratch)
-            call soscf_scale_matrix(nvirt, nocc, image(:, :, i), HESSIAN_SCALE, image(:, :, i))
+            call soscf_scale_in_place(nvirt, nocc, HESSIAN_SCALE, image(:, :, i))
             io%products = io%products + 1
          end do
 
@@ -701,7 +701,7 @@ contains
             if (.not. added) exit
 
             call scf_soscf_hessian_apply_rhf(b, eri, lp, dims, cmo, basis(:, :, nsub), image(:, :, nsub), scratch)
-            call soscf_scale_matrix(nvirt, nocc, image(:, :, nsub), HESSIAN_SCALE, image(:, :, nsub))
+            call soscf_scale_in_place(nvirt, nocc, HESSIAN_SCALE, image(:, :, nsub))
             io%products = io%products + 1
          end do
       else
@@ -750,7 +750,7 @@ contains
       call lp%gemm_mat(cmo(:, nocc + 1:n_mo), pin, scratch%temporary_no)
       call lp%gemm_mat(scratch%temporary_no, cmo(:, 1:nocc), scratch%d_u, transb="T")
       call lp%transpose(dims%nao, dims%nao, scratch%d_u, dims%nao, scratch%d_ut, dims%nao)
-      call cphf_add_matrix(dims%nao, dims%nao, scratch%d_u, scratch%d_ut, scratch%d_u)
+      call cphf_axpy_matrix(dims%nao, dims%nao, 1.0_dp, scratch%d_ut, scratch%d_u)
       call scf_fock_to_cart(b, dims%sph, dims%nao, dims%nao_c, scratch%d_u, scratch%d_u_c)
       call eri%fock_resident(b, scratch%d_u_c, scratch%g_u_c, &
                              opts=trc_fock_options_t(k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.))
@@ -775,7 +775,7 @@ contains
       added = .false.
       norm = sqrt(lp%dot_2d(direction, direction))
       if (.not. (norm > tiny(1.0_dp))) return
-      call soscf_scale_matrix(m, n, direction, 1.0_dp/norm, direction)
+      call soscf_scale_in_place(m, n, 1.0_dp/norm, direction)
       do pass = 1, 2
          do j = 1, nsub
             overlap = lp%dot_2d(basis(:, :, j), direction)
@@ -803,7 +803,9 @@ contains
    end subroutine soscf_preconditioned_direction
 
    subroutine soscf_scale_matrix(m, n, a, alpha, c)
-      !! c := alpha*a, elementwise (a and c may be the same actual array).
+      !! c := alpha*a, elementwise. a and c are distinct arrays: an actual
+      !! argument may not be changed through one dummy while another dummy
+      !! is associated with it (soscf_scale_in_place scales an array itself).
       integer, intent(in) :: m, n
       real(dp), intent(in) :: alpha
       real(dp), intent(in) :: a(m, n)
@@ -813,6 +815,17 @@ contains
          c(i, j) = alpha*a(i, j)
       end do
    end subroutine soscf_scale_matrix
+
+   subroutine soscf_scale_in_place(m, n, alpha, a)
+      !! a := alpha*a, elementwise.
+      integer, intent(in) :: m, n
+      real(dp), intent(in) :: alpha
+      real(dp), intent(inout) :: a(m, n)
+      integer :: i, j
+      do concurrent(j=1:n, i=1:m)
+         a(i, j) = alpha*a(i, j)
+      end do
+   end subroutine soscf_scale_in_place
 
    subroutine soscf_unit_matrix(m, n, a0, i0, a)
       !! a := the (a0, i0) unit matrix.
@@ -976,7 +989,7 @@ contains
       do k = 1, TAYLOR_TERMS
          call lp%gemm_mat(term, scaled, next_term)
          call soscf_scale_matrix(n, n, next_term, 1.0_dp/real(k, dp), term)
-         call cphf_add_matrix(n, n, rotation, term, rotation)
+         call cphf_axpy_matrix(n, n, 1.0_dp, term, rotation)
          term_norm = sqrt(lp%dot_2d(term, term))
          if (term_norm < 1.0e-16_dp) exit
       end do

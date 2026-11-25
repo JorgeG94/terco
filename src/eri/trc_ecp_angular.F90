@@ -992,11 +992,12 @@ contains
       !! Angular contraction of the type-1 (local) radial integrals.
       !! `rad_all` arrives indexed (total degree, lambda), `rad_ang` comes
       !! out over the three Cartesian powers, (lmax+1)^3, fixed to
-      !! (2*ECP_ORB_LMAX+1)^3.
+      !! (2*ECP_ORB_LMAX+1)^3. `rad_all` holds (lmax+1)^2 values, the extent the
+      !! caller's slice has (the dummy may not claim more than the actual).
       !$acc routine seq
       integer, intent(in) :: lmax
       real(dp), intent(in) :: r(3)
-      real(dp), intent(in) :: rad_all(0:(2*ECP_ORB_LMAX + 1)*(2*ECP_ORB_LMAX + 1) - 1)
+      real(dp), intent(in) :: rad_all(0:(lmax + 1)*(lmax + 1) - 1)
       real(dp), intent(out) :: rad_ang(0:(2*ECP_ORB_LMAX + 1)**3 - 1)
 
       real(dp) :: unitr(3)

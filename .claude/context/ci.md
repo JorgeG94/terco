@@ -6,7 +6,7 @@ directives are inert.
 
 | Job | What it checks |
 |---|---|
-| `host gcc-15`, `host intel-2025.0`, `host nvidia-hpc-latest` | host build and the full ctest suite, then the "Golden spread" report |
+| `host gcc-15`, `host intel-2025.0`, `host nvidia-hpc-latest`, `host flang-23` | host build and the full ctest suite, then the "Golden spread" report |
 | `host gcc-15 (TERCO_LMAX=3)`, `(TERCO_DF_LMAX=3)` | the f-function and f/g-auxiliary builds; regenerates kernels at configure |
 | `host gcc-15 (TERCO_LMAX=4, -O0)` | g functions: builds only the command line at -O0 (about a minute) and runs water/def2-QZVP against pyscf (`terco/cli_library_def2qzvp_g`) |
 | `generated sources are up to date` | reruns the generators and requires no diff in `src/generated/` |

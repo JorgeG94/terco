@@ -302,8 +302,13 @@ contains
       write (unit) fx%rpa%omega
       write (unit) fx%rpa%osc
       write (unit) yy
-      write (unit) int(size(fx%scf%grid_w), int64)
-      write (unit) fx%scf%grid_r, fx%scf%grid_w
+      ! Hartree-Fock leaves the grid unallocated: write a zero count and no arrays.
+      if (allocated(fx%scf%grid_w)) then
+         write (unit) int(size(fx%scf%grid_w), int64)
+         write (unit) fx%scf%grid_r, fx%scf%grid_w
+      else
+         write (unit) 0_int64
+      end if
       close (unit)
    end subroutine write_probe
 
