@@ -103,6 +103,17 @@ if(NOT "${TERCO_DF_LMAX}" STREQUAL "" AND TERCO_DF_LMAX GREATER 4)
   message(WARNING "TERCO_DF_LMAX=${TERCO_DF_LMAX}: density fitting is built and checked through 4 (g) "
                   "on the orbital side; an h orbital basis is energies through the four-centre path only")
 endif()
+# The auxiliary ceiling is bounded by the component and spherical-transform
+# tables, which stop at g (l = 4) unless TERCO_LMAX is 5 (h build, src/CMakeLists.txt).
+# TERCO_DF_LMAX_AUX only sizes the density-fitting kernels, so an auxiliary basis
+# with h shells (aug-cc-pVQZ-RIFIT on Be-Ne, Mg) on a build with tables to g reads
+# past them at run time, with no message: refuse it here instead.
+if(TERCO_DF_LMAX_AUX GREATER 5 OR (TERCO_DF_LMAX_AUX GREATER 4 AND NOT TERCO_LMAX GREATER 4))
+  message(FATAL_ERROR "TERCO_DF_LMAX_AUX=${TERCO_DF_LMAX_AUX} with TERCO_LMAX=${TERCO_LMAX}: the auxiliary "
+                      "ceiling is bounded by the Cartesian and spherical tables, which reach l = 4 (g) unless "
+                      "TERCO_LMAX=5 (h), and never l = 6; use TERCO_DF_LMAX_AUX=4, or TERCO_LMAX=5 for h "
+                      "auxiliary shells (unverified). Higher is not currently supported, please open an issue")
+endif()
 
 #
 # TESTING ONLY -- never set by a shipped build. gen_df.py routes a class
