@@ -216,14 +216,9 @@ contains
       allocate (dpk(npack), cq(naux), zmat(naux, naux))
       !$acc enter data create(dpk, cq, zmat)
       ! c over the Cartesian auxiliary functions the kernels run over (a copy
-      ! of cq when the auxiliary basis is Cartesian: one vector), and for a
-      ! spherical one Z too, allocated here so that choose_grad_blocks sees it.
+      ! of cq when the auxiliary basis is Cartesian: one vector).
       allocate (cqc(naux_c))
       !$acc enter data create(cqc)
-      if (aux%spherical) then
-         allocate (zc(naux_c, naux_c))
-         !$acc enter data create(zc)
-      end if
       ! One flat index (a masked two-index form left one loop sequential
       ! on the device): the lower triangle of D, off-diagonal doubled.
       do concurrent(t=0:n8*n8 - 1) local(mu, nu)
@@ -443,11 +438,14 @@ contains
       call tbl%step_on(lp, ST_D2C, tc)
       if (aux%spherical) then
          ! Z over both auxiliary indices: expand the columns, transpose, expand
-         ! again (Z is symmetric, so the order is immaterial). Peak device
-         ! memory is zc + max(zmat, zhalf_t) = zc + naux naux_c: the first
-         ! expansion lands in the front of zc itself (naux naux_c <= naux_c^2),
-         ! zmat is freed before zhalf_t exists, and the second expansion reads
-         ! zhalf_t only.
+         ! again (Z is symmetric, so the order is immaterial). zc exists only
+         ! from here, once X and the blocks are gone, so the K step's budget
+         ! does not pay for it. Peak device memory is zc + max(zmat, zhalf_t)
+         ! = zc + naux naux_c: the first expansion lands in the front of zc
+         ! itself (naux naux_c <= naux_c^2), zmat is freed before zhalf_t
+         ! exists, and the second expansion reads zhalf_t only.
+         allocate (zc(naux_c, naux_c))
+         !$acc enter data create(zc)
          call sph_cols_sph_to_cart(aux, naux, zmat, zc)
          !$acc exit data delete(zmat)
          deallocate (zmat)
@@ -917,10 +915,11 @@ contains
       !! device to budget: naux/4 and every orbital, unless capped.
       integer, intent(in) :: n, naux, naux_c, nocc
       logical, intent(in) :: sph_aux
-      !! A spherical auxiliary basis: each block also holds its Cartesian
-      !! expansion of the packed X columns, at most (nocc x nocc) per function.
+      !! A spherical auxiliary basis: each derivative block also holds its
+      !! Cartesian expansion of the packed X columns, at most (nocc x nocc)
+      !! per function. The K step's blocks do not.
       integer, intent(out) :: ablk, ablk_c, nci
-      integer(int64) :: per_q, per_i
+      integer(int64) :: per_q, per_qc, per_i
       character(len=16) :: v
       integer :: st, cap
 #ifdef TRC_DEVICE
@@ -932,7 +931,8 @@ contains
       avail = free - 512_int64*1024*1024
 #endif
       per_q = 8_int64*(int(n, int64)*(int(n, int64) + int(max(nocc, 1), int64)) + int(max(nocc, 1), int64)**2)
-      if (sph_aux .and. nocc > 0) per_q = per_q + 8_int64*int(nocc, int64)**2
+      per_qc = per_q
+      if (sph_aux .and. nocc > 0) per_qc = per_q + 8_int64*int(nocc, int64)**2
       per_i = 8_int64*int(max(nocc, 1), int64)*int(naux, int64)
       ablk = max(naux/4, 1)
       ablk_c = max(naux_c/4, 1)
@@ -941,11 +941,11 @@ contains
       xall = 8_int64*int(naux, int64)*(int(nocc, int64)*int(nocc + 1, int64)/2)
       if (xall + int(min(MIN_BLOCK, naux), int64)*per_q <= avail) then
          ablk = int(min(int(ablk, int64), (avail - xall)/per_q))
-         ablk_c = int(min(int(ablk_c, int64), (avail - xall)/per_q))
+         ablk_c = int(min(int(ablk_c, int64), (avail - xall)/per_qc))
       else
          ablk = int(min(int(ablk, int64), max(0_int64, (avail/2)/per_q)))
-         ablk_c = int(min(int(ablk_c, int64), max(0_int64, (avail/2)/per_q)))
-         if (nocc > 0) nci = int(min(int(nci, int64), max(0_int64, (avail - max(ablk, ablk_c)*per_q)/per_i)))
+         ablk_c = int(min(int(ablk_c, int64), max(0_int64, (avail/2)/per_qc)))
+         if (nocc > 0) nci = int(min(int(nci, int64), max(0_int64, (avail - max(ablk*per_q, ablk_c*per_qc))/per_i)))
       end if
       if (ablk < 1 .or. ablk_c < 1 .or. nci < 1) then
          write (msg, "(a,i0,a,i0,a,i0,a)") "trc_scf_grad_df: not enough device memory for the --df gradient (", &

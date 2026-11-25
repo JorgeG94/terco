@@ -296,8 +296,12 @@ contains
       !! kernels' functions in separate code (scf_grad_df_two_electron per
       !! chunk and block, scf_grad_df_bilinear per derivative block), and
       !! scf_grad_df_bilinear is itself checked against pyscf and finite
-      !! differences, so this is the exact per-PR check of the mixed pairs
-      !! pyscf cannot reference.
+      !! differences, so this is the per-PR check of the mixed pairs pyscf
+      !! cannot reference. Both sides call the same trc_sph expansions and
+      !! derivative kernels: it tests how scf_grad_df_two_electron arranges
+      !! them (block cuts, the two-sided expansion of Z, the per-block
+      !! offsets of X), not the expansions themselves, which the sph/sph
+      !! pyscf anchors and check_df_grad_fd's mixed pairs (LONG) test.
       type(error_type), allocatable, intent(out) :: error
       character(*), intent(in) :: name, xyz, jk_space
       logical, intent(in) :: cart

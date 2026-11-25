@@ -375,6 +375,8 @@ module trc_capi
    !! (TRC_ERR_UNSUPPORTED), never a silently shortened list.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
    integer(c_int), parameter, public :: TRC_ABI_MINOR = 34
+   !! 1.34: trc_run_gradient accepts --df with a spherical orbital and auxiliary
+   !! basis (refused before). No signature change.
    !! 1.33: trc_tddft_window_open, a new entry point (the number of candidate Ritz
    !! pairs the TDDFT missed-root check left open); and the default of the missed-root
    !! iteration count is now 0 (it was 24 in 1.31 and 1.32), like the 1.20 change of
