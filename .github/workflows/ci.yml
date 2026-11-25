@@ -568,6 +568,11 @@ jobs:
           python3 scripts/gen_cartcomp.py
           python3 scripts/gen_sph.py
 
+      - name: Generator helper tests
+        run: |
+          pip install pytest
+          python3 -m pytest tools/test_rys_inline.py -q
+
       - name: Require no diff
         run: |
           if ! git diff --quiet -- src/generated; then
