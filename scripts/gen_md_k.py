@@ -715,10 +715,9 @@ def gen_h_module(lmax, order, header):
     # S = T (T^T T)^-1 per l: the right inverse with T^T S = I, so a density
     # D_cart = T D_sph T^T gives D_sph = S^T D_cart S back, and adding S K S^T
     # to the Cartesian result folds out (T^T . T) to exactly K.
-    # S has its own extents, the module-local MDG_S_NC x MDG_S_NS x 0:lsph, for
-    # an h build: trc_sph_tables' table is l <= 4 by default (so SPH_NCART_MAX
-    # is S's own extent up to g, below) but l <= 5 in an h build, where a table
-    # sized by SPH_NCART_MAX would be mostly padding.
+    # S has its own extents, the module-local MDG_S_NC x MDG_S_NS x 0:lsph:
+    # trc_sph_tables' table is l <= 4 by default but l <= 5 in an h build or
+    # with an h auxiliary ceiling.
     lsph = max(lmax, 4)
     nc_max, ns_max = (lsph + 1) * (lsph + 2) // 2, 2 * lsph + 1
     svals = []
@@ -732,12 +731,11 @@ def gen_h_module(lmax, order, header):
         for j in range(ns_max):
             for a in range(nc_max):
                 svals.append(S[a][j] if (a < nc and j < ns) else 0.0)
-    if lsph == 4:
-        # The shipped spherical table is l <= 4 too, so its own extents are S's.
-        nc_name, ns_name = "SPH_NCART_MAX", "SPH_NSPH_MAX"
-    else:
-        nc_name, ns_name = "MDG_S_NC", "MDG_S_NS"
-        o.append(f"   integer, parameter :: MDG_S_NC = {nc_max}, MDG_S_NS = {ns_max}")
+    # Always its own extents: trc_sph_tables' SPH_NCART_MAX is 21 whenever the
+    # table reaches l = 5, which an h auxiliary ceiling does at TERCO_LMAX=4
+    # too, so S sized by it would no longer match the l <= 4 data written here.
+    nc_name, ns_name = "MDG_S_NC", "MDG_S_NS"
+    o.append(f"   integer, parameter :: MDG_S_NC = {nc_max}, MDG_S_NS = {ns_max}")
     o.append(f"   real(dp), parameter :: SPH_S({nc_name}, {ns_name}, 0:{lsph}) = reshape([ &")
     toks = [repr(v) + "_dp" for v in svals]
     for k in range(0, len(toks), 4):

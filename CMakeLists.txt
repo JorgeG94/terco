@@ -90,16 +90,33 @@ set(TERCO_DF_LMAX_AUX
     "4"
     CACHE STRING "Density-fitting auxiliary angular momentum ceiling (gen_df.py --lmax-aux)")
 
-# The ceilings the generators and the kernels have been built and checked to:
-# h for the four-centre path, g for the density-fitting orbital shells. A larger
-# value would generate kernels nothing has compiled or compared with a
-# reference, so it stops here rather than at the first wrong number.
+# The ceilings the generators and the kernels have been built and checked to.
+# TERCO_LMAX stops at h: the Boys function a four-centre class needs has the
+# order of its total angular momentum, 4*LMAX, and the tabulated one (BOYS_MMAX
+# in src/core/trc_boys.F90) ends at 20; the Rys path is also capped by its 11
+# root tables, which LMAX=6 (13 roots) exceeds. A higher ceiling cannot give
+# right numbers.
+# The density-fitting ceilings (orbital TERCO_DF_LMAX and auxiliary
+# TERCO_DF_LMAX_AUX) go to h too: the kernels are generated, and the Cartesian
+# and spherical tables are extended to l = 5 for either (src/CMakeLists.txt),
+# but nothing past g has been compared with a reference (an h auxiliary basis
+# has been, for the water RI-CCSD(T) energy). Above h they are refused: the
+# tables stop at l = 5.
 if(TERCO_LMAX GREATER 5)
-  message(FATAL_ERROR "TERCO_LMAX=${TERCO_LMAX}: the four-centre path is built and checked through 5 (h)")
+  message(FATAL_ERROR "TERCO_LMAX=${TERCO_LMAX}: LMAX>5 is not currently supported, please open an issue")
+endif()
+if(NOT "${TERCO_DF_LMAX}" STREQUAL "" AND TERCO_DF_LMAX GREATER 5)
+  message(FATAL_ERROR "TERCO_DF_LMAX=${TERCO_DF_LMAX}: the density-fitting orbital ceiling above 5 (h) is not "
+                      "currently supported, please open an issue")
+endif()
+if(TERCO_DF_LMAX_AUX GREATER 5)
+  message(FATAL_ERROR "TERCO_DF_LMAX_AUX=${TERCO_DF_LMAX_AUX}: the density-fitting auxiliary ceiling above 5 (h) "
+                      "is not currently supported, please open an issue")
 endif()
 if(NOT "${TERCO_DF_LMAX}" STREQUAL "" AND TERCO_DF_LMAX GREATER 4)
-  message(FATAL_ERROR "TERCO_DF_LMAX=${TERCO_DF_LMAX}: density fitting is built and checked through 4 (g) "
-                      "on the orbital side; an h orbital basis is energies through the four-centre path only")
+  message(WARNING "TERCO_DF_LMAX=${TERCO_DF_LMAX}: density fitting with h orbital shells is built but no h "
+                  "density-fitting number has been compared with a reference (through g it has); "
+                  "TERCO_LMAX=5 is needed to run an h orbital basis through the four-centre path")
 endif()
 
 #
