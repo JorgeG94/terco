@@ -266,11 +266,53 @@ rank by node-local rank (`trc_bind_device`).
 ### 4.9 Nuclear gradients
 
 The two-electron gradient (`src/eri/trc_grad.F90`) uses Rys kernels for
-every class (`scripts/gen_rys_grad.py`), over the same bins. Each class runs
+every class (`scripts/gen_rys_grad.py`), over the same bins. The Coulomb part
+comes by default from the McMurchie-Davidson J engine's gradient
+(`trc_mdj`'s `gradient`, `scripts/gen_md_j_grad.py`) and the Rys kernels then
+run exchange only; the fused Rys J+K kernels remain for the cases the MD route
+does not cover (a skeleton point-group gradient, a range-separated
+`omega > 0` pass, `j_scale = 0`) and are selected for the whole run with
+`TRC_MDJ_GRAD=0` or per engine with `eri%grad_j_engine =
+TRC_J_ENGINE_BINS`. With exchange, the default also keeps the fused kernels
+below 600 basis functions, where the MD route's fixed cost (about 40 ms on a
+V100: per-geometry bounds and some eighty small launches) loses: 10 waters
+0.050 s fused against 0.090 s, 25 waters 0.244 against 0.242 s, 30 waters
+0.418 against 0.392 s (RHF, def2-SVP, same conditions as below);
+`TRC_MDJ_GRAD=1` takes the MD route at any size. A basis above f has no analytic gradient at all. When a
+symmetric run's skeleton decision changes between geometry steps the Coulomb
+gradient engine changes with it, a difference at the screening-error level
+(<= 1e-11 measured at `thresh` 1e-12 on the check_sym cases). Measured on one
+V100 (NVHPC 26.9), def2-SVP, `thresh` 1e-12, the two-electron gradient stage
+alone, fused -> MD route: HF glycine 20-mer 2.23 -> 1.23 s, 50-mer 13.1 ->
+4.67 s, 40 waters 1.34 -> 1.29 s; PBE 2.36 -> 0.49 s, 13.35 -> 2.76 s, 1.46
+-> 0.54 s. Timed only for closed-shell, double-zeta, up to d; open-shell,
+triple-zeta and f were validated for correctness but not timed. At equal threshold the MD
+Coulomb gradient is also the more accurate: CHFCl2 6-31G*, Coulomb part alone,
+error against each engine's own `thresh` 1e-15 result at `thresh` 1e-10, MD
+1.2e-10 against Rys 1.7e-7 Eh/Bohr. The two routes therefore agree to the
+Rys screening error, not to rounding, at a loose threshold. Each class runs
 in two passes: a screening pass that compacts the surviving quartets into a
 list, then the derivative pass over that list. Contributions are accumulated
 into 32 private copies of the gradient, chosen by thread, and reduced at the
 end, which limits atomic contention on the few atoms a quartet touches.
+
+The screening pass drops a quartet when its Schwarz product times the density
+factor of the terms the launch has is under the threshold: the Coulomb blocks
+D_ab, D_cd only if there is a Coulomb term, the exchange blocks D_ac, D_ad,
+D_bc, D_bd only if there is an exchange term. The exchange-only Rys pass
+behind the MD Coulomb gradient (`eri%grad_j_engine`, the default route) uses
+instead the product of two exchange blocks, `max(D_ac D_bd, D_ad D_bc)`,
+against the threshold times a margin (`GRAD_K_PRODUCT_MARGIN`,
+`src/eri/trc_grad.F90`, which records what it was calibrated on). Every other
+launch, including the long-range pass of a range-separated hybrid and pair
+tables, keeps the largest single block.
+
+That product pass is also planned on the exchange tiles of section 4.3: a
+tile pair is dropped before launch when its Schwarz bound times the square of
+the largest density block between the two tiles is under the threshold times
+the margin. That bounds every quartet of the pair, so only quartets the
+screening pass rejects anyway are never visited and the survivors are
+unchanged. `TRC_EXCHANGE_TILES=0` turns it off.
 
 ## 5. Other integrals
 
@@ -514,6 +556,11 @@ are split across ranks by surface point.
   four-centre or density-fitted two-electron derivatives, the XC gradient
   including the grid-weight response (from the derivatives of the Becke
   partition), the VV10 gradient and the nuclear repulsion.
+  The grid-weight response (`dft_partition_becke_grad_contract`) keeps a
+  per-point active list ordered so that the work stops early: the nearest
+  atoms first in every cell product, the rows whose cell counts at the
+  front, and a closure that asks the atom most likely to admit a candidate
+  before scanning the rest (measurements in `trc_dft_partition.F90`).
 - **RI-MP2 and double-hybrid gradients** (`src/post_hf/rimp2/trc_rimp2_grad.F90`)
   add the correlation's relaxed and energy-weighted densities, from a
   Z-vector solved against the reference's own orbital Hessian: CPHF for an

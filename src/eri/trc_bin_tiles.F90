@@ -58,6 +58,25 @@
 ! Only exchange-only launches are tiled (jfac = 0, kfac /= 0): a Coulomb
 ! launch keeps nearly every bin pair, and TRC_EXCHANGE_TILES=0 turns the
 ! tiling off for measurement.
+!
+! GRADIENT PRODUCT TEST. The two-electron gradient's exchange-only Rys pass
+! behind the MD Coulomb gradient (trc_grad) is tiled the same way, with a
+! different kernel test: it rejects a quartet when
+!     qcut * max(dsh(si,sk) dsh(sj,sl), dsh(si,sl) dsh(sj,sk)) <= thresh*kmarg,
+! qcut = Q_ab Q_cd (RHF and UHF alike: dsh is the maximum over the spins), si,
+! sj the shells of the bra pair and sk, sl those of the ket pair. All four dsh
+! entries are CROSS blocks, one shell from each pair, so for a tile pair (A, B)
+! with C the largest db over A's blocks x B's blocks every product is at most
+! C*C, and qcut <= Q_A Q_B. If Q_A Q_B C^2/kmarg <= thresh, every quartet of
+! the tile pair fails the kernel's test, and the tile pair may be dropped. That
+! is the exchange test above run on db' = db^2/kmarg with the unchanged cut
+! thresh/(Q_A Q_B), and bin_tiles_reach(.., kmarg) forms db', so the
+! thresholds, the Schwarz admission and the levels need no second code path.
+! (max of squares is the square of the max, so the block maxima, hulls and
+! levels see the right thing.) The levels only round conservatively
+! (lowest_level and cut_level), the symmetrisation of db only raises it, and
+! the relative 1e-9 on db' only keeps more, so the test drops a subset of what
+! the kernel drops: the survivors are the same.
 #include "inc/trc_dc_index.inc"
 
 module trc_bin_tiles
@@ -69,6 +88,7 @@ module trc_bin_tiles
    private
 
    public :: bin_tiles_requested, bin_tiles_set_enabled, bin_tiles_build, bin_tiles_reach, bin_tiles_plan
+   public :: bin_tiles_env_off, bin_tiles_share_env
 
    integer, parameter :: TILE_PAIRS = 64
    !! Pairs per tile: two warps of bra pairs against one ket pair, so the
@@ -86,17 +106,41 @@ module trc_bin_tiles
 
    logical :: tiles_enabled = .true.
    !! bin_tiles_set_enabled's switch; TRC_EXCHANGE_TILES=0 overrides it off.
+   logical :: env_shared = .false.
+   !! Whether bin_tiles_share_env has replaced this process's environment.
+   logical :: env_off = .false.
+   !! Rank 0's TRC_EXCHANGE_TILES=0, when env_shared.
 
 contains
 
    logical function bin_tiles_requested() result(res)
       !! On unless bin_tiles_set_enabled(.false.) or TRC_EXCHANGE_TILES=0
-      !! turned it off.
+      !! turned it off. Over several ranks the environment is rank 0's
+      !! (bin_tiles_share_env): the tiled plans are split across ranks by
+      !! segment, so ranks that disagreed would count quartets twice or not
+      !! at all.
+      if (env_shared) then
+         res = tiles_enabled .and. .not. env_off
+      else
+         res = tiles_enabled .and. .not. bin_tiles_env_off()
+      end if
+   end function bin_tiles_requested
+
+   logical function bin_tiles_env_off() result(off)
+      !! Whether this process's TRC_EXCHANGE_TILES is 0.
       character(len=8) :: e
       e = " "
       call get_environment_variable("TRC_EXCHANGE_TILES", e)
-      res = tiles_enabled .and. trim(e) /= "0"
-   end function bin_tiles_requested
+      off = trim(e) == "0"
+   end function bin_tiles_env_off
+
+   subroutine bin_tiles_share_env(off)
+      !! Take `off` (rank 0's bin_tiles_env_off) in place of this process's
+      !! own environment from here on.
+      logical, intent(in) :: off
+      env_shared = .true.
+      env_off = off
+   end subroutine bin_tiles_share_env
 
    subroutine bin_tiles_set_enabled(on)
       !! Turn the tiling on or off for the builds that follow, so a check can
@@ -258,20 +302,48 @@ contains
       res = (shell - 1)/TILE_BLOCK + 1
    end function block_of
 
-   subroutine bin_tiles_reach(this, dsh)
+   subroutine bin_tiles_reach(this, dsh, kmarg)
       !! This build's reach of every tile, from the shell-pair density bound.
       !! `dsh` must be present on the device; only its block maxima come back.
+      !!
+      !! With `kmarg` > 0 the reach is that of the gradient's PRODUCT test
+      !! (see the module header, GRADIENT PRODUCT TEST): the block maxima are
+      !! first made symmetric, then replaced by db^2/kmarg, so that the cut
+      !! thresh/(Q_A Q_B) the plan hands the levels now stands for
+      !! Q_A Q_B C^2/kmarg <= thresh, that is
+      !! Q max(D_ac D_bd, D_ad D_bc) <= thresh*kmarg for every quartet of the
+      !! tile pair (both factors are cross blocks, at most C). `db` then holds
+      !! the replaced values.
       type(trc_bin_tiles_t), intent(inout) :: this
       real(dp), intent(in) :: dsh(this%nbas, this%nbas)
+      real(dp), intent(in), optional :: kmarg
 
       integer, allocatable :: hlo(:, :), hhi(:, :)
       integer :: i, j, m, mv, t, nblk
+      real(dp) :: dmax
 
       nblk = this%nblk
       !$acc enter data create(this%db)
       call block_maxima(this%nbas, nblk, dsh, this%db)
       !$acc update self(this%db)
       !$acc exit data delete(this%db)
+      if (present(kmarg)) then
+         if (kmarg > 0.0_dp) then
+            ! Symmetric, so that the bound does not depend on which side of a
+            ! tile pair a kernel reads as the bra (dsh is symmetric for a
+            ! symmetric density; this makes it a fact).
+            do j = 1, nblk
+               do i = 1, j - 1
+                  dmax = max(this%db(i, j), this%db(j, i))
+                  this%db(i, j) = dmax
+                  this%db(j, i) = dmax
+               end do
+            end do
+            ! The relative 1e-9 only ever keeps more: it covers the different
+            ! rounding of this product and of the kernel's.
+            this%db = this%db*this%db*((1.0_dp + 1.0e-9_dp)/kmarg)
+         end if
+      end if
 
       ! Per block row I and level m: the hull of the blocks J with
       ! db(I, J) > 10^-m. The sets grow with m, so a scan from each end
@@ -310,7 +382,10 @@ contains
       !! enters the hulls at m and every later level, so rounding in log10
       !! may only add it early. TILE_NLEV + 1 for a block that is zero.
       real(dp), intent(in) :: v
-      if (v <= 0.0_dp) then
+      if (v /= v) then
+         ! NaN: int(floor(NaN)) is undefined; keep everything (level 0).
+         m = 0
+      else if (v <= 0.0_dp) then
          m = TILE_NLEV + 1
       else if (v >= 1.0_dp) then
          m = 0

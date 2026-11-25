@@ -719,15 +719,30 @@ if(TERCO_LMAX GREATER 3)
   endforeach()
 endif()
 list(JOIN _mdg_classes "," _mdg_classes)
+# The Coulomb gradient's kernels (scripts/gen_md_j_grad.py, trc_mdjg_*): the
+# raised-bra gather Hermite stage and the gradient bra, through f at most (the
+# Rys gradient's own validated ceiling); a basis above it has no analytic
+# gradient at all (eri%gradient stops on it).
+if(TERCO_LMAX GREATER 3)
+  set(_mdjg_lmax 3)
+else()
+  set(_mdjg_lmax ${TERCO_LMAX})
+endif()
+set(_mdjg_batch_flag "")
+if(NOT "${TERCO_MDJ_BATCHES}" STREQUAL "")
+  set(_mdjg_batch_flag "--batches" "${TERCO_MDJ_BATCHES}")
+endif()
 macro(_terco_gen_mdj)
   terco_gen("gen_md_j.py" ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/gen_md_j.py
             --lmax ${TERCO_LMAX} ${_order_flag} ${_mdj_batch_flag} -o ${_mdj_stage})
+  terco_gen("gen_md_j_grad.py" ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/gen_md_j_grad.py
+            --lmax ${_mdjg_lmax} ${_order_flag} ${_mdjg_batch_flag} -o ${_mdj_stage})
   terco_gen("gen_md_k.py" ${Python3_EXECUTABLE} ${PROJECT_SOURCE_DIR}/scripts/gen_md_k.py
             --lmax ${TERCO_LMAX} --classes=${_mdg_classes} ${_order_flag} -o ${_mdj_stage})
 endmacro()
 terco_generate(
   "MD J kernels" _terco_gen_mdj "${_mdj_stage}" "${_mdj_dir}" ON ON
-  ${_s}/gen_md_j.py ${_s}/gen_md_k.py ${_s}/md/__init__.py ${_s}/md/hermite.py ${_s}/md/rtree.py ${_s}/cartorder.py)
+  ${_s}/gen_md_j.py ${_s}/gen_md_j_grad.py ${_s}/gen_md_k.py ${_s}/md/__init__.py ${_s}/md/hermite.py ${_s}/md/rtree.py ${_s}/cartorder.py)
 file(GLOB _mdj_sources "${_mdj_dir}/*.F90")
 list(LENGTH _mdj_sources _nmdj)
 message(STATUS "terco: ${_nmdj} MD J engine modules in ${_mdj_dir}")
