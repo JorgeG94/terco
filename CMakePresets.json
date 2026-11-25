@@ -66,6 +66,59 @@
         "CMAKE_CXX_COMPILER": "mpic++",
         "TERCO_ENABLE_MPI": "ON"
       }
+    },
+    {
+      "name": "gadi-base",
+      "hidden": true,
+      "description": "Shared by the gadi-cpu and gadi-gpu-* presets. BLAS/LAPACK is sequential LP64 MKL, named explicitly under $MKLROOT so it follows the loaded intel-mkl module. Explicit because CMake's FindBLAS only searches for MKL when C or C++ is enabled, and terco's own project is Fortran-only: BLA_VENDOR works for pic-blas and then fails in test/. Gadi's login environment preloads intel-mkl/2018.1.163 and a second `module load intel-mkl/...` is refused as a conflict, so `module unload intel-mkl` first.",
+      "installDir": "${sourceDir}/../../install/terco",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "TERCO_LMAX": "3",
+        "TERCO_DF_LMAX": "3",
+        "BLAS_LIBRARIES": "$env{MKLROOT}/lib/intel64/libmkl_intel_lp64.so;$env{MKLROOT}/lib/intel64/libmkl_sequential.so;$env{MKLROOT}/lib/intel64/libmkl_core.so;-lpthread;-lm;-ldl",
+        "LAPACK_LIBRARIES": "$env{MKLROOT}/lib/intel64/libmkl_intel_lp64.so;$env{MKLROOT}/lib/intel64/libmkl_sequential.so;$env{MKLROOT}/lib/intel64/libmkl_core.so;-lpthread;-lm;-ldl"
+      }
+    },
+    {
+      "name": "gadi-cpu",
+      "inherits": "gadi-base",
+      "displayName": "Gadi CPU (ifx, OpenMPI 5.0.8, MPI ranks)",
+      "description": "source tools/machines/gadi/cpu_env.sh (intel-compiler-llvm/2025.3.2, intel-mkl/2025.3.1, openmpi/5.0.8, cmake/3.31.12). Host build parallelised over MPI ranks only: `do concurrent` stays serial (no -qopenmp, TERCO_ENABLE_MULTICORE=OFF) and MKL is the sequential layer, so a rank is one core.",
+      "binaryDir": "${sourceDir}/build-gadi-cpu",
+      "cacheVariables": {
+        "CMAKE_Fortran_COMPILER": "mpifort",
+        "CMAKE_C_COMPILER": "mpicc",
+        "CMAKE_CXX_COMPILER": "mpic++",
+        "TERCO_ENABLE_GPU": "OFF",
+        "TERCO_ENABLE_MULTICORE": "OFF",
+        "TERCO_ENABLE_MPI": "ON"
+      }
+    },
+    {
+      "name": "gadi-gpu-cc70",
+      "inherits": "gadi-base",
+      "displayName": "Gadi GPU cc70 (nvidia-hpc-sdk, V100)",
+      "description": "source tools/machines/gadi/gpu_env.sh (nvidia-hpc-sdk, openmpi/5.0.5, intel-mkl, cmake/3.31.12, cuda). gpuvolta V100s. OpenMPI's wrappers (nvfortran underneath), single rank; -DTERCO_ENABLE_MPI=ON for one device per rank.",
+      "binaryDir": "${sourceDir}/build-gadi-gpu-cc70",
+      "cacheVariables": {
+        "CMAKE_Fortran_COMPILER": "mpifort",
+        "CMAKE_C_COMPILER": "mpicc",
+        "CMAKE_CXX_COMPILER": "mpic++",
+        "TERCO_ENABLE_GPU": "ON",
+        "TERCO_GPU_ARCH": "cc70",
+        "TERCO_ENABLE_MPI": "OFF"
+      }
+    },
+    {
+      "name": "gadi-gpu-cc90",
+      "inherits": "gadi-gpu-cc70",
+      "displayName": "Gadi GPU cc90 (nvidia-hpc-sdk, H100/H200)",
+      "description": "As gadi-gpu-cc70, for the Hopper nodes. The binaries do not run on a V100.",
+      "binaryDir": "${sourceDir}/build-gadi-gpu-cc90",
+      "cacheVariables": {
+        "TERCO_GPU_ARCH": "cc90"
+      }
     }
   ],
   "buildPresets": [
@@ -87,6 +140,21 @@
     {
       "name": "gadi-mpi",
       "configurePreset": "gadi-mpi",
+      "jobs": 16
+    },
+    {
+      "name": "gadi-cpu",
+      "configurePreset": "gadi-cpu",
+      "jobs": 16
+    },
+    {
+      "name": "gadi-gpu-cc70",
+      "configurePreset": "gadi-gpu-cc70",
+      "jobs": 16
+    },
+    {
+      "name": "gadi-gpu-cc90",
+      "configurePreset": "gadi-gpu-cc90",
       "jobs": 16
     }
   ]
