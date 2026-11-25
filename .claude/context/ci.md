@@ -6,13 +6,14 @@ directives are inert.
 
 | Job | What it checks |
 |---|---|
-| `host gcc-15`, `host intel-2025.0`, `host nvidia-hpc-latest` | host build and the full ctest suite, then the "Golden spread" report |
+| `host gcc-15`, `host intel-2025.0`, `host nvidia-hpc-latest`, `host flang-23` | host build and the full ctest suite, then the "Golden spread" report |
 | `host gcc-15 (TERCO_LMAX=3)`, `(TERCO_DF_LMAX=3)` | the f-function and f/g-auxiliary builds; regenerates kernels at configure |
 | `host gcc-15 (TERCO_LMAX=4, -O0)` | g functions: builds only the command line at -O0 (about a minute) and runs water/def2-QZVP against pyscf (`terco/cli_library_def2qzvp_g`) |
 | `generated sources are up to date` | reruns the generators and requires no diff in `src/generated/` |
 | `Rys root tables are up to date` | regenerates the Rys root tables (1..11 roots) and the Boys table with mpmath 1.3.0 |
 | `OpenACC to OpenMP conversion` | converts the source to OpenMP, builds with `-fopenmp`, runs ctest at 4 threads |
 | `fortitude lint` | `fortitude check`, fortitude-lint 0.9.2 |
+| `style (system_clock, MPI, Doxygen, kinds, console output)` | `tools/check_style.py src app test` (and its pytest): no `system_clock`, no MPI outside pic-mpi (`use mpi`, `MPI_*(` calls), no Doxygen (`!>`, `!<`, `@param`), no `real(8)` or `1.0d0`, no bare `print`/`write(*, ...)` in `src/` and `app/`. Reproduce: `python3 tools/check_style.py src app test` |
 | `no AI-session links in commits or the PR body` (own workflow, `session-links.yml`, so a body edit reruns only it) | pull requests only: `tools/check_session_links.py` fails on a `Claude-Session:` trailer or a claude.ai/code/session URL in the PR's commit messages or body. Reproduce: `python3 tools/check_session_links.py origin/main HEAD` |
 | `fpm (gcc 15)` | the fpm build (often skipped) |
 

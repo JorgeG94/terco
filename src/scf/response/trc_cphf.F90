@@ -245,7 +245,7 @@ contains
             call lp%gemm_mat(cmo(:, nocc + 1:nao), cg%p(:, :, kk), temporary_no)
             call lp%gemm_mat(temporary_no, cmo(:, 1:nocc), d_u(:, :, k), transb="T")
             call lp%transpose(nao, nao, d_u(:, :, k), nao, d_ut, nao)
-            call cphf_add_matrix(nao, nao, d_u(:, :, k), d_ut, d_u(:, :, k))
+            call cphf_axpy_matrix(nao, nao, 1.0_dp, d_ut, d_u(:, :, k))
          end do
          if (nbmax == 1) then
             call eri%fock_resident(b, d_u(:, :, 1), g_u(:, :, 1), opts=fopts)
@@ -642,12 +642,12 @@ contains
          call lp%gemm_mat(cmo_a(:, noa + 1:nao), pina, temporary_a)
          call lp%gemm_mat(temporary_a, cmo_a(:, 1:noa), d_ua, transb="T")
          call lp%transpose(nao, nao, d_ua, nao, d_temporary, nao)
-         call cphf_add_matrix(nao, nao, d_ua, d_temporary, d_ua)
+         call cphf_axpy_matrix(nao, nao, 1.0_dp, d_temporary, d_ua)
          ! D_U^beta
          call lp%gemm_mat(cmo_b(:, nob + 1:nao), pinb, temporary_b)
          call lp%gemm_mat(temporary_b, cmo_b(:, 1:nob), d_ub, transb="T")
          call lp%transpose(nao, nao, d_ub, nao, d_temporary, nao)
-         call cphf_add_matrix(nao, nao, d_ub, d_temporary, d_ub)
+         call cphf_axpy_matrix(nao, nao, 1.0_dp, d_temporary, d_ub)
          call cphf_add_matrix(nao, nao, d_ua, d_ub, d_t)
          call eri%fock_resident(b, d_t, g_j, &
                                 opts=trc_fock_options_t(j_scale=1.0_dp, k_scale=0.0_dp, density_screen=.false.))

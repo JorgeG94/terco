@@ -2167,15 +2167,25 @@ def gen_dft_grad(case, xyz, json_rel, functional, grid_level=3):
     dump.unlink()
 
 
-def gen_df_grad(case, xyz, json_rel, functional, grid_level=3):
+def gen_df_grad(case, xyz, json_rel, functional, grid_level=3, space='cart'):
     """check_df_grad_vs_pyscf.F90's cases: the FULL density-fitted RHF/RKS
     gradient against pyscf's own df.grad (auxbasis def2-universal-jkfit,
-    mol.cart=True, auxiliary-basis response on, pyscf's default) at
+    mol.cart per `space` below, auxiliary-basis response on, pyscf's default) at
     TERCO'S OWN converged orbitals and, for a functional, TERCO'S OWN grid
     -- gen_dft_grad's recipe, with `density_fit` on the mf. Grid response
     off on both sides (pyscf's default, and the Fortran side passes
-    grid_response=.false.)."""
+    grid_response=.false.).
+
+    `space` mirrors the binary's 9th argument: 'cart' (the original cases:
+    mol.cart=True, auxmol Cartesian) or 'sph' (cart=False for both, pyscf's own
+    default: the cc-pVDZ and def2-universal-jkfit JSONs are tagged spherical).
+    A spherical case's dump carries cmo and the overlap in nao_sph, folded the
+    way gen_dft_grad's are, and is renormalised from that overlap the same way.
+    A mixed pair is not generated: pyscf's three-centre integrals take one
+    cart flag for the orbital and auxiliary molecules, so check_df_grad_fd.F90
+    covers those against finite differences."""
     PYSCF = {'pbe': 'PBE', 'b3lyp': 'HYB_GGA_XC_B3LYP', 'r2scan': 'R2SCAN', 'tpssh': 'TPSSH'}
+    orb_sph = space == 'sph'
     aux_rel = "basis_sets/def2-universal-jkfit.json"
     dump = TEST / f"dfg_{case}_probe.bin"
     # Pruning off for the probe run: pyscf is handed the literal (unpruned)
@@ -2185,7 +2195,7 @@ def gen_df_grad(case, xyz, json_rel, functional, grid_level=3):
     # precheck. Gradients do not depend on it; bases with no general
     # contraction (6-31G*) are unaffected.
     run_bin(f"check_df_grad_vs_pyscf_{case}", [xyz, json_rel, aux_rel, functional, grid_level, dump.name, case,
-                                                1.0], env_extra=NO_PRUNE)
+                                                1.0] + ([] if space == 'cart' else [space]), env_extra=NO_PRUNE)
     if not dump.exists():
         print(f"  dfg {case}: binary self-skipped; not regenerating")
         return
@@ -2207,10 +2217,10 @@ def gen_df_grad(case, xyz, json_rel, functional, grid_level=3):
     basis_arg = bse_json_basis(TEST / json_rel, elements)
     aux_arg = bse_json_basis(TEST / aux_rel, elements)
     atoms = [(_SYMBOL[int(z)], tuple(rcoord[i])) for i, z in enumerate(at_z)]
-    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=True, verbose=0)
+    mol = gto.M(atom=atoms, basis=basis_arg, unit='Bohr', cart=not orb_sph, verbose=0)
     if mol.nao_nr() != nao:
         raise RuntimeError(f"gen_df_grad {case}: nao mismatch terco {nao} pyscf {mol.nao_nr()}")
-    perm = terco_to_pyscf_perm(atoms, basis_arg)
+    perm = (terco_to_pyscf_perm_sph if orb_sph else terco_to_pyscf_perm)(atoms, basis_arg)
     inv_perm = np.argsort(perm)
     n, s_err = ao_norm_from_overlap(s_terco[np.ix_(inv_perm, inv_perm)], mol.intor('int1e_ovlp'))
     if s_err >= 1e-9:
@@ -7824,6 +7834,18 @@ CASES = {
         "water_b3lyp_631gs", "water.xyz", "basis_sets/6-31gs.json", "b3lyp"),
     "dfg_formamide_b3lyp_ccpvdz": lambda: gen_df_grad(
         "formamide_b3lyp_ccpvdz", "formamide.xyz", "basis_sets/cc-pvdz.json", "b3lyp"),
+    "dfg_water_hf_ccpvdz_sph": lambda: gen_df_grad(
+        "water_hf_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "hf", space="sph"),
+    "dfg_water_pbe_ccpvdz_sph": lambda: gen_df_grad(
+        "water_pbe_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "pbe", space="sph"),
+    "dfg_water_b3lyp_ccpvdz_sph": lambda: gen_df_grad(
+        "water_b3lyp_ccpvdz_sph", "water.xyz", "basis_sets/cc-pvdz.json", "b3lyp", space="sph"),
+    "dfg_formamide_hf_ccpvdz_sph": lambda: gen_df_grad(
+        "formamide_hf_ccpvdz_sph", "formamide.xyz", "basis_sets/cc-pvdz.json", "hf", space="sph"),
+    "dfg_formamide_pbe_ccpvdz_sph": lambda: gen_df_grad(
+        "formamide_pbe_ccpvdz_sph", "formamide.xyz", "basis_sets/cc-pvdz.json", "pbe", space="sph"),
+    "dfg_formamide_b3lyp_ccpvdz_sph": lambda: gen_df_grad(
+        "formamide_b3lyp_ccpvdz_sph", "formamide.xyz", "basis_sets/cc-pvdz.json", "b3lyp", space="sph"),
     "rks": gen_rks,
     "scf_mgga": gen_scf_mgga,
     "scf_robust": gen_scf_robust,

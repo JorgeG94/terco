@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["dfg_water_tpssh_631gs"] -> gen_df_grad
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 1caa0de5b80663333b860e47b3b3fcce9c2b6115bcbd70601d19ff9eda7867a2
+# hash: bfd70238500181db715425b4c669ac4c0f9c9bae787eba01228a311062f46f5e
 # files: test/check_df_grad_vs_pyscf.F90 test/basis_sets/6-31gs.json test/basis_sets/def2-universal-jkfit.json test/water.xyz
 NAT 3
 NAO 19

@@ -4,7 +4,7 @@ module check_df_grad_vs_pyscf_suite
    !! (trc_scf_grad%trc_scf_gradient with `dfjk`/`aux`: fitted J and K, 1e, XC,
    !! nuclear repulsion) against pyscf's own density-fitted gradient
    !! (pyscf.df.grad.rhf / pyscf.df.grad.rks, auxiliary basis
-   !! def2-universal-jkfit, mol.cart=True) AT TERCO'S OWN converged orbitals and,
+   !! def2-universal-jkfit) AT TERCO'S OWN converged orbitals and,
    !! for a functional, TERCO'S OWN grid -- gen_dft_grad's recipe
    !! (test/pyscf_refs/generate.py's gen_df_grad), so the comparison is of the
    !! gradient formula at one fixed state, not of two SCFs.
@@ -15,8 +15,18 @@ module check_df_grad_vs_pyscf_suite
    !! (pyscf's default); check_df_grad_fd.F90 checks the grid-response-ON
    !! gradient against a finite difference instead.
    !!
+   !! The AO spaces come from the optional 9th argument `space`: "cart" (the
+   !! default: both bases Cartesian) or "sph" (both as their JSON tags them,
+   !! spherical for cc-pVDZ and def2-universal-jkfit), which exercises the
+   !! gradient's expansion of the orbital and auxiliary coefficient tensors
+   !! onto the Cartesian functions the derivative kernels run over
+   !! (trc_scf_grad_df.F90's SPHERICAL BASES). A mixed pair is not compared
+   !! with pyscf, whose three-centre integrals take a single cart flag
+   !! (check_df_grad_fd.F90 covers those).
+   !!
    !! Writes the dump gen_df_grad reads: geometry, grid, orbitals, terco's
-   !! gradient and the Cartesian overlap (for the per-AO normalisation).
+   !! gradient and the overlap in the orbitals' own space (for the per-AO
+   !! normalisation).
    !!
    !! SKIPS CLEANLY (print SKIP, stop 0, before run_testsuite) when the
    !! auxiliary basis needs more angular momentum than this build's
@@ -27,6 +37,7 @@ module check_df_grad_vs_pyscf_suite
    use testdrive, only: new_unittest, unittest_type, error_type, check
    use trc_api, only: trc_basis_t, trc_pairlist_t, trc_1e, trc_bind_device
    use trc_basis_json, only: trc_basis_from_json
+   use trc_sph, only: sph_cart_to_sph
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_scf_grad, only: trc_scf_gradient
    use trc_scf_df, only: df_jk_t
@@ -43,6 +54,8 @@ module check_df_grad_vs_pyscf_suite
    real(dp), parameter :: THRESH = 1.0e-12_dp
 
    character(len=256) :: g_xyzfile, g_basis_json, g_aux_json, g_functional, g_dump, g_case_name
+   logical :: g_orb_cart = .true., g_aux_cart = .true.
+   !! Force the orbital / auxiliary basis Cartesian (else follow the JSON's tag).
    integer :: g_grid_level
    real(dp) :: g_tol
    !! Per-case tolerance, from test/CMakeLists.txt (the 8th argument):
@@ -66,17 +79,17 @@ module check_df_grad_vs_pyscf_suite
    !! Independently of pyscf, the same formamide gradient matches a
    !! Richardson finite difference of terco's reconverged --df energy to
    !! 7.1e-10 (check_df_grad_fd formamide).
-   !! Revisit once spherical auxiliary functions land (PR #82): the
-   !! Cartesian auxiliary set's non-spherical contaminants likely drive
-   !! cond(M), and with them gone the formamide gate should tighten to
-   !! water's.
+   !! The spherical cases (cc-pVDZ over the spherical jkfit set) agree to
+   !! 2.2e-12 on formamide, 1.1e-12 on water, so formamide gets water's gate
+   !! there: the Cartesian auxiliary set's non-spherical contaminants do drive
+   !! cond(M).
    logical :: g_is_dft
 
 contains
 
    subroutine check_df_grad_vs_pyscf_prepare(xyzfile, basis_json, aux_json, functional, grid_level, &
-                                             dump, case_name, tol, skip)
-      character(*), intent(in) :: xyzfile, basis_json, aux_json, functional, dump, case_name
+                                             dump, case_name, tol, space, skip)
+      character(*), intent(in) :: xyzfile, basis_json, aux_json, functional, dump, case_name, space
       integer, intent(in) :: grid_level
       real(dp), intent(in) :: tol
       logical, intent(out) :: skip
@@ -93,13 +106,22 @@ contains
       g_functional = functional; g_grid_level = grid_level; g_dump = dump
       g_case_name = case_name; g_tol = tol
       g_is_dft = trim(functional) /= 'hf'
+      select case (space)
+      case ('cart')
+         g_orb_cart = .true.; g_aux_cart = .true.
+      case ('sph')
+         g_orb_cart = .false.; g_aux_cart = .false.
+      case default
+         print '(a)', 'check_df_grad_vs_pyscf: unknown space "'//space//'" (cart, sph)'
+         stop 1
+      end select
 
       ! Only the aux basis's own ceiling decides the skip, and building it
       ! once here (then rebuilding inside the test) is cheap next to the
       ! SCF -- simpler than threading a cached basis through, and this
       ! program only ever builds one test.
       call read_xyz(trim(xyzfile), nat, at_z, r)
-      call trc_basis_from_json(trim(aux_json), nat, at_z, r, aux, err, force_cart=.true.)
+      call trc_basis_from_json(trim(aux_json), nat, at_z, r, aux, err, force_cart=g_aux_cart)
       if (err%has_error()) then
          print '(a)', 'check_df_grad_vs_pyscf: '//err%get_message(); stop 1
       end if
@@ -114,7 +136,7 @@ contains
 
    subroutine test_df_grad_vs_pyscf(error)
       type(error_type), allocatable, intent(out) :: error
-      integer :: nat, nao, nalpha, nbeta, unit, npts
+      integer :: nat, nao, nao_sp, nalpha, nbeta, unit, npts
       integer, allocatable :: at_z(:)
       real(dp), allocatable :: r(:, :), grad(:, :)
       type(trc_basis_t) :: bas, aux
@@ -125,7 +147,7 @@ contains
       type(trc_linalg_t) :: lp
       type(df_jk_t) :: dfjk
       type(error_t) :: err
-      real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :)
+      real(dp), allocatable :: smat(:, :), tmat(:, :), vmat(:, :), s_sp(:, :)
       integer :: u, nat_ref, nao_ref, nfail
       real(dp), allocatable :: grad_ref(:, :)
       real(dp) :: worst
@@ -140,11 +162,11 @@ contains
       call read_xyz(trim(g_xyzfile), nat, at_z, r)
       nalpha = sum(at_z)/2
       nbeta = nalpha
-      call trc_basis_from_json(trim(g_basis_json), nat, at_z, r, bas, err, force_cart=.true.)
+      call trc_basis_from_json(trim(g_basis_json), nat, at_z, r, bas, err, force_cart=g_orb_cart)
       if (err%has_error()) then
          print '(a)', 'check_df_grad_vs_pyscf: '//err%get_message(); stop 1
       end if
-      call trc_basis_from_json(trim(g_aux_json), nat, at_z, r, aux, err, force_cart=.true.)
+      call trc_basis_from_json(trim(g_aux_json), nat, at_z, r, aux, err, force_cart=g_aux_cart)
       if (err%has_error()) then
          print '(a)', 'check_df_grad_vs_pyscf: '//err%get_message(); stop 1
       end if
@@ -186,6 +208,14 @@ contains
       call trc_1e(bas, pl, smat, tmat, vmat)
       !$acc update self(smat)
       !$acc exit data delete(smat, tmat, vmat)
+      ! The overlap in the orbitals' own space, nao_sp (T^T S T when spherical).
+      nao_sp = size(res%cmo, 1)
+      allocate (s_sp(nao_sp, nao_sp))
+      if (bas%spherical) then
+         call sph_cart_to_sph(bas, smat, s_sp)
+      else
+         s_sp = smat
+      end if
       call dfjk%release()
       call pl%release()
       call lp%release()
@@ -195,7 +225,7 @@ contains
       npts = 0
       if (g_is_dft) npts = size(res%grid_r, 2)
       open (newunit=unit, file=trim(g_dump), access='stream', form='unformatted', status='replace')
-      write (unit) int(nat, int64), int(nao, int64), int(nalpha, int64)
+      write (unit) int(nat, int64), int(nao_sp, int64), int(nalpha, int64)
       write (unit) int(at_z, int64)
       write (unit) r
       write (unit) int(npts, int64)
@@ -206,18 +236,18 @@ contains
       write (unit) res%cmo
       write (unit) res%eps
       write (unit) grad
-      write (unit) smat
+      write (unit) s_sp
       close (unit)
       print '(a)', 'check_df_grad_vs_pyscf: wrote '//trim(g_dump)
 
       call ref_require('dfg_'//trim(g_case_name)//'.ref', u)
       call ref_read_int(u, 'NAT', nat_ref)
       call ref_read_int(u, 'NAO', nao_ref)
-      shape_ok = nat_ref == nat .and. nao_ref == nao
+      shape_ok = nat_ref == nat .and. nao_ref == nao_sp
       call check(error, shape_ok, "check_df_grad_vs_pyscf: pyscf reference shape does not match this build")
       if (allocated(error)) then
          call ref_close(u)
-         deallocate (at_z, r, grad, smat, tmat, vmat)
+         deallocate (at_z, r, grad, smat, tmat, vmat, s_sp)
          return
       end if
       allocate (grad_ref(3, nat))
@@ -229,7 +259,7 @@ contains
       print '(a,es10.2)', '  translational-invariance residual: ', maxval(abs(sum(grad, dim=2)))
       call check(error, worst < g_tol, "--df gradient vs pyscf df.grad, worst|diff| = "// &
                  to_string(worst, "es10.2")//" exceeds gate "//to_string(g_tol, "es10.2"))
-      deallocate (at_z, r, grad, smat, tmat, vmat, grad_ref)
+      deallocate (at_z, r, grad, smat, tmat, vmat, s_sp, grad_ref)
    end subroutine test_df_grad_vs_pyscf
 
 end module check_df_grad_vs_pyscf_suite
@@ -242,13 +272,13 @@ program check_df_grad_vs_pyscf
    implicit none
    integer :: stat, grid_level
    type(testsuite_type), allocatable :: testsuites(:)
-   character(len=256) :: xyzfile, basis_json, aux_json, functional, dump, case_name, glevel_str, tol_str
+   character(len=256) :: xyzfile, basis_json, aux_json, functional, dump, case_name, glevel_str, tol_str, space
    real(dp) :: tol
    logical :: skip
 
    if (command_argument_count() < 8) then
       print '(a)', 'usage: check_df_grad_vs_pyscf <xyz> <basis.json> <aux.json> <functional|hf> '// &
-         '<grid_level> <dump.bin> <case_name> <tol>'; stop 1
+         '<grid_level> <dump.bin> <case_name> <tol> [cart|sph]'; stop 1
    end if
    call get_command_argument(1, xyzfile)
    call get_command_argument(2, basis_json)
@@ -258,11 +288,13 @@ program check_df_grad_vs_pyscf
    call get_command_argument(6, dump)
    call get_command_argument(7, case_name)
    call get_command_argument(8, tol_str)
+   space = 'cart'
+   if (command_argument_count() >= 9) call get_command_argument(9, space)
    read (glevel_str, *) grid_level
    read (tol_str, *) tol
 
    call check_df_grad_vs_pyscf_prepare(trim(xyzfile), trim(basis_json), trim(aux_json), trim(functional), &
-                                       grid_level, trim(dump), trim(case_name), tol, skip)
+                                       grid_level, trim(dump), trim(case_name), tol, trim(space), skip)
    if (skip) then
       print '(a)', '  SKIP: the auxiliary basis needs more angular momentum than this build''s DF_LMAX_AUX.'
       stop 0

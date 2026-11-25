@@ -36,7 +36,7 @@ module trc_c_interfaces
    integer(c_int), parameter :: TRC_AO_NORM_UNIT = 1
    integer(c_int), parameter :: TRC_TIMING_NAME_MAX = 64
    integer(c_int), parameter :: TRC_ABI_MAJOR = 1
-   integer(c_int), parameter :: TRC_ABI_MINOR = 33
+   integer(c_int), parameter :: TRC_ABI_MINOR = 34
    integer(c_int), parameter :: TRC_CONST_BOHR_TO_ANGSTROM = 0
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_EV = 1
    integer(c_int), parameter :: TRC_CONST_HARTREE_TO_KCALMOL = 2
@@ -1392,10 +1392,11 @@ module trc_c_interfaces
          !! grid). A later trc_run_scf clears the RI-MP2 result, and the
          !! gradient is the SCF's again. (ABI 1.15: a double hybrid's
          !! gradient was refused before.)
-         !!   - --df outside the DF-SCF's own scope (unrestricted, spherical,
+         !!   - --df outside the DF-SCF's own scope (unrestricted,
          !!     range-separated -- the SCF refuses those first), or with the fit
          !!     gone. A --df gradient otherwise runs the FITTED J/K gradient
          !!     (trc_scf_grad_df.F90) over `cx%dfjk`, the fit the SCF used.
+         !!     (ABI 1.34: a spherical orbital basis was refused before.)
          !!
          !! NOT refused any more: PCM (C-PCM/IEF-PCM). `trc_scf_run` releases
          !! its own continuum at the end of a run, the same as its pair list
