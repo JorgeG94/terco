@@ -92,8 +92,8 @@ def _ab_power_lines(ab, cd, lb, ld, indent):
     (`hrr_inline_body`/`hrr_scalar_assignments`) reads `{ab}` raised to the
     shift, which runs up to lb on the bra side and up to ld on the ket side --
     2 was everything needed while LMAX stayed 2. A class with lb, ld <= 2 emits
-    exactly the two lines it always did. No ceiling: an h shell (l = 5) needs
-    `ab5`, which stopping at 4 left undeclared (TERCO_DF_LMAX=5)."""
+    exactly the two lines it always did. No ceiling: the powers run to lb and
+    ld, whatever l the generator is asked for."""
     pad = " "*indent
     lines = [f"{pad}ab2 = {ab}*{ab}"]
     for p in range(3, lb + 1):
@@ -412,8 +412,8 @@ def rys2d_hrr_decls(la, lb, ld, nk_h):
     same array is reused for x, y, z in turn. `nk_h` is the HRR's own
     second dimension bound (equal to `nk` for the energy kernel, `nk + 1`
     for the gradient kernel's extended table). `ld` sizes the ket-side
-    power scratch (cd3/cd4, see `_power_decl_names`) -- needed once a g
-    shell raises the ket shift past 2; `lb` does the same for ab3/ab4,
+    power scratch (cd3..cd{ld}, see `_power_decl_names`) -- needed once a g
+    shell raises the ket shift past 2; `lb` does the same for ab3..ab{lb},
     already a parameter here for `ht`'s own bound."""
     return (f"      integer  :: i, k, a, b, c\n"
             f"      real(dp) :: {_power_decl_names(lb, ld)}\n"
@@ -434,8 +434,8 @@ def hrr_slice_assignments(hneed, g, t, h, ab, cd, indent):
     the slice reaches, then `{h}_i_j_k_l = sum_u C(l,u) cd^(l-u) t(i, j,
     k+u)`. A stage with nothing to transfer (j = 0, or l = 0) is an ALIAS --
     the element is the g (or t) scalar itself, not a copy of it. The powers
-    ab^2 and cd^2 are read as `{ab}2`/`{cd}2`, which the caller assigns once
-    per quartet. Returns (text, names assigned, {(i, j, k, l): scalar name})."""
+    ab^p and cd^p (p >= 2) are read as `{ab}{p}`/`{cd}{p}`, which the caller
+    assigns once per quartet. Returns (text, names assigned, {(i, j, k, l): scalar name})."""
     pad = " "*indent
     out, names = [], []
     tneed = sorted({(i, j, k + u) for (i, j, k, l) in hneed for u in range(l + 1)})
