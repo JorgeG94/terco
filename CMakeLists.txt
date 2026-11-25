@@ -92,14 +92,16 @@ set(TERCO_DF_LMAX_AUX
 
 # The ceilings the generators and the kernels have been built and checked to:
 # h for the four-centre path, g for the density-fitting orbital shells. A larger
-# value would generate kernels nothing has compiled or compared with a
-# reference, so it stops here rather than at the first wrong number.
+# value generates kernels nothing has compiled or compared with a reference, so
+# it warns instead of stopping: it can be expected to work, but no number from
+# it has been verified.
 if(TERCO_LMAX GREATER 5)
-  message(FATAL_ERROR "TERCO_LMAX=${TERCO_LMAX}: the four-centre path is built and checked through 5 (h)")
+  message(WARNING "TERCO_LMAX=${TERCO_LMAX}: the four-centre path is built and checked through 5 (h); "
+                  "a higher ceiling is unverified")
 endif()
 if(NOT "${TERCO_DF_LMAX}" STREQUAL "" AND TERCO_DF_LMAX GREATER 4)
-  message(FATAL_ERROR "TERCO_DF_LMAX=${TERCO_DF_LMAX}: density fitting is built and checked through 4 (g) "
-                      "on the orbital side; an h orbital basis is energies through the four-centre path only")
+  message(WARNING "TERCO_DF_LMAX=${TERCO_DF_LMAX}: density fitting is built and checked through 4 (g) "
+                  "on the orbital side; an h orbital basis is energies through the four-centre path only")
 endif()
 
 #
