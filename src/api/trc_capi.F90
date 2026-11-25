@@ -4886,14 +4886,14 @@ contains
 
    function trc_check_gradient_upfront(handle) result(status)
       !! Whether trc_run_gradient will refuse this context for a reason its
-      !! molecule, basis and ECP settle before any SCF runs (an ECP attached,
-      !! l above this build's gradient kernels): TRC_OK when nothing known up
-      !! front refuses it, otherwise TRC_ERR_UNSUPPORTED with the message
-      !! (trc_message) trc_run_gradient would give. A geometry optimiser asks
-      !! this before its first step (trc_dlfind_optimize): a refusal at the
-      !! first gradient would otherwise reach DL-FIND, whose only answer to
-      !! a failed evaluation is `error stop`. Fortran only, not part of the C
-      !! ABI: trc_opt_run reaches it through trc_dlfind_optimize.
+      !! molecule, basis and ECP settle before any SCF runs (an f basis function
+      !! with an ECP attached, l above this build's gradient kernels): TRC_OK
+      !! when nothing known up front refuses it, otherwise TRC_ERR_UNSUPPORTED
+      !! with the message (trc_message) trc_run_gradient would give. A geometry
+      !! optimiser asks this before its first step (trc_dlfind_optimize): a
+      !! refusal at the first gradient would otherwise reach DL-FIND, whose only
+      !! answer to a failed evaluation is `error stop`. Fortran only, not part
+      !! of the C ABI: trc_opt_run reaches it through trc_dlfind_optimize.
       type(c_ptr), value :: handle
       integer(c_int) :: status
       type(context_box), pointer :: cx

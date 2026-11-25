@@ -234,9 +234,13 @@ contains
       !! instead, so a test can compare the two; `stats` returns the task
       !! counts and the bound's worst ratio to the largest element it bounds.
       !!
-      !! `split` present: only the shell pairs (i, j) with i > split >= j are
-      !! built, the rectangle the derivative integrals need (their bra shells
-      !! after the ket's, `trc_ecp_deriv_cart`); everything else stays zero.
+      !! `split` present (0 < split < b%nshell): only the shell pairs (i, j)
+      !! with i > split >= j are built, the rectangle the derivative integrals
+      !! need (`trc_ecp_deriv_cart`), and ONLY that rectangle is allocated:
+      !! with nket = b%sh_ao(split + 1) - 1, `mcart(b%nao - nket, nket)`, row
+      !! mu - nket holding AO mu. The shells' AOs must be in shell order. The
+      !! square matrix over real and derivative shells together was 25 times
+      !! the rectangle's size on CH3I.
       !!
       type(trc_basis_t), intent(in) :: b
       type(trc_ecp_t), intent(in) :: ecp
@@ -246,7 +250,7 @@ contains
       type(trc_ecp_screen_stats_t), intent(out), optional :: stats
       integer, intent(in), optional :: split
       logical :: do_screen
-      integer :: nsplit
+      integer :: nsplit, nrow, ncol
       type(trc_ecp_screen_stats_t) :: st
 
       do_screen = .true.
@@ -265,7 +269,19 @@ contains
          end if
       end if
 
-      allocate (mcart(b%nao, b%nao))
+      nsplit = 0
+      if (present(split)) nsplit = split
+      nrow = b%nao
+      ncol = b%nao
+      if (nsplit /= 0) then
+         if (nsplit < 0 .or. nsplit >= b%nshell) then
+            call error%set(ERROR_VALIDATION, "trc_ecp_matrix: split must lie inside the shell list")
+            return
+         end if
+         ncol = b%sh_ao(nsplit + 1) - 1
+         nrow = b%nao - ncol
+      end if
+      allocate (mcart(nrow, ncol))
       mcart = 0.0_dp
 
       if (ecp%has_ecp) then
@@ -298,8 +314,6 @@ contains
                return
             end if
          end if
-         nsplit = 0
-         if (present(split)) nsplit = split
          call ecp_matrix_cart(b, ecp, mcart, error, do_screen, present(stats), st, nsplit)
          if (error%has_error()) return
       end if
@@ -327,8 +341,8 @@ contains
       !! over a basis of those uncontracted fake shells (their coefficients
       !! carry 2a c and c), against the real shells as ket, is folded back
       !! (libfint's cint_ecp_deriv, from PySCF's nr_ecp_deriv.c, does the same).
-      !! The fake shells follow the real ones in the basis, so `split` builds only
-      !! the fake-bra, real-ket rectangle. The raised shell must fit the angular
+      !! The fake shells follow the real ones in the basis, so `split` builds and
+      !! stores only the fake-bra, real-ket rectangle. The raised shell must fit the angular
       !! tables: l + 1 <= ECP_ORB_LMAX, so no f function (ECP_ORB_LMAX is 3).
       !!
       type(trc_basis_t), intent(in) :: b
@@ -346,6 +360,19 @@ contains
 
       nao = b%nao
       nsh = b%nshell
+      ! Before `drop(ia)` and the rows' atoms index anything.
+      if (ecp%has_ecp) then
+         if (ecp%natm /= b%natm) then
+            call error%set(ERROR_VALIDATION, "trc_ecp_deriv_cart: the ECP describes "// &
+                           to_string(ecp%natm)//" atoms, the basis "//to_string(b%natm))
+            return
+         end if
+         if (ia < 1 .or. ia > b%natm) then
+            call error%set(ERROR_VALIDATION, "trc_ecp_deriv_cart: atom "//to_string(ia)//" is outside 1.."// &
+                           to_string(b%natm))
+            return
+         end if
+      end if
       allocate (d(nao, nao, 3))
       d = 0.0_dp
       if (.not. ecp%has_ecp) return
@@ -442,7 +469,8 @@ contains
                   case default
                      k = lexi(ly, lz + 1)
                   end select
-                  d(row, :, c) = d(row, :, c) + mf(bf%sh_ao(up(ip, ish)) + cart_perm_l2b(l + 1, k), 1:nao)
+                  ! The rectangle's row 1 is the first AO after the real ones.
+                  d(row, :, c) = d(row, :, c) + mf(bf%sh_ao(up(ip, ish)) + cart_perm_l2b(l + 1, k) - nao, :)
                   if (l == 0) cycle
                   select case (c)
                   case (1)
@@ -459,7 +487,7 @@ contains
                      rowd = lz
                   end select
                   d(row, :, c) = d(row, :, c) - real(rowd, dp)* &
-                                 mf(bf%sh_ao(dn(ip, ish)) + cart_perm_l2b(l - 1, k), 1:nao)
+                                 mf(bf%sh_ao(dn(ip, ish)) + cart_perm_l2b(l - 1, k) - nao, :)
                end do
             end do
          end do
@@ -499,6 +527,21 @@ contains
       real(dp) :: w(3)
 
       if (.not. ecp%has_ecp .or. ecp%nrow == 0) return
+      ! Checked before anything indexes by atom: a foreign ECP, or a shell on
+      ! no atom (a probe function), would write outside `grad` below.
+      if (ecp%natm /= b%natm) then
+         call error%set(ERROR_VALIDATION, "trc_ecp_gradient: the ECP describes "//to_string(ecp%natm)// &
+                        " atoms, the basis "//to_string(b%natm))
+         return
+      end if
+      if (minval(ecp%ecp_at(1:ecp%nrow)) < 1 .or. maxval(ecp%ecp_at(1:ecp%nrow)) > b%natm) then
+         call error%set(ERROR_VALIDATION, "trc_ecp_gradient: an ECP row names an atom outside 1.."//to_string(b%natm))
+         return
+      end if
+      if (any(b%sh_at(1:b%nshell) < 1) .or. any(b%sh_at(1:b%nshell) > b%natm)) then
+         call error%set(ERROR_VALIDATION, "trc_ecp_gradient: every shell must sit on an atom of the molecule")
+         return
+      end if
       allocate (ao_at(b%nao), has(b%natm))
       do ish = 1, b%nshell
          a0 = b%sh_ao(ish)
@@ -528,12 +571,13 @@ contains
       !!
       type(trc_basis_t), intent(in) :: b
       type(trc_ecp_t), intent(in) :: ecp
-      real(dp), intent(inout) :: mcart(b%nao, b%nao)
+      real(dp), intent(inout) :: mcart(:, :)
       type(error_t), intent(inout) :: error
       logical, intent(in) :: do_screen, want_stats
       type(trc_ecp_screen_stats_t), intent(out) :: st
       integer, intent(in) :: split
-      !! 0: every pair i >= j; otherwise only i > split >= j
+      !! 0: every pair i >= j into the square matrix; otherwise only
+      !! i > split >= j, into the rectangle `trc_ecp_matrix_cart` describes
 
       real(dp) :: rs(0:ECP_NRS - 1), ws(0:ECP_NRS - 1)
       real(dp), allocatable :: sval(:, :)
@@ -630,8 +674,12 @@ contains
       else
          nk64 = ntot64
       end if
-      call global_logger%performance("   ECP 3-centre screen: kept "//to_string(nk64)//" of "// &
-                                     to_string(ntot64)//" (shell pair, ECP atom) tasks")
+      ! Not for the derivative's rectangle: that is one call per ECP atom on
+      ! every gradient.
+      if (split == 0) then
+         call global_logger%performance("   ECP 3-centre screen: kept "//to_string(nk64)//" of "// &
+                                        to_string(ntot64)//" (shell pair, ECP atom) tasks")
+      end if
       if (nk64 > int(huge(nkept), int64)) then
          call error%set(ERROR_VALIDATION, "trc_ecp_matrix: "//to_string(nk64)//" (shell pair, ECP atom) "// &
                         "tasks survive the screen, more than a default integer can index")
@@ -728,9 +776,14 @@ contains
 
       ! K3: write each kept slot into the Cartesian block (and
       ! its symmetric mirror -- U is symmetric, scalar ECPs are real, and
-      ! only i>=j pairs were built).
+      ! only i>=j pairs were built). The derivative's rectangle has no
+      ! mirror: its rows start after its ncol ket functions.
       do t = 1, nkept
-         call deposit_slot(b, mcart, pr_i(kt_p(t)), pr_j(kt_p(t)), block_buffer(:, t))
+         if (split == 0) then
+            call deposit_slot(b, mcart, pr_i(kt_p(t)), pr_j(kt_p(t)), 0, .true., block_buffer(:, t))
+         else
+            call deposit_slot(b, mcart, pr_i(kt_p(t)), pr_j(kt_p(t)), size(mcart, 2), .false., block_buffer(:, t))
+         end if
       end do
 
       deallocate (ur_cache, fac1_cache, fac2_cache, ang2_cache, grp_atom, grp_l, grp_row0, grp_row1)
@@ -752,11 +805,14 @@ contains
       end do
    end function pair_bound
 
-   subroutine deposit_slot(b, mcart, i, j, slot)
-      !! Adds one kept (shell pair, ECP atom) slot into the Cartesian matrix.
+   subroutine deposit_slot(b, mcart, i, j, row0, mirror, slot)
+      !! Adds one kept (shell pair, ECP atom) slot into the Cartesian matrix:
+      !! AO (mu, nu) goes to mcart(mu - row0, nu), and with `mirror` (the
+      !! square matrix, row0 = 0) to its transpose too.
       type(trc_basis_t), intent(in) :: b
-      real(dp), intent(inout) :: mcart(b%nao, b%nao)
-      integer, intent(in) :: i, j
+      real(dp), intent(inout) :: mcart(:, :)
+      integer, intent(in) :: i, j, row0
+      logical, intent(in) :: mirror
       real(dp), intent(in) :: slot(SLOT_SIZE)
       integer :: li, lj, nfi, nfj, ai, aj, mi, mj, pi, pj
 
@@ -772,8 +828,8 @@ contains
             ! the matrix is in this build's order, like S, T and V.
             pi = ai + cart_perm_l2b(li, mi - 1)
             pj = aj + cart_perm_l2b(lj, mj - 1)
-            mcart(pi, pj) = mcart(pi, pj) + slot((mj - 1)*NFMAX + mi)
-            if (i /= j) mcart(pj, pi) = mcart(pj, pi) + slot((mj - 1)*NFMAX + mi)
+            mcart(pi - row0, pj) = mcart(pi - row0, pj) + slot((mj - 1)*NFMAX + mi)
+            if (mirror .and. i /= j) mcart(pj, pi) = mcart(pj, pi) + slot((mj - 1)*NFMAX + mi)
          end do
       end do
    end subroutine deposit_slot

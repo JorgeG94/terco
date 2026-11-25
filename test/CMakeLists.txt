@@ -518,15 +518,17 @@ terco_add_check(check_ecp_screen check_ecp_screen.F90 NEEDS_BASIS)
 target_link_libraries(check_ecp_screen PRIVATE test-drive::test-drive)
 
 # The ECP term of the analytic gradient: the derivative integrals against
-# differences of the ECP matrix, the RHF gradient of HI and bent TeH2 against
-# pyscf, and (the _fd test, LONG) the HF, PBE and RI-MP2 gradients against
-# differences of the energy -- see check_ecp_grad.F90's own
-# header.
+# differences of the ECP matrix (one and two ECP atoms), RHF, UHF and RI-MP2
+# gradients against pyscf; the _long test (LONG) the heavier integral and
+# pyscf cases, and the _fd test (LONG) the HF, PBE, UHF and RI-MP2 gradients
+# against differences of the energy -- see check_ecp_grad.F90's own header.
 terco_add_check(check_ecp_grad check_ecp_grad.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_ecp_grad PRIVATE terco_c_interfaces test-drive::test-drive)
 # The energy-difference half reconverges about fifty SCFs (~3.5 min on one CPU thread): nightly.
 add_test(NAME terco/check_ecp_grad_fd COMMAND check_ecp_grad fd)
-set_tests_properties(terco/check_ecp_grad_fd PROPERTIES
+# LONG: with these the pull-request test took 84 s (nvfortran host, ctest -j 12).
+add_test(NAME terco/check_ecp_grad_long COMMAND check_ecp_grad long)
+set_tests_properties(terco/check_ecp_grad_fd terco/check_ecp_grad_long PROPERTIES
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
   LABELS LONG)

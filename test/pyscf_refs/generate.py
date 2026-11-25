@@ -701,34 +701,73 @@ _ECP_GRAD_GEOMETRY = {
     "hi": ([1, 53], [[0.1, -0.2, 0.0], [0.3, 0.2, 3.04]]),
     "teh2": ([52, 1, 1], [[0.05, 0.0, 0.3], [2.2, 0.1, -1.8], [-2.1, -0.1, -1.7]]),
     "hi_bond": ([1, 53], [[0.0, 0.0, 0.0], [0.0, 0.0, 1.609 / 0.529177210903]]),
+    # Two ECP atoms, off-axis, so the ECP-centre term has to be split between them.
+    "hi_dimer": ([1, 53, 1, 53], [[0.1, -0.2, 0.0], [0.3, 0.2, 3.04], [4.6, 1.1, 0.9], [4.9, 4.0, 1.9]]),
 }
 
 
 def gen_ecp_grad():
-    """check_ecp_grad.F90's and check_ecp_scf.F90's RHF gradients over an ECP
+    """check_ecp_grad.F90's and check_ecp_scf.F90's gradients over an ECP
     (def2-SVP, the ECP read from the same BSE JSON as the matrix and SCF
-    references, `bse_json_ecp`), spherical and Cartesian, at the geometries
-    above. No terco binary is needed: the geometries are literals. Each G_*
-    is the (3, natm) analytic gradient, Eh/Bohr."""
+    references, `bse_json_ecp`) at the geometries above: RHF, spherical and
+    Cartesian; RHF of an HI dimer (two ECP atoms); UHF of the HI cation; and
+    RI-MP2 of HI (def2-SVP-RIFIT, no frozen core, as the test sets it). No
+    terco binary is needed: the geometries are literals. Each G_* is the
+    (3, natm) gradient, Eh/Bohr; RHF and UHF are pyscf's analytic ones.
+    pyscf has no analytic DF-MP2 gradient, so G_hi_mp2 is a five-point
+    difference (step 2e-3 Bohr; 4e-3 gives the same to 1e-8) of pyscf's
+    RHF + DF-MP2 energy."""
     w = RefWriter("ecp_grad.ref")
-    w.header("check_ecp_grad",
-             [ROOT / "test" / "check_ecp_grad.F90", ROOT / "test" / "check_ecp_scf.F90",
-              HERE.parent / "basis_sets" / "def2-svp.json"])
     jf = HERE.parent / "basis_sets" / "def2-svp.json"
-    for name, cart in [("hi", False), ("hi", True), ("teh2", False), ("teh2", True), ("hi_bond", False)]:
-        z, r = _ECP_GRAD_GEOMETRY[name]
+    aux_jf = HERE.parent / "basis_sets" / "def2-svp-rifit.json"
+    w.header("check_ecp_grad",
+             [ROOT / "test" / "check_ecp_grad.F90", ROOT / "test" / "check_ecp_scf.F90", jf, aux_jf])
+
+    def molecule(name, cart=False, charge=0, spin=0, r=None):
+        z, r0 = _ECP_GRAD_GEOMETRY[name]
         labels = [f"{_SYMBOL_ECP_GRAD[x]}{i + 1}" for i, x in enumerate(z)]
         elements = dict(zip(labels, z))
-        basis_arg = bse_json_basis(jf, elements)
-        ecp_arg = bse_json_ecp(jf, elements)
-        atoms = [(lab, tuple(c)) for lab, c in zip(labels, r)]
-        mol = gto.M(atom=atoms, basis=basis_arg, ecp=ecp_arg, unit='Bohr', cart=cart, verbose=0)
-        tag = f"{name}_{'cart' if cart else 'sph'}"
-        mf, grad_norm = converge_tight(lambda: scf.RHF(mol), None, f"ecp_grad {tag}")
+        atoms = [(lab, tuple(c)) for lab, c in zip(labels, r0 if r is None else r)]
+        mol = gto.M(atom=atoms, basis=bse_json_basis(jf, elements), ecp=bse_json_ecp(jf, elements),
+                    unit='Bohr', cart=cart, charge=charge, spin=spin, verbose=0)
+        return mol, bse_json_basis(aux_jf, elements)
+
+    def analytic(tag, mol, make_mf):
+        mf, grad_norm = converge_tight(lambda: make_mf(mol), None, f"ecp_grad {tag}")
         g = mf.nuc_grad_method().kernel()
         w.real(f"E_{tag}", mf.e_tot)
         w.matrix(f"G_{tag}", g.T)
         print(f"  ecp_grad {tag:14s}: E = {mf.e_tot:18.12f}  |g| {grad_norm:.2e}")
+
+    for name, cart in [("hi", False), ("hi", True), ("teh2", False), ("teh2", True), ("hi_bond", False)]:
+        analytic(f"{name}_{'cart' if cart else 'sph'}", molecule(name, cart)[0], scf.RHF)
+    analytic("hi_dimer_sph", molecule("hi_dimer")[0], scf.RHF)
+    analytic("hi_uhf", molecule("hi", charge=1, spin=1)[0], scf.UHF)
+
+    def mp2_energy(r):
+        mol, aux = molecule("hi", r=r)
+        mf, _ = converge_tight(lambda: scf.RHF(mol), None, "ecp_grad hi_mp2", conv_tol=1.0e-13, conv_tol_grad=1.0e-9)
+        pt = mp.dfmp2.DFMP2(mf)
+        pt.with_df = df.DF(mol, auxbasis=aux)
+        pt.verbose = 0
+        pt.kernel()
+        return pt.e_tot
+
+    r0 = np.array(_ECP_GRAD_GEOMETRY["hi"][1])
+    h = 2.0e-3
+    g = np.zeros((len(r0), 3))
+    for a in range(len(r0)):
+        for c in range(3):
+            e = {}
+            for k in (1, -1, 2, -2):
+                r = r0.copy()
+                r[a, c] += k * h
+                e[k] = mp2_energy(r)
+            g[a, c] = (8.0 * (e[1] - e[-1]) - (e[2] - e[-2])) / (12.0 * h)
+    e0 = mp2_energy(r0)
+    w.real("E_hi_mp2", e0)
+    w.matrix("G_hi_mp2", g.T)
+    print(f"  ecp_grad hi_mp2        : E = {e0:18.12f}  |sum g| {np.abs(g.sum(0)).max():.2e}")
     w.end()
     w.write()
 

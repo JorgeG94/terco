@@ -4,16 +4,22 @@ module check_ecp_grad_suite
    !!
    !! Three layers, each against something independent of the code under test:
    !!
-   !!   1. The derivative integrals. For HI and a bent TeH2 in def2-SVP
-   !!      (Cartesian), dU/dR_X, assembled from `trc_ecp_deriv_cart`'s
-   !!      one-ECP-atom bra derivatives (basis-centre terms on the bra and, by
-   !!      symmetry, the ket, plus the ECP centre by translational invariance),
-   !!      against a five-point difference of `trc_ecp_matrix_cart` over every
-   !!      atom X and component: the basis centres AND the ECP centre move.
-   !!   2. The RHF gradient of both molecules against pyscf 2.14 (the same
-   !!      BSE-JSON basis and ECP, spherical and Cartesian, tight SCF), read from
-   !!      pyscf_refs/ecp_grad.ref. A doublet (the HI cation, UHF) is checked
-   !!      against energy differences only.
+   !!   1. The derivative integrals. For HI, a bent TeH2 and an HI dimer (two
+   !!      ECP atoms) in def2-SVP (Cartesian), dU/dR_X, assembled from
+   !!      `trc_ecp_deriv_cart`'s one-ECP-atom bra derivatives (basis-centre
+   !!      terms on the bra and, by symmetry, the ket, plus the ECP centre by
+   !!      translational invariance), against a five-point difference of
+   !!      `trc_ecp_matrix_cart` over every atom X and component: the basis
+   !!      centres AND the ECP centre move. `trc_ecp_gradient` on a fixed
+   !!      synthetic density against the same differences contracted with it:
+   !!      with two ECP atoms that fails if a centre term lands on the wrong one.
+   !!      On a pull request the dimer's contraction is one directional
+   !!      derivative, every atom moving at once (four matrices); element by
+   !!      element it is LONG.
+   !!   2. Whole gradients against pyscf 2.14 (the same BSE-JSON basis and ECP,
+   !!      tight SCF), read from pyscf_refs/ecp_grad.ref: RHF of HI and TeH2
+   !!      (spherical and Cartesian) and of the HI dimer, UHF of the HI cation,
+   !!      RI-MP2 of HI (pyscf's side a difference of its DF-MP2 energy).
    !!   3. The whole gradient through the C API, at the same two molecules in
    !!      def2-SVP's own spherical functions:
    !!      `trc_run_gradient` for RHF, UHF, RKS/PBE and RI-MP2 against a central
@@ -32,7 +38,7 @@ module check_ecp_grad_suite
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_ecp_types, only: trc_ecp_t
    use trc_ecp_json, only: trc_ecp_from_json
-   use trc_ecp, only: trc_ecp_matrix_cart, trc_ecp_deriv_cart
+   use trc_ecp, only: trc_ecp_matrix_cart, trc_ecp_deriv_cart, trc_ecp_gradient
    use trc_error, only: error_t
    use trc_c_interfaces, only: trc_create, trc_destroy, trc_set_molecule, trc_set_basis_json, trc_set_aux_json, &
                                trc_set_convergence, trc_set_method, trc_set_rimp2, trc_set_force_cartesian, &
@@ -46,18 +52,31 @@ module check_ecp_grad_suite
    character(len=*), parameter :: DEF2_SVP = 'basis_sets/def2-svp.json'
    real(dp), parameter :: INT_TOL = 1.0e-10_dp
    !! The derivative matrix against its five-point difference, absolute: measured 8e-13.
+   real(dp), parameter :: CONTRACT_TOL = 1.0e-10_dp
+   !! trc_ecp_gradient against the contracted difference of U, Eh/bohr: measured 3e-12.
+   real(dp), parameter :: DIRECTION_TOL = 1.0e-8_dp
+   !! The dimer's directional derivative, a sum over all twelve components: measured 7e-11 (gfortran), 3e-11 (nvfortran), on a value of 1.2.
+   real(dp), parameter :: PYSCF_TOL = 1.0e-7_dp
+   !! Whole gradients against pyscf_refs/ecp_grad.ref: measured at most 1e-9 (RHF, UHF and RI-MP2).
    real(dp), parameter :: GRAD_TOL_HF = 2.0e-6_dp
    real(dp), parameter :: GRAD_TOL_KS = 2.0e-6_dp
    !! The DFT difference carries the quadrature's own noise (the grid moves
    !! with the atoms and is finite).
    real(dp), parameter :: GRAD_TOL_MP2 = 5.0e-6_dp
 
+   type :: pyscf_refs_t
+      !! pyscf_refs/ecp_grad.ref.
+      real(dp) :: hi_sph(3, 2), hi_cart(3, 2), teh2_sph(3, 3), teh2_cart(3, 3), hi_bond(3, 2)
+      real(dp) :: dimer(3, 4), uhf(3, 2), mp2(3, 2), e_uhf, e_mp2, e_skip
+   end type pyscf_refs_t
+
 contains
 
    subroutine collect_ecp_grad_tests(testsuite)
-      !! No argument: the integrals and the pyscf values (seconds). `fd`: the
-      !! gradients against energy differences, which reconverge about fifty
-      !! SCFs (minutes; registered LONG).
+      !! No argument: what a pull request runs (about half a minute). `long`: the
+      !! heavier integral and pyscf cases. `fd`: the gradients against energy
+      !! differences, which reconverge about fifty SCFs (minutes). The last two
+      !! are registered LONG.
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
       character(len=8) :: arg
 
@@ -72,11 +91,20 @@ contains
                      new_unittest("RI-MP2 gradient of HI vs the energy difference", test_mp2_hi), &
                      new_unittest("RI-MP2 gradient of bent TeH2 vs the energy difference", test_mp2_teh2) &
                      ]
+      else if (trim(arg) == "long") then
+         testsuite = [ &
+                     new_unittest("dU/dR of bent TeH2 vs differences of the ECP matrix", test_ints_teh2), &
+                     new_unittest("dU/dR of an HI dimer (two ECP atoms) vs differences of the ECP matrix", test_ints_dimer), &
+                     new_unittest("RHF gradients of HI, Cartesian TeH2 and an HI dimer vs pyscf", test_rhf_pyscf_long) &
+                     ]
       else
          testsuite = [ &
                      new_unittest("dU/dR of HI vs differences of the ECP matrix", test_ints_hi), &
-                     new_unittest("dU/dR of bent TeH2 vs differences of the ECP matrix", test_ints_teh2), &
-                     new_unittest("RHF gradient of HI and bent TeH2 vs pyscf", test_rhf_pyscf), &
+                     new_unittest("ECP gradient of an HI dimer (two ECP atoms) along a direction", test_dimer_direction), &
+                     new_unittest("RHF gradients of bent TeH2 and Cartesian HI vs pyscf", test_rhf_pyscf), &
+                     new_unittest("UHF gradient of the HI cation (doublet) vs pyscf", test_uhf_pyscf), &
+                     new_unittest("RI-MP2 gradient of HI vs pyscf", test_mp2_pyscf), &
+                     new_unittest("HI/def2-SVP with an ECP: the gradient pre-check accepts it", test_upfront_ok), &
                      new_unittest("an f basis function with an ECP: the gradient is refused up front", test_f_refused) &
                      ]
       end if
@@ -95,6 +123,15 @@ contains
          elements = [1, 53]
          r(:, 1) = [0.1_dp, -0.2_dp, 0.0_dp]
          r(:, 2) = [0.3_dp, 0.2_dp, 3.04_dp]
+      case ("hi_dimer")
+         ! Two ECP atoms, neither on an axis of the other.
+         nat = 4
+         allocate (elements(nat), r(3, nat))
+         elements = [1, 53, 1, 53]
+         r(:, 1) = [0.1_dp, -0.2_dp, 0.0_dp]
+         r(:, 2) = [0.3_dp, 0.2_dp, 3.04_dp]
+         r(:, 3) = [4.6_dp, 1.1_dp, 0.9_dp]
+         r(:, 4) = [4.9_dp, 4.0_dp, 1.9_dp]
       case default
          ! Te at the apex, 2.2 / 1.8 bohr to each H: a bent, non-symmetric frame.
          nat = 3
@@ -122,6 +159,77 @@ contains
       call bas%release()
    end subroutine ecp_u
 
+   subroutine synthetic_density(dens)
+      !! Symmetric and nowhere special: a density the ECP gradient can be
+      !! contracted with, no SCF needed.
+      real(dp), intent(out) :: dens(:, :)
+      integer :: j, k
+
+      do j = 1, size(dens, 2)
+         do k = 1, size(dens, 1)
+            dens(k, j) = cos(0.37_dp*real(k + j, dp))/(1.0_dp + 0.05_dp*real(abs(k - j), dp))
+         end do
+      end do
+   end subroutine synthetic_density
+
+   subroutine test_dimer_direction(error)
+      !! trc_ecp_gradient of the HI dimer against a five-point difference of
+      !! sum(density * U) with every atom moving at once: four matrices, and
+      !! all twelve components enter. A centre term put on the wrong ECP atom
+      !! shifts the sum by that term times the two atoms' relative motion.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_basis_t) :: bas
+      type(trc_ecp_t) :: ecp
+      type(error_t) :: err
+      integer, parameter :: STEP(4) = [1, -1, 2, -2]
+      real(dp), parameter :: H = 1.0e-3_dp
+      real(dp), parameter :: WEIGHT(4) = [8.0_dp, -8.0_dp, -1.0_dp, 1.0_dp]
+      integer :: nat, ia, c, k
+      integer, allocatable :: elements(:)
+      real(dp), allocatable :: r(:, :), v(:, :), g(:, :), dens(:, :), u(:, :)
+      real(dp) :: fd, ana, diff
+
+      call geometry("hi_dimer", nat, elements, r)
+      call trc_basis_from_json(DEF2_SVP, nat, elements, r, bas, err, force_cart=.true., &
+                               overrides=trc_basis_json_overrides(allow_ecp=.true.))
+      call check(error,.not. err%has_error(), "dimer basis must build: "//err%get_message())
+      if (allocated(error)) return
+      call trc_ecp_from_json(DEF2_SVP, nat, elements, ecp, err)
+      call check(error,.not. err%has_error(), "dimer ECP must read: "//err%get_message())
+      if (allocated(error)) return
+
+      allocate (v(3, nat), g(3, nat), dens(bas%nao, bas%nao))
+      do ia = 1, nat
+         do c = 1, 3
+            v(c, ia) = cos(1.3_dp*real(c, dp) + 2.1_dp*real(ia, dp))
+         end do
+      end do
+      call synthetic_density(dens)
+      g = 0.0_dp
+      call trc_ecp_gradient(bas, ecp, dens, g, err)
+      call check(error,.not. err%has_error(), "dimer gradient: "//err%get_message())
+      if (allocated(error)) return
+      ana = sum(g*v)
+
+      fd = 0.0_dp
+      do k = 1, 4
+         call ecp_u(nat, elements, r + real(STEP(k), dp)*H*v, ecp, u, err)
+         call check(error,.not. err%has_error(), "dimer displaced matrix: "//err%get_message())
+         if (allocated(error)) return
+         fd = fd + WEIGHT(k)*sum(dens*u)
+      end do
+      fd = fd/(12.0_dp*H)
+      diff = abs(ana - fd)
+      call global_logger%info("  hi_dimer: directional derivative "//to_string(fd, "es14.6")// &
+                              ", |trc_ecp_gradient - difference| = "//to_string(diff, "es10.3"))
+      call check(error, abs(fd) > 1.0e-2_dp, "dimer: the directional difference is ~0, the test is blind")
+      if (allocated(error)) return
+      call check(error, diff < DIRECTION_TOL, "dimer: trc_ecp_gradient along a direction vs the difference, |diff| = "// &
+                 to_string(diff, "es12.4"))
+      call bas%release()
+      call ecp%release()
+   end subroutine test_dimer_direction
+
    subroutine ints_case(error, name)
       type(error_type), allocatable, intent(out) :: error
       character(len=*), intent(in) :: name
@@ -130,9 +238,9 @@ contains
       type(error_t) :: err
       integer :: nat, nao, ix, c, ia, ish, a0, k
       integer, allocatable :: elements(:), ao_at(:)
-      real(dp), allocatable :: r(:, :), rr(:, :), up(:, :), d(:, :, :), um(:, :), fd(:, :), ana(:, :), dcen(:, :, :)
-      real(dp), allocatable :: u2p(:, :), u2m(:, :)
-      real(dp) :: worst, refmax
+      real(dp), allocatable :: r(:, :), rr(:, :), up(:, :), d(:, :, :), um(:, :), fd(:, :), ana(:, :)
+      real(dp), allocatable :: u2p(:, :), u2m(:, :), dens(:, :), g(:, :)
+      real(dp) :: worst, refmax, gworst
       real(dp), parameter :: H = 1.0e-3_dp
 
       call geometry(name, nat, elements, r)
@@ -150,9 +258,16 @@ contains
          ao_at(a0:a0 + (bas%sh_l(ish) + 1)*(bas%sh_l(ish) + 2)/2 - 1) = bas%sh_at(ish)
       end do
 
+      allocate (dens(nao, nao), g(3, nat))
+      call synthetic_density(dens)
+      g = 0.0_dp
+      call trc_ecp_gradient(bas, ecp, dens, g, err)
+      call check(error,.not. err%has_error(), name//": gradient: "//err%get_message())
+      if (allocated(error)) return
+
       worst = 0.0_dp
       refmax = 0.0_dp
-      allocate (dcen(nao, nao, 3))
+      gworst = 0.0_dp
       do ix = 1, nat
          ! dU/dR_X over every ECP atom's own potential, from the bra
          ! derivatives: rows on X, the transpose for the ket, minus both for
@@ -190,6 +305,7 @@ contains
             call check(error,.not. err%has_error(), name//": displaced matrix: "//err%get_message())
             if (allocated(error)) return
             fd = (8.0_dp*(up - um) - (u2p - u2m))/(12.0_dp*H)
+            gworst = max(gworst, abs(g(c, ix) - sum(dens*fd)))
             worst = max(worst, maxval(abs(fd - ana)))
             refmax = max(refmax, maxval(abs(fd)))
          end do
@@ -200,6 +316,11 @@ contains
       call check(error, refmax > 1.0e-2_dp, name//": the differences are all ~0, the test is blind")
       if (allocated(error)) return
       call check(error, worst < INT_TOL, name//": dU/dR vs the difference of U, max|diff| = "//to_string(worst, "es12.4"))
+      if (allocated(error)) return
+      call global_logger%info("  "//name//": max|trc_ecp_gradient - contracted difference| = "// &
+                              to_string(gworst, "es10.3")//" (largest component "//to_string(maxval(abs(g)), "es10.3")//")")
+      call check(error, gworst < CONTRACT_TOL, name//": trc_ecp_gradient vs the contracted difference, max|diff| = "// &
+                 to_string(gworst, "es12.4"))
       call bas%release()
       call ecp%release()
    end subroutine ints_case
@@ -213,6 +334,11 @@ contains
       type(error_type), allocatable, intent(out) :: error
       call ints_case(error, "teh2")
    end subroutine test_ints_teh2
+
+   subroutine test_ints_dimer(error)
+      type(error_type), allocatable, intent(out) :: error
+      call ints_case(error, "hi_dimer")
+   end subroutine test_ints_dimer
 
    subroutine run_method(nat, elements, r, method, want_grad, cart, e, grad, status)
       !! SCF (+ RI-MP2 for "mp2") at `r` through the C API; the total energy,
@@ -303,58 +429,127 @@ contains
                  to_string(worst, "es12.4"))
    end subroutine grad_case
 
-   subroutine test_rhf_pyscf(error)
-      !! pyscf's RHF gradients from test/pyscf_refs/ecp_grad.ref (generate.py's
-      !! gen_ecp_grad: conv_tol 1e-13-ish via converge_tight, the basis and ECP
-      !! read from def2-svp.json by bse_json_basis/bse_json_ecp), spherical and
-      !! Cartesian, Eh/bohr, (x, y, z) per atom. The file's fifth case is
-      !! check_ecp_scf's.
-      type(error_type), allocatable, intent(out) :: error
-      real(dp) :: hi_sph(3, 2), hi_cart(3, 2), teh2_sph(3, 3), teh2_cart(3, 3), hi_bond(3, 2), e
+   subroutine read_refs(refs)
+      !! Every case of pyscf_refs/ecp_grad.ref (generate.py's gen_ecp_grad), in
+      !! the file's order.
+      type(pyscf_refs_t), intent(out) :: refs
       integer :: u
 
       call ref_require('ecp_grad.ref', u)
-      call ref_read_real(u, 'E_hi_sph', e)
-      call ref_read_matrix(u, 'G_hi_sph', 3, 2, hi_sph)
-      call ref_read_real(u, 'E_hi_cart', e)
-      call ref_read_matrix(u, 'G_hi_cart', 3, 2, hi_cart)
-      call ref_read_real(u, 'E_teh2_sph', e)
-      call ref_read_matrix(u, 'G_teh2_sph', 3, 3, teh2_sph)
-      call ref_read_real(u, 'E_teh2_cart', e)
-      call ref_read_matrix(u, 'G_teh2_cart', 3, 3, teh2_cart)
-      call ref_read_real(u, 'E_hi_bond_sph', e)
-      call ref_read_matrix(u, 'G_hi_bond_sph', 3, 2, hi_bond)
+      call ref_read_real(u, 'E_hi_sph', refs%e_skip)
+      call ref_read_matrix(u, 'G_hi_sph', 3, 2, refs%hi_sph)
+      call ref_read_real(u, 'E_hi_cart', refs%e_skip)
+      call ref_read_matrix(u, 'G_hi_cart', 3, 2, refs%hi_cart)
+      call ref_read_real(u, 'E_teh2_sph', refs%e_skip)
+      call ref_read_matrix(u, 'G_teh2_sph', 3, 3, refs%teh2_sph)
+      call ref_read_real(u, 'E_teh2_cart', refs%e_skip)
+      call ref_read_matrix(u, 'G_teh2_cart', 3, 3, refs%teh2_cart)
+      ! check_ecp_scf's case.
+      call ref_read_real(u, 'E_hi_bond_sph', refs%e_skip)
+      call ref_read_matrix(u, 'G_hi_bond_sph', 3, 2, refs%hi_bond)
+      call ref_read_real(u, 'E_hi_dimer_sph', refs%e_skip)
+      call ref_read_matrix(u, 'G_hi_dimer_sph', 3, 4, refs%dimer)
+      call ref_read_real(u, 'E_hi_uhf', refs%e_uhf)
+      call ref_read_matrix(u, 'G_hi_uhf', 3, 2, refs%uhf)
+      call ref_read_real(u, 'E_hi_mp2', refs%e_mp2)
+      call ref_read_matrix(u, 'G_hi_mp2', 3, 2, refs%mp2)
       call ref_close(u)
-      call vs_pyscf(error, "hi", .false., hi_sph)
+   end subroutine read_refs
+
+   subroutine test_rhf_pyscf(error)
+      !! pyscf's RHF gradients (conv_tol 1e-13-ish via converge_tight, the basis
+      !! and ECP read from def2-svp.json by bse_json_basis/bse_json_ecp),
+      !! spherical and Cartesian, Eh/bohr, (x, y, z) per atom. Spherical HI is
+      !! also check_ecp_scf's and the UHF and RI-MP2 cases' molecule.
+      type(error_type), allocatable, intent(out) :: error
+      type(pyscf_refs_t) :: refs
+
+      call read_refs(refs)
+      call vs_pyscf(error, "teh2", "hf", .false., refs%teh2_sph)
       if (allocated(error)) return
-      call vs_pyscf(error, "teh2", .false., teh2_sph)
-      if (allocated(error)) return
-      call vs_pyscf(error, "hi", .true., hi_cart)
-      if (allocated(error)) return
-      call vs_pyscf(error, "teh2", .true., teh2_cart)
+      call vs_pyscf(error, "hi", "hf", .true., refs%hi_cart)
    end subroutine test_rhf_pyscf
 
-   subroutine vs_pyscf(error, name, cart, ref)
+   subroutine test_rhf_pyscf_long(error)
       type(error_type), allocatable, intent(out) :: error
-      character(len=*), intent(in) :: name
+      type(pyscf_refs_t) :: refs
+
+      call read_refs(refs)
+      call vs_pyscf(error, "hi", "hf", .false., refs%hi_sph)
+      if (allocated(error)) return
+      call vs_pyscf(error, "teh2", "hf", .true., refs%teh2_cart)
+      if (allocated(error)) return
+      call vs_pyscf(error, "hi_dimer", "hf", .false., refs%dimer)
+   end subroutine test_rhf_pyscf_long
+
+   subroutine test_uhf_pyscf(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(pyscf_refs_t) :: refs
+
+      call read_refs(refs)
+      call vs_pyscf(error, "hi", "uhf", .false., refs%uhf, refs%e_uhf)
+   end subroutine test_uhf_pyscf
+
+   subroutine test_mp2_pyscf(error)
+      !! The ECP term takes the relaxed density D + P: with the reference's D
+      !! alone this misses by far more than PYSCF_TOL.
+      type(error_type), allocatable, intent(out) :: error
+      type(pyscf_refs_t) :: refs
+
+      call read_refs(refs)
+      call vs_pyscf(error, "hi", "mp2", .false., refs%mp2, refs%e_mp2)
+   end subroutine test_mp2_pyscf
+
+   subroutine vs_pyscf(error, name, method, cart, ref, e_ref)
+      type(error_type), allocatable, intent(out) :: error
+      character(len=*), intent(in) :: name, method
       logical, intent(in) :: cart
       real(dp), intent(in) :: ref(:, :)
+      real(dp), intent(in), optional :: e_ref
       character(len=:), allocatable :: tag
       integer :: nat, status
       integer, allocatable :: elements(:)
       real(dp), allocatable :: r(:, :), g(:, :)
       real(dp) :: e, worst
 
-      tag = name//merge("/cartesian", "/spherical", cart)
+      tag = name//"/"//method//merge("/cartesian", "/spherical", cart)
       call geometry(name, nat, elements, r)
       allocate (g(3, nat))
-      call run_method(nat, elements, r, "hf", .true., cart, e, g, status)
+      call run_method(nat, elements, r, method, .true., cart, e, g, status)
       call check(error, status == 0, tag//": the SCF and gradient must run, status "//to_string(status))
       if (allocated(error)) return
+      if (present(e_ref)) then
+         ! The same electronic state as pyscf's, before its gradient is asked about.
+         call check(error, abs(e - e_ref) < 1.0e-8_dp, tag//": energy vs pyscf, |diff| = "// &
+                    to_string(abs(e - e_ref), "es12.4"))
+         if (allocated(error)) return
+      end if
       worst = maxval(abs(g - ref))
       call global_logger%info("  "//tag//" vs pyscf: max|diff| = "//to_string(worst, "es10.3"))
-      call check(error, worst < 1.0e-7_dp, tag//": RHF gradient vs pyscf, max|diff| = "//to_string(worst, "es12.4"))
+      call check(error, worst < PYSCF_TOL, tag//": gradient vs pyscf, max|diff| = "//to_string(worst, "es12.4"))
    end subroutine vs_pyscf
+
+   subroutine test_upfront_ok(error)
+      !! What --opt and --hessian ask before their first step: nothing about
+      !! this molecule, basis and ECP refuses a gradient.
+      type(error_type), allocatable, intent(out) :: error
+      type(c_ptr) :: h
+      integer(c_int) :: rc
+      integer :: nat
+      integer, allocatable :: elements(:)
+      real(dp), allocatable :: r(:, :)
+
+      call geometry("hi", nat, elements, r)
+      rc = trc_create(h)
+      if (rc == TRC_OK) rc = trc_set_molecule(h, int(nat, c_int), real(elements, c_double), &
+                                              reshape(real(r, c_double), [3*nat]), 0_c_int, 1_c_int)
+      if (rc == TRC_OK) rc = trc_set_basis_json(h, DEF2_SVP//c_null_char)
+      call check(error, rc == TRC_OK, "HI/def2-SVP setup must succeed")
+      if (allocated(error)) return
+      rc = trc_check_gradient_upfront(h)
+      call check(error, rc == TRC_OK, "trc_check_gradient_upfront refuses HI/def2-SVP, status "//to_string(int(rc)))
+      rc = trc_destroy(h)
+   end subroutine test_upfront_ok
 
    subroutine test_rhf_hi(error)
       type(error_type), allocatable, intent(out) :: error

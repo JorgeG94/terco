@@ -127,7 +127,7 @@ contains
                   new_unittest("MINAO guess is refused with an ECP attached", test_minao_refused), &
                   new_unittest("SAP guess is refused with an ECP attached", test_sap_refused), &
                   new_unittest("Hirshfeld charges are refused with an ECP attached", test_hirshfeld_refused), &
-                  new_unittest("the analytic gradient runs with an ECP attached and is translation invariant", test_gradient_runs), &
+                  new_unittest("the ECP gradient of HI matches pyscf and sums to zero", test_gradient_runs), &
                   new_unittest("a restart file round-trips an ECP SCF (format version 4)", test_restart_roundtrip) &
                   ]
    end subroutine collect_ecp_scf_tests
@@ -466,11 +466,12 @@ contains
       !! The RHF gradient of this HI (spherical) against pyscf's, the last case
       !! of pyscf_refs/ecp_grad.ref (generate.py's gen_ecp_grad); check_ecp_grad
       !! holds the rest of that file's cases and the finite-difference checks.
+      !! The atoms' gradients also sum to zero (translational invariance).
       type(error_type), allocatable, intent(out) :: error
       type(c_ptr) :: h
       integer(c_int) :: rc
       real(c_double) :: grad(6)
-      real(dp) :: skip2(3, 2), skip3(3, 3), e, ref(3, 2)
+      real(dp) :: skip2(3, 2), skip3(3, 3), e, ref(3, 2), drift
       integer :: u
 
       call make_hi(h)
@@ -498,6 +499,11 @@ contains
          call ref_close(u)
          call check(error, maxval(abs(real(grad, dp) - reshape(ref, [6]))) < 1.0e-7_dp, &
                     "HI gradient vs pyscf, max|diff| = "//to_string(maxval(abs(real(grad, dp) - reshape(ref, [6]))), "es10.3"))
+      end if
+      if (.not. allocated(error)) then
+         drift = maxval(abs(grad(1:3) + grad(4:6)))
+         call check(error, drift < 1.0e-8_dp, "HI gradient does not sum to zero over the atoms: "// &
+                    to_string(drift, "es10.3"))
       end if
       rc = trc_destroy(h)
    end subroutine test_gradient_runs
