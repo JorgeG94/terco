@@ -82,7 +82,7 @@
 module trc_bin_tiles
    use pic_types, only: dp, int64
    use trc_bins, only: pair_bins_t, trc_bin_plan_t, bins_skel_cut_first, bins_plan_emit, bins_plan_allocate, bins_any_masked, &
-                       trc_bin_segment_t
+                       trc_bin_segment_t, SKEL_SWAP_LMAX
    use trc_eri_data, only: trc_bin_tiles_t, trc_bin_orbits_t
    implicit none
    private
@@ -1132,19 +1132,39 @@ contains
       integer, intent(inout) :: sA(nseg), sNB(nseg), sOA(nseg), sOB(nseg), sPA(nseg), sPB(nseg)
       integer, intent(inout) :: sSA(nseg), sSB(nseg), sLA(nseg), sLB(nseg), sLC(nseg), sLD(nseg)
       logical, intent(inout) :: sD(nseg)
-      sA(k) = na
-      sNB(k) = nb
-      sOA(k) = bin_off(ka) + oa
-      sOB(k) = bin_off(kb) + ob
-      sPA(k) = bin_pbase(ka) + oa
-      sPB(k) = bin_pbase(kb) + ob
-      sSA(k) = bin_cnt(ka)
-      sSB(k) = bin_cnt(kb)
+      integer :: ja, jb, ja_o, ja_n, jb_o, jb_n
+      ja = ka
+      jb = kb
+      ja_o = oa
+      ja_n = na
+      jb_o = ob
+      jb_n = nb
+      ! As bins_plan_emit: with a shell above SKEL_SWAP_LMAX only the class
+      ! with (la, lb) >= (lc, ld) has a kernel, and a split bin's chunk can
+      ! be the bra against a higher-l ket, so write such a pair canonically.
+      if (.not. diag .and. max(bin_la(ka), bin_la(kb)) > SKEL_SWAP_LMAX) then
+         if (bin_la(kb) > bin_la(ka) .or. (bin_la(kb) == bin_la(ka) .and. bin_lb(kb) > bin_lb(ka))) then
+            ja = kb
+            jb = ka
+            ja_o = ob
+            ja_n = nb
+            jb_o = oa
+            jb_n = na
+         end if
+      end if
+      sA(k) = ja_n
+      sNB(k) = jb_n
+      sOA(k) = bin_off(ja) + ja_o
+      sOB(k) = bin_off(jb) + jb_o
+      sPA(k) = bin_pbase(ja) + ja_o
+      sPB(k) = bin_pbase(jb) + jb_o
+      sSA(k) = bin_cnt(ja)
+      sSB(k) = bin_cnt(jb)
       sD(k) = diag
-      sLA(k) = bin_la(ka)
-      sLB(k) = bin_lb(ka)
-      sLC(k) = bin_la(kb)
-      sLD(k) = bin_lb(kb)
+      sLA(k) = bin_la(ja)
+      sLB(k) = bin_lb(ja)
+      sLC(k) = bin_la(jb)
+      sLD(k) = bin_lb(jb)
    end subroutine put_seg
 
    pure subroutine cand_d(nbin, ntile, bt0, btn, pmax2, smin1, tq, qbin, rlo, rhi, ta, kb, thresh, t1, t2)
