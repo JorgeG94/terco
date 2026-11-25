@@ -91,24 +91,32 @@ set(TERCO_DF_LMAX_AUX
     CACHE STRING "Density-fitting auxiliary angular momentum ceiling (gen_df.py --lmax-aux)")
 
 # The ceilings the generators and the kernels have been built and checked to.
-# TERCO_LMAX stops at h: a four-centre class of total angular momentum 4*LMAX
-# needs a Boys function of that order, and the tabulated one (BOYS_MMAX in
-# src/core/trc_boys.F90) ends at 20, so a higher ceiling cannot give right
-# numbers. The density-fitting orbital ceiling only warns above g: the kernels
-# are expected to work, but nothing past g has been compared with a reference.
+# TERCO_LMAX stops at h: the Boys function a four-centre class needs has the
+# order of its total angular momentum, 4*LMAX, and the tabulated one (BOYS_MMAX
+# in src/core/trc_boys.F90) ends at 20; the Rys path is also capped by its 11
+# root tables, which LMAX=6 (13 roots) exceeds. A higher ceiling cannot give
+# right numbers.
+# The density-fitting ceilings (orbital TERCO_DF_LMAX and auxiliary
+# TERCO_DF_LMAX_AUX) go to h too: the kernels are generated, and the Cartesian
+# and spherical tables are extended to l = 5 for either (src/CMakeLists.txt),
+# but nothing past g has been compared with a reference (an h auxiliary basis
+# has been, for the water RI-CCSD(T) energy). Above h they are refused: the
+# tables stop at l = 5.
 if(TERCO_LMAX GREATER 5)
   message(FATAL_ERROR "TERCO_LMAX=${TERCO_LMAX}: LMAX>5 is not currently supported, please open an issue")
 endif()
-if(NOT "${TERCO_DF_LMAX}" STREQUAL "" AND TERCO_DF_LMAX GREATER 4)
-  message(WARNING "TERCO_DF_LMAX=${TERCO_DF_LMAX}: density fitting is built and checked through 4 (g) "
-                  "on the orbital side; an h orbital basis is energies through the four-centre path only")
+if(NOT "${TERCO_DF_LMAX}" STREQUAL "" AND TERCO_DF_LMAX GREATER 5)
+  message(FATAL_ERROR "TERCO_DF_LMAX=${TERCO_DF_LMAX}: the density-fitting orbital ceiling above 5 (h) is not "
+                      "currently supported, please open an issue")
 endif()
-# The auxiliary ceiling is bounded by the component and spherical-transform
-# tables, which src/CMakeLists.txt extends to l = 5 when TERCO_DF_LMAX_AUX or
-# TERCO_LMAX is 5; they never reach l = 6.
 if(TERCO_DF_LMAX_AUX GREATER 5)
-  message(FATAL_ERROR "TERCO_DF_LMAX_AUX=${TERCO_DF_LMAX_AUX}: the Cartesian and spherical tables reach l = 5 (h); "
-                      "higher is not currently supported, please open an issue")
+  message(FATAL_ERROR "TERCO_DF_LMAX_AUX=${TERCO_DF_LMAX_AUX}: the density-fitting auxiliary ceiling above 5 (h) "
+                      "is not currently supported, please open an issue")
+endif()
+if(NOT "${TERCO_DF_LMAX}" STREQUAL "" AND TERCO_DF_LMAX GREATER 4)
+  message(WARNING "TERCO_DF_LMAX=${TERCO_DF_LMAX}: density fitting with h orbital shells is built but no h "
+                  "density-fitting number has been compared with a reference (through g it has); "
+                  "TERCO_LMAX=5 is needed to run an h orbital basis through the four-centre path")
 endif()
 
 #
