@@ -87,23 +87,20 @@ def binom(n, k):
 
 def _ab_power_lines(ab, cd, lb, ld, indent):
     """`ab2 = ab*ab` and `cd2 = cd*cd`, exactly as every class has always
-    computed them, plus `ab3`/`ab4`/`cd3`/`cd4` by Horner chaining once lb
-    or ld reaches 3 or 4: the HRR's binomial expansion (`hrr_inline_body`/
-    `hrr_scalar_assignments`) reads `{ab}` raised to the shift, which runs
-    up to lb on the bra side and up to ld on the ket side -- 2 was
-    everything needed while LMAX stayed 2. A class with lb, ld <= 2 emits
-    exactly the two lines it always did."""
+    computed them, plus `ab3`..`ab{lb}` and `cd3`..`cd{ld}` by Horner chaining
+    once lb or ld reaches 3: the HRR's binomial expansion
+    (`hrr_inline_body`/`hrr_scalar_assignments`) reads `{ab}` raised to the
+    shift, which runs up to lb on the bra side and up to ld on the ket side --
+    2 was everything needed while LMAX stayed 2. A class with lb, ld <= 2 emits
+    exactly the two lines it always did. No ceiling: the powers run to lb and
+    ld, whatever l the generator is asked for."""
     pad = " "*indent
     lines = [f"{pad}ab2 = {ab}*{ab}"]
-    if lb >= 3:
-        lines.append(f"{pad}ab3 = ab2*{ab}")
-    if lb >= 4:
-        lines.append(f"{pad}ab4 = ab3*{ab}")
+    for p in range(3, lb + 1):
+        lines.append(f"{pad}ab{p} = ab{p - 1}*{ab}")
     lines.append(f"{pad}cd2 = {cd}*{cd}")
-    if ld >= 3:
-        lines.append(f"{pad}cd3 = cd2*{cd}")
-    if ld >= 4:
-        lines.append(f"{pad}cd4 = cd3*{cd}")
+    for p in range(3, ld + 1):
+        lines.append(f"{pad}cd{p} = cd{p - 1}*{cd}")
     return lines
 
 
@@ -398,20 +395,14 @@ def unrolled_table_decls(ni, nk, la, lb, lc, ld, indent):
 
 
 def _power_decl_names(lb, ld):
-    """`ab2, cd2`, plus `ab3`/`ab4`/`cd3`/`cd4` once lb or ld reaches 3 or
-    4 -- the same condition `_ab_power_lines` computes those under, so a
-    declaration and its assignment never disagree. A class with lb, ld <=
-    2 gets exactly `ab2, cd2`, same as every class did before l reached 3."""
+    """`ab2, cd2`, plus `ab3`..`ab{lb}` and `cd3`..`cd{ld}` once lb or ld
+    reaches 3 -- the same condition `_ab_power_lines` computes those under, so
+    a declaration and its assignment never disagree. A class with lb, ld <= 2
+    gets exactly `ab2, cd2`, same as every class did before l reached 3."""
     names = ["ab2"]
-    if lb >= 3:
-        names.append("ab3")
-    if lb >= 4:
-        names.append("ab4")
+    names += [f"ab{p}" for p in range(3, lb + 1)]
     names.append("cd2")
-    if ld >= 3:
-        names.append("cd3")
-    if ld >= 4:
-        names.append("cd4")
+    names += [f"cd{p}" for p in range(3, ld + 1)]
     return ", ".join(names)
 
 
@@ -421,8 +412,8 @@ def rys2d_hrr_decls(la, lb, ld, nk_h):
     same array is reused for x, y, z in turn. `nk_h` is the HRR's own
     second dimension bound (equal to `nk` for the energy kernel, `nk + 1`
     for the gradient kernel's extended table). `ld` sizes the ket-side
-    power scratch (cd3/cd4, see `_power_decl_names`) -- needed once a g
-    shell raises the ket shift past 2; `lb` does the same for ab3/ab4,
+    power scratch (cd3..cd{ld}, see `_power_decl_names`) -- needed once a g
+    shell raises the ket shift past 2; `lb` does the same for ab3..ab{lb},
     already a parameter here for `ht`'s own bound."""
     return (f"      integer  :: i, k, a, b, c\n"
             f"      real(dp) :: {_power_decl_names(lb, ld)}\n"
@@ -443,8 +434,8 @@ def hrr_slice_assignments(hneed, g, t, h, ab, cd, indent):
     the slice reaches, then `{h}_i_j_k_l = sum_u C(l,u) cd^(l-u) t(i, j,
     k+u)`. A stage with nothing to transfer (j = 0, or l = 0) is an ALIAS --
     the element is the g (or t) scalar itself, not a copy of it. The powers
-    ab^2 and cd^2 are read as `{ab}2`/`{cd}2`, which the caller assigns once
-    per quartet. Returns (text, names assigned, {(i, j, k, l): scalar name})."""
+    ab^p and cd^p (p >= 2) are read as `{ab}{p}`/`{cd}{p}`, which the caller
+    assigns once per quartet. Returns (text, names assigned, {(i, j, k, l): scalar name})."""
     pad = " "*indent
     out, names = [], []
     tneed = sorted({(i, j, k + u) for (i, j, k, l) in hneed for u in range(l + 1)})

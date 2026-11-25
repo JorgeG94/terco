@@ -70,6 +70,21 @@ else()
     set(TERCO_FLAGS "-fpp -traceback")
   elseif(CMAKE_Fortran_COMPILER_ID MATCHES "LLVMFlang|Flang")
     set(TERCO_FLAGS "-cpp")
+    # flang defaults to PIE, and CMake (through at least 4.2) defines no PIC
+    # option for LLVMFlang, so a shared libterco would not link ("relocation
+    # R_X86_64_PC32 ... can not be used when making a shared object").
+    if(NOT CMAKE_Fortran_COMPILE_OPTIONS_PIC)
+      set(CMAKE_Fortran_COMPILE_OPTIONS_PIC "-fPIC" PARENT_SCOPE)
+    endif()
+  elseif(CMAKE_Fortran_COMPILER_ID MATCHES "LFortran" OR CMAKE_Fortran_COMPILER MATCHES "lfortran")
+    # Not a validated compiler for terco: no CI job builds with it, and these
+    # are the options one build was seen to need. `-cpp` would be parsed as
+    # `-c -pp`, so the
+    # preprocessor flag is `--cpp`. Array elements are passed to array
+    # dummies (--legacy-array-sections), assignments reallocate
+    # (--realloc-lhs-arrays), and without --separate-compilation every
+    # object is empty and libterco.so has no symbols.
+    set(TERCO_FLAGS "--cpp --legacy-array-sections --realloc-lhs-arrays --separate-compilation")
   else()
     message(
       WARNING

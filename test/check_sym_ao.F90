@@ -303,6 +303,8 @@ contains
       do s = 1, bas%nshell
          if (bas%sh_at(s) == ja) exit
       end do
+      call check(error, s <= bas%nshell, "the moved atom carries a shell")
+      if (allocated(error)) return
       bas%sh_e(1, s) = bas%sh_e(1, s)*(1.0_dp + 1.0e-6_dp)
       ao = sym_ao_build(bas, geom, err)
       call check(error, err%has_error(), "perturbed exponent on an equivalent atom is refused")

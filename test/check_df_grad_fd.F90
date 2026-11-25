@@ -18,13 +18,23 @@ module check_df_grad_fd_suite
    !! 6-31G*, def2-universal-jkfit (g auxiliary shells). Also checks
    !! translational invariance of the analytic gradient alone (the XC term's
    !! grid response is on, trc_scf_gradient's default, so the DFT cases are as
-   !! invariant as the RHF one).
+   !! invariant as the RHF one). Three further B3LYP cases on water/cc-pVDZ run
+   !! the spherical expansion of the fitted gradient (trc_scf_grad_df.F90): both
+   !! bases spherical, and each of the two spherical with the other Cartesian,
+   !! which pyscf cannot do (its three-centre integrals take one cart flag), so
+   !! these mixed pairs are checked here and not against pyscf.
    !!
    !! GATES, from the measured agreement (gfortran 15, CPU): |analytic - FD|
    !! 1.4e-10 (RHF), 8.3e-11 (PBE), 8.4e-11 (B3LYP), at step 2e-3 bohr with the
    !! SCF converged to 1e-12 Eh; invariance 1.8e-13 to 1.9e-13. The FD gate is
    !! 1e-8 (the SCF's own 1e-12 Eh convergence over a 1e-3 bohr step is ~1e-9
-   !! of noise), the invariance gate 1e-10.
+   !! of noise), the invariance gate 1e-10. The three water/cc-pVDZ B3LYP cases:
+   !! 1.1e-10 (spherical orbitals and fitting set), 2.3e-10 (spherical
+   !! orbitals, Cartesian fitting set), 2.1e-10 (Cartesian orbitals, spherical
+   !! fitting set); invariance 1.5e-13 to 1.9e-13. They add runtime: the whole
+   !! `check_df_grad_fd water` run took 277 s on the host (measured with another
+   !! job running; the three 6-31G* cases alone were ~80 s), the cc-pVDZ ones
+   !! being the bulk.
    !!
    !! `check_df_grad_fd formamide` runs RHF on formamide/cc-pVDZ instead (its own
    !! ctest entry), the case whose pyscf comparison is limited by the fit's
@@ -62,6 +72,12 @@ module check_df_grad_fd_suite
    real(dp), parameter :: H = 2.0e-3_dp
    real(dp), parameter :: THRESH = 1.0e-12_dp
    character(len=*), parameter :: AUX_JSON = 'basis_sets/def2-universal-jkfit.json'
+
+   logical :: g_orb_cart = .true., g_aux_cart = .true.
+      !! Whether setup() forces the orbital / auxiliary basis Cartesian (else
+      !! it follows the JSON's tag: spherical for cc-pVDZ and the jkfit set).
+      !! Module state because setup() also builds every displaced geometry's
+      !! bases; each spherical test sets them and restores .true. afterwards.
 
    character(len=32) :: selected_case = 'water'
       !! set from the command line by the program, before run_testsuite;
@@ -118,7 +134,13 @@ contains
          testsuite = [ &
                      new_unittest("RHF --df water/6-31G* vs Richardson FD", test_water_rhf), &
                      new_unittest("RKS PBE --df water/6-31G* vs Richardson FD", test_water_pbe), &
-                     new_unittest("RKS B3LYP --df water/6-31G* vs Richardson FD", test_water_b3lyp) &
+                     new_unittest("RKS B3LYP --df water/6-31G* vs Richardson FD", test_water_b3lyp), &
+                     new_unittest("RKS B3LYP --df water/cc-pVDZ spherical orbitals and auxiliary set vs Richardson FD", &
+                                  test_water_b3lyp_sph), &
+                     new_unittest("RKS B3LYP --df water/cc-pVDZ spherical orbitals, Cartesian auxiliary set vs "// &
+                                  "Richardson FD", test_water_b3lyp_sph_cartaux), &
+                     new_unittest("RKS B3LYP --df water/cc-pVDZ Cartesian orbitals, spherical auxiliary set vs "// &
+                                  "Richardson FD", test_water_b3lyp_cart_sphaux) &
                      ]
       end if
    end subroutine collect_df_grad_fd_tests
@@ -140,6 +162,30 @@ contains
       call run_case('water.xyz', 'basis_sets/6-31gs.json', 5, 5, 'b3lyp', 'RKS B3LYP --df water/6-31G*', &
                     1.0e-8_dp, 1.0e-10_dp, error)
    end subroutine test_water_b3lyp
+
+   subroutine test_water_b3lyp_sph(error)
+      type(error_type), allocatable, intent(out) :: error
+      g_orb_cart = .false.; g_aux_cart = .false.
+      call run_case('water.xyz', 'basis_sets/cc-pvdz.json', 5, 5, 'b3lyp', 'RKS B3LYP --df water/cc-pVDZ (sph, sph)', &
+                    1.0e-8_dp, 1.0e-10_dp, error)
+      g_orb_cart = .true.; g_aux_cart = .true.
+   end subroutine test_water_b3lyp_sph
+
+   subroutine test_water_b3lyp_sph_cartaux(error)
+      type(error_type), allocatable, intent(out) :: error
+      g_orb_cart = .false.; g_aux_cart = .true.
+      call run_case('water.xyz', 'basis_sets/cc-pvdz.json', 5, 5, 'b3lyp', &
+                    'RKS B3LYP --df water/cc-pVDZ (sph, Cartesian aux)', 1.0e-8_dp, 1.0e-10_dp, error)
+      g_orb_cart = .true.; g_aux_cart = .true.
+   end subroutine test_water_b3lyp_sph_cartaux
+
+   subroutine test_water_b3lyp_cart_sphaux(error)
+      type(error_type), allocatable, intent(out) :: error
+      g_orb_cart = .true.; g_aux_cart = .false.
+      call run_case('water.xyz', 'basis_sets/cc-pvdz.json', 5, 5, 'b3lyp', &
+                    'RKS B3LYP --df water/cc-pVDZ (Cartesian, sph aux)', 1.0e-8_dp, 1.0e-10_dp, error)
+      g_orb_cart = .true.; g_aux_cart = .true.
+   end subroutine test_water_b3lyp_cart_sphaux
 
    subroutine test_formamide_rhf(error)
       type(error_type), allocatable, intent(out) :: error
@@ -251,11 +297,11 @@ contains
       type(trc_linalg_t), intent(inout) :: lp
       type(df_jk_t), intent(inout) :: dfjk
       type(error_t) :: err
-      call trc_basis_from_json(basis_json, nat, at_z, r, bas, err, force_cart=.true.)
+      call trc_basis_from_json(basis_json, nat, at_z, r, bas, err, force_cart=g_orb_cart)
       if (err%has_error()) then
          print '(a)', 'check_df_grad_fd: '//err%get_message(); stop 1
       end if
-      call trc_basis_from_json(AUX_JSON, nat, at_z, r, aux, err, force_cart=.true.)
+      call trc_basis_from_json(AUX_JSON, nat, at_z, r, aux, err, force_cart=g_aux_cart)
       if (err%has_error()) then
          print '(a)', 'check_df_grad_fd: '//err%get_message(); stop 1
       end if

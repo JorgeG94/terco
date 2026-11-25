@@ -109,7 +109,7 @@ contains
                   new_unittest("accept slack: plain between full builds, wide only when an incremental build is involved", &
                                test_accept_slack), &
                   new_unittest("adiis before the handover: GDM then reaches the same energy", test_adiis_handover), &
-                  new_unittest("a too-large maximum rotation: steps are rejected, accepted energies never rise", &
+                  new_unittest("a too-large maximum rotation: accepted energies never rise, a non-aufbau end is reported", &
                                test_rejected_steps), &
                   new_unittest("H atom UHF: an empty spin block is diagonalised whole, not rotated", test_empty_spin), &
                   new_unittest("H atom in a one-function basis: nothing to rotate in either spin", test_nothing_to_rotate), &
@@ -712,9 +712,18 @@ contains
 
    subroutine test_rejected_steps(error)
       !! GDM from the guess with a maximum rotation of 4 radians, far more than
-      !! the energy surface is quadratic over: the first quasi-Newton steps
-      !! overshoot and must be rejected and halved, and the run still lands on
-      !! pyscf's energy with every accepted point below the one before.
+      !! the energy surface is quadratic over: quasi-Newton steps overshoot and
+      !! are rejected and halved, and every accepted point is below the one
+      !! before. Which stationary point such a run reaches is not determined:
+      !! from the core guess it is the ground state or, depending on round-off,
+      !! the saddle at -75.0746 Eh with one virtual orbital below the HOMO
+      !! (measured: flang with reference LAPACK at 4 radians, gfortran with MKL
+      !! at 1.5, the ground state in the other 26 of 28 compiler, library and
+      !! cap combinations; a trial was rejected in 25 of them). So the energy
+      !! is pyscf's when the run ends aufbau, and otherwise the run must say it
+      !! is not aufbau (check_gdm_ran: the counter agrees with the orbital
+      !! energies) and lie above the ground state. The rejection path itself is
+      !! forced in test_rejected_never_converges and test_no_downhill.
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_scf_options_t) :: opts
@@ -727,12 +736,15 @@ contains
       opts%guess = "core"
       call trc_scf_run(bas, na, nb, opts, res)
       call bas%release()
-      call check_gdm_ran(error, res, "large rotation", [na, nb], exact=.true.)
+      call check_gdm_ran(error, res, "large rotation", [na, nb], exact=.true., off_aufbau_ok=.true.)
       if (allocated(error)) return
-      call check(error, res%gdm_rejected > 0, "no trial was rejected, so the rejection path was not exercised")
-      if (allocated(error)) return
-      call check(error, abs(res%energy - E_WATER_RHF) < TOL_REF, "energy differs from pyscf by "// &
-                 to_string(abs(res%energy - E_WATER_RHF)))
+      if (res%gdm_off_aufbau == 0) then
+         call check(error, abs(res%energy - E_WATER_RHF) < TOL_REF, "energy differs from pyscf by "// &
+                    to_string(abs(res%energy - E_WATER_RHF)))
+      else
+         call check(error, res%energy > E_WATER_RHF + TOL_REF, "a non-aufbau state at or below the ground state: "// &
+                    to_string(res%energy))
+      end if
    end subroutine test_rejected_steps
 
    subroutine test_rotation_cap(error)
