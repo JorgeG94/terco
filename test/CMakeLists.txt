@@ -195,6 +195,12 @@ terco_add_check(check_rccsd_ladder check_rccsd_ladder.F90 NEEDS_BASIS NEEDS_PYSC
 target_link_libraries(check_rccsd_ladder PRIVATE test-drive::test-drive terco_rccsd_test_support)
 set_tests_properties(terco/check_rccsd_ladder PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
+# The ladder of an arbitrary o^2 v^2 tensor (rccsd_ladder_tensor, what the Lambda equations take of l2): a random
+# pair-symmetric tensor in every form, dressed and undressed, against host loops over b_vv and b_ov. No reference file.
+terco_add_check(check_rccsd_ladder_tensor check_rccsd_ladder_tensor.F90 NEEDS_BASIS)
+target_link_libraries(check_rccsd_ladder_tensor PRIVATE test-drive::test-drive terco_rccsd_test_support)
+set_tests_properties(terco/check_rccsd_ladder_tensor PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+
 # The amplitude update, DIIS and the iteration driver (src/post_hf/ccsd/trc_rccsd_update.F90, _diis.F90,
 # _driver.F90) against pyscf's update_amps, the converged DF-CCSD energy and amplitudes of the same references,
 # plus an independent host implementation of update_amps and DIIS on a linear problem. Same SKIP guard.

@@ -511,7 +511,7 @@ with the (T) code):
 | `trc_rccsd_ints` | the fitted integral blocks and the three-index factors `b_oo`, `b_ov`, `b_vv` (no dense `(ia|bc)`) |
 | `trc_rccsd_inter` | tau, the one-particle intermediates, the energy functional, the MP2 start; the amplitudes type |
 | `trc_rccsd_w` | the two-particle intermediates Woooo, Wvoov, Wvovo |
-| `trc_rccsd_ladder` | the particle-particle ladder (assembled, direct, half form) and its t1 dressing |
+| `trc_rccsd_ladder` | the particle-particle ladder (assembled, direct, half form) and its t1 dressing, on tau or any o^2 v^2 tensor |
 | `trc_rccsd_xfer` | the point-to-point transfers of a multi-rank iteration (amplitudes down, partial ladders up) |
 | `trc_rccsd_update` | the amplitude update (T1 and T2 equations), driving the modules above |
 | `trc_rccsd_diis` | DIIS on the amplitudes (full, packed, host history) and the measure of a step |
