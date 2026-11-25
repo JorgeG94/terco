@@ -90,11 +90,11 @@ terco water.xyz -b 6-31gs --symmetry C2v             # standard frame of C2v
 
 | Flag | Meaning |
 |---|---|
-| `--df` | density-fitted J and K (restricted, Cartesian only) |
+| `--df` | density-fitted J and K (restricted; Cartesian or spherical, as the basis is tagged) |
 | `--jkfit` | fitting basis for `--df` (`def2-universal-jkfit`) |
 
 ```sh
-terco water.xyz -b def2-svp -f pbe0 --df --grad --cart   # DF gradient needs a Cartesian basis
+terco water.xyz -b def2-svp -f pbe0 --df --grad   # the DF gradient follows the basis' own spherical/Cartesian tag
 ```
 
 ## Gradients, Hessian, geometry optimisation

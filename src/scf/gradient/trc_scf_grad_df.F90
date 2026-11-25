@@ -56,6 +56,22 @@
 ! once per chunk. A system too large for even one orbital per chunk stops
 ! with the sizes, not at a failed allocation.
 !
+! SPHERICAL BASES. The generated derivative kernels, and df_jk_t's B, run
+! over Cartesian orbital functions; a spherical function is a fixed linear
+! combination of them, so only the coefficient tensors change space and the
+! kernels stay Cartesian:
+!   * orbital basis: the occupied orbitals are folded once, C_cart = T C_sph
+!     (trc_sph's sph_mo_to_cart); `density` arrives Cartesian already
+!     (trc_scf_gradient folds D with sph_sph_to_cart).
+!   * auxiliary basis (aux%spherical): the fit's index runs over naux =
+!     aux%nao_sph functions, the kernels over aux%nao >= naux Cartesian ones.
+!     Steps 1-3 run over the fitted index unchanged; c and Z are expanded to
+!     the Cartesian index once (sph_cols_sph_to_cart, twice around a
+!     transpose for Z), and X is expanded one derivative block at a time
+!     (sph_cols_sph_to_cart_block) as it is turned into Y. The blocks of the
+!     K step are cut in fitted functions (they index B's columns), those of
+!     the derivative step in Cartesian ones (they index the kernels').
+!
 ! DEVICE RESIDENCY. Every argument array (cmo, dens, grad) and both bases
 ! and the pair list must already be device-resident, as must `dfjk`'s own
 ! B and L (they are, from its setup). Everything else is this routine's own.
@@ -70,7 +86,7 @@ module trc_scf_grad_df
    use trc_step_table, only: step_table_t
    use pic_timer, only: timer_type
    use trc_rys_select, only: rys_select_tables_init
-   use trc_sph, only: sph_cols_sph_to_cart, sph_cols_sph_to_cart_block
+   use trc_sph, only: sph_cols_sph_to_cart, sph_cols_sph_to_cart_block, sph_mo_to_cart
    use trc_df_grad_kernels, only: df_grad_2c_driver, df_grad_3c_driver, df_grad_3c_plan, DFG_LMAX, &
                                   DFG_LMAX_AUX, DFG_NPCLS
 #ifdef TRC_DEVICE
@@ -138,10 +154,13 @@ contains
 
    subroutine scf_grad_df_two_electron(b, aux, pl, dfjk, lp, nocc, cmo, density, j_scale, k_scale, grad)
       !! grad += dE_2/dR for the density-fitted J (scaled by j_scale) and K
-      !! (scaled by k_scale), restricted, Cartesian -- see this module's
-      !! header. `cmo` the converged orbitals (their first `nocc` columns are
-      !! the occupied ones), `density` the total density 2 C_occ C_occ^T,
-      !! `pl` the pair list the fit's (mu nu|P) was built over.
+      !! (scaled by k_scale), restricted, over a Cartesian or spherical
+      !! orbital and auxiliary basis -- see this module's header. `cmo` the
+      !! converged orbitals in the SCF's own space (b%nao_sph rows when `b`
+      !! is spherical, else b%nao; their first `nocc` columns are the
+      !! occupied ones), `density` the total density 2 C_occ C_occ^T,
+      !! always Cartesian, `pl` the pair list the fit's (mu nu|P) was built
+      !! over.
       type(trc_basis_t),    intent(in)    :: b
       type(trc_basis_t),    intent(in)    :: aux
       type(trc_pairlist_t), intent(in)    :: pl
@@ -149,15 +168,17 @@ contains
       !! Read for its retained B (`bpk`) and Cholesky factor (`chol`).
       type(trc_linalg_t),   intent(inout) :: lp
       integer,              intent(in)    :: nocc
-      real(dp),             intent(in)    :: cmo(b%nao, b%nao)
+      real(dp),             intent(in)    :: cmo(merge(b%nao_sph, b%nao, b%spherical), nocc)
       real(dp),             intent(in)    :: density(b%nao, b%nao)
       real(dp),             intent(in)    :: j_scale, k_scale
       real(dp),             intent(inout) :: grad(3, b%natm)
 
       real(dp), allocatable :: dpk(:), cq(:), zmat(:, :), cocc(:, :), xp(:), hb(:, :, :)
       real(dp), allocatable :: tens(:, :, :), half(:, :, :), ydum(:, :, :)
+      real(dp), allocatable :: cqc(:), zc(:, :), zhalf_t(:, :), xcb(:, :)
       type(trc_basis_t) :: aux_subset
-      integer :: n, naux, npack, ablk, nci, nchunk, ic, i0, i1, nc, s0, s1, p0, np, mu, nu, q, i, p
+      integer :: naux_c
+      integer :: n, naux, npack, ablk, ablk_c, nci, nchunk, ic, i0, i1, nc, s0, s1, p0, np, mu, nu, q, i, p
       integer(int64) :: n8, o8, c8, t
       type(trc_gemm_batch_t) :: gemm_shape
       integer :: q0, w, nrp, rbase, il, j, kmode
@@ -171,14 +192,16 @@ contains
       type(timer_type) :: tall
       logical :: dense(NSTEP)
 
-      if (b%spherical) error stop "trc_scf_grad_df: the orbital basis is spherical; the DF gradient is Cartesian only"
       if (.not. dfjk%is_ready()) error stop "trc_scf_grad_df: the density fit has not been set up"
       if (maxval(b%sh_l) > DFG_LMAX .or. maxval(aux%sh_l) > DFG_LMAX_AUX) then
          error stop "trc_scf_grad_df: a basis is above the DF derivative kernels' ceiling (gen_df_grad.py)"
       end if
       call dfjk%dims(n, naux, npack)
-      if (n /= b%nao .or. naux /= aux%nao) error stop "trc_scf_grad_df: the fit does not match these bases"
+      if (n /= b%nao .or. naux /= merge(aux%nao_sph, aux%nao, aux%spherical)) then
+         error stop "trc_scf_grad_df: the fit does not match these bases"
+      end if
       if (aux%natm /= b%natm) error stop "trc_scf_grad_df: the auxiliary basis is on a different molecule"
+      naux_c = aux%nao
       ! The derivative kernels read the Rys root tables; push them here
       ! rather than trust that the fit's trc_df_3c did, on this device.
       call rys_select_tables_init()
@@ -192,6 +215,10 @@ contains
       ! --- 1. c = M^-1 t: the energy's own J gamma, then L^T c = gamma -----
       allocate (dpk(npack), cq(naux), zmat(naux, naux))
       !$acc enter data create(dpk, cq, zmat)
+      ! c over the Cartesian auxiliary functions the kernels run over (a copy
+      ! of cq when the auxiliary basis is Cartesian: one vector).
+      allocate (cqc(naux_c))
+      !$acc enter data create(cqc)
       ! One flat index (a masked two-index form left one loop sequential
       ! on the device): the lower triangle of D, off-diagonal doubled.
       do concurrent(t=0:n8*n8 - 1) local(mu, nu)
@@ -207,6 +234,11 @@ contains
       call lp%trsm("L", "L", "T", naux, 1, 1.0_dp, dfjk%chol, naux, cq, naux)
       call tbl%step_off(lp, ST_CSOL, tc)
       call tbl%add_flop(ST_CSOL, int(naux, int64)**2)
+      if (aux%spherical) then
+         call sph_cols_sph_to_cart(aux, 1, cq, cqc)
+      else
+         call copy_flat(int(naux, int64), cq, cqc)
+      end if
 
       do concurrent(q=1:naux, p=1:naux)
          zmat(p, q) = -0.5_dp*j_scale*cq(p)*cq(q)
@@ -214,9 +246,13 @@ contains
       if (do_k) then
          allocate (cocc(n, nocc))
          !$acc enter data create(cocc)
-         do concurrent(mu=1:n, i=1:nocc)
-            cocc(mu, i) = cmo(mu, i)
-         end do
+         if (b%spherical) then
+            call sph_mo_to_cart(b, nocc, cmo, cocc)
+         else
+            do concurrent(mu=1:n, i=1:nocc)
+               cocc(mu, i) = cmo(mu, i)
+            end do
+         end if
       end if
 
       ! The three-centre kernels' pair plan: every screened pair turned to
@@ -233,7 +269,7 @@ contains
       ! block, and occupied orbitals i per chunk of X (packed, X is
       ! nocc(nocc+1)/2 naux doubles, GBs at a few hundred occupied and
       ! several thousand auxiliary functions). One chunk is the usual case.
-      call choose_grad_blocks(n, naux, merge(nocc, 0, do_k), ablk, nci)
+      call choose_grad_blocks(n, naux, naux_c, merge(nocc, 0, do_k), aux%spherical, ablk, ablk_c, nci)
       nchunk = 1
       if (do_k) nchunk = (nocc + nci - 1)/nci
 
@@ -247,7 +283,7 @@ contains
          call df_grad_3c_driver(b%nshell, n, b%sh_ao, b%sh_at, b%sh_r, coff, pl%npair, q_a, q_b, q_o, q_n, &
                                 size(pd, 2), pd, aux%nshell, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, &
                                 aux%sh_at, aux%sh_e, aux%sh_c, aux%sh_r, b%natm, 0, 1, 1, ydum, j_scale, &
-                                naux, 0, cq, density, grad)
+                                naux_c, 0, cqc, density, grad)
          call tbl%step_off(lp, ST_D3C, tc)
          !$acc exit data delete(ydum)
          deallocate (ydum)
@@ -280,7 +316,7 @@ contains
          !$acc enter data create(xp)
          s0 = 1
          do while (s0 <= aux%nshell)
-            call next_block(aux, s0, ablk, s1, p0, np)
+            call next_block(aux, s0, ablk, s1, p0, np, fitted=.true.)
             allocate (tens(n, n, np), half(nc, n, np), hb(nc, nocc, np))
             !$acc enter data create(tens, half, hb)
             call tbl%step_on(lp, ST_UNPK, tc)
@@ -338,30 +374,24 @@ contains
          kmode = merge(1, 2, nchunk == 1)
          s0 = 1
          do while (s0 <= aux%nshell)
-            call next_block(aux, s0, ablk, s1, p0, np)
+            ! p0/np: this block's CARTESIAN functions, the kernels' own index;
+            ! the fitted columns of xp they come from are expanded below.
+            call next_block(aux, s0, ablk_c, s1, p0, np)
             call aux%subset(s0, s1, aux_subset)
             call aux_subset%to_device()
             allocate (tens(n, n, np), half(nc, n, np), hb(nc, nocc, np))
             !$acc enter data create(tens, half, hb)
             call tbl%step_on(lp, ST_XPACK, tc)
-            do concurrent(t=0:c8*o8*int(np, int64) - 1) local(il, j, q, i)
-               il = int(mod(t, c8)) + 1
-               j = int(mod(t/c8, o8)) + 1
-               q = int(t/(c8*o8)) + 1
-               i = i0 - 1 + il
-               if (j < i) then
-                  hb(il, j, q) = xp(int(i*(i - 1)/2 + j - rbase, int64) + int(nrp, int64)*int(p0 - 2 + q, int64)) &
-                                 /SQRT2
-               else if (j == i) then
-                  hb(il, j, q) = merge(1.0_dp, 0.5_dp, kmode == 1)* &
-                                 xp(int(i*(i - 1)/2 + j - rbase, int64) + int(nrp, int64)*int(p0 - 2 + q, int64))
-               else if (kmode == 1) then
-                  hb(il, j, q) = xp(int(j*(j - 1)/2 + i - rbase, int64) + int(nrp, int64)*int(p0 - 2 + q, int64)) &
-                                 /SQRT2
-               else
-                  hb(il, j, q) = 0.0_dp
-               end if
-            end do
+            if (aux%spherical) then
+               allocate (xcb(nrp, np))
+               !$acc enter data create(xcb)
+               call sph_cols_sph_to_cart_block(aux, s0, s1, nrp, xp, xcb)
+               call unpack_v_block(nc, nocc, np, i0, nrp, rbase, kmode, xcb, hb)
+               !$acc exit data delete(xcb)
+               deallocate (xcb)
+            else
+               call unpack_v_block(nc, nocc, np, i0, nrp, rbase, kmode, xp(1 + int(p0 - 1, int64)*int(nrp, int64)), hb)
+            end if
             call tbl%step_off(lp, ST_XPACK, tc)
             call tbl%add_bytes(ST_XPACK, 8_int64*c8*o8*int(np, int64))
             ! half_q = V_q C^T (nc x n), then M = -(k/2) occ_s^2 C_c half,
@@ -381,7 +411,7 @@ contains
                                    aux_subset%sh_np, aux_subset%sh_ao, &
                                    aux_subset%sh_at, aux_subset%sh_e, aux_subset%sh_c, aux_subset%sh_r, b%natm, &
                                    kmode, n, np, tens, jc, &
-                                   naux, p0 - 1, cq, density, grad)
+                                   naux_c, p0 - 1, cqc, density, grad)
             call tbl%step_off(lp, ST_D3C, tc)
             !$acc exit data delete(tens)
             deallocate (tens)
@@ -406,16 +436,45 @@ contains
 
       ! --- 3b. the two-centre derivative, once Z is complete ---------------
       call tbl%step_on(lp, ST_D2C, tc)
-      call df_grad_2c_driver(aux%nshell, naux, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
-                             aux%sh_e, aux%sh_c, aux%sh_r, b%natm, zmat, grad)
+      if (aux%spherical) then
+         ! Z over both auxiliary indices: expand the columns, transpose, expand
+         ! again (Z is symmetric, so the order is immaterial). zc exists only
+         ! from here, once X and the blocks are gone, so the K step's budget
+         ! does not pay for it. Peak device memory is zc + max(zmat, zhalf_t)
+         ! = zc + naux naux_c: the first expansion lands in the front of zc
+         ! itself (naux naux_c <= naux_c^2), zmat is freed before zhalf_t
+         ! exists, and the second expansion reads zhalf_t only.
+         allocate (zc(naux_c, naux_c))
+         !$acc enter data create(zc)
+         call sph_cols_sph_to_cart(aux, naux, zmat, zc)
+         !$acc exit data delete(zmat)
+         deallocate (zmat)
+         allocate (zhalf_t(naux_c, naux))
+         !$acc enter data create(zhalf_t)
+         call lp%transpose(naux, naux_c, zc, naux, zhalf_t, naux_c)
+         call sph_cols_sph_to_cart(aux, naux_c, zhalf_t, zc)
+         !$acc exit data delete(zhalf_t)
+         deallocate (zhalf_t)
+         call df_grad_2c_driver(aux%nshell, naux_c, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
+                                aux%sh_e, aux%sh_c, aux%sh_r, b%natm, zc, grad)
+         !$acc exit data delete(zc)
+         deallocate (zc)
+      else
+         call df_grad_2c_driver(aux%nshell, naux, aux%maxnp, aux%sh_l, aux%sh_np, aux%sh_ao, aux%sh_at, &
+                                aux%sh_e, aux%sh_c, aux%sh_r, b%natm, zmat, grad)
+      end if
       call tbl%step_off(lp, ST_D2C, tc)
 
       if (do_k) then
          !$acc exit data delete(cocc)
          deallocate (cocc)
       end if
-      !$acc exit data delete(dpk, cq, zmat)
-      deallocate (dpk, cq, zmat)
+      !$acc exit data delete(dpk, cq, cqc)
+      deallocate (dpk, cq, cqc)
+      if (allocated(zmat)) then
+         !$acc exit data delete(zmat)
+         deallocate (zmat)
+      end if
       dense = .false.
       dense([ST_CSOL, ST_HGEMM, ST_XTRSM, ST_ZGEMM, ST_YK]) = .true.
       call lp%sync()
@@ -449,8 +508,8 @@ contains
       !! B = T L^-T and b = B C: c^D = L^-T (B^T d), X c = (X b) L^-1 over the
       !! auxiliary index, and <c^P, X c^Q> = L^-T (b^T X c).
       !!
-      !! Unlike scf_grad_df_two_electron this takes a SPHERICAL orbital or
-      !! auxiliary basis: `cocc` and `xmat` are in the Cartesian AO space the
+      !! Like scf_grad_df_two_electron this takes a SPHERICAL orbital or
+      !! auxiliary basis, but `cocc` and `xmat` are in the Cartesian AO space the
       !! fit and the kernels share (C_cart = T C_sph for a spherical orbital
       !! basis; T X T^T), and the auxiliary index of c^D, c^X, X c^P and Z is
       !! expanded onto the Cartesian auxiliary functions (trc_sph), X c^P one
@@ -769,24 +828,60 @@ contains
       end do
    end subroutine copy_flat
 
-   subroutine next_block(aux, s0, ablk, s1, p0, np)
+   subroutine next_block(aux, s0, ablk, s1, p0, np, fitted)
       !! The run of whole auxiliary shells starting at s0 whose functions fit
       !! in `ablk` (at least one shell): last shell s1, first function p0,
-      !! function count np. Same rule as trc_scf_df's setup blocks.
+      !! function count np. Same rule as trc_scf_df's setup blocks. The
+      !! functions are the Cartesian ones the kernels run over, or with
+      !! `fitted` the fit's own (spherical when aux%spherical: the index of
+      !! B's columns, X and c) -- the two differ only for a spherical set.
       type(trc_basis_t), intent(in) :: aux
       integer, intent(in) :: s0, ablk
       integer, intent(out) :: s1, p0, np
+      logical, intent(in), optional :: fitted
       integer :: ish
+      logical :: sph
+      sph = .false.
+      if (present(fitted)) sph = fitted .and. aux%spherical
       s1 = s0
+      np = merge(2*aux%sh_l(s0) + 1, ncart(aux%sh_l(s0)), sph)
       do ish = s0 + 1, aux%nshell
-         if (aux%sh_ao(ish) + ncart(aux%sh_l(ish)) - aux%sh_ao(s0) > ablk) exit
+         if (np + merge(2*aux%sh_l(ish) + 1, ncart(aux%sh_l(ish)), sph) > ablk) exit
+         np = np + merge(2*aux%sh_l(ish) + 1, ncart(aux%sh_l(ish)), sph)
          s1 = ish
       end do
-      p0 = aux%sh_ao(s0)
-      np = aux%sh_ao(s1) + ncart(aux%sh_l(s1)) - p0
+      p0 = merge(aux%sh_ao_sph(s0), aux%sh_ao(s0), sph)
    end subroutine next_block
 
-   subroutine choose_grad_blocks(n, naux, nocc, ablk, nci)
+   subroutine unpack_v_block(nc, nocc, np, i0, nrp, rbase, kmode, xs, hb)
+      !! hb(il, j, q) := V^q_ij for the chunk's i = i0 - 1 + il, from the
+      !! packed rows j <= i of X (scf_grad_df_two_electron's step 4): `xs`
+      !! holds the block's `np` columns, (nrp, np).
+      integer, intent(in) :: nc, nocc, np, i0, nrp, rbase, kmode
+      real(dp), intent(in) :: xs(nrp, np)
+      real(dp), intent(out) :: hb(nc, nocc, np)
+      integer(int64) :: t, c8, o8
+      integer :: il, j, q, i
+      c8 = int(max(nc, 1), int64)
+      o8 = int(max(nocc, 1), int64)
+      do concurrent(t=0:c8*o8*int(np, int64) - 1) local(il, j, q, i)
+         il = int(mod(t, c8)) + 1
+         j = int(mod(t/c8, o8)) + 1
+         q = int(t/(c8*o8)) + 1
+         i = i0 - 1 + il
+         if (j < i) then
+            hb(il, j, q) = xs(i*(i - 1)/2 + j - rbase, q)/SQRT2
+         else if (j == i) then
+            hb(il, j, q) = merge(1.0_dp, 0.5_dp, kmode == 1)*xs(i*(i - 1)/2 + j - rbase, q)
+         else if (kmode == 1) then
+            hb(il, j, q) = xs(j*(j - 1)/2 + i - rbase, q)/SQRT2
+         else
+            hb(il, j, q) = 0.0_dp
+         end if
+      end do
+   end subroutine unpack_v_block
+
+   subroutine choose_grad_blocks(n, naux, naux_c, nocc, sph_aux, ablk, ablk_c, nci)
       !! The gradient's two block sizes, from the device's free memory AFTER
       !! everything resident is allocated (B, L, Z, C_occ, the caller's own
       !! arrays), half a gigabyte kept back for the libraries:
@@ -794,6 +889,11 @@ contains
       !!   ablk  auxiliary functions per block, up to naux/4: each costs a
       !!         dense n x n slab, an (nocc x n) half-transform and an
       !!         (nocc x nocc) block of H or V;
+      !!   ablk_c the same for the derivative step's blocks, which are cut in
+      !!         the kernels' Cartesian functions: up to naux_c/4, so a
+      !!         spherical auxiliary set takes as many passes of the
+      !!         three-centre kernels as the Cartesian one (naux_c = naux
+      !!         when it is Cartesian, and ablk_c = ablk);
       !!   nci   occupied orbitals per chunk of X (the packed rows j <= i of
       !!         the chunk's i, at most nci nocc naux doubles).
       !!
@@ -813,9 +913,13 @@ contains
       !! allocation. TERCO_DFG_OCC_CHUNK=<k> caps nci at k (TESTING: forces
       !! the chunked path on a small molecule). The host build has no
       !! device to budget: naux/4 and every orbital, unless capped.
-      integer, intent(in) :: n, naux, nocc
-      integer, intent(out) :: ablk, nci
-      integer(int64) :: per_q, per_i
+      integer, intent(in) :: n, naux, naux_c, nocc
+      logical, intent(in) :: sph_aux
+      !! A spherical auxiliary basis: each derivative block also holds its
+      !! Cartesian expansion of the packed X columns, at most (nocc x nocc)
+      !! per function. The K step's blocks do not.
+      integer, intent(out) :: ablk, ablk_c, nci
+      integer(int64) :: per_q, per_qc, per_i
       character(len=16) :: v
       integer :: st, cap
 #ifdef TRC_DEVICE
@@ -827,18 +931,23 @@ contains
       avail = free - 512_int64*1024*1024
 #endif
       per_q = 8_int64*(int(n, int64)*(int(n, int64) + int(max(nocc, 1), int64)) + int(max(nocc, 1), int64)**2)
+      per_qc = per_q
+      if (sph_aux .and. nocc > 0) per_qc = per_q + 8_int64*int(nocc, int64)**2
       per_i = 8_int64*int(max(nocc, 1), int64)*int(naux, int64)
       ablk = max(naux/4, 1)
+      ablk_c = max(naux_c/4, 1)
       nci = max(nocc, 1)
 #ifdef TRC_DEVICE
       xall = 8_int64*int(naux, int64)*(int(nocc, int64)*int(nocc + 1, int64)/2)
       if (xall + int(min(MIN_BLOCK, naux), int64)*per_q <= avail) then
          ablk = int(min(int(ablk, int64), (avail - xall)/per_q))
+         ablk_c = int(min(int(ablk_c, int64), (avail - xall)/per_qc))
       else
          ablk = int(min(int(ablk, int64), max(0_int64, (avail/2)/per_q)))
-         if (nocc > 0) nci = int(min(int(nci, int64), max(0_int64, (avail - ablk*per_q)/per_i)))
+         ablk_c = int(min(int(ablk_c, int64), max(0_int64, (avail/2)/per_qc)))
+         if (nocc > 0) nci = int(min(int(nci, int64), max(0_int64, (avail - max(ablk*per_q, ablk_c*per_qc))/per_i)))
       end if
-      if (ablk < 1 .or. nci < 1) then
+      if (ablk < 1 .or. ablk_c < 1 .or. nci < 1) then
          write (msg, "(a,i0,a,i0,a,i0,a)") "trc_scf_grad_df: not enough device memory for the --df gradient (", &
             avail/1024/1024, " MiB free; one auxiliary function needs ", per_q/1024/1024, &
             " MiB, one occupied orbital's share of X ", per_i/1024/1024, " MiB)"
@@ -851,6 +960,7 @@ contains
          if (st == 0 .and. cap >= 1) nci = min(nci, cap)
       end if
       ablk = max(1, min(ablk, naux))
+      ablk_c = max(1, min(ablk_c, naux_c))
    end subroutine choose_grad_blocks
 
    subroutine unpack_aux_block(n, npack, naux, np, p0, bpk, tens)
