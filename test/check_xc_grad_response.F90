@@ -773,11 +773,11 @@ contains
       call trc_xc_grad_response_many(bas, la, f_mgga, xg, d, c, g, opts)
       call check(error, opts%err%has_error() .and. index(opts%err%get_message(), "meta-GGA") > 0, "meta-GGA must be refused")
       if (allocated(error)) return
-      opts = trc_xc_grad_response_options_t()
+      opts = trc_xc_grad_response_options_t(err=error_t())
       call trc_xc_grad_response_many(bas, la, f_rsh, xg, d, c, g, opts)
       call check(error, opts%err%has_error() .and. index(opts%err%get_message(), "range-separated") > 0, "RSH must be refused")
       if (allocated(error)) return
-      opts = trc_xc_grad_response_options_t()
+      opts = trc_xc_grad_response_options_t(err=error_t())
       call trc_xc_grad_response_many(bas, la, f_vv10, xg, d, c, g, opts)
       call check(error, opts%err%has_error() .and. index(opts%err%get_message(), "VV10") > 0, "VV10 must be refused")
    end subroutine test_refuse

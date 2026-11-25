@@ -187,8 +187,8 @@ before any non-trivial change. The rules that most often break builds:
 
 ## More context
 
-- `.claude/skills/pr-review/SKILL.md`: the full review checklist (use the
-  `pr-review` skill).
+- `.claude/skills/pr-review/SKILL.md`: the full review checklist (`pr-review`).
+- `.claude/skills/gpu-port/SKILL.md`: designing a new compute path (`gpu-port`).
 - `.claude/context/ci.md`: each CI job and how to reproduce it locally.
 - `.claude/context/workflow.md`: writing tests that can fail, refreshing
   pyscf references, stacked PRs, and running long jobs as an agent.

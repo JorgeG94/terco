@@ -85,8 +85,16 @@ endif()
 # to what every generator emitted before this option existed, which is what
 # "regenerates byte for byte" in docs/GENERATORS.md means for the shipped
 # set.
-if(TERCO_LMAX GREATER 4 AND NOT TERCO_CART_ORDER STREQUAL "lexicographic")
-  message(FATAL_ERROR "TERCO_LMAX=${TERCO_LMAX} (h) needs TERCO_CART_ORDER=lexicographic: "
+set(_h_tables OFF)
+if(TERCO_LMAX GREATER 4 OR TERCO_DF_LMAX_AUX GREATER 4)
+  set(_h_tables ON)
+endif()
+if(NOT "${TERCO_DF_LMAX}" STREQUAL "" AND TERCO_DF_LMAX GREATER 4)
+  set(_h_tables ON)
+endif()
+if(_h_tables AND NOT TERCO_CART_ORDER STREQUAL "lexicographic")
+  message(FATAL_ERROR "an h build (TERCO_LMAX=${TERCO_LMAX}, TERCO_DF_LMAX=${TERCO_DF_LMAX}, "
+                      "TERCO_DF_LMAX_AUX=${TERCO_DF_LMAX_AUX}) needs TERCO_CART_ORDER=lexicographic: "
                       "scripts/cartorder.py transcribes the gamess order through l = 4 only")
 endif()
 
@@ -113,25 +121,32 @@ if(_regen)
   if(_hgp_lmax GREATER 2)
     set(_hgp_lmax 2)
   endif()
-  # An h build (TERCO_LMAX=5) needs the Cartesian component tables and the
-  # spherical transform to l = 5 (an h shell is the highest any path reads: the
-  # collocation, the AO permutation and the transform take l of a basis shell,
-  # never l + 1; density fitting refuses an h orbital basis and the fitting
-  # shells stay at g), and the Rys Schwarz kernel for 11 roots. The shipped
-  # ceilings stay at 4 (generated tables are PARAMETER arrays that device
-  # kernels may copy per thread, so a larger one is not free).
+  # An h build (TERCO_LMAX=5, or an h density-fitting ceiling) needs the
+  # Cartesian component tables and the spherical transform to l = 5 (an h shell
+  # is the highest any path reads: the collocation, the AO permutation and the
+  # transform take l of a basis shell, never l + 1), and TERCO_LMAX=5 also the
+  # Rys Schwarz kernel for 11 roots. The shipped ceilings stay at 4 (generated
+  # tables are PARAMETER arrays that device kernels may copy per thread, so a
+  # larger one is not free).
   set(_h_build OFF)
   set(_h_ceil_flag "")
   set(_h_sph_flag "")
   if(TERCO_LMAX GREATER 4)
     set(_h_build ON)
+  endif()
+  # The tables also reach l = 5 when the AUXILIARY ceiling does (an RIFIT set
+  # with h shells, e.g. aug-cc-pVQZ-RIFIT on Be-Ne and Mg): the fitting reads
+  # an auxiliary shell's components and spherical transform at its own l. That
+  # alone does not need the h four-centre build, so TERCO_LMAX=4 with
+  # TERCO_DF_LMAX_AUX=5 extends the tables without the 11-root Schwarz kernel.
+  if(_h_tables)
     set(_h_ceil_flag "--ceil" "5")
     set(_h_sph_flag "--lmax" "5")
   endif()
 
-  # Density fitting stops at g orbitals whatever TERCO_LMAX is: an h orbital
-  # basis (TERCO_LMAX=5) is energies through the four-centre path only, and
-  # every DF entry point refuses it (trc_integrals' DF_LMAX check).
+  # Density fitting follows TERCO_LMAX up to g orbitals; an h orbital ceiling
+  # is TERCO_DF_LMAX=5 only (the DF entry points refuse a basis above DF_LMAX,
+  # trc_integrals' check), and the fitting shells follow TERCO_DF_LMAX_AUX.
   set(_df_lmax ${TERCO_LMAX})
   if(_df_lmax GREATER 4)
     set(_df_lmax 4)
@@ -250,12 +265,13 @@ if(_regen)
               --perm-l2b-out ${_gen_out}/trc_cart_perm_l2b.inc
               --perm-b2l-out ${_gen_out}/trc_cart_perm_b2l.inc)
 
-    # The Cartesian-to-pure-spherical-harmonic transform blocks, l = 0..4
-    # (src/core/trc_sph.F90's only consumer). Fixed at l<=4 regardless of
-    # TERCO_LMAX or TRC_MAXL, for the same reason gen_cartcomp.py's CEIL is 4
-    # and not TERCO_LMAX: f support (milestone M3) needs this table ready
-    # before any four-centre kernel reaches f, and generating a small table
-    # four levels higher than today's d ceiling costs nothing.
+    # The Cartesian-to-pure-spherical-harmonic transform blocks, l = 0..4, or
+    # 0..5 for an h build (src/core/trc_sph.F90's only consumer). Fixed at l<=4
+    # regardless of TERCO_LMAX or TRC_MAXL otherwise, for the same reason
+    # gen_cartcomp.py's CEIL is 4 and not TERCO_LMAX: f support (milestone M3)
+    # needs this table ready before any four-centre kernel reaches f, and
+    # generating a small table four levels higher than today's d ceiling costs
+    # nothing.
     terco_gen("gen_sph.py" ${Python3_EXECUTABLE} ${_scripts}/gen_sph.py ${_order_flag} ${_h_sph_flag}
               -o ${_gen_out}/trc_sph_tables.F90)
     # The Rys diagonal Schwarz kernel for an h basis (an (hh| pair has 11
