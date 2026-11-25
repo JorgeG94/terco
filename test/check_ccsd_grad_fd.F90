@@ -5,7 +5,7 @@ module check_ccsd_grad_fd_suite
    !! test/pyscf_refs/ccsd_grad_water_*.ref (generate.py's gen_ccsd_grad) is the derivative of the energy terco
    !! computes, not only of pyscf's.
    !!
-   !! The energies are terco's trc_run_rccsd totals (exact-ERI RHF to 1e-13 / 1e-11, amplitudes to 1e-12 / 1e-10,
+   !! The energies are terco's trc_run_rccsd totals (exact-ERI RHF to 1e-13 / 1e-11, amplitudes to 1e-13 / 1e-11,
    !! cc-pVDZ-RIFIT), CCSD and CCSD(T) from the same run. The derivative is the five-point stencil
    !! (f(-2h) - 8 f(-h) + 8 f(h) - f(2h)) / 12h with h = 0.01 Bohr: truncation error h^4 f^(5) / 30 and energy
    !! noise (1e-11) / h. Every coordinate of the four cases (STO-3G and cc-pVDZ, frozen core 0 and 1): 36 coordinates,

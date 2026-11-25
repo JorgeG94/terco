@@ -7,8 +7,7 @@ module check_ccsd_grad_ref_suite
    !!
    !! Per case:
    !!   - terco's SCF, RI-CCSD correlation energy, (T) and the CCSD(T) total against pyscf's DF-RCCSD(T) of the
-   !!     reference, at the tolerances of check_capi_rccsd (same method, same molecule class, SCF to 1e-13 / 1e-11):
-   !!     SCF 1e-10, E_CCSD 1e-10, E(T) 3e-12, total 3e-11;
+   !!     reference (SCF to 1e-13 / 1e-11, amplitudes to 1e-13 / 1e-11), at the tolerances below;
    !!   - the reference is self-consistent: the energy rebuilt from its own densities, sum gamma f + 1/2 sum g3 b,
    !!     is the CCSD (and then the CCSD(T)) correlation energy to 1e-9, the one-particle density is
    !!     traceless over the occupied and virtual spaces together, the translational sum of the gradient vanishes
@@ -27,9 +26,9 @@ module check_ccsd_grad_ref_suite
    private
    public :: collect_ccsd_grad_ref
 
-   !> About ten times the worst difference measured over the four cases on a host build: SCF 2.3e-13,
-   !> E_CCSD 6.8e-13, E(T) 6.4e-14, total 9.8e-13.
    real(dp), parameter :: TOL_SCF = 3.0e-12_dp
+   !! The four energy tolerances are at least ten times the worst difference measured over the four cases on a host
+   !! build: SCF 2.3e-13, E_CCSD 4.3e-13, E(T) 4.4e-14, total 7.1e-13.
    real(dp), parameter :: TOL_CORR = 7.0e-12_dp
    real(dp), parameter :: TOL_T = 7.0e-13_dp
    real(dp), parameter :: TOL_TOTAL = 1.0e-11_dp

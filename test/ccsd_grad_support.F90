@@ -90,7 +90,7 @@ contains
 
    subroutine terco_energies(basis, nfrozen, zint, at_r, e_scf, e_corr, e_t, rc, iterations)
       !! terco's RI-CCSD(T) at the geometry `at_r` (3, natm) in Bohr: exact-ERI RHF to energy 1e-13 and commutator
-      !! 1e-11, full Fock builds, then the coupled-cluster iteration to 1e-12 / 1e-10. e_scf is the SCF energy
+      !! 1e-11, full Fock builds, then the coupled-cluster iteration to 1e-13 / 1e-11. e_scf is the SCF energy
       !! (trc_energy less the correlation), e_corr the CCSD correlation energy and e_t the (T) correction.
       character(len=*), intent(in) :: basis
       integer, intent(in) :: nfrozen, zint(:)
@@ -118,7 +118,7 @@ contains
       ! Full Fock builds: an incremental build's screening error sits near these thresholds.
       if (stat == TRC_OK) stat = trc_set_incremental(h, 0_c_int)
       if (stat == TRC_OK) stat = trc_set_rccsd(h, 1_c_int, int(nfrozen, c_int), 0_c_int)
-      if (stat == TRC_OK) stat = trc_set_rccsd_convergence(h, 1.0e-12_c_double, 1.0e-10_c_double, 100_c_int, 0_c_int)
+      if (stat == TRC_OK) stat = trc_set_rccsd_convergence(h, 1.0e-13_c_double, 1.0e-11_c_double, 100_c_int, 0_c_int)
       if (stat == TRC_OK) stat = trc_run_scf(h)
       if (stat == TRC_OK) stat = trc_run_rccsd(h)
       if (stat == TRC_OK) stat = trc_rccsd_energy(h, e_mp2, e_ccsd, e_triples, t1, iters, converged, has_triples)
