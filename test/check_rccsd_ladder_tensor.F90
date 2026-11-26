@@ -12,6 +12,14 @@ module check_rccsd_ladder_tensor_suite
    !! the two give the same numbers. Each undressed against L and dressed against L + D, with the default batches and
    !! with small ones (which start GEMMs and gathers inside t).
    !!
+   !! `rccsd_ladder_transposed`, the transposed dressing, on the same two tensors and the same paths against
+   !!    R(i,j,a,b) = sum_cd sum_P bT(a,c;P) bT(b,d;P) t(i,j,c,d),   bT(a,c;P) = b_vv(a,c;P) - sum_k b_ov(k,a;P) t1(k,c)
+   !! and the identity the Lambda equations use it by (module header of the ladder, TRANSPOSED DRESSING), whose other
+   !! side is the (kb|ac) slab term written in host loops, at t and a random pair-symmetric t2.
+   !!
+   !! With TERCO_RCCSD_LADDER_D_CHUNK=<k> in the environment (a second ctest entry sets it) every half-form plan of
+   !! the transposed cases must be capped at k virtuals d a pass.
+   !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
    use testdrive, only: new_unittest, unittest_type, error_type, check
@@ -20,7 +28,8 @@ module check_rccsd_ladder_tensor_suite
    use trc_rccsd_ints, only: trc_rccsd_ints_t, trc_rccsd_ints_options_t
    use trc_rccsd_inter, only: trc_rccsd_amps_t
    use trc_rccsd_ladder, only: trc_rccsd_ladder_t, trc_rccsd_lscratch_t, trc_rccsd_ladder_options_t, rccsd_ladder_tensor, &
-                               RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_DIRECT, RCCSD_LADDER_HALF
+                               RCCSD_LADDER_ASSEMBLED, RCCSD_LADDER_DIRECT, RCCSD_LADDER_HALF, rccsd_ladder_transposed
+   use trc_device_memory, only: device_memory_set_cap
    use trc_linalg, only: trc_linalg_t
    use rccsd_test_support, only: MOL_NFROZEN, load_molecule, run_scf
    implicit none
@@ -42,6 +51,7 @@ module check_rccsd_ladder_tensor_suite
    real(dp), allocatable :: t0(:, :, :, :)                         !! the tensor without symmetry, mapped to the device
    real(dp), allocatable :: ref_l(:, :, :, :), ref_w(:, :, :, :)   !! L and L + D of t
    real(dp), allocatable :: ref0_l(:, :, :, :), ref0_w(:, :, :, :)  !! L and L + D of t0
+   real(dp), allocatable :: ref_t(:, :, :, :), ref0_t(:, :, :, :)   !! the transposed ladder of t and of t0
 
 contains
 
@@ -51,7 +61,11 @@ contains
                    new_unittest("direct", test_direct), &
                    new_unittest("half, one contraction", test_half_symmetric), &
                    new_unittest("half, two contractions", test_half_general), &
-                   new_unittest("refusals", test_refusals)]
+                   new_unittest("refusals", test_refusals), &
+                   new_unittest("transposed: assembled and direct", test_transposed_full), &
+                   new_unittest("transposed: half", test_transposed_half), &
+                   new_unittest("transposed: the Lambda identity", test_identity), &
+                   new_unittest("transposed: refusals", test_transposed_refusals)]
    end subroutine collect_check_rccsd_ladder_tensor
 
    subroutine test_assembled(error)
@@ -233,6 +247,321 @@ contains
       call ls%release()
    end subroutine refuse_symmetric
 
+   subroutine test_transposed_full(error)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_rccsd_ladder_options_t) :: opts
+
+      call ensure_fixture()
+      opts%form = RCCSD_LADDER_ASSEMBLED
+      call run_transposed_general(error, opts)
+      if (allocated(error)) return
+      opts%cd_batch = 7
+      call run_transposed_general(error, opts)
+      if (allocated(error)) return
+      opts = trc_rccsd_ladder_options_t(form=RCCSD_LADDER_DIRECT)
+      call run_transposed_general(error, opts)
+      if (allocated(error)) return
+      opts%p_batch = 5
+      call run_transposed_general(error, opts)
+   end subroutine test_transposed_full
+
+   subroutine run_transposed_general(error, opts)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_rccsd_ladder_options_t), intent(in) :: opts
+      integer(int64) :: flops
+
+      call run_transposed(error, opts, t, .false., ref_t, flops)
+      if (allocated(error)) return
+      call run_transposed(error, opts, t0, .false., ref0_t, flops)
+   end subroutine run_transposed_general
+
+   subroutine test_transposed_half(error)
+      !! Two contractions on both tensors; one contraction on t, and on t0 where it must give the ladder of t, with
+      !! the GEMM tally showing which ran
+      type(error_type), allocatable, intent(out) :: error
+
+      type(trc_rccsd_ladder_options_t) :: opts
+      integer(int64) :: one, two, second, no, nv
+      integer :: d_batch
+
+      call ensure_fixture()
+      do d_batch = 0, 2, 2
+         opts = trc_rccsd_ladder_options_t(form=RCCSD_LADDER_HALF, d_batch=d_batch)
+         call run_transposed_general(error, opts)
+         if (allocated(error)) return
+         call run_transposed(error, opts, t, .true., ref_t, one)
+         if (allocated(error)) return
+         call run_transposed(error, opts, t, .false., ref_t, two)
+         if (allocated(error) .or. .not. supported) return
+         no = ints%no
+         nv = ints%nv
+         second = no*no*nv*nv*nv*(nv + 1)
+         call check(error, two - one == second, "transposed: one contraction did not run, general minus symmetric "// &
+                    "GEMM flops "//to_string(two - one)//", expected "//to_string(second))
+         if (allocated(error)) return
+         call run_transposed(error, opts, t0, .true., ref_t, one)
+         if (allocated(error)) return
+      end do
+   end subroutine test_transposed_half
+
+   subroutine run_transposed(error, opts, x, sym, want, flops)
+      !! `rccsd_ladder_transposed` of `x` against `want`, twice with one scratch (the assembled and direct plans
+      !! allocate their dressed factor at the first)
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_rccsd_ladder_options_t), intent(in) :: opts
+      real(dp), intent(in), contiguous :: x(:, :, :, :)
+      logical, intent(in) :: sym
+      real(dp), intent(in) :: want(:, :, :, :)
+      integer(int64), intent(out) :: flops  !! `ls%flops_pp`
+
+      type(trc_rccsd_lscratch_t) :: ls
+      type(trc_rccsd_ladder_t) :: lad
+      integer(int64) :: bytes
+      real(dp) :: d
+      integer :: pass
+
+      flops = 0_int64
+      if (.not. supported) return
+      call ls%init(ints, opts)
+      call check(error, .not. ls%status%has_error(), "scratch: "//ls%status%get_message())
+      if (allocated(error)) return
+      if (ls%form == RCCSD_LADDER_HALF .and. env_d_chunk() > 0) then
+         call check(error, ls%d_batch <= env_d_chunk(), "d_batch "//to_string(ls%d_batch)//" above the environment's "// &
+                    "cap "//to_string(env_d_chunk()))
+         if (allocated(error)) return
+      end if
+      call lad%init(ints%no, ints%nv)
+      do pass = 1, 2
+         bytes = ls%bytes
+         call rccsd_ladder_transposed(ints, x, amps, lad, ls, la, tau_symmetric=sym)
+         call check(error, .not. ls%status%has_error(), "transposed: "//ls%status%get_message())
+         if (allocated(error)) exit
+         flops = ls%flops_pp
+         call lad%pull()
+         d = maxval(abs(lad%h - want))/max(1.0_dp, maxval(abs(want)))
+         call check(error, d < TOL_HOST, "transposed vs host loops, form "//to_string(ls%form)//": "// &
+                    to_string(d, "es9.2"))
+         if (allocated(error)) exit
+         if (pass == 2) call check(error, ls%bytes == bytes, "the dressed factor was allocated twice")
+         if (allocated(error)) exit
+      end do
+      call lad%release()
+      call ls%release()
+   end subroutine run_transposed
+
+   function env_d_chunk() result(cap)
+      !! TERCO_RCCSD_LADDER_D_CHUNK, 0 when unset
+      integer :: cap
+      character(len=16) :: text
+      integer :: stat
+
+      cap = 0
+      call get_environment_variable("TERCO_RCCSD_LADDER_D_CHUNK", text, status=stat)
+      if (stat /= 0) return
+      read (text, *, iostat=stat) cap
+      if (stat /= 0) cap = 0
+   end function env_d_chunk
+
+   subroutine test_identity(error)
+      !! With l2 = t and a random pair-symmetric t2 (tau = t2 + t1 t1), after (i,j,a,b) + (j,i,b,a):
+      !!   1/2 L(l2) + 1/2 sum_kl (ka|lb) [l2 tau](ij;kl) - sum_kc (kb|ac) sum_d l2(ij;cd) t1(k,d)
+      !!     = 1/2 R(l2) + 1/2 sum_kl (ka|lb) [l2 t2](ij;kl)
+      !! left side by host loops (L = sum_cd (ac|bd) l2), R from the library
+      type(error_type), allocatable, intent(out) :: error
+
+      type(trc_rccsd_lscratch_t) :: ls
+      type(trc_rccsd_ladder_t) :: lad
+      type(trc_rccsd_ladder_options_t) :: opts
+      real(dp), allocatable :: x(:, :, :, :), t2(:, :, :, :), old(:, :, :, :), new(:, :, :, :), ovov(:, :), ovvv(:, :)
+      real(dp), allocatable :: l2t1(:, :, :, :), l2tau(:, :, :, :), l2t2(:, :, :, :)
+      integer :: no, nv, i, j, a, b, c, d, k, l
+      real(dp) :: s, diff, scale, raw
+
+      call ensure_fixture()
+      if (.not. supported) return
+      no = ints%no
+      nv = ints%nv
+      allocate (x(no, no, nv, nv), t2(no, no, nv, nv), old(no, no, nv, nv), new(no, no, nv, nv))
+      call random_number(x)
+      do b = 1, nv
+         do a = 1, nv
+            do j = 1, no
+               do i = 1, no
+                  t2(i, j, a, b) = 0.2_dp*(0.5_dp*(x(i, j, a, b) + x(j, i, b, a)) - 0.5_dp)
+               end do
+            end do
+         end do
+      end do
+      ovov = matmul(ints%b_ov, transpose(ints%b_ov))
+      ovvv = matmul(ints%b_ov, transpose(ints%b_vv))
+      allocate (l2t1(no, no, nv, no), l2tau(no, no, no, no), l2t2(no, no, no, no))
+      do k = 1, no
+         do c = 1, nv
+            do j = 1, no
+               do i = 1, no
+                  l2t1(i, j, c, k) = sum(t(i, j, c, :)*amps%t1(k, :))
+               end do
+            end do
+         end do
+      end do
+      do l = 1, no
+         do k = 1, no
+            do j = 1, no
+               do i = 1, no
+                  l2t2(i, j, k, l) = sum(t(i, j, :, :)*t2(k, l, :, :))
+                  s = l2t2(i, j, k, l)
+                  do d = 1, nv
+                     do c = 1, nv
+                        s = s + t(i, j, c, d)*amps%t1(k, c)*amps%t1(l, d)
+                     end do
+                  end do
+                  l2tau(i, j, k, l) = s
+               end do
+            end do
+         end do
+      end do
+
+      opts%form = RCCSD_LADDER_HALF
+      call ls%init(ints, opts)
+      call lad%init(no, nv)
+      call rccsd_ladder_transposed(ints, t, amps, lad, ls, la, tau_symmetric=.true.)
+      call check(error, .not. ls%status%has_error(), "transposed: "//ls%status%get_message())
+      if (allocated(error)) return
+      call lad%pull()
+
+      do b = 1, nv
+         do a = 1, nv
+            do j = 1, no
+               do i = 1, no
+                  old(i, j, a, b) = 0.5_dp*ref_l(i, j, a, b)
+                  new(i, j, a, b) = 0.5_dp*lad%h(i, j, a, b)
+                  do l = 1, no
+                     do k = 1, no
+                        s = 0.5_dp*ovov(k + no*(a - 1), l + no*(b - 1))
+                        old(i, j, a, b) = old(i, j, a, b) + s*l2tau(i, j, k, l)
+                        new(i, j, a, b) = new(i, j, a, b) + s*l2t2(i, j, k, l)
+                     end do
+                  end do
+                  do c = 1, nv
+                     do k = 1, no
+                        old(i, j, a, b) = old(i, j, a, b) - ovvv(k + no*(b - 1), a + nv*(c - 1))*l2t1(i, j, c, k)
+                     end do
+                  end do
+               end do
+            end do
+         end do
+      end do
+      diff = 0.0_dp
+      scale = 1.0_dp
+      raw = maxval(abs(old - new))
+      do b = 1, nv
+         do a = 1, nv
+            do j = 1, no
+               do i = 1, no
+                  diff = max(diff, abs(old(i, j, a, b) + old(j, i, b, a) - new(i, j, a, b) - new(j, i, b, a)))
+                  scale = max(scale, abs(old(i, j, a, b) + old(j, i, b, a)))
+               end do
+            end do
+         end do
+      end do
+      call check(error, diff/scale < TOL_HOST, "the symmetrised identity: "//to_string(diff/scale, "es9.2"))
+      if (.not. allocated(error)) then
+         ! the two sides must differ before symmetrisation, or the case would not need it and so not test it
+         call check(error, raw > 1.0e-6_dp, "the unsymmetrised sides agree: the t1 terms vanish")
+      end if
+      call lad%release()
+      call ls%release()
+   end subroutine test_identity
+
+   subroutine test_transposed_refusals(error)
+      !! Shape, share, `tau_symmetric` outside the half form, missing amplitudes and no room for the dressed
+      !! factor: each by its message, nothing written
+      type(error_type), allocatable, intent(out) :: error
+
+      type(trc_rccsd_ladder_options_t) :: opts
+      type(trc_rccsd_lscratch_t) :: ls
+      type(trc_rccsd_ladder_t) :: lad
+      type(trc_rccsd_amps_t) :: empty
+      logical :: ok(5)
+
+      call ensure_fixture()
+      if (.not. supported) return
+      opts%form = RCCSD_LADDER_ASSEMBLED
+      call ls%init(ints, opts)
+      call check(error, .not. ls%status%has_error(), "scratch: "//ls%status%get_message())
+      if (allocated(error)) return
+      call lad%init(ints%no, ints%nv)
+      call rccsd_ladder_transposed(ints, t(:, :, :, 1:ints%nv - 1), amps, lad, ls, la)
+      ok(1) = index(ls%status%get_message(), "does not have the shape") > 0
+      call rccsd_ladder_transposed(ints, t, amps, lad, ls, la, tau_symmetric=.true.)
+      ok(2) = index(ls%status%get_message(), "tau_symmetric") > 0
+      call rccsd_ladder_transposed(ints, t, empty, lad, ls, la)
+      ok(3) = index(ls%status%get_message(), "the amplitudes are not initialised") > 0
+      call device_memory_set_cap(1000_int64)
+      call rccsd_ladder_transposed(ints, t, amps, lad, ls, la)
+      call device_memory_set_cap(0_int64)
+      ok(4) = index(ls%status%get_message(), "the dressed factor of the transposed ladder (v 19, naux") > 0 .and. &
+              index(ls%status%get_message(), "GB are free") > 0
+      ls%d_lo = 2
+      call rccsd_ladder_transposed(ints, t, amps, lad, ls, la)
+      ! a share is itself refused by the scratch check of a form that cannot be shared
+      ok(5) = index(ls%status%get_message(), "share of the ladder") > 0
+      call lad%pull()
+      call check(error, all(ok) .and. all(lad%h == 0.0_dp), "transposed refusals: shape "//merge("T", "F", ok(1))// &
+                 " symmetric "//merge("T", "F", ok(2))//" amplitudes "//merge("T", "F", ok(3))//" memory "// &
+                 merge("T", "F", ok(4))//" share "//merge("T", "F", ok(5)))
+      call lad%release()
+      call ls%release()
+      if (allocated(error)) return
+      opts%form = RCCSD_LADDER_HALF
+      call ls%init(ints, opts)
+      call lad%init(ints%no, ints%nv)
+      ls%d_lo = 2
+      call rccsd_ladder_transposed(ints, t, amps, lad, ls, la)
+      call lad%pull()
+      call check(error, index(ls%status%get_message(), "takes no share") > 0 .and. all(lad%h == 0.0_dp), &
+                 "a share of the half form must be refused: "//ls%status%get_message())
+      call lad%release()
+      call ls%release()
+   end subroutine test_transposed_refusals
+
+   subroutine host_transposed(x, want)
+      !! sum_cd sum_P bT(a,c;P) bT(b,d;P) x(i,j,c,d) by loops
+      real(dp), intent(in) :: x(:, :, :, :)
+      real(dp), allocatable, intent(out) :: want(:, :, :, :)
+
+      real(dp), allocatable :: bt(:, :), w4(:, :), w(:, :)
+      integer :: no, nv, i, j, a, b, c, d, k
+
+      no = ints%no
+      nv = ints%nv
+      allocate (bt(nv*nv, ints%naux))
+      do c = 1, nv
+         do a = 1, nv
+            bt(a + nv*(c - 1), :) = ints%b_vv(a + nv*(c - 1), :)
+            do k = 1, no
+               bt(a + nv*(c - 1), :) = bt(a + nv*(c - 1), :) - ints%b_ov(k + no*(a - 1), :)*amps%t1(k, c)
+            end do
+         end do
+      end do
+      w4 = matmul(bt, transpose(bt))
+      allocate (want(no, no, nv, nv), w(nv, nv))
+      do b = 1, nv
+         do a = 1, nv
+            do d = 1, nv
+               do c = 1, nv
+                  w(c, d) = w4(a + nv*(c - 1), b + nv*(d - 1))
+               end do
+            end do
+            do j = 1, no
+               do i = 1, no
+                  want(i, j, a, b) = sum(w*x(i, j, :, :))
+               end do
+            end do
+         end do
+      end do
+   end subroutine host_transposed
+
    subroutine ensure_fixture()
       type(trc_scf_result_t) :: res
       type(trc_rccsd_ints_options_t) :: bopts
@@ -279,6 +608,11 @@ contains
       call amps%push()
       call host_reference(t, ref_l, ref_w)
       call host_reference(t0, ref0_l, ref0_w)
+      call host_transposed(t, ref_t)
+      call host_transposed(t0, ref0_t)
+      ! the transposed dressing must be neither no dressing nor the dressed Wvvvv, or its cases would not tell
+      if (maxval(abs(ref_t - ref_l)) < 1.0e-6_dp .or. maxval(abs(ref_t - ref_w)) < 1.0e-6_dp) &
+         error stop "check_rccsd_ladder_tensor: the transposed dressing is not distinct"
       ! the two tensors must give different ladders, or the t0 cases would only repeat those of t
       if (maxval(abs(ref0_l - ref_l)) < 1.0e-6_dp) error stop "check_rccsd_ladder_tensor: t0 is symmetric"
    end subroutine ensure_fixture

@@ -205,6 +205,11 @@ set_tests_properties(terco/check_rccsd_ladder PROPERTIES SKIP_REGULAR_EXPRESSION
 terco_add_check(check_rccsd_ladder_tensor check_rccsd_ladder_tensor.F90 NEEDS_BASIS)
 target_link_libraries(check_rccsd_ladder_tensor PRIVATE test-drive::test-drive terco_rccsd_test_support)
 set_tests_properties(terco/check_rccsd_ladder_tensor PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
+add_test(NAME terco/check_rccsd_ladder_tensor_chunked COMMAND check_rccsd_ladder_tensor)
+set_tests_properties(
+  terco/check_rccsd_ladder_tensor_chunked
+  PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_REGULAR_EXPRESSION "SKIP" ENVIRONMENT
+             "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_RCCSD_LADDER_D_CHUNK=1")
 
 # The amplitude update, DIIS and the iteration driver (src/post_hf/ccsd/trc_rccsd_update.F90, _diis.F90,
 # _driver.F90) against pyscf's update_amps, the converged DF-CCSD energy and amplitudes of the same references,
