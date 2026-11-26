@@ -42,6 +42,9 @@ module trc_scf_grad
    use trc_basis_types, only: trc_basis_t, trc_pairlist_t
    use trc_integrals, only: trc_1e_gradient
    use trc_eri, only: trc_eri_t
+   use trc_ecp, only: trc_ecp_gradient
+   use trc_ecp_types, only: trc_ecp_t
+   use trc_error, only: error_t
    use trc_linalg, only: trc_linalg_t
    use trc_sph, only: sph_sph_to_cart
    use trc_xc_functional, only: trc_xc_functional_t
@@ -193,7 +196,7 @@ contains
 
    subroutine trc_scf_gradient(b, lp, nspin, nalpha, nbeta, cmo, eps, thresh, grad, &
                                func, grid_level, grid_max_pts, grid_response, rho_tol, nlc_grid_level, grid_rotation, &
-                               dfjk, aux, verbose, grid_cache, grid_reuse, pair_eri_cache, reused, sym)
+                               dfjk, aux, verbose, grid_cache, grid_reuse, pair_eri_cache, reused, sym, ecp)
       !! The full RHF/UHF analytic gradient at the converged orbitals
       !! `cmo`/`eps`: eri%gradient (two-electron) + trc_1e_gradient
       !! (overlap Pulay term, kinetic, nuclear attraction) +
@@ -319,6 +322,15 @@ contains
       !! other, or no cache, is built by the term itself. Both arguments are
       !! needed for a reuse. trc_capi.F90's `trc_run_gradient` is the one caller.
       type(trc_scf_grad_sym_t), intent(in), optional :: sym   !! see its type; absent, the C1 gradient
+      type(trc_ecp_t), intent(in), optional :: ecp
+      !! The effective core potential the SCF ran with: present with `has_ecp`,
+      !! its derivative contracted with the total density is added
+      !! (`trc_ecp_gradient`). `b%at_z` is already the reduced charge, so the
+      !! nuclear terms need nothing. This routine has no status argument, so
+      !! any failure of that term, the run-time one included (the device
+      !! cannot hold one ECP atom's caches beside the kernels' local memory),
+      !! is an `error stop` carrying its message. The RI-MP2 gradient returns
+      !! the same failure as a message instead.
       type(trc_pairlist_t) :: pl_own
       !! The pair list built here when the cache's is not reused.
       type(step_table_t) :: gst, xst, vst
@@ -329,6 +341,7 @@ contains
       integer :: nao
       integer :: nocc(2)
       type(grad_exchange_t) :: xch
+      type(error_t) :: eerr
       real(dp), allocatable :: wmat(:, :), dtot(:, :), density(:, :, :)
 
       talk = .false.
@@ -347,7 +360,7 @@ contains
       end if
       ! the density, two-electron, XC and VV10 terms print nothing until the table at the end
       if (talk) call global_logger%info("  grad: starting the analytic gradient, "//to_string(b%nao)//" basis functions")
-      call gst%init("grad", [character(len=12) :: "density", "two-electron", "one-electron", "xc", "vv10"])
+      call gst%init("grad", [character(len=12) :: "density", "two-electron", "one-electron", "xc", "vv10", "ecp"])
       call xst%init("xc grad", xc_grad_step_names())
       call vst%init("vv10 grad", xc_grad_step_names())
       call gst%step_on(lp, 1, tc)
@@ -459,6 +472,17 @@ contains
       end if
 
       !$acc update self(grad)
+
+      ! --- the effective core potential, added on top: into the HOST `grad`
+      ! just fetched, from `dtot` while it is still mapped. ---
+      if (present(ecp)) then
+         if (ecp%has_ecp) then
+            call gst%step_on(lp, 6, tc)
+            call trc_ecp_gradient(b, ecp, dtot, grad, eerr)
+            if (eerr%has_error()) error stop "trc_scf_gradient: the ECP gradient failed: "//eerr%get_message()
+            call gst%step_off(lp, 6, tc)
+         end if
+      end if
       !$acc exit data delete(wmat, dtot, grad, cmo, eps, density)
 
       ! --- nuclear repulsion, host arithmetic, added on top ---
