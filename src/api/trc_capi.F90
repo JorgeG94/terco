@@ -6357,9 +6357,10 @@ contains
       !! off; a later trc_run_scf drops the result and the gradient is the
       !! SCF's again. trc_run_hessian refuses.
       !!
-      !! Refused with TRC_ERR_STATE (no converged SCF) or TRC_ERR_UNSUPPORTED
-      !! (trc_check_tddft's list, and a non-aufbau reference, RI-MP2/RI-CCSD
-      !! results held, more than one rank, symmetry that is not lenient);
+      !! Refused with TRC_ERR_STATE (no converged SCF, or a --df fit dropped
+      !! since the SCF) or TRC_ERR_UNSUPPORTED (trc_check_tddft's list, and
+      !! a non-aufbau reference, RI-MP2/RI-CCSD results held, more than one
+      !! rank, symmetry that is not lenient);
       !! TRC_ERR_NOCONV when the Davidson iteration does not converge.
       type(c_ptr), value :: handle
       integer(c_int) :: status
@@ -6385,6 +6386,11 @@ contains
          cx%message = "trc_run_tddft: run a converged SCF first"
          return
       end if
+      ! A state problem, not an unsupported option: trc_set_jkfit_* drops the fit and leaves the SCF result.
+      if (cx%opts%df .and. .not. cx%df_fit_ok) then
+         cx%message = "trc_run_tddft: the --df fit of the SCF is gone; run the SCF again"
+         return
+      end if
       status = TRC_ERR_UNSUPPORTED
       refusal = tddft_context_refusal(cx, "trc_run_tddft")
       if (len(refusal) > 0) then
@@ -6399,10 +6405,6 @@ contains
       cx%td_opts%verbose = cx%opts%verbose
       ! The response builds its own engine (as trc_run_polarizability does), so the SCF's would only sit beside it.
       call cx%peri%release()
-      if (cx%opts%df .and. .not. cx%df_fit_ok) then
-         cx%message = "trc_run_tddft: the --df fit of the SCF is gone; run the SCF again"
-         return
-      end if
       if (cx%opts%df) then
          call trc_tddft_run_solve_fitted(cx%bb%b, cx%la, cx%res, cx%nalpha, cx%opts, cx%td_opts, cx%td, cx%dfjk)
       else if (tddft_grid_reusable(cx)) then

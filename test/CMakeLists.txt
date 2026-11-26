@@ -3123,12 +3123,23 @@ foreach(_space IN ITEMS cart sph)
     endforeach()
   endforeach()
 endforeach()
+# The blocked-chunk and refusal checks do not depend on the molecule, the functional or the space: the "extras"
+# mode runs them once for HF and once for a hybrid on water Cartesian, not in every program above.
+foreach(_f IN ITEMS hf b3lyp)
+  add_test(NAME terco/check_tddft_df_extras_${_f}
+           COMMAND check_tddft_df_water_cart_${_f} water.xyz basis_sets/6-31gs.json basis_sets/def2-universal-jkfit.json
+                   water cart ${_f} ${CMAKE_CURRENT_BINARY_DIR}/tddft_df_extras_${_f}_probe.bin extras)
+  set_tests_properties(terco/check_tddft_df_extras_${_f} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+                       SKIP_REGULAR_EXPRESSION "SKIP")
+endforeach()
 # The same program with the blocked, rebuilt path forced through the environment switches: chunks of seven
 # auxiliary functions, none kept resident, against the same pyscf anchors.
 add_test(NAME terco/check_tddft_df_water_cart_hf_envblocks
          COMMAND check_tddft_df_water_cart_hf water.xyz basis_sets/6-31gs.json basis_sets/def2-universal-jkfit.json water cart hf
                  ${CMAKE_CURRENT_BINARY_DIR}/tddft_df_water_cart_hf_env_probe.bin)
 set_tests_properties(terco/check_tddft_df_water_cart_hf_envblocks PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                     SKIP_REGULAR_EXPRESSION "SKIP"
                      ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_TDDFT_DF_BLOCK=7;TERCO_TDDFT_DF_RESIDENT=0")
 
 #

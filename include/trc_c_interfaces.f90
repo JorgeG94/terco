@@ -1747,9 +1747,10 @@ module trc_c_interfaces
          !! off; a later trc_run_scf drops the result and the gradient is the
          !! SCF's again. trc_run_hessian refuses.
          !!
-         !! Refused with TRC_ERR_STATE (no converged SCF) or TRC_ERR_UNSUPPORTED
-         !! (trc_check_tddft's list, and a non-aufbau reference, RI-MP2/RI-CCSD
-         !! results held, more than one rank, symmetry that is not lenient);
+         !! Refused with TRC_ERR_STATE (no converged SCF, or a --df fit dropped
+         !! since the SCF) or TRC_ERR_UNSUPPORTED (trc_check_tddft's list, and
+         !! a non-aufbau reference, RI-MP2/RI-CCSD results held, more than one
+         !! rank, symmetry that is not lenient);
          !! TRC_ERR_NOCONV when the Davidson iteration does not converge.
          import :: c_int, c_ptr
          implicit none

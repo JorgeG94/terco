@@ -15,8 +15,8 @@ module check_tddft_df_suite
    !!     some resident, to round-off (`tddft_df_set_blocks`);
    !!  5. the refusals: the excited-state gradient over a fit (a TDA solve, whose message must survive the approximation
    !!     check -- it was overwritten by an operator-precedence slip), a fit-less solve, an unset fit, a fit of another
-   !!     basis, and a device without room for the MO blocks (`device_memory_set_cap`), after which the fit is intact
-   !!     and solves again. A second ctest entry of the water Cartesian HF case runs the whole program with
+   !!     basis, and the refusal plumbing for a device cap below the reserve (`device_memory_set_cap`), after which
+   !!     the fit is intact and solves again. A second ctest entry of the water Cartesian HF case runs the whole program with
    !!     TERCO_TDDFT_DF_BLOCK=7 and TERCO_TDDFT_DF_RESIDENT=0 in the environment (the blocked, rebuilt path against
    !!     the pyscf anchors).
    !! The spaces are as check_df_grad_vs_pyscf.F90's: "cart" (the orbital and auxiliary bases Cartesian) and
@@ -25,7 +25,10 @@ module check_tddft_df_suite
    !! functional) per process; the SCF is run to pyscf's tight convergence and terco's numbers and its grid go
    !! to the probe file for generate.py.
    !!
-   !! Arguments: xyz basis.json aux.json molname space(cart|sph) funcname probe.bin. Run from test/.
+   !! Arguments: xyz basis.json aux.json molname space(cart|sph) funcname probe.bin [mode]. Run from test/.
+   !! Mode "anchors" (the default) runs 1-3 and the release; mode "extras" runs 4, 5 and the release. Items 4
+   !! and 5 do not depend on the molecule, the functional or the space, so ctest runs them once for HF and
+   !! once for a hybrid on water Cartesian instead of in every program (each costs two SCFs and a dozen solves).
    !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
@@ -47,15 +50,17 @@ module check_tddft_df_suite
    implicit none
    private
    public :: collect_check_tddft_df, tddft_df_needs_more_aux_lmax
-   public :: xyz_arg, basis_arg, aux_arg, molname_arg, space_arg, funcname_arg, probe_arg
+   public :: xyz_arg, basis_arg, aux_arg, molname_arg, space_arg, funcname_arg, probe_arg, mode_arg
 
    real(dp), parameter :: TOL_OMEGA = 1.0e-6_dp
    real(dp), parameter :: TOL_OSC = 1.0e-5_dp
    real(dp), parameter :: TOL_YY = 1.0e-6_dp
-   !! The Cartesian TDDFT checks' gates against pyscf (check_tddft_basis, check_tddft_sph).
+   ! TOL_OMEGA, TOL_OSC, TOL_YY: the Cartesian TDDFT checks' gates against pyscf (check_tddft_basis,
+   ! check_tddft_sph).
+   ! TOL_BLOCK_OMEGA, TOL_BLOCK_OSC: blocked against unblocked, the same operator summed in another order and
+   ! solved to conv_tol 1e-10.
    real(dp), parameter :: TOL_BLOCK_OMEGA = 1.0e-11_dp
    real(dp), parameter :: TOL_BLOCK_OSC = 1.0e-7_dp
-   !! Blocked against unblocked: the same operator, summed in another order, solved to conv_tol 1e-10.
    real(dp), parameter :: FIT_BOUND = 1.0e-4_dp
    !! Fitted against four-centre excitation energies (hartree): the fitting error of def2-universal-jkfit in the
    !! lowest roots is 1.0e-5 to 1.6e-5 (measured, water and formamide, HF/PBE/B3LYP); a wrong operator (a missing
@@ -70,6 +75,7 @@ module check_tddft_df_suite
    character(len=16) :: space_arg = "cart"
    character(len=16) :: funcname_arg = "hf"
    character(len=256) :: probe_arg = "tddft_df_probe.bin"
+   character(len=16) :: mode_arg = "anchors"
 
    type :: fixture_t
       logical :: ready = .false.   ! the bases and the fit exist: test_release frees them
@@ -111,14 +117,20 @@ contains
 
    subroutine collect_check_tddft_df(testsuite)
       type(unittest_type), allocatable, intent(out) :: testsuite(:)
-      testsuite = [ &
-                  new_unittest("fitted TDA energies vs pyscf", test_tda), &
-                  new_unittest("fitted RPA energies and ||Y||^2 vs pyscf", test_rpa), &
-                  new_unittest("fitted roots within the fitting error of the four-centre ones", test_vs_exact), &
-                  new_unittest("blocked and rebuilt chunks equal the unblocked solve", test_blocks), &
-                  new_unittest("refusals", test_refusals), &
-                  new_unittest("release", test_release) &
-                  ]
+      if (trim(mode_arg) == "extras") then
+         testsuite = [ &
+                     new_unittest("blocked and rebuilt chunks equal the unblocked solve", test_blocks), &
+                     new_unittest("refusals", test_refusals), &
+                     new_unittest("release", test_release) &
+                     ]
+      else
+         testsuite = [ &
+                     new_unittest("fitted TDA energies vs pyscf", test_tda), &
+                     new_unittest("fitted RPA energies and ||Y||^2 vs pyscf", test_rpa), &
+                     new_unittest("fitted roots within the fitting error of the four-centre ones", test_vs_exact), &
+                     new_unittest("release", test_release) &
+                     ]
+      end if
    end subroutine collect_check_tddft_df
 
    function ref_name(prefix) result(name)
@@ -383,12 +395,14 @@ contains
       if (allocated(error)) return
       call refuse_other_basis(error)
       if (allocated(error)) return
-      ! A device with no room for the blocks: refused with the sizes, the fit untouched (it solves again after).
+      ! The refusal plumbing for a device without room: the cap is below the fixed reserve, so any molecule is
+      ! refused, with the sizes in the message and the fit left intact (it solves again after). That the
+      ! refusal threshold is sized right is not checked here.
       call device_memory_set_cap(600000000_int64)
       call trc_tddft_run_solve_fitted(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, o, r, fx%dfjk)
       call device_memory_set_cap(0_int64)
       call check(error, r%err%has_error() .and. index(r%err%get_message(), "device memory") > 0, &
-                 "no room for the MO blocks was not refused with the sizes: "//r%err%get_message())
+                 "a device cap below the reserve was not refused with the sizes: "//r%err%get_message())
       if (allocated(error)) return
       call check(error, fx%dfjk%is_ready(), "the fit was left lent after a refused setup")
       if (allocated(error)) return
@@ -453,7 +467,7 @@ program check_tddft_df
    use testdrive, only: run_testsuite
    use pic_logger, only: global_logger
    use check_tddft_df_suite, only: collect_check_tddft_df, tddft_df_needs_more_aux_lmax, xyz_arg, basis_arg, aux_arg, &
-                                   molname_arg, space_arg, funcname_arg, probe_arg
+                                   molname_arg, space_arg, funcname_arg, probe_arg, mode_arg
    implicit none
    integer :: stat
 
@@ -464,6 +478,7 @@ program check_tddft_df
    if (command_argument_count() >= 5) call get_command_argument(5, space_arg)
    if (command_argument_count() >= 6) call get_command_argument(6, funcname_arg)
    if (command_argument_count() >= 7) call get_command_argument(7, probe_arg)
+   if (command_argument_count() >= 8) call get_command_argument(8, mode_arg)
    stat = 0
    if (tddft_df_needs_more_aux_lmax()) then
       call global_logger%info("SKIP check_tddft_df: the auxiliary basis needs more angular momentum than DF_LMAX_AUX")
