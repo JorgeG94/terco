@@ -32,7 +32,7 @@ module check_cpks_batched_suite
    use trc_xc_functional, only: trc_xc_functional_t, xc_functional_by_name
    use trc_scf_driver, only: trc_scf_options_t, trc_scf_result_t, trc_scf_run
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_cphf_solve_rhf, &
-                       cphf_zero_matrix, cphf_neg_matrix, cphf_add_matrix, cphf_axpy_matrix, cphf_precond_matrix, &
+                       cphf_zero_matrix, cphf_neg_matrix, cphf_axpy_matrix, cphf_precond_matrix, &
                        cphf_combine_p, cphf_add_diag, cphf_copy_matrix
    use trc_cpks, only: trc_cpks_solve_rks
    use trc_test_basis, only: read_xyz
@@ -200,12 +200,12 @@ contains
       call fx%la%gemm_mat(fx%cmo(:, no + 1:n), pin, fx%wt1)
       call fx%la%gemm_mat(fx%wt1, fx%cmo(:, 1:no), fx%wd, transb="T")
       call fx%la%transpose(n, n, fx%wd, n, fx%wdt, n)
-      call cphf_add_matrix(n, n, fx%wd, fx%wdt, fx%wd)
+      call cphf_axpy_matrix(n, n, 1.0_dp, fx%wdt, fx%wd)
       if (fx%ks) then
          call fx%eri%fock_resident(fx%bas, fx%wd, fx%wg, &
                                    opts=trc_fock_options_t(k_scale=fx%func%exx, j_scale=1.0_dp, density_screen=.false.))
          call trc_xc_fxc_rks(fx%bas, fx%xg, fx%func, fx%dmat, fx%wd, fx%wv, la=fx%la)
-         call cphf_add_matrix(n, n, fx%wg, fx%wv, fx%wg)
+         call cphf_axpy_matrix(n, n, 1.0_dp, fx%wv, fx%wg)
       else
          call fx%eri%fock_resident(fx%bas, fx%wd, fx%wg, &
                                    opts=trc_fock_options_t(k_scale=1.0_dp, j_scale=1.0_dp, density_screen=.false.))
@@ -267,7 +267,7 @@ contains
       fx%vb = b
       !$acc update device(fx%vp, fx%vb)
       call apply_a(fx, fx%vp, fx%vap)
-      call cphf_add_matrix(fx%nvirt, fx%nocc, fx%vap, fx%vb, fx%vap)
+      call cphf_axpy_matrix(fx%nvirt, fx%nocc, 1.0_dp, fx%vb, fx%vap)
       r = sqrt(fx%la%dot_2d(fx%vap, fx%vap))
    end function true_residual
 

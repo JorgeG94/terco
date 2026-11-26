@@ -3062,7 +3062,12 @@ set_tests_properties(terco/check_tddft_api_fd terco/check_tddft_api_fd_sph PROPE
 # ||Y||^2 for water and formamide with HF, PBE and B3LYP, and the TDA and RPA gradients (the
 # trailing `grad` argument) of water with all three and of formamide with HF. See
 # check_tddft_sph.F90's own header.
-foreach(_c water:hf:grad water:pbe:grad water:b3lyp:grad formamide:hf:grad formamide:pbe formamide:b3lyp)
+# One executable, one test per case (one (molecule, functional) per process, the probe file named after it).
+add_executable(check_tddft_sph check_tddft_sph.F90)
+target_compile_definitions(check_tddft_sph PRIVATE ${TERCO_TEST_DEFS})
+target_link_libraries(check_tddft_sph PRIVATE ${main_lib} terco_test_basis terco_pyscf_ref_io test-drive::test-drive)
+target_include_directories(check_tddft_sph PRIVATE ${CMAKE_BINARY_DIR}/modules)
+foreach(_c water:hf:grad water:pbe:grad water:b3lyp:grad formamide:hf:grad formamide:hf formamide:pbe formamide:b3lyp)
   string(REPLACE ":" ";" _cl ${_c})
   list(GET _cl 0 _mol)
   list(GET _cl 1 _f)
@@ -3071,23 +3076,30 @@ foreach(_c water:hf:grad water:pbe:grad water:b3lyp:grad formamide:hf:grad forma
   if(_ncl GREATER 2)
     set(_grad grad)
   endif()
-  terco_add_check(check_tddft_sph_${_mol}_${_f} check_tddft_sph.F90 NEEDS_BASIS NEEDS_PYSCF_REF
-                  ARGS ${_mol}.xyz ${_mol} ${_f} ${CMAKE_CURRENT_BINARY_DIR}/tddft_sph_${_mol}_${_f}_probe.bin ${_grad})
-  target_link_libraries(check_tddft_sph_${_mol}_${_f} PRIVATE test-drive::test-drive)
-  set_target_properties(check_tddft_sph_${_mol}_${_f} PROPERTIES Fortran_MODULE_DIRECTORY
-                        ${CMAKE_CURRENT_BINARY_DIR}/mod_check_tddft_sph_${_mol}_${_f})
+  # The energies-only formamide Hartree-Fock case has its own name and probe file (the gradient one is LONG).
+  set(_sfx "")
+  if(_mol STREQUAL "formamide" AND _f STREQUAL "hf" AND NOT _grad)
+    set(_sfx _energies)
+  endif()
+  set(_t terco/check_tddft_sph_${_mol}_${_f}${_sfx})
+  add_test(NAME ${_t}
+           COMMAND check_tddft_sph ${_mol}.xyz ${_mol} ${_f}
+                   ${CMAKE_CURRENT_BINARY_DIR}/tddft_sph_${_mol}_${_f}${_sfx}_probe.bin ${_grad})
+  set_tests_properties(${_t} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}")
 endforeach()
-# LONG: formamide PBE and B3LYP (energies only) took 42-72 s and 58-92 s on a loaded host build, the size of the
-# Cartesian formamide Kohn-Sham checks above and the check_tddft_basis tier; nightly only. Formamide HF with its six
-# gradients (57-95 s) stays on pull requests, like the Cartesian formamide Hartree-Fock gradient cases, and the water
-# cases (3-39 s) run on every pull request.
-set_tests_properties(terco/check_tddft_sph_formamide_pbe terco/check_tddft_sph_formamide_b3lyp PROPERTIES LABELS LONG)
+# LONG: the formamide gradient and Kohn-Sham cases took 42-95 s on a loaded host build (the six gradients of
+# Hartree-Fock 57-95 s), the size of the Cartesian formamide Kohn-Sham checks above and the check_tddft_basis tier;
+# nightly only. Every pull request runs the water cases (3-39 s), with the spherical grid response (the `grad` water
+# Kohn-Sham cases' own test), and formamide Hartree-Fock energies only, the one case with more than one d shell.
+set_tests_properties(terco/check_tddft_sph_formamide_hf terco/check_tddft_sph_formamide_pbe
+                     terco/check_tddft_sph_formamide_b3lyp PROPERTIES LABELS LONG)
 
 # TDA and RPA excited states over a density-fitted (--df) reference (src/scf/response/trc_tddft_df.F90),
 # def2-universal-jkfit, against pyscf's TDA/TDDFT on mf.density_fit with the same auxiliary basis
 # (generate.py's tddft_df_* cases): water and formamide, HF, PBE and B3LYP, Cartesian 6-31G* (cart) and
 # spherical cc-pVDZ (sph), energies, oscillator strengths and ||Y||^2; plus the fitted roots against a
-# four-centre run, the blocked and rebuilt chunks against the unblocked solve, and the refusals. See
+# four-centre run. The blocked-chunk and refusal checks run separately (the extras tests below). See
 # check_tddft_df.F90's own header.
 foreach(_space IN ITEMS cart sph)
   if(_space STREQUAL "cart")
@@ -3111,13 +3123,25 @@ foreach(_space IN ITEMS cart sph)
     endforeach()
   endforeach()
 endforeach()
-# The same program with the blocked, rebuilt path forced through the environment switches: chunks of seven
+# The blocked-chunk and refusal checks do not depend on the molecule, the functional or the space: the "extras"
+# mode runs them once for HF (exchange on) and once for PBE (exchange off, the one-element blocks) on water
+# Cartesian, not in every program above.
+foreach(_f IN ITEMS hf pbe)
+  add_test(NAME terco/check_tddft_df_extras_${_f}
+           COMMAND check_tddft_df_water_cart_${_f} water.xyz basis_sets/6-31gs.json basis_sets/def2-universal-jkfit.json
+                   water cart ${_f} ${CMAKE_CURRENT_BINARY_DIR}/tddft_df_extras_${_f}_probe.bin extras)
+  set_tests_properties(terco/check_tddft_df_extras_${_f} PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                       ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER}"
+                       SKIP_REGULAR_EXPRESSION "SKIP")
+endforeach()
+# The same program with the blocked, rebuilt path forced through the environment switches: chunks of eight
 # auxiliary functions, none kept resident, against the same pyscf anchors.
 add_test(NAME terco/check_tddft_df_water_cart_hf_envblocks
          COMMAND check_tddft_df_water_cart_hf water.xyz basis_sets/6-31gs.json basis_sets/def2-universal-jkfit.json water cart hf
                  ${CMAKE_CURRENT_BINARY_DIR}/tddft_df_water_cart_hf_env_probe.bin)
 set_tests_properties(terco/check_tddft_df_water_cart_hf_envblocks PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_TDDFT_DF_BLOCK=7;TERCO_TDDFT_DF_RESIDENT=0")
+                     SKIP_REGULAR_EXPRESSION "SKIP"
+                     ENVIRONMENT "CUDA_VISIBLE_DEVICES=0;TERCO_CART_ORDER=${TERCO_CART_ORDER};TERCO_TDDFT_DF_BLOCK=8;TERCO_TDDFT_DF_RESIDENT=0")
 
 #
 # trc_xc_fxc_rks_apply_many (src/xc/trc_xc.F90): the XC kernel response of

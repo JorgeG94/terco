@@ -125,11 +125,12 @@ module trc_rimp2_grad
    public :: rimp2_grad_reference_refusal
 
    real(dp), parameter :: PAD_EPS = 1.0e6_dp
-   !! The orbital energy of a zero-coefficient pad column: the CPHF solver
-   !! takes a square Cartesian (nao, nao) C, and a spherical basis has
-   !! nao - nao_sph columns fewer. Their right-hand side is exactly zero, so
-   !! their solution is too; the energy only keeps the preconditioner finite
-   !! (trc_rimp2_driver's own rimp2_driver_mo_to_cart pads the same way).
+   !! The orbital energy of a zero-coefficient pad column. This path hands the
+   !! CPHF solver a Cartesian C padded to (nao, nao): a spherical basis has
+   !! nao - nao_sph fewer orbitals, and trc_rimp2_driver's
+   !! rimp2_driver_mo_to_cart pads the same way. A pad column's right-hand
+   !! side is exactly zero, so its solution is too; the energy only keeps the
+   !! preconditioner finite.
 
    integer, parameter :: ST_ORB = 1, ST_CORR = 2, ST_ZVEC = 3, ST_DENSITY = 4, ST_GRAD4C = 5, ST_GRAD1E = 6, &
                          ST_XC = 7, ST_KSGRID = 8, NSTEP = 8
@@ -621,8 +622,8 @@ contains
          call cpks%rot%release_keeping(w%scratch)
          call cpks%kernel%release()
       else
-         ! The exact solver's square Cartesian C: the nmo real orbitals, then
-         ! zero-coefficient pad virtuals (PAD_EPS's own comment).
+         ! C padded to (n, n): the nmo real orbitals, then zero-coefficient pad
+         ! virtuals (PAD_EPS's own comment).
          allocate (cpad(n, n), epad(n), bvec(nvp, nocc, 1), u(nvp, nocc, 1))
          cpad = 0.0_dp
          cpad(:, 1:nmo) = w%ccart

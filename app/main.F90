@@ -248,8 +248,8 @@ program trc_main
                        "global-hybrid functionals). With --grad the gradient of E_SCF + omega of the root "// &
                        "--tddft-root, with --opt its geometry optimisation (not yet over --df, whose energies "// &
                        "are the response of the fitted energy). Refused with triplets, UHF/UKS, "// &
-                       "meta-GGAs, range-separated hybrids, VV10, double hybrids, --pcm, --rimp2, --riccsd "// &
-                       "and --hessian")
+                       "meta-GGAs, range-separated hybrids, VV10, double hybrids, an f basis, --pcm, --rimp2, "// &
+                       "--riccsd, --hessian and more than one rank")
    call r%cli%add_option("tddft-roots", "number of singlet roots wanted (3)")
    call r%cli%add_option("tddft-root", "the root --grad and --opt differentiate, counted from 1 (1); at most "// &
                          "--tddft-roots (give one more to watch the next root's gap while optimising)")

@@ -85,7 +85,8 @@ Closed-shell singlet TDA/CIS and RPA (TDHF, Casida) excitation energies, and the
 gradient of one root, are in the C ABI since version 1.30, on the converged
 restricted reference of the handle (Cartesian or spherical basis, the latter
 since ABI 1.35, over a `--df` fit since ABI 1.36, energies only; LDA, GGA and global-hybrid functionals). The Fortran entry is `trc_tddft_run_solve` and
-`trc_tddft_run_gradient` (module `trc_tddft_run`).
+`trc_tddft_run_gradient` (module `trc_tddft_run`); over a `--df` reference it is
+`trc_tddft_run_solve_fitted`, which takes the `df_jk_t` the SCF converged with.
 
 | Call | What it does |
 |---|---|

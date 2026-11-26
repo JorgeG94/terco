@@ -114,7 +114,7 @@ module trc_scf_settings
       !! when the pairs are binned. 1 is decades, which is what this always
       !! did; higher values make the pre-launch screen finer, at more and
       !! smaller batches. Settable through trc_set_batching.
-      type(trc_decontract_options_t) :: decontract
+      type(trc_decontract_options_t) :: decontract = trc_decontract_options_t()
       !! How the four-centre engine splits the basis into its working basis
       !! (trc_decontract). The integrals are exact in any working basis; the
       !! policy sets the cost and, at the screening threshold, what is

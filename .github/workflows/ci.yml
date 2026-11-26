@@ -63,6 +63,10 @@ jobs:
           # 24.04, where it last passed, until a newer ifx is validated.
           - {compiler: intel, version: '2025.0', os: ubuntu-24.04}
           - {compiler: nvidia-hpc, version: 'latest'}
+          # LLVM flang, from apt.llvm.org: stricter than gfortran about
+          # structure constructors (C7104) and unallocated I/O items, so it
+          # catches non-conforming code the other host compilers accept.
+          - {compiler: flang, version: 23, os: ubuntu-24.04}
     steps:
       - uses: actions/checkout@v4
 

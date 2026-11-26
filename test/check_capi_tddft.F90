@@ -293,6 +293,14 @@ contains
          call check(error, rc == TRC_ERR_UNSUPPORTED .and. index(message_of(handle), "not implemented yet") > 0, &
                     "the --df excited-state gradient must be refused: "//message_of(handle))
       end if
+      if (.not. allocated(error)) then
+         ! Setting the fitting basis again drops the fit but keeps the converged SCF: a state error, not an
+         ! unsupported option.
+         rc = trc_set_jkfit_json(handle, "basis_sets/def2-universal-jkfit.json"//c_null_char)
+         if (rc == TRC_OK) rc = trc_run_tddft(handle)
+         call check(error, rc == TRC_ERR_STATE .and. index(message_of(handle), "fit of the SCF is gone") > 0, &
+                    "trc_run_tddft after the fit was dropped must be a state error: "//message_of(handle))
+      end if
       rc = trc_destroy(handle)
    end subroutine test_df
 
