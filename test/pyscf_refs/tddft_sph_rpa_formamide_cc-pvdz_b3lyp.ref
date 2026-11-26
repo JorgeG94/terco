@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["tddft_sph_formamide_b3lyp"] -> gen_tddft_sph
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 667084f1c326d09dec505f95e48a906c87344ee6a6ab9c5ef4d1eed2485d30c0
+# hash: df0c556b983de34a525a285a812db6d1e02a305d79ec728469e46e1a76249d8a
 # files: test/check_tddft_sph.F90 test/basis_sets/cc-pvdz.json test/formamide.xyz
 E_SCF -1.69901366905618374e+02
 OMEGA 3

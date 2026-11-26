@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["tddft_basis"] -> gen_tddft_basis
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 690a351054ccb125986e15f7c87a68969330c403834b5f4b49f1d428202ac3fb
+# hash: 74b2b6f86d2e5f693bcdbd99137923767cc1093f430845fa3f0fc6add35a2688
 # files: test/check_tddft_basis.F90 basis_sets/6-31g.json test/water.xyz
 E_SCF -7.62981055655634464e+01
 OMEGA_TDA 3

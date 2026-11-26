@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["tddft_sph_water_b3lyp"] -> gen_tddft_sph
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 0b4ad8fc36b7a45c30f71f5a8b61de1a7bee25f9ff4abe6b4ee16e7a7eafa008
+# hash: 7dbc411857fbcf0ec54ca8becd79d10c2179b2c165c9c696fa1a44ceeb397a33
 # files: test/check_tddft_sph.F90 test/basis_sets/cc-pvdz.json test/water.xyz
 E_SCF -7.64203688916700088e+01
 GRAD 3 3 3

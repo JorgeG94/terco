@@ -108,7 +108,7 @@ module trc_xc_grad_response
 
    type :: trc_xc_grad_response_options_t
       !! The settings of trc_xc_grad_response_many, and its status on return.
-      type(xc_grad_options_t) :: gradient
+      type(xc_grad_options_t) :: gradient = xc_grad_options_t()
       !! Grid response and the grid's partition, as xc_grad_add_on_grid's. Its
       !! density screen is not read: `screen_tol`.
       integer(int64) :: budget = 0_int64

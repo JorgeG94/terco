@@ -96,7 +96,7 @@ module trc_cpks
    use trc_xc, only: trc_xc_fxc_rks, trc_xc_fxc_cache_t, trc_xc_fxc_rks_apply, &
                   trc_xc_response_refuse_reason
    use trc_cphf, only: trc_cphf_options_t, trc_cphf_result_t, trc_cphf_cg_t, &
-                       cphf_zero_matrix, cphf_copy_matrix, cphf_neg_matrix, cphf_add_matrix, &
+                       cphf_zero_matrix, cphf_copy_matrix, cphf_neg_matrix, &
                        cphf_axpy_matrix, cphf_precond_matrix, cphf_combine_p, cphf_add_diag, &
                        cphf_refuse_polarizability
    use trc_scf_df, only: df_jk_t
@@ -271,7 +271,7 @@ contains
             call lp%gemm_mat(cmo(:, nocc + 1:nocc + nvirt), cg%p(:, :, kk), temporary_no)
             call lp%gemm_mat(temporary_no, cmo(:, 1:nocc), d_u(:, :, k), transb="T")
             call lp%transpose(nao, nao, d_u(:, :, k), nao, d_ut, nao)
-            call cphf_add_matrix(nao, nao, d_u(:, :, k), d_ut, d_u(:, :, k))
+            call cphf_axpy_matrix(nao, nao, 1.0_dp, d_ut, d_u(:, :, k))
          end do
          if (nbmax == 1) then
             call eri%fock_resident(b, d_u(:, :, 1), g_u(:, :, 1), opts=fopts)
@@ -285,7 +285,7 @@ contains
          end do
          do k = 1, cg%na
             kk = cg%act(k)
-            call cphf_add_matrix(nao, nao, g_u(:, :, k), v_resp(:, :, k), g_u(:, :, k))
+            call cphf_axpy_matrix(nao, nao, 1.0_dp, v_resp(:, :, k), g_u(:, :, k))
             call lp%gemm_mat(g_u(:, :, k), cmo(:, 1:nocc), temporary_no2)
             call lp%gemm_mat(cmo(:, nocc + 1:nocc + nvirt), temporary_no2, cg%ap(:, :, kk), transa="T", alpha=2.0_dp)
             call cphf_add_diag(nvirt, nocc, cg%diagv, cg%p(:, :, kk), cg%ap(:, :, kk))
@@ -419,7 +419,7 @@ contains
       call lp%gemm_mat(this%cvir, u, this%half)
       call lp%gemm_mat(this%half, this%cocc, this%xden, transb="T")
       call lp%transpose(this%n, this%n, this%xden, this%n, this%xden_t, this%n)
-      call cphf_add_matrix(this%n, this%n, this%xden, this%xden_t, this%xden)
+      call cphf_axpy_matrix(this%n, this%n, 1.0_dp, this%xden_t, this%xden)
       call kernel_response(this, b, xg, lp)
       if (present(au)) call lp%gemm_mat(this%cvir, this%half, au, transa="T", alpha=2.0_dp, beta=1.0_dp)
       if (present(goo)) call lp%gemm_mat(this%cocc, this%half, goo, transa="T", beta=1.0_dp)
