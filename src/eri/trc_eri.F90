@@ -1693,12 +1693,12 @@ contains
       if (this%rank == 0) then
          if (use_mdg) then
             if (kfac /= 0.0_dp) then
-               call global_logger%info("  [gradient] Coulomb part: MD J engine; exchange: Rys kernels")
+               call global_logger%verbose("  [gradient] Coulomb part: MD J engine; exchange: Rys kernels")
             else
-               call global_logger%info("  [gradient] Coulomb part: MD J engine; no exchange")
+               call global_logger%verbose("  [gradient] Coulomb part: MD J engine; no exchange")
             end if
          else
-            call global_logger%info("  [gradient] Coulomb part: fused Rys kernels")
+            call global_logger%verbose("  [gradient] Coulomb part: fused Rys kernels")
          end if
       end if
       jrys = jfac

@@ -773,13 +773,13 @@ contains
       if (error%has_error()) return
 
       bytes = sum(int(tk%ncol, int64))*BRA_COL_BYTES + sum(int(tk%ncol_g, int64))*ECP_GBRA_COL_BYTES
-      call global_logger%performance("   ECP gradient: kept "//to_string(st%nkept)//" of "//to_string(st%ntask)// &
-                                     " (derivative shell, shell, ECP atom) tasks ("//to_string(st%nkept_g)// &
-                                     " with a g bra), "//to_string(st%nchunk)//" chunk(s), "// &
-                                     to_string(bytes/1000000_int64)//" MB of K1b caches")
+      call global_logger%verbose("   ECP gradient: kept "//to_string(st%nkept)//" of "//to_string(st%ntask)// &
+                                 " (derivative shell, shell, ECP atom) tasks ("//to_string(st%nkept_g)// &
+                                 " with a g bra), "//to_string(st%nchunk)//" chunk(s), "// &
+                                 to_string(bytes/1000000_int64)//" MB of K1b caches")
       if (nfail > 0) then
-         call global_logger%info("   ECP radial quadrature: "//to_string(nfail)// &
-                                 " gradient tasks kept the finest level")
+         call global_logger%verbose("   ECP radial quadrature: "//to_string(nfail)// &
+                                    " gradient tasks kept the finest level")
       end if
    end subroutine ecp_gradient_run
 
@@ -1174,8 +1174,8 @@ contains
       ! Not for the derivative's rectangle: that is one call per ECP atom on
       ! every gradient.
       if (split == 0) then
-         call global_logger%performance("   ECP 3-centre screen: kept "//to_string(nk64)//" of "// &
-                                        to_string(ntot64)//" (shell pair, ECP atom) tasks")
+         call global_logger%verbose("   ECP 3-centre screen: kept "//to_string(nk64)//" of "// &
+                                    to_string(ntot64)//" (shell pair, ECP atom) tasks")
       end if
       if (nk64 > int(huge(nkept), int64)) then
          call error%set(ERROR_VALIDATION, "trc_ecp_matrix: "//to_string(nk64)//" (shell pair, ECP atom) "// &
@@ -1267,8 +1267,8 @@ contains
       ! 1e-13 (#194 review). Reported, so a change of grid can be traced.
       nfail = sum(conv_fail)
       if (nfail > 0) then
-         call global_logger%info("   ECP radial quadrature: "//to_string(nfail)// &
-                                 " (shell pair, ECP atom) blocks kept the finest level")
+         call global_logger%verbose("   ECP radial quadrature: "//to_string(nfail)// &
+                                    " (shell pair, ECP atom) blocks kept the finest level")
       end if
 
       ! K3: write each kept slot into the Cartesian block (and
