@@ -300,7 +300,7 @@ contains
       ! metric+Cholesky: w40's n=1000, naux=5320 asks for another 10.6 GB. Free-
       ! memory-aware, same pattern as the per-iteration K block
       ! (`choose_qb`) and RI-MP2's own `k_group`.
-      ablk = choose_setup_block(n, naux_c)
+      ablk = choose_setup_block(n, naux_c, aux%spherical)
       if (present(aux_block)) ablk = max(aux_block, 1)
       call dbg_mem("ablk chosen (ablk="//itoa_dbg(ablk)//")")
 
@@ -753,18 +753,25 @@ contains
       flush (output_unit)
    end subroutine dbg_rank
 
-   integer function choose_setup_block(n, naux) result(ablk)
+   integer function choose_setup_block(n, naux, spherical) result(ablk)
+      !! Auxiliary functions per (mu nu|P) setup block: as many as naux/4 unless the device's free memory (after `bpk`
+      !! is resident) would not hold the dense scratch tensors of that block, then as many as fit with half a gigabyte
+      !! kept back; the same pattern as `choose_qb`. A spherical auxiliary basis holds TWO dense
+      !! (n, n, ablk) tensors at once, the Cartesian block and its spherical fold (`tens` and `tsph` in
+      !! `df_jk_setup`), so it counts twice: sized for one, w40 def2-SVP (n = 1000, 17 GB of packed B on a 32 GB
+      !! V100) took every free byte for `tens` and failed allocating `tsph` with 0.5 GB free.
       integer, intent(in) :: n, naux
-#ifdef TRC_DEVICE
+      logical, intent(in) :: spherical
       integer(int64) :: free, per_q, fixed
+#ifdef TRC_DEVICE
       free = int(acc_get_property(acc_get_device_num(acc_get_device_type()), acc_get_device_type(), &
                                   acc_property_free_memory), int64)
-      per_q = 8_int64*int(n, int64)*int(n, int64)
+#else
+      free = huge(0_int64)/2
+#endif
+      per_q = 8_int64*int(n, int64)*int(n, int64)*merge(2_int64, 1_int64, spherical)
       fixed = 512_int64*1024*1024
       ablk = int(min(int(max(naux/4, 1), int64), max(1_int64, (free - fixed)/max(per_q, 1_int64))))
-#else
-      ablk = max(naux/4, 1)
-#endif
       ablk = max(1, min(ablk, naux))
    end function choose_setup_block
 
