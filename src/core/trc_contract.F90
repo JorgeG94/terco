@@ -36,7 +36,11 @@ module trc_contract
    !! REFUSALS. `build` and `contract_permute` set their `error` argument. `apply` of a plan that is
    !! not built, or with a `work` shorter than `work_size`, writes nothing and sets `plan%status`,
    !! which every `apply` clears first: check it after the call. (A component: `apply` is at the
-   !! eight-argument limit.)
+   !! eight-argument limit.) The refusal is also logged as an error, so that a caller who does not
+   !! look still leaves a trace.
+   !!
+   !! ONE PLAN PER THREAD. `apply` writes `plan%status`, so threads that apply the same contraction
+   !! each need a plan of their own (a copy of a built plan will do: a plan is plain values).
    !!
    !! HOW. `build` picks, among the layouts a GEMM can read, the one that reorders
    !! the fewest elements:
@@ -83,6 +87,7 @@ module trc_contract
    use pic_types, only: dp, int64
    use trc_linalg, only: trc_linalg_t, trc_gemm_batch_t, trc_gemm_batch
    use trc_error, only: error_t, ERROR_VALIDATION
+   use pic_logger, only: global_logger
    implicit none
    private
 
@@ -238,7 +243,8 @@ contains
    subroutine plan_apply(this, la, a, b, c, work, alpha, beta)
       !! C = alpha contraction(A, B) + beta C; alpha and beta default to 1 and 0. `work` holds at least
       !! `this%work_size` doubles, and may be empty when that is 0. `la` is initialised. A plan that is not
-      !! built, or a shorter `work`, sets `this%status` and writes nothing.
+      !! built, or a shorter `work`, sets `this%status`, logs it and writes nothing. Writes `this`: one plan
+      !! per thread.
       class(trc_contract_plan_t), intent(inout) :: this
       class(trc_linalg_t), intent(in) :: la
       real(dp), intent(in) :: a(*), b(*)
@@ -249,11 +255,11 @@ contains
 
       call this%status%clear()
       if (.not. this%ready) then
-         call this%status%set(ERROR_VALIDATION, "trc_contract: apply of a plan that was not built")
+         call refuse(this, "trc_contract: apply of a plan that was not built")
          return
       end if
       if (size(work, kind=int64) < this%work_size) then
-         call this%status%set(ERROR_VALIDATION, "trc_contract: apply: work is shorter than work_size")
+         call refuse(this, "trc_contract: apply: work is shorter than work_size")
          return
       end if
       al = 1.0_dp
@@ -276,6 +282,15 @@ contains
          call apply_reordered(this, la, a, b, c, work, al, be)
       end if
    end subroutine plan_apply
+
+   subroutine refuse(plan, message)
+      !! Record `apply`'s refusal in `plan%status` and log it
+      class(trc_contract_plan_t), intent(inout) :: plan
+      character(len=*), intent(in) :: message
+
+      call plan%status%set(ERROR_VALIDATION, message)
+      call global_logger%error(message)
+   end subroutine refuse
 
    subroutine apply_reordered(plan, la, a, b, c, work, alpha, beta)
       !! `apply` of a plan that reorders something: `work` holds A's copy, then B's, then C's GEMM result

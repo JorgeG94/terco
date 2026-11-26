@@ -537,9 +537,28 @@ contains
       call expect_refusal("ab,cd->abcd", [1000, 1000], [1000, 1000], error)  ! C above 2^31-1
       if (allocated(error)) return
 
+      ! trailing blanks are no part of a spec
+      block
+         type(trc_contract_plan_t) :: plan
+
+         call plan%build("ab,bc->ac   ", [2, 3], [3, 5], status)
+         call check(error, plan%ready .and. .not. status%has_error(), "trailing blanks after a contraction")
+      end block
+      if (allocated(error)) return
+
       source = 1.0_dp
       destination = 7.0_dp
       !$acc enter data copyin(source, destination)
+      call contract_permute("ab->ba   ", [2, 3], source, destination, status)
+      call check(error, .not. status%has_error(), "trailing blanks after a permutation")
+      if (.not. allocated(error)) then
+         destination = 7.0_dp
+         !$acc update device(destination)
+      end if
+      if (allocated(error)) then
+         !$acc exit data delete(source, destination)
+         return
+      end if
       call contract_permute("ab->aa", [2, 3], source, destination, status)
       call check(error, status%has_error(), "a repeated letter is no permutation")
       if (.not. allocated(error)) then
