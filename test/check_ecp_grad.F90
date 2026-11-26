@@ -19,8 +19,10 @@ module check_ecp_grad_suite
    !!      (three ECP atoms, far enough for the screen to drop tasks): screened
    !!      against unscreened, one chunk of ECP atoms against three, both
    !!      against the density contracted with `trc_ecp_deriv_cart` (the
-   !!      dense, one-atom-a-time reference, a different derivative basis), and
-   !!      the refusal when the device cannot hold one atom's caches.
+   !!      dense, one-atom-a-time reference, a different derivative basis);
+   !!      the chunks the free device memory forces, and the refusal when it
+   !!      cannot hold one atom with the kernels' local memory (both through
+   !!      the memory query's test cap, so on the host too).
    !!   2. Whole gradients against pyscf 2.14 (the same BSE-JSON basis and ECP,
    !!      tight SCF), read from pyscf_refs/ecp_grad.ref: RHF of HI and TeH2
    !!      (spherical and Cartesian) and of the HI dimer, UHF of the HI cation,
@@ -290,20 +292,22 @@ contains
 
    subroutine test_screen_chunk(error)
       !! HI, an iodine 9 bohr off it and another 60 bohr off: three ECP
-      !! atoms (and a hydrogen without one), tasks the screen drops, and
-      !! (TERCO_ECP_GRAD_ATOM_CHUNK=1) one ECP atom a chunk.
+      !! atoms (and a hydrogen without one), tasks the screen drops,
+      !! (TERCO_ECP_GRAD_ATOM_CHUNK=1) one ECP atom a chunk, and a capped
+      !! device memory that forces chunks by itself, then refuses.
       type(error_type), allocatable, intent(out) :: error
       type(trc_basis_t) :: bas
       type(trc_ecp_t) :: ecp
       type(error_t) :: err, refused
-      type(trc_ecp_screen_stats_t) :: st, st_all, st_chunk
+      type(trc_ecp_screen_stats_t) :: st, st_all, st_chunk, st_fit, st_short
       integer, parameter :: NAT = 4
       integer, parameter :: ELEMENTS(NAT) = [1, 53, 53, 53]
       real(dp), parameter :: R(3, NAT) = reshape([0.1_dp, -0.2_dp, 0.0_dp, &
                                                   0.3_dp, 0.2_dp, 3.04_dp, &
                                                   9.0_dp, 1.0_dp, 2.0_dp, &
                                                   60.0_dp, 0.5_dp, 1.0_dp], [3, NAT])
-      integer :: rc
+      integer :: rc_set, rc_unset
+      integer(int64) :: whole
       real(dp), allocatable :: dens(:, :)
       real(dp) :: g(3, NAT), g_all(3, NAT), g_chunk(3, NAT), g_ref(3, NAT)
 
@@ -321,10 +325,12 @@ contains
       call trc_ecp_gradient(bas, ecp, dens, g, err, stats=st)
       g_all = 0.0_dp
       call trc_ecp_gradient(bas, ecp, dens, g_all, err, screen=.false., stats=st_all)
-      rc = int(c_setenv("TERCO_ECP_GRAD_ATOM_CHUNK"//c_null_char, "1"//c_null_char, 1_c_int))
+      rc_set = int(c_setenv("TERCO_ECP_GRAD_ATOM_CHUNK"//c_null_char, "1"//c_null_char, 1_c_int))
       g_chunk = 0.0_dp
       call trc_ecp_gradient(bas, ecp, dens, g_chunk, err, stats=st_chunk)
-      rc = int(c_unsetenv("TERCO_ECP_GRAD_ATOM_CHUNK"//c_null_char))
+      rc_unset = int(c_unsetenv("TERCO_ECP_GRAD_ATOM_CHUNK"//c_null_char))
+      call check(error, rc_set == 0 .and. rc_unset == 0, "three I: setenv and unsetenv must succeed")
+      if (allocated(error)) return
       call dense_reference(bas, ecp, dens, g_ref, err)
       call check(error,.not. err%has_error(), "three I: "//err%get_message())
       if (allocated(error)) return
@@ -351,11 +357,39 @@ contains
                  to_string(maxval(abs(g - g_ref)), "es12.4"))
       if (allocated(error)) return
 
-      ! No room for one atom's caches: a status naming the sizes, not an abort.
-      call device_memory_set_cap(1000_int64)
+      ! The free memory decides the chunks. `st_chunk` ran last, so its
+      ! reserve is the one the next call computes: a first launch has taken
+      ! the local memory a device had still to take. Exactly enough for every
+      ! atom at once is one chunk; one byte less is more than one.
+      whole = st_chunk%chunk_reserve + st_chunk%cache_bytes
+      call check(error, st_chunk%atom_bytes_max > 0_int64 .and. st_chunk%cache_bytes > st_chunk%atom_bytes_max, &
+                 "three I: more than one ECP atom must hold memory, or no cap can chunk them")
+      if (allocated(error)) return
+      g_chunk = 0.0_dp
+      call device_memory_set_cap(whole)
+      call trc_ecp_gradient(bas, ecp, dens, g_chunk, err, stats=st_fit)
+      g_chunk = 0.0_dp
+      call device_memory_set_cap(whole - 1_int64)
+      call trc_ecp_gradient(bas, ecp, dens, g_chunk, err, stats=st_short)
+      call device_memory_set_cap(0_int64)
+      call check(error,.not. err%has_error(), "three I: capped memory: "//err%get_message())
+      if (allocated(error)) return
+      call global_logger%info("  three I: capped at every atom's bytes and the reserve "//to_string(st_fit%nchunk)// &
+                              " chunk(s), one byte less "//to_string(st_short%nchunk))
+      call check(error, st_fit%nchunk == 1, "three I: memory for every ECP atom must give one chunk")
+      if (allocated(error)) return
+      call check(error, st_short%nchunk > 1, "three I: memory one byte short of every ECP atom must chunk")
+      if (allocated(error)) return
+      call check(error, maxval(abs(g - g_chunk)) < CHUNK_TOL, "three I: chunked by memory vs whole, max|diff| = "// &
+                 to_string(maxval(abs(g - g_chunk)), "es12.4"))
+      if (allocated(error)) return
+
+      ! One byte short of the largest atom with the reserve: a status naming
+      ! the sizes, not a launch that aborts.
+      call device_memory_set_cap(st_chunk%chunk_reserve + st_chunk%atom_bytes_max - 1_int64)
       call trc_ecp_gradient(bas, ecp, dens, g_chunk, refused)
       call device_memory_set_cap(0_int64)
-      call check(error, refused%has_error(), "three I: 1000 free bytes of device memory must be refused")
+      call check(error, refused%has_error(), "three I: no room for one ECP atom with the reserve must be refused")
       if (allocated(error)) return
       call check(error, index(refused%get_message(), "device memory") > 0, &
                  "three I: the refusal names the memory: "//refused%get_message())

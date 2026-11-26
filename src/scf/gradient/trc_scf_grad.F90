@@ -326,7 +326,11 @@ contains
       !! The effective core potential the SCF ran with: present with `has_ecp`,
       !! its derivative contracted with the total density is added
       !! (`trc_ecp_gradient`). `b%at_z` is already the reduced charge, so the
-      !! nuclear terms need nothing.
+      !! nuclear terms need nothing. This routine has no status argument, so
+      !! any failure of that term, the run-time one included (the device
+      !! cannot hold one ECP atom's caches beside the kernels' local memory),
+      !! is an `error stop` carrying its message. The RI-MP2 gradient returns
+      !! the same failure as a message instead.
       type(trc_pairlist_t) :: pl_own
       !! The pair list built here when the cache's is not reused.
       type(step_table_t) :: gst, xst, vst
