@@ -41,3 +41,23 @@ def test_unmasked_header_unchanged_shape():
     out, n = dc_to_omp.transform_lines(src, "gpu")
     assert n == 1
     assert "if (" not in "".join(out)
+
+
+def test_components_in_a_gpu_body_go_through_associate():
+    # `this%dpk(i)` in a target region maps `this` implicitly: a struct
+    # copy whose descriptors were never attached to the member-mapped
+    # device arrays (memory access fault at (nil) in trc_scf_df). The
+    # associate name is a plain array, found present by its data address.
+    src = [
+        "      do concurrent(i=1:n) local(w)\n",
+        "         this%dpk(i) = this%a%b(i)*w%x + 2*this%dpk(i)\n",
+        "      end do\n",
+    ]
+    out, _ = dc_to_omp.transform_lines(src, "gpu")
+    text = "".join(out)
+    assert "associate (trc_a1_1_ => this%dpk, trc_a1_2_ => this%a%b)" in text
+    assert "trc_a1_1_(i) = trc_a1_2_(i)*w%x + 2*trc_a1_1_(i)" in text
+    assert text.rstrip().endswith("end associate")
+    # The host target leaves the body alone.
+    out_cpu, _ = dc_to_omp.transform_lines(src, "cpu")
+    assert "associate" not in "".join(out_cpu)
