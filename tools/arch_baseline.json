@@ -21,7 +21,7 @@
 "arg-count|src/opt/trc_dlfind_bridge.F90|cb_get_params|": 82,
 "arg-count|src/post_hf/rimp2/trc_rimp2_driver.F90|trc_rimp2_run|": 10,
 "arg-count|src/post_hf/rimp2/trc_rimp2_driver.F90|trc_urimp2_run|": 10,
-"arg-count|src/scf/gradient/trc_scf_grad.F90|trc_scf_gradient|": 24,
+"arg-count|src/scf/gradient/trc_scf_grad.F90|trc_scf_gradient|": 25,
 "arg-count|src/scf/gradient/trc_scf_grad_df.F90|scf_grad_df_two_electron|": 11,
 "arg-count|src/scf/guess/trc_sap.F90|trc_sap_screen_table|": 10,
 "arg-count|src/scf/response/trc_cphf.F90|trc_cphf_solve_rhf|": 13,

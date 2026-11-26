@@ -199,6 +199,7 @@ module trc_capi
    use trc_decontract, only: trc_decontract_options_t, decontract_options_for_exchange
    use trc_basis_json, only: trc_basis_from_json, trc_basis_json_overrides
    use trc_ecp_types, only: trc_ecp_t, trc_ecp_without_atoms
+   use trc_ecp, only: trc_ecp_gradient_refusal
    use trc_ecp_json, only: trc_ecp_from_json
    use trc_sad, only: trc_sad_build, trc_sadq_build
    use trc_sap, only: trc_sap_build
@@ -373,6 +374,10 @@ module trc_capi
    integer, parameter :: MAX_TIMINGS = 128
    !! trc_timing's list capacity. A run that would list more is an error
    !! (TRC_ERR_UNSUPPORTED), never a silently shortened list.
+   character(len=*), parameter :: TDDFT_ECP_REFUSAL = "the excited-state gradient has no effective-core-potential "// &
+                                                      "term yet (the ground-state gradient has one)"
+   !! What trc_run_gradient says for an excited-state gradient over an ECP: the
+   !! root's density has no U_ECP contraction yet.
    integer(c_int), parameter, public :: TRC_ABI_MAJOR = 1
    integer(c_int), parameter, public :: TRC_ABI_MINOR = 35
    !! 1.35: trc_run_tddft, trc_check_tddft and the TDDFT trc_run_gradient accept a
@@ -4864,21 +4869,17 @@ contains
       !!
       type(context_box), intent(in) :: cx
       character(len=:), allocatable :: refusal
-      ! Phase 4 (ECP_DESIGN.md's PR breakdown), not this one: U_ECP's own
-      ! derivative (the energy kernel at l +/- 1) is not ported yet, so an
-      ! ECP atom's analytic gradient would silently miss that term rather
-      ! than include it. Checked first and unconditionally -- before the
-      ! functional/RI-MP2 checks of gradient_capability_check, which do not
-      ! apply here -- so trc_run_hessian (which calls that up front, its own
-      ! header) and --opt/--opt-freq/a FD Hessian (all gradient-driven)
-      ! refuse clean rather than running a displacement loop that fails at
-      ! the first gradient anyway.
       refusal = ""
-      if (cx%ecp%has_ecp) then
-         refusal = "the analytic gradient has no effective-core-potential term yet "// &
-                   "(U_ECP's derivative is not implemented); this applies to --grad, "// &
-                   "--hessian/--freq and --opt on a molecule with an ECP attached"
-         return
+      ! The ECP term has its own ceilings (the derivative raises each shell by
+      ! one l), which the energy does not share.
+      if (cx%ecp%has_ecp .and. cx%have_basis) then
+         if (cx%bb%b%nshell > 0) then
+            refusal = trc_ecp_gradient_refusal(cx%bb%b, cx%ecp)
+            if (len(refusal) > 0) then
+               refusal = "the analytic gradient of a molecule with an effective core potential: "//refusal
+               return
+            end if
+         end if
       end if
       ! With no kernels for the basis's l, every later path would end in
       ! grad_bins' error stop, not a refusal.
@@ -4887,14 +4888,14 @@ contains
 
    function trc_check_gradient_upfront(handle) result(status)
       !! Whether trc_run_gradient will refuse this context for a reason its
-      !! molecule, basis and ECP settle before any SCF runs (an ECP attached,
-      !! l above this build's gradient kernels): TRC_OK when nothing known up
-      !! front refuses it, otherwise TRC_ERR_UNSUPPORTED with the message
-      !! (trc_message) trc_run_gradient would give. A geometry optimiser asks
-      !! this before its first step (trc_dlfind_optimize): a refusal at the
-      !! first gradient would otherwise reach DL-FIND, whose only answer to
-      !! a failed evaluation is `error stop`. Fortran only, not part of the C
-      !! ABI: trc_opt_run reaches it through trc_dlfind_optimize.
+      !! molecule, basis and ECP settle before any SCF runs (a g basis function
+      !! with an ECP attached, l above this build's gradient kernels): TRC_OK
+      !! when nothing known up front refuses it, otherwise TRC_ERR_UNSUPPORTED
+      !! with the message (trc_message) trc_run_gradient would give. A geometry
+      !! optimiser asks this before its first step (trc_dlfind_optimize): a
+      !! refusal at the first gradient would otherwise reach DL-FIND, whose only
+      !! answer to a failed evaluation is `error stop`. Fortran only, not part
+      !! of the C ABI: trc_opt_run reaches it through trc_dlfind_optimize.
       type(c_ptr), value :: handle
       integer(c_int) :: status
       type(context_box), pointer :: cx
@@ -5406,7 +5407,7 @@ contains
                                   grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                   nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=reshape(cx%opts%grid_rotation, [3, 3]), &
                                   dfjk=cx%dfjk, aux=cx%jb%b, verbose=cx%opts%verbose, &
-                                  grid_cache=cx%kgrid, grid_reuse=greuse, pair_eri_cache=cx%peri, sym=gsym)
+                                  grid_cache=cx%kgrid, grid_reuse=greuse, pair_eri_cache=cx%peri, sym=gsym, ecp=cx%ecp)
          else
             call trc_scf_gradient(cx%bb%b, cx%la, cx%res%nspin, cx%nalpha, cx%nbeta, &
                                   cx%bb%cmo, cx%bb%eps, scf_settings_eri_thresh_env(cx%opts%eri_thresh), cx%grad, &
@@ -5414,7 +5415,7 @@ contains
                                   grid_max_pts=cx%opts%grid_max_pts, rho_tol=cx%opts%rho_tol, &
                                   nlc_grid_level=cx%opts%nlc_grid_level, grid_rotation=reshape(cx%opts%grid_rotation, [3, 3]), &
                                   verbose=cx%opts%verbose, &
-                                  grid_cache=cx%kgrid, grid_reuse=greuse, pair_eri_cache=cx%peri, sym=gsym)
+                                  grid_cache=cx%kgrid, grid_reuse=greuse, pair_eri_cache=cx%peri, sym=gsym, ecp=cx%ecp)
          end if
          ! --- PCM, added on top of the vacuum gradient above: its own
          ! density/pair list (pcm_grad_scf_add's own header explains why
@@ -6326,6 +6327,7 @@ contains
       end if
       if (gradient /= 0_c_int) then
          refusal = gradient_upfront_refusal(cx)
+         if (len(refusal) == 0 .and. cx%ecp%has_ecp) refusal = TDDFT_ECP_REFUSAL
          if (len(refusal) > 0) then
             cx%message = "trc_run_gradient: "//refusal
             return
@@ -6414,11 +6416,16 @@ contains
       type(trc_xc_functional_t) :: func
       logical :: have_func
       character(len=:), allocatable :: refusal
-      ! The ground-state gradient's own limits apply to the excited state's too: an effective core potential has no
-      ! U_ECP derivative, and l above the gradient kernels' ceiling is refused here rather than at an error stop.
+      ! The ground-state gradient's own limits apply to the excited state's too (l above the gradient kernels'
+      ! ceiling is refused here rather than at an error stop), and the excited-state density has no U_ECP term yet.
       call gradient_capability_check(cx, have_func, func, refusal, status)
       if (len(refusal) > 0) then
          cx%message = "trc_run_gradient: "//refusal
+         return
+      end if
+      if (cx%ecp%has_ecp) then
+         cx%message = "trc_run_gradient: "//TDDFT_ECP_REFUSAL
+         status = TRC_ERR_UNSUPPORTED
          return
       end if
       opts = cx%td_opts
@@ -6697,6 +6704,7 @@ contains
          job%opts%rho_tol = cx%opts%rho_tol
       end if
       job%opts%nocc = cx%nalpha
+      job%opts%ecp = cx%ecp
       job%opts%nfrozen = frozen_core_count(cx%nfrozen, cx)
       job%opts%aux_block = max(cx%aux_block, 0)
       job%opts%pair_threshold = cx%opts%eri_thresh
