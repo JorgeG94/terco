@@ -22,8 +22,8 @@
 #
 # Pinned to a COMMIT, not a branch, for the same reason as every other
 # fetched dependency here: what terco builds against must not move because
-# someone pushed to the fork. b7f353b is JorgeG94/libdlfind's own
-# terco-patches branch, five commits on top of upstream's
+# someone pushed to the fork. 86d4832 is JorgeG94/libdlfind's own
+# terco-patches branch, six commits on top of upstream's
 # (digital-chemistry-laboratory/libdlfind) 4167998 HEAD (2026-04-06,
 # "Update README.md"), that this bridge needs:
 #   - 86ca316 passes the `kiter` argument dlf_parallel_opt.f90's three
@@ -61,6 +61,12 @@
 #     dlc sat at "Generating HDLC for residue" and never returned. The
 #     rows span the same space; on small molecules the optimisations take
 #     the same steps as before.
+#   - 86d4832 re-orthonormalises those rows (B v / sqrt(lambda) loses
+#     orthogonality as lambda gets small) and adds libdlfind's own
+#     test/ut_small, which holds the routine to B Bt diagonalised directly.
+#     NO terco check reaches this routine: every hdlc/dlc check here
+#     optimises a three-atom molecule, which has fewer primitives than
+#     Cartesians and so takes the original path. It is tested in libdlfind.
 # GIT_TAG is the commit, not the branch name, so a push to terco-patches
 # after this cannot move the build out from under us either; terco-patches
 # itself exists only so these commits have somewhere to live upstream
@@ -74,7 +80,7 @@
 # Offline builds (a compute node with no network): point
 # -DFETCHCONTENT_SOURCE_DIR_LIBDLFIND=<a local clone checked out to the
 # pinned commit above>. `git clone` the fork, then `git checkout
-# b7f353bb165f3175a7d7f547d9e17303f037a44a` gets one.
+# 86d483277ceb588f08e23bbf964742008d3b352f` gets one.
 #
 # libdlfind's OWN CMakeLists.txt (not terco's) builds it: a SHARED library
 # named `dlfind`, serial (dlf_serial.f90 -- no MPI inside DL-FIND at all),
@@ -92,7 +98,7 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 message(STATUS "Retrieving libdlfind from https://github.com/JorgeG94/libdlfind.git "
-               "(ref: b7f353bb165f3175a7d7f547d9e17303f037a44a, branch terco-patches)")
+               "(ref: 86d483277ceb588f08e23bbf964742008d3b352f, branch terco-patches)")
 
 # EXCLUDE_FROM_ALL: a dependency built for terco_cli to link, not shipped --
 # same reasoning as my_fetch_package's own comment (otherwise libdlfind's
@@ -102,7 +108,7 @@ message(STATUS "Retrieving libdlfind from https://github.com/JorgeG94/libdlfind.
 FetchContent_Declare(
   libdlfind
   GIT_REPOSITORY "https://github.com/JorgeG94/libdlfind.git"
-  GIT_TAG "b7f353bb165f3175a7d7f547d9e17303f037a44a"
+  GIT_TAG "86d483277ceb588f08e23bbf964742008d3b352f"
   GIT_SHALLOW FALSE
   EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(libdlfind)
