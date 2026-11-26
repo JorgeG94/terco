@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["ecp_grad"] -> gen_ecp_grad
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: 8a36085056152d1ab69666e2a69ba211db0ccfc4a2d45c714942c0471da90182
+# hash: 4626306aa352ed977dfac6e2607b9b2172bc2902e9a5293252f13caee090cc1f
 # files: test/check_ecp_grad.F90 test/check_ecp_scf.F90 test/basis_sets/def2-svp.json test/basis_sets/def2-svp-rifit.json basis_sets/def2-tzvp.json test/basis_sets/ecp-f-test.json
 E_hi_sph -2.97231321965063842e+02
 G_hi_sph 3 2

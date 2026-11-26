@@ -16,13 +16,19 @@ module trc_device_memory
    !! host build can exercise every refusal. The RI-CCSD options (`trc_rccsd_options_t%device_free_cap`, and the
    !! triples options' `device_free_cap` of `trc_rccsd_triples`) set it for the duration of a call; 0 (the default)
    !! restores the real query. Not for production use: the value is never read from the environment.
+   !!
+   !! LOCAL MEMORY. Before it launches a kernel, CUDA holds one stack frame for every thread that can be resident on
+   !! the device (multiprocessors times resident threads each), sized by the largest frame launched so far, and
+   !! keeps it until `cudaDeviceSetLimit` shrinks it. A launch that cannot get it aborts, so a caller that checks
+   !! before a kernel with a large frame also asks `device_memory_local_growth` what is still to be taken.
+   use, intrinsic :: iso_c_binding, only: c_int, c_size_t
    use pic_types, only: dp, int64
    use pic_format, only: to_string_fixed
    use trc_error, only: error_t, ERROR_VALIDATION
    implicit none
    private
 
-   public :: device_memory_free_bytes, device_memory_fits, device_memory_set_cap
+   public :: device_memory_free_bytes, device_memory_fits, device_memory_set_cap, device_memory_local_growth
 
    integer(int64), save :: free_cap = 0_int64  !! the test hook's answer, 0 for none
 
@@ -51,6 +57,64 @@ contains
 #endif
       if (free_cap > 0) bytes = free_cap
    end function device_memory_free_bytes
+
+   function device_memory_local_growth(frame_bytes) result(bytes)
+      !! Device memory, not yet taken, that CUDA reserves to launch a kernel whose per-thread stack frame is
+      !! `frame_bytes` (read it with `cuobjdump -res-usage` from the linked library): the multiprocessor count
+      !! times the resident threads of each, times what the frame exceeds the current stack limit by.
+      !! `cudaDeviceGetLimit(cudaLimitStackSize)` reports the grown size after such a launch (measured, NVHPC 26.9,
+      !! V100: 1024 before, 53920 after a 53920 B kernel, and the free memory down by 52896 B a thread), and the
+      !! free-memory query already counts what is reserved, so only the growth is returned. A host build, or a
+      !! failing query, answers as a V100 (80 multiprocessors of 2048 threads) with nothing reserved, so that a
+      !! test with `device_memory_set_cap` sees a device's figure.
+      integer(int64), intent(in) :: frame_bytes
+      integer(int64) :: bytes
+
+#ifdef TRC_DEVICE
+      interface
+         function cuda_get_device(device) bind(c, name="cudaGetDevice") result(ierr)
+            import :: c_int
+            implicit none
+            integer(c_int), intent(out) :: device
+            integer(c_int) :: ierr
+         end function cuda_get_device
+         function cuda_device_get_attribute(val, attr, device) bind(c, name="cudaDeviceGetAttribute") result(ierr)
+            import :: c_int
+            implicit none
+            integer(c_int), intent(out) :: val
+            integer(c_int), value :: attr, device
+            integer(c_int) :: ierr
+         end function cuda_device_get_attribute
+         function cuda_device_get_limit(val, limit) bind(c, name="cudaDeviceGetLimit") result(ierr)
+            import :: c_int, c_size_t
+            implicit none
+            integer(c_size_t), intent(out) :: val
+            integer(c_int), value :: limit
+            integer(c_int) :: ierr
+         end function cuda_device_get_limit
+      end interface
+      ! cudaDeviceAttr and cudaLimit values of cuda's driver_types.h.
+      integer(c_int), parameter :: ATTR_MULTIPROCESSORS = 16, ATTR_THREADS_PER_MULTIPROCESSOR = 39
+      integer(c_int), parameter :: LIMIT_STACK_SIZE = 0
+      integer(c_int) :: device, nmp, nthread
+      integer(c_size_t) :: frame_now
+#endif
+      integer(int64) :: threads, reserved
+
+      threads = 80_int64*2048_int64
+      reserved = 0
+#ifdef TRC_DEVICE
+      if (cuda_get_device(device) == 0) then
+         if (cuda_device_get_attribute(nmp, ATTR_MULTIPROCESSORS, device) == 0) then
+            if (cuda_device_get_attribute(nthread, ATTR_THREADS_PER_MULTIPROCESSOR, device) == 0) then
+               threads = int(nmp, int64)*int(nthread, int64)
+               if (cuda_device_get_limit(frame_now, LIMIT_STACK_SIZE) == 0) reserved = int(frame_now, int64)
+            end if
+         end if
+      end if
+#endif
+      bytes = max(frame_bytes - reserved, 0_int64)*threads
+   end function device_memory_local_growth
 
    function device_memory_fits(status, what, need, hint) result(fits)
       !! True when `need` bytes fit in the free device memory (always when it is unknown). Otherwise false, and
