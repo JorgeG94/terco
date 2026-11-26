@@ -4301,7 +4301,7 @@ def gen_tddft_sph(molname, funcname, grad):
     """check_tddft_sph.F90: TDA and RPA of a spherical cc-pVDZ basis, and with `grad` the gradients."""
     xyzname = molname + ".xyz"
     probe = f"tddft_sph_{molname}_{funcname}_probe.bin"
-    run_bin(f"check_tddft_sph_{molname}_{funcname}",
+    run_bin("check_tddft_sph",
             [xyzname, molname, funcname, str(TEST / probe)] + (["grad"] if grad else []))
     _gen_tddft_sph_one(probe, xyzname, molname, funcname)
 

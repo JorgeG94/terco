@@ -19,7 +19,8 @@ module check_tddft_sph_suite
    !! process; the SCF uses pyscf's convergence and writes terco's numbers and its
    !! grid to the probe file for generate.py.
    !!
-   !! Arguments: xyz molname funcname probe.bin [grad]. Run from test/.
+   !! Arguments: xyz molname funcname probe.bin [grad]. Run from test/. With `grad` and a Kohn-Sham functional it
+   !! also checks the grid response (test_grid_response).
    !!
    use pic_types, only: dp, int64
    use pic_strings, only: to_string
@@ -39,11 +40,16 @@ module check_tddft_sph_suite
    public :: collect_check_tddft_sph
    public :: xyz_arg, molname_arg, funcname_arg, probe_arg, grad_arg
 
-   real(dp), parameter :: TOL_OMEGA = 1.0e-6_dp
-   real(dp), parameter :: TOL_OSC = 1.0e-5_dp
+   ! TOL_YY and GATE_GRAD are the Cartesian checks' gates against pyscf (check_tddft_basis, check_tddft_grad).
+   real(dp), parameter :: TOL_OMEGA = 1.0e-8_dp
+   real(dp), parameter :: TOL_OSC = 1.0e-7_dp
    real(dp), parameter :: TOL_YY = 1.0e-6_dp
    real(dp), parameter :: GATE_GRAD = 5.0e-9_dp
-   !! The Cartesian checks' gates against pyscf (check_tddft_basis, check_tddft_grad).
+   ! Host-measured over the six cases: max|d omega| 2.8e-10 and max|d f| 2.1e-9 (the gates keep 35x and 50x for
+   ! the device's 1e-12 atomics noise); the grid response moves the water gradient by 4.5e-6 to 5.5e-6 and the atom
+   ! sum is 2e-13 with it and 4e-6 to 5e-6 without.
+   real(dp), parameter :: GRID_MOVE_MIN = 1.0e-6_dp
+   real(dp), parameter :: GRID_SUM_MAX = 1.0e-9_dp
    integer, parameter :: NROOTS = 3
    character(len=*), parameter :: BASIS_JSON = "basis_sets/cc-pvdz.json"
 
@@ -77,6 +83,7 @@ contains
                      new_unittest("spherical RPA energies and ||Y||^2 vs pyscf", test_rpa), &
                      new_unittest("spherical TDA gradients vs pyscf (Pulay only)", test_grad_tda), &
                      new_unittest("spherical RPA gradients vs pyscf (Pulay only)", test_grad_rpa), &
+                     new_unittest("spherical grid response (Kohn-Sham)", test_grid_response), &
                      new_unittest("release", test_release) &
                      ]
       else
@@ -281,6 +288,47 @@ contains
       call compare_gradients(error, "tddft_sph_rpa_grad_", fx%g_rpa, "RPA")
    end subroutine test_grad_rpa
 
+   subroutine test_grid_response(error)
+      !! The grid response of a spherical basis, which pyscf has no reference for (its tdrks has none): the TDA
+      !! gradient of root 1 with it on, against the Pulay-only one of the fixture. The grid moves with the nuclei,
+      !! so (a) the response changes the gradient by the grid's own derivative, well above the solver noise, and
+      !! (b) the full gradient is translation invariant (its atom sum vanishes) while the Pulay-only one is not.
+      !! Hartree-Fock has no grid: the test passes trivially.
+      type(error_type), allocatable, intent(out) :: error
+      type(trc_tddft_run_options_t) :: opts
+      type(trc_tddft_run_result_t) :: res
+      real(dp) :: diff, sum_full, sum_pulay
+
+      if (trim(funcname_arg) == "hf") return
+      call fixture_build(error)
+      if (allocated(error)) return
+      opts%nroots = 1
+      opts%target_root = 1
+      opts%tda = .true.
+      opts%conv_tol = 1.0e-10_dp
+      opts%cpks_tol = 1.0e-11_dp
+      call check(error, opts%grid_response, "grid_response is on by default")
+      if (allocated(error)) return
+      call trc_tddft_run_solve(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, opts, res)
+      call check(error, res%converged, "solve failed: "//res%err%get_message())
+      if (allocated(error)) return
+      call trc_tddft_run_gradient(fx%bas, fx%la, fx%scf, fx%nocc, fx%sopts, opts, res)
+      call check(error, .not. res%err%has_error(), "gradient: "//res%err%get_message())
+      if (allocated(error)) return
+      diff = maxval(abs(res%grad - fx%g_tda(:, :, 1)))
+      sum_full = maxval(abs(sum(res%grad, dim=2)))
+      sum_pulay = maxval(abs(sum(fx%g_tda(:, :, 1), dim=2)))
+      call global_logger%info("tddft sph grid response "//trim(molname_arg)//"/"//trim(funcname_arg)// &
+                              ": moves the gradient by "//to_string(diff, "es10.2")//"; atom sum "// &
+                              to_string(sum_full, "es10.2")//" with it, "//to_string(sum_pulay, "es10.2")//" without")
+      call check(error, diff > GRID_MOVE_MIN, "the grid response must move the gradient, got "//to_string(diff, "es10.2"))
+      if (allocated(error)) return
+      call check(error, sum_full < GRID_SUM_MAX, "the full gradient must sum to zero over the atoms, got "// &
+                 to_string(sum_full, "es10.2"))
+      if (allocated(error)) return
+      call check(error, sum_pulay > 10.0_dp*sum_full, "the Pulay-only gradient must fail the atom sum by far more")
+   end subroutine test_grid_response
+
    subroutine test_release(error)
       type(error_type), allocatable, intent(out) :: error
       if (fx%ready) then
@@ -300,12 +348,20 @@ program check_tddft_sph
    use check_tddft_sph_suite, only: collect_check_tddft_sph, xyz_arg, molname_arg, funcname_arg, probe_arg, grad_arg
    implicit none
    integer :: stat
+   character(len=16) :: grad_text
 
    if (command_argument_count() >= 1) call get_command_argument(1, xyz_arg)
    if (command_argument_count() >= 2) call get_command_argument(2, molname_arg)
    if (command_argument_count() >= 3) call get_command_argument(3, funcname_arg)
    if (command_argument_count() >= 4) call get_command_argument(4, probe_arg)
-   if (command_argument_count() >= 5) grad_arg = .true.
+   if (command_argument_count() >= 5) then
+      call get_command_argument(5, grad_text)
+      if (trim(grad_text) /= "grad") then
+         write (error_unit, "(a)") "check_tddft_sph: the fifth argument must be 'grad', got '"//trim(grad_text)//"'"
+         error stop 2
+      end if
+      grad_arg = .true.
+   end if
    stat = 0
    call run_testsuite(collect_check_tddft_sph, error_unit, stat, parallel=.false.)
    if (stat > 0) then

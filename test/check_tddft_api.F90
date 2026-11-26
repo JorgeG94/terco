@@ -74,6 +74,8 @@ module check_tddft_api_suite
    real(dp), parameter :: FD_STEP = 2.5e-3_dp
    real(dp), parameter :: FD_GATE = 2.0e-7_dp
    !! Kohn-Sham finite difference with the grid response (check_tddft_grad's FD_ABSTOL_DFT).
+   real(dp), parameter :: PULAY_MISS_MIN = 1.0e-6_dp
+   !! The Pulay-only gradient must miss the finite difference by this much at the coordinate the test picks.
 
    type :: fixture_t
       !! One SCF of water, with what the TDDFT entry needs.
@@ -122,7 +124,8 @@ contains
                      new_unittest("TDA energies vs pyscf (water PBE/6-31G*)", test_energies_tda), &
                      new_unittest("RPA energies and ||Y||^2 vs pyscf (water PBE/6-31G*)", test_energies_rpa), &
                      new_unittest("refusals before any work", test_refusals), &
-                     new_unittest("an SCF with functions dropped for linear dependence is refused", test_lindep_refused) &
+                     new_unittest("an SCF with functions dropped for linear dependence is refused", test_lindep_refused), &
+                     new_unittest("the same in a Cartesian basis", test_lindep_refused_cart) &
                      ]
       end if
    end subroutine collect_check_tddft_api
@@ -838,7 +841,8 @@ contains
       type(trc_tddft_run_result_t) :: res, res_pulay
       real(dp), allocatable :: rp(:, :)
       real(dp) :: ep, em, coarse, fd, diff, exact_miss, pulay_miss
-      integer, parameter :: ROOT = 2, ATOM = 1, DIR = 3
+      integer, parameter :: ROOT = 2
+      integer :: iat, idir, loc(2)
 
       call fixture_build(fx, "basis_sets/6-31g.json", "pbe", error)
       if (allocated(error)) then
@@ -866,6 +870,12 @@ contains
       end if
       if (.not. allocated(error)) then
          diff = maxval(abs(res%grad - res_pulay%grad))
+         ! The coordinate to differentiate is where the grid response is largest, so the finite difference tells
+         ! the exact gradient from the Pulay-only one by the widest margin: the two analytic gradients differ by
+         ! the Pulay-only gradient's own miss there (the exact one matches the finite difference to FD_GATE).
+         loc = maxloc(abs(res%grad - res_pulay%grad))
+         idir = loc(1)
+         iat = loc(2)
          call global_logger%info("tddft api: grid response moves the gradient by "//to_string(diff, "es10.2")// &
                                  " (max over atoms and components)")
          call check(error, diff > 1.0e-6_dp .and. diff < 1.0e-3_dp, "the grid response should move the water PBE "// &
@@ -874,35 +884,37 @@ contains
       if (.not. allocated(error)) then
          ! Richardson (4 D(h/2) - D(h))/3 of the central difference of E_SCF + omega, one coordinate.
          rp = fx%bas%at_r
-         rp(DIR, ATOM) = fx%bas%at_r(DIR, ATOM) + FD_STEP
+         rp(idir, iat) = fx%bas%at_r(idir, iat) + FD_STEP
          call excited_energy(rp, ROOT, ep, error)
          if (.not. allocated(error)) then
-            rp(DIR, ATOM) = fx%bas%at_r(DIR, ATOM) - FD_STEP
+            rp(idir, iat) = fx%bas%at_r(idir, iat) - FD_STEP
             call excited_energy(rp, ROOT, em, error)
          end if
          coarse = (ep - em)/(2.0_dp*FD_STEP)
          if (.not. allocated(error)) then
-            rp(DIR, ATOM) = fx%bas%at_r(DIR, ATOM) + 0.5_dp*FD_STEP
+            rp(idir, iat) = fx%bas%at_r(idir, iat) + 0.5_dp*FD_STEP
             call excited_energy(rp, ROOT, ep, error)
          end if
          if (.not. allocated(error)) then
-            rp(DIR, ATOM) = fx%bas%at_r(DIR, ATOM) - 0.5_dp*FD_STEP
+            rp(idir, iat) = fx%bas%at_r(idir, iat) - 0.5_dp*FD_STEP
             call excited_energy(rp, ROOT, em, error)
          end if
          fd = (4.0_dp*(ep - em)/FD_STEP - coarse)/3.0_dp
       end if
       if (.not. allocated(error)) then
-         exact_miss = abs(res%grad(DIR, ATOM) - fd)
-         pulay_miss = abs(res_pulay%grad(DIR, ATOM) - fd)
-         call global_logger%info("tddft api: d(E_SCF + omega_2)/dz(O) finite difference "//to_string(fd, "f14.10")// &
+         exact_miss = abs(res%grad(idir, iat) - fd)
+         pulay_miss = abs(res_pulay%grad(idir, iat) - fd)
+         call global_logger%info("tddft api: d(E_SCF + omega_2)/dx_"//to_string(idir)//"(atom "//to_string(iat)// &
+                                 ") finite difference "//to_string(fd, "f14.10")// &
                                  "; grid response misses by "//to_string(exact_miss, "es10.2")// &
                                  ", Pulay only by "//to_string(pulay_miss, "es10.2"))
          call check(error, exact_miss < FD_GATE, "the default gradient vs finite difference, "// &
                     to_string(exact_miss, "es10.2"))
       end if
       if (.not. allocated(error)) then
-         call check(error, pulay_miss > 10.0_dp*FD_GATE, "the Pulay-only gradient should miss the finite difference "// &
-                    "by more than ten gates, so the test tells the two apart, got "//to_string(pulay_miss, "es10.2"))
+         call check(error, pulay_miss > PULAY_MISS_MIN, "the Pulay-only gradient should miss the finite difference "// &
+                    "by more than "//to_string(PULAY_MISS_MIN, "es8.1")//", so the test tells the two apart, got "// &
+                    to_string(pulay_miss, "es10.2"))
       end if
       call fixture_release(fx)
    end subroutine test_grid_response
@@ -921,9 +933,23 @@ contains
    end subroutine expect_refusal
 
    subroutine test_lindep_refused(error)
-      !! O2- in the d-aug-cc-pVDZ set (check_scf_lindep_gap's case, 5 functions dropped at a 0.2 threshold): the run
-      !! has no tested path for the null states, so it refuses with the reason rather than using them as virtuals.
+      !! The spherical basis (d-aug-cc-pVDZ as shipped).
       type(error_type), allocatable, intent(out) :: error
+      call lindep_refused(error, .false.)
+   end subroutine test_lindep_refused
+
+   subroutine test_lindep_refused_cart(error)
+      !! The same set as Cartesian functions, the path the response took before spherical bases.
+      type(error_type), allocatable, intent(out) :: error
+      call lindep_refused(error, .true.)
+   end subroutine test_lindep_refused_cart
+
+   subroutine lindep_refused(error, cart)
+      !! O2- in the d-aug-cc-pVDZ set (check_scf_lindep_gap's case, 5 functions dropped at a 0.2 threshold in the
+      !! spherical basis): the run has no tested path for the null states, so it refuses with the reason rather than
+      !! using them as virtuals.
+      type(error_type), allocatable, intent(out) :: error
+      logical, intent(in) :: cart
       type(trc_basis_t) :: bas
       type(trc_linalg_t) :: la
       type(trc_scf_options_t) :: sopts
@@ -938,7 +964,7 @@ contains
       z = 8
       r = 0.0_dp
       call trc_basis_from_json("basis_sets/d-aug-cc-pvdz.json", 1, z, r, bas, err, &
-                               overrides=trc_basis_json_overrides(prune=.false.))
+                               overrides=trc_basis_json_overrides(prune=.false.), force_cart=cart)
       call check(error, .not. err%has_error(), "basis: "//err%get_message())
       if (allocated(error)) return
       call bas%to_device()
@@ -949,7 +975,8 @@ contains
       sopts%conv_diis = 1.0e-9_dp
       sopts%max_iteration = 100
       call trc_scf_run(bas, 5, 5, sopts, scf)
-      call check(error, scf%converged .and. scf%n_lindep == 5, "the SCF must converge with 5 functions dropped")
+      call check(error, scf%converged .and. (scf%n_lindep == 5 .or. (cart .and. scf%n_lindep > 0)), &
+                 "the SCF must converge with functions dropped (5 in the spherical basis)")
       if (.not. allocated(error)) then
          opts%nroots = 1
          call trc_tddft_run_solve(bas, la, scf, 5, sopts, opts, res)
@@ -958,7 +985,7 @@ contains
       end if
       call la%release()
       call bas%release()
-   end subroutine test_lindep_refused
+   end subroutine lindep_refused
 
    subroutine test_refusals(error)
       type(error_type), allocatable, intent(out) :: error

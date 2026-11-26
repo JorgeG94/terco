@@ -6268,7 +6268,7 @@ contains
          refusal = who//": the response path is not rank-split; run it on a single rank"
       else if (cx%res%n_lindep > 0) then
          refusal = who//": canonical orthogonalisation dropped "//to_string(cx%res%n_lindep)// &
-                   " functions (trc_set_lindep); the response needs (nao, nao) orbitals"
+                   " functions (trc_set_lindep); the response needs orbitals that are square in the basis"
       end if
    end function tddft_context_refusal
 

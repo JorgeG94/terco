@@ -254,9 +254,14 @@ contains
       msg = reason
       if (len_trim(msg) > 0) return
       nsp = merge(b%nao_sph, b%nao, b%spherical)
-      if (scf%nspin /= 1 .or. size(scf%cmo, 1) /= nsp .or. size(scf%cmo, 2) /= nsp .or. scf%n_lindep /= 0) then
-         msg = "trc_tddft: needs a restricted reference whose orbitals are square in this basis "// &
-               "(functions dropped for linear dependence are not implemented)"
+      if (scf%nspin /= 1) then
+         msg = "trc_tddft: needs a restricted reference (an unrestricted SCF is not implemented)"
+      else if (scf%n_lindep /= 0) then
+         msg = "trc_tddft: the reference dropped "//to_string(scf%n_lindep)//" functions for linear dependence, "// &
+               "which is not implemented"
+      else if (size(scf%cmo, 1) /= nsp .or. size(scf%cmo, 2) /= nsp) then
+         msg = "trc_tddft: the reference's orbitals are not square in this basis ("//to_string(size(scf%cmo, 1))//" x "// &
+               to_string(size(scf%cmo, 2))//", expected "//to_string(nsp)//" x "//to_string(nsp)//")"
       end if
    end function run_reference_refusal
 

@@ -78,7 +78,7 @@ module trc_cphf
    !!
    !! RESIDENCY. `cmo`, the right-hand sides and the solution are assumed
    !! already on the device (the same contract eri%fock_resident itself
-   !! documents); only `eps` (nao-size) and the CG's own scalars (dot
+   !! documents); only `eps` (nocc + nvirt) and the CG's own scalars (dot
    !! products, read back by trc_linalg%dot_2d, exactly as DIIS's history
    !! does) cross the bus. Every per-iteration matrix -- D_U, G_U, the GEMM
    !! scratch, the CG vectors themselves -- stays resident for the life of
