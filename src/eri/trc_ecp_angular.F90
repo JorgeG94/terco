@@ -26,9 +26,13 @@
 !
 ! FIXED-SIZE SCRATCH ONLY: every routine here runs inside a `do concurrent`
 ! eventually (src/eri/trc_ecp.F90's item routines), where an automatic-size
-! local array is not allowed (.claude/context/gpu-pitfalls.md). Buffers are
-! sized to this module's own ceilings (`ECP_ORB_LMAX`, `trc_ecp_quadrature`'s
-! `ECP_LMAX`) and indexed at the caller's actual, smaller extent.
+! local array is not allowed (.claude/context/gpu-pitfalls.md). Local buffers
+! are sized to this module's own ceilings (`ECP_BRA_LMAX`,
+! `trc_ecp_quadrature`'s `ECP_LMAX`) and indexed at the caller's actual,
+! smaller extent; the array ARGUMENTS are sized by the call's own angular
+! momenta, so one set of routines serves the energy's caches (f) and the
+! gradient's raised bra (g), whose columns have different sizes. None of the
+! local buffers grows by more than a few hundred bytes from f to g.
 !
 module trc_ecp_angular
    use pic_types, only: dp
@@ -37,14 +41,22 @@ module trc_ecp_angular
    implicit none
    private
 
-   public :: ECP_ORB_LMAX
+   public :: ECP_ORB_LMAX, ECP_BRA_LMAX
    public :: CART_POW_Y, CART_POW_Z
    public :: ecp_cache_3dfac, ecp_type2_facs_ang, ecp_type1_rad_ang
    public :: ecp_int_unit_xyz, ecp_ang_nuc_in_cart
 
    integer, parameter :: ECP_ORB_LMAX = 3
-   !! Highest ORBITAL shell angular momentum the ECP path supports (f).
-   !! TERCO_LMAX never builds past this; checked by the driver.
+   !! Highest ORBITAL shell angular momentum the ECP path supports (f), for the
+   !! energy and the gradient alike; checked by the driver. g and above are
+   !! not validated.
+
+   integer, parameter :: ECP_BRA_LMAX = ECP_ORB_LMAX + 1
+   !! Highest angular momentum of a BRA the kernels are built for: the
+   !! gradient's raised derivative shell, g for an f function. Only the
+   !! gradient reaches it. With a projected channel of l it needs the angular
+   !! tables up to ECP_BRA_LMAX + l <= ECP_ANG_LMAX, so l <= 4 (the driver
+   !! refuses an h projector with an f basis).
 
    ! Cartesian (ly, lz) powers, lexicographic order, indexed from zero
    ! REGARDLESS of l: the first ncart(l) entries of this SAME array are
@@ -164,16 +176,14 @@ contains
 
    pure subroutine ecp_cache_3dfac(facs, l, r)
       !! Binomial-expansion factors for shifting a Cartesian shell of
-      !! angular momentum `l` (<= ECP_ORB_LMAX) to a new centre: three
+      !! angular momentum `l` (<= ECP_BRA_LMAX) to a new centre: three
       !! (l+1)x(l+1) blocks (x, y, z), fac(i,j) = binom(i,j) r^(i-j).
-      !! Fixed-size backing array sized for ECP_ORB_LMAX; indexed at the
-      !! caller's actual l.
       !$acc routine seq
       integer, intent(in) :: l
       real(dp), intent(in) :: r(3)
-      real(dp), intent(out) :: facs(0:3*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1) - 1)
+      real(dp), intent(out) :: facs(0:3*(l + 1)*(l + 1) - 1)
 
-      real(dp) :: xx(0:ECP_ORB_LMAX), yy(0:ECP_ORB_LMAX), zz(0:ECP_ORB_LMAX)
+      real(dp) :: xx(0:ECP_BRA_LMAX), yy(0:ECP_BRA_LMAX), zz(0:ECP_BRA_LMAX)
       real(dp) :: bfac
       integer :: l1, i, j, off, ox, oy, oz
 
@@ -206,8 +216,8 @@ contains
    pure subroutine ecp_type2_facs_ang(facs, li, lc, ri)
       !! Angular factors for the type-2 (projected) term: `facs`, shaped
       !! (li+1, nfi, dlc, dlambda) in the caller's flat ordering
-      !! (dlc=2lc+1, dlambda=li+lc+1), fixed-size for (ECP_ORB_LMAX,
-      !! ECP_LMAX) and read at the caller's actual li/lc.
+      !! (dlc=2lc+1, dlambda=li+lc+1), for li <= ECP_BRA_LMAX and
+      !! li + lc <= ECP_ANG_LMAX.
       !!
       !! DISPATCHES on `lc` to one of the six ecp_type2_facs_ang_lc0..lc5
       !! copies below rather than running one routine with `lc` as a plain
@@ -243,8 +253,7 @@ contains
       !$acc routine seq
       integer, intent(in) :: li, lc
       real(dp), intent(in) :: ri(3)
-      real(dp), intent(out) :: facs(0:(ECP_ORB_LMAX + 1)*((ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 2)/2)* &
-                                     (2*ECP_LMAX + 1)*(ECP_ORB_LMAX + ECP_LMAX + 1) - 1)
+      real(dp), intent(out) :: facs(0:(li + 1)*((li + 1)*(li + 2)/2)*(2*lc + 1)*(li + lc + 1) - 1)
 
       select case (lc)
       case (0)
@@ -266,21 +275,19 @@ contains
       !$acc routine seq
       integer, intent(in) :: li
       real(dp), intent(in) :: ri(3)
-      real(dp), intent(out) :: facs(0:(ECP_ORB_LMAX + 1)*((ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 2)/2)* &
-                                     (2*ECP_LMAX + 1)*(ECP_ORB_LMAX + ECP_LMAX + 1) - 1)
+      real(dp), intent(out) :: facs(0:(li + 1)*((li + 1)*(li + 2)/2)*1*(li + 1) - 1)
 
       real(dp) :: unitr(3)
       real(dp) :: omega_nuc(0:CART_CUM - 1)
       real(dp) :: buf(0:(ECP_LMAX + 1)*(ECP_LMAX + 2)/2 - 1)
-      real(dp) :: omega(0:(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1)* &
-                         (ECP_ORB_LMAX + ECP_LMAX + 1)*(2*ECP_LMAX + 1) - 1)
-      real(dp) :: fac3d(0:3*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1) - 1)
+      real(dp) :: omega(0:(ECP_BRA_LMAX + ECP_LMAX + 1)*(2*ECP_LMAX + 1) - 1)
+      real(dp) :: fac3d(0:3*(ECP_BRA_LMAX + 1)*(ECP_BRA_LMAX + 1) - 1)
       real(dp) :: omega_scratch(0:ECP_ANG_NCART_MAX - 1)
       integer :: li1, dlc, dlambda, dlclmb, nfi
       integer, parameter :: lc = 0
       integer :: i, j, k, m, n, lmb, mi, loc
-      integer :: need_even, need_odd, pu, pv, pw, pr, ps, pt
-      integer :: base, po, pf, ox, oy, oz
+      integer :: need_even, pu, pv, pw, pr, ps, pt
+      integer :: po, pf, ox, oy, oz, nf3
       real(dp) :: acc, fac
 
       call unit_direction(ri, unitr)
@@ -297,17 +304,27 @@ contains
             omega_nuc(OFFSET_CART(i) + loc) = omega_scratch(loc)
          end do
       end do
-      do i = 0, OFFSET_CART(min(li + lc + 1, 9)) - 1
+      do i = 0, OFFSET_CART(min(li + lc + 1, ECP_ANG_LMAX + 1)) - 1
          omega_nuc(i) = omega_nuc(i)*4.0_dp*acos(-1.0_dp)
       end do
 
+      ox = 0
+      oy = li1*li1
+      oz = 2*li1*li1
+      call ecp_cache_3dfac(fac3d, li, ri)
+
+      ! One (i, j, k) block of omega at a time, then every function it enters:
+      ! the whole (li + 1)**3 array was 50 KB of every thread's stack at f and
+      ! would be 110 KB at g. The terms reach each element of facs in the same
+      ! (i, j, k) order as before, so the numbers do not change.
+      nf3 = li1*nfi*dlclmb
+      facs(0:nf3 - 1) = 0.0_dp
       do i = 0, li
          do j = 0, li - i
             do k = 0, li - i - j
-               base = (i*li1*li1 + j*li1 + k)*dlclmb
                need_even = mod(lc + i + j + k, 2)
 
-               po = base + need_even*dlc
+               po = need_even*dlc
                do lmb = need_even, li + lc, 2
                   do m = 0, cart_len(lc) - 1
                      pv = CART_POW_Y(m)
@@ -342,39 +359,17 @@ contains
                   po = po + dlc*2
                end do
 
-               need_odd = ieor(need_even, 1)
-               po = base + need_odd*dlc
-               do lmb = need_odd, li + lc, 2
-                  do m = 0, dlc - 1
-                     omega(po + m) = 0.0_dp
-                  end do
-                  po = po + dlc*2
-               end do
-            end do
-         end do
-      end do
-
-      ox = 0
-      oy = li1*li1
-      oz = 2*li1*li1
-      call ecp_cache_3dfac(fac3d, li, ri)
-
-      facs(0:li1*nfi*dlclmb - 1) = 0.0_dp
-      do mi = 0, nfi - 1
-         ps = CART_POW_Y(mi)
-         pt = CART_POW_Z(mi)
-         pr = li - ps - pt
-         do i = 0, pr
-            do j = 0, ps
-               do k = 0, pt
-                  need_even = mod(lc + i + j + k, 2)
+               do mi = 0, nfi - 1
+                  ps = CART_POW_Y(mi)
+                  pt = CART_POW_Z(mi)
+                  pr = li - ps - pt
+                  if (i > pr .or. j > ps .or. k > pt) cycle
                   fac = fac3d(ox + pr*li1 + i)*fac3d(oy + ps*li1 + j)*fac3d(oz + pt*li1 + k)
-                  base = (i*li1*li1 + j*li1 + k)*dlclmb
                   pf = ((i + j + k)*nfi + mi)*dlclmb
                   do m = 0, dlc - 1
                      do n = need_even, dlambda - 1, 2
                         facs(pf + m*dlambda + n) = facs(pf + m*dlambda + n) &
-                                                   + fac*omega(base + n*dlc + m)
+                                                   + fac*omega(n*dlc + m)
                      end do
                   end do
                end do
@@ -387,21 +382,19 @@ contains
       !$acc routine seq
       integer, intent(in) :: li
       real(dp), intent(in) :: ri(3)
-      real(dp), intent(out) :: facs(0:(ECP_ORB_LMAX + 1)*((ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 2)/2)* &
-                                     (2*ECP_LMAX + 1)*(ECP_ORB_LMAX + ECP_LMAX + 1) - 1)
+      real(dp), intent(out) :: facs(0:(li + 1)*((li + 1)*(li + 2)/2)*3*(li + 2) - 1)
 
       real(dp) :: unitr(3)
       real(dp) :: omega_nuc(0:CART_CUM - 1)
       real(dp) :: buf(0:(ECP_LMAX + 1)*(ECP_LMAX + 2)/2 - 1)
-      real(dp) :: omega(0:(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1)* &
-                         (ECP_ORB_LMAX + ECP_LMAX + 1)*(2*ECP_LMAX + 1) - 1)
-      real(dp) :: fac3d(0:3*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1) - 1)
+      real(dp) :: omega(0:(ECP_BRA_LMAX + ECP_LMAX + 1)*(2*ECP_LMAX + 1) - 1)
+      real(dp) :: fac3d(0:3*(ECP_BRA_LMAX + 1)*(ECP_BRA_LMAX + 1) - 1)
       real(dp) :: omega_scratch(0:ECP_ANG_NCART_MAX - 1)
       integer :: li1, dlc, dlambda, dlclmb, nfi
       integer, parameter :: lc = 1
       integer :: i, j, k, m, n, lmb, mi, loc
-      integer :: need_even, need_odd, pu, pv, pw, pr, ps, pt
-      integer :: base, po, pf, ox, oy, oz
+      integer :: need_even, pu, pv, pw, pr, ps, pt
+      integer :: po, pf, ox, oy, oz, nf3
       real(dp) :: acc, fac
 
       call unit_direction(ri, unitr)
@@ -418,17 +411,27 @@ contains
             omega_nuc(OFFSET_CART(i) + loc) = omega_scratch(loc)
          end do
       end do
-      do i = 0, OFFSET_CART(min(li + lc + 1, 9)) - 1
+      do i = 0, OFFSET_CART(min(li + lc + 1, ECP_ANG_LMAX + 1)) - 1
          omega_nuc(i) = omega_nuc(i)*4.0_dp*acos(-1.0_dp)
       end do
 
+      ox = 0
+      oy = li1*li1
+      oz = 2*li1*li1
+      call ecp_cache_3dfac(fac3d, li, ri)
+
+      ! One (i, j, k) block of omega at a time, then every function it enters:
+      ! the whole (li + 1)**3 array was 50 KB of every thread's stack at f and
+      ! would be 110 KB at g. The terms reach each element of facs in the same
+      ! (i, j, k) order as before, so the numbers do not change.
+      nf3 = li1*nfi*dlclmb
+      facs(0:nf3 - 1) = 0.0_dp
       do i = 0, li
          do j = 0, li - i
             do k = 0, li - i - j
-               base = (i*li1*li1 + j*li1 + k)*dlclmb
                need_even = mod(lc + i + j + k, 2)
 
-               po = base + need_even*dlc
+               po = need_even*dlc
                do lmb = need_even, li + lc, 2
                   do m = 0, cart_len(lc) - 1
                      pv = CART_POW_Y(m)
@@ -463,39 +466,17 @@ contains
                   po = po + dlc*2
                end do
 
-               need_odd = ieor(need_even, 1)
-               po = base + need_odd*dlc
-               do lmb = need_odd, li + lc, 2
-                  do m = 0, dlc - 1
-                     omega(po + m) = 0.0_dp
-                  end do
-                  po = po + dlc*2
-               end do
-            end do
-         end do
-      end do
-
-      ox = 0
-      oy = li1*li1
-      oz = 2*li1*li1
-      call ecp_cache_3dfac(fac3d, li, ri)
-
-      facs(0:li1*nfi*dlclmb - 1) = 0.0_dp
-      do mi = 0, nfi - 1
-         ps = CART_POW_Y(mi)
-         pt = CART_POW_Z(mi)
-         pr = li - ps - pt
-         do i = 0, pr
-            do j = 0, ps
-               do k = 0, pt
-                  need_even = mod(lc + i + j + k, 2)
+               do mi = 0, nfi - 1
+                  ps = CART_POW_Y(mi)
+                  pt = CART_POW_Z(mi)
+                  pr = li - ps - pt
+                  if (i > pr .or. j > ps .or. k > pt) cycle
                   fac = fac3d(ox + pr*li1 + i)*fac3d(oy + ps*li1 + j)*fac3d(oz + pt*li1 + k)
-                  base = (i*li1*li1 + j*li1 + k)*dlclmb
                   pf = ((i + j + k)*nfi + mi)*dlclmb
                   do m = 0, dlc - 1
                      do n = need_even, dlambda - 1, 2
                         facs(pf + m*dlambda + n) = facs(pf + m*dlambda + n) &
-                                                   + fac*omega(base + n*dlc + m)
+                                                   + fac*omega(n*dlc + m)
                      end do
                   end do
                end do
@@ -508,21 +489,19 @@ contains
       !$acc routine seq
       integer, intent(in) :: li
       real(dp), intent(in) :: ri(3)
-      real(dp), intent(out) :: facs(0:(ECP_ORB_LMAX + 1)*((ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 2)/2)* &
-                                     (2*ECP_LMAX + 1)*(ECP_ORB_LMAX + ECP_LMAX + 1) - 1)
+      real(dp), intent(out) :: facs(0:(li + 1)*((li + 1)*(li + 2)/2)*5*(li + 3) - 1)
 
       real(dp) :: unitr(3)
       real(dp) :: omega_nuc(0:CART_CUM - 1)
       real(dp) :: buf(0:(ECP_LMAX + 1)*(ECP_LMAX + 2)/2 - 1)
-      real(dp) :: omega(0:(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1)* &
-                         (ECP_ORB_LMAX + ECP_LMAX + 1)*(2*ECP_LMAX + 1) - 1)
-      real(dp) :: fac3d(0:3*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1) - 1)
+      real(dp) :: omega(0:(ECP_BRA_LMAX + ECP_LMAX + 1)*(2*ECP_LMAX + 1) - 1)
+      real(dp) :: fac3d(0:3*(ECP_BRA_LMAX + 1)*(ECP_BRA_LMAX + 1) - 1)
       real(dp) :: omega_scratch(0:ECP_ANG_NCART_MAX - 1)
       integer :: li1, dlc, dlambda, dlclmb, nfi
       integer, parameter :: lc = 2
       integer :: i, j, k, m, n, lmb, mi, loc
-      integer :: need_even, need_odd, pu, pv, pw, pr, ps, pt
-      integer :: base, po, pf, ox, oy, oz
+      integer :: need_even, pu, pv, pw, pr, ps, pt
+      integer :: po, pf, ox, oy, oz, nf3
       real(dp) :: acc, fac
 
       call unit_direction(ri, unitr)
@@ -539,17 +518,27 @@ contains
             omega_nuc(OFFSET_CART(i) + loc) = omega_scratch(loc)
          end do
       end do
-      do i = 0, OFFSET_CART(min(li + lc + 1, 9)) - 1
+      do i = 0, OFFSET_CART(min(li + lc + 1, ECP_ANG_LMAX + 1)) - 1
          omega_nuc(i) = omega_nuc(i)*4.0_dp*acos(-1.0_dp)
       end do
 
+      ox = 0
+      oy = li1*li1
+      oz = 2*li1*li1
+      call ecp_cache_3dfac(fac3d, li, ri)
+
+      ! One (i, j, k) block of omega at a time, then every function it enters:
+      ! the whole (li + 1)**3 array was 50 KB of every thread's stack at f and
+      ! would be 110 KB at g. The terms reach each element of facs in the same
+      ! (i, j, k) order as before, so the numbers do not change.
+      nf3 = li1*nfi*dlclmb
+      facs(0:nf3 - 1) = 0.0_dp
       do i = 0, li
          do j = 0, li - i
             do k = 0, li - i - j
-               base = (i*li1*li1 + j*li1 + k)*dlclmb
                need_even = mod(lc + i + j + k, 2)
 
-               po = base + need_even*dlc
+               po = need_even*dlc
                do lmb = need_even, li + lc, 2
                   do m = 0, cart_len(lc) - 1
                      pv = CART_POW_Y(m)
@@ -584,39 +573,17 @@ contains
                   po = po + dlc*2
                end do
 
-               need_odd = ieor(need_even, 1)
-               po = base + need_odd*dlc
-               do lmb = need_odd, li + lc, 2
-                  do m = 0, dlc - 1
-                     omega(po + m) = 0.0_dp
-                  end do
-                  po = po + dlc*2
-               end do
-            end do
-         end do
-      end do
-
-      ox = 0
-      oy = li1*li1
-      oz = 2*li1*li1
-      call ecp_cache_3dfac(fac3d, li, ri)
-
-      facs(0:li1*nfi*dlclmb - 1) = 0.0_dp
-      do mi = 0, nfi - 1
-         ps = CART_POW_Y(mi)
-         pt = CART_POW_Z(mi)
-         pr = li - ps - pt
-         do i = 0, pr
-            do j = 0, ps
-               do k = 0, pt
-                  need_even = mod(lc + i + j + k, 2)
+               do mi = 0, nfi - 1
+                  ps = CART_POW_Y(mi)
+                  pt = CART_POW_Z(mi)
+                  pr = li - ps - pt
+                  if (i > pr .or. j > ps .or. k > pt) cycle
                   fac = fac3d(ox + pr*li1 + i)*fac3d(oy + ps*li1 + j)*fac3d(oz + pt*li1 + k)
-                  base = (i*li1*li1 + j*li1 + k)*dlclmb
                   pf = ((i + j + k)*nfi + mi)*dlclmb
                   do m = 0, dlc - 1
                      do n = need_even, dlambda - 1, 2
                         facs(pf + m*dlambda + n) = facs(pf + m*dlambda + n) &
-                                                   + fac*omega(base + n*dlc + m)
+                                                   + fac*omega(n*dlc + m)
                      end do
                   end do
                end do
@@ -629,21 +596,19 @@ contains
       !$acc routine seq
       integer, intent(in) :: li
       real(dp), intent(in) :: ri(3)
-      real(dp), intent(out) :: facs(0:(ECP_ORB_LMAX + 1)*((ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 2)/2)* &
-                                     (2*ECP_LMAX + 1)*(ECP_ORB_LMAX + ECP_LMAX + 1) - 1)
+      real(dp), intent(out) :: facs(0:(li + 1)*((li + 1)*(li + 2)/2)*7*(li + 4) - 1)
 
       real(dp) :: unitr(3)
       real(dp) :: omega_nuc(0:CART_CUM - 1)
       real(dp) :: buf(0:(ECP_LMAX + 1)*(ECP_LMAX + 2)/2 - 1)
-      real(dp) :: omega(0:(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1)* &
-                         (ECP_ORB_LMAX + ECP_LMAX + 1)*(2*ECP_LMAX + 1) - 1)
-      real(dp) :: fac3d(0:3*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1) - 1)
+      real(dp) :: omega(0:(ECP_BRA_LMAX + ECP_LMAX + 1)*(2*ECP_LMAX + 1) - 1)
+      real(dp) :: fac3d(0:3*(ECP_BRA_LMAX + 1)*(ECP_BRA_LMAX + 1) - 1)
       real(dp) :: omega_scratch(0:ECP_ANG_NCART_MAX - 1)
       integer :: li1, dlc, dlambda, dlclmb, nfi
       integer, parameter :: lc = 3
       integer :: i, j, k, m, n, lmb, mi, loc
-      integer :: need_even, need_odd, pu, pv, pw, pr, ps, pt
-      integer :: base, po, pf, ox, oy, oz
+      integer :: need_even, pu, pv, pw, pr, ps, pt
+      integer :: po, pf, ox, oy, oz, nf3
       real(dp) :: acc, fac
 
       call unit_direction(ri, unitr)
@@ -660,17 +625,27 @@ contains
             omega_nuc(OFFSET_CART(i) + loc) = omega_scratch(loc)
          end do
       end do
-      do i = 0, OFFSET_CART(min(li + lc + 1, 9)) - 1
+      do i = 0, OFFSET_CART(min(li + lc + 1, ECP_ANG_LMAX + 1)) - 1
          omega_nuc(i) = omega_nuc(i)*4.0_dp*acos(-1.0_dp)
       end do
 
+      ox = 0
+      oy = li1*li1
+      oz = 2*li1*li1
+      call ecp_cache_3dfac(fac3d, li, ri)
+
+      ! One (i, j, k) block of omega at a time, then every function it enters:
+      ! the whole (li + 1)**3 array was 50 KB of every thread's stack at f and
+      ! would be 110 KB at g. The terms reach each element of facs in the same
+      ! (i, j, k) order as before, so the numbers do not change.
+      nf3 = li1*nfi*dlclmb
+      facs(0:nf3 - 1) = 0.0_dp
       do i = 0, li
          do j = 0, li - i
             do k = 0, li - i - j
-               base = (i*li1*li1 + j*li1 + k)*dlclmb
                need_even = mod(lc + i + j + k, 2)
 
-               po = base + need_even*dlc
+               po = need_even*dlc
                do lmb = need_even, li + lc, 2
                   do m = 0, cart_len(lc) - 1
                      pv = CART_POW_Y(m)
@@ -705,39 +680,17 @@ contains
                   po = po + dlc*2
                end do
 
-               need_odd = ieor(need_even, 1)
-               po = base + need_odd*dlc
-               do lmb = need_odd, li + lc, 2
-                  do m = 0, dlc - 1
-                     omega(po + m) = 0.0_dp
-                  end do
-                  po = po + dlc*2
-               end do
-            end do
-         end do
-      end do
-
-      ox = 0
-      oy = li1*li1
-      oz = 2*li1*li1
-      call ecp_cache_3dfac(fac3d, li, ri)
-
-      facs(0:li1*nfi*dlclmb - 1) = 0.0_dp
-      do mi = 0, nfi - 1
-         ps = CART_POW_Y(mi)
-         pt = CART_POW_Z(mi)
-         pr = li - ps - pt
-         do i = 0, pr
-            do j = 0, ps
-               do k = 0, pt
-                  need_even = mod(lc + i + j + k, 2)
+               do mi = 0, nfi - 1
+                  ps = CART_POW_Y(mi)
+                  pt = CART_POW_Z(mi)
+                  pr = li - ps - pt
+                  if (i > pr .or. j > ps .or. k > pt) cycle
                   fac = fac3d(ox + pr*li1 + i)*fac3d(oy + ps*li1 + j)*fac3d(oz + pt*li1 + k)
-                  base = (i*li1*li1 + j*li1 + k)*dlclmb
                   pf = ((i + j + k)*nfi + mi)*dlclmb
                   do m = 0, dlc - 1
                      do n = need_even, dlambda - 1, 2
                         facs(pf + m*dlambda + n) = facs(pf + m*dlambda + n) &
-                                                   + fac*omega(base + n*dlc + m)
+                                                   + fac*omega(n*dlc + m)
                      end do
                   end do
                end do
@@ -750,21 +703,19 @@ contains
       !$acc routine seq
       integer, intent(in) :: li
       real(dp), intent(in) :: ri(3)
-      real(dp), intent(out) :: facs(0:(ECP_ORB_LMAX + 1)*((ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 2)/2)* &
-                                     (2*ECP_LMAX + 1)*(ECP_ORB_LMAX + ECP_LMAX + 1) - 1)
+      real(dp), intent(out) :: facs(0:(li + 1)*((li + 1)*(li + 2)/2)*9*(li + 5) - 1)
 
       real(dp) :: unitr(3)
       real(dp) :: omega_nuc(0:CART_CUM - 1)
       real(dp) :: buf(0:(ECP_LMAX + 1)*(ECP_LMAX + 2)/2 - 1)
-      real(dp) :: omega(0:(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1)* &
-                         (ECP_ORB_LMAX + ECP_LMAX + 1)*(2*ECP_LMAX + 1) - 1)
-      real(dp) :: fac3d(0:3*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1) - 1)
+      real(dp) :: omega(0:(ECP_BRA_LMAX + ECP_LMAX + 1)*(2*ECP_LMAX + 1) - 1)
+      real(dp) :: fac3d(0:3*(ECP_BRA_LMAX + 1)*(ECP_BRA_LMAX + 1) - 1)
       real(dp) :: omega_scratch(0:ECP_ANG_NCART_MAX - 1)
       integer :: li1, dlc, dlambda, dlclmb, nfi
       integer, parameter :: lc = 4
       integer :: i, j, k, m, n, lmb, mi, loc
-      integer :: need_even, need_odd, pu, pv, pw, pr, ps, pt
-      integer :: base, po, pf, ox, oy, oz
+      integer :: need_even, pu, pv, pw, pr, ps, pt
+      integer :: po, pf, ox, oy, oz, nf3
       real(dp) :: acc, fac
 
       call unit_direction(ri, unitr)
@@ -781,17 +732,27 @@ contains
             omega_nuc(OFFSET_CART(i) + loc) = omega_scratch(loc)
          end do
       end do
-      do i = 0, OFFSET_CART(min(li + lc + 1, 9)) - 1
+      do i = 0, OFFSET_CART(min(li + lc + 1, ECP_ANG_LMAX + 1)) - 1
          omega_nuc(i) = omega_nuc(i)*4.0_dp*acos(-1.0_dp)
       end do
 
+      ox = 0
+      oy = li1*li1
+      oz = 2*li1*li1
+      call ecp_cache_3dfac(fac3d, li, ri)
+
+      ! One (i, j, k) block of omega at a time, then every function it enters:
+      ! the whole (li + 1)**3 array was 50 KB of every thread's stack at f and
+      ! would be 110 KB at g. The terms reach each element of facs in the same
+      ! (i, j, k) order as before, so the numbers do not change.
+      nf3 = li1*nfi*dlclmb
+      facs(0:nf3 - 1) = 0.0_dp
       do i = 0, li
          do j = 0, li - i
             do k = 0, li - i - j
-               base = (i*li1*li1 + j*li1 + k)*dlclmb
                need_even = mod(lc + i + j + k, 2)
 
-               po = base + need_even*dlc
+               po = need_even*dlc
                do lmb = need_even, li + lc, 2
                   do m = 0, cart_len(lc) - 1
                      pv = CART_POW_Y(m)
@@ -826,39 +787,17 @@ contains
                   po = po + dlc*2
                end do
 
-               need_odd = ieor(need_even, 1)
-               po = base + need_odd*dlc
-               do lmb = need_odd, li + lc, 2
-                  do m = 0, dlc - 1
-                     omega(po + m) = 0.0_dp
-                  end do
-                  po = po + dlc*2
-               end do
-            end do
-         end do
-      end do
-
-      ox = 0
-      oy = li1*li1
-      oz = 2*li1*li1
-      call ecp_cache_3dfac(fac3d, li, ri)
-
-      facs(0:li1*nfi*dlclmb - 1) = 0.0_dp
-      do mi = 0, nfi - 1
-         ps = CART_POW_Y(mi)
-         pt = CART_POW_Z(mi)
-         pr = li - ps - pt
-         do i = 0, pr
-            do j = 0, ps
-               do k = 0, pt
-                  need_even = mod(lc + i + j + k, 2)
+               do mi = 0, nfi - 1
+                  ps = CART_POW_Y(mi)
+                  pt = CART_POW_Z(mi)
+                  pr = li - ps - pt
+                  if (i > pr .or. j > ps .or. k > pt) cycle
                   fac = fac3d(ox + pr*li1 + i)*fac3d(oy + ps*li1 + j)*fac3d(oz + pt*li1 + k)
-                  base = (i*li1*li1 + j*li1 + k)*dlclmb
                   pf = ((i + j + k)*nfi + mi)*dlclmb
                   do m = 0, dlc - 1
                      do n = need_even, dlambda - 1, 2
                         facs(pf + m*dlambda + n) = facs(pf + m*dlambda + n) &
-                                                   + fac*omega(base + n*dlc + m)
+                                                   + fac*omega(n*dlc + m)
                      end do
                   end do
                end do
@@ -871,21 +810,19 @@ contains
       !$acc routine seq
       integer, intent(in) :: li
       real(dp), intent(in) :: ri(3)
-      real(dp), intent(out) :: facs(0:(ECP_ORB_LMAX + 1)*((ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 2)/2)* &
-                                     (2*ECP_LMAX + 1)*(ECP_ORB_LMAX + ECP_LMAX + 1) - 1)
+      real(dp), intent(out) :: facs(0:(li + 1)*((li + 1)*(li + 2)/2)*11*(li + 6) - 1)
 
       real(dp) :: unitr(3)
       real(dp) :: omega_nuc(0:CART_CUM - 1)
       real(dp) :: buf(0:(ECP_LMAX + 1)*(ECP_LMAX + 2)/2 - 1)
-      real(dp) :: omega(0:(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1)* &
-                         (ECP_ORB_LMAX + ECP_LMAX + 1)*(2*ECP_LMAX + 1) - 1)
-      real(dp) :: fac3d(0:3*(ECP_ORB_LMAX + 1)*(ECP_ORB_LMAX + 1) - 1)
+      real(dp) :: omega(0:(ECP_BRA_LMAX + ECP_LMAX + 1)*(2*ECP_LMAX + 1) - 1)
+      real(dp) :: fac3d(0:3*(ECP_BRA_LMAX + 1)*(ECP_BRA_LMAX + 1) - 1)
       real(dp) :: omega_scratch(0:ECP_ANG_NCART_MAX - 1)
       integer :: li1, dlc, dlambda, dlclmb, nfi
       integer, parameter :: lc = 5
       integer :: i, j, k, m, n, lmb, mi, loc
-      integer :: need_even, need_odd, pu, pv, pw, pr, ps, pt
-      integer :: base, po, pf, ox, oy, oz
+      integer :: need_even, pu, pv, pw, pr, ps, pt
+      integer :: po, pf, ox, oy, oz, nf3
       real(dp) :: acc, fac
 
       call unit_direction(ri, unitr)
@@ -902,17 +839,27 @@ contains
             omega_nuc(OFFSET_CART(i) + loc) = omega_scratch(loc)
          end do
       end do
-      do i = 0, OFFSET_CART(min(li + lc + 1, 9)) - 1
+      do i = 0, OFFSET_CART(min(li + lc + 1, ECP_ANG_LMAX + 1)) - 1
          omega_nuc(i) = omega_nuc(i)*4.0_dp*acos(-1.0_dp)
       end do
 
+      ox = 0
+      oy = li1*li1
+      oz = 2*li1*li1
+      call ecp_cache_3dfac(fac3d, li, ri)
+
+      ! One (i, j, k) block of omega at a time, then every function it enters:
+      ! the whole (li + 1)**3 array was 50 KB of every thread's stack at f and
+      ! would be 110 KB at g. The terms reach each element of facs in the same
+      ! (i, j, k) order as before, so the numbers do not change.
+      nf3 = li1*nfi*dlclmb
+      facs(0:nf3 - 1) = 0.0_dp
       do i = 0, li
          do j = 0, li - i
             do k = 0, li - i - j
-               base = (i*li1*li1 + j*li1 + k)*dlclmb
                need_even = mod(lc + i + j + k, 2)
 
-               po = base + need_even*dlc
+               po = need_even*dlc
                do lmb = need_even, li + lc, 2
                   do m = 0, cart_len(lc) - 1
                      pv = CART_POW_Y(m)
@@ -947,39 +894,17 @@ contains
                   po = po + dlc*2
                end do
 
-               need_odd = ieor(need_even, 1)
-               po = base + need_odd*dlc
-               do lmb = need_odd, li + lc, 2
-                  do m = 0, dlc - 1
-                     omega(po + m) = 0.0_dp
-                  end do
-                  po = po + dlc*2
-               end do
-            end do
-         end do
-      end do
-
-      ox = 0
-      oy = li1*li1
-      oz = 2*li1*li1
-      call ecp_cache_3dfac(fac3d, li, ri)
-
-      facs(0:li1*nfi*dlclmb - 1) = 0.0_dp
-      do mi = 0, nfi - 1
-         ps = CART_POW_Y(mi)
-         pt = CART_POW_Z(mi)
-         pr = li - ps - pt
-         do i = 0, pr
-            do j = 0, ps
-               do k = 0, pt
-                  need_even = mod(lc + i + j + k, 2)
+               do mi = 0, nfi - 1
+                  ps = CART_POW_Y(mi)
+                  pt = CART_POW_Z(mi)
+                  pr = li - ps - pt
+                  if (i > pr .or. j > ps .or. k > pt) cycle
                   fac = fac3d(ox + pr*li1 + i)*fac3d(oy + ps*li1 + j)*fac3d(oz + pt*li1 + k)
-                  base = (i*li1*li1 + j*li1 + k)*dlclmb
                   pf = ((i + j + k)*nfi + mi)*dlclmb
                   do m = 0, dlc - 1
                      do n = need_even, dlambda - 1, 2
                         facs(pf + m*dlambda + n) = facs(pf + m*dlambda + n) &
-                                                   + fac*omega(base + n*dlc + m)
+                                                   + fac*omega(n*dlc + m)
                      end do
                   end do
                end do
@@ -991,14 +916,13 @@ contains
    pure subroutine ecp_type1_rad_ang(rad_ang, lmax, r, rad_all)
       !! Angular contraction of the type-1 (local) radial integrals.
       !! `rad_all` arrives indexed (total degree, lambda), `rad_ang` comes
-      !! out over the three Cartesian powers, (lmax+1)^3, fixed to
-      !! (2*ECP_ORB_LMAX+1)^3. `rad_all` holds (lmax+1)^2 values, the extent the
+      !! out over the three Cartesian powers, (lmax+1)^3. `rad_all` holds (lmax+1)^2 values, the extent the
       !! caller's slice has (the dummy may not claim more than the actual).
       !$acc routine seq
       integer, intent(in) :: lmax
       real(dp), intent(in) :: r(3)
       real(dp), intent(in) :: rad_all(0:(lmax + 1)*(lmax + 1) - 1)
-      real(dp), intent(out) :: rad_ang(0:(2*ECP_ORB_LMAX + 1)**3 - 1)
+      real(dp), intent(out) :: rad_ang(0:(lmax + 1)**3 - 1)
 
       real(dp) :: unitr(3)
       real(dp) :: omega_nuc(0:CART_CUM - 1)

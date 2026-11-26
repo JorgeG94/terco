@@ -59,7 +59,7 @@ class RestaleTests(unittest.TestCase):
         # gen_rimp2_uhf, gen_dh, gen_sph_corr, gen_vib_thermo (so all three
         # vib_thermo_* cases, which share that one generator), gen_opt_ts
         # (opt_ts_hcn), gen_rsh_g (the three rsh_g_* cases), gen_h_scf (the twelve h_* SCF cases), gen_soscf, gen_mom_excited, gen_chelpg, gen_ecp_scf,
-        # gen_fukui_chelpg, gen_ccsd_grad, gen_sym_scf_cs, gen_sym_c2, gen_sym_c2v, gen_sym_ci, gen_sym_subgroup, gen_sym_d2,
+        # gen_fukui_chelpg, gen_ecp_grad, gen_ccsd_grad, gen_sym_scf_cs, gen_sym_c2, gen_sym_c2v, gen_sym_ci, gen_sym_subgroup, gen_sym_d2,
         # gen_sym_c2h, gen_sym_c2h_subgroup, gen_sym_d2h, gen_sym_d2h_subgroup, gen_sym_tops, gen_rccsd_ints, and through
         # _gen_rimp2_one / _gen_scf_df_one / _gen_cphf_one / _gen_cpks_one /
         # _gen_tddft_one / _gen_tddft_grad_one / _gen_tddft_rpa_grad_one by gen_rimp2 / gen_scf_df / gen_cphf / gen_cphf_uhf / gen_cpks / gen_tddft /
@@ -72,7 +72,7 @@ class RestaleTests(unittest.TestCase):
                           "rimp2_uhf", "dh", "sph_corr", "cphf", "cphf_uhf", "cpks", "tddft", "tddft_grad", "tddft_s1_min", "tddft_rpa_grad", "rpa",
                           "vib_thermo_water", "vib_thermo_hcn", "vib_thermo_nh3_planar",
                           "opt_ts_hcn", "rsh_g_water_wb97x", "rsh_g_nh2_wb97x", "rsh_g_water_wb97xv",
-                          "soscf", "mom_excited", "chelpg", "ecp_scf", "fukui_chelpg", "ccsd_grad", "sym_scf_cs", "sym_c2",
+                          "soscf", "mom_excited", "chelpg", "ecp_scf", "fukui_chelpg", "ecp_grad", "ccsd_grad", "sym_scf_cs", "sym_c2",
                           "sym_c2v", "sym_ci", "sym_subgroup", "sym_d2", "sym_c2h", "sym_c2h_subgroup", "sym_d2h",
                           "sym_d2h_subgroup", "sym_tops", "rccsd_ints",
                           "h_rhf_water_min", "h_rhf_water_min_cart", "h_uhf_hco_min", "h_lda_water_min",

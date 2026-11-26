@@ -72,7 +72,7 @@ toml-f = { git = "https://github.com/JorgeG94/toml-f", rev = "e0bc8c69985adcae9b
 # would link it into libterco itself (CMake keeps it in a separate libterco_opt,
 # behind TERCO_ENABLE_DLFIND). To opt in, uncomment this and add
 # "TERCO_ENABLE_DLFIND" to the macros above:
-# libdlfind = { git = "https://github.com/JorgeG94/libdlfind", rev = "eadcd7c61aa64bbb57bfe77cf5e3182f7b10167d" }
+# libdlfind = { git = "https://github.com/JorgeG94/libdlfind", rev = "86d483277ceb588f08e23bbf964742008d3b352f" }
 
 [dev-dependencies]
 # The unit-test framework, at the commit cmake/modules/Findtest-drive.cmake pins.
