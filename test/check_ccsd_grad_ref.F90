@@ -26,12 +26,11 @@ module check_ccsd_grad_ref_suite
    private
    public :: collect_ccsd_grad_ref
 
-   real(dp), parameter :: TOL_SCF = 3.0e-12_dp
-   !! The four energy tolerances are at least ten times the worst difference measured over the four cases on a host
-   !! build: SCF 2.3e-13, E_CCSD 4.3e-13, E(T) 4.4e-14, total 7.1e-13.
-   real(dp), parameter :: TOL_CORR = 7.0e-12_dp
-   real(dp), parameter :: TOL_T = 7.0e-13_dp
-   real(dp), parameter :: TOL_TOTAL = 1.0e-11_dp
+   ! The four energy tolerances are at least ten times the worst difference measured over the four cases on a host build.
+   real(dp), parameter :: TOL_SCF = 3.0e-12_dp  !! E_SCF; worst measured 2.3e-13
+   real(dp), parameter :: TOL_CORR = 7.0e-12_dp  !! E_CCSD correlation; worst measured 4.3e-13
+   real(dp), parameter :: TOL_T = 7.0e-13_dp  !! E(T); worst measured 4.4e-14
+   real(dp), parameter :: TOL_TOTAL = 1.0e-11_dp  !! CCSD(T) total; worst measured 7.1e-13
    real(dp), parameter :: TOL_DENSITY = 1.0e-9_dp
 
 contains
@@ -99,7 +98,8 @@ contains
          if (allocated(error)) return
          line = "  "//trim(CASE_REF(ic))//": |SCF| "//to_string(abs(e_scf - ref%e_scf), "es9.2")//", |E_CCSD| "// &
                 to_string(abs(e_corr - ref%e_ccsd_corr), "es9.2")//", |E(T)| "//to_string(abs(e_t - ref%e_t), "es9.2")// &
-                ", |total| "//to_string(abs(e_scf + e_corr + e_t - ref%e_ccsd_t), "es9.2")
+                ", |total| "//to_string(abs(e_scf + e_corr + e_t - ref%e_ccsd_t), "es9.2")// &
+                ", CC iterations "//to_string(iterations)
          print "(a)", line
          call check(error, abs(e_scf - ref%e_scf) < TOL_SCF, trim(CASE_REF(ic))//": E_SCF "// &
                     to_string(e_scf, "f20.12")//" vs pyscf "//to_string(ref%e_scf, "f20.12"))

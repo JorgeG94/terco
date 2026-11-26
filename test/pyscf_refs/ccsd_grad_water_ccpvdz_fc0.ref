@@ -3,7 +3,7 @@
 # generator: test/pyscf_refs/generate.py CASES["ccsd_grad"] -> gen_ccsd_grad
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: dca9856457ad2f7cef5c9d0f43cc836a77a19e149bafbb2a423f366abd34f322
+# hash: 462d122004dcf3c8a6ca0ddfeceb184bb973140cd13bff8f3c2ed0e82fe1173e
 # files: test/ccgrad_water.xyz test/basis_sets/cc-pvdz.json test/basis_sets/sto-3g.json test/basis_sets/cc-pvdz-rifit.json test/ccsd_grad_support.F90 test/check_ccsd_grad_ref.F90 test/check_ccsd_grad_fd.F90
 # ccgrad_water.xyz cc-pvdz/cc-pvdz-rifit frozen 0: pyscf DF-RCCSD(T) energies, sign-independent Lambda and density probes, exact-response gradient (CCSD, then CCSD(T))
 NATM 3

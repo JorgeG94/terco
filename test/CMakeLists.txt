@@ -239,7 +239,7 @@ set_tests_properties(terco/check_ccsd_grad_ref PROPERTIES SKIP_REGULAR_EXPRESSIO
 
 terco_add_check(check_ccsd_grad_fd check_ccsd_grad_fd.F90 NEEDS_BASIS NEEDS_PYSCF_REF)
 target_link_libraries(check_ccsd_grad_fd PRIVATE test-drive::test-drive terco_ccsd_grad_support)
-# LONG: 144 SCF and RI-CCSD(T) runs, about a minute on the host; the nightly run keeps it,
+# LONG: 144 SCF and RI-CCSD(T) runs, about 40 s on the host; the nightly run keeps it,
 # check_ccsd_grad_fd_short runs on every PR.
 set_tests_properties(terco/check_ccsd_grad_fd PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP" LABELS LONG)
 add_test(NAME terco/check_ccsd_grad_fd_short COMMAND check_ccsd_grad_fd short)
