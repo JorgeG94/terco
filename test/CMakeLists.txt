@@ -196,7 +196,8 @@ target_link_libraries(check_rccsd_ladder PRIVATE test-drive::test-drive terco_rc
 set_tests_properties(terco/check_rccsd_ladder PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")
 
 # The ladder of an arbitrary o^2 v^2 tensor (rccsd_ladder_tensor, what the Lambda equations take of l2): a random
-# pair-symmetric tensor in every form, dressed and undressed, against host loops over b_vv and b_ov. No reference file.
+# tensor without symmetry and a pair-symmetric one in every form, dressed and undressed, against host loops over b_vv
+# and b_ov; tau_symmetric refused outside the half form. No reference file.
 terco_add_check(check_rccsd_ladder_tensor check_rccsd_ladder_tensor.F90 NEEDS_BASIS)
 target_link_libraries(check_rccsd_ladder_tensor PRIVATE test-drive::test-drive terco_rccsd_test_support)
 set_tests_properties(terco/check_rccsd_ladder_tensor PROPERTIES SKIP_REGULAR_EXPRESSION "SKIP")

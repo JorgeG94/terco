@@ -189,15 +189,17 @@ contains
       if (.not. supported) return
       opts%form = RCCSD_LADDER_HALF
       call ls%init(ints, opts)
+      call check(error, .not. ls%status%has_error(), "scratch: "//ls%status%get_message())
+      if (allocated(error)) return
       call lad%init(ints%no, ints%nv)
       call rccsd_ladder_tensor(ints, t(:, :, :, 1:ints%nv - 1), lad, ls, la)
-      shape_refused = ls%status%has_error()
+      shape_refused = index(ls%status%get_message(), "does not have the shape") > 0
       ls%d_lo = 2
       call rccsd_ladder_tensor(ints, t, lad, ls, la)
-      share_refused = ls%status%has_error()
+      share_refused = index(ls%status%get_message(), "takes no share") > 0
       call lad%pull()
       call check(error, shape_refused .and. share_refused .and. all(lad%h == 0.0_dp), &
-                 "a wrong shape and a share must be refused with nothing written")
+                 "a wrong shape and a share must be refused, each for its own reason, with nothing written")
       if (.not. allocated(error)) call refuse_symmetric(error, RCCSD_LADDER_ASSEMBLED, lad)
       if (.not. allocated(error)) call refuse_symmetric(error, RCCSD_LADDER_DIRECT, lad)
       call lad%release()
@@ -205,8 +207,8 @@ contains
    end subroutine test_refusals
 
    subroutine refuse_symmetric(error, form, lad)
-      !! `tau_symmetric` with a form that has no one-contraction path: refused, undressed and dressed, `lad` (zero on
-      !! entry) untouched
+      !! `tau_symmetric` with a form that has no one-contraction path: refused for that reason, undressed and
+      !! dressed, and `lad` is not written
       type(error_type), allocatable, intent(out) :: error
       integer, intent(in) :: form
       type(trc_rccsd_ladder_t), intent(inout) :: lad
@@ -217,10 +219,14 @@ contains
 
       opts%form = form
       call ls%init(ints, opts)
+      call check(error, .not. ls%status%has_error(), "scratch: "//ls%status%get_message())
+      if (allocated(error)) return
+      lad%h = 0.0_dp
+      !$acc update device(lad%h)
       call rccsd_ladder_tensor(ints, t, lad, ls, la, tau_symmetric=.true.)
-      refused = ls%status%has_error()
+      refused = index(ls%status%get_message(), "tau_symmetric") > 0
       call rccsd_ladder_tensor(ints, t, lad, ls, la, amps=amps, tau_symmetric=.true.)
-      refused_dressed = ls%status%has_error()
+      refused_dressed = index(ls%status%get_message(), "tau_symmetric") > 0
       call lad%pull()
       call check(error, refused .and. refused_dressed .and. all(lad%h == 0.0_dp), &
                  "tau_symmetric outside the half form must be refused with nothing written, form "//to_string(form))
