@@ -205,3 +205,14 @@ stages = ["scf.setup", "scf.fock_mean_after_first", "scf.fock_first", "scf.wall"
 # what this case guards; if it proves noisy on a V100, move it to INFO.
 judge = ["scf.setup", "scf.fock_mean_after_first"]
 
+[[case]]
+name = "ecp_grad"
+description = "24 CH3I (120 atoms), def2-SVP, iodine ECP, analytic RHF gradient"
+geometry = "systems/ch3i_24.xyz"
+args = ["-b", "def2-svp", "--no-incremental", "--thresh", "1e-11", "--grad"]
+stages = ["gradient.total", "scf.setup", "scf.wall", "total_wall"]
+# gradient.total holds the ECP term (the "grad: ecp" row of the printed
+# table) with the four-centre and one-electron ones; the energy side is the
+# "ecp" case's to judge.
+judge = ["gradient.total"]
+# Measured on a V100 (one run): 15 s, the gradient 3.5 s of it.

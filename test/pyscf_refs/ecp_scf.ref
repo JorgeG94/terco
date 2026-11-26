@@ -3,12 +3,12 @@
 # generator: test/pyscf_refs/generate.py CASES["ecp_scf"] -> gen_ecp_scf
 # pyscf: 2.14.0
 # hash-scheme: case-ast-v1
-# hash: e27b2e8ea6d01b431cef6d589b513806453486f5c4750b85e9ec530ef99659a0
+# hash: f93862c58b805d768c0fddbcb4c22992dd1ae0ff5c0843a58a79c4b0d121b8e2
 # files: test/check_ecp_scf.F90 test/basis_sets/def2-svp.json
-E_hi -2.97231531663358737e+02
-E_i_atom -2.96649606475643338e+02
+E_hi -2.97231531663358680e+02
+E_i_atom -2.96649606475643395e+02
 E_hi_pbe -2.98278875556426669e+02
-E_hi_b3lyp -2.98392681495649413e+02
+E_hi_b3lyp -2.98392681495649185e+02
 E_i2 -5.93316193058264275e+02
-E_h2_ghost_i -1.12891981955631771e+00
+E_h2_ghost_i -1.12891981955631904e+00
 END
