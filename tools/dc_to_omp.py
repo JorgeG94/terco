@@ -138,7 +138,7 @@ class Header:
     indent: str
     indices: list[tuple[str, str, str, str | None]]  # (var, lo, hi, step)
     privates: list[str]
-    has_mask: bool
+    mask: str | None = None
 
 
 def parse_triplet(item: str) -> tuple[str, str, str, str | None] | None:
@@ -204,13 +204,13 @@ def find_dc_block(lines: list[str], start: int) -> tuple[Header, int, int] | Non
         trailing = rest[end + 1:].strip()
 
         indices: list[tuple[str, str, str, str | None]] = []
-        has_mask = False
+        masks: list[str] = []
         for it in split_top_level(inside, ","):
             t = parse_triplet(it)
             if t is not None:
                 indices.append(t)
             elif it.strip():
-                has_mask = True
+                masks.append(it.strip())
 
         privates: list[str] = []
         t = trailing
@@ -243,12 +243,17 @@ def find_dc_block(lines: list[str], start: int) -> tuple[Header, int, int] | Non
             else:
                 t = after
 
-        # A masked or index-less header is left as written, and the scan goes
-        # on past it: returning None here would end transform_lines for the
-        # whole file, leaving every later loop unconverted too.
-        if has_mask:
+        # A mask is the scalar logical expression after the triplets; the
+        # standard allows one. Anything else that is not a triplet is left
+        # as written, and the scan goes on past it: returning None here would
+        # end transform_lines for the whole file, leaving every later loop
+        # unconverted too. A skipped loop is not harmless: amdflang runs an
+        # unconverted `do concurrent` on the host, over host copies of
+        # device-resident arrays.
+        if len(masks) > 1:
             sys.stderr.write(
-                f"  skip: header has mask at line {first + 1}; manual handling needed\n"
+                f"  skip: header has {len(masks)} non-index items at line {first + 1}; "
+                "manual handling needed\n"
             )
             i = last + 1
             continue
@@ -257,7 +262,8 @@ def find_dc_block(lines: list[str], start: int) -> tuple[Header, int, int] | Non
             continue
 
         indent = lines[first][: len(lines[first]) - len(lines[first].lstrip())]
-        return (Header(indent=indent, indices=indices, privates=privates, has_mask=False),
+        return (Header(indent=indent, indices=indices, privates=privates,
+                       mask=masks[0] if masks else None),
                 first, last)
     return None
 
@@ -303,6 +309,11 @@ def emit_replacement(h: Header, target: str = "gpu") -> tuple[list[str], list[st
         rng = f"{lo}, {hi}" + (f", {step}" if step else "")
         do_lines.append(f"{h.indent}do {var} = {rng}")
     end_lines = [f"{h.indent}end do" for _ in h.indices]
+    # The mask filters iterations of the whole index space, so it is the
+    # innermost loop's guard: the loops stay perfectly nested for collapse.
+    if h.mask is not None:
+        do_lines.append(f"{h.indent}if ({h.mask}) then")
+        end_lines.insert(0, f"{h.indent}end if")
     end_lines.append(f"{h.indent}!$omp end {kw}")
     return ([directive] + do_lines, end_lines)
 

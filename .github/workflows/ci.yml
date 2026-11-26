@@ -687,7 +687,7 @@ jobs:
       - name: Converter unit tests
         run: |
           pip install pytest
-          python3 -m pytest tools/test_acc_to_omp.py -q
+          python3 -m pytest tools/test_acc_to_omp.py tools/test_dc_to_omp.py -q
 
       # The conversion has to keep producing something that COMPILES and gives
       # the same answers, not merely something that parses. Converting to the
